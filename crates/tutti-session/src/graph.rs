@@ -373,6 +373,13 @@ pub struct Graph {
     /// happen.
     #[cfg(feature = "plugin")]
     pub(crate) plugins: BTreeMap<NodeKey, crate::HostedPlugin>,
+    /// A reader of the session's tempo map, the template each plugin
+    /// inserted through the graph is bound with (a clone of it: the plugin
+    /// node lends the map once per block and a fork clones its reader on the
+    /// control side). The publisher is the session's `TransportSettings`,
+    /// whose `Reclaim` sweep already covers the cell.
+    #[cfg(feature = "plugin")]
+    pub(crate) tempo: tutti_transport::TempoReader,
 }
 
 /// A hook each live render helper runs once on its own thread, with its
@@ -470,7 +477,10 @@ impl Graph {
         rate: SampleRate,
         max_block: Samples,
         quantum: Option<Samples>,
+        tempo: tutti_transport::TempoReader,
     ) -> Self {
+        #[cfg(not(feature = "plugin"))]
+        let _ = tempo;
         let (mut editor, exec) = Editor::new(prepare_for(rate, max_block, quantum));
         let topology = &mut editor.spec_mut().topology;
         topology.inputs = inputs;
@@ -508,6 +518,8 @@ impl Graph {
             widen_refusal: None,
             #[cfg(feature = "plugin")]
             plugins: BTreeMap::new(),
+            #[cfg(feature = "plugin")]
+            tempo,
         }
     }
 
@@ -820,7 +832,8 @@ impl Graph {
     }
 
     /// Inserts a hosted plugin: bound (`PluginClient::bind`, its typestate
-    /// transition to a graph node) and inserted as the `Node` it then is,
+    /// transition to a graph node, with a reader of the session's tempo map,
+    /// so the plugin is told the project's tempo) and inserted as the `Node` it then is,
     /// which hands the editor its own fork source (a fork by state transfer)
     /// and declares its latency in its `Shape`. Capture its controls first:
     /// the plugin is out of reach once inserted.
@@ -830,7 +843,8 @@ impl Graph {
         let hosted =
             crate::HostedPlugin::new(tutti_plugin::handles::PluginHandle::from_client(&client))
                 .with_controls(client.controls());
-        let _controls = self.editor.insert(node, PLUGIN_KIND, client.bind());
+        let tempo = self.tempo.clone();
+        let _controls = self.editor.insert(node, PLUGIN_KIND, client.bind(tempo));
         self.nodes.insert(
             node,
             Entry {
@@ -850,6 +864,11 @@ impl Graph {
     /// [`Session::add_plugin`](crate::Session::add_plugin)'s do. Its latency
     /// is whatever its node's shape declared at insert. Returns `false`
     /// (and hosts nothing) when `node` is not in the graph.
+    ///
+    /// A host that binds a plugin itself (`PluginClient::bind`) gives it a
+    /// reader of the session's tempo map, `session.transport().settings
+    /// .tempo_reader()`, so the plugin is told the project's tempo; this
+    /// method binds nothing.
     #[cfg(feature = "plugin")]
     pub fn host_plugin(
         &mut self,
@@ -893,7 +912,8 @@ impl Graph {
         }
         let handle = tutti_plugin::handles::PluginHandle::from_client(&client);
         let controls = client.controls();
-        match self.swap_unit(node, client.bind(), fade, curve) {
+        let tempo = self.tempo.clone();
+        match self.swap_unit(node, client.bind(tempo), fade, curve) {
             Ok(_controls) => {
                 // The record is carried over to the incoming plugin (unlike
                 // `replace`, which takes it out): its handle is what the

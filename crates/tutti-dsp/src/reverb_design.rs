@@ -205,11 +205,11 @@ mod tests {
     use tutti_types::{Db, Seconds};
 
     use super::*;
-    use crate::System as _;
     use crate::contract::design::{
         DesignCase, Mutant, cases, design_contract, map_absorption, map_fdn,
     };
     use crate::network::Band;
+    use crate::{Lti as _, System as _};
 
     fn controls(room: f32, damp: f32) -> FreeverbControls {
         FreeverbControls {

@@ -371,10 +371,10 @@ mod tests {
     use rand::{Rng, SeedableRng};
 
     use super::*;
-    use crate::System as _;
     use crate::contract::design::{DesignCase, design_contract};
     use crate::contract::realization::{RealizationCase, realization_contract};
     use crate::network::{Band, Fdn, Matrix, Network, Stage};
+    use crate::{Lti as _, System as _};
 
     fn freezable() -> FdnDesign {
         FdnDesign::new(8, MaxDecay::DEFAULT.get(), true).unwrap()

@@ -27,7 +27,9 @@ use crate::network::{
     Absorption, AllPass, AllPassForm, Band, Bounds, Fdn, Gains, Inline, Line, MAX_LINES, Matrix,
     Modulation, Network, OutputMap, Stage, loop_gain, pre_delay_frames,
 };
-use crate::{Ceiling, Channels, Design, Effect, MaxDecay, Realization, Ring, Setup, Sizes, System};
+use crate::{
+    Ceiling, Channels, Design, Effect, Lti, MaxDecay, Realization, Ring, Setup, Sizes, System,
+};
 
 /// A design plus what the contract needs to know to test it.
 pub(crate) trait DesignCase:

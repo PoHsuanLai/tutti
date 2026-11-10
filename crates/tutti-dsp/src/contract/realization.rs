@@ -29,7 +29,7 @@ use tutti_types::{Db, MaxBlock, SampleRate, Samples};
 
 use super::design::{DesignCase, map_absorption, map_fdn};
 use crate::network::{Absorption, Band, Bounds, Network};
-use crate::{Ceiling, Channels, Design, Effect, MaxDecay, Realization, Ring, Setup, System};
+use crate::{Ceiling, Channels, Design, Effect, Lti, MaxDecay, Realization, Ring, Setup, System};
 
 /// The longest block the cases prepare for.
 const MAX_BLOCK: usize = 512;

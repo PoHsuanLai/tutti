@@ -29,6 +29,7 @@ mod bounds;
 mod gain;
 mod inline;
 mod queries;
+mod response;
 
 pub use bounds::Bounds;
 pub use gain::{loop_gain, rt60_from_gain};
@@ -442,7 +443,7 @@ pub struct FirSummary {
 mod tests {
     use super::*;
     use crate::Ring;
-    use crate::System as _;
+    use crate::{Lti as _, System as _};
 
     /// The pre-delay is whole frames, rounded: 1 ms at 48 kHz is 48, more than half a
     /// frame rounds up, and a negative or NaN span is none.

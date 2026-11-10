@@ -13,12 +13,12 @@ const LOSSLESS_TOLERANCE: f64 = 1e-6;
 const ORTHOGONAL_TOLERANCE: f64 = 1e-6;
 
 impl Fdn {
-    fn mixing(&self) -> bool {
+    pub(super) fn mixing(&self) -> bool {
         !matches!(self.matrix, Matrix::Diagonal)
     }
 
     /// Whether the matrix has the shape its kind needs for `n` lines.
-    fn matrix_fits(&self, n: usize) -> bool {
+    pub(super) fn matrix_fits(&self, n: usize) -> bool {
         match &self.matrix {
             Matrix::Diagonal | Matrix::Householder => true,
             Matrix::Reflection(v) => v.len() == n,
@@ -31,7 +31,7 @@ impl Fdn {
     /// The largest entry of `A Aᵀ - I`: zero for the structured kinds (orthogonal
     /// by construction), measured for a circulant or dense matrix, `None` when
     /// the matrix does not fit the line count.
-    fn orthogonality_error(&self) -> Option<f64> {
+    pub(super) fn orthogonality_error(&self) -> Option<f64> {
         let n = self.lines.len();
         if !self.matrix_fits(n) {
             return None;
@@ -81,7 +81,7 @@ impl Fdn {
     /// for the 64 lines of the largest network and is folded into the stability
     /// test, so a nearly-orthogonal matrix is never taken for an orthogonal one.
     /// Otherwise the Frobenius norm, sufficient and not necessary.
-    fn norm_bound(&self) -> f64 {
+    pub(super) fn norm_bound(&self) -> f64 {
         let n = self.lines.len() as f64;
         // Exact for a reflection: the eigenvalue along `v` is `1 - 2 |v|²` and
         // the rest are 1, so a reflection of a unit vector to within an `f32`
@@ -110,7 +110,7 @@ impl Fdn {
     }
 
     /// The largest gain of any line in any band (NaN or negative: infinity).
-    fn max_gain(&self) -> f64 {
+    pub(super) fn max_gain(&self) -> f64 {
         let mut max = 0.0f64;
         for line in self.lines.iter() {
             for band in Band::ALL {
@@ -128,7 +128,7 @@ impl Fdn {
     /// delay-free loop is not a loop), a finite modulation depth, and a nested
     /// all-pass that is a lattice (the form this analysis models) with
     /// `|g| < 1` and a finite non-negative delay.
-    fn lines_hold(&self) -> bool {
+    pub(super) fn lines_hold(&self) -> bool {
         self.lines.iter().all(|l| {
             l.length.is_finite()
                 && l.length > 0.0
@@ -179,7 +179,7 @@ impl Fdn {
     /// not positive). A line with a nested all-pass is read at its peak group
     /// delay, `D (1 + |g|) / (1 - |g|)`, a conservative reading that is not part
     /// of the proof in [`rt60_bound`](Self::rt60_bound).
-    fn slowest(&self, band: Band) -> Option<(f64, f64, f64)> {
+    pub(super) fn slowest(&self, band: Band) -> Option<(f64, f64, f64)> {
         let mut log_rho = f64::NEG_INFINITY;
         let mut longest = 0.0f64;
         for l in self.lines.iter() {
@@ -291,7 +291,7 @@ impl Fdn {
     }
 
     /// The longest effective line, in frames.
-    fn transit(&self) -> f64 {
+    pub(super) fn transit(&self) -> f64 {
         self.lines
             .iter()
             .map(|l| f64::from(l.effective_length()))
@@ -362,24 +362,6 @@ impl Network {
             slowest = slowest.max(r);
         }
         slowest
-    }
-
-    /// Whether no loop can grow. Every recirculating stage must be stable
-    /// ([`Fdn::is_stable`]), every series all-pass must have `|g| < 1`, and the
-    /// figures must be finite.
-    #[must_use]
-    pub fn is_stable(&self) -> bool {
-        self.stages.iter().all(|s| match s {
-            Stage::Fdn(f) => f.is_stable(),
-            Stage::AllPass(a) => a
-                .iter()
-                .all(|a| a.gain.abs() < 1.0 && a.delay.is_finite() && a.delay >= 0.0),
-            Stage::Taps(t) => t
-                .taps
-                .iter()
-                .all(|t| t.gain.is_finite() && t.delay.is_finite() && t.delay >= 0.0),
-            Stage::Fir(s) => s.rt60.iter().all(|r| !r.get().is_nan()),
-        })
     }
 
     /// Whether the network has a recirculating stage and every one loses
@@ -581,7 +563,7 @@ mod tests {
         Matrix, Modulation, Network, OutputMap, Stage, Tap, Taps, loop_gain,
     };
     use super::*;
-    use crate::Sizes as _;
+    use crate::{Lti as _, Sizes as _};
 
     const RATE: SampleRate = SampleRate(48_000.0);
 

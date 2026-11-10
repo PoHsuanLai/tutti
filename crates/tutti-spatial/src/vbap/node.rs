@@ -384,9 +384,6 @@ fn speaker_of_channel(layout: ChannelLayout) -> Vec<Option<usize>> {
     inverse
 }
 
-/// Frames of the mono-fold branch's stack scratch.
-const FOLD_CHUNK: usize = 64;
-
 /// Render one output channel for one block: speaker `speaker`'s gain ramped
 /// linearly from `from` to `to`, applied to the stereo pair.
 ///
@@ -399,8 +396,8 @@ const FOLD_CHUNK: usize = 64;
 /// bit for bit, and a block edge the exact solve.
 ///
 /// When both ends came from the mono-fold branch the pair is folded
-/// (`mono * g`, `mono` the stereo-to-mono `fold` of `left` and `right`, taken
-/// a chunk of frames at a time through a stack scratch); otherwise each end is expressed as a (left,
+/// (`mono * g`, `mono` the stereo-to-mono `fold` of each frame of `left` and
+/// `right`); otherwise each end is expressed as a (left,
 /// right) gain pair — [`BlockGains::pair`] — so a width crossing the
 /// mono-fold threshold between blocks crossfades instead of stepping.
 #[inline]
@@ -427,28 +424,19 @@ fn render_channel(
     if from.mono && to.mono {
         let (g_from, g_to) = (from.a[s], to.a[s]);
         let delta = g_to - g_from;
-        let held = delta.to_bits() == 0;
-        let mut mono = [0.0f32; FOLD_CHUNK];
-        for (k, o) in out.chunks_mut(FOLD_CHUNK).enumerate() {
-            let at = k * FOLD_CHUNK;
-            let mono = &mut mono[..o.len()];
-            fold.planar_channel(
-                |c| {
-                    let plane = if c == 0 { left } else { right };
-                    &plane[at..at + o.len()]
-                },
-                0,
-                mono,
-            );
-            if held {
-                for (o, &m) in o.iter_mut().zip(&*mono) {
-                    *o = m * g_to;
-                }
-            } else {
-                for (i, (o, &m)) in o.iter_mut().zip(&*mono).enumerate() {
-                    *o = m * (g_to - delta * remaining(at + i));
-                }
+        let mono = |l: f32, r: f32| {
+            let mut m = [0.0];
+            fold.frame(&[l, r], &mut m);
+            m[0]
+        };
+        if delta.to_bits() == 0 {
+            for ((o, &l), &r) in out.iter_mut().zip(left).zip(right) {
+                *o = mono(l, r) * g_to;
             }
+            return;
+        }
+        for (i, ((o, &l), &r)) in out.iter_mut().zip(left).zip(right).enumerate() {
+            *o = mono(l, r) * (g_to - delta * remaining(i));
         }
     } else {
         let (a_from, b_from) = from.pair(s);

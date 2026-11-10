@@ -757,6 +757,7 @@ fn validate_refuses_a_malformed_entry() {
         EdgeGain {
             base: amp(1.0),
             range: tutti_graph::ParamRange::new(f32::NAN, 1.0),
+            source: None,
         },
     );
     assert!(matches!(
@@ -769,6 +770,7 @@ fn validate_refuses_a_malformed_entry() {
         EdgeGain {
             base: amp(-2.0),
             range: tutti_graph::ParamRange::UNBOUNDED,
+            source: None,
         },
     );
     assert!(valid(&spec).is_ok(), "a negative weight and an open range");

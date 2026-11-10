@@ -6417,6 +6417,80 @@ bits, as `ParamRange` is), the weighted kernel and ramp, the cell,
   `SumLane`, since an integration test cannot place a store between two ops
   without a thread race.
 
+**As built (G2).** `EdgeGain::source`, `GraphSpec::connect_edge_gain` /
+`disconnect_edge_gain` (`(id, from)`, as the param port's), `DelayKey::EdgeGain
+{ id, from }`, `GainPortOp` and `Plan::gain_ports`, `Editor::set_edge_gain_range`
+and `edge_gain_range_cell`, the session's `EdgeRef` / `ModTarget`, and
+`TargetKey::Edge` in `tutti-modulation`. Where the build chose:
+
+- **A driven lane is the param port's step, not a copy.** A lane with a source
+  keeps a one-port `ParamState` (`param.rs`) in its `SumLane`, built with the
+  plan (`ParamState::lane`, sized to `max_block`: the "ramp scratch" the doc
+  asked for, and the only allocation, on apply), and the sum runs
+  `ParamState::port` on the source's events before it adds. Its values are
+  `Weight::Frames`, a slice of that state. The declick, the base before the
+  first event, the first-block rule and the clamp are the port's, once. The
+  reference shares the step's rule through `ref_port`, which `run_params`
+  also calls (its own code, not the executor's).
+- **The events are addressed to `EdgeGain::ADDR`** (`UnitParam::Volume`,
+  index 0): an edge has no node to declare a param, so the one address the
+  lane's ramps and segments carry is fixed, and no `UnitParam` kind is new. A
+  control lane for an edge is `ControlLaneNode::for_unit(EdgeGain::ADDR, ..)`.
+- **The lane's range is the param port's cell.** `GainCell` holds the base
+  and a `ParamRanges` over `EdgeGain::ADDR`, so a control lane reads it
+  through a `ParamRangeReader` (`Editor::edge_gain_range_cell`), and
+  `set_edge_gain_range` moves it, the spec and the last committed spec
+  together, as `set_param_range` does. A source is **structural**
+  (`same_but_ranges` compares sources with the keys); base and range are not.
+- **State carried by edge.** A commit that keeps the edge carries the weight
+  and the driven state (`Carried`). A lane that stops being driven keeps its
+  state only while it fades (`ParamState::busy`), then lets it go with the old
+  state on the control side; a lane that has run and is driven later resumes
+  (a source connected now declicks), a new lane starts at its value. The
+  reference holds the same by `lane_prev` and its port map.
+- **PDC.** A port sink's lane is aligned to the node's arrival
+  (`other_sources` counts it, so a late lane raises the arrival and delays the
+  audio); an output sink's lane to the output time, and a late one **raises
+  it**, through `LatencyGraph::output_sources` (new, default empty), which
+  `delays` folds into the total and into no channel's compensation or delay
+  list (it feeds no audio). Events are delayed by `align_event`, which the
+  param source now uses too.
+- **Compile.** A weighted sum with driven lanes lists them in `Op::WeightedSum
+  { gains }` over `Plan::gain_ports` (`lane`, `from`, `slot`); the sum reads
+  each source's event slot, which the verifier counts as a read of the op
+  (colouring and the claims follow); a lane's event delay is emitted only for
+  an addend that is not silence. A lane into a node's port is a direct edge in
+  the cycle check (`CycleEdge::Gain`); one into an output channel is not an
+  edge of any node. `CompileError::GainSourceOutOfRange` and
+  `GraphInvalid::UnknownGainNode` are the refusals; `GainWithoutEdge` covers a
+  missing edge. `Editor::remove` stops the lanes a removed node drove (the
+  entry stays), and a fork's roots include an output gain's source.
+- **Session routing.** `TargetKey` is an enum (`Param { node, param }` and
+  `Edge(key)`) with constructors; the host's key for an edge is opaque, and
+  `ModHost::target` resolves it to `Target::Edge { id, knob }`. The reconciler
+  makes the edge's entry (with the target's range) when the target first
+  resolves, then builds the lane once the commit that sends it has landed
+  (the host's re-apply, as for a node placed late). The lane's knob is its own
+  cell, starting at unity and written through `ModState::set_knob`, since an
+  edge's base is a `GainCell`, not a node's `Param`; the lane's value is then
+  `knob + route offsets`, clamped. `EdgeRef { sink: EdgeSink, from:
+  GraphSource }` is the session's key form of `EdgeId` (direct edges);
+  `Mods::{route, range, automate, ..}` take `impl Into<ModTarget>`, and
+  `Mods::key` gives the key a lane is read under. The session mints that key
+  per edge and forgets it with a node the edge touches. Not here (G3): the
+  session's public weight methods (`set_edge_gain`, `add_source_weighted`),
+  so a base written through the editor and the lane's knob are two writers
+  until then.
+- **Tests.** `tests/edge_gain_driven.rs` (the analytic weight at a port and an
+  output, the clamp, the declick of a source that goes, the carry, the PDC of
+  a late and an early lane and of a late lane at the output, the refusals,
+  structural source against control range, the fork), the differential
+  suite's `driven_gains_are_bit_identical_to_the_reference` (lane nodes of
+  several periods and latencies, ranges, a source that changes or goes; its
+  own RNG, so no other property's seeds moved), `rt_no_alloc.rs`'s driven
+  64- and 100-lane fan-in on both executors, `tutti-modulation`'s edge key
+  test and `tutti-session`'s `edge_modulation`.
+
 #### Bypass and mute are graph state
 
 Decided by the owner. Bypass and mute are state the **graph** holds for any

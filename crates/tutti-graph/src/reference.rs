@@ -213,6 +213,12 @@ pub struct Reference {
     /// Edge gains moved by [`set_edge_gain`](Self::set_edge_gain) since the
     /// last graph: they override the graph's.
     gain_moves: BTreeMap<EdgeId, Amplitude>,
+    /// The param-port state of each driven edge gain's lane, as
+    /// `Reference::params` keeps a node's: one rule (`ref_port`).
+    gain_ports: BTreeMap<EdgeId, RefParam>,
+    /// Edge gain ranges moved by [`set_edge_gain_range`](Self::set_edge_gain_range)
+    /// since the last graph.
+    gain_ranges: BTreeMap<EdgeId, ParamRange>,
     /// The transport's jumps, kept as the executor keeps them: the same type.
     /// (Its answers are checked against the blocks themselves in
     /// `history.rs`'s tests, not against this.)
@@ -323,6 +329,8 @@ impl Reference {
             ranges: BTreeMap::new(),
             lane_prev: BTreeMap::new(),
             gain_moves: BTreeMap::new(),
+            gain_ports: BTreeMap::new(),
+            gain_ranges: BTreeMap::new(),
             playhead: RefPlayhead::default(),
             suspended: None,
             landing: BTreeMap::new(),
@@ -509,6 +517,12 @@ impl Reference {
         self.gain_moves.insert(id, base);
     }
 
+    /// Moves edge `id`'s range, from the next block on, without a new graph:
+    /// `Editor::set_edge_gain_range`'s contract.
+    pub fn set_edge_gain_range(&mut self, id: EdgeId, range: ParamRange) {
+        self.gain_ranges.insert(id, range);
+    }
+
     /// Switch to `graph`. `fresh` supplies a unit for every node that is new or
     /// whose generation changed; units whose key and generation survive keep
     /// their state.
@@ -684,6 +698,13 @@ impl Reference {
                     best = best.max(arrive(n, g, lat, memo) + lat(n));
                 }
             }
+            for (id, gain) in g.gains() {
+                if let (Sink::Port(at), Some(from)) = (id.sink, gain.source)
+                    && at.node == k
+                {
+                    best = best.max(arrive(from.node, g, lat, memo) + lat(from.node));
+                }
+            }
             memo.insert(k, best);
             best
         }
@@ -746,8 +767,32 @@ impl Reference {
             .iter()
             .flatten()
             .map(source_departure)
+            // A lane driving an output edge's gain counts toward the output
+            // time too.
+            .chain(
+                graph
+                    .gains()
+                    .iter()
+                    .filter_map(|(id, g)| match (id.sink, g.source) {
+                        (Sink::Output(_), Some(from)) => Some(departure(from.node).samples()),
+                        _ => None,
+                    }),
+            )
             .max()
             .unwrap_or_default();
+        for (&id, gain) in graph.gains() {
+            let Some(from) = gain.source else { continue };
+            let to = match id.sink {
+                Sink::Port(at) => arrival[&at.node].samples(),
+                Sink::Output(_) => total,
+            };
+            let d = to
+                .checked_sub(departure(from.node).samples())
+                .unwrap_or_default();
+            if !d.is_zero() {
+                delays.insert(DelayKey::EdgeGain { id, from }, d);
+            }
+        }
         for (ch, sources) in t.outputs.iter().enumerate() {
             for s in sources {
                 let d = total.checked_sub(source_departure(s)).unwrap_or_default();
@@ -862,7 +907,10 @@ impl Reference {
         self.audio_lines.retain(|k, _| delays.contains_key(k));
         self.event_lines.retain(|k, _| delays.contains_key(k));
         for (&key, &d) in &delays {
-            if matches!(key, DelayKey::Event { .. } | DelayKey::ParamEvent { .. }) {
+            if matches!(
+                key,
+                DelayKey::Event { .. } | DelayKey::ParamEvent { .. } | DelayKey::EdgeGain { .. }
+            ) {
                 let f = self.event_lines.entry(key).or_insert(RefFifo {
                     pending: Vec::new(),
                     len: 0,
@@ -916,6 +964,9 @@ impl Reference {
         self.lane_prev
             .retain(|id, _| graph.gains().contains_key(id));
         self.gain_moves.clear();
+        self.gain_ranges.clear();
+        self.gain_ports
+            .retain(|id, _| graph.gains().contains_key(id));
     }
 
     /// Renders one block. Same contract as
@@ -998,16 +1049,13 @@ impl Reference {
             return;
         };
         let t = graph.topology();
-        // Each weighted lane's weights for this block, as they stand at its
-        // start: from the weight the previous block was given to this one's
-        // (a lane's first block starts at its value).
-        let mut weights: BTreeMap<EdgeId, RefWeight> = BTreeMap::new();
-        for (&id, gain) in graph.gains() {
-            let to = self.gain_moves.get(&id).copied().unwrap_or(gain.base);
-            let from = self.lane_prev.get(&id).copied().unwrap_or(to);
-            self.lane_prev.insert(id, to);
-            weights.insert(id, RefWeight { from, to });
-        }
+        // Each weighted lane's base for this block, as it stands at its start
+        // (a lane's weights are made where its addend is, `lane_weight`).
+        let targets: BTreeMap<EdgeId, Amplitude> = graph
+            .gains()
+            .iter()
+            .map(|(&id, gain)| (id, self.gain_moves.get(&id).copied().unwrap_or(gain.base)))
+            .collect();
         with_no_denormals(|| {
             // Scheduled commands: which land this block, and where. Kept in
             // scheduling order per port; the gather below appends them after the
@@ -1076,6 +1124,13 @@ impl Reference {
                         v.extend(m.source.map(|s| s.node));
                     }
                 }
+                for (id, gain) in graph.gains() {
+                    if let (Sink::Port(at), Some(from)) = (id.sink, gain.source)
+                        && at.node == k
+                    {
+                        v.push(from.node);
+                    }
+                }
                 v
             };
 
@@ -1093,7 +1148,7 @@ impl Reference {
                         inputs,
                         &mut audio,
                         &mut events,
-                        &weights,
+                        &targets,
                     );
                     done.insert(key);
                 }
@@ -1144,15 +1199,12 @@ impl Reference {
                     if let Some(line) = self.audio_lines.get_mut(&key) {
                         delay_line(line, &mut buf);
                     }
-                    addends.push(RefAddend {
-                        buf,
-                        weight: weights
-                            .get(&EdgeId {
-                                sink: Sink::Output(ch as u16),
-                                from: Edge::Direct(source),
-                            })
-                            .copied(),
-                    });
+                    let id = EdgeId {
+                        sink: Sink::Output(ch as u16),
+                        from: Edge::Direct(source),
+                    };
+                    let weight = self.lane_weight(&graph, id, &targets, frames, &events);
+                    addends.push(RefAddend { buf, weight });
                 }
                 outputs[ch][..frames].copy_from_slice(&sum_addends(addends, frames));
             }
@@ -1187,7 +1239,7 @@ impl Reference {
         inputs: &[&[f32]],
         audio: &mut BTreeMap<OutPort, Vec<f32>>,
         events: &mut BTreeMap<EventOut, Vec<Event>>,
-        weights: &BTreeMap<EdgeId, RefWeight>,
+        targets: &BTreeMap<EdgeId, Amplitude>,
     ) {
         let t = graph.topology();
         let shape = self.units[&key].1.shape();
@@ -1213,15 +1265,12 @@ impl Reference {
                 {
                     delay_line(line, &mut buf);
                 }
-                addends.push(RefAddend {
-                    buf,
-                    weight: weights
-                        .get(&EdgeId {
-                            sink: Sink::Port(at),
-                            from: edge,
-                        })
-                        .copied(),
-                });
+                let id = EdgeId {
+                    sink: Sink::Port(at),
+                    from: edge,
+                };
+                let weight = self.lane_weight(graph, id, targets, frames, events);
+                addends.push(RefAddend { buf, weight });
             }
             ins.push(sum_addends(addends, frames));
         }
@@ -1397,6 +1446,60 @@ impl Reference {
 }
 
 impl Reference {
+    /// Edge `id`'s lane for this block: `None` for an edge with no entry.
+    /// Its weights are the doc's ramp from the weight the previous block was
+    /// given to the base `targets` holds, or, when a source drives it, the
+    /// values of the param port's rule (`ref_port`) over the source's events
+    /// through its PDC delay. A lane's state advances here, once a block.
+    fn lane_weight(
+        &mut self,
+        graph: &ValidGraph,
+        id: EdgeId,
+        targets: &BTreeMap<EdgeId, Amplitude>,
+        frames: usize,
+        events: &BTreeMap<EventOut, Vec<Event>>,
+    ) -> Option<RefWeight> {
+        let gain = graph.gains().get(&id)?;
+        let to = targets[&id];
+        let ran = self.lane_prev.contains_key(&id);
+        let evs: Vec<Event> = match gain.source {
+            Some(from) => {
+                let src = events[&from].clone();
+                match self.event_lines.get_mut(&DelayKey::EdgeGain { id, from }) {
+                    Some(f) => fifo_run(f, &src, frames),
+                    None => src,
+                }
+            }
+            None => Vec::new(),
+        };
+        // A lane's first block starts at its value; one that has run is on
+        // a running port, so a source connected to it later declicks.
+        if gain.source.is_some() || self.gain_ports.contains_key(&id) {
+            let range = self.gain_ranges.get(&id).copied().unwrap_or(gain.range);
+            let st = self.gain_ports.entry(id).or_default();
+            if let Some(vals) = ref_port(
+                st,
+                !ran,
+                RefPortIn {
+                    param: crate::EdgeGain::ADDR,
+                    b1: to.get(),
+                    range,
+                    source: gain.source,
+                    events: &evs,
+                    frames,
+                },
+            ) {
+                self.lane_prev.insert(id, Amplitude::new(vals[frames - 1]));
+                return Some(RefWeight::Frames(vals));
+            }
+        }
+        let from = self.lane_prev.get(&id).copied().unwrap_or(to);
+        self.lane_prev.insert(id, to);
+        Some(RefWeight::Ramp { from, to })
+    }
+}
+
+impl Reference {
     /// Each declared param of `key` for this block: `Some` of its values
     /// when modulated or declicking, `None` when it reads its base. Written
     /// from the spec and the port outputs alone (see the module docs).
@@ -1409,7 +1512,6 @@ impl Reference {
     ) -> Vec<Option<Vec<f32>>> {
         let unit = &self.units[&key].1;
         let declared = unit.shape().params;
-        let decl = PARAM_DECLICK.get();
         let mut out = Vec::new();
         for (k, &param) in declared.as_slice().iter().enumerate() {
             let at = ParamIn { node: key, param };
@@ -1438,133 +1540,172 @@ impl Reference {
 
             let fresh = !self.params.contains_key(&at);
             let st = self.params.entry(at).or_default();
-            if fresh {
-                st.source = source;
-            } else if st.source != source {
-                st.hold = if st.modulated { st.last } else { b1 };
-                st.fading = decl;
-                st.source = source;
-                st.ramp = RefRamp::default();
-            }
-            let start = st.clock;
-            st.clock += frames as u64;
-            if source.is_none() && st.fading == 0 {
-                st.modulated = false;
-                out.push(None);
-                continue;
-            }
-            // The base at frame `i`: ramped from the last block's to this
-            // block's, landing on it at the last frame.
-            let from = if st.modulated { st.last_base } else { b1 };
-            let base = |i: usize| {
-                if i == frames - 1 {
-                    b1
-                } else {
-                    from + (b1 - from) * ((i + 1) as f32 / frames as f32)
-                }
-            };
-            let (lo, hi) = if range.min <= range.max {
-                (range.min, range.max)
-            } else {
-                (range.max, range.min)
-            };
-            // The event source's value at every frame, the base before its
-            // first event; it replaces the base, clamped.
-            let mut vals = vec![0.0f32; frames];
-            let mut evs = evs.iter().peekable();
-            for (i, v) in vals.iter_mut().enumerate() {
-                if source.is_none() {
-                    *v = base(i);
-                    continue;
-                }
-                let now = start + i as u64;
-                let want = tutti_types::ParamAddr::unit(param);
-                while let Some(e) = evs.next_if(|e| e.offset.index() <= i) {
-                    match e.kind {
-                        EventKind::Ramp(r) if r.addr() == want => {
-                            // A first ramp starts from the base at this frame.
-                            let cur = if st.ramp.started {
-                                st.ramp.value
-                            } else {
-                                base(i)
-                            };
-                            st.ramp = RefRamp {
-                                from: cur,
-                                target: r.raw_target(),
-                                at: now,
-                                len: r.duration().get() as u64,
-                                shape: r.shape(),
-                                curve: None,
-                                value: cur,
-                                started: true,
-                            };
-                        }
-                        EventKind::Segment(s) if s.addr() == want => {
-                            let (from, to, position, length) = s.raw();
-                            // What a ramp replacing it on this frame starts
-                            // from: the held value, or (a first event) the
-                            // base at this frame, as for a first ramp.
-                            let cur = if st.ramp.started {
-                                st.ramp.value
-                            } else {
-                                base(i)
-                            };
-                            st.ramp = RefRamp {
-                                from,
-                                target: to,
-                                at: now,
-                                len: 0,
-                                shape: tutti_curve::Law::Linear,
-                                curve: Some((position, length, s.shape())),
-                                value: cur,
-                                started: true,
-                            };
-                        }
-                        // Another param's, MIDI, a chord, or a resync: a port re-sends
-                        // nothing.
-                        EventKind::Ramp(_)
-                        | EventKind::Segment(_)
-                        | EventKind::Midi(_)
-                        | EventKind::Harmony(_)
-                        | EventKind::Resync => {}
-                    }
-                }
-                let r = &st.ramp;
-                let value = if !r.started {
-                    base(i)
-                } else if now < r.at {
-                    r.value
-                } else if let Some((position, length, shape)) = r.curve {
-                    // Frames since its event, `0` on the event's own.
-                    let j = u32::try_from(now - r.at).unwrap_or(u32::MAX);
-                    crate::event::segment_value(r.from, r.target, shape, position, length, j)
-                } else {
-                    let into = now - r.at + 1;
-                    if into >= r.len {
-                        r.target
-                    } else {
-                        let t = into as f32 / r.len as f32;
-                        r.from + (r.target - r.from) * r.shape.eval(t)
-                    }
-                };
-                st.ramp.value = value;
-                *v = value.clamp(lo, hi);
-            }
-            for (i, v) in vals.iter_mut().enumerate() {
-                if st.fading > 0 && i < st.fading {
-                    let j = decl - st.fading + i;
-                    let g = 1.0 - (j + 1) as f32 / decl as f32;
-                    *v += (st.hold - *v) * g;
-                }
-            }
-            st.fading = st.fading.saturating_sub(frames);
-            st.last = vals[frames - 1];
-            st.last_base = b1;
-            st.modulated = true;
-            out.push(Some(vals));
+            out.push(ref_port(
+                st,
+                fresh,
+                RefPortIn {
+                    param,
+                    b1,
+                    range,
+                    source,
+                    events: &evs,
+                    frames,
+                },
+            ));
         }
         out
     }
+}
+
+/// What one param port (or edge gain lane) is given for a block.
+struct RefPortIn<'a> {
+    param: tutti_types::UnitAddr,
+    /// The base at the end of the block.
+    b1: f32,
+    range: ParamRange,
+    source: Option<EventOut>,
+    /// The source's events, through its PDC delay.
+    events: &'a [Event],
+    frames: usize,
+}
+
+/// One block of the param port step, written from the rules in `param.rs`'s
+/// docs: `Some` of its values when modulated or declicking, `None` when it
+/// reads its base. `fresh` is the port's first block. Shared by a node's
+/// param ports and an edge gain's lane, which are one rule.
+fn ref_port(st: &mut RefParam, fresh: bool, p: RefPortIn<'_>) -> Option<Vec<f32>> {
+    let RefPortIn {
+        param,
+        b1,
+        range,
+        source,
+        events: evs,
+        frames,
+    } = p;
+    let decl = PARAM_DECLICK.get();
+    if fresh {
+        st.source = source;
+    } else if st.source != source {
+        st.hold = if st.modulated { st.last } else { b1 };
+        st.fading = decl;
+        st.source = source;
+        st.ramp = RefRamp::default();
+    }
+    let start = st.clock;
+    st.clock += frames as u64;
+    if source.is_none() && st.fading == 0 {
+        st.modulated = false;
+        return None;
+    }
+    // The base at frame `i`: ramped from the last block's to this
+    // block's, landing on it at the last frame.
+    let from = if st.modulated { st.last_base } else { b1 };
+    let base = |i: usize| {
+        if i == frames - 1 {
+            b1
+        } else {
+            from + (b1 - from) * ((i + 1) as f32 / frames as f32)
+        }
+    };
+    let (lo, hi) = if range.min <= range.max {
+        (range.min, range.max)
+    } else {
+        (range.max, range.min)
+    };
+    // The event source's value at every frame, the base before its
+    // first event; it replaces the base, clamped.
+    let mut vals = vec![0.0f32; frames];
+    let mut evs = evs.iter().peekable();
+    for (i, v) in vals.iter_mut().enumerate() {
+        if source.is_none() {
+            *v = base(i);
+            continue;
+        }
+        let now = start + i as u64;
+        let want = tutti_types::ParamAddr::unit(param);
+        while let Some(e) = evs.next_if(|e| e.offset.index() <= i) {
+            match e.kind {
+                EventKind::Ramp(r) if r.addr() == want => {
+                    // A first ramp starts from the base at this frame.
+                    let cur = if st.ramp.started {
+                        st.ramp.value
+                    } else {
+                        base(i)
+                    };
+                    st.ramp = RefRamp {
+                        from: cur,
+                        target: r.raw_target(),
+                        at: now,
+                        len: r.duration().get() as u64,
+                        shape: r.shape(),
+                        curve: None,
+                        value: cur,
+                        started: true,
+                    };
+                }
+                EventKind::Segment(s) if s.addr() == want => {
+                    let (from, to, position, length) = s.raw();
+                    // What a ramp replacing it on this frame starts
+                    // from: the held value, or (a first event) the
+                    // base at this frame, as for a first ramp.
+                    let cur = if st.ramp.started {
+                        st.ramp.value
+                    } else {
+                        base(i)
+                    };
+                    st.ramp = RefRamp {
+                        from,
+                        target: to,
+                        at: now,
+                        len: 0,
+                        shape: tutti_curve::Law::Linear,
+                        curve: Some((position, length, s.shape())),
+                        value: cur,
+                        started: true,
+                    };
+                }
+                // Another param's, MIDI, a chord, or a resync: a port re-sends
+                // nothing.
+                EventKind::Ramp(_)
+                | EventKind::Segment(_)
+                | EventKind::Midi(_)
+                | EventKind::Harmony(_)
+                | EventKind::Resync => {}
+            }
+        }
+        let r = &st.ramp;
+        let value = if !r.started {
+            base(i)
+        } else if now < r.at {
+            r.value
+        } else if let Some((position, length, shape)) = r.curve {
+            // Frames since its event, `0` on the event's own.
+            let j = u32::try_from(now - r.at).unwrap_or(u32::MAX);
+            crate::event::segment_value(r.from, r.target, shape, position, length, j)
+        } else {
+            let into = now - r.at + 1;
+            if into >= r.len {
+                r.target
+            } else {
+                let t = into as f32 / r.len as f32;
+                r.from + (r.target - r.from) * r.shape.eval(t)
+            }
+        };
+        st.ramp.value = value;
+        *v = value.clamp(lo, hi);
+    }
+    for (i, v) in vals.iter_mut().enumerate() {
+        if st.fading > 0 && i < st.fading {
+            let j = decl - st.fading + i;
+            let g = 1.0 - (j + 1) as f32 / decl as f32;
+            *v += (st.hold - *v) * g;
+        }
+    }
+    st.fading = st.fading.saturating_sub(frames);
+    st.last = vals[frames - 1];
+    st.last_base = b1;
+    st.modulated = true;
+    Some(vals)
 }
 
 /// `(MIDI 2.0, group, channel, note)`.
@@ -2072,12 +2213,13 @@ struct RefAddend {
     weight: Option<RefWeight>,
 }
 
-/// A weighted lane's weights for one block: the weight the previous block was
-/// given, and this block's.
-#[derive(Clone, Copy)]
-struct RefWeight {
-    from: Amplitude,
-    to: Amplitude,
+/// A weighted lane's weights for one block.
+enum RefWeight {
+    /// Ramping across the block from the weight the previous block was given
+    /// to this block's.
+    Ramp { from: Amplitude, to: Amplitude },
+    /// A driven lane: the weight at every frame.
+    Frames(Vec<f32>),
 }
 
 /// The value a sink holds: none is silence, one plain addend is itself (an
@@ -2096,13 +2238,14 @@ fn sum_addends(mut addends: Vec<RefAddend>, frames: usize) -> Vec<f32> {
             let mut acc = vec![0.0f32; frames];
             for a in &addends {
                 for (i, (x, y)) in acc.iter_mut().zip(&a.buf).enumerate() {
-                    *x = match a.weight {
+                    *x = match &a.weight {
                         None => *x + *y,
-                        Some(RefWeight { from, to }) => {
+                        Some(RefWeight::Ramp { from, to }) => {
                             let (from, to) = (from.get(), to.get());
                             let w = from + (to - from) * ((i + 1) as f32 / frames as f32);
                             *x + w * *y
                         }
+                        Some(RefWeight::Frames(w)) => *x + w[i] * *y,
                     };
                 }
             }

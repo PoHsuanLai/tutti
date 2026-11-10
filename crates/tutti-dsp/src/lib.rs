@@ -13,7 +13,7 @@
 //!   [`Real`], the `f32` or `f64` their state runs in.
 //! - Dynamics: [`EnvelopeFollower`] and [`GateEnvelopeFollower`]; the gain
 //!   curves [`compute_compressor_gain_reduction`], [`compute_gate_gain`],
-//!   [`compute_limiter_gain`] and [`LimiterCurve`]; [`CompressorKernel`] and
+//!   [`compute_limiter_gain`] and [`LimiterCurve`]; [`CompressorKernel`], [`LimiterKernel`] and
 //!   [`GateKernel`] with their [`CompressorBlock`] and [`GateBlock`]; the
 //!   limiter's [`LookaheadRing`]; and the ring buffers [`CircularBuffer`] and
 //!   [`MonotonicMinDeque`].
@@ -80,9 +80,9 @@ pub use delay::{DelayLine, InterpolationMode, delay_step, fractional_samples};
 pub use dither::{DitherNoise, DitherShape};
 pub use dynamics::{
     CompressorBlock, CompressorKernel, EnvelopeFollower, GateBlock, GateEnvelopeFollower,
-    GateKernel, LimiterCurve, LookaheadRing, amplitude_to_db, brickwall_clip,
-    compute_compressor_gain_reduction, compute_gate_gain, compute_limiter_gain, db_to_amplitude,
-    fold_peak, gate_gain_at, ramp_db, ramp_is_at_end, smooth_envelope,
+    GateKernel, LimiterBlock, LimiterCurve, LimiterKernel, LookaheadRing, amplitude_to_db,
+    brickwall_clip, compute_compressor_gain_reduction, compute_gate_gain, compute_limiter_gain,
+    db_to_amplitude, fold_peak, gate_gain_at, ramp_db, ramp_is_at_end, smooth_envelope,
 };
 pub use error::{Error, Result};
 pub use fdn::FdnKernel;

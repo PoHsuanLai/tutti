@@ -29,7 +29,7 @@ use crate::voice_width;
 /// than retry.
 ///
 /// It is an error type rather than a silent `let _ =` because swallowing it
-/// leaves a dead streamer accepting `Stream`/`Seek`/`Loop`/`Stop` indefinitely and
+/// leaves a dead streamer accepting `Stream`/`Loop`/`Stop` indefinitely and
 /// doing nothing — indistinguishable, from the caller's side, from working
 /// playback.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -45,8 +45,7 @@ impl std::error::Error for StreamerGone {}
 
 /// Build a bare `DiskSource` over a channel whose streamer link is
 /// ready, alongside the channel's shared [`RtState`], the file's own rate and
-/// the stream's [`StreamOrigin`]: the stream's one live reader, `placed` when
-/// the caller wraps it in a voice that follows a clock.
+/// the stream's [`StreamOrigin`]: the stream's one live reader.
 ///
 /// [`TakeVoiceError::NotStreaming`] while the streamer hasn't installed the
 /// [`ChannelPlan`] link yet; [`TakeVoiceError::ReaderTaken`] once the stream
@@ -58,7 +57,6 @@ pub(crate) fn take_streaming_unit(
     plans: &Arc<DashMap<usize, ChannelPlan>>,
     channel_index: usize,
     width: Option<ChannelLayout>,
-    placed: bool,
 ) -> Result<(DiskSource, Arc<RtState>, SampleRate, StreamOrigin), TakeVoiceError> {
     let plan = plans
         .get(&channel_index)
@@ -68,7 +66,7 @@ pub(crate) fn take_streaming_unit(
     let width = voice_width(width.unwrap_or_else(|| consumer.channels()));
     // Build the placement (and so refuse) before the single reader is taken.
     let place = Place::for_topology(consumer.topology(), width)?;
-    let reader = link.consumer.take_reader(placed)?;
+    let reader = link.consumer.take_reader()?;
     let file_rate = link.file_rate;
     let origin = StreamOrigin(Arc::clone(&link.record));
     let rt_state = plan.rt_state();

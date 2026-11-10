@@ -1,7 +1,7 @@
 use super::*;
 use crate::MidiFile;
 use tutti_fixtures::midi::{note_off, note_on};
-use tutti_midi_types::Bpm;
+use tutti_types::Bpm;
 use tutti_ump::{MidiChannel, MidiGroup};
 
 #[test]
@@ -42,7 +42,7 @@ fn round_trips_a_clip_through_a_file() {
 
 #[test]
 fn detect_tells_the_two_midi_formats_apart() {
-    let clip = tutti_midi_types::write_clip_file(96, &[]);
+    let clip = crate::write_clip_file(96, &[]);
     assert_eq!(MidiFileKind::detect(&clip), Some(MidiFileKind::ClipFile));
 
     let smf = crate::smf::to_bytes(&[vec![]], &crate::smf::MidiWriteConfig::default()).unwrap();

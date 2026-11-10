@@ -3,6 +3,7 @@
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
 pub mod clip;
+mod clip_file;
 mod file;
 pub mod smf;
 
@@ -64,11 +65,11 @@ impl From<midly::Error> for Error {
 /// `Result` with this crate's [`enum@Error`] as the failure type.
 pub type Result<T> = std::result::Result<T, Error>;
 
-/// The MIDI 2.0 Clip File byte codec, re-exported from `tutti-midi-types`.
+/// The MIDI 2.0 Clip File byte codec.
 ///
 /// [`clip`] is the *file-level* (path) half; these are the byte-level types it
 /// reads and writes.
-pub use tutti_midi_types::{
+pub use clip_file::{
     CLIP_FILE_MAGIC, ClipEvent, ClipFileError, ClipHeader, ClipNote, ParsedClipFile,
     write_clip_file, write_clip_file_from_beats, write_clip_file_with_header,
 };

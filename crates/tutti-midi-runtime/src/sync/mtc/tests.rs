@@ -121,7 +121,7 @@ fn test_to_seconds() {
         frames: 0,
         frame_rate: SmpteFrameRate::Fps30,
     };
-    assert!((tc.to_seconds() - 3600.0).abs() < 0.001);
+    assert!((tc.to_seconds().get() - 3600.0).abs() < 0.001);
 }
 
 // Mutation: drop the `2 * (minutes - minutes / 10)` term (or the `/ 10`)
@@ -183,9 +183,9 @@ fn frame_count_inverts_from_frame_count_and_to_seconds_follows_it() {
     // 10 minutes of drop-frame is 17_982 frames: 599.999… s (SMPTE 12M).
     let tc = SmpteTimecode::from_frame_count(17_982, SmpteFrameRate::Fps2997Df);
     assert!(
-        (tc.to_seconds() - 600.0).abs() < 0.001,
+        (tc.to_seconds().get() - 600.0).abs() < 0.001,
         "{}",
-        tc.to_seconds()
+        tc.to_seconds().get()
     );
 }
 
@@ -199,7 +199,7 @@ fn test_to_beats() {
         frame_rate: SmpteFrameRate::Fps30,
     };
     // 60 seconds at 120 BPM = 120 beats
-    assert!((tc.to_beats(Bpm::of(120.0)) - 120.0).abs() < 0.001);
+    assert!((tc.to_beats(Bpm::of(120.0)).get() - 120.0).abs() < 0.001);
 }
 
 #[test]

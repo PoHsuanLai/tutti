@@ -12,7 +12,7 @@ MIDI **file** codecs for the Tutti audio engine: Standard MIDI File ([`smf`],
   Metrical timing only; the tempo map is reported, not applied.
 - [`clip`]: the *file-level* (path) half of the MIDI 2.0 Clip File codec
   ([`clip::write`]; [`MidiFile::read`] reads one back). The byte-level codec is
-  in `tutti-midi-types` and is re-exported here ([`ParsedClipFile::from_bytes`],
+  this crate's too, at the root ([`ParsedClipFile::from_bytes`],
   [`write_clip_file`]).
 
 [`MidiFileKind::detect`] tells the two formats apart by magic bytes, not by

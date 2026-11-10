@@ -54,8 +54,7 @@ pub struct TransportSettings {
     pub(crate) publishing: Arc<Mutex<()>>,
     /// The tempo of the map's first point, for readers that want a scalar
     /// without the map (a [`Timeline`](super::Timeline), `samples_per_beat`):
-    /// stored beside every publish. A timed [`TransportCommand::Tempo`]
-    /// (super::TransportCommand::Tempo) stores here too, being applied on the
+    /// stored beside every publish. A timed [`TransportCommand::Tempo`](super::TransportCommand::Tempo) stores here too, being applied on the
     /// audio thread, which cannot publish; the clock keeps it until the next
     /// publish (doc 020, stage 6 retires the command).
     pub(crate) tempo: Arc<AtomicBpm>,

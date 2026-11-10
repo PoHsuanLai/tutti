@@ -9,6 +9,10 @@
 #
 # Four things here are load-bearing and are documented at their step:
 # the plugin-server prebuild, doctests, the Bevy-free floor, and the path gate.
+#
+# `bevy-tutti` is parked: it is not a workspace member, so nothing here builds,
+# lints, tests or documents it. `.github/workflows/parked-bevy.yml` measures its
+# drift weekly and gates nothing.
 
 name: CI
 
@@ -28,7 +32,7 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
-  # Fewer codegen units keeps CI RAM in check on the large Bevy graph.
+  # Incremental off: CI builds from clean, so the incremental cache is dead weight.
   CARGO_INCREMENTAL: 0
   # Line tables only: backtraces keep file:line, and the test binaries are a
   # fraction of the size. Full debug info filled the ubuntu runner's disk.
@@ -135,10 +139,9 @@ jobs:
       # the superproject actually records. It belongs in this job because it is
       # the other static gate: no toolchain, no build, just a claim checked.
       - run: scripts/check-submodule-pins.sh
-      # Design 015 §8, checks 3 and 4: `bevy-tutti/src` names none of the
-      # engine composition the session owns (`Editor`, `Engine`, ...), and
-      # `tutti-session` re-exports no crate whole. Perl over the source, no
-      # build, so it belongs with the other static gates.
+      # Design 015 §8, check 4: `tutti-session` re-exports no crate whole.
+      # (Checks 3 and 5, over `bevy-tutti/src`, are skipped while it is parked.)
+      # Perl over the source, no build, so it belongs with the other static gates.
       - run: scripts/check-adapter.sh
       # Every CLAP host callback and VST3 host COM method runs in the panic
       # guard (python3 over the source, no build).
@@ -272,7 +275,7 @@ jobs:
   features:
     name: dark features
     runs-on: ubuntu-24.04
-    # Its bevy-tutti suites assert golden digests; see the `test` job.
+    # Suites run here may assert golden digests; see the `test` job.
     env:
       TUTTI_GOLDEN: require
     steps:
@@ -302,14 +305,6 @@ jobs:
       #
       # What was dark until this job existed:
       #   tutti-cpal/capture  — all of src/mic.rs (MicIn, the capture ring)
-      #   bevy-tutti/audio-io — tests/audio_io_pump.rs, 12 tests that had
-      #                         never once run in this repo
-      #   bevy-tutti/soundfont — tests/midi_soundfont.rs (implies `midi`); its
-      #                         5 tests looked for the .sf2 at the pre-extraction
-      #                         `crates/tutti/assets/` path and failed on every
-      #                         run, which no run ever made
-      #   bevy-tutti/sampler  — src/sampler (the WaveAsset loader, the voice
-      #                         components) and its tests
       #   tutti-export/*      — no format is default (ogg links C), so the library
       #                         is linted with none and each of wav, flac, aiff
       #                         and ogg alone; its own tests have all four on
@@ -324,15 +319,6 @@ jobs:
       #                         through the crate's dev-dependency on itself);
       #                         with them all and `serde`, the pinned bytes and
       #                         Quality's range contract run
-      #   bevy-tutti/plugin   — src/plugin_host's binding against a live plugin:
-      #                         tests/plugin_capture.rs loads the reference CLAP
-      #                         plugin through a real plugin-server and is the
-      #                         only test that watches the latency poll see one.
-      #                         `full,plugin` so the modulation-gated param
-      #                         binding compiles with it; `plugin,modulation`
-      #                         alone, without `export` or `vst2`, left
-      #                         `tests/mod_plugin.rs` helpers and no test
-      #                         (dead code) until this lint found it.
       #   tutti-session/clap  — src/plugin.rs and src/export.rs's plugin half:
       #                         tests/plugin.rs hosts the reference CLAP
       #                         plugin through a real plugin-server.
@@ -340,6 +326,15 @@ jobs:
       #                         GUI-edit drain compile with it.
       #   tutti-session/midi-hardware — tests/midi.rs's hardware-port reclaim test
       #                         and its hot-plug tests
+      #   tutti-session/sampler,vst2 — the suites ported from the parked
+      #                         `bevy-tutti`: the sampler voice's export fork
+      #                         (`export_fork_sampler`) and the reference VST2
+      #                         plugin in process (`vst2_meter`,
+      #                         `vst2_modulation`).
+      #   tutti-session/device — tests/device.rs (the device-free restart and
+      #                         watch tests over `ManualStreamDriver`). A
+      #                         workspace run turned it on only through the
+      #                         adapter that is now parked.
       #   tutti-au-host/installed-units — linted by the macOS clippy job (the
       #                         crate is empty on Linux) and run only locally
       #                         (`cargo xtask test-au-installed`, part of `test-all`):
@@ -379,12 +374,7 @@ jobs:
         run: |
           cargo clippy --locked -p tutti-cpal --features capture --all-targets -- -D warnings
           cargo clippy --locked -p tutti-session --features audio-io --all-targets -- -D warnings
-          cargo clippy --locked -p bevy-tutti --features audio-io --all-targets -- -D warnings
-          cargo clippy --locked -p bevy-tutti --features soundfont --all-targets -- -D warnings
-          cargo clippy --locked -p bevy-tutti --features sampler --all-targets -- -D warnings
-          cargo clippy --locked -p bevy-tutti --features full,plugin --all-targets -- -D warnings
-          cargo clippy --locked -p bevy-tutti --features plugin,modulation --all-targets -- -D warnings
-          cargo clippy --locked -p tutti-session --features clap,export,modulation,midi-hardware,synth,soundfont --all-targets -- -D warnings
+          cargo clippy --locked -p tutti-session --features clap,export,modulation,midi-hardware,synth,soundfont,sampler,vst2,device --all-targets -- -D warnings
           cargo clippy --locked -p tutti --features clap,export,modulation --all-targets -- -D warnings
           cargo clippy --locked -p tutti --features audio-io --all-targets -- -D warnings
           cargo clippy --locked -p tutti --no-default-features --features io --all-targets -- -D warnings
@@ -419,7 +409,7 @@ jobs:
       # binary, which no test build produces (it would be a dependency cycle through
       # `tutti-plugin`), so it is built here, before the tests, as the `test`
       # job does. Without `au`, which is macOS-only.
-      - name: Build plugin-server (bevy-tutti/plugin, tutti-session/clap, tutti/clap and the plugin contract spawn it)
+      - name: Build plugin-server (tutti-session/clap, tutti/clap and the plugin contract spawn it)
         run: |
           cargo build --locked -p tutti-plugin-server --no-default-features --features clap,vst2,vst3
           cargo build --locked -p tutti-plugin-probe
@@ -428,11 +418,7 @@ jobs:
         run: |
           cargo nextest run --locked -p tutti-cpal --features capture
           cargo nextest run --locked -p tutti-session --features audio-io
-          cargo nextest run --locked -p bevy-tutti --features audio-io
-          cargo nextest run --locked -p bevy-tutti --features soundfont
-          cargo nextest run --locked -p bevy-tutti --features sampler
-          cargo nextest run --locked -p bevy-tutti --features full,plugin
-          cargo nextest run --locked -p tutti-session --features clap,export,modulation,midi-hardware,synth,soundfont
+          cargo nextest run --locked -p tutti-session --features clap,export,modulation,midi-hardware,synth,soundfont,sampler,vst2,device
           cargo nextest run --locked -p tutti --features clap,export,modulation
           cargo nextest run --locked -p tutti --features audio-io
           cargo nextest run --locked -p tutti --no-default-features --features io
@@ -453,37 +439,6 @@ jobs:
           cargo nextest run --locked -p tutti-plugin-types --features test-support
           cargo nextest run --locked -p tutti-plugin-db --features json
           cargo nextest run --locked -p tutti-plugin-contract --features server
-
-      # bevy-tutti builds `bevy_tasks` without `multi_threaded`, so its task
-      # pool runs each task inside `spawn`, on the main thread: a render's
-      # graph dropped on the pool is a main-thread drop too, and an export's
-      # fork is built in the frame it starts. Only with real pool threads
-      # (what an app with Bevy's default features has) can these tests see a
-      # forked in-process VST2 instance built, prepared or closed off the main
-      # thread, or a frame wait for a slow fork build. These tests, not the
-      # suite: `export_surface`'s batch test assumes a render finishes in the
-      # frame that polls it, which a threaded pool does not promise.
-      - name: Export forks and drops on the main thread (threaded pool)
-        run: >-
-          cargo nextest run --locked -p bevy-tutti --features full,bevy_tasks/multi_threaded
-          -E 'test(the_rendered_graph_is_dropped_on_the_main_thread) | test(/^off_thread::/)'
-
-      # The plugin host on a multi-threaded executor and pool, as an app with
-      # Bevy's default features runs it: a system that calls a main-thread
-      # session API (`Session::add_plugin`, the plugin phases, an export's
-      # finish) runs on a pool thread unless it is pinned, and the session's
-      # main-thread assert panics there (a debug build). An in-process VST2
-      # plugin's load is confined to the main thread the same way. The whole
-      # suite, `vst2` included (in process: the CLAP-only server above
-      # suffices), but for `export_surface`'s batch test, as in the step
-      # above: it assumes a render finishes in the frame that polls it
-      # (64 frames for 5 renders, no wait), which a threaded pool does not
-      # promise.
-      - name: Plugin host on a threaded executor
-        run: >-
-          cargo nextest run --locked -p bevy-tutti
-          --features full,plugin,vst2,clap,bevy_tasks/multi_threaded,bevy_ecs/multi_threaded
-          -E 'not test(a_batch_spawned_in_one_frame_starts_one_at_a_time)'
 
       # JACK hard-links libjack at build time, so it gets its own step (and its
       # own apt package) rather than joining the list above. `AudioHost::Jack`
@@ -676,8 +631,8 @@ jobs:
       - name: Doctests
         run: cargo test --locked --doc --workspace
       # `Device`'s `compile_fail` doctest (it is `!Send`) exists only with
-      # `device`. The workspace run above has it only because bevy-tutti's
-      # features unify it in; this names the feature so the proof does not
+      # `device`. A workspace run does not turn it on (the adapter that once
+      # unified it in is parked); this names the feature so the proof does not
       # depend on another crate's defaults.
       - name: Doctests (tutti-session, device)
         run: cargo test --locked --doc -p tutti-session --features device
@@ -712,8 +667,8 @@ jobs:
       # appear anywhere under `tutti`, at any depth, with everything on. The
       # repo has no other guarantee of that shape.
       #
-      # `-e normal`, not `-e all`: `bevy-tutti` is a workspace member, so a
-      # dev-dependency walk would false-positive.
+      # `-e normal`, not `-e all`: a dev-dependency walk is not what the
+      # facade ships.
       - run: cargo check --locked -p tutti
       - run: cargo check --locked -p tutti --features full
       - name: No bevy under the facade
@@ -761,12 +716,6 @@ jobs:
       # — and rustdoc builds none, so the line above never documents it. The
       # tests and clippy (`--all-targets`) do reach it.
       - run: cargo doc --locked -p tutti-graph --no-deps --features contract
-        env:
-          RUSTDOCFLAGS: -D warnings
-      # bevy-tutti gates most of its surface behind features (`full`, and
-      # `plugin`, which `full` leaves out), so the workspace line above
-      # documents little of it: two broken links sat there unseen.
-      - run: cargo doc --locked -p bevy-tutti --no-deps --features full,plugin
         env:
           RUSTDOCFLAGS: -D warnings
       # Each feature of the feature-gated crates alone. The union above cannot

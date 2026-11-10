@@ -1,34 +1,59 @@
-# bevy-tutti is the Bevy adapter for the tutti audio engine: a member of this
-# repo's workspace, one tier above the engine crates it wraps.
+# bevy-tutti is the Bevy adapter for the tutti audio engine, one tier above the
+# engine crates it wraps.
+#
+# PARKED: it is out of the repo's workspace (the root `exclude`) and is its own
+# workspace root (the `[workspace]` table at the foot of this file), so no
+# workspace command builds Bevy and CI does not build it (CLAUDE.md, "bevy-tutti
+# is parked"). It no longer inherits from the root manifest: the values it
+# took from `[workspace.package]`, `[workspace.lints]` and
+# `[workspace.dependencies]` are copied here and are NOT kept in step with the
+# root by anything but the weekly drift check. Build it on demand:
+#
+#   cargo check --manifest-path crates/bevy-tutti/Cargo.toml --features full,plugin --all-targets
 [package]
 name = "bevy-tutti"
 version = "0.1.0"
-edition.workspace = true
-rust-version.workspace = true
+edition = "2024"
+rust-version = "1.99"
 description = "Bevy plugin for the Tutti real-time audio engine: the audio graph, transport, MIDI, plugin hosting and export as ECS entities and resources"
-license.workspace = true
-repository.workspace = true
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/PoHsuanLai/Tutti"
 documentation = "https://docs.rs/bevy-tutti"
 readme = "README.md"
 keywords = ["bevy", "audio", "daw", "midi", "real-time"]
 categories = ["game-development", "multimedia::audio"]
 
-[lints]
-workspace = true
+# The root `[workspace.lints]`, copied (an excluded crate cannot inherit them).
+[lints.rustdoc]
+broken_intra_doc_links = "deny"
+private_intra_doc_links = "deny"
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(loom)', 'cfg(docsrs)'] }
+missing_docs = "warn"
+missing_debug_implementations = "warn"
+
+[lints.clippy]
+too_many_arguments = "allow"
+type_complexity = "allow"
+missing_errors_doc = "warn"
+missing_panics_doc = "warn"
 
 [dependencies]
 # The graph resource's lock: re-entrant, so two reads of the graph in one
 # statement cannot deadlock (`AudioGraphRes::graph_ref`).
 parking_lot = { version = "0.12", default-features = false }
 # Minimal Bevy (just ECS + App, no rendering)
-bevy_app.workspace = true
-bevy_ecs.workspace = true
-bevy_log.workspace = true
-bevy_asset.workspace = true
-bevy_reflect.workspace = true
+# The bevy 0.19 line (copied from the root's `[workspace.dependencies]`); a
+# consumer that also depends on bevy directly must be on the same line.
+bevy_app = { version = "0.19", default-features = false }
+bevy_ecs = { version = "0.19", default-features = false, features = ["debug", "bevy_reflect"] }
+bevy_log = { version = "0.19", default-features = false }
+bevy_asset = { version = "0.19", default-features = false }
+bevy_reflect = { version = "0.19", default-features = false }
 # AsyncComputeTaskPool + Task<T> for non-RT subsystem work (export, region
 # render, plugin scan, wave import, soundfont decode). See src/task.rs.
-bevy_tasks.workspace = true
+bevy_tasks = "0.19"
 
 # Tutti audio engine — bevy-tutti depends on the subsystem crates directly.
 # bevy-tutti supplies the node component, the reconcile systems and the CPAL
@@ -105,7 +130,7 @@ tutti-cpal = { path = "../tutti-cpal", default-features = false }
 atomic_float = "1.1"
 
 # Error handling
-thiserror.workspace = true
+thiserror = "2"
 
 # Diagnostics
 tracing = "0.1"
@@ -297,3 +322,9 @@ required-features = ["plugin", "modulation"]
 [package.metadata.docs.rs]
 all-features = true
 rustdoc-args = ["--cfg", "docsrs"]
+
+# Its own workspace root: the parked crate is outside the repo's workspace, so
+# cargo must not look for one above it. Path dependencies on the engine crates
+# keep inheriting from the root workspace they sit in.
+[workspace]
+resolver = "2"

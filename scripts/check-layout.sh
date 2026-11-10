@@ -60,7 +60,8 @@
 # - `tutti-spatial` depends on `tutti-nodes`, and `tutti-nodes` never on
 #   `tutti-spatial`, of any kind;
 # - nothing but `tutti` and `bevy-tutti` depends on `tutti-session`, and
-#   nothing depends on `tutti` or `bevy-tutti`.
+#   nothing depends on `tutti` or `bevy-tutti`. (`bevy-tutti` is parked, out of
+#   the workspace, and its checks here apply only while it is a member.)
 #
 # Mutation record (each planted on the tree that added this script, seen to
 # exit 1, then removed):
@@ -186,6 +187,9 @@ LAYERS = [
      "tutti-clap-host", "tutti-vst3-host", "tutti-vst2-host"],
     ["tutti-plugin", "tutti-plugin-probe"],
     ["tutti-plugin-server", "tutti-session"],
+    # `bevy-tutti` is parked: out of the workspace (CLAUDE.md, "bevy-tutti is
+    # parked"), so it is never a member here. Its place stays so that it is
+    # ranked, and its edges checked, the day it is back.
     ["tutti", "bevy-tutti"],
 ]
 layer = {n: i for i, ns in enumerate(LAYERS) for n in ns}
@@ -195,6 +199,9 @@ def fail(msg):
     errors.append(msg)
 
 # ---- layout ---------------------------------------------------------------
+# Crates kept in the tree and out of the workspace (CLAUDE.md, "bevy-tutti is
+# parked"): each is its own workspace root, listed in the root `exclude`.
+PARKED = {"crates/bevy-tutti"}
 member_dirs = set()
 for name, p in pkgs.items():
     d = rel(p)
@@ -217,6 +224,13 @@ for top in ("crates", "testing"):
     for entry in sorted(os.listdir(os.path.join(root, top))):
         path = os.path.join(root, top, entry)
         if os.path.isdir(path) and f"{top}/{entry}" not in member_dirs:
+            if f"{top}/{entry}" in PARKED:
+                # Out of the workspace on purpose: its own workspace root, built
+                # on demand with `--manifest-path`, never by a workspace command.
+                with open(os.path.join(path, "Cargo.toml")) as m:
+                    if "\n[workspace]" not in m.read():
+                        fail(f"{top}/{entry} is parked and must be its own `[workspace]` root")
+                continue
             fail(f"{top}/{entry} is not a workspace member")
 
 def internal_deps(p):

@@ -29,7 +29,7 @@ use tutti_ump::{Message, Ump, Unknown, Voice2, decode};
 
 use crate::events::{InputEvents, Stager};
 use crate::types::{MidiEvent, ParameterChanges};
-use tutti_plugin_types::MIDI_STACK_CAPACITY;
+use tutti_plugin_types::{MIDI_STACK_CAPACITY, MainThread};
 use tutti_rt::{Reader, RtVec};
 use tutti_vst3_ffi::{EventList, Plugin};
 
@@ -87,8 +87,8 @@ impl MidiCcMapping {
     /// Returns an [`empty`](Self::empty) table when the controller is absent
     /// or doesn't implement `IMidiMapping`. Must run on the UI/main thread —
     /// `IMidiMapping` is an `IEditController` extension.
-    pub(crate) fn query(plugin: &Plugin) -> Self {
-        if !plugin.has_midi_mapping() {
+    pub(crate) fn query(main: &MainThread, plugin: &Plugin) -> Self {
+        if !plugin.has_midi_mapping(main) {
             return Self::empty();
         }
 
@@ -97,6 +97,7 @@ impl MidiCcMapping {
         // busIndex 0: CC mappings are reported against the first event bus
         // (matches the JUCE host contract).
         plugin.midi_controller_assignments(
+            main,
             0..NUM_CHANNELS as i16,
             0..NUM_CONTROLLERS as i16,
             |channel, controller_number, id| {
@@ -257,27 +258,34 @@ pub(crate) fn route_cc_events(
 /// plugin maps nothing. When the route dropped MIDI past its cap, the list
 /// drops its open SysEx ([`EventList::lose_sysex_tail`]) so a message never
 /// reaches the plugin with a gap in it. Never allocates.
+///
+/// `None` when the list was busy (a plugin thread inside `getEventCount` or
+/// `getEvent`) and could not be staged or cleared: it still holds the last
+/// block's events, so the block must not be processed.
 pub(crate) fn stage_input_events<'a>(
     cc: &'a mut CcRoute,
     stager: &mut Stager,
     list: &EventList,
     events: &InputEvents<'_>,
     param_changes: Option<&'a ParameterChanges>,
-) -> Option<&'a ParameterChanges> {
+) -> Option<Option<&'a ParameterChanges>> {
     let (midi, params, lost_tail) = match cc.route(events.midi, param_changes) {
         Some((midi, params)) => (midi.as_slice(), Some(params), midi.is_overflowed()),
         None => (events.midi, param_changes, false),
     };
     let effective = InputEvents { midi, ..*events };
-    if effective.is_empty() {
-        list.clear();
+    let staged = if effective.is_empty() {
+        list.clear()
     } else {
-        stager.stage(list, &effective);
+        stager.stage(list, &effective)
+    };
+    if !staged {
+        return None;
     }
     if lost_tail {
         list.lose_sysex_tail();
     }
-    params
+    Some(params)
 }
 
 /// Sorts every queue's points into ascending `sample_offset` order, as VST3's

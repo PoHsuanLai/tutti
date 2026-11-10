@@ -86,7 +86,7 @@ impl Probe {
     }
 
     fn load(&self) -> Vst3Loaded {
-        Vst3Loaded::load(probe_path(), LoadOptions::new()).expect("the probe loads")
+        Vst3Loaded::load(&main_thread(), probe_path(), LoadOptions::new()).expect("the probe loads")
     }
 }
 

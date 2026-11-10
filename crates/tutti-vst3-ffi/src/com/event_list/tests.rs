@@ -488,12 +488,12 @@ fn staging_is_allocation_free_after_warmup() {
         note_off(64, 96),
     ];
     stage(&list, events);
-    list.clear();
+    assert!(list.clear());
 
     assert_no_alloc::assert_no_alloc(|| {
         for _ in 0..10_000 {
             stage(&list, events);
-            list.clear();
+            assert!(list.clear());
         }
     });
 }
@@ -504,7 +504,7 @@ fn clear_empties_a_staged_block() {
     let list = EventList::input();
     stage(&list, [note_on(60, 0), note_off(60, 10)]);
     assert_eq!(list.len(), 2);
-    list.clear();
+    assert!(list.clear());
     assert_eq!(list.len(), 0);
 }
 
@@ -650,4 +650,26 @@ fn a_plugin_text_is_copied_into_the_arena() {
         ] => assert_eq!(text.slice(staged.text), Some(utf16("lyric").as_slice())),
         other => panic!("expected one text event, got {other:?}"),
     });
+}
+
+/// **A plugin thread inside a list call makes the host skip, not panic.** The
+/// audio thread's `try_begin` and `try_with_events` used to `borrow`, which
+/// panics when a plugin thread is inside `getEventCount` or `getEvent`.
+///
+/// Mutation (run, fails): make `try_begin` use `borrow_mut` again -> the first call panics.
+#[test]
+fn a_list_in_use_by_the_plugin_is_skipped_and_counted() {
+    let list = EventList::input();
+    {
+        let _plugin_reading = list.inner.borrow();
+        assert!(list.try_begin().is_none());
+        assert!(!list.clear());
+        list.add_dropped(1);
+        assert_eq!(list.busy(), 3);
+    }
+    let staging = list.try_begin().expect("free again");
+    assert!(list.try_with_events(|_| ()).is_none());
+    drop(staging);
+    assert_eq!(list.dropped(), 0, "the skipped add_dropped did not count");
+    assert!(list.try_with_events(|_| ()).is_some());
 }

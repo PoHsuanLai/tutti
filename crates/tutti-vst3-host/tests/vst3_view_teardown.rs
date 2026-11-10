@@ -146,7 +146,10 @@ fn teardown(view: &ComWrapper<RecordingView>) {
         .expect("IPlugView is the only interface on RecordingView");
     // `detach_view` takes the owning `ComPtr` the host holds in `EditorState`.
     // `to_com_ptr` bumps the refcount, so the wrapper outlives the call.
-    detach_view(&view.to_com_ptr());
+    detach_view(
+        &tutti_plugin_types::MainThread::claim().unwrap(),
+        &view.to_com_ptr(),
+    );
 }
 
 /// The frame must be retracted before `removed()`, never after and never not

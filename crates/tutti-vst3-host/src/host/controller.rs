@@ -436,7 +436,7 @@ impl Vst3Loaded {
     /// activation.
     #[allow(clippy::result_large_err)]
     fn rejoin<P>(
-        _main: &MainThread,
+        main: &MainThread,
         mut processor: P,
         mut controller: Vst3Controller,
         shell_of: impl Fn(&P) -> &Arc<Shell>,
@@ -470,7 +470,7 @@ impl Vst3Loaded {
             .take()
             .expect("a Controller holds its plugin until it is consumed");
         controller.shell.controller_rejoined();
-        loaded.deactivate_plugin();
+        loaded.deactivate_plugin(main);
         loaded.carried = latest_per_parameter(pending);
         Ok(loaded)
     }
@@ -500,7 +500,7 @@ impl Vst3Loaded {
     /// `setActive(0)`, if the plugin is active. The Processor has stopped
     /// processing by now (`rejoin` stops it, and sends `setProcessing(0)` only
     /// if it was on), so it is not told twice.
-    fn deactivate_plugin(&mut self) {
+    fn deactivate_plugin(&mut self, main: &MainThread) {
         if !self.active.is_active() {
             return;
         }
@@ -508,7 +508,7 @@ impl Vst3Loaded {
         // the interfaces are still valid and every loaded-state method is still
         // legal. (The asymmetry with `setActive(1)`, where a refusal is a
         // failure.)
-        let _ = self.plugin.set_active(false);
+        let _ = self.plugin.set_active(main, false);
         self.active = Activation::default();
     }
 }
@@ -579,7 +579,7 @@ impl Loaded for Vst3Loaded {
             Some(class) => super::loaded::LoadOptions::new().class(class.clone()),
             None => super::loaded::LoadOptions::new(),
         };
-        let mut fresh = match Vst3Loaded::load(&self.origin.path, options) {
+        let mut fresh = match Vst3Loaded::load(main, &self.origin.path, options) {
             Ok(fresh) => fresh,
             Err(error) => {
                 return Err(Refused {

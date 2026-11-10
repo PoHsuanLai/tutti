@@ -268,7 +268,7 @@ fn a_full_text_arena_refuses_rather_than_moving_its_pointers() {
     let list = EventList::input();
     let mut stager = Stager::default();
     assert_no_alloc::assert_no_alloc(|| {
-        stager.stage(&list, &sources);
+        assert!(stager.stage(&list, &sources));
     });
     assert_eq!(list.text_dropped(), over);
 
@@ -300,7 +300,7 @@ fn a_full_text_arena_refuses_rather_than_moving_its_pointers() {
     }
 
     assert_no_alloc::assert_no_alloc(|| {
-        stager.stage(&list, &sources);
+        assert!(stager.stage(&list, &sources));
     });
     assert_eq!(list.text_dropped(), 2 * over);
 }
@@ -371,7 +371,7 @@ fn a_banked_program_change_reaches_the_plugin_as_three_messages() {
     midi.push(pc);
     let full = EventList::input();
     let mut stager = Stager::default();
-    stager.stage(&full, &midi_only(&midi));
+    assert!(stager.stage(&full, &midi_only(&midi)));
     assert_eq!(count(&full), EVENT_CAPACITY - 2);
     assert_eq!(full.dropped(), 3);
 }
@@ -441,11 +441,11 @@ fn a_sysex_spanning_blocks_completes_in_the_block_of_its_end() {
     let list = EventList::input();
     let mut stager = Stager::default();
     let (first, second) = midi.split_at(MIDI_STACK_CAPACITY);
-    stager.stage(&list, &midi_only(first));
+    assert!(stager.stage(&list, &midi_only(first)));
     assert!(sysex_read_by_plugin(&list).is_empty());
     // An empty block between them clears the list, keeping the run.
-    list.clear();
-    stager.stage(&list, &midi_only(second));
+    assert!(list.clear());
+    assert!(stager.stage(&list, &midi_only(second)));
     assert_eq!(sysex_read_by_plugin(&list), vec![(0, framed(&body))]);
     assert_eq!(list.sysex_dropped(), 0);
 }
@@ -462,12 +462,12 @@ fn a_sysex_past_capacity_is_dropped_whole_and_counted() {
     let list = EventList::input();
     let mut stager = Stager::default();
     for block in sysex_packets(&long, 0).chunks(MIDI_STACK_CAPACITY) {
-        stager.stage(&list, &midi_only(block));
+        assert!(stager.stage(&list, &midi_only(block)));
         assert!(sysex_read_by_plugin(&list).is_empty());
     }
     assert_eq!(list.sysex_dropped(), 1);
     let next = sysex_payload(20);
-    stager.stage(&list, &midi_only(&sysex_packets(&next, 2)));
+    assert!(stager.stage(&list, &midi_only(&sysex_packets(&next, 2))));
     assert_eq!(sysex_read_by_plugin(&list), vec![(2, framed(&next))]);
     assert_eq!(list.sysex_dropped(), 1);
 }
@@ -486,7 +486,7 @@ fn a_start_without_its_end_before_the_next_start_is_dropped() {
     midi.extend(sysex_packets(&b, 4));
     let list = EventList::input();
     let mut stager = Stager::default();
-    stager.stage(&list, &midi_only(&midi));
+    assert!(stager.stage(&list, &midi_only(&midi)));
     assert_eq!(sysex_read_by_plugin(&list), vec![(4, framed(&b))]);
     assert_eq!(list.sysex_dropped(), 1);
 }

@@ -264,10 +264,42 @@ fn data_from_an_iterator_holds_what_new_holds() {
         let from_slice = Data::new(5, &bytes).expect("fits");
         assert_eq!(from_iter.payload(), from_slice.payload());
         assert_eq!(
-            (from_iter.size, from_iter.data_type, from_iter.bytes),
-            (from_slice.size, from_slice.data_type, from_slice.bytes)
+            (from_iter.size(), from_iter.data_type(), from_iter.payload()),
+            (
+                from_slice.size(),
+                from_slice.data_type(),
+                from_slice.payload()
+            )
         );
     }
     assert!(Data::try_from_iter(0, 0..17u8).is_none());
     assert!(Data::try_from_iter(0, std::iter::repeat(1)).is_none());
+}
+
+/// **A plugin's data event never makes the host claim more than the inline
+/// array holds.** `to_c` hands the next plugin `size` with a pointer to 16
+/// bytes, so a `size` past 16 is an out-of-bounds read; the audit's probe saw
+/// 1,000,000 reach the plugin.
+///
+/// Mutation: drop the `.min(Self::CAPACITY as u32)` in `Data::from_plugin` ->
+/// the size is 1,000,000 on both sides and the test fails.
+#[test]
+fn a_data_event_never_claims_more_than_it_holds() {
+    let bytes = [7u8; 40];
+    let mut c: vst3::Steinberg::Vst::Event = crate::sdk::zeroed();
+    c.r#type = EventKind::Data as u16;
+    c.__field0.data = vst3::Steinberg::Vst::DataEvent {
+        size: 1_000_000,
+        r#type: 0,
+        bytes: bytes.as_ptr(),
+    };
+    // SAFETY: tagged `Data`; `bytes` is readable for the 16 bytes the decode copies.
+    let event = unsafe { Event::from_c(&c, &mut TextArena::new()) }.unwrap();
+    let Payload::Data(d) = event.payload else {
+        panic!("not data");
+    };
+    assert_eq!(d.size(), 16);
+    let out = event.to_c(&[], &[]);
+    // SAFETY: tagged `Data` by `to_c`.
+    assert_eq!(unsafe { out.__field0.data.size }, 16);
 }

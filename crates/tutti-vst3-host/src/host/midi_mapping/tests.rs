@@ -795,7 +795,8 @@ fn a_mapped_route_passes_a_sysex_spanning_blocks_whole() {
         midi: &first,
         ..Default::default()
     };
-    let params = stage_input_events(&mut route, &mut stager, &list, &one, None);
+    let params =
+        stage_input_events(&mut route, &mut stager, &list, &one, None).expect("the list is free");
     assert_eq!(
         params.map(|p| p.queues.len()),
         Some(1),
@@ -807,7 +808,7 @@ fn a_mapped_route_passes_a_sysex_spanning_blocks_whole() {
         midi: &packets[MIDI_STACK_CAPACITY - 1..],
         ..Default::default()
     };
-    stage_input_events(&mut route, &mut stager, &list, &two, None);
+    stage_input_events(&mut route, &mut stager, &list, &two, None).expect("the list is free");
     let mut framed = vec![0xF0];
     framed.extend_from_slice(&payload);
     framed.push(0xF7);
@@ -836,13 +837,13 @@ fn a_route_overflow_drops_the_open_sysex() {
         midi: &packets[..300],
         ..Default::default()
     };
-    stage_input_events(&mut route, &mut stager, &list, &one, None);
+    stage_input_events(&mut route, &mut stager, &list, &one, None).expect("the list is free");
     assert_eq!(list.sysex_dropped(), 1);
     let two = InputEvents {
         midi: &packets[300..],
         ..Default::default()
     };
-    stage_input_events(&mut route, &mut stager, &list, &two, None);
+    stage_input_events(&mut route, &mut stager, &list, &two, None).expect("the list is free");
     assert!(sysex_in(&list).is_empty(), "no message with a gap in it");
     assert_eq!(list.sysex_dropped(), 1);
 }

@@ -40,6 +40,7 @@ use std::cell::Cell;
 use std::sync::Arc;
 use std::time::Instant;
 
+use tutti_graph::NodeKey;
 use tutti_graph::{
     CrossfadeCurve, Cx, Event, ForkByClone, Io, Node, Offset, Prepare, Shape, Status,
 };
@@ -54,8 +55,7 @@ use tutti_session::{
     SessionEvent, Take, declare_targets,
 };
 use tutti_types::{
-    Amplitude, Beat, Bpm, ChannelLayout, Depth, Hz, NodeKey, SampleRate, Samples, Seconds,
-    UnitParam,
+    Amplitude, Beat, Bpm, ChannelLayout, Depth, Hz, SampleRate, Samples, Seconds, UnitParam,
 };
 
 use common::probe::{ProbeUnit, Pulse};

@@ -127,9 +127,10 @@ whole reason these algorithms need no engine vocabulary.
 ```rust
 use tutti_measure::correlate;
 use tutti_graph::{Cx, Editor, Io, Node, Prepare, Shape, Status, Transport, Unforkable};
-use tutti_types::graph::{OutPort, Source};
-use tutti_types::{Beat, Bpm, ChannelLayout, NodeKey, SampleRate, Samples, StereoPlanes};
-use tutti_types::{TapAlign, TapId};
+use tutti_graph::{OutPort, Source};
+use tutti_types::{Beat, Bpm, ChannelLayout, SampleRate, Samples, StereoPlanes};
+use tutti_graph::NodeKey;
+use tutti_graph::{TapAlign, TapId};
 
 /// A stereo source: 0.5 on the left, -0.5 on the right.
 struct Tone;

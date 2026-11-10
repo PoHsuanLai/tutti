@@ -19,10 +19,10 @@
 
 use std::time::{Duration, Instant};
 
+use tutti_graph::NodeKey;
 use tutti_modulation::{Follower, Lfo};
 use tutti_nodes::{SvfFilterNode, SvfType};
 use tutti_session::{GraphSource, ParamRef, Session};
-use tutti_types::NodeKey;
 use tutti_types::{BeatDuration, Depth, Hz, Q, UnitParam};
 use tutti_types::{ChannelLayout, SampleRate, Samples};
 

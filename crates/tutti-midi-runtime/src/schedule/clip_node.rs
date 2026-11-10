@@ -308,7 +308,8 @@ impl MidiClipControls {
 /// audio. See the module docs.
 ///
 /// ```
-/// use tutti_types::{Beat, NodeKey, SampleRate, Samples};
+/// use tutti_types::{Beat, SampleRate, Samples};
+/// use tutti_graph::NodeKey;
 /// use tutti_graph::{Editor, Prepare};
 /// use tutti_midi_runtime::{MidiClipNode, TimedMidiEvent};
 /// use tutti_fixtures::midi::note_on;

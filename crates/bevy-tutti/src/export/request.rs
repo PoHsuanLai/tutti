@@ -20,7 +20,8 @@ use bevy_tasks::Task;
 
 use tutti_export::{ExportConfig, Progress, RenderClock};
 use tutti_graph::{ForkCause, ForkFaultKind};
-use tutti_types::{NodeKey, Samples};
+use tutti_types::Samples;
+use tutti_graph::NodeKey;
 
 /// The session's: the time an export renders in.
 pub use tutti_session::ExportClock;

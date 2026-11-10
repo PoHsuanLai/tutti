@@ -19,11 +19,12 @@
 use std::sync::Arc;
 
 use tutti_graph::Op;
+use tutti_graph::TapAlign;
 use tutti_nodes::MetronomeMode;
 use tutti_nodes::testing::{Const, assert_golden};
 use tutti_session::{GraphSource, MissingSource, Session};
 use tutti_transport::MotionEvent;
-use tutti_types::{ChannelLayout, InterleavedMut, SampleRate, Samples, TapAlign};
+use tutti_types::{ChannelLayout, InterleavedMut, SampleRate, Samples};
 
 const RATE: f64 = 48_000.0;
 
@@ -388,7 +389,7 @@ fn an_offline_render_feeds_the_master_meter() {
 fn opening_a_tap_or_meter_on_a_missing_source_is_refused() {
     let mut s = offline();
     let (a, _) = s.graph().insert(Const::mono(0.5));
-    let ghost = tutti_types::NodeKey(0xdead);
+    let ghost = tutti_graph::NodeKey(0xdead);
     assert_eq!(
         s.graph().open_node_meter(ghost).err(),
         Some(MissingSource::Node { node: ghost })

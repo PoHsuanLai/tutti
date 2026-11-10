@@ -26,16 +26,16 @@ mod support;
 
 use support::{Change, model_beats};
 use tutti_engine::Engine;
+use tutti_graph::NodeKey;
 use tutti_graph::{
     Cx, Editor, Env, Executor, IntoNode, Io, Node, Prepare, Shape, Status, Unforkable,
 };
+use tutti_graph::{Edge, InPort, OutPort, Source};
 use tutti_nodes::{ClickNode, ClickSettings, MetronomeMode};
 use tutti_transport::{
     FadeOut, LoopEdit, MotionEvent, OfflineTimeline, OfflineTimelineConfig, Then, Transport,
     TransportCommand,
 };
-use tutti_types::NodeKey;
-use tutti_types::graph::{Edge, InPort, OutPort, Source};
 use tutti_types::{
     At, Beat, Bpm, ChannelLayout, Frame, InterleavedMut, LoopRange, SampleRate, Samples, Tail,
 };

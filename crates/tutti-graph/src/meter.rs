@@ -1,7 +1,7 @@
 //! Level meters: declared readers on ports of the compiled plan.
 //!
-//! A meter is declared on the [`Topology`](tutti_types::Topology) as "measure
-//! these sources" ([`MeterSpec`](tutti_types::MeterSpec)): the global outputs
+//! A meter is declared on the [`Topology`](crate::Topology) as "measure
+//! these sources" ([`MeterSpec`](crate::MeterSpec)): the global outputs
 //! for a master meter (`Outputs`, aligned: each lane is what its output
 //! channel carries, at the output's time), any node's output ports for a track
 //! (`Ports { sources, align }`, as they leave their nodes or aligned to the
@@ -42,8 +42,9 @@
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Weak};
 
+use crate::MeterId;
 use tutti_rt::{LevelReader, LevelSpan, LevelWriter, RtScope, level_cell};
-use tutti_types::{Amplitude, MeterId, Samples};
+use tutti_types::{Amplitude, Samples};
 
 use crate::exec::SILENT;
 use crate::slots::{AudioSlots, SlotFlags};

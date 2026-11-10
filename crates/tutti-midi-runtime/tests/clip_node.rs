@@ -10,12 +10,13 @@
 use std::sync::{Arc, Mutex};
 
 use tutti_fixtures::midi::{note_off, note_on};
+use tutti_graph::NodeKey;
 use tutti_graph::{
     Cx, Editor, EventEdge, EventIn, EventKind, EventOut, Executor, IntoNode, Io, LoopRange, Node,
     Offset, Prepare, Shape, Status, Transport, TransportChanges, Unforkable,
 };
 use tutti_midi_runtime::{MidiClipControls, MidiClipNode, TimedMidiEvent};
-use tutti_types::{Beat, Bpm, NodeKey, SampleRate, Samples};
+use tutti_types::{Beat, Bpm, SampleRate, Samples};
 use tutti_ump::Ump;
 use tutti_ump::{MidiChannel, MidiGroup};
 

@@ -1522,8 +1522,8 @@ mod tests {
     /// Wire the globals to a `Ramp` of `width` at key 1, replacing any, and
     /// commit.
     fn rewire(ed: &mut Editor, width: u16) {
-        use tutti_types::NodeKey;
-        use tutti_types::graph::{OutPort, Source};
+        use tutti_graph::NodeKey;
+        use tutti_graph::{OutPort, Source};
         ed.insert(NodeKey(1), "ramp", tutti_graph::Unforkable(Ramp(width)));
         ed.spec_mut().topology.outputs = (0..width)
             .map(|port| {

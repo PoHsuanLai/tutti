@@ -11,9 +11,10 @@
 
 use criterion::{BatchSize, Criterion, criterion_group, criterion_main};
 use tutti_fixtures::midi::{note_off, note_on};
+use tutti_graph::NodeKey;
 use tutti_graph::{Editor, Executor, Prepare, Transport};
 use tutti_midi_runtime::{MidiClipNode, TimedMidiEvent};
-use tutti_types::{Beat, Bpm, NodeKey, SampleRate, Samples};
+use tutti_types::{Beat, Bpm, SampleRate, Samples};
 use tutti_ump::{MidiChannel, MidiGroup, Ump};
 
 const FRAMES_PER_BEAT: f64 = 24_000.0;

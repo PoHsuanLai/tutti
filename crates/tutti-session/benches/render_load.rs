@@ -196,9 +196,9 @@ fn ir(seed: u32) -> Vec<f32> {
 
 fn connect_stereo(
     s: &mut Session,
-    to: tutti_types::NodeKey,
+    to: tutti_graph::NodeKey,
     first_port: usize,
-    from: tutti_types::NodeKey,
+    from: tutti_graph::NodeKey,
 ) {
     for c in 0..2 {
         s.graph()

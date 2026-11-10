@@ -178,6 +178,7 @@ pub use tutti_plugin as plugin;
 pub mod prelude {
     pub use tutti_engine::prelude::*;
     pub use tutti_graph::{CrossfadeCurve, Level, MAX_ROOT_CHANNELS, MeterReader, TapReader};
+    pub use tutti_graph::{TapAlign, TapId};
     pub use tutti_metering::{LoadMeter, LoadReading};
     pub use tutti_nodes::{ClickState, MetronomeMode};
     pub use tutti_rt::{ArcLend, Loan, Reader};
@@ -186,7 +187,7 @@ pub mod prelude {
         OfflineTimelineConfig, Then, Timeline, Transport, TransportCommand,
     };
     pub use tutti_types::prelude::*;
-    pub use tutti_types::{At, BarNumber, LoopRange, Meter, TapAlign, TapId};
+    pub use tutti_types::{At, BarNumber, LoopRange, Meter};
     pub use tutti_ump::{CCNumber, MidiChannel, MidiGroup};
 
     // The device handle and its enumeration record.

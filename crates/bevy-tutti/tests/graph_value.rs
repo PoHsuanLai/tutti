@@ -27,8 +27,9 @@ use bevy_tutti::graph::{
 };
 use tutti_nodes::testing::{Const, Osc};
 use tutti_nodes::{ChannelSumNode, LimiterNode};
-use tutti_types::graph::{Edge, InPort, OutPort, Source};
-use tutti_types::{ChannelLayout, Db, Hz, NodeKey};
+use tutti_graph::{Edge, InPort, OutPort, Source};
+use tutti_types::{ChannelLayout, Db, Hz};
+use tutti_graph::NodeKey;
 
 /// An app wired the way `build_into` leaves one, minus the audio device.
 fn app() -> App {
@@ -52,7 +53,7 @@ fn node_id(app: &App, entity: Entity) -> NodeKey {
     app.world().get::<AudioNode>(entity).expect("AudioNode").0
 }
 
-fn live(app: &App) -> &tutti_types::Topology {
+fn live(app: &App) -> &tutti_graph::Topology {
     app.world().resource::<LiveGraph>().topology()
 }
 
@@ -381,7 +382,7 @@ fn the_latency_plan_shrinks_when_the_latency_bearing_node_leaves() {
     );
     app.update();
 
-    let before = tutti_types::latency::plan(live(&app));
+    let before = tutti_graph::latency_plan(live(&app));
     assert!(
         before.total().get() > 0,
         "the limiter reports latency, so the graph has a figure to display"
@@ -393,7 +394,7 @@ fn the_latency_plan_shrinks_when_the_latency_bearing_node_leaves() {
     app.world_mut().entity_mut(lim).despawn();
     app.update();
 
-    let after = tutti_types::latency::plan(live(&app));
+    let after = tutti_graph::latency_plan(live(&app));
     assert!(
         after.total() < before.total(),
         "the plan shrank: {:?} -> {:?}",

@@ -507,9 +507,10 @@ fn a_first_block_on_a_cold_thread_is_allocation_free() {
 /// `Vec` before merging → the gate aborts.
 #[test]
 fn a_clip_into_a_synth_is_allocation_free() {
+    use tutti_graph::NodeKey;
     use tutti_graph::{Editor, EventEdge, EventIn, EventOut, Prepare, Transport};
     use tutti_midi_runtime::{MidiClipNode, TimedMidiEvent};
-    use tutti_types::{Beat, Bpm, NodeKey, Samples};
+    use tutti_types::{Beat, Bpm, Samples};
 
     const BLOCK: usize = 256;
     // A note on or off every 37 frames over the first 8 192.
@@ -546,7 +547,7 @@ fn a_clip_into_a_synth_is_allocation_free() {
     );
     ed.spec_mut().topology.outputs = (0..2)
         .map(|port| {
-            tutti_types::graph::Source::Node(tutti_types::graph::OutPort {
+            tutti_graph::Source::Node(tutti_graph::OutPort {
                 node: NodeKey(2),
                 port,
             })

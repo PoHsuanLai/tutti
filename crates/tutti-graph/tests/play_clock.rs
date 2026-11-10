@@ -15,12 +15,13 @@ mod common;
 use std::collections::BTreeMap;
 
 use common::prepare;
+use tutti_graph::NodeKey;
 use tutti_graph::{
     Cx, Editor, Executor, ForkByClone, ForkMode, ForkTarget, Io, Node, Offset, PlayReading,
     Prepare, Reference, Shape, Status, Transport, TransportChanges, Unforkable,
 };
-use tutti_types::graph::{Edge, InPort, OutPort, Source};
-use tutti_types::{Beat, Bpm, ChannelLayout, Frame, Latency, NodeKey, Samples};
+use tutti_graph::{Edge, InPort, OutPort, Source};
+use tutti_types::{Beat, Bpm, ChannelLayout, Frame, Latency, Samples};
 
 const MAX: usize = 64;
 const LATENT: NodeKey = NodeKey(1);

@@ -7,14 +7,13 @@ mod common;
 
 use assert_no_alloc::AllocDisabler;
 use common::{Kind, TestNode, prepare};
+use tutti_graph::{Edge, InPort, OutPort, Source};
 use tutti_graph::{
     Editor, Executor, ForkCause, ForkMode, ForkSource, ForkTarget, Forked, IntoNode, MissingSource,
     Node, NodeParts, Op, TapReader, Transport,
 };
-use tutti_types::graph::{Edge, InPort, OutPort, Source};
-use tutti_types::{
-    Beat, Bpm, ChannelLayout, MeterId, MeterSpec, NodeKey, Samples, TapAlign, TapId,
-};
+use tutti_graph::{MeterId, MeterSpec, NodeKey, TapAlign, TapId};
+use tutti_types::{Beat, Bpm, ChannelLayout, Samples};
 
 #[global_allocator]
 static A: AllocDisabler = AllocDisabler;

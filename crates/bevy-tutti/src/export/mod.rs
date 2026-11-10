@@ -169,7 +169,7 @@ pub use run::{poll_exports, start_exports};
 // `scripts/check-adapter.sh`). A hook calls its methods without naming it;
 // a host that names it depends on `tutti-export`.
 pub use tutti_graph::{ForkCause, ForkFaultKind};
-pub use tutti_types::NodeKey;
+pub use tutti_graph::NodeKey;
 
 use bevy_app::{App, Plugin, Update};
 use bevy_ecs::prelude::*;

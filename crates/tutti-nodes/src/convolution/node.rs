@@ -36,7 +36,7 @@ use tutti_dsp::Ramp;
 /// the input stops: an IR of length `L` answers an impulse at frame 0 through
 /// frame `L - 1`, so `L - 1` of them land past the input. Defined this way the
 /// figure adds along a chain with no correction term, which is what
-/// [`tutti_types::tail`] relies on.
+/// [`tutti_graph`] relies on.
 ///
 /// A convolution is linear and finite, so this is exact rather than an estimate
 /// — the only node here that can say that.

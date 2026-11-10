@@ -367,7 +367,7 @@ fn the_trim_is_read_after_the_prepare_hook() {
                 let editor = prepared.graph.editor_mut();
                 editor.insert(key, "test:late", ForkByClone(Late { pos: 0 }));
                 for out in editor.spec_mut().topology.outputs.iter_mut() {
-                    *out = tutti_types::graph::Source::Node(tutti_types::graph::OutPort {
+                    *out = tutti_graph::Source::Node(tutti_graph::OutPort {
                         node: key,
                         port: 0,
                     });

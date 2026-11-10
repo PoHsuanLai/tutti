@@ -44,15 +44,15 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 
 use proptest::prelude::*;
+use tutti_graph::NodeKey;
 use tutti_graph::{
     CommitError, Cx, Editor, Event, EventOut, Executor, ForkByClone, ForkMode, ForkTarget,
     GraphInvalid, Io, Node, PARAM_DECLICK, ParamIn, ParamInput, ParamRamp, ParamRange,
     ParamSegment, Prepare, Reference, SegmentShape, Shape, Status, Transport, Unforkable,
 };
-use tutti_types::graph::{Edge, InPort, OutPort, Source};
+use tutti_graph::{Edge, InPort, OutPort, Source};
 use tutti_types::{
-    ChannelLayout, Hz, Latency, NodeKey, ParamKey, Q, SamplePosition, SampleRate, Samples,
-    UnitParam,
+    ChannelLayout, Hz, Latency, ParamKey, Q, SamplePosition, SampleRate, Samples, UnitParam,
 };
 
 const RATE: SampleRate = SampleRate(48_000.0);
@@ -1006,7 +1006,7 @@ fn a_param_source_counts_toward_arrival_in_both_solves() {
     let plan = ed.base().expect("a plan");
     assert_eq!(plan.total_latency(), Latency::new(Samples(37)));
     assert_eq!(
-        tutti_types::latency::plan(ed.spec()).total(),
+        tutti_graph::latency_plan(ed.spec()).total(),
         Samples(37),
         "the spec's own fold agrees"
     );

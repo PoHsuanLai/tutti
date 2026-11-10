@@ -37,11 +37,12 @@ use std::hint::black_box;
 use std::time::{Duration, Instant};
 
 use common::{WORKERS, test_pool};
+use tutti_graph::NodeKey;
 use tutti_graph::{
     Cx, Editor, Io, Node, Prepare, Shape, Status, Transport, TransportChanges, Unforkable,
 };
-use tutti_types::graph::{Edge, InPort, OutPort, Source};
-use tutti_types::{ChannelLayout, NodeKey, SampleRate, Samples};
+use tutti_graph::{Edge, InPort, OutPort, Source};
+use tutti_types::{ChannelLayout, SampleRate, Samples};
 
 const MAX_BLOCK: usize = 64;
 const PROBES: u64 = 24;

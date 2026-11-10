@@ -28,8 +28,8 @@
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use crate::NodeKey;
 use ringbuf::{HeapProd, traits::Producer};
-use tutti_types::NodeKey;
 
 use crate::plan::{DelayKey, FeedbackKey, Plan};
 use crate::spec::EventOut;

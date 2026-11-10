@@ -52,7 +52,7 @@ fn offline() -> Session {
         .expect("an offline session builds")
 }
 
-fn add_probe_on_outputs(s: &mut Session) -> tutti_types::NodeKey {
+fn add_probe_on_outputs(s: &mut Session) -> tutti_graph::NodeKey {
     let node = s
         .add_plugin_blocking(
             &main_thread(),
@@ -149,7 +149,7 @@ fn a_plugins_latency_is_the_sessions_and_follows_the_plugin() {
     s.update();
     assert_eq!(
         s.graph_ref().node_latency(node),
-        tutti_types::latency::MAX_NODE_LATENCY,
+        tutti_graph::MAX_NODE_LATENCY,
         "clamped to what PDC compensates"
     );
 }

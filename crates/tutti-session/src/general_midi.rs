@@ -15,10 +15,11 @@
 //! that wants a different reverb, two units into one chorus or no chorus wires
 //! the unit's outputs itself, through [`Graph::set_source`](crate::Graph::set_source).
 
+use tutti_graph::NodeKey;
 use tutti_graph::ParamSet;
 use tutti_nodes::{BusStripNode, ChannelSumNode, ModDelayConfig, ModDelayNode, ReverbNode};
 use tutti_soundfont::SoundFontUnit;
-use tutti_types::{Amplitude, ChannelLayout, NodeKey, UnitParam};
+use tutti_types::{Amplitude, ChannelLayout, UnitParam};
 
 use crate::{GraphSource, InstrumentHandle, Session};
 

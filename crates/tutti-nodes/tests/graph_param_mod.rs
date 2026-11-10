@@ -26,6 +26,7 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
 use audio_automation::CurveType;
+use tutti_graph::NodeKey;
 use tutti_graph::{
     Editor, EventOut, GraphBuilder, IntoNode, NodeParts, PARAM_DECLICK, ParamIn, ParamRange,
     Prepare, Renderer,
@@ -38,8 +39,8 @@ use tutti_nodes::{
     SvfType,
 };
 use tutti_types::{
-    Amplitude, AtomicF32, BeatDuration, ChannelLayout, Depth, NodeKey, PhaseIncrement, SampleRate,
-    Samples, UnitParam,
+    Amplitude, AtomicF32, BeatDuration, ChannelLayout, Depth, PhaseIncrement, SampleRate, Samples,
+    UnitParam,
 };
 
 const FRAMES: usize = 24_000;

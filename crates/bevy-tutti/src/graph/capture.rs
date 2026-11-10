@@ -47,7 +47,7 @@
 use bevy_ecs::prelude::*;
 
 use crate::graph::AudioNode;
-use tutti_types::NodeKey;
+use tutti_graph::NodeKey;
 
 /// The controls captured from one node, before it moved into the graph.
 ///

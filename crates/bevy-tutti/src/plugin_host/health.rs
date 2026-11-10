@@ -63,7 +63,7 @@ use tutti_plugin::Liveness;
 use tutti_session::{
     GiveUp, Phase, PluginReloaded, PluginSnapshotTaken, SessionEvent, StateRestore,
 };
-use tutti_types::NodeKey;
+use tutti_graph::NodeKey;
 
 use crate::graph::{AudioGraphRes, CapturedControls};
 use crate::plugin_host::PluginEditorMainThread;

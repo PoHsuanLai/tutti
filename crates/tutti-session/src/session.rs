@@ -5,11 +5,12 @@ use std::any::Any;
 use std::sync::Arc;
 use std::time::Instant;
 
+use tutti_graph::NodeKey;
 use tutti_graph::PrerollTable;
 use tutti_graph::TapReader;
 use tutti_nodes::ClickSettings;
 use tutti_transport::Transport;
-use tutti_types::{ChannelLayout, ChannelTopology, NodeKey, Samples};
+use tutti_types::{ChannelLayout, ChannelTopology, Samples};
 
 use crate::HeardTapError;
 use crate::graph::{Committed, CrossfadeId, Graph, Retried};
@@ -906,7 +907,7 @@ impl Session {
     /// The events the graph's ports lost since the last update, as
     /// [`SessionEvent::EventsDropped`], one per port.
     fn report_event_losses(&mut self, out: &mut Vec<SessionEvent>) {
-        let mut sums: std::collections::BTreeMap<(tutti_types::NodeKey, Option<u16>), (u64, u64)> =
+        let mut sums: std::collections::BTreeMap<(tutti_graph::NodeKey, Option<u16>), (u64, u64)> =
             std::collections::BTreeMap::new();
         for loss in self.graph.take_event_losses() {
             let sum = sums.entry((loss.node, loss.port)).or_default();

@@ -28,15 +28,14 @@
 use std::sync::{Arc, Mutex};
 
 use tutti_fixtures::midi::{note_off, note_on};
+use tutti_graph::NodeKey;
 use tutti_graph::{Offset, UmpAt};
 use tutti_midi_runtime::{MidiIn, MidiInputNode, TimedMidiEvent};
 use tutti_session::{MidiRouteRule, Session};
 use tutti_sf2::SoundFont;
 use tutti_soundfont::{Settings, SoundFontUnit};
 use tutti_transport::MotionEvent;
-use tutti_types::{
-    Beat, BeatDuration, ChannelLayout, InterleavedMut, NodeKey, SampleRate, Samples,
-};
+use tutti_types::{Beat, BeatDuration, ChannelLayout, InterleavedMut, SampleRate, Samples};
 use tutti_ump::{MidiChannel, MidiGroup};
 
 const RATE: SampleRate = SampleRate(48_000.0);

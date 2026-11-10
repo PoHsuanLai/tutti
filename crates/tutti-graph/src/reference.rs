@@ -80,10 +80,11 @@
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
+use crate::MAX_NODE_LATENCY;
+use crate::NodeKey;
+use crate::{Edge, InPort, OutPort, Source};
 use tutti_rt::with_no_denormals;
-use tutti_types::graph::{Edge, InPort, OutPort, Source};
-use tutti_types::latency::MAX_NODE_LATENCY;
-use tutti_types::{At, Frame, Latency, NodeKey, Samples};
+use tutti_types::{At, Frame, Latency, Samples};
 
 use crate::event::{Event, EventKind, EventWriter, SortedEvents};
 use crate::history::TransportHistory;
@@ -426,7 +427,7 @@ impl Reference {
         self.params.clear();
         if let Some(graph) = self.graph.clone() {
             for (&at, e) in &graph.topology().edges {
-                if let tutti_types::graph::Edge::Feedback(f) = e {
+                if let crate::Edge::Feedback(f) = e {
                     assert!(
                         f.delay >= prepare.max_block().samples(),
                         "feedback into {at:?} is shorter than the new maximum block"

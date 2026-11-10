@@ -31,7 +31,8 @@ pub const MIDI_OUT_CAPACITY: usize = 1024;
 /// module docs.
 ///
 /// ```
-/// use tutti_types::{NodeKey, SampleRate, Samples};
+/// use tutti_types::{SampleRate, Samples};
+/// use tutti_graph::NodeKey;
 /// use tutti_graph::{Editor, Prepare};
 /// use tutti_midi_runtime::MidiOutNode;
 ///

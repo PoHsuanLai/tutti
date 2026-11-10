@@ -24,12 +24,13 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use assert_no_alloc::AllocDisabler;
 use common::{Kind, TestNode, prepare};
+use tutti_graph::NodeKey;
 use tutti_graph::{
     CrossfadeCurve, Cx, Editor, EventEdge, EventIn, EventKind, EventOut, Fade, Io, Node, ParamRamp,
     ParamSegment, Prepare, SegmentShape, Shape, Status, Transport, Unforkable,
 };
-use tutti_types::graph::{Edge, FeedbackFrom, InPort, OutPort, Source};
-use tutti_types::{At, Beat, ChannelLayout, Frame, Latency, NodeKey, Samples, Tail};
+use tutti_graph::{Edge, FeedbackFrom, InPort, OutPort, Source};
+use tutti_types::{At, Beat, ChannelLayout, Frame, Latency, Samples, Tail};
 use tutti_ump::Ump;
 
 #[global_allocator]

@@ -16,7 +16,7 @@
 
 use tutti_export::{ChannelLayout, EncodeConfig, ExportConfig, RenderConfig, RenderGraph};
 use tutti_graph::GraphBuilder;
-use tutti_types::NodeKey;
+use tutti_graph::NodeKey;
 use tutti_types::Seconds;
 
 /// The rate [`export`] renders at, and so the rate every graph is built for.
@@ -157,7 +157,7 @@ fn stereo_net_widened_then_exports_four_channels() {
     g.spec_mut()
         .topology
         .outputs
-        .resize(4, tutti_types::graph::Source::Zero);
+        .resize(4, tutti_graph::Source::Zero);
     assert_eq!(g.outputs(), 4, "graph widened to quad");
     g.pipe_output(mix);
 

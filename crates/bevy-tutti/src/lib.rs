@@ -302,7 +302,8 @@ pub mod prelude {
     pub use tutti_session::HeardTapError;
     pub use tutti_transport::{Timeline, Transport, TransportCommand};
     pub use tutti_types::prelude::*;
-    pub use tutti_types::{At, BarNumber, Meter, TapAlign, TapId};
+    pub use tutti_types::{At, BarNumber, Meter};
+pub use tutti_graph::{TapAlign, TapId};
     pub use tutti_ump::{CCNumber, MidiChannel, MidiGroup};
 
     pub use tutti_nodes::{ClickState, MetronomeMode};

@@ -25,13 +25,9 @@ mod fold;
 mod interleaved;
 mod topology;
 
-// Public: each holds items the root does not re-export (`graph::Source`),
-// spelled through the module path.
-pub mod graph;
+// Public: `io` holds items the root does not re-export.
 pub mod io;
-pub mod latency;
 pub mod meter;
-pub mod tail;
 
 // The cell a `Param` shares (`Param::as_atomic`), named here so a crate that
 // addresses params without their unit types need not depend on `atomic_float`
@@ -77,19 +73,8 @@ pub use downmix::{
 // index stop being the same type.
 pub use interleaved::{Interleaved, InterleavedMut, StereoPlanes};
 
-// I/O edge + latency.
+// I/O edge.
 pub use io::{Pull, Sink, SinkFailed, Source, Stop};
-pub use latency::{Compensation, Delays, Feed, LatencyGraph, delays};
-
-// How long a graph rings after its input stops.
-pub use tail::{GraphTail, TailGraph, graph_tail};
-
-// The audio graph as a value. Only the four names a consumer spells outside a
-// builder come to the root: `Source`, `Edge`, `InPort`, `OutPort`, `NodeSpec`
-// and `Invalid` stay module-qualified, because each is a generic word that reads
-// wrong unprefixed — `graph::Source` is an edge's origin, while the root `Source`
-// is `io::Source`, the I/O edge's input.
-pub use graph::{MeterId, MeterSpec, NodeKey, TapAlign, TapId, TapSpec, Topology, Valid};
 
 // Musical meter.
 pub use meter::{

@@ -8,6 +8,7 @@
 use std::sync::Arc;
 
 use tutti_fixtures::midi;
+use tutti_graph::NodeKey;
 use tutti_graph::{
     Editor, EventEdge, EventIn, EventOut, Executor, ForkMode, ForkTarget, Prepare, Renderer,
     Transport,
@@ -16,7 +17,7 @@ use tutti_midi_runtime::{MidiClipNode, TimedMidiEvent};
 use tutti_midi_types::convert::midi1_velocity_to_midi2;
 use tutti_sf2::SoundFont;
 use tutti_soundfont::{Settings, SoundFontUnit};
-use tutti_types::{Beat, Bpm, NodeKey, SampleRate, Samples};
+use tutti_types::{Beat, Bpm, SampleRate, Samples};
 use tutti_ump::{MidiChannel, MidiGroup};
 
 const BLOCK: usize = 256;
@@ -57,7 +58,7 @@ fn graph(unit: SoundFontUnit, rate: f64, frame: u64) -> (Editor, Executor) {
     );
     ed.spec_mut().topology.outputs = (0..2)
         .map(|port| {
-            tutti_types::graph::Source::Node(tutti_types::graph::OutPort {
+            tutti_graph::Source::Node(tutti_graph::OutPort {
                 node: NodeKey(2),
                 port,
             })

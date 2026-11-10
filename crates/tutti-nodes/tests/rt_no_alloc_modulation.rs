@@ -213,13 +213,14 @@ impl tutti_nodes::automation::Curve for SineCurve {
 /// (the linear fallback), and a curve with no pieces.
 fn lane_graph(max: usize) -> (tutti_graph::Editor, tutti_graph::Executor) {
     use std::sync::Arc;
+    use tutti_graph::NodeKey;
     use tutti_graph::{EventOut, ParamIn, Prepare, Unforkable};
+    use tutti_graph::{OutPort, Source};
     use tutti_modulation::ControlProgram;
     use tutti_nodes::automation::{
         AutomationEnvelope, AutomationPoint, ControlLaneNode, Curve, CurveType,
     };
-    use tutti_types::graph::{OutPort, Source};
-    use tutti_types::{Hz, NodeKey, ParamKey, Samples, UnitParam};
+    use tutti_types::{Hz, ParamKey, Samples, UnitParam};
     let mut shaped = AutomationEnvelope::new(());
     shaped.add_point(AutomationPoint::with_curve(
         0.0,
@@ -559,9 +560,10 @@ fn lanes_200(
     tutti_graph::Executor,
     Vec<tutti_nodes::automation::LaneControls>,
 ) {
+    use tutti_graph::NodeKey;
     use tutti_graph::{EventOut, ParamIn, ParamRange, Prepare, Unforkable};
-    use tutti_types::graph::{OutPort, Source};
-    use tutti_types::{NodeKey, Samples};
+    use tutti_graph::{OutPort, Source};
+    use tutti_types::Samples;
     let (mut ed, exec) = tutti_graph::Editor::new(Prepare::new(SampleRate(48_000.0), Samples(max)));
     let at = |k: usize| ParamIn {
         node: NodeKey(1000 + (k / 8) as u64),
@@ -602,8 +604,8 @@ fn lane_moves(
     controls: &[tutti_nodes::automation::LaneControls],
     block: usize,
 ) {
+    use tutti_graph::NodeKey;
     use tutti_graph::{ParamIn, ParamRange};
-    use tutti_types::NodeKey;
     if block % 10 == 9 {
         for (k, c) in controls.iter().enumerate() {
             c.publish(lane_program(k, block as u32));
@@ -835,16 +837,15 @@ const CHAINS: usize = 12;
 
 fn signal_graph(max: usize) -> (tutti_graph::Editor, tutti_graph::Executor) {
     use std::sync::Arc;
+    use tutti_graph::NodeKey;
+    use tutti_graph::{Edge, InPort, OutPort, Source};
     use tutti_graph::{EventEdge, EventIn, EventOut, ForkByClone, ParamIn, ParamRange, Prepare};
     use tutti_modulation::{
         Adsr, Amount, ControlProgram, CurveType, InputLayer, LayerId, Polarity, SourceId,
     };
     use tutti_nodes::automation::ControlLaneNode;
     use tutti_nodes::{EnvelopeFollowerNode, NoteEnvelopeNode};
-    use tutti_types::graph::{Edge, InPort, OutPort, Source};
-    use tutti_types::{
-        Amplitude, AtomicF32, Depth, Hz, NodeKey, ParamKey, Samples, Seconds, UnitParam,
-    };
+    use tutti_types::{Amplitude, AtomicF32, Depth, Hz, ParamKey, Samples, Seconds, UnitParam};
     let (mut ed, exec) = tutti_graph::Editor::new(Prepare::new(SampleRate(48_000.0), Samples(max)));
     let probe = |k: usize| NodeKey(5000 + k as u64);
     let cutoff = |k: usize| ParamIn {
@@ -1120,6 +1121,8 @@ fn signal_sources_are_allocation_free_serial_and_on_a_pool() {
 /// republish) → aborts.
 #[test]
 fn an_apply_that_republishes_is_allocation_free_on_the_audio_thread() {
+    use tutti_graph::NodeKey;
+    use tutti_graph::{Edge, InPort, OutPort, Source};
     use tutti_graph::{Editor, ForkByClone, Prepare, Transport};
     use tutti_modulation::{
         Clock, CurveType, Declarations, Polarity, RouteDecl, RouteKey, RouteTarget,
@@ -1127,9 +1130,8 @@ fn an_apply_that_republishes_is_allocation_free_on_the_audio_thread() {
     };
     use tutti_nodes::testing::Osc;
     use tutti_nodes::{Feed, ModHost, Modulation, SvfFilterNode, SvfType, Target};
-    use tutti_types::graph::{Edge, InPort, OutPort, Source};
     use tutti_types::{
-        Beat, Bpm, Depth, Hz, NodeKey, ParamAddr, PhaseIncrement, Q, Samples, Seconds, UnitParam,
+        Beat, Bpm, Depth, Hz, ParamAddr, PhaseIncrement, Q, Samples, Seconds, UnitParam,
     };
 
     struct Host {

@@ -47,14 +47,15 @@ use std::hint::black_box;
 
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use tutti_engine::Engine;
+use tutti_graph::NodeKey;
+use tutti_graph::{Edge, InPort, OutPort, Source};
 use tutti_graph::{Editor, Prepare, Unforkable};
 use tutti_nodes::testing::Osc;
 use tutti_nodes::{BusStripNode, EqBandNode, SvfFilterNode, SvfType};
 use tutti_transport::MotionEvent;
 use tutti_transport::Transport;
-use tutti_types::graph::{Edge, InPort, OutPort, Source};
 use tutti_types::{Bpm, Samples};
-use tutti_types::{ChannelLayout, InterleavedMut, NodeKey, SampleRate};
+use tutti_types::{ChannelLayout, InterleavedMut, SampleRate};
 use tutti_types::{Db, Hz, Q};
 
 const SR: f64 = 48_000.0;
@@ -319,8 +320,8 @@ impl tutti_graph::Node for Lowpass {
 /// The `nodes` shape on the graph: `ours` runs this crate's own nodes,
 /// otherwise the reference pair.
 fn depth_graph_engine(depth: usize, ours: bool) -> Engine {
-    use tutti_types::NodeKey;
-    use tutti_types::graph::{Edge, InPort, OutPort, Source};
+    use tutti_graph::NodeKey;
+    use tutti_graph::{Edge, InPort, OutPort, Source};
     let (mut ed, exec) = tutti_graph::Editor::new(tutti_graph::Prepare::new(
         SampleRate(SR),
         tutti_types::Samples(512),

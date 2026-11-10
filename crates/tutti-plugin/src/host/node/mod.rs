@@ -12,7 +12,7 @@
 //! ```no_run
 //! use tutti_graph::Editor;
 //! use tutti_plugin::handles::{PluginClient, PluginControls};
-//! use tutti_types::NodeKey;
+//! use tutti_graph::NodeKey;
 //! fn insert(client: PluginClient, editor: &mut Editor) -> PluginControls {
 //!     editor.insert(NodeKey(1), "plugin", client.bind())
 //! }
@@ -23,7 +23,7 @@
 //! ```compile_fail,E0277
 //! use tutti_graph::Editor;
 //! use tutti_plugin::handles::PluginClient;
-//! use tutti_types::NodeKey;
+//! use tutti_graph::NodeKey;
 //! fn insert(client: PluginClient, editor: &mut Editor) {
 //!     // `PluginClient` is `PluginClient<Unbound>`: not a node.
 //!     editor.insert(NodeKey(1), "plugin", client);
@@ -231,7 +231,7 @@ impl std::fmt::Debug for Bound {
 /// ```no_run
 /// use tutti_graph::Editor;
 /// use tutti_plugin::handles::{PluginClient, PluginControls};
-/// use tutti_types::NodeKey;
+/// use tutti_graph::NodeKey;
 /// fn insert(client: PluginClient, editor: &mut Editor) -> PluginControls {
 ///     editor.insert(NodeKey(1), "plugin", client.bind())
 /// }

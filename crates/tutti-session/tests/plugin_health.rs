@@ -15,12 +15,13 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use tutti_graph::NodeKey;
 use tutti_nodes::testing::Const;
 use tutti_plugin::Liveness;
 use tutti_plugin::handles::{Normalized, OptionalCapabilities, ParamId, PluginHandle};
 use tutti_plugin::server::ParameterInfo;
 use tutti_session::{Phase, PhaseCx, PluginLiveness, Session, SessionEvent};
-use tutti_types::{NodeKey, SampleRate};
+use tutti_types::SampleRate;
 
 /// A backend whose liveness is whatever the test says it is.
 struct FakeBackend {

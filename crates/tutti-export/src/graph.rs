@@ -7,11 +7,12 @@
 use std::sync::Arc;
 use tutti_types::SampleRate;
 
+use tutti_graph::GraphTail;
 use tutti_graph::{
     CommitError, Editor, Executor, ForkError, ForkMode, ForkRemains, ForkTarget, PendingFork, Pool,
     Prepare,
 };
-use tutti_types::{ChannelTopology, GraphTail, Samples};
+use tutti_types::{ChannelTopology, Samples};
 
 use crate::{ConfigError, Error, Result};
 
@@ -369,7 +370,7 @@ impl RenderGraph {
 
     /// The tail the graph reports — how long it keeps ringing after its input
     /// stops — with its caveats: the fold over the graph's topology
-    /// (`tutti_types::graph_tail`), whose per-node tails the editor probed
+    /// (`tutti_graph::graph_tail`), whose per-node tails the editor probed
     /// from each prepared unit.
     ///
     /// For a caller that wants [`RenderConfig::tail`](crate::RenderConfig::tail)
@@ -404,6 +405,6 @@ impl RenderGraph {
     /// # let _ = config;
     /// ```
     pub fn reported_tail(&self) -> GraphTail {
-        tutti_types::graph_tail(&self.editor.spec().topology)
+        tutti_graph::graph_tail(&self.editor.spec().topology)
     }
 }

@@ -22,13 +22,14 @@ mod support;
 use std::time::{Duration, Instant};
 
 use support::{clap_probe, plugin_server};
+use tutti_graph::NodeKey;
 use tutti_modulation::Lfo;
 use tutti_plugin::catalog::PluginId;
 use tutti_plugin::handles::{Normalized, ParamId, PluginClient};
 use tutti_session::{
     Crossfade, PHASES, ParamRef, PhaseCx, PluginLoadRequest, Session, SessionEvent,
 };
-use tutti_types::{Depth, Hz, NodeKey, SampleRate, Seconds};
+use tutti_types::{Depth, Hz, SampleRate, Seconds};
 
 const RATE: SampleRate = SampleRate(48_000.0);
 /// The plugin's pipeline chunk in a detached session: its `MaxBlock`

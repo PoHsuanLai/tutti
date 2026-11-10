@@ -96,7 +96,7 @@ jobs:
       # `tutti_graph::plan::Plan` in code. Prose is the gap: a ```text block
       # or a *.md naming a module path compiles fine and goes stale the moment
       # a module is renamed. The per-module gate covers it.
-      - run: scripts/check-canonical-paths.sh tutti_graph arena builder command compile controls cost editor event exec fade fork held history instrument io kernels loss meter node par param plan play pool preroll reference slots spec tap time
+      - run: scripts/check-canonical-paths.sh tutti_graph arena builder command compile controls cost editor event exec fade fork graph held history instrument io kernels latency loss meter node par param plan play pool preroll reference slots spec tail tap time
       # The same for `tutti-session`, which keeps every module private too.
       - run: scripts/check-canonical-paths.sh tutti_session builder device error export graph instrument midi modulation node plugin session watch
       # And `tutti-ump`, which keeps its modules private.

@@ -15,17 +15,15 @@
 //!   Channel Voice 2, widths via [`scaling`]), plus the velocity-0
 //!   NoteOn ⇒ NoteOff fold. Exposed as the single [`normalize`] seam every
 //!   consumer calls.
-//! - [`rpn`] — the part of Default Translation that spans *several*
-//!   MIDI-1 messages: RPN/NRPN Data-Entry runs collapsed into single MIDI-2
-//!   Registered / Assignable Controller messages ([`Midi1ToMidi2Translator`]).
+//!
+//! The part of Default Translation that spans several MIDI 1.0 messages (RPN
+//! and NRPN runs, Bank Select) is `tutti_midi_protocol::Translator`'s.
 
 pub mod promote;
-pub mod rpn;
 pub mod scaling;
 pub mod wire;
 
 pub use promote::normalize;
-pub use rpn::Midi1ToMidi2Translator;
 pub use wire::{
     Midi1Messages, MidiParseError, from_midi1_bytes, parse_midi1_bytes, to_midi1_bytes,
     to_midi1_messages,

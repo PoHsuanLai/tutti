@@ -60,8 +60,8 @@ pub use mpe::{
 };
 pub use note_id::{NoteId, PerNoteMap};
 pub use translation::{
-    Midi1Messages, Midi1ToMidi2Translator, MidiParseError, from_midi1_bytes, normalize,
-    parse_midi1_bytes, to_midi1_bytes, to_midi1_messages,
+    Midi1Messages, MidiParseError, from_midi1_bytes, normalize, parse_midi1_bytes, to_midi1_bytes,
+    to_midi1_messages,
 };
 pub use ump::{
     ALL_FUNCTION_BLOCKS, Alteration, BarAccents, ChordBass, ChordName, ChordSharpsFlats, ChordType,

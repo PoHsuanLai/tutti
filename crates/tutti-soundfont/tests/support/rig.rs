@@ -11,7 +11,7 @@ use tutti_sf2::SoundFont;
 use tutti_soundfont::{Settings, SoundFontUnit};
 use tutti_types::SampleRate;
 use tutti_ump::{
-    Address, CCNumber, Message, MidiChannel, MidiGroup, NoteNumber, U7, U14, Ump, Voice1,
+    Address, CCNumber, Message, MidiChannel, MidiGroup, NoteNumber, U7, U14, Ump, Voice1, Voice2,
 };
 
 pub const RATE: SampleRate = SampleRate::SR_44K1;
@@ -36,6 +36,17 @@ pub fn timgm6mb() -> Arc<SoundFont> {
 /// A MIDI 1.0 channel voice message on group 0.
 pub fn m1(channel: MidiChannel, voice: Voice1) -> Ump {
     Ump::from(Message::Midi1(
+        Address {
+            group: MidiGroup::FIRST,
+            channel,
+        },
+        voice,
+    ))
+}
+
+/// A MIDI 2.0 channel voice message on group 0.
+pub fn m2(channel: MidiChannel, voice: Voice2) -> Ump {
+    Ump::from(Message::Midi2(
         Address {
             group: MidiGroup::FIRST,
             channel,
@@ -93,6 +104,12 @@ impl Rig {
             },
         );
         self.hand.queue_midi(&[e]);
+    }
+
+    /// A MIDI 2.0 message, as the input edge's translator sends an RPN,
+    /// an NRPN or a Program Change with its bank.
+    pub fn voice2(&mut self, ch: u8, voice: Voice2) {
+        self.hand.queue_midi(&[m2(channel(ch), voice)]);
     }
 
     pub fn program(&mut self, ch: u8, program: u8) {

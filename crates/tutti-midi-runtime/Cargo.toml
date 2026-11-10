@@ -30,6 +30,8 @@ crossbeam-queue = "0.3"
 tutti-types = { path = "../tutti-types", default-features = false }
 tutti-rt = { path = "../tutti-rt" }
 tutti-ump = { path = "../tutti-ump", default-features = false }
+# The input edge's MIDI 1.0 to MIDI 2.0 `Translator` (design 017 §4).
+tutti-midi-protocol = { path = "../tutti-midi-protocol" }
 
 [dev-dependencies]
 # The graph's by-hand node driver, `tutti_graph::contract::Direct`.

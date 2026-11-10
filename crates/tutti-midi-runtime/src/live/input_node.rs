@@ -1,9 +1,9 @@
 //! [`MidiInputNode`]: a MIDI input edge (the hardware ports, typically) as a
 //! graph node, its events out of one event port per channel.
 //!
-//! Each block it polls its [`MidiIn`], assembles (N)RPN runs
-//! ([`Midi1ToMidi2Translator`]) and rewrites classic MPE into native per-note
-//! messages ([`MpeIngest`]), then sends every event out of the port for its
+//! Each block it polls its [`MidiIn`], translates MIDI 1.0 to MIDI 2.0
+//! ([`Translator`]: RPN and NRPN runs, Bank Select, widening) and rewrites
+//! classic MPE into native per-note messages ([`MpeIngest`]), then sends every event out of the port for its
 //! channel: port `c` carries channel `c`'s voice messages, and
 //! [`CHANNELLESS_PORT`] everything with no channel (system, SysEx, Flex,
 //! Stream, utility). **Routing is wiring**: a synth listening to channel 3
@@ -23,14 +23,14 @@ use tutti_graph::{
     Cx, Event, EventDensity, ForkCause, ForkMode, ForkSource, Forked, IntoNode, Io, Node,
     NodeParts, Offset, Prepare, Shape, Status,
 };
-use tutti_midi_types::Midi1ToMidi2Translator;
+use tutti_midi_protocol::Translator;
 use tutti_midi_types::mpe::MpeMode;
 use tutti_rt::{ArcLend, Reader};
 use tutti_types::ChannelLayout;
 use tutti_ump::{MidiChannel, MidiGroup, Ump};
 
 use super::order::{BLANK, in_offset_order, offset_of};
-use crate::outbound::mpe_ingest::{MpeIngest, Translated};
+use crate::outbound::mpe_ingest::MpeIngest;
 use crate::traits::MidiIn;
 
 /// The port that carries events with no channel: after the sixteen channel
@@ -100,7 +100,7 @@ pub struct MidiInputNode {
     /// What the block sends: the translated events, which may outnumber the
     /// polled ones (a member channel's bend range fans out over its zone).
     out: Box<[UmpAt]>,
-    translator: Midi1ToMidi2Translator,
+    translator: Translator,
     mpe: MpeIngest,
     /// The MPE mode a host asked for, read once per block. The reader owns
     /// its cell (`Reader::cell`), which the controls publish to.
@@ -116,7 +116,6 @@ pub struct MidiInputNode {
 impl std::fmt::Debug for MidiInputNode {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("MidiInputNode")
-            .field("translator", &self.translator)
             .field("mpe", &self.mpe)
             .field("mpe_request", &self.mpe_request)
             .field("dropped", &self.dropped)
@@ -138,7 +137,7 @@ impl MidiInputNode {
             scratch: vec![BLANK; MIDI_INPUT_EVENT_CAPACITY].into_boxed_slice(),
             out: vec![BLANK; tutti_graph::note_off_room(MIDI_INPUT_EVENT_CAPACITY)]
                 .into_boxed_slice(),
-            translator: Midi1ToMidi2Translator::new(),
+            translator: Translator::new(),
             mpe: MpeIngest::new(MpeMode::Disabled),
             dropped: Arc::new(AtomicU64::new(0)),
             capacity: MIDI_INPUT_EVENT_CAPACITY,
@@ -152,22 +151,24 @@ impl MidiInputNode {
         self
     }
 
-    /// Adopt a requested MPE mode that differs from the one in force, and
-    /// return the new zones' default bend ranges for the block to send first
-    /// ([`MpeIngest::zone_defaults`]: what an MPE Configuration Message
-    /// resets a receiver to, as this node sends an MCM's).
+    /// Adopt a requested MPE mode that differs from the one in force; `true`
+    /// when it did, and the block then sends the new zones' default bend
+    /// ranges first ([`MpeIngest::zone_defaults`]: what an MPE Configuration
+    /// Message resets a receiver to, as this node sends an MCM's).
     ///
     /// **The comparison is load-bearing**: the request latches (the audio
     /// thread cannot clear it without publishing), and `set_mode` rebuilds
     /// the ingest, so re-adopting it every block would drop every sounding
     /// note's voice mapping, and re-send the ranges, every block.
-    fn adopt_mpe_request(&mut self) -> Option<Translated> {
-        let mode = (*self.mpe_request.lend())?;
+    fn adopt_mpe_request(&mut self) -> bool {
+        let Some(mode) = *self.mpe_request.lend() else {
+            return false;
+        };
         if *self.mpe.mode() == mode {
-            return None;
+            return false;
         }
         self.mpe.set_mode(mode);
-        Some(self.mpe.zone_defaults(MidiGroup::FIRST, Offset::ZERO))
+        true
     }
 }
 
@@ -250,43 +251,32 @@ impl Node for MidiInputNode {
             return Status::Modified;
         };
         let block_len = cx.env.block_len;
-        let mut kept = 0;
-        let mut dropped = 0;
         // An event's translation goes in whole or not at all: a fan-out cut
         // partway would leave some of a zone's channels at another range.
         // A note-off may use the room past the capacity (the port's own
         // `note_off_room`), so a block full of other messages (a bend range
         // fanned out over a zone) cannot keep it out.
-        let capacity = self.capacity;
-        let mut stage = |events: Translated, note_off: bool| {
-            let n = events.len();
-            let limit = if note_off {
-                self.out.len()
-            } else {
-                capacity.min(self.out.len())
-            };
-            match (kept + n <= limit).then(|| &mut self.out[kept..kept + n]) {
-                Some(slots) => {
-                    for (slot, ev) in slots.iter_mut().zip(events) {
-                        *slot = ev;
-                    }
-                    kept += n;
-                }
-                None => dropped += n as u64,
-            }
+        let mut staging = Staging {
+            out: &mut self.out,
+            capacity: self.capacity,
+            kept: 0,
+            dropped: 0,
         };
         // A host-set mode's ranges, at frame 0, ahead of the block's events
         // (the sort below is stable).
-        if let Some(reset) = reset {
-            stage(reset, false);
+        if reset {
+            staging.whole(false, |send| {
+                self.mpe.zone_defaults(MidiGroup::FIRST, Offset::ZERO, send);
+            });
         }
         let n = input.poll_block(block_len.get(), &mut self.scratch);
         for &(at, raw) in &self.scratch[..n.min(self.scratch.len())] {
-            let Some(ev) = self.translator.translate(&raw) else {
-                continue;
-            };
-            stage(self.mpe.translate(&(at, ev)), ev.is_note_off());
+            let (translator, mpe) = (&mut self.translator, &mut self.mpe);
+            translator.feed(raw, |ev| {
+                staging.whole(ev.is_note_off(), |send| mpe.translate(&(at, ev), send));
+            });
         }
+        let Staging { kept, dropped, .. } = staging;
         if dropped > 0 {
             self.dropped.fetch_add(dropped, Ordering::Relaxed);
             // The executor's too, so an export watching its count sees it.
@@ -304,6 +294,43 @@ impl Node for MidiInputNode {
     }
 
     fn reset(&mut self) {}
+}
+
+/// The block's translated events, as they are made.
+struct Staging<'a> {
+    out: &'a mut [UmpAt],
+    capacity: usize,
+    kept: usize,
+    dropped: u64,
+}
+
+impl Staging<'_> {
+    /// Keeps everything `make` sends, or, if it does not all fit, none of it
+    /// and counts it dropped. A `note_off`'s may use the room past the
+    /// capacity.
+    fn whole(&mut self, note_off: bool, make: impl FnOnce(&mut dyn FnMut(UmpAt))) {
+        let limit = if note_off {
+            self.out.len()
+        } else {
+            self.capacity.min(self.out.len())
+        };
+        let start = self.kept;
+        let mut sent = 0u64;
+        let mut fits = true;
+        make(&mut |ev| {
+            sent += 1;
+            if fits && self.kept < limit {
+                self.out[self.kept] = ev;
+                self.kept += 1;
+            } else {
+                fits = false;
+            }
+        });
+        if !fits {
+            self.kept = start;
+            self.dropped += sent;
+        }
+    }
 }
 
 /// A [`MidiInputNode`]'s fork: the same ports, no wire.

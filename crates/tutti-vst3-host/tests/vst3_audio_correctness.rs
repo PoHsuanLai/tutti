@@ -1286,9 +1286,8 @@ fn note_expression_reaches_the_plugin_with_its_value() {
 /// 64, fails; the sensitivity not stored → 0.55 at sample 192, fails.
 #[test]
 fn a_per_note_pitch_bend_reaches_the_plugin_as_tuning() {
+    use tutti_midi_protocol::PitchBendSensitivity;
     use tutti_midi_protocol::signed_f32_to_bend_u32;
-    use tutti_midi_types::PitchBendSensitivity;
-    use tutti_midi_types::ump::{RPN_BANK_MPE, RPN_INDEX_PER_NOTE_PITCH_BEND_SENSITIVITY};
 
     if !harness_ready() {
         return;
@@ -1322,11 +1321,10 @@ fn a_per_note_pitch_bend_reaches_the_plugin_as_tuning() {
         quarter_bend(64),
         (
             at(100),
-            midi::registered_controller(
+            midi::registered_rpn(
                 MidiGroup::FIRST,
                 MidiChannel::FIRST,
-                RPN_BANK_MPE,
-                RPN_INDEX_PER_NOTE_PITCH_BEND_SENSITIVITY,
+                tutti_ump::Rpn::PER_NOTE_PITCH_BEND_SENSITIVITY,
                 PitchBendSensitivity::of(24).to_rpn_bits(),
             ),
         ),

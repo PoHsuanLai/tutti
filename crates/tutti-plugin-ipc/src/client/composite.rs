@@ -4,7 +4,7 @@ use super::audio::{AudioBridge, BridgeListener, BridgeThread, HarmonyInputs, Sub
 use crate::error::{Delivered, EditorError, Result, StateError};
 use crate::protocol::{
     MidiEventVec, Normalized, NoteExpressionChanges, ParamId, ParameterChanges, ParameterInfo,
-    Preset, PresetId, TransportInfo,
+    Preset, PresetId, TransportChanges, TransportInfo,
 };
 use crate::transport::shm::AudioSlab;
 use std::path::{Path, PathBuf};
@@ -236,6 +236,7 @@ impl PluginBridge {
         note_expression: NoteExpressionChanges,
         harmony: HarmonyInputs,
         transport: TransportInfo,
+        transport_changes: TransportChanges,
     ) -> Submitted {
         self.audio.submit(
             seq,
@@ -245,6 +246,7 @@ impl PluginBridge {
             note_expression,
             harmony,
             transport,
+            transport_changes,
         )
     }
 

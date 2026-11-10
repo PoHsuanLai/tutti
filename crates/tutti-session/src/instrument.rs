@@ -20,17 +20,18 @@
 //! whatever the rate has become since, including between the read and the send.
 //!
 //! Everything a handle does is a port or a cell: a message is pushed into the
-//! queue node's ring (lock-free, allocation-free, never blocks) stamped with
-//! an [`At`], and a gain is a store into the strip's volume cell. Neither takes
+//! queue node's ring (never blocking the audio thread; the handle's clones
+//! share one writer behind a lock only control threads take, which may
+//! allocate on its first use)
+//! stamped with an [`At`], and a gain is a store into the strip's volume cell. Neither takes
 //! `&mut` of anything in the graph.
 //!
 
 use tutti_graph::NodeKey;
 use tutti_graph::{Instrument, ParamSet};
-pub use tutti_midi_runtime::Moment;
 use tutti_midi_runtime::{TimedQueueNode, TimedSendError, TimedSender};
 use tutti_nodes::BusStripNode;
-use tutti_types::{Amplitude, At, UnitParam};
+use tutti_types::{Amplitude, At, Moment, UnitParam};
 use tutti_ump::{Address, Attribute, Message, MidiChannel, MidiGroup, NoteNumber, Ump, Voice2};
 
 use crate::{Feeder, GraphSource, Session, SessionNode};

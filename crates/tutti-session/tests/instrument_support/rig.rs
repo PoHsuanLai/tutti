@@ -1,7 +1,8 @@
 //! A session with one instrument in it, played and rendered a block at a time.
 
 use tutti_graph::NodeKey;
-use tutti_session::{InstrumentHandle, Moment, Session};
+use tutti_session::{InstrumentHandle, Session};
+use tutti_types::Moment;
 use tutti_types::{ChannelLayout, InterleavedMut, SampleRate, Samples};
 use tutti_ump::Ump;
 

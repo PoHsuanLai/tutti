@@ -6,7 +6,7 @@ use crate::error::StateError;
 use crate::protocol::{
     ChordChanges, MidiEventVec, Normalized, NoteExpressionChanges, NoteExpressionIntChanges,
     NoteExpressionTextChanges, ParamId, ParameterChanges, ParameterInfo, PluginTail, Preset,
-    PresetId, Samples, ScaleChanges, TransportInfo,
+    PresetId, Samples, ScaleChanges, TransportChanges, TransportInfo,
 };
 use tutti_types::SampleRate;
 
@@ -28,6 +28,8 @@ pub(super) struct ProcessPayload {
     pub expr_texts: NoteExpressionTextChanges,
     pub expr_ints: NoteExpressionIntChanges,
     pub transport: TransportInfo,
+    /// The transport changes inside the block (never at frame 0).
+    pub transport_changes: TransportChanges,
 }
 
 impl ProcessPayload {
@@ -43,6 +45,7 @@ impl ProcessPayload {
             expr_texts: NoteExpressionTextChanges::new(),
             expr_ints: NoteExpressionIntChanges::new(),
             transport: TransportInfo::default(),
+            transport_changes: TransportChanges::new(),
         }
     }
 }

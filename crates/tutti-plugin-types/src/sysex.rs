@@ -10,8 +10,7 @@
 //! it was handed out in. The other direction, a plugin's message to packets,
 //! is [`push_sysex`].
 
-use tutti_midi_types::ump::SYSEX7_MAX_PAYLOAD;
-use tutti_ump::{MidiGroup, Sysex7Packets, SysexAssembler};
+use tutti_ump::{MidiGroup, SYSEX7_MAX_PAYLOAD, Sysex7Packets, SysexAssembler};
 
 use crate::{MIDI_STACK_CAPACITY, MidiEventVec, RtMidiEvents, WireMidi};
 

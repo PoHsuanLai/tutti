@@ -565,6 +565,7 @@ impl Batcher {
             p.note_expression,
             p.harmony,
             p.transport,
+            p.changes,
         );
         host.handed_off(submitted.params);
         if submitted.block {

@@ -8,7 +8,7 @@
 use std::sync::{Arc, Mutex};
 use tutti_graph::UmpAt;
 
-use tutti_fixtures::midi::{note_off, note_on, pitch_bend, registered_controller, timing_clock};
+use tutti_fixtures::midi::{note_off, note_on, pitch_bend, registered_rpn, timing_clock};
 use tutti_graph::NodeKey;
 use tutti_graph::{
     Cx, Editor, EventEdge, EventIn, EventKind, EventOut, Executor, ForkMode, ForkTarget, Io, Node,
@@ -265,15 +265,15 @@ fn a_requested_mpe_mode_is_adopted_once() {
 /// at the reset's ±48 → fails.
 #[test]
 fn a_host_set_modes_reset_goes_ahead_of_the_blocks_events() {
-    use tutti_midi_types::ump::{RPN_BANK_MPE, RPN_INDEX_CHANNEL_PITCH_BEND_SENSITIVITY};
-    use tutti_midi_types::{PerNoteBendRanges, PitchBendSensitivity};
+    use tutti_midi_protocol::PitchBendSensitivity;
+    use tutti_midi_types::PerNoteBendRanges;
+    use tutti_ump::Rpn;
     let range = at(
         0,
-        registered_controller(
+        registered_rpn(
             MidiGroup::FIRST,
             MidiChannel::of(2),
-            RPN_BANK_MPE,
-            RPN_INDEX_CHANNEL_PITCH_BEND_SENSITIVITY,
+            Rpn::PITCH_BEND_SENSITIVITY,
             PitchBendSensitivity::of(12).to_rpn_bits(),
         ),
     );

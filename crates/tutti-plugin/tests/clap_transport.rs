@@ -422,3 +422,104 @@ fn the_plugin_is_told_the_maps_tempo_and_slope() {
     assert_eq!(stopped[5], 0.0);
     drop(probe.handle);
 }
+
+/// The `CLAP_EVENT_TRANSPORT` events the probe echoed past the block's own
+/// transport: `(time, beats, tempo, flags, tempo_inc)` for each, in the order
+/// the host presented them (`RenderMode::Transport`).
+fn event_echo(out: &[f32]) -> Vec<[f64; 5]> {
+    let n = out[ECHO] as usize;
+    (0..n.min(8))
+        .map(|k| {
+            let at = ECHO + 1 + 5 * k;
+            std::array::from_fn(|i| f64::from(out[at + i]))
+        })
+        .collect()
+}
+
+/// 120 to 180 BPM over beats 0 to 4 (tempo linear in time, 1.6 s), then 180
+/// to 60 over four more (2 s), then a step.
+fn two_ramps() -> tutti_transport::TempoReader {
+    use tutti_tempo::{Shape, TempoMap, TempoPoint};
+    let point = |beat: f64, bpm: f64, shape| TempoPoint {
+        beat: Beat(beat),
+        tempo: Bpm::of(bpm),
+        shape,
+    };
+    let map = TempoMap::new([
+        point(0.0, 120.0, Shape::RampTime),
+        point(4.0, 180.0, Shape::RampTime),
+        point(8.0, 60.0, Shape::Step),
+    ])
+    .expect("a map");
+    tutti_transport::TempoReader::fixed(std::sync::Arc::new(map))
+}
+
+/// **The plugin is told a ramp's end inside a chunk by a transport event**,
+/// through a real `plugin-server`: the chunk's own transport has the first
+/// ramp's slope (60 / 76 800 BPM a frame), and one `CLAP_EVENT_TRANSPORT` at
+/// the point's frame carries beat 4, tempo 180 and the second ramp's slope
+/// (-120 / 96 000). Beat 3.999 is `s` into the first ramp with
+/// `0.3125 s^2 + 2 s = 3.999`, a third of a millisecond short of its end:
+/// frame 17 (16.0x rounds up).
+///
+/// Mutation: stop the CLAP host adding the list's events (`add_transport`
+/// loop in `process_impl`) -> no event is echoed -> fails. Mutation: drop
+/// `.transport_changes(..)` in the server's `AudioPipeline::process` -> the
+/// same -> fails. Mutation: have the node's `payload` not take the walk's
+/// changes (`changes: Default::default()`) -> the same -> fails.
+#[test]
+fn a_ramps_end_inside_a_chunk_is_a_transport_event_at_its_frame() {
+    let _lock = machine_lock();
+    let _env = ProbeEnv::new().render_mode(render::TRANSPORT);
+    let probe = load_probe(SAMPLE_RATE);
+    let fork = probe
+        .client
+        .fork_instance(ForkMode::Offline, two_ramps())
+        .expect("the probe forks");
+    let prepare = tutti_graph::Prepare::new(SampleRate(SAMPLE_RATE), Samples(CHUNK))
+        .with_quantum(Samples(CHUNK));
+    let mut rig = Rig::prepared(fork, prepare);
+
+    let s0 = (-2.0 + (4.0f64 + 1.25 * 3.999).sqrt()) / 0.625;
+    let frame = ((1.6 - s0) * SAMPLE_RATE - 1e-6).ceil() as usize;
+    assert_eq!(frame, 17);
+
+    let ins = rig.inputs();
+    let silence = vec![0.0f32; CHUNK];
+    let inputs: Vec<&[f32]> = (0..ins).map(|_| &silence[..]).collect();
+    let mut out = vec![vec![0.0f32; CHUNK]; rig.outputs()];
+    let mut heard = Vec::new();
+    for _ in 0..2 {
+        let transport = Transport::new(true, Bpm::of(150.0), Beat(3.999), None);
+        let mut changes = TransportChanges::NONE;
+        changes
+            .push(
+                offset(frame, CHUNK),
+                Transport::new(true, Bpm::of(180.0), Beat(4.0), None),
+            )
+            .expect("a change");
+        let r = rig.renderer();
+        let mut outs: Vec<&mut [f32]> = out.iter_mut().map(|c| &mut c[..]).collect();
+        r.executor_mut()
+            .process_with_changes(CHUNK, &transport, &changes, &inputs, &mut outs);
+        r.editor_mut().collect();
+        heard.push(out[0].clone());
+    }
+    // Block 1 hears block 0's chunk.
+    let first = echo_at(&heard[1], 0).expect("an offline fork collects every chunk");
+    assert!(
+        (first[5] - 60.0 / 76_800.0).abs() < 1e-9,
+        "slope {}",
+        first[5]
+    );
+    let events = event_echo(&heard[1]);
+    assert_eq!(events.len(), 1, "{events:?}");
+    let [time, beats, tempo, flags, inc] = events[0];
+    assert_eq!(time as usize, frame);
+    assert!((beats - 4.0).abs() < 1e-4);
+    assert!((tempo - 180.0).abs() < 1e-3);
+    assert_eq!(flags, 1.0);
+    assert!((inc - (-120.0 / 96_000.0)).abs() < 1e-9, "slope {inc}");
+    assert_eq!(rig.controls.dropped_transport_changes(), 0);
+    drop(probe.handle);
+}

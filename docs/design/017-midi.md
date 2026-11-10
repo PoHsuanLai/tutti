@@ -1061,6 +1061,54 @@ has its model. No new structure, so no new loom model. The waiting list is a
 `Vec` allocated at open and sorted by insertion (the `in_offset_order` code
 today); it allocates nothing in `process`.
 
+### Stage E2 as built
+
+Built as specified, except where the code decided otherwise:
+
+- **`clock()` is `Option<Moment>`.** The node has published nothing before its
+  first prepare, so there is no honest instant to return; `TimedSender::clock`
+  was `Option` for the same reason, and the signature follows it.
+- **The counts are four, and cumulative plain loads.** `lost()` (ring full),
+  `evicted()` (waiting list), `refused()` (port) and `late()`, each an
+  `AtomicU64` shared with the node and read with `Relaxed`; none is a
+  `take`-style read that clears. The design named `lost()` and `late()` and
+  said the other two in prose.
+- **A port refusal is counted by the port already.** `EventWriter::push`
+  counts every refusal in the executor's `dropped_event_count`, so the node
+  does not call `Io::count_lost` too (that would count it twice); it adds
+  only its own `refused()`. A port cannot refuse in a graph (its declared
+  capacity is the list's, and a note-off has room past it), so the figure is
+  reached only where the port is narrower than the node's capacity, as the
+  `contract::Direct` harness's is.
+- **Capacity 0 or above `u32::MAX` panics** (`# Panics`), where the design said
+  nothing: a port's capacity is a non-zero `u32`.
+- **`NextBlock` is not late.** It is stored as its own `When` and sorts at the
+  block's first frame; only an `At::Frame` already behind the block counts
+  late, at arrival or, for an event that waited through blocks the node did not
+  run, when the block finds it behind.
+- **The silence skip needs no tail.** The node has no audio input, so the
+  executor never parks it (doc 013, "The silence skip"); it declares none,
+  where the audio inlet declares `Tail::Unbounded`. A tail on a node whose fork
+  is silent would also make an export's tail unbounded.
+- **`TimedQueueNode` is a thin user, not deleted** (that is E4): it is a
+  newtype over `EventInletNode`, and `TimedSender` is the writer behind
+  `Arc<Mutex<_>>` (design question 3's lock, here inside `tutti-midi-runtime`
+  because the callers are not migrated). The one waiting list is the graph's.
+  Two behaviours differ for its callers: a send takes the lock (control
+  threads only, the audio thread never does), and a full ring now counts in
+  `lost()` as well as answering `Full`. `Moment` left `tutti_midi_runtime` and
+  `tutti_session` for `tutti_types`, with no re-export; the node-level tests of
+  the waiting list moved to `tutti-graph/tests/event_inlet.rs`.
+- **The panic predicate is `Ump::is_panic_controller`** (CC 120 and 123 of a
+  MIDI 1.0 or 2.0 Control Change), beside `is_note_off`.
+- **The parallel test is in the inlet's own file**, not in `tests/parallel.rs`'s
+  `build`: that graph has no handle to pre-fill a ring before each run. The
+  test compares the serial and pooled audio bit for bit and inlet 1's tap
+  against its script, with the ring pre-filled and every participant under
+  `assert_no_alloc`.
+- **`tutti_session` re-exports no inlet type.** Like `InletNode`, the node
+  and writer are named from `tutti_graph` (and the `tutti` prelude).
+
 ### The parallel executor
 
 - **Tap.** An op, `EVENTS` class, claims its writer and reads one slot through
@@ -1082,7 +1130,7 @@ today); it allocates nothing in `process`.
 |---|---|---|
 | `MidiOutNode`, `MidiOutControls`, `MIDI_OUT_CAPACITY` | **Deleted.** The session opens an `EventTapReader` on the clock node's event output, `ToOutput`, and `Phase::MidiOut` drains it | `tutti-session` owns the open and the policy. `drain_receiver_through`'s rebasing goes: a tap's frames are real, so `MidiOutRouter::route` takes `(Frame, Ump)`; `UmpOut`, `JrStream` and the stamper stay where they are. The drop report reads `take_lost`. `MidiNodes::hardware_out` and `out_controls` go. `tutti-midi-hardware` stays the OS backend and the pump |
 | `MidiQueueNode` | **Deleted.** `EventInletNode` with `At::NextBlock` | `MidiSender`'s key helpers (`note_on`, `note_off`, which build a `Voice2` into a `Ump`) become a thin MIDI wrapper over `EventInletWriter` in `tutti-midi-runtime`, since the graph builds no message. The session's live input (`Live`) holds that wrapper |
-| `TimedQueueNode`, `TimedSender`, `TimedSendError`, `Moment` | **Moved up:** the node and its waiting list are `EventInletNode`, the sender is `EventInletWriter`, `Moment` is in `tutti-types` | What remains in `tutti-midi-runtime` is nothing of it. `InstrumentHandle` (`instrument.rs`) holds the writer, behind the session's own lock if it must stay `Clone` (below) |
+| `TimedQueueNode`, `TimedSender`, `TimedSendError`, `Moment` | **Moved up** (E2 did `Moment` and the node's logic; `TimedQueueNode` stays a thin newtype over `EventInletNode` until E4 moves its callers): the node and its waiting list are `EventInletNode`, the sender is `EventInletWriter`, `Moment` is in `tutti-types` | What remains in `tutti-midi-runtime` is nothing of it. `InstrumentHandle` (`instrument.rs`) holds the writer, behind the session's own lock if it must stay `Clone` (below) |
 | `MidiMailbox`, `MidiReceiver`, the `MidiOut` trait | **Deleted when their last user moves**, if no non-graph user remains. The host's own outbound mailbox (read in `drain_receiver_through`) is one such: it stays until the host's outbound path is its own, and is named when it is | Stage E4 audits it |
 | `MidiInputNode` | **Splits.** The wire side (the `MidiIn` poll, the arrival-time offset) becomes an inlet fed from the OS callback; `MidiIngestNode`, the translator, MPE and per-channel split, stays a node in `tutti-midi-runtime` with one event input and 17 outputs | **Blocked on `ClockMap`** (§5, "Timing at the edge"): today the `Instant` to `Offset` conversion runs on the audio thread in the drain, and an inlet's producer must give a `Moment`. Until then `MidiInputNode` is unchanged. It also needs one inlet per open device, since an inlet has one producer; the merge across devices is the graph's fan-in. That leaves the translator's per-channel state per device, where today it is shared across the merged ports |
 
@@ -1202,7 +1250,7 @@ describes changes: each graph PR edits that document's primitive table.
 | PR | Holds | Touches `tutti-graph` |
 |---|---|---|
 | **E1** (done) | The event tap: `EventTapId`, `EventTapSpec`, `Topology.event_taps`, `EventTapWriter` and `EventTapReader`, `Editor::open_event_tap`, `MissingSource::EventPort`, the compiler's op and `DelayKey::EventTap`, `verify`, `cost`, the serial, pooled and reference interpreters, the commit carry, reap. The tests above. Then `tutti-session`: `Graph::open_event_tap` and the `Reclaim` reap | Yes |
-| **E2** | The event inlet: `EventInletNode`, `EventInletWriter`, `Refused`, `Moment` to `tutti-types`, the panic predicate in `tutti-ump`, the waiting list moved from `TimedQueueNode`. Then `tutti-session`: `Graph::open_event_inlet` and `add_event_inlet` | Yes, and `tutti-types` and `tutti-ump` |
+| **E2** (done) | The event inlet: `EventInletNode`, `EventInletWriter`, `Refused`, `Moment` to `tutti-types`, the panic predicate in `tutti-ump`, the waiting list moved from `TimedQueueNode`. Then `tutti-session`: `Graph::open_event_inlet` and `add_event_inlet` | Yes, and `tutti-types` and `tutti-ump` |
 | **E3** | The hardware out: the session reads a tap on the clock; `MidiOutNode`, `MidiOutControls`, `MIDI_OUT_CAPACITY` and `MidiNodes::hardware_out` deleted; `drain_receiver_through` and `MidiOutRouter` take frames | No. After E1 |
 | **E4** | The queues: `MidiQueueNode` and `TimedQueueNode` deleted, `MidiSender` slimmed to the key helpers over `EventInletWriter`, `InstrumentHandle` and the session's live inputs moved, `MidiMailbox` audited | No. After E2 |
 | **E5** | `MidiInputNode` split into the OS-side inlet and `MidiIngestNode` | No. After E2 and `ClockMap` (stage 4, timing) |
@@ -1214,8 +1262,8 @@ nothing new: nothing here adds `unsafe` or a lock-free structure.
 
 | Crate | Layer | Holds | Depends on |
 |---|---|---|---|
-| `tutti-ump` | Packet | `Ump`, `Message`, codec, `MidiGroup`, `MidiChannel`, `CCNumber`, field types, MIDI 1.0 bytes and `Midi1Parser` | No tutti crate |
-| `tutti-midi-protocol` | Translation | `Translator`, App. D, M2-115 scaling, MPE | `tutti-ump` |
+| `tutti-ump` | Packet | `Ump`, `Message`, codec, `MidiGroup`, `MidiChannel`, `CCNumber`, field types, MIDI 1.0 bytes and `Midi1Parser`, `Rpn` (an RPN address) and `SYSEX7_MAX_PAYLOAD` | No tutti crate |
+| `tutti-midi-protocol` | Translation | `Translator`, App. D, M2-115 scaling, MPE, `PitchBendSensitivity` | `tutti-ump` |
 | `tutti-midi-device` | Endpoint, Function Block | `Endpoint`, `Connection`, CI codec, JR | `tutti-ump` |
 | `tutti-midi-hardware` | Transport | OS backends, no graph (the target: today `port/manager.rs` imports `tutti_graph::{Offset, UmpAt}` and turns an arrival `Instant` into an `Offset` on the audio thread; stage E5 moves that behind the event inlet); `#![forbid(unsafe_code)]` once the `-ffi` crates exist (today the ALSA wrappers hold the `unsafe`) | `tutti-midi-device`, the two `-ffi` crates |
 | `tutti-alsa-ffi` | FFI | All ALSA `unsafe`, safe wrappers (from `tutti-alsa-ump-sys`) | Linux only |
@@ -1230,6 +1278,14 @@ already small. Dependencies enforce the layering: `tutti-ump` cannot call the
 translator, so reading cannot translate, and `tutti-midi-hardware` cannot reach
 the graph. The cycle that keeps `ump` and `translation` together today is mostly
 `message()` calling `normalize`, and it ends with that call.
+
+Moved out of `tutti-midi-types` in stage 5b: `SYSEX7_MAX_PAYLOAD` to `tutti-ump`
+(tutti's cap on one SysEx7 message, for sizing a `SysexAssembler`; M2-104 section 7.7
+sets no maximum), the four RPN address constants (`RPN_BANK_MPE`, `RPN_INDEX_MCM`,
+`RPN_INDEX_CHANNEL_PITCH_BEND_SENSITIVITY`, `RPN_INDEX_PER_NOTE_PITCH_BEND_SENSITIVITY`)
+to one `tutti_ump::Rpn` with named addresses, and `PitchBendSensitivity` to
+`tutti-midi-protocol` (an optional `serde` feature, because `MpeZoneConfig` persists
+it). `PerNoteBendRanges` moves with the Plugins lane after these.
 
 `tutti-midi-runtime` keeps only graph nodes and what they need: the input, queue,
 out, clip, harmony and clock nodes with `ClockMaster`, plus `MidiMailbox` and
@@ -1765,7 +1821,7 @@ at any point; its CI codec move and `ci`/`negotiate` deletion (4a, done) shrink
    `new -> Option` that refuses what RP-053 does, and a `DualZone` constructor that
    refuses an overlap, with the range-types contract test.
 - **Stage E. The event tap and the event inlet** (the section of that name).
-   E1 the tap in `tutti-graph` and its session API, E2 the inlet, E3 the hardware
+   E1 the tap in `tutti-graph` and its session API, E2 the inlet (built), E3 the hardware
    out on a tap (`MidiOutNode` deleted), E4 the queues on the inlet
    (`MidiQueueNode`, `TimedQueueNode` deleted), E5 `MidiInputNode` split, after
    `ClockMap`. E1 and E2 touch `tutti-graph`. Behaviour change: a tap's frame is

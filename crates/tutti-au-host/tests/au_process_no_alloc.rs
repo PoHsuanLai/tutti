@@ -323,7 +323,7 @@ fn send_midi_decode_does_not_allocate() {
 /// is dropped and the first `assert_eq!` fails.
 #[test]
 fn a_long_sysex_does_not_allocate_and_an_oversized_one_is_dropped_counted() {
-    use tutti_midi_types::ump::SYSEX7_MAX_PAYLOAD;
+    use tutti_ump::SYSEX7_MAX_PAYLOAD;
 
     let _lock = lock();
     let au = corpus::SAMPLER.open(48_000.0, BLOCK);

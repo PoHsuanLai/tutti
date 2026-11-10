@@ -4,10 +4,8 @@
 //! per-note bend range as unsigned fixed-point words: 7 integer bits, then the
 //! fraction. These are the one conversion each of them has.
 
-/// Fraction bits of the 32-bit pitch word (Registered Per-Note Controller #3,
-/// M2-104 §7.4.15.2) and of the per-note bend sensitivity (RPN #00/07,
-/// §7.4.13): Q7.25.
-pub(crate) const Q7_25_FRAC_BITS: u32 = 25;
+/// Fraction bits of the Q7.25 pitch word (M2-104 sections 7.4.13 and 7.4.15.2).
+const Q7_25_FRAC_BITS: u32 = 25;
 
 /// A Q7.25 word (7 integer bits, 25 fractional bits) as a float: a fractional
 /// MIDI note number, or a range in semitones.

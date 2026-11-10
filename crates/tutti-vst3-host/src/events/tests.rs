@@ -557,9 +557,8 @@ fn per_note_pitch_bend_becomes_tuning_expression() {
 /// fails.
 #[test]
 fn a_per_note_bend_is_tuned_over_its_channels_range() {
+    use tutti_midi_protocol::PitchBendSensitivity;
     use tutti_midi_protocol::signed_f32_to_bend_u32;
-    use tutti_midi_types::PitchBendSensitivity;
-    use tutti_midi_types::ump::{RPN_BANK_MPE, RPN_INDEX_PER_NOTE_PITCH_BEND_SENSITIVITY};
 
     let bend = |channel: u8, amount: f32| {
         (
@@ -596,11 +595,10 @@ fn a_per_note_bend_is_tuned_over_its_channels_range() {
 
     let sensitivity = (
         Offset::ZERO,
-        midi::registered_controller(
+        midi::registered_rpn(
             MidiGroup::FIRST,
             MidiChannel::of(3),
-            RPN_BANK_MPE,
-            RPN_INDEX_PER_NOTE_PITCH_BEND_SENSITIVITY,
+            tutti_ump::Rpn::PER_NOTE_PITCH_BEND_SENSITIVITY,
             PitchBendSensitivity::of(24).to_rpn_bits(),
         ),
     );

@@ -224,6 +224,7 @@ mod controls;
 mod cost;
 mod editor;
 mod event;
+mod event_inlet;
 mod event_tap;
 mod exec;
 mod fade;
@@ -263,6 +264,7 @@ pub use event::{
     HarmonyKind, MAX_EVENT_PORT_CAPACITY, MIN_EVENT_PORT_CAPACITY, ParamRamp, ParamSegment,
     SegmentShape, SortedEvents, SubBlocks, UmpAt, note_off_room,
 };
+pub use event_inlet::{EventInletNode, EventInletWriter, Refused};
 pub use event_tap::{EventTapReader, EventTapWriter, TapEvent};
 pub use exec::{DEFAULT_EVENT_CAPACITY, Executor, FADE_CAPACITY, QUEUE_CAPACITY};
 pub use fade::{CrossfadeCurve, Fade};
@@ -281,7 +283,8 @@ pub use inlet::InletNode;
 pub use instrument::Instrument;
 pub use io::{Channel, Inputs, Io, Outputs, PortKind};
 pub use latency::{
-    Compensation, Delays, Feed, LatencyGraph, MAX_NODE_LATENCY, delays, plan as latency_plan,
+    ChannelFeed, Compensation, Delays, Feed, InputDelay, LatencyGraph, MAX_NODE_LATENCY,
+    OutputDelay, PortFeed, delays, plan as latency_plan,
 };
 pub use loss::EventLoss;
 pub use node::{

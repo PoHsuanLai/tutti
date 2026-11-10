@@ -1483,12 +1483,11 @@ fn test_per_note_pitch_bend_sensitivity_rpn_updates_range() {
     });
 
     // Sensitivity RPN: 12 semitones (7.25 fixed-point).
-    let sens = tutti_midi_types::mpe::PitchBendSensitivity::of(12);
-    let rpn = midi::registered_controller(
+    let sens = tutti_midi_protocol::PitchBendSensitivity::of(12);
+    let rpn = midi::registered_rpn(
         MidiGroup::FIRST,
         MidiChannel::of(1),
-        tutti_midi_types::ump::RPN_BANK_MPE,
-        tutti_midi_types::ump::RPN_INDEX_PER_NOTE_PITCH_BEND_SENSITIVITY,
+        tutti_ump::Rpn::PER_NOTE_PITCH_BEND_SENSITIVITY,
         sens.to_rpn_bits(),
     );
     queue_midi(&mut synth, &[ev_note_on(1, 60, 100), rpn]);

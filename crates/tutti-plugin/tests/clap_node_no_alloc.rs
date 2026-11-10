@@ -38,6 +38,23 @@ use tutti_types::{BeatsPerBar, MeterChange, MeterMap, NoteValue, TimeSignature};
 use tutti_ump::{MidiChannel, MidiGroup};
 
 const SAMPLE_RATE: f64 = 48_000.0;
+
+/// A tempo map with a step a thousandth of a beat past every whole beat
+/// (alternating 120 and 121 BPM), so a map point falls inside nearly every
+/// 64-frame pass (12 frames in at 120 BPM, 32 after the block's seek to beat
+/// 9 at 90): the chunk's walk adds an entry for each, beside the seek's, and
+/// fills the eight it can hold in every chunk, counting the rest.
+fn points_inside_blocks() -> tutti_tempo::TempoMap {
+    use tutti_tempo::{Shape, TempoMap, TempoPoint};
+    let point = |beat: f64, bpm: f64| TempoPoint {
+        beat: Beat(beat),
+        tempo: Bpm::of(bpm),
+        shape: Shape::Step,
+    };
+    let mut points = vec![point(0.0, 120.0)];
+    points.extend((0..400).map(|k| point(f64::from(k) + 0.001, 120.0 + f64::from(k % 2))));
+    TempoMap::new(points).expect("a map")
+}
 /// The graph's `MaxBlock`: blocks of 64 (as the engine rendered in passes
 /// while a `Legacy` node was in the graph), so a chunk collects eight
 /// blocks of automation points.
@@ -55,6 +72,10 @@ const PASSES: usize = QUANTUM / BLOCK;
 /// the engine renders a 512-frame device callback: eight 64-frame passes,
 /// the FIFO carrying the chunk across all eight, the lanes' points on the
 /// play clock's 32-frame grid across it.
+///
+/// Transport changes inside every chunk (a map point and a seek in each
+/// pass, doc 020 stage 5b) are walked inside the guard too. Mutation: build a
+/// `Vec` of the chunk's entries in `TransportWalk::scan` -> aborts.
 ///
 /// Mutation: allocate in the node's chunk walk (a `Vec` of the chunk's
 /// input slices in place of the stack array in `graph_node.rs`) → the
@@ -120,9 +141,11 @@ fn a_bound_plugin_does_not_allocate_on_the_audio_thread() {
         (0.0, 1.0),
     );
     let (mut rig, sender) = Rig::prepared_with_keys(
-        probe.client.bind(
-            tutti_transport::TempoReader::constant(tutti_types::Bpm::of(120.0)).expect("a tempo"),
-        ),
+        probe
+            .client
+            .bind(tutti_transport::TempoReader::fixed(Arc::new(
+                points_inside_blocks(),
+            ))),
         prepare,
         vec![lfo, lane],
     );
@@ -183,6 +206,12 @@ fn a_bound_plugin_does_not_allocate_on_the_audio_thread() {
         }
     });
     drop(outs);
+    // The chunks' transport changes ran inside the guard: a map point and a
+    // seek in every pass overflow the eight a chunk holds, counted.
+    assert!(
+        rig.controls.dropped_transport_changes() > 0,
+        "no chunk filled its transport changes, so the cap path was not guarded"
+    );
     // The plugin rendered through it all (its transport echo opens every
     // chunk, and the last pass opened one), so the collect path ran inside
     // the guard, not only the submit.

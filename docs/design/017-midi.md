@@ -283,7 +283,25 @@ Rules:
   defined type with an undefined status. A consumer that forwards forwards
   `Unknown` unchanged and never drops it; one that is a sink says so in its arm.
 - **Name limits are not in the codec.** They apply to a reassembled string, so
-  they are checked where strings are reassembled.
+  they are checked where strings are reassembled. Nothing checks them today: the
+  `endpoint_name`, `function_block_name` and `product_instance_id` constructors
+  in `tutti-midi-types` and `EndpointNegotiator::with_names` (and
+  `FunctionBlock::name`) in `tutti-midi-runtime` take any `&str` or `String`, and
+  the `midi2` crate adds no limit. The limits, from M2-104 v1.1.2 §7.1:
+  - **Endpoint Name:** at most 98 bytes of UTF-8 (seven packets).
+  - **Function Block Name:** at most 91 bytes (seven packets). Version 1.1.2
+    (§7.1.9) lowered it from 98, so a name built to the old figure is now too long.
+  - **Product Instance ID:** at most 42 bytes, every byte ASCII 32 to 126
+    (§7.1.5), so a non-ASCII or control byte is refused, not passed through.
+
+  A name is a checked value built on the control side (`new -> Result`, never a
+  truncation, as in the range-checked table of CLAUDE.md), so a sender cannot
+  emit an over-long name. A receiver caps what it accumulates at the same limit
+  and drops a name that exceeds it (`EndpointInquiry` has no cap today). Each
+  limit gets three boundary tests, at the limit, one byte over and a long
+  input, each asserting the packet count (7, 7, 3) and the refusal; the
+  Product Instance ID also gets a byte below 32, 127 and a multi-byte
+  character. Mutation: raise a limit by one and the one-over test must fail.
 
 `NoteId` is an engine concept: `MidiMessage` mints one on decode and the wire has
 none. It moves to whichever node assigns voices, and leaves decoding.
@@ -582,9 +600,11 @@ sounding until the node that tracks notes exists.
 ### MIDI-CI
 
 `ci/*` and `negotiate` are about 2,400 production lines with no production path:
-no inbound SysEx reaches them. They also miss current requirements: no ACK, no
-Invalidate MUID response (M2-101 App. F), profile bodies without Message Version 2
-fields (18 bytes against 20), and Property Exchange built for v1.1.
+no inbound SysEx reaches them (`bevy-tutti`'s `negotiation.rs` says its inbound
+message types have no producer, and `CiRes` is inserted by no plugin). They also
+miss current requirements: no ACK, no Invalidate MUID response (M2-101 App. F),
+profile bodies without Message Version 2 fields (18 bytes against 20), and
+Property Exchange built for v1.1.
 
 Keep the header, MUID, Discovery, NAK and Invalidate codec and the Stream
 constructors, about 400 lines, moved to `tutti-midi-device`. Delete the state
@@ -592,6 +612,114 @@ machines and profile and property bodies. Rebuild the App. F minimum with a real
 inbound path, in one change, when a stage needs it (an estimated 650 to 750
 lines). Property Exchange waits for a named peer and for M2-105, which is not in
 the core set.
+
+The rebuild is done when each requirement below holds and its test fails with the
+requirement broken. Section numbers are M2-101 v1.2.1 unless named. Every test
+runs on the pure core with time as a value, and the inbound path gets one more
+that sends SysEx7 bytes through the whole route.
+
+1. **MUID generation and regeneration** (§3.3). A device draws a new random MUID
+   from an OS random source each time it starts, never from a caller's seed
+   (`Muid::from_seed` and `CiRes::new`'s `muid_seed` go). The reserved range
+   `0x0FFFFF00` to `0x0FFFFFFE` and the broadcast value are never drawn. One MUID
+   serves a Function Block in every role, so the responder and the initiator
+   share it (`CiRes` builds two with different seeds today). On Invalidate MUID
+   addressed to its own MUID, a device draws a different one and announces the
+   change. Tests: a draw loop with an injected source that returns reserved
+   values, asserting none is kept; two starts give different MUIDs; the
+   Invalidate response differs from the old MUID; the responder and the
+   initiator report one MUID.
+2. **Collisions and echo detection** (§5.9, §5.9.1, App. A.1.1). A Discovery whose
+   source MUID equals ours is a collision, resolved by one of the two options of
+   §5.9.1; a message that is our own transmission looped back is not, and the
+   two are told apart by the Product Instance ID in the Discovery body. The
+   responder examines the source of every inbound Discovery (it reads only the
+   source for the reply today), and the initiator no longer treats any reply
+   carrying its MUID as a collision. Tests: each option; a looped-back
+   Discovery with our own ID causes no Invalidate; a foreign device with the
+   same MUID does. Initiator collision (two replies with one MUID, §5.9.2) too.
+3. **The destination-MUID filter** (§3.3.3). A device acts on a message whose
+   destination is its MUID, or the broadcast MUID for the message types that
+   allow a broadcast, and ignores every other (`respond_to` answers a Discovery
+   addressed to another device today). Tests: a Discovery, Profile Inquiry and
+   Property request addressed elsewhere yield no reply; a non-broadcast message
+   sent to broadcast yields none.
+4. **Discovery collects for at least 3 s** (§5.5.5). The initiator takes a clock
+   as a value, keeps every Discovery Reply that arrives in the window, and
+   reports the set when the window closes (`CiInitiator` keeps only the last
+   reply). Tests: two devices reply at 0.5 s and 2.9 s, both kept; the set is
+   not reported at 2.9 s and is at 3.0 s; a reply after the window is ignored.
+5. **Per-group operation** (§3.2.2). A reply goes out on the group of the
+   inquiry that prompted it, and Discovery goes to each group of the endpoint
+   (`CI_GROUP` is `MidiGroup::FIRST` in `bevy-tutti`'s `negotiation.rs` for every
+   outbound message, so a Function Block on another group never sees it). The
+   inbound path reassembles SysEx7 per group. Tests: an inquiry on group 5 is
+   answered on group 5; Discovery on an endpoint with blocks on groups 0 and 3
+   is sent to both; two interleaved reassemblies on different groups both
+   complete.
+6. **The v2 profile bodies** (§7, M2-102). Set Profile On carries the number of
+   channels requested; Set Profile Off carries two reserved bytes; Profile
+   Enabled and Profile Disabled carry the number of channels enabled or
+   disabled. `ProfileState::{SetOn, SetOff, Enabled, Disabled}` encode only the
+   five-byte profile id today (18 payload bytes, 20 required), and the doc on
+   `CI_VERSION` says every v2 field is carried, which is false for these four.
+   Tests: byte-exact encoding of each against the tables, a round trip, and a
+   v1-format body still decoding with the channel count defaulted. The profile
+   state also moves to `&mut self` so a Set On changes what the next Profile
+   Inquiry lists.
+7. **ACK and NAK** (§5.10, §5.11). ACK (sub-ID#2 `0x7D`) is encoded and decoded
+   (`CiMessage::decode` returns `None` for it), with its status values for
+   Timeout Wait and next-chunk flow control. NAK gains the statuses `Nak` has no
+   constant for: `0x12` (resend the last chunk), `0x20` (terminate, with
+   status data telling who terminates), `0x21` (chunks out of sequence) and
+   `0x43` (busy, in 100 ms units); decoding already passes any code through.
+   Tests: a round trip of each, and an ACK payload decoding.
+8. **Function Block Info** (M2-104 §7.1.8). The notification sets the MIDI 1.0
+   flag, the UI hint, the MIDI-CI Message Version (0 means none or unknown) and the
+   maximum number of SysEx8 streams, so a block that `CiResponder` drives
+   advertises that it speaks MIDI-CI. `MidiEvent::function_block_info` sets
+   active, number, first group, group count and direction only. Tests: the
+   encoded words for a CI v2 block with two SysEx8 streams.
+9. **Property Exchange roles and the version gap** (§4.2, §8; M2-103). Roles are
+   per transaction, not per device: a device that subscribed to a peer's
+   resource is the initiator of that subscription and replies to its updates
+   (the responder NAKs a peer's `full` update today, and `CiInitiator` has no
+   Property Exchange). The Common Rules figure in the Capabilities messages is
+   M2-101 Table 31's (1.0 and 1.1), while M2-103 is at 1.2 with flow control
+   over ACK and NAK in place of Notify; the rebuild names the version it
+   speaks, tests both messages against it, and treats a received Notify as
+   M2-103 requires. Property Exchange does not ship without a named peer, so this
+   item is a requirement on the day it does, not on the first rebuild.
+
+Stale spec citations in the CI code. Stage 4 fixes each when it moves the code
+(the corrected numbers are those of M2-101 v1.2.1; a citation that is already right
+is not listed):
+
+- `ci/discovery.rs`: the module title and the Discovery constants cite §5.2/5.5/5.6,
+  they are §5.5 (Discovery, the category bitmap in §5.5.2), §5.9 (Invalidate MUID)
+  and §5.11 (NAK; the `Nak` doc already says §5.11.1);
+- `ci/mod.rs`: the Sub-ID#1, MUID, broadcast and preamble docs cite §5.1, they are
+  §5.2.1 and §3.3/§3.3.3; the `CI_VERSION` doc cites §5.2 for the version number
+  and §5.4 for the receiver rule, both are §5.3; the Discovery, Invalidate and
+  NAK variant docs cite §5.2, §5.5 and §5.6 (§5.5, §5.9, §5.11); and the
+  Property Exchange Capabilities variant docs cite §8.4/8.6 (inquiry §8.5);
+- `ci/profile.rs`: the module and variant docs cite §6.x, they are §7.x (the Profile
+  Id §7.3.1, Inquiry §7.2, Reply §7.3, Set On §7.8, Set Off §7.9, Enabled §7.10,
+  Disabled §7.11);
+- `ci/property.rs`: the module cites §7, §7.1.3 and §7.1.1, they are §8, §8.3
+  (Tables 33 to 36) and §8.4; the Capabilities constants cite §8.4 for the
+  inquiry (§8.5);
+- `capability_inquiry.rs`: the Capabilities inquiry cites §8.4 (Request ID), it is
+  §8.5 for the inquiry and §8.6 for the reply; the header JSON cites M2-103 §5,
+  which is v1.1 numbering (v1.2: §6.1 and §7.1);
+- `endpoint.rs`: `FunctionBlock` cites M2-104 §7.1.3 (Device Identity
+  Notification), it is §7.1.8;
+- `message.rs`: the assigned controller number cites M2-104 §7.4.5 (Per-Note
+  Management), it is §7.4.4 and App. A;
+- `tutti-ump`'s `midi_group.rs` says the Group field is in every UMP packet
+  header; M2-104 §2.1.2 says Message Types 0x0 and 0xF have none;
+- the `CI_GROUP` doc in `bevy-tutti`'s `negotiation.rs` says "function-block-wide",
+  and it is group 0 only (item 5).
 
 ## Layers
 
@@ -811,6 +939,21 @@ Each is its own lane after its dependency stage.
    a loop wrap inside a block.
 6. **Files** (below).
 
+Smaller items that no stage owns:
+
+- **No clock while stopped.** `ClockMaster` returns from its tick as soon as the
+  transport is not playing (`tutti-midi-runtime/src/outbound/clock_master.rs`), so
+  external gear that wants a running clock through Stop (arpeggiators, delays)
+  gets none. Make it a setting of the master, off by default, with a test.
+- **No headless live example.** `crates/tutti/examples` has no live-keyboard to
+  plugin example (`headless_engine`, `headless_export`, `headless_modulation`
+  and `plugin_midi_export` do not read a device). Add one when the live path is
+  settled, as the doc for the device API.
+- **The event sort.** `in_offset_order` in `tutti-midi-runtime/src/live/order.rs` is
+  an insertion sort, O(n^2) for input out of order (57 us at 512 events, as measured
+  in the audit). It never allocates, and a wire or ring is usually in order, so this
+  is low priority; revisit with the `(Offset, Ump)` event of stage 5a.
+
 ### Files
 
 `tutti-midi-file` adds real work on top of `midly`: musical time, note
@@ -855,6 +998,13 @@ impl Track { pub fn notes(&self) -> impl Iterator<Item = PairedNote> + '_; }
   is that design, and it points `MidiFile::seconds_at` at the same `TempoMap`.
 - **Integer ticks.** Events keep their tick and the track its division, so a write is
   exact with no rounding, and `events()` gives callers `Beat`.
+- **The Clip File reader checks structure order.** `parse_clip` in
+  `tutti-midi-types` records that a Start of Clip and an End of Clip were seen
+  but not where: a file whose DCTPQ is missing from the front or repeated, whose
+  events precede Start of Clip, or whose End of Clip is not last (data after it is
+  already refused) still reads. M2-116 requires the DCTPQ first and once, Start
+  of Clip before any event, and End of Clip last. One error variant per rule, with
+  a test for each.
 - **A lossless round trip** is the test: a file read and written holds the same
   events, including SysEx and meta. Running status and event spelling may differ.
 - **Clip File moves here** from `tutti-midi-types`, its only production consumer.
@@ -895,6 +1045,21 @@ rest is below.
    attribute type (MIDI 1.0 has no attribute; Table 8 gives a receiver no rule for
    it), where `to_midi1_messages` drops it. Its only caller, the VST2 host, still
    does until it moves to `Message`; no shipped path changes.
+   Residue that belongs to this stage, each a consumer dropping part of a message:
+   - **SoundFont, Program Change bank.** `Player` handles `Voice2::ProgramChange`
+     with `..` and so ignores the bank of a MIDI 2.0 Program Change (the bank-valid
+     flag and its two bytes); only a Bank Select Control Change reaches the channel.
+     Select the bank when the flag is set (`tutti-soundfont/src/player.rs`).
+   - **AU host, Program Change bank.** `tutti-au-host/src/instance.rs` writes a
+     Program Change as the program byte alone and drops the bank, so an AU
+     instrument never changes bank from a MIDI 2.0 message. Send the bank as Bank
+     Select first, as `tutti_midi_protocol::midi1` does (plan item 15).
+   - **CLAP host, per-note registered controllers.** The `Voice2::RegisteredPerNote`
+     arm in `tutti-clap-host/src/events.rs` maps only Volume, Pan and Brightness
+     to a note expression and returns `None` for the other registered controllers
+     (Modulation, Breath, Pitch and the rest), so they never reach the plugin. Map
+     each to the nearest CLAP note-expression type, or say in the arm why one has
+     none (doc 023 §5.4).
 
 Stages 3 to 5 run in the order below, not the numeric one: 5a, 3a, 3b, 3c, then 5b
 (stage 4 anywhere). Three reasons, all from
@@ -927,10 +1092,23 @@ at any point; its CI codec move and `ci`/`negotiate` deletion shrink
    then reads a registered-controller `Voice2`, NRPN included), `mpe_ingest`'s
    `RpnRun` and the old `Midi1ToMidi2Translator`, and `MidiInputNode` runs the new
    one. Behaviour change: §4's remaining spec fixes. Oracle: M2-115 and M2-104
-   App. D, as analytic tests.
+   App. D, as analytic tests. Residue the old translator
+   (`tutti-midi-types`' `translation/rpn.rs`) has and the new one must not copy:
+   - **Data Entry order.** A CC 6 on a selected parameter emits the Registered or
+     Assignable Controller at once, with the LSB as last sent (0 if never), and a
+     CC 38 emits it again, so a receiver first sees a value built on a stale LSB.
+     App. D.3.3 gives the triggers: a CC 38, a later CC 6, or a new parameter
+     select. Emit on those only, and test CC 6 alone, CC 6 then CC 38, and CC 38
+     then CC 6.
+   - **Parameter number halves.** An NRPN or RPN LSB select alone leaves the
+     MSB at its default of 0 instead of keeping the one last selected on the
+     channel; the test is a select of the LSB only after a full select.
 - **Stage 3b. `dispatch`** (§4.1) in `tutti-midi-protocol`. Deletes the four widen
    copies (the two `widened` functions and the two `voice1` functions) and the
    seven-arm match in the polysynth and the SoundFont. Oracle: M2-104 App. D.3.
+   Compare `tutti_graph::Io::sub_blocks` with `tutti_midi_runtime::BlockSplitter`
+   here: both cut a block at its event offsets, and `dispatch` should call one.
+   Keep the one with the tests, and delete the other with its callers moved.
 - **Stage 3c. The MIDI dedup.** The AU host reads its bytes with
    `tutti_ump::Midi1Parser`, and `Midi1Decoder` and `Midi1Splitter` go. One SysEx7
    reassembler stays, in the layer that uses it, and the other goes
@@ -938,18 +1116,53 @@ at any point; its CI codec move and `ci`/`negotiate` deletion shrink
    caller that the survivor cannot serve; choose in the PR from the callers).
    Oracle: M2-104 §7.7.1 for the SysEx7 packets and the byte-stream rules of
    MIDI 1.0 for the parser (M1-100 is not available, §13). The `Reassemble` trait of
-   §4.1 is revisited here.
+   §4.1 is revisited here. Two further items for this stage (plan item 5):
+   - **A checked SysEx type.** `tutti-plugin-types`' `sysex.rs` has `unframed` and
+     `is_framed`, which accept a message with or without `F0` and `F7`. A
+     `SysexMessage<'a>` newtype (checked `F0` to `F7`, every interior byte 7-bit)
+     retires the leniency: a host that sends one builds it once and the check
+     is the type's.
+   - **Test copies.** `is_framed` is hand-coded, and five test helpers named
+     `framed` rebuild the same `F0 .. F7` wrapper (`tutti-plugin-types`'
+     `sysex.rs` and `midi1_decoder.rs`, `tutti-clap-host`'s `events.rs`,
+     `tutti-vst2-ffi`'s `midi.rs`, `tutti-vst3-ffi`'s `event_list` tests). They
+     go to `tutti_ump::frame`.
 - **Stage 4. `tutti-midi-device` and the `-ffi` crates.** Device detection comes first
    (`Devices`, `DeviceTable`, `FakeBackend::plug`; §5), directly after stage 1:
    done, except the flush (§5, "Built").
    Then model, connection, identity, device loss, timing (§5), and the backends
    with no `unsafe` of their own.
    Behaviour change: real hot-plug, timestamps, output scheduling. CI codec moves
-   here and the rest of `ci`/`negotiate` is deleted.
+   here and the rest of `ci`/`negotiate` is deleted, and the rebuilt MIDI-CI
+   minimum (§5, "MIDI-CI") lands with the citation fixes listed there.
+   Residue for this stage:
+   - **`clock_out.rs` doc is false.** The module doc of `bevy-tutti`'s
+     `midi/hardware/clock_out.rs` says the drain cadence does not affect tick
+     spacing because the timing is baked into each event. The wire carries no
+     timestamp, so the spacing at the wire is the drain's (once per Bevy
+     frame, §5 "Timing at the edge"). Correct the doc now, and again when
+     scheduled output lands.
+   - **`ChangeSink::seed`.** "A backend seeds once, before any `send`" is only a
+     doc sentence (`tutti-midi-hardware/src/devices.rs`). Make a second or late
+     seed an error the type returns, or take the list in the constructor.
+   - **Not verified, needs a Mac or a check.** (a) The CoreMIDI input callback
+     has no panic guard; only the watch thread has `catch_unwind`
+     (`backend/coremidi/watch.rs`). (b) The session MIDI input ring size
+     is 256 in one place and 2048 in another per the audit; the drain chunk is 256
+     (`tutti-session/src/midi.rs`) and the other figure was not found. (c) `AlsaOutput` takes its
+     mutex with `.expect("output mutex poisoned")`, `unpack_id` in
+     `backend/alsa/enumerate.rs` decodes any `EndpointId` without checking it
+     was minted by the backend, and the input thread's drop joins without a
+     bound. (d) There is no benchmark of the hardware callback to the drain.
 - **Stage 5b. Shrink `tutti-midi-types` away:** what 5a, 3a, 3c and 4 leave
    (`mpe/`, `clip_file`, `cc/mapping`, `sync/`, `MidiMessage`, the re-exports) moves
    to its owner (§6) or is deleted, then the crate, and `midi2` from the workspace
-   and `Cargo.lock`.
+   and `Cargo.lock`. With `mpe/`: `MpeZoneConfig` has public fields, so a literal
+   can hold a member count or master channel its constructors would refuse, and a
+   `DualZone` pair totalling more than 15 members (the two spans overlap) is not
+   rejected, only documented as the sender's duty. Give it private fields, a
+   `new -> Option` that refuses what RP-053 does, and a `DualZone` constructor that
+   refuses an overlap, with the range-types contract test.
 7. **Capabilities** (§9).
 
 ## 11. Testing

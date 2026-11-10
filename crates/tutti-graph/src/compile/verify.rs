@@ -128,6 +128,7 @@ fn accesses(plan: &Plan, op: &Op) -> Vec<Access> {
             .iter()
             .map(|&s| a(s, false))
             .collect(),
+        Op::EventTap { src, .. } => vec![e(src, false)],
         Op::Meter { srcs, .. } => plan.audio_list[srcs.range()]
             .iter()
             .map(|&s| a(s, false))
@@ -685,6 +686,12 @@ fn verify_tables(plan: &Plan) -> Result<(), VerifyError> {
                 }
                 None
             }
+            Op::EventTap { tap, .. } => {
+                if tap as usize >= plan.event_taps.len() {
+                    return Err(VerifyError(format!("an event tap op names tap {tap}")));
+                }
+                None
+            }
             Op::Meter { meter, .. } => {
                 if meter as usize >= plan.meters.len() {
                     return Err(VerifyError(format!("a meter op names meter {meter}")));
@@ -784,7 +791,8 @@ fn verify_tables(plan: &Plan) -> Result<(), VerifyError> {
                     .get(delay as usize)
                     .ok_or_else(|| VerifyError(format!("op {m} names delay {delay}")))?;
                 let (crate::plan::DelayKey::Event { from, .. }
-                | crate::plan::DelayKey::ParamEvent { from, .. }) = d.key
+                | crate::plan::DelayKey::ParamEvent { from, .. }
+                | crate::plan::DelayKey::EventTap { from, .. }) = d.key
                 else {
                     return Err(VerifyError(format!(
                         "event delay {delay} is not keyed as events"

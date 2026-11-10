@@ -41,6 +41,7 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 use crate::latency::{Feed, LatencyGraph};
+use crate::spec::EventOut;
 use crate::tail::TailGraph;
 use tutti_types::ChannelLayout;
 use tutti_types::{Samples, Tail};
@@ -346,6 +347,13 @@ pub struct Topology {
     /// (`tutti_graph::MissingSource`), and a lane whose port goes missing
     /// later reads silence.
     pub taps: BTreeMap<TapId, TapSpec>,
+    /// Event copy-out points ("tap this event output"). A closed event tap is
+    /// absent: nothing is compiled for it. Like [`taps`](Self::taps),
+    /// [`validate`](Self::validate) does not check them: opening one refuses an
+    /// event port that does not exist then
+    /// (`tutti_graph::MissingSource::EventPort`), and one whose port goes
+    /// missing later reads nothing.
+    pub event_taps: BTreeMap<EventTapId, EventTapSpec>,
     /// Level meters ("measure these sources"). A closed meter is absent:
     /// nothing is compiled for it.
     pub meters: BTreeMap<MeterId, MeterSpec>,
@@ -434,6 +442,26 @@ pub enum TapAlign {
     ToOutput,
 }
 
+/// The name of one event tap. Its own type: a [`TapId`] names a key of
+/// [`Topology::taps`], and the two maps do not share a namespace.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct EventTapId(pub u32);
+
+/// "Tap this event output": one port of any node, copied out with the frame
+/// each event was due on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct EventTapSpec {
+    /// The event output copied. `None` once its node was removed (a key is
+    /// the author's and can be inserted again, and a tap left naming it would
+    /// read the new node, as [`TapSpec::sources`] says of an audio lane): it
+    /// reads nothing. A port that does not exist (a node replaced by one with
+    /// fewer event outputs) reads nothing too; it does not fail a commit.
+    /// Opening an event tap refuses a port that does not exist at that moment.
+    pub source: Option<EventOut>,
+    /// Where the copy sits in time.
+    pub align: TapAlign,
+}
+
 /// "Tap these sources": one lane per source, any ports, any number.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct TapSpec {
@@ -461,6 +489,7 @@ impl Default for Topology {
             outputs: Vec::new(),
             inputs: ChannelLayout::EMPTY,
             taps: BTreeMap::new(),
+            event_taps: BTreeMap::new(),
             meters: BTreeMap::new(),
         }
     }

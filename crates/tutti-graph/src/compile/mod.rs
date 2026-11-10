@@ -353,6 +353,10 @@ enum Pre {
         tap: u32,
         srcs: Vec<ARef>,
     },
+    EventTap {
+        tap: u32,
+        src: u32,
+    },
     Meter {
         meter: u32,
         srcs: Vec<ARef>,
@@ -1053,6 +1057,50 @@ pub fn compile(
         tap_ids.push(tap);
     }
 
+    // Event taps: one event output each. An aligned tap is delayed to the
+    // graph's output time (the compensation an event edge into an output-time
+    // sink would get); a raw one reads the port as it leaves its node. A closed
+    // tap is not in the topology, so nothing is emitted for it. A tap whose
+    // port does not exist (a node replaced by one with fewer event outputs, a
+    // removed node) keeps its place in the table, so its writer is carried and
+    // resumes if the port returns, but it gets no op and no delay ring: it
+    // reads nothing and the commit succeeds. One op a tap, after its delay.
+    let mut event_tap_ids: Vec<crate::EventTapId> = Vec::new();
+    for (&tap, spec) in &topology.event_taps {
+        let index = event_tap_ids.len() as u32;
+        event_tap_ids.push(tap);
+        let Some(from) = spec.source else {
+            continue;
+        };
+        let (Some(&v), Some(&n)) = (event_out_val.get(&from), dense.get(&from.node)) else {
+            continue;
+        };
+        let mut src = v;
+        if spec.align == crate::TapAlign::ToOutput {
+            let d = departure(n).gap_to(total);
+            if !d.is_zero() {
+                let delay = em.delays.len() as u32;
+                em.delays.push(DelaySpec {
+                    key: DelayKey::EventTap { tap, from },
+                    len: d,
+                });
+                let op = em.push(Pre::EventDelay {
+                    delay,
+                    src: v,
+                    dst: 0,
+                });
+                em.read_event(v, op);
+                let dv = em.event_value(op);
+                if let Pre::EventDelay { dst, .. } = &mut em.pre[op as usize] {
+                    *dst = dv;
+                }
+                src = dv;
+            }
+        }
+        let op = em.push(Pre::EventTap { tap: index, src });
+        em.read_event(src, op);
+    }
+
     // Meters: one lane per source. `Outputs` reads what each output channel
     // carries (after its alignment delay, above); `Ports` reads each source as
     // it leaves its node, or, aligned, delayed to the output time by a ring of
@@ -1213,7 +1261,9 @@ pub fn compile(
             }
             Pre::EventDelay { delay, dst, .. } => {
                 let d = &em.delays[*delay as usize];
-                let (DelayKey::Event { from, .. } | DelayKey::ParamEvent { from, .. }) = d.key
+                let (DelayKey::Event { from, .. }
+                | DelayKey::ParamEvent { from, .. }
+                | DelayKey::EventTap { from, .. }) = d.key
                 else {
                     unreachable!("an event delay is keyed as events")
                 };
@@ -1339,6 +1389,10 @@ pub fn compile(
             Pre::Tap { tap, srcs } => Op::Tap {
                 tap: *tap,
                 srcs: span_of(&mut audio_list, &mut srcs.iter().map(|&r| aref_slot(r))),
+            },
+            Pre::EventTap { tap, src } => Op::EventTap {
+                tap: *tap,
+                src: eslot(*src),
             },
             Pre::Meter { meter, srcs } => Op::Meter {
                 meter: *meter,
@@ -1492,6 +1546,7 @@ pub fn compile(
             .collect(),
         delays: em.delays,
         taps: tap_ids,
+        event_taps: event_tap_ids,
         meters: meter_ids,
         event_edges: {
             let mut v: Vec<(EventOut, EventIn)> = graph

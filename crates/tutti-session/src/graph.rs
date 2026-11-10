@@ -1678,12 +1678,9 @@ impl Graph {
     }
 
     /// The sorted, distinct edges of a set of sources, as the topology holds
-    /// them. A lone `Silence` is the empty set.
+    /// them. `Silence` is the sum's zero and is dropped wherever it is listed:
+    /// alone it leaves the empty set, beside a source it adds nothing.
     fn edge_set(sources: &[GraphSource]) -> Vec<Edge> {
-        assert!(
-            sources.len() < 2 || !sources.contains(&GraphSource::Silence),
-            "silence is the empty set and cannot be one of several sources"
-        );
         let mut edges: Vec<Edge> = sources
             .iter()
             .map(|s| Self::lower(*s))

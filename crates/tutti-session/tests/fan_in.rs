@@ -155,13 +155,12 @@ fn an_unchanged_set_marks_nothing_edited() {
     assert!(r.s.graph_ref().is_edited(), "a new source");
 }
 
-/// Silence is the empty set: a lone `Silence` clears the port, `add_source`
-/// of it adds nothing, and it cannot be one of several.
+/// Silence is the empty set: a lone `Silence` clears the port, and
+/// `add_source` of it adds nothing.
 ///
-/// Mutations (each run): `edge_set` drops `Silence` instead of asserting ->
-/// `silence_beside_a_source_is_refused` fails (no panic); `edge_set` stops
-/// filtering `Source::Zero` -> the port stores it and `planned_compensation`
-/// is `None` (the spec no longer validates).
+/// Mutation (run): `edge_set` stops filtering `Source::Zero` -> the port
+/// stores it and `planned_compensation` is `None` (the spec no longer
+/// validates).
 #[test]
 fn silence_is_the_empty_set() {
     let mut r = rig();
@@ -177,12 +176,19 @@ fn silence_is_the_empty_set() {
     assert!(left(&mut r.s).iter().all(|&x| x == 0.0));
 }
 
+/// Silence is the sum's zero: listed beside a source it is dropped, so the
+/// set is that source and the render is its figure.
+///
+/// Mutation (run): `edge_set` keeps `Source::Zero` in a set of several ->
+/// the port holds two entries and the spec no longer validates.
 #[test]
-#[should_panic(expected = "silence is the empty set")]
-fn silence_beside_a_source_is_refused() {
+fn silence_beside_a_source_adds_nothing() {
     let mut r = rig();
     r.s.graph()
         .set_sources(r.sink, 0, &[node(r.a), GraphSource::Silence]);
+    assert_eq!(r.s.graph_ref().sources(r.sink, 0), [node(r.a)]);
+    assert!(r.s.graph_ref().planned_compensation().is_some());
+    assert!(left(&mut r.s).iter().all(|&x| x == A));
 }
 
 #[test]

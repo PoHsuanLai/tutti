@@ -5942,8 +5942,12 @@ of `graph.rs` carry the same sentence and change with it. So does
 | `output_source` / `set_output_source` | `output_sources(channel)` / `set_output_sources(channel, &[GraphSource])`, with `set_output_source` as exactly one |
 | `set_outputs_from(node)` | unchanged: it replaces every output's set with the one source |
 
-`GraphSource::Silence` is never stored: in a set of several it is refused
-(`StoredSilence`), in a set of one it clears the port (the empty set), as now. `GraphBuilder::connect`
+`GraphSource::Silence` is never stored: it is the sum's zero, so the session
+drops it wherever it is listed. Alone it clears the port (the empty set), as
+now; beside a source it adds nothing. (The plan said to refuse it in a set of
+several; as built it is dropped, since `{silence, x}` sums to `x` and a
+refusal would only turn a correct answer into a panic. A raw `Topology` that
+stores `Source::Zero` is still `Invalid::StoredSilence`.) `GraphBuilder::connect`
 adds a source (it replaced); `connect_output` likewise; `disconnect(node,
 port)` clears the port and `disconnect_from` (**new**) removes one. This
 changes the meaning of `connect` for a caller that wired a port twice to

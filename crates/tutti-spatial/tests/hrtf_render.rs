@@ -956,5 +956,9 @@ fn the_panners_fold_renders_what_it_always_did() {
         }
     }
     println!("DIGEST hrtf {h:#018x}");
-    tutti_nodes::testing::assert_golden("the HRTF panner's folded render", h, 0);
+    tutti_nodes::testing::assert_golden(
+        "the HRTF panner's folded render",
+        h,
+        0xacdb_8337_a761_33f4,
+    );
 }

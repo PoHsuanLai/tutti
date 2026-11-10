@@ -129,4 +129,4 @@ fn the_convolver_fold_renders_what_it_always_did() {
 
 const DOWNMIX: u64 = 0xa683_8aff_5759_c8b4;
 #[cfg(feature = "convolution")]
-const CONVOLVER: u64 = 0;
+const CONVOLVER: u64 = 0x16de_0f44_0e66_cf81;

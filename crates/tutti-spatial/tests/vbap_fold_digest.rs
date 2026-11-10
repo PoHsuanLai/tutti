@@ -57,5 +57,5 @@ fn the_panners_fold_renders_what_it_always_did() {
         }
     }
     println!("DIGEST vbap {h:#018x}");
-    assert_golden("the VBAP panner's folded render", h, 0);
+    assert_golden("the VBAP panner's folded render", h, 0x2012_c32b_b7ce_53e9);
 }

@@ -88,7 +88,7 @@ impl FaultLatch {
 
     /// Reads the latch, **then** runs `pop`, and says what the pair means.
     ///
-    /// See the [module docs](self) for why the order is the whole point.
+    /// See the module docs above for why the order is the whole point.
     pub fn drain<T>(&self, pop: impl FnOnce() -> Option<T>) -> Drained<T> {
         let raised = self.is_raised();
         match pop() {

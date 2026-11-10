@@ -68,7 +68,7 @@ pub struct StreamFault {
 pub struct StreamFaults {
     count: AtomicU64,
     /// Raised once the device is gone; a capture source reads it through
-    /// [`drain`](Self::drain), before its ring.
+    /// `drain`, before its ring.
     disconnected: FaultLatch,
     last: Mutex<Option<StreamFault>>,
     /// Zero point of `run_start`.

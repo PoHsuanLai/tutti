@@ -1051,6 +1051,51 @@ mod walk_tests {
         assert_eq!(rig.dropped(), 1);
     }
 
+    /// **A map point dropped past the cap taints its stretch too**: the eighth
+    /// entry's stretch then crosses the ramp's end at beat 4, where
+    /// `tempo_slope_with` would extrapolate the ramp, so its slope is zero.
+    /// Eight seeks fill the list (beats 3.928 to 3.998, each a jump of 0.01
+    /// beat in 8 frames, where the ramp moves about 0.0005), and the point
+    /// some 32 frames after the eighth is the ninth change.
+    ///
+    /// Mutation: taint only for a dropped seek, wrap, start or stop (skip
+    /// `Source::Predicted(Kind::Point(_))`) -> the eighth entry keeps the
+    /// ramp's slope -> fails.
+    #[test]
+    fn a_dropped_point_leaves_its_stretch_without_a_slope() {
+        let mut rig = Rig::new(ramps_map());
+        let seeks: Vec<(usize, Transport)> = (0..8)
+            .map(|i| (4 + 8 * i, rolling(180.0, 3.928 + 0.01 * i as f64)))
+            .collect();
+        let only = block(128, rolling(180.0, 3.5), &seeks);
+        let p = rig.chunk(128, &[only]);
+        let slopes: Vec<f64> = entries(&p).iter().map(|e| e.2).collect();
+        assert_eq!(slopes.len(), 9);
+        assert!(slopes[7] > 0.0, "{slopes:?}");
+        assert_eq!(slopes[8], 0.0, "{slopes:?}");
+        assert_eq!(rig.dropped(), 1);
+    }
+
+    /// **A point is told once though the engine's beat lags it**: the
+    /// engine's cells hold a ramp's tempo a little under the curve, so at
+    /// the frame the map puts beat 4 the block's beat is an ulp short of it.
+    /// The block here runs at 170 BPM from beat 3.998 while the ramp nears
+    /// 180, so it is short by more: the point is one entry, not two.
+    ///
+    /// Mutation: never set `Stretch::told` -> the stretch the point started
+    /// is before beat 4 and predicts it again a frame on -> two entries ->
+    /// fails.
+    #[test]
+    fn a_point_the_engine_reaches_late_is_one_entry() {
+        let mut rig = Rig::new(ramps_map());
+        let only = block(128, rolling(170.0, 3.998), &[]);
+        let p = rig.chunk(128, &[only]);
+        let e = entries(&p);
+        assert_eq!(p.changes.len(), 1, "{e:?}");
+        assert!(e[1].0 > 0 && e[1].0 < 128, "{e:?}");
+        assert_eq!(rig.dropped(), 0);
+    }
+
     /// **Nine changes in one chunk: eight are sent, one is counted, and the
     /// ninth's transport is the next chunk's first.** Eight seeks in the
     /// first call and a ninth in the second, a chunk of 128 frames.

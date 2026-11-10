@@ -528,6 +528,9 @@ zeroed the slope when a point lay inside. 5b tells it where things change:
   because a point ends a stretch: past a ramp's end `tempo_slope_with` holds
   the ramp's own slope, so a per-sample increment over a span that crossed the
   end would extrapolate past it. Every point is an entry, so no stretch does;
+  and a point is one entry, even where the engine's beat at its frame is short
+  of it (its cells lag a ramp): the stretch a point starts predicts only the
+  points past it (`Stretch::told`);
   an entry dropped past the cap of eight leaves its stretch's slope at zero
   (below) for the same reason.
 - **A chunk spanning calls.** `begin` runs in the call holding the chunk's
@@ -544,8 +547,9 @@ zeroed the slope when a point lay inside. 5b tells it where things change:
 - **The cap.** One change more than fit is counted, and its transport waits for
   the next chunk's first frame, which reads the transport as it stands. The
   walk re-seats on a dropped change without an entry, so each further one is
-  counted once. A dropped seek, wrap, start or stop leaves the stretch it fell
-  in without a slope (no slope describes it). The count is
+  counted once. Any dropped change leaves the stretch it fell in without a
+  slope: no slope describes a stretch the beat jumped in (a seek, wrap, start
+  or stop), and one that crosses a dropped map point would extrapolate. The count is
   `PluginControls::dropped_transport_changes` (beside `dropped_midi_in`, in the
   node's `DeliveryCounters`); VST3, VST2 and AU never count one.
 - **CLAP.** The host adds one `CLAP_EVENT_TRANSPORT` per entry at its frame

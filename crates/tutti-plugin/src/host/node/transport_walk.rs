@@ -86,6 +86,11 @@ struct Stretch {
     playing: bool,
     recording: bool,
     looping: Option<(Beat, Beat)>,
+    /// The map points at or before this beat were told already: a stretch a
+    /// point started is at that point even when the engine's beat there is
+    /// an ulp short of it (its cells lag a ramp), and must not predict it
+    /// again.
+    told: Beat,
 }
 
 /// The entry whose slope is not written yet: the last one kept. Its stretch
@@ -96,15 +101,17 @@ struct Open {
     /// `0` is the chunk's own transport; `k` is `changes[k - 1]`.
     index: usize,
     start: Stretch,
-    /// A change that is not a map point was dropped inside it (a seek, a
-    /// wrap, a start or stop): no slope describes the rest of it.
+    /// A change was dropped inside it: a seek, a wrap, a start or stop (no
+    /// slope describes a stretch the beat jumped in) or a map point (past a
+    /// ramp's end its slope would extrapolate).
     tainted: bool,
 }
 
 /// What a predicted change is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Kind {
-    Point,
+    /// The map point at this index of `TempoMap::points`.
+    Point(usize),
     Wrap,
 }
 
@@ -116,6 +123,7 @@ impl Stretch {
             playing: s.playing,
             recording: s.recording,
             looping: s.looping,
+            told: Beat(f64::NEG_INFINITY),
         }
     }
 
@@ -135,11 +143,12 @@ impl Stretch {
             usize::try_from(first_frame_at_or_after(ahead).max(1)).ok()
         };
         let points = map.points();
-        let next = points.partition_point(|p| p.beat.get() <= self.beat.get());
+        let past = self.beat.get().max(self.told.get());
+        let next = points.partition_point(|p| p.beat.get() <= past);
         let point = points
             .get(next)
             .and_then(|p| frames_to(p.beat, cursor))
-            .map(|f| (self.frame + f, Kind::Point));
+            .map(|f| (self.frame + f, Kind::Point(next)));
         let wrap = self
             .looping
             .filter(|(_, end)| end.get() > self.beat.get())
@@ -290,7 +299,7 @@ impl TransportWalk {
                 // A prediction is a change when the engine's transport is
                 // there: a point always, a wrap only once the beat has jumped
                 // back (a wrap an ulp early is the stretch going on).
-                Source::Predicted(Kind::Point) => true,
+                Source::Predicted(Kind::Point(_)) => true,
                 Source::Predicted(Kind::Wrap) => t.beat().get() < stretch.beat.get(),
             };
             if !is_change {
@@ -299,18 +308,24 @@ impl TransportWalk {
                     // frame, without an entry.
                     stretch.beat = t.beat();
                     stretch.frame = frame;
+                    // `told` stays: the beat here is past any point told.
                 }
                 continue;
             }
             // The change's own transport, with the tempo the map has there.
             let mut s = Snapshot::at(call.cx, offset, call.steady.at(p), project, call.block_ns);
             let settled = s.settle(call.tempo, cursor);
-            let next = Stretch::of(&s, settled, frame);
+            let mut next = Stretch::of(&s, settled, frame);
+            if let Source::Predicted(Kind::Point(i)) = source
+                && let Some(point) = call.tempo.points().get(i)
+            {
+                next.told = point.beat;
+            }
             if payload.changes.is_full() {
                 dropped += 1;
-                if let Some(open) = self.open.as_mut()
-                    && !matches!(source, Source::Predicted(Kind::Point))
-                {
+                // No slope describes a stretch the beat jumped in, nor one
+                // that crosses a map point (the ramp's would extrapolate).
+                if let Some(open) = self.open.as_mut() {
                     open.tainted = true;
                 }
                 stretch = next;

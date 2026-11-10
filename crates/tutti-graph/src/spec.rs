@@ -535,7 +535,7 @@ impl LatencyGraph for GraphSpec {
         LatencyGraph::latency(&self.topology, node)
     }
 
-    fn inputs(&self, node: NodeKey) -> impl Iterator<Item = Feed<NodeKey>> {
+    fn inputs(&self, node: NodeKey) -> impl Iterator<Item = (u16, Feed<NodeKey>)> {
         LatencyGraph::inputs(&self.topology, node)
     }
 
@@ -545,7 +545,7 @@ impl LatencyGraph for GraphSpec {
         driving_nodes(&self.events, &self.params, node)
     }
 
-    fn outputs(&self) -> impl Iterator<Item = Option<NodeKey>> {
+    fn outputs(&self) -> impl Iterator<Item = (usize, Feed<NodeKey>)> {
         LatencyGraph::outputs(&self.topology)
     }
 }
@@ -562,7 +562,7 @@ impl LatencyGraph for ValidGraph {
         LatencyGraph::latency(self.topology(), node)
     }
 
-    fn inputs(&self, node: NodeKey) -> impl Iterator<Item = Feed<NodeKey>> {
+    fn inputs(&self, node: NodeKey) -> impl Iterator<Item = (u16, Feed<NodeKey>)> {
         LatencyGraph::inputs(self.topology(), node)
     }
 
@@ -570,7 +570,7 @@ impl LatencyGraph for ValidGraph {
         driving_nodes(&self.events, &self.params, node)
     }
 
-    fn outputs(&self) -> impl Iterator<Item = Option<NodeKey>> {
+    fn outputs(&self) -> impl Iterator<Item = (usize, Feed<NodeKey>)> {
         LatencyGraph::outputs(self.topology())
     }
 }

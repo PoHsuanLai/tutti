@@ -6060,6 +6060,19 @@ Each PR passes CI by itself. The doc is its own PR, this one.
    `latency_plan` and `graph_tail` take several; the reference interpreter
    folds several. Tests drive the latency view directly with fan-in. Compile
    still refuses.
+   *As built:* `LatencyGraph::inputs` yields `(u16, Feed)` per source (an
+   unconnected port yields one `(port, Feed::None)`, a feedback addend
+   `Feed::None`), and `outputs` yields `(usize, Feed)` the same way, so an
+   output channel's sources are views too (the plan said only inputs).
+   `Delays::inputs` is `(node, port, feed, by)` and `Delays::outputs` is
+   `(channel, feed, by)`: each source of a summed port or channel is delayed
+   to the arrival or the output time on its own; two outputs of one node into
+   one port are one feed and one entry. A channel's arrival (and so its
+   pre-roll in `Compensation`) is its latest source's departure.
+   `graph_tail` needed only the signature change: the max over sources is what
+   it already took. The reference sorts each sink's sources by `Edge` order
+   itself and folds them from `+0.0`; one source is an alias (its `-0.0`
+   stays). The tests are `tests/fan_in_views.rs`.
 3. **The op.** `Op::Sum`, `sum_chain`, colouring, `sum_op`, `par.rs`, `cost.rs`,
    `verify.rs`; the refusal goes. The analytic, order, differential, flag,
    PDC, add/remove, plan and no-alloc tests of point 9, written against a

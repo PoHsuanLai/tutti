@@ -102,8 +102,8 @@ fn latency_and_tail_are_folds_over_the_value() {
 
     // The trait view agrees with the structure: the mixer's port order is the
     // authored one, holes and all.
-    let preds: Vec<Feed<NodeKey>> = t.inputs(C).collect();
-    assert_eq!(preds, vec![Feed::Node(B), Feed::Node(D)]);
+    let preds: Vec<(u16, Feed<NodeKey>)> = t.inputs(C).collect();
+    assert_eq!(preds, vec![(0, Feed::Node(B)), (1, Feed::Node(D))]);
 }
 
 /// A node whose tail was never declared is counted, not collapsed to zero —
@@ -387,8 +387,8 @@ fn a_cycle_is_rejected_unless_feedback_breaks_it() {
     // path — and treating it as live puts the walk back in the cycle it was just
     // told to cut, which `plan` resolves by silently appending the cyclic nodes
     // in arbitrary order.
-    let preds: Vec<Feed<NodeKey>> = valid.get().inputs(A).collect();
-    assert_eq!(preds, vec![Feed::None]);
+    let preds: Vec<(u16, Feed<NodeKey>)> = valid.get().inputs(A).collect();
+    assert_eq!(preds, vec![(0, Feed::None)]);
 
     // With a real latency inside the loop, the fold still terminates on the
     // acyclic reading and counts the node once.

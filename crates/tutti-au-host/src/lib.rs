@@ -11,6 +11,8 @@ pub mod types;
 
 pub mod component;
 
+mod unit_code;
+
 #[cfg(target_os = "macos")]
 mod handle;
 
@@ -59,6 +61,7 @@ pub mod render_notify;
 
 pub use component::{AuComponentInfo, AuType};
 pub use error::{AuError, LoadFailedError, LoadStage, PresetFileError, PresetMismatch, Result};
+pub use unit_code::{unit_measures, unit_role};
 
 // Shared host vocabulary re-exported so consumers can stay format-agnostic.
 // `WindowHandle` is consumed by the GUI bridge; `TransportInfo` is the input type of

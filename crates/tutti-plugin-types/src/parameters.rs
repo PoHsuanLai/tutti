@@ -26,6 +26,9 @@
 //! building a coverage report; they are not the reading path.
 
 use bitflags::bitflags;
+use tutti_types::UnitParam;
+
+use crate::{FromPlain, ParamUnit};
 
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
@@ -515,6 +518,47 @@ pub struct ParameterInfo {
     /// clump 3, VST2 category 3 and VST3 unit 3 are unrelated numbers, and a
     /// bare number that does not say which model it belongs to is a mistake.
     pub group: String,
+    /// What the number measures, only where the format declared it exactly and
+    /// the declared range fits it. `None` is the common case, and the flat
+    /// [`unit`](Self::unit) string is still there. Read a value in tutti's own
+    /// unit through [`typed`](Self::typed); set it with
+    /// [`with_measures`](Self::with_measures), which applies the range check.
+    ///
+    /// `serde(default)`: data saved before this field reads as `None`.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub measures: Option<ParamUnit>,
+    /// The tutti role this parameter plays, only where the format declared the
+    /// role itself (a bypass flag, AU's pan unit, VST3's `DryWetMix` function
+    /// name), never from a name. `serde(default)` as [`measures`](Self::measures).
+    #[cfg_attr(feature = "serde", serde(default, with = "role_serde"))]
+    pub role: Option<UnitParam>,
+}
+
+/// `UnitParam` has no serde of its own, and its persisted form is its stable
+/// discriminant ([`UnitParam`]'s `u16` conversions), so a role crosses as that.
+#[cfg(feature = "serde")]
+mod role_serde {
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+    use tutti_types::UnitParam;
+
+    pub(super) fn serialize<S: Serializer>(
+        role: &Option<UnitParam>,
+        s: S,
+    ) -> Result<S::Ok, S::Error> {
+        role.map(u16::from).serialize(s)
+    }
+
+    pub(super) fn deserialize<'de, D: Deserializer<'de>>(
+        d: D,
+    ) -> Result<Option<UnitParam>, D::Error> {
+        Option::<u16>::deserialize(d)?
+            .map(|raw| {
+                UnitParam::try_from(raw).map_err(|_| {
+                    serde::de::Error::custom(format!("{raw} is not a UnitParam discriminant"))
+                })
+            })
+            .transpose()
+    }
 }
 
 impl ParameterInfo {
@@ -532,7 +576,53 @@ impl ParameterInfo {
             flags: ParamFlags::empty(),
             known: ParamFlags::empty(),
             group: String::new(),
+            measures: None,
+            role: None,
         }
+    }
+
+    /// Sets what the number measures, if the declared [`range`](Self::range)
+    /// fits `unit` ([`ParamUnit::fits`]); a unit the range does not fit leaves
+    /// [`measures`](Self::measures) `None`. Call it after the range is set.
+    #[must_use]
+    pub fn with_measures(mut self, unit: Option<ParamUnit>) -> Self {
+        self.measures = unit.filter(|u| u.fits(&self.range));
+        self
+    }
+
+    /// Sets the role the format declared for this parameter.
+    #[must_use]
+    pub fn with_role(mut self, role: Option<UnitParam>) -> Self {
+        self.role = role;
+        self
+    }
+
+    /// A plain value of this parameter as a tutti unit, if the declared unit and
+    /// the declared plain range allow it.
+    ///
+    /// The scaling happens here, once: a percent is divided by 100 for a
+    /// [`Mix`](tutti_types::Mix), milliseconds by 1000 for
+    /// [`Seconds`](tutti_types::Seconds). `None` for a normalized-only
+    /// parameter, one with no declared [`measures`](Self::measures), a unit
+    /// `U` does not read, or a `plain` that is not finite. Get `plain` from
+    /// [`to_plain`](Self::to_plain) for a normalized value.
+    ///
+    /// ```
+    /// use tutti_plugin_types::{ParamId, ParamUnit, ParameterInfo};
+    /// use tutti_types::{Mix, Seconds};
+    ///
+    /// let wet = ParameterInfo::new(ParamId::new(1), "Wet")
+    ///     .with_plain_range(0.0, 100.0, 50.0)
+    ///     .with_measures(Some(ParamUnit::Percent));
+    /// assert_eq!(wet.typed::<Mix>(25.0), Some(Mix::new(0.25)));
+    /// assert_eq!(wet.typed::<Seconds>(25.0), None);
+    /// ```
+    #[must_use]
+    pub fn typed<U: FromPlain>(&self, plain: f64) -> Option<U> {
+        if !matches!(self.range, ParamRange::Plain { .. }) || !plain.is_finite() {
+            return None;
+        }
+        U::from_plain(self.measures?, plain)
     }
 
     /// Sets the group this parameter belongs to.
@@ -1042,5 +1132,81 @@ mod tests {
             base.with_steps(ParamSteps::Enumerated(5)).step_count(),
             Some(5)
         );
+    }
+}
+
+#[cfg(all(test, feature = "serde"))]
+mod measures_serde_tests {
+    use super::*;
+
+    /// What `ParameterInfo` serialized as before `measures` and `role`: the
+    /// JSON of an older saved catalog.
+    const OLD_JSON: &str = r#"{
+        "id": 7, "name": "Cutoff", "unit": "Hz",
+        "range": {"Plain": {"min": 20.0, "max": 20000.0, "default": 1000.0}},
+        "steps": "Continuous", "flags": "AUTOMATABLE", "known": "AUTOMATABLE", "group": "Filter"
+    }"#;
+
+    /// An old `ParameterInfo` without the fields still deserializes, with both
+    /// `None`.
+    ///
+    /// Mutation (run, 2026-11-11): `default` removed from `role`'s attribute
+    /// (`serde(with = ..)` alone) → the old JSON fails with a missing-field
+    /// error, and this test fails. Removing `serde(default)` from `measures` does
+    /// **not** fail it: serde's derive already reads a missing `Option` as
+    /// `None`, so that attribute documents the rule and `role`'s is the one that
+    /// holds it.
+    #[test]
+    fn an_old_parameter_without_the_fields_still_deserializes() {
+        let p: ParameterInfo = serde_json::from_str(OLD_JSON).expect("old data reads");
+        assert_eq!(p.name, "Cutoff");
+        assert_eq!(p.measures, None);
+        assert_eq!(p.role, None);
+    }
+
+    /// The same, for `role` alone: `measures` present, `role` absent.
+    ///
+    /// Mutation (run): as above, `default` removed from `role` → fails.
+    #[test]
+    fn an_old_parameter_without_a_role_deserializes() {
+        let json = OLD_JSON.replace(
+            r#""group": "Filter""#,
+            r#""group": "Filter", "measures": "Hertz""#,
+        );
+        let p: ParameterInfo = serde_json::from_str(&json).expect("reads");
+        assert_eq!(p.measures, Some(ParamUnit::Hertz));
+        assert_eq!(p.role, None);
+    }
+
+    /// A typed unit and a role survive JSON and the IPC's bincode.
+    ///
+    /// Mutation (run): the role serialized as `Some(0)` whatever it is
+    /// (`role.map(|_| 0u16)`) → it reads back as `Cutoff`, and this test fails.
+    #[test]
+    fn measures_and_role_round_trip() {
+        let p = ParameterInfo::new(ParamId::new(3), "Pan")
+            .with_plain_range(-1.0, 1.0, 0.0)
+            .with_measures(Some(ParamUnit::Pan))
+            .with_role(Some(UnitParam::Pan));
+
+        let json: ParameterInfo =
+            serde_json::from_str(&serde_json::to_string(&p).unwrap()).unwrap();
+        assert_eq!(
+            (json.measures, json.role),
+            (Some(ParamUnit::Pan), Some(UnitParam::Pan))
+        );
+
+        let bin: ParameterInfo = bincode::deserialize(&bincode::serialize(&p).unwrap()).unwrap();
+        assert_eq!(
+            (bin.measures, bin.role),
+            (Some(ParamUnit::Pan), Some(UnitParam::Pan))
+        );
+    }
+
+    /// A role number that is no `UnitParam` is refused, not mapped to another.
+    #[test]
+    fn a_role_that_names_no_unit_param_is_refused() {
+        let json = OLD_JSON.replace(r#""group": "Filter""#, r#""group": "Filter", "role": 9999"#);
+        assert!(serde_json::from_str::<ParameterInfo>(&json).is_err());
     }
 }

@@ -167,6 +167,13 @@ impl Vst3ParameterInfo {
         self.flags.contains(ParameterFlags::IS_BYPASS)
     }
 
+    /// True if the parameter is a discrete list (`kIsList`): its `stepCount`
+    /// positions have names the plugin gives through `getParamStringByValue`.
+    #[must_use]
+    pub fn is_list(&self) -> bool {
+        self.flags.contains(ParameterFlags::IS_LIST)
+    }
+
     /// True if writing this parameter selects a program.
     ///
     /// VST3 has no load-preset call: a program is chosen by writing the

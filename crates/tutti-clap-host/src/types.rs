@@ -247,6 +247,10 @@ bitflags! {
         /// [`set_parameter`](crate::ClapLoaded::set_parameter) on an actively
         /// processing instance.
         const REQUIRES_PROCESS        = 1 << 15;
+        /// The value is an enumerated choice (`CLAP_PARAM_IS_ENUM`): an index
+        /// into names the plugin gives through `value_to_text`. Implies
+        /// [`STEPPED`](Self::STEPPED).
+        const IS_ENUM                 = 1 << 16;
     }
 }
 

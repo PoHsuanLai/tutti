@@ -11,9 +11,13 @@
 //! `try_lock`ed there. It still allocates the message string, as cpal's own
 //! error path does.
 
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, MutexGuard};
 use std::time::{Duration, Instant};
+
+#[cfg(feature = "capture")]
+use tutti_rt::Drained;
+use tutti_rt::FaultLatch;
 
 /// How long backend errors may arrive with no audio delivered before the
 /// stream counts as gone.
@@ -63,7 +67,9 @@ pub struct StreamFault {
 #[derive(Debug)]
 pub struct StreamFaults {
     count: AtomicU64,
-    disconnected: AtomicBool,
+    /// Raised once the device is gone; a capture source reads it through
+    /// `drain`, before its ring.
+    disconnected: FaultLatch,
     last: Mutex<Option<StreamFault>>,
     /// Zero point of `run_start`.
     pub(crate) epoch: Instant,
@@ -84,7 +90,7 @@ impl StreamFaults {
     pub fn new() -> Self {
         Self {
             count: AtomicU64::new(0),
-            disconnected: AtomicBool::new(false),
+            disconnected: FaultLatch::new(),
             last: Mutex::new(None),
             epoch: Instant::now(),
             run_start: AtomicU64::new(0),
@@ -120,7 +126,17 @@ impl StreamFaults {
     /// Returns whether the backend reported the device gone. Lock-free; stays
     /// set until the stream is started again.
     pub fn is_disconnected(&self) -> bool {
-        self.disconnected.load(Ordering::Acquire)
+        self.disconnected.is_raised()
+    }
+
+    /// Reads the disconnect, **then** runs `pop` over the capture ring, and
+    /// answers `Drained::Failed` only if the pop found nothing
+    /// ([`FaultLatch::drain`]). The order is the point: a pop first and a flag
+    /// after could report a drained ring with frames the callback pushed in
+    /// between.
+    #[cfg(feature = "capture")]
+    pub(crate) fn drain<T>(&self, pop: impl FnOnce() -> Option<T>) -> Drained<T> {
+        self.disconnected.drain(pop)
     }
 
     /// Returns a copy of the most recent fault, if any.
@@ -185,7 +201,7 @@ impl StreamFaults {
             Err(std::sync::TryLockError::WouldBlock) => {}
         }
         if kind == StreamFaultKind::Disconnected {
-            self.disconnected.store(true, Ordering::Release);
+            self.disconnected.raise();
         }
         self.count.fetch_add(1, Ordering::Release);
     }
@@ -193,7 +209,7 @@ impl StreamFaults {
     /// Forgets everything. Called when a stream starts.
     pub(crate) fn clear(&self) {
         *self.last_guard() = None;
-        self.disconnected.store(false, Ordering::Release);
+        self.disconnected.clear();
         self.count.store(0, Ordering::Release);
         self.run_start.store(0, Ordering::Relaxed);
     }

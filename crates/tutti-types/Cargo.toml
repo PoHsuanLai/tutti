@@ -5,7 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 # The name is an unrelated project's on crates.io; publishing is the owner's call.
 publish = false
-description = "Typed quantities and shapes shared by every engine crate: units, channel layouts, the AudioIn/AudioOut I/O traits, meter and graph values"
+description = "Typed quantities and shapes shared by every engine crate: units, channel layouts, the Source/Sink I/O traits, meter and graph values"
 license.workspace = true
 repository.workspace = true
 documentation = "https://docs.rs/tutti-types"

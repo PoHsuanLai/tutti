@@ -34,7 +34,7 @@ which re-exports this crate as `tutti::engine`, or `bevy-tutti` for a Bevy app.
   (`tutti-graph`), and the MIDI nodes are `tutti-midi-runtime`'s.
 - **The device.** Opening a stream and driving the real-time callback is
   `tutti-cpal`'s job. This crate only knows how to render a block.
-- **The value vocabulary.** The unit newtypes, the `AudioIn`/`AudioOut` traits
+- **The value vocabulary.** The unit newtypes, the `Source`/`Sink` traits
   and the PDC and meter math are `tutti-types`'. Delay compensation (`latency`)
   is `tutti-types`' pure pass, applied by the graph compiler.
 - **The ECS binding.** The node component, the reconcile pipeline and the

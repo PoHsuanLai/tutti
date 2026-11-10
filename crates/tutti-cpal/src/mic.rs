@@ -1,4 +1,4 @@
-//! Microphone capture as an [`AudioIn`] — the input-device twin of the output
+//! Microphone capture as a [`Source`] — the input-device twin of the output
 //! stream in [`output`](super::output).
 //!
 //! This is the device crate, so opening the `cpal` stream belongs here and
@@ -7,14 +7,14 @@
 //! `InletNode`, opened by `tutti-session`'s `Graph::add_inlet`), the
 //! `tutti_codec::FileOut` a take records into, and the `Recorder` that pumps
 //! between them (`tutti-session`). What this crate contributes is the one live
-//! [`AudioIn`] that touches hardware.
+//! [`Source`] that touches hardware.
 //!
 //! # Threading
 //!
 //! `cpal` runs the input callback on its own real-time thread (the producer); it
 //! only ever pushes whole interleaved frames into lock-free SPSC rings (one lane
 //! a channel, [`tutti_graph::TapWriter`]), never allocating or blocking. A background pump thread owns the [`MicIn`] (the
-//! consumer) and drains the recording ring via [`poll_into`](AudioIn::poll_into).
+//! consumer) and drains the recording ring via [`pull`](Source::pull).
 //! If the consumer falls behind, the ring fills and the callback drops the newest
 //! frames rather than block the audio thread — an overrun, surfaced as a gap,
 //! never a glitch on the output stream.
@@ -47,10 +47,11 @@ use cpal::traits::{DeviceTrait, StreamTrait};
 
 use tutti_codec::{FileOut, Format, Spec};
 use tutti_graph::{TapReader, TapWriter};
+use tutti_rt::Drained;
 use tutti_types::SampleRate;
 use tutti_types::Samples;
-use tutti_types::{AudioIn, OnEmpty};
 use tutti_types::{ChannelLayout, ChannelTopology, Fold, TapId};
+use tutti_types::{Pull, Source};
 
 use crate::driver::DeviceInfo;
 use crate::error::{Error, Result};
@@ -86,17 +87,17 @@ struct StreamHandle(
     #[allow(dead_code, reason = "ownership is the API — held for Drop, never read")] Owned,
 );
 
-/// A live microphone as an [`AudioIn`]. Requires the `capture` feature.
+/// A live microphone as a [`Source`]. Requires the `capture` feature.
 ///
 /// The CPAL input callback selects the inputs the mic was opened with from each
 /// device frame and pushes them into a lock-free ring of about one second; this
-/// value is the consumer end. Poll it with [`poll_into`](AudioIn::poll_into),
+/// value is the consumer end. Pull from it with [`pull`](Source::pull),
 /// or hand it to a `tutti_session::Recorder` with a sink from
 /// [`matching_sink`](Self::matching_sink) to record. If the consumer falls
 /// behind, the callback drops the newest frames rather than block. Capture
 /// stops when this value is dropped.
 ///
-/// Its [`layout`](AudioIn::layout) is the number of inputs selected, and its
+/// Its [`layout`](Source::layout) is the number of inputs selected, and its
 /// [`topology`](Self::topology) says they feed no speaker.
 ///
 /// [`open_with_monitor`](Self::open_with_monitor) also returns the reader of a
@@ -162,7 +163,7 @@ impl MicIn {
     /// a live-monitor ring fed by the same capture callback.
     ///
     /// Each captured frame goes into both the recording ring (drained by
-    /// [`poll_into`](AudioIn::poll_into)) and a shallow monitor ring. Give the
+    /// [`pull`](Source::pull)) and a shallow monitor ring. Give the
     /// monitor reader to `Graph::add_inlet` (`tutti-session`), with this mic's
     /// [`sample_rate`](Self::sample_rate), to hear the mic live, through
     /// effects if wanted, while recording the same input. The rings are
@@ -324,7 +325,7 @@ impl MicIn {
     }
 
     /// How many inputs the device has, of which this mic delivers
-    /// [`layout`](AudioIn::layout)'s.
+    /// [`layout`](Source::layout)'s.
     #[must_use]
     pub fn device_inputs(&self) -> ChannelLayout {
         self.device_inputs
@@ -342,7 +343,7 @@ impl MicIn {
     /// layout (one channel a selected input), in `format`.
     ///
     /// A source and sink must agree on rate and channel count, and nothing
-    /// downstream can check the rate: [`AudioIn`] carries none, so an 8 kHz
+    /// downstream can check the rate: [`Source`] carries none, so an 8 kHz
     /// sink fed by a 48 kHz mic writes a valid WAV that plays six times too
     /// slow. Building the sink here rules that out.
     ///
@@ -355,14 +356,14 @@ impl MicIn {
         path: impl AsRef<std::path::Path>,
         format: Format,
     ) -> std::io::Result<FileOut> {
-        // Read off `AudioIn::layout` rather than hard-coded, so this pairing
-        // cannot drift from what `poll_into` actually hands back; a sink built
+        // Read off `Source::layout` rather than hard-coded, so this pairing
+        // cannot drift from what `pull` actually hands back; a sink built
         // from a *different* width than the source reports is exactly what
         // `Recorder::start` refuses, and this helper exists to be the pairing
         // that always passes.
         FileOut::create(
             path,
-            &Spec::new(format, AudioIn::layout(self), self.sample_rate),
+            &Spec::new(format, Source::layout(self), self.sample_rate),
         )
     }
 
@@ -376,23 +377,35 @@ impl MicIn {
     }
 }
 
-impl AudioIn for MicIn {
-    /// A live capture device: an empty ring means the callback has not pushed
-    /// since the last poll, not that the microphone is finished. A consumer
-    /// that stopped here would end a recording within milliseconds of starting
-    /// it.
-    const ON_EMPTY: OnEmpty = OnEmpty::Starved;
-
+impl Source for MicIn {
     /// One channel a selected input (two for [`MicIn::open`]), whatever the
     /// device's own width is.
     fn layout(&self) -> ChannelLayout {
         self.tap.layout()
     }
 
-    /// The device is gone: the backend reported it disconnected. Any other
-    /// backend error may be transient and does not fail the source.
-    fn is_failed(&self) -> bool {
-        self.faults.is_disconnected()
+    /// Pops up to `out.len() / width` FRAMES the callback has pushed.
+    ///
+    /// A live capture device: an empty ring means the callback has not pushed
+    /// since the last pull, so [`Starved`](Pull::Starved), never
+    /// [`Ended`](Pull::Ended): a consumer that stopped there would end a
+    /// recording within milliseconds of starting it.
+    ///
+    /// [`Failed`](Pull::Failed) means the backend reported the device
+    /// disconnected (any other backend error may be transient and does not fail
+    /// the source) **and** the ring is empty. The fault flag is read before the
+    /// ring ([`StreamFaults::drain`]), so frames the callback pushed before the
+    /// disconnect are never hidden behind it.
+    fn pull(&mut self, out: &mut [f32]) -> Pull {
+        let tap = &mut self.tap;
+        match self.faults.drain(|| {
+            let n = tap.pop_into(out);
+            (!n.is_zero()).then_some(n)
+        }) {
+            Drained::Item(n) => Pull::Frames(n),
+            Drained::Empty => Pull::Starved,
+            Drained::Failed => Pull::Failed,
+        }
     }
 
     /// The frames the capture callback dropped on a full ring since the last
@@ -400,13 +413,6 @@ impl AudioIn for MicIn {
     /// ring's writer.)
     fn take_lost(&mut self) -> Samples {
         TapReader::take_lost(&self.tap)
-    }
-
-    /// Pops up to `out.len() / width` FRAMES the callback has pushed — the
-    /// return is frames, the slice is samples. A short/zero count is normal for
-    /// a live source — the pump backs off and tries again.
-    fn poll_into(&mut self, out: &mut [f32]) -> Samples {
-        self.tap.pop_into(out)
     }
 }
 
@@ -514,7 +520,7 @@ where
             capture.block(data);
         },
         // Not exercised without a device: what it calls, `StreamFaults::record`
-        // and `MicIn::is_failed`, is tested on its own.
+        // and `MicIn::pull`'s verdict, is tested on its own.
         move |err| faults.record(&err),
         None,
     )?;

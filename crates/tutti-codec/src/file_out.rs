@@ -1,20 +1,20 @@
-//! [`FileOut`]: an [`AudioOut`] that writes a file of any [`Format`](crate::Format).
+//! [`FileOut`]: a [`Sink`] that writes a file of any [`Format`](crate::Format).
 
 use std::fs::File;
 use std::io::BufWriter;
 use std::path::Path;
 
-use tutti_types::{AudioOut, ChannelLayout, Interleaved, SampleRate};
+use tutti_types::{ChannelLayout, Interleaved, SampleRate, Sink, SinkFailed};
 
 use crate::encoder::Encoder;
 use crate::spec::Spec;
 
-/// A file sink: the [`AudioOut`] a recording writes into, as a file of any
+/// A file sink: the [`Sink`] a recording writes into, as a file of any
 /// [`Format`](crate::Format) this build can write.
 ///
 /// The write edge, the mirror of `FileIn` (with a `decode-*` feature): `FileIn` is the
-/// codec's [`AudioIn`](tutti_types::AudioIn) and this is its
-/// [`AudioOut`]. It is an [`Encoder`] behind that contract, the same writer
+/// codec's [`Source`](tutti_types::Source) and this is its
+/// [`Sink`]. It is an [`Encoder`] behind that contract, the same writer
 /// an export bounces through, so a recorded and an exported file agree
 /// sample-for-sample and byte-for-byte for a [`Spec`]. One difference is
 /// deliberate: an export dithers before quantizing and a live capture does
@@ -23,7 +23,7 @@ use crate::spec::Spec;
 ///
 /// It writes incrementally through a buffered file writer, so a take of any
 /// length is never held in memory. Frames are whole: a trailing part of a
-/// frame in a [`write`](AudioOut::write) is ignored, so a caller's odd slice
+/// frame in a [`write`](Sink::write) is ignored, so a caller's odd slice
 /// cannot rotate the file's channels.
 ///
 /// Writes do blocking file I/O: drive the sink from a thread of its own
@@ -31,11 +31,12 @@ use crate::spec::Spec;
 ///
 /// # Failure
 ///
-/// [`AudioOut::write`] returns `()`, so a failure has nowhere to go
-/// mid-stream: the **first** write error (a full disk, or a WAV reaching its
-/// 4 GiB limit with [`Error::WavTooLarge`](crate::Error::WavTooLarge)) is kept,
-/// [`is_failed`](AudioOut::is_failed) turns `true`, and later writes are
-/// skipped. [`finalize`](AudioOut::finalize) must run for the file to be
+/// [`Sink::write`] returns only the marker [`SinkFailed`], so the detail of a
+/// failure has nowhere to go mid-stream: the **first** write error (a full
+/// disk, or a WAV reaching its 4 GiB limit with
+/// [`Error::WavTooLarge`](crate::Error::WavTooLarge)) is kept, that write and
+/// every later one returns [`SinkFailed`], and later writes are skipped.
+/// [`finalize`](Sink::finalize) must run for the file to be
 /// readable: it closes what was written even after a failure (a recording
 /// keeps its readable prefix) and returns the first error, else the result of
 /// closing.
@@ -46,7 +47,7 @@ use crate::spec::Spec;
 /// take dropped without finalizing (a pump thread that panicked) still
 /// opens.
 ///
-/// The sample rate is the [`Spec`]'s: [`AudioIn`](tutti_types::AudioIn)
+/// The sample rate is the [`Spec`]'s: [`Source`](tutti_types::Source)
 /// carries none, so build the spec at the source's rate or the file plays at
 /// the wrong speed.
 ///
@@ -55,13 +56,13 @@ use crate::spec::Spec;
 /// ```
 /// # #[cfg(feature = "encode-wav")] {
 /// use tutti_codec::{FileOut, Format, Pcm, Spec};
-/// use tutti_types::{AudioOut, ChannelLayout, SampleRate};
+/// use tutti_types::{ChannelLayout, SampleRate, Sink};
 ///
 /// # fn main() -> std::io::Result<()> {
 /// let dir = tempfile::tempdir()?;
 /// let spec = Spec::new(Format::Wav(Pcm::Int24), ChannelLayout::STEREO, SampleRate(48_000.0));
 /// let mut out = FileOut::create(dir.path().join("tone.wav"), &spec)?;
-/// out.write(&[0.5, -0.5, 0.25, -0.25]); // two stereo frames
+/// out.write(&[0.5, -0.5, 0.25, -0.25]).expect("the write lands"); // two stereo frames
 /// out.finalize()?;
 /// # Ok(())
 /// # }
@@ -70,7 +71,7 @@ use crate::spec::Spec;
 pub struct FileOut {
     encoder: Encoder<BufWriter<File>>,
     spec: Spec,
-    /// The first write failure, kept until [`finalize`](AudioOut::finalize)
+    /// The first write failure, kept until [`finalize`](Sink::finalize)
     /// can report it. Keeping the *first* is what makes the report meaningful:
     /// later failures are usually the same cause repeated.
     first_error: Option<std::io::Error>,
@@ -135,7 +136,7 @@ impl FileOut {
     }
 }
 
-impl AudioOut for FileOut {
+impl Sink for FileOut {
     fn layout(&self) -> ChannelLayout {
         self.spec.layout
     }
@@ -145,23 +146,24 @@ impl AudioOut for FileOut {
     /// ignored. A caller feeding another width folds first, through
     /// [`tutti_types::Fold`].
     ///
-    /// A failure stops the sink and is reported once, from
-    /// [`finalize`](AudioOut::finalize). Swallowing it would leave a disk-full
+    /// A failure stops the sink: this write and every later one returns
+    /// [`SinkFailed`], and the detail of the first is reported once, from
+    /// [`finalize`](Sink::finalize). Swallowing it would leave a disk-full
     /// mid-take looking like a complete recording.
-    fn write(&mut self, frames: &[f32]) {
+    fn write(&mut self, frames: &[f32]) -> Result<(), SinkFailed> {
         if self.first_error.is_some() {
-            return; // already failed; the file is being abandoned
+            return Err(SinkFailed); // already failed; the file is being abandoned
         }
         // `Interleaved` views whole frames only: a trailing part of one is
         // ignored, so an odd slice cannot rotate the file's channels.
         let block = Interleaved::new(frames, self.spec.layout);
-        if let Err(e) = self.encoder.write(block) {
-            self.first_error = Some(e.into());
+        match self.encoder.write(block) {
+            Ok(()) => Ok(()),
+            Err(e) => {
+                self.first_error = Some(e.into());
+                Err(SinkFailed)
+            }
         }
-    }
-
-    fn is_failed(&self) -> bool {
-        self.first_error.is_some()
     }
 
     fn finalize(self) -> std::io::Result<()> {

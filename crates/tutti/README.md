@@ -93,7 +93,7 @@ Most of what a host names is in [`prelude`](crate::prelude).
 | `tutti::nodes` | `tutti-nodes` | built-in nodes: filters, delays, dynamics, LFOs, mixing, automation | always |
 | `tutti::device` | `tutti-cpal` | the sound card: CPAL output stream, mic capture, driver lifecycle | `device` |
 | `tutti::codec` | `tutti-codec` | audio file codecs: `Wave`, `FileIn`, the decoders, `FileOut`, the encoders | `codec` (implied by every format) |
-| `tutti::io` | `tutti-session` | recording: `Recorder` and its `PumpLoop` (the sink is `tutti::codec::FileOut`; a graph tap is an `AudioIn` as it is) | `io` |
+| `tutti::io` | `tutti-session` | recording: `Recorder` and its `PumpLoop` (the sink is `tutti::codec::FileOut`; a graph tap is a `Source` as it is) | `io` |
 | `tutti::export` | `tutti-export` | offline render of a graph to a buffer or a file | `export` |
 | `tutti::sampler` | `tutti-sampler` | sample playback: in-memory and streamed voices, time stretch | `sampler` |
 | `tutti::polysynth` | `tutti-polysynth` | polyphonic subtractive synth node | `synth` |

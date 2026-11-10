@@ -44,7 +44,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use tutti_codec::{FileOut, Format, Pcm, Spec};
 use tutti_session::{Recorder, RecorderError};
-use tutti_types::{AudioIn, ChannelLayout, OnEmpty, SampleRate, Samples};
+use tutti_types::{ChannelLayout, Pull, SampleRate, Samples, Source};
 
 fn wav(path: &std::path::Path) -> FileOut {
     FileOut::create(
@@ -115,14 +115,12 @@ struct Ramp {
     delay: std::time::Duration,
 }
 
-impl AudioIn for Ramp {
-    const ON_EMPTY: OnEmpty = OnEmpty::EndOfStream;
-
+impl Source for Ramp {
     fn layout(&self) -> ChannelLayout {
         ChannelLayout::STEREO
     }
 
-    fn poll_into(&mut self, out: &mut [f32]) -> Samples {
+    fn pull(&mut self, out: &mut [f32]) -> Pull {
         self.polls.fetch_add(1, Ordering::Release);
         if !self.delay.is_zero() {
             std::thread::sleep(self.delay);
@@ -130,7 +128,7 @@ impl AudioIn for Ramp {
         let n = (self.frames - self.pos).min(out.len() / 2);
         if n == 0 {
             self.drained.store(true, Ordering::Release);
-            return Samples::ZERO;
+            return Pull::Ended;
         }
         for i in 0..n {
             // Distinct per frame and per channel, so a dropped, duplicated or
@@ -140,7 +138,7 @@ impl AudioIn for Ramp {
             out[i * 2 + 1] = -(f / 100_000.0);
         }
         self.pos += n;
-        Samples(n)
+        Pull::Frames(Samples(n))
     }
 }
 
@@ -152,21 +150,19 @@ struct HalfStarving {
     polls: Arc<AtomicUsize>,
 }
 
-impl AudioIn for HalfStarving {
-    const ON_EMPTY: OnEmpty = OnEmpty::Starved;
-
+impl Source for HalfStarving {
     fn layout(&self) -> ChannelLayout {
         ChannelLayout::STEREO
     }
 
-    fn poll_into(&mut self, out: &mut [f32]) -> Samples {
+    fn pull(&mut self, out: &mut [f32]) -> Pull {
         let n = self.polls.fetch_add(1, Ordering::Release) + 1;
         if n.is_multiple_of(2) {
-            return Samples::ZERO;
+            return Pull::Starved;
         }
         let frames = Samples::from_interleaved_len(out.len(), ChannelLayout::STEREO);
         out[..frames.interleaved_len(ChannelLayout::STEREO)].fill(0.25);
-        frames
+        Pull::Frames(frames)
     }
 }
 
@@ -177,14 +173,12 @@ struct Exploding {
     polled: Arc<AtomicUsize>,
 }
 
-impl AudioIn for Exploding {
-    const ON_EMPTY: OnEmpty = OnEmpty::Starved;
-
+impl Source for Exploding {
     fn layout(&self) -> ChannelLayout {
         ChannelLayout::STEREO
     }
 
-    fn poll_into(&mut self, _out: &mut [f32]) -> Samples {
+    fn pull(&mut self, _out: &mut [f32]) -> Pull {
         self.polled.fetch_add(1, Ordering::Release);
         panic!("the source fell over mid-take");
     }
@@ -198,7 +192,7 @@ fn sink(path: &std::path::Path) -> FileOut {
 ///
 /// This is the whole production path in one test: `Recorder::start` spawns via
 /// `the thread`, the loop runs `pump_once` until `Ramp` reports
-/// [`OnEmpty::EndOfStream`], the driver breaks, finalizes where it owns the
+/// [`Pull::Ended`], the driver breaks, finalizes where it owns the
 /// loop, and the `io::Result` rides the joined `JoinHandle` back to `stop`.
 ///
 /// The frame count is exact, and the values are checked too — a count alone
@@ -247,7 +241,7 @@ fn a_finite_source_ends_its_own_take_and_the_file_is_readable() {
     assert_eq!(
         polls.load(Ordering::Acquire),
         at_drain,
-        "the driver must break its loop on EndOfStream, not keep polling a dry \
+        "the driver must break its loop on Ended, not keep polling a dry \
          source — a live-spinning take burns a core until someone calls stop()"
     );
 
@@ -277,7 +271,7 @@ fn a_finite_source_ends_its_own_take_and_the_file_is_readable() {
 
 /// **A live take ends only when someone stops it.**
 ///
-/// `HalfStarving` reports [`OnEmpty::Starved`] and never runs dry, so the
+/// `HalfStarving` reports [`Pull::Starved`] and never runs dry, so the
 /// driver must park and re-poll rather than break — that flag is the only
 /// thing that ends a microphone take, and the reason `Drop` exists at all.
 ///
@@ -381,7 +375,7 @@ fn a_panicking_source_surfaces_as_a_recording_thread_panic() {
 ///
 /// So the body here is the assertion: `start`, `wait`, read the file. No
 /// `wait_until`, no published flag, no sleep in the test. If `wait` did not
-/// hold the loop open to the source's own [`OnEmpty::EndOfStream`], the frame
+/// hold the loop open to the source's own [`Pull::Ended`], the frame
 /// count would come up short — which is exactly the mutation.
 ///
 /// *Mutation:* make `Recorder::wait` call `finish_in_place()` instead of
@@ -437,7 +431,7 @@ fn wait_returns_a_complete_finite_take_without_sequencing_on_the_pump() {
 /// `bevy-tutti`'s drain system polls `is_finished` once per frame and only
 /// then calls `finish_in_place`, so the frame never waits on the pump thread. This is
 /// that sequence without Bevy: nobody requests a stop, the source's own
-/// [`OnEmpty::EndOfStream`] ends the loop, and the run flag is still set when
+/// [`Pull::Ended`] ends the loop, and the run flag is still set when
 /// the take is collected, which is what tells "it ended" from "it was ended".
 #[test]
 fn is_finished_reports_a_finite_take_ending_itself_without_blocking() {
@@ -460,7 +454,7 @@ fn is_finished_reports_a_finite_take_ending_itself_without_blocking() {
     wait_until("the finite take to finish on its own", || rec.is_finished());
     assert!(
         rec.is_running(),
-        "no stop was requested: the source's EndOfStream ended the take"
+        "no stop was requested: the source's Ended ended the take"
     );
 
     let result = rec
@@ -531,29 +525,25 @@ fn a_requested_stop_ends_a_live_take_without_blocking() {
     );
 }
 
-/// A live source whose device died: serves 7 frames, then reads empty and is
-/// failed. The thread driver must end the take by itself, keeping the frames,
+/// A live source whose device died: serves 7 frames, then answers `Failed`. The thread driver must end the take by itself, keeping the frames,
 /// where it used to park for ever.
 struct Dead {
     left: usize,
 }
 
-impl AudioIn for Dead {
-    const ON_EMPTY: OnEmpty = OnEmpty::Starved;
-
+impl Source for Dead {
     fn layout(&self) -> ChannelLayout {
         ChannelLayout::STEREO
     }
 
-    fn poll_into(&mut self, out: &mut [f32]) -> Samples {
+    fn pull(&mut self, out: &mut [f32]) -> Pull {
         let n = self.left.min(out.len() / 2);
+        if n == 0 {
+            return Pull::Failed;
+        }
         out[..n * 2].fill(0.25);
         self.left -= n;
-        Samples(n)
-    }
-
-    fn is_failed(&self) -> bool {
-        true
+        Pull::Frames(Samples(n))
     }
 }
 
@@ -598,18 +588,16 @@ struct AlwaysLive {
     polls: Arc<AtomicUsize>,
 }
 
-impl AudioIn for AlwaysLive {
-    const ON_EMPTY: OnEmpty = OnEmpty::Starved;
-
+impl Source for AlwaysLive {
     fn layout(&self) -> ChannelLayout {
         ChannelLayout::STEREO
     }
 
-    fn poll_into(&mut self, out: &mut [f32]) -> Samples {
+    fn pull(&mut self, out: &mut [f32]) -> Pull {
         self.polls.fetch_add(1, Ordering::Release);
         let frames = Samples::from_interleaved_len(out.len(), ChannelLayout::STEREO);
         out[..frames.interleaved_len(ChannelLayout::STEREO)].fill(0.5);
-        frames
+        Pull::Frames(frames)
     }
 }
 

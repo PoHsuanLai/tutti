@@ -10,8 +10,8 @@
 //! Both ends speak flat interleaved `&[f32]` at a runtime width, with the
 //! stride owned by the type and every count denominated in frames. The sink
 //! end is [`RegionOut::push_interleaved`](crate::butler::prefetch::RegionOut::push_interleaved).
-//! `WaveIn` deliberately does not implement [`AudioIn`](tutti_types::AudioIn) —
-//! see its type docs, which is where that decision and its reasoning live.
+//! `WaveIn` is not a [`Source`](tutti_types::Source): it never ends (see its type
+//! docs).
 
 use crate::nonempty;
 use crate::voice::interp::Place;
@@ -45,39 +45,13 @@ pub(crate) fn wave_frame_into(wave: &Wave, place: &Place, idx: usize, out: &mut 
 /// Past the end it yields silence, so it is an *unbounded* source — the
 /// caller bounds the transfer by the size of the scratch buffer it fills.
 ///
-/// # Deliberately NOT an [`AudioIn`](tutti_types::AudioIn), and not because of the width
+/// # Not a [`Source`](tutti_types::Source)
 ///
-/// Width is no obstacle: [`AudioIn`](tutti_types::AudioIn) carries a runtime
-/// [`ChannelLayout`]. `WaveIn` stays inherent for a different reason, about
-/// what a short count *means*.
-///
-/// [`AudioIn::poll_into`](tutti_types::AudioIn::poll_into)'s contract is entirely
-/// about what a short or zero count means: `0` is either "the producer has
-/// not caught up" ([`Starved`](tutti_types::OnEmpty::Starved)) or "there will
-/// never be more" ([`EndOfStream`](tutti_types::OnEmpty::EndOfStream)), and
-/// `ON_EMPTY` is the source answering that question once, on the type, so a
-/// generic consumer can branch on it.
-///
-/// `WaveIn` cannot answer it, because it never asks it.
-/// [`fill_interleaved`](Self::fill_interleaved) always fills the whole buffer
-/// and always returns `out.len() / channels` — it is unbounded by construction,
-/// yielding silence forever past the end of the wave. Neither verdict is true of
-/// it:
-///
-/// - `EndOfStream` is a promise about the *first* zero. `WaveIn` runs off the
-///   end of the wave and keeps returning full counts of silence, so a consumer
-///   looping on that verdict would never stop.
-/// - `Starved` promises a producer that will catch up. There is no producer —
-///   the `Wave` is resident in memory, and a retry returns exactly the same
-///   silence.
-///
-/// A third `OnEmpty` variant ("unbounded — pads rather than ending") would make
-/// it fit, but that is the wrong trade: it would add a case every existing
-/// consumer must handle, in `tutti-types`, to describe a source whose count is
-/// already known to be constant. The honest reading is that a source which never
-/// returns a short count is not answering the question `AudioIn` exists to ask,
-/// so it is not an `AudioIn`. It stays inherent, and the *caller* owns the
-/// bound — which is what `refill_forward` already does by sizing the scratch
+/// A `Source` answers each pull with a verdict (starved, ended, failed), and
+/// `WaveIn` has none to give: [`fill_interleaved`](Self::fill_interleaved)
+/// always fills the whole buffer, with silence past the end of the wave, so it
+/// never ends and never waits on a producer. It stays inherent, and the
+/// *caller* owns the bound, which `refill_forward` does by sizing the scratch
 /// buffer.
 pub(crate) struct WaveIn<'w> {
     wave: &'w Wave,
@@ -110,16 +84,13 @@ impl<'w> WaveIn<'w> {
     /// cursor. Always fills the whole buffer — past the end that means
     /// zero-padded silence.
     ///
-    /// # Why the return is not an `AudioIn::poll_into` count
+    /// # The return is not a pull's count
     ///
-    /// It looks like one and it is not. The loop below is over
-    /// `chunks_exact_mut`, with no early exit, so this returns
-    /// `out.len() / ch` unconditionally — a pure function of the buffer the
-    /// caller passed in, carrying no information back about the source. It is a
-    /// convenience, not a signal, and the production callers
-    /// (`loops::Mapping::fill`'s runs) discard it; the refill takes its frame
-    /// count from `RegionOut::push_interleaved` instead. See the type-level docs for why
-    /// that disqualifies `WaveIn` from the trait.
+    /// The loop below has no early exit, so this returns `out.len() / ch`
+    /// unconditionally: a pure function of the buffer, carrying nothing back
+    /// about the source. The production callers (`loops::Mapping::fill`'s
+    /// runs) discard it; the refill takes its frame count from
+    /// `RegionOut::push_interleaved`.
     pub(crate) fn fill_interleaved(&mut self, out: &mut [f32]) -> usize {
         // Stride derived once, above the frame loop.
         let ch = self.channels.count() as usize;

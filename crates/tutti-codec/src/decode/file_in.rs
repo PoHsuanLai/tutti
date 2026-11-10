@@ -1,10 +1,11 @@
 //! Streaming decode over symphonia.
 //!
 //! [`FileIn`] decodes an audio file sequentially, frame by frame, without
-//! loading the whole file into RAM. It is an [`AudioIn`]: [`poll_into`] fills a
+//! loading the whole file into RAM. It is a [`Source`]: [`pull`] fills a
 //! caller buffer of flat interleaved `f32` **at the file's own channel width**
 //! from the current cursor and reports how many **frames** it produced (a short
-//! count then `0` at end-of-stream). [`layout`](AudioIn::layout) reports that
+//! count, then [`Pull::Ended`] at end-of-stream, or [`Pull::Failed`] at a decode
+//! fault). [`layout`](Source::layout) reports that
 //! width, so a caller sizes its buffer from the trait and never has to ask the
 //! concrete type.
 //!
@@ -18,9 +19,9 @@
 //! arbitrary position, call [`seek`] first — it hooks
 //! `FormatReader::seek(SeekMode::Accurate, ...)` (which lands *before* the
 //! requested frame) and decodes-and-discards the preroll to hit the exact frame,
-//! so a following `poll_into` is a clean sequential read from there.
+//! so a following `pull` is a clean sequential read from there.
 //!
-//! [`poll_into`]: FileIn::poll_into
+//! [`pull`]: Source::pull
 //! [`seek`]: FileIn::seek
 //!
 //! It shares [`Wave::read`](crate::Wave::read)'s probe head and its one-packet
@@ -33,8 +34,8 @@ use symphonia::core::audio::{AudioBuffer, Signal};
 use symphonia::core::codecs::{CODEC_TYPE_FLAC, Decoder, DecoderOptions};
 use symphonia::core::errors::Error;
 use symphonia::core::formats::{FormatReader, SeekMode, SeekTo};
-use tutti_types::{AudioIn, OnEmpty};
 use tutti_types::{ChannelLayout, ChannelTopology, SampleRate, Samples};
+use tutti_types::{Pull, Source};
 
 use super::error::{DecodeError, convert};
 use super::placement::{topology_of, unstated};
@@ -50,13 +51,13 @@ fn frames(n: u64) -> Samples {
 const TRUNCATED: &str = "stream ended before the container's frame count";
 
 /// A streaming decoder over an audio file's first audio track, as an
-/// [`AudioIn`].
+/// [`Source`].
 ///
 /// Decodes sequentially without loading the whole file into memory (compare
-/// [`Wave::read`](crate::Wave::read)). [`poll_into`](AudioIn::poll_into) fills a
+/// [`Wave::read`](crate::Wave::read)). [`pull`](Source::pull) fills a
 /// flat interleaved `f32` buffer **at the file's own channel width** and
-/// returns the frames produced; a short count and then `0` mark the end of the
-/// file. It does not downmix: [`topology`](Self::topology) says which speaker each
+/// returns the frames produced; a short count and then [`Pull::Ended`] mark the
+/// end of the file. It does not downmix: [`topology`](Self::topology) says which speaker each
 /// channel feeds, and a caller wanting another width builds a
 /// [`tutti_types::Fold`] from it.
 ///
@@ -69,14 +70,15 @@ const TRUNCATED: &str = "stream ended before the container's frame count";
 ///
 /// ```no_run
 /// use tutti_codec::FileIn;
-/// use tutti_types::{AudioIn, Samples};
+/// use tutti_types::{Pull, Samples, Source};
 ///
 /// let mut file = FileIn::open("take.flac")?;
 /// let width = usize::from(file.layout().count());
 /// let mut buf = vec![0.0f32; 1024 * width];
 /// file.seek(Samples(48_000))?; // start one second in, at 48 kHz
-/// let frames = file.poll_into(&mut buf);
-/// println!("read {} frames of {width} channels", frames.get());
+/// if let Pull::Frames(frames) = file.pull(&mut buf) {
+///     println!("read {} frames of {width} channels", frames.get());
+/// }
 /// # Ok::<(), tutti_codec::DecodeError>(())
 /// ```
 pub struct FileIn {
@@ -103,7 +105,7 @@ pub struct FileIn {
     /// the decoder primer. [`seek`](Self::seek) steps back past it when the
     /// frames it swallowed include the one asked for.
     skipped_primer: Option<u64>,
-    /// The decode error that ended a [`poll_into`](AudioIn::poll_into) stream
+    /// The decode error that ended a [`pull`](Source::pull) stream
     /// early, kept for [`error`](Self::error). Sticky until a
     /// [`seek`](Self::seek) succeeds.
     fault: Option<DecodeError>,
@@ -146,7 +148,7 @@ impl FileIn {
     /// Which speaker each channel of the interleaved frames feeds, in channel
     /// order: what the container names, or stereo when it names none (see
     /// [`Wave::read`](crate::Wave::read)). Its length is
-    /// [`layout`](AudioIn::layout)'s width.
+    /// [`layout`](Source::layout)'s width.
     pub fn topology(&self) -> &ChannelTopology {
         &self.topology
     }
@@ -288,10 +290,9 @@ impl FileIn {
     /// that ended before that count, where a damaged frame can read as a
     /// clean end of file.
     ///
-    /// [`poll_into`](AudioIn::poll_into) has no error channel: a failed read
-    /// returns the frames decoded before it and then `0`, the same as
-    /// end-of-file, so a consumer that sees `0` asks here to tell a corrupt
-    /// file from a finished one. The fault is sticky (later reads return it
+    /// [`pull`](Source::pull) answers [`Pull::Failed`] after the frames decoded
+    /// before the fault, where a finished file answers [`Pull::Ended`]; this is
+    /// the fault's detail. The fault is sticky (later reads return it
     /// without decoding on) and cleared by a successful [`seek`](Self::seek).
     pub fn error(&self) -> Option<&DecodeError> {
         self.fault.as_ref()
@@ -308,7 +309,7 @@ impl FileIn {
     ///
     /// `out.len()` should be a multiple of the file's channel count; a
     /// partial trailing frame is not filled. This is the fallible form of
-    /// [`poll_into`](AudioIn::poll_into).
+    /// [`pull`](Source::pull).
     ///
     /// # Errors
     ///
@@ -459,45 +460,48 @@ impl FileIn {
 }
 
 /// Sequential reads at the file's **own** channel width. A decode error ends
-/// the stream (`0` from then on), is kept for [`FileIn::error`] and reads as
-/// [`is_failed`](AudioIn::is_failed); use
+/// the stream, is kept for [`FileIn::error`] and reads as
+/// [`Pull::Failed`], where a clean end reads as [`Pull::Ended`]; use
 /// [`fill_sequential_interleaved`](FileIn::fill_sequential_interleaved) to get
-/// it back as a `Result`.
+/// the error back as a `Result`.
 ///
-/// No downmix happens here: `layout()` describes exactly what `poll_into`
+/// No downmix happens here: `layout()` describes exactly what `pull`
 /// produces. A caller wanting another width builds a [`tutti_types::Fold`] from
 /// [`topology`](FileIn::topology).
-impl AudioIn for FileIn {
-    /// A file has an end, and a decode error ends the stream there too (see the
-    /// doc above): either way `0` means there is no more to read, and
-    /// [`is_failed`](Self::is_failed) says which.
-    const ON_EMPTY: OnEmpty = OnEmpty::EndOfStream;
-
-    /// The file's own width, which is what [`poll_into`](Self::poll_into) produces.
+///
+/// A file is synchronous, so it never answers [`Pull::Starved`].
+impl Source for FileIn {
+    /// The file's own width, which is what [`pull`](Self::pull) produces.
     fn layout(&self) -> ChannelLayout {
         self.topology.layout()
     }
 
     /// Flat interleaved at [`layout`](Self::layout)'s width. `out` holds
-    /// `out.len() / channels` frames, and the return is that many FRAMES at
-    /// most — never samples.
+    /// `out.len() / channels` frames, and the count is that many FRAMES at
+    /// most, never samples.
     ///
     /// A trailing partial frame is not filled: a short frame desynchronises the
     /// interleave for everything after it.
-    fn poll_into(&mut self, out: &mut [f32]) -> Samples {
+    ///
+    /// Frames and a verdict never arrive together: the frames read before a
+    /// decode fault come first, and the fault is the next pull's
+    /// [`Failed`](Pull::Failed). A pull that finds nothing left and no fault is
+    /// [`Ended`](Pull::Ended).
+    fn pull(&mut self, out: &mut [f32]) -> Pull {
         // Not through `fill_sequential_interleaved`, whose `Err` is a copy of
         // the fault: here it would be dropped.
         if self.fault.is_some() {
-            return Samples::ZERO;
+            return Pull::Failed;
         }
         let (filled, fault) = self.fill(out);
         self.fault = fault;
-        Samples(filled)
-    }
-
-    /// Whether a decode fault ended the stream: [`FileIn::error`] is `Some`.
-    fn is_failed(&self) -> bool {
-        self.fault.is_some()
+        if filled > 0 {
+            Pull::Frames(Samples(filled))
+        } else if self.fault.is_some() {
+            Pull::Failed
+        } else {
+            Pull::Ended
+        }
     }
 }
 

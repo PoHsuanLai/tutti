@@ -177,9 +177,13 @@ fn a_unit_with_both_latency_and_tail_reports_them_separately() {
          tail-vs-latency contrast meaningful; re-measure if it moved"
     );
     let tail_samples = tail.to_samples_ceil(RATE);
+    // `ceil(0.2 * 48000) = 9600`: the AU's `Float64` 0.2 times 48000 is
+    // 9600.0 in f64. This read 9601 while `Seconds` was `f32`: the nearest
+    // `f32` to 0.2 is 0.200000003, and 0.200000003 * 48000 = 9600.00014,
+    // which ceils to 9601 (one frame of tail that was never asked for).
     assert_eq!(
         tail_samples,
-        Samples(9601),
+        Samples(9600),
         "0.2s at 48kHz, rounded up: the *allocation* rounding, because a bounce \
          that rounds a tail down truncates it"
     );

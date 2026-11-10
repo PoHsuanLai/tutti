@@ -60,7 +60,7 @@ pub(crate) mod verify;
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::NodeKey;
-use crate::{Edge, FeedbackFrom, InPort, OutPort, Sink, Source};
+use crate::{Edge, FeedbackFrom, InPort, OutPort, Source};
 use tutti_types::{ChannelLayout, Latency, Samples, Tail};
 
 use crate::node::{InPlaceMask, MAX_PORTS, Prepare, Resolution, Shape};
@@ -117,15 +117,6 @@ pub enum CompileError {
         delay: Samples,
         /// The maximum block being compiled for.
         max_block: Samples,
-    },
-    /// A sink has two or more sources, and this compiler does not sum yet.
-    ///
-    /// [`Topology`](crate::Topology) holds a set of sources per sink port and
-    /// per global output channel; the compiler reads one. Removed when the
-    /// sum op lands (doc 013, "Audio fan-in sums").
-    FanInNotCompiled {
-        /// The sink with several sources.
-        at: Sink,
     },
     /// No shape was supplied for a node.
     MissingShape {
@@ -220,12 +211,6 @@ impl std::fmt::Display for CompileError {
                 f,
                 "feedback edge {edge:?} delays {delay} frames, less than the maximum block {max_block}"
             ),
-            Self::FanInNotCompiled { at } => {
-                write!(
-                    f,
-                    "{at:?} has several sources, and fan-in is not compiled yet"
-                )
-            }
             Self::MissingShape { node } => write!(f, "no shape for node {}", node.0),
             Self::WidthMismatch {
                 node,
@@ -325,6 +310,10 @@ enum Pre {
     Delay {
         delay: u32,
         src: u32,
+        dst: u32,
+    },
+    Sum {
+        srcs: Vec<ARef>,
         dst: u32,
     },
     EventDelay {
@@ -568,21 +557,6 @@ pub fn compile(
         }
     }
 
-    // Fan-in: the topology can say it, the compiler cannot sum it yet. Past
-    // this check every sink has at most one source.
-    for (&at, edges) in &topology.edges {
-        if edges.len() > 1 {
-            return Err(CompileError::FanInNotCompiled { at: Sink::Port(at) });
-        }
-    }
-    for (channel, sources) in topology.outputs.iter().enumerate() {
-        if sources.len() > 1 {
-            return Err(CompileError::FanInNotCompiled {
-                at: Sink::Output(channel as u16),
-            });
-        }
-    }
-
     // Feedback delays: at least one block, or a read would need the future.
     let max_block = prepare.max_block().samples();
     for (&at, e) in topology
@@ -771,45 +745,42 @@ pub fn compile(
         let key = keys[n];
         let shape = node_shapes[n];
 
-        // Audio inputs, each through its PDC delay when it needs one.
+        // Audio inputs: every source of a port through its own PDC delay
+        // when it needs one, then the sum in **source order** (`Edge`'s `Ord`,
+        // not the order the spec listed them in), so two specs that list the
+        // same sources differently render alike (doc 013, "Audio fan-in
+        // sums", point 2). One source is the value itself, none is silence.
         let mut ain = Vec::with_capacity(shape.audio_in.count() as usize);
         for port in 0..shape.audio_in.count() {
             let at = InPort { node: key, port };
-            let r = match topology.edges.get(&at).and_then(|es| es.first()) {
-                None | Some(Edge::Direct(Source::Zero)) => ARef::Zero,
-                Some(&Edge::Direct(from @ (Source::Global(_) | Source::Node(_)))) => {
-                    // A global input arrives at zero: it is a merge-point
-                    // source like any other (see the module docs, step 4).
-                    let (v, dep) = match from {
-                        Source::Global(ch) => (global_val[&ch], Latency::ZERO),
-                        Source::Node(p) => (audio_out_val[&p], departure(dense[&p.node])),
-                        Source::Zero => unreachable!("matched above"),
-                    };
-                    let d = dep.gap_to(arrival[n]);
-                    if d.is_zero() {
-                        ARef::Val(v)
-                    } else {
-                        let delay = em.delays.len() as u32;
-                        em.delays.push(DelaySpec {
-                            key: DelayKey::Audio { at, from },
-                            len: d,
-                        });
-                        let op = em.push(Pre::Delay {
-                            delay,
-                            src: v,
-                            dst: 0,
-                        });
-                        em.read_audio(v, op);
-                        let dv = em.audio_value(op);
-                        if let Pre::Delay { dst, .. } = &mut em.pre[op as usize] {
-                            *dst = dv;
-                        }
-                        ARef::Val(dv)
+            let mut sources: Vec<Edge> = topology.edges.get(&at).cloned().unwrap_or_default();
+            sources.sort();
+            let mut refs: Vec<ARef> = Vec::with_capacity(sources.len());
+            for edge in sources {
+                refs.push(match edge {
+                    // Silence adds nothing, bit for bit (the sum starts at
+                    // `+0.0`); `validate` refuses it in a set, so this is a
+                    // raw write's.
+                    Edge::Direct(Source::Zero) => continue,
+                    Edge::Direct(from @ (Source::Global(_) | Source::Node(_))) => {
+                        // A global input arrives at zero: it is a merge-point
+                        // source like any other (see the module docs, step 4).
+                        let (v, dep) = match from {
+                            Source::Global(ch) => (global_val[&ch], Latency::ZERO),
+                            Source::Node(p) => (audio_out_val[&p], departure(dense[&p.node])),
+                            Source::Zero => unreachable!("matched above"),
+                        };
+                        align_audio(
+                            &mut em,
+                            v,
+                            dep.gap_to(arrival[n]),
+                            DelayKey::Audio { at, from },
+                        )
                     }
-                }
-                Some(Edge::Feedback(f)) => ARef::Fb(fb_index(audio_fb_key(*f), &audio_fb)),
-            };
-            ain.push(r);
+                    Edge::Feedback(f) => ARef::Fb(fb_index(audio_fb_key(f), &audio_fb)),
+                });
+            }
+            ain.push(sum_chain(&mut em, refs));
         }
 
         // Event inputs: delay each source that needs it, then merge fan-in
@@ -951,6 +922,45 @@ pub fn compile(
     let mut output_refs: Vec<ARef> = Vec::with_capacity(topology.outputs.len());
     for (channel, sources) in topology.outputs.iter().enumerate() {
         let channel = channel as u16;
+        let mut sources: Vec<Source> = sources
+            .iter()
+            .copied()
+            .filter(|s| *s != Source::Zero)
+            .collect();
+        sources.sort();
+        if sources.len() > 1 {
+            // A summed channel: each source is delayed to the output time on
+            // its own, as an op of its own, then summed; the `Output` op
+            // carries no ring (doc 013, "Audio fan-in sums", point 3).
+            let refs: Vec<ARef> = sources
+                .iter()
+                .map(|&source| {
+                    let (v, dep) = match source {
+                        Source::Node(p) => (audio_out_val[&p], departure(dense[&p.node])),
+                        Source::Global(ch) => (global_val[&ch], Latency::ZERO),
+                        Source::Zero => unreachable!("filtered above"),
+                    };
+                    align_audio(
+                        &mut em,
+                        v,
+                        dep.gap_to(total),
+                        DelayKey::Output {
+                            channel,
+                            from: source,
+                        },
+                    )
+                })
+                .collect();
+            let src = sum_chain(&mut em, refs);
+            output_refs.push(src);
+            let op = em.push(Pre::Output {
+                channel,
+                src,
+                delay: None,
+            });
+            em.read_aref(src, op);
+            continue;
+        }
         let source = &sources.first().copied().unwrap_or(Source::Zero);
         let mut src = match *source {
             Source::Node(p) => ARef::Val(audio_out_val[&p]),
@@ -1213,6 +1223,13 @@ pub fn compile(
             Pre::Delay { src, dst, .. } => {
                 in_place.insert(*dst, *src);
             }
+            // The sum accumulates into its first addend's slot when that
+            // addend is read nowhere else later (the colouring's own test).
+            Pre::Sum { srcs, dst } => {
+                if let Some(&ARef::Val(u)) = srcs.first() {
+                    in_place.insert(*dst, u);
+                }
+            }
             Pre::Node {
                 unit, ain, aout, ..
             } if node_shapes[*unit as usize].in_place => {
@@ -1327,6 +1344,10 @@ pub fn compile(
             Pre::Delay { delay, src, dst } => Op::Delay {
                 delay: *delay,
                 src: aslot(*src),
+                dst: aslot(*dst),
+            },
+            Pre::Sum { srcs, dst } => Op::Sum {
+                srcs: span_of(&mut audio_list, &mut srcs.iter().map(|&r| aref_slot(r))),
                 dst: aslot(*dst),
             },
             Pre::EventDelay { delay, src, dst } => Op::EventDelay {
@@ -1577,6 +1598,70 @@ pub fn compile(
     }
 
     Ok((plan, delta))
+}
+
+/// `v` through its PDC delay of `by` frames, keyed `key`: the value itself
+/// when `by` is zero (no op), else the output of a `Pre::Delay` ring.
+fn align_audio(em: &mut Emitted, v: u32, by: Samples, key: DelayKey) -> ARef {
+    if by.is_zero() {
+        return ARef::Val(v);
+    }
+    let delay = em.delays.len() as u32;
+    em.delays.push(DelaySpec { key, len: by });
+    let op = em.push(Pre::Delay {
+        delay,
+        src: v,
+        dst: 0,
+    });
+    em.read_audio(v, op);
+    let dv = em.audio_value(op);
+    if let Pre::Delay { dst, .. } = &mut em.pre[op as usize] {
+        *dst = dv;
+    }
+    ARef::Val(dv)
+}
+
+/// Sum `refs` (already in source order) into one audio value: the left fold
+/// `((+0.0 + a_0) + a_1) + ..` (doc 013, "Audio fan-in sums", point 2).
+///
+/// Silence (`ARef::Zero`) adds nothing and is dropped; none left is silence,
+/// one is itself (an alias, no op). Up to [`MAX_PORTS`] addends are one
+/// `Op::Sum`. A wider fan-in is a **chain, not a tree**: a float sum is not
+/// associative, so the first op folds the first `MAX_PORTS` and each next one
+/// reads the last result as its first addend and adds the following
+/// `MAX_PORTS - 1`. The accumulator is never `-0.0`, so adding it to `+0.0`
+/// again changes no bit: the chain is one flat fold, wherever it is cut.
+fn sum_chain(em: &mut Emitted, refs: Vec<ARef>) -> ARef {
+    let refs: Vec<ARef> = refs.into_iter().filter(|&r| r != ARef::Zero).collect();
+    let emit = |em: &mut Emitted, srcs: Vec<ARef>| -> ARef {
+        let op = em.push(Pre::Sum {
+            srcs: srcs.clone(),
+            dst: 0,
+        });
+        for &r in &srcs {
+            em.read_aref(r, op);
+        }
+        let v = em.audio_value(op);
+        if let Pre::Sum { dst, .. } = &mut em.pre[op as usize] {
+            *dst = v;
+        }
+        ARef::Val(v)
+    };
+    match refs.len() {
+        0 => ARef::Zero,
+        1 => refs[0],
+        len => {
+            let first = len.min(MAX_PORTS);
+            let mut acc = emit(em, refs[..first].to_vec());
+            for run in refs[first..].chunks(MAX_PORTS - 1) {
+                let mut srcs = Vec::with_capacity(run.len() + 1);
+                srcs.push(acc);
+                srcs.extend_from_slice(run);
+                acc = emit(em, srcs);
+            }
+            acc
+        }
+    }
 }
 
 /// Merge `refs` (already in source order) into one event stream, in

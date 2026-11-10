@@ -51,7 +51,7 @@ Evidence for "no map anywhere": `grep TempoMap crates` hits only `tutti-tempo`;
 | `tutti-graph` `time.rs` | `frames_per_beat_at(transport.tempo)`; `Playhead::arrives_at(now, tempo)` decides whether a block continues the last across a tempo change. |
 | `tutti-midi-runtime` | `schedule/walk.rs` frames per beat of a segment; `outbound/clock_master.rs` MIDI clock rate from `transport.tempo`. |
 | `tutti-nodes` | `ClickNode` (beat-driven, via `Env`); `lfo.rs` and `automation/control_lane.rs` rebuild a `FrameClock` from `transport.tempo`. |
-| `tutti-sampler` | `voice/clock.rs`, `block_render.rs`, `wrap_fade.rs`: frames per beat from `clock.tempo()`; a voice is a private `FrameClock`. |
+| `tutti-sampler` | `voice/clock.rs`, `block_render.rs`, `wrap_fade.rs`: frames per beat from `clock.tempo()`; a voice is a private `FrameClock`. `interp.rs`'s `Gate::origin` seated a clip at the beats over the run's tempo (stage 5 reads the map instead). |
 | `tutti-plugin` `transport_source.rs` | Counts a plugin's steady time across chunks by segment; its own docs state "the engine has no tempo map" and that a ramp is counted at the faster tempo. |
 | `tutti-plugin-types`, `tutti-clap-host`, `tutti-vst3-host`, `tutti-vst2-host`, `tutti-au-host` | `timing.tempo` into `ProcessContext` / CLAP `transport` / VST2 `VstTimeInfo` / AU callbacks. CLAP's `tempo_inc` was always `0.0` until stage 5a (`clap-host/instance/audio.rs`). |
 | `bevy-tutti`, `tutti-export` | `transport.settings.tempo()` seeds an `OfflineTimelineConfig` (examples); `beats_to_seconds` and `duration_to_frames` convert export ranges. |
@@ -193,7 +193,7 @@ as an inequality (§8), not a claim of equality.
 | `tutti-graph` `Transport`, `Env` | No new field. The tempo is the cell's chord. `Playhead::arrives_at` already treats a tempo change inside a block as a continuation; a ramp cell boundary is one. |
 | `tutti-midi-runtime` | Reads `transport.tempo` per segment: MIDI clock follows the chord per cell. Nothing else. |
 | `ClickNode`, `lfo`, `control_lane` | No change; they read `Env`. |
-| `tutti-sampler` | A sampler voice's private `FrameClock` takes its tempo from the `Env` transport of the block (chord per cell) and re-seats on a change. Beat-locked playback tracks the project's map. Time-locked sample playback (tempo-independent) is unchanged. |
+| `tutti-sampler` | A sampler voice's private `FrameClock` takes its tempo from the `Env` transport of the block (chord per cell); a cell edge is a continuation, not a jump. Where the voice is in its clip is the map's seconds from the clip's start (`BlockClock::seconds`, through a `TempoReader` the node is given), not the beats over the tempo of the moment, which re-seated it at every change (stage 5, the sampler reader). Time-locked sample playback (tempo-independent) is unchanged. |
 | `tutti-plugin` `transport_source.rs` | The segment walk already counts tempo changes between two reads. A ramp cell boundary is a tempo change at a segment start; the "counted at the faster tempo" caveat shrinks to the within-cell chord. Steady time stays what it is. |
 | Plugin hosts' transport info | See below. |
 | `bevy-tutti`, `tutti-session` | A `TempoMap` resource-equivalent on `Session`; the adapter composes nothing (`check-adapter.sh`). |
@@ -452,7 +452,60 @@ section 4 bound), `a_ramp_or_step_boundary_is_not_a_locate` (no Song Position,
 exactly 24 ticks a beat), `the_ticks_do_not_depend_on_the_block_size` (1, 64,
 100, 512, 1 000, 4 096), `a_locate_inside_a_ramp_sends_one_song_position_then_the_maps_ticks`
 and `mtc_keeps_wall_clock_time_across_a_ramp`. A loop wrap inside a ramp is not
-rendered there. The sampler's reader remains; the plugin hosts' is 5a, below.
+rendered there. The sampler's reader is the next note; the plugin hosts' is 5a, below.
+
+**As built, stage 5, the sampler reader.** Unlike the MIDI clock, the sampler
+needed code. A placed voice (`MemorySource::placed`, a `DiskVoice` window) is
+a clip: its window is in beats, it enters on the frame the playhead reaches
+its start beat and leaves on the frame it reaches its end, and between them it
+plays its samples at their own speed. The `Env` transport already gave it the
+window's edges right: a ramp's or step's cell edge is a segment continuation
+(an ulp under `CONTINUES_WITHIN`), not a jump, so there is no wrap fade, no
+re-seek and no declick at it (`clock.rs`'s `breaks`, unchanged). What it got
+wrong was the position inside the window: `Gate::origin` seated the read at
+`(beat - start) x 60 / tempo` on every run, with the tempo of the run, so a
+clip that played through a step was re-seated at the new tempo as though it had
+started there (a clip from beat 0 over 120 then 60 BPM jumped from source frame
+23 999 to 48 000 at the step, and by cells over a ramp). The beat offset over
+the tempo of the moment is the time the playhead took only while the tempo did
+not change, and the `Env` holds no earlier tempo, so the voice reads the map:
+
+- `BlockClock::seconds(from, to, tempo)` is that time: over a map that
+  changes, `seconds_at(to) - seconds_at(from)` (the playhead's beat is the
+  engine's chord within a ramp cell, the map's own at a step, so the figure is
+  within section 4's bound of the map's); over a constant map or none, the old
+  expression, bit for bit, so a constant map renders as it did and no golden
+  moved. `Gate::origin` and the wrap tail's origin take it.
+- A node reads the map through a `TempoReader` it is given
+  (`VoicePool::with_tempo`, and the same on `VoiceNode`, `MemorySource` and
+  `DiskVoice` as graph nodes; a voice inside a pool or a `VoiceNode` reads its
+  owner's). The node lends the map once per block and hands it to its
+  `Clock::observe_with`; a fork clones the reader on the control side.
+  `tutti-session` binds what it takes in `Graph::add` and `Graph::crossfade`
+  through `SessionNode::bind_tempo` (default: the node as it is), the graph's
+  template reader being the plugins' too; a node inserted with the bare
+  `Graph::insert` is unbound and behaves as a constant tempo, as it always did.
+  The lend is the engine's own block start, and a map published between the
+  engine's lend and the node's in one block is seen by the node a block early:
+  a one-block seam on a map swap, not a position error.
+- A seek or a loop wrap inside a clip is a jump and re-seats from the map's
+  seconds too, so they are exact over a changing map. A time-locked voice (a
+  free-running `MemorySource`) reads no transport and no map and is unchanged.
+
+`tutti-sampler`'s `tests/tempo_map.rs` renders a ramp-valued wave (sample `i` is
+`i / 2^17`, so the output says which source frame it played) through the live
+engine over a published map and pins, against the map's definition written in
+the test: `a_step_map_puts_a_clips_frames_where_the_map_says` (clips from
+beats 0, 1, 3 and a windowed one, exact: entry, one source frame a frame
+through a mid-cell step, exit, at blocks of 1, 64, 100, 512, 1 000 and 4 096),
+`a_ramp_puts_a_clips_frames_within_the_grid_bound_of_the_maps` (within 0.08
+frame, one frame a frame at every cell edge, a clip entering at a fractional
+frame), `a_constant_map_keeps_the_clip_where_it_was` and
+`a_time_locked_voice_ignores_the_tempo_map`; `tutti-session`'s
+`a_sampler_node_added_to_the_graph_follows_the_sessions_tempo_map` pins the
+binding. Not done: a stretched or pitched voice's origin over a ramp is the
+same seat and is not rendered there; a loop wrap inside a ramp is not
+rendered.
 
 **As built, stage 5a (the plugin hosts).** A plugin is told the map's tempo,
 not the graph's chord, and CLAP its slope.

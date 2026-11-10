@@ -137,7 +137,7 @@ impl VbapMixParts {
     ///
     /// Returns [`VbapError::UnsupportedSpeakerLayout`](super::VbapError::UnsupportedSpeakerLayout)
     /// if `layout` has no VBAP preset (only 2, 4, 6, 8 and 12 channels do), and
-    /// [`VbapError::Vbap`](super::VbapError::Vbap) if the preset geometry is
+    /// [`VbapError::Geometry`](super::VbapError::Geometry) if the preset geometry is
     /// rejected.
     pub fn new<N>(
         layout: tutti_types::ChannelLayout,
@@ -296,7 +296,7 @@ impl VbapMixParts {
 ///
 /// Returns [`VbapError::UnsupportedSpeakerLayout`](super::VbapError::UnsupportedSpeakerLayout)
 /// if `layout` has no VBAP preset (only 2, 4, 6, 8 and 12 channels do), and
-/// [`VbapError::Vbap`](super::VbapError::Vbap) if the preset geometry is
+/// [`VbapError::Geometry`](super::VbapError::Geometry) if the preset geometry is
 /// rejected.
 pub fn build_vbap_mix(
     g: &mut GraphBuilder,

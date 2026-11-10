@@ -20,7 +20,7 @@ height as lock-free params), the position de-zipper, and the SMPTE/WAV
 channel-order conventions in `layout`.
 
 `VbapPannerNode` places a source in a speaker field via
-[vbap](https://crates.io/crates/vbap), with presets for 2/4/6/8/12 channels
+`tutti_dsp::SpeakerLayout` (Pulkki's vector base amplitude panning), with presets for 2/4/6/8/12 channels
 (stereo, quad, 5.1, 7.1, 7.1.4). It takes **two inputs**, not one: a mono source
 presents the same sample on both ports. `HrtfBinauralNode` renders to headphones
 by FFT convolution against a measured HRIR sphere (the format

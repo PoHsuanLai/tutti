@@ -975,7 +975,14 @@ impl PluginParams for AuInstance {
                         .and_then(|c| clump_names.get(&c))
                         .cloned()
                         .unwrap_or_default(),
+                    measures: None,
+                    role: None,
                 }
+                // The unit code is a closed enumeration, so it types the
+                // parameter exactly (doc 023 §5.2); the range check is
+                // `with_measures`'. The pan code is also the pan role.
+                .with_measures(tutti_au_host::unit_measures(p.unit_code))
+                .with_role(tutti_au_host::unit_role(p.unit_code))
             })
             .collect()
     }

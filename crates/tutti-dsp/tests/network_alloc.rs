@@ -94,13 +94,13 @@ fn freeverb_design_allocates_nothing() {
 /// `Inline::push` of the design would too.
 #[test]
 fn freeverb_retargets_and_renders_without_allocating() {
-    use tutti_dsp::{Ceiling, ChannelLayout, Freeverb, Kernel, Network, Setup};
+    use tutti_dsp::{Ceiling, ChannelLayout, Freeverb, Network, Realization, Setup};
     use tutti_types::{MaxBlock, Samples};
 
     let rate = SampleRate(48_000.0);
     let design = FreeverbDesign;
-    let mut kernel = design.kernel();
-    kernel.prepare(
+    let mut realization = design.realization();
+    realization.prepare(
         &design.bounds(&Ceiling::at(rate).unwrap()),
         &Setup {
             rate,
@@ -119,12 +119,12 @@ fn freeverb_retargets_and_renders_without_allocating() {
         };
         let n = allocations(|| {
             design.design_into(&c, rate, &mut network);
-            kernel.retarget(&network);
-            Kernel::process(&mut kernel, &[&input], &mut [&mut left, &mut right]);
+            realization.retarget(&network);
+            Realization::process(&mut realization, &[&input], &mut [&mut left, &mut right]);
         });
         assert_eq!(n, 0, "the block allocated");
     }
-    let _: Freeverb = kernel;
+    let _: Freeverb = realization;
 }
 
 /// `design_into` builds no value of the network's size (about 56 KB): it runs
@@ -150,7 +150,7 @@ fn design_into_needs_no_network_sized_stack() {
 /// The FDN's `design_into`, `retarget` and `process` allocate nothing, with a
 /// different network every block (a decay, a size, a diffusion, a pre-delay, a
 /// width, a wet gain and a freeze all move), after the one `prepare` that sizes
-/// the kernel from the bounds. The ramps the kernel starts are the work of the
+/// the realization from the bounds. The ramps the realization starts are the work of the
 /// following blocks, which allocate nothing either.
 ///
 /// Mutation (run): a `Vec` built inside `FdnKernel::retarget`, or in
@@ -158,13 +158,13 @@ fn design_into_needs_no_network_sized_stack() {
 /// design's line loop fails the first.
 #[test]
 fn the_fdn_retargets_and_renders_without_allocating() {
-    use tutti_dsp::{Ceiling, ChannelLayout, FdnControls, FdnDesign, Kernel, Network, Setup};
+    use tutti_dsp::{Ceiling, ChannelLayout, FdnControls, FdnDesign, Network, Realization, Setup};
     use tutti_types::{Db, Depth, Hz, MaxBlock, Samples, Seconds, StereoWidth};
 
     let rate = SampleRate(48_000.0);
     let design = FdnDesign::new(8, Seconds(8.0), true).unwrap();
-    let mut kernel = design.kernel();
-    kernel.prepare(
+    let mut realization = design.realization();
+    realization.prepare(
         &design.bounds(&Ceiling::at(rate).unwrap()),
         &Setup {
             rate,
@@ -195,8 +195,8 @@ fn the_fdn_retargets_and_renders_without_allocating() {
         };
         let n = allocations(|| {
             design.design_into(&c, rate, &mut network);
-            kernel.retarget(&network);
-            Kernel::process(&mut kernel, &[&input], &mut [&mut left, &mut right]);
+            realization.retarget(&network);
+            Realization::process(&mut realization, &[&input], &mut [&mut left, &mut right]);
         });
         assert_eq!(n, 0, "the block allocated");
     }

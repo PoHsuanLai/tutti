@@ -1,4 +1,4 @@
-//! `ReverbNode` over Freeverb, as the graph runs it (design 022 step 1b): its
+//! `DesignNode` over Freeverb, as the graph runs it (design 022 step 1b): its
 //! ports, its tail (a ceiling it narrows and honours), its controls (a cell, or
 //! a port the graph modulates), its mix, and its fork. Every figure is from the
 //! definition (the network's own analytic tail, an impulse's first echo, a
@@ -7,7 +7,7 @@
 use std::sync::Arc;
 
 use tutti_dsp::{
-    Design, FdnControls, FdnDesign, Freeverb, FreeverbControls, FreeverbDesign, Kernel,
+    Design, FdnControls, FdnDesign, Freeverb, FreeverbControls, FreeverbDesign, Realization,
 };
 use tutti_graph::contract::{assert_honest_tail, assert_param_fork, drive_input, prepared};
 use tutti_graph::{
@@ -16,7 +16,7 @@ use tutti_graph::{
 };
 use tutti_modulation::ControlProgram;
 use tutti_nodes::automation::ControlLaneNode;
-use tutti_nodes::{FdnNode, FreeverbNode, ReverbNode};
+use tutti_nodes::{DesignNode, FdnNode, FreeverbNode};
 use tutti_types::{
     AtomicF32, ChannelLayout, Db, Frame, Mix, SampleRate, Samples, Tail, UnitAddr, UnitParam,
 };
@@ -37,7 +37,7 @@ fn controls(room: f32, damp: f32) -> FreeverbControls {
 
 /// A live (modulatable) Freeverb node at `c`, prepared at 48 kHz.
 fn live(c: FreeverbControls) -> FreeverbNode {
-    prepared(ReverbNode::new(FreeverbDesign, c), SR, BLOCK)
+    prepared(DesignNode::new(FreeverbDesign, c), SR, BLOCK)
 }
 
 /// A node driven block by block, at its own running frame.
@@ -114,7 +114,7 @@ fn tail_of(c: FreeverbControls) -> usize {
 /// frame early, changes the digest and fails.
 #[test]
 fn the_general_midi_send_renders_what_it_always_did() {
-    let mut rig = Rig::new(prepared(ReverbNode::general_midi(), SR, BLOCK));
+    let mut rig = Rig::new(prepared(FreeverbNode::general_midi(), SR, BLOCK));
     let mut digest: u64 = 0xcbf2_9ce4_8422_2325;
     let mut eat = |samples: &[f32]| {
         for s in samples {
@@ -137,12 +137,12 @@ fn the_general_midi_send_renders_what_it_always_did() {
 /// and the damping after it. Its tail is a ceiling.
 ///
 /// Mutation (run): `Mode::Live` offering no addresses fails the live row;
-/// `Mode::Fixed` offering the cells fails the fixed one; the kernel's latency
-/// left out of the shape fails the latency assertion only if a kernel had one
-/// (none of Freeverb's does, so that is pinned by the kernel contract).
+/// `Mode::Fixed` offering the cells fails the fixed one; the realization's latency
+/// left out of the shape fails the latency assertion only if a realization had one
+/// (none of Freeverb's does, so that is pinned by the realization contract).
 #[test]
 fn the_ports_and_the_ceiling() {
-    let fixed = prepared(ReverbNode::general_midi(), SR, BLOCK);
+    let fixed = prepared(FreeverbNode::general_midi(), SR, BLOCK);
     let shape = fixed.shape();
     assert_eq!(shape.audio_in, ChannelLayout::MONO);
     assert_eq!(shape.audio_out, ChannelLayout::STEREO);
@@ -192,7 +192,7 @@ fn the_port_order_is_the_mix_then_the_cells() {
         ]
     );
     let fdn: FdnNode = prepared(
-        ReverbNode::new(FdnDesign::default(), FdnControls::DEFAULT),
+        DesignNode::new(FdnDesign::default(), FdnControls::DEFAULT),
         SR,
         BLOCK,
     );
@@ -245,15 +245,15 @@ fn a_live_node_reports_the_tail_of_its_current_network() {
 /// `live`) fails with a sound one frame past the tail.
 #[test]
 fn the_reported_tail_is_honest() {
-    assert_honest_tail(&mut prepared(ReverbNode::general_midi(), SR, BLOCK), SR);
+    assert_honest_tail(&mut prepared(FreeverbNode::general_midi(), SR, BLOCK), SR);
     assert_honest_tail(&mut live(controls(0.1, 0.5)), SR);
     assert_honest_tail(&mut live(controls(0.9, 0.2)), SR);
 }
 
-/// What the node cuts off at the tail is under the floor: the kernel alone,
+/// What the node cuts off at the tail is under the floor: the realization alone,
 /// left to ring, is below -60 dB of its first echo (the loudest frame of an
 /// impulse's answer) at every frame past the tail the node reports, so parking
-/// the room there takes nothing audible. (The kernel's own render, held to the
+/// the room there takes nothing audible. (The realization's own render, held to the
 /// network's figure; no other reverb's.)
 ///
 /// Mutation (run): `TAIL_FLOOR` -60 -> -30 in the node shortens the tail to
@@ -293,7 +293,7 @@ fn the_room_is_cut_at_its_tail_to_the_frame() {
     x.resize(n + tail + 4 * BLOCK, 0.0);
     // Block-aligned input ends at a block edge: 4000 = 62 * 64 + 32, so the last
     // input frame is mid-block, as it may be.
-    let mut rig = Rig::new(prepared(ReverbNode::general_midi(), SR, BLOCK));
+    let mut rig = Rig::new(prepared(FreeverbNode::general_midi(), SR, BLOCK));
     let mut out = [Vec::new(), Vec::new()];
     for chunk in x.chunks(BLOCK) {
         for (all, more) in out.iter_mut().zip(rig.block(chunk, &[]).audio) {
@@ -342,7 +342,7 @@ fn a_shorter_decay_keeps_the_longer_tail_until_heard_out() {
 /// and an idle node answers new input as a fresh one does, bit for bit: the
 /// state it holds is exactly zero. Before the tail has elapsed it is not idle.
 ///
-/// Mutation (run): not resetting the kernel before returning `Idle` leaves the
+/// Mutation (run): not resetting the realization before returning `Idle` leaves the
 /// old room in the lines, and the wake differs from the fresh node's.
 #[test]
 fn an_idle_reverb_wakes_as_a_fresh_one() {
@@ -478,11 +478,11 @@ fn the_mix_blends_the_dry_input() {
 /// does not carry the ring (doc 022's export-fork rule: `fresh()` plus preroll).
 ///
 /// Mutation (run): `fork_fresh` returning a plain clone of the state (not
-/// `Kernel::fresh`) carries the ring into the fork and fails the second half;
+/// `Realization::fresh`) carries the ring into the fork and fails the second half;
 /// not detaching the mix fails `assert_param_fork`.
 #[test]
 fn a_fork_starts_silent_with_the_values_set() {
-    assert_param_fork(ReverbNode::new(FreeverbDesign, gm()));
+    assert_param_fork(DesignNode::new(FreeverbDesign, gm()));
 
     let mut rig = Rig::new(live(controls(0.9, 0.5)));
     rig.block(&noise(5, BLOCK), &[]);
@@ -511,14 +511,14 @@ fn a_fork_starts_silent_with_the_values_set() {
 ///
 /// This is the modulation path as an engine runs it: the lane sends a segment to
 /// the node's param port, the executor fuses it with the node's base, the node
-/// reads the port at the block's last frame, designs, and retargets its kernel.
+/// reads the port at the block's last frame, designs, and retargets its realization.
 ///
 /// Mutation (run): the node reading its cell instead of the port makes the two
 /// renders identical and fails.
 #[test]
 fn a_lane_driving_the_room_changes_how_long_it_rings() {
     let ring = |room: f32| -> f64 {
-        let node = ReverbNode::new(FreeverbDesign, gm());
+        let node = DesignNode::new(FreeverbDesign, gm());
         let mut g = GraphBuilder::new(ChannelLayout::MONO, ChannelLayout::STEREO);
         let (n, _) = g.add_with_controls(node);
         g.connect_input(0, n, 0).connect_output(n, 0, 0);
@@ -563,14 +563,14 @@ fn a_lane_driving_the_room_changes_how_long_it_rings() {
     );
 }
 
-/// A `ReverbNode` is an `IntoNode` whose controls are its
+/// A `DesignNode` is an `IntoNode` whose controls are its
 /// `ParamSet`, so the session can address the mix and the room by `UnitParam`.
 #[test]
 fn it_is_inserted_with_a_param_set() {
-    let (_, set) = ReverbNode::new(FreeverbDesign, gm()).into_node();
+    let (_, set) = DesignNode::new(FreeverbDesign, gm()).into_node();
     assert!(set.set(UnitParam::RoomSize, 0.7));
     assert_eq!(set.get(UnitParam::RoomSize), Some(0.7));
     assert!(set.set(UnitParam::Wet, 0.25));
-    let (_, fixed) = ReverbNode::general_midi().into_node();
+    let (_, fixed) = FreeverbNode::general_midi().into_node();
     assert!(!fixed.set(UnitParam::RoomSize, 0.7), "the send has no room");
 }

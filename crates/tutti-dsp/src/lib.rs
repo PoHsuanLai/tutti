@@ -24,12 +24,12 @@
 //!   line and the sampler's readers share.
 //! - Reverb: [`Freeverb`], mono in and stereo out, a damped comb bank and
 //!   all-pass chain whose comb feedback and damping are set through its
-//!   [`Kernel`] impl.
+//!   [`Realization`] impl.
 //! - Reverb model (design 022): a [`Network`] of [`Stage`]s, a feedback delay
 //!   network as a plain fixed-capacity value, with analytic queries
 //!   ([`Network::rt60`], [`tail`](Network::tail), [`is_stable`](Network::is_stable),
 //!   the densities) and a [`Bounds`] worst case; a [`Design`] maps its controls
-//!   to one ([`FreeverbDesign`] for [`Freeverb`]) and names the [`Kernel`] that runs
+//!   to one ([`FreeverbDesign`] for [`Freeverb`]) and names the [`Realization`] that runs
 //!   it, prepared from a [`Setup`] and moved to each network by `retarget`; [`loop_gain`] and
 //!   [`rt60_from_gain`] are the RT60 formula both ways.
 //! - Waveshaping: [`ShapeKind`] and [`Shaper`].
@@ -47,6 +47,8 @@
 mod allpass;
 mod balance;
 mod buffer;
+#[cfg(test)]
+mod contract;
 mod control;
 mod convolver;
 mod delay;
@@ -97,9 +99,9 @@ pub use grid::{BinCount, BinIndex, FrameCount, FrameIndex, Grid};
 pub use interp::cubic_hermite;
 pub use network::{
     Absorption, AllPass, AllPassForm, Band, Bounds, Ceiling, Channels, Design, Effort, Fdn,
-    FirSummary, Full, Gains, Inline, Kernel, Line, MAX_CHANNELS, MAX_DENSE, MAX_LINES, MAX_STAGES,
-    MAX_TAPS, Matrix, Modulation, Network, OutputMap, Ring, Setup, Stage, Tap, Taps, loop_gain,
-    pre_delay_frames, rt60_from_gain,
+    FirSummary, Full, Gains, Inline, Line, MAX_CHANNELS, MAX_DENSE, MAX_LINES, MAX_STAGES,
+    MAX_TAPS, Matrix, Modulation, Network, OutputMap, Realization, Ring, Setup, Stage, Tap, Taps,
+    loop_gain, pre_delay_frames, rt60_from_gain,
 };
 pub use resample::{ChunkSize, FftResampler, ResampleError, StreamingResampler, WindowedSinc};
 pub use reverb::Freeverb;

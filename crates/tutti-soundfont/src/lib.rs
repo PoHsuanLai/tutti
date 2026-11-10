@@ -66,7 +66,7 @@ pub const SYNTH_BLOCK_FRAMES: usize = Render::BLOCK;
 /// preset and the channel ask (SF2 2.04 section 8.1.2, generators 15 and 16, and
 /// CC 93 and CC 91), and the chorus and reverb are graph nodes
 /// (`tutti_nodes::ModDelayNode` with `ModDelayConfig::GENERAL_MIDI_CHORUS`, and
-/// `tutti_nodes::ReverbNode`) summed back with the dry pair by a
+/// `tutti_nodes::FreeverbNode`) summed back with the dry pair by a
 /// `ChannelSumNode`; `tutti-session`'s `Session::add_general_midi` wires all of
 /// that. A send with nothing to send is reported silent in the block's status
 /// (`Status::Masked`), and a unit with no voice sounding is `Status::Idle`. Build it with [`new`](Self::new), pick a preset with

@@ -2,7 +2,6 @@
 
 use super::audio::{AudioBridge, BridgeListener, BridgeThread, HarmonyInputs, Submitted};
 use crate::error::{Delivered, EditorError, Result, StateError};
-use crate::format::gui::PluginEditor;
 use crate::protocol::{
     MidiEventVec, Normalized, NoteExpressionChanges, ParamId, ParameterChanges, ParameterInfo,
     Preset, PresetId, TransportInfo,
@@ -13,6 +12,7 @@ use std::ffi::c_void;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
+use tutti_plugin_types::Editor;
 use tutti_plugin_types::{Edit, EditDrain, EditSink, MainThread, edits};
 use tutti_types::SampleRate;
 
@@ -23,7 +23,7 @@ use tutti_types::SampleRate;
 pub struct PluginBridge {
     audio: AudioBridge,
     plugin_path: PathBuf,
-    gui: Mutex<Option<Box<dyn PluginEditor>>>,
+    gui: Mutex<Option<Box<dyn Editor>>>,
     /// What the realtime setters want the in-process editor to show, applied by
     /// the next [`editor_idle`](Self::editor_idle).
     mirror: GuiMirror,
@@ -427,7 +427,7 @@ impl PluginBridge {
         };
         if let Some(gui) = guard.as_mut() {
             // Flush pending GUI param changes before closing.
-            for (param_id, value) in gui.poll_gui_param_changes(main) {
+            for (param_id, value) in gui.poll_edits(main) {
                 self.audio
                     .set_parameter_rt(param_id, Normalized::clamped(f64::from(value)));
             }
@@ -457,7 +457,7 @@ impl PluginBridge {
                 gui.set_automation_state(main, mode);
             }
             // Forward GUI-originated parameter changes to the audio bridge.
-            for (param_id, value) in gui.poll_gui_param_changes(main) {
+            for (param_id, value) in gui.poll_edits(main) {
                 self.audio
                     .set_parameter_rt(param_id, Normalized::clamped(f64::from(value)));
             }

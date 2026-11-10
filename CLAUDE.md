@@ -145,6 +145,7 @@ scripts/check-guards.sh            # every host callback runs under the panic gu
 scripts/check-plugin-ffi.sh        # no CLAP/VST3/AU unsafe outside the -ffi crates; the forbids; VST2 held to its pins
 scripts/check-layout.sh            # flat crates/ and testing/, no crates->testing edges, layering
 scripts/check-range-types.sh       # no plain derived Deserialize on a private tuple field
+scripts/check-hosting.sh           # every InProcess/OutOfProcess impl is in the contract's hostings
 cargo xtask deny                   # RustSec advisories, yanked and unmaintained crates (deny.toml)
 ```
 

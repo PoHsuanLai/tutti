@@ -16,6 +16,7 @@ mod control;
 mod controller;
 mod editor;
 mod host;
+mod hosting;
 mod loaded;
 mod param_properties;
 mod parameters;

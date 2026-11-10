@@ -131,6 +131,31 @@ fn map_category(c: Category, raw: i32) -> Vst2Category {
 /// }
 /// ```
 ///
+/// # Hosting
+///
+/// VST2 is [`InProcess`](tutti_plugin_types::InProcess) and not
+/// [`OutOfProcess`](tutti_plugin_types::OutOfProcess): an `AEffect` is one
+/// object for its editor and its audio, so no editor-only second instance can
+/// show what an audio instance in another process holds (design 021 §4). The
+/// absence is a statement, and this checks it (mutation, run: add
+/// `impl OutOfProcess for Vst2Loaded` and the first doctest compiles and fails;
+/// change its type to a typo and it fails with E0412, not the pinned E0277):
+///
+/// ```compile_fail,E0277
+/// use tutti_plugin_types::OutOfProcess;
+/// fn served<F: OutOfProcess>() {}
+/// served::<tutti_vst2_host::Vst2Loaded>();
+/// ```
+///
+/// Its twin, with the same imports, compiles, so the failure above is the
+/// missing impl and not the setup:
+///
+/// ```
+/// use tutti_plugin_types::InProcess;
+/// fn here<F: InProcess>() {}
+/// here::<tutti_vst2_host::Vst2Loaded>();
+/// ```
+///
 /// # Examples
 ///
 /// ```no_run

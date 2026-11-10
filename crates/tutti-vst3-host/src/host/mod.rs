@@ -20,6 +20,8 @@
 pub mod conformance;
 mod control;
 mod controller;
+mod editor_instance;
+mod hosting;
 mod instance;
 mod library;
 mod loaded;
@@ -32,6 +34,7 @@ mod speakers;
 
 pub use control::descriptor_of;
 pub use controller::Vst3Controller;
+pub use editor_instance::Vst3Editor;
 pub use library::{ClassInfo, FactoryFlags, FactoryInfo, Library};
 pub use loaded::{LoadOptions, RestartOutcome, Vst3Loaded};
 pub use processor::{ProcessFailed, ProcessorAny, Vst3Processor};

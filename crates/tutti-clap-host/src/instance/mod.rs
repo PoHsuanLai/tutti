@@ -24,6 +24,8 @@ mod audio;
 mod config;
 mod control;
 mod controller;
+mod editor_instance;
+mod hosting;
 mod lifecycle;
 mod load;
 mod params;
@@ -42,6 +44,7 @@ mod undo;
 pub use audio::{ClapProcessContext, ProcessOutput, ProcessOutputRef};
 pub use control::descriptor_of;
 pub use controller::ClapController;
+pub use editor_instance::ClapEditor;
 pub use load::LoadOptions;
 #[cfg(feature = "clap-extras")]
 pub use params::ParamMapping;

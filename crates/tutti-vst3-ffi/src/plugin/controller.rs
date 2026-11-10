@@ -395,12 +395,12 @@ impl Plugin {
     }
 
     /// `IAutomationState::setAutomationState`; `false` without the interface.
-    pub fn set_automation_state(&self, main: &MainThread, state: i32) -> bool {
+    pub fn set_automation_state(&self, main: &MainThread, state: crate::AutomationStates) -> bool {
         let _scope = self.scoped(main);
         match &self.ext.automation_state {
             Some(a) => {
                 // SAFETY: a plain call on a live interface.
-                unsafe { a.setAutomationState(state) };
+                unsafe { a.setAutomationState(state.bits()) };
                 true
             }
             None => false,

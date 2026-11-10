@@ -7,6 +7,8 @@ use vst3::Steinberg::Vst::NoteExpressionTypeInfo_::NoteExpressionTypeFlags_;
 use vst3::Steinberg::Vst::ParameterInfo_::ParameterFlags_;
 use vst3::Steinberg::Vst::{PhysicalUITypeIDs_, ePrefetchableSupport_};
 
+use tutti_plugin_types::AutomationMode;
+
 use crate::sdk::utf16_to_string;
 
 /// Host-facing bus descriptor. Thin wrapper around `vst3::Steinberg::Vst::BusInfo`
@@ -222,75 +224,71 @@ bitflags::bitflags! {
     }
 }
 
-/// VST3 `IAutomationState` mode constants, mirroring
-/// `IAutomationState_::AutomationStates_` from the Steinberg SDK. The host
-/// pushes one of these to the plugin so it can adapt to whether the host is
-/// reading, writing, both, or ignoring automation. Pass to
-/// [`Control::set_automation_state`](tutti_plugin_types::Control::set_automation_state).
-pub mod automation_state {
-    use super::AutomationStates_;
-    use tutti_plugin_types::AutomationMode;
+bitflags::bitflags! {
+    /// What the host tells a plugin about automation, by `IAutomationState`'s
+    /// `AutomationStates_`: reading, writing, both or (empty) neither. Pass to
+    /// [`Plugin::set_automation_state`](crate::Plugin::set_automation_state).
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+    pub struct AutomationStates: i32 {
+        /// Host is reading automation.
+        const READ = AutomationStates_::kReadState;
+        /// Host is writing automation.
+        const WRITE = AutomationStates_::kWriteState;
+    }
+}
 
-    /// No automation read or write.
-    pub const NONE: i32 = AutomationStates_::kNoAutomation;
-    /// Host is reading automation.
-    pub const READ: i32 = AutomationStates_::kReadState;
-    /// Host is writing automation.
-    pub const WRITE: i32 = AutomationStates_::kWriteState;
-    /// Host is both reading and writing automation.
-    pub const READ_WRITE: i32 = AutomationStates_::kReadWriteState;
-
-    /// Encodes the format-neutral [`AutomationMode`] as the VST3 `IAutomationState`
-    /// bitmask. This mapping lives here — the VST3 crate is the one that knows
-    /// both the mode vocabulary and its `IAutomationState` ABI — so
-    /// `tutti-plugin-types` stays format-agnostic. Pass the result to
-    /// [`Control::set_automation_state`](tutti_plugin_types::Control::set_automation_state).
-    #[must_use]
-    pub fn from_mode(mode: AutomationMode) -> i32 {
+impl From<AutomationMode> for AutomationStates {
+    /// Encodes the format-neutral [`AutomationMode`] as the VST3 bitmask. The
+    /// mapping lives here so `tutti-plugin-types` stays format-agnostic.
+    fn from(mode: AutomationMode) -> Self {
         match mode {
-            AutomationMode::Off => NONE,
-            AutomationMode::Reading => READ,
-            AutomationMode::Writing => WRITE,
-            AutomationMode::ReadWriting => READ_WRITE,
+            AutomationMode::Off => Self::empty(),
+            AutomationMode::Reading => Self::READ,
+            AutomationMode::Writing => Self::WRITE,
+            AutomationMode::ReadWriting => Self::READ | Self::WRITE,
         }
     }
+}
 
-    /// Decodes a VST3 `IAutomationState` bitmask back into an [`AutomationMode`]
-    /// (inverse of [`from_mode`]). Unknown bits beyond read|write are ignored.
+impl AutomationStates {
+    /// The [`AutomationMode`] these bits name (inverse of `From`).
     #[must_use]
-    pub fn to_mode(bits: i32) -> AutomationMode {
-        match (bits & READ != 0, bits & WRITE != 0) {
+    pub fn mode(self) -> AutomationMode {
+        match (self.contains(Self::READ), self.contains(Self::WRITE)) {
             (false, false) => AutomationMode::Off,
             (true, false) => AutomationMode::Reading,
             (false, true) => AutomationMode::Writing,
             (true, true) => AutomationMode::ReadWriting,
         }
     }
+}
 
-    #[cfg(test)]
-    mod tests {
-        use super::*;
+#[cfg(test)]
+mod automation_states_tests {
+    use super::*;
 
-        #[test]
-        fn mode_bits_round_trip() {
-            for mode in [
-                AutomationMode::Off,
-                AutomationMode::Reading,
-                AutomationMode::Writing,
-                AutomationMode::ReadWriting,
-            ] {
-                assert_eq!(to_mode(from_mode(mode)), mode);
-            }
+    #[test]
+    fn mode_bits_round_trip() {
+        for mode in [
+            AutomationMode::Off,
+            AutomationMode::Reading,
+            AutomationMode::Writing,
+            AutomationMode::ReadWriting,
+        ] {
+            assert_eq!(AutomationStates::from(mode).mode(), mode);
         }
+    }
 
-        #[test]
-        fn mode_bit_values() {
-            // 0=none, 1=read, 2=write, 3=read|write (the SDK values).
-            assert_eq!(from_mode(AutomationMode::Off), 0);
-            assert_eq!(from_mode(AutomationMode::Reading), 1);
-            assert_eq!(from_mode(AutomationMode::Writing), 2);
-            assert_eq!(from_mode(AutomationMode::ReadWriting), 3);
-        }
+    #[test]
+    fn mode_bit_values() {
+        // 0=none, 1=read, 2=write, 3=read|write (the SDK values).
+        assert_eq!(AutomationStates::from(AutomationMode::Off).bits(), 0);
+        assert_eq!(AutomationStates::from(AutomationMode::Reading).bits(), 1);
+        assert_eq!(AutomationStates::from(AutomationMode::Writing).bits(), 2);
+        assert_eq!(
+            AutomationStates::from(AutomationMode::ReadWriting).bits(),
+            3
+        );
     }
 }
 

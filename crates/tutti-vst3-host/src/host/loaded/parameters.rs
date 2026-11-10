@@ -274,7 +274,7 @@ impl Vst3Loaded {
     /// was delivered. Must run on the main/UI thread.
     pub fn apply_automation_state(&mut self, main: &MainThread, mode: AutomationMode) -> bool {
         self.plugin
-            .set_automation_state(main, tutti_vst3_ffi::automation_state::from_mode(mode))
+            .set_automation_state(main, tutti_vst3_ffi::AutomationStates::from(mode))
     }
 }
 

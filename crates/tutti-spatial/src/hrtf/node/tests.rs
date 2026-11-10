@@ -94,7 +94,8 @@ fn a_non_finite_position_is_ignored_and_does_not_stick() {
     let near = |(az, el): (Azimuth, Elevation), want: (f32, f32)| {
         (az.get() - want.0).abs() < 0.01 && (el.get() - want.1).abs() < 0.01
     };
-    node.controls().set_position(-45.0, 30.0);
+    node.controls()
+        .set_position(Azimuth::new(-45.0), Elevation::new(30.0));
     settle(&mut node);
     assert!(
         near(node.panner.aim(), (-45.0, 30.0)),
@@ -109,14 +110,16 @@ fn a_non_finite_position_is_ignored_and_does_not_stick() {
             if az.is_finite() { az } else { -45.0 },
             if el.is_finite() { el } else { 30.0 },
         );
-        node.controls().set_position(az, el);
+        node.controls()
+            .set_position(Azimuth::new(az), Elevation::new(el));
         settle(&mut node);
         assert!(
             near(node.panner.aim(), want),
             "({az}, {el}): aimed at {:?}, want {want:?}",
             node.panner.aim()
         );
-        node.controls().set_position(-45.0, 30.0);
+        node.controls()
+            .set_position(Azimuth::new(-45.0), Elevation::new(30.0));
         settle(&mut node);
         assert!(
             near(node.panner.aim(), (-45.0, 30.0)),
@@ -144,7 +147,8 @@ fn a_non_finite_position_is_ignored_and_does_not_stick() {
             "raw ({az}, {el}): aimed at {:?}",
             node.panner.aim()
         );
-        node.controls().set_position(-45.0, 30.0);
+        node.controls()
+            .set_position(Azimuth::new(-45.0), Elevation::new(30.0));
         settle(&mut node);
         assert!(
             near(node.panner.aim(), (-45.0, 30.0)),
@@ -153,7 +157,8 @@ fn a_non_finite_position_is_ignored_and_does_not_stick() {
         );
     }
     // A reset (and a fork's) seats on the held position, not on a NaN.
-    node.controls().set_position(f32::NAN, f32::NAN);
+    node.controls()
+        .set_position(Azimuth::new(f32::NAN), Elevation::new(f32::NAN));
     Node::reset(&mut node);
     assert!(
         near(node.panner.aim(), (-45.0, 30.0)),
@@ -164,14 +169,15 @@ fn a_non_finite_position_is_ignored_and_does_not_stick() {
 
 #[test]
 fn rejects_garbage_bytes() {
-    let err = HrtfBinauralNode::new(&[0u8; 16], 44_100.0);
+    let err = HrtfBinauralNode::new(&[0u8; 16], SampleRate::new(44_100.0));
     assert!(err.is_err(), "non-HRIR bytes must fail to construct");
 }
 
 #[test]
 fn produces_output_after_one_frame_of_latency() {
     let mut node = make_node();
-    node.controls().set_position(90.0, 0.0);
+    node.controls()
+        .set_position(Azimuth::new(90.0), Elevation::new(0.0));
 
     // Drive a steady tone through more than one step and confirm the
     // renderer eventually emits non-silence (output lags by one step).
@@ -398,12 +404,14 @@ fn clone_shares_the_position_atomics() {
     let c = node.clone();
 
     // Set through the original, observe through the clone.
-    node.controls().set_position(45.0, 10.0);
+    node.controls()
+        .set_position(Azimuth::new(45.0), Elevation::new(10.0));
     assert_eq!(c.controls().azimuth(), Azimuth(45.0));
     assert_eq!(c.controls().elevation(), Elevation(10.0));
 
     // And back the other way.
-    c.controls().set_position(-60.0, -20.0);
+    c.controls()
+        .set_position(Azimuth::new(-60.0), Elevation::new(-20.0));
     assert_eq!(node.controls().azimuth(), Azimuth(-60.0));
     assert_eq!(node.controls().elevation(), Elevation(-20.0));
 }

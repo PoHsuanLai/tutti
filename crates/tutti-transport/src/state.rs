@@ -211,7 +211,7 @@ mod tests {
         let seek = SeekSlot::new();
         assert_eq!(seek.take(), None);
 
-        seek.request(8.0);
+        seek.request(Beat::new(8.0));
         assert!(seek.is_pending());
         assert_eq!(seek.take(), Some(Beat(8.0)));
         // Consumed — a second take sees nothing.

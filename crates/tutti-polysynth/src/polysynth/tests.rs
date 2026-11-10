@@ -2083,7 +2083,7 @@ fn disabling_mpe_clears_latent_per_note_state() {
 #[test]
 fn a_long_block_renders_every_frame_like_short_blocks() {
     let config = || SynthConfig {
-        sample_rate: tutti_types::SampleRate::from(48_000.0),
+        sample_rate: tutti_types::SampleRate::new(48_000.0),
         max_voices: 4,
         oscillator: OscillatorType::Saw,
         filter: FilterType::Svf {
@@ -2159,7 +2159,7 @@ fn a_long_block_renders_every_frame_like_short_blocks() {
 #[test]
 fn unison_grown_under_a_held_note_sounds_immediately() {
     let mut synth = synth(SynthConfig {
-        sample_rate: tutti_types::SampleRate::from(48_000.0),
+        sample_rate: tutti_types::SampleRate::new(48_000.0),
         max_voices: 2,
         oscillator: OscillatorType::Saw,
         unison: Some(UnisonConfig {
@@ -2213,7 +2213,7 @@ fn unison_grown_under_a_held_note_sounds_immediately() {
 #[test]
 fn process_and_tick_agree_through_a_glide() {
     let config = || SynthConfig {
-        sample_rate: tutti_types::SampleRate::from(48_000.0),
+        sample_rate: tutti_types::SampleRate::new(48_000.0),
         max_voices: 1,
         voice_mode: VoiceMode::Mono,
         oscillator: OscillatorType::Sine,
@@ -2282,7 +2282,7 @@ fn process_and_tick_agree_through_a_glide() {
 #[test]
 fn a_chord_gets_a_distinct_phase_stack_per_voice() {
     let mut synth = synth(SynthConfig {
-        sample_rate: tutti_types::SampleRate::from(48_000.0),
+        sample_rate: tutti_types::SampleRate::new(48_000.0),
         max_voices: 2,
         oscillator: OscillatorType::Saw,
         unison: Some(UnisonConfig {
@@ -2341,7 +2341,7 @@ fn a_chord_gets_a_distinct_phase_stack_per_voice() {
 #[test]
 fn a_steal_at_a_different_velocity_does_not_click() {
     let mut synth = synth(SynthConfig {
-        sample_rate: tutti_types::SampleRate::from(48_000.0),
+        sample_rate: tutti_types::SampleRate::new(48_000.0),
         max_voices: 1,
         allocation_strategy: crate::AllocationStrategy::Oldest,
         oscillator: OscillatorType::Sine,
@@ -2388,7 +2388,7 @@ fn a_steal_at_a_different_velocity_does_not_click() {
 #[test]
 fn reset_all_controllers_leaves_the_cutoff_alone() {
     let config = || SynthConfig {
-        sample_rate: tutti_types::SampleRate::from(48_000.0),
+        sample_rate: tutti_types::SampleRate::new(48_000.0),
         max_voices: 1,
         oscillator: OscillatorType::Saw,
         filter: FilterType::Svf {

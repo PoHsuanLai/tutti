@@ -13,6 +13,7 @@
 
 use std::path::PathBuf;
 use std::sync::{Mutex, MutexGuard};
+use tutti_types::SampleRate;
 
 use tutti_plugin::error::StateError;
 use tutti_plugin::handles::PluginHandle;
@@ -70,8 +71,9 @@ fn load_handle(env: &[(&str, &str)]) -> PluginHandle {
         // SAFETY: as above.
         unsafe { std::env::set_var(k, v) };
     }
-    let (_unit, handle) = tutti_plugin::in_process_vst2_client(&main_thread(), &path, SAMPLE_RATE)
-        .unwrap_or_else(|e| panic!("in-process VST2 load failed for {path:?}: {e:?}"));
+    let (_unit, handle) =
+        tutti_plugin::in_process_vst2_client(&main_thread(), &path, SampleRate::new(SAMPLE_RATE))
+            .unwrap_or_else(|e| panic!("in-process VST2 load failed for {path:?}: {e:?}"));
     // The AEffect is built; clearing now keeps the variable from outliving it.
     clear_probe_env();
     handle
@@ -272,8 +274,12 @@ fn open_routes_a_vst2_to_the_in_process_backend() {
     // SAFETY: `PROBE_LOCK` is held, so no other test thread reads the
     // environment concurrently.
     unsafe { std::env::set_var("TUTTI_VST2_PROBE_EDITOR", "1") };
-    let plugin = tutti_plugin::catalog::Plugin::open(Some(&main_thread()), &staged, SAMPLE_RATE)
-        .expect("Plugin::open should load a .vst in-process");
+    let plugin = tutti_plugin::catalog::Plugin::open(
+        Some(&main_thread()),
+        &staged,
+        SampleRate::new(SAMPLE_RATE),
+    )
+    .expect("Plugin::open should load a .vst in-process");
     clear_probe_env();
     let handle = plugin.handle().clone();
     drop(plugin);
@@ -365,9 +371,12 @@ fn the_node_carries_midi_on_its_event_ports() {
             std::env::set_var("TUTTI_VST2_PROBE_MIDI_INPUTS", "1");
             std::env::set_var("TUTTI_VST2_PROBE_MIDI_OUTPUTS", outputs);
         }
-        let plugin =
-            tutti_plugin::catalog::Plugin::open(Some(&main_thread()), &staged, SAMPLE_RATE)
-                .unwrap_or_else(|e| panic!("in-process VST2 load failed for {staged:?}: {e:?}"));
+        let plugin = tutti_plugin::catalog::Plugin::open(
+            Some(&main_thread()),
+            &staged,
+            SampleRate::new(SAMPLE_RATE),
+        )
+        .unwrap_or_else(|e| panic!("in-process VST2 load failed for {staged:?}: {e:?}"));
         clear_probe_env();
         plugin
     };
@@ -414,9 +423,12 @@ fn the_node_reports_the_decoded_tail_rather_than_unknown() {
         // SAFETY: the probe lock is held, so no other test thread is touching
         // the environment.
         unsafe { std::env::set_var("TUTTI_VST2_PROBE_TAIL_SIZE", raw) };
-        let (unit, _handle) =
-            tutti_plugin::in_process_vst2_client(&main_thread(), &path, SAMPLE_RATE)
-                .unwrap_or_else(|e| panic!("in-process VST2 load failed: {e:?}"));
+        let (unit, _handle) = tutti_plugin::in_process_vst2_client(
+            &main_thread(),
+            &path,
+            SampleRate::new(SAMPLE_RATE),
+        )
+        .unwrap_or_else(|e| panic!("in-process VST2 load failed: {e:?}"));
         clear_probe_env();
 
         // The tail the graph's compiler folds: the node's declared shape.
@@ -446,9 +458,12 @@ fn midi_past_the_blocks_capacity_is_counted() {
 
     let _lock = lock_probe();
     clear_probe_env();
-    let (unit, _handle) =
-        tutti_plugin::in_process_vst2_client(&main_thread(), probe_path::probe_path(), SAMPLE_RATE)
-            .expect("load the probe");
+    let (unit, _handle) = tutti_plugin::in_process_vst2_client(
+        &main_thread(),
+        probe_path::probe_path(),
+        SampleRate::new(SAMPLE_RATE),
+    )
+    .expect("load the probe");
     let controls = unit.controls();
     let mut unit = Direct::new(unit, SampleRate(SAMPLE_RATE), 512);
     let notes = |n: usize| -> Vec<Event> {

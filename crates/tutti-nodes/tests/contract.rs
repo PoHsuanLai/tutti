@@ -38,7 +38,7 @@
 use tutti_graph::contract::{Detect, Excite, Row};
 use tutti_graph::contract_tests;
 use tutti_nodes::{CrossoverNode, DelayLineNode, LimiterNode, MultibandCompressorNode};
-use tutti_types::{ChannelLayout, Db, Hz, Samples};
+use tutti_types::{ChannelLayout, Db, Feedback, Hz, Mix, Samples, Seconds};
 
 fn impulse(port: u16) -> Excite {
     Excite::Impulse {
@@ -83,8 +83,12 @@ fn delay_line_row() -> Row {
     Row::new(
         "DelayLineNode (500 ms echo, mix 0.5)",
         || {
-            let node = DelayLineNode::new(1.0_f64, 0.5_f64, 0.0_f32);
-            node.set_mix(0.5_f32);
+            let node = DelayLineNode::new(
+                Seconds::new(1.0_f64),
+                Seconds::new(0.5_f64),
+                Feedback::new(0.0_f32),
+            );
+            node.set_mix(Mix::new(0.5_f32));
             Box::new(node)
         },
         impulse(0),
@@ -139,7 +143,7 @@ mod convolution {
             &format!("ConvolverNode (256-frame block, mix {mix})"),
             move || {
                 let node = ConvolverNode::new(&[1.0], 256);
-                node.set_mix(mix);
+                node.set_mix(Mix::new(mix));
                 Box::new(node)
             },
             impulse(0),

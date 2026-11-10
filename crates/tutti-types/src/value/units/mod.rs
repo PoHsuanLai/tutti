@@ -11,7 +11,7 @@
 //! # Units are labels
 //!
 //! A unit is a name on a float, not a validated value: `Pan(5.0)` and
-//! `Mix(-3.0)` build through the public field, `new` and `From`. The range a
+//! `Mix(-3.0)` build through the public field and `new`. The range a
 //! type documents is what its named constructors and methods produce
 //! (`new_clamped`, `wrapped`, `wrap`), not what a hand-built value holds.
 //!
@@ -100,6 +100,11 @@ pub trait Unit: Copy + Clone + core::fmt::Debug + PartialEq {
 }
 
 // `From` for the conversions with exactly one answer.
+//
+// Between a unit and its own bare number there is no `From` at all: a bare
+// float becomes a unit with `new` and leaves with `get` (`Unit::from_raw` and
+// `to_raw` in generic code), so the quantity is named where the number is
+// written. The omission ledgers in the family tests record it.
 //
 // The rule this file follows, stated once so the split is never accidental:
 //

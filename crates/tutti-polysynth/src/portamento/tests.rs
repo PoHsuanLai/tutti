@@ -6,9 +6,9 @@ fn test_no_glide() {
         mode: PortamentoMode::Off,
         ..Default::default()
     };
-    let mut porta = Portamento::new(config, 44100.0);
+    let mut porta = Portamento::new(config, SampleRate::new(44100.0));
 
-    porta.set_target(880.0, false);
+    porta.set_target(Hz::new(880.0), false);
     assert!((porta.tick().get() - 880.0).abs() < 0.01);
     assert!(!porta.is_gliding());
 }
@@ -20,10 +20,10 @@ fn test_always_glide() {
         time: Seconds(0.01), // 10ms
         ..Default::default()
     };
-    let mut porta = Portamento::new(config, 44100.0);
+    let mut porta = Portamento::new(config, SampleRate::new(44100.0));
 
-    porta.reset(440.0);
-    porta.set_target(880.0, false);
+    porta.reset(Hz::new(440.0));
+    porta.set_target(Hz::new(880.0), false);
 
     // Should start near 440
     let first = porta.tick();
@@ -45,17 +45,17 @@ fn test_legato_only() {
         time: Seconds(0.01),
         ..Default::default()
     };
-    let mut porta = Portamento::new(config, 44100.0);
+    let mut porta = Portamento::new(config, SampleRate::new(44100.0));
 
-    porta.reset(440.0);
+    porta.reset(Hz::new(440.0));
 
     // Non-legato should not glide
-    porta.set_target(880.0, false);
+    porta.set_target(Hz::new(880.0), false);
     assert!(!porta.is_gliding());
     assert!((porta.current().get() - 880.0).abs() < 0.01);
 
     // Legato should glide
-    porta.set_target(440.0, true);
+    porta.set_target(Hz::new(440.0), true);
     assert!(porta.is_gliding());
 }
 
@@ -72,10 +72,10 @@ fn test_curve_shapes() {
             time: Seconds(0.01),
             ..Default::default()
         };
-        let mut porta = Portamento::new(config, 44100.0);
+        let mut porta = Portamento::new(config, SampleRate::new(44100.0));
 
-        porta.reset(440.0);
-        porta.set_target(880.0, false);
+        porta.reset(Hz::new(440.0));
+        porta.set_target(Hz::new(880.0), false);
 
         // Run to completion
         while porta.is_gliding() {
@@ -112,13 +112,13 @@ fn advance_is_that_many_ticks() {
             ..Default::default()
         };
         let (mut by_tick, mut by_advance) = (
-            Portamento::new(config.clone(), 44100.0),
-            Portamento::new(config, 44100.0),
+            Portamento::new(config.clone(), SampleRate::new(44100.0)),
+            Portamento::new(config, SampleRate::new(44100.0)),
         );
         for target in [587.0, 311.13, 1234.5, 97.3, 2093.0] {
             for p in [&mut by_tick, &mut by_advance] {
-                p.reset(220.0);
-                p.set_target(target, false);
+                p.reset(Hz::new(220.0));
+                p.set_target(Hz::new(target), false);
             }
             for steps in [0usize, 1, 7, 16, 0, 19, 3, 16, 16] {
                 let mut want = by_tick.current();

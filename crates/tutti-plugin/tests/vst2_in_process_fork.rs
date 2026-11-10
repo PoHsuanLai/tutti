@@ -150,7 +150,7 @@ impl Drop for ProbeEnv {
 
 fn load() -> (InProcessVst2Client, PluginHandle) {
     let path = probe_path::probe_path();
-    in_process_vst2_client(&main_thread(), path, SAMPLE_RATE)
+    in_process_vst2_client(&main_thread(), path, SampleRate::new(SAMPLE_RATE))
         .unwrap_or_else(|e| panic!("in-process load of the probe at {path:?}: {e:?}"))
 }
 
@@ -430,7 +430,7 @@ fn a_plugin_handed_back_by_into_client_forks() {
     let plugin = tutti_plugin::catalog::Plugin::open(
         Some(&main_thread()),
         probe_path::probe_path(),
-        SAMPLE_RATE,
+        SampleRate::new(SAMPLE_RATE),
     )
     .expect("the probe opens");
     let handle = plugin.handle().clone();

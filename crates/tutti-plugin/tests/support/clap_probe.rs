@@ -506,8 +506,12 @@ pub fn load_probe_with(config: BridgeConfig, sample_rate: f64) -> LoadedProbe {
     // SAFETY: `exclusive()` is held; see `ProbeEnv::set`.
     unsafe { std::env::set_var("TUTTI_PLUGIN_SERVER", plugin_server_path()) };
 
-    let client = PluginClient::new(config, clap_probe_path().to_path_buf(), sample_rate)
-        .expect("load the reference CLAP plugin through a real plugin-server");
+    let client = PluginClient::new(
+        config,
+        clap_probe_path().to_path_buf(),
+        SampleRate::new(sample_rate),
+    )
+    .expect("load the reference CLAP plugin through a real plugin-server");
     let handle = PluginHandle::from_client(&client);
     LoadedProbe { client, handle }
 }

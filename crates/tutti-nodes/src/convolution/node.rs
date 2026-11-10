@@ -543,6 +543,7 @@ mod tests {
     use super::*;
     use crate::test_support::{drive_block, drive_frames, prepared};
     use tutti_graph::contract::assert_param_fork;
+    use tutti_types::Seconds;
 
     /// A fork starts from the mix last set through the node's `ParamSet`
     /// and shares no cell with it (see
@@ -560,9 +561,9 @@ mod tests {
         assert_param_fork(node.clone());
         // The gain has no address: the fork keeps it at its value when
         // forked, and follows no live write.
-        node.set_gain(0.3);
+        node.set_gain(Amplitude::new(0.3));
         let fork = node.fork_fresh();
-        node.set_gain(2.0);
+        node.set_gain(Amplitude::new(2.0));
         assert_eq!(fork.params.gain.load(), Amplitude(0.3));
     }
 
@@ -575,7 +576,7 @@ mod tests {
     /// again: the node keeps no IR samples, only their spectra.)
     #[test]
     fn the_spectra_are_stored_once_and_a_fork_shares_them() {
-        let ir = generate_test_ir(4_096, 0.3, 48_000.0);
+        let ir = generate_test_ir(4_096, Seconds::new(0.3), SampleRate::new(48_000.0));
         let node = ConvolverNode::shared_ir(6u16, &ir, 256);
         let first = node.convolvers[0].spectra();
         assert!(
@@ -601,14 +602,14 @@ mod tests {
     /// state copied) → the fork rings with the live node's tail → fails.
     #[test]
     fn a_fork_carries_none_of_the_live_state() {
-        let ir = generate_test_ir(700, 0.3, 48_000.0);
+        let ir = generate_test_ir(700, Seconds::new(0.3), SampleRate::new(48_000.0));
         let x = crate::test_support::noise(5, 512);
         let mut live = prepared(ConvolverNode::stereo(&ir, &ir, 64));
-        live.set_mix(1.0);
+        live.set_mix(Mix::new(1.0));
         drive_block(&mut live, &[&x, &x]);
         let mut fork = prepared(live.fork_fresh());
         let mut new = prepared(ConvolverNode::stereo(&ir, &ir, 64));
-        new.set_mix(1.0);
+        new.set_mix(Mix::new(1.0));
         let silent = [0.0f32; 512];
         assert_eq!(
             drive_block(&mut fork, &[&silent, &silent]),
@@ -647,7 +648,7 @@ mod tests {
         let mut renders = Vec::new();
         for lens in [&[1usize][..], &[7, 61, 64, 127], &[1000, 3]] {
             let mut node = prepared(ConvolverNode::new(&ir, 32));
-            node.set_mix(1.0);
+            node.set_mix(Mix::new(1.0));
             let (mut at, mut k) = (0, 0);
             let mut out = Vec::new();
             while at < x.len() {
@@ -678,9 +679,9 @@ mod tests {
     fn mix_is_clamped() {
         let ir = vec![1.0; 64];
         let node = ConvolverNode::new(&ir, 64);
-        node.set_mix(1.5);
+        node.set_mix(Mix::new(1.5));
         assert_eq!(node.mix().load(core::sync::atomic::Ordering::Acquire), 1.0);
-        node.set_mix(-0.5);
+        node.set_mix(Mix::new(-0.5));
         assert_eq!(node.mix().load(core::sync::atomic::Ordering::Acquire), 0.0);
     }
 
@@ -692,7 +693,7 @@ mod tests {
     fn dry_mix_is_passthrough() {
         let ir = vec![1.0; 64];
         let mut node = prepared(ConvolverNode::new(&ir, 64));
-        node.set_mix(0.0);
+        node.set_mix(Mix::new(0.0));
         let latency = node.latency_samples().0;
 
         let x: Vec<f32> = (0..latency * 2).map(|i| 0.5 + i as f32 * 1e-3).collect();
@@ -709,28 +710,28 @@ mod tests {
 
     #[test]
     fn reset_zeroes_state() {
-        let ir = generate_test_ir(256, 0.2, 48_000.0);
+        let ir = generate_test_ir(256, Seconds::new(0.2), SampleRate::new(48_000.0));
         let mut node = prepared(ConvolverNode::new(&ir, 64));
         drive_frames(&mut node, &[&[1.0; 100]]);
         Node::reset(&mut node);
-        node.set_mix(1.0);
+        node.set_mix(Mix::new(1.0));
         let out = drive_frames(&mut node, &[&[0.0]]);
         assert!(out[0][0].abs() < 1e-6);
     }
 
     #[test]
     fn stereo_convolver_true_stereo_produces_finite_output() {
-        let ir_l = generate_test_ir(512, 0.3, 48_000.0);
-        let ir_r = generate_test_ir(512, 0.4, 48_000.0);
+        let ir_l = generate_test_ir(512, Seconds::new(0.3), SampleRate::new(48_000.0));
+        let ir_r = generate_test_ir(512, Seconds::new(0.4), SampleRate::new(48_000.0));
         let mut node = prepared(ConvolverNode::stereo(&ir_l, &ir_r, 64));
-        node.set_mix(0.5);
+        node.set_mix(Mix::new(0.5));
         let out = drive_frames(&mut node, &[&[1.0], &[0.5]]);
         assert!(out[0][0].is_finite() && out[1][0].is_finite());
     }
 
     #[test]
     fn room_ir_has_content() {
-        let ir = generate_room_ir(0.5, 1.0, 48_000.0);
+        let ir = generate_room_ir(0.5, Seconds::new(1.0), SampleRate::new(48_000.0));
         assert!(!ir.is_empty());
         assert_eq!(ir[0], 1.0);
         assert!(ir.iter().any(|&x| x != 0.0));
@@ -742,6 +743,7 @@ mod golden {
     use super::super::ir::generate_test_ir;
     use super::*;
     use tutti_graph::contract::{drive, prepared};
+    use tutti_types::Seconds;
 
     const BLOCK: usize = 64;
     const FRAMES: usize = 1500;
@@ -781,8 +783,8 @@ mod golden {
     }
 
     fn cases() -> Vec<(&'static str, ConvolverNode)> {
-        let ir_a = generate_test_ir(700, 0.3, 48_000.0);
-        let ir_b = generate_test_ir(300, 0.5, 48_000.0);
+        let ir_a = generate_test_ir(700, Seconds::new(0.3), SampleRate::new(48_000.0));
+        let ir_b = generate_test_ir(300, Seconds::new(0.5), SampleRate::new(48_000.0));
         vec![
             ("width1", ConvolverNode::new(&ir_a, 64)),
             ("mono", ConvolverNode::shared_ir(2u16, &ir_a, 32)),
@@ -932,8 +934,8 @@ mod golden {
     fn output_matches_the_pinned_pre_merge_render() {
         for ((name, node), (gname, want)) in cases().into_iter().zip(GOLDEN) {
             assert_eq!(name, gname);
-            node.set_mix(0.4);
-            node.set_gain(0.7);
+            node.set_mix(Mix::new(0.4));
+            node.set_gain(Amplitude::new(0.7));
             let x = signal(node.width(), FRAMES);
             let out = render(node, &x);
             assert_eq!(out.len(), want.len(), "{name}: width");
@@ -968,7 +970,7 @@ mod golden {
                 generate_test_ir(
                     200 + 90 * c,
                     tutti_types::Seconds::from_f32(0.2 + 0.05 * c as f32),
-                    48_000.0,
+                    SampleRate::new(48_000.0),
                 )
             })
             .collect();
@@ -977,12 +979,12 @@ mod golden {
         let shape = wide.shape();
         assert_eq!((shape.audio_in.count(), shape.audio_out.count()), (6, 6));
         assert_eq!(wide.layout(), ChannelLayout::from(6u16));
-        wide.set_mix(0.3);
+        wide.set_mix(Mix::new(0.3));
         let x = signal(6, 900);
         let got = render(wide, &x);
         for c in 0..6 {
             let solo = ConvolverNode::new(&irs[c], 64);
-            solo.set_mix(0.3);
+            solo.set_mix(Mix::new(0.3));
             let want = render(solo, &x[c..=c]);
             for (i, (g, w)) in got[c].iter().zip(&want[0]).enumerate() {
                 assert_eq!(g.to_bits(), w.to_bits(), "ch{c} frame {i}: {g} vs {w}");
@@ -1000,7 +1002,7 @@ mod golden {
     #[test]
     fn a_six_channel_shared_ir_keeps_each_channel_to_itself_and_aligned() {
         let node = ConvolverNode::shared_ir(6u16, &[1.0], 64);
-        node.set_mix(0.5);
+        node.set_mix(Mix::new(0.5));
         let latency = node.latency_samples().0;
         assert_eq!(node.shape().latency, Latency::new(Samples(latency)));
         let mut x = vec![vec![0.0f32; 4 * latency]; 6];
@@ -1025,11 +1027,11 @@ mod golden {
     #[test]
     fn a_six_channel_fold_convolves_the_engine_fold() {
         let irs: Vec<Vec<f32>> = (0..6)
-            .map(|c| generate_test_ir(150 + 40 * c, 0.3, 48_000.0))
+            .map(|c| generate_test_ir(150 + 40 * c, Seconds::new(0.3), SampleRate::new(48_000.0)))
             .collect();
         let refs: Vec<&[f32]> = irs.iter().map(Vec::as_slice).collect();
         let node = ConvolverNode::folded(&refs, 32);
-        node.set_mix(1.0);
+        node.set_mix(Mix::new(1.0));
         let x = signal(6, 700);
         let got = render(node, &x);
         let mono: Vec<f32> = (0..700)
@@ -1040,7 +1042,7 @@ mod golden {
             .collect();
         for c in 0..6 {
             let solo = ConvolverNode::new(&irs[c], 32);
-            solo.set_mix(1.0);
+            solo.set_mix(Mix::new(1.0));
             let want = render(solo, std::slice::from_ref(&mono));
             for (i, (g, w)) in got[c].iter().zip(&want[0]).enumerate() {
                 assert_eq!(g.to_bits(), w.to_bits(), "ch{c} frame {i}: {g} vs {w}");
@@ -1059,13 +1061,15 @@ mod golden {
     #[test]
     fn a_mix_or_gain_change_is_read_next_block_and_ramped_across_it() {
         use crate::test_support::{change_between_node_blocks, noise};
-        let ir = generate_test_ir(256, 0.2, 48_000.0);
+        let ir = generate_test_ir(256, Seconds::new(0.2), SampleRate::new(48_000.0));
         let x = noise(21, 64 * 8);
         let (hist, block) = (&x[..64 * 7], &x[64 * 7..]);
         let make = || ConvolverNode::shared_ir(ChannelLayout::STEREO, &ir, 64);
         type Change = fn(&ConvolverNode);
-        let changes: [(&str, Change); 2] =
-            [("mix", |n| n.set_mix(1.0)), ("gain", |n| n.set_gain(4.0))];
+        let changes: [(&str, Change); 2] = [
+            ("mix", |n| n.set_mix(Mix::new(1.0))),
+            ("gain", |n| n.set_gain(Amplitude::new(4.0))),
+        ];
         for (what, change) in changes {
             let run = change_between_node_blocks(make, change, &[hist, hist], &[block, block]);
             run.assert_ramps_in(what);

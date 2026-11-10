@@ -31,16 +31,21 @@ use tutti_nodes::{
     PhaserNode, ShapeKind, SvfFilterNode, SvfType,
 };
 use tutti_types::{
-    Amplitude, ChannelLayout, CompressionRatio, Db, Depth, Drive, Hz, Pan, PhaseIncrement, Q,
-    Resonance, Seconds,
+    Amplitude, ChannelLayout, CompressionRatio, Db, Depth, Drive, Feedback, Hz, Mix, Pan,
+    PhaseIncrement, Q, Resonance, Seconds,
 };
 
 #[test]
 fn compressor() {
     IsolateRow::new("CompressorNode (stereo)", || {
-        CompressorNode::stereo(Db(-20.0), 4.0, Seconds(0.005), Seconds(0.05))
-            .with_soft_knee(Db(3.0))
-            .with_makeup(Db(2.0))
+        CompressorNode::stereo(
+            Db(-20.0),
+            CompressionRatio::new(4.0),
+            Seconds(0.005),
+            Seconds(0.05),
+        )
+        .with_soft_knee(Db(3.0))
+        .with_makeup(Db(2.0))
     })
     .control("threshold", |c| c.set_threshold(Db(-30.0)))
     .control("ratio", |c| {
@@ -101,16 +106,23 @@ fn brickwall_limiter() {
 #[test]
 fn delay_line() {
     IsolateRow::new("DelayLineNode (stereo, ping-pong)", || {
-        let d = DelayLineNode::stereo(Seconds(1.0), Seconds(0.05), Seconds(0.07), 0.5_f32);
-        d.set_cross_feedback(0.3_f32);
-        d.set_mix(0.5_f32);
+        let d = DelayLineNode::stereo(
+            Seconds(1.0),
+            Seconds(0.05),
+            Seconds(0.07),
+            Feedback::new(0.5_f32),
+        );
+        d.set_cross_feedback(Feedback::new(0.3_f32));
+        d.set_mix(Mix::new(0.5_f32));
         d
     })
     .control("delay time (left)", |d| d.set_delay_time_l(Seconds(0.08)))
     .control("delay time (right)", |d| d.set_delay_time_r(Seconds(0.03)))
-    .control("feedback", |d| d.set_feedback(0.1_f32))
-    .control("cross feedback", |d| d.set_cross_feedback(0.0_f32))
-    .control("mix", |d| d.set_mix(0.9_f32))
+    .control("feedback", |d| d.set_feedback(Feedback::new(0.1_f32)))
+    .control("cross feedback", |d| {
+        d.set_cross_feedback(Feedback::new(0.0_f32))
+    })
+    .control("mix", |d| d.set_mix(Mix::new(0.9_f32)))
     .check();
 }
 
@@ -140,13 +152,13 @@ fn lfo() {
 fn chorus() {
     IsolateRow::new("ModDelayNode (stereo chorus)", || {
         let c = ModDelayNode::chorus(ChannelLayout::STEREO);
-        c.set_feedback(0.3_f32);
+        c.set_feedback(Feedback::new(0.3_f32));
         c
     })
     .control("rate", |c| c.set_rate(Hz(3.0)))
     .control("depth", |c| c.set_depth(Seconds(0.001)))
-    .control("feedback", |c| c.set_feedback(0.6_f32))
-    .control("mix", |c| c.set_mix(0.2_f32))
+    .control("feedback", |c| c.set_feedback(Feedback::new(0.6_f32)))
+    .control("mix", |c| c.set_mix(Mix::new(0.2_f32)))
     .check();
 }
 
@@ -154,13 +166,13 @@ fn chorus() {
 fn phaser() {
     IsolateRow::new("PhaserNode (stereo, 4 stages)", || {
         let p = PhaserNode::with_channels(ChannelLayout::STEREO, 4);
-        p.set_feedback(0.3_f32);
+        p.set_feedback(Feedback::new(0.3_f32));
         p
     })
     .control("rate", |p| p.set_rate(Hz(3.0)))
     .control("depth", |p| p.set_depth(Depth::new_clamped(0.2)))
-    .control("feedback", |p| p.set_feedback(0.7_f32))
-    .control("mix", |p| p.set_mix(0.2_f32))
+    .control("feedback", |p| p.set_feedback(Feedback::new(0.7_f32)))
+    .control("mix", |p| p.set_mix(Mix::new(0.2_f32)))
     .check();
 }
 

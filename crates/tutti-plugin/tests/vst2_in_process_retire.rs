@@ -60,8 +60,8 @@ fn block(exec: &mut tutti_graph::Executor, left: &mut [f32], right: &mut [f32]) 
 fn a_removed_vst2_node_is_dropped_on_the_control_side() {
     let main = tutti_plugin_types::MainThread::claim().expect("one test, one process");
     let path = probe_path::probe_path().clone();
-    let (unit, handle) =
-        in_process_vst2_client(&main, &path, RATE).expect("the probe loads in process");
+    let (unit, handle) = in_process_vst2_client(&main, &path, SampleRate::new(RATE))
+        .expect("the probe loads in process");
 
     let key = NodeKey(1);
     let (mut editor, mut exec) = Editor::new(Prepare::new(SampleRate(RATE), Samples(BLOCK)));

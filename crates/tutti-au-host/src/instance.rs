@@ -1107,7 +1107,7 @@ impl AuInstance {
         // sample count can land a hair below it in f64, and truncating there
         // reports one sample less than the plugin actually delays — PDC then
         // under-compensates by a sample on every such plugin.
-        Ok(Seconds(seconds).to_samples(self.sample_rate()))
+        Ok(Seconds(seconds).to_samples(tutti_types::SampleRate::new(self.sample_rate())))
     }
 
     /// Seconds of audio this AU keeps producing after its input goes silent.

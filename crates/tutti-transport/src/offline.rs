@@ -465,7 +465,7 @@ mod tests {
             start_beat: Beat(0.0),
             tempo: Bpm::of(120.0),
             sample_rate: SampleRate(44100.0),
-            loop_range: LoopRange::new(8.0, 4.0),
+            loop_range: LoopRange::new(Beat::new(8.0), Beat::new(4.0)),
         });
 
         assert_eq!(
@@ -492,7 +492,7 @@ mod tests {
             start_beat: Beat(0.0),
             tempo: Bpm::of(120.0),
             sample_rate: SampleRate(44100.0),
-            loop_range: LoopRange::new(4.0, 4.0),
+            loop_range: LoopRange::new(Beat::new(4.0), Beat::new(4.0)),
         });
         assert_eq!(timeline.loop_range(), None);
     }
@@ -513,7 +513,7 @@ mod tests {
             start_beat: Beat(0.0),
             tempo: Bpm::of(120.0),
             sample_rate: SampleRate(44100.0),
-            loop_range: LoopRange::new(0.0, 1.0),
+            loop_range: LoopRange::new(Beat::new(0.0), Beat::new(1.0)),
         });
 
         // Five beats over a one-beat loop: a crossing every 22 050 frames, each
@@ -532,7 +532,7 @@ mod tests {
             start_beat: Beat(0.1),
             tempo: Bpm::of(97.0),
             sample_rate: SampleRate(44100.0),
-            loop_range: LoopRange::new(0.1, 0.43),
+            loop_range: LoopRange::new(Beat::new(0.1), Beat::new(0.43)),
         };
         let (block, frames) = (OfflineTimeline::new(&config), OfflineTimeline::new(&config));
         block.advance(50_000);
@@ -569,7 +569,7 @@ mod tests {
                 Arc::new(AtomicBpm::new(Bpm::of(tempo))),
                 Arc::new(AtomicBool::new(false)),
             ),
-            sample_rate,
+            SampleRate::new(sample_rate),
         )
         .starting_at(start_beat);
 
@@ -672,9 +672,9 @@ mod tests {
                     Arc::new(AtomicBpm::new(Bpm::of(tempo))),
                     Arc::new(AtomicBool::new(false)),
                 ),
-                rate,
+                SampleRate::new(rate),
             )
-            .starting_at(start);
+            .starting_at(Beat::new(start));
             let mut frames = 0u64;
             for _ in 0..1_000 {
                 let n = 1 + (next() % 2_048) as usize;
@@ -713,7 +713,7 @@ mod tests {
         assert!((timeline.beat().get() - 5.0).abs() < 0.01);
 
         // Seek back to beat 2
-        timeline.seek_to(2.0);
+        timeline.seek_to(Beat::new(2.0));
         assert!((timeline.beat().get() - 2.0).abs() < 0.001);
     }
 
@@ -723,12 +723,15 @@ mod tests {
             start_beat: Beat(0.0),
             tempo: Bpm::of(120.0),
             sample_rate: SampleRate(44100.0),
-            loop_range: LoopRange::new(0.0, 8.0),
+            loop_range: LoopRange::new(Beat::new(0.0), Beat::new(8.0)),
         });
 
         use crate::Timeline;
 
-        assert_eq!(timeline.loop_range(), LoopRange::new(0.0, 8.0));
+        assert_eq!(
+            timeline.loop_range(),
+            LoopRange::new(Beat::new(0.0), Beat::new(8.0))
+        );
         assert_eq!(timeline.tempo().get(), 120.0);
         // An offline timeline has nothing to pause it.
         assert!(timeline.is_rolling());
@@ -855,11 +858,11 @@ mod tests {
             &config(0.0),
             map(&[(0.0, 120.0), (4.0, 60.0)], Shape::Step),
         );
-        t.seek_to(4.5);
+        t.seek_to(Beat::new(4.5));
         assert_eq!(t.graph_block().0.tempo, Bpm::of(60.0));
         t.advance(48_000);
         assert_eq!(t.beat(), Beat(5.5));
-        t.seek_to(3.5);
+        t.seek_to(Beat::new(3.5));
         assert_eq!(t.graph_block().0.tempo, Bpm::of(120.0));
         t.advance(11_999);
         assert_eq!(t.graph_block().0.tempo, Bpm::of(120.0));

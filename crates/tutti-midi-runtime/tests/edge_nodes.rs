@@ -663,7 +663,7 @@ fn a_short_loop_in_a_long_block_is_counted_past_the_cap() {
             start: Beat(0.0),
             end: Beat(end),
         });
-        let region = tutti_types::LoopRange::new(0.0, end);
+        let region = tutti_types::LoopRange::new(Beat::new(0.0), Beat::new(end));
         let mut host = FrameClock::new(Beat(0.0), Bpm::of(120.0), SampleRate(RATE));
         for _ in 0..TOTAL / len {
             let rolling = Transport::new(true, Bpm::of(120.0), host.beat(), looping);

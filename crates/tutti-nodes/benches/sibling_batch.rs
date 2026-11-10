@@ -44,7 +44,7 @@ use tutti_graph::{Cost, Cx, Editor, Executor, Io, Node, Prepare, Shape, Status, 
 use tutti_graph::{Edge, InPort, OutPort, Source};
 use tutti_graph::{ForkByClone, Unforkable};
 use tutti_nodes::BusStripNode;
-use tutti_types::{ChannelLayout, SampleRate, Samples};
+use tutti_types::{Amplitude, ChannelLayout, SampleRate, Samples};
 use wide::f32x8;
 
 const SR: f64 = 48_000.0;
@@ -365,7 +365,7 @@ fn graph(kind: Kind, variant: Variant, members: usize, frames: usize) -> Executo
                     }
                     Kind::BusStrip => {
                         let s = BusStripNode::new();
-                        s.set_volume(0.5 + m as f32 * 1e-3);
+                        s.set_volume(Amplitude::new(0.5 + m as f32 * 1e-3));
                         ed.insert(k, "bus strip", s);
                     }
                     Kind::Biquad => {

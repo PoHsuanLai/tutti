@@ -703,6 +703,12 @@ quantity one covers: fields, signatures, `Param<U>` and return types.
   adding one; a unit's `unit!` ability list is its whole algebra. If it is
   listed there, write a named method instead.
 - **An omission must ship with its replacement in the same change.**
+- **A bare number becomes a unit with `new` and leaves with `get`** (`Unit::from_raw`
+  and `to_raw` in generic code). The `unit!` macro emits no `From<raw>` and no
+  `From<Unit> for raw`, so `.into()` never crosses between a unit and its raw: the
+  quantity is named where the number is written. A signature takes the unit type
+  (or `impl Into<Unit>` for a conversion between units, such as `Amplitude` to `Db`),
+  never `impl Into<f32>`.
 - **Convert with the named converters** (`Db::to_amplitude`,
   `Seconds::to_samples{,_floor,_ceil}`, `Cents::to_semitones`), never by hand.
 - **Measurements are not controls.** `Confidence`, `Correlation` and `Pan`

@@ -1296,7 +1296,10 @@ mod tests {
         for (tempo, looping) in [
             (97.0, None),
             (133.3, None),
-            (97.0, tutti_types::LoopRange::new(1_000.0, 1_000.004)),
+            (
+                97.0,
+                tutti_types::LoopRange::new(Beat::new(1_000.0), Beat::new(1_000.004)),
+            ),
         ] {
             let mut host = tutti_types::FrameClock::new(Beat(0.25), Bpm::of(tempo), rate);
             host.advance(Samples(987_654_321), None);

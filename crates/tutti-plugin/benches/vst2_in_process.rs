@@ -44,8 +44,12 @@ const SR: f64 = 48_000.0;
 const BLOCK: usize = 64;
 
 fn unit() -> Direct<InProcessVst2Client> {
-    let (unit, _handle) = in_process_vst2_client(&main_thread(), probe_path::probe_path(), SR)
-        .expect("the reference VST2 plugin must be built — see tutti-fixtures");
+    let (unit, _handle) = in_process_vst2_client(
+        &main_thread(),
+        probe_path::probe_path(),
+        SampleRate::new(SR),
+    )
+    .expect("the reference VST2 plugin must be built — see tutti-fixtures");
     Direct::new(unit, SampleRate(SR), BLOCK)
 }
 

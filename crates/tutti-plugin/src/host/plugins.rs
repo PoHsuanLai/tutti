@@ -650,7 +650,7 @@ mod tests {
 
         let plugins = catalog_with(&path, blacklisted_row(&path, "SIGSEGV during probe"));
 
-        match plugins.open(None, &path, 48_000.0) {
+        match plugins.open(None, &path, SampleRate::new(48_000.0)) {
             Err(BridgeError::Blacklisted { path: p, reason }) => {
                 assert_eq!(p, path);
                 assert_eq!(reason, "SIGSEGV during probe");
@@ -685,7 +685,7 @@ mod tests {
         let plugins = catalog_with(&path, row);
 
         let err = plugins
-            .open(None, &path, 48_000.0)
+            .open(None, &path, SampleRate::new(48_000.0))
             .expect_err("the fixture is not a loadable plugin");
         assert!(
             !matches!(err, BridgeError::Blacklisted { .. }),
@@ -721,7 +721,7 @@ mod tests {
         );
         assert!(
             matches!(
-                fresh.open(None, &path, 48_000.0),
+                fresh.open(None, &path, SampleRate::new(48_000.0)),
                 Err(BridgeError::Blacklisted { .. })
             ),
             "unchanged and blacklisted: the door must refuse"
@@ -740,7 +740,7 @@ mod tests {
             "a changed file lifts the blacklist — this is the half that was wrong"
         );
         let err = plugins
-            .open(None, &path, 48_000.0)
+            .open(None, &path, SampleRate::new(48_000.0))
             .expect_err("the fixture is not a loadable plugin");
         assert!(
             !matches!(err, BridgeError::Blacklisted { .. }),
@@ -763,8 +763,8 @@ mod tests {
         let plugins = catalog_with(&path, blacklisted_row(&path, "SIGSEGV during probe"));
         assert!(plugins.is_blacklisted(&path), "fixture should be recorded");
 
-        let err =
-            Plugin::open(None, &path, 48_000.0).expect_err("the fixture is not a loadable plugin");
+        let err = Plugin::open(None, &path, SampleRate::new(48_000.0))
+            .expect_err("the fixture is not a loadable plugin");
         assert!(
             !matches!(err, BridgeError::Blacklisted { .. }),
             "Plugin::open has no catalog and cannot refuse on one, got {err:?}"

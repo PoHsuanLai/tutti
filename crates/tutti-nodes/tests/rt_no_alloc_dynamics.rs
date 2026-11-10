@@ -21,7 +21,7 @@ use assert_no_alloc::AllocDisabler;
 use tutti_graph::IntoNode;
 use tutti_graph::contract::BlockRig;
 use tutti_nodes::{BrickwallLimiterNode, CompressorNode, GateNode, LimiterNode};
-use tutti_types::{ChannelLayout, SampleRate};
+use tutti_types::{ChannelLayout, CompressionRatio, Db, SampleRate, Seconds};
 
 #[global_allocator]
 static A: AllocDisabler = AllocDisabler;
@@ -54,7 +54,12 @@ fn gate<N: IntoNode>(node: N, amplitude: f32, warm: usize, blocks: usize) {
 fn compressor_mono_process_is_allocation_free() {
     // 2 inputs (audio + sidechain), 1 output.
     gate(
-        CompressorNode::mono(-20.0, 4.0, 0.005, 0.050),
+        CompressorNode::mono(
+            Db::new(-20.0),
+            CompressionRatio::new(4.0),
+            Seconds::new(0.005),
+            Seconds::new(0.050),
+        ),
         0.7,
         16,
         2_000,
@@ -65,7 +70,13 @@ fn compressor_mono_process_is_allocation_free() {
 fn compressor_stereo_process_is_allocation_free() {
     // 4 inputs (L, R, SC-L, SC-R), 2 outputs, linked gain.
     gate(
-        CompressorNode::stereo(-18.0, 3.0, 0.003, 0.080).with_soft_knee(6.0),
+        CompressorNode::stereo(
+            Db::new(-18.0),
+            CompressionRatio::new(3.0),
+            Seconds::new(0.003),
+            Seconds::new(0.080),
+        )
+        .with_soft_knee(Db::new(6.0)),
         0.8,
         16,
         2_000,
@@ -76,7 +87,7 @@ fn compressor_stereo_process_is_allocation_free() {
 fn limiter_node_process_is_allocation_free() {
     // Warm-up fills the lookahead ring and primes the deque; over ceiling.
     gate(
-        LimiterNode::new(-3.0, -0.3).with_lookahead(0.005),
+        LimiterNode::new(Db::new(-3.0), Db::new(-0.3)).with_lookahead(Seconds::new(0.005)),
         1.5,
         32,
         2_000,
@@ -89,7 +100,8 @@ fn limiter_node_wide_6ch_process_is_allocation_free() {
     // the first block; the linked-gain wide path must not allocate per
     // buffer.
     gate(
-        LimiterNode::with_channels(ChannelLayout::from(6u16), -3.0, -0.3).with_lookahead(0.005),
+        LimiterNode::with_channels(ChannelLayout::from(6u16), Db::new(-3.0), Db::new(-0.3))
+            .with_lookahead(Seconds::new(0.005)),
         1.5,
         32,
         2_000,
@@ -99,7 +111,7 @@ fn limiter_node_wide_6ch_process_is_allocation_free() {
 #[test]
 fn brickwall_limiter_wide_6ch_process_is_allocation_free() {
     gate(
-        BrickwallLimiterNode::with_channels(ChannelLayout::from(6u16), -0.3),
+        BrickwallLimiterNode::with_channels(ChannelLayout::from(6u16), Db::new(-0.3)),
         1.5,
         1,
         5_000,
@@ -108,14 +120,20 @@ fn brickwall_limiter_wide_6ch_process_is_allocation_free() {
 
 #[test]
 fn brickwall_limiter_process_is_allocation_free() {
-    gate(BrickwallLimiterNode::new(-0.3), 1.5, 1, 5_000);
+    gate(BrickwallLimiterNode::new(Db::new(-0.3)), 1.5, 1, 5_000);
 }
 
 #[test]
 fn gate_mono_process_is_allocation_free() {
     // 2 inputs (audio + sidechain), 1 output.
     gate(
-        GateNode::mono(-40.0, 0.001, 0.010, 0.100).with_range(-60.0),
+        GateNode::mono(
+            Db::new(-40.0),
+            Seconds::new(0.001),
+            Seconds::new(0.010),
+            Seconds::new(0.100),
+        )
+        .with_range(Db::new(-60.0)),
         0.5,
         16,
         2_000,
@@ -124,7 +142,17 @@ fn gate_mono_process_is_allocation_free() {
 
 #[test]
 fn gate_stereo_process_is_allocation_free() {
-    gate(GateNode::stereo(-40.0, 0.001, 0.010, 0.100), 0.6, 16, 2_000);
+    gate(
+        GateNode::stereo(
+            Db::new(-40.0),
+            Seconds::new(0.001),
+            Seconds::new(0.010),
+            Seconds::new(0.100),
+        ),
+        0.6,
+        16,
+        2_000,
+    );
 }
 
 /// A lookahead limiter through a burst and its release, every block under
@@ -140,9 +168,9 @@ fn gate_stereo_process_is_allocation_free() {
 /// window + 1 entries and grows inside the gate.
 #[test]
 fn limiter_node_burst_and_release_are_allocation_free() {
-    let node = LimiterNode::new(-3.0, -0.3)
-        .with_lookahead(0.005)
-        .with_release(0.1);
+    let node = LimiterNode::new(Db::new(-3.0), Db::new(-0.3))
+        .with_lookahead(Seconds::new(0.005))
+        .with_release(Seconds::new(0.1));
     let (mut rig, _controls) = BlockRig::new(node, SampleRate(48_000.0), 64);
     let fill = |rig: &mut BlockRig, amplitude: f32| {
         for c in rig.inputs_mut() {
@@ -181,7 +209,7 @@ fn brickwall_limiter_fed_ceiling_process_is_allocation_free() {
     use tutti_graph::contract::Direct;
 
     let mut node = Direct::new(
-        BrickwallLimiterNode::with_channels(ChannelLayout::from(6u16), -0.3),
+        BrickwallLimiterNode::with_channels(ChannelLayout::from(6u16), Db::new(-0.3)),
         SampleRate(48_000.0),
         64,
     );
@@ -218,7 +246,7 @@ fn limiter_node_fed_ceiling_and_threshold_process_is_allocation_free() {
     use tutti_graph::contract::Direct;
 
     let mut node = Direct::new(
-        LimiterNode::with_channels(ChannelLayout::from(6u16), -6.0, -0.3),
+        LimiterNode::with_channels(ChannelLayout::from(6u16), Db::new(-6.0), Db::new(-0.3)),
         SampleRate(48_000.0),
         64,
     );
@@ -260,9 +288,9 @@ fn limiter_node_fed_ceiling_and_threshold_process_is_allocation_free() {
 fn a_limiter_cloned_mid_release_processes_allocation_free() {
     use tutti_graph::contract::Direct;
 
-    let node = LimiterNode::new(-3.0, -0.3)
-        .with_lookahead(0.005)
-        .with_release(0.1);
+    let node = LimiterNode::new(Db::new(-3.0), Db::new(-0.3))
+        .with_lookahead(Seconds::new(0.005))
+        .with_release(Seconds::new(0.1));
     let mut d = Direct::new(node, SampleRate(48_000.0), 64);
     let fill = |d: &mut Direct<LimiterNode>, amplitude: f32| {
         for c in d.inputs_mut() {

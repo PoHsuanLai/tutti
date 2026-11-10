@@ -24,7 +24,7 @@ use tutti_midi_types::translation::scaling::midi1_velocity_to_midi2;
 use tutti_polysynth::{
     Adsr, FilterType, OscillatorType, PolySynth, SvfMode, SynthConfig, UnisonConfig,
 };
-use tutti_types::{Amplitude, Hz, Q, Samples, Seconds, Spread};
+use tutti_types::{Amplitude, Cents, Hz, Q, Samples, Seconds, Spread};
 use tutti_ump::{MidiChannel, MidiGroup, Ump};
 
 const SR: f64 = 48_000.0;
@@ -112,7 +112,7 @@ fn main() {
     std::fs::create_dir_all(out).expect("create output dir");
 
     let base = |osc: OscillatorType| SynthConfig {
-        sample_rate: tutti_types::SampleRate::from(SR),
+        sample_rate: tutti_types::SampleRate::new(SR),
         oscillator: osc,
         envelope: flat_envelope(),
         ..Default::default()
@@ -190,7 +190,7 @@ fn main() {
         let mut cfg = base(OscillatorType::Saw);
         cfg.unison = Some(UnisonConfig {
             voice_count: voices,
-            detune_cents: detune.into(),
+            detune_cents: Cents::new(detune),
             stereo_spread: Spread(0.8),
             ..Default::default()
         });

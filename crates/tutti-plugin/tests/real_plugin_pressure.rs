@@ -88,6 +88,7 @@ mod clap_probe;
 #[cfg(not(feature = "clap"))]
 use std::sync::{Mutex, MutexGuard};
 use std::time::{Duration, Instant};
+use tutti_types::SampleRate;
 
 /// Planar scratch, `channels` × [`BLOCK`] frames: what this harness fills and
 /// measures.
@@ -381,11 +382,15 @@ fn load_n(count: usize) -> Option<(Vec<GraphUnit>, Vec<tutti_plugin::handles::Pl
         // dispatch on the extension itself. `available_effects` has already
         // filtered to what is installed, and the whole function is cfg'd on the
         // formats `EFFECTS` can name.
-        let built = tutti_plugin::catalog::Plugin::open(Some(&main_thread()), path, SAMPLE_RATE)
-            .map(|plugin| {
-                let handle = plugin.handle().clone();
-                (GraphUnit::from_plugin(plugin), handle)
-            });
+        let built = tutti_plugin::catalog::Plugin::open(
+            Some(&main_thread()),
+            path,
+            SampleRate::new(SAMPLE_RATE),
+        )
+        .map(|plugin| {
+            let handle = plugin.handle().clone();
+            (GraphUnit::from_plugin(plugin), handle)
+        });
         match built {
             Ok((unit, handle)) => {
                 units.push(unit);
@@ -1556,12 +1561,15 @@ fn load_passthrough(path: &str) -> Option<(GraphUnit, tutti_plugin::handles::Plu
         eprintln!("{path} not installed — skipping");
         return None;
     }
-    let built = tutti_plugin::catalog::Plugin::open(Some(&main_thread()), path, SAMPLE_RATE).map(
-        |plugin| {
-            let handle = plugin.handle().clone();
-            (GraphUnit::from_plugin(plugin), handle)
-        },
-    );
+    let built = tutti_plugin::catalog::Plugin::open(
+        Some(&main_thread()),
+        path,
+        SampleRate::new(SAMPLE_RATE),
+    )
+    .map(|plugin| {
+        let handle = plugin.handle().clone();
+        (GraphUnit::from_plugin(plugin), handle)
+    });
     Some(built.unwrap_or_else(|e| panic!("{path} is installed but failed to load: {e}")))
 }
 

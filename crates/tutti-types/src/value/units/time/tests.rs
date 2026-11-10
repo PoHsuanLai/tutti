@@ -1,23 +1,54 @@
 use super::*;
 
+/// What is deliberately *absent* is as load-bearing as what is present.
+/// These must not compile; the ledger is here so a future contributor does
+/// not "helpfully" add them.
+///
+/// - `From<raw> for Unit`, `From<Unit> for raw`, so `.into()` between a unit and
+///   its bare number — a bare float must not become a unit unnamed at the call
+///   site, and a unit must not leave as a float by an `.into()` that hides which
+///   quantity it was. Build with `new`, read with `get` (generic code: the
+///   `Unit` trait's `from_raw` / `to_raw`).
+///
+/// The body is empty and this test cannot fail; see the note in `units/tests.rs`.
+#[test]
+fn omitted_conversions_are_documented() {}
+
 #[test]
 fn seconds_to_samples_names_its_rounding() {
     // 0.5 s at 44100 is exactly 22050 frames — every variant agrees.
-    assert_eq!(Seconds(0.5).to_samples(44_100.0), Samples(22_050));
-    assert_eq!(Seconds(0.5).to_samples_floor(44_100.0), Samples(22_050));
-    assert_eq!(Seconds(0.5).to_samples_ceil(44_100.0), Samples(22_050));
+    assert_eq!(
+        Seconds(0.5).to_samples(SampleRate::new(44_100.0)),
+        Samples(22_050)
+    );
+    assert_eq!(
+        Seconds(0.5).to_samples_floor(SampleRate::new(44_100.0)),
+        Samples(22_050)
+    );
+    assert_eq!(
+        Seconds(0.5).to_samples_ceil(SampleRate::new(44_100.0)),
+        Samples(22_050)
+    );
 
     // 10 ms at 44100 is 441.0; nudge it so the three diverge.
     let odd = Seconds(0.010_5);
-    assert_eq!(odd.to_samples_floor(44_100.0), Samples(463));
-    assert_eq!(odd.to_samples_ceil(44_100.0), Samples(464));
-    assert_eq!(odd.to_samples(44_100.0), Samples(463));
+    assert_eq!(
+        odd.to_samples_floor(SampleRate::new(44_100.0)),
+        Samples(463)
+    );
+    assert_eq!(odd.to_samples_ceil(SampleRate::new(44_100.0)), Samples(464));
+    assert_eq!(odd.to_samples(SampleRate::new(44_100.0)), Samples(463));
 
     // Allocation must never under-size: ceil is >= nearest, always.
     for ms in 1..200 {
         let s = Seconds(ms as f64 * 0.001);
-        assert!(s.to_samples_ceil(48_000.0) >= s.to_samples(48_000.0));
-        assert!(s.to_samples(48_000.0) >= s.to_samples_floor(48_000.0));
+        assert!(
+            s.to_samples_ceil(SampleRate::new(48_000.0)) >= s.to_samples(SampleRate::new(48_000.0))
+        );
+        assert!(
+            s.to_samples(SampleRate::new(48_000.0))
+                >= s.to_samples_floor(SampleRate::new(48_000.0))
+        );
     }
 }
 
@@ -25,10 +56,19 @@ fn seconds_to_samples_names_its_rounding() {
 fn seconds_to_samples_collapses_nonsense_to_zero() {
     // `NaN as usize` is already 0 and a negative cast already saturates —
     // this pins the behaviour so it is stated rather than inherited.
-    assert_eq!(Seconds(f64::NAN).to_samples(48_000.0), Samples::ZERO);
-    assert_eq!(Seconds(f64::INFINITY).to_samples(48_000.0), Samples::ZERO);
-    assert_eq!(Seconds(-1.0).to_samples(48_000.0), Samples::ZERO);
-    assert_eq!(Seconds(1.0).to_samples(0.0), Samples::ZERO);
+    assert_eq!(
+        Seconds(f64::NAN).to_samples(SampleRate::new(48_000.0)),
+        Samples::ZERO
+    );
+    assert_eq!(
+        Seconds(f64::INFINITY).to_samples(SampleRate::new(48_000.0)),
+        Samples::ZERO
+    );
+    assert_eq!(
+        Seconds(-1.0).to_samples(SampleRate::new(48_000.0)),
+        Samples::ZERO
+    );
+    assert_eq!(Seconds(1.0).to_samples(SampleRate::new(0.0)), Samples::ZERO);
 }
 
 #[test]
@@ -36,7 +76,10 @@ fn seconds_to_samples_computes_wide_enough_for_a_long_render() {
     // f32 cannot represent frame counts past 2^24 (~6 min at 48k), which
     // is why the arithmetic widens to f64 before rounding.
     let hour = Seconds(3600.0);
-    assert_eq!(hour.to_samples(48_000.0), Samples(172_800_000));
+    assert_eq!(
+        hour.to_samples(SampleRate::new(48_000.0)),
+        Samples(172_800_000)
+    );
 }
 
 #[test]
@@ -60,7 +103,7 @@ fn sample_rate_accepts_every_shape_a_caller_holds() {
     // arithmetic is f64. Both widen exactly, which is what lets the
     // migrated signatures take `impl Into<SampleRate>` without churning
     // their call sites.
-    assert_eq!(SampleRate::from(48_000.0_f64), SampleRate::SR_48K);
+    assert_eq!(SampleRate::new(48_000.0_f64), SampleRate::SR_48K);
     assert_eq!(SampleRate::from(48_000_u32), SampleRate::SR_48K);
     assert_eq!(SampleRate::SR_44K1, SampleRate(44_100.0));
 }
@@ -149,7 +192,10 @@ fn seconds_to_samples_takes_the_typed_rate() {
     // untyped rate in a node field has to justify itself at the call.
     assert_eq!(Seconds(1.0).to_samples(SampleRate::SR_48K), Samples(48_000));
     // Raw floats still infer through `impl Into`.
-    assert_eq!(Seconds(1.0).to_samples(48_000.0), Samples(48_000));
+    assert_eq!(
+        Seconds(1.0).to_samples(SampleRate::new(48_000.0)),
+        Samples(48_000)
+    );
     // And the rounding split holds through the typed form.
     assert_eq!(Seconds(0.5).to_samples_floor(SampleRate(3.0)), Samples(1));
     assert_eq!(Seconds(0.5).to_samples_ceil(SampleRate(3.0)), Samples(2));

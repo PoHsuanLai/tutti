@@ -12,6 +12,7 @@
 #![allow(dead_code)]
 
 use std::time::{Duration, Instant};
+use tutti_types::SampleRate;
 
 use tutti_modulation::ControlProgram;
 use tutti_nodes::automation::{ControlLaneNode, LaneControls};
@@ -38,7 +39,11 @@ pub fn load_vst2_probe(params: usize, sample_rate: f64) -> (PluginClient, Plugin
         std::env::set_var("TUTTI_PLUGIN_SERVER", plugin_server_path());
         std::env::set_var("TUTTI_VST2_PROBE_PARAMS", params.to_string());
     }
-    let client = PluginClient::new(BridgeConfig::default(), probe_path().clone(), sample_rate);
+    let client = PluginClient::new(
+        BridgeConfig::default(),
+        probe_path().clone(),
+        SampleRate::new(sample_rate),
+    );
     // SAFETY: as above. The server has read it; leaving it set would reshape
     // whichever probe loads next.
     unsafe { std::env::remove_var("TUTTI_VST2_PROBE_PARAMS") };

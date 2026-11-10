@@ -63,7 +63,7 @@ fn flat_envelope() -> Adsr {
 
 fn config() -> SynthConfig {
     SynthConfig {
-        sample_rate: tutti_types::SampleRate::from(SR),
+        sample_rate: tutti_types::SampleRate::new(SR),
         envelope: flat_envelope(),
         ..Default::default()
     }

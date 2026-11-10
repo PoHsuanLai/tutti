@@ -60,7 +60,7 @@ fn write_ramp(path: &Path, rate: u32, frames: usize) {
 
 /// The same ramp, resident, for the memory tier.
 fn ramp_wave(rate: u32, frames: usize) -> Arc<tutti_codec::Wave> {
-    let mut wave = tutti_codec::Wave::new(2, rate as f64);
+    let mut wave = tutti_codec::Wave::new(2, SampleRate::new(rate as f64));
     for i in 0..frames {
         wave.push_frame(&[value(i), -value(i)]);
     }
@@ -184,8 +184,8 @@ impl Live {
     /// One block of the voice, channel 0; then the clock moves and the
     /// streamer runs a cycle, as the thread would before the next callback.
     fn block(&mut self) -> Vec<f32> {
-        let left = block(&mut self.voice, &self.clock, SR, BLOCK).swap_remove(0);
-        self.clock.advance(BLOCK as i64, SR);
+        let left = block(&mut self.voice, &self.clock, SampleRate::new(SR), BLOCK).swap_remove(0);
+        self.clock.advance(BLOCK as i64, SampleRate::new(SR));
         let _ = self.streamer.step_once();
         left
     }
@@ -224,7 +224,7 @@ impl Live {
 /// transport change in the block's `Env`), channel 0; the clock then stands
 /// where the seek leaves it at the block's end.
 fn seeking(node: &mut dyn Node, clock: &MockTransport, at: usize, beat: f64) -> Vec<f32> {
-    let mut env = clock.env(BLOCK, SR);
+    let mut env = clock.env(BLOCK, SampleRate::new(SR));
     let mut changes = TransportChanges::NONE;
     changes
         .push(
@@ -237,7 +237,7 @@ fn seeking(node: &mut dyn Node, clock: &MockTransport, at: usize, beat: f64) -> 
         .audio
         .swap_remove(0);
     clock.set_beat(Beat::new(beat));
-    clock.advance((BLOCK - at) as i64, SR);
+    clock.advance((BLOCK - at) as i64, SampleRate::new(SR));
     left
 }
 
@@ -259,8 +259,8 @@ impl Memory {
     }
 
     fn block(&mut self) -> Vec<f32> {
-        let left = block(&mut self.source, &self.clock, SR, BLOCK).swap_remove(0);
-        self.clock.advance(BLOCK as i64, SR);
+        let left = block(&mut self.source, &self.clock, SampleRate::new(SR), BLOCK).swap_remove(0);
+        self.clock.advance(BLOCK as i64, SampleRate::new(SR));
         left
     }
 
@@ -772,8 +772,8 @@ fn a_fork_after_a_loop_edit_renders_the_edited_loop() {
     fork.prepare(&Prepare::new(SampleRate(SR), Samples(BLOCK)));
     let mut forked = Vec::new();
     for _ in 0..81 + 150 {
-        forked.extend(block(&mut fork, &clock, SR, BLOCK).swap_remove(0));
-        clock.advance(BLOCK as i64, SR);
+        forked.extend(block(&mut fork, &clock, SampleRate::new(SR), BLOCK).swap_remove(0));
+        clock.advance(BLOCK as i64, SampleRate::new(SR));
     }
     let want = Memory::new(ramp_wave(SR as u32, LEN), b, 1.0, 0.0).render(81 + 150);
     assert_same_outside("the fork against the edited loop", &forked, &want, &[]);
@@ -920,8 +920,8 @@ fn a_starved_reader_ramps_out_and_back_in() {
     // Far outside the window, and the streamer stalls for 50 blocks.
     live.clock.set_beat(Beat::new(beats(1_450_000.0)));
     for _ in 0..50 {
-        got.extend(block(&mut live.voice, &live.clock, SR, BLOCK).swap_remove(0));
-        live.clock.advance(BLOCK as i64, SR);
+        got.extend(block(&mut live.voice, &live.clock, SampleRate::new(SR), BLOCK).swap_remove(0));
+        live.clock.advance(BLOCK as i64, SampleRate::new(SR));
     }
     assert!(
         live.underruns() > 0,
@@ -1063,8 +1063,8 @@ fn a_loop_set_through_a_pool_reaches_the_streamer_and_the_voice_loops() {
     let clock = MockTransport::rolling(Beat::new(0.0), Bpm::of(120.0));
     let mut left = Vec::new();
     for _ in 0..200 {
-        left.extend(block(&mut pool, &clock, SR, BLOCK).swap_remove(0));
-        clock.advance(BLOCK as i64, SR);
+        left.extend(block(&mut pool, &clock, SampleRate::new(SR), BLOCK).swap_remove(0));
+        clock.advance(BLOCK as i64, SampleRate::new(SR));
         let _ = streamer.step_once();
     }
     // The frame of the file each output sample is (`value` inverted).

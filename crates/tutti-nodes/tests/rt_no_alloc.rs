@@ -3,6 +3,9 @@
 //! gate, alongside the nodes they cover.
 
 use assert_no_alloc::AllocDisabler;
+use tutti_types::Drive;
+#[cfg(feature = "convolution")]
+use tutti_types::{SampleRate, Seconds};
 
 #[global_allocator]
 static A: AllocDisabler = AllocDisabler;
@@ -36,7 +39,7 @@ fn gate_at<N: tutti_graph::IntoNode>(node: N, block: usize) {
 fn convolver_process_is_allocation_free() {
     use tutti_nodes::{ConvolverNode, generate_test_ir};
 
-    let ir = generate_test_ir(2048, 0.3, 48_000.0);
+    let ir = generate_test_ir(2048, Seconds::new(0.3), SampleRate::new(48_000.0));
     gate(ConvolverNode::new(&ir, 512));
 }
 
@@ -45,8 +48,8 @@ fn convolver_process_is_allocation_free() {
 fn stereo_convolver_process_is_allocation_free() {
     use tutti_nodes::{ConvolverNode, generate_test_ir};
 
-    let ir_l = generate_test_ir(2048, 0.3, 48_000.0);
-    let ir_r = generate_test_ir(2048, 0.4, 48_000.0);
+    let ir_l = generate_test_ir(2048, Seconds::new(0.3), SampleRate::new(48_000.0));
+    let ir_r = generate_test_ir(2048, Seconds::new(0.4), SampleRate::new(48_000.0));
     gate(ConvolverNode::stereo(&ir_l, &ir_r, 512));
 }
 
@@ -61,7 +64,7 @@ fn stereo_convolver_process_is_allocation_free() {
 fn convolver_mid_cycle_blocks_are_allocation_free() {
     use tutti_nodes::{ConvolverNode, generate_test_ir};
 
-    let ir = generate_test_ir(8192, 0.3, 48_000.0);
+    let ir = generate_test_ir(8192, Seconds::new(0.3), SampleRate::new(48_000.0));
     for block in [37usize, 100, 128, 1000] {
         gate_at(ConvolverNode::new(&ir, 256), block);
     }
@@ -78,7 +81,7 @@ fn convolver_ragged_calls_are_allocation_free() {
     use tutti_dsp::Convolver;
     use tutti_nodes::generate_test_ir;
 
-    let ir = generate_test_ir(8192, 0.3, 48_000.0);
+    let ir = generate_test_ir(8192, Seconds::new(0.3), SampleRate::new(48_000.0));
     let mut c = Convolver::new(&ir, 128);
     let x: Vec<f32> = (0..513).map(|i| ((i as f32) * 0.31).sin()).collect();
     let mut y = vec![0.0f32; 513];
@@ -109,7 +112,7 @@ fn convolver_tail_levels_are_allocation_free() {
     use tutti_dsp::Convolver;
     use tutti_nodes::generate_test_ir;
 
-    let ir = generate_test_ir(240_000, 1.0, 48_000.0);
+    let ir = generate_test_ir(240_000, Seconds::new(1.0), SampleRate::new(48_000.0));
     let mut c = Convolver::new(&ir, 512);
     let x: Vec<f32> = (0..5000).map(|i| ((i as f32) * 0.31).sin()).collect();
     let mut y = vec![0.0f32; 5000];
@@ -143,7 +146,7 @@ fn folded_six_channel_convolver_process_is_allocation_free() {
             generate_test_ir(
                 1024,
                 tutti_types::Seconds::from_f32(0.2 + 0.05 * c as f32),
-                48_000.0,
+                SampleRate::new(48_000.0),
             )
         })
         .collect();
@@ -222,7 +225,7 @@ fn distortion_process_is_allocation_free_fed_and_unfed() {
         let mut unfed: Vec<Vec<f32>> = Vec::new();
         for fed in [false, true] {
             let mut node = Direct::new(
-                DistortionNode::with_channels(3u16, kind, 2.0),
+                DistortionNode::with_channels(3u16, kind, Drive::new(2.0)),
                 SampleRate(48_000.0),
                 64,
             );

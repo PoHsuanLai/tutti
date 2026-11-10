@@ -49,7 +49,7 @@ impl tutti_graph::Node for Spin {
 
 /// An engine over one `Spin`, with graph blocks of at most `max_block`.
 fn engine(spin: Duration, max_block: usize) -> (Engine, Transport, Editor) {
-    let transport = Transport::new(RATE);
+    let transport = Transport::new(SampleRate::new(RATE));
     let (mut ed, exec) = Editor::new(Prepare::new(SampleRate(RATE), Samples(max_block)));
     ed.insert(NodeKey(1), "spin", Unforkable(Spin { spin }));
     ed.spec_mut().topology.outputs = vec![Source::Node(OutPort {
@@ -180,7 +180,7 @@ impl tutti_graph::Node for Burst {
 /// of the change → 300 after the second block → fails.
 #[test]
 fn events_past_a_ports_capacity_reach_the_meter() {
-    let transport = Transport::new(RATE);
+    let transport = Transport::new(SampleRate::new(RATE));
     let (mut ed, exec) = Editor::new(Prepare::new(SampleRate(RATE), Samples(64)));
     let per_block = tutti_graph::DEFAULT_EVENT_CAPACITY + 100;
     ed.insert(NodeKey(1), "burst", Unforkable(Burst { per_block }));

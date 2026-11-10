@@ -436,7 +436,7 @@ mod tests {
     /// 5.5 → fails.
     #[test]
     fn loop_range_advance_wraps_only_a_crossing() {
-        let r = LoopRange::new(4.0, 8.0).unwrap();
+        let r = LoopRange::new(Beat::new(4.0), Beat::new(8.0)).unwrap();
         assert_eq!(r.advance(Beat(7.5), Beat(8.5)), Beat(4.5), "crossed");
         assert_eq!(r.advance(Beat(9.0), Beat(9.5)), Beat(9.5), "armed behind");
         assert_eq!(r.advance(Beat(8.0), Beat(8.5)), Beat(8.5), "from the end");
@@ -445,7 +445,7 @@ mod tests {
 
     #[test]
     fn loop_range_wrap_preserves_overshoot() {
-        let r = LoopRange::new(4.0, 8.0).unwrap();
+        let r = LoopRange::new(Beat::new(4.0), Beat::new(8.0)).unwrap();
 
         // Inside the region: untouched.
         assert_eq!(r.wrap(Beat(6.0)), Beat(6.0));
@@ -473,7 +473,7 @@ mod tests {
             (31.514089410586077, 35.695114633845506, 186.21202267118494),
             (3.5544260744842737, 5.620754820044198, 30.416699766763283),
         ] {
-            let r = LoopRange::new(start, end).expect("non-empty");
+            let r = LoopRange::new(Beat::new(start), Beat::new(end)).expect("non-empty");
             let wrapped = r.wrap(Beat(past));
             assert!(
                 r.contains(wrapped),
@@ -481,7 +481,7 @@ mod tests {
             );
         }
         // Brute force over many near-end overshoots of a tiny loop.
-        let tiny = LoopRange::new(0.5, 0.5 + 1e-9).expect("non-empty");
+        let tiny = LoopRange::new(Beat::new(0.5), Beat::new(0.5 + 1e-9)).expect("non-empty");
         for i in 0..100_000u64 {
             let b = Beat(0.5 + 1e-9 + i as f64 * 1.7e-12);
             assert!(tiny.contains(tiny.wrap(b)), "{b:?} wrapped outside");
@@ -520,9 +520,9 @@ mod tests {
     fn a_frame_at_a_time_is_a_block_at_a_time() {
         let loops = [
             None,
-            LoopRange::new(0.25, 1.0),
-            LoopRange::new(0.5, 0.5007),
-            LoopRange::new(1.0 / 3.0, 2.0 / 3.0),
+            LoopRange::new(Beat::new(0.25), Beat::new(1.0)),
+            LoopRange::new(Beat::new(0.5), Beat::new(0.5007)),
+            LoopRange::new(Beat::new(1.0 / 3.0), Beat::new(2.0 / 3.0)),
         ];
         for tempo in [90.0, 97.0, 120.0, 133.3] {
             for looping in loops {
@@ -562,7 +562,7 @@ mod tests {
     #[test]
     fn a_loop_wraps_on_its_frame() {
         // 4 beats at 90 BPM is 128 000 frames.
-        let four = LoopRange::new(0.0, 4.0);
+        let four = LoopRange::new(Beat::new(0.0), Beat::new(4.0));
         let mut c = FrameClock::new(Beat(0.0), Bpm::of(90.0), SR);
         c.advance(Samples(127_999), four);
         assert!(c.beat() < Beat(4.0));
@@ -571,7 +571,7 @@ mod tests {
         c.advance(Samples(96_000), four);
         assert_eq!(c.beat(), Beat(3.0), "the second pass is as exact");
 
-        let behind = LoopRange::new(1.0, 2.0);
+        let behind = LoopRange::new(Beat::new(1.0), Beat::new(2.0));
         let mut c = FrameClock::new(Beat(3.0), Bpm::of(90.0), SR);
         c.advance(Samples(32_000), behind);
         assert_eq!(c.beat(), Beat(4.0), "armed behind: plays on");
@@ -587,7 +587,7 @@ mod tests {
     /// the wrap to `frames` → the clock is not on the loop's start → fails.
     #[test]
     fn advance_to_wrap_stops_on_each_wrap() {
-        let four = LoopRange::new(0.0, 4.0);
+        let four = LoopRange::new(Beat::new(0.0), Beat::new(4.0));
         let mut c = FrameClock::new(Beat(0.0), Bpm::of(90.0), SR);
         assert_eq!(
             c.advance_to_wrap(Samples(200_000), four),
@@ -598,7 +598,7 @@ mod tests {
         assert_eq!(c.beat(), Beat(3.0), "no wrap: every frame rolled");
 
         // A third of a frame at 90 BPM and 48 kHz.
-        let tiny = LoopRange::new(1.0, 1.0 + 1.0 / 96_000.0);
+        let tiny = LoopRange::new(Beat::new(1.0), Beat::new(1.0 + 1.0 / 96_000.0));
         let mut walked = FrameClock::new(Beat(1.0), Bpm::of(90.0), SR);
         let mut whole = walked;
         let mut stops = 0;
@@ -635,7 +635,7 @@ mod tests {
         );
         assert_eq!(c.passes(Samples(0), None).count(), 0, "empty block");
 
-        let far = LoopRange::new(8.0, 9.0);
+        let far = LoopRange::new(Beat::new(8.0), Beat::new(9.0));
         let mut c = FrameClock::new(Beat(1.0), Bpm::of(90.0), SR);
         assert_eq!(c.passes(Samples(512), far).count(), 1);
     }
@@ -652,7 +652,7 @@ mod tests {
     /// block → fails.
     #[test]
     fn several_wraps_in_a_block_are_several_passes() {
-        let region = LoopRange::new(0.0, 0.1);
+        let region = LoopRange::new(Beat::new(0.0), Beat::new(0.1));
         let mut c = FrameClock::new(Beat(0.0), Bpm::of(90.0), SR);
         let passes: Vec<_> = c.passes(Samples(10_000), region).collect();
         let starts: Vec<_> = passes.iter().map(|p| p.start.get()).collect();
@@ -679,7 +679,7 @@ mod tests {
     /// the block edge is not reported → fails.
     #[test]
     fn a_wrap_on_the_block_edge_ends_the_last_pass() {
-        let four = LoopRange::new(0.0, 4.0);
+        let four = LoopRange::new(Beat::new(0.0), Beat::new(4.0));
         let mut c = FrameClock::new(Beat(0.0), Bpm::of(90.0), SR);
         let ends: Vec<_> = c.passes(Samples(128_000), four).map(|p| p.end).collect();
         assert_eq!(ends, [PassEnd::Wrap]);
@@ -702,7 +702,7 @@ mod tests {
     /// frame of the block → fails.
     #[test]
     fn passes_leave_the_clock_where_advance_does() {
-        let region = LoopRange::new(1.0 / 3.0, 2.0 / 3.0);
+        let region = LoopRange::new(Beat::new(1.0 / 3.0), Beat::new(2.0 / 3.0));
         let mut a = FrameClock::new(Beat(0.5), Bpm::of(133.0), SR);
         let mut b = a;
         let passes: Vec<_> = a.passes(Samples(40_001), region).collect();
@@ -845,7 +845,7 @@ mod tests {
         // on the beat it left.
         let mut l = FrameClock::new(Beat(4.0), Bpm::of(120.0), SR);
         let one_beat = Samples(24_000);
-        l.advance(one_beat, LoopRange::new(4.0, 5.0));
+        l.advance(one_beat, LoopRange::new(Beat::new(4.0), Beat::new(5.0)));
         assert_eq!(l.beat(), Beat(4.0), "the wrap lands where it left");
         assert_eq!(l.generation(), 1, "but it jumped");
     }

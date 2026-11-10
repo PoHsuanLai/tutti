@@ -94,7 +94,7 @@ fn feed(port: &mut InputProducerHandle, count: usize) {
 /// The steady state: events arriving every block, well under the cap.
 #[test]
 fn hardware_poll_is_allocation_free() {
-    let inputs = Arc::new(HardwareMidiInputs::new(256, 48_000.0));
+    let inputs = Arc::new(HardwareMidiInputs::new(256, SampleRate::new(48_000.0)));
     let mut port = inputs.open_input_port("Test Input");
 
     let mut pre = Rig::new(inputs.clone());
@@ -124,7 +124,7 @@ fn hardware_poll_is_allocation_free() {
 /// leave the rest — without reallocating to hold them.
 #[test]
 fn hardware_poll_over_capacity_is_allocation_free() {
-    let inputs = Arc::new(HardwareMidiInputs::new(256, 48_000.0));
+    let inputs = Arc::new(HardwareMidiInputs::new(256, SampleRate::new(48_000.0)));
     let mut ports: Vec<InputProducerHandle> = (0..4)
         .map(|i| inputs.open_input_port(format!("Input {i}")))
         .collect();
@@ -158,7 +158,7 @@ fn hardware_poll_over_capacity_is_allocation_free() {
 /// A block size sweep, since `Offset` conversion is driven by `nframes`.
 #[test]
 fn hardware_poll_across_block_sizes_is_allocation_free() {
-    let inputs = Arc::new(HardwareMidiInputs::new(256, 48_000.0));
+    let inputs = Arc::new(HardwareMidiInputs::new(256, SampleRate::new(48_000.0)));
     let mut port = inputs.open_input_port("Test Input");
 
     let mut pre = Rig::new(inputs.clone());
@@ -186,7 +186,7 @@ fn hardware_poll_across_block_sizes_is_allocation_free() {
 /// which the steady-state test above never reaches.
 #[test]
 fn hardware_poll_with_stale_timestamps_is_allocation_free() {
-    let inputs = Arc::new(HardwareMidiInputs::new(256, 48_000.0));
+    let inputs = Arc::new(HardwareMidiInputs::new(256, SampleRate::new(48_000.0)));
     let mut handle = inputs.open_input_port("Test Input");
 
     let mut pre = Rig::new(inputs.clone());
@@ -229,7 +229,7 @@ fn hardware_poll_with_stale_timestamps_is_allocation_free() {
 /// strong count, and the guard's drop frees that `Vec` inside the gate.
 #[test]
 fn hotplug_during_a_drain_frees_nothing_on_the_audio_thread() {
-    let inputs = Arc::new(HardwareMidiInputs::new(256, 48_000.0));
+    let inputs = Arc::new(HardwareMidiInputs::new(256, SampleRate::new(48_000.0)));
     // The audio side's drain, as the input node owns it.
     let mut drain = HardwareMidiDrain::new(Arc::clone(&inputs));
     let mut first = inputs.open_input_port("Input 0");
@@ -286,7 +286,7 @@ fn hotplug_during_a_drain_frees_nothing_on_the_audio_thread() {
 /// same mutation aborts the plug-in gate above.)
 #[test]
 fn unplug_during_a_drain_frees_nothing_on_the_audio_thread() {
-    let inputs = Arc::new(HardwareMidiInputs::new(256, 48_000.0));
+    let inputs = Arc::new(HardwareMidiInputs::new(256, SampleRate::new(48_000.0)));
     // The audio side's drain, as the input node owns it.
     let mut drain = HardwareMidiDrain::new(Arc::clone(&inputs));
 

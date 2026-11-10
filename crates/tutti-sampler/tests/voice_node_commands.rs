@@ -47,7 +47,10 @@ const RATE: SampleRate = SampleRate(48_000.0);
 /// A wave whose every frame is 1.0, so "is it inside its window" reads as
 /// audible-or-silent with no waveform to reason about.
 fn flat_wave(len: usize) -> Arc<Wave> {
-    Arc::new(Wave::from_samples(48_000.0, &vec![1.0; len]))
+    Arc::new(Wave::from_samples(
+        SampleRate::new(48_000.0),
+        &vec![1.0; len],
+    ))
 }
 
 /// A voice placed on the transport at `[start, start + 1)`.

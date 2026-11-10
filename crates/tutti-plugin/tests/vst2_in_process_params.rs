@@ -86,7 +86,7 @@ impl Drop for ProbeEnv {
 
 fn load() -> (InProcessVst2Client, PluginHandle) {
     let path = probe_path::probe_path();
-    in_process_vst2_client(&main_thread(), path, SAMPLE_RATE)
+    in_process_vst2_client(&main_thread(), path, SampleRate::new(SAMPLE_RATE))
         .unwrap_or_else(|e| panic!("in-process load of the probe at {path:?}: {e:?}"))
 }
 

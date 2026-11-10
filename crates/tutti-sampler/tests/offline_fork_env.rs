@@ -31,7 +31,7 @@ const RATE: SampleRate = SampleRate(44_100.0);
 
 fn ramp_wave() -> Arc<Wave> {
     Arc::new(Wave::from_samples(
-        44_100.0,
+        SampleRate::new(44_100.0),
         &(0..4_096)
             .map(|i| (i as f32 + 1.0) / 4_096.0)
             .collect::<Vec<_>>(),

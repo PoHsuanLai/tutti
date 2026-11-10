@@ -114,8 +114,9 @@ struct Loaded {
 fn load() -> Loaded {
     let path = probe_path::probe_path().clone();
     reset_probe(&path);
-    let (unit, handle) = in_process_vst2_client(&main_thread(), &path, SAMPLE_RATE)
-        .unwrap_or_else(|e| panic!("in-process load of reference plugin at {path:?}: {e:?}"));
+    let (unit, handle) =
+        in_process_vst2_client(&main_thread(), &path, SampleRate::new(SAMPLE_RATE))
+            .unwrap_or_else(|e| panic!("in-process load of reference plugin at {path:?}: {e:?}"));
     Loaded { unit, handle, path }
 }
 
@@ -456,7 +457,7 @@ fn outputs_past_the_tables_are_silent() {
         std::env::set_var("TUTTI_VST2_PROBE_INPUTS", WIDE.to_string());
         std::env::set_var("TUTTI_VST2_PROBE_OUTPUTS", WIDE.to_string());
     }
-    let loaded = in_process_vst2_client(&main_thread(), &path, SAMPLE_RATE);
+    let loaded = in_process_vst2_client(&main_thread(), &path, SampleRate::new(SAMPLE_RATE));
     unsafe {
         std::env::remove_var("TUTTI_VST2_PROBE_INPUTS");
         std::env::remove_var("TUTTI_VST2_PROBE_OUTPUTS");

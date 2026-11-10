@@ -23,7 +23,7 @@ use tutti_graph::contract::{SAMPLE_RATE, drive};
 use tutti_graph::{ForkMode, IntoNode, Node, NodeParts, Prepare};
 use tutti_spatial::{HrtfBinauralControls, HrtfBinauralNode, VbapPannerControls, VbapPannerNode};
 use tutti_types::Samples;
-use tutti_types::{Mix, SampleRate, Spread, StereoWidth};
+use tutti_types::{Azimuth, Elevation, Mix, SampleRate, Spread, StereoWidth};
 
 /// Frames per render: long enough for the 50 ms de-zipper to settle, and for
 /// several loud/quiet stimulus cycles.
@@ -118,15 +118,18 @@ fn vbap() {
         "VbapPannerNode (7.1.4)",
         || {
             let node = VbapPannerNode::atmos_7_1_4().expect("the Atmos preset builds");
-            node.controls().set_position(30.0, 0.0);
+            node.controls()
+                .set_position(Azimuth::new(30.0), Elevation::new(0.0));
             node.controls().set_spread(Spread::new_clamped(0.2));
             node
         },
         &[
             ("azimuth", |c: &VbapPannerControls| {
-                c.set_position(-110.0, 0.0)
+                c.set_position(Azimuth::new(-110.0), Elevation::new(0.0))
             }),
-            ("elevation", |c| c.set_position(30.0, 45.0)),
+            ("elevation", |c| {
+                c.set_position(Azimuth::new(30.0), Elevation::new(45.0))
+            }),
             ("spread", |c| c.set_spread(Spread::new_clamped(0.8))),
             ("width", |c| c.set_width(StereoWidth::new_clamped(1.8))),
         ],
@@ -142,14 +145,17 @@ fn hrtf() {
             let bytes = synthetic_hrir_sphere(rate, 64);
             let node =
                 HrtfBinauralNode::new(&bytes, SampleRate::from(rate)).expect("the sphere parses");
-            node.controls().set_position(90.0, 0.0);
+            node.controls()
+                .set_position(Azimuth::new(90.0), Elevation::new(0.0));
             node
         },
         &[
             ("azimuth", |c: &HrtfBinauralControls| {
-                c.set_position(-150.0, 0.0)
+                c.set_position(Azimuth::new(-150.0), Elevation::new(0.0))
             }),
-            ("elevation", |c| c.set_position(90.0, 60.0)),
+            ("elevation", |c| {
+                c.set_position(Azimuth::new(90.0), Elevation::new(60.0))
+            }),
             ("blend", |c| c.set_blend(Mix::new_clamped(0.3))),
         ],
     );

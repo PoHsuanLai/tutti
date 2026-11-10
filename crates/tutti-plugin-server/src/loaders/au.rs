@@ -20,6 +20,8 @@ use tutti_plugin::server::{
     RenderMode, WindowHandle,
 };
 use tutti_plugin_types::MainThread;
+#[cfg(all(target_os = "macos", feature = "au"))]
+use tutti_plugin_types::SampleRate;
 
 use crate::loaders::common::{Meta, single_bus};
 use tutti_plugin::{BridgeError, LoadStage, Result};
@@ -192,7 +194,7 @@ fn read_tail(inner: &AuHostInstance, sample_rate: f64) -> PluginTail {
     // render that rounds a tail down clips its last partial block.
     match inner.get_tail_time() {
         Err(_) => PluginTail::Unknown,
-        Ok(seconds) => PluginTail::from_seconds(seconds, sample_rate),
+        Ok(seconds) => PluginTail::from_seconds(seconds, SampleRate::new(sample_rate)),
     }
 }
 
@@ -1297,7 +1299,7 @@ mod tests {
         inner.initialize().expect("Should initialize");
         let tail = match inner.get_tail_time() {
             Err(_) => PluginTail::Unknown,
-            Ok(sec) => PluginTail::from_seconds(sec, 44_100.0),
+            Ok(sec) => PluginTail::from_seconds(sec, SampleRate::new(44_100.0)),
         };
         assert_ne!(
             tail,
@@ -1320,7 +1322,7 @@ mod tests {
             inner.initialize().expect("Should initialize");
             let mapped = match inner.get_tail_time() {
                 Err(_) => PluginTail::Unknown,
-                Ok(sec) => PluginTail::from_seconds(sec, 44_100.0),
+                Ok(sec) => PluginTail::from_seconds(sec, SampleRate::new(44_100.0)),
             };
             // Whatever this unit answers, a *refusal* must never surface as a
             // zero tail — that is the mapping this test exists for.
@@ -1360,7 +1362,7 @@ mod tests {
                     "TAL Reverb 4 is the corpus's infinite-tail unit; it reported {seconds:?}"
                 );
 
-                let mapped = PluginTail::from_seconds(seconds, 44_100.0);
+                let mapped = PluginTail::from_seconds(seconds, SampleRate::new(44_100.0));
                 assert_eq!(mapped, PluginTail::Unbounded);
                 // The point of the whole type: converting first would have made
                 // this `None`, and a bounce would truncate the reverb entirely.

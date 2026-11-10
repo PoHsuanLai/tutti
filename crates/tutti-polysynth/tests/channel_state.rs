@@ -30,7 +30,7 @@ fn blocks(seconds: f64) -> usize {
 
 fn config() -> SynthConfig {
     SynthConfig {
-        sample_rate: SampleRate::from(SR),
+        sample_rate: SampleRate::new(SR),
         oscillator: OscillatorType::Sine,
         envelope: Adsr {
             attack: Seconds(0.001),

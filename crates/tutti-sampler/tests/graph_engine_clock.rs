@@ -49,7 +49,7 @@ fn tone_at(i: usize) -> f32 {
 /// A pool with one voice placed at beat 0, pitched by `cents`, playing four
 /// seconds of the tone.
 fn pool(cents: f32) -> VoicePool {
-    let mut wave = Wave::new(1, SR);
+    let mut wave = Wave::new(1, SampleRate::new(SR));
     for i in 0..4 * SR as usize {
         wave.push_frame(&[tone_at(i)]);
     }
@@ -160,7 +160,7 @@ fn plays_in_time(n: usize) {
     let frames = blocks * n;
     for cents in [0.0f32, 700.0] {
         let what = format!("{n}-frame blocks, {cents} cents");
-        let t = Transport::new(SR);
+        let t = Transport::new(SampleRate::new(SR));
         let (graph, _ed) = graph_engine(&t, vec![pool(cents)]);
         let b = play(&graph, &t, n, blocks, |_| {});
 
@@ -179,7 +179,7 @@ fn plays_in_time(n: usize) {
                 assert_tone_exact(&what, &b, f, f);
             }
         } else if n.is_multiple_of(64) {
-            let t64 = Transport::new(SR);
+            let t64 = Transport::new(SampleRate::new(SR));
             let (by64, _ed) = graph_engine(&t64, vec![pool(cents)]);
             let r = play(&by64, &t64, 64, frames / 64, |_| {});
             if let Some(i) = (0..2 * frames).find(|&i| r[i].to_bits() != b[i].to_bits()) {
@@ -234,7 +234,7 @@ fn a_voice_plays_in_time_at_2048_frame_blocks() {
 /// Dry, not pitched: a stretch filter's fill-up would only delay the tone.
 #[test]
 fn two_voices_over_one_transport_both_play_the_tone() {
-    let t = Transport::new(SR);
+    let t = Transport::new(SampleRate::new(SR));
     let p = pool(0.0);
     let (graph, _ed) = graph_engine(&t, vec![p.clone(), p]);
     let b = play(&graph, &t, 512, 60, |_| {});
@@ -258,7 +258,7 @@ fn two_voices_over_one_transport_both_play_the_tone() {
 fn a_crossfaded_voice_plays_on_through_the_fade() {
     let blocks = 60;
     let render = |fade: bool| {
-        let t = Transport::new(SR);
+        let t = Transport::new(SampleRate::new(SR));
         let p = pool(0.0);
         let spare = p.clone();
         let (engine, mut ed) = graph_engine(&t, vec![p]);
@@ -309,11 +309,11 @@ fn a_crossfaded_voice_plays_on_through_the_fade() {
 #[test]
 fn a_loop_wrap_plays_the_tone_a_loop_back_from_its_frame() {
     let blocks = 60_000 / 512;
-    let t = Transport::new(SR);
+    let t = Transport::new(SampleRate::new(SR));
     t.motion
         .schedule(
             At::NextBlock,
-            LoopEdit::over(LoopRange::new(1.0, 1.51).expect("ordered")),
+            LoopEdit::over(LoopRange::new(Beat::new(1.0), Beat::new(1.51)).expect("ordered")),
         )
         .expect("room");
     let (graph, _ed) = graph_engine(&t, vec![pool(0.0)]);
@@ -370,7 +370,7 @@ fn a_scheduled_locate_lands_on_its_frame() {
             .expect("room");
     };
     let blocks = 24_000 / 512;
-    let t = Transport::new(SR);
+    let t = Transport::new(SampleRate::new(SR));
     let (graph, _ed) = graph_engine(&t, vec![pool(0.0)]);
     locate(&t);
     let b = play(&graph, &t, 512, blocks, |_| {});

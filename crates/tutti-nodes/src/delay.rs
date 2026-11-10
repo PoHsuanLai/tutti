@@ -778,7 +778,12 @@ mod tests {
     /// address list below fails.
     #[test]
     fn a_fork_starts_from_the_authored_values_and_shares_nothing() {
-        let node = DelayLineNode::stereo(1.0, 0.05, 0.07, 0.4);
+        let node = DelayLineNode::stereo(
+            Seconds::new(1.0),
+            Seconds::new(0.05),
+            Seconds::new(0.07),
+            Feedback::new(0.4),
+        );
         assert_eq!(
             node.param_set().params().collect::<Vec<_>>(),
             [UnitParam::Feedback, UnitParam::DelayTime, UnitParam::Wet]
@@ -794,19 +799,27 @@ mod tests {
     /// fork's right time follows the live write → fails.
     #[test]
     fn a_fork_detaches_the_unaddressed_cells_too() {
-        let node = DelayLineNode::stereo(1.0, 0.05, 0.07, 0.4);
-        node.set_cross_feedback(0.2);
+        let node = DelayLineNode::stereo(
+            Seconds::new(1.0),
+            Seconds::new(0.05),
+            Seconds::new(0.07),
+            Feedback::new(0.4),
+        );
+        node.set_cross_feedback(Feedback::new(0.2));
         let fork = node.fork_fresh();
-        node.set_delay_time_r(0.3);
-        node.set_cross_feedback(0.6);
+        node.set_delay_time_r(Seconds::new(0.3));
+        node.set_cross_feedback(Feedback::new(0.6));
         assert_eq!(fork.delay_time[1].load(), Seconds(0.07));
         assert_eq!(fork.cross_feedback.load(), Feedback(0.2));
     }
 
     #[test]
     fn test_delay_node_passthrough_no_feedback() {
-        let mut node = at(DelayLineNode::new(1.0, 0.0, 0.0), 44_100.0);
-        node.set_mix(0.0);
+        let mut node = at(
+            DelayLineNode::new(Seconds::new(1.0), Seconds::new(0.0), Feedback::new(0.0)),
+            44_100.0,
+        );
+        node.set_mix(Mix::new(0.0));
         let out = frames(&mut node, &[&[0.5]], &[]);
         assert!(
             (out[0][0] - 0.5).abs() < 0.001,
@@ -817,7 +830,14 @@ mod tests {
     #[test]
     fn test_delay_node_echoes() {
         let delay_secs = 0.01; // 10 samples at 1 kHz
-        let mut node = at(DelayLineNode::new(1.0, delay_secs, 0.5), 1_000.0);
+        let mut node = at(
+            DelayLineNode::new(
+                Seconds::new(1.0),
+                Seconds::new(delay_secs),
+                Feedback::new(0.5),
+            ),
+            1_000.0,
+        );
         let x = impulses(1, 11, &[0]);
         let out = frames(&mut node, &refs(&x), &[]);
         // At sample 10, we should see the delayed signal
@@ -830,7 +850,15 @@ mod tests {
 
     #[test]
     fn test_stereo_delay_independent_channels() {
-        let mut node = at(DelayLineNode::stereo(1.0, 0.005, 0.01, 0.0), 1_000.0);
+        let mut node = at(
+            DelayLineNode::stereo(
+                Seconds::new(1.0),
+                Seconds::new(0.005),
+                Seconds::new(0.01),
+                Feedback::new(0.0),
+            ),
+            1_000.0,
+        );
         let x = impulses(2, 11, &[0, 1]);
         let out = frames(&mut node, &refs(&x), &[]);
         // After 5 samples the left echoes; after 10, the right.
@@ -841,8 +869,16 @@ mod tests {
 
     #[test]
     fn test_stereo_delay_cross_feedback() {
-        let mut node = at(DelayLineNode::stereo(1.0, 0.01, 0.01, 0.0), 1_000.0);
-        node.set_cross_feedback(0.5);
+        let mut node = at(
+            DelayLineNode::stereo(
+                Seconds::new(1.0),
+                Seconds::new(0.01),
+                Seconds::new(0.01),
+                Feedback::new(0.0),
+            ),
+            1_000.0,
+        );
+        node.set_cross_feedback(Feedback::new(0.5));
         // Impulse on the left only.
         let x = impulses(2, 21, &[0]);
         let out = frames(&mut node, &refs(&x), &[]);
@@ -859,9 +895,22 @@ mod tests {
     #[test]
     fn delay_with_channels_2_matches_new() {
         // with_channels(2, ...) with equal times == stereo(...) with equal L/R.
-        let mut a = at(DelayLineNode::stereo(1.0, 0.01, 0.01, 0.4), 48_000.0);
+        let mut a = at(
+            DelayLineNode::stereo(
+                Seconds::new(1.0),
+                Seconds::new(0.01),
+                Seconds::new(0.01),
+                Feedback::new(0.4),
+            ),
+            48_000.0,
+        );
         let mut b = at(
-            DelayLineNode::with_channels(ChannelLayout::STEREO, 1.0, 0.01, 0.4),
+            DelayLineNode::with_channels(
+                ChannelLayout::STEREO,
+                Seconds::new(1.0),
+                Seconds::new(0.01),
+                Feedback::new(0.4),
+            ),
             48_000.0,
         );
         let x = impulses(2, 2000, &[0, 1]);
@@ -877,7 +926,12 @@ mod tests {
 
     #[test]
     fn delay_with_channels_reports_arity() {
-        let d = DelayLineNode::with_channels(6u16, 1.0, 0.01, 0.3);
+        let d = DelayLineNode::with_channels(
+            6u16,
+            Seconds::new(1.0),
+            Seconds::new(0.01),
+            Feedback::new(0.3),
+        );
         let shape = d.shape();
         assert_eq!(shape.audio_in.count(), 6);
         assert_eq!(shape.audio_out.count(), 6);
@@ -887,8 +941,16 @@ mod tests {
     fn wide_delay_channels_are_independent_no_crossfeed() {
         // 6-channel delay: an impulse on channel 3 echoes only on channel 3,
         // and cross_feedback (a stereo-only notion) is inert.
-        let mut node = at(DelayLineNode::with_channels(6u16, 1.0, 0.01, 0.0), 1_000.0);
-        node.set_cross_feedback(0.9); // must have NO effect above width 2
+        let mut node = at(
+            DelayLineNode::with_channels(
+                6u16,
+                Seconds::new(1.0),
+                Seconds::new(0.01),
+                Feedback::new(0.0),
+            ),
+            1_000.0,
+        );
+        node.set_cross_feedback(Feedback::new(0.9)); // must have NO effect above width 2
 
         let x = impulses(6, 13, &[3]);
         let out = frames(&mut node, &refs(&x), &[]);
@@ -932,14 +994,25 @@ mod tests {
     /// fails (and `feedback_feed_modulates` reads a delay time as feedback).
     #[test]
     fn the_feed_declares_feedback_delay_time_and_mix() {
-        let d = DelayLineNode::stereo(1.0, 0.01, 0.01, 0.5);
+        let d = DelayLineNode::stereo(
+            Seconds::new(1.0),
+            Seconds::new(0.01),
+            Seconds::new(0.01),
+            Feedback::new(0.5),
+        );
         let shape = d.shape();
         assert_eq!(
             shape.params.as_slice(),
             &[UnitParam::Feedback, UnitParam::DelayTime, UnitParam::Wet][..]
         );
         assert_eq!((shape.audio_in.count(), shape.audio_out.count()), (2, 2));
-        let wide = DelayLineNode::with_channels(6u16, 1.0, 0.01, 0.5).shape();
+        let wide = DelayLineNode::with_channels(
+            6u16,
+            Seconds::new(1.0),
+            Seconds::new(0.01),
+            Feedback::new(0.5),
+        )
+        .shape();
         assert_eq!((wide.audio_in.count(), wide.audio_out.count()), (6, 6));
         assert_eq!(d.param_base(0), Some(0.5), "feedback's base is its control");
         assert_eq!(
@@ -947,7 +1020,7 @@ mod tests {
             Some(0.01),
             "delay time's base is channel 0's"
         );
-        d.set_mix(0.25);
+        d.set_mix(Mix::new(0.25));
         assert_eq!(d.param_base(2), Some(0.25), "the mix's base is its control");
     }
 
@@ -961,7 +1034,12 @@ mod tests {
 
         let run = |fb: f32| -> f32 {
             let mut node = at(
-                DelayLineNode::stereo(1.0, delay_secs, delay_secs, 0.0),
+                DelayLineNode::stereo(
+                    Seconds::new(1.0),
+                    Seconds::new(delay_secs),
+                    Seconds::new(delay_secs),
+                    Feedback::new(0.0),
+                ),
                 1_000.0,
             );
             let x = impulses(2, n, &[0, 1]);
@@ -996,14 +1074,24 @@ mod tests {
         }
 
         let mut plain = at(
-            DelayLineNode::stereo(1.0, delay_secs, delay_secs, fb),
+            DelayLineNode::stereo(
+                Seconds::new(1.0),
+                Seconds::new(delay_secs),
+                Seconds::new(delay_secs),
+                Feedback::new(fb),
+            ),
             1_000.0,
         );
         let (plain_l, plain_r) = stereo_delay_fed(&mut plain, &input_l, &input_r, [None, None]);
 
         // Both params fed, held at the atomic values.
         let mut modn = at(
-            DelayLineNode::stereo(1.0, delay_secs, delay_secs, fb),
+            DelayLineNode::stereo(
+                Seconds::new(1.0),
+                Seconds::new(delay_secs),
+                Seconds::new(delay_secs),
+                Feedback::new(fb),
+            ),
             1_000.0,
         );
         let (mod_l, mod_r) = stereo_delay_fed(
@@ -1048,8 +1136,15 @@ mod tests {
         use crate::test_support::change_between_node_blocks;
         let x = slow_sine(4_096 + 64);
         let run = change_between_node_blocks(
-            || DelayLineNode::stereo(1.0, 0.010, 0.012, 0.0),
-            |n| n.set_delay_time(0.200),
+            || {
+                DelayLineNode::stereo(
+                    Seconds::new(1.0),
+                    Seconds::new(0.010),
+                    Seconds::new(0.012),
+                    Feedback::new(0.0),
+                )
+            },
+            |n| n.set_delay_time(Seconds::new(0.200)),
             &[&x[..4_096], &x[..4_096]],
             &[&x[4_096..], &x[4_096..]],
         );
@@ -1066,8 +1161,15 @@ mod tests {
         use crate::test_support::{change_between_node_blocks, noise};
         let x = noise(4, 128);
         let run = change_between_node_blocks(
-            || DelayLineNode::with_channels(6u16, 0.1, 0.0005, 0.3),
-            |n| n.set_mix(0.0),
+            || {
+                DelayLineNode::with_channels(
+                    6u16,
+                    Seconds::new(0.1),
+                    Seconds::new(0.0005),
+                    Feedback::new(0.3),
+                )
+            },
+            |n| n.set_mix(Mix::new(0.0)),
             &(0..6).map(|_| &x[..64]).collect::<Vec<_>>(),
             &(0..6).map(|_| &x[64..]).collect::<Vec<_>>(),
         );
@@ -1090,14 +1192,14 @@ mod tests {
         let mut node = at(
             DelayLineNode::with_channels(
                 ChannelLayout::try_from(n).expect("a test width is small"),
-                1.0,
-                0.01,
-                0.0,
+                Seconds::new(1.0),
+                Seconds::new(0.01),
+                Feedback::new(0.0),
             )
             .with_cross_feedback_matrix(&ring),
             1_000.0,
         );
-        node.set_cross_feedback(0.8);
+        node.set_cross_feedback(Feedback::new(0.8));
 
         // Impulse on channel 0; fully wet, so the output is the lines alone.
         let x = impulses(n, 26, &[0]);
@@ -1130,14 +1232,14 @@ mod tests {
         let mut node = at(
             DelayLineNode::with_channels(
                 ChannelLayout::try_from(n).expect("a test width is small"),
-                0.1,
-                0.002,
-                0.99,
+                Seconds::new(0.1),
+                Seconds::new(0.002),
+                Feedback::new(0.99),
             )
             .with_cross_feedback_matrix(&vec![1.0; n * n]),
             8_000.0,
         );
-        node.set_cross_feedback(0.99);
+        node.set_cross_feedback(Feedback::new(0.99));
         let x = impulses(n, 20_001, &[0, 1, 2, 3]);
         let out = frames(&mut node, &refs(&x), &[]);
         let peak = out
@@ -1157,7 +1259,12 @@ mod tests {
     #[test]
     #[should_panic(expected = "must be finite")]
     fn a_non_finite_cross_feedback_weight_is_refused() {
-        let _ = DelayLineNode::with_channels(ChannelLayout::STEREO, 0.1, 0.01, 0.3)
-            .with_cross_feedback_matrix(&[0.0, f32::NAN, 1.0, 0.0]);
+        let _ = DelayLineNode::with_channels(
+            ChannelLayout::STEREO,
+            Seconds::new(0.1),
+            Seconds::new(0.01),
+            Feedback::new(0.3),
+        )
+        .with_cross_feedback_matrix(&[0.0, f32::NAN, 1.0, 0.0]);
     }
 }

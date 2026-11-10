@@ -219,10 +219,11 @@ impl LruCache {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tutti_types::SampleRate;
 
     fn make_wave(samples: usize) -> Arc<Wave> {
         let data = vec![0.0f32; samples];
-        Arc::new(Wave::from_samples(44100.0, &data))
+        Arc::new(Wave::from_samples(SampleRate::new(44100.0), &data))
     }
 
     /// A wave larger than the whole budget is refused, and evicts nothing.

@@ -47,7 +47,7 @@ fn sample(c: usize, i: usize) -> f32 {
 }
 
 fn wave(channels: usize, rate: f64) -> Arc<Wave> {
-    let mut w = Wave::new(channels, rate);
+    let mut w = Wave::new(channels, SampleRate::new(rate));
     for i in 0..LEN {
         let frame: Vec<f32> = (0..channels).map(|c| sample(c % 2, i + 7 * c)).collect();
         w.push_frame(&frame);
@@ -167,8 +167,8 @@ fn the_block_read_is_the_same_at_any_block_length() {
 
     // Disk streams: 0..4 for the long-block pool, 4..8 for the
     // short-block one.
-    let mut streamer =
-        DiskStreamer::manual(SR, DiskStreamerConfig::default()).expect("streamer builds");
+    let mut streamer = DiskStreamer::manual(SampleRate::new(SR), DiskStreamerConfig::default())
+        .expect("streamer builds");
     let openings: Vec<_> = (0..8)
         .map(|_| streamer.open(&path, crate::Placement::HEAD))
         .collect();

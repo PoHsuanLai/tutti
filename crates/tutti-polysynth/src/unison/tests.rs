@@ -156,7 +156,7 @@ fn test_config_update() {
     unison.set_voice_count(5);
     assert_eq!(unison.voice_count(), 5);
 
-    unison.set_detune(20.0);
+    unison.set_detune(Cents::new(20.0));
     assert!((unison.config().detune_cents.get() - 20.0).abs() < 0.001);
 
     unison.set_stereo_spread(0.5);

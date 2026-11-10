@@ -98,7 +98,7 @@ fn read_capture() -> ProcessCapture {
 
 fn load() -> (InProcessVst2Client, PluginHandle) {
     let path = probe_path::probe_path();
-    in_process_vst2_client(&main_thread(), path, SAMPLE_RATE)
+    in_process_vst2_client(&main_thread(), path, SampleRate::new(SAMPLE_RATE))
         .unwrap_or_else(|e| panic!("in-process load of the probe at {path:?}: {e:?}"))
 }
 
@@ -372,7 +372,7 @@ fn plugin_set_meter_reaches_an_in_process_vst2() {
     let plugin = tutti_plugin::catalog::Plugin::open(
         Some(&main_thread()),
         probe_path::probe_path(),
-        SAMPLE_RATE,
+        SampleRate::new(SAMPLE_RATE),
     )
     .expect("the probe opens");
     let handle = plugin.handle().clone();

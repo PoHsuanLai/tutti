@@ -862,6 +862,7 @@ mod tests {
     use super::*;
     use std::sync::Arc;
     use std::sync::atomic::AtomicUsize;
+    use tutti_types::SampleRate;
     use tutti_ump::MidiGroup;
 
     /// Counts what reached the wire. Stands in for a real OS endpoint so
@@ -876,7 +877,10 @@ mod tests {
 
     fn out_with_counter(stamping: bool) -> (UmpOut, Arc<AtomicUsize>) {
         let count = Arc::new(AtomicUsize::new(0));
-        let mut out = UmpOut::new(Box::new(CountingSink(count.clone())), 48_000.0);
+        let mut out = UmpOut::new(
+            Box::new(CountingSink(count.clone())),
+            SampleRate::new(48_000.0),
+        );
         out.set_stamping(stamping);
         (out, count)
     }

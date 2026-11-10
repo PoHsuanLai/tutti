@@ -51,7 +51,7 @@ fn low_pass(cutoff: f32) -> SvfFilterNode<f64> {
     SvfFilterNode::<f64>::new(SvfType::LowPass, Hz(cutoff), Q(0.9))
 }
 fn shaper(drive: f32) -> DistortionNode {
-    DistortionNode::new(ShapeKind::Tanh, drive)
+    DistortionNode::new(ShapeKind::Tanh, Drive::new(drive))
 }
 fn limiter() -> LimiterNode {
     LimiterNode::with_channels(ChannelLayout::MONO, Db(-12.0), Db(-1.0))

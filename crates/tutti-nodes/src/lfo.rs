@@ -664,7 +664,7 @@ mod tests {
     fn a_generator_with_no_inputs_is_never_skipped() {
         for lfo in [
             LfoNode::new(LfoShape::Sine),
-            LfoNode::new(LfoShape::Sine).with_beat_sync(1.0),
+            LfoNode::new(LfoShape::Sine).with_beat_sync(BeatDuration::new(1.0)),
         ] {
             let shape = lfo.shape();
             assert_eq!(shape.audio_in.count(), 0);
@@ -675,7 +675,7 @@ mod tests {
 
     #[test]
     fn test_beat_synced_lfo() {
-        let lfo = || LfoNode::new(LfoShape::Sine).with_beat_sync(4.0);
+        let lfo = || LfoNode::new(LfoShape::Sine).with_beat_sync(BeatDuration::new(4.0));
         // Beat 1.0 of a 4-beat cycle = quarter phase = sine peak.
         let out = render_at(lfo(), stopped_at(1.0), 1);
         assert!((out[0] - 1.0).abs() < 0.01, "Expected 1.0, got {}", out[0]);
@@ -694,7 +694,7 @@ mod tests {
         let rolling = Transport::new(true, Bpm::of(120.0), Beat(0.0), None);
         // 120 BPM at 48 kHz: 24 000 frames a beat, 96 000 a cycle.
         let out = render_at(
-            LfoNode::new(LfoShape::Sine).with_beat_sync(4.0),
+            LfoNode::new(LfoShape::Sine).with_beat_sync(BeatDuration::new(4.0)),
             rolling,
             3_000,
         );
@@ -709,7 +709,7 @@ mod tests {
     /// keeps its sub-beat detail.
     #[test]
     fn beat_synced_lfo_keeps_sub_beat_precision_at_high_beats() {
-        let lfo = || LfoNode::new(LfoShape::Sine).with_beat_sync(4.0);
+        let lfo = || LfoNode::new(LfoShape::Sine).with_beat_sync(BeatDuration::new(4.0));
         // Same fractional offset (0.5 beat) at beat 0 and at beat 20000.
         let at_edge = render_at(lfo(), stopped_at(0.5), 1)[0];
         let past_edge = render_at(lfo(), stopped_at(20_000.5), 1)[0];
@@ -724,7 +724,7 @@ mod tests {
     #[test]
     fn test_depth_control() {
         let lfo = LfoNode::new(LfoShape::Square);
-        lfo.set_depth(0.5);
+        lfo.set_depth(Depth::new(0.5));
         let out = render(lfo, 48_000.0, 1);
         assert!((out[0] - 0.5).abs() < 0.01);
     }
@@ -738,7 +738,7 @@ mod tests {
     fn negative_depth_inverts_instead_of_silencing() {
         let first = |depth: f32| {
             let lfo = LfoNode::new(LfoShape::Square);
-            lfo.set_depth(depth);
+            lfo.set_depth(Depth::new(depth));
             render(lfo, 48_000.0, 1)[0]
         };
         let (a, b) = (first(1.0), first(-1.0));
@@ -754,7 +754,7 @@ mod tests {
     #[test]
     fn test_phase_offset() {
         let lfo = LfoNode::new(LfoShape::Sine);
-        lfo.set_phase_offset(0.25);
+        lfo.set_phase_offset(PhaseIncrement::new(0.25));
         let out = render(lfo, 100.0, 1);
         assert!((out[0] - 1.0).abs() < 0.1, "Expected ~1.0, got {}", out[0]);
     }
@@ -793,7 +793,7 @@ mod tests {
         let lfo = || {
             LfoNode::new(LfoShape::Random)
                 .with_seed(seed)
-                .with_beat_sync(1.0)
+                .with_beat_sync(BeatDuration::new(1.0))
         };
         let rolling = Transport::new(true, Bpm::of(120.0), Beat(0.0), None);
         // 7.5 beats at 120 BPM and 48 kHz.
@@ -864,7 +864,7 @@ mod tests {
         }
         let rolling = Transport::new(true, Bpm::of(120.0), Beat(0.0), None);
         let synced = render_at(
-            LfoNode::new(LfoShape::Random).with_beat_sync(0.5),
+            LfoNode::new(LfoShape::Random).with_beat_sync(BeatDuration::new(0.5)),
             rolling,
             60_000,
         );

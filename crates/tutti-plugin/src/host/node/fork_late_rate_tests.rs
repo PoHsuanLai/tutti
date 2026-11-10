@@ -77,8 +77,12 @@ fn a_late_rate_answer_does_not_silence_an_offline_fork() {
             .into_owned(),
     );
     env.set("TUTTI_CLAP_PROBE_RENDER_MODE", "1".to_string());
-    let live = PluginClient::new(BridgeConfig::default(), probe_path(), LOAD_RATE)
-        .expect("load the reference CLAP plugin through a real plugin-server");
+    let live = PluginClient::new(
+        BridgeConfig::default(),
+        probe_path(),
+        SampleRate::new(LOAD_RATE),
+    )
+    .expect("load the reference CLAP plugin through a real plugin-server");
     // Armed after the live server started: only the fork's server is slow.
     env.set(
         "TUTTI_CLAP_PROBE_SLOW_ACTIVATE",

@@ -728,7 +728,7 @@ impl Lti for Network {
     }
 
     /// The slowest decay per frame over the stages: for a loop, `sigma rho` of the
-    /// slowest band ([`Network::rt60_bound`]'s own figure, `10^(log rho + log
+    /// slowest band (`Fdn::rt60_bound`'s own figure, `10^(log rho + log
     /// sigma)` per frame); a series all-pass's `|g|^(1/D)`; 0 for taps and a FIR; 1
     /// for a lossless loop; infinity for what the analysis does not accept.
     fn spectral_radius(&self) -> f64 {

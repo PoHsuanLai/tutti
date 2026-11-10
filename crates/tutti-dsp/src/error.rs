@@ -1,9 +1,7 @@
-//! Construction failures of the shared analysis infrastructure.
+//! What the STFT geometry and the grid refuse at construction.
 //!
-//! `Result`, not `Option`, and not `assert!`. This is library surface: a
-//! caller who passes a hop wider than its window deserves to know which
-//! invariant broke, and a caller feeding a short buffer deserves better than a
-//! panic on the audio path.
+//! `Result`, not `Option`, and not `assert!`: a caller who passes a hop wider
+//! than its window deserves to know which invariant broke.
 
 use tutti_types::Samples;
 

@@ -1,5 +1,7 @@
 //! The core cases: every class of system runs them.
 
+use std::borrow::Borrow;
+
 use super::harness::{MAX_BLOCK, built, noise, rate_of, render, widths};
 use super::{DesignCase, Hook, RealizationCase};
 use crate::{Realization, Sizes, System};
@@ -52,7 +54,7 @@ pub(super) mod design {
             let bound = d.bounds(&ceiling);
             for c in every(d) {
                 let n = d.design(&c, rate);
-                let size = d.measure(&n, ceiling.floor());
+                let size = D::Bounds::measure(n.borrow(), ceiling.floor());
                 if !bound.dominates(&size) {
                     return Err(format!("{bound:?} does not dominate {size:?}"));
                 }

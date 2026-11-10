@@ -31,21 +31,9 @@ impl Range for () {
 pub struct MaxDecay(Seconds);
 
 /// A refused longest decay: the raw it carries.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, thiserror::Error)]
+#[error("{0:?} is not a longest decay: it must be above zero and at most {cap:?}", cap = MaxDecay::CAP)]
 pub struct MaxDecayError(pub Seconds);
-
-impl std::fmt::Display for MaxDecayError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "{:?} is not a longest decay: it must be above zero and at most {:?}",
-            self.0,
-            MaxDecay::CAP
-        )
-    }
-}
-
-impl std::error::Error for MaxDecayError {}
 
 impl MaxDecay {
     /// The longest decay a control may ask for by default.

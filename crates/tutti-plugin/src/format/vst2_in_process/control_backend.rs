@@ -1,11 +1,12 @@
 //! Host-side capability backend for the in-process VST2 host.
 //!
 //! Implements [`HostParams`], [`HostState`], [`HostEditor`] (VST2 has an
-//! embeddable editor) and [`HostRenderMode`]. Holds the same `Arc<Mutex<Instance>>` the audio unit
-//! holds. GUI thread calls take the lock for the duration of one plugin operation
-//! — short for parameter / state methods, potentially long for editor ones. The
-//! audio thread always uses `try_lock` (in `super::client`) and falls back to
-//! silence on contention so a slow `editor_idle` can't underrun audio.
+//! embeddable editor) and [`HostRenderMode`]. Holds the plugin's control side,
+//! the `Arc<Mutex<Instance>>` the node's `shape` and `prepare` also take.
+//! Control-thread calls take the lock for the duration of one plugin operation
+//! — short for parameter / state methods, potentially long for editor ones.
+//! The audio thread never takes it: it renders through the Processor lent to
+//! the node, so a slow `editor_idle` cannot underrun audio.
 
 use std::ffi::c_void;
 use std::sync::Arc;
@@ -13,7 +14,6 @@ use std::sync::atomic::AtomicU64;
 use tutti_plugin_types::MainThread;
 
 use parking_lot::Mutex;
-use tutti_plugin_types::Control;
 
 use super::instance::Instance;
 use crate::host::handles::capabilities::{HostEditor, HostParams, HostRenderMode, HostState};
@@ -56,9 +56,9 @@ impl HostParams for InProcessVst2Backend {
     }
 
     fn set_parameter_value(&self, id: ParamId, value: Normalized) {
-        // The audio thread can take this path (PluginHandle is shared);
-        // use `try_lock` so we never block audio. Lost writes are
-        // recoverable — the GUI thread will retry on the next idle.
+        // Fire-and-forget: `try_lock`, so a caller never waits on a long
+        // `editor_idle` holding the instance. Lost writes are recoverable —
+        // the GUI thread will retry on the next idle.
         //
         // In-process, so this write reaches the plugin directly with no
         // subprocess boundary to re-clamp at. VST2 is normalized natively, so
@@ -80,9 +80,8 @@ impl HostParams for InProcessVst2Backend {
     /// So a mismatch is `None`, which the caller renders as the raw number.
     ///
     /// `try_lock` for the same reason as
-    /// [`set_parameter_value`](Self::set_parameter_value): `PluginHandle` is
-    /// shared and the audio thread can reach this. A lost text lookup shows a
-    /// number for one frame.
+    /// [`set_parameter_value`](Self::set_parameter_value): a caller never waits
+    /// on the instance. A lost text lookup shows a number for one frame.
     fn parameter_text(&self, id: ParamId, value: Normalized) -> Option<String> {
         let instance = self.inner.try_lock()?;
         instance.display_if_current(id, value)
@@ -146,8 +145,12 @@ impl HostState for InProcessVst2Backend {
     /// This is the whole change on the in-process path: the `Result` was
     /// already in hand and discarded on the previous line.
     fn load_state(&self, main: &MainThread, data: &[u8]) -> Result<(), StateError> {
-        Control::load_state(self.inner.lock().controller_mut(), main, data)
-            .map_err(|e| StateError::Rejected(e.to_string()))
+        match self.inner.lock().control() {
+            Some(control) => control
+                .load_state(main, data)
+                .map_err(|e| StateError::Rejected(e.to_string())),
+            None => Err(StateError::Rejected("the plugin is lost".into())),
+        }
     }
 }
 
@@ -236,6 +239,12 @@ impl HostEditor for InProcessVst2Backend {
 
         let (changes, param_changes) = {
             let mut instance = self.inner.lock();
+            // What the plugin changed about itself since the last pump: the
+            // figures an activation read (a rate change that finished here, once
+            // the audio thread handed its Processor back), and an
+            // `audioMasterIOChanged` the plugin raised. Re-read here, on the
+            // main thread, where `effGetTailSize` belongs.
+            let changes = instance.pump(main);
             // Before the lost check: a refusal that lost the plugin is the one to report.
             if let Some(report) = instance.take_rate_report() {
                 use crate::handles::PluginInvalidation;
@@ -248,11 +257,7 @@ impl HostEditor for InProcessVst2Backend {
                 return;
             }
             instance.editor_idle(main);
-            // What the plugin changed about itself since the last pump: the
-            // host's re-reads after the rate drained above, and an
-            // `audioMasterIOChanged` the plugin raised. Re-read here, on the
-            // main thread, where `effGetTailSize` belongs.
-            (instance.poll_changes(main), instance.drain_param_changes())
+            (changes, instance.drain_param_changes())
         };
         // Drain any plugin-internal parameter changes (knob movement on
         // the editor surface) and forward them to the user sink. Fires

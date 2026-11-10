@@ -35,17 +35,23 @@
 //! across keys: a prior voice is taken over by the new key's voice with the
 //! same [`VoiceSpec::tag`].
 
-use tutti_midi_protocol::narrow_value;
+use tutti_midi_protocol::{MpeZones, bend_u32_to_signed_f32, narrow_value};
 use tutti_types::{Amplitude, Semitones};
-use tutti_ump::{MidiChannel, NoteNumber, Pitch, Voice2};
+use tutti_ump::{MidiChannel, NoteNumber, Rpn, Voice2};
 
 use crate::{Controller, Effect, Holds, Phase, Stop};
 
 const CHANNELS: usize = MidiChannel::COUNT as usize;
 
-/// The registered parameter that sets a channel's pitch bend sensitivity: bank
-/// and index (MIDI 1.0, Registered Parameter Numbers, RPN 0).
-const BEND_SENSITIVITY: (u8, u8) = (0, 0);
+/// A channel's pitch bend sensitivity from the data of RPN 0 (MIDI 1.0 RP-003,
+/// M2-115 section 4.1): two fields, the semitones in the top 7 bits and the
+/// cents (0 to 99) in the 7 below, the rest unused. It is not the Q7.25 of the
+/// per-note sensitivity (RPN 0/7), whose fraction is binary.
+fn bend_sensitivity(value: u32) -> Semitones {
+    let semitones = (value >> 25) as f32;
+    let cents = ((value >> 18) & 0x7F) as f32;
+    Semitones(semitones + cents / 100.0)
+}
 
 /// The most voices one note may start. A patch that asks for more is cut short.
 const MAX_SPECS: usize = 32;
@@ -169,61 +175,6 @@ pub struct VoiceView {
     pub id: VoiceId,
     /// Its envelope level now.
     pub level: Amplitude,
-}
-
-/// The member channels of each MPE zone (RP-053): the lower zone's master is
-/// channel 0 and its members count up from 1; the upper zone's master is
-/// channel 15 and its members count down from 14. `0` is no such zone.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub struct Zones {
-    lower: u8,
-    upper: u8,
-}
-
-impl Zones {
-    /// No zones: every channel is its own.
-    pub const NONE: Self = Self { lower: 0, upper: 0 };
-
-    /// The zones with `lower` and `upper` member channels. Refuses more than
-    /// 15 members in a zone, and, with both zones, more than the 14 channels
-    /// between the masters: the zones would overlap. Never clamps.
-    #[must_use]
-    pub const fn new(lower: u8, upper: u8) -> Option<Self> {
-        if lower > 15 || upper > 15 || (lower > 0 && upper > 0 && lower + upper > 14) {
-            None
-        } else {
-            Some(Self { lower, upper })
-        }
-    }
-
-    /// Members of the lower zone.
-    #[must_use]
-    pub const fn lower(self) -> u8 {
-        self.lower
-    }
-
-    /// Members of the upper zone.
-    #[must_use]
-    pub const fn upper(self) -> u8 {
-        self.upper
-    }
-}
-
-/// The error of a `(lower, upper)` pair that is not a layout; carries the pair.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ZonesError(pub (u8, u8));
-
-impl TryFrom<(u8, u8)> for Zones {
-    type Error = ZonesError;
-    fn try_from((lower, upper): (u8, u8)) -> Result<Self, ZonesError> {
-        Self::new(lower, upper).ok_or(ZonesError((lower, upper)))
-    }
-}
-
-impl From<Zones> for (u8, u8) {
-    fn from(z: Zones) -> Self {
-        (z.lower, z.upper)
-    }
 }
 
 /// What the instrument must do, in order.
@@ -362,7 +313,7 @@ pub struct Voicing {
     notes: Vec<Note>,
     sustain: [bool; CHANNELS],
     bends: [Bend; CHANNELS],
-    zones: Zones,
+    zones: Option<MpeZones>,
     next: u64,
     strike: u64,
     held: [Held; CHANNELS],
@@ -402,17 +353,18 @@ impl Voicing {
                 position: 0.0,
                 range: rules.bend_range,
             }; CHANNELS],
-            zones: Zones::NONE,
+            zones: None,
             next: 1,
             strike: 0,
             held: [Held::NONE; CHANNELS],
         }
     }
 
-    /// Which channels are MPE zones. A zone master's pitch bend adds to each of
-    /// its members' own (RP-053); with no zone every channel is its own. No
-    /// command is returned: the instrument sets this when it learns the layout.
-    pub fn set_zones(&mut self, zones: Zones) {
+    /// Which channels are MPE zones (`None`: no MPE). A zone master's pitch
+    /// bend adds to each of its members' own (RP-053); with no zone every
+    /// channel is its own. No command is returned: the instrument sets this
+    /// when it learns the layout.
+    pub fn set_zones(&mut self, zones: Option<MpeZones>) {
         self.zones = zones;
     }
 
@@ -420,13 +372,28 @@ impl Voicing {
     /// is returned; the instrument returns its pitches to centre. Ids are not
     /// reused.
     pub fn reset(&mut self) {
-        self.notes.clear();
-        self.sustain = [false; CHANNELS];
+        self.forget_notes();
         self.bends = [Bend {
             position: 0.0,
             range: self.rules.bend_range,
         }; CHANNELS];
+    }
+
+    /// Forgets every note, pedal and held key, and keeps the bends: a channel's
+    /// wheel and sensitivity are controller state, which outlives its notes.
+    /// No command is returned; the instrument ends its voices.
+    pub fn forget_notes(&mut self) {
+        self.notes.clear();
+        self.sustain = [false; CHANNELS];
         self.held = [Held::NONE; CHANNELS];
+    }
+
+    /// Where `channel`'s pitch stands now: its wheel over its sensitivity, and
+    /// its zone master's if it is a member. What the last
+    /// [`Command::Retune`] for it said.
+    #[must_use]
+    pub fn channel_pitch(&self, channel: MidiChannel) -> Semitones {
+        self.pitch(usize::from(channel.get()))
     }
 
     /// What holds `id` open, if it is a voice the core knows and has not
@@ -487,14 +454,13 @@ impl Voicing {
                 }
             }
             Voice2::PitchBend(bend) => {
-                let position =
-                    ((f64::from(bend) - f64::from(1u32 << 31)) / f64::from(1u32 << 31)) as f32;
+                let position = bend_u32_to_signed_f32(bend);
                 self.bend(channel, |b| b.position = position);
             }
             Voice2::Registered { bank, index, value }
-                if (bank.get(), index.get()) == BEND_SENSITIVITY =>
+                if Rpn::new(bank, index) == Rpn::PITCH_BEND_SENSITIVITY =>
             {
-                let range = Semitones(Pitch::from_q7_25(value).note_number());
+                let range = bend_sensitivity(value);
                 self.bend(channel, |b| b.range = range);
             }
             _ => {}
@@ -825,14 +791,10 @@ impl Voicing {
 
     /// The master of the zone `channel` is a member of, if any.
     fn master_of(&self, channel: usize) -> Option<usize> {
-        let (lower, upper) = (usize::from(self.zones.lower), usize::from(self.zones.upper));
-        if (1..=lower).contains(&channel) {
-            Some(0)
-        } else if channel < CHANNELS - 1 && channel >= CHANNELS - 1 - upper {
-            Some(CHANNELS - 1)
-        } else {
-            None
-        }
+        let channel = MidiChannel::new(channel as u8)?;
+        let zone = self.zones?.zone_of(channel).copied()?;
+        zone.is_member_channel(channel)
+            .then(|| usize::from(zone.master_channel().get()))
     }
 
     /// Where `channel`'s pitch stands: its own wheel, and its master's.
@@ -879,6 +841,7 @@ impl Voicing {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tutti_midi_protocol::MpeZoneConfig;
     use tutti_midi_protocol::widen;
     use tutti_ump::{Attribute, CCNumber, U7, Voice1};
 
@@ -1851,25 +1814,10 @@ mod tests {
         );
     }
 
-    /// Zone layouts that overlap or run past the channels are refused, never
-    /// clamped. (Not `check_range_contract`: that contract needs serde, and a
-    /// layout is never persisted.)
-    ///
-    /// Mutation (run): the sum test dropped accepts (8, 8).
-    #[test]
-    fn zones_refuse_overlap() {
-        assert!(Zones::new(0, 0).is_some());
-        assert!(Zones::new(15, 0).is_some());
-        assert!(Zones::new(0, 15).is_some());
-        assert!(Zones::new(7, 7).is_some());
-        assert!(Zones::new(16, 0).is_none());
-        assert!(Zones::new(0, 16).is_none());
-        assert!(Zones::new(8, 8).is_none());
-        assert!(Zones::new(14, 1).is_none());
-        assert_eq!(Zones::try_from((8u8, 8u8)), Err(ZonesError((8, 8))));
-        let z = Zones::try_from((3u8, 2u8)).unwrap();
-        assert_eq!(<(u8, u8)>::from(z), (3, 2));
-        assert_eq!((z.lower(), z.upper()), (3, 2));
+    /// The layout of `lower` and `upper` member counts (0: no such zone), the
+    /// tests' shorthand for the protocol's [`MpeZones`].
+    fn zones(lower: u8, upper: u8) -> Option<MpeZones> {
+        MpeZones::new(MpeZoneConfig::lower(lower), MpeZoneConfig::upper(upper))
     }
 
     // ---- bends -------------------------------------------------------------
@@ -1890,6 +1838,54 @@ mod tests {
             bank: U7::of(0),
             index: U7::of(0),
             value: (range_semitones * (1u32 << 25) as f32) as u32,
+        }
+    }
+
+    /// `forget_notes` ends the notes, pedals and held keys and leaves the bends
+    /// where the channels put them; `reset` returns those too.
+    ///
+    /// Mutation (run, seen to fail): `forget_notes` also resetting `bends`
+    /// loses the 2-semitone bend at the first assert.
+    #[test]
+    fn forgetting_the_notes_keeps_the_bends() {
+        let mut s = Sim::new(POLY);
+        s.send(2, bend(u32::MAX), &One);
+        s.on(2, 60);
+        s.core.forget_notes();
+        assert_eq!(s.core.channel_pitch(MidiChannel::of(2)), Semitones(2.0));
+        assert!(s.core.holds(id(1)).is_none());
+        s.core.reset();
+        assert_eq!(s.core.channel_pitch(MidiChannel::of(2)), Semitones(0.0));
+    }
+
+    /// RPN 0 is two fields, semitones then cents (RP-003, M2-115 section 4.1):
+    /// 12 semitones 50 cents is a range of 12.5, a full bend up retunes by it,
+    /// and the 18 low bits are unused. The fraction is decimal, not Q7.25's
+    /// binary one: cents 64 is 0.64, not 0.5.
+    ///
+    /// Mutation (run, seen to fail): reading the data as Q7.25 (`from_q7_25`)
+    /// gives 12.25 for cents 50 and 12.5 for cents 64.
+    #[test]
+    fn rpn0_cents_are_hundredths_of_a_semitone() {
+        let rpn = |semitones: u32, cents: u32, low: u32| Voice2::Registered {
+            bank: U7::of(0),
+            index: U7::of(0),
+            value: semitones << 25 | cents << 18 | low,
+        };
+        for (semitones, cents, low, want) in [
+            (12, 50, 0, 12.5f32),
+            (12, 64, 0, 12.64),
+            (2, 0, 0, 2.0),
+            (0, 99, 0x3_FFFF, 0.99),
+        ] {
+            let mut s = Sim::new(POLY);
+            s.send(1, rpn(semitones, cents, low), &One);
+            let up = s.send(1, bend(u32::MAX), &One);
+            assert!((retunes(&up)[0].1 - want).abs() < 1e-5, "{up:?} {want}");
+            assert_eq!(
+                s.core.channel_pitch(MidiChannel::of(1)),
+                Semitones(retunes(&up)[0].1)
+            );
         }
     }
 
@@ -1941,7 +1937,7 @@ mod tests {
     #[test]
     fn a_zone_masters_bend_adds_to_each_members_own() {
         let mut s = Sim::new(POLY);
-        s.core.set_zones(Zones::new(3, 0).unwrap());
+        s.core.set_zones(zones(3, 0));
         // Member 2 bends its own 1 semitone (half travel at range 2).
         let c = s.send(2, bend(0xC000_0000), &One);
         assert_eq!(retunes(&c), [(2, 1.0)]);
@@ -1961,7 +1957,7 @@ mod tests {
     #[test]
     fn rpn_0_on_a_master_retunes_the_zone_and_on_a_member_only_itself() {
         let mut s = Sim::new(POLY);
-        s.core.set_zones(Zones::new(2, 0).unwrap());
+        s.core.set_zones(zones(2, 0));
         s.send(0, bend(u32::MAX), &One);
         let c = s.send(0, rpn0(12.0), &One);
         assert_eq!(retunes(&c).len(), 3);
@@ -1974,7 +1970,7 @@ mod tests {
     #[test]
     fn the_upper_zone_counts_down() {
         let mut s = Sim::new(POLY);
-        s.core.set_zones(Zones::new(0, 2).unwrap());
+        s.core.set_zones(zones(0, 2));
         let c = s.send(15, bend(u32::MAX), &One);
         let chs: Vec<_> = retunes(&c).iter().map(|x| x.0).collect();
         assert_eq!(chs, [13, 14, 15]);
@@ -1984,7 +1980,7 @@ mod tests {
     #[test]
     fn a_masters_reset_centres_the_zone() {
         let mut s = Sim::new(POLY);
-        s.core.set_zones(Zones::new(2, 0).unwrap());
+        s.core.set_zones(zones(2, 0));
         s.send(0, bend(u32::MAX), &One);
         s.send(1, bend(u32::MAX), &One);
         assert_eq!(
@@ -2283,18 +2279,14 @@ mod tests {
         for stream in 0..200u64 {
             let mut rng =
                 Rng(0xA5A5_1234_5678_9ABC ^ (stream + 1).wrapping_mul(0x9E37_79B9_7F4A_7C15));
-            let zones = [
-                Zones::NONE,
-                Zones::new(3, 0).unwrap(),
-                Zones::new(0, 4).unwrap(),
-                Zones::new(5, 6).unwrap(),
-            ][(stream % 4) as usize];
+            let (lo, up) = [(0u8, 0u8), (3, 0), (0, 4), (5, 6)][(stream % 4) as usize];
+            let zones = zones(lo, up);
             let mut s = Sim::new(POLY);
             s.core.set_zones(zones);
             let mut pos = [0.0f64; 16];
             let mut range = [2.0f64; 16];
             let master = |c: usize| -> Option<usize> {
-                let (lo, up) = (usize::from(zones.lower()), usize::from(zones.upper()));
+                let (lo, up) = (usize::from(lo), usize::from(up));
                 if (1..=lo).contains(&c) {
                     Some(0)
                 } else if c < 15 && c >= 15 - up {

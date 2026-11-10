@@ -41,10 +41,10 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use common::{Kind, Pair, bits, input_signal};
 use proptest::prelude::*;
-use tutti_graph::{Edge, FeedbackFrom, InPort, NodeSpec, OutPort, Source};
+use tutti_graph::{Edge, EdgeGain, EdgeId, FeedbackFrom, InPort, NodeSpec, OutPort, Sink, Source};
 use tutti_graph::{EventEdge, EventIn, EventOut, GraphSpec, Unforkable};
 use tutti_graph::{NodeKey, TapAlign, TapId, TapSpec, Topology};
-use tutti_types::{ChannelLayout, Samples};
+use tutti_types::{Amplitude, ChannelLayout, Samples};
 
 use tutti_graph::Node;
 
@@ -2331,5 +2331,165 @@ fn the_fade_generator_covers_what_the_suite_claims() {
     assert!(
         latency_on_queued > 5,
         "only {latency_on_queued} latency changes cutting a queued fade"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Edge gain (doc 013, "Edge gain"): weighted lanes on the generated graphs.
+// ---------------------------------------------------------------------------
+
+/// The weights the generator picks from: unity (the plain add), zero (never
+/// skipped by value), negative (polarity), and fractions that do not round
+/// exactly.
+const WEIGHTS: [f32; 9] = [1.0, 0.5, -0.75, 0.0, 1.5, 0.3, 0.1, -1.0, 2.0];
+
+/// Whether `id` names an edge of `t`.
+fn has_edge(t: &Topology, id: EdgeId) -> bool {
+    match id.sink {
+        Sink::Port(at) => t.edges.get(&at).is_some_and(|e| e.contains(&id.from)),
+        Sink::Output(ch) => match id.from {
+            Edge::Direct(s) => t
+                .outputs
+                .get(usize::from(ch))
+                .is_some_and(|v| v.contains(&s)),
+            Edge::Feedback(_) => false,
+        },
+    }
+}
+
+/// Drops the entries of edges `mutate` removed or rewired.
+fn prune_gains(desc: &mut Desc) {
+    let t = &desc.spec.topology;
+    desc.spec.gains.retain(|id, _| has_edge(t, *id));
+}
+
+/// Gives about a third of the edges without an entry one, from `rng`: a
+/// stream of its own, so the graphs the other properties draw are untouched.
+fn weigh(desc: &mut Desc, rng: &mut Rng) {
+    let t = &desc.spec.topology;
+    let mut ids: Vec<EdgeId> = t
+        .edges
+        .iter()
+        .flat_map(|(&at, es)| {
+            es.iter().map(move |&from| EdgeId {
+                sink: Sink::Port(at),
+                from,
+            })
+        })
+        .collect();
+    for (ch, sources) in t.outputs.iter().enumerate() {
+        ids.extend(sources.iter().map(|&s| EdgeId {
+            sink: Sink::Output(ch as u16),
+            from: Edge::Direct(s),
+        }));
+    }
+    for id in ids {
+        if rng.chance(33) && !desc.spec.gains.contains_key(&id) {
+            let w = WEIGHTS[rng.below(WEIGHTS.len() as u64) as usize];
+            desc.spec
+                .set_edge_gain(id, EdgeGain::new(Amplitude::new(w)));
+        }
+    }
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig { cases: 256, ..ProptestConfig::default() })]
+
+    /// Weighted lanes on the random graphs, serial and parallel, are the
+    /// reference's bit for bit: with weights on a third of the edges (feedback
+    /// ones, fan-ins, one-edge sinks, output channels, and chains behind PDC
+    /// included), a fader moved between blocks (`set_edge_gain`, so ramps of
+    /// every block length in the schedule), and an edit halfway that rewires,
+    /// removes and regenerates nodes (lane state carried by edge, entries of
+    /// vanished edges dropped, new ones added). The parallel render is held to
+    /// the serial one through the reference.
+    ///
+    /// Mutations (each run, each failed): fuse the multiply-add in
+    /// `gain::add`/`gain::first`; ramp from the new value (`from = to`);
+    /// read the cell per op rather than per block is not visible here (no
+    /// store races a block) and is pinned in `gain.rs`; skip an addend whose
+    /// weight is `0.0`; do not carry lane state across the commit.
+    #[test]
+    fn weighted_graphs_are_bit_identical_to_the_reference(seed in any::<u64>(), which in 0usize..5) {
+        for workers in modes(seed) {
+            let mut gains = Rng::new(seed ^ 0x6A14_ED6E);
+            let mut rng = Rng::new(seed ^ 0xED17);
+            let mut desc = random_graph(seed);
+            weigh(&mut desc, &mut gains);
+            let mut pair = Pair::with_workers(MAX_BLOCK, workers);
+            pair.switch(&desc.spec.validate().expect("generated graphs are valid"), &desc.kinds);
+            let blocks = schedule(which, seed, 900);
+            let half = blocks.len() / 2;
+            let mut frame = 0u64;
+            for (i, &n) in blocks.iter().enumerate() {
+                if i == half {
+                    let mut edited = mutate(&desc, &mut rng);
+                    prune_gains(&mut edited);
+                    weigh(&mut edited, &mut gains);
+                    pair.switch(&edited.spec.validate().expect("valid"), &edited.kinds);
+                    desc = edited;
+                }
+                if gains.chance(40)
+                    && let Some(id) = gains.pick(&desc.spec.gains.keys().copied().collect::<Vec<_>>())
+                {
+                    let w = Amplitude::new(WEIGHTS[gains.below(WEIGHTS.len() as u64) as usize]);
+                    pair.set_edge_gain(id, w);
+                    desc.spec.gains.get_mut(&id).expect("picked").base = w;
+                }
+                let input = input_signal(frame, n);
+                let (a, b) = pair.block(n, &input);
+                prop_assert_eq!(bits(&a), bits(&b), "diverged at frame {} ({} frames)", frame, n);
+                frame += n as u64;
+            }
+        }
+    }
+}
+
+/// The weighted property is not vacuous: over the seeds a good share of the
+/// graphs carry entries, and the plans hold weighted sums of one addend, of
+/// several, and in chains' company, so the edge cases are drawn.
+#[test]
+fn the_generator_draws_weighted_lanes() {
+    let (mut with_gains, mut one_addend, mut many, mut negative, mut zero) = (0, 0, 0, 0, 0);
+    for seed in 0..300u64 {
+        let mut gains = Rng::new(seed ^ 0x6A14_ED6E);
+        let mut desc = random_graph(seed);
+        weigh(&mut desc, &mut gains);
+        if desc.spec.gains.is_empty() {
+            continue;
+        }
+        with_gains += 1;
+        negative += usize::from(desc.spec.gains.values().any(|g| g.base.get() < 0.0));
+        zero += usize::from(desc.spec.gains.values().any(|g| g.base.get() == 0.0));
+        let valid = desc.spec.validate().expect("valid");
+        let shapes: BTreeMap<NodeKey, tutti_graph::Shape> = desc
+            .kinds
+            .iter()
+            .map(|(&k, kind)| (k, shape(kind)))
+            .collect();
+        let (plan, _) = tutti_graph::compile(&valid, &shapes, &common::prepare(MAX_BLOCK), None)
+            .expect("compiles");
+        for op in plan.ops() {
+            if let tutti_graph::Op::WeightedSum { srcs, .. } = op {
+                if srcs.len == 1 {
+                    one_addend += 1;
+                } else {
+                    many += 1;
+                }
+            }
+        }
+    }
+    eprintln!(
+        "graphs {with_gains}, one-addend {one_addend}, many {many}, neg {negative}, zero {zero}"
+    );
+    assert!(with_gains > 200, "only {with_gains} graphs with entries");
+    assert!(
+        one_addend > 100,
+        "only {one_addend} one-addend weighted sums"
+    );
+    assert!(many > 100, "only {many} weighted sums of several");
+    assert!(
+        negative > 100 && zero > 40,
+        "{negative} negative, {zero} zero"
     );
 }

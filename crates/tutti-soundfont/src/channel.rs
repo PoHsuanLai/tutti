@@ -2,10 +2,22 @@
 // MeltySynth (Copyright (C) 2021 Nobuaki Tanaka). The MIT notice is
 // LICENSE-RUSTYSYNTH.txt, at the root of this crate.
 
+use tutti_ump::{U7, U14};
+
 /// The amount of the default modulators CC 91 to reverb send and CC 93 to
 /// chorus send (SF2 2.04 sections 8.4.8 and 8.4.9): 200 tenths of a percent,
 /// which is 20% of full level at the controller's top.
 const SEND_AMOUNT: f32 = 0.2;
+
+/// A 14-bit controller with its most significant 7 bits replaced (CC 0 to 31).
+fn with_msb(current: U14, msb: U7) -> U14 {
+    U14::masked((current.get() & 0x7F) | (u16::from(msb.get()) << 7))
+}
+
+/// A 14-bit controller with its least significant 7 bits replaced (CC 32 to 63).
+fn with_lsb(current: U14, lsb: U7) -> U14 {
+    U14::masked((current.get() & 0x3F80) | u16::from(lsb.get()))
+}
 
 #[derive(Debug, Clone)]
 #[non_exhaustive]
@@ -15,19 +27,16 @@ pub(crate) struct Channel {
     bank_number: i32,
     patch_number: i32,
 
-    modulation: i16,
-    volume: i16,
-    pan: i16,
-    expression: i16,
+    modulation: U14,
+    volume: U14,
+    pan: U14,
+    expression: U14,
 
     reverb_send: u8,
     chorus_send: u8,
 
-    pitch_bend_range: i16,
     coarse_tune: i16,
     fine_tune: i16,
-
-    pitch_bend: f32,
 }
 
 impl Channel {
@@ -36,16 +45,14 @@ impl Channel {
             is_percussion_channel,
             bank_number: 0,
             patch_number: 0,
-            modulation: 0,
-            volume: 0,
-            pan: 0,
-            expression: 0,
+            modulation: U14::of(0),
+            volume: U14::of(0),
+            pan: U14::of(0),
+            expression: U14::of(0),
             reverb_send: 0,
             chorus_send: 0,
-            pitch_bend_range: 0,
             coarse_tune: 0,
             fine_tune: 0,
-            pitch_bend: 0_f32,
         };
 
         channel.reset();
@@ -57,26 +64,21 @@ impl Channel {
         self.bank_number = if self.is_percussion_channel { 128 } else { 0 };
         self.patch_number = 0;
 
-        self.modulation = 0;
-        self.volume = 100 << 7;
-        self.pan = 64 << 7;
-        self.expression = 127 << 7;
+        self.modulation = U14::of(0);
+        self.volume = with_msb(U14::of(0), U7::of(100));
+        self.pan = with_msb(U14::of(0), U7::of(64));
+        self.expression = with_msb(U14::of(0), U7::of(127));
 
         self.reverb_send = 40;
         self.chorus_send = 0;
 
-        self.pitch_bend_range = 2 << 7;
         self.coarse_tune = 0;
         self.fine_tune = 8192;
-
-        self.pitch_bend = 0_f32;
     }
 
     pub(crate) fn reset_all_controllers(&mut self) {
-        self.modulation = 0;
-        self.expression = 127 << 7;
-
-        self.pitch_bend = 0_f32;
+        self.modulation = U14::of(0);
+        self.expression = with_msb(U14::of(0), U7::of(127));
     }
 
     pub(crate) fn set_bank(&mut self, value: i32) {
@@ -91,36 +93,36 @@ impl Channel {
         self.patch_number = value;
     }
 
-    pub(crate) fn set_modulation_coarse(&mut self, value: i32) {
-        self.modulation = (self.modulation & 0x7F) | (value << 7) as i16;
+    pub(crate) fn set_modulation_coarse(&mut self, value: U7) {
+        self.modulation = with_msb(self.modulation, value);
     }
 
-    pub(crate) fn set_modulation_fine(&mut self, value: i32) {
-        self.modulation = (((self.modulation as i32) & 0xFF80) | value) as i16;
+    pub(crate) fn set_modulation_fine(&mut self, value: U7) {
+        self.modulation = with_lsb(self.modulation, value);
     }
 
-    pub(crate) fn set_volume_coarse(&mut self, value: i32) {
-        self.volume = (self.volume & 0x7F) | (value << 7) as i16;
+    pub(crate) fn set_volume_coarse(&mut self, value: U7) {
+        self.volume = with_msb(self.volume, value);
     }
 
-    pub(crate) fn set_volume_fine(&mut self, value: i32) {
-        self.volume = (((self.volume as i32) & 0xFF80) | value) as i16;
+    pub(crate) fn set_volume_fine(&mut self, value: U7) {
+        self.volume = with_lsb(self.volume, value);
     }
 
-    pub(crate) fn set_pan_coarse(&mut self, value: i32) {
-        self.pan = (self.pan & 0x7F) | (value << 7) as i16;
+    pub(crate) fn set_pan_coarse(&mut self, value: U7) {
+        self.pan = with_msb(self.pan, value);
     }
 
-    pub(crate) fn set_pan_fine(&mut self, value: i32) {
-        self.pan = (((self.pan as i32) & 0xFF80) | value) as i16;
+    pub(crate) fn set_pan_fine(&mut self, value: U7) {
+        self.pan = with_lsb(self.pan, value);
     }
 
-    pub(crate) fn set_expression_coarse(&mut self, value: i32) {
-        self.expression = (self.expression & 0x7F) | (value << 7) as i16;
+    pub(crate) fn set_expression_coarse(&mut self, value: U7) {
+        self.expression = with_msb(self.expression, value);
     }
 
-    pub(crate) fn set_expression_fine(&mut self, value: i32) {
-        self.expression = (((self.expression as i32) & 0xFF80) | value) as i16;
+    pub(crate) fn set_expression_fine(&mut self, value: U7) {
+        self.expression = with_lsb(self.expression, value);
     }
 
     pub(crate) fn set_reverb_send(&mut self, value: i32) {
@@ -131,22 +133,17 @@ impl Channel {
         self.chorus_send = value as u8;
     }
 
-    /// A Registered Controller of bank 0 (M2-104 7.4.13): pitch bend
-    /// sensitivity (0), fine tuning (1) and coarse tuning (2); any other is
-    /// ignored. The data is the MIDI 1.0 pair zero-extended (M2-115 section
+    /// A Registered Controller of bank 0 (M2-104 7.4.13): fine tuning (1) and
+    /// coarse tuning (2); any other is ignored (pitch bend sensitivity, 0, is
+    /// the note logic's, `Voicing::step`). The data is the MIDI 1.0 pair zero-extended (M2-115 section
     /// 4.1, as the translator sends it): `MSB << 7 | LSB` is its top 14 bits.
     pub(crate) fn set_registered(&mut self, index: u8, value: u32) {
         let data = (value >> 18) as i16;
         match index {
-            0 => self.pitch_bend_range = data,
             1 => self.fine_tune = data,
             2 => self.coarse_tune = (data >> 7) - 64,
             _ => {}
         }
-    }
-
-    pub(crate) fn set_pitch_bend(&mut self, value1: i32, value2: i32) {
-        self.pitch_bend = (1_f32 / 8192_f32) * ((value1 | (value2 << 7)) - 8192) as f32;
     }
 
     pub(crate) fn bank_number(&self) -> i32 {
@@ -158,19 +155,19 @@ impl Channel {
     }
 
     pub(crate) fn modulation(&self) -> f32 {
-        (50_f32 / 16383_f32) * self.modulation as f32
+        (50_f32 / 16383_f32) * f32::from(self.modulation.get())
     }
 
     pub(crate) fn volume(&self) -> f32 {
-        (1_f32 / 16383_f32) * self.volume as f32
+        (1_f32 / 16383_f32) * f32::from(self.volume.get())
     }
 
     pub(crate) fn pan(&self) -> f32 {
-        (100_f32 / 16383_f32) * self.pan as f32 - 50_f32
+        (100_f32 / 16383_f32) * f32::from(self.pan.get()) - 50_f32
     }
 
     pub(crate) fn expression(&self) -> f32 {
-        (1_f32 / 16383_f32) * self.expression as f32
+        (1_f32 / 16383_f32) * f32::from(self.expression.get())
     }
 
     /// What CC 91 adds to a voice's reverb send, as a fraction of full level:
@@ -187,15 +184,7 @@ impl Channel {
         SEND_AMOUNT * (f32::from(self.chorus_send) / 128_f32)
     }
 
-    pub(crate) fn pitch_bend_range(&self) -> f32 {
-        (self.pitch_bend_range >> 7) as f32 + 0.01_f32 * (self.pitch_bend_range & 0x7F) as f32
-    }
-
     pub(crate) fn tune(&self) -> f32 {
         self.coarse_tune as f32 + (1_f32 / 8192_f32) * (self.fine_tune - 8192) as f32
-    }
-
-    pub(crate) fn pitch_bend(&self) -> f32 {
-        self.pitch_bend_range() * self.pitch_bend
     }
 }

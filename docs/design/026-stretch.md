@@ -215,7 +215,7 @@ Why a `Warp` and not a ratio (the owner's words were "`Stretcher` takes only a
 ratio"): a ratio is the warp's slope, and the integral of a stale ratio is a
 *permanent* position error, while a position map is memoryless in position. A
 constant ratio is the warp `at + frame / r`; the contract runs on constant and
-ramp warps. The owner confirms this reading (§10, D6).
+ramp warps. The owner confirmed this reading on 2026-11-10 (§10, D6).
 
 `Source::read` is a bulk copy, not a per-sample closure (the prototype's closure
 was the cheap way to measure). `Fill` says whether the whole span was resident;
@@ -246,8 +246,9 @@ class 6. The export `FftResampler` converts a fixed rate ratio of a pushed strea
 in chunks with latency and a stopband; the two share `TimeScale` (a ratio, a
 latency, a `Fidelity`) and the class 6 contract cases, not a realization. If
 024 step 7's resampler PR lands first it writes `TimeScale`; this doc's §3.2 is
-the content it adopts, and its streaming shape is an adapter over a ring
-`Source` or a separate shape. Which of the two is open (Q1).
+the content it adopts. Its realization keeps its push shape (a fixed ratio over
+a pushed stream, in chunks, with latency) under `TimeScale`, and is not
+expressed as `Retime` over a ring `Source` (D15).
 
 ### 4.2 `LockedVocoder`: the in-house stretcher
 
@@ -518,7 +519,7 @@ repository; **the test is the owner's and is pending.** The score is per
 material (drums, mix, pads, vocal, single line) on transient smear, phasiness,
 stereo image, and voice and tone.
 
-The gate, proposed for the owner to confirm: the locked vocoder goes ahead if
+The gate, confirmed by the owner on 2026-11-10: the locked vocoder goes ahead if
 (a) it is best or tied against `Unit` in every material (a regression check; it
 is expected), and (b) against Signalsmith it loses only in materials a mode
 covers: drums to slice mode, vocal to a mono mode. If it loses in pads, a mix or a
@@ -553,8 +554,8 @@ decision is this doc's. **Stage 4 deletes the old vocoder, so 024 step 6's
 consolidation 8 (move `vocoder.rs` and `buffers.rs` to `tutti-dsp`) is not run
 for it.** If step 6 lands before stage 4 the move happens once and stage 4
 deletes the moved files; if after, consolidation 8 is struck. The vocoder is
-never moved twice, and never moved only to be deleted if the order can be
-chosen: Q10 asks the owner to strike it now. Stages 4 and 7 order against
+never moved twice, and never moved only to be deleted: the owner struck
+consolidation 8 on 2026-11-10 (D16), and doc 024 says so. Stages 4 and 7 order against
 doc 025 as above: stage 4 does not touch the disk tier's `StreamReader`, which
 stage 7 uses.
 
@@ -567,7 +568,7 @@ stage 7 uses.
 | D3 | Extensions to class 6 that 024 adopts: `reach`, `splice`, `Groups`, and the `TimeScale`/`PitchPreserving` contract split | §3.2 to §3.4, §7; listed in §11 |
 | D4 | In-house locked vocoder first; Signalsmith is the benchmark and the fallback | Owner, 2026-11-07; the gate is §8 |
 | D5 | Power link with caller-declared groups, stereo linked by default | Owner, 2026-11-07. Sum link fails antiphase and quad (§4.2); unrelated channels gain nothing from a link |
-| D6 | The trait takes a **warp** (output frame to source position), not a bare ratio; a ratio is the warp `at + frame / r` | A stale ratio's integral is a permanent error; a position map is memoryless. **A reading of "takes only a ratio" the owner should confirm** |
+| D6 | The trait takes a **warp** (output frame to source position), not a bare ratio; a ratio is the warp `at + frame / r` | A stale ratio's integral is a permanent error; a position map is memoryless. Owner confirmed this reading of "takes only a ratio", 2026-11-10 |
 | D7 | Onsets precomputed on the control side, live scan as the fallback | Owner, 2026-11-07. Removes the scan, the warm-up and the mid-note false trigger |
 | D8 | Zero latency to PDC; the voice reads ahead | Owner, 2026-11-07. Reporting the lookahead would hold every other branch back and make a played voice late (§12) |
 | D9 | `Playback` holds `rate` and `transpose`; varispeed is the `Resample` mode where they are tied; `speed` goes | Owner, 2026-11-07 |
@@ -576,6 +577,9 @@ stage 7 uses.
 | D12 | Pitch lock first cut: clip BPM, step tempo, the held-tempo rule; exact lookahead with doc 020 stages 3 and 4; ramps and markers after | Owner order (clean-plan items 30 and 31); §6.3 is the correction that block-size independence needs the lookahead |
 | D13 | Disk-voice stretch after doc 025 stage 5, with a 32-voice read-ahead test | Owner, 2026-11-07 |
 | D14 | The count-in and punch snippets are examples and tests, kept outside this doc; the app-level features are a note (§13) | Owner, 2026-11-07 |
+| D15 | The export resampler shares `TimeScale` and the class 6 contract cases, and keeps its push realization; it is not `Retime` over a ring `Source` (was Q1) | Owner, 2026-11-10. A fixed ratio over a pushed stream needs no position map, and a ring adapter would add a copy and a second flush path for no caller |
+| D16 | 024's consolidation 8 is struck: the old vocoder is deleted at stage 4, never moved (was Q10) | Owner, 2026-11-10. Its target is deleted whichever of the in-house path or Signalsmith wins the gate |
+| D17 | The listening gate of §8 is the rule as written | Owner, 2026-11-10. The test itself is still the owner's and pending |
 
 ## 11. Required changes to doc 024 and others
 
@@ -584,7 +588,7 @@ Small, and made in this PR where they are a sentence:
 1. **024 §4.2** ("Class 6 has no trait yet"): points here for `TimeScale` and `Retime`.
 2. **024 §6.2**, the Multirate row: split into `TimeScale` and `PitchPreserving`
    as in §7 (the resampler's stopband case stays as a resampler case).
-3. **024 §9, consolidation 8, and step 6:** conditional, as §9 says; Q10.
+3. **024 §9, consolidation 8, and step 6:** struck (D16).
 4. **024 §3, row 42:** the stretcher is a `StretchDesign` with a `Retime`
    realization; the "variable rate" reason it did not fit is now `Retime`.
 5. **Not made here, needed:** doc 020, a bounded view of the map past the block
@@ -632,7 +636,7 @@ external clock are MIDI stage 6. Ableton Link is not researched.
 
 | # | Unknown | Settled by |
 |---|---|---|
-| Q1 | Does 024 step 7's export resampler adopt `Retime` over a ring `Source`, or keep a push shape under `TimeScale`? | Whichever PR comes second conforms; decide at the second |
+| Q1 | ~~Does 024 step 7's export resampler adopt `Retime` over a ring `Source`, or keep a push shape under `TimeScale`?~~ | Decided: D15, a push shape under `TimeScale` |
 | Q2 | Does the vocoder sound as good as Signalsmith on real music, and are islands audible in dense material? | The listening gate (§8) |
 | Q3 | Is the detector deaf on dense mixes (1 onset in 6 s of the electronic track) or is there none? | The score for that item; then tune the constants or feed `Onsets` from a better producer |
 | Q4 | Can `tutti_measure::detect_onsets` positions, refined in the time domain, replace the stretcher's own detector? | Compare the two on the excerpts as detectors (not renders); keep one if they agree |
@@ -641,7 +645,7 @@ external clock are MIDI stage 6. Ableton Link is not researched.
 | Q7 | Does the disk ring cover `reach` at 0.25 and 4.0 with 32 voices; what is the cold-seek time to first sound? | The stage 7 test (`DiskStreamer::manual`) |
 | Q8 | Is a 2048 window right for bass and LFE content? | The window is the quality tier: listening on a bass-heavy excerpt; per-band windows only if it fails |
 | Q9 | Does the vocoder reuse the old `OverlapAdd` and `SampleFifo`? | Stage 2: reuse only if the on-demand drain fits them; otherwise they die with the old module |
-| Q10 | **Owner:** strike 024's consolidation 8 now? | Recommend yes: its target is deleted by stage 4 whichever of Signalsmith or the in-house path wins |
+| Q10 | ~~Strike 024's consolidation 8 now?~~ | Decided: D16, struck |
 | Q11 | Serial against pooled bit-identity of the vocoder, and across CPUs? | The `modes` suite of the differential tests in the pool; `sin_cos` is libm, so a digest only on its recorded target |
 | Q12 | Production CPU through the real voice on a quiet machine? | `cargo bench` on the voice pool, off a loaded machine (load was 46 to 100) |
 | Q13 | A ratio change that cuts an island short; a loop wrap inside one? | Cases written with the island in stage 3 |

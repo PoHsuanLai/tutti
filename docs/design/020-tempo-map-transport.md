@@ -479,6 +479,37 @@ not the graph's chord, and CLAP its slope.
   VST3 mirror included): not done in 5a; each host's unit tests pin that
   `timing.tempo` reaches the ABI field.
 
+**Planned, stage 5b (a transport event at each point inside a chunk).** A
+chunk is the plugin node's FIFO batch, not the graph's block. It can span
+blocks, so it can hold a map point, a step or a ramp's end. 5a tells the
+plugin the tempo at the chunk's first frame and zeroes the slope there. 5b
+tells it where the tempo changes:
+
+- The chunk's payload (`BlockPayload`, and the wire's `ProcessAudioData`)
+  gains an inline list of transport changes, each a frame within the chunk and
+  a `TransportInfo`. The list holds at most `MAX_TRANSPORT_CHANGES` (8), the
+  graph's own limit. It allocates nothing. One more change than fits is
+  counted, and its transport waits for the next chunk's first frame.
+- The node adds an entry at each map point in `(b0, b1)` (the frame where
+  `beat_at_seconds` crosses it, `frame_at_or_after`'s rule) and at each `Env`
+  change inside the chunk (a seek, a loop wrap, a start or stop). Each entry's
+  `tempo` and `tempo_inc` follow 5a's rule over its own stretch, up to the
+  next entry or the chunk's end. A stretch that holds no point now has a
+  correct slope, so the "point inside the chunk" zero goes. Each entry
+  keeps the stopped and loop-end zeros.
+- The CLAP host sends one `CLAP_EVENT_TRANSPORT` per entry at its frame, in
+  time order with the chunk's other input events. This is the
+  "subsequent inter-block transport updates" `events.h` describes.
+- VST3, VST2 and AU have no transport event inside a block: they read the
+  chunk's first entry, as now. The doc says so per format. It is not a
+  `Gap`, because no format offers more.
+- The wire protocol goes to 23, because the list is a new field.
+- Tests come from the definition: a step inside a chunk is an event at the
+  step's frame with the step's tempo and a zero slope. A ramp's end inside a
+  chunk splits the slope at that frame. Nine changes in one chunk send eight
+  and count one. A VST3 plugin reads the first entry. Each test is
+  mutation-tested.
+
 Doc 013 gets an update at stage 2 and 6 (its "tempo steps here" note, the
 `OfflineTimeline` row, the dead-crate and timeline sections). CLAUDE.md's
 tutti-tempo paragraph got its sentence at stage 3.

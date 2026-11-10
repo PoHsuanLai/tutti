@@ -262,7 +262,7 @@ impl HostEditor for InProcessVst2Backend {
         for (index, value) in param_changes {
             if let Ok(index) = u32::try_from(index) {
                 self.param_sink
-                    .fire(ParamId::new(index), Normalized::clamped(f64::from(value)));
+                    .fire((ParamId::new(index), Normalized::clamped(f64::from(value))));
             }
         }
         use crate::handles::PluginInvalidation;

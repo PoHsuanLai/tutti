@@ -305,7 +305,7 @@ mod tests {
         let (plugin, sink) = handle(vec![(ParamId::new(1), Some(0.1))]);
         let (mut mirror, read) = PluginParamValues::start(&plugin);
 
-        sink.fire(ParamId::new(1), n(0.9));
+        sink.fire((ParamId::new(1), n(0.9)));
         let mut seen = Vec::new();
         mirror.drain_edits(|id, v| seen.push((id, v)));
         assert!(seen.is_empty(), "an edit before the read lands waits");

@@ -6,7 +6,7 @@ use tutti_transport::{MeterSlot, MeterSlotReader, ProjectMeter};
 /// time-signature and bar fields of the transport it tells the plugin.
 ///
 /// Every plugin node has one, shared with the node: the out-of-process node's
-/// [`PluginControls::meter`](super::PluginControls::meter), and the in-process
+/// [`NodeControls::meter`](super::NodeControls::meter), and the in-process
 /// VST2 node's controls (what inserting it hands back). A clone is another
 /// handle on the same slot, so an install through any handle reaches the node
 /// the audio thread runs, lock-free and with no graph commit. Empty until a

@@ -18,7 +18,7 @@ pub(crate) mod control_handle;
 // `PluginRefresh` (cosmetic), `on_invalidate` delivers `PluginInvalidation`
 // (structural). `ResyncKind` stays exported as the underlying wire signal.
 pub use crate::host::node::{
-    Bound, ParamDeliveryStats, PluginClient, PluginControls, PluginMeter, Unbound,
+    Bound, NodeControls, ParamDeliveryStats, PluginClient, PluginControls, PluginMeter, Unbound,
 };
 pub use tutti_plugin_ipc::{PluginInvalidation, PluginRefresh, ResyncKind};
 // The per-block installer, reachable only when the plugin can receive that

@@ -5,12 +5,12 @@
 //! a caller writes what it means and lets `..Default::default()` cover the rest:
 //!
 //! ```
-//! # use tutti_types::SampleRate;
+//! # use tutti_types::{SampleRate, Seconds};
 //! # use tutti_export::{EncodeConfig, ExportConfig, FlacLevel, Format, IntDepth, RenderConfig};
 //! let config = ExportConfig {
 //!     render: RenderConfig {
 //!         sample_rate: SampleRate(48_000.0),
-//!         duration_seconds: 30.0,
+//!         duration_seconds: Seconds(30.0),
 //!         ..Default::default()
 //!     },
 //!     encode: EncodeConfig {
@@ -36,8 +36,8 @@
 use crate::options::Dither;
 use crate::process::ChunkSize;
 use tutti_codec::Format;
-use tutti_types::SampleRate;
 use tutti_types::{ChannelLayout, Samples};
+use tutti_types::{SampleRate, Seconds};
 
 /// The render stage: what to produce, and for how long.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -50,10 +50,8 @@ pub struct RenderConfig {
     /// [`ConfigError::EmptyRender`](crate::ConfigError::EmptyRender), and a
     /// NaN, infinite or negative value
     /// [`ConfigError::InvalidDuration`](crate::ConfigError::InvalidDuration).
-    /// `f64` deliberately — see
-    /// [`duration_to_frames`](crate::duration_to_frames), which explains why
-    /// `Seconds` (an f32) cannot carry an hour-long render.
-    pub duration_seconds: f64,
+    /// See [`duration_to_frames`](crate::duration_to_frames) for the rounding.
+    pub duration_seconds: Seconds,
     /// Leading FRAMES to drop — look-ahead limiters, linear-phase filters.
     ///
     /// A plain count, not a `{ None, Reported, Exact }` enum: an "ask the graph"
@@ -114,7 +112,7 @@ impl Default for RenderConfig {
     fn default() -> Self {
         Self {
             sample_rate: SampleRate(44_100.0),
-            duration_seconds: 0.0,
+            duration_seconds: Seconds(0.0),
             latency: Samples(0),
             tail: Samples(0),
             on_event_loss: EventLossPolicy::default(),

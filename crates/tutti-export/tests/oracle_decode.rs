@@ -48,6 +48,7 @@ use symphonia::core::formats::FormatOptions;
 use symphonia::core::io::MediaSourceStream;
 use symphonia::core::meta::MetadataOptions;
 use symphonia::core::probe::Hint;
+use tutti_types::Seconds;
 
 use tutti_export::{
     ChannelLayout, Dither, EncodeConfig, ExportConfig, FlacLevel, Format, FrozenClock, Pcm,
@@ -106,7 +107,7 @@ fn config(format: Format) -> ExportConfig {
     ExportConfig {
         render: RenderConfig {
             sample_rate: tutti_types::SampleRate(SR),
-            duration_seconds: DUR,
+            duration_seconds: Seconds(DUR),
             ..Default::default()
         },
         encode: EncodeConfig {
@@ -485,7 +486,7 @@ fn a_flac_decodes_to_exactly_the_rendered_frames_with_a_valid_md5() {
                 let cfg = |format| ExportConfig {
                     render: RenderConfig {
                         sample_rate: tutti_types::SampleRate(SR),
-                        duration_seconds: 0.0,
+                        duration_seconds: Seconds(0.0),
                         tail: tutti_types::Samples(frames),
                         ..Default::default()
                     },

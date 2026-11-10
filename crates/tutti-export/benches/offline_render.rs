@@ -25,6 +25,7 @@
 //! `--profile-time` plus samply.
 
 use std::hint::black_box;
+use tutti_types::Seconds;
 
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use tutti_export::{
@@ -72,7 +73,7 @@ fn config(seconds: f64, rate: f64, channels: ChannelLayout, format: Format) -> E
     ExportConfig {
         render: RenderConfig {
             sample_rate: SampleRate(rate),
-            duration_seconds: seconds,
+            duration_seconds: Seconds(seconds),
             ..Default::default()
         },
         encode: EncodeConfig {

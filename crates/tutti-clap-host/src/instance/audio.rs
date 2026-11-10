@@ -435,7 +435,7 @@ pub(super) fn build_clap_transport(transport: &TransportInfo) -> clap_event_tran
     if is_usable(transport.position.beats) {
         flags |= CLAP_TRANSPORT_HAS_BEATS_TIMELINE;
     }
-    if is_usable(transport.position.seconds) {
+    if is_usable(transport.position.seconds.get()) {
         flags |= CLAP_TRANSPORT_HAS_SECONDS_TIMELINE;
     }
 
@@ -459,7 +459,7 @@ pub(super) fn build_clap_transport(transport: &TransportInfo) -> clap_event_tran
         },
         flags,
         song_pos_beats: (transport.position.beats * CLAP_BEATTIME_FACTOR as f64) as i64,
-        song_pos_seconds: (transport.position.seconds * CLAP_SECTIME_FACTOR as f64) as i64,
+        song_pos_seconds: (transport.position.seconds.get() * CLAP_SECTIME_FACTOR as f64) as i64,
         tempo: transport.timing.tempo,
         tempo_inc: 0.0,
         loop_start_beats: (transport.loop_region.start_beats * CLAP_BEATTIME_FACTOR as f64) as i64,
@@ -517,7 +517,7 @@ mod tests {
             0
         );
         t.position.beats = 0.0;
-        t.position.seconds = f64::NAN;
+        t.position.seconds = tutti_types::Seconds(f64::NAN);
         assert_eq!(
             build_clap_transport(&t).flags & CLAP_TRANSPORT_HAS_SECONDS_TIMELINE,
             0
@@ -532,7 +532,7 @@ mod tests {
         let mut t = TransportInfo::new();
         t.timing.tempo = f64::NAN;
         t.position.beats = f64::NAN;
-        t.position.seconds = f64::NAN;
+        t.position.seconds = tutti_types::Seconds(f64::NAN);
         assert_ne!(
             build_clap_transport(&t).flags & CLAP_TRANSPORT_HAS_TIME_SIGNATURE,
             0

@@ -83,7 +83,7 @@ fn delay_line_row() -> Row {
     Row::new(
         "DelayLineNode (500 ms echo, mix 0.5)",
         || {
-            let node = DelayLineNode::new(1.0_f32, 0.5_f32, 0.0_f32);
+            let node = DelayLineNode::new(1.0_f64, 0.5_f64, 0.0_f32);
             node.set_mix(0.5_f32);
             Box::new(node)
         },

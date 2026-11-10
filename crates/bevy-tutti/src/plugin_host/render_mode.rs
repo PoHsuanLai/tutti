@@ -132,7 +132,7 @@ mod tests {
                     tutti_export::ExportConfig {
                         render: tutti_export::RenderConfig {
                             sample_rate: tutti_types::SampleRate(48_000.0),
-                            duration_seconds: 0.01,
+                            duration_seconds: tutti_types::Seconds(0.01),
                             ..Default::default()
                         },
                         ..Default::default()
@@ -184,7 +184,7 @@ mod tests {
                 // A render of no frames is refused, and this one is to run.
                 tutti_export::ExportConfig {
                     render: tutti_export::RenderConfig {
-                        duration_seconds: 0.01,
+                        duration_seconds: tutti_types::Seconds(0.01),
                         ..Default::default()
                     },
                     ..Default::default()

@@ -8,11 +8,46 @@ unit! {
 }
 
 unit! {
-    /// Time in seconds. Used for attack/release, delay times, lookahead.
-    pub struct Seconds(pub f32): Unit, Ordered, Bounded, Additive, Scalable, Ratio;
+    /// Time in seconds, short or long: attack/release, delay times, lookahead,
+    /// and a position or duration in a project.
+    ///
+    /// `f64`-backed: 53 bits of mantissa keep the spacing below a
+    /// nanosecond out to an hour and about a microsecond at a thousand years,
+    /// far finer than a frame at any sample rate. (An `f32` second has 24 bits:
+    /// 0.24 ms apart at one hour, more than a frame at 48 kHz past about
+    /// 256 s.) A DSP kernel that runs in `f32` narrows once at its edge
+    /// (`secs.get() as f32`), where the value is a short control time.
+    pub struct Seconds(pub f64): Unit, Ordered, Bounded, Additive, Scalable, Ratio;
 }
 
 impl Seconds {
+    /// This time as an `f32`, for a kernel that runs in `f32`: the one place a
+    /// control time narrows. A short time (a delay, an attack, a lookahead) is
+    /// exact enough in `f32`; a position or a long span is not, so keep those
+    /// as `Seconds`.
+    #[inline]
+    #[must_use]
+    pub fn to_f32(self) -> f32 {
+        self.0 as f32
+    }
+
+    /// This time rounded through `f32`: what an `f32` kernel sees of a control
+    /// time. A node narrows a user's time with it before a frame conversion
+    /// (`to_samples*`), so a render does not move with the width of `Seconds`.
+    #[inline]
+    #[must_use]
+    pub fn narrowed(self) -> Self {
+        Self::from_f32(self.to_f32())
+    }
+
+    /// A time held as an `f32` (a kernel's own state, a modulation lane's
+    /// value), widened exactly.
+    #[inline]
+    #[must_use]
+    pub fn from_f32(v: f32) -> Self {
+        Self(f64::from(v))
+    }
+
     /// Frames in this span at `sample_rate`, rounded to nearest.
     ///
     /// The *measurement* form: how long is this, in frames. Three named
@@ -20,17 +55,15 @@ impl Seconds {
     /// the name puts the choice in the signature instead of making a reader
     /// chase what a call site passed.
     ///
-    /// Computed in `f64`, but a `Seconds` is `f32`: it has 24 bits of mantissa,
-    /// so past 256 s its spacing exceeds one frame at 48 kHz (128 s at 96 kHz,
-    /// 64 s at 192 kHz) and a span built from a long frame count no longer
-    /// names that frame. Keep long durations as a [`Samples`] count or an
-    /// `f64`.
+    /// A `Seconds` is `f64`, so a span built from a long frame count still
+    /// names that frame: the spacing stays below a frame at any audio rate for
+    /// every span a project can hold.
     ///
     /// A NaN, a negative span or a non-finite product gives zero frames, and
     /// a span too large for `usize` saturates.
     #[inline]
     pub fn to_samples(self, sample_rate: impl Into<SampleRate>) -> Samples {
-        Self::frames(self.0 as f64 * sample_rate.into().get(), f64::round)
+        Self::frames(self.0 * sample_rate.into().get(), f64::round)
     }
 
     /// Frames fully elapsed in this span — rounds **down**.
@@ -38,7 +71,7 @@ impl Seconds {
     /// The *counting* form: how many whole frames have gone by.
     #[inline]
     pub fn to_samples_floor(self, sample_rate: impl Into<SampleRate>) -> Samples {
-        Self::frames(self.0 as f64 * sample_rate.into().get(), f64::floor)
+        Self::frames(self.0 * sample_rate.into().get(), f64::floor)
     }
 
     /// Frames needed to hold this span — rounds **up**.
@@ -48,7 +81,7 @@ impl Seconds {
     /// of all inputs.
     #[inline]
     pub fn to_samples_ceil(self, sample_rate: impl Into<SampleRate>) -> Samples {
-        Self::frames(self.0 as f64 * sample_rate.into().get(), f64::ceil)
+        Self::frames(self.0 * sample_rate.into().get(), f64::ceil)
     }
 
     /// The per-sample coefficient of a one-pole smoother with this time
@@ -60,13 +93,14 @@ impl Seconds {
     /// decay length `τ · rate` that is not above zero (a zero, negative or
     /// NaN time constant) is instant: 1. An infinite one holds: 0.
     ///
-    /// Computed in `f64` and rounded once to `f32`, so a long time constant
+    /// Computed in `f64` and rounded once to `f32` (a coefficient is a DSP
+    /// `f32`), so a long time constant
     /// keeps its own rate (`c` is small but representable, where an `f32`
     /// `1 − exp(…)` would cancel to 0). `τ · rate` is a decay length, not a
     /// frame count, so none of the `to_samples*` rounding applies.
     #[inline]
     pub fn one_pole_coeff(self, rate: impl Into<SampleRate>) -> f32 {
-        Self::one_pole(f64::from(self.0) * rate.into().get())
+        Self::one_pole(self.0 * rate.into().get())
     }
 
     /// The coefficient of a one-pole smoother with this time constant
@@ -83,7 +117,7 @@ impl Seconds {
     pub fn one_pole_coeff_over(self, step: Seconds) -> f32 {
         if self.0 > 0.0 {
             if step.0 > 0.0 {
-                Self::one_pole(f64::from(self.0) / f64::from(step.0))
+                Self::one_pole(self.0 / step.0)
             } else {
                 0.0
             }

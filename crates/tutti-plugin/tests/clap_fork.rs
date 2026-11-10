@@ -570,7 +570,7 @@ fn export_through_a_fork(live: &Editor) -> tutti_export::Result<tutti_export::Re
     let config = tutti_export::ExportConfig {
         render: tutti_export::RenderConfig {
             sample_rate: rate,
-            duration_seconds: 0.5,
+            duration_seconds: tutti_types::Seconds(0.5),
             ..Default::default()
         },
         encode: tutti_export::EncodeConfig {
@@ -668,7 +668,7 @@ fn a_clip_note_reaches_an_exported_plugin_on_its_frame() {
     let config = tutti_export::ExportConfig {
         render: tutti_export::RenderConfig {
             sample_rate: SampleRate(SAMPLE_RATE),
-            duration_seconds: 0.25,
+            duration_seconds: tutti_types::Seconds(0.25),
             ..Default::default()
         },
         encode: tutti_export::EncodeConfig {
@@ -767,7 +767,7 @@ fn a_chord_larger_than_a_chunk_ends_and_the_export_counts_the_loss() {
         let config = tutti_export::ExportConfig {
             render: tutti_export::RenderConfig {
                 sample_rate: SampleRate(SAMPLE_RATE),
-                duration_seconds: 0.25,
+                duration_seconds: tutti_types::Seconds(0.25),
                 on_event_loss: policy,
                 ..Default::default()
             },
@@ -1174,7 +1174,7 @@ fn an_export_is_aligned_when_the_plugin_latency_moves_offline() {
     let config = tutti_export::ExportConfig {
         render: tutti_export::RenderConfig {
             sample_rate: rate,
-            duration_seconds: 0.1,
+            duration_seconds: tutti_types::Seconds(0.1),
             latency,
             ..Default::default()
         },
@@ -1249,7 +1249,7 @@ fn an_export_of_plugins_is_bit_identical_on_a_pool() {
         let config = tutti_export::ExportConfig {
             render: tutti_export::RenderConfig {
                 sample_rate: rate,
-                duration_seconds: 0.5,
+                duration_seconds: tutti_types::Seconds(0.5),
                 ..Default::default()
             },
             encode: tutti_export::EncodeConfig {

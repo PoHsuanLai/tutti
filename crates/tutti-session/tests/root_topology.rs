@@ -267,7 +267,7 @@ fn an_export_is_placed_from_the_declaration() {
         let config = ExportConfig {
             render: RenderConfig {
                 sample_rate: RATE,
-                duration_seconds: 0.01,
+                duration_seconds: tutti_types::Seconds(0.01),
                 ..Default::default()
             },
             encode: EncodeConfig {

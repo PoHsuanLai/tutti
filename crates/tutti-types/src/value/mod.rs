@@ -42,7 +42,7 @@ pub use frame_clock::{FrameClock, LoopRange, Pass, PassEnd, SegmentOrigin};
 pub use latency::Latency;
 pub use max_block::{InvalidMaxBlock, MaxBlock};
 pub use note::{NotOnMidiScale, Note, NoteNumberOutOfRange, PitchClass};
-pub use param::{Param, Param64};
+pub use param::{Param, Param64, ParamCell, ParamRaw};
 pub use play::PlayReading;
 pub use samples::Samples;
 pub use tail::Tail;

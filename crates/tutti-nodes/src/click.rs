@@ -332,7 +332,7 @@ impl ClickNode {
         // where 30 ms is not whole — 22050 Hz gives 661 vs 662, while 44.1/48/
         // 88.2/96 k are unchanged. Correctness of the *name*, not a fix for
         // anything audible.
-        let num_samples = CLICK_LEN.to_samples_ceil(sample_rate).get();
+        let num_samples = CLICK_LEN.narrowed().to_samples_ceil(sample_rate).get();
 
         let freq = if is_accent { Hz(1200.0) } else { Hz(1000.0) };
         let accent_volume = if is_accent {
@@ -340,19 +340,21 @@ impl ClickNode {
         } else {
             Amplitude(0.7)
         };
-        let release_len = CLICK_LEN - HOLD_END;
+        // The envelope is `f32` arithmetic over `f32` times.
+        let (attack, hold_end) = (ATTACK.to_f32(), HOLD_END.to_f32());
+        let release_len = CLICK_LEN.to_f32() - hold_end;
         let phase_inc = PhaseIncrement::per_sample(freq, sample_rate);
 
         let mut phase = Phase::START;
         (0..num_samples)
             .map(|i| {
-                let t = Samples(i).to_seconds(sample_rate);
-                let env = if t < ATTACK {
-                    t.get() / ATTACK.get()
-                } else if t < HOLD_END {
+                let t = Samples(i).to_seconds(sample_rate).to_f32();
+                let env = if t < attack {
+                    t / attack
+                } else if t < hold_end {
                     1.0
                 } else {
-                    1.0 - (t - HOLD_END).get() / release_len.get()
+                    1.0 - (t - hold_end) / release_len
                 };
                 let sample = phase.to_radians().sin() * env * accent_volume.get();
                 phase = phase.advance(phase_inc);

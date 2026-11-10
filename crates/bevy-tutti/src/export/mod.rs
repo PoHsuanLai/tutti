@@ -25,7 +25,7 @@
 //! let config = ExportConfig {
 //!     render: RenderConfig {
 //!         sample_rate: tutti_types::SampleRate(44_100.0),
-//!         duration_seconds: 0.05,
+//!         duration_seconds: tutti_types::Seconds(0.05),
 //!         ..Default::default()
 //!     },
 //!     encode: EncodeConfig {

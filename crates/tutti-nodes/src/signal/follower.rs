@@ -83,6 +83,8 @@ impl EnvelopeFollowerNode {
     #[must_use]
     pub fn new(source: SourceId, attack: Seconds, release: Seconds, input: ChannelLayout) -> Self {
         let rate = SampleRate::DEFAULT;
+        // The coefficients are `f32`: the times are read at `f32` precision.
+        let (attack, release) = (attack.narrowed(), release.narrowed());
         Self {
             source: source.0,
             attack,

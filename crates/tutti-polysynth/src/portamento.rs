@@ -121,7 +121,7 @@ impl Portamento {
             PortamentoMode::LegatoOnly => is_legato,
         };
 
-        let time = self.config.time.get();
+        let time = self.config.time.to_f32();
         if should_glide && time > 0.0 {
             self.start_freq = self.current_freq;
             self.target_freq = freq;

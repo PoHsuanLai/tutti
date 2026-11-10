@@ -3,12 +3,13 @@ use crate::config::{EncodeConfig, RenderConfig};
 use crate::control::{Pass, never_stop};
 use crate::{Format, Pcm};
 use tutti_types::SampleRate;
+use tutti_types::Seconds;
 
 fn config(channels: u16, pcm: Pcm) -> ExportConfig {
     ExportConfig {
         render: RenderConfig {
             sample_rate: SampleRate::from(1_000.0),
-            duration_seconds: 0.008,
+            duration_seconds: Seconds(0.008),
             ..Default::default()
         },
         encode: EncodeConfig {

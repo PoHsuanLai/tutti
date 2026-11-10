@@ -943,6 +943,7 @@ impl PolySynth {
             .config
             .envelope
             .release
+            .narrowed()
             .to_samples_ceil(self.config.sample_rate)
         {
             s if s.is_zero() => Tail::None,

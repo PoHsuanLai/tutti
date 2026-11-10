@@ -35,7 +35,7 @@ fn config() -> SynthConfig {
             attack: Seconds(0.001),
             decay: Seconds(0.0),
             sustain: Amplitude(1.0),
-            release: Seconds(RELEASE as f32),
+            release: Seconds(RELEASE),
         },
         max_voices: 8,
         ..Default::default()

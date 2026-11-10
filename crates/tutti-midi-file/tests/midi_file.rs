@@ -15,7 +15,7 @@ use tutti_midi_file::{
     SmfTimedEvent, smf, write_clip_file_from_beats, write_clip_file_with_header,
 };
 use tutti_midi_types::MidiEvent;
-use tutti_types::{Beat, Bpm};
+use tutti_types::{Beat, Bpm, Seconds};
 use tutti_ump::{MidiChannel, MidiGroup};
 
 /// 480 ticks per quarter, the value `MidiWriteConfig` defaults to.
@@ -295,11 +295,11 @@ fn seconds_integrate_over_the_tempo_map() {
         RawEvent::note_on(4 * BEAT, 0, 62, 100),
     ]]))
     .unwrap();
-    assert_eq!(file.seconds_at(Beat(0.0)), 0.0);
-    assert_eq!(file.seconds_at(Beat(2.0)), 1.0);
-    assert_eq!(file.seconds_at(Beat(4.0)), 2.0);
-    assert_eq!(file.seconds_at(Beat(8.0)), 6.0);
-    assert_eq!(file.seconds_at(file.end_beat()), 6.0);
+    assert_eq!(file.seconds_at(Beat(0.0)), Seconds(0.0));
+    assert_eq!(file.seconds_at(Beat(2.0)), Seconds(1.0));
+    assert_eq!(file.seconds_at(Beat(4.0)), Seconds(2.0));
+    assert_eq!(file.seconds_at(Beat(8.0)), Seconds(6.0));
+    assert_eq!(file.seconds_at(file.end_beat()), Seconds(6.0));
 }
 
 /// **A Set Tempo after beat 0 does not govern beat 0.** The file's only Set

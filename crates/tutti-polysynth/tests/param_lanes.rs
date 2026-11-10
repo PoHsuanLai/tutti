@@ -113,7 +113,8 @@ fn render(synth: PolySynth, drive: Option<Drive>) -> [Vec<f32>; 2] {
         let range = ed
             .param_range_cell(at)
             .expect("the synth declares the param as a port");
-        let lane = ControlLaneNode::for_unit(d.param, constant(d.depth), Some(d.knob), Some(range));
+        let lane =
+            ControlLaneNode::for_unit(d.param, constant(d.depth), Some(d.knob.into()), Some(range));
         ed.insert(LANE, "lane", lane);
         ed.spec_mut().connect_param(
             at,

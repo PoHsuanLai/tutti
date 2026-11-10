@@ -8,6 +8,7 @@
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use tutti_types::Seconds;
 
 use tutti_export::{
     EncodeConfig, Error, ExportConfig, Flow, Format, FrozenClock, GRAPH_MAX_BLOCK, Normalize, Pcm,
@@ -100,7 +101,7 @@ fn config() -> ExportConfig {
     ExportConfig {
         render: RenderConfig {
             sample_rate: RATE,
-            duration_seconds: (BLOCKS * GRAPH_MAX_BLOCK.get()) as f64 / RATE.get(),
+            duration_seconds: Seconds((BLOCKS * GRAPH_MAX_BLOCK.get()) as f64 / RATE.get()),
             ..Default::default()
         },
         encode: EncodeConfig {

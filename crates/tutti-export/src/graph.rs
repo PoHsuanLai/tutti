@@ -88,7 +88,7 @@ pub const GRAPH_MAX_BLOCK: Samples = Samples(1024);
 /// # Example
 ///
 /// ```
-/// use tutti_types::{Hz, SampleRate};
+/// use tutti_types::{Hz, SampleRate, Seconds};
 /// use tutti_export::{render_to_buffers, ExportConfig, FrozenClock, RenderConfig, RenderGraph};
 /// use tutti_graph::GraphBuilder;
 /// use tutti_nodes::testing::Osc;
@@ -102,7 +102,7 @@ pub const GRAPH_MAX_BLOCK: Samples = Samples(1024);
 /// let graph = RenderGraph::new(editor, executor).expect("built together, so paired");
 ///
 /// let config = ExportConfig {
-///     render: RenderConfig { sample_rate: rate, duration_seconds: 0.1, ..Default::default() },
+///     render: RenderConfig { sample_rate: rate, duration_seconds: Seconds(0.1), ..Default::default() },
 ///     ..Default::default()
 /// };
 /// let out = render_to_buffers(graph, &config, &FrozenClock).expect("renders");

@@ -932,7 +932,7 @@ mod tests {
     /// render of no frames is refused.
     fn short() -> ExportConfig {
         let mut config = ExportConfig::default();
-        config.render.duration_seconds = 0.01;
+        config.render.duration_seconds = tutti_types::Seconds(0.01);
         config
     }
 
@@ -1066,7 +1066,7 @@ mod tests {
 
         let mut config = ExportConfig::default();
         config.render.sample_rate = SampleRate(48_000.0);
-        config.render.duration_seconds = DURATION as f64 / 48_000.0;
+        config.render.duration_seconds = tutti_types::Seconds(DURATION as f64 / 48_000.0);
         let request = || {
             ExportRequest::new(
                 ExportSource::Mix,

@@ -153,13 +153,11 @@ impl Alignment {
 
     /// The delay in seconds at `sample_rate`.
     ///
-    /// [`Seconds`] is `f32`: about seven significant digits, so a delay of a
-    /// second resolves to roughly 0.1 microsecond, finer than the
-    /// sub-sample estimate itself.
+    /// [`Seconds`] is `f64`, finer than the sub-sample estimate itself.
     #[inline]
     #[must_use]
     pub fn delay(&self, sample_rate: impl Into<SampleRate>) -> Seconds {
-        Seconds((self.delay_samples() / sample_rate.into().get()) as f32)
+        Seconds(self.delay_samples() / sample_rate.into().get())
     }
 }
 

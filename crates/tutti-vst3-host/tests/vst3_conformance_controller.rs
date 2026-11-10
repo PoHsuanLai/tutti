@@ -8,7 +8,7 @@
 #[path = "support/conformance.rs"]
 mod conformance_support;
 
-use tutti_types::{BarNumber, TimeSignature};
+use tutti_types::{BarNumber, Seconds, TimeSignature};
 use tutti_ump::{CCNumber, MidiChannel, MidiGroup};
 use tutti_vst3_host::{AudioBuffer, InputEvents, MidiEvent, PrefetchSupport, TransportInfo};
 
@@ -96,7 +96,7 @@ fn report_host_capability_score() {
         .with_recording(true)
         .with_time_signature(TimeSignature::of(7, 8))
         .with_sample_rate(48_000.0)
-        .with_position_beats(8.0, 3.75)
+        .with_position_beats(8.0, Seconds(3.75))
         .with_position_samples(180_000)
         .with_continuous_samples(180_000)
         .with_bar(8.0, BarNumber::new(3))

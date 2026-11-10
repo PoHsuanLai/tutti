@@ -61,8 +61,9 @@ marked as read.
 Three ways of reading a message compete. `MidiMessage` has 22 variants and almost
 no production consumer outside its crate; it has no group, mints a `NoteId` on
 decode, and repeats `frame_offset` in each variant. The polysynth, SoundFont,
-the CLAP host and the VST3 host now read `tutti_ump::Message` (stage 2); the VST3
-host still reaches `midi2` through `tutti-midi-types`' `PerNoteBendRanges::observe`.
+the CLAP host and the VST3 host now read `tutti_ump::Message` (stage 2), and
+`PerNoteBendRanges` is `tutti-plugin-types`' and reads the RPN through
+`tutti_ump::decode`: no plugin crate reaches `midi2` or `tutti-midi-types`.
 `tutti-graph` reads through
 `Ump::is_note_off` (one test kernel takes a data byte by hand); `clip_node`,
 `clip_file` and `tutti-midi-types`' `wire.rs` (`to_midi1_bytes` and `to_midi1_messages`,

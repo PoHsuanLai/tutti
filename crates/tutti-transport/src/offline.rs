@@ -5,8 +5,11 @@
 //! reproducible timeline without a real CPAL callback (golden tests,
 //! automation scrubbing) can use it.
 
-use std::sync::{Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use tutti_tempo::{Shape, TempoMap};
 
+use super::settings::HasRamp;
+use super::walk::TempoWalk;
 use atomic_float::AtomicF64;
 use std::sync::atomic::{AtomicU64, Ordering};
 use tutti_types::LoopRange;
@@ -100,7 +103,12 @@ pub struct OfflineTimeline {
     /// it on.
     current_generation: AtomicU64,
     /// The playhead: the only writer-side state, moved under its lock.
-    clock: Mutex<FrameClock>,
+    clock: Mutex<Head>,
+    /// The tempo map, when it has steps ([`with_tempo_map`](Self::with_tempo_map)):
+    /// the playhead then follows it. `None` for one tempo, which runs the
+    /// closed form of a [`FrameClock`] alone.
+    map: Option<Arc<TempoMap>>,
+    /// The tempo at construction: the config's, or the map's first point.
     tempo: Bpm,
     sample_rate: SampleRate,
     /// Musical time per sample, precomputed from `tempo` and `sample_rate`.
@@ -110,22 +118,64 @@ pub struct OfflineTimeline {
     loop_range: Option<LoopRange>,
 }
 
+/// The playhead, and where it is on a map that changes tempo.
+#[derive(Debug)]
+struct Head {
+    clock: FrameClock,
+    walk: TempoWalk,
+}
+
 impl OfflineTimeline {
     /// Creates a timeline seated at `config.start_beat`, precomputing the
     /// per-sample beat increment from its tempo and sample rate.
     #[must_use]
     pub fn new(config: &OfflineTimelineConfig) -> Self {
+        Self::build(config, config.tempo, None)
+    }
+
+    /// As [`new`](Self::new), over `map` instead of `config.tempo`, which it
+    /// replaces (doc 020, section 6): the timeline follows the map's steps,
+    /// each on the frame it falls on, as the live transport does. A render
+    /// that must see the steps drives it through
+    /// [`render_graph`](Self::render_graph), which knows the block it hands the
+    /// graph. A map of one point is the constant tempo of `new`, bit for bit.
+    ///
+    /// The map is the one given: a later edit to the project's map does not
+    /// reach this timeline.
+    ///
+    /// [`tempo`](Self::tempo) and [`beats_per_sample`](Self::beats_per_sample)
+    /// are the map's first point's; the tempo in force is each block's
+    /// transport's.
+    ///
+    /// # Errors
+    ///
+    /// [`HasRamp`] for a map with a ramp (stage 4).
+    pub fn with_tempo_map(
+        config: &OfflineTimelineConfig,
+        map: Arc<TempoMap>,
+    ) -> Result<Self, HasRamp> {
+        if map.points().iter().any(|p| p.shape != Shape::Step) {
+            return Err(HasRamp);
+        }
+        let first = map.points()[0].tempo;
+        let stepped = map.constant_tempo().is_none().then_some(map);
+        Ok(Self::build(config, first, stepped))
+    }
+
+    fn build(config: &OfflineTimelineConfig, tempo: Bpm, map: Option<Arc<TempoMap>>) -> Self {
+        let mut clock = FrameClock::new(config.start_beat, tempo, config.sample_rate);
+        let mut walk = TempoWalk::default();
+        if let Some(map) = &map {
+            walk.place(map, &mut clock);
+        }
         Self {
             current_beat: AtomicF64::new(config.start_beat.get()),
-            current_generation: AtomicU64::new(0),
-            clock: Mutex::new(FrameClock::new(
-                config.start_beat,
-                config.tempo,
-                config.sample_rate,
-            )),
-            tempo: config.tempo,
+            current_generation: AtomicU64::new(clock.generation()),
+            clock: Mutex::new(Head { clock, walk }),
+            map,
+            tempo,
             sample_rate: config.sample_rate,
-            beats_per_sample: tutti_types::beats_per_sample(config.tempo, config.sample_rate),
+            beats_per_sample: tutti_types::beats_per_sample(tempo, config.sample_rate),
             loop_range: config.loop_range,
         }
     }
@@ -140,15 +190,21 @@ impl OfflineTimeline {
     /// to the bit whether either is stepped a frame or a block at a time —
     /// see the sample-for-sample test below.
     pub fn advance(&self, samples: usize) {
-        let mut clock = self.lock();
+        let mut head = self.lock();
+        let Head { clock, walk } = &mut *head;
         // `LoopRange` is non-empty by construction, so no guard. Only a
         // crossing wraps, as for the clock (`LoopRange::advance`).
-        clock.advance(Samples(samples), self.loop_range);
-        self.publish(&clock);
+        match &self.map {
+            Some(map) => {
+                walk.roll(map, clock, samples, self.loop_range, false);
+            }
+            None => clock.advance(Samples(samples), self.loop_range),
+        }
+        self.publish(&head.clock);
     }
 
     /// The playhead, for moving: held until the moved position is published.
-    fn lock(&self) -> MutexGuard<'_, FrameClock> {
+    fn lock(&self) -> MutexGuard<'_, Head> {
         // A panic mid-move leaves a whole `FrameClock` (it is `Copy` and
         // moved by value), so a poisoned lock still holds a position.
         self.clock.lock().unwrap_or_else(PoisonError::into_inner)
@@ -171,8 +227,8 @@ impl OfflineTimeline {
         Beat(self.current_beat.load(Ordering::Acquire))
     }
 
-    /// The render tempo. Fixed at construction — an offline render does not
-    /// ramp.
+    /// The render tempo. Fixed at construction: the config's, or the first
+    /// point of the map ([`with_tempo_map`](Self::with_tempo_map)).
     #[inline]
     pub fn tempo(&self) -> Bpm {
         self.tempo
@@ -191,9 +247,13 @@ impl OfflineTimeline {
     /// destination rather than a default. Everything else on this timeline —
     /// tempo, sample rate, loop region — is fixed at construction.
     pub fn seek_to(&self, beat: impl Into<Beat>) {
-        let mut clock = self.lock();
-        clock.seat(beat.into());
-        self.publish(&clock);
+        let mut head = self.lock();
+        let Head { clock, walk } = &mut *head;
+        match &self.map {
+            Some(map) => walk.seat(map, clock, beat.into()),
+            None => clock.seat(beat.into()),
+        }
+        self.publish(&head.clock);
     }
 
     /// Musical time one frame covers, precomputed at construction.
@@ -231,17 +291,52 @@ impl OfflineTimeline {
     /// block's first frame, the one clip readers and samplers holding this
     /// timeline read during the block (see [`RenderClock`](super::RenderClock)).
     pub fn graph_block(&self) -> (tutti_graph::Transport, tutti_graph::TransportChanges) {
-        let origin = self.lock().origin();
-        let transport = tutti_graph::Transport::counted(
+        let head = self.lock();
+        (
+            self.transport(&head.clock),
+            tutti_graph::TransportChanges::NONE,
+        )
+    }
+
+    /// The transport of `clock`'s frame: rolling, at the tempo and segment the
+    /// clock stands on, looping over this timeline's region.
+    fn transport(&self, clock: &FrameClock) -> tutti_graph::Transport {
+        tutti_graph::Transport::counted(
             true,
-            self.tempo,
-            origin,
+            clock.tempo(),
+            clock.origin(),
             self.loop_range.map(|r| tutti_graph::LoopRange {
                 start: r.start(),
                 end: r.end(),
             }),
+        )
+    }
+
+    /// The next block of at most `frames` frames as the graph takes it: its
+    /// transport, the tempo changes inside it, and how many frames it covers.
+    /// That is `frames` unless more changes fall inside than a block holds
+    /// ([`MAX_TRANSPORT_CHANGES`](tutti_graph::MAX_TRANSPORT_CHANGES)), when
+    /// the block ends where the one that does not fit begins and the render
+    /// continues from there (doc 020, section 2.3): the cut is exact because
+    /// the walk is a function of the frame, not of where blocks begin.
+    fn block(
+        &self,
+        frames: usize,
+    ) -> (tutti_graph::Transport, tutti_graph::TransportChanges, usize) {
+        let head = self.lock();
+        let first = self.transport(&head.clock);
+        let Some(map) = &self.map else {
+            return (first, tutti_graph::TransportChanges::NONE, frames);
+        };
+        let ahead = head.walk.ahead(
+            map,
+            &head.clock,
+            frames,
+            self.loop_range,
+            tutti_graph::MAX_TRANSPORT_CHANGES,
+            |clock| self.transport(clock),
         );
-        (transport, tutti_graph::TransportChanges::NONE)
+        (first, ahead.changes, ahead.limit.unwrap_or(frames))
     }
 
     /// Renders one block of `frames` through `exec` under this timeline, then
@@ -267,7 +362,8 @@ impl OfflineTimeline {
         outputs: &mut [&mut [f32]],
     ) {
         // The trait's, so an export driving any `RenderClock` and a caller
-        // holding this timeline run the one sequence.
+        // holding this timeline run the one sequence (which this timeline
+        // overrides, to cut a block at its tempo steps).
         super::RenderClock::render_graph(self, exec, frames, inputs, outputs);
     }
 }
@@ -320,6 +416,43 @@ impl super::RenderClock for OfflineTimeline {
 
     fn graph_block(&self) -> (tutti_graph::Transport, tutti_graph::TransportChanges) {
         OfflineTimeline::graph_block(self)
+    }
+
+    /// The trait's sequence, with the block's tempo steps in its changes, and
+    /// the block cut where more changes fall than it holds. Without a map with
+    /// steps it is one block and the default's calls, unchanged.
+    fn render_graph(
+        &self,
+        exec: &mut tutti_graph::Executor,
+        frames: usize,
+        inputs: &[&[f32]],
+        outputs: &mut [&mut [f32]],
+    ) {
+        use tutti_graph::MAX_PORTS;
+        let mut done = 0;
+        while done < frames {
+            let (transport, changes, n) = self.block(frames - done);
+            if done == 0 && n == frames {
+                exec.process_with_changes(frames, &transport, &changes, inputs, outputs);
+            } else {
+                // A piece of the block: each channel's own frames, held in
+                // fixed arrays (the executor ignores slices past the plan's
+                // channels).
+                let mut ins: [&[f32]; MAX_PORTS] = [&[]; MAX_PORTS];
+                for (to, from) in ins.iter_mut().zip(inputs) {
+                    *to = &from[done..done + n];
+                }
+                let (ni, no) = (inputs.len().min(MAX_PORTS), outputs.len().min(MAX_PORTS));
+                let mut from = outputs.iter_mut();
+                let mut outs: [&mut [f32]; MAX_PORTS] = std::array::from_fn(|_| {
+                    from.next()
+                        .map_or(Default::default(), |o| &mut o[done..done + n])
+                });
+                exec.process_with_changes(n, &transport, &changes, &ins[..ni], &mut outs[..no]);
+            }
+            OfflineTimeline::advance(self, n);
+            done += n;
+        }
     }
 }
 
@@ -619,5 +752,115 @@ mod tests {
         });
 
         assert_eq!(timeline.loop_range(), None);
+    }
+
+    fn map(points: &[(f64, f64)], shape: Shape) -> Arc<TempoMap> {
+        use tutti_tempo::TempoPoint;
+        let last = points.len() - 1;
+        Arc::new(
+            TempoMap::new(
+                points
+                    .iter()
+                    .enumerate()
+                    .map(|(i, &(beat, bpm))| TempoPoint {
+                        beat: Beat(beat),
+                        tempo: Bpm::of(bpm),
+                        shape: if i == last { Shape::Step } else { shape },
+                    }),
+            )
+            .expect("a map"),
+        )
+    }
+
+    fn config(start: f64) -> OfflineTimelineConfig {
+        OfflineTimelineConfig {
+            start_beat: Beat(start),
+            tempo: Bpm::of(120.0),
+            sample_rate: SampleRate(48_000.0),
+            loop_range: None,
+        }
+    }
+
+    /// A one-point map is the constant timeline of `new`, bit for bit, and a
+    /// ramp is refused until stage 4.
+    ///
+    /// Mutation (run): dropping the `HasRamp` check -> the ramp is taken ->
+    /// fails; `with_tempo_map` taking `config.tempo` instead of the map's -> the
+    /// 120 BPM beats differ from `new`'s 97 -> fails.
+    #[test]
+    fn a_constant_map_is_the_constant_timeline_and_a_ramp_is_refused() {
+        let constant = map(&[(0.0, 97.0)], Shape::Step);
+        let a = OfflineTimeline::with_tempo_map(&config(0.3), constant).expect("steps");
+        let b = OfflineTimeline::new(&OfflineTimelineConfig {
+            tempo: Bpm::of(97.0),
+            ..config(0.3)
+        });
+        for n in [1, 64, 511, 4_096, 99_999] {
+            a.advance(n);
+            b.advance(n);
+            assert_eq!(a.beat().get().to_bits(), b.beat().get().to_bits(), "{n}");
+        }
+        assert_eq!(a.graph_block(), b.graph_block());
+        let ramp = map(&[(0.0, 97.0), (4.0, 120.0)], Shape::RampTime);
+        assert!(matches!(
+            OfflineTimeline::with_tempo_map(&config(0.0), ramp),
+            Err(HasRamp)
+        ));
+    }
+
+    /// 41 steps 24 frames apart: `block(512)` holds the first 8 and ends on the
+    /// frame of the ninth, which is the first frame at or after its second
+    /// (written out: beat 0.001 x 9 at its segments' tempos, 120 + i BPM).
+    ///
+    /// Mutation (run): `ahead` testing `>` for the cap -> a ninth change is
+    /// pushed (refused, lost) and the block is not cut -> fails.
+    #[test]
+    fn a_block_ends_where_the_ninth_change_would_begin() {
+        let points: Vec<(f64, f64)> = (0..41)
+            .map(|i| (f64::from(i) * 0.001, 120.0 + f64::from(i)))
+            .collect();
+        let t = OfflineTimeline::with_tempo_map(&config(0.0), map(&points, Shape::Step))
+            .expect("steps");
+        let (first, changes, n) = t.block(512);
+        assert_eq!(first.tempo, Bpm::of(120.0));
+        assert_eq!(changes.len(), tutti_graph::MAX_TRANSPORT_CHANGES);
+        let sec: f64 = (0..9).map(|i| 0.001 * 60.0 / (120.0 + f64::from(i))).sum();
+        let ninth = tutti_types::first_frame_at_or_after(sec * 48_000.0) as usize;
+        assert_eq!(n, ninth);
+        assert!(n < 512);
+        // The eighth, one change earlier.
+        let sec8: f64 = (0..8).map(|i| 0.001 * 60.0 / (120.0 + f64::from(i))).sum();
+        assert_eq!(
+            changes.as_slice()[7].at.index(),
+            tutti_types::first_frame_at_or_after(sec8 * 48_000.0) as usize
+        );
+    }
+
+    /// A seek on a timeline over a map lands on the exact beat in the step it
+    /// is in: to 4.5 of a step to 60 BPM at beat 4, 48 000 frames on is beat
+    /// 5.5; back to 3.5 at 120 BPM, 12 000 frames reach beat 4 and the 60 BPM.
+    ///
+    /// Mutation (run): `seek_to` seating the clock without the walk -> the
+    /// tempo of the first position holds -> fails.
+    #[test]
+    fn a_seek_on_a_step_map_takes_the_tempo_of_its_step() {
+        let t = OfflineTimeline::with_tempo_map(
+            &config(0.0),
+            map(&[(0.0, 120.0), (4.0, 60.0)], Shape::Step),
+        )
+        .expect("steps");
+        t.seek_to(4.5);
+        assert_eq!(t.graph_block().0.tempo, Bpm::of(60.0));
+        t.advance(48_000);
+        assert_eq!(t.beat(), Beat(5.5));
+        t.seek_to(3.5);
+        assert_eq!(t.graph_block().0.tempo, Bpm::of(120.0));
+        t.advance(11_999);
+        assert_eq!(t.graph_block().0.tempo, Bpm::of(120.0));
+        t.advance(1);
+        assert_eq!(
+            (t.beat(), t.graph_block().0.tempo),
+            (Beat(4.0), Bpm::of(60.0))
+        );
     }
 }

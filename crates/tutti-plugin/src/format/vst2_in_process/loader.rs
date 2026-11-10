@@ -7,7 +7,6 @@ use std::sync::atomic::AtomicU64;
 use tutti_plugin_types::MainThread;
 
 use parking_lot::Mutex;
-use tutti_plugin_types::Control;
 
 use super::client::{Declared, InProcessVst2Client};
 use super::control_backend::InProcessVst2Backend;
@@ -71,15 +70,18 @@ pub fn load_client_restoring(
     // `.get()` here and not at the caller: this is the last hop before
     // `Instance::load`, which crosses the VST2 ABI and takes a bare rate.
     let sample_rate = sample_rate.into().get();
-    let (inner, restored) = Instance::load(main, path, sample_rate, MAX_BLOCK_SIZE, restore)
-        .map_err(|(stage, reason)| BridgeError::LoadFailed {
-            path: path.to_path_buf(),
-            stage,
-            reason,
-        })?;
+    let (mut inner, rt, restored) =
+        Instance::load(main, path, sample_rate, MAX_BLOCK_SIZE, restore).map_err(
+            |(stage, reason)| BridgeError::LoadFailed {
+                path: path.to_path_buf(),
+                stage,
+                reason,
+            },
+        )?;
 
-    let host_meta = inner.metadata().clone();
-    let descriptor = Control::info(inner.controller()).clone();
+    let host_meta = inner.loaded().metadata().clone();
+    let control = inner.control().expect("an activated plugin is not lost");
+    let descriptor = control.info().clone();
     // VST2 feature set — what the host crate's wiring declares, the same set
     // the out-of-process VST2 loader answers: f64 (backed by
     // `processReplacingF64`), MIDI both directions, the editor, and a transport
@@ -90,7 +92,7 @@ pub fn load_client_restoring(
     // honours the claim by draining its transport slot into each
     // `Vst2ProcessContext`, which is what fills the `TimeInfo` that callback
     // serves.
-    let mut loaded: LoadedPlugin = Control::wiring(inner.controller(), main);
+    let mut loaded: LoadedPlugin = control.wiring(main);
     // Both preset bits come from one number: VST2 has no separate "can you
     // load" query, and a plugin declaring programs can always be sent
     // `effProgramChange`. A plugin with none answers `false` to both — a
@@ -108,7 +110,7 @@ pub fn load_client_restoring(
     // Read once, here: the node's parameter slots are sized from it.
     let param_count = inner.parameter_count();
     let inner = Arc::new(Mutex::new(inner));
-    let contention = Arc::new(AtomicU64::new(0));
+    let unlent = Arc::new(AtomicU64::new(0));
     let param_sink = ParameterChangeSink::new();
     let invalidate_sink = crate::host::node::InvalidateSink::new();
 
@@ -137,12 +139,13 @@ pub fn load_client_restoring(
     // read twice, cannot drift into a declared-but-undelivered capability.
     let client = InProcessVst2Client::new(
         Arc::clone(&inner),
+        rt,
         host_meta,
         declared,
         loaded.features,
         sample_rate,
         pending_sample_rate,
-        Arc::clone(&contention),
+        Arc::clone(&unlent),
         Arc::from(path),
         param_count,
     );

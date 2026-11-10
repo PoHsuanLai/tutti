@@ -339,7 +339,7 @@ like, per CLAUDE.md "Unit types").
 | 39 | 5 | **SoundFont LFO** (`lfo.rs`) | delay then a triangle at a frequency | **Fits** | Class 5, `Periodic`: a delay, then a triangle at a frequency; period and delay are exact. (Row 25's layering problem does not apply: `tutti-soundfont` owns its LFO and may take a `tutti-dsp` edge, as row 40 notes) |
 | 40 | 1 (2) | **SoundFont low-pass biquad** (`bi_quad_filter.rs`) | `set_low_pass_filter(cutoff, resonance)` then `process` | **Fits** | A biquad: the same `frequency_response`, stability and `tail` as row 1, with its model a coefficient set. `tutti-soundfont` does not depend on `tutti-dsp` yet; it would |
 | 41 | 6 | **SoundFont voice render** (`render.rs`, `voice.rs`, `region_ex.rs`; the generator sum of SF2 9.4) | sample playback with interpolation, oscillator | **Partly** | The design half is pure and fits: SF2 generators (cents, timecents, centibels) to voice parameters through the 9.3 conversions. The sample-playback oscillator is a resampling read whose model is a pitch ratio and a loop; no response to speak of |
-| 42 | 6 | **Stretch unit** (`tutti-sampler/src/stretch/unit.rs`; phase vocoder) | `Unit::tick`/`process`, source-pulled; latency depends on bypass | **Partly** | Fits: `(stretch factor, cents, FFT size, enabled)` to a model whose `latency` is `latency_samples()` (a function of the FFT size and whether it is processing, per the method's docs), the duration ratio, `Graded` (FFT size is the quality). Does not fit: nonlinear, so no `frequency_response`; the realization consumes at a variable rate (`input_rate`), so not an `Effect<M>` |
+| 42 | 6 | **Stretch unit** (`tutti-sampler/src/stretch/unit.rs`; phase vocoder) | `Unit::tick`/`process`, source-pulled; latency depends on bypass | **Partly** | Fits: `(stretch factor, cents, FFT size, enabled)` to a model whose `latency` is `latency_samples()` (a function of the FFT size and whether it is processing, per the method's docs), the duration ratio, `Graded` (FFT size is the quality). Does not fit: nonlinear, so no `frequency_response`; the realization consumes at a variable rate (`input_rate`), so not an `Effect<M>`. Doc 026 gives it the shape: a `StretchDesign` with a `Retime<M>` realization (position-driven, `splice`, `reach`) |
 | 43 | E | **Sampler butler and voices** (`tutti-sampler/src/butler/`, `voice/`) | streaming I/O | **No** | I/O and scheduling, not an algorithm |
 | 44 | 1, order 0 | **VBAP** (`tutti-spatial/src/vbap/`) | `VbapPanner::solve_block` with angle smoothing | **Fits** | Design: `(azimuth, elevation, spread, width, speaker layout)` to the gain matrix. Queries: the matrix; power normalisation (`sum g^2 = 1`); at most a few non-zero speakers; continuity in azimuth. The smoothing is the realization's |
 | 45 | 1 (2) | **HRTF binaural** (`tutti-spatial/src/hrtf/`) | `HrtfBinaural`, HRIR convolution with a de-zipper | **Fits** | Design: `(azimuth, elevation, rate)` to an interpolated HRIR pair (from the sphere: data). `frequency_response` is the HRIR's FFT, `tail` is `ir_len - 1` (`ring_out`), `latency` the delay compensation. Published like row 16 |
@@ -592,10 +592,11 @@ How each class answers through its own structure, and what it is **not**:
   `variation` (section 6): its rate must be small against `rate / CADENCE`. An `Lti`
   model under a moving *control* is the same picture with `theta` written by a lane
   instead of an LFO; it needs no `Ltv` unless the model moves `theta` itself.
-- **Class 4 is `SteadyState` over a composition** (section 4.9). **Class 6 has no trait
-  yet:** it gets its model traits with the resampler in
-  step 7 (a `Ratio` query, the prototype as an `Lti`), because the resampler's
-  realization shape is not `Effect<M>` and its queries are small.
+- **Class 4 is `SteadyState` over a composition** (section 4.9). **Class 6's trait is
+  `TimeScale`** (a duration ratio and a `reach` query), with the position-driven shape
+  `Retime<M>`, written in [doc 026](026-stretch.md) §3 for the stretcher; the resampler
+  adopts it in step 7 (its prototype is an `Lti`), because the realization shape is not
+  `Effect<M>` and its queries are small.
 
 **Why a trait per class, with queries hanging from it.** A fat `Queries` trait
 needs a default for every query a family lacks, so a contract cannot tell "no
@@ -1050,7 +1051,7 @@ own `tests/` file.
 | **`Periodic`** (5) | `harmonic(k)` decays as the family says (saw `1/k`) | the measured fundamental (autocorrelation) against `frequency`; the DFT lines against `harmonic(k)`; the aliasing floor against `Fidelity` | detune the phase increment; drop the band-limiting |
 | **`Piecewise`** (5) | `durations` non-negative and sum to the total | the measured time to each threshold crossing against the segment durations (the SoundFont tests already assert that a stage falls 100 dB in its time) | a decay stage one constant short |
 | **`Noise`** (5) | `variance` is the closed form of the shape | the measured variance and spectrum over a long run | triangular treated as rectangular |
-| **Multirate** (6) | ratio exact; latency a whole number of frames | output frames equal `ratio x input`; a swept tone's stopband against the prototype's `Lti` response | a realization one frame short |
+| **Multirate** (6) | ratio exact; latency a whole number of frames | output frames equal `ratio x input`; a swept tone's stopband against the prototype's `Lti` response (the resampler). The stretchers' `TimeScale` and `PitchPreserving` groups are in doc 026 §7 | a realization one frame short |
 | **`Graded`** (any) | `Fidelity::error_floor` non-increasing across tiers; `Bounds` of a lower tier dominated by a higher; `Effort` non-decreasing | the tier's `System::latency` equals its measured latency | a tier that changes nothing |
 
 Because the cases are bounded on the class, a realization for a *different* realization
@@ -1343,7 +1344,7 @@ class trait; they are what step 0b and the later steps (section 10) move.
 | 5 | The sampler's loop-seam crossfade (`loop_span.rs` `fade_at`) and the linear ramp in `live_read.rs` (row 48) | `CrossfadeCurve::Linear`, a third variant of `tutti-graph`'s `CrossfadeCurve` (`gains` at `x`: `g_in = x`, `g_out = 1 - x`); the wrap fade already uses `EqualPower` | None. Layer 5 over layer 2. The seam's weights are `(k + 1) / (n + 1)`, which is `x` of `gains` to the bit |
 | 6 | One home for the curve shapes (row 51: `SegmentShape`, `LfoShape::evaluate_periodic`, `PortamentoCurve`) | One module, one set of laws | **The layer table.** graph, modulation and dsp are all layer 2 with no edge between them; `tutti-types` is vocabulary only. Decide with Q25 |
 | 7 | The PRNGs (row 54): the polysynth unison's xorshift and the IR synthesiser's LCG | `tutti-dsp`'s xorshift (`DitherNoise`'s generator, factored out) | Low value. The LCG's sequence changes, so the generated IR does. `hash_bipolar` is excluded: it is addressable and `tutti-modulation` may not depend on dsp |
-| 8 | The stretch vocoder, `OverlapAdd` and `SampleFifo` (`tutti-sampler/src/stretch/vocoder.rs`, `buffers.rs`) | `tutti-dsp`, next to `StftGeometry`; the source-pulled `Unit` stays in the sampler | Lands with step 6 (the STFT processors). The vocoder is nonlinear (row 42), so it gets no `Lti` query |
+| 8 | The stretch vocoder, `OverlapAdd` and `SampleFifo` (`tutti-sampler/src/stretch/vocoder.rs`, `buffers.rs`) | `tutti-dsp`, next to `StftGeometry`; the source-pulled `Unit` stays in the sampler | Lands with step 6 (the STFT processors). The vocoder is nonlinear (row 42), so it gets no `Lti` query. **Conditional (doc 026 §9, Q10):** doc 026 stage 4 deletes the old vocoder, so the move is not run if the deletion lands first, and the vocoder is never moved twice |
 | 9 | The limiter's recursion (row 7) | A `LimiterKernel` in `tutti-dsp/src/dynamics/`, as `CompressorKernel` and `GateKernel` are; the node keeps the `Param` and lane reads | None. Pin it by the node's digest before and after |
 | 10 | The phaser's sweep mapping (row 13) and the strip's balance law (row 52) | `tutti-dsp`: a function from `(range, lfo, depth)` to the sweep frequency, and `Pan` to a gain pair | None. Both are pure functions in a node file, which CLAUDE.md puts in dsp |
 

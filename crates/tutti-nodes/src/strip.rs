@@ -31,6 +31,7 @@
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
+use crate::ramp::LastGood;
 use tutti_graph::{
     Cx, Inputs, IntoNode, Io, Node, NodeParts, Outputs, ParamNode, ParamSet, Prepare, Shape, Status,
 };
@@ -96,6 +97,10 @@ pub struct BusStripNode {
     /// Per-node state, not shared with clones: it describes what *this* node
     /// last emitted.
     ramp_from: Option<StripGains>,
+    /// The last finite volume read: a cell a host wrote a NaN or an infinity
+    /// into reads as unchanged (see [`LastGood`]). Balance needs none: a NaN
+    /// pan already reads as unity on both sides (`balance_side`).
+    good: LastGood,
 }
 
 /// The gain on each kind of channel: the balanced pair, and every channel past
@@ -144,6 +149,7 @@ impl BusStripNode {
             muted: Arc::new(AtomicF32::new(0.0)),
             layout: ChannelLayout::from(layout.count().max(1)),
             last_fed: 0,
+            good: LastGood::fixed(1.0),
             ramp_from: None,
         }
     }
@@ -296,10 +302,10 @@ impl BusStripNode {
     ///
     /// Reads three atomics; called once per block, never per sample.
     #[inline]
-    fn control_gains(&self, fed: (bool, bool)) -> StripGains {
+    fn control_gains(&mut self, fed: (bool, bool)) -> StripGains {
         let volume = match fed.0 {
             true => Amplitude::UNITY,
-            false => self.volume.load(),
+            false => Amplitude(self.good.read(self.volume.load().get())),
         };
         let pan = match fed.1 {
             true => Pan::CENTER,

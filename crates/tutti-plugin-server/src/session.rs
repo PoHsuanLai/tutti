@@ -442,6 +442,12 @@ impl Session {
         // hand a plugin a state nobody meant for it.
         let staged = self.staged.take();
         self.stage_in = None;
+        // A load replaces what the server held, whether or not it succeeds:
+        // a refused one must not leave the old plugin answering a host that
+        // was told the load failed (and holding its instance while the next
+        // one loads).
+        self.plugin = None;
+        self.rate_refused = None;
         match (&declared, &staged) {
             (None, None) => {}
             (Some(d), Some(bytes)) if d.len == bytes.len() as u64 => {}
@@ -1591,6 +1597,24 @@ mod tests {
         )
         .unwrap()
         .into_reply()
+    }
+
+    /// **A refused load leaves no plugin behind.** The server hosts one
+    /// plugin and `LoadPlugin` replaces it; when the second load fails, the
+    /// first is gone too, not kept answering for a host that was told the load
+    /// failed.
+    ///
+    /// Mutation (run): removing the `self.plugin = None` at the top of
+    /// `handle_load` leaves the first plugin loaded after the refusal.
+    #[cfg(feature = "clap")]
+    #[test]
+    fn a_failed_second_load_unloads_the_first() {
+        let mut s = Session::new();
+        load_reply(&mut s, None);
+        assert!(s.plugin.is_some(), "the first load holds a plugin");
+        let reply = load_declaring(&mut s, None);
+        assert!(matches!(reply, BridgeMessage::Error { .. }), "{reply:?}");
+        assert!(s.plugin.is_none(), "the refused load left the first plugin");
     }
 
     fn stage(s: &mut Session, seq: u32, last: bool, bytes: &[u8]) -> Reaction {

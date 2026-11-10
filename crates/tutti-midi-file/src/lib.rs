@@ -70,7 +70,7 @@ pub type Result<T> = std::result::Result<T, Error>;
 
 /// The MIDI 2.0 Clip File byte codec.
 ///
-/// [`clip`] is the *file-level* (path) half; these are the byte-level types it
+/// [`read_clip`] and [`write_clip`] are the *file-level* (path) half; these are the byte-level types it
 /// reads and writes.
 pub use clip_file::{
     CLIP_FILE_MAGIC, ClipEvent, ClipFileError, ClipHeader, ClipNote, ParsedClipFile,

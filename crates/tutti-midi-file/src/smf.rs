@@ -11,7 +11,7 @@
 //! values are 7-bit (`U7`, `NoteNumber`, `CCNumber`) and pitch bend is 14-bit
 //! (`U14`): a message is a [`Voice1`], the MIDI 1.0 channel-voice message of
 //! `tutti-ump`, and no `midly` type is in this module's signatures. The
-//! MIDI 2.0 side of the crate ([`crate::clip`], 16-bit velocity and 32-bit
+//! MIDI 2.0 side of the crate ([`crate::ParsedClipFile`], 16-bit velocity and 32-bit
 //! controllers) is a *different format*, not a wider encoding of this one.
 //!
 //! Musical time is the exception, deliberately: positions are [`Beat`] and spans

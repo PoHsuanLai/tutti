@@ -1362,7 +1362,10 @@ mod tests {
                 // The point of the whole type: converting first would have made
                 // this `None`, and a bounce would truncate the reverb entirely.
                 assert_ne!(mapped, PluginTail::None);
-                assert_eq!(seconds.to_samples_ceil(44_100.0), Samples::ZERO);
+                assert_eq!(
+                    seconds.to_samples_ceil(SampleRate::new(44_100.0)),
+                    Samples::ZERO
+                );
             }
         }
     }

@@ -35,7 +35,7 @@ pub use com::{
 #[cfg(feature = "conformance")]
 pub use conformance::{Observer, clear_observer, set_observer};
 pub use error::Vst3Error;
-pub use module::{ClassInfo, CreateError, FactoryInfo, LoadError, Module, factory_flags};
+pub use module::{ClassInfo, CreateError, FactoryFlags, FactoryInfo, LoadError, Module};
 pub use plugin::{BusDirection, MediaType, MidiLearn, Plugin};
 pub use sdk::{
     SdkEnum, Zeroable, c_str_to_string, cid_to_string, guid_as_tuid, sdk_enum_i32, sdk_enum_u32,

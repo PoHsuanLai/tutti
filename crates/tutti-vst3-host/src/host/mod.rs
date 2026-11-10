@@ -32,7 +32,7 @@ mod speakers;
 
 pub use control::descriptor_of;
 pub use controller::Vst3Controller;
-pub use library::{ClassInfo, FactoryInfo, Library, factory_flags};
+pub use library::{ClassInfo, FactoryFlags, FactoryInfo, Library};
 pub use loaded::{LoadOptions, RestartOutcome, Vst3Loaded};
 pub use processor::{ProcessFailed, ProcessorAny, Vst3Processor};
 

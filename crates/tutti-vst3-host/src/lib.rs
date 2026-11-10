@@ -17,16 +17,16 @@ pub use events::{
     Utf16Text, drain_midi, expression_type_from_id, expression_type_id,
 };
 pub use host::{
-    FactoryInfo, Library, LoadOptions, ProcessFailed, ProcessorAny, RestartOutcome, Vst3Controller,
-    Vst3Loaded, Vst3Processor, descriptor_of, factory_flags,
+    FactoryFlags, FactoryInfo, Library, LoadOptions, ProcessFailed, ProcessorAny, RestartOutcome,
+    Vst3Controller, Vst3Loaded, Vst3Processor, descriptor_of,
 };
 pub use types::{
     AudioBuffer, BufferPtrs, BusInfo, ContentScale, EditorCapabilities, EditorSize, KeyEvent,
-    KeyModifiers, KeyOutcome, MidiEvent, NoteExpressionIntValue, NoteExpressionType,
-    NoteExpressionValue, ParameterChanges, ParameterPoint, ParameterQueue, PlainRange, PluginInfo,
-    PrefetchSupport, ProcessMode, ProcessOutput, ProcessOutputRef, Sample, TransportInfo,
-    Vst3KeyswitchInfo, Vst3NoteExpressionInfo, Vst3ParameterInfo, Vst3ProgramListInfo, Vst3Sample,
-    Vst3UnitInfo, WindowHandle, keyswitch_type, note_expression_flags, parameter_flags,
+    KeyModifiers, KeyOutcome, MidiEvent, NoteExpressionFlags, NoteExpressionIntValue,
+    NoteExpressionType, NoteExpressionValue, ParameterChanges, ParameterFlags, ParameterPoint,
+    ParameterQueue, PlainRange, PluginInfo, PrefetchSupport, ProcessMode, ProcessOutput,
+    ProcessOutputRef, Sample, TransportInfo, Vst3KeyswitchInfo, Vst3NoteExpressionInfo,
+    Vst3ParameterInfo, Vst3ProgramListInfo, Vst3Sample, Vst3UnitInfo, WindowHandle, keyswitch_type,
     physical_ui_type, process_context_flags, to_process_context, unit_ids,
 };
 

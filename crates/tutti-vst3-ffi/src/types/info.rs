@@ -71,22 +71,14 @@ impl BusInfo {
 /// `IEditController::getParameterInfo`.
 #[derive(Clone, Debug)]
 pub struct Vst3ParameterInfo {
-    /// Stable parameter id used in automation messages.
-    pub id: u32,
-    /// UTF-16 display title.
-    pub title: [u16; 128],
-    /// UTF-16 abbreviated title (for narrow UIs).
-    pub short_title: [u16; 128],
-    /// UTF-16 value units (e.g. "dB", "Hz").
-    pub units: [u16; 128],
-    /// Number of discrete steps, or 0 for continuous parameters.
-    pub step_count: i32,
-    /// Default value, normalized to 0.0 – 1.0.
-    pub default_normalized_value: f64,
-    /// Unit the parameter belongs to (for `IUnitInfo` plugins).
-    pub unit_id: i32,
-    /// `ParameterFlags_` bitfield. See [`parameter_flags`] for named masks.
-    pub flags: i32,
+    id: u32,
+    title: [u16; 128],
+    short_title: [u16; 128],
+    units: [u16; 128],
+    step_count: i32,
+    default_normalized_value: f64,
+    unit_id: i32,
+    flags: ParameterFlags,
 }
 
 impl Default for Vst3ParameterInfo {
@@ -99,12 +91,42 @@ impl Default for Vst3ParameterInfo {
             step_count: 0,
             default_normalized_value: 0.0,
             unit_id: 0,
-            flags: 0,
+            flags: ParameterFlags::empty(),
         }
     }
 }
 
 impl Vst3ParameterInfo {
+    /// Stable parameter id used in automation messages.
+    #[must_use]
+    pub fn id(&self) -> u32 {
+        self.id
+    }
+
+    /// Number of discrete steps, or 0 for continuous parameters.
+    #[must_use]
+    pub fn step_count(&self) -> i32 {
+        self.step_count
+    }
+
+    /// Default value, normalized to 0.0 – 1.0.
+    #[must_use]
+    pub fn default_normalized_value(&self) -> f64 {
+        self.default_normalized_value
+    }
+
+    /// Unit the parameter belongs to (for `IUnitInfo` plugins).
+    #[must_use]
+    pub fn unit_id(&self) -> i32 {
+        self.unit_id
+    }
+
+    /// The parameter's flags.
+    #[must_use]
+    pub fn flags(&self) -> ParameterFlags {
+        self.flags
+    }
+
     /// Decoded [`title`](Self::title) as a Rust `String`.
     pub fn title_string(&self) -> String {
         utf16_to_string(&self.title)
@@ -122,25 +144,25 @@ impl Vst3ParameterInfo {
 
     /// True if the parameter carries the `kCanAutomate` flag.
     pub fn can_automate(&self) -> bool {
-        (self.flags & parameter_flags::CAN_AUTOMATE) != 0
+        self.flags.contains(ParameterFlags::CAN_AUTOMATE)
     }
 
     /// True if the parameter is read-only.
     #[must_use]
     pub fn is_read_only(&self) -> bool {
-        (self.flags & parameter_flags::IS_READ_ONLY) != 0
+        self.flags.contains(ParameterFlags::IS_READ_ONLY)
     }
 
     /// True if the parameter should be hidden from the host UI.
     #[must_use]
     pub fn is_hidden(&self) -> bool {
-        (self.flags & parameter_flags::IS_HIDDEN) != 0
+        self.flags.contains(ParameterFlags::IS_HIDDEN)
     }
 
     /// True if the parameter is the bypass parameter.
     #[must_use]
     pub fn is_bypass(&self) -> bool {
-        (self.flags & parameter_flags::IS_BYPASS) != 0
+        self.flags.contains(ParameterFlags::IS_BYPASS)
     }
 
     /// True if writing this parameter selects a program.
@@ -152,13 +174,13 @@ impl Vst3ParameterInfo {
     /// stopping at the format layer.
     #[must_use]
     pub fn is_program_change(&self) -> bool {
-        (self.flags & parameter_flags::IS_PROGRAM_CHANGE) != 0
+        self.flags.contains(ParameterFlags::IS_PROGRAM_CHANGE)
     }
 
     /// True if the parameter wraps around at its extremes.
     #[must_use]
     pub fn is_wrap(&self) -> bool {
-        (self.flags & parameter_flags::IS_WRAP) != 0
+        self.flags.contains(ParameterFlags::IS_WRAP)
     }
 
     /// Reads the plugin's `ParameterInfo` record.
@@ -171,30 +193,33 @@ impl Vst3ParameterInfo {
             step_count: c.stepCount,
             default_normalized_value: c.defaultNormalizedValue,
             unit_id: c.unitId,
-            flags: c.flags,
+            flags: ParameterFlags::from_bits_retain(c.flags),
         }
     }
 }
 
-/// VST3 `ParameterInfo` flag bits as simple `i32` constants, mirroring
-/// `ParameterFlags_` from the Steinberg SDK.
-pub mod parameter_flags {
-    use super::ParameterFlags_;
-
-    /// Parameter can be automated by the host.
-    pub const CAN_AUTOMATE: i32 = ParameterFlags_::kCanAutomate;
-    /// Parameter is read-only (display-only, cannot be edited).
-    pub const IS_READ_ONLY: i32 = ParameterFlags_::kIsReadOnly;
-    /// Parameter wraps around at its extremes (e.g. phase).
-    pub const IS_WRAP: i32 = ParameterFlags_::kIsWrapAround;
-    /// Parameter is a discrete list (maps to `stepCount` entries).
-    pub const IS_LIST: i32 = ParameterFlags_::kIsList;
-    /// Parameter should be hidden from host UI.
-    pub const IS_HIDDEN: i32 = ParameterFlags_::kIsHidden;
-    /// Parameter controls a program change.
-    pub const IS_PROGRAM_CHANGE: i32 = ParameterFlags_::kIsProgramChange;
-    /// Parameter is the plugin's bypass switch.
-    pub const IS_BYPASS: i32 = ParameterFlags_::kIsBypass;
+bitflags::bitflags! {
+    /// `ParameterInfo::flags`, mirroring `ParameterFlags_` from the Steinberg
+    /// SDK. A set the plugin filled in keeps bits this host does not name.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+    pub struct ParameterFlags: i32 {
+        /// Parameter can be automated by the host.
+        const CAN_AUTOMATE = ParameterFlags_::kCanAutomate;
+        /// Parameter is read-only (display-only, cannot be edited).
+        const IS_READ_ONLY = ParameterFlags_::kIsReadOnly;
+        /// Parameter wraps around at its extremes (e.g. phase).
+        const IS_WRAP = ParameterFlags_::kIsWrapAround;
+        /// Parameter is a discrete list (maps to `stepCount` entries).
+        const IS_LIST = ParameterFlags_::kIsList;
+        /// Parameter should be hidden from host UI.
+        const IS_HIDDEN = ParameterFlags_::kIsHidden;
+        /// Parameter controls a program change.
+        const IS_PROGRAM_CHANGE = ParameterFlags_::kIsProgramChange;
+        /// Parameter is the plugin's bypass switch.
+        const IS_BYPASS = ParameterFlags_::kIsBypass;
+        // The plugin's own bits beyond the ones named.
+        const _ = !0;
+    }
 }
 
 /// VST3 `IAutomationState` mode constants, mirroring
@@ -298,8 +323,8 @@ pub struct Vst3NoteExpressionInfo {
     /// Host parameter this expression is associated with — only meaningful when
     /// [`is_associated_parameter_id_valid`](Self::is_associated_parameter_id_valid).
     pub associated_parameter_id: u32,
-    /// `NoteExpressionTypeFlags_` bitfield. See [`note_expression_flags`].
-    pub flags: i32,
+    /// The expression's flags.
+    pub flags: NoteExpressionFlags,
 }
 
 impl Default for Vst3NoteExpressionInfo {
@@ -315,7 +340,7 @@ impl Default for Vst3NoteExpressionInfo {
             maximum: 1.0,
             step_count: 0,
             associated_parameter_id: 0,
-            flags: 0,
+            flags: NoteExpressionFlags::empty(),
         }
     }
 }
@@ -339,26 +364,27 @@ impl Vst3NoteExpressionInfo {
     /// True if the expression is bipolar (centred at 0.5, e.g. pan/tuning).
     #[must_use]
     pub fn is_bipolar(&self) -> bool {
-        (self.flags & note_expression_flags::IS_BIPOLAR) != 0
+        self.flags.contains(NoteExpressionFlags::IS_BIPOLAR)
     }
 
     /// True if the expression is one-shot (sampled at note-on only).
     #[must_use]
     pub fn is_one_shot(&self) -> bool {
-        (self.flags & note_expression_flags::IS_ONE_SHOT) != 0
+        self.flags.contains(NoteExpressionFlags::IS_ONE_SHOT)
     }
 
     /// True if the expression carries an absolute (rather than relative) value.
     #[must_use]
     pub fn is_absolute(&self) -> bool {
-        (self.flags & note_expression_flags::IS_ABSOLUTE) != 0
+        self.flags.contains(NoteExpressionFlags::IS_ABSOLUTE)
     }
 
     /// True if [`associated_parameter_id`](Self::associated_parameter_id) is
     /// meaningful.
     #[must_use]
     pub fn is_associated_parameter_id_valid(&self) -> bool {
-        (self.flags & note_expression_flags::ASSOCIATED_PARAMETER_ID_VALID) != 0
+        self.flags
+            .contains(NoteExpressionFlags::ASSOCIATED_PARAMETER_ID_VALID)
     }
 
     /// Reads the plugin's `NoteExpressionTypeInfo` record.
@@ -374,29 +400,28 @@ impl Vst3NoteExpressionInfo {
             maximum: c.valueDesc.maximum,
             step_count: c.valueDesc.stepCount,
             associated_parameter_id: c.associatedParameterId,
-            flags: c.flags,
+            flags: NoteExpressionFlags::from_bits_retain(c.flags),
         }
     }
 }
 
-/// VST3 `NoteExpressionTypeInfo` flag bits as simple `i32` constants, matching
-/// the `flags: i32` field they mask against. Mirrors `NoteExpressionTypeFlags_`
-/// from the Steinberg SDK, whose constants are `u32` on unix / `c_int` on
-/// Windows — normalised to `i32` here (the bit values fit either way).
-// Casts are `u32 as i32` on unix and no-ops on Windows (where the SDK enum is
-// already `c_int`); allow the latter's "unnecessary cast" lint.
-pub mod note_expression_flags {
-    use super::NoteExpressionTypeFlags_;
-
-    /// Expression is bipolar (value centred at 0.5).
-    pub const IS_BIPOLAR: i32 = crate::sdk_enum_i32(NoteExpressionTypeFlags_::kIsBipolar);
-    /// Expression is sampled once at note-on (not continuously).
-    pub const IS_ONE_SHOT: i32 = crate::sdk_enum_i32(NoteExpressionTypeFlags_::kIsOneShot);
-    /// Expression value is absolute rather than relative.
-    pub const IS_ABSOLUTE: i32 = crate::sdk_enum_i32(NoteExpressionTypeFlags_::kIsAbsolute);
-    /// `associatedParameterId` is valid.
-    pub const ASSOCIATED_PARAMETER_ID_VALID: i32 =
-        crate::sdk_enum_i32(NoteExpressionTypeFlags_::kAssociatedParameterIDValid);
+bitflags::bitflags! {
+    /// `NoteExpressionTypeInfo::flags`, mirroring `NoteExpressionTypeFlags_`
+    /// from the Steinberg SDK.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+    pub struct NoteExpressionFlags: i32 {
+        /// Expression is bipolar (value centred at 0.5).
+        const IS_BIPOLAR = crate::sdk_enum_i32(NoteExpressionTypeFlags_::kIsBipolar);
+        /// Expression is sampled once at note-on (not continuously).
+        const IS_ONE_SHOT = crate::sdk_enum_i32(NoteExpressionTypeFlags_::kIsOneShot);
+        /// Expression value is absolute rather than relative.
+        const IS_ABSOLUTE = crate::sdk_enum_i32(NoteExpressionTypeFlags_::kIsAbsolute);
+        /// `associatedParameterId` is valid.
+        const ASSOCIATED_PARAMETER_ID_VALID =
+            crate::sdk_enum_i32(NoteExpressionTypeFlags_::kAssociatedParameterIDValid);
+        // The plugin's own bits beyond the ones named.
+        const _ = !0;
+    }
 }
 
 /// Host-facing keyswitch (articulation) descriptor — a flat snake_case view over
@@ -634,7 +659,7 @@ pub mod prefetchable_support {
 
 #[cfg(test)]
 mod note_expression_info_tests {
-    use super::{Vst3NoteExpressionInfo, note_expression_flags};
+    use super::{NoteExpressionFlags, Vst3NoteExpressionInfo};
 
     /// Copies a Rust `&str` into a UTF-16, null-terminated `String128` buffer.
     fn string128(s: &str) -> [u16; 128] {
@@ -661,8 +686,9 @@ mod note_expression_info_tests {
         raw.valueDesc.stepCount = 0;
         raw.associatedParameterId = 42;
         // Bipolar + associated-param-id-valid.
-        raw.flags = note_expression_flags::IS_BIPOLAR
-            | note_expression_flags::ASSOCIATED_PARAMETER_ID_VALID;
+        raw.flags = (NoteExpressionFlags::IS_BIPOLAR
+            | NoteExpressionFlags::ASSOCIATED_PARAMETER_ID_VALID)
+            .bits();
 
         let info = Vst3NoteExpressionInfo::from_c(&raw);
 

@@ -169,8 +169,8 @@ impl Vst3Loaded {
     ) -> Option<(ParamId, i32)> {
         (0..self.parameter_count(main)).find_map(|i| {
             let info = self.parameter_info_at(main, i)?;
-            (info.is_program_change() && info.unit_id == owning_unit)
-                .then_some((ParamId::new(info.id), info.step_count))
+            (info.is_program_change() && info.unit_id() == owning_unit)
+                .then_some((ParamId::new(info.id()), info.step_count()))
         })
     }
 

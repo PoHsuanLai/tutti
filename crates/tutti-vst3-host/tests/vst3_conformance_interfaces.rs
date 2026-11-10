@@ -572,7 +572,8 @@ fn the_factory_flag_word_is_read_not_discarded() {
         }
         assert_eq!(
             info.classes_discardable(),
-            info.flags & tutti_vst3_host::factory_flags::CLASSES_DISCARDABLE != 0,
+            info.flags
+                .contains(tutti_vst3_host::FactoryFlags::CLASSES_DISCARDABLE),
             "{name}: accessor disagrees with the raw bitmask it decodes"
         );
     }

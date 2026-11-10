@@ -275,7 +275,7 @@ impl Module {
             vendor: c_str_to_string(&info.vendor),
             url: c_str_to_string(&info.url),
             email: c_str_to_string(&info.email),
-            flags: info.flags,
+            flags: FactoryFlags::from_bits_retain(info.flags),
         })
     }
 
@@ -459,14 +459,10 @@ pub struct FactoryInfo {
     pub url: String,
     /// Vendor contact email.
     pub email: String,
-    /// Raw `PFactoryInfo::flags` bitmask — see [`factory_flags`] and
+    /// The plugin's `PFactoryInfo::flags`, including bits this host does not
+    /// name (a decode would drop whatever a future SDK adds), see
     /// [`classes_discardable`](Self::classes_discardable).
-    ///
-    /// Carried raw rather than decoded into bools. The four flags this host
-    /// knows are not the four a future SDK defines, and `1 << 2` is already
-    /// absent from the enum — a decode would silently drop whatever lands
-    /// there, whereas a bitmask hands the caller exactly what the plugin said.
-    pub flags: i32,
+    pub flags: FactoryFlags,
 }
 
 impl FactoryInfo {
@@ -483,43 +479,45 @@ impl FactoryInfo {
     /// job either way, and dropping it here would leave the consumer with
     /// nothing to act on when it arrives.
     pub fn classes_discardable(&self) -> bool {
-        self.flags & factory_flags::CLASSES_DISCARDABLE != 0
+        self.flags.contains(FactoryFlags::CLASSES_DISCARDABLE)
     }
 
     /// The plugin asks not to be unloaded before process exit
     /// (`kComponentNonDiscardable`).
     pub fn component_non_discardable(&self) -> bool {
-        self.flags & factory_flags::COMPONENT_NON_DISCARDABLE != 0
+        self.flags.contains(FactoryFlags::COMPONENT_NON_DISCARDABLE)
     }
 
     /// The plugin's strings are Unicode (`kUnicode`) — true of every VST3
     /// plugin so far, per the SDK's own note on the flag.
     pub fn unicode_strings(&self) -> bool {
-        self.flags & factory_flags::UNICODE != 0
+        self.flags.contains(FactoryFlags::UNICODE)
     }
 }
 
-/// VST3 `PFactoryInfo::FactoryFlags` constants, mirroring `ipluginbase.h:65-83`.
-///
-/// `kLicenseCheck` (`1 << 1`) is deliberately absent: the SDK marks it
-/// deprecated and says Cubase/Nuendo 12 and later ignore it, so a host that
-/// reads it would be acting on a signal the format has withdrawn. `1 << 2` is
-/// unassigned in the header.
-/// `FactoryFlags` is `DefaultEnumType` — `u32` on unix, `c_int` on Windows —
-/// while `PFactoryInfo::flags` is `int32` on both, so each cast below is a
-/// no-op on one platform and load-bearing on the other. Same reason
-/// [`crate::physical_ui_type`] carries this allow.
-pub mod factory_flags {
-    use vst3::Steinberg::PFactoryInfo_::FactoryFlags_;
+use vst3::Steinberg::PFactoryInfo_::FactoryFlags_;
 
-    /// The exported class list can change each time the module is loaded, so
-    /// class information must not be cached.
-    pub const CLASSES_DISCARDABLE: i32 = crate::sdk_enum_i32(FactoryFlags_::kClassesDiscardable);
-    /// The component will not be unloaded until process exit.
-    pub const COMPONENT_NON_DISCARDABLE: i32 =
-        crate::sdk_enum_i32(FactoryFlags_::kComponentNonDiscardable);
-    /// The plugin's strings are entirely Unicode-encoded.
-    pub const UNICODE: i32 = crate::sdk_enum_i32(FactoryFlags_::kUnicode);
+bitflags::bitflags! {
+    /// `PFactoryInfo::flags`, mirroring `ipluginbase.h:65-83`.
+    ///
+    /// `kLicenseCheck` (`1 << 1`) is deliberately absent: the SDK marks it
+    /// deprecated and says Cubase/Nuendo 12 and later ignore it, so a host that
+    /// reads it would be acting on a signal the format has withdrawn. `1 << 2`
+    /// is unassigned in the header. A set read from a plugin keeps whatever bits
+    /// it sent.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+    pub struct FactoryFlags: i32 {
+        /// The exported class list can change each time the module is loaded,
+        /// so class information must not be cached.
+        const CLASSES_DISCARDABLE = crate::sdk_enum_i32(FactoryFlags_::kClassesDiscardable);
+        /// The component will not be unloaded until process exit.
+        const COMPONENT_NON_DISCARDABLE =
+            crate::sdk_enum_i32(FactoryFlags_::kComponentNonDiscardable);
+        /// The plugin's strings are entirely Unicode-encoded.
+        const UNICODE = crate::sdk_enum_i32(FactoryFlags_::kUnicode);
+        // The plugin's own bits beyond the ones named.
+        const _ = !0;
+    }
 }
 
 /// Descriptor for a single class (plugin variant) within a factory.
@@ -569,9 +567,9 @@ fn non_empty(s: String) -> Option<String> {
 
 #[cfg(test)]
 mod factory_flag_tests {
-    use super::{FactoryInfo, factory_flags};
+    use super::{FactoryFlags, FactoryInfo};
 
-    fn with_flags(flags: i32) -> FactoryInfo {
+    fn with_flags(flags: FactoryFlags) -> FactoryInfo {
         FactoryInfo {
             vendor: String::new(),
             url: String::new(),
@@ -589,12 +587,12 @@ mod factory_flag_tests {
     #[test]
     fn each_factory_flag_accessor_reads_its_own_bit() {
         for (flags, want) in [
-            (factory_flags::CLASSES_DISCARDABLE, (true, false, false)),
+            (FactoryFlags::CLASSES_DISCARDABLE, (true, false, false)),
             (
-                factory_flags::COMPONENT_NON_DISCARDABLE,
+                FactoryFlags::COMPONENT_NON_DISCARDABLE,
                 (false, true, false),
             ),
-            (factory_flags::UNICODE, (false, false, true)),
+            (FactoryFlags::UNICODE, (false, false, true)),
         ] {
             let info = with_flags(flags);
             let got = (
@@ -614,18 +612,18 @@ mod factory_flag_tests {
     /// discardable bundle is also a Unicode one.
     #[test]
     fn other_factory_flags_do_not_mask_classes_discardable() {
-        let both = with_flags(factory_flags::CLASSES_DISCARDABLE | factory_flags::UNICODE);
+        let both = with_flags(FactoryFlags::CLASSES_DISCARDABLE | FactoryFlags::UNICODE);
         assert!(both.classes_discardable());
         assert!(both.unicode_strings());
 
-        assert!(!with_flags(factory_flags::UNICODE).classes_discardable());
+        assert!(!with_flags(FactoryFlags::UNICODE).classes_discardable());
     }
 
     /// No flags set means no flag reads as set — pins that the accessors do not
     /// answer from a default.
     #[test]
     fn an_empty_flag_field_reports_nothing_set() {
-        let none = with_flags(0);
+        let none = with_flags(FactoryFlags::empty());
         assert!(!none.classes_discardable());
         assert!(!none.component_non_discardable());
         assert!(!none.unicode_strings());
@@ -639,8 +637,8 @@ mod factory_flag_tests {
     /// (unassigned) are deliberately absent from the module.
     #[test]
     fn the_factory_flag_bits_are_the_ones_the_sdk_defines() {
-        assert_eq!(factory_flags::CLASSES_DISCARDABLE, 1 << 0);
-        assert_eq!(factory_flags::COMPONENT_NON_DISCARDABLE, 1 << 3);
-        assert_eq!(factory_flags::UNICODE, 1 << 4);
+        assert_eq!(FactoryFlags::CLASSES_DISCARDABLE.bits(), 1 << 0);
+        assert_eq!(FactoryFlags::COMPONENT_NON_DISCARDABLE.bits(), 1 << 3);
+        assert_eq!(FactoryFlags::UNICODE.bits(), 1 << 4);
     }
 }

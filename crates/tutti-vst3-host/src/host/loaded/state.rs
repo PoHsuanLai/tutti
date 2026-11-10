@@ -258,7 +258,7 @@ impl Vst3Loaded {
         // parameter is kept once.
         let listed: HashSet<u32> = (0..self.parameter_count(main))
             .filter_map(|i| self.parameter_info_at(main, i))
-            .map(|info| info.id)
+            .map(|info| info.id())
             .collect();
         Ok(latest_listed(pending, &listed)
             .into_iter()

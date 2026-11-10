@@ -20,7 +20,7 @@ impl Vst3Loaded {
     pub fn parameter_ids(&self, main: &MainThread) -> Vec<ParamId> {
         (0..self.parameter_count(main))
             .filter_map(|i| self.plugin.parameter_info(main, i))
-            .map(|info| ParamId::new(info.id))
+            .map(|info| ParamId::new(info.id()))
             .collect()
     }
 
@@ -31,7 +31,7 @@ impl Vst3Loaded {
     pub fn parameter_info(&self, main: &MainThread, id: ParamId) -> Option<Vst3ParameterInfo> {
         (0..self.parameter_count(main))
             .filter_map(|i| self.plugin.parameter_info(main, i))
-            .find(|info| info.id == id.get())
+            .find(|info| info.id() == id.get())
     }
 
     /// The descriptor at list position `index`, for the walks that enumerate.
@@ -64,7 +64,7 @@ impl Vst3Loaded {
         (0..self.parameter_count(main))
             .filter_map(|i| {
                 let info = self.parameter_info_at(main, i)?;
-                let plain = self.parameter_plain_range(main, ParamId::new(info.id));
+                let plain = self.parameter_plain_range(main, ParamId::new(info.id()));
                 Some(build_param_info(info, plain, &groups))
             })
             .collect()
@@ -362,18 +362,18 @@ pub(super) fn build_param_info(
             ParamRange::Plain {
                 min,
                 max,
-                default: r.to_plain(info.default_normalized_value),
+                default: r.to_plain(info.default_normalized_value()),
             }
         }
         None => ParamRange::Normalized {
-            default: info.default_normalized_value,
+            default: info.default_normalized_value(),
         },
     };
 
     // The SDK spells out the encoding at `ivsteditcontroller.h:53`:
     // 0 continuous, 1 toggle, otherwise `max - min` so the position count is
     // one more than the step count.
-    let steps = match info.step_count {
+    let steps = match info.step_count() {
         0 => ParamSteps::Continuous,
         1 => ParamSteps::Toggle,
         n if n > 1 => ParamSteps::Enumerated(n as u32 + 1),
@@ -384,7 +384,7 @@ pub(super) fn build_param_info(
     ParameterInfo {
         // VST3 `ParamID` — opaque and plugin-chosen, not a list position; see
         // the ParamID-vs-index note above.
-        id: info.id.into(),
+        id: info.id().into(),
         name: info.title_string(),
         unit: info.units_string(),
         range,
@@ -398,7 +398,7 @@ pub(super) fn build_param_info(
         // parameter list over a display label, and one that fell back to a
         // neighbour would mislabel silently.
         group: groups
-            .get(&info.unit_id)
+            .get(&info.unit_id())
             .map(|n| n.to_string())
             .unwrap_or_default(),
     }

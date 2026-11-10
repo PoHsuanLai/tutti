@@ -13,7 +13,8 @@
 //! is what the ABI alone says.
 
 use tutti_plugin_types::{
-    Normalized, ParamFlags, ParamId, ParamRange, ParamSteps, ParameterInfo as SharedParameterInfo,
+    Normalized, ParamFlags, ParamId, ParamRange, ParamSteps, ParamUnit,
+    ParameterInfo as SharedParameterInfo,
 };
 
 use crate::host::ParameterChange;
@@ -234,12 +235,15 @@ impl Vst2Loaded {
             Some(n) => ParamSteps::Enumerated(n.saturating_add(1)),
         };
 
+        let label = self.instance.get_parameter_label(id);
+        let measures = declared_measures(&label, &range);
+
         SharedParameterInfo {
             // The one format that addresses by position. `id` is bounded by
             // `numParams`, so it is an index by construction — see `param_index`.
             id: ParamId::new(id as u32),
             name: self.instance.get_parameter_name(id),
-            unit: self.instance.get_parameter_label(id),
+            unit: label,
             range,
             steps,
             // Asked per parameter: `effCanBeAutomated` takes the index, so
@@ -261,6 +265,10 @@ impl Vst2Loaded {
                 .and_then(|q| q.category.as_ref())
                 .map(|c| c.label.clone())
                 .unwrap_or_default(),
+            measures,
+            // VST2 declares no role: it has no bypass flag on a parameter
+            // and no function names.
+            role: None,
         }
     }
 
@@ -311,8 +319,98 @@ impl Vst2Loaded {
     }
 }
 
+/// What a VST2 parameter's label says it measures (doc 023 §5.2): the closed
+/// list of [`ParamUnit::from_label`], and **only** over a plain range that fits,
+/// which is what `effGetParameterProperties` gives when the plugin answers it.
+/// VST2's native value is normalized, so a label without a range cannot be
+/// converted and is not typed.
+fn declared_measures(label: &str, range: &ParamRange) -> Option<ParamUnit> {
+    ParamUnit::from_label(label).filter(|unit| unit.fits(range))
+}
+
 /// The index `id` stands for, if the plugin declares that many parameters.
 pub(crate) fn index_of(id: ParamId, count: usize) -> Option<i32> {
     let index = i32::try_from(id.get()).ok()?;
     ((index as usize) < count).then_some(index)
+}
+
+#[cfg(test)]
+mod measures_tests {
+    use super::*;
+
+    fn plain(min: f64, max: f64) -> ParamRange {
+        ParamRange::Plain {
+            min,
+            max,
+            default: min,
+        }
+    }
+
+    /// Every accepted label maps over a plain range that fits.
+    ///
+    /// Mutation (run, 2026-11-11): `from_label`'s `"ms"` arm changed to
+    /// `Some(Self::Seconds)` → the `ms` row fails.
+    #[test]
+    fn every_accepted_label_maps_over_a_plain_range() {
+        for (label, unit) in [
+            ("Hz", ParamUnit::Hertz),
+            ("dB", ParamUnit::Decibels),
+            ("s", ParamUnit::Seconds),
+            ("ms", ParamUnit::Milliseconds),
+            ("%", ParamUnit::Percent),
+            ("ct", ParamUnit::Cents),
+            ("st", ParamUnit::Semitones),
+            ("BPM", ParamUnit::Bpm),
+        ] {
+            assert_eq!(
+                declared_measures(label, &plain(1.0, 100.0)),
+                Some(unit),
+                "{label:?}"
+            );
+        }
+    }
+
+    /// A normalized range (the plugin declined `effGetParameterProperties`) is
+    /// never typed, however exact the label.
+    ///
+    /// Mutation (run): `.filter(|unit| unit.fits(range))` removed → `Hz` over
+    /// a normalized range maps, and this test fails.
+    #[test]
+    fn a_label_without_a_plain_range_is_none() {
+        let normalized = ParamRange::Normalized { default: 0.5 };
+        for label in ["Hz", "dB", "%", "BPM"] {
+            assert_eq!(declared_measures(label, &normalized), None, "{label:?}");
+        }
+        assert_eq!(declared_measures("%", &plain(0.0, 1000.0)), None);
+        assert_eq!(declared_measures("Hz", &plain(-1.0, 100.0)), None);
+    }
+
+    /// Near-misses and the non-ASCII space are `None` over a fitting range.
+    ///
+    /// Mutation (run, 2026-11-11): `from_label`'s `trim_matches(' ')` changed to
+    /// `trim()` → the `Hz` + em-space and no-break-space rows map, and this test
+    /// fails.
+    #[test]
+    fn near_misses_are_none() {
+        for label in [
+            "kHz",
+            "Db",
+            "dB(A)",
+            "semitones",
+            "",
+            "\u{a0}dB",
+            "Hz\u{2003}",
+        ] {
+            assert_eq!(
+                declared_measures(label, &plain(1.0, 100.0)),
+                None,
+                "{label:?}"
+            );
+        }
+        assert_eq!(
+            declared_measures(" dB ", &plain(-60.0, 12.0)),
+            Some(ParamUnit::Decibels),
+            "ASCII spaces trim"
+        );
+    }
 }

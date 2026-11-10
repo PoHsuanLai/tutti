@@ -11,8 +11,7 @@ use std::sync::Arc;
 use tutti_graph::UmpAt;
 
 use crossbeam_queue::ArrayQueue;
-use tutti_midi_types::convert::midi1_velocity_to_midi2;
-use tutti_ump::{Address, Attribute, Message, MidiChannel, MidiGroup, NoteNumber, U7, Ump, Voice2};
+use tutti_ump::{Address, Attribute, Message, MidiChannel, MidiGroup, NoteNumber, Ump, Voice2};
 
 use crate::traits::MidiOut;
 
@@ -100,19 +99,18 @@ impl MidiSender {
         accepted
     }
 
-    /// Pushes a MIDI 1.0 note-on (7-bit velocity) on group 1. Returns `false`
-    /// if the ring was full.
-    pub fn note_on(&self, channel: MidiChannel, note: NoteNumber, velocity: U7) -> bool {
+    /// Pushes a MIDI 2.0 Note On at `velocity` (16 bits) on group 1. A velocity
+    /// of 0 is a Note On (M2-104 §7.4.2). Returns `false` if the ring was full.
+    pub fn note_on(&self, channel: MidiChannel, note: NoteNumber, velocity: u16) -> bool {
         self.slot
             .events
             .push((
                 0,
                 voice(
                     channel,
-                    // 7-bit velocity, widened (M2-115).
                     Voice2::NoteOn {
                         note,
-                        velocity: midi1_velocity_to_midi2(velocity.get()),
+                        velocity,
                         attribute: Attribute::None,
                     },
                 ),
@@ -120,7 +118,7 @@ impl MidiSender {
             .is_ok()
     }
 
-    /// Pushes a MIDI 1.0 note-off on group 1. Returns `false` if the ring was
+    /// Pushes a MIDI 2.0 Note Off at release velocity 0 on group 1. Returns `false` if the ring was
     /// full (which would leave the note stuck).
     pub fn note_off(&self, channel: MidiChannel, note: NoteNumber) -> bool {
         self.slot

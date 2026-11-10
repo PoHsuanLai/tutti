@@ -51,9 +51,8 @@ use crate::transport_cell::TransportReader;
 use crossbeam_queue::ArrayQueue;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use tutti_plugin_types::{Request, RescanScope, WireMidi, unframed};
+use tutti_plugin_types::{Request, RescanScope, WireMidi, sysex_packets};
 use tutti_rt::RequestWord;
-use tutti_ump::MidiGroup;
 use vst::api::Supported;
 use vst::host::Host;
 
@@ -213,16 +212,19 @@ impl HostState {
         if bytes.is_empty() {
             return;
         }
-        let payload = unframed(bytes);
-        let packets = tutti_midi_types::sysex7_packet_count(payload.len());
+        // A payload byte of 128 or more is a malformed message: dropped, counted.
+        let Some(packets) = sysex_packets(bytes) else {
+            self.dropped_midi_out.fetch_add(1, Ordering::Relaxed);
+            return;
+        };
         // The queue's only other end pops, so room seen now can only grow.
         let room = self.midi_out_tx.capacity() - self.midi_out_tx.len();
-        if packets > room {
+        if packets.len() > room {
             self.dropped_midi_out.fetch_add(1, Ordering::Relaxed);
             return;
         }
         let frame = delta_frames.max(0) as u32;
-        for ump in tutti_midi_types::sysex7_packets(MidiGroup::FIRST, payload) {
+        for ump in packets {
             let _ = self.midi_out_tx.push(WireMidi { offset: frame, ump });
         }
     }
@@ -880,7 +882,8 @@ mod tests {
         let host = make_host(TransportWriter::new().reader(), 48_000.0);
         let mut payload: Vec<u8> = (0..200).map(|i| (i % 0x7F) as u8).collect();
         let mut event = sysex_event(3, &mut payload);
-        let packets = tutti_midi_types::sysex7_packet_count(200);
+        // 200 payload bytes, six to a packet (M2-104 section 7.7): 34 packets.
+        let packets = 34;
 
         assert_no_alloc::assert_no_alloc(|| {
             deliver(&host, &mut event);

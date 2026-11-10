@@ -417,8 +417,6 @@ mod tests {
         );
     }
 
-    use tutti_midi_types::convert::{midi1_cc_to_midi2, midi1_velocity_to_midi2};
-
     fn is_note_on(ev: &WireMidi) -> bool {
         matches!(
             tutti_ump::decode(ev.ump),
@@ -449,7 +447,7 @@ mod tests {
                     MidiGroup::FIRST,
                     MidiChannel::FIRST,
                     60,
-                    midi1_velocity_to_midi2(100),
+                    tutti_fixtures::midi::wide_velocity(100),
                 ),
             ),
             at(
@@ -458,7 +456,7 @@ mod tests {
                     MidiGroup::FIRST,
                     MidiChannel::FIRST,
                     CCNumber::VOLUME,
-                    midi1_cc_to_midi2(64),
+                    tutti_fixtures::midi::wide_value(64),
                 ),
             ),
         ]
@@ -574,7 +572,7 @@ mod tests {
                     MidiGroup::FIRST,
                     MidiChannel::FIRST,
                     60,
-                    midi1_velocity_to_midi2(100),
+                    tutti_fixtures::midi::wide_velocity(100),
                 ),
             ),
             at(
@@ -583,7 +581,7 @@ mod tests {
                     MidiGroup::FIRST,
                     MidiChannel::FIRST,
                     64,
-                    midi1_velocity_to_midi2(100),
+                    tutti_fixtures::midi::wide_velocity(100),
                 ),
             ),
             at(
@@ -592,7 +590,7 @@ mod tests {
                     MidiGroup::FIRST,
                     MidiChannel::FIRST,
                     CCNumber::VOLUME,
-                    midi1_cc_to_midi2(64),
+                    tutti_fixtures::midi::wide_value(64),
                 ),
             ),
         ]

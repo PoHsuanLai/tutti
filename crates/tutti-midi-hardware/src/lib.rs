@@ -39,8 +39,8 @@ pub use backend::coremidi::{UmpVirtualDestination, UmpVirtualSource};
 pub use tutti_midi_types::Protocol;
 
 pub use tutti_midi_types::{
-    ControllerNamespace, MidiMessage, NoteAttribute, PerNoteController, UmpMessageType,
-    UnencodableMessage, midi2, midly, normalize,
+    ControllerNamespace, MidiMessage, NoteAttribute, PerNoteController, UnencodableMessage, midi2,
+    midly, normalize,
 };
 
 /// MIDI 2.0 Clip File (M2-116) interchange — a portable single-clip UMP stream,

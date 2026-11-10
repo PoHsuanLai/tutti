@@ -1297,6 +1297,29 @@ at any point; its CI codec move and `ci`/`negotiate` deletion (4a, done) shrink
      `origin_samples` and `sample_offset` are absolute frames carried as `u64` (they
      should be `Frame`), and `block_samples`, `interval_samples()` and `block_span()` are
      counts (they should be `Samples`). Type them as timing and output scheduling are rebuilt.
+- **Stage 3d. The helpers the plugin crates drop their own for. Done.** The float
+   converters (`u7_to_unit_f32`, `u16_to_unit_f32`, `u32_to_unit_f32`,
+   `bend_u14_to_signed_f32`, `bend_u32_to_signed_f32`, `unit_f32_to_u16`,
+   `unit_f32_to_u32`, `signed_f32_to_bend_u32`) live in `tutti-midi-protocol`;
+   `tutti-midi-types` depends on `tutti-midi-protocol` (layer 2 over layer 1). The
+   SysEx7 writer is `tutti_ump::sysex7_packets` / `SysexMessage::packets` (an
+   allocation-free `Sysex7Packets`, `ExactSizeIterator`; `Sysex7Packets::checked`
+   takes a payload of plain bytes and refuses one with a byte of 128 or more,
+   where a caller's bytes are unchecked), `Sysex7Packet::data` is the data bytes
+   as `&[u8]` (the `bits!` fields are `repr(transparent)` and `NoUninit`), and
+   `SysexRef::new` names a range in a caller's own arena. The wrappers are
+   deleted, not retired: `tutti_midi_types::convert` (the integer scaling and the
+   re-export of the float converters), the `sysex7_*` helpers, the `SYSEX7_STATUS_*`
+   constants, `message_type` and `UmpMessageType` (`Ump::message_type`, `decode`
+   and `SysexStatus` replace them) and `tutti_ump::sysex7_packets_masked`. Every
+   caller, the plugin crates included, is on `tutti_midi_protocol` (`widen`,
+   `narrow_*`, the float converters) and `tutti_ump`; a test widens through
+   `tutti_fixtures::midi::wide_*`, which call `widen`. A plugin's SysEx whose
+   payload has a byte of 128 or more is malformed: it is dropped (counted where
+   the site counts drops), no longer masked into another message.
+   `MidiSender::note_on` and `SoundFontUnit::note_on` take a MIDI 2.0 16-bit
+   velocity, as `InstrumentHandle::note_on` does since 3b: a velocity of 0 is a
+   Note On.
 - **Stage 5b. Shrink `tutti-midi-types` away:** what 5a, 3a, 3c and 4 leave
    (`mpe/`, `clip_file`, `cc/mapping`, `sync/`, `MidiMessage`, the re-exports) moves
    to its owner (§6) or is deleted, then the crate, and `midi2` from the workspace

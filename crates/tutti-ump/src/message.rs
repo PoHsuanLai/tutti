@@ -185,6 +185,14 @@ impl Sysex7Packet {
     pub fn bytes(&self) -> &[U7] {
         self.bytes.split_at(self.len as usize).0
     }
+
+    /// The valid data bytes as plain bytes: the same bytes as
+    /// [`bytes`](Self::bytes), viewed in place without a copy. Each is below
+    /// 128.
+    #[must_use]
+    pub fn data(&self) -> &[u8] {
+        bytemuck::cast_slice(self.bytes())
+    }
 }
 
 /// One System Exclusive 8 packet: a stream id and up to 13 data bytes.

@@ -154,7 +154,7 @@ impl MidiCcMapping {
 /// - Pitch bend: signed `-1.0..=1.0` (center `0.0`) → `0.0..=1.0` (center
 ///   `0.5`), matching what the plugin's parameter funnel expects.
 pub(crate) fn midi_to_mapped_controller(ump: &Ump) -> Option<(u8, usize, f64)> {
-    use tutti_midi_types::convert::{bend_u32_to_signed_f32, u32_to_unit_f32};
+    use tutti_midi_protocol::{bend_u32_to_signed_f32, u32_to_unit_f32};
 
     let (channel, voice) = match decode(*ump) {
         Ok(Message::Midi1(address, voice)) => (address.channel, widen(voice)),

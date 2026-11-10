@@ -502,10 +502,11 @@ fn test_output_events_push_sysex_with_data() {
     let drained = output.to_midi_events();
     assert_eq!(drained.len(), 1, "a 4-byte payload is one packet");
     assert_eq!(drained[0].offset, 25);
-    let (status, bytes, n) =
-        tutti_midi_types::sysex7_payload(&drained[0].ump).expect("a SysEx7 packet");
-    assert_eq!(status, tutti_midi_types::ump::SYSEX7_STATUS_SINGLE);
-    assert_eq!(&bytes[..n], &sysex_data[1..sysex_data.len() - 1]);
+    let Ok(tutti_ump::Message::Sysex7(_, packet)) = tutti_ump::decode(drained[0].ump) else {
+        panic!("a SysEx7 packet");
+    };
+    assert_eq!(packet.status(), tutti_ump::SysexStatus::Complete);
+    assert_eq!(packet.data(), &sysex_data[1..sysex_data.len() - 1]);
 }
 
 /// **A long SysEx a plugin emits reaches the host whole.** It used to be

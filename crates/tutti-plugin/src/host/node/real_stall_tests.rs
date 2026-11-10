@@ -505,7 +505,9 @@ fn a_reset_drops_the_pending_midi_and_keeps_its_sysex_cut() {
     let mut node = client.bind();
     let payload: Vec<u8> = (0..30).collect();
     let mut dump = Vec::new();
-    tutti_midi_types::sysex7_fragments(MidiGroup::FIRST, &payload, &mut dump);
+    dump.extend(
+        tutti_ump::Sysex7Packets::checked(MidiGroup::FIRST, &payload).expect("a 7-bit payload"),
+    );
     let dump: Vec<tutti_plugin_types::WireMidi> = dump
         .into_iter()
         .map(|ump| tutti_plugin_types::WireMidi { offset: 0, ump })
@@ -552,7 +554,9 @@ fn a_reprepare_drops_the_pending_midi_and_keeps_its_sysex_cut() {
     node.prepare(&Prepare::new(SampleRate(SAMPLE_RATE), Samples(BLOCK)));
     let payload: Vec<u8> = (0..30).collect();
     let mut dump = Vec::new();
-    tutti_midi_types::sysex7_fragments(MidiGroup::FIRST, &payload, &mut dump);
+    dump.extend(
+        tutti_ump::Sysex7Packets::checked(MidiGroup::FIRST, &payload).expect("a 7-bit payload"),
+    );
     let dump: Vec<tutti_plugin_types::WireMidi> = dump
         .into_iter()
         .map(|ump| tutti_plugin_types::WireMidi { offset: 0, ump })

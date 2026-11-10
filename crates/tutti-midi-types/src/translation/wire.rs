@@ -5,7 +5,7 @@ use midi2::prelude::*;
 use tutti_ump::{Midi1Parser, MidiGroup, Ump};
 
 /// The bytes were not a parseable MIDI 1.0 channel-voice or system message
-/// (malformed, or a SysEx — use [`sysex7_fragments`](crate::ump::sysex7_fragments) for that).
+/// (malformed, or a SysEx — use [`tutti_ump::sysex7_packets`] for that).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct MidiParseError;
 
@@ -32,7 +32,7 @@ pub fn parse_midi1_bytes(bytes: &[u8]) -> Result<Ump, MidiParseError> {
 /// `bytes` into a UMP of type 0x2 (Channel Voice 1) or 0x1 (System), keeping
 /// the 7-bit values. Bytes after the message are ignored, as the padding of a
 /// fixed three-byte field is. Returns `None` on malformed input, an undefined
-/// status or SysEx (use [`sysex7_fragments`](crate::ump::sysex7_fragments) for
+/// status or SysEx (use [`tutti_ump::sysex7_packets`] for
 /// that). Never allocates.
 ///
 /// Everything lands on [`MidiGroup::FIRST`], and that is not a placeholder:
@@ -156,9 +156,9 @@ fn cv1_to_midi1_bytes(ump: &Ump) -> Option<([u8; 3], u8)> {
 }
 
 fn cv2_to_midi1_bytes(ump: &Ump) -> Option<([u8; 3], u8)> {
-    use super::scaling::{midi2_cc_to_midi1, midi2_pitch_bend_to_midi1, midi2_velocity_to_midi1};
     use midi2::UmpMessage;
     use midi2::channel_voice2::ChannelVoice2;
+    use tutti_midi_protocol::{narrow_bend, narrow_value, narrow_velocity};
     let msg = UmpMessage::try_from(ump.words()).ok()?;
     let UmpMessage::ChannelVoice2(cv2) = msg else {
         return None;
@@ -175,33 +175,33 @@ fn cv2_to_midi1_bytes(ump: &Ump) -> Option<([u8; 3], u8)> {
             // every CV2 velocity in 0x0001..=0x01FF lands on 0 — and a
             // MIDI 1.0 Note On with velocity 0 *is* a Note Off, which would
             // silence the note instead of sounding it.
-            midi2_velocity_to_midi1(m.velocity()).max(1),
+            narrow_velocity(m.velocity()).get().max(1),
             3,
         ),
         ChannelVoice2::NoteOff(m) => (
             0x8,
             u8::from(m.note_number()),
-            midi2_velocity_to_midi1(m.velocity()),
+            narrow_velocity(m.velocity()).get(),
             3,
         ),
         ChannelVoice2::ControlChange(m) => (
             0xB,
             u8::from(m.control()),
-            midi2_cc_to_midi1(m.control_change_data()),
+            narrow_value(m.control_change_data()).get(),
             3,
         ),
         ChannelVoice2::ChannelPitchBend(m) => {
-            let bend14 = midi2_pitch_bend_to_midi1(m.pitch_bend_data());
+            let bend14 = narrow_bend(m.pitch_bend_data()).get();
             (0xE, (bend14 & 0x7F) as u8, ((bend14 >> 7) & 0x7F) as u8, 3)
         }
         ChannelVoice2::ProgramChange(m) => (0xC, u8::from(m.program()), 0, 2),
         ChannelVoice2::ChannelPressure(m) => {
-            (0xD, midi2_cc_to_midi1(m.channel_pressure_data()), 0, 2)
+            (0xD, narrow_value(m.channel_pressure_data()).get(), 0, 2)
         }
         ChannelVoice2::KeyPressure(m) => (
             0xA,
             u8::from(m.note_number()),
-            midi2_cc_to_midi1(m.key_pressure_data()),
+            narrow_value(m.key_pressure_data()).get(),
             3,
         ),
         // Per-note pitch bend, per-note controller, RPN/NRPN have no

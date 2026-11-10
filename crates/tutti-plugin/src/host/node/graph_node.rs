@@ -511,7 +511,9 @@ mod loss_tests {
     fn dump() -> Vec<WireMidi> {
         let payload: Vec<u8> = (0..30).collect();
         let mut out = Vec::new();
-        tutti_midi_types::sysex7_fragments(MidiGroup::FIRST, &payload, &mut out);
+        out.extend(
+            tutti_ump::Sysex7Packets::checked(MidiGroup::FIRST, &payload).expect("a 7-bit payload"),
+        );
         assert_eq!(out.len(), 5);
         out.into_iter()
             .map(|ump| WireMidi { offset: 0, ump })

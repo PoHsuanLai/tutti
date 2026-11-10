@@ -1,8 +1,7 @@
 use super::*;
 use tutti_graph::{Offset, UmpAt};
-use tutti_midi_types::convert::midi1_velocity_to_midi2;
 
-use tutti_fixtures::midi;
+use tutti_fixtures::midi::{self, wide_velocity};
 
 /// A note-on with a 7-bit velocity, widened (M2-115), at the block's first
 /// frame: what `MidiSender::note_on` pushes.
@@ -13,7 +12,7 @@ fn note_on(note: u8, vel_u7: u8) -> UmpAt {
             MidiGroup::FIRST,
             MidiChannel::FIRST,
             note,
-            midi1_velocity_to_midi2(vel_u7),
+            tutti_fixtures::midi::wide_velocity(vel_u7),
         ),
     )
 }
@@ -58,12 +57,29 @@ fn cloned_sender_pushes_to_same_receiver() {
 #[test]
 fn sender_note_helpers_match_explicit_events() {
     let (sender, receiver) = MidiMailbox::pair();
-    sender.note_on(MidiChannel::FIRST, NoteNumber::of(60), U7::of(100));
+    sender.note_on(MidiChannel::FIRST, NoteNumber::of(60), wide_velocity(100));
     sender.note_off(MidiChannel::FIRST, NoteNumber::of(60));
     let mut buf = [(0, Ump([0; 4])); 4];
     assert_eq!(receiver.poll_into(&mut buf), 2);
     assert_eq!(buf[0], raw(note_on(60, 100)));
     assert_eq!(buf[1], raw(note_off(60)));
+}
+
+/// A Note On at velocity 0 is a MIDI 2.0 Note On (M2-104 §7.4.2), not a
+/// Note Off.
+///
+/// Mutation (run): `MidiSender::note_on` widening a MIDI 1.0 Note On (which
+/// turns velocity 0 into a Note Off) -> fails here.
+#[test]
+fn a_note_on_at_velocity_zero_stays_a_note_on() {
+    let (sender, receiver) = MidiMailbox::pair();
+    sender.note_on(MidiChannel::FIRST, NoteNumber::of(60), 0);
+    let mut buf = [(0, Ump([0; 4])); 2];
+    assert_eq!(receiver.poll_into(&mut buf), 1);
+    assert_eq!(
+        buf[0].1,
+        midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0)
+    );
 }
 
 /// A push into a ring whose receiver is gone still lands (the count says
@@ -73,7 +89,7 @@ fn dropped_receiver_keeps_sender_pushable() {
     let (sender, receiver) = MidiMailbox::pair();
     drop(receiver);
     assert_eq!(sender.queue(&[note_on(60, 100), note_on(64, 100)]), 2);
-    assert!(sender.note_on(MidiChannel::FIRST, NoteNumber::of(67), U7::of(100)));
+    assert!(sender.note_on(MidiChannel::FIRST, NoteNumber::of(67), wide_velocity(100)));
 }
 
 /// A partial accept reports the prefix that landed, not the count offered.

@@ -262,10 +262,17 @@ impl SessionBuilder {
         #[cfg(feature = "midi-hardware")]
         let (midi_io, device_events) = midi_io.transpose()?.unzip();
 
-        let mut graph = Graph::new(self.input_layout()?, outputs, rate, max_block, quantum);
+        let transport = Transport::new(rate);
+        let mut graph = Graph::new(
+            self.input_layout()?,
+            outputs,
+            rate,
+            max_block,
+            quantum,
+            transport.settings.tempo_reader(),
+        );
         graph.set_render_workers(self.render_workers);
         graph.set_render_worker_start(self.render_worker_start.take());
-        let transport = Transport::new(rate);
         let click_settings = Arc::new(ClickSettings::new());
 
         // The metronome. It reads the beat, play and record state from its
@@ -434,13 +441,21 @@ impl SessionBuilder {
             .root
             .as_ref()
             .map_or(self.outputs_floor, |r| r.positions().len());
-        let mut graph = Graph::new(self.input_layout()?, outputs, rate, LIVE_MAX_BLOCK, None);
+        let transport = Transport::new(rate);
+        let mut graph = Graph::new(
+            self.input_layout()?,
+            outputs,
+            rate,
+            LIVE_MAX_BLOCK,
+            None,
+            transport.settings.tempo_reader(),
+        );
         graph.set_render_workers(self.render_workers);
         graph.declare_root(self.root.clone(), None)?;
         self.session(
             Parts {
                 graph,
-                transport: Transport::new(rate),
+                transport,
                 click: None,
                 click_settings: Arc::new(ClickSettings::new()),
                 compensation: Arc::default(),

@@ -22,12 +22,13 @@ use tutti_plugin_types::MainThread;
 use arrayvec::ArrayVec;
 use parking_lot::Mutex;
 use tutti_graph::{Cx, Offset};
-use tutti_transport::{MeterSlotReader, ProjectMeter};
+use tutti_tempo::Cursor;
+use tutti_transport::{MeterSlotReader, ProjectMeter, TempoReader};
 use tutti_types::{MeterMap, Samples};
 use tutti_vst2_host::{ChannelLayout, PluginInfo, Vst2ProcessContext, WireMidi};
 
 use super::instance::Instance;
-use crate::host::node::transport_source::{self, HostClock, ProjectTime, SteadyTime};
+use crate::host::node::transport_source::{self, HostClock, ProjectMaps, ProjectTime, SteadyTime};
 use crate::host::node::{DeliveryCounters, MidiIntake, ParamDelivery, PluginMeter, SegmentPoints};
 use tutti_plugin_types::{Features, MIDI_STACK_CAPACITY, MidiEventVec, ParamId, TransportInfo};
 
@@ -177,6 +178,12 @@ pub(super) struct TransportFeed {
     /// The meter read when none is installed (4/4 from bar 0), held so a
     /// block never builds one.
     default_meter: MeterMap,
+    /// The project's tempo map, lent once per block
+    /// ([`InProcessVst2Client::with_tempo`]): the tempo every block's
+    /// snapshot reports. A clone registers a reader of its own.
+    tempo: TempoReader,
+    /// The block's cursor into the map, kept across blocks.
+    cursor: Cursor,
     /// The free-running sample counter: frames this node rendered.
     steady: SteadyTime,
     /// Project time: rolls with playback, holds while stopped, re-seated at
@@ -204,6 +211,8 @@ impl TransportFeed {
             reader: meter.reader(),
             meter,
             default_meter: MeterMap::default(),
+            tempo: transport_source::fixed_default_tempo(),
+            cursor: Cursor::default(),
             steady: SteadyTime::default(),
             project: ProjectTime::default(),
             host_clock: Some(HostClock),
@@ -217,6 +226,7 @@ impl TransportFeed {
     /// `offline` render, no host clock.
     pub(super) fn forked(&self, offline: bool) -> Self {
         let mut feed = Self::over(PluginMeter::holding(self.meter.installed()));
+        feed.tempo = self.tempo.clone();
         if offline {
             feed.host_clock = None;
         }
@@ -242,13 +252,20 @@ impl TransportFeed {
             return self.last;
         };
         let installed = self.reader.lend();
+        // One lend of the tempo map for the block, ended with it.
+        let tempo = self.tempo.lend();
         self.last = transport_source::from_cx(
             cx,
             at,
+            frames,
             self.steady.at(0),
             &mut self.project,
             self.host_clock.map(HostClock::now_ns),
-            installed.as_deref().unwrap_or(&self.default_meter),
+            &mut ProjectMaps {
+                meter: installed.as_deref().unwrap_or(&self.default_meter),
+                tempo: &tempo,
+                cursor: &mut self.cursor,
+            },
         );
         self.steady.advance(frames);
         self.last
@@ -343,6 +360,18 @@ impl InProcessVst2Client {
             params,
             segments,
         }
+    }
+
+    /// Gives the node the reader of the project's tempo map it tells the
+    /// plugin the tempo from (`audioMasterGetTime`'s `tempo`), lent once per
+    /// block. `Session` does this for every plugin it inserts; a node driven
+    /// without a session reads a fixed 120 BPM map until it is called. A
+    /// fork clones the reader. Control thread (the reader's registration
+    /// allocates, so the clone is made here and not on the audio thread).
+    #[must_use]
+    pub fn with_tempo(mut self, tempo: TempoReader) -> Self {
+        self.transport.tempo = tempo;
+        self
     }
 
     /// Gives the plugin the project meter, for the time signature and bar
@@ -563,6 +592,14 @@ mod transport_tests {
         }
     }
 
+    /// A feed whose tempo map is the constant 132 BPM `env()`'s transport
+    /// carries, so a block reports the tempo the test's transport has.
+    fn feed() -> TransportFeed {
+        let mut feed = TransportFeed::new();
+        feed.tempo = TempoReader::constant(Bpm::of(132.0)).expect("a tempo");
+        feed
+    }
+
     fn cx(e: &Env) -> Cx<'_> {
         Cx {
             env: e,
@@ -594,7 +631,7 @@ mod transport_tests {
     #[test]
     fn the_block_context_carries_the_transport_from_cx() {
         let e = env();
-        let mut feed = TransportFeed::new();
+        let mut feed = feed();
         let snapshot = feed.block(&cx(&e), 64, loader_features());
         let ctx = block_context(48_000.0, &[], &snapshot);
         let delivered = ctx.transport.expect("a transport snapshot");
@@ -616,7 +653,7 @@ mod transport_tests {
     #[test]
     fn a_plugin_not_declaring_transport_is_handed_the_default() {
         let e = env();
-        let mut feed = TransportFeed::new();
+        let mut feed = feed();
         let got = feed.block(&cx(&e), 64, Features::empty());
         let default = TransportInfo::default();
         assert_eq!(got.timing.tempo, default.timing.tempo);
@@ -634,7 +671,7 @@ mod transport_tests {
     #[test]
     fn a_meter_installed_on_one_clone_reaches_another() {
         let e = env();
-        let held = TransportFeed::new();
+        let held = feed();
         let mut running = held.clone();
         held.meter.set_meter(seven_eight_meter());
         let got = running.block(&cx(&e), 64, loader_features());
@@ -651,7 +688,7 @@ mod transport_tests {
     #[test]
     fn a_fork_has_the_meter_installed_when_it_forked() {
         let e = env();
-        let mut live = TransportFeed::new();
+        let mut live = feed();
         live.meter.set_meter(seven_eight_meter());
         let _ = live.block(&cx(&e), 64, loader_features());
         let mut fork = live.forked(false);
@@ -669,7 +706,7 @@ mod transport_tests {
     #[test]
     fn the_counter_counts_the_frames_rendered() {
         let e = env();
-        let mut feed = TransportFeed::new();
+        let mut feed = feed();
         let _ = feed.block(&cx(&e), 64, loader_features());
         let second = feed.block(&cx(&e), 64, loader_features());
         assert_eq!(second.position.continuous_samples, 64);
@@ -683,7 +720,7 @@ mod transport_tests {
     #[test]
     fn an_empty_block_repeats_the_last_snapshot() {
         let e = env();
-        let mut feed = TransportFeed::new();
+        let mut feed = feed();
         let _ = feed.block(&cx(&e), 64, loader_features());
         let empty = feed.block(&cx(&e), 0, loader_features());
         assert_eq!(empty.timing.tempo, 132.0);
@@ -701,7 +738,7 @@ mod transport_tests {
     #[test]
     fn only_a_live_feed_carries_the_host_clock() {
         let e = env();
-        let mut live = TransportFeed::new();
+        let mut live = feed();
         assert!(
             live.block(&cx(&e), 64, loader_features())
                 .system_time_ns
@@ -718,6 +755,30 @@ mod transport_tests {
         assert_eq!(
             offline.block(&cx(&e), 64, loader_features()).system_time_ns,
             None
+        );
+    }
+
+    /// The tempo a block reports is the project map's at the playhead, not
+    /// the transport's own (`Env`'s 132), and a fork reads the map it was
+    /// cloned from.
+    ///
+    /// Mutation (run): drop `Snapshot::follow` from `from_cx` -> the block
+    /// reads 132 -> fails. Mutation (run): `forked` not cloning the tempo
+    /// reader (`feed.tempo` left at its 120 default) -> the fork reads 120
+    /// -> fails.
+    #[test]
+    fn a_block_reports_the_maps_tempo_and_a_fork_the_same_map() {
+        let e = env();
+        let mut live = feed();
+        live.tempo = TempoReader::constant(Bpm::of(100.0)).expect("a tempo");
+        assert_eq!(
+            live.block(&cx(&e), 64, loader_features()).timing.tempo,
+            100.0
+        );
+        let mut fork = live.forked(true);
+        assert_eq!(
+            fork.block(&cx(&e), 64, loader_features()).timing.tempo,
+            100.0
         );
     }
 }

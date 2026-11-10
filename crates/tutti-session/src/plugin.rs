@@ -897,7 +897,9 @@ impl Session {
             Err(plugin) => {
                 let plugin_meter = plugin.meter();
                 plugin_meter.set_meter(meter);
-                let (node, _) = self.graph.insert(*plugin);
+                let (node, _) = self
+                    .graph
+                    .insert((*plugin).with_tempo(self.graph.tempo.clone()));
                 let mut hosted = HostedPlugin::new(handle);
                 hosted.meter = Some(plugin_meter);
                 self.graph.plugins.insert(node, hosted);

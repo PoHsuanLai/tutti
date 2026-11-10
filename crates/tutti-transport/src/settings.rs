@@ -9,10 +9,11 @@
 //! lock-free cell shared between the UI thread and the audio thread, and a
 //! forwarding method would only rename it.
 
+use super::TempoReader;
 use super::state::AtomicBpm;
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
-use tutti_rt::{ArcLend, Reader};
+use tutti_rt::ArcLend;
 use tutti_tempo::TempoMap;
 
 use atomic_float::AtomicF64;
@@ -200,10 +201,13 @@ impl TransportSettings {
         TempoMap::constant(Bpm::default()).expect("120 BPM is a map")
     }
 
-    /// A reader of the map, registered here on the control side for the one
-    /// engine that lends it once per block.
-    pub(crate) fn tempo_reader(&self) -> Reader<TempoMap> {
-        self.tempo_map.reader()
+    /// A reader of the map, registered here on the control side: for the one
+    /// engine that lends it once per block, or a hosted node that reports the
+    /// project's tempo ([`TempoReader`]). Each call registers a reader of its
+    /// own.
+    #[must_use]
+    pub fn tempo_reader(&self) -> TempoReader {
+        TempoReader::new(&self.tempo_map)
     }
 
     /// The playhead as last published by the clock.

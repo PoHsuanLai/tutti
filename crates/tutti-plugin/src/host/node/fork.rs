@@ -54,7 +54,9 @@
 //!    it**. Parameters come with it: the state is the format's own
 //!    save/load (CLAP `clap.state`, VST3 `getState`/`setState`, AU class
 //!    info), which is what a project save restores parameters from.
-//! 4. **Give it the live node's meter.** Everything else it reads comes
+//! 4. **Give it the live node's meter and a reader of its tempo map**
+//!    (a clone, registered at the gather: the tempo the plugin is told is
+//!    the project's map, live or offline). Everything else it reads comes
 //!    from its own graph: the transport from its `Env` (for an offline
 //!    fork, the render's), and parameter automation, chords and
 //!    scales and MIDI from the graph's event edges, whose nodes fork
@@ -294,11 +296,39 @@ struct PluginFork {
     id: String,
     /// The live node's controls: its installed sources and its rate.
     controls: PluginControls,
+    /// The live node's reader of the project's tempo map. A fork lends the
+    /// same map (the project's, live or offline), through a reader cloned from
+    /// this one at the gather, on the control thread, where a registration
+    /// may allocate.
+    tempo: tutti_transport::TempoReader,
+}
+
+/// The reader of the tempo map a fork's node lends, from the state of the
+/// client being forked. Sealed: only [`Unbound`] and [`Bound`] are states.
+pub trait ForkTempo {
+    /// A reader of its own for the fork (registered here, control side). A
+    /// bound node's is a clone of the live node's; an unbound client has no
+    /// project, so its fork reads the fixed default tempo.
+    #[doc(hidden)]
+    fn fork_tempo(&self) -> tutti_transport::TempoReader;
+}
+
+impl ForkTempo for super::Unbound {
+    fn fork_tempo(&self) -> tutti_transport::TempoReader {
+        super::transport_source::fixed_default_tempo()
+    }
+}
+
+impl ForkTempo for Bound {
+    fn fork_tempo(&self) -> tutti_transport::TempoReader {
+        self.tempo.clone()
+    }
 }
 
 impl PluginFork {
-    fn of<S>(client: &PluginClient<S>) -> Self {
+    fn of<S: ForkTempo>(client: &PluginClient<S>) -> Self {
         Self {
+            tempo: client.state.fork_tempo(),
             bridge: Arc::downgrade(&client.bridge),
             origin: Arc::clone(&client.origin),
             id: client.descriptor.id.clone(),
@@ -335,6 +365,7 @@ impl PluginFork {
             id: self.id.clone(),
             sample_rate: self.controls.sample_rate(),
             sources: self.controls.sources_now(),
+            tempo: self.tempo.clone(),
             offline: matches!(mode, ForkMode::Offline),
         })
     }
@@ -358,6 +389,9 @@ struct Capture {
     /// The live node's rate, which the fresh instance is launched at.
     sample_rate: tutti_types::SampleRate,
     sources: ForkedSources,
+    /// A reader of the project's tempo map of the fork's own, registered at
+    /// the gather.
+    tempo: tutti_transport::TempoReader,
     offline: bool,
 }
 
@@ -404,7 +438,7 @@ impl Capture {
             died: Mutex::new(None),
             budget: timeout,
         });
-        let mut fork = fork.bind();
+        let mut fork = fork.bind(self.tempo);
         fork.state.params.seed(&self.delivered);
         if self.offline {
             // Advisory: a plugin without the concept keeps rendering as it
@@ -451,7 +485,7 @@ impl ForkSource for PluginFork {
     }
 }
 
-impl<S> PluginClient<S> {
+impl<S: ForkTempo> PluginClient<S> {
     /// Creates a fresh instance of this plugin carrying this one's saved state,
     /// bound and ready to insert.
     ///

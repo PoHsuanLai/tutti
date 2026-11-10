@@ -477,6 +477,10 @@ fn a_fork_reads_its_transport_from_the_render() {
     reset_probe();
     let _env = ProbeEnv::new(true);
     let (client, handle) = load();
+    // The tempo the plugin is told is the project map's: a constant 93 BPM,
+    // which the render's transport carries too.
+    let client =
+        client.with_tempo(tutti_transport::TempoReader::constant(Bpm::of(93.0)).expect("a tempo"));
     let seven_eight = TimeSignature::new(BeatsPerBar::of(7), NoteValue::EIGHTH);
     client.set_meter(tutti_transport::ProjectMeter::new(MeterMap::new([
         MeterChange::new(Beat(0.0), seven_eight),
@@ -500,7 +504,7 @@ fn a_fork_reads_its_transport_from_the_render() {
         cap.time_info_present,
         "the fork answered audioMasterGetTime"
     );
-    assert_eq!(cap.time_tempo, 93.0, "the render's tempo");
+    assert_eq!(cap.time_tempo, 93.0, "the map's tempo");
     assert_eq!(cap.time_ppq_pos, 5.0, "the render's beat");
     assert_eq!(
         (cap.time_sig_numerator, cap.time_sig_denominator),

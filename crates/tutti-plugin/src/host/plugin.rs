@@ -62,6 +62,9 @@ enum Backend {
 pub struct Plugin {
     backend: Backend,
     handle: PluginHandle,
+    /// The project's tempo map the node tells the plugin the tempo from
+    /// ([`with_tempo`](Self::with_tempo)); `None` until a host gives one.
+    tempo: Option<tutti_transport::TempoReader>,
 }
 
 /// Reports identity and where the plugin runs, not the node's guts: the
@@ -226,6 +229,7 @@ impl Plugin {
         Self {
             backend: Backend::Subprocess(Box::new(client)),
             handle,
+            tempo: None,
         }
     }
 
@@ -238,6 +242,7 @@ impl Plugin {
         Self {
             backend: Backend::InProcessVst2(Box::new(client)),
             handle,
+            tempo: None,
         }
     }
 
@@ -370,6 +375,18 @@ impl Plugin {
 
     // ---- The graph node ---------------------------------------------------
 
+    /// Gives the node the reader of the project's tempo map it tells the
+    /// plugin the tempo from (and CLAP its slope), whichever backend it
+    /// landed in: the in-process VST2 node takes it as
+    /// `InProcessVst2Client::with_tempo`, a
+    /// subprocess node at [`PluginClient::bind`]. `Session::add_plugin` does
+    /// this; a plugin inserted by hand without it reads a fixed 120 BPM map.
+    #[must_use]
+    pub fn with_tempo(mut self, tempo: tutti_transport::TempoReader) -> Self {
+        self.tempo = Some(tempo);
+        self
+    }
+
     /// Returns the node as the concrete out-of-process [`PluginClient`],
     /// unbound.
     ///
@@ -429,7 +446,10 @@ impl tutti_graph::IntoNode for Plugin {
     fn into_parts(self) -> tutti_graph::NodeParts<Self::Controls> {
         match self.backend {
             Backend::Subprocess(c) => {
-                let parts = tutti_graph::IntoNode::into_parts(c.bind());
+                let tempo = self
+                    .tempo
+                    .unwrap_or_else(crate::host::node::transport_source::fixed_default_tempo);
+                let parts = tutti_graph::IntoNode::into_parts(c.bind(tempo));
                 tutti_graph::NodeParts {
                     node: parts.node,
                     controls: Some(parts.controls),
@@ -438,7 +458,11 @@ impl tutti_graph::IntoNode for Plugin {
             }
             #[cfg(feature = "vst2")]
             Backend::InProcessVst2(c) => {
-                let parts = tutti_graph::IntoNode::into_parts(*c);
+                let client = match self.tempo {
+                    Some(tempo) => c.with_tempo(tempo),
+                    None => *c,
+                };
+                let parts = tutti_graph::IntoNode::into_parts(client);
                 tutti_graph::NodeParts {
                     node: parts.node,
                     controls: None,

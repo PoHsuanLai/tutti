@@ -32,10 +32,12 @@ const SAMPLE_RATE: f64 = 48_000.0;
 /// The pipeline's chunk: what the node ships per submission.
 const CHUNK: usize = 64;
 /// Frames the probe's echo occupies (`TRANSPORT_ECHO_FRAMES`), mirrored.
-const ECHO: usize = 5;
+const ECHO: usize = 6;
 
 /// What the probe writes for a transport: beats, tempo, flags (1 playing,
-/// 2 recording, 4 loop), loop start, loop end.
+/// 2 recording, 4 loop), loop start, loop end, tempo slope. The slope of
+/// these scenes is always 0: the map behind them (`scene_map`) has steps
+/// only (the slope itself is `the_plugin_is_told_the_maps_tempo_and_slope`).
 fn echo_of(t: &Transport) -> [f64; ECHO] {
     let flags = f64::from(u8::from(t.playing))
         + 2.0 * f64::from(u8::from(t.recording()))
@@ -43,7 +45,7 @@ fn echo_of(t: &Transport) -> [f64; ECHO] {
     let (start, end) = t
         .looping
         .map_or((0.0, 0.0), |l| (l.start.get(), l.end.get()));
-    [t.beat().get(), t.tempo.get(), flags, start, end]
+    [t.beat().get(), t.tempo.get(), flags, start, end, 0.0]
 }
 
 /// The echo in `out` at `at`, if the chunk there carried one (a chunk the
@@ -105,6 +107,35 @@ fn scene(b: usize, block: usize) -> (Transport, TransportChanges) {
     (t, changes)
 }
 
+/// The project's tempo map behind [`scene`]: 120 BPM, 90 around the tempo
+/// scenes' change and 100 around the stopped scenes' beat, so the tempo the
+/// plugin is told from the map is the one the scene's transport carries at
+/// each frame. (A tempo point is the map's way to say what a transport's
+/// own tempo change says.)
+fn scene_map(blocks: usize) -> tutti_tempo::TempoMap {
+    use tutti_tempo::{Shape, TempoMap, TempoPoint};
+    let point = |beat: f64, bpm: f64| TempoPoint {
+        beat: Beat(beat),
+        tempo: Bpm::of(bpm),
+        shape: Shape::Step,
+    };
+    let mut points = vec![point(0.0, 120.0)];
+    for b in 0..blocks {
+        let base = 4.0 + b as f64;
+        match b % 6 {
+            2 => points.extend([point(base + 0.4, 90.0), point(base + 0.6, 120.0)]),
+            5 => points.extend([point(base - 0.1, 100.0), point(base + 0.1, 120.0)]),
+            _ => {}
+        }
+    }
+    TempoMap::new(points).expect("a map")
+}
+
+/// A reader of [`scene_map`], for the nodes under test.
+fn scene_tempo() -> tutti_transport::TempoReader {
+    tutti_transport::TempoReader::fixed(std::sync::Arc::new(scene_map(64)))
+}
+
 /// Render `blocks` scenes of `block` frames through `rig`, one block per call;
 /// return, per block, the `Env` the node was handed and the output channel 0.
 fn render_scenes(
@@ -158,7 +189,7 @@ fn the_transport_a_live_plugin_sees_is_env_at_every_block() {
     let _lock = machine_lock();
     let _env = ProbeEnv::new().render_mode(render::TRANSPORT);
     let probe = load_probe(SAMPLE_RATE);
-    let mut rig = Rig::new(probe.client.bind(), SAMPLE_RATE, CHUNK);
+    let mut rig = Rig::new(probe.client.bind(scene_tempo()), SAMPLE_RATE, CHUNK);
 
     const BLOCKS: usize = 60;
     let period = Duration::from_nanos((CHUNK as f64 / SAMPLE_RATE * 1e9) as u64);
@@ -200,6 +231,7 @@ fn the_transport_an_offline_fork_sees_is_env_at_every_chunk() {
     let probe = load_probe(SAMPLE_RATE);
     let fork = probe
         .client
+        .bind(scene_tempo())
         .fork_instance(ForkMode::Offline)
         .expect("the probe forks");
     const BLOCK: usize = 2 * CHUNK;
@@ -283,6 +315,7 @@ fn a_plugin_behind_a_latent_path_sees_the_transport_its_input_was_rendered_at() 
     let probe = load_probe(SAMPLE_RATE);
     let fork = probe
         .client
+        .bind(scene_tempo())
         .fork_instance(ForkMode::Offline)
         .expect("the probe forks");
     const BLOCK: usize = 2 * CHUNK;
@@ -315,5 +348,80 @@ fn a_plugin_behind_a_latent_path_sees_the_transport_its_input_was_rendered_at() 
     }
     // The previous block's transport is not this one's: the test can tell.
     assert!(differs >= BLOCKS - 1, "{differs} chunks could tell");
+    drop(probe.handle);
+}
+
+/// 120 to 180 BPM over the first four beats, tempo linear in time: it climbs
+/// 60 / 76 800 BPM per frame at 48 kHz and is 150 at beat 1.8.
+fn ramp_tempo() -> tutti_transport::TempoReader {
+    use tutti_tempo::{Shape, TempoMap, TempoPoint};
+    let map = TempoMap::new([
+        TempoPoint {
+            beat: Beat(0.0),
+            tempo: Bpm::of(120.0),
+            shape: Shape::RampTime,
+        },
+        TempoPoint {
+            beat: Beat(4.0),
+            tempo: Bpm::of(180.0),
+            shape: Shape::Step,
+        },
+    ])
+    .expect("a map");
+    tutti_transport::TempoReader::fixed(std::sync::Arc::new(map))
+}
+
+/// **The plugin is told the project map's tempo and CLAP its slope**, through
+/// a real `plugin-server`: playing at beat 1.8 of a ramp, its transport event
+/// carries the curve's tempo there (150, not the engine's chord 120) and the
+/// ramp's own slope in `tempo_inc`; stopped, the slope is zero.
+///
+/// Mutation: drop `.with_tempo_inc(..)` in the CLAP host's `convert_transport`
+/// (the server's copy of the wire's snapshot) -> the echoed slope is 0 ->
+/// fails. Mutation: leave `Snapshot::follow` out of `from_cx` -> tempo 120 ->
+/// fails.
+#[test]
+fn the_plugin_is_told_the_maps_tempo_and_slope() {
+    let _lock = machine_lock();
+    let _env = ProbeEnv::new().render_mode(render::TRANSPORT);
+    let probe = load_probe(SAMPLE_RATE);
+    let fork = probe
+        .client
+        .bind(ramp_tempo())
+        .fork_instance(ForkMode::Offline)
+        .expect("the probe forks");
+    let prepare = tutti_graph::Prepare::new(SampleRate(SAMPLE_RATE), Samples(CHUNK))
+        .with_quantum(Samples(CHUNK));
+    let mut rig = Rig::prepared(fork, prepare);
+
+    let ins = rig.inputs();
+    let silence = vec![0.0f32; CHUNK];
+    let inputs: Vec<&[f32]> = (0..ins).map(|_| &silence[..]).collect();
+    let mut out = vec![vec![0.0f32; CHUNK]; rig.outputs()];
+    let mut heard = Vec::new();
+    // Rolling, then stopped, at the same beat: each block's echo is in the
+    // next block's output (the pipeline holds one chunk).
+    for playing in [true, true, false, false] {
+        // The engine's own transport says 120 whatever the map says.
+        let transport = Transport::new(playing, Bpm::of(120.0), Beat(1.8), None);
+        let changes = TransportChanges::NONE;
+        let r = rig.renderer();
+        let mut outs: Vec<&mut [f32]> = out.iter_mut().map(|c| &mut c[..]).collect();
+        r.executor_mut()
+            .process_with_changes(CHUNK, &transport, &changes, &inputs, &mut outs);
+        r.editor_mut().collect();
+        heard.push(echo_at(&out[0], 0));
+    }
+    // Block 1 hears block 0's chunk (rolling), block 3 block 2's (stopped).
+    let rolling = heard[1].expect("an offline fork collects every chunk");
+    assert!((rolling[1] - 150.0).abs() < 1e-3, "tempo {}", rolling[1]);
+    assert!(
+        (rolling[5] - 60.0 / 76_800.0).abs() < 1e-9,
+        "slope {}",
+        rolling[5]
+    );
+    let stopped = heard[3].expect("an offline fork collects every chunk");
+    assert!((stopped[1] - 150.0).abs() < 1e-3);
+    assert_eq!(stopped[5], 0.0);
     drop(probe.handle);
 }

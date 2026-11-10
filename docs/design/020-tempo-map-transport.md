@@ -53,7 +53,7 @@ Evidence for "no map anywhere": `grep TempoMap crates` hits only `tutti-tempo`;
 | `tutti-nodes` | `ClickNode` (beat-driven, via `Env`); `lfo.rs` and `automation/control_lane.rs` rebuild a `FrameClock` from `transport.tempo`. |
 | `tutti-sampler` | `voice/clock.rs`, `block_render.rs`, `wrap_fade.rs`: frames per beat from `clock.tempo()`; a voice is a private `FrameClock`. |
 | `tutti-plugin` `transport_source.rs` | Counts a plugin's steady time across chunks by segment; its own docs state "the engine has no tempo map" and that a ramp is counted at the faster tempo. |
-| `tutti-plugin-types`, `tutti-clap-host`, `tutti-vst3-host`, `tutti-vst2-host`, `tutti-au-host` | `timing.tempo` into `ProcessContext` / CLAP `transport` / VST2 `VstTimeInfo` / AU callbacks. CLAP's `tempo_inc` is always `0.0` (`clap-host/instance/audio.rs`). |
+| `tutti-plugin-types`, `tutti-clap-host`, `tutti-vst3-host`, `tutti-vst2-host`, `tutti-au-host` | `timing.tempo` into `ProcessContext` / CLAP `transport` / VST2 `VstTimeInfo` / AU callbacks. CLAP's `tempo_inc` was always `0.0` until stage 5a (`clap-host/instance/audio.rs`). |
 | `bevy-tutti`, `tutti-export` | `transport.settings.tempo()` seeds an `OfflineTimelineConfig` (examples); `beats_to_seconds` and `duration_to_frames` convert export ranges. |
 | `tutti-midi-file` | `MidiFile::seconds_at`: its own step-only integration of the file's tempo list. |
 
@@ -211,13 +211,12 @@ first frame:
 | AU | host tempo callback | The same. |
 
 **CLAP `tempo_inc`, checked.** The `clap-sys` 0.5.0 source (`events.rs:129`)
-declares `tempo_inc: f64` and carries no documentation, and the C header is not
-on this machine. The semantics are CLAP's `events.h`, quoted from memory, not
-verified here: "tempo increment for each samples and until the next time info
-event". `tutti-tempo`'s `Shape::RampTime` docs say the same (a constant
-increment per sample). Stage 5 re-checks it against `clap/events.h` before
-the host sends a non-zero value. Today the host always sends `0.0`
-(`tutti-clap-host/src/instance/audio.rs:461`).
+declares `tempo_inc: f64` and carries no documentation. Upstream's
+`clap/events.h` (main, checked 2026-11-11) does:
+`double tempo_inc; // tempo increment for each sample and until the next time
+info event`. `tutti-tempo`'s `Shape::RampTime` docs say the same (a constant
+increment per sample). The host sends it with `CLAP_TRANSPORT_HAS_TEMPO`
+(stage 5a, below); before that it always sent `0.0`.
 
 **What `TempoMap` offers for the slope.** It has no slope query. It has
 `tempo_at(beat)` and `tempo_at_seconds(seconds)` (instantaneous, via
@@ -325,7 +324,7 @@ render bit-identical (stage 0 adds the guards first).
 | 2 | Publish the map | `ArcLend<TempoMap>` on the session, the engine's `Reader`, reclaim on `Phase::Reclaim`; `set_tempo` publishes a constant map. `AtomicBpm` stays as the write-back for readers. | loom is not needed (reuses `ArcLend`); no-alloc gate on the engine; golden unchanged. |
 | 3 | Steps | Non-constant maps in the walker; step cells push `TransportChanges`; the block split at the 8th entry. `OfflineTimelineConfig` takes a map. | New step tests of §8. |
 | 4 | Ramps | Ramp cells, the grid bound, `tempo_at` slope on `TempoMap` if missing. | Ramp tests; block-size independence. |
-| 5 | Readers | Sampler, plugin transport source, MIDI clock; CLAP `tempo_inc`, VST3/VST2/AU tempo from the cell. | Per-host contract cases (`tutti-plugin-contract`), with a `gaps` ratchet untouched. |
+| 5 | Readers | Sampler, plugin transport source, MIDI clock; CLAP `tempo_inc`, VST3/VST2/AU tempo from the map (5a: the plugin hosts, below; 5b: a transport event at each point inside a chunk). | Per-host contract cases (`tutti-plugin-contract`), with a `gaps` ratchet untouched. |
 | 6 | Retire | `TransportCommand::Tempo`, `Timeline::tempo()`, `OfflineTimelineConfig::tempo`, `beats_to_seconds`, `duration_to_frames`; `MidiFile::seconds_at` over `TempoMap`; `plugin_midi_export` pins the note frames, not only the length. | Needs lane E4's bounce API; docs 013 updated. |
 
 **As built, stages 0 to 2 (publish a constant map).** Stage 0's guards already
@@ -438,6 +437,45 @@ published. What landed:
   and a beat ramp.
 - Not done here: the readers of section 5 (stage 5), and `Timeline::tempo()`
   as a tempo at a beat (stage 6).
+
+**As built, stage 5a (the plugin hosts).** A plugin is told the map's tempo,
+not the graph's chord, and CLAP its slope.
+
+- `tutti_transport::TempoReader` (a `tutti_rt::Reader<TempoMap>`: `lend` once
+  per block, no `Loan` across blocks, `Clone` registers a reader and so is
+  control-side) is the one way to read the published map:
+  `TransportSettings::tempo_reader()` is public, the engine's clock reads
+  through it, and `TempoReader::fixed(map)` / `constant(bpm)` is a reader over
+  a map of its own with no session (nothing republishes it), for a host or test
+  without one. The type names no node or format; the sampler can use it.
+- `PluginClient::bind(self, tempo: TempoReader)`: the bound node owns the
+  reader, lends the map once per block, and keeps a `Cursor` into it; a fork
+  clones the reader on the control side (at the gather). `tutti-session`'s
+  `Graph` holds a template reader from the session's settings and binds every
+  plugin it inserts or replaces with a clone (`insert_plugin`, `replace_plugin`);
+  a host that binds itself uses `session.transport().settings.tempo_reader()`.
+  The in-process VST2 node and `Plugin` (which stays an `IntoNode`) take it
+  with `with_tempo`, reading a fixed 120 BPM map until a host gives one;
+  `Session::add_plugin` does.
+- Per chunk, from the snapshot's own beat `b0` (latency, loops and seeks
+  already applied) and its length `n` frames (`Snapshot::follow`): `tempo` is
+  `tempo_at(b0)` (a step's own tempo, a ramp's curve at the beat), and
+  `tempo_inc` is `(tempo_at_seconds(t1) - tempo) / n` with `t1 = seconds_at(b0)
+  + n / rate`, exact for `RampTime`. It is `0.0` when the transport is stopped,
+  when a map point lies in `(b0, b1]` (a point at `b0` itself is fine), or when
+  the chunk crosses the loop's end. A point inside the chunk is stage 5b's: a
+  transport event at the point's frame, which is when a slope across a point
+  could be right.
+- `MusicalTiming::tempo_inc` (BPM per sample, `f64`, default `0.0`) crosses the
+  IPC wire inside `TransportInfo`, eight bytes after `tempo`, so the wire
+  protocol is 22. The CLAP host sends it beside `HAS_TEMPO` (finite only);
+  VST3, VST2 and AU read `tempo` alone.
+- Tests: the unit tests of `transport_source` (step, ramp, point, stopped,
+  loop, constant), the CLAP host's event, the test plugin's echo through a real
+  `plugin-server` (`clap_transport`), and the wire. The shared contract plugin
+  records no transport, so a per-format contract case needs it to (the C++
+  VST3 mirror included): not done in 5a; each host's unit tests pin that
+  `timing.tempo` reaches the ABI field.
 
 Doc 013 gets an update at stage 2 and 6 (its "tempo steps here" note, the
 `OfflineTimeline` row, the dead-crate and timeline sections). CLAUDE.md's

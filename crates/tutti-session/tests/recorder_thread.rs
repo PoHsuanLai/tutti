@@ -1,11 +1,10 @@
-//! [`ThreadDriver`] — the default driver — under test.
+//! [`Recorder`]'s thread under test.
 //!
-//! The unit tests in `recorder.rs` drive a [`ManualDriver`] so they can count
-//! passes instead of sleeping. These cover what only the thread driver runs:
-//! `std::thread::spawn`, the `Acquire`/`Release` stop handshake, the
-//! [`PumpPass::Ended`] break, the [`IDLE_PARK`] on a starving source, and
-//! `impl RunningPump for JoinHandle` — including its "recording thread
-//! panicked" arm.
+//! The unit tests in `src/recorder/tests.rs` step a `PumpLoop` by hand so they
+//! can count passes instead of sleeping. These cover what only the thread
+//! runs: `std::thread::spawn`, the `Acquire`/`Release` stop handshake, the
+//! [`PumpPass::Ended`] break, the park on a starving source, and the join,
+//! including its "recording thread panicked" arm.
 //!
 //! The first three sequence on a fact the pump thread *publishes about
 //! itself* — drained, polled N times — via [`wait_until`], so no assertion
@@ -15,7 +14,7 @@
 //! nextest's per-test timeout. That is said plainly at the test rather than
 //! dressed up as a check.
 //!
-//! Mutations run against `ThreadDriver`, and which test each one broke. Every
+//! Mutations run against `the thread`, and which test each one broke. Every
 //! row was executed, not reasoned about:
 //!
 //! | mutation in `recorder.rs` | fails |
@@ -43,9 +42,21 @@
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use tutti_codec::Pcm;
-use tutti_io::{Recorder, WavOut};
-use tutti_types::{AudioIn, ChannelLayout, OnEmpty, Samples};
+use tutti_codec::{FileOut, Format, Pcm, Spec};
+use tutti_session::{Recorder, RecorderError};
+use tutti_types::{AudioIn, ChannelLayout, OnEmpty, SampleRate, Samples};
+
+fn wav(path: &std::path::Path) -> FileOut {
+    FileOut::create(
+        path,
+        &Spec::new(
+            Format::Wav(Pcm::Float32),
+            ChannelLayout::STEREO,
+            SampleRate(48_000.0),
+        ),
+    )
+    .expect("sink opens")
+}
 
 /// Block until `cond` holds, or fail the test at `deadline`.
 ///
@@ -71,9 +82,9 @@ fn wait_until(what: &str, cond: impl Fn() -> bool) {
 }
 
 /// A finite source: hands out `frames` frames of a known ramp, then reports
-/// end-of-stream. `ThreadDriver` must break its own loop on that.
+/// end-of-stream. `the thread` must break its own loop on that.
 ///
-/// Re-declared here rather than shared with `recorder.rs`'s fixture of the same
+/// Re-declared here rather than shared with `the unit tests' fixture of the same
 /// shape: that one is `#[cfg(test)]`-private to the crate, and an integration
 /// binary cannot see it. `tutti-sampler`'s `MockTransport` hits the same wall
 /// and answers it the same way (`tests/tier_parity.rs:119`).
@@ -179,14 +190,14 @@ impl AudioIn for Exploding {
     }
 }
 
-fn sink(path: &std::path::Path) -> WavOut {
-    WavOut::create(path, 48_000.0, 2u16, Pcm::Float32).expect("sink opens")
+fn sink(path: &std::path::Path) -> FileOut {
+    wav(path)
 }
 
 /// **A finite take ends itself, on a real thread, and the file is readable.**
 ///
 /// This is the whole production path in one test: `Recorder::start` spawns via
-/// `ThreadDriver`, the loop runs `pump_once` until `Ramp` reports
+/// `the thread`, the loop runs `pump_once` until `Ramp` reports
 /// [`OnEmpty::EndOfStream`], the driver breaks, finalizes where it owns the
 /// loop, and the `io::Result` rides the joined `JoinHandle` back to `stop`.
 ///
@@ -313,7 +324,7 @@ fn a_starving_source_is_ended_only_by_stop() {
 
 /// **A panic on the pump thread becomes an error, not a lost take.**
 ///
-/// `impl RunningPump for JoinHandle` maps a poisoned join to
+/// the join maps a poisoned join to
 /// `io::Error::other("recording thread panicked")`. Nothing exercised that arm,
 /// so a panicking source would have surfaced as… whatever `unwrap` does.
 ///
@@ -550,7 +561,7 @@ impl AudioIn for Dead {
 fn a_dead_source_ends_its_own_take() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("dead.wav");
-    let wav = WavOut::create(&path, 48_000.0, 2u16, Pcm::Float32).unwrap();
+    let wav = sink(&path);
     let mut rec = Recorder::start(Dead { left: 7 }, wav).unwrap();
 
     wait_until("the pump to stop on its own", || rec.is_finished());
@@ -569,14 +580,122 @@ fn wait_and_finish_report_a_failed_source() {
     for use_wait in [true, false] {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("dead.wav");
-        let wav = WavOut::create(&path, 48_000.0, 2u16, Pcm::Float32).unwrap();
+        let wav = sink(&path);
         let rec = Recorder::start(Dead { left: 7 }, wav).unwrap();
         wait_until("the pump to stop on its own", || rec.is_finished());
         let result = if use_wait { rec.wait() } else { rec.finish() };
         assert!(
-            matches!(result, Err(tutti_io::Error::SourceFailed)),
+            matches!(result, Err(RecorderError::SourceFailed)),
             "got {result:?}"
         );
         assert_eq!(hound::WavReader::open(&path).unwrap().len(), 14);
     }
+}
+
+/// A live source that never ends and fills every buffer it is handed, counting
+/// its polls. Only `Drop` (or `finish`) can end a take over it.
+struct AlwaysLive {
+    polls: Arc<AtomicUsize>,
+}
+
+impl AudioIn for AlwaysLive {
+    const ON_EMPTY: OnEmpty = OnEmpty::Starved;
+
+    fn layout(&self) -> ChannelLayout {
+        ChannelLayout::STEREO
+    }
+
+    fn poll_into(&mut self, out: &mut [f32]) -> Samples {
+        self.polls.fetch_add(1, Ordering::Release);
+        let frames = Samples::from_interleaved_len(out.len(), ChannelLayout::STEREO);
+        out[..frames.interleaved_len(ChannelLayout::STEREO)].fill(0.5);
+        frames
+    }
+}
+
+/// **The `Drop` guarantee.** A live recorder dropped without `finish` still
+/// stops its thread and finalizes, so the WAV is readable.
+///
+/// A starving source has no exit but the stop flag, so without the `Drop` the
+/// thread never reaches `finalize` (and never stops): the RIFF/data sizes stay
+/// at their placeholders and the pump keeps polling. Both are observed: the
+/// file holds the frames and the poll count freezes once the drop returns.
+///
+/// Mutation (run): delete `impl Drop for Recorder`: the poll count keeps
+/// climbing after the drop and the header reads zero frames, so both
+/// assertions fail.
+#[test]
+fn dropping_a_live_recorder_still_finalizes_the_wav() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("dropped.wav");
+    let polls = Arc::new(AtomicUsize::new(0));
+
+    let rec = Recorder::start(
+        AlwaysLive {
+            polls: Arc::clone(&polls),
+        },
+        sink(&path),
+    )
+    .expect("matching stereo widths");
+    wait_until("the live source to be polled", || {
+        polls.load(Ordering::Acquire) >= 3
+    });
+    drop(rec);
+
+    let at_drop = polls.load(Ordering::Acquire);
+    std::thread::sleep(std::time::Duration::from_millis(20));
+    assert_eq!(
+        polls.load(Ordering::Acquire),
+        at_drop,
+        "the drop joined the pump thread: nothing polls the source after it"
+    );
+    let reader =
+        hound::WavReader::open(&path).expect("a dropped recorder must still leave a readable WAV");
+    assert_eq!(reader.spec().channels, 2);
+    assert!(
+        reader.len() >= 3 * 1024 * 2,
+        "the header reports the frames the counted polls wrote, got {}",
+        reader.len()
+    );
+}
+
+/// **`finish_in_place` finalizes in place, once.**
+///
+/// A component holding a take cannot move it into `finish`, so it calls
+/// `finish_in_place` from a `&mut`. The first call returns the finalize result;
+/// every later one returns `None`, and the `Drop` that follows joins nothing.
+///
+/// *Mutations:* make `join_pump` return `Some(Ok(()))` when the handle is gone
+/// (the second-call assertion fails); make `finish_in_place` skip
+/// `request_stop` (the take never ends: `wait_until` times out in the join's
+/// place, guarded here by sequencing on `is_finished` after an explicit stop).
+#[test]
+fn finish_in_place_finalizes_in_place_exactly_once() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("in_place.wav");
+    let polls = Arc::new(AtomicUsize::new(0));
+    let mut rec = Recorder::start(
+        AlwaysLive {
+            polls: Arc::clone(&polls),
+        },
+        sink(&path),
+    )
+    .expect("matching stereo widths");
+    wait_until("a pass to land", || polls.load(Ordering::Acquire) >= 1);
+
+    assert!(rec.is_running());
+    assert!(
+        matches!(rec.finish_in_place(), Some(Ok(()))),
+        "the first shutdown returns the finalize result"
+    );
+    assert!(!rec.is_running(), "a shutdown clears the run flag");
+    assert!(
+        rec.finish_in_place().is_none(),
+        "a second shutdown has nothing to join and must say so"
+    );
+    assert!(!rec.is_finished(), "no pump is left to report on");
+    drop(rec);
+
+    let reader = hound::WavReader::open(&path).expect("finalized in place");
+    assert!(reader.len() >= 1024 * 2);
 }

@@ -4,7 +4,7 @@ use crate::Wave;
 
 /// Write `wave` as a 16-bit WAV named `name` and return its path.
 ///
-/// `Wave` has no writer (the engine's WAV sink is `WavOut`), so this uses
+/// `Wave` has no writer (the engine's file sink is `FileOut`, which needs an encode feature), so this uses
 /// `hound` directly. The directory is per process, and nextest runs each
 /// test in its own, so no two tests share a file.
 fn save_wav16(wave: &Wave, name: &str) -> std::path::PathBuf {
@@ -339,7 +339,7 @@ fn a_mid_stream_decode_error_keeps_the_frames_before_it() {
 
 /// Through the trait alone, a cut FLAC yields its frames and then reads as
 /// failed, and a whole file ends without failing. (The pump over the cut file
-/// finishes as `Failed` rather than `Ended`: `tutti-io`'s
+/// finishes as `Failed` rather than `Ended`: `tutti-session`'s
 /// `tests/file_in_pump.rs`.)
 ///
 /// Mutation (run): removing the `is_failed` override from `impl AudioIn for

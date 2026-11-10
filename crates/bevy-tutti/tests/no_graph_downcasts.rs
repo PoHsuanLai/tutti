@@ -77,7 +77,7 @@ const ALLOWED: &[(&str, &str, usize, &str)] = &[
         "downcast_ref / downcast_mut",
         1,
         "a_width_mismatch_is_reported_not_recorded downcasts a `PumpFinished` \
-         io::Error's source to the `tutti_io::Error` it carries (the \
+         io::Error's source to the `RecorderError` it carries (the \
          conversion's documented use), not a graph node.",
     ),
 ];

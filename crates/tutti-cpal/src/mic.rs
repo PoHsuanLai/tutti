@@ -2,10 +2,12 @@
 //! stream in [`output`](super::output).
 //!
 //! This is the device crate, so opening the `cpal` stream belongs here and
-//! nowhere lower. Everything the mic feeds is device-free and sits one layer
-//! down in `tutti-io`: the monitor node this hands back, the `WavOut` a take
-//! records into, and the `Recorder` that pumps between them. What this crate
-//! contributes is the one live [`AudioIn`] that touches hardware.
+//! nowhere lower. Everything the mic feeds is device-free and lives lower: the
+//! inlet node that copies the monitor ring into the graph (`tutti-graph`'s
+//! `InletNode`, opened by `tutti-session`'s `Graph::add_inlet`), the
+//! `tutti_codec::FileOut` a take records into, and the `Recorder` that pumps
+//! between them (`tutti-session`). What this crate contributes is the one live
+//! [`AudioIn`] that touches hardware.
 //!
 //! # Threading
 //!
@@ -20,9 +22,10 @@
 //! # Live monitoring
 //!
 //! [`open_with_monitor`](MicIn::open_with_monitor) tees the same capture
-//! callback into a *second*, shallow ring drained by a [`MicMonitorNode`] (a
-//! `tutti_io` graph node, so it's device-free and lives in the graph).
-//! Add that node to the audio graph — through effects if you like — to hear the
+//! callback into a *second*, shallow ring and hands back its reader. Give it to
+//! `tutti-session`'s `Graph::add_inlet` with [`MicIn::sample_rate`], which
+//! refuses a rate that is not the graph's; the inlet node it makes copies the
+//! ring into the graph. Wire that node through effects if you like to hear the
 //! mic live while recording the same input. The two rings are independent: the
 //! recording ring is deep (dropout-resistant, latency irrelevant to a file); the
 //! monitor ring is shallow (low-latency, so you don't hear yourself slapped-back).
@@ -42,9 +45,8 @@ use std::sync::Arc;
 
 use cpal::traits::{DeviceTrait, StreamTrait};
 
-use tutti_codec::Pcm;
+use tutti_codec::{FileOut, Format, Spec};
 use tutti_graph::{TapReader, TapWriter};
-use tutti_io::{MicMonitorNode, MicRing, TapIn, WavOut};
 use tutti_types::SampleRate;
 use tutti_types::Samples;
 use tutti_types::{AudioIn, OnEmpty};
@@ -89,7 +91,7 @@ struct StreamHandle(
 /// The CPAL input callback selects the inputs the mic was opened with from each
 /// device frame and pushes them into a lock-free ring of about one second; this
 /// value is the consumer end. Poll it with [`poll_into`](AudioIn::poll_into),
-/// or hand it to a `tutti_io::Recorder` with a sink from
+/// or hand it to a `tutti_session::Recorder` with a sink from
 /// [`matching_sink`](Self::matching_sink) to record. If the consumer falls
 /// behind, the callback drops the newest frames rather than block. Capture
 /// stops when this value is dropped.
@@ -97,12 +99,11 @@ struct StreamHandle(
 /// Its [`layout`](AudioIn::layout) is the number of inputs selected, and its
 /// [`topology`](Self::topology) says they feed no speaker.
 ///
-/// [`open_with_monitor`](Self::open_with_monitor) also returns a
-/// [`MicMonitorNode`] fed from the same callback through a second, shallow
-/// (about 10 ms) ring, so the mic can be heard live through the graph while it
-/// is recorded.
+/// [`open_with_monitor`](Self::open_with_monitor) also returns the reader of a
+/// second, shallow (about 10 ms) ring fed from the same callback, for an inlet
+/// that makes the mic heard live through the graph while it is recorded.
 pub struct MicIn {
-    tap: TapIn,
+    tap: TapReader,
     sample_rate: SampleRate,
     /// How many inputs the device has.
     device_inputs: ChannelLayout,
@@ -135,7 +136,7 @@ impl MicIn {
     /// on both). Returns once the stream is live.
     ///
     /// The rate is a parameter rather than read off the device because nothing
-    /// downstream resamples: [`MicMonitorNode`] renders the mic into the graph
+    /// downstream resamples: an inlet renders the mic into the graph
     /// as-is, so the device must run at `graph_rate`. A device whose supported
     /// range covers `graph_rate` is opened at it (preferring `f32` samples);
     /// otherwise its default config is used if it already matches.
@@ -157,23 +158,24 @@ impl MicIn {
         Self::open_inner(sel.into(), graph_rate, None, false).map(|(mic, _)| mic)
     }
 
-    /// Opens the mic like [`open`](Self::open), and also returns a
-    /// live-monitor node fed by the same capture callback.
+    /// Opens the mic like [`open`](Self::open), and also returns the reader of
+    /// a live-monitor ring fed by the same capture callback.
     ///
     /// Each captured frame goes into both the recording ring (drained by
-    /// [`poll_into`](AudioIn::poll_into)) and a shallow monitor ring drained
-    /// by the returned [`MicMonitorNode`]. Add that node to the graph to hear
-    /// the mic live, through effects if wanted, while recording the same
-    /// input. The rings are independent: when one is full it drops frames
-    /// without stalling the other or the capture thread.
+    /// [`poll_into`](AudioIn::poll_into)) and a shallow monitor ring. Give the
+    /// monitor reader to `Graph::add_inlet` (`tutti-session`), with this mic's
+    /// [`sample_rate`](Self::sample_rate), to hear the mic live, through
+    /// effects if wanted, while recording the same input. The rings are
+    /// independent: when one is full it drops frames without stalling the
+    /// other or the capture thread.
     ///
     /// # Errors
     /// As [`open`](Self::open).
     pub fn open_with_monitor(
         sel: impl Into<DeviceSelector>,
         graph_rate: SampleRate,
-    ) -> Result<(Self, MicMonitorNode)> {
-        Self::open_inner(sel.into(), graph_rate, None, true).map(Self::with_node)
+    ) -> Result<(Self, TapReader)> {
+        Self::open_inner(sel.into(), graph_rate, None, true).map(Self::with_ring)
     }
 
     /// Opens the mic like [`open`](Self::open), capturing `inputs`: destination
@@ -195,9 +197,9 @@ impl MicIn {
         Self::open_inner(sel.into(), graph_rate, Some(inputs), false).map(|(mic, _)| mic)
     }
 
-    /// [`open_inputs`](Self::open_inputs) with a live-monitor node, as
+    /// [`open_inputs`](Self::open_inputs) with a live-monitor ring, as
     /// [`open_with_monitor`](Self::open_with_monitor) is to [`open`](Self::open).
-    /// The node has one output a selected input.
+    /// The ring has one lane a selected input.
     ///
     /// # Errors
     /// As [`open_inputs`](Self::open_inputs).
@@ -205,19 +207,12 @@ impl MicIn {
         sel: impl Into<DeviceSelector>,
         graph_rate: SampleRate,
         inputs: &[usize],
-    ) -> Result<(Self, MicMonitorNode)> {
-        Self::open_inner(sel.into(), graph_rate, Some(inputs), true).map(Self::with_node)
+    ) -> Result<(Self, TapReader)> {
+        Self::open_inner(sel.into(), graph_rate, Some(inputs), true).map(Self::with_ring)
     }
 
-    /// `new_at`, not `new`: the node then carries the rate it was opened at,
-    /// and its `prepare` debug-asserts the graph agrees. That assertion is the
-    /// unchecked half of the same guarantee `Error::SampleRateMismatch` is the
-    /// checked half of — the two-check shape `pump`'s layout `debug_assert` and
-    /// `Recorder::start`'s returned error already use.
-    fn with_node((source, ring): (Self, Option<MicRing>)) -> (Self, MicMonitorNode) {
-        let ring = ring.expect("a monitor was asked for");
-        let monitor = MicMonitorNode::new_at(ring, source.sample_rate);
-        (source, monitor)
+    fn with_ring((source, ring): (Self, Option<TapReader>)) -> (Self, TapReader) {
+        (source, ring.expect("a monitor was asked for"))
     }
 
     fn open_inner(
@@ -225,7 +220,7 @@ impl MicIn {
         graph_rate: SampleRate,
         inputs: Option<&[usize]>,
         monitor: bool,
-    ) -> Result<(Self, Option<MicRing>)> {
+    ) -> Result<(Self, Option<TapReader>)> {
         let host = DeviceHost::open(AudioHost::Default)?;
         let device = host.device(Direction::Input, &sel)?;
         let name = device.name().unwrap_or_default();
@@ -252,7 +247,11 @@ impl MicIn {
         let (reader, rec) =
             TapReader::standalone(TapId(0), usize::from(width.count()), Samples(RING_FRAMES));
         let (ring, mon) = if monitor {
-            let (ring, writer) = MicRing::pair(width, Samples(MONITOR_RING_FRAMES));
+            let (ring, writer) = TapReader::standalone(
+                TapId(0),
+                usize::from(width.count()),
+                Samples(MONITOR_RING_FRAMES),
+            );
             (Some(ring), Some(writer))
         } else {
             (None, None)
@@ -296,7 +295,7 @@ impl MicIn {
         })?;
 
         let mic = Self {
-            tap: TapIn::new(reader),
+            tap: reader,
             sample_rate,
             device_inputs,
             faults,
@@ -307,7 +306,7 @@ impl MicIn {
 
     /// The faults the input stream has reported, shared with its error callback.
     ///
-    /// Take it before handing the mic to a `tutti_io::Recorder`, which owns the
+    /// Take it before handing the mic to a `tutti_session::Recorder`, which owns the
     /// `MicIn`. A disconnect also ends the take: the recorder's
     /// `failed()` turns `true` once the buffered frames are written. Nothing
     /// else observes the mic; a host that wants to report it polls this handle,
@@ -339,8 +338,8 @@ impl MicIn {
         ChannelTopology::discrete(self.tap.layout())
     }
 
-    /// Creates a WAV file sink that matches this mic: its sample rate, its
-    /// layout (one channel a selected input), at `depth`.
+    /// Creates a file sink that matches this mic: its sample rate, its
+    /// layout (one channel a selected input), in `format`.
     ///
     /// A source and sink must agree on rate and channel count, and nothing
     /// downstream can check the rate: [`AudioIn`] carries none, so an 8 kHz
@@ -349,19 +348,22 @@ impl MicIn {
     ///
     /// # Errors
     ///
-    /// Whatever [`WavOut::create`] reports — the file could not be created or
-    /// the header not written.
+    /// Whatever [`FileOut::create`] reports: the file could not be created, the
+    /// format cannot be written at this width, or the header not written.
     pub fn matching_sink(
         &self,
         path: impl AsRef<std::path::Path>,
-        depth: Pcm,
-    ) -> std::io::Result<WavOut> {
+        format: Format,
+    ) -> std::io::Result<FileOut> {
         // Read off `AudioIn::layout` rather than hard-coded, so this pairing
         // cannot drift from what `poll_into` actually hands back; a sink built
         // from a *different* width than the source reports is exactly what
         // `Recorder::start` refuses, and this helper exists to be the pairing
         // that always passes.
-        WavOut::create(path, self.sample_rate, AudioIn::layout(self), depth)
+        FileOut::create(
+            path,
+            &Spec::new(format, AudioIn::layout(self), self.sample_rate),
+        )
     }
 
     /// Lists the default host's input devices; a [`DeviceInfo::id`] is what
@@ -397,14 +399,14 @@ impl AudioIn for MicIn {
     /// call: the recording closes up over them. (Counted in the callback by the
     /// ring's writer.)
     fn take_lost(&mut self) -> Samples {
-        self.tap.take_lost()
+        TapReader::take_lost(&self.tap)
     }
 
     /// Pops up to `out.len() / width` FRAMES the callback has pushed — the
     /// return is frames, the slice is samples. A short/zero count is normal for
     /// a live source — the pump backs off and tries again.
     fn poll_into(&mut self, out: &mut [f32]) -> Samples {
-        self.tap.poll_into(out)
+        self.tap.pop_into(out)
     }
 }
 

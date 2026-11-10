@@ -2,8 +2,8 @@
 //! fault both read as a zero-frame poll, and the pump must tell them apart.
 
 use tutti_codec::FileIn;
-use tutti_io::{ManualDriver, PumpPass, Recorder};
-use tutti_types::{AudioIn, AudioOut, ChannelLayout};
+use tutti_session::{PumpLoop, PumpPass};
+use tutti_types::{AudioIn, AudioOut, ChannelLayout, Samples};
 
 struct Discard(ChannelLayout);
 
@@ -29,10 +29,9 @@ fn truncated_flac(dir: &std::path::Path) -> std::path::PathBuf {
 fn run_to_the_end(path: &std::path::Path) -> PumpPass {
     let src = FileIn::open(path).expect("open");
     let sink = Discard(src.layout());
-    let (driver, pump) = ManualDriver::new();
-    let _rec = Recorder::start_with(src, sink, driver).expect("widths agree");
+    let mut pump = PumpLoop::new(src, sink, Samples(1024)).expect("widths agree");
     loop {
-        match pump.pump_once().expect("the take is running") {
+        match pump.pump_once() {
             PumpPass::Wrote(_) => {}
             end => return end,
         }

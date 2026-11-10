@@ -1341,7 +1341,37 @@ This replaces `ClapInstance::service_requests`, `note_layout_change`,
 `Vst2Instance::poll_changes`; `AuInstance::poll_changes`; the `Meta.loaded`
 cache; and `Plugin::poll_async_events`'s per-format arms (fp-edge F1, F10, F11).
 
+#### Why a type, and when (origin: [008](../archive/008-plugin-lifecycle-strategies.md))
+
+**The rule.** A lifecycle boundary is a *type* when crossing it changes what the
+object can do and the crossing is rare (VST3, CLAP and AU: `Loaded` and the
+active pair). It is a *flag* when the crossing is cheap and frequent. It is
+nothing when the ABI has no such state (VST2's `start_process` legality stays
+prose). Each format's `Loaded` follows from its ABI, not from taste.
+
+**Adding a fifth format.**
+
+1. Ask what the ABI makes legal only while inactive. If nothing, the format
+   gets a flag, not a type.
+2. If there is a pre-activation window, make two types and put the boundary
+   where the spec's boundary is.
+3. A fallible transition returns the receiver in the `Err` (`Refused`, `Stuck`);
+   use an `Option` there if backing out can itself fail.
+4. Anything switchable on a live instance is a method, not a state.
+5. If the plugin holds a pointer into host memory across the transition, pin
+   that memory and say so where the pin is.
+
+**The AU pinned pointer.** AU's input render callback holds a `ref_con` into the
+instance's render scratch, which is a `Box`. Moving the `Box` moves its pointer,
+not its body, so the callback stays valid across the by-value moves of
+`activate` and `deactivate`. The `Box` indirection is load-bearing: anything
+that frees it must already have run `AudioUnitUninitialize`. VST3 and CLAP have
+no such pointer, so their moves are free. Do not flatten it in `AuLoaded`'s
+`activate` split.
+
 ### 2.4 `AnyPlugin`
+
+> Superseded by doc 021 §2.3 and §10 step 5 (`Served<F>`).
 
 ```rust
 pub enum AnyPlugin {
@@ -1939,6 +1969,8 @@ splits: `AuProcessor` (render and MIDI from the render thread) and `AuController
 
 ## 4. What is deleted
 
+> Superseded by doc 021 §2.3 and §10 step 5 (`Served<F>`).
+
 - `format_host.rs`'s capability traits (`PluginMeta`, `PluginAudio`,
   `PluginParams`, `PluginState`, `PluginPresets`, `PluginEditorHost`,
   `PluginInstance`) and its module doc. `Control`, `Loaded`, `Processor` and
@@ -2086,7 +2118,8 @@ Each step is reviewable in one sitting and leaves `just ci` green.
    deleted and its editor and SysEx state moved; `AuComponentRef` and the borrowed
    listener, since AU's `activate` takes a safe component; the VST2 and AU loaders
    shrink; `Vst2Instance` loses `Sync`; `ParamAddress` collapses to `ParamId`.
-4. **The server over `AnyPlugin`.** `AnyPlugin` and its macro, `Hosted`,
+4. *Superseded by doc 021 §2.3 and §10 step 5 (`Served<F>`).*
+   **The server over `AnyPlugin`.** `AnyPlugin` and its macro, `Hosted`,
    `Session<P: Hosted>`, `FakePlugin` tests for the session, the `Reaction::frames`
    and `From<Notice>` dedupes, `Plugin` and `poll_async_events` deleted.
 5. **The safe editor and the rest of the `Send`/`Sync` review.** `Editor`,

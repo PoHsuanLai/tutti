@@ -11,12 +11,12 @@
 //! holding 16, 32 or 64 notes against the default steals back down to 8 and
 //! every case above 8 would measure *identically*. Each case here sets
 //! `max_voices` to its own note count. `max_voices` has no upper bound; the
-//! axis stops at 16 because that is where the numbers in `docs/benchmarks.md`
+//! axis stops at 16 because that is where the numbers in `docs/archive/benchmarks.md`
 //! were taken and the scaling is linear — extend it if you need a figure past
 //! there, rather than extrapolating.
 //!
 //! **The block size is fixed at 64 frames**, the figures in
-//! `docs/benchmarks.md`. The synth is driven as a graph drives it,
+//! `docs/archive/benchmarks.md`. The synth is driven as a graph drives it,
 //! `Node::process` through `tutti_graph::contract::Direct`, so a longer block
 //! is measurable; block size is `engine_render`'s axis.
 //!

@@ -126,9 +126,8 @@ impl SessionNode for tutti_nodes::MultibandCompressorNode {
     }
 }
 
-/// The width adapters: no controls, forked by clone.
+/// The width adapter: no controls, forked by clone.
 impl SessionNode for tutti_nodes::DownmixNode {}
-impl SessionNode for tutti_nodes::ChannelSumNode {}
 
 // The delay, modulation and LFO nodes.
 param_session_node!(

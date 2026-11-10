@@ -62,7 +62,7 @@ fn a_removed_vst2_node_is_dropped_on_the_control_side() {
 
     let key = NodeKey(1);
     let (mut editor, mut exec) = Editor::new(Prepare::new(SampleRate(RATE), Samples(BLOCK)));
-    editor.insert(key, "vst2", Unforkable(unit));
+    editor.insert(key, "vst2", Unforkable(unit.bind(tempo())));
     editor.spec_mut().topology.outputs = (0..2)
         .map(|port| Source::Node(OutPort { node: key, port }))
         .collect();
@@ -104,4 +104,9 @@ fn a_removed_vst2_node_is_dropped_on_the_control_side() {
         before + 1,
         "the control-side drop closed the plugin, once"
     );
+}
+
+/// The project's tempo map the node under test is bound to.
+fn tempo() -> tutti_transport::TempoReader {
+    tutti_transport::TempoReader::constant(tutti_types::Bpm::of(120.0)).expect("a tempo")
 }

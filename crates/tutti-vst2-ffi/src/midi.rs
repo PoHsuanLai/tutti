@@ -1,9 +1,9 @@
 //! MIDI wire codec between a UMP (`tutti_ump::Ump`) and `crate::api::MidiEvent`.
 //!
 //! VST2's on-the-wire format is plain 3-byte MIDI-1 plus a `delta_frames`
-//! sample offset — `tutti_midi_types` already knows how to encode
-//! and decode that via `to_midi1_bytes` / `from_midi1_bytes`, so the
-//! event-level helpers are thin structural conversions.
+//! sample offset: `tutti_ump::Midi1Parser` reads it and
+//! `tutti_midi_protocol::midi1` writes it, so the event-level helpers are
+//! thin structural conversions.
 //!
 //! The flexible-array `api::Events` header has no safe constructor in
 //! the `vst` crate, so [`MidiSendBuffer`] hand-assembles it into an
@@ -19,9 +19,9 @@
 
 use tutti_graph::Offset;
 use tutti_graph::UmpAt;
-use tutti_midi_protocol::midi1;
+use tutti_midi_protocol::{midi1, widen_message};
 use tutti_plugin_types::WireMidi;
-use tutti_ump::{Midi1Bytes, Ump, decode};
+use tutti_ump::{Midi1Bytes, Midi1Parser, MidiGroup, Ump, decode};
 
 /// A block's plugin-to-host MIDI, reserved once and reused.
 pub type MidiEventVec = Vec<WireMidi>;
@@ -112,14 +112,13 @@ impl MidiIo {
 /// Parses a VST2 `crate::api::MidiEvent` (MIDI 1.0 wire bytes) into a Tutti
 /// UMP [`WireMidi`]. Tags the event with the original `delta_frames`.
 pub fn to_midi(event: &crate::api::MidiEvent) -> Option<WireMidi> {
-    let bytes = event.midi_data;
     let frame = event.delta_frames.max(0) as u32;
-    // Promote the MIDI-1 bytes to Channel Voice 2 at this edge, so the engine
-    // sees one vocabulary regardless of source — matching the hardware input
-    // path. System / SysEx messages pass through `normalize` unchanged.
-    tutti_midi_types::from_midi1_bytes(&bytes).map(|e| WireMidi {
+    // Widen the MIDI-1 message to Channel Voice 2 at this edge, so the engine
+    // sees one vocabulary regardless of source (a Note On at velocity 0 is a
+    // Note Off). System messages pass through unchanged.
+    Midi1Parser::message(MidiGroup::FIRST, &event.midi_data).map(|message| WireMidi {
         offset: frame,
-        ump: tutti_midi_types::normalize(&e),
+        ump: widen_message(message).into(),
     })
 }
 
@@ -370,6 +369,7 @@ impl MidiSendBuffer {
         // stable sort below keeps input order at equal frames.
         let mut next_sysex = 0;
         for (index, (offset, ev)) in midi_events.iter().enumerate() {
+            // Type 3 is System Exclusive (7-bit) (M2-104 Table 4).
             if ev.message_type() == 0x3 {
                 let Some(&(end, at, message)) = self.completed.get(next_sysex) else {
                     continue;
@@ -830,40 +830,36 @@ mod tests {
     }
 
     /// A plugin-emitted MIDI-1 CC must arrive as MIDI-2 Channel Voice 2, not
-    /// CV1 — the engine sees one vocabulary regardless of source (mirrors the
-    /// hardware input path's `normalize` promotion).
+    /// CV1: the engine sees one vocabulary regardless of source (as the
+    /// hardware input path's widening does).
     #[test]
     fn inbound_cc_promotes_to_cv2() {
-        use tutti_midi_types::midi2::channel_voice2::ChannelVoice2 as Cv2;
-        use tutti_midi_types::midi2::{Channeled, UmpMessage};
+        use tutti_ump::{Message, Voice2, decode};
 
         // 0xB1 = CC on channel 1, controller 74, value 100.
         let midi = to_midi(&api_from_bytes([0xB1, 74, 100])).expect("CC decodes");
-        match UmpMessage::try_from(midi.ump.words()).expect("valid UMP") {
-            UmpMessage::ChannelVoice2(Cv2::ControlChange(m)) => {
-                assert_eq!(u8::from(m.channel()), 1);
-                assert_eq!(u8::from(m.control()), 74);
+        match decode(midi.ump).expect("valid UMP") {
+            Message::Midi2(address, Voice2::ControlChange { controller, value }) => {
+                assert_eq!(address.channel, MidiChannel::of(1));
+                assert_eq!(controller, CCNumber::of(74));
                 // Widened to 32-bit, not left as 7-bit.
-                assert_eq!(
-                    m.control_change_data(),
-                    tutti_fixtures::midi::wide_value(100)
-                );
+                assert_eq!(value, tutti_fixtures::midi::wide_value(100));
             }
             other => panic!("expected CV2 ControlChange, got {other:?}"),
         }
     }
 
-    /// A System real-time message (Timing Clock 0xF8) has no CV form and must
-    /// pass through `normalize` unchanged, not be dropped or promoted.
+    /// A System real-time message (Timing Clock 0xF8) has no channel voice
+    /// form and must pass through unchanged, not be dropped or widened.
     #[test]
     fn inbound_system_message_passes_through() {
-        use tutti_midi_types::midi2::UmpMessage;
+        use tutti_ump::{Message, System, decode};
 
         let midi = to_midi(&api_from_bytes([0xF8, 0, 0])).expect("clock decodes");
         assert!(
             matches!(
-                UmpMessage::try_from(midi.ump.words()),
-                Ok(UmpMessage::SystemCommon(_))
+                decode(midi.ump),
+                Ok(Message::System(_, System::TimingClock))
             ),
             "timing clock should stay a System Real-Time message"
         );

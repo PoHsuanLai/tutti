@@ -45,7 +45,7 @@ fn process_steady_state_does_not_allocate() {
     .expect("load failed");
     // Prepared (outside the gate) as a graph prepares a node, then driven by
     // hand through `Node::process`.
-    let mut unit = Direct::new(unit, SampleRate(48_000.0), 64);
+    let mut unit = Direct::new(unit.bind(tempo()), SampleRate(48_000.0), 64);
 
     // Warm up: many plugins allocate on their first few process calls
     // (sample buffers, lookup tables). Run enough blocks to settle.
@@ -87,7 +87,7 @@ fn process_with_a_meter_does_not_allocate() {
         Beat(0.0),
         TimeSignature::new(BeatsPerBar::of(7), NoteValue::EIGHTH),
     )])));
-    let mut unit = Direct::new(unit, SampleRate(48_000.0), 64);
+    let mut unit = Direct::new(unit.bind(tempo()), SampleRate(48_000.0), 64);
     for _ in 0..32 {
         unit.block();
     }
@@ -108,7 +108,7 @@ fn process_with_midi_does_not_allocate() {
         SampleRate::new(48_000.0),
     )
     .expect("load failed");
-    let mut unit = Direct::new(unit, SampleRate(48_000.0), 64);
+    let mut unit = Direct::new(unit.bind(tempo()), SampleRate(48_000.0), 64);
 
     // Warm up audio path.
     for _ in 0..32 {
@@ -185,12 +185,12 @@ fn two_hundred_moving_parameters_do_not_allocate() {
     unsafe { std::env::remove_var("TUTTI_VST2_PROBE_PARAMS") };
     let (unit, handle) = loaded.expect("load failed");
     let controls = unit.controls();
-    let mut unit = Direct::new(unit, SampleRate(48_000.0), 64);
+    let mut unit = Direct::new(unit.bind(tempo()), SampleRate(48_000.0), 64);
 
     // Sixteenths, a different one for every parameter, frame and block.
     let value = |b: u32, k: u32, id: u32| ((b * 2 + k + id) % 16) as f32 / 16.0;
     let mut events: Vec<Event> = Vec::with_capacity(2 * PARAMS as usize);
-    let mut block = |unit: &mut Direct<tutti_plugin::InProcessVst2Client>, b: u32| {
+    let mut block = |unit: &mut Direct<tutti_plugin::BoundInProcessVst2Client>, b: u32| {
         events.clear();
         for k in 0..2 {
             let at = Offset::new(32 * k as usize, Samples(64)).expect("inside");
@@ -226,4 +226,9 @@ fn two_hundred_moving_parameters_do_not_allocate() {
     assert_eq!(stats.points_dropped, 0, "{stats:?}");
     assert_eq!(stats.points_merged, 0, "{stats:?}");
     drop(handle);
+}
+
+/// The project's tempo map the node under test is bound to.
+fn tempo() -> tutti_transport::TempoReader {
+    tutti_transport::TempoReader::constant(tutti_types::Bpm::of(120.0)).expect("a tempo")
 }

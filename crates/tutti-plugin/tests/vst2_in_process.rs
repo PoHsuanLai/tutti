@@ -384,12 +384,20 @@ fn the_node_carries_midi_on_its_event_ports() {
     let takes_only = open("0");
     assert!(takes_only.takes_midi());
     assert!(!takes_only.sends_midi());
-    let shape = tutti_graph::IntoNode::into_parts(takes_only).node.shape();
+    let shape = tutti_graph::IntoNode::into_parts(takes_only.bind(
+        tutti_transport::TempoReader::constant(tutti_types::Bpm::of(120.0)).expect("a tempo"),
+    ))
+    .node
+    .shape();
     assert_eq!((shape.event_in, shape.event_out), (1, 0));
 
     let both = open("1");
     assert!(both.sends_midi());
-    let shape = tutti_graph::IntoNode::into_parts(both).node.shape();
+    let shape = tutti_graph::IntoNode::into_parts(both.bind(
+        tutti_transport::TempoReader::constant(tutti_types::Bpm::of(120.0)).expect("a tempo"),
+    ))
+    .node
+    .shape();
     assert_eq!((shape.event_in, shape.event_out), (1, 1));
 
     drop(image);
@@ -433,7 +441,13 @@ fn the_node_reports_the_decoded_tail_rather_than_unknown() {
 
         // The tail the graph's compiler folds: the node's declared shape.
         assert_eq!(
-            tutti_graph::Node::shape(&unit).tail,
+            tutti_graph::Node::shape(
+                &unit.bind(
+                    tutti_transport::TempoReader::constant(tutti_types::Bpm::of(120.0))
+                        .expect("a tempo")
+                )
+            )
+            .tail,
             want,
             "raw tail {raw} must decode to {want:?}"
         );
@@ -465,7 +479,13 @@ fn midi_past_the_blocks_capacity_is_counted() {
     )
     .expect("load the probe");
     let controls = unit.controls();
-    let mut unit = Direct::new(unit, SampleRate(SAMPLE_RATE), 512);
+    let mut unit = Direct::new(
+        unit.bind(
+            tutti_transport::TempoReader::constant(tutti_types::Bpm::of(120.0)).expect("a tempo"),
+        ),
+        SampleRate(SAMPLE_RATE),
+        512,
+    );
     let notes = |n: usize| -> Vec<Event> {
         (0..n)
             .map(|i| {

@@ -317,6 +317,37 @@ fn host_supplies_transport_when_present() {
     );
 }
 
+/// CLAP's `tempo_inc` ("tempo increment for each sample and until the next
+/// time info event", clap/events.h) is the slope the host measured, BPM per
+/// sample, as the plugin reads it from the transport event.
+///
+/// Mutation (run): `tempo_inc: 0.0` in `build_clap_transport` -> the plugin
+/// reads 0 -> fails.
+#[test]
+fn host_supplies_the_tempo_slope() {
+    let mut inst = load_plugin();
+    let transport = TransportInfo::default()
+        .with_tempo(140.0)
+        .with_tempo_inc(-0.001)
+        .with_playing(true);
+    let ctx = ClapProcessContext {
+        transport: Some(&transport),
+        ..Default::default()
+    };
+    let cap = drive_once(&mut inst, 64, &ctx);
+    assert!(cap.transport_present);
+    assert_eq!(cap.transport_tempo, 140.0);
+    assert_eq!(cap.transport_tempo_inc, -0.001);
+
+    // A constant tempo is a zero slope.
+    let flat = TransportInfo::default().with_tempo(140.0);
+    let ctx = ClapProcessContext {
+        transport: Some(&flat),
+        ..Default::default()
+    };
+    assert_eq!(drive_once(&mut inst, 64, &ctx).transport_tempo_inc, 0.0);
+}
+
 #[test]
 fn host_callback_round_trips() {
     let mut inst = load_plugin();

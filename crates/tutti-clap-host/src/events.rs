@@ -275,7 +275,7 @@ fn note_address(channel: i16, key: i16, note_id: i32) -> Option<(u8, u8)> {
         )]
         Some((channel as u8 & 0x0F, key as u8 & 0x7F))
     } else {
-        note_id_to_channel_note(note_id)
+        note_id_to_channel_note(note_id).map(|(channel, note)| (channel.get(), note.get()))
     }
 }
 
@@ -308,14 +308,16 @@ impl ClapEvent {
     /// Mints the host's `note_id` for a `(channel, key)` voice, matching what
     /// [`per_note_expression`](Self::per_note_expression) stamps.
     ///
-    /// [`note_id_for`] takes `u8`s; note/off events carry CLAP's signed
+    /// [`note_id_for`] takes a channel and a note; note/off events carry CLAP's signed
     /// `i16` wildcard-capable fields. A wildcard (`< 0`) or out-of-range value
     /// has no `(channel, key)` voice to name, so it yields CLAP's `-1`
     /// "unspecified note id" — which the spec permits and plugins fall back
     /// from by matching on the rest of the (port, channel, key, note_id) tuple.
     fn voice_note_id(channel: i16, key: i16) -> i32 {
-        match (u8::try_from(channel), u8::try_from(key)) {
-            (Ok(ch), Ok(k)) if ch < 16 && k < 128 => note_id_for(ch, k),
+        let channel = u8::try_from(channel).ok().and_then(MidiChannel::new);
+        let key = u8::try_from(key).ok().and_then(NoteNumber::new);
+        match (channel, key) {
+            (Some(channel), Some(key)) => note_id_for(channel, key),
             _ => -1,
         }
     }
@@ -638,16 +640,16 @@ impl ClapEvent {
             Voice2::PerNotePitchBend { note, value } => Self::per_note_expression(
                 time,
                 NoteExpressionType::Tuning,
-                ch,
-                note.get(),
+                channel,
+                note,
                 f64::from(bend_u32_to_signed_f32(value)) * f64::from(ranges.semitones(ch)),
             ),
             // Poly (per-key) pressure is a CLAP pressure expression, `[0, 1]`.
             Voice2::PolyPressure { note, value } => Self::per_note_expression(
                 time,
                 NoteExpressionType::Pressure,
-                ch,
-                note.get(),
+                channel,
+                note,
                 f64::from(u32_to_unit_f32(value)),
             ),
             // An assignable per-note controller is a note expression for the
@@ -662,8 +664,8 @@ impl ClapEvent {
                 Self::per_note_expression(
                     time,
                     ty,
-                    ch,
-                    note.get(),
+                    channel,
+                    note,
                     // VOLUME is a gain in `0 < x <= 4`, not a unit fraction;
                     // Pan and Brightness really are `0..1`.
                     expression_value_from_unit(ty, u32_to_unit_f32(value)),
@@ -705,8 +707,8 @@ impl ClapEvent {
                 Self::per_note_expression(
                     time,
                     ty,
-                    ch,
-                    note.get(),
+                    channel,
+                    note,
                     expression_value_from_unit(ty, u32_to_unit_f32(value)),
                 )
             }
@@ -877,15 +879,15 @@ impl ClapEvent {
     fn per_note_expression(
         time: u32,
         expression_type: NoteExpressionType,
-        channel: u8,
-        note: u8,
+        channel: MidiChannel,
+        note: NoteNumber,
         value: f64,
     ) -> Option<Self> {
         let mut event =
             Self::note_expression(time, expression_type, note_id_for(channel, note), value)?;
         if let ClapEvent::NoteExpression(ne) = &mut event {
-            ne.channel = channel as i16;
-            ne.key = note as i16;
+            ne.channel = i16::from(channel.get());
+            ne.key = i16::from(note.get());
         }
         Some(event)
     }
@@ -1967,7 +1969,9 @@ mod tests {
     fn midi1_event(bytes: &[u8]) -> UmpAt {
         (
             at(0),
-            tutti_midi_types::from_midi1_bytes(bytes).expect("builds"),
+            tutti_ump::Midi1Parser::message(tutti_ump::MidiGroup::FIRST, bytes)
+                .expect("a MIDI 1.0 message")
+                .into(),
         )
     }
 
@@ -2791,8 +2795,14 @@ mod tests {
         use tutti_midi_protocol::u32_to_unit_f32;
 
         let unit_of = |gain: f64| -> f32 {
-            let clap = ClapEvent::per_note_expression(0, NoteExpressionType::Volume, 1, 64, gain)
-                .expect("Volume is a named CLAP dimension");
+            let clap = ClapEvent::per_note_expression(
+                0,
+                NoteExpressionType::Volume,
+                MidiChannel::of(1),
+                NoteNumber::of(64),
+                gain,
+            )
+            .expect("Volume is a named CLAP dimension");
             let midi = clap.to_midi().expect("volume -> midi");
             match message(&midi) {
                 Message::Midi2(_, Voice2::AssignablePerNote { value, .. }) => {
@@ -2826,7 +2836,10 @@ mod tests {
             ClapEvent::NoteExpression(e) => {
                 assert_eq!(e.header.time, 11);
                 assert_eq!(e.expression_id, CLAP_NOTE_EXPRESSION_TUNING);
-                assert_eq!(e.note_id, note_id_for(3, 60));
+                assert_eq!(
+                    e.note_id,
+                    note_id_for(MidiChannel::of(3), NoteNumber::of(60))
+                );
                 assert_eq!(e.channel, 3);
                 assert_eq!(e.key, 60);
                 let expected = 0.5 * emitted_bend_range_semitones();
@@ -2902,9 +2915,14 @@ mod tests {
         use tutti_midi_protocol::bend_u32_to_signed_f32;
 
         let value_semitones = 0.5 * emitted_bend_range_semitones();
-        let clap =
-            ClapEvent::per_note_expression(7, NoteExpressionType::Tuning, 5, 67, value_semitones)
-                .expect("Tuning is a named CLAP dimension");
+        let clap = ClapEvent::per_note_expression(
+            7,
+            NoteExpressionType::Tuning,
+            MidiChannel::of(5),
+            NoteNumber::of(67),
+            value_semitones,
+        )
+        .expect("Tuning is a named CLAP dimension");
         let midi = clap.to_midi().expect("tuning -> midi");
         assert_eq!(midi.offset, 7);
         match message(&midi) {
@@ -2934,7 +2952,10 @@ mod tests {
         {
             ClapEvent::NoteExpression(e) => {
                 assert_eq!(e.expression_id, CLAP_NOTE_EXPRESSION_PRESSURE);
-                assert_eq!(e.note_id, note_id_for(2, 48));
+                assert_eq!(
+                    e.note_id,
+                    note_id_for(MidiChannel::of(2), NoteNumber::of(48))
+                );
                 assert!((e.value - 0.75).abs() < 0.01, "pressure {}", e.value);
             }
             _ => panic!("expected NoteExpression(Pressure)"),
@@ -2960,7 +2981,10 @@ mod tests {
         {
             ClapEvent::NoteExpression(e) => {
                 assert_eq!(e.expression_id, CLAP_NOTE_EXPRESSION_BRIGHTNESS);
-                assert_eq!(e.note_id, note_id_for(1, 64));
+                assert_eq!(
+                    e.note_id,
+                    note_id_for(MidiChannel::of(1), NoteNumber::of(64))
+                );
                 assert!((e.value - 0.6).abs() < 0.01, "brightness {}", e.value);
             }
             _ => panic!("expected NoteExpression(Brightness)"),
@@ -2999,7 +3023,10 @@ mod tests {
                 assert_eq!(e.key, 60);
                 assert!((e.velocity - 0.5).abs() < 0.01, "velocity {}", e.velocity);
                 // The note_id must match what the expression path mints.
-                assert_eq!(e.note_id, note_id_for(1, 60));
+                assert_eq!(
+                    e.note_id,
+                    note_id_for(MidiChannel::of(1), NoteNumber::of(60))
+                );
             }
             _ => panic!("expected NoteOn"),
         }
@@ -3067,7 +3094,10 @@ mod tests {
             off.note_id, on.note_id,
             "the note-off must release the voice the note-on opened"
         );
-        assert_eq!(on.note_id, note_id_for(CH, KEY));
+        assert_eq!(
+            on.note_id,
+            note_id_for(MidiChannel::of(CH), NoteNumber::of(KEY))
+        );
     }
 
     /// `note_id_for` only covers channels 0..16 and keys 0..128. A

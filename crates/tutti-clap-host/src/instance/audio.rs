@@ -465,7 +465,15 @@ pub(super) fn build_clap_transport(transport: &TransportInfo) -> clap_event_tran
         song_pos_beats: (transport.position.beats * CLAP_BEATTIME_FACTOR as f64) as i64,
         song_pos_seconds: (transport.position.seconds.get() * CLAP_SECTIME_FACTOR as f64) as i64,
         tempo: transport.timing.tempo,
-        tempo_inc: 0.0,
+        // BPM per sample until the next transport event, as the host measured
+        // it (`0.0` when it cannot describe the block by one slope). Sent
+        // only beside a tempo the flag vouches for, and only if finite.
+        tempo_inc: if flags & CLAP_TRANSPORT_HAS_TEMPO != 0 && is_usable(transport.timing.tempo_inc)
+        {
+            transport.timing.tempo_inc
+        } else {
+            0.0
+        },
         loop_start_beats: (transport.loop_region.start_beats * CLAP_BEATTIME_FACTOR as f64) as i64,
         loop_end_beats: (transport.loop_region.end_beats * CLAP_BEATTIME_FACTOR as f64) as i64,
         loop_start_seconds: 0,
@@ -526,6 +534,23 @@ mod tests {
             build_clap_transport(&t).flags & CLAP_TRANSPORT_HAS_SECONDS_TIMELINE,
             0
         );
+    }
+
+    /// The slope rides beside a tempo the flag vouches for and is finite; a
+    /// slope with no usable tempo, or a NaN one, is `0.0`.
+    ///
+    /// Mutation (run): drop the `is_usable(tempo_inc)` gate -> the NaN slope
+    /// is sent -> fails. Mutation (run): drop the `HAS_TEMPO` gate -> the
+    /// slope beside a zero tempo is sent -> fails.
+    #[test]
+    fn the_slope_is_sent_only_beside_a_usable_tempo() {
+        let mut t = TransportInfo::new().with_tempo(120.0).with_tempo_inc(0.002);
+        assert_eq!(build_clap_transport(&t).tempo_inc, 0.002);
+        t.timing.tempo_inc = f64::NAN;
+        assert_eq!(build_clap_transport(&t).tempo_inc, 0.0);
+        t.timing.tempo_inc = 0.002;
+        t.timing.tempo = 0.0;
+        assert_eq!(build_clap_transport(&t).tempo_inc, 0.0);
     }
 
     /// The time signature is the one unconditional claim, and legitimately so:

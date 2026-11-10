@@ -361,8 +361,8 @@ crates/          everything shipped; directory name = package name; no nesting
                  `is_note_off` read the type, status and velocity bits a queue
                  needs), and the MIDI 1.0 wire: `Voice1::bytes`, `System::bytes`,
                  `frame` and `Midi1Parser`, the status bytes the hosts use
-                 (`tutti-midi-types`' `wire.rs` and `Midi1Splitter` hold their own
-                 until VST2 and AU move), `NoteId` (`channel * 128 + note`), and
+                 (`tutti-midi-types`' `wire.rs` holds its own until the MIDI
+                 lane deletes it), `NoteId` (`channel * 128 + note`), and
                  SysEx: `SysexMessage` (a checked `F0 .. F7`), `SysexAssembler`
                  (SysEx7 packets to whole messages over a caller's buffer) and its
                  inverse `sysex7_packets` (`SysexMessage::packets`,

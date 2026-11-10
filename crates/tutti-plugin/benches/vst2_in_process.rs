@@ -31,7 +31,7 @@ use tutti_fixtures::main_thread;
 
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use tutti_graph::contract::Direct;
-use tutti_plugin::{InProcessVst2Client, in_process_vst2_client};
+use tutti_plugin::{BoundInProcessVst2Client, in_process_vst2_client};
 use tutti_types::SampleRate;
 
 const SR: f64 = 48_000.0;
@@ -39,17 +39,19 @@ const SR: f64 = 48_000.0;
 /// reads against are per 64-frame block).
 const BLOCK: usize = 64;
 
-fn unit() -> Direct<InProcessVst2Client> {
+fn unit() -> Direct<BoundInProcessVst2Client> {
     let (unit, _handle) = in_process_vst2_client(
         &main_thread(),
         tutti_fixtures::vst2_probe(),
         SampleRate::new(SR),
     )
     .expect("the reference VST2 plugin must be built — see tutti-fixtures");
-    Direct::new(unit, SampleRate(SR), BLOCK)
+    let tempo =
+        tutti_transport::TempoReader::constant(tutti_types::Bpm::of(120.0)).expect("a tempo");
+    Direct::new(unit.bind(tempo), SampleRate(SR), BLOCK)
 }
 
-fn drive(unit: &mut Direct<InProcessVst2Client>) {
+fn drive(unit: &mut Direct<BoundInProcessVst2Client>) {
     unit.block();
     black_box(unit.output(0).first().copied());
 }
@@ -72,7 +74,7 @@ fn bench_many(c: &mut Criterion) {
     let mut group = c.benchmark_group("vst2/instances");
     group.throughput(Throughput::Elements(BLOCK as u64));
     for n in [1usize, 4, 16] {
-        let mut units: Vec<Direct<InProcessVst2Client>> = (0..n).map(|_| unit()).collect();
+        let mut units: Vec<Direct<BoundInProcessVst2Client>> = (0..n).map(|_| unit()).collect();
         group.bench_with_input(BenchmarkId::from_parameter(n), &n, |b, _| {
             b.iter(|| {
                 for u in &mut units {

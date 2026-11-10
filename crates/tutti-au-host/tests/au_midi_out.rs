@@ -58,11 +58,29 @@ use tutti_au_host::AuType;
 use tutti_au_host::types::MIDIPacketList;
 use tutti_fixtures::midi;
 use tutti_graph::Offset;
-use tutti_midi_types::MidiMessage;
-use tutti_ump::{MidiChannel, MidiGroup};
+use tutti_midi_protocol::channel_voice;
+use tutti_ump::{CCNumber, MidiChannel, MidiGroup, NoteNumber, Voice2};
 
 /// Same rationale as `au_conformance.rs`'s `AU_LOCK`.
 static AU_LOCK: Mutex<()> = Mutex::new(());
+
+/// The channel voice message an event carries, read as MIDI 2.0.
+fn voice(e: &tutti_plugin_types::WireMidi) -> Option<(MidiChannel, Voice2)> {
+    channel_voice(e.ump).map(|(address, voice)| (address.channel, voice))
+}
+
+/// The note number of a note-on or note-off event.
+fn note(e: &tutti_plugin_types::WireMidi) -> Option<u8> {
+    match voice(e)? {
+        (_, Voice2::NoteOn { note, .. } | Voice2::NoteOff { note, .. }) => Some(note.get()),
+        _ => None,
+    }
+}
+
+/// Whether the event is a note-on.
+fn is_note_on(e: &tutti_plugin_types::WireMidi) -> bool {
+    matches!(voice(e), Some((_, Voice2::NoteOn { .. })))
+}
 
 /// Recover from poisoning: the guard only serializes, it protects no shared state,
 /// so one panicking test must not convert into N spurious failures.
@@ -550,53 +568,35 @@ fn a_framework_built_packet_list_decodes_to_its_events() {
     // Apple documents as a *sample offset* from the render timestamp — so it is
     // already the value `WireMidi::offset` wants, with no clock conversion.
     assert!(matches!(
-        MidiMessage::from_ump(events[0].ump),
-        MidiMessage::NoteOn {
-            note: 60,
-            channel: MidiChannel::FIRST,
-            ..
-        }
+        voice(&events[0]),
+        Some((MidiChannel::FIRST, Voice2::NoteOn { note, .. })) if note == NoteNumber::of(60)
     ));
     assert_eq!(events[0].offset, 0);
 
     assert!(matches!(
-        MidiMessage::from_ump(events[1].ump),
-        MidiMessage::NoteOff {
-            note: 60,
-            channel: MidiChannel::FIRST,
-            ..
-        }
+        voice(&events[1]),
+        Some((MidiChannel::FIRST, Voice2::NoteOff { note, .. })) if note == NoteNumber::of(60)
     ));
     assert_eq!(events[1].offset, 64);
 
     assert!(matches!(
-        MidiMessage::from_ump(events[2].ump),
-        MidiMessage::ControlChange {
-            index: 7,
-            channel: MidiChannel::FIRST,
-            ..
-        }
+        voice(&events[2]),
+        Some((MidiChannel::FIRST, Voice2::ControlChange { controller, .. }))
+            if controller == CCNumber::of(7)
     ));
     assert_eq!(events[2].offset, 128);
 
     // Program change is a TWO-byte message. A decoder that assumed three would
     // consume the next packet's status byte as data.
     assert!(matches!(
-        MidiMessage::from_ump(events[3].ump),
-        MidiMessage::ProgramChange {
-            program: 5,
-            channel: MidiChannel::FIRST,
-            ..
-        }
+        voice(&events[3]),
+        Some((MidiChannel::FIRST, Voice2::ProgramChange { program, .. })) if program.get() == 5
     ));
     assert_eq!(events[3].offset, 192);
 
     assert!(matches!(
-        MidiMessage::from_ump(events[4].ump),
-        MidiMessage::PitchBend {
-            channel: MidiChannel::FIRST,
-            ..
-        }
+        voice(&events[4]),
+        Some((MidiChannel::FIRST, Voice2::PitchBend(_)))
     ));
     assert_eq!(events[4].offset, 256);
 }
@@ -631,7 +631,7 @@ fn the_decode_covers_exactly_what_send_midi_encodes() {
         // a decoder that masked it off would still produce the right message *type*.
         let expected_channel = MidiChannel::of(bytes[0] & 0x0F);
         assert_eq!(
-            MidiMessage::from_ump(events[0].ump).channel(),
+            voice(&events[0]).map(|(channel, _)| channel),
             Some(expected_channel),
             "{what}: channel must round-trip"
         );
@@ -666,10 +666,7 @@ fn one_packet_can_carry_several_messages() {
     let events = list.decode();
     assert_eq!(events.len(), 3);
     assert_eq!(
-        events
-            .iter()
-            .filter_map(|e| MidiMessage::from_ump(e.ump).note())
-            .collect::<Vec<_>>(),
+        events.iter().filter_map(note).collect::<Vec<_>>(),
         vec![62, 64, 67]
     );
 }
@@ -751,10 +748,7 @@ fn running_status_is_expanded() {
     }
     let events = list.decode();
     assert_eq!(
-        events
-            .iter()
-            .filter_map(|e| MidiMessage::from_ump(e.ump).note())
-            .collect::<Vec<_>>(),
+        events.iter().filter_map(note).collect::<Vec<_>>(),
         vec![60, 62, 64],
         "all three notes must be recovered"
     );
@@ -941,12 +935,12 @@ fn system_common_clears_running_status() {
 /// SysEx a plugin emits reaches the sink whole, and the messages around it
 /// survive.
 ///
-/// The decoder reassembles the bytes and hands the sink UMP SysEx7 packets in
-/// the list's order. The logic is unit-tested in `tutti-plugin-types`
-/// (`Midi1Decoder`); this pins the wiring from the packet walk.
+/// The decoder hands the sink UMP SysEx7 packets in the list's order, as
+/// `tutti_ump::Midi1Parser` completes them (the parser is tested in
+/// `tutti-ump`); this pins the wiring from the packet walk.
 ///
-/// Mutation (not run here, macOS only): in `decode_packet_list_for_test`,
-/// skip `Midi1Message::SysEx` → the SysEx7 packets are missing → fails.
+/// Mutation (not run here, macOS only): in `Decoder::decode`, skip a
+/// `Message::Sysex7` → the SysEx7 packet is missing → fails.
 #[test]
 fn sysex_is_delivered_whole_between_its_neighbours() {
     use tutti_plugin_types::{SysExAssembler, SysExStep};
@@ -955,7 +949,7 @@ fn sysex_is_delivered_whole_between_its_neighbours() {
         PacketListBuf::from_raw(&[(0, &[0x90, 60, 100, 0xF0, 0x7E, 0x00, 0xF7, 0x80, 60, 0])]);
     let events = list.decode();
     assert_eq!(events.len(), 3, "note-on, one SysEx7 packet, note-off");
-    assert!(MidiMessage::from_ump(events[0].ump).is_note_on());
+    assert!(is_note_on(&events[0]));
     assert!(events[2].ump.is_note_off());
     let mut assembler = SysExAssembler::reserved();
     let SysExStep::Complete(done) = assembler.push(&events[1].ump) else {
@@ -968,7 +962,9 @@ fn sysex_is_delivered_whole_between_its_neighbours() {
 /// the offset of the packet that held its `0xF0`.
 ///
 /// Mutation (not run here, macOS only): construct the decoder per packet in
-/// `decode_packet_list_for_test` → the tail packets are stray data → fails.
+/// `decode_packet_list_for_test` → the tail packets are stray data → fails;
+/// stamp a SysEx7 packet with the offset of the packet that completed it → the
+/// offsets are 8 and 9 → fails.
 #[test]
 fn a_sysex_spanning_packets_is_delivered_once() {
     use tutti_plugin_types::{SysExAssembler, SysExStep};
@@ -1029,13 +1025,7 @@ fn a_list_longer_than_the_batch_is_delivered_in_full() {
             "event {i} carries the wrong frame offset; batching must not reorder"
         );
     }
-    assert_eq!(
-        events
-            .iter()
-            .filter(|e| MidiMessage::from_ump(e.ump).is_note_on())
-            .count(),
-        150
-    );
+    assert_eq!(events.iter().filter(|e| is_note_on(e)).count(), 150);
     assert_eq!(events.iter().filter(|e| e.ump.is_note_off()).count(), 150);
 }
 
@@ -1090,10 +1080,7 @@ fn the_sink_sees_exactly_the_events_it_was_handed() {
     ])
     .expect("fits");
     let events = list.decode();
-    let notes: Vec<u8> = events
-        .iter()
-        .filter_map(|e| MidiMessage::from_ump(e.ump).note())
-        .collect();
+    let notes: Vec<u8> = events.iter().filter_map(note).collect();
     assert_eq!(
         notes,
         vec![60, 61, 62],

@@ -129,7 +129,13 @@ fn a_refused_rate_is_silent_visible_and_retried() {
     let sink = Arc::clone(&events);
     handle.on_invalidate(move |e| sink.lock().unwrap().push(e));
 
-    let mut unit = Rig::new(probe.client.bind(), LOAD_RATE, BLOCK);
+    let mut unit = Rig::new(
+        probe.client.bind(
+            tutti_transport::TempoReader::constant(tutti_types::Bpm::of(120.0)).expect("a tempo"),
+        ),
+        LOAD_RATE,
+        BLOCK,
+    );
     assert!(renders_live(&mut unit), "the plugin renders at {LOAD_RATE}");
     assert_eq!(handle.status(), PluginStatus::Alive);
 

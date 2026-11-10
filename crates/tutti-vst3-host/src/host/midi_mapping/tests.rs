@@ -2,9 +2,8 @@ use super::*;
 use tutti_fixtures::midi;
 use tutti_graph::Offset;
 use tutti_graph::UmpAt;
-use tutti_midi_types::MidiMessage;
 use tutti_types::Samples;
-use tutti_ump::{CCNumber, MidiChannel, MidiGroup};
+use tutti_ump::{CCNumber, KeyEvent, MidiChannel, MidiGroup};
 
 /// A packet from its words, zero-padded to four, at offset 0.
 fn raw(words: &[u32]) -> UmpAt {
@@ -175,7 +174,7 @@ fn route_cc_events_splits_mapped_cc_into_params() {
     assert!(
         filtered
             .iter()
-            .any(|e| MidiMessage::from_ump(e.1).is_note_on())
+            .any(|e| matches!(e.1.key_event(), Some(KeyEvent::On(_))))
     );
 }
 
@@ -494,20 +493,25 @@ fn cc_points_past_the_scratch_pool_give_way_without_allocating() {
         }
         host
     };
-    let cc = |frame: u32, value: u8| {
+    let cc = |frame: u32, value: u32| {
         (
             at(frame),
             midi::cc(
                 MidiGroup::FIRST,
                 MidiChannel::FIRST,
                 CCNumber::MOD_WHEEL,
-                tutti_fixtures::midi::wide_value(value),
+                value,
             ),
         )
     };
     let (warm, measured) = (chunk(0..pooled), chunk(pooled..2 * pooled));
-    let one = [cc(0, 10)];
-    let four = [cc(0, 10), cc(8, 20), cc(16, 30), cc(24, 127)];
+    let one = [cc(0, 0x1400_0000)];
+    let four = [
+        cc(0, 0x1400_0000),
+        cc(8, 0x2800_0000),
+        cc(16, 0x3C00_0000),
+        cc(24, 0xFFFF_FFFF),
+    ];
     let mut route = CcRoute::new(mod_wheel_mapping(MAPPED), QUEUES, room);
     let _ = route.route(&one, Some(&warm)).expect("mapped");
     assert_eq!(route.points_overflowed(), 0);
@@ -655,14 +659,14 @@ fn a_queue_with_host_and_cc_points_ends_on_its_latest_value() {
     for (offset, value) in [(0, 0.0), (100, 0.25), (200, 0.5), (300, 0.625), (400, 0.75)] {
         assert!(host.add_change(MAPPED.into(), offset, value));
     }
-    let cc = |frame: u32, value: u8| {
+    let cc = |frame: u32, value: u32| {
         (
             at(frame),
             midi::cc(
                 MidiGroup::FIRST,
                 MidiChannel::FIRST,
                 CCNumber::MOD_WHEEL,
-                tutti_fixtures::midi::wide_value(value),
+                value,
             ),
         )
     };
@@ -677,8 +681,8 @@ fn a_queue_with_host_and_cc_points_ends_on_its_latest_value() {
         );
         q.points.last().map(|p| (p.sample_offset, p.value.get()))
     };
-    assert_eq!(ends(&[cc(150, 127)]), Some((400, 0.75)));
-    assert_eq!(ends(&[cc(450, 127)]), Some((450, 1.0)));
+    assert_eq!(ends(&[cc(150, 0xFFFF_FFFF)]), Some((400, 0.75)));
+    assert_eq!(ends(&[cc(450, 0xFFFF_FFFF)]), Some((450, 1.0)));
     assert_eq!(route.points_overflowed(), 2);
 }
 
@@ -708,20 +712,20 @@ fn the_merge_sorts_a_full_room_queue_without_allocating() {
     for k in 0..full - CCS {
         assert!(host.add_change(MAPPED.into(), 8 * k as i32, 0.25));
     }
-    let cc = |frame: u32, value: u8| {
+    let cc = |frame: u32, value: u32| {
         (
             at(frame),
             midi::cc(
                 MidiGroup::FIRST,
                 MidiChannel::FIRST,
                 CCNumber::MOD_WHEEL,
-                tutti_fixtures::midi::wide_value(value),
+                value,
             ),
         )
     };
     // On host frames (multiples of 8) and between them.
     let events: Vec<UmpAt> = (0..CCS as u32)
-        .map(|k| cc(100 * k + if k % 2 == 0 { 0 } else { 3 }, 127))
+        .map(|k| cc(100 * k + if k % 2 == 0 { 0 } else { 3 }, 0xFFFF_FFFF))
         .collect();
     let mut route = CcRoute::new(mod_wheel_mapping(MAPPED), 1, room);
     let sorted = assert_no_alloc::assert_no_alloc(|| {

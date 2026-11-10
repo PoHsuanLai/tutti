@@ -1379,7 +1379,8 @@ fn a_slow_but_progressing_state_transfer_completes() {
 ///
 /// **Mutation note.** Verified to fail, not merely pass:
 /// - Propagating the bridge thread's timeout instead of reporting it (i.e.
-///   dropping `recv_state_reply`'s `BridgeError::Timeout` arm) fails this test.
+///   `recv_state` returning `Err(BridgeError::Timeout { .. })` when
+///   `next_reply` answers `None`) fails this test.
 ///   Worth recording precisely, because it is *not* the health assertions that
 ///   catch it: now that one deadline drives both waits, the bridge thread
 ///   crashes before the caller's own wait expires, so the caller is answered
@@ -1469,13 +1470,13 @@ fn a_stalled_save_state_fails_typed_and_leaves_the_bridge_healthy() {
 /// directions stall through *different code*: `save_state` gives up waiting for
 /// a chunk to arrive, `load_state` writes every chunk successfully and then
 /// waits on the single `StateLoaded` acknowledgement that never comes. Only the
-/// receive path was covered, so the load path's timeout — a distinct
-/// `recv_state_reply` call site — was crashing the bridge with no test to say
-/// so.
+/// receive path was covered, so the load path's timeout — a distinct call
+/// site, the `LoadState` arm's `answer` — was crashing the bridge with no test
+/// to say so.
 ///
 /// **Mutation note.** Verified to fail:
-/// - Propagating the timeout at the `LoadState` reply site (the second
-///   `recv_state_reply` call) fails the health assertions here while leaving
+/// - Propagating the timeout at the `LoadState` reply site (its `answer`
+///   returning `None` turned into an `Err`) fails the health assertions here while leaving
 ///   the `save_state` test above green — which is precisely why this test has
 ///   to exist separately.
 /// - Answering `Ok(())` on a missing acknowledgement fails the typed assertion:
@@ -1546,6 +1547,136 @@ fn assert_healthy_after_stall(mock: &MockServer, direction: &str) {
         "after a stalled {direction} the bridge no longer completes a round \
          trip, so the session is dead in practice however `is_crashed` reads"
     );
+}
+
+/// **A query that times out leaves the bridge healthy, and its late reply is
+/// not the next query's answer** (doc 027 D5, D6). The first `GetParameter` is
+/// answered after the 5 s budget; the second at once. The bridge owes the
+/// first reply, takes it off the stream when it lands, and gives the second
+/// query its own value.
+///
+/// Mutations (run), each fails: `answer` not owing a reply that timed out (the
+/// second query reads 0.25, the first's value); a query's timeout propagated
+/// as an error, as its `?` did (the bridge crashes).
+#[test]
+fn a_late_query_reply_is_not_the_next_querys_answer() {
+    let asked = Arc::new(AtomicU64::new(0));
+    let mock = MockServer::start("late-query", {
+        let asked = Arc::clone(&asked);
+        move |msg| match msg {
+            HostMessage::GetParameter { .. } => {
+                let value = |v| BridgeMessage::ParameterValue {
+                    value: Some(Normalized::of(v)),
+                };
+                if asked.fetch_add(1, Ordering::SeqCst) == 0 {
+                    Action::ReplyManySlowly {
+                        msgs: vec![value(0.25)],
+                        gap: Duration::from_millis(5_300),
+                    }
+                } else {
+                    Action::Reply(Box::new(value(0.75)))
+                }
+            }
+            _ => Action::Silent,
+        }
+    });
+
+    assert_eq!(
+        mock.bridge.parameter(ParamId::new(1)),
+        None,
+        "the first is late"
+    );
+    assert_eq!(
+        mock.bridge.parameter(ParamId::new(1)),
+        Some(Normalized::of(0.75)),
+        "the second query was answered with the first's late reply"
+    );
+    assert!(!mock.bridge.is_crashed(), "a late reply crashed the bridge");
+}
+
+/// **A plugin that keeps sending events does not extend a request's budget**
+/// (doc 027 D7). The first `GetParameter` gets 6.5 s of `LatencyChanged`
+/// events at 100 ms and no answer. The bridge gives up at its 5 s budget and
+/// sends the next request, which the peer answers once its events stop; with
+/// the budget restarting per event the bridge waited until 11.5 s, past the
+/// second caller's own wait.
+///
+/// Mutation (run): `recv_reply` passing the whole `timeout` to each read (the
+/// per-message restart) → the second query answers `None` → fails.
+#[test]
+fn a_chatty_plugin_does_not_extend_the_budget() {
+    let asked = Arc::new(AtomicU64::new(0));
+    let mock = MockServer::start("chatty", {
+        let asked = Arc::clone(&asked);
+        move |msg| match msg {
+            HostMessage::GetParameter { .. } if asked.fetch_add(1, Ordering::SeqCst) == 0 => {
+                Action::ReplyManySlowly {
+                    msgs: (0..65)
+                        .map(|n| BridgeMessage::LatencyChanged {
+                            samples: crate::protocol::Samples(n),
+                        })
+                        .collect(),
+                    gap: Duration::from_millis(100),
+                }
+            }
+            HostMessage::GetParameterList => {
+                Action::Reply(Box::new(BridgeMessage::ParameterList {
+                    parameters: Vec::new(),
+                }))
+            }
+            _ => Action::Silent,
+        }
+    });
+
+    assert_eq!(mock.bridge.parameter(ParamId::new(1)), None);
+    assert!(
+        mock.bridge.parameters().is_some(),
+        "the bridge was still waiting on the chatty request"
+    );
+    assert!(!mock.bridge.is_crashed());
+}
+
+/// **The rest of a stalled state is taken off the stream, not read as the next
+/// answer** (doc 027 D5). `SaveState` stalls before its first chunk; the two
+/// chunks land later, ahead of the answer to `GetParameterList`.
+///
+/// Mutation (run): `recv_state` not owing `Late::StateRest` on a stall → the
+/// first chunk is read as the parameter list's answer → `None` → fails.
+#[test]
+fn the_rest_of_a_stalled_state_is_not_the_next_answer() {
+    let mock = MockServer::start_with_state_progress_timeout(
+        "stalled-rest",
+        STATE_PROGRESS_TIMEOUT,
+        |msg| match msg {
+            HostMessage::SaveState => Action::ReplyManySlowly {
+                msgs: (0..2)
+                    .map(|seq| BridgeMessage::StateChunk {
+                        seq,
+                        last: seq == 1,
+                        bytes: vec![7u8; 32],
+                    })
+                    .collect(),
+                gap: STATE_PROGRESS_TIMEOUT * 3 / 2,
+            },
+            HostMessage::GetParameterList => {
+                Action::Reply(Box::new(BridgeMessage::ParameterList {
+                    parameters: Vec::new(),
+                }))
+            }
+            _ => Action::Silent,
+        },
+    );
+
+    let err = mock.bridge.save_state().expect_err("the transfer stalls");
+    assert!(
+        matches!(err, StateError::Stalled { bytes: 0, .. }),
+        "{err:?}"
+    );
+    assert!(
+        mock.bridge.parameters().is_some(),
+        "a late state chunk was read as the parameter list's answer"
+    );
+    assert!(!mock.bridge.is_crashed());
 }
 
 /// This process's main thread. Each test is its own process under nextest, so

@@ -131,6 +131,14 @@ pub enum StateError {
     #[error("plugin subprocess has crashed")]
     PluginCrashed,
 
+    /// The request could not be queued: the bridge's command queue is full,
+    /// behind blocks it has not sent yet. The session is healthy and nothing
+    /// was asked of the plugin, so a retry is reasonable. Reporting this as
+    /// [`PluginCrashed`](Self::PluginCrashed) told a host to drop a working
+    /// plugin.
+    #[error("the plugin bridge is busy; the request was not sent")]
+    Busy,
+
     /// The plugin was asked and refused, carrying its own message. Routine on a
     /// version bump: a plugin that changed its state format rejects a chunk
     /// saved by an older build of itself.

@@ -73,6 +73,19 @@ already exists), and the scratch is sized to `max_block` once, which also
 fixes D14. VST3 already has the same check as defence in depth, in
 `tutti-vst3-ffi` (the audit read it as missing; a host test now pins it).
 
+**Done (D5 to D7):** the server answers strictly in order, so whatever the
+bridge stopped waiting for arrives before the next answer. The bridge keeps
+a queue of what is owed (`Late`: a block's reply, a control reply of a known
+kind, or the rest of a `SaveState`), and every read goes through one function
+that takes the owed frames first, under one deadline, before returning the
+caller's answer. A timeout on a frame boundary owes the reply and answers the
+caller (`None`, `Stalled`); a frame still half-read after `DRAIN_FINISH` is a
+peer that cannot frame, and crashes the bridge as a transport error does. A
+frame of another kind lets an owed item go, so a peer that drops an answer
+cannot swallow the replies after it. The server answers a refused
+`LoadState` sequence once, at its `last` chunk. A full command queue on a
+state request is `StateError::Busy`.
+
 ## 3. The process edge (`tutti-plugin-ipc`, doc 021 step 3)
 
 Step 3 is #406. The probe spawner left the crate in that PR. It is now

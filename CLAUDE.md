@@ -966,8 +966,7 @@ Scalars use `Param<U>`.
   global output channel). Several sources into one audio input or output
   channel sum, in source order (`NodeKey`, then port), bit-identically on every
   executor (`Op::Sum`); one source is aliased and none is silence. Summing is
-  the graph's job: never add a node to sum (`ChannelSumNode` is going, doc 013
-  "Audio fan-in sums"). The calls that wire **add** a source
+  the graph's job: never add a node to sum (doc 013 "Audio fan-in sums"). The calls that wire **add** a source
   (`GraphBuilder::connect`, `Graph::add_source`, `add_output_source`); the
   `set_` forms (`set_source`, `set_sources`, `set_output_source`,
   `set_output_sources`) replace the set, and `remove_source` /
@@ -1068,7 +1067,8 @@ read the `Cargo.toml`, grep for the type, run the probe.
   `bevy-tutti/Cargo.toml` is the one exception. The `docs/` audits are dated
   records: fix only what claims to be current, and never "update" a reference
   to a new app-side path.
-- **Dead crate names:** `tutti-spatial` → `tutti-nodes` (the panner nodes, `VbapPannerNode`
+- **Dead crate names:** `ChannelSumNode` → deleted (a port or an output
+  channel sums its sources: `Op::Sum`, doc 013 "Audio fan-in sums"); `tutti-spatial` → `tutti-nodes` (the panner nodes, `VbapPannerNode`
   and `HrtfBinauralNode`; the algorithms are `tutti-dsp::spatial`); `build_vbap_mix` and
   `VbapMixParts` → deleted (a VBAP mix is a panner per source wired to the output
   channels, the graph sums the fan-in); `tutti_types::{Topology, NodeKey, Valid, TapId, TapSpec, TapAlign,

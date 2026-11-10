@@ -39,7 +39,8 @@
 //! - Spatial: [`VbapPannerNode`] ([`VbapPannerControls`], [`VbapError`]) and
 //!   [`HrtfBinauralNode`] ([`HrtfBinauralControls`]), steered by a
 //!   [`SpatialTarget`].
-//! - Mixing: [`ChannelSumNode`], [`DownmixNode`], [`BusStripNode`].
+//! - Mixing: [`DownmixNode`], [`BusStripNode`]. Summing is the graph's
+//!   (a port or an output channel sums its sources), not a node's.
 //! - Param ports: each node's `*_PARAMS` port list (for example
 //!   [`SVF_PARAMS`]), which a control lane drives
 //!   ([`ControlLaneNode`](automation::ControlLaneNode)).
@@ -112,16 +113,11 @@ pub use dynamics::{
     GATE_PARAMS, GateNode, LIMITER_PARAMS, LimiterNode, MultibandCompressorNode, MultibandControls,
 };
 
-// The fan-in every mixer needs: `K` sources × `N` channels summed into one
-// `N`-wide output. Ungated on purpose — it is arity arithmetic, not geometry.
-mod mix_bus;
-pub use mix_bus::ChannelSumNode;
-
 mod downmix_unit;
 pub use downmix_unit::DownmixNode;
 
-// The mixer strip: volume, stereo balance, mute. Ungated for the same reason as
-// `mix_bus` — a fader is not a spatial concept.
+// The mixer strip: volume, stereo balance, mute. Ungated: a fader is not a
+// spatial concept.
 mod strip;
 pub use strip::{BusStripNode, STRIP_PARAMS};
 

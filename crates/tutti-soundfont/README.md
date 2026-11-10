@@ -19,7 +19,7 @@ much of each voice would go to one, from the font's `chorusEffectsSend` and
 and the channel's CC 93 and CC 91, and a send nothing is sent to is reported
 silent (`Status::Masked`). The chorus and reverb are graph nodes
 (`tutti_nodes::ModDelayNode` with `ModDelayConfig::GENERAL_MIDI_CHORUS`, and
-`tutti_nodes::FreeverbNode`), summed with the dry pair by a `ChannelSumNode`;
+`tutti_nodes::FreeverbNode`), summed with the dry pair by the graph (the fader's ports take all three);
 `tutti-session`'s `Session::add_general_midi` wires the three, and a host that
 wants other effects wires the sends itself. `Settings` has no switch for
 them: a dry instrument is one whose sends are left unconnected.

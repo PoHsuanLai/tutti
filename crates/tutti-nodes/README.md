@@ -36,8 +36,8 @@ node without a lock.
   adapter over a pure `Modulator` (an LFO's is `tutti_modulation::Wave`, the wave a
   control lane evaluates): an audio generator, whose output feeds a node's
   audio input.
-- **Mixing** — `ChannelSumNode` (K sources × N channels → one N-wide output),
-  `DownmixNode`, `BusStripNode` (volume / balance / mute).
+- **Mixing** — `DownmixNode` and `BusStripNode` (volume / balance / mute).
+  Summing is the graph's: a port or an output channel sums its sources.
 - **Spatial** — `VbapPannerNode` (stereo in, one output per speaker of a 2, 4,
   6, 8 or 12 channel layout) and `HrtfBinauralNode` (two outputs, by FFT
   convolution against a caller-supplied HRIR sphere), both steered by lock-free

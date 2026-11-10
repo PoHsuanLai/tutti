@@ -3761,6 +3761,7 @@ mod tests {
         assert_eq!(Arc::strong_count(&host), 1, "the main thread freed it");
     }
 
+    #[cfg(unix)]
     extern "C" fn noop_dispatch(
         _: *mut AEffect,
         _: i32,

@@ -5049,7 +5049,8 @@ owner decided on 2026-11-07, and confirmed on 2026-11-10, that they move into
 
 > This section is part of the migration record. What is built is in the design
 > sections and in `CLAUDE.md`; the verdicts below were the plan, and the two
-> rows marked below did not go that way.
+> rows marked below did not go that way, and the owner has since reversed that
+> (see [Audio fan-in sums](#audio-fan-in-sums)).
 
 This section, like Migration, records each step as it stood when it was
 made: what it says `Net`, `Legacy`, `AudioUnit` or fundsp "still" does was
@@ -5130,10 +5131,10 @@ slices are ignored on every path, and fewer is a caller bug (a
 
 | Node | Replaced by |
 |---|---|
-| `ChannelSumNode` | A fan-in `Sum` op: an accumulate kernel, or in-place aliasing of the first input. **Kept as a node** (see "SoundFont effects as graph nodes" below and CLAUDE.md, "Summing is a node's job") |
+| `ChannelSumNode` | A fan-in `Sum` op: an accumulate kernel, or in-place aliasing of the first input. **Was kept as a node; reversed (owner, 2026-11-10): the graph sums, and the node is deleted.** See [Audio fan-in sums](#audio-fan-in-sums) |
 | `ParamShaperNode` + `ParamSumNode` + `AtomicSourceNode`, and most of `bevy-tutti/src/modulation/audio_rate.rs`, `ParamPorts` index arithmetic, the `mod_*`/`with_param_inputs` construction flags on 8 node types, and the ECS `ShaperShaping` diff | A **compiler-owned modulation input** on each param port: base = the `Controls` param; offsets = N shaped sources through one fused `ParamMod` op (sum + shape LUT + clamp over slices). **An unconnected param port resolves to its base value, not 0**, so base chains and the born-with-ports trade-off go away. `Shape` declares param ports by `UnitParam` |
-| `DownmixNode` | Channel-count coercion on an edge whose layouts disagree (Web Audio's rule), backed by `tutti_types::Fold`, built from two `ChannelTopology` values. **Open: edge coercion not built; the node stays until decided** |
-| `EqBandNode` | `Svf` with bell/shelf types plus `Status::Bypass` (with a crossfade). **Kept as a node** (see "SoundFont effects as graph nodes" below and CLAUDE.md, "Summing is a node's job") |
+| `DownmixNode` | Channel-count coercion on an edge whose layouts disagree (Web Audio's rule), backed by `tutti_types::Fold`, built from two `ChannelTopology` values. **Decided (owner, 2026-11-10): coercion by `Fold` on a bus-to-bus edge, lowered to weighted fan-in lanes; the node is deleted.** See [Buses and coercion](#buses-and-coercion-between-declared-layouts) |
+| `EqBandNode` | `Svf` with bell/shelf types; bypass is graph state, not the node's. **Was kept as a node with its own flag; reversed (owner, 2026-11-10): `NodeMode::Bypassed`, with a latency-compensated dry path and a declick crossfade, and the flag goes.** See [Bypass and mute](#bypass-and-mute-are-graph-state) |
 | `TransportClock`, `BeatWindow`/`BeatCursor` state | The engine's `TransportClock` advances the transport once per block and the executor hands every node an `Env` (`transport_at`, `segments`, `for_each_beat`; the segment generation in place of `transport_epoch`). `BeatCursor`/`BeatWindow` and all 8 `rebind_offline` impls are gone |
 | `TransportSource` (plugin) | A pure function of `Env` plus the meter (`transport_source::from_env`) |
 | Metering / `AudioTap` | A side-output op the compiler can attach to **any** port, which gives per-track meters and taps. It reads planar slices, so there is no deinterleave pass. The tap is built (`Op::Tap`, see "Taps" in the runtime); `AudioTap` is gone, and so is the engine's master meter: a meter is an op too (`Op::Meter`, see "Meters" in the runtime), per channel, on the outputs or any port |
@@ -5607,6 +5608,971 @@ fade check compares, and `event_capacity` is now one of them. The
 reference's fading-out unit gets detached event writers, as the
 executor's does, so a node that reacts to a refused push behaves the same
 under both.
+
+#### Audio fan-in sums
+
+> **Amendment, decided by the owner (2026-11-10).** Audio fan-in is a graph
+> primitive, like the tap and like event fan-in. This **reverses** three
+> earlier choices: the last line of decision 6 ("audio stays one source per
+> port"), SoundFont stage 3b ("Summing is `ChannelSumNode`") and the
+> verdicts-table rows that marked `ChannelSumNode`, `EqBandNode` and
+> `DownmixNode` as nodes that stay. The reason is conceptual. Summing is
+> something the graph does, and having to add a node to sum two sources is
+> wrong. Cost is not a factor. The earlier reasoning, "a mix is a choice of
+> gains", is answered in [Edge gain](#edge-gain-a-mixer-is-a-weighted-sum):
+> the choice of gains becomes a weight on the edge, and the sum stays a sum.
+>
+> The same reasoning reopened three more node-or-graph rows. The owner has
+> decided them too, and they follow as their own sections:
+> [Bypass and mute](#bypass-and-mute-are-graph-state) (`EqBandNode`'s flag
+> and every per-node bypass go),
+> [Edge gain](#edge-gain-a-mixer-is-a-weighted-sum) (gain is an edge weight)
+> and [Buses and coercion](#buses-and-coercion-between-declared-layouts)
+> (`DownmixNode` goes). The build order across all four is in
+> [Staging](#staging-across-all-four).
+
+Everything below is checked against the code at `origin/main` d8ac46ecc.
+Names marked **new** do not exist yet.
+
+##### 1. Meaning
+
+Several sources wired to one audio input channel are **summed**, and the sum
+is the value that slot holds. The same holds for a global output channel,
+because that is also a sink; without it a headless session could not feed
+two instruments to the master without a mix node.
+
+- **One source** is aliased: the sink reads the source's slot. No op, no
+  copy, as today. A one-source port is bit-for-bit what it was.
+- **No source** is silence (`ARef::Zero`), as today.
+- **A source is an `Edge`** (`Edge::Direct(Source)` or `Edge::Feedback`). A
+  `Source::Zero` is refused beside any other source: it adds nothing and
+  would make two equal wirings compare unequal.
+- **Sources are distinct.** The same `Edge` twice at one sink is
+  `Invalid::DuplicateEdge` (**new**), as events refuse a duplicate. A source
+  wired twice at the same gain is a weight of 2, written as a weight.
+
+The sum is defined per sample, over the addends in order `a_0 .. a_{n-1}`:
+
+```text
+acc = +0.0
+for k in 0..n { acc = acc + a_k }     // f32, one rounding per add, no FMA
+```
+
+The accumulator starts at `+0.0`, as `ChannelSumNode::process` does (its test
+pins it). That one rule is what makes silence skipping exact, point 4.
+
+A later change to f32 accumulation is the "64-bit audio path" section's
+business: if it is built, the sum accumulates in f64 in both formats, as that
+section decided for `ChannelSumNode` and `kernels.rs` already says of a
+compiler-owned sum.
+
+##### 2. Order and determinism
+
+**The order is the source order of the edge.** Within a sink the addends are
+sorted by `Edge`'s derived `Ord`: `Direct` before `Feedback`; among `Direct`,
+`Source::Node` by `(NodeKey, port)` (`OutPort`'s order), then
+`Source::Global` by channel; among `Feedback`, by `FeedbackFrom`. This is the
+same key `merge_tree` gets from `sources.sort_by_key(|e| e.from())` for
+events, and for the same reason: the order is a property of the wiring, not of
+the order a spec lists its edges in. `NodeKey` is the stable key of a node
+across recompiles, a fork and an export, so the order survives all three.
+Compile sorts, so two specs that list the same sources differently render
+alike. `Topology::connect` (**new**) also keeps each list sorted, so they
+compare and hash equal, as `GraphSpec::connect_events` does.
+
+**A wide fan-in is a chain, not a tree.** `merge_tree` builds a tree because
+a merge is order-preserving however it is cut. A float sum is not: a tree
+changes the association and so the bits. The sum is therefore defined as the
+left fold above, and the compiler cuts it into ops of at most `MAX_PORTS`
+(64) addends **without changing the fold**. The first op writes
+`acc = (+0.0 + a_0) + a_1 + .. + a_63`; the next reads that slot as its
+first addend, adds `a_64 ..`, and so on. A chain of `Op::Sum` is bit-identical
+to one flat left fold, so the result does not depend on where the compiler
+cut, only on the topology. The cap is the parallel executor's: a worker holds
+`2 * MAX_PORTS + MAX_PARAM_PORTS + 1` claims (`par.rs`), and a sum op claims at
+most 64 reads and 1 write. A chain is serial along its length, which costs
+nothing that matters: a sum op is `Light`, and a fan-in past 64 is a master
+bus, not a hot loop.
+
+**Serial, parallel and reference are bit-identical** by construction:
+
+- One kernel, written once over `AudioSlots` and `SlotFlags`
+  (`sum_op`, **new**, in `exec.rs` beside `delay_op`); the serial walk and
+  `par.rs::run_op` both call it, as they call `delay_op`.
+- The kernel's per-sample order is the fold above. It may run source-major
+  (a loop over frames for each addend, which vectorises) or frame-major; each
+  sample sees the same sequence of adds, so the bits are the same.
+- Aliasing the first addend (point 6) does not change the fold: `dst += a_k`
+  for `k >= 1` after `dst = +0.0 + a_0` is the same sequence of adds as
+  writing a fresh `dst`.
+- The reference interpreter computes the fold with plain `f32` adds over the
+  edges sorted the same way, from the topology alone (`Reference` reads
+  `Topology::edges` at `reference.rs:1136`, which becomes a loop). It does not
+  read the flags.
+
+##### 3. PDC
+
+Each incoming edge is delay-compensated **separately, before the sum**, as
+the compiler already does per edge: `dep.gap_to(arrival[n])` for each source,
+one `Pre::Delay` per source that needs it, keyed
+`DelayKey::Audio { at, from }`. That key is already unique per
+`(sink port, source)`, so a fan-in needs no new key. The sum itself has zero
+latency. The sink's arrival is the latest departure over **all** its sources
+at **all** its ports, as `delays` computes for a node with several ports.
+
+- `LatencyGraph::inputs` returns one `Feed` per port. It becomes
+  `inputs(&self, node) -> impl Iterator<Item = (u16, Feed<Self::Node>)>`
+  (**new** signature): a fan-in port yields one pair per source, in the
+  compile's order. `Delays`' input entries gain the feed they delay, so a
+  delay is addressed by `(node, port, feed)`. `latency_plan` and `graph_tail`
+  fold the same value, so both take the change; `graph_tail` treats a sum as
+  passing the longest tail among its sources, which is what a sink with
+  several tailed inputs already gets.
+- A feedback addend is `Feed::None`: no alignment, as a feedback edge has
+  none today.
+- **Global outputs.** `DelayKey::Output { channel, from }` is already keyed by
+  source. Today the ring lives inside `Op::Output`. With two or more sources
+  on a channel, each source gets its own `Pre::Delay` to the output time, the
+  sum follows, and `Op::Output` carries no ring. This is what the master
+  meter's special case at the output loop already does (a delay as its own
+  op, read by `Output` and by the meter), so that case becomes the rule for a
+  fan-in channel.
+- **Taps and meters.** A plan tap or meter names a `Source`, an output port
+  of a node or a global input, never an input port, so nothing names the
+  inside of a sum today and this change adds nothing to name it. What a tap
+  or meter does see is **post-sum** wherever it can look: a node's output
+  after the node consumed the sum, and `MeterSpec::Outputs` and
+  `open_output_tap`, which read `output_refs`, the slots after the alignment
+  delays **and the sum**. A meter on a summed global output therefore reads
+  the mix at the output's time. Naming an input port as a tap source
+  (`Source::Input(InPort)`, **new**, not in this change) is the way to hear
+  one sink's sum without its node.
+
+##### 4. Silence and constant flags
+
+Flags are per slot, one byte (`SILENT`, `CONSTANT` in `exec.rs`), read through
+`SlotFlags`. The sum computes its output flags from its addends' flags, never
+from scanning samples:
+
+- **A silent addend is skipped.** `SILENT` means every sample is exact `+0.0`
+  (the executor writes silence as `+0.0`; `Status::Constant` only flags
+  `v == 0.0 && v.is_sign_positive()`). Because the accumulator starts at
+  `+0.0` it is never `-0.0` (a sum is `-0.0` only when both addends are, and
+  the accumulator starts as `+0.0`), so `acc + (+0.0) == acc` bitwise, and
+  skipping a silent addend changes no bit. That is why skipping needs no tolerance and the reference,
+  which skips nothing, still agrees.
+- **All addends silent:** the output is zero-filled (or left, when it aliases
+  an addend that is already zeros) and flagged `SILENT | CONSTANT`. Downstream
+  nodes then take their silence skip, which `ChannelSumNode` never allowed
+  (it returns `Status::Modified`, which clears the flags).
+- **Partial silence:** the kernel runs over the non-silent addends in their
+  order. With one non-silent addend the result is `+0.0 + a`, a copy that
+  turns a `-0.0` sample into `+0.0`: the reference does the same, because it
+  folds from `+0.0`.
+- **Constant:** the output is `CONSTANT` when every non-silent addend is.
+  Per sample the same inputs give the same output, so this is exact. The
+  kernel does not use it to shortcut the loop in this change.
+- **Not silent by cancellation.** `x + (-x)` is zero but not flagged. Flags
+  are a claim made from other flags; the sum never scans.
+- **The 64-bit mask.** A node's input mask is 64 wide (`in_masks` reads 64
+  channels; past 63 reads as unset, and `SilenceMask::covers(n)` for `n >= 64`
+  means the first 64 are set). `Op::Sum` does not use it: it reads the slot
+  flags directly, with no width limit. That removes the survey's hazard for
+  this path.
+- A one-source sink aliases the slot, so its flag is the source's.
+
+**Exceptions to the exact skip.** A weighted addend (see Edge gain) is skipped
+on `SILENT` too: `w * (+0.0)` is `±0.0` for a finite `w`, and the accumulator
+is never `-0.0`, so it adds nothing. A weight of exactly `0.0` is **not**
+skipped by value: `0.0 * NaN` is `NaN`, and skipping would make the render
+depend on whether a gain happens to be zero. A mute is `NodeMode::Muted`.
+
+##### 5. Feedback edges into a summed port
+
+Feedback edges exist (`Edge::Feedback(FeedbackFrom)`, a declared cycle with a
+fixed delay) and the session graph writes none today; `GraphBuilder` does.
+They take part in a sum like any addend:
+
+- The addend is the feedback slot (`ARef::Fb(f)`, slot `1 + f`), filled before
+  the block from the ring, so it is a plain read.
+- It sorts after every `Direct` edge, by `FeedbackFrom` (point 2).
+- It has no PDC (`Feed::None`) and does not take part in cycle detection:
+  only `Direct` edges count there, as now.
+- Two feedback edges from the same output with different delays are two
+  addends with two rings, as the keys already distinguish them
+  (`audio_fb_key`). The same `(from, delay)` twice is a duplicate.
+- A sink with only one feedback edge aliases the feedback slot, as today.
+- A mix of `Direct` and `Feedback` addends is a `Sum` whose last addends read
+  fixed slots. Nothing in colouring changes: the fixed slots are outside the
+  coloured range.
+
+##### 6. Op shape and cost
+
+**One op, accumulating into the first addend's slot when the colouring
+allows.**
+
+```rust
+// plan.rs (new)
+Op::Sum {
+    /// Audio slots read, in source order (into `Plan::audio_list`): at
+    /// least 2, at most MAX_PORTS.
+    srcs: Span,
+    /// Audio slot written.
+    dst: u32,
+}
+```
+
+- **Compiler.** `Pre::Sum { srcs: Vec<ARef>, dst }` (**new**), emitted by a
+  `sum_chain` beside `merge_tree`: 0 refs is `ARef::Zero`, 1 is the ref
+  itself, up to `MAX_PORTS` one op, more a chain whose next op reads the last
+  result first (point 2). Each ref was already put through its PDC `Pre::Delay`
+  by the input loop at `compile/mod.rs` where `topology.edges.get(&at)` is read
+  today; that loop now walks the sorted list. `em.read_aref` marks each read,
+  so the colouring sees `n` reads and one write.
+- **Colouring.** `in_place` gains `Pre::Sum { srcs, dst }`: `in_place.insert(dst,
+  u)` for `u = srcs[0]` when it is `ARef::Val(u)`. The existing rule (the op is
+  a reader of `u` and every other reader of `u` happens-before it) already
+  covers it. A sum whose first addend is read elsewhere later simply gets a
+  fresh slot, and the bits do not change (point 2). The arena needs no new
+  kind of slot.
+- **Kernel.** `sum_op<A: AudioSlots, F: SlotFlags + ?Sized>(arena, flags,
+  srcs, dst, frames)`: it drops silent addends by flag, then
+  - if `dst` is the first remaining addend's slot, borrows `dst` for writing
+    and the rest for reading and adds in place (after `dst += +0.0`, which is
+    what turns a `-0.0` into `+0.0`);
+  - otherwise borrows all reads and `dst`, writes `+0.0 + a_0`, adds the rest.
+
+  It borrows through `AudioSlots::borrow` with `(slot, Role)` requests sorted
+  by slot into a `[(u32, Role); MAX_PORTS + 1]` on the stack, as
+  `event_merge_op` does for events; the order of addition is the `Role::Read(i)`
+  index, not the slot order. No `unsafe`: `tutti-graph` stays
+  `#![forbid(unsafe_code)]`, and CLAUDE.md's "op code is written once" holds
+  because `par.rs` claims the slots (`SplitRw`) and calls the same function.
+  Nothing allocates.
+- **Parallel.** `par.rs::run_op` gets an arm like `Op::Delay`'s: view the
+  arena with the op's slots claimed, call `sum_op`. A sum reads `n` slots and
+  writes one, so the schedule orders it after its sources and before its
+  readers; no new claim kind.
+- **Cost.** `op_work` gets an arm: `Work { fixed: 50, per_frame: n }` for `n`
+  addends, a copy's fixed cost (`COPY`) and one unit per addend per frame. It
+  is `Light`-class and `coarsen` packs it with its siblings. These are
+  estimates; the `graph_render` bench measures them in the build, and a
+  measurement replaces the constant.
+- **verify.rs.** The access list for `Op::Sum` is `n` reads and one write
+  (beside `Op::Delay`'s at `verify.rs:92`). New checks: `srcs.len` in
+  `2..=MAX_PORTS`; slots in range; each read written before it is read; a
+  write that equals a read is the first read only (the in-place form).
+- **Where it surfaces elsewhere.** `exec.rs` (the capacity pass at the
+  `Op::EventMerge` site has no audio equivalent; the run loop adds an arm),
+  `par.rs`, `cost.rs`, `verify.rs`, `reference.rs`. Plan dumps and any `match`
+  over `Op` add an arm.
+
+##### 7. The declarative API
+
+**Representation.** The key stays the sink port; the value becomes a set:
+
+```rust
+// graph.rs
+pub struct Topology {
+    pub edges: BTreeMap<InPort, Vec<Edge>>,   // was BTreeMap<InPort, Edge>
+    pub outputs: Vec<Vec<Source>>,            // was Vec<Source>
+    // nodes, inputs, taps, meters unchanged
+}
+```
+
+- An absent key and an empty `Vec` mean the same; the methods below remove the
+  key when the last edge goes, so the derived `Eq` and `Hash` agree.
+- `Topology::connect(at, edge)` and `Topology::disconnect(at, edge)`
+  (**new**) keep each list sorted and de-duplicated, like
+  `GraphSpec::connect_events`. `GraphSpec` re-exposes them. A raw write to
+  `edges` is still legal and is canonicalised by compile's sort, as for
+  events.
+- `Topology::validate` adds `Invalid::DuplicateEdge`, and
+  `Invalid::SilenceBesideSources` for a `Source::Zero` that is not alone; the
+  existing range checks run per edge. `Invalid::Cycle` ignores nothing new.
+- **Why one map and not a `GraphSpec.sums` beside it.** A second map would
+  keep a "normal" single edge and a "sum" edge as two things for the same
+  fact, and every reader of `edges` (about 35 sites in `tutti-graph/src`, the
+  reference, the latency view, fork, the editor's `remove`) would have to
+  merge two. One set per sink is the representation in which fan-in is the
+  general case and one source is the set of one. The cost is that every site
+  that read one edge now reads a list; the build's first PR is exactly that
+  edit, with no behaviour change.
+
+**The rule that is replaced.** CLAUDE.md's "Wiring is declared, not called"
+section says: "Keys are sink ports, so fan-in cannot be represented. Summing
+is a node's job." The replacement text:
+
+> - Keys are sink ports and the value is the set of sources feeding the port.
+>   Several sources into one audio input sum, in source order (`NodeKey`, then
+>   port), bit-identically on every executor; one source is aliased and none is
+>   silence. Summing is the graph's job: never add a node to sum. A source's
+>   weight is an edge's, not a node's (doc 013, "Edge gain").
+
+`Topology::edges`' field docs, the `Source` docs ("Fan-in is unrepresentable"),
+the `GraphSpec` docs ("so audio fan-in cannot be written") and the module docs
+of `graph.rs` carry the same sentence and change with it. So does
+`docs/engineering-notes.md` where it repeats the old rule.
+
+**`tutti-session`'s `Graph`.** Today `source(node, port) -> GraphSource` and
+`set_source(node, port, source)` hold one source per port, and
+`output_source` / `set_output_source` one per channel.
+
+| Today | After |
+|---|---|
+| `source(node, port) -> GraphSource` | `sources(node, port) -> Vec<GraphSource>` (sorted as compile sorts; `source` goes, because a method that returns one of several would be wrong) |
+| `set_source(node, port, source)` | stays, meaning **exactly this one source**: it replaces the set. It is `set_sources(node, port, &[source])` |
+| (none) | `set_sources(node, port, &[GraphSource])` (**new**): exactly these, as `set_event_sources` is; touches nothing when the set is unchanged |
+| (none) | `add_source(node, port, source)` and `remove_source(node, port, source)` (**new**): one edge in or out; both mark the graph edited only when they change it |
+| `output_source` / `set_output_source` | `output_sources(channel)` / `set_output_sources(channel, &[GraphSource])`, with `set_output_source` as exactly one |
+| `set_outputs_from(node)` | unchanged: it replaces every output's set with the one source |
+
+`GraphSource::Silence` in a set of several is refused (as `Source::Zero`
+beside others); in a set of one it clears the port, as now. `GraphBuilder::connect`
+adds a source (it replaced); `connect_output` likewise; `disconnect(node,
+port)` clears the port and `disconnect_from` (**new**) removes one. This
+changes the meaning of `connect` for a caller that wired a port twice to
+replace it, and that is on purpose: such a caller wrote the sum without
+knowing.
+
+**Adding or removing one source in the editor.** It is a spec edit and a
+commit, like any wiring change:
+
+- Adding a second source to a port turns an aliased read into a `Sum` op, so
+  the plan changes shape and the commit recompiles. Removing back to one
+  source turns it into an alias again. Nothing else in the plan moves; the
+  PDC rings of the sources that stay are keyed `DelayKey::Audio { at, from }`
+  and **survive the commit with their history**, and the ring of a removed
+  source goes with its key, so the old source's past audio is never played
+  out of the new wiring (the rule `DelayKey` already states).
+- **No automatic declick of audio wiring**, as today: a source connected at
+  full level steps in. A host that wants a declick wires the edge with a
+  weight of `0.0` and ramps it to `1.0` (Edge gain), and ramps down before
+  it removes the edge. That is the same advice the engine's own editors give
+  for any rewire.
+- `Editor::remove(node)` (the `t.edges.retain` at `editor.rs:1381`) drops every
+  edge from or to the node, now by filtering each set. A sink left with one
+  edge aliases.
+
+**bevy-tutti (parked, not updated).** `PortSources` on a sink would become a
+list per port and `MasterSources` a list per output channel, applied with
+`set_sources` / `set_output_sources`. The rule "a declaration may be partial"
+stays per **port**: a port a short `PortSources` leaves out belongs to whoever
+wires it through `AudioGraphRes`, and a port it names is owned whole, its set
+replaced. `topology::disagreements` compares declared ports as sets. That is a
+note for the un-parking migration, not a change here.
+
+##### 8. Migration
+
+`ChannelSumNode` (`tutti-nodes/src/mix_bus.rs`, 140 lines, its `rt_no_alloc`
+gate and its tests) is deleted, and with it the arithmetic
+`s * channels + c` that named its ports and the rule "re-insert a new node when
+the source count changes".
+
+| Site | Change |
+|---|---|
+| `tutti-session/src/general_midi.rs` (`add_general_midi`) | No `sum` node. The strip's port `c` gets sources `[dry c, chorus c, reverb c]` through `set_sources`. `GeneralMidi` loses its `sum` field. The order is by `NodeKey`: the unit's dry strip (inserted first), the chorus, the reverb, the order the node summed in, so the render keeps its bits provided the keys are in creation order; the build checks this against `tests/general_midi.rs` rather than assuming it. |
+| `tutti-spatial/src/vbap/mix.rs` (`VbapMixParts`, `VbapLfeSend`, `build_vbap_mix`) | The main sum and the LFE sum are no longer nodes. The mix has no single output node: it reports, per output channel, the ports that feed it (panner `s` port `c` for channel `c`; the LFE low-pass for the LFE channel), and the caller wires each list into its sink's port (or the root's channel). `VbapMixNode::Sum` and `LfeSum` go; `VbapMixEdge` into them go; the LFE send keeps its low-pass and feeds it from every source's channel 0 through a fan-in. `insert_into` returns those lists instead of "the sum's key". An API change to a public type, so it is in the PR notes. |
+| `tutti-session/src/node.rs` | `impl SessionNode for ChannelSumNode` goes. |
+| `tutti-nodes/src/lib.rs`, `README.md` (lines 39, 66) | Drop the export and the sentence naming it the mixing node. |
+| `tutti-nodes/src/strip.rs` | Comment mentions only; no code change. |
+| Tests: `tutti-session/tests/general_midi.rs`, `tutti-export/tests/graph_source.rs`, `tutti-export/tests/surround_export.rs`, `tutti-plugin/tests/clap_pdc_alignment.rs`, `tutti-nodes/tests/reported_latency.rs` (the PDC fan-in case), `tutti-nodes/tests/rt_no_alloc.rs`, `tutti-nodes/tests/isolate_snapshots.rs`, `tutti-spatial/src/vbap/mix/tests.rs`, and the `cost_classes.rs` files of `tutti-polysynth`, `tutti-sampler`, `tutti-spatial` | Each wires the sources straight into the sink. `reported_latency.rs` and `clap_pdc_alignment.rs` are the PDC tests and become tests of the sum's per-source alignment. `isolate_snapshots.rs` and the `cost_classes.rs` files list node kinds and drop the entry. |
+| Benches: `tutti-nodes/benches/node_kernels.rs`, `parallel_render.rs`, `tutti-session/benches/render_load.rs` | The `ChannelSumNode` rows become a graph with a fan-in (the bench measures the op through the graph), which is also the measurement `op_work` needs. |
+| `tutti-soundfont/src/lib.rs`, `tutti-spatial/src/hrtf/mod.rs` | Doc comments that name the node. |
+| `bevy-tutti/tests/graph_value.rs` | Parked; not updated. |
+| Docs: the rows and decisions edited in this document; CLAUDE.md's wiring bullet and the `Dead crate names` list (add `ChannelSumNode` → fan-in); `graph.rs` and `spec.rs` doc comments; `docs/engineering-notes.md` | As point 7. |
+
+##### 9. Tests the build adds
+
+From the spec, never against another render (CLAUDE.md). Each records its
+mutation in a comment.
+
+- **Analytic sum.** Three sources of known constants `a, b, c` into one port:
+  every sample is `((0.0 + a) + b) + c`, computed in the test with the same
+  expression. A fan-in of 100 (past `MAX_PORTS`) equals the left fold over all
+  100, pinning that the chain cut does not change the bits. Mutation: sum in
+  reverse order; fold pairwise; start from the first addend instead of `+0.0`
+  (a `-0.0` source then survives).
+- **Order.** Two specs listing the same sources in different orders render
+  alike; a source with a smaller `NodeKey` is added first (use values whose
+  float sum is order-dependent, such as `1e8, 1.0, -1e8`). Mutation: sort by
+  the order listed.
+- **Serial, parallel, reference, bit for bit.** The differential suite's
+  `modes` gets a `Kind::Sum` fan-in node shape (the existing `Kind::Sum` stands
+  for the node and is rewritten to a fan-in): a wide fan-in, a fan-in with a
+  silent source, a fan-in behind PDC, a fan-in whose sources fan out
+  elsewhere (so the in-place alias is refused), and a fan-in at a global
+  output. `tests/parallel.rs` compares each against the serial render. The
+  reference does not read the flags, so a skipped silent addend is compared
+  against one that was added. Mutation: make the kernel skip on a non-silent
+  flag; make the parallel arm use a different order.
+- **Silence flags.** A probe node counts blocks whose input is flagged silent:
+  all-silent sources give a silent, parked sink; a live source after silence is
+  heard on the next block; `-0.0` sources sum to `+0.0`; a 70-source sum with
+  only source 66 live is not parked (the 64-bit mask hazard, which `Op::Sum`
+  does not have); a constant sum is flagged constant. Mutation: return
+  `SILENT` unconditionally.
+- **PDC.** Two paths of different latency (a lookahead node of `L` frames and
+  a zero-latency one) into one port: an impulse sent down both arrives once,
+  aligned, at the sum, at the right frame; the sum's sink arrival is `L`;
+  an edge added or removed later realigns without a click in the other path
+  (its ring survives). The same at a global output. Mutation: skip the delay
+  for the shorter path.
+- **Add and remove one source.** Add a second source to a one-source port in a
+  running graph: the first source's output is continuous across the commit
+  (its ring is kept) and the new one is added from the commit's block; remove
+  it again and the port is an alias (the plan has no `Op::Sum`, checked on the
+  plan). The session's `set_sources` with an unchanged set marks nothing
+  edited. Mutation: rebuild the PDC rings on every commit.
+- **The no-alloc gate.** `rt_no_alloc` renders a fan-in of 8, 64 and 100
+  sources, silent and live, inside `assert_no_alloc`, serial and, through
+  `TestPool::no_alloc`, on the pool (helpers included). The `GatedPool` suites
+  gain a fan-in graph.
+- **Plan tests.** `verify` rejects an `Op::Sum` with one source, 65 sources,
+  or a write that aliases a non-first read. A feedback addend sorts last and
+  has no ring. A fan-in with a feedback edge and a direct edge sums both.
+- **Compile refusals.** `Invalid::DuplicateEdge` and `SilenceBesideSources`.
+
+##### 10. Staging of the fan-in
+
+Each PR passes CI by itself. The doc is its own PR, this one.
+
+1. **Representation, no fan-in yet.** `Topology::edges` and `outputs` become
+   sets; the methods; validate; every reader reads a list; the session and the
+   builder keep their one-source methods. Compile refuses a set of two with
+   one new error (`CompileError::FanInNotCompiled`, removed in 3). No behaviour
+   change; the whole suite passes unchanged.
+2. **The views.** `LatencyGraph::inputs` returns port-tagged feeds; `delays`,
+   `latency_plan` and `graph_tail` take several; the reference interpreter
+   folds several. Tests drive the latency view directly with fan-in. Compile
+   still refuses.
+3. **The op.** `Op::Sum`, `sum_chain`, colouring, `sum_op`, `par.rs`, `cost.rs`,
+   `verify.rs`; the refusal goes. The analytic, order, differential, flag,
+   PDC, add/remove, plan and no-alloc tests of point 9, written against a
+   hand-built `Topology`.
+4. **Session API.** `sources`, `set_sources`, `add_source`, `remove_source`,
+   the output forms, the builder's `connect` and `disconnect_from`. `ChannelSumNode`
+   still exists.
+5. **Migration.** `add_general_midi`, VBAP, the tests and benches. The node
+   stays one more PR so each of those compiles and passes beside it.
+6. **Delete.** `ChannelSumNode`, its exports, `SessionNode` impl, README and
+   the lists; CLAUDE.md, `graph.rs`, `spec.rs`, `engineering-notes.md`.
+
+#### Edge gain: a mixer is a weighted sum
+
+Decided by the owner. The sum of the section above becomes a **weighted sum**:
+an edge may carry a gain, and a mixer is a fan-in whose edges carry gains.
+This answers decision 6's "a mix is a choice of gains": the choice of gains
+is a property of the edge, so the sum needs no node to hold it. A weight of
+`1.0` is the plain sum.
+
+**Representation.** An edge's gain is spec data beside the edge, not inside
+`Edge` (`Edge` is `Copy + Ord + Hash`; a gain is a float with a range and a
+driver):
+
+```rust
+// graph.rs / spec.rs (new)
+pub enum Sink { Port(InPort), Output(u16) }          // Ord, Hash
+pub struct EdgeId { pub sink: Sink, pub from: Edge } // Ord, Hash: names one edge
+pub struct EdgeGain {
+    pub base: Amplitude,        // linear multiplier, tutti_types
+    pub range: ParamRange,      // existing: what a driven value is clamped to
+    pub source: Option<EventOut>, // existing: what drives it
+}
+// GraphSpec
+pub gains: BTreeMap<EdgeId, EdgeGain>,
+```
+
+`Amplitude` is the unit (`tutti_types::value::units`), not a bare float. An
+edge **with an entry** is a weighted lane; one without is plain. The entry is
+structural: adding or removing it recompiles, as adding an edge does, because
+a one-edge sink with an entry needs an `Op::Sum` of one addend where a plain
+one aliases. Changing `base` or `range` does not recompile (below).
+`GraphSpec::validate` refuses an entry whose edge does not exist
+(`GraphInvalid::GainWithoutEdge`, **new**), a non-finite `base`, a NaN bound
+(the `BadParamRange` that param ranges already use), and a source that is not
+in the graph. `GraphSpec::disconnect` removes the edge's entry with the edge.
+The default `range` is `-8.0..=8.0` (a finite clamp, about +18 dB, polarity
+allowed): a recommendation the build may tune, but a finite default is
+required so `w * s` cannot meet infinity.
+
+**Addressing as a param.** An edge gain is a param target. It reuses the param
+port machinery (`ParamMod`, the `Ramp` and `ParamState` of `param.rs`) with a
+different key:
+
+- `GraphSpec::connect_edge_gain(id: EdgeId, from: EventOut)` and
+  `disconnect_edge_gain` (**new**) set `EdgeGain::source`, as `connect_param`
+  and `disconnect_param` set `ParamMod::source`. The rules are the param
+  port's, stated once in `param.rs`: the source **replaces** the base from its
+  first event on, the value is clamped to `range`, a source change
+  crossfades over `PARAM_DECLICK` (256 frames), an undriven lane reads its
+  base, and a unit's first block starts at its value.
+- **PDC.** The event source is aligned to the sink node's arrival like a
+  param source: a `DelayKey::EdgeGain { id, from }` (**new**, the sibling of
+  `DelayKey::ParamEvent`) with a ring only when it needs one; a later source
+  raises the sink's arrival. For a global output sink, to the output time.
+- **Compile.** The step is fused into the sum op as a param step is fused into
+  a node op: the lane's per-frame values are read only by the sum, so they
+  have no slot, no ordering edge and no verifier rule of their own. A lane
+  with a source gets a `GainPort` in `Pre::Sum` (**new**, the sibling of
+  `PPort`); its event read is a read of the op, so colouring and the verifier
+  cover it.
+- **Session and modulation.** `ParamRef { node, param: ParamAddr }` names a
+  node's param and `ParamAddr` (`Unit`, `Indexed`, `Id`) cannot name an edge.
+  An edge is named by a new `EdgeRef { sink, from }` (the session's key form
+  of `EdgeId`), and `Mods::route` takes a target that is either, `ModTarget`
+  (**new**, `From<ParamRef>` and `From<EdgeRef>`). A route to an edge compiles
+  to a `ControlLaneNode` per target as a route to a param does (doc 014 §10),
+  and the lane's event output connects with `connect_edge_gain`. Automation
+  addresses an edge the same way. The lane's range is the edge's `range`.
+- **`UnitParam`.** No new `UnitParam` kind: an edge is addressed by its id, not
+  by a kind and an index on a node. A node-level `Volume` stays what it is.
+
+**Smoothing, per block.** A move of the base is a control move and is ramped,
+as the param doc says ("ramped over one block like any control move"): the
+base lives in a cell the executor reads once at the block's start (a
+`PackedAtomic<f32>` in the spec's mirror, as `ParamRangeReader` is for the
+range), and the lane moves **linearly from the weight the previous block ended
+on to the new one across the block**:
+
+```text
+w[i] = w_prev + (w_new - w_prev) * ((i + 1) as f32 / frames as f32)   // i in 0..frames
+```
+
+`w_prev` is lane state in the executor (`SumLaneState`, **new**, held beside
+the rings and claimed in the parallel executor the same way), keyed by
+`EdgeId` so it survives a commit that keeps the edge. A lane's first block
+starts at its value, with no ramp. A static weight (`w_prev == w_new`) skips
+the ramp. This is the same smoothing the strip applies to its volume, moved to
+the edge; the executor snapshots every lane's cell at the **start of the
+block**, so a store in the middle of a block cannot make serial and parallel
+disagree (the same rule as for the transport).
+
+`Editor::set_edge_gain(id, Amplitude)` (**new**) stores into the cell and the
+spec and marks nothing for commit: a control, not a rewire, like
+`set_param_range`.
+
+**Weight 1.0 is bit-identical to the plain sum, by construction.** The lane
+kernel for a static weight of exactly `1.0` is the plain add: the kernel
+chooses it per lane per block, so no multiply happens. Where the weight is
+anything else the lane adds `w * s`, with `*` and `+` as two roundings and
+**no fused multiply-add** (Rust does not contract them; the kernel and the
+reference spell the same expression). A multiply by `1.0` is the identity in
+IEEE anyway, so the choice is not a hazard, only a statement that a unity
+weight costs what an unweighted edge costs. Two corner facts the tests pin:
+a fan-in of two or more addends at unity equals the unweighted sum bit for
+bit; a **one-edge** sink with a unity entry runs `+0.0 + s`, which turns a
+`-0.0` sample into `+0.0` where an aliased plain edge keeps it. Nothing
+audible differs, and the test says so rather than hiding it.
+
+**Silence.** Unchanged (point 4): a silent addend is skipped whatever its
+weight. A weight of `0.0` is not skipped by value (point 4), so the render
+never depends on whether a gain is zero; a mixer's mute is `NodeMode::Muted`
+or a weight of `0.0`, and a host that wants the skip uses the mode.
+
+**Determinism.** The weights are part of the fold: `acc = acc + w_k * a_k` in
+source order, per sample, with the lane's own `w_k[i]`. The reference computes
+the same expression from the spec and the same `w_prev` bookkeeping, driven by
+the same block partition the executor under test uses (the differential suite
+renders both with one block schedule). Driven lanes share the param port's
+ramp code, which the differential suite already compares.
+
+**Cost.** `op_work`: `per_frame` of `2n` for `n` weighted lanes (a multiply and an
+add), `n` for plain ones; the per-lane ramp scratch (`max_block` floats a
+lane) is sized when the plan is applied, so nothing allocates on the audio
+thread.
+
+**API.** `tutti-session`: `Graph::set_edge_gain(sink, from, Amplitude)`,
+`edge_gain(..)`, `clear_edge_gain(..)`; the fan-in methods gain a weighted
+form `add_source_weighted(node, port, source, Amplitude)`; routes through
+`Mods` as above. `bevy-tutti` (parked) would carry the weight in `PortSources`
+entries.
+
+**Migration.** `BusStripNode`'s `Volume` stays (a strip is a fader and a
+pan, and a send's gain is the edge's). What a `ChannelSumNode` plus per-source
+`BusStripNode` did is a fan-in with weights. Where a node held a gain only to
+scale one source, it becomes an edge weight; the audit of the nodes
+(`GainNode`-like uses) is a list in the build's PR, not decided here.
+
+**Tests.** From the spec: `((0 + w0*a) + w1*b) + w2*c` with the same
+expression; unity bit-identity against the unweighted sum for fan-ins of 2, 8
+and 100 and the one-edge corner; a ramp of one block pinned analytically
+(`w[i]` above, first block no ramp, a second block ramping from the first's
+end); a driven lane against the param port's own value (clamp, declick on a
+source change, base while undriven); the PDC of a lane's event source behind a
+latent path; serial against parallel against reference with weights, a ramp
+and a driven lane; `set_edge_gain` leaves the plan untouched (the plan `Arc`
+is the same); no-alloc over a ramping, driven, 64-lane sum on both executors.
+Mutations: fused multiply-add in the kernel; ramp from the new value; skip
+on `w == 0.0`; read the cell per op rather than per block.
+
+#### Bypass and mute are graph state
+
+Decided by the owner. Bypass and mute are state the **graph** holds for any
+node, a plugin included, set through the editor and the session. They are not
+a flag each node invents. `EqBandNode`'s `BandState` and `set_enabled`, and
+every per-node bypass or mute of the same kind, go.
+
+**State.**
+
+```rust
+// tutti-graph (new)
+pub enum NodeMode { Active, Bypassed, Muted }
+// GraphSpec
+pub modes: BTreeMap<NodeKey, NodeMode>,      // absent is Active
+// Editor
+pub fn set_mode(&mut self, key: NodeKey, mode: NodeMode) -> Result<(), ModeError>;
+pub fn mode(&self, key: NodeKey) -> NodeMode;
+```
+
+`set_mode` stores into a per-unit cell (an `AtomicU8` the unit's record holds,
+made when the unit is inserted and shipped in the delta with it) and into the
+spec, and marks nothing for commit: a control, not a rewire, as
+`set_param_range` is. The executor loads each cell once at the start of a
+block into a snapshot, so every op of the block, on any thread, sees one
+mode. A fork copies `modes` and starts every unit in its steady state with no
+fade (an export hears the state, not a toggle). `Session::graph().set_mode`
+and `mode` (**new**) are the session's. `UnitParam::Bypass` and `Mute` stay in
+the vocabulary for a node's own per-part toggles (a multiband's per-band
+`Bypass`, by index); a node-wide one is `NodeMode`.
+
+**What each mode does** (all decided in the executor, so the node and the
+plugin host know nothing):
+
+- **`Active`**: the node runs.
+- **`Muted`**: the node **keeps running** (it consumes its events, keeps its
+  state, advances its tail) and its outputs are replaced by silence, flagged
+  `SILENT | CONSTANT`, so everything downstream takes its silence skip. A
+  muted instrument therefore keeps time and holds its notes, and un-muting
+  needs no reset and no warm-up. A mute does not park the node: parking
+  would need the reset semantics below, and an instrument's voices are the
+  case where that is wrong. A later change may park a muted node that has no
+  event inputs, by the same rule as any quiet node.
+- **`Bypassed`**: the node's outputs are its inputs, **delayed by the node's
+  declared latency**, and the node is **parked**.
+
+**The bypass path, and the channel mapping.** The dry path is a delay of
+`shape.latency` frames (the node's declared processing latency, never the
+musical delay), so a bypassed node arrives at the same time as an active one
+and the plan, the PDC and the arrival of everything downstream hold with no
+recompile. The mapping from inputs to outputs:
+
+- When the node's main input bus and main output bus have **the same
+  declared topology** (see Buses), output `c` is input `c`.
+- When they have **different declared topologies**, the bypass is the same
+  fold an edge between them would be (`Fold::between`), so a mono-to-stereo
+  node bypasses to both sides and a 5.1-to-stereo node bypasses to a downmix;
+  a fold that cannot place the channels is `ModeError::Unplaced` at
+  `set_mode`, never a silent drop.
+- When the buses are not declared (a shape built from widths only), it is
+  `Status::Bypass`'s rule, which the executor already implements: output `c` is
+  input `c` for `c` below the narrower width, and an output past the input's
+  width is silence, flagged. A width is not a placement: nothing here guesses
+  one.
+- Every other output (a send, a sidechain output, a second bus) is silence,
+  flagged. A node with **no audio inputs** (an instrument) has nothing to pass:
+  bypassed it is silent, as muted, and its events are not forwarded.
+- **Event outputs** of a bypassed node are empty. **Event inputs** are
+  discarded while it is parked; what it held is closed on the way in (below).
+
+**The dry path's history.** Output must be input delayed by `L`, so the last
+`L` input frames must exist when the toggle comes. A node with `L > 0`
+therefore carries a **bypass line**: an `AudioRing` per input channel of its
+main bus, of capacity `L`, **allocated at apply time on the control side** and
+fed every block by the node's op (a copy of the input, the same cost as a PDC
+delay's `push`). A node with `L = 0` carries none and its dry path is the
+input slot. Memory is `L` frames a channel for each latent node, and only for
+latent nodes (plugins with lookahead, limiters, FFT and convolution blocks).
+A change of declared latency (`Editor::set_latency`) rebuilds the line in the
+commit it already causes.
+
+**The toggle declick.** A change of mode is a crossfade of **256 frames**
+(`MODE_DECLICK`, **new**, the value of `PARAM_DECLICK`) on the node's
+outputs, by `CrossfadeCurve::EqualAmplitude`'s `gains(k, len)` (dry and wet
+are phase-coherent, which is the case that curve is for), counted from the
+first frame of the block the toggle lands on, as a `replace` fade is. During
+the fade the node **is called**, so the wet side is real; the output is
+`wet * g_out + dry * g_in` per sample (to `Bypassed`), or `wet * g_out`
+(to `Muted`, the dry side being silence). After it, the steady state of the
+mode holds. A toggle during a fade restarts from the current gain: the fade
+state is the outputs' current mix weight, not a count, so a flip never jumps.
+The fade state lives in the unit's record in the store, as `Fade` does, and
+is cut by a hard edit (a re-prepare, a removal) as a fade is.
+
+**Parked while bypassed.** After the fade to `Bypassed` ends, the executor does
+not call the node. It runs only the dry path (the bypass line, or a slot
+alias when `L = 0`). The node's silence-skip rules are not involved: a bypassed
+node is parked by mode, and a sink with no outputs (a meter-like node) is
+not parked by this rule, as today. Output flags are the input's, carried
+through the dry path exactly as `Status::Bypass` carries them, so a silent
+input leaves the bypassed node's output silent and downstream parks.
+
+**On un-bypass.** The node's state is stale (a delay's old repeats, a
+reverb's old tail, a filter's old memory). So:
+
+1. At the block the toggle lands on, the executor calls `Node::reset()`
+   **before** the first call, so the node starts clean, and starts calling it
+   with its real input.
+2. For its first `L` frames the node's output is its warm-up (a lookahead
+   limiter has not yet seen `L` frames of input), so the **dry path stays
+   audible** for `L` frames, with the wet output discarded.
+3. Then the 256-frame crossfade from dry to wet runs.
+
+So un-bypass is `reset`, warm up for `L`, fade in. For `L = 0` nodes (almost
+all) the warm-up is empty and the toggle is the fade alone. No tail of the
+old state is ever heard, and the node's latency is paid in the dry path, so
+the output stays aligned the whole time. For a node that must **not** be
+reset (it holds the user's work: a sampler's loaded voices, a plugin's
+state), `Node::reset` is, per its contract, the clear of *signal* state, not
+of settings; a node whose `reset` loses user state breaks the contract and
+is a bug of that node. **On bypass-on**, the wet tail is not played out: the
+fade takes the node's output to zero in 256 frames and the tail is cut, which
+is what bypass means. A held note on a bypassed event input is closed: the
+executor already knows the keys a port holds (`held.rs`) and sends the offs
+through the injection path during the fade, then discards later events.
+
+**Tails and export.** `Shape::tail` is a ceiling, and a mode is not stable
+(a bypassed node can be active at export), so `graph_tail`, PDC and export
+keep the ceiling; they do not read `modes`. A bypassed node's tail is
+therefore over-counted, never under-counted.
+
+**Plugins.** `NodeMode` is the executor's, so any node and every plugin host
+gets it. A plugin format's own bypass parameter (the CLAP and VST3 bypass
+parameters, `kAudioUnitProperty_BypassEffect`) is **not** used for this: the
+graph's dry path is delayed by the *declared* latency, which a plugin's own
+bypass need not keep. Hosts do not expose their native bypass through the
+graph's modes. A plugin's bypass parameter stays reachable as a plugin
+parameter, as any other.
+
+**Determinism.** The mode snapshot is per block; the fade's gains are
+`CrossfadeCurve::gains`, the one function the executor and reference share
+already for `replace` fades. The reference keeps the same state (current mix
+weight, warm-up counter) and applies the toggle at the same block boundary;
+the differential suite drives both with one schedule. Parked and active nodes
+differ only in whether `process` runs, so serial and parallel agree; the dry
+path is an `AudioRing` the executor already runs identically in both.
+
+**API.** Editor: `set_mode`, `mode`. Session: `Graph::set_mode`, `mode`. The
+modulation and automation layer does not reach modes in this change; a
+`ParamIn` for a graph-owned `Bypass` or `Mute` is the way to automate one
+later and is not built here.
+
+**Migration.** `EqBandNode`: `BandState`, `set_enabled`, `set_state` and the
+copy in `process` go; the node is an SVF with bell and shelf types, and its
+bypass is `NodeMode`. `test_eq_band_bypass` (a tolerance test, `1e-4`) is
+replaced by the bit-exact bypass tests below. `BusStripNode`'s `mute` cell and
+`UnitParam::Mute` binding go (its volume and pan stay; the audit of the
+mixing nodes confirms nothing else holds a node-wide mute). The AU host's
+use of `kAudioUnitProperty_BypassEffect` is checked and removed if it
+reaches the graph. A multiband's per-band `Bypass` params are not node-wide
+and stay. `Status::Bypass` stays: it is how a node that passes its input
+through *for its own reasons* (a gate fully open, an inactive stage)
+says so cheaply, and it is not a mode.
+
+**Tests.** From the spec:
+- Steady `Bypassed` with `L = 0`: output is the input, bit for bit, including
+  `-0.0`, NaN and denormal samples; with `L = 480`: the input delayed by
+  exactly 480 frames, bit for bit, the first 480 frames being what the line
+  held (silence at start). Mutation: delay by `L - 1`; by the compensated
+  rather than the declared latency.
+- Channel mapping: mono to stereo bypass fills both outputs; 5.1 to stereo is
+  the `Fold`'s downmix (an analytic figure per channel, `M3DB` for the
+  centre); a refused fold is `ModeError::Unplaced`; undeclared widths follow
+  `Status::Bypass` (past-the-input outputs are silent and flagged).
+- Mute: every output is `+0.0`, flagged silent, the node was called every
+  block (a counting node), and un-mute needs no reset (the counter shows
+  none) and no warm-up.
+- Parking: a bypassed node is not called after the fade (counted); a silent
+  input leaves a bypassed node's output flagged silent and a downstream
+  reverb parks; a node with `L > 0` fed a click then bypassed passes the
+  click `L` frames late.
+- Declick: the 256-frame fade follows `CrossfadeCurve::EqualAmplitude`'s
+  gains exactly; a toggle mid-fade has no jump (the output at the toggle frame
+  equals the output at the previous frame plus one fade step); both
+  directions.
+- Un-bypass: `reset` is called once before the first call; the dry path stays
+  audible for `L` frames; a delay node's old repeats are never heard; a
+  held note on the event input is closed on bypass-on.
+- Plugin: the same through a hosted plugin node, with its declared latency,
+  compared against the bypass of a plain node of the same latency.
+- Serial, parallel and reference, bit for bit, with a toggle landing
+  mid-schedule; a fork copies the mode and starts steady; `set_mode` does not
+  change the plan (`Arc` identity).
+- No-alloc: toggling and rendering inside `assert_no_alloc` on both executors.
+Mutations: call `process` while parked; skip the `reset`; skip the warm-up;
+fade with `EqualPower`; read the cell per op.
+
+#### Buses and coercion between declared layouts
+
+Decided by the owner. When two ports' declared channel layouts disagree, the
+graph folds between them with `tutti_types::Fold`, instead of a `DownmixNode`
+the author must add. This is **consistent with CLAUDE.md's "a width is not a
+placement"**, and the reason is worth stating. That rule forbids *guessing* a
+placement from a width: reading a bare channel count as if it were stereo or
+5.1. It does not forbid folding between two **declared** `ChannelTopology`
+values, where both sides say where their channels sit. `Fold::between(src,
+dst)` takes two topologies and refuses (`FoldError::Unplaced`,
+`FoldError::Empty`) when a channel has no place; it never reads a width. The
+coercion here is only ever between two declared topologies, and a port that
+declares only a width is `Discrete` (a channel with no speaker), which folds
+to another `Discrete` only when the widths agree, and otherwise is refused,
+exactly as the root's declaration is (`FoldError`, never a silent drop). So
+the new edge adds no guessing: it moves a fold the author would have asked
+for into the edge.
+
+**Prerequisite: buses.** A fold needs a topology per group of channels, and a
+node's ports have none today: `Shape::audio_in` and `audio_out` are two
+`ChannelLayout` widths, and each channel is a port in the `Topology`. Group
+them.
+
+```rust
+// tutti-graph (new), in node.rs beside Shape
+pub const MAX_BUSES: usize = 4;                  // per side; main, sidechain, two aux
+pub struct Bus { pub topology: BusTopology, pub role: BusRole }
+pub enum BusRole { Main, Sidechain, Aux }
+pub struct Buses { /* len + [Bus; MAX_BUSES], Copy */ }
+// Shape
+pub buses_in: Buses,
+pub buses_out: Buses,
+
+// tutti-types (new)
+pub struct BusTopology { /* len: u8, [Speaker; 16], Copy */ }  // From/Into ChannelTopology
+```
+
+- `Shape` is `Copy`, and `ChannelTopology` owns a `Vec`, so a `Copy`
+  `BusTopology` of up to 16 speakers inline (the width the engine supports)
+  converts to and from it. `MAX_BUSES = 4` keeps `Shape` near 150 bytes more;
+  a plugin with more buses declares its first four and the rest are not
+  wired by bus (they remain reachable by port). That number is the build's to
+  settle against `Shape`'s size and the plugin formats' real counts.
+- **`audio_in` and `audio_out` stay**, and equal the sum of the buses' widths,
+  so a port is still a channel and every existing consumer is untouched. Buses
+  are a grouping **over** the ports: bus `b` is the contiguous run of
+  `audio_in` channels after the earlier buses. `Shape::audio(in, out)` (the
+  existing constructor) builds one `Main` bus per side, `Discrete` of that
+  width, with no placement claim.
+- **Who declares.** Nodes that know their layout say so through
+  `Shape::with_buses_in / with_buses_out` (**new**): a node built on a
+  `ChannelTopology` (the sampler's `Wave::topology()`, a decoded file, a
+  VBAP mix's `layout`) declares it. Plugin hosts already decode the format's
+  bus layouts (CLAP audio ports, VST3 speaker arrangements, the AU channel
+  layout) into a `ChannelTopology`; the host builds the `Shape`'s buses from
+  it, **sidechain buses as `Sidechain`**, instead of flattening them into
+  consecutive ports.
+- Bypass (above) uses the main buses.
+
+**Wiring is bus to bus.**
+
+```rust
+// graph.rs (new)
+pub struct BusRef { pub node: NodeKey, pub bus: u8 }
+pub enum BusSource { Node(BusRef), Global }          // the global input is a Discrete bus
+// GraphSpec
+pub bus_edges: BTreeMap<BusRef, Vec<BusSource>>,     // sink bus -> sources, as a set like `edges`
+```
+
+`Editor::connect_bus(from: BusSource, to: BusRef) -> Result<(), BusError>`
+(**new**) checks the sink bus and the source bus exist and builds
+`Fold::between` on the control side **at declaration**: a fold that cannot
+place is `BusError::Fold(FoldError)` and nothing is stored, so the failure is
+at the author's call, not in the audio. The root is a bus too: its topology is
+what `declare_root_topology` set, and an undeclared root takes no bus edge
+(it is wired per channel, as now). The `Fold` value itself is not stored in
+the spec (it is `PartialEq` but not `Eq` or `Hash`, because of its `f32`s);
+the spec holds only the bus edge, and compile rebuilds the fold from the two
+topologies, deterministically, as the pure function `Fold::between` is. A node
+replaced by one whose bus no longer folds fails the commit with
+`CompileError::Fold(FoldError)`, the same policy the doc's "Channel placement"
+section sets for the root: never a silent drop.
+
+**The edge fold is lowered to weighted lanes.** Compile does not add an op: a
+bus edge is replaced by per-port edges. For each destination channel `c` of
+the sink bus, and each source channel `k` the fold sends to it with gain
+`g`, there is an edge `(sink port c) <- (source port k)` carrying weight `g`.
+Then the fan-in sum and the edge gain above do everything. That is the
+reason edge gain and fan-in come first: **a fold is a weighted fan-in**, and
+the one sum kernel, the one determinism rule and the one PDC rule serve it.
+
+- A fold with gain exactly `1.0` and one source per destination (an identity
+  fold, `Fold::is_identity`, or a `select`) lowers to **plain edges** with no
+  weight entry: bit-exact, no op beyond what the sink's fan-in already is.
+- A lowered lane has a **constant** weight (the fold's), not a driven one, and
+  has no `EdgeGain` entry in the spec: the compile adds it to the lane
+  directly. A bus edge carries no gain of its own in this change.
+- A lowered lane at the same `(sink port, source)` as an explicit per-port edge
+  is `Invalid::BusEdgeOverlaps` (**new**): a duplicate by another name.
+- `Fold` needs one accessor: `Fold::contributions(dst_c) -> impl
+  Iterator<Item = (usize, f32)>` (**new**), the `(source channel, gain)` pairs
+  of one destination channel. The fold's own fused row kernels
+  (`mix_fused`, the `(a + b) * scale` form) are not used by the lowering, so a
+  lowered fold is the weighted sum `Σ g·s` and not bit-identical to
+  `Fold::planar_channel`; no test compares them (CLAUDE.md), the tests pin
+  analytic figures instead.
+- **PDC** is per lane, as for any fan-in: each source channel's ring is keyed
+  `DelayKey::Audio { at, from }`. A source channel that a fold sends to two
+  destination channels (a centre to left and right) gets two rings of equal
+  contents. That is a known cost of keying by `(sink, source)`; sharing one
+  ring per `(source, length)` is a later change to the keys, and does not
+  change a bit of the render.
+- **Silence** follows from the sum: a silent source channel is skipped.
+
+**`DownmixNode` is deleted.** Its whole job, a per-frame matrix from `Fold`
+with no latency, is the edge. Its users:
+`impl SessionNode for DownmixNode` and the node-catalog test (`tutti-session/src/node.rs`),
+`tutti-nodes/benches/node_kernels.rs`, the `rt_no_alloc` fold gate and
+`isolate_snapshots.rs`; `narrows()`, the reconciler's "do I need this node"
+question, has no user and goes with it. A caller that built a `DownmixNode`
+between a 6-wide and a 2-wide node connects the two buses.
+
+**Session API.** `Graph::connect_bus(from, to) -> Result<(), BusError>`,
+`disconnect_bus`, `bus_sources(node, bus)`; `Graph::buses(node)` reads the
+declared buses of an inserted node.
+
+**Determinism.** A bus edge is lowered by a pure function of two topologies
+and the fold's deterministic construction, and the lowered lanes are the
+sorted fan-in of the earlier sections; serial, parallel and reference agree by
+the same argument. The reference lowers the same way, from the same `Fold`.
+
+**Tests.** From the spec, never against another render:
+- Identity: equal topologies lower to plain edges and the plan equals the
+  hand-wired one's (the same ops).
+- Analytic folds: 5.1 into stereo, the centre at `M3DB` into each side, the
+  LFE dropped as `Fold` documents; mono into stereo; stereo into mono; each
+  channel's figure computed from the fold's table.
+- Refusal: `Discrete(3)` into `Discrete(2)` is `BusError::Fold(Unplaced)`
+  at the call, nothing stored; a node replaced by one whose bus no longer folds
+  fails the commit with `CompileError::Fold`; an undeclared root refuses a bus
+  edge.
+- Overlap: a bus edge and a per-port edge on the same lane is
+  `Invalid::BusEdgeOverlaps`.
+- PDC: a fold from a latent node aligns each lane; a fold beside a latent
+  second source into the same bus aligns both.
+- Silence: a silent source channel does not wake a downstream node.
+- Serial, parallel, reference; no-alloc over a folded graph.
+- Plugin hosts: each format's decoded layout produces the bus the contract
+  suite expects, including a sidechain as its own bus, in
+  `tutti-plugin-contract`.
+Mutations: lower a fold with the wrong gain; with source channels swapped;
+drop the identity shortcut (the plan then differs); store the `Fold` in the
+spec.
+
+#### Staging across all four
+
+Fan-in comes first, edge gain on it, bypass and mute independent, buses and
+coercion last, because the lowering needs the first two. Each PR passes CI by
+itself.
+
+| Order | Lane | PRs |
+|---|---|---|
+| 1 | Fan-in | the six PRs of "Audio fan-in sums", point 10 |
+| 2 | Edge gain | **G1**: `EdgeGain`, `Sink`, `EdgeId`, validate, the weighted kernel and ramp, cell and `set_edge_gain`, reference, tests (static and ramped weights). **G2**: the driven lane: `connect_edge_gain`, `DelayKey::EdgeGain`, `GainPort`, the session's `ModTarget` and `EdgeRef`, tests. **G3**: session API and the strip-and-gain audit. |
+| 3 | Bypass and mute | independent of 1 and 2, in any order after the design merges. **M1**: `NodeMode`, the cell, the executor's steady states, the bypass line, the declick and un-bypass sequence, the reference, tests. **M2**: `Editor::set_mode`, the session API, hosts (plugins, AU property). **M3**: delete `EqBandNode`'s flag, `BusStripNode`'s mute, per-node bypass; bit-exact tests replace the tolerance one. |
+| 4 | Buses and coercion | needs 1 and 2. **B1**: `BusTopology`, `Buses` and `Shape`'s buses with one `Main` bus built from widths; `Fold::contributions`; hosts fill their buses. **B2**: `BusRef`, `bus_edges`, validate, lowering to weighted lanes, `connect_bus`, session API, tests. **B3**: delete `DownmixNode` and migrate its users; bypass uses the main buses' fold. |
+
+Bypass's channel mapping for buses with different declared topologies uses
+B1's types; M1 ships the width rule (`Status::Bypass`'s) and B3 switches the
+declared case to the fold. Nothing in the first three lanes waits on the
+fourth.
 
 #### The clip node and the native synth
 
@@ -7849,9 +8815,10 @@ The graph's f32 is converted in the node's batcher today. The changes:
 
 ### Mix, meters, taps, edges, export, device
 
-- **Mix and buses** are nodes (`ChannelSumNode`, `BusStripNode`), covered
-  above. If the compiler ever owns a summing op (kernels.rs says it
-  would), it accumulates in f64 in both formats.
+- **Mix and buses**: summing is the graph's (reversed 2026-11-10, see
+  [Audio fan-in sums](#audio-fan-in-sums)); `BusStripNode` stays a node. If
+  the 64-bit path is built, the graph's sum accumulates in f64 in both
+  formats.
 - **Meters** are readings: computed from the slot in its format, stored
   as f32 (`Amplitude`, `Db`). No change to what they publish.
 - **The analysis tap** (`TapReader`) stays an f32 ring: analysis
@@ -8269,9 +9236,11 @@ Decided 2026-11-08 (SoundFont stage 3b). The reverb and chorus left
   per frame and output channel (`node_kernels` bench, `reverb`).
 - **Tails**: the unit declares the longest voice release only; each effect its
   own; an export keeps the sum along the path.
-- **Summing** is `ChannelSumNode`; `tutti-session`'s `Session::add_general_midi`
-  wires unit, chorus, reverb, a three-source sum and a fader after it (sends
-  are post-fader; `GeneralMidi::set_gain`/`set_muted`), leaves the graph's
+- **Summing** was `ChannelSumNode`; **reversed 2026-11-10** (see
+  [Audio fan-in sums](#audio-fan-in-sums)): the graph sums, and the node is
+  deleted. `tutti-session`'s `Session::add_general_midi` wires unit, chorus
+  and reverb into a fader's inputs as a three-source fan-in (sends are
+  post-fader; `GeneralMidi::set_gain`/`set_muted`), leaves the graph's
   outputs to the host, and `GeneralMidi::remove` takes the setup out whole.
 - **Sound**: the dry pair is bit-identical to the old unit's with its effects
   off. The old default (effects on) had the reverb mixed into the pair; that
@@ -8301,7 +9270,9 @@ now (**reversed**, see 8). Decision 5 was taken when the surface shrank:
        rates);
      - the plugin-boundary conversion (inside the plugin node).
 
-     Summing does not yet: `ChannelSumNode` accumulates in f32.
+     Summing does not yet: the bus sum accumulates in f32 (it was
+     `ChannelSumNode`; it is now the graph's fan-in, see
+     [Audio fan-in sums](#audio-fan-in-sums)).
    - **An f64 path is additive:** `Io` exposes audio through methods, not
      public slices. The owner's rule for it: if tutti does 64-bit audio, it
      does it all the way. The design, its decisions and its measured cost
@@ -8332,7 +9303,8 @@ now (**reversed**, see 8). Decision 5 was taken when the surface shrank:
      `(offset, source order)`, which is cheap (proposed);
    - require an explicit `Merge` node.
 
-   Audio stays one source per port.
+   Audio stays one source per port. **(Reversed 2026-11-10: audio fan-in
+   sums in the graph. See [Audio fan-in sums](#audio-fan-in-sums).)**
 
    **Decided, for events as ports: fan-in on event ports only.** An
    event input may have several sources. The executor merges them into one
@@ -8341,10 +9313,12 @@ now (**reversed**, see 8). Decision 5 was taken when the surface shrank:
    the wiring, not of the order a spec lists its edges in (the list order
    was the tie-break before; a host rebuilding its spec from an unordered
    store could otherwise reorder a chord). Scheduled commands into the port
-   come after every edge's events, as before. This differs from audio on
-   purpose: audio fan-in needs a `Sum` node (a mix is a choice of gains),
+   come after every edge's events, as before. This differed from audio on
+   purpose: audio fan-in needed a `Sum` node (a mix is a choice of gains),
    while events merge losslessly, and every merge is sized to hold all its
-   inputs, so it never drops.
+   inputs, so it never drops. **That difference is gone:** audio fan-in sums
+   in the graph, in source order, and the choice of gains is an edge weight
+   ([Edge gain](#edge-gain-a-mixer-is-a-weighted-sum)).
 7. **Automation encoding.** Linear ramp events (nih-plug, Web Audio) vs
    curve-segment events. Curve segments are needed for sample-accurate
    non-linear shapes without sub-chunking at breakpoints.

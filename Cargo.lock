@@ -3713,6 +3713,7 @@ version = "0.0.1"
 dependencies = [
  "serde",
  "serde_json",
+ "tutti-midi-protocol",
  "tutti-ump",
 ]
 
@@ -3793,6 +3794,7 @@ dependencies = [
  "tutti-graph",
  "tutti-midi-device",
  "tutti-midi-hardware",
+ "tutti-midi-protocol",
  "tutti-midi-runtime",
  "tutti-midi-types",
  "tutti-rt",
@@ -3838,6 +3840,7 @@ dependencies = [
  "serde_json",
  "thiserror 2.0.21",
  "tutti-fixtures",
+ "tutti-midi-protocol",
  "tutti-midi-types",
  "tutti-rt",
  "tutti-types",

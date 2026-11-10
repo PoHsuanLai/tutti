@@ -59,28 +59,6 @@ fn every_midi1_code_survives_promotion_and_narrowing() {
     }
 }
 
-#[test]
-fn unit_f32_inverses_are_exact_enough() {
-    for &u in &[0u16, 1, 12345, 40000, u16::MAX] {
-        assert_eq!(unit_f32_to_u16(u16_to_unit_f32(u)), u);
-    }
-    // u32 has more bits than f32's mantissa; allow a small relative slack.
-    for &u in &[0u32, 1, 0x4000_0000, 0x8000_0000, u32::MAX] {
-        let back = unit_f32_to_u32(u32_to_unit_f32(u));
-        let diff = (back as i64 - u as i64).unsigned_abs();
-        assert!(diff <= 256, "u32 round-trip {u} -> {back}");
-    }
-}
-
-#[test]
-fn signed_bend_inverse_centers() {
-    assert_eq!(signed_f32_to_bend_u32(0.0), 0x8000_0000);
-    assert_eq!(signed_f32_to_bend_u32(-1.0), 0);
-    assert_eq!(signed_f32_to_bend_u32(1.0), u32::MAX);
-    // Clamps out-of-range input.
-    assert_eq!(signed_f32_to_bend_u32(-2.0), 0);
-    assert_eq!(signed_f32_to_bend_u32(2.0), u32::MAX);
-}
 /// **A `Velocity` reaches the wire at 16-bit resolution, not 7.**
 ///
 /// This regressed once and was invisible: `velocity_to_midi2` routed through

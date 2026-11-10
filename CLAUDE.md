@@ -340,12 +340,14 @@ crates/          everything shipped; directory name = package name; no nesting
                  `frame` and `Midi1Parser`, the status bytes the hosts use
                  (`tutti-midi-types`' `wire.rs` and `Midi1Splitter` hold their own
                  until VST2 and AU move), `NoteId` (`channel * 128 + note`), and
-                 SysEx: `SysexMessage` (a checked `F0 .. F7`) and `SysexAssembler`
-                 (SysEx7 packets to whole messages over a caller's buffer); no
+                 SysEx: `SysexMessage` (a checked `F0 .. F7`), `SysexAssembler`
+                 (SysEx7 packets to whole messages over a caller's buffer) and its
+                 inverse `sysex7_packets` (`SysexMessage::packets`), with
+                 `Sysex7Packet::data` and `SysexRef::new`; no
                  dependencies but `bytemuck` (and optional `serde`)
   tutti-midi-protocol  MIDI 1.0 to MIDI 2.0 translation (design 017 §4 and §6): the
-                 stateless `widen`, `narrow` and `midi1` and the M2-115 scaling;
-                 depends on `tutti-ump` alone
+                 stateless `widen`, `narrow` and `midi1`, the M2-115 scaling, and the
+                 float converters (`u32_to_unit_f32` and kin); depends on `tutti-ump` alone
   tutti-voicing  what a note-driven instrument decides before it makes sound, as one
                  pure step: `Voicing::step(channel, message, patch, voices) -> &[Command]`
                  (`Start`, `Retarget`, `Release`, `Damp`, `Cut`, `Retune`) over channel state, the

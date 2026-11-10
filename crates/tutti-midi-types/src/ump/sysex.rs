@@ -1,18 +1,14 @@
 //! SysEx 7-bit: single-packet and multi-packet fragmentation (UMP type 0x3).
 //!
-//! Like [`super::sysex8`], the emit side leans on midi2's [`midi2::sysex7::Sysex7`]
-//! rather than hand-packing words: build one growable message with the full 7-bit
-//! payload and split its words into 2-word [`Ump`]s — midi2 owns the
-//! Start/Continue/End fragmentation and the status-nibble/count assignment. The
-//! decode side keeps a direct first-word reader ([`sysex7_payload`])
-//! because the CI/VST3 callers want the raw
-//! `(status, [u8; 6], n)` per-packet view, not a whole-message payload iterator.
+//! The emit side is `tutti_ump::sysex7_packets`; [`sysex7_fragments`],
+//! [`sysex7_packets`] and [`sysex7_single`] here are thin wrappers over it for
+//! callers that hold plain bytes (retiring, doc 017 stage 5b). The decode side
+//! keeps a direct first-word reader ([`sysex7_payload`]) because the CI/VST3
+//! callers want the raw `(status, [u8; 6], n)` per-packet view, not a
+//! whole-message payload iterator.
 
 use std::vec::Vec;
 use tutti_ump::{MidiGroup, Ump};
-
-use midi2::prelude::*;
-use midi2::sysex7::Sysex7;
 
 /// SysEx7 status nibble: the whole message fits one packet, so there is nothing
 /// to reassemble.
@@ -48,17 +44,11 @@ pub const SYSEX7_MAX_PAYLOAD: usize = 64 * 1024;
 /// Builds SysEx 7-bit packets (UMP type 0x3, 64-bit each) for `data` and
 /// pushes them onto `out`. `data` is the payload *between* 0xF0 and 0xF7
 /// (no delimiters). Payloads ≤ 6 bytes produce a single packet; longer
-/// payloads produce `Start` + `Continue*` + `End` — midi2 owns the split.
+/// payloads produce `Start` + `Continue*` + `End`. A byte's high bit is
+/// dropped. Retiring: `tutti_ump::sysex7_packets` is the writer (doc 017
+/// stage 5b).
 pub fn sysex7_fragments(group: MidiGroup, data: &[u8], out: &mut Vec<Ump>) {
-    let mut m = Sysex7::<Vec<u32>>::new();
-    m.set_group(u4::new(group.get()));
-    m.set_payload(data.iter().map(|&b| u7::new(b & 0x7F)));
-    // Each SysEx7 packet is 2 words; split the message stream into events.
-    for packet in m.data().chunks(2) {
-        let mut words = [0u32; 4];
-        words[..packet.len()].copy_from_slice(packet);
-        out.push(Ump(words));
-    }
+    out.extend(sysex7_packets(group, data));
 }
 
 /// How many SysEx 7-bit packets a payload of `payload_len` bytes (the
@@ -72,33 +62,15 @@ pub const fn sysex7_packet_count(payload_len: usize) -> usize {
 
 /// The SysEx 7-bit packets (UMP type 0x3) for `data`, one at a time and
 /// without allocating: the same packets, in the same order, as
-/// [`sysex7_fragments`] pushes. `data` is the payload *between* 0xF0
-/// and 0xF7 (no delimiters); a byte's high bit is dropped. An empty
-/// payload is one empty `SINGLE` packet. The packets carry no timing: the
-/// caller pairs each with an offset.
+/// [`sysex7_fragments`] pushes. `data` is the payload *between* 0xF0 and 0xF7
+/// (no delimiters); a byte's high bit is dropped. An empty payload is one
+/// empty `SINGLE` packet. The packets carry no timing: the caller pairs each
+/// with an offset.
 ///
-/// For the audio thread, where [`sysex7_fragments`]' `Vec` is not
-/// available.
-pub fn sysex7_packets(group: MidiGroup, data: &[u8]) -> impl Iterator<Item = Ump> + '_ {
-    let packets = sysex7_packet_count(data.len());
-    (0..packets).map(move |i| {
-        let chunk = &data[(i * 6).min(data.len())..((i + 1) * 6).min(data.len())];
-        let status = match (packets, i) {
-            (1, _) => SYSEX7_STATUS_SINGLE,
-            (_, 0) => SYSEX7_STATUS_START,
-            (n, i) if i == n - 1 => SYSEX7_STATUS_END,
-            _ => SYSEX7_STATUS_CONTINUE,
-        };
-        let b = |k: usize| u32::from(chunk.get(k).copied().unwrap_or(0) & 0x7F);
-        let w0 = (0x3 << 28)
-            | (u32::from(group.get() & 0x0F) << 24)
-            | (u32::from(status) << 20)
-            | ((chunk.len() as u32) << 16)
-            | (b(0) << 8)
-            | b(1);
-        let w1 = (b(2) << 24) | (b(3) << 16) | (b(4) << 8) | b(5);
-        Ump([w0, w1, 0, 0])
-    })
+/// A wrapper of `tutti_ump::sysex7_packets_masked`. Retiring (doc 017 stage
+/// 5b); use `tutti_ump::sysex7_packets`.
+pub fn sysex7_packets(group: MidiGroup, data: &[u8]) -> impl ExactSizeIterator<Item = Ump> + '_ {
+    tutti_ump::sysex7_packets_masked(group, data)
 }
 
 /// Builds a single self-contained SysEx 7-bit packet (UMP type 0x3) from a

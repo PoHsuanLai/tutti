@@ -2,9 +2,6 @@ use super::*;
 use tutti_fixtures::midi;
 use tutti_graph::UmpAt;
 use tutti_midi_types::MidiMessage;
-use tutti_midi_types::convert::{
-    midi1_cc_to_midi2, midi1_pitch_bend_to_midi2, midi1_velocity_to_midi2,
-};
 use tutti_midi_types::midi2::channel_voice2::ChannelVoice2;
 use tutti_midi_types::midi2::{Channeled, UmpMessage};
 use tutti_midi_types::mpe::MpeZoneConfig;
@@ -48,7 +45,7 @@ fn note_on(channel: u8, note: u8, vel_u7: u8) -> UmpAt {
             MidiGroup::FIRST,
             MidiChannel::of(channel),
             note,
-            midi1_velocity_to_midi2(vel_u7),
+            tutti_fixtures::midi::wide_velocity(vel_u7),
         ),
     )
 }
@@ -58,7 +55,7 @@ fn pitch_bend14(channel: u8, bend14: u16) -> UmpAt {
         midi::pitch_bend(
             MidiGroup::FIRST,
             MidiChannel::of(channel),
-            midi1_pitch_bend_to_midi2(bend14),
+            tutti_fixtures::midi::wide_bend(bend14),
         ),
     )
 }
@@ -69,7 +66,7 @@ fn cc(channel: u8, cc_num: CCNumber, value_u7: u8) -> UmpAt {
             MidiGroup::FIRST,
             MidiChannel::of(channel),
             cc_num,
-            midi1_cc_to_midi2(value_u7),
+            tutti_fixtures::midi::wide_value(value_u7),
         ),
     )
 }

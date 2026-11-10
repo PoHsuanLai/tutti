@@ -24,7 +24,6 @@ mod support;
 
 use support::Hand;
 use tutti_fixtures::midi;
-use tutti_midi_types::convert::midi1_velocity_to_midi2;
 use tutti_polysynth::{FilterType, OscillatorType, PolySynth, SynthConfig};
 use tutti_types::{Hz, Q, SampleRate};
 use tutti_ump::{
@@ -40,7 +39,7 @@ fn note_on(channel: u8, note: u8, vel: u8) -> Ump {
         MidiGroup::FIRST,
         MidiChannel::of(channel),
         note,
-        midi1_velocity_to_midi2(vel),
+        tutti_fixtures::midi::wide_velocity(vel),
     )
 }
 

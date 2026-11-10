@@ -46,6 +46,8 @@ const fn mcm_down(value: u32, src: u32, dst: u32) -> u32 {
 }
 
 /// 7-bit velocity → 16-bit velocity (MIDI 2.0 native form).
+///
+/// Retiring: no caller outside the plugin crates (doc 017 stage 5b); use tutti_midi_protocol::widen (a Voice1 Note Off or Note On).
 #[inline]
 pub fn midi1_velocity_to_midi2(v: u8) -> u16 {
     mcm_up(v as u32, 7, 16) as u16
@@ -105,6 +107,8 @@ pub fn midi1_velocity_to_midi2(v: u8) -> u16 {
 ///
 /// [`Velocity`]: tutti_types::Velocity
 /// [`Velocity::CENTER`]: tutti_types::Velocity::CENTER
+///
+/// Retiring: no caller outside the plugin crates (doc 017 stage 5b); use the spec's 16-bit value written directly.
 #[inline]
 pub fn velocity_to_midi2(v: tutti_types::Velocity) -> u16 {
     const CENTER: f32 = 0x8000 as f32;
@@ -123,6 +127,8 @@ pub fn velocity_to_midi2(v: tutti_types::Velocity) -> u16 {
 /// a 7-bit MIDI 1.0 note.
 ///
 /// [`Velocity`]: tutti_types::Velocity
+///
+/// Retiring: no caller outside the plugin crates (doc 017 stage 5b); use tutti_midi_protocol::narrow_velocity on a 16-bit value.
 #[inline]
 pub fn velocity_to_midi1(v: tutti_types::Velocity) -> u8 {
     // `round`, not `as`: truncation maps 1.0 to 126 and loses the top code.
@@ -132,6 +138,8 @@ pub fn velocity_to_midi1(v: tutti_types::Velocity) -> u8 {
 /// A 7-bit wire velocity → [`Velocity`]. The one sanctioned `/ 127.0`.
 ///
 /// [`Velocity`]: tutti_types::Velocity
+///
+/// Retiring: no caller outside the plugin crates (doc 017 stage 5b); use the 7-bit value as a unit float (u7_to_unit_f32).
 #[inline]
 pub fn velocity_from_midi1(v: u8) -> tutti_types::Velocity {
     tutti_types::Velocity((v & 0x7F) as f32 / 127.0)
@@ -148,6 +156,8 @@ pub fn velocity_from_midi1(v: u8) -> tutti_types::Velocity {
 /// mismatch reachable.
 ///
 /// [`Velocity`]: tutti_types::Velocity
+///
+/// Retiring: no caller outside the plugin crates (doc 017 stage 5b); use u16_to_unit_f32.
 #[inline]
 pub fn velocity_from_midi2(v: u16) -> tutti_types::Velocity {
     const CENTER: f32 = 0x8000 as f32;
@@ -160,92 +170,51 @@ pub fn velocity_from_midi2(v: u16) -> tutti_types::Velocity {
 }
 
 /// 16-bit velocity → 7-bit (lossy).
+///
+/// Retiring: no caller outside the plugin crates (doc 017 stage 5b); use tutti_midi_protocol::narrow_velocity.
 #[inline]
 pub fn midi2_velocity_to_midi1(v: u16) -> u8 {
     mcm_down(v as u32, 16, 7) as u8
 }
 
 /// 7-bit CC / pressure → 32-bit (MIDI 2.0 native form).
+///
+/// Retiring: no caller outside the plugin crates (doc 017 stage 5b); use tutti_midi_protocol::widen (a Voice1 Control Change).
 #[inline]
 pub fn midi1_cc_to_midi2(v: u8) -> u32 {
     mcm_up(v as u32, 7, 32)
 }
 
 /// 32-bit CC / pressure → 7-bit (lossy).
+///
+/// Retiring: no caller outside the plugin crates (doc 017 stage 5b); use tutti_midi_protocol::narrow_value.
 #[inline]
 pub fn midi2_cc_to_midi1(v: u32) -> u8 {
     mcm_down(v, 32, 7) as u8
 }
 
 /// 14-bit pitch bend (center 8192) → 32-bit (center 0x8000_0000).
+///
+/// Retiring: no caller outside the plugin crates (doc 017 stage 5b); use tutti_midi_protocol::widen (a Voice1 Pitch Bend).
 #[inline]
 pub fn midi1_pitch_bend_to_midi2(v: u16) -> u32 {
     mcm_up(v as u32, 14, 32)
 }
 
 /// 32-bit pitch bend → 14-bit (lossy).
+///
+/// Retiring: no caller outside the plugin crates (doc 017 stage 5b); use tutti_midi_protocol::narrow_bend.
 #[inline]
 pub fn midi2_pitch_bend_to_midi1(v: u32) -> u16 {
     mcm_down(v, 32, 14) as u16
 }
 
-// --- UMP integer → f32 unit range (DSP normalization, NOT MIDI1↔2 scaling) ----
-//
-// These map a native UMP integer to the `[0.0, 1.0]` / `[-1.0, 1.0]` range a DSP
-// node wants. They are a lossy convenience for the audio edge — NOT part of the
-// MIDI 1.0 ↔ 2.0 resolution path above (`u32_to_unit_f32` loses low bits through
-// f32's 24-bit mantissa). Consumers call these at their own boundary, not through
-// a shared decode layer.
-
-/// 7-bit value (0-127) → `[0.0, 1.0]`.
-#[inline]
-pub fn u7_to_unit_f32(v: u8) -> f32 {
-    f32::from(v) / 127.0
-}
-
-/// 16-bit value → `[0.0, 1.0]`.
-#[inline]
-pub fn u16_to_unit_f32(v: u16) -> f32 {
-    f32::from(v) / f32::from(u16::MAX)
-}
-
-/// 32-bit value → `[0.0, 1.0]`.
-#[inline]
-pub fn u32_to_unit_f32(v: u32) -> f32 {
-    (v as f64 / u32::MAX as f64) as f32
-}
-
-/// 14-bit pitch bend (center 8192) → `[-1.0, 1.0]`.
-#[inline]
-pub fn bend_u14_to_signed_f32(v: u16) -> f32 {
-    (f32::from(v) - 8192.0) / 8192.0
-}
-
-/// 32-bit pitch bend (center 0x8000_0000) → `[-1.0, 1.0]`.
-#[inline]
-pub fn bend_u32_to_signed_f32(v: u32) -> f32 {
-    ((v as f64 - 0x8000_0000_u32 as f64) / 0x8000_0000_u32 as f64) as f32
-}
-
-/// `[0.0, 1.0]` → 16-bit value. Inverse of [`u16_to_unit_f32`]; clamps.
-#[inline]
-pub fn unit_f32_to_u16(v: f32) -> u16 {
-    (v.clamp(0.0, 1.0) as f64 * u16::MAX as f64).round() as u16
-}
-
-/// `[0.0, 1.0]` → 32-bit value. Inverse of [`u32_to_unit_f32`]; clamps.
-#[inline]
-pub fn unit_f32_to_u32(v: f32) -> u32 {
-    (v.clamp(0.0, 1.0) as f64 * u32::MAX as f64).round() as u32
-}
-
-/// `[-1.0, 1.0]` → 32-bit pitch bend (center 0x8000_0000). Inverse of
-/// [`bend_u32_to_signed_f32`]; clamps and saturates at the 32-bit max.
-#[inline]
-pub fn signed_f32_to_bend_u32(v: f32) -> u32 {
-    let centered = 0x8000_0000_u32 as f64 + v.clamp(-1.0, 1.0) as f64 * 0x8000_0000_u32 as f64;
-    centered.round().clamp(0.0, u32::MAX as f64) as u32
-}
+// The float scaling lives in `tutti-midi-protocol` (doc 017 stage 3d); these
+// paths stay for the plugin crates.
+pub use tutti_midi_protocol::{
+    bend_u14_to_signed_f32, bend_u32_to_signed_f32, signed_f32_to_bend_u32, u7_to_unit_f32,
+    u16_to_unit_f32, u32_to_unit_f32, unit_f32_to_u16, unit_f32_to_u32,
+};
 
 #[cfg(test)]
 mod tests;

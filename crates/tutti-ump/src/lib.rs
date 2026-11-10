@@ -13,7 +13,8 @@
 //! reads a byte stream into [`Message`]s. [`NoteId`] is a note's identity
 //! (`channel * 128 + note`, the plugin formats' wire value), and [`SysexMessage`]
 //! and [`SysexAssembler`] are a checked complete SysEx and the one SysEx7
-//! reassembler, over a buffer the caller owns.
+//! reassembler, over a buffer the caller owns; [`sysex7_packets`] is its inverse,
+//! the one writer of a payload as SysEx7 packets.
 //!
 //! ```
 //! use tutti_ump::{Message, Ump, Voice2, decode};
@@ -72,5 +73,8 @@ pub use midi_channel::MidiChannel;
 pub use midi_group::MidiGroup;
 pub use midi1::{Framed, Midi1Bytes, Midi1Parser, frame};
 pub use note_id::NoteId;
-pub use sysex::{NotSysex, SysexAssembler, SysexMessage, SysexRef, SysexStep};
+pub use sysex::{
+    NotSysex, Sysex7Packets, SysexAssembler, SysexMessage, SysexRef, SysexStep, sysex7_packets,
+    sysex7_packets_masked,
+};
 pub use ump::{Key, KeyEvent, Ump};

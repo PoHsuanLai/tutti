@@ -39,6 +39,8 @@ bitflags = "2"
 tutti-types = { path = "../tutti-types", default-features = false }
 tutti-rt = { path = "../tutti-rt" }
 tutti-ump = { path = "../tutti-ump", default-features = false }
+# The float scaling `convert` re-exports.
+tutti-midi-protocol = { path = "../tutti-midi-protocol" }
 serde = { version = "1", optional = true, features = ["derive"] }
 thiserror.workspace = true
 

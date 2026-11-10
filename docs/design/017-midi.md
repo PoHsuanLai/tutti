@@ -1258,6 +1258,23 @@ at any point; its CI codec move and `ci`/`negotiate` deletion shrink
      `origin_samples` and `sample_offset` are absolute frames carried as `u64` (they
      should be `Frame`), and `block_samples`, `interval_samples()` and `block_span()` are
      counts (they should be `Samples`). Type them as timing and output scheduling are rebuilt.
+- **Stage 3d. The helpers the plugin crates drop their own for. Done.** The float
+   converters (`u7_to_unit_f32`, `u16_to_unit_f32`, `u32_to_unit_f32`,
+   `bend_u14_to_signed_f32`, `bend_u32_to_signed_f32`, `unit_f32_to_u16`,
+   `unit_f32_to_u32`, `signed_f32_to_bend_u32`) live in `tutti-midi-protocol`;
+   `tutti_midi_types::convert` re-exports them (`tutti-midi-types` now depends on
+   `tutti-midi-protocol`, layer 2 over layer 1). The SysEx7 writer is
+   `tutti_ump::sysex7_packets` / `SysexMessage::packets` (an allocation-free
+   `Sysex7Packets`, `ExactSizeIterator`; `sysex7_packets_masked` takes unchecked
+   bytes), `Sysex7Packet::data` is the data bytes as `&[u8]` (the `bits!` fields
+   are `repr(transparent)` and `NoUninit`), and `SysexRef::new` names a range in a
+   caller's own arena. `tutti-midi-types`' `sysex7_*` helpers are wrappers over the
+   writer. Every non-plugin caller of `convert`'s integer scaling is off it
+   (`tutti_fixtures::midi::wide_*` in tests, which call `widen`). `MidiSender::note_on`
+   and `SoundFontUnit::note_on` take a MIDI 2.0 16-bit velocity, as
+   `InstrumentHandle::note_on` does since 3b: a velocity of 0 is a Note On.
+   `sysex7_packets_masked` exists only for the retiring `sysex7_*` wrappers and
+   goes with them in 5b.
 - **Stage 5b. Shrink `tutti-midi-types` away:** what 5a, 3a, 3c and 4 leave
    (`mpe/`, `clip_file`, `cc/mapping`, `sync/`, `MidiMessage`, the re-exports) moves
    to its owner (§6) or is deleted, then the crate, and `midi2` from the workspace
@@ -1266,7 +1283,10 @@ at any point; its CI codec move and `ci`/`negotiate` deletion shrink
    `DualZone` pair totalling more than 15 members (the two spans overlap) is not
    rejected, only documented as the sender's duty. Give it private fields, a
    `new -> Option` that refuses what RP-053 does, and a `DualZone` constructor that
-   refuses an overlap, with the range-types contract test.
+   refuses an overlap, with the range-types contract test. `convert`'s integer
+   scaling (`midi1_velocity_to_midi2` and the rest, marked "Retiring") and the old
+   `sysex7_*` helpers are deleted once the plugin crates are off them; the float
+   converters are already `tutti-midi-protocol`'s.
 7. **Capabilities** (§9).
 
 ## 11. Testing

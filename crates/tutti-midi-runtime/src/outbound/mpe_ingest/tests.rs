@@ -266,7 +266,7 @@ fn ranges_after(events: impl IntoIterator<Item = UmpAt>) -> Vec<(u8, u8, f32)> {
 /// zone's ranges are sent too → fails.
 #[test]
 fn an_mcm_resets_its_zones_bend_ranges() {
-    use tutti_midi_types::PerNoteBendRanges;
+    use tutti_plugin_types::PerNoteBendRanges;
     let mut ingest = MpeIngest::new(MpeMode::LowerZone(MpeZoneConfig::lower(3)));
     let mut receiver = PerNoteBendRanges::default();
     for ev in ingest.translated(&bend_sensitivity(1, 12)) {
@@ -360,7 +360,7 @@ fn bend_sensitivity(channel: u8, semitones: u8) -> UmpAt {
 /// fails.
 #[test]
 fn a_member_channels_bend_range_becomes_every_members_per_note_range() {
-    use tutti_midi_types::PerNoteBendRanges;
+    use tutti_plugin_types::PerNoteBendRanges;
     let mut ingest = MpeIngest::new(MpeMode::DualZone {
         lower: MpeZoneConfig::lower(3),
         upper: MpeZoneConfig::upper(3),

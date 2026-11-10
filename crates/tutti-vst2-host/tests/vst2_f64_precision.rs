@@ -28,7 +28,7 @@ use tutti_vst2_test_plugin::{ProcessCapture, ProcessEntry};
 #[path = "support/active.rs"]
 mod active;
 
-use active::{Active, Precision};
+use active::{Active, ActiveExt, Precision};
 
 const SAMPLE_RATE: f64 = 48_000.0;
 const BLOCK: usize = 64;

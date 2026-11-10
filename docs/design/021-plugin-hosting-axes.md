@@ -411,7 +411,7 @@ Instead of `unsafe`:
 - `contract!` takes the hostings (§8): an `impl OutOfProcess for X` with no
   `hostings = [.., OutOfProcess]` line in the contract suite is caught by a new
   `scripts/check-hosting.sh` (greps `impl .* (InProcess|OutOfProcess) for`, requires a
-  matching `contract!`), the same pattern as `check-range-types.sh`.
+  matching `contract!`), the same pattern as `check-range-types`.
 - The traits are not sealed: an embedding application with its own format can
   implement them. The doc says an impl must pass the hosting cases.
 
@@ -552,7 +552,7 @@ at 7; `tutti` and `bevy-tutti` at 8. **`tutti-plugin` stays at layer 6, so
 | `check-plugin-ffi.sh` | It scans `tutti-plugin-server/src/loaders/<fmt>.rs` and `tutti-plugin/src/format/gui/<fmt>.rs`. Both disappear; point it at `tutti-<fmt>-host` (already scanned) and drop the two paths in the step that moves them |
 | `check-layout.sh` (probe) | `tutti-plugin-probe` is placed at layer 6 and depends on no `-ipc`, `-host` or `tutti-plugin`; nothing depends on it |
 | `check-adapter.sh`, `check-bevy-free.sh` | none: `bevy-tutti` reaches the plugin crates through `tutti-session` and `tutti-plugin` as now |
-| `check-canonical-paths.sh` | `tutti_plugin::{PluginClient, …}` paths in code and `*.md` move to the new crates' roots |
+| `check-paths` | `tutti_plugin::{PluginClient, …}` paths in code and `*.md` move to the new crates' roots |
 | new `check-hosting.sh` | §3.3 |
 | CLAUDE.md | workspace tree, layering table, the plugin-hosts paragraph, the contract paragraph; engineering notes |
 

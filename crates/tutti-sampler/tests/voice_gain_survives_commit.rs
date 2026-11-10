@@ -49,7 +49,10 @@ const BLOCK: usize = 256;
 /// against an expected gain directly, and a ramp would make that comparison
 /// depend on which frame the read landed on.
 fn flat_wave(len: usize) -> Arc<Wave> {
-    Arc::new(Wave::from_samples(48_000.0, &vec![1.0f32; len]))
+    Arc::new(Wave::from_samples(
+        SampleRate::new(48_000.0),
+        &vec![1.0f32; len],
+    ))
 }
 
 /// Rolling at 120 BPM from beat 0, as a host counting frames reports it.

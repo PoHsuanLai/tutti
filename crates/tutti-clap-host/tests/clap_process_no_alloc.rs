@@ -29,7 +29,7 @@ use tutti_graph::Offset;
 use tutti_types::Samples;
 
 mod support;
-use support::active::{Activate, Active};
+use support::active::{Activate, Active, ActiveExt};
 use support::main_thread;
 
 #[global_allocator]

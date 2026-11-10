@@ -403,7 +403,7 @@ impl std::error::Error for SendError {}
 /// # use tutti_sampler::{MemorySource, Playback, Voice, VoiceCommand, VoiceNode, VoiceSource};
 /// # use tutti_codec::Wave;
 /// # use std::sync::Arc;
-/// # let wave = Arc::new(Wave::from_samples(48_000.0, &[0.0; 64]));
+/// # let wave = Arc::new(Wave::from_samples(tutti_types::SampleRate::new(48_000.0), &[0.0; 64]));
 /// # let voice = Voice {
 /// #     source: VoiceSource::Memory(MemorySource::new(wave.clone()).expect("a placeable wave")),
 /// #     play: Playback::default(),
@@ -419,7 +419,7 @@ impl std::error::Error for SendError {}
 /// # use tutti_sampler::{MemorySource, Playback, Voice, VoiceCommand, VoiceNode, VoiceSource};
 /// # use tutti_codec::Wave;
 /// # use std::sync::Arc;
-/// # let wave = Arc::new(Wave::from_samples(48_000.0, &[0.0; 64]));
+/// # let wave = Arc::new(Wave::from_samples(tutti_types::SampleRate::new(48_000.0), &[0.0; 64]));
 /// # let voice = Voice {
 /// #     source: VoiceSource::Memory(MemorySource::new(wave.clone()).expect("a placeable wave")),
 /// #     play: Playback::default(),

@@ -83,7 +83,7 @@ use tutti_midi_types::MidiMessage;
 use tutti_ump::{MidiChannel, NoteNumber, U7, Ump};
 
 let (tx, rx) = MidiMailbox::pair();
-assert!(tx.note_on(MidiChannel::FIRST, NoteNumber::of(60), U7::of(100)));
+assert!(tx.note_on(MidiChannel::FIRST, NoteNumber::of(60), 0xC800));
 
 let mut block = [(0, Ump([0; 4])); 8];
 assert_eq!(rx.poll_into(&mut block), 1);
@@ -99,10 +99,9 @@ has to know what MPE is.
 ```rust
 use tutti_midi_runtime::MpeIngest;
 use tutti_midi_types::mpe::{MpeMode, MpeZoneConfig};
-use tutti_fixtures::midi::{note_on, pitch_bend};
+use tutti_fixtures::midi::{note_on, pitch_bend, wide_velocity};
 use tutti_graph::Offset;
 use tutti_midi_types::MidiMessage;
-use tutti_midi_types::convert::midi1_velocity_to_midi2;
 use tutti_ump::{MidiChannel, MidiGroup};
 
 let mut ingest = MpeIngest::new(MpeMode::LowerZone(MpeZoneConfig::lower(7)));
@@ -112,7 +111,7 @@ let mut ingest = MpeIngest::new(MpeMode::LowerZone(MpeZoneConfig::lower(7)));
 // each handed to the closure.
 let member = MidiChannel::of(1);
 let mut sent = Vec::new();
-let on = note_on(MidiGroup::FIRST, member, 60, midi1_velocity_to_midi2(100));
+let on = note_on(MidiGroup::FIRST, member, 60, wide_velocity(100));
 ingest.translate(&(Offset::ZERO, on), |e| sent.push(e));
 assert_eq!(sent.len(), 1, "a note-on passes through");
 

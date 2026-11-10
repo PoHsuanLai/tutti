@@ -18,7 +18,7 @@ use tutti_graph::{GraphBuilder, Prepare};
 use tutti_nodes::testing::Osc;
 use tutti_spatial::{VbapMixNode, VbapMixParts, VbapSource, build_vbap_mix};
 use tutti_types::SampleRate;
-use tutti_types::{Amplitude, ChannelLayout, Hz, Samples};
+use tutti_types::{Amplitude, Azimuth, ChannelLayout, Hz, Samples};
 
 const RATE: SampleRate = SampleRate(48_000.0);
 /// 14 462 frames: neither side's last block is full.
@@ -72,7 +72,7 @@ fn both(layout: ChannelLayout, positions: &[f32]) -> (Vec<Vec<f32>>, Vec<Vec<f32
     let sources: Vec<VbapSource> = keys
         .iter()
         .zip(positions)
-        .map(|(&k, &az)| VbapSource::at(k, az))
+        .map(|(&k, &az)| VbapSource::at(k, Azimuth::new(az)))
         .collect();
     let mix = build_vbap_mix(&mut g, layout, &sources).expect("a preset layout");
     g.pipe_output(mix);
@@ -83,7 +83,7 @@ fn both(layout: ChannelLayout, positions: &[f32]) -> (Vec<Vec<f32>>, Vec<Vec<f32
     let sources: Vec<VbapSource<NodeKey>> = keys
         .iter()
         .zip(positions)
-        .map(|(&k, &az)| VbapSource::at(k, az))
+        .map(|(&k, &az)| VbapSource::at(k, Azimuth::new(az)))
         .collect();
     let parts = VbapMixParts::new(layout, &sources).expect("a preset layout");
     let mix = insert(&mut g, parts, &keys);
@@ -160,8 +160,11 @@ fn a_7_1_4_mix_from_parts_renders_as_build_vbap_mix_does() {
 /// LFE edge dropped → the count fails.
 #[test]
 fn the_parts_list_every_edge_of_the_mix() {
-    let parts = VbapMixParts::new(ChannelLayout::from(6u16), &[VbapSource::at((), 0.0)])
-        .expect("5.1 is a preset");
+    let parts = VbapMixParts::new(
+        ChannelLayout::from(6u16),
+        &[VbapSource::at((), Azimuth::new(0.0))],
+    )
+    .expect("5.1 is a preset");
     let edges = parts.edges();
     assert_eq!(edges.len(), 11, "{edges:#?}");
     assert_eq!(parts.panners.len(), 1);

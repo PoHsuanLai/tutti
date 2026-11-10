@@ -27,7 +27,7 @@
 use std::sync::Arc;
 
 use tutti_dsp::Complex32;
-use tutti_types::{Azimuth, Elevation, Mix, Radians, SampleRate, Samples, fold_frame_to_mono};
+use tutti_types::{Azimuth, ChannelLayout, Elevation, Fold, Mix, Radians, SampleRate, Samples};
 
 use super::sphere::{HrirSphere, HrtfSet, Weights};
 use crate::AngleSmoother;
@@ -179,6 +179,8 @@ pub(crate) struct HrtfBinaural {
     current: Weights,
     face_hint: usize,
     aim: AngleSmoother,
+    /// The input pair folded to the mono the renderer convolves.
+    fold: Fold,
 }
 
 impl std::fmt::Debug for HrtfBinaural {
@@ -229,6 +231,8 @@ impl HrtfBinaural {
             current,
             face_hint,
             aim,
+            fold: Fold::widths(ChannelLayout::STEREO, ChannelLayout::MONO)
+                .expect("stereo folds to mono"),
             sphere,
             set,
         }
@@ -308,12 +312,19 @@ impl HrtfBinaural {
             let outs = (&mut output.0[done..done + n], &mut output.1[done..done + n]);
             let wet = (&self.wet_left[at..at + n], &self.wet_right[at..at + n]);
             let dry = &self.dry[at..at + n];
-            let fresh = &mut self.history[start + at..start + at + n];
-            for i in 0..n {
-                outs.0[i] = blend.blend(dry[i], wet.0[i]);
-                outs.1[i] = blend.blend(dry[i], wet.1[i]);
-                fresh[i] = fold_frame_to_mono(&[ins.0[i], ins.1[i]]);
+            for (((l, r), &d), (&wl, &wr)) in outs
+                .0
+                .iter_mut()
+                .zip(&mut *outs.1)
+                .zip(dry)
+                .zip(wet.0.iter().zip(wet.1))
+            {
+                *l = blend.blend(d, wl);
+                *r = blend.blend(d, wr);
             }
+            let fresh = &mut self.history[start + at..start + at + n];
+            self.fold
+                .planar_channel(|c| if c == 0 { ins.0 } else { ins.1 }, 0, fresh);
             self.fill += n;
             done += n;
             if self.fill == STEP {

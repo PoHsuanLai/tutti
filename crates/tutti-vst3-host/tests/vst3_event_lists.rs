@@ -8,7 +8,6 @@
 use tutti_fixtures::midi;
 use tutti_graph::Offset;
 use tutti_graph::UmpAt;
-use tutti_midi_types::{sysex7_fragments, sysex7_payload};
 use tutti_plugin_types::{
     MIDI_STACK_CAPACITY, RT_MIDI_CAPACITY, RtMidiEvents, SysExStep, WireMidi,
 };
@@ -182,7 +181,10 @@ fn a_sysex_is_detected_by_its_data_type() {
     let mut pool = RtMidiEvents::new();
     drain_midi(&list, &mut pool);
     assert_eq!(pool.len(), 1);
-    assert!(sysex7_payload(&pool.as_slice()[0].ump).is_none());
+    assert!(!matches!(
+        tutti_ump::decode(pool.as_slice()[0].ump),
+        Ok(tutti_ump::Message::Sysex7(..))
+    ));
 }
 
 /// **A SysEx the host's MIDI pool has no room for is dropped whole and
@@ -398,7 +400,9 @@ fn a_banked_program_change_reaches_the_plugin_as_three_messages() {
 
 fn sysex_packets(payload: &[u8], frame: u32) -> Vec<UmpAt> {
     let mut out = Vec::new();
-    sysex7_fragments(MidiGroup::FIRST, payload, &mut out);
+    out.extend(
+        tutti_ump::Sysex7Packets::checked(MidiGroup::FIRST, payload).expect("a 7-bit payload"),
+    );
     out.into_iter().map(|ump| (at(frame), ump)).collect()
 }
 

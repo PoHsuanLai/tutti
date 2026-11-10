@@ -138,13 +138,14 @@ mod tests {
     use crate::{StftRequest, stft_magnitude};
     use rand::{Rng, SeedableRng, rngs::StdRng};
     use tutti_dsp::FftScratch;
+    use tutti_types::SampleRate;
     use tutti_types::Samples;
 
     const RATE: f64 = 48_000.0;
     const WINDOW: usize = 2048;
 
     fn magnitudes_of(samples: &[f32]) -> StftMagnitude {
-        let request = StftRequest::new(RATE, Samples(WINDOW), Samples(WINDOW / 2));
+        let request = StftRequest::new(SampleRate::new(RATE), Samples(WINDOW), Samples(WINDOW / 2));
         stft_magnitude(samples, request, &mut FftScratch::new()).unwrap()
     }
 

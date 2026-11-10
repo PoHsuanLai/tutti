@@ -127,9 +127,9 @@ fn settled_block(voice: DiskVoice) -> Vec<Vec<f32>> {
     let clock = MockTransport::rolling(Beat::new(0.0), Bpm::of(120.0));
     let mut last = Vec::new();
     for _ in 0..8 {
-        let env = clock.env(BLOCK, SR);
+        let env = clock.env(BLOCK, SampleRate::new(SR));
         last = contract::drive_input(&mut voice, &env, &[], &[], &[]).audio;
-        clock.advance(BLOCK as i64, SR);
+        clock.advance(BLOCK as i64, SampleRate::new(SR));
     }
     last
 }
@@ -287,7 +287,7 @@ fn a_fork_places_the_file_as_the_live_voice_does() {
     let mut node = forked.node;
     node.prepare(&Prepare::new(SampleRate(SR), Samples(BLOCK)));
     let clock = MockTransport::rolling(Beat::new(0.0), Bpm::of(120.0));
-    let env = clock.env(BLOCK, SR);
+    let env = clock.env(BLOCK, SampleRate::new(SR));
     let out = contract::drive_input(&mut *node, &env, &[], &[], &[]).audio;
     // Engine order: FL FR FC LFE SL SR BL BR from the file's FL FR FC LFE BL BR SL SR.
     let want: Vec<f32> = [0, 1, 2, 3, 6, 7, 4, 5].map(value).to_vec();
@@ -440,7 +440,7 @@ fn a_file_wider_than_a_frame_folds_into_it() {
 fn render(node: &mut dyn tutti_graph::Node, clock: &MockTransport, n: usize) -> Vec<Vec<f32>> {
     let mut out: Vec<Vec<f32>> = Vec::new();
     for _ in 0..n {
-        let env = clock.env(BLOCK, SR);
+        let env = clock.env(BLOCK, SampleRate::new(SR));
         let b = contract::drive_input(node, &env, &[], &[], &[]).audio;
         if out.is_empty() {
             out = vec![Vec::new(); b.len()];
@@ -448,7 +448,7 @@ fn render(node: &mut dyn tutti_graph::Node, clock: &MockTransport, n: usize) -> 
         for (o, c) in out.iter_mut().zip(b) {
             o.extend(c);
         }
-        clock.advance(BLOCK as i64, SR);
+        clock.advance(BLOCK as i64, SampleRate::new(SR));
     }
     out
 }
@@ -571,12 +571,12 @@ fn a_fork_placed_read_is_allocation_free() {
                 contract::Direct::new(Boxed(fork_unprepared(&voice)), SampleRate(SR), BLOCK);
             let clock = MockTransport::rolling(Beat::new(0.0), Bpm::of(120.0));
             // The first block opens the file and pages it in.
-            direct.block_in(&clock.env(BLOCK, SR));
-            clock.advance(BLOCK as i64, SR);
+            direct.block_in(&clock.env(BLOCK, SampleRate::new(SR)));
+            clock.advance(BLOCK as i64, SampleRate::new(SR));
             assert_no_alloc::assert_no_alloc(|| {
                 for _ in 0..80 {
-                    direct.block_in(&clock.env(BLOCK, SR));
-                    clock.advance(BLOCK as i64, SR);
+                    direct.block_in(&clock.env(BLOCK, SampleRate::new(SR)));
+                    clock.advance(BLOCK as i64, SampleRate::new(SR));
                 }
             });
             assert_near(
@@ -609,8 +609,10 @@ fn a_loop_edit_and_wrap_on_a_placed_stream_allocate_nothing() {
             if b == 44 {
                 rig.stream.set_loop(loop_1000_3000()).expect("alive");
             }
-            assert_no_alloc::assert_no_alloc(|| direct.block_in(&clock.env(BLOCK, SR)));
-            clock.advance(BLOCK as i64, SR);
+            assert_no_alloc::assert_no_alloc(|| {
+                direct.block_in(&clock.env(BLOCK, SampleRate::new(SR)))
+            });
+            clock.advance(BLOCK as i64, SampleRate::new(SR));
             let _ = rig.streamer.step_once();
             if b >= 4 {
                 assert_near(

@@ -22,7 +22,7 @@ use tutti_graph::Pool;
 use tutti_graph::WorkerPool;
 
 mod support;
-use support::active::{Activate, Active};
+use support::active::{Activate, Active, ActiveExt};
 use support::main_thread;
 
 #[global_allocator]

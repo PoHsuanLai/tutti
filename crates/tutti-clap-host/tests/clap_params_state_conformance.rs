@@ -25,13 +25,11 @@ use std::path::Path;
 use std::sync::{Mutex, MutexGuard};
 
 mod support;
-use support::active::{Activate, Active};
+use support::active::{Activate, Active, ActiveExt, drive_block};
 use support::main_thread;
 
 use tutti_clap_host::types::StateContext;
-use tutti_clap_host::{
-    AudioBuffer32, ClapLoaded, ClapProcessContext, LoadOptions, ParameterChanges,
-};
+use tutti_clap_host::{ClapLoaded, ClapProcessContext, LoadOptions, ParameterChanges};
 use tutti_clap_test_plugin::params_state::{ProbeParam, probe_params};
 use tutti_clap_test_plugin::{
     PARAM_CMD_REQUEST_FLUSH, PARAM_CMD_RESCAN_ALL, PARAM_CMD_RESCAN_VALUES, ParamStateCapture,
@@ -125,23 +123,6 @@ impl Probe {
 /// own table rather than a hand-copied second one.
 fn param(index: usize) -> &'static ProbeParam {
     &probe_params()[index]
-}
-
-/// Drive one silent stereo block through the host with the given context.
-fn drive_block(inst: &mut Active<f32>, frames: usize, ctx: &ClapProcessContext<'_>) {
-    let mut out_l = vec![0.0f32; frames];
-    let mut out_r = vec![0.0f32; frames];
-    let in_l = vec![0.0f32; frames];
-    let in_r = vec![0.0f32; frames];
-    let outs: &mut [&mut [f32]] = &mut [&mut out_l[..], &mut out_r[..]];
-    let ins: &[&[f32]] = &[&in_l[..], &in_r[..]];
-    let mut buffer = AudioBuffer32 {
-        inputs: ins,
-        outputs: outs,
-        num_samples: frames,
-        sample_rate: 48_000.0,
-    };
-    inst.process(&mut buffer, ctx).expect("process succeeds");
 }
 
 // --- exported C symbols, reached across the dlopen seam ---------------------

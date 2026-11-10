@@ -184,7 +184,7 @@ mod tests {
     fn a_fork_releases_every_held_key() {
         let font = soundfont();
         let mut live = unit(&font, LIVE, U7::of(16));
-        live.note_on(MidiChannel::FIRST, NoteNumber::of(60), U7::of(100));
+        live.note_on(MidiChannel::FIRST, NoteNumber::of(60), 0xC800);
         let fork = live
             .fork_template()
             .fork(ForkMode::Live)

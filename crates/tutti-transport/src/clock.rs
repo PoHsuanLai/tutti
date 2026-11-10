@@ -481,6 +481,7 @@ mod tests {
     use std::sync::Arc;
     use std::sync::atomic::AtomicBool;
     use tutti_types::LoopRange;
+    use tutti_types::SampleRate;
 
     fn create_test_atomics() -> (Arc<AtomicBpm>, Arc<AtomicBool>) {
         (
@@ -505,7 +506,7 @@ mod tests {
                 steady_time: None,
                 tempo_in_force: None,
             },
-            44100.0,
+            SampleRate::new(44100.0),
         );
         (clock, seek)
     }
@@ -518,14 +519,18 @@ mod tests {
 
     /// `tick` under an armed loop over `start..end`.
     fn tick_looping(clock: &mut TransportClock, start: f64, end: f64) -> f64 {
-        let region = LoopRegion::new(LoopRange::new(start, end).expect("ordered"), true);
+        let region = LoopRegion::new(
+            LoopRange::new(Beat::new(start), Beat::new(end)).expect("ordered"),
+            true,
+        );
         clock.step_in(1, region).get()
     }
 
     #[test]
     fn test_transport_clock_tick() {
         let (tempo, paused) = create_test_atomics();
-        let mut clock = TransportClock::new(ClockLinks::bare(tempo, paused), 44100.0);
+        let mut clock =
+            TransportClock::new(ClockLinks::bare(tempo, paused), SampleRate::new(44100.0));
 
         assert!((tick(&mut clock) - 0.0).abs() < 0.001);
 
@@ -550,9 +555,9 @@ mod tests {
         let live_position = Arc::new(AtomicF64::new(7.5)); // live playhead "now"
         let mut links = ClockLinks::bare(tempo, paused);
         links.position_writeback = Some(Arc::clone(&live_position));
-        let clock = TransportClock::new(links, 44100.0);
+        let clock = TransportClock::new(links, SampleRate::new(44100.0));
 
-        let mut render = clock.starting_at(0.0);
+        let mut render = clock.starting_at(Beat::new(0.0));
 
         // Step the stream a full second — if it still shared the writeback,
         // it would overwrite `live_position` with its own advancing beat
@@ -585,8 +590,11 @@ mod tests {
         let mut links = ClockLinks::bare(Arc::clone(&tempo), Arc::clone(&paused));
         links.steady_time = Some(Arc::clone(&steady));
         // A two-beat loop, so the playhead wraps repeatedly over the run.
-        let looping = LoopRegion::new(LoopRange::new(0.0, 2.0).expect("ordered"), true);
-        let mut clock = TransportClock::new(links, 44100.0);
+        let looping = LoopRegion::new(
+            LoopRange::new(Beat::new(0.0), Beat::new(2.0)).expect("ordered"),
+            true,
+        );
+        let mut clock = TransportClock::new(links, SampleRate::new(44100.0));
 
         clock.step_in(64, looping);
         assert_eq!(steady.load(Ordering::Relaxed), 64);
@@ -629,9 +637,9 @@ mod tests {
         let steady = Arc::new(std::sync::atomic::AtomicI64::new(9_000));
         let mut links = ClockLinks::bare(tempo, paused);
         links.steady_time = Some(Arc::clone(&steady));
-        let clock = TransportClock::new(links, 44100.0);
+        let clock = TransportClock::new(links, SampleRate::new(44100.0));
 
-        let mut render = clock.starting_at(0.0);
+        let mut render = clock.starting_at(Beat::new(0.0));
         for _ in 0..1_000 {
             tick(&mut render);
         }
@@ -646,7 +654,10 @@ mod tests {
     #[test]
     fn test_transport_clock_pause() {
         let (tempo, paused) = create_test_atomics();
-        let mut clock = TransportClock::new(ClockLinks::bare(tempo, paused.clone()), 44100.0);
+        let mut clock = TransportClock::new(
+            ClockLinks::bare(tempo, paused.clone()),
+            SampleRate::new(44100.0),
+        );
 
         let mut beat = 0.0;
         for _ in 0..1000 {
@@ -670,7 +681,7 @@ mod tests {
         let (tempo, paused) = create_test_atomics();
         let (mut clock, seek) = clock_with_seek(tempo, paused);
 
-        seek.request(4.0);
+        seek.request(Beat::new(4.0));
 
         assert!((tick(&mut clock) - 4.0).abs() < 0.001);
     }
@@ -678,7 +689,10 @@ mod tests {
     #[test]
     fn test_transport_clock_tempo_change() {
         let (tempo, paused) = create_test_atomics();
-        let mut clock = TransportClock::new(ClockLinks::bare(tempo.clone(), paused), 44100.0);
+        let mut clock = TransportClock::new(
+            ClockLinks::bare(tempo.clone(), paused),
+            SampleRate::new(44100.0),
+        );
 
         for _ in 0..44100 {
             tick(&mut clock);
@@ -697,8 +711,12 @@ mod tests {
     #[test]
     fn test_transport_clock_loop_disabled() {
         let (tempo, paused) = create_test_atomics();
-        let mut clock = TransportClock::new(ClockLinks::bare(tempo, paused), 44100.0);
-        let disarmed = LoopRegion::new(LoopRange::new(0.0, 4.0).expect("ordered"), false);
+        let mut clock =
+            TransportClock::new(ClockLinks::bare(tempo, paused), SampleRate::new(44100.0));
+        let disarmed = LoopRegion::new(
+            LoopRange::new(Beat::new(0.0), Beat::new(4.0)).expect("ordered"),
+            false,
+        );
 
         let mut beat = 0.0;
         for _ in 0..90000 {
@@ -718,9 +736,9 @@ mod tests {
         let seek = SeekSlot::new();
         let mut links = ClockLinks::bare(tempo, paused);
         links.seek = seek.clone();
-        let mut clock = TransportClock::new(links, 44100.0);
+        let mut clock = TransportClock::new(links, SampleRate::new(44100.0));
 
-        seek.request(0.99999);
+        seek.request(Beat::new(0.99999));
         tick_looping(&mut clock, 0.0, 1.0);
 
         let beat = tick_looping(&mut clock, 0.0, 1.0);
@@ -740,7 +758,7 @@ mod tests {
         let (mut clock, seek) = clock_with_seek(tempo, paused);
 
         // Advance to beat ~16384 where f32 truncation would lose precision
-        seek.request(16384.5);
+        seek.request(Beat::new(16384.5));
         let beat = clock.step(1);
         let (whole, frac) = (beat.floor().get(), beat.fract().get());
 
@@ -766,7 +784,7 @@ mod tests {
         let in_force = Arc::new(AtomicBpm::new(Bpm::of(1.0)));
         let mut links = ClockLinks::bare(Arc::clone(&tempo), paused);
         links.tempo_in_force = Some(Arc::clone(&in_force));
-        let mut clock = TransportClock::new(links, 44100.0);
+        let mut clock = TransportClock::new(links, SampleRate::new(44100.0));
         // Inside the hysteresis: asked, but not taken.
         tempo.store(Bpm::of(120.0005), Ordering::Release);
         clock.set_sample_rate(tutti_types::SampleRate(48_000.0), None);
@@ -774,7 +792,7 @@ mod tests {
         assert_eq!(in_force.load(Ordering::Acquire), Bpm::of(120.0));
         assert_eq!(
             clock.current_beat(),
-            Beat(0.0) + tutti_types::beats_per_sample(Bpm::of(120.0), 48_000.0),
+            Beat(0.0) + tutti_types::beats_per_sample(Bpm::of(120.0), SampleRate::new(48_000.0)),
         );
     }
 
@@ -783,9 +801,9 @@ mod tests {
     #[test]
     fn starting_at_emits_that_beat_first() {
         let (tempo, paused) = create_test_atomics();
-        let live = TransportClock::new(ClockLinks::bare(tempo, paused), 44100.0);
+        let live = TransportClock::new(ClockLinks::bare(tempo, paused), SampleRate::new(44100.0));
 
-        let mut derived = live.starting_at(8.0);
+        let mut derived = live.starting_at(Beat::new(8.0));
         let first = tick(&mut derived);
 
         assert!(
@@ -800,10 +818,10 @@ mod tests {
         let writeback = Arc::new(AtomicF64::new(0.0));
         let mut links = ClockLinks::bare(tempo, paused);
         links.position_writeback = Some(Arc::clone(&writeback));
-        let live = TransportClock::new(links, 44100.0);
+        let live = TransportClock::new(links, SampleRate::new(44100.0));
 
         // Step a derived stream for a while; the live writeback must not move.
-        let mut derived = live.starting_at(100.0);
+        let mut derived = live.starting_at(Beat::new(100.0));
         for _ in 0..1000 {
             tick(&mut derived);
         }
@@ -821,12 +839,12 @@ mod tests {
         let seek = SeekSlot::new();
         let mut links = ClockLinks::bare(tempo, paused);
         links.seek = seek.clone();
-        let live = TransportClock::new(links, 44100.0);
+        let live = TransportClock::new(links, SampleRate::new(44100.0));
 
-        let mut derived = live.starting_at(20.0);
+        let mut derived = live.starting_at(Beat::new(20.0));
 
         // A live seek must not yank the derived stream.
-        seek.request(0.0);
+        seek.request(Beat::new(0.0));
         let first = tick(&mut derived);
         assert!(
             (first - 20.0).abs() < 1e-4,
@@ -839,7 +857,7 @@ mod tests {
     #[test]
     fn at_tempo_changes_the_beat_rate() {
         let (tempo, paused) = create_test_atomics();
-        let live = TransportClock::new(ClockLinks::bare(tempo, paused), 44100.0);
+        let live = TransportClock::new(ClockLinks::bare(tempo, paused), SampleRate::new(44100.0));
 
         // One second of samples at 240 BPM = 4 beats.
         let mut derived = live.at_tempo(Bpm::of(240.0));
@@ -857,9 +875,9 @@ mod tests {
     #[test]
     fn combinators_compose() {
         let (tempo, paused) = create_test_atomics();
-        let live = TransportClock::new(ClockLinks::bare(tempo, paused), 44100.0);
+        let live = TransportClock::new(ClockLinks::bare(tempo, paused), SampleRate::new(44100.0));
 
-        let mut derived = live.at_tempo(Bpm::of(240.0)).starting_at(8.0);
+        let mut derived = live.at_tempo(Bpm::of(240.0)).starting_at(Beat::new(8.0));
         assert!((tick(&mut derived) - 8.0).abs() < 1e-4);
 
         // Still at the derived tempo: one second later is 4 beats on.
@@ -883,8 +901,11 @@ mod tests {
     #[test]
     fn a_derived_stream_keeps_its_tempo() {
         let (tempo, paused) = create_test_atomics();
-        let live = TransportClock::new(ClockLinks::bare(Arc::clone(&tempo), paused), 48_000.0);
-        let mut derived = live.starting_at(0.0);
+        let live = TransportClock::new(
+            ClockLinks::bare(Arc::clone(&tempo), paused),
+            SampleRate::new(48_000.0),
+        );
+        let mut derived = live.starting_at(Beat::new(0.0));
         tempo.store(Bpm::of(140.0), Ordering::Release);
         derived.step(48_000);
         assert_eq!(derived.current_beat(), Beat(2.0), "one second at 120 BPM");

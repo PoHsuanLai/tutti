@@ -1,5 +1,6 @@
 #![doc = include_str!("../README.md")]
 #![deny(missing_docs)]
+#![deny(clippy::undocumented_unsafe_blocks, clippy::missing_safety_doc)]
 
 //! Real-time-safe shared-memory primitives for the audio thread.
 //!

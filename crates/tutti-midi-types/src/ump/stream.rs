@@ -190,7 +190,7 @@ fn push_ump_stream_packets(words: &[u32], out: &mut Vec<Ump>) {
 /// UMP Stream **Endpoint Name Notification** — the reply to an Endpoint
 /// Discovery `request_endpoint_name`. `name` is UTF-8 and may span several
 /// packets, so this appends one or more [`Ump`]s to `out` (mirroring
-/// [`sysex7_fragments`](super::sysex7_fragments)).
+/// `tutti_ump::sysex7_packets`).
 pub fn endpoint_name(name: &str, out: &mut Vec<Ump>) {
     use midi2::ump_stream::EndpointName;
     let mut m = EndpointName::<Vec<u32>>::new();

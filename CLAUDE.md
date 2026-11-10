@@ -136,18 +136,22 @@ run. `cargo xtask ci` runs what CI runs.
 cargo build
 cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt
-scripts/check-canonical-paths.sh   # the import-path gate (also searches *.md)
-scripts/check-submodule-pins.sh    # VST3 SDK pins, asserted by SHA
+cargo xtask check-paths [<crate> <module>...]  # the import-path gate (also searches *.md)
+cargo xtask check-submodule-pins   # VST3 SDK pins, asserted by SHA
 scripts/check-bevy-free.sh         # tutti-session reaches no Bevy and has no bevy feature
 scripts/check-adapter.sh           # tutti-session re-exports no crate whole (bevy-tutti's composition/policy scans are skipped while it is parked)
-scripts/check-doc-features.sh      # rustdoc per feature for tutti-session, tutti
+cargo xtask check-doc-features     # rustdoc per feature for tutti-session, tutti
 scripts/check-guards.sh            # every host callback runs under the panic guard
 scripts/check-plugin-ffi.sh        # no CLAP/VST3/AU unsafe outside the -ffi crates; the forbids; VST2 held to its pins
 scripts/check-layout.sh            # flat crates/ and testing/, no crates->testing edges, layering
-scripts/check-range-types.sh       # no plain derived Deserialize on a private tuple field
+cargo xtask check-range-types      # no plain derived Deserialize on a private tuple field
 scripts/check-hosting.sh           # every InProcess/OutOfProcess impl is in the contract's hostings
 cargo xtask deny                   # RustSec advisories, yanked and unmaintained crates (deny.toml)
 ```
+
+`check-paths`, `check-submodule-pins`, `check-doc-features` and `check-range-types` are
+Rust gates in `xtask/src/gates/` (a pure function from the files, read through `Tree`,
+to a `Report`, with tests over in-memory trees); the `scripts/` ones are still scripts.
 
 `cargo xtask deny` needs `cargo install cargo-deny --version 0.20.2 --locked` (CI pins
 the same version) and fails with that command when it is missing.
@@ -248,7 +252,7 @@ cargo xtask test-all              # both
   requires Bevy. Check a crate that has the feature with `cargo check -p <crate>` and
   `--features bevy`. `--no-default-features` is *not* this check.
 - **Import paths:** import engine types from a crate's root or prelude, never
-  through its modules. Only `check-canonical-paths.sh` enforces this.
+  through its modules. Only `cargo xtask check-paths` enforces this.
 
 ### Check Windows before you push
 
@@ -340,12 +344,15 @@ crates/          everything shipped; directory name = package name; no nesting
                  `frame` and `Midi1Parser`, the status bytes the hosts use
                  (`tutti-midi-types`' `wire.rs` and `Midi1Splitter` hold their own
                  until VST2 and AU move), `NoteId` (`channel * 128 + note`), and
-                 SysEx: `SysexMessage` (a checked `F0 .. F7`) and `SysexAssembler`
-                 (SysEx7 packets to whole messages over a caller's buffer); no
+                 SysEx: `SysexMessage` (a checked `F0 .. F7`), `SysexAssembler`
+                 (SysEx7 packets to whole messages over a caller's buffer) and its
+                 inverse `sysex7_packets` (`SysexMessage::packets`,
+                 `Sysex7Packets::checked` for a payload of plain bytes), with
+                 `Sysex7Packet::data` and `SysexRef::new`; no
                  dependencies but `bytemuck` (and optional `serde`)
   tutti-midi-protocol  MIDI 1.0 to MIDI 2.0 translation (design 017 §4 and §6): the
-                 stateless `widen`, `narrow` and `midi1` and the M2-115 scaling;
-                 depends on `tutti-ump` alone
+                 stateless `widen`, `narrow` and `midi1`, the M2-115 scaling, and the
+                 float converters (`u32_to_unit_f32` and kin); depends on `tutti-ump` alone
   tutti-voicing  what a note-driven instrument decides before it makes sound, as one
                  pure step: `Voicing::step(channel, message, patch, voices) -> &[Command]`
                  (`Start`, `Retarget`, `Release`, `Damp`, `Cut`, `Retune`) over channel state, the
@@ -360,8 +367,8 @@ crates/          everything shipped; directory name = package name; no nesting
   tutti-types    vocabulary only: units, channel layouts, io edge traits;
                  no FFT and no new algorithms but `Fold` (topology to
                  topology, built on the control side). `#![forbid(unsafe_code)]`.
-                 The width folds (`fold_frame`, `fold_frame_to_*`) and sample
-                 conversion stay until the edges move off them
+                 The width folds are gone (every caller builds a `Fold`); sample
+                 conversion stays until the edges move off it
   tutti-codec    the audio file codecs. Out: `Format` (`Wav(Pcm)`, `Aiff(Pcm)`,
                  `Flac { depth, level }`, `Vorbis { quality }`), `Spec`, and `Encoder`
                  over a `Write + Seek` sink, and `FileOut` (the file sink: the
@@ -703,6 +710,12 @@ quantity one covers: fields, signatures, `Param<U>` and return types.
   adding one; a unit's `unit!` ability list is its whole algebra. If it is
   listed there, write a named method instead.
 - **An omission must ship with its replacement in the same change.**
+- **A bare number becomes a unit with `new` and leaves with `get`** (`Unit::from_raw`
+  and `to_raw` in generic code). The `unit!` macro emits no `From<raw>` and no
+  `From<Unit> for raw`, so `.into()` never crosses between a unit and its raw: the
+  quantity is named where the number is written. A signature takes the unit type
+  (or `impl Into<Unit>` for a conversion between units, such as `Amplitude` to `Db`),
+  never `impl Into<f32>`.
 - **Convert with the named converters** (`Db::to_amplitude`,
   `Seconds::to_samples{,_floor,_ceil}`, `Cents::to_semitones`), never by hand.
 - **Measurements are not controls.** `Confidence`, `Correlation` and `Pan`
@@ -745,7 +758,7 @@ shape (`MidiChannel` is the reference). No macro.
   `NoteValue` has no saturating constructor until a lenient importer needs one.
 - **A new type is checked by `tutti_fixtures::check_range_contract`** in a
   test (valid and invalid raws through `new`, `TryFrom`, `of` and serde), and
-  `scripts/check-range-types.sh` fails a private tuple field with a derived
+  `cargo xtask check-range-types` fails a private tuple field with a derived
   `Deserialize` that is not `serde(try_from)` (`transparent` and `from` are
   flagged too). Its exception list names what removes each entry.
 - `tutti-ump` does not dev-depend on `tutti-fixtures` (`check-layout.sh`: it

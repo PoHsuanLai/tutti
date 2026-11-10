@@ -13,7 +13,7 @@ fn at(offset: u32, ump: Ump) -> UmpAt {
 
 #[test]
 fn clock_maps_samples_to_ticks_monotonically() {
-    let clock = JrClock::new(48_000.0);
+    let clock = JrClock::new(SampleRate::new(48_000.0));
     // 48000 samples = 1 s = 31250 ticks, which wraps: 31250 & 0xFFFF = 31250.
     assert_eq!(clock.ticks_at(0), 0);
     assert_eq!(clock.ticks_at(48_000), 31_250);
@@ -25,7 +25,7 @@ fn clock_maps_samples_to_ticks_monotonically() {
 fn clock_wraps_at_16_bits() {
     // At exactly the JR reference rate, one sample is one tick, so the wrap
     // boundary is integer-exact (no float rounding at the edge).
-    let clock = JrClock::new(JR_TICKS_PER_SECOND as f64);
+    let clock = JrClock::new(SampleRate::new(JR_TICKS_PER_SECOND as f64));
     assert_eq!(clock.ticks_at(0xFFFF), 0xFFFF);
     assert_eq!(clock.ticks_at(0x1_0000), 0, "wraps back to zero");
     assert_eq!(clock.ticks_at(0x1_0001), 1);
@@ -36,14 +36,15 @@ fn the_first_clock_is_due_immediately() {
     // A receiver cannot use any stamp until it has a clock reference, so
     // waiting one interval before the first would leave the opening block's
     // timing unusable.
-    let mut e = JrClockEmitter::new(48_000.0);
+    let mut e = JrClockEmitter::new(SampleRate::new(48_000.0));
     let first = e.due(0).expect("a clock is owed at once");
     assert_eq!(jr_clock_value(&first), Some(0));
 }
 
 #[test]
 fn clocks_are_emitted_on_the_configured_cadence() {
-    let mut e = JrClockEmitter::with_interval(48_000.0, Duration::from_millis(100));
+    let mut e =
+        JrClockEmitter::with_interval(SampleRate::new(48_000.0), Duration::from_millis(100));
     let interval = e.interval_samples();
     assert_eq!(interval, 4_800);
 
@@ -63,8 +64,8 @@ fn the_cadence_keeps_running_through_silence() {
     // idle stream — which is exactly when a receiver most needs the clock.
     let sample_rate = 48_000.0;
     let block = 512u64;
-    let mut stream =
-        JrStream::new(sample_rate).with_clock_interval(sample_rate, Duration::from_millis(100));
+    let mut stream = JrStream::new(SampleRate::new(sample_rate))
+        .with_clock_interval(SampleRate::new(sample_rate), Duration::from_millis(100));
 
     let mut clocks = 0;
     // 1 second of entirely silent blocks.
@@ -90,7 +91,8 @@ fn the_cadence_keeps_running_through_silence() {
 #[test]
 fn a_stamped_block_carries_its_clock_before_the_stamps() {
     let sample_rate = 48_000.0;
-    let mut stream = JrStream::new(sample_rate).with_clock(sample_rate);
+    let mut stream =
+        JrStream::new(SampleRate::new(sample_rate)).with_clock(SampleRate::new(sample_rate));
     let events = [at(
         0,
         note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000),
@@ -108,7 +110,7 @@ fn a_stamped_block_carries_its_clock_before_the_stamps() {
 fn a_stream_without_a_clock_emits_none() {
     // `new` alone stamps only — the cadence is opt-in, so existing
     // stamp-only callers keep their exact output.
-    let mut stream = JrStream::new(48_000.0);
+    let mut stream = JrStream::new(SampleRate::new(48_000.0));
     let mut out = Vec::new();
     stream.stamp_span(&[], 512, &mut out);
     assert!(out.is_empty(), "no clock, no events, no output");
@@ -118,11 +120,11 @@ fn a_stream_without_a_clock_emits_none() {
 fn stamp_advances_by_events_and_stamp_span_by_the_block() {
     // The distinction the cadence depends on: `stamp` cannot move time on an
     // empty block, `stamp_span` can.
-    let mut by_events = JrStream::new(48_000.0);
+    let mut by_events = JrStream::new(SampleRate::new(48_000.0));
     by_events.stamp(&[], &mut Vec::new());
     assert_eq!(by_events.origin_samples(), 0, "silence stalls the origin");
 
-    let mut by_block = JrStream::new(48_000.0);
+    let mut by_block = JrStream::new(SampleRate::new(48_000.0));
     by_block.stamp_span(&[], 512, &mut Vec::new());
     assert_eq!(by_block.origin_samples(), 512, "the block advanced it");
 }
@@ -132,7 +134,7 @@ fn stamp_advances_by_events_and_stamp_span_by_the_block() {
 fn an_interval_over_the_spec_maximum_is_rejected() {
     // §7.2.2.1's 250 ms is a `shall`, so a longer interval is not a tuning
     // choice — it is a non-conformant stream.
-    JrClockEmitter::with_interval(48_000.0, Duration::from_millis(251));
+    JrClockEmitter::with_interval(SampleRate::new(48_000.0), Duration::from_millis(251));
 }
 
 #[test]
@@ -160,7 +162,7 @@ fn a_blocks_span_is_one_past_its_furthest_offset() {
 /// A stream advances its own origin, so successive blocks keep climbing.
 #[test]
 fn a_stream_advances_its_origin_across_blocks() {
-    let mut stream = JrStream::new(48_000.0);
+    let mut stream = JrStream::new(SampleRate::new(48_000.0));
     let events = [
         at(0, note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000)),
         at(
@@ -191,7 +193,7 @@ fn a_stream_advances_its_origin_across_blocks() {
 /// tick and would prove nothing either way.
 #[test]
 fn two_producers_on_one_stream_keep_stamps_monotonic() {
-    let mut wire = JrStream::new(48_000.0);
+    let mut wire = JrStream::new(SampleRate::new(48_000.0));
 
     // One 512-frame block each, the event at the block's end.
     let clock_block = [at(
@@ -219,7 +221,7 @@ fn two_producers_on_one_stream_keep_stamps_monotonic() {
 
 #[test]
 fn stamp_block_prefixes_each_event() {
-    let stamper = JrStamper::new(48_000.0);
+    let stamper = JrStamper::new(SampleRate::new(48_000.0));
     let events = [
         at(0, note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000)),
         at(
@@ -240,7 +242,7 @@ fn stamp_block_prefixes_each_event() {
 fn stamp_then_observe_recovers_spacing() {
     // Two events 0.25 s apart at 48 kHz → the receiver reconstructs ~0.25 s.
     let sr = 48_000.0;
-    let stamper = JrStamper::new(sr);
+    let stamper = JrStamper::new(SampleRate::new(sr));
     let quarter_second = (sr * 0.25) as u32; // 12000 samples
     let events = [
         at(0, note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000)),

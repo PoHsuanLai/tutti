@@ -413,7 +413,7 @@ unit! {
     /// A position, not a count: `BarNumber + BarNumber` has no meaning without an
     /// origin, exactly as `Beat + Beat` does not. Subtracting two gives a
     /// [`BarCount`].
-    pub struct BarNumber(pub i64): Display, From, Affine(BarCount);
+    pub struct BarNumber(pub i64): Display, Affine(BarCount);
 }
 
 unit! {
@@ -510,9 +510,10 @@ impl core::ops::Mul<BarCount> for i64 {
     }
 }
 
-// `From<i64>` is the `From` ability. The plugin ABIs that carry bar numbers as
-// `i32` get the pair below, written out because `i32` is a lossy cast, not a
-// widening.
+// A `BarNumber` is built from an `i64` with `new` and read with `get`: `unit!`
+// emits no `From`. The plugin ABIs that carry bar numbers as `i32` get the
+// impl below, written out because it is a widening the ABI hands over by
+// construction.
 impl From<i32> for BarNumber {
     #[inline]
     fn from(n: i32) -> Self {

@@ -165,19 +165,25 @@ pub fn play(
 /// time a voice plays. The [`Stream`](crate::Stream) is the caller's to keep
 /// while the voice plays: dropping it ends the stream.
 ///
+/// A file the streamer can seek in is answered on the first step. One it
+/// cannot is decoded whole on the decode thread (doc 025 decision 21), which
+/// no step runs: the wait between steps is a millisecond, up to ten seconds.
+///
 /// # Errors
 ///
 /// The open's own failure, as the streamer answered it.
 ///
 /// # Panics
 ///
-/// If the streamer has not answered within 1000 steps: a hand-stepped streamer
-/// answers on the first step it takes, so that is a hang, not a slow machine.
+/// If the streamer has not answered within ten seconds: a hand-stepped
+/// streamer answers a seekable file on the first step, so that is a hang, not
+/// a slow machine.
 pub fn settle(
     streamer: &mut crate::DiskStreamer<crate::ByHand>,
     mut opening: crate::Opening,
 ) -> Result<(crate::Stream, crate::StreamReader), crate::OpenError> {
-    for _ in 0..1_000 {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while std::time::Instant::now() < deadline {
         let _ = streamer.step_once();
         match opening.poll() {
             crate::Open::Pending(again) => opening = again,
@@ -187,8 +193,9 @@ pub fn settle(
             }
             crate::Open::Failed(error) => return Err(error),
         }
+        std::thread::sleep(std::time::Duration::from_millis(1));
     }
-    panic!("a hand-stepped streamer did not answer an open in 1000 steps");
+    panic!("a hand-stepped streamer did not answer an open in 10 s");
 }
 
 /// The answer to `opening` from a streamer running its own thread, waited for
@@ -227,9 +234,9 @@ mod tests {
     fn advance_moves_forward_and_rewinds() {
         let t = MockTransport::rolling(Beat::new(0.0), Bpm::of(120.0));
         // 120 BPM = 2 beats/s, so one second of samples is two beats.
-        t.advance(44_100, 44_100.0);
+        t.advance(44_100, SampleRate::new(44_100.0));
         assert!((t.beat().get() - 2.0).abs() < 1e-9);
-        t.advance(-44_100, 44_100.0);
+        t.advance(-44_100, SampleRate::new(44_100.0));
         assert!(t.beat().get().abs() < 1e-9);
     }
 
@@ -246,7 +253,7 @@ mod tests {
         assert!(!t.is_rolling());
         assert_eq!(t.beat(), Beat::new(8.0));
         assert_eq!(t.tempo(), Bpm::of(90.0));
-        let env = t.env(4, 48_000.0);
+        let env = t.env(4, SampleRate::new(48_000.0));
         assert!(!env.transport.playing);
         assert_eq!(env.transport.beat(), Beat::new(8.0));
     }

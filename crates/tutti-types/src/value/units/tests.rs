@@ -6,6 +6,25 @@ use super::*;
 // fail. It exists as documentation: the ledger is the contract, and a `#[test]`
 // is what keeps it beside the operators rather than drifting into a README.
 // Adding an omitted operator means deleting its entry, not making a test pass.
+//
+// Every unit also lacks `From<raw>` and `From<Unit> for raw`; each ledger lists
+// that omission, and `new_and_get_are_the_one_way_between_a_unit_and_its_raw`
+// below pins the replacement.
+
+/// The replacement for the omitted `From<raw>` / `From<Unit> for raw`: `new`
+/// and `get` agree with the `Unit` trait's `from_raw` / `to_raw`, one of each
+/// per representation (float, and an integer count).
+///
+/// Mutation: make `new` wrap a different value than `from_raw` (or `get` read
+/// another field) and the equalities below fail.
+#[test]
+fn new_and_get_are_the_one_way_between_a_unit_and_its_raw() {
+    assert_eq!(Hz::new(440.0), Hz::from_raw(440.0));
+    assert_eq!(Hz::new(440.0).get(), Hz::new(440.0).to_raw());
+    assert_eq!(Hz::new(440.0).get(), 440.0);
+    assert_eq!(Db::new(-6.0).get(), -6.0);
+    assert_eq!(Samples::new(512).get(), 512);
+}
 
 #[test]
 fn from_is_the_spelling_for_single_answer_conversions() {

@@ -21,12 +21,12 @@ fn rolling_voice(samples: &[(f32, f32)]) -> (DiskVoice, Arc<MockTransport>) {
 
 /// `n` frames of `voice` as one block, then the transport moved past them.
 fn run_block(voice: &mut DiskVoice, t: &MockTransport, n: usize) -> Vec<Vec<f32>> {
-    play(voice, t, SR, n, n)
+    play(voice, t, SampleRate::new(SR), n, n)
 }
 
 /// One block of `n` frames of `voice` under `t`, at `rate`.
 fn under(voice: &mut DiskVoice, t: &MockTransport, rate: f64, n: usize) -> Vec<Vec<f32>> {
-    block(voice, t, rate, n)
+    block(voice, t, SampleRate::new(rate), n)
 }
 
 /// Tests still author stereo pairs for readability; flatten them at the one
@@ -224,7 +224,7 @@ fn a_varispeed_change_moves_the_read_without_any_beat_discontinuity() {
     );
     assert_eq!(ring.play(), 882_000, "at 2x beat 20 is 20 s in");
     // One frame on: two file frames on.
-    transport.advance(1, SR);
+    transport.advance(1, SampleRate::new(SR));
     under(&mut reader, &transport, SR, 1);
     assert_eq!(ring.play(), 882_002, "a frame later, two file frames on");
 }
@@ -269,7 +269,7 @@ fn a_fork_closes_its_file_once_past_its_window() {
     while played < 30_000 {
         under(&mut copy, &render, 48_000.0, 64);
         played += 64;
-        render.advance(64, 48_000.0);
+        render.advance(64, SampleRate::new(48_000.0));
         if played == 1_024 {
             assert!(is_open(&copy), "the file is open while the clip plays");
         }
@@ -404,7 +404,7 @@ fn a_fork_never_touches_the_live_stream() {
     let mut copy = live.fork_copy();
     for _ in 0..16 {
         under(&mut copy, &render, SR, 64);
-        render.advance(64, SR);
+        render.advance(64, SampleRate::new(SR));
     }
     copy.set_gain(Amplitude::new(0.25));
 
@@ -525,7 +525,7 @@ fn warm_clip_reader(transport: &MockTransport, frames: usize) -> Direct<DiskVoic
     );
     let mut direct = Direct::new(reader, SampleRate::new(48_000.0), frames);
     for _ in 0..16 {
-        direct.block_in(&transport.env(frames, 48_000.0));
+        direct.block_in(&transport.env(frames, SampleRate::new(48_000.0)));
     }
     direct
 }
@@ -536,7 +536,7 @@ fn clip_reader_process_steady_state_is_allocation_free() {
     let mut direct = warm_clip_reader(&transport, 64);
     assert_no_alloc::assert_no_alloc(|| {
         for _ in 0..2_000 {
-            direct.block_in(&transport.env(64, 48_000.0));
+            direct.block_in(&transport.env(64, SampleRate::new(48_000.0)));
         }
     });
 }
@@ -556,7 +556,7 @@ fn clip_reader_jump_edge_is_allocation_free() {
             // reader keeps taking a scratch copy and starting a fade.
             let beat = if i % 2 == 0 { 5.0 } else { 6.5 };
             transport.set_beat(Beat::new(beat));
-            direct.block_in(&transport.env(64, 48_000.0));
+            direct.block_in(&transport.env(64, SampleRate::new(48_000.0)));
         }
     });
 }
@@ -579,13 +579,13 @@ fn clip_reader_single_frame_steady_state_is_allocation_free() {
     let transport = MockTransport::rolling(Beat::new(5.0), Bpm::of(120.0));
     let mut direct = warm_clip_reader(&transport, 1);
     for _ in 0..256 {
-        direct.block_in(&transport.env(1, 48_000.0));
-        transport.advance(1, 48_000.0);
+        direct.block_in(&transport.env(1, SampleRate::new(48_000.0)));
+        transport.advance(1, SampleRate::new(48_000.0));
     }
     assert_no_alloc::assert_no_alloc(|| {
         for _ in 0..100_000 {
-            direct.block_in(&transport.env(1, 48_000.0));
-            transport.advance(1, 48_000.0);
+            direct.block_in(&transport.env(1, SampleRate::new(48_000.0)));
+            transport.advance(1, SampleRate::new(48_000.0));
         }
     });
 }
@@ -603,7 +603,7 @@ fn clip_reader_single_frame_jump_every_block_is_allocation_free() {
     let mut direct = warm_clip_reader(&transport, 1);
     assert_no_alloc::assert_no_alloc(|| {
         for _ in 0..2_000 {
-            direct.block_in(&transport.env(1, 48_000.0));
+            direct.block_in(&transport.env(1, SampleRate::new(48_000.0)));
         }
     });
 }
@@ -634,8 +634,8 @@ fn clip_reader_ragged_blocks_at_max_block_512_are_allocation_free() {
     let mut direct = Direct::new(reader, SampleRate::new(48_000.0), 512);
     let step = |i: usize, direct: &mut Direct<DiskVoice>| {
         let len = RAGGED[i % RAGGED.len()];
-        direct.block_in(&transport.env(len, 48_000.0));
-        transport.advance(len as i64, 48_000.0);
+        direct.block_in(&transport.env(len, SampleRate::new(48_000.0)));
+        transport.advance(len as i64, SampleRate::new(48_000.0));
         if transport.beat() >= Beat::new(7.5) {
             transport.seek(Beat::new(5.0));
         }
@@ -723,7 +723,7 @@ fn a_steady_lane_read_writes_the_callers_lanes_as_put_does() {
         let mut clock = crate::voice::clock::Clock::new();
         let t = MockTransport::rolling(Beat::new(1.0), Bpm::of(120.0));
         let mut block = |voice: &mut DiskVoice| {
-            let env = t.env(BLOCK, SR);
+            let env = t.env(BLOCK, SampleRate::new(SR));
             let clock = clock.observe(&env);
             let crate::lanes::BlockScratch {
                 out,
@@ -732,7 +732,7 @@ fn a_steady_lane_read_writes_the_callers_lanes_as_put_does() {
                 ..
             } = &mut scratch;
             voice.render_lanes(&clock, 0..BLOCK, out, n, positions, gather);
-            t.advance(BLOCK as i64, SR);
+            t.advance(BLOCK as i64, SampleRate::new(SR));
         };
         block(&mut voice);
         assert_no_alloc::assert_no_alloc(|| {
@@ -843,7 +843,7 @@ fn render_lanes_blocks(voice: &mut DiskVoice, n: usize) -> (Vec<Vec<f32>>, usize
     let mut clock = crate::voice::clock::Clock::new();
     let t = MockTransport::rolling(Beat::new(1.0), Bpm::of(120.0));
     let mut block = |voice: &mut DiskVoice| {
-        let env = t.env(BLOCK, SR);
+        let env = t.env(BLOCK, SampleRate::new(SR));
         let clock = clock.observe(&env);
         let crate::lanes::BlockScratch {
             out,
@@ -852,7 +852,7 @@ fn render_lanes_blocks(voice: &mut DiskVoice, n: usize) -> (Vec<Vec<f32>>, usize
             ..
         } = &mut scratch;
         voice.render_lanes(&clock, 0..BLOCK, out, n, positions, gather);
-        t.advance(BLOCK as i64, SR);
+        t.advance(BLOCK as i64, SampleRate::new(SR));
     };
     block(voice);
     assert_no_alloc::assert_no_alloc(|| {
@@ -922,14 +922,14 @@ fn a_placed_ring_jump_edge_is_allocation_free() {
         let transport = MockTransport::rolling(Beat::new(1.0), Bpm::of(120.0));
         let mut direct = Direct::new(placed_clip(topology), SampleRate::new(SR), 64);
         for _ in 0..16 {
-            direct.block_in(&transport.env(64, SR));
+            direct.block_in(&transport.env(64, SampleRate::new(SR)));
         }
         assert_no_alloc::assert_no_alloc(|| {
             for i in 0..2_000 {
                 // Within the 2 000 frames the ring holds from 22 000.
                 let beat = if i % 2 == 0 { 1.0 } else { 1.04 };
                 transport.set_beat(Beat::new(beat));
-                direct.block_in(&transport.env(64, SR));
+                direct.block_in(&transport.env(64, SampleRate::new(SR)));
             }
         });
     }
@@ -963,8 +963,8 @@ fn a_streamed_clip_wider_than_its_pool_mixes_its_first_channels() {
         let mut direct = Direct::new(pool, SampleRate(SR), BLOCK);
         let t = MockTransport::rolling(Beat::new(1.0), Bpm::of(120.0));
         for b in 0..8u64 {
-            direct.block_in(&t.env(BLOCK, SR));
-            t.advance(BLOCK as i64, SR);
+            direct.block_in(&t.env(BLOCK, SampleRate::new(SR)));
+            t.advance(BLOCK as i64, SampleRate::new(SR));
             for c in 0..pool_width {
                 for (i, &got) in direct.output(c).iter().enumerate() {
                     let k = 22_050 + b * BLOCK as u64 + i as u64;
@@ -1117,7 +1117,7 @@ fn outside_the_window_silences_every_channel() {
             for ch in direct.outputs_mut() {
                 ch.fill(9.0);
             }
-            let mut env = transport.env(8, SR);
+            let mut env = transport.env(8, SampleRate::new(SR));
             env.block_len = Samples(frames);
             if frames == 8 {
                 direct.block_in(&env);
@@ -1329,9 +1329,9 @@ fn scripted_pool(script: &Script, no_skip: bool) -> Vec<[Vec<u32>; 2]> {
         }
         t.set_rolling(rolling);
         for _ in 0..count {
-            direct.block_in(&t.env(BLOCK, SR));
+            direct.block_in(&t.env(BLOCK, SampleRate::new(SR)));
             if rolling {
-                t.advance(BLOCK as i64, SR);
+                t.advance(BLOCK as i64, SampleRate::new(SR));
             }
             blocks.push([0, 1].map(|c| direct.output(c).iter().map(|s| s.to_bits()).collect()));
         }
@@ -1420,7 +1420,7 @@ fn a_block_with_no_position_leaves_the_lanes_alone() {
         for lane in scratch.out.lanes_mut() {
             lane.fill(7.0);
         }
-        let env = t.env(BLOCK, SR);
+        let env = t.env(BLOCK, SampleRate::new(SR));
         let clock = clock.observe(&env);
         let crate::lanes::BlockScratch {
             out,
@@ -1477,7 +1477,7 @@ fn a_skipped_block_forgets_the_fade_and_the_last_position() {
     let mut clock = crate::voice::clock::Clock::new();
     let t = MockTransport::rolling(Beat::new(1.0), Bpm::of(120.0));
     let mut run = |voice: &mut DiskVoice| {
-        let env = t.env(BLOCK, SR);
+        let env = t.env(BLOCK, SampleRate::new(SR));
         let clock = clock.observe(&env);
         let crate::lanes::BlockScratch {
             out,
@@ -1489,7 +1489,7 @@ fn a_skipped_block_forgets_the_fade_and_the_last_position() {
     };
     assert!(run(&mut voice));
     assert!(!voice.inner.read.forgot(), "a position is held");
-    t.advance(BLOCK as i64, SR);
+    t.advance(BLOCK as i64, SampleRate::new(SR));
     t.set_beat(Beat::new(1.03));
     assert!(run(&mut voice));
     assert!(voice.inner.read.fading(), "a jump fades");
@@ -1532,7 +1532,7 @@ fn a_skipped_block_releases_the_ring_to_the_writer() {
     let mut clock = crate::voice::clock::Clock::new();
     let t = MockTransport::rolling(Beat::new(1.0), Bpm::of(120.0));
     let mut run = |voice: &mut DiskVoice| {
-        let env = t.env(BLOCK, SR);
+        let env = t.env(BLOCK, SampleRate::new(SR));
         let clock = clock.observe(&env);
         let crate::lanes::BlockScratch {
             out,
@@ -1582,8 +1582,8 @@ fn streamer_fed(script: &Script, no_skip: bool) -> (Vec<Vec<u32>>, u64, usize) {
             .expect("write wav");
     }
     w.finalize().expect("finalize wav");
-    let mut streamer =
-        DiskStreamer::manual(SR, DiskStreamerConfig::default()).expect("streamer builds");
+    let mut streamer = DiskStreamer::manual(SampleRate::new(SR), DiskStreamerConfig::default())
+        .expect("streamer builds");
     let opening = streamer.open(&path, crate::Placement::HEAD);
     let (_stream, reader) = crate::testing::settle(&mut streamer, opening).expect("the file opens");
     for _ in 0..4096 {
@@ -1603,7 +1603,7 @@ fn streamer_fed(script: &Script, no_skip: bool) -> (Vec<Vec<u32>>, u64, usize) {
         }
         t.set_rolling(rolling);
         for _ in 0..count {
-            let env = t.env(BLOCK, SR);
+            let env = t.env(BLOCK, SampleRate::new(SR));
             let clock = clock.observe(&env);
             let crate::lanes::BlockScratch {
                 out,
@@ -1622,7 +1622,7 @@ fn streamer_fed(script: &Script, no_skip: bool) -> (Vec<Vec<u32>>, u64, usize) {
                 vec![0; BLOCK]
             });
             if rolling {
-                t.advance(BLOCK as i64, SR);
+                t.advance(BLOCK as i64, SampleRate::new(SR));
             }
             streamer.step_once();
         }

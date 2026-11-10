@@ -456,7 +456,10 @@ mod owed_tests {
         let packets = |len: usize| {
             let payload: Vec<u8> = (0..len).map(|i| (i % 0x7F) as u8).collect();
             let mut out = Vec::new();
-            tutti_midi_types::sysex7_fragments(MidiGroup::FIRST, &payload, &mut out);
+            out.extend(
+                tutti_ump::Sysex7Packets::checked(MidiGroup::FIRST, &payload)
+                    .expect("a 7-bit payload"),
+            );
             let at = Offset::new(0, tutti_types::Samples(BLOCK)).expect("inside the block");
             out.iter().map(|e| Event::midi(at, e.0)).collect::<Vec<_>>()
         };

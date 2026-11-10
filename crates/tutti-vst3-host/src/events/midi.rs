@@ -1,13 +1,13 @@
 //! A UMP event to VST3 event and back.
 
 use tutti_graph::UmpAt;
-use tutti_midi_protocol::{midi1, narrow, widen, widen_message};
-use tutti_midi_types::convert::{
+use tutti_midi_protocol::{
     bend_u32_to_signed_f32, u16_to_unit_f32, u32_to_unit_f32, unit_f32_to_u16, unit_f32_to_u32,
 };
-use tutti_midi_types::{PerNoteBendRanges, sysex7_single};
+use tutti_midi_protocol::{midi1, narrow, widen, widen_message};
+use tutti_midi_types::PerNoteBendRanges;
 use tutti_plugin_types::{
-    NoteExpressionType, NoteExpressionValue, WireMidi, note_id_for, unframed,
+    NoteExpressionType, NoteExpressionValue, WireMidi, note_id_for, sysex_packets,
 };
 use tutti_ump::{
     Address, Attribute, Message, Midi1Bytes, Midi1Parser, MidiChannel, MidiGroup, NoteNumber,
@@ -349,10 +349,14 @@ pub(super) fn decode(event: &Event) -> Option<WireMidi> {
             }
             // The 0xF0 framing is the reliable SysEx signal: the kMidiSysEx subtype is 0,
             // as is the raw channel-voice fallback's. Strip the delimiters and rebuild a
-            // single packet; a message too long for one packet is dropped, not truncated.
+            // single packet; a message too long for one packet is dropped, not truncated,
+            // and so is one with a payload byte of 128 or more (malformed).
             if bytes[0] == 0xF0 {
-                return sysex7_single(MidiGroup::FIRST, unframed(bytes))
-                    .map(|ump| WireMidi { offset: frame, ump });
+                let mut packets = sysex_packets(bytes)?;
+                if packets.len() != 1 {
+                    return None;
+                }
+                return packets.next().map(|ump| WireMidi { offset: frame, ump });
             }
             // Widened to Channel Voice 2 here. System messages pass through unchanged.
             let message = Midi1Parser::message(MidiGroup::FIRST, bytes)?;

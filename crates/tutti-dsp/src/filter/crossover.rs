@@ -210,7 +210,7 @@ impl State {
 /// use tutti_dsp::Crossover;
 /// use tutti_types::Hz;
 ///
-/// let mut xo = Crossover::new(&[Hz(200.0), Hz(2_000.0)], 48_000.0).unwrap();
+/// let mut xo = Crossover::new(&[Hz(200.0), Hz(2_000.0)], tutti_types::SampleRate::new(48_000.0)).unwrap();
 /// assert_eq!(xo.bands(), 3);
 /// // The sum of the bands is an all-pass of the input: a constant 1.0
 /// // settles to a sum of 1.0 (unity gain at DC).
@@ -547,7 +547,7 @@ mod tests {
     /// `hz`, in steady state.
     fn bands_at(freqs: &[f32], hz: f64) -> (Vec<(f64, f64)>, f64) {
         let freqs: Vec<Hz> = freqs.iter().map(|&f| Hz(f)).collect();
-        let mut xo = Crossover::new(&freqs, RATE).unwrap();
+        let mut xo = Crossover::new(&freqs, SampleRate::new(RATE)).unwrap();
         let x = sine(hz, RATE, SETTLE + WINDOW);
         let nb = xo.bands();
         let mut bands = vec![Vec::with_capacity(WINDOW); nb];
@@ -679,7 +679,7 @@ mod tests {
         let hz = 1_000.0;
         let x = sine(hz, RATE, 24_000);
         let run = |block: usize| {
-            let mut xo = Crossover::new(&[Hz(800.0)], RATE).unwrap();
+            let mut xo = Crossover::new(&[Hz(800.0)], SampleRate::new(RATE)).unwrap();
             let mut low = Vec::new();
             let mut high = Vec::new();
             for (k, chunk) in x.chunks(block).enumerate() {
@@ -708,7 +708,7 @@ mod tests {
 
     fn xo(freqs: &[f32]) -> Result<Crossover, CrossoverError> {
         let f: Vec<Hz> = freqs.iter().map(|&f| Hz(f)).collect();
-        Crossover::new(&f, RATE)
+        Crossover::new(&f, SampleRate::new(RATE))
     }
 
     /// The band count is 2 to 6.
@@ -771,7 +771,7 @@ mod tests {
         assert!(xo(&[23_999.0]).is_ok());
         for rate in [0.0, -1.0, f64::NAN, f64::INFINITY] {
             assert_eq!(
-                Crossover::new(&[Hz(100.0)], rate).unwrap_err(),
+                Crossover::new(&[Hz(100.0)], SampleRate::new(rate)).unwrap_err(),
                 CrossoverError::SampleRate
             );
         }
@@ -832,9 +832,9 @@ mod tests {
     #[test]
     fn a_rate_change_keeps_the_filter_finite() {
         let mut c = xo(&[100.0, 20_000.0]).unwrap();
-        c.set_sample_rate(f64::NAN);
+        c.set_sample_rate(SampleRate::new(f64::NAN));
         assert_eq!(c.sample_rate(), SampleRate(RATE));
-        c.set_sample_rate(8_000.0);
+        c.set_sample_rate(SampleRate::new(8_000.0));
         let mut peak = 0.0f32;
         for x in sine(300.0, 8_000.0, 4_000) {
             for b in c.split(x) {

@@ -26,7 +26,7 @@ fn one_import_renders_a_block() {
         ))
         .expect("builds");
 
-    let transport = tutti::transport::Transport::new(48_000.0);
+    let transport = tutti::transport::Transport::new(SampleRate::new(48_000.0));
     let engine =
         tutti::engine::Engine::new(&transport, &mut editor, executor).expect("within the limits");
 
@@ -101,7 +101,7 @@ fn a_graph_bounces_to_buffers_through_the_facade() {
 /// from `tutti::prelude` stops this file compiling.
 #[test]
 fn a_timed_transport_program_needs_only_the_prelude() {
-    let transport = Transport::new(48_000.0);
+    let transport = Transport::new(SampleRate::new(48_000.0));
     transport
         .motion
         .schedule(At::Frame(Frame(128)), MotionEvent::Play)

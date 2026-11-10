@@ -32,7 +32,6 @@ mod support;
 use support::Hand;
 use tutti_fixtures::midi;
 use tutti_graph::Offset;
-use tutti_midi_types::convert::midi1_velocity_to_midi2;
 use tutti_sf2::SoundFont;
 use tutti_soundfont::{Settings, SoundFontUnit};
 use tutti_types::{SampleRate, Samples};
@@ -68,7 +67,7 @@ fn at(offset: u32) -> Offset {
 }
 
 fn note_on(key: u8, offset: u32) -> UmpAt {
-    let velocity = midi1_velocity_to_midi2(100); // 7-bit 100, widened (M2-115)
+    let velocity = tutti_fixtures::midi::wide_velocity(100); // 7-bit 100, widened (M2-115)
     (
         at(offset),
         midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, key, velocity),
@@ -401,7 +400,7 @@ fn cc(channel: u8, controller: u8, value: u8) -> Ump {
 }
 
 fn drum(key: u8, offset: u32) -> UmpAt {
-    let velocity = midi1_velocity_to_midi2(100); // 7-bit 100, widened (M2-115)
+    let velocity = tutti_fixtures::midi::wide_velocity(100); // 7-bit 100, widened (M2-115)
     (
         at(offset),
         midi::note_on(MidiGroup::FIRST, MidiChannel::of(9), key, velocity),

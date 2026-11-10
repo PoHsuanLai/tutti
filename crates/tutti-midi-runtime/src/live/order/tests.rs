@@ -2,7 +2,6 @@ use super::*;
 use tutti_fixtures::midi::note_on;
 use tutti_graph::UmpAt;
 use tutti_midi_types::MidiMessage;
-use tutti_midi_types::convert::midi1_velocity_to_midi2;
 use tutti_ump::{MidiChannel, MidiGroup};
 
 /// An event at `offset`, which may lie past the 64-frame block the placement
@@ -15,7 +14,7 @@ fn at(note: u8, offset: u32) -> UmpAt {
             MidiGroup::FIRST,
             MidiChannel::FIRST,
             note,
-            midi1_velocity_to_midi2(100),
+            tutti_fixtures::midi::wide_velocity(100),
         ),
     )
 }

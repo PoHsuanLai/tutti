@@ -1,9 +1,11 @@
 //! Sample-rate conversion: a fixed-input FFT block resampler.
 
 mod fft;
+mod sinc;
 mod streaming;
 
 pub use fft::FftResampler;
+pub use sinc::WindowedSinc;
 pub use streaming::{ChunkSize, StreamingResampler};
 
 /// Why an [`FftResampler`] could not be built or fed.

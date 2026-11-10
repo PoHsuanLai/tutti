@@ -28,7 +28,7 @@ use tutti_nodes::{
     BrickwallLimiterNode, ChannelSumNode, CompressorNode, DelayLineNode, DistortionNode,
     DownmixNode, FdnControls, GateNode, LimiterNode, ReverbNode, ShapeKind,
 };
-use tutti_types::{ChannelLayout, SampleRate};
+use tutti_types::{ChannelLayout, CompressionRatio, Db, Drive, Feedback, SampleRate, Seconds};
 
 const BLOCKS: [usize; 2] = [64, 1024];
 const SR: SampleRate = SampleRate(48_000.0);
@@ -111,14 +111,14 @@ fn distortion(c: &mut Criterion) {
         c,
         "distortion",
         "tanh_2",
-        || DistortionNode::new(ShapeKind::Tanh, 2.0),
+        || DistortionNode::new(ShapeKind::Tanh, Drive::new(2.0)),
         None,
     );
     run(
         c,
         "distortion",
         "softsign_2",
-        || DistortionNode::new(ShapeKind::Softsign, 2.0),
+        || DistortionNode::new(ShapeKind::Softsign, Drive::new(2.0)),
         None,
     );
     for (case, kind) in [
@@ -130,7 +130,7 @@ fn distortion(c: &mut Criterion) {
             c,
             "distortion",
             case,
-            || DistortionNode::new(kind, 2.0),
+            || DistortionNode::new(kind, Drive::new(2.0)),
             None,
         );
     }
@@ -138,14 +138,14 @@ fn distortion(c: &mut Criterion) {
         c,
         "distortion",
         "hardclip_6",
-        || DistortionNode::with_channels(6u16, ShapeKind::HardClip, 2.0),
+        || DistortionNode::with_channels(6u16, ShapeKind::HardClip, Drive::new(2.0)),
         None,
     );
     run(
         c,
         "distortion",
         "softsign_2_fed",
-        || DistortionNode::new(ShapeKind::Softsign, 2.0),
+        || DistortionNode::new(ShapeKind::Softsign, Drive::new(2.0)),
         Some(drive_sweep),
     );
 }
@@ -160,21 +160,21 @@ fn brickwall(c: &mut Criterion) {
         c,
         "brickwall",
         "2",
-        || BrickwallLimiterNode::new(-3.0),
+        || BrickwallLimiterNode::new(Db::new(-3.0)),
         None,
     );
     run(
         c,
         "brickwall",
         "6",
-        || BrickwallLimiterNode::with_channels(ChannelLayout::from(6u16), -3.0),
+        || BrickwallLimiterNode::with_channels(ChannelLayout::from(6u16), Db::new(-3.0)),
         None,
     );
     run(
         c,
         "brickwall",
         "6_fed",
-        || BrickwallLimiterNode::with_channels(ChannelLayout::from(6u16), -3.0),
+        || BrickwallLimiterNode::with_channels(ChannelLayout::from(6u16), Db::new(-3.0)),
         Some(ceiling_sweep),
     );
 }
@@ -195,12 +195,25 @@ fn downmix(c: &mut Criterion) {
 }
 
 fn delay(c: &mut Criterion) {
-    run(c, "delay", "1", || DelayLineNode::new(1.0, 0.25, 0.4), None);
+    run(
+        c,
+        "delay",
+        "1",
+        || DelayLineNode::new(Seconds::new(1.0), Seconds::new(0.25), Feedback::new(0.4)),
+        None,
+    );
     run(
         c,
         "delay",
         "6",
-        || DelayLineNode::with_channels(ChannelLayout::from(6u16), 1.0, 0.25, 0.4),
+        || {
+            DelayLineNode::with_channels(
+                ChannelLayout::from(6u16),
+                Seconds::new(1.0),
+                Seconds::new(0.25),
+                Feedback::new(0.4),
+            )
+        },
         None,
     );
     run(
@@ -208,8 +221,13 @@ fn delay(c: &mut Criterion) {
         "delay",
         "2_cross",
         || {
-            let n = DelayLineNode::stereo(1.0, 0.25, 0.3, 0.4);
-            n.set_cross_feedback(0.3);
+            let n = DelayLineNode::stereo(
+                Seconds::new(1.0),
+                Seconds::new(0.25),
+                Seconds::new(0.3),
+                Feedback::new(0.4),
+            );
+            n.set_cross_feedback(Feedback::new(0.3));
             n
         },
         None,
@@ -217,22 +235,34 @@ fn delay(c: &mut Criterion) {
 }
 
 fn limiter(c: &mut Criterion) {
-    run(c, "limiter", "2", || LimiterNode::new(-6.0, -0.3), None);
+    run(
+        c,
+        "limiter",
+        "2",
+        || LimiterNode::new(Db::new(-6.0), Db::new(-0.3)),
+        None,
+    );
     run(
         c,
         "limiter",
         "6",
-        || LimiterNode::with_channels(ChannelLayout::from(6u16), -6.0, -0.3),
+        || LimiterNode::with_channels(ChannelLayout::from(6u16), Db::new(-6.0), Db::new(-0.3)),
         None,
     );
     // Over the threshold on every frame, and not at all: the two branches of
     // the gain curve.
-    run(c, "limiter", "2_quiet", || LimiterNode::new(6.0, 6.0), None);
+    run(
+        c,
+        "limiter",
+        "2_quiet",
+        || LimiterNode::new(Db::new(6.0), Db::new(6.0)),
+        None,
+    );
     run(
         c,
         "limiter",
         "2_fed",
-        || LimiterNode::new(-6.0, -0.3),
+        || LimiterNode::new(Db::new(-6.0), Db::new(-0.3)),
         Some(ceiling_sweep),
     );
 }
@@ -247,42 +277,86 @@ fn dynamics(c: &mut Criterion) {
         c,
         "gate",
         "2",
-        || GateNode::stereo(-12.0, 0.001, 0.01, 0.1),
+        || {
+            GateNode::stereo(
+                Db::new(-12.0),
+                Seconds::new(0.001),
+                Seconds::new(0.01),
+                Seconds::new(0.1),
+            )
+        },
         None,
     );
     run(
         c,
         "gate",
         "6",
-        || GateNode::with_channels(-12.0, 0.001, 0.01, 0.1, 6),
+        || {
+            GateNode::with_channels(
+                Db::new(-12.0),
+                Seconds::new(0.001),
+                Seconds::new(0.01),
+                Seconds::new(0.1),
+                6,
+            )
+        },
         None,
     );
     run(
         c,
         "gate",
         "2_fed",
-        || GateNode::stereo(-12.0, 0.001, 0.01, 0.1),
+        || {
+            GateNode::stereo(
+                Db::new(-12.0),
+                Seconds::new(0.001),
+                Seconds::new(0.01),
+                Seconds::new(0.1),
+            )
+        },
         Some(threshold_sweep),
     );
     run(
         c,
         "compressor",
         "2",
-        || CompressorNode::stereo(-20.0, 4.0, 0.001, 0.1),
+        || {
+            CompressorNode::stereo(
+                Db::new(-20.0),
+                CompressionRatio::new(4.0),
+                Seconds::new(0.001),
+                Seconds::new(0.1),
+            )
+        },
         None,
     );
     run(
         c,
         "compressor",
         "6",
-        || CompressorNode::with_channels(-20.0, 4.0, 0.001, 0.1, 6),
+        || {
+            CompressorNode::with_channels(
+                Db::new(-20.0),
+                CompressionRatio::new(4.0),
+                Seconds::new(0.001),
+                Seconds::new(0.1),
+                6,
+            )
+        },
         None,
     );
     run(
         c,
         "compressor",
         "2_fed",
-        || CompressorNode::stereo(-20.0, 4.0, 0.001, 0.1),
+        || {
+            CompressorNode::stereo(
+                Db::new(-20.0),
+                CompressionRatio::new(4.0),
+                Seconds::new(0.001),
+                Seconds::new(0.1),
+            )
+        },
         Some(threshold_sweep),
     );
 }
@@ -302,7 +376,7 @@ fn reverb(c: &mut Criterion) {
 #[cfg(feature = "convolution")]
 fn convolver(c: &mut Criterion) {
     use tutti_nodes::{ConvolverNode, generate_test_ir};
-    let ir = generate_test_ir(256, 0.05, SR);
+    let ir = generate_test_ir(256, Seconds::new(0.05), SR);
     run(c, "convolver", "1", || ConvolverNode::new(&ir, 64), None);
 }
 

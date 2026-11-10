@@ -75,14 +75,13 @@ fn test_note_off_roundtrip() {
 /// ControlChange falls through to CLAP's generic `Midi` (3-byte wire) event.
 #[test]
 fn test_control_change_roundtrip() {
-    use tutti_midi_types::convert::midi1_cc_to_midi2;
     let event = (
         at(5),
         fx::cc(
             MidiGroup::FIRST,
             MidiChannel::of(2),
             CCNumber::BRIGHTNESS,
-            midi1_cc_to_midi2(100),
+            tutti_fixtures::midi::wide_value(100),
         ),
     );
     let clap =
@@ -102,14 +101,13 @@ fn test_control_change_roundtrip() {
 /// bend value is split across bytes 1 (LSB) and 2 (MSB).
 #[test]
 fn test_pitch_bend_roundtrip() {
-    use tutti_midi_types::convert::midi1_pitch_bend_to_midi2;
     // MIDI-1 center = 8192 (0x2000).
     let event = (
         at(0),
         fx::pitch_bend(
             MidiGroup::FIRST,
             MidiChannel::FIRST,
-            midi1_pitch_bend_to_midi2(8192),
+            tutti_fixtures::midi::wide_bend(8192),
         ),
     );
     let clap = ClapEvent::from_midi(&event, &PerNoteBendRanges::default())

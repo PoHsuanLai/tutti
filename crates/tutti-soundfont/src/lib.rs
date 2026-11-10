@@ -39,17 +39,13 @@ mod node;
 
 use std::sync::Arc;
 use tutti_graph::{EventKind, SubBlocks};
-use tutti_midi_protocol::{channel_voice, widen};
+use tutti_midi_protocol::channel_voice;
 use tutti_sf2::SoundFont;
 use tutti_types::{SampleRate, Tail};
-use tutti_ump::{MidiChannel, NoteNumber, U7, Ump, Voice1};
+use tutti_ump::{Attribute, MidiChannel, NoteNumber, U7, Ump, Voice2};
 
 use crate::player::{Heard, Plane, Planes, Player};
 use crate::render::Render;
-
-/// The release velocity of a Note Off that carries none: a SoundFont does not
-/// read it.
-const NO_RELEASE_VELOCITY: U7 = U7::of(0);
 
 /// The frames a voice renders in at a time, and so the resolution of the unit's
 /// MIDI timing.
@@ -254,23 +250,27 @@ impl SoundFontUnit {
     /// takes `&mut self`, so it cannot reach a unit that is already in a graph.
     /// It is useful for driving a unit by hand, before insertion or in tests.
     ///
-    /// These are MIDI 1.0 values. A `velocity` of 0 reads as a note-off.
-    pub fn note_on(&mut self, channel: MidiChannel, key: NoteNumber, velocity: U7) {
-        let on = Voice1::NoteOn {
+    /// A MIDI 2.0 Note On at `velocity` (16 bits): a velocity of 0 is a Note
+    /// On (M2-104 §7.4.2), struck at the least MIDI 1.0 velocity.
+    pub fn note_on(&mut self, channel: MidiChannel, key: NoteNumber, velocity: u16) {
+        let on = Voice2::NoteOn {
             note: key,
             velocity,
+            attribute: Attribute::None,
         };
-        self.player.apply(channel, widen(on));
+        self.player.apply(channel, on);
     }
 
-    /// Releases a note directly, bypassing MIDI. Prefer the node's MIDI event
-    /// input; see [`note_on`](Self::note_on).
+    /// Releases a note directly, bypassing MIDI: a MIDI 2.0 Note Off with no
+    /// release velocity. Prefer the node's MIDI event input; see
+    /// [`note_on`](Self::note_on).
     pub fn note_off(&mut self, channel: MidiChannel, key: NoteNumber) {
-        let off = Voice1::NoteOff {
+        let off = Voice2::NoteOff {
             note: key,
-            velocity: NO_RELEASE_VELOCITY,
+            velocity: 0,
+            attribute: Attribute::None,
         };
-        self.player.apply(channel, widen(off));
+        self.player.apply(channel, off);
     }
 
     /// Selects the preset a channel plays, bypassing MIDI.

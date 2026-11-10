@@ -10,6 +10,10 @@
 //! reachable through [`Param`](super::Param). The practical difference shows up
 //! in the derives: `Eq + Ord + Hash`, which counts need for map keys and
 //! `max()`, and which the float units cannot have.
+//!
+//! Like every `unit!` type it has no `From<usize>` and no `From<Samples> for
+//! usize`: a bare count becomes frames with `new` (or the tuple field) and
+//! leaves with `get`, named at the call site.
 
 // Serde `transparent`, which `unit!` gives every quantity: a `Samples` is `512`
 // on the wire, not `[512]`. Load-bearing for the latency path: the
@@ -31,7 +35,7 @@ unit! {
     /// Integer by construction. Distinct from `SamplePosition`, which is an `f64`
     /// *position* within a wave that may be fractional so interpolating readers can
     /// address between two integer sample indices.
-    pub struct Samples(pub usize): From, Display;
+    pub struct Samples(pub usize): Display;
 }
 
 impl Samples {
@@ -404,7 +408,7 @@ mod tests {
             [Samples(3), Samples(9), Samples(1)].iter().max(),
             Some(&Samples(9))
         );
-        assert_eq!(usize::from(Samples::new(2)), 2);
-        assert_eq!(Samples::from(1).get(), 1);
+        assert_eq!(Samples::new(2).get(), 2);
+        assert_eq!(Samples::new(1), Samples(1));
     }
 }

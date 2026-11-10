@@ -14,7 +14,6 @@ use tutti_graph::{
     Transport,
 };
 use tutti_midi_runtime::{MidiClipNode, TimedMidiEvent};
-use tutti_midi_types::convert::midi1_velocity_to_midi2;
 use tutti_sf2::SoundFont;
 use tutti_soundfont::{Settings, SoundFontUnit};
 use tutti_types::{Beat, Bpm, SampleRate, Samples};
@@ -38,7 +37,7 @@ fn unit(rate: i32) -> SoundFontUnit {
 fn graph(unit: SoundFontUnit, rate: f64, frame: u64) -> (Editor, Executor) {
     let (mut ed, exec) = Editor::new(Prepare::new(SampleRate(rate), Samples(BLOCK)));
     let beat = Beat(frame as f64 / (rate / 2.0));
-    let velocity = midi1_velocity_to_midi2(100); // 7-bit 100, widened (M2-115)
+    let velocity = tutti_fixtures::midi::wide_velocity(100); // 7-bit 100, widened (M2-115)
     let on = midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, velocity);
     ed.insert(
         NodeKey(1),

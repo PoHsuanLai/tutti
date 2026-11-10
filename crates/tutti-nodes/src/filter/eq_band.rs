@@ -222,7 +222,12 @@ mod tests {
     /// "a live write reached the fork" → fails.
     #[test]
     fn a_fork_severs_the_inner_filters_cells() {
-        assert_param_fork(EqBandNode::<f64>::new(SvfType::Bell, 1000.0, 1.0, 6.0));
+        assert_param_fork(EqBandNode::<f64>::new(
+            SvfType::Bell,
+            Hz::new(1000.0),
+            Q::new(1.0),
+            Db::new(6.0),
+        ));
     }
 
     /// The band declares the inner filter's tail, not the shape default.
@@ -231,7 +236,8 @@ mod tests {
     /// fails.
     #[test]
     fn the_band_rings_on_as_its_filter_does() {
-        let band = EqBandNode::<f64>::new(SvfType::Bell, 1000.0, 8.0, 12.0);
+        let band =
+            EqBandNode::<f64>::new(SvfType::Bell, Hz::new(1000.0), Q::new(8.0), Db::new(12.0));
         assert_eq!(band.shape().tail, tutti_types::Tail::Unknown);
     }
 
@@ -239,7 +245,7 @@ mod tests {
     fn test_eq_band_f32_variant_compiles_and_runs() {
         let input = generate_sine(1000.0, 44100.0, 1024);
         let out = render(
-            EqBandNode::<f32>::new(SvfType::Bell, 1000.0, 1.0, 6.0),
+            EqBandNode::<f32>::new(SvfType::Bell, Hz::new(1000.0), Q::new(1.0), Db::new(6.0)),
             &input,
         );
         assert!(
@@ -250,7 +256,8 @@ mod tests {
 
     #[test]
     fn test_eq_band_bypass() {
-        let mut eq = EqBandNode::<f64>::new(SvfType::Bell, 1000.0, 1.0, 6.0);
+        let mut eq =
+            EqBandNode::<f64>::new(SvfType::Bell, Hz::new(1000.0), Q::new(1.0), Db::new(6.0));
         eq.set_enabled(false);
         let sine = generate_sine(1000.0, 44100.0, 1024);
         let out = render(eq, &sine);
@@ -266,7 +273,7 @@ mod tests {
     fn test_eq_band_bell_boost() {
         let sine = generate_sine(1000.0, 44100.0, 4096);
         let out = render(
-            EqBandNode::<f64>::new(SvfType::Bell, 1000.0, 1.0, 12.0),
+            EqBandNode::<f64>::new(SvfType::Bell, Hz::new(1000.0), Q::new(1.0), Db::new(12.0)),
             &sine,
         );
         let rms_in = rms(&sine[512..]);
@@ -281,10 +288,20 @@ mod tests {
     fn test_eq_band_filter_type_change() {
         let high = generate_sine(5000.0, 44100.0, 2048);
         let out_lp = render(
-            EqBandNode::<f64>::new(SvfType::LowPass, 500.0, 0.707, 0.0),
+            EqBandNode::<f64>::new(
+                SvfType::LowPass,
+                Hz::new(500.0),
+                Q::new(0.707),
+                Db::new(0.0),
+            ),
             &high,
         );
-        let mut eq = EqBandNode::<f64>::new(SvfType::LowPass, 500.0, 0.707, 0.0);
+        let mut eq = EqBandNode::<f64>::new(
+            SvfType::LowPass,
+            Hz::new(500.0),
+            Q::new(0.707),
+            Db::new(0.0),
+        );
         eq.set_filter_type(SvfType::HighPass);
         let out_hp = render(eq, &high);
         let rms_lp = rms(&out_lp[512..]);

@@ -643,6 +643,7 @@ mod tests {
     use super::super::io::wave_io::read_wave;
     use super::*;
     use tutti_codec::Wave;
+    use tutti_types::Seconds;
 
     /// A looped position the audio thread cannot place (`floor() as usize`
     /// saturates for infinity and anything from 2^64 up) makes taps near
@@ -673,7 +674,7 @@ mod tests {
     }
 
     fn make_test_wave(samples: &[(f32, f32)]) -> Wave {
-        let mut wave = Wave::new(2, 48000.0);
+        let mut wave = Wave::new(2, SampleRate::new(48000.0));
         for (l, r) in samples {
             wave.push_frame(&[*l, *r]);
         }
@@ -681,7 +682,7 @@ mod tests {
     }
 
     fn make_mono_wave(samples: &[f32]) -> Wave {
-        let mut wave = Wave::new(1, 48000.0);
+        let mut wave = Wave::new(1, SampleRate::new(48000.0));
         for s in samples {
             wave.push_frame(&[*s]);
         }
@@ -825,7 +826,11 @@ mod tests {
     #[test]
     fn a_six_channel_loop_wraps_at_its_frame_length() {
         const CH: usize = 6;
-        let mut wave = Wave::zero(CH, 48_000.0, 100.0 / 48_000.0);
+        let mut wave = Wave::zero(
+            CH,
+            SampleRate::new(48_000.0),
+            Seconds::new(100.0) / 48_000.0,
+        );
         for i in 0..100 {
             for c in 0..CH {
                 wave.set(c, i, (i * CH + c) as f32 / 1000.0);
@@ -895,7 +900,7 @@ mod tests {
     fn a_positions_taps_read_what_the_memory_tier_reads() {
         use crate::voice::interp::{Place, interpolate_taps, read_frame, read_looped_frame};
         let len = 3_000usize;
-        let mut w = Wave::new(1, 48_000.0);
+        let mut w = Wave::new(1, SampleRate::new(48_000.0));
         for i in 0..len {
             w.push_frame(&[((i as f64 * 0.013).sin() + i as f64 * 1e-4) as f32]);
         }
@@ -1096,7 +1101,7 @@ mod tests {
         // Small file: 1 second at 48kHz = 48000 samples
         // file_size_bytes = 48000 * 2 * 4 = 384000 bytes = 0.37 MB
         // buffer_seconds = min(1.0, 30.0) = 1.0
-        let size = buffer_size_for_file(48000, 48000.0);
+        let size = buffer_size_for_file(48000, SampleRate::new(48000.0));
         assert_eq!(size, 48000); // 1 second buffer
     }
 
@@ -1106,7 +1111,7 @@ mod tests {
         // file_size_bytes = file_length * 2 * 4 = file_length * 8
         // For 100MB: file_length = 100 * 1024 * 1024 / 8 = 13,107,200 samples
         let file_length = 100 * 1024 * 1024 / 8;
-        let size = buffer_size_for_file(file_length, 48000.0);
+        let size = buffer_size_for_file(file_length, SampleRate::new(48000.0));
 
         // 100MB is in 50-200MB range, so buffer_seconds = 10.0
         let expected = (10.0 * 48000.0) as usize;
@@ -1117,7 +1122,7 @@ mod tests {
     fn test_buffer_size_large_file() {
         // Large file: 300MB
         let file_length = 300 * 1024 * 1024 / 8;
-        let size = buffer_size_for_file(file_length, 48000.0);
+        let size = buffer_size_for_file(file_length, SampleRate::new(48000.0));
 
         // 300MB is in 200-500MB range, so buffer_seconds = 5.0
         let expected = (5.0 * 48000.0) as usize;
@@ -1128,7 +1133,7 @@ mod tests {
     fn test_buffer_size_very_large_file() {
         // Very large file: 1GB
         let file_length = 1024 * 1024 * 1024 / 8;
-        let size = buffer_size_for_file(file_length, 48000.0);
+        let size = buffer_size_for_file(file_length, SampleRate::new(48000.0));
 
         // 1GB > 500MB, so buffer_seconds = 3.0
         let expected = (3.0 * 48000.0) as usize;
@@ -1138,7 +1143,7 @@ mod tests {
     #[test]
     fn test_buffer_size_minimum() {
         // Tiny file should still have minimum buffer
-        let size = buffer_size_for_file(100, 48000.0);
+        let size = buffer_size_for_file(100, SampleRate::new(48000.0));
         assert!(size >= 4096, "Buffer should be at least 4096 samples");
     }
 
@@ -1149,7 +1154,7 @@ mod tests {
         // file_size = 2,880,000 * 8 = 23MB (< 50MB, so uses file duration)
         // But capped at 30 seconds
         let file_length = 60 * 48000; // 60 seconds
-        let size = buffer_size_for_file(file_length, 48000.0);
+        let size = buffer_size_for_file(file_length, SampleRate::new(48000.0));
 
         let expected = (30.0 * 48000.0) as usize; // Capped at 30s
         assert_eq!(size, expected);

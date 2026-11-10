@@ -26,12 +26,12 @@
 //! `2e-5`. The memory tier passes with or without it.
 
 use std::path::Path;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use tutti_nodes::LimiterNode;
 use tutti_nodes::testing::Const;
 use tutti_sampler::testing::settle_threaded;
-use tutti_sampler::{DiskVoice, MemorySource, Placement};
+use tutti_sampler::{DiskVoice, MemorySource, Placement, StreamPhase};
 use tutti_session::{GraphSource, Session};
 use tutti_transport::MotionEvent;
 use tutti_types::{Beat, ChannelLayout, Db, InterleavedMut, SampleRate, Samples};
@@ -96,7 +96,7 @@ fn render(tier: Tier) -> (Vec<f32>, Vec<f32>, Samples) {
     // The voice, on outputs 0 and 1.
     // The stream's handle is held for the whole render: dropping it would end
     // the stream.
-    let (voice, _stream) = match tier {
+    let (voice, stream) = match tier {
         Tier::Disk => {
             let streamer = s.disk_streamer().expect("an offline session streams");
             // The streamer opens the stream on its own thread.
@@ -106,7 +106,7 @@ fn render(tier: Tier) -> (Vec<f32>, Vec<f32>, Samples) {
             (s.graph().insert(voice).0, Some(stream))
         }
         Tier::Memory => {
-            let mut wave = tutti_codec::Wave::new(2, RATE);
+            let mut wave = tutti_codec::Wave::new(2, tutti_nodes::SampleRate::new(RATE));
             for i in 0..LEN {
                 wave.push_frame(&[value(i), -value(i)]);
             }
@@ -136,11 +136,25 @@ fn render(tier: Tier) -> (Vec<f32>, Vec<f32>, Samples) {
     );
 
     // The streamer fills the ring on its own thread, and an offline render
-    // does not wait for it, so give it time to hold the whole 0.1 s file. A
-    // ring that is not yet filled reads silence, which fails the assertions
-    // below: a slow machine can fail this test, never pass it wrongly.
-    // Stage 5 cut 5's stream status replaces this sleep with a readiness wait.
-    std::thread::sleep(Duration::from_secs(2));
+    // does not wait for it. A ring that is not yet primed reads silence, which
+    // fails the assertions below, so wait for the stream to say it is: its
+    // status leaves `Opening` once the ring holds what the streamer reads
+    // ahead (the first 4 200 of the file's 4 800 frames, which covers the
+    // frames read back).
+    if let Some(stream) = &stream {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let phase = loop {
+            let phase = stream.status().phase;
+            if phase != StreamPhase::Opening || Instant::now() > deadline {
+                break phase;
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        };
+        assert!(
+            matches!(phase, StreamPhase::Live | StreamPhase::Ended),
+            "the stream is not primed: {phase:?}"
+        );
+    }
 
     s.transport()
         .motion

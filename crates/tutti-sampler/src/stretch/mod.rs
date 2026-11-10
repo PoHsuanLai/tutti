@@ -17,7 +17,7 @@
 //!
 //! // A pure filter: it owns no source, so the caller ticks its own and feeds
 //! // each frame in.
-//! let mut stretched = stretch::Unit::new(44_100.0);
+//! let mut stretched = stretch::Unit::new(tutti_types::SampleRate::new(44_100.0));
 //!
 //! // The factor is clamped to `MIN..=MAX` at construction — an out-of-range
 //! // request saturates rather than being rejected.

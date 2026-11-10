@@ -15,7 +15,10 @@
 use tutti_graph::Node;
 use tutti_graph::contract::{drive, prepared};
 use tutti_nodes::{CompressorNode, GateNode};
+use tutti_types::CompressionRatio;
+use tutti_types::Db;
 use tutti_types::SampleRate;
+use tutti_types::Seconds;
 
 const RATE: SampleRate = SampleRate(48_000.0);
 
@@ -116,14 +119,27 @@ fn assert_pinned(name: &str, got: &[f32], want: &[f32]) {
 // `_port`: whether the case feeds the threshold — a node's feed is always
 // there, so building it does not depend on it.
 fn compressor(ch: usize, _port: bool) -> CompressorNode {
-    let n = CompressorNode::with_channels(-24.0, 4.0, 0.002, 0.05, ch as u8)
-        .with_soft_knee(6.0)
-        .with_makeup(3.0);
+    let n = CompressorNode::with_channels(
+        Db::new(-24.0),
+        CompressionRatio::new(4.0),
+        Seconds::new(0.002),
+        Seconds::new(0.05),
+        ch as u8,
+    )
+    .with_soft_knee(Db::new(6.0))
+    .with_makeup(Db::new(3.0));
     prepared(n, RATE, BLOCK)
 }
 
 fn gate(ch: usize, _port: bool) -> GateNode {
-    let n = GateNode::with_channels(-22.0, 0.001, 0.004, 0.02, ch as u8).with_range(-18.0);
+    let n = GateNode::with_channels(
+        Db::new(-22.0),
+        Seconds::new(0.001),
+        Seconds::new(0.004),
+        Seconds::new(0.02),
+        ch as u8,
+    )
+    .with_range(Db::new(-18.0));
     prepared(n, RATE, BLOCK)
 }
 
@@ -201,7 +217,7 @@ fn a_makeup_change_ramps_across_the_next_block() {
     let input = steady_block(1);
     let mut node = compressor(1, false);
     let mut reference = compressor(1, false);
-    reference.set_makeup(9.0);
+    reference.set_makeup(Db::new(9.0));
     // Settle both envelopes.
     for _ in 0..200 {
         run_block(&mut node, &input);
@@ -210,7 +226,7 @@ fn a_makeup_change_ramps_across_the_next_block() {
     let before = run_block(&mut node, &input);
     let settled_ref = run_block(&mut reference, &input);
 
-    node.set_makeup(9.0);
+    node.set_makeup(Db::new(9.0));
     let after = run_block(&mut node, &input);
 
     let old_level = before[BLOCK - 1];
@@ -260,7 +276,7 @@ fn a_threshold_change_takes_effect_on_the_next_block() {
     assert_eq!(a, b, "identical up to the write");
 
     // The write lands "during" the block just rendered — i.e. after its read.
-    changed.set_threshold(-6.0);
+    changed.set_threshold(Db::new(-6.0));
     let a2 = run_block(&mut changed, &input);
     let b2 = run_block(&mut unchanged, &input);
     assert!(

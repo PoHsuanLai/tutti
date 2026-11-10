@@ -21,6 +21,9 @@
 //! percentiles, only across interleaved runs.
 
 #[cfg(feature = "convolution")]
+use tutti_types::Seconds;
+
+#[cfg(feature = "convolution")]
 fn main() {
     use std::hint::black_box;
     use std::time::Instant;
@@ -106,7 +109,7 @@ fn main() {
         );
     }
     // A ragged mix: three small calls and one that crosses a boundary.
-    let ir = generate_test_ir(96_000, 1.0, SampleRate(48_000.0));
+    let ir = generate_test_ir(96_000, Seconds::new(1.0), SampleRate(48_000.0));
     let (mean, p99, p999, max) = run(&ir, 512, &[64, 64, 64, 500]);
     println!(
         "{:>9} {:>6} {:>6} {mean:>9.2} {p99:>9.2} {p999:>9.2} {max:>9.2} {:>9.2}",

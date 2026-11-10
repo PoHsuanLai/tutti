@@ -18,14 +18,15 @@ use crate::synth_voice::SynthVoice;
 use crate::voice::Gate;
 use crate::{Portamento, UnisonEngine, VoiceAllocator, VoiceAllocatorConfig};
 use tutti_graph::{EventKind, SubBlocks};
+use tutti_midi_protocol::{bend_u32_to_signed_f32, u16_to_unit_f32, u32_to_unit_f32};
 use tutti_midi_protocol::{channel_voice, narrow_value};
 use tutti_midi_types::cc;
-use tutti_midi_types::convert::{bend_u32_to_signed_f32, u16_to_unit_f32, u32_to_unit_f32};
 use tutti_midi_types::mpe::PitchBendSensitivity;
 use tutti_midi_types::ump::{
     RPN_BANK_MPE, RPN_INDEX_CHANNEL_PITCH_BEND_SENSITIVITY,
     RPN_INDEX_PER_NOTE_PITCH_BEND_SENSITIVITY,
 };
+use tutti_types::Hz;
 use tutti_types::{Amplitude, Param, Tail};
 use tutti_ump::NoteId;
 use tutti_ump::{
@@ -853,7 +854,7 @@ impl PolySynth {
         self.bends = [tutti_types::Semitones(0.0); 16];
         self.set_mpe_pitch_bend_range(self.mpe_range_default);
         if let Some(ref mut porta) = self.portamento {
-            porta.reset(440.0);
+            porta.reset(Hz::new(440.0));
         }
     }
 

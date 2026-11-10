@@ -11,7 +11,10 @@
 mod cache;
 mod command;
 mod config;
+#[cfg(test)]
+mod contained;
 pub(crate) mod control;
+mod decode;
 mod handlers;
 mod io;
 mod loop_body;
@@ -21,6 +24,7 @@ mod open;
 mod prefetch;
 mod record;
 mod rt_state;
+mod status;
 mod step;
 mod stream;
 mod thread;
@@ -48,6 +52,7 @@ pub(crate) type StreamerSender = crossbeam_channel::Sender<StreamerCommand>;
 // and the one failure every stream-control command can report.
 pub use control::StreamerGone;
 pub use open::{Open, OpenError, Opening, Placement, RefusedPlacement, StreamReader};
+pub use status::{StreamFault, StreamPhase, StreamStatus};
 pub use stream::{Stream, StreamerPort};
 
 // The hand-driven cycle's verdict. Public only alongside the driver that
@@ -65,6 +70,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::error::Result;
 use crate::ports::Status;
+use decode::Seams;
 use handlers::Handles;
 use thread::Built;
 use tutti_types::SampleRate;
@@ -97,7 +103,7 @@ use tutti_types::SampleRate;
 /// use tutti_sampler::{DiskStreamer, DiskVoice, Open, Placement};
 ///
 /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
-/// let streamer = DiskStreamer::new(48_000.0, Default::default())?;
+/// let streamer = DiskStreamer::new(tutti_types::SampleRate::new(48_000.0), Default::default())?;
 ///
 /// // The streamer opens the file on its own thread; the reply is polled, and
 /// // a poll that is not ready hands the `Opening` back.
@@ -126,7 +132,7 @@ use tutti_types::SampleRate;
 ///
 /// ```compile_fail
 /// # fn run() -> tutti_sampler::Result<()> {
-/// let mut streamer = tutti_sampler::DiskStreamer::new(48_000.0, Default::default())?;
+/// let mut streamer = tutti_sampler::DiskStreamer::new(tutti_types::SampleRate::new(48_000.0), Default::default())?;
 /// streamer.step_once(); // only a `DiskStreamer<ByHand>` steps
 /// # Ok(())
 /// # }
@@ -136,7 +142,7 @@ use tutti_types::SampleRate;
 ///
 /// ```
 /// # fn run() -> tutti_sampler::Result<()> {
-/// let mut streamer = tutti_sampler::DiskStreamer::manual(48_000.0, Default::default())?;
+/// let mut streamer = tutti_sampler::DiskStreamer::manual(tutti_types::SampleRate::new(48_000.0), Default::default())?;
 /// let _ = streamer.step_once();
 /// # Ok(())
 /// # }
@@ -172,21 +178,24 @@ impl DiskStreamer<Running> {
     ///
     /// # Errors
     ///
-    /// None at present: every path returns `Ok`. The `Result` is the crate's
-    /// [`Error`](crate::Error) type, for initialization that touches the
-    /// filesystem.
-    ///
-    /// # Panics
-    ///
-    /// If the OS refuses to spawn the streamer thread.
+    /// [`Error::Spawn`](crate::Error::Spawn) when the OS refuses to spawn the
+    /// streamer thread. Every stream and every refill depends on it, so there
+    /// is no streamer to return: a stream command with no consumer would
+    /// stall silently.
     pub fn new(sample_rate: impl Into<SampleRate>, config: DiskStreamerConfig) -> Result<Self> {
-        let built = Built::new(256, sample_rate.into(), config.buffer_config);
+        Self::build(sample_rate.into(), config, Seams::default())
+    }
+
+    /// [`new`](Self::new) with what a test replaces: how a thread starts, and
+    /// the hooks where a file is read and decoded.
+    fn build(sample_rate: SampleRate, config: DiskStreamerConfig, seams: Seams) -> Result<Self> {
+        let built = Built::new(256, sample_rate, config.buffer_config, seams);
         let (streamer_tx, shared) = (built.command_sender(), built.shared());
 
         Ok(DiskStreamer {
             streamer_tx,
             shared,
-            driver: built.start(),
+            driver: built.start()?,
             next_stream: AtomicU64::new(0),
         })
     }
@@ -214,13 +223,22 @@ impl DiskStreamer<ByHand> {
     /// use tutti_sampler::{DiskStreamer, DiskStreamerConfig};
     ///
     /// # fn main() -> tutti_sampler::Result<()> {
-    /// let mut sampler = DiskStreamer::manual(48_000.0, DiskStreamerConfig::default())?;
+    /// let mut sampler = DiskStreamer::manual(tutti_types::SampleRate::new(48_000.0), DiskStreamerConfig::default())?;
     /// sampler.step_once();   // nothing queued: an idle cycle
     /// # Ok(())
     /// # }
     /// ```
     pub fn manual(sample_rate: impl Into<SampleRate>, config: DiskStreamerConfig) -> Result<Self> {
-        let built = Built::new(256, sample_rate.into(), config.buffer_config);
+        Self::manual_with(sample_rate.into(), config, Seams::default())
+    }
+
+    /// [`manual`](Self::manual) with what a test replaces.
+    fn manual_with(
+        sample_rate: SampleRate,
+        config: DiskStreamerConfig,
+        seams: Seams,
+    ) -> Result<Self> {
+        let built = Built::new(256, sample_rate, config.buffer_config, seams);
         let (streamer_tx, shared) = (built.command_sender(), built.shared());
 
         Ok(DiskStreamer {
@@ -399,7 +417,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("loop.wav");
         write_tone(&path, 48_000, 2.0);
-        let mut sampler = DiskStreamer::manual(48_000.0, Default::default()).unwrap();
+        let mut sampler =
+            DiskStreamer::manual(SampleRate::new(48_000.0), Default::default()).unwrap();
         let opening = sampler.open(&path, Placement::HEAD);
         let (mut stream, reader) =
             crate::testing::settle(&mut sampler, opening).expect("the file opens");
@@ -471,7 +490,8 @@ mod tests {
         write_tone(&at_48, 48_000, 1.0);
         write_tone(&at_44, 44_100, 1.0);
 
-        let mut sampler = DiskStreamer::manual(44_100.0, Default::default()).unwrap();
+        let mut sampler =
+            DiskStreamer::manual(SampleRate::new(44_100.0), Default::default()).unwrap();
         let early = sampler.status();
         let stream = |sampler: &mut DiskStreamer<ByHand>, path: &std::path::Path| {
             let opening = sampler.open(path, Placement::HEAD);
@@ -482,14 +502,14 @@ mod tests {
         let first_ratio = Arc::clone(&first.rt_state);
         assert_eq!(
             first_ratio.src_ratio(),
-            SrcRatio::for_rates(48_000.0, 44_100.0)
+            SrcRatio::for_rates(SampleRate::new(48_000.0), SampleRate::new(44_100.0))
         );
         assert!(
             first_ratio.src_ratio() != SrcRatio::UNITY,
             "setup: a converting stream"
         );
 
-        sampler.set_sample_rate(48_000.0);
+        sampler.set_sample_rate(SampleRate::new(48_000.0));
         assert_eq!(
             first_ratio.src_ratio(),
             SrcRatio::UNITY,
@@ -503,7 +523,7 @@ mod tests {
         let (_second_stream, second) = stream(&mut sampler, &at_44);
         assert_eq!(
             second.rt_state.src_ratio(),
-            SrcRatio::for_rates(44_100.0, 48_000.0)
+            SrcRatio::for_rates(SampleRate::new(44_100.0), SampleRate::new(48_000.0))
         );
     }
 
@@ -525,7 +545,8 @@ mod tests {
         let path = dir.path().join("a.wav");
         write_tone(&path, 48_000, 1.0);
 
-        let mut sampler = DiskStreamer::manual(48_000.0, Default::default()).unwrap();
+        let mut sampler =
+            DiskStreamer::manual(SampleRate::new(48_000.0), Default::default()).unwrap();
         let opening = sampler.open(&path, Placement::HEAD);
         let (stream, reader) =
             crate::testing::settle(&mut sampler, opening).expect("the file opens");

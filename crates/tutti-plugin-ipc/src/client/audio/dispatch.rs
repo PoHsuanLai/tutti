@@ -795,6 +795,9 @@ fn recv_state(
             Err(ChunkError::OutOfOrder { got, expected }) => StateError::Rejected(format!(
                 "plugin sent state chunk {got} where {expected} was expected"
             )),
+            Err(ChunkError::Empty { seq }) => StateError::Rejected(format!(
+                "plugin sent an empty state chunk {seq} before the last"
+            )),
         };
         if !last {
             owed.owe(Late::StateRest);

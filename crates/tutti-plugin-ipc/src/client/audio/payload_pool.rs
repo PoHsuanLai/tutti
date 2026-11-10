@@ -28,7 +28,15 @@ use std::sync::atomic::{AtomicU64, Ordering};
 /// plugin is already struggling.
 ///
 /// It was 4 against a queue of 128, so blocks 5..=128 each allocated.
-const POOL_CAPACITY: usize = super::channels::COMMAND_QUEUE_SIZE;
+///
+/// **Plus two**, because a payload out of the pool is not only in the queue
+/// (doc 027 D10). At most `COMMAND_QUEUE_SIZE` are queued; one more is in the
+/// bridge thread's hands, popped and not yet recycled (it recycles once the
+/// message is built); and one more in the audio thread's, acquired before the
+/// push that a full queue refuses (and the refusal recycles it). With the
+/// queue alone the 129th and 130th allocated on the audio thread, again
+/// exactly when the bridge had fallen behind.
+const POOL_CAPACITY: usize = super::channels::COMMAND_QUEUE_SIZE + 2;
 
 /// Parameter-change buffers in circulation between the audio thread and the
 /// bridge thread: how many chunks carrying parameter changes can be on their
@@ -260,6 +268,26 @@ impl PayloadPool {
 mod tests {
     use super::*;
     use crate::protocol::ParameterQueue;
+
+    /// **Every payload that can be out at once comes from the pool**: a full
+    /// queue, the one the bridge thread holds, and the one the audio thread
+    /// holds before its refused push, all without allocating (doc 027 D10).
+    ///
+    /// Mutation (run): `POOL_CAPACITY` as `COMMAND_QUEUE_SIZE` (as it was)
+    /// or `+ 1` → the last acquire allocates and the gate aborts.
+    #[test]
+    fn a_full_queue_and_both_threads_take_payloads_without_allocating() {
+        let pool = PayloadPool::new();
+        let out = super::super::channels::COMMAND_QUEUE_SIZE + 2;
+        // Reserved outside the gate; the payloads are dropped outside it too.
+        let mut held = Vec::with_capacity(out);
+        assert_no_alloc::assert_no_alloc(|| {
+            for _ in 0..out {
+                held.push(pool.acquire());
+            }
+        });
+        assert_eq!(held.len(), out);
+    }
 
     /// **The bridge's buffers hold the pool budget, not parameters × room**:
     /// for 2 000 parameters (and the node's 64 spare slots) at 512- and

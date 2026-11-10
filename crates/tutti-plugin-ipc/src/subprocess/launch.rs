@@ -2,6 +2,7 @@
 //! spawn → handshake → load plugin → setup shared memory → return
 //! a [`LaunchedServer`] ready for the RT bridge thread to connect.
 
+use super::Reaped;
 use crate::MAX_CHUNK;
 use crate::config::BridgeConfig;
 use crate::error::{BridgeError, Result};
@@ -50,8 +51,8 @@ pub(crate) const STATE_RESTORE_TIMEOUT: Duration = Duration::from_secs(60);
 /// A plugin-server that has loaded its plugin and waits for the bridge
 /// thread to connect ([`launch`]).
 pub struct LaunchedServer {
-    /// The server process. The caller reaps it.
-    pub process: Child,
+    /// The server process, killed and reaped when this drops (doc 027 D11).
+    pub process: Reaped,
     /// Catalog identity (name, vendor, class, editor).
     pub descriptor: PluginDescriptor,
     /// Engine-wiring data from instantiation (bus widths, latency, f64).
@@ -153,7 +154,7 @@ pub(super) fn launch_with_state(
     state: Option<&[u8]>,
     restore_timeout: Duration,
 ) -> Result<LaunchedServer> {
-    let mut process = spawn_process(locator, config)?;
+    let mut process = Reaped::new(spawn_process(locator, config)?);
 
     // `&mut process` rather than a move: the connect retry polls the child so a
     // server that died on startup is reported at once, and the teardown below
@@ -203,11 +204,10 @@ pub(super) fn launch_with_state(
             state_restore,
         }),
         Err(e) => {
-            // Best-effort and deliberately un-propagated: the launch error is
-            // the one worth reporting, and a failure to clean up after it must
-            // not mask it. `wait` after `kill` is what reaps the zombie.
-            let _ = process.kill();
-            let _ = process.wait();
+            // `process` drops here, killed and reaped. Best-effort and
+            // deliberately un-propagated: the launch error is the one worth
+            // reporting, and a failed clean-up must not mask it.
+            drop(process);
             let _ = std::fs::remove_file(&config.socket_path);
             Err(e)
         }

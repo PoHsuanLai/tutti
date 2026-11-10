@@ -29,6 +29,10 @@ pub(super) struct Lifecycle {
     /// crash: the plugin stays loaded and is retried at every later rate
     /// change, which clears this when it takes one.
     refusal: Arc<Mutex<Option<(SampleRate, String)>>>,
+    /// Whether `refusal` holds one: the audio thread's question, answered
+    /// without the lock or the reason's clone (doc 027 D9). Stored after the
+    /// slot, so a reader that sees it set finds the reason.
+    refused: Arc<AtomicBool>,
     /// How long a rate change is waited on, in milliseconds.
     rate_timeout_ms: Arc<AtomicU64>,
 }
@@ -40,6 +44,7 @@ impl Lifecycle {
             crashed: Arc::new(AtomicBool::new(false)),
             cause: Arc::new(Mutex::new(None)),
             refusal: Arc::new(Mutex::new(None)),
+            refused: Arc::new(AtomicBool::new(false)),
             rate_timeout_ms: Arc::new(AtomicU64::new(
                 super::dispatch::RATE_TIMEOUT.as_millis() as u64
             )),
@@ -61,9 +66,16 @@ impl Lifecycle {
         self.refusal.lock().ok().and_then(|r| r.clone())
     }
 
+    /// Whether a refused rate stands. Wait-free: no lock, no allocation.
+    pub(super) fn is_rate_refused(&self) -> bool {
+        self.refused.load(Ordering::Acquire)
+    }
+
     pub(super) fn set_rate_refusal(&self, refusal: Option<(SampleRate, String)>) {
         if let Ok(mut slot) = self.refusal.lock() {
+            let refused = refusal.is_some();
             *slot = refusal;
+            self.refused.store(refused, Ordering::Release);
         }
     }
 
@@ -150,5 +162,22 @@ mod tests {
         assert!(!life.is_running());
         assert!(!life.is_crashed(), "a clean shutdown is not a crash");
         assert_eq!(life.crash_cause(), None);
+    }
+
+    /// **The audio thread's flag follows the refusal**, set with it and
+    /// cleared with it, and answering never allocates (doc 027 D9).
+    ///
+    /// Mutations (run), each fails: the flag not stored in
+    /// `set_rate_refusal` (stays false); `is_rate_refused` reading the slot
+    /// through `rate_refusal()` (the gate trips on the clone).
+    #[test]
+    fn the_refused_flag_follows_the_refusal_without_allocating() {
+        let life = Lifecycle::new();
+        assert!(!life.is_rate_refused());
+        life.set_rate_refusal(Some((SampleRate(44_100.0), "no".into())));
+        let refused = assert_no_alloc::assert_no_alloc(|| life.is_rate_refused());
+        assert!(refused);
+        life.set_rate_refusal(None);
+        assert!(!life.is_rate_refused());
     }
 }

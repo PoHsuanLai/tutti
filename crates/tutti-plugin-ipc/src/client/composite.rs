@@ -366,6 +366,11 @@ impl PluginBridge {
         self.audio.rate_refusal()
     }
 
+    /// See [`AudioBridge::rate_refused`](super::audio::AudioBridge::rate_refused).
+    pub fn rate_refused(&self) -> bool {
+        self.audio.rate_refused()
+    }
+
     /// See [`AudioBridge::set_rate_timeout`](super::audio::AudioBridge::set_rate_timeout).
     #[cfg(any(test, feature = "test-support"))]
     pub fn set_rate_timeout(&self, timeout: std::time::Duration) {

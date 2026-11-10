@@ -194,6 +194,12 @@ impl AudioBridge {
         self.lifecycle.rate_refusal()
     }
 
+    /// Whether the plugin refuses its rate, as [`rate_refusal`](Self::rate_refusal)
+    /// is `Some`, for the audio thread: wait-free, no lock and no allocation.
+    pub fn rate_refused(&self) -> bool {
+        self.lifecycle.is_rate_refused()
+    }
+
     /// Shorten the wait for a rate change's answer, for a test that would
     /// otherwise wait out the production budget.
     #[cfg(any(test, feature = "test-support"))]

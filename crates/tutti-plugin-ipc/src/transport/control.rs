@@ -70,16 +70,63 @@ pub fn socket_name(socket: &Path) -> std::io::Result<Name<'static>> {
     }
 }
 
+/// How long one [`send`] may block on a peer that reads nothing.
+///
+/// A write blocks only when the socket buffer is full, which on this
+/// connection means the server has stopped reading: it handles one request
+/// at a time and reads the next as soon as it answers. A server that reads
+/// nothing for this long is hung, and a send that gives up part-way has
+/// unframed the stream, so the bridge crashes on it (doc 027 D8). Generous,
+/// because a slow plugin call delays the server's next read by its length.
+pub const SEND_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Connect to the plugin-server's socket, with [`SEND_TIMEOUT`] on writes.
+///
+/// # Errors
+///
+/// The socket name is invalid or nothing is listening on it.
 pub fn connect(socket: &Path) -> Result<ControlStream> {
-    let name = socket_name(socket)
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, e))?;
-    Ok(Stream::connect(name)?)
+    connect_within(socket, SEND_TIMEOUT)
 }
 
+/// [`connect`] with `send_timeout` on writes.
+///
+/// The send deadline is the kernel's (`SO_SNDTIMEO`), armed once for the
+/// connection. Windows has none: `interprocess` refuses a timeout on a named
+/// pipe, as it does for reads, and there a hung server's writes end when the
+/// server is ended (the session's hang verdict kills it, closing the pipe).
+/// Arming is therefore best-effort and its failure is not an error.
+pub(crate) fn connect_within(socket: &Path, send_timeout: Duration) -> Result<ControlStream> {
+    let name = socket_name(socket)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, e))?;
+    let stream = Stream::connect(name)?;
+    let _ = stream.set_send_timeout(Some(send_timeout));
+    Ok(stream)
+}
+
+/// Write one frame.
+///
+/// # Errors
+///
+/// A frame the peer must reject (over the cap, or not encodable) is refused
+/// with nothing written, so the stream stays synchronised: a send the host
+/// itself declines is not a crash. A write the peer does not take within the
+/// send deadline is [`BridgeError::Timeout`] with `partial` set: some of the
+/// frame may be on the wire, and the connection cannot go on.
 pub fn send(stream: &mut ControlStream, msg: &HostMessage) -> Result<()> {
-    // A frame the peer must reject is refused here with nothing written, so the
-    // stream stays synchronised: a send the host itself declines is not a crash.
-    write_frame(stream, msg)
+    write_frame(stream, msg).map_err(|e| match e {
+        BridgeError::Io(io)
+            if io.kind() == std::io::ErrorKind::TimedOut
+                || io.kind() == std::io::ErrorKind::WouldBlock =>
+        {
+            BridgeError::Timeout {
+                operation: "send".to_string(),
+                duration_ms: SEND_TIMEOUT.as_millis() as u64,
+                partial: true,
+            }
+        }
+        other => other,
+    })
 }
 
 /// How long the unbounded [`recv`] entry may wait for a whole frame.
@@ -694,6 +741,51 @@ mod tests {
             peer: Some(peer),
             path,
         }
+    }
+
+    /// **A send to a peer that reads nothing gives up at the send deadline**
+    /// (doc 027 D8), as a `partial` timeout: the frame may be half on the
+    /// wire, so the connection cannot go on. Before, the write blocked until
+    /// the peer read or died.
+    ///
+    /// Unix only: Windows has no send timeout on a named pipe (`connect_within`
+    /// says what ends a hung write there).
+    ///
+    /// Mutation (run): `connect_within` not arming the timeout → the sends
+    /// block, the helper thread never answers → fails on `recv_timeout`.
+    #[cfg(unix)]
+    #[test]
+    fn a_send_to_a_peer_that_reads_nothing_is_bounded() {
+        use interprocess::local_socket::traits::Listener as _;
+        let path =
+            std::env::temp_dir().join(format!("tutti-control-send-{}.sock", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        let name = socket_name(&path).unwrap();
+        let listener = ListenerOptions::new().name(name).create_sync().unwrap();
+        let connect_path = path.clone();
+        let (done, outcome) = std::sync::mpsc::channel();
+        let _writer = std::thread::spawn(move || {
+            let mut host =
+                connect_within(&connect_path, Duration::from_millis(200)).expect("connect");
+            let chunk = HostMessage::LoadStateChunk {
+                seq: 0,
+                last: false,
+                bytes: vec![0u8; 1 << 20],
+            };
+            // Far more than any socket buffer holds: the peer reads nothing.
+            let result = (0..256).try_for_each(|_| send(&mut host, &chunk));
+            let _ = done.send(result);
+        });
+        let _peer = listener.accept().unwrap();
+
+        let result = outcome
+            .recv_timeout(Duration::from_secs(10))
+            .expect("the send never gave up on a peer that reads nothing");
+        let _ = std::fs::remove_file(&path);
+        assert!(
+            matches!(result, Err(BridgeError::Timeout { partial: true, .. })),
+            "{result:?}"
+        );
     }
 
     /// Send one framed `BridgeMessage`, but pause between the length prefix and

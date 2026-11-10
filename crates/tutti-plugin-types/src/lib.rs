@@ -23,7 +23,6 @@ mod locate;
 mod main_thread;
 mod metadata;
 mod midi;
-mod midi1_decoder;
 mod note_expression;
 mod note_id;
 mod order;
@@ -97,9 +96,6 @@ pub use load_stage::LoadStage;
 pub use main_thread::{MainThread, NotMainThread, defer_to_main, run_deferred};
 pub use metadata::{BusChannels, BusTopologies, Layout, LoadedPlugin, PluginTail};
 pub use midi::{MIDI_STACK_CAPACITY, MidiEventVec, RT_MIDI_CAPACITY, RtMidiEvents, WireMidi};
-pub use midi1_decoder::{
-    Midi1Decoder, Midi1Message, Midi1Splitter, SYSEX_OUT_CAPACITY, note_on_velocity_midi1,
-};
 // `NoteExpressionVec` is the alias the change list is built from, so a caller
 // assembling one has to name it.
 pub use locate::{Helper, Locator};

@@ -108,7 +108,7 @@ fn effects_report_their_measured_tail_time() {
         // Relative tolerance: the table's figures are `f32` readings of the
         // AU's `Float64` tail, so the small values (0.0046) cannot be compared
         // with the same absolute epsilon as the large ones (10.0).
-        let expected = f64::from(expected);
+        let expected = f64::from(*expected);
         let tolerance = (expected * 1e-4).max(1e-6);
         assert!(
             (tail.0 - expected).abs() <= tolerance,

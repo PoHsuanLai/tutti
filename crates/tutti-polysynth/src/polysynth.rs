@@ -18,7 +18,7 @@ use crate::synth_voice::SynthVoice;
 use crate::voice::Gate;
 use crate::{Portamento, UnisonEngine, VoiceAllocator, VoiceAllocatorConfig};
 use tutti_graph::{EventKind, SubBlocks};
-use tutti_midi_protocol::PitchBendSensitivity;
+use tutti_midi_protocol::{MpeZoneConfig, MpeZones, PitchBendSensitivity};
 use tutti_midi_protocol::{bend_u32_to_signed_f32, u16_to_unit_f32, u32_to_unit_f32};
 use tutti_midi_protocol::{channel_voice, narrow_value};
 use tutti_types::Hz;
@@ -27,7 +27,7 @@ use tutti_ump::NoteId;
 use tutti_ump::{
     CCNumber, MidiChannel, NoteNumber, Pitch, RegisteredPerNoteController, Rpn, Ump, Voice2,
 };
-use tutti_voicing::{Controller, Effect, Stop, Zones};
+use tutti_voicing::{Controller, Effect, Stop};
 
 use std::sync::Arc;
 
@@ -924,10 +924,8 @@ pub use node::SYNTH_PARAMS;
 
 /// The channels MPE makes zones when it is on: the lower zone, master 0 and
 /// every other channel its member (RP-053 allows 15 with no upper zone).
-fn mpe_zones(enabled: bool) -> Zones {
-    if enabled {
-        Zones::new(15, 0).expect("15 members fit")
-    } else {
-        Zones::NONE
-    }
+fn mpe_zones(enabled: bool) -> Option<MpeZones> {
+    enabled
+        .then(|| MpeZones::new(MpeZoneConfig::lower(MpeZoneConfig::MAX_MEMBERS), None))
+        .flatten()
 }

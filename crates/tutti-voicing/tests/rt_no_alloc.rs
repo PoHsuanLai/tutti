@@ -3,10 +3,11 @@
 //! pedals, the panics and the bends.
 
 use assert_no_alloc::{AllocDisabler, assert_no_alloc};
+use tutti_midi_protocol::{MpeZoneConfig, MpeZones};
 use tutti_types::{Amplitude, Semitones};
 use tutti_ump::{Attribute, CCNumber, MidiChannel, NoteNumber, Voice2};
 use tutti_voicing::{
-    Command, Mode, Order, Patch, Retrigger, Rules, Steal, VoiceSpec, VoiceView, Voicing, Zones,
+    Command, Mode, Order, Patch, Retrigger, Rules, Steal, VoiceSpec, VoiceView, Voicing,
 };
 
 #[global_allocator]
@@ -42,7 +43,7 @@ fn rules(mode: Mode) -> Rules {
 fn step_is_allocation_free_in_every_mode() {
     for mode in [Mode::Poly, Mode::Mono, Mode::Legato] {
         let mut core = Voicing::new(rules(mode));
-        core.set_zones(Zones::new(3, 0).unwrap());
+        core.set_zones(MpeZones::new(MpeZoneConfig::lower(3), None));
         let mut voices: Vec<VoiceView> = Vec::with_capacity(4096);
         let ch = |n| MidiChannel::of(n);
         let cc = |n: u8, v: u32| Voice2::ControlChange {

@@ -7,6 +7,7 @@
 //! construction and costs the same to play.
 
 use tutti_types::{Cents, Hz, Semitones};
+use tutti_ump::NoteNumber;
 
 // A second copy of A440. `Note::A4_HZ` is the engine's canonical one but is
 // private to `tutti-types`, and widening its visibility is a bigger change
@@ -15,7 +16,7 @@ use tutti_types::{Cents, Hz, Semitones};
 // to sit beside it, which are now `Semitones::to_pitch_ratio` and
 // `Cents::to_pitch_ratio`.
 const A4_FREQ: Hz = Hz(440.0);
-const A4_NOTE: u8 = 69;
+const A4_NOTE: NoteNumber = NoteNumber::of(69);
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct ScaleDegree {
@@ -56,7 +57,7 @@ pub struct Tuning {
     degrees: Vec<ScaleDegree>,
     freq_table: [Hz; 128],
     reference_freq: Hz,
-    reference_note: u8,
+    reference_note: NoteNumber,
 }
 
 impl Tuning {
@@ -74,7 +75,7 @@ impl Tuning {
     /// scale to a note other than A.
     pub fn equal_temperament_with_reference(
         reference_freq: impl Into<Hz>,
-        reference_note: u8,
+        reference_note: NoteNumber,
     ) -> Self {
         let degrees: Vec<ScaleDegree> = (0..12)
             .map(|i| ScaleDegree::from_cents(Cents::new(i as f32 * 100.0)))
@@ -250,14 +251,14 @@ impl Tuning {
         let scale_size = self.degrees.len();
         if scale_size == 0 {
             for note in 0..128 {
-                let semitones = Semitones(note as f32 - f32::from(self.reference_note));
+                let semitones = Semitones(note as f32 - f32::from(self.reference_note.get()));
                 self.freq_table[note] = self.reference_freq * semitones.to_pitch_ratio();
             }
             return;
         }
 
-        let ref_scale_pos = usize::from(self.reference_note) % scale_size;
-        let ref_octave = i32::from(self.reference_note) / (scale_size as i32);
+        let ref_scale_pos = usize::from(self.reference_note.get()) % scale_size;
+        let ref_octave = i32::from(self.reference_note.get()) / (scale_size as i32);
 
         for note in 0..128 {
             let note_scale_pos = note % scale_size;
@@ -277,8 +278,8 @@ impl Tuning {
     /// The frequency in [`Hz`] of a whole MIDI note.
     #[cfg(test)]
     #[inline]
-    pub fn note_to_freq(&self, note: u8) -> Hz {
-        self.freq_table[usize::from(note)]
+    pub fn note_to_freq(&self, note: NoteNumber) -> Hz {
+        self.freq_table[usize::from(note.get())]
     }
 
     /// The frequency in [`Hz`] for a fractional MIDI note number.
@@ -322,7 +323,7 @@ impl Tuning {
 
     /// Sets the reference frequency and note, then rebuilds the table.
     #[cfg(test)]
-    pub fn set_reference(&mut self, freq: impl Into<Hz>, note: u8) {
+    pub fn set_reference(&mut self, freq: impl Into<Hz>, note: NoteNumber) {
         self.reference_freq = freq.into();
         self.reference_note = note;
         self.recompute_table();
@@ -336,7 +337,7 @@ impl Tuning {
 
     /// The MIDI note the reference frequency is pinned to.
     #[cfg(test)]
-    pub fn reference_note(&self) -> u8 {
+    pub fn reference_note(&self) -> NoteNumber {
         self.reference_note
     }
 }

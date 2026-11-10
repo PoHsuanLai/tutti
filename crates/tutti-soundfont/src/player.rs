@@ -15,7 +15,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use tutti_midi_protocol::{narrow_bend, narrow_value};
+use tutti_midi_protocol::narrow_value;
 use tutti_sf2::SoundFont;
 use tutti_types::{SampleRate, Semitones};
 use tutti_ump::{CCNumber, MidiChannel, U7, Voice2};
@@ -29,6 +29,17 @@ use crate::render::Render;
 use crate::settings::Settings;
 use crate::soundfont_math::SoundFontMath;
 use crate::voices::Voices;
+
+// The controllers `ump` has no name for: the least significant half of a 14-bit
+// controller is its MSB's number plus 32, and the two sends are General MIDI's
+// effects depths 1 and 3.
+// M1 adds an LSB helper and named send constants; these become those.
+const MOD_WHEEL_LSB: CCNumber = CCNumber::of(CCNumber::MOD_WHEEL.get() + 32);
+const VOLUME_LSB: CCNumber = CCNumber::of(CCNumber::VOLUME.get() + 32);
+const PAN_LSB: CCNumber = CCNumber::of(CCNumber::PAN.get() + 32);
+const EXPRESSION_LSB: CCNumber = CCNumber::of(CCNumber::EXPRESSION.get() + 32);
+const REVERB_SEND: CCNumber = CCNumber::of(91);
+const CHORUS_SEND: CCNumber = CCNumber::of(93);
 
 /// The gain applied to the mix of every voice, on every plane: the sends carry
 /// it too, so an effect node after the unit is unity-gain.
@@ -132,8 +143,8 @@ fn rules(polyphony: usize) -> Rules {
         steal: Steal::By(Order::Oldest),
         exclusive_groups: true,
         sostenuto: true,
-        // The channel's own bend range (RPN 0 as a MIDI 1.0 Control Change
-        // run) is what the voices read; the core's figure is not used.
+        // What a full bend spans until RPN 0 says otherwise: General MIDI's
+        // default of 2 semitones.
         bend_range: Semitones(2.0),
     }
 }
@@ -274,11 +285,8 @@ impl Player {
                 self.control(channel, controller, narrow_value(value));
                 self.dispatch(channel, message);
             }
-            Voice2::PitchBend(bend) => {
-                let bend = narrow_bend(bend);
-                self.channels[usize::from(channel.get())]
-                    .set_pitch_bend(i32::from(bend.lsb().get()), i32::from(bend.msb().get()));
-            }
+            // The wheel is the core's (it retunes the channel's voices).
+            Voice2::PitchBend(_) => self.dispatch(channel, message),
             // A bank, when it rides along (the translator puts a MIDI 1.0
             // Bank Select there), is selected first; the bank number is its
             // MSB, as CC 0 sets it.
@@ -288,8 +296,12 @@ impl Player {
                 }
                 self.program_change(channel, program);
             }
-            Voice2::Registered { bank, index, value } if bank.get() == 0 => {
-                self.channels[usize::from(channel.get())].set_registered(index.get(), value);
+            Voice2::Registered { bank, index, value } => {
+                if bank.get() == 0 {
+                    self.channels[usize::from(channel.get())].set_registered(index.get(), value);
+                }
+                // Pitch bend sensitivity (RPN 0) is the core's.
+                self.dispatch(channel, message);
             }
             // No setter for pressure; no per-note control (a SoundFont voice
             // is a channel's); an Assignable Controller (NRPN) names nothing
@@ -328,19 +340,19 @@ impl Player {
     fn control(&mut self, channel: MidiChannel, controller: CCNumber, value: U7) {
         let data = i32::from(value.get());
         let info = &mut self.channels[usize::from(channel.get())];
-        match controller.get() {
-            0x00 => info.set_bank(data),
-            0x01 => info.set_modulation_coarse(data),
-            0x21 => info.set_modulation_fine(data),
-            0x07 => info.set_volume_coarse(data),
-            0x27 => info.set_volume_fine(data),
-            0x0A => info.set_pan_coarse(data),
-            0x2A => info.set_pan_fine(data),
-            0x0B => info.set_expression_coarse(data),
-            0x2B => info.set_expression_fine(data),
-            0x5B => info.set_reverb_send(data),
-            0x5D => info.set_chorus_send(data),
-            0x79 => info.reset_all_controllers(),
+        match controller {
+            CCNumber::BANK_SELECT => info.set_bank(data),
+            CCNumber::MOD_WHEEL => info.set_modulation_coarse(value),
+            MOD_WHEEL_LSB => info.set_modulation_fine(value),
+            CCNumber::VOLUME => info.set_volume_coarse(value),
+            VOLUME_LSB => info.set_volume_fine(value),
+            CCNumber::PAN => info.set_pan_coarse(value),
+            PAN_LSB => info.set_pan_fine(value),
+            CCNumber::EXPRESSION => info.set_expression_coarse(value),
+            EXPRESSION_LSB => info.set_expression_fine(value),
+            REVERB_SEND => info.set_reverb_send(data),
+            CHORUS_SEND => info.set_chorus_send(data),
+            CCNumber::RESET_ALL => info.reset_all_controllers(),
             _ => (),
         }
     }
@@ -349,7 +361,7 @@ impl Player {
     /// the pedals and keys: a fork's start.
     pub(crate) fn release_all(&mut self) {
         self.voices.release_all();
-        self.voicing.reset();
+        self.voicing.forget_notes();
     }
 
     /// Cuts every voice, forgets the pedals and keys, and returns every
@@ -359,9 +371,15 @@ impl Player {
     /// sends.
     pub(crate) fn reset(&mut self) {
         self.voices.clear();
-        self.voicing.reset();
-        for channel in &mut self.channels {
-            channel.reset_all_controllers();
+        self.voicing.forget_notes();
+        for channel in (0..MidiChannel::COUNT).filter_map(MidiChannel::new) {
+            self.apply(
+                channel,
+                Voice2::ControlChange {
+                    controller: CCNumber::RESET_ALL,
+                    value: 0,
+                },
+            );
         }
         self.block_read = self.render.block_len();
     }
@@ -410,7 +428,11 @@ impl Player {
 
     fn render_block(&mut self) {
         let inverse_block_size = 1_f32 / self.render.block_len() as f32;
-        self.voices.process(self.font.wave_data(), &self.channels);
+        let bends = std::array::from_fn(|i| {
+            MidiChannel::new(i as u8).map_or(Semitones(0.0), |c| self.voicing.channel_pitch(c))
+        });
+        self.voices
+            .process(self.font.wave_data(), &self.channels, &bends);
 
         for plane in &mut self.block {
             plane.fill(0_f32);

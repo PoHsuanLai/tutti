@@ -286,6 +286,52 @@ fn a_bend_reaches_the_synth_at_its_value() {
     }
 }
 
+/// A full bend up spans the channel's sensitivity, RPN 0 (RP-003, M2-115
+/// section 4.1: the semitones then the cents, `MSB << 7 | LSB` zero-extended):
+/// +200 cents at the default and after an explicit 2, +700 at 7, and the
+/// cents field is hundredths of a semitone (7 semitones 50 cents is +750,
+/// 0 and 64 cents is +64, not the 50 a binary fraction would give). The bend is
+/// the note logic's alone (`Voicing::step`).
+///
+/// Mutations (run, each seen to fail): the sensitivity read as Q7.25 (cents
+/// 64 gives +50); the sensitivity ignored (every row is +200); the bend
+/// applied twice (every row doubles).
+#[test]
+fn a_full_bend_spans_the_registered_sensitivity() {
+    let sustained = |events: &[Ump]| {
+        let out = render(&mut organ(), events, 40_000);
+        out[8_000..].to_vec()
+    };
+    let key = m2(Voice2::NoteOn {
+        note: NoteNumber::of(55),
+        velocity: 0xC000,
+        attribute: Attribute::None,
+    });
+    let full = m2(Voice2::PitchBend(u32::MAX));
+    let still = period(&sustained(&[key]), 200, 500);
+    let sensitivity = |semitones: u32, cents: u32| {
+        m2(Voice2::Registered {
+            bank: U7::of(0),
+            index: U7::of(0),
+            value: (semitones << 7 | cents) << 18,
+        })
+    };
+    for (events, want_cents) in [
+        (vec![full, key], 200.0),
+        (vec![sensitivity(2, 0), full, key], 200.0),
+        (vec![sensitivity(7, 0), full, key], 700.0),
+        (vec![sensitivity(7, 50), full, key], 750.0),
+        (vec![sensitivity(0, 64), full, key], 64.0),
+    ] {
+        let got = still / period(&sustained(&events), 200, 500);
+        let want = 2.0_f64.powf(want_cents / 1200.0);
+        assert!(
+            (got / want - 1.0).abs() < 5e-5,
+            "{want_cents} cents: {got} vs {want}"
+        );
+    }
+}
+
 /// Messages RustySynth has no setter for are decoded and dropped: the render
 /// is the one without them.
 #[test]

@@ -11,7 +11,7 @@ use std::collections::BTreeMap;
 use common::{Kind, Pair, SpecBehaviour, bits, input_signal};
 use tutti_graph::{
     CompileError, CycleEdge, DelayKey, EventEdge, EventIn, EventOut, GraphInvalid, GraphSpec, Op,
-    PortKind, Shape, Shapes, Sink, Unforkable, compile,
+    PortKind, Shape, Shapes, Unforkable, compile,
 };
 use tutti_graph::{
     Edge, Feed, FeedbackFrom, InPort, InputDelay, Invalid, NodeSpec, OutPort, Source,

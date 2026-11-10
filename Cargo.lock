@@ -5005,6 +5005,7 @@ version = "0.1.0"
 dependencies = [
  "arrayvec",
  "assert_no_alloc",
+ "bitflags 2.13.2",
  "core-foundation-sys",
  "crossbeam-queue",
  "libc",

@@ -82,18 +82,18 @@ impl BusBuffers {
     /// `bus_channels` stays a raw `&[usize]` slice (per-bus host counts); only
     /// the single-scalar `fallback_channels` is a `ChannelLayout`.
     ///
-    /// # Panics
+    /// # Errors
     ///
-    /// If a bus is wider than `u16::MAX` channels, which
+    /// [`Vst3Error::InvalidArgument`] if a bus is wider than `u16::MAX`
+    /// channels, which
     /// [`Plugin::audio_bus_channels`](crate::Plugin::audio_bus_channels) never
     /// reports.
-    #[must_use]
     pub fn new(
         width: SampleWidth,
         bus_channels: &[usize],
         fallback_channels: ChannelLayout,
         block_size: usize,
-    ) -> Self {
+    ) -> Result<Self, Vst3Error> {
         let flat_width: usize = if bus_channels.is_empty() {
             fallback_channels.count() as usize
         } else {
@@ -109,11 +109,11 @@ impl BusBuffers {
         for &ch in &bus_channels {
             let table = vec![std::ptr::null_mut::<c_void>(); ch.max(MIN_PTR_COUNT)];
             bus_arrays.push(make_audio_bus(
-                ChannelLayout::try_from(ch).expect("a bus is at most u16::MAX channels wide"),
+                ChannelLayout::try_from(ch).map_err(|_| Vst3Error::InvalidArgument)?,
             ));
             ptr_tables.push(table);
         }
-        Self {
+        Ok(Self {
             bus_channels,
             bus_arrays: bus_arrays.into_boxed_slice(),
             ptr_tables: ptr_tables.into_boxed_slice(),
@@ -121,7 +121,7 @@ impl BusBuffers {
                 .into_boxed_slice(),
             aux: vec![0.0f64; block_size.max(1)],
             width,
-        }
+        })
     }
 
     /// How many buses this direction has.
@@ -406,7 +406,8 @@ mod tests {
     /// channel count, and bus 0 maps straight onto the live channels.
     #[test]
     fn empty_layout_is_single_bus() {
-        let mut bb = BusBuffers::new(SampleWidth::F32, &[], ChannelLayout::from(2u16), BLOCK);
+        let mut bb =
+            BusBuffers::new(SampleWidth::F32, &[], ChannelLayout::from(2u16), BLOCK).unwrap();
         assert_eq!(bb.num_buses(), 1);
         assert_eq!(bb.bus_channels[0], 2);
 
@@ -432,7 +433,8 @@ mod tests {
     #[test]
     fn extra_input_bus_gets_silence() {
         // main = stereo, sidechain = mono.
-        let mut bb = BusBuffers::new(SampleWidth::F32, &[2, 1], ChannelLayout::from(2u16), BLOCK);
+        let mut bb =
+            BusBuffers::new(SampleWidth::F32, &[2, 1], ChannelLayout::from(2u16), BLOCK).unwrap();
         assert_eq!(bb.num_buses(), 2);
 
         let mut l = [5.0f32; BLOCK];
@@ -473,7 +475,8 @@ mod tests {
     #[test]
     fn output_direction_never_declares_silence() {
         // main = stereo out, plus an aux output bus the host doesn't drive.
-        let mut bb = BusBuffers::new(SampleWidth::F32, &[2, 2], ChannelLayout::from(2u16), BLOCK);
+        let mut bb =
+            BusBuffers::new(SampleWidth::F32, &[2, 2], ChannelLayout::from(2u16), BLOCK).unwrap();
         let mut l = [0.0f32; BLOCK];
         let mut r = [0.0f32; BLOCK];
         let l_p = l.as_mut_ptr();
@@ -496,7 +499,8 @@ mod tests {
     #[test]
     fn fully_unconnected_input_bus_flags_only_real_channels() {
         // One stereo bus, but the caller supplies zero channels.
-        let mut bb = BusBuffers::new(SampleWidth::F32, &[2], ChannelLayout::from(2u16), BLOCK);
+        let mut bb =
+            BusBuffers::new(SampleWidth::F32, &[2], ChannelLayout::from(2u16), BLOCK).unwrap();
         let live: [*mut c_void; 0] = [];
         // SAFETY: the test's tables and channel arrays are live locals, and every slot read was
         // filled by `prepare_raw` just above.
@@ -514,7 +518,8 @@ mod tests {
     #[test]
     fn sidechain_bus_reads_supplied_channel() {
         // main = stereo, sidechain = mono.
-        let mut bb = BusBuffers::new(SampleWidth::F32, &[2, 1], ChannelLayout::from(2u16), BLOCK);
+        let mut bb =
+            BusBuffers::new(SampleWidth::F32, &[2, 1], ChannelLayout::from(2u16), BLOCK).unwrap();
 
         let mut l = [5.0f32; BLOCK];
         let mut r = [6.0f32; BLOCK];
@@ -552,7 +557,8 @@ mod tests {
     /// hold.
     #[test]
     fn surplus_caller_channels_are_not_read_past_the_table() {
-        let mut bb = BusBuffers::new(SampleWidth::F32, &[3], ChannelLayout::from(3u16), BLOCK);
+        let mut bb =
+            BusBuffers::new(SampleWidth::F32, &[3], ChannelLayout::from(3u16), BLOCK).unwrap();
         assert_eq!(bb.flat_width(), 3);
         let (a, b, c, d) = (
             [1.0f32; BLOCK],
@@ -581,7 +587,8 @@ mod tests {
     /// the second assert fails.
     #[test]
     fn a_bound_direction_is_no_longer_than_its_shortest_channel() {
-        let mut bb = BusBuffers::new(SampleWidth::F32, &[2], ChannelLayout::from(2u16), BLOCK);
+        let mut bb =
+            BusBuffers::new(SampleWidth::F32, &[2], ChannelLayout::from(2u16), BLOCK).unwrap();
         let (long, short) = ([0.0f32; BLOCK], [0.0f32; BLOCK / 2]);
         let channels: [&[f32]; 2] = [&long, &short];
         assert_eq!(bb.bind_inputs_f32(&channels).unwrap().capacity(), BLOCK / 2);
@@ -593,7 +600,8 @@ mod tests {
     /// pointer tables and re-zeros the aux block.
     #[test]
     fn prepare_is_alloc_free() {
-        let mut bb = BusBuffers::new(SampleWidth::F32, &[2, 1], ChannelLayout::from(2u16), BLOCK);
+        let mut bb =
+            BusBuffers::new(SampleWidth::F32, &[2, 1], ChannelLayout::from(2u16), BLOCK).unwrap();
         let mut l = [0.5f32; BLOCK];
         let mut r = [0.5f32; BLOCK];
         let l_p = l.as_mut_ptr();
@@ -620,7 +628,8 @@ mod tests {
     #[test]
     fn output_padding_slots_are_non_null() {
         // Single mono output bus → table padded to MIN_PTR_COUNT.
-        let mut bb = BusBuffers::new(SampleWidth::F32, &[1], ChannelLayout::from(1u16), BLOCK);
+        let mut bb =
+            BusBuffers::new(SampleWidth::F32, &[1], ChannelLayout::from(1u16), BLOCK).unwrap();
         assert!(bb.ptr_tables[0].len() >= MIN_PTR_COUNT);
         let mut m = [9.0f32; BLOCK];
         let m_p = m.as_mut_ptr();
@@ -644,7 +653,8 @@ mod tests {
     /// 64-bit member is the one written through.
     #[test]
     fn f64_direction_writes_channel_buffers_64() {
-        let mut bb = BusBuffers::new(SampleWidth::F64, &[2], ChannelLayout::from(2u16), BLOCK);
+        let mut bb =
+            BusBuffers::new(SampleWidth::F64, &[2], ChannelLayout::from(2u16), BLOCK).unwrap();
         let mut l = [1.0f64; BLOCK];
         let mut r = [2.0f64; BLOCK];
         let l_p = l.as_mut_ptr();

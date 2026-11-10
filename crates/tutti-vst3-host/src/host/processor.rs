@@ -15,8 +15,8 @@ use tutti_types::ChannelLayout;
 
 use crate::events::{InputEvents, Stager, drain_midi};
 use crate::types::{
-    AudioBuffer, MidiEvent, ParameterChanges, ProcessMode, ProcessOutputRef, TransportInfo,
-    Vst3Sample, to_process_context,
+    AudioBuffer, MidiEvent, ParameterChanges, ProcessContextRequirements, ProcessMode,
+    ProcessOutputRef, TransportInfo, Vst3Sample, to_process_context,
 };
 use tutti_vst3_ffi::{AudioSide, BusBuffers, EventList, ParameterChangesImpl, ProcessIo};
 
@@ -30,16 +30,18 @@ use super::shell::{Hold, Shell};
 /// How many of the Controller's writes the ring holds between two blocks.
 pub(super) const EDIT_CAPACITY: usize = 256;
 
-/// The plugin's `process` returned a result other than `kResultOk`.
+/// The plugin's `process` (or the call that readies it) failed: the status it
+/// returned, or why the host did not make the call.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ProcessFailed {
-    /// The raw VST3 `tresult`.
-    pub code: i32,
+    /// What failed, by name; [`StatusError::code`](crate::StatusError::code) is
+    /// the raw `tresult`.
+    pub error: tutti_vst3_ffi::Vst3Error,
 }
 
 impl std::fmt::Display for ProcessFailed {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "the plugin's process returned code {}", self.code)
+        write!(f, "the plugin's process failed: {}", self.error)
     }
 }
 
@@ -179,7 +181,7 @@ pub struct Vst3Processor<T: Vst3Sample> {
     audio_side: AudioSide,
     /// What `getProcessContextRequirements` answered at activation; `None` when
     /// the plugin does not implement the interface.
-    context_requirements: Option<u32>,
+    context_requirements: Option<ProcessContextRequirements>,
     drain: EditDrain,
     /// Counts the drains, for the Controller's record of what a block has taken.
     beat: DrainBeat,
@@ -210,7 +212,7 @@ pub(super) struct ProcessorParts {
     pub shell: Arc<Shell>,
     pub audio: AudioIO,
     pub audio_side: AudioSide,
-    pub context_requirements: Option<u32>,
+    pub context_requirements: Option<ProcessContextRequirements>,
     pub drain: EditDrain,
     pub beat: DrainBeat,
     pub carried: Vec<(u32, Normalized)>,
@@ -355,7 +357,7 @@ impl<T: Vst3Sample> Vst3Processor<T> {
                 Ok(()) | Err(tutti_vst3_ffi::Vst3Error::NotImplemented) => self.processing = true,
                 Err(error) => {
                     buffer.clear_outputs();
-                    return Err(ProcessFailed { code: error.code() });
+                    return Err(ProcessFailed { error });
                 }
             }
         }
@@ -411,8 +413,11 @@ impl<T: Vst3Sample> Vst3Processor<T> {
         self.pending.clear();
         self.audio.output.param_changes.clear_in_place();
 
-        let mut process_context =
-            to_process_context(transport, self.context_requirements.unwrap_or(u32::MAX));
+        let mut process_context = to_process_context(
+            transport,
+            self.context_requirements
+                .unwrap_or(ProcessContextRequirements::all()),
+        );
         process_context.sampleRate = buffer.sample_rate;
 
         // The setup comes from `process_setup()`, the same accessor
@@ -431,7 +436,7 @@ impl<T: Vst3Sample> Vst3Processor<T> {
             Ok(buses) => buses,
             Err(error) => {
                 buffer.clear_outputs();
-                return Err(ProcessFailed { code: error.code() });
+                return Err(ProcessFailed { error });
             }
         };
         let result = self.audio_side.process(ProcessIo {
@@ -449,7 +454,7 @@ impl<T: Vst3Sample> Vst3Processor<T> {
 
         if let Err(error) = result {
             buffer.clear_outputs();
-            return Err(ProcessFailed { code: error.code() });
+            return Err(ProcessFailed { error });
         }
 
         self.audio.output.drain_emitted();

@@ -1189,7 +1189,11 @@ re-derive it.
    `vbap` dependency and `VbapError::Vbap` replaced; `glam` leaves the lock. Proof:
    the moved tests and digests unedited; the tuple sets of the five presets pinned;
    Pulkki's properties as new cases; `cargo tree -p tutti-dsp` shows no `glam`.
-2. **HRTF set, convolver and sphere build.** `spatial/hrtf.rs`, `sphere.rs`;
+2. **HRTF set, convolver and sphere build.** (**Landed**, `dsp/spatial-hrtf`:
+   `tutti-dsp`'s `HrtfBinaural`, `HrtfBinauralError`, `MIN_SPHERE_RATE`, `MAX_SPHERE_RATE`,
+   `MAX_PREPARED_RATE`, `HRTF_STEP`, `HRTF_LATENCY`; `AngleSmoother` stays in the node, which
+   hands the convolver a closure that returns the aimed direction once per completed step, so
+   the render is bit-identical and the digests are unedited.) `spatial/hrtf.rs`, `sphere.rs`;
    `HrtfBinauralError` and the constants re-exported unchanged. Proof:
    `hrtf_render.rs` and the contract suite unedited; the scalar-planner determinism
    note of `RealFft` applies.

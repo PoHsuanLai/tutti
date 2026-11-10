@@ -10,11 +10,14 @@ that already exists: doc 021's steps, doc 016's §7, doc 023's steps and doc
 same order. It is a work list, not a new design: an item that changes a design
 says which doc's section it amends.
 
-Status: plan only. The owner asked (2026-11-10) for every item to be
-implemented, and for the work to go through the existing plan rather than run
-beside it. Decisions taken here follow the delegation rule (correctness first,
-then cleanliness, and record the choice). Each one is marked **Decided** with
-its reason, so a reviewer can overturn it in this PR.
+Status: the plan, decided. The owner asked (2026-11-10) for every item to be
+implemented, for the work to go through the existing plan rather than run
+beside it, and then for the plan's decisions to be taken on their behalf. Each
+is marked **Decided** with its reason, under the delegation rule: correctness
+first, then cleanliness. One was revised on review, before the merge: the
+any-thread parameter write in §8. The first draft routed it through a queue
+that has one producer by construction, and would have added a main-thread
+tick of latency to a write that is immediate today. P1 is #413.
 
 ## 1. Sources
 
@@ -316,10 +319,23 @@ Today CLAP uses `max(0)` plus `clamp_times`, VST3 uses
     health half below.
   - `set_parameter_value` is callable from any thread today
     (`set_parameter_rt`), but `Control::set_parameter` takes the
-    `MainThread` token. **Decided:** the handle queues the edit through the
-    `EditQueue` (§5.2), and the controller drains it on its main-thread tick.
-    Callers off the main thread keep a wait-free write, and `Control` keeps
-    its token. A second write trait would be two ways to set one parameter.
+    `MainThread` token. **Decided:** each route has one job.
+    - **Main thread:** `Control::set_parameter`, token-bound. It reaches a
+      plugin that is not rendering, and the next save.
+    - **Any thread, realtime:** a `Param<Normalized>` cell per parameter,
+      which the node reads once per block and delivers in-band at the
+      block's first frame, through its `ParamDelivery`, for both hostings.
+      This is how a native node takes a write (`write_param`). It is
+      wait-free, takes any number of writers, and keeps the last value. A
+      generation counter beside the cells lets a block with no write skip
+      the scan.
+    - **What goes:** the bridge's out-of-band `SetParameter` command. It
+      reaches the server outside the block that carries the automation, so
+      the two can arrive in either order. VST2's `try_lock` write goes too.
+
+    The handle cannot use the `EditQueue` (§5.2). Its sink has one producer,
+    the controller (`EditSink::send` takes `&mut self`), and draining it on
+    a main-thread tick would delay a write that today is immediate.
   - **`Health`** is a trait of its own: crash, crash cause, rate refusal,
     block counts, terminate, dropped events. It is IPC only, and the handle
     holds an `Option<&dyn Health>`. In-process stops returning constant
@@ -328,8 +344,10 @@ Today CLAP uses `max(0)` plus `clamp_times`, VST3 uses
     calls that `Editor` lacks.
   - A render-mode change in mid-life has no `Control` route. **Decided:** it
     is `HostOp::Reconfigure` with `Prepare::with_mode`, driven through the
-    lifecycle, as the server already does by hand. `HostRenderMode` (D17)
-    goes in 4b, and P5 exports it until then.
+    lifecycle, as the server already does by hand. A format whose mode is a
+    live flag answers it without a restart: VST2's `noRealTime` is the
+    "mode as restart or live" hook of §9, so VST2 keeps its live switch.
+    `HostRenderMode` (D17) goes in 4b, and P5 exports it until then.
 - **The two capability backends** (`SubprocessBackend`,
   `InProcessVst2Backend`) become `IpcController<F>` and `InProc`'s
   controller in 4b and 4a. The ordering of VST2's `editor_idle` pump goes

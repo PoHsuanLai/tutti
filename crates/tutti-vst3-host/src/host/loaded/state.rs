@@ -66,7 +66,7 @@ impl Vst3Loaded {
     /// implement `IUnitInfo` or refuses the id.
     ///
     /// The one write on this interface. Pass
-    /// [`UnitId::ROOT`] to select the implicit
+    /// [`UnitId::ROOT`](crate::UnitId::ROOT) to select the implicit
     /// top-level unit. Main/UI thread.
     #[must_use]
     pub fn select_unit(&mut self, main: &MainThread, unit_id: crate::UnitId) -> bool {

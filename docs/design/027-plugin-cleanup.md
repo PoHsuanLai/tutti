@@ -156,6 +156,24 @@ code and about 500 lines of tests cover the same spec.
   and its own scaling: CLAP volume is a gain in `0..=4`, VST3 volume is
   unit-range, and VST3 tuning is `0.5 + st/240`.
 
+Four limits, agreed with the MIDI lane (2026-11-10), keep the module from
+starting a second copy of anything that already has an owner:
+
+1. The MIDI 1 path is `tutti_midi_protocol::midi1(Message)`, with
+   `Voice1::bytes`, `System::bytes` and `tutti_ump::frame` under it. `midi1`
+   already writes a banked Program Change and every Note On or Off attribute.
+   A format that needs more asks the MIDI lane to add it there.
+2. The neutral value stays on the host side. It is never an event-port, wire
+   or stored type: the graph and IPC carry `Ump`.
+3. Value scaling comes from `tutti-midi-protocol` (`widen`, `narrow_*`, and
+   the float converters, which the MIDI lane moves there from
+   `tutti_midi_types::convert` before 017 stage 5b). Only a format's own
+   scaling stays in its host.
+4. The module mints no note id. It takes the one `NoteId` (M8), or the
+   format's `i32` derived from it. **Decided:** the module owns
+   `PerNoteBendRanges`, its only production consumer, and 017 stage 5b's move
+   targets it.
+
 This is 017 stage 3c's "one table per format" decision, built once rather
 than four times. It lands before 023 steps 4 and 7, which would otherwise add
 more per-format note-expression code. Oracle: M2-104 for the messages, plus a

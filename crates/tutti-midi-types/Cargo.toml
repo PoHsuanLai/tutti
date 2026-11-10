@@ -31,7 +31,7 @@ default = []
 #
 # Forwards to `tutti-types`: `MpeZoneConfig` is built from that crate's
 # newtypes, so without the forward the derives here would fail to resolve.
-serde = ["dep:serde", "tutti-types/serde", "tutti-ump/serde"]
+serde = ["dep:serde", "tutti-types/serde", "tutti-ump/serde", "tutti-midi-protocol/serde"]
 
 [dependencies]
 bitflags = "2"

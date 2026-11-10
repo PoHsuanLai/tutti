@@ -84,6 +84,14 @@ that pays, and the compiler packs tasks too cheap to dispatch alone.
   rate is not the graph's with `InletError::RateMismatch`. An inlet does not
   resample and two clocks drift; what fills or empties the ring is counted,
   never blocked on. Gain is a node downstream, not the inlet's.
+- Copying events into the graph is the **event inlet**: `EventInletNode`
+  (`tutti-graph`), a ring one producer (`EventInletWriter`, not `Clone`) fills with
+  `push(At, Ump)` or `push_at(Moment, Ump)`, held on `Env::due` until its frame
+  (late lands at offset 0 and is counted), `Graph::open_event_inlet` /
+  `add_event_inlet` (`tutti-session`). No rate to refuse: a `Moment` carries
+  its own. A note-off or panic controller (`Ump::is_panic_controller`) is kept
+  over any other event; four counts (`lost`, `evicted`, `refused`, `late`);
+  its fork is silent, unlike the audio inlet's.
 - Doc 013 records the defects found and the types that address them. Update
   it when the code it describes or a decision changes.
 - **Main-thread entries take a token.** An editor, timer, run-loop, state or
@@ -496,12 +504,17 @@ list (normal and build edges; dev-dependencies may go anywhere).
   `SysexMessage` (checked once: `F0`, 7-bit bytes, `F7`), and the one SysEx7
   reassembler is `SysexAssembler<B>` over a buffer the caller sizes
   (`SysexAssembler::room_for`): it allocates nothing, holds one open message
-  across all groups and counts what it drops.
+  across all groups and counts what it drops; `SYSEX7_MAX_PAYLOAD` is tutti's
+  64 KiB cap on one message (the spec sets none), for sizing an assembler. An RPN
+  address is `Rpn` (`bank`, `index`, and the named `PITCH_BEND_SENSITIVITY`,
+  `MPE_CONFIGURATION`, `PER_NOTE_PITCH_BEND_SENSITIVITY`), never a bare `u8` pair.
 - `tutti-midi-protocol` depends on `tutti-ump` alone, keeps every module
   private (`tutti_midi_protocol::widen`; CI runs the per-module path gate on
   it) and is `#![forbid(unsafe_code)]`. It holds no state and allocates
   nothing. A consumer's call to `widen` is transitional: the stage 3 translator
-  calls it at the input edge and consumers drop theirs.
+  calls it at the input edge and consumers drop theirs. It also holds
+  `PitchBendSensitivity`, the 7.25 fixed-point range of RPN #00/07 (its `serde`
+  feature is optional and carries the bits, for `MpeZoneConfig`).
 - `tutti-voicing` depends on `tutti-ump`, `tutti-midi-protocol` and `tutti-types`
   only, keeps every module private (`tutti_voicing::Voicing`; CI runs the
   per-module path gate on it), is `#![forbid(unsafe_code)]`, `publish = false`

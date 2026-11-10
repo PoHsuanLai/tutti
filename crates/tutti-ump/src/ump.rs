@@ -96,6 +96,32 @@ impl Ump {
         }
     }
 
+    /// Whether this is a channel-mode panic: a Control Change (a MIDI 1.0 or
+    /// MIDI 2.0 channel-voice packet, types `0x2` and `0x4`) of All Sound Off
+    /// (controller 120) or All Notes Off (controller 123).
+    ///
+    /// With a note-off ([`is_note_off`](Self::is_note_off)) these are the
+    /// packets whose loss leaves a sound hanging: a queue that must drop an
+    /// event keeps them in preference to any other. The other channel-mode
+    /// controllers (121, 122, 124 to 127) end nothing and are not panics.
+    /// Controller numbers and their meanings: MIDI 1.0 Detailed Specification,
+    /// "Channel Mode Messages" (CC 120 All Sound Off, CC 123 All Notes Off);
+    /// the MIDI 2.0 Control Change (M2-104, "MIDI 2.0 Control Change
+    /// Message") keeps the index in the same bits of the first word.
+    #[inline]
+    #[must_use]
+    pub const fn is_panic_controller(&self) -> bool {
+        let w = self.0[0];
+        match w >> 28 {
+            0x2 | 0x4 => {
+                let status = (w >> 20) & 0xf;
+                let controller = (w >> 8) & 0x7f;
+                status == 0xb && (controller == 120 || controller == 123)
+            }
+            _ => false,
+        }
+    }
+
     /// The held-key fact of this packet, for an observer that must close what
     /// a stream opened: a note on or off by its `(protocol, group, channel,
     /// note)` key, or the sustain pedal (CC 64) of a channel going down or up.
@@ -286,6 +312,33 @@ mod tests {
         assert!(!Ump([0x4090_3c00, 0x8000_0000, 0, 0]).is_note_off());
         assert!(!Ump([0x1080_0000, 0, 0, 0]).is_note_off());
         assert!(!Ump([0; 4]).is_note_off());
+    }
+
+    /// Controllers 120 and 123 of a Control Change, in either protocol, on any
+    /// channel and group, are panics; no other controller, no other message
+    /// type, and no other status with the same data byte is.
+    ///
+    /// Mutation (run): matching only 123 fails the 120 rows; matching 121 or
+    /// 124 as well fails the channel-mode rows; dropping the status test
+    /// accepts the note-on with data byte 120; dropping the type test
+    /// accepts the SysEx7 packet.
+    #[test]
+    fn panic_controllers_are_recognised() {
+        let m1 = |status: u32, cc: u32| Ump([0x2000_0000 | (status << 16) | (cc << 8), 0, 0, 0]);
+        assert!(m1(0xb0, 120).is_panic_controller());
+        assert!(m1(0xb0, 123).is_panic_controller());
+        assert!(m1(0xbf, 123).is_panic_controller());
+        assert!(Ump([0x2000_0000 | (0xb3 << 16) | (120 << 8) | 5, 0, 0, 0]).is_panic_controller());
+        assert!(Ump([0x40b5_7800, 0, 0, 0]).is_panic_controller());
+        assert!(Ump([0x40bf_7b00, 0, 0, 0]).is_panic_controller());
+        for cc in [0u32, 64, 119, 121, 122, 124, 127] {
+            assert!(!m1(0xb0, cc).is_panic_controller(), "CC {cc}");
+        }
+        assert!(!m1(0x90, 120).is_panic_controller(), "a note-on, key 120");
+        assert!(!m1(0x80, 123).is_panic_controller(), "a note-off, key 123");
+        assert!(!Ump([0x4090_7800, 0, 0, 0]).is_panic_controller());
+        assert!(!Ump([0x30b0_7800, 0, 0, 0]).is_panic_controller(), "SysEx7");
+        assert!(!Ump([0x10b0_7800, 0, 0, 0]).is_panic_controller(), "System");
     }
 
     #[test]

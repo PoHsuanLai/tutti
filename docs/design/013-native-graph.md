@@ -6643,6 +6643,7 @@ the four lanes above, the graph's own surface is:
 | Tap and level meter on any port | Built (`Op::Tap`, `Op::Meter`) |
 | Event tap (any event output, out to a thread) | Built (`Op::EventTap`, `EventTapReader`, `Graph::open_event_tap`; doc 017, stage E1) |
 | Inlet (a thread's ring into the graph) | Built (`Graph::open_inlet`; `InletNode` is its implementation, not a node an author adds) |
+| Event inlet (a thread's events into the graph on their frame) | Built (`Graph::open_event_inlet`; `EventInletNode` is its implementation, not a node an author adds; doc 017, stage E2) |
 | Event fan-in (merge) | Built (`Op::EventMerge`) |
 | Param modulation and automation on a param port | Built (doc 014: the compiler's lane per param) |
 | Transport and tempo | Built (`Env`) |
@@ -6671,7 +6672,8 @@ the four lanes above, the graph's own surface is:
   across plans by `EventTapId` (a port that goes missing keeps its table entry
   and gets no op), and not in a fork. The reference interpreter knows no taps,
   audio or event, so the serial/pooled comparison and analytic figures hold it
-  (`tests/event_tap.rs`). The event inlet (`Graph::open_event_inlet`) is E2.
+  (`tests/event_tap.rs`). The **event inlet is built** too (E2): `EventInletNode` over a `ringbuf` ring,
+  a waiting list on `Env::due`, a silent fork, `Moment` in `tutti-types`.
   It is the MIDI lanes' work (doc 017 owns the event side); this document
   records only that it belongs to the graph.
 

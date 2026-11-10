@@ -23,7 +23,7 @@ use arrayvec::ArrayVec;
 use parking_lot::Mutex;
 use tutti_graph::{Cx, Offset};
 use tutti_tempo::{Cursor, TempoMap};
-use tutti_transport::{ProjectMeter, TempoReader};
+use tutti_transport::TempoReader;
 use tutti_types::Samples;
 use tutti_vst2_host::{ChannelLayout, PluginInfo, Vst2ProcessContext, WireMidi};
 
@@ -167,7 +167,7 @@ pub(super) enum RateDelivery {
 #[derive(Clone, Debug)]
 pub(super) struct TransportFeed {
     /// The node's meter slot, shared with its controls
-    /// ([`InProcessVst2Client::meter`]), so a meter installed through them
+    /// ([`InProcessVst2Client::controls`]), so a meter installed through them
     /// reaches the node the audio thread runs; a fork has a slot of its own
     /// ([`forked`](Self::forked)). Control side only: the block reads
     /// through `source`.
@@ -181,6 +181,11 @@ pub(super) struct TransportFeed {
 }
 
 impl TransportFeed {
+    /// A handle on the node's meter cell: what its controls install through.
+    pub(super) fn meter(&self) -> PluginMeter {
+        self.meter.clone()
+    }
+
     /// No meter installed, nothing rendered.
     pub(super) fn new() -> Self {
         Self::over(PluginMeter::default())
@@ -376,39 +381,6 @@ impl InProcessVst2Client {
         }
     }
 
-    /// Gives the plugin the project meter, for the time signature and bar
-    /// its `audioMasterGetTime` snapshot carries. The node's meter follows
-    /// the project meter, so an edit the host publishes there reaches the
-    /// running plugin with nothing re-installed. Replaces any meter installed
-    /// before.
-    ///
-    /// The transport itself needs no install: each block reads it from the
-    /// graph (the transport the block's input was rendered at). The snapshot
-    /// reaches plugins declaring [`Features::TRANSPORT`], which the
-    /// in-process loader declares for every VST2.
-    pub fn set_meter(&self, meter: ProjectMeter) {
-        self.transport.meter.set_meter(meter);
-    }
-
-    /// Drops the meter; the plugin is told 4/4 from bar 0.
-    pub fn clear_meter(&self) {
-        self.transport.meter.clear_meter();
-    }
-
-    /// Whether a meter is installed.
-    #[must_use]
-    pub fn has_meter(&self) -> bool {
-        self.transport.meter.has_meter()
-    }
-
-    /// The node's meter cell, as a handle of its own: the same cell as
-    /// [`set_meter`](Self::set_meter), and what inserting the node hands
-    /// back as its controls, so a host can install the meter after the
-    /// node has moved into the graph.
-    pub fn meter(&self) -> PluginMeter {
-        self.transport.meter.clone()
-    }
-
     /// Sets the render mode the plugin reads through
     /// `audioMasterGetCurrentProcessLevel`.
     ///
@@ -576,6 +548,7 @@ fn apply_params(instance: &mut Instance, params: &ParamDelivery) {
 mod transport_tests {
     use super::*;
     use tutti_graph::{Env, Transport, TransportChanges, TransportHistory};
+    use tutti_transport::ProjectMeter;
     use tutti_types::Latency;
     use tutti_types::TimeSignature;
     use tutti_types::{

@@ -104,7 +104,7 @@ pub use crate::util::node::ParameterChangeSink;
 pub(crate) use crate::util::node::{InvalidateSink, RefreshSink};
 pub use capability_view::TransportView;
 pub(crate) use capability_view::is_declined;
-pub use controls::PluginControls;
+pub use controls::{NodeControls, PluginControls};
 pub use meter::PluginMeter;
 pub use param_delivery::ParamDeliveryStats;
 pub(crate) use tutti_plugin_ipc::MidiIntake;
@@ -495,7 +495,7 @@ impl PluginClient<Unbound> {
             self.params.iter().copied(),
             self.controls.delivery_counters(),
         );
-        let meter = self.controls.meter.reader();
+        let meter = self.controls.meter().reader();
         let Self {
             bridge,
             descriptor,
@@ -695,15 +695,6 @@ impl<S> PluginClient<S> {
     /// queue is full.
     pub fn set_render_mode(&self, mode: tutti_plugin_types::RenderMode) -> bool {
         self.bridge.set_render_mode_rt(mode)
-    }
-
-    /// Installs the project meter, from which the plugin's transport gets its
-    /// time signature and bar.
-    ///
-    /// The transport itself needs no install: the node reads it from each
-    /// block. See [`PluginControls::set_meter`].
-    pub fn set_meter(&self, meter: tutti_transport::ProjectMeter) {
-        self.controls.set_meter(meter);
     }
 
     /// Used by `PluginHandle`.

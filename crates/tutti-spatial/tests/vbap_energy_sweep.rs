@@ -103,7 +103,7 @@ fn tick(node: &mut VbapPannerNode, input: [f32; 2], out: &mut [f32]) {
 fn gains_at(node: &mut VbapPannerNode, azimuth_deg: f32) -> Vec<f32> {
     node.controls()
         .set_position(Azimuth::new(azimuth_deg), Elevation::new(0.0f32));
-    // Width 0 takes the panner's mono-fold branch (`frame_gains`), so a [1, 1] frame
+    // Width 0 takes the panner's mono-fold branch (`VbapKernel::gains`), so a [1, 1] frame
     // arrives at the panner as exactly 1.0 and the outputs are the raw gains.
     node.controls().set_width(StereoWidth::new(0.0f32));
 
@@ -338,7 +338,7 @@ fn a_surrounding_layout_does_not_fold_its_rear_arc() {
 
 /// Spread is applied on the stereo-width path, not silently dropped.
 ///
-/// The width>0 branch of `frame_gains` must reach `apply_spread` too, or a
+/// The width>0 branch of `VbapKernel::gains` must reach `apply_spread` too, or a
 /// spread set on a node fed any non-zero width would do nothing at all. Width
 /// and spread are orthogonal
 /// controls (width separates two virtual sources, spread smears each across the

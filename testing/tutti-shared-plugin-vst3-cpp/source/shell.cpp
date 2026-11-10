@@ -27,7 +27,12 @@ class SharedProcessor : public AudioEffect
 {
 public:
 	shared::Core core;
-	SharedProcessor () { setControllerClass (kControllerUID); }
+	SharedProcessor ()
+	{
+		setControllerClass (kControllerUID);
+		// What the transcript records of a block's transport (core.rs, "State").
+		processContextRequirements.needTempo ().needProjectTimeMusic ().needTransportState ();
+	}
 	static FUnknown* createInstance (void*) { return (IAudioProcessor*)new SharedProcessor (); }
 
 	tresult PLUGIN_API initialize (FUnknown* ctx) SMTG_OVERRIDE
@@ -77,6 +82,16 @@ public:
 	}
 	tresult PLUGIN_API process (ProcessData& d) SMTG_OVERRIDE
 	{
+		if (auto* c = d.processContext)
+		{
+			uint32_t f = 0;
+			if (c->state & ProcessContext::kPlaying) f |= shared::kPlaying;
+			if (c->state & ProcessContext::kRecording) f |= shared::kRecording;
+			if (c->state & ProcessContext::kCycleActive) f |= shared::kCycle;
+			if (c->state & ProcessContext::kTempoValid) f |= shared::kTempoValid;
+			if (c->state & ProcessContext::kProjectTimeMusicValid) f |= shared::kBeatValid;
+			core.logTransport (0, f, c->tempo, c->projectTimeMusic);
+		}
 		if (d.inputParameterChanges)
 			for (int32 q = 0; q < d.inputParameterChanges->getParameterCount (); ++q)
 				if (auto* queue = d.inputParameterChanges->getParameterData (q))

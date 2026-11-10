@@ -273,7 +273,7 @@ pub enum MidiMessage {
     /// bits 0..3.
     TimeCode {
         /// The 7-bit quarter-frame byte. Feed it straight to
-        /// [`MtcDecoder::feed`](crate::sync::MtcDecoder::feed), which owns the
+        /// `tutti_midi_runtime::MtcDecoder::feed`, which owns the
         /// nibble reassembly.
         code: u8,
     },

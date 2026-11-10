@@ -13,10 +13,11 @@ use std::path::Path;
 use midly::Smf;
 use midly::live::LiveEvent;
 use tutti_midi_types::ump::flex_tempo_bpm;
-use tutti_midi_types::{ParsedClipFile, from_midi1_bytes, normalize};
+use tutti_midi_types::{from_midi1_bytes, normalize};
 use tutti_types::{Beat, Bpm, Seconds};
 use tutti_ump::Ump;
 
+use crate::clip_file::ParsedClipFile;
 use crate::smf::{ParsedMidiFile, SmfTrack, tracks_of};
 use crate::{Error, MidiFileKind, Result};
 

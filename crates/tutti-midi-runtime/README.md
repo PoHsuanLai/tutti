@@ -23,6 +23,9 @@ Pure MIDI values live in `tutti-midi-types`; OS ports live in
   [`MidiOutNode`]).
 - [`ClockMaster`], [`JrClock`] and [`JrStamper`]: engine-produced MIDI *out*
   (Beat Clock, MTC, JR timestamps).
+- [`MidiClockDecoder`], [`MtcDecoder`], [`SmpteTimecode`] and
+  [`SmpteFrameRate`]: the inbound half of sync (Beat Clock and MTC decoders),
+  beside the master that sends them.
 - [`MpeIngest`]: the input-edge transform that rewrites classic-MPE channel
   spread into native MIDI 2.0 per-note messages.
 

@@ -4,7 +4,7 @@
 //! Feed the relevant inbound System Real-Time events (Timing Clock 0xF8, Start
 //! 0xFA, Continue 0xFB, Stop 0xFC) via [`MidiClockDecoder::feed`] — the
 //! [`Ump`]-taking entry that mirrors
-//! [`MtcDecoder::feed`](crate::sync::MtcDecoder::feed) — or, if you've already
+//! [`MtcDecoder::feed`](crate::MtcDecoder::feed) — or, if you've already
 //! demultiplexed the stream, call [`tick`](MidiClockDecoder::tick) /
 //! [`start_msg`](MidiClockDecoder::start_msg) etc. directly.
 
@@ -60,7 +60,7 @@ impl MidiClockDecoder {
 
     /// Feeds one inbound [`Ump`], dispatching System Real-Time transport
     /// messages to the right handler — the ergonomic entry that mirrors
-    /// [`MtcDecoder::feed`](crate::sync::MtcDecoder::feed), so you can route raw
+    /// [`MtcDecoder::feed`](crate::MtcDecoder::feed), so you can route raw
     /// input packets straight in without demultiplexing the stream yourself.
     ///
     /// Recognises Timing Clock (0xF8, uses `timestamp_us` for tempo), Song

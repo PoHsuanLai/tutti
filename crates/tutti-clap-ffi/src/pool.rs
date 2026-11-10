@@ -44,15 +44,19 @@ use clap_sys::plugin::clap_plugin;
 ///
 /// # Safety
 ///
-/// The implementor owes the contract below, which this crate cannot check: a
-/// `try_run` that returns `true` has no participant left inside `job`, since
-/// `job` borrows the caller's stack, and a participant that is slow, leaked or
-/// late would otherwise run the plugin's tasks on a dead frame. (The same
-/// contract `tutti_graph::Pool` states for its own jobs.)
+/// The implementor owes the contract below, which this crate cannot check.
+/// `job` borrows the caller's stack (the task counter, the plugin), so when
+/// `try_run` returns `true`:
 ///
-/// The contract `clap.thread-pool` needs, and no more: the caller joins the
-/// job, `try_run` returns after every participant has left it, and a busy pool
-/// refuses rather than waits.
+/// - no participant is inside `job`, and none can enter it later (a slow,
+///   leaked or late helper would run the plugin's tasks on a dead frame);
+/// - every participant ran `job` with its own `i`, distinct from the others';
+/// - every task ran: `true` means the job was run to completion by the
+///   participants that took part (the caller included), not skipped.
+///
+/// When the pool is busy it runs nothing and returns `false` rather than
+/// wait. A `try_run` that returns early with `true` is a use-after-free of
+/// `request_exec`'s stack.
 ///
 /// Safe code cannot claim it:
 ///
@@ -86,15 +90,62 @@ pub unsafe trait TaskPool: Send + Sync + 'static {
     fn try_run(&self, wake: usize, job: &(dyn Fn(usize) + Sync)) -> bool;
 }
 
-/// A [`tutti_graph::Pool`] as a [`TaskPool`]: every participant runs under the
-/// audio thread's float mode, as the helpers run the plugin's DSP on its
-/// behalf.
+/// A [`tutti_graph::WorkerPool`] as a [`TaskPool`]: every participant runs
+/// under the audio thread's float mode, as the helpers run the plugin's DSP on
+/// its behalf.
+///
+/// It takes the one pool whose `try_run` is known to keep the contract (its
+/// gate closes a job to late entrants and waits for the ones inside), not any
+/// `tutti_graph::Pool`: that trait is safe to implement, and a wrong
+/// implementation would make the `unsafe impl` below false.
 pub struct GraphPool(Arc<dyn tutti_graph::Pool>);
 
 impl GraphPool {
     /// `pool`, served to a plugin's `request_exec`.
+    ///
+    /// Only a `WorkerPool` is accepted. Another pool is refused at compile
+    /// time, since a safe `tutti_graph::Pool` that returned `true` early would
+    /// break the `unsafe impl` below:
+    ///
+    /// ```compile_fail
+    /// use std::sync::Arc;
+    ///
+    /// struct Early;
+    ///
+    /// impl tutti_graph::Pool for Early {
+    ///     fn participants(&self) -> usize {
+    ///         2
+    ///     }
+    ///     fn run(&self, _wake: usize, _job: &(dyn Fn(usize) + Sync)) {}
+    ///     fn try_run(&self, _wake: usize, _job: &(dyn Fn(usize) + Sync)) -> bool {
+    ///         true
+    ///     }
+    ///     fn waits(&self) -> tutti_rt::BlockWaits {
+    ///         unimplemented!()
+    ///     }
+    /// }
+    ///
+    /// let _ = tutti_clap_ffi::GraphPool::new(Arc::new(Early));
+    /// ```
+    // Mutation record (the doctest above): taking `Arc<dyn tutti_graph::Pool>`
+    // in `new` makes it compile, so the doctest fails.
     #[must_use]
-    pub fn new(pool: Arc<dyn tutti_graph::Pool>) -> Self {
+    pub fn new(pool: Arc<tutti_graph::WorkerPool>) -> Self {
+        Self(pool)
+    }
+
+    /// Any [`tutti_graph::Pool`], for a test that wraps the worker pool (to
+    /// gate allocation on its participants, say).
+    ///
+    /// # Safety
+    /// `pool.try_run` must keep [`TaskPool::try_run`]'s contract: when it
+    /// returns `true`, no participant is inside the job or can enter it later,
+    /// and every participant ran it. A wrapper that only decorates the job of
+    /// a `WorkerPool` does.
+    #[cfg(feature = "test-support")]
+    #[doc(hidden)]
+    #[must_use]
+    pub unsafe fn from_pool_for_test(pool: Arc<dyn tutti_graph::Pool>) -> Self {
         Self(pool)
     }
 }
@@ -107,10 +158,12 @@ impl std::fmt::Debug for GraphPool {
     }
 }
 
-// SAFETY: `tutti_graph::Pool::try_run` has the contract `TaskPool::try_run`
-// asks for (`par.rs`: it "returns only once no call of `job` is still
-// running"), and the wrapper only adds `with_no_denormals` inside the job, which
-// returns before the participant leaves it.
+// SAFETY: `GraphPool::new` takes a `WorkerPool`, whose `try_run` runs the job
+// through its gate: a job is open to participants only while the gate is held,
+// the caller waits for every participant to leave before it returns `true`, and
+// a busy gate returns `false` having run nothing. The wrapper only adds
+// `with_no_denormals` inside the job, which returns before the participant
+// leaves it. (`from_pool_for_test` puts the same duty on its caller.)
 unsafe impl TaskPool for GraphPool {
     fn participants(&self) -> usize {
         self.0.participants()
@@ -222,10 +275,18 @@ impl<'a> PoolRequest<'a> {
             exec: self.exec,
         };
         let wake = (num_tasks as usize).min(self.pool.participants());
-        self.pool.try_run(wake, &|_| {
+        let ran = self.pool.try_run(wake, &|_| {
             let _task = InTask::enter();
             tasks.drain();
-        })
+        });
+        // `true` is the pool's word that every task ran (`TaskPool`'s contract):
+        // every index has been claimed, and the participants that claimed them
+        // are out of the job.
+        debug_assert!(
+            !ran || tasks.next.load(Ordering::Relaxed) >= tasks.num_tasks,
+            "a pool answered `true` without running every task"
+        );
+        ran
     }
 }
 

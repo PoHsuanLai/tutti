@@ -35,7 +35,7 @@
 //!    the spec gives to the audio-thread role when the plugin is active, takes
 //!    the claim too.
 //! 3. *Lifecycle needs the whole instance.* `activate` needs `&mut Plugin` and
-//!    no live `AudioSide`; `deactivate` and `destroy` take the claim, so they
+//!    no live `AudioSide`; `deactivate` and `destroy` take the roles lock, so they
 //!    wait out a running `process`.
 //! 4. *Destroy is the main thread's, once, last.* `Plugin`'s drop sets
 //!    `retired`, takes the claim (any `process` in flight has finished and any
@@ -516,6 +516,13 @@ impl Plugin {
         {
             return Err(ActivateError::BadConfig);
         }
+        // Read before the plugin is activated: these are the ports the host
+        // configured its buffers against, and `[!active]` entries such as
+        // `audio-ports-config` can only change them while it is inactive.
+        let layout = PortLayout {
+            inputs: self.port_channels(main, true),
+            outputs: self.port_channels(main, false),
+        };
         // SAFETY: the instance is alive.
         let Some(activate) = (unsafe { (*self.core.raw()).activate }) else {
             return Err(ActivateError::Refused);
@@ -527,10 +534,6 @@ impl Plugin {
         if !unsafe { activate(self.core.raw(), sample_rate, min_frames, max_frames) } {
             return Err(ActivateError::Refused);
         }
-        let layout = PortLayout {
-            inputs: self.port_channels(main, true),
-            outputs: self.port_channels(main, false),
-        };
         *self.core.layout.lock().unwrap_or_else(|p| p.into_inner()) = Arc::new(layout);
         self.core.min_frames.store(min_frames, Ordering::Release);
         self.core.max_frames.store(max_frames, Ordering::Release);
@@ -541,19 +544,21 @@ impl Plugin {
     /// `plugin.deactivate` (after `stop_processing` if it was running), if the
     /// plugin is active. Waits for any audio-side call in flight.
     pub fn deactivate(&mut self, _main: &MainThread) {
-        let _claim = self.core.roles.claim();
-        self.stop_and_deactivate_claimed();
+        let claim = self.core.roles.claim_lifecycle();
+        self.stop_and_deactivate_claimed(&claim);
     }
 
-    fn stop_and_deactivate_claimed(&self) {
+    fn stop_and_deactivate_claimed(&self, claim: &crate::roles::LifecycleClaim<'_>) {
         if self.core.processing.swap(false, Ordering::Relaxed) {
             // SAFETY: the instance is alive; the claim serialises audio-side
             // entries; `stop_processing` follows a `start_processing`.
-            unsafe {
+            // `stop_processing` is `[audio-thread]`, so it is answered as such;
+            // `deactivate` below is `[main-thread]` and is not.
+            claim.audio(|| unsafe {
                 if let Some(stop) = (*self.core.raw()).stop_processing {
                     stop(self.core.raw());
                 }
-            }
+            });
         }
         if self.core.active.swap(false, Ordering::AcqRel) {
             // SAFETY: the instance is alive, active, and quiescent: the claim
@@ -717,6 +722,9 @@ impl Plugin {
     // ---- state -----------------------------------------------------------
 
     /// `state.save` into `out`.
+    ///
+    /// `out` takes at most 1 GiB: a plugin whose state is larger has its write
+    /// refused (`-1`), fails to save, and the call answers `Failed`.
     ///
     /// # Errors
     /// The extension or entry is missing, or the plugin answered `false`.
@@ -1361,8 +1369,8 @@ impl Drop for Plugin {
         // closed the editor has nothing left here.
         self.destroy_gui(false);
         self.core.retired.store(true, Ordering::Release);
-        let claim = self.core.roles.claim();
-        self.stop_and_deactivate_claimed();
+        let claim = self.core.roles.claim_lifecycle();
+        self.stop_and_deactivate_claimed(&claim);
         // SAFETY: the instance is alive and nothing else can call it: the
         // audio side sees `retired` under the claim held here, and the
         // main-thread half is this value. Destroyed exactly once, here.

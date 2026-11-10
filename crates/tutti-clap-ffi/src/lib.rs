@@ -39,7 +39,7 @@ pub use plugin::{
     ActivateError, AudioPortInfo, CallError, Extension, Plugin, PortConfigRequest, PortKind,
 };
 pub use pool::{GraphPool, PoolHandle, TaskPool};
-pub use roles::{AudioClaim, ThreadRoles};
+pub use roles::{AudioClaim, LifecycleClaim, ThreadRoles};
 pub use stream::{InputStream, OutputStream};
 
 // Test-only global allocator for the no-allocation gates.

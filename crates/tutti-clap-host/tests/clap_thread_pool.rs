@@ -15,6 +15,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use assert_no_alloc::AllocDisabler;
+use tutti_clap_ffi::GraphPool;
 use tutti_clap_host::{AudioBuffer32, ClapLoaded, ClapProcessContext, LoadOptions};
 use tutti_clap_test_plugin::ThreadPoolCapture;
 use tutti_graph::Pool;
@@ -256,7 +257,7 @@ fn a_request_from_a_pool_worker_is_refused() {
     let _l = PROBE_LOCK.lock().unwrap_or_else(|p| p.into_inner());
     let shared = pool(4);
     let mut inst = load(16, 0, false);
-    inst.set_thread_pool(Some(shared.clone() as Arc<dyn Pool>));
+    inst.set_thread_pool(Some(shared.clone()));
     let slot = Mutex::new(&mut inst);
     let processed = std::sync::atomic::AtomicU32::new(0);
     for _ in 0..50 {
@@ -343,15 +344,18 @@ impl Pool for GatedPool {
     }
 }
 
-fn gated(participants: usize) -> Arc<GatedPool> {
-    Arc::new(GatedPool(
+fn gated(participants: usize) -> Arc<GraphPool> {
+    let wrapped = Arc::new(GatedPool(
         WorkerPool::builder()
             .num_threads(participants)
             .spin_budget(Duration::from_micros(1))
             .idle(Duration::from_micros(1))
             .build()
             .expect("a worker pool"),
-    ))
+    ));
+    // SAFETY: `GatedPool` forwards `try_run` to a `WorkerPool` and only wraps
+    // the job it runs in the allocation gate, so the pool's contract holds.
+    Arc::new(unsafe { GraphPool::from_pool_for_test(wrapped) })
 }
 
 /// Serving requests allocates nothing on the audio thread or on the
@@ -364,7 +368,7 @@ fn gated(participants: usize) -> Arc<GatedPool> {
 fn serving_requests_does_not_allocate() {
     let _l = PROBE_LOCK.lock().unwrap_or_else(|p| p.into_inner());
     let mut inst = load(16, 20, false);
-    inst.set_thread_pool(Some(gated(4)));
+    inst.set_task_pool(Some(gated(4)));
     // Warm-up outside the gate: the first block starts processing.
     block(&mut inst);
     assert_no_alloc::assert_no_alloc(|| {
@@ -389,7 +393,7 @@ fn serving_requests_does_not_allocate() {
 fn a_task_that_logs_does_not_allocate() {
     let _l = PROBE_LOCK.lock().unwrap_or_else(|p| p.into_inner());
     let mut inst = load(16, 20, false);
-    inst.set_thread_pool(Some(gated(4)));
+    inst.set_task_pool(Some(gated(4)));
     block(&mut inst);
     switch_bool(b"tutti_test_plugin_set_thread_pool_log\0", true);
     let dropped = inst.log_lines_dropped();

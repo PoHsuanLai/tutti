@@ -82,7 +82,7 @@ pub struct ClapLoaded {
     pub(crate) work: polling::MainThreadWork,
     /// The pool `clap.thread-pool` requests run on, or `None` to refuse them
     /// ([`set_thread_pool`](ClapLoaded::set_thread_pool)).
-    pub(crate) thread_pool: Option<Arc<dyn tutti_graph::Pool>>,
+    pub(crate) thread_pool: Option<Arc<tutti_clap_ffi::GraphPool>>,
 }
 
 impl std::fmt::Debug for ClapLoaded {

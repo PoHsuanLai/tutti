@@ -11,9 +11,12 @@ use tutti_plugin_types::MainThread;
 impl ClapLoaded {
     /// Serializes the plugin's state to bytes via `CLAP_EXT_STATE`.
     ///
+    /// The state is capped at 1 GiB: a plugin whose state is larger fails to
+    /// save, which is a `StateError`.
+    ///
     /// # Errors
     /// [`ClapError::StateError`] if the plugin does not implement state or
-    /// its `save` callback returns failure.
+    /// its `save` callback returns failure (the cap included).
     pub(crate) fn read_state(&self, main: &MainThread) -> Result<Vec<u8>> {
         let mut stream = OutputStream::new();
         match self.plugin.state_save(main, &mut stream) {

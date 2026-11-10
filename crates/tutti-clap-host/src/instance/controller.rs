@@ -86,9 +86,19 @@ impl ClapController {
     /// pool never happens on the audio thread.
     pub fn set_thread_pool(
         &mut self,
-        pool: Option<Arc<dyn tutti_graph::Pool>>,
-    ) -> Option<Arc<dyn tutti_graph::Pool>> {
-        let old = ClapLoaded::set_thread_pool(self, pool);
+        pool: Option<Arc<tutti_graph::WorkerPool>>,
+    ) -> Option<Arc<tutti_clap_ffi::GraphPool>> {
+        self.set_task_pool(pool.map(|pool| Arc::new(tutti_clap_ffi::GraphPool::new(pool))))
+    }
+
+    /// [`set_thread_pool`](Self::set_thread_pool) with the served pool built by
+    /// the caller, for a test that gates a wrapped pool.
+    #[doc(hidden)]
+    pub fn set_task_pool(
+        &mut self,
+        pool: Option<Arc<tutti_clap_ffi::GraphPool>>,
+    ) -> Option<Arc<tutti_clap_ffi::GraphPool>> {
+        let old = ClapLoaded::set_task_pool(self, pool);
         let snapshot = self.pool_snapshot();
         self.pools.publish(PoolCell(snapshot));
         old

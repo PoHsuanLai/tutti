@@ -3,8 +3,8 @@
 
 use std::sync::Arc;
 
-use tutti_clap_ffi::{GraphPool, PoolHandle};
-use tutti_graph::Pool;
+use tutti_clap_ffi::{GraphPool, PoolHandle, TaskPool};
+use tutti_graph::WorkerPool;
 
 use super::ClapLoaded;
 
@@ -23,7 +23,7 @@ impl ClapLoaded {
     /// `pool` — the calling thread taking part — and returns once all have
     /// run. When `pool` is busy (the call comes from a participant of a job
     /// already running on it, a graph block), the request is refused
-    /// ([`Pool::try_run`]) rather than waiting on that job. A pool of one
+    /// ([`tutti_graph::Pool::try_run`]) rather than waiting on that job. A pool of one
     /// participant is treated as none: the plugin's own fallback serves it as
     /// well.
     ///
@@ -33,7 +33,14 @@ impl ClapLoaded {
     /// threads of its own may do better.
     ///
     /// Control thread. Dropping the returned pool may join its threads.
-    pub fn set_thread_pool(&mut self, pool: Option<Arc<dyn Pool>>) -> Option<Arc<dyn Pool>> {
+    pub fn set_thread_pool(&mut self, pool: Option<Arc<WorkerPool>>) -> Option<Arc<GraphPool>> {
+        self.set_task_pool(pool.map(|pool| Arc::new(GraphPool::new(pool))))
+    }
+
+    /// [`set_thread_pool`](Self::set_thread_pool) with the served pool built by
+    /// the caller, for a test that gates a wrapped pool.
+    #[doc(hidden)]
+    pub fn set_task_pool(&mut self, pool: Option<Arc<GraphPool>>) -> Option<Arc<GraphPool>> {
         std::mem::replace(&mut self.thread_pool, pool)
     }
 
@@ -46,7 +53,7 @@ impl ClapLoaded {
         if pool.participants() < 2 {
             return None;
         }
-        let handle = self.plugin.pool_handle(Arc::new(GraphPool::new(pool)))?;
+        let handle = self.plugin.pool_handle(pool)?;
         Some(PoolSnapshot { handle })
     }
 }

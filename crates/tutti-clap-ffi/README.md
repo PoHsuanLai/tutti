@@ -27,24 +27,26 @@ and `tutti-rt`.
 ## How the thread rules are in the types
 
 CLAP annotates every entry with the thread it may be called on. Here a
-`[main-thread]` entry is a method of `Plugin`, which is `Send` but not `Sync`,
-and which takes a `&MainThread`: holding one is the proof, and `ThreadRoles`
-(built from one) is the single place the main thread is named. A `Plugin`
-dropped on another thread calls nothing and leaks the instance, since its
-`gui.destroy` and `destroy` are main-thread entries too. The host callbacks CLAP
-marks `[main-thread]` (timers, descriptors, rescans) are refused when a plugin
-makes them from another thread, `process` included.
-and an `[audio-thread]` entry is a method of `AudioSide`, which takes the
-instance's `AudioClaim` for the whole call. A processor that holds an
-`AudioSide` therefore cannot make a main-thread call, and a controller that
-holds the `Plugin` cannot make an audio-thread one, however the embedder wires
-them.
+`[main-thread]` entry is a method of `Plugin`, which is `Send` but not `Sync`
+and takes a `&MainThread`: holding one is the proof, and `ThreadRoles` (built
+from one) is the single place the main thread is named. An `[audio-thread]`
+entry is a method of `AudioSide`, which takes the instance's `AudioClaim` for
+the whole call. A processor that holds an `AudioSide` therefore cannot make a
+main-thread call, and a controller that holds the `Plugin` cannot make an
+audio-thread one, however the embedder wires them.
+
+A `Plugin` dropped on another thread calls nothing and leaks the instance,
+since its `gui.destroy` and `destroy` are main-thread entries too. The host
+callbacks CLAP marks `[main-thread]` (timers, descriptors, rescans) are refused
+when a plugin makes them from another thread, or from inside an audio-side
+call such as `process`; `deactivate` and `destroy` run under the roles lock
+without becoming the audio thread, so what a plugin calls from them is legal.
 
 The two halves share one instance through an `Arc` of private state, and the
 `unsafe impl Sync` on that state is argued in `plugin.rs`: the entries each half
 calls are the ones CLAP lets run beside each other; audio-side entries are
 serialised by the claim; `activate` needs the main-thread half and no live
-audio half; `deactivate` and `destroy` take the claim, so they wait out a
+audio half; `deactivate` and `destroy` take the roles lock, so they wait out a
 `process` in flight; and a half that outlives the `Plugin` finds the instance
 retired and calls nothing.
 

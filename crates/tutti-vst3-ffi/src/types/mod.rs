@@ -18,4 +18,4 @@ pub use info::{
     Vst3NoteExpressionInfo, Vst3ParameterInfo, Vst3ProgramListInfo, Vst3UnitInfo, keyswitch_type,
     physical_ui_type, prefetchable_support, unit_ids,
 };
-pub use transport::{process_context_flags, to_process_context};
+pub use transport::{ProcessContextRequirements, to_process_context};

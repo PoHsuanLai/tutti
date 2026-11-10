@@ -12,9 +12,9 @@ use vst3::Steinberg::Vst::ePrefetchableSupport_ as Prefetch;
 
 use crate::helpers::sdk_enum_i32;
 pub use tutti_vst3_ffi::{
-    BusInfo, NoteExpressionFlags, ParameterFlags, ProcessMode, Vst3KeyswitchInfo,
-    Vst3NoteExpressionInfo, Vst3ParameterInfo, Vst3ProgramListInfo, Vst3UnitInfo, keyswitch_type,
-    physical_ui_type, process_context_flags, to_process_context, unit_ids,
+    BusInfo, NoteExpressionFlags, ParameterFlags, ProcessContextRequirements, ProcessMode,
+    Vst3KeyswitchInfo, Vst3NoteExpressionInfo, Vst3ParameterInfo, Vst3ProgramListInfo,
+    Vst3UnitInfo, keyswitch_type, physical_ui_type, to_process_context, unit_ids,
 };
 
 pub use tutti_plugin_types::{

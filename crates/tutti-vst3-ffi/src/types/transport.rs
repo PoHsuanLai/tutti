@@ -4,56 +4,54 @@
 use tutti_plugin_types::{TransportInfo, is_usable};
 use vst3::Steinberg::Vst::ProcessContext_::StatesAndFlags_;
 
-/// VST3 `IProcessContextRequirements` flag bits as simple `u32` constants,
-/// mirroring `IProcessContextRequirements_::Flags_` from the Steinberg SDK.
-///
-/// A plugin returns an OR of these from `getProcessContextRequirements` to
-/// declare which [`ProcessContext`](vst3::Steinberg::Vst::ProcessContext)
-/// fields it consumes; [`to_process_context`] only fills (and marks valid) the
-/// fields whose bit is set. See the host's query for the
-/// "everything when absent" ([`u32::MAX`]) fallback.
-///
-/// The casts below are `u32 as u32` no-ops on unix and `c_int as u32`
-/// conversions on Windows (where the SDK enum is signed); allow the lint that
-/// only the former triggers.
-pub mod process_context_flags {
-    use vst3::Steinberg::Vst::IProcessContextRequirements_::Flags_;
+use vst3::Steinberg::Vst::IProcessContextRequirements_::Flags_;
 
-    /// Plugin needs `systemTime`.
-    pub const NEED_SYSTEM_TIME: u32 = crate::sdk_enum_u32(Flags_::kNeedSystemTime);
-    /// Plugin needs `continousTimeSamples`.
-    pub const NEED_CONTINOUS_TIME_SAMPLES: u32 =
-        crate::sdk_enum_u32(Flags_::kNeedContinousTimeSamples);
-    /// Plugin needs `projectTimeMusic`.
-    pub const NEED_PROJECT_TIME_MUSIC: u32 = crate::sdk_enum_u32(Flags_::kNeedProjectTimeMusic);
-    /// Plugin needs `barPositionMusic`.
-    pub const NEED_BAR_POSITION_MUSIC: u32 = crate::sdk_enum_u32(Flags_::kNeedBarPositionMusic);
-    /// Plugin needs `cycleStartMusic` / `cycleEndMusic`.
-    pub const NEED_CYCLE_MUSIC: u32 = crate::sdk_enum_u32(Flags_::kNeedCycleMusic);
-    /// Plugin needs `samplesToNextClock`.
-    pub const NEED_SAMPLES_TO_NEXT_CLOCK: u32 =
-        crate::sdk_enum_u32(Flags_::kNeedSamplesToNextClock);
-    /// Plugin needs `tempo`.
-    pub const NEED_TEMPO: u32 = crate::sdk_enum_u32(Flags_::kNeedTempo);
-    /// Plugin needs `timeSigNumerator` / `timeSigDenominator`.
-    pub const NEED_TIME_SIGNATURE: u32 = crate::sdk_enum_u32(Flags_::kNeedTimeSignature);
-    /// Plugin needs the (host-track) chord field.
-    pub const NEED_CHORD: u32 = crate::sdk_enum_u32(Flags_::kNeedChord);
-    /// Plugin needs `frameRate`.
-    pub const NEED_FRAME_RATE: u32 = crate::sdk_enum_u32(Flags_::kNeedFrameRate);
-    /// Plugin needs the transport-state bits in `state`.
-    pub const NEED_TRANSPORT_STATE: u32 = crate::sdk_enum_u32(Flags_::kNeedTransportState);
+bitflags::bitflags! {
+    /// `IProcessContextRequirements` flags, mirroring `Flags_` from the Steinberg
+    /// SDK: a plugin returns an OR of these from `getProcessContextRequirements`
+    /// to declare which [`ProcessContext`](vst3::Steinberg::Vst::ProcessContext)
+    /// fields it consumes. [`to_process_context`] only fills (and marks valid)
+    /// the fields whose bit is set; a plugin without the interface is given
+    /// [`all`](Self::all).
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+    pub struct ProcessContextRequirements: u32 {
+        /// Plugin needs `systemTime`.
+        const NEED_SYSTEM_TIME = crate::sdk_enum_u32(Flags_::kNeedSystemTime);
+        /// Plugin needs `continousTimeSamples`.
+        const NEED_CONTINOUS_TIME_SAMPLES = crate::sdk_enum_u32(Flags_::kNeedContinousTimeSamples);
+        /// Plugin needs `projectTimeMusic`.
+        const NEED_PROJECT_TIME_MUSIC = crate::sdk_enum_u32(Flags_::kNeedProjectTimeMusic);
+        /// Plugin needs `barPositionMusic`.
+        const NEED_BAR_POSITION_MUSIC = crate::sdk_enum_u32(Flags_::kNeedBarPositionMusic);
+        /// Plugin needs `cycleStartMusic` / `cycleEndMusic`.
+        const NEED_CYCLE_MUSIC = crate::sdk_enum_u32(Flags_::kNeedCycleMusic);
+        /// Plugin needs `samplesToNextClock`.
+        const NEED_SAMPLES_TO_NEXT_CLOCK = crate::sdk_enum_u32(Flags_::kNeedSamplesToNextClock);
+        /// Plugin needs `tempo`.
+        const NEED_TEMPO = crate::sdk_enum_u32(Flags_::kNeedTempo);
+        /// Plugin needs `timeSigNumerator` / `timeSigDenominator`.
+        const NEED_TIME_SIGNATURE = crate::sdk_enum_u32(Flags_::kNeedTimeSignature);
+        /// Plugin needs the (host-track) chord field.
+        const NEED_CHORD = crate::sdk_enum_u32(Flags_::kNeedChord);
+        /// Plugin needs `frameRate`.
+        const NEED_FRAME_RATE = crate::sdk_enum_u32(Flags_::kNeedFrameRate);
+        /// Plugin needs the transport-state bits in `state`.
+        const NEED_TRANSPORT_STATE = crate::sdk_enum_u32(Flags_::kNeedTransportState);
+        // The plugin's own bits beyond the ones named, and `all()` as the
+        // "plugin has no such interface" request for everything.
+        const _ = !0;
+    }
 }
 
 /// Builds a VST3 [`ProcessContext`](vst3::Steinberg::Vst::ProcessContext)
 /// from the shared [`TransportInfo`], encoding the validity flags the
 /// VST3 spec requires.
 ///
-/// `requirements` is the bitmask the plugin returned from
-/// `IProcessContextRequirements::getProcessContextRequirements` (or [`u32::MAX`]
-/// when the plugin doesn't implement that interface — see
-/// [`process_context_flags`]). Only the fields whose requirement bit is set are
-/// populated and marked valid; the rest are left zeroed. Passing [`u32::MAX`]
+/// `requirements` is what the plugin returned from
+/// `IProcessContextRequirements::getProcessContextRequirements` (or
+/// [`all`](ProcessContextRequirements::all) when the plugin doesn't implement
+/// that interface). Only the fields whose requirement bit is set are
+/// populated and marked valid; the rest are left zeroed. Passing `all()`
 /// fills everything, reproducing the unconditional behaviour this host had
 /// before the interface was wired.
 ///
@@ -75,11 +73,11 @@ pub mod process_context_flags {
 #[must_use]
 pub fn to_process_context(
     t: &TransportInfo,
-    requirements: u32,
+    requirements: ProcessContextRequirements,
 ) -> vst3::Steinberg::Vst::ProcessContext {
-    use process_context_flags as need;
+    use ProcessContextRequirements as need;
 
-    let wants = |flag: u32| requirements & flag != 0;
+    let wants = |flag: ProcessContextRequirements| requirements.intersects(flag);
     // The MIDI clock grid under the playhead, at the snapshot's own rate: a
     // guessed rate (the 44.1 kHz fallback below) is not a fact to flag.
     let to_clock = t.samples_to_nearest_clock();
@@ -241,7 +239,7 @@ pub fn to_process_context(
 // the other — the same reason `to_process_context` carries this allow. Taking
 // clippy's suggestion here would compile on macOS and break Windows.
 mod tests {
-    use super::process_context_flags as need;
+    use super::ProcessContextRequirements as need;
     use super::*;
     use tutti_plugin_types::{BeatsPerBar, NoteValue, TimeSignature};
     use vst3::Steinberg::Vst::ProcessContext_::StatesAndFlags_;
@@ -282,7 +280,7 @@ mod tests {
     #[test]
     fn a_nan_or_zero_field_is_not_advertised_as_valid() {
         // Everything requested, so only the value can clear a bit.
-        let all = u32::MAX;
+        let all = need::all();
 
         let mut t = populated_transport();
         t.timing.tempo = f64::NAN;
@@ -330,7 +328,7 @@ mod tests {
     #[test]
     fn all_bits_fills_everything() {
         let t = populated_transport();
-        let ctx = to_process_context(&t, u32::MAX);
+        let ctx = to_process_context(&t, need::all());
 
         assert_eq!(ctx.sampleRate, 48_000.0);
         assert_eq!(ctx.projectTimeSamples, 1_234);
@@ -389,7 +387,7 @@ mod tests {
         // (requirement bit, valid bit, "is the field non-zero?" probe)
         let cases: &[(
             &str,
-            u32,
+            need,
             u32,
             fn(&vst3::Steinberg::Vst::ProcessContext) -> bool,
         )] = &[
@@ -452,7 +450,7 @@ mod tests {
             );
 
             // The inverse: nothing requested → field untouched, bit clear.
-            let off = to_process_context(&t, 0);
+            let off = to_process_context(&t, need::empty());
             assert!(
                 !field_filled(&off),
                 "{name}: filled without being requested"
@@ -617,7 +615,7 @@ mod tests {
     #[test]
     fn always_on_fields_survive_empty_requirements() {
         let t = populated_transport();
-        let ctx = to_process_context(&t, 0);
+        let ctx = to_process_context(&t, need::empty());
 
         assert_eq!(ctx.sampleRate, 48_000.0);
         assert_eq!(ctx.projectTimeSamples, 1_234);

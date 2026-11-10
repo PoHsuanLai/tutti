@@ -1,7 +1,7 @@
 //! The parameter tree and the controller's optional interfaces: note expression, keyswitches, remaps, representations.
 
 use super::*;
-use crate::types::PlainRange;
+use crate::types::{PlainRange, ProcessContextRequirements};
 use tutti_plugin_types::AutomationMode;
 use tutti_plugin_types::MainThread;
 
@@ -122,12 +122,12 @@ impl Vst3Loaded {
     }
 
     /// The `IProcessContextRequirements::getProcessContextRequirements`
-    /// bitmask the plugin returned at load (see [`process_context_flags`]), or
+    /// flags the plugin returned at load (see [`ProcessContextRequirements`]), or
     /// `None` if it doesn't implement the interface, which a host treats as
     /// "wants everything".
     ///
-    /// [`process_context_flags`]: crate::types::process_context_flags
-    pub fn context_requirements(&self) -> Option<u32> {
+    /// [`ProcessContextRequirements`]: crate::types::ProcessContextRequirements
+    pub fn context_requirements(&self) -> Option<ProcessContextRequirements> {
         requirements(self.plugin.process_context_requirements())
     }
 
@@ -279,28 +279,27 @@ impl Vst3Loaded {
 }
 
 /// Whether `req` asks for any transport field; no interface wants everything.
-fn wants_transport(req: Option<u32>) -> bool {
-    use crate::types::process_context_flags as f;
-    const TRANSPORT_BITS: u32 = f::NEED_TEMPO
-        | f::NEED_PROJECT_TIME_MUSIC
-        | f::NEED_BAR_POSITION_MUSIC
-        | f::NEED_CYCLE_MUSIC
-        | f::NEED_TIME_SIGNATURE
-        | f::NEED_TRANSPORT_STATE
-        | f::NEED_CONTINOUS_TIME_SAMPLES;
-    req.is_none_or(|req| req & TRANSPORT_BITS != 0)
+fn wants_transport(req: Option<ProcessContextRequirements>) -> bool {
+    use ProcessContextRequirements as f;
+    const TRANSPORT_BITS: ProcessContextRequirements = f::NEED_TEMPO
+        .union(f::NEED_PROJECT_TIME_MUSIC)
+        .union(f::NEED_BAR_POSITION_MUSIC)
+        .union(f::NEED_CYCLE_MUSIC)
+        .union(f::NEED_TIME_SIGNATURE)
+        .union(f::NEED_TRANSPORT_STATE)
+        .union(f::NEED_CONTINOUS_TIME_SAMPLES);
+    req.is_none_or(|req| req.intersects(TRANSPORT_BITS))
 }
 
 /// Whether `req` asks for the chord field; no interface wants everything.
-fn wants_sequencer_context(req: Option<u32>) -> bool {
-    use crate::types::process_context_flags as f;
-    req.is_none_or(|req| req & f::NEED_CHORD != 0)
+fn wants_sequencer_context(req: Option<ProcessContextRequirements>) -> bool {
+    req.is_none_or(|req| req.contains(ProcessContextRequirements::NEED_CHORD))
 }
 
 /// `None` for the sentinel the FFI layer keeps for "interface not
 /// implemented".
-pub(crate) fn requirements(raw: u32) -> Option<u32> {
-    (raw != u32::MAX).then_some(raw)
+pub(crate) fn requirements(raw: u32) -> Option<ProcessContextRequirements> {
+    (raw != u32::MAX).then(|| ProcessContextRequirements::from_bits_retain(raw))
 }
 
 /// Index a plugin's unit list by id, keeping only units that can name a group.
@@ -474,7 +473,7 @@ mod unit_group_tests {
 #[cfg(test)]
 mod requirements_tests {
     use super::{requirements, wants_sequencer_context, wants_transport};
-    use crate::types::process_context_flags as f;
+    use crate::types::ProcessContextRequirements as f;
 
     /// The FFI layer keeps `u32::MAX` for "interface not implemented"; every
     /// other word, including `0` (implemented, asks for nothing), is a real
@@ -485,8 +484,8 @@ mod requirements_tests {
     #[test]
     fn only_the_sentinel_means_no_interface() {
         assert_eq!(requirements(u32::MAX), None);
-        assert_eq!(requirements(0), Some(0));
-        assert_eq!(requirements(f::NEED_TEMPO), Some(f::NEED_TEMPO));
+        assert_eq!(requirements(0), Some(f::empty()));
+        assert_eq!(requirements(f::NEED_TEMPO.bits()), Some(f::NEED_TEMPO));
     }
 
     /// A plugin without the interface wants every field; one that has it wants
@@ -499,8 +498,8 @@ mod requirements_tests {
     fn no_interface_wants_everything() {
         assert!(wants_transport(None));
         assert!(wants_sequencer_context(None));
-        assert!(!wants_transport(Some(0)));
-        assert!(!wants_sequencer_context(Some(0)));
+        assert!(!wants_transport(Some(f::empty())));
+        assert!(!wants_sequencer_context(Some(f::empty())));
         assert!(wants_transport(Some(f::NEED_TEMPO)));
         assert!(!wants_sequencer_context(Some(f::NEED_TEMPO)));
         assert!(wants_sequencer_context(Some(f::NEED_CHORD)));

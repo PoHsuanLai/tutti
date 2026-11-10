@@ -52,7 +52,7 @@ fn context_requirements_are_read_from_the_plugin() {
         "note-expression-synth requests no context fields ({:#x}), but the host \
          reports transport={} sequencer={} — these accessors are not reading \
          the plugin's flags",
-        nes.context_requirements().unwrap_or(u32::MAX),
+        nes.context_requirements().map_or(u32::MAX, |r| r.bits()),
         nes.wants_transport(),
         nes.wants_sequencer_context()
     );

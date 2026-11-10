@@ -557,7 +557,7 @@ impl Core {
     /// A core over `effect`, which must be a live `AEffect` that the plugin has not
     /// closed. Nothing here closes it; the instance does.
     fn new(effect: *mut AEffect, host_ref: Option<HostRef>, main_thread: ThreadId) -> Arc<Self> {
-        Arc::new(Core {
+        let core = Arc::new(Core {
             effect: UnsafeCell::new(effect),
             _host_ref: host_ref,
             pin_refusals: AtomicU64::new(0),
@@ -565,7 +565,20 @@ impl Core {
             processing: AtomicBool::new(false),
             gate: Mutex::new(false),
             main_thread,
-        })
+        });
+        // Warm the gate here, on the control side. On macOS (and the other platforms whose
+        // `std::sync::Mutex` is a `pthread_mutex_t`) the mutex allocates its 64-byte
+        // `pthread_mutex_t` lazily, on the first `lock` or `try_lock`; left alone, that first
+        // touch would be the first audio entry's `try_lock`, an allocation on the render path
+        // (the no-alloc gate of `a_callback_from_a_render_takes_no_lock_during_a_load` aborts
+        // on it). Linux and Windows use a futex or SRW lock that never allocates. One
+        // uncontended lock now means no later `lock`/`try_lock` on any thread allocates.
+        drop(
+            core.gate
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()),
+        );
+        core
     }
 }
 

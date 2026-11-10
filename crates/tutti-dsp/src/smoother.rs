@@ -107,6 +107,9 @@ mod tests {
     /// at 1, none at 0.
     ///
     /// Mutation (run): `toward` returning `current + coeff * target` fails.
+    /// Also carries the height half of the deleted `tutti-nodes` smoother tests
+    /// (the plain step of `ExponentialSmoother::process`): the same mutation
+    /// failed the deleted `linear_smoothing_still_converges_for_elevation`.
     /// (The retention form is not caught here, where `1 - c` is exact; the
     /// nodes' render digests catch it.)
     #[test]
@@ -129,6 +132,9 @@ mod tests {
     ///
     /// Mutation (each run, each fails): the retention `1 - coeff` replaced by
     /// `coeff` in `gap_closed`; `gap_closed`'s `steps` replaced by 1.
+    /// Also carries the height, zero-step and instant halves of the deleted
+    /// `tutti-nodes` `advance_is_the_closed_form_of_repeated_steps` (run: the
+    /// retention mutation fails both).
     #[test]
     fn advance_is_the_closed_form_of_repeated_steps() {
         for coeff in [0.0004_f32, 0.02, 0.3] {

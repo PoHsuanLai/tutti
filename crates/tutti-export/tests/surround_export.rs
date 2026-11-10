@@ -56,6 +56,10 @@ use tutti_nodes::testing::{Const, bass_send, vbap_mix};
 /// outputs grown), and proves widening a stereo graph does NOT lose the
 /// surround channels.
 ///
+/// Also carries the deleted quad-export test (run, each fails here): `vbap_mix`
+/// not wiring panner channel 2 (no rear energy); wiring only the front pair
+/// (`0..2`); every source placed at 45 degrees (the rear-left assertion).
+///
 /// Mutation (run): the widen left out → `connect_output` panics on the
 /// missing output 2; wiring only outputs 0 and 1 → the file is 4-wide with
 /// silent rears, and the rear-left assertion fails.

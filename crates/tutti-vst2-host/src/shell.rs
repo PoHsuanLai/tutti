@@ -5,18 +5,19 @@
 //! [`Shell`]. The shell owns the [`Vst2Loaded`], and so the plugin instance, and
 //! the flag that says whether `effStartProcess` is the plugin's last word.
 
-use std::cell::UnsafeCell;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+use vst::control_cell::{ControlCell, ControlKey};
 use vst::plugin::Plugin as _;
 
 use crate::loaded::Vst2Loaded;
 
 /// The plugin of one activation, shared by its two halves.
 ///
-/// # Safety argument
+/// # The argument
 ///
-/// `unsafe impl Sync`: two threads reach one plugin instance. For VST2 that is
+/// Shared by two threads, which reach one plugin instance, with the cell opened by a key only
+/// the Controller holds ([`ControlCell`]). For VST2 that is
 /// sound because of the following, each clause a rule the code keeps, and clause
 /// 3 rests on a **host convention**, not on the format: the SDK says only that
 /// `process` runs on the audio thread, the dispatcher on the UI thread, and
@@ -69,23 +70,25 @@ use crate::loaded::Vst2Loaded;
 /// The cell is read and written by the Controller alone, and by whichever
 /// thread drops the last handle, when no other handle exists.
 pub(crate) struct Shell {
-    loaded: UnsafeCell<Option<Vst2Loaded>>,
+    loaded: ControlCell<Option<Vst2Loaded>>,
     /// Whether `effStartProcess` is the plugin's last word. Written by the
     /// Processor (it starts and stops) and read by the drop that finds it on,
     /// when no Processor is left to stop it.
     processing: AtomicBool,
 }
 
-// SAFETY: see the invariant on `Shell`.
-unsafe impl Sync for Shell {}
-
 impl Shell {
     /// A shell for a plugin that was just `effStartProcess`ed by the activation.
-    pub(crate) fn new(loaded: Vst2Loaded) -> Self {
-        Self {
-            loaded: UnsafeCell::new(Some(loaded)),
-            processing: AtomicBool::new(true),
-        }
+    /// Returns the key to the plugin with it: the Controller's.
+    pub(crate) fn new(loaded: Vst2Loaded) -> (Self, ControlKey) {
+        let (loaded, key) = ControlCell::new(Some(loaded));
+        (
+            Self {
+                loaded,
+                processing: AtomicBool::new(true),
+            },
+            key,
+        )
     }
 
     /// Records that processing started (`true`) or stopped (`false`), and
@@ -100,33 +103,19 @@ impl Shell {
     }
 
     /// The plugin, shared, for the Controller's `&self` methods.
-    ///
-    /// # Safety
-    ///
-    /// Main thread, by the Controller only (clause 2), and not while a
-    /// reference from [`loaded_mut`](Self::loaded_mut) is live, which the
-    /// Controller's `&self`/`&mut self` split guarantees.
-    pub(crate) unsafe fn loaded(&self) -> &Option<Vst2Loaded> {
-        // SAFETY: the caller's contract.
-        unsafe { &*self.loaded.get() }
+    pub(crate) fn loaded<'a>(&'a self, key: &'a ControlKey) -> &'a Option<Vst2Loaded> {
+        self.loaded.get(key)
     }
 
     /// The plugin, exclusively, for the Controller's `&mut self` methods.
-    ///
-    /// # Safety
-    ///
-    /// As [`loaded`](Self::loaded); the Controller holds `&mut self`, so no
-    /// other reference to the cell's content exists.
-    #[allow(clippy::mut_from_ref)]
-    pub(crate) unsafe fn loaded_mut(&self) -> &mut Option<Vst2Loaded> {
-        // SAFETY: the caller's contract.
-        unsafe { &mut *self.loaded.get() }
+    pub(crate) fn loaded_mut<'a>(&'a self, key: &'a mut ControlKey) -> &'a mut Option<Vst2Loaded> {
+        self.loaded.get_mut(key)
     }
 
     /// The plugin, once the shell is the last handle. Its processing, if any,
     /// was stopped by whoever rejoins.
     pub(crate) fn into_loaded(mut self) -> Option<Vst2Loaded> {
-        self.loaded.get_mut().take()
+        self.loaded.get_mut_owned().take()
     }
 }
 
@@ -136,7 +125,7 @@ impl Drop for Shell {
     /// plugin suspends and closes (`Vst2Handle`'s drop).
     fn drop(&mut self) {
         let processing = *self.processing.get_mut();
-        if let Some(loaded) = self.loaded.get_mut()
+        if let Some(loaded) = self.loaded.get_mut_owned()
             && processing
             && loaded.handle.resumed
             && !std::thread::panicking()

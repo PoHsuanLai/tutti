@@ -15,6 +15,8 @@
 
 use tutti_plugin_types::ChannelLayout;
 
+use crate::host::RenderHandle;
+
 /// Pre-allocated audio buffers that [`Vst2Processor::process_f32`] and
 /// [`Vst2Processor::process_f64`] render through.
 ///
@@ -30,14 +32,14 @@ use tutti_plugin_types::ChannelLayout;
 /// Carrying both costs `block_size * (in + out) * 12` bytes over one width —
 /// at a 512-sample block and stereo I/O, 24 KiB.
 pub struct RenderScratch {
-    pub(crate) inputs: Vec<Vec<f32>>,
-    pub(crate) outputs: Vec<Vec<f32>>,
-    pub(crate) input_ptrs: Vec<*const f32>,
-    pub(crate) output_ptrs: Vec<*mut f32>,
-    pub(crate) inputs_f64: Vec<Vec<f64>>,
-    pub(crate) outputs_f64: Vec<Vec<f64>>,
-    pub(crate) input_ptrs_f64: Vec<*const f64>,
-    pub(crate) output_ptrs_f64: Vec<*mut f64>,
+    pub inputs: Vec<Vec<f32>>,
+    pub outputs: Vec<Vec<f32>>,
+    pub input_ptrs: Vec<*const f32>,
+    pub output_ptrs: Vec<*mut f32>,
+    pub inputs_f64: Vec<Vec<f64>>,
+    pub outputs_f64: Vec<Vec<f64>>,
+    pub input_ptrs_f64: Vec<*const f64>,
+    pub output_ptrs_f64: Vec<*mut f64>,
 }
 
 impl std::fmt::Debug for RenderScratch {
@@ -141,6 +143,50 @@ impl RenderScratch {
     #[cfg(test)]
     pub fn copy_out_f64_from_f32(&self, caller_outputs: &mut [&mut [f64]], num_samples: usize) {
         self.copy_out_f64_from_f32_range(caller_outputs, 0, num_samples);
+    }
+
+    /// Renders the first `num_samples` of the staged block through `render`, in `f32`.
+    pub fn render_f32(&mut self, render: &mut RenderHandle, num_samples: usize) {
+        use crate::buffer::AudioBuffer;
+
+        // SAFETY: the tables hold `len()` channel pointers into the scratch's
+        // own Vecs, each `block_size >= num_samples` elements long and refreshed
+        // by the `prepare_*` call immediately above. The output Vecs are
+        // distinct allocations from the inputs and from each other, and the
+        // scratch is borrowed mutably for the whole call, so nothing else
+        // touches them.
+        let mut buffer = unsafe {
+            AudioBuffer::from_raw(
+                self.input_ptrs.len(),
+                self.output_ptrs.len(),
+                self.input_ptrs.as_ptr(),
+                self.output_ptrs.as_mut_ptr(),
+                num_samples,
+            )
+        };
+        render.process(&mut buffer);
+    }
+
+    /// [`render_f32`](Self::render_f32) against `processReplacingF64`.
+    ///
+    /// Only called once `supports_f64` is known true: the vendor's
+    /// `process_f64` zeroes the outputs when the plugin installed no f64
+    /// entry point, so reaching it unconditionally would render silence
+    /// rather than fall back.
+    pub fn render_f64(&mut self, render: &mut RenderHandle, num_samples: usize) {
+        use crate::buffer::AudioBuffer;
+
+        // SAFETY: as `render_f32`, against the f64 tables and Vecs.
+        let mut buffer = unsafe {
+            AudioBuffer::from_raw(
+                self.input_ptrs_f64.len(),
+                self.output_ptrs_f64.len(),
+                self.input_ptrs_f64.as_ptr(),
+                self.output_ptrs_f64.as_mut_ptr(),
+                num_samples,
+            )
+        };
+        render.process_f64(&mut buffer);
     }
 
     /// `prepare_f32` for the piece of the caller's block

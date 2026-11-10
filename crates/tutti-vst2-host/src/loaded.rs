@@ -191,14 +191,6 @@ impl std::fmt::Debug for Vst2Loaded {
     }
 }
 
-// SAFETY: every field is either `Send` or its non-`Send`-ness has been
-// addressed via a wrapper (`SendEditor`, `SendParams`). The raw pointers inside
-// `vst::host::PluginInstance` point at heap memory this crate owns, and the
-// plugin has no thread affinity beyond "the main thread opens and closes it",
-// which the callers keep (clause 4 of the invariant on `Shell`). Not `Sync`:
-// a shared reference would let two threads reach the dispatcher at once.
-unsafe impl Send for Vst2Loaded {}
-
 impl Vst2Loaded {
     /// Opens a VST2 plugin: `effOpen`, and a read of what it declares.
     ///

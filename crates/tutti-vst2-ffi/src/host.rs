@@ -1818,6 +1818,21 @@ impl RenderHandle {
     }
 }
 
+// SAFETY: the instance is a pointer to the plugin's `AEffect`, an `Arc` of its core (which is
+// `Send + Sync`) and a library handle. The plugin has no thread affinity beyond "the main
+// thread opens and closes it", which the holder keeps (the host crate's `Shell` invariant);
+// the instance is driven from one thread at a time, so it is `Send` and not `Sync`: a shared
+// reference would let two threads reach the dispatcher at once.
+unsafe impl Send for PluginInstance {}
+
+impl PluginInstance {
+    /// The plugin's editor, once, as an object that moves with the instance: the same as
+    /// [`Plugin::get_editor`], for a caller that stores it.
+    pub fn take_editor(&mut self) -> Option<crate::editor::SendEditor> {
+        self.get_editor().map(crate::editor::SendEditor::new)
+    }
+}
+
 impl Plugin for PluginInstance {
     fn get_info(&self) -> plugin::Info {
         self.info.clone()

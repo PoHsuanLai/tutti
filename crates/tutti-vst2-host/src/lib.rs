@@ -1,11 +1,13 @@
 #![doc = include_str!("../README.md")]
-#![deny(clippy::undocumented_unsafe_blocks, clippy::missing_safety_doc)]
+#![forbid(unsafe_code)]
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
-// The VST2 FFI layer is our fork of vst-rs (`vst-tutti`), which adds
-// the host-side audioMaster callbacks upstream swallows. Aliased to `vst` at the
-// crate root so every `vst::` path in the submodules resolves unchanged.
+// The VST2 FFI layer is `tutti-vst2-ffi`, the host half of our fork of vst-rs, which holds
+// every VST2 `unsafe`. Aliased to `vst` at the crate root so every `vst::` path in the
+// submodules resolves unchanged.
 extern crate tutti_vst2_ffi as vst;
+
+use vst::{midi, scratch};
 
 mod error;
 pub mod types;
@@ -16,11 +18,9 @@ mod editor;
 mod handle;
 mod host;
 mod loaded;
-mod midi;
 mod param_properties;
 mod parameters;
 mod processor;
-mod scratch;
 mod shell;
 mod state;
 mod time_info;

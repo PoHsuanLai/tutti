@@ -93,11 +93,14 @@ extern crate bitflags;
 pub mod api;
 pub mod buffer;
 pub mod channels;
+pub mod control_cell;
 pub mod editor;
 pub mod event;
 pub mod host;
 pub mod interfaces;
+pub mod midi;
 pub mod plugin;
+pub mod scratch;
 
 // Test-only global allocator for the RT-safety test of the render refusal; it aborts on
 // any allocation inside an `assert_no_alloc` scope.

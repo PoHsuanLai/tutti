@@ -25,7 +25,7 @@
 //!
 //! # audioMaster query callbacks
 //!
-//! Hosting is on the `vst-tutti` fork, whose `host_dispatch` wires the query
+//! Hosting is on the `tutti-vst2-ffi` fork, whose `host_dispatch` wires the query
 //! opcodes that upstream vst-rs swallows in its `_ =>` arm. That makes these
 //! callbacks *answerable*: the plugin gets a real response rather than a silent
 //! 0. Of them:
@@ -211,14 +211,10 @@ impl HostState {
     /// at once or take a push back, so a second producer racing this check
     /// could leave a `START` without its `END`.
     pub(crate) fn push_sysex_out(&self, sysex: &vst::api::SysExEvent) {
-        let len = usize::try_from(sysex.data_size).unwrap_or(0);
-        if sysex.system_data.is_null() || len == 0 {
+        let bytes = sysex.payload();
+        if bytes.is_empty() {
             return;
         }
-        // SAFETY: non-null checked above; the VST2 contract has the plugin
-        // keep `data_size` readable bytes at `system_data` for the duration
-        // of the callback, and the bytes are copied out before it returns.
-        let bytes = unsafe { std::slice::from_raw_parts(sysex.system_data, len) };
         let payload = unframed(bytes);
         let packets = MidiEvent::sysex7_packet_count(payload.len());
         // The queue's only other end pops, so room seen now can only grow.
@@ -292,63 +288,18 @@ impl Host for HostState {
     /// Called from inside the plugin's `processReplacing` — the audio thread.
     /// See [`automate`](Self::automate) for the drop policy.
     fn process_events(&self, events: &vst::api::Events) {
-        use vst::api::{EventType, MidiEvent, SysExEvent};
+        use vst::api::PluginEvent;
 
-        // A negative count is no events; it must not become `usize::MAX`.
-        let num = usize::try_from(events.num_events).unwrap_or(0);
-        let base = events.events.as_ptr();
-        for i in 0..num {
-            // SAFETY: the VST2 contract has the plugin supply `num_events`
-            // valid event pointers in the flexible array for the duration of
-            // the callback; not checked here (the declared `[_; 2]` type is
-            // only the header's view of that array).
-            let event_ptr = unsafe { *base.add(i) };
-            if event_ptr.is_null() {
-                continue;
-            }
-            // The header is read as raw integers, never as the `EventType` enum: the
-            // plugin's memory can hold a value that is no variant, and reading one
-            // as the enum is undefined behaviour. `read_unaligned`: the header's
-            // alignment (4) does not prove the plugin's event type's.
-            //
-            // SAFETY: `event_ptr` is non-null and one of the plugin-supplied pointers,
-            // each to an event whose header (type and byte size, two `i32`) is
-            // readable for this callback.
-            let (event_type, declared) = unsafe {
-                let header = event_ptr.cast::<i32>();
-                (
-                    std::ptr::read_unaligned(header),
-                    std::ptr::read_unaligned(header.add(1)),
-                )
-            };
-            // Read a whole struct only if the plugin says it is that big.
-            let declared = usize::try_from(declared).unwrap_or(0);
-            if event_type == EventType::Midi as i32 && declared >= std::mem::size_of::<MidiEvent>()
-            {
-                // `read_unaligned`, as for the SysEx arm: neither the pointer's
-                // alignment nor the event type's is established. The struct holds no
-                // owned data, so the copy needs no drop.
-                //
-                // SAFETY: the event type is Midi and `byte_size` declares at least
-                // `size_of::<MidiEvent>()` readable bytes at `event_ptr`; the type
-                // field was just checked to be the `Midi` discriminant, and every
-                // other field is an integer.
-                let midi_event = unsafe { std::ptr::read_unaligned(event_ptr.cast::<MidiEvent>()) };
-                if let Some(converted) = to_midi(&midi_event)
-                    && self.midi_out_tx.push(converted).is_err()
-                {
-                    self.dropped_midi_out.fetch_add(1, Ordering::Relaxed);
+        for event in events.plugin_events() {
+            match event {
+                PluginEvent::Midi(midi_event) => {
+                    if let Some(converted) = to_midi(&midi_event)
+                        && self.midi_out_tx.push(converted).is_err()
+                    {
+                        self.dropped_midi_out.fetch_add(1, Ordering::Relaxed);
+                    }
                 }
-            } else if event_type == EventType::SysEx as i32
-                && declared >= std::mem::size_of::<SysExEvent>()
-            {
-                // The struct holds no owned data, so the copy needs no drop.
-                // SAFETY: the event type is SysEx and `byte_size` declares at
-                // least `size_of::<SysExEvent>()` readable bytes at
-                // `event_ptr`; the unaligned read needs no alignment, and the type
-                // field was just checked to be the `SysEx` discriminant.
-                let sysex = unsafe { std::ptr::read_unaligned(event_ptr.cast::<SysExEvent>()) };
-                self.push_sysex_out(&sysex);
+                PluginEvent::SysEx(sysex) => self.push_sysex_out(&sysex),
             }
         }
     }
@@ -395,10 +346,10 @@ impl Host for HostState {
         self.block_size.load(Ordering::Acquire) as isize
     }
 
-    // ── audioMaster query callbacks, answerable via the vst-tutti fork ──
+    // ── audioMaster query callbacks, answerable via the tutti-vst2-ffi host half ──
     //
     // Upstream vst-rs 0.3.0 swallows these in `host_dispatch`'s `_ =>` arm;
-    // the `vst-tutti` fork adds the trait methods + dispatch arms, so
+    // the `tutti-vst2-ffi` fork adds the trait methods + dispatch arms, so
     // each callback returns a real answer instead of 0. Two carry live data
     // (sample rate, process level); the rest are honest neutral defaults
     // pending engine plumbing (documented per method below).
@@ -873,10 +824,24 @@ mod tests {
             0x8000,
         );
         let valid = crate::midi::from_midi(&note).expect("MIDI-1 form");
-        // SAFETY: `MidiEvent` is 32 bytes of integers and one enum, read here as
-        // plain words; the enum is a valid `Midi` at this point (the bogus word is
-        // written into the words afterwards).
-        let mut bogus: [i32; 8] = unsafe { std::mem::transmute(valid) };
+        // The note-on as plain words (the layout `MidiEvent` is `repr(C)` in), then the
+        // type word set to the bogus one.
+        let [d0, d1, d2] = valid.midi_data;
+        let mut bogus: [i32; 8] = [
+            0,
+            valid.byte_size,
+            valid.delta_frames,
+            valid.flags,
+            valid.note_length,
+            valid.note_offset,
+            i32::from_ne_bytes([d0, d1, d2, valid._midi_reserved]),
+            i32::from_ne_bytes([
+                valid.detune as u8,
+                valid.note_off_velocity,
+                valid._reserved1,
+                valid._reserved2,
+            ]),
+        ];
         bogus[0] = 77;
         let events = vst::api::Events {
             num_events: 1,

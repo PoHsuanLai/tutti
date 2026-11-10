@@ -626,6 +626,79 @@ pub struct Events {
     pub events: [*mut Event; 2],
 }
 
+/// An event a plugin sent the host through `audioMasterProcessEvents`, copied out of the
+/// plugin's list by [`Events::plugin_events`].
+#[derive(Debug)]
+pub enum PluginEvent {
+    /// A MIDI event.
+    Midi(MidiEvent),
+    /// A SysEx event. Its `system_data` still points into the plugin's buffer: read it with
+    /// [`SysExEvent::payload`], inside the callback.
+    SysEx(SysExEvent),
+}
+
+impl Events {
+    /// The events of a list a plugin handed the host, each copied out.
+    ///
+    /// This is for the `&Events` the host callback passes to [`Host::process_events`]
+    /// (`host_dispatch` checks its alignment and nullness): a list the VST2 contract has the
+    /// plugin keep valid for the call, with `num_events` valid event pointers. A negative count
+    /// is no events, a null entry is skipped, and an entry is read as a struct only when its
+    /// own `byte_size` says it is that big; the header is read as raw integers, never as the
+    /// [`EventType`] enum, because the plugin's memory can hold a value that is no variant.
+    /// An event of another type is skipped.
+    ///
+    /// [`Host::process_events`]: crate::host::Host::process_events
+    pub fn plugin_events(&self) -> impl Iterator<Item = PluginEvent> + '_ {
+        // A negative count is no events; it must not become `usize::MAX`.
+        let num = usize::try_from(self.num_events).unwrap_or(0);
+        let base = self.events.as_ptr();
+        (0..num).filter_map(move |i| {
+            // SAFETY: the VST2 contract has the plugin supply `num_events` valid event
+            // pointers in the flexible array for the duration of the callback; not checked
+            // here (the declared `[_; 2]` type is only the header's view of that array).
+            let event_ptr = unsafe { *base.add(i) };
+            if event_ptr.is_null() {
+                return None;
+            }
+            // `read_unaligned`: the header's alignment (4) does not prove the plugin's
+            // event type's.
+            //
+            // SAFETY: `event_ptr` is non-null and one of the plugin-supplied pointers,
+            // each to an event whose header (type and byte size, two `i32`) is readable for
+            // this callback.
+            let (event_type, declared) = unsafe {
+                let header = event_ptr.cast::<i32>();
+                (
+                    std::ptr::read_unaligned(header),
+                    std::ptr::read_unaligned(header.add(1)),
+                )
+            };
+            // Read a whole struct only if the plugin says it is that big.
+            let declared = usize::try_from(declared).unwrap_or(0);
+            if event_type == EventType::Midi as i32 && declared >= std::mem::size_of::<MidiEvent>()
+            {
+                // SAFETY: the event type is Midi and `byte_size` declares at least
+                // `size_of::<MidiEvent>()` readable bytes at `event_ptr`; the type field was
+                // just checked to be the `Midi` discriminant, and every other field is an
+                // integer. The struct holds no owned data, so the copy needs no drop.
+                Some(PluginEvent::Midi(unsafe {
+                    std::ptr::read_unaligned(event_ptr.cast::<MidiEvent>())
+                }))
+            } else if event_type == EventType::SysEx as i32
+                && declared >= std::mem::size_of::<SysExEvent>()
+            {
+                // SAFETY: as above for SysEx; the struct holds no owned data.
+                Some(PluginEvent::SysEx(unsafe {
+                    std::ptr::read_unaligned(event_ptr.cast::<SysExEvent>())
+                }))
+            } else {
+                None
+            }
+        })
+    }
+}
+
 impl Events {
     #[inline]
     pub(crate) fn events_raw(&self) -> &[*const Event] {
@@ -859,6 +932,22 @@ pub struct SysExEvent {
 
     /// Reserved for future use. Should be 0.
     pub _reserved2: isize,
+}
+
+impl SysExEvent {
+    /// The payload bytes, empty for a null pointer or a non-positive size.
+    ///
+    /// For a [`PluginEvent::SysEx`] from [`Events::plugin_events`] inside the callback: the
+    /// VST2 contract has the plugin keep `data_size` readable bytes at `system_data` for the
+    /// duration of the callback, and the caller copies them out before it returns.
+    pub fn payload(&self) -> &[u8] {
+        let len = usize::try_from(self.data_size).unwrap_or(0);
+        if self.system_data.is_null() || len == 0 {
+            return &[];
+        }
+        // SAFETY: non-null and sized above; readable per the contract in the docs.
+        unsafe { std::slice::from_raw_parts(self.system_data, len) }
+    }
 }
 
 // SAFETY: the struct is plain `#[repr(C)]` data, and moving it to another thread never

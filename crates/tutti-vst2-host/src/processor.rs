@@ -78,12 +78,6 @@ impl std::fmt::Debug for Vst2Processor {
     }
 }
 
-// SAFETY: clause 2 of the invariant on `Shell`. The render handle, the scratch's
-// pointer tables and the staged events are reached from one thread at a time
-// (every method takes `&mut self`), and the plugin takes the audio-thread calls
-// from whichever thread holds the Processor.
-unsafe impl Send for Vst2Processor {}
-
 /// Everything a Processor is built from.
 pub(crate) struct ProcessorParts {
     pub shell: Arc<Shell>,
@@ -389,36 +383,13 @@ impl Vst2Processor {
     }
 
     fn dispatch_midi(&mut self, midi: &[MidiEvent], start: usize, len: usize, total: usize) {
-        if let Some(events_ptr) = self.midi.send.stage_piece(midi, start, len, total) {
-            // SAFETY: `stage_piece` returns a pointer valid until the next
-            // `stage` call or `drop`. It is used immediately and never
-            // retained. The VST2 spec requires the plugin to copy any event
-            // data it needs before `process_events` returns.
-            unsafe {
-                self.render.process_events(&*events_ptr);
-            }
-        }
+        self.midi
+            .send
+            .send_piece(&mut self.render, midi, start, len, total);
     }
 
     fn process_block(&mut self, num_samples: usize) {
-        use vst::buffer::AudioBuffer as VstBuffer;
-
-        // SAFETY: the tables hold `len()` channel pointers into the scratch's
-        // own Vecs, each `block_size >= num_samples` elements long and refreshed
-        // by the `prepare_*` call immediately above. The output Vecs are
-        // distinct allocations from the inputs and from each other, and the
-        // scratch is borrowed mutably for the whole call, so nothing else
-        // touches them.
-        let mut vst_buffer = unsafe {
-            VstBuffer::from_raw(
-                self.scratch.input_ptrs.len(),
-                self.scratch.output_ptrs.len(),
-                self.scratch.input_ptrs.as_ptr(),
-                self.scratch.output_ptrs.as_mut_ptr(),
-                num_samples,
-            )
-        };
-        self.render.process(&mut vst_buffer);
+        self.scratch.render_f32(&mut self.render, num_samples);
     }
 
     /// [`process_block`](Self::process_block) against `processReplacingF64`.
@@ -428,19 +399,7 @@ impl Vst2Processor {
     /// entry point, so reaching it unconditionally would render silence
     /// rather than fall back.
     fn process_block_f64(&mut self, num_samples: usize) {
-        use vst::buffer::AudioBuffer as VstBuffer;
-
-        // SAFETY: as `process_block`, against the f64 tables and Vecs.
-        let mut vst_buffer = unsafe {
-            VstBuffer::from_raw(
-                self.scratch.input_ptrs_f64.len(),
-                self.scratch.output_ptrs_f64.len(),
-                self.scratch.input_ptrs_f64.as_ptr(),
-                self.scratch.output_ptrs_f64.as_mut_ptr(),
-                num_samples,
-            )
-        };
-        self.render.process_f64(&mut vst_buffer);
+        self.scratch.render_f64(&mut self.render, num_samples);
     }
 }
 

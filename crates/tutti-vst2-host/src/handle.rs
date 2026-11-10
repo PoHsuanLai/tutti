@@ -41,7 +41,7 @@ pub(crate) struct Vst2Handle {
     /// last of them drops. The module is what stays loaded, not the instance — see
     /// the module docs.
     pub(crate) instance: PluginInstance,
-    pub(crate) editor: Option<SendEditor>,
+    pub(crate) editor: Option<vst::editor::SendEditor>,
     /// Whether the last `effMainsChanged` dispatched carried `value=1`.
     ///
     /// Tracked because `effMainsChanged` is not documented as idempotent and real
@@ -52,24 +52,13 @@ pub(crate) struct Vst2Handle {
     pub(crate) resumed: bool,
 }
 
-/// Wrapper to make `Box<dyn Editor>` `Send`.
-///
-/// The editor is only accessed from one thread at a time, because it
-/// lives in the `Vst2Loaded` the Controller reaches through `&mut self` (clause
-/// 2 of the invariant on `Shell`). GUI methods (`open`, `close`, `idle`) are
-/// called on the main thread; the audio thread never touches the editor.
-pub(crate) struct SendEditor(pub(crate) Box<dyn vst::editor::Editor>);
-// SAFETY: the editor is only accessed from one thread at a time (see the type's
-// docs); the audio thread never touches it.
-unsafe impl Send for SendEditor {}
-
 impl Vst2Handle {
     pub(crate) fn new(mut instance: PluginInstance) -> Self {
         // get_editor() can only be called once per PluginInstance — the
         // vst crate sets `is_editor_active = true` on first call, returning
         // None on subsequent calls. Probed once here so callers can ask
         // `has_editor()` later without re-entering the plugin.
-        let editor = instance.get_editor().map(SendEditor);
+        let editor = instance.take_editor();
         Self {
             instance,
             editor,
@@ -100,7 +89,7 @@ impl Drop for Vst2Handle {
         // Close the editor first — some plugins read audio state during
         // editor teardown (e.g., to flush meter buffers).
         if let Some(mut editor) = self.editor.take() {
-            editor.0.close();
+            editor.close();
         }
 
         // Suspend audio so the plugin releases any RT-allocated resources

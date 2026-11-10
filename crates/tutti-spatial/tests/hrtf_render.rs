@@ -914,6 +914,49 @@ fn a_moving_source_is_independent_of_the_block_length() {
     }
 }
 
+/// The binaural renderer's position de-zipper renders what it always did, bit
+/// for bit (doc 024 step 0b, consolidation 2): a digest (FNV-1a over the bits
+/// of every output sample) of seeded noise through the mirrored icosahedron
+/// with the position jumping across the seam halfway, recorded before
+/// `ExponentialSmoother` was built over `tutti_dsp::Smoother`. The render
+/// reaches libm (`sin`, `cos`, `atan2`), so it goes through `assert_golden`.
+///
+/// Mutation (run): the smoother's step as `value * (1 - coeff) + target * coeff`
+/// changes the position's last bits and fails.
+#[test]
+fn the_position_dezipper_renders_what_it_always_did() {
+    let (verts, faces) = icosahedron();
+    let len = 32;
+    let bytes = sphere_bytes(RATE, len, &verts, &faces, mirrored_response(&verts, len));
+    let mut n = node(&bytes, RATE);
+    let controls = n.controls();
+    controls.set_position(Azimuth(170.0), Elevation(10.0));
+    Node::reset(&mut n);
+    let mut state = 0x1234_5678_u32;
+    let mut digest: u64 = 0xcbf2_9ce4_8422_2325;
+    for b in 0..60 {
+        if b == 30 {
+            controls.set_position(Azimuth(-110.0), Elevation(-20.0));
+        }
+        let block: Vec<f32> = (0..64)
+            .map(|_| {
+                state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                (state >> 8) as f32 / (1u32 << 24) as f32 * 2.0 - 1.0
+            })
+            .collect();
+        for plane in drive(&mut n, SampleRate(f64::from(RATE)), &[&block, &block], &[]) {
+            for s in plane {
+                for byte in s.to_bits().to_le_bytes() {
+                    digest ^= u64::from(byte);
+                    digest = digest.wrapping_mul(0x0100_0000_01b3);
+                }
+            }
+        }
+    }
+    eprintln!("DIGEST hrtf {digest:#018x}");
+    tutti_nodes::testing::assert_golden("hrtf position de-zipper", digest, 0x6ae5_3847_7723_708d);
+}
+
 /// FNV-1a over the bits of every sample, left then right of each block, of a
 /// render of two distinct seeded noises (so the fold of the pair to mono is not
 /// a copy) with the source moved and the blend changed mid-render. Pins the

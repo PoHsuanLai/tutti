@@ -97,20 +97,6 @@ pub fn compute_compressor_gain_reduction(
     }
 }
 
-/// One-pole IIR envelope smoothing: `coeff` is the fraction of the gap
-/// closed ([`Seconds::one_pole_coeff`](tutti_types::Seconds::one_pole_coeff);
-/// 1 is instant, 0 holds).
-///
-/// At `coeff = 1` the result is `target` only to within half an ulp of the
-/// larger of the two (exactly when they are within 2× of each other). The
-/// follower's `(1 − c) · current + c · target` would be exact there, but in
-/// `f32` its `1 − c` rounds to 1 for a long time constant and the envelope
-/// then stops approaching a lower target.
-#[inline]
-pub fn smooth_envelope(current: f32, target: f32, coeff: f32) -> f32 {
-    current + coeff * (target - current)
-}
-
 /// Gate gain from gate level (unitless 0..1) and range in dB.
 #[inline]
 pub fn compute_gate_gain(gate_level: f32, range_db: impl Into<Db>) -> Amplitude {
@@ -336,19 +322,6 @@ mod tests {
         .get();
         assert!(gr_knee > 0.0);
         assert!(gr_knee < gr_hard);
-    }
-
-    #[test]
-    fn test_smooth_envelope() {
-        // Attack: target > current, a tenth of the gap closed
-        let result = smooth_envelope(0.0, 1.0, 0.1);
-        assert!((result - 0.1).abs() < 0.001);
-        // Release: target < current
-        let result = smooth_envelope(1.0, 0.0, 0.1);
-        assert!((result - 0.9).abs() < 0.001);
-        // coeff=1: instant; coeff=0: holds
-        assert_eq!(smooth_envelope(0.0, 1.0, 1.0), 1.0);
-        assert_eq!(smooth_envelope(0.25, 1.0, 0.0), 0.25);
     }
 
     #[test]

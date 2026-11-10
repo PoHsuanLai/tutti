@@ -4,8 +4,7 @@ use std::sync::Arc;
 use tutti_types::{Beat, Bpm, SamplePosition};
 
 use crate::LoopSetting;
-use crate::streamer::rt_state::RtState;
-use crate::streamer::status::StatusCell;
+use crate::streamer::StreamerPort;
 
 use super::*;
 use crate::testing::{MockTransport, play, prepared, settle};
@@ -116,20 +115,25 @@ fn an_open_is_pending_until_the_streamer_answers() {
     assert_eq!(stream.id(), id, "the handle steers the stream it opened");
 }
 
-/// A `Ready` reader has registered its map reader already, on the control
-/// side, and the voice built from it registers nothing more: the ring's map
-/// has one reader after the open, and still one with the voice built and
+/// A `Ready` reader has registered its control reader already, on the control
+/// side, and the voice built from it registers nothing more: the ring's control
+/// has two holders after the open (the stream's handle, which reads the
+/// applied loop, and the one reader), and still two with the voice built and
 /// playing, so nothing on the audio thread registers (which allocates).
 ///
 /// Mutation (run): `DiskVoice::from_reader` registering a second reader
-/// (`ring.map_reader()`) -> two readers -> fails.
+/// (`ring.control_reader()`) -> two readers -> fails.
 #[test]
-fn a_ready_reader_has_registered_its_map_before_it_is_returned() {
+fn a_ready_reader_has_registered_its_control_before_it_is_returned() {
     let (_dir, path) = constant_file(0.25);
     let mut streamer = manual();
     let opening = streamer.open(&path, Placement::HEAD);
     let (_stream, reader) = settle(&mut streamer, opening).expect("the file opens");
-    assert_eq!(reader.ring.map_readers(), 1, "registered by the open");
+    assert_eq!(
+        reader.ring.control_holders(),
+        2,
+        "the handle, and the reader registered by the open"
+    );
     let ring = Arc::clone(&reader.ring);
     let mut voice = prepared(
         DiskVoice::from_reader(reader, Beat(0.0), None),
@@ -138,7 +142,7 @@ fn a_ready_reader_has_registered_its_map_before_it_is_returned() {
     );
     let clock = MockTransport::rolling(Beat(0.0), Bpm::of(120.0));
     let _ = play(&mut voice, &clock, SampleRate::new(RATE), 64, 64);
-    assert_eq!(ring.map_readers(), 1, "the voice registers none");
+    assert_eq!(ring.control_holders(), 2, "the voice registers none");
 }
 
 /// Variant `Io`: a path with no file fails the open with the kind the
@@ -370,7 +374,7 @@ fn a_loop_set_through_one_stream_leaves_the_other_unchanged() {
     let (mut a, reader_a) = settle(&mut streamer, opening).expect("the file opens");
     let opening = streamer.open(&path, Placement::HEAD);
     let (mut b, reader_b) = settle(&mut streamer, opening).expect("the file opens");
-    let loop_of = |reader: &StreamReader| reader.origin.describe().expect("the stream runs").loop_;
+    let loop_of = |reader: &StreamReader| reader.ring.applied().loop_;
     let looped = |start, end| LoopSetting::On {
         start: SamplePosition(start),
         end: SamplePosition(end),
@@ -420,12 +424,7 @@ fn a_stopped_streams_handle_commands_nothing() {
 
     // The handle of the stream that is gone: what a late command still
     // reaching the queue looks like.
-    let mut ghost = Stream::new(
-        id_a,
-        streamer.port(),
-        Arc::new(StatusCell::new()),
-        Arc::new(RtState::new()),
-    );
+    let mut ghost = Stream::detached(id_a, StreamerPort::new(streamer.streamer_tx.clone()));
     ghost
         .set_loop(LoopSetting::On {
             start: SamplePosition(1_000.0),
@@ -435,7 +434,7 @@ fn a_stopped_streams_handle_commands_nothing() {
         .expect("the queue is alive: the command is sent, and ignored");
     let _ = streamer.step_until_settled(1_000);
     assert_eq!(
-        reader_b.origin.describe().expect("B runs").loop_,
+        reader_b.ring.applied().loop_,
         LoopSetting::Off,
         "a command for a closed stream reached another"
     );

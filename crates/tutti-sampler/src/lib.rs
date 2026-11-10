@@ -105,8 +105,8 @@ pub mod stretch;
 // references. It is a real internal namespace, not a redundant path.
 pub use voice::{
     Direction, DiskVoice, DiskVoiceControls, LoopSetting, MemorySource, MemorySourceConfig,
-    Playback, PoolDrops, PoolTooWide, SlotId, VOICE_PARAMS, Voice, VoiceCommand, VoiceNode,
-    VoiceNodeHandle, VoicePool, VoicePoolHandle, VoiceSource, VoiceWindow, memory_voice,
+    Playback, PoolDrops, PoolTooWide, SlotId, StreamingAddError, VOICE_PARAMS, Voice, VoiceCommand,
+    VoiceNode, VoiceNodeHandle, VoicePool, VoicePoolHandle, VoiceSource, VoiceWindow, memory_voice,
     voice_width,
 };
 // Entity-as-node markers for the voice pool. The asset loader and the playback
@@ -122,8 +122,8 @@ pub(crate) mod streamer;
 
 pub use streamer::{
     DiskStreamer, DiskStreamerConfig, Open, OpenError, Opening, Placement, RefusedPlacement,
-    Running, Stream, StreamFault, StreamId, StreamPhase, StreamReader, StreamStatus, StreamerGone,
-    StreamerPort,
+    Running, Stream, StreamFault, StreamFile, StreamId, StreamPhase, StreamReader, StreamStatus,
+    StreamerGone,
 };
 
 // The hand-driven streamer cycle, alongside `DiskStreamer::manual`: its driver

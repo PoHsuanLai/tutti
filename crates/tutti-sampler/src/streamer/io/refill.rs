@@ -13,16 +13,20 @@
 //! Every count here is denominated in frames. The `* ch` at each scratch
 //! resize is the only place the interleave stride enters.
 
+use super::super::cells::Cells;
 #[cfg(test)]
 use super::super::command::StreamId;
 use super::super::loops::{Content, RingMap};
 use super::super::metrics::Metrics;
 use super::super::prefetch::{HISTORY_FRAMES, RegionOut};
 use super::super::record::Record;
-use super::super::rt_state::RtState;
 use rayon::prelude::*;
 use std::sync::Arc;
 use tutti_rt::MAX_POS_RING_POSITION;
+
+/// The fraction of a ring ahead of its reader below which the streamer refills
+/// it, and at which a stream counts as primed and healthy.
+pub(in crate::streamer) const FILL_THRESHOLD: f32 = 0.75;
 
 /// How many frames to read this cycle, under the varifill strategy.
 ///
@@ -78,18 +82,11 @@ pub(crate) fn refill_all(
     records: &mut [Record],
     metrics: &Metrics,
     base_chunk_size: usize,
-    buffer_margin: f64,
     interleave_buffer: &mut Vec<f32>,
 ) {
     let read_rate = metrics.read_rate();
     for record in records.iter_mut().filter(|r| r.is_live()) {
-        refill_contained(
-            record,
-            base_chunk_size,
-            buffer_margin,
-            read_rate,
-            interleave_buffer,
-        );
+        refill_contained(record, base_chunk_size, read_rate, interleave_buffer);
     }
 }
 
@@ -98,20 +95,11 @@ pub(crate) fn refill_all(
 fn refill_contained(
     record: &mut Record,
     base_chunk_size: usize,
-    buffer_margin: f64,
     read_rate: f64,
     buffer: &mut Vec<f32>,
 ) {
-    let refilled = record.contained(|r| {
-        refill_one(
-            &mut r.out,
-            &r.rt_state,
-            base_chunk_size,
-            buffer_margin,
-            read_rate,
-            buffer,
-        )
-    });
+    let refilled =
+        record.contained(|r| refill_one(&mut r.out, &r.cells, base_chunk_size, read_rate, buffer));
     if let Some(refilled) = refilled {
         record.settle(&refilled);
     }
@@ -128,7 +116,6 @@ pub(crate) fn refill_all_parallel(
     records: &mut [Record],
     metrics: &Metrics,
     base_chunk_size: usize,
-    buffer_margin: f64,
 ) {
     let read_rate = metrics.read_rate();
     records
@@ -140,13 +127,7 @@ pub(crate) fn refill_all_parallel(
                     std::cell::RefCell::new(Vec::with_capacity(16384));
             }
             LOCAL_BUF.with(|buf| {
-                refill_contained(
-                    record,
-                    base_chunk_size,
-                    buffer_margin,
-                    read_rate,
-                    &mut buf.borrow_mut(),
-                );
+                refill_contained(record, base_chunk_size, read_rate, &mut buf.borrow_mut());
             });
         });
 }
@@ -160,14 +141,13 @@ pub(crate) fn refill_all_parallel(
 /// most of a ring ahead of the reader (and never past what the mapping
 /// writes: an unlooped stream's end).
 ///
-/// Says whether a read of the file failed (a decode fault) and whether the ring
-/// is primed: at or above its refill threshold, or holding all it can be
-/// given.
+/// Says whether a read of the file failed (a decode fault), whether the ring
+/// is primed (at or above its refill threshold, or holding all it can be
+/// given) and how full it was before this refill wrote anything.
 fn refill_one(
     writer: &mut RegionOut,
-    rt_state: &RtState,
+    cells: &Cells,
     base_chunk_size: usize,
-    buffer_margin: f64,
     read_rate: f64,
     buffer: &mut Vec<f32>,
 ) -> Refilled {
@@ -204,16 +184,15 @@ fn refill_one(
     let limit = end
         .map_or(ahead, |end| end.min(ahead))
         .min(MAX_POS_RING_POSITION);
-    let fill = (to.saturating_sub(play) as f64 / frames as f64) as f32;
-    rt_state.set_buffer_fill(fill);
-    let fill_threshold = (0.75 / buffer_margin) as f32;
-    if fill >= fill_threshold || to >= limit {
+    let fill = ((to.saturating_sub(play) as f64 / frames as f64) as f32).clamp(0.0, 1.0);
+    if fill >= FILL_THRESHOLD || to >= limit {
         return Refilled {
             read_ok: true,
             primed: true,
+            fill,
         };
     }
-    let speed = rt_state.read_rate().get() as f32 * buffer_margin as f32;
+    let speed = cells.read_rate().get() as f32;
     let chunk = varifill_chunk(fill, base_chunk_size, read_rate, speed);
     let n = (chunk as u64).min(limit - to) as usize;
     let ch = writer.channels().count() as usize;
@@ -225,6 +204,7 @@ fn refill_one(
     Refilled {
         read_ok,
         primed: false,
+        fill,
     }
 }
 
@@ -235,6 +215,9 @@ pub(in crate::streamer) struct Refilled {
     /// The ring was at its refill threshold, or full as far as it goes, before
     /// this refill wrote anything: a voice starting now has frames to read.
     pub(in crate::streamer) primed: bool,
+    /// How full the ring was before this refill wrote, as a fraction of its
+    /// capacity (0 to 1): what the pacing reads to park or come straight back.
+    pub(in crate::streamer) fill: f32,
 }
 
 #[cfg(test)]
@@ -416,11 +399,11 @@ mod tests {
 
         let (mut writer, ring, mut reader) =
             RegionBuffer::with_capacity(StreamId(1), PathBuf::from("t.wav"), 4096, 1u16);
-        let rt_state = RtState::new();
+        let cells = Cells::new();
         let mut buffer = Vec::new();
         for _ in 0..3 {
             drop(reader.claim(u64::MAX - 1, [(u64::MAX - 6, u64::MAX - 1), (0, 0)]));
-            refill_one(&mut writer, &rt_state, 4096, 1.0, 0.0, &mut buffer);
+            refill_one(&mut writer, &cells, 4096, 0.0, &mut buffer);
         }
         assert_eq!(
             writer.window(),
@@ -431,7 +414,7 @@ mod tests {
 
         // The voice coming back is followed again.
         drop(reader.claim(0, [(0, 4), (0, 0)]));
-        refill_one(&mut writer, &rt_state, 4096, 1.0, 0.0, &mut buffer);
+        refill_one(&mut writer, &cells, 4096, 0.0, &mut buffer);
         assert_eq!(writer.window().0, 0);
     }
 }

@@ -15,7 +15,9 @@
 //! seeks away from is still the stream's history, and `StreamerGone` must not
 //! hide the `Panicked` that ended the stream first.
 
-use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+
+use crate::voice::LoopSetting;
 
 /// Why a stream stopped being served.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -57,19 +59,32 @@ pub enum StreamPhase {
 }
 
 /// A stream's status: one level read ([`Stream::status`](crate::Stream::status)).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct StreamStatus {
     /// Where the stream is.
     pub phase: StreamPhase,
+    /// The loop the stream runs, as the streamer applied it. It can differ from
+    /// the one asked for ([`Stream::set_loop`](crate::Stream::set_loop)): a
+    /// lead-in that cannot be read plays the loop hard, with no crossfade, and
+    /// this says so. It is the loop an export fork of the stream plays.
+    /// [`LoopSetting::Off`] until the streamer has applied one.
+    pub loop_: LoopSetting,
     /// Frames the voice needed and the ring could not supply, since the stream
     /// opened: each was read as silence, and the next sounding frames ramp in.
     pub underruns: u64,
 }
 
 /// The cell behind a [`StreamPhase`]: one atomic word, shared by the
-/// streamer's [`Record`](super::record::Record) and the stream's handle.
+/// streamer's [`Record`](super::record::Record), the stream's handle and its
+/// voice (which asks whether the record is [`closed`](Self::closed)).
 #[derive(Debug)]
-pub(crate) struct StatusCell(AtomicU8);
+pub(crate) struct StatusCell {
+    word: AtomicU8,
+    /// The stream's record is gone: closed by its handle, faulted away or
+    /// dropped with the streamer. Apart from the word because a fault is sticky
+    /// and a stream that met a decode fault can still be closed.
+    closed: AtomicBool,
+}
 
 const OPENING: u8 = 0;
 const LIVE: u8 = 1;
@@ -81,7 +96,21 @@ const GONE: u8 = 5;
 
 impl StatusCell {
     pub(crate) fn new() -> Self {
-        Self(AtomicU8::new(OPENING))
+        Self {
+            word: AtomicU8::new(OPENING),
+            closed: AtomicBool::new(false),
+        }
+    }
+
+    /// Streamer: the stream's record is gone.
+    pub(crate) fn close(&self) {
+        self.closed.store(true, Ordering::Release);
+    }
+
+    /// Whether the stream's record is gone: nothing feeds its ring any more,
+    /// and an export fork of its voice has no stream to describe.
+    pub(crate) fn closed(&self) -> bool {
+        self.closed.load(Ordering::Acquire)
     }
 
     /// Streamer: move to a phase that is not a fault. Ignored once faulted.
@@ -91,7 +120,7 @@ impl StatusCell {
             Served::Ended => ENDED,
         };
         let _ = self
-            .0
+            .word
             .try_update(Ordering::Release, Ordering::Relaxed, |now| {
                 (now < DECODE).then_some(word)
             });
@@ -105,7 +134,7 @@ impl StatusCell {
             StreamFault::StreamerGone => GONE,
         };
         let _ = self
-            .0
+            .word
             .try_update(Ordering::Release, Ordering::Relaxed, |now| {
                 (now < DECODE).then_some(word)
             });
@@ -113,7 +142,7 @@ impl StatusCell {
 
     /// Control side: the level now.
     pub(crate) fn phase(&self) -> StreamPhase {
-        match self.0.load(Ordering::Acquire) {
+        match self.word.load(Ordering::Acquire) {
             OPENING => StreamPhase::Opening,
             LIVE => StreamPhase::Live,
             ENDED => StreamPhase::Ended,
@@ -147,6 +176,7 @@ mod tests {
     fn the_first_fault_stays() {
         let cell = StatusCell::new();
         assert_eq!(cell.phase(), StreamPhase::Opening);
+        assert!(!cell.closed());
         cell.set(Served::Live);
         assert_eq!(cell.phase(), StreamPhase::Live);
         cell.set(Served::Ended);
@@ -164,5 +194,9 @@ mod tests {
             StreamPhase::Faulted(StreamFault::Decode),
             "the first fault is the one reported"
         );
+        // Closing is a fact of its own: a faulted stream is closed all the same.
+        cell.close();
+        assert!(cell.closed());
+        assert_eq!(cell.phase(), StreamPhase::Faulted(StreamFault::Decode));
     }
 }

@@ -21,8 +21,9 @@ use tutti_plugin_types::{
     SampleRate, Samples, Seat, Stage, State,
 };
 
-use crate::loaders::common::{Meta, standing};
+use crate::loaders::common::Meta;
 use crate::plugin::AsyncEvent;
+use tutti_plugin_types::standing;
 
 /// The pool this process serves `clap.thread-pool` requests on, built the
 /// first time a plugin that implements the extension loads; `None` on a

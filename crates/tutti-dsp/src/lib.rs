@@ -115,8 +115,10 @@ pub use fdn::FdnKernel;
 pub use fdn_design::{FdnControls, FdnDesign, MAX_PRE_DELAY, MIN_DECAY};
 pub use fft::{Complex32, FftScratch, RealFft, StagedRealFft};
 pub use filter::{
-    Crossover, CrossoverError, LadderCoefficients, LadderCoeffs, LadderType, MAX_SPLITS, Real,
-    SOLVE_CEILING, SvfCoefficients, SvfCoeffs, SvfType, fit_to_rate, ladder_step, svf_step,
+    Biquad, Crossover, CrossoverError, CrossoverModel, LadderCoefficients, LadderCoeffs,
+    LadderModel, LadderType, MAX_SPLITS, Real, SOLVE_CEILING, SvfBounds, SvfCoefficients,
+    SvfCoeffs, SvfControls, SvfDesign, SvfModel, SvfRealization, SvfType, fit_to_rate, ladder_step,
+    svf_step,
 };
 pub use geometry::StftGeometry;
 pub use grid::{BinCount, BinIndex, FrameCount, FrameIndex, Grid};

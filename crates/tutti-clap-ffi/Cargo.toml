@@ -19,6 +19,11 @@ workspace = true
 # lists, streams and host vtables, a context-menu builder). Off in a
 # production build; the host crate's tests turn it on.
 test-support = []
+# The wrappers for the speculative extensions (param indication, remote
+# controls, triggers, tuning, undo, resource directory, preset load, context
+# menu, port configuration requests). The host crate's own `clap-extras`
+# turns it on; nothing else calls them.
+clap-extras = []
 
 [dependencies]
 clap-sys = "0.5"
@@ -35,6 +40,9 @@ tutti-rt = { path = "../tutti-rt" }
 libc = "0.2"
 
 [dev-dependencies]
+# The tests drive the extension wrappers `clap-extras` gates; the library alone
+# is linted without it (`just check-features`).
+tutti-clap-ffi = { path = ".", features = ["clap-extras"] }
 # The reference plugin the wrapper tests load; Cargo builds its cdylib in the
 # same `cargo test` invocation and the tests find the artifact beside the test
 # binary (`tutti-fixtures`).

@@ -743,6 +743,7 @@ impl Plugin {
         true
     }
 
+    #[cfg(feature = "clap-extras")]
     /// `param-indication.set_mapping`.
     pub fn set_param_mapping(
         &self,
@@ -761,6 +762,7 @@ impl Plugin {
         call!(self.param_indication.set_mapping(param_id, has_mapping, color_ptr, label_ptr, desc_ptr) else ());
     }
 
+    #[cfg(feature = "clap-extras")]
     /// `param-indication.set_automation`.
     pub fn set_param_automation(
         &self,
@@ -1037,6 +1039,7 @@ impl Plugin {
             .then(|| AudioPortInfo::from_raw(&info))
     }
 
+    #[cfg(feature = "clap-extras")]
     /// `configurable-audio-ports.can_apply_configuration`, `[main-thread &&
     /// !active]`.
     ///
@@ -1054,6 +1057,7 @@ impl Plugin {
         )
     }
 
+    #[cfg(feature = "clap-extras")]
     /// `configurable-audio-ports.apply_configuration`, `[main-thread &&
     /// !active]`.
     ///
@@ -1071,12 +1075,14 @@ impl Plugin {
         )
     }
 
+    #[cfg(feature = "clap-extras")]
     /// `audio-ports-activation.can_activate_while_processing`.
     #[must_use]
     pub fn can_activate_audio_port_while_processing(&self, _main: &MainThread) -> bool {
         call!(self.audio_ports_activation.can_activate_while_processing() else false)
     }
 
+    #[cfg(feature = "clap-extras")]
     /// `audio-ports-activation.set_active`, `[active ? audio-thread :
     /// main-thread]`: on an active plugin it takes the audio claim, and while
     /// the plugin is processing it is refused unless the plugin said it can
@@ -1103,6 +1109,7 @@ impl Plugin {
         )
     }
 
+    #[cfg(feature = "clap-extras")]
     /// `extensible-audio-ports.add_port`, `[main-thread && !active]`.
     ///
     /// # Errors
@@ -1122,6 +1129,7 @@ impl Plugin {
         )
     }
 
+    #[cfg(feature = "clap-extras")]
     /// `extensible-audio-ports.remove_port`, `[main-thread && !active]`.
     ///
     /// # Errors
@@ -1245,11 +1253,13 @@ impl Plugin {
 
     // ---- notifications ---------------------------------------------------
 
+    #[cfg(feature = "clap-extras")]
     /// `track-info.changed`.
     pub fn notify_track_info_changed(&self, _main: &MainThread) {
         call!(self.track_info.changed() else ());
     }
 
+    #[cfg(feature = "clap-extras")]
     /// `tuning.changed`.
     pub fn notify_tuning_changed(&self, _main: &MainThread) {
         call!(self.tuning.changed() else ());
@@ -1257,12 +1267,14 @@ impl Plugin {
 
     // ---- remote controls, triggers ---------------------------------------
 
+    #[cfg(feature = "clap-extras")]
     /// `remote-controls.count`.
     #[must_use]
     pub fn remote_controls_count(&self, _main: &MainThread) -> u32 {
         call!(self.remote_controls.count() else 0)
     }
 
+    #[cfg(feature = "clap-extras")]
     /// `remote-controls.get`.
     #[must_use]
     pub fn remote_controls_page(
@@ -1275,12 +1287,14 @@ impl Plugin {
             .then(|| crate::RemoteControlsPageDecl::from_raw(&page))
     }
 
+    #[cfg(feature = "clap-extras")]
     /// `triggers.count`.
     #[must_use]
     pub fn trigger_count(&self, _main: &MainThread) -> u32 {
         call!(self.triggers.count() else 0)
     }
 
+    #[cfg(feature = "clap-extras")]
     /// `triggers.get_info`.
     #[must_use]
     pub fn trigger_info(&self, _main: &MainThread, index: u32) -> Option<crate::TriggerDecl> {
@@ -1292,6 +1306,7 @@ impl Plugin {
 
     // ---- resource directory ----------------------------------------------
 
+    #[cfg(feature = "clap-extras")]
     /// `resource-directory.set_directory`.
     pub fn resource_set_directory(&self, _main: &MainThread, path: &Path, is_shared: bool) {
         if let Ok(cstr) = CString::new(path.to_string_lossy().as_ref()) {
@@ -1299,17 +1314,20 @@ impl Plugin {
         }
     }
 
+    #[cfg(feature = "clap-extras")]
     /// `resource-directory.collect`.
     pub fn resource_collect(&self, _main: &MainThread, all: bool) {
         call!(self.resource_directory.collect(all) else ());
     }
 
+    #[cfg(feature = "clap-extras")]
     /// `resource-directory.get_files_count`.
     #[must_use]
     pub fn resource_file_count(&self, _main: &MainThread) -> u32 {
         call!(self.resource_directory.get_files_count() else 0)
     }
 
+    #[cfg(feature = "clap-extras")]
     /// `resource-directory.get_file_path`.
     #[must_use]
     pub fn resource_file_path(&self, _main: &MainThread, index: u32) -> Option<String> {
@@ -1321,6 +1339,7 @@ impl Plugin {
 
     // ---- undo ------------------------------------------------------------
 
+    #[cfg(feature = "clap-extras")]
     /// `undo-delta.get_delta_properties`.
     #[must_use]
     pub fn undo_delta_properties(&self, _main: &MainThread) -> Option<crate::UndoDeltaDecl> {
@@ -1330,12 +1349,14 @@ impl Plugin {
         Some(crate::UndoDeltaDecl::from_raw(&props))
     }
 
+    #[cfg(feature = "clap-extras")]
     /// `undo-delta.can_use_delta_format_version`.
     #[must_use]
     pub fn undo_can_use_format_version(&self, _main: &MainThread, version: u32) -> bool {
         call!(self.undo_delta.can_use_delta_format_version(version) else false)
     }
 
+    #[cfg(feature = "clap-extras")]
     /// `undo-delta.undo`.
     pub fn undo_apply_delta(
         &mut self,
@@ -1346,6 +1367,7 @@ impl Plugin {
         call!(self.undo_delta.undo(format_version, delta.as_ptr().cast(), delta.len()) else false)
     }
 
+    #[cfg(feature = "clap-extras")]
     /// `undo-delta.redo`.
     pub fn redo_apply_delta(
         &mut self,
@@ -1356,16 +1378,19 @@ impl Plugin {
         call!(self.undo_delta.redo(format_version, delta.as_ptr().cast(), delta.len()) else false)
     }
 
+    #[cfg(feature = "clap-extras")]
     /// `undo-context.set_can_undo`.
     pub fn undo_set_can_undo(&self, _main: &MainThread, can_undo: bool) {
         call!(self.undo_context.set_can_undo(can_undo) else ());
     }
 
+    #[cfg(feature = "clap-extras")]
     /// `undo-context.set_can_redo`.
     pub fn undo_set_can_redo(&self, _main: &MainThread, can_redo: bool) {
         call!(self.undo_context.set_can_redo(can_redo) else ());
     }
 
+    #[cfg(feature = "clap-extras")]
     /// `undo-context.set_undo_name`.
     pub fn undo_set_undo_name(&self, _main: &MainThread, name: &str) {
         if let Ok(cstr) = CString::new(name) {
@@ -1373,6 +1398,7 @@ impl Plugin {
         }
     }
 
+    #[cfg(feature = "clap-extras")]
     /// `undo-context.set_redo_name`.
     pub fn undo_set_redo_name(&self, _main: &MainThread, name: &str) {
         if let Ok(cstr) = CString::new(name) {
@@ -1386,6 +1412,7 @@ impl Plugin {
         self.ext(self.core.exts.gui)
     }
 
+    #[cfg(feature = "clap-extras")]
     pub(crate) fn context_menu_ext(&self) -> Option<&clap_plugin_context_menu> {
         self.ext(self.core.exts.context_menu)
     }
@@ -1530,6 +1557,7 @@ impl AudioPortInfo {
 }
 
 /// One entry of a `configurable-audio-ports` request.
+#[cfg(feature = "clap-extras")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PortConfigRequest {
     /// Input or output.
@@ -1540,6 +1568,7 @@ pub struct PortConfigRequest {
     pub channel_count: u32,
 }
 
+#[cfg(feature = "clap-extras")]
 impl PortConfigRequest {
     fn to_raw(
         requests: &[Self],

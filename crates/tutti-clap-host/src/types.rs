@@ -754,6 +754,7 @@ pub enum ContextMenuTarget {
 /// `EndSubmenu` rather than by nesting, matching CLAP's builder callback
 /// order. The type is the FFI crate's, which builds it from the plugin's
 /// builder calls.
+#[cfg(feature = "clap-extras")]
 pub use tutti_clap_ffi::MenuItem as ContextMenuItem;
 
 /// A request to reconfigure a single audio port's channel count/type.

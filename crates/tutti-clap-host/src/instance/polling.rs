@@ -265,7 +265,6 @@ impl ClapLoaded {
     /// acknowledge the gui destruction", and the spec's own lifecycle pairs
     /// `destroy` (step 14) with `create` (step 2), so it releases the gui
     /// resources `create` allocated rather than the window that just closed.
-    /// Skipping it leaked those resources for the instance's lifetime.
     pub fn close_editor(&mut self, main: &MainThread) {
         self.destroy_editor(main);
     }

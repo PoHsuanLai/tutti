@@ -13,6 +13,7 @@ mod guard;
 mod gui;
 mod host;
 mod library;
+#[cfg(feature = "clap-extras")]
 mod menu;
 mod plugin;
 mod pool;
@@ -32,21 +33,24 @@ pub use host::{
     Host, HostCallbacks, TrackInfoWriter, TrackPortKind, TransportCommand, TuningInfoWriter,
 };
 pub use library::{Bundle, DescriptorInfo, LoadError, Stage, chars_to_string};
-#[cfg(feature = "test-support")]
+#[cfg(all(feature = "test-support", feature = "clap-extras"))]
 #[doc(hidden)]
 pub use menu::builder_for_test;
+#[cfg(feature = "clap-extras")]
 pub use menu::{MenuItem, MenuTarget};
-pub use plugin::{
-    ActivateError, AudioPortInfo, CallError, Extension, Plugin, PortConfigRequest, PortKind,
-};
+#[cfg(feature = "clap-extras")]
+pub use plugin::PortConfigRequest;
+pub use plugin::{ActivateError, AudioPortInfo, CallError, Extension, Plugin, PortKind};
 pub use pool::{GraphPool, PoolHandle, TaskPool};
 pub use roles::{AudioClaim, LifecycleClaim, ThreadRoles};
 pub use stream::{InputStream, OutputStream};
 pub use types::{
     AmbisonicDecl, AudioPortFlags, AudioPortsConfig, AudioPortsRescanFlags, AutomationState,
-    LogSeverity, NoteName, NotePortDecl, ParamInfo, ParamsRescanFlags, ProcessStatus,
-    RemoteControlsPageDecl, StateContext, TriggerDecl, UndoDeltaDecl, VoiceInfo,
+    LogSeverity, NoteName, NotePortDecl, ParamInfo, ParamsRescanFlags, ProcessStatus, StateContext,
+    VoiceInfo,
 };
+#[cfg(feature = "clap-extras")]
+pub use types::{RemoteControlsPageDecl, TriggerDecl, UndoDeltaDecl};
 
 // Test-only global allocator for the no-allocation gates.
 #[cfg(test)]

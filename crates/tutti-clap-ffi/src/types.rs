@@ -14,7 +14,9 @@ use clap_sys::ext::audio_ports::{
     CLAP_AUDIO_PORTS_RESCAN_NAMES, CLAP_AUDIO_PORTS_RESCAN_PORT_TYPE,
 };
 use clap_sys::ext::audio_ports_config::clap_audio_ports_config;
+#[cfg(feature = "clap-extras")]
 use clap_sys::ext::draft::triggers::clap_trigger_info;
+#[cfg(feature = "clap-extras")]
 use clap_sys::ext::draft::undo::clap_undo_delta_properties;
 use clap_sys::ext::log::{
     CLAP_LOG_DEBUG, CLAP_LOG_ERROR, CLAP_LOG_FATAL, CLAP_LOG_HOST_MISBEHAVING, CLAP_LOG_INFO,
@@ -31,6 +33,7 @@ use clap_sys::ext::params::{
     CLAP_PARAM_RESCAN_ALL, CLAP_PARAM_RESCAN_INFO, CLAP_PARAM_RESCAN_TEXT,
     CLAP_PARAM_RESCAN_VALUES, clap_param_info,
 };
+#[cfg(feature = "clap-extras")]
 use clap_sys::ext::remote_controls::clap_remote_controls_page;
 use clap_sys::ext::state_context::{
     CLAP_STATE_CONTEXT_FOR_DUPLICATE, CLAP_STATE_CONTEXT_FOR_PRESET, CLAP_STATE_CONTEXT_FOR_PROJECT,
@@ -401,6 +404,7 @@ impl AmbisonicDecl {
 
 /// `remote-controls.get`, owned.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg(feature = "clap-extras")]
 pub struct RemoteControlsPageDecl {
     /// The section the page belongs to.
     pub section_name: String,
@@ -414,6 +418,7 @@ pub struct RemoteControlsPageDecl {
     pub is_for_preset: bool,
 }
 
+#[cfg(feature = "clap-extras")]
 impl RemoteControlsPageDecl {
     pub(crate) fn from_raw(page: &clap_remote_controls_page) -> Self {
         Self {
@@ -428,6 +433,7 @@ impl RemoteControlsPageDecl {
 
 /// `triggers.get_info`, owned.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg(feature = "clap-extras")]
 pub struct TriggerDecl {
     /// The trigger's id.
     pub id: u32,
@@ -439,6 +445,7 @@ pub struct TriggerDecl {
     pub module: String,
 }
 
+#[cfg(feature = "clap-extras")]
 impl TriggerDecl {
     pub(crate) fn from_raw(info: &clap_trigger_info) -> Self {
         Self {
@@ -452,6 +459,7 @@ impl TriggerDecl {
 
 /// `undo-delta.get_delta_properties`, owned.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg(feature = "clap-extras")]
 pub struct UndoDeltaDecl {
     /// Whether the plugin produces deltas.
     pub has_delta: bool,
@@ -461,6 +469,7 @@ pub struct UndoDeltaDecl {
     pub format_version: u32,
 }
 
+#[cfg(feature = "clap-extras")]
 impl UndoDeltaDecl {
     pub(crate) fn from_raw(props: &clap_undo_delta_properties) -> Self {
         Self {

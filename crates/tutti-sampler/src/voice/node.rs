@@ -24,6 +24,7 @@ use tutti_graph::{
     Shape, Status,
 };
 use tutti_rt::Reader;
+use tutti_transport::TempoReader;
 use tutti_types::{Amplitude, ChannelLayout, Param, SampleRate, Tail, UnitParam};
 
 /// One [`Voice`] as a graph node in its own right: zero inputs, `channels`
@@ -76,6 +77,9 @@ pub struct VoiceNode {
     /// The transport as the voice reads it, kept across blocks so a jump is
     /// flushed where it happens.
     clock: Clock,
+    /// The project's tempo map, when the node reads one: lent once per block
+    /// to its clock ([`with_tempo`](Self::with_tempo)).
+    tempo: Option<TempoReader>,
     /// The block read's lanes (`PlaybackSlot::render_into`), built here and
     /// sized from `Prepare::max_block` in `prepare`, on the control thread.
     scratch: BlockScratch,
@@ -120,8 +124,22 @@ impl VoiceNode {
             applied: None,
             gain,
             clock: Clock::new(),
+            tempo: None,
             scratch: BlockScratch::new(UNPREPARED_FRAMES, channels.count() as usize),
         }
+    }
+
+    /// This node reading the project's tempo map through `tempo`
+    /// ([`TransportSettings::tempo_reader`](tutti_transport::TransportSettings::tempo_reader)).
+    /// Over a map whose tempo changes, how long a placed voice has played is
+    /// the map's seconds between its start and the playhead, not the beats
+    /// over the tempo of the moment; see
+    /// [`VoicePool::with_tempo`](super::VoicePool::with_tempo). It matters
+    /// only when the voice is placed on the transport. A fork reads the same map.
+    #[must_use]
+    pub fn with_tempo(mut self, tempo: TempoReader) -> Self {
+        self.tempo = Some(tempo);
+        self
     }
 
     /// This node with a fresh placement cell, and the handle that drives
@@ -303,7 +321,11 @@ impl Node for VoiceNode {
 
     fn process(&mut self, cx: &Cx<'_>, mut io: Io<'_>) -> Status {
         self.drain_commands(io.param(0).frames().and_then(|v| v.last().copied()));
-        let clock = self.clock.observe(cx.env);
+        // Lent for the block and given back after it: the render borrows the
+        // whole node.
+        let mut reader = self.tempo.take();
+        let map = reader.as_mut().map(TempoReader::lend);
+        let clock = self.clock.observe_with(cx.env, map.as_deref());
         let frames = io.frames();
         let (_, mut outs) = io.split();
         // Every output this node declares, not only the `n` the read writes:
@@ -327,6 +349,8 @@ impl Node for VoiceNode {
         } else {
             self.render_in_pieces(&clock, frames, n, &mut refs[..n]);
         }
+        drop(map);
+        self.tempo = reader;
         Status::Modified
     }
 
@@ -358,6 +382,8 @@ struct VoiceNodeFork {
     /// gain last set (a modulation lane sends its composite to the
     /// port and never writes the cell).
     params: ParamSet,
+    /// The tempo map the live node reads, which a fork reads too.
+    tempo: Option<TempoReader>,
 }
 
 impl ForkSource for VoiceNodeFork {
@@ -374,7 +400,8 @@ impl ForkSource for VoiceNodeFork {
         voice.play.gain = gain;
         voice.source.apply_gain(gain);
         let health = voice.fault().map(VoiceHealth);
-        let node = VoiceNode::with_channels(voice, self.channels);
+        let mut node = VoiceNode::with_channels(voice, self.channels);
+        node.tempo = self.tempo.clone();
         let forked = Forked::new(Box::new(node));
         Ok(match health {
             Some(h) => forked.with_health(Arc::new(h)),
@@ -393,6 +420,7 @@ impl IntoNode for VoiceNode {
             channels: node.channels,
             placement: Arc::clone(&handle.placement),
             params: handle.params.clone(),
+            tempo: node.tempo.clone(),
         };
         NodeParts {
             node: Box::new(node),

@@ -74,7 +74,7 @@ impl RenderPlan {
 /// length; a render refuses such a span before it gets here
 /// ([`ConfigError::InvalidDuration`]), so this is for a caller sizing one.
 ///
-/// A [`Seconds`](tutti_types::Seconds) is an `f64`, so a *derived* length keeps
+/// A [`Seconds`] is an `f64`, so a *derived* length keeps
 /// its frame: 2000 beats at 93 bpm and 8000 at 111 bpm land on the frame they
 /// name, where an `f32` span landed 2 and 6 frames off.
 pub fn duration_to_frames(seconds: Seconds, rate: SampleRate) -> Samples {

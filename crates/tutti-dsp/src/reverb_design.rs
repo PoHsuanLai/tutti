@@ -624,6 +624,7 @@ mod kernel_tests {
         Defective {
             inner: FreeverbDesign,
             defect,
+            tweak: |_| {},
         }
     }
 
@@ -674,6 +675,13 @@ mod kernel_tests {
             cases::click_free(&defective(Defect::UnslewedGain(4.0))),
             "jump",
         );
+        // line lengths: the longest comb 5% long (inside the RT60 tolerance).
+        let m = Defective {
+            inner: FreeverbDesign,
+            defect: Defect::None,
+            tweak: |k| k.lengthen_last_comb(1722),
+        };
+        fails(cases::line_lengths(&m), "first echo");
         // reset that does nothing; fresh that keeps the state; a gain that
         // depends on the block.
         fails(cases::reset(&defective(Defect::NoReset)), "reset");

@@ -190,6 +190,16 @@ impl Freeverb {
         }
     }
 
+    /// Makes the last right comb `len` frames long (empty), for the kernel
+    /// contract's defective kernel.
+    #[cfg(test)]
+    pub(crate) fn lengthen_last_comb(&mut self, len: usize) {
+        if let Some(c) = self.cfs_r.last_mut() {
+            c.buffer = vec![0_f32; len];
+            c.buffer_index = 0;
+        }
+    }
+
     /// The comb and all-pass lengths and the first comb's coefficients, for the
     /// design's tests: `(left combs, right combs, left all-passes, right
     /// all-passes, (feedback, damp1, damp2))`.

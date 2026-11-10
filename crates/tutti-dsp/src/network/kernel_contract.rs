@@ -596,6 +596,80 @@ pub(crate) mod cases {
         Ok(())
     }
 
+    /// Every line of a first recirculating stage that feeds the output through
+    /// the stages after it, with nothing but series all-passes after: with the
+    /// loop gain high, an impulse's first echo of line `i` lands at
+    /// `pre_delay + length_i` and is the input gain's size (a Freeverb all-pass
+    /// chain of four passes the first sample at full size). Pins every line
+    /// length, not only the shortest that `arrival` finds. Vacuous (an error) for
+    /// a network of another shape.
+    ///
+    /// Mutation: the last right comb (1640 frames, the longest) 5% long, which is
+    /// inside the RT60 tolerance.
+    pub(crate) fn line_lengths<D: KernelCase>(d: &D) -> Result<(), String>
+    where
+        D::Kernel: Clone,
+    {
+        use crate::network::Stage;
+        let rate = rate_of(d);
+        let mut checked = 0;
+        for c in d.probes() {
+            let (mut k, network) = built(d, &c, rate);
+            let Some(Stage::Fdn(f)) = network.stages.first() else {
+                continue;
+            };
+            if !network.stages[1..]
+                .iter()
+                .all(|s| matches!(s, Stage::AllPass(_)))
+            {
+                continue;
+            }
+            let mut x = vec![0.0f32; 4096];
+            x[0] = 1.0;
+            let out = render(&mut k, widths(d), &x, 64);
+            // An all-pass echoes an earlier line's first echo `delay` frames
+            // later, which can cancel this line's (Freeverb's 1116 + 441 = 1557):
+            // such a line is read at its other end, by the lines that do not.
+            let delays: Vec<usize> = network.stages[1..]
+                .iter()
+                .flat_map(|s| match s {
+                    Stage::AllPass(a) => a.iter().map(|a| a.delay as usize).collect(),
+                    _ => Vec::new(),
+                })
+                .collect();
+            for (i, line) in f.lines.iter().enumerate() {
+                let masked = f.lines.iter().enumerate().any(|(j, other)| {
+                    j != i
+                        && delays
+                            .iter()
+                            .any(|&d| other.length as usize + d == line.length as usize)
+                });
+                if masked {
+                    continue;
+                }
+                let at = network.pre_delay.get() + line.length as usize;
+                // The rows that take this line.
+                for (r, row) in f.output.rows.iter().enumerate() {
+                    if row[i] == 0.0 {
+                        continue;
+                    }
+                    checked += 1;
+                    let want = 0.5 * (f.input[i] * row[i]).abs();
+                    if out[r][at].abs() < want {
+                        return Err(format!(
+                            "line {i} (length {}): output {} at its first echo, wanted {want}",
+                            line.length, out[r][at]
+                        ));
+                    }
+                }
+            }
+        }
+        if checked == 0 {
+            return Err("no first-echo line to check".into());
+        }
+        Ok(())
+    }
+
     /// After `reset` the kernel renders bit for bit what a freshly built one
     /// does, at the same controls.
     ///
@@ -711,6 +785,10 @@ macro_rules! kernel_contract {
             $crate::network::kernel_contract::cases::click_free(&$design).unwrap();
         }
         #[test]
+        fn kernel_contract_line_lengths() {
+            $crate::network::kernel_contract::cases::line_lengths(&$design).unwrap();
+        }
+        #[test]
         fn kernel_contract_reset() {
             $crate::network::kernel_contract::cases::reset(&$design).unwrap();
         }
@@ -751,6 +829,8 @@ pub(crate) enum Defect {
     FreshKeepsState,
     /// The output is scaled by `1 + 1e-6 * block length`.
     BlockDependent,
+    /// Nothing wrong in the wrapper (the kernel itself may be tweaked).
+    None,
     /// The output is scaled by a gain that grows 0.01% a frame, for ever.
     Runaway,
 }
@@ -888,9 +968,11 @@ impl<K: Kernel + Clone> Kernel for Flawed<K> {
 
 /// A design whose kernel has one [`Defect`].
 #[derive(Clone)]
-pub(crate) struct Defective<D> {
+pub(crate) struct Defective<D: Design> {
     pub(crate) inner: D,
     pub(crate) defect: Defect,
+    /// Applied to the kernel as it is built: a defect in the kernel's own state.
+    pub(crate) tweak: fn(&mut D::Kernel),
 }
 
 impl<D: Design> Design for Defective<D>
@@ -913,8 +995,10 @@ where
     }
 
     fn kernel(&self) -> Flawed<D::Kernel> {
+        let mut inner = self.inner.kernel();
+        (self.tweak)(&mut inner);
         Flawed {
-            inner: self.inner.kernel(),
+            inner,
             defect: self.defect,
             retargets: 0,
             held: [0.0; 8],

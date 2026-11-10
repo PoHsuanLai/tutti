@@ -30,8 +30,10 @@ use crate::ramp::{LastGood, block_driven};
 
 /// The level the wet signal has fallen to when the declared tail ends, and below
 /// which the node parks: 60 dB under what it carried, the figure the General MIDI
-/// reverb has always declared. Cutting the room off there takes what is at most
-/// a thousandth of the level it reached (-70 dBFS under a loud note).
+/// reverb has always declared. Measured against the old, uncut Freeverb at
+/// `input_end + tail`, what the cut discards is more than 100 dB below the
+/// rendered peak: about -112 dBFS RMS after a 2 s noise burst, -128 dBFS after a
+/// 50 ms one, and nothing after an impulse (already flushed).
 const TAIL_FLOOR: Db = Db(-60.0);
 
 /// A tail of this many frames never ends.

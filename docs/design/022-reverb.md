@@ -651,8 +651,10 @@ see `Status::Idle`.
   General MIDI send has always declared its ring-out to -60 dB, and
   `tutti-session`'s `every_stage_declares_its_own_tail` pins the figure between
   1 and 2 s, so the floor is not deeper; the cost is that the room is cut off at
-  a thousandth of the level it reached (-70 dBFS under a loud note) where it used
-  to ring on to the flush. A node that wants a deeper floor takes it from
+  -60 dB re the level it carried, where it used to ring on to the flush. Measured
+  against the old Freeverb at `input_end + tail`, what the cut discards is more
+  than 100 dB below the rendered peak (peak -1 dBFS; a 2 s noise burst leaves
+  about -112 dBFS RMS, a 50 ms burst -128 dBFS, an impulse nothing). A node that wants a deeper floor takes it from
   `TAIL_FLOOR`; the ceiling and the reported tail follow. `tail` is the network's
   `rt60_bound` figure, about 1.2 times the old `ring_out`.
 - **The node cuts at `tail + latency`, to the frame.** `assert_honest_tail`
@@ -689,6 +691,7 @@ case that needs a counting allocator. Each case has a `Defect` it must fail
 | `decorrelated` | Zero-lag correlation of the two channels under 0.3 | channel 1 a copy of channel 0 |
 | `stability` | 60 s of noise at room 1 (damping 0 and 1): finite and under an L1 bound from the network (486 at room 1) | a gain growing 0.01% a frame (a loop gain over 1 is refused by `retarget`, so `LoopGain` cannot make it unstable) |
 | `click_free` | Noise through a step of the controls: the largest jump after it within 1.5 times the larger steady state's | a gain of 4 applied whole at the second retarget |
+| `line_lengths` | For a diagonal first stage followed by series all-passes only: an impulse's first echo of every line lands at `pre_delay + length` at the input gain's size (a line another line plus an all-pass delay would cancel is read by the others) | the longest comb 5% long, inside the RT60 tolerance; `arrival` sees only the shortest line |
 | `reset`, `fresh` | Bit-identical to a freshly built kernel at the same controls | `reset` doing nothing; `fresh` keeping the state |
 | `block_independent` | Blocks of 1, 17, 64 and 512 bit-identical | a gain that depends on the block length |
 

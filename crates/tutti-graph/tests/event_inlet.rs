@@ -580,7 +580,7 @@ fn graph(
                     width: 1,
                 }),
             );
-            ed.spec_mut().topology.edges.insert(
+            ed.spec_mut().topology.connect(
                 InPort {
                     node: NodeKey(base + g),
                     port: 0,
@@ -591,8 +591,8 @@ fn graph(
     }
     let sum = if heavy { 5 } else { 1 };
     ed.insert(NodeKey(30), "sum", Forkable(Kind::Sum { inputs: sum }));
-    let edges = &mut ed.spec_mut().topology.edges;
-    edges.insert(
+    let topology = &mut ed.spec_mut().topology;
+    topology.connect(
         InPort {
             node: NodeKey(30),
             port: 0,
@@ -600,7 +600,7 @@ fn graph(
         Edge::Direct(out(10)),
     );
     for c in (0..4u16).filter(|_| heavy) {
-        edges.insert(
+        topology.connect(
             InPort {
                 node: NodeKey(30),
                 port: c + 1,
@@ -608,7 +608,7 @@ fn graph(
             Edge::Direct(out(103 + u64::from(c) * 10)),
         );
     }
-    ed.spec_mut().topology.outputs = vec![out(30)];
+    ed.spec_mut().topology.set_outputs([out(30)]);
     let tap = tap.then(|| {
         ed.open_event_tap(
             EventTapId(1),

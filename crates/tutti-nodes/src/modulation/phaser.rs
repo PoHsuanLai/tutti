@@ -11,7 +11,7 @@ use tutti_types::{Tail, UnitParam};
 
 use super::shared::{LfoDrive, LinearModMix};
 use crate::ramp::block_driven;
-use tutti_dsp::{Ramp, allpass_chain, allpass_coeff, segments};
+use tutti_dsp::{Ramp, allpass_chain, allpass_coeff, segments, sweep_hz};
 use tutti_types::{ChannelLayout, Depth, Feedback, Hz, Mix, Phase, PhaseIncrement, SampleRate};
 
 const MAX_STAGES: usize = 12;
@@ -314,12 +314,11 @@ impl PhaserNode {
 
         // Narrowed once for the all-pass coefficients below.
         let sr = self.sample_rate.get() as f32;
-        let (min_hz, max_hz) = (self.range.min_hz.get(), self.range.max_hz.get());
+        let (min_hz, max_hz) = (self.range.min_hz, self.range.max_hz);
         let coeff_at = |i: usize, offset: PhaseIncrement| -> f32 {
             let lfo_raw = phases[i].offset_by(offset).to_radians().get().sin();
-            let lfo = lfo_raw * 0.5 + 0.5;
-            let sweep = min_hz + (max_hz - min_hz) * lfo * depth_r.at(i);
-            allpass_coeff(sweep, sr)
+            let sweep = sweep_hz(min_hz, max_hz, lfo_raw, Depth(depth_r.at(i)));
+            allpass_coeff(sweep.get(), sr)
         };
 
         // The coefficient table, solved at the control points and interpolated

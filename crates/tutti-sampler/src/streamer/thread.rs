@@ -33,7 +33,7 @@ use crossbeam_channel::Receiver;
 /// Control-thread side: build with [`with_config`](Self::with_config), spawn
 /// with [`start`](Self::start), drive through
 /// [`command_sender`](Self::command_sender), and read stream state through
-/// [`plans`](Self::plans). `Drop` stops the thread and joins it.
+/// the shared plan map. `Drop` stops the thread and joins it.
 pub struct StreamerThread {
     /// The command queue's sending end, cloned for every sender.
     tx: StreamerSender,

@@ -29,7 +29,7 @@ pub(crate) struct Link {
     /// [`StreamRecord`].
     loop_config: Option<LoopConfig>,
     /// The file's own rate, as its header states it. Recorded rather than
-    /// recovered from the stream's [`SrcRatio`] (`file / session`): the ratio
+    /// recovered from the stream's [`SrcRatio`](tutti_types::SrcRatio) (`file / session`): the ratio
     /// is re-derived from this when the session rate moves
     /// (`SessionRate::set`), and a placement gate converts beats to file
     /// frames with it (`StreamReader::file_rate`).

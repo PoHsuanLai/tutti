@@ -30,7 +30,7 @@ use crate::voice::interp::Place;
 ///
 /// A position is refused, never clamped: a negative or non-finite one would
 /// play the wrong audio with no error. A fractional position is floored to the
-/// frame it falls in ([`frame`](Self::frame)).
+/// frame it falls in when the stream's window is placed.
 ///
 /// # Raw
 ///

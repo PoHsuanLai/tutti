@@ -30,6 +30,10 @@ are not vendored (`crates/tutti-midi-types/docs/midi2-spec/README.md`).
 - **Events are not silently lost.** Capacity follows the block size, note-offs
   have priority and are retried, drops are counted exactly, and an export reports
   them (§8).
+- **One event shape, then the shared steps.** Where MIDI stands today is in §1.4,
+  the spec's interfaces as traits (mostly not) in §4.1, and the order the remaining
+  stages run in is §10: `(Offset, Ump)` first, then the `Translator`, `dispatch`
+  and the dedup.
 - **Stages**, each landing on its own (§10).
 
 ## 1. What is wrong today
@@ -76,6 +80,67 @@ about 0.3% of the budget of a 64-frame block at 48 kHz, at 40 events per block,
 with no allocation. The stack's own code compiles in about 2 s. Neither justifies
 a change on its own. This design is for correctness and for what a caller can
 express.
+
+### 1.4 Where MIDI stands
+
+A survey of `main` after stages 1, 1.5 and 2 (the CLAP host, the VST3 host, the
+polysynth and the SoundFont read `Message`). What is left is mostly duplication
+and a vocabulary that is half old.
+
+**Three event shapes coexist.**
+
+- `tutti_graph::Event { offset, kind: EventKind::Midi(Ump) }`
+  (`tutti-graph/src/event.rs`): the target.
+- The legacy `tutti_midi_types::MidiEvent { frame_offset, data: [u32; 4] }`
+  (`tutti-midi-types/src/ump/mod.rs:37`). It is still the currency of the
+  `MidiIn` and `MidiOut` traits, the plugin hosts (`tutti-plugin-types`
+  re-exports it, and its `ProcessContext` and `emit_midi` use it),
+  `MidiSession::send`, the SoundFont's `apply_event(&MidiEvent)`,
+  `BlockSplitter` and `gather_midi`. It appears in about 40 files of
+  `tutti-midi-types`, 30 of `tutti-midi-runtime` and 18 of `tutti-plugin`.
+- Bare `Ump` or `Message` (`PolySynth::process_midi_event`, `Voicing::step`).
+
+**Stage 3's `Translator` is not built.** The old `Midi1ToMidi2Translator`
+(`tutti-midi-types/src/translation/rpn.rs:81`) is what `MidiInputNode` runs, and it
+speaks `MidiEvent`.
+
+**Duplication.**
+
+- *Widening.* `fn widened` is copied at `tutti-clap-host/src/events.rs:123` and
+  `tutti-vst3-host/src/events/midi.rs:356`. The same widen is written in
+  `PolySynth::voice1` (`tutti-polysynth/src/polysynth.rs:373`) and
+  `SoundFontUnit::voice1` (`tutti-soundfont/src/lib.rs:366`). Three more calls to
+  `widen` sit in the VST3 host (`legacy_cc.rs`, `midi_mapping.rs`) and the CLAP
+  host's `from_voice2` path.
+- *Ignoring non-voice messages.* A match with seven arms (the six non-voice
+  `Message` variants and `Err(Unknown)`) is the same in
+  `PolySynth::process_midi_event` (`polysynth.rs:~351-369`) and
+  `SoundFontUnit::apply_event` (`tutti-soundfont/src/lib.rs:~344-364`).
+- *RPN and NRPN, four places.* The old translator; the SoundFont's
+  `Channel::{set_rpn_*, data_entry_*}` (`tutti-soundfont/src/channel.rs:149-190`),
+  which ignores NRPN (it notes that the last data type was NRPN and drops the
+  data); `RpnRun` in `tutti-midi-runtime`'s `outbound/mpe_ingest.rs:90`; and
+  `Voicing`'s consumption of the `Voice2` registered-controller form, which is the
+  target.
+- *MIDI 1.0 byte parsers.* `tutti_ump::Midi1Parser` against `tutti-plugin-types`'
+  `Midi1Splitter` and `Midi1Decoder` (about 700 lines), whose one production caller
+  is `tutti-au-ffi/src/midi_out.rs`.
+- *SysEx.* `tutti-plugin-types`' `SysExAssembler` (about 790 lines, packets to
+  whole messages for a plugin) and `tutti-midi-runtime`'s `Sysex7PacketReassembler`
+  (packets to the complete run) do overlapping work. `Sysex8PacketReassembler` and
+  the FlexText reassembly sit beside them.
+
+**Held-note structures answer different questions and stay separate.**
+`tutti-voicing`'s `Holds` is why one voice is still open (key, sustain,
+sostenuto). `NoteLedger` (§8.4) is which notes a node has started and not ended on
+its own port, and what the port owes. `tutti-graph`'s `held.rs` is which keys an
+event output port carries, so an edge that ends can close them. They have
+different owners, keys and failure modes; unifying them would give one of them a
+question it does not ask.
+
+**`tutti-midi-types` is still about 12,000 lines of pre-017 vocabulary:** `ci/`,
+`mpe/`, `translation/`, `clip_file`, `cc/mapping`, `sync/`, and the `MidiIn` and
+`MidiOut` traits, beside the `MidiEvent` above.
 
 ## 2. The hierarchy
 
@@ -256,6 +321,47 @@ A plugin host that wants MIDI 2.0 data takes `Midi2` directly. One that speaks
 MIDI 1.0 asks the translator for D.2, so the rule lives in one place. Hosts then
 honour a plugin's declared dialect, including `CLAP_EVENT_MIDI2`, which is never
 sent today.
+
+### 4.1 The spec's interfaces as traits
+
+The question was whether MIDI should get traits that follow the specification's
+interfaces. Most should not, because the pure-step shape already used here (a value
+in, a value out, no I/O) covers them with less surface. The decisions:
+
+- **Channel-voice receiver: a function first.** `tutti-midi-protocol` gets
+  `dispatch(ump, handler)`: it decodes, widens a MIDI 1.0 message, and routes the
+  `Voice2` to a channel-voice handler. The default handling ignores every
+  non-voice message and `Unknown`, which is the match two crates copy today (§1.4).
+  It becomes a `VoiceReceiver` trait only when a third crate implements it; two
+  implementors do not justify a trait the function already serves. Boundary: a
+  `VoiceReceiver` is what turns one channel voice message into a change in an
+  instrument, and nothing else. Oracle: M2-104 App. D.3 (a MIDI 1.0 Note On at
+  velocity 0 arrives as a Note Off; a MIDI 2.0 Note On at velocity 0 stays a Note
+  On).
+- **Controller state (RPN, NRPN, bank, data entry) is a value, not a trait.** It is
+  the stage 3 `Translator` (§4), one value per input edge. Oracle: M2-115 for the
+  scaling and M2-104 App. D for the assembly.
+- **The wire edge consolidates onto `Midi1Parser`.** No trait: once the AU copy is
+  gone one implementation remains.
+- **Reassembly: a `Reassemble` trait is revisited after stage 5a and the dedup,**
+  when every reassembler takes `Ump` and none allocates. Before that the shapes
+  differ (`MidiEvent` against `Ump`, allocating against not) and a trait would
+  cover the difference instead of ending it.
+
+Rejected:
+
+- **An Endpoint trait.** `MidiEndpoints` and `MidiIn`/`MidiOut` already are it, and
+  Function Blocks are data (§5).
+- **Profile.** Nothing implements it, and the unwired profile code is slated for
+  deletion (§5, "MIDI-CI").
+- **Property Exchange.** Deferred until a named peer and M2-105 (§5).
+- **MIDI-CI.** A pure step, `Connection::on_message` (§5), not an object to
+  implement.
+- **Timing.** Values converted at the edges (§2, "Timing at the edge").
+- **SMF and Clip.** They differ in kind (ticks and meta events against a word
+  stream); both convert to `(Beat, Ump)` (§9, "Files").
+- **A note-logic trait per instrument.** `Voicing::step` with `Rules` and `Patch`
+  is already the values form (`tutti-voicing`).
 
 ## 5. Connections
 
@@ -573,7 +679,7 @@ design's model, and it does not enforce the name limits in M2-104 §7.1.
 - `tutti-graph` depends on `tutti-ump`, so `midi2` and its build tree (`fixed`,
   `typenum`, `half`, `zerocopy`, `derive_more`) cannot be a normal dependency. Every
   message, including Flex and Stream, is written directly.
-- It is removed from the workspace at stage 5, with the old types. Until then, while
+- It is removed from the workspace at stage 5b, with the old types. Until then, while
   the old types still depend on it anyway, it serves as a test-only oracle: random
   words go through both decoders, and each disagreement is settled by reading the
   specification and pinned as an analytic test. What survives its removal is what
@@ -582,7 +688,7 @@ design's model, and it does not enforce the name limits in M2-104 §7.1.
   `tests/spec_tables.rs` with `tests/midi2_oracle.rs` deleted. The round-trip
   properties and the fuzz target check the codec only against itself (decode,
   encode, decode), so a mistake made the same way in both directions passes them;
-  they do not replace the oracle. What stage 5 does lose is independent agreement
+  they do not replace the oracle. What stage 5b does lose is independent agreement
   with a second decoder on words no table or figure pins, and the name-only
   comparison of the Flex and Stream families. The fuzz target is not run in CI
   yet; nothing here leans on it.
@@ -757,7 +863,8 @@ impl Track { pub fn notes(&self) -> impl Iterator<Item = PairedNote> + '_; }
 ## 10. Stages
 
 Each stage lands on its own, with renders bit-identical except where a stage names
-a behaviour change.
+a behaviour change. Stages 0 to 2 are done except the VST2 host's move to `Message` (stage 2); the order of the
+rest is below.
 
 0. **Stop losing events** (§8). No model change needed, and no dependency on the
    others. Behaviour change: fewer drops, a new report.
@@ -769,9 +876,9 @@ a behaviour change.
    App. D.3, a MIDI 1.0 Note On at velocity 0 as a Note Off at `0x8000`), so a
    consumer matches `Voice2` once instead of writing each message twice. A
    Control Change that needs per-channel state (RPN and NRPN data, Bank Select)
-   stays a plain Control Change there. A consumer's call is transitional: stage 3
-   moves the call to the input edge and consumers drop it with their `Voice1`
-   arm. Behaviour change: a MIDI 1.0 Note On at velocity 0 reaches the consumer
+   stays a plain Control Change there. A consumer's call is transitional: stages 3a
+   and 3b move it to the input edge and into `dispatch`, and consumers drop it with
+   their `Voice1` arm. Behaviour change: a MIDI 1.0 Note On at velocity 0 reaches the consumer
    as a Note Off with release velocity `0x8000`, not `0`.
 2. **Consumers move to `Message`,** one per PR: polysynth, SoundFont, then each
    host (the CLAP host is done; it cannot forward `Unknown`, because it sends no
@@ -787,25 +894,67 @@ a behaviour change.
    attribute type (MIDI 1.0 has no attribute; Table 8 gives a receiver no rule for
    it), where `to_midi1_messages` drops it. Its only caller, the VST2 host, still
    does until it moves to `Message`; no shipped path changes.
-3. **`Translator` in `tutti-midi-protocol`.** Translation to the edge, with the
-   state: RPN and NRPN assembly, Bank Select, groups, MPE. Behaviour change: §4's
-   remaining spec fixes.
-4. **`tutti-midi-device` and the `-ffi` crates.** Device detection comes first
+
+Stages 3 to 5 run in the order below, not the numeric one: 5a, 3a, 3b, 3c, then 5b
+(stage 4 anywhere). Three reasons, all from
+the code. `MidiEvent` is the signature everything else is written against (§1.4), so
+changing it once, first, stops later stages from rewriting a signature twice. The
+`Translator` is then written over `Ump` and never over `MidiEvent`, and the old
+translator, which speaks `MidiEvent`, is deleted rather than ported. The dedup is
+not cheaper first: the AU decoder and the SysEx reassemblers both produce and take
+`MidiEvent`, so moving them before 5a means converting them twice, and the AU side
+cannot be exercised on Linux. Stage 4 does not depend on this order and can land
+at any point; its CI codec move and `ci`/`negotiate` deletion shrink
+`tutti-midi-types` the same way.
+
+- **Stage 5a. One event shape.** Replace `MidiEvent` with `(Offset, Ump)` everywhere:
+   the `MidiIn` and `MidiOut` element type, the plugin hosts and `tutti-plugin-types`,
+   the SoundFont's `apply_event`, `BlockSplitter`, `gather_midi` and
+   `MidiSession::send`. Deletes `MidiEvent` and its constructors. Oracle: none
+   needed, since it is not a behaviour change: renders stay bit-identical, and the
+   existing spec-pinned tests for each consumer must pass unchanged. Two
+   constraints come with it. `Offset` is `tutti-graph`'s (`tutti-graph/src/time.rs`),
+   and `tutti-midi-types` sits in the same layer as `tutti-graph`, so it cannot
+   name it: `MidiIn` and `MidiOut` move to `tutti-midi-runtime`, which already
+   has the graph (`MidiInputNode` is their consumer). `tutti-plugin-types`
+   (a higher layer) takes the edge to `tutti-graph`. And `Offset` has no serde, so
+   plugin IPC keeps carrying a raw frame offset and converts at the edge, or
+   `Offset` gains the impls; decide in the PR.
+- **Stage 3a. The `Translator`** (§4) in `tutti-midi-protocol`, over `Ump`. Deletes
+   the SoundFont's RPN state machine (`Channel::{set_rpn_*, data_entry_*}`, which
+   then reads a registered-controller `Voice2`, NRPN included), `mpe_ingest`'s
+   `RpnRun` and the old `Midi1ToMidi2Translator`, and `MidiInputNode` runs the new
+   one. Behaviour change: §4's remaining spec fixes. Oracle: M2-115 and M2-104
+   App. D, as analytic tests.
+- **Stage 3b. `dispatch`** (§4.1) in `tutti-midi-protocol`. Deletes the four widen
+   copies (the two `widened` functions and the two `voice1` functions) and the
+   seven-arm match in the polysynth and the SoundFont. Oracle: M2-104 App. D.3.
+- **Stage 3c. The MIDI dedup.** The AU host reads its bytes with
+   `tutti_ump::Midi1Parser`, and `Midi1Decoder` and `Midi1Splitter` go. One SysEx7
+   reassembler stays, in the layer that uses it, and the other goes
+   (`SysExAssembler` or `Sysex7PacketReassembler`, whichever is left with no
+   caller that the survivor cannot serve; choose in the PR from the callers).
+   Oracle: M2-104 §7.7.1 for the SysEx7 packets and the byte-stream rules of
+   MIDI 1.0 for the parser (M1-100 is not available, §13). The `Reassemble` trait of
+   §4.1 is revisited here.
+- **Stage 4. `tutti-midi-device` and the `-ffi` crates.** Device detection comes first
    (`Devices`, `DeviceTable`, `FakeBackend::plug`; §5), directly after stage 1:
    done, except the flush (§5, "Built").
    Then model, connection, identity, device loss, timing (§5), and the backends
    with no `unsafe` of their own.
    Behaviour change: real hot-plug, timestamps, output scheduling. CI codec moves
    here and the rest of `ci`/`negotiate` is deleted.
-5. **Remove the old types:** `tutti-midi-types`, `MidiEvent`, `MidiMessage`, the
-   re-exports, and `midi2` from the workspace and `Cargo.lock`.
-6. **Capabilities** (§9).
+- **Stage 5b. Shrink `tutti-midi-types` away:** what 5a, 3a, 3c and 4 leave
+   (`mpe/`, `clip_file`, `cc/mapping`, `sync/`, `MidiMessage`, the re-exports) moves
+   to its owner (§6) or is deleted, then the crate, and `midi2` from the workspace
+   and `Cargo.lock`.
+7. **Capabilities** (§9).
 
 ## 11. Testing
 
 - **Spec tables.** Each message's words from M2-104 App. F and the tables in M2-115
   are analytic tests.
-- **`midi2` as an oracle** until stage 5, a dev-dependency. What it finds becomes
+- **`midi2` as an oracle** until stage 5b, a dev-dependency. What it finds becomes
   spec-pinned tests.
 - **Properties.** `decode` never panics on any words, and `encode(decode(x)) == x`
   for a canonical `x`.

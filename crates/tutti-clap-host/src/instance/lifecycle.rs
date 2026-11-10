@@ -17,6 +17,7 @@ use crate::types::{ParameterChanges, ParameterQueue, PluginInfo};
 use std::path::PathBuf;
 use std::sync::Arc;
 use tutti_clap_ffi::ActivateError;
+use tutti_plugin_types::MainThread;
 use tutti_plugin_types::{PluginError, Prepare, Refused, Request, SampleFormat, negotiate, taken};
 use tutti_rt::ArcLend;
 
@@ -75,20 +76,6 @@ impl ClapLoaded {
         self.audio.max_frames
     }
 
-    /// Debug-only guard: panic if called from a thread other than the one that
-    /// created this instance's `HostState` (the main/UI thread). CLAP requires
-    /// all calls except the audio-thread process path to run on the main
-    /// thread; this turns a silent spec violation into a located panic in
-    /// dev/test. No-op in release.
-    #[inline]
-    pub(crate) fn assert_main_thread(&self) {
-        debug_assert_eq!(
-            std::thread::current().id(),
-            self.host_state.main_thread_id,
-            "CLAP main-thread call made off the main thread"
-        );
-    }
-
     /// The format an activation runs at when `requested` is asked of this
     /// plugin: 64-bit only when asked for and every port advertises it, else
     /// 32-bit (`tutti_plugin_types::negotiate`). The audio ports are read
@@ -105,8 +92,12 @@ impl ClapLoaded {
     ///
     /// [`Loaded::activate`]: tutti_plugin_types::Loaded::activate
     /// [`ClapError::NotSupported`]: crate::ClapError::NotSupported
-    pub fn negotiate_format(&mut self, requested: SampleFormat) -> crate::Result<SampleFormat> {
-        self.rescan_audio_ports()?;
+    pub fn negotiate_format(
+        &mut self,
+        main: &MainThread,
+        requested: SampleFormat,
+    ) -> crate::Result<SampleFormat> {
+        self.rescan_audio_ports(main)?;
         Ok(negotiate(requested, self.audio.supports_f64))
     }
 
@@ -129,21 +120,16 @@ impl ClapLoaded {
     /// library and the same instance. Both failure paths preserve it: the
     /// `f64` check returns before any FFI runs, and a plugin-side refusal
     /// leaves the instance untouched and not active.
-    ///
-    /// # Panics
-    ///
-    /// In debug builds, panics if called from a thread other than the one that
-    /// loaded the plugin.
     // The `Err` variant deliberately hands `self` (a large `ClapLoaded`) back so
     // the caller can retry or fall back; boxing it would defeat that ownership
     // return and add a heap alloc on the (rare) failure path.
     #[allow(clippy::result_large_err)]
     pub(crate) fn activate_now(
         mut self,
+        main: &MainThread,
         prepare: Prepare,
     ) -> std::result::Result<(ClapProcessor, ClapController), Refused<Self>> {
         let wide = prepare.format() == SampleFormat::Float64;
-        self.assert_main_thread();
         let refuse = |plugin: Self, error: ClapError| Refused {
             plugin: Some(plugin),
             reason: plugin_error(error),
@@ -158,11 +144,11 @@ impl ClapLoaded {
         // CLAP's render mode is `[main-thread]` and carries no activation
         // constraint; a plugin without the extension has declined, which is
         // not a failure.
-        let _ = self.set_render_mode(prepare.mode().is_offline());
+        let _ = self.set_render_mode(main, prepare.mode().is_offline());
 
         // The plugin may have changed its ports since it was loaded or last
         // deactivated, and the 64-bit flag is part of them.
-        if let Err(e) = self.rescan_audio_ports() {
+        if let Err(e) = self.rescan_audio_ports(main) {
             self.audio = previous;
             return Err(refuse(self, e));
         }
@@ -176,13 +162,13 @@ impl ClapLoaded {
             return Err(refuse(self, err));
         }
 
-        if let Err(e) = self.activate_plugin() {
+        if let Err(e) = self.activate_plugin(main) {
             self.audio = previous;
             return Err(refuse(self, e));
         }
         self.audio.f64_active = wide;
 
-        let table = self.read_param_ranges();
+        let table = self.read_param_ranges(main);
         let max_frames = self.audio.max_frames as usize;
         let mut scratch = AudioScratch::new(prepare.format());
         let port_channels = |ports: &tutti_plugin_types::BusChannels| -> Vec<u32> {
@@ -219,7 +205,9 @@ impl ClapLoaded {
         // (`ClapProcessor::output_param_points_dropped`).
         reserve_input_events(&mut scratch, &table, max_frames);
         reserve_output_params(&mut scratch, &table, max_frames);
-        scratch.input_events.set_midi_notes(self.sends_midi_notes());
+        scratch
+            .input_events
+            .set_midi_notes(self.sends_midi_notes(main));
         scratch
             .in_note_expressions
             .reserve_exact(super::config::INPUT_NOTE_EXPRESSIONS);
@@ -253,9 +241,9 @@ impl ClapLoaded {
     /// Reads each param's native range for denormalizing incoming automation
     /// (the host authors normalized 0..1; CLAP wants plain), and whether the
     /// plugin claims parameters at all. Queries the plugin: control thread only.
-    pub(crate) fn read_param_ranges(&self) -> RangeTable {
+    pub(crate) fn read_param_ranges(&self, main: &MainThread) -> RangeTable {
         let mut ranges: Vec<(u32, f32, f32)> = self
-            .native_parameters()
+            .native_parameters(main)
             .into_iter()
             // A parameter with no declared bounds has nothing to denormalize
             // against; dropping it leaves its automation to pass through
@@ -274,16 +262,16 @@ impl ClapLoaded {
             // they differ exactly when the enumeration truncated at a hole,
             // which is the case `add_param_changes` has to tell apart from a
             // params-less plugin.
-            claims: self.parameter_count() > 0,
+            claims: self.parameter_count(main) > 0,
         }
     }
 
     /// Calls the plugin's `activate` FFI. Shared by `activate_now` and the
     /// transitions built on it.
-    pub(crate) fn activate_plugin(&mut self) -> Result<()> {
+    pub(crate) fn activate_plugin(&mut self, main: &MainThread) -> Result<()> {
         if let Err(e) = self
             .plugin
-            .activate(self.audio.sample_rate, 1, self.audio.max_frames)
+            .activate(main, self.audio.sample_rate, 1, self.audio.max_frames)
         {
             return Err(ClapError::LoadFailed {
                 path: PathBuf::new(),
@@ -291,6 +279,10 @@ impl ClapLoaded {
                 reason: match e {
                     ActivateError::ProcessorStillAlive => {
                         "the audio half of the previous activation is still alive".to_string()
+                    }
+                    ActivateError::AlreadyActive => "the plugin is already active".to_string(),
+                    ActivateError::BadConfig => {
+                        "the sample rate or block range is one CLAP forbids".to_string()
                     }
                     ActivateError::Refused => "Activate failed".to_string(),
                 },
@@ -318,11 +310,11 @@ impl ClapLoaded {
 
     /// Calls the plugin's `deactivate` FFI. `deactivate` is
     /// `[main-thread & active]`, so an instance already inactive is left alone.
-    pub(crate) fn deactivate_plugin(&mut self) {
+    pub(crate) fn deactivate_plugin(&mut self, main: &MainThread) {
         if !self.flags.active {
             return;
         }
-        self.plugin.deactivate();
+        self.plugin.deactivate(main);
         self.flags.active = false;
         self.audio.f64_active = false;
     }
@@ -386,7 +378,9 @@ impl Drop for ClapLoaded {
         // gui.destroy() before plugin.destroy(). A `ClapLoaded` that is dropped
         // is never active (the Controller deactivates the plugin before it lets
         // go of it), so there is no stop/deactivate to do here.
-        self.close_editor();
+        if let Some(main) = tutti_plugin_types::MainThread::current() {
+            self.destroy_editor(&main);
+        }
 
         // The FFI `Plugin`'s drop destroys the instance, then drops the host
         // vtable; the library unloads last.
@@ -404,11 +398,10 @@ mod tests {
     /// `FLOOR_POINTS + 1` each and `POOLED_QUEUES` blocks of `chunk_room +
     /// 1`), the output list's is the same, and the output queues hold
     /// exactly that budget; each under a third of a full room per
-    /// parameter. (Reworded with the one layout: the output side was the
-    /// plain budget, under a quarter.)
+    /// parameter.
     ///
     /// Mutation (run): `reserve_input_events` back to `params × (room + 1)`
-    /// → the input room is the old product → fails; `reserve_output_params`'
+    /// → the input room is the product of parameters and room → fails; `reserve_output_params`'
     /// room back to `queues * points` → fails.
     #[test]
     fn activation_reserves_the_pool_budget_not_params_times_room() {
@@ -454,8 +447,7 @@ mod tests {
     /// skipped block's carried value prepended to every queue, as the bridge
     /// does (`prepend_carried`, into the slot the set kept, so nothing
     /// grows): every point is handed on, none counted, each parameter's
-    /// points in order. (Reworded with `PointBuf`: the prepend was a `Vec`
-    /// insert that grew a queue the pool could not give room to.)
+    /// points in order.
     ///
     /// Mutation (run): `reserve_input_events` sizing the room without the
     /// carried point of each queue (`point_budget(params, room) - params`)

@@ -3,14 +3,16 @@
 
 use super::ClapLoaded;
 use super::config::{AudioConfig, LifecycleFlags, PortLayout};
+use super::control::descriptor_of;
 use crate::error::{ClapError, LoadStage, Result};
 use crate::host::{ClapHost, HostState};
 use crate::types::PluginInfo;
-use clap_sys::ext::audio_ports::CLAP_AUDIO_PORT_SUPPORTS_64BITS;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tutti_clap_ffi::{AudioPortInfo, Bundle, DescriptorInfo, LoadError, PortKind, Stage};
-use tutti_plugin_types::{BusChannels, ChannelLayout};
+use tutti_plugin_types::MainThread;
+use tutti_plugin_types::{BusChannels, ChannelLayout, EditorPresence};
+use tutti_types::ChannelCountOutOfRange;
 
 /// A placeholder rate for the plugin until its first activation, whose
 /// `Prepare` carries the real one.
@@ -59,8 +61,8 @@ fn stage_of(stage: Stage) -> LoadStage {
 fn load_failed(bundle_path: &Path, error: LoadError) -> ClapError {
     ClapError::LoadFailed {
         path: bundle_path.to_path_buf(),
-        stage: stage_of(error.stage),
-        reason: error.reason,
+        stage: stage_of(error.stage()),
+        reason: error.reason(),
     }
 }
 
@@ -82,15 +84,16 @@ impl ClapLoaded {
     /// the plugin is deactivated: the spec makes the ports `[!active]`.
     ///
     /// # Errors
-    /// [`ClapError::NotSupported`] while the plugin is active.
-    pub fn rescan_audio_ports(&mut self) -> Result<()> {
-        self.assert_main_thread();
+    /// [`ClapError::NotSupported`] while the plugin is active;
+    /// [`ClapError::PortTooWide`] when a port reports more channels than a
+    /// layout holds.
+    pub fn rescan_audio_ports(&mut self, main: &MainThread) -> Result<()> {
         if self.flags.active {
             return Err(ClapError::NotSupported(
                 "audio ports can be re-read only while the plugin is deactivated".to_string(),
             ));
         }
-        let (ports, supports_f64) = read_audio_ports(&mut self.info, &self.plugin);
+        let (ports, supports_f64) = read_audio_ports(main, &mut self.info, &self.plugin)?;
         self.ports = ports;
         self.audio.supports_f64 = supports_f64;
         Ok(())
@@ -130,8 +133,13 @@ impl ClapLoaded {
     ///
     /// # Errors
     /// The bundle cannot be opened, the plugin id is not in it, or the plugin
-    /// refuses to be created or initialised.
-    pub fn load(bundle_path: impl AsRef<Path>, options: LoadOptions) -> Result<Self> {
+    /// refuses to be created or initialised, or an audio port reports more
+    /// channels than a layout holds ([`ClapError::PortTooWide`]).
+    pub fn load(
+        main: &MainThread,
+        bundle_path: impl AsRef<Path>,
+        options: LoadOptions,
+    ) -> Result<Self> {
         let bundle_path = bundle_path.as_ref();
         let bundle = open(bundle_path, options.library.as_deref())?;
         let index = bundle
@@ -139,13 +147,13 @@ impl ClapLoaded {
             .map_err(|e| load_failed(bundle_path, e))?;
         let mut plugin_info = info_of(&bundle.descriptors()[index]);
 
-        let host_state = Arc::new(HostState::new());
+        let host_state = Arc::new(HostState::new(main));
         let host = ClapHost::new(host_state.clone()).into_inner();
         let plugin = bundle
             .instantiate(index, host, host_state.roles.clone())
             .map_err(|e| load_failed(bundle_path, e))?;
 
-        let (ports, supports_f64) = read_audio_ports(&mut plugin_info, &plugin);
+        let (ports, supports_f64) = read_audio_ports(main, &mut plugin_info, &plugin)?;
         let audio = AudioConfig {
             sample_rate: PLACEHOLDER_SAMPLE_RATE,
             max_frames: PLACEHOLDER_MAX_FRAMES,
@@ -153,72 +161,92 @@ impl ClapLoaded {
             f64_active: false,
         };
 
-        Ok(Self {
+        let loaded = Self {
             plugin,
             host_state,
             descriptor: std::cell::OnceCell::new(),
+            unmeasured: descriptor_of(&plugin_info, EditorPresence::Unknown),
             info: plugin_info,
             audio,
             ports,
             flags: LifecycleFlags::default(),
             work: Default::default(),
             thread_pool: None,
-        })
+        };
+        Ok(loaded)
     }
 }
 
 /// What the loader reads audio ports from: the plugin, or a stand-in.
 pub(crate) trait AudioPortSource {
     /// `audio-ports.count`.
-    fn port_count(&self, is_input: bool) -> u32;
+    fn port_count(&self, main: &MainThread, is_input: bool) -> u32;
     /// `audio-ports.get`.
-    fn port_info(&self, index: u32, is_input: bool) -> Option<AudioPortInfo>;
+    fn port_info(&self, main: &MainThread, index: u32, is_input: bool) -> Option<AudioPortInfo>;
 }
 
 impl AudioPortSource for tutti_clap_ffi::Plugin {
-    fn port_count(&self, is_input: bool) -> u32 {
-        self.audio_port_count(is_input)
+    fn port_count(&self, main: &MainThread, is_input: bool) -> u32 {
+        self.audio_port_count(main, is_input)
     }
 
-    fn port_info(&self, index: u32, is_input: bool) -> Option<AudioPortInfo> {
-        self.audio_port_info(index, is_input)
+    fn port_info(&self, main: &MainThread, index: u32, is_input: bool) -> Option<AudioPortInfo> {
+        self.audio_port_info(main, index, is_input)
     }
 }
 
 /// The channel layout a port's type and count name: mono and stereo by their
 /// type tag, anything else by count.
-pub(super) fn layout_of_port(port: &AudioPortInfo) -> ChannelLayout {
+///
+/// A count past what a layout holds is refused, never wrapped: a plugin
+/// reporting 65 538 channels must not become a stereo bus.
+pub(super) fn layout_of_port(
+    port: &AudioPortInfo,
+) -> std::result::Result<ChannelLayout, ChannelCountOutOfRange> {
     match port.port_type {
-        PortKind::Mono => ChannelLayout::MONO,
-        PortKind::Stereo => ChannelLayout::STEREO,
-        _ => ChannelLayout::from(port.channel_count),
+        PortKind::Mono => Ok(ChannelLayout::MONO),
+        PortKind::Stereo => Ok(ChannelLayout::STEREO),
+        _ => ChannelLayout::try_from(port.channel_count),
     }
 }
 
-fn port_channels(source: &impl AudioPortSource, is_input: bool) -> BusChannels {
-    let count = source.port_count(is_input);
+fn port_channels(
+    main: &MainThread,
+    source: &impl AudioPortSource,
+    is_input: bool,
+) -> Result<BusChannels> {
+    let count = source.port_count(main, is_input);
     let mut channels = BusChannels::with_capacity(count as usize);
     for i in 0..count {
-        let Some(port) = source.port_info(i, is_input) else {
+        let Some(port) = source.port_info(main, i, is_input) else {
             break;
         };
-        channels.push(layout_of_port(&port));
+        let layout = layout_of_port(&port).map_err(|_| ClapError::PortTooWide {
+            is_input,
+            index: i,
+            channels: port.channel_count,
+        })?;
+        channels.push(layout);
     }
-    channels
+    Ok(channels)
 }
 
 /// Reads the plugin's port layout into `info` and returns it with whether
 /// every presented port takes 64-bit audio.
-fn read_audio_ports(info: &mut PluginInfo, source: &impl AudioPortSource) -> (PortLayout, bool) {
+fn read_audio_ports(
+    main: &MainThread,
+    info: &mut PluginInfo,
+    source: &impl AudioPortSource,
+) -> Result<(PortLayout, bool)> {
     let ports = PortLayout {
-        inputs: port_channels(source, true),
-        outputs: port_channels(source, false),
+        inputs: port_channels(main, source, true)?,
+        outputs: port_channels(main, source, false)?,
     };
     let mut reported = ports.clone();
     reported.default_empty_buses();
     info.audio_inputs = reported.input_channel_total();
     info.audio_outputs = reported.output_channel_total();
-    (ports, check_f64_support(source))
+    Ok((ports, check_f64_support(main, source)))
 }
 
 /// Whether the plugin processes in 64-bit: every presented port (inputs and
@@ -228,15 +256,18 @@ fn read_audio_ports(info: &mut PluginInfo, source: &impl AudioPortSource) -> (Po
 ///
 /// Stops at the first port that fails to enumerate, as the layout does, so a
 /// port past a hole (absent from the layout) does not decide the format.
-fn check_f64_support(source: &impl AudioPortSource) -> bool {
+fn check_f64_support(main: &MainThread, source: &impl AudioPortSource) -> bool {
     let mut presented = 0u32;
     for is_input in [true, false] {
-        let count = source.port_count(is_input);
+        let count = source.port_count(main, is_input);
         for i in 0..count {
-            let Some(port) = source.port_info(i, is_input) else {
+            let Some(port) = source.port_info(main, i, is_input) else {
                 break;
             };
-            if port.flags & CLAP_AUDIO_PORT_SUPPORTS_64BITS == 0 {
+            if !port
+                .flags
+                .contains(tutti_clap_ffi::AudioPortFlags::SUPPORTS_64BIT)
+            {
                 return false;
             }
             presented += 1;
@@ -248,6 +279,10 @@ fn check_f64_support(source: &impl AudioPortSource) -> bool {
 #[cfg(test)]
 mod enumeration_hole_tests {
     use super::*;
+
+    fn claim() -> MainThread {
+        MainThread::claim().expect("one test, one process")
+    }
 
     /// A plugin's audio-port enumeration, as configured data: `inputs` and
     /// `outputs` ports, port `index` answering `false` at `hole`, port `i`
@@ -263,11 +298,16 @@ mod enumeration_hole_tests {
     }
 
     impl AudioPortSource for Stub {
-        fn port_count(&self, is_input: bool) -> u32 {
+        fn port_count(&self, _main: &MainThread, is_input: bool) -> u32 {
             if is_input { self.inputs } else { self.outputs }
         }
 
-        fn port_info(&self, index: u32, is_input: bool) -> Option<AudioPortInfo> {
+        fn port_info(
+            &self,
+            _main: &MainThread,
+            index: u32,
+            is_input: bool,
+        ) -> Option<AudioPortInfo> {
             if index == self.hole {
                 return None;
             }
@@ -276,9 +316,9 @@ mod enumeration_hole_tests {
                 id: index,
                 name: String::new(),
                 flags: if flagged & (1 << index) != 0 {
-                    CLAP_AUDIO_PORT_SUPPORTS_64BITS
+                    tutti_clap_ffi::AudioPortFlags::SUPPORTS_64BIT
                 } else {
-                    0
+                    tutti_clap_ffi::AudioPortFlags::empty()
                 },
                 channel_count: index + 1,
                 port_type: PortKind::Unspecified,
@@ -302,14 +342,14 @@ mod enumeration_hole_tests {
     }
 
     fn f64_support(stub: Stub) -> bool {
-        check_f64_support(&stub)
+        check_f64_support(&claim(), &stub)
     }
 
     /// Baseline — without it, dropping all ports unconditionally would satisfy
     /// the truncation assertions below.
     #[test]
     fn no_hole_reports_every_port() {
-        let channels = port_channels(&with_layout(4, u32::MAX), false);
+        let channels = port_channels(&claim(), &with_layout(4, u32::MAX), false).unwrap();
         // The stub leaves `port_type` null, so each layout is built from the
         // reported width alone — 1..=4 in port order.
         assert_eq!(
@@ -327,7 +367,7 @@ mod enumeration_hole_tests {
     /// `[1, 2, 4]` — port 3's width at index 2.
     #[test]
     fn hole_truncates_the_port_list() {
-        let channels = port_channels(&with_layout(4, 2), false);
+        let channels = port_channels(&claim(), &with_layout(4, 2), false).unwrap();
         assert_eq!(
             channels.as_slice(),
             [ChannelLayout::MONO, ChannelLayout::STEREO],
@@ -340,7 +380,7 @@ mod enumeration_hole_tests {
     /// A hole at index 0 leaves nothing describable.
     #[test]
     fn hole_at_zero_yields_no_ports() {
-        let channels = port_channels(&with_layout(4, 0), false);
+        let channels = port_channels(&claim(), &with_layout(4, 0), false).unwrap();
         assert!(channels.is_empty());
     }
 
@@ -462,5 +502,87 @@ mod enumeration_hole_tests {
             "output port 0 does not advertise 64-bit and precedes the hole, so \
              it must still veto"
         );
+    }
+
+    /// A port whose type tag does not name its width, reporting `channels`.
+    fn unspecified_port(channels: u32) -> AudioPortInfo {
+        AudioPortInfo {
+            id: 0,
+            name: String::new(),
+            flags: tutti_clap_ffi::AudioPortFlags::empty(),
+            channel_count: channels,
+            port_type: PortKind::Unspecified,
+            in_place_pair: u32::MAX,
+        }
+    }
+
+    /// One input port reporting a fixed count.
+    struct Wide(u32);
+
+    impl AudioPortSource for Wide {
+        fn port_count(&self, _main: &MainThread, is_input: bool) -> u32 {
+            u32::from(is_input)
+        }
+
+        fn port_info(
+            &self,
+            _main: &MainThread,
+            index: u32,
+            _is_input: bool,
+        ) -> Option<AudioPortInfo> {
+            (index == 0).then(|| unspecified_port(self.0))
+        }
+    }
+
+    /// A count a layout holds is read as it is, to the last one; one past it is
+    /// refused with the count, not wrapped into a narrower bus.
+    ///
+    /// Mutation (run): `_ => ChannelLayout::try_from(port.channel_count)`
+    /// written `Ok(ChannelLayout::from_count(port.channel_count as u16))` makes
+    /// 65 538 a stereo bus, 65 536 an empty one, and fails every refusal here.
+    #[test]
+    fn a_port_count_past_a_layout_is_refused_not_wrapped() {
+        assert_eq!(
+            layout_of_port(&unspecified_port(u32::from(u16::MAX))),
+            Ok(ChannelLayout::from(u16::MAX))
+        );
+        for wide in [65_536, 65_537, 65_538, u32::MAX] {
+            assert_eq!(
+                layout_of_port(&unspecified_port(wide)),
+                Err(ChannelCountOutOfRange(u64::from(wide)))
+            );
+        }
+        // The type tag names the width, so the count is not consulted.
+        let mut stereo = unspecified_port(70_000);
+        stereo.port_type = PortKind::Stereo;
+        assert_eq!(layout_of_port(&stereo), Ok(ChannelLayout::STEREO));
+    }
+
+    /// The load fails, naming the port and its side, instead of building a
+    /// bus of the wrapped width.
+    ///
+    /// Mutation (run): as above, the cast makes `port_channels` return
+    /// `Ok([Stereo])` for 65 538 and this fails.
+    #[test]
+    fn a_plugin_reporting_a_huge_port_fails_the_load_naming_the_port() {
+        let err = port_channels(&claim(), &Wide(65_538), true).expect_err("refused");
+        assert!(matches!(
+            err,
+            ClapError::PortTooWide {
+                is_input: true,
+                index: 0,
+                channels: 65_538
+            }
+        ));
+        let message = err.to_string();
+        assert!(message.contains("input port 0"), "{message}");
+        assert!(message.contains("65538"), "{message}");
+
+        let mut info = PluginInfo::new("id", "name");
+        assert!(matches!(
+            read_audio_ports(&claim(), &mut info, &Wide(u32::MAX)),
+            Err(ClapError::PortTooWide { .. })
+        ));
+        assert!(read_audio_ports(&claim(), &mut info, &Wide(8)).is_ok());
     }
 }

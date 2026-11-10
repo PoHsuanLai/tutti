@@ -869,3 +869,60 @@ fn direct_driving_events_does_not_allocate() {
         "the events played"
     );
 }
+
+/// Reporting a tail and parking on it never allocates: pulses into ringers
+/// that narrow their ceiling every block, through the serial executor and a
+/// pool whose every participant runs inside the gate.
+///
+/// Mutation: not run, and stated as such: the report path has no allocation
+/// to break (a stack `Cell`, a plain store). This pins that it stays so: a
+/// `Vec` or `Box` in the write-back in `node_op_with` would abort the gate.
+fn reporting_nodes_are_allocation_free_on(workers: usize) {
+    use common::{Pulse, Ringer};
+    let (mut ed, mut exec) = Editor::new(prepare(64));
+    use_pool(&mut exec, workers);
+    let mut outputs = Vec::new();
+    for i in 0..4u64 {
+        let (src, fx) = (NodeKey(10 + i), NodeKey(20 + i));
+        ed.insert(src, "pulse", Unforkable(Pulse::new(100 + 40 * i as usize)));
+        ed.insert(
+            fx,
+            "ringer",
+            Unforkable(Ringer::new(Tail::Finite(Samples(4_000)), 200, 200)),
+        );
+        ed.spec_mut()
+            .topology
+            .edges
+            .insert(at(fx.0, 0), from(src.0, 0));
+        outputs.push(Source::Node(OutPort { node: fx, port: 0 }));
+    }
+    ed.spec_mut().topology.outputs = outputs;
+    ed.commit().expect("commits");
+    exec.apply_pending();
+    ed.collect();
+    assert_eq!(exec.is_parallel(), workers > 1);
+    let [mut a, mut b, mut c, mut d] = std::array::from_fn(|_| vec![0.0f32; 64]);
+    let mut heard = false;
+    assert_no_alloc::assert_no_alloc(|| {
+        for _ in 0..200 {
+            exec.process(
+                64,
+                &Transport::default(),
+                &[],
+                &mut [&mut a[..], &mut b[..], &mut c[..], &mut d[..]],
+            );
+            heard |= [&a, &b, &c, &d].iter().any(|o| o.iter().any(|&x| x != 0.0));
+        }
+    });
+    assert!(heard, "the gate rendered signal");
+}
+
+#[test]
+fn reporting_nodes_are_allocation_free() {
+    reporting_nodes_are_allocation_free_on(1);
+}
+
+#[test]
+fn parallel_reporting_nodes_are_allocation_free() {
+    reporting_nodes_are_allocation_free_on(4);
+}

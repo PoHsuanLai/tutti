@@ -14,13 +14,15 @@
 //!
 //! Driven by hand through `support::Hand` (`tutti_graph::contract::Direct`
 //! underneath), prepared outside every gate as a graph prepares a node.
-//! - the rustysynth `Synthesizer` — its voice blocks, chorus and reverb lines
-//!   are all sized from `block_size` at construction.
+//! - the player's voices (a pool sized to the polyphony), the core's tables
+//!   (`Voicing`, sized to the polyphony) and the chorus and reverb lines are
+//!   all sized at construction.
 //!
 //! Note the fixture dependency: these run against the committed `TimGM6mb.sf2`,
 //! and construction (which does allocate, heavily) is deliberately outside
 //! every gate.
 
+use std::num::NonZeroUsize;
 use std::sync::Arc;
 
 use assert_no_alloc::AllocDisabler;
@@ -28,7 +30,8 @@ mod support;
 
 use support::Hand;
 use tutti_midi_types::ump::MidiEvent;
-use tutti_soundfont::{Settings, SoundFont, SoundFontUnit};
+use tutti_sf2::SoundFont;
+use tutti_soundfont::{Settings, SoundFontUnit};
 use tutti_types::SampleRate;
 use tutti_ump::{
     Address, Attribute, Bank, CCNumber, Data128, Flex, Message, MidiChannel, MidiGroup, NoteNumber,
@@ -199,8 +202,8 @@ fn soundfont_one_frame_blocks_are_allocation_free() {
 /// all reach the synthesizer inside the gate.
 ///
 /// Mutation (run): a `Box::new(0u8)` kept alive in the `Voice2::PitchBend` arm
-/// of `voice2`, and separately in the `Message::Utility` arm of `apply_event`,
-/// each aborts inside the gate.
+/// of `Player::apply`, and separately in the `Message::Utility` arm of
+/// `apply_event`, each aborts inside the gate.
 #[test]
 fn soundfont_every_decoded_message_is_allocation_free() {
     let mut unit = unit();
@@ -343,6 +346,120 @@ fn soundfont_every_decoded_message_is_allocation_free() {
         for _ in 0..100 {
             unit.queue_midi(&events);
             unit.block(64);
+        }
+    });
+}
+
+/// The first two keys of the standard drum kit (bank 128, patch 0) that share a
+/// non-zero exclusive class, found in the font itself (SF2 2.04 section 8.1.2,
+/// generator 57).
+fn two_drums_of_a_class(font: &SoundFont) -> (u8, u8) {
+    let kit = font
+        .presets()
+        .iter()
+        .find(|p| p.bank() == Some(tutti_sf2::Bank::Percussion) && p.patch() == U7::new(0))
+        .expect("a standard drum kit");
+    let velocity = U7::new(100).unwrap();
+    let class_of = |k: u8| -> u8 {
+        let key = NoteNumber::new(k).unwrap();
+        let mut class = 0;
+        for pr in kit.regions() {
+            if pr.contains(key, velocity) {
+                for ir in font.instruments()[pr.instrument_id()].regions() {
+                    if ir.contains(key, velocity) {
+                        class = class.max(ir.exclusive_class().map_or(0, |c| c.get()));
+                    }
+                }
+            }
+        }
+        class
+    };
+    (0..128u8)
+        .flat_map(|a| (a + 1..128).map(move |b| (a, b)))
+        .find(|&(a, b)| class_of(a) != 0 && class_of(a) == class_of(b))
+        .expect("two drums share a class in this font")
+}
+
+fn cc(channel: u8, controller: u8, value: u8) -> MidiEvent {
+    MidiEvent {
+        frame_offset: 0,
+        data: Ump::from(Message::Midi1(
+            Address {
+                group: MidiGroup::FIRST,
+                channel: MidiChannel::new(channel).unwrap(),
+            },
+            Voice1::ControlChange {
+                controller: CCNumber::new(controller).unwrap(),
+                value: U7::new(value).unwrap(),
+            },
+        ))
+        .0,
+    }
+}
+
+fn drum(key: u8, offset: u32) -> MidiEvent {
+    MidiEvent::note_on_7bit(MidiGroup::FIRST, MidiChannel::of(9), key, 100)
+        .with_frame_offset(offset)
+}
+
+/// The note logic's paths allocate nothing: a pool that is full and gives up a
+/// voice on every strike (8 voices, 24 keys, several zones each), a key struck
+/// again, the sustain and sostenuto pedals going down and up with notes under
+/// them, All Notes Off, All Sound Off and Reset All Controllers, an exclusive
+/// class ending the others of its class (a quick release), and a reset of the
+/// node itself.
+///
+/// Mutation (run): a `std::mem::forget(Box::new(0u8))` in each of the `Damp`,
+/// `Release` and `Cut` arms of `Voices::execute`, in `Player::reset` and in
+/// `Player::control`, aborts inside this gate. (A pool one voice short does
+/// not: its `Vec` grows in the warm-up, outside the gate, and the other gates,
+/// which have no warm-up of a full pool, catch it.)
+#[test]
+fn soundfont_note_logic_is_allocation_free() {
+    let font = load_test_soundfont();
+    let (open, closed) = two_drums_of_a_class(&font);
+    let settings = Settings::new(SampleRate::SR_44K1).with_polyphony(NonZeroUsize::new(8).unwrap());
+    let mut unit = Hand::new(SoundFontUnit::new(font, &settings).expect("create SoundFontUnit"));
+
+    let ons: Vec<MidiEvent> = (0..24u32).map(|f| note_on(36 + f as u8, f * 2)).collect();
+    let offs: Vec<MidiEvent> = (0..24u32).map(|f| note_off(36 + f as u8, f * 2)).collect();
+    let round = |unit: &mut Hand| {
+        // Every key struck over a full pool, and one of them again.
+        unit.queue_midi(&ons);
+        unit.queue_midi(&[note_on(40, 60)]);
+        unit.block(64);
+        // The pedals down with notes under them, then the notes off.
+        unit.queue_midi(&[cc(0, 64, 127), cc(0, 66, 127)]);
+        unit.block(64);
+        unit.queue_midi(&offs);
+        unit.block(64);
+        unit.queue_midi(&[cc(0, 64, 0), cc(0, 66, 0)]);
+        unit.block(64);
+        // An exclusive class: the second drum ends the first.
+        unit.queue_midi(&[drum(open, 0), drum(closed, 8)]);
+        unit.block(64);
+        // The panics and the reset.
+        unit.queue_midi(&ons);
+        unit.queue_midi(&[cc(0, 123, 0)]);
+        unit.block(64);
+        unit.queue_midi(&ons);
+        unit.queue_midi(&[cc(0, 120, 0), cc(0, 121, 0)]);
+        unit.block(64);
+        for _ in 0..8 {
+            unit.block(64);
+        }
+    };
+    for _ in 0..4 {
+        round(&mut unit);
+    }
+    assert_no_alloc::assert_no_alloc(|| {
+        for _ in 0..50 {
+            round(&mut unit);
+        }
+        for _ in 0..20 {
+            unit.queue_midi(&ons);
+            unit.block(64);
+            tutti_graph::Node::reset(&mut *unit);
         }
     });
 }

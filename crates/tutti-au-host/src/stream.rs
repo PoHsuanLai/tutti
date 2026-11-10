@@ -2,33 +2,19 @@
 
 #![cfg(target_os = "macos")]
 
+use tutti_au_ffi::property::{MaximumFramesPerSlice, SampleRate, StreamFormat};
+use tutti_au_ffi::{Element, Scope};
 use tutti_plugin_types::ChannelLayout;
 
 use crate::bus::BusDirection;
 use crate::error::{AuError, Result};
-use crate::ffi::{get_property, set_property};
 use crate::handle::AuHandle;
 use crate::types::*;
 
-/// Input/output channel layouts for an AU.
-///
-/// [`ChannelLayout`] cannot represent a zero channel count, so the
-/// "has an input bus at all" distinction (effect vs. generator/instrument) is
-/// carried separately in [`AuBusLayout::has_input`]; `inputs` is meaningful
-/// only when that flag is set.
-#[derive(Debug, Clone, Copy)]
-pub struct AuBusLayout {
-    /// Input channel layout. Meaningful only when [`AuBusLayout::has_input`] is
-    /// `true`; generators and instruments have no input bus.
-    pub inputs: ChannelLayout,
-    /// Output channel layout.
-    pub outputs: ChannelLayout,
-    /// Whether the AU has an input bus at all (effects do; generators /
-    /// instruments do not). AU probing reports `0` input channels for the
-    /// latter, which [`ChannelLayout`] cannot encode, so the presence bit is
-    /// tracked here.
-    pub has_input: bool,
-}
+/// Input/output channel layouts for an AU: `tutti-au-ffi`'s [`BusLayout`], whose
+/// `has_input` carries the "has an input bus at all" distinction that
+/// [`ChannelLayout`] (which cannot be zero) cannot.
+pub use tutti_au_ffi::BusLayout as AuBusLayout;
 
 /// Aggregate stream configuration applied to an AU before initialization.
 ///
@@ -73,16 +59,15 @@ impl StreamConfig {
     ///
     /// Falls back to stereo out / no input if the AU refuses the queries.
     pub(crate) fn probe(handle: &AuHandle) -> AuBusLayout {
-        let unit = handle.raw_unit();
-        let outputs = unsafe { crate::bus::bus_layout(unit, BusDirection::Output, 0) }
-            .unwrap_or(ChannelLayout::STEREO);
+        let unit = handle.unit();
+        let outputs =
+            crate::bus::bus_layout(unit, BusDirection::Output, 0).unwrap_or(ChannelLayout::STEREO);
 
         // An AU with zero input elements has no bus 0 to ask about, so skip the
         // format query entirely rather than reading -10877 and inferring from it.
-        let has_input = unsafe { crate::bus::bus_count(unit, BusDirection::Input) } > 0;
+        let has_input = crate::bus::bus_count(unit, BusDirection::Input) > 0;
         let inputs = if has_input {
-            unsafe { crate::bus::bus_layout(unit, BusDirection::Input, 0) }
-                .unwrap_or(ChannelLayout::STEREO)
+            crate::bus::bus_layout(unit, BusDirection::Input, 0).unwrap_or(ChannelLayout::STEREO)
         } else {
             ChannelLayout::EMPTY
         };
@@ -133,36 +118,18 @@ impl StreamConfig {
     /// a phantom rate. So the accepted `mSampleRate` is read back and a
     /// mismatch is a hard error.
     pub(crate) fn apply(&self, handle: &AuHandle) -> Result<AuBusLayout> {
-        let unit = handle.raw_unit();
+        let unit = handle.unit();
 
-        let effective = unsafe {
-            set_property(
-                unit,
-                K_AUDIO_UNIT_PROPERTY_MAXIMUM_FRAMES_PER_SLICE,
-                K_AUDIO_UNIT_SCOPE_GLOBAL,
-                0,
-                &self.block_size,
-            )?;
+        let effective = {
+            unit.set::<MaximumFramesPerSlice>(Scope::GLOBAL, Element::ZERO, &self.block_size)?;
 
             // JUCE sets `kAudioUnitProperty_SampleRate` per scope in addition to
             // carrying the rate in the ASBD; some AUs only honour one of the
             // two. Both writes are best-effort here — the read-back below is
             // what actually decides whether the rate took.
-            let _ = set_property(
-                unit,
-                K_AUDIO_UNIT_PROPERTY_SAMPLE_RATE,
-                K_AUDIO_UNIT_SCOPE_OUTPUT,
-                0,
-                &self.sample_rate,
-            );
+            let _ = unit.set::<SampleRate>(Scope::OUTPUT, Element::ZERO, &self.sample_rate);
             if self.channels.has_input {
-                let _ = set_property(
-                    unit,
-                    K_AUDIO_UNIT_PROPERTY_SAMPLE_RATE,
-                    K_AUDIO_UNIT_SCOPE_INPUT,
-                    0,
-                    &self.sample_rate,
-                );
+                let _ = unit.set::<SampleRate>(Scope::INPUT, Element::ZERO, &self.sample_rate);
             }
 
             // The requested width is sent verbatim — no stereo floor. This used
@@ -184,27 +151,17 @@ impl StreamConfig {
                 self.sample_rate,
                 self.channels.outputs.count() as u32,
             );
-            let _ = set_property(
-                unit,
-                K_AUDIO_UNIT_PROPERTY_STREAM_FORMAT,
-                K_AUDIO_UNIT_SCOPE_OUTPUT,
-                0,
-                &out_asbd,
-            );
+            let _ = unit.set::<StreamFormat>(Scope::OUTPUT, Element::ZERO, &out_asbd);
             // Read back what the AU actually accepted for the output scope.
             // Unlike the channel count, a sample-rate mismatch is fatal.
-            let out_accepted = get_property::<AudioStreamBasicDescription>(
-                unit,
-                K_AUDIO_UNIT_PROPERTY_STREAM_FORMAT,
-                K_AUDIO_UNIT_SCOPE_OUTPUT,
-                0,
-            );
+            let out_accepted = unit.get::<StreamFormat>(Scope::OUTPUT, Element::ZERO);
             if let Ok(asbd) = out_accepted.as_ref() {
                 self.check_sample_rate("output", asbd.mSampleRate)?;
             }
-            let effective_outputs = out_accepted
-                .map(|asbd| ChannelLayout::from(asbd.mChannelsPerFrame))
-                .unwrap_or(self.channels.outputs);
+            let effective_outputs = match out_accepted.as_ref() {
+                Ok(asbd) => accepted_layout("output", asbd.mChannelsPerFrame)?,
+                Err(_) => self.channels.outputs,
+            };
 
             let mut effective_inputs = self.channels.inputs;
             if self.channels.has_input {
@@ -212,26 +169,16 @@ impl StreamConfig {
                     self.sample_rate,
                     self.channels.inputs.count() as u32,
                 );
-                let _ = set_property(
-                    unit,
-                    K_AUDIO_UNIT_PROPERTY_STREAM_FORMAT,
-                    K_AUDIO_UNIT_SCOPE_INPUT,
-                    0,
-                    &in_asbd,
-                );
+                let _ = unit.set::<StreamFormat>(Scope::INPUT, Element::ZERO, &in_asbd);
                 // Read back what the AU actually accepted for the input scope.
-                let in_accepted = get_property::<AudioStreamBasicDescription>(
-                    unit,
-                    K_AUDIO_UNIT_PROPERTY_STREAM_FORMAT,
-                    K_AUDIO_UNIT_SCOPE_INPUT,
-                    0,
-                );
+                let in_accepted = unit.get::<StreamFormat>(Scope::INPUT, Element::ZERO);
                 if let Ok(asbd) = in_accepted.as_ref() {
                     self.check_sample_rate("input", asbd.mSampleRate)?;
                 }
-                effective_inputs = in_accepted
-                    .map(|asbd| ChannelLayout::from(asbd.mChannelsPerFrame))
-                    .unwrap_or(self.channels.inputs);
+                effective_inputs = match in_accepted.as_ref() {
+                    Ok(asbd) => accepted_layout("input", asbd.mChannelsPerFrame)?,
+                    Err(_) => self.channels.inputs,
+                };
             }
 
             AuBusLayout {
@@ -271,16 +218,9 @@ impl StreamConfig {
     /// allocated 512 while the host thinks 2048" is the only diagnosable form of
     /// this failure.
     pub(crate) fn verify_block_size(&self, handle: &AuHandle) -> Result<()> {
-        // SAFETY: the property is a `UInt32` per Apple's header, and `handle`
-        // owns a live unit for the duration of this call.
-        let accepted = unsafe {
-            get_property::<u32>(
-                handle.raw_unit(),
-                K_AUDIO_UNIT_PROPERTY_MAXIMUM_FRAMES_PER_SLICE,
-                K_AUDIO_UNIT_SCOPE_GLOBAL,
-                0,
-            )
-        };
+        let accepted = handle
+            .unit()
+            .get::<MaximumFramesPerSlice>(Scope::GLOBAL, Element::ZERO);
         // A refusal to report is not a rejection — see above.
         let Ok(accepted) = accepted else {
             return Ok(());
@@ -319,6 +259,12 @@ impl StreamConfig {
         }
         Ok(())
     }
+}
+
+/// The layout of a bus whose stream format the AU accepted with `channels`
+/// channels per frame, or [`AuError::BusTooWide`] when no layout holds that.
+fn accepted_layout(scope: &'static str, channels: u32) -> Result<ChannelLayout> {
+    ChannelLayout::try_from(channels).map_err(|_| AuError::BusTooWide { scope, channels })
 }
 
 #[cfg(test)]

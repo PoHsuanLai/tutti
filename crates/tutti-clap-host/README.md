@@ -62,6 +62,7 @@ Load, activate, render one block. `no_run`: the load needs a real `.clap` bundle
 on disk.
 
 ```rust,no_run
+# let main = tutti_plugin_types::MainThread::claim().expect("on the UI thread");
 use tutti_ump::{MidiChannel, MidiGroup};
 use tutti_clap_host::{
     AudioBuffer32, ClapLoaded, ClapProcessContext, LoadOptions, MidiEvent, TransportInfo,
@@ -70,7 +71,7 @@ use tutti_plugin_types::{AudioBufferMut, Loaded, MaxBlock, Prepare, SampleRate, 
 
 // `ClapLoaded` is the GUI / parameter / state stage. The rate and the block
 // length are not load parameters: they are the activation's.
-let loaded = ClapLoaded::load("/usr/lib/clap/MyPlugin.clap", LoadOptions::default())?;
+let loaded = ClapLoaded::load(&main, "/usr/lib/clap/MyPlugin.clap", LoadOptions::default())?;
 println!("{} by {}", loaded.info().name, loaded.info().vendor);
 
 // A refusal hands the plugin back in the error, so a plugin that declines f64
@@ -78,7 +79,7 @@ println!("{} by {}", loaded.info().name, loaded.info().vendor);
 let prepare = Prepare::new(SampleRate(48_000.0), MaxBlock::of(Samples(512)))
     .expect("a real rate");
 let (mut processor, controller) = loaded
-    .activate(prepare)
+    .activate(&main, prepare)
     .map_err(|refused| tutti_clap_host::ClapError::ProcessError(refused.reason.to_string()))?;
 
 // 512 is the block length in FRAMES; each channel slice holds that many.
@@ -97,7 +98,7 @@ processor.process(&mut AudioBufferMut::F32(buffer), &ClapProcessContext {
 })?;
 
 // The halves rejoin into the plugin, deactivated.
-let _loaded = ClapLoaded::deactivate(processor, controller)
+let _loaded = ClapLoaded::deactivate(&main, processor, controller)
     .map_err(|stuck| tutti_clap_host::ClapError::ProcessError(stuck.reason.to_string()))?;
 # Ok::<(), tutti_clap_host::ClapError>(())
 ```
@@ -112,31 +113,32 @@ above.
 # use tutti_clap_host::{ClapLoaded, LoadOptions, StateContext};
 use tutti_plugin_types::{Control, Normalized, ParamId};
 # fn ex() -> Result<(), Box<dyn std::error::Error>> {
-let mut plugin = ClapLoaded::load("/usr/lib/clap/MyPlugin.clap", LoadOptions::default())?;
+# let main = tutti_plugin_types::MainThread::claim().expect("on the UI thread");
+let mut plugin = ClapLoaded::load(&main, "/usr/lib/clap/MyPlugin.clap", LoadOptions::default())?;
 
 // CLAP addresses parameters by an opaque, plugin-chosen `clap_id`, never by
 // position. `parameters` projects them into the shared `ParameterInfo`, so a
 // consumer never learns which format it is reading.
-for info in plugin.parameters() {
+for info in plugin.parameters(&main) {
     println!("{} {:?}", info.qualified_name(), info.bounds());
 }
 
 // Values are normalized `0..=1` at the trait. A loaded plugin takes the write
 // now; a controller queues it to the Processor, which applies it at the head
 // of its next block.
-plugin.set_parameter(ParamId::new(0), Normalized::of(0.75));
-plugin.set_parameter(ParamId::new(1), Normalized::of(0.5));
+plugin.set_parameter(&main, ParamId::new(0), Normalized::of(0.75));
+plugin.set_parameter(&main, ParamId::new(1), Normalized::of(0.5));
 
 // State save/restore is legal before any buffer exists.
-let saved = plugin.save_state()?;
-plugin.load_state(&saved)?;
+let saved = plugin.save_state(&main)?;
+plugin.load_state(&main, &saved)?;
 
 // A plugin that implements the context-aware extension can be asked for a
 // blob meant specifically for a preset file. This does NOT fall back to the
 // plain save on refusal — the two legitimately differ, and answering a preset
 // request with a project-context blob writes the wrong bytes into a `.preset`
 // and surfaces only when someone loads it.
-let preset = plugin.state_with_context(StateContext::ForPreset)?;
+let preset = plugin.state_with_context(&main, StateContext::ForPreset)?;
 println!("{} bytes of preset state", preset.len());
 # Ok(()) }
 ```
@@ -146,14 +148,15 @@ println!("{} bytes of preset state", preset.len());
 ```rust,no_run
 # use tutti_clap_host::{ClapLoaded, ContentScale, LoadOptions, WindowHandle};
 # fn ex(native_view_ptr: *mut std::ffi::c_void) -> tutti_clap_host::Result<()> {
-# let mut plugin = ClapLoaded::load("/usr/lib/clap/MyPlugin.clap", LoadOptions::default())?;
-if plugin.has_editor() {
+# let main = tutti_plugin_types::MainThread::claim().expect("on the UI thread");
+# let mut plugin = ClapLoaded::load(&main, "/usr/lib/clap/MyPlugin.clap", LoadOptions::default())?;
+if plugin.has_editor(&main) {
     // The only unsafe boundary in the public API.
     let handle = unsafe { WindowHandle::from_raw(native_view_ptr) };
-    let size = plugin.open_editor(handle, ContentScale::IDENTITY)?;
+    let size = plugin.open_editor(&main, handle, ContentScale::IDENTITY)?;
     println!("editor is {}x{}", size.width, size.height);
 }
-plugin.close_editor();
+plugin.close_editor(&main);
 # Ok(()) }
 ```
 
@@ -192,8 +195,8 @@ rather than assumed from the type, which works precisely because the flag lives
 on the *inner* `ClapLoaded`: [`flush_params`][`ClapLoaded::flush_params`] is
 tagged `[active ? audio-thread : main-thread]` and branches on that live flag, so
 the same code reached through `Deref` from a `ClapController` takes an
-[`AudioThreadClaim`][`host::AudioThreadClaim`] where a bare `ClapLoaded` would
-assert the main thread.
+[`AudioThreadClaim`][`host::AudioThreadClaim`] where a bare `ClapLoaded` is a
+main-thread call (it takes the `&MainThread` either way).
 
 The distinction that gates it is *active* versus *processing*, and they are not
 the same fact. They disagree for the whole window between activation and the
@@ -236,7 +239,8 @@ in an edit ring, and the Processor drains it at the head of its next block into
 
 CLAP tags every call `[main-thread]` or `[audio-thread]`, and this crate follows
 the tags. Load, activate, deactivate, state, the editor and polling belong on
-the thread that loaded the plugin; debug builds assert it.
+the thread that loaded the plugin; each takes a `&tutti_plugin_types::MainThread`
+as proof.
 [`ClapProcessor::process`] belongs on the audio thread and does not allocate: the
 scratch it renders through is sized at activation.
 

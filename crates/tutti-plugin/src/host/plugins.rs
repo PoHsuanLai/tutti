@@ -56,6 +56,7 @@ use tutti_plugin_db::{
     BlacklistedFile, Delta, FileFacts, PluginDb, PluginEntry, Scan, ScanBusy, ScanPoll, ScanResult,
     Scanner,
 };
+use tutti_plugin_types::MainThread;
 use tutti_types::SampleRate;
 
 /// Identifies a plugin in a [`Plugins`] catalog by its file path.
@@ -452,6 +453,7 @@ impl Plugins {
     /// [`Plugin::open`]: crate::catalog::Plugin::open
     pub fn open(
         &self,
+        main: Option<&MainThread>,
         path: impl AsRef<Path>,
         sample_rate: impl Into<SampleRate>,
     ) -> Result<Plugin> {
@@ -468,7 +470,7 @@ impl Plugins {
                 reason,
             });
         }
-        Plugin::open_with(&self.audio, path, sample_rate)
+        Plugin::open_with(main, &self.audio, path, sample_rate)
     }
 
     /// Blacklists a plugin by path, hiding it from `iter`, `entries` and `find`
@@ -648,7 +650,7 @@ mod tests {
 
         let plugins = catalog_with(&path, blacklisted_row(&path, "SIGSEGV during probe"));
 
-        match plugins.open(&path, 48_000.0) {
+        match plugins.open(None, &path, 48_000.0) {
             Err(BridgeError::Blacklisted { path: p, reason }) => {
                 assert_eq!(p, path);
                 assert_eq!(reason, "SIGSEGV during probe");
@@ -683,7 +685,7 @@ mod tests {
         let plugins = catalog_with(&path, row);
 
         let err = plugins
-            .open(&path, 48_000.0)
+            .open(None, &path, 48_000.0)
             .expect_err("the fixture is not a loadable plugin");
         assert!(
             !matches!(err, BridgeError::Blacklisted { .. }),
@@ -719,7 +721,7 @@ mod tests {
         );
         assert!(
             matches!(
-                fresh.open(&path, 48_000.0),
+                fresh.open(None, &path, 48_000.0),
                 Err(BridgeError::Blacklisted { .. })
             ),
             "unchanged and blacklisted: the door must refuse"
@@ -738,7 +740,7 @@ mod tests {
             "a changed file lifts the blacklist — this is the half that was wrong"
         );
         let err = plugins
-            .open(&path, 48_000.0)
+            .open(None, &path, 48_000.0)
             .expect_err("the fixture is not a loadable plugin");
         assert!(
             !matches!(err, BridgeError::Blacklisted { .. }),
@@ -761,7 +763,8 @@ mod tests {
         let plugins = catalog_with(&path, blacklisted_row(&path, "SIGSEGV during probe"));
         assert!(plugins.is_blacklisted(&path), "fixture should be recorded");
 
-        let err = Plugin::open(&path, 48_000.0).expect_err("the fixture is not a loadable plugin");
+        let err =
+            Plugin::open(None, &path, 48_000.0).expect_err("the fixture is not a loadable plugin");
         assert!(
             !matches!(err, BridgeError::Blacklisted { .. }),
             "Plugin::open has no catalog and cannot refuse on one, got {err:?}"

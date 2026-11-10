@@ -163,7 +163,8 @@ impl Node for CrossoverNode {
         }
         Shape::audio(
             self.layout,
-            ChannelLayout::from_count(ch * self.bands as u16),
+            ChannelLayout::try_from(usize::from(ch) * self.bands)
+                .expect("`new` bounds bands * channels by MAX_PORTS"),
         )
         .with_cost(Cost::Moderate)
         .with_tail(Tail::Unknown)

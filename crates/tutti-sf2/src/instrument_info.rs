@@ -1,7 +1,7 @@
 use std::io::Read;
 
 use crate::binary_reader::ReadExt;
-use crate::error::SoundFontError;
+use crate::error::Error;
 
 #[non_exhaustive]
 pub(crate) struct InstrumentInfo {
@@ -11,7 +11,7 @@ pub(crate) struct InstrumentInfo {
 }
 
 impl InstrumentInfo {
-    fn new<R: Read>(reader: &mut R) -> Result<Self, SoundFontError> {
+    fn new<R: Read>(reader: &mut R) -> Result<Self, Error> {
         let name = reader.read_fixed_length_string(20)?;
         let zone_start_index = reader.read_u16()? as i32;
 
@@ -25,9 +25,9 @@ impl InstrumentInfo {
     pub(crate) fn read_from_chunk<R: Read>(
         reader: &mut R,
         size: usize,
-    ) -> Result<Vec<InstrumentInfo>, SoundFontError> {
+    ) -> Result<Vec<InstrumentInfo>, Error> {
         if size == 0 || !size.is_multiple_of(22) {
-            return Err(SoundFontError::InvalidInstrumentList);
+            return Err(Error::InvalidInstrumentList);
         }
 
         let count = size / 22;
@@ -35,6 +35,14 @@ impl InstrumentInfo {
         let mut instruments: Vec<InstrumentInfo> = Vec::new();
         for _i in 0..count {
             instruments.push(InstrumentInfo::new(reader)?);
+        }
+
+        // The zone indices only grow (SF2 2.04 section 7.6).
+        if instruments
+            .windows(2)
+            .any(|pair| pair[1].zone_start_index < pair[0].zone_start_index)
+        {
+            return Err(Error::InvalidInstrumentList);
         }
 
         for i in 0..(count - 1) {

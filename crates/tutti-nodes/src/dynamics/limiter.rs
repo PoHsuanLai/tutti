@@ -184,8 +184,8 @@ impl LimiterNode {
         let layout = channels.into();
         // An empty layout would leave the rings empty and make
         // the shape report no channels, so clamp to at least mono.
-        let n = (layout.count() as usize).max(1);
-        let layout = ChannelLayout::from(n);
+        let layout = ChannelLayout::from_count(layout.count().max(1));
+        let n = usize::from(layout.count());
         let lookahead_secs = Seconds(0.005);
         // `_ceil`, the allocation form: the ring must hold at *least* the
         // lookahead, and nearest-rounding under-allocates for half of all
@@ -563,12 +563,12 @@ impl BrickwallLimiterNode {
         let ceiling_db = ceiling_db.into();
         // At least mono: a zero-width unit would report 0 input and output
         // ports, which is not a limiter.
-        let n = (channels.into().count() as usize).max(1);
+        let layout = ChannelLayout::from_count(channels.into().count().max(1));
         Self {
             ceiling_db: Param::new(ceiling_db),
             ceiling_linear: linear_ceiling(ceiling_db).unwrap_or(1.0),
-            layout: ChannelLayout::from(n),
-            channels: n,
+            layout,
+            channels: usize::from(layout.count()),
         }
     }
 

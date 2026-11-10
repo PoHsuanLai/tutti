@@ -104,7 +104,9 @@ jobs:
       # And `tutti-plugin-db`, which keeps its modules private.
       - run: scripts/check-canonical-paths.sh tutti_plugin_db facts format fs pedal scanner store table
       # And `tutti-dsp`: its modules are private, the root names every item.
-      - run: scripts/check-canonical-paths.sh tutti_dsp allpass analysis buffer control convolver delay dynamics fft filter interp swept_delay waveshape resample
+      - run: scripts/check-canonical-paths.sh tutti_dsp allpass buffer control convolver delay dither dynamics error fdn fdn_design fft filter geometry grid interp network reverb reverb_design swept_delay waveshape window resample
+      # And `tutti-measure`, which keeps its modules private too.
+      - run: scripts/check-canonical-paths.sh tutti_measure align beat chord chroma features key loudness notes onset peaks pitch silence spectrum stereo tempo transform vectorscope xcorr yin
       # And `tutti-transport`, `tutti-metering` and `tutti-engine`: modules
       # private, the root names every item.
       - run: scripts/check-canonical-paths.sh tutti_transport beat_walk clock fsm handle loop_region motion offline project_meter settings state timed timeline
@@ -112,9 +114,9 @@ jobs:
       - run: scripts/check-canonical-paths.sh tutti_engine engine error
       # And `tutti-codec`, which keeps its modules private: the root names every item.
       - run: scripts/check-canonical-paths.sh tutti_codec aiff decode encoder error flac format pcm spec staged vorbis wav wave
-      # And `tutti-sf2` and `tutti-rustysynth`: modules private, the root names every item.
-      - run: scripts/check-canonical-paths.sh tutti_sf2 binary_reader error four_cc generator generator_type instrument instrument_info instrument_region loop_mode preset preset_info preset_region read_counter sample_header soundfont soundfont_info soundfont_parameters soundfont_sampledata soundfont_version zone zone_info
-      - run: scripts/check-canonical-paths.sh tutti_rustysynth array_math bi_quad_filter channel chorus envelope_stage error lfo modulation_envelope oscillator region_ex region_pair reverb soundfont_math synthesizer synthesizer_settings voice voice_collection volume_envelope
+      # And `tutti-sf2` and `tutti-soundfont`: modules private, the root names every item.
+      - run: scripts/check-canonical-paths.sh tutti_sf2 bank binary_reader error four_cc generator generator_type instrument instrument_info instrument_region loop_mode preset preset_info preset_region read_counter sample_header soundfont soundfont_info soundfont_parameters soundfont_sampledata soundfont_version zone zone_info
+      - run: scripts/check-canonical-paths.sh tutti_soundfont array_math bi_quad_filter channel chorus envelope_stage error fork lfo modulation_envelope node oscillator patch player region_ex region_pair render reverb settings soundfont_math voice voices volume_envelope
       # And `tutti-tempo`, which keeps its modules private.
       - run: scripts/check-canonical-paths.sh tutti_tempo error grid map point segment
       # And `tutti-voicing`, which keeps its modules private.
@@ -180,6 +182,7 @@ jobs:
         run: |
           for f in vst2 vst3 clap; do
             cargo clippy --locked -p tutti-plugin-server --no-default-features --features "$f" --all-targets -- -D warnings
+            cargo clippy --locked -p tutti-plugin-probe --no-default-features --features "$f" --all-targets -- -D warnings
           done
 
   # The same lint, on Windows. The `clippy` job above cannot see a
@@ -215,10 +218,26 @@ jobs:
         run: |
           cargo clippy --locked -p tutti-plugin --features clap,vst3,vst2,json --all-targets -- -D warnings
           cargo clippy --locked -p tutti-plugin-db --features json --all-targets -- -D warnings
+          cargo clippy --locked -p tutti-clap-ffi --lib -- -D warnings
           cargo clippy --locked -p tutti-clap-host --features clap-extras --all-targets -- -D warnings
       # WASAPI capture, which the `features` job lints only on Linux.
       - name: Device features
         run: cargo clippy --locked -p tutti-cpal --features capture --all-targets -- -D warnings
+
+  # The AU host on macOS. Every AU crate is `#![cfg(target_os = "macos")]`, so
+  # the Linux and Windows clippy jobs compile it to nothing and a lint in it
+  # (missing docs, a new clippy rule) went unseen until someone built on a Mac.
+  # Lints only; the AU suites need installed audio units and run locally.
+  clippy-macos:
+    name: clippy (macos)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      # The toolchain `rust-toolchain.toml` pins, with its components.
+      - run: rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo clippy --locked -p tutti-au-ffi -p tutti-au-host --all-targets -- -D warnings
+      - run: cargo clippy --locked -p tutti-au-host --features installed-units --all-targets -- -D warnings
 
   # The plugin contract on Windows. Not a required check: nothing else runs a
   # test there, and whether the shared plugin loads on a Windows runner is what
@@ -279,6 +298,10 @@ jobs:
       #                         run, which no run ever made
       #   bevy-tutti/sampler  — src/sampler (the WaveAsset loader, the voice
       #                         components) and its tests
+      #   tutti-export/*      — no format is default (ogg links C), so the library
+      #                         is linted with none and each of wav, flac, aiff
+      #                         and ogg alone; its own tests have all four on
+      #                         through a dev-dependency on itself
       #   tutti-codec/*       — a `Format` variant exists only with its encode
       #                         feature, so each of none, encode-wav, encode-aiff,
       #                         encode-flac and encode-vorbis is built and tested
@@ -305,6 +328,12 @@ jobs:
       #                         GUI-edit drain compile with it.
       #   tutti-session/midi-hardware — tests/midi.rs's hardware-port reclaim test
       #                         and its hot-plug tests
+      #   tutti-au-host/installed-units — linted by the macOS clippy job (the
+      #                         crate is empty on Linux) and run only locally
+      #                         (`just test-au-installed`, part of `test-all`):
+      #                         it asserts a claim about third-party Audio
+      #                         Units installed on the machine, and fails,
+      #                         never skips, where there are none
       #   tutti-midi-hardware/sequencer-tests — compiled and linted here, and run
       #                         only locally (`just test-features`): the suite
       #                         needs the kernel's `snd-seq` module, which the
@@ -323,7 +352,9 @@ jobs:
       #                         `real_plugin_pressure` did, by name.
       #   tutti-plugin-contract/server — tests/server.rs: the shared plugin's
       #                         mode and transcript through a real plugin-server,
-      #                         in all of CLAP, VST2 and VST3 (and the C++ plugin)
+      #                         in all of CLAP, VST2 and VST3 (and the C++ plugin);
+      #                         tests/probe.rs: their descriptors, and a crash, a
+      #                         hang and a print in init, through a real plugin-probe
       #   tutti/clap          — the umbrella's §5.1 and §5.2 examples
       #                         (`headless_modulation`; `plugin_midi_export`,
       #                         `test = true`, which plays the reference
@@ -343,6 +374,12 @@ jobs:
           cargo clippy --locked -p tutti-session --features clap,export,modulation,midi-hardware,synth,soundfont --all-targets -- -D warnings
           cargo clippy --locked -p tutti --features clap,export,modulation --all-targets -- -D warnings
           cargo clippy --locked -p tutti --features audio-io --all-targets -- -D warnings
+          cargo clippy --locked -p tutti-export --lib -- -D warnings
+          cargo clippy --locked -p tutti-export --lib --features wav -- -D warnings
+          cargo clippy --locked -p tutti-export --lib --features flac -- -D warnings
+          cargo clippy --locked -p tutti-export --lib --features aiff -- -D warnings
+          cargo clippy --locked -p tutti-export --lib --features ogg -- -D warnings
+          cargo clippy --locked -p tutti-session --lib --features export-flac,export-aiff,export-ogg -- -D warnings
           cargo clippy --locked -p tutti-codec --all-targets -- -D warnings
           cargo clippy --locked -p tutti-codec --features encode-wav --all-targets -- -D warnings
           cargo clippy --locked -p tutti-codec --features encode-aiff --all-targets -- -D warnings
@@ -357,6 +394,7 @@ jobs:
           cargo clippy --locked -p tutti-midi-device --features serde --all-targets -- -D warnings
           cargo clippy --locked -p tutti-tempo --features serde --all-targets -- -D warnings
           cargo clippy --locked -p tutti-midi-hardware --features sequencer-tests --all-targets -- -D warnings
+          cargo clippy --locked -p tutti-clap-ffi --lib -- -D warnings
           cargo clippy --locked -p tutti-clap-host --features clap-extras --all-targets -- -D warnings
           cargo clippy --locked -p tutti-plugin --features clap,vst2,json --all-targets -- -D warnings
           cargo clippy --locked -p tutti-plugin-db --features json --all-targets -- -D warnings
@@ -368,7 +406,9 @@ jobs:
       # `tutti-plugin`), so it is built here, before the tests, as the `test`
       # job does. Without `au`, which is macOS-only.
       - name: Build plugin-server (bevy-tutti/plugin, tutti-session/clap, tutti/clap and the plugin contract spawn it)
-        run: cargo build --locked -p tutti-plugin-server --no-default-features --features clap,vst2,vst3
+        run: |
+          cargo build --locked -p tutti-plugin-server --no-default-features --features clap,vst2,vst3
+          cargo build --locked -p tutti-plugin-probe
 
       - name: Test
         run: |
@@ -380,6 +420,7 @@ jobs:
           cargo nextest run --locked -p tutti-session --features clap,export,modulation,midi-hardware,synth,soundfont
           cargo nextest run --locked -p tutti --features clap,export,modulation
           cargo nextest run --locked -p tutti --features audio-io
+          cargo nextest run --locked -p tutti-session --features export-flac,export-aiff,export-ogg
           cargo nextest run --locked -p tutti-codec
           cargo nextest run --locked -p tutti-codec --features encode-wav
           cargo nextest run --locked -p tutti-codec --features encode-aiff
@@ -453,8 +494,10 @@ jobs:
       # subprocesses. If that proves too much for a shared runner, the honest
       # fix is to reduce the instance count here with the failure recorded —
       # not `continue-on-error`, which is how the pre-extraction workflow died.
-      - name: Build plugin-server
-        run: cargo build --locked -p tutti-plugin-server
+      - name: Build plugin-server and plugin-probe
+        run: |
+          cargo build --locked -p tutti-plugin-server
+          cargo build --locked -p tutti-plugin-probe
       - name: tutti-plugin suites (CLAP, in-process VST2) and the bridge under pressure
         run: cargo nextest run --locked -p tutti-plugin --features clap,vst2,json
 
@@ -549,8 +592,10 @@ jobs:
       # suites hard-fail rather than silently skip, which is deliberate: a suite
       # that skips on a missing fixture is one typo away from reporting success
       # having executed nothing.
-      - name: Build plugin-server (three plugin-host suites spawn it)
-        run: cargo build --locked -p tutti-plugin-server
+      - name: Build plugin-server and plugin-probe (three plugin-host suites spawn the server)
+        run: |
+          cargo build --locked -p tutti-plugin-server
+          cargo build --locked -p tutti-plugin-probe
 
       # nextest, not `cargo test`: each test gets its own process, which is what
       # the audio suites need — they touch device and global state, and a panic
@@ -571,19 +616,16 @@ jobs:
       # having already run them. They are run below under the runner they were
       # written for.
       #
-      # `no_installed_third_party_unit_implements_the_mapping_family` is not
-      # broken — it is doing precisely what it was built to do. It asserts a
-      # claim about *installed* third-party Audio Units, and panics with
-      # "this test asserted nothing. Install one of [...] or accept that the
-      # claim is untested here" when none is present. A hosted runner is
-      # permanently that case, so on CI the test can only ever fail. Excluding
-      # it here does not weaken it: on a developer machine with those plugins it
-      # still runs and still asserts, which is the only place it ever could.
+      # The GUI-lifecycle binaries are `harness = false` custom mains; see above.
+      # `no_installed_third_party_unit_implements_the_mapping_family` is behind
+      # `tutti-au-host`'s `installed-units` feature, which this run leaves off:
+      # it asserts a claim about third-party Audio Units installed on the
+      # machine and fails, never skips, where there are none.
       - name: Test
         shell: bash
         run: |
           cargo nextest run --locked --workspace --no-fail-fast \
-            -E 'not binary(gui_lifecycle_main) and not binary(au_gui_lifecycle_main) and not test(no_installed_third_party_unit_implements_the_mapping_family)'
+            -E 'not binary(gui_lifecycle_main) and not binary(au_gui_lifecycle_main)'
 
       # The custom-harness editor tests. `cargo test` just execs the binary,
       # which is exactly what a `harness = false` main wants.

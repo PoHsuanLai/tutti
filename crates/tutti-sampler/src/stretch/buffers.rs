@@ -132,7 +132,7 @@ impl SampleFifo {
 /// divide it back out. A precomputed scalar (`1 / (4 · mean(hann²))`) is
 /// correct only for a Hann window at exactly 75% overlap.
 ///
-/// So the sum is accumulated the same way `tutti_dsp::istft_transform` does it:
+/// So the sum is accumulated the same way `tutti_measure::istft_transform` does it:
 /// a parallel ring holding `Σw²`, divided out per sample at the read. That
 /// makes the vocoder correct for *any* window shape, and it costs one extra
 /// ring — sized once, in `new`, and

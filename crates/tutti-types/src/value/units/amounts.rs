@@ -24,6 +24,10 @@ unit! {
     /// scale: half of a 50% blend is not a meaningful quantity, and
     /// `mix * 0.5` reads like it dims the wet signal when it actually moves
     /// the crossfade point.
+    ///
+    /// It is also a position on a `0..1` scale among a node's own settings,
+    /// not only between dry and wet (a reverb's diffusion or size, which each
+    /// algorithm maps onto its scale).
     pub struct Mix(pub f32): Unit, Ordered, Bounded;
 }
 // NOT `Scalable` / `Additive`: see the type doc. Two blends

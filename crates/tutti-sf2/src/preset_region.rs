@@ -2,7 +2,7 @@ use std::ops::RangeInclusive;
 
 use tutti_ump::{NoteNumber, U7};
 
-use crate::error::SoundFontError;
+use crate::error::Error;
 use crate::generator::Generator;
 use crate::generator_range;
 use crate::generator_type::GeneratorType;
@@ -32,7 +32,7 @@ impl PresetRegion {
         global: &Zone,
         local: &Zone,
         samples: &[Instrument],
-    ) -> Result<Self, SoundFontError> {
+    ) -> Result<Self, Error> {
         let mut gs: [i16; GeneratorType::COUNT] = [0; GeneratorType::COUNT];
         gs[GeneratorType::KeyRange as usize] = 0x7F00;
         gs[GeneratorType::VelocityRange as usize] = 0x7F00;
@@ -45,9 +45,10 @@ impl PresetRegion {
             set_parameter(&mut gs, generator);
         }
 
-        let instrument_id = gs[GeneratorType::Instrument as usize] as usize;
+        // A 16-bit word holding an index, read as unsigned (see the instrument region).
+        let instrument_id = usize::from(gs[GeneratorType::Instrument as usize] as u16);
         if instrument_id >= samples.len() {
-            return Err(SoundFontError::InvalidInstrumentId {
+            return Err(Error::InvalidInstrumentId {
                 preset_id,
                 instrument_id,
             });
@@ -63,7 +64,7 @@ impl PresetRegion {
         preset_id: usize,
         zones: &[Zone],
         instruments: &[Instrument],
-    ) -> Result<Vec<PresetRegion>, SoundFontError> {
+    ) -> Result<Vec<PresetRegion>, Error> {
         // Is the first one the global zone?
         if zones[0].generators.is_empty()
             || zones[0].generators.last().unwrap().generator_type

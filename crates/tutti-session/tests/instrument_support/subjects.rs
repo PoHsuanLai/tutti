@@ -2,7 +2,8 @@
 
 use tutti_polysynth::{FilterType, OscillatorType, PolySynth, SynthConfig};
 use tutti_session::PluginLoadRequest;
-use tutti_soundfont::{Settings, SoundFont, SoundFontUnit};
+use tutti_sf2::SoundFont;
+use tutti_soundfont::{Settings, SoundFontUnit};
 use tutti_types::{Adsr, Amplitude, Seconds};
 
 use super::cases::{Gap, Subject};
@@ -47,15 +48,7 @@ pub struct Soundfont;
 
 impl Subject for Soundfont {
     const NAME: &'static str = "SoundFontUnit";
-    const GAPS: &'static [Gap] = &[Gap {
-        case: "tail_covers_the_ring_out",
-        why: "the unit's Shape declares no tail, and its envelopes ring for a \
-              fraction of a second to seconds after a note-off; an offline \
-              render that stops at the last note-off plus the declared tail \
-              cuts every note. The native rewrite (stage 3) declares the tail \
-              its release implies",
-        fails_with: "declared tail",
-    }];
+    const GAPS: &'static [Gap] = &[];
     const PITCHED: bool = true;
     /// The release of the font's first preset, measured: silent within 6 s.
     const SETTLE: usize = 6 * 48_000;
@@ -65,8 +58,7 @@ impl Subject for Soundfont {
     const CUT: usize = 8;
 
     fn rig() -> Rig {
-        let mut settings = Settings::new(RATE);
-        settings.reverb_and_chorus = false;
+        let settings = Settings::new(RATE);
         let path = tutti_fixtures::asset("soundfonts/TimGM6mb.sf2");
         let mut file = std::fs::File::open(&path).expect("the test font is in the checkout");
         let font = std::sync::Arc::new(SoundFont::new(&mut file).expect("the test font parses"));
@@ -155,10 +147,16 @@ impl Subject for Plugin {
     fn rig() -> Rig {
         let (mut session, loaded) = Self::notes();
         let handle = session
-            .instrument_plugin(loaded)
+            .instrument_plugin(&main_thread(), loaded)
             .expect("the plugin declares itself an instrument");
         let mut rig = Rig::wired(session, handle);
         rig.pace = std::time::Duration::from_millis(10);
         rig
     }
+}
+
+/// This process's main thread. Each test is its own process under nextest, so
+/// the claim cannot be refused.
+fn main_thread() -> tutti_plugin_types::MainThread {
+    tutti_plugin_types::MainThread::claim().expect("one test, one process")
 }

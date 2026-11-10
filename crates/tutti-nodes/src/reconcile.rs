@@ -1,7 +1,7 @@
 //! [`Modulation`]: the reconcile step (design doc 014 §8.2), Bevy-free.
 //!
 //! A host declares sources, routes and targets ([`Declarations`]); this
-//! compiles them ([`tutti_mod::compile`]) and applies the difference to an
+//! compiles them ([`tutti_modulation::compile`]) and applies the difference to an
 //! [`Editor`]: a [`ControlLaneNode`] per target with a program, a node per
 //! signal source, and the event edges between them. It keeps what it built
 //! (the last [`Compiled`], each target's lane, each source's node) and
@@ -18,7 +18,7 @@ use tutti_graph::{
     CommitError, Editor, EventEdge, EventIn, EventKind, EventOut, ForkByClone, ParamIn, ParamRange,
     ScheduleError,
 };
-use tutti_mod::{
+use tutti_modulation::{
     CompileError, Compiled, ControlProgram, Declarations, RouteDecl, RouteKey, RouteTarget,
     SignalKind, Source as ModSource, SourceId, SourceKey, SourceNode, TargetDecl, TargetKey,
     compile,
@@ -350,7 +350,7 @@ struct SourcePlan {
 /// ```
 /// use std::sync::Arc;
 /// use tutti_graph::{Editor, Prepare};
-/// use tutti_mod::{
+/// use tutti_modulation::{
 ///     Clock, CurveType, Declarations, LfoShape, Polarity, RouteDecl, RouteKey, RouteTarget,
 ///     Source, SourceKey, TargetDecl, TargetKey, Wave,
 /// };
@@ -1249,7 +1249,8 @@ impl Modulation {
             }
             false
         };
-        let mut routes: Vec<&(RouteKey, tutti_mod::RouteDecl)> = decl.routes.iter().collect();
+        let mut routes: Vec<&(RouteKey, tutti_modulation::RouteDecl)> =
+            decl.routes.iter().collect();
         routes.sort_by_key(|(k, _)| *k);
         for (key, route) in routes {
             let RouteTarget::Param(t) = route.to else {

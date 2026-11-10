@@ -4,7 +4,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use tutti_vst3_ffi::Module;
-pub use tutti_vst3_ffi::{ClassInfo, FactoryInfo, factory_flags};
+pub use tutti_vst3_ffi::{ClassInfo, FactoryFlags, FactoryInfo};
 
 use crate::error::{LoadCause, LoadStage, Result, Vst3Error};
 

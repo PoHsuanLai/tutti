@@ -284,7 +284,9 @@ pub fn accepts_midi(path: &Path) -> bool {
 /// The plugin's first declared ParamID, if it has any parameters.
 pub fn first_parameter_id(path: &Path) -> Option<u32> {
     let inst = Active::<f32>::load(path, 48_000.0, 512).ok()?;
-    inst.parameter_ids().first().map(|id| id.get())
+    inst.parameter_ids(&main_thread())
+        .first()
+        .map(|id| id.get())
 }
 
 /// Assert the harness is usable, **panicking with the reason when it is not**.
@@ -376,7 +378,7 @@ pub fn require_sample(bundle: &str) -> Vst3Loaded {
                 .collect::<Vec<_>>()
         )
     });
-    Vst3Loaded::load(&path, LoadOptions::new())
+    Vst3Loaded::load(&main_thread(), &path, LoadOptions::new())
         .unwrap_or_else(|e| panic!("{bundle} is present at {path:?} but failed to load: {e:?}"))
 }
 
@@ -489,7 +491,7 @@ pub fn drive_blocks_in_mode<T: Vst3Sample + Default + Copy>(
     // Register the plugin's parameter ids so unknown-id and out-of-range
     // param queues are reported. `hc_configure` (below, per block) resets only
     // the event log, not the parameter table, so registering once is enough.
-    for id in inst.parameter_ids() {
+    for id in inst.parameter_ids(&main_thread()) {
         let _hc = hostcheck_lock();
         unsafe { hc_add_parameter(id.get() as c_uint) };
     }
@@ -696,7 +698,7 @@ pub fn supports_f64(path: &Path) -> bool {
 
 /// Load a named sample bundle, or `None` when this machine lacks it.
 pub fn sample(name: &str) -> Option<Vst3Loaded> {
-    Vst3Loaded::load(&sample_path(name)?, LoadOptions::new()).ok()
+    Vst3Loaded::load(&main_thread(), &sample_path(name)?, LoadOptions::new()).ok()
 }
 
 /// Locate a sample bundle by file name, **searching both plugin directories**.
@@ -710,4 +712,8 @@ pub fn sample_path(name: &str) -> Option<PathBuf> {
         .filter(|d| !d.is_empty())
         .map(|d| resolve_bundle(&Path::new(d).join(name)))
         .find(|p| p.is_file())
+}
+
+fn main_thread() -> tutti_plugin_types::MainThread {
+    tutti_plugin_types::MainThread::claim().expect("one test, one process")
 }

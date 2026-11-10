@@ -4,6 +4,7 @@
 //! takes the host (in-process) or the plugin server with it. A callback
 //! answers "not handled" instead.
 
+use std::ffi::{CStr, c_char, c_void};
 use std::io::Write;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -57,6 +58,41 @@ pub(crate) fn or_abort<R>(f: impl FnOnce() -> R) -> R {
         }
     }
 }
+/// A nul-terminated string a plugin passed, copied lossily; empty for null.
+///
+/// # Safety
+/// `ptr` is null or points to a nul-terminated string readable for the call.
+pub(crate) unsafe fn lossy(ptr: *const c_char) -> String {
+    if ptr.is_null() {
+        String::new()
+    } else {
+        // SAFETY: the caller's contract.
+        unsafe { CStr::from_ptr(ptr) }
+            .to_string_lossy()
+            .into_owned()
+    }
+}
+
+/// The `T` a callback's `ctx` names, shared.
+///
+/// # Safety
+/// `ctx` is the pointer to a live `T` that the call which built the C object
+/// stored (`with_input`, `with_raw`, ...), and nothing mutates the `T` while
+/// the plugin runs inside that call.
+pub(crate) unsafe fn ctx_ref<'a, T>(ctx: *mut c_void) -> &'a T {
+    // SAFETY: the contract.
+    unsafe { &*ctx.cast::<T>() }
+}
+
+/// The `T` a callback's `ctx` names, exclusively.
+///
+/// # Safety
+/// As [`ctx_ref`], and no other reference to the `T` is live meanwhile.
+pub(crate) unsafe fn ctx_mut<'a, T>(ctx: *mut c_void) -> &'a mut T {
+    // SAFETY: the contract.
+    unsafe { &mut *ctx.cast::<T>() }
+}
+
 #[cfg(test)]
 mod tests {
     use super::guard;

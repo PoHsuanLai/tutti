@@ -57,7 +57,7 @@ pub use value::{
 };
 
 // Channel layout — how many channels.
-pub use channels::ChannelLayout;
+pub use channels::{ChannelCountOutOfRange, ChannelLayout};
 
 // Channel topology — which speaker each channel feeds. Distinct from the count
 // above, and additive to it: a width-only caller keeps using `ChannelLayout`.

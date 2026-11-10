@@ -3,7 +3,7 @@
 # Plugin FFI `unsafe` lives only in the per-format `-ffi` crates; the host
 # crates and the code that drives them forbid it (design 016 §2.9).
 #
-# This gate fails if, for CLAP and VST3 (`<fmt>` below is each):
+# This gate fails if, for CLAP, VST3, AU and VST2 (`<fmt>` below is each):
 #
 # - any `unsafe` token appears in `tutti-<fmt>-host` (the whole of `src/`,
 #   tests inside it included: the crate is `#![forbid(unsafe_code)]`);
@@ -17,9 +17,21 @@
 #   carry a `// SAFETY:` comment (`undocumented_unsafe_blocks`) and every
 #   `unsafe fn` a `# Safety` section (`missing_safety_doc`).
 #
+# VST2's FFI is `tutti-vst2-ffi` (the host half of the vst-rs fork; the plugin-authoring half
+# is the test-only `testing/tutti-vst2-author`). Besides the rules above:
+#
+# - outside `tutti-vst2-ffi` and `tutti-vst2-host`, `unsafe` before the test module of a file
+#   whose path has `vst2` in it or that names `tutti_vst2_host` or `tutti_vst2_ffi` is pinned
+#   to the known caller sites (`VST2_CALLERS`: the server loader's `WindowHandle` decode and
+#   the in-process backend's). A new one fails here, and so does a removed one until its pin
+#   is lowered.
+#
 # Comments and string literals are not code: prose that says "unsafe" is fine.
 #
-# Mutation (run): add `unsafe { }` to any fn of `tutti-clap-host/src/lib.rs`'s
+# Mutation (run): add an `unsafe { }` block to
+# `tutti-plugin/src/format/vst2_in_process/client.rs`, or delete a `deny` lint
+# from `tutti-vst2-ffi`'s or `tutti-vst2-host`'s `lib.rs` -> this script exits 1
+# naming the file. Also: add `unsafe { }` to any fn of `tutti-clap-host/src/lib.rs`'s
 # or `tutti-vst3-host/src/lib.rs`'s crate, or delete its forbid attribute, or add an `unsafe` block above the
 # test module of `loaders/clap.rs`, even after an earlier `#[cfg(test)] use`
 # -> this script exits 1 naming the file.
@@ -52,6 +64,12 @@ FORMATS = [
             "crates/tutti-plugin/src/format/gui/vst3.rs",
         ],
     ),
+    # The AU loaders still carry two `unsafe` sites of their own
+    # (`WindowHandle::from_raw`, doc 016 step 5), so only the host and the FFI
+    # crate are held here.
+    ("AU", "crates/tutti-au-host", "crates/tutti-au-ffi", []),
+    # The loaders' `WindowHandle` decodes are pinned below (`VST2_CALLERS`).
+    ("VST2", "crates/tutti-vst2-host", "crates/tutti-vst2-ffi", []),
 ]
 
 
@@ -114,7 +132,40 @@ def attrs(path):
     return code_only(open(path).read())
 
 
+# VST2: the crates that hold its FFI and its host, and the callers outside them that may hold
+# `unsafe` (file -> the number of `unsafe` tokens in code before the file's test module).
+VST2_CRATES = ["crates/tutti-vst2-ffi", "crates/tutti-vst2-host"]
+VST2_CALLERS = {
+    "crates/tutti-plugin-server/src/loaders/vst2.rs": 1,
+    "crates/tutti-plugin/src/format/vst2_in_process/control_backend.rs": 1,
+}
+
+
+def code_before_tests(path):
+    s = open(path).read()
+    t = re.search(r"^\s*#\[cfg\((all\()?test\b[^\n]*\]\s*\n(\s*#\[[^\n]*\]\s*\n)*\s*(pub )?mod \w+", s, re.M)
+    return code_only(s[: t.start()] if t else s)
+
+
 bad, scanned = [], 0
+for path in sorted(glob.glob("crates/*/src/**/*.rs", recursive=True)):
+    if any(path.startswith(c + "/") for c in VST2_CRATES):
+        continue
+    code = code_before_tests(path)
+    if "vst2" not in path and not re.search(r"\b(tutti_vst2_host|tutti_vst2_ffi|Vst2)", code):
+        continue
+    scanned += 1
+    n = len(re.findall(r"\bunsafe\b", code))
+    want = VST2_CALLERS.get(path, 0)
+    if n != want:
+        bad.append(
+            f"{path}: {n} `unsafe` before the test module, pinned at {want} "
+            f"(VST2 unsafe lives in tutti-vst2-ffi)"
+        )
+for path in VST2_CALLERS:
+    if not glob.glob(path):
+        bad.append(f"{path}: pinned VST2 caller does not exist; was it moved?")
+
 for name, HOST, FFI, OUTSIDE in FORMATS:
     host_files = sorted(glob.glob(f"{HOST}/src/**/*.rs", recursive=True))
     if not host_files:
@@ -144,5 +195,5 @@ for b in bad:
     print(b, file=sys.stderr)
 if bad:
     sys.exit(1)
-print(f"check-plugin-ffi: {scanned} files, no CLAP or VST3 unsafe outside the -ffi crates")
+print(f"check-plugin-ffi: {scanned} files, no CLAP, VST3, AU or VST2 unsafe outside the -ffi crates, VST2 callers held to their pins")
 PY

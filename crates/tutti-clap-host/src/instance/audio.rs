@@ -369,7 +369,10 @@ impl ClapProcessor {
             Err(ProcessError::StartFailed) => return Err(ClapError::StartProcessingFailed),
             Err(ProcessError::FormatMismatch) => return Err(ClapError::FormatMismatch),
             Err(ProcessError::BufferTooShort) => return Err(ClapError::BufferTooShort),
-            Err(ProcessError::LayoutMismatch) => return Err(ClapError::LayoutMismatch),
+            Err(ProcessError::LayoutMismatch | ProcessError::PortsMismatch) => {
+                return Err(ClapError::LayoutMismatch);
+            }
+            Err(ProcessError::BlockTooSmall) => return Err(ClapError::BlockTooSmall),
             Err(ProcessError::BlockTooLarge) => {
                 return Err(ClapError::BlockTooLarge {
                     requested: num_samples,
@@ -389,7 +392,7 @@ impl ClapProcessor {
         self.scratch.steady_time = self.scratch.steady_time.saturating_add(num_samples as i64);
         self.scratch
             .last_process_status
-            .store(status, Ordering::Relaxed);
+            .store(status.raw(), Ordering::Relaxed);
 
         let AudioScratch {
             output_events,

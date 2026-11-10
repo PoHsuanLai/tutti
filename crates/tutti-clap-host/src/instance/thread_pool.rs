@@ -3,26 +3,10 @@
 
 use std::sync::Arc;
 
-use tutti_clap_ffi::{PoolHandle, TaskPool};
-use tutti_graph::Pool;
-use tutti_rt::with_no_denormals;
+use tutti_clap_ffi::{GraphPool, PoolHandle, TaskPool};
+use tutti_graph::WorkerPool;
 
 use super::ClapLoaded;
-
-/// A graph [`Pool`] as the FFI crate's [`TaskPool`]: every participant runs
-/// under the audio thread's float mode, as the helpers run the plugin's DSP on
-/// its behalf.
-struct GraphPool(Arc<dyn Pool>);
-
-impl TaskPool for GraphPool {
-    fn participants(&self) -> usize {
-        self.0.participants()
-    }
-
-    fn try_run(&self, wake: usize, job: &(dyn Fn(usize) + Sync)) -> bool {
-        self.0.try_run(wake, &|i| with_no_denormals(|| job(i)))
-    }
-}
 
 impl ClapLoaded {
     /// Whether the plugin implements `clap.thread-pool` (it has tasks it can
@@ -39,7 +23,7 @@ impl ClapLoaded {
     /// `pool` — the calling thread taking part — and returns once all have
     /// run. When `pool` is busy (the call comes from a participant of a job
     /// already running on it, a graph block), the request is refused
-    /// ([`Pool::try_run`]) rather than waiting on that job. A pool of one
+    /// ([`tutti_graph::Pool::try_run`]) rather than waiting on that job. A pool of one
     /// participant is treated as none: the plugin's own fallback serves it as
     /// well.
     ///
@@ -49,7 +33,14 @@ impl ClapLoaded {
     /// threads of its own may do better.
     ///
     /// Control thread. Dropping the returned pool may join its threads.
-    pub fn set_thread_pool(&mut self, pool: Option<Arc<dyn Pool>>) -> Option<Arc<dyn Pool>> {
+    pub fn set_thread_pool(&mut self, pool: Option<Arc<WorkerPool>>) -> Option<Arc<GraphPool>> {
+        self.set_task_pool(pool.map(|pool| Arc::new(GraphPool::new(pool))))
+    }
+
+    /// [`set_thread_pool`](Self::set_thread_pool) with the served pool built by
+    /// the caller, for a test that gates a wrapped pool.
+    #[doc(hidden)]
+    pub fn set_task_pool(&mut self, pool: Option<Arc<GraphPool>>) -> Option<Arc<GraphPool>> {
         std::mem::replace(&mut self.thread_pool, pool)
     }
 
@@ -62,7 +53,7 @@ impl ClapLoaded {
         if pool.participants() < 2 {
             return None;
         }
-        let handle = self.plugin.pool_handle(Arc::new(GraphPool(pool)))?;
+        let handle = self.plugin.pool_handle(pool)?;
         Some(PoolSnapshot { handle })
     }
 }

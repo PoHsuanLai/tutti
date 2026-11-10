@@ -17,9 +17,10 @@
 # - `arc-lend` and `tutti-ump` depend on no workspace crate, of any kind;
 # - `tutti-types` depends on no workspace crate, and `tutti-rt` on `arc-lend`
 #   alone;
-# - `tutti-dsp` and `tutti-mod` depend on `tutti-types` alone,
+# - `tutti-dsp` and `tutti-modulation` depend on `tutti-types` alone,
 #   `tutti-midi-types` on `tutti-types`, `tutti-rt` and `tutti-ump`, and
 #   `tutti-graph` on those three;
+# - `tutti-measure` depends on `tutti-types` and `tutti-dsp` only;
 # - `tutti-midi-protocol` depends on `tutti-ump` alone;
 # - `tutti-midi-device` depends on no workspace crate;
 # - `tutti-codec` depends on `tutti-types` alone;
@@ -42,6 +43,10 @@
 #   uses `symphonia`, one of those names, or an `impl` header does. A
 #   `pub(super)` or private item may use them. The decoder is swapped by
 #   editing that module;
+# - `export` alone on `tutti-session`, `tutti` and `bevy-tutti` reaches no C
+#   library: `cargo tree -i ogg_next_sys -e normal` finds nothing (WAV is pure
+#   Rust; `export-ogg` is the one path to the C Vorbis library, and the check
+#   sees that it still is one, so it cannot pass by looking at nothing);
 # - `tutti-spatial` depends on `tutti-nodes`, and `tutti-nodes` never on
 #   `tutti-spatial`, of any kind;
 # - nothing but `tutti` and `bevy-tutti` depends on `tutti-session`, and
@@ -60,9 +65,9 @@
 #   a `[build-dependencies]` entry of `tutti-plugin`: "normal dependency on
 #   tutti-fixtures; crates/ depends on testing/" and "build dependency
 #   ...";
-# - `tutti-mod` moved to `crates/nest/tutti-mod`: "is a nested directory under
+# - `tutti-modulation` moved to `crates/nest/tutti-modulation`: "is a nested directory under
 #   crates/" (a nested directory under crates/ is refused);
-# - `tutti-mod` moved to `crates/modx`: "must be crates/tutti-mod";
+# - `tutti-modulation` moved to `crates/modx`: "must be crates/tutti-modulation";
 # - `mkdir crates/stray`: "crates/stray is not a workspace member";
 # - `tutti-graph` deleted from LAYERS: "tutti-graph is not in LAYERS";
 # - `tutti-types` as a `[dependencies]` entry of `tutti-ump`: "tutti-ump -> tutti-types
@@ -107,6 +112,8 @@
 # super::..` of a name another file imported from symphonia; and `cfg`-ed text
 # (it reads every cfg arm). The complete check is the crate's rustdoc JSON or
 # `cargo public-api`, which this repo does not run.
+# - `"tutti-export/ogg"` in `tutti-session`'s `export` feature: "tutti-session with
+#   `export` alone reaches ogg_next_sys";
 # - `tutti-rt` as a `[dependencies]` entry of `tutti-tempo`: "tutti-tempo may depend on
 #   ['tutti-types'] only"; `tutti-graph` there too: "tutti-tempo -> tutti-graph (normal)
 #   points up or sideways".
@@ -152,18 +159,18 @@ def rel(p):
 # layer. Derived from the real edges; see CLAUDE.md.
 LAYERS = [
     # no workspace dependency at all
-    ["arc-lend", "vst-tutti", "tutti-alsa-ump-sys", "tutti-ump"],
-    ["tutti-types", "tutti-rt", "tutti-midi-protocol", "tutti-midi-device", "tutti-sf2"],
-    ["tutti-graph", "tutti-dsp", "tutti-mod", "tutti-midi-types", "tutti-metering",
-     "tutti-codec", "tutti-tempo", "tutti-voicing"],
-    ["tutti-transport", "tutti-plugin-types", "tutti-rustysynth"],
+    ["arc-lend", "tutti-alsa-ump-sys", "tutti-ump"],
+    ["tutti-types", "tutti-rt", "tutti-midi-protocol", "tutti-midi-device"],
+    ["tutti-graph", "tutti-dsp", "tutti-modulation", "tutti-midi-types", "tutti-metering",
+     "tutti-codec", "tutti-tempo", "tutti-voicing", "tutti-sf2"],
+    ["tutti-transport", "tutti-plugin-types", "tutti-measure"],
     ["tutti-engine", "tutti-io", "tutti-nodes", "tutti-midi-runtime", "tutti-midi-file",
-     "tutti-clap-ffi", "tutti-vst3-ffi", "tutti-au-host", "tutti-vst2-host",
+     "tutti-clap-ffi", "tutti-vst3-ffi", "tutti-au-ffi", "tutti-vst2-ffi",
      "tutti-plugin-db"],
-    ["tutti-cpal", "tutti-export", "tutti-spatial", "tutti-sampler",
+    ["tutti-cpal", "tutti-au-host", "tutti-export", "tutti-spatial", "tutti-sampler",
      "tutti-polysynth", "tutti-soundfont", "tutti-midi-hardware",
-     "tutti-clap-host", "tutti-vst3-host"],
-    ["tutti-plugin"],
+     "tutti-clap-host", "tutti-vst3-host", "tutti-vst2-host"],
+    ["tutti-plugin", "tutti-plugin-probe"],
     ["tutti-plugin-server", "tutti-session"],
     ["tutti", "bevy-tutti"],
 ]
@@ -239,6 +246,25 @@ if "tutti-codec" in pkgs:
             fail(f"{feat} enables an encoder library ({sorted(names & encoders)}); a build that reads pulls no encoder")
         if feat.startswith("encode-") and "symphonia" in names:
             fail(f"{feat} enables symphonia; a build that writes pulls no decoder")
+
+# ---- `export` alone pulls no C library --------------------------------------
+import subprocess
+def reaches_ogg(pkg, feats, no_default):
+    cmd = ["cargo", "tree", "--locked", "-p", pkg, "-e", "normal", "-i", "ogg_next_sys", "--features", feats]
+    if no_default:
+        cmd.append("--no-default-features")
+    r = subprocess.run(cmd, cwd=root, capture_output=True, text=True)
+    return r.returncode == 0 and "ogg_next_sys" in r.stdout, r
+for pkg in ("tutti-session", "tutti", "bevy-tutti"):
+    if pkg not in pkgs:
+        continue
+    # bevy-tutti's own default is empty; tutti's is `session`; `export` alone.
+    hit, _ = reaches_ogg(pkg, "export", True)
+    if hit:
+        fail(f"{pkg} with `export` alone reaches ogg_next_sys; only `export-ogg` may")
+    hit, r = reaches_ogg(pkg, "export,export-ogg", True)
+    if not hit:
+        fail(f"{pkg} with `export,export-ogg` no longer reaches ogg_next_sys; the check sees nothing ({r.stderr.strip()[:200]})")
 
 import re
 decode_root = os.path.join(root, "crates", "tutti-codec", "src", "decode")
@@ -353,9 +379,22 @@ if "tutti-transport" in pkgs:
     only("tutti-transport", ["tutti-types", "tutti-rt", "tutti-graph"])
 if "tutti-plugin-db" in pkgs:
     only("tutti-plugin-db", ["tutti-plugin-types"])
-for n in ("tutti-dsp", "tutti-mod"):
+# The probe binary (design 021 section 2.5) links the format hosts and the
+# descriptor types, and no hosting: not the facade, not the server, and the
+# `-ipc` and `-host` crates it will never gain. Nothing depends on it (a binary).
+if "tutti-plugin-probe" in pkgs:
+    only("tutti-plugin-probe", ["tutti-plugin-types", "tutti-clap-host", "tutti-vst3-host",
+                                "tutti-vst2-host", "tutti-au-host"])
+    if "tutti-plugin" in deps_of("tutti-plugin-probe"):
+        fail("tutti-plugin-probe depends on tutti-plugin, even as a dev-dependency")
+    for name in pkgs:
+        if "tutti-plugin-probe" in deps_of(name):
+            fail(f"{name} depends on tutti-plugin-probe; nothing does, it is a binary")
+for n in ("tutti-dsp", "tutti-modulation"):
     if n in pkgs:
         only(n, ["tutti-types"])
+if "tutti-measure" in pkgs:
+    only("tutti-measure", ["tutti-types", "tutti-dsp"])
 for n in ("tutti-graph", "tutti-midi-types"):
     if n in pkgs:
         only(n, ["tutti-types", "tutti-rt", "tutti-ump"])

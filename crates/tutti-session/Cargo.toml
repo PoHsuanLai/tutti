@@ -40,7 +40,7 @@ thiserror.workspace = true
 # The sound card. Off: offline only, and no ALSA headers needed.
 tutti-cpal = { path = "../tutti-cpal", default-features = false, optional = true }
 tutti-io = { path = "../tutti-io", optional = true }
-tutti-mod = { path = "../tutti-mod", default-features = false, optional = true }
+tutti-modulation = { path = "../tutti-modulation", default-features = false, optional = true }
 tutti-midi-types = { path = "../tutti-midi-types", default-features = false, optional = true }
 tutti-midi-runtime = { path = "../tutti-midi-runtime", default-features = false, optional = true }
 tutti-midi-file = { path = "../tutti-midi-file", optional = true }
@@ -49,7 +49,7 @@ tutti-sampler = { path = "../tutti-sampler", default-features = false, optional 
 tutti-soundfont = { path = "../tutti-soundfont", optional = true }
 tutti-polysynth = { path = "../tutti-polysynth", optional = true }
 tutti-spatial = { path = "../tutti-spatial", default-features = false, optional = true }
-tutti-export = { path = "../tutti-export", optional = true }
+tutti-export = { path = "../tutti-export", default-features = false, optional = true }
 tutti-plugin = { path = "../tutti-plugin", optional = true }
 # `assert_main_thread`, the debug-only guard on the calls whose frees are
 # main-thread-only (design 015 §4.2).
@@ -61,7 +61,7 @@ tutti-plugin-types = { path = "../tutti-plugin-types", optional = true }
 default = []
 device = ["dep:tutti-cpal"]
 audio-io = ["dep:tutti-io", "tutti-cpal?/capture"]
-modulation = ["dep:tutti-mod"]
+modulation = ["dep:tutti-modulation"]
 midi = [
     "dep:tutti-midi-types",
     "dep:tutti-midi-runtime",
@@ -75,7 +75,15 @@ synth = ["dep:tutti-polysynth"]
 spatial = ["dep:tutti-spatial"]
 hrtf = ["spatial", "tutti-spatial/hrtf"]
 convolution = ["tutti-nodes/convolution"]
-export = ["dep:tutti-export"]
+# Export. `export` is the offline renderer and WAV, which is pure Rust; FLAC and
+# AIFF are pure Rust and opt-in, and `export-ogg` is the one path to C (the
+# Vorbis library, `ogg_next_sys`). `scripts/check-layout.sh` holds that a build
+# with `export` alone reaches no C.
+export = ["dep:tutti-export", "tutti-export/wav"]
+export-wav = ["export"]
+export-flac = ["export", "tutti-export/flac"]
+export-aiff = ["export", "tutti-export/aiff"]
+export-ogg = ["export", "tutti-export/ogg"]
 plugin = ["dep:tutti-plugin", "dep:tutti-plugin-types", "midi"]
 vst2 = ["plugin", "tutti-plugin/vst2"]
 vst3 = ["plugin", "tutti-plugin/vst3"]
@@ -83,6 +91,9 @@ clap = ["plugin", "tutti-plugin/clap"]
 au = ["plugin", "tutti-plugin/au"]
 
 [dev-dependencies]
+# The SoundFont type the instrument contract's subject decodes a font into
+# (`tutti-soundfont` does not re-export it).
+tutti-sf2 = { path = "../tutti-sf2" }
 # The `FakeBackend` the hot-plug tests drive (`plug`, `unplug`). Dev-only:
 # `midi-hardware` must not link a fake backend.
 tutti-midi-hardware = { path = "../tutti-midi-hardware", features = ["test-support"] }
@@ -146,11 +157,21 @@ required-features = ["midi"]
 name = "export_cancel"
 required-features = ["export"]
 
+# A parallel export is bit-identical to the serial one.
+[[test]]
+name = "export_parallel"
+required-features = ["export"]
+
 # Hosted plugins, their render mode and exports, over the reference CLAP
 # plugin in a real `plugin-server`: fails without the server, by design.
 [[test]]
 name = "plugin"
 required-features = ["clap", "export"]
+
+# The General MIDI setup of a SoundFont unit (`Session::add_general_midi`).
+[[test]]
+name = "general_midi"
+required-features = ["soundfont"]
 
 # The instrument contract (`tests/instrument_support`): the same cases against
 # `PolySynth`, the SoundFont unit and a hosted plugin. The plugin subject needs

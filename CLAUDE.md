@@ -32,6 +32,12 @@ that pays, and the compiler packs tasks too cheap to dispatch alone.
   pin an analytic figure, an invariant of the render, or (for samples that
   call libm) a golden digest asserted only on the target it was recorded on.
 - Musical delay is not latency. Report only processing latency to PDC.
+- `Shape::tail` is a node's **ceiling**. A node whose ring-out follows its
+  params narrows it each block with `Io::report_tail` (silence skip only; the
+  plan, PDC and export read the ceiling); the report must cover the ring-out
+  and err long, measured from the last non-quiet input (not from the call);
+  only a node without event inputs is parked on it (doc 013, "A tail excludes
+  latency"; `contract::assert_honest_tail` checks it).
 - Transport commands meant for playback take an `At`
   (`MotionFsm::schedule`); the untimed `try_send` means `At::NextBlock`. A
   graph node that needs the transport at a frame reads `Env::transport_at`
@@ -61,6 +67,12 @@ that pays, and the compiler packs tasks too cheap to dispatch alone.
   `AudioIn::take_lost` through `Recorder::lost`).
 - Doc 013 records the defects found and the types that address them. Update
   it when the code it describes or a decision changes.
+- **Main-thread entries take a token.** An editor, timer, run-loop, state or
+  controller call a format requires on the UI thread takes
+  `&tutti_plugin_types::MainThread` (`!Send`, from `MainThread::claim()`, once
+  per process; `MainThread::current()` for a `Drop`). Holding one is the proof:
+  no `debug_assert` and no marked thread (doc 016 §2.9a). Bevy holds it as the
+  `NonSend` resource `PluginEditorMainThread`. AU also asks the OS.
 - Plugin hosts (VST2, VST3, CLAP, AU) move to a pure `step` core, the
   `Loaded` typestate trait whose `activate` splits a plugin into a realtime
   `Processor` and a main-thread `Controller`, and `Lifecycle<L>` per
@@ -120,7 +132,7 @@ scripts/check-bevy-free.sh         # tutti-session reaches no Bevy and has no be
 scripts/check-adapter.sh           # bevy-tutti composes nothing, holds no policy (clock reads, usize/Duration consts); tutti-session re-exports no crate
 scripts/check-doc-features.sh      # rustdoc per feature for bevy-tutti, tutti-session, tutti
 scripts/check-guards.sh            # every host callback runs under the panic guard
-scripts/check-plugin-ffi.sh        # no CLAP/VST3 unsafe outside the -ffi crates; the forbids
+scripts/check-plugin-ffi.sh        # no CLAP/VST3/AU unsafe outside the -ffi crates; the forbids; VST2 held to its pins
 scripts/check-layout.sh            # flat crates/ and testing/, no crates->testing edges, layering
 scripts/check-range-types.sh       # no plain derived Deserialize on a private tuple field
 just deny                          # RustSec advisories, yanked and unmaintained crates (deny.toml)
@@ -134,9 +146,10 @@ and the docs.rs build on a dated nightly); `just check-loom` runs clippy under
 `--cfg loom`.
 
 - **`unsafe`:** a library with none carries `#![forbid(unsafe_code)]`. Plugin FFI
-  `unsafe` lives only in the per-format `-ffi` crates (`tutti-clap-ffi` and
-  `tutti-vst3-ffi`); host crates forbid `unsafe`
-  (`scripts/check-plugin-ffi.sh`, design 016 §2.9).
+  `unsafe` lives only in the per-format `-ffi` crates (`tutti-clap-ffi`,
+  `tutti-vst3-ffi`, `tutti-au-ffi` and `tutti-vst2-ffi`); host crates forbid
+  `unsafe` (`scripts/check-plugin-ffi.sh`, design 016 §2.9). The VST2 loaders'
+  `WindowHandle` decodes are the callers still pinned.
 - **Toolchain:** `rust-toolchain.toml` pins the stable every gate runs on,
   and `Cargo.lock` is committed (`--locked` everywhere). To bump, edit
   `rust-toolchain.toml`, run `just ci`, and fix the new lints in the same PR.
@@ -173,6 +186,15 @@ just test-all                      # both
   `--no-default-features --features clap,vst2,vst3`. They must fail
   rather than skip, and they cannot use a dev-dependency because that would
   be a cycle.
+- **Build `plugin-probe` first** for a suite that scans: `cargo build -p
+  tutti-plugin-probe` (`tutti_fixtures::plugin_probe()`, the same rules as
+  `plugin_server`: a dev-dependency builds a library, not a binary, and a
+  missing one is a failure, never a skip). `tutti-plugin-contract`'s `probe`
+  suite (`--features server`) spawns it, and so does `tutti-plugin`'s opt-in
+  `db_probe` test (`TUTTI_PROBE_PLUGIN`). `tutti-session`'s `plugin` suite loads
+  through the server and does not scan, so it needs the server alone. A scan
+  with no `plugin-probe` on hand degrades to filename metadata
+  (`ProbeNotFound`), so a suite that must see a real probe uses the fixture.
 - **Feature-gated suites** run only where a feature is on. A workspace run
   enables just what some member's dependency edge turns on (for example
   `tutti-nodes/convolution`), not a crate's own optional features. The rest
@@ -206,7 +228,7 @@ just test-all                      # both
   `alsa-lib-devel pkgconf-pkg-config`). Without them the build fails in
   `alsa-sys`'s build script.
 - **Bevy-free floor:** three engine crates have an optional, off-by-default
-  `bevy` feature (`tutti-types`, `tutti-mod`, `tutti-sampler`); the
+  `bevy` feature (`tutti-types`, `tutti-modulation`, `tutti-sampler`); the
   rest have none, and `tutti-session`, `tutti-graph`, `tutti-ump`, `tutti-io`
   and `tutti-codec` must never grow one (`WaveAsset`, the Bevy wrapper of a
   decoded `Wave`, is `bevy-tutti`'s). `bevy-tutti` is the only crate that
@@ -293,7 +315,7 @@ crates/          everything shipped; directory name = package name; no nesting
                  depends on `tutti-ump` alone
   tutti-voicing  what a note-driven instrument decides before it makes sound, as one
                  pure step: `Voicing::step(channel, message, patch, voices) -> &[Command]`
-                 (`Start`, `Retarget`, `Release`, `Cut`, `Retune`) over channel state, the
+                 (`Start`, `Retarget`, `Release`, `Damp`, `Cut`, `Retune`) over channel state, the
                  note table and the note gate (`Holds`), with the differences between
                  instruments as values (`Rules`) and a `Patch`; no audio, no voice, no
                  allocation after `new`. Depends on `tutti-ump`, `tutti-midi-protocol` and
@@ -314,9 +336,17 @@ crates/          everything shipped; directory name = package name; no nesting
   tutti-graph    doc 013: the `Node` contract, Topology->Plan compiler, serial
                  executor + reference interpreter, the `WorkerPool` and the
                  `PrerollTable`, `MAX_ROOT_CHANNELS`; `Engine` renders it
-  tutti-dsp      pure algorithms over slices: the real FFT, analyzers, filters,
-                 dynamics, convolver, delay lines, waveshapers
-  tutti-mod      modulation compiler
+  tutti-dsp      pure algorithms over slices: the real FFT, the cosine windows and `StftGeometry`, filters,
+                 dynamics, convolver, delay lines, reverb, waveshapers, the export
+                 resampler
+  tutti-modulation modulation compiler
+  tutti-measure  the analyzers, measurements over slices that read audio and return
+                 numbers: loudness (EBU R128, windowed momentary and short-term), peaks
+                 and waveform blocks, pitch (`yin`), onsets, spectra, spectral shape,
+                 stereo correlation and ballistics, the vectorscope, silence regions,
+                 cross-correlation and take alignment, tempo and beats, notes, chroma, key
+                 and chords, and the STFT transforms; depends on `tutti-types`
+                 and `tutti-dsp` (the FFT, the windows, `StftGeometry`)
   tutti-transport `Transport`, the motion state machine, timed commands, the
                  offline timeline, `ProjectMeter`
   tutti-metering `LoadMeter` (level meters are plan ops: `tutti-graph`'s `MeterReader`)
@@ -328,15 +358,22 @@ crates/          everything shipped; directory name = package name; no nesting
   tutti-cpal     device
   tutti-export   offline render
   tutti-nodes, tutti-spatial (vbap, hrtf), tutti-sampler, tutti-polysynth,
-  tutti-soundfont, tutti-sf2 (the SoundFont 2 file as data), tutti-rustysynth
-                 (the synthesizer over it; a port of rustysynth)
+  tutti-soundfont (the SoundFont player: the node, the voices, the patch that
+                 turns a note into voices; it executes `tutti-voicing`'s
+                 commands), tutti-sf2 (the SoundFont 2 file as data)
   tutti-midi-{types,runtime,hardware,file}, tutti-alsa-ump-sys
                  (raw ALSA UMP FFI that alsa-sys lacks; Linux only)
   tutti-plugin{,-types,-db,-server}, tutti-{vst2,vst3,clap,au}-host,
+  tutti-plugin-probe (the `plugin-probe` binary: reads a plugin's descriptor
+                 into a result file, `tutti-plugin-types`' `probe_wire`; the format
+                 hosts and no hosting; nothing depends on it, design 021 §2.5),
   tutti-clap-ffi (all CLAP unsafe), tutti-vst3-ffi (all VST3 unsafe),
-  vst-tutti (our fork of the vst crate; its split is a later lane)
+  tutti-au-ffi (all AU unsafe; macOS only, empty elsewhere),
+  tutti-vst2-ffi (all VST2 unsafe: the host half of our fork of the vst crate)
 testing/         never shipped
   tutti-clap-test-plugin, tutti-vst2-test-plugin, tutti-fixtures,
+  tutti-vst2-author (the plugin-authoring half of the vst fork: `plugin_main!`, the
+  `AEffect` builder, the plugin-side dispatcher; only the VST2 test plugins use it),
   tutti-shared-plugin (the test plugin: a format-free core, a shell per
   format), tutti-plugin-contract (the cases every format's host runs against
   it), tutti-shm-model (loom), arc-lend-compare
@@ -348,18 +385,18 @@ vendor/          third-party code we never edit
 list (normal and build edges; dev-dependencies may go anywhere).
 `scripts/check-layout.sh` holds the table and fails on an unplaced crate:
 
-0. `arc-lend`, `vst-tutti`, `tutti-alsa-ump-sys`, `tutti-ump`
-1. `tutti-types`, `tutti-rt`, `tutti-midi-protocol`, `tutti-midi-device`, `tutti-sf2`
-2. `tutti-graph`, `tutti-dsp`, `tutti-mod`, `tutti-midi-types`, `tutti-metering`,
-   `tutti-codec`, `tutti-tempo`, `tutti-voicing`
-3. `tutti-transport`, `tutti-plugin-types`, `tutti-rustysynth`
+0. `arc-lend`, `tutti-alsa-ump-sys`, `tutti-ump`
+1. `tutti-types`, `tutti-rt`, `tutti-midi-protocol`, `tutti-midi-device`
+2. `tutti-graph`, `tutti-dsp`, `tutti-modulation`, `tutti-midi-types`, `tutti-metering`,
+   `tutti-codec`, `tutti-tempo`, `tutti-voicing`, `tutti-sf2`
+3. `tutti-transport`, `tutti-plugin-types`, `tutti-measure`
 4. `tutti-engine`, `tutti-io`, `tutti-nodes`, `tutti-midi-runtime`, `tutti-midi-file`,
-   `tutti-clap-ffi`, `tutti-vst3-ffi`, `tutti-au-host`, `tutti-vst2-host`,
+   `tutti-clap-ffi`, `tutti-vst3-ffi`, `tutti-au-ffi`, `tutti-vst2-ffi`,
    `tutti-plugin-db`
 5. `tutti-cpal`, `tutti-export`, `tutti-spatial`, `tutti-sampler`,
    `tutti-polysynth`, `tutti-soundfont`, `tutti-midi-hardware`,
-   `tutti-clap-host`, `tutti-vst3-host`
-6. `tutti-plugin`
+   `tutti-clap-host`, `tutti-vst3-host`, `tutti-au-host`, `tutti-vst2-host`
+6. `tutti-plugin`, `tutti-plugin-probe`
 7. `tutti-plugin-server`, `tutti-session`
 8. `tutti`, `bevy-tutti`
 
@@ -368,7 +405,7 @@ list (normal and build edges; dev-dependencies may go anywhere).
   dependency on `testing/`; a test reaches `testing/` through a
   dev-dependency.
 - `vendor/` holds third-party code we never edit and no workspace member.
-  Our own forks (`tutti-sf2`, `tutti-rustysynth`, `vst-tutti`) are crates, not vendored.
+  Our own forks (`tutti-sf2`, `tutti-vst2-ffi`) are crates, not vendored.
 - Only `tutti` and `bevy-tutti` depend on `tutti-session`; nothing depends on
   them.
 
@@ -480,20 +517,49 @@ list (normal and build edges; dev-dependencies may go anywhere).
   every module private (`tutti_rt::RtVec`, never `tutti_rt::vec::RtVec`; CI runs
   the per-module path gate on it).
 - `tutti-dsp` depends on no tutti crate but `tutti-types` (its outside deps are
-  rustfft, ebur128, libm and thiserror; `tutti-graph` is a dev-dependency only), keeps every
+  rustfft, libm and thiserror), keeps every
   module private (`tutti_dsp::RealFft`, never `tutti_dsp::fft::RealFft`; CI runs
   the per-module path gate on it), is `#![forbid(unsafe_code)]` and has no
   graph or runtime, no `Arc`-published state and no atomics for control: every
   control arrives per call as a plain typed value. It holds the real FFT, the
-  analyzers, the SVF, ladder and Linkwitz-Riley filters (and their `Real`
+  cosine windows (`CosineWindow`, `Window`), the STFT's `StftGeometry`, `Grid` and
+  `Error`, the SVF, ladder and Linkwitz-Riley filters (and their `Real`
   float), the dynamics curves, followers and kernels, the partitioned
   convolver, the delay line and swept-delay kernel, the cubic Hermite kernel, the phaser's all-pass chain, the
-  block ramps, the export resampler, the
+  block ramps, the export resampler and its streaming
+  bookkeeping (`StreamingResampler`, `ChunkSize`), the dither noise
+  (`DitherNoise`), the Freeverb reverb (`Freeverb`, which is also the
+  `Kernel` of `FreeverbDesign`), the feedback delay network (`FdnDesign`,
+  `FdnKernel`: its kernel ramps between `retarget`s, in 32-frame chunks counted
+  from the last reset, so the output does not depend on the block length), the
+  reverb model of doc 022 (`Network`, `Design`, `Kernel`, `Setup`, `Bounds`,
+  `FreeverbDesign`: a plain
+  fixed-capacity description with analytic queries, never an instruction stream
+  a kernel must follow, and the kernel that runs it, moved to each network by
+  `retarget`; a `Design` writes its network in place, `design_into`, because a
+  `Network` is too large to build on an audio thread), the
   ring buffers and the waveshaping curves. `tutti-nodes` holds the `tutti_graph::Node` adapters over
-  them (shape, prepare, process, params, fork), and re-exports only the
+  them (shape, prepare, process, params, fork; `ReverbNode<D: ReverbDesign>` is
+  the one node over every reverb `Design`, with `FreeverbNode` and `FdnNode`
+  its two instances and `ReverbKind` the choice between them), and re-exports only the
   algorithm types that sit in a node's signature (`SvfType`, `LadderType`,
-  `Real`, `CrossoverError`, `InterpolationMode`, `ShapeKind`).
-- **A pure algorithm over slices goes in `tutti-dsp`; a node file holds only
+  `Real`, `CrossoverError`, `InterpolationMode`, `ShapeKind`, `FdnControls`,
+  `FdnDesign`, `FreeverbControls`, `FreeverbDesign`).
+- `tutti-measure` depends on `tutti-types` and `tutti-dsp` alone among workspace
+  crates (its outside deps are `ebur128`, the only place it is pulled, and
+  `thiserror`; `tutti-graph` is a dev-dependency only, for the README's tap
+  example), keeps every module private (`tutti_measure::Loudness`, never
+  `tutti_measure::loudness::Loudness`; CI runs the per-module path gate on it), is
+  `#![forbid(unsafe_code)]` and has no `bevy` feature or other feature. Like
+  `tutti-dsp` it has no graph, runtime or `Arc`-published state: every control
+  arrives per call as a plain config value, and a measurement that runs a
+  stream is a `Config`/`State`/`step` triple. It reuses `tutti-dsp`'s
+  `RealFft`/`FftScratch`, `Complex`, `StftGeometry`, `Grid`, `Error` and
+  `CosineWindow` and does not copy them: those serve the processors too (the
+  sampler's vocoder builds on `StftGeometry`).
+  A processor goes in `tutti-dsp`, a measurement in `tutti-measure`.
+- **A pure algorithm over slices goes in `tutti-dsp` (or, if it only reads audio and
+  returns a measurement, `tutti-measure`); a node file holds only
   the `Node` adapter.** Where an algorithm needs a `Param<U>` read, an atomic or
   a non-finite guard (`LastGood`), the node reads and guards it and hands the
   algorithm plain values (`CompressorKernel::gain` takes a `CompressorBlock`).
@@ -520,13 +586,23 @@ list (normal and build edges; dev-dependencies may go anywhere).
 - `tutti-midi-file` is OS-free.
 - `tutti-sf2` is the SoundFont 2 file as data (parse, presets, instruments,
   sample headers, sample data, raw generators) and holds nothing that plays.
-  It depends on `tutti-ump` alone, keeps every module private
+  Its workspace dependencies are `tutti-ump` and `tutti-types` (the units its
+  accessors return: `Samples`, `SampleRate`, `Cents`) and no others; `serde` is
+  an optional feature, on `Bank` only. It keeps every module private
   (`tutti_sf2::SoundFont`; CI runs the per-module path gate on it) and is
-  `#![forbid(unsafe_code)]`. `tutti-rustysynth` is the synthesizer over it
-  (`Synthesizer`, typed over `MidiChannel`, `NoteNumber`, `U7`, `U14` and
-  `SampleRate`), with the same rules. It sits in layer 3 so that it may take
-  `tutti-dsp` (layer 2) later; it names nothing of it today. Both keep the
-  original author's MIT license and copyright (`LICENSE.txt`).
+  `#![forbid(unsafe_code)]`. It has one error type, `tutti_sf2::Error`, with a
+  `Result` alias, and no public four-character-code type. `tutti-soundfont`
+  does not re-export `SoundFont`: its one path is `tutti_sf2::SoundFont` (the
+  umbrella `tutti` offers it as `tutti::sf2`). `tutti-soundfont` is the player over it: the
+  note logic is `tutti-voicing`'s (`Voicing::step` and its `Rules`, with a
+  `Patch` that starts one voice for each matching preset zone and instrument
+  zone), and the crate keeps what renders a voice (the oscillator, filter,
+  envelopes, LFOs, the generator summing of SF2 section 9.4 and the unit
+  conversions of 9.3). That voice render derives from Nobuaki Tanaka's
+  rustysynth (the former `tutti-rustysynth`, folded in): every file derived from
+  it carries the MIT notice in its header and `LICENSE-RUSTYSYNTH.txt` is the
+  licence text. `tutti-sf2` keeps the original author's MIT license and
+  copyright (`LICENSE.txt`) likewise.
 - A Bevy app depends on `bevy-tutti`; a headless consumer depends on `tutti`.
   `bevy-tutti` does not depend on `tutti`. Both use `tutti-session`. It
   holds only code that names two or more engine crates, or the order they
@@ -772,8 +848,8 @@ only ways out of a case.
 - A plugin that cannot share the core (the C++ VST3 plugin, an in-process AU
   unit) follows the spec in `core`'s docs (and `core.hpp` mirrors it) and runs
   the same cases. A change to the spec changes both cores.
-- The VST2 shell uses `vst-tutti`'s authoring side as a dependency; when that
-  half moves out of `vst-tutti`, the shell's one dependency line changes.
+- The VST2 shell uses `testing/tutti-vst2-author` (the plugin-authoring half of the
+  old `vst-tutti`, re-exporting `tutti-vst2-ffi`'s ABI modules) as a dependency.
 
 ## Check the constraint before designing around it
 
@@ -801,15 +877,17 @@ read the `Cargo.toml`, grep for the type, run the probe.
   `bevy-tutti/Cargo.toml` is the one exception. The `docs/` audits are dated
   records: fix only what claims to be current, and never "update" a reference
   to a new app-side path.
-- **Dead crate names:** `tutti-units` → `tutti-nodes`, `tutti-synth` →
+- **Dead crate names:** `vst-tutti` → `tutti-vst2-ffi` (the host half: ABI types, loader,
+  host callback, buffers) and `testing/tutti-vst2-author` (the plugin side, test-only), `tutti-rustysynth` → `tutti-soundfont` (the voice
+  render; the note logic went to `tutti-voicing`), `tutti-units` → `tutti-nodes`, `tutti-synth` →
   `tutti-polysynth` + `tutti-soundfont`, `tutti-midi` → the four `midi/`
-  crates, `tutti-analysis` → `tutti-dsp`, `tutti-core` → `tutti-transport`
+  crates, `tutti-analysis` → `tutti-dsp`, whose analyzers are now `tutti-measure`, `tutti-core` → `tutti-transport`
   (`Transport`, `ProjectMeter`, the clocks), `tutti-metering` (`LoadMeter`;
   the master meter is now a plan op, `Editor::open_meter`) and `tutti-engine` (`Engine`; `MAX_ROOT_CHANNELS`
   is `tutti-graph`'s), `tutti-node` and `fundsp-tutti` →
   deleted (the node contract is `tutti_graph::Node`; the filters' `Real` is
-  `tutti-nodes`'), and tutti-mod's runtime (`ModMatrix`, `ModParams`, `ParamFrom`,
-  `modulation::legacy`) → deleted (doc 014 §10: `tutti_mod::compile` and
+  `tutti-nodes`'), `tutti-mod` → `tutti-modulation` (renamed: "mod" is unclear), and tutti-modulation's runtime (`ModMatrix`, `ModParams`, `ParamFrom`,
+  `modulation::legacy`) → deleted (doc 014 §10: `tutti_modulation::compile` and
   a `ControlLaneNode` per param). A comment or doc that disagrees with the
   code is the bug.
 - **MSVC render gate:** `render_is_bit_identical_to_the_audionode_era` is

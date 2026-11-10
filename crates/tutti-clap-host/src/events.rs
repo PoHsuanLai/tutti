@@ -766,7 +766,7 @@ impl ClapEvent {
                 let (channel, note) = note_address(e.channel, e.key, e.note_id)?;
                 Some(
                     // Preserve the plugin's release velocity on the way back to
-                    // MIDI-2, mirroring the NoteOn path (was hardcoded 0).
+                    // MIDI-2, mirroring the NoteOn path.
                     MidiEvent::note_off(
                         MidiGroup::FIRST,
                         MidiChannel::masked(channel),
@@ -1832,8 +1832,8 @@ impl EventList for OutputEventList {
 
     /// Empty the list, **recycling** SysEx payload buffers into the internal
     /// `sysex_pool` rather than freeing them. `process` calls this every
-    /// block; a plain `events.clear()` dropped the `Vec<u8>` inside each
-    /// `MidiSysex`, pairing a free here with an allocation in `try_push`.
+    /// block; a plain `events.clear()` would drop the `Vec<u8>` inside each
+    /// `MidiSysex`, so every block would free here what `try_push` allocates.
     fn clear(&mut self) {
         self.param_pushed = 0;
         self.coalesced = 0;
@@ -3026,7 +3026,7 @@ mod tests {
     #[test]
     fn note_off_release_velocity_is_threaded_through() {
         // A MIDI-2 NoteOff carries a release velocity; it must reach the
-        // CLAP NoteOff's `velocity` (was hardcoded 0), and round-trip back.
+        // CLAP NoteOff's `velocity`, and round-trip back.
         use tutti_midi_types::convert::u16_to_unit_f32;
         let rel = 0x6000u16; // ~0.375 of full scale
         let midi =
@@ -3391,7 +3391,6 @@ mod tests {
         // hand: the last parameter given the rest of the list's room, and
         // one more). The last queue is built with room for them all
         // (`ParameterQueue::with_capacity`), as the host's pool never would.
-        // (Reworded with `PointBuf`: the cloned queue grew before.)
         let mut over = ParameterChanges::new();
         for q in &changes.queues {
             over.add_queue(q.clone());

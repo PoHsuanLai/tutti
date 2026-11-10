@@ -1,8 +1,8 @@
 use std::fmt::{Debug, Display, Formatter, Result, Write};
 
-/// A RIFF four-character code, as an error reports it.
+/// A RIFF four-character code, as the reader holds it.
 #[derive(PartialEq, Eq, Clone, Copy)]
-pub struct FourCC([u8; 4]);
+pub(crate) struct FourCC([u8; 4]);
 
 impl FourCC {
     pub(crate) const fn from_bytes(mut bytes: [u8; 4]) -> Self {
@@ -16,7 +16,7 @@ impl FourCC {
 
     /// The four bytes, with any non-printable byte shown as `?`.
     #[must_use]
-    pub const fn as_bytes(&self) -> &[u8; 4] {
+    pub(crate) const fn as_bytes(&self) -> &[u8; 4] {
         &self.0
     }
 }

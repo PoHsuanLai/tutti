@@ -13,7 +13,7 @@ use tutti_graph::{
 };
 use tutti_midi_runtime::{MidiClipNode, TimedMidiEvent};
 use tutti_midi_types::MidiEvent;
-use tutti_mod::{Amount, Clock, ControlProgram, CurveType, Layer, LayerId, Polarity, Wave};
+use tutti_modulation::{Amount, Clock, ControlProgram, CurveType, Layer, LayerId, Polarity, Wave};
 use tutti_nodes::automation::ControlLaneNode;
 use tutti_polysynth::{Adsr, OscillatorType, PolySynth, SynthConfig, UnisonConfig};
 use tutti_types::graph::{OutPort, Source};

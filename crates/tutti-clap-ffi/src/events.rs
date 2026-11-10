@@ -16,6 +16,7 @@
 use std::ffi::c_void;
 use std::mem::size_of;
 use std::ptr;
+use std::sync::atomic::Ordering;
 
 use clap_sys::events::{
     CLAP_CORE_EVENT_SPACE_ID, CLAP_EVENT_MIDI, CLAP_EVENT_MIDI_SYSEX, CLAP_EVENT_NOTE_CHOKE,
@@ -26,7 +27,7 @@ use clap_sys::events::{
     clap_event_param_value, clap_input_events, clap_output_events,
 };
 
-use crate::guard::guard;
+use crate::guard::{ctx_ref, guard};
 
 /// A header no plugin acts on (a space of no plugin's), handed in place of a
 /// host event that failed validation, so `get` never answers null.
@@ -117,8 +118,17 @@ impl EventRef<'_> {
             ),
             EventRef::Midi(e) => checked(e, &e.header, &[CLAP_EVENT_MIDI]),
             EventRef::NoteExpression(e) => checked(e, &e.header, &[CLAP_EVENT_NOTE_EXPRESSION]),
-            EventRef::ParamValue(e) => checked(e, &e.header, &[CLAP_EVENT_PARAM_VALUE]),
-            EventRef::ParamMod(e) => checked(e, &e.header, &[CLAP_EVENT_PARAM_MOD]),
+            // The cookie is a pointer the plugin gave `params.get_info` and
+            // expects back untouched; this crate hands none out (`param_info`
+            // zeroes it), so a non-null one was made up by safe code and the
+            // plugin would dereference it.
+            EventRef::ParamValue(e) if e.cookie.is_null() => {
+                checked(e, &e.header, &[CLAP_EVENT_PARAM_VALUE])
+            }
+            EventRef::ParamMod(e) if e.cookie.is_null() => {
+                checked(e, &e.header, &[CLAP_EVENT_PARAM_MOD])
+            }
+            EventRef::ParamValue(_) | EventRef::ParamMod(_) => None,
             EventRef::ParamGesture(e) => checked(
                 e,
                 &e.header,
@@ -203,14 +213,32 @@ pub(crate) fn with_input<R>(
     f(&raw)
 }
 
+/// What an output list's `ctx` addresses: the sink, and whether a push is in
+/// it. `events.h` has the plugin push from the audio thread, but a plugin that
+/// pushes from a pool helper beside it would otherwise make two live `&mut` to
+/// the sink; a push that finds another in progress is refused instead.
+struct OutputCtx<'a> {
+    sink: std::cell::UnsafeCell<&'a mut dyn EventSink>,
+    busy: std::sync::atomic::AtomicBool,
+}
+
+impl<'a> OutputCtx<'a> {
+    fn new(sink: &'a mut dyn EventSink) -> Self {
+        Self {
+            sink: std::cell::UnsafeCell::new(sink),
+            busy: std::sync::atomic::AtomicBool::new(false),
+        }
+    }
+}
+
 /// Run `f` with a `clap_output_events` into `sink`, valid for the call.
 pub(crate) fn with_output<R>(
     sink: &mut dyn EventSink,
     f: impl FnOnce(*const clap_output_events) -> R,
 ) -> R {
-    let mut holder: &mut dyn EventSink = sink;
+    let mut ctx = OutputCtx::new(sink);
     let raw = clap_output_events {
-        ctx: ptr::from_mut(&mut holder).cast::<c_void>(),
+        ctx: ptr::from_mut(&mut ctx).cast::<c_void>(),
         try_push: Some(output_events_try_push),
     };
     f(&raw)
@@ -247,9 +275,10 @@ pub unsafe fn input_raw_for_test(source: *const dyn EventSource) -> *const clap_
 #[must_use]
 pub unsafe fn output_raw_for_test(sink: *mut dyn EventSink) -> *const clap_output_events {
     // SAFETY: the caller's contract.
-    let holder: &'static mut &mut dyn EventSink = Box::leak(Box::new(unsafe { &mut *sink }));
+    let ctx: &'static mut OutputCtx<'static> =
+        Box::leak(Box::new(OutputCtx::new(unsafe { &mut *sink })));
     Box::leak(Box::new(clap_output_events {
-        ctx: ptr::from_mut(holder).cast::<c_void>(),
+        ctx: ptr::from_mut(ctx).cast::<c_void>(),
         try_push: Some(output_events_try_push),
     }))
 }
@@ -262,7 +291,7 @@ extern "C" fn input_events_size(list: *const clap_input_events) -> u32 {
         // SAFETY: `ctx` is the `&&dyn EventSource` of the call that built the
         // list (`with_input`), alive while the plugin runs inside it. Shared
         // access only.
-        let source = unsafe { &*(*list).ctx.cast::<&dyn EventSource>() };
+        let source = unsafe { ctx_ref::<&dyn EventSource>((*list).ctx) };
         u32::try_from(source.len()).unwrap_or(u32::MAX)
     })
 }
@@ -276,7 +305,7 @@ extern "C" fn input_events_get(
             return ptr::null();
         }
         // SAFETY: as `input_events_size`.
-        let source = unsafe { &*(*list).ctx.cast::<&dyn EventSource>() };
+        let source = unsafe { ctx_ref::<&dyn EventSource>((*list).ctx) };
         match source.get(index as usize) {
             None => ptr::null(),
             Some(event) => event.header_ptr().unwrap_or(ptr::from_ref(&INERT)),
@@ -324,20 +353,44 @@ extern "C" fn output_events_try_push(
         if event.is_null() || list.is_null() {
             return false;
         }
-        // SAFETY: `ctx` is the `&mut &mut dyn EventSink` of the call that
-        // built the list (`with_output`). The plugin pushes only from the
-        // audio thread inside that call (`events.h`), so no other reference to
-        // the sink is live.
-        let sink = unsafe { &mut **(*list).ctx.cast::<&mut dyn EventSink>() };
+        // SAFETY: `ctx` is the `OutputCtx` of the call that built the list
+        // (`with_output`), alive while the plugin runs inside it. Shared access
+        // only: the sink is reached through the cell below.
+        let ctx = unsafe { ctx_ref::<OutputCtx<'static>>((*list).ctx) };
+        // One push at a time: the flag is the exclusion that makes the `&mut`
+        // below the only one, and a concurrent push (a plugin breaking
+        // `events.h`) is refused rather than racing.
+        if ctx.busy.swap(true, Ordering::Acquire) {
+            return false;
+        }
+        struct Release<'r>(&'r std::sync::atomic::AtomicBool);
+        impl Drop for Release<'_> {
+            fn drop(&mut self) {
+                self.0.store(false, Ordering::Release);
+            }
+        }
+        let _release = Release(&ctx.busy);
+        // SAFETY: `busy` was clear and is now ours until `_release` drops, so
+        // no other reference to the sink is live.
+        let sink = unsafe { &mut **ctx.sink.get() };
         // SAFETY: the plugin passes an event whose header is readable
         // (`events.h`); read unaligned, as the plugin may have packed it at
         // 4-byte alignment.
         let header = unsafe { ptr::read_unaligned(event) };
+        // Only the bytes the decoder reads are made a slice: the type's own
+        // size, once the header claims at least that much. A header that
+        // claims less, or a type that is not ours, is malformed before any
+        // byte past the header is touched.
         let claimed = header.size as usize;
+        let readable = match core_event_size(header.type_) {
+            Some(min) if claimed >= min => min,
+            _ => size_of::<clap_event_header>().min(claimed),
+        };
         // SAFETY: the plugin guarantees `header.size` readable bytes at
-        // `event` for the call (`events.h`); `claimed` is that size. The event
-        // is re-read from these bytes below, never through `event` again.
-        let bytes = unsafe { std::slice::from_raw_parts(event.cast::<u8>(), claimed) };
+        // `event` for the call (`events.h`), and `readable <= header.size`.
+        // The event is re-read from these bytes below, never through `event`
+        // again.
+        let bytes = unsafe { std::slice::from_raw_parts(event.cast::<u8>(), readable) };
         let Some(decoded) = decode(&header, bytes) else {
             sink.refuse_malformed();
             return false;
@@ -367,7 +420,12 @@ fn decode<'a>(header: &clap_event_header, bytes: &'a [u8]) -> Option<PluginEvent
         }
         CLAP_EVENT_MIDI_SYSEX => {
             let event = read::<clap_event_midi_sysex>(bytes)?;
-            let data: &[u8] = if event.buffer.is_null() || event.size == 0 {
+            // `u32` always fits a slice length on 64-bit; on 32-bit a size past
+            // `isize::MAX` is no payload.
+            let data: &[u8] = if event.buffer.is_null()
+                || event.size == 0
+                || isize::try_from(event.size).is_err()
+            {
                 &[]
             } else {
                 // SAFETY: the plugin guarantees `buffer` addresses `size`
@@ -583,5 +641,122 @@ mod tests {
         let mut unknown = body.header;
         unknown.type_ = 999;
         assert_eq!(pushed(unknown, &body), (vec![], 1));
+    }
+
+    /// An event whose `cookie` is not null is never lent: the cookie is a
+    /// pointer the plugin gave `params.get_info` and dereferences when it
+    /// returns, and this crate hands none out, so a non-null one is made up.
+    ///
+    /// Mutation: drop the `is_null` guards in `header_ptr` (use
+    /// `checked(..)` unconditionally): the cookie-carrying events are lent and
+    /// the assertions fail.
+    #[test]
+    fn a_param_event_with_a_cookie_is_never_lent() {
+        let header = |type_, size| clap_event_header {
+            size,
+            time: 0,
+            space_id: CLAP_CORE_EVENT_SPACE_ID,
+            type_,
+            flags: 0,
+        };
+        let mut value = clap_event_param_value {
+            header: header(
+                CLAP_EVENT_PARAM_VALUE,
+                header_size::<clap_event_param_value>(),
+            ),
+            param_id: 1,
+            cookie: ptr::null_mut(),
+            note_id: -1,
+            port_index: -1,
+            channel: -1,
+            key: -1,
+            value: 0.5,
+        };
+        let mut modulation = clap_event_param_mod {
+            header: header(CLAP_EVENT_PARAM_MOD, header_size::<clap_event_param_mod>()),
+            param_id: 1,
+            cookie: ptr::null_mut(),
+            note_id: -1,
+            port_index: -1,
+            channel: -1,
+            key: -1,
+            amount: 0.5,
+        };
+        let lent = (CLAP_CORE_EVENT_SPACE_ID, CLAP_EVENT_PARAM_VALUE);
+        let inert = (u16::MAX, u16::MAX);
+        assert_eq!(seen(EventRef::ParamValue(&value)), lent);
+        assert_eq!(
+            seen(EventRef::ParamMod(&modulation)),
+            (CLAP_CORE_EVENT_SPACE_ID, CLAP_EVENT_PARAM_MOD)
+        );
+        value.cookie = 0x1000 as *mut c_void;
+        modulation.cookie = 0x1000 as *mut c_void;
+        assert_eq!(seen(EventRef::ParamValue(&value)), inert);
+        assert_eq!(seen(EventRef::ParamMod(&modulation)), inert);
+    }
+
+    /// Two pushes at once reach the sink one at a time: the second, made while
+    /// the first is inside the sink, is refused (`false`) instead of making a
+    /// second live `&mut` to it. (`events.h` has the plugin push from the audio
+    /// thread; this is what a plugin that pushes from a pool helper gets.)
+    ///
+    /// Mutation: drop the `busy` swap in `output_events_try_push`: the second
+    /// push enters the sink too and the `false` assertion fails.
+    #[test]
+    fn a_push_made_while_another_is_in_the_sink_is_refused() {
+        use std::sync::mpsc;
+
+        struct Blocking {
+            entered: mpsc::Sender<()>,
+            release: mpsc::Receiver<()>,
+            pushes: u32,
+        }
+        impl EventSink for Blocking {
+            fn push(&mut self, _event: PluginEvent<'_>) -> bool {
+                self.pushes += 1;
+                if self.pushes == 1 {
+                    self.entered.send(()).unwrap();
+                    self.release.recv().unwrap();
+                }
+                true
+            }
+        }
+
+        let (entered, entered_rx) = mpsc::channel();
+        let (release_tx, release) = mpsc::channel();
+        let mut sink = Blocking {
+            entered,
+            release,
+            pushes: 0,
+        };
+        let body = note(
+            CLAP_EVENT_NOTE_ON,
+            header_size::<clap_event_note>(),
+            CLAP_CORE_EVENT_SPACE_ID,
+        );
+        with_output(&mut sink, |raw| {
+            let (list, event) = (raw as usize, ptr::from_ref(&body) as usize);
+            let push = move || {
+                // SAFETY: `list` is the live list `with_output` built and
+                // `event` a whole `clap_event_note`, both alive until the
+                // scope below has joined this thread.
+                unsafe {
+                    let (list, event) = (list as *const clap_output_events, event as *const _);
+                    ((*list).try_push.unwrap())(list, event)
+                }
+            };
+            std::thread::scope(|s| {
+                let first = s.spawn(push);
+                entered_rx.recv().unwrap();
+                let second = push();
+                // Released before any assertion, so a failure cannot leave the
+                // first push waiting for the scope to join it.
+                release_tx.send(()).unwrap();
+                assert!(first.join().unwrap());
+                assert!(!second, "a push beside one in the sink is refused");
+            });
+            assert!(push(), "the flag is released after a push");
+        });
+        assert_eq!(sink.pushes, 2);
     }
 }

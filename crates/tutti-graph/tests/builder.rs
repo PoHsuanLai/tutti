@@ -60,7 +60,7 @@ fn node(ins: usize, outs: usize) -> ForkByClone<Width> {
 }
 
 fn ch(n: usize) -> ChannelLayout {
-    ChannelLayout::from_count(n as u16)
+    ChannelLayout::try_from(n).expect("a test width is small")
 }
 
 /// What the builder feeds `node`'s input `port`. An absent edge reads

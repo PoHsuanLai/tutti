@@ -4,7 +4,9 @@
 //! exactly one way to spell each width: two layouts of the same width are
 //! always the same value, hash the same, and match the same arm. `from_count`
 //! stays as the `const` primitive the `From` impls delegate to, because
-//! `From::from` cannot be `const`.
+//! `From::from` cannot be `const`. Every `u16` is a width, so there is no
+//! `new` returning `Option`; a wider integer converts through a refusing
+//! `TryFrom`.
 
 /// How many audio channels a signal, node port, bus, wave, or device carries.
 ///
@@ -22,9 +24,10 @@
 ///
 /// A named constant if the width has a name ([`MONO`](Self::MONO),
 /// [`STEREO`](Self::STEREO), [`QUAD`](Self::QUAD), [`EMPTY`](Self::EMPTY)),
-/// [`From`]/[`Into`] from any of `u8`, `u16`, `u32` or `usize` otherwise.
-/// 5.1 and 7.1 get no names, because a name would imply a speaker *order* this
-/// count-only type does not carry. A count above `u16::MAX` is truncated.
+/// [`From`]/[`Into`] from a `u8` or `u16` otherwise, and [`TryFrom`] from a
+/// `u32` or `usize`, which refuses a count above `u16::MAX` with
+/// [`ChannelCountOutOfRange`]. 5.1 and 7.1 get no names, because a name would
+/// imply a speaker *order* this count-only type does not carry.
 ///
 /// Ordering is by channel count, so `a > b` reads as "a is wider than b".
 ///
@@ -44,12 +47,14 @@
 /// ```
 /// use tutti_types::ChannelLayout;
 ///
-/// let surround = ChannelLayout::from(6usize);
+/// let surround = ChannelLayout::from(6u16);
 /// assert_eq!(surround.count(), 6);
+/// assert_eq!(ChannelLayout::try_from(6usize), Ok(surround));
+/// assert!(ChannelLayout::try_from(65_538usize).is_err());
 /// assert!(surround > ChannelLayout::STEREO);
 /// assert!(ChannelLayout::STEREO.is_multi());
 /// assert!(!ChannelLayout::EMPTY.is_mono() && !ChannelLayout::EMPTY.is_multi());
-/// assert_eq!(format!("{:?}", ChannelLayout::from(2u32)), "Stereo");
+/// assert_eq!(format!("{:?}", ChannelLayout::try_from(2u32).unwrap()), "Stereo");
 /// ```
 #[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -118,6 +123,17 @@ impl ChannelLayout {
         self.0 > 1
     }
 
+    /// Creates a layout from an unsigned count, saturating at `u16::MAX`.
+    ///
+    /// Named saturation, for a boundary where refusing is wrong and no error
+    /// path exists: a count past `u16::MAX` is not a width, so it saturates
+    /// (and any per-site cap then refuses it) instead of wrapping into a small
+    /// width as `as u16` does. Everywhere else use [`TryFrom`].
+    #[must_use]
+    pub fn clamped(n: usize) -> Self {
+        Self(u16::try_from(n).unwrap_or(u16::MAX))
+    }
+
     /// Creates a layout from a channel count, in `const` context.
     ///
     /// **Prefer [`From`]/[`Into`] at call sites** — `ChannelLayout::from(n)` or
@@ -130,29 +146,61 @@ impl ChannelLayout {
     }
 }
 
-/// Build a layout from any integer width.
+/// A channel count above `u16::MAX`, refused by `ChannelLayout`'s `TryFrom`.
+/// Carries the refused count.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ChannelCountOutOfRange(pub u64);
+
+impl core::fmt::Display for ChannelCountOutOfRange {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(
+            f,
+            "{} channels do not fit a layout (at most {})",
+            self.0,
+            u16::MAX
+        )
+    }
+}
+
+impl core::error::Error for ChannelCountOutOfRange {}
+
+/// Build a layout from a width that cannot be too large: `u8` and `u16`.
+impl From<u8> for ChannelLayout {
+    fn from(n: u8) -> Self {
+        Self::from_count(u16::from(n))
+    }
+}
+
+impl From<u16> for ChannelLayout {
+    fn from(n: u16) -> Self {
+        Self::from_count(n)
+    }
+}
+
+/// Build a layout from a width an upstream API reports in a wider integer:
+/// `u32` (CoreAudio's `mChannelsPerFrame`) and `usize` (`Vec::len`, VST3's bus
+/// counts). A count above `u16::MAX` is refused rather than truncated, so a
+/// plugin that reports 65 538 channels is an error, not a stereo bus.
 ///
-/// Multi-type on purpose: every upstream audio API reports a channel count in a
-/// different integer type — CoreAudio's `mChannelsPerFrame` is `u32`, CPAL's is
-/// `u16`, `Vec::len` and VST3's bus counts are `usize`. Accepting each one lets
-/// `impl Into<ChannelLayout>` parameters take them straight through, instead
-/// of scattering `as u16` casts across the FFI boundaries.
-///
-/// There is deliberately **no reverse impl**. `ChannelLayout → u8` would
-/// truncate above 255 channels, silently, inside a trait that promises not to
-/// lose data; and the wider ones were never used. Read the width with
-/// [`count`](ChannelLayout::count) and cast explicitly if you need another type.
-macro_rules! count_conversions {
+/// There is deliberately **no reverse `From`**: `ChannelLayout -> u8` would
+/// truncate above 255 channels. Read the width with
+/// [`count`](ChannelLayout::count).
+macro_rules! count_try_from {
     ($($t:ty),*) => {$(
-        impl From<$t> for ChannelLayout {
-            fn from(n: $t) -> Self {
-                Self::from_count(n as u16)
+        impl TryFrom<$t> for ChannelLayout {
+            type Error = ChannelCountOutOfRange;
+
+            fn try_from(n: $t) -> Result<Self, Self::Error> {
+                u16::try_from(n).map(Self::from_count).map_err(|_| {
+                    // `u64` holds every `u32` and `usize` here.
+                    ChannelCountOutOfRange(u64::try_from(n).unwrap_or(u64::MAX))
+                })
             }
         }
     )*};
 }
 
-count_conversions!(u8, u16, u32, usize);
+count_try_from!(u32, usize);
 
 #[cfg(test)]
 mod tests {
@@ -176,19 +224,65 @@ mod tests {
         }
     }
 
-    /// Every integer width converts, whatever type the upstream API reports it
-    /// in — the reason the `From` impls are multi-type rather than `u16`-only.
+    /// The lossless widths convert infallibly and the wide ones through
+    /// `TryFrom`, to the same value.
     #[test]
     fn every_integer_width_converts() {
         assert_eq!(ChannelLayout::from(2u8), ChannelLayout::STEREO);
         assert_eq!(ChannelLayout::from(2u16), ChannelLayout::STEREO);
-        assert_eq!(ChannelLayout::from(2u32), ChannelLayout::STEREO);
-        assert_eq!(ChannelLayout::from(2usize), ChannelLayout::STEREO);
-
-        // `.into()` resolves the same way, which is the spelling call sites use
-        // when the target type is already known.
-        let inferred: ChannelLayout = 6usize.into();
+        assert_eq!(ChannelLayout::try_from(2u32), Ok(ChannelLayout::STEREO));
+        assert_eq!(ChannelLayout::try_from(2usize), Ok(ChannelLayout::STEREO));
+        assert_eq!(
+            ChannelLayout::try_from(usize::from(u16::MAX)).map(ChannelLayout::count),
+            Ok(u16::MAX)
+        );
+        for n in 0..=u8::MAX {
+            assert_eq!(ChannelLayout::from(n).count(), u16::from(n));
+        }
+        let inferred: ChannelLayout = 6u16.into();
         assert_eq!(inferred.count(), 6);
+    }
+
+    /// `from(65538usize)` used to be Stereo and `from(70000u32)` 4464 channels;
+    /// now they are errors carrying the refused count.
+    ///
+    /// Mutation (run): `try_from` written `Ok(Self::from_count(n as u16))`
+    /// fails every assertion here; `u16::try_from` replaced by a `& 0xffff`
+    /// mask fails them too.
+    #[test]
+    fn a_count_beyond_u16_is_refused_not_truncated() {
+        for raw in [65_536usize, 65_537, 65_538, 70_000] {
+            assert_eq!(
+                ChannelLayout::try_from(raw),
+                Err(ChannelCountOutOfRange(raw as u64))
+            );
+        }
+        assert_eq!(
+            ChannelLayout::try_from(70_000u32),
+            Err(ChannelCountOutOfRange(70_000))
+        );
+        assert_eq!(
+            ChannelLayout::try_from(u32::MAX),
+            Err(ChannelCountOutOfRange(u64::from(u32::MAX)))
+        );
+        assert!(
+            ChannelCountOutOfRange(65_536)
+                .to_string()
+                .contains("65536 channels")
+        );
+    }
+
+    /// `clamped` saturates at `u16::MAX` instead of wrapping.
+    ///
+    /// Mutation (run): `clamped` written `Self(n as u16)` fails the
+    /// `65_538` and `65_536` assertions.
+    #[test]
+    fn clamped_saturates() {
+        assert_eq!(ChannelLayout::clamped(2), ChannelLayout::STEREO);
+        assert_eq!(ChannelLayout::clamped(65_535).count(), u16::MAX);
+        assert_eq!(ChannelLayout::clamped(65_536).count(), u16::MAX);
+        assert_eq!(ChannelLayout::clamped(65_538).count(), u16::MAX);
+        assert_eq!(ChannelLayout::clamped(usize::MAX).count(), u16::MAX);
     }
 
     /// The named constants report the widths their names claim.

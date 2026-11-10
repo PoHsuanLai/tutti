@@ -81,7 +81,7 @@ fn svf(c: &mut Criterion) {
     for w in [2usize, 6] {
         let make = || {
             SvfFilterNode::<f64>::with_channels(
-                ChannelLayout::from(w),
+                ChannelLayout::try_from(w).expect("a test width is small"),
                 SvfType::LowPass,
                 1_000.0,
                 0.707,
@@ -95,7 +95,7 @@ fn svf(c: &mut Criterion) {
 fn ladder(c: &mut Criterion) {
     for w in [2usize, 6] {
         let node = LadderFilterNode::<f64>::with_channels(
-            ChannelLayout::from(w),
+            ChannelLayout::try_from(w).expect("a test width is small"),
             LadderType::LP24,
             1_000.0,
             0.5,
@@ -106,7 +106,12 @@ fn ladder(c: &mut Criterion) {
 
 fn delay(c: &mut Criterion) {
     for w in [2usize, 6] {
-        let node = DelayLineNode::with_channels(ChannelLayout::from(w), 1.0, 0.25, 0.4);
+        let node = DelayLineNode::with_channels(
+            ChannelLayout::try_from(w).expect("a test width is small"),
+            1.0,
+            0.25,
+            0.4,
+        );
         run_node(c, "delay", w, node, None);
     }
 }
@@ -117,7 +122,7 @@ fn mod_delay(c: &mut Criterion) {
             c,
             "chorus",
             w,
-            ModDelayNode::chorus(ChannelLayout::from(w)),
+            ModDelayNode::chorus(ChannelLayout::try_from(w).expect("a test width is small")),
             None,
         );
     }
@@ -129,7 +134,10 @@ fn phaser(c: &mut Criterion) {
             c,
             "phaser",
             w,
-            PhaserNode::with_channels(ChannelLayout::from(w), 6),
+            PhaserNode::with_channels(
+                ChannelLayout::try_from(w).expect("a test width is small"),
+                6,
+            ),
             None,
         );
     }

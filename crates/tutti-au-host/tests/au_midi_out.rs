@@ -53,8 +53,8 @@ use std::sync::{Arc, Mutex};
 mod support;
 use support::corpus::{DELAY, DLS_SYNTH, LOWPASS, SAMPLER, every_component};
 
+use tutti_au_ffi::{decode_packet_list_for_test, split_packet_list_for_test};
 use tutti_au_host::AuType;
-use tutti_au_host::midi_out::{decode_packet_list_for_test, split_packet_list_for_test};
 use tutti_au_host::types::MIDIPacketList;
 use tutti_midi_types::MidiMessage;
 use tutti_ump::{MidiChannel, MidiGroup};
@@ -223,10 +223,7 @@ fn no_installed_au_publishes_midi_output_info() {
         if matches!(info.component_type, AuType::Output) {
             continue;
         }
-        // SAFETY: `component` came from `AudioComponentFindNext` via
-        // `enumerate_components`, so it is a live factory handle.
-        let Ok(au) = (unsafe { tutti_au_host::AuInstance::new(info.component, RATE, BLOCK) })
-        else {
+        let Ok(au) = tutti_au_host::AuInstance::new(info.component, RATE, BLOCK) else {
             // A unit that will not instantiate cannot be asked. Not a skip that
             // hides anything: it also cannot emit MIDI to this host.
             continue;

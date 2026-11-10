@@ -72,9 +72,9 @@
 //! docs compare all four and give the rule for choosing between them.
 
 use crate::{
-    AudioBufferMut, ContentScale, EditorSize, LoadedPlugin, Normalized, ParamId, ParameterInfo,
-    PluginDescriptor, PluginResult as Result, Preset, PresetId, ProcessContext, ProcessOutput,
-    RenderMode, WindowHandle,
+    AudioBufferMut, ContentScale, EditorSize, LoadedPlugin, MainThread, Normalized, ParamId,
+    ParameterInfo, PluginDescriptor, PluginResult as Result, Preset, PresetId, ProcessContext,
+    ProcessOutput, RenderMode, WindowHandle,
 };
 
 /// A plugin's catalog identity and load-time wiring snapshot.
@@ -145,7 +145,7 @@ pub trait PluginAudio: Send {
     /// the rate it already accepted, or it could not be brought back and
     /// renders silence until it is replaced. A caller that tracks the rate
     /// keeps the old one.
-    fn set_sample_rate(&mut self, rate: f64) -> Result<()>;
+    fn set_sample_rate(&mut self, main: &MainThread, rate: f64) -> Result<()>;
 
     /// Tells the plugin whether it is rendering under realtime pressure.
     ///
@@ -165,8 +165,8 @@ pub trait PluginAudio: Send {
     /// their format requires, and should be a no-op when the mode is unchanged
     /// — an offline bounce sets it once, but a caller is entitled to be
     /// idempotent.
-    fn set_render_mode(&mut self, mode: RenderMode) -> bool {
-        let _ = mode;
+    fn set_render_mode(&mut self, main: &MainThread, mode: RenderMode) -> bool {
+        let _ = (main, mode);
         false
     }
 }
@@ -210,7 +210,7 @@ pub trait PluginParams {
     /// An id the plugin does not have addresses no parameter. Each impl reports
     /// that as it reports any unknown parameter: `0.0` here, a dropped write in
     /// [`set_parameter`](Self::set_parameter).
-    fn get_parameter(&self, id: ParamId) -> f64;
+    fn get_parameter(&self, main: &MainThread, id: ParamId) -> f64;
 
     /// Writes a parameter value.
     ///
@@ -223,7 +223,7 @@ pub trait PluginParams {
     /// clamp, so the plain-for-normalized mistake described above is not
     /// expressible at this seam. The clamp is silent, so a plain value passed
     /// anyway arrives saturated rather than rejected.
-    fn set_parameter(&mut self, id: ParamId, value: Normalized);
+    fn set_parameter(&mut self, main: &MainThread, id: ParamId, value: Normalized);
 
     /// Returns the plugin's own display string for `value` (`"800 Hz"`,
     /// `"Bandpass"`, `"-inf dB"`), or `None` if it will not say.
@@ -248,8 +248,8 @@ pub trait PluginParams {
     ///
     /// Defaulted rather than required so a loader opts in as its format's call
     /// is bound, and an out-of-tree implementor keeps compiling.
-    fn parameter_text(&self, id: ParamId, value: Normalized) -> Option<String> {
-        let _ = (id, value);
+    fn parameter_text(&self, main: &MainThread, id: ParamId, value: Normalized) -> Option<String> {
+        let _ = (main, id, value);
         None
     }
 
@@ -277,8 +277,13 @@ pub trait PluginParams {
     /// the value; the other three parse without writing. A caller that wants a
     /// preview before committing cannot get one on every format, and one that
     /// does not intend to write must not call this speculatively.
-    fn parameter_value_from_text(&self, id: ParamId, text: &str) -> Option<Normalized> {
-        let _ = (id, text);
+    fn parameter_value_from_text(
+        &self,
+        main: &MainThread,
+        id: ParamId,
+        text: &str,
+    ) -> Option<Normalized> {
+        let _ = (main, id, text);
         None
     }
 
@@ -287,14 +292,14 @@ pub trait PluginParams {
     /// Fire-and-forget; the default no-op covers formats without an
     /// automation-state concept. A format that supports it (VST3's
     /// `IAutomationState`) encodes the mode onto its own ABI.
-    fn set_automation_state(&mut self, _mode: crate::AutomationMode) {}
+    fn set_automation_state(&mut self, _main: &MainThread, _mode: crate::AutomationMode) {}
 
     /// Returns every parameter the plugin advertises, in the plugin's own order.
     ///
     /// The order is presentation, not addressing: index `n` in this vector is
     /// not parameter id `n` for VST3, CLAP or AU. Address through each entry's
     /// [`ParameterInfo::id`].
-    fn get_parameter_list(&self) -> Vec<ParameterInfo>;
+    fn get_parameter_list(&self, main: &MainThread) -> Vec<ParameterInfo>;
 
     /// Returns how many parameters the plugin advertises, without building
     /// their descriptors.
@@ -302,8 +307,8 @@ pub trait PluginParams {
     /// At least `get_parameter_list().len()`: a format whose list skips a
     /// parameter the plugin declines to describe still counts it. The default
     /// builds the list; a format with a count query overrides it.
-    fn parameter_count(&self) -> usize {
-        self.get_parameter_list().len()
+    fn parameter_count(&self, main: &MainThread) -> usize {
+        self.get_parameter_list(main).len()
     }
 }
 
@@ -319,7 +324,7 @@ pub trait PluginState: Send {
     ///
     /// Returns [`PluginError::State`](crate::PluginError::State) when the
     /// plugin cannot produce its state.
-    fn get_state(&mut self) -> Result<Vec<u8>>;
+    fn get_state(&mut self, main: &MainThread) -> Result<Vec<u8>>;
 
     /// Restores state from a chunk [`get_state`](Self::get_state) produced.
     ///
@@ -331,7 +336,7 @@ pub trait PluginState: Send {
     ///
     /// Returns [`PluginError::State`](crate::PluginError::State) when the
     /// plugin rejects the chunk.
-    fn set_state(&mut self, data: &[u8]) -> Result<()>;
+    fn set_state(&mut self, main: &MainThread, data: &[u8]) -> Result<()>;
 }
 
 /// Enumerates and loads a plugin's own presets.
@@ -356,7 +361,7 @@ pub trait PluginPresets: Send {
     /// Empty is the default and is the honest answer for a format that cannot
     /// enumerate. It is **not** the same as "this plugin has no presets" — a
     /// caller separates the two by reading `Features::PRESET_LIST`.
-    fn get_presets(&mut self) -> Vec<Preset> {
+    fn get_presets(&mut self, _main: &MainThread) -> Vec<Preset> {
         Vec::new()
     }
 
@@ -368,7 +373,7 @@ pub trait PluginPresets: Send {
     /// An id whose shape this format does not use addresses nothing — a CLAP
     /// path names no AU preset — and must be refused rather than coerced into
     /// whatever number is nearest. See [`PresetId`].
-    fn load_preset(&mut self, _id: &PresetId) -> bool {
+    fn load_preset(&mut self, _main: &MainThread, _id: &PresetId) -> bool {
         false
     }
 
@@ -376,7 +381,7 @@ pub trait PluginPresets: Send {
     ///
     /// `None` means the format has no query or the plugin declined — never
     /// "the first one".
-    fn get_current_preset(&mut self) -> Option<PresetId> {
+    fn get_current_preset(&mut self, _main: &MainThread) -> Option<PresetId> {
         None
     }
 }
@@ -400,14 +405,19 @@ pub trait PluginEditorHost {
     ///
     /// Returns [`PluginError::Editor`](crate::PluginError::Editor) when the
     /// plugin has no editor or fails to open it.
-    fn open_editor(&mut self, parent: WindowHandle, scale: ContentScale) -> Result<EditorSize>;
+    fn open_editor(
+        &mut self,
+        main: &MainThread,
+        parent: WindowHandle,
+        scale: ContentScale,
+    ) -> Result<EditorSize>;
 
     /// Tears the editor down.
     ///
     /// Infallible and idempotent: a caller unwinding from a failed
     /// [`open_editor`](Self::open_editor) has nothing better to do than ask, so
     /// closing an editor that was never opened must be a no-op.
-    fn close_editor(&mut self);
+    fn close_editor(&mut self, main: &MainThread);
 }
 
 /// The full capability bundle a loaded plugin instance implements.

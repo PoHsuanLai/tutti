@@ -14,6 +14,7 @@
 
 mod support;
 use support::active::{Activate, Active};
+use support::main_thread;
 
 use std::sync::{Mutex, MutexGuard};
 
@@ -61,7 +62,7 @@ impl Probe {
         let path = std::path::Path::new(probe_path());
         // Bare dylib: pass it as both bundle and library so the host dlopens it
         // directly, no `.clap` bundle structure needed.
-        ClapLoaded::load(path, LoadOptions::new().library(path))
+        ClapLoaded::load(&main_thread(), path, LoadOptions::new().library(path))
             .expect("reference plugin should load")
     }
 
@@ -402,7 +403,7 @@ fn refused_context_save_is_not_silently_downgraded() {
     set_state_context_refusal(true, false);
 
     let err = loaded
-        .state_with_context(StateContext::ForPreset)
+        .state_with_context(&main_thread(), StateContext::ForPreset)
         .expect_err("the plugin refused the preset-context save; the host must not substitute");
 
     assert!(matches!(err, ClapError::StateError(_)), "{err:?}");
@@ -432,14 +433,14 @@ fn refused_context_load_is_not_retried_context_free() {
     // taken — succeeds and returns `Ok`. A payload that failed both ways would
     // let a buggy host pass this test for the wrong reason.
     let blob = loaded
-        .save_state()
+        .save_state(&main_thread())
         .expect("the probe's plain save works while nothing is armed");
     param_reset();
 
     set_state_context_refusal(false, true);
 
     let err = loaded
-        .set_state_with_context(&blob, StateContext::ForPreset)
+        .set_state_with_context(&main_thread(), &blob, StateContext::ForPreset)
         .expect_err("the plugin refused the preset-context load; the host must not retry");
 
     assert!(matches!(err, ClapError::StateError(_)), "{err:?}");
@@ -466,7 +467,7 @@ fn unrefused_context_save_takes_the_context_aware_path() {
     let loaded = probe.load();
 
     let blob = loaded
-        .state_with_context(StateContext::ForPreset)
+        .state_with_context(&main_thread(), StateContext::ForPreset)
         .expect("nothing armed: the context-aware save succeeds");
     assert!(!blob.is_empty());
 

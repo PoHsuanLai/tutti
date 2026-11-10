@@ -15,7 +15,7 @@
 //! [`frames`](Io::frames) long and that `frames` is at most the
 //! [`MaxBlock`] the node was prepared with. A node therefore never clamps.
 
-use tutti_types::Samples;
+use tutti_types::{Samples, Tail};
 
 use crate::event::{EventWriter, SortedEvents, SubBlocks};
 use crate::node::{ConstantMask, InPlaceMask, SilenceMask};
@@ -70,6 +70,9 @@ pub struct Io<'a> {
     /// Where [`count_lost`](Self::count_lost) adds; `None` where nothing
     /// counts (a hand-built `Io`).
     lost: Option<&'a std::cell::Cell<u32>>,
+    /// Where [`report_tail`](Self::report_tail) stores; `None` where nothing
+    /// reads it (a hand-built `Io`).
+    tail: Option<&'a std::cell::Cell<Option<Tail>>>,
 }
 
 impl std::fmt::Debug for Io<'_> {
@@ -211,6 +214,52 @@ impl<'a> Io<'a> {
             events_out,
             params: &[],
             lost: None,
+            tail: None,
+        }
+    }
+
+    /// These buffers, with [`report_tail`](Self::report_tail) storing into
+    /// `tail`.
+    #[inline]
+    pub(crate) fn with_tail(mut self, tail: &'a std::cell::Cell<Option<Tail>>) -> Self {
+        self.tail = Some(tail);
+        self
+    }
+
+    /// Narrows this node's tail for the silence skip: the frames it keeps
+    /// sounding after its input stops, counted once its latency is
+    /// compensated, **measured from the last non-quiet input frame, not from
+    /// now**. The executor parks the node once its input has been quiet for
+    /// its latency plus this figure, so a reverb with a one-second RT60
+    /// reports one second on every call, however long its input has been
+    /// quiet; reporting the half second that remains after half a second of
+    /// quiet would park it at half its ring.
+    ///
+    /// **Report on every call or not at all.** A report holds until the next
+    /// call, and a call that reports nothing restores the ceiling
+    /// ([`Shape::tail`](crate::Shape::tail)), the safe default. A report above
+    /// the ceiling is clamped to it, [`Tail::Unknown`] says nothing (the
+    /// ceiling stands), and [`Tail::Unbounded`] under an `Unbounded` ceiling
+    /// is never skipped. A node whose shape does not declare a tail with
+    /// [`with_tail`](crate::Shape::with_tail) has the default ceiling and is
+    /// never narrowed below it; one that forgets to declare any tail at all
+    /// (`Tail::Unknown`) is never skipped, whatever it reports, because an
+    /// `Unknown` ceiling bounds nothing for a report to clamp to.
+    ///
+    /// Only a node **without event inputs** is parked on its tail; one with
+    /// event inputs parks only on its own [`Status::Idle`](crate::Status::Idle),
+    /// and its report changes nothing.
+    ///
+    /// The report must cover the node's ring-out (see [`Node`](crate::Node),
+    /// "A tail that follows the params"); `contract::assert_honest_tail`
+    /// (feature `contract`) checks it. Audio thread: one store into the
+    /// unit's own record, no allocation; the plan is untouched, and nothing
+    /// but the task that runs the node reads it, so a pooled render parks the
+    /// same blocks a serial one does.
+    #[inline]
+    pub fn report_tail(&self, tail: Tail) {
+        if let Some(cell) = self.tail {
+            cell.set(Some(tail));
         }
     }
 

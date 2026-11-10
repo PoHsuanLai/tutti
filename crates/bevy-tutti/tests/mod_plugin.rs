@@ -360,7 +360,7 @@ fn a_plugin_gui_edit_becomes_the_knob() {
         .get::<PluginEmitter>(plugin)
         .expect("the plugin's handle")
         .handle
-        .editor_idle();
+        .editor_idle(&main_thread());
     app.update();
 
     let state = app.world().resource::<AudioGraphRes>().modulation();
@@ -533,7 +533,7 @@ fn a_plugin_echoing_the_lane_keeps_its_knob() {
             .expect("the plugin's handle")
             .handle
             .clone();
-        handle.editor_idle();
+        handle.editor_idle(&main_thread());
         app.update();
         let state = app.world().resource::<AudioGraphRes>().modulation();
         assert_eq!(
@@ -548,4 +548,11 @@ fn a_plugin_echoing_the_lane_keeps_its_knob() {
         );
     }
     echo(false);
+}
+
+/// This process's main thread. Each test is its own process under nextest, so
+/// the claim cannot be refused.
+#[cfg(feature = "vst2")]
+fn main_thread() -> tutti_plugin::MainThread {
+    tutti_plugin::MainThread::claim().expect("one test, one process")
 }

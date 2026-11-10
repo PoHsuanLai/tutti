@@ -417,7 +417,9 @@ impl VoiceAllocator {
                 Command::Retune { channel, bend } => {
                     self.gates.push(Gate::Retune(channel, bend));
                 }
-                Command::Release { id, .. } => {
+                // `Damp` is an exclusive class's, which `PolySynth`'s rules
+                // never turn on; if it came, its own release is the answer.
+                Command::Release { id, .. } | Command::Damp(id) => {
                     if let Some(slot_index) = self.slot_of_voice(id) {
                         self.unmap(slot_index);
                         self.slots[slot_index].release();

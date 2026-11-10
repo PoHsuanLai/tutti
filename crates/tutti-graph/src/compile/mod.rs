@@ -102,7 +102,7 @@ pub enum CycleEdge {
 /// Why a [`ValidGraph`] could not be compiled against these shapes.
 ///
 /// This is the graph compiler's error; the modulation compiler's is
-/// `tutti_mod::CompileError`.
+/// `tutti_modulation::CompileError`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum CompileError {

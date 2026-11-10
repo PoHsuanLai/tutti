@@ -6,4 +6,4 @@ mod instrument_support;
 #[global_allocator]
 static ALLOC: assert_no_alloc::AllocDisabler = assert_no_alloc::AllocDisabler;
 
-contract!(instrument_support::subjects::Soundfont, gaps = 1);
+contract!(instrument_support::subjects::Soundfont, gaps = 0);

@@ -273,7 +273,7 @@ fn editor_open_close_pairs_attach_and_remove() {
 
     // Three full cycles: a host that forgets `removed` shows up on cycle two.
     for cycle in 0..3 {
-        match inst.open_editor(handle, ContentScale::IDENTITY) {
+        match inst.open_editor(&main_thread(), handle, ContentScale::IDENTITY) {
             Ok(size) => {
                 assert!(
                     size.width > 0 && size.height > 0,
@@ -287,11 +287,11 @@ fn editor_open_close_pairs_attach_and_remove() {
                 return;
             }
         }
-        inst.close_editor();
+        inst.close_editor(&main_thread());
     }
 
     // A close with no open must be a no-op, not a stray `removed`.
-    inst.close_editor();
+    inst.close_editor(&main_thread());
 }
 }
 
@@ -303,8 +303,8 @@ fn closing_an_unopened_editor_is_a_noop() {
     };
     // No open_editor call at all. This must not reach IPlugView::removed —
     // which the plugin would flag as "removed without attached".
-    inst.close_editor();
-    inst.close_editor();
+    inst.close_editor(&main_thread());
+    inst.close_editor(&main_thread());
 }
 }
 
@@ -328,12 +328,12 @@ fn editor_resize_respects_capabilities() {
         return;
     };
 
-    let Ok(initial) = inst.open_editor(handle, ContentScale::IDENTITY) else {
+    let Ok(initial) = inst.open_editor(&main_thread(), handle, ContentScale::IDENTITY) else {
         eprintln!("open_editor failed; skipping");
         return;
     };
 
-    let caps = inst.editor_capabilities();
+    let caps = inst.editor_capabilities(&main_thread());
     eprintln!(
         "editor {}x{}, resize hints: {:?}",
         initial.width, initial.height, caps.resize
@@ -346,7 +346,7 @@ fn editor_resize_respects_capabilities() {
         width: initial.width + 100,
         height: initial.height + 80,
     };
-    match inst.resize_editor(requested) {
+    match inst.resize_editor(&main_thread(), requested) {
         Ok(granted) => {
             assert!(
                 granted.width > 0 && granted.height > 0,
@@ -375,7 +375,7 @@ fn editor_resize_respects_capabilities() {
         height: 10_000,
     };
     let clamped_to = inst
-        .check_editor_size_constraint(ABSURD)
+        .check_editor_size_constraint(&main_thread(), ABSURD)
         .expect("editor is open, so the constraint query must answer");
 
     if clamped_to == ABSURD {
@@ -383,7 +383,7 @@ fn editor_resize_respects_capabilities() {
     } else {
         eprintln!("plugin clamps {ABSURD:?} to {clamped_to:?}");
         let granted = inst
-            .resize_editor(ABSURD)
+            .resize_editor(&main_thread(), ABSURD)
             .expect("plugin reported a legal snapped size, so onSize must accept it");
         assert_eq!(
             granted, clamped_to,
@@ -393,7 +393,7 @@ fn editor_resize_respects_capabilities() {
         );
     }
 
-    inst.close_editor();
+    inst.close_editor(&main_thread());
 }
 }
 
@@ -431,13 +431,13 @@ fn editorless_plugin_is_refused_cleanly() {
     };
 
     let err = inst
-        .open_editor(handle, ContentScale::IDENTITY)
+        .open_editor(&main_thread(), handle, ContentScale::IDENTITY)
         .expect_err("audio-probe has no editor; open_editor must fail");
     eprintln!("editorless plugin refused with: {err:?}");
 
     // And the failure must leave nothing open — a close afterwards is a no-op,
     // not a `removed()` without a matching `attached()`.
-    inst.close_editor();
+    inst.close_editor(&main_thread());
 }
 }
 
@@ -464,7 +464,7 @@ fn supported_platform_type_still_opens() {
     };
 
     let size = inst
-        .open_editor(handle, ContentScale::IDENTITY)
+        .open_editor(&main_thread(), handle, ContentScale::IDENTITY)
         .expect("host-checker supports this platform type; the check must not reject it");
     assert!(
         size.width > 0 && size.height > 0,
@@ -472,7 +472,7 @@ fn supported_platform_type_still_opens() {
         size.width,
         size.height
     );
-    inst.close_editor();
+    inst.close_editor(&main_thread());
 }
 }
 
@@ -505,7 +505,7 @@ fn open_editor_run_loop_is_pumped() {
     // Nothing should be dispatched before an editor exists.
     let before_open = inst.run_loop_activity();
 
-    if let Err(e) = inst.open_editor(handle, ContentScale::IDENTITY) {
+    if let Err(e) = inst.open_editor(&main_thread(), handle, ContentScale::IDENTITY) {
         eprintln!("open_editor failed ({e:?}); skipping");
         return;
     }
@@ -521,7 +521,7 @@ fn open_editor_run_loop_is_pumped() {
         // to register nothing. Fail loudly only if it registered and we then
         // failed to pump — that is what this test is for.
         eprintln!("plugin registered no run-loop handlers; nothing to pump. Skipping.");
-        inst.close_editor();
+        inst.close_editor(&main_thread());
         return;
     }
 
@@ -531,7 +531,7 @@ fn open_editor_run_loop_is_pumped() {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
     let mut activity = registered;
     while std::time::Instant::now() < deadline {
-        inst.run_editor_loop_iteration();
+        inst.run_editor_loop_iteration(&main_thread());
         activity = inst.run_loop_activity();
         if activity.timers_fired > before_open.timers_fired
             && activity.fds_dispatched >= before_open.fds_dispatched
@@ -561,7 +561,7 @@ fn open_editor_run_loop_is_pumped() {
         activity.fds_dispatched,
     );
 
-    inst.close_editor();
+    inst.close_editor(&main_thread());
 
     // Closing must retire the plugin's handlers, or the next pump calls into a
     // released view.
@@ -573,7 +573,7 @@ fn open_editor_run_loop_is_pumped() {
 
     // Pumping with the editor closed must stay safe (and is what a host does on
     // the frame after the user closes the window).
-    inst.run_editor_loop_iteration();
+    inst.run_editor_loop_iteration(&main_thread());
 }
 }
 
@@ -631,10 +631,10 @@ fn has_editor_agrees_with_opening_one() {
             continue;
         };
 
-        let claims = inst.has_editor();
-        let opened = inst.open_editor(handle, ContentScale::IDENTITY).is_ok();
+        let claims = inst.has_editor(&main_thread());
+        let opened = inst.open_editor(&main_thread(), handle, ContentScale::IDENTITY).is_ok();
         if opened {
-            inst.close_editor();
+            inst.close_editor(&main_thread());
             with_editor += 1;
         } else {
             without_editor += 1;
@@ -687,19 +687,19 @@ fn a_closed_editor_reports_no_resize_request() {
     };
 
     assert!(
-        inst.poll_editor_resize_request().is_none(),
+        inst.poll_editor_resize_request(&main_thread()).is_none(),
         "an editor that was never opened reported a pending resize"
     );
 
-    inst.open_editor(handle, ContentScale::IDENTITY)
+    inst.open_editor(&main_thread(), handle, ContentScale::IDENTITY)
         .expect("host-checker opens an editor");
     // Drain whatever the plugin queued during open, so the post-close assertion
     // is about the close and not about start-up traffic.
-    let _ = inst.poll_editor_resize_request();
-    inst.close_editor();
+    let _ = inst.poll_editor_resize_request(&main_thread());
+    inst.close_editor(&main_thread());
 
     assert!(
-        inst.poll_editor_resize_request().is_none(),
+        inst.poll_editor_resize_request(&main_thread()).is_none(),
         "a closed editor still reported a pending resize request — it would be \
          applied to whichever editor is opened next"
     );
@@ -743,54 +743,60 @@ fn editor_accepts_keyboard_wheel_and_focus() {
     // Before the editor exists every forwarder must decline rather than reach
     // through a `None` view.
     assert!(
-        !inst.send_key_down(KeyEvent::character('a' as u16)).is_consumed(),
+        !inst.send_key_down(&main_thread(), KeyEvent::character('a' as u16)).is_consumed(),
         "a key was reported consumed with no editor open"
     );
     assert!(
-        !inst.send_wheel(1.0),
+        !inst.send_wheel(&main_thread(), 1.0),
         "a wheel event was reported consumed with no editor open"
     );
-    inst.set_editor_focus(true); // must not panic
+    inst.set_editor_focus(&main_thread(), true); // must not panic
 
-    let Ok(size) = inst.open_editor(handle, ContentScale::IDENTITY) else {
+    let Ok(size) = inst.open_editor(&main_thread(), handle, ContentScale::IDENTITY) else {
         eprintln!("open_editor failed; skipping");
         return;
     };
 
     // Focus first: a plugin that has not been told it has the keyboard is
     // entitled to ignore every key that follows.
-    inst.set_editor_focus(true);
+    inst.set_editor_focus(&main_thread(), true);
 
-    let consumed_char = inst.send_key_down(KeyEvent::character('a' as u16)).is_consumed();
-    let _ = inst.send_key_up(KeyEvent::character('a' as u16));
+    let consumed_char = inst.send_key_down(&main_thread(), KeyEvent::character('a' as u16)).is_consumed();
+    let _ = inst.send_key_up(&main_thread(), KeyEvent::character('a' as u16));
     // A non-character keystroke: virtual key set, character zero. VKEY_LEFT.
-    let consumed_arrow = inst.send_key_down(KeyEvent::virtual_key(11)).is_consumed();
-    let _ = inst.send_key_up(KeyEvent::virtual_key(11));
-    let consumed_wheel = inst.send_wheel(1.0);
-    let _ = inst.send_wheel(-1.0);
+    let consumed_arrow = inst.send_key_down(&main_thread(), KeyEvent::virtual_key(11)).is_consumed();
+    let _ = inst.send_key_up(&main_thread(), KeyEvent::virtual_key(11));
+    let consumed_wheel = inst.send_wheel(&main_thread(), 1.0);
+    let _ = inst.send_wheel(&main_thread(), -1.0);
 
     eprintln!(
         "host-checker consumed: char={consumed_char} arrow={consumed_arrow} \
          wheel={consumed_wheel}"
     );
 
-    inst.set_editor_focus(false);
+    inst.set_editor_focus(&main_thread(), false);
 
     // The editor must still be alive and answering after all of that — the
     // failure this catches is a plugin left in a broken state by input it was
     // handed at the wrong time, which a crash-free run alone would not show.
-    let caps = inst.editor_capabilities();
+    let caps = inst.editor_capabilities(&main_thread());
     eprintln!(
         "editor still responsive after input: {}x{}, resize hints {:?}",
         size.width, size.height, caps.resize
     );
 
-    inst.close_editor();
+    inst.close_editor(&main_thread());
 
     // And the forwarders decline again once it is gone.
     assert!(
-        !inst.send_key_down(KeyEvent::character('a' as u16)).is_consumed(),
+        !inst.send_key_down(&main_thread(), KeyEvent::character('a' as u16)).is_consumed(),
         "a key was reported consumed after the editor closed"
     );
 }
+}
+
+/// This process's main thread. Each test is its own process under nextest, so
+/// the claim cannot be refused.
+fn main_thread() -> tutti_plugin_types::MainThread {
+    tutti_plugin_types::MainThread::claim().expect("one test, one process")
 }

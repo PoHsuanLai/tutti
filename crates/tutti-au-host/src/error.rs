@@ -2,9 +2,6 @@
 
 use thiserror::Error;
 
-#[cfg(target_os = "macos")]
-use crate::types::*;
-
 /// The loading step an [`AuError::LoadFailed`] belongs to.
 ///
 /// Re-exported from `tutti-plugin-types`, which shares it across all plugin
@@ -82,6 +79,18 @@ pub enum AuError {
     /// configured stream (wrong frame count, mismatched channels, etc.).
     #[error("invalid buffer: {0}")]
     InvalidBuffer(String),
+    /// A bus reports more channels than a layout holds (`u16::MAX`). Refused
+    /// rather than wrapped into a narrower bus.
+    #[error(
+        "AU {scope} bus reports {channels} channels; at most {} are supported",
+        u16::MAX
+    )]
+    BusTooWide {
+        /// Which side the bus is on: `"input"` or `"output"`.
+        scope: &'static str,
+        /// The `mChannelsPerFrame` the AU reported.
+        channels: u32,
+    },
     /// The AU declined the requested sample rate: after the stream-format /
     /// `kAudioUnitProperty_SampleRate` writes, its ASBD still reports a
     /// different `mSampleRate`.
@@ -335,6 +344,7 @@ impl AuError {
                     return "preset belongs to a different Audio Unit";
                 }
                 AuError::LoadFailed(_) => return "failed to load AudioUnit",
+                AuError::BusTooWide { .. } => return "bus wider than a channel layout holds",
             };
             os_status_message(code)
         }
@@ -349,6 +359,7 @@ impl AuError {
                 AuError::InvalidPreset(_) => "not a valid .aupreset",
                 AuError::PresetIdentityMismatch(_) => "preset belongs to a different Audio Unit",
                 AuError::LoadFailed(_) => "failed to load AudioUnit",
+                AuError::BusTooWide { .. } => "bus wider than a channel layout holds",
                 _ => "unknown error",
             }
         }
@@ -361,28 +372,7 @@ impl AuError {
 /// drift.
 #[cfg(target_os = "macos")]
 fn os_status_message(code: i32) -> &'static str {
-    match code {
-        K_AUDIO_UNIT_ERR_INVALID_PROPERTY => "invalid property",
-        K_AUDIO_UNIT_ERR_INVALID_PARAMETER => "invalid parameter",
-        K_AUDIO_UNIT_ERR_INVALID_ELEMENT => "invalid element",
-        K_AUDIO_UNIT_ERR_NO_CONNECTION => "no connection",
-        K_AUDIO_UNIT_ERR_FAILED_INITIALIZATION => "failed initialization",
-        K_AUDIO_UNIT_ERR_TOO_MANY_FRAMES_TO_PROCESS => "too many frames to process",
-        K_AUDIO_UNIT_ERR_INVALID_FILE => "invalid file",
-        K_AUDIO_UNIT_ERR_UNKNOWN_FILE_TYPE => "unknown file type",
-        K_AUDIO_UNIT_ERR_FILE_NOT_SPECIFIED => "file not specified",
-        K_AUDIO_UNIT_ERR_FORMAT_NOT_SUPPORTED => "format not supported",
-        K_AUDIO_UNIT_ERR_UNINITIALIZED => "uninitialized",
-        K_AUDIO_UNIT_ERR_INVALID_SCOPE => "invalid scope",
-        K_AUDIO_UNIT_ERR_PROPERTY_NOT_WRITABLE => "property not writable",
-        K_AUDIO_UNIT_ERR_CANNOT_DO_IN_CURRENT_CONTEXT => "cannot do in current context",
-        K_AUDIO_UNIT_ERR_INVALID_PROPERTY_VALUE => "invalid property value",
-        K_AUDIO_UNIT_ERR_PROPERTY_NOT_IN_USE => "property not in use",
-        K_AUDIO_UNIT_ERR_INITIALIZED => "already initialized",
-        K_AUDIO_UNIT_ERR_INVALID_OFFLINE_RENDER => "invalid offline render",
-        K_AUDIO_UNIT_ERR_UNAUTHORIZED => "unauthorized",
-        _ => "unknown error",
-    }
+    tutti_au_ffi::Status::from_raw(code).message()
 }
 
 /// Off macOS the status constants are not compiled in (they live in the
@@ -391,4 +381,30 @@ fn os_status_message(code: i32) -> &'static str {
 #[cfg(not(target_os = "macos"))]
 fn os_status_message(_code: i32) -> &'static str {
     "unknown error"
+}
+
+#[cfg(target_os = "macos")]
+impl From<tutti_au_ffi::OsError> for AuError {
+    fn from(e: tutti_au_ffi::OsError) -> Self {
+        AuError::OsStatus {
+            function: e.function,
+            code: e.status,
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+impl From<tutti_au_ffi::Error> for AuError {
+    fn from(e: tutti_au_ffi::Error) -> Self {
+        match e {
+            tutti_au_ffi::Error::Os(e) => e.into(),
+            tutti_au_ffi::Error::Invalid(why) => AuError::InvalidBuffer(why),
+            tutti_au_ffi::Error::RenderFailed {
+                function,
+                status,
+                last,
+            } => AuError::render_failed(function, status, last),
+            other => AuError::InvalidBuffer(other.to_string()),
+        }
+    }
 }

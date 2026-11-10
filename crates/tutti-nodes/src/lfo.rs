@@ -22,10 +22,10 @@ use tutti_graph::{Cx, IntoNode, Io, Node, NodeParts, ParamNode, ParamSet, Prepar
 use tutti_types::{BeatDuration, ChannelLayout, Depth, Hz, Param, PhaseIncrement, SampleRate};
 use tutti_types::{Latency, Tail, UnitParam};
 
-// The waveform vocabulary is tutti-mod's floor, re-exported so `use
+// The waveform vocabulary is tutti-modulation's floor, re-exported so `use
 // tutti_nodes::LfoShape` resolves.
 pub use crate::modulator::Modulator;
-pub use tutti_mod::{LfoShape, Wave};
+pub use tutti_modulation::{LfoShape, Wave};
 
 /// Where `beat` falls on a clock `beats_per_cycle` beats a cycle, in unwrapped
 /// cycles: the cycle index a stepped shape addresses, and the phase.
@@ -42,7 +42,7 @@ fn beat_cycles(beat: tutti_types::Beat, beats_per_cycle: BeatDuration) -> f64 {
 
 /// Whether the adapter derives phase from a free-running oscillator or from the
 /// transport beat. This is an *adapter* concern (transport wiring), not
-/// modulation math — hence it lives here, not in `tutti-mod`.
+/// modulation math — hence it lives here, not in `tutti-modulation`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LfoMode {
     /// Phase advances from the node's own sample clock at a rate in [`Hz`],
@@ -137,7 +137,7 @@ pub struct ModulatorNode<M: Modulator> {
 /// beat of every frame from its block's `Env`, so it is sample-accurate and
 /// renders identically offline.
 ///
-/// The control-rate alternative is a `tutti_mod::Source::Lfo` route, which a
+/// The control-rate alternative is a `tutti_modulation::Source::Lfo` route, which a
 /// control lane evaluates into the param's port (doc 014 §5).
 pub type LfoNode = ModulatorNode<Wave>;
 
@@ -154,7 +154,7 @@ impl ModulatorNode<Wave> {
     }
 
     /// The random shapes' seed: seed 0 is the plain sequence, the one a
-    /// [`tutti_mod::Lfo`] of the same seed produces in a control lane.
+    /// [`tutti_modulation::Lfo`] of the same seed produces in a control lane.
     /// Ignored by a wave that is not a shape.
     #[must_use]
     pub fn with_seed(mut self, seed: u64) -> Self {
@@ -167,17 +167,17 @@ impl ModulatorNode<Wave> {
 
 /// The node for a control-rate LFO's declaration: the same shape, seed,
 /// rate and phase. Beat-synced, it produces the values a control lane
-/// evaluates from that [`tutti_mod::Lfo`], at audio rate. Free-running
+/// evaluates from that [`tutti_modulation::Lfo`], at audio rate. Free-running
 /// (`Hz`), it runs at that frequency from its insert and does not restart
 /// at play, where the lane's `Hz` clock is the graph's play clock.
-impl From<tutti_mod::Lfo> for LfoNode {
-    fn from(lfo: tutti_mod::Lfo) -> Self {
+impl From<tutti_modulation::Lfo> for LfoNode {
+    fn from(lfo: tutti_modulation::Lfo) -> Self {
         let node = Self::new(lfo.shape)
             .with_seed(lfo.seed)
             .with_phase_offset(lfo.phase);
         match lfo.rate {
-            tutti_mod::LfoRate::Beats(per_cycle) => node.with_beat_sync(per_cycle),
-            tutti_mod::LfoRate::Hz(rate) => node.with_frequency(rate),
+            tutti_modulation::LfoRate::Beats(per_cycle) => node.with_beat_sync(per_cycle),
+            tutti_modulation::LfoRate::Hz(rate) => node.with_frequency(rate),
         }
     }
 }
@@ -538,7 +538,7 @@ mod tests {
         assert_eq!(synced.param_base(1), None);
     }
 
-    // The waveform math is `tutti-mod`'s, and so are the tests that pin it.
+    // The waveform math is `tutti-modulation`'s, and so are the tests that pin it.
     // What belongs here is the adapter around it: phase generation from
     // transport, depth, and the node surface.
 
@@ -885,7 +885,7 @@ mod tests {
         }
     }
 
-    /// The node built from a control-rate [`tutti_mod::Lfo`] evaluates the
+    /// The node built from a control-rate [`tutti_modulation::Lfo`] evaluates the
     /// same wave: seed, phase and rate carried over. Beat-synced, on the same
     /// clock (the beat); free-running, at the same frequency on the node's
     /// own clock, which counts from its insert (frame 0 here).
@@ -896,7 +896,7 @@ mod tests {
     /// → the free-running case fails.
     #[test]
     fn a_node_from_a_control_lfo_reads_its_wave() {
-        let lfo = tutti_mod::Lfo::new(LfoShape::RandomSmooth)
+        let lfo = tutti_modulation::Lfo::new(LfoShape::RandomSmooth)
             .seed(3)
             .rate(BeatDuration(2.0))
             .phase(PhaseIncrement(0.25));

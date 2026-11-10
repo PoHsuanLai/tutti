@@ -19,7 +19,8 @@ use std::sync::Arc;
 use crate::graph::{
     AudioConfig, AudioGraphRes, AudioNode, CapturedControls, GraphReconcileSystems, engine_ready,
 };
-use tutti_soundfont::{SoundFont, SoundFontError, SoundFontUnit};
+use tutti_sf2::{Error as SoundFontError, SoundFont};
+use tutti_soundfont::SoundFontUnit;
 use tutti_ump::{MidiChannel, U7};
 
 /// A parsed `.sf2` as a loadable asset.
@@ -92,7 +93,7 @@ impl AssetLoader for SoundFontAssetLoader {
 
 // Compile-time proof that `SoundFontUnit` is `Send`, which is what permits
 // building it on the `AsyncComputeTaskPool` instead of the Bevy main thread. It
-// holds a rustysynth `Synthesizer` (a plain `Vec`/`Arc` struct) and a queue of
+// holds a `Player` (plain `Vec`/`Arc` structs) and a queue of
 // plain `MidiEvent`s, so the assertion holds.
 // If it ever stops compiling, the async decode below is unsound and must move
 // back onto the main thread.
@@ -246,7 +247,12 @@ pub fn soundfont_playback_system(
 ///   event input once it has a node.
 /// - **Output wiring.** Whether a soundfont is audible is declared with
 ///   [`MasterSources`](crate::graph::MasterSources) or an
-///   [`PortSources`](crate::graph::PortSources) on a mixer.
+///   [`PortSources`](crate::graph::PortSources) on a mixer. The unit has five
+///   outputs: the dry pair (0 and 1) and the chorus and reverb sends (2 to 4),
+///   with no effect inside it. Declaring only the dry pair is a dry
+///   instrument; `tutti-session`'s `Session::add_general_midi` is the setup
+///   with the effects, and a host that wants them here wires the sends through
+///   a chorus and a reverb node of its own.
 pub fn promote_pending_soundfonts(
     mut commands: Commands,
     graph: Option<ResMut<AudioGraphRes>>,

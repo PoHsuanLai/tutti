@@ -5,7 +5,7 @@
 //! VST3 has `IMidiMapping::getMidiControllerAssignment`, which answers "which
 //! parameter does CC 1 on channel 0 drive?"; CLAP has `clap_plugin_param_indication`
 //! and the note-ports/param mapping extensions. **VST 2.4 has no equivalent, and
-//! the `vst-tutti` bindings confirm it**: the full `OpCode` enum (`vst-tutti`'s
+//! the `tutti-vst2-ffi` bindings confirm it**: the full `OpCode` enum (`tutti-vst2-ffi`'s
 //! `plugin.rs`) contains no opcode that takes a controller number, and none that
 //! returns a parameter index for anything. A VST2 plugin receives MIDI CCs as
 //! raw `MidiEvent`s in `effProcessEvents` and interprets them internally; the

@@ -147,7 +147,11 @@ mod tests {
 
     /// `wave_frame_into` with the placement a reader of `out`'s width has.
     fn frame_into(wave: &Wave, idx: usize, out: &mut [f32]) {
-        let place = Place::for_wave(wave, ChannelLayout::from(out.len())).expect("placeable");
+        let place = Place::for_wave(
+            wave,
+            ChannelLayout::try_from(out.len()).expect("a test width is small"),
+        )
+        .expect("placeable");
         wave_frame_into(wave, &place, idx, out);
     }
 
@@ -235,7 +239,7 @@ mod tests {
     #[test]
     fn wave_in_polls_forward_frames() {
         let wave = test_wave(&[(0.1, 0.1), (0.2, 0.2), (0.3, 0.3)]);
-        let mut src = WaveIn::new(&wave, 0, 2usize);
+        let mut src = WaveIn::new(&wave, 0, 2u16);
         let mut out = [0.0f32; 6];
         assert_eq!(src.fill_interleaved(&mut out), 3);
         assert_eq!(out, [0.1, 0.1, 0.2, 0.2, 0.3, 0.3]);
@@ -244,7 +248,7 @@ mod tests {
     #[test]
     fn wave_in_zero_pads_past_end() {
         let wave = test_wave(&[(0.2, 0.2)]);
-        let mut src = WaveIn::new(&wave, 1, 2usize);
+        let mut src = WaveIn::new(&wave, 1, 2u16);
         let mut out = [9.0f32; 4];
         src.fill_interleaved(&mut out);
         assert_eq!(out, [0.0; 4]);
@@ -253,7 +257,7 @@ mod tests {
     #[test]
     fn wave_in_reads_six_channels() {
         let wave = indexed_wave(6, 4);
-        let mut src = WaveIn::new(&wave, 0, 6usize);
+        let mut src = WaveIn::new(&wave, 0, 6u16);
         let mut out = [0.0f32; 12];
         assert_eq!(src.fill_interleaved(&mut out), 2);
         for f in 0..2 {

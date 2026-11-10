@@ -2,16 +2,18 @@
 //! by [`Vst3Loaded`] and, with parameter writes redirected, by
 //! [`Vst3Controller`](super::Vst3Controller).
 
+use tutti_plugin_types::MainThread;
 use tutti_plugin_types::features::probed;
 use tutti_plugin_types::{
-    AutomationMode, BusChannels, ChannelLayout, Control, EditorPresence, Features, LoadedPlugin,
-    Normalized, ParamId, ParameterInfo, PluginClass, PluginDescriptor, PluginError, PluginResult,
-    PluginTail, Preset, PresetId, RescanScope, Samples, Vst3SubCategories,
+    AutomationMode, BusChannels, Control, EditorPresence, Features, LoadedPlugin, Normalized,
+    ParamId, ParameterInfo, PluginClass, PluginDescriptor, PluginError, PluginResult, PluginTail,
+    Preset, PresetId, RescanScope, Samples, Vst3SubCategories,
 };
 
 use crate::error::Vst3Error;
 use crate::types::PluginInfo;
 
+use super::instance::bus_layout;
 use super::loaded::Vst3Loaded;
 
 /// A `Vst3Error` as the shared vocabulary's error.
@@ -58,9 +60,9 @@ pub fn descriptor_of(info: &PluginInfo, editor: EditorPresence) -> PluginDescrip
 /// reported no per-bus list.
 fn bus_channels(host_buses: &[usize], main_channels: usize) -> BusChannels {
     if host_buses.is_empty() {
-        vec![ChannelLayout::from(main_channels)]
+        vec![bus_layout(main_channels)]
     } else {
-        host_buses.iter().map(|&c| ChannelLayout::from(c)).collect()
+        host_buses.iter().map(|&c| bus_layout(c)).collect()
     }
 }
 
@@ -69,30 +71,32 @@ impl Vst3Loaded {
     /// writes: the Controller's, which no block has taken.
     pub(super) fn save_state_with(
         &mut self,
+        main: &MainThread,
         undrained: &[(ParamId, Normalized)],
     ) -> PluginResult<Vec<u8>> {
-        self.read_state(undrained).map_err(plugin_error)
+        self.read_state(main, undrained).map_err(plugin_error)
     }
 
     /// [`Control::load_state`], keeping the writes the blob carried: applied to
     /// the controller already, and owed to the component's next block.
     pub(super) fn restore_state(
         &mut self,
+        main: &MainThread,
         bytes: &[u8],
     ) -> PluginResult<Vec<(ParamId, Normalized)>> {
         self.carried.clear();
-        self.write_state(bytes).map_err(plugin_error)
+        self.write_state(main, bytes).map_err(plugin_error)
     }
 
     /// The descriptor for this plugin as loaded: its factory info, with whether
     /// it has an editor measured from the plugin itself.
-    fn measured_descriptor(&self) -> PluginDescriptor {
-        descriptor_of(&self.info, EditorPresence::measured(self.has_editor()))
+    pub(super) fn measured_descriptor(&self, main: &MainThread) -> PluginDescriptor {
+        descriptor_of(&self.info, EditorPresence::measured(self.has_editor(main)))
     }
 
     /// The capabilities this plugin has, as the shared vocabulary names them.
-    fn features(&self) -> Features {
-        let has_editor = self.has_editor();
+    fn features(&self, main: &MainThread) -> Features {
+        let has_editor = self.has_editor(main);
         let mut features = Features::empty();
         // 64-bit only while activated as such: the session's format and the
         // activation agree.
@@ -102,7 +106,7 @@ impl Vst3Loaded {
         features.set(Features::EDITOR, has_editor);
         features.set(
             Features::EDITOR_RESIZE,
-            has_editor && self.editor_capabilities().resize.resizable,
+            has_editor && self.editor_capabilities(main).resize.resizable,
         );
         // VST3 always carries sample-accurate parameter automation
         // (IParameterChanges).
@@ -111,13 +115,13 @@ impl Vst3Loaded {
         // Note expression: any dimension on the main event bus, channel 0.
         features.set(
             Features::NOTE_EXPRESSION,
-            self.note_expression_count(0, 0) > 0,
+            self.note_expression_count(main, 0, 0) > 0,
         );
         features.set(Features::SEQUENCER_CONTEXT, self.wants_sequencer_context());
         // Both preset bits come from the same question, whether the plugin
         // publishes program lists, because for VST3 they are one capability: a
         // program is *selected* by writing the parameter that owns the list.
-        let has_programs = !self.program_lists().is_empty();
+        let has_programs = !self.program_lists(main).is_empty();
         features.set(Features::PRESET_LIST, has_programs);
         features.set(Features::PRESET_LOAD, has_programs);
         features
@@ -126,8 +130,8 @@ impl Vst3Loaded {
     /// The tail figure. VST3 always answers `getTailSamples`, so there is no
     /// "unasked" case: `from_vst3_samples` maps 0 to `None` and the saturating
     /// maximum to `Unbounded`.
-    fn tail_figure(&self) -> PluginTail {
-        PluginTail::from_vst3_samples(self.tail_samples())
+    fn tail_figure(&self, main: &MainThread) -> PluginTail {
+        PluginTail::from_vst3_samples(self.tail_samples(main))
     }
 
     /// The `(parameter id, step count)` of the program-change parameter that
@@ -143,22 +147,30 @@ impl Vst3Loaded {
     /// preset one. No available fixture separates the two rules, so the flag
     /// check is not covered by a test.
     #[must_use]
-    pub fn program_change_parameter(&self, list_id: i32) -> Option<(ParamId, i32)> {
+    pub fn program_change_parameter(
+        &self,
+        main: &MainThread,
+        list_id: i32,
+    ) -> Option<(ParamId, i32)> {
         let owning_unit = self
-            .units()
+            .units(main)
             .into_iter()
             .find_map(|u| (u.program_list == Some(list_id)).then_some(u.id))?;
-        self.program_change_parameter_of(owning_unit)
+        self.program_change_parameter_of(main, owning_unit)
     }
 
     /// The program-change parameter belonging to `owning_unit`: the half of
     /// [`program_change_parameter`](Self::program_change_parameter) that does
     /// not walk the unit tree, for a caller that already holds the unit.
-    fn program_change_parameter_of(&self, owning_unit: i32) -> Option<(ParamId, i32)> {
-        (0..self.parameter_count()).find_map(|i| {
-            let info = self.parameter_info_at(i)?;
-            (info.is_program_change() && info.unit_id == owning_unit)
-                .then_some((ParamId::new(info.id), info.step_count))
+    fn program_change_parameter_of(
+        &self,
+        main: &MainThread,
+        owning_unit: crate::UnitId,
+    ) -> Option<(ParamId, i32)> {
+        (0..self.parameter_count(main)).find_map(|i| {
+            let info = self.parameter_info_at(main, i)?;
+            (info.is_program_change() && info.unit_id() == owning_unit)
+                .then_some((ParamId::new(info.id()), info.step_count()))
         })
     }
 
@@ -173,11 +185,15 @@ impl Vst3Loaded {
     /// `IUnitInfo::setUnitProgramData` is *not* this call: it takes an
     /// `IBStream` of preset bytes and writes them into a slot, the inverse
     /// operation.
-    pub(super) fn program_write(&self, id: &PresetId) -> Option<(ParamId, Normalized)> {
+    pub(super) fn program_write(
+        &self,
+        main: &MainThread,
+        id: &PresetId,
+    ) -> Option<(ParamId, Normalized)> {
         let PresetId::Program { list_id, index } = id else {
             return None;
         };
-        let (param_id, step_count) = self.program_change_parameter(*list_id)?;
+        let (param_id, step_count) = self.program_change_parameter(main, *list_id)?;
         // `StringListParameter::toNormalized` is `value / stepCount`
         // (`futils.h:87-90`), and `appendString` increments `stepCount` per
         // entry from zero, so a list of N programs has `stepCount == N - 1` and
@@ -195,49 +211,55 @@ impl Vst3Loaded {
     /// `setParamNormalized` on the edit controller, for the Loaded state and
     /// the Controller's immediate half alike. `false` when the plugin has no
     /// controller.
-    pub(super) fn write_normalized(&self, id: ParamId, value: Normalized) -> bool {
-        self.plugin.set_parameter_normalized(id, value.get())
+    pub(super) fn write_normalized(
+        &self,
+        main: &MainThread,
+        id: ParamId,
+        value: Normalized,
+    ) -> bool {
+        self.plugin.set_parameter_normalized(main, id, value.get())
     }
 }
 
 impl Control for Vst3Loaded {
     fn info(&self) -> &PluginDescriptor {
-        self.descriptor.get_or_init(|| self.measured_descriptor())
+        self.descriptor
+            .get_or_init(|| descriptor_of(&self.info, EditorPresence::Unknown))
     }
 
     /// The wiring read from the plugin now. Latency is read only while the
     /// plugin is active, which is when VST3 makes the figure valid
     /// (`getLatencySamples` is `[UI-thread & Setup Done]`, read after
     /// `setActive(1)`); a loaded plugin reports none.
-    fn wiring(&self) -> LoadedPlugin {
+    fn wiring(&self, main: &MainThread) -> LoadedPlugin {
         let latency_samples = if self.active.is_active() {
-            Samples(self.latency_samples() as usize)
+            Samples(self.latency_samples(main) as usize)
         } else {
             Samples(0)
         };
         LoadedPlugin {
             inputs: bus_channels(&self.info.input_bus_channels, self.info.num_inputs),
             outputs: bus_channels(&self.info.output_bus_channels, self.info.num_outputs),
-            input_topology: self.input_bus_topologies().into_iter().collect(),
-            output_topology: self.output_bus_topologies().into_iter().collect(),
+            input_topology: self.input_bus_topologies(main).into_iter().collect(),
+            output_topology: self.output_bus_topologies(main).into_iter().collect(),
             latency_samples,
-            tail: self.tail_figure(),
-            features: self.features(),
+            tail: self.tail_figure(main),
+            features: self.features(main),
             probed: probed::VST3,
         }
     }
 
-    fn parameters(&self) -> Vec<ParameterInfo> {
-        self.parameter_list()
+    fn parameters(&self, main: &MainThread) -> Vec<ParameterInfo> {
+        self.parameter_list(main)
     }
 
     /// Normalized `0..=1`, VST3's own domain. `None` for an id the plugin does
     /// not list (`getParamNormalized` would answer 0 for it) and for a plugin
     /// with no edit controller.
-    fn parameter(&self, id: ParamId) -> Option<Normalized> {
-        self.parameter_info(id)?;
+    fn parameter(&self, main: &MainThread, id: ParamId) -> Option<Normalized> {
+        self.parameter_info(main, id)?;
         self.plugin
-            .parameter_normalized(id)
+            .parameter_normalized(main, id)
             .map(Normalized::clamped)
     }
 
@@ -251,12 +273,12 @@ impl Control for Vst3Loaded {
     /// inactive plugin waits in `carried`, which the next activation delivers in
     /// its first block and `save_state` stores beside the component's stream.
     /// While active, the Controller queues the write to the Processor instead.
-    fn set_parameter(&mut self, id: ParamId, value: Normalized) {
-        let written = self.write_normalized(id, value);
+    fn set_parameter(&mut self, main: &MainThread, id: ParamId, value: Normalized) {
+        let written = self.write_normalized(main, id, value);
         // A write the last activation left undelivered is older than this one.
         if let Some(slot) = self.carried.iter_mut().find(|(waiting, _)| *waiting == id) {
             slot.1 = value;
-        } else if written && !self.active.is_active() && self.parameter_info(id).is_some() {
+        } else if written && !self.active.is_active() && self.parameter_info(main, id).is_some() {
             self.carried.push((id, value));
         }
     }
@@ -264,9 +286,8 @@ impl Control for Vst3Loaded {
     /// The plugin's own display string for `value`: the value is a *parameter*
     /// of the call, not the plugin's current one, which is what an automation
     /// lane drawing labels along a curve needs.
-    fn parameter_text(&self, id: ParamId, value: Normalized) -> Option<String> {
-        tutti_plugin_types::assert_main_thread();
-        self.plugin.parameter_text(id, value.get())
+    fn parameter_text(&self, main: &MainThread, id: ParamId, value: Normalized) -> Option<String> {
+        self.plugin.parameter_text(main, id, value.get())
     }
 
     /// The inverse. A caller must leave its field unchanged on `None` rather
@@ -276,22 +297,26 @@ impl Control for Vst3Loaded {
     /// The buffer is a NUL-terminated UTF-16 copy the plugin borrows for the
     /// call, bounded at 128 units to match the `String128` the display
     /// direction uses.
-    fn parameter_value_from_text(&self, id: ParamId, text: &str) -> Option<Normalized> {
-        tutti_plugin_types::assert_main_thread();
+    fn parameter_value_from_text(
+        &self,
+        main: &MainThread,
+        id: ParamId,
+        text: &str,
+    ) -> Option<Normalized> {
         self.plugin
-            .parameter_from_text(id, text)
+            .parameter_from_text(main, id, text)
             .map(Normalized::clamped)
     }
 
-    fn save_state(&mut self) -> PluginResult<Vec<u8>> {
-        self.save_state_with(&[])
+    fn save_state(&mut self, main: &MainThread) -> PluginResult<Vec<u8>> {
+        self.save_state_with(main, &[])
     }
 
     /// Restores the state. The writes a rejoin carried are older than it, and
     /// are dropped; the writes the blob itself carries wait for the next
     /// activation.
-    fn load_state(&mut self, bytes: &[u8]) -> PluginResult<()> {
-        let pending = self.restore_state(bytes)?;
+    fn load_state(&mut self, main: &MainThread, bytes: &[u8]) -> PluginResult<()> {
+        let pending = self.restore_state(main, bytes)?;
         if !self.active.is_active() {
             self.carried = pending;
         }
@@ -307,14 +332,14 @@ impl Control for Vst3Loaded {
     /// plugin declines to name is kept with an empty name rather than skipped:
     /// the index is half the identifier, so dropping one would renumber every
     /// program after it within that list.
-    fn presets(&mut self) -> Vec<Preset> {
-        self.program_lists()
+    fn presets(&mut self, main: &MainThread) -> Vec<Preset> {
+        self.program_lists(main)
             .into_iter()
             .flat_map(|list| {
                 let this = &*self;
                 (0..list.program_count)
                     .map(move |index| {
-                        let name = this.program_name(list.id, index).unwrap_or_default();
+                        let name = this.program_name(main, list.id, index).unwrap_or_default();
                         Preset::in_bank(
                             PresetId::Program {
                                 list_id: list.id,
@@ -329,12 +354,12 @@ impl Control for Vst3Loaded {
             .collect()
     }
 
-    fn load_preset(&mut self, id: &PresetId) -> bool {
-        match self.program_write(id) {
+    fn load_preset(&mut self, main: &MainThread, id: &PresetId) -> bool {
+        match self.program_write(main, id) {
             Some((param, value)) => {
                 // A program replaces the plugin's other parameters too.
                 self.carried.clear();
-                self.set_parameter(param, value);
+                self.set_parameter(main, param, value);
                 true
             }
             None => false,
@@ -344,18 +369,18 @@ impl Control for Vst3Loaded {
     /// The program the plugin currently has selected, read back off the same
     /// parameter [`load_preset`](Control::load_preset) writes. `None` when no
     /// unit publishes a program list.
-    fn current_preset(&mut self) -> Option<PresetId> {
+    fn current_preset(&mut self, main: &MainThread) -> Option<PresetId> {
         // One unit walk, not two: `units()` is a COM round trip per unit and
         // enumerates the program lists to resolve each unit's `program_list`.
         let (list_id, owning_unit) = self
-            .units()
+            .units(main)
             .into_iter()
             .find_map(|u| u.program_list.map(|list| (list, u.id)))?;
-        let (param_id, step_count) = self.program_change_parameter_of(owning_unit)?;
+        let (param_id, step_count) = self.program_change_parameter_of(main, owning_unit)?;
         if step_count <= 0 {
             return None;
         }
-        let normalized = self.parameter(param_id)?.get();
+        let normalized = self.parameter(main, param_id)?.get();
         // Inverse of the write: `FromNormalized` is `value * stepCount`, then
         // rounded; the parameter is a discrete list, so a value between two
         // steps belongs to the nearer one.
@@ -369,19 +394,19 @@ impl Control for Vst3Loaded {
         })
     }
 
-    fn set_automation_state(&mut self, mode: AutomationMode) {
+    fn set_automation_state(&mut self, main: &MainThread, mode: AutomationMode) {
         // Encoded onto the `IAutomationState` bitmask here, at the VST3 edge,
         // by the crate's own SDK-backed conversion; a no-op if the plugin does
         // not implement the interface.
-        self.apply_automation_state(mode);
+        self.apply_automation_state(main, mode);
     }
 
     /// Nothing is cached: parameters are read live from the controller.
-    fn rescan_parameters(&mut self, scope: RescanScope) {
+    fn rescan_parameters(&mut self, _main: &MainThread, scope: RescanScope) {
         let _ = scope;
     }
 
-    fn rebuild_midi_mapping(&mut self) {
-        self.rebuild_midi_cc_mapping();
+    fn rebuild_midi_mapping(&mut self, main: &MainThread) {
+        self.rebuild_midi_cc_mapping(main);
     }
 }

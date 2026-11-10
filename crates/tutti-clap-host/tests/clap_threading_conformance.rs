@@ -37,12 +37,13 @@ use std::sync::{Mutex, MutexGuard};
 
 mod support;
 use support::active::{Activate, Active};
+use support::main_thread;
 use support::probe_path::probe_path;
 
 use tutti_clap_host::{AudioBuffer32, ClapLoaded, ClapProcessContext, LoadOptions};
 use tutti_clap_test_plugin::{
     CMD_LOG_ALL_SEVERITIES, CMD_REGISTER_TIMER, CMD_REQUEST_PROCESS, CMD_REQUEST_RESTART,
-    CMD_UNREGISTER_TIMER, Site, ThreadCapture,
+    CMD_UNREGISTER_TIMER, CMD_UNREGISTER_TIMER_IN_DEACTIVATE, Site, ThreadCapture,
 };
 
 /// The probe's capture, command word and reset are process-globals shared by
@@ -84,7 +85,7 @@ impl Probe {
         let path = Path::new(probe_path());
         // Bare dylib: pass it as both bundle and library so the host dlopens it
         // directly, no `.clap` bundle structure needed.
-        ClapLoaded::load(path, LoadOptions::new().library(path))
+        ClapLoaded::load(&main_thread(), path, LoadOptions::new().library(path))
             .expect("reference plugin should load")
     }
 
@@ -111,7 +112,7 @@ impl Probe {
 /// word, so a second call answers for what came after the first.
 fn callback_requested(inst: &mut ClapLoaded) -> bool {
     let mut requests = Vec::new();
-    inst.take_requests(&mut requests);
+    inst.take_requests(&main_thread(), &mut requests);
     requests.contains(&tutti_plugin_types::Request::Callback)
 }
 
@@ -221,7 +222,7 @@ fn host_answers_thread_check_correctly_at_every_call_site() {
         callback_requested(&mut inst),
         "the plugin called request_callback() from process; the host must record it"
     );
-    inst.on_main_thread();
+    inst.on_main_thread(&main_thread());
 
     let cap = probe.capture();
 
@@ -260,7 +261,7 @@ fn reset_runs_under_the_audio_thread_claim() {
     // Runs strictly after `reset` returned: if the claim leaked, the host would
     // still consider this thread the audio thread here.
     assert!(callback_requested(&mut inst));
-    inst.on_main_thread();
+    inst.on_main_thread(&main_thread());
 
     let cap = probe.capture();
     assert_eq!(
@@ -293,7 +294,7 @@ fn audio_thread_role_is_released_when_process_returns() {
     assert!(callback_requested(&mut inst));
     // Runs after `process` returned; if the claim leaked, the host would still
     // consider this thread the audio thread here.
-    inst.on_main_thread();
+    inst.on_main_thread(&main_thread());
 
     let cap = probe.capture();
     assert_roles(&cap, Site::Process, false, true, "process");
@@ -346,7 +347,7 @@ fn request_callback_round_trips_to_on_main_thread_exactly_once() {
          response to the poll"
     );
 
-    inst.on_main_thread();
+    inst.on_main_thread(&main_thread());
     assert_eq!(
         probe.capture().sites[Site::OnMainThread as usize].visits,
         1,
@@ -358,7 +359,7 @@ fn request_callback_round_trips_to_on_main_thread_exactly_once() {
 /// so a second call answers for what came after the first.
 fn restart_requested(inst: &mut ClapLoaded) -> bool {
     let mut requests = Vec::new();
-    inst.take_requests(&mut requests);
+    inst.take_requests(&main_thread(), &mut requests);
     requests.contains(&tutti_plugin_types::Request::Restart)
 }
 
@@ -416,7 +417,7 @@ fn a_flush_between_activate_and_the_first_process_is_an_audio_thread_call() {
     let id = tutti_clap_test_plugin::params_state::probe_params()[0].id;
 
     let mut loaded = probe.load();
-    loaded.set_plain_value(id, 1.0);
+    loaded.set_plain_value(&main_thread(), id, 1.0);
     assert_roles(
         &probe.capture(),
         Site::ParamsFlush,
@@ -431,7 +432,7 @@ fn a_flush_between_activate_and_the_first_process_is_an_audio_thread_call() {
         .map_err(|(_, e)| e)
         .expect("activates");
     assert!(!inst.is_processing(), "no block has run");
-    inst.set_plain_value(id, 2.0);
+    inst.set_plain_value(&main_thread(), id, 2.0);
     assert_roles(
         &probe.capture(),
         Site::ParamsFlush,
@@ -627,7 +628,7 @@ fn timer_registers_fires_on_the_main_thread_and_stops_after_unregister() {
 
     // Nothing registered yet: polling must fire nothing.
     assert_eq!(
-        inst.poll_timers(),
+        inst.poll_timers(&main_thread()),
         0,
         "no timers are registered, so poll_timers must fire none"
     );
@@ -638,7 +639,7 @@ fn timer_registers_fires_on_the_main_thread_and_stops_after_unregister() {
     probe.command(CMD_REGISTER_TIMER);
     drive_block(&mut inst, 64);
     assert!(callback_requested(&mut inst));
-    inst.on_main_thread();
+    inst.on_main_thread(&main_thread());
 
     let cap = probe.capture();
     assert!(
@@ -656,7 +657,7 @@ fn timer_registers_fires_on_the_main_thread_and_stops_after_unregister() {
 
     // Fire it. One poll, one callback — no clock.
     assert_eq!(
-        inst.poll_timers(),
+        inst.poll_timers(&main_thread()),
         1,
         "a registered timer must fire on the next poll"
     );
@@ -681,7 +682,7 @@ fn timer_registers_fires_on_the_main_thread_and_stops_after_unregister() {
 
     // Fires again — the timer is periodic, not one-shot.
     assert_eq!(
-        inst.poll_timers(),
+        inst.poll_timers(&main_thread()),
         1,
         "a registered timer is periodic; one fire must not consume it"
     );
@@ -695,7 +696,7 @@ fn timer_registers_fires_on_the_main_thread_and_stops_after_unregister() {
     probe.command(CMD_UNREGISTER_TIMER);
     drive_block(&mut inst, 64);
     assert!(callback_requested(&mut inst));
-    inst.on_main_thread();
+    inst.on_main_thread(&main_thread());
     assert!(
         probe.capture().timer_unregistered,
         "host unregister_timer() returned false for an id it issued"
@@ -705,7 +706,11 @@ fn timer_registers_fires_on_the_main_thread_and_stops_after_unregister() {
     // not the firing. A plugin that tore down the editor the timer drives would
     // dereference freed state on the next tick.
     let before = probe.capture().sites[Site::OnTimer as usize].visits;
-    assert_eq!(inst.poll_timers(), 0, "an unregistered timer must not fire");
+    assert_eq!(
+        inst.poll_timers(&main_thread()),
+        0,
+        "an unregistered timer must not fire"
+    );
     assert_eq!(
         probe.capture().sites[Site::OnTimer as usize].visits,
         before,
@@ -737,7 +742,7 @@ fn host_routes_plugin_log_lines_at_every_severity() {
     // Drain anything the load/activate path logged so the comparison below sees
     // only the probe's lines.
     let _ = inst.drain_log();
-    inst.on_main_thread();
+    inst.on_main_thread(&main_thread());
 
     let cap = probe.capture();
     assert!(
@@ -788,70 +793,117 @@ fn host_routes_plugin_log_lines_at_every_severity() {
 }
 
 // ---------------------------------------------------------------------------
-// 5. The host's own main-thread guard
+// 5. The main-thread token
 // ---------------------------------------------------------------------------
 
 /// `poll_timers` and `on_main_thread` are the two `[main-thread]` methods an
 /// embedder is most likely to reach from a UI framework's tick, which is not
-/// obliged to run on the thread `HostState::new()` did. Without the guard, a
-/// host calling them from a timer thread would drive the plugin's `on_timer` /
-/// `on_main_thread` off the main thread with nothing to say so.
+/// obliged to run on the thread that loaded the plugin. Both take a
+/// `&MainThread`, which is `!Send` and which a second thread cannot claim, so
+/// a timer thread has no way to name the call: the rule is in the types, in
+/// debug and in release alike, and no panic is left to observe.
 ///
-/// The guard is a `debug_assert`, so this has teeth only in a debug build —
-/// which is where `cargo test` runs. In release the call proceeds, and the
-/// second branch says so rather than expecting a panic that was compiled out.
+/// What this test can pin is the second half: the thread that is not the main
+/// one is refused the proof. (That a `MainThread` cannot be moved over is the
+/// `compile_fail` doctest of `tutti_plugin_types::MainThread`.)
 ///
-/// The instance is *borrowed* into a scoped thread rather than moved: `Drop`
-/// runs `close_editor`, which asserts main-thread too, so a moved instance
-/// would panic a second time while unwinding and report the wrong call.
-/// `ClapLoaded` rather than `ClapProcessor` for the same borrow reason —
-/// `ClapLoaded` is the type that carries the `unsafe impl Send`, and neither
-/// method under test needs activation.
+/// Mutation (run): `MainThread::claim` accepting any thread → the second
+/// thread is handed a token and `refused` is `None`.
 #[test]
-fn main_thread_methods_reject_a_call_from_another_thread() {
+fn a_timer_thread_is_refused_the_proof_the_main_thread_methods_take() {
     let probe = Probe::acquire();
     let mut inst = probe.load();
+    let main = main_thread();
+    inst.poll_timers(&main);
+    inst.on_main_thread(&main);
 
-    let timers = std::thread::scope(|s| s.spawn(|| inst.poll_timers()).join());
-    let callback = std::thread::scope(|s| {
-        s.spawn(|| {
-            inst.on_main_thread();
-        })
-        .join()
-    });
-
-    if cfg!(debug_assertions) {
-        assert!(
-            timers.is_err(),
-            "poll_timers is [main-thread]: it fires the plugin's on_timer, so a \
-             UI tick on another thread must be caught, not silently honoured"
-        );
-        assert!(
-            callback.is_err(),
-            "on_main_thread is [main-thread] by its own name: a plugin reached \
-             here off-thread runs its deferred work on the wrong thread"
-        );
-    } else {
-        assert!(
-            timers.is_ok() && callback.is_ok(),
-            "the guard is a debug_assert, so a release build carries none"
-        );
-    }
+    let refused = std::thread::scope(|s| {
+        s.spawn(|| tutti_plugin_types::MainThread::claim().err())
+            .join()
+    })
+    .expect("the claim does not panic");
+    assert!(
+        refused.is_some(),
+        "a thread other than the one that claimed first must not obtain a MainThread"
+    );
 }
 
-/// The positive control for the guard above: on the thread that loaded the
-/// plugin, both methods run normally. Without it, an `assert_main_thread`
-/// written as an unconditional `panic!` would satisfy the off-thread test.
+/// The positive control for the token above: on the thread that claimed it,
+/// both methods run normally.
 #[test]
 fn main_thread_methods_run_on_the_loading_thread() {
     let probe = Probe::acquire();
     let mut inst = probe.load();
 
     assert_eq!(
-        inst.poll_timers(),
+        inst.poll_timers(&main_thread()),
         0,
         "no timers are registered, so poll_timers reports none — the point is \
          that it returns rather than panicking"
     );
-    inst.on_main_thread();
+    inst.on_main_thread(&main_thread());
+}
+
+/// `Control::info` has no token, and the editor's presence is a question put
+/// to the plugin (`gui.is_api_supported`, a `[main-thread]` entry), so off the
+/// thread that holds the main role it answers from the factory alone
+/// (`EditorPresence::Unknown`) and asks nothing; on the main thread it
+/// measures, and keeps the measurement.
+///
+/// Mutation (run): in `info`, answer the `None` arm (no `MainThread`) with a
+/// measured descriptor -> the off-thread assertion fails.
+#[test]
+fn info_off_the_main_thread_asks_the_plugin_nothing() {
+    use tutti_plugin_types::{Control, EditorPresence};
+
+    let probe = Probe::acquire();
+    let inst = probe.load();
+    let _main = main_thread();
+    let (inst, off) = std::thread::spawn(move || {
+        let editor = Control::info(&inst).editor;
+        (inst, editor)
+    })
+    .join()
+    .expect("info does not panic");
+    assert_eq!(off, EditorPresence::Unknown);
+    assert_ne!(
+        Control::info(&inst).editor,
+        EditorPresence::Unknown,
+        "the main thread measures"
+    );
+}
+
+/// `deactivate` is `[main-thread]`, so what a plugin calls from it is legal: a
+/// timer it unregisters there is accepted, and never fires afterwards. The
+/// instance's roles lock is held across `deactivate` (nothing audio-side may
+/// run beside it) but must not make the main thread answer as the audio thread,
+/// or the host refuses the `[main-thread]` callback and the timer outlives the
+/// plugin's editor.
+///
+/// Mutation (run): have `ThreadRoles::claim_lifecycle` publish the audio
+/// identity as `claim` does -> `unregister_timer` is refused, `timer_unregistered`
+/// reads false, and the timer fires after `deactivate`.
+#[test]
+fn a_timer_unregistered_from_deactivate_is_accepted_and_does_not_fire_after() {
+    let probe = Probe::acquire();
+    let mut inst = probe.activate();
+    probe.command(CMD_REGISTER_TIMER);
+    drive_block(&mut inst, 64);
+    assert!(callback_requested(&mut inst));
+    inst.on_main_thread(&main_thread());
+    assert!(probe.capture().timer_registered);
+
+    probe.command(CMD_UNREGISTER_TIMER_IN_DEACTIVATE);
+    let mut loaded = inst.deactivate();
+    assert!(
+        probe.capture().timer_unregistered,
+        "the host refused `unregister_timer` from the plugin's own `deactivate`"
+    );
+    let before = probe.capture().sites[Site::OnTimer as usize].visits;
+    assert_eq!(loaded.poll_timers(&main_thread()), 0, "no timer is left");
+    assert_eq!(
+        probe.capture().sites[Site::OnTimer as usize].visits,
+        before,
+        "`on_timer` ran after the plugin unregistered its timer"
+    );
 }

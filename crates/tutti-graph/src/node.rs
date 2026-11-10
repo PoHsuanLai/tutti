@@ -109,6 +109,14 @@ pub struct Shape {
     /// has `L - 1`, whatever `D` is. Export trims the latency and then extends
     /// the render by the tail, and the executor's silence skip waits for
     /// latency plus tail quiet frames before it trusts the node is silent.
+    ///
+    /// This is the node's **ceiling**: the longest it can ever ring, or
+    /// [`Tail::Unbounded`] if it can hold forever. The compiler, PDC, the
+    /// spec's `graph_tail` and export read it, and it never changes after
+    /// [`prepare`](Node::prepare). A node whose tail follows its params
+    /// narrows what the silence skip waits for with
+    /// [`Io::report_tail`](crate::Io::report_tail); the ceiling is what stays
+    /// true when it does not.
     pub tail: Tail,
     /// Whether this node accepts **in-place** channels (see
     /// [`Io::in_place`](crate::Io::in_place)).
@@ -151,7 +159,7 @@ pub struct Shape {
 /// Ordered from finest to coarsest. A node written against
 /// [`Io::sub_blocks`](crate::Io::sub_blocks) is [`Sample`](Self::Sample) by
 /// construction; one bound by an engine that renders in fixed chunks declares
-/// the chunk (a rustysynth-backed SoundFont is `Frames(8)`); one that reads its
+/// the chunk (a SoundFont, whose voices render 8 frames at a time, is `Frames(8)`); one that reads its
 /// events once per call is [`Block`](Self::Block).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Resolution {
@@ -974,6 +982,25 @@ impl Cx<'_> {
     }
 }
 
+/// What a node's report narrows its `ceiling` tail to: the shorter of the
+/// two, or `None` when the report says nothing.
+///
+/// [`Tail::Unknown`] reported never narrows, and nothing narrows an `Unknown`
+/// ceiling (it bounds nothing, so a report has nothing to clamp to). A report
+/// above the ceiling is clamped to it; an `Unbounded` report under an
+/// `Unbounded` ceiling stays `Unbounded` (never skipped).
+pub(crate) fn narrow_tail(ceiling: Tail, reported: Tail) -> Option<Tail> {
+    match (ceiling, reported) {
+        (_, Tail::Unknown) | (Tail::Unknown, _) => None,
+        (Tail::Unbounded, r) => Some(r),
+        (c, Tail::Unbounded) => Some(c),
+        (c, r) => Some(match (c.samples(), r.samples()) {
+            (Some(c), Some(r)) if r < c => Tail::None.beside(Tail::Finite(r)),
+            _ => c,
+        }),
+    }
+}
+
 /// A processor in the graph.
 ///
 /// Object-safe: the executor stores `Box<dyn Node>`. `Send + 'static` so a
@@ -990,6 +1017,28 @@ impl Cx<'_> {
 /// [`Status`]; [`reset`](Self::reset) clears its state. Insert it through
 /// [`IntoNode`] — for a node without controls, wrap it in
 /// [`ForkByClone`](crate::ForkByClone) or [`Unforkable`](crate::Unforkable).
+///
+/// # A tail that follows the params
+///
+/// [`Shape::tail`] is the **ceiling**: the longest the node can ring, fixed at
+/// [`prepare`](Self::prepare). A node whose ring-out is shorter under its
+/// current settings (a reverb at a short decay) narrows it each block with
+/// [`Io::report_tail`]. The report is the node's duty to get right: it must
+/// cover the ring-out from the last non-quiet input frame under the settings
+/// in force since. A node that shortens its decay keeps the longer figure
+/// until its state has decayed, and one with a modulated decay reports from
+/// the larger end of the block's ramp. The rule errs long, because a figure
+/// too short lets the silence skip park a node that still sounds.
+///
+/// The figure is measured from the last non-quiet input frame, not from
+/// the moment of the call. Only a node without event inputs is parked on its
+/// tail (one with event inputs parks on its own [`Status::Idle`]), so only
+/// such a node's report matters.
+///
+/// A report holds until the node's next call; a call that reports nothing
+/// restores the ceiling, as does every new unit (insert, replace, fork,
+/// re-prepare). The executor never calls [`reset`](Self::reset), so a node
+/// whose `reset` changes its ring-out reports the new figure on its next call.
 ///
 /// ```
 /// use tutti_graph::{Cx, Io, Node, Prepare, Shape, Status};

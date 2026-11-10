@@ -157,9 +157,7 @@ fn a_listener_observes_a_parameter_written_by_the_host() {
     let p = params[0].clone();
 
     let log = EventLog::default();
-    // SAFETY: `au` outlives `listener` — `listener` is dropped at the end of
-    // this scope, before `au`.
-    let listener = unsafe { AuParameterListener::new(au.raw_unit(), log.sink()) }
+    let listener = AuParameterListener::new(au.unit(), log.sink())
         .expect("AUEventListenerCreateWithDispatchQueue");
     listener
         .watch_parameter(p.id, EventAddress::GLOBAL)
@@ -220,24 +218,20 @@ fn gesture_begin_and_end_are_delivered_in_order() {
     let p = params[0].clone();
 
     let log = EventLog::default();
-    // SAFETY: `au` outlives `listener`.
-    let listener =
-        unsafe { AuParameterListener::new(au.raw_unit(), log.sink()) }.expect("create listener");
+    let listener = AuParameterListener::new(au.unit(), log.sink()).expect("create listener");
     listener
         .watch_gestures(p.id, EventAddress::GLOBAL)
         .expect("watch_gestures");
 
-    // SAFETY: `au.raw_unit()` is live.
-    unsafe {
-        emit_gesture(au.raw_unit(), p.id, EventAddress::GLOBAL, true).expect("emit begin");
+    {
+        emit_gesture(au.unit(), p.id, EventAddress::GLOBAL, true).expect("emit begin");
     }
     // Separate the two so a coalescing window cannot merge them. The listener's
     // value-change granularity is 10 ms; gestures are not value changes, but
     // spacing them removes any doubt about what an ordering failure would mean.
     std::thread::sleep(Duration::from_millis(50));
-    // SAFETY: as above.
-    unsafe {
-        emit_gesture(au.raw_unit(), p.id, EventAddress::GLOBAL, false).expect("emit end");
+    {
+        emit_gesture(au.unit(), p.id, EventAddress::GLOBAL, false).expect("emit end");
     }
 
     assert!(
@@ -282,9 +276,7 @@ fn a_dropped_listener_stops_delivering() {
     let p = params[0].clone();
 
     let log = EventLog::default();
-    // SAFETY: `au` outlives `listener`, which is dropped explicitly below.
-    let listener =
-        unsafe { AuParameterListener::new(au.raw_unit(), log.sink()) }.expect("create listener");
+    let listener = AuParameterListener::new(au.unit(), log.sink()).expect("create listener");
     listener
         .watch_parameter(p.id, EventAddress::GLOBAL)
         .expect("watch_parameter");
@@ -351,14 +343,12 @@ fn load_state_notifies_listeners() {
     // Capture state at one value, then move the parameter somewhere else, so the
     // restore has something real to put back.
     au.set_parameter(p.id, p.range.min).expect("set to min");
-    let state = au.get_state().expect("get_state");
+    let state = au.get_state(&main_thread()).expect("get_state");
     assert!(!state.is_empty(), "AUDelay produces a non-empty state blob");
     au.set_parameter(p.id, p.range.max).expect("set to max");
 
     let log = EventLog::default();
-    // SAFETY: `au` outlives `listener`.
-    let listener =
-        unsafe { AuParameterListener::new(au.raw_unit(), log.sink()) }.expect("create listener");
+    let listener = AuParameterListener::new(au.unit(), log.sink()).expect("create listener");
     // The wildcard notify covers every parameter, so watch every parameter —
     // registration itself has no wildcard (see `notify_all_parameters`).
     for q in &params {
@@ -369,7 +359,7 @@ fn load_state_notifies_listeners() {
     // Discard anything the two writes above generated; only the restore counts.
     log.clear();
 
-    au.set_state(&state).expect("set_state");
+    au.set_state(&main_thread(), &state).expect("set_state");
 
     assert!(
         log.wait_for_at_least(1),
@@ -412,8 +402,7 @@ fn load_state_notifies_listeners() {
 fn notify_all_parameters_is_accepted_with_no_listener() {
     let _g = lock();
     let au = DELAY.open(RATE, BLOCK);
-    // SAFETY: `au.raw_unit()` is live.
-    unsafe { notify_all_parameters(au.raw_unit()) }
+    notify_all_parameters(au.unit())
         .expect("the wildcard notify is legal with no listeners registered");
 }
 
@@ -662,4 +651,10 @@ fn repeated_resets_are_harmless() {
             "non-finite output after reset round {round}"
         );
     }
+}
+
+/// This process's main thread. Each test is its own process under nextest, so
+/// the claim cannot be refused.
+fn main_thread() -> tutti_plugin_types::MainThread {
+    tutti_plugin_types::MainThread::claim().expect("one test, one process")
 }

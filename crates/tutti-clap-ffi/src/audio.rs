@@ -8,14 +8,12 @@ use std::sync::atomic::Ordering;
 
 use clap_sys::audio_buffer::clap_audio_buffer;
 use clap_sys::events::clap_event_transport;
-use clap_sys::process::{
-    CLAP_PROCESS_CONTINUE, CLAP_PROCESS_ERROR, clap_process, clap_process_status,
-};
+use clap_sys::process::{CLAP_PROCESS_CONTINUE, CLAP_PROCESS_ERROR, clap_process};
 
 use tutti_plugin_types::SampleFormat;
 
 use crate::events::{EventSink, EventSource, with_input, with_output};
-use crate::plugin::Core;
+use crate::plugin::{Core, PortLayout};
 use crate::pool::{PoolHandle, PoolRequest};
 
 /// Why a block did not run, or ran and failed.
@@ -30,6 +28,12 @@ pub enum ProcessError {
     /// The block is longer than the plugin was activated for, or than the
     /// scratch was sized for; nothing was called.
     BlockTooLarge,
+    /// The block is shorter than the plugin was activated for (`min_frames`,
+    /// at least one); nothing was called.
+    BlockTooSmall,
+    /// The call's port channel counts are not the plugin's own audio ports as
+    /// of the activation; nothing was called.
+    PortsMismatch,
     /// The port layout in the call needs more channel pointers or port
     /// buffers than the scratch was sized for (`resize_for`); nothing was
     /// called, and nothing allocated.
@@ -362,6 +366,8 @@ impl std::fmt::Debug for ProcessCall<'_, '_> {
 /// main-thread entry, so a processor holding it cannot make one.
 pub struct AudioSide {
     core: Arc<Core>,
+    /// The ports the activation declared; `process` is handed exactly these.
+    layout: Arc<PortLayout>,
     _not_sync: PhantomData<Cell<()>>,
 }
 
@@ -374,9 +380,10 @@ impl std::fmt::Debug for AudioSide {
 }
 
 impl AudioSide {
-    pub(crate) fn new(core: Arc<Core>) -> Self {
+    pub(crate) fn new(core: Arc<Core>, layout: Arc<PortLayout>) -> Self {
         Self {
             core,
+            layout,
             _not_sync: PhantomData,
         }
     }
@@ -442,7 +449,7 @@ impl AudioSide {
     pub fn process(
         &mut self,
         call: ProcessCall<'_, '_>,
-    ) -> Result<clap_process_status, ProcessError> {
+    ) -> Result<crate::ProcessStatus, ProcessError> {
         let ProcessCall {
             scratch,
             mut audio,
@@ -466,6 +473,15 @@ impl AudioSide {
         }
         if frames > self.core.max_frames.load(Ordering::Acquire) {
             return Err(ProcessError::BlockTooLarge);
+        }
+        if frames < self.core.min_frames.load(Ordering::Acquire) {
+            return Err(ProcessError::BlockTooSmall);
+        }
+        // The plugin indexes `audio_inputs`/`audio_outputs` by the ports it
+        // declared and trusts the counts (`process.h`), so a layout that
+        // differs from them is refused before the plugin is called.
+        if input_ports != self.layout.inputs || output_ports != self.layout.outputs {
+            return Err(ProcessError::PortsMismatch);
         }
         // The width is matched here, once per block, and only to bind the
         // typed slices into the scratch's port tables. Everything after is
@@ -526,7 +542,7 @@ impl AudioSide {
             audio.silence_outputs(frames as usize);
             return Err(ProcessError::PluginReturnedError);
         }
-        Ok(status)
+        Ok(crate::ProcessStatus::from_raw(status))
     }
 
     /// Starts processing if it has not been, under the claim `process` holds.

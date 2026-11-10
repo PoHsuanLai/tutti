@@ -1215,7 +1215,7 @@ fn an_oversized_load_state_is_refused_without_killing_the_bridge() {
     let start = Instant::now();
     let err = mock
         .bridge
-        .load_state(&oversized)
+        .load_state(&main_thread(), &oversized)
         .expect_err("an over-limit state was accepted");
     let elapsed = start.elapsed();
 
@@ -1237,7 +1237,7 @@ fn an_oversized_load_state_is_refused_without_killing_the_bridge() {
     // And the session must still work afterwards, which is the property
     // `is_crashed` only implies.
     assert!(
-        mock.bridge.load_state(b"small").is_err(),
+        mock.bridge.load_state(&main_thread(), b"small").is_err(),
         "a later call should still reach the (silent) server and time out, \
          rather than short-circuit on a latched crash"
     );
@@ -1483,7 +1483,7 @@ fn a_stalled_load_state_fails_typed_and_leaves_the_bridge_healthy() {
     );
 
     let bridge = Arc::clone(&mock.bridge);
-    let (got, elapsed) = call_within(move || bridge.load_state(&[3u8; 128]))
+    let (got, elapsed) = call_within(move || bridge.load_state(&main_thread(), &[3u8; 128]))
         .unwrap_or_else(|w| panic!("a stalled load_state never returned; blocked for {w:?}"));
     let err = got.expect_err("an unacknowledged load reported success");
 
@@ -1530,4 +1530,11 @@ fn assert_healthy_after_stall(mock: &MockServer, direction: &str) {
         "after a stalled {direction} the bridge no longer completes a round \
          trip, so the session is dead in practice however `is_crashed` reads"
     );
+}
+
+/// This process's main thread. Each test is its own process under nextest, so
+/// the claim cannot be refused.
+#[cfg(test)]
+fn main_thread() -> tutti_plugin_types::MainThread {
+    tutti_plugin_types::MainThread::claim().expect("one test, one process")
 }

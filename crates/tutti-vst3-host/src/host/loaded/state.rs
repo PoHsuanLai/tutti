@@ -1,6 +1,7 @@
 //! Programs and units, the compatibility JSON, and the state container.
 
 use std::collections::HashSet;
+use tutti_plugin_types::MainThread;
 
 use super::*;
 use crate::host::controller::latest_per_parameter;
@@ -12,14 +13,8 @@ impl Vst3Loaded {
     /// Read before [`units`](Self::units), which needs the list ids to tell a
     /// unit's real program list from one it names but the plugin never
     /// publishes. Main/UI thread.
-    ///
-    /// # Panics
-    ///
-    /// In debug builds, panics if called off the thread registered with
-    /// [`tutti_plugin_types::mark_main_thread`].
-    pub fn program_lists(&self) -> Vec<Vst3ProgramListInfo> {
-        tutti_plugin_types::assert_main_thread();
-        self.plugin.program_lists()
+    pub fn program_lists(&self, main: &MainThread) -> Vec<Vst3ProgramListInfo> {
+        self.plugin.program_lists(main)
     }
 
     /// The plugin's unit tree — the groups it sorts parameters, programs and
@@ -36,14 +31,8 @@ impl Vst3Loaded {
     /// `program_list: None` — see [`Vst3UnitInfo::program_list`] for why, and
     /// [`Vst3UnitInfo::has_dangling_program_list`] to detect it. Main/UI
     /// thread.
-    ///
-    /// # Panics
-    ///
-    /// In debug builds, panics if called off the thread registered with
-    /// [`tutti_plugin_types::mark_main_thread`].
-    pub fn units(&self) -> Vec<Vst3UnitInfo> {
-        tutti_plugin_types::assert_main_thread();
-        self.plugin.units()
+    pub fn units(&self, main: &MainThread) -> Vec<Vst3UnitInfo> {
+        self.plugin.units(main)
     }
 
     /// Name of one program in a list, or `None` if the plugin doesn't
@@ -52,14 +41,13 @@ impl Vst3Loaded {
     /// `list_id` is a [`Vst3ProgramListInfo::id`], **not** an index into
     /// [`program_lists`](Self::program_lists) — the two spaces differ, and a
     /// plugin is free to number its lists however it likes. Main/UI thread.
-    ///
-    /// # Panics
-    ///
-    /// In debug builds, panics if called off the thread registered with
-    /// [`tutti_plugin_types::mark_main_thread`].
-    pub fn program_name(&self, list_id: i32, program_index: u32) -> Option<String> {
-        tutti_plugin_types::assert_main_thread();
-        self.plugin.program_name(list_id, program_index)
+    pub fn program_name(
+        &self,
+        main: &MainThread,
+        list_id: i32,
+        program_index: u32,
+    ) -> Option<String> {
+        self.plugin.program_name(main, list_id, program_index)
     }
 
     /// The unit the plugin currently considers selected — which part of a
@@ -69,14 +57,8 @@ impl Vst3Loaded {
     /// Unlike the other accessors here this cannot fail: `getSelectedUnit`
     /// returns the id directly with no result code, so a plugin that
     /// implements the interface always answers. Main/UI thread.
-    ///
-    /// # Panics
-    ///
-    /// In debug builds, panics if called off the thread registered with
-    /// [`tutti_plugin_types::mark_main_thread`].
-    pub fn selected_unit(&self) -> Option<i32> {
-        tutti_plugin_types::assert_main_thread();
-        self.plugin.selected_unit()
+    pub fn selected_unit(&self, main: &MainThread) -> Option<crate::UnitId> {
+        self.plugin.selected_unit(main)
     }
 
     /// Tells the plugin which unit the host's UI is now showing, so a plugin
@@ -84,39 +66,27 @@ impl Vst3Loaded {
     /// implement `IUnitInfo` or refuses the id.
     ///
     /// The one write on this interface. Pass
-    /// [`unit_ids::ROOT`] to select the implicit
+    /// [`UnitId::ROOT`](crate::UnitId::ROOT) to select the implicit
     /// top-level unit. Main/UI thread.
-    ///
-    /// # Panics
-    ///
-    /// In debug builds, panics if called off the thread registered with
-    /// [`tutti_plugin_types::mark_main_thread`].
     #[must_use]
-    pub fn select_unit(&mut self, unit_id: i32) -> bool {
-        tutti_plugin_types::assert_main_thread();
-        self.plugin.select_unit(unit_id)
+    pub fn select_unit(&mut self, main: &MainThread, unit_id: crate::UnitId) -> bool {
+        self.plugin.select_unit(main, unit_id)
     }
 
     /// Which unit a given bus channel belongs to, or `None` if the plugin
     /// doesn't implement `IUnitInfo` or maps nothing to that channel.
     ///
-    /// `media_type` and `direction` are the SDK's `MediaTypes` and
-    /// `BusDirections` values. Main/UI thread.
-    ///
-    /// # Panics
-    ///
-    /// In debug builds, panics if called off the thread registered with
-    /// [`tutti_plugin_types::mark_main_thread`].
+    /// Main/UI thread.
     pub fn unit_by_bus(
         &self,
-        media_type: i32,
-        direction: i32,
+        main: &MainThread,
+        media_type: crate::MediaType,
+        direction: crate::BusDirection,
         bus_index: i32,
         channel: i32,
-    ) -> Option<i32> {
-        tutti_plugin_types::assert_main_thread();
+    ) -> Option<crate::UnitId> {
         self.plugin
-            .unit_by_bus(media_type, direction, bus_index, channel)
+            .unit_by_bus(main, media_type, direction, bus_index, channel)
     }
 
     /// Reads the bundle's machine-readable compatibility / migration info as a
@@ -130,13 +100,7 @@ impl Vst3Loaded {
     /// finds the one in the "Plugin Compatibility Class" category, instantiates
     /// it, and reads its JSON. Returns `None` if the bundle ships no such class.
     /// Main/UI thread.
-    ///
-    /// # Panics
-    ///
-    /// In debug builds, panics if called off the thread registered with
-    /// [`tutti_plugin_types::mark_main_thread`].
-    pub fn compatibility_json(&self) -> Option<String> {
-        tutti_plugin_types::assert_main_thread();
+    pub fn compatibility_json(&self, _main: &MainThread) -> Option<String> {
         self._library.module().compatibility_json()
     }
 
@@ -180,18 +144,13 @@ impl Vst3Loaded {
     /// component half is the one a project cannot be restored without, and
     /// plenty of controllers have no UI state to give. That half degrades to
     /// empty and the component half is still returned.
-    ///
-    /// # Panics
-    ///
-    /// In debug builds, panics if called off the thread registered with
-    /// [`tutti_plugin_types::mark_main_thread`].
     pub(in crate::host) fn read_state(
         &self,
+        main: &MainThread,
         undrained: &[(ParamId, Normalized)],
     ) -> Result<Vec<u8>> {
-        tutti_plugin_types::assert_main_thread();
-        let component = self.read_component_state()?;
-        let controller = self.read_controller_state();
+        let component = self.read_component_state(main)?;
+        let controller = self.read_controller_state(main);
         let pending = latest_per_parameter(
             self.carried
                 .iter()
@@ -208,8 +167,8 @@ impl Vst3Loaded {
     /// Failure is folded into `None` rather than surfaced: see
     /// [`save_state`](tutti_plugin_types::Control::save_state) for why a controller's UI state is best-effort
     /// while the component's is not.
-    pub(super) fn read_controller_state(&self) -> Option<Vec<u8>> {
-        self.plugin.controller_state()
+    pub(super) fn read_controller_state(&self, main: &MainThread) -> Option<Vec<u8>> {
+        self.plugin.controller_state(main)
     }
 
     /// Writes the component's `getState` blob into a fresh `IBStream` and return
@@ -218,9 +177,9 @@ impl Vst3Loaded {
     ///
     /// A `kResultFalse` return (plugin has no state) yields an empty blob;
     /// only a genuine error tresult is surfaced as [`Vst3Error::PluginError`].
-    pub(super) fn read_component_state(&self) -> Result<Vec<u8>> {
+    pub(super) fn read_component_state(&self, main: &MainThread) -> Result<Vec<u8>> {
         self.plugin
-            .component_state()
+            .component_state(main)
             .map_err(|e| Vst3Error::PluginError {
                 stage: LoadStage::Initialization,
                 code: e.code(),
@@ -234,8 +193,8 @@ impl Vst3Loaded {
     /// return `kResultFalse` when they have no controller state to load) —
     /// this is best-effort synchronisation, shared by
     /// [`load_state`](tutti_plugin_types::Control::load_state) and [`initialize`](Self::initialize).
-    pub(super) fn push_controller_state(&self, data: &[u8]) {
-        self.plugin.sync_controller_to_component_state(data);
+    pub(super) fn push_controller_state(&self, main: &MainThread, data: &[u8]) {
+        self.plugin.sync_controller_to_component_state(main, data);
     }
 
     /// Restores plugin state from a blob produced by [`save_state`](tutti_plugin_types::Control::save_state).
@@ -260,16 +219,11 @@ impl Vst3Loaded {
     /// [`Vst3Error::PluginError`] if the plugin
     /// rejects the component blob via `setState`. A controller that rejects its
     /// own stream is tolerated, matching [`save_state`](tutti_plugin_types::Control::save_state).
-    ///
-    /// # Panics
-    ///
-    /// In debug builds, panics if called off the thread registered with
-    /// [`tutti_plugin_types::mark_main_thread`].
     pub(in crate::host) fn write_state(
         &mut self,
+        main: &MainThread,
         data: &[u8],
     ) -> Result<Vec<(ParamId, Normalized)>> {
-        tutti_plugin_types::assert_main_thread();
         if data.is_empty() {
             return Ok(Vec::new());
         }
@@ -285,30 +239,30 @@ impl Vst3Loaded {
         // parameters, which the component's stream cannot hold.
         if !component.is_empty() {
             self.plugin
-                .set_component_state(component)
+                .set_component_state(main, component)
                 .map_err(|e| Vst3Error::PluginError {
                     stage: LoadStage::Initialization,
                     code: e.code(),
                 })?;
 
-            self.push_controller_state(component);
+            self.push_controller_state(main, component);
         }
 
         if let Some(controller) = controller {
-            self.push_controller_own_state(controller);
+            self.push_controller_own_state(main, controller);
         }
 
         // The writes the component's stream did not yet hold are newer than it:
         // back to the controller. Bounded by the plugin's parameter list, not
         // by the blob: an id this plugin does not list is dropped, and each
         // parameter is kept once.
-        let listed: HashSet<u32> = (0..self.parameter_count())
-            .filter_map(|i| self.parameter_info_at(i))
-            .map(|info| info.id)
+        let listed: HashSet<u32> = (0..self.parameter_count(main))
+            .filter_map(|i| self.parameter_info_at(main, i))
+            .map(|info| info.id())
             .collect();
         Ok(latest_listed(pending, &listed)
             .into_iter()
-            .filter(|&(id, value)| self.write_normalized(id, value))
+            .filter(|&(id, value)| self.write_normalized(main, id, value))
             .collect())
     }
 
@@ -319,8 +273,8 @@ impl Vst3Loaded {
     /// [`read_controller_state`](Self::read_controller_state): losing the UI's
     /// scroll position must not fail a project load whose audio state restored
     /// perfectly.
-    pub(super) fn push_controller_own_state(&self, data: &[u8]) {
-        self.plugin.set_controller_state(data);
+    pub(super) fn push_controller_own_state(&self, main: &MainThread, data: &[u8]) {
+        self.plugin.set_controller_state(main, data);
     }
 }
 

@@ -87,6 +87,11 @@ impl Node for InProcessVst2Client {
 
     fn process(&mut self, cx: &Cx<'_>, mut io: Io<'_>) -> Status {
         let size = io.frames();
+        if self.rate_refused {
+            // The plugin was not told this node's rate (`set_rate`): silence,
+            // not audio at another rate.
+            return Status::Silent;
+        }
         let n_in = (self.declared.inputs.count() as usize).min(MAX_CHANNELS);
         let n_out = (self.declared.outputs.count() as usize).min(MAX_CHANNELS);
         // No clamp and no size check: the Processor splits a block longer than
@@ -340,6 +345,12 @@ impl InProcessVst2Client {
 /// `tests/vst2_in_process_params.rs`.
 #[cfg(test)]
 mod owed_tests {
+    /// This process's main thread. Each test is its own process under nextest, so
+    /// the claim cannot be refused.
+    fn main_thread() -> tutti_plugin_types::MainThread {
+        tutti_plugin_types::MainThread::claim().expect("one test, one process")
+    }
+
     use std::path::PathBuf;
     use std::sync::OnceLock;
     use std::sync::atomic::Ordering;
@@ -368,6 +379,36 @@ mod owed_tests {
             .map(|v| v.get() as f32)
     }
 
+    /// **A fork told its rate off the main thread is refused, not left at the
+    /// wrong rate.** A fork's `prepare` dispatches the rate under the main
+    /// thread's proof; off that thread it cannot, so the node records the
+    /// refusal, renders silence, and a `prepare` on the main thread clears it.
+    ///
+    /// Mutation (run): `set_rate` not recording the refusal off the main
+    /// thread -> `refused` is false -> fails. The silence `process` renders
+    /// while refused is not covered here.
+    #[test]
+    fn a_fork_prepared_off_the_main_thread_is_refused() {
+        let main = main_thread();
+        let (client, _handle) = super::super::load_client(&main, probe(), SampleRate(48_000.0))
+            .unwrap_or_else(|e| panic!("in-process load of the probe: {e:?}"));
+        let fork = client
+            .fork_instance(&main, tutti_graph::ForkMode::Live)
+            .expect("the fork loads on the main thread");
+        let (fork, refused) = std::thread::spawn(move || {
+            let mut fork = fork;
+            fork.set_rate(SampleRate(96_000.0));
+            let refused = fork.rate_refused;
+            (fork, refused)
+        })
+        .join()
+        .expect("the thread returns");
+        assert!(refused, "off the main thread the rate cannot be told");
+        let mut fork = fork;
+        fork.set_rate(SampleRate(96_000.0));
+        assert!(!fork.rate_refused, "a prepare on the main thread clears it");
+    }
+
     /// **A block the instance is locked for owes its values to the next.**
     /// The control thread holds the instance lock for one block that ramps
     /// parameter 1 to 0.75: the block renders silent (one contention), the
@@ -381,8 +422,9 @@ mod owed_tests {
     /// plugin keeps `1 / 16` → fails.
     #[test]
     fn a_contended_block_owes_its_values_to_the_next() {
-        let (client, handle) = super::super::load_client(probe(), SampleRate(48_000.0))
-            .unwrap_or_else(|e| panic!("in-process load of the probe at {:?}: {e:?}", probe()));
+        let (client, handle) =
+            super::super::load_client(&main_thread(), probe(), SampleRate(48_000.0))
+                .unwrap_or_else(|e| panic!("in-process load of the probe at {:?}: {e:?}", probe()));
         let inner = std::sync::Arc::clone(&client.inner);
         let contention = std::sync::Arc::clone(&client.contention_count);
         let controls = client.controls();
@@ -448,8 +490,9 @@ mod owed_tests {
     /// count is short by three → fails.
     #[test]
     fn a_contended_block_cuts_the_sysex_open_in_it() {
-        let (client, _handle) = super::super::load_client(probe(), SampleRate(48_000.0))
-            .unwrap_or_else(|e| panic!("in-process load of the probe at {:?}: {e:?}", probe()));
+        let (client, _handle) =
+            super::super::load_client(&main_thread(), probe(), SampleRate(48_000.0))
+                .unwrap_or_else(|e| panic!("in-process load of the probe at {:?}: {e:?}", probe()));
         let inner = std::sync::Arc::clone(&client.inner);
         let controls = client.controls();
         let mut unit = Direct::new(client, SampleRate(48_000.0), BLOCK);
@@ -484,8 +527,9 @@ mod owed_tests {
     #[test]
     fn a_sysex_open_across_a_reset_is_not_completed() {
         use tutti_graph::Node as _;
-        let (client, _handle) = super::super::load_client(probe(), SampleRate(48_000.0))
-            .unwrap_or_else(|e| panic!("in-process load of the probe at {:?}: {e:?}", probe()));
+        let (client, _handle) =
+            super::super::load_client(&main_thread(), probe(), SampleRate(48_000.0))
+                .unwrap_or_else(|e| panic!("in-process load of the probe at {:?}: {e:?}", probe()));
         let inner = std::sync::Arc::clone(&client.inner);
         let controls = client.controls();
         let mut unit = Direct::new(client, SampleRate(48_000.0), BLOCK);

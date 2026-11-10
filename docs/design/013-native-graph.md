@@ -274,7 +274,7 @@ the interpreter.
   latency plus tail has elapsed; inside `with_no_denormals` (FTZ/DAZ). The executor always hands a node the
   **whole block** plus its sorted event slice. Sub-chunking at event offsets is
   the node's job (PolySynth already does it, SoundFont is limited to 8 frames
-  by rustysynth). An out-of-process plugin must get whole blocks, or its
+  by the chunk its voices render in). An out-of-process plugin must get whole blocks, or its
   declared one-block pipeline latency stops being constant and PDC goes wrong.
   **The executor never splits a block, not even at a loop wrap** (decided in
   the #12 review): splitting would break the whole-block promise to plugins.
@@ -300,6 +300,42 @@ the interpreter.
   `hrtf_render.rs` `the_tail_is_the_ring_out_after_the_latency`, and
   `tutti-export`'s `a_limiter_adds_no_tail_to_the_render` and
   `the_tail_extends_the_render_by_the_ring_out`.
+  **`Shape::tail` is a ceiling, and a node may narrow it per block** (doc 022
+  step 0b). A node whose ring-out follows its params (a reverb's RT60) calls
+  `Io::report_tail(Tail)`: one store into its unit's executor record
+  (`Unit::reported`, beside `quiet` and `last_quiet`), a `Cell` on the call's
+  stack written back after `process`, with no allocation, no atomic and no
+  unsafe. The plan and the spec still carry the ceiling (compile, `verify`,
+  PDC, `graph_tail`); `NodeRec` gained the two halves of `park_after`
+  (`latency`, `tail`, both checked by `verify`) so the skip can rebuild it.
+  The skip waits `latency`, then `narrow_tail(ceiling, reported)`: a report
+  above the ceiling is clamped to it (silently: a debug assertion would fire
+  in the test that pins the clamp), `Unknown` reported says nothing,
+  `Unbounded` reported under an `Unbounded` ceiling is never skipped. A report
+  holds until the unit's next call, and a call that makes none restores the
+  ceiling; a new unit (insert, replace, crossfade, re-prepare, fork) starts at
+  the ceiling. The executor never calls `Node::reset`, so there is nothing
+  there to restore. Only the task that runs a unit reads or writes its record,
+  so a pooled render parks the blocks a serial one does. The node's duty is
+  in the `Node` docs: cover the ring-out from the last non-quiet input under
+  the settings in force since, erring long. The figure is measured from the last non-quiet input
+  frame, not from the call, and it matters only for a node **without event
+  inputs** (one with event inputs parks on its own `Status::Idle`).
+  `contract::assert_honest_tail` checks the duty for an impulse in. Pinned by `tests/executor.rs`
+  (`a_reported_tail_shorter_than_the_ceiling_is_what_the_skip_waits`,
+  `a_reported_tail_above_the_ceiling_is_clamped`,
+  `a_call_that_reports_nothing_restores_the_ceiling`,
+  `a_new_unit_starts_at_its_ceiling`), `tests/parallel.rs`
+  (`reporting_nodes_render_bit_identically_on_a_pool`) and
+  `tests/rt_no_alloc.rs` (`reporting_nodes_are_allocation_free`, serial and
+  pooled). **Export still spends the ceiling**: `RenderConfig::tail` is a
+  frame count fixed before the render, which the plan, the sink, progress,
+  the resampler and the normalized two-pass render all read, so the tail a
+  graph reports at the programme's end (doc 022 section 12.4's second
+  phase) needs a config mode across `tutti-export`, `tutti-session` and
+  `bevy-tutti`. That is not built; `tutti-export`'s
+  `export_spends_the_ceiling_of_a_node_that_narrows_its_tail` pins the
+  fallback.
 - **Feedback edges delay by exactly `MaxBlock` frames**, through an audio ring
   and an event FIFO, independent of the current block length. Ragged blocks
   therefore lose nothing.
@@ -623,7 +659,7 @@ means:
 
 | What | How | Where it can fall short |
 |---|---|---|
-| Events (notes, MIDI) | Each event carries an in-block `offset`. Nodes receive `SortedEvents` (ordered, and inside the block). Fan-in merges by `(offset, source order)`, source order being the source port's `(NodeKey, port)` | A node that ignores offsets. rustysynth-backed SoundFont resolves to 8 frames |
+| Events (notes, MIDI) | Each event carries an in-block `offset`. Nodes receive `SortedEvents` (ordered, and inside the block). Fan-in merges by `(offset, source order)`, source order being the source port's `(NodeKey, port)` | A node that ignores offsets. The SoundFont player (its voices render 8 frames at a time) resolves to 8 frames |
 | PDC | Compensation in whole samples (`Latency(Samples)`). Event edges are delayed by the same amount as audio, and live inputs are aligned at merge points | none by construction |
 | Automation | `ParamRamp` events (relative: from where the param stands, linear or along a `SegmentShape`) and `ParamSegment` events (a closed set of curve shapes, evaluated by the param port per frame) at an offset, starting on their exact frame (decision 7, "Curve segments") | A curve shape outside the closed set (`audio-automation`'s `Back`, `Elastic`, `Bounce`, `Bezier`, `Circular`): an automation lane sends it as linear pieces, exact at block edges |
 | Transport and clips | `Env.frame: Frame` (`u64`), beat as f64 derived from an integer frame count (point 6 below), the loop-wrap position, and transport changes inside the block (`Env::changes`, read with `Env::transport_at`). The click and sampler placement use the offset inside the block; every clip and MIDI reader places a beat by the one frame rule (`first_frame_at_or_after`) | none by construction (a declick moves the transport on its frame; the fade is audio only). The sampler reads `Env::transport_at` like every other clip reader; the `Legacy` adapter, whose clip readers polled a timeline once per 64-frame chunk, is deleted ([below](#legacy-deleted)) |
@@ -815,8 +851,8 @@ place that loses precision to be written out explicitly:
    the `ParamRamp` edge is the one to mark. The contract suite checks each
    node against what it declared. **Decision: a `Frames(n)` node honours an event when its response lands
    within `n - 1` frames of the exact frame, in either direction**, with no
-   grid origin assumed (a node chunking on its own cursor, as rustysynth
-   does, passes whatever its phase against the blocks); `Block` means
+   grid origin assumed (a node chunking on its own cursor, as the SoundFont
+   player does, passes whatever its phase against the blocks); `Block` means
    within the block the event arrives in. A node finer than it declares
    passes.
 6. **The frame is the source of truth for the playhead.** Every
@@ -1117,7 +1153,7 @@ dropped:
   is a follower, not a generator. Write one (typed `Seconds`/`Amplitude`) as
   part of the polysynth rewrite.
 - **Audio-rate band-limited oscillators** (`sine`, `saw`, `triangle`,
-  `poly_pulse`, `pink`): `tutti-mod`'s `Lfo` shapes are control-rate and not
+  `poly_pulse`, `pink`): `tutti-modulation`'s `Lfo` shapes are control-rate and not
   band-limited. The polysynth needs its own. Write them SoA across voices (see
   the per-node plan), not as ports of fundsp's per-voice `An` nodes.
 - **Test stimulus** (`dc`, `pass`, `sink`, `split`, `multipass`, `sine_hz`,
@@ -1527,7 +1563,7 @@ Seven gaps had to close before the flip:
    reach a fork.** A
    param-automation curve can be a live `PluginParamTarget` the mod router
    writes every frame; a fork freezes each curve (`Curve::frozen`, a new
-   defaulted method in tutti-mod) and a target freezes to its **authored**
+   defaulted method in tutti-modulation) and a target freezes to its **authored**
    part — base and `AUTOMATION` layer as they stood — with every
    modulation layer dropped. So an export renders a plugin's base plus
    authored automation, without LFOs, until export has an offline
@@ -2372,7 +2408,7 @@ Export issues found along the way:
   graph node ("SoundFont as a graph node") does it: the node's
   `prepare` swaps in `SoundFontUnit::with_sample_rate` (same SoundFont,
   channel state and preset, no sounding voice) when the prepared rate
-  differs (on failure, a rate rustysynth refuses, it keeps the old rate),
+  differs (on failure, a rate outside 16 to 192 kHz, it keeps the old rate),
   so `restart_device`'s re-prepare re-rates it with the graph and
   no hook-side crossfade is needed. Pinned by `graph_node.rs`'s
   `the_node_follows_its_graphs_rate` and `soundfont_unit_audio.rs`'s
@@ -2922,9 +2958,9 @@ never touches the live ring; a free-running source follows a relayed seek).
   **Still at the build rate after a restart** (audited: everything else
   that holds a rate is a graph unit, re-rated with the graph, or reads the
   transport's shared rate):
-  - Not `SoundFontUnit` (`tutti-soundfont`): rustysynth still fixes a
-    `Synthesizer`'s rate, but the graph node's `prepare` rebuilds it at the prepared rate (keeping the preset, losing the
-    sounding voices; on failure, a rate rustysynth refuses, it keeps the
+  - Not `SoundFontUnit` (`tutti-soundfont`): the player's voices are
+    built against a rate, but the graph node's `prepare` rebuilds it at the prepared rate (keeping the preset, losing the
+    sounding voices; on failure, a rate outside 16 to 192 kHz, it keeps the
     old rate), so a restart's re-prepare re-rates it.
   - A host-built `UmpOut` (`midi-hardware`; connected with
     `Midi::set_hardware_out`): its `JrStream` stamps JR
@@ -4929,8 +4965,8 @@ properties:
    `Arc` that cloning forced to be shared), hand-written `Clone` impls, and the
    "`&mut self` setter cannot reach a live node" caveat (about 6 places). Some
    of these clones are **deep copies**: the Convolver's FFT partitions, HRTF
-   re-parsing its HRIR sphere, and SoundFont copying the whole rustysynth
-   `Synthesizer`.
+   re-parsing its HRIR sphere, and SoundFont copying the whole player
+   (its voice pool).
 2. **No per-block `Env`.** At least six nodes each hold their own
    `Arc<dyn Timeline>` plus a `BeatCursor` with its own seek detection
    (`pool.rs:320-333`: "`Timeline` is poll-only … 'since when' differs per
@@ -5544,8 +5580,8 @@ under both.
   until they become event sources too.
 
 - **SoundFont as a graph node**, the synth's shape at `Resolution::Frames(8)`
-  (rustysynth's chunk). It follows its graph's rate: `prepare` rebuilds the
-  synthesizer at the prepared rate (control thread), which closes the "can't
+  (the voices' chunk). It follows its graph's rate: `prepare` rebuilds the
+  player at the prepared rate (control thread), which closes the "can't
   re-rate live on a device restart" follow-up for the path bevy-tutti now
   takes. The port/event-input merge moved to `MidiInPort::gather`, shared.
 
@@ -5930,7 +5966,7 @@ under both.
 > **Superseded by [doc 014](014-modulation.md).** The param-port mechanism
 > below (ports on `Shape`, the fused base-plus-sources step, the port's
 > range) stays as the engine's guard, but modulation as a design is now
-> doc 014's: modulation is an API noun that `tutti-mod` compiles to lanes,
+> doc 014's: modulation is an API noun that `tutti-modulation` compiles to lanes,
 > event sources and a per-lane control program, not an engine mechanism.
 > Read doc 014 before extending what follows; this section is kept as the
 > record of the mechanism.
@@ -5950,7 +5986,7 @@ under both.
 > and past the pool a queue keeps its floor, grid points dropped before
 > corners, counted.
 >
-> **The compiler:** `tutti_mod::compile` turns declared sources, routes
+> **The compiler:** `tutti_modulation::compile` turns declared sources, routes
 > and targets into a `ControlProgram` per target, a `SourceNode`
 > description per signal source and the event edges, purely (014 §7,
 > §12.3). `PlayReading` moved to `tutti-types`
@@ -6097,7 +6133,7 @@ under both.
   branch: the base is the node's control, reached through the settings
   ring — so the two "known export limits" of the base cell and the clamp
   cell (above) are gone.
-- **Curves.** `ParamModShaping::shaping()` bakes `tutti_mod::shape` with
+- **Curves.** `ParamModShaping::shaping()` bakes `tutti_modulation::shape` with
   the old shaper's bake and lookup, and the fused sum folds from `-0.0` as
   `f32`'s `Sum` does, so the new step is bit-identical to the old chain:
   `tutti-nodes`' `param_mod_oracle.rs` compared them sample by sample
@@ -6337,7 +6373,7 @@ the source stands ("Shaped ramps" below).
   its curve as segments for one param. It is still a pure function of its
   block's `Env`: per transport piece (`Env::segments`) it walks the beat
   per frame and sends the piece the curve is on (`Curve::segment_at`,
-  tutti-mod) at the piece's first frame, at each breakpoint, and at each
+  tutti-modulation) at the piece's first frame, at each breakpoint, and at each
   loop wrap, with the fractional position the frame is at (beats to frames
   at the piece's tempo), so the port renders the curve's own value at
   every frame. While stopped it sends the value at its beat, held. A piece
@@ -6488,7 +6524,7 @@ generator sending segments of every shape (some resumed) interleaved with
 ramps, executor against reference bit for bit. `tests/parallel.rs` and
 `tests/rt_no_alloc.rs`: the ramp source there now alternates ramps with
 segments of each shape class, so the parallel renders and the no-alloc
-gate (serial and on a pool) cover them. tutti-mod: the envelope's pieces
+gate (serial and on a pool) cover them. tutti-modulation: the envelope's pieces
 (`an_envelopes_pieces_are_its_breakpoints`, `a_bent_piece_is_no_segment`).
 tutti-nodes `tests/automation_segments.rs`: an exponential, cubic-out,
 S-curve and linear envelope at a tempo whose beats fall between frames,
@@ -7481,7 +7517,7 @@ passes a value, so a bare `UnitParam` is index 0):
   `P` (`{ UnitAddr::new(UnitParam::Threshold, 1).to_u16() }`; `add_audio_param`
   asserts in debug that `P` decodes). The session's modulation resolves a native
   target of any index to the node's cell for that address (the lane's knob) and
-  to the port of that address; `tutti-mod` is unchanged, since a `TargetKey`
+  to the port of that address; `tutti-modulation` is unchanged, since a `TargetKey`
   holds a `ParamAddr`.
 - A node's params are not captured: its controls are its `ParamSet`, which the
   insert addresses by key (`SessionNode::params`). `assert_param_fork` covers
@@ -7659,7 +7695,7 @@ converts at its edges in an f64 graph.
 | `HrtfBinauralNode` | tutti-spatial | f32, converted at its edges | as the convolver |
 | `MemorySource`, `DiskSource`, `DiskVoice`, `VoiceNode`, `VoicePool` | tutti-sampler | Both for output and interpolation; the sample data stays f32 | decoded audio is at most 24-bit (32-bit float files are f32), so f32 storage loses nothing, and f64 storage would double RAM and the disk rings' bandwidth. In an f64 graph the taps widen and the Hermite runs in f64 (+12–15%, measured). The phase vocoder (`stretch::Unit`) stays f32 (rustfft f32) and its output widens |
 | `PolySynth` | tutti-polysynth | f32 | its voice bank is `f32x8` lanes (`wide`); f64 would halve the voices per vector. The edge widens its output exactly |
-| `SoundFontUnit` | tutti-soundfont | f32 | rustysynth renders in f32 internally |
+| `SoundFontUnit` | tutti-soundfont | f32 | the voices render in f32 internally |
 | `ClickNode` | tutti-nodes | Both | a generated click; cheap to make generic |
 | `MicMonitorNode` | tutti-io | f32 | it reads the device ring, which is f32; the widen at its edge is exact |
 | `PluginClient<Bound>`, `InProcessVst` | tutti-plugin | what the plugin negotiated (below) | |
@@ -8100,6 +8136,45 @@ by width alone.
 - **Quad** is spelled `FL FR BL BR` (WAVE's `0x33`). VST3 `k40Music` and AU
   `Quadraphonic` decode to `FL FR SL SR`; `Fold` relabels between the two at
   gain 1.0, so neither is rewritten.
+
+## SoundFont effects as graph nodes
+
+Decided 2026-11-08 (SoundFont stage 3b). The reverb and chorus left
+`SoundFontUnit`; nothing about an effect is inside the unit, and
+`Settings::with_reverb_and_chorus` is gone.
+
+- **Five outputs**: dry left and right, chorus send left and right, reverb send
+  (mono). `Instrument::main_outputs` is the dry pair. A voice's send is the
+  preset's and instrument's `chorusEffectsSend` / `reverbEffectsSend` (SF2 2.04
+  8.1.2, generators 15 and 16) plus the default modulators of CC 93 / CC 91
+  (8.4.9, 8.4.8: the controller over 128 times 200 tenths of a percent, so at
+  most +20%), limited to 0 to 1, times the voice's mix gains (per channel for the chorus, the sum of
+  the two for the mono reverb). A send nothing is sent to is exact zeros and is
+  reported by `Status::Masked`; a unit with no voice and nothing left to read
+  out is `Status::Idle`.
+- **Chorus** is `ModDelayNode` with `ModDelayConfig::GENERAL_MIDI_CHORUS`:
+  wet only (`mix` 1) and unable to recirculate (`feedback_max` 0, a new config
+  field; the existing presets use `Feedback::MAX_STABLE`, which changes nothing
+  for every legal input, and an illegal raw write, a negative or one past the
+  ceiling, now reads as the nearest legal value). With no recirculation an output frame is input at most `max_delay`
+  old, so such a config declares `Tail::Finite(max_delay)`; any other config is
+  `Tail::Unknown`, as before.
+- **Reverb** is `ReverbNode::general_midi()`, a `ReverbNode<FreeverbDesign>`
+  (doc 022 step 1b) over `tutti_dsp::Freeverb` (the Freeverb of rustysynth, MIT
+  header kept in `tutti-dsp`, the `Kernel` of its design): mono in, stereo wet
+  out, its controls fixed at room 0.5 and damping 0.5, a tail that is the
+  network's own to -60 dB (it parks and cuts there), `Moderate` at about 18 ns
+  per frame and output channel (`node_kernels` bench, `reverb`).
+- **Tails**: the unit declares the longest voice release only; each effect its
+  own; an export keeps the sum along the path.
+- **Summing** is `ChannelSumNode`; `tutti-session`'s `Session::add_general_midi`
+  wires unit, chorus, reverb, a three-source sum and a fader after it (sends
+  are post-fader; `GeneralMidi::set_gain`/`set_muted`), leaves the graph's
+  outputs to the host, and `GeneralMidi::remove` takes the setup out whole.
+- **Sound**: the dry pair is bit-identical to the old unit's with its effects
+  off. The old default (effects on) had the reverb mixed into the pair; that
+  mix is now the setup's sum, whose float order differs, so it is a new sound
+  rather than the old one.
 
 ## Decisions for the owner
 

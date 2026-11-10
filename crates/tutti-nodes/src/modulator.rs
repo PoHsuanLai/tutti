@@ -1,5 +1,5 @@
 //! The pure modulators the audio-rate nodes run: the [`Modulator`] trait,
-//! implemented here for `tutti-mod`'s [`Wave`].
+//! implemented here for `tutti-modulation`'s [`Wave`].
 //!
 //! A modulator is a pure function of its clock position, in unwrapped cycles:
 //! the cycle index addresses a stepped shape's step, the fraction is the
@@ -9,7 +9,7 @@
 //! lane evaluate one function ([`Wave::raw_at`]), so a random LFO is one
 //! sequence whichever tier runs it.
 
-use tutti_mod::Wave;
+use tutti_modulation::Wave;
 use tutti_types::PhaseIncrement;
 
 /// A pure `cycles -> value` function: the position, in unwrapped cycles, is
@@ -50,7 +50,7 @@ impl Modulator for Wave {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tutti_mod::LfoShape;
+    use tutti_modulation::LfoShape;
     use tutti_types::Phase;
 
     fn shape(shape: LfoShape) -> Wave {
@@ -60,7 +60,7 @@ mod tests {
     /// The deterministic shapes reach `Modulator::value` unaltered, at the
     /// position's phase.
     ///
-    /// The waveform maths itself is `tutti-mod`'s (`LfoShape::evaluate_periodic`,
+    /// The waveform maths itself is `tutti-modulation`'s (`LfoShape::evaluate_periodic`,
     /// asserted there over every shape). What this pins is that the position's
     /// fraction is the phase, in any cycle.
     #[test]

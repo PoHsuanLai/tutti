@@ -1,8 +1,11 @@
-//! The crate's error type. The crate root re-exports `SoundFont` and
-//! `SoundFontError` (what `SoundFont::new` returns) from `tutti-sf2`.
+// Derived from rustysynth 1.3.6 (MIT), Copyright (C) 2022 Nobuaki Tanaka, after
+// MeltySynth (Copyright (C) 2021 Nobuaki Tanaka). The MIT notice is
+// LICENSE-RUSTYSYNTH.txt, at the root of this crate. In this file: the errors follow rustysynth's error.rs.
+
+//! The crate's error type.
 
 use thiserror::Error;
-use tutti_rustysynth::SynthesizerError;
+use tutti_types::SampleRate;
 
 /// `Result` with this crate's [`enum@Error`] as the failure type.
 pub type Result<T> = std::result::Result<T, Error>;
@@ -14,12 +17,21 @@ pub type Result<T> = std::result::Result<T, Error>;
 #[derive(Debug, Error)]
 #[non_exhaustive]
 pub enum Error {
-    /// Reading the `.sf2` from disk failed.
-    #[error("IO error: {0}")]
+    /// Reading the `.sf2` from disk failed. The cause is the
+    /// [`source`](std::error::Error::source).
+    #[error("reading the SoundFont failed")]
     Io(#[from] std::io::Error),
 
-    /// The synthesizer refused the [`Settings`](crate::Settings), or the rate
-    /// a graph runs at.
-    #[error("SoundFont error: {0}")]
-    Synthesizer(#[from] SynthesizerError),
+    /// The rate is outside 16 to 192 kHz.
+    #[error("the sample rate must be between 16000 and 192000 Hz, but was {0}")]
+    SampleRateOutOfRange(SampleRate),
+
+    /// The font has no preset that can be played: every one has a bank or a
+    /// program that is not MIDI's (SF2 2.04 section 7.2).
+    #[error("the SoundFont has no playable preset")]
+    NoPlayablePreset,
+
+    /// The polyphony is past [`Settings::MAX_POLYPHONY`](crate::Settings::MAX_POLYPHONY).
+    #[error("the polyphony must be between 1 and 4096 voices, but was {0}")]
+    PolyphonyOutOfRange(usize),
 }

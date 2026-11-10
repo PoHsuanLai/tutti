@@ -85,14 +85,31 @@ pub use scan::{
     start_scan,
 };
 
-/// Non-send marker that pins plugin editor systems to the main thread.
+/// The main-thread token, as a non-send resource: it pins plugin editor systems
+/// to the main thread and hands them the proof the editor calls take.
 ///
 /// AppKit (macOS), Win32 and X11 window operations must happen there, and JUCE,
-/// VSTGUI and every other plugin GUI framework assumes it. Inserted with
-/// `insert_non_send`, so any system taking `NonSend<PluginEditorMainThread>` is
-/// pinned by Bevy's own scheduler rather than by convention.
+/// VSTGUI and every other plugin GUI framework assumes it. The resource holds a
+/// [`MainThread`](tutti_plugin::MainThread), which is `!Send`, and is inserted
+/// with `insert_non_send`: Bevy runs a system that takes
+/// `NonSend<PluginEditorMainThread>` on the thread that owns the world, so the
+/// scheduler pins it, and [`token`](Self::token) is the `&MainThread` every
+/// main-thread entry of `tutti-plugin` and `tutti-session` takes.
 #[derive(Debug)]
-pub struct PluginEditorMainThread;
+pub struct PluginEditorMainThread(tutti_plugin::MainThread);
+
+impl PluginEditorMainThread {
+    /// Wraps a claimed token: insert it with `World::insert_non_send_resource`
+    /// (or `App::insert_non_send`) on the main thread.
+    pub fn new(main: tutti_plugin::MainThread) -> Self {
+        Self(main)
+    }
+
+    /// The proof that the system holding this resource is on the main thread.
+    pub fn token(&self) -> &tutti_plugin::MainThread {
+        &self.0
+    }
+}
 
 /// Whether this app has windowing, and so whether a plugin editor can exist.
 ///
@@ -165,6 +182,16 @@ impl PluginsRes {
 /// Loading and scanning both run on `AsyncComputeTaskPool`; this plugin does not
 /// add one itself, since a host that configured its own pool sizes would have
 /// them silently replaced.
+///
+/// # Panics
+///
+/// `build` claims the process's main thread (`tutti_plugin::MainThread::claim`),
+/// which is first-come: the app must be built on the UI / OS main thread, before
+/// any other thread claims. Built off it, or after another thread has claimed,
+/// the claim is refused and `build` panics. `claim` does not ask the OS (test
+/// runners build apps off the OS main thread), so the first claimer being the real
+/// main thread is the host's to guarantee. An AU editor still re-checks
+/// `pthread_main_np` itself.
 #[derive(Debug)]
 pub struct TuttiHostingPlugin;
 
@@ -176,17 +203,16 @@ impl Plugin for TuttiHostingPlugin {
 
         // `Plugin::build` runs on the thread that builds the `App`, which for a
         // windowed Bevy app is the main/UI thread — the same thread every
-        // `NonSend` editor system below is pinned to. Marking it here is what
-        // arms the `assert_main_thread()` guards throughout the VST3/CLAP/AU/
-        // VST2 hosts: those are `debug_assert!`s that also no-op while the main
-        // thread is unrecorded, so without this call every main-thread guard in
-        // the plugin layer is decorative.
+        // `NonSend` editor system below is pinned to. Claiming it here makes it
+        // the process's main thread, and the token goes in as the non-send
+        // resource the editor systems take.
         //
-        // Idempotent (`OnceLock::set`): a host that already marked its own main
-        // thread wins and this call is a no-op.
-        tutti_plugin::mark_main_thread();
-
-        app.insert_non_send(PluginEditorMainThread);
+        // A host that already claimed its own main thread on this one is
+        // unaffected (a claim repeats on the same thread); a build on another
+        // thread is refused, and that is a bug in the host, not a state to run in.
+        let main = tutti_plugin::MainThread::claim()
+            .expect("TuttiHostingPlugin must be built on the process's main thread");
+        app.insert_non_send(PluginEditorMainThread(main));
 
         // macOS AppKit live-resize observers. `NonSend` so Bevy pins every
         // access — and therefore every `removeObserver` drop — to the main

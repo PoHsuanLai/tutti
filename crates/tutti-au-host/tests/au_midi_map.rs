@@ -64,18 +64,17 @@
 #![cfg(target_os = "macos")]
 
 use std::sync::Mutex;
+use tutti_au_ffi::property::MidiControlMapping;
+use tutti_au_ffi::{Property, Scope};
 
 mod support;
+#[cfg(feature = "installed-units")]
+use support::corpus::THIRD_PARTY;
 use support::corpus::{
-    AuRef, DELAY, INVALID_PROPERTY, LOWPASS, MIDI_SYNTH, N_BAND_EQ, SAMPLER, THIRD_PARTY,
-    every_component,
+    AuRef, DELAY, INVALID_PROPERTY, LOWPASS, MIDI_SYNTH, N_BAND_EQ, SAMPLER, every_component,
 };
 
 use tutti_au_host::AuInstance;
-use tutti_au_host::types::{
-    K_AUDIO_UNIT_PROPERTY_MIDI_CONTROL_MAPPING, K_AUDIO_UNIT_SCOPE_GLOBAL,
-    K_AUDIO_UNIT_SCOPE_INPUT, K_AUDIO_UNIT_SCOPE_OUTPUT,
-};
 use tutti_au_host::{AuError, AuMidiMapping, MidiEvent, MidiTrigger};
 use tutti_ump::{CCNumber, MidiChannel, MidiGroup};
 
@@ -183,8 +182,7 @@ fn exactly_two_installed_components_implement_the_mapping_family() {
     let mut found: Vec<String> = Vec::new();
 
     for info in every_component() {
-        // SAFETY: `component` came from `AudioComponentFindNext`.
-        let Ok(mut au) = (unsafe { AuInstance::new(info.component, RATE, BLOCK) }) else {
+        let Ok(mut au) = AuInstance::new(info.component, RATE, BLOCK) else {
             // A unit that cannot be instantiated cannot be probed. AUAudioTapIO
             // is the one such unit here; it is an output unit, and the family is
             // an instrument surface, so nothing is lost.
@@ -242,19 +240,14 @@ fn nothing_implements_the_deprecated_midi_control_mapping_property() {
     let mut hits: Vec<String> = Vec::new();
 
     for info in every_component() {
-        // SAFETY: `component` came from `AudioComponentFindNext`.
-        let Ok(mut au) = (unsafe { AuInstance::new(info.component, RATE, BLOCK) }) else {
+        let Ok(mut au) = AuInstance::new(info.component, RATE, BLOCK) else {
             continue;
         };
         for phase in ["loaded", "initialized"] {
             if phase == "initialized" && au.initialize().is_err() {
                 break;
             }
-            for scope in [
-                K_AUDIO_UNIT_SCOPE_GLOBAL,
-                K_AUDIO_UNIT_SCOPE_INPUT,
-                K_AUDIO_UNIT_SCOPE_OUTPUT,
-            ] {
+            for scope in [Scope::GLOBAL, Scope::INPUT, Scope::OUTPUT] {
                 let mut size = 0u32;
                 let mut writable = 0u8;
                 // Raw, because there is no wrapper for a property this crate
@@ -263,8 +256,8 @@ fn nothing_implements_the_deprecated_midi_control_mapping_property() {
                 let status = unsafe {
                     tutti_au_host::types::AudioUnitGetPropertyInfo(
                         au.raw_unit(),
-                        K_AUDIO_UNIT_PROPERTY_MIDI_CONTROL_MAPPING,
-                        scope,
+                        MidiControlMapping::ID,
+                        scope.raw(),
                         0,
                         &mut size,
                         &mut writable,
@@ -272,7 +265,7 @@ fn nothing_implements_the_deprecated_midi_control_mapping_property() {
                 };
                 if status == tutti_au_host::types::NO_ERR {
                     hits.push(format!(
-                        "{} ({phase}, scope {scope}, {size} bytes)",
+                        "{} ({phase}, scope {scope:?}, {size} bytes)",
                         info.name
                     ));
                 }
@@ -297,6 +290,11 @@ fn nothing_implements_the_deprecated_midi_control_mapping_property() {
 ///
 /// Absent third-party units are skipped, not failed — the crate's rule is that
 /// only Apple's units are guaranteed present.
+///
+/// Behind the `installed-units` feature (`just test-au-installed`): none of the
+/// units is installed on a hosted runner, and a test that can only fail there
+/// is compiled out rather than filtered by name or skipped.
+#[cfg(feature = "installed-units")]
 #[test]
 fn no_installed_third_party_unit_implements_the_mapping_family() {
     let _g = lock();
@@ -306,8 +304,7 @@ fn no_installed_third_party_unit_implements_the_mapping_family() {
     for unit in THIRD_PARTY {
         let Some(info) = unit.find() else { continue };
         probed += 1;
-        // SAFETY: `component` came from `AudioComponentFindNext`.
-        let Ok(mut au) = (unsafe { AuInstance::new(info.component, RATE, BLOCK) }) else {
+        let Ok(mut au) = AuInstance::new(info.component, RATE, BLOCK) else {
             continue;
         };
         let _ = au.initialize();
@@ -962,7 +959,7 @@ fn an_unarmed_hot_map_read_answers_noerr_not_the_documented_error() {
             tutti_au_host::types::AudioUnitGetProperty(
                 au.raw_unit(),
                 44, // kAudioUnitProperty_HotMapParameterMIDIMapping
-                K_AUDIO_UNIT_SCOPE_GLOBAL,
+                Scope::GLOBAL.raw(),
                 0,
                 buf.as_mut_ptr() as *mut std::os::raw::c_void,
                 &mut size,

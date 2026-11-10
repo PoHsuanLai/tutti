@@ -79,7 +79,7 @@ impl Active {
 
     /// Loads and activates at `prepare`.
     pub fn load_with(path: impl AsRef<Path>, prepare: Prepare) -> Result<Self, LoadError> {
-        let loaded = Vst2Loaded::load(path).map_err(LoadError::Load)?;
+        let loaded = Vst2Loaded::load(&main_thread(), path).map_err(LoadError::Load)?;
         Self::activate(loaded, prepare).map_err(|(_, e)| LoadError::Activate(e))
     }
 
@@ -88,7 +88,7 @@ impl Active {
         loaded: Vst2Loaded,
         prepare: Prepare,
     ) -> Result<Self, (Vst2Loaded, PluginError)> {
-        match loaded.activate(prepare) {
+        match loaded.activate(&main_thread(), prepare) {
             Ok(pair) => Ok(Self {
                 pair: Some(pair),
                 prepare,
@@ -108,7 +108,7 @@ impl Active {
     /// Rejoins the halves.
     pub fn deactivate(mut self) -> Vst2Loaded {
         let (processor, controller) = self.pair.take().expect("the pair is whole");
-        match Vst2Loaded::deactivate(processor, controller) {
+        match Vst2Loaded::deactivate(&main_thread(), processor, controller) {
             Ok(loaded) => loaded,
             Err(stuck) => panic!("the halves would not rejoin: {}", stuck.reason),
         }
@@ -118,11 +118,11 @@ impl Active {
     /// change.
     pub fn reconfigure(&mut self, wanted: Prepare) -> Result<(), PluginError> {
         let (processor, controller) = self.pair.take().expect("the pair is whole");
-        let loaded = match Vst2Loaded::deactivate(processor, controller) {
+        let loaded = match Vst2Loaded::deactivate(&main_thread(), processor, controller) {
             Ok(loaded) => loaded,
             Err(stuck) => panic!("the halves would not rejoin: {}", stuck.reason),
         };
-        match loaded.activate(wanted) {
+        match loaded.activate(&main_thread(), wanted) {
             Ok(pair) => {
                 self.pair = Some(pair);
                 self.prepare = wanted;
@@ -132,7 +132,7 @@ impl Active {
                 let loaded = refused.plugin.expect("VST2 hands the plugin back");
                 let previous = self.prepare;
                 let pair = loaded
-                    .activate(previous)
+                    .activate(&main_thread(), previous)
                     .map_err(|r| r.reason)
                     .expect("the previous configuration still activates");
                 self.pair = Some(pair);
@@ -224,4 +224,10 @@ impl DerefMut for Active {
     fn deref_mut(&mut self) -> &mut Vst2Controller {
         &mut self.pair.as_mut().expect("the pair is whole").1
     }
+}
+
+/// This process's main thread. Each test is its own process under nextest, so
+/// the claim cannot be refused.
+fn main_thread() -> tutti_plugin_types::MainThread {
+    tutti_plugin_types::MainThread::claim().expect("one test, one process")
 }

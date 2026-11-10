@@ -34,12 +34,13 @@
 #![cfg(target_os = "macos")]
 
 use std::mem::size_of;
-use std::os::raw::c_void;
+use tutti_au_ffi::Element;
+use tutti_au_ffi::property::{AudioChannelLayoutProperty, ElementName, SupportedChannelLayoutTags};
 
 use crate::bus::BusDirection;
 use crate::error::{AuError, Result};
-use crate::ffi::{check, get_property_bytes};
 use crate::types::*;
+use tutti_au_ffi::Unit;
 
 /// A channel *order* an AU can run a bus in — an `AudioChannelLayoutTag`.
 ///
@@ -327,29 +328,22 @@ const TAG_ONLY_LAYOUT_SIZE: usize =
 /// Duplicates are returned verbatim rather than deduplicated: AUNewPitch
 /// publishes `Quadraphonic` twice (measured), the AU describing its own table,
 /// and collapsing it would hide that from a host displaying the list.
-///
-/// # Safety
-/// `unit` must be a live `AudioUnit`.
-pub(crate) unsafe fn supported_layout_tags(
-    unit: AudioUnit,
+pub(crate) fn supported_layout_tags(
+    unit: &Unit,
     direction: BusDirection,
     bus: u32,
 ) -> Vec<AuLayoutTag> {
-    let Ok(bytes) = (unsafe {
-        get_property_bytes(
-            unit,
-            K_AUDIO_UNIT_PROPERTY_SUPPORTED_CHANNEL_LAYOUT_TAGS,
-            direction.scope(),
-            bus,
-        )
-    }) else {
+    let Ok(bytes) = unit.get_bytes::<SupportedChannelLayoutTags>(direction.scope(), Element(bus))
+    else {
         return Vec::new();
     };
     // `chunks_exact` for the reason `bus.rs` uses it: an AU reporting a size
     // that is not a whole multiple of the element would otherwise have its
     // trailing partial tag read out of bounds of what was written.
     bytes
-        .chunks_exact(size_of::<u32>())
+        .as_chunks::<{ size_of::<u32>() }>()
+        .0
+        .iter()
         .map(|c| AuLayoutTag::from_raw(u32::from_ne_bytes([c[0], c[1], c[2], c[3]])))
         .collect()
 }
@@ -379,22 +373,8 @@ pub(crate) unsafe fn supported_layout_tags(
 /// and a description array would need an owned allocation whose only consumer —
 /// a `UseChannelDescriptions` unit — none of them sets. If that changes, this
 /// returns the tag `UseChannelDescriptions` and a caller can tell.
-///
-/// # Safety
-/// `unit` must be a live `AudioUnit`.
-pub(crate) unsafe fn layout_tag(
-    unit: AudioUnit,
-    direction: BusDirection,
-    bus: u32,
-) -> Result<AuLayoutTag> {
-    let bytes = unsafe {
-        get_property_bytes(
-            unit,
-            K_AUDIO_UNIT_PROPERTY_AUDIO_CHANNEL_LAYOUT,
-            direction.scope(),
-            bus,
-        )
-    }?;
+pub(crate) fn layout_tag(unit: &Unit, direction: BusDirection, bus: u32) -> Result<AuLayoutTag> {
+    let bytes = unit.get_bytes::<AudioChannelLayoutProperty>(direction.scope(), Element(bus))?;
     // The AU controls this length, and measured sizes differ per unit for the
     // same logical value (AUMatrixReverb: 32 bytes; AUMultiChannelMixer and
     // AUSampler: 12), so a fixed-`size_of` `get_property::<AudioChannelLayout>`
@@ -458,38 +438,24 @@ pub(crate) unsafe fn layout_tag(
 /// [`crate::instance::AuInstance::set_bypass`]: a host that believes it set 5.1
 /// while the AU kept stereo will route six channels into a two-channel bus and
 /// never learn why the surround came out wrong.
-///
-/// # Safety
-/// `unit` must be a live `AudioUnit`.
-pub(crate) unsafe fn set_layout_tag(
-    unit: AudioUnit,
+pub(crate) fn set_layout_tag(
+    unit: &Unit,
     direction: BusDirection,
     bus: u32,
     tag: AuLayoutTag,
 ) -> Result<()> {
     let layout = AudioChannelLayout {
         mChannelLayoutTag: tag.to_raw(),
-        // Zeroed deliberately: Apple's header says the bitmap form "is NOT used
-        // within the context of the AudioUnit", and a tag-only layout declares
-        // no descriptions. A non-zero count here would promise an array that
-        // `TAG_ONLY_LAYOUT_SIZE` bytes do not carry.
         mChannelBitmap: 0,
         mNumberChannelDescriptions: 0,
         mChannelDescriptions: [AudioChannelDescription::default(); 1],
     };
-    // Not `crate::ffi::set_property`: that helper sends `size_of::<T>()`, which
-    // for this flexible-array struct over-reports by one description. See
-    // `TAG_ONLY_LAYOUT_SIZE`.
-    check("AudioUnitSetProperty", unsafe {
-        AudioUnitSetProperty(
-            unit,
-            K_AUDIO_UNIT_PROPERTY_AUDIO_CHANNEL_LAYOUT,
-            direction.scope(),
-            bus,
-            &layout as *const AudioChannelLayout as *const c_void,
-            TAG_ONLY_LAYOUT_SIZE as u32,
-        )
-    })
+    Ok(unit.set_prefix::<AudioChannelLayoutProperty>(
+        direction.scope(),
+        Element(bus),
+        &layout,
+        TAG_ONLY_LAYOUT_SIZE,
+    )?)
 }
 
 /// The AU's own name for bus `bus` of `direction` — "Sidechain", "stereo mix".
@@ -550,48 +516,11 @@ pub(crate) unsafe fn set_layout_tag(
 ///
 /// The split is the useful part — a name-less bus versus one that does not
 /// exist — and `Ok(String::new())` for either would erase it.
-///
-/// # Safety
-/// `unit` must be a live `AudioUnit`.
-pub(crate) unsafe fn element_name(
-    unit: AudioUnit,
-    direction: BusDirection,
-    bus: u32,
-) -> Result<String> {
-    let mut raw: CFStringRef = std::ptr::null();
-    let mut size = size_of::<CFStringRef>() as u32;
-    check("AudioUnitGetProperty", unsafe {
-        AudioUnitGetProperty(
-            unit,
-            K_AUDIO_UNIT_PROPERTY_ELEMENT_NAME,
-            direction.scope(),
-            bus,
-            &mut raw as *mut CFStringRef as *mut c_void,
-            &mut size,
-        )
-    })?;
-
-    // Take ownership of the +1 FIRST, before anything can return early: the
-    // `checked` conversion below can reject the pointer, and an early return
-    // ahead of this line would leak the retain the AU just handed over — the
-    // exact leak the doc comment above measured.
-    //
-    // `from_copied` is null-tolerant and returns `None`, the honest answer for a
-    // unit that reports `noErr` with a null string.
-    let owned = unsafe { crate::cf::CfString::from_copied(raw) };
-    let Some(_owned) = owned else {
-        return Err(AuError::OsStatus {
-            function: "channel_layout::element_name",
-            code: K_AUDIO_UNIT_ERR_INVALID_PROPERTY_VALUE,
-        });
-    };
-    // Borrow through the raw pointer rather than `_owned.to_string()`: the
-    // checked converter is what validates that this really is a CFString, and
-    // `CfString::to_string` would dereference first.
-    match unsafe { cfstring_to_string_checked(raw) } {
+pub(crate) fn element_name(unit: &Unit, direction: BusDirection, bus: u32) -> Result<String> {
+    // A null answer, or one that is not a CFString, is an invalid property
+    // value rather than a name.
+    match unit.copy_string::<ElementName>(direction.scope(), Element(bus))? {
         Some(name) => Ok(name),
-        // A non-null value that is not a live CFString. `_owned` still releases
-        // on drop, so the retain is not leaked even on this path.
         None => Err(AuError::OsStatus {
             function: "channel_layout::element_name",
             code: K_AUDIO_UNIT_ERR_INVALID_PROPERTY_VALUE,

@@ -12,8 +12,9 @@ pub(crate) mod protocol;
 
 pub use util::config::BridgeConfig;
 
-// Enables the debug-only main-thread assertions in the editor and state paths.
-pub use tutti_plugin_types::mark_main_thread;
+// The main-thread token the editor, state and polling entries take; a host
+// claims it once, on its UI thread, with `MainThread::claim`.
+pub use tutti_plugin_types::{MainThread, NotMainThread};
 // `PluginClient::set_automation_state` takes this, so callers must be able to
 // name it without depending on tutti-plugin-types directly.
 pub use tutti_plugin_types::AutomationMode;
@@ -85,7 +86,8 @@ pub use format::vst2_in_process::{
 /// table in a versioned JSON file. Without it, build the `PluginDb` from your
 /// own store and pass it to `Plugins::with_db`.
 pub mod catalog {
-    pub use crate::host::db_probe::probe_record;
+    pub use crate::host::db_probe::{probe_record, probe_record_with};
+    pub use crate::host::subprocess::{DEFAULT_PROBE_TIMEOUT, ProbeLocator};
     // Named in `Plugin::role` and `Plugins::iter`.
     pub use crate::host::plugin::Plugin;
     pub use crate::host::plugins::{PluginId, Plugins};

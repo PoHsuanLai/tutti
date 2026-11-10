@@ -7,6 +7,8 @@ use vst3::Steinberg::Vst::NoteExpressionTypeInfo_::NoteExpressionTypeFlags_;
 use vst3::Steinberg::Vst::ParameterInfo_::ParameterFlags_;
 use vst3::Steinberg::Vst::{PhysicalUITypeIDs_, ePrefetchableSupport_};
 
+use tutti_plugin_types::AutomationMode;
+
 use crate::sdk::utf16_to_string;
 
 /// Host-facing bus descriptor. Thin wrapper around `vst3::Steinberg::Vst::BusInfo`
@@ -28,14 +30,16 @@ impl Default for BusInfo {
 }
 
 impl BusInfo {
-    /// `MediaType` discriminant (`kAudio` or `kEvent`).
-    pub fn media_type(&self) -> i32 {
-        self.inner.mediaType
+    /// What the bus carries, or `None` for a media type the SDK does not
+    /// define.
+    pub fn media_type(&self) -> Option<crate::MediaType> {
+        crate::MediaType::from_raw(self.inner.mediaType)
     }
 
-    /// `BusDirection` (`kInput` or `kOutput`).
-    pub fn direction(&self) -> i32 {
-        self.inner.direction
+    /// Which way the bus faces, or `None` for a direction the SDK does not
+    /// define.
+    pub fn direction(&self) -> Option<crate::BusDirection> {
+        crate::BusDirection::from_raw(self.inner.direction)
     }
 
     /// Number of channels on this bus.
@@ -48,9 +52,9 @@ impl BusInfo {
         self.inner.flags
     }
 
-    /// `BusType` (`kMain` or `kAux`).
-    pub fn bus_type(&self) -> i32 {
-        self.inner.busType
+    /// What the bus is for, or `None` for a bus type the SDK does not define.
+    pub fn bus_type(&self) -> Option<BusType> {
+        BusType::from_raw(self.inner.busType)
     }
 
     /// Display name decoded from the UTF-16 buffer.
@@ -69,22 +73,14 @@ impl BusInfo {
 /// `IEditController::getParameterInfo`.
 #[derive(Clone, Debug)]
 pub struct Vst3ParameterInfo {
-    /// Stable parameter id used in automation messages.
-    pub id: u32,
-    /// UTF-16 display title.
-    pub title: [u16; 128],
-    /// UTF-16 abbreviated title (for narrow UIs).
-    pub short_title: [u16; 128],
-    /// UTF-16 value units (e.g. "dB", "Hz").
-    pub units: [u16; 128],
-    /// Number of discrete steps, or 0 for continuous parameters.
-    pub step_count: i32,
-    /// Default value, normalized to 0.0 – 1.0.
-    pub default_normalized_value: f64,
-    /// Unit the parameter belongs to (for `IUnitInfo` plugins).
-    pub unit_id: i32,
-    /// `ParameterFlags_` bitfield. See [`parameter_flags`] for named masks.
-    pub flags: i32,
+    id: u32,
+    title: [u16; 128],
+    short_title: [u16; 128],
+    units: [u16; 128],
+    step_count: i32,
+    default_normalized_value: f64,
+    unit_id: UnitId,
+    flags: ParameterFlags,
 }
 
 impl Default for Vst3ParameterInfo {
@@ -96,49 +92,79 @@ impl Default for Vst3ParameterInfo {
             units: [0; 128],
             step_count: 0,
             default_normalized_value: 0.0,
-            unit_id: 0,
-            flags: 0,
+            unit_id: UnitId::ROOT,
+            flags: ParameterFlags::empty(),
         }
     }
 }
 
 impl Vst3ParameterInfo {
-    /// Decoded [`title`](Self::title) as a Rust `String`.
+    /// Stable parameter id used in automation messages.
+    #[must_use]
+    pub fn id(&self) -> u32 {
+        self.id
+    }
+
+    /// Number of discrete steps, or 0 for continuous parameters.
+    #[must_use]
+    pub fn step_count(&self) -> i32 {
+        self.step_count
+    }
+
+    /// Default value, normalized to 0.0 – 1.0.
+    #[must_use]
+    pub fn default_normalized_value(&self) -> f64 {
+        self.default_normalized_value
+    }
+
+    /// Unit the parameter belongs to (for `IUnitInfo` plugins).
+    #[must_use]
+    pub fn unit_id(&self) -> UnitId {
+        self.unit_id
+    }
+
+    /// The parameter's flags.
+    #[must_use]
+    pub fn flags(&self) -> ParameterFlags {
+        self.flags
+    }
+
+    /// The title as a Rust `String`.
     pub fn title_string(&self) -> String {
         utf16_to_string(&self.title)
     }
 
-    /// Decoded [`short_title`](Self::short_title) as a Rust `String`.
+    /// The short title as a Rust `String`.
     pub fn short_title_string(&self) -> String {
         utf16_to_string(&self.short_title)
     }
 
-    /// Decoded [`units`](Self::units) as a Rust `String`.
+    /// The units as a Rust `String`.
     pub fn units_string(&self) -> String {
         utf16_to_string(&self.units)
     }
 
     /// True if the parameter carries the `kCanAutomate` flag.
     pub fn can_automate(&self) -> bool {
-        (self.flags & parameter_flags::CAN_AUTOMATE) != 0
+        self.flags.contains(ParameterFlags::CAN_AUTOMATE)
     }
 
     /// True if the parameter is read-only.
     #[must_use]
     pub fn is_read_only(&self) -> bool {
-        (self.flags & parameter_flags::IS_READ_ONLY) != 0
+        self.flags.contains(ParameterFlags::IS_READ_ONLY)
     }
 
     /// True if the parameter should be hidden from the host UI.
     #[must_use]
     pub fn is_hidden(&self) -> bool {
-        (self.flags & parameter_flags::IS_HIDDEN) != 0
+        self.flags.contains(ParameterFlags::IS_HIDDEN)
     }
 
     /// True if the parameter is the bypass parameter.
     #[must_use]
     pub fn is_bypass(&self) -> bool {
-        (self.flags & parameter_flags::IS_BYPASS) != 0
+        self.flags.contains(ParameterFlags::IS_BYPASS)
     }
 
     /// True if writing this parameter selects a program.
@@ -150,13 +176,13 @@ impl Vst3ParameterInfo {
     /// stopping at the format layer.
     #[must_use]
     pub fn is_program_change(&self) -> bool {
-        (self.flags & parameter_flags::IS_PROGRAM_CHANGE) != 0
+        self.flags.contains(ParameterFlags::IS_PROGRAM_CHANGE)
     }
 
     /// True if the parameter wraps around at its extremes.
     #[must_use]
     pub fn is_wrap(&self) -> bool {
-        (self.flags & parameter_flags::IS_WRAP) != 0
+        self.flags.contains(ParameterFlags::IS_WRAP)
     }
 
     /// Reads the plugin's `ParameterInfo` record.
@@ -168,102 +194,104 @@ impl Vst3ParameterInfo {
             units: c.units,
             step_count: c.stepCount,
             default_normalized_value: c.defaultNormalizedValue,
-            unit_id: c.unitId,
-            flags: c.flags,
+            unit_id: UnitId(c.unitId),
+            flags: ParameterFlags::from_bits_retain(c.flags),
         }
     }
 }
 
-/// VST3 `ParameterInfo` flag bits as simple `i32` constants, mirroring
-/// `ParameterFlags_` from the Steinberg SDK.
-pub mod parameter_flags {
-    use super::ParameterFlags_;
-
-    /// Parameter can be automated by the host.
-    pub const CAN_AUTOMATE: i32 = ParameterFlags_::kCanAutomate;
-    /// Parameter is read-only (display-only, cannot be edited).
-    pub const IS_READ_ONLY: i32 = ParameterFlags_::kIsReadOnly;
-    /// Parameter wraps around at its extremes (e.g. phase).
-    pub const IS_WRAP: i32 = ParameterFlags_::kIsWrapAround;
-    /// Parameter is a discrete list (maps to `stepCount` entries).
-    pub const IS_LIST: i32 = ParameterFlags_::kIsList;
-    /// Parameter should be hidden from host UI.
-    pub const IS_HIDDEN: i32 = ParameterFlags_::kIsHidden;
-    /// Parameter controls a program change.
-    pub const IS_PROGRAM_CHANGE: i32 = ParameterFlags_::kIsProgramChange;
-    /// Parameter is the plugin's bypass switch.
-    pub const IS_BYPASS: i32 = ParameterFlags_::kIsBypass;
+bitflags::bitflags! {
+    /// `ParameterInfo::flags`, mirroring `ParameterFlags_` from the Steinberg
+    /// SDK. A set the plugin filled in keeps bits this host does not name.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+    pub struct ParameterFlags: i32 {
+        /// Parameter can be automated by the host.
+        const CAN_AUTOMATE = ParameterFlags_::kCanAutomate;
+        /// Parameter is read-only (display-only, cannot be edited).
+        const IS_READ_ONLY = ParameterFlags_::kIsReadOnly;
+        /// Parameter wraps around at its extremes (e.g. phase).
+        const IS_WRAP = ParameterFlags_::kIsWrapAround;
+        /// Parameter is a discrete list (maps to `stepCount` entries).
+        const IS_LIST = ParameterFlags_::kIsList;
+        /// Parameter should be hidden from host UI.
+        const IS_HIDDEN = ParameterFlags_::kIsHidden;
+        /// Parameter controls a program change.
+        const IS_PROGRAM_CHANGE = ParameterFlags_::kIsProgramChange;
+        /// Parameter is the plugin's bypass switch.
+        const IS_BYPASS = ParameterFlags_::kIsBypass;
+        // The plugin's own bits beyond the ones named.
+        const _ = !0;
+    }
 }
 
-/// VST3 `IAutomationState` mode constants, mirroring
-/// `IAutomationState_::AutomationStates_` from the Steinberg SDK. The host
-/// pushes one of these to the plugin so it can adapt to whether the host is
-/// reading, writing, both, or ignoring automation. Pass to
-/// [`Control::set_automation_state`](tutti_plugin_types::Control::set_automation_state).
-pub mod automation_state {
-    use super::AutomationStates_;
-    use tutti_plugin_types::AutomationMode;
+bitflags::bitflags! {
+    /// What the host tells a plugin about automation, by `IAutomationState`'s
+    /// `AutomationStates_`: reading, writing, both or (empty) neither. Unlike
+    /// its siblings it names only those two bits (no `!0` const): it is
+    /// something the host sends, not something read from a plugin, and
+    /// [`mode`](Self::mode) ignores any other bit. Pass to
+    /// [`Plugin::set_automation_state`](crate::Plugin::set_automation_state).
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+    pub struct AutomationStates: i32 {
+        /// Host is reading automation.
+        const READ = AutomationStates_::kReadState;
+        /// Host is writing automation.
+        const WRITE = AutomationStates_::kWriteState;
+    }
+}
 
-    /// No automation read or write.
-    pub const NONE: i32 = AutomationStates_::kNoAutomation;
-    /// Host is reading automation.
-    pub const READ: i32 = AutomationStates_::kReadState;
-    /// Host is writing automation.
-    pub const WRITE: i32 = AutomationStates_::kWriteState;
-    /// Host is both reading and writing automation.
-    pub const READ_WRITE: i32 = AutomationStates_::kReadWriteState;
-
-    /// Encodes the format-neutral [`AutomationMode`] as the VST3 `IAutomationState`
-    /// bitmask. This mapping lives here — the VST3 crate is the one that knows
-    /// both the mode vocabulary and its `IAutomationState` ABI — so
-    /// `tutti-plugin-types` stays format-agnostic. Pass the result to
-    /// [`Control::set_automation_state`](tutti_plugin_types::Control::set_automation_state).
-    #[must_use]
-    pub fn from_mode(mode: AutomationMode) -> i32 {
+impl From<AutomationMode> for AutomationStates {
+    /// Encodes the format-neutral [`AutomationMode`] as the VST3 bitmask. The
+    /// mapping lives here so `tutti-plugin-types` stays format-agnostic.
+    fn from(mode: AutomationMode) -> Self {
         match mode {
-            AutomationMode::Off => NONE,
-            AutomationMode::Reading => READ,
-            AutomationMode::Writing => WRITE,
-            AutomationMode::ReadWriting => READ_WRITE,
+            AutomationMode::Off => Self::empty(),
+            AutomationMode::Reading => Self::READ,
+            AutomationMode::Writing => Self::WRITE,
+            AutomationMode::ReadWriting => Self::READ | Self::WRITE,
         }
     }
+}
 
-    /// Decodes a VST3 `IAutomationState` bitmask back into an [`AutomationMode`]
-    /// (inverse of [`from_mode`]). Unknown bits beyond read|write are ignored.
+impl AutomationStates {
+    /// The [`AutomationMode`] these bits name (inverse of `From`).
     #[must_use]
-    pub fn to_mode(bits: i32) -> AutomationMode {
-        match (bits & READ != 0, bits & WRITE != 0) {
+    pub fn mode(self) -> AutomationMode {
+        match (self.contains(Self::READ), self.contains(Self::WRITE)) {
             (false, false) => AutomationMode::Off,
             (true, false) => AutomationMode::Reading,
             (false, true) => AutomationMode::Writing,
             (true, true) => AutomationMode::ReadWriting,
         }
     }
+}
 
-    #[cfg(test)]
-    mod tests {
-        use super::*;
+#[cfg(test)]
+mod automation_states_tests {
+    use super::*;
 
-        #[test]
-        fn mode_bits_round_trip() {
-            for mode in [
-                AutomationMode::Off,
-                AutomationMode::Reading,
-                AutomationMode::Writing,
-                AutomationMode::ReadWriting,
-            ] {
-                assert_eq!(to_mode(from_mode(mode)), mode);
-            }
+    #[test]
+    fn mode_bits_round_trip() {
+        for mode in [
+            AutomationMode::Off,
+            AutomationMode::Reading,
+            AutomationMode::Writing,
+            AutomationMode::ReadWriting,
+        ] {
+            assert_eq!(AutomationStates::from(mode).mode(), mode);
         }
+    }
 
-        #[test]
-        fn mode_bit_values() {
-            // 0=none, 1=read, 2=write, 3=read|write (the SDK values).
-            assert_eq!(from_mode(AutomationMode::Off), 0);
-            assert_eq!(from_mode(AutomationMode::Reading), 1);
-            assert_eq!(from_mode(AutomationMode::Writing), 2);
-            assert_eq!(from_mode(AutomationMode::ReadWriting), 3);
-        }
+    #[test]
+    fn mode_bit_values() {
+        // 0=none, 1=read, 2=write, 3=read|write (the SDK values).
+        assert_eq!(AutomationStates::from(AutomationMode::Off).bits(), 0);
+        assert_eq!(AutomationStates::from(AutomationMode::Reading).bits(), 1);
+        assert_eq!(AutomationStates::from(AutomationMode::Writing).bits(), 2);
+        assert_eq!(
+            AutomationStates::from(AutomationMode::ReadWriting).bits(),
+            3
+        );
     }
 }
 
@@ -284,7 +312,7 @@ pub struct Vst3NoteExpressionInfo {
     /// UTF-16 value units (e.g. "dB", "cent").
     pub units: [u16; 128],
     /// Unit the expression belongs to (for `IUnitInfo` plugins).
-    pub unit_id: i32,
+    pub unit_id: UnitId,
     /// Default value, normalized to 0.0 – 1.0.
     pub default_value: f64,
     /// Minimum value, normalized to 0.0 – 1.0.
@@ -296,8 +324,8 @@ pub struct Vst3NoteExpressionInfo {
     /// Host parameter this expression is associated with — only meaningful when
     /// [`is_associated_parameter_id_valid`](Self::is_associated_parameter_id_valid).
     pub associated_parameter_id: u32,
-    /// `NoteExpressionTypeFlags_` bitfield. See [`note_expression_flags`].
-    pub flags: i32,
+    /// The expression's flags.
+    pub flags: NoteExpressionFlags,
 }
 
 impl Default for Vst3NoteExpressionInfo {
@@ -307,13 +335,13 @@ impl Default for Vst3NoteExpressionInfo {
             title: [0; 128],
             short_title: [0; 128],
             units: [0; 128],
-            unit_id: 0,
+            unit_id: UnitId::ROOT,
             default_value: 0.0,
             minimum: 0.0,
             maximum: 1.0,
             step_count: 0,
             associated_parameter_id: 0,
-            flags: 0,
+            flags: NoteExpressionFlags::empty(),
         }
     }
 }
@@ -337,26 +365,27 @@ impl Vst3NoteExpressionInfo {
     /// True if the expression is bipolar (centred at 0.5, e.g. pan/tuning).
     #[must_use]
     pub fn is_bipolar(&self) -> bool {
-        (self.flags & note_expression_flags::IS_BIPOLAR) != 0
+        self.flags.contains(NoteExpressionFlags::IS_BIPOLAR)
     }
 
     /// True if the expression is one-shot (sampled at note-on only).
     #[must_use]
     pub fn is_one_shot(&self) -> bool {
-        (self.flags & note_expression_flags::IS_ONE_SHOT) != 0
+        self.flags.contains(NoteExpressionFlags::IS_ONE_SHOT)
     }
 
     /// True if the expression carries an absolute (rather than relative) value.
     #[must_use]
     pub fn is_absolute(&self) -> bool {
-        (self.flags & note_expression_flags::IS_ABSOLUTE) != 0
+        self.flags.contains(NoteExpressionFlags::IS_ABSOLUTE)
     }
 
     /// True if [`associated_parameter_id`](Self::associated_parameter_id) is
     /// meaningful.
     #[must_use]
     pub fn is_associated_parameter_id_valid(&self) -> bool {
-        (self.flags & note_expression_flags::ASSOCIATED_PARAMETER_ID_VALID) != 0
+        self.flags
+            .contains(NoteExpressionFlags::ASSOCIATED_PARAMETER_ID_VALID)
     }
 
     /// Reads the plugin's `NoteExpressionTypeInfo` record.
@@ -366,36 +395,34 @@ impl Vst3NoteExpressionInfo {
             title: c.title,
             short_title: c.shortTitle,
             units: c.units,
-            unit_id: c.unitId,
+            unit_id: UnitId(c.unitId),
             default_value: c.valueDesc.defaultValue,
             minimum: c.valueDesc.minimum,
             maximum: c.valueDesc.maximum,
             step_count: c.valueDesc.stepCount,
             associated_parameter_id: c.associatedParameterId,
-            flags: c.flags,
+            flags: NoteExpressionFlags::from_bits_retain(c.flags),
         }
     }
 }
 
-/// VST3 `NoteExpressionTypeInfo` flag bits as simple `i32` constants, matching
-/// the `flags: i32` field they mask against. Mirrors `NoteExpressionTypeFlags_`
-/// from the Steinberg SDK, whose constants are `u32` on unix / `c_int` on
-/// Windows — normalised to `i32` here (the bit values fit either way).
-// Casts are `u32 as i32` on unix and no-ops on Windows (where the SDK enum is
-// already `c_int`); allow the latter's "unnecessary cast" lint.
-#[allow(clippy::unnecessary_cast)]
-pub mod note_expression_flags {
-    use super::NoteExpressionTypeFlags_;
-
-    /// Expression is bipolar (value centred at 0.5).
-    pub const IS_BIPOLAR: i32 = NoteExpressionTypeFlags_::kIsBipolar as i32;
-    /// Expression is sampled once at note-on (not continuously).
-    pub const IS_ONE_SHOT: i32 = NoteExpressionTypeFlags_::kIsOneShot as i32;
-    /// Expression value is absolute rather than relative.
-    pub const IS_ABSOLUTE: i32 = NoteExpressionTypeFlags_::kIsAbsolute as i32;
-    /// `associatedParameterId` is valid.
-    pub const ASSOCIATED_PARAMETER_ID_VALID: i32 =
-        NoteExpressionTypeFlags_::kAssociatedParameterIDValid as i32;
+bitflags::bitflags! {
+    /// `NoteExpressionTypeInfo::flags`, mirroring `NoteExpressionTypeFlags_`
+    /// from the Steinberg SDK.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+    pub struct NoteExpressionFlags: i32 {
+        /// Expression is bipolar (value centred at 0.5).
+        const IS_BIPOLAR = crate::sdk_enum_i32(NoteExpressionTypeFlags_::kIsBipolar);
+        /// Expression is sampled once at note-on (not continuously).
+        const IS_ONE_SHOT = crate::sdk_enum_i32(NoteExpressionTypeFlags_::kIsOneShot);
+        /// Expression value is absolute rather than relative.
+        const IS_ABSOLUTE = crate::sdk_enum_i32(NoteExpressionTypeFlags_::kIsAbsolute);
+        /// `associatedParameterId` is valid.
+        const ASSOCIATED_PARAMETER_ID_VALID =
+            crate::sdk_enum_i32(NoteExpressionTypeFlags_::kAssociatedParameterIDValid);
+        // The plugin's own bits beyond the ones named.
+        const _ = !0;
+    }
 }
 
 /// Host-facing keyswitch (articulation) descriptor — a flat snake_case view over
@@ -406,8 +433,8 @@ pub mod note_expression_flags {
 /// on which keys.
 #[derive(Clone, Debug)]
 pub struct Vst3KeyswitchInfo {
-    /// Keyswitch kind (`KeyswitchTypeIDs`). See [`keyswitch_type`].
-    pub type_id: u32,
+    /// What kind of switch this is.
+    pub kind: KeyswitchKind,
     /// UTF-16 display title (the articulation name).
     pub title: [u16; 128],
     /// UTF-16 abbreviated title (for narrow UIs).
@@ -420,7 +447,7 @@ pub struct Vst3KeyswitchInfo {
     /// from the trigger range), or `-1` if not remapped.
     pub key_remapped: i32,
     /// Unit the keyswitch belongs to (for `IUnitInfo` plugins).
-    pub unit_id: i32,
+    pub unit_id: UnitId,
     /// `KeyswitchInfo` flags bitfield (no named bits in the current SDK
     /// binding; surfaced verbatim).
     pub flags: i32,
@@ -429,13 +456,13 @@ pub struct Vst3KeyswitchInfo {
 impl Default for Vst3KeyswitchInfo {
     fn default() -> Self {
         Self {
-            type_id: 0,
+            kind: KeyswitchKind::from_raw(0),
             title: [0; 128],
             short_title: [0; 128],
             keyswitch_min: 0,
             keyswitch_max: 0,
             key_remapped: -1,
-            unit_id: 0,
+            unit_id: UnitId::ROOT,
             flags: 0,
         }
     }
@@ -455,13 +482,13 @@ impl Vst3KeyswitchInfo {
     /// Reads the plugin's `KeyswitchInfo` record.
     pub(crate) fn from_c(c: &vst3::Steinberg::Vst::KeyswitchInfo) -> Self {
         Self {
-            type_id: c.typeId,
+            kind: KeyswitchKind::from_raw(c.typeId),
             title: c.title,
             short_title: c.shortTitle,
             keyswitch_min: c.keyswitchMin,
             keyswitch_max: c.keyswitchMax,
             key_remapped: c.keyRemapped,
-            unit_id: c.unitId,
+            unit_id: UnitId(c.unitId),
             flags: c.flags,
         }
     }
@@ -480,10 +507,11 @@ impl Vst3KeyswitchInfo {
 /// sentinels are not part of the vocabulary a host should have to know.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Vst3UnitInfo {
-    /// This unit's id. `0` is the root unit, which every plugin has implicitly.
-    pub id: i32,
+    /// This unit's id. [`UnitId::ROOT`] is the root unit, which every plugin has
+    /// implicitly.
+    pub id: UnitId,
     /// The unit this one hangs off, or `None` for the root (`kNoParentUnitId`).
-    pub parent: Option<i32>,
+    pub parent: Option<UnitId>,
     /// Display name, already decoded from UTF-16.
     pub name: String,
     /// The program list this unit selects programs from, or `None` when it has
@@ -509,7 +537,7 @@ impl Vst3UnitInfo {
     /// Always `false` for a unit that simply has no list.
     #[must_use]
     pub fn has_dangling_program_list(&self) -> bool {
-        self.program_list.is_none() && self.program_list_id_raw != unit_ids::NO_PROGRAM_LIST
+        self.program_list.is_none() && self.program_list_id_raw != NO_PROGRAM_LIST
     }
 
     /// Decodes the C struct. `program_list` is left unresolved (`None` unless
@@ -518,8 +546,8 @@ impl Vst3UnitInfo {
     /// Reads the plugin's `UnitInfo` record.
     pub(crate) fn from_c(c: &vst3::Steinberg::Vst::UnitInfo) -> Self {
         Self {
-            id: c.id,
-            parent: (c.parentUnitId != unit_ids::NO_PARENT).then_some(c.parentUnitId),
+            id: UnitId(c.id),
+            parent: (c.parentUnitId != NO_PARENT).then_some(UnitId(c.parentUnitId)),
             name: utf16_to_string(&c.name),
             program_list: None,
             program_list_id_raw: c.programListId,
@@ -531,7 +559,7 @@ impl Vst3UnitInfo {
     /// a second call the accessor makes once for the whole enumeration rather
     /// than once per unit.
     pub(crate) fn resolve_program_list(&mut self, known: &[i32]) {
-        self.program_list = (self.program_list_id_raw != unit_ids::NO_PROGRAM_LIST
+        self.program_list = (self.program_list_id_raw != NO_PROGRAM_LIST
             && known.contains(&self.program_list_id_raw))
         .then_some(self.program_list_id_raw);
     }
@@ -562,80 +590,181 @@ impl Vst3ProgramListInfo {
     }
 }
 
-/// VST3 unit-id sentinels, mirroring the SDK's `kRootUnitId` /
-/// `kNoParentUnitId` / `kNoProgramListId`.
-///
-/// [`Vst3UnitInfo`] decodes the two negative ones into `Option`, so a caller
-/// normally never sees them. They are public for the case that still needs the
-/// raw vocabulary: passing a unit id *back* to the plugin, where
-/// [`ROOT`](self::unit_ids::ROOT) is a legitimate argument.
-pub mod unit_ids {
-    /// The implicit top-level unit every plugin has.
-    pub const ROOT: i32 = vst3::Steinberg::Vst::kRootUnitId;
-    /// `parentUnitId` of the root unit — decoded as `None`.
-    pub const NO_PARENT: i32 = vst3::Steinberg::Vst::kNoParentUnitId;
-    /// `programListId` of a unit with no programs — decoded as `None`.
-    pub const NO_PROGRAM_LIST: i32 = vst3::Steinberg::Vst::kNoProgramListId;
+/// A unit's id (`UnitID`): which group of parameters, programs and note
+/// expressions a plugin sorts something into. Any `i32` is an id the plugin may
+/// choose; [`ROOT`](Self::ROOT) is the one every plugin has. The SDK's
+/// "no parent" and "no program list" sentinels are not units and are not here:
+/// [`Vst3UnitInfo`] decodes them to `None`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct UnitId(i32);
+
+impl UnitId {
+    /// The implicit top-level unit every plugin has (`kRootUnitId`).
+    pub const ROOT: Self = Self(vst3::Steinberg::Vst::kRootUnitId);
+
+    /// The unit with this raw id, as a plugin numbers it.
+    #[must_use]
+    pub const fn new(raw: i32) -> Self {
+        Self(raw)
+    }
+
+    /// The raw `UnitID`.
+    #[must_use]
+    pub const fn get(self) -> i32 {
+        self.0
+    }
 }
 
-/// VST3 `KeyswitchTypeIDs` constants — the *kind* of a key switch, mirroring
-/// `KeyswitchTypeIDs_` from the Steinberg SDK.
-pub mod keyswitch_type {
-    use super::KeyswitchTypeIDs_;
+impl From<i32> for UnitId {
+    fn from(raw: i32) -> Self {
+        Self(raw)
+    }
+}
 
+impl From<UnitId> for i32 {
+    fn from(id: UnitId) -> Self {
+        id.0
+    }
+}
+
+/// `parentUnitId` of the root unit; decoded as `None`.
+const NO_PARENT: i32 = vst3::Steinberg::Vst::kNoParentUnitId;
+/// `programListId` of a unit with no programs; decoded as `None`.
+const NO_PROGRAM_LIST: i32 = vst3::Steinberg::Vst::kNoProgramListId;
+
+/// What a bus is for, by the SDK's `BusTypes`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum BusType {
+    /// A main bus.
+    Main,
+    /// An auxiliary bus (a sidechain, say).
+    Aux,
+}
+
+impl BusType {
+    /// The type a `BusTypes` value names, or `None` for any other.
+    #[must_use]
+    pub fn from_raw(raw: i32) -> Option<Self> {
+        [Self::Main, Self::Aux]
+            .into_iter()
+            .find(|kind| kind.raw() == raw)
+    }
+
+    /// The `BusTypes` value.
+    #[must_use]
+    pub fn raw(self) -> i32 {
+        crate::sdk_enum_i32(match self {
+            Self::Main => vst3::Steinberg::Vst::BusTypes_::kMain,
+            Self::Aux => vst3::Steinberg::Vst::BusTypes_::kAux,
+        })
+    }
+}
+
+/// The kind of a key switch, by the SDK's `KeyswitchTypeIDs`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum KeyswitchKind {
     /// Switch selected by playing its key before the note.
-    pub const NOTE_ON_KEYSWITCH: u32 = KeyswitchTypeIDs_::kNoteOnKeyswitchTypeID;
+    NoteOn,
     /// Switch that can be changed while a note sustains.
-    pub const ON_THE_FLY_KEYSWITCH: u32 = KeyswitchTypeIDs_::kOnTheFlyKeyswitchTypeID;
+    OnTheFly,
     /// Switch applied on note release.
-    pub const ON_RELEASE_KEYSWITCH: u32 = KeyswitchTypeIDs_::kOnReleaseKeyswitchTypeID;
+    OnRelease,
     /// A key *range* mapped to an articulation rather than a single switch key.
-    pub const KEY_RANGE: u32 = KeyswitchTypeIDs_::kKeyRangeTypeID;
+    KeyRange,
+    /// A kind the SDK does not define, as the plugin sent it.
+    Other(u32),
 }
 
-/// VST3 `PhysicalUITypeIDs` constants — which physical control a
-/// note-expression-physical-UI mapping entry refers to. Mirrors
-/// `PhysicalUITypeIDs_` from the Steinberg SDK. Returned (as the first tuple
-/// element) by
-/// the host's physical UI mapping query.
-///
-/// Casts are `u32 as u32` no-ops on unix and `c_int as u32` on Windows; allow
-/// the former's lint.
-#[allow(clippy::unnecessary_cast)]
-pub mod physical_ui_type {
-    use super::PhysicalUITypeIDs_;
+impl KeyswitchKind {
+    /// The kind a `KeyswitchTypeIDs` value names.
+    #[must_use]
+    pub fn from_raw(raw: u32) -> Self {
+        match raw {
+            KeyswitchTypeIDs_::kNoteOnKeyswitchTypeID => Self::NoteOn,
+            KeyswitchTypeIDs_::kOnTheFlyKeyswitchTypeID => Self::OnTheFly,
+            KeyswitchTypeIDs_::kOnReleaseKeyswitchTypeID => Self::OnRelease,
+            KeyswitchTypeIDs_::kKeyRangeTypeID => Self::KeyRange,
+            other => Self::Other(other),
+        }
+    }
+}
 
+/// Which physical control a note-expression-physical-UI mapping entry refers
+/// to, by the SDK's `PhysicalUITypeIDs`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum PhysicalUiType {
     /// Horizontal movement of the physical control.
-    pub const X_MOVEMENT: u32 = PhysicalUITypeIDs_::kPUIXMovement as u32;
+    XMovement,
     /// Vertical movement of the physical control.
-    pub const Y_MOVEMENT: u32 = PhysicalUITypeIDs_::kPUIYMovement as u32;
+    YMovement,
     /// Pressure applied to the physical control.
-    pub const PRESSURE: u32 = PhysicalUITypeIDs_::kPUIPressure as u32;
-    /// Sentinel for "no physical UI type" / unmapped.
-    pub const INVALID: u32 = PhysicalUITypeIDs_::kInvalidPUITypeID as u32;
+    Pressure,
+    /// A type the SDK does not define (including its "invalid" sentinel), as
+    /// the plugin sent it.
+    Other(u32),
 }
 
-/// VST3 `IPrefetchableSupport` result constants, mirroring
-/// `ePrefetchableSupport_` from the Steinberg SDK. Returned by
-/// the host's prefetchable-support query.
-///
-/// Casts are `u32 as u32` no-ops on unix and `c_int as u32` on Windows; allow
-/// the former's lint.
-#[allow(clippy::unnecessary_cast)]
-pub mod prefetchable_support {
-    use super::ePrefetchableSupport_;
+impl PhysicalUiType {
+    /// The type a `PhysicalUITypeIDs` value names.
+    #[must_use]
+    pub fn from_raw(raw: u32) -> Self {
+        let is = |sdk| raw == crate::sdk_enum_u32(sdk);
+        if is(PhysicalUITypeIDs_::kPUIXMovement) {
+            Self::XMovement
+        } else if is(PhysicalUITypeIDs_::kPUIYMovement) {
+            Self::YMovement
+        } else if is(PhysicalUITypeIDs_::kPUIPressure) {
+            Self::Pressure
+        } else {
+            Self::Other(raw)
+        }
+    }
 
+    /// The `PhysicalUITypeIDs` value.
+    #[must_use]
+    pub fn raw(self) -> u32 {
+        match self {
+            Self::XMovement => crate::sdk_enum_u32(PhysicalUITypeIDs_::kPUIXMovement),
+            Self::YMovement => crate::sdk_enum_u32(PhysicalUITypeIDs_::kPUIYMovement),
+            Self::Pressure => crate::sdk_enum_u32(PhysicalUITypeIDs_::kPUIPressure),
+            Self::Other(raw) => raw,
+        }
+    }
+}
+
+/// A plugin's answer to `IPrefetchableSupport`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PrefetchSupport {
     /// The plugin can never be used in prefetch (offline look-ahead) mode.
-    pub const NEVER: u32 = ePrefetchableSupport_::kIsNeverPrefetchable as u32;
-    /// The plugin currently supports prefetch.
-    pub const YET: u32 = ePrefetchableSupport_::kIsYetPrefetchable as u32;
-    /// The plugin doesn't currently support prefetch (but may later).
-    pub const NOT_YET: u32 = ePrefetchableSupport_::kIsNotYetPrefetchable as u32;
+    Never,
+    /// The plugin supports prefetch now.
+    Yes,
+    /// The plugin does not support prefetch now, but may later.
+    NotYet,
+    /// A value the SDK does not define, as returned.
+    Unknown(u32),
+}
+
+impl PrefetchSupport {
+    /// The `ePrefetchableSupport` value the plugin returned.
+    #[must_use]
+    pub fn from_raw(raw: u32) -> Self {
+        let is = |sdk| raw == crate::sdk_enum_u32(sdk);
+        if is(ePrefetchableSupport_::kIsNeverPrefetchable) {
+            Self::Never
+        } else if is(ePrefetchableSupport_::kIsYetPrefetchable) {
+            Self::Yes
+        } else if is(ePrefetchableSupport_::kIsNotYetPrefetchable) {
+            Self::NotYet
+        } else {
+            Self::Unknown(raw)
+        }
+    }
 }
 
 #[cfg(test)]
 mod note_expression_info_tests {
-    use super::{Vst3NoteExpressionInfo, note_expression_flags};
+    use super::{NoteExpressionFlags, UnitId, Vst3NoteExpressionInfo};
 
     /// Copies a Rust `&str` into a UTF-16, null-terminated `String128` buffer.
     fn string128(s: &str) -> [u16; 128] {
@@ -662,15 +791,16 @@ mod note_expression_info_tests {
         raw.valueDesc.stepCount = 0;
         raw.associatedParameterId = 42;
         // Bipolar + associated-param-id-valid.
-        raw.flags = note_expression_flags::IS_BIPOLAR
-            | note_expression_flags::ASSOCIATED_PARAMETER_ID_VALID;
+        raw.flags = (NoteExpressionFlags::IS_BIPOLAR
+            | NoteExpressionFlags::ASSOCIATED_PARAMETER_ID_VALID)
+            .bits();
 
         let info = Vst3NoteExpressionInfo::from_c(&raw);
 
         assert_eq!(info.type_id, 1);
         assert_eq!(info.title_string(), "Pan");
         assert_eq!(info.units_string(), "L/R");
-        assert_eq!(info.unit_id, 3);
+        assert_eq!(info.unit_id, UnitId::new(3));
         assert_eq!(info.default_value, 0.5);
         assert_eq!(info.minimum, 0.0);
         assert_eq!(info.maximum, 1.0);
@@ -686,7 +816,8 @@ mod note_expression_info_tests {
 
 #[cfg(test)]
 mod keyswitch_info_tests {
-    use super::{Vst3KeyswitchInfo, keyswitch_type};
+    use super::{KeyswitchKind, Vst3KeyswitchInfo};
+    use vst3::Steinberg::Vst::KeyswitchTypeIDs_;
 
     fn string128(s: &str) -> [u16; 128] {
         let mut buf = [0u16; 128];
@@ -702,7 +833,7 @@ mod keyswitch_info_tests {
     fn from_c_decodes_articulation_and_range() {
         // SAFETY: all-zero bytes is a valid value of this plain-data SDK struct.
         let mut raw: vst3::Steinberg::Vst::KeyswitchInfo = unsafe { std::mem::zeroed() };
-        raw.typeId = keyswitch_type::NOTE_ON_KEYSWITCH;
+        raw.typeId = KeyswitchTypeIDs_::kNoteOnKeyswitchTypeID;
         raw.title = string128("Staccato");
         raw.shortTitle = string128("Stac");
         raw.keyswitchMin = 24; // C1
@@ -712,7 +843,7 @@ mod keyswitch_info_tests {
 
         let info = Vst3KeyswitchInfo::from_c(&raw);
 
-        assert_eq!(info.type_id, keyswitch_type::NOTE_ON_KEYSWITCH);
+        assert_eq!(info.kind, KeyswitchKind::NoteOn);
         assert_eq!(info.title_string(), "Staccato");
         assert_eq!(info.short_title_string(), "Stac");
         assert_eq!(info.keyswitch_min, 24);
@@ -723,7 +854,7 @@ mod keyswitch_info_tests {
 
 #[cfg(test)]
 mod unit_info_tests {
-    use super::{Vst3ProgramListInfo, Vst3UnitInfo, unit_ids};
+    use super::{NO_PARENT, NO_PROGRAM_LIST, UnitId, Vst3ProgramListInfo, Vst3UnitInfo};
 
     fn string128(s: &str) -> [u16; 128] {
         let mut buf = [0u16; 128];
@@ -752,14 +883,9 @@ mod unit_info_tests {
     /// `-1` a caller could mistake for a unit id.
     #[test]
     fn the_root_units_absent_parent_decodes_to_none() {
-        let info = Vst3UnitInfo::from_c(&raw_unit(
-            unit_ids::ROOT,
-            unit_ids::NO_PARENT,
-            "Root",
-            unit_ids::NO_PROGRAM_LIST,
-        ));
+        let info = Vst3UnitInfo::from_c(&raw_unit(0, NO_PARENT, "Root", NO_PROGRAM_LIST));
 
-        assert_eq!(info.id, 0);
+        assert_eq!(info.id, UnitId::ROOT);
         assert_eq!(info.parent, None);
         assert_eq!(info.name, "Root");
     }
@@ -771,7 +897,7 @@ mod unit_info_tests {
         let mut info = Vst3UnitInfo::from_c(&raw_unit(7, 0, "Part 2", 100));
         info.resolve_program_list(&[100]);
 
-        assert_eq!(info.parent, Some(0));
+        assert_eq!(info.parent, Some(UnitId::ROOT));
         assert_eq!(info.name, "Part 2");
         assert_eq!(
             info.name.len(),
@@ -801,7 +927,7 @@ mod unit_info_tests {
     /// even though both read as `None`.
     #[test]
     fn no_program_list_is_not_reported_as_dangling() {
-        let mut info = Vst3UnitInfo::from_c(&raw_unit(1, 0, "Plain", unit_ids::NO_PROGRAM_LIST));
+        let mut info = Vst3UnitInfo::from_c(&raw_unit(1, 0, "Plain", NO_PROGRAM_LIST));
         info.resolve_program_list(&[100]);
 
         assert_eq!(info.program_list, None);
@@ -822,5 +948,76 @@ mod unit_info_tests {
 
         assert_eq!(info.program_count, 0);
         assert_eq!(info.name, "Presets");
+    }
+}
+
+#[cfg(test)]
+mod bus_type_tests {
+    use super::{BusInfo, BusType, UnitId};
+
+    /// **Each `BusTypes` value names its own variant, and anything else names
+    /// none**; `BusInfo` decodes through it, and a zeroed record is a main bus.
+    ///
+    /// Mutation (run, fails): swap `Main` and `Aux` in `BusType::raw` -> the
+    /// round trip and the zeroed-record assertion fail; make `from_raw` return
+    /// `Some(Main)` for an unknown value -> the `99` assertion fails.
+    #[test]
+    fn a_bus_type_round_trips_and_an_undefined_one_is_none() {
+        for kind in [BusType::Main, BusType::Aux] {
+            assert_eq!(BusType::from_raw(kind.raw()), Some(kind));
+        }
+        assert_ne!(BusType::Main.raw(), BusType::Aux.raw());
+        assert_eq!(BusType::from_raw(99), None);
+        assert_eq!(BusInfo::default().bus_type(), Some(BusType::Main));
+    }
+
+    /// The root unit is id 0 and an id round-trips its raw.
+    ///
+    /// Mutation (run, fails): `get` returning `0` always -> the second
+    /// assertion fails.
+    #[test]
+    fn a_unit_id_keeps_its_raw_and_the_root_is_zero() {
+        assert_eq!(UnitId::ROOT.get(), 0);
+        assert_eq!(UnitId::new(7).get(), 7);
+        assert_eq!(i32::from(UnitId::from(-3)), -3);
+    }
+}
+
+#[cfg(test)]
+mod unknown_bits_tests {
+    use super::{NoteExpressionFlags, ParameterFlags, Vst3NoteExpressionInfo, Vst3ParameterInfo};
+    use crate::sdk::zeroed;
+
+    /// **A flag bit the plugin sets that this host does not name survives the
+    /// decode** of a parameter and of a note expression, so a caller sees what
+    /// the plugin said.
+    ///
+    /// Mutation (run, each fails): `from_bits_truncate` in
+    /// `Vst3ParameterInfo::from_c` together with removing `ParameterFlags`'s
+    /// `const _ = !0` -> the first assertion; the same pair for
+    /// `Vst3NoteExpressionInfo::from_c` and `NoteExpressionFlags` -> the second.
+    /// (`from_bits_truncate` alone passes: that const makes every bit "named",
+    /// which is what keeps unknown bits.)
+    #[test]
+    fn an_unnamed_flag_bit_survives_the_decode() {
+        let unnamed = 1 << 20;
+
+        let mut raw: vst3::Steinberg::Vst::ParameterInfo = zeroed();
+        raw.flags = ParameterFlags::CAN_AUTOMATE.bits() | unnamed;
+        let info = Vst3ParameterInfo::from_c(&raw);
+        assert_eq!(
+            info.flags().bits(),
+            ParameterFlags::CAN_AUTOMATE.bits() | unnamed
+        );
+        assert!(info.can_automate());
+
+        let mut raw: vst3::Steinberg::Vst::NoteExpressionTypeInfo = zeroed();
+        raw.flags = NoteExpressionFlags::IS_BIPOLAR.bits() | unnamed;
+        let info = Vst3NoteExpressionInfo::from_c(&raw);
+        assert_eq!(
+            info.flags.bits(),
+            NoteExpressionFlags::IS_BIPOLAR.bits() | unnamed
+        );
+        assert!(info.is_bipolar());
     }
 }

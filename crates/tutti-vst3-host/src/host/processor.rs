@@ -15,8 +15,8 @@ use tutti_types::ChannelLayout;
 
 use crate::events::{InputEvents, Stager, drain_midi};
 use crate::types::{
-    AudioBuffer, MidiEvent, ParameterChanges, ProcessMode, ProcessOutputRef, TransportInfo,
-    Vst3Sample, to_process_context,
+    AudioBuffer, MidiEvent, ParameterChanges, ProcessContextRequirements, ProcessMode,
+    ProcessOutputRef, TransportInfo, Vst3Sample, to_process_context,
 };
 use tutti_vst3_ffi::{AudioSide, BusBuffers, EventList, ParameterChangesImpl, ProcessIo};
 
@@ -30,16 +30,18 @@ use super::shell::{Hold, Shell};
 /// How many of the Controller's writes the ring holds between two blocks.
 pub(super) const EDIT_CAPACITY: usize = 256;
 
-/// The plugin's `process` returned a result other than `kResultOk`.
+/// The plugin's `process` (or the call that readies it) failed: the status it
+/// returned, or why the host did not make the call.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ProcessFailed {
-    /// The raw VST3 `tresult`.
-    pub code: i32,
+    /// What failed, by name; [`StatusError::code`](crate::StatusError::code) is
+    /// the raw `tresult`.
+    pub error: tutti_vst3_ffi::Vst3Error,
 }
 
 impl std::fmt::Display for ProcessFailed {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "the plugin's process returned code {}", self.code)
+        write!(f, "the plugin's process failed: {}", self.error)
     }
 }
 
@@ -179,7 +181,7 @@ pub struct Vst3Processor<T: Vst3Sample> {
     audio_side: AudioSide,
     /// What `getProcessContextRequirements` answered at activation; `None` when
     /// the plugin does not implement the interface.
-    context_requirements: Option<u32>,
+    context_requirements: Option<ProcessContextRequirements>,
     drain: EditDrain,
     /// Counts the drains, for the Controller's record of what a block has taken.
     beat: DrainBeat,
@@ -210,7 +212,7 @@ pub(super) struct ProcessorParts {
     pub shell: Arc<Shell>,
     pub audio: AudioIO,
     pub audio_side: AudioSide,
-    pub context_requirements: Option<u32>,
+    pub context_requirements: Option<ProcessContextRequirements>,
     pub drain: EditDrain,
     pub beat: DrainBeat,
     pub carried: Vec<(u32, Normalized)>,
@@ -348,8 +350,16 @@ impl<T: Vst3Sample> Vst3Processor<T> {
         }
         // Processing resumes lazily after a `stop`. (Activation starts it.)
         if !self.processing {
-            let _ = self.audio_side.set_processing(true);
-            self.processing = true;
+            // `kNotImplemented` is a plugin that has no use for the call, not a
+            // failure; any other refusal fails the block (outputs cleared), and
+            // `processing` stays off so the next block asks again.
+            match self.audio_side.set_processing(true) {
+                Ok(()) | Err(tutti_vst3_ffi::Vst3Error::NotImplemented) => self.processing = true,
+                Err(error) => {
+                    buffer.clear_outputs();
+                    return Err(ProcessFailed { error });
+                }
+            }
         }
         // The Controller's writes since the last block, put ahead of this
         // block's automation below, so where both set one parameter the
@@ -366,14 +376,26 @@ impl<T: Vst3Sample> Vst3Processor<T> {
         // Route IMidiMapping-mapped CCs into parameter changes (when the
         // plugin exposes a non-empty CC→param table) and stage the filtered
         // MIDI plus every other input event source into the input list.
-        let effective_params = stage_input_events(
+        let Some(effective_params) = stage_input_events(
             &mut self.audio.cc,
             &mut self.audio.input.stager,
             &self.audio.input.events,
             events,
             param_changes,
-        );
-        self.audio.output.events.clear();
+        ) else {
+            // A plugin thread is inside the input list, which therefore still
+            // holds the last block's events: processing now would replay them.
+            // The block is silence, nothing is emitted, and the skip is counted
+            // (`event_lists_busy`). The controller's writes wait in `pending`.
+            buffer.clear_outputs();
+            return Ok(self.audio.output.emitted_ref());
+        };
+        if !self.audio.output.events.clear() {
+            // The output list is busy the same way: the plugin would append to
+            // the last block's output, and the host would read it twice.
+            buffer.clear_outputs();
+            return Ok(self.audio.output.emitted_ref());
+        }
 
         // Refill the pooled input/output ParameterChanges wrappers in
         // place instead of building fresh ComWrappers every block.
@@ -391,8 +413,11 @@ impl<T: Vst3Sample> Vst3Processor<T> {
         self.pending.clear();
         self.audio.output.param_changes.clear_in_place();
 
-        let mut process_context =
-            to_process_context(transport, self.context_requirements.unwrap_or(u32::MAX));
+        let mut process_context = to_process_context(
+            transport,
+            self.context_requirements
+                .unwrap_or(ProcessContextRequirements::all()),
+        );
         process_context.sampleRate = buffer.sample_rate;
 
         // The setup comes from `process_setup()`, the same accessor
@@ -411,7 +436,7 @@ impl<T: Vst3Sample> Vst3Processor<T> {
             Ok(buses) => buses,
             Err(error) => {
                 buffer.clear_outputs();
-                return Err(ProcessFailed { code: error.code() });
+                return Err(ProcessFailed { error });
             }
         };
         let result = self.audio_side.process(ProcessIo {
@@ -429,7 +454,7 @@ impl<T: Vst3Sample> Vst3Processor<T> {
 
         if let Err(error) = result {
             buffer.clear_outputs();
-            return Err(ProcessFailed { code: error.code() });
+            return Err(ProcessFailed { error });
         }
 
         self.audio.output.drain_emitted();
@@ -453,6 +478,23 @@ impl<T: Vst3Sample> Vst3Processor<T> {
                 self.audio.midi_learn.capture(channel, controller);
             }
         }
+    }
+
+    /// Blocks skipped (rendered as silence, nothing emitted) or lists left
+    /// uncleared since activation because a plugin thread was inside a call on
+    /// the input or output event list (`getEventCount`, `getEvent`, `addEvent`)
+    /// when the audio thread needed it. Zero for a plugin that keeps to the
+    /// threading rules; the host never waits on the plugin.
+    pub fn event_lists_busy(&self) -> u64 {
+        self.audio.input.events.busy() + self.audio.output.events.busy()
+    }
+
+    /// The input event list, shared: a conformance test holds it
+    /// ([`EventList::hold_as_plugin`](tutti_vst3_ffi::EventList::hold_as_plugin))
+    /// as a plugin thread inside `getEvent` does, while the processor renders.
+    #[cfg(feature = "conformance")]
+    pub fn input_event_list(&self) -> vst3::ComWrapper<tutti_vst3_ffi::EventList> {
+        self.audio.input.events.clone()
     }
 
     /// Texts (chord, scale or note-expression text) dropped since activation

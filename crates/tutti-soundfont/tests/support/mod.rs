@@ -10,8 +10,11 @@
 
 use std::ops::{Deref, DerefMut};
 
+pub mod font;
+pub mod rig;
+
 use tutti_graph::contract::{Direct, HAND_EVENT_CAPACITY};
-use tutti_graph::{Event, Offset};
+use tutti_graph::{Event, Offset, Status};
 use tutti_midi_types::ump::MidiEvent;
 use tutti_soundfont::SoundFontUnit;
 use tutti_types::{SampleRate, Samples};
@@ -24,6 +27,11 @@ pub const BLOCK: usize = 64;
 pub struct Hand {
     direct: Direct<SoundFontUnit>,
     queued: Vec<Event>,
+    /// What the last block returned, and so what its outputs are: a node that
+    /// returns `Silent` or `Idle` wrote nothing, and the executor zeroes.
+    status: Status,
+    len: usize,
+    silence: Vec<f32>,
 }
 
 impl Hand {
@@ -38,6 +46,9 @@ impl Hand {
         Self {
             direct: Direct::new(unit, rate, BLOCK),
             queued: Vec::with_capacity(HAND_EVENT_CAPACITY),
+            status: Status::Modified,
+            len: BLOCK,
+            silence: vec![0.0; BLOCK],
         }
     }
 
@@ -53,8 +64,29 @@ impl Hand {
 
     /// One block of `frames` (at most [`BLOCK`]): the queued events in it,
     /// stable-sorted by offset (an event past a shorter block lands on its
-    /// last frame). `(left, right)`.
+    /// last frame). `(left, right)`, the dry pair.
     pub fn block(&mut self, frames: usize) -> (&[f32], &[f32]) {
+        self.run(frames);
+        (self.plane(0), self.plane(1))
+    }
+
+    /// The status the last block returned.
+    pub fn status(&self) -> Status {
+        self.status
+    }
+
+    /// Output `c` of the last block, as the executor would hand it on: zeros
+    /// for a node that returned `Silent` or `Idle`.
+    pub fn plane(&self, c: usize) -> &[f32] {
+        match self.status {
+            Status::Silent | Status::Idle => &self.silence[..self.len],
+            _ => self.direct.output(c),
+        }
+    }
+
+    /// One block of `frames`, as [`block`](Self::block), leaving the outputs to
+    /// [`plane`](Self::plane).
+    pub fn run(&mut self, frames: usize) -> Status {
         self.direct.set_block_len(frames);
         let last = Offset::new(frames - 1, Samples(frames)).expect("inside");
         for e in &mut self.queued {
@@ -73,8 +105,9 @@ impl Hand {
         }
         self.direct.events(0, &self.queued);
         self.queued.clear();
-        self.direct.block();
-        (self.direct.output(0), self.direct.output(1))
+        self.status = self.direct.block();
+        self.len = frames;
+        self.status
     }
 
     /// One frame (a one-frame block): `[left, right]`.

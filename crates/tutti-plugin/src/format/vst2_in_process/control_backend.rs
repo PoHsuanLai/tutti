@@ -10,6 +10,7 @@
 use std::ffi::c_void;
 use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
+use tutti_plugin_types::MainThread;
 
 use parking_lot::Mutex;
 use tutti_plugin_types::Control;
@@ -50,8 +51,8 @@ impl HostParams for InProcessVst2Backend {
         // `None` for a plugin exposing no `getParameter`, which is exactly this
         // trait's "unavailable". Wrapping it in `Some` would report a missing
         // accessor as a present value. An id the plugin does not have takes the
-        // same `None`.
-        Control::parameter(&**self.inner.lock(), id)
+        // same `None`. `getParameter` is any-thread under the VST2 SDK.
+        self.inner.lock().parameter_value(id)
     }
 
     fn set_parameter_value(&self, id: ParamId, value: Normalized) {
@@ -84,7 +85,7 @@ impl HostParams for InProcessVst2Backend {
     /// number for one frame.
     fn parameter_text(&self, id: ParamId, value: Normalized) -> Option<String> {
         let instance = self.inner.try_lock()?;
-        Control::parameter_text(&**instance, id, value)
+        instance.display_if_current(id, value)
     }
 
     /// Parse through the plugin's own `effString2Parameter`.
@@ -119,8 +120,21 @@ impl HostState for InProcessVst2Backend {
     /// left the caller unable to tell "the plugin has no state" from "asking it
     /// failed". The in-process path cannot hit the transport's size limit, so
     /// `Rejected` is the only failure it can produce.
+    ///
+    /// **Takes no [`MainThread`]**, and reaches `effGetChunk` from whichever thread
+    /// calls it, behind the backend's lock. `HostState::save_state` is shared by every
+    /// backend and is called off the main thread on purpose: the health snapshot is a
+    /// job on the task pool, because a subprocess save is a blocking round trip with a
+    /// ten-second timeout. For this backend that is a chunk read beside the editor and
+    /// the audio thread, which the SDK does not promise to be safe; a plugin that
+    /// cannot take it is the `Shell` clause 3 convention breaking. Deferred: the fix
+    /// is a main-thread route for the snapshot (the session asks the main thread for
+    /// an in-process plugin's state), which is a change to `tutti-session` and
+    /// `bevy-tutti`, not to this crate.
     fn save_state(&self) -> Result<Vec<u8>, StateError> {
-        Control::save_state(&mut **self.inner.lock())
+        self.inner
+            .lock()
+            .read_state()
             .map_err(|e| StateError::Rejected(e.to_string()))
     }
 
@@ -128,8 +142,8 @@ impl HostState for InProcessVst2Backend {
     ///
     /// This is the whole change on the in-process path: the `Result` was
     /// already in hand and discarded on the previous line.
-    fn load_state(&self, data: &[u8]) -> Result<(), StateError> {
-        Control::load_state(&mut **self.inner.lock(), data)
+    fn load_state(&self, main: &MainThread, data: &[u8]) -> Result<(), StateError> {
+        Control::load_state(&mut **self.inner.lock(), main, data)
             .map_err(|e| StateError::Rejected(e.to_string()))
     }
 }
@@ -142,8 +156,13 @@ impl crate::backend::HostPresets for InProcessVst2Backend {
     /// really are dense. `bank` is `None`: VST2 exposes one flat set, and
     /// inventing a bank name to fill the field would be a claim the format
     /// never made.
-    fn presets(&self) -> Vec<Preset> {
-        Control::presets(&mut **self.inner.lock())
+    fn presets(&self, main: &MainThread) -> Vec<Preset> {
+        self.inner
+            .lock()
+            .programs(main)
+            .into_iter()
+            .map(|(index, name)| Preset::new(PresetId::Number(index), name))
+            .collect()
     }
 
     /// Switch program, bracketed by `effBeginSetProgram` / `effEndSetProgram`.
@@ -151,12 +170,15 @@ impl crate::backend::HostPresets for InProcessVst2Backend {
     /// `false` for an id this format cannot address — a `Program` or `Location`
     /// belongs to another format and names no VST2 program, so it is refused
     /// rather than coerced into an index.
-    fn load_preset(&self, id: &PresetId) -> bool {
-        Control::load_preset(&mut **self.inner.lock(), id)
+    fn load_preset(&self, main: &MainThread, id: &PresetId) -> bool {
+        match id.number() {
+            Some(index) => self.inner.lock().set_program(main, index),
+            None => false,
+        }
     }
 
-    fn current_preset(&self) -> Option<PresetId> {
-        Control::current_preset(&mut **self.inner.lock())
+    fn current_preset(&self, main: &MainThread) -> Option<PresetId> {
+        Some(PresetId::Number(self.inner.lock().current_program(main)))
     }
 }
 
@@ -180,6 +202,7 @@ impl HostEditor for InProcessVst2Backend {
     /// `_scale` is unused: VST2 has no call that takes a content scale.
     fn open_editor(
         &self,
+        main: &MainThread,
         parent_ptr: *mut c_void,
         _scale: ContentScale,
     ) -> std::result::Result<EditorSize, EditorError> {
@@ -189,7 +212,7 @@ impl HostEditor for InProcessVst2Backend {
         let parent = unsafe { tutti_vst2_host::WindowHandle::from_ptr(parent_ptr) };
         let mut instance = self.inner.lock();
         instance
-            .open_editor(parent)
+            .open_editor(main, parent)
             .map(|sz| EditorSize {
                 width: sz.width,
                 height: sz.height,
@@ -197,28 +220,28 @@ impl HostEditor for InProcessVst2Backend {
             .map_err(|e| EditorError::PluginError(e.to_string()))
     }
 
-    fn close_editor(&self) {
-        self.inner.lock().close_editor();
+    fn close_editor(&self, main: &MainThread) {
+        self.inner.lock().close_editor(main);
     }
 
-    fn editor_idle(&self) {
+    fn editor_idle(&self, main: &MainThread) {
         // Before the lock below, not inside it: the drain takes the same lock
         // and would deadlock under that guard. This runs on the main thread,
         // every editor frame, which is what makes it the delivery point for the
         // rate the audio thread had to park.
-        super::client::drain_sample_rate(&self.pending_sample_rate, &self.inner);
+        super::client::drain_sample_rate(main, &self.pending_sample_rate, &self.inner);
 
         let (changes, param_changes) = {
             let mut instance = self.inner.lock();
             if instance.is_lost() {
                 return;
             }
-            instance.editor_idle();
+            instance.editor_idle(main);
             // What the plugin changed about itself since the last pump: the
             // host's re-reads after the rate drained above, and an
             // `audioMasterIOChanged` the plugin raised. Re-read here, on the
             // main thread, where `effGetTailSize` belongs.
-            (instance.poll_changes(), instance.drain_param_changes())
+            (instance.poll_changes(main), instance.drain_param_changes())
         };
         // Drain any plugin-internal parameter changes (knob movement on
         // the editor surface) and forward them to the user sink. Fires

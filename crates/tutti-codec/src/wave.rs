@@ -44,7 +44,7 @@ pub struct Wave {
 /// What a bare channel count is taken to mean: the engine's own order where it
 /// has one, else channels that feed no speaker.
 fn assumed(channels: usize) -> ChannelTopology {
-    let layout = ChannelLayout::from(channels);
+    let layout = ChannelLayout::try_from(channels).expect("a wave has at most u16::MAX channels");
     ChannelTopology::smpte(layout).unwrap_or_else(|| ChannelTopology::discrete(layout))
 }
 
@@ -59,12 +59,20 @@ impl std::fmt::Debug for Wave {
 
 impl Wave {
     /// Creates an empty wave with `channels` channels.
+    ///
+    /// # Panics
+    ///
+    /// If `channels` is above `u16::MAX`, which no layout holds.
     pub fn new(channels: usize, sample_rate: impl Into<tutti_types::SampleRate>) -> Self {
         Self::with_capacity(channels, sample_rate, 0)
     }
 
     /// Creates an empty wave with `channels` channels, each with room for
     /// `capacity` frames.
+    ///
+    /// # Panics
+    ///
+    /// If `channels` is above `u16::MAX`, which no layout holds.
     pub fn with_capacity(
         channels: usize,
         sample_rate: impl Into<tutti_types::SampleRate>,

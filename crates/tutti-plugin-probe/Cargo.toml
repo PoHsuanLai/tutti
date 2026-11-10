@@ -1,0 +1,47 @@
+[package]
+name = "tutti-plugin-probe"
+version = "0.0.1"
+edition.workspace = true
+rust-version.workspace = true
+description = "plugin-probe: loads a plugin just far enough to read its descriptor, writes it to a result file and exits"
+license.workspace = true
+repository.workspace = true
+keywords = ["audio", "plugin", "vst3", "clap", "scan"]
+categories = ["multimedia::audio"]
+publish = false
+
+[lints]
+workspace = true
+
+# `plugin-probe <path> <result-file>`: spawned by `tutti-plugin`'s `probe_metadata`,
+# never run by hand. Depends on the format hosts and the descriptor types, and on
+# no hosting (`-ipc`, `-host`, `tutti-plugin`): design 021 section 2.5.
+[[bin]]
+name = "plugin-probe"
+path = "src/main.rs"
+
+[features]
+default = ["clap", "vst3", "vst2"]
+clap = ["dep:tutti-clap-host"]
+vst3 = ["dep:tutti-vst3-host"]
+vst2 = ["dep:tutti-vst2-host"]
+
+[dependencies]
+tutti-plugin-types = { path = "../tutti-plugin-types", features = ["probe-wire"] }
+tutti-clap-host = { path = "../tutti-clap-host", optional = true }
+tutti-vst3-host = { path = "../tutti-vst3-host", optional = true }
+tutti-vst2-host = { path = "../tutti-vst2-host", optional = true }
+
+[lib]
+name = "tutti_plugin_probe"
+path = "src/lib.rs"
+
+[dev-dependencies]
+# `tests/vst2_not_activated.rs`: the reference VST2 plugin, found beside the test
+# binary, and `libloading` to read what it recorded.
+tutti-fixtures = { path = "../../testing/tutti-fixtures" }
+tutti-vst2-test-plugin = { path = "../../testing/tutti-vst2-test-plugin" }
+libloading = "0.8"
+tutti-vst2-host = { path = "../tutti-vst2-host" }
+tutti-types = { path = "../tutti-types" }
+tempfile = "3"

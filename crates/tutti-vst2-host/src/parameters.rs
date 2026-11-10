@@ -21,13 +21,10 @@ use tutti_plugin_types::{
 use crate::host::ParameterChange;
 use crate::loaded::Vst2Loaded;
 
-/// Wrapper to make `Arc<dyn PluginParameters>` `Send`.
+/// The plugin's parameter object, shared by the `Vst2Loaded` and the Processor.
 ///
-/// SAFETY: the concrete type behind the trait object
-/// (`PluginParametersInstance`) is `Send + Sync`, but that information is
-/// erased by `get_parameter_object()` returning `Arc<dyn PluginParameters>`.
+/// `PluginParameters` is `Send + Sync`, so the handle is `Send` without an `unsafe impl`.
 pub(crate) struct SendParams(pub(crate) Arc<dyn vst::plugin::PluginParameters>);
-unsafe impl Send for SendParams {}
 
 impl std::ops::Deref for SendParams {
     type Target = dyn vst::plugin::PluginParameters;
@@ -57,6 +54,32 @@ impl Vst2Loaded {
     /// which clones the plugin's name and vendor strings.
     pub(crate) fn param_index(&self, id: ParamId) -> Option<i32> {
         index_of(id, self.initial_values.len())
+    }
+
+    /// The parameter's normalized value, `0..=1`. `None` when `id` addresses no
+    /// declared parameter, or the plugin exposes no `getParameter`.
+    ///
+    /// `getParameter` is callable from either thread under the VST2 SDK (as is
+    /// `setParameter`, see [`write_parameter`](Self::write_parameter)), so this
+    /// takes no [`MainThread`](tutti_plugin_types::MainThread): the in-process
+    /// backend reads it behind its own lock, from whichever thread asks.
+    pub fn parameter_value(&self, id: ParamId) -> Option<Normalized> {
+        let index = self.param_index(id)?;
+        self.params
+            .get_parameter(index)
+            .map(|v| Normalized::clamped(f64::from(v)))
+    }
+
+    /// The plugin's display text for `value`, only when `value` is the one the
+    /// plugin currently holds (see [`Control::parameter_text`]). Any thread, as
+    /// [`parameter_value`](Self::parameter_value).
+    ///
+    /// [`Control::parameter_text`]: tutti_plugin_types::Control::parameter_text
+    pub fn display_if_current(&self, id: ParamId, value: Normalized) -> Option<String> {
+        let current = self.parameter_value(id)?;
+        (current.get() == value.get())
+            .then(|| self.parameter_display(id))
+            .flatten()
     }
 
     /// Writes a parameter's normalized value. `false` when `id` addresses no

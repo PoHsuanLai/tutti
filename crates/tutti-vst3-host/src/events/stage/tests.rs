@@ -34,13 +34,13 @@ fn a_per_note_bend_range_outlives_its_block() {
         RPN_INDEX_PER_NOTE_PITCH_BEND_SENSITIVITY,
         PitchBendSensitivity::of(24).to_rpn_bits(),
     )];
-    stager.stage(
+    assert!(stager.stage(
         &list,
         &InputEvents {
             midi: &sensitivity,
             ..Default::default()
         },
-    );
+    ));
     assert_eq!(len(&list), 0, "the sensitivity stages nothing");
 
     let bend = [MidiEvent::per_note_pitch_bend(
@@ -49,13 +49,13 @@ fn a_per_note_bend_range_outlives_its_block() {
         60,
         signed_f32_to_bend_u32(0.25),
     )];
-    stager.stage(
+    assert!(stager.stage(
         &list,
         &InputEvents {
             midi: &bend,
             ..Default::default()
         },
-    );
+    ));
     list.with_events(|staged| match staged.events {
         [
             Event {
@@ -113,7 +113,7 @@ fn vst3_and_clap_bend_one_stream_by_the_same_semitones() {
     let mut stager = Stager::default();
     let mut clap = InputEventList::new();
     for (block, want) in [(&first[..], &[6.0, 12.0][..]), (&second[..], &[6.0][..])] {
-        stager.stage(&vst3, &midi_only(block));
+        assert!(stager.stage(&vst3, &midi_only(block)));
         clap.clear();
         clap.add_midi_events(block);
 
@@ -151,7 +151,7 @@ fn one_midi_event_stages_one_event() {
     let midi_events = [
         MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000).with_frame_offset(0),
     ];
-    stager.stage(&list, &midi_only(&midi_events));
+    assert!(stager.stage(&list, &midi_only(&midi_events)));
     assert_eq!(len(&list), 1);
 }
 
@@ -163,8 +163,8 @@ fn clear_empties_a_staged_block() {
         MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000).with_frame_offset(0),
         MidiEvent::note_off(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0).with_frame_offset(10),
     ];
-    stager.stage(&list, &midi_only(&midi_events));
-    list.clear();
+    assert!(stager.stage(&list, &midi_only(&midi_events)));
+    assert!(list.clear());
     assert_eq!(len(&list), 0);
 }
 
@@ -183,13 +183,13 @@ fn midi_staging_is_allocation_free_after_warmup() {
 
     // Warm up — the first call may grow (the default Vec cap is 256,
     // so this shouldn't, but prime anyway).
-    stager.stage(&list, &midi_only(&events));
-    list.clear();
+    assert!(stager.stage(&list, &midi_only(&events)));
+    assert!(list.clear());
 
     assert_no_alloc::assert_no_alloc(|| {
         for _ in 0..10_000 {
-            stager.stage(&list, &midi_only(&events));
-            list.clear();
+            assert!(stager.stage(&list, &midi_only(&events)));
+            assert!(list.clear());
         }
     });
 }
@@ -250,13 +250,13 @@ fn staging_every_source_is_allocation_free_after_warmup() {
     };
 
     // Warm up every buffer (events Vec / text arena).
-    stager.stage(&list, &src);
-    list.clear();
+    assert!(stager.stage(&list, &src));
+    assert!(list.clear());
 
     assert_no_alloc::assert_no_alloc(|| {
         for _ in 0..10_000 {
-            stager.stage(&list, &src);
-            list.clear();
+            assert!(stager.stage(&list, &src));
+            assert!(list.clear());
         }
     });
 }
@@ -376,7 +376,7 @@ fn a_full_block_from_every_source_stages_without_allocating() {
     let mut stager = Stager::default();
     assert_no_alloc::assert_no_alloc(|| {
         for _ in 0..4 {
-            stager.stage(&list, &src);
+            assert!(stager.stage(&list, &src));
         }
     });
     assert_eq!(len(&list), EVENT_CAPACITY, "every event fits the room");
@@ -432,7 +432,7 @@ fn events_on_one_frame_keep_their_source_order() {
 
     let list = EventList::input();
     let mut stager = Stager::default();
-    stager.stage(
+    assert!(stager.stage(
         &list,
         &InputEvents {
             midi: &midi,
@@ -441,7 +441,7 @@ fn events_on_one_frame_keep_their_source_order() {
             expr_ints: &expr_ints,
             ..Default::default()
         },
-    );
+    ));
 
     // The expected order, built from the sources: every event in source
     // order, then a stable sort by frame (outside any gate).
@@ -612,14 +612,14 @@ fn a_negative_offset_sorts_before_zero() {
     let note_expressions = [expr(3, 1), expr(-1, 2)];
     let list = EventList::input();
     let mut stager = Stager::default();
-    stager.stage(
+    assert!(stager.stage(
         &list,
         &InputEvents {
             midi: &midi,
             note_expressions: &note_expressions,
             ..Default::default()
         },
-    );
+    ));
     assert_eq!(
         staged(&list),
         vec![(-1, ("expr", 2)), (0, ("on", 60)), (3, ("expr", 1))]
@@ -667,7 +667,7 @@ fn draining_a_plugins_sysex_allocates_nothing() {
     let mut packets = Vec::new();
     MidiEvent::sysex7_fragments(MidiGroup::FIRST, &payload, &mut packets);
     let list = EventList::input();
-    Stager::default().stage(&list, &midi_only(&packets));
+    assert!(Stager::default().stage(&list, &midi_only(&packets)));
     let mut out = RtMidiEvents::new();
     assert_no_alloc::assert_no_alloc(|| drain_midi(&list, &mut out));
     assert_eq!(out.len(), MidiEvent::sysex7_packet_count(20));

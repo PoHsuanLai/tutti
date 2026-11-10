@@ -13,30 +13,27 @@
 use super::state::PosixFdEntry;
 use super::state::{HostState, TimerEntry};
 use crate::types::{AudioPortsRescan, ParamRescan, TrackPortType, TransportRequest, UndoChange};
-use clap_sys::ext::log::{
-    CLAP_LOG_DEBUG, CLAP_LOG_ERROR, CLAP_LOG_FATAL, CLAP_LOG_HOST_MISBEHAVING, CLAP_LOG_INFO,
-    CLAP_LOG_PLUGIN_MISBEHAVING, CLAP_LOG_WARNING, clap_log_severity,
-};
 use std::sync::atomic::Ordering;
 use std::time::Instant;
 use tutti_clap_ffi::{
-    HostCallbacks, TrackInfoWriter, TrackPortKind, TransportCommand, TuningInfoWriter,
+    AudioPortsRescanFlags, HostCallbacks, LogSeverity, ParamsRescanFlags, TrackInfoWriter,
+    TrackPortKind, TransportCommand, TuningInfoWriter,
 };
 use tutti_plugin_types::{Request, RescanScope};
 
 /// The stderr tag for each CLAP severity. Split out of the log method so the
 /// mapping is testable: inline, its seven arms were reachable only through
 /// the FFI, with stderr as the sole output.
-fn severity_label(severity: clap_log_severity) -> &'static str {
+fn severity_label(severity: LogSeverity) -> &'static str {
     match severity {
-        CLAP_LOG_DEBUG => "DEBUG",
-        CLAP_LOG_INFO => "INFO",
-        CLAP_LOG_WARNING => "WARN",
-        CLAP_LOG_ERROR => "ERROR",
-        CLAP_LOG_FATAL => "FATAL",
-        CLAP_LOG_HOST_MISBEHAVING => "HOST-MISBEHAVING",
-        CLAP_LOG_PLUGIN_MISBEHAVING => "PLUGIN-MISBEHAVING",
-        _ => "UNKNOWN",
+        LogSeverity::Debug => "DEBUG",
+        LogSeverity::Info => "INFO",
+        LogSeverity::Warning => "WARN",
+        LogSeverity::Error => "ERROR",
+        LogSeverity::Fatal => "FATAL",
+        LogSeverity::HostMisbehaving => "HOST-MISBEHAVING",
+        LogSeverity::PluginMisbehaving => "PLUGIN-MISBEHAVING",
+        LogSeverity::Unknown(_) => "UNKNOWN",
     }
 }
 
@@ -54,16 +51,16 @@ impl HostCallbacks for HostState {
     /// [`log_dropped_on_audio_thread`](Self::log_dropped_on_audio_thread)
     /// before decoding it, because building the `String` is itself one of
     /// the allocations that guard exists to prevent.)
-    fn log(&self, severity: i32, message: &str) {
+    fn log(&self, severity: LogSeverity, message: &str) {
         let label = severity_label(severity);
-        if label == "UNKNOWN" {
-            eprintln!("[clap-plugin ?{severity}] {message}");
+        if let LogSeverity::Unknown(raw) = severity {
+            eprintln!("[clap-plugin ?{raw}] {message}");
         } else {
             eprintln!("[clap-plugin {label}] {message}");
         }
         // Retain the line so a consumer can route it somewhere other than
         // stderr. Unrecognised severities are kept verbatim: see `LogRecord`.
-        self.log.push(severity, message.to_owned());
+        self.log.push(severity.raw(), message.to_owned());
     }
 
     /// `clap.log` is `[thread-safe]`, audio thread included, but recording a
@@ -91,11 +88,11 @@ impl HostCallbacks for HostState {
         Request::Callback.raise(&self.requests);
     }
 
-    fn params_rescan(&self, flags: u32) {
+    fn params_rescan(&self, flags: ParamsRescanFlags) {
         // One bit per scope, so the main thread can tell a full rescan, which
         // the spec says is honoured only while the plugin is deactivated, from
         // a value-only one applicable live. Bits accumulate between takes.
-        let rescan = ParamRescan::from_flags(true, flags);
+        let rescan = ParamRescan::from_flags(true, flags.bits());
         for (set, scope) in [
             (rescan.values, RescanScope::Values),
             (rescan.text, RescanScope::Text),
@@ -153,11 +150,11 @@ impl HostCallbacks for HostState {
         }
     }
 
-    fn audio_ports_rescan(&self, flags: u32) {
+    fn audio_ports_rescan(&self, flags: AudioPortsRescanFlags) {
         // Five of the six flags are `[!active]`: only those change what a
         // buffer looks like, so only they ask for a restart. A cosmetic name
         // change asks for nothing.
-        if AudioPortsRescan::from_flags(true, flags).needs_deactivate() {
+        if AudioPortsRescan::from_flags(true, flags.bits()).needs_deactivate() {
             Request::IoChanged.raise(&self.requests);
         }
     }
@@ -410,9 +407,6 @@ impl HostCallbacks for HostState {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use clap_sys::ext::audio_ports::{
-        CLAP_AUDIO_PORTS_RESCAN_CHANNEL_COUNT, CLAP_AUDIO_PORTS_RESCAN_NAMES,
-    };
 
     /// An audio-ports rescan asks for a restart only when a flag that changes a
     /// buffer's shape is set; a cosmetic name change asks for nothing.
@@ -423,12 +417,14 @@ mod tests {
     /// fails.
     #[test]
     fn a_ports_rescan_asks_for_a_restart_only_for_a_change_of_shape() {
-        let state = HostState::new();
+        let state = HostState::new(
+            &tutti_plugin_types::MainThread::claim().expect("one test, one process"),
+        );
 
-        state.audio_ports_rescan(CLAP_AUDIO_PORTS_RESCAN_NAMES);
+        state.audio_ports_rescan(AudioPortsRescanFlags::NAMES);
         assert_eq!(tutti_plugin_types::taken(&state.requests).count(), 0);
 
-        state.audio_ports_rescan(CLAP_AUDIO_PORTS_RESCAN_CHANNEL_COUNT);
+        state.audio_ports_rescan(AudioPortsRescanFlags::CHANNEL_COUNT);
         let got: Vec<_> = tutti_plugin_types::taken(&state.requests).collect();
         assert_eq!(got, [Request::IoChanged]);
     }
@@ -439,13 +435,12 @@ mod tests {
     /// finds set → the `Text` request is lost and the assertion fails.
     #[test]
     fn rescans_between_takes_accumulate_rather_than_overwrite() {
-        let state = HostState::new();
-
-        state.params_rescan(clap_sys::ext::params::CLAP_PARAM_RESCAN_VALUES);
-        state.params_rescan(
-            clap_sys::ext::params::CLAP_PARAM_RESCAN_TEXT
-                | clap_sys::ext::params::CLAP_PARAM_RESCAN_VALUES,
+        let state = HostState::new(
+            &tutti_plugin_types::MainThread::claim().expect("one test, one process"),
         );
+
+        state.params_rescan(ParamsRescanFlags::VALUES);
+        state.params_rescan(ParamsRescanFlags::TEXT | ParamsRescanFlags::VALUES);
         let got: Vec<_> = tutti_plugin_types::taken(&state.requests).collect();
         assert_eq!(
             got,
@@ -462,7 +457,9 @@ mod tests {
     /// request is missing and the assertion fails.
     #[test]
     fn the_plain_callbacks_raise_their_requests() {
-        let state = HostState::new();
+        let state = HostState::new(
+            &tutti_plugin_types::MainThread::claim().expect("one test, one process"),
+        );
         state.request_restart();
         state.request_callback();
         state.latency_changed();
@@ -486,11 +483,16 @@ mod tests {
     /// fails.
     #[test]
     fn each_severity_has_its_label() {
-        assert_eq!(severity_label(CLAP_LOG_WARNING), "WARN");
         assert_eq!(
-            severity_label(CLAP_LOG_PLUGIN_MISBEHAVING),
+            severity_label(LogSeverity::from_raw(clap_sys::ext::log::CLAP_LOG_WARNING)),
+            "WARN"
+        );
+        assert_eq!(
+            severity_label(LogSeverity::from_raw(
+                clap_sys::ext::log::CLAP_LOG_PLUGIN_MISBEHAVING
+            )),
             "PLUGIN-MISBEHAVING"
         );
-        assert_eq!(severity_label(99), "UNKNOWN");
+        assert_eq!(severity_label(LogSeverity::from_raw(99)), "UNKNOWN");
     }
 }

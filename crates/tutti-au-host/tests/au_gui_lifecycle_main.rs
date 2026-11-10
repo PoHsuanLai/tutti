@@ -13,13 +13,10 @@
 //! `support/gui_lifecycle.rs`, shared with `au_gui_lifecycle.rs`, so the two
 //! cannot drift.
 //!
-//! `main` also calls [`tutti_plugin_types::mark_main_thread`] before anything
-//! else, which **arms** the affinity guard: `AuEditor` calls
-//! `assert_main_thread()` on `open` and `close`, and that is a `debug_assert`
-//! which is a no-op until a main thread has been marked. Without the mark this
-//! suite would exercise the editor without proving anything about thread
-//! correctness; with it, any call that strays off this thread is a located
-//! panic.
+//! `AuEditor` asks the OS whether it is on the main thread (`pthread_main_np`)
+//! on `open` and `close`, so no token has to be armed here: running on the
+//! process main thread is what makes the OS check pass, and any call that
+//! strays off it is refused or skipped by the editor itself.
 //!
 //! ## Running
 //!
@@ -93,13 +90,6 @@ fn main() {
 
 #[cfg(target_os = "macos")]
 fn main() {
-    // Arm the main-thread affinity guard, on the thread that actually is the
-    // main one. `AuEditor::open`/`close` call `assert_main_thread()`, which is
-    // a no-op until this runs — so without it the suite would drive the editor
-    // without proving anything about thread correctness. Must be first: a mark
-    // set after the first `open` would leave that call unchecked.
-    tutti_plugin_types::mark_main_thread();
-
     let mut failed = Vec::new();
     let mut total = 0;
 

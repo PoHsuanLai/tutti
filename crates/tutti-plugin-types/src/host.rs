@@ -15,7 +15,9 @@
 //! # Threads
 //!
 //! Every method of [`Control`] and [`Controller`] runs on the main thread, one
-//! at a time. [`Processor::process`] and [`Processor::stop`] run on whichever
+//! at a time. The entries that must (all of [`Control`] but `info`, and the
+//! transitions of [`Loaded`]) take a [`&MainThread`](crate::MainThread): holding
+//! one is the proof, and no check runs. [`Processor::process`] and [`Processor::stop`] run on whichever
 //! thread holds the Processor and are the only calls that thread makes. An
 //! implementation's `unsafe` states, per format, why the two halves may reach
 //! one plugin instance at once.
@@ -25,7 +27,7 @@ use crate::{
     PluginDescriptor, PluginError, PluginResult, PluginTail, Preset, PresetId, ProcessContext,
     ProcessOutput, Samples,
 };
-use crate::{FdId, Prepare, RescanScope, RestartRules, TimerId};
+use crate::{FdId, MainThread, Prepare, RescanScope, RestartRules, TimerId};
 
 /// What the main thread asks of a plugin, in any state that has one.
 ///
@@ -36,29 +38,34 @@ pub trait Control {
     fn info(&self) -> &PluginDescriptor;
 
     /// The wiring read from the plugin now, not a load-time cache.
-    fn wiring(&self) -> LoadedPlugin;
+    fn wiring(&self, main: &MainThread) -> LoadedPlugin;
 
     /// Every parameter the plugin declares.
-    fn parameters(&self) -> Vec<ParameterInfo>;
+    fn parameters(&self, main: &MainThread) -> Vec<ParameterInfo>;
 
     /// The parameter's current value, or `None` if the plugin has no such
     /// parameter.
-    fn parameter(&self, id: ParamId) -> Option<Normalized>;
+    fn parameter(&self, main: &MainThread, id: ParamId) -> Option<Normalized>;
 
     /// Sets a parameter. Loaded: applied now. Active: an edit queued to the
     /// Processor, applied at the head of its next block
     /// ([`Edit`](crate::Edit)).
-    fn set_parameter(&mut self, id: ParamId, value: Normalized);
+    fn set_parameter(&mut self, main: &MainThread, id: ParamId, value: Normalized);
 
     /// The plugin's display text for `value`, if it has any.
-    fn parameter_text(&self, id: ParamId, value: Normalized) -> Option<String> {
-        let _ = (id, value);
+    fn parameter_text(&self, main: &MainThread, id: ParamId, value: Normalized) -> Option<String> {
+        let _ = (main, id, value);
         None
     }
 
     /// The value the plugin parses from `text`, if it can.
-    fn parameter_value_from_text(&self, id: ParamId, text: &str) -> Option<Normalized> {
-        let _ = (id, text);
+    fn parameter_value_from_text(
+        &self,
+        main: &MainThread,
+        id: ParamId,
+        text: &str,
+    ) -> Option<Normalized> {
+        let _ = (main, id, text);
         None
     }
 
@@ -67,63 +74,71 @@ pub trait Control {
     /// # Errors
     ///
     /// [`PluginError::State`] when the plugin cannot save.
-    fn save_state(&mut self) -> PluginResult<Vec<u8>>;
+    fn save_state(&mut self, main: &MainThread) -> PluginResult<Vec<u8>>;
 
     /// Restores state saved by [`save_state`](Self::save_state).
     ///
     /// # Errors
     ///
     /// [`PluginError::State`] when the plugin rejects the bytes.
-    fn load_state(&mut self, bytes: &[u8]) -> PluginResult<()>;
+    fn load_state(&mut self, main: &MainThread, bytes: &[u8]) -> PluginResult<()>;
 
     /// The plugin's factory presets. Empty when the format has none.
-    fn presets(&mut self) -> Vec<Preset> {
+    fn presets(&mut self, main: &MainThread) -> Vec<Preset> {
+        let _ = main;
         Vec::new()
     }
 
     /// Loads a preset; `false` when the format or the plugin cannot.
-    fn load_preset(&mut self, id: &PresetId) -> bool {
-        let _ = id;
+    fn load_preset(&mut self, main: &MainThread, id: &PresetId) -> bool {
+        let _ = (main, id);
         false
     }
 
     /// The preset the plugin is on, if it says.
-    fn current_preset(&mut self) -> Option<PresetId> {
+    fn current_preset(&mut self, main: &MainThread) -> Option<PresetId> {
+        let _ = main;
         None
     }
 
     /// Tells the plugin how the host is automating it.
-    fn set_automation_state(&mut self, mode: AutomationMode) {
-        let _ = mode;
+    fn set_automation_state(&mut self, main: &MainThread, mode: AutomationMode) {
+        let _ = (main, mode);
     }
 
     /// Reads parameters again after a rescan the plugin asked for.
-    fn rescan_parameters(&mut self, scope: RescanScope) {
-        let _ = scope;
+    fn rescan_parameters(&mut self, main: &MainThread, scope: RescanScope) {
+        let _ = (main, scope);
     }
 
     /// Rebuilds the host's MIDI controller-to-parameter mapping from the plugin
     /// (VST3 `kMidiCCAssignmentChanged`).
-    fn rebuild_midi_mapping(&mut self) {}
+    fn rebuild_midi_mapping(&mut self, main: &MainThread) {
+        let _ = main;
+    }
 
     /// Retries the parameter edits an active plugin's full ring refused,
     /// latest value per parameter. [`Lifecycle::drive`](crate::Lifecycle::drive)
     /// calls it on every [`Event::Tick`](crate::Event::Tick), so the host must
     /// keep ticking: with no ticks a refused edit is never retried and the
     /// plugin keeps the older value.
-    fn flush_edits(&mut self) {}
+    fn flush_edits(&mut self, main: &MainThread) {
+        let _ = main;
+    }
 
     /// The plugin's own main-thread work (CLAP `on_main_thread`).
-    fn run_main_thread(&mut self) {}
+    fn run_main_thread(&mut self, main: &MainThread) {
+        let _ = main;
+    }
 
     /// Runs a plugin timer that is due.
-    fn run_timer(&mut self, id: TimerId) {
-        let _ = id;
+    fn run_timer(&mut self, main: &MainThread, id: TimerId) {
+        let _ = (main, id);
     }
 
     /// Services a plugin file descriptor that is ready.
-    fn service_fd(&mut self, id: FdId) {
-        let _ = id;
+    fn service_fd(&mut self, main: &MainThread, id: FdId) {
+        let _ = (main, id);
     }
 }
 
@@ -144,6 +159,7 @@ pub trait Loaded: Control + Sized + Send {
     /// [`Refused`] when the plugin will not run at `prepare`.
     fn activate(
         self,
+        main: &MainThread,
         prepare: Prepare,
     ) -> Result<(Self::Processor, Self::Controller), Refused<Self>>;
 
@@ -154,6 +170,7 @@ pub trait Loaded: Control + Sized + Send {
     /// [`Stuck`], with both halves, for a pair from two activations or a plugin
     /// that will not stop.
     fn deactivate(
+        main: &MainThread,
         processor: Self::Processor,
         controller: Self::Controller,
     ) -> Result<Self, Stuck<Self::Processor, Self::Controller>>;
@@ -165,7 +182,8 @@ pub trait Loaded: Control + Sized + Send {
     ///
     /// [`Refused`], holding the plugin if it survived, when the instance cannot
     /// be rebuilt.
-    fn rebuild(self) -> Result<Self, Refused<Self>> {
+    fn rebuild(self, main: &MainThread) -> Result<Self, Refused<Self>> {
+        let _ = main;
         Ok(self)
     }
 }
@@ -203,10 +221,10 @@ pub trait Controller: Control + Send {
     type Processor: Processor;
 
     /// The latency the plugin reports now.
-    fn latency(&self) -> Samples;
+    fn latency(&self, main: &MainThread) -> Samples;
 
     /// The tail the plugin reports now.
-    fn tail(&self) -> PluginTail;
+    fn tail(&self, main: &MainThread) -> PluginTail;
 }
 
 /// An activation or rebuild that did not take, and the plugin it left.

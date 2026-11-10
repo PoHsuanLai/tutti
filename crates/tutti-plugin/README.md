@@ -31,7 +31,7 @@ use tutti_types::{NodeKey, Samples};
 
 // `sample_rate` takes anything convertible to `SampleRate` — the engine's
 // unit type, not a bare rate that could be a block size.
-let plugin = Plugin::open("/usr/lib/vst3/MyPlugin.vst3", SampleRate::new(48_000.0))?;
+let plugin = Plugin::open(None, "/usr/lib/vst3/MyPlugin.vst3", SampleRate::new(48_000.0))?;
 println!("{} by {}", plugin.descriptor().name, plugin.descriptor().vendor);
 
 // Two handles, one subprocess: keep the control surface before the node goes

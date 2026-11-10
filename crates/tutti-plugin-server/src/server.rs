@@ -6,8 +6,9 @@
 
 use crate::session::{Reaction, Session};
 use crate::transport::{Transport, TransportListener};
-use tutti_plugin::Result;
 use tutti_plugin::server::{BridgeConfig, BridgeMessage, PROTOCOL_VERSION};
+use tutti_plugin::{BridgeError, Result};
+use tutti_plugin_types::MainThread;
 
 /// Ask the OS for the highest priority it grants this thread, now that it is
 /// about to do nothing but per-block audio work, and log what it got once.
@@ -47,6 +48,9 @@ pub(crate) fn request_audio_priority(what: &str) {
 pub struct PluginServer {
     config: BridgeConfig,
     session: Session,
+    /// The thread that built the server: the one the plugin's main-thread
+    /// calls run on, claimed once at startup.
+    main: MainThread,
 }
 
 impl std::fmt::Debug for PluginServer {
@@ -72,9 +76,11 @@ impl PluginServer {
         // recorded here, and recording it later would sample a reaper instead
         // of the real spawner. See `transport::record_parent_pid`.
         crate::transport::record_parent_pid();
+        let main = MainThread::claim().map_err(|e| BridgeError::ProtocolError(e.to_string()))?;
         Ok(Self {
             config,
             session: Session::new(),
+            main,
         })
     }
 
@@ -132,7 +138,7 @@ impl PluginServer {
             };
             // A load says it is restoring a state before it does (the host's wait
             // changes with it); the transport is the interim sink.
-            let reaction = self.session.handle_with(msg, &mut |m| {
+            let reaction = self.session.handle_with(&self.main, msg, &mut |m| {
                 let _ = transport.send(&m);
             })?;
             match reaction {
@@ -155,9 +161,10 @@ impl PluginServer {
     }
 
     fn audio_phase(&mut self, transport: &mut dyn Transport) -> Result<()> {
+        let main = self.main;
         loop {
             let msg = transport.recv()?;
-            match self.session.handle(msg)? {
+            match self.session.handle(&main, msg)? {
                 Reaction::Shutdown => break,
                 Reaction::Reply(m) => transport.send(&m)?,
                 Reaction::ReplyMany(ms) => {
@@ -167,7 +174,7 @@ impl PluginServer {
                 }
                 Reaction::None => {}
             }
-            for event in self.session.drain_async_events() {
+            for event in self.session.drain_async_events(&main) {
                 transport.send(&event)?;
             }
         }
@@ -177,7 +184,7 @@ impl PluginServer {
 
 impl Drop for PluginServer {
     fn drop(&mut self) {
-        self.session.close_editor_on_drop();
+        self.session.close_editor_on_drop(&self.main);
         let _ = std::fs::remove_file(&self.config.socket_path);
     }
 }

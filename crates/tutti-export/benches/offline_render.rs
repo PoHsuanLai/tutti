@@ -115,8 +115,8 @@ fn bench_render(c: &mut Criterion) {
     for (name, layout) in [
         ("mono", ChannelLayout::MONO),
         ("stereo", ChannelLayout::STEREO),
-        ("quad", ChannelLayout::from(4usize)),
-        ("5.1", ChannelLayout::from(6usize)),
+        ("quad", ChannelLayout::from(4u16)),
+        ("5.1", ChannelLayout::from(6u16)),
     ] {
         let cfg = config(0.25, SR, layout, Format::Wav(Pcm::Float32));
         group.throughput(Throughput::Elements((0.25 * SR) as u64));

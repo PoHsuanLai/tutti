@@ -99,8 +99,9 @@ Most of what a host names is in [`prelude`](crate::prelude).
 | `tutti::polysynth` | `tutti-polysynth` | polyphonic subtractive synth node | `synth` |
 | `tutti::soundfont` | `tutti-soundfont` | SoundFont (.sf2) playback node | `soundfont` |
 | `tutti::spatial` | `tutti-spatial` | VBAP speaker panning, binaural HRTF | `spatial` |
-| `tutti::dsp` | `tutti-dsp` | real FFT, waveform, onsets, pitch, loudness, correlation, STFT | `dsp` |
-| `tutti::modulation` | `tutti-mod` | modulation sources, routes and the compiler to per-param control programs | `modulation` |
+| `tutti::dsp` | `tutti-dsp` | real FFT, windows, filters, dynamics, convolution, delay, reverb | `dsp` |
+| `tutti::measure` | `tutti-measure` | waveform, onsets, pitch, loudness, correlation, spectra, STFT | `dsp` |
+| `tutti::modulation` | `tutti-modulation` | modulation sources, routes and the compiler to per-param control programs | `modulation` |
 | `tutti::midi` | `tutti-midi-types` | MIDI value types, MIDI 2.0 / UMP native | `midi` |
 | `tutti::midi_runtime` | `tutti-midi-runtime` | MIDI graph nodes, MPE, MIDI-CI, SysEx | `midi` |
 | `tutti::midi_file` | `tutti-midi-file` | Standard MIDI File and MIDI 2.0 Clip File codecs | `midi` |
@@ -127,7 +128,7 @@ None are on by default.
 - `midi` — `tutti::midi`, `tutti::midi_runtime`, `tutti::midi_file`.
 - `midi-hardware` — `tutti::midi_hardware` (implies `midi`).
 - `synth`, `soundfont`, `sampler`, `spatial`, `dsp`, `modulation` — the
-  matching module. `soundfont` implies `midi`; `sampler` implies `wav`.
+  matching module (`dsp` gives both `tutti::dsp` and `tutti::measure`). `soundfont` implies `midi`; `sampler` implies `wav`.
 - `convolution` — the convolution reverb nodes in `tutti::nodes`.
 - `plugin` — `tutti::plugin` (implies `midi`), with one or more formats:
   `vst2`, `vst3`, `clap`, `au`. Each format links its SDK, which is why none

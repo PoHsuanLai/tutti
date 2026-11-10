@@ -20,9 +20,9 @@ use tutti_rt::RequestWord;
 
 use crate::{
     AudioBufferMut, ChannelLayout, Control, Controller, EditDrain, EditSink, FdId, Layout, Loaded,
-    LoadedPlugin, Normalized, ParamId, ParameterInfo, PluginDescriptor, PluginError, PluginIo,
-    PluginResult, PluginTail, Prepare, Processor, Refused, RescanScope, RestartRules, SampleRate,
-    Samples, Stuck, TimerId, edits,
+    LoadedPlugin, MainThread, Normalized, ParamId, ParameterInfo, PluginDescriptor, PluginError,
+    PluginIo, PluginResult, PluginTail, Prepare, Processor, Refused, RescanScope, RestartRules,
+    SampleRate, Samples, Stuck, TimerId, edits,
 };
 
 /// One call the fake received.
@@ -204,7 +204,8 @@ struct Shared {
 impl Shared {
     fn wiring(&self) -> LoadedPlugin {
         self.log.push(Call::Wiring);
-        let outputs = ChannelLayout::from_count(self.outputs.load(Ordering::Relaxed) as u16);
+        let outputs = ChannelLayout::try_from(self.outputs.load(Ordering::Relaxed))
+            .expect("a fake plugin has few outputs");
         LoadedPlugin {
             inputs: vec![ChannelLayout::STEREO],
             outputs: vec![outputs],
@@ -404,61 +405,61 @@ macro_rules! fake_control {
                 &self.descriptor
             }
 
-            fn wiring(&self) -> LoadedPlugin {
+            fn wiring(&self, _main: &MainThread) -> LoadedPlugin {
                 self.shared.wiring()
             }
 
-            fn parameters(&self) -> Vec<ParameterInfo> {
+            fn parameters(&self, _main: &MainThread) -> Vec<ParameterInfo> {
                 self.values
                     .iter()
                     .map(|&(id, _)| ParameterInfo::new(id, "p"))
                     .collect()
             }
 
-            fn parameter(&self, id: ParamId) -> Option<Normalized> {
+            fn parameter(&self, _main: &MainThread, id: ParamId) -> Option<Normalized> {
                 self.values.iter().find(|(k, _)| *k == id).map(|&(_, v)| v)
             }
 
-            fn set_parameter(&mut self, id: ParamId, value: Normalized) {
+            fn set_parameter(&mut self, _main: &MainThread, id: ParamId, value: Normalized) {
                 self.shared.log.push(Call::SetParameter(id));
                 set_value(&mut self.values, id, value);
                 let set: fn(&mut Self, ParamId, Normalized) = $set;
                 set(self, id, value);
             }
 
-            fn save_state(&mut self) -> PluginResult<Vec<u8>> {
+            fn save_state(&mut self, _main: &MainThread) -> PluginResult<Vec<u8>> {
                 self.shared.log.push(Call::SaveState);
                 Ok(self.shared.state.lock().map_err(|_| poisoned())?.clone())
             }
 
-            fn load_state(&mut self, bytes: &[u8]) -> PluginResult<()> {
+            fn load_state(&mut self, _main: &MainThread, bytes: &[u8]) -> PluginResult<()> {
                 self.shared.log.push(Call::LoadState(bytes.len()));
                 *self.shared.state.lock().map_err(|_| poisoned())? = bytes.to_vec();
                 Ok(())
             }
 
-            fn flush_edits(&mut self) {
-                let flush: fn(&mut Self) = $flush;
-                flush(self);
+            fn flush_edits(&mut self, main: &MainThread) {
+                let flush: fn(&mut Self, &MainThread) = $flush;
+                flush(self, main);
             }
 
-            fn rebuild_midi_mapping(&mut self) {
+            fn rebuild_midi_mapping(&mut self, _main: &MainThread) {
                 self.shared.log.push(Call::RebuildMidiMapping);
             }
 
-            fn rescan_parameters(&mut self, scope: RescanScope) {
+            fn rescan_parameters(&mut self, _main: &MainThread, scope: RescanScope) {
                 self.shared.log.push(Call::RescanParameters(scope));
             }
 
-            fn run_main_thread(&mut self) {
+            fn run_main_thread(&mut self, _main: &MainThread) {
                 self.shared.log.push(Call::RunMainThread);
             }
 
-            fn run_timer(&mut self, id: TimerId) {
+            fn run_timer(&mut self, _main: &MainThread, id: TimerId) {
                 self.shared.log.push(Call::RunTimer(id));
             }
 
-            fn service_fd(&mut self, id: FdId) {
+            fn service_fd(&mut self, _main: &MainThread, id: FdId) {
                 self.shared.log.push(Call::ServiceFd(id));
             }
         }
@@ -469,7 +470,7 @@ fn poisoned() -> PluginError {
     PluginError::State("the fake's state lock was poisoned".into())
 }
 
-fake_control!(FakeLoaded, |_, _, _| {}, |_| {});
+fake_control!(FakeLoaded, |_, _, _| {}, |_, _| {});
 fake_control!(
     FakeController,
     |this, id, value| {
@@ -481,9 +482,9 @@ fake_control!(
             this.unsent.push(id);
         }
     },
-    |this| {
+    |this, main| {
         for id in std::mem::take(&mut this.unsent) {
-            let Some(value) = this.parameter(id) else {
+            let Some(value) = this.parameter(main, id) else {
                 continue;
             };
             if this.sink.send(crate::Edit::Param { id, value }).is_err() {
@@ -499,7 +500,11 @@ impl Loaded for FakeLoaded {
 
     const RESTARTS: RestartRules = RestartRules::CLAP;
 
-    fn activate(self, prepare: Prepare) -> Result<(FakeProcessor, FakeController), Refused<Self>> {
+    fn activate(
+        self,
+        _main: &MainThread,
+        prepare: Prepare,
+    ) -> Result<(FakeProcessor, FakeController), Refused<Self>> {
         let shared = self.shared.clone();
         shared.log.push(Call::Activate(
             prepare.rate(),
@@ -535,6 +540,7 @@ impl Loaded for FakeLoaded {
     }
 
     fn deactivate(
+        _main: &MainThread,
         processor: FakeProcessor,
         controller: FakeController,
     ) -> Result<Self, Stuck<FakeProcessor, FakeController>> {
@@ -569,7 +575,7 @@ impl Loaded for FakeLoaded {
         })
     }
 
-    fn rebuild(self) -> Result<Self, Refused<Self>> {
+    fn rebuild(self, _main: &MainThread) -> Result<Self, Refused<Self>> {
         self.shared.log.push(Call::Rebuild);
         assert!(
             !self.shared.panic_in_rebuild.load(Ordering::Relaxed),
@@ -589,7 +595,7 @@ impl Controller for FakeController {
     type Loaded = FakeLoaded;
     type Processor = FakeProcessor;
 
-    fn latency(&self) -> Samples {
+    fn latency(&self, _main: &MainThread) -> Samples {
         self.shared.log.push(Call::Latency);
         assert!(
             !self.shared.panic_in_latency.load(Ordering::Relaxed),
@@ -598,7 +604,7 @@ impl Controller for FakeController {
         Samples(self.shared.latency.load(Ordering::Relaxed))
     }
 
-    fn tail(&self) -> PluginTail {
+    fn tail(&self, _main: &MainThread) -> PluginTail {
         self.shared.log.push(Call::Tail);
         self.shared.tail()
     }

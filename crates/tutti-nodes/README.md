@@ -33,7 +33,7 @@ node without a lock.
   `ModDelayConfig` presets) and `PhaserNode`, both any width.
 - **Distortion** — `DistortionNode` and its `ShapeKind` waveshapers.
 - **Modulation sources** — `ModulatorNode<M>` (aliased `LfoNode`), the per-sample
-  adapter over a pure `Modulator` (an LFO's is `tutti_mod::Wave`, the wave a
+  adapter over a pure `Modulator` (an LFO's is `tutti_modulation::Wave`, the wave a
   control lane evaluates): an audio generator, whose output feeds a node's
   audio input.
 - **Mixing** — `ChannelSumNode` (K sources × N channels → one N-wide output),
@@ -42,10 +42,10 @@ node without a lock.
   `*_PARAMS` list: `SVF_PARAMS`, `DELAY_PARAMS`, …) as param ports, filled per
   frame from one event source each (read through `Io::param`).
 - **Modulation** — the `automation` module's `ControlLaneNode`, which
-  evaluates a `tutti_mod::ControlProgram` into a param port (design doc 014),
+  evaluates a `tutti_modulation::ControlProgram` into a param port (design doc 014),
   the signal sources that feed a lane (`EnvelopeFollowerNode`,
   `NoteEnvelopeNode`), and `Modulation`, the reconciler that builds them from
-  `tutti_mod` declarations.
+  `tutti_modulation` declarations.
 - **Automation / convolution** — the `automation` module's `AutomationLaneNode`
   (a curve as audio) and recording units, and `ConvolverNode` with its IR
   generators (behind a feature).

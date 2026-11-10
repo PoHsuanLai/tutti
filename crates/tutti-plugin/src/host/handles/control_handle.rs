@@ -19,6 +19,7 @@ use crate::protocol::{
 use crate::util::window::{ContentScale, EditorSize};
 use raw_window_handle::HasWindowHandle;
 use std::sync::Arc;
+use tutti_plugin_types::MainThread;
 
 /// The capabilities a backend may or may not honour, for
 /// [`PluginHandle::from_backend`].
@@ -584,6 +585,7 @@ impl PluginHandle {
     /// error of [`HostEditor::open_editor`].
     pub fn open_editor(
         &self,
+        main: &MainThread,
         parent: impl HasWindowHandle,
         scale: ContentScale,
     ) -> Result<EditorSize, EditorError> {
@@ -597,7 +599,7 @@ impl PluginHandle {
             .map_err(|e| EditorError::PluginError(format!("failed to get window handle: {e}")))?
             .as_raw();
         let ptr = crate::util::window::extract_platform_ptr(raw)?;
-        editor.open_editor(ptr, scale)
+        editor.open_editor(main, ptr, scale)
     }
 
     /// Opens the editor as a floating window the plugin owns.
@@ -613,13 +615,13 @@ impl PluginHandle {
     /// Returns [`EditorError::GuiNotSupported`] when this handle has no editor
     /// route, and otherwise any error of [`HostEditor::open_floating_editor`],
     /// such as a format without floating editors.
-    pub fn open_floating_editor(&self) -> Result<(), EditorError> {
+    pub fn open_floating_editor(&self, main: &MainThread) -> Result<(), EditorError> {
         let Some(editor) = self.editor.as_deref() else {
             return Err(EditorError::GuiNotSupported {
                 format: self.descriptor.class.format_name().to_string(),
             });
         };
-        editor.open_floating_editor()
+        editor.open_floating_editor(main)
     }
 
     /// Closes the editor, if one is open.
@@ -627,9 +629,9 @@ impl PluginHandle {
     /// A no-op without an editor route, so a caller tearing a window down need
     /// not first ask whether there was one. Returns `&Self` for chaining with
     /// the other editor calls.
-    pub fn close_editor(&self) -> &Self {
+    pub fn close_editor(&self, main: &MainThread) -> &Self {
         if let Some(editor) = self.editor.as_deref() {
-            editor.close_editor();
+            editor.close_editor(main);
         }
         self
     }
@@ -639,9 +641,9 @@ impl PluginHandle {
     /// Like [`close_editor`](Self::close_editor), a no-op without an editor:
     /// this is driven from a per-frame system that should not branch on a
     /// capability that cannot change after load.
-    pub fn editor_idle(&self) -> &Self {
+    pub fn editor_idle(&self, main: &MainThread) -> &Self {
         if let Some(editor) = self.editor.as_deref() {
-            editor.editor_idle();
+            editor.editor_idle(main);
         }
         self
     }
@@ -654,9 +656,13 @@ impl PluginHandle {
     /// Returns [`EditorError::GuiNotSupported`] when this handle has no editor
     /// route, and otherwise any error of [`HostEditor::set_editor_size`], such
     /// as an editor that cannot be resized.
-    pub fn set_editor_size(&self, requested: EditorSize) -> Result<EditorSize, EditorError> {
+    pub fn set_editor_size(
+        &self,
+        main: &MainThread,
+        requested: EditorSize,
+    ) -> Result<EditorSize, EditorError> {
         match self.editor.as_deref() {
-            Some(editor) => editor.set_editor_size(requested),
+            Some(editor) => editor.set_editor_size(main, requested),
             None => Err(EditorError::GuiNotSupported {
                 format: self.descriptor.class.format_name().to_string(),
             }),
@@ -680,8 +686,8 @@ impl PluginHandle {
     /// plugin has not asked" are the same answer to a poll — nothing to do —
     /// whereas `set_editor_size` is a request that deserves to be told it went
     /// nowhere.
-    pub fn poll_editor_resize_request(&self) -> Option<EditorSize> {
-        self.editor.as_deref()?.poll_editor_resize_request()
+    pub fn poll_editor_resize_request(&self, main: &MainThread) -> Option<EditorSize> {
+        self.editor.as_deref()?.poll_editor_resize_request(main)
     }
 
     // ---- Automation-state convenience --------------------------------------
@@ -775,13 +781,13 @@ mod tests {
     }
 
     impl HostPresets for FakePresets {
-        fn presets(&self) -> Vec<Preset> {
+        fn presets(&self, _main: &MainThread) -> Vec<Preset> {
             self.listed.clone()
         }
-        fn load_preset(&self, _id: &PresetId) -> bool {
+        fn load_preset(&self, _main: &MainThread, _id: &PresetId) -> bool {
             self.accepts
         }
-        fn current_preset(&self) -> Option<PresetId> {
+        fn current_preset(&self, _main: &MainThread) -> Option<PresetId> {
             None
         }
     }
@@ -823,6 +829,7 @@ mod tests {
             /// plugin at all, so a caller must not read "state loaded" from it.
             fn load_state(
                 &self,
+                _main: &tutti_plugin_types::MainThread,
                 _data: &[u8],
             ) -> std::result::Result<(), crate::error::StateError> {
                 Err(crate::error::StateError::NoStateRoute)
@@ -897,7 +904,9 @@ mod tests {
             accepts: false,
         })));
         assert_eq!(
-            empty.presets().map(|p| p.presets()),
+            empty
+                .presets()
+                .map(|p| p.presets(&MainThread::claim().unwrap())),
             Some(Vec::new()),
             "a capability that listed nothing must report an empty list, not None"
         );
@@ -926,7 +935,9 @@ mod tests {
             accepts: false,
         })));
         assert_eq!(
-            refusing.presets().map(|p| p.load_preset(&id)),
+            refusing
+                .presets()
+                .map(|p| p.load_preset(&MainThread::claim().unwrap(), &id)),
             Some(false),
             "a refusal must report a present route that said no"
         );
@@ -936,7 +947,9 @@ mod tests {
             accepts: true,
         })));
         assert_eq!(
-            accepting.presets().map(|p| p.load_preset(&id)),
+            accepting
+                .presets()
+                .map(|p| p.load_preset(&MainThread::claim().unwrap(), &id)),
             Some(true),
             "an accepted load must report true"
         );
@@ -959,7 +972,9 @@ mod tests {
             accepts: true,
         })));
         assert_eq!(
-            handle.presets().map(|p| p.presets()),
+            handle
+                .presets()
+                .map(|p| p.presets(&MainThread::claim().unwrap())),
             Some(listed),
             "the handle must not reorder or renumber what the plugin listed"
         );

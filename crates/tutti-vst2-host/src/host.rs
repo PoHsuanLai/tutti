@@ -25,7 +25,7 @@
 //!
 //! # audioMaster query callbacks
 //!
-//! Hosting is on the `vst-tutti` fork, whose `host_dispatch` wires the query
+//! Hosting is on the `tutti-vst2-ffi` fork, whose `host_dispatch` wires the query
 //! opcodes that upstream vst-rs swallows in its `_ =>` arm. That makes these
 //! callbacks *answerable*: the plugin gets a real response rather than a silent
 //! 0. Of them:
@@ -210,14 +210,10 @@ impl HostState {
     /// the room check and the pushes. The queue cannot reserve several slots
     /// at once or take a push back, so a second producer racing this check
     /// could leave a `START` without its `END`.
-    pub(crate) fn push_sysex_out(&self, sysex: &vst::api::SysExEvent) {
-        let len = usize::try_from(sysex.data_size).unwrap_or(0);
-        if sysex.system_data.is_null() || len == 0 {
+    pub(crate) fn push_sysex_out(&self, delta_frames: i32, bytes: &[u8]) {
+        if bytes.is_empty() {
             return;
         }
-        // Safety: the plugin guarantees `data_size` bytes at `system_data`
-        // for the duration of the callback.
-        let bytes = unsafe { std::slice::from_raw_parts(sysex.system_data, len) };
         let payload = unframed(bytes);
         let packets = MidiEvent::sysex7_packet_count(payload.len());
         // The queue's only other end pops, so room seen now can only grow.
@@ -226,7 +222,7 @@ impl HostState {
             self.dropped_midi_out.fetch_add(1, Ordering::Relaxed);
             return;
         }
-        let frame = sysex.delta_frames.max(0) as u32;
+        let frame = delta_frames.max(0) as u32;
         for packet in MidiEvent::sysex7_packets(MidiGroup::FIRST, payload) {
             let _ = self.midi_out_tx.push(packet.with_frame_offset(frame));
         }
@@ -290,33 +286,21 @@ impl Host for HostState {
 
     /// Called from inside the plugin's `processReplacing` — the audio thread.
     /// See [`automate`](Self::automate) for the drop policy.
-    fn process_events(&self, events: &vst::api::Events) {
-        let num = events.num_events as usize;
-        let base = events.events.as_ptr();
-        for i in 0..num {
-            // Safety: events is valid for num_events pointers in the flexible array.
-            let event_ptr = unsafe { *base.add(i) };
-            let event = unsafe { &*event_ptr };
-            // Read a whole struct only if the plugin says it is that big.
-            let declared = usize::try_from(event.byte_size).unwrap_or(0);
-            if matches!(event.event_type, vst::api::EventType::Midi)
-                && declared >= std::mem::size_of::<vst::api::MidiEvent>()
-            {
-                let midi_event = unsafe { &*(event_ptr as *const vst::api::MidiEvent) };
-                if let Some(converted) = to_midi(midi_event)
-                    && self.midi_out_tx.push(converted).is_err()
-                {
-                    self.dropped_midi_out.fetch_add(1, Ordering::Relaxed);
+    fn process_plugin_events(&self, events: vst::api::PluginEvents<'_>) {
+        use vst::api::PluginEvent;
+
+        for event in events.iter() {
+            match event {
+                PluginEvent::Midi(midi_event) => {
+                    if let Some(converted) = to_midi(&midi_event)
+                        && self.midi_out_tx.push(converted).is_err()
+                    {
+                        self.dropped_midi_out.fetch_add(1, Ordering::Relaxed);
+                    }
                 }
-            } else if matches!(event.event_type, vst::api::EventType::SysEx)
-                && declared >= std::mem::size_of::<vst::api::SysExEvent>()
-            {
-                // `read_unaligned`: the header's alignment (4) does not prove the
-                // plugin's `SysExEvent` (8). The struct holds no owned data, so
-                // the copy needs no drop.
-                let sysex =
-                    unsafe { std::ptr::read_unaligned(event_ptr.cast::<vst::api::SysExEvent>()) };
-                self.push_sysex_out(&sysex);
+                PluginEvent::SysEx(sysex) => {
+                    self.push_sysex_out(sysex.delta_frames(), sysex.payload());
+                }
             }
         }
     }
@@ -363,10 +347,10 @@ impl Host for HostState {
         self.block_size.load(Ordering::Acquire) as isize
     }
 
-    // ── audioMaster query callbacks, answerable via the vst-tutti fork ──
+    // ── audioMaster query callbacks, answerable via the tutti-vst2-ffi host half ──
     //
     // Upstream vst-rs 0.3.0 swallows these in `host_dispatch`'s `_ =>` arm;
-    // the `vst-tutti` fork adds the trait methods + dispatch arms, so
+    // the `tutti-vst2-ffi` fork adds the trait methods + dispatch arms, so
     // each callback returns a real answer instead of 0. Two carry live data
     // (sample rate, process level); the rest are honest neutral defaults
     // pending engine plumbing (documented per method below).
@@ -469,6 +453,7 @@ impl Host for HostState {
 mod tests {
     use super::*;
     use crate::transport_cell::TransportWriter;
+    use vst::api::PluginEvents;
     use vst::host::Host;
 
     fn make_host(time_info: TransportReader, default_sample_rate: f64) -> HostState {
@@ -691,7 +676,7 @@ mod tests {
                 std::ptr::null_mut(),
             ],
         };
-        host.process_events(&events);
+        host.process_plugin_events(PluginEvents::for_test(&events));
 
         assert_eq!(
             host.dropped_midi_out(),
@@ -728,7 +713,7 @@ mod tests {
                 std::ptr::null_mut(),
             ],
         };
-        host.process_events(&events);
+        host.process_plugin_events(PluginEvents::for_test(&events));
     }
 
     /// **A SysEx the plugin emits reaches the host whole, at any length.**
@@ -787,13 +772,88 @@ mod tests {
             _reserved: 0,
             events: [&raw mut midi as *mut vst::api::Event, std::ptr::null_mut()],
         };
-        host.process_events(&events);
+        host.process_plugin_events(PluginEvents::for_test(&events));
         assert!(host.midi_out_tx.is_empty());
 
         // The same events with their true sizes are delivered.
         sysex.byte_size = std::mem::size_of::<vst::api::SysExEvent>() as i32;
         deliver(&host, &mut sysex);
         assert!(!host.midi_out_tx.is_empty());
+    }
+
+    /// **A malformed event list from the plugin is ignored, not followed.** A
+    /// negative `num_events` is no events (it was `as usize`, about 2^64
+    /// iterations over the array), a null entry is skipped, and an event whose
+    /// type word is no `EventType` variant is skipped without ever being read as
+    /// the enum (reading one is undefined behaviour, which no test can show).
+    ///
+    /// Mutation (run): `usize::try_from(..).unwrap_or(0)` -> `as usize`: the
+    /// negative list reads the null second slot and dereferences it, and the test
+    /// dies on SIGSEGV. Mutation (run): drop the `is_null` check: the null entry
+    /// is dereferenced, same death. Mutation (run): drop the type-word comparison
+    /// away (treat every word as `Midi`): the valid note under the bogus word is
+    /// queued and `is_empty` fails.
+    #[test]
+    fn a_malformed_event_list_is_ignored() {
+        let host = make_host(TransportWriter::new().reader(), 48_000.0);
+
+        let negative = vst::api::Events {
+            num_events: -1,
+            _reserved: 0,
+            events: [std::ptr::null_mut(); 2],
+        };
+        host.process_plugin_events(PluginEvents::for_test(&negative));
+        let negative_max = vst::api::Events {
+            num_events: i32::MIN,
+            ..negative
+        };
+        host.process_plugin_events(PluginEvents::for_test(&negative_max));
+
+        // Both entries null: skipped, not dereferenced.
+        let nulls = vst::api::Events {
+            num_events: 2,
+            _reserved: 0,
+            events: [std::ptr::null_mut(); 2],
+        };
+        host.process_plugin_events(PluginEvents::for_test(&nulls));
+
+        // A valid note-on, but with a type word (77) that is no variant: it must not
+        // be read as a `Midi` event, nor as the enum at all.
+        let note = tutti_midi_types::MidiEvent::note_on(
+            tutti_ump::MidiGroup::FIRST,
+            tutti_ump::MidiChannel::FIRST,
+            60,
+            0x8000,
+        );
+        let valid = crate::midi::from_midi(&note).expect("MIDI-1 form");
+        // The note-on as plain words (the layout `MidiEvent` is `repr(C)` in), then the
+        // type word set to the bogus one.
+        let [d0, d1, d2] = valid.midi_data;
+        let mut bogus: [i32; 8] = [
+            0,
+            valid.byte_size,
+            valid.delta_frames,
+            valid.flags,
+            valid.note_length,
+            valid.note_offset,
+            i32::from_ne_bytes([d0, d1, d2, valid._midi_reserved]),
+            i32::from_ne_bytes([
+                valid.detune as u8,
+                valid.note_off_velocity,
+                valid._reserved1,
+                valid._reserved2,
+            ]),
+        ];
+        bogus[0] = 77;
+        let events = vst::api::Events {
+            num_events: 1,
+            _reserved: 0,
+            events: [bogus.as_mut_ptr().cast(), std::ptr::null_mut()],
+        };
+        host.process_plugin_events(PluginEvents::for_test(&events));
+
+        assert!(host.midi_out_tx.is_empty());
+        assert_eq!(host.dropped_midi_out(), 0);
     }
 
     /// A SysEx that does not fit the queue is dropped whole and counted once,
@@ -881,7 +941,7 @@ mod tests {
                 [1, 2, 3],
             ] {
                 api_ev.midi_data = hostile;
-                host.process_events(&events(&mut api_ev));
+                host.process_plugin_events(PluginEvents::for_test(&events(&mut api_ev)));
             }
             assert!(
                 host.midi_out_tx.is_empty(),
@@ -890,7 +950,7 @@ mod tests {
             assert_eq!(host.dropped_midi_out(), 0);
 
             api_ev.midi_data = good;
-            host.process_events(&events(&mut api_ev));
+            host.process_plugin_events(PluginEvents::for_test(&events(&mut api_ev)));
             assert_eq!(host.midi_out_tx.len(), 1);
         });
     }
@@ -932,7 +992,7 @@ mod tests {
             // gate. Neither may allocate.
             for i in 0..(PARAM_QUEUE_CAPACITY + MIDI_OUT_QUEUE_CAPACITY) * 2 {
                 host.automate(i as i32, 0.5);
-                host.process_events(&events);
+                host.process_plugin_events(PluginEvents::for_test(&events));
             }
         });
 

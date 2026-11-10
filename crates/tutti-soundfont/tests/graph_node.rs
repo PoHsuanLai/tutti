@@ -1,5 +1,5 @@
 //! The unit as a graph node: a clip node's note
-//! sounds on its frame (to rustysynth's 8-frame chunk), the node follows its
+//! sounds on its frame (to the voices' 8-frame chunk), the node follows its
 //! graph's rate, and a forked graph plays the clip.
 //!
 //! Against the committed `TimGM6mb.sf2`; a missing fixture fails, as in the
@@ -13,7 +13,8 @@ use tutti_graph::{
 };
 use tutti_midi_runtime::{MidiClipNode, TimedMidiEvent};
 use tutti_midi_types::MidiEvent;
-use tutti_soundfont::{Settings, SoundFont, SoundFontUnit};
+use tutti_sf2::SoundFont;
+use tutti_soundfont::{Settings, SoundFontUnit};
 use tutti_types::{Beat, Bpm, NodeKey, SampleRate, Samples};
 use tutti_ump::{MidiChannel, MidiGroup};
 

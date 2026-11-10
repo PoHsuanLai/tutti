@@ -406,7 +406,7 @@ impl<F: Real + 'static> Node for LadderFilterNode<F> {
     /// input stops, for as long as its resonance and cutoff say, so it is never
     /// skipped on a silent block (a `Tail::None` would cut the ring-out).
     fn shape(&self) -> Shape {
-        let width = ChannelLayout::from_count(self.width() as u16);
+        let width = ChannelLayout::try_from(self.width()).expect("the width came from a layout");
         Shape::audio(width, width)
             .with_cost(tutti_graph::Cost::Moderate)
             .with_tail(Tail::Unknown)
@@ -783,7 +783,7 @@ mod tests {
     #[test]
     fn ladder_with_channels_reports_arity_and_is_independent() {
         let mut wide = prepared_at(
-            LadderFilterNode::<f64>::with_channels(6usize, LadderType::LP24, 1000.0, 0.3),
+            LadderFilterNode::<f64>::with_channels(6u16, LadderType::LP24, 1000.0, 0.3),
             RATE_44K,
         );
         assert_eq!(wide.shape().audio_in.count(), 6);
@@ -820,7 +820,7 @@ mod tests {
     /// the shape's default `Tail::None` → the tail assertion fails.
     #[test]
     fn the_shape_declares_cutoff_q_then_drive() {
-        let f = LadderFilterNode::<f64>::with_channels(6usize, LadderType::LP24, 1000.0, 0.3);
+        let f = LadderFilterNode::<f64>::with_channels(6u16, LadderType::LP24, 1000.0, 0.3);
         assert_eq!(
             f.shape().params.as_slice(),
             &[UnitParam::Cutoff, UnitParam::Q, UnitParam::Drive][..]
@@ -965,7 +965,7 @@ mod tests {
         let inputs: Vec<Vec<f32>> = (0..6).map(|c| noise(c + 20, 64)).collect();
         let refs: Vec<&[f32]> = inputs.iter().map(|v| &v[..]).collect();
         let mut wide = prepared(LadderFilterNode::<f64>::with_channels(
-            6usize,
+            6u16,
             LadderType::HP12,
             800.0,
             0.7,

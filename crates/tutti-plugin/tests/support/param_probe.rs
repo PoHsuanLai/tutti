@@ -13,7 +13,7 @@
 
 use std::time::{Duration, Instant};
 
-use tutti_mod::ControlProgram;
+use tutti_modulation::ControlProgram;
 use tutti_nodes::automation::{ControlLaneNode, LaneControls};
 use tutti_plugin::BridgeConfig;
 use tutti_plugin::handles::{PluginClient, PluginHandle};

@@ -140,6 +140,17 @@ pub(super) fn warm_retirement() {
 
 /// Takes a plugin no Controller holds off the realtime thread: queued for the
 /// control side, or destroyed in place when the queue is full.
+///
+/// **Known gap (audit S11, deferred).** A full queue (64 plugins retired and
+/// never reaped) or an unwarmed one still destroys the plugin on the calling
+/// thread, which may be the audio thread: a `dlclose` under the process-wide
+/// module lock. Nothing here can refuse the swap that dropped the Processor,
+/// and leaking the plugin instead would trade a glitch for an unbounded leak.
+/// The guard is the control side's: [`reap`] runs on every tick and
+/// [`warm_retirement`] runs before the first Processor, so reaching the cap
+/// means the control side has stopped ticking. The real fix is a swap that asks
+/// for room first, which belongs to the session's node replacement, not to this
+/// crate.
 fn retire(loaded: Vst3Loaded) {
     if let Some(queue) = RETIRED.get() {
         if let Err(loaded) = queue.push(loaded) {

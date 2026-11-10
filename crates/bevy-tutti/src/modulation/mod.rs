@@ -98,8 +98,8 @@ pub use reconcile::{
     DeclChanges, Declared, Kept, ModulationRefused, ModulationState, after_commit,
     note_declaration_changes, reconcile,
 };
-// The time-function builders are `tutti-mod`'s, declared as they are.
-pub use tutti_mod::{Adsr, CurveType, Lfo, LfoRate, LfoShape, Macro, Polarity};
+// The time-function builders are `tutti-modulation`'s, declared as they are.
+pub use tutti_modulation::{Adsr, CurveType, Lfo, LfoRate, LfoShape, Macro, Polarity};
 
 use bevy_app::{App, Plugin, Update};
 use bevy_ecs::prelude::*;

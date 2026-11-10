@@ -125,7 +125,7 @@ fn report_host_capability_score() {
     // as those arrive. Reading while still active cannot see anything `process`
     // observed.
     let mut inst = inst.deactivate();
-    let _ = inst.poll_plugin_notifications(|_| {});
+    let _ = inst.poll_plugin_notifications(&main_thread(), |_| {});
 
     let score = inst.get_parameter(K_SCORE_TAG);
     eprintln!(
@@ -161,11 +161,11 @@ fn restart_component_requests_reach_the_host() {
         .unwrap_or_else(|e| panic!("host-checker failed to load: {e:?}"));
 
     // Drain anything latched during load so the assertion is about our trigger.
-    let _ = inst.poll_plugin_notifications(|_| {});
+    let _ = inst.poll_plugin_notifications(&main_thread(), |_| {});
 
     inst.set_parameter(K_RESTART_PARAM_VALUES_TAG, 1.0);
     inst.set_parameter(K_RESTART_PARAM_TITLES_TAG, 1.0);
-    let restart = inst.poll_plugin_notifications(|_| {});
+    let restart = inst.poll_plugin_notifications(&main_thread(), |_| {});
 
     assert!(
         restart.param_values_changed || restart.param_titles_changed,
@@ -194,11 +194,11 @@ fn progress_reports_are_accepted() {
     let path = require_host_checker();
     let mut inst = Active::<f32>::load(&path, 48_000.0, 512)
         .unwrap_or_else(|e| panic!("host-checker failed to load: {e:?}"));
-    let _ = inst.poll_plugin_notifications(|_| {});
+    let _ = inst.poll_plugin_notifications(&main_thread(), |_| {});
 
     inst.set_parameter(K_TRIGGER_PROGRESS_TAG, 1.0);
     let mut progress = 0;
-    let _ = inst.poll_plugin_notifications(|n| {
+    let _ = inst.poll_plugin_notifications(&main_thread(), |n| {
         if matches!(n, tutti_vst3_host::PluginNotification::Progress(_)) {
             progress += 1;
         }
@@ -210,7 +210,7 @@ fn progress_reports_are_accepted() {
     );
 
     inst.set_parameter(K_TRIGGER_PROGRESS_TAG, 0.0);
-    let _ = inst.poll_plugin_notifications(|_| {});
+    let _ = inst.poll_plugin_notifications(&main_thread(), |_| {});
 }
 
 /// `IPrefetchableSupport` must be queryable without upsetting the plugin.
@@ -228,7 +228,7 @@ fn prefetchable_support_is_queryable() {
     let inst = Active::<f32>::load(&path, 48_000.0, 512)
         .unwrap_or_else(|e| panic!("host-checker failed to load: {e:?}"));
 
-    match inst.prefetchable_support() {
+    match inst.prefetchable_support(&main_thread()) {
         Some(v) => {
             eprintln!("IPrefetchableSupport reports {v:?}");
             assert!(
@@ -256,7 +256,7 @@ fn midi_learn_forwards_from_the_main_thread() {
     let mut inst = Active::<f32>::load(&path, 48_000.0, 512)
         .unwrap_or_else(|e| panic!("host-checker failed to load: {e:?}"));
 
-    inst.arm_midi_learn(true);
+    inst.arm_midi_learn(&main_thread(), true);
     assert!(inst.is_midi_learn_armed());
 
     // Feed CCs through the *audio* path; the host must capture them there and
@@ -304,8 +304,8 @@ fn midi_learn_forwards_from_the_main_thread() {
     );
 
     // The forward happens here, on this (main) thread.
-    let _ = inst.poll_plugin_notifications(|_| {});
-    inst.arm_midi_learn(false);
+    let _ = inst.poll_plugin_notifications(&main_thread(), |_| {});
+    inst.arm_midi_learn(&main_thread(), false);
     assert!(!inst.is_midi_learn_armed());
 }
 
@@ -328,7 +328,7 @@ fn warn_tag_block_is_isolated() {
         .unwrap_or_else(|e| panic!("host-checker failed to load: {e:?}"));
 
     let declared: Vec<u32> = inst
-        .parameter_ids()
+        .parameter_ids(&main_thread())
         .into_iter()
         .map(|id| id.get())
         .collect();
@@ -492,4 +492,10 @@ fn plugin_state_round_trips() {
         "plugin state did not round-trip:\n{}",
         failures.join("\n")
     );
+}
+
+/// This process's main thread. Each test is its own process under nextest, so
+/// the claim cannot be refused.
+fn main_thread() -> tutti_plugin_types::MainThread {
+    tutti_plugin_types::MainThread::claim().expect("one test, one process")
 }

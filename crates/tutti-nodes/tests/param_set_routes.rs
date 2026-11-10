@@ -26,7 +26,7 @@ use tutti_graph::{
     Cx, Editor, EventOut, GraphBuilder, Io, Node, ParamIn, ParamNode, ParamRange, ParamSet,
     Prepare, Renderer, Shape, Status, Unforkable,
 };
-use tutti_mod::{Amount, Clock, ControlProgram, Layer, LayerId, LfoShape, Polarity, Wave};
+use tutti_modulation::{Amount, Clock, ControlProgram, Layer, LayerId, LfoShape, Polarity, Wave};
 use tutti_nodes::automation::ControlLaneNode;
 use tutti_nodes::{
     CompressorNode, LadderFilterNode, LadderType, LfoNode, LimiterNode, ModDelayNode, PhaserNode,
@@ -337,7 +337,7 @@ fn compressor_makeup_is_addressed_as_gain_db() {
 fn convolver_only_addresses_wet() {
     // Room size is baked into the IR; only Wet is a control.
     // A minimal unit IR is fine — only the param surface is probed.
-    let node = tutti_nodes::ConvolverNode::shared_ir(2usize, &[1.0], 64);
+    let node = tutti_nodes::ConvolverNode::shared_ir(2u16, &[1.0], 64);
     assert!(addresses(&node, UnitParam::Wet));
     assert!(!addresses(&node, UnitParam::RoomSize));
     assert!(!addresses(&node, UnitParam::Cutoff));

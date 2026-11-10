@@ -9,12 +9,12 @@
 //!
 //! Run: `cargo run --example export -- <outdir>`
 
-use tutti_dsp::{LoudnessConfig, measure_loudness};
 use tutti_export::{
     ChannelLayout, EncodeConfig, ExportConfig, FlacLevel, Format, IntDepth, Pcm, Quality,
     RenderConfig, RenderGraph, render_to_buffers, render_to_file,
 };
 use tutti_graph::GraphBuilder;
+use tutti_measure::{LoudnessConfig, measure_loudness};
 use tutti_nodes::testing::{Const, Osc};
 use tutti_transport::FrozenClock;
 use tutti_types::{Amplitude, Hz, SampleRate};
@@ -61,8 +61,8 @@ fn main() -> tutti_export::Result<()> {
     // ---- 1. a graph to a file -------------------------------------------
     //
     // Configuration is a struct literal: fill in what you mean, let `Default`
-    // cover the rest. There is no builder, so there is no way to set something
-    // the path you chose will quietly ignore.
+    // cover the rest. Every field is read by `render_to_file`; the other entry
+    // points ignore some (see `ExportConfig`'s "What each entry point reads").
     let config = ExportConfig {
         render: RenderConfig {
             sample_rate: RATE,
@@ -112,8 +112,9 @@ fn main() -> tutti_export::Result<()> {
     // ---- 2. a graph into memory -----------------------------------------
     //
     // `Rendered` is one plane per channel, so a surround render survives it. A
-    // mono graph asked for as quad folds per the ITU matrix: channel 0 carries
-    // the signal, the rest are silent — not four copies of the same thing.
+    // mono graph asked for as quad is placed by the engine's order: the front
+    // pair carries the signal and the rears are silent — not four copies of the
+    // same thing.
     let quad = render_to_buffers(
         mono_tone(),
         &ExportConfig {
@@ -137,12 +138,12 @@ fn main() -> tutti_export::Result<()> {
 
     // ---- 3. normalization, composed by the caller ------------------------
     //
-    // This crate does not normalize, and that is deliberate. Choosing a gain
-    // means measuring the whole signal first, and a stage that hides two passes
-    // has to hold the signal to do it. Split apart, the measurement streams
-    // (`tutti_dsp` wraps an online R128 meter) and the gain is one value
-    // you apply where you like — including on a second render, without ever
-    // holding the audio.
+    // `render_to_file` never normalizes: choosing a gain means measuring the
+    // whole signal first, and a stage that hides two passes has to hold the
+    // signal to do it. `render_normalized_to_file` is the named two-pass entry
+    // point. Done by hand, as here, the measurement streams (`tutti_measure` wraps
+    // an online R128 meter) and the gain is one value you apply where you
+    // like — including on a second render, without ever holding the audio.
     let mut audio = render_to_buffers(tone(), &config, &FrozenClock)?;
 
     let cfg = LoudnessConfig::new(audio.sample_rate, ChannelLayout::STEREO);

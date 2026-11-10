@@ -22,6 +22,10 @@ default = []
 # don't pay for the serde dep.
 serde = ["dep:serde", "arrayvec/serde", "bitflags/serde", "tutti-types/serde"]
 
+# The probe's result file (`ProbeOutcome`, `write_result`, `read_result`): the
+# wire between `tutti-plugin-probe` and the host that spawned it.
+probe-wire = ["serde", "dep:bincode"]
+
 # `FakePlugin`: a plugin that records every call, for testing what drives one. A
 # consumer's dev-dependency; nothing ships it.
 test-support = []
@@ -40,6 +44,8 @@ tutti-types = { path = "../tutti-types" }
 tutti-rt = { path = "../tutti-rt" }
 tutti-ump = { path = "../tutti-ump", default-features = false }
 serde = { version = "1", features = ["derive"], optional = true }
+# The result file's payload encoding, with `probe-wire`.
+bincode = { version = "1", optional = true }
 # Structured editor-open errors (`EditorError`).
 thiserror.workspace = true
 

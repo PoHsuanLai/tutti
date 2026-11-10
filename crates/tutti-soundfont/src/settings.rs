@@ -1,44 +1,72 @@
-//! How a unit's synthesizer is built.
+// Derived from rustysynth 1.3.6 (MIT), Copyright (C) 2022 Nobuaki Tanaka, after
+// MeltySynth (Copyright (C) 2021 Nobuaki Tanaka). The MIT notice is
+// LICENSE-RUSTYSYNTH.txt, at the root of this crate. In this file: the settings follow rustysynth's synthesizer_settings.rs.
 
-use tutti_rustysynth::SynthesizerSettings;
-use tutti_types::{SampleRate, Samples};
+//! How a unit is built.
 
-/// The synthesizer settings a [`SoundFontUnit`](crate::SoundFontUnit) is built
-/// with. The block size is not one of them: every unit is built at
-/// [`SYNTH_BLOCK_FRAMES`](crate::SYNTH_BLOCK_FRAMES).
+use std::num::NonZeroUsize;
+
+use tutti_types::SampleRate;
+
+/// What a [`SoundFontUnit`](crate::SoundFontUnit) is built with: start from
+/// [`new`](Self::new) and change what differs with the `with_*` methods.
+///
+/// ```
+/// use std::num::NonZeroUsize;
+/// use tutti_soundfont::Settings;
+/// use tutti_types::SampleRate;
+///
+/// let settings = Settings::new(SampleRate::SR_48K)
+///     .with_polyphony(NonZeroUsize::new(16).unwrap());
+/// assert_eq!(settings.polyphony().get(), 16);
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq)]
-#[non_exhaustive]
 pub struct Settings {
-    /// The rate to render at, rounded to whole hertz. RustySynth accepts
-    /// 16 to 192 kHz.
-    pub sample_rate: SampleRate,
-    /// The most voices sounding at once.
-    pub max_polyphony: usize,
-    /// Whether the reverb and chorus effect lines run.
-    pub reverb_and_chorus: bool,
+    sample_rate: SampleRate,
+    polyphony: NonZeroUsize,
 }
 
 impl Settings {
-    /// Settings at `sample_rate` with RustySynth's defaults: 64 voices, reverb
-    /// and chorus on.
+    /// The most voices a unit can be built with. A pool allocates every voice
+    /// when it is built, so a count past this is refused rather than tried;
+    /// 4096 is far beyond what a SoundFont plays.
+    pub const MAX_POLYPHONY: usize = 4096;
+    /// The polyphony of [`new`](Self::new).
+    pub const DEFAULT_POLYPHONY: NonZeroUsize = NonZeroUsize::new(64).unwrap();
+
+    /// Settings at `sample_rate`: 64 voices.
     #[must_use]
-    pub fn new(sample_rate: SampleRate) -> Self {
-        let defaults = SynthesizerSettings::new(sample_rate);
+    pub const fn new(sample_rate: SampleRate) -> Self {
         Self {
             sample_rate,
-            max_polyphony: defaults.maximum_polyphony,
-            reverb_and_chorus: defaults.enable_reverb_and_chorus,
+            polyphony: Self::DEFAULT_POLYPHONY,
         }
     }
 
-    /// RustySynth's settings, at the unit's fixed block size.
-    pub(crate) fn to_rustysynth(self) -> SynthesizerSettings {
-        // `SynthesizerSettings` is `#[non_exhaustive]`, so it is built from
-        // `new` and then assigned.
-        let mut settings = SynthesizerSettings::new(self.sample_rate);
-        settings.maximum_polyphony = self.max_polyphony;
-        settings.enable_reverb_and_chorus = self.reverb_and_chorus;
-        settings.block_size = Samples(crate::SYNTH_BLOCK_FRAMES);
-        settings
+    /// These settings at `sample_rate`, rounded to whole hertz when the unit is
+    /// built. A rate outside 16 to 192 kHz is refused then, not here.
+    #[must_use]
+    pub const fn with_sample_rate(mut self, sample_rate: SampleRate) -> Self {
+        self.sample_rate = sample_rate;
+        self
+    }
+
+    /// These settings with `polyphony` voices at most sounding at once.
+    #[must_use]
+    pub const fn with_polyphony(mut self, polyphony: NonZeroUsize) -> Self {
+        self.polyphony = polyphony;
+        self
+    }
+
+    /// The rate to render at.
+    #[must_use]
+    pub const fn sample_rate(&self) -> SampleRate {
+        self.sample_rate
+    }
+
+    /// The most voices sounding at once.
+    #[must_use]
+    pub const fn polyphony(&self) -> NonZeroUsize {
+        self.polyphony
     }
 }

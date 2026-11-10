@@ -57,7 +57,10 @@ fn bench_callback(c: &mut Criterion) {
     let mut group = c.benchmark_group("callback");
     for outputs in [2usize, 6] {
         let (st, _cons) = state(outputs, false);
-        let mut block = OutputBlock::new(st, ChannelLayout::from(outputs));
+        let mut block = OutputBlock::new(
+            st,
+            ChannelLayout::try_from(outputs).expect("a bench width is small"),
+        );
         for frames in [64usize, 256, 512] {
             let mut data = vec![0.0f32; frames * outputs];
             group.throughput(Throughput::Elements(frames as u64));

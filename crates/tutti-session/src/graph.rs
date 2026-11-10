@@ -464,7 +464,7 @@ impl Graph {
     /// outputs, prepared for `rate`, `max_block` and the device's callback
     /// `quantum` (when known), its executor local.
     pub(crate) fn new(
-        inputs: usize,
+        inputs: ChannelLayout,
         outputs: usize,
         rate: SampleRate,
         max_block: Samples,
@@ -472,7 +472,7 @@ impl Graph {
     ) -> Self {
         let (mut editor, exec) = Editor::new(prepare_for(rate, max_block, quantum));
         let topology = &mut editor.spec_mut().topology;
-        topology.inputs = ChannelLayout::from_count(inputs as u16);
+        topology.inputs = inputs;
         topology.outputs = vec![Source::Zero; outputs];
         // Declared and on from the start: a host reads the master level
         // without asking for it.
@@ -1344,6 +1344,12 @@ impl Graph {
         true
     }
 
+    /// How many nodes the graph holds.
+    #[must_use]
+    pub fn node_count(&self) -> usize {
+        self.nodes.len()
+    }
+
     /// Whether `node` is in the graph, a modulation lane or signal node
     /// included (staged, committed or not).
     pub fn contains(&self, node: NodeKey) -> bool {
@@ -1362,7 +1368,7 @@ impl Graph {
     pub(crate) fn modulate(
         &mut self,
         m: &mut tutti_nodes::Modulation,
-        decl: &tutti_mod::Declarations<'_>,
+        decl: &tutti_modulation::Declarations<'_>,
         keys: &dyn ModKeys,
     ) -> Result<(tutti_nodes::Applied, PluginTargets), tutti_nodes::ReconcileError> {
         let host = ModHostOver {
@@ -1589,8 +1595,29 @@ impl Graph {
 
     /// Feeds **every** global output from `node`: channel `c` from its port
     /// `c % node_outputs(node)`, or silence if it has no outputs.
+    ///
+    /// A node whose outputs are not all for the speakers (an instrument with
+    /// effect sends, such as the SoundFont unit) wraps its sends onto a root
+    /// wider than its main pair: use
+    /// [`set_outputs_from_ports`](Self::set_outputs_from_ports) with the pair.
     pub fn set_outputs_from(&mut self, node: NodeKey) {
         let outs = self.node_outputs(node);
+        self.feed_outputs(node, outs, |c| c % outs.max(1));
+    }
+
+    /// Feeds **every** global output from `node`, channel `c` from port
+    /// `ports[c % ports.len()]`, or silence if `ports` is empty or names a port
+    /// the node lacks. For an instrument, `ports` is its main pair
+    /// (`InstrumentHandle::main_outputs`, feature `midi`),
+    /// so a wide root never reaches its sends.
+    pub fn set_outputs_from_ports(&mut self, node: NodeKey, ports: &[usize]) {
+        let outs = self.node_outputs(node);
+        let ports = ports.to_vec();
+        let have = !ports.is_empty() && ports.iter().all(|&p| p < outs);
+        self.feed_outputs(node, usize::from(have), |c| ports[c % ports.len()]);
+    }
+
+    fn feed_outputs(&mut self, node: NodeKey, usable: usize, port: impl Fn(usize) -> usize) {
         for (c, source) in self
             .editor
             .spec_mut()
@@ -1599,12 +1626,12 @@ impl Graph {
             .iter_mut()
             .enumerate()
         {
-            *source = if outs == 0 {
+            *source = if usable == 0 {
                 Source::Zero
             } else {
                 Source::Node(OutPort {
                     node,
-                    port: (c % outs) as u16,
+                    port: port(c) as u16,
                 })
             };
         }
@@ -1913,7 +1940,10 @@ impl Graph {
         {
             Some(tutti_types::FoldError::RootWidth {
                 declared: root.layout(),
-                requested: ChannelLayout::from(channels),
+                // Only the report names the request; one past `u16::MAX` is
+                // refused either way (it is past `MAX_ROOT_CHANNELS`), so the
+                // saturated figure loses nothing.
+                requested: ChannelLayout::clamped(channels),
             })
         } else if channels > tutti_graph::MAX_ROOT_CHANNELS {
             Some(tutti_types::FoldError::Unplaced {
@@ -2003,7 +2033,10 @@ impl Graph {
             }
             None => {
                 if let Some(device) = device {
-                    Fold::widths(ChannelLayout::from(self.outputs()), device)?;
+                    let outputs = self.outputs();
+                    let width = ChannelLayout::try_from(outputs)
+                        .map_err(|_| tutti_types::FoldError::TooWide(outputs))?;
+                    Fold::widths(width, device)?;
                 }
                 self.outputs()
             }
@@ -2195,7 +2228,7 @@ pub(crate) enum AudioNodeTarget {
 
 /// Resolves a host's modulation keys to graph nodes.
 ///
-/// `tutti_mod`'s declarations key a target by `TargetKey { node: u64, param }`
+/// `tutti_modulation`'s declarations key a target by `TargetKey { node: u64, param }`
 /// and a source by `SourceKey(u64)`; the `u64` is the host's own minting (a
 /// Bevy entity's bits, say), and this is how the session's
 /// [`Modulation`](crate::Phase::Modulation) phase reads it ([`ModInput`](crate::ModInput)).
@@ -2204,7 +2237,7 @@ pub trait ModKeys {
     /// The node a target's key names.
     fn node(&self, target: u64) -> Option<NodeKey>;
     /// What feeds source `source`'s node.
-    fn feed(&self, source: tutti_mod::SourceKey) -> Option<tutti_nodes::Feed>;
+    fn feed(&self, source: tutti_modulation::SourceKey) -> Option<tutti_nodes::Feed>;
 }
 
 /// `tutti_nodes::ModHost` over the graph's nodes and the host's keys: a
@@ -2225,11 +2258,11 @@ struct ModHostOver<'a> {
 
 /// A plugin parameter's modulation target, by its node and parameter id.
 #[cfg(feature = "modulation")]
-pub(crate) type PluginTargets = BTreeMap<(NodeKey, u32), tutti_mod::TargetKey>;
+pub(crate) type PluginTargets = BTreeMap<(NodeKey, u32), tutti_modulation::TargetKey>;
 
 #[cfg(feature = "modulation")]
 impl tutti_nodes::ModHost for ModHostOver<'_> {
-    fn target(&self, target: tutti_mod::TargetKey) -> Option<tutti_nodes::Target> {
+    fn target(&self, target: tutti_modulation::TargetKey) -> Option<tutti_nodes::Target> {
         let node = self.keys.node(target.node)?;
         Some(match target.param.as_unit() {
             // A native param, at any index: the node's own cell for that
@@ -2267,7 +2300,7 @@ impl tutti_nodes::ModHost for ModHostOver<'_> {
         })
     }
 
-    fn feed(&self, source: tutti_mod::SourceKey) -> Option<tutti_nodes::Feed> {
+    fn feed(&self, source: tutti_modulation::SourceKey) -> Option<tutti_nodes::Feed> {
         self.keys.feed(source)
     }
 }

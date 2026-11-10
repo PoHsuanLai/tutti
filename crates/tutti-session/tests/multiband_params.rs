@@ -13,7 +13,7 @@
 use std::f64::consts::{PI, TAU};
 
 #[cfg(feature = "modulation")]
-use tutti_mod::Lfo;
+use tutti_modulation::Lfo;
 use tutti_nodes::testing::Osc;
 use tutti_nodes::{MultibandCompressorNode, MultibandControls};
 #[cfg(feature = "modulation")]

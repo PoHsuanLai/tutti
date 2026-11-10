@@ -122,15 +122,24 @@ pub(crate) fn encode_to_file(
         spec.format.max_frames(spec.layout),
     )?;
     let mut encoder = Encoder::create_file(&spec, path)?;
+    // Counted here, just before the encoder's quantizer: the pipeline owns
+    // gain, resample and dither, so it is the one that knows what reaches the
+    // quantizer, and `tutti-codec` keeps its boundary (blocks in, a file out).
+    let counts_clipping = spec.format.int_depth().is_some();
+    let mut clipped = 0u64;
     let outcome = pump_blocks(src, source_rate, plan, config, control, |block| {
+        if counts_clipping {
+            clipped += clipped_in(block.samples());
+        }
         encoder.write(block).map_err(Error::from)
     })?;
     if outcome == Outcome::Cancelled {
         return Ok(Outcome::Cancelled);
     }
-    // Before the file is put in place: a render that lost events is never
-    // written, and `path` keeps what it held (the encoder removes its file
-    // when it drops).
+    // Before the file is put in place: a render that lost events, or that a
+    // forked unit failed in (silence from then on), is never written, and
+    // `path` keeps what it held (the encoder removes its file when it drops).
+    src.check_health()?;
     let lost = src.lost_events();
     crate::render::check_loss(config.render.on_event_loss, lost)?;
     encoder.finish()?;
@@ -139,7 +148,20 @@ pub(crate) fn encode_to_file(
         path: path.to_path_buf(),
         bytes,
         dropped_events: lost,
+        clipped_samples: clipped,
+        normalized: None,
     }))
+}
+
+/// Samples of an integer-bound block the quantizer will not write as they are:
+/// those past full scale (`tutti-codec`'s converters clamp to `[-1, 1]`, so
+/// `1.0` itself is not clipped), and non-finite ones (a NaN becomes 0 and an
+/// infinity full scale).
+fn clipped_in(samples: &[f32]) -> u64 {
+    samples
+        .iter()
+        .filter(|s| !s.is_finite() || s.abs() > 1.0)
+        .count() as u64
 }
 
 /// Pull every FRAME of the render through resample → dither, into `write`.
@@ -167,9 +189,10 @@ where
 {
     // Once, at entry — never inside a per-block or per-frame loop.
     let layout = config.encode.channels;
+    let on_loss = config.render.on_event_loss;
     let ch = usize::from(layout.count());
     if ch == 0 {
-        return Err(crate::Error::UnsupportedChannels(0));
+        return Err(crate::Error::UnsupportedChannels);
     }
 
     let mut dither = crate::process::DitherState::for_config(config);
@@ -188,9 +211,9 @@ where
     let mut resampler = match config.resample {
         Some(r) if whole_hz(output_rate(config)) != whole_hz(source_rate) => Some((
             // The rates themselves stay `SampleRate`: only the *comparison*
-            // narrows, and `Resampler::new` derives its ratio from values that
+            // narrows, and `StreamingResampler::new` derives its ratio from values that
             // never did.
-            crate::process::Resampler::new(ch, source_rate, r.target_rate, r.chunk)?,
+            tutti_dsp::StreamingResampler::new(ch, source_rate, r.target_rate, r.chunk)?,
             vec![Vec::<f32>::new(); ch],
             vec![Vec::<f32>::new(); ch],
         )),
@@ -199,7 +222,7 @@ where
     };
 
     if let Some((rs, planes, out)) = resampler.as_mut() {
-        let driven = drive(src, layout, plan, control, |block| {
+        let driven = drive(src, layout, plan, control, on_loss, |block| {
             block.deinterleave_into(planes);
             rs.push(planes, out)?;
             emit_planes(out, &mut staging, &mut dither, layout, &mut write)
@@ -213,9 +236,9 @@ where
     } else if dither.is_off() {
         // Nothing to add, so nothing to copy: the gated block goes straight
         // to the encoder.
-        drive(src, layout, plan, control, write)
+        drive(src, layout, plan, control, on_loss, write)
     } else {
-        drive(src, layout, plan, control, |block| {
+        drive(src, layout, plan, control, on_loss, |block| {
             staging.clear();
             staging.extend_from_slice(block.samples());
             dither.apply(&mut staging);
@@ -260,8 +283,19 @@ pub(crate) fn encode_planes(
     path: &Path,
     control: &mut Control<'_>,
 ) -> Result<Outcome<Written>> {
+    // The planes carry the events their render lost: judged by this config's
+    // policy, before anything is written.
+    crate::render::check_loss(config.render.on_event_loss, rendered.dropped_events)?;
     let frames = rendered.frames();
-    let mut src = PlaneSource::new(&rendered.planes);
+    // Planes of another width than the file's are folded onto it, by the
+    // same rule the graph's outputs are (the file's `topology` included); a
+    // width it cannot place is an error, never a dropped channel.
+    let fold = if rendered.planes.is_empty() || rendered.layout() == config.encode.channels {
+        None
+    } else {
+        Some(crate::file_channels(config).fold_from(rendered.channels(), None)?)
+    };
+    let mut src = PlaneSource::new(&rendered.planes, fold);
     let plan = RenderPlan {
         total: frames,
         output_length: frames,

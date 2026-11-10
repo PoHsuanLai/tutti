@@ -24,6 +24,7 @@ use std::sync::Mutex;
 
 mod support;
 use support::active::{Activate, Active};
+use support::main_thread;
 use support::probe_path::probe_path;
 
 use tutti_clap_host::{
@@ -75,7 +76,7 @@ fn load_plugin() -> Active<f32> {
     let path = Path::new(probe_path());
     // The artifact is a bare dylib — pass it as both bundle and library so
     // the host dlopens it directly (no .clap bundle structure needed).
-    let loaded = ClapLoaded::load(path, LoadOptions::new().library(path))
+    let loaded = ClapLoaded::load(&main_thread(), path, LoadOptions::new().library(path))
         .expect("reference plugin should load");
     loaded
         .activate_at::<f32>(48_000.0, 512)
@@ -303,7 +304,7 @@ fn host_callback_round_trips() {
     let _ = drive_once(&mut inst, 64, &ctx);
 
     let mut requests = Vec::new();
-    inst.take_requests(&mut requests);
+    inst.take_requests(&main_thread(), &mut requests);
     assert!(
         requests.contains(&tutti_plugin_types::Request::Callback),
         "host must record the plugin's request_callback() in HostState: {requests:?}"

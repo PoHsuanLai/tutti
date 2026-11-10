@@ -33,6 +33,7 @@ use tutti_plugin_ipc::PluginBridge;
 const BATCH_SIZE: usize = 64;
 use crate::host::node::BlockPayload;
 use std::sync::Arc;
+use tutti_plugin_ipc::unique_socket_path;
 use tutti_plugin_ipc::{AudioSlab, RING_SLOTS, SlabWriter};
 use tutti_plugin_ipc::{BridgeMessage, HostMessage, PROTOCOL_VERSION, SlabLayout};
 use tutti_plugin_types::{ChannelLayout, MidiEventVec, SampleFormat};
@@ -92,17 +93,6 @@ impl Planar {
     fn outs(&mut self) -> [&mut [f32]; CHANNELS] {
         self.0.each_mut().map(Vec::as_mut_slice)
     }
-}
-
-fn unique_socket_path(label: &str) -> std::path::PathBuf {
-    use std::sync::atomic::{AtomicU64, Ordering};
-    static COUNTER: AtomicU64 = AtomicU64::new(0);
-    std::env::temp_dir().join(format!(
-        "tutti-test-{}-{}-{}.sock",
-        label,
-        std::process::id(),
-        COUNTER.fetch_add(1, Ordering::Relaxed)
-    ))
 }
 
 fn unique_shm_name(label: &str) -> String {
@@ -183,7 +173,7 @@ fn bridge_with_server(
 ) -> Rig {
     use interprocess::local_socket::{ListenerOptions, traits::Listener as _};
 
-    let path = unique_socket_path("process-sync");
+    let path = unique_socket_path();
     let _ = std::fs::remove_file(&path);
     let name = tutti_plugin_ipc::socket_name(&path).unwrap();
     let listener = ListenerOptions::new().name(name).create_sync().unwrap();
@@ -899,7 +889,7 @@ fn stalled_plugins_do_not_stall_the_audio_thread() {
 /// Returned deliberately without a server thread — the point is a bridge that
 /// never publishes to the slab.
 fn bridge_with_no_server() -> (Arc<PluginBridge>, BridgeThread, SlabWriter) {
-    let path = unique_socket_path("no-server");
+    let path = unique_socket_path();
     let _ = std::fs::remove_file(&path);
 
     let layout = stereo_layout();
@@ -1410,7 +1400,7 @@ fn bridge_with_first_block_stalled(stall: std::time::Duration) -> Rig {
 fn stamped_server(stall: std::time::Duration, first_only: bool) -> Rig {
     use interprocess::local_socket::{ListenerOptions, traits::Listener as _};
 
-    let path = unique_socket_path("stamped");
+    let path = unique_socket_path();
     let _ = std::fs::remove_file(&path);
     let name = tutti_plugin_ipc::socket_name(&path).unwrap();
     let listener = ListenerOptions::new().name(name).create_sync().unwrap();
@@ -1595,7 +1585,7 @@ fn an_unstaged_chunk_reports_its_midi_lost() {
 #[test]
 fn a_refused_chunk_reports_its_midi_lost() {
     let _lock = machine_lock();
-    let path = unique_socket_path("refused");
+    let path = unique_socket_path();
     let _ = std::fs::remove_file(&path);
     let slab = AudioSlab::create(unique_shm_name("refused"), stereo_layout()).unwrap();
     let (bridge, _thread) = PluginBridge::new(
@@ -1733,7 +1723,7 @@ fn two_stale_blocks(
     use interprocess::local_socket::{ListenerOptions, traits::Listener as _};
 
     assert_eq!(RING_SLOTS, 2, "blocks 1 and 2 of 4 are stale");
-    let path = unique_socket_path("stale-midi");
+    let path = unique_socket_path();
     let _ = std::fs::remove_file(&path);
     let name = tutti_plugin_ipc::socket_name(&path).unwrap();
     let listener = ListenerOptions::new().name(name).create_sync().unwrap();

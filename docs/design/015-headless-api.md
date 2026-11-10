@@ -919,9 +919,9 @@ s.transport().set_tempo(tempo);
 let mut config = ExportConfig::default();
 config.render.sample_rate = SampleRate(48_000.0);
 // `end_beat()` is a `Beat`. One tempo is right only for a file that never changes
-// it: in general the length integrates over `file.tempo_map()`. An f64
-// converter that does (`BeatDuration::to_seconds` is f32 `Seconds` at one
-// tempo) does not exist yet: §9.6's to add.
+// it: in general the length integrates over `file.tempo_map()`. A converter
+// that does (`BeatDuration::to_seconds` is `Seconds` at one tempo) does not
+// exist yet: §9.6's to add.
 config.render.duration_seconds = file_seconds(file.end_beat(), &file.tempo_map());
 let job = s.export(
     ExportRequest::file("song.wav", config)
@@ -1673,7 +1673,7 @@ Two private modules, `plugin` (feature `plugin`) and `export`
 | `AudioGraphRes::export`, `ExportRefused`, `start_exports`' fork build and render | `Session::export(ExportRequest)` → `ExportJob`, `run()` → `ExportRendered`, `Session::finish_export`; `export_blocking`, `export_in_flight` |
 | `ExportTarget`, `ExportOutput`, `ExportClock`, `PreparedGraph`, `PrepareEdit`, `Stopped` (`export/request.rs`) | the session's; `bevy_tutti::export` re-exports each by name |
 | `ExportDrops` | the session's leftovers channel, drained by `Phase::Collect`, `finish_export` and `drop_export_leftovers` |
-| the §5.2 example's f64 length | `MidiFile::seconds_at(Beat) -> f64`, integrated over `tempo_map()` |
+| the §5.2 example's f64 length | `MidiFile::seconds_at(Beat) -> Seconds`, integrated over `tempo_map()` |
 
 The session API: `Session::{plugin_load, add_plugin, add_plugin_blocking,
 plugin, plugins, land_snapshot, render_mode, export, finish_export,

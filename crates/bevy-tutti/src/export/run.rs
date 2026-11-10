@@ -468,7 +468,7 @@ mod tests {
         let config = ExportConfig {
             render: RenderConfig {
                 sample_rate: SampleRate(RATE),
-                duration_seconds: 0.1,
+                duration_seconds: tutti_types::Seconds(0.1),
                 ..Default::default()
             },
             ..Default::default()
@@ -557,7 +557,7 @@ mod tests {
         let config = ExportConfig {
             render: RenderConfig {
                 sample_rate: SampleRate(RATE),
-                duration_seconds: 1.0,
+                duration_seconds: tutti_types::Seconds(1.0),
                 ..Default::default()
             },
             ..Default::default()

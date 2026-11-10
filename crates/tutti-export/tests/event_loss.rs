@@ -12,6 +12,7 @@ use tutti_export::{
 };
 use tutti_graph::{Cx, Event, GraphBuilder, Io, Node, Prepare, Shape, Status};
 use tutti_nodes::testing::Osc;
+use tutti_types::Seconds;
 use tutti_types::{ChannelLayout, Hz, SampleRate};
 
 #[derive(Clone)]
@@ -67,7 +68,7 @@ fn config(policy: EventLossPolicy) -> ExportConfig {
     ExportConfig {
         render: RenderConfig {
             sample_rate: RATE,
-            duration_seconds: 2_048.0 / 48_000.0,
+            duration_seconds: Seconds(2_048.0 / 48_000.0),
             on_event_loss: policy,
             ..Default::default()
         },

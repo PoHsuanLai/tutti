@@ -403,7 +403,7 @@ fn an_export_is_the_live_render_on_a_clap_gain() {
     let config = ExportConfig {
         render: RenderConfig {
             sample_rate: RATE,
-            duration_seconds: total as f64 / RATE.get(),
+            duration_seconds: Seconds(total as f64 / RATE.get()),
             ..Default::default()
         },
         encode: EncodeConfig {

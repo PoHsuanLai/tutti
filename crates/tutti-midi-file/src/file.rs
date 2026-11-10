@@ -14,7 +14,7 @@ use midly::Smf;
 use midly::live::LiveEvent;
 use tutti_midi_types::ump::flex_tempo_bpm;
 use tutti_midi_types::{ParsedClipFile, from_midi1_bytes, normalize};
-use tutti_types::{Beat, Bpm};
+use tutti_types::{Beat, Bpm, Seconds};
 use tutti_ump::Ump;
 
 use crate::smf::{ParsedMidiFile, SmfTrack, tracks_of};
@@ -253,10 +253,7 @@ impl MidiFile {
     /// when it declares none (a Clip File without a tempo at beat 0 gets the
     /// same). What an offline render of the file lasts:
     /// `seconds_at(end_beat())` is `RenderConfig::duration_seconds`.
-    ///
-    /// `f64`, not `Seconds`: `Seconds` is `f32`, which cannot carry an
-    /// hour-long file to the frame (and `duration_seconds` is `f64`).
-    pub fn seconds_at(&self, at: Beat) -> f64 {
+    pub fn seconds_at(&self, at: Beat) -> Seconds {
         let mut tempo = self.tempo().unwrap_or(Bpm::of(120.0));
         let mut from = 0.0_f64;
         let mut seconds = 0.0_f64;
@@ -272,7 +269,7 @@ impl MidiFile {
             }
             tempo = bpm;
         }
-        seconds + (to - from) * 60.0 / tempo.get()
+        Seconds(seconds + (to - from) * 60.0 / tempo.get())
     }
 
     /// Where the last event lands: the position of the final event

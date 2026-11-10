@@ -13,7 +13,7 @@
 //! its own boundary via `From` — the same shape `ChannelLayout` uses for speaker
 //! arrangements.
 
-use tutti_types::{BarNumber, TimeSignature};
+use tutti_types::{BarNumber, Seconds, TimeSignature};
 
 /// A transport snapshot passed into a plugin's process call.
 ///
@@ -176,11 +176,8 @@ pub struct TransportPosition {
     pub beats: f64,
     /// Seconds from song start (clap `song_pos_seconds`): the engine's
     /// plugin node fills it as [`samples`](Self::samples) over the rate,
-    /// unrounded. A raw `f64` rather
-    /// than `Seconds` because it is handed straight to a C ABI, which is where
-    /// the unit types stop — and `Seconds` is `f32`-backed, so it cannot carry
-    /// an hour-long song position at full precision.
-    pub seconds: f64,
+    /// unrounded. A host reads `.get()` where it hands the value to a C ABI.
+    pub seconds: Seconds,
 }
 
 /// Cycle / loop region boundaries in both coordinate systems.
@@ -270,7 +267,7 @@ impl TransportInfo {
 
     /// Sets the CLAP-style position (beats and seconds) (builder).
     #[must_use]
-    pub fn with_position_beats(mut self, beats: f64, seconds: f64) -> Self {
+    pub fn with_position_beats(mut self, beats: f64, seconds: Seconds) -> Self {
         self.position.beats = beats;
         self.position.seconds = seconds;
         self
@@ -375,7 +372,7 @@ impl TransportInfo {
     ///     .with_sample_rate(48_000.0)
     ///     .with_tempo(120.0)
     ///     .with_playing(true)
-    ///     .with_position_beats(2.75, 0.0);
+    ///     .with_position_beats(2.75, tutti_types::Seconds(0.0));
     /// assert_eq!(t.samples_to_next_beat(), Some(6_000));
     /// ```
     // A bare `u32`, not `Samples`: it is AU's `UInt32` ABI value, as
@@ -596,7 +593,7 @@ mod tests {
                 .with_tempo(tempo)
                 .with_sample_rate(rate)
                 .with_playing(playing)
-                .with_position_beats(beats, 0.0)
+                .with_position_beats(beats, Seconds(0.0))
                 .samples_to_next_beat()
         };
         assert_eq!(at(120.0, 48_000.0, 2.25, true), Some(18_000));
@@ -618,7 +615,7 @@ mod tests {
             .with_tempo(120.0)
             .with_sample_rate(48_000.0)
             .with_playing(playing)
-            .with_position_beats(beats, 0.0)
+            .with_position_beats(beats, Seconds(0.0))
     }
 
     /// **A playhead that advances as playing predicts is not a change; the

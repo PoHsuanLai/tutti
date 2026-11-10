@@ -192,7 +192,7 @@ fn an_export_is_the_live_render_on_a_clap_gain() {
     let config = ExportConfig {
         render: RenderConfig {
             sample_rate: SampleRate(RATE),
-            duration_seconds: total as f64 / RATE,
+            duration_seconds: tutti_types::Seconds(total as f64 / RATE),
             ..Default::default()
         },
         encode: EncodeConfig {

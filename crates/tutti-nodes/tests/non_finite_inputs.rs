@@ -9,7 +9,7 @@ use tutti_graph::{Node, Prepare};
 use tutti_nodes::{
     BrickwallLimiterNode, BusStripNode, DelayLineNode, EqBandNode, LimiterNode, SvfType,
 };
-use tutti_types::{AtomicF32, Db, Feedback, Hz, Q, SampleRate, Samples, Seconds};
+use tutti_types::{AtomicF32, Db, Feedback, Hz, ParamCell, Q, SampleRate, Samples, Seconds};
 
 const RATE: SampleRate = SampleRate(48_000.0);
 const BAD: [f32; 3] = [f32::NAN, f32::INFINITY, f32::NEG_INFINITY];
@@ -47,7 +47,7 @@ fn renders_finite(node: &mut dyn Node, blocks: usize) -> bool {
 /// makes the NaN, -inf and negative cases panic.
 #[test]
 fn a_delay_with_an_unusable_maximum_saturates_to_an_empty_line() {
-    for max in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY, -1.0, -1e30] {
+    for max in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, -1.0, -1e30] {
         for node in [
             DelayLineNode::new(Seconds(max), Seconds(0.01), Feedback(0.3)),
             DelayLineNode::stereo(Seconds(max), Seconds(0.01), Seconds(0.02), Feedback(0.3)),
@@ -65,7 +65,7 @@ fn a_delay_with_an_unusable_maximum_saturates_to_an_empty_line() {
 /// `is_finite` test leaves NaN in the cell and the case fails.
 #[test]
 fn a_delay_with_a_nan_initial_time_starts_at_zero() {
-    let node = DelayLineNode::new(Seconds(0.1), Seconds(f32::NAN), Feedback(0.3));
+    let node = DelayLineNode::new(Seconds(0.1), Seconds(f64::NAN), Feedback(0.3));
     assert_eq!(node.delay_time().load(Ordering::Acquire), 0.0);
 }
 
@@ -110,7 +110,7 @@ fn the_strip_holds_off_non_finite_volume_and_pan() {
 /// behaviour and not each guard.
 #[test]
 fn the_limiters_and_the_eq_band_hold_off_non_finite_controls() {
-    type Cell = (&'static str, std::sync::Arc<AtomicF32>, f32);
+    type Cell = (&'static str, ParamCell, f32);
     fn check(name: &str, make: impl Fn() -> (Box<dyn Node>, Vec<Cell>)) {
         for bad in BAD {
             for k in 0..make().1.len() {
@@ -137,23 +137,23 @@ fn the_limiters_and_the_eq_band_hold_off_non_finite_controls() {
     check("limiter", || {
         let n = LimiterNode::new(Db(-6.0), Db(-1.0));
         let cells = vec![
-            ("threshold", n.threshold(), -12.0),
-            ("ceiling", n.ceiling(), -3.0),
-            ("release", n.release_time(), 0.2),
+            ("threshold", n.threshold().into(), -12.0),
+            ("ceiling", n.ceiling().into(), -3.0),
+            ("release", n.release_time().into(), 0.2),
         ];
         (Box::new(n), cells)
     });
     check("brickwall", || {
         let n = BrickwallLimiterNode::new(Db(-1.0));
-        let cells = vec![("ceiling", n.ceiling(), -3.0)];
+        let cells = vec![("ceiling", n.ceiling().into(), -3.0)];
         (Box::new(n), cells)
     });
     check("eq band", || {
         let n = EqBandNode::<f64>::new(SvfType::Bell, Hz(1000.0), Q(1.0), Db(3.0));
         let cells = vec![
-            ("frequency", n.frequency(), 2000.0),
-            ("q", n.q(), 2.0),
-            ("gain", n.gain_db(), 6.0),
+            ("frequency", n.frequency().into(), 2000.0),
+            ("q", n.q().into(), 2.0),
+            ("gain", n.gain_db().into(), 6.0),
         ];
         (Box::new(n), cells)
     });

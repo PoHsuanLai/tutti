@@ -492,7 +492,7 @@ fn an_infinite_tail_survives_the_host_and_collapses_in_conversion() {
     // The unconditional leg: the conversion's behaviour is a property of the unit
     // vocabulary, not of any plugin, so it is asserted whether or not TAL Reverb 4
     // is installed. This is the half a host author has to know about.
-    let inf = tutti_types::Seconds(f32::INFINITY);
+    let inf = tutti_types::Seconds(f64::INFINITY);
     assert!(
         !inf.get().is_finite(),
         "Seconds must carry a non-finite value without normalizing it, or the \

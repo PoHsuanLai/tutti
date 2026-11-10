@@ -17,6 +17,7 @@ use tutti_graph::GraphBuilder;
 use tutti_measure::{LoudnessConfig, measure_loudness};
 use tutti_nodes::testing::{Const, Osc};
 use tutti_transport::FrozenClock;
+use tutti_types::Seconds;
 use tutti_types::{Amplitude, Hz, SampleRate};
 use tutti_types::{Db, Interleaved};
 
@@ -66,7 +67,7 @@ fn main() -> tutti_export::Result<()> {
     let config = ExportConfig {
         render: RenderConfig {
             sample_rate: RATE,
-            duration_seconds: 2.0,
+            duration_seconds: Seconds(2.0),
             ..Default::default()
         },
         encode: EncodeConfig {

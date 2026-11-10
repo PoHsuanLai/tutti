@@ -234,7 +234,7 @@ impl BeatGrid {
     pub fn time(&self, index: usize, sample_rate: impl Into<SampleRate>) -> Option<Seconds> {
         self.beats
             .get(index)
-            .map(|b| Seconds((b.get() as f64 / sample_rate.into().get()) as f32))
+            .map(|b| Seconds(b.get() as f64 / sample_rate.into().get()))
     }
 }
 
@@ -986,7 +986,7 @@ mod tests {
         assert!((grid.bpm.get() - 150.0).abs() < 0.01);
         assert_eq!(
             grid.time(1, RATE),
-            Some(Seconds(0.4 * (grid.beats[1].get() / (40 * 441)) as f32))
+            Some(Seconds(0.4 * (grid.beats[1].get() / (40 * 441)) as f64))
         );
         assert_eq!(grid.time(grid.beats.len(), RATE), None);
 

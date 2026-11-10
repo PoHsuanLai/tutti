@@ -69,7 +69,11 @@ fn main() {
     };
     for secs in [0.5f32, 2.0, 5.0] {
         let len = (secs * 48_000.0) as usize;
-        let ir = generate_test_ir(len, secs.min(1.0), SampleRate(48_000.0));
+        let ir = generate_test_ir(
+            len,
+            tutti_types::Seconds::from_f32(secs.min(1.0)),
+            SampleRate(48_000.0),
+        );
         for partition in [512usize] {
             for host in [64usize, 128, 512] {
                 let (mean, p99, p999, max) = run(&ir, partition, &[host]);
@@ -91,7 +95,7 @@ fn main() {
     ] {
         let ir = generate_test_ir(
             (secs * 48_000.0) as usize,
-            secs.min(1.0),
+            tutti_types::Seconds::from_f32(secs.min(1.0)),
             SampleRate(48_000.0),
         );
         let (mean, p99, p999, max) = run(&ir, partition, &[64]);

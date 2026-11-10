@@ -14,7 +14,8 @@ use tutti_modulation::{Clock, ControlProgram, CurveSegment, MAX_LANE_INPUTS, Pro
 use tutti_rt::{ArcLend, PackedAtomic, Reader};
 use tutti_types::ChannelLayout;
 use tutti_types::{
-    AtomicF32, Beat, Frame, ParamAddr, ParamKey, SamplePosition, Samples, Tail, Unit, UnitAddr,
+    AtomicF32, Beat, Frame, ParamAddr, ParamCell, ParamKey, SamplePosition, Samples, Tail, Unit,
+    UnitAddr,
 };
 
 use super::lane::segment_shape;
@@ -78,7 +79,7 @@ struct Shared {
     generation: AtomicU64,
     /// Set by [`LaneControls::resync`]: the next block sends at frame 0.
     resync: AtomicBool,
-    knob: Option<Arc<AtomicF32>>,
+    knob: Option<ParamCell>,
     range: RangeSource,
     thinned: AtomicU64,
     truncated: AtomicU64,
@@ -345,7 +346,7 @@ fn fresh_seen() -> Seen {
 impl ControlLaneNode {
     fn build(
         program: Arc<ControlProgram>,
-        knob: Option<Arc<AtomicF32>>,
+        knob: Option<ParamCell>,
         range: RangeSource,
         make: Arc<MakeSegment>,
         native: bool,
@@ -388,10 +389,10 @@ impl ControlLaneNode {
     /// The typed spelling of [`for_unit`](Self::for_unit), which it calls:
     /// the lane is erased over the unit (doc 014 §4.1), so the key only
     /// names the param.
-    pub fn for_param<U: Unit<Raw = f32>>(
+    pub fn for_param<U: Unit>(
         key: ParamKey<U>,
         program: ControlProgram,
-        knob: Option<Arc<AtomicF32>>,
+        knob: Option<ParamCell>,
         range: Option<ParamRangeReader>,
     ) -> Self {
         Self::for_unit(key.addr(), program, knob, range)
@@ -406,7 +407,7 @@ impl ControlLaneNode {
     pub fn for_unit(
         param: impl Into<UnitAddr>,
         program: ControlProgram,
-        knob: Option<Arc<AtomicF32>>,
+        knob: Option<ParamCell>,
         range: Option<ParamRangeReader>,
     ) -> Self {
         let param: UnitAddr = param.into();
@@ -431,7 +432,7 @@ impl ControlLaneNode {
     ) -> Self {
         Self::build(
             Arc::new(program),
-            knob.map(|k| Arc::new(AtomicF32::new(k))),
+            knob.map(|k| Arc::new(AtomicF32::new(k)).into()),
             RangeSource::Own(PackedAtomic::new(ParamRange::new(range.0, range.1))),
             Arc::new(move |from, to, shape| ParamSegment::foreign(id, from, to, Samples(0), shape)),
             false,
@@ -461,7 +462,7 @@ impl ControlLaneNode {
         let knob = s
             .knob
             .as_ref()
-            .map(|k| Arc::new(AtomicF32::new(k.load(Ordering::Acquire))));
+            .map(|k| Arc::new(AtomicF32::new(k.load(Ordering::Acquire))).into());
         let range = match &s.range {
             RangeSource::None => RangeSource::None,
             r => RangeSource::Own(PackedAtomic::new(r.load())),

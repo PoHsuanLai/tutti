@@ -271,9 +271,9 @@ fn rt60_frames(network: &Network, rate: SampleRate, depth: f64) -> Result<usize,
     let r = Band::ALL
         .iter()
         .map(|&b| network.rt60(b).get())
-        .fold(0.0, f32::max);
+        .fold(0.0, f64::max);
     if r.is_finite() && r > 0.0 {
-        Ok((f64::from(r) * rate.get() * (depth / 60.0 + 0.35)) as usize + 8 * WINDOW)
+        Ok((r * rate.get() * (depth / 60.0 + 0.35)) as usize + 8 * WINDOW)
     } else {
         Err(format!("a network with no finite RT60 ({r})"))
     }
@@ -309,7 +309,7 @@ pub(crate) mod cases {
                 );
                 let out = render(&mut k, widths(d), &b.signal, 64);
                 let got = measured_rt60(&out, &b, rate, &d.bounds(&ceiling), d.fit_depth())?;
-                let want = network.rt60(band).get();
+                let want = network.rt60(band).to_f32();
                 measured += 1;
                 if (got - want).abs() > tol * want {
                     return Err(format!(
@@ -353,7 +353,7 @@ pub(crate) mod cases {
                 let out = render(&mut k, widths(d), &b.signal, 64);
                 got[band.index()] =
                     measured_rt60(&out, &b, rate, &d.bounds(&ceiling), d.fit_depth())?;
-                want[band.index()] = network.rt60(band).get();
+                want[band.index()] = network.rt60(band).to_f32();
             }
             for (i, j) in [(0, 1), (1, 2), (0, 2)] {
                 if (want[i] - want[j]).abs() > 2.0 * tol * want[i].max(want[j]) {
@@ -395,7 +395,7 @@ pub(crate) mod cases {
             let Ring::Finite(deepest) = network.tail(Db(-90.0)) else {
                 continue;
             };
-            let after = (f64::from(deepest.get()) * rate.get()) as usize + 4 * WINDOW;
+            let after = (deepest.get() * rate.get()) as usize + 4 * WINDOW;
             let b = burst(d.tone(Band::Low, rate), frames, after);
             let out = render(&mut k, widths(d), &b.signal, 64);
             let carried = (0..=out[0].len() - WINDOW)
@@ -416,7 +416,7 @@ pub(crate) mod cases {
                     .step_by(WINDOW / 4)
                     .find(|&n| rms(&out, n, WINDOW) >= limit);
                 let took = last.map_or(0, |n| n + WINDOW / 2 - b.end);
-                let allowed = (f64::from(tail.get()) * rate.get()).ceil() as usize;
+                let allowed = (tail.get() * rate.get()).ceil() as usize;
                 checked += 1;
                 if last.is_some_and(|n| n + 2 * WINDOW >= out[0].len()) {
                     return Err(format!(

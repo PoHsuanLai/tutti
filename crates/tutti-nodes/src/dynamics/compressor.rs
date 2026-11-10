@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 use tutti_graph::{Cx, IntoNode, Io, Node, NodeParts, ParamNode, ParamSet, Prepare, Shape, Status};
-use tutti_types::AtomicF32;
+use tutti_types::{AtomicF32, AtomicF64};
 use tutti_types::{ChannelLayout, UnitParam};
 
 use super::params::{AttackRelease, ThresholdParams};
@@ -62,8 +62,8 @@ impl CompressorCore {
                 LastGood::fixed(0.0),
                 LastGood::new(ratio.get(), CompressionRatio::UNITY.get()),
                 LastGood::fixed(0.0),
-                LastGood::new(attack.get(), 0.0),
-                LastGood::new(release.get(), 0.0),
+                LastGood::new(attack.to_f32(), 0.0),
+                LastGood::new(release.to_f32(), 0.0),
             ],
         }
     }
@@ -127,12 +127,12 @@ impl CompressorCore {
     #[inline]
     fn times(&mut self, [attack, release]: [Option<f32>; 2]) -> (Seconds, Seconds) {
         (
-            Seconds(AttackRelease::clamp_time(self.good[4].read(
-                attack.unwrap_or_else(|| self.timing.attack.load().get()),
-            ))),
-            Seconds(AttackRelease::clamp_time(self.good[5].read(
-                release.unwrap_or_else(|| self.timing.release.load().get()),
-            ))),
+            Seconds::from_f32(AttackRelease::clamp_time(
+                self.good[4].read(attack.unwrap_or_else(|| self.timing.attack.load().to_f32())),
+            )),
+            Seconds::from_f32(AttackRelease::clamp_time(
+                self.good[5].read(release.unwrap_or_else(|| self.timing.release.load().to_f32())),
+            )),
         )
     }
 
@@ -354,7 +354,7 @@ impl CompressorNode {
     ///
     /// Shorter catches transients, longer lets them through. Coefficients are
     /// recomputed once per block from this.
-    pub fn attack_time(&self) -> Arc<AtomicF32> {
+    pub fn attack_time(&self) -> Arc<AtomicF64> {
         self.core.timing.attack.as_atomic()
     }
 
@@ -362,7 +362,7 @@ impl CompressorNode {
     /// falls once the signal drops.
     ///
     /// Too short pumps audibly on sustained material; longer sounds smoother.
-    pub fn release_time(&self) -> Arc<AtomicF32> {
+    pub fn release_time(&self) -> Arc<AtomicF64> {
         self.core.timing.release.as_atomic()
     }
 
@@ -399,7 +399,7 @@ impl CompressorNode {
         self.core
             .timing
             .attack
-            .store(Seconds(AttackRelease::clamp_time(seconds.into().get())));
+            .store(AttackRelease::floor(seconds.into()));
     }
 
     /// Sets the release time in [`Seconds`], floored at 0.
@@ -407,7 +407,7 @@ impl CompressorNode {
         self.core
             .timing
             .release
-            .store(Seconds(AttackRelease::clamp_time(seconds.into().get())));
+            .store(AttackRelease::floor(seconds.into()));
     }
 
     /// Sets the makeup gain in [`Db`], applied after reduction.
@@ -492,8 +492,8 @@ impl Node for CompressorNode {
         match k {
             0 => Some(self.core.threshold.threshold.load().get()),
             1 => Some(self.core.ratio.load().get()),
-            2 => Some(self.core.timing.attack.load().get()),
-            3 => Some(self.core.timing.release.load().get()),
+            2 => Some(self.core.timing.attack.load().to_f32()),
+            3 => Some(self.core.timing.release.load().to_f32()),
             4 => Some(self.core.makeup_db.load().get()),
             _ => None,
         }

@@ -355,7 +355,7 @@ fn lane_to_probe(
     let node = ControlLaneNode::for_param(
         ParamKey::<Hz>::CUTOFF,
         program,
-        Some(Arc::new(AtomicF32::new(knob))),
+        Some(Arc::new(AtomicF32::new(knob)).into()),
         Some(ed.param_range_cell(cutoff(probe)).expect("committed")),
     );
     ed.insert(NodeKey(lane), "lane", node);
@@ -460,15 +460,20 @@ fn pole(tau: f32) -> f64 {
 }
 
 fn follower(source: u32, attack: f32, release: f32, width: ChannelLayout) -> EnvelopeFollowerNode {
-    EnvelopeFollowerNode::new(SourceId(source), Seconds(attack), Seconds(release), width)
+    EnvelopeFollowerNode::new(
+        SourceId(source),
+        Seconds::from_f32(attack),
+        Seconds::from_f32(release),
+        width,
+    )
 }
 
 fn adsr(a: f32, d: f32, s: f32, r: f32) -> Adsr {
     Adsr {
-        attack: Seconds(a),
-        decay: Seconds(d),
+        attack: Seconds::from_f32(a),
+        decay: Seconds::from_f32(d),
         sustain: Amplitude(s),
-        release: Seconds(r),
+        release: Seconds::from_f32(r),
     }
 }
 

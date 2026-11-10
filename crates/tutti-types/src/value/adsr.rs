@@ -66,13 +66,15 @@ impl Adsr {
         Self::new(Seconds(0.5), Seconds(0.2), Amplitude(0.8), Seconds(1.0))
     }
 
-    fn bits(&self) -> [u32; 4] {
-        [
-            self.attack.get().to_bits(),
-            self.decay.get().to_bits(),
+    fn bits(&self) -> ([u64; 3], u32) {
+        (
+            [
+                self.attack.get().to_bits(),
+                self.decay.get().to_bits(),
+                self.release.get().to_bits(),
+            ],
             self.sustain.get().to_bits(),
-            self.release.get().to_bits(),
-        ]
+        )
     }
 }
 
@@ -105,7 +107,7 @@ mod tests {
         let neg = Adsr::new(Seconds(-0.0), Seconds(0.1), Amplitude(0.5), Seconds(0.2));
         assert_ne!(a, neg);
         let nan = Adsr::new(
-            Seconds(f32::NAN),
+            Seconds(f64::NAN),
             Seconds(0.1),
             Amplitude(0.5),
             Seconds(0.2),

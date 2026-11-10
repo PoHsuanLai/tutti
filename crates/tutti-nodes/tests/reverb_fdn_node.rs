@@ -91,7 +91,7 @@ fn tail_of(design: &FdnDesign, c: &FdnControls) -> usize {
     let tutti_dsp::Ring::Finite(s) = design.design(c, SR).tail(Db(-60.0)) else {
         panic!("finite")
     };
-    (f64::from(s.get()) * SR.get()).ceil() as usize
+    (s.get() * SR.get()).ceil() as usize
 }
 
 fn energy(blocks: &[Driven]) -> f64 {
@@ -303,7 +303,7 @@ fn a_lane_driving_the_decay_changes_how_long_it_rings() {
         let lane = ControlLaneNode::for_unit(
             UnitParam::Decay,
             program,
-            Some(Arc::new(AtomicF32::new(decay))),
+            Some(Arc::new(AtomicF32::new(decay)).into()),
             None,
         );
         let key = tutti_types::NodeKey(9_000);

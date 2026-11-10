@@ -31,13 +31,13 @@ impl EnvelopeFollower {
         release: impl Into<Seconds>,
         sample_rate: impl Into<SampleRate>,
     ) -> Self {
-        let attack = attack.into().get();
-        let release = release.into().get();
+        let attack = attack.into().to_f32();
+        let release = release.into().to_f32();
         let sample_rate = sample_rate.into();
         Self {
             value: 0.0,
-            attack_coeff: Seconds(attack).one_pole_coeff(sample_rate),
-            release_coeff: Seconds(release).one_pole_coeff(sample_rate),
+            attack_coeff: Seconds::from_f32(attack).one_pole_coeff(sample_rate),
+            release_coeff: Seconds::from_f32(release).one_pole_coeff(sample_rate),
             last_attack: attack,
             last_release: release,
             sample_rate,
@@ -47,14 +47,14 @@ impl EnvelopeFollower {
     /// Lazily update coefficients if attack/release params changed.
     #[inline]
     pub fn update_coefficients(&mut self, attack: impl Into<Seconds>, release: impl Into<Seconds>) {
-        let attack = attack.into().get();
-        let release = release.into().get();
+        let attack = attack.into().to_f32();
+        let release = release.into().to_f32();
         if (attack - self.last_attack).abs() > EPSILON {
-            self.attack_coeff = Seconds(attack).one_pole_coeff(self.sample_rate);
+            self.attack_coeff = Seconds::from_f32(attack).one_pole_coeff(self.sample_rate);
             self.last_attack = attack;
         }
         if (release - self.last_release).abs() > EPSILON {
-            self.release_coeff = Seconds(release).one_pole_coeff(self.sample_rate);
+            self.release_coeff = Seconds::from_f32(release).one_pole_coeff(self.sample_rate);
             self.last_release = release;
         }
     }
@@ -115,11 +115,11 @@ impl EnvelopeFollower {
         release: impl Into<Seconds>,
     ) {
         let sample_rate = sample_rate.into();
-        let attack = attack.into().get();
-        let release = release.into().get();
+        let attack = attack.into().to_f32();
+        let release = release.into().to_f32();
         self.sample_rate = sample_rate;
-        self.attack_coeff = Seconds(attack).one_pole_coeff(sample_rate);
-        self.release_coeff = Seconds(release).one_pole_coeff(sample_rate);
+        self.attack_coeff = Seconds::from_f32(attack).one_pole_coeff(sample_rate);
+        self.release_coeff = Seconds::from_f32(release).one_pole_coeff(sample_rate);
         self.last_attack = attack;
         self.last_release = release;
     }
@@ -155,7 +155,7 @@ impl GateEnvelopeFollower {
             // `_floor`: a hold is a countdown of whole elapsed frames, and
             // a truncating `as usize` would agree, since truncation is floor.
             hold_samples: hold.to_samples_floor(sample_rate).get(),
-            last_hold: hold.get(),
+            last_hold: hold.to_f32(),
         }
     }
 
@@ -169,9 +169,9 @@ impl GateEnvelopeFollower {
     ) {
         let hold = hold.into();
         self.inner.update_coefficients(attack, release);
-        if (hold.get() - self.last_hold).abs() > EPSILON {
+        if (hold.to_f32() - self.last_hold).abs() > EPSILON {
             self.hold_samples = hold.to_samples_floor(self.inner.sample_rate).get();
-            self.last_hold = hold.get();
+            self.last_hold = hold.to_f32();
         }
     }
 
@@ -216,7 +216,7 @@ impl GateEnvelopeFollower {
         let release = release.into();
         self.inner.set_sample_rate(sample_rate, attack, release);
         self.hold_samples = hold.to_samples_floor(sample_rate).get();
-        self.last_hold = hold.get();
+        self.last_hold = hold.to_f32();
     }
 }
 

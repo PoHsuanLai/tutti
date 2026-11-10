@@ -236,10 +236,10 @@ fn activation_starts_processing_and_a_reconfigure_is_a_balanced_bracket() {
 /// already rejoined, or was never activated, is neither stopped nor suspended a
 /// second time.
 ///
-/// Mutation (run): `Vst2Handle::drop` suspending unconditionally -> the second
-/// and third traces gain a `MAINS_CHANGED(0)` -> fails. Mutation (run):
-/// `Shell::drop` not stopping processing -> the first trace lacks
-/// `STOP_PROCESS` -> fails.
+/// Mutation (run): `PluginInstance::close` suspending unconditionally (the `resumed`
+/// guard dropped) -> the second and third traces gain a `MAINS_CHANGED(0)` -> fails.
+/// Mutation (run): `PluginInstance::close` not stopping processing -> the first trace
+/// lacks `STOP_PROCESS` -> fails.
 #[test]
 fn drop_stops_then_suspends_only_a_resumed_plugin() {
     let _guard = lock_probe();

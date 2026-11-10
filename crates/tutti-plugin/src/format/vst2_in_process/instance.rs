@@ -99,7 +99,7 @@ impl Instance {
             Ok(halves) => {
                 let declared = Declared {
                     latency: halves.1.latency_samples(),
-                    tail: halves.1.tail(),
+                    tail: halves.1.tail(main),
                 };
                 Ok((
                     Self {
@@ -271,7 +271,7 @@ impl Instance {
                 self.declared.latency = latency;
                 changes.latency = Some(latency);
             }
-            let tail = self.controller().tail();
+            let tail = self.controller().tail(main);
             if tail != self.declared.tail {
                 self.declared.tail = tail;
                 changes.tail = Some(tail);

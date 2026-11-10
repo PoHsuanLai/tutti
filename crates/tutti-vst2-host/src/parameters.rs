@@ -12,26 +12,12 @@
 //! A plugin that declines is reported as normalized with unknown steps, which
 //! is what the ABI alone says.
 
-use std::sync::Arc;
-
 use tutti_plugin_types::{
     Normalized, ParamFlags, ParamId, ParamRange, ParamSteps, ParameterInfo as SharedParameterInfo,
 };
 
 use crate::host::ParameterChange;
 use crate::loaded::Vst2Loaded;
-
-/// The plugin's parameter object, shared by the `Vst2Loaded` and the Processor.
-///
-/// `PluginParameters` is `Send + Sync`, so the handle is `Send` without an `unsafe impl`.
-pub(crate) struct SendParams(pub(crate) Arc<dyn vst::plugin::PluginParameters>);
-
-impl std::ops::Deref for SendParams {
-    type Target = dyn vst::plugin::PluginParameters;
-    fn deref(&self) -> &Self::Target {
-        &*self.0
-    }
-}
 
 impl Vst2Loaded {
     /// Confirm a caller-supplied id addresses a parameter this plugin declares,
@@ -65,7 +51,7 @@ impl Vst2Loaded {
     /// backend reads it behind its own lock, from whichever thread asks.
     pub fn parameter_value(&self, id: ParamId) -> Option<Normalized> {
         let index = self.param_index(id)?;
-        self.params
+        self.instance
             .get_parameter(index)
             .map(|v| Normalized::clamped(f64::from(v)))
     }
@@ -93,7 +79,7 @@ impl Vst2Loaded {
     pub fn write_parameter(&self, id: ParamId, value: Normalized) -> bool {
         match self.param_index(id) {
             Some(index) => {
-                crate::host::host_write(|| self.params.set_parameter(index, value.get() as f32))
+                crate::host::host_write(|| self.instance.set_parameter(index, value.get() as f32))
             }
             None => false,
         }
@@ -124,8 +110,8 @@ impl Vst2Loaded {
     /// [`Control::parameter_text`]: tutti_plugin_types::Control::parameter_text
     pub fn parameter_display(&self, id: ParamId) -> Option<String> {
         let index = self.param_index(id)?;
-        let text = self.params.get_parameter_text(index);
-        let label = self.params.get_parameter_label(index);
+        let text = self.instance.get_parameter_text(index);
+        let label = self.instance.get_parameter_label(index);
         Some(match (text.trim().is_empty(), label.trim().is_empty()) {
             (true, _) => return None,
             (false, true) => text,
@@ -150,10 +136,10 @@ impl Vst2Loaded {
     /// caller cannot preview a typed string here — asking is committing.
     pub fn set_parameter_from_string(&self, id: ParamId, text: &str) -> Option<Normalized> {
         let index = self.param_index(id)?;
-        if !self.params.string_to_parameter(index, text.to_string()) {
+        if !self.instance.string_to_parameter(index, text.to_string()) {
             return None;
         }
-        self.params
+        self.instance
             .get_parameter(index)
             .map(|v| Normalized::clamped(f64::from(v)))
     }
@@ -208,11 +194,12 @@ impl Vst2Loaded {
         // that cannot be observed at all.
         // `id` is bounded by `numParams`, so it is never negative and the
         // widening cannot wrap.
-        let default =
-            self.initial_values
-                .get(id as usize)
-                .copied()
-                .unwrap_or_else(|| self.params.get_parameter(id).unwrap_or(0.0)) as f64;
+        let default = self
+            .initial_values
+            .get(id as usize)
+            .copied()
+            .unwrap_or_else(|| self.instance.get_parameter(id).unwrap_or(0.0))
+            as f64;
 
         let props = self.parameter_properties(ParamId::new(id as u32));
         let int_range = props.as_ref().and_then(|q| q.integer_range);
@@ -249,13 +236,13 @@ impl Vst2Loaded {
             // The one format that addresses by position. `id` is bounded by
             // `numParams`, so it is an index by construction — see `param_index`.
             id: ParamId::new(id as u32),
-            name: self.params.get_parameter_name(id),
-            unit: self.params.get_parameter_label(id),
+            name: self.instance.get_parameter_name(id),
+            unit: self.instance.get_parameter_label(id),
             range,
             steps,
             // Asked per parameter: `effCanBeAutomated` takes the index, so
             // there is no whole-plugin answer to cache.
-            flags: if self.params.can_be_automated(id) {
+            flags: if self.instance.can_be_automated(id) {
                 ParamFlags::AUTOMATABLE
             } else {
                 ParamFlags::empty()

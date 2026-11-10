@@ -30,8 +30,9 @@
 //! # Plugins
 //! The plugin-authoring half (`plugin_main!`, the `AEffect` builder and the
 //! plugin-side dispatcher) lives in the test-only `tutti-vst2-author`; this crate
-//! holds the `Plugin` and `PluginParameters` traits the host drives a loaded
-//! plugin through, and the ABI types both sides share.
+//! holds the ABI types both sides share, and the `Plugin` and `PluginParameters` traits
+//! the authoring side implements (nothing here implements them any more: a loaded plugin
+//! is a `PluginInstance`, the main-thread handle, and a `RenderHandle`, the audio one).
 //!
 //! # Hosts
 //!
@@ -49,7 +50,6 @@
 //! use std::path::Path;
 //!
 //! use tutti_vst2_ffi::host::{Host, PluginLoader};
-//! use tutti_vst2_ffi::plugin::Plugin;
 //!
 //! struct SampleHost;
 //!
@@ -64,11 +64,12 @@
 //!     let path = Path::new("/path/to/vst");
 //!
 //!     let mut loader = PluginLoader::load(path, host.clone()).unwrap();
-//!     let mut instance = loader.instance().unwrap();
+//!     let main = tutti_plugin_types::MainThread::claim().unwrap();
+//!     let mut instance = loader.instance(&main).unwrap();
 //!
 //!     println!("Loaded {}", instance.get_info().name);
 //!
-//!     instance.init();
+//!     instance.init(&main);
 //!     println!("Initialized instance!");
 //!
 //!     println!("Closing instance...");
@@ -93,7 +94,6 @@ extern crate bitflags;
 pub mod api;
 pub mod buffer;
 pub mod channels;
-pub mod control_cell;
 pub mod editor;
 pub mod event;
 pub mod host;

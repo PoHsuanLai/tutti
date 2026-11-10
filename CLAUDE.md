@@ -148,8 +148,9 @@ and the docs.rs build on a dated nightly); `just check-loom` runs clippy under
 - **`unsafe`:** a library with none carries `#![forbid(unsafe_code)]`. Plugin FFI
   `unsafe` lives only in the per-format `-ffi` crates (`tutti-clap-ffi`,
   `tutti-vst3-ffi`, `tutti-au-ffi` and `tutti-vst2-ffi`); host crates forbid
-  `unsafe` (`scripts/check-plugin-ffi.sh`, design 016 §2.9). The VST2 loaders'
-  `WindowHandle` decodes are the callers still pinned.
+  `unsafe` (`scripts/check-plugin-ffi.sh`, design 016 §2.9). The in-process VST2
+  backend's `WindowHandle` decode (the raw pointer of `HostEditor::open_editor`) is the
+  one caller still pinned.
 - **Toolchain:** `rust-toolchain.toml` pins the stable every gate runs on,
   and `Cargo.lock` is committed (`--locked` everywhere). To bump, edit
   `rust-toolchain.toml`, run `just ci`, and fix the new lints in the same PR.
@@ -349,7 +350,8 @@ crates/          everything shipped; directory name = package name; no nesting
   tutti-plugin{,-types,-db,-server}, tutti-{vst2,vst3,clap,au}-host,
   tutti-clap-ffi (all CLAP unsafe), tutti-vst3-ffi (all VST3 unsafe),
   tutti-au-ffi (all AU unsafe; macOS only, empty elsewhere),
-  tutti-vst2-ffi (all VST2 unsafe: the host half of our fork of the vst crate)
+  tutti-vst2-ffi (all VST2 unsafe: the host half of our fork of the vst crate; the plugin
+  is a main-thread `PluginInstance` that closes it and an audio `RenderHandle` that never does)
 testing/         never shipped
   tutti-clap-test-plugin, tutti-vst2-test-plugin, tutti-fixtures,
   tutti-vst2-author (the plugin-authoring half of the vst fork: `plugin_main!`, the

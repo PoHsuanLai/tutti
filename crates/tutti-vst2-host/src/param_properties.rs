@@ -47,7 +47,7 @@
 
 use vst::api;
 
-use tutti_plugin_types::ParamId;
+use tutti_plugin_types::{MainThread, ParamId};
 
 use crate::loaded::Vst2Loaded;
 
@@ -384,7 +384,7 @@ impl Vst2Loaded {
         // unchecked walk reads properties for parameters that do not exist.
         let index = self.param_index(id)?;
 
-        let raw = self.handle.instance.parameter_properties(index)?;
+        let raw = self.instance.parameter_properties(index)?;
         Some(ParameterProperties::decode(index, &raw))
     }
 
@@ -416,14 +416,18 @@ impl Vst2Loaded {
     /// Returns the program plus the number of programs the plugin says it
     /// services on that channel. `None` when the channel is out of range or the
     /// plugin declines.
-    pub fn midi_program(&self, channel: i32, program_index: i32) -> Option<(MidiProgram, i32)> {
+    pub fn midi_program(
+        &self,
+        main: &MainThread,
+        channel: i32,
+        program_index: i32,
+    ) -> Option<(MidiProgram, i32)> {
         if !(0..NUM_MIDI_CHANNELS).contains(&channel) || program_index < 0 {
             return None;
         }
         let (raw, serviced) = self
-            .handle
             .instance
-            .midi_program_name(channel, program_index)?;
+            .midi_program_name(main, channel, program_index)?;
         Some((MidiProgram::decode(program_index, &raw), serviced))
     }
 
@@ -436,15 +440,15 @@ impl Vst2Loaded {
     ///
     /// Empty when unsupported, which is not distinguishable from "supports zero
     /// programs" and does not need to be: both mean there is nothing to show.
-    pub fn midi_programs(&self, channel: i32) -> Vec<MidiProgram> {
-        let Some((first, serviced)) = self.midi_program(channel, 0) else {
+    pub fn midi_programs(&self, main: &MainThread, channel: i32) -> Vec<MidiProgram> {
+        let Some((first, serviced)) = self.midi_program(main, channel, 0) else {
             return Vec::new();
         };
 
         let mut programs = Vec::with_capacity(serviced.max(1) as usize);
         programs.push(first);
         for index in 1..serviced {
-            match self.midi_program(channel, index) {
+            match self.midi_program(main, channel, index) {
                 Some((program, _)) => programs.push(program),
                 // The plugin advertised a count it will not service — the
                 // enumeration hole the reference probe models. Stop at the
@@ -481,16 +485,16 @@ impl Vst2Loaded {
     /// index 0 literally. (The three plugins measured here answer `-1`, which
     /// needs no disambiguation — but a `-1`-only guard is not enough, because
     /// vst-rs's own fall-through answers `0`.)
-    pub fn current_midi_program(&self, channel: i32) -> Option<MidiProgram> {
+    pub fn current_midi_program(&self, main: &MainThread, channel: i32) -> Option<MidiProgram> {
         if !(0..NUM_MIDI_CHANNELS).contains(&channel) {
             return None;
         }
 
         // Gate on the query whose zero is unambiguous. Cheap: one extra
         // dispatch on a cold, UI-thread path.
-        self.midi_program(channel, 0)?;
+        self.midi_program(main, channel, 0)?;
 
-        let (raw, current) = self.handle.instance.current_midi_program(channel)?;
+        let (raw, current) = self.instance.current_midi_program(main, channel)?;
         Some(MidiProgram::decode(current, &raw))
     }
 
@@ -500,6 +504,7 @@ impl Vst2Loaded {
     /// Returns the category plus the plugin's count of used categories.
     pub fn midi_program_category(
         &self,
+        main: &MainThread,
         channel: i32,
         category_index: i32,
     ) -> Option<(MidiProgramCategory, i32)> {
@@ -507,9 +512,8 @@ impl Vst2Loaded {
             return None;
         }
         let (raw, serviced) = self
-            .handle
             .instance
-            .midi_program_category(channel, category_index)?;
+            .midi_program_category(main, channel, category_index)?;
         Some((MidiProgramCategory::decode(category_index, &raw), serviced))
     }
 
@@ -517,11 +521,11 @@ impl Vst2Loaded {
     /// last read them, via `effHasMidiProgramsChanged`.
     ///
     /// A cache-invalidation signal, so it is `true` only on the spec'd `1`.
-    pub fn midi_programs_changed(&self, channel: i32) -> bool {
+    pub fn midi_programs_changed(&self, main: &MainThread, channel: i32) -> bool {
         if !(0..NUM_MIDI_CHANNELS).contains(&channel) {
             return false;
         }
-        self.handle.instance.midi_programs_changed(channel)
+        self.instance.midi_programs_changed(main, channel)
     }
 
     /// Returns the plugin's name for one MIDI key, via `effGetMidiKeyName`.
@@ -531,6 +535,7 @@ impl Vst2Loaded {
     /// number.
     pub fn midi_key_name(
         &self,
+        main: &MainThread,
         channel: i32,
         program_index: i32,
         key_number: i32,
@@ -542,9 +547,8 @@ impl Vst2Loaded {
             return None;
         }
         let raw = self
-            .handle
             .instance
-            .midi_key_name(channel, program_index, key_number)?;
+            .midi_key_name(main, channel, program_index, key_number)?;
         Some(MidiKeyName::decode(program_index, key_number, &raw))
     }
 
@@ -553,9 +557,14 @@ impl Vst2Loaded {
     /// Keys the plugin declines are omitted: an unnamed key is not an
     /// empty-named key, and a drum editor should fall back to the note number
     /// for it rather than render a blank pad.
-    pub fn midi_key_names(&self, channel: i32, program_index: i32) -> Vec<MidiKeyName> {
+    pub fn midi_key_names(
+        &self,
+        main: &MainThread,
+        channel: i32,
+        program_index: i32,
+    ) -> Vec<MidiKeyName> {
         (0..=MAX_MIDI_KEY)
-            .filter_map(|key| self.midi_key_name(channel, program_index, key))
+            .filter_map(|key| self.midi_key_name(main, channel, program_index, key))
             .collect()
     }
 }

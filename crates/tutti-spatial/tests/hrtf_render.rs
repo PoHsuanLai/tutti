@@ -913,3 +913,52 @@ fn a_moving_source_is_independent_of_the_block_length() {
         );
     }
 }
+
+/// FNV-1a over the bits of every sample, left then right of each block, of a
+/// render of two distinct seeded noises (so the fold of the pair to mono is not
+/// a copy) with the source moved and the blend changed mid-render. Pins the
+/// panner's output across the move of its input fold from the width-only fold
+/// to `tutti_types::Fold` (design 024 step 0b, consolidation 3). The render
+/// reaches `libm` (the aim's `sin`/`cos`, the resampler), so the digest goes
+/// through `assert_golden`.
+///
+/// Mutation (run): the input fold's `0.5` -> `1.0` (the pair summed, not
+/// averaged) changes the digest and fails.
+#[test]
+fn the_panners_fold_renders_what_it_always_did() {
+    const LEN: usize = 100;
+    let (verts, faces) = icosahedron();
+    let bytes = sphere_bytes(RATE, LEN, &verts, &faces, mirrored_response(&verts, LEN));
+    let rate = SampleRate(f64::from(RATE));
+    let mut node = node(&bytes, RATE);
+    node.controls().set_position(Azimuth(37.0), Elevation(12.0));
+    Node::reset(&mut node);
+    let (l, r) = (
+        noise(1536),
+        noise(1536).into_iter().rev().collect::<Vec<_>>(),
+    );
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for (i, (cl, cr)) in l.chunks(64).zip(r.chunks(64)).enumerate() {
+        if i == 5 {
+            node.controls()
+                .set_position(Azimuth(-120.0), Elevation(-30.0));
+        }
+        if i == 12 {
+            node.controls().set_blend(tutti_types::Mix(0.6));
+        }
+        for out in drive(&mut node, rate, &[cl, cr], &[]) {
+            for s in out {
+                for byte in s.to_bits().to_le_bytes() {
+                    h ^= u64::from(byte);
+                    h = h.wrapping_mul(0x0100_0000_01b3);
+                }
+            }
+        }
+    }
+    println!("DIGEST hrtf {h:#018x}");
+    tutti_nodes::testing::assert_golden(
+        "the HRTF panner's folded render",
+        h,
+        0xacdb_8337_a761_33f4,
+    );
+}

@@ -3,7 +3,7 @@
 //! Bounded cache with least-recently-used eviction.
 //!
 //! The *read* half (`get`, `pin`) is unconditional, but the sole writer is the
-//! decode arm of `io::refill::load_wave`, which needs `Wave::read` and so is
+//! decode arm of `decode::load_wave`, which needs `Wave::read` and so is
 //! gated on the codec features. A build with none of them on therefore reaches
 //! `insert` from nowhere, and `over_budget` / `evict_lru` / the budget fields
 //! die with it — a feature-matrix artifact, not rot. CI builds that config, so
@@ -219,10 +219,11 @@ impl LruCache {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tutti_types::SampleRate;
 
     fn make_wave(samples: usize) -> Arc<Wave> {
         let data = vec![0.0f32; samples];
-        Arc::new(Wave::from_samples(44100.0, &data))
+        Arc::new(Wave::from_samples(SampleRate::new(44100.0), &data))
     }
 
     /// A wave larger than the whole budget is refused, and evicts nothing.

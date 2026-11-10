@@ -10,12 +10,12 @@
 use std::sync::Arc;
 use tutti_graph::{Cx, IntoNode, Io, Node, NodeParts, ParamNode, ParamSet, Prepare, Shape, Status};
 use tutti_types::ChannelLayout;
-use tutti_types::{AtomicF32, AtomicF64};
+use tutti_types::{Amplitude, AtomicF32, AtomicF64};
 
 use crate::ramp::LastGood;
 use tutti_dsp::{
-    EnvelopeFollower, LimiterCurve, LookaheadRing, amplitude_to_db, brickwall_clip,
-    compute_limiter_gain, db_to_amplitude, fold_peak, smooth_envelope,
+    LimiterBlock, LimiterKernel, LookaheadRing, amplitude_to_db, brickwall_clip, db_to_amplitude,
+    fold_peak,
 };
 use tutti_types::Latency;
 use tutti_types::UnitParam;
@@ -110,10 +110,9 @@ pub struct LimiterNode {
     /// gain), sized to the prepared `MaxBlock`; a longer block runs in
     /// lane-sized chunks.
     lane: Vec<f32>,
-    envelope: f32,
     gain_reduction_db: Db,
     sample_rate: SampleRate,
-    follower: EnvelopeFollower,
+    kernel: LimiterKernel,
 }
 
 impl std::fmt::Debug for LimiterNode {
@@ -127,10 +126,9 @@ impl std::fmt::Debug for LimiterNode {
             .field("lookahead", &self.lookahead)
             .field("layout", &self.layout)
             .field("channels", &self.channels)
-            .field("envelope", &self.envelope)
             .field("gain_reduction_db", &self.gain_reduction_db)
             .field("sample_rate", &self.sample_rate)
-            .field("follower", &self.follower)
+            .field("kernel", &self.kernel)
             .finish_non_exhaustive()
     }
 }
@@ -202,10 +200,9 @@ impl LimiterNode {
             layout,
             channels: n,
             lane: vec![0.0; DEFAULT_LANE],
-            envelope: 0.0,
             gain_reduction_db: Db::UNITY,
             sample_rate: SampleRate::DEFAULT,
-            follower: EnvelopeFollower::new(0.0, 0.1, SampleRate::DEFAULT),
+            kernel: LimiterKernel::new(Seconds(0.1), SampleRate::DEFAULT),
         }
     }
 
@@ -323,8 +320,7 @@ impl LimiterNode {
             self.good_release
                 .read(driven.unwrap_or_else(|| self.release.load().to_f32())),
         );
-        self.follower
-            .update_coefficients(Seconds(0.0), Seconds::from_f32(release));
+        self.kernel.update_coefficients(Seconds::from_f32(release));
     }
 }
 
@@ -353,8 +349,8 @@ impl Node for LimiterNode {
         // ratchet the window up on every call — see the `lookahead` field.
         let sample_rate = p.sample_rate();
         self.sample_rate = sample_rate;
-        self.follower
-            .set_sample_rate(sample_rate, Seconds(0.0), self.release.load());
+        self.kernel
+            .set_sample_rate(sample_rate, self.release.load());
         let new_samples = self.lookahead.to_samples_ceil(sample_rate).get();
         self.ring.resize(new_samples.max(1));
         let lane_len = p.max_block().get().max(1);
@@ -370,15 +366,10 @@ impl Node for LimiterNode {
         let base_threshold = self.threshold_db.load();
         let base_ceiling = self.ceiling_db.load();
         let (inputs, mut outputs) = io.split();
-        let release_coeff = self.follower.release_coeff();
-        // Unfed, the curve is constant across the block: its constants are a
-        // few `powf`s here, and a frame is a compare and a divide.
-        let curve = (threshold_fed.is_none() && ceiling_fed.is_none())
-            .then(|| LimiterCurve::new(base_threshold, base_ceiling));
+        let block = LimiterBlock::new(base_threshold, base_ceiling, threshold_fed, ceiling_fed);
 
         // Borrowed in place, so a panic caught outside leaves the lane intact.
         let lane = &mut self.lane;
-        let mut envelope = self.envelope;
         let mut last_gain = None;
         let mut start = 0;
         while start < size {
@@ -397,20 +388,7 @@ impl Node for LimiterNode {
             // The recursive half: the envelope and the sliding minimum, one
             // frame at a time; each frame's peak becomes its window-min gain.
             for (k, p) in gains.iter_mut().enumerate() {
-                let target_gain = match &curve {
-                    Some(curve) => curve.gain(*p),
-                    None => {
-                        let peak_db = amplitude_to_db(*p);
-                        let threshold = threshold_fed.map_or(base_threshold, |v| Db(v[start + k]));
-                        let ceiling = ceiling_fed.map_or(base_ceiling, |v| Db(v[start + k]));
-                        compute_limiter_gain(peak_db, threshold, ceiling).get()
-                    }
-                };
-                if target_gain < envelope {
-                    envelope = target_gain;
-                } else {
-                    envelope = smooth_envelope(envelope, target_gain, release_coeff);
-                }
+                let envelope = self.kernel.gain(&block, start + k, *p);
                 *p = self.ring.push_gain(envelope);
             }
             last_gain = gains.last().copied();
@@ -425,7 +403,6 @@ impl Node for LimiterNode {
             }
             start = end;
         }
-        self.envelope = envelope;
 
         // Metering only, read after the block, so the block's last frame is
         // the only one that is converted. Reported as a positive magnitude,
@@ -436,14 +413,14 @@ impl Node for LimiterNode {
         // `Db::FLOOR` rather than `-inf`, the same floor the detector path
         // above uses.
         if let Some(min_gain) = last_gain {
-            self.gain_reduction_db = -amplitude_to_db(min_gain);
+            self.gain_reduction_db = -amplitude_to_db(Amplitude::new(min_gain));
         }
         Status::Modified
     }
 
     fn reset(&mut self) {
         self.ring.clear();
-        self.envelope = 0.0;
+        self.kernel.reset();
         self.gain_reduction_db = Db::UNITY;
     }
 
@@ -506,10 +483,9 @@ impl Clone for LimiterNode {
             layout: self.layout,
             channels: self.channels,
             lane: self.lane.clone(),
-            envelope: self.envelope,
             gain_reduction_db: self.gain_reduction_db,
             sample_rate: self.sample_rate,
-            follower: self.follower.clone(),
+            kernel: self.kernel.clone(),
         }
     }
 }
@@ -742,6 +718,7 @@ impl Clone for BrickwallLimiterNode {
 mod tests {
     use super::*;
     use crate::test_support::{RATE_44K, prepared_at, tick, tick_fed};
+    use tutti_dsp::compute_limiter_gain;
     use tutti_graph::contract::{assert_param_fork, drive};
 
     /// A fork starts from the values last set through the node's
@@ -751,14 +728,14 @@ mod tests {
     /// live write reached the fork" for `Release` → fails.
     #[test]
     fn a_limiter_fork_shares_no_cell() {
-        assert_param_fork(LimiterNode::new(-6.0, -0.3));
+        assert_param_fork(LimiterNode::new(Db::new(-6.0), Db::new(-0.3)));
     }
 
     /// Mutation (run): drop `fork.ceiling_db.detach()` in `fork_fresh` → "a
     /// live write reached the fork" for `Ceiling` → fails.
     #[test]
     fn a_brickwall_fork_shares_no_cell() {
-        assert_param_fork(BrickwallLimiterNode::new(-1.0));
+        assert_param_fork(BrickwallLimiterNode::new(Db::new(-1.0)));
     }
 
     /// A ceiling set through the brickwall's `ParamSet` reaches the clip on
@@ -769,12 +746,12 @@ mod tests {
     /// 0 dB → fails.
     #[test]
     fn a_brickwall_ceiling_set_by_address_reaches_the_clip() {
-        let mut bw = prepared_at(BrickwallLimiterNode::new(0.0), RATE_44K);
+        let mut bw = prepared_at(BrickwallLimiterNode::new(Db::new(0.0)), RATE_44K);
         let set = bw.param_set();
         assert!(set.set(UnitParam::Ceiling, -6.0));
         let mut out = [0.0f32; 2];
         tick(&mut bw, &[1.0, -1.0], &mut out);
-        let ceiling = db_to_amplitude(-6.0).get();
+        let ceiling = db_to_amplitude(Db::new(-6.0)).get();
         assert!((out[0] - ceiling).abs() < 1e-4, "clipped at {}", out[0]);
     }
 
@@ -801,7 +778,7 @@ mod tests {
         // Mutation (run): a round trip through `f32` (`from_f32(x.to_f32())`) on the lookahead in
         // `with_lookahead` or `prepare` makes the ring 4801 and fails.
         let device = tutti_types::SampleRate(48_000.0);
-        let mut lim = LimiterNode::new(-6.0, -0.3).with_lookahead(Seconds(0.1));
+        let mut lim = LimiterNode::new(Db::new(-6.0), Db::new(-0.3)).with_lookahead(Seconds(0.1));
         lim.prepare(&Prepare::new(device, Samples(64)));
         assert_eq!(
             lim.ring.lookahead_samples(),
@@ -815,7 +792,7 @@ mod tests {
         const LOOKAHEAD: Seconds = Seconds(0.005);
         let device = tutti_types::SampleRate(48_000.0);
 
-        let mut lim = LimiterNode::new(-6.0, -0.3);
+        let mut lim = LimiterNode::new(Db::new(-6.0), Db::new(-0.3));
 
         // Born at the placeholder: the count is right for 44100 and wrong for
         // the device the node is about to run on.
@@ -894,7 +871,7 @@ mod tests {
     /// the latency and the second assertion fails.
     #[test]
     fn the_limiter_stops_at_its_latency_and_declares_no_tail() {
-        let mut lim = prepared_at(LimiterNode::new(-6.0, -0.3), RATE_44K);
+        let mut lim = prepared_at(LimiterNode::new(Db::new(-6.0), Db::new(-0.3)), RATE_44K);
         let shape = lim.shape();
         let n = shape.latency.samples().get();
         assert!(n > 1, "a lookahead to compensate");
@@ -919,7 +896,7 @@ mod tests {
 
     #[test]
     fn test_limiter_reduces_loud_signal() {
-        let mut lim = prepared_at(LimiterNode::new(-6.0, -0.3), RATE_44K);
+        let mut lim = prepared_at(LimiterNode::new(Db::new(-6.0), Db::new(-0.3)), RATE_44K);
 
         let loud = 1.0f32;
         let mut out = [0.0f32; 2];
@@ -928,7 +905,7 @@ mod tests {
             tick(&mut lim, &[loud, loud], &mut out);
         }
 
-        let ceiling_lin = db_to_amplitude(-0.3).get();
+        let ceiling_lin = db_to_amplitude(Db::new(-0.3)).get();
         assert!(
             out[0].abs() <= ceiling_lin + 0.05,
             "Output {:.4} should be near ceiling {:.4}",
@@ -939,7 +916,7 @@ mod tests {
 
     #[test]
     fn test_limiter_passes_quiet_signal() {
-        let mut lim = prepared_at(LimiterNode::new(-6.0, -0.3), RATE_44K);
+        let mut lim = prepared_at(LimiterNode::new(Db::new(-6.0), Db::new(-0.3)), RATE_44K);
 
         let quiet = 0.1f32;
         let mut out = [0.0f32; 2];
@@ -957,7 +934,7 @@ mod tests {
 
     #[test]
     fn test_limiter_stereo_linked() {
-        let mut lim = prepared_at(LimiterNode::new(-6.0, -0.3), RATE_44K);
+        let mut lim = prepared_at(LimiterNode::new(Db::new(-6.0), Db::new(-0.3)), RATE_44K);
 
         let mut out = [0.0f32; 2];
 
@@ -977,7 +954,7 @@ mod tests {
 
     #[test]
     fn test_limiter_reset() {
-        let mut lim = prepared_at(LimiterNode::new(-6.0, -0.3), RATE_44K);
+        let mut lim = prepared_at(LimiterNode::new(Db::new(-6.0), Db::new(-0.3)), RATE_44K);
 
         let mut out = [0.0f32; 2];
         for _ in 0..500 {
@@ -990,7 +967,7 @@ mod tests {
 
     #[test]
     fn test_brickwall_clips_at_ceiling() {
-        let mut bw = BrickwallLimiterNode::new(0.0);
+        let mut bw = BrickwallLimiterNode::new(Db::new(0.0));
 
         let mut out = [0.0f32; 2];
         tick(&mut bw, &[2.0, -3.0], &mut out);
@@ -1009,8 +986,8 @@ mod tests {
 
     #[test]
     fn test_brickwall_adjustable_ceiling() {
-        let mut bw = BrickwallLimiterNode::new(-6.0);
-        let ceiling_lin = db_to_amplitude(-6.0).get();
+        let mut bw = BrickwallLimiterNode::new(Db::new(-6.0));
+        let ceiling_lin = db_to_amplitude(Db::new(-6.0)).get();
 
         let mut out = [0.0f32; 2];
         tick(&mut bw, &[1.0, -1.0], &mut out);
@@ -1024,7 +1001,7 @@ mod tests {
 
     #[test]
     fn test_brickwall_passes_quiet_signal() {
-        let mut bw = BrickwallLimiterNode::new(0.0);
+        let mut bw = BrickwallLimiterNode::new(Db::new(0.0));
 
         let mut out = [0.0f32; 2];
         tick(&mut bw, &[0.3, -0.2], &mut out);
@@ -1045,7 +1022,7 @@ mod tests {
     /// cell → fails.
     #[test]
     fn the_shapes_declare_ceiling_threshold_and_release() {
-        let l = LimiterNode::with_channels(ChannelLayout::from(6u16), -6.0, -0.3);
+        let l = LimiterNode::with_channels(ChannelLayout::from(6u16), Db::new(-6.0), Db::new(-0.3));
         assert_eq!(
             l.shape().params.as_slice(),
             &[UnitParam::Ceiling, UnitParam::Threshold, UnitParam::Release][..]
@@ -1061,7 +1038,7 @@ mod tests {
             Some(l.release_time().load(std::sync::atomic::Ordering::Acquire) as f32),
             "the release's base"
         );
-        let b = BrickwallLimiterNode::new(-1.0);
+        let b = BrickwallLimiterNode::new(Db::new(-1.0));
         assert_eq!(b.shape().params.as_slice(), &[UnitParam::Ceiling][..]);
         assert_eq!(
             (b.shape().audio_in.count(), b.shape().audio_out.count()),
@@ -1074,9 +1051,9 @@ mod tests {
     fn limiter_unmodulated_matches_held_constant() {
         // A node whose fed ceiling and threshold are held at the same values
         // as a plain node's atomics must produce identical output.
-        let mut plain = prepared_at(LimiterNode::new(-6.0, -0.3), RATE_44K);
+        let mut plain = prepared_at(LimiterNode::new(Db::new(-6.0), Db::new(-0.3)), RATE_44K);
 
-        let mut modn = prepared_at(LimiterNode::new(-6.0, -0.3), RATE_44K);
+        let mut modn = prepared_at(LimiterNode::new(Db::new(-6.0), Db::new(-0.3)), RATE_44K);
 
         let mut plain_out = [0.0f32; 2];
         let mut mod_out = [0.0f32; 2];
@@ -1100,8 +1077,8 @@ mod tests {
     fn brickwall_unmodulated_matches_held_constant() {
         // A brickwall whose fed ceiling is held at the atomic value must clip
         // identically to a plain brickwall.
-        let mut plain = BrickwallLimiterNode::new(-6.0);
-        let mut modn = BrickwallLimiterNode::new(-6.0);
+        let mut plain = BrickwallLimiterNode::new(Db::new(-6.0));
+        let mut modn = BrickwallLimiterNode::new(Db::new(-6.0));
 
         let mut plain_out = [0.0f32; 2];
         let mut mod_out = [0.0f32; 2];
@@ -1122,7 +1099,7 @@ mod tests {
     #[test]
     fn brickwall_fed_ceiling_modulates_clip() {
         // A fed ceiling held low clips harder than one held high.
-        let mut bw = BrickwallLimiterNode::new(0.0);
+        let mut bw = BrickwallLimiterNode::new(Db::new(0.0));
         let mut out = [0.0f32; 2];
         // Ceiling -12 dB ≈ 0.251 linear: 1.0 clips to ~0.251.
         tick_fed(&mut bw, &[1.0, 1.0], &[Some(-12.0)], &mut out);
@@ -1145,13 +1122,13 @@ mod tests {
     /// bound → fails.
     #[test]
     fn brickwall_a_fed_nan_ceiling_clamps_at_the_cell() {
-        let mut bw = prepared_at(BrickwallLimiterNode::new(-6.0), RATE_44K);
-        let cell = db_to_amplitude(-6.0).get();
+        let mut bw = prepared_at(BrickwallLimiterNode::new(Db::new(-6.0)), RATE_44K);
+        let cell = db_to_amplitude(Db::new(-6.0)).get();
         let mut out = [0.0f32; 2];
         tick_fed(&mut bw, &[1.0, -1.0], &[Some(f32::NAN)], &mut out);
         assert_eq!(out, [cell, -cell]);
         tick_fed(&mut bw, &[1.0, -1.0], &[Some(-12.0)], &mut out);
-        let fed = db_to_amplitude(-12.0).get();
+        let fed = db_to_amplitude(Db::new(-12.0)).get();
         assert_eq!(out, [fed, -fed]);
     }
 
@@ -1165,22 +1142,22 @@ mod tests {
     /// `with_channels` → the NaN-built node panics → fails.
     #[test]
     fn brickwall_a_nan_cell_keeps_the_last_ceiling() {
-        let mut bw = prepared_at(BrickwallLimiterNode::new(-6.0), RATE_44K);
+        let mut bw = prepared_at(BrickwallLimiterNode::new(Db::new(-6.0)), RATE_44K);
         let set = bw.param_set();
         let mut out = [0.0f32; 2];
         assert!(set.set(UnitParam::Ceiling, f32::NAN));
         tick(&mut bw, &[1.0, -1.0], &mut out);
-        let held = db_to_amplitude(-6.0).get();
+        let held = db_to_amplitude(Db::new(-6.0)).get();
         assert_eq!(out, [held, -held]);
         assert!(set.set(UnitParam::Ceiling, -12.0));
         tick(&mut bw, &[1.0, -1.0], &mut out);
-        let next = db_to_amplitude(-12.0).get();
+        let next = db_to_amplitude(Db::new(-12.0)).get();
         assert!((out[0] - next).abs() < 1e-6, "{}", out[0]);
 
-        let mut born_nan = prepared_at(BrickwallLimiterNode::new(f32::NAN), RATE_44K);
+        let mut born_nan = prepared_at(BrickwallLimiterNode::new(Db::new(f32::NAN)), RATE_44K);
         tick(&mut born_nan, &[2.0, -2.0], &mut out);
         assert_eq!(out, [1.0, -1.0], "a NaN-built brickwall clamps at 0 dB");
-        born_nan.set_ceiling(f32::NAN);
+        born_nan.set_ceiling(Db::new(f32::NAN));
         tick(&mut born_nan, &[2.0, -2.0], &mut out);
         assert_eq!(out, [1.0, -1.0], "set_ceiling(NaN) keeps the ceiling");
     }
@@ -1196,7 +1173,7 @@ mod tests {
     /// → ch1 carries ch0's signal → fails.
     #[test]
     fn limiter_leaves_an_unfed_channel_silent() {
-        let mut lim = prepared_at(LimiterNode::new(-6.0, -0.3), RATE_44K);
+        let mut lim = prepared_at(LimiterNode::new(Db::new(-6.0), Db::new(-0.3)), RATE_44K);
         let mut out = [0.0f32; 2];
         // Run past the 5 ms lookahead so the delayed signal emerges.
         for _ in 0..500 {
@@ -1208,16 +1185,16 @@ mod tests {
 
     #[test]
     fn limiter_with_channels_reports_arity() {
-        let l = LimiterNode::with_channels(ChannelLayout::from(6u16), -6.0, -0.3);
+        let l = LimiterNode::with_channels(ChannelLayout::from(6u16), Db::new(-6.0), Db::new(-0.3));
         assert_eq!(l.shape().audio_in.count(), 6);
         assert_eq!(l.shape().audio_out.count(), 6);
     }
 
     #[test]
     fn limiter_with_channels_2_matches_new() {
-        let mut a = prepared_at(LimiterNode::new(-6.0, -0.3), RATE_44K);
+        let mut a = prepared_at(LimiterNode::new(Db::new(-6.0), Db::new(-0.3)), RATE_44K);
         let mut b = prepared_at(
-            LimiterNode::with_channels(ChannelLayout::STEREO, -6.0, -0.3),
+            LimiterNode::with_channels(ChannelLayout::STEREO, Db::new(-6.0), Db::new(-0.3)),
             RATE_44K,
         );
         let mut oa = [0.0f32; 2];
@@ -1236,7 +1213,7 @@ mod tests {
         // A loud transient on one channel must reduce ALL channels by the same
         // linked gain (max-abs across the frame), preserving inter-channel ratios.
         let mut lim = prepared_at(
-            LimiterNode::with_channels(ChannelLayout::from(6u16), -6.0, -0.3),
+            LimiterNode::with_channels(ChannelLayout::from(6u16), Db::new(-6.0), Db::new(-0.3)),
             RATE_44K,
         );
         let mut out = [0.0f32; 6];
@@ -1284,7 +1261,7 @@ mod tests {
             })
             .collect();
         let refs: Vec<&[f32]> = ins.iter().map(|c| &c[..]).collect();
-        let mut bw = BrickwallLimiterNode::with_channels(ChannelLayout::from(3u16), 0.0);
+        let mut bw = BrickwallLimiterNode::with_channels(ChannelLayout::from(3u16), Db::new(0.0));
         let out = drive(&mut bw, RATE, &refs, &[Some(&fed)]);
         for (c, (o, x)) in out.iter().zip(&ins).enumerate() {
             for (i, (&y, &x)) in o.iter().zip(x).enumerate() {
@@ -1309,7 +1286,7 @@ mod tests {
 
     #[test]
     fn brickwall_with_channels_reports_arity_and_clips_all() {
-        let mut bw = BrickwallLimiterNode::with_channels(ChannelLayout::from(6u16), 0.0);
+        let mut bw = BrickwallLimiterNode::with_channels(ChannelLayout::from(6u16), Db::new(0.0));
         assert_eq!(bw.shape().audio_in.count(), 6);
         assert_eq!(bw.shape().audio_out.count(), 6);
         let mut out = [0.0f32; 6];
@@ -1327,7 +1304,7 @@ mod tests {
     #[test]
     fn test_limiter_sliding_minimum_releases_after_window() {
         let mut lim = prepared_at(
-            LimiterNode::new(-12.0, -0.3).with_lookahead(0.002),
+            LimiterNode::new(Db::new(-12.0), Db::new(-0.3)).with_lookahead(Seconds::new(0.002)),
             RATE_44K,
         );
 
@@ -1365,7 +1342,7 @@ mod tests {
     #[test]
     fn the_meter_reports_the_blocks_last_frame_whatever_the_lane() {
         for lane in [None, Some(100)] {
-            let mut lim = prepared_at(LimiterNode::new(-12.0, -0.3), RATE_44K);
+            let mut lim = prepared_at(LimiterNode::new(Db::new(-12.0), Db::new(-0.3)), RATE_44K);
             if let Some(n) = lane {
                 lim.lane.truncate(n);
             }
@@ -1373,7 +1350,7 @@ mod tests {
             let input: Vec<f32> = (0..1024).map(|i| if i < 600 { 0.2 } else { 0.8 }).collect();
             let out = drive(&mut lim, RATE_44K, &[&input, &input], &[]).remove(0);
             let gain = out[1023] / input[1023 - latency];
-            let expected = -amplitude_to_db(gain).get();
+            let expected = -amplitude_to_db(Amplitude::new(gain)).get();
             assert!(expected > 1.0, "the loud half is being reduced: {expected}");
             assert!(
                 (lim.gain_reduction_db().get() - expected).abs() < 1e-3,
@@ -1413,7 +1390,7 @@ mod tests {
         let (threshold, ceiling) = (Db(-12.0), Db(-0.3));
         for lane in [None, Some(100)] {
             let mut lim = prepared_at(
-                LimiterNode::new(threshold, ceiling).with_release(release),
+                LimiterNode::new(threshold, ceiling).with_release(Seconds::new(release)),
                 RATE_44K,
             );
             if let Some(n) = lane {
@@ -1430,7 +1407,12 @@ mod tests {
             let envelopes: Vec<f32> = input
                 .iter()
                 .map(|&x| {
-                    let target = compute_limiter_gain(amplitude_to_db(x), threshold, ceiling).get();
+                    let target = compute_limiter_gain(
+                        amplitude_to_db(Amplitude::new(x)),
+                        threshold,
+                        ceiling,
+                    )
+                    .get();
                     envelope = if target < envelope {
                         target
                     } else {
@@ -1509,7 +1491,7 @@ mod tests {
         let limit = db_to_amplitude(ceiling).get();
         for (level, want) in [(0.25f32, 1.0f32), (1.0, limit), (3.0, limit / 3.0)] {
             let mut lim = prepared_at(
-                LimiterNode::new(ceiling, ceiling).with_release(0.001),
+                LimiterNode::new(ceiling, ceiling).with_release(Seconds::new(0.001)),
                 RATE_44K,
             );
             let x = vec![level; 1024];
@@ -1542,7 +1524,7 @@ mod tests {
         );
         for (level, gain) in [(0.1f32, c / t), (2.0, c / 2.0)] {
             let mut lim = prepared_at(
-                LimiterNode::new(threshold, ceiling).with_release(0.001),
+                LimiterNode::new(threshold, ceiling).with_release(Seconds::new(0.001)),
                 RATE_44K,
             );
             let x = vec![level; 1024];
@@ -1562,7 +1544,7 @@ mod tests {
     /// The steady-state output level in dB of a constant input at `in_db`.
     fn steady_out_db(threshold: Db, ceiling: Db, in_db: f32) -> f32 {
         let mut lim = prepared_at(
-            LimiterNode::new(threshold, ceiling).with_release(0.001),
+            LimiterNode::new(threshold, ceiling).with_release(Seconds::new(0.001)),
             RATE_44K,
         );
         let level = db_to_amplitude(Db(in_db)).get();
@@ -1578,7 +1560,7 @@ mod tests {
             out.iter().all(|y| y.abs() <= ceiling_lin * (1.0 + 1e-6)),
             "threshold {threshold:?}, ceiling {ceiling:?}, in {in_db}: past the ceiling"
         );
-        amplitude_to_db(out[1023]).get()
+        amplitude_to_db(Amplitude::new(out[1023])).get()
     }
 
     /// Threshold, ceiling pairs covering a boost, a cut, and no drive.
@@ -1664,7 +1646,7 @@ mod tests {
         let ceiling = Db(-6.0);
         let limit = db_to_amplitude(ceiling).get();
         let mut lim = prepared_at(
-            LimiterNode::new(ceiling, ceiling).with_release(0.001),
+            LimiterNode::new(ceiling, ceiling).with_release(Seconds::new(0.001)),
             RATE_44K,
         );
         let latency = lim.ring.lookahead_samples();
@@ -1683,7 +1665,7 @@ mod tests {
                 "frame {i}: {y} against {limit}"
             );
         }
-        assert!(lim.envelope.is_finite());
+        assert!(lim.kernel.envelope().is_finite());
     }
 
     /// A NaN fed to the peak fold yields a non-NaN peak. Separate from the
@@ -1709,7 +1691,7 @@ mod tests {
     fn a_very_low_threshold_never_produces_a_nan() {
         for threshold in [f32::NEG_INFINITY, -800.0, -150.0] {
             let mut lim = prepared_at(
-                LimiterNode::new(Db(threshold), Db(-6.0)).with_release(0.001),
+                LimiterNode::new(Db(threshold), Db(-6.0)).with_release(Seconds::new(0.001)),
                 RATE_44K,
             );
             let mut x = vec![0.0f32; 1024];

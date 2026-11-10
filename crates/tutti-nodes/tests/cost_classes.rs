@@ -83,7 +83,7 @@ fn click(transport: &Transport) -> ClickNode {
 /// `declared`: the clicks as shipped, or every one wrapped to declare
 /// nothing.
 fn graph(workers: usize, declared: bool) -> Executor {
-    let transport = Transport::new(SR);
+    let transport = Transport::new(SampleRate::new(SR));
     let (mut ed, mut exec) = Editor::new(Prepare::new(SampleRate(SR), Samples(MAX_BLOCK)));
     if workers > 1 {
         exec.set_pool(Some(Arc::new(
@@ -162,7 +162,10 @@ fn bits(v: &[Vec<f32>]) -> Vec<Vec<u32>> {
 #[test]
 #[cfg_attr(miri, ignore = "spawns a worker pool")]
 fn moderate_clicks_pack_and_render_bit_identically() {
-    assert_eq!(click(&Transport::new(SR)).shape().cost, Cost::Moderate);
+    assert_eq!(
+        click(&Transport::new(SampleRate::new(SR))).shape().cost,
+        Cost::Moderate
+    );
     let declared = graph(4, true);
     let undeclared = graph(4, false);
     let (plan, bare) = (

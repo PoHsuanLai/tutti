@@ -10,7 +10,7 @@ use tutti_measure::{
     ChordConfig, ChordQuality, ChromaConfig, Key, KeyProfile, Mode, PitchClass, Tuning, chroma,
     detect_chords, estimate_key,
 };
-use tutti_types::{Cents, Samples};
+use tutti_types::{Cents, SampleRate, Samples};
 
 const SR: f64 = 22_050.0;
 
@@ -53,7 +53,7 @@ fn chord_tones(out: &mut [f32], at: usize, secs: f64, root: i32, minor: bool, pa
 }
 
 fn geometry(window: usize, hop: usize) -> StftGeometry {
-    StftGeometry::new(SR, Samples(window), Samples(hop)).unwrap()
+    StftGeometry::new(SampleRate::new(SR), Samples(window), Samples(hop)).unwrap()
 }
 
 fn config() -> ChromaConfig {

@@ -59,8 +59,12 @@ fn load_handle(env: &[(&str, &str)]) -> PluginHandle {
         // SAFETY: as above.
         unsafe { std::env::set_var(k, v) };
     }
-    let (_client, handle) = in_process_vst2_client(&main_thread(), &path, SAMPLE_RATE)
-        .unwrap_or_else(|e| panic!("in-process VST2 load failed for {path:?}: {e:?}"));
+    let (_client, handle) = in_process_vst2_client(
+        &main_thread(),
+        &path,
+        tutti_plugin_types::SampleRate::new(SAMPLE_RATE),
+    )
+    .unwrap_or_else(|e| panic!("in-process VST2 load failed for {path:?}: {e:?}"));
     // The AEffect is built; clearing now keeps the variable from outliving it.
     clear_probe_env();
     handle

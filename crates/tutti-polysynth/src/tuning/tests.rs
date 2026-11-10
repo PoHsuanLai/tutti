@@ -19,7 +19,7 @@ fn test_equal_temperament() {
 
 #[test]
 fn test_custom_reference() {
-    let tuning = Tuning::equal_temperament_with_reference(432.0, 69);
+    let tuning = Tuning::equal_temperament_with_reference(Hz::new(432.0), 69);
 
     // A4 should be 432 Hz
     assert!((tuning.note_to_freq(69).get() - 432.0).abs() < 0.01);
@@ -163,7 +163,7 @@ fn test_set_reference_dynamically() {
     assert!((tuning.note_to_freq(69).get() - 440.0).abs() < 0.01);
 
     // Change to A4 = 432 (alternative tuning)
-    tuning.set_reference(432.0, 69);
+    tuning.set_reference(Hz::new(432.0), 69);
 
     assert!((tuning.note_to_freq(69).get() - 432.0).abs() < 0.01);
     assert!((tuning.reference_freq().get() - 432.0).abs() < 0.01);
@@ -176,7 +176,7 @@ fn test_set_reference_dynamically() {
 #[test]
 fn test_different_reference_note() {
     // Use C4 (note 60) as reference at 256 Hz
-    let tuning = Tuning::equal_temperament_with_reference(256.0, 60);
+    let tuning = Tuning::equal_temperament_with_reference(Hz::new(256.0), 60);
 
     assert!((tuning.note_to_freq(60).get() - 256.0).abs() < 0.01);
 

@@ -18,6 +18,8 @@
 use tutti_graph::contract::{Detect, Excite, Row, SAMPLE_RATE};
 use tutti_graph::contract_tests;
 use tutti_spatial::HrtfBinauralNode;
+use tutti_types::Azimuth;
+use tutti_types::Elevation;
 use tutti_types::Samples;
 
 /// The panner's convolution step (`STEP` in `panner.rs`).
@@ -71,7 +73,8 @@ fn node() -> HrtfBinauralNode {
     let bytes = synthetic_hrir_sphere(rate, 64);
     // Born at the contract's rate; the graph prepares it at that rate too.
     let node = HrtfBinauralNode::new(&bytes, SAMPLE_RATE).expect("the sphere parses");
-    node.controls().set_position(90.0, 0.0);
+    node.controls()
+        .set_position(Azimuth::new(90.0), Elevation::new(0.0));
     node
 }
 

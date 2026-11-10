@@ -1,6 +1,11 @@
 //! [`Fold`] — the one way a signal of one channel topology becomes another's.
 
-use crate::{ChannelLayout, ChannelTopology, InterleavedMut, M3DB, Speaker};
+use crate::{ChannelLayout, ChannelTopology, InterleavedMut, Speaker};
+
+/// The −3 dB attenuation (`1/√2 ≈ 0.7071`) of the ITU-R BS.775 / Dolby consumer
+/// downmix, applied by a [`Fold`] to the centre and surround channels it folds
+/// into the front pair.
+pub const M3DB: f32 = core::f32::consts::FRAC_1_SQRT_2;
 
 /// Which end of a fold a [`FoldError`] is about.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -322,10 +327,10 @@ impl Row {
 /// # Bit-identity with the width folds
 ///
 /// For the topologies [`ChannelTopology::smpte`] (and [`quad`](ChannelTopology::quad))
-/// gives, a fold to one or two channels reproduces the width folds this
-/// replaced ([`fold_frame_to_stereo`](crate::fold_frame_to_stereo) is the
-/// stereo one) to the bit, in their
-/// order of operations: the direct channel, then each folded channel in source
+/// gives, a fold to one or two channels writes the bits of the width-only folds
+/// it replaced (`fold_frame_to_stereo` and `fold_frame_to_mono`, deleted),
+/// which `tests::widths_write_the_itu_formulas_to_the_bit` pins against their
+/// closed forms, in their order of operations: the direct channel, then each folded channel in source
 /// order, `acc + gain·x`. With overhead speakers in the source (7.1.4) the −3 dB
 /// channels of a side are summed first and then scaled once, as the 12-wide
 /// fold always did; summing then scaling rounds differently from scaling each

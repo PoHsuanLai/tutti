@@ -53,6 +53,8 @@ env:
 jobs:
   fmt:
     name: rustfmt
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
@@ -66,6 +68,8 @@ jobs:
   # `licenses` are not checked (see `deny.toml`).
   deny:
     name: cargo deny (advisories)
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
@@ -87,49 +91,52 @@ jobs:
           # but prefixed `-` for uninitialised, so the gate would report the
           # checkout rather than the pin on every run.
           submodules: recursive
+      # The toolchain `rust-toolchain.toml` pins: the gates below that are
+      # `cargo xtask` recipes build `xtask` (std only, a few seconds).
+      - run: rustup toolchain install
       # Engine types are imported from a crate's root or prelude, never through
       # its modules. Neither rustc nor clippy has a lint for a redundant path,
       # and doc comments in ```text / ```ignore blocks are never compiled — so
-      # this grep is the only enforcement there is.
-      - run: scripts/check-canonical-paths.sh
+      # this scan is the only enforcement there is.
+      - run: cargo xtask check-paths
       # `tutti-graph` keeps every module private, so rustc already refuses
       # `tutti_graph::plan::Plan` in code. Prose is the gap: a ```text block
       # or a *.md naming a module path compiles fine and goes stale the moment
       # a module is renamed. The per-module gate covers it.
-      - run: scripts/check-canonical-paths.sh tutti_graph arena builder command compile controls cost editor event exec fade fork graph held history instrument io kernels latency loss meter node par param plan play pool preroll reference slots spec tail tap time
+      - run: cargo xtask check-paths tutti_graph arena builder command compile controls cost editor event exec fade fork graph held history instrument io kernels latency loss meter node par param plan play pool preroll reference slots spec tail tap time
       # The same for `tutti-session`, which keeps every module private too.
-      - run: scripts/check-canonical-paths.sh tutti_session builder device error export graph instrument midi modulation node plugin session watch
+      - run: cargo xtask check-paths tutti_session builder device error export graph instrument midi modulation node plugin session watch
       # And `tutti-ump`, which keeps its modules private.
-      - run: scripts/check-canonical-paths.sh tutti_ump cc_number decode encode field message midi1 midi_channel midi_group ump
+      - run: cargo xtask check-paths tutti_ump cc_number decode encode field message midi1 midi_channel midi_group ump
       # And `tutti-midi-protocol`, which keeps its modules private.
-      - run: scripts/check-canonical-paths.sh tutti_midi_protocol midi1 narrow scale voice
+      - run: cargo xtask check-paths tutti_midi_protocol midi1 narrow scale voice
       # And `tutti-midi-device`, which keeps its modules private.
-      - run: scripts/check-canonical-paths.sh tutti_midi_device id table
+      - run: cargo xtask check-paths tutti_midi_device id table
       # And `tutti-plugin-db`, which keeps its modules private.
-      - run: scripts/check-canonical-paths.sh tutti_plugin_db facts format fs pedal scanner store table
+      - run: cargo xtask check-paths tutti_plugin_db facts format fs pedal scanner store table
       # And `tutti-plugin-ipc`, whose modules are private but `state_chunk`, the
       # namespace both ends of the wire chunk a state with.
-      - run: scripts/check-canonical-paths.sh tutti_plugin_ipc client config error midi_intake protocol subprocess transport
+      - run: cargo xtask check-paths tutti_plugin_ipc client config error midi_intake protocol subprocess transport
       # And `tutti-dsp`: its modules are private, the root names every item.
-      - run: scripts/check-canonical-paths.sh tutti_dsp allpass buffer control convolver delay dither dynamics error fdn fdn_design fft filter geometry grid interp network reverb reverb_design swept_delay waveshape window resample
+      - run: cargo xtask check-paths tutti_dsp allpass buffer control convolver delay dither dynamics error fdn fdn_design fft filter geometry grid interp network reverb reverb_design swept_delay waveshape window resample
       # And `tutti-measure`, which keeps its modules private too.
-      - run: scripts/check-canonical-paths.sh tutti_measure align beat chord chroma features key loudness notes onset peaks pitch silence spectrum stereo tempo transform vectorscope xcorr yin
+      - run: cargo xtask check-paths tutti_measure align beat chord chroma features key loudness notes onset peaks pitch silence spectrum stereo tempo transform vectorscope xcorr yin
       # And `tutti-transport`, `tutti-metering` and `tutti-engine`: modules
       # private, the root names every item.
-      - run: scripts/check-canonical-paths.sh tutti_transport beat_walk clock fsm handle loop_region motion offline project_meter settings state timed timeline
-      - run: scripts/check-canonical-paths.sh tutti_metering load
-      - run: scripts/check-canonical-paths.sh tutti_engine engine error
+      - run: cargo xtask check-paths tutti_transport beat_walk clock fsm handle loop_region motion offline project_meter settings state timed timeline
+      - run: cargo xtask check-paths tutti_metering load
+      - run: cargo xtask check-paths tutti_engine engine error
       # And `tutti-codec`, which keeps its modules private: the root names every item.
-      - run: scripts/check-canonical-paths.sh tutti_codec aiff decode encoder error flac format pcm spec staged vorbis wav wave
+      - run: cargo xtask check-paths tutti_codec aiff decode encoder error flac format pcm spec staged vorbis wav wave
       # And `tutti-sf2` and `tutti-soundfont`: modules private, the root names every item.
-      - run: scripts/check-canonical-paths.sh tutti_sf2 bank binary_reader error four_cc generator generator_type instrument instrument_info instrument_region loop_mode preset preset_info preset_region read_counter sample_header soundfont soundfont_info soundfont_parameters soundfont_sampledata soundfont_version zone zone_info
-      - run: scripts/check-canonical-paths.sh tutti_soundfont array_math bi_quad_filter channel chorus envelope_stage error fork lfo modulation_envelope node oscillator patch player region_ex region_pair render reverb settings soundfont_math voice voices volume_envelope
+      - run: cargo xtask check-paths tutti_sf2 bank binary_reader error four_cc generator generator_type instrument instrument_info instrument_region loop_mode preset preset_info preset_region read_counter sample_header soundfont soundfont_info soundfont_parameters soundfont_sampledata soundfont_version zone zone_info
+      - run: cargo xtask check-paths tutti_soundfont array_math bi_quad_filter channel chorus envelope_stage error fork lfo modulation_envelope node oscillator patch player region_ex region_pair render reverb settings soundfont_math voice voices volume_envelope
       # And `tutti-tempo`, which keeps its modules private.
-      - run: scripts/check-canonical-paths.sh tutti_tempo error grid map point segment
+      - run: cargo xtask check-paths tutti_tempo error grid map point segment
       # And `tutti-voicing`, which keeps its modules private.
-      - run: scripts/check-canonical-paths.sh tutti_voicing controller holds phase voicing
+      - run: cargo xtask check-paths tutti_voicing controller holds phase voicing
       # And `tutti-rt`, which keeps its modules private: the root names every item.
-      - run: scripts/check-canonical-paths.sh tutti_rt cell denormals doorbell drain_clock edits job_gate level_cell packed_atomic pos_ring request_word scope seq_cell spin split task_graph vec
+      - run: cargo xtask check-paths tutti_rt cell denormals doorbell drain_clock edits job_gate level_cell packed_atomic pos_ring request_word scope seq_cell spin split task_graph vec
       # The vendored VST3 SDK is three Steinberg submodules, documented as
       # pinned at v3.8.0_build_66 in .gitmodules, in CLAUDE.md and in
       # tutti-vst3-host's build.rs. Prose cannot notice a submodule bump moving
@@ -137,8 +144,8 @@ jobs:
       # unexplained C++ compile error in `audio-probe` rather than as a version
       # complaint — so this compares those three statements against the commits
       # the superproject actually records. It belongs in this job because it is
-      # the other static gate: no toolchain, no build, just a claim checked.
-      - run: scripts/check-submodule-pins.sh
+      # the other static gate: no build of the workspace, just a claim checked.
+      - run: cargo xtask check-submodule-pins
       # Design 015 §8, check 4: `tutti-session` re-exports no crate whole.
       # (Checks 3 and 5, over `bevy-tutti/src`, are skipped while it is parked.)
       # Perl over the source, no build, so it belongs with the other static gates.
@@ -154,17 +161,18 @@ jobs:
       # Every member sits directly in `crates/<package>` or `testing/<dir>`, no
       # shipped crate builds on a `testing/` crate, and dependencies point down
       # the layers in CLAUDE.md (`cargo metadata`, no build).
-      - run: rustup toolchain install
       - run: scripts/check-layout.sh
       # A tuple struct with a private field does not derive `Deserialize`
-      # plainly: the derive skips `new` (python3 over the source, no build).
-      - run: scripts/check-range-types.sh
+      # plainly: the derive skips `new` (`xtask` over the source, no build).
+      - run: cargo xtask check-range-types
       # Every InProcess/OutOfProcess impl is listed in the plugin contract's
       # `hostings` (python3 over the source, no build).
       - run: scripts/check-hosting.sh
 
   clippy:
     name: clippy
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
@@ -209,6 +217,8 @@ jobs:
   # MSVC, so no clang/stub workaround is needed.
   clippy-windows:
     name: clippy (windows)
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -239,6 +249,8 @@ jobs:
   # Lints only; the AU suites need installed audio units and run locally.
   clippy-macos:
     name: clippy (macos)
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
@@ -259,6 +271,8 @@ jobs:
   # this finds out. Linux and macOS run the same suite in `test`.
   contract-windows:
     name: plugin contract (windows)
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: windows-latest
     continue-on-error: true
     steps:
@@ -274,6 +288,8 @@ jobs:
 
   features:
     name: dark features
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-24.04
     # Suites run here may assert golden digests; see the `test` job.
     env:
@@ -526,6 +542,8 @@ jobs:
 
   test:
     name: test (${{ matrix.os }})
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     strategy:
       fail-fast: false
       matrix:
@@ -639,6 +657,8 @@ jobs:
 
   bevy-free:
     name: Bevy-free floor
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
@@ -686,6 +706,8 @@ jobs:
 
   doc:
     name: rustdoc
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
@@ -721,7 +743,7 @@ jobs:
       # Each feature of the feature-gated crates alone. The union above cannot
       # see a link out of one feature's docs into an item another feature
       # gates, which the union of features cannot see.
-      - run: scripts/check-doc-features.sh
+      - run: cargo xtask check-doc-features
       # The docs.rs build: nightly and `--cfg docsrs`, so `doc_cfg` parses and
       # the feature badges render. A dated nightly (bumped by hand, like
       # `rust-toolchain.toml`'s stable) so a new rustdoc lint cannot turn CI
@@ -751,6 +773,8 @@ jobs:
   # is the first thing to run it. A check nobody has run is not a check.
   miri:
     name: miri
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-24.04
     # About 10 minutes on main: a hang (a test miri cannot finish) fails here,
     # not at GitHub's six-hour cap. A test that is slow only because it is a
@@ -806,18 +830,28 @@ jobs:
   # (about a minute), and every recorded mutation fails at a bound of 3. That
   # model at 5 (about 6 minutes) is `cargo xtask loom-full`, for a change to `arc-lend`'s
   # protocol code itself; at 6 it did not finish in 25 minutes.
-  # Whether this change can affect a loom model. The models run the shipped
-  # code of `arc-lend` and `tutti-rt` (and `tutti-shm-model`'s mirror of the
-  # plugin slab header), so a PR that touches none of those, nor the lock, the
-  # toolchain or this file, cannot change their result. `loom` is the slowest
-  # job (about 12 minutes) and set CI's wall time on every PR; it now runs on
-  # the PRs that can change it, and on every push to main and manual run.
-  # A skipped job reports success; no check is required by branch protection.
-  loom-changes:
-    name: loom needed?
+  # What a pull request changed, read once for the jobs that can skip it. A
+  # skipped job reports success; no check is required by branch protection.
+  # A push to main and a manual run always run everything.
+  #
+  # `code`: false when every changed file is prose that nothing compiles: under
+  # top-level `docs/`, or a `*.md` at the repository root. A crate's README
+  # and `arc-lend`'s `src/docs/design.md` are pulled into rustdoc by
+  # `include_str!`, so they live under `crates/` and count as code. A prose PR
+  # still runs `canonical paths`, which scans `*.md`. Before this, a doc-only
+  # PR ran the whole matrix (about 17 minutes) for nothing it could change.
+  #
+  # `loom`: whether the change can affect a loom model. The models run the
+  # shipped code of `arc-lend` and `tutti-rt` (and `tutti-shm-model`'s mirror
+  # of the plugin slab header), so a PR that touches none of those, nor the
+  # lock, the toolchain or this file, cannot change their result. `loom` is the
+  # slowest job (about 12 minutes); it runs on the PRs that can change it.
+  changes:
+    name: what changed?
     runs-on: ubuntu-24.04
     outputs:
-      run: ${{ steps.diff.outputs.run }}
+      code: ${{ steps.diff.outputs.code }}
+      loom: ${{ steps.diff.outputs.loom }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -828,21 +862,27 @@ jobs:
           BASE: ${{ github.event.pull_request.base.sha }}
         run: |
           if [ "$EVENT" != "pull_request" ]; then
-            echo "run=true" >> "$GITHUB_OUTPUT"
+            echo "code=true" >> "$GITHUB_OUTPUT"
+            echo "loom=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
           changed=$(git diff --name-only "$BASE"...HEAD)
           echo "$changed"
-          if echo "$changed" | grep -qE '^(crates/arc-lend/|crates/tutti-rt/|testing/tutti-shm-model/|Cargo\.lock$|rust-toolchain\.toml$|\.github/workflows/ci\.yml$)'; then
-            echo "run=true" >> "$GITHUB_OUTPUT"
+          if echo "$changed" | grep -qvE '^(docs/.*|[^/]+\.md)$'; then
+            echo "code=true" >> "$GITHUB_OUTPUT"
           else
-            echo "run=false" >> "$GITHUB_OUTPUT"
+            echo "code=false" >> "$GITHUB_OUTPUT"
+          fi
+          if echo "$changed" | grep -qE '^(crates/arc-lend/|crates/tutti-rt/|testing/tutti-shm-model/|Cargo\.lock$|rust-toolchain\.toml$|\.github/workflows/ci\.yml$)'; then
+            echo "loom=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "loom=false" >> "$GITHUB_OUTPUT"
           fi
 
   loom:
     name: loom
-    needs: loom-changes
-    if: needs.loom-changes.outputs.run == 'true'
+    needs: changes
+    if: needs.changes.outputs.loom == 'true'
     runs-on: ubuntu-24.04
     # About 12 minutes with the `PosRing` models: a model that stops
     # terminating fails here.
@@ -897,8 +937,8 @@ jobs:
   # mutation in the three files fails at this bound.
   loom-parallel:
     name: loom (parallel executor)
-    needs: loom-changes
-    if: needs.loom-changes.outputs.run == 'true'
+    needs: changes
+    if: needs.changes.outputs.loom == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     env:

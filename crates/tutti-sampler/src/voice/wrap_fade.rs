@@ -39,7 +39,7 @@ fn tone(freq: f64, i: usize) -> f32 {
 
 /// A wave of `channels` tones (437.3 Hz, then 311.7 Hz), `len` frames.
 fn wave(channels: usize, len: usize, tone_at: impl Fn(f64, usize) -> f32) -> Arc<Wave> {
-    let mut w = Wave::new(channels, SR);
+    let mut w = Wave::new(channels, SampleRate::new(SR));
     for i in 0..len {
         let frame: Vec<f32> = [437.3, 311.7][..channels]
             .iter()
@@ -51,7 +51,7 @@ fn wave(channels: usize, len: usize, tone_at: impl Fn(f64, usize) -> f32) -> Arc
 }
 
 fn region(start: f64, end: f64) -> LoopRange {
-    LoopRange::new(start, end).expect("a loop")
+    LoopRange::new(Beat::new(start), Beat::new(end)).expect("a loop")
 }
 
 /// What renders the voice: a pool slot, or the source as a graph node.
@@ -109,7 +109,8 @@ impl Rig {
             // Placed by `place`.
             Host::Voice => Hosted::Voice(None),
             Host::Node => Hosted::Node(
-                MemorySource::new(Arc::new(Wave::new(2, SR))).expect("a placeable wave"),
+                MemorySource::new(Arc::new(Wave::new(2, SampleRate::new(SR))))
+                    .expect("a placeable wave"),
             ),
         };
         Self {
@@ -538,7 +539,7 @@ fn steps(channels: usize, before: f32, after: f32) -> Arc<Wave> {
 
 /// [`steps`] with the step at frame `split`.
 fn steps_at(channels: usize, before: f32, after: f32, split: usize) -> Arc<Wave> {
-    let mut w = Wave::new(channels, SR);
+    let mut w = Wave::new(channels, SampleRate::new(SR));
     for i in 0..4 * FPB {
         let v = if i < split { before } else { after };
         let frame: Vec<f32> = (0..channels).map(|c| v + 0.1 * c as f32).collect();

@@ -27,8 +27,8 @@ Use it directly when you need only the vocabulary (a crate that implements
   are the entry points for an edge that knows only a width (a device, an export
   file, the graph root): the engine's order where the width has one, channels by
   index (`Fold::by_index`, widening only; a narrowing is `FoldError::Unplaced`,
-  and `Fold::select` truncates on purpose) where it has none. The width-only `fold_frame` is gone;
-  `fold_frame_to_mono` / `fold_frame_to_stereo` remain for a bare frame.
+  and `Fold::select` truncates on purpose) where it has none. The width-only folds (`fold_frame`, `fold_frame_to_mono`,
+  `fold_frame_to_stereo`, `fold_buffer_to_mono`, `fold_planar_to_mono`) are gone.
 - **`io`** — `Source`, `Sink` and `Pull`: the edge vocabulary, a stream on a clock
   other than the graph's (mic, file, tap, file encoder). A `Pull` says whether an
   empty read is late, finished or broken.

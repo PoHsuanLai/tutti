@@ -198,7 +198,7 @@ impl PeakBlocks {
     /// So this is the right reduction for a *waveform* that needs one row. It
     /// is **not** a downmix: a caller that wants the mono signal's own peaks —
     /// what the listener hears through a mono fold — folds the samples with
-    /// [`Interleaved::fold_to_mono_into`] and blocks that instead.
+    /// [`Interleaved::fold_into`] (through a [`Fold`](tutti_types::Fold) to one channel) and blocks that instead.
     ///
     /// `rms` merges quadratically; see [`PeakBlock::merge`].
     #[must_use]

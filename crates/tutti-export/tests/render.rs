@@ -21,7 +21,7 @@ use tutti_export::{
 use tutti_graph::{Cx, ForkByClone, GraphBuilder, Io, Node, Prepare, Shape, Status};
 use tutti_nodes::testing::{Const, Osc};
 use tutti_types::Seconds;
-use tutti_types::{Amplitude, Hz, SampleRate};
+use tutti_types::{Amplitude, Drive, Hz, SampleRate};
 
 /// The rate [`config`] renders at.
 const RATE: SampleRate = SampleRate(44_100.0);
@@ -426,7 +426,7 @@ fn resolving_a_reported_graph_keeps_its_own_figure() {
 fn a_stateless_node_reports_no_tail_rather_than_an_unknown_one() {
     use tutti_graph::Node;
 
-    let dist = tutti_nodes::DistortionNode::new(tutti_nodes::ShapeKind::Tanh, 1.0);
+    let dist = tutti_nodes::DistortionNode::new(tutti_nodes::ShapeKind::Tanh, Drive::new(1.0));
     assert_eq!(dist.shape().tail, tutti_types::Tail::None);
 }
 
@@ -1211,7 +1211,7 @@ fn an_odd_width_survives_a_resample() {
     }
 
     let mut cfg = config(Format::Wav(Pcm::Float32), ChannelLayout::from(width));
-    cfg.resample = Some(Resample::to(48_000.0));
+    cfg.resample = Some(Resample::to(SampleRate::new(48_000.0)));
 
     let p = d.path().join("resampled5.wav");
     render_to_file(built(g, RATE), &cfg, &FrozenClock, &p).expect("a 5-wide resampled export");

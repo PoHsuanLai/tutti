@@ -98,7 +98,7 @@ fn main() {
     // Chosen for the failure modes YIN actually has, not for coverage of the
     // frequency axis. A detector can nail every pure sine and still be wrong on
     // everything musical.
-    let cfg = YinConfig::standard(SR).expect("standard range");
+    let cfg = YinConfig::standard(SampleRate::new(SR)).expect("standard range");
 
     // Pure sines across the range, including the extremes where the period
     // bounds bite. 55 Hz needs a long window; 1975 Hz sits near min_period,

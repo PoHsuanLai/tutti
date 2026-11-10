@@ -15,7 +15,9 @@ use assert_no_alloc::AllocDisabler;
 use tutti_graph::IntoNode;
 use tutti_graph::contract::BlockRig;
 use tutti_nodes::{DelayLineNode, LfoNode, LfoShape, ModDelayNode, PhaserNode};
-use tutti_types::{ChannelLayout, SampleRate};
+use tutti_types::{
+    BeatDuration, ChannelLayout, Depth, Feedback, Hz, Mix, PhaseIncrement, SampleRate, Seconds,
+};
 
 #[global_allocator]
 static A: AllocDisabler = AllocDisabler;
@@ -49,7 +51,7 @@ fn gate<N: IntoNode>(node: N, amplitude: f32, blocks: usize, mut between: impl F
 #[test]
 fn lfo_node_process_is_allocation_free() {
     gate(
-        LfoNode::new(LfoShape::Sine).with_frequency(2.0_f32),
+        LfoNode::new(LfoShape::Sine).with_frequency(Hz::new(2.0_f32)),
         0.0,
         5_000,
         |_| {},
@@ -61,7 +63,7 @@ fn lfo_random_shape_process_is_allocation_free() {
     // RandomSmooth hashes its cycle index on its own path. Fast enough
     // to step inside the warm-up, so the node is audible there.
     gate(
-        LfoNode::new(LfoShape::RandomSmooth).with_frequency(200.0_f32),
+        LfoNode::new(LfoShape::RandomSmooth).with_frequency(Hz::new(200.0_f32)),
         0.0,
         5_000,
         |_| {},
@@ -78,8 +80,8 @@ fn lfo_random_shape_process_is_allocation_free() {
 fn beat_synced_lfo_process_is_allocation_free() {
     gate(
         LfoNode::new(LfoShape::Sine)
-            .with_beat_sync(4.0)
-            .with_phase_offset(0.25),
+            .with_beat_sync(BeatDuration::new(4.0))
+            .with_phase_offset(PhaseIncrement::new(0.25)),
         0.0,
         5_000,
         |_| {},
@@ -89,15 +91,24 @@ fn beat_synced_lfo_process_is_allocation_free() {
 #[test]
 fn delay_line_node_process_is_allocation_free() {
     // Half dry, so the warm-up (shorter than the 250 ms tap) is audible.
-    let node = DelayLineNode::new(2.0_f64, 0.25_f64, 0.4_f32);
-    node.set_mix(0.5_f32);
+    let node = DelayLineNode::new(
+        Seconds::new(2.0_f64),
+        Seconds::new(0.25_f64),
+        Feedback::new(0.4_f32),
+    );
+    node.set_mix(Mix::new(0.5_f32));
     gate(node, 0.5, 2_000, |_| {});
 }
 
 #[test]
 fn stereo_delay_line_node_process_is_allocation_free() {
-    let node = DelayLineNode::stereo(2.0_f64, 0.30_f64, 0.31_f64, 0.4_f32);
-    node.set_mix(0.5_f32);
+    let node = DelayLineNode::stereo(
+        Seconds::new(2.0_f64),
+        Seconds::new(0.30_f64),
+        Seconds::new(0.31_f64),
+        Feedback::new(0.4_f32),
+    );
+    node.set_mix(Mix::new(0.5_f32));
     gate(node, 0.5, 2_000, |_| {});
 }
 
@@ -105,8 +116,13 @@ fn stereo_delay_line_node_process_is_allocation_free() {
 fn stereo_delay_line_node_wide_6ch_process_is_allocation_free() {
     // The per-channel delay-line Vec must be built at construction; the wide
     // path must not allocate per buffer.
-    let node = DelayLineNode::with_channels(6u16, 2.0_f64, 0.30_f64, 0.4_f32);
-    node.set_mix(0.5_f32);
+    let node = DelayLineNode::with_channels(
+        6u16,
+        Seconds::new(2.0_f64),
+        Seconds::new(0.30_f64),
+        Feedback::new(0.4_f32),
+    );
+    node.set_mix(Mix::new(0.5_f32));
     gate(node, 0.5, 2_000, |_| {});
 }
 
@@ -146,27 +162,32 @@ fn phaser_node_process_is_allocation_free() {
 /// `render` fails.
 #[test]
 fn delay_and_modulation_with_moving_controls_are_allocation_free() {
-    let delay = DelayLineNode::stereo(1.0_f64, 0.2_f64, 0.3_f64, 0.4_f32);
-    delay.set_cross_feedback(0.3);
+    let delay = DelayLineNode::stereo(
+        Seconds::new(1.0_f64),
+        Seconds::new(0.2_f64),
+        Seconds::new(0.3_f64),
+        Feedback::new(0.4_f32),
+    );
+    delay.set_cross_feedback(Feedback::new(0.3));
     let d = delay.clone();
     gate(delay, 0.5, 2_000, |i| {
         let t = (i % 50) as f32 / 50.0;
         d.set_delay_time(tutti_types::Seconds::from_f32(0.05 + 0.4 * t));
-        d.set_mix(t);
+        d.set_mix(Mix::new(t));
     });
     let chorus = ModDelayNode::chorus(6u16);
     let c = chorus.clone();
     gate(chorus, 0.5, 2_000, |i| {
         let t = (i % 50) as f32 / 50.0;
         c.set_depth(tutti_types::Seconds::from_f32(0.002 + 0.01 * t));
-        c.set_mix(1.0 - t);
+        c.set_mix(Mix::new(1.0 - t));
     });
     let phaser = PhaserNode::with_channels(6u16, 8);
     let p = phaser.clone();
     gate(phaser, 0.5, 2_000, |i| {
         let t = (i % 50) as f32 / 50.0;
-        p.set_depth(t);
-        p.set_feedback(0.9 * t);
+        p.set_depth(Depth::new(t));
+        p.set_feedback(Feedback::new(0.9 * t));
     });
 }
 

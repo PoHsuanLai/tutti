@@ -34,10 +34,36 @@ fn every_recipe_plans_with_no_arguments() {
     }
 }
 
-/// The justfile's 37, and `check-hosting` (design 021 step 1) since.
+/// The justfile's 37, `check-hosting` (design 021 step 1) and the two gates
+/// that became recipes of their own when their scripts moved into `gates`.
 #[test]
 fn the_justfiles_37_recipes_and_check_hosting() {
-    assert_eq!(RECIPES.len(), 38);
+    assert_eq!(RECIPES.len(), 40);
+}
+
+/// The four ported gates are recipes that run in this process, and `ci`
+/// (which CI mirrors) runs each; `doc` runs the per-feature rustdoc between
+/// its two `cargo doc` lines and the docs.rs build.
+// Mutation: plan one of them as `lines(&["scripts/..."])`, or leave it out of
+// the `ci` list: the matching assertion below fails.
+#[test]
+fn the_ported_gates_are_in_process_steps_and_ci_runs_them() {
+    assert_eq!(dry("check-range-types", &[]), ["gate check-range-types"]);
+    assert_eq!(
+        dry("check-submodule-pins", &[]),
+        ["gate check-submodule-pins"]
+    );
+    assert_eq!(dry("check-paths", &[]), ["gate check-canonical-paths"]);
+    assert!(dry("check-doc-features", &[])[0].starts_with("doc-features: "));
+    let ci = dry("ci", &[]);
+    for want in [
+        "gate check-range-types",
+        "gate check-submodule-pins",
+        "gate check-canonical-paths",
+    ] {
+        assert!(ci.iter().any(|l| l == want), "{want}");
+    }
+    assert!(ci.iter().any(|l| l.starts_with("doc-features: ")));
 }
 
 #[test]
@@ -168,7 +194,7 @@ fn doc_sets_rustdocflags_and_the_dated_nightly() {
     let s = dry("doc", &[]);
     assert_eq!(s.len(), 4);
     assert!(s[0].starts_with("RUSTDOCFLAGS='-D warnings --document-private-items' cargo doc"));
-    assert_eq!(s[2], "scripts/check-doc-features.sh");
+    assert!(s[2].starts_with("doc-features: cargo doc"), "{}", s[2]);
     assert!(s[3].contains("cargo +nightly-2026-10-14 doc"));
 }
 
@@ -203,8 +229,8 @@ fn arguments_are_refused_where_the_recipe_has_none() {
 #[test]
 fn check_paths_and_doc_tests_pass_their_arguments_through() {
     assert_eq!(
-        dry("check-paths", &["--fix"]),
-        ["scripts/check-canonical-paths.sh --fix"]
+        dry("check-paths", &["tutti_rt", "cell"]),
+        ["gate check-canonical-paths tutti_rt cell"]
     );
     let d = dry("test-doc", &["--", "x"]);
     assert_eq!(d[0], "cargo test --locked --doc --workspace -- x");

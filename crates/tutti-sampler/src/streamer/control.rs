@@ -172,7 +172,7 @@ mod tests {
     fn a_fork_is_handed_the_streamers_decoded_copy() {
         let path = PathBuf::from("/cached.wav");
         let cache = Arc::new(LruCache::new(4, 1 << 20));
-        let wave = Arc::new(tutti_codec::Wave::new(1, 48_000.0));
+        let wave = Arc::new(tutti_codec::Wave::new(1, SampleRate::new(48_000.0)));
         cache.insert(path.clone(), Arc::clone(&wave));
         let origin = StreamOrigin(Arc::new(StreamRecord::new(
             path,

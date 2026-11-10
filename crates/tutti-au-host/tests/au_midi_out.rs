@@ -631,7 +631,7 @@ fn the_decode_covers_exactly_what_send_midi_encodes() {
         // a decoder that masked it off would still produce the right message *type*.
         let expected_channel = MidiChannel::of(bytes[0] & 0x0F);
         assert_eq!(
-            events[0].channel(),
+            MidiMessage::from_ump(events[0].ump).channel(),
             Some(expected_channel),
             "{what}: channel must round-trip"
         );
@@ -955,10 +955,10 @@ fn sysex_is_delivered_whole_between_its_neighbours() {
         PacketListBuf::from_raw(&[(0, &[0x90, 60, 100, 0xF0, 0x7E, 0x00, 0xF7, 0x80, 60, 0])]);
     let events = list.decode();
     assert_eq!(events.len(), 3, "note-on, one SysEx7 packet, note-off");
-    assert!(events[0].is_note_on());
-    assert!(events[2].is_note_off());
+    assert!(MidiMessage::from_ump(events[0].ump).is_note_on());
+    assert!(events[2].ump.is_note_off());
     let mut assembler = SysExAssembler::reserved();
-    let SysExStep::Complete(done) = assembler.push(&events[1]) else {
+    let SysExStep::Complete(done) = assembler.push(&events[1].ump) else {
         panic!("a SINGLE packet completes");
     };
     assert_eq!(assembler.message(done), [0xF0, 0x7E, 0x00, 0xF7]);

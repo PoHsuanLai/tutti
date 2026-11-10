@@ -18,6 +18,7 @@ use crate::synth_voice::SynthVoice;
 use crate::voice::Gate;
 use crate::{Portamento, UnisonEngine, VoiceAllocator, VoiceAllocatorConfig};
 use tutti_graph::Offset;
+use tutti_graph::UmpAt;
 use tutti_midi_protocol::narrow_value;
 use tutti_midi_protocol::widen;
 use tutti_midi_runtime::{BlockSplitter, Overrun, Step};
@@ -97,7 +98,7 @@ pub struct PolySynth {
     /// or an infinity into reads as this, not as itself.
     last_volume: f32,
     /// The block's MIDI, sorted by offset: its event input's.
-    midi_buffer: Vec<(Offset, Ump)>,
+    midi_buffer: Vec<UmpAt>,
     /// Voices that finished this span. Sized to `max_voices` and only cleared,
     /// so it never allocates on the audio thread.
     finished_indices: Vec<usize>,

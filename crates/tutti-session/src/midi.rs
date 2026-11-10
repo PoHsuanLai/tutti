@@ -15,6 +15,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
+use tutti_graph::UmpAt;
 
 use tutti_graph::Offset;
 use tutti_midi_runtime::{
@@ -56,7 +57,7 @@ pub struct UmpOut {
     /// once per block and the result is only borrowed, straight to
     /// `MidiOut::queue`. `JrStream::stamp` clears it on entry, so nothing
     /// carries between blocks.
-    stamped: Vec<(Offset, Ump)>,
+    stamped: Vec<UmpAt>,
 }
 
 impl core::fmt::Debug for UmpOut {
@@ -112,7 +113,7 @@ impl UmpOut {
     /// cadence advances with the *block*, and this entry point can only
     /// advance by the events it was handed, so a silent stream never
     /// clocks. With stamping off the events go out unchanged.
-    pub fn send_stamped(&mut self, events: &[(Offset, Ump)]) {
+    pub fn send_stamped(&mut self, events: &[UmpAt]) {
         if !self.stamping {
             self.send_all(events);
             return;
@@ -129,7 +130,7 @@ impl UmpOut {
     /// long the block was so the JR Clock cadence keeps running through
     /// silence (§7.2.2.1: the cadence is a property of elapsed time, not of
     /// traffic).
-    pub fn send_stamped_span(&mut self, events: &[(Offset, Ump)], block_samples: u64) {
+    pub fn send_stamped_span(&mut self, events: &[UmpAt], block_samples: u64) {
         if !self.stamping {
             self.send_all(events);
             return;
@@ -140,7 +141,7 @@ impl UmpOut {
         self.stamped = buf;
     }
 
-    fn send_all(&mut self, events: &[(Offset, Ump)]) {
+    fn send_all(&mut self, events: &[UmpAt]) {
         // One `queue` for the batch: a backend may pack several UMP
         // messages into one packet.
         self.sink.queue(events);
@@ -206,7 +207,7 @@ pub struct MidiOutRouter<'a> {
 impl MidiOutRouter<'_> {
     /// Routes a batch of drained events to the open output. An event with
     /// no output is dropped (the ring must not back up), counted first.
-    pub fn route(&mut self, events: &[(Offset, Ump)]) {
+    pub fn route(&mut self, events: &[UmpAt]) {
         match self.out.as_mut() {
             Some(out) => out.send_stamped(events),
             None => {
@@ -866,7 +867,7 @@ mod tests {
     /// these tests run on every platform.
     struct CountingSink(Arc<AtomicUsize>);
     impl tutti_midi_runtime::MidiOut for CountingSink {
-        fn queue(&self, events: &[(Offset, Ump)]) -> usize {
+        fn queue(&self, events: &[UmpAt]) -> usize {
             self.0.fetch_add(events.len(), Ordering::SeqCst);
             events.len()
         }
@@ -879,7 +880,7 @@ mod tests {
         (out, count)
     }
 
-    fn note(offset: u32) -> (Offset, Ump) {
+    fn note(offset: u32) -> UmpAt {
         (
             Offset::new(offset as usize, Samples(512)).unwrap(),
             tutti_fixtures::midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000),

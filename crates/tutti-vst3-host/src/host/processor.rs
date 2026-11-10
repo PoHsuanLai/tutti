@@ -3,17 +3,16 @@
 //! type at activation.
 
 use std::sync::Arc;
+use tutti_graph::UmpAt;
 
 use vst3::Steinberg::Vst::ProcessSetup;
 
-use tutti_graph::Offset;
 use tutti_plugin_types::{
     AudioBufferMut, Edit, EditDrain, Normalized, ParamId, PluginError, PluginIo, PluginResult,
     Processor, RtMidiEvents,
 };
 use tutti_rt::DrainBeat;
 use tutti_types::ChannelLayout;
-use tutti_ump::Ump;
 
 use crate::events::{InputEvents, Stager, drain_midi};
 use crate::types::{
@@ -470,7 +469,7 @@ impl<T: Vst3Sample> Vst3Processor<T> {
     /// pitch-bend) is decoded to its VST3 `(channel, controller)` and captured
     /// allocation-free; the value is irrelevant to learning and dropped.
     #[inline]
-    fn capture_midi_learn(&self, midi_events: &[(Offset, Ump)]) {
+    fn capture_midi_learn(&self, midi_events: &[UmpAt]) {
         // Cheap bail when disarmed (the norm): avoid even decoding the MIDI.
         if !self.audio.midi_learn.is_armed() {
             return;

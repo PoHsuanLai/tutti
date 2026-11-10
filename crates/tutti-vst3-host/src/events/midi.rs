@@ -1,6 +1,6 @@
 //! A UMP event to VST3 event and back.
 
-use tutti_graph::Offset;
+use tutti_graph::UmpAt;
 use tutti_midi_protocol::{midi1, narrow, widen};
 use tutti_midi_types::convert::{
     bend_u32_to_signed_f32, u16_to_unit_f32, u32_to_unit_f32, unit_f32_to_u16, unit_f32_to_u32,
@@ -54,7 +54,7 @@ impl MidiEncoder {
     ///
     /// The group is ignored: one plugin instance has one set of channels,
     /// whatever group a message arrives on.
-    pub fn encode(&mut self, event: &(Offset, Ump)) -> Option<Event> {
+    pub fn encode(&mut self, event: &UmpAt) -> Option<Event> {
         let (at, ump) = event;
         if self.ranges.observe(ump) {
             return None;

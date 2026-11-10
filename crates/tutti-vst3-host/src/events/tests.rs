@@ -2,6 +2,7 @@ use super::midi::bank_program;
 use super::*;
 use tutti_fixtures::midi;
 use tutti_graph::Offset;
+use tutti_graph::UmpAt;
 use tutti_midi_types::convert::{
     bend_u32_to_signed_f32, midi2_velocity_to_midi1, u16_to_unit_f32, u32_to_unit_f32,
 };
@@ -15,7 +16,7 @@ use tutti_ump::{
 use tutti_vst3_ffi::EventList;
 
 /// A packet from its words, zero-padded to four, at offset 0.
-fn raw(words: &[u32]) -> (Offset, Ump) {
+fn raw(words: &[u32]) -> UmpAt {
     let mut packet = [0; 4];
     packet[..words.len()].copy_from_slice(words);
     (Offset::ZERO, Ump(packet))
@@ -31,7 +32,7 @@ fn at(k: u32) -> Offset {
 
 /// Encodes one event on a fresh stream (every per-note bend range at the
 /// MPE default).
-fn encode(event: &(Offset, Ump)) -> Option<Event> {
+fn encode(event: &UmpAt) -> Option<Event> {
     MidiEncoder::default().encode(event)
 }
 
@@ -564,7 +565,7 @@ fn a_per_note_bend_is_tuned_over_its_channels_range() {
             ),
         )
     };
-    let tuning = |encoder: &mut MidiEncoder, e: &(Offset, Ump)| match encoder.encode(e) {
+    let tuning = |encoder: &mut MidiEncoder, e: &UmpAt| match encoder.encode(e) {
         Some(Event {
             payload: Payload::ExpressionValue(x),
             ..
@@ -936,7 +937,7 @@ mod message {
         U7::new(v).unwrap()
     }
 
-    fn packet(message: Message) -> (Offset, Ump) {
+    fn packet(message: Message) -> UmpAt {
         (at(7), Ump::from(message))
     }
 
@@ -1298,9 +1299,8 @@ mod message {
             Offset::ZERO,
             midi::program_change(MidiGroup::FIRST, MidiChannel::of(1), 9, Some(0x0085)),
         );
-        let padded = |event: &(Offset, Ump)| {
-            bank_program(&event.1).map(|messages| messages.map(|m| m.padded()))
-        };
+        let padded =
+            |event: &UmpAt| bank_program(&event.1).map(|messages| messages.map(|m| m.padded()));
         assert_eq!(
             padded(&banked),
             Some([[0xB1, 0, 1], [0xB1, 32, 5], [0xC1, 9, 0]])
@@ -1516,7 +1516,7 @@ mod message {
     /// two events → fails.
     #[test]
     fn a_chord_stages_as_three_note_ons_in_order() {
-        let events: Vec<(Offset, Ump)> = [60u8, 64, 67]
+        let events: Vec<UmpAt> = [60u8, 64, 67]
             .into_iter()
             .map(|n| {
                 packet(Message::Midi1(

@@ -5,6 +5,7 @@ use crate::devices::{ChangeSink, os_devices};
 use crate::endpoints::{InputConnection, NoWatch, Watch};
 use crate::test_support::FakeBackend;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use tutti_graph::{Offset, UmpAt};
 use tutti_midi_device::EndpointId;
 
 // The fake backend is in `crate::test_support` so `bevy-tutti` can test
@@ -34,7 +35,7 @@ fn input(s: &MidiSession, name: &str) -> DeviceId {
         .id
 }
 
-fn note() -> (Offset, Ump) {
+fn note() -> UmpAt {
     use tutti_ump::{MidiChannel, MidiGroup};
     (
         Offset::ZERO,

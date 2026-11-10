@@ -1,12 +1,13 @@
 use super::*;
 use tutti_fixtures::midi::{jr_timestamp, note_off, note_on};
+use tutti_graph::UmpAt;
 use tutti_midi_types::{MidiMessage, jr_clock_value, jr_timestamp_value};
 use tutti_types::Samples;
 use tutti_ump::{MidiChannel, MidiGroup};
 
 /// `ump` at frame `offset`, built against a block long enough to hold it (the
 /// stamper reads the offset, not the block).
-fn at(offset: u32, ump: Ump) -> (Offset, Ump) {
+fn at(offset: u32, ump: Ump) -> UmpAt {
     (Offset::new(offset as usize, Samples(1 << 20)).unwrap(), ump)
 }
 

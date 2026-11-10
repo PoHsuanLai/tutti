@@ -523,6 +523,7 @@ mod midi_soundfont_audio {
 /// - A rule for another channel (the check below) → silent.
 mod midi_route {
     use std::sync::{Arc, Mutex};
+    use tutti_graph::UmpAt;
 
     use bevy_app::prelude::*;
 
@@ -538,7 +539,7 @@ mod midi_route {
     use tutti_soundfont::{Settings, SoundFontUnit};
     use tutti_transport::Transport;
     use tutti_types::SampleRate;
-    use tutti_ump::Ump;
+
     use tutti_ump::{MidiChannel, MidiGroup};
 
     const SAMPLE_RATE: f64 = 48_000.0;
@@ -558,10 +559,10 @@ mod midi_route {
     /// clone is another handle on the same wire: the node owns one, the test
     /// pushes through another.
     #[derive(Default, Clone)]
-    struct Wire(Arc<Mutex<Vec<(Offset, Ump)>>>);
+    struct Wire(Arc<Mutex<Vec<UmpAt>>>);
 
     impl MidiIn for Wire {
-        fn poll_block(&mut self, _block_size: usize, buffer: &mut [(Offset, Ump)]) -> usize {
+        fn poll_block(&mut self, _block_size: usize, buffer: &mut [UmpAt]) -> usize {
             let mut pending = self.0.lock().unwrap();
             let n = pending.len().min(buffer.len());
             buffer[..n].copy_from_slice(&pending[..n]);

@@ -1,11 +1,12 @@
 use super::*;
+use tutti_graph::{Offset, UmpAt};
 use tutti_midi_types::convert::midi1_velocity_to_midi2;
 
 use tutti_fixtures::midi;
 
 /// A note-on with a 7-bit velocity, widened (M2-115), at the block's first
 /// frame: what `MidiSender::note_on` pushes.
-fn note_on(note: u8, vel_u7: u8) -> (Offset, Ump) {
+fn note_on(note: u8, vel_u7: u8) -> UmpAt {
     (
         Offset::ZERO,
         midi::note_on(
@@ -18,11 +19,11 @@ fn note_on(note: u8, vel_u7: u8) -> (Offset, Ump) {
 }
 
 /// An event as the ring holds it: its offset as the raw stamp.
-fn raw(e: (Offset, Ump)) -> (u32, Ump) {
+fn raw(e: UmpAt) -> (u32, Ump) {
     (e.0.get(), e.1)
 }
 
-fn note_off(note: u8) -> (Offset, Ump) {
+fn note_off(note: u8) -> UmpAt {
     (
         Offset::ZERO,
         midi::note_off(MidiGroup::FIRST, MidiChannel::FIRST, note, 0),

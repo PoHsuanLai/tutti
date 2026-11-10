@@ -18,8 +18,8 @@
 //! dropped whole and counted.
 
 use tutti_graph::Offset;
+use tutti_graph::UmpAt;
 use tutti_plugin_types::WireMidi;
-use tutti_ump::Ump;
 
 /// A block's plugin-to-host MIDI, reserved once and reused.
 pub type MidiEventVec = Vec<WireMidi>;
@@ -309,7 +309,7 @@ impl MidiSendBuffer {
     /// that call.
     pub fn stage_piece(
         &mut self,
-        midi_events: &[(Offset, Ump)],
+        midi_events: &[UmpAt],
         start: usize,
         len: usize,
         total: usize,
@@ -472,7 +472,7 @@ impl MidiSendBuffer {
     pub fn send_piece(
         &mut self,
         render: &mut RenderHandle,
-        midi_events: &[(Offset, Ump)],
+        midi_events: &[UmpAt],
         start: usize,
         len: usize,
         total: usize,
@@ -534,6 +534,7 @@ mod tests {
     use super::*;
     use tutti_fixtures::midi;
     use tutti_plugin_types::Samples;
+    use tutti_ump::Ump;
 
     /// A plugin-side event at a raw frame (`WireMidi` is unchecked, as `from_midi` reads it).
     fn wire(ump: Ump, offset: u32) -> WireMidi {
@@ -541,7 +542,7 @@ mod tests {
     }
 
     /// A block event at frame `k` of a block long enough to hold it.
-    fn at(k: usize, ump: Ump) -> (Offset, Ump) {
+    fn at(k: usize, ump: Ump) -> UmpAt {
         (Offset::new(k, Samples(k + 1)).unwrap(), ump)
     }
 
@@ -835,7 +836,7 @@ mod tests {
         // After warmup, repeated stage() calls within the pre-sized
         // capacity must not grow the backing buffers.
         let mut buf = MidiSendBuffer::with_capacity(8);
-        let evs: Vec<(Offset, Ump)> = (0..4usize)
+        let evs: Vec<UmpAt> = (0..4usize)
             .map(|i| {
                 at(
                     i,
@@ -868,7 +869,7 @@ mod tests {
     /// What the plugin reads from a staged `api::Events`: per event, its
     /// `delta_frames` and either the MIDI bytes or the SysEx bytes, read
     /// through the pointers it is handed.
-    fn note(frame: u32, key: u8) -> (Offset, Ump) {
+    fn note(frame: u32, key: u8) -> UmpAt {
         use tutti_ump::{MidiChannel, MidiGroup};
         at(
             frame as usize,
@@ -1005,7 +1006,7 @@ mod tests {
         out
     }
 
-    fn sysex_packets(payload: &[u8], frame: u32) -> Vec<(Offset, Ump)> {
+    fn sysex_packets(payload: &[u8], frame: u32) -> Vec<UmpAt> {
         let mut out = Vec::new();
         tutti_midi_types::sysex7_fragments(MidiGroup::FIRST, payload, &mut out);
         out.into_iter().map(|e| at(frame as usize, e)).collect()
@@ -1140,7 +1141,7 @@ mod tests {
         let single = sysex_packets(&[1, 2, 3], 0);
         assert_eq!(single.len(), 1);
         // Half notes, half one-packet SysEx, then one past the cap of each.
-        let midi: Vec<(Offset, Ump)> = (0..MIDI_STACK_CAPACITY / 2 + 1)
+        let midi: Vec<UmpAt> = (0..MIDI_STACK_CAPACITY / 2 + 1)
             .flat_map(|_| [note, single[0]])
             .collect();
         let mut buf = MidiSendBuffer::new();
@@ -1179,7 +1180,7 @@ mod tests {
             0x0F01_0101,
             0x00E1_0000,
         ];
-        let midi: Vec<(Offset, Ump)> = (0..16u32)
+        let midi: Vec<UmpAt> = (0..16u32)
             .flat_map(|mt| {
                 BODIES.map(|body| {
                     (

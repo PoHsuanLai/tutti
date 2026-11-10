@@ -9,6 +9,7 @@
 #![allow(dead_code)] // each test binary uses its own subset
 
 use std::ops::{Deref, DerefMut};
+use tutti_graph::UmpAt;
 
 use tutti_graph::contract::{Direct, HAND_EVENT_CAPACITY};
 use tutti_graph::{Event, Offset};
@@ -50,7 +51,7 @@ impl Hand {
     }
 
     /// Play `events` in the next block, each on its own `Offset`.
-    pub fn queue_midi_at(&mut self, events: &[(Offset, Ump)]) {
+    pub fn queue_midi_at(&mut self, events: &[UmpAt]) {
         for (at, ump) in events {
             self.queued.push(Event::midi(*at, ump.0));
         }

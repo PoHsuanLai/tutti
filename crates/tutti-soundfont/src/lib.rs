@@ -39,6 +39,7 @@ mod node;
 
 use std::sync::Arc;
 use tutti_graph::Offset;
+use tutti_graph::UmpAt;
 use tutti_midi_protocol::widen;
 use tutti_midi_runtime::{BlockSplitter, Overrun, Step};
 use tutti_sf2::SoundFont;
@@ -156,7 +157,7 @@ pub struct SoundFontUnit {
     /// event's offset.
     planes: [Vec<f32>; Plane::COUNT],
     /// The block's MIDI, sorted by offset: its event input's.
-    midi_buffer: Vec<(Offset, Ump)>,
+    midi_buffer: Vec<UmpAt>,
 }
 
 impl std::fmt::Debug for SoundFontUnit {

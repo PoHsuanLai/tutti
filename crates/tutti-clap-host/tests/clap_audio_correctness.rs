@@ -26,6 +26,7 @@
 
 use std::path::Path;
 use std::sync::{Mutex, MutexGuard};
+use tutti_graph::UmpAt;
 
 mod support;
 use support::active::{Activate, Active};
@@ -36,7 +37,6 @@ use tutti_clap_host::{AudioBuffer32, AudioPortFlags, ClapLoaded, ClapProcessCont
 use tutti_clap_test_plugin::{PREFERRED_DIALECT_DEFAULT, REPORTED_LATENCY_SAMPLES, probe_tag};
 use tutti_graph::Offset;
 use tutti_types::Samples;
-use tutti_ump::Ump;
 
 const SAMPLE_RATE: f64 = 48_000.0;
 const MAX_FRAMES: u32 = 512;
@@ -927,14 +927,14 @@ fn at(k: usize) -> Offset {
 }
 
 /// The SysEx7 packets of `payload`, each `k` frames into the block.
-fn sysex_packets(payload: &[u8], k: usize) -> Vec<(Offset, Ump)> {
+fn sysex_packets(payload: &[u8], k: usize) -> Vec<UmpAt> {
     let mut packets = Vec::new();
     tutti_midi_types::sysex7_fragments(tutti_ump::MidiGroup::FIRST, payload, &mut packets);
     packets.into_iter().map(|ump| (at(k), ump)).collect()
 }
 
 /// Run one block carrying `midi`.
-fn drive_midi_block(inst: &mut Active<f32>, midi: &[(Offset, Ump)]) {
+fn drive_midi_block(inst: &mut Active<f32>, midi: &[UmpAt]) {
     let frames = 64;
     let ins: Vec<Vec<f32>> = (0..2).map(|_| vec![0.0; frames]).collect();
     let mut outs: Vec<Vec<f32>> = (0..2).map(|_| vec![0.0; frames]).collect();

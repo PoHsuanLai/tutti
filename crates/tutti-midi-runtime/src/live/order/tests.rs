@@ -1,12 +1,13 @@
 use super::*;
 use tutti_fixtures::midi::note_on;
+use tutti_graph::UmpAt;
 use tutti_midi_types::MidiMessage;
 use tutti_midi_types::convert::midi1_velocity_to_midi2;
 use tutti_ump::{MidiChannel, MidiGroup};
 
 /// An event at `offset`, which may lie past the 64-frame block the placement
 /// test uses: it is built against a longer one.
-fn at(note: u8, offset: u32) -> (Offset, Ump) {
+fn at(note: u8, offset: u32) -> UmpAt {
     (
         Offset::new(offset as usize, Samples(1024)).unwrap(),
         // 7-bit velocity 100, widened (M2-115).

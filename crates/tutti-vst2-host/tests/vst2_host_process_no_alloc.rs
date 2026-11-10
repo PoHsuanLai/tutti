@@ -18,12 +18,13 @@
 
 use std::path::PathBuf;
 use std::sync::{Mutex, MutexGuard};
+use tutti_graph::UmpAt;
 
 use assert_no_alloc::AllocDisabler;
 use tutti_fixtures::midi;
 use tutti_graph::Offset;
 use tutti_plugin_types::{MaxBlock, Prepare, SampleRate, Samples};
-use tutti_ump::{MidiChannel, MidiGroup, Ump};
+use tutti_ump::{MidiChannel, MidiGroup};
 use tutti_vst2_host::{TimeSignature, TransportInfo, Vst2Loaded, Vst2ProcessContext};
 use tutti_vst2_test_plugin::ProcessCapture;
 
@@ -306,7 +307,7 @@ fn process_f32_with_midi_does_not_allocate() {
 
     assert_no_alloc::assert_no_alloc(|| {
         for i in 0..128usize {
-            let events: &[(Offset, Ump)] = match i % 32 {
+            let events: &[UmpAt] = match i % 32 {
                 0 => &on_event,
                 16 => &off_event,
                 _ => &[],

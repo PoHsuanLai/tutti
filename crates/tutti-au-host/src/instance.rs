@@ -9,6 +9,7 @@
 use tutti_au_ffi::property::{BypassEffect, ClassInfo, ClassInfoFromDocument, Latency};
 use tutti_au_ffi::{Element, Scope};
 use tutti_au_ffi::{HostCallbacks, Renderer, TransportState, Unit};
+use tutti_graph::UmpAt;
 
 use crate::bus::{self, AuChannelConfig, BusDirection};
 use crate::channel_layout::{self, AuLayoutTag};
@@ -621,7 +622,7 @@ impl AuInstance {
     /// Only meaningful for AUs whose type [`AuType::receives_midi`] is true;
     /// the caller gates on that. Errors from individual events are ignored so a
     /// single rejected message can't abort the whole block.
-    pub fn send_midi(&self, events: &[(Offset, Ump)]) {
+    pub fn send_midi(&self, events: &[UmpAt]) {
         use tutti_midi_types::MidiMessage;
         use tutti_midi_types::convert::{midi2_cc_to_midi1, midi2_pitch_bend_to_midi1};
         use tutti_plugin_types::{SysExStep, is_framed};

@@ -7,8 +7,7 @@
 //! [`PluginAudio`](crate::PluginAudio) trait and the four format host
 //! crates speak the same vocabulary.
 
-use tutti_graph::Offset;
-use tutti_ump::Ump;
+use tutti_graph::UmpAt;
 
 use crate::{
     ChordChanges, MidiEventVec, NoteExpressionChanges, NoteExpressionTextChanges, ParamId,
@@ -48,7 +47,7 @@ pub struct ProcessContext<'a> {
     /// MIDI for this block, in ascending time order. An empty slice rather than
     /// an `Option` — every format takes MIDI, so there is no "did not send"
     /// state to distinguish from "sent nothing".
-    pub midi_events: &'a [(Offset, Ump)],
+    pub midi_events: &'a [UmpAt],
     /// Sent only when the plugin advertised [`Features::PARAM_AUTOMATION`](crate::Features).
     pub param_changes: Option<&'a ParameterChanges>,
     /// Sent only when the plugin advertised [`Features::NOTE_EXPRESSION`](crate::Features).
@@ -68,7 +67,7 @@ impl<'a> ProcessContext<'a> {
 
     /// Attaches this block's MIDI (builder).
     #[must_use]
-    pub fn midi(mut self, events: &'a [(Offset, Ump)]) -> Self {
+    pub fn midi(mut self, events: &'a [UmpAt]) -> Self {
         self.midi_events = events;
         self
     }
@@ -199,6 +198,7 @@ impl ProcessOutput {
 mod tests {
     use super::*;
     use crate::MIDI_STACK_CAPACITY;
+    use tutti_ump::Ump;
 
     /// **`emit_midi` fills to the cap, drops and counts the rest, and never
     /// panics**; `clear` resets the count with the list. What lets a loader

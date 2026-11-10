@@ -15,13 +15,13 @@
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Instant;
+use tutti_graph::UmpAt;
 
 use tutti_rt::{ArcLend, Reader};
 use tutti_types::{SampleRate, Samples};
 
 use super::async_port::{HardwareMidiInput, InputProducerHandle};
 use tutti_graph::Offset;
-use tutti_ump::Ump;
 
 /// One port's identity: its slot in the manager, and which of the ports ever
 /// created there it is.
@@ -162,7 +162,7 @@ impl DrainShared {
 /// checkable at all. See
 /// [`cycle_start_read_all_inputs_at`](HardwareMidiDrain::cycle_start_read_all_inputs_at).
 fn read_inputs(
-    events: &mut Vec<(PortId, (Offset, Ump))>,
+    events: &mut Vec<(PortId, UmpAt)>,
     limit: usize,
     input_ports: &PortSlots,
     sample_rate: SampleRate,
@@ -521,7 +521,7 @@ pub struct HardwareMidiDrain {
     /// and the block start, all known before the first pop, so each event is
     /// converted as it leaves its ring and stored once. The events reach the
     /// caller through a visitor, copied out one at a time.
-    events: Vec<(PortId, (Offset, Ump))>,
+    events: Vec<(PortId, UmpAt)>,
     /// The most events one drain takes: at most `events`' capacity.
     limit: usize,
 }
@@ -574,7 +574,7 @@ impl HardwareMidiDrain {
     pub fn cycle_start_read_all_inputs(
         &mut self,
         nframes: usize,
-        visit: impl FnMut(PortId, (Offset, Ump)),
+        visit: impl FnMut(PortId, UmpAt),
     ) -> usize {
         self.cycle_start_read_all_inputs_at(nframes, Instant::now(), visit)
     }
@@ -603,7 +603,7 @@ impl HardwareMidiDrain {
         &mut self,
         nframes: usize,
         buffer_start: Instant,
-        visit: impl FnMut(PortId, (Offset, Ump)),
+        visit: impl FnMut(PortId, UmpAt),
     ) -> usize {
         let limit = self.limit;
         self.read_limited(nframes, buffer_start, limit, visit)
@@ -616,7 +616,7 @@ impl HardwareMidiDrain {
         nframes: usize,
         buffer_start: Instant,
         limit: usize,
-        mut visit: impl FnMut(PortId, (Offset, Ump)),
+        mut visit: impl FnMut(PortId, UmpAt),
     ) -> usize {
         let shared = &self.inputs.shared;
         if shared.draining.swap(true, Ordering::Relaxed) {
@@ -660,7 +660,7 @@ impl tutti_midi_runtime::MidiIn for HardwareMidiDrain {
     /// Takes no more events than `buffer` holds: the rest stay in the port
     /// rings for the next block, so a small `buffer` defers events and drops
     /// none.
-    fn poll_block(&mut self, block_size: usize, buffer: &mut [(Offset, Ump)]) -> usize {
+    fn poll_block(&mut self, block_size: usize, buffer: &mut [UmpAt]) -> usize {
         let mut written = 0usize;
         self.read_limited(block_size, Instant::now(), buffer.len(), |_port, event| {
             buffer[written] = event;

@@ -1,11 +1,10 @@
 //! Staging a block's input events into a plugin's `IEventList`, and reading
 //! back what the plugin wrote.
 
-use tutti_graph::Offset;
+use tutti_graph::UmpAt;
 use tutti_plugin_types::{
     NoteExpressionIntValue, NoteExpressionValue, RtMidiEvents, SysExStep, push_sysex,
 };
-use tutti_ump::Ump;
 use tutti_vst3_ffi::{EventList, NOTE_EXPRESSION_ROOM, Staging};
 
 use super::midi::{bank_program, midi1_data};
@@ -19,7 +18,7 @@ use super::{
 #[derive(Clone, Copy, Default, Debug)]
 pub struct InputEvents<'a> {
     /// UMP MIDI for the block, in ascending frame-offset order.
-    pub midi: &'a [(Offset, Ump)],
+    pub midi: &'a [UmpAt],
     /// Continuous per-note expression values, addressed by note id.
     pub note_expressions: &'a [NoteExpressionValue],
     /// Chord context changes (root, bass, degree mask) for chord-aware plugins.
@@ -112,7 +111,7 @@ impl Stager {
     /// Stages one MIDI event: a SysEx7 packet through the reassembler (a
     /// completed message stages as one event), anything else through the
     /// encoder.
-    fn stage_midi(&mut self, stage: &mut Staging<'_>, event: &(Offset, Ump)) {
+    fn stage_midi(&mut self, stage: &mut Staging<'_>, event: &UmpAt) {
         let (at, ump) = event;
         match stage.reassemble(ump) {
             SysExStep::NotSysEx => {

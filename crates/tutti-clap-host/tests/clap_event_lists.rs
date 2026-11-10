@@ -7,6 +7,7 @@
 //! and its recorded mutation are as they were.
 
 use std::ptr;
+use tutti_graph::UmpAt;
 
 use clap_sys::events::{
     CLAP_CORE_EVENT_SPACE_ID, CLAP_EVENT_MIDI, CLAP_EVENT_MIDI_SYSEX, CLAP_EVENT_NOTE_CHOKE,
@@ -28,7 +29,7 @@ use tutti_types::Samples;
 use tutti_ump::Ump;
 
 /// The packet of `words`, zero-padded to four, `k` frames into a 100-frame block.
-fn packet(k: u32, words: &[u32]) -> (Offset, Ump) {
+fn packet(k: u32, words: &[u32]) -> UmpAt {
     let mut w = [0u32; 4];
     w[..words.len()].copy_from_slice(words);
     (

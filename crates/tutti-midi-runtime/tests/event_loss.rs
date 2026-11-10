@@ -5,6 +5,7 @@
 //! render. The clip plays at 120 BPM and 48 kHz, so a beat is 24,000 frames.
 
 use std::sync::{Arc, Mutex};
+use tutti_graph::UmpAt;
 
 use tutti_fixtures::midi::{note_off, note_on};
 use tutti_graph::{
@@ -294,13 +295,13 @@ fn the_port_follows_the_block() {
 #[test]
 fn the_hardware_input_follows_the_block() {
     use std::sync::atomic::{AtomicUsize, Ordering};
-    use tutti_graph::Offset;
+
     use tutti_midi_runtime::MidiIn;
     use tutti_midi_runtime::MidiInputNode;
 
     struct Wire(Arc<AtomicUsize>);
     impl MidiIn for Wire {
-        fn poll_block(&mut self, _: usize, _: &mut [(Offset, Ump)]) -> usize {
+        fn poll_block(&mut self, _: usize, _: &mut [UmpAt]) -> usize {
             0
         }
         fn reserve(&mut self, events: usize) {

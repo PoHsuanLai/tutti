@@ -4,13 +4,14 @@
 use crate::active::main_thread;
 use tutti_fixtures::midi;
 use tutti_graph::Offset;
+use tutti_graph::UmpAt;
 use tutti_midi_types::convert::midi1_velocity_to_midi2;
 use tutti_plugin_types::{
     AudioBuffer, AudioBufferMut, Control, Controller, Loaded, Normalized, ParamFlags,
     ParameterChanges, PluginIo, PluginTail, ProcessContext, ProcessOutput, Processor, SampleFormat,
     Samples,
 };
-use tutti_ump::{MidiChannel, MidiGroup, Ump};
+use tutti_ump::{MidiChannel, MidiGroup};
 
 use crate::spec::{self, Mode, Param};
 use crate::{
@@ -49,7 +50,7 @@ fn ramp(frames: usize, base: f32) -> Vec<f32> {
     (0..frames).map(|i| base + i as f32 * 0.001).collect()
 }
 
-fn note(offset: u32, on: bool) -> (Offset, Ump) {
+fn note(offset: u32, on: bool) -> UmpAt {
     let (group, channel) = (MidiGroup::FIRST, MidiChannel::of(0));
     let ump = if on {
         // 7-bit 100, widened (M2-115).

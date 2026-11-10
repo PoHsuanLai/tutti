@@ -5,6 +5,7 @@
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
+use tutti_graph::UmpAt;
 
 use std::time::{Duration, Instant};
 use tutti_fixtures::midi;
@@ -359,7 +360,7 @@ fn the_routes_have_one_declarer() {
 /// Counts what reached the wire.
 struct CountingSink(Arc<AtomicUsize>);
 impl tutti_midi_runtime::MidiOut for CountingSink {
-    fn queue(&self, events: &[(Offset, Ump)]) -> usize {
+    fn queue(&self, events: &[UmpAt]) -> usize {
         self.0.fetch_add(events.len(), Ordering::SeqCst);
         events.len()
     }

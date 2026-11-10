@@ -29,7 +29,7 @@ use tutti_ump::{Message, Ump, Unknown, Voice2, decode};
 
 use crate::events::{InputEvents, Stager};
 use crate::types::ParameterChanges;
-use tutti_graph::Offset;
+use tutti_graph::UmpAt;
 use tutti_plugin_types::{MIDI_STACK_CAPACITY, MainThread};
 use tutti_rt::{Reader, RtVec};
 use tutti_vst3_ffi::{EventList, Plugin};
@@ -37,7 +37,7 @@ use tutti_vst3_ffi::{EventList, Plugin};
 /// The MIDI a [`CcRoute`] passes on: a block's whole MIDI cap, so the route
 /// never drops an event the plugin node delivered. Dropping one would cut a
 /// multi-packet SysEx the event list is reassembling.
-pub(crate) type FilteredMidi = RtVec<(Offset, Ump), MIDI_STACK_CAPACITY>;
+pub(crate) type FilteredMidi = RtVec<UmpAt, MIDI_STACK_CAPACITY>;
 
 /// Number of MIDI channels VST3 enumerates mappings for.
 pub(crate) const NUM_CHANNELS: usize = 16;
@@ -218,7 +218,7 @@ pub(crate) fn midi_to_mapped_controller(ump: &Ump) -> Option<(u8, usize, f64)> {
 /// pushes into existing storage.
 pub(crate) fn route_cc_events(
     mapping: &MidiCcMapping,
-    midi_events: &[(Offset, Ump)],
+    midi_events: &[UmpAt],
     out_filtered: &mut FilteredMidi,
     out_params: &mut ParameterChanges,
 ) {
@@ -458,7 +458,7 @@ impl CcRoute {
     /// same lossless path the event list's encoding uses for events.
     pub(crate) fn route(
         &mut self,
-        midi_events: &[(Offset, Ump)],
+        midi_events: &[UmpAt],
         param_changes: Option<&ParameterChanges>,
     ) -> Option<(&FilteredMidi, &ParameterChanges)> {
         let Self {

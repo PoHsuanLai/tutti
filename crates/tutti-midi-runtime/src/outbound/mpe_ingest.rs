@@ -52,6 +52,7 @@
 //! transform.
 
 use tutti_graph::Offset;
+use tutti_graph::UmpAt;
 use tutti_midi_types::PitchBendSensitivity;
 use tutti_midi_types::midi2::channel_voice2::ChannelVoice2;
 use tutti_midi_types::midi2::{Channeled, UmpMessage};
@@ -88,7 +89,7 @@ pub struct Translated(Out);
 
 #[derive(Clone, Debug)]
 enum Out {
-    One(Option<(Offset, Ump)>),
+    One(Option<UmpAt>),
     /// Registered controllers in [`RPN_BANK_MPE`], each run in turn.
     Rpns {
         group: MidiGroup,
@@ -120,16 +121,16 @@ impl Translated {
     }
 }
 
-impl From<Option<(Offset, Ump)>> for Translated {
-    fn from(event: Option<(Offset, Ump)>) -> Self {
+impl From<Option<UmpAt>> for Translated {
+    fn from(event: Option<UmpAt>) -> Self {
         Self(Out::One(event))
     }
 }
 
 impl Iterator for Translated {
-    type Item = (Offset, Ump);
+    type Item = UmpAt;
 
-    fn next(&mut self) -> Option<(Offset, Ump)> {
+    fn next(&mut self) -> Option<UmpAt> {
         match &mut self.0 {
             Out::One(event) => event.take(),
             Out::Rpns {
@@ -299,12 +300,12 @@ impl MpeIngest {
     ///
     /// Nothing means "drop this event" (e.g. a member-channel message with no
     /// note currently held on that channel).
-    pub fn translate(&mut self, event: &(Offset, Ump)) -> Translated {
+    pub fn translate(&mut self, event: &UmpAt) -> Translated {
         self.translate_one(event).unwrap_or_else(|| None.into())
     }
 
     /// [`translate`](Self::translate), with `None` for nothing.
-    fn translate_one(&mut self, event: &(Offset, Ump)) -> Option<Translated> {
+    fn translate_one(&mut self, event: &UmpAt) -> Option<Translated> {
         // An MPE Configuration Message (RPN 0x00/0x06, M2-104 §7.4.7) reconfigures
         // the zone from the wire — handled in *any* mode, including Disabled (a
         // controller declaring its zone should enable MPE). The message itself
@@ -351,11 +352,7 @@ impl MpeIngest {
     /// A bend sensitivity (RPN #00/00) on a member channel, as a per-note
     /// bend sensitivity (RPN #00/07) on each of its zone's member channels;
     /// `None` for anything else (the master channel's passes through).
-    fn member_bend_range(
-        &self,
-        event: &(Offset, Ump),
-        cv2: &ChannelVoice2<&[u32]>,
-    ) -> Option<Translated> {
+    fn member_bend_range(&self, event: &UmpAt, cv2: &ChannelVoice2<&[u32]>) -> Option<Translated> {
         let ChannelVoice2::RegisteredController(m) = cv2 else {
             return None;
         };
@@ -418,11 +415,7 @@ impl MpeIngest {
 
     /// Zone (lower/upper/dual) mode: member-channel channel-messages fold onto the
     /// note that member channel holds; master-channel and native per-note pass.
-    fn translate_zoned(
-        &mut self,
-        event: &(Offset, Ump),
-        cv2: ChannelVoice2<&[u32]>,
-    ) -> Option<(Offset, Ump)> {
+    fn translate_zoned(&mut self, event: &UmpAt, cv2: ChannelVoice2<&[u32]>) -> Option<UmpAt> {
         match cv2 {
             ChannelVoice2::NoteOn(m) => {
                 let (ch, note, vel) = (
@@ -533,9 +526,9 @@ impl MpeIngest {
     fn translate_rotation(
         &mut self,
         channel: u8,
-        event: &(Offset, Ump),
+        event: &UmpAt,
         cv2: ChannelVoice2<&[u32]>,
-    ) -> Option<(Offset, Ump)> {
+    ) -> Option<UmpAt> {
         // Messages off the rotation channel are ignored (this mode owns one).
         if u8::from(cv2.channel()) != channel {
             return None;

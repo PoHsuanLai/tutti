@@ -161,13 +161,14 @@ mod midi_out_device {
 /// The call site is covered by inspection.
 mod midi_hardware_frame_offset {
     use std::time::{Duration, Instant};
+    use tutti_graph::UmpAt;
 
     use std::sync::Arc;
 
     use tutti_fixtures::midi::note_on;
-    use tutti_graph::Offset;
+
     use tutti_midi_hardware::{HardwareMidiDrain, HardwareMidiInputs};
-    use tutti_ump::{MidiChannel, MidiGroup, Ump};
+    use tutti_ump::{MidiChannel, MidiGroup};
 
     /// A block long enough that a 1 ms offset is a large, unambiguous fraction of
     /// it, and short enough to stay a plausible audio block.
@@ -200,7 +201,7 @@ mod midi_hardware_frame_offset {
 
         // The drain hands each event to a visitor rather than returning a slice, so
         // nothing borrows into the audio-thread-only scratch.
-        let mut seen: Vec<(Offset, Ump)> = Vec::new();
+        let mut seen: Vec<UmpAt> = Vec::new();
         let mut drain = HardwareMidiDrain::new(Arc::clone(&inputs));
         drain.cycle_start_read_all_inputs_at(NFRAMES, block_start, |_port, event| seen.push(event));
         assert_eq!(seen.len(), 1, "exactly the event we pushed");

@@ -6,6 +6,7 @@
 //! included.
 
 use std::sync::{Arc, Mutex};
+use tutti_graph::UmpAt;
 
 use tutti_fixtures::midi::{note_off, note_on, pitch_bend, registered_controller, timing_clock};
 use tutti_graph::{
@@ -106,16 +107,16 @@ fn block(exec: &mut Executor, len: usize) {
 }
 
 /// A wire that hands out one scripted batch per poll.
-struct Wire(std::collections::VecDeque<Vec<(Offset, Ump)>>);
+struct Wire(std::collections::VecDeque<Vec<UmpAt>>);
 
 impl Wire {
-    fn new(batches: Vec<Vec<(Offset, Ump)>>) -> Box<Self> {
+    fn new(batches: Vec<Vec<UmpAt>>) -> Box<Self> {
         Box::new(Self(batches.into()))
     }
 }
 
 impl MidiIn for Wire {
-    fn poll_block(&mut self, _block_size: usize, buffer: &mut [(Offset, Ump)]) -> usize {
+    fn poll_block(&mut self, _block_size: usize, buffer: &mut [UmpAt]) -> usize {
         let batch = self.0.pop_front().unwrap_or_default();
         let n = batch.len().min(buffer.len());
         buffer[..n].copy_from_slice(&batch[..n]);
@@ -125,12 +126,12 @@ impl MidiIn for Wire {
 
 /// `ump` at frame `offset`, which may lie past the 512-frame blocks these
 /// tests run: it is built against a block long enough to hold it.
-fn at(offset: u32, ump: Ump) -> (Offset, Ump) {
+fn at(offset: u32, ump: Ump) -> UmpAt {
     (Offset::new(offset as usize, Samples(1 << 20)).unwrap(), ump)
 }
 
 /// A note-on with 7-bit velocity 100, widened (M2-115), at `offset`.
-fn note(channel: u8, note: u8, offset: u32) -> (Offset, Ump) {
+fn note(channel: u8, note: u8, offset: u32) -> UmpAt {
     at(
         offset,
         note_on(
@@ -143,7 +144,7 @@ fn note(channel: u8, note: u8, offset: u32) -> (Offset, Ump) {
 }
 
 /// A MIDI 1.0 wire CC (status 0xB0 | channel).
-fn cc_ev(channel: u8, control: CCNumber, value: u8) -> (Offset, Ump) {
+fn cc_ev(channel: u8, control: CCNumber, value: u8) -> UmpAt {
     at(
         0,
         from_midi1_bytes(&[0xB0 | channel, control.get(), value]).unwrap(),
@@ -337,7 +338,7 @@ fn a_member_bend_range_fans_out_over_the_zones_ports() {
 #[test]
 fn a_fan_out_with_no_room_is_dropped_whole_and_counted() {
     use tutti_midi_types::PerNoteBendRanges;
-    let mut batch: Vec<(Offset, Ump)> = (0..508).map(|i| note(0, 60, i)).collect();
+    let mut batch: Vec<UmpAt> = (0..508).map(|i| note(0, 60, i)).collect();
     batch.extend([
         cc_ev(2, cc::RPN_MSB, 0),
         cc_ev(2, cc::RPN_LSB, 0),
@@ -373,7 +374,7 @@ fn a_fan_out_with_no_room_is_dropped_whole_and_counted() {
 /// in `stage`) → the four note-offs are dropped and counted → fails.
 #[test]
 fn a_note_off_has_room_past_the_capacity() {
-    let mut batch: Vec<(Offset, Ump)> = (0..505).map(|i| note(0, 60, i)).collect();
+    let mut batch: Vec<UmpAt> = (0..505).map(|i| note(0, 60, i)).collect();
     batch.extend([
         cc_ev(2, cc::RPN_MSB, 0),
         cc_ev(2, cc::RPN_LSB, 0),
@@ -456,7 +457,7 @@ fn the_out_node_hands_midi_back_and_counts_drops() {
     );
     ed.commit().unwrap();
     for _ in 0..5 {
-        let batch: Vec<(Offset, Ump)> = (0..256).map(|i| note(0, 60, 7 + i / 128)).collect();
+        let batch: Vec<UmpAt> = (0..256).map(|i| note(0, 60, 7 + i / 128)).collect();
         assert_eq!(keys.queue(&batch), 256);
         exec.process(512, &Transport::default(), &[], &mut []);
     }

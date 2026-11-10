@@ -1,12 +1,13 @@
 use super::*;
 use tutti_fixtures::midi::{noop, note_on};
+use tutti_graph::UmpAt;
 use tutti_midi_types::MidiMessage;
 use tutti_midi_types::convert::midi2_velocity_to_midi1;
-use tutti_ump::{MidiChannel, MidiGroup};
+use tutti_ump::{MidiChannel, MidiGroup, Ump};
 
 /// Test helper: collect one cycle's visits into a `Vec`, so the assertions
 /// below can index and count without threading a closure through each.
-fn drain_cycle(manager: &Arc<HardwareMidiInputs>, nframes: usize) -> Vec<(PortId, (Offset, Ump))> {
+fn drain_cycle(manager: &Arc<HardwareMidiInputs>, nframes: usize) -> Vec<(PortId, UmpAt)> {
     let mut out = Vec::new();
     HardwareMidiDrain::new(Arc::clone(manager))
         .cycle_start_read_all_inputs(nframes, |port, event| out.push((port, event)));

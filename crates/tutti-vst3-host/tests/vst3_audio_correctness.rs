@@ -40,13 +40,13 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
+use tutti_graph::UmpAt;
 
 use tutti_fixtures::midi;
 use tutti_graph::Offset;
 use tutti_midi_types::sysex7_fragments;
 use tutti_plugin_types::ParamId;
 use tutti_types::Samples;
-use tutti_ump::Ump;
 use tutti_ump::{MidiChannel, MidiGroup};
 use tutti_vst3_host::{
     AudioBuffer, InputEvents, LoadOptions, NoteExpressionType, NoteExpressionValue,
@@ -242,7 +242,7 @@ struct Rendered {
 fn render(
     inst: &mut Active,
     frames: usize,
-    midi: &[(Offset, Ump)],
+    midi: &[UmpAt],
     params: Option<&ParameterChanges>,
     input_at: impl Fn(usize, usize, usize) -> f32,
 ) -> Rendered {
@@ -1506,7 +1506,7 @@ fn a_sysex_open_across_a_stop_is_dropped() {
     assert_eq!(inst.sysex_dropped(), 0);
     inst.stop();
     assert_eq!(inst.sysex_dropped(), 1, "the open message, at the stop");
-    let rest: Vec<(Offset, Ump)> = cut[3..].iter().chain(&next).copied().collect();
+    let rest: Vec<UmpAt> = cut[3..].iter().chain(&next).copied().collect();
     render(&mut inst, 64, &rest, None, |_, _, _| 0.0);
     assert_eq!(inst.sysex_dropped(), 1, "the tail completed nothing");
 }

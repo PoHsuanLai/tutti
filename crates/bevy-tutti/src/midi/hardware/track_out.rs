@@ -33,8 +33,8 @@
 use bevy_app::{App, Plugin, Update};
 use bevy_ecs::message::{Message, MessageReader};
 use bevy_ecs::prelude::*;
+use tutti_graph::UmpAt;
 
-use tutti_graph::Offset;
 use tutti_midi_runtime::{MidiMailbox, MidiReceiver, MidiSender};
 use tutti_ump::Ump;
 
@@ -116,7 +116,7 @@ impl MidiOutRes {
 pub struct SendMidiOut(
     /// Queued in order, as one batch. A hot producer should clone the
     /// [`MidiOutRes::sender`] instead of paying the message round-trip.
-    pub Vec<(Offset, Ump)>,
+    pub Vec<UmpAt>,
 );
 
 /// Forwards each [`SendMidiOut`] request into the outbound mailbox.
@@ -182,6 +182,7 @@ impl Plugin for MidiOutPlugin {
 mod tests {
     use super::*;
     use tutti_fixtures::midi::note_on;
+    use tutti_graph::Offset;
     use tutti_midi_runtime::MidiOut;
     use tutti_midi_types::MidiMessage;
     use tutti_ump::{MidiChannel, MidiGroup};

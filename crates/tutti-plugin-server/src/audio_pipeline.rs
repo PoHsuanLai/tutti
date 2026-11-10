@@ -11,6 +11,7 @@
 //! resulting `AudioOutput`.
 
 use tutti_graph::Offset;
+use tutti_graph::UmpAt;
 use tutti_plugin::Result;
 use tutti_plugin::server::{
     AudioBufferMut, AudioSlab, ChordChanges, ExpressiveContext, Features, MIDI_STACK_CAPACITY,
@@ -536,11 +537,7 @@ impl AudioPipeline {
 /// would be dropped; tutti's host never sends one (a graph block holds at least
 /// one frame, and every chunk the host ships is made of them), and a debug
 /// build says so. Allocates nothing.
-fn block_midi(
-    midi: &[WireMidi],
-    frames: usize,
-    out: &mut [(Offset, Ump); MIDI_STACK_CAPACITY],
-) -> usize {
+fn block_midi(midi: &[WireMidi], frames: usize, out: &mut [UmpAt; MIDI_STACK_CAPACITY]) -> usize {
     debug_assert!(
         frames > 0 || midi.is_empty(),
         "a process block of 0 frames carries MIDI it cannot place"

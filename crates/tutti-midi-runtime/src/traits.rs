@@ -6,8 +6,7 @@
 //! what is the graph's wiring (a `MidiInputNode` in `tutti-midi-runtime`
 //! sends each channel out of its own event port).
 
-use tutti_graph::Offset;
-use tutti_ump::Ump;
+use tutti_graph::UmpAt;
 
 // -----------------------------------------------------------------------------
 // Delivery: write side (out) and read side (in)
@@ -32,7 +31,7 @@ pub trait MidiOut: Send + Sync {
     /// A partial accept is a **prefix**, not a subset: an implementation that
     /// hits a failure stops there rather than skipping and continuing, so the
     /// count always names an unbroken run and the stream stays in order.
-    fn queue(&self, events: &[(Offset, Ump)]) -> usize;
+    fn queue(&self, events: &[UmpAt]) -> usize;
 }
 
 /// One input edge's per-node read state, which the audio thread polls once per block.
@@ -66,7 +65,7 @@ pub trait MidiIn: Send {
     /// next block, so it defers rather than drops; one that cannot (it has
     /// consumed the events already) drops the overflow and counts it. Size
     /// `buffer` for the largest burst worth taking in one block.
-    fn poll_block(&mut self, block_size: usize, buffer: &mut [(Offset, Ump)]) -> usize;
+    fn poll_block(&mut self, block_size: usize, buffer: &mut [UmpAt]) -> usize;
 
     /// Sizes the source for blocks of up to `events` events. Called on the
     /// control thread before the first [`poll_block`](Self::poll_block), and

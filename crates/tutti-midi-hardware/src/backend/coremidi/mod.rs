@@ -26,6 +26,7 @@ use coremidi::{
     Client, Destinations, EventBuffer, InputPortWithContext, OutputPort, Properties,
     PropertyGetter, Protocol as CmProtocol, Source, Sources,
 };
+use tutti_graph::UmpAt;
 
 use crate::InputProducerHandle;
 use crate::capability::{EndpointInfo, UmpCapability};
@@ -343,7 +344,7 @@ impl MidiOut for CoreMidiOutput {
     /// unbroken **prefix** of `events`. Skipping would report a number no
     /// contiguous run matches, and would deliver a note-off whose note-on never
     /// left. The ALSA backend's `queue` behaves identically.
-    fn queue(&self, events: &[(Offset, Ump)]) -> usize {
+    fn queue(&self, events: &[UmpAt]) -> usize {
         let mut accepted = 0;
         for (_, ump) in events {
             if let Err(e) = self.send_ump(ump.words()) {

@@ -1,12 +1,13 @@
 use super::*;
 use tutti_fixtures::midi;
 use tutti_graph::Offset;
+use tutti_graph::UmpAt;
 use tutti_midi_types::{MidiMessage, sysex7_fragments};
 use tutti_types::Samples;
 use tutti_ump::{CCNumber, MidiChannel, MidiGroup};
 
 /// A packet from its words, zero-padded to four, at offset 0.
-fn raw(words: &[u32]) -> (Offset, Ump) {
+fn raw(words: &[u32]) -> UmpAt {
     let mut packet = [0; 4];
     packet[..words.len()].copy_from_slice(words);
     (Offset::ZERO, Ump(packet))
@@ -50,7 +51,7 @@ fn lookup_resolves_mapped_slots() {
 }
 
 /// Run a `(Offset, Ump)` through `midi_to_mapped_controller`.
-fn mapped(event: &(Offset, Ump)) -> Option<(u8, usize, f64)> {
+fn mapped(event: &UmpAt) -> Option<(u8, usize, f64)> {
     midi_to_mapped_controller(&event.1)
 }
 
@@ -674,7 +675,7 @@ fn a_queue_with_host_and_cc_points_ends_on_its_latest_value() {
         )
     };
     let mut route = CcRoute::new(mod_wheel_mapping(MAPPED), 1, room);
-    let mut ends = |events: &[(Offset, Ump)]| {
+    let mut ends = |events: &[UmpAt]| {
         let (_, params) = route.route(events, Some(&host)).expect("mapped");
         let q = params.queue(MAPPED.into()).expect("queued");
         assert!(
@@ -728,7 +729,7 @@ fn the_merge_sorts_a_full_room_queue_without_allocating() {
         )
     };
     // On host frames (multiples of 8) and between them.
-    let events: Vec<(Offset, Ump)> = (0..CCS as u32)
+    let events: Vec<UmpAt> = (0..CCS as u32)
         .map(|k| cc(100 * k + if k % 2 == 0 { 0 } else { 3 }, 127))
         .collect();
     let mut route = CcRoute::new(mod_wheel_mapping(MAPPED), 1, room);
@@ -823,7 +824,7 @@ fn sysex_in(list: &EventList) -> Vec<Vec<u8>> {
     list.staged_sysex()
 }
 
-fn sysex_packets(payload: &[u8]) -> Vec<(Offset, Ump)> {
+fn sysex_packets(payload: &[u8]) -> Vec<UmpAt> {
     let mut out = Vec::new();
     sysex7_fragments(MidiGroup::FIRST, payload, &mut out);
     out.into_iter().map(|ump| (Offset::ZERO, ump)).collect()
@@ -853,7 +854,7 @@ fn a_mapped_route_passes_a_sysex_spanning_blocks_whole() {
             midi1_cc_to_midi2(64),
         ),
     );
-    let first: Vec<(Offset, Ump)> = std::iter::once(cc)
+    let first: Vec<UmpAt> = std::iter::once(cc)
         .chain(packets[..MIDI_STACK_CAPACITY - 1].iter().copied())
         .collect();
     assert_eq!(first.len(), MIDI_STACK_CAPACITY);

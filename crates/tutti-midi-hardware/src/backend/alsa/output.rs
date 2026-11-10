@@ -1,15 +1,14 @@
 //! Sending UMP to a sequencer port.
 
 use std::sync::Mutex;
+use tutti_graph::UmpAt;
 
 use super::client::{SeqClient, check};
 use super::enumerate::unpack_id;
 use crate::error::{Error, Result};
 use tutti_alsa_ump_sys as sys;
-use tutti_graph::Offset;
 use tutti_midi_device::EndpointId;
 use tutti_midi_runtime::MidiOut;
-use tutti_ump::Ump;
 
 /// An open ALSA output, as a [`MidiOut`].
 pub struct AlsaOutput {
@@ -102,7 +101,7 @@ impl MidiOut for AlsaOutput {
     /// unbroken prefix, so a caller can tell exactly where the stream stopped.
     /// Skipping would report a number that no contiguous run matches, and would
     /// deliver a note-off whose note-on never left.
-    fn queue(&self, events: &[(Offset, Ump)]) -> usize {
+    fn queue(&self, events: &[UmpAt]) -> usize {
         let mut accepted = 0;
         for (_, ump) in events {
             if let Err(e) = self.send_ump(ump.words()) {

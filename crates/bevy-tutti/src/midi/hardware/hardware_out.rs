@@ -65,14 +65,13 @@ mod tests {
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use tutti_fixtures::midi::note_on;
-    use tutti_graph::Offset;
-    use tutti_ump::Ump;
+    use tutti_graph::{Offset, UmpAt};
     use tutti_ump::{MidiChannel, MidiGroup};
 
     /// Counts what reached the wire.
     struct CountingSink(Arc<AtomicUsize>);
     impl tutti_midi_runtime::MidiOut for CountingSink {
-        fn queue(&self, events: &[(Offset, Ump)]) -> usize {
+        fn queue(&self, events: &[UmpAt]) -> usize {
             self.0.fetch_add(events.len(), Ordering::SeqCst);
             events.len()
         }

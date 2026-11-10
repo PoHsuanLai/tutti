@@ -16,6 +16,7 @@
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use tutti_graph::UmpAt;
 use tutti_plugin_types::MainThread;
 
 use arrayvec::ArrayVec;
@@ -23,7 +24,6 @@ use parking_lot::Mutex;
 use tutti_graph::{Cx, Offset};
 use tutti_transport::{MeterSlotReader, ProjectMeter};
 use tutti_types::{MeterMap, Samples};
-use tutti_ump::Ump;
 use tutti_vst2_host::{ChannelLayout, PluginInfo, Vst2ProcessContext, WireMidi};
 
 use super::instance::Instance;
@@ -458,7 +458,7 @@ impl InProcessVst2Client {
 /// `audioMasterGetTime` has anything to serve.
 pub(super) fn block_context<'a>(
     sample_rate: f64,
-    midi_events: &'a [(Offset, Ump)],
+    midi_events: &'a [UmpAt],
     transport: &'a TransportInfo,
 ) -> Vst2ProcessContext<'a> {
     Vst2ProcessContext::new(sample_rate)
@@ -496,7 +496,7 @@ pub(super) fn drive_f32(
     // the `min` only keeps a stray one inside the block.
     let last = size.saturating_sub(1);
     let block = Samples(size);
-    let timed: ArrayVec<(Offset, Ump), MIDI_STACK_CAPACITY> = midi_events
+    let timed: ArrayVec<UmpAt, MIDI_STACK_CAPACITY> = midi_events
         .iter()
         .filter_map(|e| Some((Offset::new((e.offset as usize).min(last), block)?, e.ump)))
         .collect();

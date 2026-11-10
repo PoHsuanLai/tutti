@@ -17,6 +17,7 @@
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use tutti_graph::UmpAt;
 
 use tutti_graph::{
     Cx, Event, EventDensity, ForkCause, ForkMode, ForkSource, Forked, IntoNode, Io, Node,
@@ -95,10 +96,10 @@ pub struct MidiInputNode {
     /// hardware drain's scratch, its read of the port set) is the node's.
     input: Option<Box<dyn MidiIn>>,
     /// What the wire's poll fills.
-    scratch: Box<[(Offset, Ump)]>,
+    scratch: Box<[UmpAt]>,
     /// What the block sends: the translated events, which may outnumber the
     /// polled ones (a member channel's bend range fans out over its zone).
-    out: Box<[(Offset, Ump)]>,
+    out: Box<[UmpAt]>,
     translator: Midi1ToMidi2Translator,
     mpe: MpeIngest,
     /// The MPE mode a host asked for, read once per block. The reader owns

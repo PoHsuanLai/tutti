@@ -17,11 +17,12 @@
 //! - a block longer than the announced maximum is split before the plugin.
 
 use std::sync::{Mutex, MutexGuard};
+use tutti_graph::UmpAt;
 
 use tutti_fixtures::midi;
 use tutti_graph::Offset;
 use tutti_plugin_types::{Control, Controller, Request};
-use tutti_ump::{MidiChannel, MidiGroup, Ump};
+use tutti_ump::{MidiChannel, MidiGroup};
 use tutti_vst2_host::{
     Samples, TimeSignature, TransportInfo, Vst2Loaded, Vst2ProcessContext, WindowHandle,
 };
@@ -496,7 +497,7 @@ fn editor_idle_reaches_an_open_editor() {
 fn render_f32(
     instance: &mut Active,
     frames: usize,
-    midi: &[(Offset, Ump)],
+    midi: &[UmpAt],
     transport: Option<&TransportInfo>,
     input: f32,
 ) -> Vec<Vec<f32>> {

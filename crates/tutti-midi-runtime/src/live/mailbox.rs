@@ -8,9 +8,9 @@
 //! the graph MIDI travels on event ports, never through a mailbox.
 
 use std::sync::Arc;
+use tutti_graph::UmpAt;
 
 use crossbeam_queue::ArrayQueue;
-use tutti_graph::Offset;
 use tutti_midi_types::convert::midi1_velocity_to_midi2;
 use tutti_ump::{Address, Attribute, Message, MidiChannel, MidiGroup, NoteNumber, Ump, Voice2};
 
@@ -75,7 +75,7 @@ impl MidiSender {
     /// the stream stays in order). Dropping a note-off whose note-on landed is
     /// what leaves a note stuck, so a caller with anywhere to report it must.
     /// Never blocks.
-    pub fn queue(&self, events: &[(Offset, Ump)]) -> usize {
+    pub fn queue(&self, events: &[UmpAt]) -> usize {
         let mut accepted = 0;
         for &(offset, ump) in events {
             if self.slot.events.push((offset.get(), ump)).is_err() {
@@ -141,7 +141,7 @@ impl MidiSender {
 }
 
 impl MidiOut for MidiSender {
-    fn queue(&self, events: &[(Offset, Ump)]) -> usize {
+    fn queue(&self, events: &[UmpAt]) -> usize {
         self.queue(events)
     }
 }

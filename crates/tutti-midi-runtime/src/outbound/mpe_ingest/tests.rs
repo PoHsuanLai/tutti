@@ -1,5 +1,6 @@
 use super::*;
 use tutti_fixtures::midi;
+use tutti_graph::UmpAt;
 use tutti_midi_types::MidiMessage;
 use tutti_midi_types::convert::{
     midi1_cc_to_midi2, midi1_pitch_bend_to_midi2, midi1_velocity_to_midi2,
@@ -8,7 +9,7 @@ use tutti_midi_types::mpe::MpeZoneConfig;
 use tutti_types::Samples;
 
 /// `ump` at frame `offset` of a 64-frame block.
-fn at(offset: usize, ump: Ump) -> (Offset, Ump) {
+fn at(offset: usize, ump: Ump) -> UmpAt {
     (Offset::new(offset, Samples(64)).unwrap(), ump)
 }
 
@@ -17,7 +18,7 @@ fn channel_of(ump: &Ump) -> u8 {
     ((ump.0[0] >> 16) & 0x0F) as u8
 }
 
-fn note_on(channel: u8, note: u8, vel_u7: u8) -> (Offset, Ump) {
+fn note_on(channel: u8, note: u8, vel_u7: u8) -> UmpAt {
     at(
         0,
         midi::note_on(
@@ -28,7 +29,7 @@ fn note_on(channel: u8, note: u8, vel_u7: u8) -> (Offset, Ump) {
         ),
     )
 }
-fn pitch_bend14(channel: u8, bend14: u16) -> (Offset, Ump) {
+fn pitch_bend14(channel: u8, bend14: u16) -> UmpAt {
     at(
         0,
         midi::pitch_bend(
@@ -38,7 +39,7 @@ fn pitch_bend14(channel: u8, bend14: u16) -> (Offset, Ump) {
         ),
     )
 }
-fn cc(channel: u8, cc_num: CCNumber, value_u7: u8) -> (Offset, Ump) {
+fn cc(channel: u8, cc_num: CCNumber, value_u7: u8) -> UmpAt {
     at(
         0,
         midi::cc(
@@ -171,7 +172,7 @@ fn mcm_from_the_wire_configures_the_lower_zone() {
     // The MCM itself is absorbed (configuration, not a musical event);
     // what goes on is the zone's reset ranges, all registered controllers
     // (`an_mcm_resets_its_zones_bend_ranges`).
-    let reset: Vec<(Offset, Ump)> = ingest.translate(&mcm).collect();
+    let reset: Vec<UmpAt> = ingest.translate(&mcm).collect();
     assert_eq!(reset.len(), 8, "master and seven members");
     assert!(!reset.contains(&mcm));
     assert!(matches!(ingest.mode(), MpeMode::LowerZone(_)));
@@ -208,7 +209,7 @@ fn mcm_with_zero_members_disables_the_zone() {
 /// What a receiver following RPN #00/00 (channel bend range) and
 /// #00/07 (per-note bend range) per channel ends with after `events`:
 /// `(channel, index) → semitones`, in order of arrival.
-fn ranges_after(events: impl IntoIterator<Item = (Offset, Ump)>) -> Vec<(u8, u8, f32)> {
+fn ranges_after(events: impl IntoIterator<Item = UmpAt>) -> Vec<(u8, u8, f32)> {
     events
         .into_iter()
         .map(|ev| {
@@ -253,7 +254,7 @@ fn an_mcm_resets_its_zones_bend_ranges() {
         receiver.observe(&ev.1);
     }
     let mcm = at(9, MpeZoneConfig::upper(3).to_mcm());
-    let reset: Vec<(Offset, Ump)> = ingest.translate(&mcm).collect();
+    let reset: Vec<UmpAt> = ingest.translate(&mcm).collect();
     assert!(matches!(ingest.mode(), MpeMode::DualZone { .. }));
     assert!(reset.iter().all(|ev| ev.0.get() == 9));
     assert_eq!(
@@ -315,7 +316,7 @@ fn an_mcm_resets_its_zones_bend_ranges() {
     );
 }
 
-fn bend_sensitivity(channel: u8, semitones: u8) -> (Offset, Ump) {
+fn bend_sensitivity(channel: u8, semitones: u8) -> UmpAt {
     at(
         17,
         midi::registered_controller(
@@ -353,7 +354,7 @@ fn a_member_channels_bend_range_becomes_every_members_per_note_range() {
     let mut receiver = PerNoteBendRanges::default();
 
     let master = bend_sensitivity(0, 2);
-    let out: Vec<(Offset, Ump)> = ingest.translate(&master).collect();
+    let out: Vec<UmpAt> = ingest.translate(&master).collect();
     assert_eq!(out, vec![master], "the master's own range passes through");
     assert!(!receiver.observe(&out[0].1));
 

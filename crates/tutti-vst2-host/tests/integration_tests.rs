@@ -13,11 +13,12 @@
 
 use std::path::Path;
 use std::sync::{Mutex, MutexGuard};
+use tutti_graph::UmpAt;
 
 use tutti_fixtures::midi;
 use tutti_graph::Offset;
 use tutti_plugin_types::{Control, Normalized, ParamId};
-use tutti_ump::{MidiChannel, MidiGroup, Ump};
+use tutti_ump::{MidiChannel, MidiGroup};
 use tutti_vst2_host::{Samples, TimeSignature, TransportInfo, Vst2ProcessContext};
 
 #[path = "support/active.rs"]
@@ -195,7 +196,7 @@ mod can_do {
     pub const CUSTOM: i32 = 3;
 }
 
-fn render_block(instance: &mut Active, midi: &[(Offset, Ump)]) -> Vec<Vec<f32>> {
+fn render_block(instance: &mut Active, midi: &[UmpAt]) -> Vec<Vec<f32>> {
     let inputs = (instance.pins().0.count() as usize).max(1);
     let outputs = (instance.pins().1.count() as usize).max(1);
 
@@ -1237,7 +1238,7 @@ fn many_midi_events_in_one_block() {
     let _guard = lock_probe();
     let mut instance = load_probe();
 
-    let events: Vec<(Offset, Ump)> = (0..10usize)
+    let events: Vec<UmpAt> = (0..10usize)
         .map(|i| {
             (
                 Offset::new(i, Samples(BLOCK)).unwrap(),
@@ -1247,7 +1248,7 @@ fn many_midi_events_in_one_block() {
         .collect();
     render_block(&mut instance, &events);
 
-    let note_offs: Vec<(Offset, Ump)> = (0..10)
+    let note_offs: Vec<UmpAt> = (0..10)
         .map(|i| {
             (
                 Offset::ZERO,

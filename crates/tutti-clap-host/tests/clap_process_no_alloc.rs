@@ -20,6 +20,7 @@
 
 use std::path::Path;
 use std::sync::Mutex;
+use tutti_graph::UmpAt;
 
 use assert_no_alloc::AllocDisabler;
 use tutti_clap_host::{AudioBuffer32, ClapLoaded, ClapProcessContext, LoadOptions, TransportInfo};
@@ -72,7 +73,7 @@ fn at(k: u32) -> Offset {
 }
 
 /// The packet of `words`, zero-padded to four, `k` frames into the block.
-fn packet(k: u32, words: &[u32]) -> (Offset, Ump) {
+fn packet(k: u32, words: &[u32]) -> UmpAt {
     let mut w = [0u32; 4];
     w[..words.len()].copy_from_slice(words);
     (at(k), Ump(w))
@@ -287,7 +288,7 @@ fn process_with_midi_does_not_allocate() {
 
     assert_no_alloc::assert_no_alloc(|| {
         for i in 0..128usize {
-            let events: &[(Offset, Ump)] = match i % 32 {
+            let events: &[UmpAt] = match i % 32 {
                 0 => &on_event,
                 16 => &off_event,
                 _ => &[],
@@ -376,7 +377,7 @@ fn process_with_every_message_kind_does_not_allocate() {
         };
         assert_eq!(kind, *claimed, "{words:08x?}");
     }
-    let packets: Vec<(Offset, Ump)> = table.iter().map(|(_, words)| packet(2, words)).collect();
+    let packets: Vec<UmpAt> = table.iter().map(|(_, words)| packet(2, words)).collect();
 
     let ctx = ClapProcessContext {
         midi: &packets,
@@ -734,7 +735,7 @@ fn drive_and_read_param_output(
 fn drive_and_read_output(
     inst: &mut Active<f32>,
     bufs: &mut StereoBufs,
-    midi: &[(Offset, Ump)],
+    midi: &[UmpAt],
 ) -> (Vec<(u32, usize, f64)>, usize) {
     let transport = TransportInfo::default();
     let ctx = ClapProcessContext {

@@ -14,6 +14,7 @@
 //! Its fork sends nothing: an offline render drives no external gear.
 
 use std::sync::Arc;
+use tutti_graph::UmpAt;
 
 use tutti_graph::{
     Cx, Event, ForkCause, ForkMode, ForkSource, Forked, IntoNode, Io, Node, NodeParts, Offset,
@@ -21,7 +22,6 @@ use tutti_graph::{
 };
 use tutti_rt::RtVec;
 use tutti_types::{ChannelLayout, SampleRate};
-use tutti_ump::Ump;
 
 use super::clock_master::ClockMaster;
 use crate::live::order::{in_offset_order, offset_of};
@@ -57,7 +57,7 @@ pub struct ClockNode {
     /// Where a block's events are gathered, to go out in offset order. Capped
     /// at the port's capacity: past it an event is refused and counted on the
     /// master ([`ClockMaster::dropped_events`]), never grown into.
-    pending: RtVec<(Offset, Ump), CLOCK_EVENT_CAPACITY>,
+    pending: RtVec<UmpAt, CLOCK_EVENT_CAPACITY>,
 }
 
 impl ClockNode {
@@ -103,21 +103,20 @@ impl Node for ClockNode {
         let mut dropped = 0u64;
         for (start, seg) in cx.env.segments() {
             let base = start.get();
-            self.master
-                .tick(
-                    &seg.transport,
-                    seg.block_len.get(),
-                    &mut |(at, ump): (Offset, Ump)| {
-                        // Never grows on the audio thread: past the capacity the
-                        // rest are refused, as the port would refuse them, and
-                        // counted for the host.
-                        let at = base as usize + at.index();
-                        let at = Offset::new(at.min(last), block_len).unwrap_or(Offset::ZERO);
-                        if !pending.push((at, ump)) {
-                            dropped += 1;
-                        }
-                    },
-                );
+            self.master.tick(
+                &seg.transport,
+                seg.block_len.get(),
+                &mut |(at, ump): UmpAt| {
+                    // Never grows on the audio thread: past the capacity the
+                    // rest are refused, as the port would refuse them, and
+                    // counted for the host.
+                    let at = base as usize + at.index();
+                    let at = Offset::new(at.min(last), block_len).unwrap_or(Offset::ZERO);
+                    if !pending.push((at, ump)) {
+                        dropped += 1;
+                    }
+                },
+            );
         }
         self.master.count_dropped(dropped);
         in_offset_order(self.pending.as_mut_slice());

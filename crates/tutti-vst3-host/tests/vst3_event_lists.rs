@@ -7,12 +7,12 @@
 
 use tutti_fixtures::midi;
 use tutti_graph::Offset;
+use tutti_graph::UmpAt;
 use tutti_midi_types::{sysex7_fragments, sysex7_payload};
 use tutti_plugin_types::{
     MIDI_STACK_CAPACITY, RT_MIDI_CAPACITY, RtMidiEvents, SysExStep, WireMidi,
 };
 use tutti_types::Samples;
-use tutti_ump::Ump;
 use tutti_ump::{MidiChannel, MidiGroup};
 use tutti_vst3_ffi::{
     EVENT_CAPACITY, EventKind, EventList, K_DATA_TYPE_MIDI_SYSEX, SYSEX_OUT_ROOM, TextArena,
@@ -29,7 +29,7 @@ fn at(k: u32) -> Offset {
     Offset::new(usize::try_from(k).unwrap(), Samples(TEST_BLOCK)).unwrap()
 }
 
-fn midi_only(midi: &[(Offset, Ump)]) -> InputEvents<'_> {
+fn midi_only(midi: &[UmpAt]) -> InputEvents<'_> {
     InputEvents {
         midi,
         ..Default::default()
@@ -396,7 +396,7 @@ fn a_banked_program_change_reaches_the_plugin_as_three_messages() {
     assert_eq!(full.dropped(), 3);
 }
 
-fn sysex_packets(payload: &[u8], frame: u32) -> Vec<(Offset, Ump)> {
+fn sysex_packets(payload: &[u8], frame: u32) -> Vec<UmpAt> {
     let mut out = Vec::new();
     sysex7_fragments(MidiGroup::FIRST, payload, &mut out);
     out.into_iter().map(|ump| (at(frame), ump)).collect()

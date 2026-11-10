@@ -59,6 +59,7 @@
 mod support;
 
 use std::sync::{Mutex, MutexGuard};
+use tutti_graph::UmpAt;
 
 use support::corpus::{AuRef, SAMPLER};
 use tutti_graph::Offset;
@@ -94,7 +95,7 @@ const SYSEX_SAFE_INSTRUMENTS: &[AuRef] = &[SAMPLER];
 ///
 /// Hand-rolled rather than taken from a helper, so the test states the wire
 /// layout it depends on instead of agreeing with whatever the encoder does.
-fn sysex7_packet(status: u8, bytes: &[u8]) -> (Offset, Ump) {
+fn sysex7_packet(status: u8, bytes: &[u8]) -> UmpAt {
     assert!(bytes.len() <= 6, "a SysEx7 packet carries at most 6 bytes");
     let n = bytes.len() as u32;
     let b = |i: usize| -> u32 { bytes.get(i).copied().unwrap_or(0) as u32 };

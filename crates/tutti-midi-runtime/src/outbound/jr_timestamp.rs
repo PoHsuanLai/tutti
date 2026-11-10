@@ -24,6 +24,7 @@
 //! a stamp → observe loopback recovers the injected spacing — see the tests.
 
 use std::time::Duration;
+use tutti_graph::UmpAt;
 
 use tutti_graph::Offset;
 use tutti_midi_types::jr_timestamp_value;
@@ -101,12 +102,7 @@ impl JrStamper {
     /// per-block operation whose consumers hand the result straight to
     /// `MidiOut::queue` as a slice. Returning one allocated on every block for a
     /// value nobody keeps.
-    pub fn stamp_block(
-        &self,
-        events: &[(Offset, Ump)],
-        origin_samples: u64,
-        out: &mut Vec<(Offset, Ump)>,
-    ) {
+    pub fn stamp_block(&self, events: &[UmpAt], origin_samples: u64, out: &mut Vec<UmpAt>) {
         out.reserve(events.len() * 2);
         for ev in events {
             let ticks = self.clock.ticks_at(origin_samples + u64::from(ev.0.get()));
@@ -121,7 +117,7 @@ impl JrStamper {
     /// Split out from [`JrStream::stamp`] so the arithmetic that keeps stamps
     /// monotonic is stated once and testable on its own.
     #[inline]
-    pub fn block_span(events: &[(Offset, Ump)]) -> u64 {
+    pub fn block_span(events: &[UmpAt]) -> u64 {
         events
             .iter()
             .map(|e| u64::from(e.0.get()))
@@ -291,7 +287,7 @@ impl JrStream {
     /// block. That is fine for stamping — an empty block stamps nothing — but it
     /// means a clock cadence driven from here would freeze on a silent stream.
     /// Use [`stamp_span`](Self::stamp_span) when clocking.
-    pub fn stamp(&mut self, events: &[(Offset, Ump)], out: &mut Vec<(Offset, Ump)>) {
+    pub fn stamp(&mut self, events: &[UmpAt], out: &mut Vec<UmpAt>) {
         self.stamp_span(events, JrStamper::block_span(events), out);
     }
 
@@ -307,12 +303,7 @@ impl JrStream {
     /// Reusing one buffer across blocks is the point: this path runs once per
     /// block, and its callers only borrow the result to hand it to
     /// `MidiOut::queue`.
-    pub fn stamp_span(
-        &mut self,
-        events: &[(Offset, Ump)],
-        block_samples: u64,
-        out: &mut Vec<(Offset, Ump)>,
-    ) {
+    pub fn stamp_span(&mut self, events: &[UmpAt], block_samples: u64, out: &mut Vec<UmpAt>) {
         out.clear();
         if let Some(emitter) = self.emitter.as_mut()
             && let Some(clock) = emitter.due(self.origin_samples)

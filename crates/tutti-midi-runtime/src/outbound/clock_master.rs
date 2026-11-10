@@ -31,6 +31,7 @@
 //!   (when `send_mtc` is set).
 
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicU64, Ordering};
+use tutti_graph::UmpAt;
 use tutti_ump::{Message, MidiGroup, System, U7, U14, Ump};
 
 use atomic_float::AtomicF64;
@@ -293,12 +294,7 @@ impl ClockMaster {
     ///
     /// Events come out in the order generated, not by offset: in each pass
     /// (the block cut at a loop wrap) the MTC quarter-frames follow its ticks.
-    pub fn tick(
-        &self,
-        transport: &Transport,
-        block_size: usize,
-        emit: &mut impl FnMut((Offset, Ump)),
-    ) {
+    pub fn tick(&self, transport: &Transport, block_size: usize, emit: &mut impl FnMut(UmpAt)) {
         // Once per block: a rate moved mid-block would split it in two. A
         // counted transport carries the rate its block runs at, and that is
         // the one its clock is rebuilt at (a master re-rated between the
@@ -423,7 +419,7 @@ impl ClockMaster {
         pass: &Pass,
         block_size: usize,
         beats_per_sample: BeatDuration,
-        emit: &mut impl FnMut((Offset, Ump)),
+        emit: &mut impl FnMut(UmpAt),
     ) {
         let tick_beats = BeatDuration(1.0 / PPQN);
         // The tick at or before the pass's first beat: its frame is 0 (on the
@@ -459,7 +455,7 @@ impl ClockMaster {
         block_size: usize,
         sample_rate: SampleRate,
         beats_per_sample: BeatDuration,
-        emit: &mut impl FnMut((Offset, Ump)),
+        emit: &mut impl FnMut(UmpAt),
     ) {
         let (beat, len) = (pass.beat, pass.len.get());
         let fps = self.fps();

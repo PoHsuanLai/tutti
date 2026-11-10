@@ -31,7 +31,7 @@ use clap_sys::events::{
 };
 use std::ptr;
 use tutti_clap_ffi::{EventRef, EventSink, PluginEvent};
-use tutti_graph::Offset;
+use tutti_graph::UmpAt;
 use tutti_plugin_types::{
     Normalized, ParamId, RtMidiEvents, SYSEX_MESSAGE_CAPACITY, StableOrder, SysExAssembler,
     SysExStep, WireMidi, note_id_for, note_id_to_channel_note, push_sysex, unframed,
@@ -501,7 +501,7 @@ impl ClapEvent {
         }))
     }
 
-    /// Builds a `ClapEvent` from a Tutti UMP event (its block [`Offset`] and
+    /// Builds a `ClapEvent` from a Tutti UMP event (its block [`Offset`](tutti_graph::Offset) and
     /// packet), at the stream
     /// state `ranges` holds: a per-note pitch bend is a tuning of the bend
     /// over its channel's per-note bend range, in semitones. An
@@ -523,7 +523,7 @@ impl ClapEvent {
     /// as MIDI 2.0 (a packet `decode` cannot frame included), and for SysEx,
     /// which [`InputEventList::add_midi`] reassembles into a `MidiSysex`.
     #[must_use]
-    pub fn from_midi(event: &(Offset, Ump), ranges: &PerNoteBendRanges) -> Option<Self> {
+    pub fn from_midi(event: &UmpAt, ranges: &PerNoteBendRanges) -> Option<Self> {
         Self::from_message(event.0.get(), event.1, ranges, false)
     }
 
@@ -1098,7 +1098,7 @@ impl InputEventList {
     /// message (which may span blocks) is appended as one
     /// [`ClapEvent::MidiSysex`], `0xF0 … 0xF7`, at its `END` packet's time.
     /// Allocation-free once [`reserve_sysex`](Self::reserve_sysex)ed.
-    pub fn add_midi(&mut self, event: &(Offset, Ump)) -> &mut Self {
+    pub fn add_midi(&mut self, event: &UmpAt) -> &mut Self {
         let (offset, ump) = *event;
         match self.sysex.push(&ump) {
             SysExStep::NotSysEx => {
@@ -1163,7 +1163,7 @@ impl InputEventList {
     }
 
     /// Batch version of [`add_midi`](Self::add_midi).
-    pub fn add_midi_events(&mut self, events: &[(Offset, Ump)]) -> &mut Self {
+    pub fn add_midi_events(&mut self, events: &[UmpAt]) -> &mut Self {
         for event in events {
             self.add_midi(event);
         }
@@ -1947,6 +1947,7 @@ impl EventSink for OutputEventList {
 mod tests {
     use super::*;
     use tutti_fixtures::midi as fx;
+    use tutti_graph::Offset;
     use tutti_plugin_types::{MIDI_STACK_CAPACITY, RT_MIDI_CAPACITY};
     use tutti_types::Samples;
     use tutti_ump::{Data128, Sysex8Packet, SysexStatus, System};
@@ -1961,14 +1962,14 @@ mod tests {
     }
 
     /// The packet of `words`, zero-padded to four, at offset `k`.
-    fn packet(k: u32, words: &[u32]) -> (Offset, Ump) {
+    fn packet(k: u32, words: &[u32]) -> UmpAt {
         let mut w = [0u32; 4];
         w[..words.len()].copy_from_slice(words);
         (at(k), Ump(w))
     }
 
     /// The MIDI 1.0 bytes as a packet at offset 0.
-    fn midi1_event(bytes: &[u8]) -> (Offset, Ump) {
+    fn midi1_event(bytes: &[u8]) -> UmpAt {
         (
             at(0),
             tutti_midi_types::from_midi1_bytes(bytes).expect("builds"),
@@ -2304,7 +2305,7 @@ mod tests {
             };
             assert_eq!(kind, *claimed, "{words:08x?}");
         }
-        let packets: Vec<(Offset, Ump)> = table.iter().map(|(_, words)| packet(2, words)).collect();
+        let packets: Vec<UmpAt> = table.iter().map(|(_, words)| packet(2, words)).collect();
         for midi_notes in [false, true] {
             let mut list = InputEventList::new();
             list.reserve(64);
@@ -3510,7 +3511,7 @@ mod tests {
             .collect()
     }
 
-    fn sysex_packets(payload: &[u8], time: u32) -> Vec<(Offset, Ump)> {
+    fn sysex_packets(payload: &[u8], time: u32) -> Vec<UmpAt> {
         let mut out = Vec::new();
         tutti_midi_types::sysex7_fragments(MidiGroup::FIRST, payload, &mut out);
         out.into_iter().map(|ump| (at(time), ump)).collect()

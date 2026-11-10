@@ -1,8 +1,7 @@
 //! Cutting a block at its MIDI events.
 
 use core::ops::Range;
-use tutti_graph::Offset;
-use tutti_ump::Ump;
+use tutti_graph::UmpAt;
 
 /// What to do with an event whose offset is at or past the block's end.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -17,7 +16,7 @@ pub enum Overrun {
 #[derive(Debug, Clone, PartialEq)]
 pub enum Step {
     /// Apply this event to the instrument now.
-    Event((Offset, Ump)),
+    Event(UmpAt),
     /// Render these frames, which no event falls inside.
     Span(Range<usize>),
 }
@@ -58,7 +57,7 @@ impl BlockSplitter {
 
     /// Where `event` takes effect in this block.
     #[inline]
-    fn offset_of(&self, event: &(Offset, Ump)) -> usize {
+    fn offset_of(&self, event: &UmpAt) -> usize {
         let at = event.0.index();
         match self.overrun {
             Overrun::Defer => at,
@@ -70,7 +69,7 @@ impl BlockSplitter {
     /// call), or `None` when the block is done.
     #[inline]
     #[must_use]
-    pub fn step(&mut self, events: &[(Offset, Ump)]) -> Option<Step> {
+    pub fn step(&mut self, events: &[UmpAt]) -> Option<Step> {
         let due = events.get(self.next_event);
         if let Some(event) = due
             && (self.pos >= self.size || self.offset_of(event) <= self.pos)
@@ -96,12 +95,13 @@ impl BlockSplitter {
 mod tests {
     use super::*;
     use tutti_fixtures::midi::note_on;
+    use tutti_graph::Offset;
     use tutti_types::Samples;
     use tutti_ump::{MidiChannel, MidiGroup};
 
     /// An event at `offset`, which may lie past the walked block: it is built
     /// against a block long enough to hold it.
-    fn at(offset: u32, note: u8) -> (Offset, Ump) {
+    fn at(offset: u32, note: u8) -> UmpAt {
         let long = Samples(1 << 20);
         (
             Offset::new(offset as usize, long).unwrap(),
@@ -109,7 +109,7 @@ mod tests {
         )
     }
 
-    fn walk(size: usize, overrun: Overrun, events: &[(Offset, Ump)]) -> Vec<String> {
+    fn walk(size: usize, overrun: Overrun, events: &[UmpAt]) -> Vec<String> {
         let mut split = BlockSplitter::new(size, overrun);
         let mut out = Vec::new();
         while let Some(step) = split.step(events) {

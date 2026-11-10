@@ -3,9 +3,8 @@
 //! Format-neutral types are re-exported from `tutti_plugin_types`; this module
 //! adds the VST2-specific ones, [`PluginInfo`] and [`Vst2ProcessContext`].
 
-use tutti_graph::Offset;
+use tutti_graph::UmpAt;
 pub use tutti_plugin_types::{Samples, WireMidi};
-use tutti_ump::Ump;
 
 pub use tutti_plugin_types::{
     ChannelLayout, EditorSize, ParameterInfo, PluginTail, TimeSignature, TransportInfo,
@@ -80,7 +79,7 @@ pub type MidiEventVec = Vec<WireMidi>;
 pub struct Vst2ProcessContext<'a> {
     /// Events to deliver before the block renders, each carrying its own frame
     /// offset within the block. Empty is normal for an effect.
-    pub midi: &'a [(Offset, Ump)],
+    pub midi: &'a [UmpAt],
     /// Transport state for this block. `None` leaves the plugin's `VstTimeInfo`
     /// reporting a stopped transport, which is what a plugin syncing to host
     /// tempo will see.
@@ -107,7 +106,7 @@ impl<'a> Vst2ProcessContext<'a> {
 
     /// Attaches this block's MIDI events, replacing any already set.
     #[must_use]
-    pub fn midi(mut self, midi: &'a [(Offset, Ump)]) -> Self {
+    pub fn midi(mut self, midi: &'a [UmpAt]) -> Self {
         self.midi = midi;
         self
     }

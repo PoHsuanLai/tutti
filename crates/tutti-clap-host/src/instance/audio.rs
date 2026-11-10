@@ -15,11 +15,10 @@ use clap_sys::fixedpoint::{CLAP_BEATTIME_FACTOR, CLAP_SECTIME_FACTOR};
 use clap_sys::process::{CLAP_PROCESS_SLEEP, CLAP_PROCESS_TAIL, clap_process_status};
 use std::sync::atomic::Ordering;
 use tutti_clap_ffi::{Planar, ProcessCall, ProcessError};
-use tutti_graph::Offset;
+use tutti_graph::UmpAt;
 use tutti_plugin_types::AudioBufferMut;
 use tutti_plugin_types::WireMidi;
 use tutti_plugin_types::is_usable;
-use tutti_ump::Ump;
 
 /// Owned snapshot of the plugin's per-block output. Returned for
 /// non-RT consumers (tests, offline render) via
@@ -83,7 +82,7 @@ impl<'a> ProcessOutputRef<'a> {
 pub struct ClapProcessContext<'a> {
     /// MIDI to deliver during this block. Sorted by time before being handed
     /// to the plugin, so the caller need not pre-sort.
-    pub midi: &'a [(Offset, Ump)],
+    pub midi: &'a [UmpAt],
     /// Parameter changes to apply during this block, as normalized `0..=1`
     /// values. They are denormalized against the plugin's declared ranges on
     /// the way in; changes for an id the plugin never described are dropped
@@ -273,7 +272,7 @@ impl ClapProcessor {
         &mut self,
         audio: Planar<'_, '_>,
         frames: usize,
-        midi_events: &[(Offset, Ump)],
+        midi_events: &[UmpAt],
         param_changes: &ParameterChanges,
         note_expressions: &[ClapNoteExpression],
         transport: Option<&TransportInfo>,

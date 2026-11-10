@@ -29,12 +29,12 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
+use tutti_graph::UmpAt;
 
 use assert_no_alloc::AllocDisabler;
 use tutti_fixtures::midi;
 use tutti_graph::Offset;
 use tutti_types::Samples;
-use tutti_ump::Ump;
 use tutti_ump::{MidiChannel, MidiGroup};
 use tutti_vst3_host::{AudioBuffer, InputEvents, ParameterChanges, TransportInfo};
 
@@ -113,7 +113,7 @@ fn load_or_skip() -> Option<Active> {
 fn drive_silent(inst: &mut Active, iters: usize, transport: &TransportInfo) {
     let mut out_l = [0.0f32; 64];
     let mut out_r = [0.0f32; 64];
-    let midi: [(Offset, Ump); 0] = [];
+    let midi: [UmpAt; 0] = [];
     for _ in 0..iters {
         let outs: &mut [&mut [f32]] = &mut [&mut out_l[..], &mut out_r[..]];
         let ins: &[&[f32]] = &[];
@@ -166,7 +166,7 @@ fn process_with_automation_does_not_allocate() {
 
     let mut out_l = [0.0f32; 64];
     let mut out_r = [0.0f32; 64];
-    let midi: [(Offset, Ump); 0] = [];
+    let midi: [UmpAt; 0] = [];
 
     let mut drive = |inst: &mut Active, iters: usize| {
         for _ in 0..iters {
@@ -260,7 +260,7 @@ fn process_with_midi_does_not_allocate() {
 
     assert_no_alloc::assert_no_alloc(|| {
         for i in 0..128usize {
-            let events: &[(Offset, Ump)] = match i % 32 {
+            let events: &[UmpAt] = match i % 32 {
                 0 => &on_event,
                 16 => &off_event,
                 _ => &[],
@@ -302,7 +302,7 @@ fn process_with_hundreds_of_events_does_not_allocate() {
 
     // Built off the audio thread. Four events a frame across the 64-frame
     // block, alternating on and off so no note is left sounding.
-    let midi: Vec<(Offset, Ump)> = (0..256u32)
+    let midi: Vec<UmpAt> = (0..256u32)
         .map(|i| {
             let note = (i / 2 % 128) as u8;
             let e = if i % 2 == 0 {

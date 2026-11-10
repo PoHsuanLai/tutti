@@ -1,6 +1,7 @@
 use super::*;
+use tutti_graph::UmpAt;
 use tutti_midi_types::{sysex7_fragments, sysex7_packet_count, sysex7_payload};
-use tutti_ump::{MidiChannel, MidiGroup, Ump};
+use tutti_ump::{MidiChannel, MidiGroup};
 
 use tutti_fixtures::midi;
 use tutti_graph::Offset;
@@ -15,7 +16,7 @@ fn at(k: u32) -> Offset {
     Offset::new(usize::try_from(k).unwrap(), Samples(TEST_BLOCK)).unwrap()
 }
 
-fn midi_only(midi: &[(Offset, Ump)]) -> InputEvents<'_> {
+fn midi_only(midi: &[UmpAt]) -> InputEvents<'_> {
     InputEvents {
         midi,
         ..Default::default()
@@ -370,7 +371,7 @@ fn chord(offset: i32, root: i16) -> Utf16Chord {
 #[test]
 fn a_full_block_from_every_source_stages_without_allocating() {
     use tutti_plugin_types::{HARMONY_CAPACITY, MIDI_STACK_CAPACITY};
-    let midi: Vec<(Offset, Ump)> = (0..MIDI_STACK_CAPACITY)
+    let midi: Vec<UmpAt> = (0..MIDI_STACK_CAPACITY)
         .map(|i| {
             (
                 at(2 * i as u32),
@@ -458,7 +459,7 @@ fn a_full_block_from_every_source_stages_without_allocating() {
 #[test]
 fn events_on_one_frame_keep_their_source_order() {
     // 12 MIDI events a frame, alternating off/on, the pitch their arrival.
-    let midi: Vec<(Offset, Ump)> = (0..120u8)
+    let midi: Vec<UmpAt> = (0..120u8)
         .map(|i| {
             let e = if i % 2 == 0 {
                 (
@@ -533,7 +534,7 @@ fn events_on_one_frame_keep_their_source_order() {
 #[test]
 fn past_the_room_note_offs_are_kept_and_the_rest_counted() {
     let ons = EVENT_CAPACITY;
-    let midi: Vec<(Offset, Ump)> = (0..ons)
+    let midi: Vec<UmpAt> = (0..ons)
         .map(|i| {
             (
                 at(i as u32),
@@ -603,7 +604,7 @@ fn past_the_room_note_offs_are_kept_and_the_rest_counted() {
 #[test]
 fn note_expressions_past_their_budget_leave_the_harmony_room() {
     use tutti_plugin_types::{HARMONY_CAPACITY, MIDI_STACK_CAPACITY};
-    let midi: Vec<(Offset, Ump)> = (0..MIDI_STACK_CAPACITY)
+    let midi: Vec<UmpAt> = (0..MIDI_STACK_CAPACITY)
         .map(|i| {
             (
                 at(i as u32),
@@ -730,7 +731,7 @@ fn draining_a_plugins_sysex_allocates_nothing() {
     let payload: Vec<u8> = (0..20).collect();
     let mut fragments = Vec::new();
     sysex7_fragments(MidiGroup::FIRST, &payload, &mut fragments);
-    let packets: Vec<(Offset, Ump)> = fragments
+    let packets: Vec<UmpAt> = fragments
         .into_iter()
         .map(|ump| (Offset::ZERO, ump))
         .collect();

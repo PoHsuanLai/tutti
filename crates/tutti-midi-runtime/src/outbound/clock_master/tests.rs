@@ -1,6 +1,7 @@
 use super::*;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool as StdAtomicBool;
+use tutti_graph::UmpAt;
 use tutti_midi_types::MidiMessage;
 use tutti_midi_types::sync::{ClockTransportState, MidiClockDecoder, MtcDecoder};
 use tutti_types::Bpm;
@@ -83,7 +84,7 @@ fn master(
 }
 
 /// Drains a receiver fully into a `Vec`.
-fn drain_all(receiver: &crate::MidiReceiver) -> Vec<(Offset, Ump)> {
+fn drain_all(receiver: &crate::MidiReceiver) -> Vec<UmpAt> {
     let mut out = Vec::new();
     let mut buf = [(0, Ump([0; 4])); 256];
     loop {
@@ -101,7 +102,7 @@ fn drain_all(receiver: &crate::MidiReceiver) -> Vec<(Offset, Ump)> {
     out
 }
 
-fn is_status(ev: &(Offset, Ump), status: u8) -> bool {
+fn is_status(ev: &UmpAt, status: u8) -> bool {
     let w0 = ev.1.0[0];
     (w0 >> 28) & 0x0F == 0x1 && ((w0 >> 16) & 0xFF) as u8 == status
 }
@@ -239,7 +240,7 @@ fn ticks_are_sample_accurate_within_block() {
 /// does not continue the previous one: the transport message(s), then an
 /// F8 on frame 0 when the beat sits on a tick boundary, else the first F8
 /// on the next boundary.
-fn first_clock(events: &[(Offset, Ump)]) -> (usize, u32) {
+fn first_clock(events: &[UmpAt]) -> (usize, u32) {
     let i = events
         .iter()
         .position(|e| is_status(e, 0xF8))
@@ -349,7 +350,7 @@ fn run_at(
     rate: f64,
     (block, blocks): (usize, usize),
     (beat, frame): (&mut f64, &mut u64),
-) -> Vec<((Offset, Ump), u64)> {
+) -> Vec<(UmpAt, u64)> {
     let mut at = Vec::new();
     for _ in 0..blocks {
         transport.set_beat(*beat);
@@ -366,7 +367,7 @@ fn run_at(
 }
 
 /// The frames of the events in `events` with `status`.
-fn of(events: &[((Offset, Ump), u64)], status: u8) -> Vec<u64> {
+fn of(events: &[(UmpAt, u64)], status: u8) -> Vec<u64> {
     events
         .iter()
         .filter(|(e, _)| is_status(e, status))
@@ -708,7 +709,7 @@ fn looping_rig() -> (Rig, Arc<TestTransport>, crate::MidiReceiver) {
 }
 
 /// The `(offset, ...)` of the events with `status`.
-fn offsets(events: &[(Offset, Ump)], status: u8) -> Vec<u32> {
+fn offsets(events: &[UmpAt], status: u8) -> Vec<u32> {
     events
         .iter()
         .filter(|e| is_status(e, status))
@@ -827,12 +828,7 @@ fn the_mtc_grid_restarts_on_the_wrap() {
 /// `region`) through blocks of `lens`, the host's clock giving each block its
 /// start beat, and returns every event with its absolute frame, in the order
 /// sent. `mtc` turns the quarter-frames on.
-fn play_layout(
-    from: f64,
-    region: (f64, f64),
-    mtc: bool,
-    lens: &[usize],
-) -> Vec<(u64, (Offset, Ump))> {
+fn play_layout(from: f64, region: (f64, f64), mtc: bool, lens: &[usize]) -> Vec<(u64, UmpAt)> {
     let (cm, transport, cons) = master(Bpm::of(120.0), 48_000.0);
     transport.set_loop(region.0, region.1);
     transport.set_playing(true);
@@ -919,7 +915,7 @@ fn the_stream_does_not_depend_on_the_block_boundaries() {
     ] {
         assert_eq!(lens.iter().sum::<usize>(), TOTAL);
         let got = play_layout(0.0, region, true, &lens);
-        let key = |v: &[(u64, (Offset, Ump))]| {
+        let key = |v: &[(u64, UmpAt)]| {
             let mut v: Vec<_> = v.iter().map(|&(at, e)| (at, e.1.0[0])).collect();
             v.sort_by_key(|&(at, _)| at);
             v

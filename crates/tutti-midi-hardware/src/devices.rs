@@ -12,6 +12,7 @@
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError, Weak};
 use std::time::Duration;
+use tutti_graph::UmpAt;
 
 use tutti_midi_device::{
     DeviceEvent, DeviceId, DeviceInfo, DeviceTable, Direction, EndpointId, Identity, OsChange,
@@ -617,7 +618,7 @@ impl OpenOutput {
 }
 
 impl MidiOut for OpenOutput {
-    fn queue(&self, events: &[(tutti_graph::Offset, tutti_ump::Ump)]) -> usize {
+    fn queue(&self, events: &[UmpAt]) -> usize {
         self.sink.queue(events)
     }
 }

@@ -91,10 +91,12 @@ and a vocabulary that is half old.
 data: [u32; 4] }` is deleted, with its constructors. What it carried is now
 said by the type of the position beside a `Ump`:
 
-- `(Offset, Ump)` in a block: `MidiIn`, `MidiOut` (both in
-  `tutti-midi-runtime` now), `ProcessContext::midi_events`, `BlockSplitter`,
-  `gather_midi`. The graph's `Event { offset, kind: EventKind::Midi(Ump) }`
-  is the same pair.
+- `(Offset, Ump)` in a block, named by the alias `tutti_graph::UmpAt`:
+  `MidiIn`, `MidiOut` (both in `tutti-midi-runtime` now),
+  `ProcessContext::midi_events`, `BlockSplitter`, `gather_midi`. The graph's
+  `Event { offset, kind: EventKind::Midi(Ump) }` is the same pair. An alias
+  and not a struct: both halves are checked types, so the pair adds no rule,
+  and sites destructure it.
 - A raw `u32` where the event crosses a thread or a process ahead of any
   block, and becomes an `Offset` where a block is known: the `MidiMailbox`
   ring's `(u32, Ump)` stamp, and `tutti-plugin-types`' `WireMidi` (plugin

@@ -48,6 +48,7 @@
 #![cfg(target_os = "macos")]
 
 use std::sync::Mutex;
+use tutti_graph::UmpAt;
 
 use assert_no_alloc::AllocDisabler;
 use tutti_au_host::AuInstance;
@@ -334,10 +335,10 @@ fn a_long_sysex_does_not_allocate_and_an_oversized_one_is_dropped_counted() {
     let body: Vec<u8> = (0..3000).map(|i| (i % 0x7F) as u8).collect();
     let mut packets = Vec::new();
     sysex7_fragments(MidiGroup::FIRST, &body, &mut packets);
-    let long: Vec<(Offset, Ump)> = packets.drain(..).map(|p| (Offset::ZERO, p)).collect();
+    let long: Vec<UmpAt> = packets.drain(..).map(|p| (Offset::ZERO, p)).collect();
     let oversized_body = vec![1u8; SYSEX7_MAX_PAYLOAD + 10];
     sysex7_fragments(MidiGroup::FIRST, &oversized_body, &mut packets);
-    let oversized: Vec<(Offset, Ump)> = packets.drain(..).map(|p| (Offset::ZERO, p)).collect();
+    let oversized: Vec<UmpAt> = packets.drain(..).map(|p| (Offset::ZERO, p)).collect();
 
     au.send_midi(&long);
     au.send_midi(&oversized);

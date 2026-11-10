@@ -11,6 +11,7 @@
 //! widths are independent paths rather than one width wrapping the other.
 
 use std::sync::Arc;
+use tutti_graph::UmpAt;
 
 use vst::host::RenderHandle;
 
@@ -18,9 +19,6 @@ use tutti_plugin_types::{
     AudioBufferMut, Normalized, ParameterChanges, PluginError, PluginIo, PluginResult,
     ProcessContext, ProcessOutput, Processor,
 };
-
-use tutti_graph::Offset;
-use tutti_ump::Ump;
 
 use crate::host::HostState;
 use crate::loaded::AudioSide;
@@ -364,7 +362,7 @@ impl Vst2Processor {
         self.time_info.write(t);
     }
 
-    fn dispatch_midi(&mut self, midi: &[(Offset, Ump)], start: usize, len: usize, total: usize) {
+    fn dispatch_midi(&mut self, midi: &[UmpAt], start: usize, len: usize, total: usize) {
         self.midi
             .send
             .send_piece(&mut self.render, midi, start, len, total);

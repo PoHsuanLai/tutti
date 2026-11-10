@@ -6,6 +6,7 @@
 
 use std::path::PathBuf;
 use std::sync::Arc;
+use tutti_graph::UmpAt;
 
 mod support;
 
@@ -17,7 +18,7 @@ use tutti_nodes::testing::assert_golden;
 use tutti_sf2::SoundFont;
 use tutti_soundfont::{Settings, SoundFontUnit};
 use tutti_types::{SampleRate, Samples};
-use tutti_ump::{MidiChannel, MidiGroup, NoteNumber, U7, Ump};
+use tutti_ump::{MidiChannel, MidiGroup, NoteNumber, U7};
 
 fn key(n: u8) -> NoteNumber {
     NoteNumber::new(n).unwrap()
@@ -69,7 +70,7 @@ fn render_process_blocks(
     unit: &mut Hand,
     size: usize,
     blocks: usize,
-    events: &[(Offset, Ump)],
+    events: &[UmpAt],
 ) -> Vec<(f32, f32)> {
     unit.queue_midi_at(events);
     let mut out = Vec::with_capacity(size * blocks);
@@ -217,7 +218,7 @@ fn two_events_in_one_block_apply_at_their_own_offsets() {
         )
     };
 
-    let render = |events: &[(Offset, Ump)]| {
+    let render = |events: &[UmpAt]| {
         let mut unit = Hand::new(
             SoundFontUnit::new(Arc::clone(&sf), &settings).expect("create SoundFontUnit"),
         );

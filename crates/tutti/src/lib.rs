@@ -131,7 +131,8 @@ pub use tutti_ump as ump;
 #[cfg(feature = "midi")]
 pub use tutti_midi_protocol as midi_protocol;
 
-/// The MIDI runtime (`tutti-midi-runtime`): MIDI graph nodes, MPE, MIDI-CI.
+/// The MIDI runtime (`tutti-midi-runtime`): MIDI graph nodes, Beat Clock and MTC
+/// sync, JR timestamps, MPE ingest.
 /// Feature `midi`.
 #[cfg(feature = "midi")]
 pub use tutti_midi_runtime as midi_runtime;

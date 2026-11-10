@@ -1,4 +1,5 @@
 use super::*;
+use tutti_ump::{CCNumber, NoteNumber, U7, U14, Voice1};
 
 #[test]
 fn test_parse_empty_midi() {
@@ -45,12 +46,12 @@ fn a_degenerate_tempo_is_absent_rather_than_infinite() {
     let track = vec![vec![SmfTimedEvent {
         time_beats: Beat(0.0),
         channel: MidiChannel::FIRST,
-        msg: SmfMessage::NoteOn {
-            key: 60.into(),
-            vel: 100.into(),
+        msg: Voice1::NoteOn {
+            note: NoteNumber::of(60),
+            velocity: U7::of(100),
         },
     }]];
-    let bytes = to_bytes(&track, &config).expect("encodes");
+    let bytes = smf_to_bytes(&track, &config).expect("encodes");
     let reparsed = ParsedMidiFile::from_bytes(&bytes).expect("round-trips");
     assert!(reparsed.tempo_bpm.get().is_finite());
 }
@@ -90,17 +91,17 @@ fn test_write_and_read_roundtrip() {
         SmfTimedEvent {
             time_beats: Beat(0.0),
             channel: MidiChannel::FIRST,
-            msg: SmfMessage::NoteOn {
-                key: 60.into(),
-                vel: 100.into(),
+            msg: Voice1::NoteOn {
+                note: NoteNumber::of(60),
+                velocity: U7::of(100),
             },
         },
         SmfTimedEvent {
             time_beats: Beat(1.0),
             channel: MidiChannel::FIRST,
-            msg: SmfMessage::NoteOff {
-                key: 60.into(),
-                vel: 0.into(),
+            msg: Voice1::NoteOff {
+                note: NoteNumber::of(60),
+                velocity: U7::of(0),
             },
         },
     ];
@@ -111,7 +112,7 @@ fn test_write_and_read_roundtrip() {
         time_signature: Some((4, 2)),
     };
 
-    let data = to_bytes(&[events], &config).unwrap();
+    let data = smf_to_bytes(&[events], &config).unwrap();
     let parsed = ParsedMidiFile::from_bytes(&data).unwrap();
 
     assert_eq!(parsed.ticks_per_beat, 480);
@@ -133,9 +134,9 @@ fn beat_to_tick_rounds_to_nearest() {
     let at = |beats: f64| SmfTimedEvent {
         time_beats: Beat(beats),
         channel: MidiChannel::FIRST,
-        msg: SmfMessage::NoteOn {
-            key: 60.into(),
-            vel: 100.into(),
+        msg: Voice1::NoteOn {
+            note: NoteNumber::of(60),
+            velocity: U7::of(100),
         },
     };
     let config = MidiWriteConfig {
@@ -188,12 +189,12 @@ fn delta_time_varint_golden_bytes() {
     let events = vec![SmfTimedEvent {
         time_beats: Beat(1.001_5),
         channel: MidiChannel::FIRST,
-        msg: SmfMessage::NoteOn {
-            key: 60.into(),
-            vel: 100.into(),
+        msg: Voice1::NoteOn {
+            note: NoteNumber::of(60),
+            velocity: U7::of(100),
         },
     }];
-    let data = to_bytes(
+    let data = smf_to_bytes(
         &[events],
         &MidiWriteConfig {
             ticks_per_beat: 480,
@@ -224,7 +225,7 @@ fn delta_time_varint_golden_bytes() {
 
 #[test]
 fn test_write_empty_tracks_error() {
-    let result = to_bytes(&[], &MidiWriteConfig::default());
+    let result = smf_to_bytes(&[], &MidiWriteConfig::default());
     assert!(result.is_err());
 }
 
@@ -235,21 +236,21 @@ fn tracks_pairs_note_on_off_with_duration() {
         SmfTimedEvent {
             time_beats: Beat(0.0),
             channel: MidiChannel::FIRST,
-            msg: SmfMessage::NoteOn {
-                key: 60.into(),
-                vel: 100.into(),
+            msg: Voice1::NoteOn {
+                note: NoteNumber::of(60),
+                velocity: U7::of(100),
             },
         },
         SmfTimedEvent {
             time_beats: Beat(1.0),
             channel: MidiChannel::FIRST,
-            msg: SmfMessage::NoteOff {
-                key: 60.into(),
-                vel: 0.into(),
+            msg: Voice1::NoteOff {
+                note: NoteNumber::of(60),
+                velocity: U7::of(0),
             },
         },
     ];
-    let data = to_bytes(
+    let data = smf_to_bytes(
         &[events],
         &MidiWriteConfig {
             ticks_per_beat: 480,
@@ -262,8 +263,8 @@ fn tracks_pairs_note_on_off_with_duration() {
     assert_eq!(parsed.len(), 1);
     assert_eq!(parsed[0].notes.len(), 1);
     let n = parsed[0].notes[0];
-    assert_eq!(n.key, 60);
-    assert_eq!(n.velocity, 100);
+    assert_eq!(n.key, NoteNumber::of(60));
+    assert_eq!(n.velocity, U7::of(100));
     assert!((n.start_beats - Beat(0.0)).abs() < BeatDuration(1e-6));
     assert!((n.duration_beats - BeatDuration(1.0)).abs() < BeatDuration(1e-3));
 }
@@ -279,14 +280,14 @@ fn tracks_pair_notes_per_channel() {
         time_beats: Beat(time_beats),
         channel: MidiChannel::of(channel),
         msg: if on {
-            SmfMessage::NoteOn {
-                key: 60.into(),
-                vel: 100.into(),
+            Voice1::NoteOn {
+                note: NoteNumber::of(60),
+                velocity: U7::of(100),
             }
         } else {
-            SmfMessage::NoteOff {
-                key: 60.into(),
-                vel: 0.into(),
+            Voice1::NoteOff {
+                note: NoteNumber::of(60),
+                velocity: U7::of(0),
             }
         },
     };
@@ -296,7 +297,7 @@ fn tracks_pair_notes_per_channel() {
         note(2.0, 1, false),
         note(4.0, 0, false),
     ];
-    let data = to_bytes(
+    let data = smf_to_bytes(
         &[events],
         &MidiWriteConfig {
             ticks_per_beat: 480,
@@ -337,22 +338,22 @@ fn tracks_treats_velocity_zero_note_on_as_off() {
         SmfTimedEvent {
             time_beats: Beat(0.0),
             channel: MidiChannel::FIRST,
-            msg: SmfMessage::NoteOn {
-                key: 64.into(),
-                vel: 80.into(),
+            msg: Voice1::NoteOn {
+                note: NoteNumber::of(64),
+                velocity: U7::of(80),
             },
         },
         SmfTimedEvent {
             time_beats: Beat(2.0),
             channel: MidiChannel::FIRST,
             // Running-status note-off: NoteOn with velocity 0.
-            msg: SmfMessage::NoteOn {
-                key: 64.into(),
-                vel: 0.into(),
+            msg: Voice1::NoteOn {
+                note: NoteNumber::of(64),
+                velocity: U7::of(0),
             },
         },
     ];
-    let data = to_bytes(
+    let data = smf_to_bytes(
         &[events],
         &MidiWriteConfig {
             ticks_per_beat: 480,
@@ -368,4 +369,51 @@ fn tracks_treats_velocity_zero_note_on_as_off() {
         "vel-0 NoteOn should close the note"
     );
     assert!((parsed[0].notes[0].duration_beats - BeatDuration(2.0)).abs() < BeatDuration(1e-3));
+}
+
+/// Every MIDI 1.0 channel-voice message survives write then read unchanged,
+/// including the two that are not a note (a 14-bit bend and a controller).
+///
+/// Mutation (run): in `voice_of`, read `MidiMessage::PitchBend` as
+/// `bend.0.as_int() >> 1`, or map `Aftertouch` to `ChannelPressure`: the
+/// matching case fails.
+#[test]
+fn every_voice_message_round_trips_through_the_file() {
+    let messages = [
+        Voice1::NoteOff {
+            note: NoteNumber::of(61),
+            velocity: U7::of(5),
+        },
+        Voice1::NoteOn {
+            note: NoteNumber::of(127),
+            velocity: U7::of(127),
+        },
+        Voice1::PolyPressure {
+            note: NoteNumber::of(0),
+            pressure: U7::of(33),
+        },
+        Voice1::ControlChange {
+            controller: CCNumber::of(74),
+            value: U7::of(99),
+        },
+        Voice1::ProgramChange(U7::of(17)),
+        Voice1::ChannelPressure(U7::of(64)),
+        Voice1::PitchBend(U14::of(0x3FFF)),
+        Voice1::PitchBend(U14::of(0x2000)),
+        Voice1::PitchBend(U14::of(0)),
+    ];
+    let track: Vec<SmfTimedEvent> = messages
+        .iter()
+        .enumerate()
+        .map(|(i, &msg)| SmfTimedEvent {
+            time_beats: Beat(i as f64),
+            channel: MidiChannel::of(9),
+            msg,
+        })
+        .collect();
+    let bytes = smf_to_bytes(&[track], &MidiWriteConfig::default()).unwrap();
+    let read = ParsedMidiFile::from_bytes(&bytes).unwrap();
+    let got: Vec<Voice1> = read.events.iter().map(|e| e.msg).collect();
+    assert_eq!(got, messages);
+    assert!(read.events.iter().all(|e| e.channel == MidiChannel::of(9)));
 }

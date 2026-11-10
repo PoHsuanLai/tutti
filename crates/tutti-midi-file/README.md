@@ -1,17 +1,17 @@
 # tutti-midi-file
 
-MIDI **file** codecs for the Tutti audio engine: Standard MIDI File ([`smf`],
-`.mid`) and MIDI 2.0 Clip File ([`clip`], M2-116, `.midi2`). Re-exported by
+MIDI **file** codecs for the Tutti audio engine: Standard MIDI File (SMF,
+`.mid`) and MIDI 2.0 Clip File (M2-116, `.midi2`). Re-exported by
 `tutti` as `tutti::midi_file` (feature `midi`).
 
 ## What the two codecs cover
 
-- [`smf`]: SMF 1.0. Read to beat-positioned events ([`ParsedMidiFile`]) or
+- SMF 1.0: Read to beat-positioned events ([`ParsedMidiFile`]) or
   per-track paired notes ([`SmfFile`]), with `read(path)` and
-  `from_bytes(&[u8])` on each, and write ([`smf::to_bytes`] / [`smf::write`]).
+  `from_bytes(&[u8])` on each, and write ([`smf_to_bytes`] / [`write_smf`]).
   Metrical timing only; the tempo map is reported, not applied.
-- [`clip`]: the *file-level* (path) half of the MIDI 2.0 Clip File codec
-  ([`clip::write`]; [`MidiFile::read`] reads one back). The byte-level codec is
+- Clip File: the *file-level* (path) half of the MIDI 2.0 Clip File codec
+  ([`write_clip`], [`read_clip`]; [`MidiFile::read`] reads one back). The byte-level codec is
   this crate's too, at the root ([`ParsedClipFile::from_bytes`],
   [`write_clip_file`]).
 
@@ -35,18 +35,18 @@ what lets an imported clip be placed without a conversion step:
 
 ```rust
 use tutti_types::{Beat, BeatDuration, Bpm};
-use tutti_ump::MidiChannel;
+use tutti_ump::{MidiChannel, NoteNumber, U7, Voice1};
 use tutti_midi_file::{
-    smf, MidiFileKind, MidiWriteConfig, SmfFile, SmfMessage, SmfTimedEvent,
+    smf_to_bytes, MidiFileKind, MidiWriteConfig, SmfFile, SmfTimedEvent,
 };
 
 let note = |beat, msg| SmfTimedEvent { time_beats: Beat(beat), channel: MidiChannel::FIRST, msg };
 let track = vec![
-    note(0.0, SmfMessage::NoteOn { key: 60.into(), vel: 100.into() }),
-    note(1.5, SmfMessage::NoteOff { key: 60.into(), vel: 0.into() }),
+    note(0.0, Voice1::NoteOn { note: NoteNumber::of(60), velocity: U7::of(100) }),
+    note(1.5, Voice1::NoteOff { note: NoteNumber::of(60), velocity: U7::of(0) }),
 ];
 
-let bytes = smf::to_bytes(
+let bytes = smf_to_bytes(
     &[track],
     &MidiWriteConfig { ticks_per_beat: 480, tempo_bpm: Some(Bpm::of(174.0)), ..Default::default() },
 )?;
@@ -70,15 +70,15 @@ not a precision bug. Tempo is read back as `Bpm` (f64-backed, so nothing more is
 lost after the wire).
 
 ```rust
-# use tutti_midi_file::{smf, MidiWriteConfig, ParsedMidiFile, SmfMessage, SmfTimedEvent};
+# use tutti_midi_file::{smf_to_bytes, MidiWriteConfig, ParsedMidiFile, SmfTimedEvent};
 # use tutti_types::{Beat, Bpm};
-# use tutti_ump::MidiChannel;
+# use tutti_ump::{MidiChannel, NoteNumber, U7, Voice1};
 # let track = vec![SmfTimedEvent {
 #     time_beats: Beat(0.0),
 #     channel: MidiChannel::FIRST,
-#     msg: SmfMessage::NoteOn { key: 60.into(), vel: 100.into() },
+#     msg: Voice1::NoteOn { note: NoteNumber::of(60), velocity: U7::of(100) },
 # }];
-let bytes = smf::to_bytes(
+let bytes = smf_to_bytes(
     &[track],
     &MidiWriteConfig { tempo_bpm: Some(Bpm::of(174.0)), ..Default::default() },
 )?;

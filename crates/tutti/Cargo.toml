@@ -60,6 +60,9 @@ tempfile = "3.8"
 # both beside the running binary (`tutti-session/tests/support`).
 tutti-clap-test-plugin = { path = "../../testing/tutti-clap-test-plugin" }
 tutti-fixtures = { path = "../../testing/tutti-fixtures" }
+# The §5.2 example writes a two-tempo SMF, which `tutti-midi-file`'s writer
+# (one tempo) cannot, so it builds the file with `midly` itself.
+midly = { workspace = true, features = ["std"] }
 
 [features]
 # `default = ["session"]`: the API layer is what this umbrella is for. It is

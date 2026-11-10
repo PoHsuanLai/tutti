@@ -585,7 +585,7 @@ fn mtc_cycle_nibbles(tc: &SmpteTimecode, fps: SmpteFrameRate) -> u32 {
         SmpteFrameRate::Fps2997Df | SmpteFrameRate::Fps2997Ndf => 2,
         SmpteFrameRate::Fps30 => 3,
     };
-    let (h, m, s, f) = (tc.hours, tc.minutes, tc.seconds, tc.frames);
+    let (h, m, s, f) = (tc.hours(), tc.minutes(), tc.seconds(), tc.frames());
     let nibbles = [
         f & 0x0F,
         f >> 4,

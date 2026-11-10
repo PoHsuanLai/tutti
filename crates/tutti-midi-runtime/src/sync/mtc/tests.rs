@@ -36,7 +36,10 @@ fn joining_mid_cycle_waits_for_the_next_piece_zero() {
     assert_eq!(decoder.timecode(), None);
     feed_timecode(&mut decoder, 1, 2, 3, 4, 1);
     let tc = decoder.timecode().expect("a full cycle after piece 0");
-    assert_eq!((tc.hours, tc.minutes, tc.seconds, tc.frames), (1, 2, 3, 4));
+    assert_eq!(
+        (tc.hours(), tc.minutes(), tc.seconds(), tc.frames()),
+        (1, 2, 3, 4)
+    );
 }
 
 /// Eight quarter-frames assemble into the timecode they spell, at each of
@@ -109,18 +112,15 @@ fn test_resyncs_on_next_piece_zero() {
 
     feed_timecode(&mut decoder, 1, 2, 3, 4, 3);
     let tc = decoder.timecode().unwrap();
-    assert_eq!((tc.hours, tc.minutes, tc.seconds, tc.frames), (1, 2, 3, 4));
+    assert_eq!(
+        (tc.hours(), tc.minutes(), tc.seconds(), tc.frames()),
+        (1, 2, 3, 4)
+    );
 }
 
 #[test]
 fn test_to_seconds() {
-    let tc = SmpteTimecode {
-        hours: 1,
-        minutes: 0,
-        seconds: 0,
-        frames: 0,
-        frame_rate: SmpteFrameRate::Fps30,
-    };
+    let tc = SmpteTimecode::new(1, 0, 0, 0, SmpteFrameRate::Fps30).unwrap();
     assert!((tc.to_seconds().get() - 3600.0).abs() < 0.001);
 }
 
@@ -151,13 +151,7 @@ fn drop_frame_labels_skip_00_and_01_except_every_tenth_minute() {
 // Mutation: drop the `frames.max(2)` and `00:01:00:00` counts as frame 1798.
 #[test]
 fn invalid_drop_frame_labels_count_as_the_next_valid_one() {
-    let at = |m, s, f| SmpteTimecode {
-        hours: 0,
-        minutes: m,
-        seconds: s,
-        frames: f,
-        frame_rate: SmpteFrameRate::Fps2997Df,
-    };
+    let at = |m, s, f| SmpteTimecode::new(0, m, s, f, SmpteFrameRate::Fps2997Df).unwrap();
     assert_eq!(at(1, 0, 0).frame_count(), 1800);
     assert_eq!(at(1, 0, 1).frame_count(), 1800);
     assert_eq!(at(1, 0, 2).frame_count(), 1800);
@@ -191,13 +185,7 @@ fn frame_count_inverts_from_frame_count_and_to_seconds_follows_it() {
 
 #[test]
 fn test_to_beats() {
-    let tc = SmpteTimecode {
-        hours: 0,
-        minutes: 0,
-        seconds: 60,
-        frames: 0,
-        frame_rate: SmpteFrameRate::Fps30,
-    };
+    let tc = SmpteTimecode::new(0, 1, 0, 0, SmpteFrameRate::Fps30).unwrap();
     // 60 seconds at 120 BPM = 120 beats
     assert!((tc.to_beats(Bpm::of(120.0)).get() - 120.0).abs() < 0.001);
 }
@@ -235,4 +223,41 @@ fn test_hours_above_15() {
     assert_eq!(tc.minutes, 59);
     assert_eq!(tc.seconds, 59);
     assert_eq!(tc.frames, 29);
+}
+
+/// `new` refuses each field one past its range, per rate, and accepts the
+/// last in-range value.
+///
+/// Mutation (run): `hours < 24` to `<= 24`, or `frames < labels_per_second()`
+/// to `<= 30`: the matching refusal below fails.
+#[test]
+fn new_refuses_a_field_out_of_range() {
+    use SmpteFrameRate::*;
+    assert!(SmpteTimecode::new(23, 59, 59, 23, Fps24).is_some());
+    assert!(SmpteTimecode::new(24, 0, 0, 0, Fps30).is_none());
+    assert!(SmpteTimecode::new(0, 60, 0, 0, Fps30).is_none());
+    assert!(SmpteTimecode::new(0, 0, 60, 0, Fps30).is_none());
+    assert!(SmpteTimecode::new(0, 0, 0, 24, Fps24).is_none());
+    assert!(SmpteTimecode::new(0, 0, 0, 25, Fps25).is_none());
+    assert!(SmpteTimecode::new(0, 0, 0, 24, Fps25).is_some());
+    for rate in [Fps2997Df, Fps2997Ndf, Fps30] {
+        assert!(SmpteTimecode::new(0, 0, 0, 29, rate).is_some());
+        assert!(SmpteTimecode::new(0, 0, 0, 30, rate).is_none());
+    }
+}
+
+/// A frame the wire framed into a position no clock reads (hour 28) is
+/// dropped; the decoder keeps the last good timecode.
+///
+/// Mutation (run): clear `timecode` when `new` refuses the assembled frame,
+/// instead of keeping the last good one: the last assertion fails.
+#[test]
+fn a_corrupt_position_is_dropped_and_the_last_good_one_kept() {
+    let mut decoder = MtcDecoder::new();
+    feed_timecode(&mut decoder, 1, 2, 3, 4, 3);
+    let good = decoder.timecode();
+    assert!(good.is_some());
+    // Hour 28 at 30 fps: the five hour bits hold it, no clock does.
+    feed_timecode(&mut decoder, 28, 2, 3, 4, 3);
+    assert_eq!(decoder.timecode(), good);
 }

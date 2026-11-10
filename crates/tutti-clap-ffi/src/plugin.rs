@@ -404,16 +404,13 @@ impl Plugin {
         }
         let mut cleanup = Destroy(raw, true);
         // SAFETY: a created instance.
-        let init = unsafe { (*raw).init }.ok_or_else(|| LoadError {
+        let init = unsafe { (*raw).init }.ok_or(LoadError::MissingFunction {
             stage: Stage::Initialization,
-            reason: "No plugin init function".to_string(),
+            name: "plugin init",
         })?;
         // SAFETY: the instance's own `init`, once, right after creation.
         if !unsafe { init(raw) } {
-            return Err(LoadError {
-                stage: Stage::Initialization,
-                reason: "Plugin init failed".to_string(),
-            });
+            return Err(LoadError::PluginInitFailed);
         }
         cleanup.1 = false;
         let core = Arc::new(Core {

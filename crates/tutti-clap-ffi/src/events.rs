@@ -27,7 +27,7 @@ use clap_sys::events::{
     clap_event_param_value, clap_input_events, clap_output_events,
 };
 
-use crate::guard::guard;
+use crate::guard::{ctx_ref, guard};
 
 /// A header no plugin acts on (a space of no plugin's), handed in place of a
 /// host event that failed validation, so `get` never answers null.
@@ -291,7 +291,7 @@ extern "C" fn input_events_size(list: *const clap_input_events) -> u32 {
         // SAFETY: `ctx` is the `&&dyn EventSource` of the call that built the
         // list (`with_input`), alive while the plugin runs inside it. Shared
         // access only.
-        let source = unsafe { &*(*list).ctx.cast::<&dyn EventSource>() };
+        let source = unsafe { ctx_ref::<&dyn EventSource>((*list).ctx) };
         u32::try_from(source.len()).unwrap_or(u32::MAX)
     })
 }
@@ -305,7 +305,7 @@ extern "C" fn input_events_get(
             return ptr::null();
         }
         // SAFETY: as `input_events_size`.
-        let source = unsafe { &*(*list).ctx.cast::<&dyn EventSource>() };
+        let source = unsafe { ctx_ref::<&dyn EventSource>((*list).ctx) };
         match source.get(index as usize) {
             None => ptr::null(),
             Some(event) => event.header_ptr().unwrap_or(ptr::from_ref(&INERT)),
@@ -356,7 +356,7 @@ extern "C" fn output_events_try_push(
         // SAFETY: `ctx` is the `OutputCtx` of the call that built the list
         // (`with_output`), alive while the plugin runs inside it. Shared access
         // only: the sink is reached through the cell below.
-        let ctx = unsafe { &*(*list).ctx.cast::<OutputCtx<'static>>() };
+        let ctx = unsafe { ctx_ref::<OutputCtx<'static>>((*list).ctx) };
         // One push at a time: the flag is the exclusion that makes the `&mut`
         // below the only one, and a concurrent push (a plugin breaking
         // `events.h`) is refused rather than racing.

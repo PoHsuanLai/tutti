@@ -117,6 +117,20 @@ for path in matches("crates/tutti-clap-ffi/src/**/*.rs"):
         if m.group(1) not in ALLOW and not guarded(body_of(s, m.end())):
             bad.append((path, m.group(1)))
 
+# A `trampoline!` (clap-ffi's host.rs) expands to a callback under `guarded` or
+# `main_only`; the kind is the second argument, so that is what is checked.
+# Mutation (run): change one `guarded` to `unchecked` in an invocation -> exits 1.
+for path in matches("crates/tutti-clap-ffi/src/**/*.rs"):
+    s = open(path).read()
+    t = re.search(r"^\s*#\[cfg\(test\)\]\s*\n\s*(pub )?mod \w+", s, re.M)
+    s = s[: t.start()] if t else s
+    for m in re.finditer(r"^trampoline!\(\s*(\w+)\(", s, re.M):
+        seen += 1
+        end = match(s, m.end() - 1, "(", ")")
+        kind = re.match(r"\s*,?\s*(?:->[^,]*)?,?\s*(\w+)\s*,", s[end + 1 : end + 80] if False else s[end + 1 :])
+        if kind is None or kind.group(1) not in ("guarded", "main_only"):
+            bad.append((path, m.group(1)))
+
 for path in matches("crates/tutti-au-ffi/src/**/*.rs"):
     s = open(path).read()
     t = re.search(r"^\s*#\[cfg\(test\)\]\s*\n\s*(pub )?mod \w+", s, re.M)

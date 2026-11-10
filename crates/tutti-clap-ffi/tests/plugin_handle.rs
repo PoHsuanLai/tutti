@@ -215,7 +215,7 @@ fn a_bundle_selects_by_id_and_refuses_an_unknown_one() {
     );
     assert!(bundle.select(Some(PLUGIN_ID.to_str().unwrap())).is_ok());
     let err = bundle.select(Some("no.such.plugin")).unwrap_err();
-    assert!(err.reason.contains("no.such.plugin"), "{err}");
+    assert!(err.reason().contains("no.such.plugin"), "{err}");
 }
 
 /// The main-thread half answers extension reads, and a `Plugin` is not

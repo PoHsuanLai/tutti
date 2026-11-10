@@ -3,9 +3,11 @@
 //!
 //! The Processor and the Controller are separate values on purpose; most of
 //! these suites want "the active plugin", so [`Active`] holds the pair, derefs
-//! to the Controller (and so to `ClapLoaded`), and forwards the Processor's
-//! calls. [`Active::reconfigure`] is the deactivate/activate pair a rate or
-//! block-size change is.
+//! to the Controller, and forwards the Processor's calls. It does not deref to
+//! `ClapLoaded`: a call meant for the loaded plugin names [`Active::loaded`], so
+//! a name both have (`set_thread_pool`) cannot quietly skip what the Controller tells
+//! the Processor. [`Active::reconfigure`] is the deactivate/activate pair a
+//! rate or block-size change is.
 
 // The error carries the whole plugin back, which is the point of it.
 #![allow(clippy::result_large_err)]
@@ -222,34 +224,28 @@ impl<T: Width> Active<T> {
 }
 
 impl<T: Width> Active<T> {
-    /// The Controller's `set_thread_pool`, which tells the Processor too; the
-    /// loaded plugin's own (reached through `Deref`) does not.
-    pub fn set_thread_pool(
-        &mut self,
-        pool: Option<std::sync::Arc<tutti_graph::WorkerPool>>,
-    ) -> Option<std::sync::Arc<tutti_clap_ffi::GraphPool>> {
-        self.pair_mut().1.set_thread_pool(pool)
+    /// The loaded plugin under the Controller. A suite names it on purpose:
+    /// a call through it skips what the Controller tells the Processor.
+    pub fn loaded(&self) -> &ClapLoaded {
+        self.pair().1.loaded()
     }
 
-    /// The Controller's `set_task_pool`, as [`set_thread_pool`](Self::set_thread_pool).
-    pub fn set_task_pool(
-        &mut self,
-        pool: Option<std::sync::Arc<tutti_clap_ffi::GraphPool>>,
-    ) -> Option<std::sync::Arc<tutti_clap_ffi::GraphPool>> {
-        self.pair_mut().1.set_task_pool(pool)
+    /// [`loaded`](Self::loaded), mutably.
+    pub fn loaded_mut(&mut self) -> &mut ClapLoaded {
+        self.pair_mut().1.loaded_mut()
     }
 }
 
 impl<T: Width> Deref for Active<T> {
-    type Target = ClapLoaded;
+    type Target = ClapController;
 
-    fn deref(&self) -> &ClapLoaded {
-        self.pair().1.loaded()
+    fn deref(&self) -> &ClapController {
+        &self.pair().1
     }
 }
 
 impl<T: Width> DerefMut for Active<T> {
-    fn deref_mut(&mut self) -> &mut ClapLoaded {
-        self.pair_mut().1.loaded_mut()
+    fn deref_mut(&mut self) -> &mut ClapController {
+        &mut self.pair_mut().1
     }
 }

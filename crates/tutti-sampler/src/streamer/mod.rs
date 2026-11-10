@@ -11,7 +11,10 @@
 mod cache;
 mod command;
 mod config;
+#[cfg(test)]
+mod contained;
 pub(crate) mod control;
+mod decode;
 mod handlers;
 mod io;
 mod loop_body;
@@ -21,6 +24,7 @@ mod open;
 mod prefetch;
 mod record;
 mod rt_state;
+mod status;
 mod step;
 mod stream;
 mod thread;
@@ -48,6 +52,7 @@ pub(crate) type StreamerSender = crossbeam_channel::Sender<StreamerCommand>;
 // and the one failure every stream-control command can report.
 pub use control::StreamerGone;
 pub use open::{Open, OpenError, Opening, Placement, RefusedPlacement, StreamReader};
+pub use status::{StreamFault, StreamPhase, StreamStatus};
 pub use stream::{Stream, StreamerPort};
 
 // The hand-driven cycle's verdict. Public only alongside the driver that
@@ -65,6 +70,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::error::Result;
 use crate::ports::Status;
+use decode::Seams;
 use handlers::Handles;
 use thread::Built;
 use tutti_types::SampleRate;
@@ -172,21 +178,24 @@ impl DiskStreamer<Running> {
     ///
     /// # Errors
     ///
-    /// None at present: every path returns `Ok`. The `Result` is the crate's
-    /// [`Error`](crate::Error) type, for initialization that touches the
-    /// filesystem.
-    ///
-    /// # Panics
-    ///
-    /// If the OS refuses to spawn the streamer thread.
+    /// [`Error::Spawn`](crate::Error::Spawn) when the OS refuses to spawn the
+    /// streamer thread. Every stream and every refill depends on it, so there
+    /// is no streamer to return: a stream command with no consumer would
+    /// stall silently.
     pub fn new(sample_rate: impl Into<SampleRate>, config: DiskStreamerConfig) -> Result<Self> {
-        let built = Built::new(256, sample_rate.into(), config.buffer_config);
+        Self::build(sample_rate.into(), config, Seams::default())
+    }
+
+    /// [`new`](Self::new) with what a test replaces: how a thread starts, and
+    /// the hooks where a file is read and decoded.
+    fn build(sample_rate: SampleRate, config: DiskStreamerConfig, seams: Seams) -> Result<Self> {
+        let built = Built::new(256, sample_rate, config.buffer_config, seams);
         let (streamer_tx, shared) = (built.command_sender(), built.shared());
 
         Ok(DiskStreamer {
             streamer_tx,
             shared,
-            driver: built.start(),
+            driver: built.start()?,
             next_stream: AtomicU64::new(0),
         })
     }
@@ -220,7 +229,16 @@ impl DiskStreamer<ByHand> {
     /// # }
     /// ```
     pub fn manual(sample_rate: impl Into<SampleRate>, config: DiskStreamerConfig) -> Result<Self> {
-        let built = Built::new(256, sample_rate.into(), config.buffer_config);
+        Self::manual_with(sample_rate.into(), config, Seams::default())
+    }
+
+    /// [`manual`](Self::manual) with what a test replaces.
+    fn manual_with(
+        sample_rate: SampleRate,
+        config: DiskStreamerConfig,
+        seams: Seams,
+    ) -> Result<Self> {
+        let built = Built::new(256, sample_rate, config.buffer_config, seams);
         let (streamer_tx, shared) = (built.command_sender(), built.shared());
 
         Ok(DiskStreamer {

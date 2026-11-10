@@ -28,6 +28,7 @@
 //! `streamer_loop` is written in terms of `StreamerCycle::step`, so a
 //! divergence between what tests drive and what ships is not representable.
 
+use super::StreamerSender;
 use super::command::StreamerCommand;
 use super::config::BufferConfig;
 use super::handlers::{Handles, Local, handle_command};
@@ -87,9 +88,12 @@ impl StreamerCycle {
     }
 
     /// A cycle whose scratch is pre-sized for one `config.chunk_size` refill.
-    pub(crate) fn new(config: BufferConfig) -> Self {
+    ///
+    /// `reports` is the streamer's own queue, which its decode thread answers
+    /// on.
+    pub(crate) fn new(config: BufferConfig, reports: StreamerSender) -> Self {
         Self {
-            local: Local::new(config.chunk_size),
+            local: Local::new(config.chunk_size, reports),
             config,
         }
     }
@@ -129,6 +133,7 @@ impl StreamerCycle {
         }
 
         self.apply_directions();
+        self.local.streams.reap();
 
         // Frames resident across every streaming ring, sampled before the
         // refill so the outcome can say whether the refill actually achieved
@@ -152,6 +157,8 @@ impl StreamerCycle {
             );
         }
 
+        self.local.streams.reap();
+
         if buffers_healthy(&self.local.streams, self.local.buffer_margin) {
             StepOutcome::Healthy
         } else if total_buffered(&self.local.streams) > buffered_before {
@@ -173,17 +180,20 @@ impl StreamerCycle {
             .iter_mut()
             .filter(|r| r.is_live())
         {
-            let reverse = record.rt_state.is_reverse();
-            let rate = record.rt_state.read_rate().get();
-            let writer = &mut record.out;
-            if writer.content().current.reverse == reverse {
-                continue;
-            }
-            let new = Mapping {
-                reverse,
-                ..writer.content().current.clone()
-            };
-            apply_mapping(writer, new, self.config.seek_crossfade_frames, rate);
+            let fade = self.config.seek_crossfade_frames;
+            let _ = record.contained(|record| {
+                let reverse = record.rt_state.is_reverse();
+                let rate = record.rt_state.read_rate().get();
+                let writer = &mut record.out;
+                if writer.content().current.reverse == reverse {
+                    return;
+                }
+                let new = Mapping {
+                    reverse,
+                    ..writer.content().current.clone()
+                };
+                apply_mapping(writer, new, fade, rate);
+            });
         }
     }
 }
@@ -225,6 +235,7 @@ mod tests {
 
     use super::super::cache::LruCache;
     use super::super::command::StreamId;
+    use super::super::decode::Seams;
     use super::super::handlers::SessionRate;
     use super::super::loops::{Arrangement, RingMap};
     use super::super::metrics::Metrics;
@@ -247,8 +258,10 @@ mod tests {
             )),
             metrics: Arc::new(Metrics::new()),
             session_rate: SessionRate::new(SampleRate(48_000.0)),
+            seams: Seams::default(),
         };
-        let mut cycle = StreamerCycle::new(config);
+        let (reports, _queue) = crossbeam_channel::bounded(8);
+        let mut cycle = StreamerCycle::new(config, reports);
         let id = StreamId(1);
         let (record, ring, _pos) =
             super::super::record::tests::record(id, PathBuf::from("t.wav"), 1024, 1u16);

@@ -13,7 +13,6 @@
 //! Every count here is denominated in frames. The `* ch` at each scratch
 //! resize is the only place the interleave stride enters.
 
-use super::super::cache::LruCache;
 #[cfg(test)]
 use super::super::command::StreamId;
 use super::super::loops::{Content, RingMap};
@@ -22,9 +21,7 @@ use super::super::prefetch::{HISTORY_FRAMES, RegionOut};
 use super::super::record::Record;
 use super::super::rt_state::RtState;
 use rayon::prelude::*;
-use std::path::Path;
 use std::sync::Arc;
-use tutti_codec::Wave;
 use tutti_rt::MAX_POS_RING_POSITION;
 
 /// How many frames to read this cycle, under the varifill strategy.
@@ -70,7 +67,9 @@ fn varifill_chunk(
     chunk_size.max(1024)
 }
 
-/// Refill every live stream's ring in turn, serially.
+/// Refill every live stream's ring in turn, serially, each under its own
+/// containment ([`Record::contained`]): a stream whose refill panics is
+/// faulted and the rest are refilled.
 ///
 /// `interleave_buffer` is the streamer's reusable scratch, passed in so a refill
 /// does not allocate per cycle. Streamer thread throughout — this both blocks on
@@ -84,14 +83,37 @@ pub(crate) fn refill_all(
 ) {
     let read_rate = metrics.read_rate();
     for record in records.iter_mut().filter(|r| r.is_live()) {
-        refill_one(
-            &mut record.out,
-            &record.rt_state,
+        refill_contained(
+            record,
             base_chunk_size,
             buffer_margin,
             read_rate,
             interleave_buffer,
         );
+    }
+}
+
+/// [`refill_one`] on `record` under its containment, then its status
+/// published.
+fn refill_contained(
+    record: &mut Record,
+    base_chunk_size: usize,
+    buffer_margin: f64,
+    read_rate: f64,
+    buffer: &mut Vec<f32>,
+) {
+    let refilled = record.contained(|r| {
+        refill_one(
+            &mut r.out,
+            &r.rt_state,
+            base_chunk_size,
+            buffer_margin,
+            read_rate,
+            buffer,
+        )
+    });
+    if let Some(refilled) = refilled {
+        record.settle(&refilled);
     }
 }
 
@@ -118,9 +140,8 @@ pub(crate) fn refill_all_parallel(
                     std::cell::RefCell::new(Vec::with_capacity(16384));
             }
             LOCAL_BUF.with(|buf| {
-                refill_one(
-                    &mut record.out,
-                    &record.rt_state,
+                refill_contained(
+                    record,
                     base_chunk_size,
                     buffer_margin,
                     read_rate,
@@ -138,6 +159,10 @@ pub(crate) fn refill_all_parallel(
 /// varifill chunk of the stream's mapping lands at the window's end, up to
 /// most of a ring ahead of the reader (and never past what the mapping
 /// writes: an unlooped stream's end).
+///
+/// Says whether a read of the file failed (a decode fault) and whether the ring
+/// is primed: at or above its refill threshold, or holding all it can be
+/// given.
 fn refill_one(
     writer: &mut RegionOut,
     rt_state: &RtState,
@@ -145,7 +170,7 @@ fn refill_one(
     buffer_margin: f64,
     read_rate: f64,
     buffer: &mut Vec<f32>,
-) {
+) -> Refilled {
     let ring = Arc::clone(writer.ring());
     let play = writer.play();
     let (from, to) = writer.window();
@@ -183,7 +208,10 @@ fn refill_one(
     rt_state.set_buffer_fill(fill);
     let fill_threshold = (0.75 / buffer_margin) as f32;
     if fill >= fill_threshold || to >= limit {
-        return;
+        return Refilled {
+            read_ok: true,
+            primed: true,
+        };
     }
     let speed = rt_state.read_rate().get() as f32 * buffer_margin as f32;
     let chunk = varifill_chunk(fill, base_chunk_size, read_rate, speed);
@@ -192,46 +220,21 @@ fn refill_one(
     buffer.clear();
     buffer.resize(n * ch, 0.0);
     let mapping = writer.content().current.clone();
-    writer.fill_with(&mapping, to, buffer);
+    let read_ok = writer.fill_with(&mapping, to, buffer);
     writer.push_interleaved(buffer);
+    Refilled {
+        read_ok,
+        primed: false,
+    }
 }
 
-/// The whole-file fallback: hand back a cached [`Wave`], or decode one and cache
-/// it. `None` means the file could not be turned into audio — every caller
-/// already treats that as "skip this region".
-///
-/// With no codec feature enabled there is no decoder to call, so the miss arm is
-/// gated out and a miss is simply `None`. The cache *lookup* stays live in both
-/// builds: entries reach it from elsewhere, and a hit needs no decoder.
-pub(in crate::streamer) fn load_wave(
-    cache: &LruCache,
-    metrics: &Metrics,
-    file_path: &Path,
-) -> Option<Arc<Wave>> {
-    if let Some(cached) = cache.get(file_path) {
-        return Some(cached);
-    }
-
-    // `Wave::read` is `tutti-codec`'s decode path, which is compiled only when a
-    // codec feature is on — calling it unconditionally breaks the
-    // `--no-default-features` build.
-    #[cfg(codec)]
-    {
-        if let Ok(w) = Wave::read(file_path) {
-            let arc_wave = Arc::new(w);
-            let bytes = arc_wave.len() as u64 * arc_wave.channels() as u64 * 4;
-            metrics.record_read(bytes);
-            cache.insert(file_path.to_path_buf(), arc_wave.clone());
-            return Some(arc_wave);
-        }
-    }
-
-    // Silences the unused-parameter warning in the codec-free build, where the
-    // only way to reach this line is a cache miss with nothing able to fill it.
-    #[cfg(not(codec))]
-    let _ = metrics;
-
-    None
+/// What one refill of a ring found.
+pub(in crate::streamer) struct Refilled {
+    /// No read of the file failed.
+    pub(in crate::streamer) read_ok: bool,
+    /// The ring was at its refill threshold, or full as far as it goes, before
+    /// this refill wrote anything: a voice starting now has frames to read.
+    pub(in crate::streamer) primed: bool,
 }
 
 #[cfg(test)]

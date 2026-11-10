@@ -1,8 +1,10 @@
 //! Streamer thread command enum and the stream's identity.
 
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use crossbeam_channel::Sender;
+use tutti_codec::Wave;
 use tutti_types::ChannelLayout;
 
 use super::open::Opened;
@@ -28,6 +30,18 @@ impl std::fmt::Display for StreamId {
 /// and read once by [`Opening::poll`](crate::Opening::poll).
 pub(crate) type Reply = Sender<Result<Opened, OpenError>>;
 
+/// What the decode thread made of a file: the whole wave, or why there is none.
+pub(crate) struct Decoded(pub(crate) Result<Arc<Wave>, OpenError>);
+
+impl std::fmt::Debug for Decoded {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match &self.0 {
+            Ok(wave) => write!(f, "Decoded({} frames)", wave.len()),
+            Err(error) => write!(f, "Decoded({error})"),
+        }
+    }
+}
+
 /// Command sent to the Streamer thread.
 #[derive(Debug)]
 pub(crate) enum StreamerCommand {
@@ -41,6 +55,15 @@ pub(crate) enum StreamerCommand {
         width: Option<ChannelLayout>,
         reply: Reply,
     },
+    /// The decode thread finished the whole-file decode an open of a file that
+    /// cannot seek waits on: the streamer builds the stream's ring from it and
+    /// answers the open (doc 025 decision 21). Sent by the decode thread; an
+    /// id the streamer holds no pending open for is ignored.
+    #[cfg_attr(
+        not(codec),
+        allow(dead_code, reason = "sent only by the codec-gated decode lane")
+    )]
+    Decoded { id: StreamId, wave: Decoded },
     /// End a stream: its record, and with it its ring and region, goes in the
     /// step that handles this. Sent by `Drop for Stream`. A stream the
     /// streamer no longer holds ignores it.

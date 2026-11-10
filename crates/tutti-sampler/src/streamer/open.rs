@@ -23,6 +23,7 @@ use super::control::StreamOrigin;
 use super::loops::RingMap;
 use super::prefetch::SharedReader;
 use super::rt_state::RtState;
+use super::status::StatusCell;
 use super::stream::{Stream, StreamerPort};
 use crate::PlaceError;
 use crate::voice::interp::Place;
@@ -117,6 +118,8 @@ pub(crate) struct Opened {
     pub(crate) ring: SharedReader,
     pub(crate) pos: PosReader,
     pub(crate) rt_state: Arc<RtState>,
+    /// What the stream's handle reads of it ([`Stream::status`]).
+    pub(crate) status: Arc<StatusCell>,
     pub(crate) file_rate: SampleRate,
     pub(crate) origin: StreamOrigin,
     pub(crate) place: Place,
@@ -187,9 +190,15 @@ impl Opening {
     /// allocates, so it is here and not on the audio thread).
     pub fn poll(self) -> Open {
         match self.reply.try_recv() {
-            Ok(Ok(opened)) => {
-                Open::Ready(Stream::new(opened.id, self.port), StreamReader::new(opened))
-            }
+            Ok(Ok(opened)) => Open::Ready(
+                Stream::new(
+                    opened.id,
+                    self.port,
+                    Arc::clone(&opened.status),
+                    Arc::clone(&opened.rt_state),
+                ),
+                StreamReader::new(opened),
+            ),
             Ok(Err(error)) => Open::Failed(error),
             Err(TryRecvError::Empty) => Open::Pending(self),
             // The streamer dropped the reply unanswered: its thread is gone.

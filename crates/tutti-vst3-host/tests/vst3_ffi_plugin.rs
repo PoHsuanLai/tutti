@@ -7,6 +7,7 @@
 
 use std::path::PathBuf;
 use std::sync::Arc;
+use tutti_fixtures::main_thread;
 
 use tutti_vst3_ffi::{
     AudioSide, BusBuffers, EventList, MIN_POINT_ROOM, Module, ParameterChangesImpl, Plugin,
@@ -296,8 +297,4 @@ fn a_failed_open_does_not_deadlock_the_next() {
         .expect("the opens finished: a failed open did not release the lock");
     assert!(refused, "a system library is not a VST3 module");
     assert!(opened);
-}
-
-fn main_thread() -> tutti_plugin_types::MainThread {
-    tutti_plugin_types::MainThread::claim().expect("one test, one process")
 }

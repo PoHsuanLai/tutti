@@ -372,19 +372,10 @@ impl DerefMut for Instance {
 }
 
 #[cfg(test)]
-#[path = "../../../tests/support/probe_path.rs"]
-mod probe_path;
-
 #[cfg(test)]
 mod tests {
+    use tutti_fixtures::main_thread;
 
-    /// This process's main thread. Each test is its own process under nextest, so
-    /// the claim cannot be refused.
-    fn main_thread() -> tutti_plugin_types::MainThread {
-        tutti_plugin_types::MainThread::claim().expect("one test, one process")
-    }
-
-    use super::probe_path;
     use super::*;
 
     /// **A load at no rate or no block is refused** at the activation stage:
@@ -403,7 +394,13 @@ mod tests {
             (f64::NEG_INFINITY, 64),
             (48_000.0, 0),
         ] {
-            match Instance::load(&main_thread(), probe_path::probe_path(), rate, block, None) {
+            match Instance::load(
+                &main_thread(),
+                tutti_fixtures::vst2_probe(),
+                rate,
+                block,
+                None,
+            ) {
                 Err((LoadStage::Activation, reason)) => {
                     assert!(reason.contains("cannot run at"), "{reason}");
                 }
@@ -429,10 +426,15 @@ mod tests {
     /// restored assertion fails.
     #[test]
     fn a_rate_that_is_no_rate_leaves_the_instance_alone_and_is_reported() {
-        let mut instance =
-            Instance::load(&main_thread(), probe_path::probe_path(), 48_000.0, 64, None)
-                .expect("loads")
-                .0;
+        let mut instance = Instance::load(
+            &main_thread(),
+            tutti_fixtures::vst2_probe(),
+            48_000.0,
+            64,
+            None,
+        )
+        .expect("loads")
+        .0;
         let before = instance.prepare;
         assert_eq!(instance.take_rate_report(), None, "nothing to report yet");
         for rate in [0.0, -48_000.0, f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
@@ -483,10 +485,15 @@ mod tests {
     /// returning without zeroing -> the outputs keep 1.0 -> fails.
     #[test]
     fn a_lost_plugin_renders_silence_without_panicking() {
-        let mut instance =
-            Instance::load(&main_thread(), probe_path::probe_path(), 48_000.0, 64, None)
-                .expect("loads")
-                .0;
+        let mut instance = Instance::load(
+            &main_thread(),
+            tutti_fixtures::vst2_probe(),
+            48_000.0,
+            64,
+            None,
+        )
+        .expect("loads")
+        .0;
         assert!(!instance.is_lost());
         instance.lose();
         assert!(instance.is_lost());

@@ -29,6 +29,7 @@
 #![cfg(feature = "conformance")]
 
 use std::sync::{Arc, Mutex};
+use tutti_fixtures::main_thread;
 
 use tutti_vst3_host::host::{send_key_down, send_key_up, send_wheel, set_view_focus};
 
@@ -305,10 +306,4 @@ fn the_recording_view_observes_input() {
         1,
         "the view recorded nothing, so it cannot witness what the host sent"
     );
-}
-
-/// This process's main thread. Each test is its own process under nextest, so
-/// the claim cannot be refused.
-fn main_thread() -> tutti_plugin_types::MainThread {
-    tutti_plugin_types::MainThread::claim().expect("one test, one process")
 }

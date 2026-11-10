@@ -19,14 +19,13 @@
 mod clap_probe;
 #[path = "support/param_probe.rs"]
 mod param_probe;
-#[path = "support/probe_path.rs"]
-mod probe_path;
 
 use std::sync::Arc;
 use std::time::Duration;
 
-use clap_probe::{ProbeEnv, Rig, exclusive, load_probe, render};
+use clap_probe::{ProbeEnv, Rig, load_probe, render};
 use param_probe::{knob, knobs, load_vst2_probe, until};
+use tutti_fixtures::machine_lock;
 use tutti_graph::{ForkMode, ForkTarget, Prepare, Transport};
 use tutti_nodes::automation::{ControlLaneNode, LaneControls};
 use tutti_plugin::handles::{ParamId, PluginHandle};
@@ -73,7 +72,7 @@ fn rig(client: tutti_plugin::handles::PluginClient, lanes: Vec<ControlLaneNode>)
 /// refused value is still unsent, so a later chunk with room takes it.)
 #[test]
 fn two_hundred_parameters_changing_in_one_block_all_arrive() {
-    let _lock = exclusive();
+    let _lock = machine_lock();
     let (client, handle) = load_vst2_probe(PARAMS, SAMPLE_RATE);
     let (_knobs, lanes) = knobs(PARAMS, value);
     let mut rig = rig(client, lanes);
@@ -110,7 +109,7 @@ fn two_hundred_parameters_changing_in_one_block_all_arrive() {
 /// chunk resends all two hundred → the count keeps rising → fails.
 #[test]
 fn an_unchanged_value_is_not_sent_again() {
-    let _lock = exclusive();
+    let _lock = machine_lock();
     let (client, handle) = load_vst2_probe(PARAMS, SAMPLE_RATE);
     let (knobs, lanes) = knobs(PARAMS, value);
     let mut rig = rig(client, lanes);
@@ -163,7 +162,7 @@ fn an_unchanged_value_is_not_sent_again() {
 /// → 0.5 never arrives.
 #[test]
 fn an_edit_on_the_plugin_survives_a_held_host_value() {
-    let _lock = exclusive();
+    let _lock = machine_lock();
     let (client, handle) = load_vst2_probe(8, SAMPLE_RATE);
     let (knobs, lanes) = knobs(8, |_| 0.25);
     let mut rig = rig(client, lanes);
@@ -244,7 +243,7 @@ fn amplitude(db: f64) -> f32 {
 #[test]
 fn an_export_renders_an_edit_made_in_the_plugin_as_live_does() {
     const FORK_BLOCK: usize = 256;
-    let _lock = exclusive();
+    let _lock = machine_lock();
     let _env = ProbeEnv::new()
         .render_mode(render::TAG_ONLY)
         .gain_enabled(true);

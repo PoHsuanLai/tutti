@@ -112,6 +112,7 @@
 #![cfg(target_os = "macos")]
 
 use std::sync::Mutex;
+use tutti_fixtures::main_thread;
 
 mod support;
 use support::corpus::{
@@ -1686,10 +1687,4 @@ fn refused_optional_properties_stay_refused() {
         },
     );
     eprintln!("refused_optional_properties_stay_refused: exercised {found} unit(s)");
-}
-
-/// This process's main thread. Each test is its own process under nextest, so
-/// the claim cannot be refused.
-fn main_thread() -> tutti_plugin_types::MainThread {
-    tutti_plugin_types::MainThread::claim().expect("one test, one process")
 }

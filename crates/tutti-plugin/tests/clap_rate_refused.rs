@@ -14,7 +14,8 @@
 
 #[path = "support/clap_probe.rs"]
 mod clap_probe;
-use clap_probe::{ProbeEnv, Rig, exclusive, load_probe, render};
+use clap_probe::{ProbeEnv, Rig, load_probe, render};
+use tutti_fixtures::machine_lock;
 
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -118,7 +119,7 @@ fn assert_silent(unit: &mut Rig, what: &str) {
 /// dropout count rises → fails.
 #[test]
 fn a_refused_rate_is_silent_visible_and_retried() {
-    let _lock = exclusive();
+    let _lock = machine_lock();
     let _env = ProbeEnv::new()
         .render_mode(render::TAG_PASSTHROUGH)
         .refuse_rate(REFUSED_RATE);

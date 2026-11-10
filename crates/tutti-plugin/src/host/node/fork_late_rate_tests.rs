@@ -14,8 +14,8 @@ use std::time::Duration;
 use tutti_graph::{ForkMode, GraphBuilder, Prepare, Renderer};
 use tutti_types::{ChannelLayout, SampleRate, Samples};
 
-use super::machine_lock as probe_lock;
 use crate::handles::PluginClient;
+use tutti_fixtures::machine_lock;
 use tutti_plugin_ipc::BridgeConfig;
 
 const LOAD_RATE: f64 = 48_000.0;
@@ -49,11 +49,6 @@ impl Drop for Env {
     }
 }
 
-fn probe_path() -> std::path::PathBuf {
-    let real = tutti_fixtures::cdylib("tutti_clap_test_plugin", "tutti-clap-test-plugin");
-    tutti_fixtures::publish_with_extension(&real, "clap")
-}
-
 /// **A plugin that answers a rate change after the bridge gave up on it
 /// still renders an offline fork, and the fork is healthy.**
 ///
@@ -68,7 +63,7 @@ fn probe_path() -> std::path::PathBuf {
 /// "did not answer") with silent blocks → fails.
 #[test]
 fn a_late_rate_answer_does_not_silence_an_offline_fork() {
-    let _lock = probe_lock::acquire();
+    let _lock = machine_lock();
     let mut env = Env(Vec::new());
     env.set(
         "TUTTI_PLUGIN_SERVER",
@@ -77,8 +72,12 @@ fn a_late_rate_answer_does_not_silence_an_offline_fork() {
             .into_owned(),
     );
     env.set("TUTTI_CLAP_PROBE_RENDER_MODE", "1".to_string());
-    let live = PluginClient::new(BridgeConfig::default(), probe_path(), LOAD_RATE)
-        .expect("load the reference CLAP plugin through a real plugin-server");
+    let live = PluginClient::new(
+        BridgeConfig::default(),
+        tutti_fixtures::clap_probe().to_path_buf(),
+        LOAD_RATE,
+    )
+    .expect("load the reference CLAP plugin through a real plugin-server");
     // Armed after the live server started: only the fork's server is slow.
     env.set(
         "TUTTI_CLAP_PROBE_SLOW_ACTIVATE",

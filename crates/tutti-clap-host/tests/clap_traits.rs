@@ -11,7 +11,6 @@ use std::sync::{Mutex, MutexGuard};
 
 mod support;
 use support::main_thread;
-use support::probe_path::probe_path;
 
 use assert_no_alloc::{AllocDisabler, assert_no_alloc};
 use tutti_clap_host::{ClapLoaded, ClapProcessor, LoadOptions};
@@ -47,7 +46,8 @@ struct Probe {
 impl Probe {
     fn acquire() -> Self {
         let lock = PROBE_LOCK.lock().unwrap_or_else(|p| p.into_inner());
-        let image = unsafe { libloading::Library::new(probe_path()) }.expect("opens the plugin");
+        let image = unsafe { libloading::Library::new(tutti_fixtures::clap_probe()) }
+            .expect("opens the plugin");
         call("tutti_test_plugin_param_reset");
         call("tutti_test_plugin_thread_reset");
         call("tutti_test_plugin_reset_activation");
@@ -58,7 +58,7 @@ impl Probe {
     }
 
     fn load(&self) -> ClapLoaded {
-        let path = Path::new(probe_path());
+        let path = Path::new(tutti_fixtures::clap_probe());
         ClapLoaded::load(&main_thread(), path, LoadOptions::new().library(path))
             .expect("the plugin loads")
     }
@@ -67,7 +67,8 @@ impl Probe {
 fn call(symbol: &str) {
     let name = format!("{symbol}\0");
     unsafe {
-        let lib = libloading::Library::new(probe_path()).expect("re-open reference plugin");
+        let lib = libloading::Library::new(tutti_fixtures::clap_probe())
+            .expect("re-open reference plugin");
         let f: libloading::Symbol<unsafe extern "C" fn()> =
             lib.get(name.as_bytes()).expect("symbol present");
         f();
@@ -78,7 +79,8 @@ fn process_capture() -> ProcessCapture {
     type F = unsafe extern "C" fn(*mut ProcessCapture) -> bool;
     let mut cap = ProcessCapture::default();
     unsafe {
-        let lib = libloading::Library::new(probe_path()).expect("re-open reference plugin");
+        let lib = libloading::Library::new(tutti_fixtures::clap_probe())
+            .expect("re-open reference plugin");
         let f: libloading::Symbol<F> = lib.get(b"tutti_test_plugin_capture\0").expect("symbol");
         assert!(f(&mut cap), "the plugin recorded a process() call");
     }
@@ -89,7 +91,8 @@ fn thread_capture() -> ThreadCapture {
     type F = unsafe extern "C" fn(*mut ThreadCapture) -> bool;
     let mut cap = ThreadCapture::default();
     unsafe {
-        let lib = libloading::Library::new(probe_path()).expect("re-open reference plugin");
+        let lib = libloading::Library::new(tutti_fixtures::clap_probe())
+            .expect("re-open reference plugin");
         let f: libloading::Symbol<F> = lib
             .get(b"tutti_test_plugin_thread_capture\0")
             .expect("symbol");
@@ -100,7 +103,8 @@ fn thread_capture() -> ThreadCapture {
 
 fn set_ports_64bit(mask: u32) {
     unsafe {
-        let lib = libloading::Library::new(probe_path()).expect("re-open reference plugin");
+        let lib = libloading::Library::new(tutti_fixtures::clap_probe())
+            .expect("re-open reference plugin");
         let f: libloading::Symbol<unsafe extern "C" fn(u32)> = lib
             .get(b"tutti_test_plugin_set_ports_64bit\0")
             .expect("symbol");
@@ -110,7 +114,8 @@ fn set_ports_64bit(mask: u32) {
 
 fn set_activate_refusal(rate: f64) {
     unsafe {
-        let lib = libloading::Library::new(probe_path()).expect("re-open reference plugin");
+        let lib = libloading::Library::new(tutti_fixtures::clap_probe())
+            .expect("re-open reference plugin");
         let f: libloading::Symbol<unsafe extern "C" fn(u64, u32)> = lib
             .get(b"tutti_test_plugin_set_activate_refusal\0")
             .expect("symbol");
@@ -620,7 +625,8 @@ fn peek_param(id: u32) -> Option<f64> {
     type F = unsafe extern "C" fn(u32, *mut f64) -> bool;
     let mut v = 0.0f64;
     unsafe {
-        let lib = libloading::Library::new(probe_path()).expect("re-open reference plugin");
+        let lib = libloading::Library::new(tutti_fixtures::clap_probe())
+            .expect("re-open reference plugin");
         let f: libloading::Symbol<F> = lib.get(b"tutti_test_plugin_param_peek\0").expect("symbol");
         f(id, &mut v).then_some(v)
     }

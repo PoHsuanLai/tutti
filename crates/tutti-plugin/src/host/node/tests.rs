@@ -7,6 +7,7 @@
 
 use crate::host::handles::control_handle::PluginHandle;
 use std::sync::Arc;
+use tutti_fixtures::main_thread;
 use tutti_plugin_ipc::AudioSlab;
 use tutti_plugin_ipc::PluginBridge;
 use tutti_plugin_ipc::SlabLayout;
@@ -494,11 +495,4 @@ fn handle_open_editor_errors_for_missing_plugin() {
             )
             .is_err()
     );
-}
-
-/// This process's main thread. Each test is its own process under nextest, so
-/// the claim cannot be refused.
-#[cfg(test)]
-fn main_thread() -> tutti_plugin_types::MainThread {
-    tutti_plugin_types::MainThread::claim().expect("one test, one process")
 }

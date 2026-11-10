@@ -41,7 +41,8 @@
 // the CLAP harness (and its `tutti-clap-test-plugin` dev-dependency) at all.
 #[path = "support/clap_probe.rs"]
 mod clap_probe;
-use clap_probe::{ProbeEnv, exclusive, load_probe, render};
+use clap_probe::{ProbeEnv, load_probe, render};
+use tutti_fixtures::machine_lock;
 
 use tutti_graph::NodeKey;
 use tutti_graph::{GraphBuilder, Prepare, Renderer};
@@ -282,7 +283,7 @@ impl Rig {
 /// same in `PluginControls::declared_latency` → fails the third.
 #[test]
 fn the_probe_declares_the_latency_this_suite_expects() {
-    let _lock = exclusive();
+    let _lock = machine_lock();
     let _env = ProbeEnv::new().render_mode(render::LATENCY);
     let probe = load_probe(SAMPLE_RATE);
 
@@ -320,7 +321,7 @@ fn the_probe_declares_the_latency_this_suite_expects() {
 /// plugin path is measured on its own, where there is nothing to compensate.)
 #[test]
 fn the_plugin_path_alone_arrives_a_full_latency_late() {
-    let _lock = exclusive();
+    let _lock = machine_lock();
     let _env = ProbeEnv::new().render_mode(render::LATENCY);
     let probe = load_probe(SAMPLE_RATE);
     let handle = probe.handle;
@@ -364,7 +365,7 @@ fn the_plugin_path_alone_arrives_a_full_latency_late() {
 /// of it.
 #[test]
 fn with_compensation_both_paths_land_on_the_same_sample() {
-    let _lock = exclusive();
+    let _lock = machine_lock();
     let _env = ProbeEnv::new().render_mode(render::LATENCY);
     let probe = load_probe(SAMPLE_RATE);
     let handle = probe.handle;
@@ -423,7 +424,7 @@ fn with_compensation_both_paths_land_on_the_same_sample() {
 #[test]
 fn a_latency_change_reaches_pdc_at_the_next_commit() {
     const EXTRA: usize = 64;
-    let _lock = exclusive();
+    let _lock = machine_lock();
     let _env = ProbeEnv::new().render_mode(render::LATENCY);
     let probe = load_probe(SAMPLE_RATE);
     let handle = probe.handle;

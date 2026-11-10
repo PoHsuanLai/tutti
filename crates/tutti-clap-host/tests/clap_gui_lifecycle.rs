@@ -22,7 +22,6 @@ use std::sync::{Mutex, MutexGuard};
 
 mod support;
 use support::main_thread;
-use support::probe_path::probe_path;
 
 use tutti_clap_host::{ClapLoaded, ContentScale, EditorSize, LoadOptions, WindowHandle};
 use tutti_clap_test_plugin::{
@@ -72,7 +71,7 @@ impl Probe {
     /// `ClapLoaded`, so activating would add an unrelated audio setup whose
     /// failure would be reported as a GUI failure.
     fn load(&self) -> ClapLoaded {
-        let path = Path::new(probe_path());
+        let path = Path::new(tutti_fixtures::clap_probe());
         // Bare dylib: pass it as both bundle and library so the host dlopens it
         // directly, no `.clap` bundle structure needed.
         ClapLoaded::load(&main_thread(), path, LoadOptions::new().library(path))
@@ -129,7 +128,7 @@ fn fake_parent() -> WindowHandle {
 fn probe_lib() -> &'static libloading::Library {
     static LIB: std::sync::OnceLock<libloading::Library> = std::sync::OnceLock::new();
     LIB.get_or_init(|| unsafe {
-        libloading::Library::new(probe_path()).expect("re-open reference plugin")
+        libloading::Library::new(tutti_fixtures::clap_probe()).expect("re-open reference plugin")
     })
 }
 

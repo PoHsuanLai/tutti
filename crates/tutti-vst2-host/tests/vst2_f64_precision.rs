@@ -27,8 +27,6 @@ use tutti_vst2_test_plugin::{ProcessCapture, ProcessEntry};
 
 #[path = "support/active.rs"]
 mod active;
-#[path = "support/probe_path.rs"]
-mod probe_path;
 
 use active::{Active, Precision};
 
@@ -131,7 +129,7 @@ fn read_capture(path: &Path) -> ProcessCapture {
 /// Load the probe, with `effFlagsCanDoubleReplacing` set or clear, telling it
 /// it will be processed at `precision`.
 fn load_probe(declares_f64: bool, precision: Precision) -> (Active, PathBuf) {
-    let path = probe_path::probe_path().clone();
+    let path = tutti_fixtures::vst2_probe().to_path_buf();
     reset_probe(&path);
     clear_probe_env();
     if declares_f64 {

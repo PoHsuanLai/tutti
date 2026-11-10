@@ -917,9 +917,10 @@ at any point; its CI codec move and `ci`/`negotiate` deletion shrink
    and `tutti-midi-types` sits in the same layer as `tutti-graph`, so it cannot
    name it: `MidiIn` and `MidiOut` move to `tutti-midi-runtime`, which already
    has the graph (`MidiInputNode` is their consumer). `tutti-plugin-types`
-   (a higher layer) takes the edge to `tutti-graph`. And `Offset` has no serde, so
-   plugin IPC keeps carrying a raw frame offset and converts at the edge, or
-   `Offset` gains the impls; decide in the PR.
+   (a higher layer) takes the edge to `tutti-graph`. And `Offset` has no serde, and
+   gains none: plugin IPC keeps carrying a raw `u32` frame offset and converts
+   at the edge, because the types stop at IPC boundaries (CLAUDE.md, "Where the
+   types stop"); a comment at the wire type says so.
 - **Stage 3a. The `Translator`** (§4) in `tutti-midi-protocol`, over `Ump`. Deletes
    the SoundFont's RPN state machine (`Channel::{set_rpn_*, data_entry_*}`, which
    then reads a registered-controller `Voice2`, NRPN included), `mpe_ingest`'s

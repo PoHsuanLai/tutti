@@ -38,9 +38,10 @@ verified or not.
 - **Most families need no new trait (§2, §3).** An EQ is `SeriesN<SvfModel, N>`,
   a pan law and a rotation are order-0 `Lti`, a limiter is a `SteadyState`
   model with an inherent detector, an oversampled shaper is a class 6 pair around
-  a class 3 map. What is added is small: two traits kept because more than one
-  family answers them (`GainMatrix`, `BandLimited`); four combinators
-  justified by composition laws (`Controlled` for a dynamic EQ band, `Filtered`
+  a class 3 map. What is added is small: one trait kept because more than one
+  family answers it (`BandLimited`; the planned `GainMatrix` is struck, below); four combinators
+  justified by composition laws (`Controlled` for a dynamic EQ band, which doc 024 §4.5a
+  generalises to any trajectory, `Filtered`
   for a noise process through an `Lti`, `Oversampled` for up, map, down, and
   `Lure<L, Phi>` for a nonlinearity inside a feedback loop); three amendments
   proposed to doc 024 §4.2 (`onset`, the measured first non-zero frame, added
@@ -131,8 +132,13 @@ applied by the graph, aligned by the node's declared `latency`.
 
 ### 2.1 Amendments proposed to doc 024
 
-Doc 024 is not edited by this document beyond a pointer. Three amendments to its
-§4.2 are proposed here, each marked **(proposal)** where used. P1 and P2 are
+Three amendments to doc 024's §4.2 are proposed here, each marked **(proposal)** where used.
+Doc 024 itself was amended on 2026-11-11 (its §4.2, §4.5, §4.5a and §4.10, from the IAMF stress
+test), and four items of this document change with it: `GainMatrix` is struck (§3.5: `Fold` with
+a basis and a metric, doc 024 §4.2); `Controlled` is generalised to a source of controls with a
+law (§3.4; doc 024 §4.5a); doc 026's `Warp` is a monotone `Trajectory<f64>` and no separate trait
+(§5); and `Fidelity` for `StftEffect` (§3.8) is the aliasing norm of the lifted periodic system
+(doc 024 §4.2, class 6). P1 and P2 are
 additive and land in the PR of their first consumer (§9 D10); P3 reverses a
 recorded recommendation of doc 024 (§9 D10).
 
@@ -212,7 +218,7 @@ case `hinf_norm <= l1_norm` and the trait default `hinf = l1`, which hold for on
 input and one output only: for several they become
 `hinf_norm <= sqrt(outputs) * l1_norm` (the 2-norm of a matrix is at most
 `sqrt(rows)` times its infinity-norm), and a mono-to-stereo pan law
-`[cos, sin]` has `hinf = 1` against `l1 = 0.707` at the centre. `GainMatrix`
+`[cos, sin]` has `hinf = 1` against `l1 = 0.707` at the centre. An order-0 `Fold` model
 overrides the default.
 
 **P3. `Lure<L, Phi>`, a feedback combinator for one narrow case** (§3.10). Doc 024
@@ -228,8 +234,8 @@ circle criterion) is stated once. It lifts Q17 for that case and no other.
 | `onset`, `h2_norm`, MIMO norms | amendments to `System`, `Lti` | 1, all | measured first frame; white-noise gain; matrix norms | 2.1 |
 | `ShapeKind::f1`, `f2`; `Adaa1`, `Adaa2` | inherent methods; realizations | 3, 4 | antiderivatives; the box-averaged map | 3.1 |
 | `PolyphaseFir`, `HalfbandIir`, `Decimator`, `Oversampled` | models | 6 (`TimeScale`, `Fidelity`) | ratio, reach, stopband; `overshoot_bound` on the FIR only | 3.2 |
-| `Controlled<D, F>` | combinator | 2 / 4 | the `Lti` system at a settled detector level | 3.4 |
-| `GainMatrix` | trait | 1 order 0 | matrix, column power, isometry test | 3.5 |
+| `Controlled<S, D>` | combinator (doc 024 §4.5a) | 2 / 4 | the model at a source's `theta(t)`; at a settled detector level, the `Lti` system | 3.4 |
+| ~~`GainMatrix`~~ | **struck 2026-11-11**: `Fold` with a basis and a metric, doc 024 §4.2 and step 7a | 1 order 0 | matrix, column power, isometry test relative to the metric | 3.5 |
 | `ShEncode`, `ShRotation`, `ShDecode` | models | 1 order 0 | degree energy (on `ShEncode`); isometry; commutation | 3.5 |
 | `Filtered<N, L>` | combinator | 5 (`Noise`) with 1 | shaped psd; variance from `h2_norm` | 3.6 |
 | `BandLimited` | trait | 5 | top harmonic at a floor; aliasing harmonics | 3.7 |
@@ -553,14 +559,16 @@ section. Mutant: a wrong `Q` ladder fails at the anchors.
 
 **Dynamic EQ.** A dynamic band is a bell whose gain follows a detector on a
 band-passed sidechain. Doc 024 has the pieces but not the structure: the
-controlled thing is the gain *parameter of an `Lti` filter*. It is `Ltv::frozen(t)`
-with `theta(t)` produced by a `SteadyState` detector and a design map, a
-composition, not a second trait:
+controlled thing is the gain *parameter of an `Lti` filter*. It is doc 024's
+`Controlled` (§4.5a, a design evaluated at `theta(t)` from a source of controls) with the source
+a `SteadyState` detector in steady state (`Settled`) and a design map, a composition, not a
+second trait. The earlier sketch, `Controlled<D, F>` with `F: Fn(Db) -> L`, is the `Settled`
+instance of the general type, and doc 024's proposed `Ltv` it was written against is not built:
 
 ```rust
-/// An `Lti` design chosen by a settled detector level: a dynamic EQ band.
-pub struct Controlled<D, F> { /* detector: D (SteadyState In = Db, Out = Db), design: F: Fn(Db) -> L */ }
-impl<D, F, L: Lti> Controlled<D, F> { pub fn at(&self, level: Db) -> L { /* design(detector.steady_state(level)) */ } }
+/// A dynamic EQ band: the design `D` (a bell whose gain is its control) driven by a detector in
+/// steady state; `Controlled<Settled<Det>, D>` in doc 024 §4.5a's terms.
+/// `at(level)` is `design(detector.steady_state(level))`.
 ```
 
 `at(level)` answers every class-1 query at a settled level. It is exact only when
@@ -602,26 +610,17 @@ dynamics is signal-dependent, so a `BinMap` (§3.8), not a per-bin gain.
 **Mathematics.** Every panner is a gain matrix: doc 024 §4.8 states it (an
 order-0 `Lti`: latency 0, tail `Finite(0)`, `spectral_radius` 0, the response the
 matrix at every frequency), and rows 31, 32, 44 and 52 are that. More than one
-family exposes the matrix itself, which `Lti` does not, so one trait is kept:
-
-```rust
-/// An order-0 `Lti` with its matrix (`rows` outputs, `cols` inputs, row major).
-/// For order 0, `hinf_norm` is the largest singular value and `l1_norm` the largest row sum (P2).
-pub trait GainMatrix: Lti {
-    fn rows(&self) -> usize;  fn cols(&self) -> usize;
-    fn matrix(&self, out: &mut [f64]);
-    /// Sum over rows of the squared gain from input `col`.
-    fn column_power(&self, col: usize) -> f64;
-    /// `hinf_norm == 1` and every `column_power == 1` together imply an isometry:
-    /// `M^T M` then has a unit diagonal and eigenvalues at most 1, so it is the identity.
-    fn is_isometry(&self, tol: f64) -> bool;
-}
-```
-
-Its implementers are pan laws, mid/side, VBAP, the spherical-harmonic models and
-`Fold`'s order-0 view, so it meets doc 024's rule. `spectral_norm` is not a
-separate query (P2). Matrices are `f64` so the identities below run at their own
-precision; the node narrows to `f32` once.
+family exposes the matrix itself, which `Lti` does not. **Struck 2026-11-11: the
+planned `GainMatrix` trait.** `Fold` (`tutti-types`) already is the sparse matrix
+between two topologies, and doc 024 §4.2 (order 0, basis and metric) makes it the one order-0
+map: a validated constructor from a matrix, `matrix`, `column_power` and an `is_isometry`
+measured in the topologies' metrics, stored in `f64` and narrowed once at the apply (Q26, step
+7a). Pan laws, mid/side, VBAP, the spherical-harmonic models and a basis conversion are
+`Design`s whose model is a `Fold`; `Fold::between` stays the default policy (the ITU
+coefficients). For order 0, `hinf_norm` is the largest singular value and `l1_norm` the largest
+row sum (P2), in the metric. The earlier trait's `is_isometry` was Euclid-only
+(`hinf_norm == 1` and every `column_power == 1`), which classifies a change of normalisation as
+not an isometry; the relative form replaces it. `spectral_norm` is not a separate query (P2).
 
 **Pan laws.** A law is a mono-to-stereo map `Pan -> (gl, gr)`, a 2x1 matrix whose
 `column_power` is the figure that defines it: 1 for the constant-power law
@@ -655,11 +654,13 @@ convention; FuMa is an import concern):
   an inherent method, is the sum over `m` of `Y_nm^2` for degree `n`: 1 for SN3D
   and `2n+1` for N3D at every direction (the addition theorem; checked to first
   order in the sketch). Column power is therefore `order + 1` (SN3D) or
-  `(order + 1)^2` (N3D); an encode is **not** an isometry.
+  `(order + 1)^2` (N3D); an encode is **not** an isometry. The two normalisations are two
+  bases of one field, `N3D = sqrt(2n + 1) SN3D` per degree `n`, with Gram matrices `I` and
+  `diag(2n + 1)` (doc 024 §4.2): the conversion between them is an isometry in the metric.
 - `ShRotation` (block diagonal, one orthogonal block per degree; SN3D and N3D
   differ by a per-degree scalar that commutes with it, so the matrix is the same).
   `hinf_norm = 1` and every `column_power = 1`, so it **is** an isometry
-  (`is_isometry`). **Rotation commutes with encode:** `R(q) E(d) = E(q d)`, an
+  (`Fold::is_isometry`, in both metrics). **Rotation commutes with encode:** `R(q) E(d) = E(q d)`, an
   identity between two models' answers, checked on the control side (verified in
   the sketch for a yaw at first order). The test rotation must not be an
   involution (a 180 degree turn makes the transpose mutant pass). Mutant: the
@@ -667,7 +668,8 @@ convention; FuMa is an import concern):
 - `ShDecode` (coefficients to `speakers`; it carries the normalisation, which the
   decoder depends on). A sampling decoder is an isometry up to `1/sqrt(speakers)`
   only for a layout that is a spherical `t`-design with `t >= 2 * order`, in an N3D
-  basis; a regular polyhedron is not enough (an icosahedron is a 5-design, exact to
+  basis (the N3D metric: in SN3D coordinates it is an isometry relative to the SN3D Gram
+  matrix); a regular polyhedron is not enough (an icosahedron is a 5-design, exact to
   order 2 and not 3), and 5.1 or 7.1.4 layouts are not designs. For those the
   decoder is AllRAD: decode to a dense virtual layout that closes the convex hull
   (imaginary speakers) and pan the virtual feeds to the real layout with VBAP. In
@@ -678,11 +680,13 @@ convention; FuMa is an import concern):
   beyond). Binaural decode is a `Series` of the virtual-layout decode and the
   HRTF's `Lti` pair (doc 024 row 45).
 
-**Channel convention.** ACN and SN3D. Doc 023 G11's `Ambisonic` topology (order,
-ordering, normalisation) in `tutti-types` is a prerequisite: a bus must say what
-it carries before a node can refuse a wrong wiring.
+**Channel convention.** ACN and SN3D. The topology is what lets a node refuse a wrong wiring:
+a bus must say what it carries. Under doc 024 §4.2 that is not a separate `Ambisonic` kind
+(doc 023 G11's plan, **struck 2026-11-11**) but `ChannelTopology::ambisonic(order, norm, ordering)`
+over `Speaker` variants (a harmonic by ACN index), with the metric `gram` beside it; step 7a
+builds it.
 
-**Lives in** `tutti-dsp/src/spatial/` (the matrices; §4) and `tutti-spatial`
+**Lives in** `tutti-types` (`Fold`, the topology and its metric), `tutti-dsp/src/spatial/` (the matrices; §4) and `tutti-spatial`
 (the nodes: encode, rotate, decode, binaural; it stays at layer 5 over
 `tutti-nodes`, §4.1). **Hosted by** doc 024 step 7 (panners and fold) and step 6
 (the HRTF as a published model). **Effort** S for pan laws and their
@@ -839,7 +843,9 @@ only to the extent the gain's impulse response is short against the window.
 energy that wraps at this size: a zero-phase real gain is symmetric about 0 and
 wraps circularly, so the figure is computed from the gain's inverse transform) and
 offers the class-1 queries at the sampled response, stated with that bound as doc
-024 Q23 does for `Ltv`. A map that is not a time-constant multiplier (a gate
+024 Q23 does for the frozen-time query. The wrap share is the aliasing norm of the lifted periodic
+system (doc 024 §4.2, class 6: block-periodic systems are LTI under blocking), and the model's
+period is `Cadence::stream(hop)`. A map that is not a time-constant multiplier (a gate
 with hysteresis, freeze, morph, spectral dynamics) is a **`BinMap`** the
 realization runs, with its own cases and no class trait (doc 024 §2.4 item 8).
 
@@ -1018,7 +1024,7 @@ Each is a node over an existing class; none needs a new trait.
 | Tremolo, auto-pan | a time-varying order-0 gain `1 + d lfo(t)` over a class 5 LFO | sidebands at `+-f_lfo` of amplitude `d/2` for a sinusoidal LFO (a `d` doubled); auto-pan's column power varies as its law | `tutti-nodes` over `ModulatorNode` |
 | Ring modulation | a product with a `Periodic` carrier | sideband amplitudes closed form (a missing carrier phase); no aliasing while `fc + fm < fs/2` | `tutti-nodes` |
 | Hilbert pair, frequency shifter | the Hilbert transform as two all-pass chains 90 degrees apart (`Lti`); an SSB shift is a `Series` and a product | phase difference `90 deg +- e` over the band, `e` stated; sideband suppression (a chain of the wrong order) | `tutti-dsp/src/allpass.rs` |
-| Pan laws | order-0 `GainMatrix` | §3.5 | `tutti-dsp/src/balance.rs` |
+| Pan laws | order-0 `Fold` model | §3.5 | `tutti-dsp/src/balance.rs` |
 | Delay variants (ping-pong, tempo-synced, ducking) | `Lti` with feedback as structure inside the model (doc 024 Q17); ducking is a `GainControl` in the loop | loop gain below 1 (stability); echo spacing equals the tempo-derived time (the transport's tempo ignored) | `tutti-nodes` over `DelayLineNode` |
 | De-esser, transient shaper | class 4: a band-passed detector `GainControl`; two followers' difference `GainControl` | `steady_state` curve; time constants | after doc 024 step 4 |
 
@@ -1033,7 +1039,8 @@ stays a plain type with its own tests. These do:
 
 - **Warp markers and the beat map.** A monotone piecewise-linear map from beat to
   source frame: data, a pure function of position (doc 024 row 29's reasoning),
-  consumed by doc 026's `Warp` (§6.2 there: a longer segment list). Auto-warp from
+  consumed by doc 026's warp (§6.2 there: a longer segment list), which doc 024 §4.5a reads as a
+  monotone scalar `Trajectory<f64>` and not as a separate `Warp` trait. Auto-warp from
   `tempo` and `beat` is a `tutti-measure` analysis plus a data edit.
 - **Scale quantisation and retune policy:** a pure function, data plus event logic.
 - **Granular synthesis.** Grains are events (class E) over a position-driven
@@ -1171,7 +1178,7 @@ re-derive it.
 ### 4.3 The PRs
 
 1. **The VBAP solve.** (**Landed**, `dsp/spatial-vbap`: `tutti-dsp`'s `SpeakerLayout`,
-   `SpeakerGeometryError`, `PanningMode`, `Tuple`, `MAX_SPEAKERS`; `VbapError::Geometry`
+   `SpeakerGeometryError`, `PanningMode`, `Tuple`, `MAX_SPEAKERS` (a cap to lift into a `Bounds` value, doc 024 §4.4, not a design limit); `VbapError::Geometry`
    replaces `Vbap`; `vbap` and `glam` are out of `Cargo.lock`. The selection is Pulkki's
    method, the convex-hull facets of the speaker directions with the shortest diagonal of a
    coplanar polygon (D15), not the crate's. Stereo, quad, 5.1 and 7.1 render bit for bit as
@@ -1182,7 +1189,11 @@ re-derive it.
    `vbap` dependency and `VbapError::Vbap` replaced; `glam` leaves the lock. Proof:
    the moved tests and digests unedited; the tuple sets of the five presets pinned;
    Pulkki's properties as new cases; `cargo tree -p tutti-dsp` shows no `glam`.
-2. **HRTF set, convolver and sphere build.** `spatial/hrtf.rs`, `sphere.rs`;
+2. **HRTF set, convolver and sphere build.** (**Landed**, `dsp/spatial-hrtf`:
+   `tutti-dsp`'s `HrtfBinaural`, `HrtfBinauralError`, `MIN_SPHERE_RATE`, `MAX_SPHERE_RATE`,
+   `MAX_PREPARED_RATE`, `HRTF_STEP`, `HRTF_LATENCY`; `AngleSmoother` stays in the node, which
+   hands the convolver a closure that returns the aimed direction once per completed step, so
+   the render is bit-identical and the digests are unedited.) `spatial/hrtf.rs`, `sphere.rs`;
    `HrtfBinauralError` and the constants re-exported unchanged. Proof:
    `hrtf_render.rs` and the contract suite unedited; the scalar-planner determinism
    note of `RealFft` applies.
@@ -1241,7 +1252,7 @@ waits for the doc 024 step that adds it.
 |---|---|---|---|
 | A1 | Spatial PR 1: the VBAP solve into `tutti-dsp::spatial`; `vbap` and `glam` dropped (§4) | unedited tests and digests; preset tuples pinned; Pulkki's properties | §9 D13 |
 | A2 | Spatial PRs 2 (HRTF) and 3 (cleanup) | `hrtf_render.rs`, contract suite; paths stable | A1 |
-| B1 | Utility pack; pan-law consolidation into `balance.rs` (the polysynth law and the crossfade onto it) (§3.12, §3.5) | matrices, sidebands, DC corner; power figures | none (the pan models adopt `GainMatrix` at step 7) |
+| B1 | Utility pack; pan-law consolidation into `balance.rs` (the polysynth law and the crossfade onto it) (§3.12, §3.5) | matrices, sidebands, DC corner; power figures | none (the pan models become `Design`s with `Model = Fold` at step 7, after 7a) |
 | B2 | Oversampling kernels and ADAA kernels as plain code and free functions (§3.1, §3.2) | derivative, identity, box average, stopband, overshoot, power complement | none |
 | B3 | Doc 024 step 5 adopts them: waveshaper `Memoryless`, `Graded` oversampling, `Adaa` realizations, the oversampler models | the aliasing case, digests | B2, step 5 |
 | B4 | True-peak limiter and the true-peak reader (§3.3) | margin, inter-sample peak, `Dg` | **B2 (kernels) and doc 024 step 4** (not B3) |
@@ -1253,7 +1264,7 @@ waits for the doc 024 step that adds it.
 | E1 | Reverb: doc 022 steps 3 and 3b, then the two queries (§3.11) | doc 022 §8 | doc 022 steps 1c, 2; doc 024 step 3 |
 | E2 | Wavetable and FM (§3.7) | non-harmonic bins, Bessel amplitudes | doc 024 step 7 |
 | E3 | `Lure`, the nonlinear TPT ladder, a diode clipper (§3.10) | small-signal response, critical gain, circle bound | B3, C1; step 2 |
-| F1a | Ambisonics: the `Ambisonic` topology (doc 023 G11); encode, rotation and a plain decoder as `GainMatrix` models and nodes (§3.5) | degree energy, isometry, commutation | G11 only |
+| F1a | Ambisonics: `ChannelTopology::ambisonic` (doc 023 G11, doc 024 step 7a); encode, rotation and a plain decoder as `Fold` models and nodes (§3.5), on doc 024 step 7a | degree energy, isometry, commutation | G11 only |
 | F1b | AllRAD (`Series<ShDecode, VbapColumns>`) | AllRAD cases | F1a, A1 |
 | F1c | Binaural ambisonic decode | series with the HRTF pair | F1a, A2 |
 | F2 | Neural core (§9 D11), only if chosen | layer equations | after E3 |
@@ -1297,7 +1308,7 @@ patterns doc 024 §6 already has, plus one:
 | Generator spectrum (`Periodic`, `Noise`) | wavetable, PM, shaped dither | `BandLimited::top_harmonic`; `Filtered::psd` |
 | Time scale (`TimeScale`, `Fidelity`) | the prototypes, the shifter | inherent `overshoot_bound`, `formant_shift` |
 | Honest tail counted from `latency` (`contract::assert_honest_tail`) | linear-phase FIR (the remaining `(L-1)/2` taps), the limiter, the STFT effect | `System::tail` against `latency` (P1) |
-| **An identity between two models' answers** | rotation against encode, the STFT window-sum constant, mid/side round trip | `GainMatrix::is_isometry`, `column_power` |
+| **An identity between two models' answers** | rotation against encode, the STFT window-sum constant, mid/side round trip | `Fold::is_isometry` (relative to the metric), `column_power` |
 
 The last pattern is new to doc 024: both sides are closed-form queries of models,
 checked on the control side, so it is consistent with CLAUDE.md's rule against
@@ -1317,7 +1328,7 @@ recommendation as the decision.
 | D1 | The limiter's detector is a measured oversampled peak divided by `cos(pi/2N)`; `overshoot_bound` is not used by it, and the windowed minimum stays inherent | §3.3; a worst-case bound would attenuate signals under the ceiling |
 | D2 | A true-peak plan meter is a tap read by `tutti-measure`, not an op in `tutti-graph` | §3.3: `tutti-graph` cannot reach `tutti-dsp` |
 | D3 | Shimmer is not a reverb `Design`; doc 022's exclusion stands. A shimmer after a live pitch shifter exists is a graph composition | §3.9, §3.11; it needs a live shifter that does not exist |
-| D4 | Antiderivatives, the FIR overshoot bound and the formant shift are inherent methods; only `GainMatrix` and `BandLimited` are new traits | doc 024 §4.2: a trait needs a second family; §2.2 names each implementer |
+| D4 | Antiderivatives, the FIR overshoot bound and the formant shift are inherent methods; only `BandLimited` is a new trait (`GainMatrix` was struck 2026-11-11 for `Fold` with a basis) | doc 024 §4.2: a trait needs a second family; §2.2 names each implementer |
 | D5 | The oversampler is two types (`PolyphaseFir`, `HalfbandIir`) with one `TimeScale` and `Fidelity`; the tier is the node's and export uses the live tier | §3.2; doc 024 Q8 stands |
 | D6 | The STFT pair lives in `tutti-dsp/src/stft.rs`. Doc 026 stage 2 is not delayed: `LockedVocoder` is written on `StftGeometry` as 026 says, and the pair is factored out afterwards (D3 follows stage 2) with the vocoder moved onto it only if the two share code | §3.8; a separate crate would cut `tutti-dsp` along a boundary every processor crosses |
 | D7 | The formant estimator is private to the realization in `tutti-dsp`; no trait | §3.9; doc 024 Q24's cut |
@@ -1325,7 +1336,7 @@ recommendation as the decision.
 | D9 | A live pitch shifter's input-fed push shape amends doc 026 §12 when the shifter is built, and not before; the sampler realization (stage D2 of §6) does not need it | §3.9; doc 026 §12 rejected the shape for lack of a consumer |
 | D10 | Doc 024 §4.2 amendments: P1 (`onset` added; `latency` stays the alignment delay, per the PDC owner's naming) and P2 (MIMO norms, `h2_norm`) land with their first consumers (P1 with the oversampler or linear-phase EQ, P2 with the dither work); P3 (`Lure<L, Phi>`) for the ladder and diode clipper only, at the PR of the first realization, and a general `Feedback<A, B>` stays declined | §2.1, §3.10; P3 lifts doc 024 Q17 for one loop shape whose stability argument is the circle criterion |
 | D11 | Neural inference: none now; hosted plugins cover NAM-class models. If built later: a pure-Rust core (LSTM, GRU, 1-D convolution, dense) in a new crate above `tutti-dsp`, weights as control-side data, no allocation on the audio thread, no `candle`/`ort` there, with §3.13's contract. Revisit after items 1 to 13 | §3.13, §7 |
-| D12 | Commit to ambisonics, first through third order in ACN/SN3D, with the `Ambisonic` topology (G11) first and AllRAD and binaural decode as the deliverable; not above order 3 until a consumer asks | §3.5 |
+| D12 | Commit to ambisonics, first through third order in ACN/SN3D, with the ambisonic topology (G11, now `ChannelTopology::ambisonic`, doc 024 step 7a) first and AllRAD and binaural decode as the deliverable; not above order 3 until a consumer asks | §3.5 |
 | D13 | The spatial consolidation is taken as §4 describes: algorithms into `tutti-dsp`, nodes and the smoother stay, in the three PRs of §4.3 | §4 |
 | D14 | If a golden digest moves despite the bit-exact plan, a re-record is allowed only for a reason argued in the PR; the plan is to keep the digests bit-exact by pinning the preset tuples and glam's operation order first | §4.2 |
 | D15 | The VBAP speaker-tuple selection is re-derived from Pulkki's published method and held to the spec cases of §4.2, so that no code derived from Ardour's `vbap_speakers.cc` (listed LGPL-2.1-or-later in Debian's copyright file, unverified at the source file) enters the workspace; the mathematics of the solve is kept as it is | §4.2 |
@@ -1343,10 +1354,10 @@ with `cargo check` and `cargo test` clean. Doc 024's class traits and the vocabu
 types are **stand-ins** (the `model` module is not on `main`), `TimeScale` is
 restated as doc 026 §3.2 defines it (including `reach`), and the proposed `onset`
 and `h2_norm` are added to the stand-in traits. Every trait kept in this document
-has an implementer there (`GainMatrix`: a pan law, mid/side, `ShEncode`, a yaw
+has an implementer there (`GainMatrix`, since struck for `Fold` with a basis: a pan law, mid/side, `ShEncode`, a yaw
 rotation; `BandLimited`: a wavetable and a PM pair), and the combinators
 (`Filtered`, `Controlled`, `Lure`, `Oversampled`) are written and exercised by a
-test each (`Controlled` selecting a design by detector level, `Oversampled`'s peak
+test each (`Controlled` selecting a design by detector level (the `Settled` case), `Oversampled`'s peak
 gain with the down stage, `Lure`'s injection-aware bound and well-posedness). The tests assert the figures this document states: the antiderivatives (including
 the shipped atan curve)
 by central difference and the identity-map quotient; the true-peak margin for a

@@ -55,7 +55,7 @@ already measured.
 - **Six processor classes and two non-processor ones** (section 2.2), by four
   axes (linear or not, memoryless or stateful, time-invariant / slowly varying /
   multirate, driven or autonomous): (1) LTI, with order 0 a gain matrix; (2)
-  slowly varying LTI, `H_theta` with `theta(t)` slow; (3) memoryless nonlinear, a
+  time-varying, a linear parameter-varying system along a known trajectory `theta(t)`; (3) memoryless nonlinear, a
   static map; (4) stateful nonlinear, a composition of (3) with (1)/(2); (5)
   autonomous generators; (6) multirate or time-scale. Plus measurements
   (functionals) and event or discrete logic.
@@ -83,8 +83,20 @@ already measured.
   with the FDN tail) and the old Q4 (a series EQ chain's curve).
 - **The engineering layer is labelled and kept apart** (section 4.4): `Bounds`,
   `Ceiling`, `Effort`, `Cadence` and `Quality` size and schedule a realization;
-  they are not properties of the math object. `Cadence` is the sampling of
-  `theta(t)`: the slowly-varying assumption made explicit.
+  they are not properties of the math object. `Cadence` is the time grid on which
+  `theta(t)` is sampled, with its anchor (section 4.5); the *law* by which `theta` moves
+  between grid points is not engineering but part of the model (section 4.5a).
+- **Amendments of 2026-11-11, from the IAMF stress test (section 4.10).** IAMF's
+  linear pipeline was tried against this design and showed three places where it was
+  weaker than it needed to be; each is fixed by generalising an item that exists, and
+  the special cases it replaces are deleted, not kept beside it. (A1) `Cadence` becomes
+  a period and an anchor (section 4.5). (A2) `Controlled` becomes a model whose controls
+  are a trajectory with a law (section 4.5a); the planned `Ltv`, `Variation` and
+  `Scheduled` are not built. (A3) `Fold` and `ChannelTopology` carry a basis and a
+  metric (section 4.2, order 0); the planned `GainMatrix` trait and the separate
+  `Ambisonic` topology are not built. (A4) the periodic view of class 6, theory only
+  (section 4.2). (A5) a cap that bounds a design is a `Bounds` field (section 4.4).
+  Steps 2b0 and 7a of section 10 carry them.
 - **The contract is written once per class** (section 6): every LTI realization
   inherits the impulse-response-against-response, ring-time-against-decay,
   linearity and shift-invariance checks; every static map inherits the level
@@ -96,7 +108,9 @@ already measured.
 - **Plan (section 10): a step 0b (the analysis split and the first consolidations, section 9) and seven steps after the merged #367, each a PR.**
   Generalise on the reverb (answering as `Lti`); filters (several realizations of
   one H(z); G8); composition (the parametric EQ, then reverb 3b); dynamics (G9);
-  delay, modulation effects and the waveshaper; convolver and HRTF; the rest.
+  delay, modulation effects and the waveshaper; convolver and HRTF; the rest. The
+  amendments above enter as step 2b0 (A1, A2: before or with 2b) and step 7a (A3: before the
+  panners).
 
 ## 1. Current state
 
@@ -153,21 +167,22 @@ autonomous**. They give six processor classes and two that are not processors.
 | Class | Axes | Representation | What the class answers (exactly) | In tutti |
 |---|---|---|---|---|
 | **1. LTI** | linear, stateful (order 0: memoryless), time-invariant, driven | rational `H(z)` (IIR) or `h[n]` (FIR); in state space `(A, B, C, D)`. Order 0 is a **gain matrix** | the response `H(e^jw)` per input/output pair, the spectral radius of `A` (stable iff below 1), the slowest decay (ring time), `l1_norm` (`||h||_1`) and `hinf_norm` (`||H||_inf`), DC gain, latency, group delay | filters at a frozen setting, delay, comb, convolver, the reverb `Network`, HRTF; at order 0 `Fold`, VBAP, pan, the bus strip, the channel sum |
-| **2. Slowly varying LTI** | linear, stateful, **slowly varying**, driven | a family `H_theta` with `theta(t)` slow, held by its frozen-time approximation | the class-1 queries at each frozen `theta` (`Ltv::frozen`), plus the variation `theta` declares (its rate and range) | every filter under modulation; chorus, flanger, phaser; the FDN with modulated lines |
+| **2. Time-varying (linear parameter-varying)** | linear, stateful (order 0: memoryless), **time-varying through a known trajectory `theta(t)`**, driven | a family `S_theta` with `x[n+1] = A(theta[n]) x[n] + B(theta[n]) u[n]`, `y = C x + D u`, and the trajectory with its law (section 4.5a) | the class-1 queries at each frozen `theta` (`Controlled::at`); at order 0 every norm over the trajectory's range, exactly; for a stateful system the frozen queries hold only under the slowness the trajectory declares (section 4.2) | every filter under modulation; chorus, flanger, phaser; the FDN with modulated lines; at order 0 a pan, a rotation or a demix under a moving control |
 | **3. Memoryless nonlinear** | nonlinear, memoryless, time-invariant, driven | a static map `y = f(x)` | the curve, DC `f(0)`, odd symmetry, the harmonics of a sine through it, `lipschitz` and `max_gain`, the aliasing bound | the waveshaper, the brickwall clip, a dynamics gain curve on its own |
 | **4. Stateful nonlinear** | nonlinear, stateful, time-invariant, driven | a **composition of 3 with 1 or 2**: Wiener (LTI then map), Hammerstein (map then LTI), or a detector path controlling a gain | the steady-state characteristic (the map at the LTI part's DC gain), the time constants and latency of the LTI part, a peak gain; **no frequency response** | compressor, gate, limiter, followers; the ladder (class 1 only once linearised for small signals) |
 | **5. Autonomous generators** | any, driven by a phase or an event, then autonomous | `f(phi(t))`, a segment list, or a stochastic process | the period or frequency, the harmonic spectrum, the segment durations, the range, a noise variance or spectrum | oscillators, LFOs, envelopes, noise, dither's noise, the click's waveform |
-| **6. Multirate or time-scale** | linear (resampler) or not (stretch), stateful, **periodically time-varying** with an LTI prototype | a ratio, an LTI prototype (the resampler's windowed-sinc low-pass), a time-varying read | the ratio, the prototype's response, the latency, the duration ratio | the FFT resampler, the stretch unit, the sampler's playback read |
+| **6. Multirate or time-scale** | linear (resampler) or not (stretch), stateful, **periodically time-varying** with an LTI prototype (LTI under blocking by the period, section 4.2) | a ratio, an LTI prototype (the resampler's windowed-sinc low-pass), a time-varying read | the ratio, the prototype's response, the latency, the duration ratio | the FFT resampler, the stretch unit, the sampler's playback read |
 | **M. Measurements** | a functional of a signal, not a processor | a config and an analyser | a resolution (`fs/N`), a latency | `analysis/` |
 | **E. Event or discrete logic** | not a signal map | a state machine over events | transitions | voice allocation, the gate's hold timer, the click's trigger, lanes as data |
 
 Two consequences used throughout.
 
-1. **Modulation is not a class; it is sampling `theta`.** Every class can be
+1. **Modulation is not a class; it is a trajectory `theta(t)`.** Every class can be
    driven by a control that moves. Class 1 at a frozen setting is class 2 as soon
    as a lane moves a cutoff; the table says "1 (2 under modulation)" for the
-   filters. The class-2 queries are the class-1 queries at the sampled `theta`,
-   and `Cadence` (section 4.5) is how often it is sampled.
+   filters. The class-2 queries are the class-1 queries at `theta(t)`, `Cadence`
+   (section 4.5) is the grid on which it is sampled, and the law between samples is part of the
+   model (section 4.5a).
 2. **A class is a trait, and a model may implement several.** A resampler is
    class 6 and its prototype is class 1. A compressor is class 4 and its detector
    is class 1 and its gain map class 3. The composition algebra (section 4.9) is
@@ -177,14 +192,15 @@ Two consequences used throughout.
 
 `Bounds` (the sizes a realization allocates), `Ceiling` (the limits a node builds to:
 rate, tail floor, a control's maximum), `Effort` (what the realization costs),
-`Cadence` (how often `theta` is sampled) and `Quality` (which realization tier) are
+`Cadence` (the grid on which `theta` is sampled) and `Quality` (which realization tier) are
 properties of a **realization and of the node that schedules it**. Two realizations of
 one `H(z)` have different `Bounds` and `Effort` and the same model. They sit on
 `Design` and `Realization` as associated items, never on a class trait, so a class
 trait states only what the mathematical object is. `Cadence` is the one that
-touches the math: it is the explicit statement of the slowly-varying
-assumption, and a contract case checks that a model which declares a variation
-(an LFO rate) is slow against its cadence.
+touches the math: its anchor decides whether a render depends on the block length
+(section 4.5), and a contract case checks that a trajectory is slow against its
+period. The *law* by which `theta` moves between grid points is not on this list:
+it is part of the model (section 4.5a).
 
 ### 2.4 What must not be forced
 
@@ -240,8 +256,9 @@ a given `H(z)`; a *kernel* is an impulse response or a convolution kernel.
 | **`spectral_radius`** | an upper bound on the spectral radius of the state matrix `A`; stable iff below 1 | `spectral_radius` |
 | **`l1_norm`** | an upper bound on `norm(h, 1)`: the BIBO gain, the guarantee against overs | `gain_bound` |
 | **`hinf_norm`** | an upper bound on `norm(H, inf)`: the peak of the magnitude response, what an EQ display scales to | `gain_bound` |
-| **`Ltv`** | a linear time-varying system with slow `theta(t)`; `frozen(t)` is the frozen-time approximation (an `Lti`) | `Varying` |
-| **`Cadence`** | how often `theta(t)` is frozen (engineering) | `Cadence` |
+| **`Trajectory`, `Controlled`** | `theta(t)` as a signal with a law (pieces of a start, a length, endpoints and a shape), and a model driven by such a source: a linear parameter-varying system; `at(t)` is the frozen-time model | `Ltv`, `Varying` (not built) |
+| **`Cadence`** | the grid on which `theta(t)` is sampled: a period and an anchor (engineering) | `Cadence` |
+| **basis, metric** | the coordinates a channel bundle is in, and the Gram matrix `G` that makes energy `c^T G c`; isometry is `M^T G_dst M = G_src` | new |
 | **`Memoryless`** | a static map `y = f(x)`, no state | `StaticMap` |
 | **`lipschitz`** | the constant `L` with `abs(f(a) - f(b)) <= L abs(a - b)` | new |
 | **`max_gain`** | `sup abs(f(x)) / abs(x)`: the largest secant gain from the origin | `max_gain` |
@@ -294,8 +311,8 @@ like, per CLAUDE.md "Unit types").
 | 9 | 4 (comp.) | **Multiband compressor** (`MultibandCompressorNode`) | crossover plus a `CompressorKernel` per band | **Partly** | A composite: `Series<Crossover, bands>` of the crossover model (row 3) and one compressor model per band (section 4.9). Per-band `Memoryless` and `Readout` (`gain_reduction_db(band)` exists). The summed `frequency_response` is not a single model query (it is signal dependent). Fits as a model that holds sub-models |
 | 10 | 4 | **Envelope followers** (`dynamics/envelope.rs`; `EnvelopeFollowerNode` in `signal/follower.rs`) | `EnvelopeFollower`, `GateEnvelopeFollower`; the node outputs a control signal | **Partly** | A building block of rows 5 to 7, whose attack and release are their time-constant queries. The node is a measurement with a control output: its model is the two coefficients and a step response, with no response or curve to query |
 | 11 | 1 (2) | **Delay line** (`delay.rs`, `buffer.rs` `CircularBuffer`; `DelayLineNode`) | `DelayLine::read_sample` with `InterpolationMode`, a per-channel `Ramp` of the time. Typed: `Seconds`, `Feedback`, `Mix` | **Fits** | Design: `(time, feedback, mix, interpolation, rate)` to a model of delay in fractional frames and loop gain. Queries: `Bounds` (the maximum delay, a build parameter, `delay.rs`), `tail` (`time x trips to the floor`, as the all-pass term of doc 022 section 3.1), stability (`|feedback| < 1`, `Feedback::MAX_STABLE`), `frequency_response` (the comb `1/(1 - g z^-D)` for the frozen setting), `latency` zero (musical delay is not latency). The interpolation's droop is a term of `Fidelity` |
-| 12 | 2 | **Chorus and flanger** (`swept_delay.rs` `SweptLines`; `ModDelayNode` in `modulation/mod_delay.rs`) | `SweptLines::run`, LFO solved at control points and interpolated. Typed: `Seconds`, `Hz`, `Feedback`, `Mix`, `PhaseIncrement` | **Fits** | Class 2. Design: `(base delay, depth, rate, feedback, mix, rate)` to a delay-line `Lti` with an internal LFO (`Ltv`). Queries: the frozen comb `frequency_response`; `tail` (`feedback_max` makes it exactly `max_delay` at none, per the type docs); `spectral_radius` = `|feedback|`; `variation` = the LFO's rate and excursion. Family-only: the sidebands of a sinusoidal delay modulation (Bessel `J_n(beta)`) |
-| 13 | 2 | **Phaser** (`allpass.rs` `allpass_coeff`, `allpass_chain`; `PhaserNode`) | the swept first-order all-pass chain. Typed: `Hz` range, `Depth`, `Feedback`, `Mix` | **Fits** | Class 2. The all-pass chain at a sweep position is an exact `Lti` (first-order all-pass phase), so the notch frequencies and depths for a mix are its `frequency_response`; `Ltv` declares the sweep; `spectral_radius` from the feedback; `tail` from it. The sweep mapping (`min + (max - min) * lfo * depth` into `allpass_coeff`) is in the node, `tutti-nodes/src/modulation/phaser.rs` `coeff_at` (~318-322), not in dsp (section 9, consolidation 10) |
+| 12 | 2 | **Chorus and flanger** (`swept_delay.rs` `SweptLines`; `ModDelayNode` in `modulation/mod_delay.rs`) | `SweptLines::run`, LFO solved at control points and interpolated. Typed: `Seconds`, `Hz`, `Feedback`, `Mix`, `PhaseIncrement` | **Fits** | Class 2. Design: `(base delay, depth, rate, feedback, mix, rate)` to a delay-line `Lti` with an internal LFO (a `Controlled` model whose source of `theta` is the LFO). Queries: the frozen comb `frequency_response`; `tail` (`feedback_max` makes it exactly `max_delay` at none, per the type docs); `spectral_radius` = `|feedback|`; the source's `slew_bound` = the LFO's rate and excursion. Family-only: the sidebands of a sinusoidal delay modulation (Bessel `J_n(beta)`) |
+| 13 | 2 | **Phaser** (`allpass.rs` `allpass_coeff`, `allpass_chain`; `PhaserNode`) | the swept first-order all-pass chain. Typed: `Hz` range, `Depth`, `Feedback`, `Mix` | **Fits** | Class 2. The all-pass chain at a sweep position is an exact `Lti` (first-order all-pass phase), so the notch frequencies and depths for a mix are its `frequency_response`; the LFO is the trajectory's source and declares the sweep; `spectral_radius` from the feedback; `tail` from it. The sweep mapping (`min + (max - min) * lfo * depth` into `allpass_coeff`) is in the node, `tutti-nodes/src/modulation/phaser.rs` `coeff_at` (~318-322), not in dsp (section 9, consolidation 10) |
 | 14 | P | `interp.rs` `cubic_hermite`, `InterpolationMode` | four-point interpolation | **No** | A primitive below the shape. Its response is a term in rows 11 and 12 |
 | 15 | 1 (2) | **Reverb**, Freeverb and the `Network` (`reverb.rs`, `reverb_design.rs`, `network/`) | on `main`: `Freeverb` is the realization; `FreeverbControls { room, damp }` | **Fits** | The first family: this is doc 022 |
 | 16 | 1 | **Partitioned convolver** (`convolver.rs`; `ConvolverNode`) | `Convolver`, `IrSpectra` behind an `Arc`, non-uniform levels from a cost model. Typed: `Mix`, `Amplitude` (`convolution/params.rs`) | **Fits** | Design: `(IR, block size B, quality)` to a model that carries what analysis needs: `frequency_response` is the IR's FFT magnitude, `tail` the IR length, `latency` = `B` (the file header: output at frame `n` is the convolution at `n - B`), `Bounds` the IR length and level plan. The IR is data, so the control path is a **published** model, not param cells (`ArcLend`, section 5.3). Doc 022's `FirSummary` is this model's reverb face |
@@ -324,7 +341,7 @@ like, per CLAUDE.md "Unit types").
 | 29 | E | **Automation and control lanes** (`automation/lane.rs`, `control_lane.rs`, `recording.rs`) | a curve evaluated at the beat | **No** | The model is user data (a curve) and already a pure function of position |
 | 30 | 1, order 0 | **Channel sum** (`mix_bus.rs`; `ChannelSumNode`) | summing | **Partly** | Class 1 at order 0: a gain matrix of ones, so `frequency_response` is flat and `spectral_radius` is 0. It fits trivially and has nothing to design: no controls, so no `Design` and nothing for `Describe` |
 | 31 | 1, order 0 (2) | **Bus strip** (`strip.rs`; `BusStripNode`) | gain, balance, mute: `balance_gains` | **Fits** | Design: `(Amplitude, Pan, mute)` to a 2x2 gain matrix. Queries: the matrix, unity at centre, flat `frequency_response`. Small, and the same kind of model as `Fold` (row 32): a gain matrix |
-| 32 | 1, order 0 | **Downmix and `Fold`** (`downmix_unit.rs`; `tutti-types/src/fold.rs`) | `Fold` is built on the control side and applied without allocating | **Fits** | Already the split: `Fold` is the model (a gain matrix), `Fold::frame` the realization. Queries: the matrix, power preservation, `FoldError`. `Fold` is in `tutti-types` and cannot implement `tutti-dsp` traits, so a wrapper in `tutti-nodes` would |
+| 32 | 1, order 0 | **Downmix and `Fold`** (`downmix_unit.rs`; `tutti-types/src/fold.rs`) | `Fold` is built on the control side and applied without allocating | **Fits** | Already the split: `Fold` is the model (a gain matrix), `Fold::frame` the realization. Queries: the matrix, power preservation, `FoldError`. `Fold` is in `tutti-types` and cannot implement `tutti-dsp` traits, so a one-field wrapper in `tutti-dsp` does (step 7a: `Fold` is the one order-0 map and carries a basis; there is no `GainMatrix` trait) |
 | 33 | E | `reconcile.rs` | graph editing | **No** | Modulation reconciliation (doc 014), not an algorithm |
 
 ### 3.4 Instruments and the other crates
@@ -342,7 +359,7 @@ like, per CLAUDE.md "Unit types").
 | 42 | 6 | **Stretch unit** (`tutti-sampler/src/stretch/unit.rs`; phase vocoder) | `Unit::tick`/`process`, source-pulled; latency depends on bypass | **Partly** | Fits: `(stretch factor, cents, FFT size, enabled)` to a model whose `latency` is `latency_samples()` (a function of the FFT size and whether it is processing, per the method's docs), the duration ratio, `Graded` (FFT size is the quality). Does not fit: nonlinear, so no `frequency_response`; the realization consumes at a variable rate (`input_rate`), so not an `Effect<M>`. Doc 026 gives it the shape: a `StretchDesign` with a `Retime<M>` realization (position-driven, `splice`, `reach`) |
 | 43 | E | **Sampler butler and voices** (`tutti-sampler/src/butler/`, `voice/`) | streaming I/O | **No** | I/O and scheduling, not an algorithm |
 | 44 | 1, order 0 | **VBAP** (the layout and solve in `tutti-dsp/src/spatial/`, `SpeakerLayout`; the node and the smoothing in `tutti-spatial/src/vbap/`) | `VbapPanner::solve_block` with angle smoothing over `SpeakerLayout::gains_into` | **Fits** | Design: `(azimuth, elevation, spread, width, speaker layout)` to the gain matrix. Queries: the matrix; power normalisation (`sum g^2 = 1`); at most a few non-zero speakers; continuity in azimuth. The smoothing is the realization's |
-| 45 | 1 (2) | **HRTF binaural** (`tutti-spatial/src/hrtf/`) | `HrtfBinaural`, HRIR convolution with a de-zipper | **Fits** | Design: `(azimuth, elevation, rate)` to an interpolated HRIR pair (from the sphere: data). `frequency_response` is the HRIR's FFT, `tail` is `ir_len - 1` (`ring_out`), `latency` the delay compensation. Published like row 16 |
+| 45 | 1 (2) | **HRTF binaural** (the convolver, sphere and face lookup in `tutti-dsp/src/spatial/`; the node and the de-zipper in `tutti-spatial/src/hrtf/`) | `HrtfBinaural`, HRIR convolution with a de-zipper | **Fits** | Design: `(azimuth, elevation, rate)` to an interpolated HRIR pair (from the sphere: data). `frequency_response` is the HRIR's FFT, `tail` is `ir_len - 1` (`ring_out`), `latency` the delay compensation. Published like row 16 |
 
 Whether the instruments' controls are typed units was not audited row by row.
 What the code shows: `Adsr` is `Seconds` and `Amplitude`
@@ -363,13 +380,13 @@ consolidation list.
 | # | Class | Algorithm (where) | Realization today and controls | Verdict | Design, model, queries, or why not |
 |---|---|---|---|---|---|
 | 46 | 1 | **One-pole smoothers**: `ExponentialSmoother` (`tutti-spatial/src/smoothing.rs`), `smooth_envelope` (`tutti-dsp/src/dynamics/curves.rs` ~110) | `y += c * (x - y)`, the same recurrence in both. `ExponentialSmoother` steps once per `stride` samples, has a closed form for `n` steps (`advance`, `gap_closed`) and an angle variant (`process_angle`, `advance_angle`: along the short arc). `smooth_envelope` takes `c` as an argument. The follower node (`tutti-nodes/src/signal/follower.rs`, f64 envelope, attack and release coefficients) and the polysynth's `gain_glide` (`bank.rs`) are the same recurrence with a second coefficient or a fixed time. Typed: `Seconds` | **Fits** | Class 1, order 1: a pole at `1 - c`. Design: `(time, rate, stride)` to `c`. The solve is `Seconds::one_pole_coeff` in `tutti-types` and stays there, because `Param`, dsp and the graph all need it. Queries: DC gain 1, `spectral_radius` `1 - c`, the step response reaches 63% in `time`, `tail` from the pole. The attack/release switch of a follower is row 10 (class 4); the angle variant is not LTI (the wrap is a nonlinearity on the difference) and stays in spatial as an inherent piece. The polysynth portamento (`portamento.rs`) is not a variant: it is a finite ramp shaped by `PortamentoCurve` (row 51) |
-| 47 | 6 | **HRIR resampler** (`tutti-spatial/src/hrtf/sphere.rs` `resample_into`, `resample_batched`, ~203-262) | Blackman-windowed sinc, half-width 32 zero crossings, cutoff 0.95 of the lower Nyquist, weights evaluated once per output tap and applied to a batch of responses; runs when the sphere is built, never on the audio thread | **Partly** | Class 6 with an LTI prototype (the low-pass), the same shape as row 18. It duplicates the kernel of `tutti-dsp/src/resample/fft.rs` `sinc_filter`, and its window formula (`0.42 + 0.5 cos u + 0.08 cos 2u`) duplicates `CosineWindow::BLACKMAN` (`analysis/window.rs`). The two differ in what they compute: `sinc_filter` is a fixed FIR applied in the FFT domain at a ratio of integers, this one evaluates the kernel at a fractional offset per output tap. The shared piece is the windowed-sinc kernel, not the resampler. Partly for the reason of row 18: not an `Effect<M>` |
+| 47 | 6 | **HRIR resampler** (`tutti-dsp/src/spatial/sphere.rs` `resample_into`, `resample_batched`, ~203-262) | Blackman-windowed sinc, half-width 32 zero crossings, cutoff 0.95 of the lower Nyquist, weights evaluated once per output tap and applied to a batch of responses; runs when the sphere is built, never on the audio thread | **Partly** | Class 6 with an LTI prototype (the low-pass), the same shape as row 18. It duplicates the kernel of `tutti-dsp/src/resample/fft.rs` `sinc_filter`, and its window formula (`0.42 + 0.5 cos u + 0.08 cos 2u`) duplicates `CosineWindow::BLACKMAN` (`analysis/window.rs`). The two differ in what they compute: `sinc_filter` is a fixed FIR applied in the FFT domain at a ratio of integers, this one evaluates the kernel at a fractional offset per output tap. The shared piece is the windowed-sinc kernel, not the resampler. Partly for the reason of row 18: not an `Effect<M>` |
 | 48 | 1, order 0 | **Fades and crossfades**: `CrossfadeCurve` (`tutti-graph/src/fade.rs` `gains`, ~84-96: `EqualPower`, `EqualAmplitude`), the sampler's loop-seam crossfade (`tutti-sampler/src/voice/loop_span.rs` `fade_at`, ~189-199), the wrap fade (`voice/memory_source.rs`, `clock.rs` `Wrap`, 5 ms) and a linear ramp in `voice/live_read.rs` | A gain pair per frame, `g_in(k) * a + g_out(k) * b`. `CrossfadeCurve::gains(k, len)` takes `x = (k + 1) / (len + 1)`. The wrap fade uses `EqualPower`; the loop seam and `live_read.rs` write `(k + 1) / (n + 1)` out by hand | **Fits** | Class 1, order 0, **time-varying by a prescribed schedule**: at each frame `k` a 1x2 gain row `[g_out g_in]`, so a gain matrix whose entries follow a curve. It is not class 2: `theta` is not slow, it sweeps its whole range inside the fade by design. The model is the curve pair, a pure function of `x`; the exact queries are the sum law (`g_in + g_out = 1` for `EqualAmplitude`, `g_in^2 + g_out^2 = 1` for `EqualPower`), monotonicity and the endpoints. The seam's linear weight is `CrossfadeCurve::gains` at `x` with `g_in = x`, a third variant, `Linear` (consolidation 5) |
 | 49 | E (1, order 0, time-varying) | **The engine's declick `Fader`** (`tutti-engine/src/engine.rs` ~878-940) | A gain carried across blocks, shaped per frame by a `GainPlan` of declicked commands over transport frames: a linear fall to zero on the command's frame, then a rise of `1/fade` a frame; one gain for every channel | **No** | Order-0 and time-varying like row 48, but what defines it is the plan (when a command lands, `At::NextBlock`, a late command, a jump), which is event logic over transport frames, and the only invariant is the slope bound `1/fade`. It is not a graph node (it shapes the engine's output buffer after the plan) and holds no model to query. It stays in `tutti-engine`, which owns `GainPlan` and the transport clock; the law it runs (a fall that multiplies the gain by `left / (left + 1)`, a rise that adds `1/fade`) is not a `CrossfadeCurve` |
 | 50 | M | **Level metering**: `block_stats` (`tutti-graph/src/meter.rs` ~104: peak and sum of squares, in lane order), `Ballistics`, `BallisticsState` and `step_ballistics` (`tutti-dsp/src/analysis/stereo.rs` ~159) | `block_stats` runs as the meter op in the plan (`Editor::open_meter`); `Ballistics` is the reader's | **No** | A measurement (row 23's kind): a functional of a signal, with no sound to realize. `block_stats` stays in `tutti-graph`: the meter is a plan op, and graph and dsp are both layer 2 with no edge between them, so graph cannot take it from dsp (nor from `tutti-measure`, layer 3). `Ballistics` moves with the analysis split to `tutti-measure` (section 9) |
-| 51 | 5 | **Curve shapes**: `SegmentShape` (`tutti-graph/src/event.rs` ~189-288, `eval(t)` on a segment), `LfoShape::evaluate_periodic` (`tutti-modulation/src/shape.rs` ~89, on a phase), `PortamentoCurve` (`tutti-polysynth/src/portamento.rs` ~38: `Linear`, `Exponential`, `Logarithmic` of the progress) | Three enums, each a pure function of a position in `[0, 1]` or of a phase, each in the crate that needs it. `SegmentShape` and `PortamentoCurve` share the linear, square and square-root laws (`SegmentShape::PowerIn(2.0)` is `PortamentoCurve::Exponential`, `PowerIn(0.5)` is `Logarithmic`); `LfoShape` is periodic | **Partly** | Class 5: a curve is a `Periodic` (the LFO) or a `Piecewise` (a segment) generator's own shape, with exact queries (range, endpoints, monotonicity, the Fourier series of a periodic one). Partly because of the layer table: `tutti-graph`, `tutti-modulation` and `tutti-dsp` are all layer 2 and none may depend on another, so no one of them can be the home. Moving the shape to `tutti-types` puts a function into the vocabulary crate. Consolidation 6 |
+| 51 | 5 | **Curve shapes**: `SegmentShape` (`tutti-graph/src/event.rs` ~189-288, `eval(t)` on a segment), `LfoShape::evaluate_periodic` (`tutti-modulation/src/shape.rs` ~89, on a phase), `PortamentoCurve` (`tutti-polysynth/src/portamento.rs` ~38: `Linear`, `Exponential`, `Logarithmic` of the progress) | Three enums, each a pure function of a position in `[0, 1]` or of a phase, each in the crate that needs it. `SegmentShape` and `PortamentoCurve` share the linear, square and square-root laws (`SegmentShape::PowerIn(2.0)` is `PortamentoCurve::Exponential`, `PowerIn(0.5)` is `Logarithmic`); `LfoShape` is periodic | **Partly** | Class 5: a curve is a `Periodic` (the LFO) or a `Piecewise` (a segment) generator's own shape, with exact queries (range, endpoints, monotonicity, the Fourier series of a periodic one). Partly because of the layer table: `tutti-graph`, `tutti-modulation` and `tutti-dsp` are all layer 2 and none may depend on another, so no one of them can be the home. Under A2 (section 4.5a) the shape is the *law* of a trajectory, so the model needs it and it cannot stay private to the graph; `tutti-modulation`'s `Bezier` (`shape.rs`) is a fourth copy of the family, and the home is Q25 (under study, 2026-11-11). Consolidation 6 |
 | 52 | 1, order 0 | **Strip balance law** (`tutti-nodes/src/strip.rs` `balance_gains`, `balance_side`, ~249-262) | `left = min(1, 1 - p)`, `right = min(1, 1 + p)` for pan `p` in `[-1, 1]`: unity at the centre, the far side attenuated linearly, nothing boosted | **Fits** | Row 31's design, as a law: `Pan` to a 2x2 diagonal gain matrix. Queries: the matrix, unity at `p = 0`, monotone in `p`, flat `frequency_response`. It is a pure function in a node file, which CLAUDE.md puts in `tutti-dsp`. It is not VBAP's law (row 44, power-normalised) and is not a constant-power pan |
-| 53 | 1, order 0 | **Width-only folds** (`tutti-types/src/downmix.rs`: `fold_frame_to_mono`, `fold_frame_to_stereo`; the buffer forms `fold_buffer_to_mono`, `fold_planar_to_mono`) | Fixed BS.775 matrices by source width (1, 2, 4, 6, 8, 12), applied to one frame. Callers: `tutti-nodes` `convolution/node.rs` and `downmix_unit.rs` (tests), `tutti-spatial` `hrtf/panner.rs` and `vbap/node.rs`, `tutti-types` `interleaved.rs` | **No** | The matrices `Fold` builds (row 32), for the widths that have an order, to the bit (`fold.rs` documents this for smpte and quad). A duplicate with no model of its own, scheduled for deletion; callers move to a `Fold` built on the control side. The buffer forms stay until their callers (`interleaved.rs`, `tutti-dsp`'s re-export) have moved |
+| 53 | 1, order 0 | **Width-only folds** (`tutti-types/src/downmix.rs`: `fold_frame_to_mono`, `fold_frame_to_stereo`; the buffer forms `fold_buffer_to_mono`, `fold_planar_to_mono`) | Fixed BS.775 matrices by source width (1, 2, 4, 6, 8, 12), applied to one frame. Callers: `tutti-nodes` `convolution/node.rs` and `downmix_unit.rs` (tests), `tutti-dsp` `spatial/hrtf.rs` (now a `Fold`) and `tutti-spatial` `vbap/node.rs`, `tutti-types` `interleaved.rs` | **No** | The matrices `Fold` builds (row 32), for the widths that have an order, to the bit (`fold.rs` documents this for smpte and quad). A duplicate with no model of its own, scheduled for deletion; callers move to a `Fold` built on the control side. The buffer forms stay until their callers (`interleaved.rs`, `tutti-dsp`'s re-export) have moved |
 | 54 | P (5, noise) | **Bit generators**: the polysynth unison's xorshift32 (`tutti-polysynth/src/unison.rs` ~211, `seed_rng`), `hash_bipolar` (`tutti-modulation/src/program.rs` ~805), the LCG of the room IR synthesiser (`tutti-nodes/src/convolution/ir.rs` ~80); and, already in dsp, `DitherNoise`'s xorshift32 (`dither.rs`) | Four generators. The polysynth noise oscillator runs eight xorshift32 lanes in `tutti-polysynth/src/kernel.rs` ~138 and is a SIMD realization (row 34), not a candidate | **No** | A primitive below the shape; its distribution (uniform, period `2^32 - 1` for xorshift32) is the model of the generator that uses it (rows 19, 25, 34). Targets: the unison's and the IR's generators go to dsp's xorshift (the LCG's sequence changes, so the generated IR does; nothing pins it against a reference). `hash_bipolar` is **not** a candidate for it: it is addressable, a pure function of the index, so a random wave replays after a seek and in a fork (its own docs), which a stream generator cannot do, and `tutti-modulation` may not depend on dsp |
 
 ### 3.6 Counts
@@ -395,7 +412,7 @@ with nothing to design. The survey rows (46 to 54, section 3.5) add three Fits (
 |---|---|---|---|---|
 | 1. LTI, order 1 or more | 1, 3, 11, 15, 16, 40, 45, 36 (portamento), 46 | 9 | `System`, `Lti` | the filters, delay, reverb, convolver, HRTF; all become class 2 when a lane moves a control |
 | 1. LTI, order 0 (gain matrix) | 30, 31, 32, 44, 48, 52, 53 | 7 | `System`, `Lti` | `Fold`, VBAP, strip, sum; the crossfade is order 0 with a prescribed schedule (row 48) |
-| 2. Slowly varying LTI | 12, 13 | 2 | `Lti`, `Ltv` | chorus, flanger, phaser; the FDN's modulated lines are the reverb's (row 15) |
+| 2. Time-varying (LPV) | 12, 13 | 2 | `Lti`, `Controlled` | chorus, flanger, phaser; the FDN's modulated lines are the reverb's (row 15) |
 | 3. Memoryless nonlinear | 8, 17 | 2 | `System`, `Memoryless` | waveshaper, brickwall |
 | 4. Stateful nonlinear | 2, 5, 6, 7, 9, 10 | 6 | `Wiener`, `Hammerstein`, `GainControl`, `SteadyState` (parts: `Lti`, `Memoryless`), `Readout` | the ladder only linearises to class 1 |
 | 5. Autonomous generators | 19, 25, 26, 27, 34, 35, 38, 39, 51 | 9 | `Autonomous`, `Periodic`, `Piecewise`, `Noise` | oscillators, LFOs, envelopes, noise, click waveform |
@@ -435,7 +452,7 @@ pub trait Design: Clone + Send {
     type Realization: Realization<Self::Model>;                     // generalised, section 4.3
     // engineering (section 4.4), not math:
     type Bounds: Bounds;  type Range: Copy;
-    const CADENCE: Cadence = Cadence::Block;
+    const CADENCE: Cadence = Cadence::BLOCK;
 
     fn channels(&self) -> Channels;
     fn blank(&self, rate: SampleRate) -> Self::Model;     // Network::new(rate)
@@ -569,35 +586,89 @@ How each class answers through its own structure, and what it is **not**:
   at Nyquist measured 0.46 s for 1.2 s requested at a modulation depth of 0.5, since
   a fractional delay of one half cancels a tone there and the modulation visits
   every fraction (doc 022 "Step 1c as built"). The frozen-time query
-  `Ltv::frozen(t).frequency_response` is that of the **unmodulated** realization and
+  `Controlled::at(t).frequency_response` is that of the **unmodulated** realization and
   is accurate only in the low and mid bands; at the top band the model overstates
   the decay time. The contract therefore holds the frozen queries on the static
   probes only (section 6.1) and states the band limit; a model that wants the top
   band under modulation needs an interpolation-aware `Fidelity` (the droop of the
   interpolator is already a term of `Fidelity` for the delay line, row 11).
-- **Class 2 is `Ltv`**: a linear time-varying system `H_theta(t)` with `theta(t)` slow,
-  held through its **frozen-time approximation** `frozen(t)`, the LTI system the
-  family has at time `t`:
+- **Class 2 is a linear parameter-varying (LPV) system with a known trajectory**
+  (amendment A2, 2026-11-11; it replaces the proposed `Ltv` trait and its `Variation`, which
+  were never built). The object is `x[n+1] = A(theta[n]) x[n] + B(theta[n]) u[n]`,
+  `y[n] = C(theta[n]) x[n] + D(theta[n]) u[n]`. With the trajectory `theta(t)` given it is a
+  linear time-varying system; as a family over the admissible trajectories (a rate and a range)
+  it is LPV. `theta` is exogenous: a detector-driven `theta(level)` is a different *source* of
+  `theta` (a quasi-LPV system if the loop is closed, which composition does not offer), not a
+  different class, and a settled detector is the constant trajectory (doc 028 §3.4).
+  Three statements make it precise.
+  1. **The interpolation law between samples of `theta` is part of the model, not of the
+     realization.** A model that leaves the law to the realization cannot define the system it is
+     run as, and the contract can then hold the frozen queries on static probes only. The evidence
+     that this is semantic is Q21's measurement: the same filter under a block-end ramp of its
+     *coefficients* is 15 to 17 times further from the per-sample solve than the node's
+     *parameter*-space ramp solved every 16 frames. The reference that measurement uses is the
+     model at `theta(t)`, which this class names.
+  2. **The trajectory lives in parameter space, and `design_into` maps it.** Linear
+     interpolation of two rotation matrices `R(0)` and `R(90 deg)` is `(I + R)/2` at the midpoint,
+     whose columns have norm `sqrt(1/2)`: it dips by 3 dB and is not a rotation, whereas
+     interpolating the angle and then designing keeps an isometry. Conversely a spec may
+     interpolate in decibels or entrywise. So the domain of the law is a stated choice of the
+     design (`Design::Controls` is the space), and the same piece type serves both. Row 46's angle
+     smoother (`process_angle`, along the short arc) is already a per-case choice of domain.
+  3. **Order 0 is exact; stateful is a regime.** With no state, `y[n] = M(theta[n]) x[n]` holds
+     with equality, latency is 0, tail is `Finite(0)`, and the norms over a trajectory's range are
+     suprema: `hinf_norm = sup sigma_max(M(theta))`, `l1_norm = sup (largest row sum)`. For a
+     stateful `D` the frozen-time model `at(t)` is an approximation valid when `theta` is slow
+     against the dynamics (Q23's band limit still applies), and a frozen radius below 1 does
+     **not** imply stability of the time-varying system (section 4.9).
 
-  ```rust
-  /// A linear time-varying system with slow parameters: an LFO inside a chorus, a phaser,
-  /// an FDN with modulated lines. (proposal)
-  pub trait Ltv: System {
-      fn frozen(&self, t: Seconds) -> impl Lti;            // the frozen-time approximation
-      fn variation(&self) -> Variation;                    // { rate: Hz, excursion }
-  }
-  ```
-
-  `Cadence` is how often `theta(t)` is frozen: the realization is retargeted to
-  `frozen(t)` at each sample of `t`. The contract checks the slow assumption against
-  `variation` (section 6): its rate must be small against `rate / CADENCE`. An `Lti`
-  model under a moving *control* is the same picture with `theta` written by a lane
-  instead of an LFO; it needs no `Ltv` unless the model moves `theta` itself.
+  The API is section 4.5a's. An `Lti` model under a moving *control* is this picture with
+  `theta` written by a lane; an LFO inside a model (a chorus) is the same with the LFO as the
+  source, its rate and excursion the source's `slew_bound`.
+- **Order 0 has a basis and a metric** (amendment A3, 2026-11-11; it replaces the proposed
+  `GainMatrix` trait and the Euclid-only `is_isometry` of doc 028 §3.5). A bundle of channels is a
+  vector of *coordinates* in a basis, and a gain matrix is a linear map between coordinate
+  spaces. Energy is `c^T G c` for the basis's Gram matrix `G`. Speaker feeds, ear signals and
+  object streams have `G = I`. Spherical harmonics in ACN order are diagonal and depend on
+  the normalisation: N3D coordinates have `G = I`, SN3D coordinates have `G = diag(2n + 1)` per
+  degree `n` (the same field has N3D coordinates `sqrt(2n + 1)` times the SN3D ones, and the
+  encode's column power is `order + 1` in SN3D against `(order + 1)^2` in N3D, doc 028 §3.5). **An
+  isometry is therefore relative: `M` is an energy-preserving change of basis iff
+  `M^T G_dst M = G_src`.** The N3D to SN3D conversion is the identity on the physical field and
+  an isometry in this sense, and not in the Euclid one; a decode that is an isometry in N3D
+  is not one in SN3D. The carriers are the ones that exist: `Speaker`, the per-channel meaning of
+  `ChannelTopology`, gains the variants a bundle needs (a harmonic by ACN index, an ear, an
+  object), `ChannelTopology` gains the metric (`gram`, diagonal, enough for every basis named
+  here) and a constructor for an ambisonic bundle (doc 023 G11), and `Fold` becomes the one
+  order-0 map: a validated constructor from a matrix between two topologies, `matrix`,
+  `column_power`, and `is_isometry` measured in the topologies' metrics. `Fold::between`
+  stays the default *policy* (the ITU coefficients); a decode, a pan law, VBAP, a rotation and a
+  basis conversion are `Design`s whose model is a `Fold`, differing in how they build the
+  matrix. `Series` over folds checks that one's destination topology is the next one's source,
+  so an SH bus wired to a speaker bed is refused where a width-only check passes it. `Fold`
+  moves to `f64` storage and narrows once at the apply (decided 2026-11-11, Q26). Where
+  `Fold` stops: it is an order-0 sparse map. A binaural decode from SH to ears is a
+  multi-input FIR bank (an `Lti` with 16 inputs and 2 outputs), `Series<Fold, FirBank>` or one
+  model with typed ear outputs, and its topologies still check the wiring. A graph port stays
+  per-channel and carries no meaning; the topology rides the declaration, as `MasterTopology`
+  does, and is checked on the control side. Type-level `Fold<From, To>` is refused (CLAUDE.md:
+  width is runtime).
 - **Class 4 is `SteadyState` over a composition** (section 4.9). **Class 6's trait is
   `TimeScale`** (a duration ratio and a `reach` query), with the position-driven shape
   `Retime<M>`, written in [doc 026](026-stretch.md) §3 for the stretcher; the resampler
   adopts it in step 7 (its prototype is an `Lti`), because the realization shape is not
-  `Effect<M>` and its queries are small.
+  `Effect<M>` and its queries are small. **Block-periodic systems are LTI under blocking, so
+  class 6 adds no class** (amendment A4, optional, 2026-11-11): stacking `P` consecutive samples
+  turns a period-`P` system into an LTI MIMO system with `P` inputs and `P` outputs at `1/P` of
+  the rate (polyphase blocking; a rate changer is the same lift with unequal widths). Its
+  `hinf_norm` is the induced gain of the periodic system; the phase-averaged part is the LTI
+  prototype and the aliasing terms are the other components, whose norm is the stopband of a
+  resampler and the wrap error that doc 028 §3.8 calls `Fidelity` for `StftEffect`. A
+  critically sampled filter bank reconstructs perfectly iff its polyphase matrix is
+  paraunitary, which is the isometry query again, on the lifted system. No query is added ahead of a
+  consumer: the aliasing norm lands with its first consumer, the STFT effect's `Fidelity`
+  (doc 028 §3.8), and a periodic model then states its period as `Cadence::stream(P)`. A block FIR whose block grid is a realization detail
+  (the partitioned convolver) is plain LTI, not periodic. Realizations are untouched.
 
 **Why a trait per class, with queries hanging from it.** A fat `Queries` trait
 needs a default for every query a family lacks, so a contract cannot tell "no
@@ -667,15 +738,15 @@ property of the mathematical object, and none is on a class trait.
 | `Bounds` | the sizes a realization allocates for the worst case of a design (lines, taps, IR length, max delay); `dominates` | `Design::Bounds`, `Design::bounds`, `Design::measure` |
 | `Ceiling<R>` | the limits a node builds to: the rate, the level a tail is measured to, the family's range `R` of a control (`MaxDecay` for the reverb, `MaxDelay` for a delay, `()` for a filter) | argument of `Design::bounds` |
 | `Effort` | `Light`, `Moderate` or `Heavy`: what scheduling class the realization merits | `Realization::effort` |
-| `Cadence` | how often `theta` is sampled inside a block (section 4.5) | `Design::CADENCE` |
+| `Cadence` | the grid on which `theta` is sampled: a period and an anchor (section 4.5) | `Design::CADENCE` |
 | `Quality` | which realization tier is built (section 4.7) | `Graded`, a field of the design |
 
 **Ramping is inside the realization.** Doc 022 step 1c (the FDN, PR #372) found
 that the smoothing between two retargets belongs to the realization, not the node:
 `retarget` only sets targets, and the realization moves to them (a slew of whole
-chunks that lands exactly), so `Cadence::Block` suffices for the FDN and a
-32-frame `Cadence::Every` would redesign and query the tail per chunk for
-nothing. Two consequences are in the contract (section 6.1): **the ramp's clock is
+chunks that lands exactly), so `Cadence::BLOCK` suffices for the design of the FDN and a
+32-frame `Cadence::every(32)` would redesign and query the tail per chunk for
+nothing. The chunk grid itself is a stream-anchored one (section 4.5). Two consequences are in the contract (section 6.1): **the ramp's clock is
 the stream's, not the block's** (it runs from the last reset, so blocks of 1, 17,
 64 and 512 render bit for bit alike; `block_independent` found this), and **the
 first retarget after `prepare`, `reset` or `fresh` lands at once** while later ones
@@ -688,40 +759,71 @@ that a design cannot make dominate its own designs fails `bounds_dominate` in th
 contract, as it does for the reverb today. The reverb's `Bounds` struct is
 unchanged and becomes `FreeverbDesign::Bounds`.
 
+**Caps are sizes, not theory** (amendment A5, 2026-11-11). A cap that bounds a *design* is a
+`Bounds` field sized at `prepare`, and a cap that is a host capability stays an executor
+capability. `MAX_SPEAKERS` (12, `tutti-dsp/src/spatial/layout.rs`) and `Network`'s
+`MAX_CHANNELS` (8, `tutti-dsp/src/network.rs`) exist for inline audio-thread storage and are
+bounds to lift, not design: where the audio thread can use a buffer sized at `prepare`, the
+constant is replaced by a `Bounds` value. `MAX_ROOT_CHANNELS` (8, `tutti-graph/src/editor.rs`,
+what the host that runs the executor can take, enforced at commit) and `MAX_PORTS` (64 per node)
+are the second kind, limits of the current executor and likewise to lift where a consumer needs
+more than they allow; neither is a property of any model.
 
-### 4.5 Cadence: sampling `theta(t)`
 
-A model is a system `S_theta`; in operation `theta` moves with the controls, so
-the node runs a *family*. `Cadence` is the **sampling of `theta(t)`**: the
-slowly-varying assumption made explicit as a number. It is engineering in the
-sense of section 4.4 (it schedules a realization) and mathematics in one respect:
-the family is only a good model of the running system if `theta` is slow against
-the sampling, and `Ltv::variation` lets a contract check it. In the `Ltv` reading of
-section 4.2, `Cadence` is **how often `theta(t)` is frozen**.
+### 4.5 Cadence: the time grid of `theta(t)`
 
-**Revisit: `Every` against an internal ramp.** The FDN settled it one way: design
-once per block and let the realization ramp (`Block`). Filters solve every 16
-frames *inside* a block because a lane may move the cutoff within it (the node
-reads the port at the solve points), which an internal ramp between block-end
-targets cannot see. So the two are not the same case unless the control is
-block-rate; step 2 measures whether the SVF can be `Block` with an internal
-coefficient ramp (bit-identical for a block-rate control, an approximation for a
-lane inside a block) or keeps `Every(16)` (Q21). Until then `Every(n)` stays in the
-design for the families that need it, and the reverb never uses it. **Step 2a measured it: `Every(16)`** ("Step 2 as built", Q21); the variant is added with the realization in 2b, and until then only `Block` is in the code.
+A model is a system `S_theta`; in operation `theta(t)` moves with the controls, so
+the node runs a *family*. `Cadence` is the **grid on which `theta` is sampled**: a period
+and an anchor. It is engineering in the sense of section 4.4 (it schedules a realization) and
+mathematics in two respects: the family is a good model of the running system only if `theta`
+is slow against the period (the source's `slew_bound`, section 4.5a), and the **anchor**
+decides whether the render depends on the block length.
 
 ```rust
-pub enum Cadence {
-    /// One design per block whose controls changed: reverb, delay, dynamics (today).
-    Block,
-    /// A design at the end of every segment of at most `n` frames: filters (`COEFF_INTERVAL`).
-    Every(NonZeroUsize),
+/// When theta is sampled. Replaces `enum Cadence { Block }` (amendment A1, 2026-11-11);
+/// `Design::CADENCE` keeps its name and type.
+pub struct Cadence { period: Period, anchor: Anchor }
+pub enum Period { Block, Frames(NonZeroU32) }
+pub enum Anchor { Block, Stream { offset: Samples } }   // grid at offset + k * period on the stream clock
+impl Cadence {
+    pub const BLOCK: Self;                              // Period::Block, Anchor::Block: one design per block
+    pub const fn every(n: NonZeroU32) -> Self;          // Frames(n) from the block's start: the filters
+    pub const fn stream(n: NonZeroU32) -> Self;         // Frames(n) on the stream clock: the FDN's chunks, an STFT hop
+    pub fn block_independent(self) -> bool;             // Period::Frames with Anchor::Stream
 }
 ```
+
+`Cadence::Block` and the planned `Cadence::Every(n)` of this section's earlier draft are the
+instances `BLOCK` and `every(n)`; the FDN's private chunk clock is the instance `stream(32)`;
+and the "normative cadence" some formats have is not a cadence at all but a trajectory whose
+anchor is data (section 4.5a). Only `Block` is in the code today (`model/cadence.rs`, a
+`non_exhaustive` enum), and nothing reads `Design::CADENCE` yet.
+
+**Finding (2026-11-11): two anchors already coexist, and neither is named.**
+`tutti_dsp::segments(size, solve_first)` (`control.rs:93`) steps from the *block's start*, so a
+filter's render depends on the block length (`every(16)`, `Anchor::Block`); the FDN's 32-frame
+slew is counted from the last reset, on the *stream clock*, so blocks of 1, 17, 64 and 512 are
+bit-identical (`stream(32)`; doc 022 "Step 1c as built"). Block independence is a property of the
+anchor. The contract's block-independence case (section 6.1) is therefore required iff
+`block_independent()`, and a block-anchored cadence is stated as not block independent; the filters'
+digests (`tutti-nodes/tests/filter_digests.rs`) pin `every(16)` at the block anchor, unchanged.
+Whether `every(16)` should move to a stream anchor, which would make the filters block
+independent and change their render and digests, is Q27 and is not decided here. A frame-based
+model (an STFT effect, a decimator) states its period as `Cadence::stream(hop)`; its
+`latency = size - 1` (doc 028 §3.8) is then the wait for the stream-anchored frame, derived and
+not declared.
+
+**Every against an internal ramp (decided, Q21).** The FDN settled it one way: design once per
+block and let the realization ramp. Filters solve every 16 frames *inside* a block because a
+lane may move the cutoff within it (the node reads the port at the solve points), which an
+internal ramp between block-end targets cannot see. Step 2a measured it: the filters keep
+`every(16)` ("Step 2 as built", Q21) and the reverbs stay at `BLOCK`. Step 2b0 adds the struct
+with the realization's first consumer.
 
 `DesignNode` splits a block with `tutti_dsp::segments(size, unprimed)` (it exists
 and is what `SvfFilterNode` calls) and, per segment, reads the controls at the
 segment's last frame, designs, calls `retarget` and `process` on the segment's
-slices. For `Block` that is one segment and the reverb is unchanged. For `Every(16)`
+slices. For `BLOCK` that is one segment and the reverb is unchanged. For `every(16)`
 it reproduces what the SVF does: the coefficients are solved at the solve points
 and the realization `lerp`s from the previous solve to the new one across the segment
 (`SvfCoefficients::lerp`), arriving exactly on the segment's last frame, as `Ramp`
@@ -731,9 +833,9 @@ does.
 
 **Where cadence stops.** The compressor, gate and limiter nodes take a threshold
 (and the limiter a ceiling) as a **per-frame lane** (`io.param(0).frames()`,
-`compressor.rs` line 469, `limiter.rs` line 365). `Every(1)` per-frame would pay
+`compressor.rs` line 469, `limiter.rs` line 365). `every(1)` per-frame would pay
 the node's per-segment overhead on every frame, which is exactly the fixed shape
-the owner warned against. So per-frame lanes are not a `Cadence`; they are a
+the owner warned against. So per-frame lanes are not a `Cadence` (the limit of `every`, one frame, is a lane); they are a
 second, optional realization shape (**(proposal)** `Driven<M>`: `process_driven(input,
 output, lane)`, chosen by the node on a block whose port is `Frames`), or the node
 keeps its own `process` and adopts the model and the contract only. Section 11 Q3
@@ -741,12 +843,79 @@ recommends deciding that against the code in step 4, and states the fallback,
 which loses nothing: the dynamics get their curves, readouts and contract either way.
 
 
+### 4.5a Trajectory: `theta(t)` as a signal with a law
+
+Amendment A2 (2026-11-11). Section 4.2 gives the theory (class 2: the law and its domain are part
+of the model, order 0 is exact, stateful is a regime); this is what it is made of. Every
+mechanism below exists in some form today: a trajectory piece is `tutti-graph`'s
+`ParamSegment` (`event.rs`) and its `SegmentShape`; `Controlled` is doc 028 §3.4's combinator;
+the filters' "applied controls" are fields of `ControlParams`. A2 gives them one set of
+names and deletes the proposals that were beside them.
+
+```rust
+/// A source of controls on the model's clock. (proposal)
+pub trait ControlSource {
+    type Theta: Copy;
+    /// `theta` at absolute time `t` (control side; may allocate).
+    fn at(&self, t: Samples) -> Self::Theta;
+    /// A bound on `|d theta / dt|` per frame, the declared slowness; `None` if it jumps.
+    fn slew_bound(&self) -> Option<f64>;
+}
+/// A detector in steady state: `theta` constant in `t` (doc 028 §3.4's `Controlled::at(level)`).
+pub struct Settled<D: SteadyState>(D);
+/// Sorted pieces `(start, length, from, to, law)`, in `Design::Controls`' space.
+pub struct Trajectory<T> { /* pieces */ }
+/// A model of design `D` driven by `S`. `System` always; `Lti` iff `D::Model: Lti` and `S` is `Settled`.
+pub struct Controlled<S: ControlSource, D: Design<Controls = S::Theta>> { /* source, design, rate */ }
+impl<S, D> Controlled<S, D> {
+    pub fn at(&self, t: Samples) -> D::Model;       // frozen at t; exact at order 0
+    pub fn norm_over_theta(&self) -> Norms;         // sup of hinf, l1 over the source's range; exact at order 0, a bound otherwise
+}
+```
+
+- **The law and its home.** A piece's law is a pure function of the progress in `[0, 1]`:
+  step, linear, the power and exponential shapes, Bezier, slerp for a direction. These are the
+  curve shapes of row 51 (`SegmentShape`, `LfoShape::evaluate_periodic`, `PortamentoCurve`) and
+  `tutti-modulation`'s `Bezier` (`shape.rs`), to be one set of laws (consolidation 6). The model
+  needs the law, so it cannot live in `tutti-graph`; **which crate holds it is Q25, under study
+  (2026-11-11)**, with the layer question that graph, dsp and modulation are peers at layer 2.
+  The split of `ParamSegment` is independent of the answer: a *piece* `{ from, to, length,
+  shape }` is the pure part, and the event is a piece plus an address and a position, so events
+  keep their 32 bytes and **no new `EventKind`** is needed. A vector `theta` is `N` pieces at one
+  offset; that they apply in one frame with one law is a contract case. A large `theta` (a table,
+  an IR) already has a route, the published model (section 5.3).
+- **The anchor of a trajectory is data.** A piece starts where the data says, on the stream
+  clock, so a grid derived from a parameter block's start is a trajectory whose pieces begin at
+  that frame; it needs no `Cadence`. (`Anchor::Stream { offset }` is the same thing for a
+  periodic grid.)
+- **What it subsumes, and deletes from the plan.** `Ltv` and `Variation` (never built; section
+  4.2's frozen query is `Controlled::at`, the variation the source's `slew_bound`); the proposed
+  `Scheduled<M, S>` (a schedule of models is a trajectory of controls); doc 026's `Warp` as a
+  separate trait (a monotone scalar trajectory, `Trajectory<f64>`; doc 026 and doc 028 note
+  it); the idea of sending a matrix as an event (`theta` travels and `design_into` builds the
+  matrix on the audio thread). **Not subsumed on purpose:** `Smoother` and `ExponentialSmoother`
+  (row 46) are a causal *filter* on `theta`, a class-1 system on the control signal and not a
+  law with fixed endpoints; it is an alternative realization of "applied follows target" whose
+  step response is the exponential law, and it keeps its place.
+- **The sampler.** The structure common to step 2b's blockers 1, 2, 3 and 6 is
+  `theta_applied = sampler(theta_target; grid, law, hold-state)`, whose output feeds
+  `design_into`. Today that sampler is an unnamed part of `DesignNode` and `ControlParams`;
+  here the grid is `Cadence`, the law is the piece's, and the hold-state is the source's.
+- **Queries and cases.** `at(t)` equals the realization's frozen response at grid points;
+  `norm_over_theta` is the over guarantee for a limiter ahead of a time-varying mixer; if every
+  `at(t)` is an isometry (section 4.2, order 0) the time-varying system preserves energy
+  **iff the law is applied in `theta`-space** (entrywise interpolation of an isometry is not
+  one). The contract group `Controlled` is in section 6.2.
+- **Remaining engineering limits, stated.** `ParamSegment.position` and `length` are `f32`,
+  exact to 2^24 frames (about 5.8 minutes at 48 kHz); a longer hold rounds to a few frames. An
+  exact Bezier needs a second control point the 32-byte event has no room for. Both are Q28.
+
 ### 4.6 The control side of a node
 
 `ReverbParams` (on `main`) is the `Param` cells of an algorithm and how a block
 reads them. It is generic already and gets a neutral name (`ControlParams`) and two
 changes: `read` takes the frame to read at (the segment's last frame, for
-`Every(n)`; the block's last frame, as today, for `Block`), and the `longest` hook
+`every(n)`; the block's last frame, as today, for `BLOCK`), and the `longest` hook
 becomes declarative where it can (section 8.2). `tutti-dsp` still holds no `Param`.
 
 
@@ -803,7 +972,7 @@ impl Lti    for SvfModel { /* H(z) from g, k, m0..m2; spectral_radius from the p
 impl Design for SvfDesign {
     type Controls = SvfControls;          // { ty: SvfType, freq: Hz, q: Q, gain: Db }
     type Model = SvfModel; type Realization = SvfRealization; type Bounds = (); type Range = ();
-    const CADENCE: Cadence = Cadence::Every(COEFF_INTERVAL);       // 16
+    const CADENCE: Cadence = Cadence::every(COEFF_INTERVAL);       // 16
 }
 impl Realization<SvfModel> for SvfRealization { /* retarget stores `next`; process lerps across the segment */ }
 impl Effect<SvfModel> for SvfRealization { /* svf_step over lane groups (control.rs LANES) */ }
@@ -846,7 +1015,7 @@ realizes the same model (the model does not care).
 
 | Combinator | Class of the result | Response | Latency | Tail | Stability | `l1_norm`, `hinf_norm` |
 |---|---|---|---|---|---|---|
-| `Series<A, B>` (A then B) | `Lti` if both | `H_B H_A` (a matrix product when multi-channel; exact) | `l_A + l_B` (exact) | `tail_A(f - g_B) + tail_B(f - g_A)`, where `g_X = 20 log10 max(1, l1_norm_X)`: a bound, so that the residue of each part passed through the other stays under the floor (the proof is a step-3 obligation, with the contract's measured tail as the safety net) | preserved: radius `max(r_A, r_B)` | both multiply (the norms are sub-multiplicative) |
+| `Series<A, B>` (A then B) | `Lti` if both | `H_B H_A` (a matrix product when multi-channel; exact) | `l_A + l_B` (exact) | `tail_A(f - g_B) + tail_B(f - g_A)`, where `g_X = 20 log10 max(1, l1_norm_X)`: a bound, so that the residue of each part passed through the other stays under the floor (the proof is a step-3 obligation, with the contract's measured tail as the safety net) | preserved for LTI parts: radius `max(r_A, r_B)` | both multiply (the norms are sub-multiplicative) |
 | `Parallel<A, B>` (A + B, aligned) | `Lti` if both | `H_A z^-(L - l_A) + H_B z^-(L - l_B)`, `L = max(l_A, l_B)` | `max(l_A, l_B)` (the shorter branch is delayed to align) | `max(t_A, t_B)` (tail excludes latency, so the alignment delays cancel) | preserved: `max(r_A, r_B)` | both add (triangle inequality) |
 | `SeriesN<M, N>` (N of one model, a runtime count up to `N`) | `Lti` if `M` is | product over the bands | sum | as `Series` | preserved | both multiply |
 | `Wiener<L, S>` (LTI then static map) | class 4: `SteadyState` (not `Memoryless`: it has memory) | no response (nonlinear); the steady-state characteristic is `S(L.dc_gain * x)` | `L`'s | `L`'s | bounded if `L` is stable and `S` has a finite `max_gain`: `peak_gain = l1_norm(L) * max_gain(S)` | |
@@ -877,6 +1046,19 @@ a bound that depends on the loop), so the FDN's recirculation stays inside its
 model as structure, and a user-level feedback composition is not offered (Q17).
 Series and parallel of LTI models preserve stability exactly; that is the property
 the algebra is built on.
+
+**Time variation does not carry over (2026-11-11).** The stability column above is a statement
+about LTI parts. A `Series` or `Parallel` of stateful time-varying parts (class 2, a `Controlled`
+over a stateful design) does not inherit it: each part's frozen radius below 1 does not imply
+stability under time variation (a switched linear system needs a common Lyapunov function or a
+dwell time), and a composite's frozen radius is not enough either. This is an obligation, not a
+theorem: a time-varying composite claims stability only with its source's `slew_bound` and a
+dwell-time or common-Lyapunov argument for the design, and until a design carries one the
+contract's measured-stability case (a long run of noise along the extreme trajectories) is the
+safety net, as the measured tail is for the `Series` bound. **Order 0 is exact.** With no state,
+latency is 0, the tail is `Finite(0)` and the radius is 0, norms over a trajectory are suprema
+and multiply along a `Series`, and the open tail obligation above is vacuous for a series of
+order-0 parts. That is why a matrix pipeline (section 4.10) composes without a new argument.
 
 **Realizations compose by the same rule, optionally.** A `Series` realization runs its parts'
 realizations in order over a scratch plane and a `Parallel` realization runs both and sums,
@@ -915,6 +1097,45 @@ compositions a design fixes in its type.
    the slowest. A chain of *separate graph nodes* is the application's product of
    each node's `Describe::curve` (they are different nodes; no model spans them).
    There is no `Chain` model to invent.
+
+
+### 4.10 A stress test: IAMF
+
+IAMF (Immersive Audio Model and Formats, with its renderer specification OAR) was read as a test of
+this design on 2026-11-11, **not as a build commitment**. The test found the three gaps that
+amendments A1 to A3 close, and its result is that after them every linear stage of IAMF is a
+composition of models of this document, with no concept added. The spec's own observation is
+the same: every normative operation except the codecs is an order-0 matrix, a scalar gain
+schedule or an FIR bank. Facts below are from the IAMF 2.0 text and OAR as read in
+`iamf-spec-pipeline.md`; in version 2.0 the default renderer (OAR) is normative, and the
+BS.2127 renderer's HOA decoder is AllRAD.
+
+| Stage | Model | Why it fits |
+|---|---|---|
+| Codec packets (Opus, AAC, FLAC, PCM) | not a model | a codec is nonlinear, lossy and bitstream-driven; outside |
+| Demix | `Controlled<Trajectory<Index>, DemixDesign>`, model a `Fold` | one value per frame, applied without interpolation: a piecewise-constant schedule with state (the weight index is a saturating counter, nonlinear in the *parameter* and linear in the signal). Order 0, so exact |
+| Recon gain | `Controlled<Trajectory<Gains>, GainDesign>`, a diagonal `Fold` | one value per frame with a fixed crossfade at the frame head (a window length the spec recommends); the window is a piece anchored at the frame boundary, data and not a cadence |
+| Mix gain | `Controlled` over a `Trajectory` of gains | step, linear, slerp and Bezier, interpolated per sample on `floor(t * fs / parameter_rate)` from the parameter block's start: an **anchored grid** (A1), with the law in decibels, i.e. **in parameter space** (A2, `design_into` converts to amplitude); the reference renderer interpolates in dB |
+| Channel render, scene decode, object pan | `Fold`s typed by topologies; AllRAD as `Series<ShDecode, VbapColumns>` | the basis and metric of A3; the SH bus into a bed is refused by the topology check |
+| Mix | `Parallel` of the above; the sum is the graph's fan-in `Op::Sum` | |
+| Binaural | `Series<Controlled<Quat, ShRotation>, SH-to-ear FIR bank>` | the rotation is order 0 and exact; the bank is an `Lti` with typed ear outputs and needs a multi-input FIR realization |
+| Limiter | class 4 `GainControl` | no frequency response by design |
+
+**Placement, as planned and not built.** The bitstream is data at layer 2, as `tutti-sf2` is the
+SoundFont file as data (a crate named `tutti-iamf` in the plan); `tutti-codec` grows a packet
+API and a multi-track ISOBMFF layer; demix and recon gain are `Fold`s with a basis; at runtime
+the parameter blocks ride the existing `ControlProgram` and `ControlLaneNode`; loudness stays in
+`tutti-measure`. There is no player crate.
+
+**Correctly outside the abstraction.** The codecs; the bitstream and the container; loudness, a
+measurement (class M). **Remaining gaps, neither a design gap:** the packet-level decode API in
+`tutti-codec` (decode there is file-shaped today), and the binaural data and conformance
+question: conformance is PSNR-based against the spec's vectors (above 80 dB for lossless), not
+bit-exact, and the spec permits a clean-room binaural renderer (OAR §9), checked perceptually.
+AOM publishes a reference renderer in Rust (`AOMediaCodec/roar`); it exists as a reference to
+read, and tests here come from the spec and its conformance vectors, never from matching it.
+Whether a non-exact law (a Bezier as linear pieces, the `f32` position of section 4.5a) is within
+that tolerance is Q28.
 
 
 ## 5. The generic node
@@ -1019,7 +1240,7 @@ figure replaced where it was one:
 | Bounds dominate | `bounds()` holds `measure(design())` for every reachable control | undersize by one |
 | Latency | `Realization::latency()` equals `System::latency()` equals the measured shift of the first output sample | return 0 |
 | Reset, fresh | bit-identical to a freshly built realization at the same controls | `reset` does nothing; `fresh` shares state |
-| Block independence | blocks of 1, 17, 64, 512 bit-identical (time-domain realizations; a convolver within a declared round-off) | a block-dependent ramp |
+| Block independence | blocks of 1, 17, 64, 512 bit-identical (time-domain realizations; a convolver within a declared round-off); **required iff `Cadence::block_independent()`**, and a block-anchored cadence is stated as not block independent (section 4.5) | a block-dependent ramp |
 | Click-free retarget | a step of the controls mid-signal: the largest jump within a small factor of the steady-state bound | apply a coefficient unslewed |
 | No allocation | `retarget` and `process` under `assert_no_alloc` with changing models | n/a (it is the gate) |
 
@@ -1046,7 +1267,7 @@ own `tests/` file.
 | Class | Design case (no realization) | Realization case (realization against model) | Mutant pattern |
 |---|---|---|---|
 | **`Lti`** (1; also 2 at frozen `theta`) | `spectral_radius` below 1 on the whole reachable grid and the radius is a true bound on the poles where they are cheap; `frequency_response` at the family's **anchors** equals the spec (LP at `fc` is -3.01 dB at Butterworth Q; a bell's centre is its gain; a shelf is half its gain at `fc`; LR4 is -6.02 dB at `fc` and the bands sum flat); `tail` non-decreasing along the family's slower pairs; order 0: `spectral_radius == 0`, `tail == 0`; `hinf_norm <= l1_norm` | **Membership:** the realization is linear (`f(a+b) = f(a)+f(b)`, `f(ka) = k f(a)`) and shift-invariant (a delayed input gives the delayed output) at the frozen setting, within rounding. **Response:** the `RealFft` of the impulse response against `frequency_response`, magnitude (and phase where declared) on a log grid. **Ring time:** the measured decay rate against `spectral_radius`, the measured time to -40, -60, -90 dB within `tail(floor)` (covers) and `tail` not above a declared slack over it (tight). **Stability and `l1_norm`:** 60 s of noise at the extreme controls finite and under `l1_norm` (the guarantee against overs). **`hinf_norm`:** the measured peak of the response grid is under `hinf_norm` and `hinf_norm` is not above a declared slack over it (what an EQ display scales to); a model that returns the default (`l1_norm`) fails the tightness case if it claims otherwise. **DC:** the measured DC gain against `dc_gain` | add a `tanh` (membership fails); detune the cutoff 2% (response fails); halve `tail` (covers); double it (tight); a pole outside the unit circle (stability) |
-| **`Ltv`** (2) | the declared `variation` rate is slow against `rate / CADENCE` | at a segment's end the realization's frozen response **is** the model's (a response check after the segment) | a realization that never reaches the target |
+| **`Controlled`** (2) | the source's `slew_bound` is slow against the period of `CADENCE`; order 0: `norm_over_theta` is the supremum over the range | (i) at the grid points the realization's frozen response **is** `design(theta(t))`'s (a response check after the segment); (ii) a step trajectory lands exactly on its frame; (iii) a trajectory crossing a block edge equals the same trajectory inside one block; (iv) a law applied in `theta`-space keeps an isometry at every frame (an energy check along a rotation); (v) a vector `theta` of `N` pieces at one offset changes in one frame | a realization that never reaches the target; a step one frame early; a ramp that restarts per block; a ramp in matrix space for a rotation (an energy dip at the midpoint); one lane offset by a frame |
 | **`Memoryless`** (3) | monotone where the family says; `max_gain` bounds `eval` (the over guarantee) and `lipschitz` bounds the slope between sweep points; the limiter's output never above the ceiling; a shaper's symmetry and bound | **Memoryless:** shuffling the input samples shuffles the output (no state). **Level sweep:** a steady tone or DC at each level against `eval(level)`, exact to the ulp for a memoryless realization. **Harmonics:** the DFT of a sine through the realization against `harmonics`; DC against `dc` | threshold +1 dB; ignore the knee; make it stateful |
 | **`SteadyState`** (4: `Wiener`, `Hammerstein`, `GainControl`; **not** the memoryless check, which a stateful composite fails by construction) | the steady-state characteristic of the composite equals the map at the LTI part's DC gain; `peak_gain` bounds it (the over guarantee: the sweep's peak output at `|x| <= 1`); `time_constants` are non-negative | **Settled-level sweep:** a steady tone or DC at each level, run for at least five of the slowest time constant, against `steady_state(level)`; **step response** reaches 63% in the LTI part's time constant; `Readout::take` equals the curve at the level and equals the gain measured on the output (two realization facts that must agree); `take` clears what it took | threshold +1 dB; flip the readout's sign; report the gain before makeup |
 | **`Periodic`** (5) | `harmonic(k)` decays as the family says (saw `1/k`) | the measured fundamental (autocorrelation) against `frequency`; the DFT lines against `harmonic(k)`; the aliasing floor against `Fidelity` | detune the phase increment; drop the band-limiting |
@@ -1204,7 +1425,7 @@ is measured except that row**; each step measures its own and records it here.
 | Family | A design solves | Cadence | Smoothing policy | Tail query |
 |---|---|---|---|---|
 | Reverb | a few hundred float ops per line; `tail` dominates | `Block` | Freeverb steps; the FDN ramps lengths and `lerp`s absorption (022 sections 10.2, 10.3) | libm per band: skip in a block that cannot lengthen it |
-| SVF, biquad, ladder | one `tan` (and a `powf` for gain) per solve (`svf.rs`) | `Every(16)` | coefficient `lerp`, arriving exactly at the segment end | pole radius: one `sqrt`, one `ln` |
+| SVF, biquad, ladder | one `tan` (and a `powf` for gain) per solve (`svf.rs`) | `every(16)` | coefficient `lerp`, arriving exactly at the segment end | pole radius: one `sqrt`, one `ln` |
 | Crossover | a `tan` per split | `Block` today (`block_driven`) | re-solve at the block's target | as the filters |
 | Compressor, gate, limiter | trivial arithmetic | `Block`; a per-frame threshold lane is a second shape (4.5) | the follower smooths; makeup ramps across the block (`CompressorBlock::makeup_from/to`) | zero |
 | Delay, chorus | trivial | `Block` | a per-channel `Ramp` of the time, fractional reads, so a moving length is a pitch bend (022 section 10.3) | `time x trips` |
@@ -1242,7 +1463,7 @@ interpolate the coefficients. The SVF already measured it (`control.rs`,
 `COEFF_INTERVAL`): per-sample solving is the dominant cost of a modulated SVF (a
 `tan` per sample); solving every 16 frames and interpolating costs a quarter of a
 64-frame block's `tan`s, with 3e-5 worst error on a 200 Hz to 8 kHz sweep in 85 ms
-(4.6e-4 at 64 frames, exactly 0 at 1). So **interpolate**, at `Every(16)`. The
+(4.6e-4 at 64 frames, exactly 0 at 1). So **interpolate**, at `every(16)`. The
 guarantee the contract holds is the one that matters for correctness: at a
 segment's end the realization's frozen response **is** the model's (an `Lti::frequency_response` check
 after the segment), so the interpolation can never leave the filter at a setting
@@ -1277,10 +1498,12 @@ Layering per CLAUDE.md and `scripts/check-layout.sh` (lines 381 to 383:
 
 | Item | Crate | Layer | Check |
 |---|---|---|---|
-| `Design`, `Realization<M>`, `Effect<M>`, `Setup`, `Channels`, `Ring`; the class traits (`System`, `Lti`, `Ltv`, `Memoryless`, `SteadyState`, `Autonomous`, `Periodic`, `Piecewise`, `Noise`), `Fidelity`, `Readout`, `Graded`; the combinators (`Series`, `Parallel`, `SeriesN`, `Wiener`, `Hammerstein`, `GainControl`); the engineering items (`Bounds`, `Ceiling<R>`, `Effort`, `Cadence`); `Complex64` use | `tutti-dsp`, a neutral module (`model`), exported at the crate root | 2 | no new tutti edge; `forbid(unsafe_code)`; no atomics or `Arc`-published state; every control arrives per call |
+| `Design`, `Realization<M>`, `Effect<M>`, `Setup`, `Channels`, `Ring`; the class traits (`System`, `Lti`, `Memoryless`, `SteadyState`, `Autonomous`, `Periodic`, `Piecewise`, `Noise`), `Fidelity`, `Readout`, `Graded`; the combinators (`Series`, `Parallel`, `SeriesN`, `Wiener`, `Hammerstein`, `GainControl`); the engineering items (`Bounds`, `Ceiling<R>`, `Effort`, `Cadence` with its anchor); `ControlSource`, `Settled`, `Controlled`; `Complex64` use | `tutti-dsp`, a neutral module (`model`), exported at the crate root | 2 | no new tutti edge; `forbid(unsafe_code)`; no atomics or `Arc`-published state; every control arrives per call |
 | The families' models and designs | `tutti-dsp` (`filter/`, `dynamics/`, `delay`, `waveshape`, `convolver`, `reverb`, `resample/`, `dither`, and by the consolidation below the smoother, the biquad, `LimiterKernel`, the vocoder parts) | 2 | pure algorithm over slices; a node file holds only the adapter (CLAUDE.md) |
 | `contract` module: core cases, class groups, `design_contract!`, `realization_contract!`, `no_alloc_contract!`, the measuring helpers, `Defect` and `Flawed` | `tutti-dsp`, behind a `contract` feature (off by default; `rand` becomes an optional dependency of it) | 2 | the precedent is `tutti-graph`'s `contract` feature (`lib.rs` lines 201 to 222; `tutti-nodes` turns it on in its dev-dependencies) |
 | `Quality` | `tutti-types`, beside `RenderMode` | 1 | vocabulary only |
+| The trajectory and its laws (`Piece`, `Trajectory`, the curve shapes of row 51 and `tutti-modulation`'s `Bezier`) | **Q25, under study (2026-11-11)**: `tutti-modulation`, `tutti-types`, a crate made from `audio-automation`, or `audio-automation` kept external | 1 or 2 | the layer question of Q25; the model needs the law, so not `tutti-graph` |
+| The basis and metric (`Speaker` variants, `ChannelTopology::gram`, the ambisonic constructor) and `Fold` as the one order-0 map, in `f64` | `tutti-types`, where `Fold` and `ChannelTopology` are | 1 | vocabulary plus `Fold`'s apply, which CLAUDE.md already names; the dsp-side `System`/`Lti` impls are on a one-field wrapper in `tutti-dsp` |
 | `DesignNode<D>`, `NodeDesign`, `ControlParams`, `Blend`, `DryWet`, `NoBlend`, `Readouts`, `DryAlign`, `node_contract!` | `tutti-nodes` (`node_contract!` behind `testing`) | 4 | the node holds the adapter only |
 | `Describe`, `Curve`, `ReadoutReader`, the session read | `tutti-session` (with doc 023's `Display`) | 7 | Bevy-free, re-exports no crate whole |
 | The analysers (`analysis/` less `window`, `geometry`, `grid`, `error`) | `tutti-measure` (landed, #376), depending on `tutti-dsp` | 3 | the analysis split below; `ebur128` moves with it |
@@ -1343,7 +1566,7 @@ class trait; they are what step 0b and the later steps (section 10) move.
 | 3 | The width-only folds in `downmix.rs` (row 53) | Deleted; callers (`convolution/node.rs`, `hrtf/panner.rs`, `vbap/node.rs`, `interleaved.rs`, the `downmix_unit.rs` tests) build a `Fold` on the control side | **Landed (#446).** The buffer forms (`fold_buffer_to_mono`, `fold_planar_to_mono`) have the same callers to move; `Fold` reproduces the frame forms to the bit for smpte and quad (`fold.rs`) |
 | 4 | **Landed.** The SoundFont RBJ low-pass biquad (row 40, `tutti-soundfont/src/bi_quad_filter.rs`) | A `tutti-dsp` biquad (a realization of row 1's model); `tutti-soundfont` gains the `tutti-dsp` edge row 40 already names | The output may change in the last bits (a different summation order or form), so the soundfont's digests move and are re-recorded for an argued reason, not pinned against the old render. The rustysynth MIT header (`LICENSE-RUSTYSYNTH.txt`) moves with the code if any of that file does |
 | 5 | The sampler's loop-seam crossfade (`loop_span.rs` `fade_at`) and the linear ramp in `live_read.rs` (row 48) | `CrossfadeCurve::Linear`, a third variant of `tutti-graph`'s `CrossfadeCurve` (`gains` at `x`: `g_in = x`, `g_out = 1 - x`); the wrap fade already uses `EqualPower` | None. Layer 5 over layer 2. The seam's weights are `(k + 1) / (n + 1)`, which is `x` of `gains` to the bit |
-| 6 | One home for the curve shapes (row 51: `SegmentShape`, `LfoShape::evaluate_periodic`, `PortamentoCurve`) | One module, one set of laws | **The layer table.** graph, modulation and dsp are all layer 2 with no edge between them; `tutti-types` is vocabulary only. Decide with Q25 |
+| 6 | One home for the curve shapes (row 51: `SegmentShape`, `LfoShape::evaluate_periodic`, `PortamentoCurve`, and `tutti-modulation/src/shape.rs`'s `Bezier`), which under A2 are the laws of a trajectory (section 4.5a) | One module, one set of laws; it lands in step 2b0 | **Q25, reopened and under study (2026-11-11).** The layer table (graph, modulation and dsp are all layer 2 with no edge between them; `tutti-types` is vocabulary only) and the owner's lean toward `tutti-modulation`, possibly with `audio-automation` copied in |
 | 7 | The PRNGs (row 54): the polysynth unison's xorshift and the IR synthesiser's LCG | `tutti-dsp`'s xorshift (`DitherNoise`'s generator, factored out) | Low value. The LCG's sequence changes, so the generated IR does. `hash_bipolar` is excluded: it is addressable and `tutti-modulation` may not depend on dsp |
 | 8 | The stretch vocoder, `OverlapAdd` and `SampleFifo` (`tutti-sampler/src/stretch/vocoder.rs`, `buffers.rs`) | `tutti-dsp`, next to `StftGeometry`; the source-pulled `Unit` stays in the sampler | Lands with step 6 (the STFT processors). **Struck (owner, 2026-11-10).** Doc 026 stage 4 deletes the old vocoder and `crates/tutti-sampler/src/stretch/` whole, so moving it first would move code only to delete it. The new vocoder is written in `tutti-dsp` by doc 026 stage 2 |
 | 9 | The limiter's recursion (row 7) | A `LimiterKernel` in `tutti-dsp/src/dynamics/`, as `CompressorKernel` and `GateKernel` are; the node keeps the `Param` and lane reads | **Landed (#443).** None. Pin it by the node's digest before and after |
@@ -1403,12 +1626,14 @@ test compares a render against another reference render.
 | 0 | This document | | | |
 | 0b | **Split and consolidate the code the survey found (section 9), before step 1.** **The split has landed (#376: `tutti-measure`, layer 3, `check-layout.sh` places it), and so have consolidations 1 (#448), 2 (#451), 3 (#446), 9 (#443) and 10 (#444); the `tutti-dsp` `Error` split (#452) followed as a PR of its own, not a numbered consolidation.** The `tutti-measure` split (layer 3, over `tutti-dsp`; `window`, `geometry`, `grid` and `error` stay), then consolidations 1 (HRIR sinc onto dsp's resampler and `CosineWindow`), 2 (`Smoother`), 3 (delete the width-only folds, callers onto `Fold`), 9 (`LimiterKernel`) and 10 (the phaser sweep mapping and the strip balance law). Each is its own PR, the split first. The split PR updates CLAUDE.md and `scripts/check-layout.sh`; the rest are code moves under existing rules | `tutti-dsp/src/analysis/` to `tutti-measure`; `tutti-spatial` `hrtf/sphere.rs` and `smoothing.rs`; `tutti-types/src/downmix.rs` and its callers; `tutti-nodes` `dynamics/limiter.rs`, `modulation/phaser.rs`, `strip.rs` | The split: the workspace builds and tests with the same tests, unmoved; `check-layout.sh` places the crate. Each consolidation: the moved code's own tests, unchanged (never edited to pass); a digest of the node's render before and after where the output must not change (limiter, strip, phaser; golden-guarded where it calls libm); the HRIR resampler against its analytic anchors (unity DC gain, the response of the windowed sinc), not against the old output | #367 (merged) |
 | 1 | **Landed: 1a (renames) and 1b (the model; see "Step 1b as built" below).** **Generalise on the reverb, which answers as `Lti`. Two PRs: 1a (the renames below marked "renamed in this step", landed as a renames-only PR with the port order pinned first) and 1b (the model).** The neutral `model` module: `Design`'s `type Model`, `blank`, `measure`, engineering `Bounds`/`Range`; the class traits `System` and `Lti` (`Memoryless` and `Autonomous` are not added until they have an implementer); `Realization<M>` and `Effect<M>` (**the code's `Kernel`, on `main` since #367 and reverb only, is renamed `Realization` in this step**, with `Design::kernel` to `Design::realization`, `kernel_contract!` to `realization_contract!` and `KernelCase` to `RealizationCase`; doc 022 and CLAUDE.md are updated in the same PR. `Effect<M>` **keeps its name**: it names the planar block shape (an audio effect), which is engineering, not a term the math conventions use for something else; recommend keeping it), `Ceiling<R>`, `Cadence` (only `Block` used); `Network: System + Lti` (`frequency_response` from the comb sums and the FDN solve over its own lines, `spectral_radius` from `rt60_bound`, `gain_bound` from the L1 bound `peak_bound` already computes, and `hinf_norm` the same figure until a tighter one exists); the `contract` feature with core and `Lti` groups and the reverb-only cases split out, including the three cases the FDN (PR #372) found (section 6.1): **landed**, the **stream clock** for ramps, and the **vacuity** hook; `ReverbNode` to `DesignNode` with `DryWet`, `NoBlend` and `()` as `Readouts`; the renames of section 9. The polysynth's `kernel.rs` is not renamed here: it holds oscillator functions, implements no `Kernel`, and its name is the step 7 PR's to settle | `network/{design,kernel,contract,kernel_contract,queries}.rs` (the files keep their names or are renamed with their types, the PR's choice), `tutti-nodes/src/reverb.rs`, `dry_align.rs` | The GM digest `the_general_midi_send_renders_what_it_always_did` and `retargeting_to_the_general_midi_network_changes_no_coefficient` pass unchanged; every 022 case passes under its new name and still fails its `Defect`; the new `Lti` group passes on Freeverb (response at the comb frequencies, measured decay against `spectral_radius`, linearity and shift invariance) and fails a defective realization; `tests/reverb_node*.rs` pass; port order pinned. The FDN's contract workarounds (fit depth, tone probes, static probes, the 15% RT60 tolerance) exist only because the model has no `frequency_response`; the solve below retires them. Risk named: `Network::frequency_response` for a mixing FDN is a control-side solve per frequency (64x64 at most). If it proves too large, `frequency_response` splits into a sub-trait `Spectral: Lti` and the reverb implements it in 1c | #367 (merged); ideally 1c (PR #372, the FDN) so **two reverb realizations** run the traits; if 1c is not in, the test-only `ToyFdn` is the second |
-| 2 | **2a landed (the models and `Biquad`, and Q21 by measurement; see "Step 2 as built"); 2b open: the `Design`, the realization, `Cadence::Every(16)` and the node migration, together, once `DesignNode` has the five pieces listed under "What 2b has to solve".** **Filters (SVF, ladder, LR crossover), with several realizations of one H(z).** `SvfModel`, `LadderModel` (small signal, class 1 by `Linearised`), `CrossoverModel`; `Cadence::Every(16)` in the node, **or the same ramp inside the realization at `Cadence::Block`** (decided by measurement in this step, Q21); separate the crossover's design from its state; **a transposed-direct-form-II biquad realization and a lattice realization as second and third realizations of `SvfModel`'s response** (test-support realizations in `tutti-dsp`), so the `Lti` group is run on three realizations of one H(z) and the model is shown to be the equivalence class; `Describe::curve` and `Curve::Magnitude`; `ControlParams::snapshot`. **Consolidation 4 landed with this step**: the SoundFont's RBJ biquad is deleted; the voice takes `SvfModel::biquad()` and runs it in `DirectForm1`, both `tutti-dsp`'s. **Delivers G8** | `filter/*.rs` in `tutti-dsp`; `SvfFilterNode`, `LadderFilterNode`, `CrossoverNode`, `EqBandNode` become `DesignNode` aliases | The `Lti` group on all three realizations (mutants: a 2% cutoff error, a `tanh` in the loop); analytic anchors; ring time from the slowest pole against the measured tail; node digests (golden-guarded, `tan`) before and after, including a swept-cutoff block, which pins that `Every(16)` is the old schedule; the segment-end case | 1 |
+| 2 | **2a landed (the models and `Biquad`, and Q21 by measurement; see "Step 2 as built"); 2b open: the `Design`, the realization, `Cadence::every(16)` and the node migration, together, after step 2b0 (or in its PR) and once `DesignNode` has the three pieces 2b0 does not supply (tail and park, the public API, `DryWet`; see "What 2b has to solve").** **Filters (SVF, ladder, LR crossover), with several realizations of one H(z).** `SvfModel`, `LadderModel` (small signal, class 1 by `Linearised`), `CrossoverModel`; `Cadence::every(16)` in the node, **or the same ramp inside the realization at `Cadence::BLOCK`** (decided by measurement in this step, Q21); separate the crossover's design from its state; **a transposed-direct-form-II biquad realization and a lattice realization as second and third realizations of `SvfModel`'s response** (test-support realizations in `tutti-dsp`), so the `Lti` group is run on three realizations of one H(z) and the model is shown to be the equivalence class; `Describe::curve` and `Curve::Magnitude`; `ControlParams::snapshot`. **Consolidation 4 landed with this step**: the SoundFont's RBJ biquad is deleted; the voice takes `SvfModel::biquad()` and runs it in `DirectForm1`, both `tutti-dsp`'s. **Delivers G8** | `filter/*.rs` in `tutti-dsp`; `SvfFilterNode`, `LadderFilterNode`, `CrossoverNode`, `EqBandNode` become `DesignNode` aliases | The `Lti` group on all three realizations (mutants: a 2% cutoff error, a `tanh` in the loop); analytic anchors; ring time from the slowest pole against the measured tail; node digests (golden-guarded, `tan`) before and after, including a swept-cutoff block, which pins that `every(16)` is the old schedule; the segment-end case | 1 |
+| 2b0 | **The time grid and the trajectory (amendments A1 and A2 of 2026-11-11), before 2b or in its PR.** (A1) `Cadence { period, anchor }` replaces the enum (`BLOCK`, `every`, `stream`, `block_independent`), `DesignNode` reads `Design::CADENCE` for the first time, and the block-independence case becomes required iff `block_independent()`. (A2) The trajectory and its laws (one set: `SegmentShape`, `LfoShape`, `PortamentoCurve` and `tutti-modulation`'s `Bezier`; consolidation 6, home per Q25), `ParamSegment` split into a pure piece plus an address and a position (32 bytes kept, no new `EventKind`), `ControlSource`, `Trajectory` and `Controlled<S, D>` in `tutti-dsp`'s `model` (doc 028 §3.4's `Controlled` is this type, built once: its `Settled` source lands with the dynamic EQ, doc 028 C1). `ControlParams` reads the *applied* controls through the source. `Ltv`, `Variation` and `Scheduled` are not built | `tutti-dsp/src/model/cadence.rs` and a new source module; the law's home (Q25); `tutti-graph/src/event.rs`, `tutti-modulation/src/shape.rs`, `tutti-polysynth/src/portamento.rs` | The `Controlled` group of section 6.2 with its mutants; the existing tests of each law moved unchanged, and digests of segment, LFO and portamento renders before and after consolidation 6; `filter_digests.rs` unchanged (`every(16)` at the block anchor); a trajectory crossing a block edge against the same inside one block | 2a; consolidation 6 once Q25 is answered |
 | 3 | **Composition, first consumer the parametric EQ.** `Series`, `Parallel`, `SeriesN` and their realizations (two realizations in order; two summed), with the algebra as free functions over `Lti` parts that `Network`'s stage fold also uses; a parametric EQ design whose model is `SeriesN<SvfModel, N>`; the `Series` tail bound proof. Reverb step 3b (early reflections as `Parallel<Taps, Network>`) is then unblocked and is doc 022's own PR | `tutti-dsp` `model` module, a new EQ design in `filter/` | The algebra laws as unit tests (response of `Series` is the product of the parts' responses at random points; `Parallel` aligns latency; stability preserved); the composite passes the unchanged `Lti` group; the tail bound against the measured tail on random pairs; mutants: sum the latencies in `Parallel`, drop the alignment | 2 (and the reverb's 1b for the 3b consumer) |
 | 4 | **Dynamics: compressor, gate, limiter, brickwall (class 3 and 4).** `SteadyState`, `Wiener`, `Hammerstein`, `GainControl` (over the memoryless `Memoryless` for the brickwall and the gain maps), `Readout`, `Readouts` publishing through `level_cell`, `Describe::readout`, `Curve::Transfer`. Decide `Driven<M>` against the code (Q3). Gate hold and the limiter's windowed minimum stay inherent (they are class E and a nonlinear operator). **Delivers G9** | `dynamics/*.rs`; the dynamics nodes | The class-4 settled-level sweep and step response (mutants: threshold +1 dB, ratio off, knee ignored); the readout equals the measured gain; node digests; the `multiband` readout test unchanged | 3 (`Wiener`), 2 (the `Describe` plumbing) |
-| 5 | **Delay, chorus, flanger, phaser (class 1 and 2); the waveshaper (class 3).** `Ltv`; the frozen comb and all-pass `frequency_response`; the waveshaper's `Memoryless` with its harmonics and `Fidelity`; `Graded` for oversampling if the realization gains it | `delay.rs`, `swept_delay.rs`, `allpass.rs`, `waveshape.rs` and their nodes | Comb response against the FFT; notch frequencies; the slow-variation case; DC and odd-symmetry cases; the aliasing case; digests | 2 |
+| 5 | **Delay, chorus, flanger, phaser (class 1 and 2); the waveshaper (class 3).** `Controlled` over an LFO source; the frozen comb and all-pass `frequency_response`; the waveshaper's `Memoryless` with its harmonics and `Fidelity`; `Graded` for oversampling if the realization gains it | `delay.rs`, `swept_delay.rs`, `allpass.rs`, `waveshape.rs` and their nodes | Comb response against the FFT; notch frequencies; the slow-variation case; DC and odd-symmetry cases; the aliasing case; digests | 2 |
 | 6 | **Convolver, HRTF (class 1, published model).** The published control path (5.3), `FirSummary` unified with the convolver's model, `Graded` for the partition; `ReverbKind` gains the convolution variant (doc 022 step 2). Consolidation 8 is struck (owner, 2026-11-10): doc 026 stage 4 deletes the old stretch vocoder, so it is not moved | `convolver.rs`, `ConvolverNode`, `tutti-spatial` hrtf | `frequency_response` against the IR FFT; `latency` = `B`; a `Loan` is never parked; the export-fork test | 1 and doc 022 step 2 |
-| 7 | **The rest, each in the PR that needs it, in this order:** resampler (class 6, own shape trait; `Fidelity`, `Graded`, latency; used by export); panners and fold (class 1 at order 0); envelopes, oscillators, LFOs and noise (class 5: `Autonomous`, `Periodic`, `Piecewise`, `Noise`, in `tutti-polysynth` and `tutti-soundfont`, the latter gated on a `tutti-dsp` edge); stretch; dither | per family | per family, with a mutation record | the step 1 shape |
+| 7a | **Basis and metric (amendment A3, 2026-11-11), before the panners and before doc 028's ambisonics (F1a).** `Speaker` gains `Harmonic { acn }`, `Ear` and `Object` (renaming it `Channel` is a mechanical edit); `ChannelTopology` gains `gram` (the metric, diagonal) and the ambisonic constructor (doc 023 G11); `Fold` gains `from_matrix(src, dst, m)` (validates width **and** topology agreement), `matrix`, `column_power` and `is_isometry(tol)` relative to the metrics, and **stores `f64`, narrowing once at the apply** (decided 2026-11-11, Q26: it changes a shipped type). `Fold::between` stays the default policy. The `System`/`Lti` impls for order 0 are on a one-field wrapper in `tutti-dsp` (`Fold` is below it, row 32). The planned `GainMatrix` trait, the separate `Ambisonic` topology and the Euclid-only `is_isometry` are not built | `tutti-types/src/{topology,fold}.rs` (and `fold/tests.rs`), the wrapper in `tutti-dsp` | The existing `Fold` tests unedited, and the ITU downmix figures to the bit (a computed gain that moves in the last bit under `f64` is argued, not pinned); a metric isometry case (mutant: the Euclid test, which rejects the N3D/SN3D conversion); a wiring refusal (SH order 3 into a 16-speaker bed; mutant: a width-only check); a rotation is an isometry in both norms | 1 |
+| 7 | **The rest, each in the PR that needs it, in this order:** resampler (class 6, own shape trait; `Fidelity`, `Graded`, latency; used by export); panners and fold (`Design`s whose model is a `Fold`, class 1 at order 0; step 7a first); envelopes, oscillators, LFOs and noise (class 5: `Autonomous`, `Periodic`, `Piecewise`, `Noise`, in `tutti-polysynth` and `tutti-soundfont`, the latter gated on a `tutti-dsp` edge); stretch; dither | per family | per family, with a mutation record | the step 1 shape |
 
 ### Step 1b as built
 
@@ -1492,12 +1717,12 @@ the realization's whole response, but the RT60 cases read the model's `rt60` and
   grid, so its measured peak is under the true one, and the slack would blame the bound.
 
 **Not done, by decision.** `Readouts` (step 4: dynamics is its first consumer); the
-`Ltv` and `Memoryless` traits (no implementer yet); `Describe` and `Curve` (step 2b).
+the `Memoryless` trait (no implementer yet; `Ltv` is no longer planned, section 4.2); `Describe` and `Curve` (step 2b).
 
 ### Step 2 as built
 
 Step 2 was split as step 1 was: **2a** (the models and `Biquad`; landed) and **2b** (the `Design`,
-the realization, `Cadence::Every(16)` and the nodes as `DesignNode` aliases, together, with
+the realization, `Cadence::every(16)` and the nodes as `DesignNode` aliases, together, with
 `ControlParams::snapshot`, `Describe::curve` and G8; open, with the reasons below). A first cut of 2a also
 carried `SvfDesign` and `SvfRealization`; it was trimmed, because without the nodes migrated it was a second
 block loop beside the nodes' own. Consolidation 4 (the SoundFont's biquad) landed after 2a as its own PR: `bi_quad_filter.rs` is deleted,
@@ -1541,7 +1766,7 @@ still giving a stable model. 2b runs the `Lti` group on the realization.
 (150 to 2850 Hz) and a block-rate cutoff step 800 Hz to 3 kHz, 64-frame blocks, `Q` 1.2, seeded noise,
 against the per-sample solve along the same parameter path (the method of `COEFF_INTERVAL`'s doc comment):
 
-| Case | Node, `Every(16)` | `Block` with a coefficient ramp to the block-end target |
+| Case | Node, `every(16)` | `Block` with a coefficient ramp to the block-end target |
 |---|---|---|
 | lane sweep 200 Hz to 8 kHz in 85 ms | 4.8e-5 | 8.2e-4 (17 times) |
 | 40 Hz LFO lane | 1.5e-3 | 2.4e-2 (15 times) |
@@ -1551,7 +1776,7 @@ against the per-sample solve along the same parameter path (the method of `COEFF
 block-rate control, because the node ramps the **parameter** and solves `tan` at every 16th frame
 while a coefficient-space ramp across the block is a straight line through a curved path; and it cannot
 see a lane at all. It cannot preserve the old schedule, which the nodes' digests pin, so **the filters keep
-`Every(16)`**, which 2b adds to `Cadence` with the realization, one `process` call ramping across its segment.
+`every(16)`**, which 2b0 adds to `Cadence` with the realization, one `process` call ramping across its segment.
 Recorded as the decision of Q21; the reverbs stay at `Block`.
 
 **Digests** (`tutti-nodes/tests/filter_digests.rs`, recorded **before** any change, on the unmodified nodes; every
@@ -1562,10 +1787,10 @@ ladder `0xfacbee3adce13507`, crossover `0xe487a6a17b136f8d`). They cover a cell 
 (the block-rate ramp), a cutoff lane, a Q lane and both, at 44.1 and 48 kHz, `f32` and `f64`, mono and stereo.
 
 **What 2b has to solve** (why the nodes are not aliases yet; the digests are the gate). `DesignNode` is a
-`Cadence::Block` node today and the four filter nodes are not hosted by it for these reasons, each a change
+`Cadence::BLOCK` node today and the four filter nodes are not hosted by it for these reasons, each a change
 to `DesignNode` or `ControlParams`, not to a filter:
 
-1. **Segments.** `DesignNode::process` designs once per block; `Every(16)` needs `segments(size, unprimed)`,
+1. **Segments.** `DesignNode::process` designs once per block; `every(16)` needs `segments(size, unprimed)`,
    a design, a `retarget` and a `process` per segment, the controls read at the segment's last frame
    (`ControlParams::read` takes a frame), and the first block's first sample solved alone.
 2. **The block-rate glide.** A moved cell glides: the node ramps the **parameter** from the value the last solve
@@ -1581,11 +1806,24 @@ to `DesignNode` or `ControlParams`, not to a filter:
    `set_filter_type(&mut self)` re-types a node in place (a design with the type in its controls, changed on the
    control side), `F: Real` is a type parameter of the node and `with_gain_db` a builder; `EqBandNode` is an `SvfFilterNode`
    plus a `BandState` bypass, a wrapper that is not a design.
-6. **The crossover** is neither `Every(16)` nor `Block` as `DesignNode` has them: `split_block` ramps the frequencies
+6. **The crossover** is neither `every(16)` nor `Block` as `DesignNode` has them: `split_block` ramps the frequencies
    linearly over the **block** and re-solves every 16 samples from the interpolated frequency, with `bands * channels`
    outputs and a `Crossover` per channel.
 7. **No `DryWet`.** None of the four filter nodes has a mix port, so each would be `NoBlend` (doc 013's M4 makes the
    mix a graph primitive); nothing here adds a `DryWet` user.
+
+**After the amendments (2026-11-11).** Blockers 1, 2, 3 and 6 share one structure, `theta_applied =
+sampler(theta_target; grid, law, hold-state)`, and step 2b0 gives it the names section 4.5 and 4.5a
+state. 1 is `Cadence::every(16)` (`segments` is its grid iterator, and "unprimed" is the grid's
+first point). 2 is a trajectory piece from the *applied* controls, now the source's state and not a
+node field, to the cell's value over the block. 3 is a dead-band on the source (it returns the held
+controls unless they moved by more than the tolerance), so far only partly: `Controls: PartialEq`
+becomes "moved by more than a tolerance", a small extension of an existing trait. 6 is blocker 2's
+mechanism with two laws on two grids: a block-long piece in frequency (in `theta`-space) with the
+solve on `every(16)`, on a `Controlled` whose model is the multi-output `CrossoverModel`. **Left for
+2b itself:** 4 (the tail and park rule: park only on a finite ceiling, and `Unbounded` never
+parks, is the proposed rule, since the SVF design's ceiling is `Unbounded` and `DesignNode` parks),
+5 (the public API, Q9) and 7 (no `DryWet`; each node is `NoBlend`).
 
 **G8 is not delivered in 2a, on purpose.** `Describe` and `Curve` need a home that nothing has: the trait is
 implemented by a node (`tutti-nodes`, layer 4) and read by `tutti-session` (layer 7), so it must sit below both
@@ -1637,9 +1875,12 @@ text is not rewritten.
 | Q17 | Offer feedback composition (`Feedback<A, B>`)? | No. Series and parallel of LTI models preserve stability exactly; closing a loop needs a small-gain bound that depends on the loop. The FDN's recirculation stays structure inside its model |
 | Q18 | `spectral_radius`, `l1_norm` and `hinf_norm` as upper bounds, or exact? | Upper bounds, documented as sufficient (the reverb's `rt60_bound` and `peak_bound` already are). A model with an exact value says so in its docs, and the contract measures that the true radius and norm are under the stated ones |
 | Q19 | `Parallel`'s latency alignment: in the model or in the realization? | In the model: it states the aligned latency (`max`) and its `frequency_response` includes the compensating delays, so a fused or composed realization are both held to one answer |
-| Q20 | A moving `theta` inside a model (an LFO in a chorus): `Ltv`, or just a note in the docs? | `Ltv`, with `frozen(t)` and `variation`, because the slow assumption is then a checkable number against `Cadence` rather than a sentence |
-| Q21 | Does a design need `Cadence::Every`, or can the realization ramp internally at `Cadence::Block` (the FDN's finding)? Are the filters the same case? | **Resolved in step 2 by measurement: the filters keep `Every(16)`.** An internal coefficient ramp between block-end targets is not the old schedule even for a block-rate control (it is 17 times further from the per-sample solve, and not bit-identical), and it cannot see a lane inside a block ("Step 2 as built"). `Block` stays right where the control is block-rate and the realization owns the ramp (the reverbs) |
+| Q20 | A moving `theta` inside a model (an LFO in a chorus): `Ltv`, or just a note in the docs? | **Revised 2026-11-11: neither a trait nor a note.** It is the class-2 model of section 4.2 (a linear parameter-varying system along a trajectory, section 4.5a): `Controlled::at` is the frozen-time query and the source's `slew_bound` is the declared variation, a checkable number against the `Cadence` period. `Ltv` and `Variation` are not built |
+| Q21 | Does a design need `Cadence::Every`, or can the realization ramp internally at `Cadence::Block` (the FDN's finding)? Are the filters the same case? | **Resolved in step 2 by measurement: the filters keep `Every(16)`.** An internal coefficient ramp between block-end targets is not the old schedule even for a block-rate control (it is 17 times further from the per-sample solve, and not bit-identical), and it cannot see a lane inside a block ("Step 2 as built"). `Block` stays right where the control is block-rate and the realization owns the ramp (the reverbs). **Re-read 2026-11-11:** the filters' model is "a parameter-space path solved on a 16-frame grid", which is `Cadence::every(16)` with its law, and the coefficient-ramp alternative defines a different system; the grid is anchored at the block (Q27) |
 | Q22 | Keep the name `Effect<M>` for the planar block shape? | Yes. It is the engineering shape of an audio effect, not a term the field uses for something else; `Realization<M>` is the renamed math term |
-| Q23 | The `Ltv` frozen-time query overstates decay near Nyquist under linear-interpolated modulation (0.46 s measured for 1.2 s requested). Fix the model or document the gap? | Document the gap and keep the frozen queries to the low and mid bands under modulation (section 4.2); an interpolation-aware `Fidelity` is the model-side fix if a family needs the top band |
+| Q23 | The frozen-time query (`Controlled::at`) overstates decay near Nyquist under linear-interpolated modulation (0.46 s measured for 1.2 s requested). Fix the model or document the gap? | Document the gap and keep the frozen queries to the low and mid bands under modulation (section 4.2); an interpolation-aware `Fidelity` is the model-side fix if a family needs the top band |
 | Q24 | Where exactly does the analysis split cut? `window.rs` and `geometry.rs` are used by processors (`fft/scratch.rs`, the resampler and vocoder after consolidations 1 and 8), and they name `grid.rs` and `error.rs`; `transform.rs` (the STFT) builds on both | Cut at what a processor needs: `window`, `geometry`, `grid` and `error` stay in `tutti-dsp` with the FFT, everything that reads a signal and reports a figure moves. Settle the file list in the split PR by what fails to compile, not by this table |
-| Q25 | Where do the three curve shapes (row 51) live, given that graph, modulation and dsp are peers at layer 2 and `tutti-types` is vocabulary? | Open. Options: a new layer-1 crate for pure curve laws (below all three; the cost is a crate for under a hundred lines); the shapes in `tutti-types` beside `Adsr` (the cost is functions in the vocabulary crate, which CLAUDE.md refuses); or leave the three and share only the tests. Not decided here; consolidation 6 waits on it |
+| Q25 | Where do the curve shapes (row 51, with `tutti-modulation`'s `Bezier`) live, now that under A2 they are the laws of a trajectory and the model needs them, given that graph, modulation and dsp are peers at layer 2 and `tutti-types` is vocabulary? | **Open, under study (2026-11-11).** Candidates: `tutti-modulation` (the owner's lean; it needs the layer question answered, because `tutti-graph` and `tutti-dsp` would both have to depend on it and the three are peers at layer 2); `tutti-types`, beside `Fold` (the lead's earlier recommendation: the trajectory is the value type of a control signal and its evaluation law is its definition, but it puts functions in the vocabulary crate that CLAUDE.md refuses beyond `Fold`); a crate made from `audio-automation` (copied in), which already holds curves and automation; or `audio-automation` kept external, which keeps the `expected Curve, found Curve` pin of CLAUDE.md and cannot sit below the engine. Consolidation 6 and step 2b0 wait on it. Whatever the answer, a piece is pure and the event is a piece plus an address |
+| Q26 | Does `Fold` store `f32` or `f64`? | **Decided (owner, 2026-11-11): `f64` storage, narrowing once at the apply.** Doc 028 §3.5 wants matrices at their own precision for the identities (isometry, commutation), which `f32` gains cannot hold; the narrowing happens where the audio is, as doc 028 states. It changes a shipped, tested type (`Hit.gain`, `fold/tests.rs`), so it is step 7a's and its tests are not edited. A dense 16 by 16 decode through a sparse row list may need a dense mode |
+| Q27 | Should `every(16)` move to a stream anchor, making the filters block independent? And does `Design::CADENCE` name the grid the design is sampled on (the FDN: per block, its slew grid private) or the grid the render is a function of (the FDN: `stream(32)`)? | Open. The first changes the filters' render and their digests (re-recorded only for an argued reason, CLAUDE.md); the amendment makes the difference visible and does not decide it. On the second, `DesignNode` splitting at a finer stream grid would redesign the FDN per chunk, which doc 022 measured as wasted, so the render's grid and the design's may be two declarations |
+| Q28 | How exact must a trajectory's laws be? The 32-byte event has no room for a second Bezier control point, and `ParamSegment.position` and `length` are `f32` (exact to 2^24 frames) | Open, an owner question. Either a piece is approximated (a tolerance the spec for the consumer sets: IAMF's Bezier has one control point per quadratic; conformance there is PSNR-based, section 4.10) or the event carries a tension in `shape_param`. A contract case for the vector atomicity of `N` pieces at one offset is not yet written |

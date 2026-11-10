@@ -32,9 +32,11 @@
 //! [`Compensation`], whose per-channel figures tell sources *outside* the
 //! graph how far to pre-roll.
 //!
-//! # One solve, the compiler's
+//! # One solve
 //!
-//! A graph compiler runs this same solve, so the two agree on every graph:
+//! A graph compiler calls this solve (`delays`, with [`Delays::arrival`] and
+//! [`Delays::departure`] for the delays it places itself); there is no second
+//! copy. It aligns:
 //!
 //! - a node's **arrival** is the latest departure among everything that
 //!   feeds it — its audio ports, and any [`other_sources`] (event and param
@@ -190,12 +192,26 @@ impl Compensation {
 /// The delays that align a graph, and the compensation they leave for
 /// sources outside it. Returned by [`delays`]; a value, applied by whoever
 /// builds the runtime.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub struct Delays<N> {
     inputs: Vec<(N, usize, Samples)>,
     outputs: Vec<(usize, Samples)>,
     compensation: Compensation,
+    arrival: HashMap<N, Samples>,
+    latency: HashMap<N, Samples>,
 }
+
+impl<N: Eq + Hash> PartialEq for Delays<N> {
+    fn eq(&self, other: &Self) -> bool {
+        self.inputs == other.inputs
+            && self.outputs == other.outputs
+            && self.compensation == other.compensation
+            && self.arrival == other.arrival
+            && self.latency == other.latency
+    }
+}
+
+impl<N: Eq + Hash> Eq for Delays<N> {}
 
 impl<N> Default for Delays<N> {
     fn default() -> Self {
@@ -203,7 +219,24 @@ impl<N> Default for Delays<N> {
             inputs: Vec::new(),
             outputs: Vec::new(),
             compensation: Compensation::default(),
+            arrival: HashMap::new(),
+            latency: HashMap::new(),
         }
+    }
+}
+
+impl<N: Copy + Eq + Hash> Delays<N> {
+    /// Returns when the signals feeding `node` have all arrived: the latest
+    /// departure among its sources. Zero for a node the solve does not know,
+    /// and for every node of a graph with no latency.
+    pub fn arrival(&self, node: N) -> Samples {
+        self.arrival.get(&node).copied().unwrap_or_default()
+    }
+
+    /// Returns when `node`'s output is ready: its [`arrival`](Self::arrival)
+    /// plus its own latency (clamped to [`MAX_NODE_LATENCY`]).
+    pub fn departure(&self, node: N) -> Samples {
+        departure(node, &self.arrival, &self.latency)
     }
 }
 
@@ -308,6 +341,8 @@ pub fn delays<G: LatencyGraph>(g: &G) -> Delays<G::Node> {
         inputs,
         outputs,
         compensation: Compensation { channels, total },
+        arrival,
+        latency,
     }
 }
 

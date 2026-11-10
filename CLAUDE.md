@@ -19,8 +19,8 @@ holds the `Editor`; PDC is the compiler's, export forks the live graph with
 the vendored fork, `tutti-node` and its `AudioUnit` trait, `Setting` and
 the numeric tower are deleted; the engine and `tutti-session` key a node by
 `NodeKey` (`AudioNode` is `bevy-tutti`'s component, wrapping one), and
-`tutti_types::latency` is a pure pass that is the compiler's own solve. A
-block's tasks can run on a worker pool (below); a cost model decides when
+`tutti_types::latency` is a pure pass that is the compiler's own solve (`compile`
+calls `latency::delays`; one copy). A block's tasks can run on a worker pool (below); a cost model decides when
 that pays, and the compiler packs tasks too cheap to dispatch alone.
 
 - Write nodes against `tutti_graph::Node` (`shape`, `prepare`, `process`,

@@ -445,6 +445,62 @@ fn automation_ramp_is_rendered_at_the_right_offsets() {
     );
 }
 
+/// **A block longer than the activation promised never reaches the plugin**
+/// (doc 027 D12). `setupProcessing` told the plugin no block exceeds
+/// `maxSamplesPerBlock`, and a plugin sizes its own buffers by that, so the
+/// host refuses the block, as the plugin would (`InvalidArgument`), with its
+/// outputs cleared. A block within the promise still renders. The refusal is
+/// `tutti-vst3-ffi`'s `Processor::process` (the setup's `max_block` and the
+/// bound channels' capacity); this pins it through the host.
+///
+/// Mutation (run): make that length gate in `tutti-vst3-ffi/src/audio.rs`
+/// `if false` → the 65-frame block reaches the plugin and succeeds → fails.
+/// (Removing only the `max_block` term passes: the bound buffers' capacity is
+/// the activated block too, so either term refuses it.)
+#[test]
+fn a_block_past_the_activated_length_is_refused() {
+    if !harness_ready() {
+        return;
+    }
+    let _guard = plugin_guard();
+    let Some(mut inst) = load_probe(64) else {
+        return;
+    };
+    let info = inst.loaded().plugin_info().clone();
+    let (ins, outs) = (info.num_inputs.max(1), info.num_outputs.max(1));
+    let block = |inst: &mut Active, frames: usize| {
+        let input: Vec<Vec<f32>> = (0..ins).map(|_| vec![0.5; frames]).collect();
+        let mut output: Vec<Vec<f32>> = (0..outs).map(|_| vec![9.0; frames]).collect();
+        let in_refs: Vec<&[f32]> = input.iter().map(Vec::as_slice).collect();
+        let mut out_refs: Vec<&mut [f32]> = output.iter_mut().map(Vec::as_mut_slice).collect();
+        let mut buffer = AudioBuffer {
+            inputs: &in_refs,
+            outputs: &mut out_refs,
+            num_samples: frames,
+            sample_rate: 48_000.0,
+        };
+        let failed = inst
+            .try_process(
+                &mut buffer,
+                &InputEvents::default(),
+                None,
+                &TransportInfo::default(),
+            )
+            .err()
+            .map(|e| e.error);
+        let cleared = output.iter().all(|ch| ch.iter().all(|&s| s == 0.0));
+        (failed, cleared)
+    };
+
+    let (failed, cleared) = block(&mut inst, 65);
+    assert_eq!(failed, Some(tutti_vst3_ffi::Vst3Error::InvalidArgument));
+    assert!(
+        cleared,
+        "a refused block leaves silence, not the caller's bytes"
+    );
+    assert_eq!(block(&mut inst, 64).0, None, "the promised length renders");
+}
+
 /// Consecutive blocks must be delivered exactly once each, in order.
 ///
 /// The probe emits a strictly increasing clock (`blockIndex + i/frames`), so a

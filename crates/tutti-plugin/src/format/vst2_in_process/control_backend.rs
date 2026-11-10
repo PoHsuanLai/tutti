@@ -236,6 +236,14 @@ impl HostEditor for InProcessVst2Backend {
 
         let (changes, param_changes) = {
             let mut instance = self.inner.lock();
+            // Before the lost check: a refusal that lost the plugin is the one to report.
+            if let Some(report) = instance.take_rate_report() {
+                use crate::handles::PluginInvalidation;
+                self.invalidate_sink.fire(match report {
+                    Some((rate, reason)) => PluginInvalidation::RateRefused { rate, reason },
+                    None => PluginInvalidation::RateRestored,
+                });
+            }
             if instance.is_lost() {
                 return;
             }

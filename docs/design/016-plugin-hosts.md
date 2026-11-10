@@ -1726,16 +1726,22 @@ nothing in release and nothing while no thread was marked. It is now a type.
   `debug_assert!` on `MainThread::claimed_elsewhere()` (silent until a host
   claims); the VST2 `PluginInstance` records the thread it was made on and, dropped
   elsewhere, hands its close to the main thread (`tutti_plugin_types::defer_to_main`, run
-  by the session's `Phase::Collect`) instead of closing there or skipping it; the VST3
+  by the session's `Phase::Collect`) instead of closing there or skipping it; the CLAP
+  `Plugin` does the same with its whole destruction; the VST3
   `Plugin` tears down on the dropping thread. The per-format
   lanes' main-thread handles make that the main thread by construction.
 - CLAP, below the host crate: every `Plugin` entry that calls into the plugin
   takes `&MainThread` (`tutti-clap-ffi`), and `ThreadRoles::new(&MainThread)` is
   the one place the main thread is named: `HostState` keeps no second copy, and
   `thread-check`, the `[main-thread]` host callbacks and `Plugin`'s drop read
-  it. A `Plugin` dropped on another thread destroys the editor and the instance
-  nowhere: it leaks them (and the library) rather than call `[main-thread]`
-  entries off the thread, so the `ClapLoaded` `debug_assert!` above is gone. The
+  it. A `Plugin` dropped on another thread rebuilds itself from its parts (instance, host,
+  library) and hands the value to the main thread (`tutti_plugin_types::defer_to_main`,
+  run by the session's `Phase::Collect`), which drops it there at its next `run_deferred`;
+  the drop is counted (`tutti_clap_ffi::off_thread_drops`, plus a `warn!`) and an `AudioSide`
+  still running keeps a valid plugin until then. Only the control-side half defers:
+  `AudioSide` holds the core alone and its drop destroys nothing, and a plugin node leaves
+  the plan on the control side (`Editor::collect`), so the deferral never runs on an audio
+  thread. The `ClapLoaded` `debug_assert!` above is gone. The
   host callbacks CLAP marks `[main-thread]` (timers, descriptors, rescans,
   `mark_dirty`, `latency.changed`, undo, ...) are refused, not forwarded, when
   a plugin calls them from any other thread or from inside an audio claim.

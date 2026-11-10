@@ -6052,7 +6052,10 @@ Each PR passes CI by itself. The doc is its own PR, this one.
    hand-built `Topology`.
 4. **Session API.** `sources`, `set_sources`, `add_source`, `remove_source`,
    the output forms, the builder's `connect` and `disconnect_from`. `ChannelSumNode`
-   still exists.
+   still exists. Before `connect` starts adding, the PR lists every caller in
+   the workspace (code, tests, examples, doc comments) that connects one port
+   twice, and decides each: a caller that meant to replace moves to
+   `set_source` in the same PR, so no render changes silently.
 5. **Migration.** `add_general_midi`, VBAP, the tests and benches. The node
    stays one more PR so each of those compiles and passes beside it.
 6. **Delete.** `ChannelSumNode`, its exports, `SessionNode` impl, README and

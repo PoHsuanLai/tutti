@@ -13,6 +13,7 @@
 
 use std::path::Path;
 use std::sync::{Mutex, MutexGuard};
+use tutti_fixtures::main_thread;
 use tutti_graph::UmpAt;
 
 use tutti_fixtures::midi;
@@ -23,8 +24,6 @@ use tutti_vst2_host::{Samples, TimeSignature, TransportInfo, Vst2ProcessContext}
 
 #[path = "support/active.rs"]
 mod active;
-#[path = "support/probe_path.rs"]
-mod probe_path;
 
 use active::Active;
 
@@ -79,7 +78,7 @@ fn set_probe_env(pairs: &[(&str, &str)]) {
 /// Load the probe with the given `TUTTI_VST2_PROBE_*` overrides applied, then
 /// clear them so the next load starts from the well-behaved defaults.
 fn load_probe_with(env: &[(&str, &str)]) -> Active {
-    let path = probe_path::probe_path().clone();
+    let path = tutti_fixtures::vst2_probe().to_path_buf();
     reset_switches(&path);
     set_probe_env(env);
     let instance = Active::load(&path, SAMPLE_RATE, BLOCK)
@@ -285,7 +284,7 @@ fn opening_an_editor_on_an_editorless_plugin_says_so() {
 #[test]
 fn an_explicit_can_do_refusal_beats_the_synth_category() {
     let _guard = lock_probe();
-    let path = probe_path::probe_path().clone();
+    let path = tutti_fixtures::vst2_probe().to_path_buf();
     reset_switches(&path);
     set_can_do(&path, can_do::NO, 0);
 
@@ -314,7 +313,7 @@ fn an_explicit_can_do_refusal_beats_the_synth_category() {
 #[test]
 fn a_silent_can_do_still_defers_to_the_synth_category() {
     let _guard = lock_probe();
-    let path = probe_path::probe_path().clone();
+    let path = tutti_fixtures::vst2_probe().to_path_buf();
     reset_switches(&path);
     set_can_do(&path, can_do::MAYBE, 0);
 
@@ -337,7 +336,7 @@ fn a_silent_can_do_still_defers_to_the_synth_category() {
 #[test]
 fn an_affirmative_can_do_beats_the_effect_category() {
     let _guard = lock_probe();
-    let path = probe_path::probe_path().clone();
+    let path = tutti_fixtures::vst2_probe().to_path_buf();
     reset_switches(&path);
     set_can_do(&path, can_do::YES, 0);
 
@@ -363,7 +362,7 @@ fn an_affirmative_can_do_beats_the_effect_category() {
 #[test]
 fn an_undocumented_can_do_answer_is_not_an_affirmative() {
     let _guard = lock_probe();
-    let path = probe_path::probe_path().clone();
+    let path = tutti_fixtures::vst2_probe().to_path_buf();
     reset_switches(&path);
     set_can_do(&path, can_do::CUSTOM, 42);
 
@@ -398,7 +397,7 @@ fn an_undocumented_can_do_answer_is_not_an_affirmative() {
 #[test]
 fn a_maybe_answer_with_declared_output_pins_emits_midi() {
     let _guard = lock_probe();
-    let path = probe_path::probe_path().clone();
+    let path = tutti_fixtures::vst2_probe().to_path_buf();
     reset_switches(&path);
     set_can_do(&path, can_do::MAYBE, 0);
 
@@ -426,7 +425,7 @@ fn a_maybe_answer_with_declared_output_pins_emits_midi() {
 #[test]
 fn a_maybe_answer_without_output_pins_does_not_emit_midi() {
     let _guard = lock_probe();
-    let path = probe_path::probe_path().clone();
+    let path = tutti_fixtures::vst2_probe().to_path_buf();
     reset_switches(&path);
     set_can_do(&path, can_do::MAYBE, 0);
 
@@ -456,7 +455,7 @@ fn a_maybe_answer_without_output_pins_does_not_emit_midi() {
 #[test]
 fn declared_input_pins_make_a_non_synth_a_midi_receiver() {
     let _guard = lock_probe();
-    let path = probe_path::probe_path().clone();
+    let path = tutti_fixtures::vst2_probe().to_path_buf();
     reset_switches(&path);
     set_can_do(&path, can_do::MAYBE, 0);
 
@@ -488,7 +487,7 @@ fn declared_input_pins_make_a_non_synth_a_midi_receiver() {
 #[test]
 fn an_out_of_range_midi_count_is_not_an_answer() {
     let _guard = lock_probe();
-    let path = probe_path::probe_path().clone();
+    let path = tutti_fixtures::vst2_probe().to_path_buf();
     reset_switches(&path);
 
     set_probe_env(&[
@@ -521,7 +520,7 @@ fn an_out_of_range_midi_count_is_not_an_answer() {
 #[test]
 fn an_in_range_midi_count_is_reported_verbatim() {
     let _guard = lock_probe();
-    let path = probe_path::probe_path().clone();
+    let path = tutti_fixtures::vst2_probe().to_path_buf();
     reset_switches(&path);
 
     set_probe_env(&[
@@ -551,7 +550,7 @@ fn an_in_range_midi_count_is_reported_verbatim() {
 #[test]
 fn an_explicit_refusal_beats_declared_midi_pins() {
     let _guard = lock_probe();
-    let path = probe_path::probe_path().clone();
+    let path = tutti_fixtures::vst2_probe().to_path_buf();
     reset_switches(&path);
     set_can_do(&path, can_do::NO, 0);
 
@@ -821,7 +820,7 @@ fn load_and_metadata() {
 #[test]
 fn a_program_switch_is_bracketed_in_order() {
     let _guard = lock_probe();
-    let path = probe_path::probe_path().clone();
+    let path = tutti_fixtures::vst2_probe().to_path_buf();
     reset_switches(&path);
 
     let mut instance = Active::load(&path, SAMPLE_RATE, BLOCK).expect("probe should load");
@@ -848,7 +847,7 @@ fn a_program_switch_is_bracketed_in_order() {
 #[test]
 fn an_out_of_range_program_dispatches_nothing() {
     let _guard = lock_probe();
-    let path = probe_path::probe_path().clone();
+    let path = tutti_fixtures::vst2_probe().to_path_buf();
     reset_switches(&path);
 
     let mut instance = Active::load(&path, SAMPLE_RATE, BLOCK).expect("probe should load");
@@ -928,7 +927,7 @@ fn an_unnamed_program_keeps_its_index() {
 #[test]
 fn an_accepted_soft_bypass_reaches_the_plugin() {
     let _guard = lock_probe();
-    let path = probe_path::probe_path().clone();
+    let path = tutti_fixtures::vst2_probe().to_path_buf();
     reset_switches(&path);
     set_accept_soft_bypass(&path, true);
 
@@ -968,7 +967,7 @@ fn an_accepted_soft_bypass_reaches_the_plugin() {
 #[test]
 fn a_refused_soft_bypass_is_reported() {
     let _guard = lock_probe();
-    let path = probe_path::probe_path().clone();
+    let path = tutti_fixtures::vst2_probe().to_path_buf();
     reset_switches(&path);
     set_accept_soft_bypass(&path, false);
 
@@ -1000,7 +999,7 @@ fn a_refused_soft_bypass_is_reported() {
 #[test]
 fn soft_bypass_support_is_advertised_not_assumed() {
     let _guard = lock_probe();
-    let path = probe_path::probe_path().clone();
+    let path = tutti_fixtures::vst2_probe().to_path_buf();
 
     reset_switches(&path);
     set_can_do(&path, can_do::YES, 0);
@@ -1283,10 +1282,4 @@ fn many_midi_events_in_one_block() {
 fn load_nonexistent_path() {
     let result = Active::load(Path::new("/nonexistent/plugin.vst"), SAMPLE_RATE, BLOCK);
     assert!(result.is_err());
-}
-
-/// This process's main thread. Each test is its own process under nextest, so
-/// the claim cannot be refused.
-fn main_thread() -> tutti_plugin_types::MainThread {
-    tutti_plugin_types::MainThread::claim().expect("one test, one process")
 }

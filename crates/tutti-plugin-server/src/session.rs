@@ -825,12 +825,7 @@ fn load_failure(e: &BridgeError) -> BridgeMessage {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// This process's main thread. Each test is its own process under nextest, so
-    /// the claim cannot be refused.
-    fn main_thread() -> tutti_plugin_types::MainThread {
-        tutti_plugin_types::MainThread::claim().expect("one test, one process")
-    }
+    use tutti_fixtures::main_thread;
 
     // `Features` is named only by `load_clap_plugin_f64`, which carries the
     // same gate.

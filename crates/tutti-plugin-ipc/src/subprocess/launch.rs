@@ -518,7 +518,7 @@ mod tests {
     #[test]
     #[cfg(unix)]
     fn a_failed_launch_does_not_strand_the_subprocess() {
-        let dir = TempDir::new("strand");
+        let dir = tempfile::tempdir().expect("a private temp dir");
         let pid_file = dir.path().join("standin.pid");
         let stand_in = dir.path().join("standin.sh");
 
@@ -592,7 +592,6 @@ mod tests {
     /// nextest runs each test in a process of its own).
     #[cfg(unix)]
     fn stateful_launch(
-        label: &str,
         env: &[(&str, &str)],
         timeout_ms: u64,
         restore_timeout: Duration,
@@ -602,21 +601,18 @@ mod tests {
             // of it reads the environment.
             unsafe { std::env::set_var(k, v) };
         }
-        let dir = TempDir::new(label);
+        let dir = tempfile::tempdir().expect("a private temp dir");
         let config = BridgeConfig {
             socket_path: dir.path().join("s.sock"),
             timeout_ms,
             ..Default::default()
         };
-        let plugin = tutti_fixtures::publish_with_extension(
-            &tutti_fixtures::cdylib("tutti_clap_test_plugin", "tutti-clap-test-plugin"),
-            "clap",
-        );
+        let plugin = tutti_fixtures::clap_probe();
         let started = Instant::now();
         let launched = launch_with_state(
             &Locator::at(tutti_fixtures::plugin_server()),
             &config,
-            &plugin,
+            plugin,
             SampleRate(48_000.0),
             Some(&[0u8; 16]),
             restore_timeout,
@@ -644,7 +640,6 @@ mod tests {
     #[cfg(unix)]
     fn a_slow_restore_that_succeeds_is_a_load() {
         let (launched, took) = stateful_launch(
-            "slow-restore",
             &[("TUTTI_CLAP_PROBE_STATE_LOAD_SLEEP_MS", "2500")],
             1_000,
             Duration::from_secs(20),
@@ -664,7 +659,6 @@ mod tests {
     #[cfg(unix)]
     fn a_restore_that_outlasts_its_window_is_blamed_on_the_state() {
         let (launched, _) = stateful_launch(
-            "hung-restore",
             &[("TUTTI_CLAP_PROBE_STATE_LOAD_SLEEP_MS", "6000")],
             1_000,
             Duration::from_millis(1_500),
@@ -684,7 +678,6 @@ mod tests {
     #[cfg(unix)]
     fn a_crash_in_the_restore_is_blamed_on_the_state() {
         let (launched, _) = stateful_launch(
-            "crash-restore",
             &[("TUTTI_CLAP_PROBE_CRASH_ON_STATE_LOAD", "1")],
             2_000,
             Duration::from_secs(20),
@@ -705,7 +698,6 @@ mod tests {
     #[cfg(unix)]
     fn a_crash_before_the_restore_is_not_blamed_on_the_state() {
         let (launched, _) = stateful_launch(
-            "crash-open",
             &[("TUTTI_CLAP_PROBE_CRASH_ON_INIT", "1")],
             2_000,
             Duration::from_secs(20),
@@ -734,7 +726,7 @@ mod tests {
     #[test]
     #[cfg(unix)]
     fn a_library_that_is_not_a_plugin_fails_the_launch_with_the_loaders_reason() {
-        let dir = TempDir::new("notaplugin");
+        let dir = tempfile::tempdir().expect("a private temp dir");
         let config = BridgeConfig {
             socket_path: dir.path().join("s.sock"),
             ..Default::default()
@@ -797,43 +789,6 @@ mod tests {
             .status()
             .map(|s| s.success())
             .unwrap_or(false)
-    }
-
-    /// A private directory that removes itself, so the stand-in script, its pid
-    /// file and the socket path cannot collide with a concurrently running copy
-    /// of this test in another process.
-    ///
-    /// Names are process-and-counter unique rather than random: the pid keeps
-    /// concurrent test binaries apart, the counter keeps repeats within one
-    /// apart.
-    #[cfg(unix)]
-    struct TempDir(std::path::PathBuf);
-
-    #[cfg(unix)]
-    impl TempDir {
-        fn new(label: &str) -> Self {
-            use std::sync::atomic::{AtomicU32, Ordering};
-            static N: AtomicU32 = AtomicU32::new(0);
-            let dir = std::env::temp_dir().join(format!(
-                "tutti-{}-{}-{}",
-                label,
-                std::process::id(),
-                N.fetch_add(1, Ordering::Relaxed)
-            ));
-            std::fs::create_dir_all(&dir).expect("create test temp dir");
-            Self(dir)
-        }
-
-        fn path(&self) -> &Path {
-            &self.0
-        }
-    }
-
-    #[cfg(unix)]
-    impl Drop for TempDir {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_dir_all(&self.0);
-        }
     }
 
     fn loaded(inputs: &[ChannelLayout], outputs: &[ChannelLayout]) -> LoadedPlugin {

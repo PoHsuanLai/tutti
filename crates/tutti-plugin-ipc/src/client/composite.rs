@@ -806,6 +806,7 @@ mod state_back_tests {
     //! `save_state` is its host crate's.
     use super::*;
     use std::cell::RefCell;
+    use tutti_fixtures::main_thread;
     use tutti_plugin_types::{PluginError, PluginResult};
 
     struct FakeEditor {
@@ -836,10 +837,6 @@ mod state_back_tests {
                 .clone()
                 .ok_or_else(|| PluginError::State("unreadable".into()))
         }
-    }
-
-    fn main_thread() -> MainThread {
-        MainThread::claim().expect("one test, one process")
     }
 
     /// What the audio instance was given, if anything, and the baseline after.

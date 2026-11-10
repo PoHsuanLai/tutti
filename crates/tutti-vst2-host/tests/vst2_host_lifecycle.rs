@@ -17,6 +17,7 @@
 //! - a block longer than the announced maximum is split before the plugin.
 
 use std::sync::{Mutex, MutexGuard};
+use tutti_fixtures::main_thread;
 use tutti_graph::UmpAt;
 
 use tutti_fixtures::midi;
@@ -30,8 +31,6 @@ use tutti_vst2_test_plugin::ProcessCapture;
 
 #[path = "support/active.rs"]
 mod active;
-#[path = "support/probe_path.rs"]
-mod probe_path;
 
 use active::Active;
 
@@ -76,7 +75,7 @@ fn probe_call<F, R>(symbol: &[u8], f: F) -> R
 where
     F: FnOnce(libloading::Symbol<'_, *mut std::ffi::c_void>) -> R,
 {
-    let path = probe_path::probe_path();
+    let path = tutti_fixtures::vst2_probe();
     // SAFETY: the path is the cdylib this crate's dev-dependency built.
     let lib = unsafe { libloading::Library::new(path) }
         .unwrap_or_else(|e| panic!("re-open reference plugin at {path:?}: {e}"));
@@ -153,7 +152,7 @@ fn set_late_latency(samples: i32) {
 fn load(block: usize) -> Active {
     reset_probe();
     set_late_latency(0);
-    let instance = Active::load(probe_path::probe_path(), SAMPLE_RATE, block)
+    let instance = Active::load(tutti_fixtures::vst2_probe(), SAMPLE_RATE, block)
         .unwrap_or_else(|e| panic!("the probe must load: {e:?}"));
     // The AEffect is built; clearing keeps a variable from outliving its load.
     clear_probe_env();
@@ -264,7 +263,7 @@ fn drop_stops_then_suspends_only_a_resumed_plugin() {
 
     clear_trace();
     let loaded =
-        Vst2Loaded::load(&main_thread(), probe_path::probe_path()).expect("the probe loads");
+        Vst2Loaded::load(&main_thread(), tutti_fixtures::vst2_probe()).expect("the probe loads");
     drop(loaded);
     assert_eq!(
         trace(),
@@ -670,10 +669,4 @@ fn a_bar_line_in_a_later_piece_moves_the_bar_start() {
     let before = cap.time_sample_pos;
     render_f32(&mut instance, 200, &[], None, 0.0);
     assert_eq!(read_capture().time_sample_pos, before);
-}
-
-/// This process's main thread. Each test is its own process under nextest, so
-/// the claim cannot be refused.
-fn main_thread() -> tutti_plugin_types::MainThread {
-    tutti_plugin_types::MainThread::claim().expect("one test, one process")
 }

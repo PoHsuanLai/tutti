@@ -9,6 +9,7 @@
 
 use std::ffi::c_void;
 use std::path::Path;
+use tutti_fixtures::main_thread;
 
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use winit::application::ApplicationHandler;
@@ -171,10 +172,4 @@ fn main() {
 
     let mut app = App::new();
     event_loop.run_app(&mut app).expect("Event loop error");
-}
-
-/// This process's main thread. Each test is its own process under nextest, so
-/// the claim cannot be refused.
-fn main_thread() -> tutti_plugin_types::MainThread {
-    tutti_plugin_types::MainThread::claim().expect("one test, one process")
 }

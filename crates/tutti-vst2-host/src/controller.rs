@@ -4,10 +4,7 @@
 use std::cell::Cell;
 use std::marker::PhantomData;
 use std::ops::{Deref, DerefMut};
-use std::sync::Arc;
 use tutti_plugin_types::MainThread;
-
-use vst::plugin::Plugin as _;
 
 use tutti_plugin_types::{
     AutomationMode, Control, Controller, Loaded, LoadedPlugin, Normalized, ParamId, ParameterInfo,
@@ -16,25 +13,23 @@ use tutti_plugin_types::{
 };
 
 use crate::loaded::Vst2Loaded;
-use crate::parameters::SendParams;
 use crate::processor::{ProcessorParts, Vst2Processor};
 use crate::scratch::RenderScratch;
-use crate::shell::Shell;
-use vst::control_cell::ControlKey;
 
 /// The main-thread half of an activation: the whole control surface of a
 /// [`Vst2Loaded`], reached through `Deref`, beside a Processor that renders.
 ///
-/// Every call runs on the plugin's dispatcher while the Processor may be inside
-/// `process`, which is what hosts do with a VST2 plugin and what the plugin is
-/// written against; the one invariant on `Shell` says so plainly. A parameter
-/// write is a direct `setParameter`, which the SDK allows from either thread, so
-/// no write is queued and a rejoin has none to carry.
+/// It **owns** the [`Vst2Loaded`], and so the plugin: the Processor holds only the audio
+/// handle ([`RenderHandle`](vst::host::RenderHandle)), which shares the plugin's core and
+/// does not keep it open. Dropping the Controller (on the thread the plugin was loaded on)
+/// closes the plugin; a Processor that outlives it renders silence, and a Processor dropped
+/// last does nothing. The main-thread entries take a [`MainThread`] (see
+/// [`PluginInstance`](tutti_vst2_ffi::host::PluginInstance)); a parameter write is a direct
+/// `setParameter`, which the SDK allows from either thread, so no write is queued and a
+/// rejoin has none to carry.
 ///
 /// `Send` so a server can build it on one thread and run it on another, not
-/// `Sync`, and never used from two threads at once. Dropping it releases its
-/// share of the activation; the plugin is destroyed when the Processor's goes
-/// too (see the invariant on the shell).
+/// `Sync`, and never used from two threads at once.
 ///
 /// The doc test below is the guard (mutation, run: an `unsafe impl Sync` for the
 /// type makes it compile, and the test fails):
@@ -44,10 +39,7 @@ use vst::control_cell::ControlKey;
 /// needs_sync::<tutti_vst2_host::Vst2Controller>();
 /// ```
 pub struct Vst2Controller {
-    /// `None` only once `deactivate` has taken the shell.
-    shell: Option<Arc<Shell>>,
-    /// Opens the shell's cell: the Controller's alone.
-    key: ControlKey,
+    loaded: Vst2Loaded,
     _not_sync: PhantomData<Cell<()>>,
 }
 
@@ -58,25 +50,11 @@ impl std::fmt::Debug for Vst2Controller {
 }
 
 impl Vst2Controller {
-    fn new(shell: Arc<Shell>, key: ControlKey) -> Self {
+    fn new(loaded: Vst2Loaded) -> Self {
         Self {
-            shell: Some(shell),
-            key,
+            loaded,
             _not_sync: PhantomData,
         }
-    }
-
-    fn shell(&self) -> &Arc<Shell> {
-        self.shell
-            .as_ref()
-            .expect("a Controller holds its shell until it is consumed")
-    }
-
-    fn loaded(&self) -> &Vst2Loaded {
-        self.shell()
-            .loaded(&self.key)
-            .as_ref()
-            .expect("a live Controller's shell holds its plugin")
     }
 }
 
@@ -84,20 +62,13 @@ impl Deref for Vst2Controller {
     type Target = Vst2Loaded;
 
     fn deref(&self) -> &Vst2Loaded {
-        self.loaded()
+        &self.loaded
     }
 }
 
 impl DerefMut for Vst2Controller {
     fn deref_mut(&mut self) -> &mut Vst2Loaded {
-        let shell = self
-            .shell
-            .as_ref()
-            .expect("a Controller holds its shell until it is consumed");
-        shell
-            .loaded_mut(&mut self.key)
-            .as_mut()
-            .expect("a live Controller's shell holds its plugin")
+        &mut self.loaded
     }
 }
 
@@ -164,12 +135,6 @@ impl Control for Vst2Controller {
     fn rescan_parameters(&mut self, main: &MainThread, scope: RescanScope) {
         Control::rescan_parameters(&mut **self, main, scope);
     }
-
-    /// A tick is a control-side moment: plugins whose last holder was a
-    /// Processor are destroyed here, not on its thread.
-    fn flush_edits(&mut self, _main: &MainThread) {
-        crate::shell::reap();
-    }
 }
 
 impl Controller for Vst2Controller {
@@ -180,8 +145,8 @@ impl Controller for Vst2Controller {
         self.latency_samples()
     }
 
-    fn tail(&self, _main: &MainThread) -> PluginTail {
-        Vst2Loaded::tail(self)
+    fn tail(&self, main: &MainThread) -> PluginTail {
+        Vst2Loaded::tail(self, main)
     }
 }
 
@@ -214,11 +179,9 @@ impl Loaded for Vst2Loaded {
     /// failed licence claim, say) is not an error the host can see.
     fn activate(
         mut self,
-        _main: &MainThread,
+        main: &MainThread,
         prepare: Prepare,
     ) -> Result<(Vst2Processor, Vst2Controller), Refused<Self>> {
-        crate::shell::warm_retirement();
-        crate::shell::reap();
         let rate = prepare.rate().0;
         let block = prepare.max_block().get();
         let Some(audio) = self.audio.take() else {
@@ -233,31 +196,31 @@ impl Loaded for Vst2Loaded {
         // Before each dispatch, so a plugin asking `audioMasterGetSampleRate` or
         // `GetBlockSize` from inside it reads the figure being set.
         self.host.set_sample_rate(rate);
-        self.handle.instance.set_sample_rate(rate as f32);
+        self.instance.set_sample_rate(main, rate as f32);
         self.host.set_block_size(block);
-        self.handle.instance.set_block_size(block as i64);
+        self.instance.set_block_size(main, block as i64);
         self.host.set_offline(prepare.mode().is_offline());
         // `effSetProcessPrecision` is a suspended-state opcode, and a plugin that
         // switches its internal precision on it reallocates the same buffers
         // `effMainsChanged` does.
-        self.handle.instance.set_precision(double_precision);
+        self.instance.set_precision(main, double_precision);
 
-        self.handle.instance.resume();
-        self.handle.resumed = true;
+        self.instance.resume(main);
         // The bracket every rejoin repeats: `effStartProcess` after
         // `effMainsChanged(1)`. A plugin that arms its DSP on the start edge
-        // would otherwise render dry until the first block.
-        self.handle.instance.start_process();
+        // would otherwise render dry until the first block. `effStartProcess` is an audio
+        // handle's entry, so it goes through one (a first handle, dropped at once: the
+        // core remembers that processing is on), and the handle the Processor keeps is
+        // made after it, with the pins as the plugin has them now.
+        self.instance.render_handle(main).start_process();
 
         // The pins as the plugin has them now: it may have settled them in the
         // calls above.
         let (inputs, outputs) = self.pins();
-        // The handle holds the instance's core, so `effClose` waits for it.
-        let render = self.handle.instance.render_handle();
+        let render = self.instance.render_handle(main);
         let scratch = RenderScratch::new(inputs, outputs, block);
-        let params = SendParams(Arc::clone(&self.params.0));
         let param_count = self.initial_values.len();
-        let host = Arc::clone(&self.host);
+        let host = std::sync::Arc::clone(&self.host);
 
         // What the plugin asked of the host while it was activating about the
         // pins, latency and tail is answered by the reads that follow; the rest
@@ -276,12 +239,8 @@ impl Loaded for Vst2Loaded {
             let _ = request.raise(self.host.requests());
         }
 
-        let (shell, key) = Shell::new(self);
-        let shell = Arc::new(shell);
         let processor = Vst2Processor::new(ProcessorParts {
-            shell: Arc::clone(&shell),
             render,
-            params,
             param_count,
             scratch,
             audio,
@@ -289,7 +248,7 @@ impl Loaded for Vst2Loaded {
             double_precision,
             host,
         });
-        Ok((processor, Vst2Controller::new(shell, key)))
+        Ok((processor, Vst2Controller::new(self)))
     }
 
     /// Rejoins the halves of one activation: checks they are a pair, stops the
@@ -298,41 +257,24 @@ impl Loaded for Vst2Loaded {
     ///
     /// # Errors
     ///
-    /// The halves come back, with the reason, when they are of two activations
-    /// or a third handle exists.
+    /// The halves come back, with the reason, when they are of two activations.
     fn deactivate(
-        _main: &MainThread,
+        main: &MainThread,
         mut processor: Vst2Processor,
-        mut controller: Vst2Controller,
+        controller: Vst2Controller,
     ) -> Result<Self, Stuck<Vst2Processor, Vst2Controller>> {
-        if !Arc::ptr_eq(processor.shell(), controller.shell()) {
+        if !processor.audio_handle().is_of(&controller.loaded.instance) {
             return Err(Stuck {
                 processor,
                 controller,
                 reason: PluginError::Other("the halves are of two activations".into()),
             });
         }
-        // The pair and nothing else: one share each.
-        if Arc::strong_count(controller.shell()) != 2 {
-            return Err(Stuck {
-                processor,
-                controller,
-                reason: PluginError::Other("the activation has a third handle".into()),
-            });
-        }
         Processor::stop(&mut processor);
         let audio = processor.into_audio();
-        let shell = controller
-            .shell
-            .take()
-            .expect("a Controller holds its shell until it is consumed");
-        let shell = Arc::try_unwrap(shell)
-            .unwrap_or_else(|_| unreachable!("the pair was the only two handles"));
-        let mut loaded = shell
-            .into_loaded()
-            .expect("the plugin stays in the shell until the last half drops");
+        let mut loaded = controller.loaded;
         loaded.audio = Some(audio);
-        loaded.suspend();
+        loaded.suspend(main);
         Ok(loaded)
     }
 }
@@ -342,10 +284,7 @@ impl Vst2Loaded {
     /// processing by now (the rejoin stops it, and sends `effStopProcess` only
     /// if it was on), so the SDK's teardown order holds and nothing is sent
     /// twice.
-    fn suspend(&mut self) {
-        if self.handle.resumed {
-            self.handle.instance.suspend();
-            self.handle.resumed = false;
-        }
+    fn suspend(&mut self, main: &MainThread) {
+        self.instance.suspend(main);
     }
 }

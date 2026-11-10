@@ -10,7 +10,7 @@ use crate::generator::Generator;
 use crate::generator_range;
 use crate::generator_type::GeneratorType;
 use crate::loop_mode::LoopMode;
-use crate::sample_header::SampleHeader;
+use crate::sample_header::{SampleHeader, Side};
 use crate::zone::Zone;
 
 fn set_parameter(gs: &mut [i16; GeneratorType::COUNT], generator: &Generator) {
@@ -34,6 +34,7 @@ pub struct InstrumentRegion {
     pub(crate) sample_sample_rate: u32,
     pub(crate) sample_original_pitch: i32,
     pub(crate) sample_pitch_correction: i32,
+    pub(crate) sample_side: Option<Side>,
 }
 
 impl InstrumentRegion {
@@ -92,6 +93,7 @@ impl InstrumentRegion {
             sample_sample_rate: sample.sample_rate,
             sample_original_pitch: sample.original_pitch as i32,
             sample_pitch_correction: sample.pitch_correction as i32,
+            sample_side: sample.side(),
         })
     }
 
@@ -284,6 +286,34 @@ impl InstrumentRegion {
             -1 => self.sample_original_pitch,
             key => i32::from(key),
         }
+    }
+
+    /// The side the region's sample is meant for (section 7.10), when it is
+    /// one of a stereo pair's.
+    #[must_use]
+    pub fn sample_side(&self) -> Option<Side> {
+        self.sample_side
+    }
+
+    /// The key generator 46 (`keynum`) forces for the region, if the zone sets
+    /// one (section 8.1.2: instrument level only, 0 to 127). A value outside
+    /// the range reads as none.
+    #[must_use]
+    pub fn forced_key(&self) -> Option<NoteNumber> {
+        u8::try_from(self.generator(GeneratorType::KeyNumber))
+            .ok()
+            .and_then(NoteNumber::new)
+    }
+
+    /// The velocity generator 47 (`velocity`) forces for the region, if the
+    /// zone sets one (instrument level only, 1 to 127). A value outside the
+    /// range reads as none.
+    #[must_use]
+    pub fn forced_velocity(&self) -> Option<U7> {
+        u8::try_from(self.generator(GeneratorType::Velocity))
+            .ok()
+            .filter(|v| *v >= 1)
+            .and_then(U7::new)
     }
 
     /// The index of the region's sample header.

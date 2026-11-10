@@ -1,6 +1,7 @@
 use std::io::Read;
 
 use crate::binary_reader::ReadExt;
+use crate::chunk::{expect_size, next_chunk, skip_pad};
 use crate::error::Error;
 use crate::read_counter::ReadCounter;
 use crate::soundfont_version::SoundFontVersion;
@@ -53,23 +54,30 @@ impl SoundFontInfo {
         let mut tools: Option<String> = None;
 
         while reader.bytes_read() < end {
-            let id = reader.read_four_cc()?;
-            let size = reader.read_u32()? as usize;
+            let (id, size) = next_chunk(reader, end)?;
 
             match id.as_bytes() {
-                b"ifil" => version = Some(SoundFontVersion::new(reader)?),
+                b"ifil" => {
+                    expect_size(id, size, 4)?;
+                    version = Some(SoundFontVersion::new(reader)?);
+                }
                 b"isng" => target_sound_engine = Some(reader.read_fixed_length_string(size)?),
                 b"INAM" => bank_name = Some(reader.read_fixed_length_string(size)?),
                 b"irom" => rom_name = Some(reader.read_fixed_length_string(size)?),
-                b"iver" => rom_version = Some(SoundFontVersion::new(reader)?),
+                b"iver" => {
+                    expect_size(id, size, 4)?;
+                    rom_version = Some(SoundFontVersion::new(reader)?);
+                }
                 b"ICRD" => creation_date = Some(reader.read_fixed_length_string(size)?),
                 b"IENG" => author = Some(reader.read_fixed_length_string(size)?),
                 b"IPRD" => target_product = Some(reader.read_fixed_length_string(size)?),
                 b"ICOP" => copyright = Some(reader.read_fixed_length_string(size)?),
                 b"ICMT" => comments = Some(reader.read_fixed_length_string(size)?),
                 b"ISFT" => tools = Some(reader.read_fixed_length_string(size)?),
-                _ => return Err(Error::ListContainsUnknownId(*id.as_bytes())),
+                // A reader ignores what it does not know (section 4).
+                _ => reader.discard_data(size)?,
             }
+            skip_pad(reader, size, end)?;
         }
 
         let version = version.unwrap_or_else(SoundFontVersion::default);

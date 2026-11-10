@@ -131,6 +131,11 @@ rustdoc-args = ["--cfg", "docsrs"]
 name = "device"
 required-features = ["device"]
 
+# Work handed to the main thread runs on the session's update.
+[[test]]
+name = "deferred_main"
+required-features = ["plugin"]
+
 # The session's modulation loop (`Session::mods`, `ModInput`).
 [[test]]
 name = "modulation"

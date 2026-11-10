@@ -122,19 +122,22 @@ impl HostState for InProcessVst2Backend {
     /// `Rejected` is the only failure it can produce.
     ///
     /// **Takes no [`MainThread`]**, and reaches `effGetChunk` from whichever thread
-    /// calls it, behind the backend's lock. `HostState::save_state` is shared by every
-    /// backend and is called off the main thread on purpose: the health snapshot is a
-    /// job on the task pool, because a subprocess save is a blocking round trip with a
-    /// ten-second timeout. For this backend that is a chunk read beside the editor and
-    /// the audio thread, which the SDK does not promise to be safe; a plugin that
-    /// cannot take it is the `Shell` clause 3 convention breaking. Deferred: the fix
-    /// is a main-thread route for the snapshot (the session asks the main thread for
-    /// an in-process plugin's state), which is a change to `tutti-session` and
-    /// `bevy-tutti`, not to this crate.
+    /// calls it, behind the backend's lock, through `read_state_off_main_thread`: the one
+    /// named exception to the main-thread rule that `tutti-vst2-ffi`'s `PluginInstance`
+    /// puts in its types. `HostState::save_state` is shared by every backend and is called
+    /// off the main thread on purpose: the health snapshot is a job on the task pool,
+    /// because a subprocess save is a blocking round trip with a ten-second timeout. For
+    /// this backend that is a chunk read beside the editor and the audio thread, which the
+    /// SDK does not promise to be safe; a plugin that cannot take it is the convention
+    /// breaking. Still deferred, with the reason: the fix is a main-thread route for the
+    /// snapshot (the session asks the main thread for an in-process plugin's state, and
+    /// the task pool waits for the answer), which is a change to `tutti-session`,
+    /// `bevy-tutti` and the snapshot job's shape, not to the handles; a stale cached
+    /// snapshot would be a behaviour change, not a route.
     fn save_state(&self) -> Result<Vec<u8>, StateError> {
         self.inner
             .lock()
-            .read_state()
+            .read_state_off_main_thread()
             .map_err(|e| StateError::Rejected(e.to_string()))
     }
 

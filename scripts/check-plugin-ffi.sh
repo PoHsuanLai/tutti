@@ -22,9 +22,9 @@
 #
 # - outside `tutti-vst2-ffi` and `tutti-vst2-host`, `unsafe` before the test module of a file
 #   whose path has `vst2` in it or that names `tutti_vst2_host` or `tutti_vst2_ffi` is pinned
-#   to the known caller sites (`VST2_CALLERS`: the server loader's `WindowHandle` decode and
-#   the in-process backend's). A new one fails here, and so does a removed one until its pin
-#   is lowered.
+#   to the known caller site (`VST2_CALLERS`: the in-process backend's `WindowHandle`
+#   decode, which `HostEditor::open_editor`'s raw pointer needs). A new one fails here, and
+#   so does a removed one until its pin is lowered.
 #
 # Comments and string literals are not code: prose that says "unsafe" is fine.
 #
@@ -136,7 +136,6 @@ def attrs(path):
 # `unsafe` (file -> the number of `unsafe` tokens in code before the file's test module).
 VST2_CRATES = ["crates/tutti-vst2-ffi", "crates/tutti-vst2-host"]
 VST2_CALLERS = {
-    "crates/tutti-plugin-server/src/loaders/vst2.rs": 1,
     "crates/tutti-plugin/src/format/vst2_in_process/control_backend.rs": 1,
 }
 

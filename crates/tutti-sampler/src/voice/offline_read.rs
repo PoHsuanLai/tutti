@@ -188,6 +188,11 @@ impl OfflineRead {
         place: &Place,
         out: &mut [f32],
     ) {
+        // A position that is not a number is nowhere in the file.
+        if !pos.get().is_finite() {
+            out.fill(0.0);
+            return;
+        }
         // Past what this direction can play, known without opening the file.
         let played_out = match direction {
             Direction::Reverse => true,
@@ -704,5 +709,40 @@ mod tests {
         );
         let latched = fault.fault().expect("the cut is latched").to_string();
         assert!(latched.contains("frame count"), "{latched}");
+    }
+
+    /// A position that is NaN or infinite reads silence, in both directions
+    /// and on a loop: it was NaN (the fraction of a NaN position) or, on a
+    /// loop, a wrapped read of garbage frames.
+    ///
+    /// Mutation (run): removing the `is_finite` return at the top of
+    /// `OfflineRead::read_into` makes the NaN cases write NaN.
+    #[test]
+    fn a_non_finite_position_reads_silence() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let path = ramp_file(dir.path());
+        let on = LoopSetting::On {
+            start: SamplePosition(10.0),
+            end: SamplePosition(20.0),
+            crossfade_frames: 0,
+        };
+        for loop_ in [LoopSetting::Off, on] {
+            for direction in [Direction::Forward, Direction::Reverse] {
+                for pos in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+                    let mut read = OfflineRead::new(
+                        StreamFile {
+                            path: path.clone(),
+                            file_rate: SampleRate(48_000.0),
+                            loop_,
+                            resident: None,
+                        },
+                        Arc::default(),
+                    );
+                    let mut out = [1.0f32; 2];
+                    read.read_into(SamplePosition(pos), direction, &Place::FAN, &mut out);
+                    assert_eq!(out, [0.0; 2], "{loop_:?} {direction:?} at {pos}");
+                }
+            }
+        }
     }
 }

@@ -5,6 +5,29 @@ use tutti_types::{Cents, SampleRate, Samples};
 use crate::binary_reader::ReadExt;
 use crate::error::Error;
 
+/// The side a sample is meant for (SF2 2.04 section 7.10): the `Left` and
+/// `Right` sample types, which a pair of linked samples carries. A mono, a
+/// linked-only or a ROM sample has none.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Side {
+    /// The left sample of a stereo pair.
+    Left,
+    /// The right sample of a stereo pair.
+    Right,
+}
+
+impl Side {
+    /// The side a sample type word names. Bit 15 marks a ROM sample, which
+    /// keeps its side.
+    pub(crate) fn of_type(sample_type: u16) -> Option<Side> {
+        match sample_type & 0x7FFF {
+            2 => Some(Side::Right),
+            4 => Some(Side::Left),
+            _ => None,
+        }
+    }
+}
+
 /// Represents a sample in the SoundFont.
 #[derive(Debug)]
 #[non_exhaustive]
@@ -123,6 +146,12 @@ impl SampleHeader {
     #[must_use]
     pub fn link(&self) -> u16 {
         self.link
+    }
+
+    /// The side the sample is meant for, if its type is left or right.
+    #[must_use]
+    pub fn side(&self) -> Option<Side> {
+        Side::of_type(self.sample_type)
     }
 
     /// The sample type: the `SFSampleLink` word (mono, right, left, linked, ROM).

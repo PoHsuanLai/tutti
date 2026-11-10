@@ -8,10 +8,13 @@
 /// Generator numbers, SF2 2.04 section 8.1.2: what a zone's generator list uses.
 pub mod generator {
 
+    pub const PAN: u16 = 17;
     pub const RELEASE_VOL_ENV: u16 = 38;
     pub const INSTRUMENT: u16 = 41;
     pub const KEY_RANGE: u16 = 43;
     pub const VEL_RANGE: u16 = 44;
+    pub const KEY_NUM: u16 = 46;
+    pub const VELOCITY: u16 = 47;
     pub const INITIAL_ATTENUATION: u16 = 48;
     pub const SAMPLE_ID: u16 = 53;
     pub const SAMPLE_MODES: u16 = 54;
@@ -84,10 +87,49 @@ pub fn bytes(presets: &[Preset], insts: &[Inst]) -> Vec<u8> {
 #[must_use]
 pub fn bytes_with_samples(presets: &[Preset], insts: &[Inst], samples: usize) -> Vec<u8> {
     assert!(samples > 0, "a SoundFont has a sample");
-    let sine: Vec<u8> = (0..2100)
-        .flat_map(|i| {
-            let phase = i as f32 / 100.0 * std::f32::consts::TAU;
-            ((phase.sin() * 20_000.0) as i16).to_le_bytes()
+    let shared = SampleSpec {
+        sample_type: 0,
+        link: 0,
+        gain: 1.0,
+    };
+    build(presets, insts, &vec![shared; samples], false)
+}
+
+/// One sample header of [`bytes_with_headers`].
+#[derive(Debug, Clone, Copy)]
+pub struct SampleSpec {
+    /// The `SFSampleLink` word (section 7.10): 1 mono, 2 right, 4 left, 8 linked.
+    pub sample_type: u16,
+    /// The header index of the linked sample.
+    pub link: u16,
+    /// The sine's amplitude, as a fraction of the usual 20 000.
+    pub gain: f32,
+}
+
+/// The file's bytes with one sample header for each of `samples`, each its own
+/// sine (441 Hz at key 69, looped) of its own `gain`, at its own place in the
+/// sample data, and its own type and link.
+///
+/// # Panics
+///
+/// If `samples` is empty.
+#[must_use]
+pub fn bytes_with_headers(presets: &[Preset], insts: &[Inst], samples: &[SampleSpec]) -> Vec<u8> {
+    assert!(!samples.is_empty(), "a SoundFont has a sample");
+    build(presets, insts, samples, true)
+}
+
+/// `own`: each header has a sine of its own in the sample data; otherwise all
+/// share the first.
+fn build(presets: &[Preset], insts: &[Inst], samples: &[SampleSpec], own: bool) -> Vec<u8> {
+    let sine: Vec<u8> = samples
+        .iter()
+        .take(if own { samples.len() } else { 1 })
+        .flat_map(|spec| {
+            (0..2100).flat_map(move |i| {
+                let phase = i as f32 / 100.0 * std::f32::consts::TAU;
+                ((phase.sin() * 20_000.0 * spec.gain) as i16).to_le_bytes()
+            })
         })
         .collect();
 
@@ -142,19 +184,37 @@ pub fn bytes_with_samples(presets: &[Preset], insts: &[Inst], samples: usize) ->
     ibag.extend([gen_index, 0]);
     igen.extend([0, 0]);
 
-    let sample = |label: &str, start: u32, end: u32, rate: u32, pitch: u8| {
+    let sample = |label: &str, start: u32, rate: u32, pitch: u8, spec: SampleSpec| {
+        let end = if rate == 0 { 0 } else { start + 2000 };
+        let (loop_start, loop_end) = if rate == 0 {
+            (0, 0)
+        } else {
+            (start + 100, start + 1900)
+        };
         let mut bytes = name(label);
-        for v in [start, end, 100, 1900, rate] {
+        for v in [start, end, loop_start, loop_end, rate] {
             bytes.extend(v.to_le_bytes());
         }
-        bytes.extend([pitch, 0, 0, 0, 0, 0]);
+        bytes.extend([pitch, 0]);
+        bytes.extend(spec.link.to_le_bytes());
+        bytes.extend(spec.sample_type.to_le_bytes());
         bytes
     };
+    let terminator = SampleSpec {
+        sample_type: 0,
+        link: 0,
+        gain: 1.0,
+    };
     let shdr = [
-        (0..samples)
-            .flat_map(|_| sample("sine", 0, 2000, 44_100, 69))
+        samples
+            .iter()
+            .enumerate()
+            .flat_map(|(i, spec)| {
+                let start = if own { i as u32 * 2100 } else { 0 };
+                sample("sine", start, 44_100, 69, *spec)
+            })
             .collect::<Vec<u8>>(),
-        sample("EOS", 0, 0, 0, 0),
+        sample("EOS", 0, 0, 0, terminator),
     ]
     .concat();
     let terminal_mod = vec![0; 10];

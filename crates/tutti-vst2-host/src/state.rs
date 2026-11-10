@@ -9,7 +9,7 @@
 //!   index order and replayed on restore. Loses any non-parameter state the
 //!   plugin holds, but works for a plugin with no chunk mechanism.
 
-use vst::plugin::Plugin as _;
+use tutti_plugin_types::MainThread;
 
 use crate::error::{Result, Vst2Error};
 use crate::loaded::Vst2Loaded;
@@ -104,11 +104,31 @@ impl Vst2Loaded {
     /// Returns [`Vst2Error::StateError`] if the plugin's chunk save fails, or if
     /// it declares parameters but exposes no `getParameter` to read them.
     ///
-    /// Takes no [`MainThread`](tutti_plugin_types::MainThread): the in-process
-    /// backend serializes a project, or forks a session, from whichever thread
-    /// does that, behind its own lock.
-    pub fn read_state(&self) -> Result<Vec<u8>> {
-        let info = self.handle.instance.get_info();
+    /// `effGetChunk` is a main-thread opcode, so this takes the proof; the one caller that
+    /// has none is [`read_state_off_main_thread`](Self::read_state_off_main_thread).
+    pub fn read_state(&self, main: &MainThread) -> Result<Vec<u8>> {
+        self.read_state_with(|| self.instance.try_get_preset_data(main))
+    }
+
+    /// [`read_state`](Self::read_state) from whichever thread asks: the named exception to
+    /// the main-thread rule of `effGetChunk`, for the in-process backend's
+    /// `HostState::save_state`, which the session calls off the main thread on purpose (the
+    /// health snapshot is a job on the task pool) behind the backend's lock. Closing it is a
+    /// main-thread route for the snapshot, a change to `tutti-session` and `bevy-tutti`; see
+    /// `PluginInstance::chunk_off_main_thread`.
+    ///
+    /// # Errors
+    ///
+    /// As [`read_state`](Self::read_state).
+    pub fn read_state_off_main_thread(&self) -> Result<Vec<u8>> {
+        self.read_state_with(|| self.instance.chunk_off_main_thread())
+    }
+
+    fn read_state_with(
+        &self,
+        chunk: impl FnOnce() -> std::result::Result<Vec<u8>, vst::api::ChunkError>,
+    ) -> Result<Vec<u8>> {
+        let info = self.instance.get_info();
 
         if info.preset_chunks {
             // `try_get_preset_data`, not `get_preset_data`: the infallible one
@@ -117,7 +137,7 @@ impl Vst2Loaded {
             // parameter snapshot, losing the non-parameter state chunks exist
             // to carry. A failure is an error; an *empty* chunk still falls through
             // to the parameter snapshot, keeping a fresh plugin saveable.
-            let chunk = self.params.try_get_preset_data().map_err(|e| {
+            let chunk = chunk().map_err(|e| {
                 Vst2Error::StateError(format!(
                     "plugin advertises effFlagsProgramChunks but its preset \
                      chunk save failed: {e}"
@@ -146,7 +166,7 @@ impl Vst2Loaded {
             // A plugin that advertises parameters but exposes no accessor
             // cannot be serialized: writing 0.0 would produce a blob that
             // restores silently and wrongly, which is worse than refusing.
-            let Some(value) = self.params.get_parameter(i) else {
+            let Some(value) = self.instance.get_parameter(i) else {
                 return Err(Vst2Error::StateError(format!(
                     "plugin reports {param_count} parameters but exposes no \
                      getParameter, so parameter {i} cannot be saved"
@@ -169,14 +189,14 @@ impl Vst2Loaded {
     /// header, truncated, or an empty chunk), if a parameter snapshot holds
     /// more parameters than the plugin declares, if the plugin rejects the
     /// chunk, or if it exposes no `setParameter` to write parameters with.
-    pub(crate) fn write_state(&self, data: &[u8]) -> Result<()> {
+    pub(crate) fn write_state(&self, main: &MainThread, data: &[u8]) -> Result<()> {
         match parse_state_header(data)? {
             StateHeader::Chunk(payload) => {
                 // `effSetChunk` reports whether the plugin took the blob.
                 // Discarding that answer would let a plugin refusing a chunk
                 // (truncated, foreign, or a format version it does not read)
                 // report a successful restore while sitting at its defaults.
-                if !self.params.load_preset_data(payload) {
+                if !self.instance.load_preset_data(main, payload) {
                     return Err(Vst2Error::StateError(format!(
                         "plugin rejected the {} byte preset chunk (effSetChunk \
                          did not report success)",
@@ -190,7 +210,7 @@ impl Vst2Loaded {
                 // `AEffect`. Unclamped, a plugin declaring `-1` makes this
                 // comparison `0 > -1` and rejects the empty snapshot
                 // `read_state` just wrote for that same plugin.
-                let actual_count = self.handle.instance.get_info().parameters.max(0);
+                let actual_count = self.instance.get_info().parameters.max(0);
                 if count > actual_count {
                     return Err(Vst2Error::StateError(format!(
                         "State has {} parameters but plugin only has {}",
@@ -207,7 +227,7 @@ impl Vst2Loaded {
                         values[offset + 3],
                     ]);
                     let value = value.clamp(0.0, 1.0);
-                    if !self.params.set_parameter(i, value) {
+                    if !self.instance.set_parameter(i, value) {
                         // Reporting success here would claim a preset was
                         // restored while every value went nowhere.
                         return Err(Vst2Error::StateError(format!(

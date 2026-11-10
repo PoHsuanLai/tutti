@@ -1722,9 +1722,12 @@ nothing in release and nothing while no thread was marked. It is now a type.
 - AU keeps its OS check (`pthread_main_np`) in `tutti-au-ffi` as well: the
   claimed thread need not be AppKit's.
 - A `Drop` has no token. The editor of a dropped `PluginBridge` closes only when
-  `MainThread::current()` says so; `ClapLoaded` and `Vst2Handle` check with a
+  `MainThread::current()` says so; `ClapLoaded` checks with a
   `debug_assert!` on `MainThread::claimed_elsewhere()` (silent until a host
-  claims); the VST3 `Plugin` tears down on the dropping thread. The per-format
+  claims); the VST2 `PluginInstance` records the thread it was made on and, dropped
+  elsewhere, hands its close to the main thread (`tutti_plugin_types::defer_to_main`, run
+  by the session's `Phase::Collect`) instead of closing there or skipping it; the VST3
+  `Plugin` tears down on the dropping thread. The per-format
   lanes' main-thread handles make that the main thread by construction.
 - CLAP, below the host crate: every `Plugin` entry that calls into the plugin
   takes `&MainThread` (`tutti-clap-ffi`), and `ThreadRoles::new(&MainThread)` is
@@ -2212,8 +2215,9 @@ mechanical split of `vst-tutti` with no behaviour change; the typed handles (§2
   `audioMaster` callback (`callback_wrapper`, under `catch_unwind`, checked by
   `scripts/check-guards.sh`), `HostBuffer`, `RenderHandle`, and from the host crate the
   event buffers (`MidiSendBuffer`, `MidiIo`, `to_midi`) and `RenderScratch`. It keeps the
-  `Plugin`, `PluginParameters` and `Editor` traits, because `PluginInstance` implements
-  them; they leave with the typed handles. MIT, derived from vst-rs 0.3.0 (`LICENSE`).
+  `Plugin`, `PluginParameters` and `Editor` traits for the authoring side (nothing in the
+  crate implements them since the typed handles); moving them to `tutti-vst2-author` is a
+  cleanliness follow-up. MIT, derived from vst-rs 0.3.0 (`LICENSE`).
 - `tutti-vst2-host` is `#![forbid(unsafe_code)]`, checked by
   `scripts/check-plugin-ffi.sh`. What its `unsafe` did is a safe API of the FFI crate:
   `PluginEvents` and `SysExMessage` (a view of a plugin's event list that only
@@ -2222,18 +2226,82 @@ mechanical split of `vst-tutti` with no behaviour change; the typed handles (§2
   `RenderScratch::render_f32_piece` / `render_f64_piece` / `render_f64_as_f32_piece` (stage,
   length-check, render and copy out in one call; the pointer tables are private) and
   `MidiSendBuffer::send_piece` (the pointer tables behind a safe call),
-  `PluginInstance::take_editor` (a `SendEditor`), `Send` on `PluginInstance`, and
-  `ControlCell` / `ControlKey`: the shell's cell, opened by a key the Controller alone
-  holds, which replaces `Shell`'s `UnsafeCell` and `unsafe impl Sync` and makes the
-  Processor, Controller and `Vst2Loaded` `Send` by their fields. It is in the FFI crate and
-  not in `tutti-rt` because it is a type-level capability around an `UnsafeCell`, not a
-  lock-free structure: there is no protocol between threads, so nothing for loom to model. The server loader's
-  `unsafe impl Send for Vst2Instance` is gone for the same reason. The two
-  `WindowHandle::from_ptr` decodes in the callers stay pinned.
+  `PluginInstance` and `RenderHandle` made `Send` (their thread rules are in the next
+  entry). The server loader's `unsafe impl Send for Vst2Instance` is gone for the same
+  reason, and the typed handles below removed `ControlCell` / `ControlKey`, which only the
+  shell's cell needed.
 - The plugin-authoring half (`plugin_main!`, `main`, the plugin-side dispatcher,
   `PluginCache`, `util`) is `testing/tutti-vst2-author`, used only by the VST2 test
   plugins; it re-exports the FFI crate's ABI modules, so a plugin names `vst::api` from one
   place. Nothing under `crates/` depends on it.
+
+**As built (the VST2 typed handles).** The live plugin is two handles, and the host crate's
+`Shell` is gone.
+
+- `PluginInstance` (the main-thread handle) is the one owner of the plugin and sends
+  `effClose` when it drops. Everything that is not a render entry is its method. `RenderHandle`
+  (the audio handle) offers `processReplacing`, `processReplacingF64`, `effProcessEvents`,
+  `effStartProcess`, `effStopProcess` and `setParameter`, shares the core and never owns the
+  plugin: a render handle dropped last closes nothing.
+- **Affinity: a token on the entry, not a `!Send` handle.** An entry VST2 puts on the main
+  thread takes a `&MainThread` (the proof, as in the other formats): `effOpen`,
+  `effMainsChanged`, the sample rate and block size, state, programs, bypass, the editor,
+  the MIDI-program queries, `effCanDo`, `effGetTailSize`. A `!Send` handle would not fit
+  `Loaded` / `Controller`, which a server builds on one thread and runs on another, and
+  `Vst2Loaded` is `Send`; the token is what the other FFI crates already do. A **drop has
+  no token**, so the instance records the thread it was made on (under the token it was
+  made with) and closes the plugin only there; dropped anywhere else it hands the close to
+  the main thread (`defer_to_main`; the session's `Phase::Collect` runs it with
+  `run_deferred`, on the claimed thread) and counts it (`off_thread_drops`, plus a `warn!`),
+  so a live render handle stays valid until the tick and the plugin is never left open.
+  Nothing in the engine's paths drops one off the claimed thread today (an export's fork is
+  sent back to the session and dropped by its collect, `poll_exports` is pinned to the main
+  thread); the exception is an export still in flight when the world is dropped, which has no
+  session left to tick.
+- **The gate.** The core holds a mutex the audio entries `try_lock` (never wait) and the
+  instance's close `lock`s. After the close every audio entry is refused, to silence for
+  `process`, without touching the freed `AEffect`: this replaces S1's "the last handle
+  closes" with "the owner closes, and no handle outlives it". It is a `std` mutex, not a new
+  lock-free structure (the one uncontended-case cost is a compare-and-swap per audio entry).
+- **§2.10 by type, where it is natural.** The exclusive calls (`effSetSampleRate`,
+  `effSetBlockSize`, `effSetProcessPrecision`, `effMainsChanged`) hold the same gate for the
+  call, so the plugin never sees one beside an audio entry: one in flight finishes first,
+  one that starts is refused. The host crate also keeps them to the activation and the
+  rejoin. The quirk itself (`Vst2Quirks`, the `EditRing`, the shadow instance) is the next
+  change and is not started here.
+- **Only `getParameter` and `setParameter` are any-thread in VST2.** They take no token and
+  no gate. The dispatcher-based parameter calls (a parameter's name, label and display,
+  `effGetParameterProperties`, `effCanBeAutomated`, `effString2Parameter`) must never run
+  beside `process`; the in-process backend of `tutti-plugin` calls them off the main thread
+  behind its own lock, so they stay token-free as **named exceptions** (with
+  `chunk_off_main_thread`) and each holds the audio gate for the call, as the exclusive calls
+  do. Narrowing them to the main thread waits for the session to give the backend a route.
+- **Poison and the last holder.** A panic under the gate poisons it and marks the core dead:
+  later audio entries render silence and never call the plugin again (the instance still
+  closes it). A `RenderHandle` that is the last holder of the core (the instance closed first)
+  hands the core to the main thread to be freed when dropped off it, so the host box and host
+  state never free on an audio thread, whether or not the graph's retire path already keeps a
+  unit off it.
+- **`HostState::save_state` stays deferred, again with the reason.** `effGetChunk` is a
+  main-thread opcode (`PluginInstance::try_get_preset_data` takes the token), but the
+  session calls `save_state` from a task-pool job on purpose (a subprocess save is a blocking
+  round trip with a ten-second timeout), so the in-process backend has no token. Its one entry,
+  `chunk_off_main_thread` / `Vst2Loaded::read_state_off_main_thread`, is the named exception.
+  A main-thread route means the session asking the main thread for an in-process plugin's
+  state and the pool waiting for the answer: a change to `tutti-session`, `bevy-tutti` and
+  the snapshot job's shape, not reasonable inside this change, and a cached snapshot would be
+  a behaviour change, not a route.
+- The editor is the instance's: `open_editor(&MainThread, WindowHandle)`, `close_editor`,
+  `idle_editor`, `editor_size`. `SendEditor` and the `Editor` object it boxed are gone, so
+  the editor cannot outlive the plugin or move off it. The server loader's
+  `WindowHandle::from_ptr` hop was a no-op re-wrap of the same type and is gone; the
+  in-process backend's remains (it takes `HostEditor::open_editor`'s raw pointer).
+- The host crate: the Controller **owns** the `Vst2Loaded`; the Processor holds only the
+  render handle. `Shell`, `Hold`, the retirement queue and `ControlCell` are deleted, and
+  `deactivate` pairs the halves by `RenderHandle::is_of`. The §2.2 invariant's clause 4
+  for VST2 reads: the plugin is destroyed by the instance's drop on its own thread, a
+  Processor dropped last calls nothing, and a Controller dropped first leaves the Processor
+  rendering silence.
 
 **As built (the AU FFI crate).** The third format moved to the rule of §2.9.
 It is staged: this change moves the `unsafe` in; the cleanliness pass over the

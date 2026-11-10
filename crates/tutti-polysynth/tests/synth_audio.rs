@@ -436,6 +436,90 @@ fn master_volume_scales_the_output() {
     );
 }
 
+/// A master volume cell a host wrote a NaN or an infinity into leaves the
+/// synth at the volume it had: the output stays finite and keeps its level,
+/// and a finite write after it lands.
+///
+/// Mutation (run): `process` reading `master_volume.load()` without the
+/// `last_volume` hold makes the NaN case render NaN and the infinite ones
+/// infinity.
+#[test]
+fn a_non_finite_master_volume_write_leaves_the_synth_at_its_volume() {
+    for bad in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+        let mut synth =
+            Hand::new(PolySynth::new(config(OscillatorType::Sine)).expect("synth builds"));
+        synth.set_volume(0.5);
+        synth.queue_midi(&[note_on(69, 100)]);
+        let before = render(&mut synth, 40);
+        synth
+            .volume_atomic()
+            .store(bad, std::sync::atomic::Ordering::Release);
+        let held = render(&mut synth, 40);
+        assert!(
+            held.iter().all(|s| s.is_finite()),
+            "volume = {bad} reached the output"
+        );
+        let ratio = rms(&held[2048..]) / rms(&before[2048..]);
+        assert!(
+            (ratio - 1.0).abs() < 0.05,
+            "volume = {bad} moved the level by {ratio}"
+        );
+        synth.set_volume(0.25);
+        let after = render(&mut synth, 40);
+        assert!(
+            rms(&after[2048..]) < 0.7 * rms(&held[2048..]),
+            "volume = {bad} then 0.25"
+        );
+    }
+}
+
+/// **A key struck twice before it is released once still ends.** The same key
+/// on one channel struck by two sources (twice from one group, and once from
+/// each of two groups) leaves no voice gated after the key comes up: past the
+/// release the synth is silent. Guards the plan 36a item "double note-on from
+/// two sources leaves a gated voice", which holds no longer now that the note
+/// logic is `tutti-voicing`'s.
+///
+/// Mutation (run, in `tutti-voicing`): the retrigger not releasing the earlier
+/// strike (`if false && self.rules.retrigger == Replace`) together with
+/// `each_note` stopping after its first release leaves the second strike's
+/// voice gated: "one group twice" fails with a peak of 0.55.
+#[test]
+fn a_key_struck_twice_then_released_once_goes_silent() {
+    let group_one = MidiGroup::new(1).expect("a second group");
+    let on = |group: MidiGroup| {
+        MidiEvent::note_on(group, MidiChannel::FIRST, 69, midi1_velocity_to_midi2(100))
+    };
+    let off = |group: MidiGroup| MidiEvent::note_off(group, MidiChannel::FIRST, 69, 0);
+    let cases: [(&str, Vec<MidiEvent>, Vec<MidiEvent>); 2] = [
+        (
+            "one group twice",
+            vec![on(MidiGroup::FIRST), on(MidiGroup::FIRST)],
+            vec![off(MidiGroup::FIRST)],
+        ),
+        (
+            "two groups",
+            vec![on(MidiGroup::FIRST), on(group_one)],
+            vec![off(MidiGroup::FIRST), off(group_one)],
+        ),
+    ];
+    for (name, strikes, releases) in cases {
+        let mut synth =
+            Hand::new(PolySynth::new(config(OscillatorType::Sine)).expect("synth builds"));
+        synth.queue_midi(&strikes);
+        let sounding = render(&mut synth, 50);
+        assert!(peak(&sounding) > 0.01, "{name}: the strike must sound");
+        synth.queue_midi(&releases);
+        // The release is half a second: 24 000 frames, then some.
+        let tail = render(&mut synth, 600);
+        assert!(
+            peak(&tail[tail.len() - 2048..]) < 1e-4,
+            "{name}: a voice is still gated after the key came up: {}",
+            peak(&tail[tail.len() - 2048..])
+        );
+    }
+}
+
 /// A synth with no notes must emit exact silence.
 ///
 /// The control case. If this fails, every level assertion above is measuring

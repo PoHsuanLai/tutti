@@ -92,6 +92,9 @@ pub struct PolySynth {
     /// The per-note sensitivity a reset returns to: the construction value.
     mpe_range_default: tutti_types::Semitones,
     master_volume: Param<Amplitude>,
+    /// The last finite master volume the node read: a cell a host wrote a NaN
+    /// or an infinity into reads as this, not as itself.
+    last_volume: f32,
     /// The block's MIDI, sorted by offset: its event input's.
     midi_buffer: Vec<MidiEvent>,
     /// Voices that finished this span. Sized to `max_voices` and only cleared,
@@ -158,6 +161,7 @@ impl PolySynth {
             bends,
             mpe_range_default,
             master_volume,
+            last_volume: Amplitude::UNITY.get(),
             midi_buffer: vec![MidiEvent::noop(); node::MIDI_BUFFER],
             finished_indices: Vec::with_capacity(max_voices),
         })
@@ -913,6 +917,7 @@ impl Clone for PolySynth {
             bends: self.bends,
             mpe_range_default: self.mpe_range_default,
             master_volume: self.master_volume.clone(),
+            last_volume: self.last_volume,
             midi_buffer: vec![MidiEvent::noop(); node::MIDI_BUFFER],
             finished_indices: Vec::with_capacity(self.config.max_voices),
         }

@@ -464,15 +464,11 @@ impl PluginEditorHost for Vst2Instance {
         parent: WindowHandle,
         _scale: ContentScale,
     ) -> PluginResult<EditorSize> {
-        // Adapt tutti-plugin's WindowHandle (own pointer) to vst2-host's
-        // local WindowHandle wrapper. Safety: the handle was validated at the
-        // IPC boundary in server.rs.
-        let host_parent = unsafe { tutti_vst2_host::WindowHandle::from_ptr(parent.as_ptr()) };
         let loaded = self
             .loaded_mut()
             .ok_or_else(|| PluginError::Other("the plugin is lost".to_string()))?;
         loaded
-            .open_editor(main, host_parent)
+            .open_editor(main, parent)
             .map(|sz| EditorSize {
                 width: sz.width,
                 height: sz.height,

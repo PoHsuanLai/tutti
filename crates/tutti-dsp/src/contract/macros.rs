@@ -133,24 +133,21 @@ macro_rules! realization_contract {
             $crate::contract::cases::realization::fresh(&$design).unwrap();
         }
         #[test]
-        fn realization_contract_block_independent() {
-            if $crate::contract::cases::realization::block_independence_required(&$design) {
-                $crate::contract::cases::realization::block_independent(&$design).unwrap();
-            }
-        }
-        #[test]
         fn realization_contract_landed() {
             $crate::contract::cases::realization::landed(&$design).unwrap();
         }
         #[test]
-        fn realization_contract_stream_clock() {
-            if $crate::contract::cases::realization::block_independence_required(&$design) {
-                $crate::contract::cases::realization::stream_clock(&$design).unwrap();
-            }
-        }
-        #[test]
         fn realization_contract_vacuity() {
             $crate::contract::cases::realization::vacuity(&$design).unwrap();
+        }
+        #[test]
+        fn realization_contract_cadence() {
+            let groups = [$(stringify!($group)),*];
+            $crate::contract::cases::realization::cadence(
+                &$design,
+                groups.contains(&"BlockIndependent"),
+            )
+            .unwrap();
         }
         $( $crate::__realization_group!($group, $design); )*
     };
@@ -159,6 +156,16 @@ macro_rules! realization_contract {
 #[doc(hidden)]
 #[macro_export]
 macro_rules! __realization_group {
+    (BlockIndependent, $design:expr) => {
+        #[test]
+        fn realization_contract_block_independent() {
+            $crate::contract::cases::realization::block_independent(&$design).unwrap();
+        }
+        #[test]
+        fn realization_contract_stream_clock() {
+            $crate::contract::cases::realization::stream_clock(&$design).unwrap();
+        }
+    };
     (Lti, $design:expr) => {
         #[test]
         fn realization_contract_tail_covers() {

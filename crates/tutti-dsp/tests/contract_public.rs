@@ -16,6 +16,8 @@
 //! `hinf_norm` of half the l1 norm is under the response's peak and fails
 //! `contract_norms`; a response of `2 g` fails `contract_anchors` (and norms).
 
+use std::num::NonZeroU32;
+
 use tutti_dsp::contract::{Anchor, DesignCase, Hook, LtiCase, RealizationCase};
 use tutti_dsp::{
     Cadence, Ceiling, ChannelLayout, Channels, Complex64, Design, Effect, Lti, Realization, Ring,
@@ -148,7 +150,8 @@ impl Design for GainDesign {
     type Bounds = NoSizes;
     type Range = ();
     type Realization = GainRealization;
-    const CADENCE: Cadence = Cadence::BLOCK;
+    // The slew counts frames from the last reset: a per-frame stream grid.
+    const CADENCE: Cadence = Cadence::stream(NonZeroU32::MIN);
 
     fn channels(&self) -> Channels {
         Channels {
@@ -230,5 +233,5 @@ mod design {
 
 mod realization {
     use super::*;
-    realization_contract!(GainDesign, Lti);
+    realization_contract!(GainDesign, Lti, BlockIndependent);
 }

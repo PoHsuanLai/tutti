@@ -13,6 +13,8 @@
 //! ([`Realization`](crate::Realization)): it reads those two numbers from the network, and
 //! this file changes no processing.
 
+use core::num::NonZeroU32;
+
 use tutti_types::{Amplitude, ChannelLayout, Mix, SampleRate};
 
 use crate::network::{
@@ -20,7 +22,7 @@ use crate::network::{
     Matrix, Modulation, Network, OutputMap, Stage,
 };
 use crate::reverb::Freeverb;
-use crate::{Ceiling, Channels, Design, MaxDecay, Sizes};
+use crate::{Cadence, Ceiling, Channels, Design, MaxDecay, Sizes};
 
 const COMBS_LEFT: [usize; 8] = [
     Freeverb::CF_TUNING_L1,
@@ -99,6 +101,11 @@ impl Design for FreeverbDesign {
     type Bounds = Bounds;
     type Range = MaxDecay;
     type Realization = Freeverb;
+
+    // A retarget lands at once and nothing ramps: the render is a function of
+    // the stream whatever the blocks (the design is still sampled per block, as
+    // for the FDN, doc 024 Q27).
+    const CADENCE: Cadence = Cadence::stream(NonZeroU32::MIN);
 
     fn channels(&self) -> Channels {
         Channels {
@@ -738,7 +745,7 @@ mod realization_tests {
         }
     }
 
-    crate::realization_contract!(FreeverbDesign, Lti, reverb);
+    crate::realization_contract!(FreeverbDesign, Lti, reverb, BlockIndependent);
 
     fn defective(defect: Defect) -> Defective<FreeverbDesign> {
         Defective {

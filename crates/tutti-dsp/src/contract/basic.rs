@@ -241,18 +241,28 @@ pub(super) mod realization {
         Ok(())
     }
 
-    /// Whether the design's [`Cadence`](crate::Cadence) makes it block independent,
-    /// which is what makes [`block_independent`] and [`stream_clock`] required
-    /// (a block-anchored cadence is stated as not block independent, design 024
-    /// section 4.5). `realization_contract!` runs both iff this is true.
+    /// The design's [`Cadence`](crate::Cadence) and the `BlockIndependent` group
+    /// agree (design 024 section 4.5): the group (`block_independent` and
+    /// `stream_clock`) is named iff `CADENCE.block_independent()`, so a
+    /// block-anchored design skips the two cases by saying so, and a stream
+    /// grid cannot leave them out. `listed` is whether the macro was given the
+    /// group.
     ///
-    /// Mutation: always `true` runs both on a `BLOCK` design whose render does
-    /// depend on the block (`contract_public`'s `GainDesign` is the one
-    /// that does not, so it is the `Defect::BlockDependent` runs that pin the
-    /// cases themselves); always `false` leaves the FDN's two cases unrun,
-    /// which `fdn_design`'s `the_fdn_declares_its_stream_grid` catches.
-    pub fn block_independence_required<D: RealizationCase>(_: &D) -> bool {
-        D::CADENCE.block_independent()
+    /// Mutations (run, in `fdn_design.rs`): the FDN's `CADENCE` set to `BLOCK`
+    /// fails (the group is listed, the cadence is not stream-anchored); the
+    /// FDN's contract line without `BlockIndependent` fails (the cadence is).
+    pub fn cadence<D: RealizationCase>(_: &D, listed: bool) -> Result<(), String> {
+        match (D::CADENCE.block_independent(), listed) {
+            (true, false) => Err(
+                "CADENCE is stream-anchored but the contract does not name BlockIndependent: \
+                 the block-independence cases would not run"
+                    .into(),
+            ),
+            (false, true) => Err(
+                "the contract names BlockIndependent but CADENCE is not block independent".into(),
+            ),
+            _ => Ok(()),
+        }
     }
 
     /// The output does not depend on how the input is cut into blocks: blocks of

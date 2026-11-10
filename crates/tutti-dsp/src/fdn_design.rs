@@ -702,20 +702,19 @@ mod tests {
         }
     }
 
-    crate::realization_contract!(freezable(), Lti, reverb);
+    crate::realization_contract!(freezable(), Lti, reverb, BlockIndependent);
 
-    /// The FDN's declared cadence is its chunk clock, so the contract requires
-    /// its block-independence cases.
+    /// The FDN's declared cadence is its chunk clock, so it names the
+    /// `BlockIndependent` group.
     ///
-    /// Mutation: `CADENCE` left at `Cadence::BLOCK` fails (the two cases would
-    /// silently stop running).
+    /// Mutation (run): `CADENCE = Cadence::BLOCK` fails this and
+    /// `realization_contract_cadence`.
     #[test]
     fn the_fdn_declares_its_stream_grid() {
         assert_eq!(
             FdnDesign::CADENCE,
             Cadence::stream(NonZeroU32::new(CHUNK as u32).unwrap())
         );
-        assert!(cases::block_independence_required(&freezable()));
     }
 
     use crate::contract::cases::realization as cases;

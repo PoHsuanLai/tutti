@@ -147,7 +147,7 @@ impl Fdn {
     /// governs: the largest `-3 m / (fs log10 g)`) or when every line is set
     /// from one RT60. For a mixing `A` it is the length-weighted
     /// `-3 Σm / (fs Σ log10 g)`, a mean that can undercut the true decay when
-    /// the lines differ: use [`rt60_bound`](Self::rt60_bound) where a figure
+    /// the lines differ: use [`Network::tail`] where a figure
     /// must cover the ring. `m` is the effective length.
     #[must_use]
     pub fn rt60(&self, band: Band, rate: f64) -> Seconds {
@@ -178,7 +178,7 @@ impl Fdn {
     /// line cannot be analysed (a gain that is NaN or negative, a length that is
     /// not positive). A line with a nested all-pass is read at its peak group
     /// delay, `D (1 + |g|) / (1 - |g|)`, a conservative reading that is not part
-    /// of the proof in [`rt60_bound`](Self::rt60_bound).
+    /// of the proof in [`rt60_bound`](Fdn::rt60_bound).
     pub(super) fn slowest(&self, band: Band) -> Option<(f64, f64, f64)> {
         let mut log_rho = f64::NEG_INFINITY;
         let mut longest = 0.0f64;
@@ -226,8 +226,7 @@ impl Fdn {
     /// [`rt60`](Self::rt60), the length-weighted mean, is not such a bound: for
     /// a mixing `A` with lines of different decay it can be shorter than the
     /// slowest line's.
-    #[must_use]
-    pub fn rt60_bound(&self, band: Band, rate: f64) -> Seconds {
+    fn rt60_bound(&self, band: Band, rate: f64) -> Seconds {
         if self.lines.is_empty() {
             return Seconds(0.0);
         }
@@ -244,7 +243,7 @@ impl Fdn {
         })
     }
 
-    /// The frames the lag of [`rt60_bound`](Self::rt60_bound) exceeds the
+    /// The frames the lag of [`rt60_bound`](Fdn::rt60_bound) exceeds the
     /// longest line by, `(m-1) log σ / -log(σρ)`: zero where `σ = 1` (a
     /// structured matrix), a few frames for a measured-orthogonal one.
     fn lag_extra_frames(&self, band: Band) -> f64 {
@@ -329,8 +328,7 @@ impl Network {
     ///
     /// **Exact** for a diagonal `A`, or when every line is set from one RT60;
     /// **an estimate** for a mixing `A` with lines of different decay (see
-    /// [`Fdn::rt60`]). Use [`rt60_bound`](Self::rt60_bound) for a figure that
-    /// must cover the ring; [`tail`](Self::tail) does.
+    /// [`Fdn::rt60`]); [`tail`](Self::tail) is the figure that covers the ring.
     #[must_use]
     pub fn rt60(&self, band: Band) -> Seconds {
         let rate = self.rate.get();
@@ -338,24 +336,6 @@ impl Network {
         for stage in self.stages.iter() {
             let r = match stage {
                 Stage::Fdn(f) => f.rt60(band, rate),
-                Stage::Fir(s) => s.rt60[band.index()],
-                _ => Seconds(0.0),
-            };
-            slowest = slowest.max(r);
-        }
-        slowest
-    }
-
-    /// The slowest recirculating stage's [`Fdn::rt60_bound`] in `band`, which
-    /// never undercuts the true decay (a FIR reports its summary; infinity when
-    /// a loop cannot be bounded).
-    #[must_use]
-    pub fn rt60_bound(&self, band: Band) -> Seconds {
-        let rate = self.rate.get();
-        let mut slowest = Seconds(0.0);
-        for stage in self.stages.iter() {
-            let r = match stage {
-                Stage::Fdn(f) => f.rt60_bound(band, rate),
                 Stage::Fir(s) => s.rt60[band.index()],
                 _ => Seconds(0.0),
             };
@@ -477,7 +457,7 @@ impl System for Network {
     /// below what it carried: the pre-delay, plus each stage's transit (the
     /// longest line, the longest tap, an all-pass's delay times the trips of its
     /// train, a FIR's length), plus the slowest band's
-    /// [`rt60_bound`](Network::rt60_bound) times `|floor| / 60` (with the
+    /// `Fdn::rt60_bound` times `|floor| / 60` (with the
     /// lag the bound's proof adds). It uses the bound,
     /// not the estimate, so it never undercuts a mixing network whose lines
     /// differ.
@@ -1007,7 +987,7 @@ mod tests {
         f.output.rows.push(Gains::filled(1.0, 2).unwrap()).unwrap();
         let mut n = network(&[Stage::Fdn(f)]);
         n.pre_delay = Samples(10);
-        let b = Bounds::of(&n, Db(-60.0));
+        let b = Bounds::measure(&n, Db(-60.0));
         assert_eq!((b.lines, b.stages, b.taps, b.outputs), (2, 1, 0, 1));
         assert_eq!((b.line, b.delay, b.pre_delay), (202.0, 302.0, Samples(10)));
         assert!(b.dominates(&b));
@@ -1078,8 +1058,9 @@ mod tests {
                 assert_eq!(a.gain(band).get(), f32::INFINITY, "damp {damp}");
             }
             assert!(!stable(a), "damp {damp}");
-            let n = network(&[Stage::Fdn(fdn(&[line(100.0, a)], Matrix::Diagonal))]);
-            assert_eq!(n.rt60_bound(Band::Mid).to_f32(), f32::INFINITY);
+            let f = fdn(&[line(100.0, a)], Matrix::Diagonal);
+            assert_eq!(f.rt60_bound(Band::Mid, RATE.get()).to_f32(), f32::INFINITY);
+            let n = network(&[Stage::Fdn(f)]);
             assert_eq!(n.tail(Db(-60.0)), Ring::Unbounded);
         }
         // A valid low-pass pole is stable; a valid negative pole at gain 0.9
@@ -1205,7 +1186,8 @@ mod tests {
             .unwrap();
         let estimate = mixed.rt60(Band::Mid).to_f32();
         assert!((estimate - 1.32).abs() < 1e-3, "{estimate}");
-        assert!((mixed.rt60_bound(Band::Mid).get() - 3.0).abs() < 1e-3);
+        let bound = fdn(&lines, Matrix::Hadamard).rt60_bound(Band::Mid, rate.get());
+        assert!((bound.get() - 3.0).abs() < 1e-3);
         let Ring::Finite(tail) = mixed.tail(Db(-60.0)) else {
             panic!("finite")
         };
@@ -1246,9 +1228,9 @@ mod tests {
             .stages
             .push(Stage::Fdn(fdn(&lines, Matrix::Diagonal)))
             .unwrap();
-        assert!(
-            (diagonal.rt60_bound(Band::Mid).get() - diagonal.rt60(Band::Mid).get()).abs() < 1e-4
-        );
+        let exact = diagonal.rt60(Band::Mid).get();
+        let bound = fdn(&lines, Matrix::Diagonal).rt60_bound(Band::Mid, rate.get());
+        assert!((bound.get() - exact).abs() < 1e-4);
     }
 
     /// A measured-orthogonal matrix has a norm bound just above 1, and the

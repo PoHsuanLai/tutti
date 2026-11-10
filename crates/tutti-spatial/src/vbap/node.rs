@@ -1,9 +1,10 @@
 use super::error::Result;
+use tutti_dsp::VbapGains;
 use tutti_graph::{Cx, IntoNode, Io, Node, NodeParts, Prepare, Shape, Status};
 use tutti_types::{Azimuth, Elevation, Param, SampleRate, Spread, StereoWidth, Tail};
 use tutti_types::{ChannelLayout, Fold};
 
-use super::panner::{BlockGains, VbapPanner};
+use super::panner::VbapPanner;
 use crate::SpatialTarget;
 use crate::fork::{FreshFork, fresh_fork_parts};
 use crate::layout::speaker_channel_map;
@@ -106,7 +107,7 @@ pub struct VbapPannerNode {
     /// from. `None` until the first block after construction or a
     /// [`reset`](Node::reset) (which a fork runs): the ramp then starts from the smoother's
     /// current position instead, so there is no stale vector to glide from.
-    ramp_from: Option<BlockGains>,
+    ramp_from: Option<VbapGains>,
     /// The stereo input folded to mono, for the mono-fold branch. Built at
     /// construction.
     fold: Fold,
@@ -331,7 +332,7 @@ impl VbapPannerNode {
     /// once per block. The end point is remembered as the next block's start,
     /// which is what keeps consecutive blocks continuous: a block boundary is
     /// a point on the ramp, never a step.
-    fn block_gains(&mut self, frames: usize) -> (BlockGains, BlockGains) {
+    fn block_gains(&mut self, frames: usize) -> (VbapGains, VbapGains) {
         let (azimuth, elevation, spread) = self.placement();
         let width = StereoWidth(hold_finite(
             &mut self.good.width,
@@ -362,77 +363,6 @@ fn speaker_of_channel(layout: ChannelLayout) -> Vec<Option<usize>> {
         }
     }
     inverse
-}
-
-/// Render one output channel for one block: speaker `speaker`'s gain ramped
-/// linearly from `from` to `to`, applied to the stereo pair.
-///
-/// Frame `i` of `n` uses `to - (to - from) * (n - 1 - i) / n`, so the ramp
-/// starts one step past `from` (which the previous block already played)
-/// and its last frame is exactly `to` — written as a subtraction of a
-/// zero term, which is exact for any `from`, rather than
-/// `from + (to - from) * 1.0`, which is exact only when the two are within a
-/// factor of two. That is what makes a one-frame block the per-frame solve
-/// bit for bit, and a block edge the exact solve.
-///
-/// When both ends came from the mono-fold branch the pair is folded
-/// (`mono * g`, `mono` the stereo-to-mono `fold` of each frame of `left` and
-/// `right`); otherwise each end is expressed as a (left,
-/// right) gain pair — [`BlockGains::pair`] — so a width crossing the
-/// mono-fold threshold between blocks crossfades instead of stepping.
-#[inline]
-fn render_channel(
-    from: &BlockGains,
-    to: &BlockGains,
-    speaker: Option<usize>,
-    fold: &Fold,
-    left: &[f32],
-    right: &[f32],
-    out: &mut [f32],
-) {
-    let Some(s) = speaker else {
-        out.fill(0.0);
-        return;
-    };
-    let n = out.len();
-    let inv_n = 1.0 / n as f32;
-    let remaining = |i: usize| (n - 1 - i) as f32 * inv_n;
-    // A delta of exactly `+0.0` makes every ramp gain `g_to - (+0.0 * t)`,
-    // which is `g_to` bit for bit (`t` is finite and non-negative; `-0.0`
-    // is excluded because `-0.0 - -0.0` is `+0.0`), so a held gain skips the
-    // ramp arithmetic with the same bits.
-    if from.mono && to.mono {
-        let (g_from, g_to) = (from.a[s], to.a[s]);
-        let delta = g_to - g_from;
-        let mono = |l: f32, r: f32| {
-            let mut m = [0.0];
-            fold.frame(&[l, r], &mut m);
-            m[0]
-        };
-        if delta.to_bits() == 0 {
-            for ((o, &l), &r) in out.iter_mut().zip(left).zip(right) {
-                *o = mono(l, r) * g_to;
-            }
-            return;
-        }
-        for (i, ((o, &l), &r)) in out.iter_mut().zip(left).zip(right).enumerate() {
-            *o = mono(l, r) * (g_to - delta * remaining(i));
-        }
-    } else {
-        let (a_from, b_from) = from.pair(s);
-        let (a_to, b_to) = to.pair(s);
-        let (da, db) = (a_to - a_from, b_to - b_from);
-        if da.to_bits() == 0 && db.to_bits() == 0 {
-            for ((o, &l), &r) in out.iter_mut().zip(left).zip(right) {
-                *o = l * a_to + r * b_to;
-            }
-            return;
-        }
-        for (i, ((o, &l), &r)) in out.iter_mut().zip(left).zip(right).enumerate() {
-            let t = remaining(i);
-            *o = l * (a_to - da * t) + r * (b_to - db * t);
-        }
-    }
 }
 
 /// A graph node: stereo in, the layout's width out, no latency.
@@ -487,7 +417,7 @@ impl Node for VbapPannerNode {
         let (inputs, mut outputs) = io.split();
         let (left, right) = (&inputs.get(0)[..size], &inputs.get(1)[..size]);
         for (ch, out) in outputs.iter_mut().enumerate() {
-            render_channel(
+            VbapGains::render_channel(
                 &from,
                 &to,
                 self.speaker_of_channel[ch],

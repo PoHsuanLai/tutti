@@ -21,52 +21,6 @@ fn tick_at(node: &mut VbapPannerNode, rate: SampleRate, input: &[f32; 2], out: &
     }
 }
 
-/// The held-gain shortcut is taken only where it has the ramp's bits.
-/// A gain moving from `+0.0` to `-0.0` has a delta of `-0.0`, which
-/// compares equal to zero, but the ramp computes `-0.0 - (-0.0 * t)`,
-/// which is `+0.0` on every frame; the shortcut would write `-0.0`.
-///
-/// Mutation (run): test `delta == 0.0` instead of `delta.to_bits() == 0`
-/// → the output reads `-0.0`, fails.
-#[test]
-fn a_signed_zero_gain_change_takes_the_ramp() {
-    let mut from = BlockGains {
-        mono: true,
-        a: [0.0; crate::vbap::panner::MAX_SPEAKERS],
-        b: [0.0; crate::vbap::panner::MAX_SPEAKERS],
-    };
-    let mut to = from;
-    from.a[0] = 0.0;
-    to.a[0] = -0.0;
-    let ones = [1.0f32; 8];
-    let mut out = [1.0f32; 8];
-    let fold = Fold::widths(ChannelLayout::STEREO, ChannelLayout::MONO).unwrap();
-    render_channel(&from, &to, Some(0), &fold, &ones, &ones, &mut out);
-    assert!(
-        out.iter().all(|o| o.to_bits() == 0.0f32.to_bits()),
-        "{out:?}"
-    );
-
-    // And a held gain is exactly `mono * g` / `l * a + r * b`, the mono the
-    // pair's average (`(l + r) * 0.5`, the stereo-to-mono fold).
-    let mut held = from;
-    held.a[0] = 0.3;
-    let (l, r) = ([0.5f32, -0.25], [0.125f32, 1.0]);
-    let mut out = [0.0f32; 2];
-    let mono = [(l[0] + r[0]) * 0.5, (l[1] + r[1]) * 0.5];
-    render_channel(&held, &held, Some(0), &fold, &l, &r, &mut out);
-    for i in 0..2 {
-        assert_eq!(out[i], mono[i] * 0.3);
-    }
-    let mut pair = held;
-    pair.mono = false;
-    pair.b[0] = 0.7;
-    render_channel(&pair, &pair, Some(0), &fold, &l, &r, &mut out);
-    for i in 0..2 {
-        assert_eq!(out[i], l[i] * 0.3 + r[i] * 0.7);
-    }
-}
-
 #[test]
 fn vbap_panner_tick() {
     let mut panner = prep(VbapPannerNode::stereo().unwrap());

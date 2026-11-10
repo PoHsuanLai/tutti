@@ -94,7 +94,7 @@ fn freeverb_design_allocates_nothing() {
 /// `Inline::push` of the design would too.
 #[test]
 fn freeverb_retargets_and_renders_without_allocating() {
-    use tutti_dsp::{Ceiling, ChannelLayout, Freeverb, Network, Realization, Setup};
+    use tutti_dsp::{Ceiling, Freeverb, Network, Realization, Setup};
     use tutti_types::{MaxBlock, Samples};
 
     let rate = SampleRate(48_000.0);
@@ -105,8 +105,6 @@ fn freeverb_retargets_and_renders_without_allocating() {
         &Setup {
             rate,
             max_block: MaxBlock::of(Samples(64)),
-            input: ChannelLayout::MONO,
-            output: ChannelLayout::STEREO,
         },
     );
     let mut network = Box::new(Network::new(rate));
@@ -158,7 +156,7 @@ fn design_into_needs_no_network_sized_stack() {
 /// design's line loop fails the first.
 #[test]
 fn the_fdn_retargets_and_renders_without_allocating() {
-    use tutti_dsp::{Ceiling, ChannelLayout, FdnControls, FdnDesign, Network, Realization, Setup};
+    use tutti_dsp::{Ceiling, FdnControls, FdnDesign, Network, Realization, Setup};
     use tutti_types::{Db, Depth, Hz, MaxBlock, Samples, Seconds, StereoWidth};
 
     let rate = SampleRate(48_000.0);
@@ -169,8 +167,6 @@ fn the_fdn_retargets_and_renders_without_allocating() {
         &Setup {
             rate,
             max_block: MaxBlock::of(Samples(64)),
-            input: ChannelLayout::MONO,
-            output: ChannelLayout::STEREO,
         },
     );
     let mut network = Box::new(Network::new(rate));

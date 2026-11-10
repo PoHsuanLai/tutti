@@ -241,7 +241,7 @@ so the `Network` never carries an `Arc` into the audio thread.
 
 All are pure functions of the `Network`, with no kernel and no signal.
 
-They are design-time figures and are computed in `f64`: every query that returns a time (`rt60`, `rt60_bound`, `tail`, `modal_density`, `ring_out`) returns the exact `Seconds`, with no `f32` rounding on the way. Only the `Network`'s own entries and the kernel's per-sample state are `f32`.
+They are design-time figures and are computed in `f64`: every query that returns a time (`rt60`, `tail`, `modal_density`, `ring_out`) returns the exact `Seconds`, with no `f32` rounding on the way. Only the `Network`'s own entries and the kernel's per-sample state are `f32`.
 
 | Query | Definition |
 |---|---|

@@ -4,7 +4,7 @@
 use std::path::Path;
 
 use tutti_plugin_types::bundle::{ModuleKind, native_module_path};
-use tutti_plugin_types::{InProcess, Load, MainThread, OutOfProcess, PluginResult};
+use tutti_plugin_types::{InProcess, Load, MainThread, Origin, OutOfProcess, PluginResult};
 
 use super::control::plugin_error;
 use super::editor_instance::Vst3Editor;
@@ -18,6 +18,10 @@ impl InProcess for Vst3Loaded {
             None => LoadOptions::new(),
         };
         Vst3Loaded::load(main, &module, options).map_err(plugin_error)
+    }
+
+    fn origin(&self) -> &Origin {
+        &self.origin
     }
 }
 

@@ -65,12 +65,6 @@ impl LimiterKernel {
         }
     }
 
-    /// The gain envelope now, before the window minimum.
-    #[must_use]
-    pub fn envelope(&self) -> f32 {
-        self.envelope
-    }
-
     /// Clears the envelope.
     pub fn reset(&mut self) {
         self.envelope = 0.0;
@@ -168,6 +162,6 @@ mod tests {
             );
         }
         k.reset();
-        assert_eq!(k.envelope(), 0.0);
+        assert_eq!(k.envelope, 0.0);
     }
 }

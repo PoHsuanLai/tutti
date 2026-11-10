@@ -45,7 +45,9 @@
 //!   ways.
 //! - Spatial: [`SpeakerLayout`], the pairs or triplets of a speaker array and Pulkki's
 //!   vector base amplitude panning solve over it ([`SpeakerLayout::gains_into`]), with a
-//!   [`SpeakerGeometryError`] for a layout that cannot be built.
+//!   [`SpeakerGeometryError`] for a layout that cannot be built; [`VbapKernel`] and [`VbapGains`],
+//!   the block's gains at the two ends of a ramp and one channel rendered between them; and
+//!   [`HrtfBinaural`].
 //! - Waveshaping: [`ShapeKind`] and [`Shaper`].
 //! - Frame-by-bin data: [`StftGeometry`] (window, hop, shape and rate, validated
 //!   together), and [`Grid`] with its typed indices; [`enum@Error`] and [`Result`].
@@ -144,6 +146,7 @@ pub use smoother::Smoother;
 pub use spatial::{
     HRTF_LATENCY, HRTF_STEP, HrtfBinaural, HrtfBinauralError, MAX_PREPARED_RATE, MAX_SPEAKERS,
     MAX_SPHERE_RATE, MIN_SPHERE_RATE, PanningMode, SpeakerGeometryError, SpeakerLayout, Tuple,
+    VbapGains, VbapKernel,
 };
 pub use swept_delay::SweptLines;
 pub use tutti_types::ChannelLayout;

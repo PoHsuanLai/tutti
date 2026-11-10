@@ -353,9 +353,11 @@ crates/          everything shipped; directory name = package name; no nesting
                  `AudioThreadCell`, `RtVec`, the position ring, the sequence lock,
                  the parallel executor's claims and job gate, `with_no_denormals`,
                  and the `ArcLend`/`Loan`/`Reader` re-export. Holds the lock-free
-                 and `unsafe` runtime structure, with every loom model, and the one
+                 and `unsafe` runtime structure, with every loom model, the one
                  thread-priority call (`request_priority`, which reports what the OS
-                 granted); depends on `arc-lend` alone (and `thread-priority`),
+                 granted) and the one OS clock read (`monotonic_ns`, the clock a
+                 plugin's system time is on); depends on `arc-lend` alone (and
+                 `thread-priority`, and `libc` / `windows` for the clock),
                  `publish = false`
   tutti-ump      the Universal MIDI Packet: `Ump`, `MidiGroup`, `MidiChannel`,
                  `CCNumber`, and `Message` with `decode` and `From<Message> for Ump`,
@@ -639,7 +641,10 @@ list (normal and build edges; dev-dependencies may go anywhere).
   `unsafe` runtime structure (apart from `arc-lend` and the `-ffi` crates), and
   the one thread-priority call, `request_priority` (a request for an ordinary-
   scheduler raise, never real time, whose `PriorityOutcome` is what a caller
-  logs; the plugin server and the sampler's streamer both use it). Keep
+  logs; the plugin server and the sampler's streamer both use it), and the
+  one OS clock read, `monotonic_ns` (the OS's monotonic clock in nanoseconds,
+  on the OS's epoch so a plugin server reads the same timebase; not
+  `Instant`, which is process-local). Keep
   every module private (`tutti_rt::RtVec`, never `tutti_rt::vec::RtVec`; CI runs
   the per-module path gate on it).
 - `tutti-dsp` depends on no tutti crate but `tutti-types` (its outside deps are
@@ -652,10 +657,12 @@ list (normal and build edges; dev-dependencies may go anywhere).
   control arrives per call as a plain typed value. It holds the real FFT, the
   cosine windows (`CosineWindow`, `Window`), the STFT's `StftGeometry`, `Grid` and
   `Error`, the VBAP speaker layout and gain solve (`SpeakerLayout`, `SpeakerGeometryError`: Pulkki's
-  pairs and triplets, selected from the published method, doc 028 section 4), the HRTF
+  pairs and triplets, selected from the published method, doc 028 section 4; `VbapKernel`, the
+  block's gains with the mono fold and the last-solve cache, and `VbapGains`, a ramp's end point,
+  whose `render_channel` ramps one output channel), the HRTF
   convolver (`HrtfBinaural`, the HRIR sphere's parse, resample and face lookup, `HrtfBinauralError`
   and the sphere-rate constants; it takes the aimed direction per call, `HRTF_STEP` frames at a
-  time, so the de-zipper is the caller's; the nodes and the smoother stay in `tutti-spatial`), the SVF, ladder and Linkwitz-Riley filters (and their `Real`
+  time, so the de-zipper is the caller's; the nodes, the `Param` reads and the smoother stay in `tutti-spatial`), the SVF, ladder and Linkwitz-Riley filters (and their `Real`
   float) and their models of doc 024 (`SvfModel`, an `Lti`; the small-signal
   `LadderModel`; `CrossoverModel`, the crossover's design apart from its state, a
   multi-output `Lti`; `Biquad`, the shared second-order section; the realizations

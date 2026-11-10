@@ -119,12 +119,12 @@ marked "on `main` (#367)".
 
 | Piece | Where | Reverb-specific? |
 |---|---|---|
-| `Network`, `Stage`, `Inline`, the queries (`rt60`, `rt60_bound`, `tail`, `is_stable`, `is_lossless`, densities, `min_delay`, `latency`) | `tutti-dsp/src/network.rs`, `network/queries.rs` | The model: yes. `tail`, `is_stable` and `latency` are what every family has |
+| `Network`, `Stage`, `Inline`, the queries (`rt60`, `tail`, `is_stable`, `is_lossless`, densities, `min_delay`, `latency`) | `tutti-dsp/src/network.rs`, `network/queries.rs` | The model: yes. `tail`, `is_stable` and `latency` are what every family has |
 | `Ring { Finite(Seconds), Unbounded }` | `network/queries.rs` | No: every family's tail |
 | `Design { Controls, design_into, design, bounds, channels }`; also `type Realization`, `fn realization` (PR 1a renamed them from `Kernel`, `kernel`) | `network/design.rs` | Names `Network` and `Bounds` (the reverb's) in its signatures |
 | `Ceiling { rate, max_decay, floor }` | `network/design.rs` | `max_decay` is; `rate` and `floor` are not |
-| `Bounds { lines, stages, taps, outputs, line, delay, ir, pre_delay, tail }`, `Bounds::of`, `dominates` | `network/design.rs` | Every field but `tail` |
-| On `main`: `Realization` (non-generic; PR 1a renamed it from `Kernel`, and step 1 / PR 1b makes it `Realization<M>`), `Setup { rate, max_block, input, output }`, `Effort` | `network/realization.rs` | `Realization` names `Network` and `Bounds`; `Setup` and `Effort` are not reverb at all |
+| `Bounds { lines, stages, taps, outputs, line, delay, ir, pre_delay, tail }`, `Sizes::measure`, `dominates` | `network/design.rs` | Every field but `tail` |
+| On `main`: `Realization` (non-generic; PR 1a renamed it from `Kernel`, and step 1 / PR 1b makes it `Realization<M>`), `Setup { rate, max_block }`, `Effort` | `network/realization.rs` | `Realization` names `Network` and `Bounds`; `Setup` and `Effort` are not reverb at all |
 | `design_contract!`, `DesignCase`, `Mutant`; `realization_contract!`, `RealizationCase`, `Defect` (PR 1a renamed them from `kernel_contract!`, `KernelCase`) | `contract/design.rs`, `contract/realization.rs` (a crate-root `#[cfg(test)] mod contract` since PR 1a) | Crate-private and `cfg(test)`; the cases mix generic ones (pure, bounds dominate, reset, fresh, block independence, click-free, latency, no allocation) with reverb ones (`rt60`, `band_order`, `decorrelated`, `line_lengths`, freeze) |
 | On `main`: `DesignNode<D>`, `NodeDesign`, `ControlParams` (PR 1a renamed them from `ReverbNode`, `ReverbDesign`, `ReverbParams`), `DryAlign` | `tutti-nodes/src/reverb.rs`, `dry_align.rs` | The control path, tail report, `longest`, parking, cut-to-frame, fork and dry alignment are generic; the names are not |
 | On `main`: node tests | `tutti-nodes/tests/reverb_node.rs`, `reverb_node_generic.rs` | Generic cases through a lying design |
@@ -358,7 +358,7 @@ like, per CLAUDE.md "Unit types").
 | 41 | 6 | **SoundFont voice render** (`render.rs`, `voice.rs`, `region_ex.rs`; the generator sum of SF2 9.4) | sample playback with interpolation, oscillator | **Partly** | The design half is pure and fits: SF2 generators (cents, timecents, centibels) to voice parameters through the 9.3 conversions. The sample-playback oscillator is a resampling read whose model is a pitch ratio and a loop; no response to speak of |
 | 42 | 6 | **Stretch unit** (`tutti-sampler/src/stretch/unit.rs`; phase vocoder) | `Unit::tick`/`process`, source-pulled; latency depends on bypass | **Partly** | Fits: `(stretch factor, cents, FFT size, enabled)` to a model whose `latency` is `latency_samples()` (a function of the FFT size and whether it is processing, per the method's docs), the duration ratio, `Graded` (FFT size is the quality). Does not fit: nonlinear, so no `frequency_response`; the realization consumes at a variable rate (`input_rate`), so not an `Effect<M>`. Doc 026 gives it the shape: a `StretchDesign` with a `Retime<M>` realization (position-driven, `splice`, `reach`) |
 | 43 | E | **Sampler butler and voices** (`tutti-sampler/src/butler/`, `voice/`) | streaming I/O | **No** | I/O and scheduling, not an algorithm |
-| 44 | 1, order 0 | **VBAP** (the layout and solve in `tutti-dsp/src/spatial/`, `SpeakerLayout`; the node and the smoothing in `tutti-spatial/src/vbap/`) | `VbapPanner::solve_block` with angle smoothing over `SpeakerLayout::gains_into` | **Fits** | Design: `(azimuth, elevation, spread, width, speaker layout)` to the gain matrix. Queries: the matrix; power normalisation (`sum g^2 = 1`); at most a few non-zero speakers; continuity in azimuth. The smoothing is the realization's |
+| 44 | 1, order 0 | **VBAP** (the layout, solve and block kernel in `tutti-dsp/src/spatial/`, `SpeakerLayout`, `VbapKernel`; the node and the smoothing in `tutti-spatial/src/vbap/`) | `VbapKernel::gains` over `SpeakerLayout::gains_into` (the block kernel, `VbapGains::render_channel`), under `VbapPanner::solve_block`'s angle smoothing | **Fits** | Design: `(azimuth, elevation, spread, width, speaker layout)` to the gain matrix. Queries: the matrix; power normalisation (`sum g^2 = 1`); at most a few non-zero speakers; continuity in azimuth. The smoothing is the realization's |
 | 45 | 1 (2) | **HRTF binaural** (the convolver, sphere and face lookup in `tutti-dsp/src/spatial/`; the node and the de-zipper in `tutti-spatial/src/hrtf/`) | `HrtfBinaural`, HRIR convolution with a de-zipper | **Fits** | Design: `(azimuth, elevation, rate)` to an interpolated HRIR pair (from the sphere: data). `frequency_response` is the HRIR's FFT, `tail` is `ir_len - 1` (`ring_out`), `latency` the delay compensation. Published like row 16 |
 
 Whether the instruments' controls are typed units was not audited row by row.
@@ -459,15 +459,14 @@ pub trait Design: Clone + Send {
     fn design_into(&self, c: &Self::Controls, rate: SampleRate, out: &mut Self::Model);
     fn design(&self, c: &Self::Controls, rate: SampleRate) -> Self::Model { /* blank + design_into */ }
     fn bounds(&self, ceiling: &Ceiling<Self::Range>) -> Self::Bounds;   // worst case over the controls
-    fn measure(&self, model: &Self::Model, floor: Db) -> Self::Bounds;  // today's Bounds::of
     fn realization(&self) -> Self::Realization;
 }
 ```
 
 Differences from `main`: `type Model` is any class trait, not `Network`; `Bounds`
 is the design's (engineering) and no longer part of the model, so the model trait
-states only mathematics; `blank` and `measure` are the two things the old
-`Network::new` and `Bounds::of` did, now on the design that owns the sizes.
+states only mathematics; `blank` is what the old `Network::new` did, now on the design, and
+`Sizes::measure` (the old `Bounds::of`) is on the sizes that own the figure.
 `design_into` stays the required method: a `Network` is 56 KB and cannot be built
 by value on an audio thread (doc 022 "Step 1a as built"); a biquad is a few dozen
 bytes and in place is merely harmless.

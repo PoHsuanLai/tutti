@@ -197,6 +197,9 @@ pub struct Vst2Loaded {
     pub(crate) audio: Option<AudioSide>,
     metadata: PluginInfo,
     descriptor: PluginDescriptor,
+    /// The module opened, what a reopen loads again (a VST2 file holds one
+    /// plugin, so there is no choice to keep).
+    pub(crate) origin: tutti_plugin_types::Origin,
 }
 
 /// What the realtime half keeps between activations: the transport snapshot the
@@ -376,6 +379,7 @@ impl Vst2Loaded {
             }),
             metadata,
             descriptor,
+            origin: tutti_plugin_types::Origin::new(resolved, tutti_plugin_types::Load::new()),
         })
     }
 

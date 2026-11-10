@@ -1,6 +1,7 @@
 //! [`Design`]: the pure function from a family's controls to its model, and the
 //! engineering that sizes what runs it ([`Sizes`]).
 
+use std::borrow::Borrow;
 use std::fmt::Debug;
 
 use tutti_types::{ChannelLayout, Db, SampleRate};
@@ -21,6 +22,14 @@ pub struct Channels {
 /// an impulse response's length, a longest delay (design 024 section 4.4).
 /// Engineering, not mathematics, so it is the design's and not the model's.
 pub trait Sizes: Copy + Debug {
+    /// What one set of sizes is measured from: the part of a design's model
+    /// that the sizes depend on (the model borrows it).
+    type Source;
+
+    /// The sizes of one `source`, its tail measured to `floor`: what
+    /// [`Design::bounds`] must hold for every model the design can give.
+    fn measure(source: &Self::Source, floor: Db) -> Self;
+
     /// The longest [`System::tail`] the design can give, at the ceiling's floor:
     /// what the node declares as its tail ceiling.
     fn tail(&self) -> Ring;
@@ -44,7 +53,7 @@ pub trait Design: Clone + Send {
     type Controls: Copy + PartialEq + Send;
 
     /// The system a set of controls describes.
-    type Model: System + Clone + Send;
+    type Model: System + Clone + Send + Borrow<<Self::Bounds as Sizes>::Source>;
 
     /// The worst-case sizes of this design, the figures its realization
     /// allocates from.
@@ -90,10 +99,6 @@ pub trait Design: Clone + Send {
     /// declared ranges (and the limits in `ceiling`): what a realization
     /// allocates for and what the node declares as its tail ceiling.
     fn bounds(&self, ceiling: &Ceiling<Self::Range>) -> Self::Bounds;
-
-    /// The sizes of one `model`, its tail measured to `floor`: what
-    /// [`bounds`](Self::bounds) must hold for every model the design can give.
-    fn measure(&self, model: &Self::Model, floor: Db) -> Self::Bounds;
 
     /// An unprepared realization for this design. Control side; allocates.
     fn realization(&self) -> Self::Realization;

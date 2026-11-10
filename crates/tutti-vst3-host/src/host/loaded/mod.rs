@@ -11,7 +11,7 @@
 //! renders.
 
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::{Arc, OnceLock};
 
 use tutti_plugin_types::{
@@ -62,8 +62,8 @@ pub struct Vst3Loaded {
     /// the audio thread, drained in [`Self::poll_plugin_notifications`]. Built at load
     /// and outlives activate/deactivate cycles.
     pub(super) midi_learn: MidiLearnConsumer,
-    /// What `rebuild` loads again.
-    pub(super) origin: LoadOrigin,
+    /// What `rebuild` and `Reopen` load again.
+    pub(super) origin: tutti_plugin_types::Origin,
     /// The catalog identity, with the editor measured on first ask.
     pub(super) descriptor: OnceLock<PluginDescriptor>,
     /// Whether the plugin is activated, and at which width.
@@ -77,15 +77,6 @@ pub struct Vst3Loaded {
     /// Keeps the DSO loaded for the plugin's lifetime. **Must stay last** — see
     /// the teardown-order note at the top of this struct.
     pub(super) _library: Arc<Library>,
-}
-
-/// How a plugin was loaded, kept so [`Loaded::rebuild`] loads it again.
-///
-/// [`Loaded::rebuild`]: tutti_plugin_types::Loaded::rebuild
-#[derive(Debug, Clone)]
-pub(super) struct LoadOrigin {
-    pub(super) path: PathBuf,
-    pub(super) class: Option<String>,
 }
 
 /// The plugin's activation, as the host last made it.

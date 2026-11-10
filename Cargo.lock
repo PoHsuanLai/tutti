@@ -3996,6 +3996,7 @@ dependencies = [
  "libc",
  "loom",
  "thread-priority",
+ "windows 0.52.0",
 ]
 
 [[package]]

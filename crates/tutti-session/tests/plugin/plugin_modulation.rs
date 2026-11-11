@@ -24,7 +24,7 @@ use std::time::{Duration, Instant};
 use support::{clap_probe, plugin_server};
 use tutti_graph::NodeKey;
 use tutti_modulation::Lfo;
-use tutti_plugin::catalog::PluginId;
+use tutti_plugin::catalog::PluginRef;
 use tutti_plugin::handles::PluginClient;
 use tutti_plugin_types::{Normalized, ParamId};
 use tutti_session::{
@@ -65,10 +65,7 @@ fn add_probe(s: &mut Session) -> NodeKey {
     let node = s
         .add_plugin_blocking(
             &main_thread(),
-            PluginLoadRequest {
-                id: PluginId::from_path(clap_probe()),
-                state: None,
-            },
+            PluginLoadRequest::new(PluginRef::file(clap_probe()).expect("a plugin file")),
         )
         .expect("the reference CLAP plugin loads");
     s.graph().set_outputs_from(node);

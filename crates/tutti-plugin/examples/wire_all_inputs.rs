@@ -23,7 +23,7 @@ use tutti_modulation::{
     Amount, Clock, ControlProgram, Law, Layer, LayerId, LfoShape, Polarity, Wave,
 };
 use tutti_nodes::automation::ControlLaneNode;
-use tutti_plugin::catalog::{Plugin, PluginRole};
+use tutti_plugin::catalog::{Plugin, PluginRef, PluginRole};
 use tutti_plugin_types::BridgeResult;
 
 use tutti_transport::ProjectMeter;
@@ -40,7 +40,11 @@ fn main() -> BridgeResult<()> {
 
     // 1. Open. A path, not a catalog entry — the catalog is for discovery, and
     //    this host already knows what it wants.
-    let plugin = Plugin::open(Some(&main_thread()), &path, SAMPLE_RATE)?;
+    let Some(file) = PluginRef::file(&path) else {
+        eprintln!("{path} is not a plugin file");
+        std::process::exit(2);
+    };
+    let plugin = Plugin::open(Some(&main_thread()), &file, SAMPLE_RATE)?;
 
     println!("opened {:?}", plugin.descriptor().name);
     println!("  format {}", plugin.descriptor().class.format_name());

@@ -99,6 +99,7 @@ mod tests;
 pub use capability_view::TransportView;
 pub(crate) use capability_view::is_declined;
 
+use crate::host::plugin_ref::PluginRef;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
@@ -208,6 +209,8 @@ pub struct PluginClient<S = Unbound> {
     served: IpcController,
     /// Where this instance came from, so a fork can load another of it.
     origin: Option<IpcOrigin>,
+    /// The plugin this is, with the id it reports.
+    plugin: PluginRef,
     /// On a **fork** only: whether it has failed while rendering
     /// ([`fork_health`](PluginClient::fork_health)).
     fork_watch: Option<Arc<ForkWatch>>,
@@ -266,8 +269,9 @@ impl PluginClient<Unbound> {
     }
 
     /// [`new_with_state`](Self::new_with_state) for the plugin `load` chooses in
-    /// a file that exports several (a CLAP plugin id, a VST3 class name, an AU
-    /// descriptor id); the other constructors load the file's first. The
+    /// a file that exports several (a CLAP plugin id, a VST3 class id, an AU
+    /// descriptor id: its `PluginDescriptor::id`); the other constructors load
+    /// the file's first. The
     /// choice is kept for a fork, which loads the same plugin again.
     ///
     /// # Errors
@@ -398,6 +402,12 @@ impl PluginClient<Unbound> {
         };
 
         let origin = ipc.origin().cloned();
+        // The ref carries the id the plugin reports, so a state it saves and a
+        // hand-inserted node name it as a scan would.
+        let plugin = origin
+            .as_ref()
+            .and_then(|o| PluginRef::loaded(&o.path, &descriptor.id))
+            .ok_or_else(|| failed("the served plugin has no file of a plugin format".into()))?;
         let format = ipc.format();
         let served = ipc.controller();
         // Report the FULL input width (main + sidechain/aux input buses) so a
@@ -429,6 +439,7 @@ impl PluginClient<Unbound> {
             invalidate_sink,
             served,
             origin,
+            plugin,
             fork_watch: None,
             state: Unbound {
                 client: Box::new(client),
@@ -466,6 +477,7 @@ impl PluginClient<Unbound> {
             invalidate_sink,
             served,
             origin,
+            plugin,
             fork_watch,
             state: Unbound { client },
         } = self;
@@ -482,6 +494,7 @@ impl PluginClient<Unbound> {
             invalidate_sink,
             served,
             origin,
+            plugin,
             fork_watch,
             state: Bound {
                 node: Box::new((*client).bind(tempo.clone())),
@@ -492,6 +505,11 @@ impl PluginClient<Unbound> {
 }
 
 impl<S> PluginClient<S> {
+    /// The plugin this client is: its file, its format and the id it reports.
+    pub fn plugin(&self) -> &PluginRef {
+        &self.plugin
+    }
+
     /// The shape the plugin's node declares: its channels as audio ports, one
     /// MIDI event input, one MIDI event output if it has MIDI-out, and its
     /// latency and tail now (the node's `shape`). Read before binding, so a

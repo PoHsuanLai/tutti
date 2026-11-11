@@ -126,6 +126,8 @@ tutti-cpal = { path = "../tutti-cpal", default-features = false }
 # `plugin-server` (built first: `cargo build -p tutti-plugin-server`; it is
 # not a dev-dependency, which would be a cycle through `tutti-plugin`).
 tutti-clap-test-plugin = { path = "../../testing/tutti-clap-test-plugin" }
+# `PluginEntry`: a scanned plugin, which `PluginRef::from` reads (`plugin_identity`).
+tutti-plugin-db = { path = "../tutti-plugin-db" }
 # The reference VST2 plugin the `vst2_*` suites load in process (`vst2`), and
 # `libloading` re-opens the image the host loaded to read what it captured and
 # to flip its switches: the linked rlib is a separate image with separate

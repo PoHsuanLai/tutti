@@ -47,7 +47,7 @@ pub(crate) mod wire;
 ///   is refused at the handshake (`handshake` names a server whose first frame
 ///   does not decode as one from another build).
 /// - **Version 28** added `load` to `LoadPlugin`: which plugin of a file that
-///   exports several to load (a CLAP plugin id, a VST3 class name, an AU
+///   exports several to load (a CLAP plugin id, a VST3 class id, an AU
 ///   descriptor id), which the server hands its format's
 ///   `OutOfProcess::load_served`. Before it a file always loaded its first
 ///   plugin.
@@ -661,7 +661,7 @@ mod tests {
     fn test_load_plugin_f64_serialization() {
         let msg = HostMessage::LoadPlugin {
             path: PathBuf::from("/test/reverb.vst3"),
-            load: Load::new().plugin("Reverb Plus"),
+            load: Load::new().plugin("vst3.00112233-44556677-8899AABB-CCDDEEFF"),
             sample_rate: SampleRate(96000.0),
             block_size: 1024,
             preferred_format: SampleFormat::Float64,
@@ -684,7 +684,7 @@ mod tests {
                 assert_eq!(path, PathBuf::from("/test/reverb.vst3"));
                 assert_eq!(
                     load.chosen(),
-                    Some("Reverb Plus"),
+                    Some("vst3.00112233-44556677-8899AABB-CCDDEEFF"),
                     "the choice crosses the wire"
                 );
                 assert_eq!(sample_rate, SampleRate(96000.0));

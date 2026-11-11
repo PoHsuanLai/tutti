@@ -834,7 +834,8 @@ impl Graph {
     #[cfg(feature = "plugin")]
     pub fn insert_plugin(&mut self, client: Box<tutti_plugin::handles::PluginClient>) -> NodeKey {
         let node = NodeKey::fresh();
-        let hosted = crate::HostedPlugin::new(client.handle()).with_controls(client.controls());
+        let hosted = crate::HostedPlugin::new(client.handle(), client.plugin().clone())
+            .with_controls(client.controls());
         let tempo = self.tempo.clone();
         let _controls = self.editor.insert(node, PLUGIN_KIND, client.bind(tempo));
         self.nodes.insert(
@@ -857,16 +858,26 @@ impl Graph {
     /// is whatever its node's shape declared at insert. Returns `false`
     /// (and hosts nothing) when `node` is not in the graph.
     ///
+    /// `plugin` is which plugin it is, which the handle does not know (the
+    /// file it came from): the one the host opened, and the ref its states
+    /// are saved under ([`HostedPlugin::state`](crate::HostedPlugin::state)).
+    ///
     /// A host that binds a plugin itself (`PluginClient::bind`) gives it a
     /// reader of the session's tempo map, `session.transport().settings
     /// .tempo_reader()`, so the plugin is told the project's tempo; this
     /// method binds nothing.
     #[cfg(feature = "plugin")]
-    pub fn host_plugin(&mut self, node: NodeKey, handle: tutti_plugin_host::PluginHandle) -> bool {
+    pub fn host_plugin(
+        &mut self,
+        node: NodeKey,
+        handle: tutti_plugin_host::PluginHandle,
+        plugin: tutti_plugin::catalog::PluginRef,
+    ) -> bool {
         if !self.nodes.contains_key(&node) {
             return false;
         }
-        self.plugins.insert(node, crate::HostedPlugin::new(handle));
+        self.plugins
+            .insert(node, crate::HostedPlugin::new(handle, plugin));
         true
     }
 
@@ -900,6 +911,7 @@ impl Graph {
         }
         let handle = client.handle();
         let controls = client.controls();
+        let plugin = client.plugin().clone();
         let tempo = self.tempo.clone();
         match self.swap_unit(node, client.bind(tempo), fade, curve) {
             Ok(_controls) => {
@@ -909,11 +921,11 @@ impl Graph {
                 // what the latency poll reads; nothing of the outgoing
                 // plugin's state survives (`HostedPlugin::replace`).
                 match self.plugins.get_mut(&node) {
-                    Some(hosted) => hosted.replace(handle, controls),
+                    Some(hosted) => hosted.replace(handle, controls, plugin),
                     None => {
                         self.plugins.insert(
                             node,
-                            crate::HostedPlugin::new(handle).with_controls(controls),
+                            crate::HostedPlugin::new(handle, plugin).with_controls(controls),
                         );
                     }
                 }

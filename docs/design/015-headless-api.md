@@ -561,7 +561,7 @@ plugin's parameter edits arrive through `PluginParamValues` and become
 knob writes at the next update.
 
 ```rust
-let job = s.plugin_load(PluginLoadRequest { id: PluginId::from_path(path), state: None }); // &self; Send; rate from the session
+let job = s.plugin_load(PluginLoadRequest::new(PluginRef::file(path)?)); // &self; Send; rate from the session
 let done = job.run();                        // any thread
 let synth = s.add_plugin(done)?;             // main thread: NodeKey; controls and meter captured
 ```
@@ -924,7 +924,7 @@ use tutti::prelude::*;
 let mut s = Session::builder()
     .build_offline(SampleRate(48_000.0), ChannelLayout::STEREO, MaxBlock::of(Samples(512)))?;
 
-let job = s.plugin_load(PluginLoadRequest { id: PluginId::from_path("Synth.clap"), state: None });
+let job = s.plugin_load(PluginLoadRequest::new(PluginRef::file("Synth.clap").ok_or("not a plugin")?));
 let synth = s.add_plugin(job.run())?;
 s.graph().set_outputs_from(synth);
 
@@ -1864,7 +1864,7 @@ addition). Specifics:
   reordering the constant reorders the expectation.
 - **The prelude** gains the session's requests behind their features
   (`ExportRequest`, `ExportOutput`, `ExportConfig`, `PluginLoadRequest`,
-  `PluginId`, `ParamRef`, `MidiFile`, `TimedMidiEvent`, `GraphSource`, the
+  `PluginRef`, `PluginState`, `ParamRef`, `MidiFile`, `TimedMidiEvent`, `GraphSource`, the
   offline timeline). **Deviation:** §5.1 and §5.2 moved from
   `tutti-session/examples` to `tutti/examples` so they can use
   `tutti::prelude::*`: `tutti-session` cannot dev-depend on `tutti`, which

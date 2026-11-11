@@ -19,5 +19,6 @@ pub mod db_probe;
 pub mod handles;
 pub mod node;
 pub mod plugin;
+pub mod plugin_ref;
 pub mod plugins;
 pub(crate) mod probe;

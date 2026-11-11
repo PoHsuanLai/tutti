@@ -6,6 +6,7 @@
 //! more than its node: it also takes per-block MIDI, chord/scale context and
 //! note expression, reached here through capability accessors.
 
+use crate::host::plugin_ref::PluginRef;
 use std::path::Path;
 use tutti_plugin_types::MainThread;
 
@@ -52,7 +53,10 @@ enum Backend {
 /// use tutti_types::SampleRate;
 /// use tutti_plugin::catalog::Plugin;
 ///
-/// let plugin = Plugin::open(None, "/usr/lib/vst3/MyPlugin.vst3", SampleRate::new(48_000.0))?;
+/// use tutti_plugin::catalog::PluginRef;
+///
+/// let file = PluginRef::file("/usr/lib/vst3/MyPlugin.vst3").expect("a plugin file");
+/// let plugin = Plugin::open(None, &file, SampleRate::new(48_000.0))?;
 /// println!("{} ({:?})", plugin.descriptor().name, plugin.role());
 /// if plugin.takes_midi() {
 ///     // wire a MIDI source to the node's event input
@@ -62,6 +66,8 @@ enum Backend {
 pub struct Plugin {
     backend: Backend,
     handle: PluginHandle,
+    /// The plugin that was opened, with the id the loaded plugin reports.
+    plugin: PluginRef,
 }
 
 /// Reports identity and where the plugin runs, not the node's guts: the
@@ -89,15 +95,19 @@ impl Plugin {
     /// No catalog is needed: discovery through [`Plugins`] is optional.
     /// ```no_run
     /// # fn ex() -> tutti_plugin_types::BridgeResult<()> {
-    /// use tutti_plugin::catalog::Plugin;
-    /// let plugin = Plugin::open(None, "/Library/Audio/Plug-Ins/VST3/Foo.vst3", tutti_types::SampleRate::new(48_000.0))?;
+    /// use tutti_plugin::catalog::{Plugin, PluginRef};
+    /// let foo = PluginRef::file("/Library/Audio/Plug-Ins/VST3/Foo.vst3").expect("a plugin file");
+    /// let plugin = Plugin::open(None, &foo, tutti_types::SampleRate::new(48_000.0))?;
     /// # Ok(()) }
     /// ```
     ///
     /// `sample_rate` takes anything convertible to [`SampleRate`] — `f64` and
     /// `u32` (which widens exactly), but deliberately not `f32`.
     ///
-    /// The format is taken from the path's extension. VST2 (with the `vst2`
+    /// `plugin` names the plugin: its file, and (from a scan,
+    /// `PluginRef::from(&entry)`) which plugin of the file: a bundle that
+    /// exports several opens the one the ref's id names, not the first.
+    /// The format is the ref's. VST2 (with the `vst2`
     /// feature) runs in the host process, since its `AEffect` fuses editor and
     /// audio processor into one instance; every other format runs in a
     /// `plugin-server` subprocess with an IPC bridge. This call blocks while
@@ -127,10 +137,10 @@ impl Plugin {
     /// [`AudioConfig`]: crate::BridgeConfig
     pub fn open(
         main: Option<&MainThread>,
-        path: impl AsRef<Path>,
+        plugin: &PluginRef,
         sample_rate: impl Into<SampleRate>,
     ) -> BridgeResult<Self> {
-        Self::open_with(main, &AudioConfig::default(), path.as_ref(), sample_rate)
+        Self::open_with(main, &AudioConfig::default(), plugin, sample_rate)
     }
 
     /// Opens a plugin file with explicit bridge settings.
@@ -143,10 +153,10 @@ impl Plugin {
     pub fn open_with(
         main: Option<&MainThread>,
         audio: &AudioConfig,
-        path: impl AsRef<Path>,
+        plugin: &PluginRef,
         sample_rate: impl Into<SampleRate>,
     ) -> BridgeResult<Self> {
-        Self::open_with_state(main, audio, path, sample_rate, None).map(|(plugin, _)| plugin)
+        Self::open_with_state(main, audio, plugin, sample_rate, None).map(|(plugin, _)| plugin)
     }
 
     /// [`open_with`](Self::open_with), restoring `state` into the plugin
@@ -162,11 +172,11 @@ impl Plugin {
     pub fn open_with_state(
         main: Option<&MainThread>,
         audio: &AudioConfig,
-        path: impl AsRef<Path>,
+        plugin: &PluginRef,
         sample_rate: impl Into<SampleRate>,
         state: Option<&[u8]>,
     ) -> BridgeResult<(Self, Option<std::result::Result<(), String>>)> {
-        let path = path.as_ref();
+        let path = plugin.path();
         let sample_rate = sample_rate.into();
         #[cfg(not(feature = "vst2"))]
         let _ = main;
@@ -193,16 +203,18 @@ impl Plugin {
             let (client, handle, restored) = tutti_plugin_host::load_client_restoring(
                 main,
                 path,
-                &tutti_plugin_types::Load::new(),
+                &plugin.load(),
                 sample_rate,
                 restore.as_mut().map(|r| r as _),
             )?;
-            return Ok((Self::from_in_process(client, handle), restored));
+            let plugin = plugin.identified(&handle.descriptor().id);
+            return Ok((Self::from_in_process(client, handle, plugin), restored));
         }
 
-        let ((client, restored), handle) = PluginClient::new_with_state(
+        let ((client, restored), handle) = PluginClient::open(
             audio.to_bridge_config(),
             path.to_path_buf(),
+            plugin.load(),
             sample_rate,
             state,
         )
@@ -225,6 +237,7 @@ impl Plugin {
     /// Wrap a subprocess client.
     fn from_subprocess(client: PluginClient, handle: PluginHandle) -> Self {
         Self {
+            plugin: client.plugin().clone(),
             backend: Backend::Subprocess(Box::new(client)),
             handle,
         }
@@ -235,14 +248,22 @@ impl Plugin {
     fn from_in_process(
         client: tutti_plugin_host::InProcClient<tutti_vst2_host::Vst2Loaded>,
         handle: PluginHandle,
+        plugin: PluginRef,
     ) -> Self {
         Self {
             backend: Backend::InProcess(Box::new(client)),
             handle,
+            plugin,
         }
     }
 
     // ---- Identity ---------------------------------------------------------
+
+    /// The plugin that was opened: the file, the format, and the id the loaded
+    /// plugin reports (filled in when the open was by file alone).
+    pub fn plugin(&self) -> &PluginRef {
+        &self.plugin
+    }
 
     /// Returns the main-thread control surface: editor, parameters, state.
     ///

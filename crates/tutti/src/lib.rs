@@ -185,7 +185,7 @@ pub use tutti_plugin_host as plugin_host;
 /// with `device` its `Device`), with the requests a session takes, each
 /// behind the features that gate it: `ParamRef` (`modulation`),
 /// `Bounce`, `Bounced`, `BounceError`, `Range`, `BounceLatency` and `BounceTail` (`export`),
-/// `PluginLoadRequest` and `PluginId` (`plugin`), and `MidiFile` and
+/// `PluginLoadRequest`, `PluginRef` and `PluginState` (`plugin`), and `MidiFile` and
 /// `TimedMidiEvent` (`midi`), with the offline timeline an export runs on.
 /// The one `Error`, the sampler's `Clip` and `LoopSetting` (`sampler`), `Wave`
 /// (`codec`), `Format` and `Pcm` (`export`), `Lfo` and `Follower`
@@ -261,7 +261,7 @@ pub mod prelude {
     #[cfg(feature = "midi")]
     pub use tutti_midi_runtime::TimedMidiEvent;
     #[cfg(feature = "plugin")]
-    pub use tutti_plugin::catalog::PluginId;
+    pub use tutti_plugin::catalog::{PluginRef, PluginState};
     #[cfg(all(feature = "session", feature = "modulation"))]
     pub use tutti_session::ParamRef;
     #[cfg(all(feature = "session", feature = "plugin"))]

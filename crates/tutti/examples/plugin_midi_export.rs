@@ -64,10 +64,12 @@ fn play<M: Master>(
         MaxBlock::of(Samples(512)),
     )?;
 
-    let job = s.plugin_load(PluginLoadRequest {
-        id: PluginId::from_path(plugin),
-        state,
-    });
+    let plugin = PluginRef::file(plugin).ok_or("not a plugin file")?;
+    let mut request = PluginLoadRequest::new(plugin.clone());
+    if let Some(bytes) = state {
+        request = request.restoring(PluginState::new(plugin, bytes))?;
+    }
+    let job = s.plugin_load(request);
     // The thread that opens an in-process plugin is the main thread: claim it once.
     let main = tutti::plugin::MainThread::claim()?;
     let synth = s.add_plugin(&main, job.run())?;

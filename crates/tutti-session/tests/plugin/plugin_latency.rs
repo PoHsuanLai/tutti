@@ -23,7 +23,7 @@ use tutti_types::MaxBlock;
 
 use support::{clap_probe, plugin_server};
 use tutti_cpal::{ManualStreamDriver, OutputSpec};
-use tutti_plugin::catalog::PluginId;
+use tutti_plugin::catalog::PluginRef;
 use tutti_plugin::handles::PluginClient;
 use tutti_session::{
     Crossfade, GraphSource, PHASES, Phase, PhaseCx, PluginLoadRequest, Session, SessionEvent,
@@ -57,10 +57,7 @@ fn add_probe_on_outputs(s: &mut Session) -> tutti_graph::NodeKey {
     let node = s
         .add_plugin_blocking(
             &main_thread(),
-            PluginLoadRequest {
-                id: PluginId::from_path(clap_probe()),
-                state: None,
-            },
+            PluginLoadRequest::new(PluginRef::file(clap_probe()).expect("a plugin file")),
         )
         .expect("the reference CLAP plugin loads");
     s.graph().set_output_source(0, GraphSource::Node(node, 0));

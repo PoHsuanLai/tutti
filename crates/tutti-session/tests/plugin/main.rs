@@ -12,6 +12,10 @@ mod plugin;
 // the reference CLAP plugin in a real `plugin-server`.
 #[cfg(feature = "clap")]
 mod plugin_bypass;
+// Which plugin of a bundle a load opens, and whose state a restore accepts:
+// the reference CLAP bundle exports two, in a real `plugin-server`.
+#[cfg(feature = "clap")]
+mod plugin_identity;
 // What `Phase::Plugins` does with a hosted plugin's health, over a fake
 // backend (no `plugin-server`): the session half of `bevy-tutti`'s
 // `plugin_host::health` tests.

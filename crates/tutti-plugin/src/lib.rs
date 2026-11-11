@@ -11,7 +11,6 @@ pub use error::{EditorError, LoadStage, PluginRenderFault};
 
 mod format;
 mod host;
-pub(crate) mod util;
 
 pub use tutti_plugin_ipc::BridgeConfig;
 
@@ -30,28 +29,6 @@ pub use tutti_plugin_types::Features;
 // `PluginHandle::presets` hands back these, and `load_preset` takes one, so a
 // caller must be able to name them without depending on tutti-plugin-types.
 pub use tutti_plugin_types::{FeatureReport, Preset, PresetId, PresetSupport};
-
-/// Traits for plugging an out-of-crate loader into [`PluginHandle`](handles::PluginHandle).
-///
-/// **Not part of the general API.** These let an out-of-crate loader
-/// implement the granular host-side capability traits
-/// ([`HostParams`](backend::HostParams), [`HostState`](backend::HostState), and
-/// optionally [`HostEditor`](backend::HostEditor)) over its own
-/// plugin and hand the result to
-/// [`PluginHandle::from_backend`](handles::PluginHandle::from_backend),
-/// reusing this crate's main-thread control surface and audio-node wiring
-/// without re-implementing them. End users loading plugins should stick to
-/// [`catalog`] and [`handles`].
-pub mod backend {
-    pub use crate::host::handles::capabilities::{
-        HostAutomationState, HostEditor, HostParams, HostPresets, HostState,
-    };
-    pub use crate::host::node::{Listener, ParameterChangeSink};
-}
-
-// Loads a plugin of any `InProcess` format in the host process; most callers
-// use `Plugin::open`, which dispatches here for `.vst` files.
-pub use format::in_process::{InProcClient, PluginNode, load_client, load_client_restoring};
 
 /// Discovering, persisting, and loading plugins.
 ///
@@ -97,15 +74,9 @@ pub mod catalog {
     pub use tutti_plugin_types::{PluginDescriptor, PluginRole};
 }
 
-// Per-plugin handles: the graph node and the main-thread control surface.
+// The graph node of a served plugin and its two states. The control handle,
+// the node's controls and the host policy over a handle are `tutti-plugin-host`'s.
 pub use host::handles;
-
-// Host policy over a handle, written once for every host: the parameter
-// mirror and the job that fills it (nothing here spawns it), the death
-// debounce, and when a plugin must be told the render mode.
-pub use host::liveness::{Liveness, Verdict};
-pub use host::param_values::{ParamRead, PluginParamValues};
-pub use host::render_mode::needs_announcement;
 
 // Wire-contract types shared with `tutti-plugin-server`.
 pub mod server;

@@ -3,7 +3,7 @@
 //! [`ProcessGuard`] owns the `plugin-server` child process and its
 //! bridge thread. `Drop` kills the subprocess and removes the socket
 //! file. Held behind an `Arc` inside [`super::PluginClient`] and
-//! [`crate::host::handles::PluginHandle`] — the subprocess dies when the LAST Arc
+//! [`PluginHandle`](tutti_plugin_host::PluginHandle) — the subprocess dies when the LAST Arc
 //! drops (i.e., after both the graph has released the node *and* every
 //! user-held handle has dropped).
 
@@ -71,7 +71,7 @@ impl ProcessGuard {
     }
 
     /// Test-only: create a guard without a real subprocess. Used by
-    /// `PluginHandle::from_bridge_and_metadata` in mock-server tests.
+    /// `handle_over` in the mock-server tests.
     #[cfg(test)]
     pub(crate) fn for_test(config: BridgeConfig) -> Self {
         Self {

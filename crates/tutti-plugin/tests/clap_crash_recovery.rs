@@ -51,7 +51,7 @@ use tutti_fixtures::machine_lock;
 
 use std::time::{Duration, Instant};
 
-use tutti_plugin::handles::PluginStatus;
+use tutti_plugin_host::PluginStatus;
 
 /// Which `process()` call kills the plugin.
 ///
@@ -132,7 +132,7 @@ fn drive_block(unit: &mut Rig) -> Vec<f32> {
 /// Driving until the observed status flips is the handshake. The bound is
 /// [`DRIVE_TO_DEATH_MAX`] blocks, so a plugin that genuinely never dies still
 /// ends the loop and fails an assertion rather than spinning.
-fn drive_until_dead(unit: &mut Rig, handle: &tutti_plugin::handles::PluginHandle) -> usize {
+fn drive_until_dead(unit: &mut Rig, handle: &tutti_plugin_host::PluginHandle) -> usize {
     for driven in 1..=DRIVE_TO_DEATH_MAX {
         let _ = drive_block(unit);
         if handle.status().is_dead() {
@@ -146,7 +146,7 @@ fn drive_until_dead(unit: &mut Rig, handle: &tutti_plugin::handles::PluginHandle
 ///
 /// Returns the status either way, so the caller asserts on it and gets a useful
 /// message rather than a bare timeout.
-fn wait_for_death(handle: &tutti_plugin::handles::PluginHandle) -> PluginStatus {
+fn wait_for_death(handle: &tutti_plugin_host::PluginHandle) -> PluginStatus {
     let deadline = Instant::now() + NOTICE_TIMEOUT;
     loop {
         let status = handle.status();

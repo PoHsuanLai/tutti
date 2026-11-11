@@ -39,6 +39,10 @@
 # - `tutti-plugin-db` depends on `tutti-plugin-types` alone;
 # - `tutti-plugin-ipc` depends on `tutti-types`, `tutti-rt`, `tutti-ump`
 #   and `tutti-plugin-types` only, and no `tutti-*-host` depends on it;
+# - `tutti-plugin-host` (the format-generic half of hosting) depends on
+#   `tutti-plugin-types`, `tutti-graph`, `tutti-transport`, `tutti-tempo`,
+#   `tutti-types`, `tutti-rt` and `tutti-ump` only: no `tutti-plugin-ipc`, no
+#   format host, no `tutti-plugin`;
 # - the codec libraries (`symphonia`, `flacenc`, `aifc`, `vorbis_rs`) are normal
 #   dependencies of `tutti-codec` alone, and in its manifest a `decode-*`
 #   feature enables no encoder library and an `encode-*` feature no
@@ -188,7 +192,7 @@ LAYERS = [
      "tutti-plugin-db", "tutti-plugin-ipc"],
     ["tutti-cpal", "tutti-au-host", "tutti-export", "tutti-sampler",
      "tutti-polysynth", "tutti-soundfont", "tutti-midi-hardware",
-     "tutti-clap-host", "tutti-vst3-host", "tutti-vst2-host"],
+     "tutti-clap-host", "tutti-vst3-host", "tutti-vst2-host", "tutti-plugin-host"],
     ["tutti-plugin", "tutti-plugin-probe"],
     ["tutti-plugin-server", "tutti-session"],
     # `bevy-tutti` is parked: out of the workspace (CLAUDE.md, "bevy-tutti is
@@ -434,6 +438,16 @@ if "tutti-plugin-ipc" in pkgs:
         if name.endswith("-host") and name.startswith("tutti-") \
                 and "tutti-plugin-ipc" in deps_of(name):
             fail(f"{name} depends on tutti-plugin-ipc; a format host knows no hosting")
+# The format-generic half of hosting (design 021 section 6.1) is built on the
+# vocabulary, the graph and the transport: it names no wire, no format host and
+# not the facade above it. (The `-ipc` check above covers it too: its name ends
+# in `-host`.)
+if "tutti-plugin-host" in pkgs:
+    only("tutti-plugin-host", ["tutti-plugin-types", "tutti-graph", "tutti-transport",
+                               "tutti-tempo", "tutti-types", "tutti-rt", "tutti-ump"])
+    for banned in ("tutti-plugin", "tutti-plugin-ipc"):
+        if banned in deps_of("tutti-plugin-host"):
+            fail(f"tutti-plugin-host depends on {banned}, even as a dev-dependency")
 # The probe binary (design 021 section 2.5) links the format hosts and the
 # descriptor types, and no hosting: not the facade, not the server, and the
 # `-ipc` and `-host` crates it will never gain. Nothing depends on it (a binary).

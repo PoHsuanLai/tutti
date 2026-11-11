@@ -38,7 +38,7 @@ fn input(t: usize) -> f32 {
 
 /// An offline fork of the probe in `Latency` mode, as the only node of a graph
 /// prepared for blocks of up to `max_block` frames.
-fn fork_rig(max_block: usize) -> (Rig, tutti_plugin::handles::PluginHandle) {
+fn fork_rig(max_block: usize) -> (Rig, tutti_plugin_host::PluginHandle) {
     let probe = load_probe(SAMPLE_RATE);
     let fork = probe
         .client

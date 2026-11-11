@@ -636,7 +636,7 @@ const BENCH: &[&str] = &[
     r#"cargo bench --locked -p tutti-ump       --bench codec"#,
     r#"cargo bench --locked -p tutti-midi-runtime --bench clip_node"#,
     r#"cargo bench --locked -p tutti-sampler   --bench voice_pool"#,
-    r#"cargo bench --locked -p tutti-plugin --features vst2 --bench vst2_in_process"#,
+    r#"cargo bench --locked -p tutti-plugin-host --bench vst2_in_process"#,
     r#"cargo bench --locked -p arc-lend --bench lend"#,
 ];
 

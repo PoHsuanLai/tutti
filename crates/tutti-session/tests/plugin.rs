@@ -24,7 +24,7 @@ use tutti_graph::ForkByClone;
 use tutti_graph::NodeKey;
 use tutti_plugin::RenderMode;
 use tutti_plugin::catalog::PluginId;
-use tutti_plugin::handles::PluginStatus;
+use tutti_plugin_host::PluginStatus;
 use tutti_session::{
     ExportClock, ExportRequest, ExportSource, ExportTarget, Phase, PhaseCx, PluginLiveness,
     PluginLoadRequest, Session, SessionEvent,
@@ -452,11 +452,11 @@ fn an_update_frees_a_plugin_meter_cleared_while_a_block_held_it() {
 // --- Recovery ---------------------------------------------------------------
 
 /// The reference plugin's applied `Gain` parameter.
-fn gain_param(_s: &Session, _node: NodeKey) -> tutti_plugin::handles::ParamId {
-    tutti_plugin::handles::ParamId::new(tutti_clap_test_plugin::params_state::GAIN_PARAM_ID)
+fn gain_param(_s: &Session, _node: NodeKey) -> tutti_plugin_types::ParamId {
+    tutti_plugin_types::ParamId::new(tutti_clap_test_plugin::params_state::GAIN_PARAM_ID)
 }
 
-fn param(s: &Session, node: NodeKey, id: tutti_plugin::handles::ParamId) -> Option<f64> {
+fn param(s: &Session, node: NodeKey, id: tutti_plugin_types::ParamId) -> Option<f64> {
     s.plugin(node)
         .expect("hosted")
         .handle()
@@ -595,7 +595,7 @@ fn a_crashed_plugin_comes_back_at_its_node_with_its_last_state() {
         .unwrap()
         .handle()
         .params()
-        .set_parameter_value(id, tutti_plugin::handles::Normalized::of(0.25));
+        .set_parameter_value(id, tutti_plugin_types::Normalized::of(0.25));
     let deadline = Instant::now() + Duration::from_secs(10);
     while !is_quarter(param(&s, node, id)) {
         assert!(
@@ -1084,7 +1084,7 @@ fn a_snapshot_that_kills_the_load_is_withheld_from_the_next_attempt() {
         .unwrap()
         .handle()
         .params()
-        .set_parameter_value(id, tutti_plugin::handles::Normalized::of(0.25));
+        .set_parameter_value(id, tutti_plugin_types::Normalized::of(0.25));
     let deadline = Instant::now() + Duration::from_secs(10);
     while !is_quarter(param(&s, node, id)) {
         assert!(Instant::now() < deadline, "the probe never took the value");

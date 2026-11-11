@@ -133,8 +133,8 @@ use tutti_graph::{
 use tutti_types::Samples;
 use tutti_types::{Latency, SampleRate};
 
-use super::controls::ForkedSources;
-use super::{Bound, PluginClient, PluginControls, ProcessGuard, Unbound};
+use super::{Bound, PluginClient, ProcessGuard, Unbound};
+use tutti_plugin_host::{ForkedSources, PluginControls};
 use tutti_plugin_ipc::PluginBridge;
 use tutti_plugin_ipc::PluginRenderFault;
 use tutti_plugin_ipc::{BridgeConfig, unique_socket_path};

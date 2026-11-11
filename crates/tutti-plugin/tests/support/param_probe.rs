@@ -17,7 +17,8 @@ use tutti_types::SampleRate;
 use tutti_modulation::ControlProgram;
 use tutti_nodes::automation::{ControlLaneNode, LaneControls};
 use tutti_plugin::BridgeConfig;
-use tutti_plugin::handles::{PluginClient, PluginHandle};
+use tutti_plugin::handles::PluginClient;
+use tutti_plugin_host::PluginHandle;
 
 use crate::clap_probe::plugin_server_path;
 
@@ -47,7 +48,7 @@ pub fn load_vst2_probe(params: usize, sample_rate: f64) -> (PluginClient, Plugin
     // whichever probe loads next.
     unsafe { std::env::remove_var("TUTTI_VST2_PROBE_PARAMS") };
     let client = client.expect("load the reference VST2 plugin through a real plugin-server");
-    let handle = PluginHandle::from_client(&client);
+    let handle = client.handle();
     (client, handle)
 }
 

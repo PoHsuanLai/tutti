@@ -38,20 +38,19 @@ au = ["dep:tutti-au-host"]
 vst2 = ["dep:tutti-vst2-host"]
 
 [dependencies]
+# The format-generic half of hosting: the handle, the node's controls, the
+# transport and parameter delivery, and the in-process node (design 021 4a).
+tutti-plugin-host = { path = "../tutti-plugin-host" }
+
 # The transport the hosted plugins read.
 tutti-transport = { path = "../tutti-transport" }
 tutti-tempo = { path = "../tutti-tempo" }
 # The engine's value vocabulary (`Samples`, `SampleRate`).
 tutti-types = { path = "../tutti-types" }
-tutti-rt = { path = "../tutti-rt" }
-tutti-ump = { path = "../tutti-ump", default-features = false }
 
 # The graph, for a plugin node's own `ForkSource` (fork by state
 # transfer). No cycle: `tutti-graph` names only `tutti-types`, `tutti-rt` and `tutti-ump`.
 tutti-graph = { path = "../tutti-graph" }
-
-# Lock-free f64 cursor for the harmony source
-atomic_float = "1.1"
 
 # MIDI support
 tutti-midi-runtime = { path = "../tutti-midi-runtime" }
@@ -67,18 +66,8 @@ tutti-plugin-types = { path = "../tutti-plugin-types", features = ["serde", "pro
 # subprocess probe.
 tutti-plugin-db = { path = "../tutti-plugin-db" }
 
-# The in-process node's stack channel tables.
-arrayvec = "0.7"
-
-parking_lot = "0.12"
-
 # Logging
 tracing = "0.1"
-
-# Typed parent-window handle for editor embedding. The public API accepts
-# anything that impls `HasWindowHandle` (Bevy, winit, wgpu, …) and we
-# extract the platform pointer internally.
-raw-window-handle = "0.6"
 
 # In-process plugin GUI (optional — loads plugin library for editor only).
 # `tutti-vst2-host` is different: it owns the audio path too (single in-process
@@ -92,6 +81,11 @@ tutti-vst2-host = { path = "../tutti-vst2-host", optional = true }
 tempfile = "3"
 
 [dev-dependencies]
+tutti-rt = { path = "../tutti-rt" }
+tutti-ump = { path = "../tutti-ump", default-features = false }
+# The tests' mock listeners and a window-handle stand-in.
+parking_lot = "0.12"
+raw-window-handle = "0.6"
 # The node tests' mock plugin-server speaks the wire by hand.
 interprocess = { version = "2" }
 bincode = "1"
@@ -115,7 +109,6 @@ tutti-export = { path = "../tutti-export", default-features = false, features = 
 tutti-nodes = { path = "../tutti-nodes", default-features = false, features = ["testing"] }
 # The lane's `ControlProgram`, for the tests and the example that build one.
 tutti-modulation = { path = "../tutti-modulation", default-features = false }
-criterion.workspace = true
 # Finds the reference plugins and the plugin-server beside the test binary.
 tutti-fixtures = { path = "../../testing/tutti-fixtures", features = ["plugin"] }
 assert_no_alloc = { version = "1", default-features = false }
@@ -159,8 +152,3 @@ windows = { version = "0.52", features = ["Win32_Foundation", "Win32_System_Thre
 [package.metadata.docs.rs]
 all-features = true
 rustdoc-args = ["--cfg", "docsrs"]
-
-[[bench]]
-name = "vst2_in_process"
-harness = false
-required-features = ["vst2"]

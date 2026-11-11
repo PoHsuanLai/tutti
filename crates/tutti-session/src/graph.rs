@@ -836,9 +836,7 @@ impl Graph {
     #[cfg(feature = "plugin")]
     pub fn insert_plugin(&mut self, client: Box<tutti_plugin::handles::PluginClient>) -> NodeKey {
         let node = NodeKey::fresh();
-        let hosted =
-            crate::HostedPlugin::new(tutti_plugin::handles::PluginHandle::from_client(&client))
-                .with_controls(client.controls());
+        let hosted = crate::HostedPlugin::new(client.handle()).with_controls(client.controls());
         let tempo = self.tempo.clone();
         let _controls = self.editor.insert(node, PLUGIN_KIND, client.bind(tempo));
         self.nodes.insert(
@@ -866,11 +864,7 @@ impl Graph {
     /// .tempo_reader()`, so the plugin is told the project's tempo; this
     /// method binds nothing.
     #[cfg(feature = "plugin")]
-    pub fn host_plugin(
-        &mut self,
-        node: NodeKey,
-        handle: tutti_plugin::handles::PluginHandle,
-    ) -> bool {
+    pub fn host_plugin(&mut self, node: NodeKey, handle: tutti_plugin_host::PluginHandle) -> bool {
         if !self.nodes.contains_key(&node) {
             return false;
         }
@@ -906,7 +900,7 @@ impl Graph {
         if self.editor.is_repreparing() {
             return Err(ReplaceRefused::Busy(client));
         }
-        let handle = tutti_plugin::handles::PluginHandle::from_client(&client);
+        let handle = client.handle();
         let controls = client.controls();
         let tempo = self.tempo.clone();
         match self.swap_unit(node, client.bind(tempo), fade, curve) {
@@ -1004,7 +998,7 @@ impl Graph {
                 .plugins
                 .values()
                 .filter_map(crate::HostedPlugin::meter)
-                .map(tutti_plugin::handles::PluginMeter::reclaim)
+                .map(tutti_plugin_host::PluginMeter::reclaim)
                 .sum::<usize>();
         pinned
     }

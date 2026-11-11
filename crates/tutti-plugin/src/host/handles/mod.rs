@@ -1,38 +1,12 @@
-//! Per-plugin handles — the two values a loaded plugin yields.
+//! The client of a served plugin: the graph node [`PluginClient`] and its two
+//! states.
 //!
 //! Every loaded plugin produces both a [`PluginClient`] (the audio-graph
-//! node, owned by the graph's executor once inserted) and a [`PluginHandle`] (the main-thread control
-//! surface — editor, parameters, state). They share subprocess lifetime via
-//! `Arc`: the plugin stays alive as long as either does.
-//!
-//! The control surface splits into granular capability traits
-//! ([`HostParams`](capabilities::HostParams) / [`HostState`](capabilities::HostState)
-//! / [`HostEditor`](capabilities::HostEditor)), so out-of-process VST3/CLAP/AU and
-//! in-process VST2 hosting each implement exactly the subset they honor while
-//! sharing one [`PluginHandle`] surface.
+//! node, owned by the graph's executor once inserted) and, from
+//! [`PluginClient::handle`], a [`PluginHandle`](tutti_plugin_host::PluginHandle)
+//! (the main-thread control surface: editor, parameters, state). They share
+//! subprocess lifetime via `Arc`: the plugin stays alive as long as either
+//! does. The control surface, its capability traits and the node's controls
+//! are `tutti-plugin-host`'s.
 
-pub(crate) mod capabilities;
-pub(crate) mod control_handle;
-
-// The public plugin→host notification vocabulary: `on_refresh` delivers
-// `PluginRefresh` (cosmetic), `on_invalidate` delivers `PluginInvalidation`
-// (structural). `ResyncKind` stays exported as the underlying wire signal.
-pub use crate::host::node::{
-    Bound, NodeControls, ParamDeliveryStats, PluginClient, PluginControls, PluginMeter, Unbound,
-};
-// The per-block installer, reachable only when the plugin can receive that
-// input. Named here because a caller matching on the `Option` a
-// `PluginClient` accessor returns has to be able to name what is inside it.
-pub use crate::host::node::TransportView;
-// `ParamId` because a plugin's parameters are addressed by one
-// (`HostParams::parameter_value`, `set_parameter_value`): a caller of those must be
-// able to name it without reaching into the private `protocol` module.
-// `ParamId` for the same reason one step further in — every `ParamId`
-// variant wraps one, so naming the address without it builds nothing.
-// `Normalized` for the same rule applied to values rather than addresses:
-// `HostParams::set_parameter_value` takes one, so a caller that cannot name it
-// cannot call the method, and an out-of-crate backend cannot implement the
-// trait at all.
-pub use crate::util::window::{ContentScale, EditorCapabilities, EditorSize};
-pub use control_handle::{OptionalCapabilities, PluginHandle, PluginStatus};
-pub use tutti_plugin_types::{ChordValue, Normalized, ParamId, Preset, PresetId, ScaleValue};
+pub use crate::host::node::{Bound, PluginClient, TransportView, Unbound};

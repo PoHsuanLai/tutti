@@ -67,11 +67,12 @@
 //! else: the `f64` stays inside the node.
 
 use super::fork::ForkWatch;
-use crate::host::node::{BlockPayload, ChunkCounters};
+use crate::host::node::BlockPayload;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 use tutti_graph::Prepare;
+use tutti_plugin_host::ChunkCounters;
 use tutti_plugin_ipc::PluginBridge;
 use tutti_plugin_ipc::SlabWriter;
 use tutti_plugin_types::BridgeResult;

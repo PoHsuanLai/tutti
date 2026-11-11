@@ -1864,7 +1864,7 @@ impl Drop for RenderHandle {
     /// the audio thread, which is where a Processor could be dropped. The graph keeps it off
     /// that thread (it retires a plugin node's unit, and so its `Processor`, to the control
     /// side: see `tutti_plugin_types::defer_to_main`, "Never from an audio thread", and
-    /// `tutti-plugin/tests/vst2_in_process_retire.rs`), so this branch runs on a control or
+    /// `tutti-plugin-host/tests/vst2_in_process_retire.rs`), so this branch runs on a control or
     /// pool thread. **It must not run on an audio thread:** it takes a lock and allocates.
     /// Off the instance's thread, the last holder's share goes to the main thread to be freed
     /// there.

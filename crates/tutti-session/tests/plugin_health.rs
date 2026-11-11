@@ -17,9 +17,10 @@ use std::time::{Duration, Instant};
 
 use tutti_graph::NodeKey;
 use tutti_nodes::testing::Const;
-use tutti_plugin::Liveness;
-use tutti_plugin::handles::{Normalized, OptionalCapabilities, ParamId, PluginHandle};
 use tutti_plugin::server::ParameterInfo;
+use tutti_plugin_host::Liveness;
+use tutti_plugin_host::{OptionalCapabilities, PluginHandle};
+use tutti_plugin_types::{Normalized, ParamId};
 use tutti_session::{Phase, PhaseCx, PluginLiveness, Session, SessionEvent};
 use tutti_types::SampleRate;
 
@@ -28,7 +29,7 @@ struct FakeBackend {
     cause: Option<String>,
 }
 
-impl tutti_plugin::backend::HostParams for FakeBackend {
+impl tutti_plugin_host::HostParams for FakeBackend {
     fn parameter_descriptors(&self) -> Option<Vec<ParameterInfo>> {
         None
     }
@@ -47,7 +48,7 @@ impl tutti_plugin::backend::HostParams for FakeBackend {
     }
 }
 
-impl tutti_plugin::backend::HostState for FakeBackend {
+impl tutti_plugin_host::HostState for FakeBackend {
     fn save_state(&self) -> Result<Vec<u8>, tutti_plugin::error::StateError> {
         Err(tutti_plugin::error::StateError::NoStateRoute)
     }

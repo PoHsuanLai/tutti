@@ -70,7 +70,7 @@ assert_no_alloc = { version = "1", default-features = false }
 tutti-clap-host = { path = "../tutti-clap-host" }
 tempfile = "3"
 # The shared test plugin (its cdylib is built by the same `cargo test`) and the
-# helper that finds it: `tests/vst3_run_loop.rs` drives its editor modes.
+# helper that finds it: `tests/conformance/vst3_run_loop.rs` drives its editor modes.
 tutti-fixtures = { path = "../../testing/tutti-fixtures", features = ["plugin"] }
 tutti-shared-plugin = { path = "../../testing/tutti-shared-plugin" }
 winit = "0.30"
@@ -80,79 +80,25 @@ raw-window-handle = "0.6"
 name = "gui_test"
 path = "examples/gui_test.rs"
 
-# Every test target is declared because `autotests = false` (see above);
-# a new file under tests/ needs an entry here or it will not run.
 [[test]]
-name = "integration_tests"
-path = "tests/integration_tests.rs"
-
-[[test]]
-name = "vst3_audio_correctness"
-path = "tests/vst3_audio_correctness.rs"
-
-[[test]]
-name = "vst3_com_dispatch"
-path = "tests/vst3_com_dispatch.rs"
-
-[[test]]
-name = "vst3_conformance_blocks"
-path = "tests/vst3_conformance_blocks.rs"
-
-[[test]]
-name = "vst3_conformance_controller"
-path = "tests/vst3_conformance_controller.rs"
-
-[[test]]
-name = "vst3_conformance_interfaces"
-path = "tests/vst3_conformance_interfaces.rs"
-
-[[test]]
-name = "vst3_conformance_modes"
-path = "tests/vst3_conformance_modes.rs"
-
-[[test]]
-name = "vst3_event_lists"
-path = "tests/vst3_event_lists.rs"
-
-[[test]]
-name = "vst3_midi_groups"
-path = "tests/vst3_midi_groups.rs"
-
-[[test]]
-name = "vst3_ffi_plugin"
-path = "tests/vst3_ffi_plugin.rs"
+name = "conformance"
+path = "tests/conformance/main.rs"
 
 [[test]]
 name = "vst3_gui_lifecycle"
 path = "tests/vst3_gui_lifecycle.rs"
 
 [[test]]
-name = "vst3_misbehaving_plugin"
-path = "tests/vst3_misbehaving_plugin.rs"
+name = "host"
+path = "tests/host/main.rs"
 
 [[test]]
 name = "vst3_process_no_alloc"
 path = "tests/vst3_process_no_alloc.rs"
 
 [[test]]
-name = "vst3_busy_list"
-path = "tests/vst3_busy_list.rs"
-
-[[test]]
-name = "vst3_run_loop"
-path = "tests/vst3_run_loop.rs"
-
-[[test]]
 name = "vst3_traits"
 path = "tests/vst3_traits.rs"
-
-[[test]]
-name = "vst3_view_input"
-path = "tests/vst3_view_input.rs"
-
-[[test]]
-name = "vst3_view_teardown"
-path = "tests/vst3_view_teardown.rs"
 
 # The editor-lifecycle tests, run on the main thread. `harness = false` so this
 # target owns `main()` — the only way to reach the main thread under cargo, and

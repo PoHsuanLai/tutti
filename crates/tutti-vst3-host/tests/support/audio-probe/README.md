@@ -18,7 +18,7 @@ of those checks silently.
 `audio-probe` closes that gap. Each mode makes some host behaviour observable in
 the output samples, so the test can compute what a correct host would produce
 and compare exactly. See `source/probeids.h` for the mode list and the wire
-contract; `tests/vst3_audio_correctness.rs` mirrors those constants.
+contract; `tests/conformance/vst3_audio_correctness.rs` mirrors those constants.
 
 The probe declares a deliberately **asymmetric** layout — input buses `[2, 1]`,
 output buses `[2, 1]` — because a host that assumes "one stereo bus in, one
@@ -100,7 +100,7 @@ one plugin exhibit many return codes.
 
 The value is read **once, when the processor is constructed** — it cannot be a
 parameter, because most of these happen during `initialize`/`setActive`, before a
-host could set one. `tests/vst3_misbehaving_plugin.rs` drives them.
+host could set one. `tests/conformance/vst3_misbehaving_plugin.rs` drives them.
 
 Two constraints on anything added here:
 
@@ -117,7 +117,7 @@ Two constraints on anything added here:
 
 1. Add the enum value and any constants to `source/probeids.h`.
 2. Implement it in `ProbeProcessor::process` (`source/probeprocessor.cpp`).
-3. Mirror the constants in `tests/vst3_audio_correctness.rs` — they are a wire
+3. Mirror the constants in `tests/conformance/vst3_audio_correctness.rs` — they are a wire
    contract between the two files and there is no compiler check on them.
 4. Verify the new assertion is non-vacuous by mutating the probe (e.g. shift a
    tag by one) and confirming the test fails.

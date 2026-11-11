@@ -19,7 +19,7 @@ reference plugin is ~300 lines of pure Rust with no new deps.
 ## What it proves (this pass — core FFI correctness)
 
 Driven through one real `process()` block, the reference plugin records and the
-test (`tutti-clap-host/tests/clap_conformance.rs`) asserts:
+test (`tutti-clap-host/tests/conformance/clap_conformance.rs`) asserts:
 
 - **Buffer geometry** — `frames_count`, in/out bus counts, per-port
   `channel_count`, and that the `data32`/`data64` split matches the negotiated

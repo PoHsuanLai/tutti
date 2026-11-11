@@ -1658,7 +1658,7 @@ mod tests {
     //! the snapshot cadence and its one-in-flight token, a declined save,
     //! and a failing plugin's skipped snapshot. The death, the render mode
     //! and the export are pinned end to end over the CLAP test plugin, in
-    //! `tests/plugin.rs`.
+    //! `tests/plugin/plugin.rs`.
 
     use super::*;
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};

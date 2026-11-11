@@ -87,7 +87,7 @@ const OFF: usize = 6_011;
 
 /// **Only an instrument is one**: a node with no event input, and one with
 /// no stereo pair, are refused with the reason. (A hosted plugin that declares
-/// itself an effect is refused in `tests/plugin.rs`: it needs a plugin.)
+/// itself an effect is refused in `tests/plugin/plugin.rs`: it needs a plugin.)
 pub fn only_an_instrument_is_one<S: Subject>() {
     let mut rig = S::rig();
     let (dc, _) =

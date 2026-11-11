@@ -11,7 +11,7 @@
 //! # Why this rather than checked-in `.mid` fixtures
 //!
 //! This repo has no checked-in test data of any kind, and its stated reason is
-//! good: `tests/roundtrip.rs:46` argues that an expected value should be
+//! good: `tests/formats/roundtrip.rs:46` argues that an expected value should be
 //! recomputed from first principles rather than pinned to bytes, "the whole
 //! point is a second opinion". A committed corpus would also only cover the
 //! files someone thought to commit. A builder covers those *and* the malformed

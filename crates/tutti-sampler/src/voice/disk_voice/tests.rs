@@ -361,7 +361,7 @@ fn a_severed_copy_holds_no_live_reader() {
 /// inside its window on the render's transport, it tells the live streamer
 /// no position (so the live window stays where the live voice reads), and
 /// its controls are its own. What it plays instead is
-/// `tests/offline_disk_voice.rs`'s. The node's fork source forks it for an
+/// `tests/offline/offline_disk_voice.rs`'s. The node's fork source forks it for an
 /// offline render and refuses a live one, which would read the file
 /// on the audio thread.
 #[test]

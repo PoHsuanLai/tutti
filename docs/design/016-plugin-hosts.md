@@ -1135,7 +1135,7 @@ and from CLAP and VST3:
   bind a block's slices and run `process`. It refuses a channel shorter than the
   block.
 - **Tests.** The unit tests that used stub vtables moved with the code they
-  cover. The ones that drove the raw lists now sit in `tests/clap_event_lists.rs`
+  cover. The ones that drove the raw lists now sit in `tests/behaviour/clap_event_lists.rs`
   (the host crate forbids `unsafe`, a test may use it) over the FFI crate's
   `#[doc(hidden)]` `*_raw_for_test` hooks (feature `test-support`), and the suites that call the callbacks
   through `ClapHost`'s vtable get it from `tests/support/raw.rs`.

@@ -33,7 +33,7 @@
 //! touched by exactly one op. So each op sees the inputs it sees serially,
 //! whatever order the workers run it in, and does the same arithmetic. The
 //! only cross-op sums (dropped events) are integer counts. The tests in
-//! `tests/parallel.rs` hold the parallel render to the serial one, sample for
+//! `tests/executor/parallel.rs` hold the parallel render to the serial one, sample for
 //! sample, across worker counts and block lengths.
 //!
 //! A node that shares mutable state with another node *outside* the graph's
@@ -401,7 +401,7 @@ pub(crate) fn run_block(par: &mut Par, pool: &Arc<dyn Pool>, b: Block<'_, '_>) -
             workers: SplitMut::new(workers, worker_claims),
             due: b.due,
             // The pool's, not the defaults
-            // (`tests/parallel.rs`'s `the_executor_waits_by_its_pools_budget`).
+            // (`tests/executor/parallel.rs`'s `the_executor_waits_by_its_pools_budget`).
             waits: pool.waits(),
         };
         let wake = (*wake).clamp(1, pool.participants());

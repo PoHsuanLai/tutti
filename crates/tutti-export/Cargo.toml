@@ -71,7 +71,7 @@ tutti-nodes = { path = "../tutti-nodes", default-features = false, features = ["
 # acyclic: tutti-sampler does NOT depend on tutti-export.
 tutti-sampler = { path = "../tutti-sampler", default-features = false }
 # An independent decoder for every container this crate writes, for
-# `tests/oracle_decode.rs`. `hound` only speaks WAV, so FLAC/AIFF/Ogg were
+# `tests/formats/oracle_decode.rs`. `hound` only speaks WAV, so FLAC/AIFF/Ogg were
 # checked by frame count and header, never by content. The feature list is the
 # minimum that reads what this crate emits — do NOT add `isomp4` or the
 # mp3/aac bundles; nothing here writes those.

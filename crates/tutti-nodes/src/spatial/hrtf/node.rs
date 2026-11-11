@@ -7,12 +7,12 @@ use tutti_dsp::{HRTF_LATENCY, HRTF_STEP, HrtfBinaural, HrtfBinauralError};
 use tutti_graph::{Cx, IntoNode, Io, Node, NodeParts, Prepare, Shape, Status};
 use tutti_types::ChannelLayout;
 use tutti_types::Latency;
-use tutti_types::{Azimuth, Elevation, Mix, Param, SampleRate, Samples, Tail};
+use tutti_types::{Azimuth, Direction, Elevation, Mix, Param, SampleRate, Samples, Tail};
 
+use crate::ramp::LastGood;
 use crate::spatial::SpatialTarget;
 use crate::spatial::fork::{FreshFork, fresh_fork_parts};
 use crate::spatial::target::AngleSmoother;
-use crate::spatial::target::hold_finite;
 
 /// A binaural panner for headphones: FFT convolution against a measured HRIR
 /// sphere, stereo in, stereo out.
@@ -46,15 +46,15 @@ pub struct HrtfBinauralNode {
     /// The last finite azimuth and elevation the cells held. The de-zipper
     /// smoother is recursive, so one NaN or ±∞ coordinate would leave it NaN
     /// for good; a non-finite write reads as unchanged instead.
-    good: LastFinite,
+    good: Held,
 }
 
-/// The last finite value each control cell held, for [`hold_finite`].
+/// The last finite value each control cell held.
 #[derive(Clone, Copy, Debug)]
-struct LastFinite {
-    azimuth: f32,
-    elevation: f32,
-    blend: f32,
+struct Held {
+    azimuth: LastGood,
+    elevation: LastGood,
+    blend: LastGood,
 }
 
 /// The live controls of an [`HrtfBinauralNode`]: its position and its
@@ -162,10 +162,10 @@ impl HrtfBinauralNode {
                 blend: Param::new(Mix::WET),
             },
             sample_rate,
-            good: LastFinite {
-                azimuth: Azimuth::FRONT.get(),
-                elevation: Elevation::LEVEL.get(),
-                blend: Mix::WET.get(),
+            good: Held {
+                azimuth: LastGood::fixed(Azimuth::FRONT.get()),
+                elevation: LastGood::fixed(Elevation::LEVEL.get()),
+                blend: LastGood::fixed(Mix::WET.get()),
             },
         })
     }
@@ -179,11 +179,11 @@ impl HrtfBinauralNode {
     /// The position cells, read once: a non-finite coordinate held at the
     /// last finite one.
     #[inline]
-    fn placement(&mut self) -> (Azimuth, Elevation) {
-        let (azimuth, elevation) = self.controls.target.load();
-        (
-            Azimuth(hold_finite(&mut self.good.azimuth, azimuth.get())),
-            Elevation(hold_finite(&mut self.good.elevation, elevation.get())),
+    fn placement(&mut self) -> Direction {
+        let aim = self.controls.target.load();
+        Direction::new(
+            Azimuth(self.good.azimuth.read(aim.azimuth.get())),
+            Elevation(self.good.elevation.read(aim.elevation.get())),
         )
     }
 }
@@ -228,7 +228,7 @@ impl Node for HrtfBinauralNode {
         self.aim.set_sample_rate(self.sample_rate);
         let aim = &mut self.aim;
         self.panner.set_sample_rate(self.sample_rate, || {
-            aim.reset_to_target(target.0, target.1);
+            aim.reset_to_target(target);
             aim.current()
         });
     }
@@ -238,10 +238,7 @@ impl Node for HrtfBinauralNode {
         // blend; the renderer reads them here, once per block.
         let target = self.placement();
         // `Mix::new_clamped` passes a NaN through, so the blend is held too.
-        let blend = Mix(hold_finite(
-            &mut self.good.blend,
-            self.controls.blend.load().get(),
-        ));
+        let blend = Mix(self.good.blend.read(self.controls.blend.load().get()));
         let size = io.frames();
         let (inputs, mut outputs) = io.split();
         let (left, right) = (&inputs.get(0)[..size], &inputs.get(1)[..size]);
@@ -253,7 +250,7 @@ impl Node for HrtfBinauralNode {
                 blend,
                 (left, right),
                 (&mut out_left[..size], &mut out_right[..size]),
-                || aim.step(target.0, target.1),
+                || aim.step(target),
             );
         }
         Status::Modified
@@ -261,7 +258,7 @@ impl Node for HrtfBinauralNode {
 
     fn reset(&mut self) {
         let target = self.placement();
-        self.aim.reset_to_target(target.0, target.1);
+        self.aim.reset_to_target(target);
         self.panner.reset_state(self.aim.current());
     }
 }

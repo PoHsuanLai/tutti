@@ -1,6 +1,6 @@
 use super::error::Result;
 use tutti_dsp::{SpeakerLayout, VbapGains, VbapKernel};
-use tutti_types::{Azimuth, Elevation, SampleRate, Samples, Spread, StereoWidth};
+use tutti_types::{Direction, SampleRate, Samples, Spread, StereoWidth};
 
 use crate::spatial::AngleSmoother;
 
@@ -60,12 +60,12 @@ impl VbapPanner {
     }
 
     /// Drop the in-flight de-zipper ramp, seating it on the commanded
-    /// `(azimuth, elevation)`.
+    /// direction.
     ///
     /// The smoother is this panner's only per-block history; the commanded
     /// position is the caller's, which is why it is passed in.
-    pub(crate) fn reset_state(&mut self, azimuth: Azimuth, elevation: Elevation) {
-        self.smoother.reset_to_target(azimuth, elevation);
+    pub(crate) fn reset_state(&mut self, target: Direction) {
+        self.smoother.reset_to_target(target);
         self.settled_at = None;
     }
 
@@ -73,15 +73,15 @@ impl VbapPanner {
     /// it — the starting point of the first ramp after a construction or a
     /// reset.
     pub(crate) fn gains_now(&mut self, width: StereoWidth, spread: Spread) -> VbapGains {
-        let (azimuth, elevation) = self.smoother.current();
-        self.kernel.gains(azimuth, elevation, width, spread)
+        let aim = self.smoother.current();
+        self.kernel.gains(aim.azimuth, aim.elevation, width, spread)
     }
 
     /// Advance the de-zipper `frames` steps toward the target and solve the
     /// gains once, at the block's last frame.
     ///
     /// The smoother advances `frames` steps in one analytic move
-    /// ([`ExponentialSmoother::advance`](crate::spatial::smoothing::ExponentialSmoother::advance)),
+    /// (`AngleSmoother::advance`),
     /// so the 50 ms ramp keeps its timing. The frames in between are not
     /// solved: the node ramps linearly towards this set instead, which saves
     /// two VBAP solves per frame.
@@ -91,27 +91,34 @@ impl VbapPanner {
     /// advance would again: a held source skips it.
     pub(crate) fn solve_block(
         &mut self,
-        target: (Azimuth, Elevation),
+        target: Direction,
         width: StereoWidth,
         spread: Spread,
         frames: usize,
     ) -> VbapGains {
-        let settled = ([target.0.get().to_bits(), target.1.get().to_bits()], frames);
+        let settled = (
+            [
+                target.azimuth.get().to_bits(),
+                target.elevation.get().to_bits(),
+            ],
+            frames,
+        );
         if self.settled_at != Some(settled) {
             let before = self.smoother.current();
-            let after = self.smoother.advance(target.0, target.1, frames);
+            let after = self.smoother.advance(target, frames);
             self.settled_at = same_bits(after, before).then_some(settled);
         }
-        let (azimuth, elevation) = self.smoother.current();
-        self.kernel.gains(azimuth, elevation, width, spread)
+        let aim = self.smoother.current();
+        self.kernel.gains(aim.azimuth, aim.elevation, width, spread)
     }
 }
 
 /// Whether two positions are the same bits (not merely `==`: `-0.0` and
 /// `0.0` are different smoother states).
 #[inline]
-fn same_bits(a: (Azimuth, Elevation), b: (Azimuth, Elevation)) -> bool {
-    a.0.get().to_bits() == b.0.get().to_bits() && a.1.get().to_bits() == b.1.get().to_bits()
+fn same_bits(a: Direction, b: Direction) -> bool {
+    a.azimuth.get().to_bits() == b.azimuth.get().to_bits()
+        && a.elevation.get().to_bits() == b.elevation.get().to_bits()
 }
 
 #[cfg(test)]

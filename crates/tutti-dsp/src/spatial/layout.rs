@@ -1,6 +1,6 @@
 //! [`SpeakerLayout`]: the tuples of a speaker array and the gain solve.
 
-use tutti_types::{Azimuth, Elevation, Spread};
+use tutti_types::{Azimuth, Direction, Elevation, Spread};
 
 use super::error::SpeakerGeometryError;
 use super::math::{Mat2, Mat3, direction, inverse2, inverse3, mul2, mul3, wrapped_deg};
@@ -100,7 +100,7 @@ impl SpeakerLayout {
     /// that is not finite, or positions no pair or triplet can be formed from
     /// (a speaker at the same place as another, or all in one plane through
     /// the listener).
-    pub fn new(positions: &[(Azimuth, Elevation)]) -> Result<Self, SpeakerGeometryError> {
+    pub fn new(positions: &[Direction]) -> Result<Self, SpeakerGeometryError> {
         let count = positions.len();
         if count > MAX_SPEAKERS {
             return Err(SpeakerGeometryError::TooManySpeakers {
@@ -110,14 +110,14 @@ impl SpeakerLayout {
         }
         if positions
             .iter()
-            .any(|(a, e)| !a.get().is_finite() || !e.get().is_finite())
+            .any(|d| !d.azimuth.get().is_finite() || !d.elevation.get().is_finite())
         {
             return Err(SpeakerGeometryError::NonFinitePosition);
         }
         // The types stop at the trigonometry: the solve works in f64 degrees.
         let degrees: Vec<(f64, f64)> = positions
             .iter()
-            .map(|&(a, e)| (f64::from(a.get()), f64::from(e.get())))
+            .map(|d| (f64::from(d.azimuth.get()), f64::from(d.elevation.get())))
             .collect();
         let mode = if degrees.iter().any(|&(_, e)| e.abs() > PLANE_TOLERANCE_DEG) {
             PanningMode::Surround
@@ -186,8 +186,8 @@ impl SpeakerLayout {
     /// Never, for this fixed geometry; the `Result` is the constructor's.
     pub fn stereo() -> Result<Self, SpeakerGeometryError> {
         Self::new(&[
-            (Azimuth(30.0), Elevation(0.0)),
-            (Azimuth(-30.0), Elevation(0.0)),
+            Direction::new(Azimuth(30.0), Elevation(0.0)),
+            Direction::new(Azimuth(-30.0), Elevation(0.0)),
         ])
     }
 
@@ -199,10 +199,10 @@ impl SpeakerLayout {
     /// Never, for this fixed geometry; the `Result` is the constructor's.
     pub fn quad() -> Result<Self, SpeakerGeometryError> {
         Self::new(&[
-            (Azimuth(45.0), Elevation(0.0)),
-            (Azimuth(-45.0), Elevation(0.0)),
-            (Azimuth(135.0), Elevation(0.0)),
-            (Azimuth(-135.0), Elevation(0.0)),
+            Direction::new(Azimuth(45.0), Elevation(0.0)),
+            Direction::new(Azimuth(-45.0), Elevation(0.0)),
+            Direction::new(Azimuth(135.0), Elevation(0.0)),
+            Direction::new(Azimuth(-135.0), Elevation(0.0)),
         ])
     }
 
@@ -214,11 +214,11 @@ impl SpeakerLayout {
     /// Never, for this fixed geometry; the `Result` is the constructor's.
     pub fn surround_5_1() -> Result<Self, SpeakerGeometryError> {
         Self::new(&[
-            (Azimuth(30.0), Elevation(0.0)),
-            (Azimuth(-30.0), Elevation(0.0)),
-            (Azimuth(0.0), Elevation(0.0)),
-            (Azimuth(110.0), Elevation(0.0)),
-            (Azimuth(-110.0), Elevation(0.0)),
+            Direction::new(Azimuth(30.0), Elevation(0.0)),
+            Direction::new(Azimuth(-30.0), Elevation(0.0)),
+            Direction::new(Azimuth(0.0), Elevation(0.0)),
+            Direction::new(Azimuth(110.0), Elevation(0.0)),
+            Direction::new(Azimuth(-110.0), Elevation(0.0)),
         ])
     }
 
@@ -241,10 +241,10 @@ impl SpeakerLayout {
     pub fn atmos_7_1_4() -> Result<Self, SpeakerGeometryError> {
         let mut speakers = SEVEN_ZERO.to_vec();
         speakers.extend([
-            (Azimuth(45.0), Elevation(45.0)),
-            (Azimuth(-45.0), Elevation(45.0)),
-            (Azimuth(135.0), Elevation(45.0)),
-            (Azimuth(-135.0), Elevation(45.0)),
+            Direction::new(Azimuth(45.0), Elevation(45.0)),
+            Direction::new(Azimuth(-45.0), Elevation(45.0)),
+            Direction::new(Azimuth(135.0), Elevation(45.0)),
+            Direction::new(Azimuth(-135.0), Elevation(45.0)),
         ]);
         Self::new(&speakers)
     }
@@ -434,14 +434,14 @@ impl SpeakerLayout {
 }
 
 /// L, R, C, Lss, Rss, Lrs, Rrs: the 7.0 bed.
-const SEVEN_ZERO: [(Azimuth, Elevation); 7] = [
-    (Azimuth(30.0), Elevation(0.0)),
-    (Azimuth(-30.0), Elevation(0.0)),
-    (Azimuth(0.0), Elevation(0.0)),
-    (Azimuth(90.0), Elevation(0.0)),
-    (Azimuth(-90.0), Elevation(0.0)),
-    (Azimuth(150.0), Elevation(0.0)),
-    (Azimuth(-150.0), Elevation(0.0)),
+const SEVEN_ZERO: [Direction; 7] = [
+    Direction::new(Azimuth(30.0), Elevation(0.0)),
+    Direction::new(Azimuth(-30.0), Elevation(0.0)),
+    Direction::new(Azimuth(0.0), Elevation(0.0)),
+    Direction::new(Azimuth(90.0), Elevation(0.0)),
+    Direction::new(Azimuth(-90.0), Elevation(0.0)),
+    Direction::new(Azimuth(150.0), Elevation(0.0)),
+    Direction::new(Azimuth(-150.0), Elevation(0.0)),
 ];
 
 /// Fold a bearing into the front hemisphere by mirroring it about the lateral

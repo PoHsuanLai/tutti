@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 //! The `plugin-server` binary — one process per hosted plugin.
 //!
 //! Spawned by the host (`tutti-plugin`), never run by hand: it takes the

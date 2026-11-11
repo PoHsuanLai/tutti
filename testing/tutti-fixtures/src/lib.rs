@@ -34,10 +34,12 @@
 //! mutation-verification result.
 
 // Test-only `unsafe` the suites need lives here, each behind a safe call with
-// its argument at the site (`ScopedEnv`, `StandInWindow`); `deny` so every site is
+// its argument at the site (`ScopedEnv`, `StandInWindow`, `ClapProbe`, `Vst2Probe`); `deny` so every site is
 // a named `allow`.
 #![deny(unsafe_code)]
 
+#[cfg(feature = "clap-probe")]
+mod clap_probe;
 mod digest;
 mod env;
 mod machine_lock;
@@ -46,13 +48,19 @@ pub mod midi;
 mod plugin;
 mod range_contract;
 pub mod sf2;
+#[cfg(feature = "vst2-probe")]
+mod vst2_probe;
 
+#[cfg(feature = "clap-probe")]
+pub use clap_probe::{ClapProbe, ClapSwitch};
 pub use digest::{Fnv, Noise, noise};
 pub use env::ScopedEnv;
 pub use machine_lock::{MachineLock, machine_lock};
 #[cfg(feature = "plugin")]
 pub use plugin::{Activation, Active, StandInWindow, Whole, main_thread};
 pub use range_contract::{RangeContract, check_range_contract};
+#[cfg(feature = "vst2-probe")]
+pub use vst2_probe::Vst2Probe;
 
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;

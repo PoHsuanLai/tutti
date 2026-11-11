@@ -1585,51 +1585,18 @@ mod tests {
 
     /// What the reference plugin recorded of its last `process` call.
     fn read_process_capture() -> tutti_clap_test_plugin::ProcessCapture {
-        type F = unsafe extern "C" fn(*mut tutti_clap_test_plugin::ProcessCapture) -> bool;
-        let mut cap = tutti_clap_test_plugin::ProcessCapture::default();
-        // SAFETY: `#[no_mangle] extern "C"` in `tutti-clap-test-plugin`; the
-        // handle is leaked as in `set_clap_probe_switch`.
-        unsafe {
-            let lib = libloading::Library::new(clap_plugin()).expect("reference plugin opens");
-            let capture: libloading::Symbol<F> = lib
-                .get(b"tutti_test_plugin_capture\0")
-                .expect("capture exported by the reference plugin");
-            assert!(capture(&mut cap), "the plugin recorded a process() call");
-            std::mem::forget(lib);
-        }
-        cap
+        tutti_fixtures::ClapProbe::get().process_capture()
     }
 
     /// Arm (or, with 0, disarm) the reference plugin's thread-pool probe on
     /// the image the loader opens; see `set_clap_probe_render_mode` for why
     /// through `dlopen`.
     fn set_thread_pool_tasks(tasks: u32) {
-        // SAFETY: `#[no_mangle] extern "C" fn(u32)` in the reference plugin.
-        unsafe {
-            let lib = libloading::Library::new(clap_plugin()).expect("reference plugin opens");
-            let set: libloading::Symbol<unsafe extern "C" fn(u32)> = lib
-                .get(b"tutti_test_plugin_set_thread_pool_tasks\0")
-                .expect("thread-pool switch exported");
-            set(tasks);
-            // Leaked: closing it before the load would unmap the switch.
-            std::mem::forget(lib);
-        }
+        tutti_fixtures::ClapProbe::get().set_thread_pool_tasks(tasks);
     }
 
     fn thread_pool_capture() -> tutti_clap_test_plugin::ThreadPoolCapture {
-        // SAFETY: `#[no_mangle] extern "C" fn() -> ThreadPoolCapture`, the
-        // same `#[repr(C)]` type as the rlib's.
-        unsafe {
-            let lib = libloading::Library::new(clap_plugin()).expect("reference plugin opens");
-            let get: libloading::Symbol<
-                unsafe extern "C" fn() -> tutti_clap_test_plugin::ThreadPoolCapture,
-            > = lib
-                .get(b"tutti_test_plugin_thread_pool_capture\0")
-                .expect("thread-pool capture exported");
-            let cap = get();
-            std::mem::forget(lib);
-            cap
-        }
+        tutti_fixtures::ClapProbe::get().thread_pool_capture()
     }
 
     fn process_blocks(instance: &mut ClapInstance, blocks: usize) {

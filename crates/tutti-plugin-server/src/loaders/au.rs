@@ -319,7 +319,7 @@ impl PropertyWatch {
     }
 }
 
-// `AuInstance` is `Send` without an `unsafe impl`: the host `AuInstance` is `Send`
+// `AuInstance` is `Send` with no hand-written Send impl: the host `AuInstance` is `Send`
 // (an owned `Unit`, an editor and a renderer, each `Send` at its own definition
 // in `tutti-au-ffi`), the watch holds a `Send + Sync` listener and atomics, and
 // the rest is plain data. There is no `Sync`, so two threads cannot call into one
@@ -1504,36 +1504,17 @@ mod tests {
         // delta, numerator, denominator, v1 changed, v1 playing).
         let pull = |au: &AuInstance| {
             let state = au.inner.transport().expect("callbacks installed at load");
-            let (user, beat_tempo, musical, v1, _v2) = state.test_callback_info();
-            let (mut beat, mut tempo) = (f64::NAN, f64::NAN);
-            let (mut delta, mut num, mut den, mut downbeat) = (u32::MAX, f32::NAN, u32::MAX, 0.0);
-            let (mut playing, mut changed, mut sample, mut cycling) = (0u8, 0u8, 0.0, 0u8);
-            let (mut c0, mut c1) = (0.0, 0.0);
-            // SAFETY: the procs and `user` come from the live state the unit
-            // holds, and every out-param is a valid local.
-            unsafe {
-                let status = beat_tempo(user, &mut beat, &mut tempo);
-                musical(user, &mut delta, &mut num, &mut den, &mut downbeat);
-                v1(
-                    user,
-                    &mut playing,
-                    &mut changed,
-                    &mut sample,
-                    &mut cycling,
-                    &mut c0,
-                    &mut c1,
-                );
-                (
-                    status,
-                    beat,
-                    tempo,
-                    delta,
-                    num,
-                    den,
-                    changed != 0,
-                    playing != 0,
-                )
-            }
+            let p = state.test_pull();
+            (
+                p.status,
+                p.beat,
+                p.tempo,
+                p.delta,
+                p.numerator,
+                p.denominator,
+                p.changed,
+                p.playing,
+            )
         };
 
         // Nothing published: the host cannot say, so no fabricated 120 BPM.

@@ -77,7 +77,6 @@ tutti-vst3-host = { path = "../tutti-vst3-host", optional = true }
 # Audio Unit hosting (optional, macOS only)
 tutti-au-host = { path = "../tutti-au-host", optional = true }
 
-libloading = "0.8"
 # The OS calls of the host watchdog and the connection wait, behind safe calls.
 tutti-plugin-ipc-ffi = { path = "../tutti-plugin-ipc-ffi" }
 
@@ -85,7 +84,7 @@ tutti-plugin-ipc-ffi = { path = "../tutti-plugin-ipc-ffi" }
 # The slab's sample bound (`Pod`) on the generic round-trip helper.
 bytemuck = "1"
 # Finds the reference plugins and the plugin-server beside the test binary.
-tutti-fixtures = { path = "../../testing/tutti-fixtures", features = ["plugin"] }
+tutti-fixtures = { path = "../../testing/tutti-fixtures", features = ["plugin", "clap-probe", "vst2-probe"] }
 # RT-safety regression: prove the per-block audio path never allocates.
 assert_no_alloc = { version = "1", default-features = false }
 # The reference CLAP plugin the loader tests drive. A dev-dependency rather

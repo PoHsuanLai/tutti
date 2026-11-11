@@ -1273,22 +1273,7 @@ mod tests {
     /// The probe's call-site record, from the image `load_clap` loaded.
     #[cfg(feature = "clap")]
     fn clap_probe_sites() -> tutti_clap_test_plugin::ThreadCapture {
-        let mut cap = tutti_clap_test_plugin::ThreadCapture::default();
-        // SAFETY: `tutti_test_plugin_thread_capture` is the reference plugin's
-        // `extern "C" fn(*mut ThreadCapture) -> bool`, and `cap` is a valid,
-        // exclusive `ThreadCapture` for the call. The handle is leaked, as
-        // `set_clap_probe_switch` leaks its own: a live instance uses the image.
-        unsafe {
-            let lib = libloading::Library::new(clap_plugin()).expect("the probe opens");
-            let capture: libloading::Symbol<
-                unsafe extern "C" fn(*mut tutti_clap_test_plugin::ThreadCapture) -> bool,
-            > = lib
-                .get(b"tutti_test_plugin_thread_capture\0")
-                .expect("the probe exports its capture");
-            assert!(capture(&mut cap), "the probe reports its capture");
-            std::mem::forget(lib);
-        }
-        cap
+        tutti_fixtures::ClapProbe::get().thread_capture()
     }
 
     /// **A reset reaches the plugin, between the blocks it was sent between**
@@ -2227,11 +2212,12 @@ mod tests {
     fn a_vst3_block_the_plugin_fails_is_silence_and_the_server_goes_on() {
         let _lock = crate::test_utils::plugin_load_lock();
         let failing = {
-            // SAFETY: `plugin_load_lock` is held, as every loader test that reads
-            // this variable holds it. `kMisbehaveProcessFails`.
-            unsafe { std::env::set_var("TUTTI_PROBE_MISBEHAVIOUR", "4") };
+            // `plugin_load_lock` is held, as every loader test that reads this
+            // variable holds it. 4 is `kMisbehaveProcessFails`.
+            let mut env = tutti_fixtures::ScopedEnv::new();
+            env.set("TUTTI_PROBE_MISBEHAVIOUR", "4");
             let (mut s, mut shm) = load_vst3_probe("fails_vst3");
-            unsafe { std::env::remove_var("TUTTI_PROBE_MISBEHAVIOUR") };
+            drop(env);
             for seq in 1..=3 {
                 assert!(
                     !run_silent_block(&mut s, &mut shm, seq, 128),

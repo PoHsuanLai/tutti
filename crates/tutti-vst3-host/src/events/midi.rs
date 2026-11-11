@@ -304,7 +304,7 @@ impl MidiEncoder {
                 // bend already in it: VST3's one tuning is its distance from the
                 // key.
                 NoteEvent::Control { id, note, control } => {
-                    control_event(offset, channel, Some(note), id, &control)
+                    control_event(offset, channel, note, id, &control)
                 }
                 NoteEvent::Reset { id } => {
                     for (expression_type, value) in EXPRESSION_DEFAULTS {
@@ -368,7 +368,7 @@ fn pressure_event(
 fn control_event(
     offset: i32,
     channel: MidiChannel,
-    note: Option<NoteNumber>,
+    note: NoteNumber,
     id: NoteId,
     control: &NoteControl,
 ) -> Option<Event> {
@@ -382,17 +382,14 @@ fn control_event(
         .to_event()
     };
     match *control {
-        NoteControl::Pitch(pitch) => {
-            let note = note?;
-            expression(
-                NoteExpressionType::Tuning,
-                tuning_expression(f64::from(pitch.note_number()) - f64::from(note.get())),
-            )
-        }
+        NoteControl::Pitch(pitch) => expression(
+            NoteExpressionType::Tuning,
+            tuning_expression(f64::from(pitch.note_number()) - f64::from(note.get())),
+        ),
         NoteControl::Pressure(value) => Some(pressure_event(
             offset,
             channel,
-            note?,
+            note,
             id,
             u32_to_unit_f32(value),
         )),

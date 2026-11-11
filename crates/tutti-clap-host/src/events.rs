@@ -658,18 +658,16 @@ fn plugin_note_id(id: NoteId) -> i32 {
 
 /// The expression and CLAP value a per-note controller stands for on the note
 /// `note`, or `None` when CLAP has no expression for it. A Pitch is the
-/// tuning relative to the note's key, so it needs `note`.
+/// tuning relative to the note's key, `note`.
 fn control_expression(
     control: &NoteControl,
-    note: Option<NoteNumber>,
+    note: NoteNumber,
 ) -> Option<(NoteExpressionType, f64)> {
     match *control {
-        NoteControl::Pitch(pitch) => note.map(|note| {
-            (
-                NoteExpressionType::Tuning,
-                f64::from(pitch.note_number()) - f64::from(note.get()),
-            )
-        }),
+        NoteControl::Pitch(pitch) => Some((
+            NoteExpressionType::Tuning,
+            f64::from(pitch.note_number()) - f64::from(note.get()),
+        )),
         NoteControl::Pressure(value) => Some((
             NoteExpressionType::Pressure,
             f64::from(u32_to_unit_f32(value)),
@@ -1255,9 +1253,8 @@ impl InputEventList {
                     // A Pitch is the note's sounding pitch, already the told
                     // pitch with its bend: CLAP's one tuning is its distance
                     // from the key.
-                    let key = Some(key);
                     let expression = control_expression(&control, key).and_then(|(ty, value)| {
-                        Self::expression(time, ty, id, port, channel, key, value)
+                        Self::expression(time, ty, id, port, channel, Some(key), value)
                     });
                     push(&mut self.events, expression);
                 }

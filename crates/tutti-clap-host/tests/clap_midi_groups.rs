@@ -563,3 +563,36 @@ fn a_minted_id_names_no_channel_and_key() {
     let id = note_on(&drain(&mut list)[0]).3;
     assert!(u32::try_from(id).unwrap() > NoteId::MAX_CHANNEL_NOTE);
 }
+
+/// **Each note port has its own dialect**: Group 0 on a port that takes CLAP
+/// note events, Group 1 on one that takes only MIDI. Group 1's Note On, poly
+/// pressure and Note Off are `clap_event_midi` on port 1 (a held bend, which has
+/// no MIDI 1.0 bytes, is not sent), Group 0's are CLAP note events on port 0.
+#[test]
+fn each_note_port_takes_its_own_dialect() {
+    let mut list = InputEventList::new();
+    list.set_note_ports(&[false, true]);
+    add(
+        &mut list,
+        fx::note_on(group(0), ch(0), 60, fx::MID_VELOCITY),
+    );
+    add(
+        &mut list,
+        fx::note_on(group(1), ch(2), 62, fx::MID_VELOCITY),
+    );
+    add(
+        &mut list,
+        fx::poly_pressure(group(1), ch(2), 62, 0x8000_0000),
+    );
+    add(
+        &mut list,
+        fx::per_note_pitch_bend(group(1), ch(2), 62, 0xC000_0000),
+    );
+    add(&mut list, fx::note_off(group(1), ch(2), 62, 0x8000));
+    let events = drain(&mut list);
+    assert_eq!(events.len(), 4, "{events:?}");
+    assert_eq!(note_on(&events[0]).0, 0, "Group 0 is a CLAP note on port 0");
+    assert_eq!(midi_bytes(&events[1]), (1, [0x92, 62, 64]));
+    assert_eq!(midi_bytes(&events[2]), (1, [0xA2, 62, 64]));
+    assert_eq!(midi_bytes(&events[3]), (1, [0x82, 62, 64]));
+}

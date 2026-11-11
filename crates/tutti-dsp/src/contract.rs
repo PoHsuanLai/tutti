@@ -52,8 +52,6 @@
 
 mod basic;
 mod design_case;
-#[cfg(test)]
-pub(crate) mod flaws;
 mod harness;
 mod lti;
 mod macros;

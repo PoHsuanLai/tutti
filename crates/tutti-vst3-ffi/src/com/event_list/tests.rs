@@ -599,12 +599,36 @@ fn a_list_in_use_by_the_plugin_is_skipped_and_counted() {
         let _plugin_reading = list.inner.borrow();
         assert!(list.try_begin().is_none());
         assert!(!list.clear());
-        list.add_dropped(1);
-        assert_eq!(list.busy(), 3);
+        assert_eq!(list.busy(), 2);
     }
     let staging = list.try_begin().expect("free again");
     assert!(list.try_with_events(|_| ()).is_none());
     drop(staging);
-    assert_eq!(list.dropped(), 0, "the skipped add_dropped did not count");
     assert!(list.try_with_events(|_| ()).is_some());
+}
+
+/// **The stat readers do not borrow the list: a plugin thread inside
+/// `addEvent` (the exclusive borrow) cannot make them panic, and the count they return is whole.** A drop
+/// counted while the plugin holds the list ([`EventList::add_dropped`]) is not
+/// lost, and the arena's and the assembler's counts read as they stood.
+#[test]
+fn the_stat_readers_answer_while_the_plugin_holds_the_list() {
+    let list = EventList::input();
+    let mut staging = list.begin();
+    for _ in 0..=TextArena::CAPACITY {
+        staging.intern(&[0x61; 256]);
+    }
+    for _ in 0..EVENT_CAPACITY + 1 {
+        staging.push(note_on(60, 0));
+    }
+    staging.finish();
+    assert_eq!(list.dropped(), 1);
+    {
+        let _plugin_adding = list.inner.borrow_mut();
+        list.add_dropped(2);
+        assert_eq!(list.dropped(), 3, "counted while held, not lost");
+        assert!(list.text_dropped() > 0, "the arena's count, as it stood");
+        assert_eq!(list.sysex_dropped(), 0);
+    }
+    assert_eq!(list.dropped(), 3);
 }

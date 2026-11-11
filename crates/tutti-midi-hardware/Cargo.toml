@@ -51,6 +51,9 @@ tutti-midi-runtime = { path = "../tutti-midi-runtime", default-features = false 
 tutti-types = { path = "../tutti-types", default-features = false }
 tutti-rt = { path = "../tutti-rt" }
 tutti-ump = { path = "../tutti-ump", default-features = false }
+# `Narrower`: the output edge's MIDI 2.0 to MIDI 1.0 translation. (The tests also
+# read packets back as MIDI 2.0 with `channel_voice`.)
+tutti-midi-protocol = { path = "../tutti-midi-protocol" }
 
 # Lock-free: each input port's SPSC ring, split into an owned producer and
 # consumer.
@@ -86,8 +89,6 @@ tutti-midi-hardware = { path = ".", features = ["test-support"] }
 # allocator.
 assert_no_alloc = { version = "1", default-features = false }
 tutti-fixtures = { path = "../../testing/tutti-fixtures" }
-# `channel_voice` (the examples' and tests' read of a packet as MIDI 2.0), `narrow_velocity`.
-tutti-midi-protocol = { path = "../tutti-midi-protocol" }
 
 [package.metadata.docs.rs]
 all-features = true

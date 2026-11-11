@@ -41,6 +41,7 @@ use crate::error::{Error, Result};
 use crate::stream::{DeviceStream, Negotiation};
 use tutti_midi_device::{DeviceId, DeviceInfo};
 use tutti_midi_runtime::MidiOut;
+use tutti_ump::StreamConfig;
 
 /// The set of open MIDI connections, and the endpoints available to open.
 ///
@@ -332,7 +333,12 @@ impl MidiSession {
     /// backend raises while opening.
     pub fn connect_output(&self, id: &DeviceId) -> Result<()> {
         let output = self.inner.devices.open_output(id)?;
-        self.inner.open().output = Some(output);
+        let mut open = self.inner.open();
+        // A device whose input is held may have settled already.
+        if let Some(stream) = open.inputs.get(id).and_then(|held| held.stream.settled()) {
+            output.set_config(stream.config());
+        }
+        open.output = Some(output);
         Ok(())
     }
 
@@ -378,6 +384,13 @@ impl MidiSession {
         self.inner.open().output.as_ref().map(|o| o.id().clone())
     }
 
+    /// The Protocol and JR Timestamps the open output sends in, if one is open:
+    /// the OS's description of its device, or what the negotiation settled.
+    #[must_use]
+    pub fn output_config(&self) -> Option<StreamConfig> {
+        self.inner.open().output.as_ref().map(OpenOutput::config)
+    }
+
     /// Whether `id` is an open input that is still delivering: one whose
     /// reader ended on an error is not (see [`OpenInput::is_alive`]), and
     /// [`connect_input`](Self::connect_input) reopens it.
@@ -393,7 +406,10 @@ impl MidiSession {
     /// Steps the UMP Stream negotiation of every open input at `now`: starts
     /// the ones connected since, hands each the Stream messages its device sent,
     /// and sends what they answer or ask again. Returns the devices whose
-    /// negotiation settled in this call, once each.
+    /// negotiation settled in this call, and those whose settled state changed
+    /// (a Stream Configuration Notification, or a Function Block of an
+    /// Endpoint that did not declare them static), once each. The open output
+    /// follows its device's Protocol and JR Timestamps.
     ///
     /// `now` is the caller's time: nothing here reads a clock or waits, so a
     /// device that never answers costs a few packets over a few seconds of
@@ -412,6 +428,12 @@ impl MidiSession {
                 settled.push((id.clone(), stream));
             }
         }
+        // The output the session holds sends in what its device settled.
+        if let Some(out) = &open.output
+            && let Some((_, stream)) = settled.iter().rev().find(|(id, _)| id == out.id())
+        {
+            out.set_config(stream.config());
+        }
         settled
     }
 
@@ -425,7 +447,8 @@ impl MidiSession {
         self.inner.open().inputs.get(id)?.stream.settled()
     }
 
-    /// Sends events to the open output.
+    /// Sends events to the open output, in the wire form of its device (see
+    /// [`OpenOutput`]).
     ///
     /// Returns how many the device **accepted**: `0` when nothing is connected,
     /// and `< events.len()` when the endpoint refused part of the batch. That is

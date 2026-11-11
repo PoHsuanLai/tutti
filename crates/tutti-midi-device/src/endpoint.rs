@@ -561,20 +561,44 @@ impl Endpoint {
         }
     }
 
-    /// Folds a peer's Endpoint Info into this (discoverer) value.
-    pub(crate) fn apply_info(&mut self, info: &tutti_ump::EndpointInfo) {
+    /// Folds a peer's Endpoint Info into this (discoverer) value. A count of
+    /// Function Blocks above [`MAX_FUNCTION_BLOCKS`] is refused (`false`, and
+    /// nothing is folded): the numbers are 0 to 31, so there is no Endpoint
+    /// with more.
+    #[must_use]
+    pub(crate) fn apply_info(&mut self, info: &tutti_ump::EndpointInfo) -> bool {
+        if usize::from(info.function_blocks.get()) > MAX_FUNCTION_BLOCKS {
+            return false;
+        }
         self.version = info.version;
         self.static_function_blocks = info.static_function_blocks;
-        self.declared_blocks = info
-            .function_blocks
-            .get()
-            .min(u8::try_from(MAX_FUNCTION_BLOCKS).unwrap_or(32));
+        self.declared_blocks = info.function_blocks.get();
         self.capabilities = Capabilities {
             midi1: info.midi1,
             midi2: info.midi2,
             rx_jr: info.rx_jr,
             tx_jr: info.tx_jr,
         };
+        true
+    }
+
+    /// The block a peer's Function Block Info describes, read as this
+    /// Endpoint's: `None` for one `from_info` refuses and for one outside the
+    /// count the Endpoint declared (its numbers are `0..declared`, §7.1.7). A
+    /// block a peer that declared its blocks static sends inactive is read
+    /// active: §7.1.8 says such an Endpoint "shall not have any inactive
+    /// Function Blocks and all Function Blocks shall have this bit set to
+    /// high". A MIDI 1.0 port over several Groups is already read as a plain
+    /// block (`from_info`: §7.1.8, "Number of Groups Spanned shall be 1").
+    pub(crate) fn read_block(&self, info: &FunctionBlockInfo) -> Option<FunctionBlock> {
+        let mut block = FunctionBlock::from_info(info)?;
+        if block.id.get() >= self.declared_blocks {
+            return None;
+        }
+        if self.static_function_blocks {
+            block.active = true;
+        }
+        Some(block)
     }
 
     /// What a MIDI 1.0 device is: the Endpoint as the discoverer knows it, but

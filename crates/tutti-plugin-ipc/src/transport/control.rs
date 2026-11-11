@@ -156,25 +156,13 @@ const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(30);
 /// report, which is the exact bug the `PIPE_NOWAIT` attempt shipped.
 #[cfg(windows)]
 fn bytes_available(stream: &ControlStream) -> std::io::Result<u32> {
-    use std::os::windows::io::{AsHandle, AsRawHandle};
-    use windows::Win32::Foundation::HANDLE;
-    use windows::Win32::System::Pipes::PeekNamedPipe;
+    use std::os::windows::io::AsHandle;
 
     // On Windows `local_socket::Stream` has exactly one variant, so this
     // destructure is irrefutable. Written as a `let` rather than a `match` for
     // that reason: a wildcard arm would be unreachable code.
     let Stream::NamedPipe(pipe) = stream;
-    let borrowed = pipe.as_handle();
-    let handle = HANDLE(borrowed.as_raw_handle() as isize);
-
-    let mut available: u32 = 0;
-    // SAFETY: `handle` is borrowed from `stream` and cannot outlive this call.
-    // The only out-pointer is `available`, a live local; every other buffer
-    // argument is `None`, which is what makes this a pure size query — nothing
-    // is copied out of the pipe and the stream position does not move.
-    unsafe { PeekNamedPipe(handle, None, 0, None, Some(&mut available), None) }
-        .map_err(|_| std::io::Error::last_os_error())?;
-    Ok(available)
+    tutti_plugin_ipc_ffi::pipe_bytes_available(pipe.as_handle())
 }
 
 /// Wait longer each time a peeked stream comes back empty, never past `remaining`.

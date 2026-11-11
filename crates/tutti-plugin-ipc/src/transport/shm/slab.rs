@@ -66,14 +66,13 @@
 
 use crate::protocol::SlabLayout;
 use bytemuck::Pod;
-use memmap2::MmapMut;
-use std::fs::OpenOptions;
 use std::sync::Arc;
 use tutti_plugin_types::Sample;
 use tutti_plugin_types::{BridgeError, BridgeResult};
 
-use super::header::{Direction, RING_SLOTS, SLAB_HEADER_BYTES, slot_for};
-use super::mmap::MmapCell;
+use tutti_plugin_ipc_ffi::{
+    Direction, MappingWriter, RING_SLOTS, SLAB_HEADER_BYTES, SharedMapping, SlabError, slot_for,
+};
 
 /// Who is responsible for the backing file's lifetime.
 #[derive(Debug)]
@@ -91,7 +90,7 @@ enum Ownership {
 /// is a view.
 #[derive(Debug)]
 pub struct AudioSlab {
-    mmap: MmapCell,
+    mapping: Arc<SharedMapping>,
     name: String,
     layout: SlabLayout,
     ownership: Ownership,
@@ -118,18 +117,16 @@ impl AudioSlab {
     pub fn create(name: impl Into<String>, layout: SlabLayout) -> BridgeResult<SlabWriter> {
         check_layout(&layout)?;
         let name = name.into();
-        let mmap = open_mmap(&name, byte_size(&layout)?, Open::Create)?;
+        // Stamped before it returns: the peer is told the slab's name only
+        // after this, and the header's magic is released last.
+        let writer = MappingWriter::create(&name, byte_size(&layout)?).map_err(slab_err)?;
         let slab = Self {
-            mmap: MmapCell::new(mmap),
+            mapping: Arc::clone(writer.mapping()),
             name,
             layout,
             ownership: Ownership::Owner,
         };
-        // Stamp before anyone can open it: the peer is told the slab's name only
-        // after this returns, and `initialize` releases the magic last so an
-        // opener that sees the magic sees a fully written header.
-        slab.mmap.header().initialize();
-        Ok(SlabWriter::new(slab, Direction::Input))
+        Ok(SlabWriter::new(slab, writer, Direction::Input))
     }
 
     /// Opens an existing slab as a view, the server's end, validating its
@@ -149,24 +146,16 @@ impl AudioSlab {
     pub fn open(name: impl Into<String>, layout: SlabLayout) -> BridgeResult<SlabWriter> {
         check_layout(&layout)?;
         let name = name.into();
-        let expected = byte_size(&layout)?;
-        let mmap = open_mmap(&name, expected, Open::Existing)?;
-        // Length first: `header()` asserts on a short mapping, and an assert is
-        // the wrong failure mode for "the peer created a slab of another shape".
-        if mmap.len() < expected {
-            return Err(oob_owned(format!(
-                "slab is {} bytes, layout needs {expected}",
-                mmap.len()
-            )));
-        }
+        // Checks the length before the header, and the header before this
+        // side trusts a byte.
+        let writer = MappingWriter::open(&name, byte_size(&layout)?).map_err(slab_err)?;
         let slab = Self {
-            mmap: MmapCell::new(mmap),
+            mapping: Arc::clone(writer.mapping()),
             name,
             layout,
             ownership: Ownership::View,
         };
-        slab.mmap.header().validate()?;
-        Ok(SlabWriter::new(slab, Direction::Output))
+        Ok(SlabWriter::new(slab, writer, Direction::Output))
     }
 
     // ---- Accessors ----
@@ -239,13 +228,15 @@ impl AudioSlab {
     /// Anything else means the slot holds a different block — read nothing.
     #[inline]
     pub fn input_sequence(&self, seq: u64) -> u64 {
-        self.mmap.header().sequence(Direction::Input, slot_for(seq))
+        self.mapping
+            .header()
+            .sequence(Direction::Input, slot_for(seq))
     }
 
     /// Which block currently occupies the output slot that `seq` maps to.
     #[inline]
     pub fn output_sequence(&self, seq: u64) -> u64 {
-        self.mmap
+        self.mapping
             .header()
             .sequence(Direction::Output, slot_for(seq))
     }
@@ -266,10 +257,10 @@ impl AudioSlab {
 
     // ---- Internal helpers ----
 
-    /// Only [`SlabWriter`] calls this, through `&mut self`: that is what makes
-    /// the region's writer unique in this process.
+    /// Only [`SlabWriter`] calls this, with the mapping's one writer.
     fn write_region<T: Sample + Pod>(
         &self,
+        writer: &mut MappingWriter,
         direction: Direction,
         seq: u64,
         channel: usize,
@@ -280,7 +271,7 @@ impl AudioSlab {
         if data.len() > self.layout.samples_per_channel {
             return Err(oob("data length exceeds buffer capacity"));
         }
-        self.mmap.write(offset, bytemuck::cast_slice(data));
+        writer.write(offset, bytemuck::cast_slice(data));
         Ok(())
     }
 
@@ -310,14 +301,14 @@ impl AudioSlab {
         let offset = self.offset_of(direction, seq, channel)?;
         let copy_samples = self.layout.samples_per_channel.min(output.len());
         let slot = slot_for(seq);
-        let header = self.mmap.header();
+        let header = self.mapping.header();
         // The recheck is what makes the count evidence: with two slots, the
         // peer reuses this one two blocks later, and a reader preempted
         // between the first load and the end of the copy would otherwise
         // return half of one block and half of the next.
         let held = header.sequence(direction, slot) == seq;
         if held {
-            self.mmap.read(
+            self.mapping.read(
                 offset,
                 bytemuck::cast_slice_mut(&mut output[..copy_samples]),
             );
@@ -394,13 +385,15 @@ impl AudioSlab {
 #[derive(Debug)]
 pub struct SlabWriter {
     slab: Arc<AudioSlab>,
+    writer: MappingWriter,
     direction: Direction,
 }
 
 impl SlabWriter {
-    fn new(slab: AudioSlab, direction: Direction) -> Self {
+    fn new(slab: AudioSlab, writer: MappingWriter, direction: Direction) -> Self {
         Self {
             slab: Arc::new(slab),
+            writer,
             direction,
         }
     }
@@ -426,7 +419,8 @@ impl SlabWriter {
         channel: usize,
         data: &[T],
     ) -> BridgeResult<()> {
-        self.slab.write_region(self.direction, seq, channel, data)
+        self.slab
+            .write_region(&mut self.writer, self.direction, seq, channel, data)
     }
 
     /// Announces that block `seq` is complete in this direction.
@@ -437,7 +431,7 @@ impl SlabWriter {
     #[inline]
     pub fn publish(&mut self, seq: u64) {
         self.slab
-            .mmap
+            .mapping
             .header()
             .publish(self.direction, slot_for(seq), seq);
     }
@@ -488,7 +482,7 @@ impl Drop for AudioSlab {
     ///
     fn drop(&mut self) {
         if matches!(self.ownership, Ownership::Owner) {
-            let _ = std::fs::remove_file(shm_path(&self.name));
+            tutti_plugin_ipc_ffi::remove(&self.name);
         }
     }
 }
@@ -501,65 +495,8 @@ fn oob_owned(msg: String) -> BridgeError {
     BridgeError::SharedMemoryError(msg)
 }
 
-enum Open {
-    Create,
-    Existing,
-}
-
-fn open_mmap(name: &str, size: usize, mode: Open) -> BridgeResult<MmapMut> {
-    let path = shm_path(name);
-    let mut opts = OpenOptions::new();
-    opts.read(true).write(true);
-    match mode {
-        Open::Create => {
-            // Exclusive (`O_CREAT | O_EXCL`): an existing name, a symlink
-            // included, is refused. Truncating one would shrink a file that
-            // another process may have mapped, which faults it (SIGBUS), and a
-            // planted file or link would put our audio where its owner chose.
-            opts.create_new(true);
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::OpenOptionsExt;
-                opts.mode(0o600);
-            }
-        }
-        Open::Existing => {
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::OpenOptionsExt;
-                opts.custom_flags(libc::O_NOFOLLOW);
-            }
-        }
-    }
-    let file = opts.open(&path).map_err(|e| {
-        BridgeError::SharedMemoryError(format!("failed to open shared memory file: {e}"))
-    })?;
-    if matches!(mode, Open::Create) {
-        file.set_len(size as u64)
-            .map_err(|e| BridgeError::SharedMemoryError(format!("failed to set file size: {e}")))?;
-    }
-    // SAFETY: `memmap2`'s contract is that the file is not truncated or
-    // resized by anyone while mapped. Ours is created exclusively at 0600 and
-    // only sized here, before the map; the peer opens it without `truncate`
-    // and never sizes it. A process with write access to the file could still
-    // shrink it; that is a fault of a trusted peer, as is scribbling on it
-    // (`mmap.rs`, the `Sync` argument).
-    unsafe { MmapMut::map_mut(&file) }
-        .map_err(|e| BridgeError::SharedMemoryError(format!("failed to map shared memory: {e}")))
-}
-
-#[cfg(unix)]
-fn shm_path(name: &str) -> std::path::PathBuf {
-    #[cfg(target_os = "linux")]
-    let base = std::path::PathBuf::from("/dev/shm");
-    #[cfg(target_os = "macos")]
-    let base = std::env::temp_dir();
-    base.join(format!("tutti_{name}"))
-}
-
-#[cfg(windows)]
-fn shm_path(name: &str) -> std::path::PathBuf {
-    std::env::temp_dir().join(format!("tutti_{name}"))
+fn slab_err(e: SlabError) -> BridgeError {
+    BridgeError::SharedMemoryError(e.to_string())
 }
 
 #[cfg(test)]
@@ -924,7 +861,8 @@ mod tests {
     /// than truncated: truncating a file another process has mapped faults
     /// that process (SIGBUS), and a planted file would carry our audio.
     ///
-    /// Mutation (run): `create(true).truncate(true)` in `open_mmap` → the
+    /// Mutation (run): `create(true).truncate(true)` in `tutti-plugin-ipc-ffi`'s
+    /// `open_file` → the
     /// second create succeeds → fails.
     #[test]
     fn create_refuses_a_name_that_exists() {
@@ -942,45 +880,6 @@ mod tests {
         assert_eq!(out, [3.0; 8], "the first slab is untouched");
     }
 
-    /// A symlink planted at the name is refused by both ends: `create` does
-    /// not follow it into the file it names, and `open` (`O_NOFOLLOW`) does not
-    /// map whatever it points at.
-    ///
-    /// Mutation (run): drop `custom_flags(O_NOFOLLOW)` → the open through the
-    /// link succeeds → fails. (`create` is covered by `create_new`: `O_EXCL`
-    /// refuses an existing link, dangling or not.)
-    #[cfg(unix)]
-    #[test]
-    fn a_symlink_at_the_name_is_refused() {
-        let l = stereo_layout(8, SampleFormat::Float32);
-        let real = name("real");
-        let _owner = AudioSlab::create(real.clone(), l.clone()).unwrap();
-        let link = name("link");
-        std::os::unix::fs::symlink(shm_path(&real), shm_path(&link)).unwrap();
-        let opened = AudioSlab::open(link.clone(), l.clone());
-        let created = AudioSlab::create(link.clone(), l);
-        let _ = std::fs::remove_file(shm_path(&link));
-        assert!(opened.is_err(), "open followed a link");
-        assert!(created.is_err(), "create followed a link");
-    }
-
-    /// Opening a file that is not a slab must fail on the magic, not produce a
-    /// mapping full of someone else's bytes read as audio.
-    #[test]
-    fn opening_a_foreign_file_is_refused() {
-        let l = stereo_layout(64, SampleFormat::Float32);
-        let n = name("foreign");
-        let path = shm_path(&n);
-        std::fs::write(&path, vec![0xABu8; byte_size(&l).unwrap()]).unwrap();
-
-        let err = AudioSlab::open(n, l).expect_err("a foreign file must not open");
-        assert!(
-            format!("{err}").contains("not a tutti audio slab"),
-            "expected a magic failure, got: {err}"
-        );
-        let _ = std::fs::remove_file(&path);
-    }
-
     /// A slab created for a smaller layout must not be openable with a larger
     /// one — the mapping would end mid-region and every read past it would be
     /// out of bounds.
@@ -995,19 +894,6 @@ mod tests {
         assert!(format!("{err}").contains("bytes"), "got: {err}");
     }
 
-    /// The mapping's copies refuse the header's bytes: the header is only ever
-    /// stored through its atomics, while `header()` hands out a shared
-    /// reference to them.
-    ///
-    /// Mutation (run): drop the `offset >= SLAB_HEADER_BYTES` term in
-    /// `check_range` → the write lands → no panic → fails.
-    #[test]
-    #[should_panic(expected = "outside the data region")]
-    fn a_copy_into_the_header_panics() {
-        let (host, _server) = pair("hdr", stereo_layout(8, SampleFormat::Float32));
-        host.slab().mmap.write(0, &[0u8; 8]);
-    }
-
     /// Read the mapping's raw bytes and check the layout *without* going through
     /// the offset helper that produced it.
     ///
@@ -1017,10 +903,6 @@ mod tests {
     /// This test recomputes each address from the layout arithmetic
     /// independently, so such an error shows up as a value in the wrong place
     /// rather than not at all.
-    ///
-    /// The `#[repr(C)]` header is checked here too: `magic` sits at offset 0 of
-    /// the mapping, which is what the opening side keys on before trusting a
-    /// single audio byte.
     ///
     /// This is the by-hand `hexdump` from the pipelining plan, kept as a test
     /// because nothing about it needed a human eye — only bytes at addresses.
@@ -1059,22 +941,18 @@ mod tests {
             }
         }
 
-        let bytes = host.slab().mmap.snapshot();
+        // The data region at its absolute offsets; the header's bytes (and the
+        // magic at offset 0) are `tutti-plugin-ipc-ffi`'s to check.
+        let mapping = &host.slab().mapping;
         assert_eq!(
-            bytes.len(),
+            mapping.len(),
             byte_size(&l).unwrap(),
             "mapping is not the sized length"
         );
+        let mut bytes = vec![0u8; mapping.len()];
+        mapping.read(SLAB_HEADER_BYTES, &mut bytes[SLAB_HEADER_BYTES..]);
 
-        // 1. The magic is the first thing in the mapping.
-        let magic = u64::from_le_bytes(bytes[..8].try_into().unwrap());
-        assert_eq!(
-            magic,
-            crate::transport::shm::header::SLAB_MAGIC,
-            "magic must sit at offset 0 — the opening side reads it before anything else"
-        );
-
-        // 2. Audio starts after the header, and the two rings are disjoint.
+        // 1. Audio starts after the header, and the two rings are disjoint.
         let stride = SAMPLES * size_of::<f32>();
         let input_base = SLAB_HEADER_BYTES;
         let output_base = SLAB_HEADER_BYTES + l.input_ring_bytes();
@@ -1088,7 +966,7 @@ mod tests {
             "the output ring starts inside the input ring: bases {input_base} / {output_base}"
         );
 
-        // 3. Every channel of every slot, addressed from the layout rather than
+        // 2. Every channel of every slot, addressed from the layout rather than
         //    from the code under test.
         let read_at = |offset: usize| -> f32 {
             f32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap())
@@ -1112,7 +990,7 @@ mod tests {
             }
         }
 
-        // 4. The directions really do hold different data. The shipped bypass
+        // 3. The directions really do hold different data. The shipped bypass
         //    was precisely the case where reading "output" returned the input.
         assert_ne!(
             read_at(input_base),

@@ -464,7 +464,12 @@ crates/          everything shipped; directory name = package name; no nesting
                  that feeds it (`Batcher`, `OfflineWait`), the server's
                  process (`ProcessGuard`) and the served plugin as a `Loaded`
                  (`Ipc`, `IpcProcessor`, `IpcController`); no plugin format,
-                 design 021 §6.1),
+                 design 021 §6.1; `#![forbid(unsafe_code)]`),
+  tutti-plugin-ipc-ffi (the process edge's `unsafe` behind safe calls: the
+                 audio slab's file, mapping and header (`MappingWriter`, the
+                 mapping's one writer, `SharedMapping`, `SlabHeader`), and the
+                 OS calls of the host's pipe peek and the server's host
+                 watchdog; names no tutti crate),
   tutti-plugin-host (the format-generic half of hosting, not a format host: the
                  `PluginHandle` control surface over a hosting's `AnyThread`,
                  `Health` and `MainThreadControl`,
@@ -496,7 +501,7 @@ vendor/          third-party code we never edit
 list (normal and build edges; dev-dependencies may go anywhere).
 `scripts/check-layout.sh` holds the table and fails on an unplaced crate:
 
-0. `arc-lend`, `tutti-alsa-ump-sys`, `tutti-ump`, `tutti-types`
+0. `arc-lend`, `tutti-alsa-ump-sys`, `tutti-ump`, `tutti-types`, `tutti-plugin-ipc-ffi`
 1. `tutti-rt`, `tutti-midi-protocol`, `tutti-midi-device`, `tutti-curve`
 2. `tutti-graph`, `tutti-dsp`, `tutti-modulation`, `tutti-metering`,
    `tutti-codec`, `tutti-tempo`, `tutti-voicing`, `tutti-sf2`
@@ -779,8 +784,8 @@ list (normal and build edges; dev-dependencies may go anywhere).
   snapshot and sends `Delta`s, and `PluginDb::apply` is the only code that
   changes a row. Consumers
   name its types from it, not through `tutti-plugin`.
-- `tutti-plugin-ipc` depends on `tutti-types`, `tutti-rt`, `tutti-ump` and
-  `tutti-plugin-types` alone among workspace crates (no `tutti-graph`: the
+- `tutti-plugin-ipc` depends on `tutti-types`, `tutti-rt`, `tutti-ump`,
+  `tutti-plugin-types` and `tutti-plugin-ipc-ffi` alone among workspace crates (no `tutti-graph`: the
   `Batcher` takes the plain values it reads from a `Prepare`; `Ipc` is a
   `tutti_plugin_types::Loaded`, one for every format by path until AU has its own),
   keeps every module private but `state_chunk` (the namespace both ends chunk
@@ -792,9 +797,11 @@ list (normal and build edges; dev-dependencies may go anywhere).
   (or `IpcOrigin::reopen`), an activation with no token with
   `Ipc::activate_anywhere`, and a fork's watch (`Ipc::watch`: its retune
   settles the server and records the plan) with `OfflineWait`.
-  Its `unsafe` is the process edge's own (shared memory and
-  its mapping, the Windows control-socket deadline, the launch), each block
-  under a `// SAFETY:`. It knows no format:
+  It is `#![forbid(unsafe_code)]`: the process edge's `unsafe` (the slab's
+  mapping and header, the Windows pipe peek, the server's watchdog calls) is
+  `tutti-plugin-ipc-ffi`'s, which depends on no workspace crate and hands out
+  only safe calls (a mapping is made with its one `MappingWriter`, so its
+  copies cannot race in this process). It knows no format:
   the editor-only instance a `PluginBridge` opens is loaded by the host's
   `EditorLoader`, and no `tutti-*-host` depends on it
   (`scripts/check-layout.sh`). Its test-only knobs (`set_rate_timeout`,

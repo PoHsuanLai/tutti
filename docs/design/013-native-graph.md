@@ -3762,6 +3762,28 @@ Decisions:
    ports. Two nodes sharing mutable state outside the graph (one
    `Arc<Mutex<_>>`) are ordered serially by accident and not at all in
    parallel.
+
+   **The chase is a port write the executor makes once, at the swap.** A
+   node that is replaced (a crossfade, a replace, an insert at an existing
+   key: the delta's `replace` entry, which every swap passes through)
+   may hand its successor the state it holds: `Node::chase(&self, &mut
+   Chase)` writes MIDI messages, and `Shape::with_chase(capacity)` declares
+   how many, so the executor sizes its buffer when it builds a plan, for
+   the nodes that declare it, and the swap allocates nothing for it.
+   Nothing is shared between the two nodes: the executor calls `chase` at
+   the serial point where the commit is applied, before the block's first
+   task, and the events travel as flushed events (the existing injection of
+   an event into a sink's first call, "Flushed events" in `exec.rs`), at
+   offset 0 of the successor's first block and ahead of everything else
+   there, on its first event input. Parallel and serial see the same
+   events, so the render stays bit-identical. A successor with no event
+   input drops them and what the buffer refused is dropped too: both are
+   counted (`Executor::dropped_event_count`). During a crossfade only the
+   incoming node is chased (the outgoing one is not sent anything); a
+   replace that waits behind a crossfade already running is not chased (its
+   predecessor has not taken over); a re-prepare keeps its units and a mode
+   change swaps nothing, so neither chases; a fork does not, its copy
+   carries the state. What the two instruments write is in doc 017, "L4d".
 7. **The caller spins, then yields** while it waits on a helper (on the
    task graph, any task finishing: the sinks' `remaining`, the caller's own
    count and the helpers' completion counters; on the gate, `entered`). On

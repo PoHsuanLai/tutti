@@ -1476,3 +1476,117 @@ fn driven_mixes_are_allocation_free() {
 fn parallel_driven_mixes_are_allocation_free() {
     driven_mixes_are_allocation_free_on(4);
 }
+
+/// A node with state to hand over: it writes `STATE` messages when replaced
+/// (inside the gate, which the executor's chase buffer must satisfy) and
+/// counts every event it is sent.
+struct Chaser {
+    seen: Arc<AtomicU64>,
+}
+
+const STATE: u8 = 4;
+
+impl Node for Chaser {
+    fn shape(&self) -> Shape {
+        Shape::buses(Buses::NONE, Buses::unassigned(ChannelLayout::MONO))
+            .with_events(1, 0)
+            .with_chase(u32::from(STATE))
+    }
+    fn prepare(&mut self, _: &Prepare) {}
+    fn process(&mut self, _: &Cx<'_>, mut io: Io<'_>) -> Status {
+        self.seen
+            .fetch_add(io.events(0).len() as u64, Ordering::Relaxed);
+        io.output(0).fill(0.0);
+        Status::Modified
+    }
+    fn reset(&mut self) {}
+    fn chase(&self, out: &mut tutti_graph::Chase<'_>) {
+        assert_no_alloc::assert_no_alloc(|| {
+            for i in 0..STATE {
+                let controller = tutti_ump::CCNumber::of(i);
+                assert!(out.push(tutti_fixtures::midi::m1_cc(
+                    MidiChannel::FIRST,
+                    controller,
+                    U7::of(1)
+                )));
+            }
+        });
+    }
+}
+
+/// A swap's block never allocates: the replaced node writes its state into
+/// the executor's buffer inside the gate, and the block that delivers it to
+/// the successor (and every block after) runs inside it. Applying the commit
+/// itself allocates, as it always does, and runs outside.
+fn a_swap_is_allocation_free_on(workers: usize) {
+    const NODES: u64 = 4;
+    let (mut ed, mut exec) = Editor::new(prepare(256));
+    use_pool(&mut exec, workers);
+    let counts = |_| (Arc::new(AtomicU64::new(0)), Arc::new(AtomicU64::new(0)));
+    let seen: Vec<_> = (0..NODES).map(counts).collect();
+    for (k, (first, _)) in (1..).zip(&seen) {
+        ed.insert(
+            NodeKey(k),
+            "chaser",
+            Unforkable(Chaser {
+                seen: Arc::clone(first),
+            }),
+        );
+    }
+    ed.spec_mut().topology.set_outputs((1..=NODES).map(|k| {
+        Source::Node(OutPort {
+            node: NodeKey(k),
+            port: 0,
+        })
+    }));
+    ed.commit().expect("commits");
+    let transport = Transport::default();
+    let mut outs: [Vec<f32>; NODES as usize] = std::array::from_fn(|_| vec![0.0f32; 256]);
+    let mut block = |exec: &mut tutti_graph::Executor, n: usize| {
+        let [a, b, c, d] = &mut outs;
+        exec.process(
+            n,
+            &transport,
+            &[],
+            &mut [&mut a[..n], &mut b[..n], &mut c[..n], &mut d[..n]],
+        );
+    };
+    block(&mut exec, 256);
+    for (k, (_, second)) in (1..).zip(&seen) {
+        ed.replace(
+            NodeKey(k),
+            Unforkable(Chaser {
+                seen: Arc::clone(second),
+            }),
+            Fade::new(Samples(0), CrossfadeCurve::EqualPower),
+        )
+        .expect("fits");
+    }
+    ed.commit().expect("commits");
+    exec.apply_pending();
+    assert_eq!(
+        exec.is_parallel(),
+        workers > 1,
+        "the gate runs the mode it names"
+    );
+    assert_no_alloc::assert_no_alloc(|| {
+        for n in [256usize, 1, 7, 64] {
+            block(&mut exec, n);
+        }
+    });
+    for (first, second) in &seen {
+        assert_eq!(second.load(Ordering::Relaxed), u64::from(STATE));
+        assert_eq!(first.load(Ordering::Relaxed), 0);
+    }
+    assert_eq!(exec.dropped_event_count(), 0);
+}
+
+#[test]
+fn a_swap_is_allocation_free() {
+    a_swap_is_allocation_free_on(1);
+}
+
+#[test]
+fn parallel_swap_is_allocation_free() {
+    a_swap_is_allocation_free_on(4);
+}

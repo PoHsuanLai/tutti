@@ -65,6 +65,15 @@ impl UmpVirtualDestination {
     where
         F: FnMut(Ump) + Send + 'static,
     {
+        Self::stamped(name, move |event, _arrived| on_event(event))
+    }
+
+    /// As [`new`](Self::new), also giving each message the `Instant` its packet
+    /// reached CoreMIDI (the packet's host time).
+    fn stamped<F>(name: &str, mut on_event: F) -> Result<Self>
+    where
+        F: FnMut(Ump, std::time::Instant) + Send + 'static,
+    {
         let client = shared_client().map_err(|status| Error::CoreMidi {
             operation: "create client (ump destination)",
             status,
@@ -75,10 +84,12 @@ impl UmpVirtualDestination {
                 name,
                 Protocol::Midi20,
                 move |event_list: &EventList| {
+                    let pairing = super::host_time::Pairing::now();
                     for packet in event_list.iter() {
+                        let arrived = pairing.instant_of(packet.timestamp());
                         // One packet carries several concatenated UMP messages.
                         for event in split_stream(packet.data()) {
-                            on_event(event);
+                            on_event(event, arrived);
                         }
                     }
                 },
@@ -107,8 +118,8 @@ impl UmpVirtualDestination {
     ///
     /// As [`new`](Self::new).
     pub fn with_producer(name: &str, mut producer: crate::InputProducerHandle) -> Result<Self> {
-        Self::new(name, move |event| {
-            if !producer.push(event, std::time::Instant::now()) {
+        Self::stamped(name, move |event, arrived| {
+            if !producer.push(event, arrived) {
                 debug!("UMP input ring full, dropping event");
             }
         })

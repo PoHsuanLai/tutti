@@ -37,6 +37,7 @@ use tutti_midi_device::{EndpointId, Identity, OsDevice};
 use tutti_midi_runtime::MidiOut;
 use tutti_ump::{Protocol, split_stream};
 
+mod host_time;
 pub mod virtual_destination;
 pub mod virtual_source;
 mod watch;
@@ -232,12 +233,15 @@ impl MidiEndpoints for CoreMidiEndpoints {
         // `F0 … F7` bytes.
         let mut port = client
             .input_port_with_protocol("tutti-in", CmProtocol::Midi20, move |event_list, _ctx| {
-                let now = std::time::Instant::now();
+                // The packet's own host time, as an `Instant`: when the event
+                // reached CoreMIDI, not when this callback ran.
+                let pairing = host_time::Pairing::now();
                 for packet in event_list.iter() {
+                    let arrived = pairing.instant_of(packet.timestamp());
                     // One CoreMIDI packet is a packed word stream of several
                     // concatenated UMP messages.
                     for event in split_stream(packet.data()) {
-                        if !producer.push(event, now) {
+                        if !producer.push(event, arrived) {
                             tracing::debug!("MIDI input ring full, dropping event");
                         }
                     }

@@ -268,7 +268,7 @@ impl Node for MidiInputNode {
                 self.mpe.zone_defaults(MidiGroup::FIRST, Offset::ZERO, send);
             });
         }
-        let n = input.poll_block(block_len.get(), &mut self.scratch);
+        let n = input.poll_block(block_len, &mut self.scratch);
         for &(at, raw) in &self.scratch[..n.min(self.scratch.len())] {
             let (translator, mpe) = (&mut self.translator, &mut self.mpe);
             translator.feed(raw, |ev| {

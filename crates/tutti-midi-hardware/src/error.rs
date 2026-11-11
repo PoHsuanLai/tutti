@@ -65,6 +65,10 @@ pub enum Error {
         code: i32,
     },
 
+    /// A backend seeded its device list twice, or after reporting a change.
+    #[error(transparent)]
+    Seed(#[from] crate::SeedError),
+
     /// No MIDI backend exists for this build.
     ///
     /// Distinct from "no devices found", which is an empty list and not an

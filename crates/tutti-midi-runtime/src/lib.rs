@@ -8,6 +8,7 @@
 // `MpeIngest::translate` sends nothing for an event it drops. The MIDI parse errors live one crate
 // down (`tutti_midi_file::ClipFileError`, `tutti_ump::Midi1Parser`'s refusal, `None`).
 
+mod clock_map;
 mod ledger;
 mod live;
 mod outbound;
@@ -15,6 +16,7 @@ mod schedule;
 mod sync;
 mod traits;
 
+pub use clock_map::{ClockMap, ClockReading, GAIN, Observed, RESYNC};
 pub use ledger::{NoteLedger, Sending};
 pub use live::{
     CHANNELLESS_PORT, LIVE_INLET_CAPACITY, MAILBOX_CAPACITY, MIDI_INPUT_DENSITY,

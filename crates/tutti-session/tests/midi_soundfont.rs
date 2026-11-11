@@ -215,7 +215,7 @@ fn preview_still_sounds_under_an_installed_clip() {
 struct Wire(Arc<Mutex<Vec<UmpAt>>>);
 
 impl MidiIn for Wire {
-    fn poll_block(&mut self, _block_size: usize, buffer: &mut [UmpAt]) -> usize {
+    fn poll_block(&mut self, _block_size: tutti_types::Samples, buffer: &mut [UmpAt]) -> usize {
         let mut pending = self.0.lock().unwrap();
         let n = pending.len().min(buffer.len());
         buffer[..n].copy_from_slice(&pending[..n]);

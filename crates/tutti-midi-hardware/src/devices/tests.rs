@@ -249,7 +249,7 @@ struct Refuses;
 
 impl MidiEndpoints for Refuses {
     fn watch(&self, sink: ChangeSink) -> Result<Box<dyn Watch>> {
-        sink.seed(os_devices(&self.inputs(), &[]));
+        sink.seed(os_devices(&self.inputs(), &[]))?;
         Ok(Box::new(crate::endpoints::NoWatch))
     }
     fn inputs(&self) -> Vec<EndpointInfo> {
@@ -572,7 +572,7 @@ fn a_replaced_device_is_never_missing_from_the_list() {
     };
     let mut reporter = Reporter::new(ChangeSink { shared });
     let twin = os_devices(&[endpoint(7, "Twin")], &[]);
-    reporter.seed(twin.clone());
+    reporter.seed(twin.clone()).unwrap();
     let done = Arc::new(AtomicBool::new(false));
     let reader = {
         let (devices, done) = (devices.clone(), Arc::clone(&done));
@@ -589,4 +589,46 @@ fn a_replaced_device_is_never_missing_from_the_list() {
     }
     done.store(true, Ordering::Relaxed);
     assert_eq!(reader.join().unwrap(), 0, "the list was seen without Twin");
+}
+
+/// A sink over a fresh table, and the `Devices` that reads it.
+fn sink_over_empty() -> (ChangeSink, Devices) {
+    let shared = Arc::new(Shared::default());
+    let devices = Devices {
+        inner: Arc::new(Inner {
+            _watch: Box::new(crate::endpoints::NoWatch),
+            backend: FakeBackend::build().0,
+            shared: Arc::clone(&shared),
+        }),
+    };
+    (ChangeSink { shared }, devices)
+}
+
+// The list is seeded once: a second seed is refused and changes nothing.
+// Mutation: drop the `begun` check in `seed`: the second call is `Ok` and the
+// list gains "Second".
+#[test]
+fn a_second_seed_is_refused_and_leaves_the_list() {
+    let (sink, devices) = sink_over_empty();
+    assert_eq!(sink.seed(os_devices(&[endpoint(1, "First")], &[])), Ok(()));
+    assert_eq!(
+        sink.seed(os_devices(&[endpoint(2, "Second")], &[])),
+        Err(SeedError)
+    );
+    let names: Vec<_> = devices.list().into_iter().map(|d| d.name).collect();
+    assert_eq!(names.len(), 1, "{names:?}");
+    assert!(names[0].contains("First"), "{names:?}");
+}
+
+// A seed after a change was reported is late: it would rewrite what a
+// subscriber may already have read.
+// Mutation: `send_all` without `begun = true`: the late seed is `Ok`.
+#[test]
+fn a_seed_after_a_change_is_refused() {
+    let (sink, devices) = sink_over_empty();
+    let events = devices.subscribe();
+    let present = os_devices(&[endpoint(1, "Keys")], &[]);
+    sink.send(OsChange::Present(present[0].clone()));
+    assert_eq!(sink.seed(present), Err(SeedError));
+    assert_eq!(events.try_iter().count(), 1, "only the reported change");
 }

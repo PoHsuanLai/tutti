@@ -784,3 +784,91 @@ fn an_input_whose_pump_fails_reads_as_gone() {
     // Dropping a dead input is as prompt as any.
     drop(input);
 }
+
+/// The time an event is given is when it arrived, not when the pump read it.
+/// The pump is held 400 ms after its wake (`PUMP_STALL_MS`), so three notes sent
+/// 50 and 100 ms apart are all in the queue when it reads; their spacing as the
+/// drain sees it must be the sender's, within the sequencer clock's resolution
+/// and the scheduler's, and a read-time stamp would put all three within
+/// microseconds.
+/// Mutation: `None => Instant::now()` taken for every event in the pump (the
+/// stamp ignored) collapses the spacing and fails the first assertion.
+#[test]
+fn events_keep_the_spacing_they_arrived_with_when_the_pump_is_late() {
+    let rate = 44_100.0;
+    let window = 441_000; // 10 s of frames: nothing clamps
+    super::input::PUMP_STALL_MS.store(400, std::sync::atomic::Ordering::SeqCst);
+    let mut pumped = Pumped::open();
+    std::thread::sleep(Duration::from_millis(50));
+
+    let t0 = Instant::now();
+    let mut sent = Vec::new();
+    for gap in [0, 50, 100] {
+        std::thread::sleep(Duration::from_millis(gap));
+        sent.push(t0.elapsed().as_secs_f64());
+        pumped.send();
+    }
+
+    // Each event's arrival in seconds after `t0`, from the offset the drain
+    // gave it and the block start it was given.
+    let mut arrived = Vec::new();
+    let deadline = Instant::now() + PATIENCE;
+    while arrived.len() < 3 {
+        assert!(Instant::now() < deadline, "got {arrived:?}");
+        let block_start = Instant::now();
+        pumped
+            .drain
+            .cycle_start_read_all_inputs_at(window, block_start, |_, (offset, _)| {
+                let ago = (window - offset.index()) as f64 / rate;
+                arrived.push(block_start.duration_since(t0).as_secs_f64() - ago);
+            });
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    super::input::PUMP_STALL_MS.store(0, std::sync::atomic::Ordering::SeqCst);
+
+    for i in 1..3 {
+        let (heard, sent) = (arrived[i] - arrived[i - 1], sent[i] - sent[i - 1]);
+        assert!(
+            (heard - sent).abs() < 0.020,
+            "gap {i}: sent {sent:.4} s apart, arrived {heard:.4} s apart"
+        );
+    }
+}
+
+/// Dropping an input does not wait for ever on a pump that will not stop: here
+/// one held 3 s after a wake, which `JOIN_BOUND` (1 s) must cut short.
+/// Mutation: `AlsaInput::drop` joining without the bounded wait takes 3 s.
+#[test]
+fn dropping_an_input_does_not_wait_on_a_stuck_pump() {
+    super::input::PUMP_STALL_MS.store(3000, std::sync::atomic::Ordering::SeqCst);
+    let mut pumped = Pumped::open();
+    std::thread::sleep(Duration::from_millis(50));
+    pumped.send();
+    std::thread::sleep(Duration::from_millis(100));
+    let connection = pumped.connection.take().unwrap();
+    let start = Instant::now();
+    drop(connection);
+    let took = start.elapsed();
+    super::input::PUMP_STALL_MS.store(0, std::sync::atomic::Ordering::SeqCst);
+    assert!(
+        took >= Duration::from_millis(900),
+        "gave up early: {took:?}"
+    );
+    assert!(
+        took < Duration::from_millis(2000),
+        "waited on the pump: {took:?}"
+    );
+}
+
+/// A send after a panic poisoned the output lock still goes: the guarded state
+/// is a client and two ids, never half-written.
+/// Mutation: `.unwrap_or_else(PoisonError::into_inner)` back to
+/// `.expect("output mutex poisoned")` makes the send panic.
+#[test]
+fn an_output_with_a_poisoned_lock_still_sends() {
+    let target = plug(&unique("poisoned"));
+    let id = super::enumerate::pack_id(target.0.id().unwrap(), 0);
+    let output = super::output::connect(id).expect("the output to open");
+    output.poison();
+    output.send_ump(&[0x2090_3C64]).expect("the send to go");
+}

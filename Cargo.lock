@@ -3716,6 +3716,7 @@ dependencies = [
  "coremidi",
  "coremidi-sys",
  "libc",
+ "mach2",
  "ringbuf",
  "thiserror 2.0.21",
  "tracing",

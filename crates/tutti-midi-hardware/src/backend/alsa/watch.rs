@@ -227,11 +227,15 @@ impl Tracker {
     /// quiet read are those of the devices it lists (their starts), so none is
     /// held for later. If no look succeeds, the first wake that has one reports
     /// the devices as added.
-    fn seed(&mut self, drain: impl FnMut() -> Drained, look: impl Fn() -> Option<Vec<OsDevice>>) {
+    fn seed(
+        &mut self,
+        drain: impl FnMut() -> Drained,
+        look: impl Fn() -> Option<Vec<OsDevice>>,
+    ) -> std::result::Result<(), crate::SeedError> {
         let settled = settle(Drained::default(), drain, look);
         let Some(present) = settled.seen else {
             self.keep(settled.events);
-            return;
+            return Ok(());
         };
         let handles = present.iter().map(|d| d.handle).collect();
         self.unconfirmed = Self::unconfirmed_after(
@@ -247,7 +251,7 @@ impl Tracker {
         // between, would flap a device nobody has opened yet.
         self.port_pending = BTreeSet::new();
         self.last = handles;
-        self.reporter.seed(present);
+        self.reporter.seed(present)
     }
 
     /// One wake: settles, then reports the look with the handles `first` and
@@ -304,10 +308,11 @@ impl Tracker {
             return BTreeSet::new();
         }
         let started = |h: EndpointId| {
-            let (client, port) = unpack_id(h);
-            events
-                .iter()
-                .any(|&e| e == Event::ClientStart(client) || e == Event::PortStart(client, port))
+            unpack_id(h).is_some_and(|(client, port)| {
+                events.iter().any(|&e| {
+                    e == Event::ClientStart(client) || e == Event::PortStart(client, port)
+                })
+            })
         };
         let listed_first = handles
             .iter()
@@ -329,8 +334,8 @@ impl Tracker {
         events: &[Event],
     ) -> BTreeSet<EndpointId> {
         let started = |h: EndpointId| {
-            let (client, port) = unpack_id(h);
-            events.contains(&Event::PortStart(client, port))
+            unpack_id(h)
+                .is_some_and(|(client, port)| events.contains(&Event::PortStart(client, port)))
         };
         let listed_first = handles
             .iter()
@@ -359,7 +364,11 @@ impl Tracker {
         for &event in events {
             match event {
                 Event::ClientStart(n) => {
-                    for &h in self.last.iter().filter(|&&h| unpack_id(h).0 == n) {
+                    for &h in self
+                        .last
+                        .iter()
+                        .filter(|&&h| unpack_id(h).is_some_and(|(client, _)| client == n))
+                    {
                         if !fold.unconfirmed.remove(&h) {
                             fold.replaced.insert(h);
                         }
@@ -533,7 +542,7 @@ pub(super) fn start(
     };
     let failures = sink.clone();
     let mut tracker = Tracker::new(Reporter::new(sink));
-    tracker.seed(|| announce.drain(), || snapshot(&announce.seq));
+    tracker.seed(|| announce.drain(), || snapshot(&announce.seq))?;
     let thread = std::thread::Builder::new()
         .name(THREAD_NAME.to_string())
         .spawn(move || {

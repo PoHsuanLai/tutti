@@ -40,11 +40,22 @@ pub(super) fn pack_id(client: c_int, port: c_int) -> EndpointId {
     EndpointId::from_raw(((client as u64) << 32) | (port as u32 as u64))
 }
 
-/// Unpack an [`EndpointId`] back into `(client, port)`.
-pub(super) fn unpack_id(id: EndpointId) -> (c_int, c_int) {
+/// Unpack an [`EndpointId`] back into `(client, port)`; `None` if `pack_id`
+/// could not have made it.
+///
+/// An `EndpointId` is a bare number any caller can build with `from_raw`, and a
+/// sequencer address is a pair of bytes. A value with bits above either byte was
+/// not minted here (a CoreMIDI id, a corrupted saved one): truncating it would
+/// subscribe to whichever port its low bits name.
+pub(super) fn unpack_id(id: EndpointId) -> Option<(c_int, c_int)> {
     let raw = id.raw();
-    ((raw >> 32) as c_int, (raw & 0xFFFF_FFFF) as c_int)
+    let (client, port) = (raw >> 32, raw & 0xFFFF_FFFF);
+    let byte = u64::from(u8::MAX);
+    (client <= byte && port <= byte).then_some((client as c_int, port as c_int))
 }
+
+#[cfg(test)]
+mod tests;
 
 /// Every port on the system usable in `direction`.
 ///

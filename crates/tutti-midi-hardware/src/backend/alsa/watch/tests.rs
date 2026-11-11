@@ -271,7 +271,7 @@ impl World {
             storm: Cell::new(false),
         };
         let mut tracker = Tracker::new(Reporter::new(sink));
-        tracker.seed(|| model.drain(), || model.look());
+        tracker.seed(|| model.drain(), || model.look()).unwrap();
         Self {
             devices,
             events,

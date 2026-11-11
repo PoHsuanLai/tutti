@@ -19,7 +19,7 @@ use tracing::{debug, warn};
 
 /// The version of the file layout [`save`] writes and [`load`] reads. 2: a
 /// bus's speakers name a channel with no speaker `Unassigned` (was
-/// `Unassigned`).
+/// `Discrete`).
 const VERSION: u64 = 2;
 
 #[derive(Serialize)]
@@ -363,11 +363,8 @@ mod tests {
         let marker = format!("\"version\":{VERSION}");
         assert!(current.contains(&marker));
         let with_version = |v: u64| current.replace(&marker, &format!("\"version\":{v}"));
-        let cases = [
-            (with_version(VERSION - 1), "v0"),
-            (with_version(VERSION + 1), "v2"),
-            (with_version(41), "v41"),
-        ];
+        // The file is kept under the version it holds.
+        let cases = [VERSION - 1, VERSION + 1, 41].map(|v| (with_version(v), format!("v{v}")));
         for (text, extension) in cases {
             let dir = TempDir::new().unwrap();
             let path = dir.path().join("db.json");
@@ -378,7 +375,7 @@ mod tests {
             assert!(db.is_empty(), "{extension}: was misread: {text}");
             assert!(!path.exists(), "{extension}: left in place");
             assert_eq!(
-                std::fs::read_to_string(path.with_extension(extension)).unwrap(),
+                std::fs::read_to_string(path.with_extension(&extension)).unwrap(),
                 text,
                 "{extension}: not preserved"
             );

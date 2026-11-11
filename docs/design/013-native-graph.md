@@ -7561,7 +7561,7 @@ which everything else is derived.** The refusals of #570 stay, for buses that ar
   width are `through_unassigned` until T3 gives their designs a topology. `PluginClient::declared_shape` states its
   ports only; the bound node states the plugin's buses.
 
-**Renamed after T1 (owner, 2026-11-11).** A channel that feeds no speaker is `Speaker::Unassigned`, not `Unassigned`:
+**Renamed after T1 (owner, 2026-11-11).** A channel that feeds no speaker is `Speaker::Unassigned`, not `Discrete`:
 to most audio engineers "discrete 5.1" means six channels *each* with its speaker, the opposite. The constructors
 follow (`ChannelTopology::unassigned`, `BusTopology::unassigned`, `Buses::unassigned`, `Shape::through_unassigned`,
 `source_unassigned`, `sink_unassigned`, `FoldError::Unassigned`). The plugin database's file is version 2 (its JSON

@@ -42,6 +42,7 @@
 // its entry point into every suite.
 #![deny(unsafe_code)]
 
+mod alloc_count;
 mod digest;
 mod env;
 mod glibc;
@@ -54,6 +55,7 @@ mod range_contract;
 pub mod sf2;
 pub mod signal;
 
+pub use alloc_count::{ThreadCounting, allocations};
 pub use digest::{Fnv, Noise, digest, digest_planes, noise};
 pub use env::ScopedEnv;
 pub use golden::{RECORDED_ARCH, RECORDED_GLIBC, assert_golden};

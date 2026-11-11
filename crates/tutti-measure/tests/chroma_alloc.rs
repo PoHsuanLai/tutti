@@ -4,50 +4,13 @@
 //! so this binary counts allocations with its own global allocator. It counts
 //! per thread, so the harness's other threads do not show up in a count.
 
-use std::alloc::{GlobalAlloc, Layout, System};
-use std::cell::Cell;
-
 use tutti_dsp::{FftScratch, StftGeometry};
+use tutti_fixtures::{ThreadCounting, allocations};
 use tutti_measure::{ChromaConfig, ChromaState, Tuning, step_chroma};
 use tutti_types::{Cents, SampleRate, Samples};
 
-struct Counting;
-
-thread_local! {
-    // Per thread: the harness's own threads allocate while a test counts.
-    static ALLOCATIONS: Cell<usize> = const { Cell::new(0) };
-}
-
-fn count() {
-    // `try_with`: an allocation during thread teardown finds no slot.
-    let _ = ALLOCATIONS.try_with(|n| n.set(n.get() + 1));
-}
-
-// SAFETY: every method forwards to `System` unchanged; the counter is the only
-// addition.
-unsafe impl GlobalAlloc for Counting {
-    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        count();
-        unsafe { System.alloc(layout) }
-    }
-    unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
-        unsafe { System.dealloc(ptr, layout) }
-    }
-    unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
-        count();
-        unsafe { System.realloc(ptr, layout, new_size) }
-    }
-}
-
 #[global_allocator]
-static A: Counting = Counting;
-
-/// Allocations made by `f`.
-fn allocations(f: impl FnOnce()) -> usize {
-    let before = ALLOCATIONS.with(Cell::get);
-    f();
-    ALLOCATIONS.with(Cell::get) - before
-}
+static A: ThreadCounting = ThreadCounting;
 
 /// After one step has built the buffers and planned the FFT, further steps, a
 /// `reset` and a step, and a step under a config that differs only in tuning

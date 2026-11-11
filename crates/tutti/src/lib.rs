@@ -20,6 +20,13 @@
 #[cfg(feature = "session")]
 pub use tutti_session as session;
 
+/// The one error a common-path call returns (`tutti_session::Error`): decode,
+/// sampler placement, wiring, transport, bounce and the rest each convert into
+/// it, so `fn main() -> Result<(), tutti::Error>` takes `?` across a whole
+/// program. Feature `session`, on by default.
+#[cfg(feature = "session")]
+pub use tutti_session::Error;
+
 // --- runtime and vocabulary -------------------------------------------------
 //
 // Whole-crate re-exports, ALIASED. Flattening would collide at once —
@@ -177,11 +184,14 @@ pub use tutti_plugin_host as plugin_host;
 /// (`Session`, `SessionBuilder`, `SessionEvent`, `Phase`, `GraphSource`, and
 /// with `device` its `Device`), with the requests a session takes, each
 /// behind the features that gate it: `ParamRef` (`modulation`),
-/// `Bounce`, `Bounced`, `BounceError`, `Range` and `Latency` (`export`),
+/// `Bounce`, `Bounced`, `BounceError`, `Range`, `BounceLatency` and `BounceTail` (`export`),
 /// `PluginLoadRequest` and `PluginId` (`plugin`), and, under `midi`, the names a
 /// MIDI file is written and played with (`MidiFile`, `Track`, `Tick`,
 /// `Message`, `Ump`, `NoteNumber`, `TimedMidiEvent`; `MidiChannel` and
 /// `MidiGroup` are always in), with the offline timeline an export runs on.
+/// The one `Error`, the sampler's `Clip` and `LoopSetting` (`sampler`), `Wave`
+/// (`codec`), `Format` and `Pcm` (`export`), `Lfo` and `Follower`
+/// (`modulation`) and the common nodes (`dsp`) are there too.
 /// `Result`, `Sample` and `Unit` are left out because each would shadow a
 /// name a consumer already has. It matches `bevy-tutti`'s prelude without
 /// the ECS types.
@@ -203,6 +213,10 @@ pub mod prelude {
         OfflineTimelineConfig, Then, Timeline, Transport, TransportCommand,
     };
     pub use tutti_types::prelude::*;
+    // The graph's own `Latency` (what `Shape::with_latency` takes), beside the
+    // `Tail` the types prelude carries: the bounce's policies are
+    // `BounceLatency` and `BounceTail`.
+    pub use tutti_types::Latency;
     pub use tutti_types::{At, BarNumber, LoopRange, Meter};
     pub use tutti_ump::{CCNumber, MidiChannel, MidiGroup};
 
@@ -211,13 +225,35 @@ pub mod prelude {
     pub use tutti_cpal::{DeviceInfo, TuttiDriver};
 
     #[cfg(feature = "sampler")]
-    pub use tutti_sampler::{Playback, Voice, VoiceWindow};
+    pub use tutti_sampler::{Clip, LoopSetting, Playback, Voice, VoiceWindow};
+
+    // The file formats a program names: a decoded wave, and what a bounce
+    // writes.
+    #[cfg(feature = "codec")]
+    pub use tutti_codec::Wave;
+    #[cfg(feature = "export")]
+    pub use tutti_codec::{Format, Pcm};
+
+    // The common nodes (feature `dsp`: the algorithms they run).
+    #[cfg(feature = "dsp")]
+    pub use tutti_nodes::{
+        CompressorNode, DelayLineNode, FdnNode, FreeverbNode, LadderFilterNode, LimiterNode,
+        SvfFilterNode, SvfType,
+    };
+
+    // The session's wiring, and the one error.
+    #[cfg(feature = "session")]
+    pub use tutti_graph::NodeKey;
+    #[cfg(feature = "modulation")]
+    pub use tutti_modulation::{Follower, Lfo};
+    #[cfg(feature = "session")]
+    pub use tutti_session::Error;
 
     #[cfg(all(feature = "session", feature = "device"))]
     pub use tutti_session::Device;
     #[cfg(feature = "session")]
     pub use tutti_session::{
-        GraphSource, HeardTapError, Phase, Session, SessionBuilder, SessionEvent,
+        ConnectError, GraphSource, HeardTapError, Phase, Session, SessionBuilder, SessionEvent,
     };
 
     // What a session's calls take, by the feature that gates each (design
@@ -233,7 +269,9 @@ pub mod prelude {
     #[cfg(all(feature = "session", feature = "plugin"))]
     pub use tutti_session::PluginLoadRequest;
     #[cfg(all(feature = "session", feature = "export"))]
-    pub use tutti_session::{Bounce, BounceError, Bounced, Latency, Range, Stem, StemGain};
+    pub use tutti_session::{
+        Bounce, BounceError, BounceLatency, BounceTail, Bounced, Range, Stem, StemGain,
+    };
     #[cfg(feature = "midi")]
     pub use tutti_ump::{Message, NoteNumber, Ump};
 }

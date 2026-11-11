@@ -184,6 +184,17 @@ pub trait Source {
     }
 }
 
+/// A [`Source`] that is finite: it ends, with [`Pull::Ended`], and never
+/// answers [`Pull::Starved`].
+///
+/// A decoded file is one; a microphone and a graph tap are not (they are live:
+/// "not yet" is always possible and "never again" never comes). A consumer
+/// that waits for a source's end asks for this bound, so waiting on a live
+/// source does not compile instead of hanging
+/// (`tutti_session::Recorder::start_finite`). Implement it only when both
+/// halves hold: it is a promise the type cannot check.
+pub trait FiniteSource: Source {}
+
 /// A sink for audio frames: written incrementally, then closed once.
 ///
 /// Takes blocks of **flat interleaved** samples, then is closed with

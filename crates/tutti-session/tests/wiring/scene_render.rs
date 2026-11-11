@@ -102,7 +102,7 @@ fn scene_driven(with_limiter: bool, drive: f32) -> Scene {
     };
     g.set_output_source(0, GraphSource::Node(drive, 0));
     g.set_output_source(1, GraphSource::Node(right, 0));
-    session.update();
+    let _ = session.update();
     Scene {
         session,
         side,
@@ -216,7 +216,7 @@ fn a_param_write_lands_on_the_next_blocks_first_frame() {
     s.session
         .graph()
         .set_param(s.drive, UnitParam::Drive, Drive(6.0).0);
-    s.session.update();
+    let _ = s.session.update();
     let after = render(&mut s.side, 2_048, 256);
 
     let mut old = scene(false);
@@ -297,7 +297,7 @@ fn a_crossfade_follows_its_law_to_the_new_filter() {
             CrossfadeCurve::EqualAmplitude,
         )
         .expect("the crossfade starts");
-    s.session.update();
+    let _ = s.session.update();
     for (c, rest) in b.iter_mut().zip(render(&mut s.side, 3_072 - FADE_AT, 256)) {
         c.extend(rest);
     }

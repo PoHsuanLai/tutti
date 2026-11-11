@@ -16,8 +16,9 @@ use symphonia::core::io::{MediaSource, MediaSourceStream};
 use symphonia::core::meta::MetadataOptions;
 use symphonia::core::probe::Hint;
 
-use super::error::{DecodeError, convert};
+use super::error::convert;
 use super::placement::{topology_of, unstated};
+use crate::DecodeError;
 use crate::Wave;
 use tutti_types::ChannelTopology;
 
@@ -109,14 +110,21 @@ pub(super) fn first_audio_track(
         .ok_or(DecodeError::NoAudioTrack)
 }
 
+/// The track's sample rate, as the container states it. A container that
+/// states none is refused, never given a rate of ours.
+pub(super) fn sample_rate_of(
+    params: &symphonia::core::codecs::CodecParameters,
+) -> Result<u32, DecodeError> {
+    params.sample_rate.ok_or(DecodeError::NoSampleRate)
+}
+
 impl Wave {
     /// Decodes the first audio track of the file at `path` into memory.
     ///
     /// Requires a decode feature (`decode-wav`, `decode-flac`, `decode-mp3` or
     /// `decode-ogg`). Supported formats are whatever those enable; see
     /// [`decodable_extensions`](crate::decodable_extensions). The wave keeps
-    /// the file's own sample rate and channel count (44.1 kHz and 2 channels
-    /// when the container states neither); nothing is resampled. Its
+    /// the file's own sample rate and channel count; nothing is resampled. Its
     /// [`topology`](Wave::topology) is what the container names, in the order
     /// the samples are in: a mono file is the centre, and a speaker the
     /// vocabulary has no name for (a second LFE) is
@@ -127,7 +135,8 @@ impl Wave {
     /// # Errors
     ///
     /// A [`DecodeError`] if the file cannot be opened, its container is not one
-    /// this build reads, it has no audio track, or a packet fails to decode.
+    /// this build reads, it has no audio track, the track states no sample
+    /// rate ([`DecodeError::NoSampleRate`]), or a packet fails to decode.
     ///
     /// # Examples
     ///
@@ -151,13 +160,14 @@ impl Wave {
     /// # Errors
     ///
     /// A [`DecodeError`] if the file cannot be opened, its container is not one
-    /// this build reads, or it has no audio track.
+    /// this build reads, it has no audio track, or the track states no sample
+    /// rate ([`DecodeError::NoSampleRate`]).
     pub fn read_metadata(path: impl AsRef<Path>) -> Result<WaveMetadata, DecodeError> {
         let reader = probe_path(path.as_ref()).map_err(convert)?;
         let track = first_audio_track(&*reader)?;
         Ok(WaveMetadata {
             total_frames: track.codec_params.n_frames,
-            sample_rate: track.codec_params.sample_rate.unwrap_or(44100),
+            sample_rate: sample_rate_of(&track.codec_params)?,
             topology: track
                 .codec_params
                 .channels
@@ -183,7 +193,7 @@ fn decode(mut reader: Box<dyn FormatReader>) -> Result<Wave, DecodeError> {
     let track_id = track.id;
 
     let total_frames = track.codec_params.n_frames;
-    let sample_rate = track.codec_params.sample_rate.unwrap_or(44100) as f64;
+    let sample_rate = f64::from(sample_rate_of(&track.codec_params)?);
     let mut decoder = symphonia::default::get_codecs()
         .make(&track.codec_params, &DecoderOptions::default())
         .map_err(convert)?;

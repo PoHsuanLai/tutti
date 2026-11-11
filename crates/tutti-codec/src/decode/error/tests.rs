@@ -1,4 +1,5 @@
 use super::*;
+use std::io;
 
 /// Every decoder error maps to its own variant with its message intact.
 #[test]

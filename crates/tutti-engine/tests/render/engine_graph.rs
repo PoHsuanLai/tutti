@@ -262,14 +262,17 @@ fn fold_and_declick_are_the_fold_matrix_and_a_linear_fade() {
             }),
             src as u16,
         );
-        transport.motion.try_send(MotionEvent::Play).expect("room");
+        transport
+            .motion()
+            .try_send(MotionEvent::Play)
+            .expect("room");
         let mut got = render(&engine, layout, &blocks[..3]);
         transport
-            .motion
+            .motion()
             .try_send(MotionEvent::stop())
             .expect("room");
         got.extend(render(&engine, layout, &blocks[3..]));
-        assert!(transport.motion.is_stopped());
+        assert!(transport.motion().is_stopped());
 
         for f in 0..total {
             let frame: Vec<f32> = (0..src).map(|c| value(f as u64, c)).collect();
@@ -313,15 +316,15 @@ fn a_timed_start_sounds_from_its_exact_frame() {
     let transport = Transport::new(SampleRate::new(SR));
     let (engine, _ed) = graph_engine(&transport, 256, Unforkable(Gate { log: None }), 1);
     transport
-        .motion
+        .motion()
         .schedule(At::Frame(Frame(1_000)), MotionEvent::Play)
         .expect("room");
     let out = render(&engine, ChannelLayout::MONO, &[256; 8]);
     let first = out.iter().position(|&x| x != 0.0);
     assert_eq!(first, Some(1_000));
     assert!(out[1_000..].iter().all(|&x| x == 1.0), "and rolls on");
-    assert!(transport.motion.is_playing());
-    assert_eq!(transport.motion.scheduled_outstanding(), 0, "credit back");
+    assert!(transport.motion().is_playing());
+    assert_eq!(transport.motion().scheduled_outstanding(), 0, "credit back");
 }
 
 /// Beat-timed seek and stop land on the frame their beat resolves to:
@@ -343,7 +346,7 @@ fn beat_timed_seek_and_stop_land_on_their_frames() {
         }),
         1,
     );
-    let m = &transport.motion;
+    let m = &transport.motion();
     m.try_send(MotionEvent::Play).expect("room");
     m.schedule(
         At::Beat(Beat(1.0)),
@@ -426,7 +429,10 @@ fn the_recording_flag_reaches_a_nodes_env() {
     let transport = Transport::new(SampleRate::new(SR));
     let log = Arc::new(Mutex::new(Vec::new()));
     let (engine, _ed) = graph_engine(&transport, 256, Unforkable(RecLog(Arc::clone(&log))), 1);
-    transport.motion.try_send(MotionEvent::Play).expect("room");
+    transport
+        .motion()
+        .try_send(MotionEvent::Play)
+        .expect("room");
     render(&engine, ChannelLayout::MONO, &[256; 2]);
     transport.settings().set_recording(true);
     render(&engine, ChannelLayout::MONO, &[256; 2]);
@@ -471,9 +477,12 @@ fn dc_run(
     let log = Arc::new(Mutex::new(Vec::new()));
     let (engine, _ed) = graph_engine(&transport, 256, Unforkable(DcLog(Arc::clone(&log))), 1);
     let mut out = Vec::new();
-    transport.motion.try_send(MotionEvent::Play).expect("room");
+    transport
+        .motion()
+        .try_send(MotionEvent::Play)
+        .expect("room");
     for i in 0..blocks {
-        script(&transport.motion, i);
+        script(transport.motion(), i);
         out.extend(render(&engine, ChannelLayout::MONO, &[256]));
     }
     let t = log
@@ -577,9 +586,12 @@ fn a_declick_lasts_ten_milliseconds_at_any_rate() {
         outputs(&mut ed, NodeKey(1), 1);
         ed.commit().expect("commits");
         let engine = Engine::new(&transport, &mut ed, exec).expect("within the limits");
-        transport.motion.try_send(MotionEvent::Play).expect("room");
         transport
-            .motion
+            .motion()
+            .try_send(MotionEvent::Play)
+            .expect("room");
+        transport
+            .motion()
             .schedule(At::Frame(Frame(4_000)), MotionEvent::stop())
             .expect("room");
         let out = render(&engine, ChannelLayout::MONO, &[256; 40]);
@@ -630,12 +642,12 @@ fn a_past_frame_lands_at_once_and_is_counted() {
     let (engine, _ed) = graph_engine(&transport, 256, Unforkable(Gate { log: None }), 1);
     render(&engine, ChannelLayout::MONO, &[256; 2]);
     transport
-        .motion
+        .motion()
         .schedule(At::Frame(Frame(10)), MotionEvent::Play)
         .expect("room");
     let out = render(&engine, ChannelLayout::MONO, &[256]);
     assert_eq!(out[0], 1.0, "at the block's first frame");
-    assert_eq!(transport.motion.late_command_count(), 1);
+    assert_eq!(transport.motion().late_command_count(), 1);
 }
 
 /// Tempo and loop changes at a frame: the beat advances at the old tempo up
@@ -652,7 +664,7 @@ fn tempo_and_loop_change_on_their_frames() {
         }),
         1,
     );
-    let m = &transport.motion;
+    let m = &transport.motion();
     m.try_send(MotionEvent::Play).expect("room");
     transport.settings().set_tempo_map(step_map(&[
         (0.0, 120.0),
@@ -676,7 +688,7 @@ fn tempo_and_loop_change_on_their_frames() {
     // Within a frame of rounding either way, as the beat accumulates.
     assert!(beat(2_998) > 0.199);
     assert!(beat(3_002) < 0.001);
-    assert!(transport.motion.loop_region().active().is_some());
+    assert!(transport.motion().loop_region().active().is_some());
 }
 
 /// The first engine-level case of the sample-accuracy contract: the transport
@@ -704,7 +716,7 @@ fn a_graph_beat_note_after_a_timed_start_lands_on_its_frame() {
     ed.schedule(At::Beat(Beat(0.0)), to, note).expect("room");
     ed.schedule(At::Beat(Beat(0.5)), to, note).expect("room");
     transport
-        .motion
+        .motion()
         .schedule(At::Frame(Frame(1_000)), MotionEvent::Play)
         .expect("room");
     render(&engine, ChannelLayout::MONO, &[256; 60]);
@@ -732,7 +744,7 @@ fn env_beats_are_the_closed_form_of_each_segment() {
         1,
     );
     let blocks = [512usize, 300, 512, 77, 512, 512, 400, 512, 512];
-    let m = &transport.motion;
+    let m = &transport.motion();
     m.try_send(MotionEvent::Play).expect("room");
     // Armed with the playhead inside it (beat ~0.065): one wrap at ~2 140,
     // disarmed before the next.
@@ -837,7 +849,7 @@ fn a_loop_armed_behind_the_playhead_does_not_jump() {
         }),
         1,
     );
-    let m = &transport.motion;
+    let m = &transport.motion();
     m.try_send(MotionEvent::play_from(Beat(3.0))).expect("room");
     // Armed at beat ~3.04, behind the playhead.
     m.schedule(
@@ -899,7 +911,7 @@ fn a_declick_stop_stops_the_transport_on_its_frame() {
         1,
     );
     render(&engine, ChannelLayout::MONO, &[256]);
-    let m = &transport.motion;
+    let m = &transport.motion();
     m.schedule(At::Frame(Frame(256)), MotionEvent::Play)
         .expect("room");
     m.schedule(At::Frame(Frame(600)), MotionEvent::stop())
@@ -930,10 +942,10 @@ fn a_declick_stop_stops_the_transport_on_its_frame() {
         )),
     )
     .expect("room");
-    t2.motion
+    t2.motion()
         .schedule(At::Frame(Frame(256)), MotionEvent::Play)
         .expect("room");
-    t2.motion
+    t2.motion()
         .schedule(At::Frame(Frame(600)), MotionEvent::stop())
         .expect("room");
     render(&e, ChannelLayout::MONO, &[256; 8]);
@@ -1072,9 +1084,12 @@ fn a_tempo_wiggle_under_the_clock_hysteresis_does_not_move_the_beat() {
         1,
     );
     transport.settings().set_tempo(Bpm::of(120.0005));
-    transport.motion.try_send(MotionEvent::Play).expect("room");
     transport
-        .motion
+        .motion()
+        .try_send(MotionEvent::Play)
+        .expect("room");
+    transport
+        .motion()
         .schedule(At::Beat(Beat(10.0)), MotionEvent::stop_unfaded())
         .expect("room");
     for _ in 0..480 {
@@ -1131,9 +1146,12 @@ fn the_published_playhead_is_the_closed_form_over_ten_minutes() {
     let first = Arc::new(Mutex::new(0.0));
     let (engine, _ed) = graph_engine(&transport, 64, Unforkable(FirstBeat(Arc::clone(&first))), 1);
     transport.settings().set_tempo(Bpm::of(123.0));
-    transport.motion.try_send(MotionEvent::Play).expect("room");
     transport
-        .motion
+        .motion()
+        .try_send(MotionEvent::Play)
+        .expect("room");
+    transport
+        .motion()
         .schedule(
             At::Frame(Frame(LOOP_AT)),
             TransportCommand::Loop(LoopEdit::over(
@@ -1285,9 +1303,12 @@ fn a_re_prepare_keeps_the_beat_and_a_frame_command_on_wall_clock_time() {
     outputs(&mut ed, NodeKey(1), 1);
     ed.commit().expect("commits");
     let engine = Engine::new(&transport, &mut ed, exec).expect("within the limits");
-    transport.motion.try_send(MotionEvent::Play).expect("room");
     transport
-        .motion
+        .motion()
+        .try_send(MotionEvent::Play)
+        .expect("room");
+    transport
+        .motion()
         .schedule(At::Frame(Frame(44_100)), MotionEvent::stop_unfaded())
         .expect("room");
 
@@ -1325,7 +1346,7 @@ fn a_re_prepare_keeps_the_beat_and_a_frame_command_on_wall_clock_time() {
         .map(|e| e.0)
         .expect("the stop landed");
     assert_eq!(stop, 48_000, "one second, at the new rate");
-    assert_eq!(transport.motion.late_command_count(), 0);
+    assert_eq!(transport.motion().late_command_count(), 0);
 }
 
 // ---- one playhead writer, and its segment generation ----------------------
@@ -1374,7 +1395,7 @@ fn a_seek_to_the_same_beat_moves_the_live_generation() {
 
     // Stopped, so the beat holds: a seek to it jumps nowhere a beat shows.
     transport
-        .motion
+        .motion()
         .try_send(MotionEvent::Locate {
             beat,
             fade: FadeOut::Immediate,
@@ -1392,7 +1413,10 @@ fn a_seek_to_the_same_beat_moves_the_live_generation() {
     render(&engine, ChannelLayout::STEREO, &[256]);
     assert_eq!(transport.segment_generation(), sought, "holding is no jump");
 
-    transport.motion.try_send(MotionEvent::Play).expect("room");
+    transport
+        .motion()
+        .try_send(MotionEvent::Play)
+        .expect("room");
     render(&engine, ChannelLayout::STEREO, &[256]);
     let started = transport.segment_generation();
     assert!(started > sought, "a play start is a discontinuity");
@@ -1445,7 +1469,10 @@ fn the_playhead_another_thread_reads_never_goes_backwards() {
         })
     };
 
-    transport.motion.try_send(MotionEvent::Play).expect("room");
+    transport
+        .motion()
+        .try_send(MotionEvent::Play)
+        .expect("room");
     let mut buf = vec![0.0f32; 512];
     let n_blocks = 2 * SR as usize / 512;
     for _ in 0..n_blocks {

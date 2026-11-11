@@ -33,7 +33,7 @@ fn the_published_latency_shrinks_when_the_latency_bearing_node_leaves() {
     s.graph().set_source(lim, 0, GraphSource::Node(src, 0));
     s.graph().set_output_source(0, GraphSource::Node(lim, 0));
     s.graph().set_output_source(1, GraphSource::Node(dry, 0));
-    s.update();
+    let _ = s.update();
 
     let before = s.latency();
     assert!(
@@ -47,7 +47,7 @@ fn the_published_latency_shrinks_when_the_latency_bearing_node_leaves() {
     );
 
     assert!(s.remove(lim));
-    s.update();
+    let _ = s.update();
     assert!(s.latency() < before, "the figure shrank");
     assert_eq!(
         s.latency(),

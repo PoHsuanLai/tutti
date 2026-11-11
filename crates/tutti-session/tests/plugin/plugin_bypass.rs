@@ -101,7 +101,7 @@ fn rig(mode: NodeMode) -> Rig {
     g.set_source(plugin, 0, GraphSource::Node(click, 0));
     g.set_output_source(0, GraphSource::Node(plugin, 0));
     g.set_mode(plugin, mode).expect("the plugin node is there");
-    s.update();
+    let _ = s.update();
     Rig { s, plugin }
 }
 
@@ -178,7 +178,7 @@ fn a_bypassed_plugin_is_not_called_and_comes_back() {
     r.s.graph()
         .set_mode(r.plugin, NodeMode::Active)
         .expect("the plugin node is there");
-    r.s.update();
+    let _ = r.s.update();
     // The served pipeline is realtime here: a block whose reply is late plays
     // silence and is not counted. So the blocks stay paced and the plugin is
     // waited for (reset, the warm-up of `L` frames, the 256-frame fade, then

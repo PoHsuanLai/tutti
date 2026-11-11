@@ -1,5 +1,7 @@
 use super::*;
-use crate::testing::{amplitude_at, lock_in, sine};
+use crate::testing::{amplitude_at, lock_in};
+use tutti_fixtures::signal::{peak, sine};
+use tutti_types::{Amplitude, Samples};
 
 const RATE: f64 = 48_000.0;
 /// A whole number of periods of every tone on the 5 Hz grid.
@@ -9,6 +11,16 @@ const SETTLE: usize = 12_000;
 /// `(bands + 2)` half-ulps of the peak, each `2^-24`, which the lock-in
 /// only averages down.
 const TOL: f64 = 1e-6;
+
+/// A unit sine at `hz` (on the 5 Hz grid, exact in `f32`) at `rate`.
+fn unit_sine(hz: f64, rate: f64, len: usize) -> Vec<f32> {
+    sine(
+        Hz::new(hz as f32),
+        Amplitude::new(1.0),
+        SampleRate::new(rate),
+        Samples(len),
+    )
+}
 
 /// The 5 Hz-grid frequencies of a log sweep from 20 Hz to 16 kHz.
 fn sweep() -> Vec<f64> {
@@ -25,7 +37,7 @@ fn sweep() -> Vec<f64> {
 fn bands_at(freqs: &[f32], hz: f64) -> (Vec<(f64, f64)>, f64) {
     let freqs: Vec<Hz> = freqs.iter().map(|&f| Hz(f)).collect();
     let mut xo = Crossover::new(&freqs, SampleRate::new(RATE)).unwrap();
-    let x = sine(hz, RATE, SETTLE + WINDOW);
+    let x = unit_sine(hz, RATE, SETTLE + WINDOW);
     let nb = xo.bands();
     let mut bands = vec![Vec::with_capacity(WINDOW); nb];
     let mut sum = Vec::with_capacity(WINDOW);
@@ -132,7 +144,7 @@ fn max_step(x: &[f32]) -> f32 {
 #[test]
 fn a_frequency_step_is_ramped_not_jumped() {
     let hz = 1_000.0;
-    let x = sine(hz, RATE, 24_000);
+    let x = unit_sine(hz, RATE, 24_000);
     let run = |block: usize| {
         let mut xo = Crossover::new(&[Hz(800.0)], SampleRate::new(RATE)).unwrap();
         let mut low = Vec::new();
@@ -279,7 +291,7 @@ fn a_rate_change_keeps_the_filter_finite() {
     assert_eq!(c.sample_rate(), SampleRate(RATE));
     c.set_sample_rate(SampleRate::new(8_000.0));
     let mut peak = 0.0f32;
-    for x in sine(300.0, 8_000.0, 4_000) {
+    for x in unit_sine(300.0, 8_000.0, 4_000) {
         for b in c.split(x) {
             assert!(b.is_finite());
             peak = peak.max(b.abs());
@@ -292,7 +304,7 @@ fn a_rate_change_keeps_the_filter_finite() {
 #[test]
 fn reset_clears_every_section() {
     let mut c = xo(&[100.0, 1_000.0, 5_000.0]).unwrap();
-    for x in sine(80.0, RATE, 2_000) {
+    for x in unit_sine(80.0, RATE, 2_000) {
         c.split(x);
     }
     c.reset();
@@ -357,7 +369,7 @@ fn every_band_has_the_same_phase() {
 #[test]
 fn the_sum_stays_flat_while_frequencies_ramp() {
     let mut c = xo(&[120.0, 1_000.0, 6_000.0]).unwrap();
-    let x = sine(1_000.0, RATE, SETTLE + 4_096);
+    let x = unit_sine(1_000.0, RATE, SETTLE + 4_096);
     let mut sum = Vec::new();
     for (k, chunk) in x.chunks(256).enumerate() {
         if k * 256 == SETTLE {
@@ -371,8 +383,6 @@ fn the_sum_stays_flat_while_frequencies_ramp() {
         }
     }
     // The first 1 kHz period after the move starts to the last of the ramp.
-    let peak = sum[SETTLE..SETTLE + 1_024]
-        .iter()
-        .fold(0.0f32, |m, v| m.max(v.abs()));
+    let peak = peak(&sum[SETTLE..SETTLE + 1_024]);
     assert!((peak - 1.0).abs() < 3e-3, "peak {peak}");
 }

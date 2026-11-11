@@ -81,14 +81,14 @@ mod watch;
 #[cfg(feature = "export")]
 pub use bounce::{
     BOUNCE_STALL_WARNING, Bounce, BounceConfigError, BounceError, BounceHandle, BounceJob,
-    BounceRendered, Bounced, BufferMaster, ExportClock, Field, FileMaster, Latency, Master,
-    NoMaster, PrepareEdit, PreparedGraph, Range, Stem, StemGain, Tail,
+    BounceLatency, BounceRendered, BounceTail, Bounced, BufferMaster, ExportClock, Field,
+    FileMaster, Master, NoMaster, PrepareEdit, PreparedGraph, Range, Stem, StemGain,
 };
 pub use builder::{SessionBuilder, root_width};
 #[cfg(feature = "device")]
-pub use device::{Device, DeviceRestart, DeviceRestarted};
+pub use device::{Device, DeviceRestart, DeviceRestarted, LiveSession};
 pub use edge::{EdgeGainError, EdgeRef, EdgeSink};
-pub use error::{Error, HeardTapError, InletError, Result};
+pub use error::{ConnectError, Error, HeardTapError, InletError, Result};
 #[cfg(feature = "soundfont")]
 pub use general_midi::GeneralMidi;
 #[cfg(feature = "modulation")]
@@ -107,7 +107,7 @@ pub use midi::{
 };
 #[cfg(feature = "modulation")]
 pub use modulation::{
-    MixRef, ModRefusal, ModState, ModTarget, Mods, ParamRef, Take, UNRESOLVED_WARNING,
+    MixRef, ModRefusal, ModState, ModTarget, Mods, ParamRef, RouteError, Take, UNRESOLVED_WARNING,
     declare_targets,
 };
 pub use node::{Reclaimer, SessionNode};
@@ -119,7 +119,7 @@ pub use plugin::{
 #[cfg(all(feature = "plugin", feature = "modulation"))]
 pub use plugin::{PluginParamRead, PluginParamsRead};
 #[cfg(feature = "record")]
-pub use recorder::{IDLE_PARK, PumpLoop, PumpPass, Recorder, RecorderError};
+pub use recorder::{Finite, IDLE_PARK, Live, PumpLoop, PumpPass, Recorder, RecorderError};
 #[cfg(feature = "plugin")]
 pub use recovery::{GiveUp, Recovery, RecoveryAction, RecoveryEvent, RecoveryPolicy};
 #[cfg(feature = "midi")]

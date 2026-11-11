@@ -11,8 +11,8 @@
 
 use tutti_codec::{FileOut, Format, IntDepth, Pcm, Spec};
 use tutti_export::{EventLossPolicy, FileTarget, Rendered, write_buffers};
-use tutti_session::{DitherShape, DitherSink, DitherSpec, IDLE_PARK, Recorder};
-use tutti_types::{ChannelLayout, Pull, SampleRate, Samples, Source};
+use tutti_session::{DitherShape, DitherSink, DitherSpec, Recorder};
+use tutti_types::{ChannelLayout, FiniteSource, Pull, SampleRate, Samples, Source};
 
 const RATE: SampleRate = SampleRate(48_000.0);
 const FRAMES: usize = 5_000;
@@ -32,6 +32,8 @@ fn planes() -> Vec<Vec<f32>> {
 struct Take {
     pos: usize,
 }
+
+impl FiniteSource for Take {}
 
 impl Source for Take {
     fn layout(&self) -> ChannelLayout {
@@ -68,8 +70,8 @@ fn record(path: &std::path::Path, dither: Option<DitherShape>) {
         lsb: IntDepth::Int16.lsb(),
     });
     let sink = DitherSink::new(file, spec);
-    let rec = Recorder::start_with_capacity(Take { pos: 0 }, sink, Samples(100), IDLE_PARK)
-        .expect("widths");
+    let rec =
+        Recorder::start_finite_with_capacity(Take { pos: 0 }, sink, Samples(100)).expect("widths");
     rec.wait().expect("the take ends and finalizes");
 }
 

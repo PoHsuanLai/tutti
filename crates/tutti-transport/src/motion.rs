@@ -325,9 +325,9 @@ impl MotionFsm {
     ///
     /// let transport = Transport::new(tutti_types::SampleRate(48_000.0));
     /// // Start rolling one second into the stream, stop at beat 16.
-    /// transport.motion.schedule(At::Frame(Frame(48_000)), MotionEvent::Play)?;
-    /// transport.motion.schedule(At::Beat(Beat(16.0)), MotionEvent::stop())?;
-    /// assert_eq!(transport.motion.scheduled_outstanding(), 2);
+    /// transport.motion().schedule(At::Frame(Frame(48_000)), MotionEvent::Play)?;
+    /// transport.motion().schedule(At::Beat(Beat(16.0)), MotionEvent::stop())?;
+    /// assert_eq!(transport.motion().scheduled_outstanding(), 2);
     /// # Ok::<_, tutti_transport::ScheduleFull>(())
     /// ```
     pub fn schedule(

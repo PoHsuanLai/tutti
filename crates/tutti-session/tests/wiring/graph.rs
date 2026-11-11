@@ -321,7 +321,7 @@ fn an_edit_between_updates_is_committed_by_the_next() {
     let mut s = detached(1);
     let (a, _) = s.graph().insert(Const::mono(1.0));
     s.graph().set_output_source(0, GraphSource::Node(a, 0));
-    s.update();
+    let _ = s.update();
     let sent = s.graph_ref().commits_sent();
     let plan = s
         .graph_ref()
@@ -331,7 +331,7 @@ fn an_edit_between_updates_is_committed_by_the_next() {
     let (b, _) = s.graph().insert(Const::mono(2.0));
     s.graph().set_output_source(0, GraphSource::Node(b, 0));
     assert!(s.graph_ref().is_edited());
-    s.update();
+    let _ = s.update();
     assert!(!s.graph_ref().is_edited(), "the update committed the edit");
     assert_eq!(s.graph_ref().commits_sent(), sent + 1, "one commit");
     let after = s.graph_ref().sent_plan().expect("a plan");
@@ -348,14 +348,14 @@ fn an_update_with_no_edit_sends_no_plan() {
     let mut s = detached(1);
     let (a, _) = s.graph().insert(Const::mono(1.0));
     s.graph().set_output_source(0, GraphSource::Node(a, 0));
-    s.update();
+    let _ = s.update();
     let sent = s.graph_ref().commits_sent();
     let plan = s
         .graph_ref()
         .sent_plan()
         .expect("the first update sent a plan");
     for _ in 0..3 {
-        s.update();
+        let _ = s.update();
     }
     assert_eq!(s.graph_ref().commits_sent(), sent, "no commit");
     let after = s.graph_ref().sent_plan().expect("a plan");
@@ -463,7 +463,7 @@ fn a_crossfade_on_a_poisoned_graph_is_refused() {
     let mut s = detached(1);
     let (knob, _) = s.graph().add(Knob::new());
     s.graph().add(Unforkable(Grenade));
-    s.update();
+    let _ = s.update();
     // Both halves run here (the executor is local); the second panics in
     // the grenade's `prepare` and poisons the editor.
     s.graph().set_sample_rate(SampleRate(96_000.0));
@@ -493,7 +493,7 @@ fn every_param_write_path_reaches_a_fork() {
     let (k1, c1) = s.graph().add(Knob::new());
     s.graph().set_output_source(0, GraphSource::Node(k0, 0));
     s.graph().set_output_source(1, GraphSource::Node(k1, 0));
-    s.update();
+    let _ = s.update();
 
     s.graph().set_param(k0, UnitParam::Drive, 5.0);
     assert!(c1.set(UnitParam::Drive, 4.0));
@@ -581,7 +581,7 @@ fn an_offline_session_renders_a_sines_analytic_rms() {
         .expect("builds");
     let (osc, _) = s.graph().add(ForkByClone(Osc::sine(Hz(1_000.0))));
     s.graph().set_outputs_from(osc);
-    s.update();
+    let _ = s.update();
     let out = pull(&s, ChannelLayout::MONO, 48_000, 512);
     let rms = (out.iter().map(|&x| f64::from(x).powi(2)).sum::<f64>() / out.len() as f64).sqrt();
     assert!(
@@ -614,7 +614,7 @@ fn a_latent_branch_is_compensated_on_the_other_to_the_sample() {
     s.graph().set_source(late, 0, GraphSource::Node(osc, 0));
     s.graph().set_output_source(0, GraphSource::Node(osc, 0));
     s.graph().set_output_source(1, GraphSource::Node(late, 0));
-    s.update();
+    let _ = s.update();
     assert_eq!(s.latency(), Samples(N), "the total is published");
     assert_eq!(
         s.compensation().to_vec().as_slice(),
@@ -653,7 +653,7 @@ fn a_removal_is_any_threads_and_a_free_is_the_main_threads() {
     let _main = tutti_plugin_types::MainThread::claim().expect("one test, one process");
     let mut s = detached(1);
     let (dc, _) = s.graph().insert(Const::mono(0.5));
-    s.update();
+    let _ = s.update();
 
     let (s, removed) = std::thread::spawn(move || {
         let mut s = s;
@@ -700,7 +700,7 @@ fn an_update_frees_what_a_block_held_across_a_replacement() {
     let mut s = detached(1);
     let (dc, _) = s.graph().insert(Const::mono(0.5));
     s.graph().set_output_source(0, GraphSource::Node(dc, 0));
-    s.update();
+    let _ = s.update();
 
     let meter = s.click_settings().project_meter();
     let slot = MeterSlot::following_meter(Some(meter.clone()));
@@ -717,11 +717,11 @@ fn an_update_frees_what_a_block_held_across_a_replacement() {
         let _held = node.lend();
         meter.set_meter(Arc::new(MeterMap::default()));
         // Still held: this update's own reclaim leaves it.
-        s.update();
+        let _ = s.update();
     }
     assert!(gone.upgrade().is_some(), "the meter is retired");
 
-    s.update();
+    let _ = s.update();
     assert!(gone.upgrade().is_none(), "the meter is freed");
 }
 
@@ -824,12 +824,12 @@ fn the_update_sweeps_each_nodes_reclaimer_while_it_is_in_the_graph() {
     let mut s = detached(1);
     let (node, first) = s.graph().add(Published::new());
     s.graph().set_output_source(0, GraphSource::Node(node, 0));
-    s.update();
+    let _ = s.update();
     assert_eq!(Arc::strong_count(&first.token), 2, "the graph keeps one");
 
     replace_under_a_held_borrow(&first);
     assert_eq!(first.cell.retired_len(), 1, "retired, not yet scanned");
-    s.update();
+    let _ = s.update();
     assert_eq!(first.cell.retired_len(), 0, "the update freed it");
 
     let second = match s
@@ -855,9 +855,9 @@ fn the_update_sweeps_each_nodes_reclaimer_while_it_is_in_the_graph() {
         2,
         "the incoming one's kept"
     );
-    s.update();
+    let _ = s.update();
     replace_under_a_held_borrow(&second);
-    s.update();
+    let _ = s.update();
     assert_eq!(second.cell.retired_len(), 0, "the incoming node is swept");
 
     // A raw replace (a plain `IntoNode`) keeps no reclaimer, and takes the
@@ -879,7 +879,7 @@ fn the_update_sweeps_each_nodes_reclaimer_while_it_is_in_the_graph() {
     );
 
     let (other, third) = s.graph().add(Published::new());
-    s.update();
+    let _ = s.update();
     assert!(s.remove(other));
     assert_eq!(
         Arc::strong_count(&third.token),
@@ -887,7 +887,7 @@ fn the_update_sweeps_each_nodes_reclaimer_while_it_is_in_the_graph() {
         "the removal dropped its reclaimer"
     );
     replace_under_a_held_borrow(&third);
-    s.update();
+    let _ = s.update();
     assert_eq!(third.cell.retired_len(), 1, "a removed node is not swept");
 }
 

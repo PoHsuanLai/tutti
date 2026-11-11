@@ -27,7 +27,8 @@ fn a_blocked_enumeration_does_not_hold_the_update_and_lands_when_it_answers() {
             ),
             driver,
         )
-        .expect("builds with no device");
+        .expect("builds with no device")
+        .into_parts();
     let (release, held) = std::sync::mpsc::channel::<()>();
     s.list_outputs(
         DeviceListing::spawn_with(move || {

@@ -1,9 +1,14 @@
 use super::*;
 use tutti_curve::Breakpoint;
+use tutti_curve::Exponent;
 
 fn trajectory() -> Trajectory {
     let mut e = Trajectory::new();
-    e.add_breakpoint(Breakpoint::with_law(Beat(1.0), 0.2, Law::PowerIn(2.0)));
+    e.add_breakpoint(Breakpoint::with_law(
+        Beat(1.0),
+        0.2,
+        Law::PowerIn(Exponent::of(2.0)),
+    ));
     e.add_breakpoint(Breakpoint::with_law(Beat(2.0), 0.8, Law::Linear));
     e.add_breakpoint(Breakpoint::new(Beat(3.0), 0.4));
     e
@@ -27,7 +32,7 @@ fn trajectory_pieces_are_its_breakpoints() {
         end: Beat(2.0),
         from: 0.2,
         to: 0.8,
-        shape: Law::PowerIn(2.0),
+        shape: Law::PowerIn(Exponent::of(2.0)),
     };
     assert_eq!(e.segment_at(Beat(1.0)), Some(exp));
     assert_eq!(e.segment_at(Beat(1.7)), Some(exp));

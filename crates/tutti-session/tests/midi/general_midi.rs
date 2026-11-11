@@ -112,7 +112,7 @@ fn the_setup_does_not_take_the_graphs_outputs() {
 fn every_stage_declares_its_own_tail() {
     let mut session = offline_session();
     let gm = session.add_general_midi(unit()).expect("a SoundFont unit");
-    session.update();
+    let _ = session.update();
     let graph = session.graph_ref();
     let frames = |node| match graph.node_tail(node) {
         Tail::Finite(n) => n.get(),
@@ -171,7 +171,7 @@ fn a_note_through_the_setup_rings_out_within_the_summed_tails() {
     session
         .graph()
         .set_output_source(1, GraphSource::node(gm.out(), 1));
-    session.update();
+    let _ = session.update();
     let tail = |node| match session.graph_ref().node_tail(node) {
         Tail::Finite(n) => n.get(),
         other => panic!("{node:?}: {other:?}"),
@@ -207,7 +207,7 @@ fn a_note_through_the_setup_rings_out_within_the_summed_tails() {
     let block = |session: &mut Session, heard: &mut Vec<f32>| {
         let mut buf = vec![0.0f32; 128 * 2];
         session.render(&mut InterleavedMut::new(&mut buf, ChannelLayout::STEREO));
-        session.update();
+        let _ = session.update();
         heard.extend(buf.chunks(2).map(|f| f[0].abs().max(f[1].abs())));
     };
     while heard.len() < 48_000 {
@@ -258,7 +258,7 @@ fn short_release_setup() -> (Session, GeneralMidi) {
             .graph()
             .set_output_source(c, GraphSource::node(gm.out(), c));
     }
-    session.update();
+    let _ = session.update();
     (session, gm)
 }
 
@@ -266,7 +266,7 @@ fn peak_of_block(session: &mut Session) -> f32 {
     use tutti_types::InterleavedMut;
     let mut buf = vec![0.0f32; 128 * 2];
     session.render(&mut InterleavedMut::new(&mut buf, ChannelLayout::STEREO));
-    session.update();
+    let _ = session.update();
     buf.iter().fold(0.0f32, |m, s| m.max(s.abs()))
 }
 

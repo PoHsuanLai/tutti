@@ -1,4 +1,5 @@
 use super::*;
+use tutti_curve::Exponent;
 
 #[test]
 fn test_no_glide() {
@@ -61,7 +62,11 @@ fn test_legato_only() {
 
 #[test]
 fn test_curve_shapes() {
-    for curve in [Law::Linear, Law::PowerIn(2.0), Law::PowerIn(0.5)] {
+    for curve in [
+        Law::Linear,
+        Law::PowerIn(Exponent::of(2.0)),
+        Law::PowerIn(Exponent::of(0.5)),
+    ] {
         let config = PortamentoConfig {
             mode: PortamentoMode::Always,
             curve,
@@ -89,7 +94,11 @@ fn test_curve_shapes() {
 /// its last frame and past it, and for zero frames.
 #[test]
 fn advance_is_that_many_ticks() {
-    for curve in [Law::Linear, Law::PowerIn(2.0), Law::PowerIn(0.5)] {
+    for curve in [
+        Law::Linear,
+        Law::PowerIn(Exponent::of(2.0)),
+        Law::PowerIn(Exponent::of(0.5)),
+    ] {
         let config = PortamentoConfig {
             mode: PortamentoMode::Always,
             curve,
@@ -167,8 +176,16 @@ fn glide_render_digests() {
     }
     for (name, curve, recorded) in [
         ("linear", Law::Linear, 0xdf0c_b95a_5395_87d9),
-        ("quadratic", Law::PowerIn(2.0), 0xb127_e94e_c43e_399e),
-        ("square-root", Law::PowerIn(0.5), 0x4a68_7e6b_1b1a_9839),
+        (
+            "quadratic",
+            Law::PowerIn(Exponent::of(2.0)),
+            0xb127_e94e_c43e_399e,
+        ),
+        (
+            "square-root",
+            Law::PowerIn(Exponent::of(0.5)),
+            0x4a68_7e6b_1b1a_9839,
+        ),
     ] {
         tutti_fixtures::assert_golden(name, digest(curve), recorded);
     }

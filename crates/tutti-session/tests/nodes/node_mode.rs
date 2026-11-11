@@ -61,7 +61,7 @@ fn rig() -> Rig {
     let (halve, _) = g.insert(ForkByClone(Halve));
     g.set_source(halve, 0, GraphSource::Node(a, 0));
     g.set_output_source(0, GraphSource::Node(halve, 0));
-    s.update();
+    let _ = s.update();
     assert!(!s.graph_ref().is_edited());
     Rig { s, halve }
 }
@@ -70,7 +70,7 @@ impl Rig {
     /// Runs `update` and enough blocks for a fade to finish; returns the last
     /// block's channel 0.
     fn settled(&mut self) -> Vec<f32> {
-        self.s.update();
+        let _ = self.s.update();
         let mut block = vec![f32::NAN; BLOCK * 2];
         for _ in 0..SETTLE_BLOCKS {
             self.s

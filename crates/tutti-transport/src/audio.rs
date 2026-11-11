@@ -63,7 +63,7 @@ impl Applied {
 ///
 /// ```compile_fail,E0624
 /// let t = tutti_transport::Transport::new(48_000.0);
-/// let _ = t.motion.audio();
+/// let _ = t.motion().audio();
 /// ```
 ///
 /// ```compile_fail,E0277

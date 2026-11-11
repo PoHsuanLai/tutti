@@ -16,15 +16,21 @@
 //! modulation sources) is named through `tutti::`.
 
 use std::sync::Arc;
-use tutti::types::MaxBlock;
 
 use tutti::graph::{Cx, ForkByClone, Io, Node, Prepare, Shape, Status};
-use tutti::modulation::{Follower, Lfo};
 use tutti::nodes::testing::Osc;
 use tutti::nodes::{SvfFilterNode, SvfType};
 use tutti::prelude::*;
 
 const RATE: f64 = 48_000.0;
+
+/// What `Session::update` found: faults and dropouts (a refused commit, a
+/// plugin that died, a lost block). A host logs them; here they are printed.
+fn report(events: Vec<SessionEvent>) {
+    for event in events {
+        eprintln!("session event: {event:?}");
+    }
+}
 const BLOCK: usize = 512;
 
 /// A kick on the executor's own clock: a burst decaying over 50 ms at the
@@ -57,7 +63,7 @@ fn play(s: &mut Session, windows: usize) {
     let mut line = String::new();
     while n < windows * window {
         s.render(&mut InterleavedMut::new(&mut out, ChannelLayout::MONO));
-        s.update();
+        report(s.update());
         for &x in &out {
             sum += f64::from(x) * f64::from(x);
             n += 1;
@@ -70,7 +76,7 @@ fn play(s: &mut Session, windows: usize) {
     println!("{line}");
 }
 
-fn main() {
+fn main() -> Result<(), tutti::Error> {
     let mut s = Session::builder()
         .build_offline(
             SampleRate(RATE),
@@ -94,13 +100,13 @@ fn main() {
     m.range(cutoff, 100.0, 4_000.0);
     m.range(resonance, 0.5, 8.0);
     let wobble = m.lfo(Lfo::sine().hz(Hz(2.0)));
-    let sweep = m.route(wobble, cutoff, Depth(0.2));
+    let sweep = m.route(wobble, cutoff, Depth(0.2))?;
     let hits = m.follower(Follower::default(), kick);
-    m.route(hits, resonance, Depth(0.5));
+    m.route(hits, resonance, Depth(0.5))?;
 
     // The nodes commit on the first update, the lanes on the re-apply after
     // it (their targets resolve once the filter is in a plan).
-    s.update();
+    report(s.update());
     assert_eq!(s.mod_state().refusal(), None, "the declarations apply");
     assert!(s.mod_state().unresolved_targets().is_empty());
     println!("LFO depth 0.2, kick on the resonance:");
@@ -110,7 +116,7 @@ fn main() {
     // No plan is sent.
     let sent = s.graph().sent_plan();
     s.mods().route_mut(sweep).expect("the route").depth = Depth(0.45);
-    s.update();
+    report(s.update());
     assert!(
         sent.zip(s.graph().sent_plan())
             .is_some_and(|(a, b)| Arc::ptr_eq(&a, &b)),
@@ -118,4 +124,5 @@ fn main() {
     );
     println!("LFO depth 0.45:");
     play(&mut s, 20);
+    Ok(())
 }

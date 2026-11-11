@@ -26,6 +26,8 @@
 //!
 //! MIT OR Apache-2.0.
 
+mod clip;
+pub use clip::Clip;
 mod error;
 pub use error::{Error, PlaceError, Result};
 

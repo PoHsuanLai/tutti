@@ -20,7 +20,7 @@
 //! Not waiting makes a stalled plugin cost zero, however many there are and
 //! whatever the graph's shape. The price is one chunk of latency per
 //! out-of-process plugin — *declared to PDC* (the node's `Shape::latency`,
-//! through `PluginControls::declared_latency`) and so compensated rather than
+//! through `PluginControls::declared_latency` in `tutti-plugin-host`) and so compensated rather than
 //! heard. This is what JACK, PipeWire, AUv3 and every DAW that hosts plugins
 //! out of process do.
 //!
@@ -38,8 +38,7 @@
 //! # One device callback per chunk
 //!
 //! The chunk is settled by [`prepare`](Batcher::prepare): the host's device
-//! quantum (`Prepare::quantum`) when it knows one, else the graph's
-//! `MaxBlock`, never past the slab's [`MAX_CHUNK`](tutti_plugin_types::MAX_CHUNK). Live, that makes a chunk
+//! quantum when it knows one, else the graph's `MaxBlock`, never past the slab's [`MAX_CHUNK`](tutti_plugin_types::MAX_CHUNK). Live, that makes a chunk
 //! complete on a callback's last frame and its output first needed on the
 //! next callback's first — so the server has a whole device period to answer,
 //! and the plugin's latency is one device block, as a DAW hosting plugins out
@@ -66,17 +65,15 @@
 //! processes in double is converted here, in the wire scratch, and nowhere
 //! else: the `f64` stays inside the node.
 
-use super::fork::ForkWatch;
-use crate::host::node::BlockPayload;
+use crate::OfflineWait;
+use crate::{HarmonyInputs, PluginBridge, SlabWriter};
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
-use tutti_graph::Prepare;
-use tutti_plugin_host::ChunkCounters;
-use tutti_plugin_ipc::PluginBridge;
-use tutti_plugin_ipc::SlabWriter;
-use tutti_plugin_types::BridgeResult;
-use tutti_plugin_types::{MidiEventVec, ParameterChanges, SampleFormat, WireMidi};
+use tutti_plugin_types::{
+    BridgeResult, ChunkCounters, MidiEventVec, NoteExpressionChanges, ParameterChanges,
+    SampleFormat, TransportChanges, TransportInfo, WireMidi,
+};
 use tutti_types::Samples;
 
 /// Single-chunk wire scratch in the plugin-negotiated format. Allocated at
@@ -163,6 +160,28 @@ impl WireStorage {
     }
 }
 
+/// Everything the host produces for one chunk, aggregated for the bridge
+/// call. Host-side only — the batcher unpacks it into the (unchanged)
+/// positional `bridge.submit` arguments, so the IPC wire shape is untouched.
+///
+/// The chunk's parameter changes are not here: they stay in the node's
+/// `ParamDelivery`, whose buffer the bridge swaps rather than moves
+/// ([`Chunks::params`]), so nothing is allocated or freed per chunk.
+#[derive(Debug, Default)]
+pub struct BlockPayload {
+    /// The chunk's MIDI events.
+    pub midi: MidiEventVec,
+    /// The chunk's note expression changes.
+    pub note_expression: NoteExpressionChanges,
+    /// The chunk's chords, scales and text and integer note expressions.
+    pub harmony: HarmonyInputs,
+    /// The transport at the chunk's first frame.
+    pub transport: TransportInfo,
+    /// The transport changes after it, each at its chunk frame (doc 020
+    /// stage 5b; `transport_walk`). Inline: nothing allocates.
+    pub changes: TransportChanges,
+}
+
 /// What the plugin node gives the batcher per chunk: the chunk's payload, and
 /// where its MIDI-out goes.
 ///
@@ -170,7 +189,7 @@ impl WireStorage {
 /// span (module docs, "A FIFO, so every chunk is whole"): the node is told
 /// where each chunk **begins** in the call that begins it, and is asked for
 /// its payload when the chunk is **submitted**, possibly a call later.
-pub(super) trait Chunks {
+pub trait Chunks {
     /// A chunk of `chunk` frames begins at frame `at` of this call (its first
     /// frame is the next input frame the batcher takes).
     fn begin(&mut self, at: usize, chunk: usize);
@@ -208,7 +227,7 @@ pub(super) trait Chunks {
 /// The pipeline between the plugin node and the plugin-server bridge: an
 /// input FIFO that ships a chunk when full, and an output ring the previous
 /// chunk's output is read from.
-pub(crate) struct Batcher {
+pub struct Batcher {
     wire: WireStorage,
     /// The slab's input writer: the one in this process, so the node is the
     /// only thing that writes a chunk (`SlabWriter`). Reads go through the
@@ -241,7 +260,7 @@ pub(crate) struct Batcher {
     /// `Some` only on an **offline fork** (`host::node::fork`): before
     /// collecting a chunk, wait up to this long for the server to publish it.
     /// See [`await_output`](Self::await_output).
-    offline_wait: Option<OfflineWait>,
+    offline_wait: Option<Arc<OfflineWait>>,
     /// The plugin's MIDI-out for the chunk the ring holds, at that chunk's
     /// frames, sorted (`collect`). Inline, so the drain never allocates.
     reply: MidiEventVec,
@@ -249,10 +268,15 @@ pub(crate) struct Batcher {
     counters: Arc<ChunkCounters>,
 }
 
-/// An offline fork's wait: its [`ForkWatch`] holds the per-block budget and
-/// the latches.
-struct OfflineWait {
-    watch: Arc<ForkWatch>,
+impl std::fmt::Debug for Batcher {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Batcher")
+            .field("chunk", &self.chunk)
+            .field("ceiling", &self.ceiling)
+            .field("next_seq", &self.next_seq)
+            .field("expect_seq", &self.expect_seq)
+            .finish_non_exhaustive()
+    }
 }
 
 impl Batcher {
@@ -261,7 +285,7 @@ impl Batcher {
     /// allocates the wire scratch, the FIFO and the ring. The chunk starts at
     /// the ceiling; [`prepare`](Self::prepare) narrows it to the graph's
     /// `MaxBlock`.
-    pub(super) fn new(
+    pub fn new(
         inputs: usize,
         outputs: usize,
         format: SampleFormat,
@@ -285,7 +309,7 @@ impl Batcher {
     }
 
     /// Reports to `counters` (the controls' cells) instead of its own.
-    pub(super) fn with_counters(mut self, counters: Arc<ChunkCounters>) -> Self {
+    pub fn with_counters(mut self, counters: Arc<ChunkCounters>) -> Self {
         self.counters = counters;
         self
     }
@@ -296,20 +320,20 @@ impl Batcher {
     /// render, or a host that does not know its callback), never past the
     /// slab's ceiling (module docs, "One device callback per chunk"). Starts
     /// the pipeline over, as a re-prepare starts the node over.
-    pub(super) fn prepare(&mut self, p: &Prepare) {
-        let want = p.quantum().map_or(p.max_block().get(), Samples::get);
+    pub fn prepare(&mut self, max_block: Samples, quantum: Option<Samples>) {
+        let want = quantum.map_or(max_block.get(), Samples::get);
         self.chunk = self.ceiling.min(want).max(1);
         self.reset();
     }
 
     /// The frames every submission carries.
-    pub(super) fn chunk(&self) -> usize {
+    pub fn chunk(&self) -> usize {
         self.chunk
     }
 
     /// [`chunk`](Self::chunk) as the latency it adds: exactly one chunk,
     /// whatever the blocks (module docs).
-    pub(super) fn pipeline_latency(&self) -> Samples {
+    pub fn pipeline_latency(&self) -> Samples {
         Samples(self.chunk)
     }
 
@@ -325,10 +349,11 @@ impl Batcher {
     /// the declared one-chunk latency, and makes the output a function of the
     /// input rather than of scheduling.
     ///
-    /// The budget and the latches are the fork's [`ForkWatch`]: it records a
-    /// miss or a dead server there, and its health probe reports them.
-    pub(super) fn set_offline_wait(&mut self, watch: Arc<ForkWatch>) {
-        self.offline_wait = Some(OfflineWait { watch });
+    /// The budget and the latches are the [`OfflineWait`]: the batcher records
+    /// a miss or a dead server there, and the fork's health probe reports
+    /// them.
+    pub fn set_offline_wait(&mut self, wait: Arc<OfflineWait>) {
+        self.offline_wait = Some(wait);
     }
 
     /// With [`set_offline_wait`](Self::set_offline_wait): block until the
@@ -348,13 +373,12 @@ impl Batcher {
     /// bridge alone would not notice in time: it learns of a dead peer only
     /// when it next reads the socket, which it does for a command, and this
     /// wait sends none. So the wait also asks the process itself
-    /// ([`ForkWatch::server_died`]), every `PROCESS_POLL`.
+    /// ([`OfflineWait::server_died`]), every `PROCESS_POLL`.
     fn await_output(&mut self, bridge: &PluginBridge) {
         const PROCESS_POLL: Duration = Duration::from_millis(5);
-        let (Some(wait), Some(seq)) = (&self.offline_wait, self.expect_seq) else {
+        let (Some(watch), Some(seq)) = (&self.offline_wait, self.expect_seq) else {
             return;
         };
-        let watch = &wait.watch;
         if watch.stopped_waiting() {
             return;
         }
@@ -425,7 +449,7 @@ impl Batcher {
     /// The server's own `Reset` is a no-op for this purpose, so clearing
     /// `expect_seq` here is the *entire* mechanism by which a seek stops old
     /// audio from arriving.
-    pub(super) fn reset(&mut self) {
+    pub fn reset(&mut self) {
         self.expect_seq = None;
         self.counters.in_flight.store(0, Ordering::Release);
         self.pos = 0;
@@ -556,7 +580,7 @@ impl Batcher {
     ///
     /// An input port past `input.len()` is taken as silence; an output port
     /// past `output.len()` is not written.
-    pub(super) fn process(
+    pub fn process(
         &mut self,
         bridge: &PluginBridge,
         frames: usize,
@@ -605,9 +629,8 @@ impl Batcher {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tutti_plugin_ipc::AudioSlab;
+    use crate::AudioSlab;
     use tutti_plugin_types::MAX_CHUNK;
-    use tutti_types::SampleRate;
 
     /// A real slab's input writer, `samples` frames per channel, stereo both
     /// ways: these tests stage nothing, but a batcher cannot exist without the
@@ -623,10 +646,10 @@ mod tests {
         let stereo = tutti_plugin_types::ChannelLayout::STEREO;
         AudioSlab::create(
             name,
-            tutti_plugin_ipc::SlabLayout {
+            crate::SlabLayout {
                 samples_per_channel: samples,
                 format: SampleFormat::Float32,
-                slots: tutti_plugin_ipc::RING_SLOTS as u32,
+                slots: crate::RING_SLOTS as u32,
                 inputs: vec![stereo],
                 outputs: vec![stereo],
             },
@@ -722,27 +745,26 @@ mod tests {
     ///
     /// Mutation: `self.chunk = self.ceiling.min(64)` in `prepare` (the
     /// reversed 64-frame pipeline) → the 480-frame quantum ships 64 → fails.
-    /// Mutation: ignore `quantum()` → 1024 instead of 480 → fails. Mutation:
+    /// Mutation: ignore `quantum` → 1024 instead of 480 → fails. Mutation:
     /// drop the `ceiling.min` → the small slab's chunk is 1024 → fails.
     #[test]
     fn the_pipeline_chunk_is_the_device_quantum_else_the_max_block() {
-        let prepare = |max: usize| Prepare::new(SampleRate(48_000.0), Samples(max));
         let mut b = Batcher::new(2, 2, SampleFormat::Float32, MAX_CHUNK, slab(MAX_CHUNK));
-        b.prepare(&prepare(1024).with_quantum(Samples(480)));
+        b.prepare(Samples(1024), Some(Samples(480)));
         assert_eq!(b.pipeline_latency(), Samples(480));
-        b.prepare(&prepare(64).with_quantum(Samples(2048)));
+        b.prepare(Samples(64), Some(Samples(2048)));
         assert_eq!(
             b.pipeline_latency(),
             Samples(2048),
             "the quantum, not MaxBlock"
         );
-        b.prepare(&prepare(1024));
+        b.prepare(Samples(1024), None);
         assert_eq!(b.pipeline_latency(), Samples(1024), "no quantum: MaxBlock");
-        b.prepare(&prepare(32));
+        b.prepare(Samples(32), None);
         assert_eq!(b.pipeline_latency(), Samples(32));
 
         let mut small_slab = Batcher::new(2, 2, SampleFormat::Float32, 16, slab(16));
-        small_slab.prepare(&prepare(1024));
+        small_slab.prepare(Samples(1024), None);
         assert_eq!(small_slab.pipeline_latency(), Samples(16));
     }
 
@@ -757,7 +779,7 @@ mod tests {
         let mut b = Batcher::new(2, 2, SampleFormat::Float32, MAX_CHUNK, slab(MAX_CHUNK));
         b.next_seq = 7;
         b.expect_seq = Some(6);
-        b.prepare(&Prepare::new(SampleRate(48_000.0), Samples(128)));
+        b.prepare(Samples(128), None);
         assert_eq!(b.expect_seq, None);
         assert_eq!(b.next_seq, 7);
     }

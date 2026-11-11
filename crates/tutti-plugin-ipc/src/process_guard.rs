@@ -2,18 +2,17 @@
 //!
 //! [`ProcessGuard`] owns the `plugin-server` child process and its
 //! bridge thread. `Drop` kills the subprocess and removes the socket
-//! file. Held behind an `Arc` inside [`super::PluginClient`] and
-//! [`PluginHandle`](tutti_plugin_host::PluginHandle) — the subprocess dies when the LAST Arc
+//! file. `tutti-plugin` holds it behind an `Arc` in the node of a served
+//! plugin and in the plugin's handle — the subprocess dies when the LAST Arc
 //! drops (i.e., after both the graph has released the node *and* every
 //! user-held handle has dropped).
 
+use crate::{BridgeConfig, BridgeThread, Reaped};
 use std::process::ExitStatus;
 use std::sync::{Mutex, PoisonError};
-use tutti_plugin_ipc::BridgeConfig;
-use tutti_plugin_ipc::BridgeThread;
-use tutti_plugin_ipc::Reaped;
 
-pub(crate) struct ProcessGuard {
+/// The `plugin-server` child process and its bridge thread, owned as one.
+pub struct ProcessGuard {
     /// Behind a lock only so [`exited`](Self::exited) can ask from `&self`
     /// (`try_wait` takes `&mut`). Never locked on the audio thread.
     process: Mutex<Option<Reaped>>,
@@ -21,10 +20,18 @@ pub(crate) struct ProcessGuard {
     config: BridgeConfig,
 }
 
+impl std::fmt::Debug for ProcessGuard {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ProcessGuard")
+            .field("pid", &self.pid())
+            .finish_non_exhaustive()
+    }
+}
+
 impl ProcessGuard {
     /// Own the launched `process`; it is killed and reaped when the guard
     /// drops ([`Reaped`]).
-    pub(crate) fn launched(process: Reaped, config: BridgeConfig) -> Self {
+    pub fn launched(process: Reaped, config: BridgeConfig) -> Self {
         Self {
             process: Mutex::new(Some(process)),
             _bridge_thread: None,
@@ -34,7 +41,7 @@ impl ProcessGuard {
 
     /// The OS process id of the guarded `plugin-server`, or `None` for a
     /// test guard that owns no subprocess.
-    pub(crate) fn pid(&self) -> Option<u32> {
+    pub fn pid(&self) -> Option<u32> {
         self.process
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
@@ -44,7 +51,7 @@ impl ProcessGuard {
 
     /// Hand over the bridge thread once it exists; it shuts down with the
     /// process.
-    pub(crate) fn attach(&mut self, bridge_thread: BridgeThread) {
+    pub fn attach(&mut self, bridge_thread: BridgeThread) {
         self._bridge_thread = Some(bridge_thread);
     }
 
@@ -55,7 +62,7 @@ impl ProcessGuard {
     /// the dead server will never publish sends nothing while it waits, so
     /// it asks the process instead. Not for the audio thread (a lock and a
     /// syscall).
-    pub(crate) fn exited(&self) -> Option<ExitStatus> {
+    pub fn exited(&self) -> Option<ExitStatus> {
         let mut process = self.process.lock().unwrap_or_else(PoisonError::into_inner);
         process.as_mut()?.try_wait().ok().flatten()
     }
@@ -63,7 +70,7 @@ impl ProcessGuard {
     /// Kills the server without waiting for it, so the bridge thread reads an
     /// EOF and the socket closes. [`Drop`] reaps it. Not for the audio thread
     /// (a lock and a syscall).
-    pub(crate) fn terminate(&self) {
+    pub fn terminate(&self) {
         let mut process = self.process.lock().unwrap_or_else(PoisonError::into_inner);
         if let Some(process) = process.as_mut() {
             let _ = process.kill();
@@ -71,9 +78,9 @@ impl ProcessGuard {
     }
 
     /// Test-only: create a guard without a real subprocess. Used by
-    /// `handle_over` in the mock-server tests.
-    #[cfg(test)]
-    pub(crate) fn for_test(config: BridgeConfig) -> Self {
+    /// `handle_over` in `tutti-plugin`'s mock-server tests.
+    #[cfg(feature = "test-support")]
+    pub fn for_test(config: BridgeConfig) -> Self {
         Self {
             process: Mutex::new(None),
             _bridge_thread: None,

@@ -120,7 +120,7 @@ pub use param_unit::{FromPlain, ParamUnit};
 pub use parameters::{
     InvalidNormalized, Normalized, ParamFlags, ParamId, ParamRange, ParamSteps, ParameterInfo,
 };
-pub use pipeline::{BlockCounts, MAX_CHUNK};
+pub use pipeline::{BlockCounts, ChunkCounters, MAX_CHUNK};
 pub use presets::{Preset, PresetId, PresetSupport};
 #[cfg(feature = "probe-wire")]
 pub use probe_wire::{

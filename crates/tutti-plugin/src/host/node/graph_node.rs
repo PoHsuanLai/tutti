@@ -16,8 +16,7 @@ use tutti_graph::{
 use tutti_tempo::{Cursor, TempoMap};
 use tutti_types::{ChannelLayout, Samples};
 
-use super::batcher::Chunks;
-use super::{BlockPayload, Bound, PluginClient};
+use super::{Bound, PluginClient};
 #[cfg(test)]
 use tutti_plugin_host::TransportSource;
 use tutti_plugin_host::{
@@ -25,6 +24,7 @@ use tutti_plugin_host::{
     transport_info,
 };
 use tutti_plugin_ipc::HarmonyInputs;
+use tutti_plugin_ipc::{BlockPayload, Chunks};
 use tutti_plugin_types::MidiIntake;
 use tutti_plugin_types::{
     ChordValue, Features, MidiEventVec, ParameterChanges, ScaleValue, TransportInfo, WireMidi,
@@ -96,7 +96,9 @@ impl Node for PluginClient<Bound> {
     /// starts the node over.
     fn prepare(&mut self, p: &Prepare) {
         let c = &mut *self;
-        c.state.io.prepare(p);
+        c.state
+            .io
+            .prepare(Samples(p.max_block().get()), p.quantum());
         // The MIDI taken towards the next chunk goes with the batcher's
         // frames, counted, and the SysEx open in it is cut: a same-rate
         // re-prepare is a no-op on the server, whose reassembler keeps its

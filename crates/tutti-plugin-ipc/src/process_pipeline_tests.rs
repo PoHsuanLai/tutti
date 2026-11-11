@@ -23,29 +23,41 @@
 //! A constant signal would separate none of those, which is why the ramp is
 //! load-bearing rather than decorative.
 
-use crate::host::node::batcher::Batcher;
+use crate::Batcher;
+use crate::BridgeThread;
+use crate::PluginBridge;
 use tutti_fixtures::machine_lock;
-use tutti_plugin_host::ChunkCounters;
-use tutti_plugin_ipc::BridgeThread;
-use tutti_plugin_ipc::PluginBridge;
 
 /// The chunk these tests ship: the slab ceiling they build each batcher and
 /// slab with, and the block they drive (so every call is one whole chunk).
 const BATCH_SIZE: usize = 64;
-use crate::host::node::BlockPayload;
+use crate::BlockPayload;
+use crate::unique_socket_path;
+use crate::{AudioSlab, RING_SLOTS, SlabWriter};
+use crate::{BridgeMessage, HostMessage, PROTOCOL_VERSION, SlabLayout};
 use std::sync::Arc;
-use tutti_plugin_ipc::unique_socket_path;
-use tutti_plugin_ipc::{AudioSlab, RING_SLOTS, SlabWriter};
-use tutti_plugin_ipc::{BridgeMessage, HostMessage, PROTOCOL_VERSION, SlabLayout};
-use tutti_plugin_types::{ChannelLayout, MidiEventVec, SampleFormat};
+use tutti_plugin_types::{ChannelLayout, ChunkCounters, MidiEventVec, SampleFormat};
 use tutti_types::SampleRate;
+
+/// The bridge's editor loader: these peers never open an editor, and one that
+/// tried is refused (the suite loads no plugin format).
+fn no_editor(
+    _: &tutti_plugin_types::MainThread,
+    path: &std::path::Path,
+) -> tutti_plugin_types::BridgeResult<Box<dyn tutti_plugin_types::Editor>> {
+    Err(tutti_plugin_types::BridgeError::LoadFailed {
+        path: path.to_path_buf(),
+        stage: tutti_plugin_types::LoadStage::Opening,
+        reason: "no editor in these tests".into(),
+    })
+}
 
 const CHANNELS: usize = 2;
 const GAIN: f32 = 2.0;
 
 /// The tests' side of each chunk: an empty payload, and the plugin's MIDI-out
 /// kept as collected, so a test reads what the bridge returned.
-impl super::batcher::Chunks for MidiEventVec {
+impl crate::Chunks for MidiEventVec {
     fn begin(&mut self, _at: usize, _chunk: usize) {}
     fn take(&mut self, _from: usize, _n: usize, _at: usize) {}
 
@@ -176,7 +188,7 @@ fn bridge_with_server(
 
     let path = unique_socket_path();
     let _ = std::fs::remove_file(&path);
-    let name = tutti_plugin_ipc::socket_name(&path).unwrap();
+    let name = crate::socket_name(&path).unwrap();
     let listener = ListenerOptions::new().name(name).create_sync().unwrap();
 
     let out_channels: usize = layout.outputs.iter().map(|l| l.count() as usize).sum();
@@ -190,7 +202,7 @@ fn bridge_with_server(
         path.clone(),
         Arc::clone(host_slab.slab()),
         std::path::PathBuf::from("test.vst3"),
-        crate::format::gui::load_gui_instance,
+        no_editor,
         SampleRate(48_000.0),
     )
     .unwrap();
@@ -901,7 +913,7 @@ fn bridge_with_no_server() -> (Arc<PluginBridge>, BridgeThread, SlabWriter) {
         path,
         Arc::clone(host_slab.slab()),
         std::path::PathBuf::from("test.vst3"),
-        crate::format::gui::load_gui_instance,
+        no_editor,
         SampleRate(48_000.0),
     )
     .unwrap();
@@ -929,27 +941,25 @@ fn drive_one_block(
     );
 }
 
-/// The silence substitutions are audio-thread code, so they must not allocate.
-///
-/// Both branches are reached through `Batcher::collectable` returning `None`,
-/// and both are new with the pipelined design — under the synchronous one the
-/// audio thread waited for a reply, so "nothing to collect" was not a per-block
-/// path. They are the branches taken whenever a plugin is late, absent or dead,
-/// which is exactly when the callback can least afford a malloc.
-///
-/// # What this does and does not prove
-///
-/// [`assert_no_alloc`] arms a *thread-local* counter, and the detection lives in
-/// the `AllocDisabler` global allocator registered below. A violation calls
-/// `handle_alloc_error`, which aborts rather than unwinds — so a regression here
-/// kills the test process rather than reporting a tidy failure. That is the
-/// harness working, not a broken test.
-///
-/// Registering a global allocator is process-wide, but the forbid counter is
-/// not: unrelated tests in this binary allocate freely, and only the closures
-/// below are guarded.
-#[global_allocator]
-static ALLOC: assert_no_alloc::AllocDisabler = assert_no_alloc::AllocDisabler;
+// The silence substitutions are audio-thread code, so they must not allocate.
+//
+// Both branches are reached through `Batcher::collectable` returning `None`,
+// and both are new with the pipelined design — under the synchronous one the
+// audio thread waited for a reply, so "nothing to collect" was not a per-block
+// path. They are the branches taken whenever a plugin is late, absent or dead,
+// which is exactly when the callback can least afford a malloc.
+//
+// # What this does and does not prove
+//
+// [`assert_no_alloc`] arms a *thread-local* counter, and the detection lives in
+// the `AllocDisabler` global allocator this crate's tests register (`lib.rs`). A violation calls
+// `handle_alloc_error`, which aborts rather than unwinds — so a regression here
+// kills the test process rather than reporting a tidy failure. That is the
+// harness working, not a broken test.
+//
+// Registering a global allocator is process-wide, but the forbid counter is
+// not: unrelated tests in this binary allocate freely, and only the closures
+// below are guarded.
 
 /// A live-but-slow plugin must not push allocations onto the audio thread.
 ///
@@ -1404,7 +1414,7 @@ fn stamped_server(stall: std::time::Duration, first_only: bool) -> Rig {
 
     let path = unique_socket_path();
     let _ = std::fs::remove_file(&path);
-    let name = tutti_plugin_ipc::socket_name(&path).unwrap();
+    let name = crate::socket_name(&path).unwrap();
     let listener = ListenerOptions::new().name(name).create_sync().unwrap();
 
     let layout = stereo_layout();
@@ -1416,7 +1426,7 @@ fn stamped_server(stall: std::time::Duration, first_only: bool) -> Rig {
         path.clone(),
         Arc::clone(host_slab.slab()),
         std::path::PathBuf::from("test.vst3"),
-        crate::format::gui::load_gui_instance,
+        no_editor,
         SampleRate(48_000.0),
     )
     .unwrap();
@@ -1503,8 +1513,8 @@ fn stamped_server(stall: std::time::Duration, first_only: bool) -> Rig {
 /// batcher reports lost: chunks not sent ([`Chunks::unsent`]) and the MIDI
 /// of chunks the bridge refused ([`Chunks::refused`]).
 ///
-/// [`Chunks::unsent`]: super::batcher::Chunks::unsent
-/// [`Chunks::refused`]: super::batcher::Chunks::refused
+/// [`Chunks::unsent`]: crate::Chunks::unsent
+/// [`Chunks::refused`]: crate::Chunks::refused
 #[derive(Default)]
 struct LossProbe {
     midi: usize,
@@ -1513,7 +1523,7 @@ struct LossProbe {
     out: MidiEventVec,
 }
 
-impl super::batcher::Chunks for LossProbe {
+impl crate::Chunks for LossProbe {
     fn begin(&mut self, _at: usize, _chunk: usize) {}
     fn take(&mut self, _from: usize, _n: usize, _at: usize) {}
 
@@ -1594,7 +1604,7 @@ fn a_refused_chunk_reports_its_midi_lost() {
         path,
         Arc::clone(slab.slab()),
         std::path::PathBuf::from("test.vst3"),
-        crate::format::gui::load_gui_instance,
+        no_editor,
         SampleRate(48_000.0),
     )
     .unwrap();
@@ -1727,14 +1737,14 @@ fn two_stale_blocks(
     assert_eq!(RING_SLOTS, 2, "blocks 1 and 2 of 4 are stale");
     let path = unique_socket_path();
     let _ = std::fs::remove_file(&path);
-    let name = tutti_plugin_ipc::socket_name(&path).unwrap();
+    let name = crate::socket_name(&path).unwrap();
     let listener = ListenerOptions::new().name(name).create_sync().unwrap();
     let slab = AudioSlab::create(unique_shm_name("stale-midi"), stereo_layout()).unwrap();
     let (bridge, thread) = PluginBridge::new(
         path.clone(),
         Arc::clone(slab.slab()),
         std::path::PathBuf::from("test.vst3"),
-        crate::format::gui::load_gui_instance,
+        no_editor,
         SampleRate(48_000.0),
     )
     .unwrap();

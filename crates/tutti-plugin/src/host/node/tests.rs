@@ -5,7 +5,6 @@
 //! socket, then drives `PluginHandle` IPC round-trips through it. The
 //! `respond` callback lets each test script the server's replies.
 
-use crate::host::node::ProcessGuard;
 use crate::host::subprocess_backend::SubprocessBackend;
 use std::sync::Arc;
 use tutti_fixtures::main_thread;
@@ -30,7 +29,7 @@ fn handle_over(
     descriptor: PluginDescriptor,
     loaded: LoadedPlugin,
 ) -> PluginHandle {
-    let guard = Arc::new(ProcessGuard::for_test(
+    let guard = Arc::new(tutti_plugin_ipc::ProcessGuard::for_test(
         tutti_plugin_ipc::BridgeConfig::default(),
     ));
     SubprocessBackend::new(bridge, guard).into_handle(descriptor, loaded, Default::default(), None)

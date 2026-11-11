@@ -93,8 +93,7 @@ const PASSES: usize = QUANTUM / BLOCK;
 /// flight on its own parameter, so two slots are ever live; the overflow
 /// path's fallback is pinned by `segment_points`' unit tests.)
 ///
-/// Ported: the LFO was an `LfoCurve` sampled by the deleted
-/// `PluginAutomation` node; it is a lane's LFO layer around its knob now.
+/// The LFO is a lane's LFO layer around its knob.
 #[test]
 fn a_bound_plugin_does_not_allocate_on_the_audio_thread() {
     let _lock = machine_lock();

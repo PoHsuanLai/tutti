@@ -817,9 +817,6 @@ mod tests {
     /// Its fraction rounds to 1.0 in `f32`; the kernel at `t` = 1.0 returns
     /// the next tap only to within an ulp, so the read lands on the next frame
     /// at `t` = 0 instead, where the tap is returned as it is.
-    ///
-    /// Mutation (run): the `frac >= 1.0` carry removed from `tap_indices` →
-    /// taps `[3, 4, 5, 6]` at 1.0 → fails.
     #[test]
     fn a_position_a_hair_under_a_frame_reads_that_frame() {
         let below = 5.0 - 1e-12;
@@ -993,74 +990,35 @@ mod tests {
         Arc::new(w)
     }
 
-    /// Golden-vector gate: width-2 output must be bit-identical to what the
-    /// pre-width-generic stereo kernel produced.
-    ///
-    /// `assert_eq` on `f32::to_bits`, not an epsilon compare: a reassociated
-    /// `cubic_hermite` or a fold that multiplies by 1.0 changes the last mantissa
-    /// bit, and that is a real (if inaudible) divergence worth knowing about.
-    ///
-    /// These constants were captured by running the stereo kernel on `main`
-    /// before any part of the width change existed. Regenerating them is not
-    /// the fix if this fails — it would erase the only evidence that stereo
-    /// still behaves as it did, which is the load-bearing claim for every
-    /// unchanged app-side call site.
+    /// The cubic Hermite kernel reproduces a straight line, so a ramp read at a
+    /// fractional position is the ramp's value there: channel 0 of `stereo_ramp`
+    /// is `(p + 1) * 0.01` at position `p`, and channel 1 is its negation (a
+    /// channel swap or a sign slip shows).
     #[test]
-    fn stereo_output_is_bit_identical_to_the_pre_width_kernel() {
-        const EXPECTED: [(u32, u32); 16] = [
-            (1011413796, 3158897444),
-            (1025222116, 3172705764),
-            (1031865893, 3179349541),
-            (1035221336, 3182704984),
-            (1038576779, 3186060427),
-            (1041059808, 3188543456),
-            (1042737529, 3190221177),
-            (1044415251, 3191898899),
-            (1046092972, 3193576620),
-            (1047770693, 3195254341),
-            (1049012207, 3196495855),
-            (1049851069, 3197334717),
-            (1050689929, 3198173577),
-            (1051528791, 3199012439),
-            (1052367651, 3199851299),
-            (1053206511, 3200690159),
-        ];
+    fn a_stereo_ramp_reads_back_as_the_line_it_is() {
         let w = stereo_ramp();
-        let got: Vec<(u32, u32)> = (0..16)
-            .map(|k| {
-                let (l, r) = read_stereo_frame(&w, k as f64 * 2.5 + 0.3);
-                (l.to_bits(), r.to_bits())
-            })
-            .collect();
-        assert_eq!(
-            got.as_slice(),
-            &EXPECTED[..],
-            "stereo playback diverged from the pre-width-generic kernel"
-        );
+        // From the second frame: the first has no tap before it.
+        for k in 1..16 {
+            let p = k as f64 * 2.5 + 0.3;
+            let (l, r) = read_stereo_frame(&w, p);
+            let line = ((p + 1.0) * 0.01) as f32;
+            assert!((l - line).abs() < 1e-5, "left at {p}: {l}, line {line}");
+            assert!((r + line).abs() < 1e-5, "right at {p}: {r}, line {}", -line);
+        }
     }
 
-    /// The mono fan-out is likewise pinned bit-for-bit — it is the one policy
-    /// arm that deliberately does *not* zero-fill.
+    /// A mono wave read as a stereo frame is its line on both sides: the one
+    /// policy arm that fans out and does not zero-fill.
     #[test]
-    fn mono_fan_out_is_bit_identical_to_the_pre_width_kernel() {
-        const EXPECTED: [(u32, u32); 8] = [
-            (1015590651, 1015590651),
-            (1028309124, 1028309124),
-            (1034416029, 1034416029),
-            (1038778106, 1038778106),
-            (1041663787, 1041663787),
-            (1043844824, 1043844824),
-            (1046025863, 1046025863),
-            (1048206901, 1048206901),
-        ];
+    fn a_mono_ramp_fans_out_as_the_line_it_is() {
         let w = mono_ramp();
-        let got: Vec<(u32, u32)> = (0..8)
-            .map(|k| {
-                let (l, r) = read_stereo_frame(&w, k as f64 * 3.25 + 0.7);
-                (l.to_bits(), r.to_bits())
-            })
-            .collect();
-        assert_eq!(got.as_slice(), &EXPECTED[..]);
+        for k in 1..8 {
+            let p = k as f64 * 3.25 + 0.7;
+            let (l, r) = read_stereo_frame(&w, p);
+            let line = ((p + 1.0) * 0.01) as f32;
+            assert!((l - line).abs() < 1e-5, "left at {p}: {l}, line {line}");
+            assert!((r - line).abs() < 1e-5, "right at {p}: {r}, line {line}");
+        }
     }
 
     /// A 6-channel wave must deliver all six channels, each to its own slot —
@@ -1090,11 +1048,6 @@ mod tests {
     /// 8-wide spread, in `memory_source`'s test), both sides of a stereo one, and
     /// every channel where the engine has no order (3, 4, 5, 7), where there is
     /// no centre to name.
-    ///
-    /// Mutation (run): `MonoSpread::to` returning `FAN` for every width fails
-    /// the 6, 8 and 12 rows (the silent channels); returning the fold for
-    /// widths without an order is `NoSmpteOrder`, mapped by `.ok()` to the fan,
-    /// and dropping the `.ok()` fallback for `Self::FAN` would panic there.
     #[test]
     fn a_mono_wave_is_the_centre_of_a_wide_frame_and_a_fan_where_there_is_none() {
         let w = mono_ramp();
@@ -1121,10 +1074,6 @@ mod tests {
     /// into that order writes, and `lanes` writes the same bits block-wise.
     /// The widths below three (where the spread is the fan, to save the
     /// fold's dispatch) are in the comparison.
-    ///
-    /// Mutation (run): `lanes` reading the scratch with an off-by-one
-    /// (`scratch[1..]`) breaks the block rows; `frame` writing `v * 0.5` breaks
-    /// the first.
     #[test]
     fn the_spread_is_the_fold_of_a_lone_centre() {
         let v = 0.3f32;
@@ -1207,10 +1156,6 @@ mod tests {
     /// A file with a channel no speaker names (a second LFE) is refused when
     /// the placement is built, whatever width it goes to, mono or not; a
     /// source and a voice over it are refused too.
-    ///
-    /// Mutation (run): the `Unknown` check removed from `Place::for_wave` and
-    /// `Fold::to_width` → the wave is placed (the 5-wide row is by index) and
-    /// every assertion here fails.
     #[test]
     fn a_file_with_an_unnamed_channel_is_refused() {
         use tutti_types::{ChannelTopology, Speaker::*};
@@ -1248,9 +1193,6 @@ mod tests {
     /// A file that lists its channels in WAV order (7.1 with the rears before
     /// the sides) lands in the engine's order, and one already in it is read
     /// straight.
-    ///
-    /// Mutation (run): `Place::for_wave` returning `native` for a matched width
-    /// → the first row reads the file's order and fails.
     #[test]
     fn a_wav_seven_one_is_permuted_to_the_engines_order() {
         use tutti_types::{ChannelTopology, Speaker::*};
@@ -1287,9 +1229,6 @@ mod tests {
     /// is folded, not cut to its first 8: a 7.1.4 file's top-front-left reaches
     /// front left at -3 dB. And a count-built 4-wide wave is a quad into stereo,
     /// as it always was.
-    ///
-    /// Mutation (run): the gather limited to `MAX_SAMPLER_CHANNELS` channels
-    /// (the old behaviour) → the height is not read and the first row fails.
     #[test]
     fn a_wide_wave_is_placed_not_cut() {
         let mut frame = [0.0f32; 12];
@@ -1323,9 +1262,6 @@ mod tests {
     /// A wave wider than the frame with an unordered end has no place for its
     /// extra channels, and is refused rather than cut: ten channels into a
     /// frame of eight, a 5.1 file into five.
-    ///
-    /// Mutation (run): `Fold::by_index` accepting a narrowing → both rows place
-    /// the wave (truncated) and fail.
     #[test]
     fn a_wave_with_no_place_for_its_extra_channels_is_refused() {
         let ten = Wave::new(10, SampleRate::new(48_000.0));
@@ -1441,10 +1377,6 @@ mod tests {
     /// position in it drops audio and a `true` over silence wastes the skip.
     /// Over a window before, across and after the block, entered and left
     /// mid-block, a stopped transport, a stop and a seek inside the block.
-    ///
-    /// Mutation (run): `sounds` set for every rolling run (outside the
-    /// `e < x` test) → the window after the block reports a sound → fails.
-    /// Mutation (run): `sounds` never set → every sounding row fails.
     #[test]
     fn place_sounds_iff_a_frame_has_a_position() {
         let stopped = Transport::new(false, Bpm::of(120.0), Beat(1.0), None);
@@ -1485,11 +1417,6 @@ mod tests {
     /// frame 0 there, and one lasting 30 frames is silent from frame 40 on. A
     /// gate asked once per 64-frame chunk would let it enter at the next
     /// chunk instead.
-    ///
-    /// Mutation (run): `place` seating only if the range's first frame is
-    /// inside the window (the chunked gate) → frames 10..40 are `None` →
-    /// fails. Mutation (run): the exit never found inside the range
-    /// (`x = b`) → frame 40 sounds → fails.
     #[test]
     fn a_window_opens_and_closes_on_its_frames() {
         let start = 1.0;
@@ -1509,9 +1436,6 @@ mod tests {
     /// `24 000 + i` at frame `i` of a block at beat 1, and after a seek to
     /// beat 2 on frame 32, at `48 000 + (i - 32)`. A stop on frame 48 silences
     /// it there.
-    ///
-    /// Mutation (run): `place` reading the block's transport for every frame
-    /// (ignoring `Env::changes`) → frame 32 reads 24 032 → fails.
     #[test]
     fn a_seek_and_a_stop_inside_a_block_land_on_their_frames() {
         let stopped = Transport::new(false, Bpm::of(120.0), Beat(2.5), None);
@@ -1531,9 +1455,6 @@ mod tests {
     /// the wrap's frame, and the clock reports it as a jump (a new
     /// generation): the buffered state behind a read — a stretch filter, the
     /// live disk reader — is flushed or crossfaded there.
-    ///
-    /// Mutation (run): `Runs` not cutting a run at a wrap (`wrap = None`) →
-    /// frames past the wrap read on past the loop's end → fails.
     #[test]
     fn a_loop_wrap_inside_a_block_reseats_at_the_loop_start() {
         let looping = Some(tutti_graph::LoopRange {

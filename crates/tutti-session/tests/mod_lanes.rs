@@ -795,11 +795,9 @@ fn a_host_edit_committed_for_a_target_publishes_its_latency() {
     assert!(s.mod_state().lane(cutoff.key()).is_some());
 }
 
-// ------------------------------------- ported from the old driver --
+// ------------------------------- properties of the declarations --
 //
-// Doc 014 §10 deleted the frame-rate driver and its suites. The properties
-// below were theirs and still hold of the declarations; each is asserted on
-// the lanes now.
+// Each is asserted on the lanes.
 
 /// **Two routes onto one param sum, and removing one takes only its share.**
 /// Two macros at 1 on a cutoff (knob 500 in `0..=1000`) at depths 0.1 and 0.2
@@ -1155,12 +1153,6 @@ fn a_depth_slider_keeps_phase() {
 ///
 /// The session half of `bevy-tutti`'s `every_param_write_path_reaches_a_fork`
 /// (its unmodulated paths are `graph.rs`' test of the same name).
-///
-/// Mutation (run): `OwnKeys::node` answering `None` (no target resolves, so
-/// no lane is built): `settle` reports the unresolved targets and fails. The
-/// fork's own half: `ControlLaneNode::fork_fresh` giving the fork's lane a
-/// knob cell of 0 instead of the one it holds → the fork reads 2 where live
-/// reads 8 and 3 (fails).
 #[test]
 fn a_fork_renders_a_modulated_param_as_live_does() {
     let mut s = Session::builder()

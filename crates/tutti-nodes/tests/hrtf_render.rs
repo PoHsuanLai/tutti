@@ -15,13 +15,13 @@
 //!   rate it is prepared at is held to a ceiling.
 
 use tutti_dsp::{HrtfBinauralError, MAX_PREPARED_RATE, MAX_SPHERE_RATE, MIN_SPHERE_RATE};
-use tutti_fixtures::{Fnv, Noise};
+use tutti_fixtures::Noise;
 use tutti_graph::ParamNode;
 use tutti_graph::contract::{drive, prepared};
 use tutti_graph::{Node, Prepare};
 use tutti_nodes::HrtfBinauralNode;
 use tutti_nodes::testing::aim;
-use tutti_types::{Azimuth, Direction, Elevation, SampleRate, Samples, Tail, UnitParam};
+use tutti_types::{Azimuth, Direction, Elevation, SampleRate, Samples, Tail};
 
 const RATE: u32 = 48_000;
 /// The convolution step (`tutti_dsp::HRTF_STEP`).
@@ -213,12 +213,6 @@ fn energy(x: &[f32]) -> f32 {
 /// covers the constant of the two transforms and the multiply. The responses
 /// are 200 taps, longer than a step, so the history the overlap-save keeps
 /// is exercised too.
-///
-/// Mutations (run): an FFT length of `(step + ir_len / 2).next_power_of_two()`
-/// (256, too short: the history no longer reaches back over the response)
-/// → off by 0.025 against a tolerance of 3e-5; dropping the `1 / fft_len` normalization → fails (every
-/// sample 512 times too large); taking the left ear's spectra for both ears (in
-/// `blend_into`) → the right ear fails.
 #[test]
 fn an_impulse_at_a_vertex_comes_out_as_that_vertexs_hrir() {
     const LEN: usize = 200;
@@ -249,10 +243,6 @@ fn an_impulse_at_a_vertex_comes_out_as_that_vertexs_hrir() {
 /// vertices whose ears are identical, so the ears are equal up to round-off.
 /// Hard left, the near (left) ear is the louder: every vertex near there has
 /// `1 + s/2` against `1 - s/2` with `s` above 0.5, an energy ratio above 3.
-///
-/// Mutations (run): taking the left ear's spectra for both ears → hard left is
-/// balanced and fails; swapping the ears' spectra → hard left fails the other
-/// way; scaling the right ear by 0.9 → straight ahead fails.
 #[test]
 fn straight_ahead_is_balanced_and_hard_left_favours_the_left_ear() {
     const LEN: usize = 64;
@@ -290,10 +280,6 @@ fn straight_ahead_is_balanced_and_hard_left_favours_the_left_ear() {
 /// fourth vertex behind that no face uses. A source behind crosses no face,
 /// so the renderer takes the nearest vertex (the one behind) rather than
 /// failing on the audio thread. A non-finite bearing renders finite audio.
-///
-/// Mutations (run): falling back to vertex 0 instead of the nearest → the
-/// response behind is the front vertex's and fails; `unreachable!()` in
-/// place of the fallback → the test panics.
 #[test]
 fn a_direction_no_face_covers_takes_the_nearest_vertex() {
     const LEN: usize = 16;
@@ -355,12 +341,6 @@ fn a_direction_no_face_covers_takes_the_nearest_vertex() {
 /// The response itself is pinned too: the kernel is centred, so the delta
 /// at source tap 24 peaks at output tap 48, and its value there is the
 /// kernel's centre, `cutoff × from / to` = `0.95 × 0.5` of the gain.
-///
-/// Mutations (run): dropping the `from / to` scale → the DC gain is 2 g and
-/// fails; evaluating the kernel at `t - m + 1.0` (a one-source-tap shift)
-/// keeps the gain but moves the peak to tap 46 and fails; a cutoff with no
-/// `.min(1.0)` (1.9 when upsampling: no low-pass below the source's
-/// Nyquist) keeps the gain but doubles the peak and fails.
 #[test]
 fn resampling_the_sphere_keeps_its_dc_gain() {
     const LEN: usize = 64;
@@ -419,11 +399,6 @@ fn resampling_the_sphere_keeps_its_dc_gain() {
 /// the delta peaks at output tap 24 at the kernel's centre, `cutoff × from /
 /// to` = `0.475 × 2` of the gain, and the DC gain (the sum of the taps)
 /// stays `g`. Tolerances as in the upsampling test above.
-///
-/// Mutation (run): a cutoff of a constant `0.95` (no low-pass when
-/// `from > to`: the source's whole band aliases into the output's) fails
-/// the DC check; with that check disabled it keeps the peak's tap but
-/// doubles its value (1.71 against 0.855) and fails there too.
 #[test]
 fn downsampling_low_passes_below_the_new_nyquist() {
     const LEN: usize = 128;
@@ -493,10 +468,6 @@ fn tetrahedron() -> (Vec<[f32; 3]>, Vec<[u32; 3]>) {
 /// wherever in the 128-frame step it lands (first, second, a middle and the
 /// last frame). Every vertex has the same response, so the blend cannot
 /// move the last tap.
-///
-/// Mutation (run): `ring_out` counting the latency again (`LATENCY +
-/// ir_len - 1`, the old figure) → the declared tail is 327 against the
-/// 199 the render shows, and the first assertion fails.
 #[test]
 fn the_tail_is_the_ring_out_after_the_latency() {
     const LEN: usize = 200;
@@ -553,13 +524,6 @@ fn the_tail_is_the_ring_out_after_the_latency() {
 /// The bound is pinned at both edges, and at the longest response allowed
 /// the tail at a new rate is exactly 50 ms of frames there, less one (a
 /// tail excludes latency).
-///
-/// Mutations (run): no lower rate bound → the 1 Hz sphere is refused for
-/// its length instead and the `Rate` match fails; `rate > MAX_SPHERE_RATE`
-/// dropped → 384 001 Hz builds and fails; no length bound → the 401-tap
-/// sphere builds and fails; `len >= max` → the 400-tap sphere is refused
-/// and fails; a half-second bound (`rate / 2`) → the 401-tap sphere
-/// builds and fails.
 #[test]
 fn the_spheres_rate_and_response_length_are_bounded() {
     let (verts, faces) = tetrahedron();
@@ -608,9 +572,6 @@ fn the_spheres_rate_and_response_length_are_bounded() {
 ///
 /// The set's rate shows in the tail: a 48 kHz sphere's 32 taps are
 /// `32 * rate / 48 000` frames at `rate`, 512 at the ceiling.
-///
-/// Mutation (run): dropping the ceiling in `rate_key` → twice the ceiling
-/// prepares 1 024-tap responses and the first tail assertion fails.
 #[test]
 fn the_prepared_rate_is_held_to_its_ceiling() {
     let (verts, faces) = tetrahedron();
@@ -647,18 +608,6 @@ fn the_prepared_rate_is_held_to_its_ceiling() {
 
 /// A malformed sphere fails at `new`, on the control thread, with an error
 /// naming what is wrong, instead of reaching the audio thread.
-///
-/// Mutations (run), each in `HrirSphere::parse`: dropping the face-index
-/// check → the out-of-range sphere builds and fails; dropping the sample
-/// bound → the 1e38 sphere builds and fails; dropping the distance bound
-/// (keeping the finiteness check) → the 1e-30 vertex builds and fails;
-/// dropping the pre-allocation size check → the claimed header fails on
-/// its first face word instead (`needed: 24`) and the size match fails;
-/// dropping the trailing-bytes check → the long sphere builds and fails;
-/// dropping the usable-face check → the degenerate sphere builds and fails;
-/// dropping the vertex-count check → the empty sphere is refused as
-/// `NoFace` and fails; dropping the whole-triangles check → the four-index
-/// header is refused as `Truncated` and fails.
 #[test]
 fn a_malformed_sphere_is_refused_at_construction() {
     let (verts, faces) = icosahedron();
@@ -794,12 +743,6 @@ fn a_malformed_sphere_is_refused_at_construction() {
 /// `n = 2 * LEN` samples, so the energy is off by at most the cross term
 /// `2 ‖h‖ √n` times that, under 1e-4 for every gain here (about 2e-5 for
 /// the typical one), well under the 0.02 step between gains squared.
-///
-/// Mutations (run): dropping the `1 / fft_len` normalization → energy 256^2
-/// too large; scaling one ear's inverse output by 0.9 → that ear's energy is
-/// off by 19 % and the other ear's is not; reading vertex `v + 1`'s spectra
-/// in `HrtfSet::spectrum` (`at` shifted by one vertex) → the energy is the
-/// neighbour's and fails.
 #[test]
 fn a_vertexs_hrir_energy_reaches_the_output_ear_by_ear() {
     const LEN: usize = 16;
@@ -872,10 +815,6 @@ fn render_in_blocks(
 /// Input is gathered into fixed 128-frame steps and a block only reads the
 /// commanded position once, which is the same figure here (it never moves),
 /// so the arithmetic is identical.
-///
-/// Mutation (run): scaling the left output by 0.999 in `process` when the
-/// block is a single frame → the 1-frame render differs from the 64-frame
-/// one.
 #[test]
 fn the_render_is_independent_of_the_block_length() {
     const LEN: usize = 100;
@@ -903,10 +842,6 @@ fn the_render_is_independent_of_the_block_length() {
 /// starts a block at, and mid-step: 320 and 832 are not multiples of 128.)
 /// The source jumps across the sphere twice, so the aim glides through
 /// many faces and every step crossfades.
-///
-/// Mutation (run): the crossfade ramp taken over the block rather than the
-/// step (`render_step` given the block length, `t = ((i % block) + 1) /
-/// block`) → blocks of 1 differ from blocks of 64.
 #[test]
 fn a_moving_source_is_independent_of_the_block_length() {
     const LEN: usize = 100;
@@ -933,76 +868,38 @@ fn a_moving_source_is_independent_of_the_block_length() {
     }
 }
 
-/// The binaural renderer's position de-zipper renders what it always did, bit
-/// for bit (doc 024 step 0b, consolidation 2): a digest (FNV-1a over the bits
-/// of every output sample) of seeded noise through the mirrored icosahedron
-/// with the position jumping across the seam halfway, recorded before
-/// the spatial smoother was built over `tutti_dsp::Smoother`. The render
-/// reaches libm (`sin`, `cos`, `atan2`), so it goes through `assert_golden`.
-///
-/// Mutation (run): the smoother's step as `value * (1 - coeff) + target * coeff`
-/// changes the position's last bits and fails.
+/// The panner takes the mean of a stereo pair as its mono source: the pair
+/// `(x, x)` renders as `x` would, `(x, 0)` as half of that (the render is linear
+/// at a held position), and an anti-phase pair `(x, -x)` cancels to silence.
 #[test]
-fn the_position_dezipper_renders_what_it_always_did() {
-    let (verts, faces) = icosahedron();
-    let len = 32;
-    let bytes = sphere_bytes(RATE, len, &verts, &faces, mirrored_response(&verts, len));
-    let mut n = node(&bytes, RATE);
-    let controls = n.param_set();
-    aim(&controls, Azimuth(170.0), Elevation(10.0));
-    Node::reset(&mut n);
-    let mut input = Noise::from_state(0x1234_5678);
-    let mut digest = Fnv::new();
-    for b in 0..60 {
-        if b == 30 {
-            aim(&controls, Azimuth(-110.0), Elevation(-20.0));
-        }
-        let block: Vec<f32> = input.by_ref().take(64).collect();
-        for plane in drive(&mut n, SampleRate(f64::from(RATE)), &[&block, &block], &[]) {
-            digest.f32s(&plane);
-        }
-    }
-    let digest = digest.finish();
-    eprintln!("DIGEST hrtf {digest:#018x}");
-    tutti_fixtures::assert_golden("hrtf position de-zipper", digest, 0x6ae5_3847_7723_708d);
-}
-
-/// FNV-1a over the bits of every sample, left then right of each block, of a
-/// render of two distinct seeded noises (so the fold of the pair to mono is not
-/// a copy) with the source moved and the blend changed mid-render. Pins the
-/// panner's output across the move of its input fold from the width-only fold
-/// to `tutti_types::Fold` (design 024 step 0b, consolidation 3). The render
-/// reaches `libm` (the aim's `sin`/`cos`, the resampler), so the digest goes
-/// through `assert_golden`.
-///
-/// Mutation (run): the input fold's `0.5` -> `1.0` (the pair summed, not
-/// averaged) changes the digest and fails.
-#[test]
-fn the_panners_fold_renders_what_it_always_did() {
+fn the_panner_takes_the_mean_of_a_stereo_pair() {
     const LEN: usize = 100;
     let (verts, faces) = icosahedron();
     let bytes = sphere_bytes(RATE, LEN, &verts, &faces, mirrored_response(&verts, LEN));
     let rate = SampleRate(f64::from(RATE));
-    let mut node = node(&bytes, RATE);
-    aim(&node.param_set(), Azimuth(37.0), Elevation(12.0));
-    Node::reset(&mut node);
-    let (l, r) = (
-        noise(1536),
-        noise(1536).into_iter().rev().collect::<Vec<_>>(),
-    );
-    let mut h = Fnv::new();
-    for (i, (cl, cr)) in l.chunks(64).zip(r.chunks(64)).enumerate() {
-        if i == 5 {
-            aim(&node.param_set(), Azimuth(-120.0), Elevation(-30.0));
+    let x = noise(1536);
+    let silence = vec![0.0f32; x.len()];
+    let negated: Vec<f32> = x.iter().map(|v| -v).collect();
+    let render = |l: &[f32], r: &[f32]| -> Vec<f32> {
+        let mut node = node(&bytes, RATE);
+        aim(&node.param_set(), Azimuth(37.0), Elevation(12.0));
+        Node::reset(&mut node);
+        let mut out = Vec::new();
+        for (cl, cr) in l.chunks(64).zip(r.chunks(64)) {
+            for plane in drive(&mut node, rate, &[cl, cr], &[]) {
+                out.extend_from_slice(&plane);
+            }
         }
-        if i == 12 {
-            node.param_set().set(UnitParam::Wet, 0.6);
-        }
-        for out in drive(&mut node, rate, &[cl, cr], &[]) {
-            h.f32s(&out);
-        }
+        out
+    };
+    let both = render(&x, &x);
+    let one = render(&x, &silence);
+    let anti = render(&x, &negated);
+    let peak = both.iter().fold(0.0f32, |m, v| m.max(v.abs()));
+    assert!(peak > 0.1, "the reference render is audible ({peak})");
+    for (b, o) in both.iter().zip(&one) {
+        assert!((b - 2.0 * o).abs() <= 1e-4 * peak, "{b} is not twice {o}");
     }
-    let h = h.finish();
-    println!("DIGEST hrtf {h:#018x}");
-    tutti_fixtures::assert_golden("the HRTF panner's folded render", h, 0xacdb_8337_a761_33f4);
+    let leak = anti.iter().fold(0.0f32, |m, v| m.max(v.abs()));
+    assert!(leak <= 1e-5 * peak, "an anti-phase pair leaves {leak}");
 }

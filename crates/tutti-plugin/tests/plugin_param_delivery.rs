@@ -71,12 +71,6 @@ fn rig(client: tutti_plugin::handles::PluginClient, lanes: Vec<ControlLaneNode>)
 
 /// **Two hundred parameters moving in the same block all reach the plugin**,
 /// each with its own value, and the node counts one point per parameter.
-///
-/// Mutation (run): the node's chunk sized at 16 queues
-/// (`ParameterChanges::reserved(16, self.points)` in
-/// `ParamDelivery::prepare`) → the parameters past the 16th are refused in
-/// the first chunks, counted as dropped → fails. (They do arrive later: each
-/// refused value is still unsent, so a later chunk with room takes it.)
 #[test]
 fn two_hundred_parameters_changing_in_one_block_all_arrive() {
     let _lock = machine_lock();
@@ -106,14 +100,8 @@ fn two_hundred_parameters_changing_in_one_block_all_arrive() {
 /// then nothing, however many more blocks run. A value that moves is one
 /// more point.
 ///
-/// Ported: the source was the deleted `PluginAutomation`
-/// node, which sampled every parameter at every stride point of every
-/// block; a lane sends only when something moves, so the re-sends are asked
-/// for, to keep the node's own dedupe under test.
-///
-/// Mutation (run): no dedupe against the delivered value (`slot.sent ==
-/// Some(value)` replaced by `false` in `ParamDelivery::place`) → every
-/// chunk resends all two hundred → the count keeps rising → fails.
+/// A lane sends only when something moves, so the re-sends are asked for, to
+/// keep the node's own dedupe under test.
 #[test]
 fn an_unchanged_value_is_not_sent_again() {
     let _lock = machine_lock();
@@ -161,12 +149,6 @@ fn an_unchanged_value_is_not_sent_again() {
 /// sending 0.25 for many blocks (its lane re-sent before every block,
 /// `resync`) and the plugin keeps 0.75; then the host moves to 0.5 and the
 /// plugin takes it.
-///
-/// Mutations (run), each fails: the node forgetting what it sent
-/// (`slot.sent = None` for `Some(slot.staged)` in `settle`) → the next
-/// chunk resends 0.25 over the edit; the node never sending a parameter
-/// again once it has sent one (`place` returning when `slot.sent.is_some()`)
-/// → 0.5 never arrives.
 #[test]
 fn an_edit_on_the_plugin_survives_a_held_host_value() {
     let _lock = machine_lock();
@@ -243,10 +225,6 @@ fn amplitude(db: f64) -> f32 {
 /// node had delivered (-6 dB), so the fork's fresh lane, which sends its
 /// -6 dB on its first block (doc 014 §10's fork requirement), is not
 /// passed on, and the export plays -15 dB too.
-///
-/// Mutation (run): the fork's delivery not seeded (no
-/// `fork.state.params.seed(..)` in `fork.rs`) → the fork sends the lane's
-/// -6 dB over the loaded -15 dB → the export plays -6 dB → fails.
 #[test]
 fn an_export_renders_an_edit_made_in_the_plugin_as_live_does() {
     const FORK_BLOCK: usize = 256;

@@ -391,10 +391,6 @@ fn render(exec: &mut Executor, ed: &mut Editor, frames: usize, block: usize) -> 
 /// An unconnected param reads its base: `Io::param` says `Base`, and the
 /// node's own control is what sounds — never 0. A range with no source is
 /// still no modulation.
-///
-/// Mutation (run): in `ParamState::inputs`, hand every port its buffer
-/// (`if true` for `if self.framed[k]`) → the probe reads the scratch's
-/// zeros and flags frames → fails.
 #[test]
 fn an_unconnected_param_reads_its_base_never_zero() {
     let (cutoff, q) = (Cell::new(440.0), Cell::new(0.7));
@@ -412,15 +408,8 @@ fn an_unconnected_param_reads_its_base_never_zero() {
 /// port's first frame, and is clamped to the port's range: an unbounded
 /// port reads the source exactly, a bounded one reads it clamped.
 ///
-/// Ported from `modulators_sum_on_the_base_then_clamp`:
-/// the base, several audio sources summed in source order and a shaping LUT
-/// are gone (§10, §11: one event source per port replaces the base; a lane
-/// sums and shapes before it sends). The clamp and the per-frame timing are
-/// the properties kept.
-///
-/// Mutation (run): in `ParamState::port`, skip the clamp → the Q port reads
-/// past 0.5 → fails. Write the source one frame late (`render_ramps` starts
-/// events at `offset < i`) → frame 0 reads the base → fails.
+/// A port has one event source (a lane sums and shapes before it sends), so the
+/// clamp and the per-frame timing are the properties held here.
 #[test]
 fn an_event_sources_value_is_clamped_to_the_range() {
     let (cutoff, q) = (Cell::new(100.0), Cell::new(1.0));
@@ -450,9 +439,6 @@ fn an_event_sources_value_is_clamped_to_the_range() {
 /// A base moved under a source that has not spoken yet ramps linearly
 /// across the next block, landing exactly on the new base at its last
 /// frame — no zipper step.
-///
-/// Mutation (run): in `ParamState::port`, ramp from the new base (`from =
-/// b1`) → the block starts at the new base → fails.
 #[test]
 fn a_base_move_under_modulation_ramps_across_the_block() {
     let (cutoff, q) = (Cell::new(100.0), Cell::new(1.0));
@@ -478,10 +464,6 @@ fn a_base_move_under_modulation_ramps_across_the_block() {
 /// `PARAM_DECLICK` frames: no frame-to-frame step larger than the fade's
 /// slope, and a disconnected param is back on its base (`Base`) once the
 /// fade is over.
-///
-/// Mutation (run): in `ParamState::port`, skip the declick (`fading =
-/// false`) → a step of 1.0 on connect → fails. Hold nothing on disconnect
-/// (return at once when `source.is_none()`) → a step of 1.0 back → fails.
 #[test]
 fn connecting_and_disconnecting_at_runtime_does_not_click() {
     let (cutoff, q) = (Cell::new(0.0), Cell::new(0.0));
@@ -519,11 +501,6 @@ fn connecting_and_disconnecting_at_runtime_does_not_click() {
 /// reaches the param at `k` exactly, under block sizes that put `k`
 /// anywhere in its block; a ramp of `len` frames lands on its target at
 /// `k + len - 1`.
-///
-/// Mutation (run): in `render_ramps`, start a ramp on the frame after its
-/// event (`offset < i`) → the step cases fail. In `Ramp::step`,
-/// interpolate one frame behind (`(done - 1) / len`) → the ramp's first
-/// step fails.
 #[test]
 fn a_modulation_step_lands_on_its_frame() {
     for block in [1usize, 7, 63, 64, 65, 128] {
@@ -569,9 +546,6 @@ fn a_modulation_step_lands_on_its_frame() {
 
 /// A node that cannot say its base is never driven, whatever is connected:
 /// it keeps reading `Base`, so a param is never driven from a base of 0.
-///
-/// Mutation (run): in `ParamState::port`, treat a `None` base as 0 → the
-/// probe reads frames → fails.
 #[test]
 fn a_node_without_a_base_is_never_modulated() {
     let (cutoff, q) = (Cell::new(440.0), Cell::new(1.0));
@@ -593,9 +567,6 @@ fn a_node_without_a_base_is_never_modulated() {
 
 /// A param the node does not declare, or a source port the node does not
 /// have, is refused at compile, naming it.
-///
-/// Mutation (run): drop the `from.port >= shape.event_out` check from
-/// `compile` → the second commit is accepted → fails.
 #[test]
 fn undeclared_params_and_missing_sources_are_refused() {
     let (cutoff, q) = (Cell::new(0.0), Cell::new(0.0));
@@ -627,10 +598,6 @@ fn undeclared_params_and_missing_sources_are_refused() {
 /// Removing a node drops every param edge that names it: the ports it
 /// drove lose their source, and the ports other nodes drive keep theirs —
 /// so the value never names a node the graph no longer holds.
-///
-/// Mutation (run): in `Editor::remove`, keep sources from the removed key
-/// (drop the `m.source = None`) → the commit is refused as naming an
-/// unknown node → fails.
 #[test]
 fn removing_a_node_drops_its_param_edges() {
     let (cutoff, q) = (Cell::new(0.0), Cell::new(0.0));
@@ -668,10 +635,6 @@ fn removing_a_node_drops_its_param_edges() {
 /// held value through it, with no declick (the source did not change): the
 /// source spoke once, at frame 0, so a unit that faded in with fresh state
 /// would read its base.
-///
-/// Mutation (run): drop `shape.params == running.params` from
-/// `Editor::replace`'s check → the replace is accepted (and the fade's
-/// incoming unit runs on state sized for other params) → fails.
 #[test]
 fn a_fade_keeps_the_params_it_declares() {
     struct CutoffOnly;
@@ -725,10 +688,6 @@ fn a_fade_keeps_the_params_it_declares() {
 /// out is heard when it comes back. The source steps `Cutoff` to 7 at frame
 /// 300, while the probe is parked; un-bypassed at frame 640 it reads 7 once
 /// the fade is over, not its base.
-///
-/// Mutation (run): the parked path not running the param step
-/// (`run_params` removed from `park`) → the step at frame 300 is never seen
-/// and the probe reads its base 0 → fails.
 #[test]
 fn a_parked_nodes_params_keep_stepping() {
     let (cutoff, q) = (Cell::new(0.0), Cell::new(0.0));
@@ -758,10 +717,6 @@ fn a_parked_nodes_params_keep_stepping() {
 /// A unit's first block is not a change of sources: a probe inserted with a
 /// source already connected, and one hard-replaced at its key, read the
 /// source's value from their first frame — no fade in from the base.
-///
-/// Mutation (run): in `ParamState::port`, treat a fresh port as a change
-/// (drop the `st.fresh` branch) → the first frames fade in from the base →
-/// fails.
 #[test]
 fn a_units_first_block_is_not_declicked() {
     let (cutoff, q) = (Cell::new(0.0), Cell::new(0.0));
@@ -788,15 +743,8 @@ fn a_units_first_block_is_not_declicked() {
 /// changes its node's other port (Q gains a source), and through one that
 /// changes nothing of it (a range on Q).
 ///
-/// Ported from
-/// `an_event_sources_held_value_survives_another_source_joining`: a second
-/// source can no longer join a port (one source, replacing the base), and
-/// shaping is gone (§10), so the reshape refusal went with it. The edit
-/// now changes the node's port list instead.
-///
-/// Mutation (run): in `ParamState::port`, reset every port's ramp when
-/// any one port's source changes (a port-wide reset where only the
-/// changed port's is due) → the cutoff drops to its base (0) → fails.
+/// A port has one source, so the edit changes the node's port list instead of
+/// adding a second source.
 #[test]
 fn an_event_sources_held_value_survives_an_edit_to_its_node() {
     let (cutoff, q) = (Cell::new(0.0), Cell::new(0.0));
@@ -836,13 +784,6 @@ fn an_event_sources_held_value_survives_an_edit_to_its_node() {
 /// move under it changes nothing; a first ramp starts from the base at its
 /// frame; and a disconnect hands the port back to the base through the
 /// declick.
-///
-/// Mutation (run): in `ParamState::port`, add the base under a started
-/// event source (`out[i] + b1`, the old offset rule) → frame 10 reads 1500
-/// → fails. Mutation (run): in `render_ramps`, write 0 before the first
-/// event instead of the base → frame 0 reads 0 → fails. Mutation (run): in
-/// `render_ramps`, leave a first ramp's start at 0 (skip `ramp.value =
-/// base(i)`) → the Q ramp's first frame reads 9.99 → fails.
 #[test]
 fn an_event_source_replaces_the_base_from_its_first_event() {
     let (cutoff, q) = (Cell::new(1000.0), Cell::new(2000.0));
@@ -903,12 +844,8 @@ fn an_event_source_replaces_the_base_from_its_first_event() {
 /// (and hands it back), the port follows the new one after the declick,
 /// and disconnecting the one no longer there is a no-op.
 ///
-/// Ported from `a_second_event_source_is_refused`: the
-/// refusal (`TooManyEventParamSources`) is gone because a port's source is
-/// one `Option<EventOut>`, so two cannot be represented (§10).
-///
-/// Mutation (run): `GraphSpec::connect_param` keeping the first source
-/// (`get_or_insert`) → the port still follows node 2 → fails.
+/// A port's source is one `Option<EventOut>`, so two cannot be represented
+/// (§10).
 #[test]
 fn a_second_event_source_replaces_the_first() {
     let (cutoff, q) = (Cell::new(0.0), Cell::new(0.0));
@@ -946,10 +883,6 @@ fn a_second_event_source_replaces_the_first() {
 /// had to be filled with its last value; audio sources are gone (§10), and
 /// an event delay carries only events, so the property is now that the
 /// port keeps what it holds.
-///
-/// Mutation (run): in `compile`, never lower a param source's delay
-/// (`if d.is_zero()` → `if true`: no `ParamEvent` delay) → the delay
-/// assertion fails.
 #[test]
 fn a_delay_appearing_on_a_param_source_holds_its_last_value() {
     let (cutoff, q) = (Cell::new(0.0), Cell::new(0.0));
@@ -1028,11 +961,6 @@ impl Node for LatentHold {
 /// Added in doc 014 §12.6: the differential's reference shares the
 /// compiler's arrival, so nothing pinned the spec's fold of param sources
 /// (`compile_passes.rs` pins its event sources).
-///
-/// Mutation (run): in `GraphSpec`'s `other_sources`, leave param sources
-/// out → the spec's plan totals 0 against the compiler's 37 → fails. In
-/// `compile`, leave a param source out of its target's `preds` → the
-/// compiler's total is 0 → fails.
 #[test]
 fn a_param_source_counts_toward_arrival_in_both_solves() {
     let (cutoff, q) = (Cell::new(0.0), Cell::new(0.0));
@@ -1106,16 +1034,9 @@ impl Node for OnFirstBlock {
 /// prepared copy that sends its value on its first block, and the fork's
 /// ports (fresh too) take it from their first frame, undeclicked.
 ///
-/// Ported from `a_fork_carries_its_event_sources_ramps`:
-/// the fork no longer seeds its ports from a tap of the live ones (the
-/// seeds are gone, §10); a fresh source speaks instead. The lane itself is
-/// held to this in `tutti-nodes` (`ControlLaneNode`'s fork test).
-///
-/// Mutations (run): in `ParamState::port`, treat a fresh port as a change
-/// (drop the `st.fresh` branch) → the fork's first frames fade in from the
-/// base → fails. A source that does not speak on the fork's first block
-/// (`OnFirstBlock` cloned with `pending: false`, re-armed by neither
-/// `prepare` nor `reset`) → the fork's ports read their bases (0) → fails.
+/// A fork does not seed its ports from the live ones: a fresh source speaks
+/// instead. The lane itself is held to this in `tutti-nodes`
+/// (`ControlLaneNode`'s fork test).
 #[test]
 fn a_lane_fed_fork_reads_its_value_at_frame_0() {
     let (cutoff, q) = (Cell::new(0.0), Cell::new(0.0));
@@ -1157,9 +1078,6 @@ fn a_lane_fed_fork_reads_its_value_at_frame_0() {
 
 /// A NaN bound is refused when the spec is validated, naming the port —
 /// never handed to the audio thread, where `f32::clamp` panics on it.
-///
-/// Mutation (run): drop the NaN check from `GraphSpec::validate` → the
-/// commit is accepted → fails.
 #[test]
 fn a_nan_range_is_refused() {
     let (cutoff, q) = (Cell::new(0.0), Cell::new(0.0));
@@ -1191,12 +1109,6 @@ fn a_nan_range_is_refused() {
 /// instead of naming a node that is gone; and the executor hands the
 /// retired unit's param state back rather than freeing it on the audio
 /// thread.
-///
-/// Mutation (run): in `Editor::remove`, keep the target's entries (drop
-/// the `at.node != key` half of the retain) → the commit is refused with
-/// `UnknownParamNode` → fails. In `Executor::apply`, drop a retired unit's
-/// param state instead of pushing it to `spare_params` → `ParamState`'s
-/// drop check panics on the audio thread (a debug build) → fails.
 #[test]
 fn removing_a_modulated_target_leaves_the_graph_committable() {
     let (cutoff, q) = (Cell::new(0.0), Cell::new(0.0));
@@ -1223,10 +1135,6 @@ fn removing_a_modulated_target_leaves_the_graph_committable() {
 /// A re-prepare checks every unit out; a driven unit's param state comes
 /// back with it in the box, freed on the control side, and the resumed
 /// unit is driven again from its first block.
-///
-/// Mutation (run): in `Executor::apply`'s suspend, drop the checked-out
-/// unit's param state instead of pushing it to `spare_params` →
-/// `ParamState`'s drop check panics on the audio thread → fails.
 #[test]
 fn a_reprepare_hands_param_state_back() {
     let (cutoff, q) = (Cell::new(0.0), Cell::new(0.0));
@@ -1337,14 +1245,6 @@ fn analytic(from: f64, to: f64, shape: Law, position: f64, length: f64, j: u64) 
 /// (libm: hence a tolerance rather than bits), and an ease-out resumed at a
 /// fractional position along a fractional length (a breakpoint between
 /// frames).
-///
-/// Mutations (run), each fails: `Law::eval` returning `t` for
-/// `PowerIn` (linearised: frame 599 reads 0.5 for 0.25). In `Ramp::step`,
-/// not advancing a segment's `done` (every frame at its event frame's
-/// progress). In `ParamState::port`, holding an event source's first frame
-/// for the whole block (`buf.fill(buf[0])` after `render_ramps`: evaluated
-/// at block starts only). In `render_ramps`, starting events one frame
-/// late (`offset < i`).
 #[test]
 fn a_segment_hits_its_analytic_values_per_frame() {
     const TOL: f64 = 1e-5;
@@ -1398,11 +1298,6 @@ fn a_segment_hits_its_analytic_values_per_frame() {
 /// frame at its own (absolute) value, and a ramp after it moves on from
 /// the value the segment reached — under every block schedule, the
 /// interruptions landing mid-block in most.
-///
-/// Mutations (run): in `render_ramps`, start a segment from the value it
-/// interrupts (`from: ramp.value`) → frame 437 reads near `a`'s value →
-/// fails. In `Ramp::start`, keep the segment's curve (`self.curve` not
-/// cleared) → the ramp after it follows the old shape → fails.
 #[test]
 fn an_interrupted_segment_hands_over_on_the_frame() {
     const TOL: f64 = 1e-5;
@@ -1449,11 +1344,6 @@ fn an_interrupted_segment_hands_over_on_the_frame() {
 /// 0.0625, 0.25, 0.5625 and 1 (IEEE-exact); a long `Exp` ramp (libm: a
 /// tolerance) spans blocks; a `Hold` ramp holds its start and steps on its
 /// last frame.
-///
-/// Mutations (run), each fails: in `render_ramps`, start every ramp
-/// `Law::Linear` (`r.shape()` ignored) → frame 100 reads 0.25. In
-/// `Ramp::step`, evaluate the shape one frame behind (`(done - 1) / len`) →
-/// frame 100 reads 0.
 #[test]
 fn a_shaped_ramp_hits_its_analytic_values_per_frame() {
     const TOL: f64 = 1e-5;
@@ -1498,11 +1388,6 @@ fn a_shaped_ramp_hits_its_analytic_values_per_frame() {
 /// later segment jumps to its own value, and a shaped ramp after a segment
 /// starts from the value the segment reached — on its frame, under every
 /// block schedule.
-///
-/// Mutations (run), each fails: in `Ramp::start`, start from the
-/// interrupted move's target (`self.from = self.target`) → frame 150 reads
-/// near 1. In `Ramp::start`, keep the interrupted ramp's shape (`self.shape`
-/// not set) → the linear ramp at 150 follows `PowerIn(2)`.
 #[test]
 fn an_interrupted_shaped_ramp_hands_over_on_the_frame() {
     const TOL: f64 = 1e-5;
@@ -1560,11 +1445,6 @@ fn an_interrupted_shaped_ramp_hands_over_on_the_frame() {
 /// never rewrites the segment: narrowed mid-segment, the port sits inside
 /// the range; widened again, it is back on the curve where the segment has
 /// run on to.
-///
-/// Mutations (run): in `ParamState::port`, ignore the live range (clamp to
-/// the unbounded range) → the narrowed blocks read the curve → fails. After
-/// the clamp, clamp each event source's stored target to the range too →
-/// the widened block lands at 0.25 → fails.
 #[test]
 fn a_range_clamps_a_segment_without_rewriting_it() {
     const TOL: f64 = 1e-5;
@@ -1765,12 +1645,6 @@ fn ramp_from(at: u64, held: impl Fn(usize) -> f32) -> Vec<f32> {
 /// value). Pinned under a base that is ramping across the block, in the
 /// executor and in the reference alike, so neither can start it from the
 /// previous frame's base or from a value nothing wrote.
-///
-/// Mutations (run): in `render_ramps`, drop the base seed from the segment
-/// arm → the executor's ramp starts from its never-written value 0 (frame
-/// 10 reads 0 for 1.03125) → fails. In the reference's `run_params`, seed
-/// the segment with the value the last frame held (`st.ramp.value`) →
-/// the reference's ramp starts from 1.25 (frame 10 reads 0.9375) → fails.
 #[test]
 fn a_ramp_replacing_a_first_segment_on_its_frame_starts_from_the_base() {
     let want = ramp_from(10, moving_base);
@@ -1785,12 +1659,6 @@ fn a_ramp_replacing_a_first_segment_on_its_frame_starts_from_the_base() {
 /// segment's own frame starts from the value the source held on the frame
 /// before (here a step to 7), not from the base, even as the base moves
 /// under it: the base seed is for a source's first event only.
-///
-/// Mutations (run): in `render_ramps`, seed the base on the segment arm
-/// unconditionally (drop `if !ramp.started`) → the executor's ramp starts
-/// from the base 1.375 (frame 10 reads 1.03125 for 5.25) → fails. In the
-/// reference's `run_params`, seed the segment with `base(i)` unconditionally
-/// → the reference's ramp does the same → fails.
 #[test]
 fn a_started_sources_ramp_replacing_a_segment_on_its_frame_starts_from_its_held_value() {
     let want = ramp_from(10, |_| 7.0);
@@ -1814,11 +1682,6 @@ fn a_started_sources_ramp_replacing_a_segment_on_its_frame_starts_from_its_held_
 /// §12.6 (was `a_segment_replaces_the_base_and_audio_offsets_add`): the audio
 /// modulator added beside it is gone with audio-rate param sources (§10,
 /// §11).
-///
-/// Mutation (run): in `ParamState::port`, add the base under the event
-/// source (the old offset rule) → every frame from 10 on is 0.5 high →
-/// fails. Mutation (run): in `render_ramps`, write 0 before the first event
-/// instead of the base → frames 0..10 read 0.5 low → fails.
 #[test]
 fn a_segment_replaces_the_base() {
     const TOL: f64 = 1e-5;
@@ -1874,16 +1737,6 @@ fn stepped(x: f32, (lo, hi): (f32, f32)) -> f32 {
 /// every frame of it, while the block before it ran on the old range. A
 /// range edited through the spec instead lands with a commit that, the edit
 /// being only a range, sends nothing either.
-///
-/// Mutations (run): in `Editor::set_param_range`, skip the cell store (the
-/// running unit keeps the spec's range as of the last commit) → the next
-/// block is unclamped → fails. In `ParamState::port`, clamp with the range
-/// the port read on its *previous* block (a `PortState` field updated after
-/// the clamp) → the first block after the move is unclamped → fails. In
-/// `Editor::commit`, compare specs with `==` again (a range is plan) → the
-/// spec edit sends a new plan → fails. In `Editor::commit`'s range-only
-/// path, skip `sync_ranges` → the spec edit never reaches the running unit
-/// → fails.
 #[test]
 fn a_range_move_lands_on_the_next_block_without_a_commit() {
     const SEED: u64 = 23;
@@ -1982,11 +1835,6 @@ fn a_range_move_lands_on_the_next_block_without_a_commit() {
 /// A crossfade keeps the key's running param state, and with it the range
 /// cells that state reads: once the fade is over, a range move reaches the
 /// unit that faded in, on the next block.
-///
-/// Mutation (run): in `Editor::send`, give every placed unit fresh range
-/// cells (`*c = ParamRanges::new(list)` unconditionally) → the editor
-/// writes cells the kept state does not read → the move never lands →
-/// fails.
 #[test]
 fn a_range_move_reaches_a_unit_that_faded_in() {
     let (cutoff, q) = (Cell::new(0.0), Cell::new(0.0));
@@ -2028,10 +1876,6 @@ fn a_range_move_reaches_a_unit_that_faded_in() {
 /// cells of its own: each of its ports clamps to its own param's range,
 /// from its first block and after a move — never to the range of the
 /// param the replaced unit had at that port.
-///
-/// Mutation (run): in `Editor::send`, keep a key's cells whatever the new
-/// unit declares (drop the `c.declared() != list` replacement) → the
-/// reversed probe's port 0 (`Q`) reads cell 0 (`Cutoff`'s range) → fails.
 #[test]
 fn a_reordered_param_list_clamps_each_port_to_its_own_range() {
     let (cutoff, q) = (Cell::new(0.0), Cell::new(0.0));
@@ -2077,9 +1921,6 @@ fn a_reordered_param_list_clamps_each_port_to_its_own_range() {
 
 /// `Editor::set_param_range` refuses what a commit would, and changes
 /// nothing when it does.
-///
-/// Mutation (run): drop the NaN check from `Editor::set_param_range` → the
-/// NaN is recorded → fails.
 #[test]
 fn a_bad_range_move_is_refused() {
     let (cutoff, q) = (Cell::new(0.0), Cell::new(0.0));
@@ -2113,11 +1954,6 @@ fn a_bad_range_move_is_refused() {
 /// Changed in doc 014 §12.2: the ramp ran from 0 and the port read base +
 /// ramp; an event source now replaces the base, and its first ramp starts
 /// from the base.
-///
-/// Mutation (run): in `ParamState::port`, write the clamped value back into
-/// an event source's ramp (`s.ramp.value`, the value the next frame steps
-/// from, clamped with the sum) → after the widen the ramp resumes from the
-/// bound → fails.
 #[test]
 fn a_shrinking_range_rewrites_neither_the_base_nor_a_ramp() {
     const BASE: f32 = 0.5;
@@ -2592,14 +2428,6 @@ proptest! {
 /// The handle is read-only: a store into the cell alone would be undone by
 /// the next commit, so the test writes through the supported path,
 /// `set_param_range`, and asserts the handle sees it.
-///
-/// Mutations (run): `param_range_cell` returning a view of a fresh cell
-/// holding the current range (`PackedAtomic::new` of the stored range) → the
-/// handle misses the later `set_param_range` → fails. `ParamRanges::new`
-/// sharing one cell between all ports → the range set on Cutoff clamps Q's
-/// port, which reads past it → fails. `set_param_range` not updating the
-/// spec (cell only) → the commit that follows rewrites the cell to the old
-/// range → fails.
 #[test]
 fn a_range_cell_handle_is_the_ports_own() {
     const SEED: u64 = 29;

@@ -56,14 +56,6 @@ fn gained(v: f64) -> f32 {
 /// input. Rendered in an export (an offline fork of both, rolling), so the
 /// pipeline answers every chunk: once the first chunk has passed, the
 /// output is 10^(-6/20).
-///
-/// Ported from the deleted `PluginAutomation` node.
-///
-/// Mutations (run), each fails with the gain left at 0 dB: the
-/// plugin node ignoring segment events (the lane's) in its event walk.
-/// The ramp path (the deleted node's) is pinned by
-/// `an_interrupting_ramp_stops_a_segment_on_a_plugin`: ignoring ramp events
-/// there fails (run); here it survives, as a lane sends segments.
 #[test]
 fn automation_reaches_the_plugin_through_its_event_input() {
     let _lock = machine_lock();
@@ -267,14 +259,6 @@ fn follows(
 /// every chunk (four 256-frame chunks here) and the end value on the
 /// segment's last frame: the gain rises through the curve's values and
 /// lands exactly on the end gain on its frame, and stays.
-///
-/// Mutations (run), each fails: the plugin node sending only the segment's
-/// first point (no `SegmentPoints` tracking) → the gain stays near the
-/// start; no point on the arrival frame → the end gain lands late, on the
-/// next stride point. Mutation (run): the play-grid points dropped
-/// (`on_grid` false in `SegmentPoints::points`) → the gain holds the start
-/// until the chunk's last frame, "input frame 334" below the curve 32
-/// frames earlier → fails.
 #[test]
 fn a_scheduled_segment_drives_a_plugin_parameter_to_its_end() {
     const AT: u64 = 300;
@@ -297,10 +281,6 @@ fn a_scheduled_segment_drives_a_plugin_parameter_to_its_end() {
 /// the ramp starts from the 0.5 the node gave the gain, so the gain follows
 /// the segment from 0.5 to 0.75 along `PowerIn(2)` that a param port would
 /// render, and lands exactly on the end gain on the ramp's last frame.
-///
-/// Mutations (run), each fails: the plugin node ignoring a ramp's duration
-/// (every ramp a step) → the gain is at 0.75 from frame 300; sending the
-/// ramp `Linear` → the gain lies above the curve's upper bound mid-ramp.
 #[test]
 fn a_shaped_ramp_drives_a_plugin_parameter_along_its_shape() {
     const AT: u64 = 300;
@@ -325,12 +305,6 @@ fn a_shaped_ramp_drives_a_plugin_parameter_along_its_shape() {
 
 /// **An interrupting event wins.** A ramp to 0.25 landing mid-segment holds
 /// the gain at 0.25 from its frame on: the segment sends no more points.
-///
-/// Mutation (run): the plugin node not interrupting a segment on a ramp
-/// (`SegmentPoints::interrupt` not called) → the next stride point pulls
-/// the gain back onto the segment → fails. Mutation (run):
-/// the plugin ignoring ramp events (`params.point` not called) → the
-/// segment's value is left → fails.
 #[test]
 fn an_interrupting_ramp_stops_a_segment_on_a_plugin() {
     const AT: u64 = 300;
@@ -356,12 +330,6 @@ fn an_interrupting_ramp_stops_a_segment_on_a_plugin() {
 /// sending an exponential trajectory as segments (`for_foreign`) gives what a
 /// scheduled segment gives: the gain follows the curve within one point
 /// spacing and lands exactly on the end gain on the trajectory's last frame.
-///
-/// Mutation (run): the plugin node sending only each segment's first point
-/// → the gain moves only at the lane's block-edge re-sends, more than one
-/// spacing behind the curve → fails. Mutation (run): each piece's end
-/// value read one grid step late (`d + 32.0` in the lane's piece end) →
-/// the chunk edge at frame 255 lies above `curve(256)` → fails.
 #[test]
 fn a_lane_drives_a_plugin_parameter_along_its_curve() {
     let mut env = Trajectory::new();

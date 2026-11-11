@@ -1,6 +1,6 @@
 use super::*;
 
-// ── LfoShape waveform math (ported from tutti_nodes::lfo tests) ──
+// ── LfoShape waveform math ──
 
 #[test]
 fn test_lfo_shapes() {
@@ -85,9 +85,6 @@ fn curve(c: Law, x: f32) -> f32 {
 }
 
 /// Every curve runs from 0 at no input to 1 at full input.
-///
-/// Mutation (run): `shape`'s bipolar arm curving `1 - |x|` → `Linear` at 0
-/// is 1.
 #[test]
 fn every_curve_runs_from_zero_to_one() {
     for c in LAWS {
@@ -102,9 +99,6 @@ fn every_curve_runs_from_zero_to_one() {
 
 /// No curve falls as the input rises, and none leaves `[0, 1]`: the offset
 /// never exceeds the depth.
-///
-/// Mutations (run), each fails: `shape` evaluating `PowerOut` as `Hold` →
-/// `PowerOut(3)` falls; `shape` curving `1 - |x|` → every curve falls.
 #[test]
 fn no_curve_falls_or_leaves_the_unit_range() {
     for c in LAWS {
@@ -124,10 +118,6 @@ fn no_curve_falls_or_leaves_the_unit_range() {
 
 /// `Quad` and `Cubic` shape the offset: they are not linear, and a
 /// bipolar amount keeps the sign while curving the magnitude.
-///
-/// Mutations (run), each fails: `shape` reading every easing variant as
-/// linear (`_ => x`) → `QuadIn` at 0.5 is 0.5; the unipolar arm
-/// uncurved → `CubicIn` at 0 is 0.5.
 #[test]
 fn quad_and_cubic_are_not_linear() {
     for (c, want) in [

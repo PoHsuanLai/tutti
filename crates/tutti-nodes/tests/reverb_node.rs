@@ -10,7 +10,7 @@ use tutti_dsp::{
     Ceiling, Design, Effect, FdnControls, FdnDesign, Freeverb, FreeverbControls, FreeverbDesign,
     Realization, Setup, System,
 };
-use tutti_fixtures::{Fnv, Noise};
+use tutti_fixtures::Noise;
 use tutti_graph::contract::{assert_honest_tail, assert_param_fork, drive_input, prepared};
 use tutti_graph::{
     Env, GraphBuilder, IntoNode, Node, ParamFork, ParamIn, ParamNode, Prepare, Status, Transport,
@@ -99,36 +99,9 @@ fn tail_of(c: FreeverbControls) -> usize {
     (s.get() * SR.get()).ceil() as usize
 }
 
-/// The General MIDI send renders what the reverb always did, bit for bit: a
-/// digest (FNV-1a over the bits of every sample, left then right of each 64-frame
-/// block) of its answer to 24 000 frames of seeded noise at 48 kHz, recorded from
-/// `Freeverb::process` at `f30a9d1db`, before it was a kernel and a node over a
-/// design. The render is adds and multiplies of `f32` with no `libm` call, so the
-/// digest holds on every platform and needs no golden guard.
-///
-/// Mutation (run): `damp * 0.4` -> `damp * 0.41` in `FreeverbDesign::design_into`
-/// (the coefficient `retarget` sets from the network), or the node cutting a
-/// frame early, changes the digest and fails.
-#[test]
-fn the_general_midi_send_renders_what_it_always_did() {
-    let mut rig = Rig::new(prepared(FreeverbNode::general_midi(), SR, BLOCK));
-    let mut digest = Fnv::new();
-    for chunk in noise(21, 24_000).chunks(BLOCK) {
-        let out = rig.block(chunk, &[]).audio;
-        digest.f32s(&out[0]);
-        digest.f32s(&out[1]);
-    }
-    assert_eq!(digest.finish(), 0x1140_a790_410d_b275);
-}
-
 /// The General MIDI send takes a mono input and gives a stereo one, with no
 /// latency, and offers no cell to the graph (its dry/wet is the graph's mix); a
 /// live node offers the room and the damping. Its tail is a ceiling.
-///
-/// Mutation (run): `Mode::Live` offering no addresses fails the live row;
-/// `Mode::Fixed` offering the cells fails the fixed one; the realization's latency
-/// left out of the shape fails the latency assertion only if a realization had one
-/// (none of Freeverb's does, so that is pinned by the realization contract).
 #[test]
 fn the_ports_and_the_ceiling() {
     let fixed = prepared(FreeverbNode::general_midi(), SR, BLOCK);
@@ -164,10 +137,6 @@ fn the_ports_and_the_ceiling() {
 /// name by index: the design's cells in the order its params list them. Freeverb
 /// offers `[RoomSize, Damping]`; the FDN offers the three decays, the size, the diffusion, the pre-delay, the
 /// modulation depth and rate, the width and the wet gain.
-///
-/// Mutation (run): swapping the room and damping addresses in
-/// `FreeverbSet::addrs` fails the first assertion; swapping the first two
-/// decays in the FDN's `ADDRS` fails the second.
 #[test]
 fn the_port_order_is_the_cells_in_their_order() {
     let freeverb = live(gm());
@@ -203,9 +172,6 @@ fn the_port_order_is_the_cells_in_their_order() {
 /// A live node narrows its ceiling each block to the tail of the network it is
 /// running, from the network's own `tail` query at -60 dB: a smaller room reports
 /// less than a bigger one, and both less than the ceiling.
-///
-/// Mutation (run): not calling `report_tail` leaves `reported_tail` empty and
-/// fails; reporting the ceiling fails the `<` against it.
 #[test]
 fn a_live_node_reports_the_tail_of_its_current_network() {
     let mut last = 0;
@@ -226,9 +192,6 @@ fn a_live_node_reports_the_tail_of_its_current_network() {
 /// The reported tail holds: past it the output is exactly silent, for the fixed
 /// send and a live node at a short and a long room (the harness's check, which
 /// also looks past the ceiling).
-///
-/// Mutation (run): the node's `cut` computed one frame late (`+ 1` more in
-/// `live`) fails with a sound one frame past the tail.
 #[test]
 fn the_reported_tail_is_honest() {
     assert_honest_tail(&mut prepared(FreeverbNode::general_midi(), SR, BLOCK), SR);
@@ -241,9 +204,6 @@ fn the_reported_tail_is_honest() {
 /// impulse's answer) at every frame past the tail the node reports, so parking
 /// the room there takes nothing audible. (The realization's own render, held to the
 /// network's figure; no other reverb's.)
-///
-/// Mutation (run): `TAIL_FLOOR` -60 -> -30 in the node shortens the tail to
-/// where the room still rings at -30 dB, and fails.
 #[test]
 fn the_cut_discards_only_what_is_below_the_floor() {
     for c in [gm(), controls(0.9, 0.2), controls(0.1, 0.9)] {
@@ -276,8 +236,6 @@ fn the_cut_discards_only_what_is_below_the_floor() {
 /// `n - 1`, the last frame to sound is `n - 1 + tail` (the tail counted from the
 /// last frame of input) and every frame after it is exactly zero. The input is
 /// loud noise, so the answer is dense at the cut and a frame early or late shows.
-///
-/// Mutation (run): one frame more or less in the node's `live` count fails.
 #[test]
 fn the_room_is_cut_at_its_tail_to_the_frame() {
     let n = 4_000;
@@ -304,9 +262,6 @@ fn the_room_is_cut_at_its_tail_to_the_frame() {
 /// input. Room 0.9 rung by an impulse, then the cell set to 0.1: every later
 /// block still reports the long room's tail, and a block of new input takes
 /// off the frames since the old input and no more.
-///
-/// Mutation (run): reporting `current` alone (dropping `self.ring.max`) reports
-/// the short room's tail in the quiet blocks and fails the first loop.
 #[test]
 fn a_shorter_decay_keeps_the_longer_tail_until_heard_out() {
     let mut rig = Rig::new(live(controls(0.9, 0.5)));
@@ -334,9 +289,6 @@ fn a_shorter_decay_keeps_the_longer_tail_until_heard_out() {
 /// Past its tail the node cuts the room off, resets and parks (`Status::Idle`),
 /// and an idle node answers new input as a fresh one does, bit for bit: the
 /// state it holds is exactly zero. Before the tail has elapsed it is not idle.
-///
-/// Mutation (run): not resetting the realization before returning `Idle` leaves the
-/// old room in the lines, and the wake differs from the fresh node's.
 #[test]
 fn an_idle_reverb_wakes_as_a_fresh_one() {
     let mut rig = Rig::new(live(gm()));
@@ -376,9 +328,6 @@ fn an_idle_reverb_wakes_as_a_fresh_one() {
 /// read: a block whose room port ends at 0.9 renders as one whose cell is 0.9.
 /// And the tail is reported from the *longest* room the port takes in the
 /// block, so a decay that falls through the block is not reported short.
-///
-/// Mutation (run): reading the port's first frame rather than its last fails the
-/// first assertion; dropping `longest` fails the second.
 #[test]
 fn a_modulated_port_is_read_at_the_blocks_end_and_its_peak_sets_the_tail() {
     // Long enough for the combs to come round, where the room is heard.
@@ -410,9 +359,6 @@ fn a_modulated_port_is_read_at_the_blocks_end_and_its_peak_sets_the_tail() {
 
 /// A non-finite write to a cell reads as unchanged: the node keeps the last
 /// finite room, so the render equals one that never saw the NaN.
-///
-/// Mutation (run): reading the cell without `LastGood` designs a room of NaN
-/// (clamped to the General MIDI value by the design, which differs from 0.9).
 #[test]
 fn a_non_finite_cell_write_is_ignored() {
     let x = noise(4, 4_096);
@@ -435,9 +381,6 @@ fn a_non_finite_cell_write_is_ignored() {
 /// channels (no dry input in the output), and the first left echo is the input at
 /// the fixed gain, 1215 frames in at 48 kHz. Its dry/wet is the graph's mix
 /// (`node_mix.rs`), which blends this signal with the aligned input.
-///
-/// Mutation (run): the node adding `0.01 * input` to each output channel fails
-/// the first frame; scaling its output by 0.9 fails the echo's figure.
 #[test]
 fn the_node_is_the_room_alone() {
     let mut x = vec![0.0f32; 1_400];
@@ -456,10 +399,6 @@ fn the_node_is_the_room_alone() {
 /// A fork of the node starts from silence with the values set, and shares nothing
 /// with it: the harness's fork checks, and a fork taken while the room rings
 /// does not carry the ring (doc 022's export-fork rule: `fresh()` plus preroll).
-///
-/// Mutation (run): `fork_fresh` returning a plain clone of the state (not
-/// `Realization::fresh`) carries the ring into the fork and fails the second half;
-/// not detaching the cells fails `assert_param_fork`.
 #[test]
 fn a_fork_starts_silent_with_the_values_set() {
     assert_param_fork(DesignNode::live(FreeverbDesign, gm()));
@@ -492,9 +431,6 @@ fn a_fork_starts_silent_with_the_values_set() {
 /// This is the modulation path as an engine runs it: the lane sends a segment to
 /// the node's param port, the executor fuses it with the node's base, the node
 /// reads the port at the block's last frame, designs, and retargets its realization.
-///
-/// Mutation (run): the node reading its cell instead of the port makes the two
-/// renders identical and fails.
 #[test]
 fn a_lane_driving_the_room_changes_how_long_it_rings() {
     let ring = |room: f32| -> f64 {

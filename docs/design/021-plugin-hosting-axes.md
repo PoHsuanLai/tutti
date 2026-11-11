@@ -227,7 +227,9 @@ of `fork.rs` and `vst2_in_process/fork.rs` become one.
 `ProcessContext` (automation, MIDI, transport) and calls `Processor::process`;
 `IpcProcessor` serialises that context into the slab, `F::Processor` consumes it.
 
-As built (step 4a-3c-2): `format/in_process/` is generic over `F: InProcess`
+As built (step 4a-3c-2; a dated record: since step 4b the node is generic over
+any `Loaded`, in `tutti-plugin-host`'s `node/`, and the `Host*` traits are
+`AnyThread`, `Health` and `MainThreadControl`, §10.4): `format/in_process/` is generic over `F: InProcess`
 and names no format: `Instance<F>` (a `Lifecycle<F>` and a threaded `Hand`),
 `InProcClient<F>` (the unbound node), `PluginNode<F>` (the bound graph node: a
 `tutti_graph::Node`, an `IntoNode` with a fork source), `load_client::<F>(main,

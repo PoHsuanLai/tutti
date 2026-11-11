@@ -8,9 +8,11 @@
 //! editor-only instance a client opens in this process is loaded by a
 //! function the host passes ([`EditorLoader`]).
 //!
-//! The `unsafe` here is the process edge's own: shared memory, its mapping
-//! and the atomics laid over it (`transport/shm`), the control socket's
-//! deadline on Windows, and the launch. Every block carries a `// SAFETY:`.
+//! It has no `unsafe`: the slab's shared mapping and header, and the Windows
+//! pipe peek behind the control socket's deadline, are `tutti-plugin-ipc-ffi`'s
+//! safe calls.
+
+#![forbid(unsafe_code)]
 
 // The test build's allocator: without it every `assert_no_alloc` gate in
 // this crate's tests is inert (they were, from the crate's extraction until

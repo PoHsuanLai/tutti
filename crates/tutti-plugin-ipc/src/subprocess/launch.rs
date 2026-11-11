@@ -597,10 +597,10 @@ mod tests {
         timeout_ms: u64,
         restore_timeout: Duration,
     ) -> (BridgeResult<LaunchedServer>, Duration) {
+        // Held for the launch: the server inherits the switches when it spawns.
+        let mut switches = tutti_fixtures::ScopedEnv::new();
         for (k, v) in env {
-            // SAFETY: each test runs in a process of its own, before any thread
-            // of it reads the environment.
-            unsafe { std::env::set_var(k, v) };
+            switches.set(k, v);
         }
         let config = BridgeConfig {
             socket_path: crate::unique_socket_path(),

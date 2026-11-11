@@ -78,23 +78,8 @@ tutti-vst3-host = { path = "../tutti-vst3-host", optional = true }
 tutti-au-host = { path = "../tutti-au-host", optional = true }
 
 libloading = "0.8"
-
-[target.'cfg(unix)'.dependencies]
-# `getppid`, to notice that the host died before it connected. An orphan is
-# reparented to init, so ppid == 1 is the signal — no handle, no host cooperation
-# needed, which is the point: the case being handled is the one where the host had
-# no chance to cooperate.
-libc = "0.2"
-
-[target.'cfg(windows)'.dependencies]
-# Same duty as `libc` above, but Windows has no `getppid` and does not reparent
-# orphans, so the parent PID has to be found by walking the process table
-# (`CreateToolhelp32Snapshot`) and then probed for liveness.
-windows-sys = { version = "0.59", features = [
-  "Win32_Foundation",
-  "Win32_System_Diagnostics_ToolHelp",
-  "Win32_System_Threading",
-] }
+# The OS calls of the host watchdog and the connection wait, behind safe calls.
+tutti-plugin-ipc-ffi = { path = "../tutti-plugin-ipc-ffi" }
 
 [dev-dependencies]
 # The slab's sample bound (`Pod`) on the generic round-trip helper.
@@ -128,3 +113,7 @@ tutti-vst3-host = { path = "../tutti-vst3-host", features = ["conformance"] }
 [package.metadata.docs.rs]
 all-features = true
 rustdoc-args = ["--cfg", "docsrs"]
+
+[target.'cfg(unix)'.dev-dependencies]
+# `orphan_watchdog`'s process control (`kill`, `waitpid`, `prctl`).
+libc = "0.2"

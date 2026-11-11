@@ -5,11 +5,13 @@
 use std::sync::atomic::Ordering;
 
 use tutti_graph::contract::drive;
-use tutti_graph::{Node, Prepare};
+use tutti_graph::{Node, ParamNode, Prepare};
 use tutti_nodes::{
     BrickwallLimiterNode, BusStripNode, DelayLineNode, EqBandNode, LimiterNode, SvfType,
 };
-use tutti_types::{AtomicF32, Db, Feedback, Hz, ParamCell, Q, SampleRate, Samples, Seconds};
+use tutti_types::{
+    AtomicF32, Db, Feedback, Hz, ParamCell, Q, SampleRate, Samples, Seconds, UnitParam,
+};
 
 const RATE: SampleRate = SampleRate(48_000.0);
 const BAD: [f32; 3] = [f32::NAN, f32::INFINITY, f32::NEG_INFINITY];
@@ -151,9 +153,13 @@ fn the_limiters_and_the_eq_band_hold_off_non_finite_controls() {
     check("eq band", || {
         let n = EqBandNode::<f64>::new(SvfType::Bell, Hz(1000.0), Q(1.0), Db(3.0));
         let cells = vec![
-            ("frequency", n.frequency().into(), 2000.0),
-            ("q", n.q().into(), 2.0),
-            ("gain", n.gain_db().into(), 6.0),
+            (
+                "frequency",
+                n.param_set().cell(UnitParam::Cutoff).unwrap(),
+                2000.0,
+            ),
+            ("q", n.param_set().cell(UnitParam::Q).unwrap(), 2.0),
+            ("gain", n.param_set().cell(UnitParam::GainDb).unwrap(), 6.0),
         ];
         (Box::new(n), cells)
     });

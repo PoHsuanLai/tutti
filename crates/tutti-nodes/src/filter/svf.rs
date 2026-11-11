@@ -5,9 +5,7 @@
 //! [`SvfFilterNode`]: the coefficients are shared across channels and only the
 //! integrator state is per channel.
 
-use std::sync::Arc;
 use tutti_dsp::Real;
-use tutti_types::AtomicF32;
 
 use tutti_graph::{
     Cx, Inputs, IntoNode, Io, Node, NodeParts, Outputs, ParamNode, ParamSet, Prepare, Shape, Status,
@@ -18,7 +16,7 @@ use tutti_types::{ChannelLayout, Db, Hz, Param, Q, SampleRate, Tail};
 use crate::ramp::LastGood;
 use tutti_dsp::{Ramp, lane_group, segments};
 
-use tutti_dsp::{SvfCoefficients, SvfType, svf_step};
+use tutti_dsp::{SvfCoefficients, SvfControls, SvfType, svf_step};
 
 /// A state-variable filter of any width: `N` audio inputs, `N` outputs, one
 /// coefficient set shared across the channels and one integrator pair per
@@ -167,96 +165,25 @@ impl<F: Real> SvfFilterNode<F> {
         self.state.len()
     }
 
-    /// Sets the shelf/bell gain in [`Db`], recomputing coefficients
-    /// immediately. Read only by the gain-bearing filter types.
+    /// A filter `channels` wide with every control of `controls` (the response,
+    /// cutoff, Q and the gain of a bell or shelf, read only by those three).
+    ///
+    /// [`new`](Self::new) and [`with_channels`](Self::with_channels) start at
+    /// 0 dB; this is the constructor of a gain-bearing filter. The response is
+    /// fixed here: a node with another one is another node.
     #[must_use]
-    pub fn with_gain_db(mut self, db: impl Into<Db>) -> Self {
-        let db = db.into();
-        self.gain_db = Param::new(db);
-        self.good[2] = LastGood::new(db.get(), 0.0);
-        self.coeffs = SvfCoefficients::solve(
-            self.filter_type,
-            self.frequency.load(),
-            self.q.load(),
-            db,
-            self.sample_rate,
+    pub fn with_controls(channels: impl Into<ChannelLayout>, controls: SvfControls) -> Self {
+        let mut node = Self::with_channels(channels, controls.ty, controls.freq, controls.q);
+        node.gain_db = Param::new(controls.gain);
+        node.good[2] = LastGood::new(controls.gain.get(), 0.0);
+        node.coeffs = SvfCoefficients::solve(
+            controls.ty,
+            controls.freq,
+            controls.q,
+            controls.gain,
+            node.sample_rate,
         );
-        self
-    }
-
-    /// The shared cutoff cell in [`Hz`], applied to every channel alike.
-    ///
-    /// Read once per block. Writing the raw cell bypasses the 1 Hz floor
-    /// [`set_frequency`](Self::set_frequency) applies; the coefficient
-    /// computation clamps to `1.0..=0.998 * Nyquist` regardless, since `tan`
-    /// diverges at Nyquist. **A cutoff the graph feeds overrides it.**
-    /// Shared across clones.
-    ///
-    /// A non-finite value written here (NaN, ±∞) reads as *unchanged*: the
-    /// filter keeps the last finite value, so it never reaches the coefficient
-    /// solve or the filter state, and the next finite write takes effect.
-    pub fn frequency(&self) -> Arc<AtomicF32> {
-        self.frequency.as_atomic()
-    }
-
-    /// The shared resonance cell in [`Q`], applied to every channel alike.
-    ///
-    /// Read once per block. Writing the raw cell bypasses
-    /// [`set_q`](Self::set_q)'s clamp; the coefficient computation floors the
-    /// value at `0.01` to avoid a division blow-up. **A Q the graph feeds
-    /// overrides it.** Shared across clones.
-    ///
-    /// A non-finite value written here (NaN, ±∞) reads as *unchanged*: the
-    /// filter keeps the last finite value, so it never reaches the coefficient
-    /// solve or the filter state, and the next finite write takes effect.
-    pub fn q(&self) -> Arc<AtomicF32> {
-        self.q.as_atomic()
-    }
-
-    /// The shared shelf/bell gain cell in [`Db`].
-    ///
-    /// Always read from the atomic — the graph cannot modulate it. Inert
-    /// on the non-gain filter types.
-    ///
-    /// A non-finite value written here (NaN, ±∞) reads as *unchanged*: the
-    /// filter keeps the last finite value, so it never reaches the coefficient
-    /// solve or the filter state, and the next finite write takes effect.
-    pub fn gain_db(&self) -> Arc<AtomicF32> {
-        self.gain_db.as_atomic()
-    }
-
-    /// Sets the cutoff in [`Hz`] for every channel, floored at 1 Hz.
-    ///
-    /// The upper bound is applied when coefficients are computed, at `0.998` of
-    /// Nyquist — so this accepts a higher value and the filter tops out there.
-    /// While the graph modulates the cutoff this sets the *base* its
-    /// modulation rides on, not what the filter runs at.
-    pub fn set_frequency(&self, hz: impl Into<Hz>) {
-        self.frequency.store(Hz(hz.into().get().max(1.0)));
-    }
-
-    /// Sets the resonance [`Q`] for every channel, clamped to the valid range.
-    ///
-    /// `0.707` is the flattest response; higher resonates at the cutoff.
-    pub fn set_q(&self, q: impl Into<Q>) {
-        self.q.store(Q::new_clamped(q.into().get()));
-    }
-
-    /// Sets the shelf/bell gain in [`Db`]. Inert on the non-gain filter types.
-    pub fn set_gain_db(&self, db: impl Into<Db>) {
-        self.gain_db.store(db.into());
-    }
-
-    /// Switches the filter response for every channel, forcing a coefficient
-    /// solve on the next sample.
-    ///
-    /// `&mut self`, so this cannot reach a node already live in the graph —
-    /// the response is a structural choice, not an automatable parameter.
-    /// Integrator state is deliberately kept, so the switch is continuous
-    /// rather than a click.
-    pub fn set_filter_type(&mut self, filter_type: SvfType) {
-        self.filter_type = filter_type;
-        self.coeffs.invalidate();
+        node
     }
 
     /// Read the three control cells, once, with non-finite values held off.
@@ -537,8 +464,15 @@ mod tests {
     /// assertion below fails.
     #[test]
     fn a_fork_starts_from_the_authored_values_and_shares_nothing() {
-        let node = SvfFilterNode::<f64>::new(SvfType::Bell, Hz::new(500.0), Q::new(0.707))
-            .with_gain_db(Db::new(-3.0));
+        let node = SvfFilterNode::<f64>::with_controls(
+            ChannelLayout::MONO,
+            SvfControls {
+                ty: SvfType::Bell,
+                freq: Hz::new(500.0),
+                q: Q::new(0.707),
+                gain: Db::new(-3.0),
+            },
+        );
         assert_eq!(
             node.param_set().params().collect::<Vec<_>>(),
             [UnitParam::Cutoff, UnitParam::Q, UnitParam::GainDb]
@@ -682,7 +616,7 @@ mod tests {
             &noise,
         );
         let high = SvfFilterNode::<f64>::new(SvfType::LowPass, Hz::new(500.0), Q::new(0.707));
-        high.set_frequency(Hz::new(5000.0));
+        assert!(high.param_set().set(UnitParam::Cutoff, 5000.0));
         let out2 = render(high, &noise);
         let rms1 = rms(&out1[100..]);
         let rms2 = rms(&out2[100..]);
@@ -931,7 +865,9 @@ mod tests {
                     Q::new(0.707),
                 )
             },
-            |n| n.set_frequency(Hz::new(6_000.0)),
+            |n| {
+                assert!(n.param_set().set(UnitParam::Cutoff, 6_000.0));
+            },
             &[&x[..64], &x[..64]],
             &[&x[64..], &x[64..]],
         );
@@ -964,10 +900,10 @@ mod tests {
         }
         let level = rms(&last);
         assert!((level - 0.5).abs() < 0.05, "RMS {level}");
-        f.set_q(Q::new(2.0));
+        assert!(f.param_set().set(UnitParam::Q, 2.0));
         for block in x.chunks(1024) {
             last = drive_block(&mut f, &[block]).remove(0);
-            assert!(last.iter().all(|s| s.is_finite()), "after set_q");
+            assert!(last.iter().all(|s| s.is_finite()), "after a Q write");
         }
         let raised = rms(&last);
         assert!(raised > 0.9, "Q 2 takes effect: {raised}");
@@ -994,11 +930,13 @@ mod tests {
             Q::new(0.7),
         ));
         drive_block(&mut f, &[&x]);
-        f.frequency()
+        f.param_set()
+            .cell(UnitParam::Cutoff)
+            .unwrap()
             .store(f32::NAN, std::sync::atomic::Ordering::Release);
         let held = drive_block(&mut f, &[&x]);
         assert!(held[0].iter().all(|s| s.is_finite()), "a NaN alone");
-        f.set_q(Q::new(3.0));
+        assert!(f.param_set().set(UnitParam::Q, 3.0));
         let moved = drive_block(&mut f, &[&x]);
         assert!(
             moved[0].iter().all(|s| s.is_finite()),
@@ -1009,7 +947,7 @@ mod tests {
             Hz(800.0),
             "held at the last good cutoff"
         );
-        f.set_frequency(Hz::new(2_000.0));
+        assert!(f.param_set().set(UnitParam::Cutoff, 2_000.0));
         drive_block(&mut f, &[&x]);
         assert_eq!(
             f.coeffs.last_freq,

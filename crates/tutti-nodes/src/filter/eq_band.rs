@@ -1,13 +1,11 @@
 //! Parametric EQ band: an SVF plus a zero-cost bypass.
 
-use std::sync::Arc;
 use tutti_dsp::Real;
 use tutti_graph::{Cx, IntoNode, Io, Node, NodeParts, ParamNode, ParamSet, Prepare, Shape, Status};
-use tutti_types::AtomicF32;
 use tutti_types::{ChannelLayout, Db, Hz, Q};
 
 use super::svf::SvfFilterNode;
-use tutti_dsp::SvfType;
+use tutti_dsp::{SvfControls, SvfType};
 
 /// Enable/bypass state for an EQ band. Replaces a raw `bool` so callers
 /// cannot confuse "active" with unrelated boolean flags, and so the two
@@ -81,27 +79,17 @@ impl<F: Real> EqBandNode<F> {
         gain_db: impl Into<Db>,
     ) -> Self {
         Self {
-            svf: SvfFilterNode::<F>::new(filter_type, frequency, q).with_gain_db(gain_db),
+            svf: SvfFilterNode::<F>::with_controls(
+                ChannelLayout::MONO,
+                SvfControls {
+                    ty: filter_type,
+                    freq: frequency.into(),
+                    q: q.into(),
+                    gain: gain_db.into(),
+                },
+            ),
             state: BandState::Active,
         }
-    }
-
-    /// The inner filter's shared centre-frequency cell in [`Hz`]. Read once per
-    /// block; shared across clones.
-    pub fn frequency(&self) -> Arc<AtomicF32> {
-        self.svf.frequency()
-    }
-
-    /// The inner filter's shared [`Q`] cell — the band's width. Higher is
-    /// narrower.
-    pub fn q(&self) -> Arc<AtomicF32> {
-        self.svf.q()
-    }
-
-    /// The inner filter's shared gain cell in [`Db`]: positive boosts, negative
-    /// cuts, `0.0` is flat.
-    pub fn gain_db(&self) -> Arc<AtomicF32> {
-        self.svf.gain_db()
     }
 
     /// Enables or bypasses the band.
@@ -126,15 +114,6 @@ impl<F: Real> EqBandNode<F> {
     /// [`set_enabled`](Self::set_enabled).
     pub fn set_state(&mut self, state: BandState) {
         self.state = state;
-    }
-
-    /// Switches the inner filter's response, forcing a coefficient recompute on
-    /// the next sample.
-    ///
-    /// Filter state is retained, so the switch is continuous rather than a
-    /// click.
-    pub fn set_filter_type(&mut self, filter_type: SvfType) {
-        self.svf.set_filter_type(filter_type);
     }
 }
 
@@ -296,14 +275,15 @@ mod tests {
             ),
             &high,
         );
-        let mut eq = EqBandNode::<f64>::new(
-            SvfType::LowPass,
-            Hz::new(500.0),
-            Q::new(0.707),
-            Db::new(0.0),
+        let out_hp = render(
+            EqBandNode::<f64>::new(
+                SvfType::HighPass,
+                Hz::new(500.0),
+                Q::new(0.707),
+                Db::new(0.0),
+            ),
+            &high,
         );
-        eq.set_filter_type(SvfType::HighPass);
-        let out_hp = render(eq, &high);
         let rms_lp = rms(&out_lp[512..]);
         let rms_hp = rms(&out_hp[512..]);
         assert!(

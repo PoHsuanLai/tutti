@@ -29,7 +29,7 @@ use tutti_graph::UmpAt;
 use crate::InputProducerHandle;
 use crate::capability::{EndpointInfo, UmpCapability};
 use crate::devices::{ChangeSink, os_devices};
-use crate::endpoints::{InputConnection, MidiEndpoints, Watch};
+use crate::endpoints::{DeviceOut, InputConnection, MidiEndpoints, Watch};
 use crate::error::{Error, Result};
 use tutti_midi_device::{Direction, EndpointId, Identity, OsChange};
 use tutti_midi_runtime::MidiOut;
@@ -282,6 +282,8 @@ struct FakeSink {
     log: SentLog,
 }
 
+impl DeviceOut for FakeSink {}
+
 impl MidiOut for FakeSink {
     fn queue(&self, events: &[UmpAt]) -> usize {
         self.sent.fetch_add(events.len(), Ordering::SeqCst);
@@ -441,7 +443,7 @@ impl MidiEndpoints for FakeBackend {
         }))
     }
 
-    fn open_output(&self, id: EndpointId) -> Result<Box<dyn MidiOut>> {
+    fn open_output(&self, id: EndpointId) -> Result<Box<dyn DeviceOut>> {
         if !self.devices().outputs.iter().any(|e| e.id == id) {
             return Err(Error::MidiDevice("no such output".into()));
         }

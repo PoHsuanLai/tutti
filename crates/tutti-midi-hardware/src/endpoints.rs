@@ -43,6 +43,7 @@ use crate::devices::ChangeSink;
 use crate::error::Result;
 use tutti_midi_device::EndpointId;
 use tutti_midi_runtime::MidiOut;
+use tutti_ump::Protocol;
 
 /// An open input connection: a live subscription to one endpoint.
 ///
@@ -133,5 +134,21 @@ pub trait MidiEndpoints: Send + Sync {
     /// As [`open_input`](Self::open_input), plus
     /// [`Error::Unsupported`](crate::Error::Unsupported) from the stub backend
     /// on a platform with no native-UMP path.
-    fn open_output(&self, id: EndpointId) -> Result<Box<dyn MidiOut>>;
+    fn open_output(&self, id: EndpointId) -> Result<Box<dyn DeviceOut>>;
+}
+
+/// A device's output as a backend opens it: a [`MidiOut`] that is also told the
+/// Protocol its packets are in.
+///
+/// [`OpenOutput`](crate::OpenOutput) converts a batch to the device's Protocol
+/// before it queues it (`wire`), so the batch is in one Protocol. A transport that
+/// tags what it sends with a Protocol (CoreMIDI's event list) must tag it with
+/// that one, not the one the OS reported when the output opened: a negotiation
+/// can settle on the other.
+pub trait DeviceOut: MidiOut {
+    /// The batches from now on are in `protocol`. Called when the output opens
+    /// and whenever the device's configuration changes, never during a
+    /// [`queue`](MidiOut::queue). The default is for a transport that does not
+    /// tag.
+    fn follow(&self, _protocol: Protocol) {}
 }

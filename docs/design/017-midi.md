@@ -546,11 +546,11 @@ core takes an `Instant`; the hardware layer only passes one on).
   the rest of the endpoint; a MIDI 2.0 packet is always valid to the endpoint, and the
   per-Group flag the blocks give (`FunctionBlock::midi1`) is kept as data. (2) **The graph
   carries no type 2** (the input edge's `Translator` widens it), so a MIDI 2.0 endpoint is
-  not sent a widened type 2; a packet that is one passes as it is. (3) **CoreMIDI's output
-  event list is tagged with the protocol the OS reported when the output opened**; a
-  negotiation that settled on another Protocol for a CoreMIDI device would be tagged wrongly.
-  CoreMIDI runs its own Stream negotiation for a device it presents as UMP, so this has not
-  been seen, and the backend is not changed here.
+  not sent a widened type 2; a packet that is one passes as it is. (3) *Done in L6(b2):*
+  **CoreMIDI's output event list is tagged with the Protocol the output is in**, not the one
+  the OS reported at open: a backend's output is a `DeviceOut` (a `MidiOut` that is also told
+  `follow(protocol)`), `OpenOutput` calls it as the output opens and at each `set_config`, and
+  the event list is `Midi20` or `Midi10` by the last call.
 - *Received JR (L6(c)).* A JR Clock or JR Timestamp a device sends is dropped at
   `InputProducerHandle::push` (`Ump::is_jr`), not read. §7.2.2.1 leaves the use to the
   Receiver ("the Receiver may use smoothing or averaging of time from each JR Clock message
@@ -572,9 +572,21 @@ core takes an `Instant`; the hardware layer only passes one on).
   name); `tutti-alsa-ffi` reads both and the backend reads the *protocol*, no longer "has a
   block, so MIDI 2.0". Whether the kernel forwards a real device's replies on a UMP client's
   port 0 is not verified here (no USB MIDI 2.0 device on the machine); between two seq
-  clients, Stream packets cross in both directions, which the sequencer suite runs. CoreMIDI:
-  `kMIDIPropertyProtocolID` (read already); its Function Blocks (macOS 15's
-  `MIDIUMPEndpoint`) are not bound by the `coremidi` crate and are not read. No endpoint
+  clients, Stream packets cross in both directions, which the sequencer suite runs. CoreMIDI
+  (L6(b2)): macOS 15's `MIDIUMPEndpointManager`, `MIDIUMPEndpoint` and `MIDIUMPFunctionBlock`
+  are Objective-C classes, which `coremidi-sys` cannot carry; `tutti-coremidi-ffi` binds them
+  through `objc2-core-midi` (pure Rust, generated from the SDK headers; the only code that
+  names it) behind `ump_endpoints()`, which asks the Objective-C runtime for the manager
+  class first and answers `None` before macOS 15. The backend matches an endpoint to its
+  `MIDIUMPEndpoint` by `kMIDIPropertyUniqueID` (of its source or destination) and reads the
+  Protocol in use (`MIDIProtocol`) and the blocks, through the same `RawBlock` check as ALSA
+  (`block.rs`: M2-104 §7.1.8's numbers, a block the spec cannot hold is left out, never
+  clamped); an endpoint with no UMP object is the `kMIDIPropertyProtocolID` property as
+  before, with no blocks. Not read: `MIDIUMPFunctionBlock` has no MIDI-CI version of its own
+  (`midiCIDevice` is a separate object), so it is 0, and the endpoint's JR Timestamp
+  capabilities (`hasJRTSReceiveCapability`/`hasJRTSTransmitCapability`) are not carried by
+  `UmpCapability`, which reports JR off for every OS endpoint; the session's own
+  negotiation is what turns JR on. No endpoint
   tutti publishes answers Discovery: the CoreMIDI virtual endpoints are types nothing in the
   session creates, and ALSA has none, so `Endpoint::reply` has no caller.
 

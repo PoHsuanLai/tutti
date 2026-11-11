@@ -8,6 +8,8 @@
 
 mod host_clock;
 mod source;
+mod ump_endpoints;
 
 pub use host_clock::{Timebase, host_ticks};
 pub use source::{Error, UmpSource};
+pub use ump_endpoints::{UmpBlockInfo, UmpEndpointInfo, ump_endpoints};

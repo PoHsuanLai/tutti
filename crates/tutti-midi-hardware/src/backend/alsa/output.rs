@@ -4,6 +4,7 @@ use std::sync::{Mutex, PoisonError};
 use tutti_graph::UmpAt;
 
 use super::enumerate::unpack_id;
+use crate::endpoints::DeviceOut;
 use crate::error::{Error, Result};
 use tutti_alsa_ffi::{CAP_READ, Client, TYPE_APPLICATION, TYPE_MIDI_GENERIC};
 use tutti_midi_device::EndpointId;
@@ -90,13 +91,15 @@ impl MidiOut for AlsaOutput {
     }
 }
 
+impl DeviceOut for AlsaOutput {}
+
 /// Opens `id` for output.
 ///
 /// # Errors
 ///
 /// [`Error::Alsa`] if the sequencer cannot be opened, the
 /// port created, or the subscription to `id` made.
-pub fn open(id: EndpointId) -> Result<Box<dyn MidiOut>> {
+pub fn open(id: EndpointId) -> Result<Box<dyn DeviceOut>> {
     Ok(Box::new(connect(id)?))
 }
 

@@ -17,10 +17,10 @@ fn report(events: Vec<SessionEvent>) {
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut live = SessionBuilder::default().build_device(Default::default())?;
     let tone = Osc::sine(Hz(440.0)).with_amplitude(Amplitude(0.2));
-    let (tone, _) = live.graph().add(ForkByClone(tone));
-    live.graph().set_outputs_from(tone);
-    report(live.update());
-    live.play()?;
+    let (tone, _) = live.session_mut().graph().add(ForkByClone(tone));
+    live.session_mut().graph().set_outputs_from(tone);
+    report(live.session_mut().update());
+    live.session_mut().play()?;
     std::thread::sleep(std::time::Duration::from_secs(2));
     println!("running: {}", live.device().is_running()); // dropping `live` stops it
     Ok(())

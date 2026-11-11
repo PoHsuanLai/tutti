@@ -58,8 +58,8 @@ use crate::{DevicePolicy, DeviceWatch, FollowEvent, Result, Session, SessionEven
 /// `#[must_use]` too and names what it hands back. Keep the `LiveSession`
 /// itself for as long as the sound should play.
 ///
-/// It dereferences to the [`Session`], so `live.update()` and
-/// `live.graph()` need no accessor.
+/// Reach the session through [`session`](Self::session) and
+/// [`session_mut`](Self::session_mut): it does not dereference to it.
 ///
 /// A discarded build, or a discarded `into_parts`, is a warning (an error
 /// under `deny(unused_must_use)`):
@@ -115,19 +115,6 @@ impl LiveSession {
     #[must_use = "the Device is the stream; dropping it stops the sound"]
     pub fn into_parts(self) -> (Session, Device) {
         (self.session, self.device)
-    }
-}
-
-impl std::ops::Deref for LiveSession {
-    type Target = Session;
-    fn deref(&self) -> &Session {
-        &self.session
-    }
-}
-
-impl std::ops::DerefMut for LiveSession {
-    fn deref_mut(&mut self) -> &mut Session {
-        &mut self.session
     }
 }
 

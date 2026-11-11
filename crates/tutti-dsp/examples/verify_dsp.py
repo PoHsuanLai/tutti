@@ -184,7 +184,8 @@ rows = []
 
 # Cases whose disagreement with the reference is understood and is a property of tutti's
 # design, not of the reference. They are printed as KNOWN and do not fail the run; every
-# other FAIL does. Delete an entry when the cause is removed.
+# other FAIL does. A KNOWN case that passes fails the run (a stale excuse, like a
+# contract `Gap` that no longer fails): delete its entry when the cause is removed.
 KNOWN = {
     "ladder_lp24_4000_0.5": "the ladder closes its resonance loop through the 4th stage's state "
     "(a one-sample delay, `u = tanh(x - k * s[3])`), not the zero-delay solve of the "
@@ -197,8 +198,11 @@ KNOWN = {
 
 def record(name, mag_err, mag_f, mag_tol, ph_err=None, ph_f=None, ph_tol=None, note=""):
     ok = mag_err <= mag_tol and (ph_err is None or ph_err <= ph_tol)
-    if not ok and name in KNOWN:
-        ok, note = None, "known finding: " + KNOWN[name]
+    if name in KNOWN:
+        if ok:
+            ok, note = False, "KNOWN but passes: remove it from KNOWN"
+        else:
+            ok, note = None, "known finding: " + KNOWN[name]
     rows.append((name, mag_err, mag_f, mag_tol, ph_err, ph_f, ph_tol, ok, note))
 
 

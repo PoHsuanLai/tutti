@@ -46,7 +46,8 @@ tolerances are that tight.
 ## Known findings
 
 A case whose disagreement is understood is listed in `KNOWN` in the script, with
-the reason: it prints as KNOWN and does not fail the run. Every other FAIL does.
+the reason: it prints as KNOWN and does not fail the run. Every other FAIL does,
+and so does a KNOWN case that passes (a stale excuse: remove it from `KNOWN`).
 
 - **Ladder resonance.** The two cases with resonance of 0.5 and above disagree
   with the continuous-loop model: at resonance 0.5 and 4 kHz the render peaks at

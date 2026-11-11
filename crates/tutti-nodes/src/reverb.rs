@@ -3,7 +3,7 @@
 //! [`DesignNode<D>`] is the one node over every reverb algorithm. It is generic
 //! rather than boxed: a [`Design`] has a `Controls` type and a [`Realization`] of its
 //! own, and erasing them would bring back a settings bag. The node holds the
-//! design, its realization and the algorithm's [`Param`] cells ([`ControlParams`]),
+//! design, its realization and the algorithm's [`Param`] cells ([`Params`]),
 //! and per block it reads the cells once, designs a [`Model`](Design::Model) when the
 //! controls changed, moves the realization to it ([`Realization::retarget`]), renders, and
 //! tells the graph how long the room will still ring ([`Io::report_tail`]).
@@ -20,15 +20,14 @@ use tutti_dsp::{
     MAX_CHANNELS, Range, Realization, Ring, Setup, Sizes, System,
 };
 use tutti_graph::{
-    Cost, Cx, IntoNode, Io, Node, NodeParts, ParamNode, ParamSet, ParamSetBuilder, Prepare, Shape,
-    Status,
+    Cost, Cx, IntoNode, Io, Node, NodeParts, ParamNode, ParamSet, Prepare, Shape, Status,
 };
 use tutti_types::{
     Db, Latency, MaxBlock, Mix, Param, SampleRate, Samples, Tail, UnitAddr, UnitParam,
 };
 
 use crate::blend::{Blend, DryWet};
-use crate::params::{ControlSet, Params};
+use crate::params::{At, ControlSet, Params};
 
 /// The level the wet signal has fallen to when the declared tail ends, and below
 /// which the node parks: 60 dB under what it carried, the figure the General MIDI
@@ -41,79 +40,12 @@ const TAIL_FLOOR: Db = Db(-60.0);
 /// A tail of this many frames never ends.
 const UNBOUNDED: u64 = u64::MAX;
 
-/// Where in a block a node reads its controls, and what it last designed from.
-#[derive(Clone, Copy, Debug)]
-pub struct At<C> {
-    /// The frame of the block to read a driven port at.
-    pub frame: usize,
-    /// The frames a cell's glide ramps over: the block, or up to its last solve
-    /// when a grid solves inside it.
-    pub block: usize,
-    /// The controls the model was designed from at the start of the block, where
-    /// a cell's glide starts; `None` before the first design (after a prepare),
-    /// when there is nothing to glide from.
-    pub applied: Option<C>,
-    /// The rate the node runs at, for a control that is only valid against it.
-    pub rate: SampleRate,
-}
-
-/// The algorithm's [`Param`] cells and how a block reads them.
-///
-/// `tutti-dsp` holds no `Param` (it is a library of algorithms over plain
-/// values), so the cells live here, one struct per [`Design`]: the cells the
-/// algorithm exposes, their addresses ([`addrs`](Self::addrs)), and the
-/// function from a block's port values to the algorithm's
-/// [`Controls`](Self::Controls).
-pub trait ControlParams: Clone + Send + 'static {
-    /// The algorithm's controls: the design's own `Controls`.
-    type Controls: Copy + PartialEq + Send;
-
-    /// The addresses of the params the graph may modulate, in port order after
-    /// the blend's (the node's mix, port 0, for a [`DryWet`]), which are the node's
-    /// and no algorithm's. A method,
-    /// not a constant: a design that can freeze has a freeze param and one that
-    /// cannot has none.
-    fn addrs(&self) -> &'static [UnitAddr];
-
-    /// Adds each cell to `set` under its address.
-    fn bind(&self, set: ParamSetBuilder) -> ParamSetBuilder;
-
-    /// The base of the `k`th address ([`Node::param_base`]): its cell's value.
-    fn base(&self, k: usize) -> Option<f32>;
-
-    /// The controls at `at.frame`: each cell, or the value its port carries
-    /// when the graph modulates it, read through `LastGood` so a non-finite
-    /// write reads as unchanged. `first` is the port of the first address: the
-    /// number of the blend's. A design sampled once per block is read at the
-    /// block's last frame and ignores the rest of `at`.
-    fn read(&mut self, io: &Io<'_>, first: usize, at: At<Self::Controls>) -> Self::Controls;
-
-    /// Whether a port drives a control that [`read`](Self::read) samples
-    /// per frame, so the controls can differ between frames of the block. `false`
-    /// (the default) for a design read once per block.
-    fn driven(&self, io: &Io<'_>, first: usize) -> bool {
-        let _ = (io, first);
-        false
-    }
-
-    /// The controls that ring longest among the values a modulated port takes
-    /// anywhere in the block, which can differ from the last frame's: the node
-    /// reports its tail from them, so a decay that falls through the block is
-    /// not reported short. `None` when nothing is modulated.
-    fn longest(&self, io: &Io<'_>, first: usize) -> Option<Self::Controls> {
-        let _ = (io, first);
-        None
-    }
-
-    /// Stops sharing the cells, keeping their values: a fork's own.
-    fn detach(&mut self);
-}
-
 /// A [`Design`] a [`DesignNode`] can run: the design plus the cells of its
 /// controls and what the node does with the input around it.
 pub trait NodeDesign: Design<Realization: Effect<<Self as Design>::Model>> + 'static {
-    /// The cells.
-    type Params: ControlParams<Controls = Self::Controls>;
+    /// The cells: the family's addresses and the conversion between its controls and
+    /// the `f32`s the ports carry.
+    type Set: ControlSet<Controls = Self::Controls>;
 
     /// What the node does with its input: [`DryWet`] for a reverb used as an
     /// insert, [`NoBlend`](crate::NoBlend) for a family that is only ever the
@@ -137,15 +69,8 @@ pub trait NodeDesign: Design<Realization: Effect<<Self as Design>::Model>> + 'st
     /// block.
     const SAMPLING: Cadence = Cadence::BLOCK;
 
-    /// Cells that hold `initial`. Control side; allocates.
-    fn params(&self, initial: Self::Controls) -> Self::Params;
-
-    /// Whether `target` is far enough from `applied`, the controls the model
-    /// was last designed from, to design again: the dead-band. Exact inequality by
-    /// default.
-    fn moved(applied: &Self::Controls, target: &Self::Controls) -> bool {
-        applied != target
-    }
+    /// The control set, for a node whose controls start at `initial`. Control side.
+    fn set(&self, initial: &Self::Controls) -> Self::Set;
 }
 
 /// Freeverb's controls: the room size and the damping, as positions on `0..1`.
@@ -188,11 +113,11 @@ impl ControlSet for FreeverbSet {
 }
 
 impl NodeDesign for FreeverbDesign {
-    type Params = Params<FreeverbSet>;
+    type Set = FreeverbSet;
     type Blend = DryWet;
 
-    fn params(&self, initial: FreeverbControls) -> Self::Params {
-        Params::new(FreeverbSet, &initial)
+    fn set(&self, _: &FreeverbControls) -> FreeverbSet {
+        FreeverbSet
     }
 }
 
@@ -214,7 +139,7 @@ enum Mode<C> {
 ///
 /// # Controls
 ///
-/// Per block the node reads its cells once ([`ControlParams::read`]), and when
+/// Per block the node reads its cells once ([`Params`]), and when
 /// the controls differ from the last block's it designs the [`Model`](Design::Model) **in
 /// place** into one it owns ([`Design::design_into`]: a network is about 56 KB,
 /// too large to build on an audio thread) and calls [`Realization::retarget`], which
@@ -240,7 +165,7 @@ enum Mode<C> {
 pub struct DesignNode<D: NodeDesign> {
     design: D,
     realization: D::Realization,
-    params: D::Params,
+    params: Params<D::Set>,
     mode: Mode<D::Controls>,
     /// The dry path and its controls.
     blend: D::Blend,
@@ -302,7 +227,7 @@ impl<D: NodeDesign> DesignNode<D> {
         let rate = SampleRate::DEFAULT;
         let channels = design.channels();
         let realization = design.realization();
-        let params = design.params(controls);
+        let params = Params::new(design.set(&controls), &controls);
         let (network, longest) = (Box::new(design.blank(rate)), Box::new(design.blank(rate)));
         let mut node = Self {
             design,
@@ -490,7 +415,7 @@ impl<D: NodeDesign> DesignNode<D> {
             if self
                 .applied
                 .as_ref()
-                .is_none_or(|applied| D::moved(applied, &target))
+                .is_none_or(|applied| self.params.moved(applied, &target))
             {
                 self.render(io, held..step.frames.start);
                 self.apply(target);
@@ -597,7 +522,7 @@ impl<D: NodeDesign> Node for DesignNode<D> {
                 },
             ),
         };
-        let moved = |applied: &D::Controls| D::moved(applied, &target);
+        let moved = |applied: &D::Controls| self.params.moved(applied, &target);
         let stepped = D::SAMPLING != Cadence::BLOCK
             && matches!(self.mode, Mode::Live)
             && (self.params.driven(&io, first) || self.applied.as_ref().is_some_and(moved));

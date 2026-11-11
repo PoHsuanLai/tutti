@@ -11,6 +11,7 @@ mod ceiling;
 mod design;
 mod lti;
 mod realization;
+mod realized;
 mod system;
 
 pub use cadence::{Anchor, Cadence, Period, Step};
@@ -18,4 +19,5 @@ pub use ceiling::{Ceiling, MaxDecay, MaxDecayError, Range};
 pub use design::{Channels, Design, Sizes};
 pub use lti::Lti;
 pub use realization::{Effect, Effort, Realization, Setup};
+pub use realized::{Approach, Glide, Kernel, Lerp, Realized};
 pub use system::{Ring, System};

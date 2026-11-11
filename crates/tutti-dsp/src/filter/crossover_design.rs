@@ -1,16 +1,16 @@
-//! [`CrossoverDesign`]: the Linkwitz-Riley crossover as a [`Design`] (design 024
+//! [`CrossoverDesign`]: the Linkwitz-Riley crossover as a [`Design`](crate::Design) (design 024
 //! step 2b).
 //!
 //! The controls are [`CrossoverControls`] (the split frequencies), the model
 //! [`CrossoverModel`] (a multi-output [`Lti`](crate::Lti): one output a band) and
-//! the realization [`CrossoverRealization`]: the tree's sections, one set of words
-//! per channel, run with the model's own coefficients.
+//! the kernel [`CrossoverTree`]: the tree's sections, one set of words per channel, run
+//! with the model's own coefficients.
 //!
 //! Like the SVF and the ladder it is designed on a 16-frame grid counted on the
-//! stream clock from the last reset ([`CrossoverDesign::CADENCE`]), so a control is
+//! stream clock from the last reset ([`Design::CADENCE`](crate::Design::CADENCE)), so a control is
 //! in the render at most 16 frames after it was sampled and the render does not
 //! depend on how audio is split into blocks. **Unlike them its coefficients do not
-//! ramp over the segment**: a retarget lands whole and the segment runs on the set
+//! ramp over the segment**: a retarget lands whole (`STEPS = 0`) and the segment runs on the set
 //! it solved, stair by stair. That is what the crossover has always done (it held
 //! its coefficients per 16-chunk), and the interpolation is better left out for
 //! what the tree is: the bands sum to an all-pass only while each split's low-pass,
@@ -22,12 +22,10 @@
 
 use tutti_types::{ChannelLayout, Hz, SampleRate};
 
-use super::CrossoverModel;
 use super::crossover::check_bands;
 use super::crossover::{CrossoverError, CrossoverState, MAX_SPLITS, SOLVE_CEILING, validate};
-use super::sizes::FilterSizes;
-use crate::control::COEFF_STREAM;
-use crate::{Cadence, Ceiling, Channels, Design, Effect, Effort, Realization, Setup};
+use super::{ChannelKernel, Crossover, CrossoverModel, Filter};
+use crate::Lerp;
 
 /// The frequencies of a crossover's splits, lowest first; the entries past the
 /// design's last split are 0 and ignored.
@@ -55,12 +53,15 @@ impl CrossoverControls {
     }
 }
 
-/// The [`Design`] of the Linkwitz-Riley crossover: `bands` bands over `channels`
-/// channels, the input's width in and `bands * channels` out, band-major (output
-/// `band * channels + channel`).
+/// The [`Design`](crate::Design) of the Linkwitz-Riley crossover: `bands` bands over
+/// `channels` channels, the input's width in and `bands * channels` out, band-major
+/// (output `band * channels + channel`).
+pub type CrossoverDesign = Filter<CrossoverTree>;
+
+/// The crossover as a [`ChannelKernel`]: a tree of `bands` bands per channel, run with
+/// the model's own coefficients.
 #[derive(Clone, Copy, Debug)]
-pub struct CrossoverDesign {
-    channels: ChannelLayout,
+pub struct CrossoverTree {
     bands: usize,
 }
 
@@ -75,39 +76,44 @@ impl CrossoverDesign {
         check_bands(bands)?;
         match channels.count() {
             0 => Err(CrossoverError::Channels { channels: 0 }),
-            _ => Ok(Self { channels, bands }),
+            _ => Ok(Self::over(CrossoverTree { bands }, channels)),
         }
     }
 
     /// How many bands it makes.
     #[must_use]
     pub fn bands(&self) -> usize {
-        self.bands
-    }
-
-    /// The input width; each band is this wide.
-    #[must_use]
-    pub fn layout(&self) -> ChannelLayout {
-        self.channels
+        self.kernel().bands()
     }
 }
 
-impl Design for CrossoverDesign {
+impl CrossoverTree {
+    /// How many bands it makes.
+    #[must_use]
+    pub fn bands(&self) -> usize {
+        self.bands
+    }
+}
+
+/// A crossover's coefficients do not blend: its glide has no steps ([`ChannelKernel::STEPS`]),
+/// so this is only ever the target.
+impl Lerp for CrossoverModel {
+    fn lerp(&self, to: &Self, _: u32, _: u32) -> Self {
+        *to
+    }
+}
+
+impl ChannelKernel for CrossoverTree {
     type Controls = CrossoverControls;
     type Model = CrossoverModel;
-    type Bounds = FilterSizes<CrossoverModel>;
-    type Range = ();
-    type Realization = CrossoverRealization;
+    type Coeffs = CrossoverModel;
+    type State = CrossoverState;
+    type Frame = [f32; Crossover::MAX_BANDS];
 
-    /// Solved every 16 frames on the stream clock (doc 024 Q27), at the first frame
-    /// of each segment, and held over it.
-    const CADENCE: Cadence = COEFF_STREAM;
+    const STEPS: u32 = 0;
 
-    fn channels(&self) -> Channels {
-        Channels {
-            input: self.channels,
-            output: ChannelLayout::from_count(self.channels.count() * self.bands as u16),
-        }
+    fn outputs(&self) -> usize {
+        self.bands
     }
 
     /// A model at splits an octave apart from 0.2% of the rate up: increasing and
@@ -142,66 +148,13 @@ impl Design for CrossoverDesign {
         out.solve();
     }
 
-    fn bounds(&self, _: &Ceiling<()>) -> FilterSizes<CrossoverModel> {
-        FilterSizes::NONE
+    fn coeffs(&self, model: &CrossoverModel) -> CrossoverModel {
+        *model
     }
 
-    fn realization(&self) -> CrossoverRealization {
-        CrossoverRealization {
-            model: self.blank(SampleRate::DEFAULT),
-            state: vec![CrossoverState::default(); usize::from(self.channels.count()).max(1)],
-        }
-    }
-}
-
-/// The realization of a [`CrossoverModel`]: the model's coefficients, held, and the
-/// sections' words of each channel.
-#[derive(Clone, Debug)]
-pub struct CrossoverRealization {
-    model: CrossoverModel,
-    /// One tree per channel; `len()` is the input width. Built with the design and
-    /// never resized (no allocation on the audio thread).
-    state: Vec<CrossoverState>,
-}
-
-impl Realization<CrossoverModel> for CrossoverRealization {
-    type Bounds = FilterSizes<CrossoverModel>;
-
-    fn prepare(&mut self, _: &FilterSizes<CrossoverModel>, _: &Setup) {}
-
-    /// Takes `model`'s coefficients whole, from the next frame.
-    fn retarget(&mut self, model: &CrossoverModel) {
-        self.model = *model;
-    }
-
-    fn reset(&mut self) {
-        self.state.fill(CrossoverState::default());
-    }
-
-    fn effort(&self) -> Effort {
-        Effort::Moderate
-    }
-
-    fn fresh(&self) -> Self {
-        let mut fresh = self.clone();
-        fresh.reset();
-        fresh
-    }
-}
-
-impl Effect<CrossoverModel> for CrossoverRealization {
-    /// Each channel through its tree, band `b` of channel `c` written to output
-    /// `b * channels + c`.
-    fn process(&mut self, input: &[&[f32]], output: &mut [&mut [f32]]) {
-        let width = self.state.len();
-        for (c, tree) in self.state.iter_mut().enumerate() {
-            for (i, &x) in input[c].iter().enumerate() {
-                let bands = tree.tick(&self.model, x);
-                for (b, &y) in bands[..self.model.bands].iter().enumerate() {
-                    output[b * width + c][i] = y;
-                }
-            }
-        }
+    #[inline]
+    fn tick(c: &CrossoverModel, s: &mut CrossoverState, x: f32) -> [f32; Crossover::MAX_BANDS] {
+        s.tick(c, x)
     }
 }
 
@@ -212,6 +165,7 @@ mod tests {
 
     use super::*;
     use crate::contract::{Anchor, DesignCase, LtiCase, RealizationCase};
+    use crate::{Design, Effect, Realization};
 
     /// Mono, three bands: output `b` is band `b`, the model's own outputs.
     fn design() -> CrossoverDesign {

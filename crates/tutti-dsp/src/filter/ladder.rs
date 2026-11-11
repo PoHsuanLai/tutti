@@ -72,7 +72,7 @@ impl LadderCoeffs {
 /// `g1` is the one-pole stage gain `g / (1 + g)` with `g = tan(π·fc/sr)`, solved
 /// once with the `tan` rather than divided out every sample.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub(crate) struct LadderCoefficients<F: Real> {
+pub struct LadderCoefficients<F: Real> {
     g1: F,
     k: F,
 }

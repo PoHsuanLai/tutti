@@ -2,8 +2,8 @@
 //! (doc 024 section 2.6).
 //!
 //! A family writes a [`ControlSet`]: its addresses, and the conversion between its
-//! `Controls` and the `f32`s the ports carry. [`Params`] is the one
-//! [`ControlParams`] over it, with one rule for every control: the lane's value at
+//! `Controls` and the `f32`s the ports carry. [`Params`] is the one reader over it,
+//! with one rule for every control: the lane's value at
 //! the solve frame when a lane drives it, else a glide from the controls last
 //! designed to the cell's value, each read through [`LastGood`]. Sanitising
 //! (floors, clamps, whole-set validation) is the design's, never the reader's.
@@ -13,10 +13,9 @@ use std::sync::atomic::Ordering::{Acquire, Relaxed};
 
 use tutti_dsp::Ramp;
 use tutti_graph::{Io, ParamSetBuilder};
-use tutti_types::{AtomicF32, UnitAddr};
+use tutti_types::{AtomicF32, SampleRate, UnitAddr};
 
 use crate::ramp::LastGood;
-use crate::reverb::{At, ControlParams};
 
 /// The most controls a family has.
 const MAX_CONTROLS: usize = 12;
@@ -45,6 +44,28 @@ pub trait ControlSet: Clone + core::fmt::Debug + Send + 'static {
     fn longest(&self, _lowest: &Self::Controls, highest: &Self::Controls) -> Self::Controls {
         *highest
     }
+
+    /// Whether `target` is far enough from `applied`, the controls the model was last
+    /// designed from, to design again: the dead-band. Exact inequality by default.
+    fn moved(&self, applied: &Self::Controls, target: &Self::Controls) -> bool {
+        applied != target
+    }
+}
+
+/// Where in a block a node reads its controls, and what it last designed from.
+#[derive(Clone, Copy, Debug)]
+pub struct At<C> {
+    /// The frame of the block to read a driven port at.
+    pub frame: usize,
+    /// The frames a cell's glide ramps over: the block, or up to its last solve
+    /// when a grid solves inside it.
+    pub block: usize,
+    /// The controls the model was designed from at the start of the block, where
+    /// a cell's glide starts; `None` before the first design (after a prepare),
+    /// when there is nothing to glide from.
+    pub applied: Option<C>,
+    /// The rate the node runs at, for a control that is only valid against it.
+    pub rate: SampleRate,
 }
 
 /// The cells of a [`ControlSet`] and how a block reads them.
@@ -95,16 +116,14 @@ impl<S: ControlSet> Params<S> {
         }
         driven.then_some(out)
     }
-}
 
-impl<S: ControlSet> ControlParams for Params<S> {
-    type Controls = S::Controls;
-
-    fn addrs(&self) -> &'static [UnitAddr] {
+    /// The addresses of the cells, in port order after the blend's.
+    pub(crate) fn addrs(&self) -> &'static [UnitAddr] {
         self.set.addrs()
     }
 
-    fn bind(&self, set: ParamSetBuilder) -> ParamSetBuilder {
+    /// Adds each cell to `set` under its address.
+    pub(crate) fn bind(&self, set: ParamSetBuilder) -> ParamSetBuilder {
         let cells = self.cells.iter().cloned();
         self.addrs()
             .iter()
@@ -112,11 +131,15 @@ impl<S: ControlSet> ControlParams for Params<S> {
             .fold(set, |set, (&addr, cell)| set.param(addr, cell))
     }
 
-    fn base(&self, k: usize) -> Option<f32> {
+    /// The base of the `k`th address ([`Node::param_base`](tutti_graph::Node::param_base)): its cell's value.
+    pub(crate) fn base(&self, k: usize) -> Option<f32> {
         self.cells.get(k).map(|c| c.load(Acquire))
     }
 
-    fn read(&mut self, io: &Io<'_>, first: usize, at: At<S::Controls>) -> S::Controls {
+    /// The controls at `at.frame`: each cell, or the value its port carries when the
+    /// graph modulates it, read through [`LastGood`] so a non-finite write reads as
+    /// unchanged. `first` is the port of the first address: the number of the blend's.
+    pub(crate) fn read(&mut self, io: &Io<'_>, first: usize, at: At<S::Controls>) -> S::Controls {
         let n = self.cells.len();
         let mut from = [0.0; MAX_CONTROLS];
         if let Some(applied) = &at.applied {
@@ -138,11 +161,15 @@ impl<S: ControlSet> ControlParams for Params<S> {
         self.set.assemble(&value[..n])
     }
 
-    fn driven(&self, io: &Io<'_>, first: usize) -> bool {
+    /// Whether a port drives a control, so the controls can differ between the frames
+    /// of the block.
+    pub(crate) fn driven(&self, io: &Io<'_>, first: usize) -> bool {
         (first..first + self.cells.len()).any(|k| io.param(k).frames().is_some())
     }
 
-    fn longest(&self, io: &Io<'_>, first: usize) -> Option<S::Controls> {
+    /// The controls that ring longest among the values a modulated port takes anywhere
+    /// in the block, or `None` when nothing is modulated.
+    pub(crate) fn longest(&self, io: &Io<'_>, first: usize) -> Option<S::Controls> {
         let [lowest, highest] = self.extremes(io, first)?;
         let n = self.cells.len();
         Some(self.set.longest(
@@ -151,9 +178,15 @@ impl<S: ControlSet> ControlParams for Params<S> {
         ))
     }
 
-    fn detach(&mut self) {
+    /// Stops sharing the cells, keeping their values: a fork's own.
+    pub(crate) fn detach(&mut self) {
         for cell in &mut self.cells {
             *cell = Arc::new(AtomicF32::new(cell.load(Acquire)));
         }
+    }
+
+    /// Whether `target` is far enough from `applied` to design again ([`ControlSet::moved`]).
+    pub(crate) fn moved(&self, applied: &S::Controls, target: &S::Controls) -> bool {
+        self.set.moved(applied, target)
     }
 }

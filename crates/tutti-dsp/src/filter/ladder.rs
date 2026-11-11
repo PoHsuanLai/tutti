@@ -8,15 +8,6 @@
 use super::Real;
 use tutti_types::{Hz, Resonance, SampleRate};
 
-/// Below these deltas a freq/resonance change doesn't warrant recomputing the
-/// coefficients — the change guard shared by the atomic and modulation paths.
-///
-/// The thresholds alone would not keep a NaN out (`|NaN - last| > eps` is
-/// false, so a NaN is held off only until another control moves); the cells
-/// are read through `LastGood`, which does.
-const FREQ_EPS: f32 = 0.01;
-const RES_EPS: f32 = 0.0001;
-
 /// Which tap of the four-stage ladder is taken as the output, and so what
 /// response and slope the filter presents.
 ///
@@ -75,72 +66,44 @@ impl LadderCoeffs {
     }
 }
 
-/// The ladder's two coefficients plus the parameter values they were solved
-/// at, shared by every channel.
+/// The ladder's two coefficients, narrowed to the state precision `F` and shared
+/// by every channel.
 ///
-/// `g1` is the one-pole stage gain `g / (1 + g)` with `g = tan(π·fc/sr)`,
-/// solved once with the `tan` rather than divided out every sample.
+/// `g1` is the one-pole stage gain `g / (1 + g)` with `g = tan(π·fc/sr)`, solved
+/// once with the `tan` rather than divided out every sample.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub struct LadderCoefficients<F: Real> {
+pub(crate) struct LadderCoefficients<F: Real> {
     g1: F,
     k: F,
-    /// The cutoff this set was solved at.
-    pub last_freq: Hz,
-    /// The resonance this set was solved at.
-    pub last_res: Resonance,
 }
 
-impl<F: Real> LadderCoefficients<F> {
-    /// The set solved at `freq`, `resonance` and `sample_rate`.
-    #[must_use]
-    pub fn solve(freq: Hz, resonance: Resonance, sample_rate: SampleRate) -> Self {
-        let c = LadderCoeffs::new(freq, resonance, sample_rate);
+impl<F: Real> From<&LadderCoeffs> for LadderCoefficients<F> {
+    /// The solve's `f64` set, with the stage gain divided out in `F`.
+    fn from(c: &LadderCoeffs) -> Self {
         let g = F::from_f64(c.g);
         Self {
             g1: g / (F::from_f64(1.0) + g),
             k: F::from_f64(c.k),
-            last_freq: freq,
-            last_res: resonance,
         }
     }
+}
 
-    /// Marks the set stale, so the next read solves at its target outright.
-    pub fn invalidate(&mut self) {
-        self.last_freq = Hz(-1.0);
-    }
-
-    /// Whether the set was marked stale by [`invalidate`](Self::invalidate).
-    #[must_use]
+impl<F: Real> LadderCoefficients<F> {
+    /// Linear blend toward `to` by `t` in `0..=1`: an interpolated set is only
+    /// ever used for one sample and never stored.
     #[inline]
-    pub fn is_invalid(&self) -> bool {
-        self.last_freq.get() < 0.0
-    }
-
-    #[inline]
-    /// Whether `(freq, res)` moved past the epsilons since this set was
-    /// solved. A held value costs nothing.
     #[must_use]
-    pub fn moved(&self, freq: Hz, res: Resonance) -> bool {
-        (freq.get() - self.last_freq.get()).abs() > FREQ_EPS
-            || (res.get() - self.last_res.get()).abs() > RES_EPS
-    }
-
-    #[inline]
-    /// Linear blend toward `to` by `t` in `0..=1`. The parameters it was solved
-    /// at are not blended.
-    #[must_use]
-    pub fn lerp(&self, to: &Self, t: F) -> Self {
+    pub(crate) fn lerp(&self, to: &Self, t: F) -> Self {
         Self {
             g1: self.g1 + (to.g1 - self.g1) * t,
             k: self.k + (to.k - self.k) * t,
-            ..*to
         }
     }
 }
 
 /// One channel's four-stage step over its stage words `s`.
 #[inline(always)]
-pub fn ladder_step<F: Real>(
+pub(crate) fn ladder_step<F: Real>(
     c: &LadderCoefficients<F>,
     ty: LadderType,
     s: &mut [F; 4],

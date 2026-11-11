@@ -372,7 +372,7 @@ mod tests {
     use super::*;
     use crate::FreeverbDesign;
     use crate::contract::cases::realization as cases;
-    use crate::contract::flaws::Mutant;
+    use crate::testing::flaws::Mutant;
 
     /// A hook that returns nothing and is not listed fails, one that is listed and
     /// returns something fails, a listing without a reason fails, and the other

@@ -103,7 +103,7 @@ mod reverb_design;
 mod smoother;
 mod spatial;
 #[cfg(test)]
-mod test_support;
+mod testing;
 
 pub use allpass::{allpass_chain, allpass_coeff, sweep_hz};
 pub use balance::balance_gains;

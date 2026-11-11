@@ -17,7 +17,7 @@ use tutti_plugin_types::MainThread;
 use vst3::Steinberg::Vst::{SpeakerArr, SpeakerArrangement};
 
 use tutti_plugin_types::{PointPool, RtMidiEvents};
-use tutti_types::{ChannelLayout, ChannelTopology};
+use tutti_types::{ChannelLayout, ChannelTopology, SampleRate};
 
 use crate::error::{LoadStage, Result, Vst3Error};
 use crate::events::Stager;
@@ -125,7 +125,7 @@ impl<T: Vst3Sample> Staged<T> {
     pub(super) fn stage(
         main: &MainThread,
         loaded: Vst3Loaded,
-        sample_rate: f64,
+        sample_rate: SampleRate,
         block_size: usize,
         mode: ProcessMode,
     ) -> std::result::Result<Self, (Vst3Loaded, Vst3Error)> {
@@ -631,8 +631,9 @@ mod scratch_resolution_tests {
         let library = tutti_fixtures::cdylib("tutti_shared_plugin", "tutti-shared-plugin");
         let loaded = Vst3Loaded::load(&main, &library, crate::LoadOptions::new())
             .expect("the shared plugin loads");
-        let mut staged = Staged::<f32>::stage(&main, loaded, 48_000.0, 64, ProcessMode::Realtime)
-            .unwrap_or_else(|(_, error)| panic!("the plugin stages: {error}"));
+        let mut staged =
+            Staged::<f32>::stage(&main, loaded, SampleRate::SR_48K, 64, ProcessMode::Realtime)
+                .unwrap_or_else(|(_, error)| panic!("the plugin stages: {error}"));
         let (buses_in, buses_out) = (
             staged.audio.input.buses.num_buses(),
             staged.audio.output.buses.num_buses(),

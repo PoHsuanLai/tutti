@@ -1680,6 +1680,19 @@ holds the second borrow of the port).
   128 held notes 0.31 to 0.41 µs, 1,500 held notes with 4 changing a block 0.39 to
   1.06 µs. The table is a sorted `Vec`, so a change to a large table is a
   `memmove`.
+- **Controllers go back with the notes.** The ledger also keeps, per protocol, Group
+  and Channel, whether the hold pedals (CC 64, 66, 67, 69) are down and whether the
+  pitch bend is off centre (512 `u16`s, `ledger/controllers.rs`; a MIDI 1.0 value of 64
+  or more, a MIDI 2.0 one at or above `0x8000_0000`, is down). MIDI 1.0 Detailed Spec
+  p. 31 (Stop): "any controllers not in their initialized position (pitch wheels,
+  sustain pedal, etc.) should be returned to their normal positions", and A-5: a
+  pedal on "takes priority over Note Off and All Notes Off until it is released", so
+  `release_all` (the clip's stop, seek, loop wrap and replacement) writes the
+  note-offs first, then a pedal-up (value 0) and a centred bend (`0x2000` or
+  `0x8000_0000`) in the protocol the controller was sent in, for each that is off
+  and only those. A reset the port refuses is owed like an off and goes out on a
+  later block, after every owed off. Per-note pitch bend is not tracked: it ends with
+  its note (M2-104), and every note is ended first.
 - **Fork and reset.** The table is not `Clone`; a fork builds a fresh node over a
   snapshot of the clip and starts with an empty table, and `Node::reset` clears it.
 - **The clip node uses it; the relays do not yet.** The input and queue nodes, a
@@ -1703,7 +1716,7 @@ holds the second borrow of the port).
   same key. So can a close still owed after a replacement: past about 72 held
   keys (what a block's slot takes) it can end a note the new unit started on the
   same key. A fork starts with empty tables and closes what it has seen itself.
-  Sostenuto, CC 120 and 123, per-note controllers and pitch bend are not tracked.
+  Sostenuto, CC 120 and 123, per-note controllers and pitch bend are not tracked at the edge (the clip's ledger returns the pedals and the bend, above).
 
 ## 9. Missing capabilities, in the order a DAW needs them
 

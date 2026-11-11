@@ -13,7 +13,11 @@
 //! What it does keep is the set of notes it has started and not ended
 //! (a [`NoteLedger`]): when playback stops, jumps (a seek, a loop wrap), or the
 //! clip is replaced, those notes would hang in whatever it feeds, so it ends
-//! each with a note-off on the frame the jump happens. It writes only through
+//! each with a note-off on the frame the jump happens, and then returns the
+//! hold pedals (CC 64, 66, 67, 69) and the pitch bend it left off their
+//! normal position to it, on the same frame (MIDI 1.0 Detailed Spec p. 31,
+//! Stop; the pedals after the offs because a pedal down takes priority over
+//! Note Off, A-5). It writes only through
 //! the ledger's [`Sending`], which pays a note-off the port refused before
 //! anything else goes out.
 //!
@@ -419,7 +423,7 @@ struct Playing<'a, 'w> {
 impl Visit<ClipEvent> for Playing<'_, '_> {
     fn stop(&mut self, at: Option<Offset>) {
         // Stopped (or no usable tempo): nothing plays, and nothing may keep
-        // sounding.
+        // sounding or stay held down.
         if let Some(o) = at {
             self.sending.release_all(o);
         }

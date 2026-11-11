@@ -1900,6 +1900,13 @@ suite's `crossfades_are_bit_identical`:
   own slots. Frame `k` of the fade has position `(k + 1) / (duration + 1)`,
   so the fade is exactly `duration` frames with no step at either end.
   Allocation-free (`tests/rt_no_alloc.rs`).
+- **The gains stay in `[0, 1]`.** `EqualAmplitude`'s `g_in` is
+  `tutti_curve::Law::Smootherstep` (the quintic `6x⁵ − 15x⁴ + 10x³`),
+  **clamped to `[0, 1]`** (2026-11-11, #515): in `f32` the quintic
+  overshoots 1 by up to 1.1e-6, which made `g_out = 1 − g_in` negative near
+  a fade's end. `EqualPower` (`sin`, `cos` of `πx/2`) is unchanged.
+  `fade.rs`'s `equal_amplitude_gains_are_bit_stable` pins the gains and
+  asserts the range at every frame.
 - **Shape rule: everything but the tail must match** — ports, latency,
   in-place acceptance, event resolution — or `replace` returns
   `CommitError::FadeShape` naming the key. A latency change is refused
@@ -7742,7 +7749,8 @@ the source stands ("Shaped ramps" below).
   segment is **absolute**: its start and end values, a `Law`, and
   where along itself it is at the event's frame (`position`) over its
   `length`, both in fractional frames. Frame `j` after the event reads
-  `from + (to - from) · shape.eval((position + j) / length)`, and `to`
+  `Piece { from, to, law }.value((position + j) / length)` (`tutti_curve::Piece`, i.e.
+  `from + (to - from) · shape.eval(t)`), and `to`
   from the frame that progress reaches 1 (a zero length is a step).
   `ParamSegment::new` is the ramp convention (position 1: the event's
   frame is one step in, `to` on the last frame); `resumed` sets the
@@ -7796,7 +7804,7 @@ the source stands ("Shaped ramps" below).
   LUT.
 - **Shaped ramps.** `ParamRamp::with_shape(Law)` (default
   `Linear`) makes the relative move follow a shape: frame `j` after the
-  event reads `from + (target - from) · shape.eval((j + 1) / duration)`,
+  event reads `Piece::value` at `(j + 1) / duration` (`from + (target - from) · shape.eval(t)`),
   `from` being the source's value on the frame before the event (for a
   source not yet started, the base at the event's own frame), and
   `target` from frame `duration - 1` on: a segment in the ramp convention

@@ -1284,6 +1284,7 @@ fn analytic(from: f64, to: f64, shape: Law, position: f64, length: f64, j: u64) 
             let k = f64::from(k);
             ((k * t).exp() - 1.0) / (k.exp() - 1.0)
         }
+        Law::Smootherstep => t * t * t * (t * (t * 6.0 - 15.0) + 10.0),
     };
     from + (to - from) * g
 }

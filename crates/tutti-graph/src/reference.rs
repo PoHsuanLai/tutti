@@ -132,8 +132,9 @@ struct RefRamp {
     len: u64,
     /// A ramp's shape.
     shape: tutti_curve::Law,
-    /// A curve segment's `(position, length, shape)`; `None`: linear.
-    curve: Option<(f32, f32, tutti_curve::Law)>,
+    /// A curve segment's `(position, length)`; `None`: a ramp. Its law is
+    /// `shape`.
+    curve: Option<(f32, f32)>,
     /// Its value on the last frame evaluated.
     value: f32,
     /// Whether the source has sent an event yet: until it has, the port
@@ -1644,7 +1645,8 @@ fn ref_port(st: &mut RefParam, fresh: bool, p: RefPortIn<'_>) -> Option<Vec<f32>
                     };
                 }
                 EventKind::Segment(s) if s.addr() == want => {
-                    let (from, to, position, length) = s.raw();
+                    let piece = s.piece();
+                    let (position, length) = s.timing();
                     // What a ramp replacing it on this frame starts
                     // from: the held value, or (a first event) the
                     // base at this frame, as for a first ramp.
@@ -1654,12 +1656,12 @@ fn ref_port(st: &mut RefParam, fresh: bool, p: RefPortIn<'_>) -> Option<Vec<f32>
                         base(i)
                     };
                     st.ramp = RefRamp {
-                        from,
-                        target: to,
+                        from: piece.from,
+                        target: piece.to,
                         at: now,
                         len: 0,
-                        shape: tutti_curve::Law::Linear,
-                        curve: Some((position, length, s.shape())),
+                        shape: piece.law,
+                        curve: Some((position, length)),
                         value: cur,
                         started: true,
                     };
@@ -1678,17 +1680,18 @@ fn ref_port(st: &mut RefParam, fresh: bool, p: RefPortIn<'_>) -> Option<Vec<f32>
             base(i)
         } else if now < r.at {
             r.value
-        } else if let Some((position, length, shape)) = r.curve {
+        } else if let Some((position, length)) = r.curve {
             // Frames since its event, `0` on the event's own.
             let j = u32::try_from(now - r.at).unwrap_or(u32::MAX);
-            crate::event::segment_value(r.from, r.target, shape, position, length, j)
+            let piece = tutti_curve::Piece::new(r.from, r.target, r.shape);
+            crate::event::segment_value(piece, position, length, j)
         } else {
             let into = now - r.at + 1;
             if into >= r.len {
                 r.target
             } else {
                 let t = into as f32 / r.len as f32;
-                r.from + (r.target - r.from) * r.shape.eval(t)
+                tutti_curve::Piece::new(r.from, r.target, r.shape).value(t)
             }
         };
         st.ramp.value = value;
@@ -2242,7 +2245,8 @@ fn sum_addends(mut addends: Vec<RefAddend>, frames: usize) -> Vec<f32> {
                         None => *x + *y,
                         Some(RefWeight::Ramp { from, to }) => {
                             let (from, to) = (from.get(), to.get());
-                            let w = from + (to - from) * ((i + 1) as f32 / frames as f32);
+                            let w = tutti_curve::Piece::new(from, to, tutti_curve::Law::Linear)
+                                .value((i + 1) as f32 / frames as f32);
                             *x + w * *y
                         }
                         Some(RefWeight::Frames(w)) => *x + w[i] * *y,

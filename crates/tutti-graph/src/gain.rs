@@ -52,6 +52,7 @@
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
+use tutti_curve::{Law, Piece};
 
 use tutti_types::{Amplitude, AtomicF32, ParamCell, UnitAddr, UnitParam};
 
@@ -352,11 +353,10 @@ pub(crate) struct Carried {
     pub(crate) drive: Option<ParamState>,
 }
 
-/// `w[i]` of a ramp across `frames`: the doc's expression, spelled once.
-/// The reference interpreter writes its own.
+/// `w[i]` of a ramp across `frames`: a linear [`Piece`] at `t = (i + 1) / frames`.
 #[inline(always)]
 fn ramp_at(from: f32, to: f32, i: usize, frames: f32) -> f32 {
-    from + (to - from) * ((i + 1) as f32 / frames)
+    Piece::new(from, to, Law::Linear).value((i + 1) as f32 / frames)
 }
 
 /// The first live addend: `out = +0.0 + w * a`, or `out = +0.0 + w * out`

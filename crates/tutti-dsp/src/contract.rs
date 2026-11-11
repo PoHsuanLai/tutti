@@ -50,7 +50,7 @@
 // says what it holds in its own docs.
 #![allow(clippy::missing_errors_doc)]
 
-mod basic;
+mod core;
 mod design_case;
 mod harness;
 mod lti;
@@ -68,14 +68,14 @@ pub use harness::{
 pub mod cases {
     /// The design cases (no realization, no audio).
     pub mod design {
-        pub use crate::contract::basic::design::*;
+        pub use crate::contract::core::design::*;
         pub use crate::contract::lti::design::*;
         pub use crate::contract::reverb::design::*;
     }
 
     /// The realization cases, measured on the output.
     pub mod realization {
-        pub use crate::contract::basic::realization::*;
+        pub use crate::contract::core::realization::*;
         pub use crate::contract::lti::realization::*;
         pub use crate::contract::reverb::realization::*;
     }

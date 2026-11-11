@@ -1,94 +1,159 @@
-//! The lookahead limiter's delay ring with its sliding gain minimum, and the
-//! brickwall clip.
+//! The lookahead limiter's per-frame gain: the curve, the instant-attack
+//! release recursion on its target, before the window minimum.
 
-use super::window::{FixedDelay, MonotonicMinDeque};
+use super::curves::{LimiterCurve, amplitude_to_db, compute_limiter_gain};
+use super::envelope::EnvelopeFollower;
+use crate::Smoother;
+use tutti_types::{Amplitude, Db, SampleRate, Seconds};
 
-/// Lookahead ring buffers + sliding-window-minimum tracker for the limiter.
-#[derive(Clone, Debug)]
-pub struct LookaheadRing {
-    /// One lookahead ring per audio channel; `buffers.len()` == width. Built at
-    /// construction — never resized in the RT path.
-    buffers: Vec<FixedDelay>,
-    min_deque: MonotonicMinDeque,
-    sample_counter: u64,
-    lookahead_samples: usize,
+/// The controls one block of a limiter runs on, read once at the top of the
+/// block.
+///
+/// Unfed, the curve is constant across the block, so its constants (a few
+/// `powf`s) are derived once here and a frame is a compare and a divide. A
+/// lane replaces the threshold or the ceiling per frame, in dB; either one
+/// fed leaves the curve to be evaluated per frame.
+#[derive(Clone, Copy, Debug)]
+pub struct LimiterBlock<'a> {
+    threshold: Db,
+    ceiling: Db,
+    threshold_lane: Option<&'a [f32]>,
+    ceiling_lane: Option<&'a [f32]>,
+    curve: Option<LimiterCurve>,
 }
 
-impl LookaheadRing {
-    /// A ring of `channels` channels delaying by `lookahead_samples` frames.
+impl<'a> LimiterBlock<'a> {
+    /// A block at `threshold` and `ceiling`, either overridden per frame by
+    /// its lane (in dB, indexed by the frame `i` given to
+    /// [`LimiterKernel::gain`]).
     #[must_use]
-    pub fn new(channels: usize, lookahead_samples: usize) -> Self {
-        let n = lookahead_samples.max(1);
+    pub fn new(
+        threshold: Db,
+        ceiling: Db,
+        threshold_lane: Option<&'a [f32]>,
+        ceiling_lane: Option<&'a [f32]>,
+    ) -> Self {
+        let curve = (threshold_lane.is_none() && ceiling_lane.is_none())
+            .then(|| LimiterCurve::new(threshold, ceiling));
         Self {
-            buffers: (0..channels.max(1)).map(|_| FixedDelay::new(n)).collect(),
-            // n + 1 frames: the one delayed out now and the n after it.
-            min_deque: MonotonicMinDeque::new(n + 1),
-            sample_counter: 0,
-            lookahead_samples: n,
+            threshold,
+            ceiling,
+            threshold_lane,
+            ceiling_lane,
+            curve,
         }
     }
+}
 
-    /// The window length in frames: the latency the delay adds.
-    #[inline]
+/// A limiter's state: the gain envelope (instant attack, one-pole release)
+/// and the follower that holds the release coefficient. Every control arrives
+/// per call as plain values. The window minimum over the lookahead is
+/// [`LookaheadRing`](super::LookaheadRing)'s.
+#[derive(Clone, Debug)]
+pub struct LimiterKernel {
+    envelope: f32,
+    follower: EnvelopeFollower,
+}
+
+impl LimiterKernel {
+    /// A kernel releasing over `release` at `sample_rate`.
     #[must_use]
-    pub fn lookahead_samples(&self) -> usize {
-        self.lookahead_samples
-    }
-
-    /// Re-sizes the window to `lookahead_samples`, clearing it.
-    pub fn resize(&mut self, lookahead_samples: usize) {
-        *self = Self::new(self.buffers.len(), lookahead_samples);
-    }
-
-    /// Empties the rings and the minimum tracker.
-    pub fn clear(&mut self) {
-        for b in &mut self.buffers {
-            b.clear();
+    pub fn new(release: Seconds, sample_rate: SampleRate) -> Self {
+        Self {
+            envelope: 0.0,
+            follower: EnvelopeFollower::new(Seconds::new(0.0), release, sample_rate),
         }
-        self.min_deque.clear();
-        self.sample_counter = 0;
     }
 
-    /// Feeds `gain` to the sliding minimum and returns the window-min gain
-    /// (the linked gain reduction all channels share). The window is the
-    /// delayed sample's own frame and the `lookahead_samples` after it, so the
-    /// gain that scales a sample is never later than its own target's: the
-    /// push drops the gain leaving the window before adding this one.
-    #[inline]
-    pub fn push_gain(&mut self, gain: f32) -> f32 {
-        self.min_deque.push(self.sample_counter, gain);
-        self.sample_counter = self.sample_counter.wrapping_add(1);
-        self.min_deque.min().unwrap_or(gain)
+    /// Clears the envelope.
+    pub fn reset(&mut self) {
+        self.envelope = 0.0;
     }
 
-    /// Delays `input` by the lookahead through channel `c`'s ring and writes
-    /// it to `out` scaled by the matching frame of `gains`. Each ring holds
-    /// `lookahead_samples`, so its oldest slot is the sample that many pushes
-    /// back. The channels' rings are independent, so a block runs one
-    /// channel at a time.
+    /// Retunes the release for `sample_rate`.
+    pub fn set_sample_rate(&mut self, sample_rate: SampleRate, release: Seconds) {
+        self.follower
+            .set_sample_rate(sample_rate, Seconds(0.0), release);
+    }
+
+    /// Re-derives the release coefficient if `release` moved.
     #[inline]
-    pub fn delay_scaled(&mut self, c: usize, input: &[f32], gains: &[f32], out: &mut [f32]) {
-        let ring = &mut self.buffers[c];
-        for ((o, &x), &g) in out.iter_mut().zip(input).zip(gains) {
-            let d = ring.step(x);
-            // A NaN in both operands: x86 returns the first one's and which
-            // is first is up to the compiler, so pick the delayed sample's
-            // (as the per-frame product did) to keep the sign bit.
-            *o = if d.is_nan() { d + d } else { d * g };
+    pub fn update_coefficients(&mut self, release: Seconds) {
+        self.follower.update_coefficients(Seconds(0.0), release);
+    }
+
+    /// The envelope gain (linear) for the linked `peak` of frame `i` of the
+    /// block: the curve's target taken instantly when it is lower, released
+    /// toward it otherwise.
+    #[inline]
+    pub fn gain(&mut self, block: &LimiterBlock<'_>, i: usize, peak: f32) -> f32 {
+        let target_gain = match &block.curve {
+            Some(curve) => curve.gain(peak),
+            None => {
+                let peak_db = amplitude_to_db(Amplitude::new(peak));
+                let threshold = block.threshold_lane.map_or(block.threshold, |v| Db(v[i]));
+                let ceiling = block.ceiling_lane.map_or(block.ceiling, |v| Db(v[i]));
+                compute_limiter_gain(peak_db, threshold, ceiling).get()
+            }
+        };
+        if target_gain < self.envelope {
+            self.envelope = target_gain;
+        } else {
+            self.envelope =
+                Smoother::toward(self.envelope, target_gain, self.follower.release_coeff());
         }
+        self.envelope
     }
 }
 
-/// The linked-peak fold: `max` returns the other operand for a NaN, so a NaN
-/// sample never reaches the peak.
-#[inline]
-pub fn fold_peak(peak: f32, x: f32) -> f32 {
-    peak.max(x.abs())
-}
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-/// Clamps `sample` to `+-ceiling_linear`.
-#[inline]
-#[must_use]
-pub fn brickwall_clip(sample: f32, ceiling_linear: f32) -> f32 {
-    sample.clamp(-ceiling_linear, ceiling_linear)
+    const RATE: SampleRate = SampleRate(48_000.0);
+
+    /// The attack is instant: a peak whose target is lower than the envelope
+    /// takes the envelope to the target in the same frame, and the release
+    /// then climbs back by the one-pole step, `e + coeff * (target - e)`.
+    #[test]
+    fn the_attack_is_instant_and_the_release_is_one_pole() {
+        let release = Seconds(0.05);
+        let mut k = LimiterKernel::new(release, RATE);
+        let block = LimiterBlock::new(Db(-6.0), Db(-6.0), None, None);
+        // Quiet: the gain is 1 (threshold == ceiling), the envelope rises from 0.
+        let mut quiet = 0.0;
+        for _ in 0..40_000 {
+            quiet = k.gain(&block, 0, 0.1);
+        }
+        assert!((quiet - 1.0).abs() < 1e-3, "{quiet}");
+        // A peak at 1.0 under a -6 dB ceiling: target 10^(-6/20).
+        let target = Db(-6.0).to_amplitude().get();
+        assert_eq!(k.gain(&block, 0, 1.0), target, "instant attack");
+        // Back to quiet: one release step.
+        let coeff = release.one_pole_coeff(RATE);
+        let want = target + coeff * (1.0 - target);
+        assert_eq!(k.gain(&block, 0, 0.1).to_bits(), want.to_bits());
+    }
+
+    /// A ceiling lane overrides the block's ceiling per frame, and reaches the
+    /// curve at frame `i`.
+    #[test]
+    fn a_ceiling_lane_overrides_the_block_per_frame() {
+        let lane = [-6.0f32, -12.0];
+        let block = LimiterBlock::new(Db(-20.0), Db(-1.0), None, Some(&lane));
+        // A zero release follows the target in one frame, so the gain is the
+        // curve's own.
+        let mut k = LimiterKernel::new(Seconds(0.0), RATE);
+        for (i, ceiling) in lane.iter().enumerate() {
+            let mut k = k.clone();
+            let got = k.gain(&block, i, 1.0);
+            let want = LimiterCurve::new(Db(-20.0), Db(*ceiling)).gain(1.0);
+            assert!(
+                (got - want).abs() <= 1e-6 * want,
+                "frame {i}: {got} vs {want}"
+            );
+        }
+        k.reset();
+        assert_eq!(k.envelope, 0.0);
+    }
 }

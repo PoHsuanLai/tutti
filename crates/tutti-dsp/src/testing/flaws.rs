@@ -7,7 +7,7 @@ use rand::{Rng, SeedableRng};
 use tutti_types::{Amplitude, BusTopology, Db, Hz, Mix, SampleRate, Samples, Seconds, StereoWidth};
 
 use crate::contract::{Anchor, DesignCase, Hook, LtiCase, RealizationCase, ReverbCase};
-use crate::network::{
+use crate::reverb::network::{
     AllPass, AllPassForm, Fdn, Gains, Inline, Line, MAX_LINES, Matrix, Modulation, OutputMap,
     pre_delay_frames,
 };
@@ -344,8 +344,10 @@ impl Design for ToyFdn {
                     let pole = crossover.map(|f| {
                         libm::exp(-std::f64::consts::TAU * f64::from(f.get()) / rate.get()) as f32
                     });
-                    let [low, mid, high] =
-                        crate::fdn::rescale_bands([low.get(), mid.get(), high.get()], pole);
+                    let [low, mid, high] = crate::reverb::fdn::kernel::rescale_bands(
+                        [low.get(), mid.get(), high.get()],
+                        pole,
+                    );
                     Absorption::Bands {
                         low: Amplitude(low),
                         mid: Amplitude(mid),
@@ -525,7 +527,7 @@ impl ReverbCase for ToyFdn {
             let pole = [Hz(250.0), Hz(4000.0)].map(|f| {
                 libm::exp(-std::f64::consts::TAU * f64::from(f.get()) / rate.get()) as f32
             });
-            if crate::fdn::peak_response(g, pole) > 1.0 {
+            if crate::reverb::fdn::kernel::peak_response(g, pole) > 1.0 {
                 return None;
             }
         }
@@ -778,7 +780,7 @@ impl<K: Effect<Network, Bounds = Bounds> + Clone> Realization<Network> for Flawe
                 })
             }),
             Defect::NoMixing => self.edited(network, |n| {
-                map_fdn(n, |f| f.matrix = crate::network::Matrix::Diagonal)
+                map_fdn(n, |f| f.matrix = crate::reverb::network::Matrix::Diagonal)
             }),
             Defect::OpenInput => self.edited(network, |n| {
                 map_fdn(n, |f| f.input.as_mut_slice().fill(0.35))

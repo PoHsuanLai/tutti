@@ -30,6 +30,17 @@ ramps and the graph shape. Here they take plain typed values per call.
   and `SweptLines`, the chorus and flanger kernel (the LFO's sine solved every
   `COEFF_INTERVAL` samples and interpolated between).
 - **Waveshaping** — `ShapeKind`, six memoryless curves with block kernels.
+- **Reverb** — the reverb model of design 022, a `Network` with analytic queries
+  (RT60, tail, stability, densities), and two designs over it: `FreeverbDesign` and
+  `FdnDesign`, the feedback delay network.
+- **Spatial** — vector base amplitude panning (`SpeakerLayout`, `VbapKernel`) and the
+  HRTF binaural convolver (`HrtfBinaural`).
+- **Resampling and dither** — `FftResampler` and `StreamingResampler` for export, and
+  `DitherNoise` with `DitherSink`, the dither path export and recording share.
+
+Each family is laid out as its design (controls to a model), its model (a `System`, and
+an `Lti` where it is linear and time-invariant) and its kernel (the per-frame math that
+`Realized` runs), the split of design 024.
 
 FFT is `RealFft`, the engine's one real-input FFT: rustfft's
 *scalar* planner under realfft's even-length real passes (an odd size runs a
@@ -49,7 +60,8 @@ plans lazily, per scratch, on the cold path.
 
 ## Features
 
-None: `default = []`.
+- `contract` (off by default): the `contract` module, the cases a `Design` and its
+  `Realization` are held to (design 024 section 6). Test support.
 
 The `tutti` crate re-exports this one as `tutti::dsp` behind its `dsp` feature. `tutti-nodes`, `tutti-sampler` and
 `tutti-export` use it.

@@ -8,7 +8,13 @@
 
 use tutti_types::{ArcDegrees, Azimuth, Elevation, Fold, Spread, StereoWidth};
 
-use super::layout::{MAX_SPEAKERS, SpeakerLayout};
+mod error;
+mod layout;
+mod math;
+mod select;
+
+pub use error::SpeakerGeometryError;
+pub use layout::{MAX_SPEAKERS, PanningMode, SpeakerLayout, Tuple};
 
 /// A width below this folds the stereo pair to mono and pans one source.
 const MONO_WIDTH: f32 = 0.001;

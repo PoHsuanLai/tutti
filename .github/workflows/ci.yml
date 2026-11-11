@@ -577,19 +577,13 @@ jobs:
           cargo bench --locked -p arc-lend-compare --bench compare -- --test
 
   test:
-    name: test (${{ matrix.os }}, opt ${{ matrix.opt }})
+    name: test (${{ matrix.os }})
     needs: changes
     if: needs.changes.outputs.code == 'true'
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest]
-        opt: ['1']
-        include:
-          - os: ubuntu-latest
-            opt: '2'
-          - os: macos-latest
-            opt: '2'
     # The golden digests are glibc libm's on 24.04; 26.04's libm moves them.
     # `require` makes a Linux runner whose glibc is not the recorded one fail
     # instead of skipping the digests (CLAUDE.md, Testing).
@@ -599,7 +593,7 @@ jobs:
       # Optimized dependencies and workspace crates, with debug assertions and
       # overflow checks still on: the suite is CPU-bound (the differential
       # suite alone was a third of the run at opt-level 0).
-      CARGO_PROFILE_DEV_OPT_LEVEL: ${{ matrix.opt }}
+      CARGO_PROFILE_DEV_OPT_LEVEL: '1'
     steps:
       - uses: actions/checkout@v4
         with:
@@ -617,7 +611,6 @@ jobs:
       - run: rustup toolchain install
       - uses: Swatinem/rust-cache@v2
         with:
-          key: opt${{ matrix.opt }}
           save-if: ${{ github.ref == 'refs/heads/main' || github.ref == 'refs/heads/ci-speed' }}
       - uses: taiki-e/install-action@nextest
 

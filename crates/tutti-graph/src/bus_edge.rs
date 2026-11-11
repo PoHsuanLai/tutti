@@ -104,6 +104,17 @@ pub enum BusError {
         /// Why.
         error: FoldError,
     },
+    /// A bus edge into the root, and the root's topology is not declared
+    /// ([`GraphSpec::root`] is `None`).
+    RootUndeclared,
+    /// A bus edge into the root, and the source cannot be folded to the
+    /// root's declared topology.
+    RootFold {
+        /// The source bus.
+        from: BusSource,
+        /// Why.
+        error: FoldError,
+    },
     /// A lowered lane lands on an edge the spec already has.
     Overlaps {
         /// The lane.
@@ -132,6 +143,10 @@ impl std::fmt::Display for BusError {
             Self::Fold { from, to, error } => {
                 write!(f, "bus edge {from:?} -> {to:?} cannot be folded: {error}")
             }
+            Self::RootUndeclared => write!(f, "the root's topology is not declared"),
+            Self::RootFold { from, error } => {
+                write!(f, "bus edge {from:?} -> root cannot be folded: {error}")
+            }
             Self::Overlaps { id } => write!(f, "a bus edge's lane {id:?} is also a plain edge"),
             Self::GainOnLane { id } => {
                 write!(f, "a gain is set on the lane {id:?} of a bus edge")
@@ -141,6 +156,19 @@ impl std::fmt::Display for BusError {
 }
 
 impl std::error::Error for BusError {}
+
+/// Why the lanes of one bus edge could not be made: a bus error of its own,
+/// or the fold, which the caller names with its sink.
+enum LaneError {
+    Bus(BusError),
+    Fold(FoldError),
+}
+
+impl From<BusError> for LaneError {
+    fn from(e: BusError) -> Self {
+        Self::Bus(e)
+    }
+}
 
 /// A spec with its bus edges lowered, and what the lowering made.
 #[derive(Clone, Debug, PartialEq)]
@@ -202,6 +230,37 @@ impl GraphSpec {
         true
     }
 
+    /// Adds `from` to the bus edges into the root, in source order. Returns
+    /// whether it was new. As [`connect_bus`](Self::connect_bus), nothing is
+    /// checked until the lowering.
+    pub fn connect_bus_to_root(&mut self, from: BusSource) -> bool {
+        match self.root_sources.binary_search(&from) {
+            Ok(_) => false,
+            Err(i) => {
+                self.root_sources.insert(i, from);
+                true
+            }
+        }
+    }
+
+    /// Removes `from` from the bus edges into the root. Returns whether it
+    /// was there.
+    pub fn disconnect_bus_from_root(&mut self, from: BusSource) -> bool {
+        match self.root_sources.iter().position(|s| *s == from) {
+            Some(i) => {
+                self.root_sources.remove(i);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Whether the spec holds any bus edge, to a node or to the root.
+    #[must_use]
+    pub fn has_bus_edges(&self) -> bool {
+        !self.bus_edges.is_empty() || !self.root_sources.is_empty()
+    }
+
     /// The lanes of the bus edge `from -> to` against `shapes`: `(edge,
     /// weight)` in sink-port then source order. A pure function of the two
     /// buses' topologies (and the global input's width).
@@ -226,7 +285,40 @@ impl GraphSpec {
             .buses_in
             .first_port(usize::from(to.bus))
             .ok_or(no_sink)?;
+        self.fold_lanes(shapes, from, sink_bus.topology, |c| {
+            Sink::Port(InPort {
+                node: to.node,
+                port: (sink_first + c) as u16,
+            })
+        })
+        .map_err(|error| match error {
+            LaneError::Bus(e) => e,
+            LaneError::Fold(error) => BusError::Fold { from, to, error },
+        })
+    }
 
+    /// The lanes of the bus edge `from -> root`: the same fold, onto the
+    /// output channels.
+    fn root_lanes(&self, shapes: &Shapes, from: BusSource) -> Result<Vec<(EdgeId, f32)>, BusError> {
+        // The engine's roots (`MAX_ROOT_CHANNELS`, 8) all fit a bus (16), so
+        // a root with no `BusTopology` is one never declared.
+        let root = self.root.ok_or(BusError::RootUndeclared)?;
+        self.fold_lanes(shapes, from, root, |c| Sink::Output(c as u16))
+            .map_err(|error| match error {
+                LaneError::Bus(e) => e,
+                LaneError::Fold(error) => BusError::RootFold { from, error },
+            })
+    }
+
+    /// The lanes of `from` folded to `sink`'s topology, each channel `c` at
+    /// `at(c)`.
+    fn fold_lanes(
+        &self,
+        shapes: &Shapes,
+        from: BusSource,
+        sink: BusTopology,
+        at: impl Fn(usize) -> Sink,
+    ) -> Result<Vec<(EdgeId, f32)>, LaneError> {
         let (source_topology, source_first, source_node) = match from {
             BusSource::Node(bus) => {
                 let shape = shapes
@@ -257,16 +349,12 @@ impl GraphSpec {
 
         let fold = Fold::between(
             &ChannelTopology::from(source_topology),
-            &ChannelTopology::from(sink_bus.topology),
+            &ChannelTopology::from(sink),
         )
-        .map_err(|error| BusError::Fold { from, to, error })?;
+        .map_err(LaneError::Fold)?;
 
         let mut lanes = Vec::new();
-        for c in 0..sink_bus.width() {
-            let at = InPort {
-                node: to.node,
-                port: (sink_first + c) as u16,
-            };
+        for c in 0..sink.positions().len() {
             for (k, gain) in fold.contributions(c) {
                 let source = match source_node {
                     Some(node) => Source::Node(OutPort {
@@ -277,7 +365,7 @@ impl GraphSpec {
                 };
                 lanes.push((
                     EdgeId {
-                        sink: Sink::Port(at),
+                        sink: at(c),
                         from: Edge::Direct(source),
                     },
                     gain,
@@ -297,6 +385,18 @@ impl GraphSpec {
         to: BusRef,
     ) -> Result<(), BusError> {
         for (id, _) in self.bus_lanes(shapes, from, to)? {
+            self.check_lane(id)?;
+        }
+        Ok(())
+    }
+
+    /// As [`check_bus_edge`](Self::check_bus_edge), for the root.
+    pub(crate) fn check_root_bus_edge(
+        &self,
+        shapes: &Shapes,
+        from: BusSource,
+    ) -> Result<(), BusError> {
+        for (id, _) in self.root_lanes(shapes, from)? {
             self.check_lane(id)?;
         }
         Ok(())
@@ -326,22 +426,45 @@ impl GraphSpec {
     pub fn lowered(&self, shapes: &Shapes) -> Result<Lowering, BusError> {
         let mut spec = self.clone();
         spec.bus_edges.clear();
+        spec.root_sources.clear();
         let mut lanes = BTreeMap::new();
+        let mut place = |spec: &mut GraphSpec, id: EdgeId, weight: f32| -> Result<(), BusError> {
+            // Against the spec as lowered so far, so two bus edges that make
+            // the same lane are caught too.
+            spec.check_lane(id)?;
+            match (id.sink, id.from) {
+                (Sink::Port(at), from) => {
+                    spec.topology.connect(at, from);
+                }
+                (Sink::Output(c), Edge::Direct(source)) => {
+                    // The root is as wide as its declaration; a shorter
+                    // output list is widened in the lowered value only.
+                    let c = usize::from(c);
+                    if spec.topology.outputs.len() <= c {
+                        spec.topology.outputs.resize(c + 1, Vec::new());
+                    }
+                    spec.topology.connect_output(c, source);
+                }
+                (Sink::Output(_), Edge::Feedback(_)) => {
+                    unreachable!("a bus lane is a direct edge");
+                }
+            }
+            if weight.to_bits() != 1.0f32.to_bits() {
+                spec.gains.insert(id, EdgeGain::new(Amplitude::new(weight)));
+            }
+            lanes.insert(id, Amplitude::new(weight));
+            Ok(())
+        };
         for (&to, sources) in &self.bus_edges {
             for &from in sources {
                 for (id, weight) in self.bus_lanes(shapes, from, to)? {
-                    // Against the spec as lowered so far, so two bus edges
-                    // that make the same lane are caught too.
-                    spec.check_lane(id)?;
-                    let Sink::Port(at) = id.sink else {
-                        unreachable!("a bus lane goes into a node's port");
-                    };
-                    spec.topology.connect(at, id.from);
-                    if weight.to_bits() != 1.0f32.to_bits() {
-                        spec.gains.insert(id, EdgeGain::new(Amplitude::new(weight)));
-                    }
-                    lanes.insert(id, Amplitude::new(weight));
+                    place(&mut spec, id, weight)?;
                 }
+            }
+        }
+        for &from in &self.root_sources {
+            for (id, weight) in self.root_lanes(shapes, from)? {
+                place(&mut spec, id, weight)?;
             }
         }
         Ok(Lowering { spec, lanes })

@@ -7396,20 +7396,62 @@ bit for bit (the M1 tests, unedited, are the proof).
   narrower width is) until it is set again; the commit does not fail on it, as
   it does for a bus edge whose fold went away, because a mode is a control and
   not an edit.
-- **Not built: the root as a bus sink.** A bus edge into the root needs the
-  editor to know the root's declared topology, which lives in the session
-  (`Graph::root_topology`, set by `declare_root_topology`) and in the engine's
-  output control. The editor would have to hold it in the spec
-  (`GraphSpec::root: Option<BusTopology>`, kept in step by the session's
-  declaration), the edge's sink would stop being a `BusRef` (a `BusSink` of
-  `Node(BusRef)` and `Root`, or a separate list of the root's sources), and the
-  lowering would write `Sink::Output` lanes. A root past `MAX_BUS_CHANNELS` (16)
-  channels cannot be a `BusTopology` and would be refused as `GlobalTooWide`
-  is. These are each small; the choice among them changes B2's `bus_edges` key
-  or adds a second map, and a declaration that narrows a root under existing
-  edges needs a rule. It is left for its own change so the owner picks them; a
-  graph is wired to its outputs per channel, as now, and an undeclared root
-  takes no bus edge because none can name it.
+- The root as a bus sink is B4, below.
+
+**As built (B4).** The root is a bus sink: the graph's outputs take a bus edge,
+folded to the root's declared topology. No plan op changes, and a graph with no
+root edge renders as before (B2's tests, unedited, are the proof). The owner
+took B3's recommendation.
+
+- **Storage.** `GraphSpec` gains `root: Option<BusTopology>` (the declared root;
+  `None` is undeclared) and `root_sources: Vec<BusSource>` (bus edges into the
+  root, kept in source order). B2's `bus_edges` key (`BusRef`) is untouched: the
+  root is a second list beside it, not a `BusSink` in the key, so the least
+  surface changed. `has_bus_edges()` answers for both, and validate, the
+  commit's lowering and the fork read that.
+- **The declaration.** The session's `declare_root` (`declare_root_topology`,
+  `SessionBuilder::root_topology`) writes `spec.root`; a change under root edges
+  marks the graph edited, so they re-lower at the next commit. A declaration
+  stays an edit, as before. **No root is too wide for a bus:** the engine's
+  `MAX_ROOT_CHANNELS` is 8 and `MAX_BUS_CHANNELS` 16 (`check_root` holds the
+  declaration to the first), so the "too wide" case B3 left open cannot arise
+  and has no error variant; `root` is `None` only when undeclared.
+- **API.** `Editor::connect_bus_to_root(from: BusSource)` and
+  `disconnect_bus_from_root` (and `GraphSpec`'s), `Graph::connect_bus_to_root`,
+  `disconnect_bus_from_root` and `root_bus_sources` in the session, with
+  `BusError` re-exported as it was. `from` is any `BusSource`, a node's output
+  bus or the global input. New `BusError` variants: `RootUndeclared` (an
+  undeclared root refuses the edge at the call, storing nothing and marking
+  nothing edited) and `RootFold { from, error }` (the source does not fold to the
+  root; B2's `Fold` names a `BusRef` sink, which the root is not).
+- **Lowering.** The same fold, written as `Sink::Output(c)` lanes: output channel
+  `c` gets the `Fold::contributions(c)` pairs, a unity lane a plain output
+  source (a same-topology root edge is the hand-wired plan) and any other weight
+  a static `EdgeGain` on the output edge in the lowered spec only, summed with
+  every other source of that output in source order (`Op::Sum` or
+  `Op::WeightedSum`, aligned to the outputs' time by the compiler). The overlap
+  check and the one-writer rule are B2's `check_lane`, which already read
+  `Sink::Output` through `has_edge`: a lane on an ordinary output source is
+  `BusError::Overlaps`, a hand-set gain at a lane `GainOnLane`. The lowered
+  value widens `topology.outputs` to the root's width if it is shorter, in the
+  clone only. The lowering stays a pure function of the spec and shapes;
+  validate, compile and the reference see only the lowered value.
+- **Re-declaring under edges.** A declaration that changes the root re-lowers
+  every root edge against it at the next commit; one a source no longer folds
+  to (or `None`) fails that commit with `CompileError::Bus(RootFold { .. })`
+  (`RootUndeclared`), as B2's replaced-node case does, and the plan sent last
+  stands (`Committed::Refused` in the session).
+- **Removal and forks.** Removing a node drops its root edges with its other bus
+  edges. `fork_gather` forks the lowered spec when either list is non-empty, so
+  an export of the master hears the fold; the fork itself holds neither list.
+- **Tests.** `bus_edges.rs` (graph): 5.1 into a declared stereo root on the
+  serial, parallel and reference renders, the same-topology plan equality, the
+  undeclared and unfoldable refusals, overlap with an ordinary output source
+  (both orders), re-declaration failing the commit, connect/disconnect and node
+  removal, the fork; `differential.rs`: `root_bus_edges_are_bit_identical_to_the_reference`
+  from its own stream (`seed ^ 0x0B05_4007`, drawn after `bus_graph`, so no
+  existing seed moves); `tutti-session`'s `bus_edges.rs`: the round trip through
+  `declare_root_topology`, the undeclared refusal, re-declaration.
 
 #### What else is, and is not, a graph primitive
 
@@ -7482,7 +7524,7 @@ itself.
 | 1 | Fan-in | the six PRs of "Audio fan-in sums", point 10 |
 | 2 | Edge gain | **G1**: `EdgeGain`, `Sink`, `EdgeId`, validate, the weighted kernel and ramp, cell and `set_edge_gain`, reference, tests (static and ramped weights). **G2**: the driven lane: `connect_edge_gain`, `DelayKey::EdgeGain`, `GainPort`, the session's `ModTarget` and `EdgeRef`, tests. **G3**: session API. The audit is done here: no shipped node exists only to scale one source (the `Gain` nodes are test doubles), and `BusStripNode` keeps its volume and pan (below), so G3 deletes nothing. |
 | 3 | Bypass, mute and mix | independent of 1 and 2, in any order after the design merges. **M4** (built; the static half, then **M4b**, the `ModTarget`, see "As built (M4)" and "As built (M4b)"): the blend above, `Editor::set_mix`, its `ModTarget`, the reference, tests (`Mix` 1.0 bit-identical to `Active`, 0.0 bit-identical to `Bypassed` in steady state); `Mix`'s docs, and `DRY`'s and `WET`'s, say what the ends are (all of the aligned input, all of the node's output) instead of the studio words alone. **M1** (built): `NodeMode`, the cell, the executor's steady states, the bypass line, the declick and un-bypass sequence, the reference, tests. **M2** (session half built): `Editor::set_mode`, the session API, hosts (plugins, AU property). **M3** (built): delete `EqBandNode`'s flag, `BusStripNode`'s mute (and `add_general_midi`'s binding of it through `UnitParam::Mute`, which becomes `NodeMode::Muted` on the channel's strip), per-node bypass; bit-exact tests replace the tolerance one; CLAUDE.md's dead-names list gains the strip mute and `EqBandNode`'s flag. |
-| 4 | Buses and coercion | needs 1 and 2. **B1** (built, "As built (B1)"): `BusTopology`, `Buses` and `Shape`'s buses with one `Main` bus built from widths; `Fold::contributions`; hosts fill their buses (generically, sidechain roles pending the hosts). **B2** (built, "As built (B2)"): `BusRef`, `bus_edges`, validate, lowering to weighted lanes, `connect_bus`, session API, tests; the root as a sink bus waits for B3. **B3** (built, "As built (B3)"): `DownmixNode` deleted and its users migrated; bypass is the fold of the main buses (`ModeError::Unplaced`); **the root as a sink bus is not built** (the design question in the note). |
+| 4 | Buses and coercion | needs 1 and 2. **B1** (built, "As built (B1)"): `BusTopology`, `Buses` and `Shape`'s buses with one `Main` bus built from widths; `Fold::contributions`; hosts fill their buses (generically, sidechain roles pending the hosts). **B2** (built, "As built (B2)"): `BusRef`, `bus_edges`, validate, lowering to weighted lanes, `connect_bus`, session API, tests; **B3** (built, "As built (B3)"): `DownmixNode` deleted and its users migrated; bypass is the fold of the main buses (`ModeError::Unplaced`). **B4** (built, "As built (B4)"): the root as a sink bus: `GraphSpec::root` and `root_sources`, `connect_bus_to_root`, lowering to `Sink::Output` lanes, `BusError::{RootUndeclared, RootFold}`. |
 
 Bypass's channel mapping for buses with different declared topologies uses
 B1's types; M1 shipped the width rule (`Status::Bypass`'s) and B3 switched the

@@ -2259,7 +2259,8 @@ impl<N: Node> Direct<N> {
     }
 
     /// The events the node reported lost (`Io::count_lost`) over every block
-    /// so far: what an executor adds to its lost-event count.
+    /// since this driver was built: what an executor adds to its lost-event
+    /// count. Cumulative: reading it does not drain or reset it.
     pub fn lost(&self) -> u64 {
         self.lost
     }

@@ -22,6 +22,14 @@ pub(super) fn moded_node_op<A: AudioSlots, F: SlotFlags + ?Sized, E: EventSlots 
     let (rec, plan, frames) = (head.rec, head.plan, head.frames);
     let [ain, aout, ein, eout] = rec.ports(&plan.nodes.slots);
 
+    // The mix's lane, before anything reads the block's mix (it moves while
+    // the node is parked too, as the mix's snapshot does).
+    let source = plan.param_ports[rec.params.range()]
+        .last()
+        .filter(|p| p.is_mix())
+        .map(|p| (p.from, &st.events.ev(p.slot)[..]));
+    u.mode.drive_step(frames, source);
+
     let want = u.mode.seen();
     if want != u.mode.heading() && u.mode.toggle(want) {
         // Un-bypass: its state is stale. Reset before the first call.
@@ -58,9 +66,10 @@ pub(super) fn moded_node_op<A: AudioSlots, F: SlotFlags + ?Sized, E: EventSlots 
     if seg.is_steady() && seg.steady == NodeMode::Active && seg.mix.is_wet() {
         return ended;
     }
+    let lane = u.mode.lane(frames);
     for (c, &s) in aout.iter().enumerate() {
         let x = (c < main && need).then(|| u.mode.aligned(c, frames));
-        seg.blend(st.arena.slot_mut(s, frames), x);
+        seg.blend(st.arena.slot_mut(s, frames), x, lane);
         if seg.is_steady() {
             match seg.steady {
                 NodeMode::Active => {

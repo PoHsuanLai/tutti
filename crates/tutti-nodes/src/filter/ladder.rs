@@ -5,20 +5,17 @@
 //! compresses rather than blowing up. That saturation is the character, not a
 //! safety measure.
 //!
-//! One width-generic node, [`LadderFilterNode`]: the coefficients are solved
-//! once for every channel, and the channels run side by side in groups.
+//! One width-generic node, [`LadderFilterNode`]. The algorithm is `tutti-dsp`'s
+//! ([`LadderDesign`]); the node is a [`DesignNode`] over it, and this file holds
+//! the cells and how a block reads them.
 
-use tutti_dsp::Real;
+use tutti_dsp::{Cadence, Design, LadderControls, LadderDesign, LadderType, Ramp, Real};
+use tutti_graph::{Io, ParamSetBuilder};
+use tutti_types::{ChannelLayout, Drive, Hz, Param, Resonance, UnitAddr, UnitParam};
 
-use tutti_graph::{
-    Cx, Inputs, IntoNode, Io, Node, NodeParts, Outputs, ParamNode, ParamSet, Prepare, Shape, Status,
-};
-use tutti_types::UnitParam;
-use tutti_types::{ChannelLayout, Drive, Hz, Param, Resonance, SampleRate, Tail};
-
+use crate::blend::NoBlend;
 use crate::ramp::{LastGood, finite_or};
-use tutti_dsp::{COEFF_CADENCE, Ramp, lane_group};
-use tutti_dsp::{LadderCoefficients, LadderType, ladder_step};
+use crate::reverb::{At, ControlParams, DesignNode, NodeDesign};
 
 /// A Moog-style four-stage ladder filter with resonance and drive, of any
 /// width: `N` audio inputs, `N` outputs.
@@ -27,10 +24,16 @@ use tutti_dsp::{LadderCoefficients, LadderType, ladder_step};
 /// four-stage chains run side by side.
 ///
 /// Cutoff ([`Hz`]), [`Resonance`] and [`Drive`] are live [`Param`]s shared
-/// across clones, all read **once per block**. A held cutoff/resonance costs
-/// nothing; a moved one is ramped across the block with a coefficient solve
-/// every 16 samples; a moved drive is ramped linearly across the block, since
-/// it multiplies straight into the saturator and would otherwise step.
+/// across clones. A held value costs nothing: the model is designed again only
+/// when the cutoff or resonance moves past a small dead-band or the drive moves
+/// at all ([`LadderControls::moved_from`]). The filter is designed on a 16-frame
+/// grid counted from the last reset, at each segment's first frame, and the
+/// coefficients **and the drive** ramp linearly to that solve over the segment, so
+/// an automated control glides rather than stepping (drive multiplies straight
+/// into the saturator and would otherwise click), arrives within 16 frames and
+/// renders the same however the stream is cut into blocks. A cell that moved
+/// glides from the last solve to its value across the block, so it is the one
+/// control whose render depends on the block's length.
 ///
 /// **Resonance is `0.0..=1.0`, not a [`Q`](tutti_types::Q).** It scales the
 /// ladder's feedback: `0.0` is no emphasis, and toward `1.0` the filter
@@ -47,57 +50,26 @@ use tutti_dsp::{LadderCoefficients, LadderType, ladder_step};
 /// # Modulated params
 ///
 /// `N` audio inputs, `N` outputs. Cutoff, Q and drive are modulatable by the
-/// graph, in that port order ([`LADDER_PARAMS`]). A
-/// modulated cutoff or Q is sampled at the solve points (every 16 samples
-/// and the block's last sample) with the coefficients interpolated between
-/// them; a modulated drive is read every sample, since drive needs no solve.
-/// Unmodulated, the filter reads its cells once per block, at the cost of
-/// one branch.
+/// graph, in that port order. A per-frame value on a param port
+/// ([`Io::param`](tutti_graph::Io::param)) **overrides** the corresponding cell
+/// and is sampled at the first frame of each 16-frame segment, with the
+/// coefficients and the drive interpolated over the segment. A lane on the cutoff
+/// or on Q stops the cutoff and Q cells gliding. Unmodulated, the filter reads its
+/// cells once per block at the cost of one branch.
 ///
 /// The param is `UnitParam::Q` for consistency with the other filters, but
 /// it carries [`Resonance`] (`0.0..=1.0`), not a [`Q`](tutti_types::Q).
 ///
 /// # In a graph
 ///
-/// A graph node ([`IntoNode`]): inserted, its controls are a [`ParamSet`]
-/// over cutoff, resonance (as `UnitParam::Q`) and drive, and a fork of it
-/// starts from the values last set through that set. The graph prepares it
-/// at the device rate before its first block. Rendering allocates nothing.
-pub struct LadderFilterNode<F: Real = f64> {
-    ladder_type: LadderType,
-    frequency: Param<Hz>,
-    resonance: Param<Resonance>,
-    drive: Param<Drive>,
-    sample_rate: SampleRate,
-    /// The coefficients the last rendered sample ran at.
-    coeffs: LadderCoefficients<F>,
-    /// The drive the last rendered sample ran at — where a drive ramp starts.
-    /// `None` until the first block (and after `reset`), which then starts on
-    /// its target rather than ramping in from a value nothing set.
-    last_drive: Option<Drive>,
-    /// Stage state, four words per channel; `len()` is the audio width. Built
-    /// at construction and never resized in `process` (RT no-alloc).
-    stages: Vec<[F; 4]>,
-    /// The last finite cutoff / resonance / drive the cells held: a
-    /// non-finite write reads as unchanged, so it never reaches the solve or
-    /// the saturator (see [`LastGood`]).
-    good: [LastGood; 3],
-}
-
-impl<F: Real> std::fmt::Debug for LadderFilterNode<F> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("LadderFilterNode")
-            .field("ladder_type", &self.ladder_type)
-            .field("frequency", &self.frequency)
-            .field("resonance", &self.resonance)
-            .field("drive", &self.drive)
-            .field("sample_rate", &self.sample_rate)
-            .finish_non_exhaustive()
-    }
-}
-
-/// The params a [`LadderFilterNode`] lets the graph modulate, in port order.
-pub const LADDER_PARAMS: [UnitParam; 3] = [UnitParam::Cutoff, UnitParam::Q, UnitParam::Drive];
+/// A graph node ([`IntoNode`](tutti_graph::IntoNode)): inserted, its controls are
+/// a [`ParamSet`](tutti_graph::ParamSet) over cutoff, resonance (as `UnitParam::Q`)
+/// and drive, and a fork of it starts from the values last set through that set.
+/// Its tail is [`Tail::Unknown`](tutti_types::Tail::Unknown): a resonant ladder
+/// rings on after its input stops, so it is never skipped on a silent block and
+/// never parks. The graph prepares it at the device rate before its first block.
+/// Rendering allocates nothing.
+pub type LadderFilterNode<F = f64> = DesignNode<LadderDesign<F>>;
 
 impl<F: Real> LadderFilterNode<F> {
     /// A mono ladder filter (1 in, 1 out) of `ladder_type` at `frequency`
@@ -106,7 +78,8 @@ impl<F: Real> LadderFilterNode<F> {
     /// `resonance` is clamped to `0.0..=1.0`; `0.0` gives no emphasis at the
     /// cutoff and values near `1.0` approach self-oscillation.
     ///
-    /// The coefficients are solved at the rate [`Node::prepare`] hands it.
+    /// The coefficients are solved at the rate [`prepare`](tutti_graph::Node::prepare)
+    /// hands it.
     pub fn new(
         ladder_type: LadderType,
         frequency: impl Into<Hz>,
@@ -126,339 +99,133 @@ impl<F: Real> LadderFilterNode<F> {
         frequency: impl Into<Hz>,
         resonance: impl Into<Resonance>,
     ) -> Self {
-        let frequency = frequency.into();
-        let resonance = Resonance::new_clamped(resonance.into().get());
-        let n = usize::from(channels.into().count()).max(1);
-        let zero = F::from_f64(0.0);
-        Self {
-            ladder_type,
-            frequency: Param::new(frequency),
-            resonance: Param::new(resonance),
-            drive: Param::new(Drive::UNITY),
-            sample_rate: SampleRate::DEFAULT,
-            coeffs: LadderCoefficients::solve(frequency, resonance, SampleRate::DEFAULT),
-            last_drive: None,
-            stages: vec![[zero; 4]; n],
+        Self::live(
+            LadderDesign::new(channels.into()),
+            LadderControls {
+                ty: ladder_type,
+                freq: frequency.into(),
+                res: Resonance::new_clamped(resonance.into().get()),
+                drive: Drive::UNITY,
+            },
+        )
+    }
+}
+
+/// The cells of a [`LadderFilterNode`]: cutoff, resonance and drive, with the
+/// type they are for.
+#[derive(Clone, Debug)]
+pub struct LadderParams {
+    ty: LadderType,
+    freq: Param<Hz>,
+    res: Param<Resonance>,
+    drive: Param<Drive>,
+    /// The last finite cutoff / resonance / drive the cells held: a non-finite
+    /// write reads as unchanged, so it never reaches the design (see
+    /// [`LastGood`]).
+    good: [LastGood; 3],
+}
+
+impl ControlParams for LadderParams {
+    type Controls = LadderControls;
+
+    fn addrs(&self) -> &'static [UnitAddr] {
+        const ADDRS: [UnitAddr; 3] = [
+            UnitAddr::first(UnitParam::Cutoff),
+            UnitAddr::first(UnitParam::Q),
+            UnitAddr::first(UnitParam::Drive),
+        ];
+        &ADDRS
+    }
+
+    fn bind(&self, set: ParamSetBuilder) -> ParamSetBuilder {
+        let addrs = self.addrs();
+        set.param(addrs[0], self.freq.as_atomic())
+            .param(addrs[1], self.res.as_atomic())
+            .param(addrs[2], self.drive.as_atomic())
+    }
+
+    fn base(&self, k: usize) -> Option<f32> {
+        match k {
+            0 => Some(self.freq.load().get()),
+            1 => Some(self.res.load().get()),
+            2 => Some(self.drive.load().get()),
+            _ => None,
+        }
+    }
+
+    /// Each driven control is its lane at `at.frame` (a cutoff floored at 1 Hz, a
+    /// resonance clamped to `0..=1` with a non-finite one read as the cell, a drive
+    /// floored at 0.1 with a non-finite one read as the cell) and the cell is taken
+    /// as it is. A control with no lane glides from the controls last designed to
+    /// its cell across the block, sampled at `at.frame`: the cutoff and resonance
+    /// only when neither has a lane (a lane on one stops the other gliding), the
+    /// drive whatever the other two do.
+    fn read(&mut self, io: &Io<'_>, first: usize, at: At<LadderControls>) -> LadderControls {
+        let [cutoff, res, drive] = [first, first + 1, first + 2].map(|k| io.param(k).frames());
+        let freq = Hz(self.good[0].read(self.freq.load().get()));
+        let resonance = Resonance(self.good[1].read(self.res.load().get()));
+        let cell_drive = Drive(self.good[2].read(self.drive.load().get()));
+        let glide = |from: f32, to: f32| Ramp::new(from, to, at.block).at(at.frame);
+        let (freq, resonance) = match (cutoff, res, at.applied) {
+            (None, None, Some(from)) => (
+                Hz(glide(from.freq.get(), freq.get())),
+                Resonance(glide(from.res.get(), resonance.get())),
+            ),
+            _ => (
+                cutoff.map_or(freq, |s| Hz(s[at.frame].max(1.0))),
+                res.map_or(resonance, |s| {
+                    Resonance(finite_or(s[at.frame], resonance.get()).clamp(0.0, 1.0))
+                }),
+            ),
+        };
+        let drive = match (drive, at.applied) {
+            (Some(s), _) => Drive(finite_or(s[at.frame], cell_drive.get()).max(0.1)),
+            (None, Some(from)) => Drive(glide(from.drive.get(), cell_drive.get())),
+            (None, None) => cell_drive,
+        };
+        LadderControls {
+            ty: self.ty,
+            freq,
+            res: resonance,
+            drive,
+        }
+    }
+
+    fn driven(&self, io: &Io<'_>, first: usize) -> bool {
+        (first..first + 3).any(|k| io.param(k).frames().is_some())
+    }
+
+    fn detach(&mut self) {
+        self.freq.detach();
+        self.res.detach();
+        self.drive.detach();
+    }
+}
+
+impl<F: Real> NodeDesign for LadderDesign<F> {
+    type Params = LadderParams;
+    type Blend = NoBlend;
+
+    /// A filter declares an unknown tail and never parks.
+    const PARKS: bool = false;
+    const SAMPLING: Cadence = <Self as Design>::CADENCE;
+
+    fn params(&self, initial: LadderControls) -> LadderParams {
+        LadderParams {
+            ty: initial.ty,
+            freq: Param::new(initial.freq),
+            res: Param::new(initial.res),
+            drive: Param::new(initial.drive),
             good: [
-                LastGood::new(frequency.get(), 0.0),
-                LastGood::new(resonance.get(), 0.0),
+                LastGood::new(initial.freq.get(), 0.0),
+                LastGood::new(initial.res.get(), 0.0),
                 LastGood::fixed(Drive::UNITY.get()),
             ],
         }
     }
 
-    /// Audio channel width (as many inputs as outputs).
-    #[inline]
-    fn width(&self) -> usize {
-        self.stages.len()
-    }
-
-    /// Read the three control cells, once, with non-finite values held off.
-    #[inline]
-    fn read_controls(&mut self) -> (Hz, Resonance, Drive) {
-        (
-            Hz(self.good[0].read(self.frequency.load().get())),
-            Resonance(self.good[1].read(self.resonance.load().get())),
-            Drive(self.good[2].read(self.drive.load().get())),
-        )
-    }
-
-    #[inline]
-    fn solve_toward(
-        &self,
-        from: &LadderCoefficients<F>,
-        freq: Hz,
-        res: Resonance,
-    ) -> LadderCoefficients<F> {
-        if from.is_invalid() || from.moved(freq, res) {
-            LadderCoefficients::solve(freq, res, self.sample_rate)
-        } else {
-            *from
-        }
-    }
-
-    /// Coefficients held for the block. `drive_at(i)` is the drive at sample
-    /// `i`.
-    ///
-    /// The channels go through in groups of up to `tutti_dsp::LANES`, sample-inner, the
-    /// group's stage words in registers and each channel on its own planar
-    /// slice. One channel alone is latency-bound — every sample's `tanh` waits
-    /// on the previous sample's fourth stage — and running the independent
-    /// chains of a group side by side is what fills that latency (measured:
-    /// one channel at a time is 2× slower).
-    fn run_held(
-        &mut self,
-        size: usize,
-        input: &Inputs<'_>,
-        output: &mut Outputs<'_, '_>,
-        drive_at: impl Fn(usize) -> F + Copy,
-    ) {
-        let w = self.width();
-        let mut first = 0;
-        while first < w {
-            let n = lane_group(w - first);
-            match n {
-                8 => self.held_group::<8>(first, size, input, output, drive_at),
-                7 => self.held_group::<7>(first, size, input, output, drive_at),
-                6 => self.held_group::<6>(first, size, input, output, drive_at),
-                5 => self.held_group::<5>(first, size, input, output, drive_at),
-                4 => self.held_group::<4>(first, size, input, output, drive_at),
-                3 => self.held_group::<3>(first, size, input, output, drive_at),
-                2 => self.held_group::<2>(first, size, input, output, drive_at),
-                _ => self.held_group::<1>(first, size, input, output, drive_at),
-            }
-            first += n;
-        }
-    }
-
-    #[inline]
-    fn held_group<const N: usize>(
-        &mut self,
-        first: usize,
-        size: usize,
-        input: &Inputs<'_>,
-        output: &mut Outputs<'_, '_>,
-        drive_at: impl Fn(usize) -> F,
-    ) {
-        let (c, ty) = (self.coeffs, self.ladder_type);
-        let xs: [&[f32]; N] = core::array::from_fn(|k| &input.get(first + k)[..size]);
-        let mut group = output.iter_mut().skip(first);
-        let ys: [&mut [f32]; N] = core::array::from_fn(|_| {
-            &mut group.next().expect("the group is inside the width")[..size]
-        });
-        let mut st: [[F; 4]; N] = core::array::from_fn(|k| self.stages[first + k]);
-        for i in 0..size {
-            let d = drive_at(i);
-            for k in 0..N {
-                ys[k][i] = ladder_step(&c, ty, &mut st[k], F::from_f32(xs[k][i]), d).to_f32();
-            }
-        }
-        self.stages[first..first + N].copy_from_slice(&st);
-    }
-
-    /// Cutoff/resonance moving inside the block: a solve at each segment's
-    /// last sample, coefficients interpolated between solves, every channel
-    /// stepped per sample against the shared set. `param_at(i)` gives the
-    /// `(cutoff, resonance)` at sample `i` and is asked only at solve points.
-    fn run_swept(
-        &mut self,
-        size: usize,
-        input: &Inputs<'_>,
-        output: &mut Outputs<'_, '_>,
-        param_at: impl Fn(usize) -> (Hz, Resonance),
-        drive_at: impl Fn(usize) -> F,
-    ) {
-        let ty = self.ladder_type;
-        let mut prev = self.coeffs;
-        let unprimed = prev.is_invalid();
-        if unprimed {
-            // Nothing meaningful to ramp from — solve at the first sample.
-            let (f, r) = param_at(0);
-            prev = LadderCoefficients::solve(f, r, self.sample_rate);
-        }
-        for step in COEFF_CADENCE.steps(size, unprimed) {
-            let (start, end) = (step.frames.start, step.frames.end);
-            let (f, r) = param_at(end - 1);
-            let next = self.solve_toward(&prev, f, r);
-            let n = F::from_f64((end - start) as f64);
-            for i in start..end {
-                let k = if next == prev || i + 1 == end {
-                    next
-                } else {
-                    prev.lerp(&next, F::from_f64((i - start + 1) as f64) / n)
-                };
-                let drive = drive_at(i);
-                for (ch, s) in self.stages.iter_mut().enumerate() {
-                    let y = ladder_step(&k, ty, s, F::from_f32(input.get(ch)[i]), drive);
-                    output.get(ch)[i] = y.to_f32();
-                }
-            }
-            prev = next;
-        }
-        self.coeffs = prev;
-    }
-
-    /// The block's cutoff/resonance handling, with the drive source already
-    /// chosen: held coefficients take the grouped fast path; a moved control
-    /// or a fed cutoff/Q (`cutoff`, `res`) takes the swept path.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "the block, its buffers, the two bases and the three sources \
-                  the render chooses between; a struct would only move the list"
-    )]
-    fn render(
-        &mut self,
-        size: usize,
-        input: &Inputs<'_>,
-        output: &mut Outputs<'_, '_>,
-        base_freq: Hz,
-        base_res: Resonance,
-        cutoff: Option<&[f32]>,
-        res: Option<&[f32]>,
-        drive_at: impl Fn(usize) -> F + Copy,
-    ) {
-        match (cutoff, res) {
-            (None, None) => {
-                if self.coeffs.is_invalid() {
-                    self.coeffs = LadderCoefficients::solve(base_freq, base_res, self.sample_rate);
-                }
-                if !self.coeffs.moved(base_freq, base_res) {
-                    self.run_held(size, input, output, drive_at);
-                    return;
-                }
-                let fr = Ramp::new(self.coeffs.last_freq.get(), base_freq.get(), size);
-                let rr = Ramp::new(self.coeffs.last_res.get(), base_res.get(), size);
-                self.run_swept(
-                    size,
-                    input,
-                    output,
-                    |i| (Hz(fr.at(i)), Resonance(rr.at(i))),
-                    drive_at,
-                );
-            }
-            (cutoff, res) => {
-                self.run_swept(
-                    size,
-                    input,
-                    output,
-                    |i| {
-                        (
-                            cutoff.map_or(base_freq, |s| Hz(s[i].max(1.0))),
-                            res.map_or(base_res, |s| {
-                                Resonance(finite_or(s[i], base_res.get()).clamp(0.0, 1.0))
-                            }),
-                        )
-                    },
-                    drive_at,
-                );
-            }
-        }
-    }
-}
-
-impl<F: Real + 'static> Node for LadderFilterNode<F> {
-    /// `N` in and out, cutoff, Q and drive modulatable ([`LADDER_PARAMS`]).
-    ///
-    /// Its tail is [`Tail::Unknown`]: a resonant ladder rings on after its
-    /// input stops, for as long as its resonance and cutoff say, so it is never
-    /// skipped on a silent block (a `Tail::None` would cut the ring-out).
-    fn shape(&self) -> Shape {
-        let width = ChannelLayout::try_from(self.width()).expect("the width came from a layout");
-        Shape::audio(width, width)
-            .with_cost(tutti_graph::Cost::Moderate)
-            .with_tail(Tail::Unknown)
-            .with_params(&LADDER_PARAMS)
-    }
-
-    fn prepare(&mut self, p: &Prepare) {
-        self.sample_rate = p.sample_rate();
-        self.coeffs.invalidate();
-    }
-
-    fn process(&mut self, _cx: &Cx<'_>, mut io: Io<'_>) -> Status {
-        let size = io.frames();
-        if size == 0 {
-            return Status::Modified;
-        }
-        // Every control is read here, once, for the whole block.
-        let (base_freq, base_res, base_drive) = self.read_controls();
-        let bd = base_drive.get();
-
-        // Drive: a modulated drive is read per sample; the cell ramps from
-        // where the last block ended. Each source gets its own monomorphised
-        // render, so a held drive is a constant in the loop.
-        let (cutoff, res, fed_drive) = (
-            io.param(0).frames(),
-            io.param(1).frames(),
-            io.param(2).frames(),
-        );
-        let (inputs, mut outputs) = io.split();
-        let (input, output) = (&inputs, &mut outputs);
-        let drive_from = self.last_drive.unwrap_or(base_drive);
-        let drive_ramp = Ramp::new(drive_from.get(), base_drive.get(), size);
-        self.last_drive = Some(match fed_drive {
-            Some(s) => Drive(finite_or(s[size - 1], bd).max(0.1)),
-            None => base_drive,
-        });
-        let (f, r) = (base_freq, base_res);
-        match fed_drive {
-            Some(s) => self.render(size, input, output, f, r, cutoff, res, |i| {
-                F::from_f32(finite_or(s[i], bd).max(0.1))
-            }),
-            None if drive_ramp.is_flat() => {
-                let d = F::from_f32(base_drive.get());
-                self.render(size, input, output, f, r, cutoff, res, move |_| d);
-            }
-            None => self.render(size, input, output, f, r, cutoff, res, |i| {
-                F::from_f32(drive_ramp.at(i))
-            }),
-        }
-        Status::Modified
-    }
-
-    fn reset(&mut self) {
-        let zero = F::from_f64(0.0);
-        self.stages.fill([zero; 4]);
-        self.last_drive = None;
-    }
-
-    fn param_base(&self, k: usize) -> Option<f32> {
-        match k {
-            0 => Some(self.frequency.load().get()),
-            1 => Some(self.resonance.load().get()),
-            2 => Some(self.drive.load().get()),
-            _ => None,
-        }
-    }
-}
-
-impl<F: Real + 'static> ParamNode for LadderFilterNode<F> {
-    /// Cutoff, resonance (as `UnitParam::Q`) and drive.
-    fn param_set(&self) -> ParamSet {
-        ParamSet::builder()
-            .param(UnitParam::Cutoff, self.frequency.as_atomic())
-            .param(UnitParam::Q, self.resonance.as_atomic())
-            .param(UnitParam::Drive, self.drive.as_atomic())
-            .build()
-    }
-
-    /// A clone with its three cells detached (at their values now) and its
-    /// stages cleared.
-    fn fork_fresh(&self) -> Self {
-        let mut fork = self.clone();
-        fork.frequency.detach();
-        fork.resonance.detach();
-        fork.drive.detach();
-        Node::reset(&mut fork);
-        fork
-    }
-}
-
-/// Inserted with its [`ParamSet`] as its controls and a fork that starts from
-/// the values last set through it ([`tutti_graph::param_parts`]).
-impl<F: Real + 'static> IntoNode for LadderFilterNode<F> {
-    type Controls = ParamSet;
-
-    fn into_parts(self) -> NodeParts<ParamSet> {
-        tutti_graph::param_parts(self)
-    }
-}
-
-/// Shares the control cells (the template [`tutti_graph::param_parts`] forks
-/// from); the stages are copied.
-impl<F: Real> Clone for LadderFilterNode<F> {
-    fn clone(&self) -> Self {
-        Self {
-            ladder_type: self.ladder_type,
-            frequency: self.frequency.handle(),
-            resonance: self.resonance.handle(),
-            drive: self.drive.handle(),
-            sample_rate: self.sample_rate,
-            coeffs: self.coeffs,
-            last_drive: self.last_drive,
-            stages: self.stages.clone(),
-            good: self.good,
-        }
+    fn moved(applied: &LadderControls, target: &LadderControls) -> bool {
+        target.moved_from(applied)
     }
 }
 
@@ -468,6 +235,8 @@ mod tests {
     use crate::filter::test_utils::{generate_sine, process_mono, rms};
     use crate::test_support::{RATE_44K, prepared_at, tick, tick_fed};
     use tutti_graph::contract::assert_param_fork;
+    use tutti_graph::{Node, ParamNode};
+    use tutti_types::Tail;
 
     /// A fork starts from the values last set through the node's
     /// `ParamSet` and shares no cell with it.
@@ -760,7 +529,7 @@ mod tests {
     /// The shape declares cutoff, Q then drive, never changes the arity, and
     /// reports `Tail::Unknown`.
     ///
-    /// Mutation (run): swap `LADDER_PARAMS`' Q and drive → the first
+    /// Mutation (run): swap `ADDRS`' Q and drive → the first
     /// assertion fails. Mutation (run): drop `.with_tail(Tail::Unknown)` →
     /// the shape's default `Tail::None` → the tail assertion fails.
     #[test]
@@ -867,7 +636,8 @@ mod tests {
     /// across it, and the block ends solved at the new cutoff.
     ///
     /// Mutation: solving straight at the target and rendering the block held
-    /// (a jump) fails `assert_ramps_in`.
+    /// (a jump) fails `assert_ramps_in`; dropping the `self.applied = Some(controls)`
+    /// in `DesignNode::apply` (the block's final solve) fails the controls check.
     #[test]
     fn a_cutoff_change_is_read_next_block_and_ramped_across_it() {
         use crate::test_support::{change_between_node_blocks, noise};
@@ -881,13 +651,16 @@ mod tests {
             &[&x[64..], &x[64..]],
         );
         run.assert_ramps_in("ladder cutoff");
-        assert!(run.ramped.coeffs == run.jumped.coeffs);
+        assert!(
+            run.ramped.applied() == run.jumped.applied(),
+            "the block must end solved at the new cutoff"
+        );
     }
 
     /// Drive multiplies straight into the saturator, so a step would click; it
     /// ramps across the next block and ends on the new value.
     ///
-    /// Mutation: `Ramp::new(base_drive.get(), base_drive.get(), size)` (a jump)
+    /// Mutation: gliding the drive from its own target (`glide(cell, cell)`, a jump)
     /// fails `assert_ramps_in`.
     #[test]
     fn a_drive_change_is_read_next_block_and_ramped_across_it() {
@@ -911,13 +684,13 @@ mod tests {
             &[&x[64..], &x[64..]],
         );
         run.assert_ramps_in("ladder drive");
-        assert_eq!(run.ramped.last_drive, Some(Drive(9.0)));
+        assert_eq!(run.ramped.applied().map(|c| c.drive), Some(Drive(9.0)));
     }
 
     /// Six channels share one coefficient solve and keep six independent
     /// stage lanes: each channel is the mono ladder on its own input.
     ///
-    /// Mutation: indexing lane 0 for every channel in `run_held` fails.
+    /// Mutation: indexing lane 0 for every channel in `held_group` fails.
     #[test]
     fn six_channels_are_six_mono_ladders() {
         use crate::test_support::{drive_block, noise, prepared};

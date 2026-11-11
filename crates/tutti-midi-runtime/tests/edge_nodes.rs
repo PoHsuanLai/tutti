@@ -1,7 +1,7 @@
 //! The nodes at the graph's MIDI border:
 //! [`MidiInputNode`] sends a wire's events out of their channels' ports,
-//! translated; [`MidiQueueNode`] sends what a control thread pushed;
-//! an event tap hands what a port carries back to one; [`ClockNode`] ticks
+//! translated; an event tap hands what a port carries back to a control
+//! thread; [`ClockNode`] ticks
 //! Beat Clock on the frames the transport reaches, a start inside a block
 //! included.
 
@@ -16,15 +16,14 @@ use tutti_fixtures::midi::{
 };
 use tutti_graph::NodeKey;
 use tutti_graph::{
-    Cx, Editor, EventEdge, EventIn, EventKind, EventOut, Executor, ForkMode, ForkTarget, Io, Node,
-    Offset, Prepare, Shape, Status, Transport, TransportChanges,
+    Cx, Editor, EventEdge, EventIn, EventInletNode, EventKind, EventOut, Executor, ForkMode,
+    ForkTarget, Io, Node, Offset, Prepare, Shape, Status, Transport, TransportChanges,
 };
 use tutti_midi_protocol::channel_voice;
 use tutti_midi_runtime::{
-    CHANNELLESS_PORT, ClockNode, MIDI_INPUT_EVENT_CAPACITY, MIDI_INPUT_PORTS, MidiIn,
-    MidiInputNode, MidiQueueNode,
+    CHANNELLESS_PORT, ClockNode, MIDI_INPUT_EVENT_CAPACITY, MIDI_INPUT_PORTS, MidiIn, MidiInputNode,
 };
-use tutti_types::{Beat, Bpm, SampleRate, Samples};
+use tutti_types::{At, Beat, Bpm, Frame, SampleRate, Samples};
 use tutti_ump::{
     CCNumber, KeyEvent, Message, MidiChannel, MidiGroup, NoteNumber, U7, Ump, Voice2, decode,
 };
@@ -449,26 +448,6 @@ fn an_input_nodes_fork_is_silent() {
     assert!(seen.lock().unwrap().is_empty());
 }
 
-/// **The queue sends what was pushed, on its offsets, in order.** Pushed
-/// out of order, with one offset past the block: 3 first, then the late one
-/// on the block's last frame.
-///
-/// Mutation (run): skip the sort → the writer refuses the second push →
-/// fails.
-#[test]
-fn the_queue_sends_in_offset_order() {
-    let (_ed, mut exec, keys, seen) = rig(MidiQueueNode::new(), 1, 512);
-    keys.queue(&[note(0, 60, 700), note(0, 62, 3)]);
-    block(&mut exec, 512);
-    let got: Vec<(u64, Option<u8>)> = seen
-        .lock()
-        .unwrap()
-        .iter()
-        .map(|s| (s.1, note_of(s.2)))
-        .collect();
-    assert_eq!(got, vec![(3, Some(62)), (511, Some(60))]);
-}
-
 /// **An event tap hands MIDI back on the graph's clock, and counts what a
 /// full ring drops.** Five blocks of 256 queued notes into a ring of 1 024
 /// nobody drains: 256 dropped; what is drained is the first 1 024, the
@@ -481,12 +460,17 @@ fn the_queue_sends_in_offset_order() {
 #[test]
 fn an_event_tap_hands_midi_back_and_counts_drops() {
     let (mut ed, mut exec) = Editor::new(Prepare::new(SampleRate(RATE), Samples(512)));
-    let keys = ed.insert(NodeKey(1), "keys", MidiQueueNode::new());
+    let (inlet, mut keys) = EventInletNode::pair(256);
+    ed.insert(NodeKey(1), "keys", inlet);
     let mut out = common::sink(&mut ed, 0, &[(1, 0)]);
     ed.commit().unwrap();
-    for _ in 0..5 {
-        let batch: Vec<UmpAt> = (0..256).map(|i| note(0, 60, 7 + i / 128)).collect();
-        assert_eq!(keys.queue(&batch), 256);
+    for k in 0..5u64 {
+        // The inlet holds each event for its frame: offset 7, then 8, in
+        // block `k`.
+        for i in 0..256u64 {
+            let frame = Frame(512 * k + 7 + i / 128);
+            keys.push(At::Frame(frame), note(0, 60, 0).1).unwrap();
+        }
         exec.process(512, &Transport::default(), &[], &mut []);
     }
     assert_eq!(out.dropped(), 256);

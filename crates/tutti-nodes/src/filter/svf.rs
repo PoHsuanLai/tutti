@@ -7,12 +7,12 @@
 //! ([`SvfDesign`]); the node is a [`DesignNode`] over it, and this file holds the
 //! cells and how a block reads them.
 
-use tutti_dsp::{COEFF_CADENCE, Cadence, Ramp, Real, SvfControls, SvfDesign, SvfType};
+use tutti_dsp::{Cadence, Design, Ramp, Real, SvfControls, SvfDesign, SvfType};
 use tutti_graph::{Io, ParamSetBuilder};
 use tutti_types::{ChannelLayout, Db, Hz, Param, Q, UnitAddr, UnitParam};
 
 use crate::blend::NoBlend;
-use crate::ramp::{LastGood, block_driven};
+use crate::ramp::LastGood;
 use crate::reverb::{At, ControlParams, DesignNode, NodeDesign};
 
 /// A state-variable filter of any width: `N` audio inputs, `N` outputs, one
@@ -42,12 +42,14 @@ use crate::reverb::{At, ControlParams, DesignNode, NodeDesign};
 /// ```
 ///
 /// Cutoff ([`Hz`]), [`Q`] and gain ([`Db`]) are live [`Param`]s shared across
-/// clones, read **once per block**. A held value costs nothing: the model is
-/// designed again only when one moves past a small dead-band
-/// ([`SvfControls::moved_from`]). A value that *did* move is ramped across the
-/// block: it is designed every 16 samples along a linear parameter ramp and the
-/// coefficients are interpolated between solves, so an automated cutoff glides
-/// rather than stepping at block edges.
+/// clones. A held value costs nothing: the model is designed again only when one
+/// moves past a small dead-band ([`SvfControls::moved_from`]). The filter is
+/// designed on a 16-frame grid counted from the last reset, at each segment's
+/// first frame, and the coefficients ramp linearly to that solve over the segment,
+/// so an automated cutoff glides rather than stepping, arrives within 16 frames
+/// and renders the same however the stream is cut into blocks. A cell that moved
+/// glides from the last solve to its value across the block, so it is the one
+/// control whose render depends on the block's length.
 ///
 /// Gain applies only to [`Bell`](SvfType::Bell),
 /// [`LowShelf`](SvfType::LowShelf) and [`HighShelf`](SvfType::HighShelf); the
@@ -60,13 +62,12 @@ use crate::reverb::{At, ControlParams, DesignNode, NodeDesign};
 /// # Modulated params
 ///
 /// Cutoff (in [`Hz`]), [`Q`] and the gain (in [`Db`]) are modulatable by the
-/// graph, in that port order. The gain is read once per block, as its cell is. For
-/// cutoff and Q, a per-frame value on the param port
-/// ([`Io::param`](tutti_graph::Io::param)) **overrides** the corresponding
-/// cell. It is sampled at the solve points (every 16 samples and at the block's
-/// last sample) with the coefficients interpolated between them, instead of a
-/// `tan` per sample. Unmodulated, the filter reads its cells once per block at
-/// the cost of one branch, which is the common case.
+/// graph, in that port order. A per-frame value on a param port
+/// ([`Io::param`](tutti_graph::Io::param)) **overrides** the corresponding cell
+/// (and a lane on any of the three stops the cells gliding): it is sampled at the
+/// first frame of each 16-frame segment, with the coefficients interpolated over
+/// the segment, instead of a `tan` per sample. Unmodulated, the filter reads its
+/// cells once per block at the cost of one branch, which is the common case.
 ///
 /// # In a graph
 ///
@@ -170,20 +171,18 @@ impl ControlParams for SvfParams {
         }
     }
 
-    /// With a lane on the cutoff or the Q, each driven control is its lane at
+    /// With a lane on any of the three, each driven control is its lane at
     /// `at.frame` (a cutoff floored at 1 Hz and a Q at 0.01, which also maps a NaN
     /// to the floor) and the cells are taken as they are. With none, the cells
     /// glide from the controls last designed to their values across the block,
-    /// sampled at `at.frame`. The gain is read once per block, at the block's
-    /// last frame, whichever of the two.
+    /// sampled at `at.frame`.
     fn read(&mut self, io: &Io<'_>, first: usize, at: At<SvfControls>) -> SvfControls {
-        let (cutoff, res) = (io.param(first).frames(), io.param(first + 1).frames());
+        let lanes = [first, first + 1, first + 2].map(|k| io.param(k).frames());
         let freq = Hz(self.good[0].read(self.freq.load().get()));
         let q = Q(self.good[1].read(self.q.load().get()));
-        let gain = Db(self.good[2]
-            .read(block_driven(io, first + 2).unwrap_or_else(|| self.gain.load().get())));
-        match (cutoff, res, at.applied) {
-            (None, None, Some(from)) => {
+        let gain = Db(self.good[2].read(self.gain.load().get()));
+        match (lanes, at.applied) {
+            ([None, None, None], Some(from)) => {
                 let glide = |from: f32, to: f32| Ramp::new(from, to, at.block).at(at.frame);
                 SvfControls {
                     ty: self.ty,
@@ -192,23 +191,23 @@ impl ControlParams for SvfParams {
                     gain: Db(glide(from.gain.get(), gain.get())),
                 }
             }
-            (None, None, None) => SvfControls {
+            ([None, None, None], None) => SvfControls {
                 ty: self.ty,
                 freq,
                 q,
                 gain,
             },
-            _ => SvfControls {
+            ([cutoff, res, gain_lane], _) => SvfControls {
                 ty: self.ty,
                 freq: cutoff.map_or(freq, |s| Hz(s[at.frame].max(1.0))),
                 q: res.map_or(q, |s| Q(s[at.frame].max(0.01))),
-                gain,
+                gain: gain_lane.map_or(gain, |s| Db(self.good[2].read(s[at.frame]))),
             },
         }
     }
 
     fn driven(&self, io: &Io<'_>, first: usize) -> bool {
-        io.param(first).frames().is_some() || io.param(first + 1).frames().is_some()
+        (first..first + 3).any(|k| io.param(k).frames().is_some())
     }
 
     fn detach(&mut self) {
@@ -224,7 +223,7 @@ impl<F: Real> NodeDesign for SvfDesign<F> {
 
     /// A filter declares an unknown tail and never parks.
     const PARKS: bool = false;
-    const SAMPLING: Cadence = COEFF_CADENCE;
+    const SAMPLING: Cadence = <Self as Design>::CADENCE;
 
     fn params(&self, initial: SvfControls) -> SvfParams {
         SvfParams {

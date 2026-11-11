@@ -1,7 +1,7 @@
 //! Regression gate for RT-safety: the MIDI border nodes process a block
 //! without allocating, events flowing — a wire's through the input node's
-//! translation onto its ports, a control thread's through the queue into the
-//! event tap's ring, and the clock's ticks.
+//! translation onto its ports, a control thread's through the event inlet into
+//! the event tap's ring, and the clock's ticks.
 //!
 //! Mutation (run): a `Vec::new()` + push per block in `MidiInputNode::process`
 //! → the gate panics.
@@ -11,10 +11,10 @@ use tutti_fixtures::midi;
 use tutti_fixtures::midi::{note_off, registered_rpn};
 use tutti_graph::NodeKey;
 use tutti_graph::UmpAt;
-use tutti_graph::{Editor, Harmony, LoopRange, Offset, Prepare, Transport};
+use tutti_graph::{Editor, EventInletNode, Harmony, LoopRange, Offset, Prepare, Transport};
 use tutti_midi_runtime::{
-    ClockNode, HarmonyNode, MidiClipNode, MidiIn, MidiInputNode, MidiMailbox, MidiQueueNode,
-    TimedHarmony, TimedMidiEvent, TimedQueueNode,
+    ClockNode, HarmonyNode, LIVE_INLET_CAPACITY, MidiClipNode, MidiIn, MidiInputNode, MidiKeys,
+    MidiMailbox, TimedHarmony, TimedMidiEvent,
 };
 use tutti_types::{At, Beat, Bpm, Frame, FrameClock, SampleRate, Samples};
 use tutti_ump::{MidiChannel, MidiGroup, NoteNumber, U7, Ump};
@@ -52,7 +52,9 @@ impl MidiIn for Busy {
 fn the_border_nodes_process_without_allocating() {
     let (mut ed, mut exec) = Editor::new(Prepare::new(SampleRate(48_000.0), Samples(512)));
     ed.insert(NodeKey(1), "in", MidiInputNode::new(Some(Box::new(Busy))));
-    let keys = ed.insert(NodeKey(2), "keys", MidiQueueNode::new());
+    let (inlet, writer) = EventInletNode::pair(LIVE_INLET_CAPACITY);
+    ed.insert(NodeKey(2), "keys", inlet);
+    let mut keys = MidiKeys::new(writer);
     let clock = ed.insert(NodeKey(3), "clock", ClockNode::new());
     let mut out = common::sink(&mut ed, 0, &[(1, 0), (1, 3), (2, 0), (3, 0)]);
     clock.set_enabled(true);
@@ -66,7 +68,13 @@ fn the_border_nodes_process_without_allocating() {
     let (tx, rx) = MidiMailbox::pair();
     assert_no_alloc::assert_no_alloc(|| {
         for b in 1..200u32 {
-            keys.note_on(MidiChannel::FIRST, NoteNumber::of(60), 0xC800);
+            keys.note_on(
+                At::NextBlock,
+                MidiChannel::FIRST,
+                NoteNumber::of(60),
+                0xC800,
+            )
+            .unwrap();
             let at = Beat(f64::from(b) * 512.0 / 24_000.0);
             exec.process(
                 512,
@@ -401,17 +409,16 @@ fn a_clip_with_a_full_table_sends_and_pays_without_allocating() {
     assert!(exec.lost_event_count() < exec.dropped_event_count());
 }
 
-/// The timed queue's audio side takes events from its ring, orders them, and
+/// The event inlet's audio side takes events from its ring, orders them, and
 /// sends them out of its port without allocating. The sends stay outside the
-/// gate: they take the handle's control-side lock, which std's mutex allocates
-/// on its first use on macOS.
+/// gate: they are the control thread's.
 ///
 /// Mutation (run): a `Vec::with_capacity` per block in
-/// `EventInletNode::process` (the node `TimedQueueNode` wraps) aborts the gate.
+/// `EventInletNode::process` aborts the gate.
 #[test]
-fn the_timed_queue_processes_without_allocating() {
+fn the_event_inlet_processes_without_allocating() {
     let (mut ed, mut exec) = Editor::new(Prepare::new(SampleRate(48_000.0), Samples(512)));
-    let (queue, tx) = TimedQueueNode::new();
+    let (queue, mut tx) = EventInletNode::pair(LIVE_INLET_CAPACITY);
     ed.insert(NodeKey(1), "timed", queue);
     let mut out = common::sink(&mut ed, 0, &[(1, 0)]);
     ed.commit().unwrap();
@@ -423,13 +430,11 @@ fn the_timed_queue_processes_without_allocating() {
     let msg = midi::m1_note_on(MidiChannel::FIRST, NoteNumber::of(60), U7::of(100));
     let mut heard = 0;
     for b in 1..200u64 {
-        // Control side, outside the gate: a send takes the handle's lock,
-        // which only control threads take (std's mutex allocates on its first
-        // lock on macOS). One for this block's middle, one already late, one
-        // for the next block.
-        tx.send(At::Frame(Frame(b * 512 + 200)), msg).unwrap();
-        tx.send(At::Frame(Frame(3)), msg).unwrap();
-        tx.send(At::NextBlock, msg).unwrap();
+        // Control side, outside the gate: one for this block's middle, one
+        // already late, one for the next block.
+        tx.push(At::Frame(Frame(b * 512 + 200)), msg).unwrap();
+        tx.push(At::Frame(Frame(3)), msg).unwrap();
+        tx.push(At::NextBlock, msg).unwrap();
         // The audio thread's part, inside the gate.
         assert_no_alloc::assert_no_alloc(|| {
             exec.process(512, &t, &[], &mut []);
@@ -449,9 +454,9 @@ fn the_timed_queue_processes_without_allocating() {
 /// Mutation (run): a `Vec::new()` + push in `keep`'s full-list branch aborts the
 /// gate.
 #[test]
-fn the_timed_queue_with_a_full_list_processes_without_allocating() {
+fn the_event_inlet_with_a_full_list_processes_without_allocating() {
     let (mut ed, mut exec) = Editor::new(Prepare::new(SampleRate(48_000.0), Samples(512)));
-    let (queue, tx) = TimedQueueNode::new();
+    let (queue, mut tx) = EventInletNode::pair(LIVE_INLET_CAPACITY);
     ed.insert(NodeKey(1), "timed", queue);
     let mut out = common::sink(&mut ed, 0, &[(1, 0)]);
     ed.commit().unwrap();
@@ -461,20 +466,20 @@ fn the_timed_queue_with_a_full_list_processes_without_allocating() {
     let off = midi::m1_note_off(MidiChannel::FIRST, NoteNumber::of(60), U7::of(0));
     // Outside the gate: fill the list with events for frames far ahead.
     for k in 0..256u64 {
-        tx.send(At::Frame(Frame(10_000_000 + k)), on).unwrap();
+        tx.push(At::Frame(Frame(10_000_000 + k)), on).unwrap();
     }
     exec.process(512, &t, &[], &mut []);
     let _ = out.poll_into(&mut drain);
 
     for b in 1..100u64 {
-        // Control side, outside the gate (the handle's lock; see above).
-        tx.send(At::NextBlock, on).unwrap();
-        tx.send(At::Frame(Frame(20_000_000 + b)), off).unwrap();
-        tx.send(At::Frame(Frame(30_000_000 + b)), on).unwrap();
+        // Control side, outside the gate.
+        tx.push(At::NextBlock, on).unwrap();
+        tx.push(At::Frame(Frame(20_000_000 + b)), off).unwrap();
+        tx.push(At::Frame(Frame(30_000_000 + b)), on).unwrap();
         assert_no_alloc::assert_no_alloc(|| {
             exec.process(512, &t, &[], &mut []);
             let _ = out.poll_into(&mut drain);
         });
     }
-    assert!(tx.dropped() >= 99 * 2, "dropped only {}", tx.dropped());
+    assert!(tx.evicted() >= 99 * 2, "dropped only {}", tx.evicted());
 }

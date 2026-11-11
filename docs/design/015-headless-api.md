@@ -569,7 +569,7 @@ let synth = s.add_plugin(done)?;             // main thread: NodeKey; controls a
 **MIDI.**
 
 ```rust
-let live = s.midi().live_input(synth)?;           // MidiQueueNode fed into synth; returns a MidiSender
+let live = s.midi().live_input(synth)?;           // an event inlet fed into synth; returns a LiveInput
 s.midi().play_clip(synth, events)?;               // one MidiClipNode per target, updated in place
 s.midi().route(MidiRouteRule::any_channel().to(synth)); // `midi-hardware`
 ```
@@ -1592,7 +1592,7 @@ Where the code differs from the text above:
 - **`Graph::modulate` and `Graph::send_mod_resyncs` are `pub(crate)`**:
   the phases are the one way in.
 - **`NodeKey` is `Ord`**, for the session's `BTreeMap`s.
-- **`live_input` returns a `LiveInput`** (its node and its `MidiSender`),
+- **`live_input` returns a `LiveInput`** (its node and a cloneable handle on the inlet's writer, with `note_on`, `note_off` and `send`),
   and **`Midi::retarget`** re-aims a clip or live input: both outlive their
   target, so a host whose entity is re-bound keeps them, and removes one
   with `Session::remove`.

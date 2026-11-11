@@ -3980,7 +3980,7 @@ Decisions:
    | node | ns / frame / channel | class |
    |---|---|---|
    | `BusStripNode` (tutti-nodes), channel-major kernel, measured on another box (the note below) | 0.06 steady, 0.4 ramping every block, 0.6–1.0 with the volume fed per frame | `Light` (fed: borderline) |
-   | `MidiClipNode`, `ClockNode` (measured); `HarmonyNode`, `MidiQueueNode`, `MidiInputNode` (the same shape of work) | 0 (event-only: about 0.3 µs a block at any length; a gain's 256 frames take 0.2) | `Light` |
+   | `MidiClipNode`, `ClockNode` (measured); `HarmonyNode`, `EventInletNode` (once `MidiQueueNode`), `MidiInputNode` (the same shape of work) | 0 (event-only: about 0.3 µs a block at any length; a gain's 256 frames take 0.2) | `Light` |
    | `DistortionNode` (tutti-nodes), stereo, by curve, measured on another box (the note below) | `HardClip` 0.11, `Softsign` 0.22 (fed 0.8 both); `Crush` 2.2 (fed 2.8), `SoftCrush` 2.8 (fed 3.5), `Atan` 7.6 (fed 9.0), `Tanh` 15–16 (fed 18) | `Light` for `HardClip` and `Softsign`, `Moderate` for the other four |
    | `ClickNode` | 3.8 | `Moderate` |
    | `InletNode` (then `MicMonitorNode`), one block copy out of the ring, measured on another box (the note below) | 0.4–0.6 | `Light` |
@@ -6889,8 +6889,8 @@ the reference CLAP plugin in a real `plugin-server` (`clap` feature):
   `bevy-tutti` (parked).
 
 **As built (M4).** A node's blend with its aligned input, `Mix`, as graph
-state beside the mode. The static half is built; the driven half (a
-`ModTarget` onto the mix) is **not** (below).
+state beside the mode. The static half is built here; the driven half (a
+`ModTarget` onto the mix) is **M4b**, built after it ("As built (M4b)", below).
 
 - **API.** `tutti_graph::Editor::set_mix(key, Mix) -> Result<(), MixError>` and
   `mix(key) -> Mix`; `GraphSpec::mixes: BTreeMap<NodeKey, NodeMix>` (absent is
@@ -6945,7 +6945,7 @@ state beside the mode. The static half is built; the driven half (a
   differential suite found: the weights a fade starts from are the last
   *sample* of a ramp, which `from + (to - from) * 1.0` need not make exactly
   `to`; both sides take the last sample.
-- **Not built: the `ModTarget`.** The doc asks for a mix that a route can
+- **Not built in M4: the `ModTarget`** (built in M4b, below). The doc asks for a mix that a route can
   drive, as an edge gain can (G2, G3). It is not in M4. A driven mix needs the
   mix to be a *port of the unit's op* that the compiler knows (an event source
   read by the node op, aligned by the PDC, counted by the cycle check and the
@@ -6978,6 +6978,97 @@ state beside the mode. The static half is built; the driven half (a
   differential suite's `mixes_are_bit_identical_to_the_reference` (own RNG;
   mixes and modes together), `rt_no_alloc.rs`'s moving-mix gate on both
   executors and `tutti-session/tests/node_mix.rs`.
+
+**As built (M4b).** A control lane drives a node's mix, with one writer. The
+design of "As built (M4)" held on contact with the code, with the choices
+below.
+
+- **API.** The mix is a param port at a reserved address:
+  `NodeMix::ADDR`, `UnitAddr::new(UnitParam::Wet, 255)`, so
+  `GraphSpec::connect_param(ParamIn { node, param: NodeMix::ADDR }, from)` and
+  `set_param_range` / `Editor::set_param_range` / `param_range_cell` serve the
+  mix with no new method. `ParamPorts::try_of` refuses the address to a node
+  (`ParamPortsError::Reserved`), `CompileError::UnknownParam` exempts it, and
+  `NodeMix::DEFAULT_RANGE` (`0..=1`) is the range of a port with no entry.
+  `NodeMix::lane_range(range)` narrows any range to `0..=1` where it is
+  stored (the mode cell's), so the lane's step needs no second clamp and a
+  range a host sets wider than the blend is the blend. `Editor::mix_cell(key)
+  -> Option<ParamCell>` is the cell `set_mix` stores into, the lane's knob;
+  `Editor::mix` reads the cell once a commit has placed the unit. Session:
+  `MixRef::of(node)` (the key form, as `ParamRef` and `EdgeRef` are),
+  `ModTarget::Mix(MixRef)` with its `From`, `TargetKey::Mix(node bits)` in
+  `tutti-modulation` (`TargetKey::mix`), `tutti_nodes::Target::Mix { node }`
+  (the reconciler takes the knob and the range cell from the editor, as an
+  edge's), `Bind::Mix`, and the session's own `OwnMods` keying (the node's
+  bits, no minting) and `forget_node`.
+- **How the lane reaches the node op.** The compiler lists the mix as the
+  **last** entry of the node op's `params` span, at the sentinel port
+  `ParamPortOp::MIX_PORT` (`u16::MAX`, past every declared index; the
+  verifier allows it only there, only at `NodeMix::ADDR`), its source aligned
+  to the node's arrival by `DelayKey::ParamEvent { at: ParamIn { node,
+  NodeMix::ADDR }, .. }` (the param source's own key, so no new `DelayKey`,
+  and `driving_nodes`, the cycle check and the verifier's reads served it
+  already). `run_params` skips it (no declared port matches the sentinel).
+  `moded_node_op` reads it: **`ModeState::drive_step`** runs the param port's
+  step (`ParamState::port`) on the source's events before anything reads the
+  block's mix, with the cell's snapshot as the base.
+- **Scratch, sized at apply.** The lane's state is a one-port
+  `ParamState::lane` in `ModeState` (`drive`), built by
+  `ModeState::set_driven` when a plan applied first drives the unit's mix
+  (`Executor::apply`, after `rebuild`: the only allocation, as a driven edge's
+  is) and **kept for the unit's life**: an idle one costs `max_block` floats
+  and no work, and no commit frees one on the audio thread (a driven edge's is
+  carried by edge and dropped on the control side; a mix's unit is already
+  carried, so keeping it needed no spare list). A lane built for a unit that
+  has run a block resumes (a source connected to a running mix declicks), one
+  built with the unit starts at its value (`ModeState::ran`).
+- **WET pays nothing, and a driven mix pays only while it is driven.** A unit
+  is plain only if its lane is idle (`drive` is `None` or not `busy`: a lane
+  delivers frames, so is busy, every block it is driven, and for the declick
+  after it is let go). A node whose mix no plan drives never builds one and
+  keeps the plain op bit for bit. (The block after a lane's declick ends is
+  one moded block more, as a driven edge's is.)
+- **Frames replace the ramp.** When the lane delivers, `MixRun` is `driven`:
+  `m[i]` is the lane's value at frame `i` (`Segments::blend` takes the lane's
+  slice beside the aligned input), `is_wet` is false, `state()` is `Moving`
+  (flags clear) and `is_static` is false **whatever the block's ends are**: the
+  differential suite found the case (a block whose previous and last values
+  agree took the static path, and the frames between were lost);
+  `tests/mix_driven.rs` pins it with a block of seven driver periods. The
+  next block ramps from the lane's last frame (`mix_to` becomes it), to the
+  cell as ever. A lane that does not deliver (never driven, or its declick
+  done) leaves the base ramp of M4. Mode wins as before, the lane steps while
+  the node is bypassed or muted (so a move made while it was out has arrived
+  when it is heard), and a fade's target is taken at each frame's lane value.
+- **PDC.** As a param's: a late source raises the node's arrival (the audio
+  is delayed to it, the lane needs no ring), an early one is delayed to it.
+- **One writer.** The lane's knob is the mix cell (`ModeCell::knob`, a clone
+  of the `Arc<AtomicF32>` the executor reads and `set_mix` stores into), so
+  `set_mix` and a route are one writer (G3's rule): a route modulates around
+  the base and removing it returns to the base, not WET. The spec's copy of
+  the mix can fall behind a cell the knob wrote, so the cell is the truth once
+  a commit has placed the unit, as for an edge's gain: a commit writes the
+  spec's mix into an existing cell only when the spec's mix *moved* since the
+  last commit (`carry_mix`), `Editor::mix` and a fork read the cell (a fork
+  starts at the base; a lane's value is its own route's to give), and the
+  range is written from the spec for every unit a commit keeps.
+- **The reference** runs the same lane by its own code (`run_mix`, through
+  `ref_port`, the rule it already shares with a node's ports and an edge's
+  lane; its state is the node's `ParamIn` entry at the mix's address, and
+  `RefMode::ran` stands for `ran`).
+- **Tests.** `tutti-graph/tests/mix_driven.rs` (the analytic blend at a plain
+  and a latent node, the clamp, a range moved between blocks, a source that
+  goes declicked to the base, state across a commit, the mode winning, a late
+  and an early lane, the refusals, the one writer), the unit test in `mode.rs`
+  (a node whose mix is not driven keeps the plain op), the differential suite's
+  `driven_mixes_are_bit_identical_to_the_reference` (own RNGs, so no seed
+  moved), `rt_no_alloc.rs`'s driven-mix gate on both executors,
+  `tutti-modulation`'s mix key test and `tutti-session`'s
+  `tests/mix_modulation.rs` (set mix, route, move the base while routed, move
+  the macro, clamp, route removed). Every one has its mutation recorded on it.
+- **Not touched**: nodes' own dry/wet (the tutti-dsp session's follow-up), the
+  plugin hosts and `bevy-tutti` (parked; its `match`es on `TargetKey` would
+  need the new variant when it is unparked).
 
 #### Buses and coercion between declared layouts
 
@@ -7135,6 +7226,54 @@ Mutations: lower a fold with the wrong gain; with source channels swapped;
 drop the identity shortcut (the plan then differs); store the `Fold` in the
 spec.
 
+**As built (B1).** The vocabulary and the declaration; nothing reads a bus
+yet, so no plan, op or render moves.
+
+- **Types.** `tutti_types::BusTopology` (`new(impl IntoIterator<Item =
+  Speaker>) -> Option`, `discrete(ChannelLayout) -> Option` (const), `EMPTY`,
+  `positions`, `layout`, `From<BusTopology> for ChannelTopology`,
+  `TryFrom<&ChannelTopology>` with `BusTooWide { width }`), `MAX_BUS_CHANNELS =
+  16`. `tutti_graph::{Bus, BusRole, Buses, MAX_BUSES}` in their own private
+  module `bus.rs` (not `node.rs`: that file is long enough), and
+  `Shape::{buses_in, buses_out, with_buses_in, with_buses_out}`. `Buses` is a
+  `Copy` inline list with `NONE`, `main`, `of_width`, `with`, `new`, `get`,
+  `iter`, `main_bus`, `width`, `first_port`.
+- **`Shape::audio` builds `Discrete`, not `assumed`.** The text above says
+  `Discrete` of that width with no placement claim; the staging note's "built
+  from widths" is the same. `ChannelTopology::assumed` is the guess "a width is
+  not a placement" forbids, and it would make a 6-wide node a 5.1 that a
+  `Discrete(2)` sink refuses by luck of the count. So a width-only node's bus
+  folds to another `Discrete` bus of equal width and to nothing else.
+- **The buses cover a prefix of the ports.** The text says `audio_in` "equals
+  the sum of the buses' widths". That cannot hold for a node of 17 to 64
+  channels (`MAX_PORTS` is 64, a bus is 16), nor for a plugin with more than
+  `MAX_BUSES` buses. So the rule is: the buses cover the first
+  `buses.width()` ports, `buses.width() <= audio_in`, and the rest are reached
+  by port, as the text already says of a plugin's fifth bus. A width of 0 or
+  past 16 has no bus from `Shape::audio`. `with_buses_*` panics (const) when
+  the buses are wider than the ports, and leaves `audio_in` alone. An empty
+  bus (a plugin bus declared with no channels) keeps its slot so the bus index
+  is the plugin's.
+- **Size.** `Shape` goes from about 100 to 664 bytes (a `BusTopology` is 68
+  bytes, a `Bus` 68, `Buses` 274, twice). The text's "near 150 bytes" was
+  low. `Shape` is built by `Node::shape` and kept once per unit in the plan,
+  never on the audio thread. A smaller `Bus` (speakers packed to a byte, with
+  `Unknown` out of line) is a later change if the plan's size shows.
+- **`Fold::contributions(dst_c) -> impl Iterator<Item = (usize, f32)>`**: the
+  fold as a matrix row, ascending in source channel, one pair per channel (a
+  channel reached by two paths has its gains added), the dropped LFE and a
+  silent destination channel having no pair. A `Mix` row's `scale` multiplies
+  its terms' gains; a grouped term's gain goes to each of its sources. It is
+  the fold to rounding only, as this section says of the lowering.
+- **Plugins.** `PluginNode::shape` declares the plugin's buses from
+  `LoadedPlugin`'s `inputs`/`outputs` widths and `input_topology`/
+  `output_topology`, in bus order, first `Main`, the rest `Aux`. A bus whose
+  topology is `None` or disagrees with its width is `Discrete`. It stops at
+  the first bus past `MAX_BUSES` or past 16 channels. **Sidechain is not
+  declared yet:** `LoadedPlugin` does not say which input bus is one, so the
+  hosts have to report a role (list in the hand-off) and `buses_of` then
+  maps it to `BusRole::Sidechain`.
+
 #### What else is, and is not, a graph primitive
 
 The test this document applies: a **primitive** says where a signal goes, how
@@ -7205,8 +7344,8 @@ itself.
 |---|---|---|
 | 1 | Fan-in | the six PRs of "Audio fan-in sums", point 10 |
 | 2 | Edge gain | **G1**: `EdgeGain`, `Sink`, `EdgeId`, validate, the weighted kernel and ramp, cell and `set_edge_gain`, reference, tests (static and ramped weights). **G2**: the driven lane: `connect_edge_gain`, `DelayKey::EdgeGain`, `GainPort`, the session's `ModTarget` and `EdgeRef`, tests. **G3**: session API. The audit is done here: no shipped node exists only to scale one source (the `Gain` nodes are test doubles), and `BusStripNode` keeps its volume and pan (below), so G3 deletes nothing. |
-| 3 | Bypass, mute and mix | independent of 1 and 2, in any order after the design merges. **M4** (static half built; the `ModTarget` is M4b, see "As built (M4)"): the blend above, `Editor::set_mix`, its `ModTarget`, the reference, tests (`Mix` 1.0 bit-identical to `Active`, 0.0 bit-identical to `Bypassed` in steady state); `Mix`'s docs, and `DRY`'s and `WET`'s, say what the ends are (all of the aligned input, all of the node's output) instead of the studio words alone. **M1** (built): `NodeMode`, the cell, the executor's steady states, the bypass line, the declick and un-bypass sequence, the reference, tests. **M2** (session half built): `Editor::set_mode`, the session API, hosts (plugins, AU property). **M3** (built): delete `EqBandNode`'s flag, `BusStripNode`'s mute (and `add_general_midi`'s binding of it through `UnitParam::Mute`, which becomes `NodeMode::Muted` on the channel's strip), per-node bypass; bit-exact tests replace the tolerance one; CLAUDE.md's dead-names list gains the strip mute and `EqBandNode`'s flag. |
-| 4 | Buses and coercion | needs 1 and 2. **B1**: `BusTopology`, `Buses` and `Shape`'s buses with one `Main` bus built from widths; `Fold::contributions`; hosts fill their buses. **B2**: `BusRef`, `bus_edges`, validate, lowering to weighted lanes, `connect_bus`, session API, tests. **B3**: delete `DownmixNode` and migrate its users; bypass uses the main buses' fold. |
+| 3 | Bypass, mute and mix | independent of 1 and 2, in any order after the design merges. **M4** (built; the static half, then **M4b**, the `ModTarget`, see "As built (M4)" and "As built (M4b)"): the blend above, `Editor::set_mix`, its `ModTarget`, the reference, tests (`Mix` 1.0 bit-identical to `Active`, 0.0 bit-identical to `Bypassed` in steady state); `Mix`'s docs, and `DRY`'s and `WET`'s, say what the ends are (all of the aligned input, all of the node's output) instead of the studio words alone. **M1** (built): `NodeMode`, the cell, the executor's steady states, the bypass line, the declick and un-bypass sequence, the reference, tests. **M2** (session half built): `Editor::set_mode`, the session API, hosts (plugins, AU property). **M3** (built): delete `EqBandNode`'s flag, `BusStripNode`'s mute (and `add_general_midi`'s binding of it through `UnitParam::Mute`, which becomes `NodeMode::Muted` on the channel's strip), per-node bypass; bit-exact tests replace the tolerance one; CLAUDE.md's dead-names list gains the strip mute and `EqBandNode`'s flag. |
+| 4 | Buses and coercion | needs 1 and 2. **B1** (built, "As built (B1)"): `BusTopology`, `Buses` and `Shape`'s buses with one `Main` bus built from widths; `Fold::contributions`; hosts fill their buses (generically, sidechain roles pending the hosts). **B2**: `BusRef`, `bus_edges`, validate, lowering to weighted lanes, `connect_bus`, session API, tests. **B3**: delete `DownmixNode` and migrate its users; bypass uses the main buses' fold. |
 
 Bypass's channel mapping for buses with different declared topologies uses
 B1's types; M1 ships the width rule (`Status::Bypass`'s) and B3 switches the
@@ -7371,7 +7510,8 @@ fourth.
     (`input_ports`); the routing table, `MidiRoute`, `MidiRoutingSnapshot`
     and `MAX_TARGETS_PER_ROUTE` are gone, and so is `MidiRouter`. Its fork
     reads no wire.
-  - **`MidiQueueNode`**: what a control thread sends (a keyboard, a
+  - **`MidiQueueNode`** (deleted, doc 017 stage E4: the event inlet
+    replaced it): what a control thread sends (a keyboard, a
     preview), out of one port, each event on its offset clamped into the
     block. Its controls are the push half of a `MidiMailbox`, which is now
     just the ring MIDI crosses threads on (no unit id). Its fork is silent.

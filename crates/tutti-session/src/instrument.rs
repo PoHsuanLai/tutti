@@ -5,7 +5,7 @@
 //! ([`Session::add_instrument`]), makes one of a node already in the graph
 //! ([`Session::instrument`]), or of a hosted plugin whose format says it is one
 //! ([`Session::instrument_plugin`]), and hands back an [`InstrumentHandle`]: a
-//! timed queue before the event input, and a strip after the main pair (the
+//! event inlet before the event input, and a strip after the main pair (the
 //! gain no two instruments agree on).
 //!
 //! # What a frame is
@@ -20,21 +20,23 @@
 //! whatever the rate has become since, including between the read and the send.
 //!
 //! Everything a handle does is a port or a cell: a message is pushed into the
-//! queue node's ring (never blocking the audio thread; the handle's clones
+//! event inlet's ring (never blocking the audio thread; the handle's clones
 //! share one writer behind a lock only control threads take, which may
 //! allocate on its first use)
 //! stamped with an [`At`], and a gain is a store into the strip's volume cell. Neither takes
 //! `&mut` of anything in the graph.
 //!
 
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+
 use tutti_graph::NodeKey;
-use tutti_graph::{Instrument, ParamSet};
-use tutti_midi_runtime::{TimedQueueNode, TimedSendError, TimedSender};
+use tutti_graph::{Instrument, ParamSet, Refused};
+use tutti_midi_runtime::{LIVE_INLET_CAPACITY, MidiKeys};
 use tutti_nodes::BusStripNode;
 use tutti_types::{Amplitude, At, Moment, UnitParam};
-use tutti_ump::{Address, Message, MidiChannel, NoteNumber, Ump, Voice2};
+use tutti_ump::{MidiChannel, NoteNumber, Ump};
 
-use crate::{Feeder, GraphSource, Session, SessionNode};
+use crate::{Feeder, Graph, GraphSource, Session, SessionNode};
 
 /// Why a node is not an instrument.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
@@ -74,12 +76,68 @@ pub enum SendError {
     Full,
 }
 
-impl From<TimedSendError> for SendError {
-    fn from(e: TimedSendError) -> Self {
+impl From<Refused> for SendError {
+    fn from(e: Refused) -> Self {
         match e {
-            TimedSendError::Beat => Self::Beat,
-            TimedSendError::Full => Self::Full,
+            Refused::Beat => Self::Beat,
+            Refused::Full => Self::Full,
         }
+    }
+}
+
+/// An event inlet's writer ([`MidiKeys`]) behind the session's own lock, so
+/// that what holds it can be `Clone` (design 017, "The event inlet": the
+/// inlet has one producer). The lock is a control thread's: it is taken to
+/// send, to read the clock and to read a count, never on the audio thread,
+/// which owns the inlet's node.
+#[derive(Clone, Debug)]
+pub(crate) struct SharedKeys(Arc<Mutex<MidiKeys>>);
+
+impl SharedKeys {
+    /// Opens an inlet in `graph`: its node, and the writer.
+    pub(crate) fn open(graph: &mut Graph) -> (NodeKey, Self) {
+        let (node, writer) = graph.open_event_inlet(LIVE_INLET_CAPACITY);
+        (node, Self(Arc::new(Mutex::new(MidiKeys::new(writer)))))
+    }
+
+    fn keys(&self) -> MutexGuard<'_, MidiKeys> {
+        // A panic while pushing leaves the writer whole.
+        self.0.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    pub(crate) fn clock(&self) -> Option<Moment> {
+        self.keys().clock()
+    }
+
+    pub(crate) fn send_at(&self, moment: Moment, ump: Ump) -> Result<(), SendError> {
+        Ok(self.keys().push_at(moment, ump)?)
+    }
+
+    pub(crate) fn send(&self, at: At, ump: Ump) -> Result<(), SendError> {
+        Ok(self.keys().push(at, ump)?)
+    }
+
+    pub(crate) fn note_on(
+        &self,
+        at: At,
+        channel: MidiChannel,
+        note: NoteNumber,
+        velocity: u16,
+    ) -> Result<(), SendError> {
+        Ok(self.keys().note_on(at, channel, note, velocity)?)
+    }
+
+    pub(crate) fn note_off(
+        &self,
+        at: At,
+        channel: MidiChannel,
+        note: NoteNumber,
+    ) -> Result<(), SendError> {
+        Ok(self.keys().note_off(at, channel, note)?)
+    }
+
+    pub(crate) fn dropped(&self) -> u64 {
+        self.keys().evicted()
     }
 }
 
@@ -90,7 +148,7 @@ pub struct InstrumentHandle {
     main: [u16; 2],
     strip: NodeKey,
     queue: NodeKey,
-    sender: TimedSender,
+    keys: SharedKeys,
     strip_params: ParamSet,
 }
 
@@ -130,7 +188,7 @@ impl InstrumentHandle {
     /// instant: the queue rescales it to the rate it runs at.
     #[must_use]
     pub fn clock(&self) -> Option<Moment> {
-        self.sender.clock()
+        self.keys.clock()
     }
 
     /// Plays `ump` at the instant `moment` names (a reading of
@@ -142,7 +200,7 @@ impl InstrumentHandle {
     ///
     /// [`SendError::Full`] when the queue is full.
     pub fn send_at(&self, moment: Moment, ump: Ump) -> Result<(), SendError> {
-        self.sender.send_at(moment, ump).map_err(SendError::from)
+        self.keys.send_at(moment, ump)
     }
 
     /// Plays `ump` at `at`: [`At::Frame`] on that frame of the engine's clock
@@ -157,7 +215,7 @@ impl InstrumentHandle {
     /// [`SendError::Beat`] for [`At::Beat`]; [`SendError::Full`] when the queue
     /// is full.
     pub fn send(&self, at: At, ump: Ump) -> Result<(), SendError> {
-        self.sender.send(at, ump).map_err(SendError::from)
+        self.keys.send(at, ump)
     }
 
     /// A MIDI 2.0 Note On at `velocity` (16 bits), at `at` (see
@@ -176,7 +234,7 @@ impl InstrumentHandle {
         note: NoteNumber,
         velocity: u16,
     ) -> Result<(), SendError> {
-        self.voice(at, channel, Voice2::note_on(note, velocity))
+        self.keys.note_on(at, channel, note, velocity)
     }
 
     /// A MIDI 2.0 Note Off at release velocity 0, at `at` (see
@@ -191,12 +249,7 @@ impl InstrumentHandle {
         channel: MidiChannel,
         note: NoteNumber,
     ) -> Result<(), SendError> {
-        self.voice(at, channel, Voice2::note_off(note, 0))
-    }
-
-    fn voice(&self, at: At, channel: MidiChannel, voice: Voice2) -> Result<(), SendError> {
-        let address = Address::first(channel);
-        self.send(at, Ump::from(Message::Midi2(address, voice)))
+        self.keys.note_off(at, channel, note)
     }
 
     /// How many messages the queue has dropped for want of room to hold them
@@ -206,7 +259,7 @@ impl InstrumentHandle {
     /// instead.
     #[must_use]
     pub fn dropped(&self) -> u64 {
-        self.sender.dropped()
+        self.keys.dropped()
     }
 
     /// Sets the gain after the instrument's main pair, a linear amplitude.
@@ -308,9 +361,8 @@ impl Session {
                 return Err(why(NotInstrument::Plugin(role)));
             }
         }
-        let (queue_node, sender) = TimedQueueNode::new();
         let graph = self.graph();
-        let (queue, ()) = graph.add(queue_node);
+        let (queue, keys) = SharedKeys::open(graph);
         graph.set_feed(node, Feeder::Instrument, vec![queue.into()]);
         let (strip, strip_params) = graph.add(BusStripNode::new());
         graph.set_source(strip, 0, GraphSource::node(node, usize::from(main[0])));
@@ -320,7 +372,7 @@ impl Session {
             main,
             strip,
             queue,
-            sender,
+            keys,
             strip_params,
         })
     }

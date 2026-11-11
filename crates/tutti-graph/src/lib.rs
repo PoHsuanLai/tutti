@@ -217,6 +217,7 @@
 
 mod arena;
 mod builder;
+mod bus;
 mod command;
 mod compile;
 #[cfg(feature = "contract")]
@@ -278,6 +279,7 @@ pub use fork::{
 pub use tutti_curve::Law;
 // The audio graph as a value, and the two passes over it. `plan` is the
 // latency pass and is exported as `latency_plan`.
+pub use bus::{Bus, BusRole, Buses, MAX_BUSES};
 pub use gain::EdgeGain;
 pub use graph::{
     Edge, EdgeId, EventTapId, EventTapSpec, FeedbackFrom, InPort, Invalid, MeterId, MeterSpec,

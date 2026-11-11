@@ -191,8 +191,9 @@ use crate::node::{
 };
 use crate::par::{Block, Par, Pool};
 use crate::param::{ParamInput, ParamState};
-use crate::plan::GainPortOp;
-use crate::plan::{DelayKey, Delta, Direct, FeedbackKey, Form, NodeRec, Op, Plan, UnitIdx};
+use crate::plan::{
+    DelayKey, Delta, Direct, FeedbackKey, Form, GainPortOp, NodeRec, Op, ParamPortOp, Plan, UnitIdx,
+};
 use crate::play::{PlayClock, PlayReader, PlayState};
 use crate::slots::{AudioSlots, EventSlots, SlotFlags, borrow_events, event_pair};
 use crate::spec::{EventIn, EventOut};
@@ -1284,6 +1285,17 @@ impl Executor {
         c.spare_held.append(&mut departed.spare);
         self.suspended = false;
         self.reset_time = false;
+        // Which units' mix this plan drives: a lane's state is built here for
+        // a unit that has none (the plan's own sizing, as a driven edge's).
+        let max_block = self.prepare.max_block().get();
+        for rec in &plan.nodes.recs {
+            let driven = plan.param_ports[rec.params.range()]
+                .last()
+                .is_some_and(ParamPortOp::is_mix);
+            if let Some(u) = self.store[rec.store as usize].as_mut() {
+                u.mode.set_driven(driven, max_block);
+            }
+        }
         let old_state = std::mem::replace(&mut self.state, new_state);
         c.old_state = Some(old_state);
         self.plan = Some(plan);

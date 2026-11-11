@@ -4,7 +4,7 @@
 //! [`Phase::MidiOut`].
 //!
 //! Every piece is wiring. A clip is a `MidiClipNode`, a live input a
-//! `MidiQueueNode`, each the session's own node fed into its target's event
+//! an event inlet, each the session's own node fed into its target's event
 //! input through the session's feeds ([`Graph::set_feed`]); a route rule
 //! gives a target ports of the hardware input node. A clip or a live input
 //! outlives its target: a host that re-binds a target to a new node
@@ -20,13 +20,14 @@ use tutti_graph::UmpAt;
 
 use tutti_graph::{EventTapId, EventTapReader, NodeKey, Offset, TapEvent};
 use tutti_midi_runtime::{
-    MidiClipControls, MidiClipNode, MidiQueueNode, MidiReceiver, MidiSender, RouteRule,
-    TimedMidiEvent, compile_routes,
+    MidiClipControls, MidiClipNode, MidiReceiver, RouteRule, TimedMidiEvent, compile_routes,
 };
-use tutti_types::{Frame, Samples};
-use tutti_ump::{MidiChannel, Ump};
+use tutti_types::{At, Frame, Moment, Samples};
+use tutti_ump::{MidiChannel, NoteNumber, Ump};
 
+use crate::SendError;
 use crate::graph::{Feeder, Graph};
+use crate::instrument::SharedKeys;
 use crate::{Error, EventSource, MidiNodes, Result};
 
 /// Max events drained per chunk into the stack buffer: one frame of clock at
@@ -286,21 +287,81 @@ pub fn drain_receiver_through(receiver: &MidiReceiver, router: &mut MidiOutRoute
     }
 }
 
-/// A live input's queue node, fed into its target, and the sender into it:
-/// what is queued plays from the next block, on its frame offset clamped
-/// into the block. Cheap to clone; derefs to the [`MidiSender`].
+/// A live input's event inlet, fed into its target, and the handle that
+/// sends into it: what is sent plays from the next block
+/// ([`At::NextBlock`]) or on a frame of the engine's clock, held until the
+/// block that contains it. Cheap to clone; every clone shares the one writer
+/// behind a lock only control threads take.
 #[derive(Clone, Debug)]
 pub struct LiveInput {
-    /// The queue node.
+    /// The inlet's node.
     pub node: NodeKey,
-    /// The sender into it.
-    pub sender: MidiSender,
+    keys: SharedKeys,
 }
 
-impl std::ops::Deref for LiveInput {
-    type Target = MidiSender;
-    fn deref(&self) -> &MidiSender {
-        &self.sender
+impl LiveInput {
+    /// The engine's clock where the inlet's last block ended
+    /// ([`InstrumentHandle::clock`](crate::InstrumentHandle::clock) reads the
+    /// same); `None` before it is prepared.
+    #[must_use]
+    pub fn clock(&self) -> Option<Moment> {
+        self.keys.clock()
+    }
+
+    /// Sends `ump` at `at` ([`At::Frame`] or [`At::NextBlock`]).
+    ///
+    /// # Errors
+    ///
+    /// [`SendError::Beat`] for [`At::Beat`]; [`SendError::Full`] when the
+    /// ring is full (a note-off dropped there leaves a note stuck).
+    pub fn send(&self, at: At, ump: Ump) -> std::result::Result<(), SendError> {
+        self.keys.send(at, ump)
+    }
+
+    /// Sends `ump` at the instant `moment` names, whatever the rate has become.
+    ///
+    /// # Errors
+    ///
+    /// [`SendError::Full`].
+    pub fn send_at(&self, moment: Moment, ump: Ump) -> std::result::Result<(), SendError> {
+        self.keys.send_at(moment, ump)
+    }
+
+    /// A MIDI 2.0 Note On at `velocity` (16 bits) on group 1. A velocity of 0
+    /// is a Note On (M2-104 §7.4.2).
+    ///
+    /// # Errors
+    ///
+    /// As [`send`](Self::send).
+    pub fn note_on(
+        &self,
+        at: At,
+        channel: MidiChannel,
+        note: NoteNumber,
+        velocity: u16,
+    ) -> std::result::Result<(), SendError> {
+        self.keys.note_on(at, channel, note, velocity)
+    }
+
+    /// A MIDI 2.0 Note Off at release velocity 0 on group 1.
+    ///
+    /// # Errors
+    ///
+    /// As [`send`](Self::send).
+    pub fn note_off(
+        &self,
+        at: At,
+        channel: MidiChannel,
+        note: NoteNumber,
+    ) -> std::result::Result<(), SendError> {
+        self.keys.note_off(at, channel, note)
+    }
+
+    /// How many events the inlet dropped from its waiting list for want of
+    /// room ([`InstrumentHandle::dropped`](crate::InstrumentHandle::dropped)).
+    #[must_use]
+    pub fn dropped(&self) -> u64 {
+        self.keys.dropped()
     }
 }
 
@@ -367,9 +428,9 @@ struct Clip {
     target: NodeKey,
 }
 
-/// One live input: its sender and the target it feeds.
+/// One live input: its handle and the target it feeds.
 struct Live {
-    sender: MidiSender,
+    keys: SharedKeys,
     target: NodeKey,
 }
 
@@ -610,7 +671,7 @@ impl Midi<'_> {
 
     // --- Live input ---
 
-    /// A live input for `target` (a synth, a plugin): a `MidiQueueNode` fed
+    /// A live input for `target` (a synth, a plugin): an event inlet fed
     /// into its event input, for a keyboard, a preview or an all-notes-off
     /// the host sends. The one it has already when there is one.
     ///
@@ -623,20 +684,20 @@ impl Midi<'_> {
         if let Some((node, live)) = self.fed_by(target, Feeder::LiveInput, &self.state.live) {
             return Ok(LiveInput {
                 node,
-                sender: live.sender.clone(),
+                keys: live.keys.clone(),
             });
         }
-        let (node, sender) = self.graph.insert(MidiQueueNode::new());
+        let (node, keys) = SharedKeys::open(self.graph);
         self.graph
             .set_feed(target, Feeder::LiveInput, vec![node.into()]);
         self.state.live.insert(
             node,
             Live {
-                sender: sender.clone(),
+                keys: keys.clone(),
                 target,
             },
         );
-        Ok(LiveInput { node, sender })
+        Ok(LiveInput { node, keys })
     }
 
     // --- Clips ---

@@ -17,7 +17,6 @@ use tutti_plugin_types::{BridgeError, BridgeResult};
 use tutti_plugin_types::{
     Features, InProcess, Load, LoadStage, Loaded, LoadedPlugin, ParamId, PluginDescriptor, Prepare,
 };
-use tutti_types::ChannelLayout;
 
 /// The maximum block size the plugin is told (`Prepare::max_block`). A graph
 /// block longer than this (the engine renders up to 8192, more with
@@ -188,12 +187,7 @@ where
         loaded.features.insert(Features::PRESET_LIST);
         loaded.features.insert(Features::PRESET_LOAD);
     }
-    let declared = Declared {
-        inputs: ChannelLayout::clamped(loaded.total_inputs()),
-        outputs: ChannelLayout::clamped(loaded.total_outputs()),
-        latency: loaded.latency_samples,
-        tail: loaded.tail,
-    };
+    let declared = Declared::of(&loaded);
     let inner = Arc::new(Mutex::new(inner));
     let unlent = Arc::new(AtomicU64::new(0));
     // Built here rather than inside the node so the node's producer end and the
@@ -263,12 +257,7 @@ where
     H::Processor: 'static,
 {
     let (inner, rt) = Instance::<H>::adopt(processor, controller, prepare, wiring);
-    let declared = Declared {
-        inputs: ChannelLayout::clamped(wiring.total_inputs()),
-        outputs: ChannelLayout::clamped(wiring.total_outputs()),
-        latency: wiring.latency_samples,
-        tail: wiring.tail,
-    };
+    let declared = Declared::of(wiring);
     InProcClient::new(
         Arc::new(Mutex::new(inner)),
         rt,

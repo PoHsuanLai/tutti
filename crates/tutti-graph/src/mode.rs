@@ -63,6 +63,30 @@
 //!   value). A fade between modes runs against these per-frame weights, so a
 //!   mix that moves during one does not jump.
 //!
+//! # A driven mix
+//!
+//! A control lane can drive a node's mix: `connect_param` at
+//! `ParamIn { node, NodeMix::ADDR }` (a reserved address no node declares).
+//! The compiler lists it as the **last** entry of the node op's `params`, at
+//! the sentinel port [`ParamPortOp::MIX_PORT`](crate::ParamPortOp::MIX_PORT),
+//! aligns its source to the node's arrival as any param's, and counts it in the
+//! cycle check, the claims and the verifier like any read of the op. The mode
+//! state keeps the lane's state, a one-port [`ParamState`] built when a plan
+//! first drives the unit's mix (`ModeState::set_driven`, at apply: the only
+//! allocation) and kept for the unit's life.
+//!
+//! A driven unit never takes the plain op. Each block, before anything reads
+//! the mix, the lane runs the param port's step on its source's events
+//! (`ModeState::drive_step`), with the mix cell's snapshot as the base: when it
+//! delivers frames they **replace** the block's ramp (`m[i]` is the lane's
+//! value at frame `i`, clamped to the port's range, itself narrowed to
+//! `0..=1`) and the next block ramps from the last of them; otherwise the base
+//! ramp above applies (a source that goes declicks to the base over
+//! [`PARAM_DECLICK`](crate::PARAM_DECLICK), as a driven edge gain does). The
+//! mode still wins, and the lane runs while the node is parked. The cell is the
+//! lane's knob ([`Editor::mix_cell`](crate::Editor::mix_cell)), so
+//! [`Editor::set_mix`](crate::Editor::set_mix) and a route are one writer.
+//!
 //! # Un-bypass
 //!
 //! A bypassed unit is not called, so its state is stale. The toggle that
@@ -75,15 +99,18 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU8, Ordering};
 
-use tutti_types::{AtomicF32, Mix, Samples};
+use tutti_types::{AtomicF32, Mix, ParamCell, Samples, UnitAddr, UnitParam};
 
 use crate::NodeKey;
 use crate::arena::Arena;
+use crate::event::Event;
 use crate::fade::CrossfadeCurve;
 use crate::gain::ramp_at;
 use crate::held::Held;
 use crate::kernels::AudioRing;
 use crate::node::Shape;
+use crate::param::{ParamPorts, ParamRange, ParamRangeReader, ParamRanges, ParamState};
+use crate::spec::EventOut;
 
 /// How long a change of mode crossfades: 256 frames, [`PARAM_DECLICK`](crate::PARAM_DECLICK)'s
 /// value, along [`CrossfadeCurve::EqualAmplitude`] (the aligned input and the
@@ -174,7 +201,7 @@ impl std::error::Error for ModeError {}
 /// `out = y * m + x̂ * (1 - m)`. [`Mix::WET`] (all of the node's output) is
 /// the canonical absent entry of [`GraphSpec::mixes`](crate::GraphSpec::mixes).
 ///
-/// Compared and hashed by bits, as [`ParamRange`](crate::ParamRange) is, so a
+/// Compared and hashed by bits, as [`ParamRange`] is, so a
 /// spec holding one stays `Eq + Hash`.
 #[derive(Clone, Copy, Debug)]
 pub struct NodeMix {
@@ -184,6 +211,29 @@ pub struct NodeMix {
 }
 
 impl NodeMix {
+    /// The address a driving lane's ramps and segments carry, and the
+    /// [`ParamIn`](crate::ParamIn) key of the mix in
+    /// [`GraphSpec::params`](crate::GraphSpec::connect_param): a node's mix
+    /// is addressed by its node, never by a kind and an index it declares
+    /// (index 255 of [`UnitParam::Wet`] is reserved:
+    /// [`ParamPortsError::Reserved`](crate::ParamPortsError::Reserved)), so
+    /// the events that drive it name this one fixed address. A control lane
+    /// for a mix is built with `ControlLaneNode::for_unit(NodeMix::ADDR, ..)`.
+    pub const ADDR: UnitAddr = UnitAddr::new(UnitParam::Wet, u8::MAX);
+
+    /// The range a mix's port gets without an entry: the whole blend.
+    pub const DEFAULT_RANGE: ParamRange = ParamRange::new(0.0, 1.0);
+
+    /// `range` as the lane clamps to it: inside `0..=1` whatever was asked (a
+    /// mix off the ends is not a blend), so a range a host sets wider than
+    /// the blend is narrowed here, once, and the lane's step needs no second
+    /// clamp.
+    #[must_use]
+    pub fn lane_range(range: ParamRange) -> ParamRange {
+        let (lo, hi) = range.ordered();
+        ParamRange::new(lo.clamp(0.0, 1.0), hi.clamp(0.0, 1.0))
+    }
+
     /// Whether `mix` can be one: finite and in `0..=1` (what
     /// [`Mix::new_clamped`] makes).
     #[must_use]
@@ -240,15 +290,49 @@ impl std::error::Error for MixError {}
 pub(crate) struct ModeCell {
     mode: Arc<AtomicU8>,
     mix: Arc<AtomicF32>,
+    /// The range a driven mix is clamped to: the param port's own cell over
+    /// the one address [`NodeMix::ADDR`], so the lane's step clamps to it as a
+    /// port does and a control lane reads it through the same
+    /// [`ParamRangeReader`].
+    range: Arc<ParamRanges>,
 }
 
 impl ModeCell {
     /// A cell holding `mode` and `mix`. Control side: allocates.
     pub(crate) fn new(mode: NodeMode, mix: Mix) -> Self {
+        let range = ParamRanges::new(ParamPorts::MIX);
+        range.store(NodeMix::ADDR, NodeMix::DEFAULT_RANGE);
         Self {
             mode: Arc::new(AtomicU8::new(mode.to_bits())),
             mix: Arc::new(AtomicF32::new(mix.get())),
+            range,
         }
+    }
+
+    /// Store the range a driven mix is clamped to (narrowed to `0..=1`).
+    /// Wait-free.
+    pub(crate) fn store_range(&self, range: ParamRange) {
+        self.range.store(NodeMix::ADDR, NodeMix::lane_range(range));
+    }
+
+    /// The mix as a width-erased cell: the very cell the executor reads and
+    /// [`store_mix`](Self::store_mix) writes, handed to a control lane as its
+    /// knob, so [`Editor::set_mix`](crate::Editor::set_mix) and a route are
+    /// one writer. Clones the `Arc`: control side.
+    pub(crate) fn knob(&self) -> ParamCell {
+        Arc::clone(&self.mix).into()
+    }
+
+    /// A read-only view of the range cell, for a control lane.
+    pub(crate) fn range_reader(&self) -> ParamRangeReader {
+        self.range
+            .reader(NodeMix::ADDR)
+            .expect("the cell holds the mix's own address")
+    }
+
+    /// The range cells, for a driven lane's state.
+    fn ranges(&self) -> Arc<ParamRanges> {
+        Arc::clone(&self.range)
     }
 
     /// Store `mode`. Wait-free.
@@ -335,12 +419,16 @@ pub(crate) struct RampRun {
 }
 
 /// A block's mix: the previous block's to this one's, across `frames`
-/// ([`ramp_at`], as an edge's gain ramps).
+/// ([`ramp_at`], as an edge's gain ramps), or, when a control lane drives it
+/// and delivers this block, the lane's value at each frame (`driven`, the
+/// values handed beside it: a `&[f32]` of `frames`, which every method that
+/// reads a frame takes as `lane`).
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct MixRun {
     from: f32,
     to: f32,
     frames: usize,
+    driven: bool,
 }
 
 /// What a block's mix is, for the flags of the output.
@@ -359,7 +447,9 @@ pub(crate) enum MixState {
 impl MixRun {
     /// Whether the whole block is steady [`Mix::WET`]: nothing to blend.
     pub(crate) fn is_wet(&self) -> bool {
-        self.from.to_bits() == 1.0f32.to_bits() && self.to.to_bits() == 1.0f32.to_bits()
+        !self.driven
+            && self.from.to_bits() == 1.0f32.to_bits()
+            && self.to.to_bits() == 1.0f32.to_bits()
     }
 
     /// Which of the four things a block's mix is.
@@ -375,15 +465,19 @@ impl MixRun {
         }
     }
 
-    /// Whether the mix does not move across the block.
+    /// Whether the mix does not move across the block (a driven block moves
+    /// at every frame, whatever its ends are).
     fn is_static(&self) -> bool {
-        self.from.to_bits() == self.to.to_bits()
+        !self.driven && self.from.to_bits() == self.to.to_bits()
     }
 
-    /// The mix at frame `i` of the block.
+    /// The mix at frame `i` of the block; `lane` is the driving lane's values
+    /// (read only when the block is driven).
     #[inline]
-    fn at(&self, i: usize) -> f32 {
-        if self.is_static() {
+    fn at(&self, i: usize, lane: &[f32]) -> f32 {
+        if self.driven {
+            lane[i]
+        } else if self.is_static() {
             self.to
         } else {
             ramp_at(self.from, self.to, i, self.frames as f32)
@@ -392,8 +486,8 @@ impl MixRun {
 
     /// The mix of the block's last frame (a ramp's last sample, which
     /// `from + (to - from) * 1.0` need not make exactly `to`).
-    fn last(&self) -> f32 {
-        self.at(self.frames - 1)
+    fn last(&self, lane: &[f32]) -> f32 {
+        self.at(self.frames - 1, lane)
     }
 }
 
@@ -412,7 +506,9 @@ impl Segments {
     /// leave or fill, never multiply. A steady Active block at a mix off the
     /// ends is `y * m + x * (1 - m)` (a channel with no `x` is `y * m`); at
     /// `Mix::WET` it leaves `out` alone and at `Mix::DRY` it copies `x`.
-    pub(crate) fn blend(&self, out: &mut [f32], x: Option<&[f32]>) {
+    /// `lane` is the driving lane's value at each frame of a driven block
+    /// (empty otherwise).
+    pub(crate) fn blend(&self, out: &mut [f32], x: Option<&[f32]>, lane: &[f32]) {
         let put = |out: &mut [f32], range: std::ops::Range<usize>| match x {
             Some(x) => out[range.clone()].copy_from_slice(&x[range]),
             None => out[range].fill(0.0),
@@ -423,7 +519,7 @@ impl Segments {
             let input = x.is_some();
             for j in 0..r.len {
                 let i = at + j;
-                let to = r.heading.weights(self.mix.at(i));
+                let to = r.heading.weights(self.mix.at(i, lane));
                 let w = r.from.toward(to, gain(r.k + j));
                 let node_on = r.from.node != 0.0 || to.node != 0.0;
                 let input_on = input && (r.from.input != 0.0 || to.input != 0.0);
@@ -437,14 +533,14 @@ impl Segments {
             at += r.len;
         }
         match self.steady {
-            NodeMode::Active => self.blend_active(out, x, at),
+            NodeMode::Active => self.blend_active(out, x, at, lane),
             NodeMode::Muted => out[at..].fill(0.0),
             NodeMode::Bypassed => put(out, at..out.len()),
         }
     }
 
     /// The steady Active frames from `at` on, against the block's mix.
-    fn blend_active(&self, out: &mut [f32], x: Option<&[f32]>, at: usize) {
+    fn blend_active(&self, out: &mut [f32], x: Option<&[f32]>, at: usize, lane: &[f32]) {
         let m = self.mix;
         if m.is_wet() {
             return;
@@ -470,7 +566,7 @@ impl Segments {
             return;
         }
         for i in at..out.len() {
-            let w = m.at(i);
+            let w = m.at(i, lane);
             out[i] = match x {
                 Some(x) => out[i] * w + x[i] * (1.0 - w),
                 None => out[i] * w,
@@ -545,6 +641,16 @@ pub(crate) struct ModeState {
     /// What each event input has been sent and not ended, to close when the
     /// node is bypassed.
     held_in: Vec<Held>,
+    /// The mix's driven lane: the param port's step over one port, built when
+    /// a plan first drives this unit's mix ([`set_driven`](Self::set_driven))
+    /// and kept for the unit's life, so no commit frees one on the audio
+    /// thread (an idle one costs `max_block` floats and no work).
+    drive: Option<ParamState>,
+    /// Whether this block's lane delivered frames: they replace the ramp.
+    lane_on: bool,
+    /// Whether the unit has run a block: a lane built for a unit that has is
+    /// a connection to a running port (it declicks), not a first block.
+    ran: bool,
 }
 
 impl ModeState {
@@ -573,7 +679,53 @@ impl ModeState {
             line: BypassLine::for_shape(shape),
             scratch: (main > 0).then(|| Arena::new(main, max_block)),
             held_in: (0..shape.event_in).map(|_| Held::new()).collect(),
+            drive: None,
+            lane_on: false,
+            ran: false,
         }
+    }
+
+    /// Say whether the plan now applied drives this unit's mix, building the
+    /// lane's state the first time it does (sized to `max` frames: the only
+    /// allocation, at apply). A lane that is no longer driven keeps its state,
+    /// which fades to the base and then idles.
+    pub(crate) fn set_driven(&mut self, driven: bool, max: usize) {
+        if driven && self.drive.is_none() {
+            self.drive = Some(ParamState::lane(max, self.cell.ranges(), self.ran));
+        }
+        debug_assert!(
+            self.drive.as_ref().is_none_or(|d| d.fits(max)),
+            "a kept unit's lane serves the executor's block"
+        );
+    }
+
+    /// The mix's lane for a block: the param port's step on the driving
+    /// source's events (`None`: nothing drives it), run before anything reads
+    /// the block's mix. When it delivers frames they are the block's mix at
+    /// each frame ([`lane`](Self::lane)), clamped to the port's range, and
+    /// the next block ramps from the last of them; otherwise the base, the
+    /// cell's snapshot, ramps as it does undriven.
+    #[inline]
+    pub(crate) fn drive_step(&mut self, frames: usize, source: Option<(EventOut, &[Event])>) {
+        let Some(drive) = &mut self.drive else {
+            return;
+        };
+        drive.begin();
+        drive.port(0, NodeMix::ADDR, frames, source, Some(self.mix_to));
+        if let Some(f) = drive.frames(0, frames) {
+            self.lane_on = true;
+            self.mix_to = f[frames - 1];
+        }
+    }
+
+    /// The driving lane's value at each frame of this block: empty unless the
+    /// lane delivered ([`drive_step`](Self::drive_step)).
+    pub(crate) fn lane(&self, frames: usize) -> &[f32] {
+        self.drive
+            .as_ref()
+            .filter(|_| self.lane_on)
+            .and_then(|d| d.frames(0, frames))
+            .unwrap_or(&[])
     }
 
     /// Read the cell, and decide which op the block runs: once per block,
@@ -582,6 +734,8 @@ impl ModeState {
     #[inline]
     pub(crate) fn snapshot(&mut self) {
         self.seen = self.cell.load();
+        self.ran = true;
+        self.lane_on = false;
         // The mix advances every block, parked or silent or not, so a move
         // made while the node was out has arrived when it is heard.
         self.mix_from = self.mix_to;
@@ -593,7 +747,8 @@ impl ModeState {
                 && self.ramp.is_none()
                 && self.warm == 0
                 && self.line.is_none()
-                && self.held_in.is_empty());
+                && self.held_in.is_empty()
+                && self.drive.as_ref().is_none_or(|d| !d.busy()));
     }
 
     /// The block's mix: the previous block's to this one's, across `frames`.
@@ -602,6 +757,7 @@ impl ModeState {
             from: self.mix_from,
             to: self.mix_to,
             frames,
+            driven: self.lane_on,
         }
     }
 
@@ -757,6 +913,12 @@ impl ModeState {
         let warm = self.warm.min(frames);
         self.warm -= warm;
         let mix = self.mix_run(frames);
+        let lane: &[f32] = self
+            .drive
+            .as_ref()
+            .filter(|_| self.lane_on)
+            .and_then(|d| d.frames(0, frames))
+            .unwrap_or(&[]);
         let mut seg = Segments {
             warm,
             ramp: None,
@@ -775,14 +937,14 @@ impl ModeState {
                 len,
             });
             r.k += len;
-            let to = self.heading.weights(mix.at(warm + len - 1));
+            let to = self.heading.weights(mix.at(warm + len - 1, lane));
             self.weights = r.from.toward(to, gain(r.k - 1));
             if r.k == MODE_DECLICK.get() {
                 self.ramp = None;
             }
         }
         if self.ramp.is_none() {
-            self.weights = self.heading.weights(mix.last());
+            self.weights = self.heading.weights(mix.last(lane));
         }
         seg
     }
@@ -791,6 +953,7 @@ impl ModeState {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::param::PARAM_DECLICK;
     use tutti_types::{ChannelLayout, Latency};
 
     fn shape(latency: usize) -> Shape {
@@ -845,6 +1008,44 @@ mod tests {
         state.snapshot();
         assert!(state.is_plain(), "and the block after it");
         assert!(!state.needs_input());
+    }
+
+    /// **A driven mix pays, an undriven one does not.** A node whose mix no
+    /// plan drives keeps the plain op; one the plan drives is never plain (its
+    /// lane is busy: it delivers frames every block); one whose lane was just
+    /// let go is not plain until the lane has finished fading to the base
+    /// (`PARAM_DECLICK` frames), and is plain again after (an idle lane left
+    /// behind costs nothing).
+    ///
+    /// Mutation (run, failed): `snapshot` leaving `plain` without its
+    /// `drive ... busy` term -> the driven node is plain, and so is the fade.
+    #[test]
+    fn a_node_whose_mix_is_not_driven_keeps_the_plain_op() {
+        let from = EventOut {
+            node: NodeKey(1),
+            port: 0,
+        };
+        let (_, mut state) = at(&shape(0), 1.0);
+        assert!(state.is_plain(), "never driven");
+
+        state.set_driven(true, 64);
+        state.snapshot();
+        assert!(!state.is_plain(), "driven");
+        state.drive_step(64, Some((from, &[])));
+        state.step(64);
+
+        // Let go of the source: its lane fades to the base, blended, for the
+        // declick and the block that sees it done.
+        state.set_driven(false, 64);
+        let fade = PARAM_DECLICK.get() / 64 + 1;
+        for block in 0..fade {
+            state.snapshot();
+            assert!(!state.is_plain(), "fading, block {block}");
+            state.drive_step(64, None);
+            state.step(64);
+        }
+        state.snapshot();
+        assert!(state.is_plain(), "faded: the plain op again");
     }
 
     /// A moving mix is a ramp of one block from what the previous block was

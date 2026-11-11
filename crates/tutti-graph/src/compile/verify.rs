@@ -269,6 +269,18 @@ fn verify_params(plan: &Plan) -> Result<(), VerifyError> {
             if i > 0 && ports[i - 1].port >= p.port {
                 return Err(bad("are not in strict port order".into()));
             }
+            // The node's mix is the one port nothing declares: last, at the
+            // sentinel, and addressed by its reserved address.
+            if p.is_mix() {
+                if p.param != crate::NodeMix::ADDR {
+                    return Err(bad(format!(
+                        "name {:?} at the mix port, which is {:?}'s",
+                        p.param,
+                        crate::NodeMix::ADDR
+                    )));
+                }
+                continue;
+            }
             if declared.as_slice().get(p.port as usize) != Some(&p.param) {
                 return Err(bad(format!(
                     "modulate {:?} at port {}, which the unit does not declare there",

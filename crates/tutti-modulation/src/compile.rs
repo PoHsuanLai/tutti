@@ -61,8 +61,8 @@ pub struct SourceKey(pub u64);
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub struct RouteKey(pub u64);
 
-/// A target: one param of one node (a Bevy host: the node entity's bits), or
-/// one edge's gain. A plugin parameter is `ParamAddr::Id`.
+/// A target: one param of one node (a Bevy host: the node entity's bits), one
+/// edge's gain, or one node's mix. A plugin parameter is `ParamAddr::Id`.
 ///
 /// An edge is named by the host's own key for it (`Edge`): what it stands for
 /// (the sink and the source of a graph edge) is the host's to resolve, as a
@@ -79,6 +79,10 @@ pub enum TargetKey {
     },
     /// The gain of an edge, by the host's key for the edge.
     Edge(u64),
+    /// The mix of a node, by the host's key for the node (doc 013, "Bypass
+    /// and mute are graph state"): the node's blend with its aligned input,
+    /// whose range is `0..=1`.
+    Mix(u64),
 }
 
 impl TargetKey {
@@ -94,11 +98,17 @@ impl TargetKey {
         Self::Edge(edge)
     }
 
-    /// The node a param target is on; `None` for an edge.
+    /// The mix of the node whose key is `node`.
+    #[must_use]
+    pub const fn mix(node: u64) -> Self {
+        Self::Mix(node)
+    }
+
+    /// The node a param or mix target is on; `None` for an edge.
     #[must_use]
     pub const fn node(self) -> Option<u64> {
         match self {
-            Self::Param { node, .. } => Some(node),
+            Self::Param { node, .. } | Self::Mix(node) => Some(node),
             Self::Edge(_) => None,
         }
     }

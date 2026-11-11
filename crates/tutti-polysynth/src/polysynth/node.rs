@@ -3,8 +3,8 @@
 //! [`MidiClipNode`](tutti_midi_runtime::MidiClipNode), an arpeggiator, a
 //! hardware source — in the same block it was written.
 //!
-//! A keyboard reaches it the same way: through a `MidiQueueNode` wired to
-//! its input. Driven by hand (a test, a bench), its events are handed to it
+//! A keyboard reaches it the same way: through an event inlet
+//! (`tutti_graph::EventInletNode`) wired to its input. Driven by hand (a test, a bench), its events are handed to it
 //! the same way, through `tutti_graph::contract::{drive_input, Direct}`.
 //!
 //! Its controls are its [`ParamSet`]: the master volume and, with a unison

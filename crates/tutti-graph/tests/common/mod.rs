@@ -88,6 +88,10 @@ pub enum Kind {
     /// It declares `latency` frames of processing latency it does not
     /// realise, so its events leave late for the PDC tests.
     GainDriver { period: u64, latency: usize },
+    /// [`Kind::GainDriver`]'s twin for a node's mix: the same steps doubled
+    /// (`-1.0` to `2.0`, off `0..=1` on both sides, for the clamp), as a `Mix`
+    /// addressed to `NodeMix::ADDR`.
+    MixDriver { period: u64, latency: usize },
     /// Folds incoming events into a running value: `s = 0.5 s + (w0 % 97)`.
     /// Order-sensitive, so a merge that reorders ties is caught.
     Consumer { inputs: u16 },
@@ -190,10 +194,12 @@ impl TestNode {
                 .with_latency(lat(latency))
                 .with_tail(Tail::None),
             Kind::Emitter { .. } => Shape::audio(ch(0), ch(1)).with_events(0, 1),
-            Kind::GainDriver { latency, .. } => Shape::audio(ch(0), ch(0))
-                .with_events(0, 1)
-                .with_latency(lat(latency))
-                .with_tail(Tail::None),
+            Kind::GainDriver { latency, .. } | Kind::MixDriver { latency, .. } => {
+                Shape::audio(ch(0), ch(0))
+                    .with_events(0, 1)
+                    .with_latency(lat(latency))
+                    .with_tail(Tail::None)
+            }
             Kind::Burst { cap, .. } => Shape::audio(ch(0), ch(1))
                 .with_events(0, 1)
                 .with_event_capacity(cap),
@@ -317,6 +323,20 @@ impl Node for TestNode {
                         let ramp = tutti_graph::ParamRamp::new(
                             tutti_types::ParamKey::<tutti_types::Amplitude>::VOLUME,
                             tutti_types::Amplitude::new(driver_value(f, period)),
+                            Samples(0),
+                        );
+                        let _ = io.event_out(0).push(Event::ramp(at, ramp));
+                    }
+                }
+                Status::Modified
+            }
+            Kind::MixDriver { period, .. } => {
+                for at in cx.env.offsets() {
+                    let f = cx.env.frame_at(at).get();
+                    if f.is_multiple_of(period) {
+                        let ramp = tutti_graph::ParamRamp::new(
+                            tutti_types::ParamKey::<tutti_types::Mix>::WET.at(u8::MAX),
+                            tutti_types::Mix::new(driver_value(f, period) * 2.0),
                             Samples(0),
                         );
                         let _ = io.event_out(0).push(Event::ramp(at, ramp));
@@ -651,6 +671,11 @@ impl Pair {
             live.topology = graph.topology().clone();
             live.gains = graph.gains().clone();
         }
+        // The ranges a unit's cells start with (a node's mix range) are the
+        // editor's spec's.
+        if !graph.params().is_empty() || !self.editor.spec_mut().params.is_empty() {
+            self.editor.spec_mut().params = graph.params().clone();
+        }
         // And `set_mode` checks the node against it, and a unit placed now
         // starts in the spec's mode.
         if !graph.modes().is_empty()
@@ -712,6 +737,24 @@ impl Pair {
             .set_mix(key, mix)
             .expect("the harness's editor holds the graph's nodes");
         self.reference.set_mix(key, mix);
+    }
+
+    /// Move `key`'s mix range in both, as a host narrowing a send's knob: the
+    /// editor's `set_param_range` at the mix's address (a store, no commit) and
+    /// the reference's.
+    pub fn set_mix_range(&mut self, key: NodeKey, range: tutti_graph::ParamRange) {
+        if !self.editor.spec().topology.nodes.contains_key(&key) {
+            let graph = self.graph.as_ref().expect("a graph was switched to");
+            self.editor.spec_mut().topology = graph.topology().clone();
+        }
+        let at = tutti_graph::ParamIn {
+            node: key,
+            param: tutti_graph::NodeMix::ADDR,
+        };
+        self.editor
+            .set_param_range(at, range)
+            .expect("the harness's editor holds the graph's nodes");
+        self.reference.set_param_range(at, range);
     }
 
     /// Move edge `id`'s range in both: the editor's `set_edge_gain_range` (a

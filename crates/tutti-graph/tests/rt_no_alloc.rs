@@ -1452,3 +1452,101 @@ fn moving_mixes_are_allocation_free() {
 fn parallel_moving_mixes_are_allocation_free() {
     moving_mixes_are_allocation_free_on(4);
 }
+
+/// Driven mixes and rendering inside `assert_no_alloc`, on `workers`
+/// participants (doc 013, "Bypass and mute are graph state", M4b): the graph
+/// of the mode gate, with a commit that then drives the mix of five of its
+/// kept nodes from lanes of four periods and latencies (two of them late
+/// enough to give a node an event ring), and a mix, a range and a third of the
+/// modes moved every few blocks, so a lane meets a steady blend, a fade, a
+/// warm-up, a parked node and a lane that has just been let go (a source
+/// disconnected halfway, its fade running out). Blocks of four lengths.
+///
+/// Mutation (run, aborted): an allocation in `ModeState::drive_step`
+/// (`vec![0.0f32; 8]`, standing for a lane's scratch built when a block needs
+/// it rather than at apply) -> aborts at the first driven block.
+fn driven_mixes_are_allocation_free_on(workers: usize) {
+    use tutti_graph::{NodeMix, NodeMode, ParamIn, ParamRange};
+    use tutti_types::Mix;
+    let (mut ed, mut exec) = mode_graph(workers);
+    for (i, latency) in [0usize, 0, 40, 150].into_iter().enumerate() {
+        ed.insert(
+            NodeKey(5000 + i as u64),
+            "lane",
+            Unforkable(TestNode::new(Kind::MixDriver {
+                period: 8 + 9 * i as u64,
+                latency,
+            })),
+        );
+    }
+    let port = |k: u64| ParamIn {
+        node: NodeKey(k),
+        param: NodeMix::ADDR,
+    };
+    let lane = |k: u64| EventOut {
+        node: NodeKey(5000 + k % 4),
+        port: 0,
+    };
+    for k in 5..=9u64 {
+        ed.spec_mut().connect_param(port(k), lane(k));
+    }
+    ed.commit().expect("commits");
+    exec.apply_pending();
+    ed.collect();
+    let input: Vec<f32> = (0..256).map(|i| ((i % 19) as f32 - 9.0) * 0.1).collect();
+    let mut out = vec![0.0f32; 256];
+    let lens = [64usize, 100, 256, 7];
+    let mixes = [1.0f32, 0.0, 0.5, 0.25, 1.0, 0.75, 0.0, 1.0];
+    let ranges = [(0.0f32, 1.0f32), (0.25, 0.75), (-2.0, 2.0)];
+    let mut heard = false;
+    for block in 0..120usize {
+        if block == 60 {
+            // Let go of two sources: their lanes fade to the base.
+            for k in [6u64, 8] {
+                ed.spec_mut().disconnect_param(port(k), lane(k));
+            }
+            ed.commit().expect("commits");
+            exec.apply_pending();
+            ed.collect();
+        }
+        for k in 1..=9u64 {
+            let at = block / (1 + k as usize % 3) + k as usize;
+            ed.set_mix(NodeKey(k), Mix::new(mixes[at % mixes.len()]))
+                .expect("a node");
+            if k >= 5 && block % 11 == k as usize {
+                let (min, max) = ranges[(block / 11 + k as usize) % ranges.len()];
+                ed.set_param_range(port(k), ParamRange::new(min, max))
+                    .expect("a node");
+            }
+            if k % 3 == 0 {
+                let mode = match (block / 7 + k as usize) % 3 {
+                    0 => NodeMode::Active,
+                    1 => NodeMode::Bypassed,
+                    _ => NodeMode::Muted,
+                };
+                ed.set_mode(NodeKey(k), mode).expect("a node");
+            }
+        }
+        let n = lens[block % lens.len()];
+        assert_no_alloc::assert_no_alloc(|| {
+            exec.process(
+                n,
+                &Transport::default(),
+                &[&input[..n]],
+                &mut [&mut out[..n]],
+            );
+        });
+        heard |= out[..n].iter().any(|&x| x != 0.0);
+    }
+    assert!(heard);
+}
+
+#[test]
+fn driven_mixes_are_allocation_free() {
+    driven_mixes_are_allocation_free_on(1);
+}
+
+#[test]
+fn parallel_driven_mixes_are_allocation_free() {
+    driven_mixes_are_allocation_free_on(4);
+}

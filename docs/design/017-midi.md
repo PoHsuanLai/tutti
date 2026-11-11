@@ -124,7 +124,7 @@ A single message is built as `Ump::from(Message::..)`; tests use
 at the two input edges there are: `MidiInputNode`, per polled event, and a clip
 as it is loaded (`MidiClipNode::new` and `MidiClipControls::set_events`, in beat
 order, each result in its source's place). The old `Midi1ToMidi2Translator` is
-deleted. A `MidiSender` queue and a plugin's MIDI output are not translated: a
+deleted. A mailbox's `MidiSender` queue and a plugin's MIDI output are not translated: a
 host builds MIDI 2.0 itself, or runs a `Translator` on what it sends.
 
 **Duplication.**
@@ -1072,8 +1072,8 @@ today); it allocates nothing in `process`.
 Built as specified, except where the code decided otherwise:
 
 - **`clock()` is `Option<Moment>`.** The node has published nothing before its
-  first prepare, so there is no honest instant to return; `TimedSender::clock`
-  was `Option` for the same reason, and the signature follows it.
+  first prepare, so there is no honest instant to return; the deleted
+  `TimedSender::clock` was `Option` for the same reason, and the signature follows it.
 - **The counts are four, and cumulative plain loads.** `lost()` (ring full),
   `evicted()` (waiting list), `refused()` (port) and `late()`, each an
   `AtomicU64` shared with the node and read with `Relaxed`; none is a
@@ -1096,15 +1096,10 @@ Built as specified, except where the code decided otherwise:
   executor never parks it (doc 013, "The silence skip"); it declares none,
   where the audio inlet declares `Tail::Unbounded`. A tail on a node whose fork
   is silent would also make an export's tail unbounded.
-- **`TimedQueueNode` is a thin user, not deleted** (that is E4): it is a
-  newtype over `EventInletNode`, and `TimedSender` is the writer behind
-  `Arc<Mutex<_>>` (design question 3's lock, here inside `tutti-midi-runtime`
-  because the callers are not migrated). The one waiting list is the graph's.
-  Two behaviours differ for its callers: a send takes the lock (control
-  threads only, the audio thread never does), and a full ring now counts in
-  `lost()` as well as answering `Full`. `Moment` left `tutti_midi_runtime` and
-  `tutti_session` for `tutti_types`, with no re-export; the node-level tests of
-  the waiting list moved to `tutti-graph/tests/event_inlet.rs`.
+- **`TimedQueueNode` was a thin user until E4, which deleted it** (see
+  "Stage E4, as built"). `Moment` left `tutti_midi_runtime` and `tutti_session`
+  for `tutti_types`, with no re-export; the node-level tests of the waiting
+  list moved to `tutti-graph/tests/event_inlet.rs`.
 - **The panic predicate is `Ump::is_panic_controller`** (CC 120 and 123 of a
   MIDI 1.0 or 2.0 Control Change), beside `is_note_off`.
 - **The parallel test is in the inlet's own file**, not in `tests/parallel.rs`'s
@@ -1175,9 +1170,9 @@ into the `UmpOut` and adds `take_lost` to the drop count that
 | Today | Becomes | What moves where |
 |---|---|---|
 | `MidiOutNode`, `MidiOutControls`, `MIDI_OUT_CAPACITY` | **Deleted (E3, built).** The session opens an `EventTapReader` on the clock node's event output, `ToOutput`, and `Phase::MidiOut` drains it | `tutti-session` owns the open and the policy. `drain_receiver_through`'s rebasing goes: a tap's frames are real, so `MidiOutRouter::route` takes `(Frame, Ump)`; `UmpOut`, `JrStream` and the stamper stay where they are. The drop report reads `take_lost`. `MidiNodes::hardware_out` and `out_controls` go. `tutti-midi-hardware` stays the OS backend and the pump |
-| `MidiQueueNode` | **Deleted.** `EventInletNode` with `At::NextBlock` | `MidiSender`'s key helpers (`note_on`, `note_off`, which build a `Voice2` into a `Ump`) become a thin MIDI wrapper over `EventInletWriter` in `tutti-midi-runtime`, since the graph builds no message. The session's live input (`Live`) holds that wrapper |
-| `TimedQueueNode`, `TimedSender`, `TimedSendError`, `Moment` | **Moved up** (E2 did `Moment` and the node's logic; `TimedQueueNode` stays a thin newtype over `EventInletNode` until E4 moves its callers): the node and its waiting list are `EventInletNode`, the sender is `EventInletWriter`, `Moment` is in `tutti-types` | What remains in `tutti-midi-runtime` is nothing of it. `InstrumentHandle` (`instrument.rs`) holds the writer, behind the session's own lock if it must stay `Clone` (below) |
-| `MidiMailbox`, `MidiReceiver`, the `MidiOut` trait | **Deleted when their last user moves**, if no non-graph user remains. The host's own outbound mailbox (read in `drain_receiver_through`) is one such: it stays until the host's outbound path is its own, and is named when it is | Stage E4 audits it |
+| `MidiQueueNode` | **Deleted (E4).** `EventInletNode` with `At::NextBlock` | `MidiKeys` (`tutti-midi-runtime`) is the key helpers (`note_on`, `note_off`, which build a `Voice2` into a `Ump`) over an `EventInletWriter`, which it derefs to; the graph builds no message. The session's live input (`LiveInput`) holds it behind the session's lock |
+| `TimedQueueNode`, `TimedSender`, `TimedSendError`, `Moment` | **Deleted (E4).** The node and its waiting list are `EventInletNode`, the sender is `EventInletWriter`, the error is `Refused`, `Moment` is in `tutti-types` | What remains in `tutti-midi-runtime` is nothing of it. `InstrumentHandle` (`instrument.rs`) holds the writer behind the session's lock (below) |
+| `MidiMailbox`, `MidiReceiver`, the `MidiOut` trait | **Audited in E4; E3 has landed: no graph crossing remains, the mailbox stays for the host's own outbound path, the trait stays.** `MidiMailbox`, `MidiSender` (its queue half) and `MidiReceiver` are used by the host's own outbound path, read in `drain_receiver_through`, and the clock master's tests; they go when that path is its own. `MidiOut` is not a graph crossing at all: it is the hardware's terminal sink (`tutti-midi-hardware`'s `MidiSession`, every backend's output, `UmpOut`), and it stays | See "Stage E4, as built" |
 | `MidiInputNode` | **Splits.** The wire side (the `MidiIn` poll, the arrival-time offset) becomes an inlet fed from the OS callback; `MidiIngestNode`, the translator, MPE and per-channel split, stays a node in `tutti-midi-runtime` with one event input and 17 outputs | **Blocked on `ClockMap`** (§5, "Timing at the edge"): today the `Instant` to `Offset` conversion runs on the audio thread in the drain, and an inlet's producer must give a `Moment`. Until then `MidiInputNode` is unchanged. It also needs one inlet per open device, since an inlet has one producer; the merge across devices is the graph's fan-in. That leaves the translator's per-channel state per device, where today it is shared across the merged ports |
 
 `ClockNode`, `MidiClipNode`, the harmony node, `compile_routes` and
@@ -1262,6 +1257,9 @@ Each with the recommendation to take unless the owner says otherwise.
    audio thread), and a hardware callback gets an inlet of its own. The
    alternative is an MPSC ring in `tutti-rt` with a loom model, which is a
    larger change for a case a lock on the control side already covers.
+   **Decided in E4:** the lock, as recommended: `InstrumentHandle` and
+   `LiveInput` stay `Clone`, because a host hands a handle to a UI thread and
+   a feeder, and `Midi::live_input` returns the one it has already.
 4. **Re-prepare at another rate and the tap. Decided (review of #458).** A
    tap's frames are on the graph clock at the rate prepared when they were
    written, so frames from before and after a re-prepare at another rate are on
@@ -1270,7 +1268,7 @@ Each with the recommendation to take unless the owner says otherwise.
    (`EventTapReader::rate() -> SampleRate`), which is what a reader converts
    with. A rate field per `TapEvent` was rejected: it costs every element for a
    rare event.
-5. **`At::Beat` on the inlet.** Recommended: refused, as `TimedSender` refuses it:
+5. **`At::Beat` on the inlet.** Recommended: refused, as the deleted `TimedSender` refused it:
    a beat waits on the transport and may wait forever, which makes the waiting
    list's bound unclear. Revisit if a producer needs it.
 6. **The inlet's fork is silent, the audio inlet's is refused.** Recommended:
@@ -1285,7 +1283,9 @@ Each with the recommendation to take unless the owner says otherwise.
    latency, which only `ClockMap`'s output side can know.
 10. **`MidiMailbox`'s other users.** A host's outbound mailbox is not a graph
     crossing. Recommended: audit in E4; if one remains it is named and kept, and
-    `MidiOut` stays for it.
+    `MidiOut` stays for it. **Audited in E4:** the mailbox's remaining users
+    are the out node and `drain_receiver_through` (E3's) and the clock master's
+    tests; `MidiOut` is the hardware sink. Both stay; the mailbox goes after E3.
 
 ### Staging
 
@@ -1298,8 +1298,26 @@ describes changes: each graph PR edits that document's primitive table.
 | **E1** (done) | The event tap: `EventTapId`, `EventTapSpec`, `Topology.event_taps`, `EventTapWriter` and `EventTapReader`, `Editor::open_event_tap`, `MissingSource::EventPort`, the compiler's op and `DelayKey::EventTap`, `verify`, `cost`, the serial, pooled and reference interpreters, the commit carry, reap. The tests above. Then `tutti-session`: `Graph::open_event_tap` and the `Reclaim` reap | Yes |
 | **E2** (done) | The event inlet: `EventInletNode`, `EventInletWriter`, `Refused`, `Moment` to `tutti-types`, the panic predicate in `tutti-ump`, the waiting list moved from `TimedQueueNode`. Then `tutti-session`: `Graph::open_event_inlet` and `add_event_inlet` | Yes, and `tutti-types` and `tutti-ump` |
 | **E3** (done) | The hardware out: the session reads a tap on the clock; `MidiOutNode`, `MidiOutControls`, `MIDI_OUT_CAPACITY` and `MidiNodes::hardware_out` deleted; `drain_receiver_through` and `MidiOutRouter` take frames | No. After E1 |
-| **E4** | The queues: `MidiQueueNode` and `TimedQueueNode` deleted, `MidiSender` slimmed to the key helpers over `EventInletWriter`, `InstrumentHandle` and the session's live inputs moved, `MidiMailbox` audited | No. After E2 |
+| **E4** (done) | The queues: `MidiQueueNode` and `TimedQueueNode` deleted, `MidiSender` slimmed to the key helpers over `EventInletWriter`, `InstrumentHandle` and the session's live inputs moved, `MidiMailbox` audited | No. After E2 |
 | **E5** | `MidiInputNode` split into the OS-side inlet and `MidiIngestNode` | No. After E2 and `ClockMap` (stage 4, timing) |
+
+**Stage E4, as built.** Deleted: `MidiQueueNode` and `MIDI_QUEUE_CAPACITY`,
+`TimedQueueNode`, `TimedSender`, `TimedSendError` and `TIMED_QUEUE_CAPACITY`,
+and the key helpers (`note_on`, `note_off`) of the mailbox's `MidiSender`. Added:
+`MidiKeys` and `LIVE_INLET_CAPACITY` (256) in `tutti-midi-runtime`. Callers
+moved to `Graph::open_event_inlet` (the session's live input and an
+instrument's queue, through one private `SharedKeys`: a `MidiKeys` behind an
+`Arc<Mutex<_>>` taken on control threads only), to `EventInletNode::pair` (the
+plugin tests' keyboard, the `rt_no_alloc` gates) and to `EventInletWriter::push`
+(`At::NextBlock` replaces an offset of 0). `LiveInput` is no longer a `Deref` to
+a mailbox sender: it has `send`, `send_at`, `note_on`, `note_off`, `clock` and
+`dropped`, as `InstrumentHandle` does. Behaviour that differs from
+`MidiQueueNode`: an event stamped past the block waits for its block instead of
+being clamped onto its last frame (the inlet's rule), and a full ring refuses
+with `SendError::Full` and counts in `lost()`. Two crate-level deviations from
+the plan above: the key-helper wrapper is not named `MidiSender` (that is the
+mailbox's push half, which `MidiOutNode` still uses, so it cannot change
+shape before E3), and the mailbox is not deleted (above).
 
 E3 and E4 are independent of each other. The loom, miri and doc gates need
 nothing new: nothing here adds `unsafe` or a lock-free structure.
@@ -1453,7 +1471,7 @@ earlier stages built:
   specification's; changing it is a decision for the owner.
 
 `tutti-midi-runtime` keeps only graph nodes and what they need: the input, queue,
-out, clip, harmony and clock nodes with `ClockMaster`, plus `MidiMailbox` and
+out, clip, harmony and clock nodes (the queue nodes went in E4) with `ClockMaster`, plus `MidiMailbox` and
 routes (stage 3b deleted `gather_midi` and `BlockSplitter`), about 3,100 of its 5,700 production lines. Its
 layout flattens to match. `jr_timestamp` moves to `tutti-midi-device` (`negotiate` was deleted in stage 4a),
 `mpe_ingest` to `tutti-midi-protocol`, and the SysEx reassemblers are gone (stage 3c:

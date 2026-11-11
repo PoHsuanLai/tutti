@@ -9,7 +9,7 @@ tunings and MPE / MIDI 2.0 per-note expression.
 
 `PolySynth` is the synth: a graph node (`tutti_graph::Node`) built from a
 `SynthConfig`, with no audio input, stereo output and one MIDI event input.
-Wire a clip node, a keyboard's `MidiQueueNode` or the hardware input node (all
+Wire a clip node, a keyboard's event inlet (`tutti_graph::EventInletNode`) or the hardware input node (all
 `tutti-midi-runtime`) to the event input; each event is applied on its own
 frame. The rest of the crate is configuration: `SynthConfig` with its
 `OscillatorType`, `FilterType`, `Adsr` and `FilterModConfig`; voice

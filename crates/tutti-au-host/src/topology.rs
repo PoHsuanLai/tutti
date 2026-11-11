@@ -154,7 +154,7 @@ mod tests {
     /// against Apple's own arithmetic rather than against itself — a
     /// transcription that dropped or doubled a speaker fails here.
     ///
-    /// Mutation (not run: macOS only, no Mac here): dropping `FrontCenter` from
+    /// Mutation (run, on macOS): dropping `FrontCenter` from
     /// the `AudioUnit5_0` row fails this at that tag.
     #[test]
     fn every_topology_matches_the_tags_own_channel_count() {

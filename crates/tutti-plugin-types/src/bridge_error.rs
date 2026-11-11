@@ -34,6 +34,22 @@ pub enum BridgeError {
         reason: String,
     },
 
+    /// The plugin's format cannot be hosted out of process: a VST2 plugin's
+    /// `AEffect` fuses its editor and its audio instance, so the instance
+    /// that renders cannot run apart from its window (design 021 §4). It is
+    /// refused before any `plugin-server` is started; a VST2 plugin runs in
+    /// the host's own process.
+    #[error(
+        "{path} is a {format} plugin, which cannot be hosted out of process: \
+         its editor and its audio instance are one object"
+    )]
+    NotOutOfProcess {
+        /// The plugin file.
+        path: PathBuf,
+        /// The format's name, as a user knows it.
+        format: &'static str,
+    },
+
     /// The plugin returned a format-defined failure code.
     #[error("Plugin error at {stage}: code {code:#x}")]
     FormatCode {

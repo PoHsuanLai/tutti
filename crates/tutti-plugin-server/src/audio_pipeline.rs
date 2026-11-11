@@ -2,7 +2,7 @@
 //!
 //! Everything the audio path owns lives here: the format-tagged
 //! scratch buffers, the sample-rate/format [`Clock`], and the `process`
-//! driver that takes an explicit `&mut dyn PluginInstance` + `&mut SlabWriter`
+//! driver that takes an explicit `&mut dyn Render` + `&mut SlabWriter`
 //! so the server doesn't have to weave field borrows.
 //!
 //! Input/output cross this layer as value types ([`AudioBlock`],
@@ -10,16 +10,16 @@
 //! `AudioBlock` and builds the wire `BridgeMessage::AudioProcessed` from the
 //! resulting `AudioOutput`.
 
+use crate::served::Render;
 use tutti_graph::Offset;
 use tutti_graph::UmpAt;
-use tutti_plugin::server::{
-    AudioBufferMut, ChordChanges, ExpressiveContext, Features, MIDI_STACK_CAPACITY, MidiEventVec,
-    NoteExpressionChanges, NoteExpressionIntChanges, NoteExpressionTextChanges, ParameterChanges,
-    PluginInstance, ProcessContext, ProcessOutput, SampleFormat, Samples, ScaleChanges, SlabWriter,
-    TransportChange, TransportInfo, WireMidi,
+use tutti_plugin_ipc::SlabWriter;
+use tutti_plugin_types::{
+    AudioBufferMut, BridgeResult, ChordChanges, ExpressiveContext, Features, MAX_BLOCK_CHANNELS,
+    MIDI_STACK_CAPACITY, MidiEventVec, NoteExpressionChanges, NoteExpressionIntChanges,
+    NoteExpressionTextChanges, ParameterChanges, ProcessContext, ProcessOutput, SampleFormat,
+    Samples, ScaleChanges, TransportChange, TransportInfo, WireMidi,
 };
-use tutti_plugin_types::BridgeResult;
-use tutti_plugin_types::MAX_BLOCK_CHANNELS;
 use tutti_ump::Ump;
 
 /// Sample-rate + negotiated sample format; travel together.
@@ -197,7 +197,7 @@ pub(crate) struct AudioBlock<'a> {
 pub(crate) struct AudioOutput {
     /// Wall-clock microseconds this block spent inside the plugin, measured by
     /// the server. A *diagnostic*, not the plugin's reported PDC latency —
-    /// that arrives as an `AsyncEvent::LatencyChanged` in `Samples`.
+    /// that arrives as a `BridgeMessage::LatencyChanged` in `Samples`.
     pub latency_us: u64,
 }
 
@@ -342,7 +342,7 @@ impl AudioPipeline {
     /// A slab read or write failure is absorbed into the silence path above.
     pub(crate) fn process(
         &mut self,
-        plugin: &mut dyn PluginInstance,
+        plugin: &mut dyn Render,
         shm: &mut SlabWriter,
         clock: &Clock,
         block: AudioBlock<'_>,
@@ -387,7 +387,7 @@ impl AudioPipeline {
             // is forwarded unconditionally to match. Gating it on `PARAM_AUTOMATION`
             // here would silently drop automation for any plugin that leaves that
             // optional flag unset — host says send, server throws it away.
-            let features = plugin.loaded().features;
+            let features = plugin.features();
             let mut timed = [(Offset::ZERO, Ump([0; 4])); MIDI_STACK_CAPACITY];
             let timed_len = block_midi(block.midi, num_samples, &mut timed);
             let mut ctx = ProcessContext::new().midi(&timed[..timed_len]);
@@ -459,7 +459,7 @@ impl AudioPipeline {
                         &mut output[..out_n],
                         num_samples,
                         sample_rate,
-                        |buf| plugin.process(buf, &ctx, plugin_output),
+                        |buf| plugin.render(buf, &ctx, plugin_output),
                     );
                     if let Err(error) = processed {
                         note_failed_block(failed_blocks, &error);
@@ -499,7 +499,7 @@ impl AudioPipeline {
                         &mut output[..out_n],
                         num_samples,
                         sample_rate,
-                        |buf| plugin.process(buf, &ctx, plugin_output),
+                        |buf| plugin.render(buf, &ctx, plugin_output),
                     );
                     if let Err(error) = processed {
                         note_failed_block(failed_blocks, &error);
@@ -585,7 +585,7 @@ fn block_midi(midi: &[WireMidi], frames: usize, out: &mut [UmpAt; MIDI_STACK_CAP
 /// 1024th: the line is rate-limited so a plugin that fails every block cannot
 /// turn the audio phase into a log writer. Nothing is built for a block that
 /// is not logged.
-fn note_failed_block(count: &mut u64, error: &tutti_plugin::server::PluginError) {
+fn note_failed_block(count: &mut u64, error: &tutti_plugin_types::PluginError) {
     *count += 1;
     if *count == 1 || count.is_multiple_of(1024) {
         tracing::warn!("the plugin failed {} block(s), the latest: {error}", *count);
@@ -622,7 +622,7 @@ fn with_audio_buffer_f32<R>(
         *slot = &mut chan[..size];
     }
 
-    f(AudioBufferMut::F32(tutti_plugin::server::AudioBuffer {
+    f(AudioBufferMut::F32(tutti_plugin_types::AudioBuffer {
         inputs: &in_refs[..in_n],
         outputs: &mut out_refs[..out_n],
         num_samples: size,
@@ -651,7 +651,7 @@ fn with_audio_buffer_f64<R>(
         *slot = &mut chan[..size];
     }
 
-    f(AudioBufferMut::F64(tutti_plugin::server::AudioBuffer64 {
+    f(AudioBufferMut::F64(tutti_plugin_types::AudioBuffer64 {
         inputs: &in_refs[..in_n],
         outputs: &mut out_refs[..out_n],
         num_samples: size,
@@ -663,10 +663,7 @@ fn with_audio_buffer_f64<R>(
 mod tests {
     use super::*;
 
-    use tutti_plugin::server::{
-        Normalized, ParamId, PluginAudio, PluginMeta, PluginParams, PluginState, PluginTail,
-        Samples,
-    };
+    use tutti_plugin_types::{PluginTail, Samples};
 
     #[test]
     fn buffers_resize_allocates_channels_and_samples() {
@@ -715,35 +712,24 @@ mod tests {
         }
     }
 
-    use crate::loaders::common::Meta;
-    use tutti_plugin::server::{
-        ChannelLayout, Features, LoadedPlugin, PluginDescriptor, PluginResult, ProcessOutput,
-        SlabLayout,
-    };
+    use tutti_plugin_ipc::SlabLayout;
+    use tutti_plugin_types::{ChannelLayout, LoadedPlugin, PluginResult};
 
-    /// A stand-in plugin whose `process` fills every output sample with a
+    /// A stand-in plugin whose `render` fills every output sample with a
     /// non-finite value. Used to prove the pipeline sanitizes plugin output
-    /// before it reaches the shared-memory slab. Only `metadata` + `process`
-    /// are meaningful; the rest are inert.
+    /// before it reaches the shared-memory slab. Only its wiring and `render`
+    /// are meaningful.
     struct NanPlugin {
-        meta: Meta,
+        meta: LoadedPlugin,
         fill: f32,
     }
 
-    impl PluginMeta for NanPlugin {
-        fn descriptor(&self) -> &PluginDescriptor {
-            &self.meta.descriptor
-        }
-        fn loaded(&self) -> &LoadedPlugin {
-            &self.meta.loaded
-        }
-    }
-    impl PluginAudio for NanPlugin {
-        fn reset(&mut self) -> tutti_plugin_types::PluginResult<()> {
-            Ok(())
+    impl Render for NanPlugin {
+        fn features(&self) -> Features {
+            self.meta.features
         }
 
-        fn process(
+        fn render(
             &mut self,
             buffer: AudioBufferMut<'_, '_>,
             _ctx: &ProcessContext,
@@ -756,46 +742,6 @@ mod tests {
             }
             Ok(())
         }
-        fn set_sample_rate(
-            &mut self,
-            _main: &tutti_plugin_types::MainThread,
-            _rate: f64,
-        ) -> PluginResult<()> {
-            Ok(())
-        }
-    }
-    impl PluginParams for NanPlugin {
-        fn get_parameter(&self, _main: &tutti_plugin_types::MainThread, _id: ParamId) -> f64 {
-            0.0
-        }
-        fn set_parameter(
-            &mut self,
-            _main: &tutti_plugin_types::MainThread,
-            _id: ParamId,
-            _value: Normalized,
-        ) {
-        }
-        fn get_parameter_list(
-            &self,
-            _main: &tutti_plugin_types::MainThread,
-        ) -> Vec<tutti_plugin::server::ParameterInfo> {
-            Vec::new()
-        }
-    }
-    /// The probe has no presets; the defaults say so.
-    impl tutti_plugin::server::PluginPresets for NanPlugin {}
-
-    impl PluginState for NanPlugin {
-        fn get_state(&mut self, _main: &tutti_plugin_types::MainThread) -> PluginResult<Vec<u8>> {
-            Ok(Vec::new())
-        }
-        fn set_state(
-            &mut self,
-            _main: &tutti_plugin_types::MainThread,
-            _data: &[u8],
-        ) -> PluginResult<()> {
-            Ok(())
-        }
     }
 
     /// A stand-in plugin that records the first sample of every input channel
@@ -803,26 +749,18 @@ mod tests {
     /// flat channels), then echoes each input channel into the matching output
     /// channel. Inputs beyond the output count are still recorded — that's how
     /// the sidechain bus is observed. Sample-erased via an interior-mutable
-    /// `RefCell` so `process(&mut self)` can stash the seen values.
+    /// `RefCell` so `render(&mut self)` can stash the seen values.
     struct EchoProbe {
-        meta: Meta,
+        meta: LoadedPlugin,
         seen_inputs: std::cell::RefCell<Vec<f32>>,
     }
 
-    impl PluginMeta for EchoProbe {
-        fn descriptor(&self) -> &PluginDescriptor {
-            &self.meta.descriptor
-        }
-        fn loaded(&self) -> &LoadedPlugin {
-            &self.meta.loaded
-        }
-    }
-    impl PluginAudio for EchoProbe {
-        fn reset(&mut self) -> tutti_plugin_types::PluginResult<()> {
-            Ok(())
+    impl Render for EchoProbe {
+        fn features(&self) -> Features {
+            self.meta.features
         }
 
-        fn process(
+        fn render(
             &mut self,
             buffer: AudioBufferMut<'_, '_>,
             _ctx: &ProcessContext,
@@ -848,50 +786,11 @@ mod tests {
             }
             Ok(())
         }
-        fn set_sample_rate(
-            &mut self,
-            _main: &tutti_plugin_types::MainThread,
-            _rate: f64,
-        ) -> PluginResult<()> {
-            Ok(())
-        }
-    }
-    impl PluginParams for EchoProbe {
-        fn get_parameter(&self, _main: &tutti_plugin_types::MainThread, _id: ParamId) -> f64 {
-            0.0
-        }
-        fn set_parameter(
-            &mut self,
-            _main: &tutti_plugin_types::MainThread,
-            _id: ParamId,
-            _value: Normalized,
-        ) {
-        }
-        fn get_parameter_list(
-            &self,
-            _main: &tutti_plugin_types::MainThread,
-        ) -> Vec<tutti_plugin::server::ParameterInfo> {
-            Vec::new()
-        }
-    }
-    /// The probe has no presets; the defaults say so.
-    impl tutti_plugin::server::PluginPresets for EchoProbe {}
-
-    impl PluginState for EchoProbe {
-        fn get_state(&mut self, _main: &tutti_plugin_types::MainThread) -> PluginResult<Vec<u8>> {
-            Ok(Vec::new())
-        }
-        fn set_state(
-            &mut self,
-            _main: &tutti_plugin_types::MainThread,
-            _data: &[u8],
-        ) -> PluginResult<()> {
-            Ok(())
-        }
     }
 
-    use tutti_plugin::server::SampleFormat as SF;
-    use tutti_plugin::server::{AudioSlab, PluginBus, RING_SLOTS};
+    use tutti_plugin_ipc::{AudioSlab, RING_SLOTS};
+    use tutti_plugin_types::PluginBus;
+    use tutti_plugin_types::SampleFormat as SF;
 
     /// A slab layout with real bus lists in both directions.
     ///
@@ -918,30 +817,27 @@ mod tests {
     /// its sequence check pass by accident rather than because anyone published.
     const SEQ: u64 = 1;
 
-    /// Build a test [`Meta`] with the given per-bus input/output channel widths.
-    fn meta(inputs: &[usize], outputs: &[usize]) -> Meta {
-        Meta {
-            descriptor: PluginDescriptor::default(),
-            loaded: LoadedPlugin {
-                inputs: inputs
-                    .iter()
-                    .map(|&c| {
-                        PluginBus::main(ChannelLayout::try_from(c).expect("a test bus is narrow"))
-                    })
-                    .collect(),
-                outputs: outputs
-                    .iter()
-                    .map(|&c| {
-                        PluginBus::main(ChannelLayout::try_from(c).expect("a test bus is narrow"))
-                    })
-                    .collect(),
-                latency_samples: Samples::ZERO,
-                tail: PluginTail::Unknown,
-                // This fixture is about bus widths; no capability is claimed,
-                // and no speaker placement either.
-                features: Features::empty(),
-                probed: Features::empty(),
-            },
+    /// A test [`LoadedPlugin`] with the given per-bus input/output channel widths.
+    fn meta(inputs: &[usize], outputs: &[usize]) -> LoadedPlugin {
+        LoadedPlugin {
+            inputs: inputs
+                .iter()
+                .map(|&c| {
+                    PluginBus::main(ChannelLayout::try_from(c).expect("a test bus is narrow"))
+                })
+                .collect(),
+            outputs: outputs
+                .iter()
+                .map(|&c| {
+                    PluginBus::main(ChannelLayout::try_from(c).expect("a test bus is narrow"))
+                })
+                .collect(),
+            latency_samples: Samples::ZERO,
+            tail: PluginTail::Unknown,
+            // This fixture is about bus widths; no capability is claimed,
+            // and no speaker placement either.
+            features: Features::empty(),
+            probed: Features::empty(),
         }
     }
 
@@ -1338,7 +1234,7 @@ mod tests {
     /// `process_is_alloc_free` above drives `NanPlugin`, which returns without
     /// touching a loader at all, so nothing in it can observe what a loader does
     /// with the plugin's output. This one covers the whole chain: slab read,
-    /// COM-boundary crossing, `Vst3Instance::process`, the loader's copy into
+    /// COM-boundary crossing, `Served::render`, the host crate's copy into
     /// the pipeline's reusable `ProcessOutput`, sanitize, and slab write.
     ///
     /// Hermetic: the probe is the vendored `audio-probe`, built by this crate's
@@ -1354,7 +1250,7 @@ mod tests {
     /// `outputEvents` or `outputParameterChanges`). So the plugin's output lists
     /// arrive empty every block, and an owning conversion over an empty
     /// list allocates nothing, so restoring
-    /// `ProcessOutputRef::to_owned()` in `loaders::vst3::process_block` leaves
+    /// `ProcessOutputRef::to_owned()` in `tutti-vst3-host`'s `process_block` leaves
     /// this test green. Saying so is the point: a gate that names a property it
     /// cannot observe is the failure this whole class of test exists to avoid.
     ///
@@ -1366,24 +1262,29 @@ mod tests {
     #[cfg(feature = "vst3")]
     #[test]
     fn process_through_the_real_vst3_loader_is_alloc_free() {
-        use crate::loaders::vst3::Vst3Instance;
+        use crate::served::{Served, ServedPlugin};
+        use tutti_plugin_types::Load;
+        use tutti_vst3_host::Vst3Loaded;
 
         const N: usize = 128;
         const SR: f64 = 48_000.0;
 
         let _lock = crate::test_utils::plugin_load_lock();
-        let mut plugin = Vst3Instance::load(
+        let (mut plugin, _) = Served::<Vst3Loaded>::load(
             &tutti_fixtures::main_thread(),
             std::path::Path::new(crate::test_utils::vst3_probe_path()),
+            &Load::new(),
             SR,
             N,
             false,
+            None,
+            &mut || {},
         )
         .expect("the vendored VST3 probe must load");
 
         // Shape the slab to what the plugin actually declared, so no channel is
         // silently dropped and the widths the pipeline reads are the real ones.
-        let loaded = PluginMeta::loaded(&plugin);
+        let loaded = plugin.loaded().clone();
         let layout = test_layout(
             N,
             SampleFormat::Float32,
@@ -1437,7 +1338,7 @@ mod tests {
     /// The MIDI is past its cap ([`MIDI_STACK_CAPACITY`]), so the copy also
     /// pins that the list drops the excess (counted) rather than growing.
     ///
-    /// [`MIDI_STACK_CAPACITY`]: tutti_plugin::server::MIDI_STACK_CAPACITY
+    /// [`MIDI_STACK_CAPACITY`]: tutti_plugin_types::MIDI_STACK_CAPACITY
     ///
     /// Copying emitted events into a warm output allocates nothing: the `ProcessOutput` is
     /// reused rather than built per block, `ProcessOutput::reserve_params` leaves room for
@@ -1491,12 +1392,12 @@ mod tests {
         }
         assert_eq!(
             out.midi_events.len(),
-            tutti_plugin::server::MIDI_STACK_CAPACITY,
+            tutti_plugin_types::MIDI_STACK_CAPACITY,
             "the fixture must actually fill the buffers"
         );
         assert_eq!(
             out.midi_dropped(),
-            EVENTS - tutti_plugin::server::MIDI_STACK_CAPACITY
+            EVENTS - tutti_plugin_types::MIDI_STACK_CAPACITY
         );
         assert_eq!(out.param_changes.queues.len(), PARAMS);
 

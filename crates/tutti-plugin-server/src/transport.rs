@@ -10,7 +10,7 @@
 //! anyone to serve.
 
 use interprocess::local_socket::{ListenerOptions, traits::Listener as _};
-use tutti_plugin::server::{BridgeMessage, HostMessage, read_frame, write_frame};
+use tutti_plugin_ipc::{BridgeMessage, HostMessage, read_frame, write_frame};
 use tutti_plugin_types::BridgeResult;
 
 /// The platform's concrete listener/stream pair, not the crate's dispatch enum.
@@ -107,7 +107,7 @@ impl TransportListener {
         // Must agree with the host's `connect`, which is why both go through the
         // one helper: a listener bound to a filesystem path and a client dialling
         // a pipe name would simply never meet.
-        let name = tutti_plugin::server::socket_name(socket_path)
+        let name = tutti_plugin_ipc::socket_name(socket_path)
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, e))?;
         let listener = ListenerOptions::new().name(name).create_sync_as()?;
         Ok(Self { listener })
@@ -378,7 +378,7 @@ mod recv_tests {
     use std::io::Write;
     use std::os::fd::OwnedFd;
     use std::os::unix::net::UnixStream;
-    use tutti_plugin::server::MAX_FRAME_BYTES;
+    use tutti_plugin_ipc::MAX_FRAME_BYTES;
     use tutti_plugin_types::BridgeError;
 
     /// A length prefix over the cap is a framing violation by the host, not

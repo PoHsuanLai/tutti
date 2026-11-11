@@ -17,6 +17,7 @@ use super::Samples;
 use super::process::ProcessAudioData;
 use super::shm::SlabLayout;
 use super::{LoadedPlugin, ParameterInfo, PluginDescriptor, PluginTail, Preset, PresetId};
+use tutti_plugin_types::Load;
 use tutti_types::SampleRate;
 
 /// Wire-deserialization fallback for [`HostMessage::LoadPlugin::block_size`]
@@ -53,6 +54,12 @@ pub enum HostMessage {
     LoadPlugin {
         /// Filesystem path to the plugin bundle or shared library.
         path: PathBuf,
+        /// Which plugin of the file to load, when it exports several (a CLAP
+        /// plugin id, a VST3 class name, an AU descriptor id): the same
+        /// [`Load`](tutti_plugin_types::Load) the server hands its format's
+        /// `OutOfProcess::load_served`. The file's first plugin when it chooses
+        /// none; a format whose files hold one refuses a choice.
+        load: Load,
         /// Sample rate, an `f64` on the wire because plugin ABIs denominate it so.
         sample_rate: SampleRate,
         /// Maximum frames per [`ProcessAudio`](Self::ProcessAudio) block. The

@@ -2,8 +2,8 @@
 //! (`ControlLaneNode::for_foreign`, one per parameter) on the plugin node's
 //! event input, the node's per-parameter queues,
 //! the bridge, a real `plugin-server` and a real format host (the reference
-//! VST2 plugin, which takes its parameter count from the environment), and
-//! the values read back from the plugin.
+//! CLAP plugin, which takes an extra parameter count from the environment),
+//! and the values read back from the plugin.
 //!
 //! What it pins: a chunk carries a change for every parameter (no 16-queue
 //! cap), the node sends changes only, an unchanged host value does not
@@ -25,7 +25,7 @@ use std::time::Duration;
 use tutti_types::MaxBlock;
 
 use clap_probe::{ProbeEnv, Rig, load_probe, render};
-use param_probe::{knob, knobs, load_vst2_probe, until};
+use param_probe::{extra, knob, knobs, load_param_probe, until};
 use tutti_fixtures::machine_lock;
 use tutti_graph::{ForkMode, ForkTarget, Prepare, Transport};
 use tutti_nodes::automation::{ControlLaneNode, LaneControls};
@@ -47,11 +47,11 @@ fn value(i: usize) -> f32 {
     (1 + i % 7) as f32 / 8.0
 }
 
-/// The plugin's value for parameter `i`, read from the plugin-server.
+/// The plugin's value for extra parameter `i`, read from the plugin-server.
 fn read(handle: &PluginHandle, i: usize) -> Option<f32> {
     handle
         .any_thread()
-        .parameter_value(ParamId::new((i32::try_from(i).expect("small")) as u32))
+        .parameter_value(extra(i))
         .map(|v| v.get() as f32)
 }
 
@@ -75,7 +75,7 @@ fn rig(client: tutti_plugin::handles::PluginClient, lanes: Vec<ControlLaneNode>)
 #[test]
 fn two_hundred_parameters_changing_in_one_block_all_arrive() {
     let _lock = machine_lock();
-    let (client, handle) = load_vst2_probe(PARAMS, SAMPLE_RATE);
+    let (client, handle) = load_param_probe(PARAMS, SAMPLE_RATE);
     let (_knobs, lanes) = knobs(PARAMS, value);
     let mut rig = rig(client, lanes);
 
@@ -106,7 +106,7 @@ fn two_hundred_parameters_changing_in_one_block_all_arrive() {
 #[test]
 fn an_unchanged_value_is_not_sent_again() {
     let _lock = machine_lock();
-    let (client, handle) = load_vst2_probe(PARAMS, SAMPLE_RATE);
+    let (client, handle) = load_param_probe(PARAMS, SAMPLE_RATE);
     let (knobs, lanes) = knobs(PARAMS, value);
     let mut rig = rig(client, lanes);
     let resend = |knobs: &[LaneControls]| knobs.iter().for_each(LaneControls::resync);
@@ -153,7 +153,7 @@ fn an_unchanged_value_is_not_sent_again() {
 #[test]
 fn an_edit_on_the_plugin_survives_a_held_host_value() {
     let _lock = machine_lock();
-    let (client, handle) = load_vst2_probe(8, SAMPLE_RATE);
+    let (client, handle) = load_param_probe(8, SAMPLE_RATE);
     let (knobs, lanes) = knobs(8, |_| 0.25);
     let mut rig = rig(client, lanes);
     let p = 2;
@@ -165,12 +165,19 @@ fn an_edit_on_the_plugin_survives_a_held_host_value() {
         },
         || read(&handle, p) == Some(0.25),
     ));
-    handle.any_thread().set_parameter_value(
-        ParamId::new((p as i32) as u32),
-        tutti_plugin_types::Normalized::of(0.75),
-    );
+    handle
+        .any_thread()
+        .set_parameter_value(extra(p), tutti_plugin_types::Normalized::of(0.75));
+    // The edit is queued to the plugin's Processor and reaches the plugin at
+    // the head of its next block, so blocks run until it has.
     assert!(
-        until(SETTLE, || {}, || read(&handle, p) == Some(0.75)),
+        until(
+            SETTLE,
+            || {
+                rig.run(BLOCK, |_, _| 0.0);
+            },
+            || read(&handle, p) == Some(0.75)
+        ),
         "the edit reached the plugin"
     );
     for _ in 0..100 {

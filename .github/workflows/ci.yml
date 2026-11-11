@@ -207,8 +207,10 @@ jobs:
       # format on) cannot see it.
       - name: clippy (plugin server, one format)
         run: |
-          for f in vst2 vst3 clap; do
+          for f in vst3 clap; do
             cargo clippy --locked -p tutti-plugin-server --no-default-features --features "$f" --all-targets -- -D warnings
+          done
+          for f in vst2 vst3 clap; do
             cargo clippy --locked -p tutti-plugin-probe --no-default-features --features "$f" --all-targets -- -D warnings
           done
 
@@ -458,7 +460,7 @@ jobs:
       # job does. Without `au`, which is macOS-only.
       - name: Build plugin-server (tutti-session/clap, tutti/clap and the plugin contract spawn it)
         run: |
-          cargo build --locked -p tutti-plugin-server --no-default-features --features clap,vst2,vst3
+          cargo build --locked -p tutti-plugin-server --no-default-features --features clap,vst3
           cargo build --locked -p tutti-plugin-probe
 
       - name: Test

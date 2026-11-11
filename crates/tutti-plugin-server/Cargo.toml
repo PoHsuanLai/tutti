@@ -3,7 +3,7 @@ name = "tutti-plugin-server"
 version = "0.0.1"
 edition.workspace = true
 rust-version.workspace = true
-description = "The plugin-server subprocess for tutti-plugin: hosts one VST2, VST3, CLAP or AU plugin in isolation"
+description = "The plugin-server subprocess for tutti-plugin: hosts one VST3, CLAP or AU plugin in isolation"
 license.workspace = true
 repository.workspace = true
 documentation = "https://docs.rs/tutti-plugin-server"
@@ -19,10 +19,7 @@ name = "plugin-server"
 path = "src/main.rs"
 
 [features]
-default = ["vst2", "vst3", "clap", "au"]
-
-# VST2 support (loader lives in the `tutti-vst2-host` sibling crate)
-vst2 = ["dep:tutti-vst2-host"]
+default = ["vst3", "clap", "au"]
 
 # VST3 support
 vst3 = ["dep:tutti-vst3-host"]
@@ -33,12 +30,14 @@ clap = ["dep:tutti-clap-host"]
 # Audio Unit support (macOS only)
 au = ["dep:tutti-au-host"]
 
-# All plugin formats.
-all = ["vst2", "vst3", "clap", "au"]
+# All served plugin formats. VST2 is not one: its editor and audio instance are
+# one object, so it runs in the host's process only (design 021 §4).
+all = ["vst3", "clap", "au"]
 
 [dependencies]
-# Shared protocol types
-tutti-plugin = { path = "../tutti-plugin" }
+# The wire, the shared-memory slab and the state chunking: the process edge's
+# other end (the host's is the same crate).
+tutti-plugin-ipc = { path = "../tutti-plugin-ipc" }
 # The shared bundle-layout walk (`bundle::any_module_in_bundle`). Direct rather
 # than reached through `tutti-plugin`, because this is a dependency in its own
 # right and a re-export would hide that.
@@ -63,9 +62,6 @@ interprocess = { version = "2" }
 # Logging
 tracing = "0.1"
 tracing-subscriber = "0.3"
-
-# VST2 plugin hosting (optional)
-tutti-vst2-host = { path = "../tutti-vst2-host", optional = true }
 
 # CLAP plugin hosting (optional)
 tutti-clap-host = { path = "../tutti-clap-host", optional = true }
@@ -92,11 +88,6 @@ assert_no_alloc = { version = "1", default-features = false }
 # tests find it beside the test binary. This is what lets the CLAP suite run on any
 # machine instead of naming an absolute macOS path.
 tutti-clap-test-plugin = { path = "../../testing/tutti-clap-test-plugin", features = ["probe"] }
-# The reference VST2 plugin, on the same terms as the CLAP one above: a
-# dev-dependency so the cdylib is built inside this `cargo test`, and found the
-# same way. Its behaviour is steered per-test through
-# `TUTTI_VST2_PROBE_*` env vars rather than by building variants.
-tutti-vst2-test-plugin = { path = "../../testing/tutti-vst2-test-plugin", features = ["probe"] }
 # The same `tutti-vst3-host` the `vst3` feature pulls in, but with `conformance`
 # on so its build script compiles `audio-probe` — the reference VST3 plugin the
 # loader tests drive, the counterpart to `tutti-clap-test-plugin` above. As a

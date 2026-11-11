@@ -3991,13 +3991,11 @@ dependencies = [
  "tutti-clap-test-plugin",
  "tutti-fixtures",
  "tutti-graph",
- "tutti-plugin",
+ "tutti-plugin-ipc",
  "tutti-plugin-ipc-ffi",
  "tutti-plugin-types",
  "tutti-rt",
  "tutti-ump",
- "tutti-vst2-host",
- "tutti-vst2-test-plugin",
  "tutti-vst3-host",
 ]
 

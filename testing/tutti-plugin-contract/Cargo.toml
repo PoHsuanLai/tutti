@@ -23,7 +23,7 @@ tutti-shared-plugin = { path = "../tutti-shared-plugin" }
 tutti-shared-plugin-vst3-cpp = { path = "../tutti-shared-plugin-vst3-cpp" }
 
 # Needs `cargo build -p tutti-plugin-server --no-default-features --features
-# clap,vst2,vst3` and `cargo build -p tutti-plugin-probe` first: the server
+# clap,vst3` and `cargo build -p tutti-plugin-probe` first: the server
 # cannot be a dependency (it depends on `tutti-plugin`), and a dependency's
 # binary is not built for a test.
 tutti-plugin = { path = "../../crates/tutti-plugin", features = ["clap", "vst2", "vst3"], optional = true }

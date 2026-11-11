@@ -26,6 +26,7 @@ use crate::{
 /// [`Control::load_state`](crate::Control::load_state) on the loaded plugin, so
 /// a load needs only the choice of plugin.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Load {
     plugin: Option<String>,
 }

@@ -28,7 +28,7 @@ use tutti_types::{
 };
 
 use crate::blend::{Blend, DryWet};
-use crate::ramp::{LastGood, block_driven};
+use crate::params::{ControlSet, Params};
 
 /// The level the wet signal has fallen to when the declared tail ends, and below
 /// which the node parks: 60 dB under what it carried, the figure the General MIDI
@@ -148,15 +148,11 @@ pub trait NodeDesign: Design<Realization: Effect<<Self as Design>::Model>> + 'st
     }
 }
 
-/// Freeverb's cells: the room size and the damping, as positions on `0..1`.
-#[derive(Clone, Debug)]
-pub struct FreeverbParams {
-    room: Param<Mix>,
-    damp: Param<Mix>,
-    good: [LastGood; 2],
-}
+/// Freeverb's controls: the room size and the damping, as positions on `0..1`.
+#[derive(Clone, Copy, Debug)]
+pub struct FreeverbSet;
 
-impl ControlParams for FreeverbParams {
+impl ControlSet for FreeverbSet {
     type Controls = FreeverbControls;
 
     fn addrs(&self) -> &'static [UnitAddr] {
@@ -167,71 +163,36 @@ impl ControlParams for FreeverbParams {
         &ADDRS
     }
 
-    fn bind(&self, set: ParamSetBuilder) -> ParamSetBuilder {
-        let addrs = self.addrs();
-        set.param(addrs[0], self.room.as_atomic())
-            .param(addrs[1], self.damp.as_atomic())
+    fn defaults(&self) -> FreeverbControls {
+        FreeverbControls::GENERAL_MIDI
     }
 
-    fn base(&self, k: usize) -> Option<f32> {
-        match k {
-            0 => Some(self.room.load().get()),
-            1 => Some(self.damp.load().get()),
-            _ => None,
-        }
+    fn flatten(&self, c: &FreeverbControls, out: &mut [f32]) {
+        out.copy_from_slice(&[c.room.get(), c.damp.get()]);
     }
 
-    fn read(&mut self, io: &Io<'_>, first: usize, _: At<FreeverbControls>) -> FreeverbControls {
-        let room = block_driven(io, first).unwrap_or_else(|| self.room.load().get());
-        let damp = block_driven(io, first + 1).unwrap_or_else(|| self.damp.load().get());
+    fn assemble(&self, v: &[f32]) -> FreeverbControls {
         FreeverbControls {
-            room: Mix(self.good[0].read(room)),
-            damp: Mix(self.good[1].read(damp)),
+            room: Mix(v[0]),
+            damp: Mix(v[1]),
         }
     }
 
-    /// A bigger room and less damping ring longer: the highest room and the
-    /// lowest damping the block's frames take.
-    fn longest(&self, io: &Io<'_>, first: usize) -> Option<FreeverbControls> {
-        let room = io.param(first).frames();
-        let damp = io.param(first + 1).frames();
-        if room.is_none() && damp.is_none() {
-            return None;
+    /// A bigger room and less damping ring longer.
+    fn longest(&self, lowest: &FreeverbControls, highest: &FreeverbControls) -> FreeverbControls {
+        FreeverbControls {
+            room: highest.room,
+            damp: lowest.damp,
         }
-        let extreme = |frames: Option<&[f32]>, cell: f32, pick: fn(f32, f32) -> f32| {
-            frames
-                .into_iter()
-                .flatten()
-                .copied()
-                .filter(|v| v.is_finite())
-                .fold(cell, pick)
-        };
-        Some(FreeverbControls {
-            room: Mix(extreme(room, self.room.load().get(), f32::max)),
-            damp: Mix(extreme(damp, self.damp.load().get(), f32::min)),
-        })
-    }
-
-    fn detach(&mut self) {
-        self.room.detach();
-        self.damp.detach();
     }
 }
 
 impl NodeDesign for FreeverbDesign {
-    type Params = FreeverbParams;
+    type Params = Params<FreeverbSet>;
     type Blend = DryWet;
 
-    fn params(&self, initial: FreeverbControls) -> FreeverbParams {
-        let fallback = FreeverbControls::GENERAL_MIDI;
-        FreeverbParams {
-            room: Param::new(initial.room),
-            damp: Param::new(initial.damp),
-            good: [
-                LastGood::new(initial.room.get(), fallback.room.get()),
-                LastGood::new(initial.damp.get(), fallback.damp.get()),
-            ],
-        }
+    fn params(&self, initial: FreeverbControls) -> Self::Params {
+        Params::new(FreeverbSet, &initial)
     }
 }
 

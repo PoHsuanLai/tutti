@@ -336,7 +336,7 @@ fn a_lane_driving_the_decay_changes_how_long_it_rings() {
 /// harness's fork checks over every cell of both designs.
 ///
 /// Mutation (run): not detaching the freeze or the width in
-/// `FdnParams::detach` fails `assert_param_fork`.
+/// `Params::detach` fails `assert_param_fork`.
 #[test]
 fn a_fork_shares_no_cell() {
     assert_param_fork(DesignNode::live(plain(), FdnControls::DEFAULT));

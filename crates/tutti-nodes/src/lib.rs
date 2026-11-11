@@ -53,6 +53,7 @@
 // the rest of this crate has no `Error` type.
 
 // Per-block control reads and the ramps that keep them from stepping.
+mod params;
 mod ramp;
 
 // Rendering helpers for the width-generic nodes' unit tests.
@@ -98,10 +99,7 @@ pub use distortion::{DISTORTION_PARAMS, DistortionNode};
 pub use tutti_dsp::ShapeKind;
 
 mod filter;
-pub use filter::{
-    CrossoverNode, CrossoverParams, EqBandNode, LadderFilterNode, LadderParams, SvfFilterNode,
-    SvfParams,
-};
+pub use filter::{CrossoverNode, EqBandNode, LadderFilterNode, SvfFilterNode};
 // The types in the filter nodes' signatures stay reachable from here; the
 // algorithms behind them (`SvfCoeffs`, `LadderCoeffs`, `Crossover`) are
 // `tutti-dsp`'s only.
@@ -135,11 +133,12 @@ pub use blend::{Blend, DryWet, NoBlend};
 // The reverb: any `tutti_dsp::Design` as a node, and the Freeverb send (mono in,
 // stereo wet out) the SoundFont player's General MIDI setup uses.
 mod reverb;
-pub use reverb::{At, ControlParams, DesignNode, FreeverbNode, FreeverbParams, NodeDesign};
+pub use params::{ControlSet, Params};
+pub use reverb::{At, ControlParams, DesignNode, FreeverbNode, NodeDesign};
 
 // The feedback delay network as a `DesignNode`, and the choice between the two.
 mod reverb_fdn;
-pub use reverb_fdn::{FdnNode, FdnParams, ReverbKind, SpawnedReverb};
+pub use reverb_fdn::{FdnNode, ReverbKind, SpawnedReverb};
 
 // The designs and controls that sit in a `DesignNode<D>`'s signature.
 pub use tutti_dsp::{FdnControls, FdnDesign, FreeverbControls, FreeverbDesign, SvfDesign};

@@ -1883,7 +1883,7 @@ to `DesignNode` or `ControlParams`, not to a filter:
    linearly over the **block** and re-solves every 16 samples from the interpolated frequency, with `bands * channels`
    outputs and a `Crossover` per channel. **Built (PR5):** `CrossoverDesign` on `stream(16)`, `CrossoverRealization` one
    shared model and a `CrossoverState` per channel, the coefficients held over the segment (no lerp), the frequency
-   glide the node's (`CrossoverParams::read`, in hertz) and an invalid set held as a whole to the last good one
+   glide the node's (`Params::read`, in hertz) and the design holding each split between the one below and the cap
    (`CrossoverControls::new`). `Crossover::split_block` stays for the multiband compressor.
 7. **No `DryWet`.** None of the four filter nodes has a mix port, so each would be `NoBlend` (doc 013's M4 makes the
    mix a graph primitive); nothing here adds a `DryWet` user.

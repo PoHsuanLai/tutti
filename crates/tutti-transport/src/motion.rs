@@ -321,17 +321,13 @@ impl MotionFsm {
     ///
     /// ```
     /// use tutti_types::{At, Beat, Frame};
-    /// use tutti_transport::{MotionEvent, Transport, TransportCommand};
+    /// use tutti_transport::{MotionEvent, Transport};
     ///
     /// let transport = Transport::new(tutti_types::SampleRate(48_000.0));
     /// // Start rolling one second into the stream, stop at beat 16.
     /// transport.motion.schedule(At::Frame(Frame(48_000)), MotionEvent::Play)?;
     /// transport.motion.schedule(At::Beat(Beat(16.0)), MotionEvent::stop())?;
-    /// // A tempo edit on the next block.
-    /// transport
-    ///     .motion
-    ///     .schedule(At::NextBlock, TransportCommand::Tempo(tutti_types::Bpm::of(90.0)))?;
-    /// assert_eq!(transport.motion.scheduled_outstanding(), 3);
+    /// assert_eq!(transport.motion.scheduled_outstanding(), 2);
     /// # Ok::<_, tutti_transport::ScheduleFull>(())
     /// ```
     pub fn schedule(
@@ -487,9 +483,6 @@ impl MotionAudio {
     pub fn apply(&mut self, command: TransportCommand) {
         match command {
             TransportCommand::Motion(event) => self.step(event),
-            // The audio thread cannot publish a map: the command is a scalar
-            // the clock keeps until the next publish (doc 020, stage 6).
-            TransportCommand::Tempo(bpm) => self.settings.tempo.store(bpm, Ordering::Release),
             TransportCommand::Loop(edit) => {
                 if let Some(owner) = self.owner.as_mut() {
                     owner.apply(edit);

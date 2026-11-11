@@ -55,24 +55,39 @@ expression themselves.
 
 ## Routing is wiring
 
-A `MidiInputNode` sends each event out of its channel's port, and everything
-with no channel (system, SysEx, Flex) out of `CHANNELLESS_PORT`. Which node
-hears which channel is which ports it takes event edges from: `input_ports`
+A `MidiInputNode` sends each event out of the port of its Group and channel,
+and a Group's System, SysEx and Flex messages out of that Group's channelless
+port (`CHANNELLESS_PORT` for the first). A Group is a channel space of its own
+(M2-104 section 2.1.2, Appendix B.1), so each Group the node hears has seventeen
+ports; the node hears the first Group unless built with
+`MidiInputNode::hearing(MidiInputPorts::through(last))`, so a one-Group device is
+`MIDI_INPUT_PORTS` ports and costs nothing more. A message with no Group
+(Utility, UMP Stream) leaves the first Group's channelless port. Which node hears
+which channel is which ports it takes event edges from: `MidiInputPorts::listening`
 names them.
 
 ```rust
-use tutti_midi_runtime::{input_ports, CHANNELLESS_PORT, MIDI_INPUT_PORTS};
-use tutti_ump::MidiChannel;
+use tutti_midi_runtime::{CHANNELLESS_PORT, MIDI_INPUT_PORTS, MidiInputPorts};
+use tutti_ump::{MidiChannel, MidiGroup};
 
+let ports = MidiInputPorts::FIRST_GROUP;
 // A synth on channel 3 hears port 3 and the channelless port...
-let on_three: Vec<usize> = input_ports(Some(MidiChannel::of(3))).collect();
+let on_three: Vec<usize> = ports
+    .listening(Some(MidiGroup::FIRST), Some(MidiChannel::of(3)))
+    .collect();
 assert_eq!(on_three, vec![3, CHANNELLESS_PORT]);
 // ...one on every channel hears all of them.
-assert_eq!(input_ports(None).count(), MIDI_INPUT_PORTS);
+assert_eq!(ports.listening(None, None).count(), MIDI_INPUT_PORTS);
+// Group 2's channel 3 is another port, on a node that hears two Groups.
+let two = MidiInputPorts::through(MidiGroup::of(1));
+let group2: Vec<usize> = two
+    .listening(Some(MidiGroup::of(1)), Some(MidiChannel::of(3)))
+    .collect();
+assert_eq!(group2, vec![MIDI_INPUT_PORTS + 3, MIDI_INPUT_PORTS + CHANNELLESS_PORT]);
 ```
 
 A set of routing rules compiles to those port sets with `compile_routes`: each
-rule's targets take its channel's ports (several rules, the union), and an
+rule's targets take its Group and channel's ports (several rules, the union), and an
 optional fallback takes every port no rule covers.
 
 ## MIDI across a thread boundary

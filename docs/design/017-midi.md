@@ -2450,6 +2450,47 @@ SysEx8 message ends on its own End (or the abort of `# of bytes` `0xF`) and is k
 its Number of this Chunk is zero, and is keyed by (Group, MDS ID). Whoever first needs one
 writes it to that, in `tutti-ump`, with the same caller-sized storage.
 
+### L3: the input routes and instruments key by Group (done)
+
+M2-104 section 2.1.2: "Each Group's set of 16 MIDI Channels shall be separate and independent
+from any other Group's set of MIDI Channels"; System and Data messages "shall apply to, and
+shall affect, all MIDI Channels within that Group"; and Appendix B.1: "Functionality of Mode
+Messages received in one Group does not apply to Channels in any other Group in the device".
+The input node routed by channel alone and the instruments ignored the Group, so Group 2
+channel 1 played as Group 1 channel 1. Now:
+
+- **The input node's ports are per Group.** `MidiInputPorts` is the layout: Group `g`
+  owns ports `g * 17 ..= g * 17 + 16`, its sixteen channels and a channelless port for its
+  System, SysEx and Flex messages. The node hears the first Group unless built with
+  `hearing(MidiInputPorts::through(last))`, so a one-Group device is the seventeen ports it
+  was (`MIDI_INPUT_PORTS`, `CHANNELLESS_PORT`) and a Group costs ports only where it is
+  heard. An event of a Group not heard has no port and is not delivered. A message with no
+  Group (Utility, UMP Stream: they address the Endpoint, §6.1) leaves the first Group's
+  channelless port. A Function Block's Groups (section 6.1.1: it starts on any Group and spans
+  1 to 16) are wired by `listening` per Group; a Function Block declared as a map from
+  Groups to ports is left to L6, which splits the node. `RouteRule` and the session's
+  `MidiRouteRule` carry a Group (the first by default; `in_group`, `in_any_group`), and
+  `SessionBuilder::midi_groups` chooses how many Groups the engine's input hears.
+- **An instrument plays one Group.** `SynthConfig::group` and `Settings::with_group` (the first
+  by default) name the Group whose sixteen channels the instrument is, and a message of
+  another Group is not read. So `tutti-voicing`'s channel tables (notes, pedals, wheels, held
+  keys, MPE zones) stay sixteen wide and `step` stays a pure step with tables sized in `new`:
+  an instrument never holds two Groups' channels to merge. Two Groups are two instruments,
+  each wired to its Group's ports. The alternative, state keyed by (Group, channel) in the
+  core, would size every table by 256 for an instrument that one Group fills.
+- **MPE is per Group.** `MpeIngest` keeps the zone layout and the held member notes of each
+  Group. The configured mode is every Group's starting layout; an MPE Configuration Message
+  configures the Group it arrives in, and its reset ranges leave on that Group (a host-set
+  mode sends them on every Group heard). The per-note messages it builds keep the Group of the
+  message they came from (they were built on the first Group). `MpeIngest::mode` is the
+  configured mode and `mode_of(group)` the one in force.
+- **Already per Group:** `Translator` (RPN, NRPN and Bank Select state is kept per Group and
+  channel), `NoteLedger`, and the SysEx assembler (L2).
+- **Not done, in the plugin hosts** (a format with no Group is one Group per port): the CLAP and
+  VST3 hosts' event conversion read `address.channel` and drop the Group, and
+  `tutti_plugin_types::PerNoteBendRanges` is keyed by channel, so a plugin fed from two Groups
+  merges them; a served plugin is one Group's wire until those take the Group.
+
 ## 11. Testing
 
 - **Spec tables.** Each message's words from M2-104 App. F and the tables in M2-115

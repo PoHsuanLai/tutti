@@ -7,6 +7,7 @@ use core::fmt;
 use crate::{AllocationStrategy, PortamentoConfig, Tuning, UnisonConfig, VoiceMode};
 use tutti_types::Adsr;
 use tutti_types::{Depth, Hz, Q, Resonance, Semitones};
+use tutti_ump::MidiGroup;
 
 /// The waveform every sub-voice of every voice generates.
 ///
@@ -260,6 +261,11 @@ pub struct SynthConfig {
     /// [`pitch_bend_range`](Self::pitch_bend_range), and overridden at runtime
     /// by the per-note pitch-bend sensitivity RPN.
     pub mpe_pitch_bend_range: Semitones,
+    /// The Group whose sixteen channels this synth plays; a message in
+    /// another Group is not read. A Group is a channel space of its own (M2-104
+    /// section 2.1.2, Appendix B.1), so its channels' notes, wheels, pedals and
+    /// MPE zones are not another Group's. Default the first.
+    pub group: MidiGroup,
 }
 
 impl Default for SynthConfig {
@@ -279,6 +285,7 @@ impl Default for SynthConfig {
             filter_mod: FilterModConfig::default(),
             mpe_enabled: false,
             mpe_pitch_bend_range: Semitones(48.0),
+            group: MidiGroup::FIRST,
         }
     }
 }

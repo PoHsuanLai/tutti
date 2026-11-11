@@ -11,8 +11,8 @@
 
 use super::TempoReader;
 use super::state::AtomicBpm;
+use std::sync::Arc;
 use std::sync::atomic::Ordering;
-use std::sync::{Arc, Mutex};
 use tutti_rt::ArcLend;
 use tutti_tempo::TempoMap;
 
@@ -35,16 +35,6 @@ pub struct TransportSettings {
     /// stored first: a clock that sees a new count lends the new map or a later
     /// one, never an older one.
     pub(crate) map_generation: Arc<AtomicU64>,
-    /// Held across a publish and its mirror store, so two control threads cannot
-    /// leave the map and [`tempo`](Self::tempo) on different tempos. Never taken
-    /// by the audio thread.
-    pub(crate) publishing: Arc<Mutex<()>>,
-    /// The tempo of the map's first point, for readers that want a scalar
-    /// without the map (a [`Timeline`](super::Timeline), `samples_per_beat`):
-    /// stored beside every publish. A timed [`TransportCommand::Tempo`](super::TransportCommand::Tempo) stores here too, being applied on the
-    /// audio thread, which cannot publish; the clock keeps it until the next
-    /// publish (doc 020, stage 6 retires the command).
-    pub(crate) tempo: Arc<AtomicBpm>,
     /// The playhead, in beats. Written by `TransportClock` via its position
     /// writeback (and by a locate, which moves the readout at once); read by
     /// the UI and by pull-based sources through [`beat`](Self::beat).
@@ -100,8 +90,8 @@ pub struct TransportSettings {
     /// CLAP's `steady_time`, which free-running effects key off precisely
     /// because the playhead is discontinuous.
     pub(crate) steady_time: Arc<AtomicI64>,
-    /// The tempo the clock is actually running at: [`tempo`](Self::tempo)
-    /// as the clock last took it, which ignores wiggles smaller than its
+    /// The tempo the clock is actually running at: the map's, as the clock
+    /// last took it, which for a constant map ignores wiggles smaller than its
     /// hysteresis. Written by the clock; what a beat must be resolved with
     /// to agree with it.
     pub(crate) tempo_in_force: Arc<AtomicBpm>,
@@ -114,8 +104,6 @@ impl TransportSettings {
         Self {
             tempo_map: Arc::new(ArcLend::new(Self::default_map())),
             map_generation: Arc::new(AtomicU64::new(0)),
-            publishing: Arc::new(Mutex::new(())),
-            tempo: Arc::new(AtomicBpm::new(Bpm::default())),
             beat: Arc::new(AtomicF64::new(0.0)),
             segment_generation: Arc::new(AtomicU64::new(0)),
             recording: Arc::new(AtomicBool::new(false)),
@@ -138,30 +126,18 @@ impl TransportSettings {
         self.steady_time.load(Ordering::Relaxed)
     }
 
-    /// The tempo the transport was last given, from beat 0: what
-    /// [`set_tempo`](Self::set_tempo) stored, or the published map's first
-    /// point's.
-    pub fn tempo(&self) -> Bpm {
-        self.tempo.load(Ordering::Acquire)
-    }
-
     /// Sets a constant tempo from the next block: sugar for publishing
     /// `TempoMap::constant(bpm)` ([`set_tempo_map`](Self::set_tempo_map)), so it
     /// **replaces** any map. A [`Bpm`] is finite and above zero, so a caller
     /// holding a raw number checks it with [`Bpm::new`] first.
     ///
-    /// A tempo so small that a beat's rate underflows (a denormal)
-    /// is no map: it is stored for [`tempo`](Self::tempo) and the clock keeps
-    /// the map it had.
+    /// A tempo so small that a beat's rate underflows (a denormal) is no map
+    /// ([`TempoMap::constant`] refuses it): nothing is published and the
+    /// project keeps the map it had.
     pub fn set_tempo(&self, bpm: Bpm) {
-        let _publishing = self
-            .publishing
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Ok(map) = TempoMap::constant(bpm) {
             self.tempo_map.publish(map);
         }
-        self.tempo.store(bpm, Ordering::Release);
         self.map_generation.fetch_add(1, Ordering::Release);
     }
 
@@ -171,15 +147,8 @@ impl TransportSettings {
     /// Any map is followed: the clock takes each step on the frame it falls
     /// on (doc 020, stage 3) and each ramp cell by cell, a constant tempo of
     /// 128 frames at the chord of the curve (stage 4).
-    /// [`tempo`](Self::tempo) reads the map's first point.
     pub fn set_tempo_map(&self, map: Arc<TempoMap>) {
-        let tempo = map.points()[0].tempo;
-        let _publishing = self
-            .publishing
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
         self.tempo_map.publish(map);
-        self.tempo.store(tempo, Ordering::Release);
         self.map_generation.fetch_add(1, Ordering::Release);
     }
 
@@ -276,8 +245,11 @@ mod tests {
         let b = a.clone();
 
         a.set_tempo(Bpm::of(140.0));
-        assert_eq!(b.tempo().get(), 140.0, "clones must share, not copy");
-        assert_eq!(b.tempo_map().constant_tempo(), Some(Bpm::of(140.0)));
+        assert_eq!(
+            b.tempo_map().constant_tempo(),
+            Some(Bpm::of(140.0)),
+            "clones must share, not copy"
+        );
     }
 
     /// `set_tempo` is the constant map of that tempo, to the bit, and the
@@ -302,12 +274,11 @@ mod tests {
                 tutti_types::first_frame_at_or_after(frames) as u64,
                 "beat 4 at {bpm}"
             );
-            assert_eq!(s.tempo(), Bpm::of(bpm));
         }
     }
 
     /// A constant map, a map of steps and a map with a ramp are each the
-    /// transport's tempo (read as the first point's).
+    /// taken whole.
     ///
     /// Mutation (run): `set_tempo_map` ignoring a map with a ramp (an early
     /// return) -> the tempo stays 75.5 and the map stays constant -> fails.
@@ -317,7 +288,6 @@ mod tests {
         let s = TransportSettings::new();
         let constant = TempoMap::constant(Bpm::of(75.5)).unwrap();
         s.set_tempo_map(Arc::new(constant));
-        assert_eq!(s.tempo(), Bpm::of(75.5));
         assert_eq!(s.tempo_map().constant_tempo(), Some(Bpm::of(75.5)));
 
         let two = |shape| {
@@ -338,17 +308,11 @@ mod tests {
         for shape in [Shape::RampTime, Shape::RampBeats] {
             s.set_tempo_map(Arc::new(constant_of(75.5)));
             s.set_tempo_map(Arc::new(two(shape)));
-            assert_eq!(
-                s.tempo(),
-                Bpm::of(100.0),
-                "the ramp's first point, {shape:?}"
-            );
             assert_eq!(s.tempo_map().constant_tempo(), None);
             assert_eq!(s.tempo_map().points()[0].shape, shape);
         }
 
         s.set_tempo_map(Arc::new(two(Shape::Step)));
-        assert_eq!(s.tempo(), Bpm::of(100.0), "the first point's");
         assert_eq!(s.tempo_map().constant_tempo(), None);
     }
 

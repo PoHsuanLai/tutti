@@ -3003,3 +3003,37 @@ fn a_mono_synth_returns_to_the_held_key_and_sounds_it() {
         "the last key released it"
     );
 }
+
+/// **A synth plays one Group's channels** (M2-104 section 2.1.2, Appendix
+/// B.1: a Group is a channel space of its own): a note in Group 2 is not
+/// played by a synth of Group 1, whichever channel it names, and a synth built
+/// for Group 2 plays it and not Group 1's.
+///
+/// Mutation: `process_midi_event` ignoring the Group (the check dropped) ->
+/// the first synth sounds Group 2's note and the first assertion fails.
+#[test]
+fn a_synth_plays_its_own_groups_channels_only() {
+    let group2 = MidiGroup::of(1);
+    let note = |group: MidiGroup| {
+        midi::note_on(
+            group,
+            MidiChannel::FIRST,
+            60,
+            tutti_fixtures::midi::wide_velocity(100),
+        )
+    };
+    let mut first = synth(SynthConfig::default());
+    first.apply_midi(note(group2));
+    assert_eq!(first.active_voice_count(), 0, "Group 2 is not Group 1's");
+    first.apply_midi(note(MidiGroup::FIRST));
+    assert_eq!(first.active_voice_count(), 1);
+
+    let mut second = synth(SynthConfig {
+        group: group2,
+        ..SynthConfig::default()
+    });
+    second.apply_midi(note(MidiGroup::FIRST));
+    assert_eq!(second.active_voice_count(), 0, "Group 1 is not Group 2's");
+    second.apply_midi(note(group2));
+    assert_eq!(second.active_voice_count(), 1);
+}

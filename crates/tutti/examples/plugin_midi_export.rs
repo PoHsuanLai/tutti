@@ -9,7 +9,8 @@
 //! `bounce_start` and Realtime from `finish_bounce`.
 //!
 //! With no arguments it plays a two-bar phrase it writes itself through the
-//! reference CLAP plugin (`tutti-clap-test-plugin`), which needs the
+//! shared reference plugin (`tutti-shared-plugin`, in its `Notes` mode: it
+//! renders the key it holds), which needs the
 //! `plugin-server` built first:
 //!
 //! ```text
@@ -26,25 +27,33 @@
 //! the prelude with the features that gate them). `tutti-session` cannot
 //! name `tutti`, which depends on it.
 
-// The plugin and server lookup `tutti-session`'s plugin suite uses.
+// The server lookup `tutti-session`'s plugin suite uses (its reference-probe
+// lookup is for that suite).
+#[allow(dead_code)]
 #[path = "../../tutti-session/tests/support/mod.rs"]
 mod support;
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use tutti::export::{Format, Pcm, Written};
+use tutti::export::{Format, Pcm, Produced, Written};
 use tutti::prelude::*;
 
 const RATE: SampleRate = SampleRate(48_000.0);
 
-/// §5.2, as written there: `plugin` plays `midi` into `out`.
-fn play(plugin: &Path, midi: &Path, out: &Path) -> Result<Written, Box<dyn std::error::Error>> {
+/// §5.2, as written there: `plugin` (restored from `state`, if any) plays
+/// `midi` into the master `master` names (a file, here).
+fn play(
+    plugin: &Path,
+    state: Option<Vec<u8>>,
+    midi: &Path,
+    master: impl FnOnce(Bounce) -> Bounce,
+) -> Result<Produced, Box<dyn std::error::Error>> {
     let mut s = Session::builder().build_offline(RATE, ChannelLayout::STEREO, Samples(512))?;
 
     let job = s.plugin_load(PluginLoadRequest {
         id: PluginId::from_path(plugin),
-        state: None,
+        state,
     });
     // The thread that opens an in-process plugin is the main thread: claim it once.
     let main = tutti::plugin::MainThread::claim()?;
@@ -75,19 +84,26 @@ fn play(plugin: &Path, midi: &Path, out: &Path) -> Result<Written, Box<dyn std::
     // Everything else is derived: the clock is the project's tempo map from
     // beat 0, the latency is the plan's, the tail is the plugin's declared
     // one, and the file is as wide as the root.
-    let job = s.bounce_start(
-        Bounce::project()
-            .format(Format::Wav(Pcm::Int24))
-            .range(Range::Beats(Beat(0.0), file.end_beat()))
-            .master(out),
-    )?; // the plugin hears Offline from here
+    let job = s.bounce_start(master(
+        Bounce::project().range(Range::Beats(Beat(0.0), file.end_beat())),
+    ))?; // the plugin hears Offline from here
     let Some(bounced) = s.finish_bounce(job.run())?.finished() else {
         unreachable!("nothing cancels it");
     }; // and Realtime from here
-    Ok(bounced
-        .into_master()
-        .file()
-        .expect("a file master writes a file"))
+    Ok(bounced.into_master())
+}
+
+/// [`play`] into a 24-bit WAV at `out`.
+fn play_to_file(
+    plugin: &Path,
+    state: Option<Vec<u8>>,
+    midi: &Path,
+    out: &Path,
+) -> Result<Written, Box<dyn std::error::Error>> {
+    let produced = play(plugin, state, midi, |bounce| {
+        bounce.format(Format::Wav(Pcm::Int24)).master(out)
+    })?;
+    Ok(produced.file().expect("a file master writes a file"))
 }
 
 /// Two bars: a note on each beat, 120 BPM for the first four beats and 60
@@ -121,20 +137,33 @@ fn phrase(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-/// The phrase through the reference CLAP plugin, in `dir`.
+/// The reference plugin's cdylib, published as a `.clap`, and its state in
+/// `Notes` mode (mode 3 of 5, the parameter's value `k / 4`).
+fn notes_plugin() -> (PathBuf, Vec<u8>) {
+    let real = tutti_fixtures::cdylib("tutti_shared_plugin", "tutti-shared-plugin");
+    let core = tutti_shared_plugin::core::Core::new();
+    core.set_param(tutti_shared_plugin::core::MODE, 3.0 / 4.0);
+    (
+        tutti_fixtures::publish_with_extension(&real, "clap"),
+        core.save(),
+    )
+}
+
+/// The phrase through the reference plugin, in `dir`.
 fn reference(dir: &Path) -> Result<Written, Box<dyn std::error::Error>> {
     // SAFETY: set before the first server is spawned, on the only thread
     // that reads the environment.
     unsafe { std::env::set_var("TUTTI_PLUGIN_SERVER", support::plugin_server()) };
     let midi = dir.join("phrase.mid");
     phrase(&midi)?;
-    play(&support::clap_probe(), &midi, &dir.join("phrase.wav"))
+    let (plugin, state) = notes_plugin();
+    play_to_file(&plugin, Some(state), &midi, &dir.join("phrase.wav"))
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<PathBuf> = std::env::args_os().skip(1).map(PathBuf::from).collect();
     let written = match args.as_slice() {
-        [plugin, midi, out] => play(plugin, midi, out)?,
+        [plugin, midi, out] => play_to_file(plugin, None, midi, out)?,
         [] => reference(&std::env::temp_dir())?,
         _ => return Err("usage: plugin_midi_export [PLUGIN MIDI OUT]".into()),
     };
@@ -144,13 +173,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 #[cfg(test)]
 mod tests {
-    /// **The §5.2 example plays**: the phrase through the reference CLAP
-    /// plugin writes a WAV holding the file's length plus the plugin's tail.
+    /// **The §5.2 example plays**: the phrase through the reference plugin
+    /// writes a WAV holding the file's length plus the plugin's tail.
     /// Fails, not skips, without `plugin-server`.
     ///
     /// The length is pinned in frames: four beats at 120 BPM and four at 60
     /// are 2 s + 4 s; past them, the probe's declared tail (8191 frames,
-    /// `REPORTED_TAIL_SAMPLES`); the latency the plan compensated is trimmed
+    /// `tutti_shared_plugin::core::TAIL`); the latency the plan compensated is trimmed
     /// from the front, not added. The file is 24-bit stereo,
     /// 6 bytes a frame, after a header of at least 44 bytes.
     ///
@@ -161,13 +190,58 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("tutti-5-2-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let written = super::reference(&dir).expect("the example runs");
-        let frames = 6 * 48_000 + u64::from(tutti_clap_test_plugin::REPORTED_TAIL_SAMPLES);
+        let frames = 6 * 48_000 + u64::from(tutti_shared_plugin::core::TAIL);
         let header = written.bytes.checked_sub(frames * 6);
         assert!(
             header.is_some_and(|h| (44..256).contains(&h)),
             "{} bytes for {frames} frames of 24-bit stereo",
             written.bytes
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// **The file's notes land on the frames of the file's tempo map.** The
+    /// shared plugin in `Notes` mode renders the key it holds, so the left
+    /// channel of the bounce steps to a key on the frame its note arrived on.
+    /// The phrase is a note a beat, 120 BPM to beat 4 and 60 from it: written
+    /// out from the bpm, a beat is `60 / bpm` s, so beats 0 to 4 land every
+    /// 24 000 frames at 48 kHz and beats 5 to 7 every 48 000 after frame
+    /// 96 000. Past the last note's end, the file's 288 000 frames, the plugin
+    /// holds nothing (zero).
+    ///
+    /// Break it by taking the file's first tempo for the whole bounce (the
+    /// project's map left at its default or constant): beats 5 to 7 land at
+    /// 120 000, 144 000 and 168 000 and the assertion fails.
+    #[test]
+    fn the_notes_land_on_the_frames_of_the_files_tempo_map() {
+        let dir = std::env::temp_dir().join(format!("tutti-5-2-notes-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        // SAFETY: set before the first server is spawned, on the only thread
+        // that reads the environment.
+        unsafe { std::env::set_var("TUTTI_PLUGIN_SERVER", super::support::plugin_server()) };
+        let midi = dir.join("phrase.mid");
+        super::phrase(&midi).unwrap();
+        let (plugin, state) = super::notes_plugin();
+        // Into buffers, not the file: the plugin's output is a key number,
+        // far past full scale, which a WAV clips.
+        let rendered = super::play(
+            &plugin,
+            Some(state),
+            &midi,
+            tutti::prelude::Bounce::master_buffers,
+        )
+        .expect("the example runs")
+        .buffers()
+        .expect("a buffer master");
+        let left: Vec<i32> = rendered.planes()[0].iter().map(|&s| s as i32).collect();
+
+        let onsets: Vec<(usize, i32)> = (0..left.len())
+            .filter(|&f| left[f] != 0 && (f == 0 || left[f] != left[f - 1]))
+            .map(|f| (f, left[f]))
+            .collect();
+        let frames = [0, 24_000, 48_000, 72_000, 96_000, 144_000, 192_000, 240_000];
+        let want: Vec<(usize, i32)> = frames.iter().zip(60..).map(|(&f, key)| (f, key)).collect();
+        assert_eq!(onsets, want);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -488,7 +488,9 @@ impl ExportClock {
     /// The render's timeline, as [`PreparedGraph::ctx`] hands it.
     fn offline(&self) -> OfflineTransport {
         match &self.0 {
-            Clock::Frozen => OfflineTransport::new(Arc::new(Stopped)),
+            Clock::Frozen => OfflineTransport::new(Arc::new(Stopped(Arc::new(
+                TempoMap::constant(tutti_types::Bpm::default()).expect("120 BPM is a map"),
+            )))),
             Clock::Timeline { timeline, .. } => timeline.clone(),
         }
     }
@@ -505,8 +507,8 @@ impl std::fmt::Debug for ExportClock {
 
 /// [`ExportClock::frozen`]'s timeline: stopped at beat 0, what
 /// `FrozenClock` hands the renderer. A stopped transport's tempo is never
-/// read; 120 BPM is the engine's default.
-struct Stopped;
+/// read; its map is the engine's default, 120 BPM.
+struct Stopped(Arc<TempoMap>);
 
 /// The frozen render's timeline: only the render reads it.
 impl tutti_transport::OfflineClock for Stopped {}
@@ -515,8 +517,8 @@ impl tutti_transport::Timeline for Stopped {
     fn beat(&self) -> tutti_types::Beat {
         tutti_types::Beat(0.0)
     }
-    fn tempo(&self) -> tutti_types::Bpm {
-        tutti_types::Bpm::of(120.0)
+    fn tempo_map(&self) -> Arc<TempoMap> {
+        Arc::clone(&self.0)
     }
     fn is_rolling(&self) -> bool {
         false
@@ -1254,16 +1256,12 @@ impl Session {
         // from the range's first beat with the loop off, so a transport-driven
         // node reads what playback gives it.
         let clock = clock.unwrap_or_else(|| {
-            let config = OfflineTimelineConfig {
+            ExportClock::timeline(Arc::new(OfflineTimeline::new(&OfflineTimelineConfig {
                 start_beat: start,
-                tempo: map.points()[0].tempo,
+                tempo_map: Arc::clone(&map),
                 sample_rate: rate,
                 loop_range: None,
-            };
-            ExportClock::timeline(Arc::new(OfflineTimeline::with_tempo_map(
-                &config,
-                Arc::clone(&map),
-            )))
+            })))
         });
         // The edit hook's timeline: the same object the renderer advances, or
         // one stopped at beat 0 for a frozen clock.
@@ -1757,7 +1755,10 @@ mod tests {
                     .master_buffers()
                     .range(Range::Beats(Beat(3.0), Beat(4.0)))
                     .edit(Box::new(move |prepared: PreparedGraph<'_>| {
-                        *into.lock().unwrap() = Some((prepared.ctx.beat(), prepared.ctx.tempo()));
+                        *into.lock().unwrap() = Some((
+                            prepared.ctx.beat(),
+                            prepared.ctx.tempo_map().tempo_at(prepared.ctx.beat()),
+                        ));
                     })),
             )
             .expect("renders")

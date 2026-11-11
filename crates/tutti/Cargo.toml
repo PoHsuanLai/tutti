@@ -58,8 +58,10 @@ tempfile = "3.8"
 # The reference CLAP plugin the §5.2 example plays, in a `plugin-server`
 # (built first: `cargo build -p tutti-plugin-server`; not a dev-dependency,
 # which would be a cycle through `tutti-plugin`), and the lookup that finds
-# both beside the running binary (`tutti-session/tests/support`).
-tutti-clap-test-plugin = { path = "../../testing/tutti-clap-test-plugin" }
+# both beside the running binary (`tutti-session/tests/support`). Its `Notes`
+# mode renders the key it holds, so the example's test reads the frames the
+# file's notes land on.
+tutti-shared-plugin = { path = "../../testing/tutti-shared-plugin" }
 tutti-fixtures = { path = "../../testing/tutti-fixtures" }
 
 [features]

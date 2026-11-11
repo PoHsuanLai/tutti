@@ -204,6 +204,8 @@ jobs:
       # The toolchain `rust-toolchain.toml` pins, with its components.
       - run: rustup toolchain install
       - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' || github.ref == 'refs/heads/ci-speed' }}
       - run: cargo clippy --locked --workspace --all-targets -- -D warnings
       # One format at a time: a test helper or a match that only the other
       # formats use is dead or irrefutable here, and the workspace run (every
@@ -240,6 +242,8 @@ jobs:
       # The toolchain `rust-toolchain.toml` pins, with its components.
       - run: rustup toolchain install
       - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' || github.ref == 'refs/heads/ci-speed' }}
       - name: Workspace
         run: cargo clippy --locked --workspace --all-targets -- -D warnings
       # The workspace run builds each crate with the features the workspace
@@ -270,6 +274,8 @@ jobs:
       # The toolchain `rust-toolchain.toml` pins, with its components.
       - run: rustup toolchain install
       - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' || github.ref == 'refs/heads/ci-speed' }}
       - run: cargo clippy --locked -p tutti-au-ffi -p tutti-au-host --all-targets -- -D warnings
       # The CoreMIDI backend: the native-UMP source and the host clock are
       # `tutti-coremidi-ffi`'s, the rest of the backend is `tutti-midi-hardware`'s.
@@ -299,6 +305,8 @@ jobs:
       # The toolchain `rust-toolchain.toml` pins, with its components.
       - run: rustup toolchain install
       - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' || github.ref == 'refs/heads/ci-speed' }}
       - uses: taiki-e/install-action@nextest
       - run: cargo nextest run --locked -p tutti-plugin-contract
 
@@ -324,6 +332,8 @@ jobs:
       # The toolchain `rust-toolchain.toml` pins, with its components.
       - run: rustup toolchain install
       - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' || github.ref == 'refs/heads/ci-speed' }}
       - uses: taiki-e/install-action@nextest
 
       # Feature-gated code that no other job compiles.
@@ -545,6 +555,8 @@ jobs:
       # The toolchain `rust-toolchain.toml` pins, with its components.
       - run: rustup toolchain install
       - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' || github.ref == 'refs/heads/ci-speed' }}
       # Named targets, not a sweep: a bare `cargo bench` (and `--benches`)
       # also runs the test targets in the release profile, where
       # `debug_assert!` is gone and a `#[should_panic]` over one fails.
@@ -565,19 +577,29 @@ jobs:
           cargo bench --locked -p arc-lend-compare --bench compare -- --test
 
   test:
-    name: test (${{ matrix.os }})
+    name: test (${{ matrix.os }}, opt ${{ matrix.opt }})
     needs: changes
     if: needs.changes.outputs.code == 'true'
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest]
+        opt: ['1']
+        include:
+          - os: ubuntu-latest
+            opt: '2'
+          - os: macos-latest
+            opt: '2'
     # The golden digests are glibc libm's on 24.04; 26.04's libm moves them.
     # `require` makes a Linux runner whose glibc is not the recorded one fail
     # instead of skipping the digests (CLAUDE.md, Testing).
     runs-on: ${{ matrix.os == 'ubuntu-latest' && 'ubuntu-24.04' || matrix.os }}
     env:
       TUTTI_GOLDEN: ${{ matrix.os == 'ubuntu-latest' && 'require' || '' }}
+      # Optimized dependencies and workspace crates, with debug assertions and
+      # overflow checks still on: the suite is CPU-bound (the differential
+      # suite alone was a third of the run at opt-level 0).
+      CARGO_PROFILE_DEV_OPT_LEVEL: ${{ matrix.opt }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -594,6 +616,9 @@ jobs:
       # The toolchain `rust-toolchain.toml` pins, with its components.
       - run: rustup toolchain install
       - uses: Swatinem/rust-cache@v2
+        with:
+          key: opt${{ matrix.opt }}
+          save-if: ${{ github.ref == 'refs/heads/main' || github.ref == 'refs/heads/ci-speed' }}
       - uses: taiki-e/install-action@nextest
 
       # MUST come before the test run. `tutti-plugin`'s clap_pdc_alignment,
@@ -639,6 +664,42 @@ jobs:
         run: |
           cargo nextest run --locked --workspace --no-fail-fast \
             -E 'not binary(gui_lifecycle_main) and not binary(au_gui_lifecycle_main)'
+
+  # What `test` used to run after the workspace suite, on its own runner so the
+  # two overlap: the critical path was the macOS `test` job, which ran all of
+  # this serially behind the 8-minute suite. The same checks, the same
+  # commands, the same `TUTTI_GOLDEN` and profile env.
+  test-more:
+    name: test (${{ matrix.os }}, editor + release + doctests)
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os == 'ubuntu-latest' && 'ubuntu-24.04' || matrix.os }}
+    env:
+      TUTTI_GOLDEN: ${{ matrix.os == 'ubuntu-latest' && 'require' || '' }}
+      CARGO_PROFILE_DEV_OPT_LEVEL: '1'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Install Linux audio deps
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          # libasound2-dev:    tutti-cpal (ALSA).
+          # libdbus-1-dev:     cpal -> audio_thread_priority -> dbus, the
+          #                    RT-priority request on Linux.
+          sudo apt-get install -y --no-install-recommends \
+            libasound2-dev libdbus-1-dev pkg-config
+      # The toolchain `rust-toolchain.toml` pins, with its components.
+      - run: rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' || github.ref == 'refs/heads/ci-speed' }}
+      - uses: taiki-e/install-action@nextest
 
       # The custom-harness editor tests. `cargo test` just execs the binary,
       # which is exactly what a `harness = false` main wants.
@@ -697,6 +758,8 @@ jobs:
       # The toolchain `rust-toolchain.toml` pins, with its components.
       - run: rustup toolchain install
       - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' || github.ref == 'refs/heads/ci-speed' }}
       # The engine must stay usable without Bevy. `--no-default-features` does
       # NOT test that — `bevy` is already off by default on every engine crate
       # that has one, so that flag drops the codec and midi features instead and proves
@@ -748,6 +811,8 @@ jobs:
       # The toolchain `rust-toolchain.toml` pins, with its components.
       - run: rustup toolchain install
       - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' || github.ref == 'refs/heads/ci-speed' }}
       # The workspace sets broken_intra_doc_links and private_intra_doc_links to
       # deny; this is where that is actually enforced, since a plain build never
       # runs rustdoc.
@@ -801,9 +866,16 @@ jobs:
   # machine that wrote it (installing nightly there failed repeatedly), so CI
   # is the first thing to run it. A check nobody has run is not a check.
   miri:
-    name: miri
+    name: miri (${{ matrix.crate }})
     needs: changes
-    if: needs.changes.outputs.code == 'true'
+    # Miri runs `tutti-rt` and `arc-lend` only, and they depend on no other
+    # workspace crate, so it runs when the `loom` filter says one of them (or the
+    # lock, the toolchain or this file) changed.
+    if: needs.changes.outputs.loom == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        crate: [tutti-rt, arc-lend]
     runs-on: ubuntu-24.04
     # About 10 minutes on main: a hang (a test miri cannot finish) fails here,
     # not at GitHub's six-hour cap. A test that is slow only because it is a
@@ -822,6 +894,9 @@ jobs:
         with:
           components: miri
       - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.crate }}
+          save-if: ${{ github.ref == 'refs/heads/main' || github.ref == 'refs/heads/ci-speed' }}
       # `denormals.rs`'s register tests are `#[cfg_attr(miri, ignore)]`d — they read
       # MXCSR, and miri has no x86 SSE intrinsics. They report as skipped
       # rather than vanishing, so the run says what it did not cover. So are
@@ -829,20 +904,24 @@ jobs:
       # list parked loans keep growing, is quadratic and runs past this job's
       # timeout under miri. They test a debug-only policy check, which the
       # native nextest run covers; `ArcLend`'s protocol is miri-tested below.
-      - run: cargo +nightly miri test --locked -p tutti-rt --lib
+      - if: matrix.crate == 'tutti-rt'
+        run: cargo +nightly miri test --locked -p tutti-rt --lib
       # The thread hand-over of `edit_ring` under 16 schedules: one seed
       # explores one interleaving.
-      - run: cargo +nightly miri test --locked -p tutti-rt --lib edits
+      - if: matrix.crate == 'tutti-rt'
+        run: cargo +nightly miri test --locked -p tutti-rt --lib edits
         env:
           MIRIFLAGS: -Zmiri-many-seeds=0..16
       # `ArcLend`'s unit tests, its no-alloc gate and its doctests.
-      - run: cargo +nightly miri test --locked -p arc-lend
+      - if: matrix.crate == 'arc-lend'
+        run: cargo +nightly miri test --locked -p arc-lend
       # Its unit tests again over 16 scheduling seeds: the small
       # concurrent-readers stress test reports a race on a freed value if
       # either `SeqCst` fence in `ArcLend` goes, on some seeds only. (A plain
       # x86 run rarely does: only a store-buffer reordering shows it, which is
       # why this job and the loom one both exist.)
-      - run: cargo +nightly miri test --locked -p arc-lend --lib
+      - if: matrix.crate == 'arc-lend'
+        run: cargo +nightly miri test --locked -p arc-lend --lib
         env:
           MIRIFLAGS: -Zmiri-many-seeds=0..16
 
@@ -909,9 +988,16 @@ jobs:
           fi
 
   loom:
-    name: loom
+    name: loom (${{ matrix.group }})
     needs: changes
     if: needs.changes.outputs.loom == 'true'
+    # Three runners, because `pos_ring_loom` (about five minutes) and
+    # `doorbell_loom` (about two) were most of the job's nine, run back to back.
+    # Every model still runs, at the same bound, in exactly one group.
+    strategy:
+      fail-fast: false
+      matrix:
+        group: [pos_ring, doorbell, rest]
     runs-on: ubuntu-24.04
     # About 12 minutes with the `PosRing` models: a model that stops
     # terminating fails here.
@@ -926,41 +1012,54 @@ jobs:
       # The toolchain `rust-toolchain.toml` pins, with its components.
       - run: rustup toolchain install
       - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.group }}
+          save-if: ${{ github.ref == 'refs/heads/main' || github.ref == 'refs/heads/ci-speed' }}
       # Clippy under `--cfg loom`: the flag changes constants the lints see
       # (`PROGRESS_EVERY` is 1, so `% PROGRESS_EVERY` tripped `modulo_one`),
       # and no other job compiles that configuration.
-      - run: cargo clippy --locked -p arc-lend -p tutti-rt -p tutti-shm-model --all-targets -- -D warnings
-      - run: cargo test --locked -p arc-lend --release --test loom -- --skip registering_and_dropping_readers
-      - run: cargo test --locked -p arc-lend --release --test loom -- registering_and_dropping_readers --exact
+      - if: matrix.group == 'rest'
+        run: cargo clippy --locked -p arc-lend -p tutti-rt -p tutti-shm-model --all-targets -- -D warnings
+      - if: matrix.group == 'rest'
+        run: cargo test --locked -p arc-lend --release --test loom -- --skip registering_and_dropping_readers
+      - if: matrix.group == 'rest'
+        run: cargo test --locked -p arc-lend --release --test loom -- registering_and_dropping_readers --exact
         env:
           LOOM_MAX_PREEMPTIONS: 4
       # `PosRing`'s no-tear protocol (the disk stream's ring), against the
       # shipped code: nine models, about five minutes at this bound (the
       # shrink models a minute each); every recorded mutation fails at it but
       # the documented survivor (`tests/pos_ring_loom.rs`).
-      - run: cargo test --locked -p tutti-rt --release --test pos_ring_loom
+      - if: matrix.group == 'pos_ring'
+        run: cargo test --locked -p tutti-rt --release --test pos_ring_loom
         env:
           LOOM_MAX_PREEMPTIONS: 4
       # `PackedAtomic`'s one property (no torn `[min, max]`), against the
       # shipped code: one model, seconds.
-      - run: cargo test --locked -p tutti-rt --release --test packed_atomic_loom
+      - if: matrix.group == 'rest'
+        run: cargo test --locked -p tutti-rt --release --test packed_atomic_loom
       # `SeqWriter`/`SeqReader`'s one property (no copy mixing two writes),
       # against the shipped code: two models (the writer on either thread),
       # unbounded, about four seconds.
-      - run: cargo test --locked -p tutti-rt --release --test seq_cell_loom
+      - if: matrix.group == 'rest'
+        run: cargo test --locked -p tutti-rt --release --test seq_cell_loom
       # `AudioThreadCell`'s always-on borrow flag (no aliasing, a granted
       # borrow sees the last one's writes), against the shipped code: one
       # model, unbounded, under a second.
-      - run: cargo test --locked -p tutti-rt --release --test cell_loom
+      - if: matrix.group == 'rest'
+        run: cargo test --locked -p tutti-rt --release --test cell_loom
       # `handoff`'s slot (a value is never moved out twice, never lost, and a
       # recall is never dropped), against the shipped code: unbounded.
-      - run: cargo test --locked -p tutti-rt --release --test handoff_loom -- --nocapture
+      - if: matrix.group == 'rest'
+        run: cargo test --locked -p tutti-rt --release --test handoff_loom -- --nocapture
       # `Doorbell` (a ring before, during or between parks is never lost),
       # against the shipped code. Unbounded (about 45 s): the plain-store
       # variant its model guards against needs 4 preemptions, and
       # `loom-parallel` sets 3 for the whole job, which cannot be unset.
-      - run: cargo test --locked -p tutti-rt --release --test doorbell_loom
-      - run: cargo test --locked -p tutti-shm-model --release
+      - if: matrix.group == 'doorbell'
+        run: cargo test --locked -p tutti-rt --release --test doorbell_loom
+      - if: matrix.group == 'rest'
+        run: cargo test --locked -p tutti-shm-model --release
 
   # The parallel executor's runtime primitives (doc 013), each
   # against the shipped code: `SplitMut`/`SplitRw`'s claims, `JobGate`'s
@@ -982,6 +1081,8 @@ jobs:
       # The toolchain `rust-toolchain.toml` pins, with its components.
       - run: rustup toolchain install
       - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' || github.ref == 'refs/heads/ci-speed' }}
       - run: cargo test --locked -p tutti-rt --release --test split_loom
       - run: cargo test --locked -p tutti-rt --release --test job_gate_loom
       - run: cargo test --locked -p tutti-rt --release --test task_graph_loom

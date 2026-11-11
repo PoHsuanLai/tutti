@@ -255,9 +255,12 @@ fn no_installed_au_publishes_midi_output_info() {
     }
 
     // A silent-skip guard: the sweep must actually have opened a substantial
-    // number of units, or "none publish" is vacuous. Measured: 100+ instantiate.
+    // number of units, or "none publish" is vacuous. Measured: 45 Audio Units
+    // instantiate on macOS 26.6. (The earlier "100+" counted the codecs
+    // `enumerate_components` used to list; they are not Audio Units and never
+    // could publish MIDI output.) The floor is `au_identity`'s, 40.
     assert!(
-        probed > 50,
+        probed >= 40,
         "only {probed} components instantiated; a negative assertion over that few \
          units says nothing about the machine"
     );

@@ -147,7 +147,10 @@ mod tests {
         );
 
         let started = Instant::now();
-        let result = probe(&locator, Duration::from_millis(300));
+        // Long enough for the shell to start and write its pid before it is
+        // killed: at 300 ms a cold shell on macOS sometimes had not, and the
+        // pid read below failed. Still far below the 10 s a wait would take.
+        let result = probe(&locator, Duration::from_secs(2));
         assert!(
             started.elapsed() < Duration::from_secs(10),
             "the child was waited for, not killed: {:?}",

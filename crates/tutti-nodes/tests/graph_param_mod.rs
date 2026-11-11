@@ -781,7 +781,7 @@ struct MixCase {
 }
 
 fn mix_cases() -> Vec<MixCase> {
-    let mut cases = vec![
+    let cases = vec![
         MixCase {
             name: "delay mix",
             make: |w| {
@@ -819,17 +819,22 @@ fn mix_cases() -> Vec<MixCase> {
             },
         },
     ];
+    // The convolver joins only with its feature: the cases are rebound, not
+    // pushed to, so the list needs no `mut` the featureless build leaves unused.
     #[cfg(feature = "convolution")]
-    cases.push(MixCase {
-        name: "convolver mix",
-        make: |w| {
-            parts_of(tutti_nodes::ConvolverNode::shared_ir(
-                ChannelLayout::try_from(w).expect("a test width is small"),
-                &[0.0, 0.0, 1.0, -0.5],
-                64,
-            ))
-        },
-    });
+    let cases: Vec<MixCase> = cases
+        .into_iter()
+        .chain([MixCase {
+            name: "convolver mix",
+            make: |w| {
+                parts_of(tutti_nodes::ConvolverNode::shared_ir(
+                    ChannelLayout::try_from(w).expect("a test width is small"),
+                    &[0.0, 0.0, 1.0, -0.5],
+                    64,
+                ))
+            },
+        }])
+        .collect();
     cases
 }
 

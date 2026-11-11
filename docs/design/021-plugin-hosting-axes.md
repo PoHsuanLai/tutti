@@ -1064,14 +1064,83 @@ nothing that ships changes (`PluginClient`, `graph_node.rs`, the served
    receives the same bounded list). A chunk's MIDI past the Processor's cap is
    counted lost through `ProcessOutput::count_midi_lost`.
 
-**3b must still:** switch `PluginClient`/`Plugin::open` to `PluginNode<Ipc>`
-(the handle over a served backend, the sinks on `forward_events`, `PluginControls`
-counters and `attach_bridge_midi`, the `ChunkCounters`); build the fork from
-`Ipc::reopen_restoring` with `wait_offline`, `settle` in `prepare` and
-`ForkWatch` over the generic node; move
-`mock_server.rs` out of the migration aid's neighbourhood (the pins use it) and
-delete `differential_tests.rs`, `graph_node.rs`, the served `fork.rs`,
-`node/mod.rs` and `subprocess_backend.rs`.
+**PR 3b as built.** The served plugin runs as `PluginNode<Ipc>`; the old
+served node is gone.
+
+1. **One node.** `tutti-plugin`'s `PluginClient<S>` survives as the served
+   *client*, not a node: `Unbound` holds the generic `InProcClient<Ipc>`,
+   `Bound` the `PluginNode<Ipc>` and the tempo reader it was bound to, and the
+   fields the node does not have (the `PluginControls`, the handle's three
+   sinks, the bridge and the process guard, an `IpcOrigin`, a fork's watch).
+   `IntoNode for PluginClient<Bound>` boxes the generic node (`PluginClient<Bound>`
+   is no `Node`; a test drives the boxed node with `tutti_graph::contract::Direct::boxed`,
+   which holds any node in a `Box`, so no accessor exists for tests alone).
+   The wrapper exists because the orphan rule bars `tutti-plugin` from
+   implementing `IntoNode` for `PluginNode<Ipc>` (both foreign), and
+   `tutti-plugin-host` may not name `Ipc` (decision (a)).
+2. **Built with no main thread.** `Plugin::open` has always loaded a served plugin
+   from any thread (`main: None`), and a fork's deferred build runs on a worker, so the
+   generic node had to be built with no token. `Ipc::activate_anywhere` is
+   `Loaded::activate` without it; `Lifecycle::adopt` (`tutti-plugin-types`) puts an
+   activated plugin in the core's state by stepping the pure core with the
+   replies an activation gets (a test compares it with a driven one) and lends
+   the Processor; `client_over(processor, controller, prepare, descriptor,
+   wiring, parameters, spares, controls)` builds the client over it, infallible.
+   A served plugin's `PluginControls` ride in the client: its meter and
+   delivery counters are the node's, `shape` reads the latency and tail from
+   the controls' cells (the bridge's thread keeps them current; the lifecycle's
+   figures are a main-thread pump's, which nothing ticks for a served plugin),
+   and `retune` writes the chunk and the rate into them.
+3. **The handle's backend is unchanged.** `SubprocessBackend` (the `Host*`
+   traits over the bridge, thread-agnostic, as decision (d) says) is built from the
+   client's bridge and guard; PR 4 deletes the traits and it with them. The
+   sinks are fed by `Ipc::forward_events`: a latency or tail change writes the
+   controls' cell and fires the invalidate sink, a parameter edit the parameter
+   sink, a resync the refresh or invalidate sink by its class, a refused or
+   restored rate and a crash the invalidate sink. `attach_bridge_midi` and the
+   `ChunkCounters` (`PluginControls::with_chunks`, over `Ipc::chunk_counters`)
+   are wired when the client is built; `set_render_mode` is the bridge's, so it
+   answers off the main thread.
+4. **The fork.** `ServedFork` (the fork source) reads the live node at the gather
+   as before (the delivery's record, then the saved state, over the live bridge),
+   and its deferred build is `IpcOrigin::reopen` (the token-free half of
+   `Reopen`: a server of its own socket, the state restored before activation),
+   the id check, `Ipc::watch(offline)` before activation, the same client
+   construction, the live node's meter, `seed_delivery`, `go_offline` and
+   `RenderMode::Offline` for an offline one. `Ipc::watch` generalises
+   `wait_offline`: offline, the pipeline waits for each chunk; either way
+   `IpcProcessor::retune` (the node's `prepare`) settles the server's queued
+   rate and mode changes (`PluginBridge::settle`) and records the latency the
+   graph is planned against in the `OfflineWait` (`plan`), and `ForkWatch`
+   (now `controls` + `bridge` + that wait) reads a later move as a fault. A
+   live fork is watched too, as it was.
+5. **One behaviour moved into the generic node.** A re-prepare of a Processor
+   that retunes starts its pipeline over, and now cuts the SysEx open in the
+   chunk it drops (`intake.lost()`), as a reset does: the served node's `prepare`
+   did, and the generic one did not (the in-process Processors, which do not
+   retune, are unchanged). `a_reprepare_drops_the_pending_midi_and_keeps_its_sysex_cut`
+   pins it.
+6. **Deleted:** `graph_node.rs`, `differential_tests.rs` (the migration aid),
+   the served `fork.rs`'s `PluginFork` and `Origin` (replaced, as above), the
+   old node's `Bound` state, `PluginClient::new_with_state`'s hand-built bridge
+   (now `Ipc::launch`). `mock_server.rs` stays (the analytic pins use it). The
+   walk tests that drove `PluginChunks` (ten) moved to
+   `tutti-plugin-host`'s `walk_tests.rs` over the node's own walk (`Rig::chunk`
+   repeats the node's `begin`, `scan` and `finish`; assertions unchanged); the
+   harmony test is the node's own `harmony_tests` (`graph.rs`); the unsent and
+   refused chunk tests are `chunked_node`'s `a_sysex_cut_by_a_reported_loss_stays_cut`
+   (new: the node cuts an open SysEx after a loss the Processor reports) with
+   `tutti-plugin-ipc`'s `a_refused_chunk_reports_its_midi_lost`; the three
+   reset/re-prepare/bridge-count tests in `real_stall_tests` name no deleted
+   internal now (they drive blocks with events through the node and read the
+   controls' counts; the SysEx cut is observed as the two refused tail packets,
+   counted, instead of `intake.push` returning `false`).
+
+**PR 4 must now:** delete the `Host*` capability traits and `SubprocessBackend`
+(`PluginHandle` over `Control` plus a small `Health` trait: crash, cause,
+terminate, rate refusal, block counts, dropped parameter events), give the
+served handle `IpcController`'s control, and decide whether `PluginClient`'s
+accessors move onto the handle or the controls.
 
 ## 11. Open questions
 

@@ -11,11 +11,11 @@ use parking_lot::Mutex;
 use super::client::{Declared, InProcClient};
 use super::control_backend::ControlBackend;
 use super::instance::Instance;
-use crate::ParameterChangeSink;
 use crate::PluginHandle;
+use crate::{ParameterChangeSink, PluginControls};
 use tutti_plugin_types::{BridgeError, BridgeResult};
 use tutti_plugin_types::{
-    Features, InProcess, Load, LoadStage, Loaded, LoadedPlugin, ParamId, PluginDescriptor,
+    Features, InProcess, Load, LoadStage, Loaded, LoadedPlugin, ParamId, PluginDescriptor, Prepare,
 };
 use tutti_types::ChannelLayout;
 
@@ -224,6 +224,7 @@ where
         unlent,
         ids.iter().copied(),
         spares,
+        None,
     );
     Ok(Wired {
         client,
@@ -234,39 +235,52 @@ where
     })
 }
 
-/// A client over a plugin of any hosting that is already loaded, activated at
-/// `sample_rate` and blocks of up to `block_size` (what a graph node's
-/// `prepare` then follows): the generic node for a hosting that is not
-/// [`InProcess`], as `tutti-plugin` builds one for a served plugin.
+/// A client over a plugin the caller activated itself, with no main thread
+/// ([`Lifecycle::adopt`](tutti_plugin_types::Lifecycle::adopt)): the generic
+/// node for a hosting whose activation reads no token, as `tutti-plugin`
+/// builds one for a served plugin (`Ipc::activate_anywhere`). What a graph
+/// node's `prepare` then follows is the rate and block it was activated at.
 ///
-/// The client has no origin, so it has no fork of its own yet (a served
-/// plugin reopens with `Ipc::reopen_restoring`), and no handle: its control
-/// is the hosting's. A parameter address the plugin did not list is learned
-/// into `spares` spare slots, as the served node's delivery does.
-///
-/// # Errors
-///
-/// The activation is refused, or the plugin was lost in it.
+/// `wiring` is what the plugin reports now; `parameters` are the addresses it
+/// lists, which the node's delivery has a slot for, and `spares` is how many
+/// it did not list the delivery may learn. The client has no origin (a served
+/// plugin reopens with `Ipc::reopen_restoring`) and no handle: its control is
+/// the hosting's. With `controls`, the node's meter, parameter counters and
+/// latency figures are those of the served plugin's [`PluginControls`], and
+/// `retune` keeps its pipeline chunk and rate current.
 pub fn client_over<H>(
-    main: &MainThread,
-    loaded: H,
-    sample_rate: impl Into<tutti_types::SampleRate>,
-    block_size: usize,
+    processor: H::Processor,
+    controller: H::Controller,
+    prepare: Prepare,
+    descriptor: PluginDescriptor,
+    wiring: &LoadedPlugin,
+    parameters: impl IntoIterator<Item = ParamId>,
     spares: usize,
-) -> BridgeResult<InProcClient<H>>
+    controls: Option<PluginControls>,
+) -> InProcClient<H>
 where
     H: Loaded + 'static,
     H::Processor: 'static,
 {
-    let sample_rate = sample_rate.into().get();
-    let failed = |(stage, reason): (LoadStage, String)| BridgeError::LoadFailed {
-        path: std::path::PathBuf::new(),
-        stage,
-        reason,
+    let (inner, rt) = Instance::<H>::adopt(processor, controller, prepare, wiring);
+    let declared = Declared {
+        inputs: ChannelLayout::clamped(wiring.total_inputs()),
+        outputs: ChannelLayout::clamped(wiring.total_outputs()),
+        latency: wiring.latency_samples,
+        tail: wiring.tail,
     };
-    let (inner, rt) =
-        Instance::<H>::start(main, loaded, None, sample_rate, block_size).map_err(failed)?;
-    wire(main, inner, rt, None, sample_rate, spares)
-        .map(|wired| wired.client)
-        .map_err(failed)
+    InProcClient::new(
+        Arc::new(Mutex::new(inner)),
+        rt,
+        descriptor,
+        None,
+        declared,
+        wiring.features,
+        prepare.rate().get(),
+        Arc::new(AtomicU64::new(super::client::NO_PENDING_RATE)),
+        Arc::new(AtomicU64::new(0)),
+        parameters,
+        spares,
+        controls,
+    )
 }

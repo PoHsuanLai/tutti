@@ -844,3 +844,60 @@ fn the_fake_control_answers_nothing_in_either_state() {
         assert!(edits.is_empty());
     }
 }
+
+/// **A plugin its shell activated itself is in the state a driven activation
+/// leaves, with its Processor lent.** `adopt` steps the pure core with the
+/// replies an activation gets, so the stage, the `Prepare`, the latency, the
+/// tail and the layout are what `drive` records, and the Processor is on the
+/// realtime thread's end, not in the seat.
+///
+/// Mutation (run): `adopt` answering `Reply::Activated` and nothing else (no
+/// reads) -> the latency, tail and layout are `None` -> fails. Mutation
+/// (run): `adopt` not calling `lend` -> the realtime end polls nothing and
+/// the seat holds the Processor -> fails. Mutation (run): the `ReadLayout`
+/// arm dropped (moved into the `unreachable!` group) -> the core's layout read
+/// panics -> fails. Mutation (run): the latency reply withheld -> the core
+/// still awaits it, and the post-condition (active, nothing planned) fails.
+#[test]
+fn an_adopted_plugin_is_in_the_state_a_driven_activation_leaves() {
+    let mut driven = Rig::new();
+    driven.plugin.set_latency(Samples(32));
+    driven.op(HostOp::Activate(prepare(48_000.0)));
+
+    let (plugin, loaded) = FakePlugin::new();
+    plugin.set_latency(Samples(32));
+    let wiring = Control::wiring(&loaded, &main());
+    let (processor, controller) = match loaded.activate(&main(), prepare(48_000.0)) {
+        Ok(halves) => halves,
+        Err(_) => panic!("the fake activates"),
+    };
+    let (mut hand, mut rt) = Hand::threaded();
+    let (lifecycle, state) = Lifecycle::<FakeLoaded>::adopt(
+        processor,
+        controller,
+        prepare(48_000.0),
+        &wiring,
+        &mut hand,
+    );
+
+    assert_eq!(state.stage(), driven.state.stage());
+    assert_eq!(state.prepare(), driven.state.prepare());
+    assert_eq!(state.latency(), Some(Samples(32)));
+    assert_eq!(state.latency(), driven.state.latency());
+    assert_eq!(state.tail(), driven.state.tail());
+    assert!(state.tail().is_some());
+    assert_eq!(state.layout(), driven.state.layout());
+    assert!(state.layout().is_some());
+    assert!(state.is_quiet(), "no plan is left under way");
+    assert!(matches!(
+        lifecycle,
+        Lifecycle::Active {
+            seat: Seat::Lent,
+            ..
+        }
+    ));
+    assert!(
+        rt.poll(Processor::stop).is_some(),
+        "lent to the realtime end"
+    );
+}

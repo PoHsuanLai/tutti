@@ -35,7 +35,7 @@ use tutti_types::{ChannelLayout, Samples};
 
 use super::instance::Instance;
 use crate::{BlockTransport, TransportSource, TransportWalk};
-use crate::{DeliveryCounters, ParamDelivery, PluginMeter, SegmentPoints};
+use crate::{ParamDelivery, PluginControls, PluginMeter, SegmentPoints};
 use tutti_plugin_types::MidiIntake;
 use tutti_plugin_types::{
     ChordChanges, ExpressiveContext, Features, MAX_BLOCK_CHANNELS, MIDI_STACK_CAPACITY,
@@ -77,6 +77,13 @@ pub struct InProcClient<F: Loaded> {
     /// ([`Processor::latency`]), as the last `prepare` read it: the served
     /// pipeline's chunk.
     pub(super) pipeline: Samples,
+    /// A served plugin's host-side controls (`PluginControls`): its latency and
+    /// tail are re-reported by the bridge's thread into cells the controls
+    /// share, so `shape` reads the figures from them, `retune` writes the
+    /// pipeline's chunk and the rate into them, and the meter, the delivery
+    /// counters and the chunk counters are the node's own. `None` for an
+    /// in-process plugin, whose figures are the control side's.
+    pub(super) controls: Option<PluginControls>,
     /// The pin counts, latency and tail the plugin declared when the node was
     /// built: what `shape` and `process` size by while the instance lock is
     /// held elsewhere. Moves are reported through the handle
@@ -393,6 +400,7 @@ impl<F: Loaded> InProcClient<F> {
         unlent: Arc<AtomicU64>,
         parameters: impl IntoIterator<Item = ParamId>,
         spares: usize,
+        controls: Option<PluginControls>,
     ) -> Self {
         // A slot per declared parameter: every parameter can move in one
         // block. Its point room is sized in `prepare`. `spares` is how many
@@ -402,8 +410,16 @@ impl<F: Loaded> InProcClient<F> {
         let pipeline = rt
             .poll(Processor::stop)
             .map_or(Samples(0), |processor| processor.latency());
-        let params =
-            ParamDelivery::with_spares(parameters, Arc::new(DeliveryCounters::default()), spares);
+        if let Some(controls) = &controls {
+            controls.set_pipeline(pipeline);
+        }
+        let counters = controls
+            .as_ref()
+            .map_or_else(Arc::default, PluginControls::delivery_counters);
+        let params = ParamDelivery::with_spares(parameters, counters, spares);
+        let transport = controls
+            .as_ref()
+            .map_or_else(TransportFeed::new, |c| TransportFeed::over(c.meter()));
         let mut segments = SegmentPoints::default();
         segments.prepare(params.room());
         Self {
@@ -416,7 +432,8 @@ impl<F: Loaded> InProcClient<F> {
             midi: MidiEventVec::new(),
             intake: MidiIntake::default(),
             out: ProcessOutput::default(),
-            transport: TransportFeed::new(),
+            transport,
+            controls,
             features,
             sample_rate,
             pending_sample_rate,
@@ -466,6 +483,14 @@ impl<F: Loaded> InProcClient<F> {
             Some(main) => self.inner.lock().set_render_mode(&main, mode),
             None => false,
         }
+    }
+
+    /// Seeds the parameter delivery with what a live node had delivered
+    /// ([`PluginControls::delivered`]): a value the live node sent is the
+    /// fork's too, so a host value held still is not sent to a fork over the
+    /// state it was loaded with.
+    pub fn seed_delivery(&mut self, delivered: &[(ParamId, f64)]) {
+        self.params.seed(delivered);
     }
 
     /// Drops the host clock the transport tells the plugin
@@ -522,6 +547,12 @@ impl<F: Loaded> InProcClient<F> {
             return false;
         }
         self.pipeline = processor.latency();
+        if let Some(controls) = &self.controls {
+            // What a host holding the controls reads as the declared latency
+            // and stamps a source with.
+            controls.set_pipeline(self.pipeline);
+            controls.restamp(rate);
+        }
         self.sample_rate = rate.get();
         self.rate_refused = false;
         self.inner.lock().retuned(rate);

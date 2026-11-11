@@ -78,7 +78,7 @@ const PASSES: usize = QUANTUM / BLOCK;
 /// `Vec` of the chunk's entries in `TransportWalk::scan` -> aborts.
 ///
 /// Mutation: allocate in the node's chunk walk (a `Vec` of the chunk's
-/// input slices in place of the stack array in `graph_node.rs`) → the
+/// input slices in place of the stack array in the generic node's chunk walk) → the
 /// guarded blocks allocate → the test aborts. Mutation: build a fresh
 /// `MeterMap::default()` per block in place of the prebuilt
 /// `Bound::default_meter` → it allocates → aborts. Mutation: collect each

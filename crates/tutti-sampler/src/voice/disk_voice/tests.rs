@@ -1123,7 +1123,7 @@ fn outside_the_window_silences_every_channel() {
             } else {
                 // `Direct` runs its own block length; a one-frame block
                 // is a node of its own.
-                let mut one = Direct::new(direct.node.clone(), SampleRate(SR), 1);
+                let mut one = Direct::new((*direct.node).clone(), SampleRate(SR), 1);
                 for ch in one.outputs_mut() {
                     ch.fill(9.0);
                 }

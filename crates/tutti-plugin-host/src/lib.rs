@@ -32,6 +32,8 @@ mod render_mode;
 mod segment_points;
 mod transport_source;
 mod transport_walk;
+#[cfg(test)]
+mod walk_tests;
 mod window;
 
 pub use capabilities::{

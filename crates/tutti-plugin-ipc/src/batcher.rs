@@ -257,7 +257,7 @@ pub struct Batcher {
     /// The chunk submitted and not collected yet, or `None` when nothing is
     /// in flight (start-up, after a reset, after a failed submission).
     expect_seq: Option<u64>,
-    /// `Some` only on an **offline fork** (`host::node::fork`): before
+    /// `Some` only on an **offline fork** (`Ipc::watch`): before
     /// collecting a chunk, wait up to this long for the server to publish it.
     /// See [`await_output`](Self::await_output).
     offline_wait: Option<Arc<OfflineWait>>,

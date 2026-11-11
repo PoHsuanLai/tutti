@@ -2,10 +2,10 @@
 //! latches when the wait fails.
 
 use crate::ProcessGuard;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Mutex, MutexGuard, PoisonError, Weak};
 use std::time::Duration;
-use tutti_types::SampleRate;
+use tutti_types::{SampleRate, Samples};
 
 /// An offline fork's wait for the server: the per-block budget, and the
 /// latches the batcher sets when the wait fails (a missed budget, a dead
@@ -25,6 +25,9 @@ pub struct OfflineWait {
     died: Mutex<Option<String>>,
     /// Latched when the fork's plugin was found refusing its rate.
     refusal: Mutex<Option<(SampleRate, String)>>,
+    /// The latency the fork's graph was compiled against, recorded once the
+    /// plugin has settled (`usize::MAX`: not planned yet).
+    planned: AtomicUsize,
     budget: Duration,
 }
 
@@ -46,7 +49,23 @@ impl OfflineWait {
             gave_up: AtomicBool::new(false),
             died: Mutex::new(None),
             refusal: Mutex::new(None),
+            planned: AtomicUsize::new(usize::MAX),
             budget,
+        }
+    }
+
+    /// Record the whole latency (the plugin's own and the pipeline's chunk)
+    /// the fork's graph is compiled against: what the node declares right
+    /// after this `prepare`, once the plugin has settled.
+    pub fn plan(&self, latency: Samples) {
+        self.planned.store(latency.get(), Ordering::Release);
+    }
+
+    /// The latency recorded by [`plan`](Self::plan), or `None` before one.
+    pub fn planned(&self) -> Option<Samples> {
+        match self.planned.load(Ordering::Acquire) {
+            usize::MAX => None,
+            planned => Some(Samples(planned)),
         }
     }
 

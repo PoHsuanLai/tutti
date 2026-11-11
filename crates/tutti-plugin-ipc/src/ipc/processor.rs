@@ -124,6 +124,18 @@ impl Processor for IpcProcessor {
         self.pending = BlockPayload::default();
         let _ = self.link.bridge.set_sample_rate_rt(rate);
         self.link.set_rate(rate);
+        // A fork's graph is compiled from the shape read right after this, and
+        // a plugin may move its latency when its rate or render mode changes
+        // (an HQ offline mode is the usual case). Both changes are queued
+        // commands the server has not necessarily handled yet, so wait for
+        // them and for any latency they caused (`PluginBridge::settle`), then
+        // record the figure the plan will hold: the fork's health reports a
+        // later move as a fault rather than a silently misaligned export.
+        // Live, the latency poll re-plans instead, and a retune never blocks.
+        if let Some(super::Watch { wait, .. }) = self.link.watch() {
+            self.link.bridge.settle();
+            wait.plan(Samples(self.link.latency().get() + self.batcher.chunk()));
+        }
         true
     }
 }

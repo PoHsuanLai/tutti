@@ -490,114 +490,131 @@ fn the_park_switch_is_off_unless_armed() {
     );
 }
 
+/// A 30-byte SysEx dump's five packets, and a note: what the three tests
+/// below feed the node on its event input.
+fn dump_and_note() -> (Vec<tutti_graph::EventKind>, tutti_graph::EventKind) {
+    use tutti_ump::{MidiChannel, MidiGroup};
+    let payload: Vec<u8> = (0..30).collect();
+    let dump: Vec<_> = tutti_ump::Sysex7Packets::checked(MidiGroup::FIRST, &payload)
+        .expect("a 7-bit payload")
+        .collect();
+    assert_eq!(dump.len(), 5);
+    let note = tutti_fixtures::midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 1);
+    (
+        dump.into_iter().map(tutti_graph::EventKind::Midi).collect(),
+        tutti_graph::EventKind::Midi(note),
+    )
+}
+
+/// A node of the probe on its own, bound and driven a half chunk at a time:
+/// its controls and the driver. The chunk is [`BLOCK`] frames (no quantum),
+/// so a block of half of it leaves the chunk in progress.
+fn half_chunk_rig(
+    client: PluginClient,
+) -> (
+    tutti_graph::contract::Direct<dyn tutti_graph::Node>,
+    tutti_plugin_host::PluginControls,
+) {
+    let controls = client.controls();
+    let node = tutti_graph::IntoNode::into_node(client.bind(
+        tutti_transport::TempoReader::constant(tutti_types::Bpm::of(120.0)).expect("a tempo"),
+    ))
+    .0;
+    let mut unit = tutti_graph::contract::Direct::boxed(node, SampleRate(SAMPLE_RATE), BLOCK);
+    unit.set_block_len(BLOCK / 2);
+    (unit, controls)
+}
+
+/// One half-chunk block carrying `kinds` at its first frame.
+fn feed(
+    unit: &mut tutti_graph::contract::Direct<dyn tutti_graph::Node>,
+    kinds: &[tutti_graph::EventKind],
+) {
+    let at = tutti_graph::Offset::new(0, Samples(BLOCK / 2)).expect("inside the block");
+    let events: Vec<tutti_graph::Event> = kinds
+        .iter()
+        .map(|kind| match kind {
+            tutti_graph::EventKind::Midi(ump) => tutti_graph::Event::midi(at, *ump),
+            _ => unreachable!("only MIDI is fed"),
+        })
+        .collect();
+    unit.events(0, &events);
+    let _ = unit.block();
+}
+
 /// **A reset drops the MIDI taken towards the next chunk, counted, and the
 /// SysEx open in it stays cut past the reset.** The server keeps its
 /// reassembler's open message across the node's reset, so a tail taken after
 /// it would complete the message with a gap.
 ///
-/// Mutation (run): the `intake.lose` in the node's `reset` removed → nothing
-/// counted, and the tail is taken → fails.
+/// The dump's first three packets and a note go in a block that leaves the
+/// chunk in progress; the reset counts all four, and the dump's two tail packets
+/// in the next block are refused (counted, six in all) while a note after them
+/// is taken (not counted).
+///
+/// Mutation (run): the `intake.lost` and `drop_chunk` in the node's `reset`
+/// removed → nothing counted, and the tail is taken → fails.
 #[test]
 fn a_reset_drops_the_pending_midi_and_keeps_its_sysex_cut() {
-    use tutti_graph::Node as _;
-    use tutti_ump::{MidiChannel, MidiGroup};
-
     let _lock = machine_lock();
     let mut env = ProbeEnv::new();
     let (client, _handle) = load_probe(&mut env, 1);
-    let mut node = client.bind(
-        tutti_transport::TempoReader::constant(tutti_types::Bpm::of(120.0)).expect("a tempo"),
-    );
-    let payload: Vec<u8> = (0..30).collect();
-    let mut dump = Vec::new();
-    dump.extend(
-        tutti_ump::Sysex7Packets::checked(MidiGroup::FIRST, &payload).expect("a 7-bit payload"),
-    );
-    let dump: Vec<tutti_plugin_types::WireMidi> = dump
-        .into_iter()
-        .map(|ump| tutti_plugin_types::WireMidi { offset: 0, ump })
-        .collect();
-    let note = tutti_plugin_types::WireMidi {
-        offset: 0,
-        ump: tutti_fixtures::midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 1),
-    };
-    let state = &mut node.state;
-    for &e in dump[..3].iter().chain([&note]) {
-        assert!(state.intake.push(&mut state.pending.midi, e));
-    }
+    let (mut unit, controls) = half_chunk_rig(client);
+    let (dump, note) = dump_and_note();
+    feed(&mut unit, &[dump[0], dump[1], dump[2], note]);
+    assert_eq!(controls.dropped_midi_in(), 0, "held in the chunk, not lost");
 
-    node.reset();
+    unit.node.reset();
 
-    assert_eq!(node.controls.dropped_midi_in(), 4);
-    let state = &mut node.state;
-    assert!(state.pending.midi.is_empty());
-    assert!(
-        !state.intake.push(&mut state.pending.midi, dump[3]),
-        "the tail is cut"
+    assert_eq!(controls.dropped_midi_in(), 4);
+    feed(&mut unit, &[dump[3], dump[4], note]);
+    assert_eq!(
+        controls.dropped_midi_in(),
+        4 + 2,
+        "the tail is cut, the note is taken"
     );
-    assert!(!state.intake.push(&mut state.pending.midi, dump[4]));
-    assert!(state.intake.push(&mut state.pending.midi, note));
 }
 
 /// **A re-prepare drops the MIDI taken towards the next chunk, counted, and
 /// the SysEx open in it stays cut.** A same-rate re-prepare (a device
-/// restart to another callback size) starts the batcher over, and the next
+/// restart to another callback size) starts the pipeline over, and the next
 /// chunk's `begin` would overwrite what was taken; the server does nothing
 /// for a rate it already has, so its reassembler keeps the open message.
 ///
-/// Mutation (run): the `intake.lose` in the node's `prepare` removed → the
-/// four events are not counted, and the tail is taken → fails.
+/// Mutation (run): the `drop_chunk` in the node's `prepare` removed → the
+/// four events are not counted → fails. Mutation (run): the `intake.lost` in
+/// the node's `reset` and `prepare` path removed → the tail is taken →
+/// fails.
 #[test]
 fn a_reprepare_drops_the_pending_midi_and_keeps_its_sysex_cut() {
-    use tutti_graph::Node as _;
-    use tutti_ump::{MidiChannel, MidiGroup};
-
     let _lock = machine_lock();
     let mut env = ProbeEnv::new();
     let (client, _handle) = load_probe(&mut env, 1);
-    let mut node = client.bind(
-        tutti_transport::TempoReader::constant(tutti_types::Bpm::of(120.0)).expect("a tempo"),
-    );
-    node.prepare(&Prepare::new(SampleRate(SAMPLE_RATE), Samples(BLOCK)));
-    let payload: Vec<u8> = (0..30).collect();
-    let mut dump = Vec::new();
-    dump.extend(
-        tutti_ump::Sysex7Packets::checked(MidiGroup::FIRST, &payload).expect("a 7-bit payload"),
-    );
-    let dump: Vec<tutti_plugin_types::WireMidi> = dump
-        .into_iter()
-        .map(|ump| tutti_plugin_types::WireMidi { offset: 0, ump })
-        .collect();
-    let note = tutti_plugin_types::WireMidi {
-        offset: 0,
-        ump: tutti_fixtures::midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 1),
-    };
-    let state = &mut node.state;
-    for &e in dump[..3].iter().chain([&note]) {
-        assert!(state.intake.push(&mut state.pending.midi, e));
-    }
+    let (mut unit, controls) = half_chunk_rig(client);
+    let (dump, note) = dump_and_note();
+    feed(&mut unit, &[dump[0], dump[1], dump[2], note]);
 
     // The same rate, another callback size.
-    node.prepare(&Prepare::new(SampleRate(SAMPLE_RATE), Samples(BLOCK * 2)));
+    unit.node
+        .prepare(&Prepare::new(SampleRate(SAMPLE_RATE), Samples(BLOCK * 2)));
 
-    assert_eq!(node.controls.dropped_midi_in(), 4);
-    let state = &mut node.state;
-    assert!(state.pending.midi.is_empty());
-    assert!(
-        !state.intake.push(&mut state.pending.midi, dump[3]),
-        "the tail is cut"
+    assert_eq!(controls.dropped_midi_in(), 4);
+    feed(&mut unit, &[dump[3], dump[4], note]);
+    assert_eq!(
+        controls.dropped_midi_in(),
+        4 + 2,
+        "the tail is cut, the note is taken"
     );
-    assert!(!state.intake.push(&mut state.pending.midi, dump[4]));
-    assert!(state.intake.push(&mut state.pending.midi, note));
 }
 
 /// **The controls' MIDI count folds in the bridge thread's.** The node
-/// counts what it drops itself; the bridge thread counts what it skips as
-/// stale or filters out, in its own cell, which `bind` attaches to the
-/// node's counters. The bridge's cell is bumped here directly: driving a
-/// stale skip through a real server is `two_stale_blocks`'s job.
+/// counts what it drops itself (here the two notes a reset drops); the bridge
+/// thread counts what it skips as stale or filters out, in its own cell, which
+/// `Plugin::open` attaches to the node's counters. The bridge's cell is bumped
+/// here directly: driving a stale skip through a real server is
+/// `two_stale_blocks`'s job.
 ///
-/// Mutation (run): the `attach_bridge_midi` call removed from `bind` → the
+/// Mutation (run): the `attach_bridge_midi` call removed from `over` → the
 /// controls read the node's 2 only → fails. Mutation (run): `+ bridge`
 /// dropped from `DeliveryCounters::dropped_midi_in` → the same → fails.
 #[test]
@@ -607,12 +624,11 @@ fn the_controls_count_the_bridges_dropped_midi_too() {
     let _lock = machine_lock();
     let mut env = ProbeEnv::new();
     let (client, _handle) = load_probe(&mut env, 1);
-    let node = client.bind(
-        tutti_transport::TempoReader::constant(tutti_types::Bpm::of(120.0)).expect("a tempo"),
-    );
-    node.state.params.count_midi_dropped(2);
-    node.bridge
-        .dropped_midi_cell()
-        .fetch_add(5, Ordering::Relaxed);
-    assert_eq!(node.controls.dropped_midi_in(), 2 + 5);
+    let bridge = client.bridge();
+    let (mut unit, controls) = half_chunk_rig(client);
+    let (_, note) = dump_and_note();
+    feed(&mut unit, &[note, note]);
+    unit.node.reset();
+    bridge.dropped_midi_cell().fetch_add(5, Ordering::Relaxed);
+    assert_eq!(controls.dropped_midi_in(), 2 + 5);
 }

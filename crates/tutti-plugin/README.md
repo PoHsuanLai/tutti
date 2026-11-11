@@ -79,9 +79,10 @@ executable, then in its parent directory, then on `PATH`.
 A loaded [`Plugin`](catalog::Plugin) yields two values that share the plugin's
 lifetime — it dies only when the last of either drops:
 
-- [`handles::PluginClient`] — the audio-graph node. Loaded `Unbound`;
-  `bind()` makes it a `PluginClient<Bound>`, which owns the audio path and is
-  what a graph inserts. `Plugin` does this for you when inserted directly.
+- [`handles::PluginClient`] — the client of a served plugin and its audio-graph
+  node (`tutti-plugin-host`'s generic `PluginNode` over the served hosting).
+  Loaded `Unbound`; `bind()` makes it a `PluginClient<Bound>`, which holds the
+  node and is what a graph inserts. `Plugin` does this for you when inserted directly.
 - [`PluginHandle`](tutti_plugin_host::PluginHandle) (`tutti-plugin-host`'s;
   [`PluginClient::handle`](handles::PluginClient::handle) makes one) — the
   main-thread control surface: editor, parameters, state, presets. Cheap to
@@ -101,8 +102,8 @@ plugin's format.
   recovery), [`probe_record`](catalog::probe_record) (the stateless probe),
   and the [`PluginDescriptor`](catalog::PluginDescriptor) identity type. The
   scanner, the catalog traits and their records are `tutti-plugin-db`'s.
-- [`handles`] — [`PluginClient`](handles::PluginClient), the graph node of a
-  served plugin. The control surface over it, [`PluginHandle`](tutti_plugin_host::PluginHandle),
+- [`handles`] — [`PluginClient`](handles::PluginClient), the client and graph
+  node of a served plugin. The control surface over it, [`PluginHandle`](tutti_plugin_host::PluginHandle),
   the node's [`PluginControls`](tutti_plugin_host::PluginControls), the in-process
   node and the host policy written once for every host
   ([`PluginParamValues`](tutti_plugin_host::PluginParamValues) and its

@@ -16,9 +16,9 @@ use std::marker::PhantomData;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
 use crate::{
-    Control, Controller, Effect, Event, Layout, Loaded, LoadedPlugin, MainThread, Normalized,
-    Notice, ParamId, ParameterInfo, PluginDescriptor, PluginError, PluginResult, Prepare,
-    Processor, Refused, Reply, SampleRate, State, Stuck, step,
+    Control, Controller, Effect, Event, HostOp, Layout, Loaded, LoadedPlugin, MainThread,
+    Normalized, Notice, ParamId, ParameterInfo, PluginDescriptor, PluginError, PluginResult,
+    Prepare, Processor, Refused, Reply, SampleRate, State, Stuck, step,
 };
 
 /// The main thread's end of the Processor's trip to the realtime thread.
@@ -123,6 +123,84 @@ impl<L: Loaded> Lifecycle<L> {
     #[must_use]
     pub fn initial_state() -> State {
         State::new(L::RESTARTS)
+    }
+
+    /// A lifecycle over a plugin whose shell activated it itself, with the
+    /// core's state as if [`Lifecycle::drive`] had: for a hosting whose
+    /// activation needs no main thread (a served plugin, `tutti-plugin-ipc`'s
+    /// `Ipc::activate_anywhere`), so a node over it is built on any thread.
+    ///
+    /// `wiring` is what the plugin reports now: its layout, latency and tail
+    /// are the figures the core records. The Processor is lent through `hand`
+    /// as an activation lends it. Nothing here calls into the plugin.
+    ///
+    /// The state is stepped through the pure core with the replies an
+    /// activation gets, so it cannot differ from the driven one
+    /// (`an_adopted_plugin_is_in_the_state_a_driven_activation_leaves`).
+    ///
+    /// # Panics
+    ///
+    /// If the core plans an activation other than as one call, plans an
+    /// effect an activation does not answer, or is left anywhere but active
+    /// with nothing planned: each a change to the core that `adopt` has not
+    /// been taught, never a property of the plugin.
+    #[must_use]
+    pub fn adopt(
+        processor: L::Processor,
+        controller: L::Controller,
+        prepare: Prepare,
+        wiring: &LoadedPlugin,
+        hand: &mut Hand<L::Processor>,
+    ) -> (Self, State) {
+        let mut lifecycle = Self::Active {
+            seat: Seat::Held(processor),
+            controller,
+        };
+        // The op plans the activation, which the shell has done; each effect
+        // the activation's answer plans is answered from `wiring`.
+        let (mut state, planned) =
+            step(Self::initial_state(), Event::Op(HostOp::Activate(prepare)));
+        assert!(
+            matches!(planned.as_slice(), [Effect::CallActivate(_)]),
+            "an activation is planned as one call, which the shell made: {planned:?}"
+        );
+        let mut replies = VecDeque::from([Reply::Activated]);
+        while let Some(reply) = replies.pop_front() {
+            let (next, effects) = step(state, Event::Replied(reply));
+            state = next;
+            for effect in effects {
+                // Every variant named, so a new one does not compile until it
+                // is decided here (a silent skip could leave the core short of
+                // active).
+                let reply = match effect {
+                    Effect::ReadLatency => Reply::Latency(wiring.latency_samples),
+                    Effect::ReadTail => Reply::Tail(wiring.tail),
+                    Effect::ReadLayout => Reply::Layout(Layout::from(wiring)),
+                    // The Processor is lent below, as `lend` answers.
+                    Effect::Lend => Reply::Done,
+                    // Delivered by the driver, which answers it so.
+                    Effect::Notify(_) => Reply::Done,
+                    effect @ (Effect::CallActivate(_)
+                    | Effect::CallDeactivate
+                    | Effect::Rebuild
+                    | Effect::Recall
+                    | Effect::ReadParams(_)
+                    | Effect::RebuildMidiMapping
+                    | Effect::RunMainThread
+                    | Effect::RunTimer(_)
+                    | Effect::ServiceFd(_)) => {
+                        unreachable!("an activation does not plan {effect:?}")
+                    }
+                };
+                replies.push_back(reply);
+            }
+        }
+        assert!(
+            state.renders() && !state.is_busy(),
+            "an adopted plugin is active with nothing planned, as a driven activation leaves it"
+        );
+        lifecycle.lend(hand);
+        (lifecycle, state)
     }
 
     /// Whether a transition has left no plugin.

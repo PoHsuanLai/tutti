@@ -2183,9 +2183,9 @@ impl BlockRig {
 /// params and outputs are buffers of the prepared frames; fill them between
 /// blocks. Each block starts where the last ended (its [`Env::frame`]), under
 /// the transport last [set](Self::set_transport) (stopped, by default).
-pub struct Direct<N> {
+pub struct Direct<N: ?Sized> {
     /// The node, prepared.
-    pub node: N,
+    pub node: Box<N>,
     rate: SampleRate,
     frames: usize,
     len: usize,
@@ -2200,7 +2200,7 @@ pub struct Direct<N> {
     lost: u64,
 }
 
-impl<N> std::fmt::Debug for Direct<N> {
+impl<N: ?Sized> std::fmt::Debug for Direct<N> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Direct")
             .field("rate", &self.rate)
@@ -2212,7 +2212,7 @@ impl<N> std::fmt::Debug for Direct<N> {
     }
 }
 
-impl<N: Node> Direct<N> {
+impl<N: Node + ?Sized> Direct<N> {
     /// `node`, prepared at `rate` for blocks of `frames`, silent inputs, no
     /// param fed, no events.
     ///
@@ -2220,8 +2220,21 @@ impl<N: Node> Direct<N> {
     ///
     /// If the node is wider than [`RIG_MAX_CHANNELS`] either way, or has more
     /// than [`MAX_PORTS`](crate::MAX_PORTS) event ports a side.
-    pub fn new(node: N, rate: SampleRate, frames: usize) -> Self {
-        let node = prepared(node, rate, frames);
+    pub fn new(node: N, rate: SampleRate, frames: usize) -> Self
+    where
+        N: Sized,
+    {
+        Self::boxed(Box::new(node), rate, frames)
+    }
+
+    /// [`new`](Self::new) for a node an `IntoNode` already boxed, e.g.
+    /// `Direct::boxed(x.into_node().0, ..)`.
+    ///
+    /// # Panics
+    ///
+    /// As [`new`](Self::new).
+    pub fn boxed(mut node: Box<N>, rate: SampleRate, frames: usize) -> Self {
+        node.prepare(&Prepare::new(rate, Samples(frames)));
         let shape = node.shape();
         let (ins, outs) = (
             usize::from(shape.audio_in.count()),

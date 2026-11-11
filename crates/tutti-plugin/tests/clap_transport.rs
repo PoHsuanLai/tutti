@@ -306,7 +306,7 @@ fn said_at(seen: &[(Env, Vec<f32>)], f: Option<u64>) -> Transport {
 /// Mutation: build `Snapshot::at` from `cx.env.transport_at(offset)` (the
 /// chunk's own frame, as before) → the first chunk of every block reports
 /// its own block's scene → fails. Mutation: hand the plugin node a `Cx`
-/// with `arrival: Latency::ZERO` in `PluginChunks::begin` → fails.
+/// with `arrival: Latency::ZERO` in the node's chunk `begin` → fails.
 #[test]
 fn a_plugin_behind_a_latent_path_sees_the_transport_its_input_was_rendered_at() {
     let _lock = machine_lock();

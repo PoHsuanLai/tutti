@@ -549,6 +549,52 @@ fn the_loss_a_chunked_processor_reports_is_counted() {
     assert_eq!(stats.chunks_deferred, 1);
 }
 
+/// **A SysEx cut by the loss a chunked Processor reports stays cut.** The
+/// chunk completes in the first block, which reports the three packets of a
+/// dump (and no more) lost: the node counts them, and the dump's tail, taken
+/// in the next block, is refused (counted) while a note after it is taken, so
+/// a message never reaches the Processor with a gap. A loss with no SysEx open
+/// cuts nothing.
+///
+/// Mutation (run): the `intake.lost()` after a reported loss removed from the
+/// node's chunk loop -> the tail reaches the Processor -> fails.
+#[test]
+fn a_sysex_cut_by_a_reported_loss_stays_cut() {
+    let payload: Vec<u8> = (0..30).collect();
+    let dump: Vec<_> = tutti_ump::Sysex7Packets::checked(MidiGroup::FIRST, &payload)
+        .expect("a 7-bit payload")
+        .collect();
+    assert_eq!(dump.len(), 5);
+    let packet = |i: usize, frame: usize| Event::midi(at(frame, 64), dump[i]);
+    for open in [true, false] {
+        let rig = Rig::new(Some(64), Features::TRANSPORT);
+        let (mut unit, controls) = node(&rig, 64, tempo(None));
+        // The first chunk reports three lost; the dump is open in it only when
+        // its first packets were taken there.
+        rig.lose.store(3, Ordering::Relaxed);
+        let first: Vec<Event> = if open {
+            vec![packet(0, 0), packet(1, 1), packet(2, 2)]
+        } else {
+            vec![note_on(0, 64), note_on(1, 64), note_on(2, 64)]
+        };
+        unit.events(0, &first);
+        run_block(&mut unit, 0, 64);
+        assert_eq!(controls.dropped_midi_in(), 3);
+        rig.lose.store(0, Ordering::Relaxed);
+        unit.events(0, &[packet(3, 0), packet(4, 1), note_on(2, 64)]);
+        run_block(&mut unit, 64, 64);
+        let seen = rig.seen.lock().unwrap();
+        let midi: Vec<_> = seen.iter().map(|s| s.midi.clone()).collect();
+        if open {
+            assert_eq!(midi, [vec![0, 1, 2], vec![2]], "the tail is cut");
+            assert_eq!(controls.dropped_midi_in(), 3 + 2);
+        } else {
+            assert_eq!(midi, [vec![0, 1, 2], vec![0, 1, 2]], "nothing was open");
+            assert_eq!(controls.dropped_midi_in(), 3);
+        }
+    }
+}
+
 /// **MIDI and chords reach the Processor on the frames of the piece they fall
 /// in**, and a chord only for a plugin that declared sequencer context. A note
 /// at frame 10 of the second block lands in its first piece (28 frames, the

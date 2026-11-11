@@ -195,13 +195,25 @@ impl std::ops::Deref for PluginControls {
 impl PluginControls {
     /// Public for `tutti-plugin`'s node of a served plugin, which builds its controls at load.
     pub fn new(latency: Samples, tail: PluginTail, sample_rate: SampleRate) -> Self {
+        Self::with_chunks(latency, tail, sample_rate, Arc::default())
+    }
+
+    /// [`new`](Self::new), reporting the pipeline's chunk counters (the
+    /// served hosting's own, `Ipc::chunk_counters`) rather than counters of
+    /// its own.
+    pub fn with_chunks(
+        latency: Samples,
+        tail: PluginTail,
+        sample_rate: SampleRate,
+        chunks: Arc<ChunkCounters>,
+    ) -> Self {
         Self {
             latency: Arc::new(AtomicUsize::new(latency.get())),
             tail: Arc::new(Mutex::new(tail)),
             pipeline: Arc::new(AtomicUsize::new(MAX_CHUNK)),
             node: NodeControls::new(crate::PluginMeter::default(), Arc::default()),
             sample_rate: Arc::new(AtomicF64::new(sample_rate.get())),
-            chunks: Arc::default(),
+            chunks,
         }
     }
 

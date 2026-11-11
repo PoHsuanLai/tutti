@@ -34,23 +34,25 @@
 mod support;
 
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
-use tutti_types::MaxBlock;
 
 use tutti::codec::{Format, Pcm};
-use tutti::export::{Produced, Written};
+use tutti::export::Written;
+use tutti::graph::NodeKey;
 use tutti::prelude::*;
+use tutti::session::Master;
+use tutti::types::MaxBlock;
 
 const RATE: SampleRate = SampleRate(48_000.0);
 
 /// §5.2, as written there: `plugin` (restored from `state`, if any) plays
-/// `midi` into the master `master` names (a file, here).
-fn play(
+/// `midi` into the master `master` names (a file or memory, which `M` says
+/// and the result's type follows).
+fn play<M: Master>(
     plugin: &Path,
     state: Option<Vec<u8>>,
     midi: &Path,
-    master: impl FnOnce(Bounce) -> Bounce,
-) -> Result<Produced, Box<dyn std::error::Error>> {
+    master: impl FnOnce(Bounce) -> Bounce<NodeKey, M>,
+) -> Result<M::Result, Box<dyn std::error::Error>> {
     let mut s = Session::builder().build_offline(
         RATE,
         ChannelLayout::STEREO,
@@ -70,8 +72,8 @@ fn play(
     // A file's tempo track is the file's data, not the project's: the project
     // adopts it on import, here, by an explicit call.
     s.transport()
-        .settings
-        .set_tempo_map(Arc::new(file.tempo_map().clone()));
+        .settings()
+        .set_tempo_map(file.tempo_map().clone());
     // Its messages on the file's timeline (a format 2 file has none), as the
     // packets they are: the clip translates them when it is loaded.
     let timeline = file.events().ok_or("a format 2 file has no one timeline")?;
@@ -93,9 +95,7 @@ fn play(
     let job = s.bounce_start(master(
         Bounce::project().range(Range::Beats(Beat(0.0), file.end_beat())),
     ))?; // the plugin hears Offline from here
-    let Some(bounced) = s.finish_bounce(job.run())?.finished() else {
-        unreachable!("nothing cancels it");
-    }; // and Realtime from here
+    let bounced = s.finish_bounce(job.run())?; // and Realtime from here
     Ok(bounced.into_master())
 }
 
@@ -106,10 +106,9 @@ fn play_to_file(
     midi: &Path,
     out: &Path,
 ) -> Result<Written, Box<dyn std::error::Error>> {
-    let produced = play(plugin, state, midi, |bounce| {
+    play(plugin, state, midi, |bounce| {
         bounce.format(Format::Wav(Pcm::Int24)).master(out)
-    })?;
-    Ok(produced.file().expect("a file master writes a file"))
+    })
 }
 
 /// Two bars: a note on each beat, 120 BPM for the first four beats and 60
@@ -233,9 +232,7 @@ mod tests {
             &midi,
             tutti::prelude::Bounce::master_buffers,
         )
-        .expect("the example runs")
-        .buffers()
-        .expect("a buffer master");
+        .expect("the example runs");
         let left: Vec<i32> = rendered.planes()[0].iter().map(|&s| s as i32).collect();
 
         let onsets: Vec<(usize, i32)> = (0..left.len())

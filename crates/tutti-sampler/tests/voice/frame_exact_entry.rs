@@ -102,7 +102,7 @@ struct Run {
 
 fn transport() -> Transport {
     let t = Transport::new(SampleRate::new(SR));
-    t.settings.set_tempo(TEMPO);
+    t.settings().set_tempo(TEMPO);
     t
 }
 

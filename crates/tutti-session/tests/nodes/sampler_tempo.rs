@@ -79,7 +79,7 @@ fn a_sampler_node_added_to_the_graph_follows_the_sessions_tempo_map() {
                 }),
         )
         .expect("a map");
-    s.transport().settings.set_tempo_map(Arc::new(map));
+    s.transport().settings().set_tempo_map(Arc::new(map));
     let (voice, _handle) = s.graph().add(pool);
     for port in 0..2 {
         s.graph()

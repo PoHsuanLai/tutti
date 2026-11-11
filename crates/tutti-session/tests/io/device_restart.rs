@@ -128,7 +128,7 @@ fn a_restart_at_a_new_rate_re_rates_the_graph_and_everything_on_it() {
         (period(&before[4_410..]) - 44.1).abs() < 0.01,
         "1 kHz at 44.1 kHz"
     );
-    assert!((t.settings.beat().get() - 2.0).abs() < 1e-9, "one second");
+    assert!((t.settings().beat().get() - 2.0).abs() < 1e-9, "one second");
     let old_latency = s.graph_ref().node_latency(lim);
     assert_eq!(s.latency(), old_latency, "the 44.1 kHz figure is published");
 
@@ -167,24 +167,24 @@ fn a_restart_at_a_new_rate_re_rates_the_graph_and_everything_on_it() {
          of a re-prepare with its units out"
     );
     assert!(
-        (t.settings.beat().get() - 2.02).abs() < 1e-9,
+        (t.settings().beat().get() - 2.02).abs() < 1e-9,
         "the beat carries on from 2.0 at the new rate, not from {}",
-        t.settings.beat().get()
+        t.settings().beat().get()
     );
     after.extend(play(&mut s, &new, 480, 54));
     // One frame of 48 kHz is 1/24 000 of a beat: 1e-9 pins the frame.
     assert!(t.motion.is_stopped(), "the stop landed");
     assert!(
-        (t.settings.beat().get() - 3.0).abs() < 1e-9,
+        (t.settings().beat().get() - 3.0).abs() < 1e-9,
         "the stop lands on 1.5 s of wall clock, frame 72 000 (beat 3), not at beat {}",
-        t.settings.beat().get()
+        t.settings().beat().get()
     );
     after.extend(play(&mut s, &new, 480, 45));
     assert!(t.motion.is_playing(), "the later play landed");
     assert!(
-        (t.settings.beat().get() - 3.5).abs() < 1e-9,
+        (t.settings().beat().get() - 3.5).abs() < 1e-9,
         "rolling again from frame 84 000, 12 000 frames to go (beat 3.5), not beat {}",
-        t.settings.beat().get()
+        t.settings().beat().get()
     );
     assert!(
         (period(&after[4_800..]) - 48.0).abs() < 0.01,

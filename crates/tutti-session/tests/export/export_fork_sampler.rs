@@ -22,6 +22,7 @@ use tutti_sampler::{
     ByHand, DiskStreamer, DiskVoice, MemorySource, Placement, Playback, Stream, StreamReader,
     Voice, VoiceNode, VoiceSource,
 };
+use tutti_session::BufferMaster;
 use tutti_session::{Bounce, BounceError, ExportClock, Latency, Range, Session, Stem, Tail};
 use tutti_transport::{OfflineTimeline, OfflineTimelineConfig};
 use tutti_types::ChannelLayout;
@@ -31,7 +32,7 @@ const RATE: f64 = 48_000.0;
 
 /// A bounce of the mix into memory for `seconds` at `rate`: stereo, trimming
 /// nothing and keeping no tail, on `clock`.
-fn bounce_of(seconds: f64, rate: f64, clock: ExportClock) -> Bounce {
+fn bounce_of(seconds: f64, rate: f64, clock: ExportClock) -> Bounce<NodeKey, BufferMaster> {
     Bounce::project()
         .master_buffers()
         .channels(ChannelLayout::STEREO)
@@ -42,31 +43,29 @@ fn bounce_of(seconds: f64, rate: f64, clock: ExportClock) -> Bounce {
         .tail(Tail::None)
 }
 
-fn render(session: &mut Session, bounce: Bounce) -> Vec<Vec<f32>> {
-    match session
+fn render(session: &mut Session, bounce: Bounce<NodeKey, BufferMaster>) -> Vec<Vec<f32>> {
+    session
         .bounce(bounce)
         .expect("the bounce renders")
-        .finished()
-        .map(|b| b.into_master())
-    {
-        Some(Produced::Buffers(rendered)) => rendered.into_planes(),
-        other => panic!("expected rendered buffers, got {other:?}"),
-    }
+        .into_master()
+        .into_planes()
 }
 
 /// The planes of `node`'s stem of `bounce`, in memory, rendered beside the
 /// master. A stem is a node the outputs hear, so the node is routed to them
 /// first: the master is then the node alone, and the stem its own output.
-fn render_stem(session: &mut Session, bounce: Bounce, node: NodeKey) -> Vec<Vec<f32>> {
+fn render_stem(
+    session: &mut Session,
+    bounce: Bounce<NodeKey, BufferMaster>,
+    node: NodeKey,
+) -> Vec<Vec<f32>> {
     session.graph().set_outputs_from(node);
-    let mut targets = session
+    let (_, mut stems) = session
         .bounce(bounce.stem_with(Stem::buffers(node)))
         .expect("the bounce renders")
-        .finished()
-        .expect("nothing cancels it")
-        .into_targets();
-    match targets.pop() {
-        Some(Produced::Buffers(rendered)) if targets.len() == 1 => rendered.into_planes(),
+        .into_parts();
+    match stems.pop() {
+        Some(Produced::Buffers(rendered)) if stems.is_empty() => rendered.into_planes(),
         other => panic!("expected one stem held in memory, got {other:?}"),
     }
 }
@@ -92,7 +91,7 @@ fn timeline(tempo: f64) -> Arc<OfflineTimeline> {
     }))
 }
 
-fn on(seconds: f64, clock: &Arc<OfflineTimeline>) -> Bounce {
+fn on(seconds: f64, clock: &Arc<OfflineTimeline>) -> Bounce<NodeKey, BufferMaster> {
     bounce_of(seconds, RATE, ExportClock::timeline(clock.clone()))
 }
 

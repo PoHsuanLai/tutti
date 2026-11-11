@@ -428,9 +428,9 @@ fn the_recording_flag_reaches_a_nodes_env() {
     let (engine, _ed) = graph_engine(&transport, 256, Unforkable(RecLog(Arc::clone(&log))), 1);
     transport.motion.try_send(MotionEvent::Play).expect("room");
     render(&engine, ChannelLayout::MONO, &[256; 2]);
-    transport.settings.set_recording(true);
+    transport.settings().set_recording(true);
     render(&engine, ChannelLayout::MONO, &[256; 2]);
-    transport.settings.set_recording(false);
+    transport.settings().set_recording(false);
     render(&engine, ChannelLayout::MONO, &[256]);
     let log = log.lock().expect("log").clone();
     assert_eq!(
@@ -654,7 +654,7 @@ fn tempo_and_loop_change_on_their_frames() {
     );
     let m = &transport.motion;
     m.try_send(MotionEvent::Play).expect("room");
-    transport.settings.set_tempo_map(step_map(&[
+    transport.settings().set_tempo_map(step_map(&[
         (0.0, 120.0),
         (beat_of_frame(1_200, 120.0, SR), 240.0),
     ]));
@@ -765,13 +765,13 @@ fn env_beats_are_the_closed_form_of_each_segment() {
     let mut published = Vec::new();
     for (i, &n) in blocks.iter().enumerate() {
         if i == 2 {
-            transport.settings.set_tempo(Bpm::of(97.0));
+            transport.settings().set_tempo(Bpm::of(97.0));
         }
         if i == 6 {
-            transport.settings.set_tempo(Bpm::of(133.0));
+            transport.settings().set_tempo(Bpm::of(133.0));
         }
         render(&engine, ChannelLayout::MONO, &[n]);
-        published.push(transport.settings.beat().get());
+        published.push(transport.settings().beat().get());
     }
     let frames: usize = blocks.iter().sum();
     let model = model_beats(
@@ -863,7 +863,7 @@ fn a_loop_armed_behind_the_playhead_does_not_jump() {
         if end < 20_000 {
             // The published playhead is linear too, never inside the loop.
             let want = 3.0 + end as f64 / 24_000.0;
-            let got = transport.settings.beat().get();
+            let got = transport.settings().beat().get();
             assert!((got - want).abs() < 1e-9, "after block {i}: {got}");
         }
     }
@@ -1071,7 +1071,7 @@ fn a_tempo_wiggle_under_the_clock_hysteresis_does_not_move_the_beat() {
         }),
         1,
     );
-    transport.settings.set_tempo(Bpm::of(120.0005));
+    transport.settings().set_tempo(Bpm::of(120.0005));
     transport.motion.try_send(MotionEvent::Play).expect("room");
     transport
         .motion
@@ -1092,7 +1092,7 @@ fn a_tempo_wiggle_under_the_clock_hysteresis_does_not_move_the_beat() {
         .expect("the graph stopped");
     assert_eq!(stop, 240_000, "stops on beat 10's frame");
     assert_eq!(log[stop].1, 10.0, "and holds beat 10");
-    let in_force = transport.settings.tempo_in_force();
+    let in_force = transport.settings().tempo_in_force();
     assert_eq!(in_force, Bpm::of(120.0), "the tempo in force");
 }
 
@@ -1130,7 +1130,7 @@ fn the_published_playhead_is_the_closed_form_over_ten_minutes() {
     let transport = Transport::new(SampleRate::new(SR));
     let first = Arc::new(Mutex::new(0.0));
     let (engine, _ed) = graph_engine(&transport, 64, Unforkable(FirstBeat(Arc::clone(&first))), 1);
-    transport.settings.set_tempo(Bpm::of(123.0));
+    transport.settings().set_tempo(Bpm::of(123.0));
     transport.motion.try_send(MotionEvent::Play).expect("room");
     transport
         .motion
@@ -1164,7 +1164,7 @@ fn the_published_playhead_is_the_closed_form_over_ten_minutes() {
     for i in 0..blocks as u64 {
         if 64 * i == TEMPO_AT {
             // An untimed edit between blocks lands on the next block's frame.
-            transport.settings.set_tempo(Bpm::of(91.5));
+            transport.settings().set_tempo(Bpm::of(91.5));
         }
         engine.process(&mut InterleavedMut::new(&mut buf, ChannelLayout::MONO));
         if i > 0 {
@@ -1175,7 +1175,7 @@ fn the_published_playhead_is_the_closed_form_over_ten_minutes() {
             );
         }
         let end = 64 * (i + 1);
-        let got = transport.settings.beat().get();
+        let got = transport.settings().beat().get();
         let want = linear(end);
         wrapped |= end > LOOP_AT && want >= loop_end;
         if !wrapped {
@@ -1190,7 +1190,7 @@ fn the_published_playhead_is_the_closed_form_over_ten_minutes() {
     // Not vacuous: it ran long (~715 beats by the loop's arming, ahead of
     // the loop, which it then plays into and holds).
     assert!(wrapped, "the loop wrapped");
-    let end = transport.settings.beat().get();
+    let end = transport.settings().beat().get();
     assert!(
         (loop_start..loop_end).contains(&end),
         "ends inside the loop, at {end}"

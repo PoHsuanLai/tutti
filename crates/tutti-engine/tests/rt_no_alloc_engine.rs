@@ -162,7 +162,7 @@ fn graph_engine_with_timed_transport_is_allocation_free() {
         }
     });
     // The engine really ran every block, through its own clock.
-    assert_eq!(transport.settings.steady_time(), 1024 * (1 + 20 * 8));
+    assert_eq!(transport.settings().steady_time(), 1024 * (1 + 20 * 8));
 }
 
 /// A tempo map published between blocks reaches the engine's clock without
@@ -196,14 +196,14 @@ fn a_published_tempo_map_is_taken_without_allocating() {
     engine.process(&mut InterleavedMut::new(&mut output, ChannelLayout::STEREO));
     for round in 0..20u32 {
         let bpm = Bpm::of(80.0 + f64::from(round));
-        transport.settings.set_tempo(bpm);
+        transport.settings().set_tempo(bpm);
         assert_no_alloc::assert_no_alloc(|| {
             for _ in 0..3 {
                 engine.process(&mut InterleavedMut::new(&mut output, ChannelLayout::STEREO));
             }
         });
-        assert_eq!(transport.settings.tempo_in_force(), bpm, "round {round}");
-        transport.settings.reclaim_tempo();
+        assert_eq!(transport.settings().tempo_in_force(), bpm, "round {round}");
+        transport.settings().reclaim_tempo();
     }
 }
 
@@ -259,7 +259,7 @@ fn a_step_map_is_followed_without_allocating() {
     }));
     ed.commit().expect("commits");
     let engine = Engine::new(&transport, &mut ed, exec).expect("within the limits");
-    transport.settings.set_tempo_map(dense(90.0));
+    transport.settings().set_tempo_map(dense(90.0));
     transport
         .motion
         .try_send(MotionEvent::play_from(Beat(0.0)))
@@ -267,11 +267,11 @@ fn a_step_map_is_followed_without_allocating() {
     let mut output = vec![0.0f32; 1024 * 2];
     engine.process(&mut InterleavedMut::new(&mut output, ChannelLayout::STEREO));
     // 1 024 frames: past all 41 steps (the last at frame 960).
-    assert_eq!(transport.settings.tempo_in_force(), Bpm::of(160.0));
+    assert_eq!(transport.settings().tempo_in_force(), Bpm::of(160.0));
     for round in 0..10u32 {
         // Control side: a new map, a loop over the steps, a seek back.
         transport
-            .settings
+            .settings()
             .set_tempo_map(dense(80.0 + f64::from(round)));
         let m = &transport.motion;
         m.schedule(
@@ -286,9 +286,9 @@ fn a_step_map_is_followed_without_allocating() {
             }
         });
         // Looping over beats 0 to 0.02 keeps the tempo among the first 21.
-        let tempo = transport.settings.tempo_in_force().get();
+        let tempo = transport.settings().tempo_in_force().get();
         assert!((120.0..=140.0).contains(&tempo), "round {round}: {tempo}");
-        transport.settings.reclaim_tempo();
+        transport.settings().reclaim_tempo();
     }
 
     // The ramp case: 120 to `end` BPM over 2 beats, linear in time.
@@ -324,7 +324,7 @@ fn a_step_map_is_followed_without_allocating() {
     ed.commit().expect("commits");
     let engine = Engine::new(&transport, &mut ed, exec).expect("within the limits");
     transport
-        .settings
+        .settings()
         .set_tempo_map(ramp(60.0, Shape::RampTime));
     transport
         .motion
@@ -332,7 +332,7 @@ fn a_step_map_is_followed_without_allocating() {
         .expect("room");
     let mut output = vec![0.0f32; 4_096 * 2];
     engine.process(&mut InterleavedMut::new(&mut output, ChannelLayout::STEREO));
-    let slowed = transport.settings.tempo_in_force().get();
+    let slowed = transport.settings().tempo_in_force().get();
     assert!(
         (60.0..119.0).contains(&slowed),
         "a ramp cell's chord: {slowed}"
@@ -344,7 +344,7 @@ fn a_step_map_is_followed_without_allocating() {
             Shape::RampBeats
         };
         transport
-            .settings
+            .settings()
             .set_tempo_map(ramp(50.0 + f64::from(round), shape));
         let m = &transport.motion;
         m.schedule(
@@ -360,9 +360,9 @@ fn a_step_map_is_followed_without_allocating() {
         });
         // Looping over beats 0.1 to 0.3 of a ramp that starts at 120 keeps the
         // chord between the ramp's tempo there and its start.
-        let tempo = transport.settings.tempo_in_force().get();
+        let tempo = transport.settings().tempo_in_force().get();
         assert!((90.0..120.0).contains(&tempo), "round {round}: {tempo}");
-        transport.settings.reclaim_tempo();
+        transport.settings().reclaim_tempo();
     }
 }
 

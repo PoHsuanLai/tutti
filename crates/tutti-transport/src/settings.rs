@@ -46,7 +46,7 @@ pub struct TransportSettings {
     ///
     /// ```compile_fail,E0616
     /// let t = tutti_transport::Transport::new(48_000.0);
-    /// t.settings.beat.store(8.0, std::sync::atomic::Ordering::Release);
+    /// t.settings().beat.store(8.0, std::sync::atomic::Ordering::Release);
     /// ```
     ///
     /// A host that drives the playhead by hand takes the audio side and
@@ -60,7 +60,7 @@ pub struct TransportSettings {
     ///
     /// ```compile_fail,E0616
     /// let t = tutti_transport::Transport::new(48_000.0);
-    /// t.settings.segment_generation.store(0, std::sync::atomic::Ordering::Release);
+    /// t.settings().segment_generation.store(0, std::sync::atomic::Ordering::Release);
     /// ```
     pub(crate) segment_generation: Arc<AtomicU64>,
     /// Whether the transport is armed and capturing. Read by the metronome's
@@ -79,7 +79,7 @@ pub struct TransportSettings {
     ///
     /// ```compile_fail,E0616
     /// let t = tutti_transport::Transport::new(48_000.0);
-    /// t.settings.paused.store(false, std::sync::atomic::Ordering::Release);
+    /// t.settings().paused.store(false, std::sync::atomic::Ordering::Release);
     /// ```
     pub(crate) paused: Arc<AtomicBool>,
     /// Free-running sample count since the stream started, written by
@@ -147,8 +147,8 @@ impl TransportSettings {
     /// Any map is followed: the clock takes each step on the frame it falls
     /// on (doc 020, stage 3) and each ramp cell by cell, a constant tempo of
     /// 128 frames at the chord of the curve (stage 4).
-    pub fn set_tempo_map(&self, map: Arc<TempoMap>) {
-        self.tempo_map.publish(map);
+    pub fn set_tempo_map(&self, map: impl Into<Arc<TempoMap>>) {
+        self.tempo_map.publish(map.into());
         self.map_generation.fetch_add(1, Ordering::Release);
     }
 

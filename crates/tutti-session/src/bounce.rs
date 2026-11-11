@@ -31,9 +31,9 @@
 //! stages, and before each file is finalized and put in place; or before it
 //! starts), and [`progress`](BounceHandle::progress) reads its stage and
 //! fraction, [`Stage::Preparing`] included (the session's steps, in the band
-//! the pipeline leaves it). A cancelled job returns [`Outcome::Cancelled`]
-//! from [`Session::finish_bounce`] like any other job returns, drops its token
-//! when the render has stopped, and leaves a file target's path as it was.
+//! the pipeline leaves it). A cancelled job returns [`BounceError::Cancelled`]
+//! from [`Session::finish_bounce`], drops its token when the render has
+//! stopped, and leaves a file target's path as it was.
 //!
 //! **A token that never drops** (a job `mem::forget`ed, or kept unrun
 //! forever) keeps the bounce in flight: the plugins stay Offline and every
@@ -48,7 +48,17 @@
 //! [`Phase::Collect`](crate::Phase::Collect). A forked in-process VST2
 //! plugin closes its instance when dropped, which VST2 confines to the main
 //! thread. Something sent once the session is gone drops where it is.
+//!
+//! **The master's kind is a type.** [`Bounce::master`] and
+//! [`Bounce::master_buffers`] each turn a bounce with no master
+//! ([`NoMaster`]) into a [`FileMaster`] or a [`BufferMaster`] bounce, and only
+//! one with a master starts ([`Master`]): a bounce with no master is not
+//! writable. The kind rides through [`BounceJob`] and [`BounceRendered`] to
+//! [`Bounced`], whose master is a [`Written`] for a file and a [`Rendered`]
+//! for planes, with no `Option` to unwrap. A cancelled bounce is
+//! [`BounceError::Cancelled`].
 
+use std::marker::PhantomData;
 use std::path::PathBuf;
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Mutex, PoisonError};
@@ -58,8 +68,8 @@ use tutti_codec::Format;
 use tutti_dsp::DitherShape;
 use tutti_export::{
     BufferTarget, CancelToken, Control, EventLossPolicy, FileTarget, GRAPH_MAX_BLOCK, Job,
-    JobError, Normalize, NormalizeSpec, Outcome, Output, Placement, Produced, Progress, Resample,
-    Target,
+    JobError, Normalize, NormalizeSpec, Outcome, Output, Placement, Produced, Progress, Rendered,
+    Resample, Target, Written,
 };
 use tutti_graph::{CommitError, Editor, MissingSource, NodeKey, OutPort, TapAlign, TapId};
 use tutti_tempo::TempoMap;
@@ -146,15 +156,76 @@ impl Default for Tail {
 pub enum Field {
     /// The [`Format`] of a file target.
     Format,
-    /// A target: [`Bounce::master`] or [`Bounce::master_buffers`].
-    Master,
 }
 
-/// Where the master goes.
-#[derive(Debug, Clone, PartialEq)]
-enum Master {
-    File(PathBuf),
-    Buffers,
+/// A bounce that has not chosen its master yet: [`Bounce::project`]'s.
+/// It does not start; [`Bounce::master`] or [`Bounce::master_buffers`] choose.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NoMaster;
+
+/// A master into a file ([`Bounce::master`]); [`Bounced::master`] is its
+/// [`Written`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FileMaster(PathBuf);
+
+/// A master into memory ([`Bounce::master_buffers`]); [`Bounced::master`] is
+/// its [`Rendered`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BufferMaster;
+
+mod sealed {
+    pub trait Sealed {}
+    impl Sealed for super::FileMaster {}
+    impl Sealed for super::BufferMaster {}
+}
+
+/// Where a started bounce's master goes: [`FileMaster`] or [`BufferMaster`]
+/// (sealed). It names what the finished bounce holds for the master, so the
+/// caller who chose a file is handed a [`Written`] and one who chose memory a
+/// [`Rendered`].
+pub trait Master: sealed::Sealed + Sized + 'static {
+    /// What the master is once rendered.
+    type Result: std::fmt::Debug + Send;
+
+    /// The file's path, or `None` for memory.
+    #[doc(hidden)]
+    fn path(self) -> Option<PathBuf>;
+
+    /// The master's result out of what the pipeline produced for it.
+    #[doc(hidden)]
+    fn result(produced: Produced) -> Self::Result;
+}
+
+impl Master for FileMaster {
+    type Result = Written;
+
+    fn path(self) -> Option<PathBuf> {
+        Some(self.0)
+    }
+
+    fn result(produced: Produced) -> Written {
+        match produced {
+            Produced::File(written) => written,
+            // The master's target was built from this kind alone.
+            other => unreachable!("a file master produces a file, not {other:?}"),
+        }
+    }
+}
+
+impl Master for BufferMaster {
+    type Result = Rendered;
+
+    fn path(self) -> Option<PathBuf> {
+        None
+    }
+
+    fn result(produced: Produced) -> Rendered {
+        match produced {
+            Produced::Buffers(rendered) => rendered,
+            // The master's target was built from this kind alone.
+            other => unreachable!("a buffer master produces planes, not {other:?}"),
+        }
+    }
 }
 
 /// A bounce: what to render and where it goes, with every figure it does not
@@ -183,9 +254,9 @@ enum Master {
 /// handle that [`try_map`](Self::try_map) resolves to one before the bounce
 /// starts.
 #[must_use = "a bounce renders nothing until the session starts it"]
-pub struct Bounce<N = NodeKey> {
+pub struct Bounce<N = NodeKey, M = NoMaster> {
     format: Option<Format>,
-    master: Option<Master>,
+    master: M,
     stems: Vec<Stem<N>>,
     normalize_stems: StemGain,
     range: Option<Range>,
@@ -205,15 +276,16 @@ pub struct Bounce<N = NodeKey> {
     edit: Option<PrepareEdit>,
 }
 
-impl<N> Bounce<N> {
-    /// A bounce of the project's mix, with nothing chosen: a format and a
-    /// target are required, and a range when no loop is set. Name nodes as
+impl<N> Bounce<N, NoMaster> {
+    /// A bounce of the project's mix, with nothing chosen: a master
+    /// ([`master`](Self::master) or [`master_buffers`](Self::master_buffers),
+    /// without which it does not start), a format for a file master, and a range when no loop is set. Name nodes as
     /// stems with [`stem`](Self::stem); `N` is what names one (a [`NodeKey`],
     /// or a host's own handle for it: [`try_map`](Self::try_map) resolves them).
     pub fn project() -> Self {
         Self {
             format: None,
-            master: None,
+            master: NoMaster,
             stems: Vec::new(),
             normalize_stems: StemGain::None,
             range: None,
@@ -231,6 +303,68 @@ impl<N> Bounce<N> {
             on_event_loss: EventLossPolicy::default(),
             normalize: None,
             edit: None,
+        }
+    }
+
+    /// The master into a file at `path`: written beside it and renamed over it
+    /// when the bounce finishes, so a cancelled or failed bounce leaves what
+    /// was at the path as it was. [`Bounced::master`] is a [`Written`], and a
+    /// [`format`](Self::format) is required.
+    pub fn master(self, path: impl Into<PathBuf>) -> Bounce<N, FileMaster> {
+        self.with_master(FileMaster(path.into()))
+    }
+
+    /// The master into memory, one plane per channel: [`Bounced::master`] is
+    /// a [`Rendered`]. Nothing is encoded, resampled, dithered or normalized.
+    pub fn master_buffers(self) -> Bounce<N, BufferMaster> {
+        self.with_master(BufferMaster)
+    }
+}
+
+impl<N, M> Bounce<N, M> {
+    /// The same bounce with another master.
+    fn with_master<M2>(self, master: M2) -> Bounce<N, M2> {
+        let Self {
+            format,
+            master: _,
+            stems,
+            normalize_stems,
+            range,
+            until,
+            clock,
+            sample_rate,
+            resample,
+            latency,
+            tail,
+            root_topology,
+            channels,
+            file_topology,
+            serial,
+            dither,
+            on_event_loss,
+            normalize,
+            edit,
+        } = self;
+        Bounce {
+            format,
+            master,
+            stems,
+            normalize_stems,
+            range,
+            until,
+            clock,
+            sample_rate,
+            resample,
+            latency,
+            tail,
+            root_topology,
+            channels,
+            file_topology,
+            serial,
+            dither,
+            on_event_loss,
+            normalize,
+            edit,
         }
     }
 
@@ -266,7 +400,7 @@ impl<N> Bounce<N> {
     /// # Errors
     ///
     /// What `f` returns for the first node it refuses.
-    pub fn try_map<M, E>(self, mut f: impl FnMut(N) -> Result<M, E>) -> Result<Bounce<M>, E> {
+    pub fn try_map<N2, E>(self, mut f: impl FnMut(N) -> Result<N2, E>) -> Result<Bounce<N2, M>, E> {
         let Self {
             format,
             master,
@@ -315,26 +449,10 @@ impl<N> Bounce<N> {
         })
     }
 
-    /// The file format of the master: required for a file target, and
+    /// The file format of the master: required for a file master, and
     /// ignored by [`master_buffers`](Self::master_buffers).
     pub fn format(mut self, format: Format) -> Self {
         self.format = Some(format);
-        self
-    }
-
-    /// The master into a file at `path`: written beside it and renamed over it
-    /// when the bounce finishes, so a cancelled or failed bounce leaves what
-    /// was at the path as it was.
-    pub fn master(mut self, path: impl Into<PathBuf>) -> Self {
-        self.master = Some(Master::File(path.into()));
-        self
-    }
-
-    /// The master into memory ([`Bounced::master`] is [`Produced::Buffers`]),
-    /// one plane per channel. Nothing is encoded, resampled, dithered or
-    /// normalized.
-    pub fn master_buffers(mut self) -> Self {
-        self.master = Some(Master::Buffers);
         self
     }
 
@@ -445,7 +563,7 @@ impl<N> Bounce<N> {
     }
 }
 
-impl<N: std::fmt::Debug> std::fmt::Debug for Bounce<N> {
+impl<N: std::fmt::Debug, M: std::fmt::Debug> std::fmt::Debug for Bounce<N, M> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Bounce")
             .field("format", &self.format)
@@ -614,42 +732,51 @@ pub enum StemGain {
     Each(Normalize),
 }
 
-/// What a finished bounce produced: one [`Produced`] per target, the master
-/// first and then the stems in the order the bounce named them.
+/// What a finished bounce produced: the master's result, which is what the
+/// bounce's master kind says it is ([`Written`] for [`FileMaster`],
+/// [`Rendered`] for [`BufferMaster`]), and one [`Produced`] per stem in the
+/// order the bounce named them.
 #[derive(Debug)]
-pub struct Bounced {
-    produced: Vec<Produced>,
+pub struct Bounced<M: Master> {
+    master: M::Result,
+    stems: Vec<Produced>,
 }
 
-impl Bounced {
-    /// Every target's result: the master, then each stem.
-    #[must_use]
-    pub fn targets(&self) -> &[Produced] {
-        &self.produced
-    }
-
+impl<M: Master> Bounced<M> {
     /// The master's result.
     #[must_use]
-    pub fn master(&self) -> &Produced {
-        &self.produced[0]
+    pub fn master(&self) -> &M::Result {
+        &self.master
     }
 
     /// The stems' results, in the order the bounce named them.
     #[must_use]
     pub fn stems(&self) -> &[Produced] {
-        &self.produced[1..]
+        &self.stems
     }
 
     /// The master's result, owned.
     #[must_use]
-    pub fn into_master(mut self) -> Produced {
-        self.produced.swap_remove(0)
+    pub fn into_master(self) -> M::Result {
+        self.master
     }
 
-    /// Every target's result, owned: the master, then each stem.
+    /// The master's result and then each stem's, owned.
     #[must_use]
-    pub fn into_targets(self) -> Vec<Produced> {
-        self.produced
+    pub fn into_parts(self) -> (M::Result, Vec<Produced>) {
+        (self.master, self.stems)
+    }
+
+    /// The pipeline's outputs, the master first.
+    fn new(produced: Vec<Produced>) -> Self {
+        let mut produced = produced.into_iter();
+        let master = produced
+            .next()
+            .expect("a bounce renders its master as output 0");
+        Self {
+            master: M::result(master),
+            stems: produced.collect(),
+        }
     }
 }
 
@@ -839,6 +966,10 @@ pub enum BounceError {
     /// or the graph's shape did not allow one.
     #[error("bounce: the graph could not be forked: {0}")]
     Fork(tutti_graph::ForkError),
+    /// The bounce was cancelled ([`BounceHandle::cancel`]): nothing was
+    /// produced, and a file target is as it was.
+    #[error("the bounce was cancelled")]
+    Cancelled,
     /// The pipeline's: an I/O or encoder error, a fork that failed mid-render
     /// (naming its node's key), a lost event.
     #[error("bounce: {0}")]
@@ -1052,7 +1183,7 @@ impl BounceHandle {
     /// stages, during the measurement and the conversion, before each file is
     /// finalized and before it is put in place: doc 019 section 6.2), or
     /// before it starts for a job that has not run. It reports
-    /// [`Outcome::Cancelled`] and drops the bounce's token; every temporary
+    /// [`BounceError::Cancelled`] and drops the bounce's token; every temporary
     /// file is removed and the target path is untouched. A cancel after the
     /// file is in place is too late and the render is `Finished`.
     pub fn cancel(&self) {
@@ -1158,7 +1289,7 @@ const PREPARING_STEPS: u32 = 4;
 /// Nothing else reports it; the session warns once after
 /// [`BOUNCE_STALL_WARNING`].
 #[must_use = "a bounce renders nothing until it is run and finished"]
-pub struct BounceJob {
+pub struct BounceJob<M: Master> {
     pending: ToMain<PendingExport>,
     edit: Option<ToMain<PrepareEdit>>,
     ctx: OfflineTransport,
@@ -1170,9 +1301,10 @@ pub struct BounceJob {
     drops: Sender<Box<dyn Send>>,
     token: Arc<()>,
     handle: BounceHandle,
+    kind: PhantomData<fn() -> M>,
 }
 
-impl std::fmt::Debug for BounceJob {
+impl<M: Master> std::fmt::Debug for BounceJob<M> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("BounceJob")
             .field("ctx", &self.ctx)
@@ -1184,7 +1316,7 @@ impl std::fmt::Debug for BounceJob {
     }
 }
 
-impl BounceJob {
+impl<M: Master> BounceJob<M> {
     /// The handle that cancels this job and reads its progress.
     #[must_use]
     pub fn handle(&self) -> BounceHandle {
@@ -1194,7 +1326,7 @@ impl BounceJob {
     /// Builds the fork, runs the edit, commits it, and renders. Any thread;
     /// it blocks for the whole render, or until [`BounceHandle::cancel`]
     /// stops it.
-    pub fn run(self) -> BounceRendered {
+    pub fn run(self) -> BounceRendered<M> {
         let Self {
             pending,
             edit,
@@ -1206,6 +1338,7 @@ impl BounceJob {
             drops,
             token,
             handle,
+            kind: _,
         } = self;
         // The band the render leaves for the session's steps depends on the
         // targets alone: the readers do not exist until the taps are open.
@@ -1293,8 +1426,11 @@ impl BounceJob {
             )
             .collect();
         let result = tutti_export::render(&mut graph, &job, clock.as_ref(), outputs, &mut control)
-            .map(|outcome| outcome.map(|produced| Bounced { produced }))
-            .map_err(BounceError::from);
+            .map_err(BounceError::from)
+            .and_then(|outcome| match outcome {
+                Outcome::Finished(produced) => Ok(Bounced::new(produced)),
+                Outcome::Cancelled => Err(BounceError::Cancelled),
+            });
         BounceRendered {
             result,
             graph: Some(graph.erase()),
@@ -1369,17 +1505,17 @@ fn open_stem_taps(
 /// (dropped on the main thread by [`Session::finish_bounce`]), and the
 /// bounce's token. `Send`.
 #[must_use = "finish the bounce with `Session::finish_bounce` (or `finish_bounce_unannounced`)"]
-pub struct BounceRendered {
-    result: Result<Outcome<Bounced>, BounceError>,
+pub struct BounceRendered<M: Master> {
+    result: Result<Bounced<M>, BounceError>,
     /// The fork, sealed or not: whatever it holds is dropped on the main thread.
     graph: Option<ToMain<Box<dyn Send>>>,
     _token: Arc<()>,
 }
 
-impl BounceRendered {
+impl<M: Master> BounceRendered<M> {
     fn cancelled(graph: Option<ToMain<Box<dyn Send>>>, token: Arc<()>) -> Self {
         Self {
-            result: Ok(Outcome::Cancelled),
+            result: Err(BounceError::Cancelled),
             graph,
             _token: token,
         }
@@ -1394,14 +1530,14 @@ impl BounceRendered {
     }
 }
 
-impl std::fmt::Debug for BounceRendered {
+impl<M: Master> std::fmt::Debug for BounceRendered<M> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("BounceRendered")
             .field(
                 "result",
                 &match &self.result {
-                    Ok(Outcome::Finished(b)) => format!("Ok({} targets)", b.targets().len()),
-                    Ok(Outcome::Cancelled) => "Cancelled".to_string(),
+                    Ok(b) => format!("Ok({} stems)", b.stems().len()),
+                    Err(BounceError::Cancelled) => "Cancelled".to_string(),
                     Err(_) => "Err".to_string(),
                 },
             )
@@ -1492,7 +1628,10 @@ impl Session {
     /// range, whose range keeps no frame, or for a graph with no outputs (all
     /// before anything is forked); [`BounceError::NotForkable`] and
     /// [`BounceError::Fork`] for a node the fork cannot copy.
-    pub fn bounce_start(&mut self, bounce: Bounce<NodeKey>) -> Result<BounceJob, BounceError> {
+    pub fn bounce_start<M: Master>(
+        &mut self,
+        bounce: Bounce<NodeKey, M>,
+    ) -> Result<BounceJob<M>, BounceError> {
         if self.bounce.in_flight() {
             return Err(BounceError::InFlight);
         }
@@ -1522,19 +1661,18 @@ impl Session {
         }
         // The width the master file has without being told: the root's.
         let outputs = self.graph.outputs();
-        let master = master.ok_or(BounceConfigError::Missing(Field::Master))?;
         let rate = sample_rate.unwrap_or_else(|| self.transport.sample_rate());
 
         // The span: the range named, else the transport's loop, else the end
         // the bounce names; never a guess.
-        let map = self.transport.settings.tempo_map();
+        let map = self.transport.settings().tempo_map();
         let looped = self.transport.motion.loop_region().active();
         let range = chosen(range, looped, until)?;
         let (start, length) = span(range, looped, &map, rate)?;
 
         let channels = channels.unwrap_or_else(|| ChannelLayout::clamped(outputs));
-        let target: Target = match master {
-            Master::File(path) => {
+        let target: Target = match master.path() {
+            Some(path) => {
                 let format = format.ok_or(BounceConfigError::Missing(Field::Format))?;
                 let file = FileTarget::new(path, format, channels)
                     .with_topology(file_topology)
@@ -1543,7 +1681,7 @@ impl Session {
                     .with_normalize(normalize.map(NormalizeSpec::own));
                 file.into()
             }
-            Master::Buffers => {
+            None => {
                 if normalize.is_some() {
                     return Err(BounceConfigError::NormalizeBuffers.into());
                 }
@@ -1691,6 +1829,7 @@ impl Session {
             drops,
             token: Arc::clone(&self.bounce.token),
             handle: BounceHandle::default(),
+            kind: PhantomData,
         };
         // Offline is announced here, on the control thread, before the job
         // can render a block.
@@ -1708,12 +1847,14 @@ impl Session {
     ///
     /// # Errors
     ///
-    /// The render's [`BounceError`]: a failed fork build or render (a fork
-    /// that failed mid-render names its node's key), an I/O or encoder error.
-    pub fn finish_bounce(
+    /// The render's [`BounceError`]: [`Cancelled`](BounceError::Cancelled) for
+    /// a bounce its [`BounceHandle`] stopped, a failed fork build or render (a
+    /// fork that failed mid-render names its node's key), an I/O or encoder
+    /// error.
+    pub fn finish_bounce<M: Master>(
         &mut self,
-        rendered: BounceRendered,
-    ) -> Result<Outcome<Bounced>, BounceError> {
+        rendered: BounceRendered<M>,
+    ) -> Result<Bounced<M>, BounceError> {
         let result = self.finish_bounce_unannounced(rendered);
         #[cfg(feature = "plugin")]
         self.render_mode_phase();
@@ -1740,10 +1881,10 @@ impl Session {
     /// # Errors
     ///
     /// As [`finish_bounce`](Self::finish_bounce).
-    pub fn finish_bounce_unannounced(
+    pub fn finish_bounce_unannounced<M: Master>(
         &mut self,
-        rendered: BounceRendered,
-    ) -> Result<Outcome<Bounced>, BounceError> {
+        rendered: BounceRendered<M>,
+    ) -> Result<Bounced<M>, BounceError> {
         crate::main_thread();
         let BounceRendered {
             result,
@@ -1763,7 +1904,10 @@ impl Session {
     /// # Errors
     ///
     /// As `bounce_start` and `finish_bounce`.
-    pub fn bounce(&mut self, bounce: Bounce<NodeKey>) -> Result<Outcome<Bounced>, BounceError> {
+    pub fn bounce<M: Master>(
+        &mut self,
+        bounce: Bounce<NodeKey, M>,
+    ) -> Result<Bounced<M>, BounceError> {
         let job = self.bounce_start(bounce)?;
         self.finish_bounce(job.run())
     }
@@ -1797,7 +1941,7 @@ mod tests {
     const RATE: SampleRate = SampleRate(48_000.0);
 
     /// A render of a few blocks into memory.
-    fn short() -> Bounce {
+    fn short() -> Bounce<NodeKey, BufferMaster> {
         Bounce::project()
             .master_buffers()
             .range(Range::Seconds(Seconds(0.0), Seconds(0.01)))
@@ -1814,11 +1958,8 @@ mod tests {
     }
 
     /// The planes of a finished buffers bounce.
-    fn planes(out: Result<Outcome<Bounced>, BounceError>) -> Vec<Vec<f32>> {
-        match out.expect("renders").finished().map(Bounced::into_master) {
-            Some(Produced::Buffers(r)) => r.into_planes(),
-            _ => unreachable!("buffers were asked for"),
-        }
+    fn planes(out: Result<Bounced<BufferMaster>, BounceError>) -> Vec<Vec<f32>> {
+        out.expect("renders").into_master().into_planes()
     }
 
     /// 120 BPM for four beats, then 60: a step at beat 4, which is second 2.
@@ -1928,16 +2069,18 @@ mod tests {
     }
 
     /// **Nothing is guessed, and nothing is half-started.** A bounce with no
-    /// range, loop or end, no format for a file, no target, or a normalize on
+    /// range, loop or end, no format for a file, or a normalize on
     /// memory is refused by name before anything is forked: no token is held
     /// after.
     #[test]
     fn a_bounce_that_misses_what_it_needs_is_refused_before_it_forks() {
         let mut session = session();
-        let refused = |session: &mut Session, b: Bounce| match session.bounce_start(b) {
-            Err(BounceError::Config(e)) => e,
-            other => panic!("expected a config error, got {other:?}"),
-        };
+        fn refused<M: Master>(session: &mut Session, b: Bounce<NodeKey, M>) -> BounceConfigError {
+            match session.bounce_start(b) {
+                Err(BounceError::Config(e)) => e,
+                other => panic!("expected a config error, got {other:?}"),
+            }
+        }
         assert_eq!(
             refused(&mut session, Bounce::project().master_buffers()),
             BounceConfigError::NoRange
@@ -1948,10 +2091,6 @@ mod tests {
                 Bounce::project().until(Beat(1.0)).master("x.wav")
             ),
             BounceConfigError::Missing(Field::Format)
-        );
-        assert_eq!(
-            refused(&mut session, Bounce::project().until(Beat(1.0))),
-            BounceConfigError::Missing(Field::Master)
         );
         assert_eq!(
             refused(
@@ -2005,7 +2144,7 @@ mod tests {
         assert!(handle.progress().is_none(), "nothing before the job runs");
         *job_handle.lock().unwrap() = Some(handle.clone());
         let done = session.finish_bounce(job.run()).unwrap();
-        assert!(done.finished().is_some());
+        drop(done);
         let at_edit = seen.lock().unwrap()[0];
         assert_eq!(at_edit.stage(), Stage::Preparing);
         assert!((at_edit.fraction() - 0.025).abs() < 1e-6, "{at_edit:?}");
@@ -2026,21 +2165,13 @@ mod tests {
         let mut session = session();
         let job = session.bounce_start(short()).unwrap();
         assert_eq!(session.render_mode(), RenderMode::Offline);
-        session
-            .finish_bounce_unannounced(job.run())
-            .unwrap()
-            .finished()
-            .expect("not cancelled");
+        session.finish_bounce_unannounced(job.run()).unwrap();
         assert!(!session.bounce_in_flight(), "the token is released");
         assert_eq!(session.render_mode(), RenderMode::Offline, "not announced");
         // The next bounce starts with no Realtime in between.
         let job = session.bounce_start(short()).unwrap();
         assert_eq!(session.render_mode(), RenderMode::Offline);
-        session
-            .finish_bounce_unannounced(job.run())
-            .unwrap()
-            .finished()
-            .expect("not cancelled");
+        session.finish_bounce_unannounced(job.run()).unwrap();
         session.run_phase(
             Phase::RenderMode,
             PhaseCx::at(Instant::now()),
@@ -2052,11 +2183,7 @@ mod tests {
             "the phase announces"
         );
 
-        session
-            .bounce(short())
-            .unwrap()
-            .finished()
-            .expect("not cancelled");
+        session.bounce(short()).unwrap();
         assert_eq!(
             session.render_mode(),
             RenderMode::Realtime,
@@ -2126,9 +2253,7 @@ mod tests {
                     *into.lock().unwrap() = Some((prepared.ctx.is_rolling(), prepared.ctx.beat()));
                 },
             )))
-            .expect("the bounce renders")
-            .finished()
-            .expect("not cancelled");
+            .expect("the bounce renders");
         let (rolling, beat) = seen.lock().unwrap().expect("the edit ran");
         assert!(!rolling, "a frozen bounce's timeline must not roll");
         assert_eq!(beat, tutti_types::Beat(0.0));
@@ -2140,7 +2265,7 @@ mod tests {
     #[test]
     fn the_default_clock_starts_at_the_ranges_first_beat_on_the_projects_tempo() {
         let mut session = session();
-        session.transport().settings.set_tempo(Bpm::of(90.0));
+        session.transport().settings().set_tempo(Bpm::of(90.0));
         let seen: Arc<Mutex<Option<(tutti_types::Beat, Bpm)>>> = Arc::default();
         let into = Arc::clone(&seen);
         session
@@ -2155,9 +2280,7 @@ mod tests {
                         ));
                     })),
             )
-            .expect("renders")
-            .finished()
-            .expect("not cancelled");
+            .expect("renders");
         assert_eq!(
             seen.lock().unwrap().expect("the edit ran"),
             (Beat(3.0), Bpm::of(90.0))
@@ -2217,11 +2340,7 @@ mod tests {
         let first = start(&mut session);
         assert_eq!(collect(&mut session, t2), 2);
         assert_eq!(collect(&mut session, t2 + 50 * minute), 2);
-        session
-            .finish_bounce_unannounced(first.run())
-            .unwrap()
-            .finished()
-            .expect("not cancelled");
+        session.finish_bounce_unannounced(first.run()).unwrap();
         let second = start(&mut session);
         assert_eq!(
             collect(&mut session, t2 + 70 * minute),
@@ -2229,10 +2348,6 @@ mod tests {
             "the second bounce has been in flight for 20 minutes, not 70"
         );
         assert_eq!(collect(&mut session, t2 + 129 * minute), 2, "59 minutes");
-        session
-            .finish_bounce_unannounced(second.run())
-            .unwrap()
-            .finished()
-            .expect("not cancelled");
+        session.finish_bounce_unannounced(second.run()).unwrap();
     }
 }

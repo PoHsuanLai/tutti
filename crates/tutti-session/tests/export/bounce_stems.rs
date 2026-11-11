@@ -13,13 +13,14 @@ use std::collections::HashMap;
 use std::path::Path;
 
 use tutti_codec::{Format, Pcm};
-use tutti_export::{Error, Normalize, Outcome, Produced, Resample, TargetError};
-use tutti_graph::{Cx, ForkByClone, Io, Node, Prepare, Shape, Status};
+use tutti_export::{Error, Normalize, Produced, Resample, TargetError};
+use tutti_graph::{Cx, ForkByClone, Io, Node, NodeKey, Prepare, Shape, Status};
 use tutti_nodes::testing::Const;
 use tutti_session::{
     Bounce, BounceConfigError, BounceError, ExportClock, GraphSource, Latency, PreparedGraph,
     Range, Session, Stem, StemGain, Tail,
 };
+use tutti_session::{Bounced, BufferMaster, Master};
 use tutti_types::ChannelLayout;
 use tutti_types::{Db, SampleRate, Samples, Seconds};
 
@@ -36,34 +37,35 @@ fn session() -> Session {
 
 /// The mix into memory for `seconds`: nothing trimmed, no tail, no musical
 /// time.
-fn bounce(seconds: f64) -> Bounce {
+fn base(seconds: f64) -> Bounce {
     Bounce::project()
-        .master_buffers()
         .range(Range::Seconds(Seconds(0.0), Seconds(seconds)))
         .clock(ExportClock::frozen())
         .latency(Latency::Keep)
         .tail(Tail::None)
 }
 
+/// [`base`] into memory.
+fn bounce(seconds: f64) -> Bounce<NodeKey, BufferMaster> {
+    base(seconds).master_buffers()
+}
+
 /// The planes of every target a finished bounce produced, master first.
-fn planes(out: Result<Outcome<tutti_session::Bounced>, BounceError>) -> Vec<Vec<Vec<f32>>> {
-    out.expect("the bounce renders")
-        .finished()
-        .expect("nothing cancels it")
-        .into_targets()
-        .into_iter()
-        .map(|p| match p {
+fn planes(out: Result<Bounced<BufferMaster>, BounceError>) -> Vec<Vec<Vec<f32>>> {
+    let (master, stems) = out.expect("the bounce renders").into_parts();
+    std::iter::once(master.into_planes())
+        .chain(stems.into_iter().map(|p| match p {
             Produced::Buffers(rendered) => rendered.into_planes(),
             other => panic!("expected planes, got {other:?}"),
-        })
+        }))
         .collect()
 }
 
 /// What a bounce is refused with, started and run on this thread.
-fn refused(session: &mut Session, bounce: Bounce) -> BounceError {
+fn refused<M: Master>(session: &mut Session, bounce: Bounce<NodeKey, M>) -> BounceError {
     match session.bounce(bounce) {
         Err(e) => e,
-        Ok(out) => panic!("expected a refusal, got {:?}", out.finished()),
+        Ok(out) => panic!("expected a refusal, got {:?}", out.stems().len()),
     }
 }
 
@@ -150,7 +152,7 @@ fn stems_are_aligned_with_the_master_and_sum_to_it() {
     }
     let frames = 2_000;
     let seconds = Samples(frames).to_seconds(RATE).get();
-    let stems = |bounce: Bounce| {
+    let stems = |bounce: Bounce<NodeKey, BufferMaster>| {
         bounce
             .stem_with(Stem::buffers(steady))
             .stem_with(Stem::buffers(late))
@@ -299,16 +301,14 @@ fn every_target_has_the_same_length_and_a_stem_its_own_format() {
     let stem = dir.path().join("stem.wav");
     let done = session
         .bounce(
-            bounce(0.25)
+            base(0.25)
                 .format(Format::Wav(Pcm::Int16))
                 .resample(Resample::to(44_100_u32))
                 .master(&master)
                 .stem_with(Stem::new(node, &stem).format(float_wav())),
         )
-        .expect("renders")
-        .finished()
-        .expect("nothing cancels it");
-    assert_eq!(done.targets().len(), 2);
+        .expect("renders");
+    assert_eq!(done.stems().len(), 1);
 
     let master_spec = hound::WavReader::open(&master).unwrap().spec();
     assert_eq!(
@@ -351,7 +351,7 @@ fn shared_gain_keeps_the_balance_and_each_measures_its_own() {
         let paths = ["master", "loud", "quiet"].map(|n| dir.path().join(format!("{tag}-{n}.wav")));
         let done = session
             .bounce(
-                bounce(0.1)
+                base(0.1)
                     .format(float_wav())
                     .master(&paths[0])
                     .normalize(target)
@@ -359,13 +359,13 @@ fn shared_gain_keeps_the_balance_and_each_measures_its_own() {
                     .stem(quiet, &paths[2])
                     .normalize_stems(gain),
             )
-            .expect("renders")
-            .finished()
-            .expect("nothing cancels it");
-        let gains: Vec<Option<Db>> = done
-            .into_targets()
-            .into_iter()
-            .map(|p| p.file().expect("files").gain)
+            .expect("renders");
+        let (master, stems) = done.into_parts();
+        let gains: Vec<Option<Db>> = std::iter::once(master.gain)
+            .chain(stems.into_iter().map(|p| match p {
+                Produced::File(written) => written.gain,
+                other => panic!("expected a file, got {other:?}"),
+            }))
             .collect();
         let levels = paths.clone().map(|p| {
             let plane = read_wav(&p).0.swap_remove(0);
@@ -422,15 +422,17 @@ fn a_request_that_cannot_work_is_refused_by_name() {
     let mut session = session();
     let (node, _) = session.graph().insert(Const::mono(0.5));
     session.graph().set_outputs_from(node);
-    let why = |session: &mut Session, b: Bounce| match refused(session, b) {
-        BounceError::Config(why) => why,
-        other => panic!("expected a refusal by name, got {other:?}"),
-    };
+    fn why<M: Master>(session: &mut Session, b: Bounce<NodeKey, M>) -> BounceConfigError {
+        match refused(session, b) {
+            BounceError::Config(why) => why,
+            other => panic!("expected a refusal by name, got {other:?}"),
+        }
+    }
 
     assert_eq!(
         why(
             &mut session,
-            bounce(0.01)
+            base(0.01)
                 .format(float_wav())
                 .master(path("m.wav"))
                 .stem(node, path("s.wav"))
@@ -454,7 +456,7 @@ fn a_request_that_cannot_work_is_refused_by_name() {
     assert_eq!(
         why(
             &mut session,
-            bounce(0.01)
+            base(0.01)
                 .format(float_wav())
                 .master(path("one.wav"))
                 .stem(node, path("one.wav")),
@@ -464,7 +466,7 @@ fn a_request_that_cannot_work_is_refused_by_name() {
     assert_eq!(
         why(
             &mut session,
-            bounce(0.01)
+            base(0.01)
                 .format(float_wav())
                 .master(path("m.wav"))
                 .stem(node, path("two.wav"))

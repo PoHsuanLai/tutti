@@ -121,7 +121,7 @@ fn render(
         Some((start, duration)) => {
             let source = MemorySource::placed(wave, Beat(start), duration.map(BeatDuration::new))
                 .expect("a placeable wave");
-            let mut pool = VoicePool::new().with_tempo(transport.settings.tempo_reader());
+            let mut pool = VoicePool::new().with_tempo(transport.settings().tempo_reader());
             pool.insert_voice(
                 SlotId(1),
                 Voice {
@@ -147,7 +147,7 @@ fn render(
     }));
     ed.commit().expect("commits");
     let engine = Engine::new(&transport, &mut ed, exec).expect("within the limits");
-    transport.settings.set_tempo_map(Arc::clone(map));
+    transport.settings().set_tempo_map(Arc::clone(map));
     transport.motion.try_send(MotionEvent::Play).expect("room");
     let mut left = Vec::with_capacity(frames + block);
     let mut buf = vec![0.0f32; block * 2];

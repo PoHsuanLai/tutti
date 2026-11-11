@@ -261,8 +261,6 @@ impl<'a, T> Outputs<'a, T> {
     ///
     /// ```compile_fail
     /// # use tutti_vst2_ffi::host::HostBuffer;
-    /// // Mutation (run): return `&'a mut [T]` from `get_mut` again and this
-    /// // compiles, so the doctest fails.
     /// let mut host_buffer: HostBuffer<f32> = HostBuffer::new(0, 1);
     /// let inputs: Vec<Vec<f32>> = vec![];
     /// let mut outputs = vec![vec![0.0f32; 4]];

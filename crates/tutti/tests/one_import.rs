@@ -11,7 +11,7 @@
 //! the note in `src/lib.rs`). It proves the vocabulary arrives.
 
 use tutti::prelude::*;
-use tutti_types::MaxBlock;
+use tutti::types::MaxBlock;
 
 /// Everything below is reached through `tutti::` and nothing else. If the
 /// façade stopped re-exporting something, this stops compiling.

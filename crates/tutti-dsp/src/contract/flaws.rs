@@ -297,10 +297,7 @@ impl Design for ToyFdn {
     }
 
     fn channels(&self) -> Channels {
-        Channels {
-            input: ChannelLayout::MONO,
-            output: ChannelLayout::STEREO,
-        }
+        Channels::speakers(ChannelLayout::MONO, ChannelLayout::STEREO)
     }
 
     fn realization(&self) -> Unrun {

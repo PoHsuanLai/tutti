@@ -112,10 +112,7 @@ impl Design for FreeverbDesign {
     });
 
     fn channels(&self) -> Channels {
-        Channels {
-            input: ChannelLayout::MONO,
-            output: ChannelLayout::STEREO,
-        }
+        Channels::speakers(ChannelLayout::MONO, ChannelLayout::STEREO)
     }
 
     fn blank(&self, rate: SampleRate) -> Network {

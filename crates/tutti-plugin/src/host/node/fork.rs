@@ -122,22 +122,22 @@
 //! (`format::in_process`'s `fork` module).
 
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError, Weak};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Weak};
 use std::time::Duration;
 
 use tutti_graph::{
     ForkBuild, ForkCause, ForkFaultKind, ForkHealth, ForkMode, ForkSource, Forked, IntoNode, Node,
     NodeParts,
 };
+use tutti_types::Latency;
 use tutti_types::Samples;
-use tutti_types::{Latency, SampleRate};
 
-use super::{Bound, PluginClient, ProcessGuard, Unbound};
+use super::{Bound, PluginClient, Unbound};
 use tutti_plugin_host::{ForkedSources, PluginControls};
-use tutti_plugin_ipc::PluginBridge;
 use tutti_plugin_ipc::PluginRenderFault;
 use tutti_plugin_ipc::{BridgeConfig, unique_socket_path};
+use tutti_plugin_ipc::{OfflineWait, PluginBridge};
 use tutti_plugin_types::PluginForkError;
 use tutti_plugin_types::RenderMode;
 use tutti_plugin_types::StateError;
@@ -158,52 +158,18 @@ pub(super) struct ForkWatch {
     /// node's `prepare` once the plugin has settled (`usize::MAX`: not
     /// prepared yet).
     planned: AtomicUsize,
-    /// The fork's bridge and process. Weak: a probe the editor keeps must not
-    /// keep the fork alive after its node is gone (a dropped fork has nothing
-    /// left to fail), and the fork's own batcher holds this watch.
+    /// The fork's bridge. Weak: a probe the editor keeps must not keep the
+    /// fork alive after its node is gone (a dropped fork has nothing left to
+    /// fail), and the fork's own batcher holds the wait.
     bridge: Weak<PluginBridge>,
-    server: Weak<ProcessGuard>,
-    /// Latched by the batcher when a block first misses `budget`.
-    gave_up: AtomicBool,
-    /// Latched, with its exit status, when the server was found dead.
-    died: Mutex<Option<String>>,
-    /// Latched when the fork's plugin was found refusing its rate.
-    refusal: Mutex<Option<(SampleRate, String)>>,
-    budget: Duration,
+    /// What the fork's batcher waits on and latches into (shared with it).
+    wait: Arc<OfflineWait>,
 }
 
 impl ForkWatch {
-    /// The per-block budget of an offline wait (`BridgeConfig::timeout_ms`).
-    pub(super) fn budget(&self) -> Duration {
-        self.budget
-    }
-
-    /// Whether an offline wait should not wait at all any more: a block
-    /// already missed its budget, or the server is dead.
-    pub(super) fn stopped_waiting(&self) -> bool {
-        self.gave_up.load(Ordering::Acquire) || lock(&self.died).is_some()
-    }
-
-    /// Latch a missed budget.
-    pub(super) fn give_up(&self) {
-        self.gave_up.store(true, Ordering::Release);
-    }
-
-    /// Latch a crash the bridge reported, unless a death is latched already.
-    pub(super) fn latch_crash(&self, cause: Option<String>) {
-        let mut died = lock(&self.died);
-        if died.is_none() {
-            *died = Some(cause.unwrap_or_else(|| "no cause latched".to_string()));
-        }
-    }
-
-    /// Latch a rate refusal: the fork renders silence, at once, for the rest
-    /// of the render.
-    pub(super) fn latch_refusal(&self, refusal: (SampleRate, String)) {
-        let mut slot = lock(&self.refusal);
-        if slot.is_none() {
-            *slot = Some(refusal);
-        }
+    /// The wait the fork's batcher is given.
+    pub(super) fn wait(&self) -> Arc<OfflineWait> {
+        Arc::clone(&self.wait)
     }
 
     /// Record the latency the fork's graph is compiled against: what the
@@ -224,23 +190,6 @@ impl ForkWatch {
         let now = self.controls.declared_latency();
         (now != planned).then_some((planned, now))
     }
-
-    /// Ask the process whether it has exited, and latch it if so.
-    pub(super) fn server_died(&self) -> bool {
-        let mut died = lock(&self.died);
-        if died.is_some() {
-            return true;
-        }
-        let status = self.server.upgrade().and_then(|s| s.exited());
-        if let Some(status) = status {
-            *died = Some(format!("plugin-server exited: {status}"));
-        }
-        died.is_some()
-    }
-}
-
-fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
-    m.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
 impl ForkHealth for ForkWatch {
@@ -249,9 +198,9 @@ impl ForkHealth for ForkWatch {
     /// latched, then a latency that moved after the fork's graph was compiled
     /// (`Failed`: the render ran, misaligned).
     fn fault(&self) -> Option<(ForkFaultKind, ForkCause)> {
-        if self.gave_up.load(Ordering::Acquire) {
+        if self.wait.gave_up() {
             let cause = PluginRenderFault::TimedOut {
-                budget: self.budget,
+                budget: self.wait.budget(),
             };
             return Some((ForkFaultKind::TimedOut, ForkCause::new(cause)));
         }
@@ -259,8 +208,8 @@ impl ForkHealth for ForkWatch {
             let cause = PluginRenderFault::Crashed { cause };
             (ForkFaultKind::Crashed, ForkCause::new(cause))
         };
-        if self.server_died() {
-            return lock(&self.died).clone().map(crashed);
+        if self.wait.server_died() {
+            return self.wait.death().map(crashed);
         }
         if let Some(bridge) = self.bridge.upgrade()
             && bridge.is_crashed()
@@ -271,7 +220,7 @@ impl ForkHealth for ForkWatch {
                     .unwrap_or_else(|| "no cause latched".to_string()),
             ));
         }
-        if let Some((rate, reason)) = lock(&self.refusal).clone() {
+        if let Some((rate, reason)) = self.wait.refusal() {
             let cause = PluginRenderFault::RateRefused { rate, reason };
             return Some((ForkFaultKind::Failed, ForkCause::new(cause)));
         }
@@ -416,11 +365,10 @@ impl Capture {
             controls: fork.controls.clone(),
             planned: AtomicUsize::new(usize::MAX),
             bridge: Arc::downgrade(&fork.bridge),
-            server: Arc::downgrade(&fork.process_guard),
-            gave_up: AtomicBool::new(false),
-            refusal: Mutex::new(None),
-            died: Mutex::new(None),
-            budget: timeout,
+            wait: Arc::new(OfflineWait::new(
+                timeout,
+                Arc::downgrade(&fork.process_guard),
+            )),
         });
         let mut fork = fork.bind(self.tempo);
         fork.state.params.seed(&self.delivered);
@@ -428,7 +376,7 @@ impl Capture {
             // Advisory: a plugin without the concept keeps rendering as it
             // would live, which is not an error (`Features::RENDER_MODE`).
             let _ = fork.set_render_mode(RenderMode::Offline);
-            fork.state.io.set_offline_wait(Arc::clone(&watch));
+            fork.state.io.set_offline_wait(watch.wait());
             // Not pinned end to end here: the out-of-process reference
             // plugin is CLAP, which has no system-time field. The in-process
             // VST2 fork drops its clock the same way, and
@@ -588,11 +536,7 @@ mod tests {
             controls: controls.clone(),
             planned: AtomicUsize::new(usize::MAX),
             bridge: Weak::new(),
-            server: Weak::new(),
-            gave_up: AtomicBool::new(false),
-            refusal: Mutex::new(None),
-            died: Mutex::new(None),
-            budget: Duration::from_secs(1),
+            wait: Arc::new(OfflineWait::new(Duration::from_secs(1), Weak::new())),
         };
         assert!(watch.fault().is_none(), "not planned yet");
         controls.set_pipeline(Samples(64));

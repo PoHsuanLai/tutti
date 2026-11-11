@@ -19,13 +19,20 @@
 #[global_allocator]
 static RT_NO_ALLOC_HARNESS: assert_no_alloc::AllocDisabler = assert_no_alloc::AllocDisabler;
 
+mod batcher;
 mod client;
 mod config;
 mod error;
+mod offline_wait;
+mod process_guard;
 mod protocol;
 mod subprocess;
 mod transport;
 
+#[cfg(test)]
+mod process_pipeline_tests;
+
+pub use batcher::{Batcher, BlockPayload, Chunks};
 pub use client::audio::{
     AudioBridge, BridgeEvent, BridgeListener, BridgeThread, HarmonyInputs, Submitted,
 };
@@ -36,6 +43,8 @@ pub use client::{EditorLoader, PluginBridge};
 pub use client::audio::{PARAM_BUFFERS, PayloadPool};
 pub use config::{AudioConfig, BridgeConfig, CatalogConfig, NO_SCAN_DIRS, unique_socket_path};
 pub use error::PluginRenderFault;
+pub use offline_wait::OfflineWait;
+pub use process_guard::ProcessGuard;
 pub use protocol::frame::{FrameTooLarge, read_frame, write_frame};
 pub use protocol::{
     BridgeMessage, HostMessage, MAX_FRAME_BYTES, MAX_STATE_BYTES, PROTOCOL_VERSION,

@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use tutti_types::SampleRate;
 
-use tutti_plugin_ipc::PluginBridge;
+use tutti_plugin_ipc::{PluginBridge, ProcessGuard};
 use tutti_plugin_types::BlockCounts;
 use tutti_plugin_types::{
     AutomationMode, ContentScale, Delivered, EditorCapabilities, EditorError, EditorSize,
@@ -14,7 +14,6 @@ use tutti_plugin_types::{
     WindowHandle,
 };
 
-use crate::host::node::ProcessGuard;
 use tutti_plugin_host::{
     HostAutomationState, HostEditor, HostParams, HostPresets, HostRenderMode, HostState,
     InvalidateSink, OptionalCapabilities, ParameterChangeSink, PluginHandle, RefreshSink,

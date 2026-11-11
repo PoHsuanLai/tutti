@@ -30,9 +30,8 @@
 //! ```
 //!
 //! Like `tutti-graph`, every module is private: everything is
-//! `tutti_session::Item`. Nothing here reaches Bevy
-//! (`scripts/check-bevy-free.sh`), and the crate re-exports no crate whole
-//! (`scripts/check-adapter.sh`).
+//! `tutti_session::Item`. Nothing here reaches Bevy,
+//! and the crate re-exports no crate whole (`cargo xtask check-session`).
 
 #![forbid(unsafe_code)]
 #![cfg_attr(docsrs, feature(doc_cfg))]

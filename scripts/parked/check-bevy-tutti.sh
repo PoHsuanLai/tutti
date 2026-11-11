@@ -1,14 +1,15 @@
 #!/usr/bin/env bash
 #
-# The adapter rules of design 015 §8 (checks 3 and 4) and a third (5), which
-# no compile can make.
+# The adapter rules of design 015 section 8 (checks 3 and 5), which no compile
+# can make.
 #
 # PARKED: `bevy-tutti` is out of the workspace (CLAUDE.md, "bevy-tutti is
-# parked"), so checks 3 and 5, which scan its source, are skipped with a note
-# while `ADAPTER_PARKED` is 1 (the default below). Check 4 (the session
-# re-exports no crate whole) is not about the adapter and always runs. To
-# un-park, set `ADAPTER_PARKED=0` (or flip the default); the scans and the
-# exception list are kept as they were so they come back unchanged.
+# parked"), so NOTHING RUNS THIS SCRIPT: not CI, not a `cargo xtask` recipe.
+# It is kept, whole, for the day the adapter is un-parked: put `crates/bevy-tutti`
+# back in `members`, port this to a Rust gate in `xtask/src/gates/` like the rest,
+# and run it in CI. Until then it can be run by hand and should pass against
+# `crates/bevy-tutti/src` as it stands. (Check 4, `tutti-session` re-exports no
+# crate whole, is not about the adapter and is the live `cargo xtask check-session`.)
 #
 # 3. `bevy-tutti` holds no engine composition. Its source
 #    (`crates/bevy-tutti/src`), tests and comments excluded, names none of the
@@ -17,17 +18,6 @@
 #    names (`.commit()`, `.apply(`) are not checked: they cannot tell an
 #    `Editor` from a `Session`. A type name can, and no composition happens
 #    without naming one.
-# 4. `tutti-session` is not an umbrella. Its source re-exports no crate (or
-#    module) whole: `pub use tutti_x as ...;`, `pub use tutti_x;`,
-#    `pub use tutti_x::{self ...}`, or a glob anywhere under a `tutti_` path
-#    (`pub use tutti_x::*;`, `pub use tutti_x::prelude::*;`,
-#    `pub use tutti_x::{a::*, B};`), with or without attributes in front,
-#    across lines, in groups nested to any depth
-#    (`pub use tutti_x::{a::{B}, self};`) and in a root group
-#    (`pub use {tutti_x as m};`). Single items are allowed: the types its own signatures
-#    take. (This check moved here from `check-bevy-free.sh`; its mutation
-#    records are below.)
-#
 # 5. `bevy-tutti` holds no policy. Its source (tests excluded, as in 3):
 #    - every `Instant::now` is the direct argument of a session phase:
 #      `run_phase(.., Instant::now())`, `run_phase_with_mods(..)` or
@@ -90,13 +80,7 @@
 # - `fn f(e: &mut tutti_graph::Editor) { e.commit(); }` in
 #   `src/graph/commit.rs` → (3) fails, names `Editor` at that line and
 #   `tutti_session::Session` (its `Graph`) as the owner.
-# - `pub use tutti_modulation as modulation;` in `tutti-session`'s `lib.rs` → (4)
-#   fails and names `tutti` as the umbrella; `pub use tutti_modulation;` and
-#   `pub use tutti_modulation::*;` fail the same way.
-# - (4), from `check-bevy-free.sh`: `#[cfg(feature = "modulation")] pub use
-#   tutti_modulation as modulation;` (an attribute on the same line), `pub use
-#   tutti_modulation::{self as modulation};` and `pub use tutti_engine::prelude::*;`
-#   each fail.
+
 # - The lexer, each case appended to `src/graph/commit.rs`: `Engine` in a
 #   `//` comment, in nested `/* */`, in a string and a raw string, inside
 #   `#[cfg(test)] mod tests { .. }` (with `"}"` and `'}'` in it) and as
@@ -123,13 +107,6 @@
 #   tutti_engine::Engine);` passes (the test-only field is still excluded),
 #   and `#[cfg(test)] fn t<A, B>() -> Option<tutti_engine::Engine>` reports
 #   a false hit (the generics limit above).
-# - (4), from review: `pub use tutti_modulation::{a::{B}, self};` and
-#   `pub use {tutti_modulation as m};` passed the old regex. Check 4 now parses the
-#   use tree, and both fail, as do `pub use ::tutti_modulation::{x::{y::{*}}};` and
-#   a multi-line `pub use tutti_modulation::{ a::{B, C}, self as m, };`. These
-#   pass: `pub use tutti_modulation::{a::{B}, C};`, `pub use {tutti_modulation::A as M};`,
-#   `pub(crate) use tutti_modulation;`, and `pub use tutti_modulation;` in a comment or
-#   a string. Every earlier (4) mutation above still fails.
 #
 # - (5), each appended to `src/graph/commit.rs` (or `midi/hardware/device.rs`)
 #   and removed. These fail: `Instant::now()` in a fn that is no phase
@@ -158,26 +135,19 @@
 #   braces, not by parsing, so a `fn` in a macro body can mis-name it.
 #
 # Usage:
-#   scripts/check-adapter.sh
+#   scripts/parked/check-bevy-tutti.sh
 
 set -uo pipefail
 
-cd "$(dirname "$0")/.."
+cd "$(dirname "$0")/../.."
 
 readonly ADAPTER_SRC=crates/bevy-tutti/src
-readonly SESSION_SRC=crates/tutti-session/src
-# 1: bevy-tutti is parked and its checks (3 and 5) are skipped; 0: scan it.
-readonly ADAPTER_PARKED=${ADAPTER_PARKED:-1}
 
 # A moved crate must fail here rather than leave both scans reading nothing.
-dirs=("$SESSION_SRC")
-[[ $ADAPTER_PARKED -eq 0 ]] && dirs+=("$ADAPTER_SRC")
-for dir in "${dirs[@]}"; do
-  if [ -z "$(find "$dir" -name '*.rs' -print -quit 2>/dev/null)" ]; then
-    echo "FAIL: $dir holds no .rs file; was the crate moved?"
-    exit 1
-  fi
-done
+if [ -z "$(find "$ADAPTER_SRC" -name '*.rs' -print -quit 2>/dev/null)" ]; then
+  echo "FAIL: $ADAPTER_SRC holds no .rs file; was the crate moved?"
+  exit 1
+fi
 
 # DENY: `type|owner, and what to call instead`. The owner is printed on a hit.
 readonly deny_list='
@@ -317,9 +287,6 @@ readonly adapter_pl
 
 fail=0
 
-if [[ $ADAPTER_PARKED -eq 1 ]]; then
-  echo "NOTE: bevy-tutti is parked; checks 3 and 5 (the adapter's composition and policy) are skipped."
-else
 # 3. The adapter's source. Perl: one pass to collect the out-of-line test
 #    modules, one to blank and scan.
 hits=$(DENY="$deny_list" perl -e "$prelude_pl$adapter_pl"'
@@ -359,89 +326,6 @@ if [[ -n $hits ]]; then
   echo "      windows. Move the composition into tutti-session and call it from here."
   fail=1
 fi
-fi  # ADAPTER_PARKED
-
-# 4. Whole-crate re-exports in the session. Each file is lexed (comments
-#    and literals blanked), and each `pub use ... ;` is parsed as a use
-#    tree, braces nested to any depth, so a statement spanning lines, a
-#    group inside a group, and a root group (`pub use {..};`) are all read.
-#    `pub(crate) use` is not a re-export and is not read. A leaf is a hit
-#    when its full path starts at a `tutti_` crate (optionally `::`-led) and
-#    it is:
-#    - the crate itself, with or without `as NAME` (`tutti_x`);
-#    - `self` (`tutti_x::{self}`, `tutti_x::a::{self as m}`: a crate or
-#      module whole);
-#    - a glob at any depth (`tutti_x::*`, `tutti_x::prelude::*`).
-hits=$(find "$SESSION_SRC" -name '*.rs' -print0 | sort -z | xargs -0 perl -e "$prelude_pl"'
-my @found;
-# Parse one use tree from @$t at $$k under the path @$pre; record the
-# whole-crate leaves.
-sub tree {
-  my ($t, $k, $pre, $hit) = @_;
-  my @path = @$pre;
-  $$k++ if $$k < @$t && $t->[$$k] eq "::";
-  while ($$k < @$t) {
-    my $tok = $t->[$$k];
-    if ($tok eq "{") {
-      $$k++;
-      while ($$k < @$t && $t->[$$k] ne "}") {
-        tree($t, $k, \@path, $hit);
-        $$k++ if $$k < @$t && $t->[$$k] eq ",";
-      }
-      $$k++;
-      return;
-    }
-    if ($tok eq "*") {
-      $$k++;
-      push @$hit, join("::", @path, "*") if @path && $path[0] =~ /\Atutti_/;
-      return;
-    }
-    if ($tok =~ /\A\w+\z/) {
-      $$k++;
-      if ($$k < @$t && $t->[$$k] eq "::") { push @path, $tok; $$k++; next }
-      my $full = join "::", @path, $tok;
-      $$k += 2 if $$k < @$t && $t->[$$k] eq "as";
-      if ($tok eq "self") {
-        push @$hit, $full if @path && $path[0] =~ /\Atutti_/;
-      } elsif (!@path && $tok =~ /\Atutti_/) {
-        push @$hit, $full;
-      }
-      return;
-    }
-    $$k++;
-    return;
-  }
-}
-for my $f (@ARGV) {
-  open my $fh, "<", $f or die "$f: $!\n";
-  local $/; my $src = <$fh>; close $fh;
-  my $c = lex($src);
-  while ($c =~ /(?<![\w)])pub\s+use\b/g) {
-    my $at = $-[0];
-    my $body_at = $+[0];
-    my $semi = index($c, ";", $body_at);
-    die "$f: unterminated use\n" if $semi < 0;
-    my $body = substr($c, $body_at, $semi - $body_at);
-    my @t = $body =~ /(::|\w+|[{},*])/g;
-    my ($k, @hit) = (0);
-    tree(\@t, \$k, [], \@hit);
-    next unless @hit;
-    my $line = 1 + (substr($c, 0, $at) =~ tr/\n//);
-    (my $text = substr($src, $at, $semi + 1 - $at)) =~ s/\s+/ /g;
-    print "$f:$line: $text\n    whole: ", join(", ", @hit), "\n";
-  }
-}
-')
-if [[ -n $hits ]]; then
-  echo "$hits"
-  echo "FAIL: tutti-session re-exports a crate whole (design 015 §8, check 4). It is"
-  echo "      not an umbrella: the umbrella is \`tutti\` (and \`bevy-tutti\` for a Bevy"
-  echo "      app). Re-export the single items tutti-session's own signatures take, or"
-  echo "      let the umbrella re-export the crate."
-  fail=1
-fi
-
-if [[ $ADAPTER_PARKED -eq 0 ]]; then
 # 5. Policy in the adapter. Same lexing and test exclusions as (3).
 hits=$(EXCEPTIONS="$exceptions" perl -e "$prelude_pl$adapter_pl"'
 my $root = shift @ARGV;
@@ -574,13 +458,7 @@ if [[ -n $hits ]]; then
   echo "      lane that removes it; a stale exception fails here and is deleted."
   fail=1
 fi
-fi  # ADAPTER_PARKED
-
 if [[ $fail -ne 0 ]]; then
   exit 1
 fi
-if [[ $ADAPTER_PARKED -eq 1 ]]; then
-  echo "OK: tutti-session re-exports no crate whole (bevy-tutti is parked: its checks were skipped)."
-else
-  echo "OK: bevy-tutti names no engine composition or policy, and tutti-session re-exports no crate whole."
-fi
+echo "OK: bevy-tutti names no engine composition or policy."

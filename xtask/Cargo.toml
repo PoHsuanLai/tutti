@@ -12,5 +12,5 @@ publish = false
 workspace = true
 
 # No dependencies, and none on a workspace crate: the commands that build and
-# gate the workspace must not depend on what they build (scripts/check-layout.sh).
+# gate the workspace must not depend on what they build (cargo xtask check-layout).
 [dependencies]

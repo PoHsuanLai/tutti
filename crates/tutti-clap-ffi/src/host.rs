@@ -502,7 +502,7 @@ fn main_only<R: Copy>(
 /// guard, answering `$fallback` for an unwired vtable or a panic.
 ///
 /// `guarded` forwards on any thread; `main_only` also refuses the call off the
-/// main thread (see [`main_only`]). `scripts/check-guards.sh` holds every
+/// main thread (see [`main_only`]). `cargo xtask check-guards` holds every
 /// `trampoline!` to one of the two.
 macro_rules! trampoline {
     (

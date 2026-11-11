@@ -172,17 +172,36 @@ pub(crate) const RECIPES: &[(&str, &str, &str)] = &[
         "",
         "the Bevy-free floor: builds and the dependency tree",
     ),
-    ("check-adapter", "", "scripts/check-adapter.sh"),
-    ("check-guards", "", "scripts/check-guards.sh"),
-    ("check-plugin-ffi", "", "scripts/check-plugin-ffi.sh"),
-    ("check-midi-ffi", "", "scripts/check-midi-ffi.sh"),
-    ("check-layout", "", "scripts/check-layout.sh"),
+    (
+        "check-session",
+        "",
+        "tutti-session is Bevy-free (closure and features) and re-exports no crate whole",
+    ),
+    (
+        "check-guards",
+        "",
+        "every plugin host callback runs under the panic guard",
+    ),
+    (
+        "check-ffi",
+        "",
+        "unsafe lives only in the -ffi crates (plugin formats and MIDI), everything else forbids it",
+    ),
+    (
+        "check-layout",
+        "",
+        "the repo layout, the crate layering, the codec boundary and the depth-free test paths",
+    ),
     (
         "check-range-types",
         "",
         "no plain derived Deserialize on a private tuple field",
     ),
-    ("check-hosting", "", "scripts/check-hosting.sh"),
+    (
+        "check-hosting",
+        "",
+        "every InProcess/OutOfProcess impl is listed in the plugin contract",
+    ),
     (
         "check-paths",
         "[<crate> <module>...]",
@@ -408,17 +427,15 @@ impl Planner<'_> {
                 self.out.push(Step::NoBevyInTree(Cmd::sh(
                     "cargo tree --locked -p tutti --features full -e normal",
                 )));
-                self.lines(&["scripts/check-bevy-free.sh"]);
             }
-            "check-adapter" => self.lines(&["scripts/check-adapter.sh"]),
-            "check-guards" => self.lines(&["scripts/check-guards.sh"]),
-            "check-plugin-ffi" => self.lines(&["scripts/check-plugin-ffi.sh"]),
-            "check-midi-ffi" => self.lines(&["scripts/check-midi-ffi.sh"]),
-            "check-layout" => self.lines(&["scripts/check-layout.sh"]),
+            "check-session" => self.out.push(Step::Gate(Gate::Session)),
+            "check-guards" => self.out.push(Step::Gate(Gate::Guards)),
+            "check-ffi" => self.out.push(Step::Gate(Gate::Ffi)),
+            "check-layout" => self.out.push(Step::Gate(Gate::Layout)),
             "check-range-types" => self.out.push(Step::Gate(Gate::RangeTypes)),
             "check-submodule-pins" => self.out.push(Step::Gate(Gate::SubmodulePins)),
             "check-doc-features" => self.out.push(Step::DocFeatures),
-            "check-hosting" => self.lines(&["scripts/check-hosting.sh"]),
+            "check-hosting" => self.out.push(Step::Gate(Gate::Hosting)),
             "check-paths" => self.out.push(Step::Gate(Gate::CanonicalPaths(args.to_vec()))),
             "lint" => self.lines(&[
                 "cargo fmt --all --check",
@@ -459,8 +476,8 @@ impl Planner<'_> {
             }
             "ci" => {
                 for d in [
-                    "lint", "deny", "check-paths", "check-bevy-free", "check-adapter", "check-guards",
-                    "check-plugin-ffi", "check-midi-ffi", "check-layout", "check-range-types", "check-hosting",
+                    "lint", "deny", "check-paths", "check-bevy-free", "check-session", "check-guards",
+                    "check-ffi", "check-layout", "check-range-types", "check-hosting",
                     "check-submodule-pins",
                     "check-features",
                     "check-loom", "test", "test-features", "test-editor", "test-doc",

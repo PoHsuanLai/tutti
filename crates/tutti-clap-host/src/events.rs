@@ -2135,10 +2135,8 @@ mod tests {
     /// `0x8000 / 0xFFFF`, not 0. A native MIDI 2.0 Note On at velocity 0 is a
     /// note-on at 0.0 (M2-104 §7.4.2: it "does not function as a Note Off").
     ///
-    /// Mutations (run): a MIDI 1.0 Note On at velocity 0 folded to a Note Off
-    /// at 0 instead of widened → the first assertion fails; the MIDI 2.0 Note
-    /// On at velocity 0 sent as a Note Off (the arm this replaced) → the
-    /// second fails.
+    /// Mutation (run): a MIDI 1.0 Note On at velocity 0 folded to a Note Off
+    /// at 0 instead of widened → the first assertion fails.
     #[test]
     fn a_midi1_note_on_at_velocity_zero_releases_at_half() {
         let ranges = PerNoteBendRanges::default();

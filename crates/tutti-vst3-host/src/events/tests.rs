@@ -1005,9 +1005,6 @@ mod message {
     /// "does not function as a Note Off"), at the smallest velocity above 0,
     /// 1/65535 (D.2's 0 -> 1), since a VST3 plugin reads a note-on at 0 as a
     /// release.
-    ///
-    /// Mutations (run): the velocity-0 arm sending a Note Off → fails; sending
-    /// the Note On at velocity 0 → fails.
     #[test]
     fn a_midi2_note_on_at_velocity_zero_is_a_note_on_at_the_least_velocity() {
         let event = packet(Message::Midi2(

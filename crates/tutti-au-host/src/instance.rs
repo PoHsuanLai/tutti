@@ -73,7 +73,7 @@ pub struct AuLoaded {
     /// [`AuEditor`].
     editor: Option<AuEditor>,
     /// What the property listener raised since the last
-    /// [`take_requests`](Control::take_requests).
+    /// [`take_requests`](tutti_plugin_types::Control::take_requests).
     pub(crate) requests: Arc<RequestWord>,
     /// The declared plain range of every parameter, read at load and again when
     /// the unit says its parameter list moved.
@@ -207,7 +207,7 @@ impl AuLoaded {
 
     /// Starts watching the properties whose load-time values would otherwise go
     /// stale (latency, tail and the parameter list): a change raises a request,
-    /// which [`take_requests`](Control::take_requests) hands out. Idempotent.
+    /// which [`take_requests`](tutti_plugin_types::Control::take_requests) hands out. Idempotent.
     ///
     /// `false` when AudioToolbox refuses the listener, which leaves the figures
     /// as read; a unit whose latency cannot be watched is still a usable plugin.
@@ -226,7 +226,7 @@ impl AuLoaded {
 
     /// Whether the unit took the last render mode written to it (activation
     /// writes the mode of its [`Prepare`](tutti_plugin_types::Prepare); so does
-    /// [`Control::set_render_mode`]). `kAudioUnitProperty_OfflineRender` is
+    /// [`Control::set_render_mode`](tutti_plugin_types::Control::set_render_mode)). `kAudioUnitProperty_OfflineRender` is
     /// optional, so this is the live probe behind `Features::RENDER_MODE`.
     pub fn render_mode_accepted(&self) -> bool {
         self.mode_accepted
@@ -302,7 +302,7 @@ impl AuLoaded {
     }
 
     /// The instance, for the safe AudioToolbox calls on it: the free functions of
-    /// [`crate::parameters`], [`crate::identity`] and [`crate::offline`] take it.
+    /// [`crate::parameters`], `crate::identity` and [`crate::offline`] take it.
     pub fn unit(&self) -> &Unit {
         self.handle.unit()
     }
@@ -439,7 +439,7 @@ impl AuLoaded {
     /// nobody, [`crate::parameters::set`] still wraps the raw call.
     ///
     /// # Errors
-    /// Returns [`AuError::OsStatus`] with the AU's own status for an id it does
+    /// Returns [`AuError::OsStatus`](crate::AuError::OsStatus) with the AU's own status for an id it does
     /// not declare.
     pub fn set_parameter(&mut self, id: u32, value: f32) -> Result<()> {
         Ok(crate::listener::set_parameter_notifying(
@@ -456,7 +456,7 @@ impl AuLoaded {
     ///
     /// # Errors
     ///
-    /// Returns [`AuError::OsStatus`] if `AudioUnitGetParameter` fails, e.g. for
+    /// Returns [`AuError::OsStatus`](crate::AuError::OsStatus) if `AudioUnitGetParameter` fails, e.g. for
     /// an unknown `id`.
     pub fn get_parameter(&self, id: u32) -> Result<f32> {
         parameters::get(self.unit(), id)
@@ -474,9 +474,9 @@ impl AuLoaded {
     /// [`render_notify::schedule`](crate::render_notify::schedule) — scheduled
     /// parameter events apply to the render call in flight and to no other.
     ///
-    /// The returned [`RenderNotify`] is the registration: **hold it**. Dropping
+    /// The returned [`RenderNotify`](crate::RenderNotify) is the registration: **hold it**. Dropping
     /// it removes the notification, and doing so is what keeps the AU from
-    /// calling into freed memory — see [`RenderNotify`]'s `Drop`.
+    /// calling into freed memory — see [`RenderNotify`](crate::RenderNotify)'s `Drop`.
     ///
     /// # Why this returns a handle rather than storing it
     ///
@@ -501,7 +501,7 @@ impl AuLoaded {
     /// for the full contract.
     ///
     /// # Errors
-    /// Returns [`AuError::OsStatus`] if the AU refuses
+    /// Returns [`AuError::OsStatus`](crate::AuError::OsStatus) if the AU refuses
     /// `AudioUnitAddRenderNotify`. Measured on macOS 15.6: none of the ~35 Apple
     /// units nor the three third-party units installed do.
     pub fn add_render_notify<F>(&self, callback: F) -> Result<crate::render_notify::RenderNotify>
@@ -517,7 +517,7 @@ impl AuLoaded {
     /// This instance's unit, wrapped so a render-notify callback can capture it.
     ///
     /// A pre-render callback's whole job is usually to schedule automation on the
-    /// unit that is rendering, but [`raw_unit`](Self::raw_unit) returns a bare
+    /// unit that is rendering, but `raw_unit` returns a bare
     /// pointer that is neither `Send` nor `Sync`, so capturing it in the callback
     /// does not compile. This is the wrapper that makes it possible — see
     /// [`RenderUnit`](crate::render_notify::RenderUnit) for why the assertion is
@@ -547,7 +547,7 @@ impl AuLoaded {
     /// plugin's editor with a redraw per sample-accurate step.
     ///
     /// # Errors
-    /// Returns [`AuError::OsStatus`] if the AU refuses the call — but note that
+    /// Returns [`AuError::OsStatus`](crate::AuError::OsStatus) if the AU refuses the call — but note that
     /// `Ok(())` is not a promise the event does anything. Measured on macOS
     /// 15.6, a nonexistent parameter id and a ramp on a non-rampable parameter
     /// both return `noErr`. See
@@ -620,7 +620,7 @@ impl AuLoaded {
     ///
     /// An empty vec means the AU publishes no constraint and must be read as
     /// "declines to say", never "supports nothing" — see
-    /// [`channel_layout::supported_layout_tags`] for the measured breakdown (only
+    /// `channel_layout::supported_layout_tags` for the measured breakdown (only
     /// 11 of ~38 units answer at all on macOS 15.6).
     pub fn supported_layout_tags(&self, direction: BusDirection, bus: u32) -> Vec<AuLayoutTag> {
         channel_layout::supported_layout_tags(self.unit(), direction, bus)
@@ -629,14 +629,14 @@ impl AuLoaded {
     /// The channel order bus `bus` of `direction` is running right now.
     ///
     /// # Errors
-    /// Returns [`AuError::OsStatus`] with the AU's own status; the three seen in
+    /// Returns [`AuError::OsStatus`](crate::AuError::OsStatus) with the AU's own status; the three seen in
     /// practice are `kAudioUnitErr_InvalidProperty` (no layout property at all),
     /// `kAudioUnitErr_PropertyNotInUse` (the property exists but no layout is
     /// set — measured on AUSampler's output) and
     /// `kAudioUnitErr_InvalidElement` (no such bus). Deliberately not flattened
     /// into a default: picking a speaker order for a bus whose order is unknown
     /// is the bug this whole property exists to prevent. See
-    /// [`channel_layout::layout_tag`].
+    /// `channel_layout::layout_tag`.
     pub fn layout_tag(&self, direction: BusDirection, bus: u32) -> Result<AuLayoutTag> {
         channel_layout::layout_tag(self.unit(), direction, bus)
     }
@@ -649,11 +649,11 @@ impl AuLoaded {
     /// on that bus and refuses any mismatch — so at the default stereo width
     /// every surround tag an AU advertises is rejected. Set the width first, via
     /// [`new_with_config`](Self::new_with_config). The measured table is in
-    /// [`channel_layout::set_layout_tag`], which also explains why this does not
+    /// `channel_layout::set_layout_tag`, which also explains why this does not
     /// widen the format on the caller's behalf.
     ///
     /// # Errors
-    /// [`AuError::OsStatus`], typically `kAudioUnitErr_InvalidPropertyValue` for
+    /// [`AuError::OsStatus`](crate::AuError::OsStatus), typically `kAudioUnitErr_InvalidPropertyValue` for
     /// a tag this bus will not take at its current width. Propagated rather than
     /// absorbed for the reason [`set_bypass`](Self::set_bypass)'s is: a host that
     /// believes it set 5.1 while the AU kept stereo routes six channels into a
@@ -674,7 +674,7 @@ impl AuLoaded {
     /// input looks identical to a second audio input.
     ///
     /// # Errors
-    /// [`AuError::OsStatus`]. The two statuses are **different facts** and
+    /// [`AuError::OsStatus`](crate::AuError::OsStatus). The two statuses are **different facts** and
     /// neither becomes an empty string:
     /// `kAudioUnitErr_PropertyNotInUse` (-10850) is a real bus the AU gave no
     /// name, `kAudioUnitErr_InvalidElement` (-10877) is a bus that does not
@@ -684,7 +684,7 @@ impl AuLoaded {
     /// its real buses — they publish no element names at all — while
     /// DLSMusicDevice names its two outputs ("stereo mix", "unused") and the
     /// third-party effects name theirs (TDR Nova: "Input", "Sidechain",
-    /// "Output"). See [`channel_layout::element_name`], which also documents the
+    /// "Output"). See `channel_layout::element_name`, which also documents the
     /// retain-count leak this read would have had.
     pub fn element_name(&self, direction: BusDirection, bus: u32) -> Result<String> {
         channel_layout::element_name(self.unit(), direction, bus)
@@ -725,7 +725,7 @@ impl AuLoaded {
     /// full contract is on [`MidiOutSink`].
     ///
     /// # Errors
-    /// [`AuError::OsStatus`] if the AU refuses the property. Measured on macOS
+    /// [`AuError::OsStatus`](crate::AuError::OsStatus) if the AU refuses the property. Measured on macOS
     /// 15.6: the output units refuse; the effects, instruments and mixers accept.
     ///
     /// # Panics
@@ -842,7 +842,7 @@ impl AuLoaded {
     /// (AUSampler reorders), so compare tables as sets.
     ///
     /// # Errors
-    /// [`AuError::OsStatus`] with `kAudioUnitErr_InvalidProperty` (-10879) from
+    /// [`AuError::OsStatus`](crate::AuError::OsStatus) with `kAudioUnitErr_InvalidProperty` (-10879) from
     /// the 57 of 59 units that do not implement the family. That is the routine
     /// answer for an effect, not a fault — branch on
     /// [`supports_parameter_midi_mapping`](Self::supports_parameter_midi_mapping)
@@ -856,7 +856,7 @@ impl AuLoaded {
     /// Verified end-to-end on macOS 15.6, which is what separates this from the
     /// crate's other "accepted but never called" surfaces: mapping CC 20 to
     /// AUSampler's parameter 900 (`Gain`, `-96..=12` dB), then sending CC 20 =
-    /// 127 through [`send_midi`](Self::send_midi) and rendering one block, moved
+    /// 127 through [`send_midi`](crate::AuProcessor::send_midi) and rendering one block, moved
     /// the parameter from `0` to `12`. The AU does the routing; the host only
     /// installs the table.
     ///
@@ -901,7 +901,7 @@ impl AuLoaded {
     /// (-10851), a non-NULL/0-length write is `paramErr` (-50), and the table is
     /// unchanged either way. So an empty slice routes through read-then-remove
     /// instead, which is the only path both implementers accept. That is not
-    /// atomic — see [`midi_map::set_all`].
+    /// atomic — see `midi_map::set_all`.
     ///
     /// # Errors
     /// `kAudioUnitErr_InvalidProperty` from a unit that does not implement the
@@ -916,7 +916,7 @@ impl AuLoaded {
     /// Supply only the parameter target — the AU fills in the trigger and channel
     /// from whatever arrives. Poll
     /// [`hot_mapped_parameter`](Self::hot_mapped_parameter) for the result, or
-    /// watch the property through [`crate::listener`]; the header says the AU
+    /// watch the property through `crate::listener`; the header says the AU
     /// fires a notification when the mapping completes.
     ///
     /// Verified: arming parameter 2 on AUSampler and sending CC 11 produced
@@ -936,7 +936,7 @@ impl AuLoaded {
     /// `kAudioUnitErr_InvalidPropertyValue`, and **neither implementer does** —
     /// both return `noErr` with an all-zero struct even on a fresh instance. A
     /// host branching on the `Result` would read that as a real "note off, note
-    /// 0" mapping and offer to bind it. See [`midi_map::hot_map`] for the
+    /// 0" mapping and offer to bind it. See `midi_map::hot_map` for the
     /// `mStatus == 0` rule that replaces the status check.
     pub fn hot_mapped_parameter(&self) -> Option<AuMidiMapping> {
         midi_map::hot_map(self.unit())
@@ -964,7 +964,7 @@ impl AuLoaded {
     /// **all 29 answer, none refuses**, and the ones with no latency answer
     /// `0.0` — AUDelay, AUSampler, DLSMusicDevice and AUMatrixReverb all do.
     /// So a zero from this function means the AU said zero. Contrast
-    /// [`transport::tail_time`](crate::transport), where refusal is the norm:
+    /// `transport::tail_time`, where refusal is the norm:
     /// every Apple instrument and mixer rejects `TailTime` with -10879.
     ///
     /// Returns [`Samples`] rather than a bare `u32` so the unit travels with the
@@ -973,7 +973,7 @@ impl AuLoaded {
     ///
     /// # Errors
     ///
-    /// Returns [`AuError::OsStatus`] if the AU refuses
+    /// Returns [`AuError::OsStatus`](crate::AuError::OsStatus) if the AU refuses
     /// `kAudioUnitProperty_Latency`. A refusal is propagated rather than
     /// flattened to zero.
     pub fn get_latency(&self) -> Result<Samples> {
@@ -990,12 +990,12 @@ impl AuLoaded {
     /// Distinct from [`get_latency`](Self::get_latency), which reports how far
     /// the AU shifts audio in time. Tail says how much *longer* it lasts: an
     /// offline bounce that stops at the last note truncates every reverb and
-    /// delay tail on the master bus. See [`transport::tail_time`] for why this
+    /// delay tail on the master bus. See `transport::tail_time` for why this
     /// returns [`Seconds`] rather than samples, and why the absence of the
     /// property is an error rather than a zero.
     ///
     /// # Errors
-    /// Returns [`AuError::OsStatus`] when the AU does not implement
+    /// Returns [`AuError::OsStatus`](crate::AuError::OsStatus) when the AU does not implement
     /// `kAudioUnitProperty_TailTime`. Measured on macOS 15.6, every Apple
     /// **effect** answers it, while every Apple instrument, mixer and generator
     /// rejects it with `kAudioUnitErr_InvalidProperty` (-10879).
@@ -1021,7 +1021,7 @@ impl AuLoaded {
     /// `kAudioUnitErr_InvalidProperty` (-10879), so a caller treating this as
     /// best-effort should discard the `Result` explicitly rather than expect a
     /// success. See
-    /// [`transport::set_presentation_latency`] for the full measurement and for
+    /// `transport::set_presentation_latency` for the full measurement and for
     /// why the refusal is not absorbed here.
     pub fn set_presentation_latency(
         &self,
@@ -1111,7 +1111,7 @@ impl AuLoaded {
     /// stores under it.
     ///
     /// # Errors
-    /// Returns [`AuError::OsStatus`] when the AU rejects the preset — most
+    /// Returns [`AuError::OsStatus`](crate::AuError::OsStatus) when the AU rejects the preset — most
     /// commonly `kAudioUnitErr_InvalidPropertyValue` for a number it does not
     /// advertise. A rejected load leaves the AU's parameters as they were; the
     /// AU is still renderable.
@@ -1122,7 +1122,7 @@ impl AuLoaded {
     /// Reads back the preset the AU currently considers active.
     ///
     /// # Errors
-    /// Returns [`AuError::OsStatus`] if the AU does not implement
+    /// Returns [`AuError::OsStatus`](crate::AuError::OsStatus) if the AU does not implement
     /// `kAudioUnitProperty_PresentPreset`. Unlike
     /// [`factory_presets`](Self::factory_presets) this *is* an error rather
     /// than a benign default, because there is no honest value to report: a
@@ -1137,7 +1137,7 @@ impl AuLoaded {
     /// output without processing it.
     ///
     /// # Errors
-    /// Returns [`AuError::OsStatus`] when the AU has no
+    /// Returns [`AuError::OsStatus`](crate::AuError::OsStatus) when the AU has no
     /// `kAudioUnitProperty_BypassEffect` property. That is the case for **every
     /// AU instrument** — DLSMusicDevice, AUSampler and AUMIDISynth all reject
     /// both the read and the write — because an instrument has no input to pass
@@ -1174,7 +1174,7 @@ impl AuLoaded {
     /// means and what a bouncing host loses without it.
     ///
     /// # Errors
-    /// [`AuError::OsStatus`] when the AU does not implement
+    /// [`AuError::OsStatus`](crate::AuError::OsStatus) when the AU does not implement
     /// `kAudioUnitProperty_OfflineRender` — which on macOS 15.6 is every Apple
     /// effect and mixer; only the two instruments implement it. The refusal is
     /// propagated rather than reported as `false`, because a host that cannot
@@ -1188,7 +1188,7 @@ impl AuLoaded {
     ///
     /// A host doing an offline export sets this on every AU in the graph before
     /// initializing them, and clears it when returning to live monitoring.
-    /// [`crate::offline::set_offline_render`] carries the full account of what
+    /// `crate::offline::set_offline_render` carries the full account of what
     /// changes inside the AU — dropout protection, resampling kernel length,
     /// dither determinism — and why setting it *before* `initialize` matters.
     ///
@@ -1204,11 +1204,11 @@ impl AuLoaded {
     /// A host that gets `true` may skip one buffer copy per block per plugin.
     /// Measured on macOS 15.6, six Apple effects advertise the property and all
     /// six say yes; no unit on the system says no. See
-    /// [`crate::offline::supports_in_place`] for the list, and for why this crate
+    /// `crate::offline::supports_in_place` for the list, and for why this crate
     /// exposes only the read even though the property is writable.
     ///
     /// # Errors
-    /// [`AuError::OsStatus`] when the AU does not implement
+    /// [`AuError::OsStatus`](crate::AuError::OsStatus) when the AU does not implement
     /// `kAudioUnitProperty_InPlaceProcessing`. Not flattened to `false`: since no
     /// unit measured actually reports `0`, doing so would turn "never mentioned
     /// it" into "forbids it" and make the host's census of the property a
@@ -1220,7 +1220,7 @@ impl AuLoaded {
     /// The AU's current render-quality setting, `0..=`[`RENDER_QUALITY_MAX`](crate::offline::RENDER_QUALITY_MAX).
     ///
     /// # Errors
-    /// [`AuError::OsStatus`] when the AU has no
+    /// [`AuError::OsStatus`](crate::AuError::OsStatus) when the AU has no
     /// `kAudioUnitProperty_RenderQuality`, which is 8 of the 12 corpus units.
     pub fn render_quality(&self) -> Result<u32> {
         crate::offline::render_quality(self.unit())
@@ -1230,11 +1230,11 @@ impl AuLoaded {
     /// [`RENDER_QUALITY_MAX`](crate::offline::RENDER_QUALITY_MAX) (best).
     ///
     /// # Errors
-    /// [`AuError::InvalidBuffer`] for a value above the maximum — enforced here
+    /// [`AuError::InvalidBuffer`](crate::AuError::InvalidBuffer) for a value above the maximum — enforced here
     /// because three of the four units that implement the property accept
     /// out-of-range values with `noErr` and read them straight back, so the AU's
-    /// own answer cannot be trusted to catch it. [`AuError::OsStatus`] when the
-    /// AU has no such property. [`crate::offline::set_render_quality`] carries the
+    /// own answer cannot be trusted to catch it. [`AuError::OsStatus`](crate::AuError::OsStatus) when the
+    /// AU has no such property. `crate::offline::set_render_quality` carries the
     /// measured table.
     pub fn set_render_quality(&mut self, quality: u32) -> Result<()> {
         crate::offline::set_render_quality(self.unit(), quality)
@@ -1251,7 +1251,7 @@ impl AuLoaded {
     /// per-document resource references — sample-library paths, external file
     /// references — differently from a portable user preset.
     ///
-    /// This is the counterpart to [`crate::aupreset::load_preset_file`], which is
+    /// This is the counterpart to `crate::aupreset::load_preset_file`, which is
     /// the *preset* path and therefore deliberately uses plain `ClassInfo`: a
     /// `.aupreset` is a user preset by definition, and routing one through the
     /// document property would tell the AU the opposite of the truth.
@@ -1286,14 +1286,14 @@ impl AuLoaded {
     /// Logic, Live and Reaper read.
     ///
     /// The identity keys are taken from this AU's own component description, never
-    /// invented; see [`crate::aupreset::save_preset_file`] for why that is what
-    /// makes the file loadable elsewhere, and [`crate::aupreset`]'s module docs for
+    /// invented; see `crate::aupreset::save_preset_file` for why that is what
+    /// makes the file loadable elsewhere, and `crate::aupreset`'s module docs for
     /// the measured consequence of getting them wrong.
     ///
     /// # Errors
-    /// [`AuError::PresetIo`] if the file cannot be written, [`AuError::OsStatus`]
+    /// [`AuError::PresetIo`](crate::AuError::PresetIo) if the file cannot be written, [`AuError::OsStatus`](crate::AuError::OsStatus)
     /// if the AU refuses to hand over its `ClassInfo`, or
-    /// [`AuError::InvalidPreset`] if what it hands over is not a dictionary.
+    /// [`AuError::InvalidPreset`](crate::AuError::InvalidPreset) if what it hands over is not a dictionary.
     pub fn save_preset_file(
         &self,
         _main: &MainThread,
@@ -1307,21 +1307,21 @@ impl AuLoaded {
     /// applying it. Returns the identity that was accepted.
     ///
     /// A preset saved from a different plugin is refused with
-    /// [`AuError::PresetIdentityMismatch`] and this AU is left untouched. That
+    /// [`AuError::PresetIdentityMismatch`](crate::AuError::PresetIdentityMismatch) and this AU is left untouched. That
     /// check is not redundant with the AU's own: measured on macOS 15.6, an AU
     /// handed a dictionary bearing its own identity keys but another plugin's
     /// `data` blob accepts it and adopts nonsense values. See the
-    /// [`crate::aupreset`] module docs.
+    /// `crate::aupreset` module docs.
     ///
     /// A successful load is followed by
-    /// [`notify_all_parameters`](crate::listener::notify_all_parameters), for the
-    /// reason [`set_state`](Self::set_state) documents: setting `ClassInfo`
+    /// [`notify_all_parameters`](crate::notify_all_parameters), for the
+    /// reason [`load_state`](tutti_plugin_types::Control::load_state) documents: setting `ClassInfo`
     /// rewrites every parameter inside the AU without notifying a single listener,
     /// so an open editor would keep displaying the pre-load values.
     ///
     /// # Errors
-    /// [`AuError::PresetIo`], [`AuError::InvalidPreset`],
-    /// [`AuError::PresetIdentityMismatch`], or [`AuError::OsStatus`] if the AU
+    /// [`AuError::PresetIo`](crate::AuError::PresetIo), [`AuError::InvalidPreset`](crate::AuError::InvalidPreset),
+    /// [`AuError::PresetIdentityMismatch`](crate::AuError::PresetIdentityMismatch), or [`AuError::OsStatus`](crate::AuError::OsStatus) if the AU
     /// rejects a correctly-identified dictionary. On every error path the AU keeps
     /// the state it had and is still renderable.
     pub fn load_preset_file(
@@ -1341,7 +1341,7 @@ impl AuLoaded {
     /// Configured maximum block size in frames.
     ///
     /// This is the bound the render enforces: a `num_frames`
-    /// above it is [`AuError::InvalidBuffer`], because the AU allocated its
+    /// above it is [`AuError::InvalidBuffer`](crate::AuError::InvalidBuffer), because the AU allocated its
     /// internal buffers for this width at `AudioUnitInitialize` time and
     /// rendering wider writes past them.
     pub fn block_size(&self) -> u32 {

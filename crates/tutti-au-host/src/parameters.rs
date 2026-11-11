@@ -349,7 +349,7 @@ pub enum ParameterUnit {
     /// unit is "CC 74", the brightness controller, and rendering it as a bare
     /// number loses the only thing that makes it readable. It is also the unit a
     /// parameter carries when it selects *which* controller drives something —
-    /// the parameter side of [`crate::midi_map`].
+    /// the parameter side of `crate::midi_map`.
     ///
     /// Measured on macOS 15.6: no installed AU reports it, so nothing on this
     /// machine exercises it end-to-end. It is decoded anyway because the cost is

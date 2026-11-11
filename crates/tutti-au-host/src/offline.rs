@@ -1,10 +1,10 @@
 //! Bounce-time and buffer-strategy properties, plus the push-model render path.
 //!
 //! Four AUv2 facilities that a live-only host never needs and an exporting host
-//! cannot do without. Grouped here rather than in [`crate::stream`] because they
+//! cannot do without. Grouped here rather than in `crate::stream` because they
 //! share one duty: how the host intends to *drive* the render, as opposed to
-//! what the stream looks like ([`crate::stream`]) or what the topology is
-//! ([`crate::bus`]).
+//! what the stream looks like (`crate::stream`) or what the topology is
+//! (`crate::bus`).
 //!
 //! * **Offline render** — tells the AU this block is part of a
 //!   faster-than-real-time bounce, so it may take the slow high-quality path.
@@ -57,7 +57,7 @@ use crate::types::*;
 /// DLSMusicDevice and AUMultiChannelMixer all accept a write of `999` with
 /// `noErr` **and read it back**; the mixer round-trips `u32::MAX` too. So the AU
 /// neither rejects nor normalizes the nonsense — it stores it. See
-/// [`set_render_quality`].
+/// `set_render_quality`.
 pub const RENDER_QUALITY_MAX: u32 = 127;
 
 /// Whether the AU has been told it is rendering offline.

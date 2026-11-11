@@ -185,7 +185,7 @@ pub const K_AUDIO_UNIT_PARAMETER_UNIT_DECIBELS: u32 = sys::kAudioUnitParameterUn
 pub const K_AUDIO_UNIT_PARAMETER_UNIT_LINEAR_GAIN: u32 = sys::kAudioUnitParameterUnit_LinearGain;
 /// A parameter whose value **is** a MIDI controller number, `0..=127` — not a
 /// quantity in a physical unit. Aliased so a mapping-aware host can format it as
-/// "CC 74" rather than as a bare `74`; see [`crate::midi_map`].
+/// "CC 74" rather than as a bare `74`; see `crate::midi_map`.
 pub const K_AUDIO_UNIT_PARAMETER_UNIT_MIDI_CONTROLLER: u32 =
     sys::kAudioUnitParameterUnit_MIDIController;
 

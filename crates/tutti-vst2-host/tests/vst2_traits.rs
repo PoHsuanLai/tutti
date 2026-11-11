@@ -769,7 +769,11 @@ fn an_io_changed_callback_is_read_again_without_a_restart() {
         .control()
         .expect("a plugin")
         .wiring(&main_thread());
-    assert_eq!(wiring.inputs[0].channels.count(), 4, "the layout was read again");
+    assert_eq!(
+        wiring.inputs[0].channels.count(),
+        4,
+        "the layout was read again"
+    );
 }
 
 /// **A plugin's `audioMasterUpdateDisplay` raised during the activation is told

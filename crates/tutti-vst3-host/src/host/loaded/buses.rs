@@ -1,7 +1,7 @@
 //! Bus configuration: the layout read back from the component, topologies, latency and tail.
 
-use crate::host::instance::bus_layout;
 use super::*;
+use crate::host::instance::bus_layout;
 use tutti_plugin_types::{BusRole, MainThread, PluginBus, PluginBuses};
 
 impl Vst3Loaded {

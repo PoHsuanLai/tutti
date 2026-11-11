@@ -457,7 +457,7 @@ impl MpeIngest {
     ///   and the channel's next Note On is preceded by the per-note forms of
     ///   what it was last told (M1-100 sections 2.2.6 to 2.2.8);
     /// - a manager-channel pressure/CC74 passes, and also reaches each note
-    ///   its zone holds, combined with the note's own ([`combined`]);
+    ///   its zone holds, combined with the note's own (`combined`);
     /// - a member-channel bend sensitivity (RPN #00/00) becomes a per-note
     ///   bend sensitivity (RPN #00/07) on each of the zone's member channels;
     /// - an MPE Configuration Message is absorbed, the channels it takes into
@@ -465,7 +465,7 @@ impl MpeIngest {
     ///   zone it configures is reset to its default ranges
     ///   ([`zone_defaults`](Self::zone_defaults));
     /// - a message the specification's receive table prohibits there is
-    ///   dropped ([`MpeSpec::receive`]);
+    ///   dropped (`MpeSpec::receive`);
     /// - note-on/off and master-channel messages pass (with the channel
     ///   map updated for note-on/off so later channel messages resolve), and
     ///   so does every message of a channel in no zone;

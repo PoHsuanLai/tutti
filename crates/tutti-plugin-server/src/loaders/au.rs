@@ -56,7 +56,7 @@ impl AuInstance {
             .map(|(instance, _)| instance)
     }
 
-    /// [`load`](Self::load), restoring `state` **before the unit is
+    /// `load`, restoring `state` **before the unit is
     /// initialized** (`AudioUnitInitialize`), when the class info may be set. The
     /// second value is the unit's refusal of the state, if it refused: the unit
     /// is then initialized at its defaults.

@@ -39,7 +39,6 @@ use tutti_types::At;
 
 use super::loop_region::LoopEdit;
 use super::motion::MotionEvent;
-use tutti_types::Bpm;
 
 /// Scheduled transport commands that may be in flight at once: sent and not
 /// yet applied or cancelled.
@@ -60,8 +59,6 @@ pub enum TransportCommand {
     /// whether it applies, exactly as for
     /// [`try_send`](super::MotionFsm::try_send).
     Motion(MotionEvent),
-    /// Set the tempo.
-    Tempo(Bpm),
     /// Edit the loop region: move its bounds, or arm or disarm it
     /// ([`LoopEdit`]). The engine owns the region, so this is the only way
     /// to change it.

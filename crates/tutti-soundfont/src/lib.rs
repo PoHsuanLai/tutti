@@ -327,12 +327,15 @@ impl SoundFontUnit {
     /// wire: everything below takes typed values.
     ///
     /// A MIDI 1.0 channel voice message is read as the MIDI 2.0 one it means
-    /// ([`channel_voice`]), so the player reads one form. The group is
-    /// ignored: one unit is one instrument, whatever group its notes arrive
-    /// on. This is a sink, so a message that is not channel voice (a clock,
+    /// ([`channel_voice`]), so the player reads one form. Only the unit's own
+    /// Group is read ([`Settings::with_group`]): a message in another Group
+    /// addresses another channel space (M2-104 Appendix B.1), so it is not
+    /// this unit's, whichever channel it names. This is a sink, so a message that is not channel voice (a clock,
     /// sysex, one `decode` cannot frame) is unused, not an error.
     fn apply_event(&mut self, ump: Ump) {
-        if let Some((address, voice)) = channel_voice(ump) {
+        if let Some((address, voice)) = channel_voice(ump)
+            && address.group == self.player.group()
+        {
             self.player.apply(address.channel, voice);
         }
     }

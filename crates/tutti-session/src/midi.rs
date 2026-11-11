@@ -20,10 +20,11 @@ use tutti_graph::UmpAt;
 
 use tutti_graph::{EventTapId, EventTapReader, NodeKey, Offset, TapEvent};
 use tutti_midi_runtime::{
-    MidiClipControls, MidiClipNode, MidiReceiver, RouteRule, TimedMidiEvent, compile_routes,
+    MidiClipControls, MidiClipNode, MidiInputPorts, MidiReceiver, RouteRule, TimedMidiEvent,
+    compile_routes,
 };
 use tutti_types::{At, Frame, Moment, Samples};
-use tutti_ump::{MidiChannel, NoteNumber, Ump};
+use tutti_ump::{MidiChannel, MidiGroup, NoteNumber, Ump};
 
 use crate::SendError;
 use crate::graph::{Feeder, Graph};
@@ -369,14 +370,22 @@ impl LiveInput {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct MidiRouteId(u64);
 
-/// One inbound routing rule: which channel of the hardware input reaches
-/// which targets, keyed by `T` (the session's own rules name nodes, a
+/// One inbound routing rule: which Group and channel of the hardware input
+/// reach which targets, keyed by `T` (the session's own rules name nodes, a
 /// host's its own keys: [`Midi::set_routes`]).
+///
+/// A channel is the channel of one Group (M2-104 Appendix B.1): the rules
+/// below match the first Group unless told otherwise
+/// ([`in_group`](MidiRouteRule::in_group),
+/// [`in_any_group`](MidiRouteRule::in_any_group)).
 ///
 /// Several rules may name the same channel; every matching rule's targets
 /// receive the event.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MidiRouteRule<T = NodeKey> {
+    /// Group filter: `None` matches every Group the input hears, `Some(g)`
+    /// only Group `g`.
+    pub group: Option<MidiGroup>,
     /// Channel filter: `None` matches any channel, `Some(n)` only channel
     /// `n`.
     pub channel: Option<MidiChannel>,
@@ -391,6 +400,7 @@ impl<T> MidiRouteRule<T> {
     /// A rule matching every channel. Add targets with [`to`](Self::to).
     pub fn any_channel() -> Self {
         Self {
+            group: Some(MidiGroup::FIRST),
             channel: None,
             targets: Vec::new(),
             enabled: true,
@@ -400,10 +410,25 @@ impl<T> MidiRouteRule<T> {
     /// A rule matching one channel.
     pub fn for_channel(channel: MidiChannel) -> Self {
         Self {
+            group: Some(MidiGroup::FIRST),
             channel: Some(channel),
             targets: Vec::new(),
             enabled: true,
         }
+    }
+
+    /// Matches `group` instead of the first.
+    #[must_use]
+    pub fn in_group(mut self, group: MidiGroup) -> Self {
+        self.group = Some(group);
+        self
+    }
+
+    /// Matches the channel in every Group the input hears.
+    #[must_use]
+    pub fn in_any_group(mut self) -> Self {
+        self.group = None;
+        self
     }
 
     /// Adds a destination.
@@ -868,6 +893,13 @@ impl Midi<'_> {
         self.nodes.map(|n| n.input).ok_or(Error::NoMidiInput)
     }
 
+    /// The layout of the input's ports; the first Group's with no input,
+    /// where nothing is compiled.
+    fn input_ports(&self) -> MidiInputPorts {
+        self.nodes
+            .map_or(MidiInputPorts::FIRST_GROUP, |n| n.input_ports)
+    }
+
     fn compile_own(&mut self, input: NodeKey) {
         let rules = std::mem::take(&mut self.state.rules);
         let fallback = self.state.fallback;
@@ -876,12 +908,12 @@ impl Midi<'_> {
     }
 
     /// Routes `input` (a `MidiInputNode`: one event output per channel and
-    /// one for channelless messages) by `rules`, keyed by the host's own
+    /// one for channelless messages, in each Group it hears) by `rules`, keyed by the host's own
     /// `T` and resolved to nodes through `resolve`, replacing every route
     /// before (the session's own rules included).
     ///
-    /// A channel rule gives its targets that channel's port and the
-    /// channelless one, an any-channel rule all of them, several rules the
+    /// A channel rule gives its targets that channel's port in its Group and
+    /// the Group's channelless one, an any-channel rule all of them, several rules the
     /// union (`tutti_midi_runtime::compile_routes`); the fallback takes
     /// every port no armed rule covers. A target `resolve` maps to no node,
     /// or to one not in the graph, takes nothing (and still covers its
@@ -923,7 +955,9 @@ impl Midi<'_> {
         resolve: impl Fn(T) -> Option<NodeKey>,
     ) {
         let ports = compile_routes(
+            self.input_ports(),
             rules.into_iter().filter(|r| r.enabled).map(|r| RouteRule {
+                group: r.group,
                 channel: r.channel,
                 targets: &r.targets,
             }),

@@ -11,7 +11,7 @@ use crate::error::{AuError, Result};
 use crate::handle::AuHandle;
 use crate::types::*;
 
-/// Input/output channel layouts for an AU: `tutti-au-ffi`'s [`BusLayout`], whose
+/// Input/output channel layouts for an AU: `tutti-au-ffi`'s [`BusLayout`](tutti_au_ffi::BusLayout), whose
 /// `has_input` carries the "has an input bus at all" distinction that
 /// [`ChannelLayout`] (which cannot be zero) cannot.
 pub use tutti_au_ffi::BusLayout as AuBusLayout;

@@ -1,7 +1,9 @@
 use super::*;
 use crate::control::{CancelToken, Progress, Stage};
 use crate::{GRAPH_MAX_BLOCK, Setup};
+use std::sync::Arc;
 use tutti_graph::GraphBuilder;
+use tutti_tempo::TempoMap;
 use tutti_transport::{FrozenClock, OfflineTimeline, OfflineTimelineConfig};
 use tutti_types::{Beat, Bpm, SampleRate};
 use tutti_types::{ChannelLayout, Interleaved};
@@ -264,7 +266,7 @@ fn the_clock_advances_exactly_once_per_frame_and_never_ahead() {
 
     let timeline = OfflineTimeline::new(&OfflineTimelineConfig {
         start_beat: Beat(start_beat),
-        tempo: Bpm::of(120.0),
+        tempo_map: Arc::new(TempoMap::constant(Bpm::of(120.0)).expect("a tempo")),
         sample_rate: RATE,
         loop_range: None,
     });
@@ -279,11 +281,12 @@ fn the_clock_advances_exactly_once_per_frame_and_never_ahead() {
 
     // After N frames the clock must have advanced by exactly N. A priming
     // advance shows up here as N+1 — the desync this test exists to catch.
-    let expected = start_beat + (timeline.beats_per_sample() * 512.0).get();
+    let bps = tutti_types::beats_per_sample(Bpm::of(120.0), RATE);
+    let expected = start_beat + (bps * 512.0).get();
     assert!(
         (timeline.beat().get() - expected).abs() < 1e-9,
         "clock advanced {} frames' worth, expected exactly 512",
-        (timeline.beat().get() - start_beat) / timeline.beats_per_sample().get()
+        (timeline.beat().get() - start_beat) / bps.get()
     );
 }
 

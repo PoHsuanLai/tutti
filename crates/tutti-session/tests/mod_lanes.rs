@@ -228,7 +228,7 @@ fn an_export_is_the_live_render_on_a_native_param() {
     let total = 24_000;
     let timeline = Arc::new(OfflineTimeline::new(&OfflineTimelineConfig {
         start_beat: Beat(0.0),
-        tempo: TEMPO,
+        tempo_map: Arc::new(tutti_tempo::TempoMap::constant(TEMPO).expect("a tempo")),
         sample_rate: SampleRate(RATE),
         loop_range: None,
     }));

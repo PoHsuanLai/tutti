@@ -89,7 +89,7 @@ pub(crate) fn render_outputs(
     spill_budget: usize,
 ) -> Result<Outcome<Vec<Produced>>> {
     check_outputs(&outputs)?;
-    control.weigh(Weights::of(&outputs));
+    control.weigh(Weights::of(outputs.iter().map(Output::target)));
     let plan = RenderPlan::of(job);
     let (done, _lost) = with_source(graph, job.rate(), clock, |src| {
         let mut lanes = open_lanes(

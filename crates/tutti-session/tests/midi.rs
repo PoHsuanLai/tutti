@@ -362,6 +362,66 @@ fn route_rules_wire_the_hardware_input() {
     assert_eq!(ports(&s, a), rest, "the fallback takes what no rule covers");
 }
 
+/// **A route rule names a Group, and the engine's input hears the Groups the
+/// builder asks for** (M2-104 Appendix B.1): channel 2 of Group 2 reaches its
+/// own listener through Group 2's ports, not Group 1's channel 2, and a rule
+/// for a Group the input does not hear wires nothing.
+///
+/// Mutation: `compile_routes` given the first Group's layout whatever the
+/// builder chose (`input_ports` fixed to `FIRST_GROUP`) -> Group 2's rule
+/// wires nothing and the first assertion fails; `MidiRouteRule::for_channel`
+/// leaving its Group out of the rule handed to the compile -> the second
+/// target takes Group 1's ports and the second assertion fails.
+#[test]
+fn a_route_rule_names_a_group() {
+    let mut s = Session::builder()
+        .midi_groups(MidiGroup::of(1))
+        .build_offline(SampleRate(RATE), ChannelLayout::STEREO, Samples(1_024))
+        .expect("builds");
+    let input = s.midi_nodes().expect("the builder's MIDI nodes").input;
+    let (a, _) = tap(&mut s);
+    let (b, _) = tap(&mut s);
+    let (c, _) = tap(&mut s);
+    let ports = |s: &Session, n: NodeKey| -> Vec<u16> {
+        let mut p: Vec<u16> = s
+            .graph_ref()
+            .feed(n, Feeder::Routes)
+            .iter()
+            .map(|e| {
+                assert_eq!(e.node, input);
+                e.port
+            })
+            .collect();
+        p.sort();
+        p
+    };
+    let ch2 = MidiChannel::of(2);
+    let group = MIDI_INPUT_PORTS as u16;
+    s.midi()
+        .route(
+            MidiRouteRule::for_channel(ch2)
+                .in_group(MidiGroup::of(1))
+                .to(a),
+        )
+        .unwrap();
+    assert_eq!(
+        ports(&s, a),
+        vec![group + 2, group + CHANNELLESS_PORT as u16]
+    );
+    s.midi()
+        .route(MidiRouteRule::for_channel(ch2).to(b))
+        .unwrap();
+    assert_eq!(ports(&s, b), vec![2, CHANNELLESS_PORT as u16]);
+    s.midi()
+        .route(
+            MidiRouteRule::for_channel(ch2)
+                .in_group(MidiGroup::of(2))
+                .to(c),
+        )
+        .unwrap();
+    assert_eq!(ports(&s, c), Vec::<u16>::new(), "a Group not heard");
+}
+
 /// **The routes have one declarer.** While the session's own rules are
 /// declared, a host's `set_routes` is refused and changes nothing; once
 /// they are unrouted it applies, and then the session's own `route` and

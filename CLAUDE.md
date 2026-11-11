@@ -598,7 +598,10 @@ list (normal and build edges; dev-dependencies may go anywhere).
   sized in `new` and a `Clone` keeps their capacity; the instrument passes
   `VoiceView`s sorted by id, and only for a note-on (liveness is read there).
   The spec is the only oracle: a rule gets a test from the spec and a mutation,
-  and nothing is pinned against another implementation. Mono and legato follow
+  and nothing is pinned against another implementation. **An instrument plays one
+  Group's sixteen channels** (`SynthConfig::group`, `Settings::with_group`; a message of
+  another Group is not read, M2-104 section 2.1.2, Appendix B.1), so `step` never sees a
+  Group; the input node routes by (Group, channel) (`MidiInputPorts`, doc 017 L3). Mono and legato follow
   tutti's named rule (last-note priority over a per-channel stack of held keys),
   which MIDI 1.0 does not specify.
 - `tutti-midi-device` depends on `tutti-ump` alone, keeps every module private
@@ -1260,7 +1263,13 @@ read the `Cargo.toml`, grep for the type, run the probe.
   and `ParamDelivery` fields, and `migration_old_and_new_served_nodes_agree`) → deleted (doc 021
   step 4b, PR 3b: the node is `tutti_plugin_host::PluginNode<tutti_plugin_ipc::Ipc>`, which
   `PluginClient<Bound>` holds and boxes (a test drives it with `contract::Direct::boxed`); the chunk walk
-  is the generic node's, the fork is `ServedFork` over `Ipc`'s reopen). A comment or doc that
+  is the generic node's, the fork is `ServedFork` over `Ipc`'s reopen). `TransportCommand::Tempo`,
+  `TransportSettings::tempo`, `Transport::samples_per_beat`, `Timeline::tempo`,
+  `OfflineTimeline::{tempo, beats_per_sample, with_tempo_map}` and
+  `OfflineTimelineConfig::tempo` → deleted (doc 020 stage 6: the project's tempo is one
+  `TempoMap`: `TransportSettings::set_tempo` / `set_tempo_map` publish it, `Timeline::tempo_map`
+  and `OfflineTimelineConfig::tempo_map` carry it, and a tempo is `TempoMap::tempo_at` a beat).
+  A comment or doc that
   disagrees with the code is the bug.
 
 ## Consumers: the pin that must stay in step

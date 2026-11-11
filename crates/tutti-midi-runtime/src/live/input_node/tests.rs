@@ -50,15 +50,18 @@ fn reclaim_frees_a_request_a_block_held_across_the_next() {
     assert_eq!(controls.request.retired_len(), 0, "freed by the reclaim");
 }
 
-/// A listener on one channel takes that channel's port and the
-/// channelless one; an omni listener takes all seventeen.
+/// A listener on one channel of a Group takes that channel's port and the
+/// Group's channelless one; an omni listener of a Group takes its seventeen.
 ///
 /// Mutation: leave out the channelless port for a channel → fails.
 #[test]
 fn a_listener_takes_its_channel_and_the_channelless_port() {
-    let one: Vec<usize> = input_ports(Some(MidiChannel::of(3))).collect();
+    let first = MidiInputPorts::FIRST_GROUP;
+    let one: Vec<usize> = first
+        .listening(Some(MidiGroup::FIRST), Some(MidiChannel::of(3)))
+        .collect();
     assert_eq!(one, vec![3, CHANNELLESS_PORT]);
-    let all: Vec<usize> = input_ports(None).collect();
+    let all: Vec<usize> = first.listening(None, None).collect();
     assert_eq!(all, (0..MIDI_INPUT_PORTS).collect::<Vec<_>>());
 }
 
@@ -66,6 +69,7 @@ fn a_listener_takes_its_channel_and_the_channelless_port() {
 /// the channelless one.
 #[test]
 fn events_leave_on_their_channels_port() {
+    let first = MidiInputPorts::FIRST_GROUP;
     // 7-bit velocity 100, widened (M2-115).
     let on = tutti_fixtures::midi::note_on(
         tutti_ump::MidiGroup::FIRST,
@@ -73,7 +77,53 @@ fn events_leave_on_their_channels_port() {
         60,
         tutti_fixtures::midi::wide_velocity(100),
     );
-    assert_eq!(input_port_of(&on), 9);
+    assert_eq!(first.port_of(&on), Some(9));
     let clock = tutti_fixtures::midi::timing_clock(tutti_ump::MidiGroup::FIRST);
-    assert_eq!(input_port_of(&clock), CHANNELLESS_PORT);
+    assert_eq!(first.port_of(&clock), Some(CHANNELLESS_PORT));
+}
+
+/// **A Group is a channel space of its own** (M2-104 section 2.1.2: a Group
+/// is 16 Channels; Appendix B.1: what a message does in one Group "does not
+/// apply to Channels in any other Group"): channel 1 of Group 2 leaves from a
+/// port of its own, not channel 1 of Group 1's; a Group's System message
+/// leaves from that Group's channelless port; a message with no Group
+/// (Utility) from the first Group's; a Group the node was not built to hear
+/// has no port.
+///
+/// Mutation: `port_of` ignoring the Group (the channel alone) → the first
+/// assertion fails.
+#[test]
+fn a_group_has_ports_of_its_own() {
+    let two = MidiInputPorts::through(MidiGroup::of(1));
+    assert_eq!(two.count(), 2 * MIDI_INPUT_PORTS);
+    let note = |group: u8, channel: u8| {
+        tutti_fixtures::midi::note_on(
+            MidiGroup::of(group),
+            MidiChannel::of(channel),
+            60,
+            tutti_fixtures::midi::wide_velocity(100),
+        )
+    };
+    assert_eq!(two.port_of(&note(0, 1)), Some(1));
+    assert_eq!(two.port_of(&note(1, 1)), Some(MIDI_INPUT_PORTS + 1));
+    assert_eq!(
+        two.port_of(&tutti_fixtures::midi::timing_clock(MidiGroup::of(1))),
+        Some(MIDI_INPUT_PORTS + CHANNELLESS_PORT)
+    );
+    // A Utility NOOP has no Group.
+    assert_eq!(
+        two.port_of(&tutti_fixtures::midi::noop()),
+        Some(CHANNELLESS_PORT)
+    );
+    assert_eq!(two.port_of(&note(2, 1)), None, "not heard");
+    // A listener on Group 2's channel 1 takes that Group's ports only.
+    let ports: Vec<usize> = two
+        .listening(Some(MidiGroup::of(1)), Some(MidiChannel::of(1)))
+        .collect();
+    assert_eq!(
+        ports,
+        vec![MIDI_INPUT_PORTS + 1, MIDI_INPUT_PORTS + CHANNELLESS_PORT]
+    );
+    // One that names a Group not heard takes nothing.
+    assert_eq!(two.listening(Some(MidiGroup::of(2)), None).count(), 0);
 }

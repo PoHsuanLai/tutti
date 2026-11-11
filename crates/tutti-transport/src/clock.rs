@@ -80,7 +80,6 @@ impl Control {
         settings: &super::TransportSettings,
     ) {
         match *command {
-            super::TransportCommand::Tempo(bpm) => self.tempo = bpm,
             super::TransportCommand::Loop(edit) => self.loop_region = self.loop_region.with(edit),
             super::TransportCommand::Motion(_) => self.paused = settings.is_paused(),
         }
@@ -123,6 +122,10 @@ pub(crate) struct TransportClock {
     /// (`Some`): a constant map never does, and the clock then runs its own
     /// closed form, untouched.
     walk: TempoWalk,
+    /// The tempo a bare test clock is asked for each block: what the
+    /// engine's `TransportAudio` hands it from the map.
+    #[cfg(test)]
+    asked: Bpm,
 }
 
 impl TransportClock {
@@ -131,15 +134,24 @@ impl TransportClock {
     /// The one constructor: `links` carries both halves of the position
     /// handshake, so a clock cannot be assembled with its inputs wired and its
     /// writeback forgotten.
-    pub fn new(links: ClockLinks, sample_rate: impl Into<tutti_types::SampleRate>) -> Self {
+    ///
+    /// `tempo` is the tempo the clock starts at: the first point of the map
+    /// the caller reads (a clock that follows a map places itself on it, and
+    /// one that does not takes each block's tempo from [`Control`]).
+    pub fn new(
+        links: ClockLinks,
+        sample_rate: impl Into<tutti_types::SampleRate>,
+        tempo: Bpm,
+    ) -> Self {
         let sample_rate = sample_rate.into();
-        let initial_tempo = links.tempo.load(Ordering::Acquire);
 
         let clock = Self {
             links,
-            clock: FrameClock::new(Beat(0.0), initial_tempo, sample_rate),
+            clock: FrameClock::new(Beat(0.0), tempo, sample_rate),
             rolling: false,
             walk: TempoWalk::default(),
+            #[cfg(test)]
+            asked: tempo,
         };
         clock.publish_tempo();
         clock
@@ -211,7 +223,7 @@ impl TransportClock {
     /// Set this clock's tempo, from its current frame on.
     #[cfg(test)]
     fn set_tempo(&mut self, bpm: Bpm) {
-        self.links.tempo.store(bpm, Ordering::Release);
+        self.asked = bpm;
         self.clock.set_tempo(bpm);
         self.publish_tempo();
     }
@@ -460,7 +472,7 @@ impl TransportClock {
     #[cfg(test)]
     pub(crate) fn step_in(&mut self, frames: usize, loop_region: LoopRegion) -> Beat {
         let control = Control {
-            tempo: self.links.tempo.load(Ordering::Acquire),
+            tempo: self.asked,
             paused: self.links.paused.load(Ordering::Acquire),
             loop_region,
             recording: false,
@@ -483,22 +495,18 @@ mod tests {
     use tutti_types::LoopRange;
     use tutti_types::SampleRate;
 
-    fn create_test_atomics() -> (Arc<AtomicBpm>, Arc<AtomicBool>) {
+    fn create_test_atomics() -> (Bpm, Arc<AtomicBool>) {
         (
-            Arc::new(AtomicBpm::new(Bpm::default())), // 120 BPM
-            Arc::new(AtomicBool::new(false)),         // Not paused
+            Bpm::default(),                   // 120 BPM
+            Arc::new(AtomicBool::new(false)), // Not paused
         )
     }
 
     /// A clock plus the seek slot that drives it.
-    fn clock_with_seek(
-        tempo: Arc<AtomicBpm>,
-        paused: Arc<AtomicBool>,
-    ) -> (TransportClock, SeekSlot) {
+    fn clock_with_seek(tempo: Bpm, paused: Arc<AtomicBool>) -> (TransportClock, SeekSlot) {
         let seek = SeekSlot::new();
         let clock = TransportClock::new(
             ClockLinks {
-                tempo,
                 paused,
                 seek: seek.clone(),
                 position_writeback: None,
@@ -507,6 +515,7 @@ mod tests {
                 tempo_in_force: None,
             },
             SampleRate::new(44100.0),
+            tempo,
         );
         (clock, seek)
     }
@@ -530,7 +539,7 @@ mod tests {
     fn test_transport_clock_tick() {
         let (tempo, paused) = create_test_atomics();
         let mut clock =
-            TransportClock::new(ClockLinks::bare(tempo, paused), SampleRate::new(44100.0));
+            TransportClock::new(ClockLinks::bare(paused), SampleRate::new(44100.0), tempo);
 
         assert!((tick(&mut clock) - 0.0).abs() < 0.001);
 
@@ -553,9 +562,9 @@ mod tests {
     fn a_derived_stream_severs_live_position_writeback() {
         let (tempo, paused) = create_test_atomics();
         let live_position = Arc::new(AtomicF64::new(7.5)); // live playhead "now"
-        let mut links = ClockLinks::bare(tempo, paused);
+        let mut links = ClockLinks::bare(paused);
         links.position_writeback = Some(Arc::clone(&live_position));
-        let clock = TransportClock::new(links, SampleRate::new(44100.0));
+        let clock = TransportClock::new(links, SampleRate::new(44100.0), tempo);
 
         let mut render = clock.starting_at(Beat::new(0.0));
 
@@ -587,14 +596,14 @@ mod tests {
     fn steady_time_ignores_pause_and_loop() {
         let (tempo, paused) = create_test_atomics();
         let steady = Arc::new(std::sync::atomic::AtomicI64::new(0));
-        let mut links = ClockLinks::bare(Arc::clone(&tempo), Arc::clone(&paused));
+        let mut links = ClockLinks::bare(Arc::clone(&paused));
         links.steady_time = Some(Arc::clone(&steady));
         // A two-beat loop, so the playhead wraps repeatedly over the run.
         let looping = LoopRegion::new(
             LoopRange::new(Beat::new(0.0), Beat::new(2.0)).expect("ordered"),
             true,
         );
-        let mut clock = TransportClock::new(links, SampleRate::new(44100.0));
+        let mut clock = TransportClock::new(links, SampleRate::new(44100.0), tempo);
 
         clock.step_in(64, looping);
         assert_eq!(steady.load(Ordering::Relaxed), 64);
@@ -635,9 +644,9 @@ mod tests {
     fn a_derived_stream_severs_steady_time() {
         let (tempo, paused) = create_test_atomics();
         let steady = Arc::new(std::sync::atomic::AtomicI64::new(9_000));
-        let mut links = ClockLinks::bare(tempo, paused);
+        let mut links = ClockLinks::bare(paused);
         links.steady_time = Some(Arc::clone(&steady));
-        let clock = TransportClock::new(links, SampleRate::new(44100.0));
+        let clock = TransportClock::new(links, SampleRate::new(44100.0), tempo);
 
         let mut render = clock.starting_at(Beat::new(0.0));
         for _ in 0..1_000 {
@@ -655,8 +664,9 @@ mod tests {
     fn test_transport_clock_pause() {
         let (tempo, paused) = create_test_atomics();
         let mut clock = TransportClock::new(
-            ClockLinks::bare(tempo, paused.clone()),
+            ClockLinks::bare(paused.clone()),
             SampleRate::new(44100.0),
+            tempo,
         );
 
         let mut beat = 0.0;
@@ -689,16 +699,14 @@ mod tests {
     #[test]
     fn test_transport_clock_tempo_change() {
         let (tempo, paused) = create_test_atomics();
-        let mut clock = TransportClock::new(
-            ClockLinks::bare(tempo.clone(), paused),
-            SampleRate::new(44100.0),
-        );
+        let mut clock =
+            TransportClock::new(ClockLinks::bare(paused), SampleRate::new(44100.0), tempo);
 
         for _ in 0..44100 {
             tick(&mut clock);
         }
 
-        tempo.store(Bpm::of(240.0), Ordering::Release);
+        clock.asked = Bpm::of(240.0);
 
         let mut beat = 0.0;
         for _ in 0..44100 {
@@ -712,7 +720,7 @@ mod tests {
     fn test_transport_clock_loop_disabled() {
         let (tempo, paused) = create_test_atomics();
         let mut clock =
-            TransportClock::new(ClockLinks::bare(tempo, paused), SampleRate::new(44100.0));
+            TransportClock::new(ClockLinks::bare(paused), SampleRate::new(44100.0), tempo);
         let disarmed = LoopRegion::new(
             LoopRange::new(Beat::new(0.0), Beat::new(4.0)).expect("ordered"),
             false,
@@ -734,9 +742,9 @@ mod tests {
     fn test_transport_clock_loop_overshoot_precision() {
         let (tempo, paused) = create_test_atomics();
         let seek = SeekSlot::new();
-        let mut links = ClockLinks::bare(tempo, paused);
+        let mut links = ClockLinks::bare(paused);
         links.seek = seek.clone();
-        let mut clock = TransportClock::new(links, SampleRate::new(44100.0));
+        let mut clock = TransportClock::new(links, SampleRate::new(44100.0), tempo);
 
         seek.request(Beat::new(0.99999));
         tick_looping(&mut clock, 0.0, 1.0);
@@ -782,11 +790,11 @@ mod tests {
     fn a_rate_change_keeps_the_tempo_in_force() {
         let (tempo, paused) = create_test_atomics();
         let in_force = Arc::new(AtomicBpm::new(Bpm::of(1.0)));
-        let mut links = ClockLinks::bare(Arc::clone(&tempo), paused);
+        let mut links = ClockLinks::bare(paused);
         links.tempo_in_force = Some(Arc::clone(&in_force));
-        let mut clock = TransportClock::new(links, SampleRate::new(44100.0));
+        let mut clock = TransportClock::new(links, SampleRate::new(44100.0), tempo);
         // Inside the hysteresis: asked, but not taken.
-        tempo.store(Bpm::of(120.0005), Ordering::Release);
+        clock.asked = Bpm::of(120.0005);
         clock.set_sample_rate(tutti_types::SampleRate(48_000.0), None);
         tick(&mut clock);
         assert_eq!(in_force.load(Ordering::Acquire), Bpm::of(120.0));
@@ -801,7 +809,7 @@ mod tests {
     #[test]
     fn starting_at_emits_that_beat_first() {
         let (tempo, paused) = create_test_atomics();
-        let live = TransportClock::new(ClockLinks::bare(tempo, paused), SampleRate::new(44100.0));
+        let live = TransportClock::new(ClockLinks::bare(paused), SampleRate::new(44100.0), tempo);
 
         let mut derived = live.starting_at(Beat::new(8.0));
         let first = tick(&mut derived);
@@ -816,9 +824,9 @@ mod tests {
     fn derived_stream_does_not_disturb_the_live_playhead() {
         let (tempo, paused) = create_test_atomics();
         let writeback = Arc::new(AtomicF64::new(0.0));
-        let mut links = ClockLinks::bare(tempo, paused);
+        let mut links = ClockLinks::bare(paused);
         links.position_writeback = Some(Arc::clone(&writeback));
-        let live = TransportClock::new(links, SampleRate::new(44100.0));
+        let live = TransportClock::new(links, SampleRate::new(44100.0), tempo);
 
         // Step a derived stream for a while; the live writeback must not move.
         let mut derived = live.starting_at(Beat::new(100.0));
@@ -837,9 +845,9 @@ mod tests {
     fn derived_stream_ignores_live_seek() {
         let (tempo, paused) = create_test_atomics();
         let seek = SeekSlot::new();
-        let mut links = ClockLinks::bare(tempo, paused);
+        let mut links = ClockLinks::bare(paused);
         links.seek = seek.clone();
-        let live = TransportClock::new(links, SampleRate::new(44100.0));
+        let live = TransportClock::new(links, SampleRate::new(44100.0), tempo);
 
         let mut derived = live.starting_at(Beat::new(20.0));
 
@@ -857,7 +865,7 @@ mod tests {
     #[test]
     fn at_tempo_changes_the_beat_rate() {
         let (tempo, paused) = create_test_atomics();
-        let live = TransportClock::new(ClockLinks::bare(tempo, paused), SampleRate::new(44100.0));
+        let live = TransportClock::new(ClockLinks::bare(paused), SampleRate::new(44100.0), tempo);
 
         // One second of samples at 240 BPM = 4 beats.
         let mut derived = live.at_tempo(Bpm::of(240.0));
@@ -875,7 +883,7 @@ mod tests {
     #[test]
     fn combinators_compose() {
         let (tempo, paused) = create_test_atomics();
-        let live = TransportClock::new(ClockLinks::bare(tempo, paused), SampleRate::new(44100.0));
+        let live = TransportClock::new(ClockLinks::bare(paused), SampleRate::new(44100.0), tempo);
 
         let mut derived = live.at_tempo(Bpm::of(240.0)).starting_at(Beat::new(8.0));
         assert!((tick(&mut derived) - 8.0).abs() < 1e-4);
@@ -889,25 +897,5 @@ mod tests {
             (beat - 12.0).abs() < 0.01,
             "expected ~12.0 (8 + 4 beats at 240 BPM), got {beat}"
         );
-    }
-
-    /// A derived stream steps at the tempo it was derived at: a live tempo
-    /// change must not reach it (`ClockLinks::severed` copies the tempo into
-    /// a fresh cell). The pause flag is deliberately *not* a snapshot — a
-    /// derived stream always rolls — so it is not checked here.
-    ///
-    /// Mutation (run): in `ClockLinks::severed`, keep `tempo: Arc::clone(tempo)`
-    /// → the stream takes 140 BPM → fails.
-    #[test]
-    fn a_derived_stream_keeps_its_tempo() {
-        let (tempo, paused) = create_test_atomics();
-        let live = TransportClock::new(
-            ClockLinks::bare(Arc::clone(&tempo), paused),
-            SampleRate::new(48_000.0),
-        );
-        let mut derived = live.starting_at(Beat::new(0.0));
-        tempo.store(Bpm::of(140.0), Ordering::Release);
-        derived.step(48_000);
-        assert_eq!(derived.current_beat(), Beat(2.0), "one second at 120 BPM");
     }
 }

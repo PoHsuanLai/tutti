@@ -17,7 +17,7 @@ use tutti_graph::contract::Direct;
 use tutti_graph::{Event, Node, Offset};
 use tutti_midi_runtime::TimedMidiEvent;
 use tutti_polysynth::{Adsr, OscillatorType, PolySynth, SynthConfig};
-use tutti_session::{Bounce, ExportClock, Latency, Range, Session, Tail};
+use tutti_session::{Bounce, ExportClock, Latency, Range, Session, Stem, Tail};
 use tutti_sf2::SoundFont;
 use tutti_soundfont::{Settings, SoundFontUnit};
 use tutti_transport::{OfflineTimeline, OfflineTimelineConfig};
@@ -33,21 +33,10 @@ const NOTE: usize = 4_096;
 /// fork that lost the live unit's preset is heard.
 const PRESET: U7 = U7::of(24);
 
-/// Which audio a bounce renders: the mix, or one node alone.
-#[derive(Debug, Clone, Copy)]
-enum ExportSource {
-    Mix,
-    Node(NodeKey),
-}
-
-/// A bounce of `source` into memory for `seconds` at `rate`: stereo, trimming
+/// A bounce of the mix into memory for `seconds` at `rate`: stereo, trimming
 /// nothing and keeping no tail, on `clock`.
-fn bounce_of(source: ExportSource, seconds: f64, rate: f64, clock: ExportClock) -> Bounce {
-    let bounce = match source {
-        ExportSource::Mix => Bounce::project(),
-        ExportSource::Node(node) => Bounce::node(node),
-    };
-    bounce
+fn bounce_of(seconds: f64, rate: f64, clock: ExportClock) -> Bounce {
+    Bounce::project()
         .master_buffers()
         .channels(ChannelLayout::STEREO)
         .range(Range::Seconds(Seconds(0.0), Seconds(seconds)))
@@ -66,6 +55,21 @@ fn render(session: &mut Session, bounce: Bounce) -> Vec<Vec<f32>> {
     {
         Some(Produced::Buffers(rendered)) => rendered.into_planes(),
         other => panic!("expected rendered buffers, got {other:?}"),
+    }
+}
+
+/// The planes of the one stem `bounce` names, in memory: the master is
+/// rendered beside it and dropped.
+fn render_stem(session: &mut Session, bounce: Bounce) -> Vec<Vec<f32>> {
+    let mut targets = session
+        .bounce(bounce)
+        .expect("the bounce renders")
+        .finished()
+        .expect("nothing cancels it")
+        .into_targets();
+    match targets.pop() {
+        Some(Produced::Buffers(rendered)) if targets.len() == 1 => rendered.into_planes(),
+        other => panic!("expected one stem held in memory, got {other:?}"),
     }
 }
 
@@ -156,15 +160,15 @@ fn install_clip(session: &mut Session, synth: NodeKey) {
 fn timeline(rate: f64) -> Arc<OfflineTimeline> {
     Arc::new(OfflineTimeline::new(&OfflineTimelineConfig {
         start_beat: Beat(0.0),
-        tempo: Bpm::of(90.0),
+        tempo_map: Arc::new(tutti_tempo::TempoMap::constant(Bpm::of(90.0)).expect("a tempo")),
         sample_rate: SampleRate(rate),
         loop_range: None,
     }))
 }
 
-/// Export `source` for 0.8 s at `rate` against [`timeline`].
-fn request(source: ExportSource, rate: f64) -> Bounce {
-    bounce_of(source, 0.8, rate, ExportClock::timeline(timeline(rate)))
+/// Export the mix for 0.8 s at `rate` against [`timeline`].
+fn request(rate: f64) -> Bounce {
+    bounce_of(0.8, rate, ExportClock::timeline(timeline(rate)))
 }
 
 /// `unit` prepared at `rate` and fed a note-on at frame 0 on its event
@@ -236,7 +240,7 @@ fn an_exported_polysynth_plays_its_clip() {
     for rate in [RATE, 2.0 * RATE] {
         let (mut session, synth) = session_with(poly());
         install_clip(&mut session, synth);
-        let planes = render(&mut session, request(ExportSource::Mix, rate));
+        let planes = render(&mut session, request(rate));
         // Prepared at the render's rate, as the fork is.
         let reference = reference(poly(), rate);
         assert_note_at_beat_1("PolySynth", rate, &planes, &reference);
@@ -277,7 +281,7 @@ fn a_param_on_a_synth_reaches_it_and_its_fork() {
             );
         }
         install_clip(&mut session, synth);
-        let planes = render(&mut session, request(ExportSource::Mix, RATE));
+        let planes = render(&mut session, request(RATE));
         planes[0].iter().fold(0.0f32, |a, s| a.max(s.abs()))
     };
     let full = peak(None);
@@ -303,7 +307,7 @@ fn an_exported_soundfont_plays_its_clip() {
     for rate in [RATE, 2.0 * RATE] {
         let (mut session, synth) = session_with(sf2(&font, RATE));
         install_clip(&mut session, synth);
-        let planes = render(&mut session, request(ExportSource::Mix, rate));
+        let planes = render(&mut session, request(rate));
         let reference = reference(sf2(&font, rate), rate);
         assert_note_at_beat_1("SoundFontUnit", rate, &planes, &reference);
         assert_live_untouched(&mut session);
@@ -328,7 +332,7 @@ fn an_exported_soundfont_plays_its_clip() {
 fn a_synth_node_export_plays_its_clip() {
     let (mut session, synth) = session_with(poly());
     install_clip(&mut session, synth);
-    let exported = render(&mut session, request(ExportSource::Node(synth), RATE));
+    let exported = render_stem(&mut session, request(RATE).stem_with(Stem::buffers(synth)));
     let reference = reference(poly(), RATE);
     assert_note_at_beat_1("PolySynth node export", RATE, &exported, &reference);
     assert_golden(

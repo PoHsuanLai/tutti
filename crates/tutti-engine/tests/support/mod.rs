@@ -15,9 +15,32 @@
 
 use std::f64::consts::TAU;
 
+use std::sync::Arc;
+
 use tutti_graph::{Cx, Io, Node, Prepare, Shape, Status};
+use tutti_tempo::{Shape as TempoShape, TempoMap, TempoPoint};
 use tutti_types::ChannelLayout;
-use tutti_types::{Hz, SampleRate, Tail};
+use tutti_types::{Beat, Bpm, Hz, SampleRate, Tail};
+
+/// A map of steps: each `(beat, bpm)` holds until the next. A tempo change
+/// is a point at a beat, never a command at a frame (doc 020).
+pub fn step_map(points: &[(f64, f64)]) -> Arc<TempoMap> {
+    Arc::new(
+        TempoMap::new(points.iter().map(|&(beat, bpm)| TempoPoint {
+            beat: Beat(beat),
+            tempo: Bpm::of(bpm),
+            shape: TempoShape::Step,
+        }))
+        .expect("a map"),
+    )
+}
+
+/// The beat frame `frame` reaches at a constant `bpm` and `rate`, in the
+/// closed form the clock derives it with: a step placed there lands on
+/// `frame` itself.
+pub fn beat_of_frame(frame: u64, bpm: f64, rate: f64) -> f64 {
+    frame as f64 * bpm / (60.0 * rate)
+}
 
 /// A mono sine source, phase 0 at the first sample.
 ///

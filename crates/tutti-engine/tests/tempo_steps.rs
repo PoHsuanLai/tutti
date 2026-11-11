@@ -253,15 +253,12 @@ fn an_offline_render_is_the_live_render_with_a_step_map() {
 
     let log = Log::default();
     let (_ed, mut exec) = graph(&log);
-    let timeline = OfflineTimeline::with_tempo_map(
-        &OfflineTimelineConfig {
-            start_beat: Beat(0.0),
-            tempo: Bpm::of(120.0),
-            sample_rate: SampleRate(SR),
-            loop_range: None,
-        },
-        Arc::clone(&map),
-    );
+    let timeline = OfflineTimeline::new(&OfflineTimelineConfig {
+        start_beat: Beat(0.0),
+        tempo_map: Arc::clone(&map),
+        sample_rate: SampleRate(SR),
+        loop_range: None,
+    });
     let mut out = vec![0.0f32; 512];
     let mut done = 0;
     for &n in [512usize, 300, 77].iter().cycle() {

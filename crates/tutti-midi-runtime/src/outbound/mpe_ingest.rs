@@ -118,10 +118,32 @@ fn send_zone_defaults(
 /// MIDI-2-normalized) event through [`translate`](Self::translate).
 #[derive(Debug)]
 pub struct MpeIngest {
+    /// The mode the host set: every Group starts in it, and a Group's own
+    /// Configuration Messages change that Group's alone.
+    mode: MpeMode,
+    /// One state for each Group: a Group is a MIDI 1.0 channel space of its own
+    /// (M2-104 section 2.1.2, Appendix B.1), so its zones, its member channels and
+    /// the notes they hold are not another Group's.
+    groups: [GroupState; MidiGroup::COUNT as usize],
+}
+
+/// What one Group's sixteen channels are: its zone layout and the note each
+/// member channel holds.
+#[derive(Debug)]
+struct GroupState {
     mode: MpeMode,
     /// The note each member channel holds. The two zones share no channel
     /// ([`MpeZones`]), so one table serves both.
     held: held::HeldNotes,
+}
+
+impl GroupState {
+    fn new(mode: MpeMode) -> Self {
+        Self {
+            mode,
+            held: held::HeldNotes::default(),
+        }
+    }
 }
 
 /// What a channel is to the configured zones.
@@ -134,22 +156,29 @@ enum Role {
 }
 
 impl MpeIngest {
-    /// An ingest configured for `mode`, holding no notes.
+    /// An ingest configured for `mode` on every Group, holding no notes.
     pub fn new(mode: MpeMode) -> Self {
         Self {
             mode,
-            held: held::HeldNotes::default(),
+            groups: std::array::from_fn(|_| GroupState::new(mode)),
         }
     }
 
-    /// The configured zone layout. Which channels are master and which are
-    /// members follows from this, and so does whether an inbound channel message
-    /// is folded to per-note or passed through.
+    /// The zone layout the host configured, which every Group starts in. A
+    /// Group's channel messages are folded to per-note or passed through by
+    /// [`mode_of`](Self::mode_of).
     pub fn mode(&self) -> &MpeMode {
         &self.mode
     }
 
-    /// Reconfigure to a new zone layout, **dropping all held-note state**.
+    /// The zone layout in force on `group`: the configured one until an MPE
+    /// Configuration Message on that Group changed it.
+    pub fn mode_of(&self, group: MidiGroup) -> &MpeMode {
+        &self.groups[usize::from(group.get())].mode
+    }
+
+    /// Reconfigure every Group to a new zone layout, **dropping all held-note
+    /// state**.
     ///
     /// The channel→note maps are keyed by a channel range the new mode may not
     /// share, so they cannot be carried over. Any note held across this call is
@@ -162,7 +191,7 @@ impl MpeIngest {
         *self = Self::new(mode);
     }
 
-    /// The bend ranges the configured zones start at, as RPNs on `group` at
+    /// The bend ranges the zones of `group` start at, as RPNs on it at
     /// `offset`: for each zone, RPN #00/00 = ±2 on its master channel
     /// and RPN #00/07 = ±48 on each member channel, what an MPE
     /// Configuration Message resets a receiver to. A host that sets the mode
@@ -171,7 +200,7 @@ impl MpeIngest {
     /// their defaults, as an MCM from the wire would have it. Nothing for
     /// [`MpeMode::Disabled`] or [`MpeMode::SingleChannelRotation`].
     pub fn zone_defaults(&self, group: MidiGroup, offset: Offset, mut out: impl FnMut(UmpAt)) {
-        if let MpeMode::Zones(zones) = &self.mode {
+        if let MpeMode::Zones(zones) = self.mode_of(group) {
             for config in zones.zones() {
                 send_zone_defaults(config, group, offset, &mut out);
             }
@@ -215,11 +244,11 @@ impl MpeIngest {
         if let (Some((zone, members)), Some(Message::Midi2(address, _))) =
             (MpeZoneConfig::from_mcm(&event.1), decoded)
         {
-            if !self.reconfigure_from_mcm(zone, members) {
+            if !self.reconfigure_from_mcm(address.group, zone, members) {
                 return None;
             }
             // A zone disabled has no ranges to reset.
-            if let MpeMode::Zones(zones) = &self.mode
+            if let MpeMode::Zones(zones) = self.mode_of(address.group)
                 && let Some(configured) = match zone {
                     MpeZone::Lower => zones.lower(),
                     MpeZone::Upper => zones.upper(),
@@ -230,16 +259,16 @@ impl MpeIngest {
             return None;
         }
 
-        if matches!(self.mode, MpeMode::Disabled) {
-            return Some(*event);
-        }
-
         let Some(Message::Midi2(address, voice)) = decoded else {
             // Not a channel-voice-2 message (System, SysEx, …) — pass through.
             return Some(*event);
         };
+        let mode = *self.mode_of(address.group);
+        if matches!(mode, MpeMode::Disabled) {
+            return Some(*event);
+        }
 
-        if let MpeMode::SingleChannelRotation { channel } = self.mode {
+        if let MpeMode::SingleChannelRotation { channel } = mode {
             // Rotation is a sender's scheme and a receiver need not know it
             // (M2-104 Appendix C.3): this mode owns one channel, so the
             // messages of the others are ignored, and the one's pass as they
@@ -269,7 +298,7 @@ impl MpeIngest {
         if Rpn::new(bank, index) != Rpn::PITCH_BEND_SENSITIVITY {
             return false;
         }
-        let MpeMode::Zones(zones) = &self.mode else {
+        let MpeMode::Zones(zones) = self.mode_of(address.group) else {
             return false;
         };
         let Some(config) = zones.zone_of(address.channel) else {
@@ -290,16 +319,17 @@ impl MpeIngest {
     }
 
     /// Apply an MPE Configuration Message: it configures the zone whose master
-    /// channel it arrived on (RP-053 / M2-104), `members == 0` disables that
-    /// zone. The zone on the *other* side is preserved (a dual-zone setup
+    /// channel it arrived on, in the Group it arrived in (RP-053 / M2-104; a
+    /// Group's messages apply to no other, Appendix B.1), `members == 0` disables
+    /// that zone. The zone on the *other* side is preserved (a dual-zone setup
     /// configures each zone with its own MCM).
     ///
     /// A message that would leave the two zones sharing a member channel is
     /// ignored, like any other MCM RP-053 does not allow: the zones keep what
     /// they had, and this returns `false`.
-    fn reconfigure_from_mcm(&mut self, zone: MpeZone, members: u8) -> bool {
+    fn reconfigure_from_mcm(&mut self, group: MidiGroup, zone: MpeZone, members: u8) -> bool {
         // Snapshot the current per-side configs so one MCM only touches its side.
-        let (mut lower, mut upper) = match &self.mode {
+        let (mut lower, mut upper) = match self.mode_of(group) {
             MpeMode::Zones(zones) => (zones.lower().copied(), zones.upper().copied()),
             MpeMode::Disabled | MpeMode::SingleChannelRotation { .. } => (None, None),
         };
@@ -315,8 +345,9 @@ impl MpeIngest {
             // The two zones would overlap.
             None => return false,
         };
-        // Rebuild the held notes for the new mode (also clears stale bindings).
-        *self = Self::new(mode);
+        // Rebuild the Group's held notes for the new mode (also clears stale
+        // bindings); the other Groups keep theirs.
+        self.groups[usize::from(group.get())] = GroupState::new(mode);
         true
     }
 
@@ -324,58 +355,59 @@ impl MpeIngest {
     /// member channel holds; master-channel and native per-note pass.
     fn translate_zoned(&mut self, event: &UmpAt, address: Address, voice: Voice2) -> Option<UmpAt> {
         let ch = address.channel;
+        let group = address.group;
         match voice {
             // M2-104 7.4.2: a MIDI 2.0 Note On at velocity 0 is a Note On, and
             // binds its channel like any other (the translator before this
             // turns a MIDI 1.0 one into a Note Off).
             Voice2::NoteOn { note, .. } => {
-                if self.role(ch)? == Role::Member {
-                    self.held.bind(ch, note);
+                if self.role(address)? == Role::Member {
+                    self.held_mut(group).bind(ch, note);
                 }
                 // The note itself always flows through unchanged.
                 Some(*event)
             }
             Voice2::NoteOff { .. } => {
-                if self.role(ch) == Some(Role::Member) {
-                    self.held.release(ch);
+                if self.role(address) == Some(Role::Member) {
+                    self.held_mut(group).release(ch);
                 }
                 Some(*event)
             }
-            Voice2::PitchBend(value) => match self.role(ch)? {
+            Voice2::PitchBend(value) => match self.role(address)? {
                 // Master-channel bend is global: the spec keeps it channel-wide.
                 Role::Master => Some(*event),
                 Role::Member => {
-                    let note = self.held.note_on(ch)?;
+                    let note = self.groups[usize::from(group.get())].held.note_on(ch)?;
                     Some((
                         event.0,
                         Ump::from(Message::Midi2(
-                            Address::first(ch),
+                            Address { group, channel: ch },
                             Voice2::PerNotePitchBend { note, value },
                         )),
                     ))
                 }
             },
-            Voice2::ChannelPressure(value) => match self.role(ch)? {
+            Voice2::ChannelPressure(value) => match self.role(address)? {
                 Role::Master => Some(*event),
                 Role::Member => {
-                    let note = self.held.note_on(ch)?;
+                    let note = self.groups[usize::from(group.get())].held.note_on(ch)?;
                     Some((
                         event.0,
                         Ump::from(Message::Midi2(
-                            Address::first(ch),
+                            Address { group, channel: ch },
                             Voice2::PolyPressure { note, value },
                         )),
                     ))
                 }
             },
             Voice2::ControlChange { controller, value } if controller == CCNumber::BRIGHTNESS => {
-                if self.role(ch)? == Role::Member {
-                    let note = self.held.note_on(ch)?;
+                if self.role(address)? == Role::Member {
+                    let note = self.groups[usize::from(group.get())].held.note_on(ch)?;
                     // CC74 -> Assignable Per-Note Controller index 74 (the MPE slide).
                     Some((
                         event.0,
                         Ump::from(Message::Midi2(
-                            Address::first(ch),
+                            Address { group, channel: ch },
                             Voice2::AssignablePerNote {
                                 note,
                                 controller: CCNumber::BRIGHTNESS.get(),
@@ -393,11 +425,17 @@ impl MpeIngest {
         }
     }
 
-    /// What `channel` is to the configured zones, or `None` when no zone owns it.
-    fn role(&self, channel: MidiChannel) -> Option<Role> {
-        let MpeMode::Zones(zones) = &self.mode else {
+    fn held_mut(&mut self, group: MidiGroup) -> &mut held::HeldNotes {
+        &mut self.groups[usize::from(group.get())].held
+    }
+
+    /// What `address`'s channel is to its Group's zones, or `None` when no
+    /// zone owns it.
+    fn role(&self, address: Address) -> Option<Role> {
+        let MpeMode::Zones(zones) = self.mode_of(address.group) else {
             return None;
         };
+        let channel = address.channel;
         let config = zones.zone_of(channel)?;
         Some(if config.is_master_channel(channel) {
             Role::Master
@@ -412,7 +450,9 @@ impl MpeIngest {
     /// the mapping table is cleared, so a subsequent member-channel message
     /// with no matching note-on is dropped rather than addressed at a stale note.
     pub fn reset(&mut self) {
-        self.held.clear();
+        for group in &mut self.groups {
+            group.held.clear();
+        }
     }
 }
 

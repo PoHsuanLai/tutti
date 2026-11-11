@@ -107,9 +107,6 @@ impl Default for SeekSlot {
 /// so no second playhead writer can be assembled outside.
 #[derive(Clone, Debug)]
 pub(crate) struct ClockLinks {
-    /// Beats per minute, re-read every buffer so a tempo edit takes effect
-    /// within one block.
-    pub(super) tempo: Arc<AtomicBpm>,
     /// Whether to hold position. Written by the motion FSM, never set directly.
     #[cfg_attr(not(test), allow(dead_code))]
     pub(super) paused: Arc<AtomicBool>,
@@ -140,12 +137,11 @@ pub(crate) struct ClockLinks {
 }
 
 impl ClockLinks {
-    /// Links that follow a transport's live tempo and pausedness and share
-    /// nothing else: a clock over them writes no playhead. For tests.
+    /// Links that follow a transport's pausedness and share nothing else: a
+    /// clock over them writes no playhead. For tests.
     #[cfg(test)]
-    pub(crate) fn bare(tempo: Arc<AtomicBpm>, paused: Arc<AtomicBool>) -> Self {
+    pub(crate) fn bare(paused: Arc<AtomicBool>) -> Self {
         Self {
-            tempo,
             paused,
             seek: SeekSlot::new(),
             position_writeback: None,
@@ -170,8 +166,7 @@ impl ClockLinks {
 
     /// A copy sharing nothing with the live transport.
     ///
-    /// Tempo is snapshotted into a private cell, playback forced unpaused with
-    /// no pending seek, and the loop and writeback dropped — so a clock
+    /// Playback is forced unpaused with no pending seek, and the loop and writeback dropped — so a clock
     /// built from this reads no live state and writes to nothing live.
     ///
     /// The destructure is exhaustive on purpose: adding another shared field
@@ -181,7 +176,6 @@ impl ClockLinks {
     #[must_use]
     pub(crate) fn severed(&self) -> Self {
         let Self {
-            tempo,
             paused: _,
             seek: _,
             position_writeback: _,
@@ -191,7 +185,6 @@ impl ClockLinks {
         } = self;
 
         Self {
-            tempo: Arc::new(AtomicBpm::new(tempo.load(Ordering::Acquire))),
             paused: Arc::new(AtomicBool::new(false)),
             seek: SeekSlot::new(),
             position_writeback: None,

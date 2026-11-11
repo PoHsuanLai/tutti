@@ -36,10 +36,6 @@ use crate::voices::Voices;
 // The fine (LSB) controller of each coarse one the player reads; a match arm
 // needs a constant, and `lsb` is `None` only above controller 31.
 const BANK_SELECT_LSB: CCNumber = CCNumber::BANK_SELECT.lsb().unwrap();
-const MOD_WHEEL_LSB: CCNumber = CCNumber::MOD_WHEEL.lsb().unwrap();
-const VOLUME_LSB: CCNumber = CCNumber::VOLUME.lsb().unwrap();
-const PAN_LSB: CCNumber = CCNumber::PAN.lsb().unwrap();
-const EXPRESSION_LSB: CCNumber = CCNumber::EXPRESSION.lsb().unwrap();
 
 /// The gain applied to the mix of every voice, on every plane: the sends carry
 /// it too, so an effect node after the unit is unity-gain.
@@ -277,10 +273,11 @@ impl Player {
     /// Reads one channel voice message.
     ///
     /// Followed: Note On and Off, program change (with its bank), pitch
-    /// bend, the registered controllers of
-    /// [`Channel::set_registered`](crate::channel::Channel::set_registered), and the
-    /// controllers named at [`control`](Self::control). Everything else is
-    /// dropped.
+    /// bend, channel pressure, the registered controllers and the channel
+    /// controllers the note logic reads ([`Voicing`]: modulation, volume, pan,
+    /// expression, portamento, legato, the pedals and Reset All Controllers),
+    /// and the ones named at [`control`](Self::control) (bank select and the
+    /// sends). Everything else is dropped.
     pub(crate) fn apply(&mut self, channel: MidiChannel, message: Voice2) {
         match message {
             // A Note On at velocity 0 is a Note On (M2-104 §7.4.2), struck at
@@ -291,8 +288,10 @@ impl Player {
                 self.control(channel, controller, narrow_value(value));
                 self.dispatch(channel, message);
             }
-            // The wheel is the core's (it retunes the channel's voices).
-            Voice2::PitchBend(_) => self.dispatch(channel, message),
+            // The wheel is the core's (it retunes the channel's voices), and so
+            // is the channel's pressure, which it keeps (a SoundFont has no
+            // generator to drive with it).
+            Voice2::PitchBend(_) | Voice2::ChannelPressure(_) => self.dispatch(channel, message),
             // A bank, when it rides along (the translator puts a MIDI 1.0
             // Bank Select there), is the held Bank Select, and the Program
             // Change applies it (M1 p.13).
@@ -304,13 +303,11 @@ impl Player {
                 }
                 self.program_change(channel, program);
             }
-            Voice2::Registered { bank, index, value } => {
-                if bank.get() == 0 {
-                    self.channels[usize::from(channel.get())].set_registered(index.get(), value);
-                }
-                // Pitch bend sensitivity (RPN 0) is the core's.
-                self.dispatch(channel, message);
-            }
+            // The registered controllers are the core's: the pitch bend
+            // sensitivity (RPN 0), the channel tuning (RPN 1 and 2, which it
+            // folds into the channel's pitch) and the Modulation Depth Range
+            // (RPN 5).
+            Voice2::Registered { .. } => self.dispatch(channel, message),
             // Per-note controllers and Per-Note Management are the core's: it
             // keeps what each Note Number was told (so a Pitch sent before its
             // Note On reaches the note) and which voices were detached; the
@@ -320,8 +317,7 @@ impl Player {
             | Voice2::PerNotePitchBend { .. }
             | Voice2::PolyPressure { .. }
             | Voice2::PerNoteManagement { .. } => self.dispatch(channel, message),
-            // No setter for channel pressure; an Assignable Controller (NRPN)
-            // names nothing here.
+            // An Assignable Controller (NRPN) names nothing here.
             _ => {}
         }
     }
@@ -348,9 +344,9 @@ impl Player {
 
     /// What a Control Change sets in the channel.
     ///
-    /// Followed: bank select (held until the next program change),
-    /// modulation, volume, pan, expression, reverb and chorus send, and reset
-    /// all controllers. RPN and NRPN arrive
+    /// Followed: bank select (held until the next program change) and the
+    /// reverb and chorus send. Modulation, volume, pan and expression, and Reset
+    /// All Controllers (RP-015), are the core's `ChannelState`. RPN and NRPN arrive
     /// assembled, as Registered and Assignable Controllers (the input edge's
     /// translator, design 017 §4), not as Data Entry. The pedals (64, 66), all sound off (120), all
     /// notes off (123) and the mode messages are the core's
@@ -361,17 +357,8 @@ impl Player {
         match controller {
             CCNumber::BANK_SELECT => info.select_bank_coarse(value),
             BANK_SELECT_LSB => info.select_bank_fine(value),
-            CCNumber::MOD_WHEEL => info.set_modulation_coarse(value),
-            MOD_WHEEL_LSB => info.set_modulation_fine(value),
-            CCNumber::VOLUME => info.set_volume_coarse(value),
-            VOLUME_LSB => info.set_volume_fine(value),
-            CCNumber::PAN => info.set_pan_coarse(value),
-            PAN_LSB => info.set_pan_fine(value),
-            CCNumber::EXPRESSION => info.set_expression_coarse(value),
-            EXPRESSION_LSB => info.set_expression_fine(value),
             CCNumber::REVERB_SEND => info.set_reverb_send(data),
             CCNumber::CHORUS_SEND => info.set_chorus_send(data),
-            CCNumber::RESET_ALL => info.reset_all_controllers(),
             _ => (),
         }
     }
@@ -450,8 +437,12 @@ impl Player {
         let bends = std::array::from_fn(|i| {
             MidiChannel::new(i as u8).map_or(Semitones(0.0), |c| self.voicing.channel_pitch(c))
         });
-        self.voices
-            .process(self.font.wave_data(), &self.channels, &bends);
+        self.voices.process(
+            self.font.wave_data(),
+            &self.channels,
+            self.voicing.channels(),
+            &bends,
+        );
 
         for plane in &mut self.block {
             plane.fill(0_f32);

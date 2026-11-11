@@ -224,9 +224,12 @@ pub struct SynthConfig {
     /// The amplitude envelope every voice's gate drives. Construction-only, and
     /// its release sets the synth's reported `tail()`.
     pub envelope: Adsr,
-    /// Pitch glide between notes, or `None` for no glide. A synth built without
-    /// one cannot gain it later — the glide state is only allocated when this is
-    /// `Some`.
+    /// The glide the synth gives a note on its own, whatever the stream says, or
+    /// `None` for none. A note also glides when the MIDI stream asks for it:
+    /// Portamento On/Off (CC 65) with Portamento Time (CC 5) on its channel, or a
+    /// Portamento Control (CC 84), which `tutti-voicing` resolves; that glide
+    /// is the stream's and replaces this one for the note it is for. Each voice
+    /// glides alone.
     pub portamento: Option<PortamentoConfig>,
     /// Detuned stacked sub-voices per note, or `None` for one oscillator per
     /// voice. `Some` allocates that many sub-voice lanes *per voice*, so

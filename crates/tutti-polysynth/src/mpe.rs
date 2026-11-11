@@ -79,12 +79,17 @@ impl MpeVoiceState {
         (self.enabled && (self.slide - SLIDE_CENTER).abs() > 0.001).then_some(self.slide)
     }
 
-    /// The gain factors in effect, `(pressure, note)`; unity when disabled.
-    pub(crate) fn gain_factors(&self) -> (f32, f32) {
+    /// The gain factors in effect, `(pressure, note)`. The pressure is the
+    /// larger of the note's own (when per-note expression is on) and the
+    /// channel's, `channel_pressure`; the note's gain is unity when disabled.
+    pub(crate) fn gain_factors(&self, channel_pressure: f32) -> (f32, f32) {
         if self.enabled {
-            (1.0 + self.pressure * 0.5, self.gain.get())
+            (
+                1.0 + self.pressure.max(channel_pressure) * 0.5,
+                self.gain.get(),
+            )
         } else {
-            (1.0, 1.0)
+            (1.0 + channel_pressure * 0.5, 1.0)
         }
     }
 }

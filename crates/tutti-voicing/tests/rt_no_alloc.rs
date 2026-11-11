@@ -112,6 +112,24 @@ fn step_is_allocation_free_in_every_mode() {
                     },
                     cc(64, round % 2 * 127),
                     cc(66, round % 3 / 2 * 127),
+                    // The channel's controllers, its portamento and legato
+                    // switches, a Portamento Control, the channel's registered
+                    // parameters and pressure.
+                    cc(1, round % 128),
+                    cc(33, round % 128),
+                    cc(5, round % 128),
+                    cc(7, round % 128),
+                    cc(10, round % 128),
+                    cc(11, round % 128),
+                    cc(65, round % 2 * 127),
+                    cc(68, round % 3 / 2 * 127),
+                    cc(84, k.into()),
+                    Voice2::ChannelPressure(round.wrapping_mul(0x0101_0101)),
+                    Voice2::Registered {
+                        bank: U7::of(0),
+                        index: U7::of([1, 2, 5][(round % 3) as usize]),
+                        value: (round % 128) << 25,
+                    },
                     Voice2::PitchBend(round.wrapping_mul(0x0101_0101)),
                     Voice2::NoteOff {
                         note: NoteNumber::of(k),

@@ -34,16 +34,8 @@ pub(crate) struct Channel {
     pending_bank: U14,
     patch_number: i32,
 
-    modulation: U14,
-    volume: U14,
-    pan: U14,
-    expression: U14,
-
     reverb_send: u8,
     chorus_send: u8,
-
-    coarse_tune: i16,
-    fine_tune: i16,
 }
 
 impl Channel {
@@ -53,14 +45,8 @@ impl Channel {
             bank_number: 0,
             pending_bank: U14::of(0),
             patch_number: 0,
-            modulation: U14::of(0),
-            volume: U14::of(0),
-            pan: U14::of(0),
-            expression: U14::of(0),
             reverb_send: 0,
             chorus_send: 0,
-            coarse_tune: 0,
-            fine_tune: 0,
         };
 
         channel.reset();
@@ -73,21 +59,8 @@ impl Channel {
         self.pending_bank = U14::of(0);
         self.patch_number = 0;
 
-        self.modulation = U14::of(0);
-        self.volume = with_msb(U7::of(100));
-        self.pan = with_msb(U7::of(64));
-        self.expression = with_msb(U7::of(127));
-
         self.reverb_send = 40;
         self.chorus_send = 0;
-
-        self.coarse_tune = 0;
-        self.fine_tune = 8192;
-    }
-
-    pub(crate) fn reset_all_controllers(&mut self) {
-        self.modulation = U14::of(0);
-        self.expression = with_msb(U7::of(127));
     }
 
     /// Bank Select, coarse (CC 0): held for the next Program Change, and the
@@ -113,38 +86,6 @@ impl Channel {
         self.patch_number = i32::from(program.get());
     }
 
-    pub(crate) fn set_modulation_coarse(&mut self, value: U7) {
-        self.modulation = with_msb(value);
-    }
-
-    pub(crate) fn set_modulation_fine(&mut self, value: U7) {
-        self.modulation = with_lsb(self.modulation, value);
-    }
-
-    pub(crate) fn set_volume_coarse(&mut self, value: U7) {
-        self.volume = with_msb(value);
-    }
-
-    pub(crate) fn set_volume_fine(&mut self, value: U7) {
-        self.volume = with_lsb(self.volume, value);
-    }
-
-    pub(crate) fn set_pan_coarse(&mut self, value: U7) {
-        self.pan = with_msb(value);
-    }
-
-    pub(crate) fn set_pan_fine(&mut self, value: U7) {
-        self.pan = with_lsb(self.pan, value);
-    }
-
-    pub(crate) fn set_expression_coarse(&mut self, value: U7) {
-        self.expression = with_msb(value);
-    }
-
-    pub(crate) fn set_expression_fine(&mut self, value: U7) {
-        self.expression = with_lsb(self.expression, value);
-    }
-
     pub(crate) fn set_reverb_send(&mut self, value: i32) {
         self.reverb_send = value as u8;
     }
@@ -153,41 +94,12 @@ impl Channel {
         self.chorus_send = value as u8;
     }
 
-    /// A Registered Controller of bank 0 (M2-104 7.4.13): fine tuning (1) and
-    /// coarse tuning (2); any other is ignored (pitch bend sensitivity, 0, is
-    /// the note logic's, `Voicing::step`). The data is the MIDI 1.0 pair zero-extended (M2-115 section
-    /// 4.1, as the translator sends it): `MSB << 7 | LSB` is its top 14 bits.
-    pub(crate) fn set_registered(&mut self, index: u8, value: u32) {
-        let data = (value >> 18) as i16;
-        match index {
-            1 => self.fine_tune = data,
-            2 => self.coarse_tune = (data >> 7) - 64,
-            _ => {}
-        }
-    }
-
     pub(crate) fn bank_number(&self) -> i32 {
         self.bank_number
     }
 
     pub(crate) fn patch_number(&self) -> i32 {
         self.patch_number
-    }
-
-    pub(crate) fn modulation(&self) -> f32 {
-        (50_f32 / 16383_f32) * f32::from(self.modulation.get())
-    }
-
-    pub(crate) fn volume(&self) -> f32 {
-        (1_f32 / 16383_f32) * f32::from(self.volume.get())
-    }
-
-    pub(crate) fn pan(&self) -> f32 {
-        (100_f32 / 16383_f32) * f32::from(self.pan.get()) - 50_f32
-    }
-
-    pub(crate) fn expression(&self) -> f32 {
-        (1_f32 / 16383_f32) * f32::from(self.expression.get())
     }
 
     /// What CC 91 adds to a voice's reverb send, as a fraction of full level:
@@ -202,26 +114,5 @@ impl Channel {
     /// section 8.4.9, as [`reverb_send`](Self::reverb_send).
     pub(crate) fn chorus_send(&self) -> f32 {
         SEND_AMOUNT * (f32::from(self.chorus_send) / 128_f32)
-    }
-
-    pub(crate) fn tune(&self) -> f32 {
-        self.coarse_tune as f32 + (1_f32 / 8192_f32) * (self.fine_tune - 8192) as f32
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// M1 p.12: "When an MSB is received, the receiver should set its concept
-    /// of the LSB to zero." After MSB 100, LSB 64, MSB 100 the 14-bit value is
-    /// 100 * 128, not 100 * 128 + 64.
-    #[test]
-    fn an_msb_sets_the_lsb_to_zero() {
-        let mut channel = Channel::new(false);
-        channel.set_volume_coarse(U7::of(100));
-        channel.set_volume_fine(U7::of(64));
-        channel.set_volume_coarse(U7::of(100));
-        assert_eq!(channel.volume(), (1_f32 / 16383_f32) * (100 * 128) as f32);
     }
 }

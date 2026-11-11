@@ -13,6 +13,11 @@
 //! - [`Rules`]: the declared differences ([`Mode`], [`Retrigger`], [`Steal`],
 //!   the polyphony).
 //! - [`Patch`]: what a note becomes.
+//! - [`ChannelState`]: what a channel has been told apart from its notes (the
+//!   14-bit controllers, pressure, the wheel and tuning, the Modulation Depth
+//!   Range, the portamento and legato switches), one for each channel, read
+//!   from [`Voicing::channel`]. Legato and Portamento Control are the note
+//!   logic's and reach the instrument as a [`Glide`] on a [`Command`].
 //! - [`Holds`]: the note gate (key, sustain, sostenuto) as a state machine.
 //! - [`Controller`]: which channel-mode controllers mean the same to every
 //!   instrument.
@@ -23,16 +28,19 @@
 
 #![forbid(unsafe_code)]
 
+mod channel;
 mod controller;
 mod holds;
 mod per_note;
 mod phase;
 mod voicing;
 
+pub use channel::{ChannelState, DEFAULT_MODULATION_RANGE};
 pub use controller::{Controller, Effect, Stop};
 pub use holds::Holds;
 pub use per_note::{LIVE_NOTES, NOTE_CONTROLS, NoteControl, NoteEvent, PerNoteState};
 pub use phase::Phase;
 pub use voicing::{
-    Command, Mode, Order, Patch, Retrigger, Rules, Steal, VoiceId, VoiceSpec, VoiceView, Voicing,
+    Command, Glide, Mode, Order, Patch, Retrigger, Rules, Steal, VoiceId, VoiceSpec, VoiceView,
+    Voicing,
 };

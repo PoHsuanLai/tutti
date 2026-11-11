@@ -96,6 +96,11 @@ pub enum Meta {
     Tempo {
         /// Microseconds per quarter note, at most `0xFF_FFFF`.
         micros_per_quarter: u32,
+        /// The data past the three bytes this reads: empty unless the file
+        /// has a longer event (SMF 1.0 section 3.3: programs "must ignore
+        /// everything past what they know about"). Kept so the file writes
+        /// back as it was.
+        extra: Box<[u8]>,
     },
     /// `58`: Time Signature, as the wire states it.
     TimeSignature {
@@ -107,6 +112,11 @@ pub enum Meta {
         clocks_per_click: u8,
         /// Notated 32nd notes in a MIDI quarter note (24 clocks): 8 usually.
         thirty_seconds_per_quarter: u8,
+        /// The data past the four bytes this reads, as `extra` of
+        /// [`Tempo`](Self::Tempo). A longer Time Signature is real: the
+        /// compound-signature bytes "were added at the end so that the
+        /// current Meta Event could be extended" (SMF 1.0 section 3.3).
+        extra: Box<[u8]>,
     },
     /// `59`: Key Signature.
     KeySignature {
@@ -114,6 +124,9 @@ pub enum Meta {
         sharps: i8,
         /// Whether the key is minor.
         minor: bool,
+        /// The data past the two bytes this reads, as `extra` of
+        /// [`Tempo`](Self::Tempo).
+        extra: Box<[u8]>,
     },
     /// Any other meta event (sequence number `00`, channel prefix `20`, port
     /// `21`, SMPTE offset `54`, sequencer specific `7F`, an unregistered
@@ -142,6 +155,7 @@ impl Meta {
         let micros = (MICROS_PER_MINUTE / bpm.get()).round() as u32;
         Self::Tempo {
             micros_per_quarter: micros.clamp(1, MAX_MICROS_PER_QUARTER),
+            extra: Box::default(),
         }
     }
 
@@ -149,7 +163,9 @@ impl Meta {
     /// (no valid tempo).
     pub fn bpm(&self) -> Option<Bpm> {
         match self {
-            Self::Tempo { micros_per_quarter } if *micros_per_quarter != 0 => {
+            Self::Tempo {
+                micros_per_quarter, ..
+            } if *micros_per_quarter != 0 => {
                 Bpm::new(MICROS_PER_MINUTE / f64::from(*micros_per_quarter))
             }
             _ => None,
@@ -752,13 +768,14 @@ fn refuses(container: Container, event: &FileEvent) -> Option<String> {
         (Container::Smf(_), FileEvent::Message(_) | FileEvent::Unknown(_)) => {
             Some("an SMF holds MIDI 1.0 channel messages, not packets".into())
         }
-        (Container::Smf(_), FileEvent::Meta(Meta::Tempo { micros_per_quarter }))
-            if *micros_per_quarter > MAX_MICROS_PER_QUARTER =>
-        {
-            Some(format!(
-                "a Set Tempo of {micros_per_quarter} us is over 24 bits"
-            ))
-        }
+        (
+            Container::Smf(_),
+            FileEvent::Meta(Meta::Tempo {
+                micros_per_quarter, ..
+            }),
+        ) if *micros_per_quarter > MAX_MICROS_PER_QUARTER => Some(format!(
+            "a Set Tempo of {micros_per_quarter} us is over 24 bits"
+        )),
         (Container::Smf(_), _) => None,
         (Container::Clip, FileEvent::SysEx(_) | FileEvent::Escape(_) | FileEvent::Meta(_)) => {
             Some("a Clip File holds packets, not SMF events".into())

@@ -1783,6 +1783,15 @@ impl Track { pub fn notes(&self) -> impl Iterator<Item = PairedNote>; }
   `F7`. Text is bytes (the specification names no encoding); the registered meta events
   `Meta` does not type (sequence number, channel prefix, port, SMPTE offset, sequencer
   specific) are `Other { kind, data }`.
+- **A fixed-size meta event can be longer than it defines.** SMF 1.0 section 3.3:
+  programs "shouldn't be surprised if it's bigger than they expected. If so, they must
+  ignore everything past what they know about." Set Tempo, Time Signature and Key
+  Signature each carry an `extra` (the bytes past the ones they define, empty for an
+  exact event), so the typed event is read and the file still writes back as it was (a
+  real Time Signature with the compound-signature bytes is `FF 58 06 ...`). An End of
+  Track that is not a track's last event is refused (`Error::MidiFileParse`): section
+  3.3 says it "must occur as the last event in the track", and ending the track there
+  would drop what follows.
 - **A `PairedNote`** is `(group, channel, note, 16-bit velocity, start, end)` in ticks,
   for both containers (a MIDI 1.0 velocity widened by the specification's scaling, a
   MIDI 2.0 Note On at velocity 0 neither a start nor an end); `SmfNote`, `ClipNote` and
@@ -2088,7 +2097,8 @@ at any point; its CI codec move and `ci`/`negotiate` deletion (4a, done) shrink
    - The SoundFont reads Registered Controllers 0, 1 and 2 (pitch bend
      sensitivity, fine and coarse tuning) and a Program Change's bank, which is
      stage 2's SoundFont residue, done here because the translator absorbs the
-     Bank Select the SoundFont followed before.
+     Bank Select the SoundFont followed before. The SoundFont holds a Bank Select (CC 0 and 32; an
+     MSB zeroes the held LSB, M1 p.12) until the next Program Change applies it (M1 p.13).
    The plan was: Deletes
    the SoundFont's RPN state machine (`Channel::{set_rpn_*, data_entry_*}`, which
    then reads a registered-controller `Voice2`, NRPN included), `mpe_ingest`'s

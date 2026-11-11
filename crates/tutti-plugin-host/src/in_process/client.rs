@@ -33,11 +33,12 @@ use tutti_transport::TempoReader;
 use tutti_types::{ChannelLayout, Samples};
 
 use super::instance::Instance;
-use crate::TransportSource;
+use crate::{BlockTransport, TransportSource, TransportWalk};
 use crate::{DeliveryCounters, ParamDelivery, PluginMeter, SegmentPoints};
 use tutti_plugin_types::MidiIntake;
 use tutti_plugin_types::{
-    Features, MAX_BLOCK_CHANNELS, MIDI_STACK_CAPACITY, MidiEventVec, ParamId, ParameterChanges,
+    ChordChanges, ExpressiveContext, Features, MAX_BLOCK_CHANNELS, MIDI_STACK_CAPACITY,
+    MidiEventVec, ParamId, ParameterChanges, ScaleChanges, TransportChange, TransportChanges,
     TransportInfo,
 };
 
@@ -130,6 +131,20 @@ pub struct InProcClient<F: InProcess> {
     /// The curve segments in flight on the event input, sent as points until
     /// each lands. Slots sized at construction, one per parameter slot.
     pub(super) segments: SegmentPoints,
+    /// Frames into the Processor's chunk, from `prepare` and every `reset`: where
+    /// a block of a chunked Processor ([`Processor::chunk`]) is cut. Always
+    /// zero for one that is not.
+    pub(super) phase: Samples,
+    /// The transport changes inside the piece being rendered.
+    pub(super) walk: TransportWalk,
+    pub(super) changes: TransportChanges,
+    /// The chords and scales in the piece being rendered, for a plugin that
+    /// takes sequencer context.
+    pub(super) chords: ChordChanges,
+    pub(super) scales: ScaleChanges,
+    /// The MIDI-out of the pieces rendered so far in this block, on the
+    /// block's frames.
+    pub(super) out_events: MidiEventVec,
 }
 
 /// Omits `inner`: formatting must not wait on the control side's lock.
@@ -227,6 +242,18 @@ impl TransportFeed {
             feed.source.go_offline();
         }
         feed
+    }
+
+    /// What one block reads of the transport, for a node that reads it at
+    /// several frames ([`TransportSource::block`]); count the block's frames
+    /// after it with [`advance`](Self::advance).
+    pub(super) fn lend(&mut self, features: Features) -> BlockTransport<'_> {
+        self.source.block(features)
+    }
+
+    /// Count `frames` rendered ([`TransportSource::advance`]).
+    pub(super) fn advance(&mut self, frames: usize) {
+        self.source.advance(frames);
     }
 
     /// The snapshot for a block of `frames`, then count them. A plugin that
@@ -368,6 +395,12 @@ impl<F: InProcess> InProcClient<F> {
             rate_refused: false,
             params,
             segments,
+            phase: Samples(0),
+            walk: TransportWalk::default(),
+            changes: TransportChanges::default(),
+            chords: ChordChanges::default(),
+            scales: ScaleChanges::default(),
+            out_events: MidiEventVec::new(),
         }
     }
 
@@ -507,20 +540,33 @@ pub(super) enum Rendered {
     Failed,
 }
 
+/// What a block, or the piece of one a chunked Processor is handed, carries
+/// beside its MIDI and parameter changes.
+pub(super) struct Inputs<'a> {
+    /// The transport at the first frame.
+    pub(super) transport: &'a TransportInfo,
+    /// The transport changes inside, each on a frame from the first.
+    pub(super) changes: &'a [TransportChange],
+    /// Sequencer context, for a plugin that takes it.
+    pub(super) expressive: Option<ExpressiveContext<'a>>,
+}
+
 /// Render one block through the plugin, from `inputs` into `outputs`: the
-/// graph's own channel buffers, each `size` frames. A free function so it can
-/// take disjoint borrows of the fields on the caller side without a
-/// self-borrow conflict.
+/// graph's own channel buffers, each `size` frames, through the Processor the
+/// node took from its realtime end (`None`: it holds none). A free function so
+/// it can take disjoint borrows of the fields on the caller side without a
+/// self-borrow conflict. A chunked Processor's node calls it once per piece of
+/// a block.
 ///
 /// On anything but [`Rendered::Ran`] `outputs` is untouched: the caller writes
 /// the silence.
-pub(super) fn render<P: Processor>(
-    rt: &mut Rt<P>,
+pub(super) fn render_with<P: Processor>(
+    processor: Option<&mut P>,
     counters: (&AtomicU64, &AtomicU64),
     params: &ParamDelivery,
     midi: &mut MidiEventVec,
     out: &mut ProcessOutput,
-    transport: &TransportInfo,
+    with: Inputs<'_>,
     inputs: &[&[f32]],
     outputs: &mut [&mut [f32]],
     size: usize,
@@ -541,14 +587,16 @@ pub(super) fn render<P: Processor>(
         .iter()
         .filter_map(|e| Some((Offset::new((e.offset as usize).min(last), block)?, e.ump)))
         .collect();
-    // Between blocks: take a Processor on offer, or hand this one back
-    // (stopped) when the control side recalled it.
-    let Some(processor) = rt.poll(Processor::stop) else {
+    let Some(processor) = processor else {
         unlent.fetch_add(1, Ordering::Relaxed);
         return Rendered::Unlent;
     };
     out.clear();
-    let ctx = block_context(&timed, params.chunk(), transport);
+    let mut ctx =
+        block_context(&timed, params.chunk(), with.transport).transport_changes(with.changes);
+    if let Some(expressive) = with.expressive {
+        ctx = ctx.expressive(expressive);
+    }
     // `PluginIo` borrows the tables and the data for one lifetime, and a
     // `&mut [&mut _]` is invariant in the data's: the same slices again, in a
     // table whose borrow is this call's own. An array, not an `ArrayVec`: a
@@ -861,7 +909,7 @@ mod transport_tests {
     }
 }
 
-/// `render`, over a Processor of the test's own: what a block does to the
+/// `render_with`, over a Processor of the test's own: what a block does to the
 /// counters and to the plugin's output, for any format.
 #[cfg(test)]
 mod render_tests {
@@ -896,7 +944,7 @@ mod render_tests {
         fn reset(&mut self) {}
     }
 
-    /// One block of 8 frames through `render`, the rest of its arguments at
+    /// One block of 8 frames through `render_with`, the rest of its arguments at
     /// their quiet values.
     fn block(
         rt: &mut Rt<Scripted>,
@@ -906,13 +954,17 @@ mod render_tests {
         let params = ParamDelivery::closed([], Arc::default());
         let mut midi = MidiEventVec::new();
         let mut channel = [0.0f32; 8];
-        render(
-            rt,
+        render_with(
+            rt.poll(Processor::stop),
             (&counters.0, &counters.1),
             &params,
             &mut midi,
             out,
-            &TransportInfo::default(),
+            Inputs {
+                transport: &TransportInfo::default(),
+                changes: &[],
+                expressive: None,
+            },
             &[],
             &mut [&mut channel[..]],
             8,
@@ -925,7 +977,7 @@ mod render_tests {
     /// silence for both. A failure does not take the Processor away: the next
     /// block runs.
     ///
-    /// Mutation (run): the `failed.fetch_add` in `render` removed -> the
+    /// Mutation (run): the `failed.fetch_add` in `render_with` removed -> the
     /// failed count stays 0 -> fails. Mutation (run): `Err(_)` answering
     /// `Rendered::Unlent` -> the first assertion fails.
     #[test]

@@ -22,6 +22,8 @@
 //! implementation's `unsafe` states, per format, why the two halves may reach
 //! one plugin instance at once.
 
+use std::num::NonZeroUsize;
+
 use crate::{
     AudioBufferMut, AutomationMode, EditorWindow, LoadedPlugin, Normalized, ParamId, ParameterInfo,
     PluginDescriptor, PluginError, PluginResult, PluginTail, Preset, PresetId, ProcessContext,
@@ -252,6 +254,25 @@ pub trait Processor: Send {
     /// only the host's own SysEx reassembly is dropped. Every format drops a
     /// SysEx open across the reset (design 016 §6.2).
     fn reset(&mut self);
+
+    /// The frames this Processor renders in, if it renders in fixed chunks
+    /// that may begin in the middle of a graph block and span several
+    /// [`process`](Self::process) calls (the served pipeline's: it ships a
+    /// whole chunk to another process and plays the one before). `None`, the
+    /// default, for a Processor that renders whatever block it is handed.
+    ///
+    /// With `Some(n)` the graph node cuts each block at the Processor's chunk
+    /// edges, counted in frames from `prepare` and from every
+    /// [`reset`](Self::reset), and calls `process` once per piece: each call
+    /// is inside one chunk, its [`ProcessContext::transport`] is the
+    /// transport at the call's first frame, and its MIDI, harmony and
+    /// [`transport_changes`](crate::ProcessContext::transport_changes) are the
+    /// ones inside the call, on frames from its start. The parameter changes
+    /// are the chunk's so far, on chunk frames. Read each block, on the
+    /// realtime thread: it must not change while the Processor renders.
+    fn chunk(&self) -> Option<NonZeroUsize> {
+        None
+    }
 }
 
 /// The main-thread side of a plugin that is rendering.

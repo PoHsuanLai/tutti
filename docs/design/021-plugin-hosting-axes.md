@@ -908,6 +908,62 @@ and its peers never open an editor, so the suite has a refusing stub, as
 `hostile_peer_tests` does. `ProcessGuard::for_test` is behind `test-support`,
 which `tutti-plugin`'s `tests.rs` needs. No `check-layout.sh` rule changed.
 
+**PR 2 as built.** The generic `PluginNode` (`tutti-plugin-host`'s `in_process/`)
+gains what `graph_node.rs` does; the in-process Processors answer the defaults,
+so their render is unchanged (`tutti-plugin-host`'s 116 tests and the
+`vst2_in_process_*` suites pass untouched).
+
+1. **`Processor::chunk() -> Option<NonZeroUsize>`**, default `None`. With
+   `Some(n)` the node polls the Processor once, cuts the block at the chunk
+   edges (frames counted from `prepare` and every `reset`, in `InProcClient`'s
+   `phase`) and calls `process` once per piece. Each piece reads its transport
+   at **its own first frame** (`Snapshot::at`, the steady counter at that
+   frame) and walks the changes inside it (`TransportWalk` `begin`, `scan`,
+   `finish`, with the piece as the chunk), which land in
+   `ProcessContext::transport_changes` on the piece's frames. MIDI and harmony
+   are the piece's, on its frames; the parameter changes are the **chunk's so
+   far, on chunk frames** (the delivery's `begin` runs at a chunk's first frame
+   and `handed_off` at its last, as the served node's do), so a chunk that
+   spans calls delivers or owes its values whole. The piece, not the chunk, is
+   what `ProcessContext` carries: a continued chunk's first piece has the
+   transport at the piece's frame, not at the chunk's first, and the
+   Processor (the served `IpcProcessor`, in PR 3) keeps the chunk's own.
+2. **`Processor::reset`** already existed (doc 016); the node's `reset` now
+   calls it, on the Processor it holds, after zeroing the chunk phase. For VST2
+   it drops the host's open SysEx (counted at the reset, where it was counted at
+   the next `START`; the totals the existing tests pin are the same).
+3. **Harmony.** `ProcessContext` already had `expressive`; the node fills its
+   `chords` and `scales` from `Harmony` events, for a plugin that declared
+   `SEQUENCER_CONTEXT`, on the frames of the call (the block's, or the piece's).
+   Note expression is not a rail: the served node leaves it empty (it rides the
+   MIDI as MIDI 2 per-note messages), and so does this one.
+4. **Loss accounting.** `ProcessOutput::count_midi_lost(n)` (MIDI a chunked
+   Processor took in earlier calls and lost when it shipped their chunk: not
+   staged, or refused) and `set_params_unsent()` (the chunk this call completed
+   went without its parameter changes). The node folds the first into its
+   dropped-MIDI count, the executor's lost count and the SysEx skip
+   (`MidiIntake::lost`), and ends the chunk's delivery with
+   `handed_off(!params_unsent)`. `params_refused` is read as before. A piece the
+   Processor did not run ends its chunk as undelivered, its MIDI lost, counted.
+5. **Fork: deferred to PR 3.** The token-free fork path is not in this PR.
+   Every `Control` call on the new instance (`load_state`, `load_preset`,
+   `set_render_mode`) and `Reopen::reopen` itself take a `&MainThread`, which
+   cannot be made off the main thread, so a deferred build cannot be written
+   against the generic traits. It has to be the hosting's own reopen-and-restore
+   (a call that takes the origin, the preset and the state and needs no token),
+   and PR 3 adds it with `Ipc`. The in-process fork stays `pinned`, unchanged.
+
+What the generic node still lacks for PR 3: the served node's `Features`-gated
+`SEQUENCER_CONTEXT` is the same, but its **MIDI-out is pushed per call from the
+batcher's `emit`** (here each piece's `ProcessOutput::midi_events` is shifted to
+the block's frames and written after the last piece, capped at the inline list);
+`PluginControls`' pipeline latency (`declared_latency` plus the chunk) and
+`set_pipeline` in `prepare`; `reserve_param_changes` on the bridge's buffers;
+`ForkWatch`, `settle` and the offline wait in `prepare`; the rate told through
+the bridge rather than a deactivate and activate; and the node's `segments`
+chunk length, which the in-process path has never set (`SegmentPoints::begin`
+is called only for a chunked Processor).
+
 ## 11. Open questions
 
 | # | Question | Recommendation |

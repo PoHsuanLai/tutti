@@ -150,6 +150,10 @@ pub struct ProcessOutput {
     midi_dropped: usize,
     // Parameter writes the plugin refused this block.
     params_refused: usize,
+    // MIDI events a chunked Processor accepted and could not send.
+    midi_lost: usize,
+    // Whether a chunk this call completed went without its parameter changes.
+    params_unsent: bool,
 }
 
 impl ProcessOutput {
@@ -163,6 +167,8 @@ impl ProcessOutput {
         self.midi_events.clear();
         self.midi_dropped = 0;
         self.params_refused = 0;
+        self.midi_lost = 0;
+        self.params_unsent = false;
         self.param_changes.clear();
         self.note_expression.changes.clear();
     }
@@ -210,6 +216,35 @@ impl ProcessOutput {
     /// counted them.
     pub fn params_refused(&self) -> usize {
         self.params_refused
+    }
+
+    /// Adds `n` to the MIDI events a chunked Processor ([`Processor::chunk`](crate::Processor::chunk))
+    /// took in earlier calls and lost when it shipped their chunk: the chunk
+    /// could not be staged, or the peer refused it. For the graph node, which
+    /// folds them into its dropped-MIDI counts and skips the rest of every
+    /// SysEx open in them. Reset by [`clear`](Self::clear).
+    pub fn count_midi_lost(&mut self, n: usize) {
+        self.midi_lost += n;
+    }
+
+    /// The MIDI events counted by [`count_midi_lost`](Self::count_midi_lost)
+    /// since the last [`clear`](Self::clear).
+    pub fn midi_lost(&self) -> usize {
+        self.midi_lost
+    }
+
+    /// Says the chunk this call completed shipped without its parameter
+    /// changes (a chunked Processor could not stage it, or the peer refused
+    /// it): the graph node owes each parameter's latest value to the next
+    /// chunk. Reset by [`clear`](Self::clear).
+    pub fn set_params_unsent(&mut self) {
+        self.params_unsent = true;
+    }
+
+    /// Whether [`set_params_unsent`](Self::set_params_unsent) was called since
+    /// the last [`clear`](Self::clear).
+    pub fn params_unsent(&self) -> bool {
+        self.params_unsent
     }
 
     /// Appends one automation point within the room
@@ -264,5 +299,25 @@ mod tests {
         out.clear();
         assert_eq!(out.midi_dropped(), 0);
         assert!(out.midi_events.is_empty());
+    }
+
+    /// **The loss reports of a chunked Processor accumulate within a block and
+    /// `clear` resets them**: the node reads them after each call, and a flag
+    /// left from the last block would fold a loss twice.
+    ///
+    /// Mutation (run): `clear` not resetting `midi_lost` → the second read is
+    /// 5 → fails; not resetting `params_unsent` → fails.
+    #[test]
+    fn loss_reports_accumulate_and_clear() {
+        let mut out = ProcessOutput::default();
+        assert!(!out.params_unsent());
+        out.count_midi_lost(2);
+        out.count_midi_lost(3);
+        out.set_params_unsent();
+        assert_eq!(out.midi_lost(), 5);
+        assert!(out.params_unsent());
+        out.clear();
+        assert_eq!(out.midi_lost(), 0);
+        assert!(!out.params_unsent());
     }
 }

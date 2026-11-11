@@ -1,6 +1,6 @@
 use super::*;
 use crate::GRAPH_MAX_BLOCK;
-use crate::control::{Pass, Progress};
+use crate::control::{CancelToken, Progress, Stage};
 use tutti_graph::GraphBuilder;
 use tutti_transport::{FrozenClock, OfflineTimeline, OfflineTimelineConfig};
 use tutti_types::ChannelLayout;
@@ -41,7 +41,8 @@ fn render(
             src,
             ChannelLayout::try_from(ch).expect("a test width is small"),
             &plan,
-            &mut Control::new(Pass::ONLY, &mut crate::control::never_stop),
+            Stage::Rendering,
+            &mut Control::none(),
             crate::EventLossPolicy::default(),
             |b| {
                 out.extend(b.iter_frames().map(<[f32]>::to_vec));
@@ -56,9 +57,13 @@ fn render(
     out
 }
 
-/// Drive `frames` of `mono_dc` ticking `tick`; returns the outcome and the
-/// frames consumed.
-fn drive_ticked(frames: usize, tick: &mut dyn FnMut(Progress) -> Flow) -> (Outcome<()>, usize) {
+/// Drive `frames` of `mono_dc` reporting to `report`, which may cancel
+/// `token`; returns the outcome and the frames consumed.
+fn drive_reported(
+    frames: usize,
+    token: &CancelToken,
+    report: &mut dyn FnMut(&Progress),
+) -> (Outcome<()>, usize) {
     let plan = crate::render::RenderPlan {
         total: Samples(frames),
         output_length: Samples(frames),
@@ -74,7 +79,8 @@ fn drive_ticked(frames: usize, tick: &mut dyn FnMut(Progress) -> Flow) -> (Outco
             src,
             ChannelLayout::MONO,
             &plan,
-            &mut Control::new(Pass::ONLY, tick),
+            Stage::Rendering,
+            &mut Control::new(token).on_progress(report),
             crate::EventLossPolicy::default(),
             |b| {
                 consumed += b.iter_frames().count();
@@ -87,51 +93,61 @@ fn drive_ticked(frames: usize, tick: &mut dyn FnMut(Progress) -> Flow) -> (Outco
     (outcome, consumed)
 }
 
-/// A tick that stops after block `n` ends the drive there, as `Cancelled`,
-/// having consumed exactly `n` blocks and no more.
+/// A callback that cancels once it has seen `frames` rendered ends the drive
+/// at the block that delivered it, as `Cancelled`, having consumed exactly
+/// those frames and no more.
 ///
-/// Mutation (run): `drive` ignoring the tick's answer -> it renders all
-/// 16 blocks and returns `Finished`; fails.
-/// Mutation (run): `drive` ticking before it consumes the block -> the
+/// Mutation (run): `drive` not checking the token after it delivers progress
+/// (and not at the top of its loop) -> it renders all 16 blocks and returns
+/// `Finished`; fails.
+/// Mutation (run): `drive` delivering before it consumes the block -> the
 /// consumed count is one block short; fails.
 #[test]
-fn a_tick_that_stops_ends_the_drive_after_that_block() {
+fn a_cancel_from_the_callback_ends_the_drive_after_that_block() {
     let block = GRAPH_MAX_BLOCK.get();
-    let mut ticks = 0;
-    let (outcome, consumed) = drive_ticked(16 * block, &mut |_| {
-        ticks += 1;
-        if ticks == 3 {
-            Flow::Stop
-        } else {
-            Flow::Continue
+    let token = CancelToken::new();
+    let stop_at = 3 * crate::control::DELIVERY_FRAMES;
+    let (outcome, consumed) = drive_reported(16 * block, &token, &mut |p| {
+        if p.frames().is_some_and(|(done, _)| done.get() >= stop_at) {
+            token.cancel();
         }
     });
     assert_eq!(outcome, Outcome::Cancelled);
-    assert_eq!(ticks, 3);
-    assert_eq!(consumed, 3 * block);
+    assert_eq!(consumed, stop_at);
 }
 
-/// Progress rises strictly block by block, names its pass, carries the plan's
-/// total, and the last reading is the total.
+/// A token cancelled before the first block stops the drive having rendered
+/// none.
 ///
-/// Mutation (run): `Control::report` given `Samples(0)` for produced -> not
+/// Mutation (run): no check at the top of the loop -> one block is consumed
+/// before the check after its delivery; fails.
+#[test]
+fn a_token_cancelled_first_renders_no_block() {
+    let token = CancelToken::new();
+    token.cancel();
+    let (outcome, consumed) = drive_reported(4 * GRAPH_MAX_BLOCK.get(), &token, &mut |_| {});
+    assert_eq!(outcome, Outcome::Cancelled);
+    assert_eq!(consumed, 0);
+}
+
+/// Progress rises, counts frames of the plan's total in the rendering stage,
+/// and the last reading is the total.
+///
+/// Mutation (run): `Control::advance` given `Samples(0)` for `done` -> not
 /// rising; fails.
 #[test]
 fn progress_rises_and_reaches_the_total() {
     let total = 5 * GRAPH_MAX_BLOCK.get() + 17;
     let mut seen = Vec::new();
-    let (outcome, _) = drive_ticked(total, &mut |p| {
-        seen.push(p);
-        Flow::Continue
-    });
+    let (outcome, _) = drive_reported(total, &CancelToken::new(), &mut |p| seen.push(*p));
     assert_eq!(outcome, Outcome::Finished(()));
-    assert_eq!(seen.len(), 6);
-    assert!(seen.windows(2).all(|w| w[0].produced < w[1].produced));
+    let done: Vec<_> = seen.iter().map(|p| p.frames().unwrap().0).collect();
+    assert!(done.windows(2).all(|w| w[0] < w[1]), "{done:?}");
     assert!(
         seen.iter()
-            .all(|p| p.total == Samples(total) && p.pass == Pass::ONLY)
+            .all(|p| p.frames().unwrap().1 == Samples(total) && p.stage() == Stage::Rendering)
     );
-    assert_eq!(seen.last().unwrap().produced, Samples(total));
+    assert_eq!(done.last(), Some(&Samples(total)));
 }
 
 /// A mono graph rendered to a wider file must NOT be copied into every
@@ -368,7 +384,8 @@ mod loss {
                 src,
                 ChannelLayout::MONO,
                 &plan,
-                &mut Control::new(Pass::ONLY, &mut crate::control::never_stop),
+                Stage::Rendering,
+                &mut Control::none(),
                 crate::EventLossPolicy::Allow,
                 |_| Ok(()),
             )

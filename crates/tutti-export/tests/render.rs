@@ -14,9 +14,12 @@
 
 #![cfg(all(feature = "wav", feature = "flac", feature = "aiff", feature = "ogg"))]
 
+mod support;
+
+use crate::support::{render_to_buffers, render_to_file};
 use tutti_export::{
     ChannelLayout, EncodeConfig, ExportConfig, FlacLevel, Format, FrozenClock, IntDepth, Pcm,
-    Quality, RenderClock, RenderConfig, RenderGraph, Resample, render_to_buffers, render_to_file,
+    Quality, RenderClock, RenderConfig, RenderGraph, Resample,
 };
 use tutti_graph::{Cx, ForkByClone, GraphBuilder, Io, Node, Prepare, Shape, Status};
 use tutti_nodes::testing::{Const, Osc};
@@ -666,7 +669,8 @@ fn file_peak(path: &std::path::Path) -> f32 {
 /// control: equal peaks would mean the normalization did nothing.
 #[test]
 fn normalized_export_lifts_the_level_toward_the_target() {
-    use tutti_export::{Normalize, render_normalized_to_file};
+    use crate::support::render_normalized_to_file;
+    use tutti_export::Normalize;
     use tutti_types::Db;
 
     let d = tempfile::tempdir().unwrap();
@@ -706,7 +710,8 @@ fn normalized_export_lifts_the_level_toward_the_target() {
 /// the amount the feature is supposed to catch.
 #[test]
 fn peak_normalization_lands_on_the_requested_dbtp() {
-    use tutti_export::{Normalize, render_normalized_to_file};
+    use crate::support::render_normalized_to_file;
+    use tutti_export::Normalize;
     use tutti_measure::{LoudnessConfig, measure_loudness};
     use tutti_types::{Db, Interleaved};
 
@@ -789,7 +794,8 @@ fn file_true_peak(path: &std::path::Path) -> f32 {
 /// the LUFS render succeeds and writes `path` → fails.
 #[test]
 fn a_sub_gating_block_render_cannot_be_loudness_normalized() {
-    use tutti_export::{Normalize, Unmeasured, render_normalized_to_file};
+    use crate::support::render_normalized_to_file;
+    use tutti_export::{Normalize, Unmeasured};
     use tutti_types::Db;
 
     let d = tempfile::tempdir().unwrap();
@@ -854,7 +860,8 @@ fn a_sub_gating_block_render_cannot_be_loudness_normalized() {
 /// different metric.
 #[test]
 fn surround_normalizes_rather_than_falling_back_to_peak() {
-    use tutti_export::{Normalize, render_normalized_to_file};
+    use crate::support::render_normalized_to_file;
+    use tutti_export::Normalize;
     use tutti_types::Db;
 
     let d = tempfile::tempdir().unwrap();
@@ -955,7 +962,8 @@ fn find_from(hay: &[u8], needle: &[u8], from: usize) -> Option<usize> {
 /// the silence has a reading, the render succeeds → fails.
 #[test]
 fn normalizing_silence_is_refused() {
-    use tutti_export::{Normalize, Unmeasured, render_normalized_to_file};
+    use crate::support::render_normalized_to_file;
+    use tutti_export::{Normalize, Unmeasured};
     use tutti_types::Db;
 
     let silence = || {
@@ -999,7 +1007,8 @@ fn normalizing_silence_is_refused() {
 /// exactly how this bug survived its first test.
 #[test]
 fn a_resampled_normalized_export_still_lands_on_its_dbtp_target() {
-    use tutti_export::{Normalize, render_normalized_to_file};
+    use crate::support::render_normalized_to_file;
+    use tutti_export::Normalize;
     use tutti_measure::{LoudnessConfig, measure_loudness};
     use tutti_types::{Db, Interleaved};
 
@@ -1069,7 +1078,8 @@ fn a_resampled_normalized_export_still_lands_on_its_dbtp_target() {
 /// success would lose the fact entirely.
 #[test]
 fn an_unmeasurable_rate_fails_rather_than_writing_un_normalized_audio() {
-    use tutti_export::{Normalize, render_normalized_to_file};
+    use crate::support::render_normalized_to_file;
+    use tutti_export::Normalize;
     use tutti_types::Db;
 
     let dir = tempfile::tempdir().unwrap();

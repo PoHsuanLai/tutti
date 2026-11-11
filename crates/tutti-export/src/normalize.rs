@@ -1,7 +1,7 @@
 //! Measure-then-apply normalization, composed over the streaming primitives.
 //!
 //! Normalization needs the whole signal measured before a gain can be chosen,
-//! which is two passes. [`render_to_file`](crate::render_to_file) will not do
+//! which is two passes. [`render_to_file`] will not do
 //! that — it streams, and choosing a gain would force it to hold the whole
 //! signal. So the two-pass path is a
 //! *separately named* function: the cost is in the name, not hidden behind a
@@ -10,7 +10,7 @@
 //! The composition itself is public API elsewhere — a caller who wants to log
 //! the reading, gate on it, or apply a gain of its own writes the four steps
 //! directly ([`render_to_buffers`],
-//! [`measure_loudness`],
+//! [`measure_loudness`](tutti_measure::measure_loudness),
 //! [`Loudness::gain_to`](tutti_measure::Loudness::gain_to),
 //! [`Rendered::apply_gain`](crate::Rendered::apply_gain),
 //! [`write_buffers`]). This function exists because every
@@ -18,18 +18,18 @@
 
 use std::path::Path;
 
-use tutti_measure::{LoudnessConfig, measure_loudness};
+use tutti_measure::{Loudness, LoudnessConfig, LoudnessState, finish_loudness, step_loudness};
 use tutti_transport::RenderClock;
-use tutti_types::{Amplitude, Db, Interleaved};
+use tutti_types::{Amplitude, ChannelLayout, Db, Interleaved, InterleavedMut, SampleRate, Samples};
 
 use crate::Unmeasured;
 use crate::options::Dither;
 
 use crate::config::ExportConfig;
-use crate::control::{Control, never_stop};
-use crate::{Flow, Outcome, Pass, Progress, Result, Written};
+use crate::control::{Control, Outcome, Stage, Weights};
+use crate::{Result, Written};
 #[cfg(doc)]
-use crate::{render_to_buffers, render_to_file_with, write_buffers};
+use crate::{render_to_buffers, render_to_file, write_buffers};
 
 /// A gain chosen by measuring the rendered signal.
 ///
@@ -147,27 +147,57 @@ impl Normalize {
     /// peak one): writing a hiss at full scale, or the file un-normalized, and
     /// reporting success is silent — nothing in [`Written`] records it.
     pub fn gain_for_rendered(&self, rendered: &crate::Rendered) -> Result<Db> {
-        Ok(self.gain_for(&self.measure(rendered)?))
+        let mut control = Control::none();
+        control.weigh(Weights::Normalized);
+        let total = rendered.frames();
+        let outcome = self.measure(rendered, Samples(0), total, &mut control)?;
+        Ok(self.gain_for(&crate::finished(outcome)))
     }
 
     /// The reading [`gain_for_rendered`](Self::gain_for_rendered) takes its
     /// gain from, refused when it is not a measurement of the programme.
     ///
+    /// Measured by a [`Measurer`] a chunk at a time, so `control` is checked
+    /// between chunks and each chunk reads as [`Stage::Measuring`]: `done`
+    /// frames of `total` were already spent in that stage (the conversion
+    /// before it), and this reading counts `rendered.frames()` more.
+    ///
     /// # Errors
     ///
     /// As [`gain_for_rendered`](Self::gain_for_rendered).
-    fn measure(&self, rendered: &crate::Rendered) -> Result<tutti_measure::Loudness> {
+    fn measure(
+        &self,
+        rendered: &crate::Rendered,
+        done: Samples,
+        total: Samples,
+        control: &mut Control<'_>,
+    ) -> Result<Outcome<Loudness>> {
         let unmeasurable = |reason| crate::Error::Unmeasurable {
             channels: rendered.layout(),
             sample_rate: rendered.sample_rate(),
             reason,
         };
-        let meter = LoudnessConfig::new(rendered.sample_rate(), rendered.layout());
-        let samples = rendered.interleaved();
-        let reading = measure_loudness(&meter, Interleaved::new(&samples, rendered.layout()))
+        let mut measurer = Measurer::new(rendered.sample_rate(), rendered.layout())
             .ok_or_else(|| unmeasurable(Unmeasured::Format))?;
+        let planes = rendered.planes();
+        let frames = rendered.frames().get();
+        let chunk = chunk_frames(rendered.sample_rate());
+        let mut at = 0;
+        while at < frames {
+            if control.is_cancelled() {
+                return Ok(Outcome::Cancelled);
+            }
+            let end = (at + chunk).min(frames);
+            measurer.feed(planes, at..end);
+            at = end;
+            control.advance(Stage::Measuring, Samples(done.get() + at), total);
+        }
+        if control.is_cancelled() {
+            return Ok(Outcome::Cancelled);
+        }
+        let reading = measurer.finish();
         self.check(&reading).map_err(unmeasurable)?;
-        Ok(reading)
+        Ok(Outcome::Finished(reading))
     }
 
     /// Whether `reading` measures the programme, for what this mode aims at.
@@ -230,6 +260,62 @@ fn headroom_ceiling(config: &ExportConfig) -> Option<Db> {
     )))
 }
 
+/// The most frames a measurement takes at once: one second of audio at `rate`,
+/// and at least one. A cancel waits for at most one chunk (doc 019 section
+/// 6.2), and the chunk is the unit the conversion before it is cut in too.
+pub(crate) fn chunk_frames(rate: SampleRate) -> usize {
+    (rate.get().round() as usize).max(1)
+}
+
+/// A loudness reading taken a chunk at a time, over planes.
+///
+/// The smallest thing normalize needs to be stoppable: `tutti-measure`'s
+/// `LoudnessState` already accumulates (and is what `measure_loudness` folds),
+/// so this only adds the planar-to-interleaved copy of one chunk, so that no
+/// whole interleaved copy of the render is made (the one-shot reading made
+/// one), and the chunking the caller checks `Control` between. Chunks end on
+/// frame boundaries, where the reading does not depend on where the stream is
+/// cut.
+struct Measurer {
+    cfg: LoudnessConfig,
+    state: LoudnessState,
+    /// One chunk, interleaved: reused, so a measurement allocates once.
+    scratch: Vec<f32>,
+}
+
+impl Measurer {
+    /// A meter for frames at `rate` in `layout`; `None` for a width or rate
+    /// EBU R128 does not take.
+    fn new(rate: SampleRate, layout: ChannelLayout) -> Option<Self> {
+        let cfg = LoudnessConfig::new(rate, layout);
+        Some(Self {
+            state: LoudnessState::new(&cfg)?,
+            cfg,
+            scratch: Vec::new(),
+        })
+    }
+
+    /// Feeds the frames `span` of `planes`.
+    fn feed(&mut self, planes: &[Vec<f32>], span: std::ops::Range<usize>) {
+        let layout = self.cfg.layout;
+        let frames = span.len();
+        self.scratch.clear();
+        self.scratch
+            .resize(Samples(frames).interleaved_len(layout), 0.0);
+        InterleavedMut::new(&mut self.scratch, layout).interleave_from(planes, span.start);
+        step_loudness(
+            &self.cfg,
+            &mut self.state,
+            Interleaved::new(&self.scratch, layout),
+        );
+    }
+
+    /// The reading of everything fed.
+    fn finish(self) -> Loudness {
+        finish_loudness(self.state)
+    }
+}
+
 /// EBU R128's absolute gate, in LUFS: what the meter's integrated loudness
 /// reads when no block passed it.
 const ABSOLUTE_GATE_LUFS: f32 = -70.0;
@@ -237,7 +323,7 @@ const ABSOLUTE_GATE_LUFS: f32 = -70.0;
 /// Render `graph`, measure it, apply the resulting gain, and write it to `path`.
 ///
 /// Two passes. The whole render is held in memory so a gain can be chosen
-/// from it. Use [`render_to_file`](crate::render_to_file) when no gain is
+/// from it. Use [`render_to_file`] when no gain is
 /// needed — it streams and holds nothing.
 ///
 /// # Measured at the output rate
@@ -295,39 +381,34 @@ pub fn render_normalized_to_file(
     clock: &dyn RenderClock,
     normalize: Normalize,
     path: impl AsRef<Path>,
-) -> Result<Written> {
-    render_normalized_to_file_with(graph, config, clock, normalize, path, &mut never_stop)
-        .map(crate::finished)
-}
-
-/// [`render_normalized_to_file`], reporting to `tick` after each block of
-/// both passes: pass 0 renders the graph, pass 1 writes the gained audio
-/// ([`Progress::pass`]). Stopping either returns [`Outcome::Cancelled`] with
-/// `path` untouched, as [`render_to_file_with`] does; the measurement and
-/// the resample between the passes do not tick.
-///
-/// # Errors
-///
-/// As [`render_normalized_to_file`].
-pub fn render_normalized_to_file_with(
-    graph: impl std::borrow::BorrowMut<crate::RenderGraph>,
-    config: &ExportConfig,
-    clock: &dyn RenderClock,
-    normalize: Normalize,
-    path: impl AsRef<Path>,
-    tick: &mut dyn FnMut(Progress) -> Flow,
+    control: &mut Control<'_>,
 ) -> Result<Outcome<Written>> {
     let path = path.as_ref();
-    let mut control = Control::new(Pass::FIRST_OF_TWO, tick);
-    let Outcome::Finished(rendered) = crate::render_pass(graph, config, clock, &mut control)?
-    else {
+    control.weigh(Weights::Normalized);
+    let Outcome::Finished(rendered) = crate::render_pass(graph, config, clock, control)? else {
         return Ok(Outcome::Cancelled);
     };
 
+    // Between stages. The measuring stage's work is the conversion (when the
+    // file's rate differs) and then the reading, a frame of each per frame.
+    let frames = rendered.frames();
+    let converts = config
+        .resample
+        .is_some_and(|r| r.target_rate.get().round() != rendered.sample_rate().get().round());
+    let total = Samples(frames.get() * if converts { 2 } else { 1 });
+    control.begin(Stage::Measuring, Some(total));
+    if control.is_cancelled() {
+        return Ok(Outcome::Cancelled);
+    }
+
     // Convert first, so what is measured is what is written.
-    let (mut rendered, config) = match config.resample {
-        Some(r) if r.target_rate.get().round() != rendered.sample_rate().get().round() => {
-            let converted = crate::process::resample_rendered(&rendered, r)?;
+    let (mut rendered, config, done) = match config.resample {
+        Some(r) if converts => {
+            let Outcome::Finished(converted) =
+                crate::process::resample_rendered(&rendered, r, total, control)?
+            else {
+                return Ok(Outcome::Cancelled);
+            };
             // The conversion has happened, so the config must stop asking for
             // it — but `render.sample_rate` has to move with it. The header rate
             // is `resample.target_rate` *or* `render.sample_rate`, so clearing
@@ -336,23 +417,23 @@ pub fn render_normalized_to_file_with(
             let mut cfg = config.clone();
             cfg.resample = None;
             cfg.render.sample_rate = converted.sample_rate();
-            (converted, std::borrow::Cow::Owned(cfg))
+            (converted, std::borrow::Cow::Owned(cfg), frames)
         }
-        _ => (rendered, std::borrow::Cow::Borrowed(config)),
+        _ => (rendered, std::borrow::Cow::Borrowed(config), Samples(0)),
     };
 
     let normalize = normalize.within(&config);
-    let measured = normalize.measure(&rendered)?;
+    // The converted length is known now: the reading counts it, after the
+    // frames the conversion consumed, and so ends the stage on its total.
+    let total = Samples(done.get() + rendered.frames().get());
+    let Outcome::Finished(measured) = normalize.measure(&rendered, done, total, control)? else {
+        return Ok(Outcome::Cancelled);
+    };
     let gain = normalize.gain_for(&measured);
     rendered.apply_gain(gain);
 
-    crate::encode::encode_planes(
-        &rendered,
-        &config,
-        path,
-        &mut control.pass(Pass::SECOND_OF_TWO),
-    )
-    .map(|outcome| {
+    // `encode_planes` begins the writing stage, which checks the token.
+    crate::encode::encode_planes(&rendered, &config, path, control).map(|outcome| {
         outcome.map(|mut written| {
             written.gain = Some(gain);
             written.measured = Some(measured);

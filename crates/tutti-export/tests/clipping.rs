@@ -1,9 +1,12 @@
 //! Clipping is counted, and a normalized export leaves an integer format its
 //! headroom so that it does not clip.
 
+mod support;
+
+use crate::support::{render_normalized_to_file, render_to_file};
 use tutti_export::{
     Dither, EncodeConfig, ExportConfig, Format, FrozenClock, Normalize, Pcm, RenderConfig,
-    RenderGraph, render_normalized_to_file, render_to_file,
+    RenderGraph,
 };
 use tutti_graph::GraphBuilder;
 use tutti_nodes::testing::{Const, Osc};

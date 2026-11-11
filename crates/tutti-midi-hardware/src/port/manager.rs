@@ -67,7 +67,7 @@ pub struct PortInfo {
     /// How many events reached the graph after their frame had begun, and
     /// sounded at the first frame of the block that found them: late, not
     /// lost. The lead the inlets place arrivals with
-    /// ([`DeviceInlets`](tutti_midi_runtime::DeviceInlets)) is what prevents it.
+    /// ([`DeviceInlets`]) is what prevents it.
     pub late: u64,
 }
 

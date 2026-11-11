@@ -214,7 +214,7 @@ impl SessionBuilder {
     /// node has one event input, and each device one event inlet and one
     /// translator state, for each ([`MIDI_INPUT_DEVICES`](crate::MIDI_INPUT_DEVICES)
     /// by default). Connecting one past it is refused
-    /// ([`tutti_midi_hardware::Error::NoFreeSlot`]). At least one.
+    /// (`tutti_midi_hardware::Error::NoFreeSlot`). At least one.
     #[cfg(feature = "midi")]
     #[must_use]
     pub fn midi_devices(mut self, devices: usize) -> Self {

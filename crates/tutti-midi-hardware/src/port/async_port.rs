@@ -7,7 +7,7 @@
 //! # Who owns what
 //!
 //! The handle owns the device's end of its inlet
-//! ([`DeviceInput`](tutti_midi_runtime::DeviceInput)), is not `Clone`, and
+//! ([`DeviceInput`]), is not `Clone`, and
 //! pushes through `&mut self`: the borrow checker keeps an inlet to one
 //! pusher. The entry holds a view of the inlet's counts and the active flag
 //! the handle reads, so the control side reads and sets them without touching

@@ -8,7 +8,7 @@
 //! engine's block-start readings ([`BlockClockReader`], one per render call:
 //! the OS time the block began and the graph frame it began at) and pushes the
 //! event for the [`Moment`] the map names, through the device's own
-//! [`EventInletWriter`](tutti_graph::EventInletWriter). The inlet holds the
+//! [`EventInletWriter`]. The inlet holds the
 //! event until its block and emits it on its frame, and a
 //! [`MidiIngestNode`](crate::MidiIngestNode) reads one inlet per slot.
 //!

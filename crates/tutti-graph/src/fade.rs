@@ -41,6 +41,7 @@
 //!   re-prepare renders silence while its units are out, so there is nothing
 //!   to fade).
 
+use tutti_curve::Law;
 use tutti_types::{SampleRate, Samples, Seconds};
 
 /// The gain curve a crossfade follows.
@@ -69,8 +70,8 @@ impl CrossfadeCurve {
     /// exactly `len` frames and the step into and out of it is one fade step,
     /// not a jump.
     ///
-    /// - `EqualAmplitude`: `g_in = x³(6x² − 15x + 10)` (fifth-order
-    ///   smoothstep), `g_out = 1 − g_in`.
+    /// - `EqualAmplitude`: `g_in = x³(6x² − 15x + 10)` (the fifth-order
+    ///   [`Law::Smootherstep`]), `g_out = 1 − g_in`.
     /// - `EqualPower`: `g_in = sin(πx/2)`, `g_out = cos(πx/2)`.
     ///
     /// # Panics
@@ -87,7 +88,7 @@ impl CrossfadeCurve {
         let x = (k + 1) as f32 / (len + 1) as f32;
         match self {
             Self::EqualAmplitude => {
-                let g = x * x * x * (x * (x * 6.0 - 15.0) + 10.0);
+                let g = Law::Smootherstep.eval(x);
                 (g, 1.0 - g)
             }
             Self::EqualPower => {
@@ -134,6 +135,37 @@ impl Fade {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `EqualAmplitude`'s gains are bit-stable: an FNV-1a digest of both
+    /// gains' bits at every frame of fades of many lengths. Plain `f32`
+    /// arithmetic, no libm, so it holds on every target.
+    ///
+    /// Both gains also stay in `[0, 1]` at every frame (the law's clamp; the
+    /// digest was `8576483186461023489` before it, a deliberate change: the
+    /// unclamped form overshot 1 by up to 7.2e-7 here).
+    ///
+    /// Mutation (run): the polynomial's `10.0` written `10.000001` → the
+    /// digest moves → fails. Mutation (run): `Law::Smootherstep`'s clamp
+    /// removed → the range assert fails.
+    #[test]
+    fn equal_amplitude_gains_are_bit_stable() {
+        let mut h = 0xcbf2_9ce4_8422_2325u64;
+        for len in [1usize, 2, 3, 7, 64, 240, 1000, 4800] {
+            for k in 0..len {
+                let (a, b) = CrossfadeCurve::EqualAmplitude.gains(k, len);
+                assert!(
+                    (0.0..=1.0).contains(&a) && (0.0..=1.0).contains(&b),
+                    "{k}/{len}: ({a}, {b})"
+                );
+                for bits in [a.to_bits(), b.to_bits()] {
+                    for byte in bits.to_le_bytes() {
+                        h = (h ^ u64::from(byte)).wrapping_mul(0x0100_0000_01b3);
+                    }
+                }
+            }
+        }
+        assert_eq!(h, 10_403_808_708_279_920_321, "digest");
+    }
 
     /// Each curve keeps the law its name promises at every frame: the halves
     /// sum to one in amplitude for `EqualAmplitude` and in power for

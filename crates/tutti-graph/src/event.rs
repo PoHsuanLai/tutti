@@ -17,7 +17,7 @@
 
 use std::cell::Cell;
 
-use tutti_curve::Law;
+use tutti_curve::{Law, Piece};
 use tutti_types::{ParamAddr, ParamKey, SamplePosition, Samples, Unit, UnitAddr};
 use tutti_ump::Ump;
 
@@ -31,7 +31,7 @@ use crate::time::Offset;
 /// receiving port's source holds on the event's frame, so the shape is
 /// evaluated exactly as a segment's is, with that value as `from`: frame `j`
 /// after the event (`j = 0` its own) reads
-/// `from + (target - from) · shape.eval((j + 1) / duration)`, and `target`
+/// [`Piece::value`] at `(j + 1) / duration` (`from + (target - from) · shape.eval(t)`), and `target`
 /// from frame `duration - 1` on. Re-sending one restarts it from where the
 /// source stands.
 ///
@@ -169,6 +169,7 @@ pub(crate) enum ShapeTag {
     PowerOut,
     PowerInOut,
     Exp,
+    Smootherstep,
 }
 
 impl ShapeTag {
@@ -181,6 +182,7 @@ impl ShapeTag {
             Law::PowerOut(p) => (Self::PowerOut, p),
             Law::PowerInOut(p) => (Self::PowerInOut, p),
             Law::Exp(k) => (Self::Exp, k),
+            Law::Smootherstep => (Self::Smootherstep, 0.0),
         }
     }
 
@@ -193,6 +195,7 @@ impl ShapeTag {
             Self::PowerOut => Law::PowerOut(param),
             Self::PowerInOut => Law::PowerInOut(param),
             Self::Exp => Law::Exp(param),
+            Self::Smootherstep => Law::Smootherstep,
         }
     }
 }
@@ -213,7 +216,7 @@ impl ShapeTag {
 ///
 /// ```text
 /// t = (position + j) / length
-/// t < 1:  from + (to - from) · shape.eval(t)
+/// t < 1:  Piece { from, to, shape }.value(t)   (from + (to - from) · shape.eval(t))
 /// t >= 1: to, held until the source's next event
 /// ```
 ///
@@ -409,14 +412,7 @@ impl ParamSegment {
     /// parameter) or a test. Past `u32::MAX` frames it reads the value
     /// there.
     pub fn raw_value_after(&self, j: Samples) -> f32 {
-        segment_value(
-            self.from,
-            self.to,
-            self.shape(),
-            self.position,
-            self.length,
-            saturate(j),
-        )
+        segment_value(self.piece(), self.position, self.length, saturate(j))
     }
 
     /// How many frames after the event's frame the segment arrives: the
@@ -445,10 +441,17 @@ impl ParamSegment {
         Some(Samples(j as usize))
     }
 
-    /// The raw endpoints, position and length, for the graph's own param
-    /// port, which is erased over the unit as the port it drives is.
-    pub(crate) fn raw(&self) -> (f32, f32, f32, f32) {
-        (self.from, self.to, self.position, self.length)
+    /// The pure part of the segment: its endpoints and its law, as a
+    /// [`Piece`]. A segment is this plus an address and a position
+    /// ([`position`](Self::position), [`length`](Self::length)).
+    pub fn piece(&self) -> Piece {
+        Piece::new(self.from, self.to, self.shape())
+    }
+
+    /// The raw position and length, for the graph's own param port, which is
+    /// erased over the unit as the port it drives is.
+    pub(crate) fn timing(&self) -> (f32, f32) {
+        (self.position, self.length)
     }
 }
 
@@ -458,17 +461,10 @@ impl ParamSegment {
 /// interpreter and [`ParamSegment::raw_value_after`] share, as they share a
 /// shaping LUT.
 #[inline]
-pub(crate) fn segment_value(
-    from: f32,
-    to: f32,
-    shape: Law,
-    position: f32,
-    length: f32,
-    j: u32,
-) -> f32 {
+pub(crate) fn segment_value(piece: Piece, position: f32, length: f32, j: u32) -> f32 {
     match segment_progress(position, length, j) {
-        Some(t) => from + (to - from) * shape.eval(t),
-        None => to,
+        Some(t) => piece.value(t),
+        None => piece.to,
     }
 }
 
@@ -1432,6 +1428,13 @@ mod tests {
             assert_eq!(s.raw_value_after(Samples(0)), 2.0, "length {l}");
             assert_eq!(s.arrives_after(), Some(Samples(0)), "length {l}");
         }
+        // The pure part: endpoints and law, the packed storage unpacked
+        // (a law with no parameter, `Smootherstep`, among them).
+        let smooth = ParamSegment::new(key, Hz(1.0), Hz(2.0), Samples(8), Law::Smootherstep);
+        assert_eq!(smooth.piece(), Piece::new(1.0, 2.0, Law::Smootherstep));
+        assert_eq!(s.piece(), Piece::new(1.0, 2.0, Law::PowerOut(3.0)));
+        // Mutation (run): `unpack` mapping `Smootherstep` to `Linear` -> the
+        // first assert fails.
         // A negative position holds `from` until it reaches 0, then moves.
         let late = ParamSegment::new(key, Hz(1.0), Hz(2.0), Samples(0), Law::Linear)
             .resumed(SamplePosition(-3.0), SamplePosition(4.0));

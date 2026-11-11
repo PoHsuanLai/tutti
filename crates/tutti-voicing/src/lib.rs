@@ -17,18 +17,22 @@
 //! - [`Controller`]: which channel-mode controllers mean the same to every
 //!   instrument.
 //! - [`Phase`]: what holds a voice open.
+//! - [`PerNoteState`]: the per-note controllers of MIDI 2.0 (held values, a
+//!   note id for each started note, Per-Note Management), which [`Voicing`]
+//!   uses and a plugin host, which allocates no voices, can use as it is.
 
 #![forbid(unsafe_code)]
 
 mod controller;
 mod holds;
+mod per_note;
 mod phase;
 mod voicing;
 
 pub use controller::{Controller, Effect, Stop};
 pub use holds::Holds;
+pub use per_note::{NOTE_CONTROLS, NoteControl, NoteEvent, PerNoteState};
 pub use phase::Phase;
 pub use voicing::{
-    Command, Mode, NoteControl, Order, Patch, Retrigger, Rules, Steal, VoiceId, VoiceSpec,
-    VoiceView, Voicing,
+    Command, Mode, Order, Patch, Retrigger, Rules, Steal, VoiceId, VoiceSpec, VoiceView, Voicing,
 };

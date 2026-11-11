@@ -40,13 +40,12 @@
 //! across keys: a prior voice is taken over by the new key's voice with the
 //! same [`VoiceSpec::tag`].
 
-use tutti_midi_protocol::{MpeZones, PitchBendSensitivity, bend_u32_to_signed_f32, narrow_value};
+use tutti_midi_protocol::{MpeZones, bend_u32_to_signed_f32, narrow_value};
 use tutti_types::{Amplitude, Semitones};
-use tutti_ump::{
-    Attribute, MidiChannel, NoteNumber, Pitch, RegisteredPerNoteController, Rpn, Voice2,
-};
+use tutti_ump::{Address, Attribute, MidiChannel, MidiGroup, NoteId, NoteNumber, Rpn, Voice2};
 
-use crate::{Controller, Effect, Holds, Phase, Stop};
+use crate::per_note::{MAX_EVENTS as NOTE_EVENTS, NOTE_CONTROLS};
+use crate::{Controller, Effect, Holds, NoteControl, NoteEvent, PerNoteState, Phase, Stop};
 
 const CHANNELS: usize = MidiChannel::COUNT as usize;
 
@@ -65,14 +64,6 @@ const MAX_SPECS: usize = 32;
 
 /// The keys a mono or legato channel remembers as held.
 const HELD_KEYS: usize = 16;
-
-/// The distinct per-note controllers one Note Number remembers. Past that the
-/// one set longest ago is forgotten (M2-104 names 22 registered numbers and
-/// 256 assignable ones; a sender that drives more than this many on one note
-/// at once loses the oldest).
-const NOTE_CONTROLS: usize = 8;
-
-const KEYS: usize = 128;
 
 /// The release velocity of a release no note-off gave one to (a pedal lifting,
 /// a panic): the centre of the 16-bit range, M2-104 Appendix D.3.1's value for a
@@ -266,77 +257,12 @@ pub enum Command {
     },
 }
 
-/// A per-note controller and its value, as a voice reads it (M2-104 section
-/// 7.4). A controller that was never sent has no value: the voice's own
-/// default stands.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum NoteControl {
-    /// Registered Per-Note Controller #3 (section 7.4.15.2) or a Note On's
-    /// Attribute Pitch 7.9 (section 7.4.15.3): the pitch the note sounds at,
-    /// the Note Number being an index only. Pitch bend offsets from it.
-    Pitch(Pitch),
-    /// Per-Note Pitch Bend, in semitones: the wheel's position over the
-    /// channel's sensitivity (section 7.4.13). Sent again when the sensitivity
-    /// changes.
-    Bend(Semitones),
-    /// Polyphonic Pressure, 32 bits.
-    Pressure(u32),
-    /// Any other Registered Per-Note Controller (Appendix A), 32 bits.
-    Registered(RegisteredPerNoteController, u32),
-    /// An Assignable Per-Note Controller's index and 32-bit value.
-    Assignable(u8, u32),
-}
-
-/// What a Note Number was last told, by controller. Sparse and fixed: a
-/// controller is its code (below) and the wire word.
-#[derive(Debug, Clone, Copy)]
-struct NoteValues {
-    len: usize,
-    set: [(u16, u32); NOTE_CONTROLS],
-}
-
-impl NoteValues {
-    const NONE: NoteValues = NoteValues {
-        len: 0,
-        set: [(0, 0); NOTE_CONTROLS],
-    };
-
-    const BEND: u16 = 0x200;
-    const PRESSURE: u16 = 0x201;
-    const ASSIGNABLE: u16 = 0x100;
-
-    /// Records `value`, the most recent. The oldest goes if the table is full.
-    fn set(&mut self, code: u16, value: u32) {
-        if let Some(e) = self.set[..self.len].iter_mut().find(|e| e.0 == code) {
-            e.1 = value;
-            return;
-        }
-        if self.len == NOTE_CONTROLS {
-            self.set.copy_within(1.., 0);
-            self.len -= 1;
-        }
-        self.set[self.len] = (code, value);
-        self.len += 1;
-    }
-
-    fn get(&self, code: u16) -> Option<u32> {
-        self.set[..self.len]
-            .iter()
-            .find(|e| e.0 == code)
-            .map(|e| e.1)
-    }
-
-    fn clear(&mut self) {
-        self.len = 0;
-    }
-}
-
 #[derive(Debug, Clone, Copy)]
 struct Note {
     id: VoiceId,
-    /// Per-Note Management Detach reached it: it keeps the per-note values it
-    /// has and no longer responds (section 7.4.5).
-    detached: bool,
+    /// The per-note id of the strike that started it (or last moved it): what
+    /// [`PerNoteState`] addresses its controllers by.
+    note: NoteId,
     /// The strike that started it (or last moved it).
     strike: u64,
     channel: MidiChannel,
@@ -416,12 +342,12 @@ pub struct Voicing {
     next: u64,
     strike: u64,
     held: [Held; CHANNELS],
-    /// What each (channel, Note Number) was told, `channel * 128 + key`: the
-    /// state a Note On inherits (section 7.4.15.2).
-    per_note: Vec<NoteValues>,
-    /// Each channel's Per-Note Pitch Bend sensitivity (RPN 0/7, section 7.4.13:
-    /// common to all Note Numbers of the channel).
-    note_bend_range: [Semitones; CHANNELS],
+    /// The per-note controllers (section 7.4), for this Group's channels.
+    per_note: PerNoteState,
+    /// What the per-note state said of the message being read.
+    events: Vec<NoteEvent>,
+    /// The id of the note being started, which the voices it starts take.
+    strike_note: NoteId,
     out: Vec<Command>,
 }
 
@@ -441,7 +367,8 @@ impl Clone for Voicing {
             strike: self.strike,
             held: self.held,
             per_note: self.per_note.clone(),
-            note_bend_range: self.note_bend_range,
+            events: Vec::with_capacity(self.events.capacity()),
+            strike_note: self.strike_note,
             out: Vec::with_capacity(self.out.capacity()),
         }
     }
@@ -466,8 +393,9 @@ impl Voicing {
             next: 1,
             strike: 0,
             held: [Held::NONE; CHANNELS],
-            per_note: vec![NoteValues::NONE; CHANNELS * KEYS],
-            note_bend_range: [rules.per_note_bend_range; CHANNELS],
+            per_note: PerNoteState::new(1, rules.per_note_bend_range),
+            events: Vec::with_capacity(NOTE_EVENTS),
+            strike_note: NoteId::from_raw(0),
         }
     }
 
@@ -484,8 +412,7 @@ impl Voicing {
     /// to centre. Ids are not reused.
     pub fn reset(&mut self) {
         self.forget_notes();
-        self.per_note.fill(NoteValues::NONE);
-        self.note_bend_range = [self.rules.per_note_bend_range; CHANNELS];
+        self.per_note.clear();
         self.bends = [Bend {
             position: 0.0,
             range: self.rules.bend_range,
@@ -552,6 +479,7 @@ impl Voicing {
         voices: &[VoiceView],
     ) -> &[Command] {
         self.out.clear();
+        self.events.clear();
         match *message {
             // A MIDI 2.0 Note On at velocity 0 is a Note On (M2-104 section
             // 7.4.2), played as quietly as there is. A MIDI 1.0 one is a Note
@@ -561,12 +489,11 @@ impl Voicing {
                 velocity,
                 attribute,
             } => {
+                self.begin(channel, note, attribute);
                 self.note_on(channel, note, velocity.max(1), patch, voices);
-                self.inherit(Some((note, attribute)));
             }
             Voice2::NoteOff { note, velocity, .. } => {
                 self.note_off(channel, note, velocity, patch, voices);
-                self.inherit(None);
             }
             Voice2::ControlChange { controller, value } => {
                 if let Some(effect) = Controller::effect(controller, narrow_value(value)) {
@@ -583,147 +510,58 @@ impl Voicing {
                 let range = bend_sensitivity(value);
                 self.bend(channel, |b| b.range = range);
             }
-            Voice2::Registered { bank, index, value }
-                if Rpn::new(bank, index) == Rpn::PER_NOTE_PITCH_BEND_SENSITIVITY =>
-            {
-                self.note_bend_sensitivity(channel, value);
+            // The per-note controllers, Per-Note Management and RPN 0/7 are
+            // `PerNoteState`'s; this core carries what it says to the voices.
+            Voice2::Registered { .. }
+            | Voice2::RegisteredPerNote { .. }
+            | Voice2::AssignablePerNote { .. }
+            | Voice2::PerNotePitchBend { .. }
+            | Voice2::PolyPressure { .. }
+            | Voice2::PerNoteManagement { .. } => {
+                let address = Self::address(channel);
+                self.events
+                    .extend_from_slice(self.per_note.step(address, message));
             }
-            Voice2::RegisteredPerNote {
-                note,
-                controller,
-                value,
-            } => self.note_control(channel, note, u16::from(controller.number()), value),
-            Voice2::AssignablePerNote {
-                note,
-                controller,
-                value,
-            } => self.note_control(
-                channel,
-                note,
-                NoteValues::ASSIGNABLE | u16::from(controller),
-                value,
-            ),
-            Voice2::PerNotePitchBend { note, value } => {
-                self.note_control(channel, note, NoteValues::BEND, value);
-            }
-            Voice2::PolyPressure { note, value } => {
-                self.note_control(channel, note, NoteValues::PRESSURE, value);
-            }
-            Voice2::PerNoteManagement {
-                note,
-                detach,
-                reset,
-            } => self.note_management(channel, note, detach, reset),
             _ => {}
         }
+        self.deliver();
         &self.out
     }
 
-    fn slot(channel: MidiChannel, key: NoteNumber) -> usize {
-        usize::from(channel.get()) * KEYS + usize::from(key.get())
-    }
-
-    /// The controller a stored code and word mean on `channel`.
-    fn resolve(&self, channel: MidiChannel, code: u16, value: u32) -> NoteControl {
-        match code {
-            NoteValues::BEND => NoteControl::Bend(Semitones(
-                bend_u32_to_signed_f32(value)
-                    * self.note_bend_range[usize::from(channel.get())].get(),
-            )),
-            NoteValues::PRESSURE => NoteControl::Pressure(value),
-            c if c >= NoteValues::ASSIGNABLE => NoteControl::Assignable(c as u8, value),
-            c => match RegisteredPerNoteController::from(c as u8) {
-                RegisteredPerNoteController::Pitch => NoteControl::Pitch(Pitch::from_q7_25(value)),
-                r => NoteControl::Registered(r, value),
-            },
+    fn address(channel: MidiChannel) -> Address {
+        Address {
+            group: MidiGroup::FIRST,
+            channel,
         }
     }
 
-    /// A per-note controller arrives: it becomes the Note Number's state (the
-    /// next note on it starts with it, section 7.4.15.2) and moves every voice
-    /// of that Note Number that has not been detached (section 7.4.5).
-    fn note_control(&mut self, channel: MidiChannel, key: NoteNumber, code: u16, value: u32) {
-        self.per_note[Self::slot(channel, key)].set(code, value);
-        let control = self.resolve(channel, code, value);
-        for i in 0..self.notes.len() {
-            let n = self.notes[i];
-            if n.channel == channel && n.key == key && !n.detached {
-                self.push(Command::Control { id: n.id, control });
-            }
+    /// Starts a note in the per-note state: its id is the one the voices this
+    /// message starts take, and what it holds is delivered after them.
+    fn begin(&mut self, channel: MidiChannel, key: NoteNumber, attribute: Attribute) {
+        let events = self.per_note.start(Self::address(channel), key, attribute);
+        if let Some(NoteEvent::Started { id, .. }) = events.first() {
+            self.strike_note = *id;
         }
+        self.events.extend_from_slice(events);
     }
 
-    /// Per-Note Management (section 7.4.5): Detach first, so the voices keep
-    /// what they have; then Reset, which is for the notes that follow and for
-    /// any voice not detached.
-    fn note_management(
-        &mut self,
-        channel: MidiChannel,
-        key: NoteNumber,
-        detach: bool,
-        reset: bool,
-    ) {
-        if detach {
-            for n in &mut self.notes {
-                if n.channel == channel && n.key == key {
-                    n.detached = true;
-                }
-            }
-        }
-        if reset {
-            self.per_note[Self::slot(channel, key)].clear();
+    /// Turns what the per-note state said into commands for the voices of
+    /// each note it names.
+    fn deliver(&mut self) {
+        for e in 0..self.events.len() {
+            let (note, control) = match self.events[e] {
+                NoteEvent::Started { .. } => continue,
+                NoteEvent::Control { id, control } => (id, Some(control)),
+                NoteEvent::Reset { id } => (id, None),
+            };
             for i in 0..self.notes.len() {
-                let n = self.notes[i];
-                if n.channel == channel && n.key == key && !n.detached {
-                    self.push(Command::ResetControls(n.id));
+                if self.notes[i].note == note {
+                    let id = self.notes[i].id;
+                    self.push(match control {
+                        Some(control) => Command::Control { id, control },
+                        None => Command::ResetControls(id),
+                    });
                 }
-            }
-        }
-    }
-
-    /// RPN 0/7: the sensitivity of the channel's Per-Note Pitch Bend (section
-    /// 7.4.13). The bends held are positions, so the voices that have one are
-    /// told where it now puts them.
-    fn note_bend_sensitivity(&mut self, channel: MidiChannel, value: u32) {
-        let range = PitchBendSensitivity::from_rpn_bits(value).as_semitones_f32();
-        self.note_bend_range[usize::from(channel.get())] = Semitones(range);
-        for i in 0..self.notes.len() {
-            let n = self.notes[i];
-            if n.channel == channel
-                && !n.detached
-                && let Some(bend) = self.per_note[Self::slot(channel, n.key)].get(NoteValues::BEND)
-            {
-                let control = self.resolve(channel, NoteValues::BEND, bend);
-                self.push(Command::Control { id: n.id, control });
-            }
-        }
-    }
-
-    /// Gives each voice a note message just started or moved what its Note
-    /// Number holds, in the order it was told, and then the Note On's own
-    /// Attribute Pitch 7.9, which is for that note alone (section 7.4.15.3).
-    fn inherit(&mut self, strike: Option<(NoteNumber, Attribute)>) {
-        for i in 0..self.out.len() {
-            let (id, key) = match self.out[i] {
-                Command::Start { id, key, .. } | Command::Retarget { id, key, .. } => (id, key),
-                _ => continue,
-            };
-            let Some(channel) = self.note(id).map(|n| n.channel) else {
-                continue;
-            };
-            let held = self.per_note[Self::slot(channel, key)];
-            for &(code, value) in &held.set[..held.len] {
-                let control = self.resolve(channel, code, value);
-                self.push(Command::Control { id, control });
-            }
-            if let Some((note, attribute)) = strike
-                && note == key
-                && let Some(pitch) = attribute.pitch()
-            {
-                self.push(Command::Control {
-                    id,
-                    control: NoteControl::Pitch(pitch),
-                });
             }
         }
     }
@@ -871,6 +709,7 @@ impl Voicing {
                     let id = self.notes[i].id;
                     self.notes[i].key = key;
                     self.notes[i].strike = strike;
+                    self.notes[i].note = self.strike_note;
                     self.push(Command::Retarget { id, key, velocity });
                 }
                 Some(i) => {
@@ -901,7 +740,7 @@ impl Voicing {
         self.next += 1;
         self.notes.push(Note {
             id,
-            detached: false,
+            note: self.strike_note,
             strike: self.strike,
             channel,
             key,
@@ -980,6 +819,7 @@ impl Voicing {
                 }
                 if let Some((back, v)) = self.held[ch].top() {
                     self.strike += 1;
+                    self.begin(channel, back, Attribute::None);
                     self.play_mono(channel, back, v, patch, voices, true);
                     return;
                 }
@@ -2350,18 +2190,6 @@ mod tests {
         )
     }
 
-    fn bend_sensitivity_7(s: &mut Sim, c: u8, semitones: u32) -> Vec<Command> {
-        s.send(
-            c,
-            Voice2::Registered {
-                bank: U7::of(0),
-                index: U7::of(7),
-                value: semitones << 25,
-            },
-            &One,
-        )
-    }
-
     /// M2-104 section 7.4.15.2 and Appendix C.3 (Method 1): "Per-Note
     /// Management; PNCC#3 Set Pitch 60.0; Note On (Pitch sounds as 60.0)". A
     /// Pitch 7.25 that arrives before its Note On, with no voice to address,
@@ -2380,6 +2208,55 @@ mod tests {
                 id: id(1),
                 control: NoteControl::Pitch(Pitch::from_q7_25(PITCH_60)),
             }]
+        );
+    }
+
+    /// M2-104 section 7.4.15.2: a value is for the note, and a note a patch
+    /// makes of several voices is one note: every voice of the strike takes it,
+    /// and no voice of another note on the same number does.
+    #[test]
+    fn every_voice_of_a_strike_takes_the_per_note_value() {
+        let mut s = Sim::new(POLY);
+        pnc(&mut s, 0, 5, RegisteredPerNoteController::Pitch, PITCH_60);
+        let c = s.on_with(0, 5, &Pair { group: 0, scope: 0 });
+        let told: Vec<VoiceId> = c
+            .iter()
+            .filter_map(|c| match c {
+                Command::Control { id, .. } => Some(*id),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(told, vec![id(1), id(2)], "{c:?}");
+        // The same key struck again is a new note: the voices of the first
+        // are no longer addressed.
+        s.on_with(0, 5, &Pair { group: 0, scope: 0 });
+        let c = per_note_bend(&mut s, 0, 5, 0xC000_0000);
+        let told: Vec<VoiceId> = c
+            .iter()
+            .filter_map(|c| match c {
+                Command::Control { id, .. } => Some(*id),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(told, vec![id(3), id(4)], "{c:?}");
+    }
+
+    /// `reset` is a fresh start, and what a Note Number was told goes with the
+    /// rest (it clears the per-note state in place); `forget_notes` keeps it,
+    /// as it keeps the bends.
+    #[test]
+    fn reset_forgets_the_per_note_values_and_forgetting_the_notes_keeps_them() {
+        let mut s = Sim::new(POLY);
+        pnc(&mut s, 0, 5, RegisteredPerNoteController::Pitch, PITCH_60);
+        s.core.forget_notes();
+        let c = s.on(0, 5);
+        assert!(matches!(c.last(), Some(Command::Control { .. })), "{c:?}");
+        s.core.reset();
+        s.voices.clear();
+        let c = s.on(0, 5);
+        assert!(
+            !c.iter().any(|c| matches!(c, Command::Control { .. })),
+            "{c:?}"
         );
     }
 
@@ -2458,105 +2335,6 @@ mod tests {
         s.cc(0, 121, 0);
         let c = s.on(0, 5);
         assert!(matches!(c.last(), Some(Command::Control { .. })), "{c:?}");
-    }
-
-    /// M2-104 section 7.4.13: the Per-Note Pitch Bend sensitivity is "common to
-    /// all Note Numbers on the selected MIDI Channel", so channel 0's setting
-    /// does not move channel 1's. Half the wheel up is half the channel's
-    /// range.
-    #[test]
-    fn per_note_bend_sensitivity_belongs_to_its_channel() {
-        let mut s = Sim::new(POLY);
-        bend_sensitivity_7(&mut s, 0, 12);
-        s.on(0, 5);
-        s.on(1, 5);
-        let semis = |c: Vec<Command>| match c[..] {
-            [
-                Command::Control {
-                    control: NoteControl::Bend(b),
-                    ..
-                },
-            ] => b.get(),
-            ref other => panic!("{other:?}"),
-        };
-        let on_0 = semis(per_note_bend(&mut s, 0, 5, 0xC000_0000));
-        let on_1 = semis(per_note_bend(&mut s, 1, 5, 0xC000_0000));
-        assert!((on_0 - 6.0).abs() < 1e-3, "{on_0}");
-        assert!((on_1 - 24.0).abs() < 1e-3, "{on_1}");
-    }
-
-    /// M2-104 section 7.4.13: a bend is a position over the sensitivity; when
-    /// the sensitivity changes the sounding bend follows, so each voice that
-    /// holds a bend is told its new size.
-    #[test]
-    fn a_new_sensitivity_resizes_the_bends_sounding() {
-        let mut s = Sim::new(POLY);
-        s.on(0, 5);
-        per_note_bend(&mut s, 0, 5, 0xC000_0000);
-        let c = bend_sensitivity_7(&mut s, 0, 2);
-        match c[..] {
-            [
-                Command::Control {
-                    id: v,
-                    control: NoteControl::Bend(b),
-                },
-            ] => {
-                assert_eq!(v, id(1));
-                assert!((b.get() - 1.0).abs() < 1e-3, "{b:?}");
-            }
-            ref other => panic!("{other:?}"),
-        }
-    }
-
-    /// M2-104 section 7.4.15.3: Attribute Pitch 7.9 on a Note On sets that
-    /// note's pitch, and "is not valid for any subsequent Notes".
-    #[test]
-    fn a_note_on_pitch_attribute_is_for_that_note_alone() {
-        let mut s = Sim::new(POLY);
-        let c = s.send(
-            0,
-            Voice2::NoteOn {
-                note: NoteNumber::of(0),
-                velocity: 0x8000,
-                attribute: Attribute::Pitch(60 << 9),
-            },
-            &One,
-        );
-        assert_eq!(
-            c.last(),
-            Some(&Command::Control {
-                id: id(1),
-                control: NoteControl::Pitch(Pitch::from_q7_9(60 << 9)),
-            })
-        );
-        let c = s.on(0, 0);
-        assert!(
-            !c.iter().any(|c| matches!(c, Command::Control { .. })),
-            "{c:?}"
-        );
-    }
-
-    /// M2-104 section 7.4.5: a Per-Note Controller addresses one Note Number
-    /// "on the referenced" channel: another key, or the same key on another
-    /// channel (section 2.1.2), is not affected.
-    #[test]
-    fn a_per_note_controller_addresses_one_channel_and_key() {
-        let mut s = Sim::new(POLY);
-        s.on(0, 5);
-        s.on(0, 6);
-        s.on(1, 5);
-        let c = per_note_bend(&mut s, 0, 5, 0xC000_0000);
-        assert!(
-            matches!(c[..], [Command::Control { id: v, .. }] if v == id(1)),
-            "{c:?}"
-        );
-        for (channel, key) in [(1, 6), (1, 5)] {
-            let c = s.on(channel, key);
-            assert!(
-                !c.iter().any(|c| matches!(c, Command::Control { .. })),
-                "{c:?}"
-            );
-        }
     }
 
     // ---- random streams ------------------------------------------------

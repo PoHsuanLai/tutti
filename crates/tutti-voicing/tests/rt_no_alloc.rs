@@ -9,7 +9,8 @@ use tutti_ump::{
     Attribute, CCNumber, MidiChannel, NoteNumber, RegisteredPerNoteController, U7, Voice2,
 };
 use tutti_voicing::{
-    Command, Mode, Order, Patch, Retrigger, Rules, Steal, VoiceSpec, VoiceView, Voicing,
+    Command, Mode, Order, Patch, PerNoteState, Retrigger, Rules, Steal, VoiceSpec, VoiceView,
+    Voicing,
 };
 
 #[global_allocator]
@@ -119,6 +120,10 @@ fn step_is_allocation_free_in_every_mode() {
                     },
                     cc([120, 121, 123, 124][(round % 4) as usize], 0),
                 ];
+                if round % 97 == 96 {
+                    // `reset` clears the per-note state in place.
+                    core.reset();
+                }
                 for m in &msgs {
                     // The instrument's side, without allocating: the views
                     // are rebuilt from what the commands left.
@@ -139,4 +144,66 @@ fn step_is_allocation_free_in_every_mode() {
             }
         });
     }
+}
+
+/// `PerNoteState` allocates nothing after `new`, on every path: a start with
+/// its held values and attribute, each controller, Per-Note Management, a
+/// sensitivity that resizes a channel's bends, `clear`, and across Groups.
+#[test]
+fn per_note_state_is_allocation_free() {
+    use tutti_ump::{Address, MidiGroup, RegisteredPerNoteController, U7};
+    let mut state = PerNoteState::new(16, Semitones(48.0));
+    let mut twin = state.clone();
+    assert_no_alloc(|| {
+        for round in 0..400u32 {
+            let address = Address {
+                group: MidiGroup::new((round % 16) as u8).unwrap(),
+                channel: MidiChannel::of((round % 5) as u8),
+            };
+            let note = NoteNumber::of((round % 128) as u8);
+            let msgs = [
+                Voice2::RegisteredPerNote {
+                    note,
+                    controller: RegisteredPerNoteController::Pitch,
+                    value: 60 << 25,
+                },
+                Voice2::AssignablePerNote {
+                    note,
+                    controller: (round % 9) as u8,
+                    value: 1 << 30,
+                },
+                Voice2::PerNotePitchBend {
+                    note,
+                    value: round.wrapping_mul(0x0101_0101),
+                },
+                Voice2::PolyPressure {
+                    note,
+                    value: 1 << 30,
+                },
+                Voice2::NoteOn {
+                    note,
+                    velocity: 0x8000,
+                    attribute: Attribute::Pitch(60 << 9),
+                },
+                Voice2::PerNoteManagement {
+                    note,
+                    detach: round % 2 == 0,
+                    reset: round % 3 == 0,
+                },
+                Voice2::Registered {
+                    bank: U7::of(0),
+                    index: U7::of(7),
+                    value: (round % 48) << 25,
+                },
+            ];
+            for m in &msgs {
+                std::hint::black_box(state.step(address, m));
+                std::hint::black_box(twin.step(address, m));
+            }
+            std::hint::black_box(state.start(address, note, Attribute::None));
+            if round % 131 == 130 {
+                state.clear();
+            }
+        }
+    });
 }

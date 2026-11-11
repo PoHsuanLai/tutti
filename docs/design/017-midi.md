@@ -2500,22 +2500,32 @@ Pitch after a Detach retuned the detached voice, D=1 with S=1 skipped the Reset,
 range was one value for every channel (section 7.4.13: one per channel), and the SoundFont
 ignored all of it. Now:
 
-- **The state is `tutti-voicing`'s**, one value for each (channel, Note Number), sized in `new`
-  (`NOTE_CONTROLS` distinct controllers per Note Number, the one set longest ago forgotten past
-  that) and kept by `reset` and `forget_notes` as the bends are: a Registered or Assignable
-  Per-Note Controller, Polyphonic Pressure and Per-Note Pitch Bend are stored when they arrive,
-  whether or not a voice holds the number. Reset All Controllers leaves them (Appendix B.2).
-- **What an instrument is told** are two `Command`s. `Control { id, control }` carries a
-  `NoteControl` (`Pitch`, `Bend` already in semitones over the channel's sensitivity, `Pressure`,
-  `Registered`, `Assignable`): sent for each voice of the Note Number that has not been detached
-  when a message arrives, and right after the `Start` (or `Retarget`) of a voice for each value the
-  number already holds, in the order told. `ResetControls(id)` returns one voice's controllers to
-  its defaults. An instrument applies what its voice has a place for and drops the rest; it holds
-  no per-note state of its own, and no detach flag.
-- **Detach and Reset** are section 7.4.5. Detach marks the voices of the number (sounding or
-  releasing) detached: they keep their values and answer nothing more, and a voice started later is
-  not detached. Reset clears the number's stored values and sends `ResetControls` to the voices
-  not detached. With D=1 and S=1 the Detach runs first, so the playing note is told nothing and the
+- **The state is `PerNoteState`**, a pure type in `tutti-voicing` that `Voicing` uses
+  inside and a plugin host (which allocates no voices) can use as it is: one copy of the rules.
+  `PerNoteState::new(groups, default_range)` sizes it (about 190 KiB for each Group; `Voicing`
+  passes 1, since an instrument plays one Group); `step(address, &Voice2) -> &[NoteEvent]` reads
+  one message, `start` is the Note On path, and `clear` drops everything held in place. It keeps
+  one slot for each (Group, channel, Note Number) (`NOTE_CONTROLS` distinct controllers each, the
+  one set longest ago forgotten past that): a Registered or Assignable Per-Note Controller,
+  Polyphonic Pressure and Per-Note Pitch Bend are held when they arrive, whether or not a note
+  sounds. Reset All Controllers leaves them (Appendix B.2). `Voicing::reset` is `clear`;
+  `forget_notes` keeps the state, as it keeps the bends.
+- **Every started note has an id**, a `NoteId` above `NoteId::MAX_CHANNEL_NOTE` that names no
+  (channel, note) pair, so two notes on one key are two ids and a Detach separates them. The
+  messages of a number address the note most recently started on it (a Note On supersedes the
+  previous one; a releasing tail stops responding).
+- **What it says** is a `NoteEvent`: `Started { id, address, note }`, then `Control { id,
+  control: NoteControl }` for each value the number holds in the order told (`NoteControl`:
+  `Pitch`, `Bend` already in semitones over the channel's sensitivity, `Pressure`, `Registered`,
+  `Assignable`), also sent when a message arrives for the current note, and `Reset { id }`.
+  `Voicing` turns them into its own `Command`s: `Control { id, control }` for each voice of the
+  noted id (the voices of one strike share it) and `ResetControls(id)`. An instrument applies
+  what its voice has a place for and drops the rest; it holds no per-note state of its own and
+  no detach flag.
+- **Detach and Reset** are section 7.4.5. Detach makes the number's current note stop being
+  addressed: it keeps its values and answers nothing more (no event is sent; the next Note On has a
+  new id). Reset clears the number's held values and resets the current note if it was not
+  detached. With D=1 and S=1 the Detach runs first, so the playing note is told nothing and the
   next one starts at the defaults.
 - **Attribute Pitch 7.9** on a Note On is the note's own `Control(Pitch)` after the stored ones,
   and is not stored (section 7.4.15.3: not valid for later notes).
@@ -2530,9 +2540,9 @@ ignored all of it. Now:
   controllers have no generator in a SoundFont voice and are dropped.
 - **Not done, in the plugin hosts.** CLAP and VST3 address a note by an id minted per (channel,
   key), drop Pitch 7.25 and Attribute 7.9, and drop Per-Note Management, so after a Detach their
-  per-note expressions still reach the previous note. They need to consume `Voicing`'s state (or its
-  own equivalent): a note id per started note, not per key; Per-Note Management ending the id that
-  Detach names; and the stored values sent as the new note's initial expressions.
+  per-note expressions still reach the previous note. They take `PerNoteState` events instead: the
+  minted id as the note id, `Control`s as the note's expressions (the held values as the new
+  note's initial ones), `Reset` as an expression reset.
 
 ## 11. Testing
 

@@ -919,7 +919,7 @@ impl InputEventList {
             midi_dropped: 0,
             bounded: false,
             bend_ranges: PerNoteBendRanges::default(),
-            sysex: SysexAssembler::new(Box::default(), 0),
+            sysex: SysexAssembler::new(Box::default(), 0, 0),
             midi_notes: false,
         }
     }
@@ -957,7 +957,7 @@ impl InputEventList {
             midi_dropped: 0,
             bounded: false,
             bend_ranges: PerNoteBendRanges::default(),
-            sysex: SysexAssembler::new(Box::default(), 0),
+            sysex: SysexAssembler::new(Box::default(), 0, 0),
             midi_notes: false,
         }
     }
@@ -1017,7 +1017,7 @@ impl InputEventList {
     }
 
     /// Reserve the SysEx reassembly buffer
-    /// ([`sysex_assembler`], about 66 KiB). Off-RT; call once at
+    /// ([`sysex_assembler`], about 132 KiB). Off-RT; call once at
     /// activation. Until then every SysEx message is dropped and counted
     /// ([`sysex_dropped`](Self::sysex_dropped)). A list already reserved
     /// keeps its buffer, and any message open in it.

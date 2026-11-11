@@ -169,7 +169,7 @@ impl AuInstance {
             editor: None,
             // No room until `initialize` reserves one: every message is
             // dropped and counted.
-            sysex: std::cell::RefCell::new(SysexAssembler::new(Box::default(), 0)),
+            sysex: std::cell::RefCell::new(SysexAssembler::new(Box::default(), 0, 0)),
         })
     }
 
@@ -184,7 +184,7 @@ impl AuInstance {
             editor: None,
             // No room until `initialize` reserves one: every message is
             // dropped and counted.
-            sysex: std::cell::RefCell::new(SysexAssembler::new(Box::default(), 0)),
+            sysex: std::cell::RefCell::new(SysexAssembler::new(Box::default(), 0, 0)),
         })
     }
 

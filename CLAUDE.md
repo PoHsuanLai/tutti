@@ -566,7 +566,9 @@ list (normal and build edges; dev-dependencies may go anywhere).
   `SysexMessage` (checked once: `F0`, 7-bit bytes, `F7`), and the one SysEx7
   reassembler is `SysexAssembler<B>` over a buffer the caller sizes
   (`SysexAssembler::room_for`): it allocates nothing, holds one open message
-  across all groups and counts what it drops; `SYSEX7_MAX_PAYLOAD` is tutti's
+  per Group (up to the `lanes` it is built with), ends a Group's message on that
+  Group's next non-Continue, non-real-time UMP (M2-104 §7.7.1: `push` takes every
+  UMP of the stream, not only SysEx7) and counts what it drops; `SYSEX7_MAX_PAYLOAD` is tutti's
   64 KiB cap on one message (the spec sets none), for sizing an assembler. An RPN
   address is `Rpn` (`bank`, `index`, and the named `PITCH_BEND_SENSITIVITY`,
   `MPE_CONFIGURATION`, `PER_NOTE_PITCH_BEND_SENSITIVITY`), never a bare `u8` pair.

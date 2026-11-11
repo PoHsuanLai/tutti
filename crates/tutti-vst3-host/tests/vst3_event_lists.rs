@@ -419,11 +419,13 @@ fn a_multi_packet_sysex_reaches_the_plugin_whole() {
     let mut midi = sysex_packets(&body, 5);
     let last = midi.len() - 1;
     midi[last].0 = at(9);
+    // On another Group: a note on the SysEx's own Group would end the message
+    // (M2-104 section 7.7.1).
     midi.insert(
         3,
         (
             at(7),
-            midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, midi::MID_VELOCITY),
+            midi::note_on(MidiGroup::of(1), MidiChannel::FIRST, 60, midi::MID_VELOCITY),
         ),
     );
     let list = EventList::input();

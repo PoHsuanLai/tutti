@@ -1220,7 +1220,7 @@ mod tests {
             .motion
             .schedule(At::Frame(Frame(100)), MotionEvent::Play)
             .expect("room");
-        let settings = &transport.settings;
+        let settings = &transport.settings();
         let mut render = engine.graph.borrow_mut();
         let mut pieces = Racing {
             inner: GraphPieces {
@@ -1423,10 +1423,10 @@ mod tests {
             .expect("room");
         let mut buf = vec![0.0f32; 64 * 2];
         engine.process(&mut InterleavedMut::new(&mut buf, ChannelLayout::STEREO));
-        let first = transport.settings.beat().get();
+        let first = transport.settings().beat().get();
         assert!((first - (8.0 + 64.0 / 24_000.0)).abs() < 1e-9, "{first}");
         engine.process(&mut InterleavedMut::new(&mut buf, ChannelLayout::STEREO));
-        let second = transport.settings.beat().get();
+        let second = transport.settings().beat().get();
         assert!((second - (8.0 + 128.0 / 24_000.0)).abs() < 1e-9, "{second}");
 
         // Into a loop's last frames: one wrap, counted once.
@@ -1445,7 +1445,7 @@ mod tests {
             .expect("room");
         let mut buf = vec![0.0f32; 1024 * 2];
         engine.process(&mut InterleavedMut::new(&mut buf, ChannelLayout::STEREO));
-        let wrapped = transport.settings.beat().get();
+        let wrapped = transport.settings().beat().get();
         let expected = 3.99 + 1024.0 / 24_000.0 - 4.0;
         assert!((wrapped - expected).abs() < 1e-9, "{wrapped} vs {expected}");
     }

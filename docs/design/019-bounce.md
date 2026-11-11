@@ -54,7 +54,7 @@ let done = session.bounce(
     Bounce::project()
         .format(Format::Flac { depth: IntDepth::Int24, level: FlacLevel::Standard })
         .master("out/master.flac"),
-)?;                                   // Outcome<Bounced>
+)?;       // Bounced<FileMaster>: done.into_master() is the file's `Written`
 ```
 
 Master plus stems, one pass:
@@ -97,9 +97,10 @@ while !worker.is_finished() {
     if ui.cancel_pressed() { handle.cancel(); }
     session.update();
 }
-match session.finish_bounce(worker.join().unwrap())? {
-    Outcome::Finished(b) => report(b.targets()),
-    Outcome::Cancelled => {}                    // every target untouched
+match session.finish_bounce(worker.join().unwrap()) {
+    Ok(b) => report(b.master(), b.stems()),
+    Err(BounceError::Cancelled) => {}           // every target untouched
+    Err(e) => return Err(e.into()),
 }
 ```
 
@@ -930,6 +931,23 @@ from the text above:
 - **Left for later, not done here:** step 7; `FrameSource` and `pump_blocks`
   (doc 025 section 5.4 decided they stay private); `Written`'s private fields
   and getters; folding `Unmeasured::Format` into the output's width and rate.
+
+**As built (the session's outcome, a later lane).** The session's surface has no
+`Option` a caller must unwrap:
+
+- **The master's kind is a type.** `Bounce<N, M>`, with `M` one of `NoMaster`
+  (what `Bounce::project()` is), `FileMaster` (`.master(path)`) or `BufferMaster`
+  (`.master_buffers()`); only the two with a master are a `Master` (sealed), so
+  `bounce`/`bounce_start` refuse nothing for want of one and `Field::Master` and
+  `Missing(Field::Master)` are gone. `BounceJob<M>` and `BounceRendered<M>` carry
+  the kind to `Bounced<M>`, whose `master()` / `into_master()` is the master's
+  result: a `Written` for a file, a `Rendered` for planes (`Master::Result`).
+  `Bounced::stems()` stays `&[Produced]` (a stem picks its own target), and
+  `targets()` / `into_targets()` are `into_parts()`.
+- **A cancel is `BounceError::Cancelled`.** The caller asked for it and matches
+  on it; `finish_bounce`, `finish_bounce_unannounced` and `bounce` return
+  `Result<Bounced<M>, BounceError>` and the session no longer names `Outcome`.
+  `tutti-export`'s own `render` keeps `Outcome` for its own callers.
 
 Test policy applies throughout: every new case must be able to fail (checked once, said in the PR); no existing
 test is relaxed; the parallel path is compared to the serial render bit for bit;

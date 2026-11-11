@@ -42,7 +42,7 @@ pub struct Transport {
     /// The state machine: play, stop, locate, scrub. Requests may be refused.
     pub motion: MotionFsm,
     /// The plain shared values: tempo, playhead, record arm.
-    pub settings: TransportSettings,
+    pub(crate) settings: TransportSettings,
     /// Shared by every clone, so a device restart at a new rate
     /// ([`set_sample_rate`](Self::set_sample_rate)) reaches each holder —
     /// a clip reader's `Arc<dyn Timeline>`, the MIDI clock master — rather
@@ -59,6 +59,12 @@ impl Transport {
             settings,
             sample_rate: Arc::new(AtomicF64::new(sample_rate.into().get())),
         }
+    }
+
+    /// The plain shared values: tempo, playhead, record arm. A setting is a
+    /// store: it needs no `&mut` and cannot be refused.
+    pub fn settings(&self) -> &TransportSettings {
+        &self.settings
     }
 
     /// The audio-thread side of this transport, for the **one** holder that

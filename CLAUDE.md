@@ -1337,7 +1337,10 @@ read the `Cargo.toml`, grep for the type, run the probe.
   `BounceRendered`, `BounceHandle`, `BounceConfigError`, `BounceError`,
   `Session::{bounce, bounce_start, finish_bounce{,_unannounced}, drop_bounce_leftovers,
   bounce_in_flight}` and `BOUNCE_STALL_WARNING` (a clock is named, never defaulted);
-  `Bounce::node` → a `stem` of the master's fork. `bevy-tutti`'s `ExportRequest`,
+  `Bounce::node` → a `stem` of the master's fork; `Field::Master`, `Bounced::{targets, into_targets}`
+  and the session's `Outcome<Bounced>` → `Bounce<N, M>` over a `Master` kind (`FileMaster`,
+  `BufferMaster`), `Bounced<M>::{master, stems, into_master, into_parts}` and
+  `BounceError::Cancelled`; `Transport`'s public `settings` field → `Transport::settings()`. `bevy-tutti`'s `ExportRequest`,
   `ExportPlugin`, `ExportDone` and `ExportInFlight` stay until step 7 un-parks it.
 
 ## Consumers: the pin that must stay in step

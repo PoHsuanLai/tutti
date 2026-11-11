@@ -292,7 +292,7 @@ impl ClickNode {
     /// `settings` is taken as an `Arc` so a later `set_meter` / `set_volume`
     /// reaches the running node: they are its controls.
     pub fn new(transport: &Transport, settings: Arc<ClickSettings>) -> Self {
-        Self::over(settings, Arc::clone(&transport.settings.in_preroll))
+        Self::over(settings, Arc::clone(&transport.settings().in_preroll))
     }
 
     /// A node over `settings` and the count-in flag `preroll`, reading the
@@ -1144,7 +1144,7 @@ mod tests {
         assert_eq!(output[0], 0.0);
 
         // Enable preroll - should play
-        transport.settings.set_in_preroll(true);
+        transport.settings().set_in_preroll(true);
         Node::reset(&mut node);
         assert!(
             sounds_within(&mut node, ROLLING, 0.0, 100),
@@ -1174,7 +1174,7 @@ mod tests {
         );
 
         // In preroll while recording - should NOT play
-        transport.settings.set_in_preroll(true);
+        transport.settings().set_in_preroll(true);
         Node::reset(&mut node);
         let output = frame(&mut node, recording, 0.0);
         assert_eq!(
@@ -1200,7 +1200,7 @@ mod tests {
                     TimeSignature::new(BeatsPerBar::of(3), NoteValue::QUARTER),
                 )])))
             }),
-            ("count-in", |t, _| t.settings.set_in_preroll(true)),
+            ("count-in", |t, _| t.settings().set_in_preroll(true)),
         ];
         let fresh = || {
             let transport = Transport::new(SampleRate::new(48_000.0));

@@ -308,7 +308,7 @@ impl SessionBuilder {
             rate,
             max_block,
             quantum,
-            transport.settings.tempo_reader(),
+            transport.settings().tempo_reader(),
         );
         graph.set_render_workers(self.render_workers);
         graph.set_render_worker_start(self.render_worker_start.take());
@@ -501,7 +501,7 @@ impl SessionBuilder {
             rate,
             LIVE_MAX_BLOCK,
             None,
-            transport.settings.tempo_reader(),
+            transport.settings().tempo_reader(),
         );
         graph.set_render_workers(self.render_workers);
         graph.declare_root(self.root.clone(), None)?;

@@ -90,7 +90,9 @@ pub(crate) const MIDI_OUT_TAP_CAPACITY: usize = 1024;
 /// out goes ([`Midi::set_hardware_out`]).
 ///
 /// The sink carries UMP words to the wire, so JR Timestamps and other
-/// MIDI-2-only messages survive, which is the whole reason this type exists.
+/// MIDI-2-only messages survive, which is the whole reason this type exists:
+/// a hardware sink puts them in its device's wire form (`OpenOutput`), and
+/// the session turns stamping on only when the device receives them.
 ///
 /// The [`JrStream`](tutti_midi_runtime::JrStream) is the whole endpoint's,
 /// not one drain's: the hardware out and a host's own mailbox stamp through
@@ -151,7 +153,9 @@ impl UmpOut {
     }
 
     /// Turns JR stamping on or off. It gates timestamps, not delivery: with
-    /// it off the events still go out, unstamped.
+    /// it off the events still go out, unstamped. For an output that is a
+    /// hardware device's the session sets it each update from the device's
+    /// configuration (`Midi::set_hardware_out`).
     pub fn set_stamping(&mut self, stamping: bool) {
         self.stamping = stamping;
     }
@@ -523,7 +527,6 @@ pub(crate) struct MidiState {
     /// The hardware out's tap on the clock, which `Phase::MidiOut` drains;
     /// `None` when the session has no engine MIDI (or the clock left).
     hardware_tap: Option<EventTapReader>,
-    stamping: bool,
     drops: MidiOutDrops,
     /// The drop count the last `MidiOut` phase reported, and when.
     drops_seen: u64,
@@ -557,7 +560,6 @@ impl std::fmt::Debug for MidiState {
             .field("routed", &self.routed)
             .field("host_routes", &self.host_routes)
             .field("out", &self.out)
-            .field("stamping", &self.stamping)
             .field("drops", &self.drops)
             .field("drops_seen", &self.drops_seen)
             .field("reported_at", &self.reported_at)
@@ -647,6 +649,9 @@ impl MidiState {
                 stream: Box::new(stream),
             });
         }
+        // What the poll settled or changed is heard by the output at once: the
+        // `MidiOut` phase that drains next stamps by it.
+        follow_output_config(self.out.as_mut(), Some(io));
         let wired = wire_inlets(&mut self.inlet_keys, io.ports().inlets(), nodes, graph);
         if !self.watch_failure_reported
             && let Some(why) = events.and_then(tutti_midi_hardware::DeviceEvents::failure)
@@ -715,6 +720,15 @@ impl MidiState {
         true
     }
 
+    /// Makes the hardware out stamp as its device's configuration says: when
+    /// the session holds an output device, the output JR-stamps iff it receives
+    /// JR Timestamps. A session with no output device leaves the output as it
+    /// is.
+    #[cfg(feature = "midi-hardware")]
+    pub(crate) fn follow_output_config(&mut self, io: Option<&tutti_midi_hardware::MidiSession>) {
+        follow_output_config(self.out.as_mut(), io);
+    }
+
     /// `Phase::MidiOut`: drains the hardware out to the output, and reports
     /// the drops when their count rose, at most once per
     /// [`MIDI_OUT_DROP_REPORT`] of `now`.
@@ -737,6 +751,17 @@ impl MidiState {
             self.reported_at = Some(now);
             out.push(crate::SessionEvent::MidiOutDropped(count));
         }
+    }
+}
+
+/// Sets `out` to stamp iff the session's output device receives JR Timestamps.
+#[cfg(feature = "midi-hardware")]
+fn follow_output_config(out: Option<&mut UmpOut>, io: Option<&tutti_midi_hardware::MidiSession>) {
+    if let (Some(out), Some(config)) = (
+        out,
+        io.and_then(tutti_midi_hardware::MidiSession::output_config),
+    ) {
+        out.set_stamping(config.rx_jr);
     }
 }
 
@@ -1098,21 +1123,18 @@ impl Midi<'_> {
     /// graph's outputs) drains to at each update's
     /// [`MidiOut`](crate::Phase::MidiOut) phase. `None`: its events are counted as dropped
     /// ([`SessionEvent::MidiOutDropped`](crate::SessionEvent::MidiOutDropped)).
-    /// The output stamps as [`set_jr_stamping`](Self::set_jr_stamping) says.
+    ///
+    /// **Whether it JR-stamps is the device's.** With the `midi-hardware`
+    /// feature, each `MidiOut` phase sets the output's stamping from the
+    /// configuration of the output device the session holds
+    /// (`tutti_midi_hardware::MidiSession::output_config`):
+    /// on only when the device receives JR Timestamps (`rx_jr`, which the
+    /// session asks for off, so a device that does not turn it on itself is
+    /// sent none), and the device's own output refuses a JR message otherwise.
+    /// An output that is not that device's (a host's own sink) stamps as
+    /// [`UmpOut::set_stamping`] says. There is no switch of the session's own.
     pub fn set_hardware_out(&mut self, out: Option<UmpOut>) {
-        self.state.out = out.map(|mut out| {
-            out.set_stamping(self.state.stamping);
-            out
-        });
-    }
-
-    /// Whether the output JR-stamps (default off). Gates timestamps, not
-    /// delivery.
-    pub fn set_jr_stamping(&mut self, stamping: bool) {
-        self.state.stamping = stamping;
-        if let Some(out) = &mut self.state.out {
-            out.set_stamping(stamping);
-        }
+        self.state.out = out;
     }
 
     /// The router onto the output: what a host writes its own outbound

@@ -6,7 +6,11 @@ ALSA UMP sequencer (Linux). Re-exported by `tutti` as `tutti::midi_hardware`
 (feature `midi-hardware`).
 
 Events reach the wire as UMP words, not MIDI 1.0 bytes, so MIDI-2-only messages
-(per-note controllers, per-note pitch bend, JR Timestamps) survive.
+(per-note controllers, per-note pitch bend, JR Timestamps) survive where the
+device's Protocol carries them: an output is put in the device's wire form (the
+OS's description, then what the UMP Stream negotiation settled), so a MIDI 1.0
+endpoint is sent MIDI 1.0 and never type `0x4`, and JR Timestamps go only to a
+device that receives them.
 
 ## Devices
 

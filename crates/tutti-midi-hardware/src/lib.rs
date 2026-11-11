@@ -1,7 +1,7 @@
 #![doc = include_str!("../README.md")]
 #![cfg_attr(docsrs, feature(doc_cfg))]
 // Every `unsafe` call into ALSA and CoreMIDI is in `tutti-alsa-ffi` and
-// `tutti-coremidi-ffi` (`scripts/check-midi-ffi.sh`).
+// `tutti-coremidi-ffi` (`cargo xtask check-ffi`).
 #![forbid(unsafe_code)]
 
 // --- Framework-free hardware I/O core ---
@@ -19,6 +19,7 @@ mod stamp;
 mod stream;
 #[cfg(test)]
 mod testing;
+mod wire;
 
 // A backend with no OS behind it, for testing the session layer. See the
 // module's own docs for why it is exported rather than `#[cfg(test)]`.

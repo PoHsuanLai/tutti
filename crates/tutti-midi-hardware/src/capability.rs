@@ -89,8 +89,9 @@ impl UmpCapability {
     /// Whether this endpoint carries MIDI-2-only messages — per-note
     /// controllers, per-note pitch bend, and JR Timestamps — intact.
     ///
-    /// A `Midi1` endpoint carries MIDI 1.0 messages, which have none of those,
-    /// and nothing narrows the graph's output for it yet (design 017, L6(c)).
+    /// A `Midi1` endpoint carries MIDI 1.0 messages, which have none of those:
+    /// the output narrows the graph's MIDI 2.0 messages for it (`OpenOutput`,
+    /// design 017 L6(c)).
     /// This is the question a caller actually asks, named once so no call site
     /// re-derives it from `protocol` and gets the polarity wrong.
     pub fn carries_midi2_only(&self) -> bool {

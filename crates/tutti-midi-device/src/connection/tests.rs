@@ -83,7 +83,7 @@ fn run(
                     next = Some(p);
                 }
                 Action::Settled(e) => return (Action::Settled(e), sent),
-                Action::Wait => {}
+                Action::Wait | Action::Changed => {}
             }
         }
         match next {
@@ -434,6 +434,11 @@ fn an_unanswered_request_falls_back_to_midi1() {
 /// A connection that wants MIDI 1.0 from a peer that declares `n` blocks and
 /// is in MIDI 1.0: it has gone straight to Function Block discovery.
 fn in_blocks(t0: Instant, n: u8) -> Connection {
+    in_blocks_declaring(t0, n, true)
+}
+
+/// As [`in_blocks`], for a peer that declares its blocks static or not.
+fn in_blocks_declaring(t0: Instant, n: u8, is_static: bool) -> Connection {
     let wanted = StreamConfig {
         protocol: Protocol::Midi1,
         rx_jr: false,
@@ -443,7 +448,7 @@ fn in_blocks(t0: Instant, n: u8) -> Connection {
     c.on_message(
         stream(Stream::EndpointInfo(tutti_ump::EndpointInfo {
             version: UMP_VERSION,
-            static_function_blocks: true,
+            static_function_blocks: is_static,
             function_blocks: U7::new(n).unwrap(),
             midi2: true,
             midi1: true,
@@ -558,10 +563,11 @@ fn a_reply_after_settling_is_ignored() {
     assert_eq!(c.settled(), Some(Ending::Midi1Fallback));
 }
 
-// A settled-by-success connection ignores later messages too, including a
-// second Notification.
+// §7.1.6.1 step 3: the Protocol and JR Timestamps in use are what the last
+// Stream Configuration Notification says, so one after a negotiated settle is
+// followed (and answered `Changed`); one that repeats what is held is not.
 #[test]
-fn a_notification_after_a_negotiated_settle_is_ignored() {
+fn a_notification_after_a_negotiated_settle_is_followed() {
     let t0 = Instant::now();
     let (mut c, first) = Connection::new(t0);
     let mut peer = Endpoint::midi1_device(None);
@@ -570,12 +576,197 @@ fn a_notification_after_a_negotiated_settle_is_ignored() {
         c.on_timeout(at(t0, 100)),
         Action::Settled(Ending::Negotiated)
     );
-    let before = *c.endpoint();
+    assert_eq!(c.endpoint().active().protocol, Protocol::Midi1);
     assert_eq!(
-        c.on_message(notification(Protocol::Midi2, true, true), t0),
+        c.on_message(notification(Protocol::Midi2, true, false), t0),
+        Action::Changed
+    );
+    let active = c.endpoint().active();
+    assert_eq!(active.protocol, Protocol::Midi2);
+    assert!(active.rx_jr && !active.tx_jr);
+    assert_eq!(
+        c.on_message(notification(Protocol::Midi2, true, false), t0),
+        Action::Wait
+    );
+}
+
+/// A connection that has settled with `n` blocks, 0 to n-1, all named, and
+/// declares its blocks `is_static`.
+fn settled_with_blocks(t0: Instant, n: u8, is_static: bool) -> Connection {
+    let mut c = in_blocks_declaring(t0, n, is_static);
+    for i in 0..n {
+        c.on_message(info_of(i), t0);
+    }
+    for i in 0..n {
+        c.on_message(block_name_packet(i, Form::Complete, b"old"), t0);
+    }
+    assert_eq!(c.settled(), Some(Ending::Negotiated));
+    c
+}
+
+fn info_moved(n: u8, first_group: u8) -> Message {
+    let Message::Stream(Stream::FunctionBlockInfo(mut info)) = info_of(n) else {
+        unreachable!()
+    };
+    info.first_group = FirstGroup::new(first_group).unwrap();
+    stream(Stream::FunctionBlockInfo(info))
+}
+
+// §6.1.1: an Endpoint that declares its blocks static "will not change any of
+// the properties of its Function Blocks after initial discovery": a Function
+// Block Info or Name after the settle is not read.
+#[test]
+fn static_function_blocks_ignore_a_later_info_and_name() {
+    let t0 = Instant::now();
+    let mut c = settled_with_blocks(t0, 2, true);
+    let before = *c.endpoint();
+    assert_eq!(c.on_message(info_moved(1, 9), at(t0, 50)), Action::Wait);
+    assert_eq!(
+        c.on_message(block_name_packet(1, Form::Complete, b"new"), at(t0, 50)),
         Action::Wait
     );
     assert_eq!(*c.endpoint(), before);
+}
+
+// §7.1.8 and §7.1.9: an Endpoint that has not declared its blocks static sends
+// a Notification when a property changes, and the connection follows it.
+#[test]
+fn function_blocks_that_are_not_static_follow_a_later_info_and_name() {
+    let t0 = Instant::now();
+    let mut c = settled_with_blocks(t0, 2, false);
+    assert_eq!(c.on_message(info_moved(1, 9), at(t0, 50)), Action::Changed);
+    let moved = c.endpoint().function_block(id(1)).unwrap();
+    assert_eq!(moved.first_group().get(), 9);
+    // The Info carries no name: the one held stays.
+    assert_eq!(moved.name().map(BlockName::as_str), Some("old"));
+    // The same Info again changes nothing.
+    assert_eq!(c.on_message(info_moved(1, 9), at(t0, 60)), Action::Wait);
+    assert_eq!(
+        c.on_message(block_name_packet(1, Form::Complete, b"new"), at(t0, 70)),
+        Action::Changed
+    );
+    assert_eq!(
+        c.endpoint()
+            .function_block(id(1))
+            .unwrap()
+            .name()
+            .map(BlockName::as_str),
+        Some("new")
+    );
+    assert_eq!(
+        c.endpoint()
+            .function_block(id(0))
+            .unwrap()
+            .first_group()
+            .get(),
+        0
+    );
+}
+
+// §7.1.7: the numbers are `0..NFB`, NFB being what Endpoint Info declared. An
+// Info for another number is not a block of this Endpoint, before or after the
+// settle, and does not raise the count the connection waits for.
+#[test]
+fn a_block_outside_the_declared_count_is_not_read() {
+    let t0 = Instant::now();
+    let mut c = in_blocks_declaring(t0, 2, false);
+    c.on_message(info_of(5), t0);
+    assert_eq!(c.endpoint().declared_function_blocks(), 2);
+    assert_eq!(c.endpoint().function_blocks().count(), 0);
+    c.on_message(info_of(0), t0);
+    c.on_message(info_of(1), t0);
+    c.on_message(block_name_packet(0, Form::Complete, b"a"), t0);
+    assert_eq!(
+        c.on_message(block_name_packet(1, Form::Complete, b"b"), t0),
+        Action::Settled(Ending::Negotiated)
+    );
+    assert_eq!(c.on_message(info_of(6), at(t0, 10)), Action::Wait);
+    assert_eq!(c.endpoint().function_blocks().count(), 2);
+}
+
+// §7.1.7: Function Block numbers are 0 to 31, so an Endpoint Info that declares
+// more is refused, not clamped: the Endpoint is never heard, and the step ends
+// as a silent peer's does.
+#[test]
+fn a_declared_count_above_32_is_refused() {
+    let t0 = Instant::now();
+    let (mut c, _) = Connection::new(t0);
+    let info = |count: u8| {
+        stream(Stream::EndpointInfo(tutti_ump::EndpointInfo {
+            version: UMP_VERSION,
+            static_function_blocks: false,
+            function_blocks: U7::new(count).unwrap(),
+            midi2: true,
+            midi1: true,
+            rx_jr: false,
+            tx_jr: false,
+        }))
+    };
+    assert_eq!(c.on_message(info(33), t0), Action::Wait);
+    assert_eq!(
+        c.on_message(notification(Protocol::Midi2, false, false), t0),
+        Action::Wait
+    );
+    assert_eq!(c.endpoint().declared_function_blocks(), 0);
+    c.on_timeout(at(t0, 1000));
+    c.on_timeout(at(t0, 2000));
+    assert_eq!(
+        c.on_timeout(at(t0, 3000)),
+        Action::Settled(Ending::Midi1Fallback)
+    );
+    // 32 is the most there are, and is heard.
+    let (mut c, _) = Connection::new(t0);
+    c.on_message(info(32), t0);
+    assert_eq!(c.endpoint().declared_function_blocks(), 32);
+}
+
+// §7.1.8: a static Endpoint "shall not have any inactive Function Blocks and
+// all Function Blocks shall have this bit set to high": a block it sent
+// inactive is read active. An Endpoint that is not static may.
+#[test]
+fn a_static_endpoints_inactive_block_is_read_active() {
+    let t0 = Instant::now();
+    let inactive = |n| {
+        let Message::Stream(Stream::FunctionBlockInfo(mut info)) = info_of(n) else {
+            unreachable!()
+        };
+        info.active = false;
+        stream(Stream::FunctionBlockInfo(info))
+    };
+    let mut c = in_blocks_declaring(t0, 1, true);
+    c.on_message(inactive(0), t0);
+    assert!(c.endpoint().function_block(id(0)).unwrap().active());
+    let mut c = in_blocks_declaring(t0, 1, false);
+    c.on_message(inactive(0), t0);
+    assert!(!c.endpoint().function_block(id(0)).unwrap().active());
+}
+
+// §7.1.8: "If this is a MIDI 1.0 Port, then Number of Groups Spanned shall be
+// 1": a block that says both is read as a block of the Endpoint's protocol, not
+// as a port.
+#[test]
+fn a_midi1_port_over_several_groups_is_read_as_a_plain_block() {
+    let t0 = Instant::now();
+    let info = |span: u8| {
+        let Message::Stream(Stream::FunctionBlockInfo(mut info)) = info_of(0) else {
+            unreachable!()
+        };
+        info.midi1 = Midi1Port::Unrestricted;
+        info.groups_spanned = GroupSpan::new(span).unwrap();
+        stream(Stream::FunctionBlockInfo(info))
+    };
+    let mut c = in_blocks(t0, 1);
+    c.on_message(info(2), t0);
+    assert_eq!(
+        c.endpoint().function_block(id(0)).unwrap().midi1(),
+        Midi1Port::No
+    );
+    let mut c = in_blocks(t0, 1);
+    c.on_message(info(1), t0);
+    assert_eq!(
+        c.endpoint().function_block(id(0)).unwrap().midi1(),
+        Midi1Port::Unrestricted
+    );
 }
 
 fn name_packet(form: Form, text: &[u8]) -> Message {

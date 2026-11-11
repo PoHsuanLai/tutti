@@ -50,6 +50,14 @@ impl Ump {
         self.message_type() == 0xF
     }
 
+    /// Whether this is a JR Clock or a JR Timestamp (type `0x0`, status `0x1` or
+    /// `0x2`, M2-104 §7.2.2): a sender's notion of time, not music.
+    #[inline]
+    #[must_use]
+    pub const fn is_jr(&self) -> bool {
+        self.message_type() == 0 && matches!((self.0[0] >> 20) & 0xF, 1 | 2)
+    }
+
     /// The Group of a message type that has one: System (`0x1`), MIDI 1.0
     /// and 2.0 channel voice (`0x2`, `0x4`), Data 64 and 128 (`0x3`, `0x5`)
     /// and Flex Data (`0xD`). `None` for Utility (`0x0`) and UMP Stream
@@ -288,6 +296,21 @@ mod tests {
     fn only_type_f_is_a_stream_message() {
         for t in 0..=0xFu32 {
             assert_eq!(Ump([t << 28, 0, 0, 0]).is_stream(), t == 0xF, "type {t:#x}");
+        }
+    }
+
+    /// Only the JR Clock (status 1) and JR Timestamp (status 2) of type 0 are
+    /// JR (M2-104 §7.2.2): not a NOOP, a Ticks Per Quarter Note or a Delta
+    /// Clockstamp, nor the same status under another type.
+    #[test]
+    fn only_the_jr_utility_messages_are_jr() {
+        for status in 0..=0xFu32 {
+            assert_eq!(
+                Ump([status << 20, 0, 0, 0]).is_jr(),
+                status == 1 || status == 2,
+                "status {status:#x}"
+            );
+            assert!(!Ump([(1 << 28) | (status << 20), 0, 0, 0]).is_jr());
         }
     }
 

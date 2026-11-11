@@ -28,6 +28,17 @@
 
 use std::ffi::c_void;
 
+/// The most channels, per direction, that a block's stack-built channel tables
+/// hold (the `&[&[T]]` and `&mut [&mut [T]]` slice tables of the plugin server's
+/// audio pipeline and of the in-process node's `process`).
+///
+/// 16 covers every realistic plugin layout: most are mono or stereo and
+/// surround tops out at 7.1 (8 channels), so 16 leaves room for 7.1.4 (12) and
+/// a pair of buses. A wider plugin's channels past it read silence and its
+/// outputs past it are silent. The tables are fixed arrays so a block builds
+/// them without allocating on the audio thread.
+pub const MAX_BLOCK_CHANNELS: usize = 16;
+
 /// Plugin-compatible sample width (`f32` or `f64`), used as a compile-time
 /// switch by generic process code.
 ///

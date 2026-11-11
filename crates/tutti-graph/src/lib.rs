@@ -219,6 +219,7 @@
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
 mod arena;
+mod block_clock;
 mod builder;
 mod bus;
 mod bus_edge;
@@ -263,6 +264,7 @@ mod tail;
 mod tap;
 mod time;
 
+pub use block_clock::{BlockClock, BlockClockReader};
 pub use builder::{GraphBuilder, Renderer, Solo};
 pub use command::{CANCEL_CAPACITY, COMMAND_CAPACITY, CommandId, ScheduleError};
 pub use compile::{CompileError, CycleEdge, Shapes, VerifyError, compile};
@@ -274,7 +276,7 @@ pub use event::{
     HarmonyKind, MAX_EVENT_PORT_CAPACITY, MIN_EVENT_PORT_CAPACITY, ParamRamp, ParamSegment,
     SortedEvents, SubBlocks, UmpAt, note_off_room,
 };
-pub use event_inlet::{EventInletNode, EventInletWriter, Refused};
+pub use event_inlet::{EventInletNode, EventInletWriter, InletCounts, Refused};
 pub use event_tap::{EventTapReader, EventTapWriter, TapEvent};
 pub use exec::{DEFAULT_EVENT_CAPACITY, Executor, FADE_CAPACITY, QUEUE_CAPACITY};
 pub use fade::{CrossfadeCurve, Fade};

@@ -864,9 +864,11 @@ list (normal and build edges; dev-dependencies may go anywhere).
   the spec says, Start of Clip, End of Clip last) are one `ClipFileError` variant each. The SMF reader is our own (doc 017 stage 6b): `winnow` combinators for the
   framing (chunks, variable-length quantities, meta and sysex lengths) with running status threaded as a
   value, in `src/smf/read.rs`; `tutti-ump` decodes a channel message (`Voice1::data_len`,
-  `Midi1Parser::message`); the writer (`src/smf/write.rs`) is a fold of pure functions. No winnow type is in a
-  public signature, field or error, and no file but `read.rs` names `winnow`
-  (`scripts/check-layout.sh`, like symphonia in `tutti-codec`). A test builds files from
+  `Midi1Parser::message`); the writer (`src/smf/write.rs`) is a fold of pure functions. The Clip File reader
+  (`src/clip_file/read.rs`, doc 017 L1b) is a `winnow` grammar over the packets `split_stream` and `decode`
+  made, each M2-116 placement rule one rule of it. No winnow type is in a
+  public signature, field or error, and no file but those two `read.rs` names `winnow`
+  (`scripts/check-layout.sh` holds it per crate, like symphonia in `tutti-codec`). A test builds files from
   `tests/support`'s encoder written from the spec, not from the crate's own writer.
   `MidiFile::to_clip` (doc 017 stage 6c) converts a format 0 or 1 SMF to a Clip File, its meta events to Flex Data (M2-116 section 3.3, Appendix B) and everything with no UMP form returned beside the clip as `Converted::dropped`, never lost silently.
 - `tutti-midi-hardware` keeps every module private but `test_support` (CI runs the

@@ -1018,3 +1018,28 @@ fn the_parts_of_a_lyric_or_ruby_message_share_one_delta_clockstamp() {
         two
     );
 }
+
+/// A Set Profile On message is complete before the DCTPQ: a Start with no End,
+/// then the DCS of the DCTPQ, is a Delta Clockstamp inside the message.
+#[test]
+fn an_unfinished_set_profile_on_is_refused() {
+    let start_only = sysex7(
+        tutti_ump::SysexStatus::Start,
+        &[0x7E, 0x7F, 0x0D, 0x22, 1, 2],
+    );
+    let mut parts = vec![start_only];
+    parts.extend(with_header(&[]));
+    assert_eq!(clip_error(&parts), ClipFileError::ProfileOnDelta);
+}
+
+/// Section 7.3: nothing follows End of Clip, not even half a packet.
+#[test]
+fn half_a_packet_after_end_of_clip_is_trailing_data() {
+    let mut bytes = clip(&valid());
+    // The first word of a 64-bit Note On.
+    bytes.extend_from_slice(&on(60, 1).words()[0].to_be_bytes());
+    assert!(matches!(
+        MidiFile::from_bytes(&bytes),
+        Err(Error::Clip(ClipFileError::TrailingData))
+    ));
+}

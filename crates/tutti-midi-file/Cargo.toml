@@ -23,7 +23,8 @@ tutti-midi-protocol = { path = "../tutti-midi-protocol" }
 tutti-tempo = { path = "../tutti-tempo" }
 tutti-types = { path = "../tutti-types", default-features = false }
 tutti-ump = { path = "../tutti-ump", default-features = false }
-# The SMF reader (`src/smf/read.rs`) alone names it; no signature does.
+# The two readers (`src/smf/read.rs`, `src/clip_file/read.rs`) alone name it; no
+# signature does.
 winnow = { workspace = true }
 unicode-normalization = { workspace = true }
 

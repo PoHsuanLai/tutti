@@ -291,22 +291,29 @@ for name, p in pkgs.items():
     for d in p["dependencies"]:
         if d["name"] in CODEC_LIBS and (d["kind"] or "normal") != "dev":
             fail(f"{d['name']} is a {d['kind'] or 'normal'} dependency of {name}; the codec libraries are tutti-codec's alone")
-# ---- `winnow` is tutti-midi-file's SMF reader alone -------------------------
-# A normal dependency of `tutti-midi-file` only, and named only in its
-# `src/smf/read.rs`: no other file there, and no signature, field or error of
-# the crate holds a winnow type (the same rule as symphonia in tutti-codec).
+# ---- `winnow` is a parser module's alone ------------------------------------
+# A normal dependency of a crate listed here, and named only in that crate's
+# parser modules, by path: no other file there, and no signature, field or error
+# of the crate holds a winnow type (the same rule as symphonia in tutti-codec).
+# A crate that parses a new format adds itself and its module here.
+WINNOW_HOMES = {
+    "tutti-midi-file": (
+        os.path.join("crates", "tutti-midi-file", "src", "smf", "read.rs"),
+        os.path.join("crates", "tutti-midi-file", "src", "clip_file", "read.rs"),
+    ),
+}
 for name, p in pkgs.items():
     for d in p["dependencies"]:
-        if d["name"] == "winnow" and (d["kind"] or "normal") != "dev" and name != "tutti-midi-file":
-            fail(f"winnow is a {d['kind'] or 'normal'} dependency of {name}; it is tutti-midi-file's SMF reader alone")
+        if d["name"] == "winnow" and (d["kind"] or "normal") != "dev" and name not in WINNOW_HOMES:
+            fail(f"winnow is a {d['kind'] or 'normal'} dependency of {name}; only {', '.join(sorted(WINNOW_HOMES))} may name it, in their listed parser modules")
 import re
-winnow_home = os.path.join("crates", "tutti-midi-file", "src", "smf", "read.rs")
-for dirpath, _, files in os.walk(os.path.join(root, "crates", "tutti-midi-file", "src")):
-    for f in files:
-        path = os.path.join(dirpath, f)
-        if f.endswith(".rs") and os.path.relpath(path, root) != winnow_home:
-            if "winnow" in re.sub(r"//[^\n]*", "", open(path, encoding="utf-8").read()):
-                fail(f"{os.path.relpath(path, root)} names winnow outside {winnow_home}")
+for crate, homes in WINNOW_HOMES.items():
+    for dirpath, _, files in os.walk(os.path.join(root, "crates", crate, "src")):
+        for f in files:
+            path = os.path.join(dirpath, f)
+            if f.endswith(".rs") and os.path.relpath(path, root) not in homes:
+                if "winnow" in re.sub(r"//[^\n]*", "", open(path, encoding="utf-8").read()):
+                    fail(f"{os.path.relpath(path, root)} names winnow outside {', '.join(homes)}")
 
 if "tutti-codec" in pkgs:
     encoders = {"flacenc", "aifc", "vorbis_rs", "md-5"}

@@ -92,6 +92,9 @@ convolution = ["tutti-nodes/convolution"]
 # AIFF are pure Rust and opt-in, and `export-ogg` is the one path to C (the
 # Vorbis library, `ogg_next_sys`). `cargo xtask check-layout` holds that a build
 # with `export` alone reaches no C.
+# The decoder's error (`Error::Decode`): `DecodeError` exists only with a
+# decode feature of `tutti-codec`, so this takes the smallest (WAV, pure Rust).
+decode = ["dep:tutti-codec", "tutti-codec/decode-wav"]
 export = ["dep:tutti-export", "dep:tutti-dsp", "dep:tutti-codec", "tutti-export/wav"]
 export-wav = ["export"]
 export-flac = ["export", "tutti-export/flac"]

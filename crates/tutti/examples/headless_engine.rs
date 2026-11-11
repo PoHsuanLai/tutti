@@ -12,7 +12,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (tone, _) = session.graph().add(ForkByClone(tone));
     session.graph().set_outputs_from(tone);
     session.update();
-    session.transport().motion.try_send(MotionEvent::Play)?;
+    session.transport().motion().try_send(MotionEvent::Play)?;
     std::thread::sleep(std::time::Duration::from_secs(2));
     println!("running: {}", device.is_running()); // dropping `device` stops it
     Ok(())

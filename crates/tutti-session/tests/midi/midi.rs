@@ -109,7 +109,7 @@ fn note(number: u8, start: Beat, duration: BeatDuration) -> [TimedMidiEvent; 2] 
 /// blocks.
 fn roll(s: &Session, frames: usize) {
     s.transport()
-        .motion
+        .motion()
         .try_send(MotionEvent::Play)
         .expect("room");
     let mut buf = vec![0.0f32; 512 * 2];

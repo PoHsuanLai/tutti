@@ -230,6 +230,19 @@ impl SessionNode for tutti_sampler::MemorySource {
     }
 }
 
+/// A [`Clip`](tutti_sampler::Clip) as a graph node: the placed clip reader it
+/// builds, its gain addressed by its set.
+#[cfg(feature = "sampler")]
+impl SessionNode for tutti_sampler::Clip {
+    fn bind_tempo(self, tempo: &tutti_transport::TempoReader) -> Self {
+        self.with_tempo(tempo.clone())
+    }
+
+    fn params(controls: &ParamSet) -> Option<ParamSet> {
+        Some(controls.clone())
+    }
+}
+
 /// A streamed voice as a graph node; its controls are its
 /// `DiskVoiceControls`.
 #[cfg(feature = "sampler")]

@@ -84,7 +84,7 @@ fn a_restart_re_rates_the_midi_clock() {
         .clock_master
         .set_enabled(true);
     s.transport()
-        .motion
+        .motion()
         .try_send(MotionEvent::Play)
         .expect("room");
     let ticks = |events: &[(Ump, u64)]| -> f64 {

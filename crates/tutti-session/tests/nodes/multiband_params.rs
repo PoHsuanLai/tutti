@@ -90,7 +90,7 @@ fn rig() -> (Session, NodeKey, MultibandControls) {
 /// Renders `frames` frames from a rolling transport, in blocks of 128.
 fn render(s: &mut Session, frames: usize) -> [Vec<f32>; 2] {
     s.transport()
-        .motion
+        .motion()
         .try_send(MotionEvent::Play)
         .expect("room");
     let mut all = [Vec::new(), Vec::new()];

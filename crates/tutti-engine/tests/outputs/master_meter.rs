@@ -192,13 +192,13 @@ fn the_master_reads_before_the_declick() {
     meter.enable();
     ed.commit().expect("commits");
     let engine = Engine::with_capacity(&transport, &mut ed, exec, Samples(512)).expect("limits");
-    let _ = transport.motion.try_send(MotionEvent::Play);
+    let _ = transport.motion().try_send(MotionEvent::Play);
     render(&engine, 512, 1);
     assert_eq!(meter.read()[0].peak.get(), 0.5);
 
     // A declicked stop with no lead time: the output falls to zero over the
     // fade, the graph's own signal does not.
-    let _ = transport.motion.try_send(MotionEvent::stop());
+    let _ = transport.motion().try_send(MotionEvent::stop());
     let out = render(&engine, 512, 1);
     assert_eq!(out[0], 0.0, "the device buffer starts the stop at zero");
     let faded = (out.iter().map(|s| s * s).sum::<f32>() / out.len() as f32).sqrt();

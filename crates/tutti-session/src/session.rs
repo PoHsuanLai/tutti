@@ -9,8 +9,9 @@ use tutti_graph::NodeKey;
 use tutti_graph::PrerollTable;
 use tutti_graph::TapReader;
 use tutti_nodes::ClickSettings;
-use tutti_transport::Transport;
-use tutti_types::{ChannelLayout, ChannelTopology, Samples};
+use tutti_tempo::TempoMap;
+use tutti_transport::{FadeOut, MotionEvent, QueueFull, ScheduleFull, Transport};
+use tutti_types::{At, Beat, Bpm, ChannelLayout, ChannelTopology, Samples};
 
 use crate::HeardTapError;
 use crate::graph::{Committed, CrossfadeId, Graph, Retried};
@@ -1145,6 +1146,64 @@ impl Session {
     /// The transport: its rate follows the device's.
     pub fn transport(&self) -> &Transport {
         &self.transport
+    }
+
+    /// Starts the transport rolling from where it stands, at the next block.
+    /// A no-op while rolling.
+    ///
+    /// # Errors
+    ///
+    /// [`QueueFull`] when the transport's command queue is full; the event
+    /// is handed back in it.
+    pub fn play(&self) -> Result<(), QueueFull> {
+        self.transport.motion().try_send(MotionEvent::Play)
+    }
+
+    /// Stops the transport where it stands, at the next block, after the
+    /// [`FadeOut`] it names.
+    ///
+    /// # Errors
+    ///
+    /// [`QueueFull`], as [`play`](Self::play).
+    pub fn stop(&self, fade: FadeOut) -> Result<(), QueueFull> {
+        self.transport.motion().try_send(MotionEvent::Stop { fade })
+    }
+
+    /// Jumps to `beat` at the next block, keeping whatever the transport was
+    /// doing (a locate while rolling keeps rolling), with a declick fade.
+    ///
+    /// # Errors
+    ///
+    /// [`QueueFull`], as [`play`](Self::play).
+    pub fn locate(&self, beat: Beat) -> Result<(), QueueFull> {
+        self.transport.motion().try_send(MotionEvent::locate(beat))
+    }
+
+    /// Sends a motion `event` to take effect at `at`: a frame, a beat, or the
+    /// next block. The one timed verb: `schedule(At::Beat(b), MotionEvent::Play)`
+    /// is play at beat `b`, so the session needs one method for the timed
+    /// form where it would need three (`play_at`, `stop_at`, `locate_at`), and
+    /// every [`MotionEvent`] (a locate that then rolls, a stop that returns
+    /// to a beat) is timed the same way. The untimed verbs are `At::NextBlock`.
+    ///
+    /// # Errors
+    ///
+    /// [`ScheduleFull`] when the timed-command list is full.
+    pub fn schedule(&self, at: At, event: MotionEvent) -> Result<(), ScheduleFull> {
+        self.transport.motion().schedule(at, event)
+    }
+
+    /// Sets a constant project tempo (the project's [`TempoMap`], one step).
+    /// The engine takes it at the next block. A tempo that is not finite and
+    /// positive leaves the map as it was.
+    pub fn set_tempo(&self, bpm: Bpm) {
+        self.transport.settings().set_tempo(bpm);
+    }
+
+    /// Publishes `map` as the project's tempo (steps and ramps): the engine
+    /// takes it at the next block. A map by value works: `map.into()`.
+    pub fn set_tempo_map(&self, map: impl Into<Arc<TempoMap>>) {
+        self.transport.settings().set_tempo_map(map);
     }
 
     /// The per-channel compensation of the plan sent last, by output channel:

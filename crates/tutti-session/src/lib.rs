@@ -88,7 +88,7 @@ pub use builder::{SessionBuilder, root_width};
 #[cfg(feature = "device")]
 pub use device::{Device, DeviceRestart, DeviceRestarted};
 pub use edge::{EdgeGainError, EdgeRef, EdgeSink};
-pub use error::{Error, HeardTapError, InletError, Result};
+pub use error::{ConnectError, Error, HeardTapError, InletError, Result};
 #[cfg(feature = "soundfont")]
 pub use general_midi::GeneralMidi;
 #[cfg(feature = "modulation")]

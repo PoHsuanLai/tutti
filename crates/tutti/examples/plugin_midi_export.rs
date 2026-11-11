@@ -35,12 +35,9 @@ mod support;
 
 use std::path::{Path, PathBuf};
 
-use tutti::codec::{Format, Pcm};
 use tutti::export::Written;
-use tutti::graph::NodeKey;
 use tutti::prelude::*;
 use tutti::session::Master;
-use tutti::types::MaxBlock;
 
 const RATE: SampleRate = SampleRate(48_000.0);
 

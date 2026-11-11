@@ -116,7 +116,7 @@ fn rolling_state_with(
     let state = AudioCallbackState::new(engine);
 
     transport.settings().set_tempo(Bpm::of(120.0));
-    let _ = transport.motion.try_send(MotionEvent::Play);
+    let _ = transport.motion().try_send(MotionEvent::Play);
 
     (transport, state, meter, reader)
 }

@@ -82,7 +82,7 @@ fn velocity_keeps_its_full_width() {
     s.midi().play_clip(tap, events).expect("a tap takes a clip");
     s.update();
     s.transport()
-        .motion
+        .motion()
         .try_send(MotionEvent::Play)
         .expect("room");
     let mut buf = vec![0.0f32; 64 * 2];

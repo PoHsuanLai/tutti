@@ -110,10 +110,10 @@ jack = ["device", "tutti-cpal/jack"]
 # The decoder is `tutti-codec`'s, so a format turns on `codec` (below):
 # `Wave::read` and `FileIn` are reached as `tutti::codec::…`. bevy-tutti
 # forwards without it, because there `tutti-codec` is always a dependency.
-wav = ["codec", "tutti-codec/decode-wav", "tutti-sampler?/wav"]
-flac = ["codec", "tutti-codec/decode-flac", "tutti-sampler?/flac"]
-mp3 = ["codec", "tutti-codec/decode-mp3", "tutti-sampler?/mp3"]
-ogg = ["codec", "tutti-codec/decode-ogg", "tutti-sampler?/ogg"]
+wav = ["codec", "tutti-codec/decode-wav", "tutti-sampler?/wav", "tutti-session?/decode"]
+flac = ["codec", "tutti-codec/decode-flac", "tutti-sampler?/flac", "tutti-session?/decode"]
+mp3 = ["codec", "tutti-codec/decode-mp3", "tutti-sampler?/mp3", "tutti-session?/decode"]
+ogg = ["codec", "tutti-codec/decode-ogg", "tutti-sampler?/ogg", "tutti-session?/decode"]
 
 # `tutti::codec` — `tutti-codec`: `Wave`, the decoder and the encoders `export`
 # writes through. Implied by every format, so it is rarely named directly.
@@ -191,6 +191,13 @@ required-features = ["session", "export", "dsp", "wav"]
 [[example]]
 name = "headless_engine"
 required-features = ["session", "device"]
+
+# The whole common path through one import: a sampler, a filter, a reverb, an
+# LFO on the cutoff, the transport and a bounce to a WAV.
+[[example]]
+name = "song_bounce"
+required-features = ["session", "export", "sampler", "dsp", "modulation"]
+test = true
 
 # Design 015 §5.1: doc 014 §8.1's modulation, headless, in one import.
 [[example]]

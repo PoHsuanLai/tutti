@@ -102,7 +102,7 @@ fn beat_notes_after_a_timed_start_leave_both_paths_on_one_frame() {
             }
         }
         transport
-            .motion
+            .motion()
             .schedule(At::Frame(Frame(start)), MotionEvent::Play)
             .expect("room");
         let mut blocks = vec![256usize; 4];
@@ -114,7 +114,7 @@ fn beat_notes_after_a_timed_start_leave_both_paths_on_one_frame() {
         let [pdc_out, direct_out] = onsets(&engine, &blocks);
         assert_eq!(pdc_out, expected, "start {start}: the PDC'd path");
         assert_eq!(direct_out, expected, "start {start}: the direct path");
-        assert_eq!(transport.motion.scheduled_outstanding(), 0);
+        assert_eq!(transport.motion().scheduled_outstanding(), 0);
         ed.collect();
         assert_eq!(ed.commands_outstanding(), 0, "every note landed");
     }

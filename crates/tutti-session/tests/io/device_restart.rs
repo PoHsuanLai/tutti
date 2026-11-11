@@ -119,8 +119,8 @@ fn period(x: &[f32]) -> f64 {
 fn a_restart_at_a_new_rate_re_rates_the_graph_and_everything_on_it() {
     let (mut s, mut device, old, _, lim) = engine();
     let t = s.transport().clone();
-    t.motion.try_send(MotionEvent::Play).expect("room");
-    t.motion
+    t.motion().try_send(MotionEvent::Play).expect("room");
+    t.motion()
         .schedule(At::Frame(Frame(66_150)), MotionEvent::stop_unfaded())
         .expect("room");
     let before = play(&mut s, &old, 441, 100);
@@ -156,7 +156,7 @@ fn a_restart_at_a_new_rate_re_rates_the_graph_and_everything_on_it() {
     // Sent after the restart, before the first block at the new rate: already
     // in 48 kHz frames (1.75 s of wall clock), so the rate's adoption must
     // leave it where it is.
-    t.motion
+    t.motion()
         .schedule(At::Frame(Frame(84_000)), MotionEvent::Play)
         .expect("room");
 
@@ -173,14 +173,14 @@ fn a_restart_at_a_new_rate_re_rates_the_graph_and_everything_on_it() {
     );
     after.extend(play(&mut s, &new, 480, 54));
     // One frame of 48 kHz is 1/24 000 of a beat: 1e-9 pins the frame.
-    assert!(t.motion.is_stopped(), "the stop landed");
+    assert!(t.motion().is_stopped(), "the stop landed");
     assert!(
         (t.settings().beat().get() - 3.0).abs() < 1e-9,
         "the stop lands on 1.5 s of wall clock, frame 72 000 (beat 3), not at beat {}",
         t.settings().beat().get()
     );
     after.extend(play(&mut s, &new, 480, 45));
-    assert!(t.motion.is_playing(), "the later play landed");
+    assert!(t.motion().is_playing(), "the later play landed");
     assert!(
         (t.settings().beat().get() - 3.5).abs() < 1e-9,
         "rolling again from frame 84 000, 12 000 frames to go (beat 3.5), not beat {}",

@@ -47,7 +47,10 @@ fn offline() -> Session {
 /// beat 0.75 between two blocks past the first 60 000 frames.
 fn run(s: &Session, frames: usize, block: usize, seek: bool) -> Vec<f32> {
     let transport = s.transport();
-    transport.motion.try_send(MotionEvent::Play).expect("room");
+    transport
+        .motion()
+        .try_send(MotionEvent::Play)
+        .expect("room");
     let mut out = Vec::with_capacity(frames * 2);
     let mut buf = vec![0.0f32; block * 2];
     let mut located = !seek;
@@ -57,7 +60,7 @@ fn run(s: &Session, frames: usize, block: usize, seek: bool) -> Vec<f32> {
         if !located && out.len() >= 2 * 60_000 {
             located = true;
             transport
-                .motion
+                .motion()
                 .try_send(MotionEvent::Locate {
                     beat: tutti_types::Beat(0.75),
                     fade: tutti_transport::FadeOut::Immediate,
@@ -619,7 +622,7 @@ fn a_tap_steps_at_a_transport_stop_where_the_output_fades() {
         .open_output_tap(Samples(16_384))
         .expect("the sources exist");
     s.update();
-    let motion = &s.transport().motion;
+    let motion = &s.transport().motion();
     motion.try_send(MotionEvent::Play).expect("room");
     motion
         .schedule(At::Frame(Frame(2_000)), MotionEvent::stop())
@@ -677,7 +680,7 @@ fn the_heard_tap_carries_the_fade_at_a_stop() {
         .expect("the sources exist");
     let mut heard = s.open_heard_tap(Samples(16_384)).expect("an engine");
     s.update();
-    let motion = &s.transport().motion;
+    let motion = &s.transport().motion();
     motion.try_send(MotionEvent::Play).expect("room");
     motion
         .schedule(At::Frame(Frame(2_000)), MotionEvent::stop())

@@ -60,7 +60,7 @@ use tutti_types::MaxBlock;
 use tutti_types::{Amplitude, ChannelLayout, Mix, SampleRate, Seconds, UnitAddr};
 use tutti_types::{Samples, Tail};
 
-use crate::{EdgeGainError, EdgeRef, InletError, SessionNode};
+use crate::{ConnectError, EdgeGainError, EdgeRef, InletError, SessionNode};
 
 /// The largest block a device's graph is prepared for.
 ///
@@ -1659,6 +1659,85 @@ impl Graph {
         if topology.edges.get(&at).map_or(0, Vec::len) != held {
             self.edited = true;
         }
+    }
+
+    /// Connects `from`'s main output to `to`'s main input, channel by channel:
+    /// output channel `c` of `from` becomes a source of input channel `c` of
+    /// `to`, for every `c`. A stereo chain is one call, not one
+    /// [`add_source`](Self::add_source) per channel.
+    ///
+    /// Like `add_source`, it **adds**: what already feeds `to`'s input stays
+    /// (the graph sums them), and a channel already connected is kept once.
+    /// To replace what feeds a port, use [`set_source`](Self::set_source).
+    ///
+    /// The two main buses must be the same width. A connection never
+    /// truncates or zero-fills; a width change is a bus edge
+    /// ([`connect_bus`](Self::connect_bus)).
+    ///
+    /// # Errors
+    ///
+    /// [`ConnectError`], with nothing stored: a node that is not in the
+    /// graph, `from == to`, a node with no main bus on the side used, or
+    /// two main buses of different widths.
+    pub fn connect(&mut self, from: NodeKey, to: NodeKey) -> Result<(), ConnectError> {
+        let wires = self.wires(from, to)?;
+        for (out, input) in wires {
+            self.add_source(to, input, GraphSource::Node(from, out));
+        }
+        Ok(())
+    }
+
+    /// [`connect`](Self::connect)s each node to the next: `chain([a, b, c])`
+    /// is `connect(a, b)` and `connect(b, c)`. Every link is checked before
+    /// any is made, so a refusal stores nothing. Fewer than two nodes connect
+    /// nothing.
+    ///
+    /// # Errors
+    ///
+    /// As [`connect`](Self::connect), for the first link that fails.
+    pub fn chain(&mut self, nodes: impl IntoIterator<Item = NodeKey>) -> Result<(), ConnectError> {
+        let nodes: Vec<NodeKey> = nodes.into_iter().collect();
+        let mut all = Vec::new();
+        for pair in nodes.windows(2) {
+            let (from, to) = (pair[0], pair[1]);
+            for (out, input) in self.wires(from, to)? {
+                all.push((to, input, GraphSource::Node(from, out)));
+            }
+        }
+        for (to, input, source) in all {
+            self.add_source(to, input, source);
+        }
+        Ok(())
+    }
+
+    /// The `(output port, input port)` pairs that connect `from`'s main
+    /// output to `to`'s main input, checked.
+    fn wires(&self, from: NodeKey, to: NodeKey) -> Result<Vec<(usize, usize)>, ConnectError> {
+        if from == to {
+            return Err(ConnectError::Itself(from));
+        }
+        let (_, out_buses) = self.buses(from).ok_or(ConnectError::NoSuchNode(from))?;
+        let (in_buses, _) = self.buses(to).ok_or(ConnectError::NoSuchNode(to))?;
+        let main = |buses: &Buses, node| {
+            let (index, bus) = buses.main_bus().ok_or(ConnectError::NoMainBus(node))?;
+            let first = buses
+                .first_port(index)
+                .ok_or(ConnectError::NoMainBus(node))?;
+            Ok::<_, ConnectError>((first, bus.width()))
+        };
+        let (out_first, out_width) = main(&out_buses, from)?;
+        let (in_first, in_width) = main(&in_buses, to)?;
+        if out_width != in_width {
+            return Err(ConnectError::Width {
+                from,
+                from_width: out_width,
+                to,
+                to_width: in_width,
+            });
+        }
+        Ok((0..out_width)
+            .map(|c| (out_first + c, in_first + c))
+            .collect())
     }
 
     /// Removes `source` from what feeds `node`'s input `port`; the others

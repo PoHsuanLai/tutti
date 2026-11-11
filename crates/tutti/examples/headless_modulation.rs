@@ -16,10 +16,8 @@
 //! modulation sources) is named through `tutti::`.
 
 use std::sync::Arc;
-use tutti::types::MaxBlock;
 
 use tutti::graph::{Cx, ForkByClone, Io, Node, Prepare, Shape, Status};
-use tutti::modulation::{Follower, Lfo};
 use tutti::nodes::testing::Osc;
 use tutti::nodes::{SvfFilterNode, SvfType};
 use tutti::prelude::*;

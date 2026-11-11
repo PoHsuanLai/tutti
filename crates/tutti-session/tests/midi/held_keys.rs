@@ -135,7 +135,7 @@ fn retarget_with_a_held_clip_note() {
         )
         .unwrap();
     s.update();
-    s.transport().motion.try_send(MotionEvent::Play).unwrap();
+    s.transport().motion().try_send(MotionEvent::Play).unwrap();
     blocks(&s, 20); // the note starts at about frame 2,400
     assert_eq!(ons(&a_seen), 1, "A heard the note start");
     s.midi().retarget(clip, b).unwrap();

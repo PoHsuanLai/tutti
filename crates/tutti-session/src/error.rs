@@ -38,6 +38,40 @@ pub enum InletError {
     },
 }
 
+/// Why [`Graph::connect`](crate::Graph::connect) or
+/// [`Graph::chain`](crate::Graph::chain) refused; nothing is stored.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Error)]
+#[non_exhaustive]
+pub enum ConnectError {
+    /// A node is not in the graph.
+    #[error("{0:?} is not in the graph")]
+    NoSuchNode(tutti_graph::NodeKey),
+    /// A node feeds itself: a node cannot be its own source.
+    #[error("{0:?} cannot feed itself")]
+    Itself(tutti_graph::NodeKey),
+    /// The source declares no main output bus, or the sink no main input
+    /// bus, to connect channel by channel.
+    #[error("{0:?} has no main bus on that side")]
+    NoMainBus(tutti_graph::NodeKey),
+    /// The two main buses are not the same width. A connection never
+    /// truncates or zero-fills: a width change is a bus edge
+    /// ([`Graph::connect_bus`](crate::Graph::connect_bus)).
+    #[error(
+        "{from:?}'s main output is {from_width} wide and {to:?}'s main input {to_width}; \
+         a width change is a bus edge (`connect_bus`)"
+    )]
+    Width {
+        /// The source node.
+        from: tutti_graph::NodeKey,
+        /// Its main output's width.
+        from_width: usize,
+        /// The sink node.
+        to: tutti_graph::NodeKey,
+        /// Its main input's width.
+        to_width: usize,
+    },
+}
+
 /// Every subsystem's error, so `?` propagates across crate boundaries.
 ///
 /// Each variant wraps a subsystem error via `#[from]`. Device failures arrive
@@ -152,6 +186,53 @@ pub enum Error {
     #[cfg(feature = "plugin")]
     #[error("Plugin: {0}")]
     Plugin(#[from] tutti_plugin_types::BridgeError),
+
+    /// A whole-bus connection was refused ([`Graph::connect`](crate::Graph::connect)).
+    #[error(transparent)]
+    Connect(#[from] ConnectError),
+
+    /// A bus edge was refused ([`Graph::connect_bus`](crate::Graph::connect_bus)).
+    #[error(transparent)]
+    Bus(#[from] tutti_graph::BusError),
+
+    /// A node mode was refused ([`Graph::set_mode`](crate::Graph::set_mode)).
+    #[error(transparent)]
+    Mode(#[from] tutti_graph::ModeError),
+
+    /// A dry/wet mix was refused ([`Graph::set_mix`](crate::Graph::set_mix)).
+    #[error(transparent)]
+    Mix(#[from] tutti_graph::MixError),
+
+    /// The transport's command queue was full ([`Session::play`](crate::Session::play)
+    /// and the other verbs).
+    #[error(transparent)]
+    Transport(#[from] tutti_transport::QueueFull),
+
+    /// The transport's timed-command list was full
+    /// ([`Session::schedule`](crate::Session::schedule)).
+    #[error(transparent)]
+    Schedule(#[from] tutti_transport::ScheduleFull),
+
+    /// A file could not be decoded ([`Wave::read`](tutti_codec::Wave::read)).
+    #[cfg(feature = "decode")]
+    #[error(transparent)]
+    Decode(#[from] tutti_codec::DecodeError),
+
+    /// A wave cannot be placed into a sampler voice's channels.
+    #[cfg(feature = "sampler")]
+    #[error(transparent)]
+    Place(#[from] tutti_sampler::PlaceError),
+
+    /// A bounce could not start or finish (a cancel included:
+    /// [`BounceError::Cancelled`](crate::BounceError::Cancelled)).
+    #[cfg(feature = "export")]
+    #[error(transparent)]
+    Bounce(#[from] crate::BounceError),
+
+    /// A bounce asks for something no render could give.
+    #[cfg(feature = "export")]
+    #[error(transparent)]
+    BounceConfig(#[from] crate::BounceConfigError),
 
     /// Standard I/O error encountered while reading or writing audio data.
     #[error(transparent)]

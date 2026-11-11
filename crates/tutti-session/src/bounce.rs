@@ -99,6 +99,28 @@ pub enum Range {
     Frames(Frame, Frame),
 }
 
+/// `Beat(0.0)..Beat(8.0)` is [`Range::Beats`]: the span from one beat to the
+/// other, end exclusive as a Rust range is.
+impl From<std::ops::Range<Beat>> for Range {
+    fn from(r: std::ops::Range<Beat>) -> Self {
+        Self::Beats(r.start, r.end)
+    }
+}
+
+/// `Seconds(0.0)..Seconds(2.0)` is [`Range::Seconds`].
+impl From<std::ops::Range<Seconds>> for Range {
+    fn from(r: std::ops::Range<Seconds>) -> Self {
+        Self::Seconds(r.start, r.end)
+    }
+}
+
+/// `Frame(0)..Frame(48_000)` is [`Range::Frames`].
+impl From<std::ops::Range<Frame>> for Range {
+    fn from(r: std::ops::Range<Frame>) -> Self {
+        Self::Frames(r.start, r.end)
+    }
+}
+
 /// Which leading frames a bounce drops: the latency the graph's plan
 /// compensates every output by (a look-ahead limiter's, a hosted plugin's) is
 /// silence ahead of the programme.
@@ -458,8 +480,8 @@ impl<N, M> Bounce<N, M> {
 
     /// The span to render. Without it the transport's loop is rendered, and
     /// without that [`until`](Self::until).
-    pub fn range(mut self, range: Range) -> Self {
-        self.range = Some(range);
+    pub fn range(mut self, range: impl Into<Range>) -> Self {
+        self.range = Some(range.into());
         self
     }
 
@@ -1615,6 +1637,13 @@ impl Session {
     /// [`run`](BounceJob::run) the job on any thread, then
     /// [`finish_bounce`](Self::finish_bounce) what it returns.
     ///
+    /// **No `update` is needed first.** The fork is the graph's spec as it
+    /// stands at this call, so an insert, a wire or a mode set since the last
+    /// [`update`](Self::update) is in it, committed or not (the live executor
+    /// is not touched). What `update` derives from the session's own
+    /// declarations (modulation lanes, a clip's node) reaches the graph in its
+    /// phases, so a bounce after declaring those wants an `update` first.
+    ///
     /// The fork renders what the graph is driven to play from the bounce's
     /// clock, from silence: every node isolated and reset, reading that
     /// clock through its `Env`; controls as they are now; a hosted plugin
@@ -1624,7 +1653,7 @@ impl Session {
     /// # Errors
     ///
     /// [`BounceError::InFlight`] while another bounce's token lives;
-    /// [`BounceError::Config`] for a request that names no format, target or
+    /// [`BounceError::Config`] for a request that names no format or
     /// range, whose range keeps no frame, or for a graph with no outputs (all
     /// before anything is forked); [`BounceError::NotForkable`] and
     /// [`BounceError::Fork`] for a node the fork cannot copy.
@@ -1666,7 +1695,7 @@ impl Session {
         // The span: the range named, else the transport's loop, else the end
         // the bounce names; never a guess.
         let map = self.transport.settings().tempo_map();
-        let looped = self.transport.motion.loop_region().active();
+        let looped = self.transport.motion().loop_region().active();
         let range = chosen(range, looped, until)?;
         let (start, length) = span(range, looped, &map, rate)?;
 
@@ -1960,6 +1989,39 @@ mod tests {
     /// The planes of a finished buffers bounce.
     fn planes(out: Result<Bounced<BufferMaster>, BounceError>) -> Vec<Vec<f32>> {
         out.expect("renders").into_master().into_planes()
+    }
+
+    /// **A bounce renders what was edited, with no `update` between.** A node
+    /// inserted and wired since the last update is in the fork: the planes
+    /// hold its level, not silence.
+    #[test]
+    fn a_bounce_renders_an_edit_no_update_has_committed() {
+        let mut session = session();
+        let (half, _) = session
+            .graph()
+            .insert(tutti_nodes::testing::Const::mono(0.5));
+        session.graph().set_outputs_from(half);
+        assert!(session.graph().is_edited(), "no update has run");
+        let out = planes(session.bounce(short()));
+        assert!(out[0].iter().all(|&s| s == 0.5), "the edit is heard");
+    }
+
+    /// **`Beat(a)..Beat(b)` is the range from beat `a` to beat `b`**, and the
+    /// same for seconds and frames.
+    #[test]
+    fn a_rust_range_is_a_range() {
+        assert_eq!(
+            Range::from(Beat(0.0)..Beat(8.0)),
+            Range::Beats(Beat(0.0), Beat(8.0))
+        );
+        assert_eq!(
+            Range::from(Seconds(1.0)..Seconds(2.0)),
+            Range::Seconds(Seconds(1.0), Seconds(2.0))
+        );
+        assert_eq!(
+            Range::from(Frame(0)..Frame(48_000)),
+            Range::Frames(Frame(0), Frame(48_000))
+        );
     }
 
     /// 120 BPM for four beats, then 60: a step at beat 4, which is second 2.

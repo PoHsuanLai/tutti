@@ -26,7 +26,7 @@ fn offline() -> Session {
 /// transport rolling from the first block.
 fn run(s: &Session, frames: usize, block: usize) -> Vec<f32> {
     s.transport()
-        .motion
+        .motion()
         .try_send(MotionEvent::Play)
         .expect("room");
     let mut out = Vec::with_capacity(frames * 2);

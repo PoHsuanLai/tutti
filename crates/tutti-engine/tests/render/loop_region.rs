@@ -114,7 +114,7 @@ fn every_frame_sees_one_whole_region() {
     }
     for &(frame, edit) in &schedule {
         transport
-            .motion
+            .motion()
             .schedule(At::Frame(Frame(frame)), edit)
             .expect("room");
     }
@@ -153,7 +153,7 @@ fn a_scheduled_edit_lands_on_its_frame() {
     let b = range(8.0, 12.0);
     let transport = Transport::new(SampleRate::new(SR));
     let (engine, _ed, log) = engine(&transport);
-    let m = &transport.motion;
+    let m = &transport.motion();
 
     m.schedule(At::Frame(Frame(0)), LoopEdit::over(a))
         .expect("room");
@@ -182,7 +182,7 @@ fn disarming_keeps_the_bounds() {
     let b = range(10.0, 14.0);
     let transport = Transport::new(SampleRate::new(SR));
     let (engine, _ed, log) = engine(&transport);
-    let m = &transport.motion;
+    let m = &transport.motion();
 
     m.schedule(At::NextBlock, LoopEdit::over(a)).expect("room");
     render(&engine, 100);
@@ -221,7 +221,7 @@ fn the_snapshot_follows_the_engine() {
     let a = range(1.0, 3.0);
     let transport = Transport::new(SampleRate::new(SR));
     let (engine, _ed, _log) = engine(&transport);
-    let m = &transport.motion;
+    let m = &transport.motion();
 
     assert_eq!(m.loop_region(), LoopRegion::default(), "before any edit");
     assert_eq!(m.loop_region().bounds(), range(0.0, 16.0));
@@ -257,7 +257,7 @@ fn a_reader_thread_never_sees_a_torn_region() {
             let mut reads = 0u64;
             // Reads at least once, whenever the thread starts.
             loop {
-                let region = reader_transport.motion.loop_region();
+                let region = reader_transport.motion().loop_region();
                 let bounds = region.bounds();
                 assert!(
                     bounds == a || bounds == b || bounds == range(0.0, 16.0),
@@ -270,7 +270,7 @@ fn a_reader_thread_never_sees_a_torn_region() {
             }
             reads
         });
-        let m = &transport.motion;
+        let m = &transport.motion();
         for i in 0..4_000u32 {
             let edit = LoopEdit::over(if i % 2 == 0 { b } else { a });
             while m.schedule(At::NextBlock, edit).is_err() {

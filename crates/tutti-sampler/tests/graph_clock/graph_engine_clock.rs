@@ -102,7 +102,10 @@ fn play(
     blocks: usize,
     mut between: impl FnMut(usize),
 ) -> Vec<f32> {
-    transport.motion.try_send(MotionEvent::Play).expect("room");
+    transport
+        .motion()
+        .try_send(MotionEvent::Play)
+        .expect("room");
     let mut all = Vec::with_capacity(n * blocks * 2);
     let mut buf = vec![0.0f32; n * 2];
     for i in 0..blocks {
@@ -296,7 +299,7 @@ fn a_crossfaded_voice_plays_on_through_the_fade() {
 fn a_loop_wrap_plays_the_tone_a_loop_back_from_its_frame() {
     let blocks = 60_000 / 512;
     let t = Transport::new(SampleRate::new(SR));
-    t.motion
+    t.motion()
         .schedule(
             At::NextBlock,
             LoopEdit::over(LoopRange::new(Beat::new(1.0), Beat::new(1.51)).expect("ordered")),
@@ -341,7 +344,7 @@ fn a_scheduled_locate_lands_on_its_frame() {
     let at = 10_037;
     let target = FPB / 4;
     let locate = |t: &Transport| {
-        t.motion
+        t.motion()
             .schedule(
                 At::Frame(Frame(at as u64)),
                 MotionEvent::Locate {

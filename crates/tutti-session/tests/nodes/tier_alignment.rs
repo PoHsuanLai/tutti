@@ -155,7 +155,7 @@ fn render(tier: Tier) -> (Vec<f32>, Vec<f32>, Samples) {
     }
 
     s.transport()
-        .motion
+        .motion()
         .try_send(MotionEvent::Play)
         .expect("room");
     let frames = AT + 2_000;

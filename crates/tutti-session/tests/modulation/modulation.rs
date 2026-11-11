@@ -143,7 +143,7 @@ fn the_8_1_example_renders_its_analytic_values() {
 
     // Rolling from beat 0 at frame 0 (120 BPM, the transport's default).
     s.transport()
-        .motion
+        .motion()
         .try_send(MotionEvent::Play)
         .expect("room");
     let (total, block) = (24_000, 128);

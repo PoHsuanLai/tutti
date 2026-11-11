@@ -51,7 +51,7 @@ fn rig(wire: &Wire) -> Session {
     s.midi()
         .set_hardware_out(Some(UmpOut::new(Box::new(wire.clone()), SampleRate(RATE))));
     s.transport()
-        .motion
+        .motion()
         .try_send(MotionEvent::Play)
         .expect("room");
     s

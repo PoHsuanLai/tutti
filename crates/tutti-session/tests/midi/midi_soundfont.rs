@@ -91,7 +91,7 @@ fn render(s: &Session, frames: usize) -> Vec<f32> {
 
 fn play(s: &Session) {
     s.transport()
-        .motion
+        .motion()
         .try_send(MotionEvent::Play)
         .expect("room");
 }

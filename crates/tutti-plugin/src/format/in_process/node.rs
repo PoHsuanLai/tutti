@@ -33,9 +33,9 @@ use tutti_graph::{
 use tutti_types::Latency;
 use tutti_types::{ChannelLayout, Samples};
 
-use super::client::{InProcClient, MAX_CHANNELS, PluginNode, Rendered, render};
+use super::client::{InProcClient, PluginNode, Rendered, render};
 use crate::host::node::{NodeControls, param_input};
-use tutti_plugin_types::{Features, InProcess, WireMidi};
+use tutti_plugin_types::{Features, InProcess, MAX_BLOCK_CHANNELS, WireMidi};
 
 impl<F: InProcess + 'static> Node for PluginNode<F>
 where
@@ -93,8 +93,8 @@ where
             // not audio at another rate.
             return Status::Silent;
         }
-        let n_in = (this.declared.inputs.count() as usize).min(MAX_CHANNELS);
-        let n_out = (this.declared.outputs.count() as usize).min(MAX_CHANNELS);
+        let n_in = (this.declared.inputs.count() as usize).min(MAX_BLOCK_CHANNELS);
+        let n_out = (this.declared.outputs.count() as usize).min(MAX_BLOCK_CHANNELS);
         // No clamp and no size check: the Processor splits a block longer than
         // the one the plugin was told.
         // The event input: its MIDI, in its (sorted) order, past the cap
@@ -152,14 +152,14 @@ where
         let rendered = {
             let (inputs, mut outputs) = io.split();
             // A plugin wider than the tables is handed their first
-            // `MAX_CHANNELS` channels; the graph's outputs past them would
+            // `MAX_BLOCK_CHANNELS` channels; the graph's outputs past them would
             // keep whatever their buffers last held, so they are silenced.
             for out in outputs.iter_mut().skip(n_out) {
                 out[..size].fill(0.0);
             }
-            let ins: ArrayVec<&[f32], MAX_CHANNELS> =
+            let ins: ArrayVec<&[f32], MAX_BLOCK_CHANNELS> =
                 (0..n_in).map(|ch| &inputs.get(ch)[..size]).collect();
-            let mut outs: ArrayVec<&mut [f32], MAX_CHANNELS> = outputs
+            let mut outs: ArrayVec<&mut [f32], MAX_BLOCK_CHANNELS> = outputs
                 .iter_mut()
                 .take(n_out)
                 .map(|out| &mut out[..size])

@@ -23,7 +23,7 @@ pub use instance::ParamMapping;
 #[cfg(all(unix, feature = "clap-extras"))]
 // CLAP channel map <-> the shared ChannelTopology. Flat-re-exported so a
 // caller converting a layout does not have to name the module.
-pub use topology::{channel_map_of, topology_of};
+pub use topology::topology_of;
 
 // `cfg`-gated to match the item: `PosixFdFlags` is `#[cfg(unix)]` (it models
 // `CLAP_EXT_POSIX_FD_SUPPORT`, which has no Windows counterpart), so an

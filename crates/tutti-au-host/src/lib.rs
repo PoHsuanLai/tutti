@@ -100,7 +100,7 @@ pub use handle::AuHandle;
 #[cfg(target_os = "macos")]
 pub use instance::{AuActive, AuInstance, AuLoaded};
 #[cfg(target_os = "macos")]
-pub use topology::{tag_for, topology_of};
+pub use topology::topology_of;
 #[cfg(target_os = "macos")]
 pub use tutti_au_ffi::{AuEditor, Element, Property, Scope, Unit, property};
 // Flat-re-exported for the reason `AuLayoutTag` is: `AuMidiMapping` is the

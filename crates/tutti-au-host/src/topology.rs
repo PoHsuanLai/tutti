@@ -1,4 +1,4 @@
-//! [`AuLayoutTag`] ↔ [`ChannelTopology`] conversion.
+//! [`AuLayoutTag`] → [`ChannelTopology`] decoding.
 //!
 //! # Keyed on the tag, never on the count
 //!
@@ -143,45 +143,6 @@ pub fn topology_of(tag: AuLayoutTag) -> Option<ChannelTopology> {
     Some(ChannelTopology::new(positions.iter().copied()))
 }
 
-/// The tag whose channel order is exactly `topology`, or `None` if no tag this
-/// crate names describes it.
-///
-/// The inverse of [`topology_of`], found by search rather than by a second
-/// table — one table cannot disagree with itself. `None` is a real answer: a
-/// caller proposing a layout the AU has no tag for should propose nothing
-/// rather than the nearest tag, since "nearest" here means a different speaker
-/// order.
-///
-/// Where two tags share an order (`Pentagonal` and `AudioUnit5_0` are both
-/// `L R Ls Rs C`), the first match in [`SEARCH_ORDER`] wins. That is a real
-/// choice rather than an accident of enum ordering, which is why the list is
-/// written out.
-pub fn tag_for(topology: &ChannelTopology) -> Option<AuLayoutTag> {
-    SEARCH_ORDER
-        .iter()
-        .copied()
-        .find(|tag| topology_of(*tag).as_ref() == Some(topology))
-}
-
-/// The tags [`tag_for`] searches, in preference order.
-///
-/// `AudioUnit*` variants come first: they are what an AU is most likely to
-/// accept, and where two tags describe one order the `AudioUnit` spelling is
-/// the one Apple documents for units. Explicit rather than derived from the
-/// enum so that adding a variant cannot silently reorder the preference.
-const SEARCH_ORDER: &[AuLayoutTag] = &[
-    AuLayoutTag::Mono,
-    AuLayoutTag::Stereo,
-    AuLayoutTag::Quadraphonic,
-    AuLayoutTag::AudioUnit5_0,
-    AuLayoutTag::AudioUnit5_1,
-    AuLayoutTag::AudioUnit6_0,
-    AuLayoutTag::AudioUnit7_0,
-    AuLayoutTag::AudioUnit7_1,
-    AuLayoutTag::Pentagonal,
-    AuLayoutTag::Hexagonal,
-];
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -192,32 +153,28 @@ mod tests {
     /// The tag's low 16 bits are its channel count, so this checks the table
     /// against Apple's own arithmetic rather than against itself — a
     /// transcription that dropped or doubled a speaker fails here.
+    ///
+    /// Mutation (not run: macOS only, no Mac here): dropping `FrontCenter` from
+    /// the `AudioUnit5_0` row fails this at that tag.
     #[test]
     fn every_topology_matches_the_tags_own_channel_count() {
-        for tag in SEARCH_ORDER {
-            let topology = topology_of(*tag).expect("every searched tag has a topology");
+        for tag in [
+            AuLayoutTag::Mono,
+            AuLayoutTag::Stereo,
+            AuLayoutTag::Quadraphonic,
+            AuLayoutTag::AudioUnit5_0,
+            AuLayoutTag::AudioUnit5_1,
+            AuLayoutTag::AudioUnit6_0,
+            AuLayoutTag::AudioUnit7_0,
+            AuLayoutTag::AudioUnit7_1,
+            AuLayoutTag::Pentagonal,
+            AuLayoutTag::Hexagonal,
+        ] {
+            let topology = topology_of(tag).expect("every placement tag has a topology");
             assert_eq!(
                 Some(topology.layout().count()),
                 tag.channel_count(),
                 "{tag:?} topology width disagrees with the count in its tag"
-            );
-        }
-    }
-
-    /// Every tag with a topology round-trips back to a tag with the same order.
-    ///
-    /// Not necessarily the *same* tag: `Pentagonal` and `AudioUnit5_0` share an
-    /// order, so one resolves to the other. What must hold is that the order
-    /// survives, which is what a caller depends on.
-    #[test]
-    fn every_topology_round_trips_to_an_equivalent_tag() {
-        for tag in SEARCH_ORDER {
-            let topology = topology_of(*tag).expect("searched tags have topologies");
-            let back = tag_for(&topology).expect("a table entry must be findable");
-            assert_eq!(
-                topology_of(back),
-                Some(topology),
-                "{tag:?} round-tripped to {back:?}, which is a different order"
             );
         }
     }
@@ -328,27 +285,5 @@ mod tests {
         );
         assert_eq!(topology_of(AuLayoutTag::AmbisonicBFormat), None);
         assert!(topology_of(AuLayoutTag::Quadraphonic).is_some());
-    }
-
-    /// An order no AU tag describes finds no tag.
-    #[test]
-    fn an_order_no_tag_describes_is_refused() {
-        // The engine's quad — `FL FR BL BR` — is a rear pair, where Apple's
-        // Quadraphonic is a surround pair. No tag names it.
-        assert_eq!(tag_for(&ChannelTopology::quad()), None);
-    }
-
-    /// The search list holds no duplicates.
-    ///
-    /// A repeat would make the "first match wins" preference depend on where
-    /// the duplicate sits, which is exactly the kind of ordering accident the
-    /// explicit list exists to prevent.
-    #[test]
-    fn the_search_order_has_no_duplicates() {
-        for (i, a) in SEARCH_ORDER.iter().enumerate() {
-            for b in &SEARCH_ORDER[i + 1..] {
-                assert_ne!(a, b, "{a:?} appears twice in SEARCH_ORDER");
-            }
-        }
     }
 }

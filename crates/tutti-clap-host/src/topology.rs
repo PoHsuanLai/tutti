@@ -1,4 +1,4 @@
-//! [`SurroundChannel`] ↔ [`ChannelTopology`] conversion.
+//! [`SurroundChannel`] → [`ChannelTopology`] decoding.
 //!
 //! # The one format whose model already matches
 //!
@@ -13,21 +13,14 @@
 //! of Apple's header comments. CLAP is the format the shared type was shaped
 //! after.
 //!
-//! # Why both directions are total
+//! # Why decoding is total
 //!
-//! Neither direction can fail. [`SurroundChannel`] carries an `Unknown(u8)` arm
-//! and [`Speaker`] an `Unknown(u16)`, so a position either vocabulary cannot
+//! It cannot fail. [`SurroundChannel`] carries an `Unknown(u8)` arm and
+//! [`Speaker`] an `Unknown(u16)`, so a position the shared vocabulary cannot
 //! name still occupies its channel's slot. That matters more here than
 //! anywhere: the map is positional, so a dropped element renumbers every
 //! channel after it, which is why `decode_surround_channel_map` never filters.
-//!
-//! The two `Unknown` payloads are **not interchangeable**. A
-//! `SurroundChannel::Unknown(n)` holds a raw CLAP position, and a
-//! `Speaker::Unknown(n)` holds whatever the *source* format meant. Round-tripping
-//! a CLAP map preserves the value because this module is both ends of it; a
-//! `Speaker::Unknown` that arrived from VST3 or AU is a different namespace and
-//! must not be handed to a CLAP plugin as though it were a CLAP position. See
-//! [`channel_map_of`].
+//! The host never tells a plugin a layout, so there is no inverse.
 
 use tutti_types::{ChannelTopology, Speaker};
 
@@ -60,49 +53,9 @@ fn speaker_of(channel: SurroundChannel) -> Speaker {
         SurroundChannel::TopBackRight => Speaker::TopBackRight,
         SurroundChannel::TopSideLeft => Speaker::TopSideLeft,
         SurroundChannel::TopSideRight => Speaker::TopSideRight,
-        // The raw CLAP position, preserved. `u16` widens from CLAP's `u8`
-        // without loss; the narrowing back is checked in `channel_of`.
+        // The raw CLAP position, preserved: `u16` widens from CLAP's `u8` without loss.
         SurroundChannel::Unknown(raw) => Speaker::Unknown(u16::from(raw)),
     }
-}
-
-/// The CLAP position a shared [`Speaker`] means, or `None` if CLAP has no
-/// position for it.
-///
-/// `None` for a `Speaker::Unknown` whose payload is not a valid CLAP position —
-/// including any value above `u8::MAX`, and any that came from another format's
-/// namespace. A VST3 bit index and a CLAP position are different numbering
-/// spaces, and coercing one into the other would name a real-but-wrong speaker.
-fn channel_of(speaker: Speaker) -> Option<SurroundChannel> {
-    Some(match speaker {
-        Speaker::FrontLeft => SurroundChannel::FrontLeft,
-        Speaker::FrontRight => SurroundChannel::FrontRight,
-        Speaker::FrontCenter => SurroundChannel::FrontCenter,
-        Speaker::LowFrequency => SurroundChannel::LowFrequency,
-        Speaker::BackLeft => SurroundChannel::BackLeft,
-        Speaker::BackRight => SurroundChannel::BackRight,
-        Speaker::FrontLeftOfCenter => SurroundChannel::FrontLeftCenter,
-        Speaker::FrontRightOfCenter => SurroundChannel::FrontRightCenter,
-        Speaker::BackCenter => SurroundChannel::BackCenter,
-        Speaker::SideLeft => SurroundChannel::SideLeft,
-        Speaker::SideRight => SurroundChannel::SideRight,
-        Speaker::TopCenter => SurroundChannel::TopCenter,
-        Speaker::TopFrontLeft => SurroundChannel::TopFrontLeft,
-        Speaker::TopFrontCenter => SurroundChannel::TopFrontCenter,
-        Speaker::TopFrontRight => SurroundChannel::TopFrontRight,
-        Speaker::TopBackLeft => SurroundChannel::TopBackLeft,
-        Speaker::TopBackCenter => SurroundChannel::TopBackCenter,
-        Speaker::TopBackRight => SurroundChannel::TopBackRight,
-        Speaker::TopSideLeft => SurroundChannel::TopSideLeft,
-        Speaker::TopSideRight => SurroundChannel::TopSideRight,
-        // Only a payload that fits CLAP's `u8` position space can be one.
-        // `from_position` then decides whether it is a position CLAP names or
-        // an `Unknown` of its own — either way the slot is kept.
-        Speaker::Unknown(raw) => SurroundChannel::from_position(u8::try_from(raw).ok()?),
-        // CLAP's surround extension places speakers; a discrete channel has no
-        // position to send, so the whole map is refused like any other.
-        Speaker::Discrete => return None,
-    })
 }
 
 /// Converts a CLAP channel map into a [`ChannelTopology`].
@@ -113,46 +66,48 @@ pub fn topology_of(map: &[SurroundChannel]) -> ChannelTopology {
     ChannelTopology::new(map.iter().copied().map(speaker_of))
 }
 
-/// Converts a [`ChannelTopology`] into a CLAP channel map, or `None` if any
-/// position has no CLAP spelling.
-///
-/// All-or-nothing rather than per-channel: a map with one element silently
-/// replaced would route that channel to the wrong speaker, and a *shorter* map
-/// would renumber the rest. Refusing hands the caller a decision it can act on.
-pub fn channel_map_of(topology: &ChannelTopology) -> Option<Vec<SurroundChannel>> {
-    topology
-        .positions()
-        .iter()
-        .copied()
-        .map(channel_of)
-        .collect()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use tutti_types::ChannelLayout;
 
-    /// Every position CLAP names survives a round trip through the shared
-    /// vocabulary.
+    /// Every position CLAP names decodes to its speaker, per `clap/ext/surround.h`.
     ///
-    /// Two hand-written match arms, so nothing but a round trip stops one from
-    /// drifting: a transposed pair still compiles and still converts
-    /// "successfully", just to the wrong speaker.
+    /// Two hand-written arms could transpose a pair and still compile, so the
+    /// positions are written as literals from the header (`CLAP_SURROUND_FL = 0`
+    /// ... `CLAP_SURROUND_TSR = 19`), not derived from the conversion.
+    ///
+    /// Mutation (run): mapping `SideLeft` to `Speaker::SideRight` in
+    /// `speaker_of` fails this at position 9.
     #[test]
-    fn every_clap_position_round_trips() {
-        for raw in 0u8..=19 {
-            let channel = SurroundChannel::from_position(raw);
-            let speaker = speaker_of(channel);
-            assert_ne!(
-                speaker,
-                Speaker::Unknown(u16::from(raw)),
-                "position {raw} is named by CLAP and must map to a named speaker"
-            );
+    fn every_clap_position_decodes_to_its_speaker() {
+        let spec: [(u8, Speaker); 20] = [
+            (0, Speaker::FrontLeft),
+            (1, Speaker::FrontRight),
+            (2, Speaker::FrontCenter),
+            (3, Speaker::LowFrequency),
+            (4, Speaker::BackLeft),
+            (5, Speaker::BackRight),
+            (6, Speaker::FrontLeftOfCenter),
+            (7, Speaker::FrontRightOfCenter),
+            (8, Speaker::BackCenter),
+            (9, Speaker::SideLeft),
+            (10, Speaker::SideRight),
+            (11, Speaker::TopCenter),
+            (12, Speaker::TopFrontLeft),
+            (13, Speaker::TopFrontCenter),
+            (14, Speaker::TopFrontRight),
+            (15, Speaker::TopBackLeft),
+            (16, Speaker::TopBackCenter),
+            (17, Speaker::TopBackRight),
+            (18, Speaker::TopSideLeft),
+            (19, Speaker::TopSideRight),
+        ];
+        for (raw, speaker) in spec {
             assert_eq!(
-                channel_of(speaker),
-                Some(channel),
-                "position {raw} did not survive the round trip"
+                speaker_of(SurroundChannel::from_position(raw)),
+                speaker,
+                "CLAP position {raw}"
             );
         }
     }
@@ -182,7 +137,7 @@ mod tests {
     /// decoder used `filter_map`.
     #[test]
     fn an_unknown_position_keeps_its_slot_and_its_value() {
-        let map = vec![
+        let map = [
             SurroundChannel::FrontLeft,
             SurroundChannel::Unknown(200),
             SurroundChannel::FrontRight,
@@ -196,50 +151,6 @@ mod tests {
             Some(2),
             "the channel after an unknown one must keep its own index"
         );
-        assert_eq!(channel_map_of(&topology), Some(map));
-    }
-
-    /// A speaker outside CLAP's position space refuses the whole map.
-    ///
-    /// `Speaker::Unknown` payloads are the *source* format's namespace — a VST3
-    /// bit index, say — so a value that cannot be a CLAP position must not be
-    /// coerced into one. 300 does not fit `u8` at all.
-    #[test]
-    fn a_speaker_outside_claps_position_space_refuses_the_map() {
-        let topology = ChannelTopology::new([Speaker::FrontLeft, Speaker::Unknown(300)]);
-        assert_eq!(
-            channel_map_of(&topology),
-            None,
-            "a payload that cannot be a CLAP position must not be coerced into one"
-        );
-    }
-
-    /// A discrete channel has no CLAP position, so a map holding one is refused.
-    ///
-    /// Mutation (run): `Discrete` mapped to `SurroundChannel::FrontCenter`
-    /// returns a map and fails this.
-    #[test]
-    fn a_discrete_channel_refuses_the_map() {
-        let topology = ChannelTopology::new([Speaker::FrontLeft, Speaker::Discrete]);
-        assert_eq!(channel_map_of(&topology), None);
-    }
-
-    /// Refusal is all-or-nothing, not a shortened map.
-    ///
-    /// The positive half of the test above: a partial map would be worse than
-    /// no map, since the surviving channels would be renumbered.
-    #[test]
-    fn a_refused_map_yields_nothing_rather_than_a_shorter_one() {
-        let topology = ChannelTopology::new([
-            Speaker::FrontLeft,
-            Speaker::Unknown(65_000),
-            Speaker::FrontRight,
-        ]);
-        assert!(channel_map_of(&topology).is_none());
-
-        // And the same topology without the offending position converts whole.
-        let ok = ChannelTopology::new([Speaker::FrontLeft, Speaker::FrontRight]);
-        assert_eq!(channel_map_of(&ok).map(|m| m.len()), Some(2));
     }
 
     /// An empty map is an empty topology, not a failure.
@@ -247,7 +158,6 @@ mod tests {
     fn an_empty_map_converts_to_an_empty_topology() {
         let topology = topology_of(&[]);
         assert_eq!(topology.layout(), ChannelLayout::EMPTY);
-        assert_eq!(channel_map_of(&topology), Some(Vec::new()));
     }
 
     /// The conversion preserves length for every map it accepts.

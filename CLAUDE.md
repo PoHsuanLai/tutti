@@ -452,8 +452,9 @@ crates/          everything shipped; directory name = package name; no nesting
   tutti-plugin{,-types,-db,-server}, tutti-{vst2,vst3,clap,au}-host,
   tutti-plugin-ipc (the process edge: the wire, the shared-memory slab and
                  control socket, the plugin-server's launch, and the
-                 client of a served plugin, `PluginBridge`; no plugin format,
-                 design 021 §6.1),
+                 client of a served plugin, `PluginBridge`, with the pipeline
+                 that feeds it (`Batcher`, `OfflineWait`) and the server's
+                 process (`ProcessGuard`); no plugin format, design 021 §6.1),
   tutti-plugin-host (the format-generic half of hosting, not a format host: the
                  `PluginHandle` control surface and its `Host*` capability traits,
                  the node's controls, meter, transport and parameter delivery, the
@@ -759,7 +760,8 @@ list (normal and build edges; dev-dependencies may go anywhere).
   changes a row. Consumers
   name its types from it, not through `tutti-plugin`.
 - `tutti-plugin-ipc` depends on `tutti-types`, `tutti-rt`, `tutti-ump` and
-  `tutti-plugin-types` alone among workspace crates,
+  `tutti-plugin-types` alone among workspace crates (no `tutti-graph`: the
+  `Batcher` takes the plain values it reads from a `Prepare`),
   keeps every module private but `state_chunk` (the namespace both ends chunk
   a state with; CI runs the per-module path gate on the rest) and has no
   `bevy` feature. Its `unsafe` is the process edge's own (shared memory and

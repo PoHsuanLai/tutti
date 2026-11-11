@@ -66,18 +66,14 @@
 //! LAST Arc drops. Main-thread editor / state / parameter access is on
 //! [`PluginHandle`].
 
-mod batcher;
 mod capability_view;
 mod fork;
 mod graph_node;
-mod process;
 
 #[cfg(test)]
 mod param_delivery_tests;
-#[cfg(test)]
-mod process_pipeline_tests;
 // The block-budget suite driven by a REAL plugin subprocess, as opposed to
-// `process_pipeline_tests`' mock servers. A unit test rather than an
+// `tutti-plugin-ipc`'s `process_pipeline_tests` mock servers. A unit test rather than an
 // integration one because it asserts on `PluginBridge::settled_replies`, which
 // is `#[cfg(test)]` — deliberately, since nothing in the shipping host reads it
 // and an always-compiled accessor with no caller reads as API someone may
@@ -91,10 +87,8 @@ mod tests;
 
 pub use capability_view::TransportView;
 pub(crate) use capability_view::is_declined;
-pub(crate) use process::ProcessGuard;
 
 use crate::host::subprocess_backend::SubprocessBackend;
-use batcher::Batcher;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
@@ -104,13 +98,13 @@ use tutti_plugin_host::{
 };
 use tutti_plugin_ipc::BridgeConfig;
 use tutti_plugin_ipc::BridgeEvent;
-use tutti_plugin_ipc::HarmonyInputs;
 use tutti_plugin_ipc::PluginBridge;
+use tutti_plugin_ipc::{Batcher, BlockPayload, ProcessGuard};
 use tutti_plugin_types::MidiIntake;
 use tutti_plugin_types::PluginTail;
 use tutti_plugin_types::{BridgeResult, MAX_CHUNK};
 use tutti_plugin_types::{
-    LoadedPlugin, MidiEventVec, Normalized, ParamId, PluginDescriptor, SampleFormat, TransportInfo,
+    LoadedPlugin, MidiEventVec, Normalized, ParamId, PluginDescriptor, SampleFormat,
 };
 use tutti_plugin_types::{PluginInvalidation, ResyncClass};
 use tutti_types::{SampleRate, Samples};
@@ -258,25 +252,6 @@ impl<S> std::fmt::Debug for PluginClient<S> {
             .field("state", &std::any::type_name::<S>())
             .finish_non_exhaustive()
     }
-}
-
-/// Everything the host produces for one chunk, aggregated for the bridge
-/// call. Host-side only — the batcher unpacks it into the (unchanged)
-/// positional `bridge.submit` arguments, so the IPC wire shape is untouched.
-///
-/// The chunk's parameter changes are not here: they stay in the node's
-/// `ParamDelivery`, whose buffer the bridge swaps rather than moves
-/// (`Chunks::params`), so nothing is allocated or freed per chunk.
-#[derive(Default)]
-pub(super) struct BlockPayload {
-    pub midi: tutti_plugin_types::MidiEventVec,
-    pub note_expression: tutti_plugin_types::NoteExpressionChanges,
-    pub harmony: HarmonyInputs,
-    /// The transport at the chunk's first frame.
-    pub transport: TransportInfo,
-    /// The transport changes after it, each at its chunk frame (doc 020
-    /// stage 5b; `transport_walk`). Inline: nothing allocates.
-    pub changes: tutti_plugin_types::TransportChanges,
 }
 
 impl PluginClient<Unbound> {

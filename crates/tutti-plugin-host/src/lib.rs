@@ -38,7 +38,7 @@ pub use capabilities::{
     HostAutomationState, HostEditor, HostParams, HostPresets, HostRenderMode, HostState,
 };
 pub use control_handle::{OptionalCapabilities, PluginHandle, PluginStatus};
-pub use controls::{ChunkCounters, ForkedSources, NodeControls, PluginControls, lock_tail};
+pub use controls::{ForkedSources, NodeControls, PluginControls, lock_tail};
 pub use in_process::{InProcClient, PluginNode, load_client, load_client_restoring};
 pub use listeners::{InvalidateSink, Listener, ParameterChangeSink, RefreshSink};
 pub use liveness::{Liveness, Verdict};

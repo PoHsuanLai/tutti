@@ -205,7 +205,7 @@ jobs:
       - run: rustup toolchain install
       - uses: Swatinem/rust-cache@v2
         with:
-          save-if: ${{ github.ref == 'refs/heads/main' || github.head_ref == 'ci-speed' }}
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - run: cargo clippy --locked --workspace --all-targets -- -D warnings
       # One format at a time: a test helper or a match that only the other
       # formats use is dead or irrefutable here, and the workspace run (every
@@ -243,7 +243,7 @@ jobs:
       - run: rustup toolchain install
       - uses: Swatinem/rust-cache@v2
         with:
-          save-if: ${{ github.ref == 'refs/heads/main' || github.head_ref == 'ci-speed' }}
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Workspace
         run: cargo clippy --locked --workspace --all-targets -- -D warnings
       # The workspace run builds each crate with the features the workspace
@@ -275,7 +275,7 @@ jobs:
       - run: rustup toolchain install
       - uses: Swatinem/rust-cache@v2
         with:
-          save-if: ${{ github.ref == 'refs/heads/main' || github.head_ref == 'ci-speed' }}
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - run: cargo clippy --locked -p tutti-au-ffi -p tutti-au-host --all-targets -- -D warnings
       # The CoreMIDI backend: the native-UMP source and the host clock are
       # `tutti-coremidi-ffi`'s, the rest of the backend is `tutti-midi-hardware`'s.
@@ -306,7 +306,7 @@ jobs:
       - run: rustup toolchain install
       - uses: Swatinem/rust-cache@v2
         with:
-          save-if: ${{ github.ref == 'refs/heads/main' || github.head_ref == 'ci-speed' }}
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - uses: taiki-e/install-action@nextest
       - run: cargo nextest run --locked -p tutti-plugin-contract
 
@@ -318,8 +318,6 @@ jobs:
     # Suites run here may assert golden digests; see the `test` job.
     env:
       TUTTI_GOLDEN: require
-      # As in `test`: optimized, with debug assertions and overflow checks on.
-      CARGO_PROFILE_DEV_OPT_LEVEL: '1'
     steps:
       # The submodules are the VST3 SDK: `tutti-plugin-contract` builds the VST3
       # shells and the C++ witness against it.
@@ -335,7 +333,7 @@ jobs:
       - run: rustup toolchain install
       - uses: Swatinem/rust-cache@v2
         with:
-          save-if: ${{ github.ref == 'refs/heads/main' || github.head_ref == 'ci-speed' }}
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - uses: taiki-e/install-action@nextest
 
       # Feature-gated code that no other job compiles.
@@ -558,7 +556,7 @@ jobs:
       - run: rustup toolchain install
       - uses: Swatinem/rust-cache@v2
         with:
-          save-if: ${{ github.ref == 'refs/heads/main' || github.head_ref == 'ci-speed' }}
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       # Named targets, not a sweep: a bare `cargo bench` (and `--benches`)
       # also runs the test targets in the release profile, where
       # `debug_assert!` is gone and a `#[should_panic]` over one fails.
@@ -613,7 +611,7 @@ jobs:
       - run: rustup toolchain install
       - uses: Swatinem/rust-cache@v2
         with:
-          save-if: ${{ github.ref == 'refs/heads/main' || github.head_ref == 'ci-speed' }}
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - uses: taiki-e/install-action@nextest
 
       # MUST come before the test run. `tutti-plugin`'s clap_pdc_alignment,
@@ -693,7 +691,7 @@ jobs:
       - run: rustup toolchain install
       - uses: Swatinem/rust-cache@v2
         with:
-          save-if: ${{ github.ref == 'refs/heads/main' || github.head_ref == 'ci-speed' }}
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - uses: taiki-e/install-action@nextest
 
       # The custom-harness editor tests. `cargo test` just execs the binary,
@@ -754,7 +752,7 @@ jobs:
       - run: rustup toolchain install
       - uses: Swatinem/rust-cache@v2
         with:
-          save-if: ${{ github.ref == 'refs/heads/main' || github.head_ref == 'ci-speed' }}
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       # The engine must stay usable without Bevy. `--no-default-features` does
       # NOT test that — `bevy` is already off by default on every engine crate
       # that has one, so that flag drops the codec and midi features instead and proves
@@ -807,7 +805,7 @@ jobs:
       - run: rustup toolchain install
       - uses: Swatinem/rust-cache@v2
         with:
-          save-if: ${{ github.ref == 'refs/heads/main' || github.head_ref == 'ci-speed' }}
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       # The workspace sets broken_intra_doc_links and private_intra_doc_links to
       # deny; this is where that is actually enforced, since a plain build never
       # runs rustdoc.
@@ -891,7 +889,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           key: ${{ matrix.crate }}
-          save-if: ${{ github.ref == 'refs/heads/main' || github.head_ref == 'ci-speed' }}
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       # `denormals.rs`'s register tests are `#[cfg_attr(miri, ignore)]`d — they read
       # MXCSR, and miri has no x86 SSE intrinsics. They report as skipped
       # rather than vanishing, so the run says what it did not cover. So are
@@ -1009,7 +1007,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           key: ${{ matrix.group }}
-          save-if: ${{ github.ref == 'refs/heads/main' || github.head_ref == 'ci-speed' }}
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       # Clippy under `--cfg loom`: the flag changes constants the lints see
       # (`PROGRESS_EVERY` is 1, so `% PROGRESS_EVERY` tripped `modulo_one`),
       # and no other job compiles that configuration.
@@ -1077,7 +1075,7 @@ jobs:
       - run: rustup toolchain install
       - uses: Swatinem/rust-cache@v2
         with:
-          save-if: ${{ github.ref == 'refs/heads/main' || github.head_ref == 'ci-speed' }}
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - run: cargo test --locked -p tutti-rt --release --test split_loom
       - run: cargo test --locked -p tutti-rt --release --test job_gate_loom
       - run: cargo test --locked -p tutti-rt --release --test task_graph_loom

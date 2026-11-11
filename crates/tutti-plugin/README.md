@@ -287,10 +287,13 @@ as the other formats'. The Controller's dispatcher calls run beside a rendering
 Processor by the host convention every VST2 host follows, which the format does
 not state; a rate change is the rejoin and an activation, like the others'.
 
-**Internal state enum — AU.** `AuInstance` carries a private `Loaded` / `Ready`
-state as data, because both AU transitions are fallible in *both* directions and a
-failed transition belongs to neither type. `tutti-au-host`'s own documentation
-carries the argument, since that is where the type lives.
+**AU.** `AuLoaded` implements `Loaded`: `activate` is `AudioUnitInitialize` (with
+the stream configuration, render mode and input render callback it needs) and
+splits the unit into an `AuProcessor` and an `AuController`; `deactivate` is
+`AudioUnitUninitialize`. Both transitions are fallible, and the one case that
+cannot hand the unit back (the render callback and the compensating uninitialize
+both refused) is `Refused::plugin == None`. `tutti-au-host`'s own documentation
+carries the argument.
 
 ### Choosing a shape for a fifth format
 

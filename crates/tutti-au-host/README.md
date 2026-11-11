@@ -16,11 +16,14 @@ engine.
 
 The main types:
 
-- `AuInstance`: a loaded AU — initialize, render, parameters, presets, state,
-  bus layouts, MIDI. The entry point for almost everything.
-- `AuLoaded` / `AuActive`: the two lifecycle states `AuInstance` switches
-  between, for callers that want the transitions as types (see
-  [below](#why-the-public-type-carries-its-state-as-data)).
+- `AuLoaded`: an AU that is instantiated and configured but not initialized:
+  parameters, presets, state, bus layouts, identity, MIDI mappings and the
+  editor all work. It implements `tutti_plugin_types::Loaded` and `Control`.
+- `AuProcessor` / `AuController`: the two halves `Loaded::activate`
+  (`AudioUnitInitialize`) splits it into. The Processor renders and nothing
+  else, and is the only thing the realtime thread holds; the Controller is the
+  main thread's, and derefs to `AuLoaded`. `Loaded::deactivate` rejoins them
+  (see [below](#why-an-activation-splits-the-unit)).
 - [`AuComponentInfo`] and [`AuType`]: an installed AU, as returned by
   `component::enumerate_components_of_type` (macOS).
 - `StreamConfig` / `AuBusLayout`: the sample rate, block size and channel
@@ -69,19 +72,23 @@ The examples below are `no_run`, because instantiating an AU needs a real
 # #[cfg(target_os = "macos")]
 # {
 use tutti_au_host::component::enumerate_components_of_type;
-use tutti_au_host::AuType;
-use tutti_au_host::AuInstance;
+use tutti_au_host::{AuLoaded, AuType};
+use tutti_plugin_types::{Loaded, MainThread, MaxBlock, Prepare, SampleRate, Samples};
 
 let effects = enumerate_components_of_type(AuType::Effect);
 if let Some(info) = effects.first() {
-    let mut au = unsafe { AuInstance::new(info.component, 44100.0, 512) }.unwrap();
-    au.initialize().unwrap();
+    let main = MainThread::claim().unwrap();
+    let au = AuLoaded::new(info.component, 44100.0, 512).unwrap();
+    let prepare = Prepare::new(SampleRate(44100.0), MaxBlock::of(Samples(512))).unwrap();
+    let Ok((mut processor, _controller)) = au.activate(&main, prepare) else {
+        return;
+    };
 
     let input = vec![vec![0.0f32; 512]; 2];
     let mut output = vec![vec![0.0f32; 512]; 2];
     let in_refs: Vec<&[f32]> = input.iter().map(|v| v.as_slice()).collect();
     let mut out_refs: Vec<&mut [f32]> = output.iter_mut().map(|v| v.as_mut_slice()).collect();
-    au.process(&in_refs, &mut out_refs, 512).unwrap();
+    processor.render_f32(&in_refs, &mut out_refs, 512).unwrap();
 }
 # }
 ```
@@ -92,13 +99,11 @@ if let Some(info) = effects.first() {
 # #[cfg(target_os = "macos")]
 # {
 use tutti_au_host::component::enumerate_components_of_type;
-use tutti_au_host::AuType;
-use tutti_au_host::AuInstance;
+use tutti_au_host::{AuLoaded, AuType};
 
 # let effects = enumerate_components_of_type(AuType::Effect);
 # if let Some(info) = effects.first() {
-let mut au = unsafe { AuInstance::new(info.component, 44100.0, 512) }.unwrap();
-au.initialize().unwrap();
+let au = AuLoaded::new(info.component, 44100.0, 512).unwrap();
 
 // `Samples` and `Seconds`, not bare numbers: the engine's unit newtypes reach
 // this far, and stop at the C ABI below them.
@@ -115,43 +120,41 @@ for preset in au.factory_presets() {
 # }
 ```
 
-## Why the public type carries its state as data
-
-AU's own forced constraint, and the reason this crate has no consuming
-`AuInstance` type-state.
+## Why an activation splits the unit
 
 An AU has two states: *loaded* (instantiated, its parameters, state and editor
-all reachable) and *ready* (`AudioUnitInitialize` has run and render buffers
-exist, the only state in which `AuInstance::process` succeeds).
+all reachable) and *initialized* (`AudioUnitInitialize` has run and render
+buffers exist, the only state in which a block renders). This crate gives them
+the shape every format host has (`tutti_plugin_types::Loaded`): `activate`
+consumes the `AuLoaded` and returns a Processor and a Controller, and
+`deactivate` takes both back.
 
-**The transitions are fallible in both directions.** `AuInstance::initialize` and
-`AuInstance::uninitialize` take `&mut self` and return `Result<()>`, because
-`AudioUnitInitialize` can fail and so can the uninitialize that would undo it. A
-consuming transition has to produce one of the two types, and a failed transition
-belongs to neither — the unit is neither in the state it started in nor the one
-it was headed for. Worse, an AU can refuse *both* the callback install and the
-compensating uninitialize, after which no valid state exists at all. A private
-`State` enum names that honestly — its `Empty` variant is what a failed recovery
-leaves behind, and every accessor then reports the instance as dead — while a
-pair of consuming functions could only do so by handing back a third type nobody
-wants.
+**The Processor owns what only rendering touches**: the renderer and the guard
+that uninitializes the unit before the renderer (whose input callback the unit
+may still call while initialized) is dropped, the SysEx reassembly buffer, the
+transport the unit pulls from, and a lent copy of the parameter ranges.
+`render_f32` and `render_f64` are its calls; AUv2 has no native f64 render, so
+an f64 block costs a narrowing round trip through the one scratch it owns.
 
-**Most operations do not care which state they are in.** Parameters, state
-save/restore, the editor, bus layouts and the raw `AudioUnit` pointer all work
-loaded or ready. Splitting the public type would force a caller to re-thread
-ownership through transitions for the sake of operations that were never
-state-dependent — a real cost paid for a guarantee that covers only `process`.
+**The Controller owns the main thread's side**: it derefs to `AuLoaded`, so
+parameters, state, presets, bypass, identity and the editor stay reachable while
+audio runs, and adds the live latency and tail. A parameter write is applied
+directly (`AudioUnitSetParameter` is callable from any thread), so there is no
+edit queue between the halves.
 
-So the split lives one layer down, where it is free: `AuLoaded` and `AuActive`
-*are* distinct types with consuming transitions
-(`AuActive::uninitialize(self) -> Result<AuLoaded, (Self, AuError)>`), and
-`AuInstance` is the façade holding one or the other. The type system enforces the
-ordering internally — notably the invariant that `AudioUnitUninitialize` runs
-before the heap-pinned render scratch is freed, since that call is what proves
-the AU's `ref_con` is dead — while the public API stays a single type. The price
-is that calling `process` too early is a runtime error rather than a compile
-error, and it is the AU's own refusal that reports it, arriving as
-`AuError::OsStatus` carrying `kAudioUnitErr_Uninitialized`.
+**Both transitions are fallible.** `AudioUnitInitialize` can fail, and so can the
+uninitialize that would undo it. A failed activation hands the unit back in
+`Refused`, except for the one case that cannot: the unit refused the input render
+callback *and* the compensating uninitialize, after which no valid `AuLoaded`
+exists (`Refused::plugin` is `None`). A failed deactivation hands both halves
+back in `Stuck`, still initialized.
+
+A rate, block ceiling or render mode is the `Prepare` of an activation
+(`AuLoaded::initialize` is the same transition with the typed `AuError`): the
+stream is configured, the mode written, and the unit initialized, in that
+order, so a change is a deactivate and an activate. The invariant the guard
+keeps: `AudioUnitUninitialize` runs before the heap-pinned render scratch is
+freed, since that call is what proves the AU's `ref_con` is dead.
 
 ## Channel order is keyed on the tag, never on the count
 
@@ -173,7 +176,7 @@ None. Platform gating is `cfg`, not a feature.
 
 ## Threading and real-time safety
 
-`AuInstance::process` belongs on the audio thread and does not allocate in the
+`AuProcessor::render` (and `render_f32`/`render_f64`) belong on the audio thread and does not allocate in the
 steady state: render buffers are sized at initialization. Loading,
 initialization, state, presets and the editor belong on the main thread; the
 editor, state and preset-file methods take a `tutti_plugin_types::MainThread`,

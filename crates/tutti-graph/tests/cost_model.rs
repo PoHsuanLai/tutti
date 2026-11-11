@@ -6,7 +6,7 @@
 //! The random-topology check is in `tests/differential.rs`
 //! (`coarsened_plans_are_bit_identical`).
 
-mod common;
+use tutti_graph::testing as common;
 
 use common::{Kind, TestNode, WORKERS, bits, test_pool};
 use tutti_graph::NodeKey;

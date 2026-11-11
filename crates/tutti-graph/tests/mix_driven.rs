@@ -14,16 +14,17 @@
     reason = "a frame index reads several outputs and the signal at that frame"
 )]
 
-mod common;
+use common::spec_of;
+use tutti_graph::testing as common;
 
 use std::collections::BTreeMap;
 use std::sync::atomic::Ordering;
 
-use common::{Kind, Pair, SpecBehaviour, TestNode, bits, driver_value, input_signal, prepare};
+use common::{Kind, Pair, SpecBehaviour, bits, driver_value, input_signal, prepare};
 use tutti_graph::{
     CompileError, CycleEdge, Edge, Editor, EventOut, ForkMode, ForkTarget, GraphInvalid, GraphSpec,
-    InPort, Node, NodeKey, NodeMix, NodeMode, NodeSpec, OutPort, PARAM_DECLICK, ParamIn,
-    ParamPorts, ParamPortsError, ParamRange, Source, Topology, Transport, ValidGraph, compile,
+    InPort, NodeKey, NodeMix, NodeMode, OutPort, PARAM_DECLICK, ParamIn, ParamPorts,
+    ParamPortsError, ParamRange, Source, Topology, Transport, ValidGraph, compile,
 };
 use tutti_types::{ChannelLayout, Mix, Tail, UnitAddr, UnitParam};
 
@@ -62,13 +63,6 @@ fn mix_of(node: u64) -> ParamIn {
         node: key(node),
         param: NodeMix::ADDR,
     }
-}
-
-fn spec_of(kind: &Kind) -> NodeSpec {
-    let s = TestNode::new(kind.clone()).shape();
-    NodeSpec::new("test", s.audio_in(), s.audio_out())
-        .with_latency(s.latency.samples())
-        .with_tail(s.tail)
 }
 
 /// `3 * x`, no latency: the node under test.

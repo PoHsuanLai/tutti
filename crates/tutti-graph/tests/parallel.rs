@@ -10,7 +10,7 @@
 //! executor to the reference interpreter on random graphs as well; this file
 //! is the direct comparison, on one graph that has everything at once.
 
-mod common;
+use tutti_graph::testing as common;
 
 use std::sync::Arc;
 use tutti_types::MaxBlock;

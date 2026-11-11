@@ -134,19 +134,13 @@ const RING_BYTES: usize = 4_096 * 2 * 4;
 
 /// A stereo WAV two seconds long.
 fn write_wav(path: &std::path::Path) {
-    let spec = hound::WavSpec {
-        channels: 2,
-        sample_rate: 48_000,
-        bits_per_sample: 32,
-        sample_format: hound::SampleFormat::Float,
-    };
-    let mut w = hound::WavWriter::create(path, spec).expect("writes");
-    for i in 0..96_000 {
-        let s = (i as f32 * 0.01).sin() * 0.25;
-        w.write_sample(s).expect("writes");
-        w.write_sample(s).expect("writes");
-    }
-    w.finalize().expect("writes");
+    let interleaved: Vec<f32> = (0..96_000)
+        .flat_map(|i| {
+            let s = (i as f32 * 0.01).sin() * 0.25;
+            [s, s]
+        })
+        .collect();
+    tutti_fixtures::signal::write_wav_f32(path, tutti_types::SampleRate(48_000.0), 2, &interleaved);
 }
 
 /// A hand-stepped streamer streaming a fresh file, and the stream's handle and

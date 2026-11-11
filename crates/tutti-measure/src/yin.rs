@@ -384,11 +384,12 @@ mod tests {
 
     fn sine(sample_rate: f64, freq: f32, seconds: f32) -> Vec<f32> {
         let n = (sample_rate as f32 * seconds) as usize;
-        (0..n)
-            .map(|i| {
-                (2.0 * core::f32::consts::PI * freq * i as f32 / sample_rate as f32).sin() * 0.5
-            })
-            .collect()
+        tutti_fixtures::signal::sine(
+            tutti_types::Hz(freq),
+            tutti_types::Amplitude(0.5),
+            tutti_types::SampleRate(sample_rate),
+            tutti_types::Samples(n),
+        )
     }
 
     /// A construction error, rather than a silent runtime nothing.

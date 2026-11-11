@@ -5,7 +5,7 @@
 //! All figures are counted by hand from the nodes below, never from another
 //! render.
 
-mod common;
+use tutti_graph::testing as common;
 
 use std::sync::{Arc, Mutex};
 use tutti_types::MaxBlock;

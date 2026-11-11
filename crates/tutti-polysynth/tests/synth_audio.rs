@@ -19,6 +19,8 @@ mod support;
 
 use support::{BLOCK, Hand};
 use tutti_fixtures::midi;
+use tutti_fixtures::signal::peak;
+use tutti_fixtures::signal::rms;
 use tutti_polysynth::{
     Adsr, AllocationStrategy, OscillatorType, PolySynth, SynthConfig, VoiceMode,
 };
@@ -124,14 +126,6 @@ fn dominant_hz(x: &[f32], sr: f64) -> f64 {
     let d = 2.0 * (2.0 * b - a - c);
     let adj = if d.abs() > 1e-12 { (c - a) / d } else { 0.0 };
     (best_k as f64 + adj) * sr / n as f64
-}
-
-fn peak(x: &[f32]) -> f32 {
-    x.iter().fold(0.0f32, |a, &b| a.max(b.abs()))
-}
-
-fn rms(x: &[f32]) -> f32 {
-    (x.iter().map(|&s| s * s).sum::<f32>() / x.len() as f32).sqrt()
 }
 
 /// Equal-tempered frequency for a MIDI note.

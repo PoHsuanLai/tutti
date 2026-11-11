@@ -127,8 +127,8 @@ mod measurer {
     use super::*;
     use crate::control::{CancelToken, Progress};
     use crate::{Outcome, Rendered};
-    use std::f32::consts::TAU;
     use tutti_measure::{LoudnessConfig, measure_loudness};
+    use tutti_types::{Amplitude, Hz, Samples};
 
     const RATE: SampleRate = SampleRate(48_000.0);
 
@@ -137,9 +137,7 @@ mod measurer {
     /// wrong channel reads something else.
     fn sine(secs: usize, amp: f32) -> Rendered {
         let plane = |amp: f32| -> Vec<f32> {
-            (0..secs * 48_000)
-                .map(|i| amp * (TAU * 1_000.0 * i as f32 / 48_000.0).sin())
-                .collect()
+            tutti_fixtures::signal::sine(Hz(1_000.0), Amplitude(amp), RATE, Samples(secs * 48_000))
         };
         Rendered::new(vec![plane(amp), plane(amp / 2.0)], RATE, 0).expect("equal planes")
     }

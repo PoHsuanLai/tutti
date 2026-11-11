@@ -10,6 +10,7 @@
 //! the block the toggle lands on; each render below is longer, and only the
 //! frames after it are compared.
 
+use tutti_fixtures::signal::bits;
 use tutti_graph::{IntoNode, MODE_DECLICK, NodeMode, Prepare, Solo};
 use tutti_nodes::{BusStripNode, EqBandNode, SvfType};
 use tutti_types::MaxBlock;
@@ -39,10 +40,6 @@ fn input() -> Vec<f32> {
     x[MODE_DECLICK.get() + 10] = -0.0;
     x[MODE_DECLICK.get() + 11] = f32::from_bits(1);
     x
-}
-
-fn bits(x: &[f32]) -> Vec<u32> {
-    x.iter().map(|v| v.to_bits()).collect()
 }
 
 /// A bypassed EQ band passes its input bit for bit (`-0.0` and the denormal

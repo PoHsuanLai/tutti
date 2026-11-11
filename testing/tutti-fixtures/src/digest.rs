@@ -46,6 +46,23 @@ pub fn noise(seed: u32, len: usize) -> Vec<f32> {
     Noise::seeded(seed).take(len).collect()
 }
 
+/// The [`Fnv`] digest of `samples`' little-endian bits, in order.
+pub fn digest(samples: &[f32]) -> u64 {
+    let mut h = Fnv::new();
+    h.f32s(samples);
+    h.finish()
+}
+
+/// The [`Fnv`] digest of a planar render: every plane's samples in turn,
+/// channel 0 first (the same figure as [`digest`] of the planes joined).
+pub fn digest_planes(planes: &[Vec<f32>]) -> u64 {
+    let mut h = Fnv::new();
+    for plane in planes {
+        h.f32s(plane);
+    }
+    h.finish()
+}
+
 /// A 64-bit FNV-1a hash, fed bytes or the little-endian bits of a number.
 ///
 /// Feeding is order-sensitive and chunk-insensitive: `f32s(&[a, b])` is

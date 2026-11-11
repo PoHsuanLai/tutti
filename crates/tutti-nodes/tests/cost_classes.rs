@@ -4,6 +4,7 @@
 //! for bit the serial one.
 
 use std::sync::Arc;
+use tutti_fixtures::signal::plane_bits as bits;
 use tutti_types::MaxBlock;
 
 use tutti_graph::NodeKey;
@@ -150,12 +151,6 @@ fn render(exec: &mut Executor) -> Vec<Vec<f32>> {
         frame += n;
     }
     all
-}
-
-fn bits(v: &[Vec<f32>]) -> Vec<Vec<u32>> {
-    v.iter()
-        .map(|c| c.iter().map(|x| x.to_bits()).collect())
-        .collect()
 }
 
 /// Twelve `Moderate` clicks beside two undeclared ones: the moderate ones

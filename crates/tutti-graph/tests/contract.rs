@@ -14,7 +14,7 @@
 //! on purpose, which it must fail — a harness that cannot fail is worse than
 //! none.
 
-mod common;
+use tutti_graph::testing as common;
 
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::{Arc, Mutex};

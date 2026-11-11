@@ -7,7 +7,7 @@
 //! The renders are not compared: the figures are `bus_edges.rs`'s and
 //! `mode.rs`'s. This pins the cost.
 
-mod common;
+use tutti_graph::testing as common;
 
 use assert_no_alloc::AllocDisabler;
 use common::{Kind, TestNode, prepare};

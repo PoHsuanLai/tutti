@@ -8,15 +8,22 @@
 //! bit-exact comparisons below would report as a failure of the skip rather
 //! than of the node.
 
-#![allow(dead_code)]
+// Test support, not API: its items are named by the tests that use them.
+#![allow(
+    dead_code,
+    missing_docs,
+    missing_debug_implementations,
+    clippy::missing_panics_doc,
+    clippy::missing_errors_doc
+)]
 
 use std::collections::{BTreeMap, VecDeque};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use tutti_types::MaxBlock;
 
-use tutti_graph::NodeKey;
-use tutti_graph::{
+use crate::NodeKey;
+use crate::{
     Cx, Editor, Event, EventKind, Executor, Fade, Io, Node, Plan, Prepare, Reference, Shape,
     Shapes, Status, Transport, TransportChanges, ValidGraph, compile,
 };
@@ -129,8 +136,8 @@ pub enum Kind {
     /// only its `Shape::buses_in` / `buses_out` differ.
     Bused {
         inner: Box<Kind>,
-        buses_in: Box<tutti_graph::Buses>,
-        buses_out: Box<tutti_graph::Buses>,
+        buses_in: Box<crate::Buses>,
+        buses_out: Box<crate::Buses>,
     },
 }
 
@@ -154,9 +161,9 @@ pub struct TestNode {
     calls: Arc<AtomicUsize>,
     /// What its shape declares to the cost model (`Cost::Heavy`, the
     /// default, unless set with `with_cost`).
-    cost: tutti_graph::Cost,
+    cost: crate::Cost,
     /// The buses a `Kind::Bused` declares.
-    buses: Option<(tutti_graph::Buses, tutti_graph::Buses)>,
+    buses: Option<(crate::Buses, crate::Buses)>,
 }
 
 impl TestNode {
@@ -187,13 +194,13 @@ impl TestNode {
             pending: VecDeque::with_capacity(1024),
             rate: None,
             calls,
-            cost: tutti_graph::Cost::default(),
+            cost: crate::Cost::default(),
             buses,
         }
     }
 
     /// This node, declaring `cost` (`Shape::cost`).
-    pub fn with_cost(mut self, cost: tutti_graph::Cost) -> Self {
+    pub fn with_cost(mut self, cost: crate::Cost) -> Self {
         self.cost = cost;
         self
     }
@@ -248,8 +255,8 @@ impl TestNode {
                 tail,
                 ..
             } => Shape::buses(
-                tutti_graph::Buses::unassigned(ch(ins)),
-                tutti_graph::Buses::unassigned(ch(outs)),
+                crate::Buses::unassigned(ch(ins)),
+                crate::Buses::unassigned(ch(outs)),
             )
             .with_latency(lat(latency))
             .with_tail(tail),
@@ -259,7 +266,7 @@ impl TestNode {
 
 /// `shape`'s figures over these buses, its ports kept.
 #[allow(dead_code)]
-pub fn rebused(shape: Shape, buses_in: tutti_graph::Buses, buses_out: tutti_graph::Buses) -> Shape {
+pub fn rebused(shape: Shape, buses_in: crate::Buses, buses_out: crate::Buses) -> Shape {
     let mut bused =
         Shape::buses(buses_in, buses_out).with_ports(shape.audio_in(), shape.audio_out());
     bused.event_in = shape.event_in;
@@ -367,7 +374,7 @@ impl Node for TestNode {
                 for at in cx.env.offsets() {
                     let f = cx.env.frame_at(at).get();
                     if f.is_multiple_of(period) {
-                        let ramp = tutti_graph::ParamRamp::new(
+                        let ramp = crate::ParamRamp::new(
                             tutti_types::ParamKey::<tutti_types::Amplitude>::VOLUME,
                             tutti_types::Amplitude::new(driver_value(f, period)),
                             Samples(0),
@@ -381,7 +388,7 @@ impl Node for TestNode {
                 for at in cx.env.offsets() {
                     let f = cx.env.frame_at(at).get();
                     if f.is_multiple_of(period) {
-                        let ramp = tutti_graph::ParamRamp::new(
+                        let ramp = crate::ParamRamp::new(
                             tutti_types::ParamKey::<tutti_types::Mix>::WET.at(u8::MAX),
                             tutti_types::Mix::new(driver_value(f, period) * 2.0),
                             Samples(0),
@@ -460,7 +467,7 @@ impl Node for TestNode {
                     // rescaling it — goes out at once rather than never.
                     let offset = match cx.env.offset_of(due) {
                         Some(o) => o,
-                        None if due < cx.env.frame => tutti_graph::Offset::ZERO,
+                        None if due < cx.env.frame => crate::Offset::ZERO,
                         None => break,
                     };
                     self.pending.pop_front();
@@ -556,6 +563,15 @@ impl Node for TestNode {
 }
 
 /// Shapes for every node in `kinds`.
+/// The topology entry of a node of `kind`: its audio widths, latency and
+/// tail, as the node's own shape declares them.
+pub fn spec_of(kind: &Kind) -> crate::NodeSpec {
+    let s = TestNode::new(kind.clone()).shape();
+    crate::NodeSpec::new("test", s.audio_in(), s.audio_out())
+        .with_latency(s.latency.samples())
+        .with_tail(s.tail)
+}
+
 pub fn shapes_of(kinds: &BTreeMap<NodeKey, Kind>) -> Shapes {
     shapes_costed(kinds, &BTreeMap::new())
 }
@@ -563,7 +579,7 @@ pub fn shapes_of(kinds: &BTreeMap<NodeKey, Kind>) -> Shapes {
 /// Shapes for every node in `kinds`, those in `costs` declaring that cost.
 pub fn shapes_costed(
     kinds: &BTreeMap<NodeKey, Kind>,
-    costs: &BTreeMap<NodeKey, tutti_graph::Cost>,
+    costs: &BTreeMap<NodeKey, crate::Cost>,
 ) -> Shapes {
     kinds
         .iter()
@@ -571,7 +587,7 @@ pub fn shapes_costed(
         .collect()
 }
 
-fn costed(k: NodeKey, kind: &Kind, costs: &BTreeMap<NodeKey, tutti_graph::Cost>) -> TestNode {
+fn costed(k: NodeKey, kind: &Kind, costs: &BTreeMap<NodeKey, crate::Cost>) -> TestNode {
     let node = TestNode::new(kind.clone());
     match costs.get(&k) {
         Some(&c) => node.with_cost(c),
@@ -590,7 +606,7 @@ pub fn units_for(
 /// `units_for`, those in `costs` declaring that cost.
 pub fn units_costed(
     kinds: &BTreeMap<NodeKey, Kind>,
-    costs: &BTreeMap<NodeKey, tutti_graph::Cost>,
+    costs: &BTreeMap<NodeKey, crate::Cost>,
     keys: impl IntoIterator<Item = NodeKey>,
 ) -> BTreeMap<NodeKey, Box<dyn Node>> {
     keys.into_iter()
@@ -609,7 +625,7 @@ pub struct Pair {
     pub max_block: usize,
     /// Declared costs (`Shape::cost`) by key; every other node declares
     /// none (`Cost::Heavy`).
-    pub costs: BTreeMap<NodeKey, tutti_graph::Cost>,
+    pub costs: BTreeMap<NodeKey, crate::Cost>,
     /// The graph last switched to, for the editor's spec (`set_mode`).
     graph: Option<ValidGraph>,
 }
@@ -687,7 +703,7 @@ impl Pair {
                             && was.shape.latency != now.shape.latency
                     })
             })
-            .map(|u| tutti_graph::Placement {
+            .map(|u| crate::Placement {
                 key: u.key,
                 generation: u.generation,
                 idx: u.idx,
@@ -751,7 +767,7 @@ impl Pair {
 
     /// Move edge `id`'s weight to `base` in both, as a host moving a fader:
     /// the editor's `set_edge_gain` (a store, no commit) and the reference's.
-    pub fn set_edge_gain(&mut self, id: tutti_graph::EdgeId, base: tutti_types::Amplitude) {
+    pub fn set_edge_gain(&mut self, id: crate::EdgeId, base: tutti_types::Amplitude) {
         self.editor
             .set_edge_gain(id, base)
             .expect("the edge has a gain entry");
@@ -760,7 +776,7 @@ impl Pair {
 
     /// Move `key`'s mode in both, as a host clicking bypass: the editor's
     /// `set_mode` (a store, no commit) and the reference's.
-    pub fn set_mode(&mut self, key: NodeKey, mode: tutti_graph::NodeMode) {
+    pub fn set_mode(&mut self, key: NodeKey, mode: crate::NodeMode) {
         // `set_mode` checks the node against the editor's spec, which a
         // harness that compiles itself has left empty.
         if !self.editor.spec().topology.nodes.contains_key(&key) {
@@ -789,14 +805,14 @@ impl Pair {
     /// Move `key`'s mix range in both, as a host narrowing a send's knob: the
     /// editor's `set_param_range` at the mix's address (a store, no commit) and
     /// the reference's.
-    pub fn set_mix_range(&mut self, key: NodeKey, range: tutti_graph::ParamRange) {
+    pub fn set_mix_range(&mut self, key: NodeKey, range: crate::ParamRange) {
         if !self.editor.spec().topology.nodes.contains_key(&key) {
             let graph = self.graph.as_ref().expect("a graph was switched to");
             self.editor.spec_mut().topology = graph.topology().clone();
         }
-        let at = tutti_graph::ParamIn {
+        let at = crate::ParamIn {
             node: key,
-            param: tutti_graph::NodeMix::ADDR,
+            param: crate::NodeMix::ADDR,
         };
         self.editor
             .set_param_range(at, range)
@@ -806,7 +822,7 @@ impl Pair {
 
     /// Move edge `id`'s range in both: the editor's `set_edge_gain_range` (a
     /// store, no commit) and the reference's.
-    pub fn set_edge_gain_range(&mut self, id: tutti_graph::EdgeId, range: tutti_graph::ParamRange) {
+    pub fn set_edge_gain_range(&mut self, id: crate::EdgeId, range: crate::ParamRange) {
         self.editor
             .set_edge_gain_range(id, range)
             .expect("the edge has a gain entry");
@@ -929,19 +945,15 @@ impl TestPool {
     }
 
     /// A pool whose gate holds `waits`, which it reports to the executor.
-    pub fn with_waits(participants: usize, waits: tutti_graph::BlockWaits) -> Arc<Self> {
+    pub fn with_waits(participants: usize, waits: crate::BlockWaits) -> Arc<Self> {
         Self::build_with(participants, false, waits)
     }
 
     fn build(participants: usize, no_alloc: bool) -> Arc<Self> {
-        Self::build_with(participants, no_alloc, tutti_graph::BlockWaits::DEFAULT)
+        Self::build_with(participants, no_alloc, crate::BlockWaits::DEFAULT)
     }
 
-    fn build_with(
-        participants: usize,
-        no_alloc: bool,
-        waits: tutti_graph::BlockWaits,
-    ) -> Arc<Self> {
+    fn build_with(participants: usize, no_alloc: bool, waits: crate::BlockWaits) -> Arc<Self> {
         let gate = Arc::new(tutti_rt::JobGate::with_waits(participants, waits));
         let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let helpers = (1..participants)
@@ -966,7 +978,7 @@ impl TestPool {
     }
 }
 
-impl tutti_graph::Pool for TestPool {
+impl crate::Pool for TestPool {
     fn participants(&self) -> usize {
         self.gate.participants()
     }
@@ -980,7 +992,7 @@ impl tutti_graph::Pool for TestPool {
         }
     }
 
-    fn waits(&self) -> tutti_graph::BlockWaits {
+    fn waits(&self) -> crate::BlockWaits {
         self.gate.waits()
     }
 }
@@ -995,7 +1007,7 @@ impl Drop for TestPool {
 }
 
 /// A shared [`TestPool`] per participant count, for a whole test binary.
-pub fn test_pool(participants: usize) -> Arc<dyn tutti_graph::Pool> {
+pub fn test_pool(participants: usize) -> Arc<dyn crate::Pool> {
     use std::sync::{Mutex, OnceLock};
     static POOLS: OnceLock<Mutex<BTreeMap<usize, Arc<TestPool>>>> = OnceLock::new();
     let pools = POOLS.get_or_init(|| Mutex::new(BTreeMap::new()));

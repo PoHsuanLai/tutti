@@ -15,7 +15,7 @@
 
 use core::num::NonZeroU32;
 
-use tutti_types::{Amplitude, ChannelLayout, Mix, SampleRate};
+use tutti_types::{Amplitude, BusTopology, Mix, SampleRate};
 
 use crate::fdn::CHUNK;
 use crate::network::{
@@ -112,7 +112,7 @@ impl Design for FreeverbDesign {
     });
 
     fn channels(&self) -> Channels {
-        Channels::speakers(ChannelLayout::MONO, ChannelLayout::STEREO)
+        Channels::new(BusTopology::MONO, BusTopology::STEREO)
     }
 
     fn blank(&self, rate: SampleRate) -> Network {

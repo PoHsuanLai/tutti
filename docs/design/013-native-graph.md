@@ -7614,6 +7614,29 @@ that says "unassigned" for such a channel predates the rename.
   channel `c` is then `outputs[b][c]`, a slice of a group, not a formula.
 - `Placement`, `Channels::port`, `of_port` and `main_output` go.
 
+**As built (T3).**
+
+- A repeated bus is a `Bus` with a band count: `Bus::banded(topology, role, bands)` (refuses no band), `Bus::new` and
+  `Bus::main` for one copy. The count is private, so `Bus` is built through those, never as a literal. `width()` is
+  every band's channels, `band_width()` one band's. `Shape` keeps its size (the count is a byte of `Bus`).
+- A banded `Main` bus's band 0 is the main bus: `Io::output(c)` and the dry path (`Pass`) see one band, and the
+  pass compares band widths. The bus's handle (`Shape::output_bus`) covers every band; a node that writes the bands
+  takes them in order.
+- A bus edge names its band: `BusRef { node, bus, band }`, with `BusRef::new(node, bus)` for band 0 and
+  `BusRef::band(node, bus, band)`. A band past the bus's last is `BusError::NoSuchBus`.
+- `tutti_dsp::Channels` is the design's buses: an input `BusTopology`, an output `BusTopology` and a band count, built
+  by `Channels::same`, `Channels::new` and `Channels::bands`; read by `input`, `output`, `band_count`, `input_width`,
+  `output_width`. `Placement`, `Channels::port`, `of_port` and `main_output` are gone. The filter designs take a
+  `BusTopology` (`SvfDesign::new`, `LadderDesign::new`, `CrossoverDesign::new`); a filter node built for a width runs on
+  `BusTopology::assumed(width)` (new: the engine's order where the width has one, unassigned elsewhere) and panics
+  past 16 channels, a filter being one bus. `BusTopology::MONO` is new beside `STEREO`.
+- `PerChannel` writes band `o` as the `o`-th run of `width` output slices (`chunks_mut`), so no port formula is left
+  in `tutti-dsp`. `DesignNode` declares one input bus and one banded output bus and writes the whole output bus
+  through its handle.
+- Not done: a handle branded to the shape that issued it (core's note on #598). A handle from another node's shape
+  still indexes this node's ports, bounded to them; a brand would need a lifetime or type parameter on `Shape` and
+  `Io` for every node, and no node holds another's handle today. Revisit if one does.
+
 **What it costs, measured (2026-11-11).**
 
 - `Shape::audio`: 69 production calls and 285 in tests, most at equal width, so mechanical.

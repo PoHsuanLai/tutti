@@ -31,10 +31,10 @@ fn key(n: u64) -> NodeKey {
 
 fn smpte(n: u16) -> Bus {
     let topology = ChannelTopology::smpte(ChannelLayout::from_count(n)).expect("an SMPTE width");
-    Bus {
-        topology: BusTopology::try_from(&topology).expect("fits a bus"),
-        role: BusRole::Main,
-    }
+    Bus::new(
+        BusTopology::try_from(&topology).expect("fits a bus"),
+        BusRole::Main,
+    )
 }
 
 fn bused(inner: Kind, input: Bus, output: Bus) -> Kind {
@@ -115,14 +115,8 @@ fn rig(workers: usize) -> (Editor, Executor) {
         }
     }
     ed.connect_bus(
-        BusSource::Node(BusRef {
-            node: key(1),
-            bus: 0,
-        }),
-        BusRef {
-            node: key(2),
-            bus: 0,
-        },
+        BusSource::Node(BusRef::new(key(1), 0)),
+        BusRef::new(key(2), 0),
     )
     .expect("5.1 folds into stereo");
     ed.set_mode(key(3), NodeMode::Bypassed).expect("folds");

@@ -121,15 +121,16 @@ impl Pass {
         // takes a named source onto an unassigned destination by index, zero
         // filling, which suits an edge that knows only a width; for a dry path
         // it is the guess: a centre on the left alone.)
+        // The dry path is band 0 of a repeated bus (a split's main output).
         if unassigned(src) || unassigned(dst) {
-            if src.width() != dst.width() {
+            if src.band_width() != dst.band_width() {
                 return Err(PassError::Unplaced {
-                    inputs: src.width(),
-                    outputs: dst.width(),
+                    inputs: src.band_width(),
+                    outputs: dst.band_width(),
                 });
             }
             if unassigned(src) && unassigned(dst) {
-                return Ok(Self::by_index(src.width()));
+                return Ok(Self::by_index(src.band_width()));
             }
         }
         let fold = Fold::between(
@@ -137,7 +138,7 @@ impl Pass {
             &ChannelTopology::from(dst.topology),
         )
         .map_err(PassError::Fold)?;
-        let (inputs, outputs) = (src.width(), dst.width());
+        let (inputs, outputs) = (src.band_width(), dst.band_width());
         if fold.is_identity() {
             return Ok(Self {
                 inputs,

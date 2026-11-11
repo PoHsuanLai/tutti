@@ -20,9 +20,10 @@ use std::num::NonZeroU32;
 
 use tutti_dsp::contract::{Anchor, DesignCase, Hook, LtiCase, RealizationCase};
 use tutti_dsp::{
-    Cadence, Ceiling, ChannelLayout, Channels, Complex64, Design, Effect, Lti, Realization, Ring,
-    Setup, Sizes, System, design_contract, realization_contract,
+    Cadence, Ceiling, Channels, Complex64, Design, Effect, Lti, Realization, Ring, Setup, Sizes,
+    System, design_contract, realization_contract,
 };
+use tutti_types::BusTopology;
 use tutti_types::{Db, Hz, SampleRate, Samples};
 
 /// The system: `y = g x`.
@@ -154,7 +155,7 @@ impl Design for GainDesign {
     const CADENCE: Cadence = Cadence::stream(NonZeroU32::MIN);
 
     fn channels(&self) -> Channels {
-        Channels::speakers(ChannelLayout::MONO, ChannelLayout::MONO)
+        Channels::same(BusTopology::MONO)
     }
 
     fn blank(&self, _: SampleRate) -> GainModel {

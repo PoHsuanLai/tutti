@@ -528,10 +528,12 @@ states only mathematics; `blank` is what the old `Network::new` did, now on the 
 by value on an audio thread (doc 022 "Step 1a as built"); a biquad is a few dozen
 bytes and in place is merely harmless.
 
-`Channels` carries the widths and a `Placement` (built after PR9): `Speakers` for
-channels in the engine's order for their width (a reverb's mono centre and stereo
-pair), `Bands` for the input's channels once per band (a crossover's: band 0 is
-the main output). `DesignNode` declares it as its main buses, so the graph's dry
+`Channels` is the design's buses (doc 013 typed ports, T3): an input `BusTopology`
+and an output `BusTopology` repeated `bands` times, band-major (`Channels::same` for
+a filter, `Channels::new` for a reverb's mono centre to its stereo pair,
+`Channels::bands` for a crossover, whose band 0 is the main output). The realization's
+outputs are the bands in order, band `b` the `b`-th run of one band's width.
+`DesignNode` declares it as its buses, one input and one banded output, so the graph's dry
 path (mix, bypass) folds a mono input onto both sides of a stereo output by
 speaker; by index it landed on the left alone. The graph refuses a dry path it
 would have to guess (`PassError`, doc 013 "As built (B3)"), so a node that

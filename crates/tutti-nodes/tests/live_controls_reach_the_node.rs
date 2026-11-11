@@ -17,17 +17,17 @@
 //! (a replace).
 //!
 //! `EqBandNode` is the fixture because it has both conventions: its
-//! frequency/Q/gain are the inner SVF's shared `Param`s, and its enable flag
-//! is a plain field.
+//! frequency/Q/gain are the inner SVF's shared `Param`s, and its filter type
+//! is fixed when it is built.
 //!
 //! Every assertion is on **rendered audio**: the copy one can inspect is not
 //! the one that renders, and a test that reads a control back proves only
 //! that the write happened somewhere. Mutations (run): make `ParamSet::set`
 //! return `true` without storing → `a_param_set_through_the_controls_*`
 //! fails (re-run since the authored copy `set` used to write beside the
-//! cell was deleted); build the replacement band `Active` → `a_by_value_change_*` fails.
+//! cell was deleted); build the replacement band as the same bell → `a_by_value_change_*` fails.
 
-use tutti_graph::{CrossfadeCurve, Fade, IntoNode, Prepare, Solo};
+use tutti_graph::{CrossfadeCurve, Fade, IntoNode, NodeMode, Prepare, Solo};
 use tutti_nodes::{EqBandNode, SvfType};
 use tutti_types::UnitParam;
 use tutti_types::{Db, Hz, Q, SampleRate, Samples};
@@ -55,15 +55,19 @@ fn solo<N: IntoNode>(node: N) -> Solo<N::Controls> {
     Solo::new(node, Prepare::new(RATE, Samples(64)))
 }
 
-/// **The instrument works**: an active +24 dB bell and a bypassed band
-/// render differently. Without it the assertions below could compare two
-/// identical renders and pass.
+/// **The instrument works**: an active +24 dB bell and a bypassed one render
+/// differently (the mode is the graph's, `NodeMode`). Without it the
+/// assertions below could compare two identical renders and pass.
 #[test]
 fn the_probe_can_tell_active_from_bypassed() {
     let active = energy(&mut solo(band(24.0)));
-    let mut off = band(24.0);
-    off.set_enabled(false);
-    let bypassed = energy(&mut solo(off));
+    let mut off = solo(band(24.0));
+    let key = off.key();
+    off.renderer_mut()
+        .editor_mut()
+        .set_mode(key, NodeMode::Bypassed)
+        .expect("the band is there");
+    let bypassed = energy(&mut off);
     assert!(
         active > 10.0 * bypassed,
         "active={active} bypassed={bypassed}: the probe cannot see the difference"
@@ -94,25 +98,29 @@ fn a_param_set_through_the_controls_reaches_the_running_node() {
     );
 }
 
-/// **A by-value change is made by replacing the node.** The enable flag is
-/// a plain field, so a running band cannot be bypassed by a setter; a
-/// bypassed band faded in over it (`Editor::replace`) is how the change
-/// reaches the audio.
+/// **A by-value change is made by replacing the node.** The filter type is
+/// fixed when the band is built, so a running bell cannot become a high-pass
+/// by a setter; a high-pass faded in over it (`Editor::replace`) is how the
+/// change reaches the audio.
 #[test]
 fn a_by_value_change_reaches_the_audio_by_replacing_the_node() {
     let mut s = solo(band(24.0));
     let active = energy(&mut s);
-    let mut off = band(24.0);
-    off.set_enabled(false);
+    // A high-pass far above the 1 kHz tone: all but nothing of it passes.
+    let high_pass = EqBandNode::<f32>::new(SvfType::HighPass, Hz(20_000.0), Q(0.7), Db(0.0));
     let key = s.key();
     let editor = s.renderer_mut().editor_mut();
     editor
-        .replace(key, off, Fade::new(Samples(1), CrossfadeCurve::default()))
+        .replace(
+            key,
+            high_pass,
+            Fade::new(Samples(1), CrossfadeCurve::default()),
+        )
         .expect("same shape");
     editor.commit().expect("commits");
-    let bypassed = energy(&mut s);
+    let replaced = energy(&mut s);
     assert!(
-        active > 10.0 * bypassed,
-        "the replacement did not reach the audio: {active} -> {bypassed}"
+        active > 10.0 * replaced,
+        "the replacement did not reach the audio: {active} -> {replaced}"
     );
 }

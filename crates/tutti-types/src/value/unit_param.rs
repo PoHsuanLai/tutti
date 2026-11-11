@@ -84,21 +84,24 @@ pub enum UnitParam {
     /// node's `ParamSet` like every other `UnitParam`, so a generic param
     /// reconciler reaches it too.
     Pan = 20,
-    /// Mute toggle: **`>= 0.5` is muted**, below is unmuted.
+    // 21 was `Mute`, deleted with the strip's mute (doc 013, "Bypass and mute
+    // are graph state"): a node-wide mute is `NodeMode::Muted`. The id is
+    // retired, not reused, and decodes as unknown.
+    /// Compressor knee width (dB, `>= 0`): the span about the threshold over
+    /// which the ratio eases in. `0` is a hard knee.
+    Knee = 22,
+    /// Bypass toggle: **`>= 0.5` is bypassed**, below is processing.
     ///
     /// The threshold encoding is forced, not chosen: a `ParamSet` cell carries
     /// an `f32`, so a boolean has to ride one. Stated here because the decode
     /// lives in each node that reads the cell, and a node that picked `!= 0.0`
-    /// instead would mute on a denormal.
-    Mute = 21,
-    /// Compressor knee width (dB, `>= 0`): the span about the threshold over
-    /// which the ratio eases in. `0` is a hard knee.
-    Knee = 22,
-    /// Bypass toggle: **`>= 0.5` is bypassed**, below is processing. Encoded
-    /// as [`Mute`](Self::Mute) is.
+    /// instead would flip on a denormal.
+    ///
+    /// For a node's own per-part toggle (a multiband's per-band bypass, by
+    /// index). A node-wide bypass is `NodeMode::Bypassed`, the graph's.
     Bypass = 23,
     /// Solo toggle: **`>= 0.5` is soloed**, below is not. Encoded as
-    /// [`Mute`](Self::Mute) is.
+    /// [`Bypass`](Self::Bypass) is.
     Solo = 24,
     /// Reverb decay: the RT60, the time the tail takes to fall 60 dB
     /// (`Seconds`, `>= 0`).
@@ -113,7 +116,7 @@ pub enum UnitParam {
     /// maps it onto its own scale (allpass gain, stage count).
     Diffusion = 26,
     /// Reverb freeze: **`>= 0.5` holds the tail**, below lets it decay. Encoded
-    /// as [`Mute`](Self::Mute) is. A frozen reverb loses nothing round its loop
+    /// as [`Bypass`](Self::Bypass) is. A frozen reverb loses nothing round its loop
     /// and takes no input, so its tail never ends.
     Freeze = 27,
     /// A source's bearing (`Azimuth`, degrees): 0 front, 90 left, -90 right.
@@ -182,7 +185,6 @@ impl TryFrom<u16> for UnitParam {
             18 => Detune,
             19 => StereoSpread,
             20 => Pan,
-            21 => Mute,
             22 => Knee,
             23 => Bypass,
             24 => Solo,
@@ -404,7 +406,7 @@ impl From<UnitAddr> for ParamAddr {
 /// `DelayTime` ("beats or seconds — unit-defined"), `RoomSize` and `Damping`
 /// (bare `0..1` with no unit type of their own), `StereoSpread` (a synth's
 /// unison spread, which no unit type claims), `Pan` (the `Pan` type
-/// is a *measurement*, and a pan control needs its own), and `Mute` (a switch,
+/// is a *measurement*, and a pan control needs its own), and `Bypass` (a switch,
 /// not a scalar). Each needs its unit decided first; until then they stay
 /// reachable through [`UnitParam`] and cannot be ramped by key.
 ///
@@ -647,7 +649,8 @@ mod tests {
 
     #[test]
     fn u16_round_trips() {
-        for id in 0..=31u16 {
+        // 21 is retired (it was `Mute`), the one gap.
+        for id in (0..=31u16).filter(|&id| id != 21) {
             let p = UnitParam::try_from(id).expect("known id");
             assert_eq!(u16::from(p), id);
         }
@@ -661,9 +664,11 @@ mod tests {
     #[test]
     fn appended_params_keep_their_ids() {
         assert_eq!(u16::from(UnitParam::Pan), 20);
-        assert_eq!(u16::from(UnitParam::Mute), 21);
         assert_eq!(UnitParam::try_from(20), Ok(UnitParam::Pan));
-        assert_eq!(UnitParam::try_from(21), Ok(UnitParam::Mute));
+        // 21 was `Mute` (deleted, doc 013): retired, so it decodes as nothing
+        // and nothing after it moved.
+        assert_eq!(UnitParam::try_from(21), Err(UnitParamOutOfRange(21)));
+        assert_eq!(u16::from(UnitParam::Knee), 22);
         // The append must not have disturbed the tail of the existing set.
         assert_eq!(u16::from(UnitParam::Volume), 17);
         assert_eq!(u16::from(UnitParam::StereoSpread), 19);
@@ -693,7 +698,7 @@ mod tests {
     /// (and is `AudioParam`'s `P`), so this table is the compatibility
     /// record: a renumbered or re-ordered variant fails here by name, which
     /// `u16_round_trips` (any id maps to *some* variant) cannot say.
-    const PINNED: [(UnitParam, u16); 32] = [
+    const PINNED: [(UnitParam, u16); 31] = [
         (UnitParam::Cutoff, 0),
         (UnitParam::Q, 1),
         (UnitParam::GainDb, 2),
@@ -715,7 +720,6 @@ mod tests {
         (UnitParam::Detune, 18),
         (UnitParam::StereoSpread, 19),
         (UnitParam::Pan, 20),
-        (UnitParam::Mute, 21),
         (UnitParam::Knee, 22),
         (UnitParam::Bypass, 23),
         (UnitParam::Solo, 24),
@@ -761,7 +765,7 @@ mod tests {
             }
         }
         assert_eq!(UnitAddr::new(UnitParam::Threshold, 1).to_u16(), 0x010A);
-        assert_eq!(UnitAddr::new(UnitParam::Mute, 255).to_u16(), 0xFF15);
+        assert_eq!(UnitAddr::new(UnitParam::Bypass, 255).to_u16(), 0xFF17);
     }
 
     /// A packed id whose low byte is not a known kind is refused whatever its
@@ -831,11 +835,12 @@ mod tests {
         assert_eq!(ParamAddr::Id(3).as_unit(), None);
         // Native before foreign, and indices in order, so a map keys on it.
         assert!(
-            ParamAddr::unit(UnitAddr::new(UnitParam::Mute, 9)) < ParamAddr::Id(0),
+            ParamAddr::unit(UnitAddr::new(UnitParam::Bypass, 9)) < ParamAddr::Id(0),
             "native before foreign"
         );
         assert!(
-            ParamAddr::Unit(UnitParam::Mute) < ParamAddr::unit(UnitAddr::new(UnitParam::Cutoff, 1))
+            ParamAddr::Unit(UnitParam::Bypass)
+                < ParamAddr::unit(UnitAddr::new(UnitParam::Cutoff, 1))
         );
     }
 

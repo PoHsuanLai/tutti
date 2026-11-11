@@ -483,7 +483,7 @@ mod measures_tests {
     /// The bypass flag is the `Bypass` role; no other flag gives a role.
     ///
     /// Mutation (run): `.then_some(UnitParam::Bypass)` changed to
-    /// `.then_some(UnitParam::Mute)` → the `Bypass` row fails.
+    /// `.then_some(UnitParam::Solo)` → the `Bypass` row fails.
     #[test]
     fn the_bypass_flag_gives_bypass() {
         assert_eq!(

@@ -9,8 +9,8 @@
 //! [`FreeverbNode`], the graph sums the dry pair and both effects' pairs into
 //! one stereo mix (each of the fader's two inputs has three sources), and a
 //! [`BusStripNode`] after the sum is the setup's fader, whose output is [`out`](GeneralMidi::out). The sends are
-//! post-fader, as a mixer channel's are: the strip's gain and mute act on the
-//! whole mix, effects included.
+//! post-fader, as a mixer channel's are: the strip's gain and its
+//! [`NodeMode`](tutti_graph::NodeMode) act on the whole mix, effects included.
 //! Nothing else is needed to hear it; nothing here is required either: a host
 //! that wants a different reverb, two units into one chorus or no chorus wires
 //! the unit's outputs itself, through [`Graph::set_source`](crate::Graph::set_source).
@@ -33,8 +33,9 @@ use crate::{GraphSource, InstrumentHandle, Session};
 /// The [`instrument`](Self::instrument) is the unit's handle as any
 /// instrument has it: MIDI is sent through it, and its gain is the **dry
 /// level** (a strip on the dry pair only, before the sum). The setup's own
-/// fader, [`set_gain`](Self::set_gain) and [`set_muted`](Self::set_muted), is
-/// after the sum and so takes the effects with it. A send's level is the font's
+/// fader, [`set_gain`](Self::set_gain), is after the sum and so takes the
+/// effects with it; so does muting it, which is the graph's, not a method
+/// here: `Graph::set_mode(gm.out(), NodeMode::Muted)`. A send's level is the font's
 /// and the channel's (CC 91 and CC 93), not a gain's.
 #[derive(Clone, Debug)]
 pub struct GeneralMidi {
@@ -75,13 +76,6 @@ impl GeneralMidi {
     /// both effects. A store into the strip's cell, read once per block.
     pub fn set_gain(&self, gain: Amplitude) {
         self.strip_params.set(UnitParam::Volume, gain.get());
-    }
-
-    /// Mutes or unmutes the whole mix, effects included (a ramp across the next
-    /// block, so there is no click).
-    pub fn set_muted(&self, muted: bool) {
-        self.strip_params
-            .set(UnitParam::Mute, if muted { 1.0 } else { 0.0 });
     }
 
     /// Takes the whole setup out of the graph: the unit with its queue and

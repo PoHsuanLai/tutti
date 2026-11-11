@@ -8,7 +8,7 @@ pub mod svf;
 
 pub use crossover::CrossoverNode;
 pub(crate) use crossover::Splits;
-pub use eq_band::{BandState, EqBandNode};
+pub use eq_band::EqBandNode;
 pub use ladder::{LADDER_PARAMS, LadderFilterNode};
 pub use svf::{SvfFilterNode, SvfParams};
 

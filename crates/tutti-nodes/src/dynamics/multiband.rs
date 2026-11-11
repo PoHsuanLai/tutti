@@ -61,7 +61,7 @@ const _: () = assert!(MAX_PORTS <= MAX_PARAM_PORTS);
 const MAKEUP: usize = 5;
 
 /// A toggle cell's value: `>= 0.5` is on (so a NaN is off), as
-/// [`UnitParam::Mute`] encodes it.
+/// [`UnitParam::Bypass`] encodes it.
 #[inline]
 fn is_on(cell: &AtomicF32) -> bool {
     cell.load(core::sync::atomic::Ordering::Acquire) >= 0.5

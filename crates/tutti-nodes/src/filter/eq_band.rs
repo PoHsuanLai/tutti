@@ -1,4 +1,4 @@
-//! Parametric EQ band: an SVF plus a zero-cost bypass.
+//! Parametric EQ band: an SVF with a mono layout and an EQ band's constructor.
 
 use tutti_dsp::Real;
 use tutti_graph::{Cx, IntoNode, Io, Node, NodeParts, ParamNode, ParamSet, Prepare, Shape, Status};
@@ -7,65 +7,24 @@ use tutti_types::{ChannelLayout, Db, Hz, Q};
 use super::svf::SvfFilterNode;
 use tutti_dsp::{SvfControls, SvfType};
 
-/// Enable/bypass state for an EQ band. Replaces a raw `bool` so callers
-/// cannot confuse "active" with unrelated boolean flags, and so the two
-/// modes have names.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum BandState {
-    /// The band filters its input. The default.
-    #[default]
-    Active,
-    /// The band passes its input through untouched, at zero DSP cost.
-    ///
-    /// Filter state is retained while bypassed, so re-enabling resumes from
-    /// stale integrator contents — reset the node first if that matters.
-    Bypassed,
-}
-
-impl BandState {
-    /// Returns whether the band is [`Active`](Self::Active) — i.e. whether it
-    /// filters rather than passing through.
-    #[inline]
-    #[must_use]
-    pub fn is_active(self) -> bool {
-        matches!(self, Self::Active)
-    }
-}
-
-impl From<bool> for BandState {
-    /// The `enabled` flag as a state: `true` is [`Active`](Self::Active),
-    /// `false` [`Bypassed`](Self::Bypassed).
-    #[inline]
-    fn from(enabled: bool) -> Self {
-        if enabled {
-            Self::Active
-        } else {
-            Self::Bypassed
-        }
-    }
-}
-
-/// Parametric EQ band: an [`SvfFilterNode`] plus a zero-cost bypass. 1 input, 1
+/// Parametric EQ band: an [`SvfFilterNode`] at one channel. 1 input, 1
 /// output.
 ///
-/// The band adds nothing to the filter but [`BandState`] — cutoff, [`Q`] and
-/// gain are the inner SVF's live params, reached by
+/// Cutoff, [`Q`] and gain are the inner SVF's live params, reached by
 /// [`UnitParam`](tutti_types::UnitParam) through the [`ParamSet`] it is
 /// inserted with. Stack several to build a parametric EQ, one band
-/// per [`SvfType`].
-///
-/// Bypass is a branch around the filter, not a dry/wet blend: it costs one
-/// `match` per block and passes samples through bit-exactly.
+/// per [`SvfType`]. A band's bypass is not here: it is `NodeMode::Bypassed`
+/// (`Graph::set_mode`), the graph's for every node, bit-exact once its
+/// declick is over (doc 013, "Bypass and mute are graph state").
 ///
 /// `F` is the internal state precision; defaults to `f64`.
 #[derive(Clone, Debug)]
 pub struct EqBandNode<F: Real = f64> {
     svf: SvfFilterNode<F>,
-    state: BandState,
 }
 
 impl<F: Real> EqBandNode<F> {
-    /// Builds an [`Active`](BandState::Active) band of `filter_type` at
+    /// Builds a band of `filter_type` at
     /// `frequency`, `q` and `gain_db`.
     ///
     /// `gain_db` is read only by [`Bell`](SvfType::Bell),
@@ -88,32 +47,7 @@ impl<F: Real> EqBandNode<F> {
                     gain: gain_db.into(),
                 },
             ),
-            state: BandState::Active,
         }
-    }
-
-    /// Enables or bypasses the band.
-    ///
-    /// `&mut self`, so it cannot reach a node already live in the graph — drive
-    /// a live bypass from the host instead.
-    pub fn set_enabled(&mut self, enabled: bool) {
-        self.state = BandState::from(enabled);
-    }
-
-    /// Returns whether the band is filtering rather than passing through.
-    pub fn is_enabled(&self) -> bool {
-        self.state.is_active()
-    }
-
-    /// Returns the band's [`BandState`].
-    pub fn state(&self) -> BandState {
-        self.state
-    }
-
-    /// Sets the band's [`BandState`] — the named form of
-    /// [`set_enabled`](Self::set_enabled).
-    pub fn set_state(&mut self, state: BandState) {
-        self.state = state;
     }
 }
 
@@ -131,15 +65,8 @@ impl<F: Real + 'static> Node for EqBandNode<F> {
         self.svf.prepare(p);
     }
 
-    fn process(&mut self, cx: &Cx<'_>, mut io: Io<'_>) -> Status {
-        match self.state {
-            BandState::Active => self.svf.process(cx, io),
-            BandState::Bypassed => {
-                let (inputs, mut outputs) = io.split();
-                outputs.get(0).copy_from_slice(inputs.get(0));
-                Status::Modified
-            }
-        }
+    fn process(&mut self, cx: &Cx<'_>, io: Io<'_>) -> Status {
+        self.svf.process(cx, io)
     }
 
     fn reset(&mut self) {
@@ -156,7 +83,6 @@ impl<F: Real + 'static> ParamNode for EqBandNode<F> {
     fn fork_fresh(&self) -> Self {
         Self {
             svf: self.svf.fork_fresh(),
-            state: self.state,
         }
     }
 }
@@ -222,21 +148,6 @@ mod tests {
             rms(&out[256..]) > 0.0,
             "eq f32 variant should produce signal"
         );
-    }
-
-    #[test]
-    fn test_eq_band_bypass() {
-        let mut eq =
-            EqBandNode::<f64>::new(SvfType::Bell, Hz::new(1000.0), Q::new(1.0), Db::new(6.0));
-        eq.set_enabled(false);
-        let sine = generate_sine(1000.0, 44100.0, 1024);
-        let out = render(eq, &sine);
-        for i in 0..sine.len() {
-            assert!(
-                (sine[i] - out[i]).abs() < 0.0001,
-                "Bypassed EQ should pass through at sample {i}"
-            );
-        }
     }
 
     #[test]

@@ -27,7 +27,7 @@ node without a lock.
   compressor per band of a `Crossover`). Every setting is an indexed param: a
   threshold, knee, ratio, attack, release and make-up (`GainDb`) per band, a
   `Cutoff` per crossover (27 ports at 4 bands), and a `Bypass` and `Solo`
-  toggle per band (`>= 0.5` is on, as `Mute`; cells without a port). The
+  toggle per band (`>= 0.5` is on, as every toggle; cells without a port). The
   per-band gain reduction meters are readings on `MultibandControls`.
 - **Modulation effects** — `ModDelayNode` (chorus and flanger are its two
   `ModDelayConfig` presets) and `PhaserNode`, both any width.
@@ -36,7 +36,7 @@ node without a lock.
   adapter over a pure `Modulator` (an LFO's is `tutti_modulation::Wave`, the wave a
   control lane evaluates): an audio generator, whose output feeds a node's
   audio input.
-- **Mixing** — `DownmixNode` and `BusStripNode` (volume / balance / mute).
+- **Mixing** — `DownmixNode` and `BusStripNode` (volume / balance; a mute or bypass is the graph's `NodeMode`).
   Summing is the graph's: a port or an output channel sums its sources.
 - **Spatial** — `VbapPannerNode` (stereo in, one output per speaker of a 2, 4,
   6, 8 or 12 channel layout) and `HrtfBinauralNode` (two outputs, by FFT
@@ -55,9 +55,9 @@ node without a lock.
   (a curve as audio) and recording units, and `ConvolverNode` with its IR
   generators (behind a feature).
 
-A `*Node` is the graph-facing node; the inner objects some are built from —
-`Modulator`, `BandState` — carry no suffix, because they are not nodes and
-can be used on their own. The algorithms are `tutti-dsp`'s (`tutti_dsp::DelayLine`,
+A `*Node` is the graph-facing node; the inner object some are built from,
+`Modulator`, carries no suffix, because it is not a node and
+can be used on its own. The algorithms are `tutti-dsp`'s (`tutti_dsp::DelayLine`,
 `tutti_dsp::Crossover`, …); this crate re-exports only the types in a node's
 signature: `SvfType`, `LadderType`, `Real`, `CrossoverError`,
 `InterpolationMode` and `ShapeKind`.

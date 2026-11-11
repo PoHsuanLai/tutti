@@ -53,7 +53,7 @@ fn dc(value: f32) -> Kind {
 
 fn spec_of(kind: &Kind) -> NodeSpec {
     let s = TestNode::new(kind.clone()).shape();
-    NodeSpec::new("test", s.audio_in, s.audio_out)
+    NodeSpec::new("test", s.audio_in(), s.audio_out())
         .with_latency(s.latency.samples())
         .with_tail(s.tail)
 }
@@ -517,7 +517,7 @@ struct Switch(Arc<AtomicBool>);
 
 impl Node for Switch {
     fn shape(&self) -> Shape {
-        Shape::audio(ChannelLayout::EMPTY, ChannelLayout::MONO)
+        Shape::source_discrete(ChannelLayout::MONO)
     }
     fn prepare(&mut self, _: &Prepare) {}
     fn process(&mut self, _: &Cx<'_>, mut io: Io<'_>) -> Status {
@@ -540,7 +540,7 @@ struct Probe {
 
 impl Node for Probe {
     fn shape(&self) -> Shape {
-        Shape::audio(ChannelLayout::MONO, ChannelLayout::MONO)
+        Shape::through_discrete(ChannelLayout::MONO)
     }
     fn prepare(&mut self, _: &Prepare) {}
     fn process(&mut self, _: &Cx<'_>, mut io: Io<'_>) -> Status {

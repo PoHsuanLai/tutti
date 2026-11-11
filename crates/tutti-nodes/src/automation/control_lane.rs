@@ -13,7 +13,6 @@ use tutti_graph::{
 };
 use tutti_modulation::{Clock, ControlProgram, CurveSegment, MAX_LANE_INPUTS, ProgramTime, Wave};
 use tutti_rt::{ArcLend, PackedAtomic, Reader};
-use tutti_types::ChannelLayout;
 use tutti_types::{
     AtomicF32, Beat, Frame, ParamAddr, ParamCell, ParamKey, SamplePosition, Samples, Tail, Unit,
     UnitAddr,
@@ -957,7 +956,7 @@ impl Node for ControlLaneNode {
     /// evaluation, sixteen grid points a block), about 7 ns a frame, where
     /// `Moderate`'s model is 200 + 8 a frame and `Light`'s 100 + 1.
     fn shape(&self) -> Shape {
-        Shape::audio(ChannelLayout::EMPTY, ChannelLayout::EMPTY)
+        Shape::EMPTY
             .with_events(1, 1)
             .with_event_capacity(LANE_EVENT_CAPACITY)
             .with_cost(Cost::Moderate)

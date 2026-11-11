@@ -324,15 +324,6 @@ fn a_mix_move_on_a_delay_ramps_across_the_block() {
 /// input's channels once per band, band-major: the dry side is band 0, the
 /// further bands silent. Each declares it; built from widths alone, each would
 /// have no pass and the graph would refuse its mix.
-///
-/// Mutation (each run, each failed): the gate's or the compressor's
-/// `with_buses_in(keyed(..))` / `with_buses_out(..)` removed → `set_mix`
-/// refuses (`MixError::Unplaced`, four in and two out naming no placement);
-/// the crossover's band 0 declared at the full output width
-/// (`Placement::Bands => self.channels.output`) → the mono crossover's centre
-/// folds onto both bands and band 1 at DRY is the input. (The stereo one cannot
-/// show that mutation: four channels are quad, and a stereo pair folds onto its
-/// front pair, band 0, either way.)
 #[test]
 fn a_keyed_node_and_a_split_are_blended_on_their_main_bus() {
     let s = Seconds::new;

@@ -116,10 +116,12 @@ impl Node for Probe {
     fn shape(&self) -> Shape {
         // Output 0 is its main channel, which a bypass passes its input to;
         // the other two are readouts.
-        Shape::audio(ChannelLayout::MONO, ChannelLayout::from_count(3))
-            .with_buses_in(tutti_graph::Buses::of_width(ChannelLayout::MONO))
-            .with_buses_out(tutti_graph::Buses::of_width(ChannelLayout::MONO))
-            .with_params(&self.declared)
+        Shape::buses(
+            tutti_graph::Buses::discrete(ChannelLayout::MONO),
+            tutti_graph::Buses::discrete(ChannelLayout::MONO),
+        )
+        .with_ports(ChannelLayout::MONO, ChannelLayout::from_count(3))
+        .with_params(&self.declared)
     }
     fn prepare(&mut self, _: &Prepare) {}
     fn process(&mut self, _: &Cx<'_>, mut io: Io<'_>) -> Status {
@@ -172,7 +174,7 @@ struct Signal {
 
 impl Node for Signal {
     fn shape(&self) -> Shape {
-        Shape::audio(ChannelLayout::EMPTY, ChannelLayout::MONO)
+        Shape::source_discrete(ChannelLayout::MONO)
             .with_events(0, 1)
             .with_event_capacity(256)
     }
@@ -201,9 +203,7 @@ struct Hold {
 
 impl Node for Hold {
     fn shape(&self) -> Shape {
-        Shape::audio(ChannelLayout::EMPTY, ChannelLayout::EMPTY)
-            .with_events(0, 1)
-            .with_event_capacity(4)
+        Shape::EMPTY.with_events(0, 1).with_event_capacity(4)
     }
     fn prepare(&mut self, _: &Prepare) {}
     fn process(&mut self, _: &Cx<'_>, mut io: Io<'_>) -> Status {
@@ -236,8 +236,7 @@ impl Lag {
 
 impl Node for Lag {
     fn shape(&self) -> Shape {
-        Shape::audio(ChannelLayout::MONO, ChannelLayout::MONO)
-            .with_latency(Latency::new(Samples(self.n)))
+        Shape::through_discrete(ChannelLayout::MONO).with_latency(Latency::new(Samples(self.n)))
     }
     fn prepare(&mut self, _: &Prepare) {}
     fn process(&mut self, _: &Cx<'_>, mut io: Io<'_>) -> Status {
@@ -286,9 +285,7 @@ impl Ramps {
 
 impl Node for Ramps {
     fn shape(&self) -> Shape {
-        Shape::audio(ChannelLayout::EMPTY, ChannelLayout::EMPTY)
-            .with_events(0, 1)
-            .with_event_capacity(64)
+        Shape::EMPTY.with_events(0, 1).with_event_capacity(64)
     }
     fn prepare(&mut self, _: &Prepare) {}
     fn process(&mut self, cx: &Cx<'_>, mut io: Io<'_>) -> Status {
@@ -640,8 +637,11 @@ fn a_fade_keeps_the_params_it_declares() {
     struct CutoffOnly;
     impl Node for CutoffOnly {
         fn shape(&self) -> Shape {
-            Shape::audio(ChannelLayout::MONO, ChannelLayout::from_count(3))
-                .with_params(&[UnitParam::Cutoff])
+            Shape::buses(
+                tutti_graph::Buses::discrete(ChannelLayout::MONO),
+                tutti_graph::Buses::discrete(ChannelLayout::from_count(3)),
+            )
+            .with_params(&[UnitParam::Cutoff])
         }
         fn prepare(&mut self, _: &Prepare) {}
         fn process(&mut self, _: &Cx<'_>, _: Io<'_>) -> Status {
@@ -1007,9 +1007,7 @@ struct OnFirstBlock {
 
 impl Node for OnFirstBlock {
     fn shape(&self) -> Shape {
-        Shape::audio(ChannelLayout::EMPTY, ChannelLayout::EMPTY)
-            .with_events(0, 1)
-            .with_event_capacity(4)
+        Shape::EMPTY.with_events(0, 1).with_event_capacity(4)
     }
     fn prepare(&mut self, _: &Prepare) {
         self.pending = true;
@@ -1521,9 +1519,7 @@ struct SegmentThenRamp {
 
 impl Node for SegmentThenRamp {
     fn shape(&self) -> Shape {
-        Shape::audio(ChannelLayout::EMPTY, ChannelLayout::EMPTY)
-            .with_events(0, 1)
-            .with_event_capacity(4)
+        Shape::EMPTY.with_events(0, 1).with_event_capacity(4)
     }
     fn prepare(&mut self, _: &Prepare) {}
     fn process(&mut self, cx: &Cx<'_>, mut io: Io<'_>) -> Status {

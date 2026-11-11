@@ -404,7 +404,7 @@ fn a_shape_mismatch_is_refused() {
     let shape = TestNode::new(later.clone()).shape();
     spec.topology.nodes.insert(
         lagged,
-        tutti_graph::NodeSpec::new("lag", shape.audio_in, shape.audio_out)
+        tutti_graph::NodeSpec::new("lag", shape.audio_in(), shape.audio_out())
             .with_latency(shape.latency.samples())
             .with_tail(shape.tail),
     );
@@ -497,7 +497,7 @@ struct EventCount(Arc<AtomicUsize>);
 
 impl Node for EventCount {
     fn shape(&self) -> Shape {
-        Shape::audio(ChannelLayout::EMPTY, ChannelLayout::MONO).with_events(1, 0)
+        Shape::source_discrete(ChannelLayout::MONO).with_events(1, 0)
     }
     fn prepare(&mut self, _: &Prepare) {}
     fn process(&mut self, _: &Cx<'_>, mut io: Io<'_>) -> Status {

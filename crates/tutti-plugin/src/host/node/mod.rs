@@ -463,14 +463,16 @@ impl PluginClient<Unbound> {
 }
 
 impl<S> PluginClient<S> {
-    /// The shape the plugin's node declares: its buses as audio ports, one
+    /// The shape the plugin's node declares: its channels as audio ports, one
     /// MIDI event input, one MIDI event output if it has MIDI-out, and its
     /// latency and tail now (the node's `shape`). Read before binding, so a
     /// host can tell a replacement's ports from the running node's.
     pub fn declared_shape(&self) -> Shape {
         let midi_out = u16::from(self.loaded.features.contains(Features::MIDI_OUT));
         let width = |n: usize| ChannelLayout::from_count(u16::try_from(n).unwrap_or(u16::MAX));
-        Shape::audio(width(self.inputs), width(self.outputs))
+        // Ports only: the node states the plugin's buses when it is bound.
+        Shape::EMPTY
+            .with_ports(width(self.inputs), width(self.outputs))
             .with_events(1, midi_out)
             .with_latency(self.controls.declared_latency())
             .with_tail(self.controls.tail())

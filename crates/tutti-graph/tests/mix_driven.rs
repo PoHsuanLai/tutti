@@ -68,7 +68,7 @@ fn mix_of(node: u64) -> ParamIn {
 
 fn spec_of(kind: &Kind) -> NodeSpec {
     let s = TestNode::new(kind.clone()).shape();
-    NodeSpec::new("test", s.audio_in, s.audio_out)
+    NodeSpec::new("test", s.audio_in(), s.audio_out())
         .with_latency(s.latency.samples())
         .with_tail(s.tail)
 }
@@ -667,7 +667,7 @@ struct Triple;
 
 impl tutti_graph::Node for Triple {
     fn shape(&self) -> tutti_graph::Shape {
-        tutti_graph::Shape::audio(ChannelLayout::MONO, ChannelLayout::MONO)
+        tutti_graph::Shape::through_discrete(ChannelLayout::MONO)
     }
     fn prepare(&mut self, _: &tutti_graph::Prepare) {}
     fn process(

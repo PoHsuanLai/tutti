@@ -72,8 +72,8 @@ pub(crate) fn unexpected_message(
     }
 }
 
-/// A bincode failure as the [`BridgeError`] it is on the wire, keeping the
+/// A postcard failure as the [`BridgeError`] it is on the wire, keeping the
 /// codec's message.
-pub(crate) fn codec(e: bincode::Error) -> BridgeError {
+pub(crate) fn codec(e: postcard::Error) -> BridgeError {
     BridgeError::Serialization(e.to_string())
 }

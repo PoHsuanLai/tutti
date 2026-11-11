@@ -1499,11 +1499,8 @@ mod tests {
 
     impl tutti_graph::Node for Ramp {
         fn shape(&self) -> tutti_graph::Shape {
-            tutti_graph::Shape::audio(
-                tutti_types::ChannelLayout::EMPTY,
-                tutti_types::ChannelLayout::from_count(self.0),
-            )
-            .with_tail(tutti_types::Tail::Unbounded)
+            tutti_graph::Shape::source_discrete(tutti_types::ChannelLayout::from_count(self.0))
+                .with_tail(tutti_types::Tail::Unbounded)
         }
         fn prepare(&mut self, _: &Prepare) {}
         fn process(

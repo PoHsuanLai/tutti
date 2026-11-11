@@ -18,7 +18,7 @@ struct Dc(f32);
 
 impl tutti_graph::Node for Dc {
     fn shape(&self) -> tutti_graph::Shape {
-        tutti_graph::Shape::audio(ChannelLayout::EMPTY, ChannelLayout::MONO)
+        tutti_graph::Shape::source_discrete(ChannelLayout::MONO)
     }
     fn prepare(&mut self, _: &Prepare) {}
     fn process(
@@ -232,7 +232,7 @@ struct Step {
 
 impl tutti_graph::Node for Step {
     fn shape(&self) -> tutti_graph::Shape {
-        tutti_graph::Shape::audio(ChannelLayout::EMPTY, ChannelLayout::MONO)
+        tutti_graph::Shape::source_discrete(ChannelLayout::MONO)
     }
     fn prepare(&mut self, _: &Prepare) {}
     fn process(

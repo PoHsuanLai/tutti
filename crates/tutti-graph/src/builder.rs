@@ -99,7 +99,7 @@ struct Pending {
 /// # #[derive(Clone)]
 /// # struct Dc(f32);
 /// # impl Node for Dc {
-/// #     fn shape(&self) -> Shape { Shape::audio(ChannelLayout::EMPTY, ChannelLayout::MONO) }
+/// #     fn shape(&self) -> Shape { Shape::source_discrete(ChannelLayout::MONO) }
 /// #     fn prepare(&mut self, _: &Prepare) {}
 /// #     fn process(&mut self, _: &Cx<'_>, mut io: Io<'_>) -> Status {
 /// #         let (_, mut outs) = io.split();
@@ -132,7 +132,7 @@ struct Pending {
 /// # #[derive(Clone)]
 /// # struct Gain(f32);
 /// # impl Node for Gain {
-/// #     fn shape(&self) -> Shape { Shape::audio(ChannelLayout::MONO, ChannelLayout::MONO) }
+/// #     fn shape(&self) -> Shape { Shape::through_discrete(ChannelLayout::MONO) }
 /// #     fn prepare(&mut self, _: &Prepare) {}
 /// #     fn process(&mut self, _: &Cx<'_>, mut io: Io<'_>) -> Status {
 /// #         let (ins, mut outs) = io.split();
@@ -217,7 +217,7 @@ impl GraphBuilder {
         let shape = unit.node.shape();
         self.spec.topology.nodes.insert(
             key,
-            NodeSpec::new(kind, shape.audio_in, shape.audio_out)
+            NodeSpec::new(kind, shape.audio_in(), shape.audio_out())
                 .with_latency(shape.latency.samples())
                 .with_tail(shape.tail),
         );
@@ -244,12 +244,12 @@ impl GraphBuilder {
 
     /// Audio inputs of `node`.
     pub fn input_count(&self, node: NodeKey) -> usize {
-        self.shape(node).audio_in.count() as usize
+        self.shape(node).audio_in().count() as usize
     }
 
     /// Audio outputs of `node`.
     pub fn output_count(&self, node: NodeKey) -> usize {
-        self.shape(node).audio_out.count() as usize
+        self.shape(node).audio_out().count() as usize
     }
 
     /// Global input channels.
@@ -736,7 +736,7 @@ type TransportFn = Box<dyn FnMut(Frame) -> Transport + Send>;
 /// # #[derive(Clone)]
 /// # struct Gain(f32);
 /// # impl Node for Gain {
-/// #     fn shape(&self) -> Shape { Shape::audio(ChannelLayout::MONO, ChannelLayout::MONO) }
+/// #     fn shape(&self) -> Shape { Shape::through_discrete(ChannelLayout::MONO) }
 /// #     fn prepare(&mut self, _: &Prepare) {}
 /// #     fn process(&mut self, _: &Cx<'_>, mut io: Io<'_>) -> Status {
 /// #         let (ins, mut outs) = io.split();
@@ -983,7 +983,7 @@ impl Renderer {
 /// # #[derive(Clone)]
 /// # struct Half;
 /// # impl Node for Half {
-/// #     fn shape(&self) -> Shape { Shape::audio(ChannelLayout::MONO, ChannelLayout::MONO) }
+/// #     fn shape(&self) -> Shape { Shape::through_discrete(ChannelLayout::MONO) }
 /// #     fn prepare(&mut self, _: &Prepare) {}
 /// #     fn process(&mut self, _: &Cx<'_>, mut io: Io<'_>) -> Status {
 /// #         let (ins, mut outs) = io.split();
@@ -1016,7 +1016,7 @@ impl<C> Solo<C> {
             fork,
         } = node.into_parts();
         let shape = node.shape();
-        let mut g = GraphBuilder::new(shape.audio_in, shape.audio_out);
+        let mut g = GraphBuilder::new(shape.audio_in(), shape.audio_out());
         let key = g.insert(
             N::kind(),
             NodeParts {
@@ -1025,10 +1025,10 @@ impl<C> Solo<C> {
                 fork,
             },
         );
-        for c in 0..usize::from(shape.audio_in.count()) {
+        for c in 0..usize::from(shape.audio_in().count()) {
             g.connect_input(c, key, c);
         }
-        for c in 0..usize::from(shape.audio_out.count()) {
+        for c in 0..usize::from(shape.audio_out().count()) {
             g.connect_output(key, c, c);
         }
         let renderer = g.renderer(prepare).expect("a one-node graph builds");

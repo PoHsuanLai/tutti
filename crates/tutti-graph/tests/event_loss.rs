@@ -16,7 +16,7 @@ use tutti_graph::{
     Cx, Editor, Event, EventEdge, EventIn, EventKind, EventLoss, EventOut, Executor, Io, Node,
     Prepare, Shape, Status, Transport, note_off_room,
 };
-use tutti_types::{ChannelLayout, SampleRate, Samples};
+use tutti_types::{SampleRate, Samples};
 use tutti_ump::{MidiChannel, NoteNumber, U7, Ump};
 
 const BLOCK: usize = 64;
@@ -46,7 +46,7 @@ struct Writer {
 
 impl Node for Writer {
     fn shape(&self) -> Shape {
-        Shape::audio(ChannelLayout::EMPTY, ChannelLayout::EMPTY)
+        Shape::EMPTY
             .with_events(0, self.scripts.len() as u16)
             .with_event_capacity(self.cap)
     }
@@ -77,7 +77,7 @@ struct Counter {
 
 impl Node for Counter {
     fn shape(&self) -> Shape {
-        Shape::audio(ChannelLayout::EMPTY, ChannelLayout::EMPTY).with_events(self.ports, 0)
+        Shape::EMPTY.with_events(self.ports, 0)
     }
     fn prepare(&mut self, _: &Prepare) {}
     fn process(&mut self, _: &Cx<'_>, io: Io<'_>) -> Status {

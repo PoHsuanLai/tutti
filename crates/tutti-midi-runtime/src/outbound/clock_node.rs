@@ -21,7 +21,7 @@ use tutti_graph::{
     Prepare, Shape, Status,
 };
 use tutti_rt::RtVec;
-use tutti_types::{ChannelLayout, SampleRate};
+use tutti_types::SampleRate;
 
 use super::clock_master::ClockMaster;
 use crate::live::order::{in_offset_order, offset_of};
@@ -81,7 +81,7 @@ impl Default for ClockNode {
 impl Node for ClockNode {
     /// No audio; one event output of [`CLOCK_EVENT_CAPACITY`].
     fn shape(&self) -> Shape {
-        Shape::audio(ChannelLayout::EMPTY, ChannelLayout::EMPTY)
+        Shape::EMPTY
             .with_events(0, 1)
             .with_event_capacity(CLOCK_EVENT_CAPACITY as u32)
             // Event-only: a few pulses a block, nothing per frame (measured

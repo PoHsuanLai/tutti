@@ -50,8 +50,7 @@ impl Bands {
 
 impl Node for Bands {
     fn shape(&self) -> Shape {
-        Shape::audio(ChannelLayout::EMPTY, ChannelLayout::from_count(2))
-            .with_param_addrs(&[BAND0, BAND1])
+        Shape::source_discrete(ChannelLayout::from_count(2)).with_param_addrs(&[BAND0, BAND1])
     }
     fn prepare(&mut self, _: &Prepare) {}
     fn process(&mut self, _: &Cx<'_>, mut io: Io<'_>) -> Status {
@@ -104,9 +103,7 @@ struct Steps {
 
 impl Node for Steps {
     fn shape(&self) -> Shape {
-        Shape::audio(ChannelLayout::EMPTY, ChannelLayout::EMPTY)
-            .with_events(0, 1)
-            .with_event_capacity(8)
+        Shape::EMPTY.with_events(0, 1).with_event_capacity(8)
     }
     fn prepare(&mut self, _: &Prepare) {}
     fn process(&mut self, _: &Cx<'_>, mut io: Io<'_>) -> Status {
@@ -462,7 +459,7 @@ struct Wide(Vec<UnitAddr>);
 
 impl Node for Wide {
     fn shape(&self) -> Shape {
-        Shape::audio(ChannelLayout::EMPTY, ChannelLayout::from_count(2)).with_param_addrs(&self.0)
+        Shape::source_discrete(ChannelLayout::from_count(2)).with_param_addrs(&self.0)
     }
     fn prepare(&mut self, _: &Prepare) {}
     fn process(&mut self, _: &Cx<'_>, mut io: Io<'_>) -> Status {

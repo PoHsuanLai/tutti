@@ -34,7 +34,7 @@
 //!
 //! impl Node for Bad {
 //!     fn shape(&self) -> Shape {
-//!         Shape::audio(tutti_types::ChannelLayout::EMPTY, tutti_types::ChannelLayout::EMPTY)
+//!         Shape::EMPTY
 //!             .with_events(0, 1)
 //!     }
 //!     fn prepare(&mut self, _: &Prepare) {}

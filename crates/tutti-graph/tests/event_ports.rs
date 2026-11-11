@@ -31,7 +31,7 @@ use tutti_graph::{
     compile,
 };
 use tutti_graph::{NodeKey, Topology};
-use tutti_types::{At, ChannelLayout, Frame, Latency, SampleRate, Samples};
+use tutti_types::{At, Frame, Latency, SampleRate, Samples};
 use tutti_ump::Ump;
 
 /// What a sink saw: `(block start frame, offset, port, tag)`.
@@ -49,7 +49,7 @@ struct Burst {
 
 impl Node for Burst {
     fn shape(&self) -> Shape {
-        let s = Shape::audio(ChannelLayout::EMPTY, ChannelLayout::EMPTY).with_events(0, self.ports);
+        let s = Shape::EMPTY.with_events(0, self.ports);
         match self.cap {
             Some(c) => s.with_event_capacity(c),
             None => s,
@@ -78,7 +78,7 @@ struct Relay;
 
 impl Node for Relay {
     fn shape(&self) -> Shape {
-        Shape::audio(ChannelLayout::EMPTY, ChannelLayout::EMPTY).with_events(1, 1)
+        Shape::EMPTY.with_events(1, 1)
     }
     fn prepare(&mut self, _: &Prepare) {}
     fn process(&mut self, _: &Cx<'_>, mut io: Io<'_>) -> Status {
@@ -105,7 +105,7 @@ struct Late {
 
 impl Node for Late {
     fn shape(&self) -> Shape {
-        Shape::audio(ChannelLayout::EMPTY, ChannelLayout::EMPTY)
+        Shape::EMPTY
             .with_events(0, 1)
             .with_latency(Latency::new(Samples(self.latency)))
     }
@@ -124,7 +124,7 @@ struct Sink {
 
 impl Node for Sink {
     fn shape(&self) -> Shape {
-        Shape::audio(ChannelLayout::EMPTY, ChannelLayout::EMPTY).with_events(self.ports, 0)
+        Shape::EMPTY.with_events(self.ports, 0)
     }
     fn prepare(&mut self, _: &Prepare) {}
     fn process(&mut self, cx: &Cx<'_>, io: Io<'_>) -> Status {
@@ -160,7 +160,7 @@ impl Rig {
             let s = make().shape();
             t.nodes.insert(
                 *k,
-                NodeSpec::new("n", s.audio_in, s.audio_out)
+                NodeSpec::new("n", s.audio_in(), s.audio_out())
                     .with_latency(s.latency.samples())
                     .with_tail(s.tail),
             );

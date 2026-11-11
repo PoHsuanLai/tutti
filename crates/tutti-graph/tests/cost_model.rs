@@ -251,7 +251,7 @@ fn packed_siblings_render_bit_identically() {
         let heavy = |op: u32| {
             matches!(plan.ops()[op as usize], tutti_graph::Op::Node { unit, .. }
                 if plan.units()[unit as usize].shape.cost == Cost::Heavy
-                    && plan.units()[unit as usize].shape.audio_in.count() == 1)
+                    && plan.units()[unit as usize].shape.audio_in().count() == 1)
         };
         let mut light_tasks = 0;
         for t in plan.tasks() {

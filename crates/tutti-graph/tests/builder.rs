@@ -38,7 +38,10 @@ struct Width {
 
 impl Node for Width {
     fn shape(&self) -> Shape {
-        Shape::audio(ch(self.ins), ch(self.outs))
+        Shape::buses(
+            tutti_graph::Buses::discrete(ch(self.ins)),
+            tutti_graph::Buses::discrete(ch(self.outs)),
+        )
     }
     fn prepare(&mut self, _: &Prepare) {}
     fn process(&mut self, _: &Cx<'_>, mut io: Io<'_>) -> Status {

@@ -247,7 +247,11 @@ pub(crate) fn op_work(op: &Op, shapes: &[Shape], sum_lanes: &[Option<crate::Edge
 /// side (at least one: an event-only node still runs per frame).
 pub(crate) fn node_work(shape: &Shape) -> Work {
     let (fixed, per) = shape.cost.weights();
-    let channels = shape.audio_in.count().max(shape.audio_out.count()).max(1) as u64;
+    let channels = shape
+        .audio_in()
+        .count()
+        .max(shape.audio_out().count())
+        .max(1) as u64;
     Work {
         fixed,
         per_frame: per * channels,
@@ -392,10 +396,7 @@ mod tests {
 
     #[test]
     fn a_default_node_is_worth_a_task_at_one_frame() {
-        let heavy = node_work(&Shape::audio(
-            tutti_types::ChannelLayout::MONO,
-            tutti_types::ChannelLayout::MONO,
-        ));
+        let heavy = node_work(&Shape::through_discrete(tutti_types::ChannelLayout::MONO));
         let task = heavy.plus(w(TASK_DISPATCH, 0));
         assert_eq!(
             schedule(heavy.plus(heavy), task, 2, 2, Samples(1), 2),

@@ -94,7 +94,7 @@ use bytemuck::{Pod, Zeroable};
 use ringbuf::traits::{Consumer, Producer, Split};
 use ringbuf::{HeapCons, HeapProd, HeapRb};
 use tutti_rt::{SeqReader, SeqWriter};
-use tutti_types::{At, ChannelLayout, Frame, Moment, SampleRate};
+use tutti_types::{At, Frame, Moment, SampleRate};
 use tutti_ump::Ump;
 
 use crate::cost::Cost;
@@ -419,7 +419,7 @@ fn must_arrive(ump: Ump) -> bool {
 impl Node for EventInletNode {
     /// No audio; one event output of [`capacity`](EventInletNode::capacity).
     fn shape(&self) -> Shape {
-        Shape::audio(ChannelLayout::EMPTY, ChannelLayout::EMPTY)
+        Shape::EMPTY
             .with_events(0, 1)
             // `pair` checked that it fits.
             .with_event_capacity(self.capacity as u32)

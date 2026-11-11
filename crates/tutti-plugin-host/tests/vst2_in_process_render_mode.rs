@@ -150,7 +150,7 @@ fn drive_blocks_at(unit: &mut PluginNode<Vst2Loaded>, hz: f64, max: usize, frame
     let rate = SampleRate(hz);
     Node::prepare(unit, &Prepare::new(rate, tutti_types::Samples(max)));
     let silence = vec![0.0f32; frames];
-    let inputs: Vec<&[f32]> = (0..Node::shape(unit).audio_in.count())
+    let inputs: Vec<&[f32]> = (0..Node::shape(unit).audio_in().count())
         .map(|_| &silence[..])
         .collect();
     let env = Env {

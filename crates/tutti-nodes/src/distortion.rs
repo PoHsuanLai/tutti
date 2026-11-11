@@ -154,7 +154,7 @@ impl Node for DistortionNode {
             ShapeKind::Softsign | ShapeKind::HardClip => tutti_graph::Cost::Light,
             _ => tutti_graph::Cost::Moderate,
         };
-        Shape::audio(width, width)
+        Shape::through_discrete(width)
             .with_cost(cost)
             .with_tail(Tail::None)
             .with_params(&DISTORTION_PARAMS)
@@ -273,15 +273,15 @@ mod tests {
     #[test]
     fn distortion_is_two_in_two_out() {
         let n = DistortionNode::new(ShapeKind::Tanh, Drive::new(1.0));
-        assert_eq!(n.shape().audio_in.count(), 2);
-        assert_eq!(n.shape().audio_out.count(), 2);
+        assert_eq!(n.shape().audio_in().count(), 2);
+        assert_eq!(n.shape().audio_out().count(), 2);
     }
 
     #[test]
     fn with_channels_reports_arity_and_shapes_every_channel() {
         let mut n = DistortionNode::with_channels(6u16, ShapeKind::HardClip, Drive::new(1.0));
-        assert_eq!(n.shape().audio_in.count(), 6);
-        assert_eq!(n.shape().audio_out.count(), 6);
+        assert_eq!(n.shape().audio_in().count(), 6);
+        assert_eq!(n.shape().audio_out().count(), 6);
 
         // Each channel gets the same (linked) shaper — hardclip clamps all 6.
         let mut out = [0.0f32; 6];
@@ -403,7 +403,7 @@ mod tests {
         let d = DistortionNode::new(ShapeKind::Tanh, Drive::new(1.0));
         assert_eq!(d.shape().params.as_slice(), &[UnitParam::Drive][..]);
         assert_eq!(
-            (d.shape().audio_in.count(), d.shape().audio_out.count()),
+            (d.shape().audio_in().count(), d.shape().audio_out().count()),
             (2, 2)
         );
         assert_eq!(d.param_base(0), Some(1.0), "the base is the drive control");
@@ -446,7 +446,7 @@ mod tests {
     fn a_fed_drive_shapes_every_channel_of_a_wide_node() {
         let mut n = DistortionNode::with_channels(6u16, ShapeKind::HardClip, Drive::new(1.0));
         assert_eq!(
-            (n.shape().audio_in.count(), n.shape().audio_out.count()),
+            (n.shape().audio_in().count(), n.shape().audio_out().count()),
             (6, 6)
         );
         let x = vec![0.25f32; 64];

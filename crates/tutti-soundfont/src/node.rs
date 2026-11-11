@@ -20,21 +20,18 @@ impl Node for SoundFontUnit {
     /// reverb send), one MIDI event input, placed to the 8-frame chunk the
     /// voices render in, and the tail of the longest release.
     fn shape(&self) -> Shape {
-        Shape::audio(
-            ChannelLayout::EMPTY,
-            ChannelLayout::from_count(Plane::COUNT as u16),
-        )
-        .with_events(1, 0)
-        .with_event_resolution(Resolution::Frames(crate::SYNTH_BLOCK_FRAMES as u32))
-        // Sample playback and filters per voice: measured 76 ns
-        // per frame and channel with one note held, 140 with eight,
-        // against `SvfFilterNode`'s 7.2 (doc 013, "The cost model and coarsening").
-        // The default, stated.
-        .with_cost(tutti_graph::Cost::Heavy)
-        // The longest a voice rings after its key is up: an export that
-        // ends at the last note-off extends by this, and keeps the
-        // release. The effects after the unit declare their own.
-        .with_tail(self.shape_tail())
+        Shape::source_discrete(ChannelLayout::from_count(Plane::COUNT as u16))
+            .with_events(1, 0)
+            .with_event_resolution(Resolution::Frames(crate::SYNTH_BLOCK_FRAMES as u32))
+            // Sample playback and filters per voice: measured 76 ns
+            // per frame and channel with one note held, 140 with eight,
+            // against `SvfFilterNode`'s 7.2 (doc 013, "The cost model and coarsening").
+            // The default, stated.
+            .with_cost(tutti_graph::Cost::Heavy)
+            // The longest a voice rings after its key is up: an export that
+            // ends at the last note-off extends by this, and keeps the
+            // release. The effects after the unit declare their own.
+            .with_tail(self.shape_tail())
     }
 
     /// Re-rate to the prepared rate (keeping the preset), and size the

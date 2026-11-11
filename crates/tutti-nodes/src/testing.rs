@@ -115,8 +115,7 @@ impl Node for Const {
     /// convention a graph's tail walk relies on (`Unbounded` here would make
     /// every graph with a stimulus in it unspendable).
     fn shape(&self) -> Shape {
-        Shape::audio(
-            ChannelLayout::EMPTY,
+        Shape::source_discrete(
             ChannelLayout::try_from(self.values.len()).expect("a stimulus has few channels"),
         )
         .with_cost(tutti_graph::Cost::Light)
@@ -268,7 +267,7 @@ impl Osc {
 impl Node for Osc {
     /// A generator at zero latency; `Tail::None`, as [`Const`]'s.
     fn shape(&self) -> Shape {
-        Shape::audio(ChannelLayout::EMPTY, self.layout).with_cost(tutti_graph::Cost::Moderate)
+        Shape::source_discrete(self.layout).with_cost(tutti_graph::Cost::Moderate)
     }
 
     fn prepare(&mut self, prepare: &Prepare) {
@@ -317,7 +316,7 @@ impl Through {
 impl Node for Through {
     /// A copy stops with its input: `Tail::None`.
     fn shape(&self) -> Shape {
-        Shape::audio(self.layout, self.layout).with_cost(tutti_graph::Cost::Light)
+        Shape::through_discrete(self.layout).with_cost(tutti_graph::Cost::Light)
     }
 
     fn prepare(&mut self, _: &Prepare) {}
@@ -351,7 +350,11 @@ impl Split {
 impl Node for Split {
     /// A copy stops with its input: `Tail::None`.
     fn shape(&self) -> Shape {
-        Shape::audio(ChannelLayout::MONO, self.layout).with_cost(tutti_graph::Cost::Light)
+        Shape::buses(
+            tutti_graph::Buses::discrete(ChannelLayout::MONO),
+            tutti_graph::Buses::discrete(self.layout),
+        )
+        .with_cost(tutti_graph::Cost::Light)
     }
 
     fn prepare(&mut self, _: &Prepare) {}
@@ -389,7 +392,7 @@ impl Sink {
 
 impl Node for Sink {
     fn shape(&self) -> Shape {
-        Shape::audio(self.layout, ChannelLayout::EMPTY).with_cost(tutti_graph::Cost::Light)
+        Shape::sink_discrete(self.layout).with_cost(tutti_graph::Cost::Light)
     }
 
     fn prepare(&mut self, _: &Prepare) {}
@@ -501,7 +504,7 @@ mod tests {
     #[test]
     fn plumbing_moves_the_samples_it_claims() {
         let sr = SampleRate(48_000.0);
-        let width = |s: Shape| (s.audio_in.count(), s.audio_out.count());
+        let width = |s: Shape| (s.audio_in().count(), s.audio_out().count());
         let dc = Const::frame(&[0.5, -0.25]);
         assert_eq!(width(dc.shape()), (0, 2));
         let out = solo(dc, sr, 8).render(8);

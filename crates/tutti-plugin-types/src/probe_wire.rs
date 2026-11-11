@@ -15,8 +15,9 @@ use std::ffi::OsString;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
-/// Leads every result file; the last byte is the format version.
-const MAGIC: [u8; 5] = *b"TPRB\x01";
+/// Leads every result file; the last byte is the format version (2: the
+/// payload is postcard; 1 was bincode).
+const MAGIC: [u8; 5] = *b"TPRB\x02";
 /// Magic, then the payload length as a little-endian `u64`.
 const HEADER: usize = MAGIC.len() + 8;
 
@@ -54,11 +55,9 @@ pub enum ResultError {
 /// # Panics
 ///
 /// Never in practice: a [`ProbeOutcome`] holds strings, numbers and enums, which
-/// bincode writes to a `Vec` without failing.
+/// postcard writes to a `Vec` without failing.
 pub fn encode_result(outcome: &ProbeOutcome) -> Vec<u8> {
-    // A `ProbeOutcome` holds only strings, numbers and enums, which bincode
-    // writes to a `Vec` without failing.
-    let payload = bincode::serialize(outcome).expect("a ProbeOutcome serializes to a Vec");
+    let payload = postcard::to_allocvec(outcome).expect("a ProbeOutcome serializes to a Vec");
     let mut bytes = Vec::with_capacity(HEADER + payload.len());
     bytes.extend_from_slice(&MAGIC);
     bytes.extend_from_slice(&(payload.len() as u64).to_le_bytes());
@@ -94,7 +93,13 @@ pub fn decode_result(bytes: &[u8]) -> Result<ProbeOutcome, ResultError> {
     if (payload.len() as u64) > len {
         return Err(ResultError::Malformed("bytes after the payload".into()));
     }
-    bincode::deserialize(payload).map_err(|e| ResultError::Malformed(e.to_string()))
+    match postcard::take_from_bytes(payload) {
+        Ok((outcome, [])) => Ok(outcome),
+        Ok(_) => Err(ResultError::Malformed(
+            "bytes after the outcome in its payload".into(),
+        )),
+        Err(e) => Err(ResultError::Malformed(e.to_string())),
+    }
 }
 
 /// Where `write_result` stages `result` before it renames it into place.
@@ -241,5 +246,29 @@ mod tests {
             decode_result(&extra),
             Err(ResultError::Malformed(_))
         ));
+    }
+
+    /// A payload whose declared length covers bytes after the outcome is
+    /// refused, not decoded from its front: the outcome is the whole payload.
+    #[test]
+    fn a_payload_with_bytes_after_the_outcome_is_refused() {
+        let mut payload = postcard::to_allocvec(&described()).unwrap();
+        payload.push(0);
+        let mut bytes = MAGIC.to_vec();
+        bytes.extend_from_slice(&(payload.len() as u64).to_le_bytes());
+        bytes.extend_from_slice(&payload);
+        assert!(matches!(
+            decode_result(&bytes),
+            Err(ResultError::Malformed(m)) if m.contains("after the outcome")
+        ));
+    }
+
+    /// A file from the bincode-era probe (format 1) is refused by its magic,
+    /// not decoded as postcard.
+    #[test]
+    fn a_format_one_file_is_refused_by_its_magic() {
+        let mut old = encode_result(&described());
+        old[MAGIC.len() - 1] = 1;
+        assert_eq!(decode_result(&old), Err(ResultError::BadMagic));
     }
 }

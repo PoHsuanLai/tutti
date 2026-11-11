@@ -20,7 +20,7 @@ const RATE: f64 = 48_000.0;
 /// gain in decibels.
 fn gains_db<N: Node + 'static>(node: N, freq: f64, amp: f32) -> Vec<f64> {
     let mut node = prepared(node, SampleRate(RATE), BLOCK);
-    let width = usize::from(node.shape().audio_in.count());
+    let width = usize::from(node.shape().audio_in().count());
     let total = BLOCK * BLOCKS;
     let input: Vec<f32> = (0..total)
         .map(|i| amp * (std::f64::consts::TAU * freq * i as f64 / RATE).sin() as f32)

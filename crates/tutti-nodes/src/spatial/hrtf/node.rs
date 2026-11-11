@@ -6,8 +6,10 @@
 use tutti_dsp::{HRTF_LATENCY, HRTF_STEP, HrtfBinaural, HrtfBinauralError};
 use tutti_graph::{Cx, IntoNode, Io, Node, NodeParts, ParamNode, ParamSet, Prepare, Shape, Status};
 use tutti_types::Latency;
-use tutti_types::{Azimuth, Direction, Elevation, Mix, Param, SampleRate, Samples, Tail};
-use tutti_types::{ChannelLayout, UnitParam};
+use tutti_types::UnitParam;
+use tutti_types::{
+    Azimuth, BusTopology, Direction, Elevation, Mix, Param, SampleRate, Samples, Tail,
+};
 
 use crate::ramp::{LastGood, block_driven};
 use crate::spatial::target::AngleSmoother;
@@ -158,7 +160,7 @@ impl HrtfBinauralNode {
 /// block after a reset already renders there.
 impl Node for HrtfBinauralNode {
     fn shape(&self) -> Shape {
-        Shape::audio(ChannelLayout::STEREO, ChannelLayout::STEREO)
+        Shape::through(BusTopology::STEREO)
             .with_params(&HRTF_BINAURAL_PARAMS)
             .with_latency(Latency::new(Samples(HRTF_LATENCY)))
             .with_tail(match self.panner.ring_out() {

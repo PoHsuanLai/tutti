@@ -1,7 +1,7 @@
 //! Wire-envelope enums — the host↔server message types.
 //!
 //! [`HostMessage`] travels host → subprocess, [`BridgeMessage`] back. Both are
-//! bincode-encoded, so **variant order is wire-significant**: a discriminant is a
+//! postcard-encoded, so **variant order is wire-significant**: a discriminant is a
 //! varint over declaration order, and inserting mid-enum renumbers every later
 //! variant. Append, and bump
 //! [`PROTOCOL_VERSION`](super::PROTOCOL_VERSION).
@@ -387,7 +387,7 @@ pub enum BridgeMessage {
     /// Handshake sent once the subprocess is live. Carries the wire
     /// [`PROTOCOL_VERSION`](super::PROTOCOL_VERSION) so a host and subprocess
     /// built from mismatched commits refuse to proceed rather than mis-parsing
-    /// each other's messages (bincode is not self-describing). `#[serde(default)]`
+    /// each other's messages (postcard is not self-describing). `#[serde(default)]`
     /// = 0 for an ancient binary that predates the field → treated as a mismatch.
     Ready {
         /// The subprocess's [`PROTOCOL_VERSION`](super::PROTOCOL_VERSION).

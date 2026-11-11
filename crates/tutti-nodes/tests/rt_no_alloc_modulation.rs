@@ -198,7 +198,7 @@ struct ParamProbe;
 
 impl tutti_graph::Node for ParamProbe {
     fn shape(&self) -> tutti_graph::Shape {
-        tutti_graph::Shape::audio(ChannelLayout::EMPTY, ChannelLayout::MONO)
+        tutti_graph::Shape::source_discrete(ChannelLayout::MONO)
             .with_params(&[tutti_types::UnitParam::Cutoff])
     }
     fn prepare(&mut self, _: &tutti_graph::Prepare) {}
@@ -440,8 +440,7 @@ struct Probe8;
 
 impl tutti_graph::Node for Probe8 {
     fn shape(&self) -> tutti_graph::Shape {
-        tutti_graph::Shape::audio(ChannelLayout::EMPTY, ChannelLayout::from_count(8))
-            .with_params(&PROBE8)
+        tutti_graph::Shape::source_discrete(ChannelLayout::from_count(8)).with_params(&PROBE8)
     }
     fn prepare(&mut self, _: &tutti_graph::Prepare) {}
     fn process(
@@ -780,7 +779,7 @@ struct Bursts {
 
 impl tutti_graph::Node for Bursts {
     fn shape(&self) -> tutti_graph::Shape {
-        tutti_graph::Shape::audio(ChannelLayout::EMPTY, ChannelLayout::STEREO)
+        tutti_graph::Shape::source_discrete(ChannelLayout::STEREO)
     }
     fn prepare(&mut self, _: &tutti_graph::Prepare) {}
     fn process(
@@ -813,7 +812,7 @@ struct Notes {
 
 impl tutti_graph::Node for Notes {
     fn shape(&self) -> tutti_graph::Shape {
-        tutti_graph::Shape::audio(ChannelLayout::EMPTY, ChannelLayout::EMPTY).with_events(0, 1)
+        tutti_graph::Shape::EMPTY.with_events(0, 1)
     }
     fn prepare(&mut self, _: &tutti_graph::Prepare) {}
     fn process(

@@ -155,7 +155,7 @@ impl AutomationLaneNode {
 impl Node for AutomationLaneNode {
     /// One audio output.
     fn shape(&self) -> Shape {
-        Shape::audio(ChannelLayout::EMPTY, ChannelLayout::MONO)
+        Shape::source_discrete(ChannelLayout::MONO)
             .with_cost(tutti_graph::Cost::Moderate)
             .with_tail(Tail::Unbounded)
     }
@@ -249,8 +249,8 @@ mod tests {
     #[test]
     fn declares_no_inputs_and_one_output() {
         let shape = AutomationLaneNode::new(ramp_trajectory()).shape();
-        assert_eq!(shape.audio_in.count(), 0);
-        assert_eq!(shape.audio_out.count(), 1);
+        assert_eq!(shape.audio_in().count(), 0);
+        assert_eq!(shape.audio_out().count(), 1);
         assert_eq!(shape.tail, Tail::Unbounded, "a generator is never skipped");
     }
 

@@ -91,7 +91,7 @@ struct TailProbe {
 
 impl Node for TailProbe {
     fn shape(&self) -> Shape {
-        Shape::audio(ChannelLayout::MONO, ChannelLayout::MONO)
+        Shape::through_discrete(ChannelLayout::MONO)
             .with_latency(Latency::new(self.latency))
             .with_tail(self.tail)
     }
@@ -192,7 +192,7 @@ fn status_silent_zeroes_and_flags() {
     struct Liar;
     impl Node for Liar {
         fn shape(&self) -> Shape {
-            Shape::audio(ChannelLayout::EMPTY, ChannelLayout::MONO)
+            Shape::source_discrete(ChannelLayout::MONO)
         }
         fn prepare(&mut self, _: &Prepare) {}
         fn process(&mut self, _: &Cx<'_>, mut io: Io<'_>) -> Status {
@@ -242,7 +242,7 @@ fn masked_status_reaches_the_next_nodes_mask() {
     struct HalfSilent;
     impl Node for HalfSilent {
         fn shape(&self) -> Shape {
-            Shape::audio(ChannelLayout::EMPTY, ChannelLayout::STEREO)
+            Shape::source_discrete(ChannelLayout::STEREO)
         }
         fn prepare(&mut self, _: &Prepare) {}
         fn process(&mut self, _: &Cx<'_>, mut io: Io<'_>) -> Status {
@@ -258,7 +258,11 @@ fn masked_status_reaches_the_next_nodes_mask() {
     struct Observer(Arc<AtomicUsize>);
     impl Node for Observer {
         fn shape(&self) -> Shape {
-            Shape::audio(ChannelLayout::STEREO, ChannelLayout::MONO).with_tail(Tail::Unknown)
+            Shape::buses(
+                tutti_graph::Buses::discrete(ChannelLayout::STEREO),
+                tutti_graph::Buses::discrete(ChannelLayout::MONO),
+            )
+            .with_tail(Tail::Unknown)
         }
         fn prepare(&mut self, _: &Prepare) {}
         fn process(&mut self, _: &Cx<'_>, mut io: Io<'_>) -> Status {
@@ -309,7 +313,7 @@ fn freeing_a_control_freed_value_inside_process_panics_in_debug() {
     struct Freer(Option<ControlFreed>);
     impl Node for Freer {
         fn shape(&self) -> Shape {
-            Shape::audio(ChannelLayout::EMPTY, ChannelLayout::MONO)
+            Shape::source_discrete(ChannelLayout::MONO)
         }
         fn prepare(&mut self, _: &Prepare) {}
         fn process(&mut self, _: &Cx<'_>, mut io: Io<'_>) -> Status {
@@ -429,7 +433,7 @@ impl IntoNode for GainBuilder {
 
 impl Node for GainNode {
     fn shape(&self) -> Shape {
-        Shape::audio(ChannelLayout::MONO, ChannelLayout::MONO).with_in_place()
+        Shape::through_discrete(ChannelLayout::MONO).with_in_place()
     }
     fn prepare(&mut self, _: &Prepare) {}
     fn process(&mut self, _: &Cx<'_>, mut io: Io<'_>) -> Status {
@@ -722,7 +726,7 @@ impl Synth {
 
 impl Node for Synth {
     fn shape(&self) -> Shape {
-        Shape::audio(ChannelLayout::EMPTY, ChannelLayout::MONO)
+        Shape::source_discrete(ChannelLayout::MONO)
             .with_events(1, 0)
             .with_tail(Tail::Finite(Samples(self.release)))
     }
@@ -777,7 +781,7 @@ struct OneShot {
 
 impl Node for OneShot {
     fn shape(&self) -> Shape {
-        Shape::audio(ChannelLayout::EMPTY, ChannelLayout::EMPTY).with_events(0, 1)
+        Shape::EMPTY.with_events(0, 1)
     }
     fn prepare(&mut self, _: &Prepare) {}
     fn process(&mut self, cx: &Cx<'_>, mut io: Io<'_>) -> Status {
@@ -915,7 +919,7 @@ fn a_merge_holds_all_its_inputs_so_no_note_off_is_lost() {
     struct Offs;
     impl Node for Offs {
         fn shape(&self) -> Shape {
-            Shape::audio(ChannelLayout::EMPTY, ChannelLayout::EMPTY).with_events(0, 1)
+            Shape::EMPTY.with_events(0, 1)
         }
         fn prepare(&mut self, _: &Prepare) {}
         fn process(&mut self, cx: &Cx<'_>, mut io: Io<'_>) -> Status {
@@ -936,7 +940,7 @@ fn a_merge_holds_all_its_inputs_so_no_note_off_is_lost() {
     struct Count(Arc<AtomicUsize>);
     impl Node for Count {
         fn shape(&self) -> Shape {
-            Shape::audio(ChannelLayout::EMPTY, ChannelLayout::EMPTY).with_events(1, 0)
+            Shape::EMPTY.with_events(1, 0)
         }
         fn prepare(&mut self, _: &Prepare) {}
         fn process(&mut self, _: &Cx<'_>, io: Io<'_>) -> Status {
@@ -999,9 +1003,9 @@ impl OutOfBand {
 
 impl Node for OutOfBand {
     fn shape(&self) -> Shape {
-        Shape::audio(
-            ChannelLayout::from_count(self.inputs),
-            ChannelLayout::from_count(self.outputs),
+        Shape::buses(
+            tutti_graph::Buses::discrete(ChannelLayout::from_count(self.inputs)),
+            tutti_graph::Buses::discrete(ChannelLayout::from_count(self.outputs)),
         )
         .with_tail(Tail::None)
     }

@@ -28,10 +28,7 @@ struct Consts {
 
 impl Node for Consts {
     fn shape(&self) -> Shape {
-        Shape::audio(
-            ChannelLayout::EMPTY,
-            ChannelLayout::try_from(self.outs).expect("a test width is small"),
-        )
+        Shape::source_discrete(ChannelLayout::try_from(self.outs).expect("a test width is small"))
     }
     fn prepare(&mut self, _: &Prepare) {}
     fn process(&mut self, _: &Cx<'_>, mut io: Io<'_>) -> Status {
@@ -69,7 +66,7 @@ impl Sine {
 
 impl Node for Sine {
     fn shape(&self) -> Shape {
-        Shape::audio(ChannelLayout::EMPTY, ChannelLayout::MONO).with_tail(Tail::Unbounded)
+        Shape::source_discrete(ChannelLayout::MONO).with_tail(Tail::Unbounded)
     }
     fn prepare(&mut self, p: &Prepare) {
         self.dt = (1.0 / p.sample_rate().get()) as f32;
@@ -95,7 +92,7 @@ struct Shared {
 
 impl Node for Shared {
     fn shape(&self) -> Shape {
-        Shape::audio(ChannelLayout::EMPTY, ChannelLayout::MONO).with_tail(Tail::Unbounded)
+        Shape::source_discrete(ChannelLayout::MONO).with_tail(Tail::Unbounded)
     }
     fn prepare(&mut self, _: &Prepare) {}
     fn process(&mut self, _: &Cx<'_>, mut io: Io<'_>) -> Status {
@@ -143,7 +140,7 @@ impl Level {
 
 impl Node for Level {
     fn shape(&self) -> Shape {
-        Shape::audio(ChannelLayout::EMPTY, ChannelLayout::MONO)
+        Shape::source_discrete(ChannelLayout::MONO)
     }
     fn prepare(&mut self, _: &Prepare) {}
     fn process(&mut self, _: &Cx<'_>, mut io: Io<'_>) -> Status {
@@ -994,7 +991,7 @@ struct Ramp {
 
 impl Node for Ramp {
     fn shape(&self) -> tutti_graph::Shape {
-        tutti_graph::Shape::audio(ChannelLayout::EMPTY, ChannelLayout::MONO)
+        tutti_graph::Shape::source_discrete(ChannelLayout::MONO)
             .with_tail(tutti_types::Tail::Unbounded)
     }
     fn prepare(&mut self, _p: &tutti_graph::Prepare) {}
@@ -1121,7 +1118,7 @@ struct Witness {
 
 impl Node for Witness {
     fn shape(&self) -> Shape {
-        Shape::audio(ChannelLayout::EMPTY, ChannelLayout::MONO)
+        Shape::source_discrete(ChannelLayout::MONO)
     }
     fn prepare(&mut self, _: &Prepare) {
         here(&self.threads.prepared);

@@ -1221,12 +1221,11 @@ mod declared_buses {
             ..LoadedPlugin::default()
         };
         let declared = Declared::of(&loaded);
-        let shape = Shape::audio(declared.inputs, declared.outputs)
-            .with_buses_in(declared.buses_in)
-            .with_buses_out(declared.buses_out);
-        assert_eq!(shape.audio_in, width(6));
+        let shape = Shape::buses(declared.buses_in, declared.buses_out)
+            .with_ports(declared.inputs, declared.outputs);
+        assert_eq!(shape.audio_in(), width(6));
         let ins: Vec<_> = shape
-            .buses_in
+            .buses_in()
             .iter()
             .map(|b| (b.role, b.topology.positions().to_vec()))
             .collect();
@@ -1238,9 +1237,9 @@ mod declared_buses {
                 (BusRole::Aux, vec![Speaker::Discrete; 3]),
             ]
         );
-        assert_eq!(shape.buses_in.first_port(2), Some(3));
+        assert_eq!(shape.buses_in().first_port(2), Some(3));
         assert_eq!(
-            shape.buses_out.get(0).unwrap().topology.positions(),
+            shape.buses_out().get(0).unwrap().topology.positions(),
             &[Speaker::FrontLeft, Speaker::FrontRight]
         );
     }
@@ -1269,9 +1268,8 @@ mod declared_buses {
         assert_eq!(declared.outputs, width(24));
         assert_eq!(declared.buses_out.len(), 1);
         assert_eq!(declared.buses_out.width(), 2);
-        let shape = Shape::audio(declared.inputs, declared.outputs)
-            .with_buses_in(declared.buses_in)
-            .with_buses_out(declared.buses_out);
-        assert_eq!(shape.audio_out, width(24));
+        let shape = Shape::buses(declared.buses_in, declared.buses_out)
+            .with_ports(declared.inputs, declared.outputs);
+        assert_eq!(shape.audio_out(), width(24));
     }
 }

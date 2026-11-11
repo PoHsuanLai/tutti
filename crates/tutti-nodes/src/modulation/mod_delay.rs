@@ -435,7 +435,7 @@ impl Node for ModDelayNode {
     fn shape(&self) -> Shape {
         let width =
             ChannelLayout::try_from(self.delays.len()).expect("the width came from a layout");
-        Shape::audio(width, width)
+        Shape::through_discrete(width)
             .with_cost(tutti_graph::Cost::Moderate)
             .with_tail(self.tail())
             .with_params(&MOD_DELAY_PARAMS)

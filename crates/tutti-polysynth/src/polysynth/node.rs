@@ -13,7 +13,7 @@
 //! starts from the values last set through the set (see `src/fork.rs`).
 
 use tutti_graph::{Cx, IntoNode, Io, Node, NodeParts, ParamNode, ParamSet, Prepare, Shape, Status};
-use tutti_types::{ChannelLayout, UnitParam};
+use tutti_types::{BusTopology, UnitParam};
 
 use super::PolySynth;
 
@@ -70,7 +70,7 @@ impl Node for PolySynth {
         // The unison engine is built with the synth or never (`&mut`
         // setters only), so every read of the shape declares the same ports.
         let ports = if self.unison.is_some() { 3 } else { 1 };
-        Shape::audio(ChannelLayout::EMPTY, ChannelLayout::STEREO)
+        Shape::source(BusTopology::STEREO)
             .with_events(1, 0)
             .with_tail(self.release_tail())
             .with_cost(self.cost())

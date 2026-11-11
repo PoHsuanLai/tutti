@@ -15,7 +15,7 @@ const BLOCK: usize = 64;
 /// input, one `Vec` per output.
 fn impulse_response<N: Node>(node: N, frames: usize) -> Vec<Vec<f32>> {
     let mut node = prepared(node, SR, BLOCK);
-    let ins = usize::from(node.shape().audio_in.count());
+    let ins = usize::from(node.shape().audio_in().count());
     let mut out: Vec<Vec<f32>> = Vec::new();
     let mut done = 0;
     while done < frames {
@@ -142,13 +142,13 @@ fn a_recirculating_chorus_keeps_an_unknown_tail() {
 /// The reverb is one channel in and two out, and silent until its first comb
 /// has gone round (a wet-only effect passes nothing straight through).
 ///
-/// Mutation (run): `Shape::audio(STEREO, STEREO)` fails the shape.
+/// Mutation (run): `Shape::through_discrete(STEREO)` fails the shape.
 #[test]
 fn the_reverb_is_mono_in_stereo_out_and_wet_only() {
     let node = FreeverbNode::general_midi();
     let shape = node.shape();
-    assert_eq!(shape.audio_in, ChannelLayout::MONO);
-    assert_eq!(shape.audio_out, ChannelLayout::STEREO);
+    assert_eq!(shape.audio_in(), ChannelLayout::MONO);
+    assert_eq!(shape.audio_out(), ChannelLayout::STEREO);
     let out = impulse_response(FreeverbNode::general_midi(), 2_000);
     assert_eq!(out.len(), 2);
     // 1116 frames at 44.1 kHz is 1215 at 48 kHz (Freeverb's tuning, scaled).

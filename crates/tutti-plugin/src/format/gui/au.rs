@@ -22,20 +22,19 @@ pub(crate) struct AuGuiInstance {
 }
 
 impl AuGuiInstance {
-    pub fn load(main: &MainThread, path: &Path) -> BridgeResult<Self> {
-        let inner =
-            tutti_au_host::AuLoaded::load(main, path, &Load::new()).map_err(|e| match e {
-                PluginError::Load { stage, reason } => BridgeError::LoadFailed {
-                    path: path.to_path_buf(),
-                    stage,
-                    reason,
-                },
-                other => BridgeError::LoadFailed {
-                    path: path.to_path_buf(),
-                    stage: tutti_plugin_types::LoadStage::Instantiation,
-                    reason: other.to_string(),
-                },
-            })?;
+    pub fn load(main: &MainThread, path: &Path, load: &Load) -> BridgeResult<Self> {
+        let inner = tutti_au_host::AuLoaded::load(main, path, load).map_err(|e| match e {
+            PluginError::Load { stage, reason } => BridgeError::LoadFailed {
+                path: path.to_path_buf(),
+                stage,
+                reason,
+            },
+            other => BridgeError::LoadFailed {
+                path: path.to_path_buf(),
+                stage: tutti_plugin_types::LoadStage::Instantiation,
+                reason: other.to_string(),
+            },
+        })?;
         Ok(Self { inner })
     }
 }
@@ -137,7 +136,11 @@ mod tests {
     #[test]
     fn the_gui_mirror_denormalizes_against_the_declared_range() {
         let main = tutti_fixtures::main_thread();
-        let Ok(mut gui) = AuGuiInstance::load(&main, Path::new("AUDelay")) else {
+        let Ok(mut gui) = AuGuiInstance::load(
+            &main,
+            Path::new("/System/Library/Components/CoreAudio.component"),
+            &Load::new().plugin("au.aufx.dely.appl"),
+        ) else {
             eprintln!("AUDelay unavailable; skipping");
             return;
         };

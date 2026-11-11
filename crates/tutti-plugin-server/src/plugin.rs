@@ -16,6 +16,8 @@ use tutti_plugin::server::{
     Features, LoadedPlugin, Normalized, ParamId, PluginDescriptor, PluginInstance, PluginTail,
     SampleFormat, Samples,
 };
+#[cfg(all(feature = "au", target_os = "macos"))]
+use tutti_plugin_types::Load;
 use tutti_plugin_types::MainThread;
 use tutti_plugin_types::{BridgeError, BridgeResult};
 
@@ -217,9 +219,12 @@ impl Plugin {
 
                 #[cfg(all(feature = "au", target_os = "macos"))]
                 "component" => {
+                    // The wire names a file, not a plugin in it: the bundle's
+                    // first Audio Unit.
                     let (i, e) = AuInstance::load_with_state(
                         main,
                         path,
+                        &Load::new(),
                         sample_rate,
                         block_size,
                         state,
@@ -356,24 +361,32 @@ mod tests {
     /// latency test valid (`poison_cached_latency` does), but it keeps the
     /// figures under test away from a value that coincides with the default.
     ///
-    /// `AU_SAMPLE_PLUGIN` overrides the choice for a machine that has something
-    /// more interesting installed.
+    /// `AU_SAMPLE_PLUGIN` overrides the choice with a bundle path (its first
+    /// Audio Unit) for a machine that has something more interesting installed.
     #[cfg(all(feature = "au", target_os = "macos"))]
-    fn au_fixture() -> Option<String> {
-        fn loadable(name: &str) -> bool {
-            crate::loaders::au::AuInstance::load(&main_thread(), Path::new(name), 44100.0, 512)
-                .is_ok()
+    fn au_fixture() -> Option<(String, Load)> {
+        fn loadable(path: &str, load: &Load) -> bool {
+            crate::loaders::au::AuInstance::load(
+                &main_thread(),
+                Path::new(path),
+                load,
+                44100.0,
+                512,
+            )
+            .is_ok()
         }
 
         if let Ok(named) = std::env::var("AU_SAMPLE_PLUGIN") {
-            if loadable(&named) {
-                return Some(named);
+            if loadable(&named, &Load::new()) {
+                return Some((named, Load::new()));
             }
             eprintln!("AU_SAMPLE_PLUGIN={named} would not load; falling back");
         }
-        const FALLBACK: &str = "AUPeakLimiter";
-        if loadable(FALLBACK) {
-            return Some(FALLBACK.to_string());
+        const BUNDLE: &str = "/System/Library/Components/CoreAudio.component";
+        const FALLBACK: &str = "au.aufx.lmtr.appl";
+        let load = Load::new().plugin(FALLBACK);
+        if loadable(BUNDLE, &load) {
+            return Some((BUNDLE.to_string(), load));
         }
         eprintln!("no loadable AU found (tried {FALLBACK}); skipping");
         None
@@ -551,10 +564,10 @@ mod tests {
         use tutti_plugin_types::{Request, RescanScope};
 
         let _lock = crate::test_utils::plugin_load_lock();
-        let Some(fixture) = au_fixture() else {
+        let Some((fixture, load)) = au_fixture() else {
             return;
         };
-        let instance = AuInstance::load(&main_thread(), Path::new(&fixture), 44100.0, 512)
+        let instance = AuInstance::load(&main_thread(), Path::new(&fixture), &load, 44100.0, 512)
             .expect("the AU fixture resolved but would not load");
         let mut plugin = Plugin::Au(instance);
 
@@ -626,10 +639,10 @@ mod tests {
         use tutti_plugin_types::Request;
 
         let _lock = crate::test_utils::plugin_load_lock();
-        let Some(fixture) = au_fixture() else {
+        let Some((fixture, load)) = au_fixture() else {
             return;
         };
-        let mut au = AuInstance::load(&main_thread(), Path::new(&fixture), 44100.0, 512)
+        let mut au = AuInstance::load(&main_thread(), Path::new(&fixture), &load, 44100.0, 512)
             .expect("the AU fixture resolved but would not load");
 
         // Poison the cache before polling. Without this the test cannot fail:

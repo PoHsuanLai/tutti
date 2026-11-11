@@ -6,7 +6,6 @@ use tutti_plugin_types::{NoteExpressionIntValue, NoteExpressionValue, RtMidiEven
 use tutti_ump::SysexStep;
 use tutti_vst3_ffi::{EventList, NOTE_EXPRESSION_ROOM, Staging};
 
-use super::midi::{bank_program, midi1_data};
 use super::{
     Event, EventExt, MidiEncoder, Payload, ToEvent, Utf16Chord, Utf16Scale, Utf16Text,
     sample_offset,
@@ -47,13 +46,36 @@ impl InputEvents<'_> {
 }
 
 /// Fills a plugin's input [`EventList`] from [`InputEvents`], keeping the
-/// MIDI stream's per-note bend ranges across blocks.
+/// MIDI stream's state across blocks ([`MidiEncoder`]).
 #[derive(Debug, Default)]
 pub struct Stager {
     encoder: MidiEncoder,
 }
 
 impl Stager {
+    /// A stager for a plugin with `buses` event input buses: a UMP Group is
+    /// the bus of its number ([`MidiEncoder::new`]). Allocates: off the audio
+    /// thread.
+    #[must_use]
+    pub fn new(buses: usize) -> Self {
+        Self {
+            encoder: MidiEncoder::new(buses),
+        }
+    }
+
+    /// MIDI messages dropped for a Group the plugin has no event input bus for
+    /// ([`MidiEncoder::groups_dropped`]).
+    #[must_use]
+    pub fn groups_dropped(&self) -> u64 {
+        self.encoder.groups_dropped()
+    }
+
+    /// The plugin was stopped or reset: it forgot its notes and its MIDI 1.0
+    /// state ([`MidiEncoder::reset`]).
+    pub fn reset(&mut self) {
+        self.encoder.reset();
+    }
+
     /// Stages every source into `list`, replacing the previous block.
     ///
     /// MIDI is transcoded ([`MidiEncoder`]) and a multi-packet SysEx stages as
@@ -109,24 +131,23 @@ impl Stager {
 
     /// Stages one MIDI event: a SysEx7 packet through the reassembler (a
     /// completed message stages as one event), anything else through the
-    /// encoder.
+    /// encoder, whose events for one packet stage all or none (an RPN's select
+    /// and data, a bank and its program: a bank is not sent without its
+    /// program).
     fn stage_midi(&mut self, stage: &mut Staging<'_>, event: &UmpAt) {
         let (at, ump) = event;
         match stage.reassemble(ump) {
             SysexStep::NotSysex => {
-                // A Program Change with a bank is three MIDI-1 messages (CC 0, CC 32,
-                // PC), each its own event at the same offset.
-                if let Some(messages) = bank_program(ump) {
-                    // All three or none: a bank is not sent without its program.
-                    if stage.room() < messages.len() {
-                        stage.count_dropped(messages.len() as u64);
-                        return;
-                    }
-                    let offset = sample_offset(at.get());
-                    for bytes in messages {
-                        stage.push(midi1_data(offset, bytes));
-                    }
-                } else if let Some(event) = self.encoder.encode(event) {
+                let events = self.encoder.encode(event);
+                // One event is the list's own to place or count (a note-off
+                // takes the place of an event staged before it); several are
+                // all or none.
+                if events.len() > 1 && stage.room() < events.len() {
+                    stage.count_dropped(events.len() as u64);
+                    self.encoder.forget_selection();
+                    return;
+                }
+                for &event in events {
                     stage.push(event);
                 }
             }

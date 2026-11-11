@@ -97,6 +97,21 @@ impl ClapLoaded {
             == Some(NoteDialect::Midi)
     }
 
+    /// For each input note port (at most 16, a UMP Group's worth), whether
+    /// notes to it go out as `clap_event_midi`: the same question as
+    /// [`sends_midi_notes`](Self::sends_midi_notes), asked of every port.
+    /// Empty for a plugin with no input note port.
+    pub fn midi_note_ports(&self, main: &MainThread) -> Vec<bool> {
+        let count = self.note_port_count(main, true).min(16);
+        (0..count)
+            .map(|index| {
+                self.note_port_info(main, index, true)
+                    .and_then(|port| port.dialect_to_send())
+                    == Some(NoteDialect::Midi)
+            })
+            .collect()
+    }
+
     /// Metadata for the note port at `index`, including supported dialects.
     pub fn note_port_info(
         &self,

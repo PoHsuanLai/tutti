@@ -7,7 +7,6 @@
 mod any_thread;
 mod automation;
 mod automation_mode;
-mod bend_ranges;
 mod bridge_error;
 pub mod bundle;
 mod channels;
@@ -71,7 +70,6 @@ pub use tutti_types::{BarNumber, BeatsPerBar, NoteValue, Seconds, TimeSignature}
 pub use any_thread::{AnyThread, Health};
 pub use automation::{ParameterChanges, ParameterPoint, ParameterQueue};
 pub use automation_mode::AutomationMode;
-pub use bend_ranges::PerNoteBendRanges;
 pub use bridge_error::{BridgeError, BridgeResult, PluginForkError};
 pub use channels::{
     AudioBuffer, AudioBuffer32, AudioBuffer64, AudioBufferMut, MAX_BLOCK_CHANNELS, Sample,

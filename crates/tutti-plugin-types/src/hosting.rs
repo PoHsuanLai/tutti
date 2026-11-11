@@ -9,7 +9,7 @@
 //! The markers are safe traits: a wrong impl is a behaviour bug (an editor that
 //! drifts from its audio instance), not undefined behaviour. They are explicit
 //! opt-in, so a format that writes neither impl is hostable nowhere. Every impl
-//! is listed in the plugin contract's `hostings` (`scripts/check-hosting.sh`).
+//! is listed in the plugin contract's `hostings` (`cargo xtask check-hosting`).
 
 use std::path::{Path, PathBuf};
 

@@ -24,7 +24,7 @@ and `tutti-plugin-types`.
 
 Not public: the `IBStream`, `IAttributeList`/`IMessage`, `IPlugFrame`,
 `IHostApplication` and `IRunLoop` objects, which a `Plugin` builds for itself.
-Every host callback runs under a panic guard (`scripts/check-guards.sh`) and
+Every host callback runs under a panic guard (`cargo xtask check-guards`) and
 answers an error code instead of unwinding into the plugin.
 
 ## How the thread rules are in the types

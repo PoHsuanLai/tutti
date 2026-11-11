@@ -1,10 +1,10 @@
 # The Bevy-free API layer (design 015): the cross-crate composition both
 # umbrellas use. `bevy-tutti` and `tutti` depend on it; nothing else does.
 #
-# Not an umbrella: it re-exports no crate whole (`scripts/check-adapter.sh`
+# Not an umbrella: it re-exports no crate whole (`cargo xtask check-session`
 # fails on `pub use tutti_x as …;`, `pub use tutti_x;` and
 # `pub use tutti_x::*;`), only the single items its own signatures take. And no
-# `bevy` feature: nothing here reaches Bevy (`scripts/check-bevy-free.sh` runs
+# `bevy` feature: nothing here reaches Bevy (`cargo xtask check-session` runs
 # `cargo tree -p tutti-session -e normal --all-features`).
 [package]
 name = "tutti-session"
@@ -69,7 +69,7 @@ tutti-plugin-types = { path = "../tutti-plugin-types", optional = true }
 
 [features]
 # Every subsystem is a feature, as on every engine crate. There is no `bevy`
-# feature, and there must never be one (`scripts/check-bevy-free.sh`).
+# feature, and there must never be one (`cargo xtask check-session`).
 default = []
 device = ["dep:tutti-cpal"]
 # `Recorder` and its pump loop: device-free, so a host that records files or
@@ -90,7 +90,7 @@ synth = ["dep:tutti-polysynth"]
 convolution = ["tutti-nodes/convolution"]
 # Export. `export` is the offline renderer and WAV, which is pure Rust; FLAC and
 # AIFF are pure Rust and opt-in, and `export-ogg` is the one path to C (the
-# Vorbis library, `ogg_next_sys`). `scripts/check-layout.sh` holds that a build
+# Vorbis library, `ogg_next_sys`). `cargo xtask check-layout` holds that a build
 # with `export` alone reaches no C.
 export = ["dep:tutti-export", "dep:tutti-dsp", "dep:tutti-codec", "tutti-export/wav"]
 export-wav = ["export"]

@@ -254,7 +254,7 @@ cargo xtask test-all              # test, test-features, test-editor, test-au-in
   neither the module nor a package for it, so CI only lints the feature and the
   suite runs locally (`cargo xtask test-features`). It fails, never skips, where the
   sequencer is missing. Run it before changing `backend/alsa`.
-- **Golden digests** go through `tutti_nodes::testing::assert_golden`: asserted
+- **Golden digests** go through `tutti_fixtures::assert_golden`: asserted
   on x86_64 with glibc 2.39 (`RECORDED_ARCH`, `RECORDED_GLIBC`, Ubuntu 24.04),
   skipped with a printed note on any other libm or architecture (nextest shows
   the note only under `--no-capture`). CI's Linux jobs set

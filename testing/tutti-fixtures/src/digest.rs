@@ -6,7 +6,7 @@
 //! with [`Fnv`], and compares the figure with one recorded earlier. Both are
 //! plain `f32`, `u32` and `u64` code with no workspace type in a signature, so
 //! a crate at any layer can dev-depend on this one for them. Where the render
-//! reaches `libm` the comparison goes through `tutti_nodes::testing::assert_golden`.
+//! reaches `libm` the comparison goes through `tutti_fixtures::assert_golden`.
 
 /// Deterministic broadband noise: an endless stream of `f32` in `[-1, 1)` from
 /// a linear congruential generator (Numerical Recipes' constants, the top 24

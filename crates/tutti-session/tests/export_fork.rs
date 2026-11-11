@@ -4,7 +4,7 @@
 //! An export forks the live graph (`Editor::fork`). The exports are held to
 //! the same units wired fresh with `GraphBuilder` (a fork starts reset, which
 //! a fresh graph is), to the graph's own latency and tail, to a prepare hook's
-//! edit, and to golden digests (`tutti_nodes::testing::assert_golden`). The
+//! edit, and to golden digests (`tutti_fixtures::assert_golden`). The
 //! rest pin what only a fork has: it shares nothing with the live graph, it
 //! names a node it cannot copy, it is gathered when the export starts and
 //! built wherever the job runs, and everything it held is dropped on the
@@ -24,12 +24,13 @@ use std::time::Duration;
 use tutti_export::{
     ChannelLayout, ConfigError, EncodeConfig, ExportConfig, Format, Pcm, RenderConfig,
 };
+use tutti_fixtures::assert_golden;
 use tutti_graph::NodeKey;
 use tutti_graph::{
     Cx, ForkBuild, ForkByClone, ForkCause, ForkMode, ForkSource, Forked, IntoNode, Io, Node,
     NodeParts, ParamNode, ParamSet, Prepare, Shape, Status, param_parts,
 };
-use tutti_nodes::testing::{Const, Osc, Sink, assert_golden};
+use tutti_nodes::testing::{Const, Osc, Sink};
 use tutti_nodes::{SvfFilterNode, SvfType};
 use tutti_session::{
     Error, ExportClock, ExportOutput, ExportRequest, ExportSource, ExportTarget, GraphSource,

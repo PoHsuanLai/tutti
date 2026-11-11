@@ -1947,7 +1947,7 @@ implementation (scipy) in a report that is not a CI dependency; our own past ren
 oracle. Bit-identity stays only where it is a correctness rule: the parallel render equals the
 serial one, block independence, the contract macros, fork determinism, codec and MIDI bytes. At
 most five golden tripwires remain (section "Step 2b as built"), each through
-`tutti_nodes::testing::assert_golden` on the target it was recorded on. No test compares a render
+`tutti_fixtures::assert_golden` on the target it was recorded on. No test compares a render
 against another reference render.
 
 | Step | Content | Moves | Proves it | After |

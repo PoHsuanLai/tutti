@@ -9,10 +9,10 @@
 //! digest goes through `assert_golden`. The strip's render is `min`, adds and
 //! multiplies of `f32` with no libm call, so its digest is a plain `assert_eq!`.
 
+use tutti_fixtures::assert_golden;
 use tutti_fixtures::{Fnv, Noise};
 use tutti_graph::Node;
 use tutti_graph::contract::{drive, prepared};
-use tutti_nodes::testing::assert_golden;
 use tutti_nodes::{BusStripNode, PhaserNode};
 use tutti_types::{Amplitude, ChannelLayout, Depth, Hz, Pan, SampleRate};
 

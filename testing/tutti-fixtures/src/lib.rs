@@ -1,7 +1,8 @@
 //! Where the test suites find things: the repo's `assets/`, the reference plugin
 //! cdylibs and the `plugin-server` and `plugin-probe` binaries;
 //! [`check_range_contract`], the one check a range-checked type keeps its
-//! contract; [`Fnv`] and [`noise`], what a digest test is made of; and
+//! contract; [`Fnv`] and [`noise`], what a digest test is made of, and [`assert_golden`],
+//! the gate that pins a digest where its libm was recorded; and
 //! [`sf2`], a SoundFont built in memory.
 //!
 //! A test finds a repo file through [`repo_root`] and [`asset`], never through
@@ -34,12 +35,14 @@
 //! mutation-verification result.
 
 // Test-only `unsafe` the suites need lives here, each behind a safe call with
-// its argument at the site (`ScopedEnv`, `StandInWindow`); `deny` so every site is
+// its argument at the site (`ScopedEnv`, `StandInWindow`, the glibc read); `deny` so every site is
 // a named `allow`.
 #![deny(unsafe_code)]
 
 mod digest;
 mod env;
+mod glibc;
+mod golden;
 mod machine_lock;
 pub mod midi;
 #[cfg(feature = "plugin")]
@@ -49,6 +52,7 @@ pub mod sf2;
 
 pub use digest::{Fnv, Noise, noise};
 pub use env::ScopedEnv;
+pub use golden::{RECORDED_ARCH, RECORDED_GLIBC, assert_golden};
 pub use machine_lock::{MachineLock, machine_lock};
 #[cfg(feature = "plugin")]
 pub use plugin::{Activation, Active, StandInWindow, Whole, main_thread};

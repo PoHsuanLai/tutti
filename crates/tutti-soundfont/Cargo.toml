@@ -37,10 +37,9 @@ tutti-types = { path = "../tutti-types", default-features = false }
 tutti-ump = { path = "../tutti-ump", default-features = false }
 
 [dev-dependencies]
-# Finds the repo's `assets/` for the tests.
+# Finds the repo's `assets/` for the tests, and `assert_golden`: the
+# libm-recorded digest gate.
 tutti-fixtures = { path = "../../testing/tutti-fixtures" }
-# `testing::assert_golden`: the libm-recorded digest gate.
-tutti-nodes = { path = "../tutti-nodes", default-features = false, features = ["testing"] }
 assert_no_alloc = { version = "1", default-features = false }
 # `contract::{drive_input, Direct}`: the unit driven by hand, as a graph drives
 # it, in its tests and allocation gate.

@@ -5,14 +5,14 @@
 use std::sync::Arc;
 
 use tutti_dsp::{
-    Cadence, CrossoverControls, CrossoverDesign, CrossoverError, Design, MAX_SPLITS, fit_to_rate,
+    CrossoverControls, CrossoverDesign, CrossoverError, CrossoverTree, MAX_SPLITS, fit_to_rate,
 };
 use tutti_types::{AtomicF32, ChannelLayout, Hz, Param, SampleRate, UnitAddr, UnitParam};
 
-use crate::blend::NoBlend;
-use crate::params::{ControlSet, Params};
+use super::NodeKernel;
+use crate::params::ControlSet;
 use crate::ramp::LastGood;
-use crate::reverb::{DesignNode, NodeDesign};
+use crate::reverb::DesignNode;
 
 /// The crossover frequency cells of a node, and the last finite value each
 /// held. Used by the multiband compressor.
@@ -161,21 +161,13 @@ impl ControlSet for CrossoverSet {
     }
 }
 
-impl NodeDesign for CrossoverDesign {
-    type Params = Params<CrossoverSet>;
-    type Blend = NoBlend;
+impl NodeKernel for CrossoverTree {
+    type Set = CrossoverSet;
 
-    /// A filter declares an unknown tail and never parks.
-    const PARKS: bool = false;
-    const SAMPLING: Cadence = <Self as Design>::CADENCE;
-
-    fn params(&self, initial: CrossoverControls) -> Self::Params {
-        Params::new(
-            CrossoverSet {
-                splits: self.bands() - 1,
-            },
-            &initial,
-        )
+    fn set(&self, _: &CrossoverControls) -> CrossoverSet {
+        CrossoverSet {
+            splits: self.bands() - 1,
+        }
     }
 }
 

@@ -1,70 +1,52 @@
-//! [`SvfDesign`]: the state-variable filter as a [`Design`] (design 024 step 2b).
+//! [`SvfDesign`]: the state-variable filter as a [`Design`](crate::Design) (design 024 step 2b).
 //!
-//! The controls are [`SvfControls`], the model [`SvfModel`] and the realization
-//! [`SvfRealization`]: Simper's trapezoidal form, whose coefficients are read from
-//! the model's own (`SvfModel::coeffs`) and narrowed once to the state precision
-//! `F`. The filter is designed on a 16-frame grid counted on the stream clock from
-//! the last reset ([`SvfDesign::CADENCE`]): a node retargets it at each grid point
-//! it solves, and the realization interpolates the coefficients linearly over the
-//! 16 frames that follow, arriving exactly on the solved set at the segment's last
-//! frame. A control is therefore in the render at most 16 frames after it was
-//! sampled, and the render does not depend on how audio is split into blocks.
+//! The controls are [`SvfControls`], the model [`SvfModel`] and the kernel [`Svf`]:
+//! Simper's trapezoidal form, whose coefficients are read from the model's own
+//! (`SvfModel::coeffs`) and narrowed once to the state precision `F`. The filter is
+//! designed on a 16-frame grid counted on the stream clock from the last reset
+//! ([`Design::CADENCE`](crate::Design::CADENCE)): a node retargets it at each grid point it solves, and the
+//! realization interpolates the coefficients linearly over the 16 frames that follow,
+//! arriving exactly on the solved set at the segment's last frame. A control is
+//! therefore in the render at most 16 frames after it was sampled, and the render does
+//! not depend on how audio is split into blocks.
 
 use core::marker::PhantomData;
 
 use tutti_types::{ChannelLayout, SampleRate};
 
 use super::real::Real;
-use super::sizes::FilterSizes;
 use super::svf::{SvfCoefficients, svf_step};
-use super::{SvfControls, SvfModel};
-use crate::control::COEFF_STREAM;
-use crate::{
-    COEFF_INTERVAL, Cadence, Ceiling, Channels, Design, Effect, Effort, Realization, Setup,
-    lane_group,
-};
+use super::{ChannelKernel, Filter, SvfControls, SvfModel};
 
-/// The [`Design`] of the state-variable filter, `channels` wide, with state
-/// precision `F`.
+/// The [`Design`](crate::Design) of the state-variable filter, `channels` wide, with
+/// state precision `F`.
 ///
 /// `F` defaults to `f64` in the nodes for accuracy at low cutoffs, where an `f32`
 /// integrator loses resolution in the feedback path. The coefficients are shared
 /// across the channels and only the integrator pair is per channel.
+pub type SvfDesign<F> = Filter<Svf<F>>;
+
+/// The state-variable filter as a [`ChannelKernel`]: `[ic1eq, ic2eq]` per channel, in
+/// state precision `F`.
 #[derive(Clone, Copy, Debug)]
-pub struct SvfDesign<F> {
-    channels: ChannelLayout,
-    state: PhantomData<fn() -> F>,
-}
+pub struct Svf<F>(PhantomData<fn() -> F>);
 
 impl<F> SvfDesign<F> {
     /// A design `channels` wide.
     #[must_use]
     pub fn new(channels: ChannelLayout) -> Self {
-        Self {
-            channels,
-            state: PhantomData,
-        }
+        Self::over(Svf(PhantomData), channels)
     }
 }
 
-impl<F: Real> Design for SvfDesign<F> {
+impl<F: Real> ChannelKernel for Svf<F> {
     type Controls = SvfControls;
     type Model = SvfModel;
-    type Bounds = FilterSizes<SvfModel>;
-    type Range = ();
-    type Realization = SvfRealization<F>;
+    type Coeffs = SvfCoefficients<F>;
+    type State = [F; 2];
+    type Frame = [f32; 1];
 
-    /// Solved every 16 frames on the stream clock (doc 024 Q27), at the first frame
-    /// of each segment, and ramped to over it: the render is a function of the
-    /// stream, not of how it is cut into blocks.
-    const CADENCE: Cadence = COEFF_STREAM;
-
-    fn channels(&self) -> Channels {
-        Channels {
-            input: self.channels,
-            output: self.channels,
-        }
-    }
+    const STEPS: u32 = 16;
 
     fn blank(&self, rate: SampleRate) -> SvfModel {
         SvfModel::new(SvfControls::DEFAULT, rate)
@@ -74,157 +56,13 @@ impl<F: Real> Design for SvfDesign<F> {
         *out = SvfModel::new(*controls, rate);
     }
 
-    fn bounds(&self, _: &Ceiling<()>) -> FilterSizes<SvfModel> {
-        FilterSizes::NONE
+    fn coeffs(&self, model: &SvfModel) -> SvfCoefficients<F> {
+        SvfCoefficients::from(model.coeffs())
     }
 
-    fn realization(&self) -> SvfRealization<F> {
-        let rest = SvfModel::new(SvfControls::DEFAULT, SampleRate::DEFAULT);
-        let c = SvfCoefficients::from(rest.coeffs());
-        SvfRealization {
-            prev: c,
-            next: c,
-            state: vec![[F::default(); 2]; usize::from(self.channels.count()).max(1)],
-            phase: COEFF_INTERVAL,
-            landed: false,
-        }
-    }
-}
-
-/// The realization of an [`SvfModel`]: the integrator pair of each channel and the
-/// coefficients it runs, interpolated over 16 frames from where the last solve
-/// left them to the model it was last retargeted to. It counts its own position in
-/// that ramp, so a ramp cut by the end of a call goes on in the next.
-#[derive(Clone, Debug)]
-pub struct SvfRealization<F: Real> {
-    /// The set the ramp starts from.
-    prev: SvfCoefficients<F>,
-    /// The set the ramp ends at.
-    next: SvfCoefficients<F>,
-    /// Frames of the ramp already rendered, [`COEFF_INTERVAL`] once it is done.
-    phase: usize,
-    /// `[ic1eq, ic2eq]`, one pair per channel; `len()` is the audio width. Built
-    /// with the design and never resized (no allocation on the audio thread).
-    state: Vec<[F; 2]>,
-    /// Whether a model has been retargeted since [`prepare`](Realization::prepare):
-    /// the first lands whole, with nothing to interpolate from.
-    landed: bool,
-}
-
-impl<F: Real> SvfRealization<F> {
-    /// The set `p` frames into the ramp: `next` from the segment's last frame on.
-    #[inline]
-    fn at(&self, p: usize) -> SvfCoefficients<F> {
-        if p >= COEFF_INTERVAL {
-            self.next
-        } else {
-            let t = F::from_f64(p as f64) / F::from_f64(COEFF_INTERVAL as f64);
-            self.prev.lerp(&self.next, t)
-        }
-    }
-
-    /// The channels `first..first + N` through the held set, sample-inner, the
-    /// group's integrators in registers. A recursive filter is latency-bound on one
-    /// channel (each sample waits for the last), so running a few channels' independent
-    /// chains side by side fills that latency while each still reads and writes its
-    /// own planar slice. Measured on the f64 SVF at width 6, one block: all six as
-    /// one group 0.49 us, as 3 + 3 0.60 us, one channel at a time 1.33 us.
-    #[inline]
-    fn held_group<const N: usize>(
-        &mut self,
-        first: usize,
-        input: &[&[f32]],
-        output: &mut [&mut [f32]],
-    ) {
-        let c = self.next;
-        let xs: [&[f32]; N] = core::array::from_fn(|k| input[first + k]);
-        let mut group = output.iter_mut().skip(first);
-        let ys: [&mut [f32]; N] =
-            core::array::from_fn(|_| &mut **group.next().expect("the group is inside the width"));
-        let mut st: [[F; 2]; N] = core::array::from_fn(|k| self.state[first + k]);
-        for i in 0..xs[0].len() {
-            for k in 0..N {
-                ys[k][i] = svf_step(&c, &mut st[k], F::from_f32(xs[k][i])).to_f32();
-            }
-        }
-        self.state[first..first + N].copy_from_slice(&st);
-    }
-}
-
-impl<F: Real> Realization<SvfModel> for SvfRealization<F> {
-    type Bounds = FilterSizes<SvfModel>;
-
-    fn prepare(&mut self, _: &FilterSizes<SvfModel>, _: &Setup) {
-        self.landed = false;
-    }
-
-    /// Starts a ramp to `model` from the set in force now (a ramp cut short is
-    /// not jumped over); the first after `prepare` lands whole.
-    fn retarget(&mut self, model: &SvfModel) {
-        let next = SvfCoefficients::from(model.coeffs());
-        if self.landed {
-            self.prev = self.at(self.phase);
-            self.phase = 0;
-        } else {
-            self.prev = next;
-            self.phase = COEFF_INTERVAL;
-            self.landed = true;
-        }
-        self.next = next;
-    }
-
-    fn reset(&mut self) {
-        self.state.fill([F::default(); 2]);
-        self.prev = self.next;
-        self.phase = COEFF_INTERVAL;
-    }
-
-    fn effort(&self) -> Effort {
-        Effort::Moderate
-    }
-
-    fn fresh(&self) -> Self {
-        let mut fresh = self.clone();
-        fresh.reset();
-        fresh
-    }
-}
-
-impl<F: Real> Effect<SvfModel> for SvfRealization<F> {
-    /// Renders with the set held when nothing moves, else with the set blended
-    /// linearly over the 16 frames after the last retarget, arriving **exactly** on
-    /// the new one at the ramp's last frame, wherever the calls cut it.
-    fn process(&mut self, input: &[&[f32]], output: &mut [&mut [f32]]) {
-        let width = self.state.len();
-        if self.prev == self.next {
-            let mut first = 0;
-            while first < width {
-                let n = lane_group(width - first);
-                match n {
-                    8 => self.held_group::<8>(first, input, output),
-                    7 => self.held_group::<7>(first, input, output),
-                    6 => self.held_group::<6>(first, input, output),
-                    5 => self.held_group::<5>(first, input, output),
-                    4 => self.held_group::<4>(first, input, output),
-                    3 => self.held_group::<3>(first, input, output),
-                    2 => self.held_group::<2>(first, input, output),
-                    _ => self.held_group::<1>(first, input, output),
-                }
-                first += n;
-            }
-        } else {
-            let len = input[0].len();
-            for i in 0..len {
-                let k = self.at(self.phase + i + 1);
-                for (ch, s) in self.state.iter_mut().enumerate() {
-                    output[ch][i] = svf_step(&k, s, F::from_f32(input[ch][i])).to_f32();
-                }
-            }
-            self.phase = (self.phase + len).min(COEFF_INTERVAL);
-        }
-        if self.phase == COEFF_INTERVAL {
-            self.prev = self.next;
-        }
+    #[inline(always)]
+    fn tick(c: &SvfCoefficients<F>, s: &mut [F; 2], x: f32) -> [f32; 1] {
+        [svf_step(c, s, F::from_f32(x)).to_f32()]
     }
 }
 
@@ -237,6 +75,7 @@ mod tests {
     use super::*;
     use crate::SvfType;
     use crate::contract::{Anchor, DesignCase, LtiCase, RealizationCase};
+    use crate::{Design, Effect, Realization};
 
     const TYPES: [SvfType; 8] = [
         SvfType::LowPass,
@@ -388,6 +227,11 @@ mod tests {
     }
 
     crate::design_contract!(design(), Lti);
+
+    #[test]
+    fn a_glides_midpoint_is_stable() {
+        super::super::channel::tests::assert_midpoints_decay(&design());
+    }
 
     // Solved on the stream's 16-frame grid, so the render does not depend on how
     // audio is split: the contract names `BlockIndependent` (the `cadence` case

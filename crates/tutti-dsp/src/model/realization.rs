@@ -41,7 +41,7 @@ pub enum Effort {
 /// Nothing is allocated after [`prepare`](Self::prepare): everything is sized there
 /// from the [`Bounds`](Self::Bounds), and `retarget` and `process` never
 /// allocate, lock or wait.
-pub trait Realization<M>: Send + Sized {
+pub trait Realization<M>: Clone + Send + Sized {
     /// The worst-case sizes [`prepare`](Self::prepare) allocates from: the
     /// design's own [`Design::Bounds`](crate::Design::Bounds), which the realization
     /// names here so the trait carries no engineering type of its own.
@@ -71,10 +71,15 @@ pub trait Realization<M>: Send + Sized {
     }
 
     /// A realization of the same type, prepared for the same setup and retargeted to
-    /// the same model, with empty state: what a fork runs. Control side;
-    /// allocates.
+    /// the same model, with empty state: what a fork runs. A clone, reset; a
+    /// realization whose clone shares more than it should (or whose reset keeps
+    /// what a fork must not) overrides it. Control side; allocates.
     #[must_use]
-    fn fresh(&self) -> Self;
+    fn fresh(&self) -> Self {
+        let mut fresh = self.clone();
+        fresh.reset();
+        fresh
+    }
 }
 
 /// The planar block shape a graph node drives: a realization that renders

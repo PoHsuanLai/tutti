@@ -8,9 +8,10 @@
 
 use std::sync::Arc;
 
-use tutti_types::{Beat, Bpm};
+use tutti_tempo::TempoMap;
+use tutti_types::Beat;
 
-/// A musical timeline: the position, the tempo, whether it is moving, and
+/// A musical timeline: the position, the tempo map, whether it is moving, and
 /// which stretch of straight-line time the position is on.
 ///
 /// Implemented by the live [`Transport`](super::Transport) and by
@@ -42,8 +43,10 @@ pub trait Timeline: Send + Sync {
     /// Returns the playhead, as a [`Beat`] position. May be negative during a
     /// count-in.
     fn beat(&self) -> Beat;
-    /// Returns the tempo in force, in [`Bpm`].
-    fn tempo(&self) -> Bpm;
+    /// Returns the tempo map the timeline runs on: the project's tempo is a
+    /// map, and a tempo is read from it at a beat (`TempoMap::tempo_at`),
+    /// never held as one number.
+    fn tempo_map(&self) -> Arc<TempoMap>;
     /// Returns whether time is advancing. An offline render is always rolling.
     fn is_rolling(&self) -> bool;
     /// Returns which segment of the timeline the playhead is on: a count that moves
@@ -85,7 +88,7 @@ pub trait OfflineClock: Timeline {}
 /// ([`new`](Self::new)), so the live transport is refused. It derefs to the
 /// timeline; [`timeline`](Self::timeline) hands out the shared handle.
 ///
-/// It carries **no** `start_beat` or `tempo` of its own: both are things the
+/// It carries **no** `start_beat` or tempo map of its own: both are things the
 /// timeline already answers, and a copy beside it could disagree.
 #[derive(Clone)]
 pub struct OfflineTransport(Arc<dyn Timeline>);
@@ -116,7 +119,7 @@ impl std::fmt::Debug for OfflineTransport {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("OfflineTransport")
             .field("beat", &self.0.beat())
-            .field("tempo", &self.0.tempo())
+            .field("tempo_map", &self.0.tempo_map())
             .finish()
     }
 }

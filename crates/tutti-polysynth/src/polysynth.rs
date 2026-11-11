@@ -342,12 +342,15 @@ impl PolySynth {
     /// wire: everything below takes typed values.
     ///
     /// A MIDI 1.0 channel voice message is read as the MIDI 2.0 one it means
-    /// ([`channel_voice`]), so a note sounds the same on either wire. The group
-    /// is ignored: one synth is one instrument, whatever group its notes arrive
-    /// on. This is a sink, so a message that is not channel voice (a clock,
+    /// ([`channel_voice`]), so a note sounds the same on either wire. Only the
+    /// synth's own Group is read ([`SynthConfig::group`]): a message in another
+    /// Group addresses another channel space (M2-104 Appendix B.1), so it is
+    /// not this synth's, whichever channel it names. This is a sink, so a message that is not channel voice (a clock,
     /// sysex, one `decode` cannot frame) is unused, not an error.
     fn process_midi_event(&mut self, ump: Ump) {
-        if let Some((address, voice)) = channel_voice(ump) {
+        if let Some((address, voice)) = channel_voice(ump)
+            && address.group == self.config.group
+        {
             self.voice2(address.channel, voice);
         }
     }

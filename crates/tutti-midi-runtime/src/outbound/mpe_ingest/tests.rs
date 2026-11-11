@@ -197,7 +197,7 @@ fn mcm_from_the_wire_configures_the_lower_zone() {
     assert_eq!(reset.len(), 8, "master and seven members");
     assert!(!reset.contains(&mcm));
     assert!(
-        matches!(ingest.mode(), MpeMode::Zones(z) if z.lower().is_some() && z.upper().is_none())
+        matches!(ingest.mode_of(MidiGroup::FIRST), MpeMode::Zones(z) if z.lower().is_some() && z.upper().is_none())
     );
 
     // Now a member-channel bend folds to per-note, proving the zone is live.
@@ -226,11 +226,17 @@ fn an_mcm_that_would_overlap_the_zones_is_ignored() {
         0,
         "absorbed, nothing sent"
     );
-    assert_eq!(*ingest.mode(), tutti_fixtures::midi::lower_zone(10));
+    assert_eq!(
+        *ingest.mode_of(MidiGroup::FIRST),
+        tutti_fixtures::midi::lower_zone(10)
+    );
     // One that fits is taken.
     let fits = at(0, MpeZoneConfig::upper(4).unwrap().to_mcm());
     assert!(ingest.translated(&fits).count() > 0);
-    assert_eq!(*ingest.mode(), tutti_fixtures::midi::dual_zones(10, 4));
+    assert_eq!(
+        *ingest.mode_of(MidiGroup::FIRST),
+        tutti_fixtures::midi::dual_zones(10, 4)
+    );
 }
 
 #[test]
@@ -249,7 +255,10 @@ fn mcm_with_zero_members_disables_the_zone() {
         ),
     );
     assert!(ingest.translated(&disable).next().is_none());
-    assert!(matches!(ingest.mode(), MpeMode::Disabled));
+    assert!(matches!(
+        ingest.mode_of(MidiGroup::FIRST),
+        MpeMode::Disabled
+    ));
 }
 
 /// What a receiver following RPN #00/00 (channel bend range) and
@@ -297,7 +306,10 @@ fn an_mcm_resets_its_zones_bend_ranges() {
     }
     let mcm = at(9, MpeZoneConfig::upper(3).unwrap().to_mcm());
     let reset: Vec<UmpAt> = ingest.translated(&mcm).collect();
-    assert!(matches!(ingest.mode(), MpeMode::Zones(_)));
+    assert!(matches!(
+        ingest.mode_of(MidiGroup::FIRST),
+        MpeMode::Zones(_)
+    ));
     assert!(reset.iter().all(|ev| ev.0.get() == 9));
     assert_eq!(
         ranges_after(reset.iter().copied()),
@@ -437,4 +449,74 @@ fn a_midi_2_note_on_at_velocity_0_binds_its_channel() {
         .next()
         .expect("the bend folds onto the note");
     assert_cv2!(out, _, Voice2::PerNotePitchBend { note, .. } if note.get() == 60);
+}
+
+/// **A Group's member channels, and the notes they hold, are its own** (M2-104
+/// section 2.1.2, Appendix B.1): a note held on member channel 2 of Group 2 is
+/// not the note a bend on channel 2 of Group 1 is for (that bend holds no note
+/// in its Group and is dropped), and the per-note message built for Group 2's
+/// bend stays in Group 2.
+///
+/// Mutation: the held-note table shared by every Group (one table, as it was)
+/// -> Group 1's bend folds onto Group 2's note, so the second assertion
+/// fails; the folded message built at `Address::first` -> its Group is 1,
+/// so the last assertion fails.
+#[test]
+fn a_groups_member_channels_hold_notes_of_their_own() {
+    let mut ingest = MpeIngest::new(tutti_fixtures::midi::lower_zone(15));
+    let group2 = MidiGroup::of(1);
+    let channel = MidiChannel::of(2);
+    let bend = tutti_fixtures::midi::wide_bend(16383);
+    ingest.translated(&at(
+        0,
+        midi::note_on(group2, channel, 60, midi::wide_velocity(100)),
+    ));
+    let first_group = at(0, midi::pitch_bend(MidiGroup::FIRST, channel, bend));
+    assert_eq!(
+        ingest.translated(&first_group).count(),
+        0,
+        "Group 1's channel 2 holds no note"
+    );
+    let second_group = at(0, midi::pitch_bend(group2, channel, bend));
+    let out = ingest.translated(&second_group).next().expect("emits");
+    assert_cv2!(
+        out,
+        Address { group, .. },
+        Voice2::PerNotePitchBend { note, .. } if note.get() == 60 && group == group2
+    );
+}
+
+/// **An MPE Configuration Message configures the Group it arrives in** and no
+/// other (M2-104 Appendix B.1: what a message does in one Group "does not
+/// apply to Channels in any other Group"), and its reset ranges go out on
+/// that Group.
+///
+/// Mutation: the MCM rebuilding the mode of every Group (or of the first
+/// Group always) -> Group 1 is a zone, or Group 2 is not, and the first two
+/// assertions fail; the reset ranges sent on the first Group -> the last
+/// fails.
+#[test]
+fn an_mcm_configures_its_own_group_only() {
+    let mut ingest = MpeIngest::new(MpeMode::Disabled);
+    let group2 = MidiGroup::of(1);
+    let mcm = at(
+        0,
+        midi::registered_rpn(
+            group2,
+            MidiChannel::FIRST,
+            Rpn::MPE_CONFIGURATION,
+            7 << 25, // seven members
+        ),
+    );
+    let reset: Vec<UmpAt> = ingest.translated(&mcm).collect();
+    assert!(matches!(ingest.mode_of(group2), MpeMode::Zones(_)));
+    assert!(matches!(
+        ingest.mode_of(MidiGroup::FIRST),
+        MpeMode::Disabled
+    ));
+    assert_eq!(reset.len(), 8, "master and seven members");
+    assert!(
+        reset.iter().all(|ev| ev.1.group() == Some(group2)),
+        "the reset goes out on the Group that asked"
+    );
 }

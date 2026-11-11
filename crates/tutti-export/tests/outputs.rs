@@ -203,6 +203,8 @@ fn two_tones() -> RenderGraph {
 /// advances once per block rendered, stands exactly the render's frames on.
 #[test]
 fn two_outputs_of_different_formats_are_each_their_own_quantization_of_one_pass() {
+    use std::sync::Arc;
+    use tutti_tempo::TempoMap;
     use tutti_transport::{OfflineTimeline, OfflineTimelineConfig};
     use tutti_types::{Beat, Bpm};
 
@@ -211,7 +213,7 @@ fn two_outputs_of_different_formats_are_each_their_own_quantization_of_one_pass(
     let frames = 9_600;
     let timeline = OfflineTimeline::new(&OfflineTimelineConfig {
         start_beat: Beat(0.0),
-        tempo: Bpm::of(120.0),
+        tempo_map: Arc::new(TempoMap::constant(Bpm::of(120.0)).expect("a tempo")),
         sample_rate: RATE,
         loop_range: None,
     });
@@ -254,7 +256,8 @@ fn two_outputs_of_different_formats_are_each_their_own_quantization_of_one_pass(
         }
     }
 
-    let stood = (timeline.beat().get() / timeline.beats_per_sample().get()).round() as usize;
+    let bps = tutti_types::beats_per_sample(Bpm::of(120.0), RATE);
+    let stood = (timeline.beat().get() / bps.get()).round() as usize;
     assert_eq!(
         stood, frames,
         "the graph was stepped once, not once per output"

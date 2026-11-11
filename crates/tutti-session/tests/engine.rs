@@ -25,7 +25,7 @@ use tutti_nodes::MetronomeMode;
 use tutti_nodes::testing::Const;
 use tutti_session::{GraphSource, MissingSource, Session};
 use tutti_transport::MotionEvent;
-use tutti_types::{Amplitude, ChannelLayout, InterleavedMut, SampleRate, Samples};
+use tutti_types::{Amplitude, Beat, ChannelLayout, InterleavedMut, SampleRate, Samples};
 
 const RATE: f64 = 48_000.0;
 
@@ -151,7 +151,7 @@ fn the_graph_runs_at_the_rate_it_was_built_at() {
 /// **The transport converts at the session's rate.** Its rate is not the
 /// graph's: the engine's clock steps the beat at the graph's rate whatever
 /// the transport holds, so the click above cannot see it. What reads it is
-/// the conversion a host schedules against (frames per beat, a time in
+/// the conversion a host schedules against (a beat's frame, a time in
 /// frames). At 120 BPM and 48 kHz a beat is 24 000 frames; a transport left
 /// at its 44.1 kHz default would say 22 050.
 ///
@@ -161,7 +161,9 @@ fn the_graph_runs_at_the_rate_it_was_built_at() {
 fn the_transport_converts_at_the_sessions_rate() {
     let s = offline();
     assert_eq!(s.transport().sample_rate(), SampleRate(RATE));
-    assert_eq!(s.transport().samples_per_beat(), Samples(24_000));
+    let beat = (s.transport().settings.tempo_map())
+        .frame_at_or_after(Beat(1.0), s.transport().sample_rate());
+    assert_eq!(beat.get(), 24_000, "one beat at 120 BPM and 48 kHz");
 }
 
 // ---- a clip reader through the builder's engine ---------------------------

@@ -700,8 +700,8 @@ means:
   exists**: `Editor::schedule(At, EventIn, EventKind)`
   delivers an event or a `ParamRamp` into a node's event input on its exact
   frame. **Transport commands take the same `At`**:
-  `MotionFsm::schedule(At, TransportCommand)` for play, stop, seek, tempo
-  and loop (see point 3).
+  `MotionFsm::schedule(At, TransportCommand)` for play, stop, seek and loop
+  (see point 3; a tempo change is a point in the project's `TempoMap`, doc 020).
   **The loop region is the engine's.** `TransportCommand::Loop(LoopEdit)`
   moves its bounds, arms it, or both, and the engine is the only writer: it
   keeps the region as plain fields (a block reads them, so a block sees one
@@ -774,8 +774,9 @@ place that loses precision to be written out explicitly:
    tolerance is now the engine-wide rule, `FRAME_TOLERANCE`.)
 
    **Transport commands.** `MotionFsm::schedule(At,
-   TransportCommand)` queues a play, stop, seek or scrub (`MotionEvent`), a
-   tempo or a loop change. No untimed overload: `try_send` is `schedule` at
+   TransportCommand)` queues a play, stop, seek or scrub (`MotionEvent`) or
+   a loop change (a timed tempo command was retired by doc 020 stage 6: the
+   tempo is the map). No untimed overload: `try_send` is `schedule` at
    `At::NextBlock`, on the same queue, so commands due on one frame keep send order across
    both calls (and `cancel_scheduled` takes back only commands waiting for a
    frame or a beat, never an `At::NextBlock`), and the settings stores are values read once per block. The queue is a
@@ -1639,7 +1640,7 @@ nothing to move):
 | `VbapPannerNode` | tutti-nodes | azimuth, elevation, spread, width (the inner panner holds none; the node passes them in per block) | detaches all | yes | `spatial_param_fork::vbap_forks_from_its_params` |
 | `HrtfBinauralNode` | tutti-nodes | azimuth, elevation, blend | detaches all | yes | `spatial_param_fork::hrtf_forks_from_its_params` |
 | `ClickNode` | tutti-nodes | `Arc<ClickSettings>` (volume, mode, meter); the live transport's play, count-in and record flags | fresh settings at the current values; flags frozen | yes | `click::…::isolate_snapshots_settings_and_session_flags` |
-| `TransportClock` | tutti-transport | tempo, pause, seek, loop, writeback, steady time | `ClockLinks::severed`: tempo snapshotted, a fork always rolls | yes | `clock::…::isolate_snapshots_the_tempo` |
+| `TransportClock` | tutti-transport | pause, seek, loop, writeback, steady time (the tempo is the published map, which the engine lends per block) | `ClockLinks::severed`: a fork always rolls | yes | `clock::…::a_derived_stream_severs_live_position_writeback` |
 | `MemorySource` | tutti-sampler | gain; the live timeline (re-pointed by `rebind_offline`) | detaches gain | yes | `isolate_snapshots_gain` |
 | `stretch::Unit` | tutti-sampler | the vocoder bank (stretch and pitch cells are private per clone) | fresh bank | yes | `isolate_snapshots_stretch_and_pitch` |
 | `VoiceNode` | tutti-sampler | command channel, cursor, its voice and stretch | severs all | as its voice | — (controls arrive as commands; `a_render_clone_steals_no_commands`) |
@@ -7851,11 +7852,14 @@ fourth.
     `HardwareMidiInputs`) as a source node. Each block it polls, assembles
     (N)RPN runs and ingests classic MPE (the mode requested through its
     controls is adopted once and latched, as the pre-block did), and sends
-    each event out of **its channel's port** — sixteen, plus
-    `CHANNELLESS_PORT` for system, SysEx, Flex and Stream. **Routing is
-    wiring**: a listener on channel `c` takes edges from port `c` and the
-    channelless port, one on every channel from all seventeen
-    (`input_ports`); the routing table, `MidiRoute`, `MidiRoutingSnapshot`
+    each event out of **its Group and channel's port** — sixteen for each
+    Group heard, plus one channelless port per Group for system, SysEx and
+    Flex (a message with no Group, Utility and Stream, leaves the first Group's;
+    doc 017 L3). **Routing is wiring**: a listener on channel `c` of a Group
+    takes edges from that Group's port `c` and its channelless port, one on
+    every channel from its seventeen (`MidiInputPorts::listening`; for the
+    first Group alone, which is the default, the ports are `c` and
+    `CHANNELLESS_PORT`); the routing table, `MidiRoute`, `MidiRoutingSnapshot`
     and `MAX_TARGETS_PER_ROUTE` are gone, and so is `MidiRouter`. Its fork
     reads no wire.
   - **`MidiQueueNode`** (deleted, doc 017 stage E4: the event inlet

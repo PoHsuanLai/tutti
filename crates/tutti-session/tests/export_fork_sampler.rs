@@ -22,27 +22,16 @@ use tutti_sampler::{
     ByHand, DiskStreamer, DiskVoice, MemorySource, Placement, Playback, Stream, StreamReader,
     Voice, VoiceNode, VoiceSource,
 };
-use tutti_session::{Bounce, BounceError, ExportClock, Latency, Range, Session, Tail};
+use tutti_session::{Bounce, BounceError, ExportClock, Latency, Range, Session, Stem, Tail};
 use tutti_transport::{OfflineTimeline, OfflineTimelineConfig};
 use tutti_types::{Beat, Bpm, SampleRate, Seconds};
 
 const RATE: f64 = 48_000.0;
 
-/// Which audio a bounce renders: the mix, or one node alone.
-#[derive(Debug, Clone, Copy)]
-enum ExportSource {
-    Mix,
-    Node(NodeKey),
-}
-
-/// A bounce of `source` into memory for `seconds` at `rate`: stereo, trimming
+/// A bounce of the mix into memory for `seconds` at `rate`: stereo, trimming
 /// nothing and keeping no tail, on `clock`.
-fn bounce_of(source: ExportSource, seconds: f64, rate: f64, clock: ExportClock) -> Bounce {
-    let bounce = match source {
-        ExportSource::Mix => Bounce::project(),
-        ExportSource::Node(node) => Bounce::node(node),
-    };
-    bounce
+fn bounce_of(seconds: f64, rate: f64, clock: ExportClock) -> Bounce {
+    Bounce::project()
         .master_buffers()
         .channels(ChannelLayout::STEREO)
         .range(Range::Seconds(Seconds(0.0), Seconds(seconds)))
@@ -64,6 +53,23 @@ fn render(session: &mut Session, bounce: Bounce) -> Vec<Vec<f32>> {
     }
 }
 
+/// The planes of `node`'s stem of `bounce`, in memory, rendered beside the
+/// master. A stem is a node the outputs hear, so the node is routed to them
+/// first: the master is then the node alone, and the stem its own output.
+fn render_stem(session: &mut Session, bounce: Bounce, node: NodeKey) -> Vec<Vec<f32>> {
+    session.graph().set_outputs_from(node);
+    let mut targets = session
+        .bounce(bounce.stem_with(Stem::buffers(node)))
+        .expect("the bounce renders")
+        .finished()
+        .expect("nothing cancels it")
+        .into_targets();
+    match targets.pop() {
+        Some(Produced::Buffers(rendered)) if targets.len() == 1 => rendered.into_planes(),
+        other => panic!("expected one stem held in memory, got {other:?}"),
+    }
+}
+
 /// A detached stereo session whose graph is at the export's rate.
 fn session() -> Session {
     let mut session = Session::builder()
@@ -79,14 +85,14 @@ fn session() -> Session {
 fn timeline(tempo: f64) -> Arc<OfflineTimeline> {
     Arc::new(OfflineTimeline::new(&OfflineTimelineConfig {
         start_beat: Beat(0.0),
-        tempo: Bpm::of(tempo),
+        tempo_map: Arc::new(tutti_tempo::TempoMap::constant(Bpm::of(tempo)).expect("a tempo")),
         sample_rate: SampleRate(RATE),
         loop_range: None,
     }))
 }
 
-fn on(seconds: f64, source: ExportSource, clock: &Arc<OfflineTimeline>) -> Bounce {
-    bounce_of(source, seconds, RATE, ExportClock::timeline(clock.clone()))
+fn on(seconds: f64, clock: &Arc<OfflineTimeline>) -> Bounce {
+    bounce_of(seconds, RATE, ExportClock::timeline(clock.clone()))
 }
 
 /// **A node export on a 90 BPM timeline plays where 90 BPM puts it.** A
@@ -131,10 +137,7 @@ fn a_node_export_follows_a_90_bpm_timeline() {
         session.graph().insert(source).0
     };
 
-    let planes = render(
-        &mut session,
-        on(2.5, ExportSource::Node(voice), &timeline(90.0)),
-    );
+    let planes = render_stem(&mut session, on(2.5, &timeline(90.0)), voice);
     // Beat 3 at 90 BPM is frame 96 000.
     const AT: usize = 96_000;
     assert!(
@@ -159,9 +162,10 @@ fn a_node_export_follows_a_90_bpm_timeline() {
     // plays nothing, rather than loop its first block against a rolling
     // playhead nothing advances (what a default timeline did before
     // `ExportClock`). Placed at beat 0 here, where a rolling one would sound.
-    let planes = render(
+    let planes = render_stem(
         &mut session,
-        bounce_of(ExportSource::Node(zero), 0.1, RATE, ExportClock::frozen()),
+        bounce_of(0.1, RATE, ExportClock::frozen()),
+        zero,
     );
     assert!(
         planes[0].iter().all(|&s| s == 0.0),
@@ -275,10 +279,8 @@ fn a_disk_voice_exports_its_file_from_its_beat_and_matches_memory() {
         (graph.insert(wrapped).0, graph.insert(memory).0)
     };
 
-    let render_at =
-        |session: &mut Session, source| render(session, on(3.0, source, &timeline(90.0)));
-    let master = render_at(&mut session, ExportSource::Mix);
-    let disk = render_at(&mut session, ExportSource::Node(disk_node));
+    let master = render(&mut session, on(3.0, &timeline(90.0)));
+    let disk = render_stem(&mut session, on(3.0, &timeline(90.0)), disk_node);
     for (what, planes) in [("master", &master), ("node", &disk)] {
         assert!(
             planes[0][..AT].iter().all(|&s| s == 0.0),
@@ -298,7 +300,7 @@ fn a_disk_voice_exports_its_file_from_its_beat_and_matches_memory() {
         );
     }
 
-    let memory = render_at(&mut session, ExportSource::Node(memory_node));
+    let memory = render_stem(&mut session, on(3.0, &timeline(90.0)), memory_node);
     for c in 0..2 {
         if let Some(i) =
             (0..disk[c].len()).find(|&i| disk[c][i].to_bits() != memory[c][i].to_bits())
@@ -327,10 +329,7 @@ fn a_node_export_of_a_disk_voice_plays_its_file() {
         let voice = node_of(VoiceSource::Disk(disk_voice(reader, 1.0)));
         session.graph().insert(voice).0
     };
-    let planes = render(
-        &mut session,
-        on(1.0, ExportSource::Node(voice), &timeline(120.0)),
-    );
+    let planes = render_stem(&mut session, on(1.0, &timeline(120.0)), voice);
     assert!(
         planes[0][..24_000].iter().all(|&s| s == 0.0),
         "sounded before beat 1"
@@ -363,7 +362,7 @@ fn a_disk_voice_at_another_rate_exports_resampled() {
         let (node, _) = session.graph().insert(voice);
         session.graph().set_outputs_from(node);
     }
-    let planes = render(&mut session, on(2.0, ExportSource::Mix, &timeline(120.0)));
+    let planes = render(&mut session, on(2.0, &timeline(120.0)));
     assert!(
         planes[0][..AT].iter().all(|&s| s == 0.0),
         "sounded before beat 1"
@@ -454,7 +453,7 @@ fn live_disk_playback_is_untouched_while_its_voice_exports() {
         while !settled.load(Ordering::Acquire) {
             std::thread::sleep(std::time::Duration::from_millis(1));
         }
-        let rendered = render(&mut session, on(1.0, ExportSource::Mix, &timeline(120.0)));
+        let rendered = render(&mut session, on(1.0, &timeline(120.0)));
         done.store(true, Ordering::Release);
         (device.join().expect("the live side"), rendered)
     });
@@ -514,7 +513,7 @@ fn an_export_leaves_nothing_open_behind_it() {
         session.graph().set_outputs_from(node);
     }
     let before = open_handles(&path);
-    let planes = render(&mut session, on(0.2, ExportSource::Mix, &timeline(120.0)));
+    let planes = render(&mut session, on(0.2, &timeline(120.0)));
     assert_eq!(planes[0][100], value(100), "the export played the clip");
     assert_eq!(
         open_handles(&path),
@@ -547,7 +546,7 @@ fn a_disk_voice_whose_file_cannot_be_read_fails_the_export_by_name() {
         node
     };
     std::fs::remove_file(&path).expect("removes");
-    match session.bounce(on(0.2, ExportSource::Mix, &timeline(120.0))) {
+    match session.bounce(on(0.2, &timeline(120.0))) {
         Err(BounceError::Export(tutti_export::Error::ForkFailed { key, kind, cause })) => {
             assert_eq!(key, clip);
             assert_eq!(kind, tutti_graph::ForkFaultKind::Failed);

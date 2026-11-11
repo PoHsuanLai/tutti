@@ -81,7 +81,8 @@ mod watch;
 #[cfg(feature = "export")]
 pub use bounce::{
     BOUNCE_STALL_WARNING, Bounce, BounceConfigError, BounceError, BounceHandle, BounceJob,
-    BounceRendered, Bounced, ExportClock, Field, Latency, PrepareEdit, PreparedGraph, Range, Tail,
+    BounceRendered, Bounced, ExportClock, Field, Latency, PrepareEdit, PreparedGraph, Range, Stem,
+    StemGain, Tail,
 };
 pub use builder::{SessionBuilder, root_width};
 #[cfg(feature = "device")]
@@ -137,6 +138,6 @@ pub use tutti_export::{
 pub use tutti_graph::{BusError, BusRef, BusSource, Buses, MissingSource};
 pub use tutti_graph::{MixError, ModeError, NodeMode, PassError};
 #[cfg(feature = "midi")]
-pub use tutti_ump::MidiChannel;
+pub use tutti_ump::{MidiChannel, MidiGroup};
 #[cfg(feature = "device")]
 pub use watch::{Backoff, DevicePolicy, DeviceWatch, Follow, FollowEvent, LISTING_WARNING};

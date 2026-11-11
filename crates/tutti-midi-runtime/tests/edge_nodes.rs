@@ -21,7 +21,8 @@ use tutti_graph::{
 };
 use tutti_midi_protocol::channel_voice;
 use tutti_midi_runtime::{
-    CHANNELLESS_PORT, ClockNode, MIDI_INPUT_EVENT_CAPACITY, MIDI_INPUT_PORTS, MidiIn, MidiInputNode,
+    CHANNELLESS_PORT, ClockNode, MIDI_INPUT_EVENT_CAPACITY, MIDI_INPUT_PORTS, MidiIn,
+    MidiInputNode, MidiInputPorts,
 };
 use tutti_types::{At, Beat, Bpm, Frame, SampleRate, Samples};
 use tutti_ump::{
@@ -171,6 +172,54 @@ fn each_event_leaves_on_its_channels_port() {
     block(&mut exec, 512);
     let got: Vec<(usize, u64)> = seen.lock().unwrap().iter().map(|s| (s.0, s.1)).collect();
     assert_eq!(got, vec![(0, 10), (9, 40), (CHANNELLESS_PORT, 20)]);
+}
+
+/// **A Group's channels leave on ports of their own** (M2-104 section 2.1.2,
+/// Appendix B.1): channel 1 of Group 1 and channel 1 of Group 2 arrive on
+/// different ports, so a synth wired to one hears the other never; a Group
+/// the node was not built to hear is not delivered; the fork of such a node
+/// has the same ports.
+///
+/// Mutation: `port_of` ignoring the Group -> both notes arrive on port 1
+/// and the first assertion fails; the fork built with the first Group's ports
+/// -> `fork` is refused for the shape's width and the last assertion fails.
+#[test]
+fn a_groups_channels_leave_on_their_own_ports() {
+    let group = |g: u8, channel: u8, n: u8| {
+        at(
+            0,
+            note_on(
+                MidiGroup::of(g),
+                MidiChannel::of(channel),
+                n,
+                tutti_fixtures::midi::wide_velocity(100),
+            ),
+        )
+    };
+    let ports = MidiInputPorts::through(MidiGroup::of(1));
+    let wire = Wire::new(vec![vec![
+        group(0, 1, 60),
+        group(1, 1, 61),
+        group(2, 1, 62),
+    ]]);
+    let (live, mut exec, _c, seen) = rig(
+        MidiInputNode::new(Some(wire)).hearing(ports),
+        ports.count() as u16,
+        512,
+    );
+    block(&mut exec, 512);
+    let got: Vec<(usize, u8)> = seen
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|s| (s.0, note_of(s.2).unwrap()))
+        .collect();
+    assert_eq!(got, vec![(1, 60), (MIDI_INPUT_PORTS + 1, 61)]);
+    let prepare = *live.prepare();
+    assert!(
+        live.fork(ForkTarget::Master, ForkMode::Live, prepare)
+            .is_ok()
+    );
 }
 
 /// **An (N)RPN run split across blocks assembles into one controller.**

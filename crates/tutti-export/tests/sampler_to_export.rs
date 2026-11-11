@@ -61,6 +61,7 @@ use tutti_dsp::DitherShape;
 use tutti_export::{ChannelLayout, Format, Pcm, RenderGraph, Setup};
 use tutti_graph::GraphBuilder;
 use tutti_sampler::{MemorySource, Playback, SlotId, Voice, VoicePool, VoiceSource};
+use tutti_tempo::TempoMap;
 use tutti_transport::{OfflineTimeline, OfflineTimelineConfig};
 use tutti_types::{Beat, Bpm, Cents, SampleRate, StretchFactor};
 
@@ -97,7 +98,7 @@ fn tone(frames: usize) -> Arc<Wave> {
 fn voice_graph(stretch: f32, cents: f32) -> (RenderGraph, Arc<OfflineTimeline>) {
     let transport = Arc::new(OfflineTimeline::new(&OfflineTimelineConfig {
         start_beat: Beat(0.0),
-        tempo: Bpm::of(TEMPO),
+        tempo_map: Arc::new(TempoMap::constant(Bpm::of(TEMPO)).expect("a tempo")),
         sample_rate: SampleRate(SR),
         loop_range: None,
     }));

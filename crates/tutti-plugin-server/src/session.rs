@@ -221,9 +221,9 @@ impl Session {
 
             M::SetParameter { param_id, value } => {
                 if let Some(plugin) = self.plugin.as_mut() {
-                    // The wire's decode is the clamp (`Normalized::clamped`), so an
-                    // out-of-range or NaN value from the peer never reaches a
-                    // live plugin as such.
+                    // The wire's decode refuses an out-of-range or NaN value
+                    // (`Normalized::new`), so one from the peer fails the frame
+                    // and never reaches a live plugin.
                     plugin.instance_mut().set_parameter(main, param_id, value);
                 }
                 Ok(Reaction::None)

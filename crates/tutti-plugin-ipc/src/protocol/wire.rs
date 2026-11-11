@@ -67,18 +67,25 @@ pub mod midi {
 ///
 /// `Normalized` is an `f64`, and its own serde encoding is that `f64`; the
 /// parameter messages carry an `f32`, so they go through here.
+///
+/// Every `Normalized` on this wire, whatever its width, is refused on decode
+/// when it is not in `0..=1` (NaN included), as `Normalized::new` refuses: a
+/// peer that sends one is broken, and the frame fails rather than carrying a
+/// value made up for it.
 pub mod normalized {
     use serde::{Deserialize, Deserializer, Serialize, Serializer};
     use tutti_plugin_types::Normalized;
+
+    use super::checked;
 
     /// Encodes the value as an `f32`.
     pub fn serialize<S: Serializer>(value: &Normalized, s: S) -> Result<S::Ok, S::Error> {
         (value.get() as f32).serialize(s)
     }
 
-    /// Decodes an `f32` and clamps it onto `0..=1` ([`Normalized::clamped`]).
+    /// Decodes an `f32`, refusing one outside `0..=1`.
     pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Normalized, D::Error> {
-        Ok(Normalized::clamped(f64::from(f32::deserialize(d)?)))
+        checked(f64::from(f32::deserialize(d)?))
     }
 }
 
@@ -88,36 +95,38 @@ pub mod normalized_opt {
     use serde::{Deserialize, Deserializer, Serialize, Serializer};
     use tutti_plugin_types::Normalized;
 
+    use super::checked;
+
     /// Encodes `Some(v)` as `Some(v as f32)`.
     pub fn serialize<S: Serializer>(value: &Option<Normalized>, s: S) -> Result<S::Ok, S::Error> {
         value.map(|v| v.get() as f32).serialize(s)
     }
 
-    /// Decodes an optional `f32`, clamping a present one onto `0..=1`.
+    /// Decodes an optional `f32`, refusing a present one outside `0..=1`.
     pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Option<Normalized>, D::Error> {
-        Ok(Option::<f32>::deserialize(d)?.map(|v| Normalized::clamped(f64::from(v))))
+        Option::<f32>::deserialize(d)?
+            .map(|v| checked(f64::from(v)))
+            .transpose()
     }
 }
 
 /// A [`Normalized`](tutti_plugin_types::Normalized) carried as the `f64` it is,
-/// as `#[serde(with = "wire::normalized_f64")]`, clamped onto `0..=1` on decode.
-///
-/// Every `Normalized` on this wire clamps on decode, whatever its width: a
-/// corrupt peer's value is pinned rather than failing the message, which would
-/// end the session (a frame that does not decode ends the server's phase).
-/// `Normalized`'s own serde, used outside the wire, refuses instead.
+/// as `#[serde(with = "wire::normalized_f64")]`, refused on decode outside
+/// `0..=1` as [`normalized`] is.
 pub mod normalized_f64 {
     use serde::{Deserialize, Deserializer, Serialize, Serializer};
     use tutti_plugin_types::Normalized;
+
+    use super::checked;
 
     /// Encodes the value as an `f64`.
     pub fn serialize<S: Serializer>(value: &Normalized, s: S) -> Result<S::Ok, S::Error> {
         value.get().serialize(s)
     }
 
-    /// Decodes an `f64` and clamps it onto `0..=1` ([`Normalized::clamped`]).
+    /// Decodes an `f64`, refusing one outside `0..=1`.
     pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Normalized, D::Error> {
-        Ok(Normalized::clamped(f64::deserialize(d)?))
+        checked(f64::deserialize(d)?)
     }
 }
 
@@ -128,15 +137,28 @@ pub mod normalized_f64_opt {
     use serde::{Deserialize, Deserializer, Serialize, Serializer};
     use tutti_plugin_types::Normalized;
 
+    use super::checked;
+
     /// Encodes `Some(v)` as `Some(v)` in `f64`.
     pub fn serialize<S: Serializer>(value: &Option<Normalized>, s: S) -> Result<S::Ok, S::Error> {
         value.map(Normalized::get).serialize(s)
     }
 
-    /// Decodes an optional `f64`, clamping a present one onto `0..=1`.
+    /// Decodes an optional `f64`, refusing a present one outside `0..=1`.
     pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Option<Normalized>, D::Error> {
-        Ok(Option::<f64>::deserialize(d)?.map(Normalized::clamped))
+        Option::<f64>::deserialize(d)?.map(checked).transpose()
     }
+}
+
+/// `raw` as a [`Normalized`](tutti_plugin_types::Normalized), or the decode
+/// error naming it when `Normalized::new` refuses it.
+fn checked<E: serde::de::Error>(raw: f64) -> Result<tutti_plugin_types::Normalized, E> {
+    tutti_plugin_types::Normalized::new(raw).ok_or_else(|| {
+        E::invalid_value(
+            serde::de::Unexpected::Float(raw),
+            &"a normalized value in 0..=1",
+        )
+    })
 }
 
 /// A byte field (a state chunk) as one byte string on the wire.
@@ -306,63 +328,73 @@ mod tests {
         ));
     }
 
-    /// A wire value outside `0..=1` is clamped on decode, and NaN becomes `0`.
-    ///
-    /// Mutation (run): `normalized::deserialize` mapping an out-of-range
-    /// value to `0.5` instead of clamping it → the 7.5 case fails.
+    /// A wire value in `0..=1` decodes; one outside it, or NaN, fails the
+    /// message, in each width and in the optional forms.
     #[test]
-    fn a_decoded_normalized_is_clamped() {
-        use crate::protocol::{HostMessage, Normalized, ParamId};
-        for (wire, want) in [(7.5f32, 1.0), (-3.0, 0.0), (f32::NAN, 0.0)] {
-            let mut bytes = vec![3, 0, 0, 0, 1, 0, 0, 0];
-            bytes.extend(wire.to_le_bytes());
-            match postcard::from_bytes::<HostMessage>(&bytes).unwrap() {
-                HostMessage::SetParameter { param_id, value } => {
-                    assert_eq!(param_id, ParamId::new(1));
-                    assert_eq!(value, Normalized::clamped(want));
-                }
-                other => panic!("{other:?}"),
-            }
-        }
-    }
-
-    /// The `f64` `Normalized` fields (`GetParameterText`, `ParameterValueFromText`)
-    /// clamp on decode too, with the wire width unchanged: a peer's out-of-range
-    /// or NaN value is pinned, and the message still decodes.
-    ///
-    /// Mutation (run): `normalized_f64::deserialize` returning
-    /// `Normalized::of(0.5)` for every value -> the 7.5 case fails;
-    /// `normalized_f64_opt::deserialize` the same -> the second assertion fails.
-    #[test]
-    fn a_decoded_f64_normalized_is_clamped() {
+    fn a_normalized_outside_the_unit_range_is_refused() {
         use crate::protocol::{BridgeMessage, HostMessage, Normalized, ParamId};
-        for (raw, want) in [(7.5f64, 1.0), (-3.0, 0.0), (f64::NAN, 0.0), (0.25, 0.25)] {
-            let mut bytes = postcard::to_allocvec(&HostMessage::GetParameterText {
+        let f32_message = |raw: f32| {
+            // variant 3, id 1 (one varint byte each), then the f32.
+            let mut bytes = vec![3, 1];
+            bytes.extend(raw.to_le_bytes());
+            postcard::from_bytes::<HostMessage>(&bytes)
+        };
+        let f64_tail = |message: &dyn Fn() -> Vec<u8>, raw: f64| {
+            let mut bytes = message();
+            let end = bytes.len();
+            bytes[end - 8..].copy_from_slice(&raw.to_le_bytes());
+            bytes
+        };
+        let get_text = || {
+            postcard::to_allocvec(&HostMessage::GetParameterText {
                 param_id: ParamId::new(1),
                 value: Normalized::of(0.5),
             })
-            .unwrap();
-            let end = bytes.len();
-            bytes[end - 8..].copy_from_slice(&raw.to_le_bytes());
-            match postcard::from_bytes::<HostMessage>(&bytes).unwrap() {
-                HostMessage::GetParameterText { value, .. } => {
-                    assert_eq!(value, Normalized::clamped(want), "{raw}");
-                }
-                other => panic!("{other:?}"),
-            }
-
-            let mut bytes = postcard::to_allocvec(&BridgeMessage::ParameterValueFromText {
+            .unwrap()
+        };
+        let value_of = |raw: f32| {
+            let mut bytes = postcard::to_allocvec(&BridgeMessage::ParameterValue {
                 value: Some(Normalized::of(0.5)),
             })
             .unwrap();
             let end = bytes.len();
-            bytes[end - 8..].copy_from_slice(&raw.to_le_bytes());
-            match postcard::from_bytes::<BridgeMessage>(&bytes).unwrap() {
-                BridgeMessage::ParameterValueFromText { value } => {
-                    assert_eq!(value, Some(Normalized::clamped(want)), "{raw}");
-                }
-                other => panic!("{other:?}"),
-            }
+            bytes[end - 4..].copy_from_slice(&raw.to_le_bytes());
+            postcard::from_bytes::<BridgeMessage>(&bytes)
+        };
+        let from_text = || {
+            postcard::to_allocvec(&BridgeMessage::ParameterValueFromText {
+                value: Some(Normalized::of(0.5)),
+            })
+            .unwrap()
+        };
+
+        assert!(matches!(
+            f32_message(0.25).unwrap(),
+            HostMessage::SetParameter { value, .. } if value == Normalized::of(0.25)
+        ));
+        assert!(matches!(
+            postcard::from_bytes::<HostMessage>(&f64_tail(&get_text, 0.25)).unwrap(),
+            HostMessage::GetParameterText { value, .. } if value == Normalized::of(0.25)
+        ));
+        assert!(matches!(
+            postcard::from_bytes::<BridgeMessage>(&f64_tail(&from_text, 0.25)).unwrap(),
+            BridgeMessage::ParameterValueFromText { value } if value == Some(Normalized::of(0.25))
+        ));
+        assert!(matches!(
+            value_of(0.25).unwrap(),
+            BridgeMessage::ParameterValue { value } if value == Some(Normalized::of(0.25))
+        ));
+        for raw in [7.5, -3.0, f64::NAN, f64::INFINITY] {
+            assert!(f32_message(raw as f32).is_err(), "f32 {raw}");
+            assert!(value_of(raw as f32).is_err(), "optional f32 {raw}");
+            assert!(
+                postcard::from_bytes::<HostMessage>(&f64_tail(&get_text, raw)).is_err(),
+                "f64 {raw}"
+            );
+            assert!(
+                postcard::from_bytes::<BridgeMessage>(&f64_tail(&from_text, raw)).is_err(),
+                "optional f64 {raw}"
+            );
         }
     }
 

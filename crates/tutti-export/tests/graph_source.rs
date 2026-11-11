@@ -51,8 +51,9 @@ use std::sync::Arc;
 use tutti_types::Seconds;
 
 use crate::support::{render_normalized_to_file, render_to_buffers, render_to_file};
+use tutti_dsp::DitherShape;
 use tutti_export::{
-    ChannelLayout, Dither, EncodeConfig, Error, ExportConfig, Format, FrozenClock, GRAPH_MAX_BLOCK,
+    ChannelLayout, EncodeConfig, Error, ExportConfig, Format, FrozenClock, GRAPH_MAX_BLOCK,
     Normalize, Pcm, RenderConfig, RenderGraph, Rendered, Resample, write_buffers,
 };
 use tutti_fixtures::assert_golden;
@@ -95,7 +96,7 @@ fn config(bit_depth: Pcm, channels: ChannelLayout) -> ExportConfig {
             channels,
             topology: None,
         },
-        dither: Dither::Off,
+        dither: None,
         ..Default::default()
     }
 }
@@ -390,7 +391,7 @@ fn a_peak_normalized_export_writes_its_normalized_render() {
 #[test]
 fn a_dithered_export_writes_its_dithered_render() {
     let mut cfg = config(Pcm::Int16, ChannelLayout::STEREO);
-    cfg.dither = Dither::Triangular;
+    cfg.dither = Some(DitherShape::Triangular);
     let level = 0.25 + 0.3 / 32_768.0;
     let bytes = same_file(
         || dc(level),

@@ -1,35 +1,27 @@
-//! Measure-then-apply normalization, composed over the streaming primitives.
+//! Normalization: choosing a gain from a measurement of the whole signal.
 //!
 //! Normalization needs the whole signal measured before a gain can be chosen,
-//! which is two passes. [`render_to_file`] will not do
-//! that — it streams, and choosing a gain would force it to hold the whole
-//! signal. So the two-pass path is a
-//! *separately named* function: the cost is in the name, not hidden behind a
-//! config field a caller sets without noticing.
+//! which is two passes, so an output that asks for it
+//! ([`FileTarget::with_normalize`](crate::FileTarget::with_normalize)) is not
+//! streamed to its encoder while the graph renders: [`render`](crate::render())
+//! keeps what the graph rendered for it (`spill`: memory up to a budget, then a
+//! temporary file beside the target), measures it with a [`Measurer`] at the
+//! file's rate, and writes it again through the same chain a streamed output
+//! uses, with the gain. The graph is rendered once.
 //!
-//! The composition itself is public API elsewhere — a caller who wants to log
-//! the reading, gate on it, or apply a gain of its own writes the four steps
-//! directly ([`render_to_buffers`],
-//! [`measure_loudness`](tutti_measure::measure_loudness),
-//! [`Loudness::gain_to`](tutti_measure::Loudness::gain_to),
-//! [`Rendered::apply_gain`](crate::Rendered::apply_gain),
-//! [`write_buffers`]). This function exists because every
-//! host was otherwise writing the same five lines.
+//! A caller who holds planes and wants the reading for itself uses
+//! [`Normalize::gain_for_rendered`] and [`Rendered::apply_gain`](crate::Rendered::apply_gain).
 
-use std::path::Path;
-
+use tutti_dsp::DitherShape;
 use tutti_measure::{Loudness, LoudnessConfig, LoudnessState, finish_loudness, step_loudness};
-use tutti_transport::RenderClock;
 use tutti_types::{Amplitude, ChannelLayout, Db, Interleaved, InterleavedMut, SampleRate, Samples};
 
+use crate::Result;
 use crate::Unmeasured;
-use crate::options::Dither;
-
-use crate::config::ExportConfig;
-use crate::control::{Control, Outcome, Stage, Weights};
-use crate::{Result, Written};
 #[cfg(doc)]
-use crate::{render_to_buffers, render_to_file, write_buffers};
+use crate::Written;
+use crate::control::{Control, Outcome, Stage, Weights};
+use crate::output::FileTarget;
 
 /// A gain chosen by measuring the rendered signal.
 ///
@@ -56,9 +48,40 @@ use crate::{render_to_buffers, render_to_file, write_buffers};
 /// Prefer it when normalizing wide layouts whose energy is not concentrated in
 /// the front six.
 ///
-/// A peak target (or a loudness ceiling) within the headroom of full scale is
-/// lowered on `Int16`/`Int24` (see `render_normalized_to_file`, "Headroom"), and
-/// [`Written::gain`] reports the gain applied and [`Written::measured`] the reading it came from.
+/// # Measured at the output rate
+///
+/// When the file is written at another rate, the conversion happens *before*
+/// the measurement. Sample-rate conversion moves the true peak (its
+/// interpolation overshoots between the original samples), so a gain chosen at
+/// the render rate and applied to resampled audio misses its target, and a
+/// ceiling chosen to prevent clipping does not prevent it. Measuring the
+/// converted signal is what makes the dBTP figure a promise about the file
+/// rather than about an intermediate nobody hears. (The render is converted
+/// twice, once to be measured and once to be written, so as to hold no
+/// converted copy; the converter is deterministic and both see the same
+/// samples.)
+///
+/// # Headroom
+///
+/// For an integer format (`Pcm::Int16`, `Pcm::Int24`) the peak target of
+/// [`Peak`](Self::Peak), and the ceiling of [`Lufs`](Self::Lufs), are pulled
+/// down to leave one LSB plus the dither amplitude of headroom below full
+/// scale (an LSB for no dither, 1.5 for rectangular, 2 for triangular): a peak
+/// normalized to 0 dBTP, plus dither, would be clamped by the quantizer. A
+/// target already under the limit is unchanged. [`Written::clipped_samples`]
+/// counts what is clamped all the same, and [`Written::gain`] is the gain to
+/// the lowered target. An output that takes another's gain
+/// ([`GainSource::FromOutput`](crate::GainSource::FromOutput)) keeps that
+/// output's headroom, not its own.
+///
+/// # Quiet audio
+///
+/// [`Peak`](Self::Peak) refuses only exact silence. Near-silence (-100 dBTP,
+/// say) is audio with a reading and gets its gain (about +99 dB); read
+/// [`Written::gain`] to see what was applied.
+///
+/// [`Written::gain`] reports the gain applied and [`Written::measured`] the
+/// reading it came from.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Normalize {
     /// Bring the loudest true peak to `target` dBTP.
@@ -108,7 +131,7 @@ impl Normalize {
     /// and only the loudness arm has a ceiling to respect (which
     /// [`Loudness::gain_to`](tutti_measure::Loudness::gain_to) already
     /// applies).
-    fn gain_for(&self, measured: &tutti_measure::Loudness) -> Db {
+    pub(crate) fn gain_for(&self, measured: &tutti_measure::Loudness) -> Db {
         match *self {
             // `Db - Db` is a gain difference, which is why `Db` implements
             // `Sub` — see the `Additive` note on `Db` in `units/level.rs`.
@@ -120,13 +143,13 @@ impl Normalize {
     /// The gain that normalizes `rendered`.
     ///
     /// For a caller that already holds a [`Rendered`](crate::Rendered) and is
-    /// not writing it with [`render_normalized_to_file`] — handing the PCM to
+    /// not writing it with a normalizing output — handing the PCM to
     /// another encoder, say. Returning the gain rather than applying it keeps
-    /// the reading available to log or gate on, and is the same value the
-    /// two-pass render uses internally, so the two can never disagree. (The
-    /// two-pass render also pulls its target and ceiling down to leave an
+    /// the reading available to log or gate on, and is the same value a
+    /// normalizing output uses, so the two can never disagree. (A normalizing
+    /// output also pulls its target and ceiling down to leave an
     /// integer format its headroom, which this cannot: it does not know the
-    /// format. See [`render_normalized_to_file`].)
+    /// format. See "Headroom" on [`Normalize`].)
     ///
     /// # Errors
     ///
@@ -151,7 +174,7 @@ impl Normalize {
         control.weigh(Weights::Normalized);
         let total = rendered.frames();
         let outcome = self.measure(rendered, Samples(0), total, &mut control)?;
-        Ok(self.gain_for(&crate::finished(outcome)))
+        Ok(self.gain_for(&finished(outcome)))
     }
 
     /// The reading [`gain_for_rendered`](Self::gain_for_rendered) takes its
@@ -205,7 +228,10 @@ impl Normalize {
     /// The loudness meter reports its absolute gate (-70 LUFS) when nothing
     /// passed it, and the true-peak floor for silence: those are the readings
     /// of "no signal", not of a quiet one, and a gain from either is invented.
-    fn check(&self, reading: &tutti_measure::Loudness) -> std::result::Result<(), Unmeasured> {
+    pub(crate) fn check(
+        &self,
+        reading: &tutti_measure::Loudness,
+    ) -> std::result::Result<(), Unmeasured> {
         match self {
             // An integrated loudness is always above the gate when it was
             // measured, so the gate itself is the "passed nothing" sentinel.
@@ -227,8 +253,8 @@ impl Normalize {
     /// ceiling already under it is unchanged, and a format that does not
     /// quantize ([`Pcm::Float32`](crate::Pcm::Float32), Ogg Vorbis) has no
     /// limit.
-    pub(crate) fn within(self, config: &ExportConfig) -> Self {
-        let Some(limit) = headroom_ceiling(config) else {
+    pub(crate) fn within(self, target: &FileTarget) -> Self {
+        let Some(limit) = headroom_ceiling(target) else {
             return self;
         };
         let cap = |db: Db| Db(db.get().min(limit.get()));
@@ -244,16 +270,23 @@ impl Normalize {
     }
 }
 
+/// The value of an outcome no token could have cancelled.
+fn finished<T>(outcome: Outcome<T>) -> T {
+    outcome
+        .finished()
+        .expect("a control with no token is never cancelled")
+}
+
 /// The loudest peak, in dBTP, an integer format can take with its dither
 /// ([`Normalize::within`]), or `None` for a format that does not quantize.
-fn headroom_ceiling(config: &ExportConfig) -> Option<Db> {
-    let depth = config.encode.format.int_depth()?;
-    // One LSB in the `[-1, 1]` float domain, as `DitherState` scales it.
-    let lsb = 1.0 / (1u32 << (depth.bits() - 1)) as f32;
-    let dither_peak = match config.dither {
-        Dither::Off => 0.0,
-        Dither::Rectangular => 0.5,
-        Dither::Triangular => 1.0,
+fn headroom_ceiling(target: &FileTarget) -> Option<Db> {
+    let depth = target.format().int_depth()?;
+    // One LSB in the `[-1, 1]` float domain, as the dither scales it.
+    let lsb = depth.lsb().get();
+    let dither_peak = match target.dither() {
+        None => 0.0,
+        Some(DitherShape::Rectangular) => 0.5,
+        Some(DitherShape::Triangular) => 1.0,
     };
     Some(Db::from_amplitude(Amplitude(
         1.0 - (1.0 + dither_peak) * lsb,
@@ -276,7 +309,7 @@ pub(crate) fn chunk_frames(rate: SampleRate) -> usize {
 /// one), and the chunking the caller checks `Control` between. Chunks end on
 /// frame boundaries, where the reading does not depend on where the stream is
 /// cut.
-struct Measurer {
+pub(crate) struct Measurer {
     cfg: LoudnessConfig,
     state: LoudnessState,
     /// One chunk, interleaved: reused, so a measurement allocates once.
@@ -286,7 +319,7 @@ struct Measurer {
 impl Measurer {
     /// A meter for frames at `rate` in `layout`; `None` for a width or rate
     /// EBU R128 does not take.
-    fn new(rate: SampleRate, layout: ChannelLayout) -> Option<Self> {
+    pub(crate) fn new(rate: SampleRate, layout: ChannelLayout) -> Option<Self> {
         let cfg = LoudnessConfig::new(rate, layout);
         Some(Self {
             state: LoudnessState::new(&cfg)?,
@@ -310,8 +343,17 @@ impl Measurer {
         );
     }
 
+    /// Feeds `frames`, already interleaved in this meter's layout.
+    pub(crate) fn feed_interleaved(&mut self, frames: &[f32]) {
+        step_loudness(
+            &self.cfg,
+            &mut self.state,
+            Interleaved::new(frames, self.cfg.layout),
+        );
+    }
+
     /// The reading of everything fed.
-    fn finish(self) -> Loudness {
+    pub(crate) fn finish(self) -> Loudness {
         finish_loudness(self.state)
     }
 }
@@ -319,128 +361,6 @@ impl Measurer {
 /// EBU R128's absolute gate, in LUFS: what the meter's integrated loudness
 /// reads when no block passed it.
 const ABSOLUTE_GATE_LUFS: f32 = -70.0;
-
-/// Render `graph`, measure it, apply the resulting gain, and write it to `path`.
-///
-/// Two passes. The whole render is held in memory so a gain can be chosen
-/// from it. Use [`render_to_file`] when no gain is
-/// needed — it streams and holds nothing.
-///
-/// # Measured at the output rate
-///
-/// When `config.resample` asks for a rate conversion, it happens *before* the
-/// measurement, not after. Sample-rate conversion moves the true peak — its
-/// interpolation overshoots between the original samples — so a gain chosen at
-/// the render rate and applied to resampled audio misses its target, and a
-/// ceiling chosen to prevent clipping does not prevent it. Measuring the
-/// converted signal is what makes the dBTP figure a promise about the file
-/// rather than about an intermediate nobody hears.
-///
-/// The trailing write (as [`write_buffers`]) is then given a config with `resample`
-/// cleared: the conversion already happened, and running it twice would resample
-/// from a rate the samples are not at.
-///
-/// # Width
-///
-/// The measurement runs at the rendered width. EBU R128 meters 1–64 channels,
-/// so a surround export is normalized against its own loudness rather than
-/// falling back to a different metric — but note that beyond 6 channels the
-/// standard channel map marks the extra channels unweighted, so a 7.1 or 7.1.4
-/// mix is measured on its first six channels. [`Normalize::Peak`] is unaffected;
-/// true peak folds over every channel.
-///
-/// # Headroom
-///
-/// For an integer format (`Pcm::Int16`, `Pcm::Int24`) the peak target of
-/// [`Normalize::Peak`], and the ceiling of [`Normalize::Lufs`], are pulled down
-/// to leave one LSB plus the dither amplitude of headroom below full scale
-/// (an LSB for no dither, 1.5 for rectangular, 2 for triangular): a peak
-/// normalized to 0 dBTP, plus dither, would be clamped by the quantizer.
-/// A target already under the limit is unchanged. [`Written::clipped_samples`]
-/// counts what is clamped all the same, and [`Written::gain`] is the gain to the
-/// lowered target.
-///
-/// # Quiet audio
-///
-/// [`Normalize::Peak`] refuses only exact silence. Near-silence (-100 dBTP, say)
-/// is audio with a reading and gets its gain (about +99 dB); read
-/// [`Written::gain`] to see what was applied.
-///
-/// # Errors
-///
-/// Everything [`render_to_buffers`] and
-/// [`write_buffers`] return, plus [`Error::Unmeasurable`](crate::Error::Unmeasurable)
-/// when the audio has no reading to take a gain from (silent, under 400 ms or
-/// under the loudness gate for [`Normalize::Lufs`], at the true-peak floor for
-/// [`Normalize::Peak`], or a width or rate the meter does not take): `path`
-/// is left as it was. [`Error::Resample`](crate::Error::Resample) if the
-/// sample-rate conversion fails.
-pub fn render_normalized_to_file(
-    graph: impl std::borrow::BorrowMut<crate::RenderGraph>,
-    config: &ExportConfig,
-    clock: &dyn RenderClock,
-    normalize: Normalize,
-    path: impl AsRef<Path>,
-    control: &mut Control<'_>,
-) -> Result<Outcome<Written>> {
-    let path = path.as_ref();
-    control.weigh(Weights::Normalized);
-    let Outcome::Finished(rendered) = crate::render_pass(graph, config, clock, control)? else {
-        return Ok(Outcome::Cancelled);
-    };
-
-    // Between stages. The measuring stage's work is the conversion (when the
-    // file's rate differs) and then the reading, a frame of each per frame.
-    let frames = rendered.frames();
-    let converts = config
-        .resample
-        .is_some_and(|r| r.target_rate.get().round() != rendered.sample_rate().get().round());
-    let total = Samples(frames.get() * if converts { 2 } else { 1 });
-    control.begin(Stage::Measuring, Some(total));
-    if control.is_cancelled() {
-        return Ok(Outcome::Cancelled);
-    }
-
-    // Convert first, so what is measured is what is written.
-    let (mut rendered, config, done) = match config.resample {
-        Some(r) if converts => {
-            let Outcome::Finished(converted) =
-                crate::process::resample_rendered(&rendered, r, total, control)?
-            else {
-                return Ok(Outcome::Cancelled);
-            };
-            // The conversion has happened, so the config must stop asking for
-            // it — but `render.sample_rate` has to move with it. The header rate
-            // is `resample.target_rate` *or* `render.sample_rate`, so clearing
-            // one without setting the other writes converted samples under the
-            // pre-conversion rate: right audio, wrong speed.
-            let mut cfg = config.clone();
-            cfg.resample = None;
-            cfg.render.sample_rate = converted.sample_rate();
-            (converted, std::borrow::Cow::Owned(cfg), frames)
-        }
-        _ => (rendered, std::borrow::Cow::Borrowed(config), Samples(0)),
-    };
-
-    let normalize = normalize.within(&config);
-    // The converted length is known now: the reading counts it, after the
-    // frames the conversion consumed, and so ends the stage on its total.
-    let total = Samples(done.get() + rendered.frames().get());
-    let Outcome::Finished(measured) = normalize.measure(&rendered, done, total, control)? else {
-        return Ok(Outcome::Cancelled);
-    };
-    let gain = normalize.gain_for(&measured);
-    rendered.apply_gain(gain);
-
-    // `encode_planes` begins the writing stage, which checks the token.
-    crate::encode::encode_planes(&rendered, &config, path, control).map(|outcome| {
-        outcome.map(|mut written| {
-            written.gain = Some(gain);
-            written.measured = Some(measured);
-            written
-        })
-    })
-}
 
 #[cfg(test)]
 mod tests;

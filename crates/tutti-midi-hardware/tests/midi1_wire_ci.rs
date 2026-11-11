@@ -19,34 +19,27 @@
 //! message differs).
 
 use tutti_midi_device::{
-    CI_DEVICE_ID_FUNCTION_BLOCK, CI_VERSION, CiCategories, CiHeader, CiMessage, Destination,
-    DiscoveryData, Muid, NO_FUNCTION_BLOCK,
+    CiCategories, CiHeader, CiMessage, Decoded, DiscoveryData, MaxSysexSize, Muid,
 };
-use tutti_ump::{Message, Midi1Parser, MidiGroup, SysexAssembler, SysexStep, Ump, frame};
+use tutti_ump::{Message, Midi1Parser, MidiGroup, SysexAssembler, SysexStep, U7, Ump, frame};
 
 #[test]
 fn midi1_wire_sysex_promotes_to_a_typed_ci_message() {
     // A Discovery probe exactly as a peer device would send it. A Discovery, not
     // a reply: section 5.5.4 makes the path id the initiator's own, and
-    // `function_block` is reply-only, so `NO_FUNCTION_BLOCK` is the value
+    // `function_block` is reply-only, so `None` is the value
     // section 5.6.2 names for a device that represents none.
     let probe = CiMessage::Discovery {
-        header: CiHeader {
-            device_id: CI_DEVICE_ID_FUNCTION_BLOCK,
-            ci_version: CI_VERSION,
-            source: Muid::new(0x1234).expect("a valid MUID"),
-            destination: Destination::Broadcast,
-        },
-        is_reply: false,
+        header: CiHeader::new(Muid::new(0x1234).expect("a valid MUID")),
         data: DiscoveryData {
             manufacturer: [0x00, 0x21, 0x09],
             family: 0x0042,
             family_model: 0x0007,
             software_revision: [1, 2, 3, 4],
             categories: CiCategories::PROFILE_CONFIGURATION,
-            max_sysex_size: 512,
-            output_path_id: 3,
-            function_block: NO_FUNCTION_BLOCK,
+            max_sysex_size: MaxSysexSize::of(512),
+            output_path_id: U7::of(3),
+            function_block: None,
         },
     };
 
@@ -70,13 +63,13 @@ fn midi1_wire_sysex_promotes_to_a_typed_ci_message() {
     let decoded = fragments
         .iter()
         .find_map(|event| match assembler.push(*event) {
-            SysexStep::Complete(at) => CiMessage::decode(assembler.message(at).payload()),
+            SysexStep::Complete(at) => Some(CiMessage::decode(assembler.message(at).payload())),
             _ => None,
         });
 
     assert_eq!(
         decoded,
-        Some(probe),
+        Some(Decoded::Message(probe)),
         "a CI probe off the MIDI-1 wire must arrive intact"
     );
 }

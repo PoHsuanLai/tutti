@@ -15,8 +15,9 @@ pub struct ParameterPoint {
     pub sample_offset: i32,
     /// The automated value, on the host's `0..=1` scale.
     ///
-    /// **Out-of-range input is clamped silently** (by [`Normalized::clamped`] at
-    /// construction, and when a point is decoded off the wire): anything outside
+    /// **Out-of-range input is clamped silently** at construction (by
+    /// [`Normalized::clamped`]; a point decoded off the wire with such a value is
+    /// refused instead, as every `Normalized` there is): anything outside
     /// `0..=1` saturates at the nearest bound with no error and no log line, so a producer that
     /// encodes data on some other scale here reads back as a run of `1.0` that
     /// looks like a legitimate parameter sweep. Values must already be
@@ -29,26 +30,7 @@ pub struct ParameterPoint {
     /// AU against the range it cached at load, CLAP against its `ranges` map.
     ///
     /// [`PluginParams::get_parameter`]: crate::PluginParams::get_parameter
-    #[cfg_attr(feature = "serde", serde(with = "clamped_on_decode"))]
     pub value: Normalized,
-}
-
-/// A point's value is encoded as its `f64` and clamped onto `0..=1` on decode,
-/// like every other `Normalized` on the IPC wire: a corrupt peer's value is
-/// pinned instead of failing the whole block's message.
-#[cfg(feature = "serde")]
-mod clamped_on_decode {
-    use serde::{Deserialize, Deserializer, Serialize, Serializer};
-
-    use crate::Normalized;
-
-    pub(super) fn serialize<S: Serializer>(value: &Normalized, s: S) -> Result<S::Ok, S::Error> {
-        value.get().serialize(s)
-    }
-
-    pub(super) fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Normalized, D::Error> {
-        Ok(Normalized::clamped(f64::deserialize(d)?))
-    }
 }
 
 /// A point at `sample_offset` for `value`, **silently clamped onto `0..=1`**
@@ -1406,15 +1388,12 @@ mod carried_tests {
 mod wire_tests {
     use super::*;
 
-    /// **A point decodes clamped, at its usual width**: an out-of-range value off
-    /// the wire is pinned, the point still decodes, and its bytes are those of a
-    /// plain `i32` (a varint) and `f64`.
-    ///
-    /// Mutation (run): `clamped_on_decode::deserialize` returning
-    /// `Normalized::of(0.5)` -> the 7.5 case fails; its `serialize` writing an
-    /// `f32` -> the length assertion fails.
+    /// **A point's value outside `0..=1` is refused on decode**, NaN and the
+    /// infinities included, like every other `Normalized` on the IPC wire; an
+    /// in-range one decodes, and the point's bytes are those of a plain `i32`
+    /// (a varint) and `f64`.
     #[test]
-    fn a_decoded_point_is_clamped() {
+    fn a_decoded_point_outside_the_unit_range_is_refused() {
         let mut bytes = postcard::to_allocvec(&ParameterPoint {
             sample_offset: 3,
             value: Normalized::of(0.5),
@@ -1422,11 +1401,16 @@ mod wire_tests {
         .unwrap();
         // The offset 3 is one zigzag varint byte (6), the value eight bytes.
         assert_eq!(bytes.len(), 1 + 8);
-        for (raw, want) in [(7.5f64, 1.0), (-3.0, 0.0), (f64::NAN, 0.0), (0.25, 0.25)] {
+        bytes[1..].copy_from_slice(&0.25f64.to_le_bytes());
+        let point: ParameterPoint = postcard::from_bytes(&bytes).unwrap();
+        assert_eq!(point.sample_offset, 3);
+        assert_eq!(point.value, Normalized::of(0.25));
+        for raw in [7.5f64, -3.0, f64::NAN, f64::INFINITY] {
             bytes[1..].copy_from_slice(&raw.to_le_bytes());
-            let point: ParameterPoint = postcard::from_bytes(&bytes).unwrap();
-            assert_eq!(point.sample_offset, 3);
-            assert_eq!(point.value, Normalized::clamped(want), "{raw}");
+            assert!(
+                postcard::from_bytes::<ParameterPoint>(&bytes).is_err(),
+                "{raw}"
+            );
         }
     }
 }

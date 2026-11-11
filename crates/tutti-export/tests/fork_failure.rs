@@ -12,7 +12,7 @@ use tutti_types::Seconds;
 
 mod support;
 
-use support::{render_normalized_to_file, render_to_buffers, render_to_file};
+use support::{render_file_under, render_normalized_to_file, render_to_buffers, render_to_file};
 use tutti_export::{
     CancelToken, Control, EncodeConfig, Error, ExportConfig, Format, FrozenClock, GRAPH_MAX_BLOCK,
     Normalize, Pcm, Progress, RenderConfig, RenderGraph,
@@ -148,10 +148,11 @@ fn a_fork_that_dies_mid_render_does_not_replace_the_file() {
             probe.0.store(true, Ordering::SeqCst);
         }
     };
-    let err = tutti_export::render_to_file(
+    let err = render_file_under(
         graph,
         &config(),
         &FrozenClock,
+        None,
         &path,
         &mut Control::new(&token).on_progress(&mut flip),
     )
@@ -211,10 +212,11 @@ fn a_cancel_wins_over_a_fork_fault() {
         probe.0.store(true, Ordering::SeqCst);
         token.cancel();
     };
-    let outcome = tutti_export::render_to_file(
+    let outcome = render_file_under(
         graph,
         &config(),
         &FrozenClock,
+        None,
         &path,
         &mut Control::new(&token).on_progress(&mut flip_and_cancel),
     )

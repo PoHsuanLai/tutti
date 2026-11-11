@@ -205,7 +205,7 @@ is `vec![Output::master(target)]`.
 | `Rendered` | `planes`, `rate`, `dropped_events` | `Rendered::new(planes, rate, dropped) -> Result<_, RenderedError>` checks equal plane lengths, at least one plane, valid rate. `frames()`, `channels()`, `planes()`, `into_planes()`. No public fields. |
 | `RenderGraph` | an installed, paired `(Editor, Executor)` plus `Setup { pool, root }` | `RenderGraph::assemble(editor, executor, Setup) -> Result<_>` checks pairing and rate. `prepare(rate)`, `reported_latency()`, `reported_tail()` stay. The rest of the fork machinery is not here (§5). |
 
-Built today (steps 1 and 2), for comparison: `Job` (`Job::new`, `with_event_loss`,
+Built today (steps 1 to 3), for comparison: `Job` (`Job::new`, `with_event_loss`,
 getters, `JobError::{InvalidRate, ZeroLength, TooLong}`, and `MAX_FRAMES`, which
 is `u32::MAX`); `Rendered` is sealed (`Rendered::new`, `RenderedError::{NoPlanes,
 UnequalPlanes, InvalidRate}`, getters `planes`, `into_planes`, `sample_rate`,
@@ -213,9 +213,17 @@ UnequalPlanes, InvalidRate}`, getters `planes`, `into_planes`, `sample_rate`,
 `clipped_samples`, `gain` and `measured` (no `frames` yet). `Control`
 (`Control::new(&CancelToken)`, `.on_progress(&mut f)`, `Control::none()`, with
 `is_cancelled`), `CancelToken`, `Progress` (private fields; `stage`, `fraction`,
-`output`, `frames`) and `Stage` exist, and the three `render_*` functions take a
-`&mut Control` and return `Result<Outcome<_>>`; `Flow`, `Pass` and the `_with`
-twins are gone. `Output`, `Feed`, `Target` and `render` do not exist yet.
+`output`, `frames`) and `Stage` exist. `Output` (`master`, `tap`), `Feed`,
+`Placement`, `Target`, `FileTarget`, `BufferTarget`, `NormalizeSpec`,
+`GainSource`, `Produced` and `TargetError` exist, and `render` (with the
+one-target helper `render_one`) replaces the `render_*` functions, which are
+deleted; `Flow`, `Pass` and the `_with` twins went in step 2. `Error::Target`,
+`NoOutputs`, `TapOverrun`, `TapStarved` and `NotCommitted` exist (the
+pipeline-side variants of section 8, except `Error::Job` and `Error::Rendered`:
+see the step 3 note in section 11). `ExportConfig`, `RenderConfig`,
+`EncodeConfig` and `write_buffers` are still here as the one-render bundle the
+session's request carries, and go with it in step 5; `RenderGraph`'s sealing
+is step 4.
 
 What leaves `tutti-export`'s public surface: `ExportConfig`, `RenderConfig`,
 `EncodeConfig`, the five `render_*` functions and `write_buffers`,
@@ -254,11 +262,11 @@ that step's work and not as a separate cleanup.
 
 | Built today in `tutti-export` | Owner | Replacement | Step |
 |---|---|---|---|
-| `Dither { Off, Rectangular, Triangular }`, mapped by hand onto `tutti_dsp::DitherShape` in `process/dither.rs` | `tutti-dsp` | `FileTarget` takes `Option<DitherShape>`; `None` is off. No second enum and no mapping. | 3 |
+| `Dither { Off, Rectangular, Triangular }`, mapped by hand onto `tutti_dsp::DitherShape` in `process/dither.rs` | `tutti-dsp` | `FileTarget` takes `Option<DitherShape>`; `None` is off. No second enum and no mapping. **Done in step 3.** | 3 |
 | The integer LSB `1 / (1 << (bits - 1))`, computed twice: in `DitherState::for_config` and in normalize's integer headroom | `tutti-codec`, whose `Pcm::quantize` holds the scale | One `IntDepth::lsb()` in `tutti-codec`, which both call. The quantizer, the dither amplitude and the headroom then cannot disagree. | 1 |
 | `clipped_in`: a scan of each block for samples the quantizer will clamp, before the encoder sees them | `tutti-codec` (`Pcm::quantize` does the clamp) | The encoder counts what it clamped, plus non-finite samples, and reports the count from `finish`; §4's `Written::clipped_samples` reads it. | 1 |
 | `planned_frames` and `whole_hz` re-derive the resampler's output length to pre-check `Format::max_frames`, and `check_fits` builds `tutti_codec::Error::WavTooLarge` itself | `tutti-dsp` (`StreamingResampler` knows its ratio and flush) and `tutti-codec` (the limit and its error) | The resampler states its output length for an input length. The encoder takes the planned frame count at creation and refuses it with its own error. Export passes numbers and builds neither error. | 3 |
-| Two resample paths: streamed in `pump_blocks`, and whole-buffer `resample_rendered` for normalize's write | `tutti-dsp` (`StreamingResampler`) | One path. Normalize's write pass feeds the spilled planes through the same streamed chain, so a normalized export and a plain one share resample, dither and encode. | 3 |
+| Two resample paths: streamed in `pump_blocks`, and whole-buffer `resample_rendered` for normalize's write | `tutti-dsp` (`StreamingResampler`) | One path. Normalize's write pass feeds the spilled planes through the same streamed chain, so a normalized export and a plain one share resample, dither and encode. **Done in step 3** (`resample_rendered` is gone; the measurement reads the spill through the same converter). | 3 |
 | `FrameSource` and `pump_blocks`, a private pull trait and pump beside the edge's | doc 025 (`Source`, `Pull`) | Settled by doc 025 §5.4. Until then they stay private and are not widened. | doc 025 |
 | `pub use` of `tutti_codec::{Format, Pcm, IntDepth, FlacLevel, Quality}`, `tutti_types::ChannelLayout` and `tutti_transport::{RenderClock, FrozenClock}` | their crates | Removed. A type has one path (CLAUDE.md, "Import paths"). The `tutti` umbrella's `export` feature implies `codec` (today it does not), so `tutti::codec::Format` is that path; `tutti::transport` already carries the clocks. | 8 |
 
@@ -592,7 +600,104 @@ render) and the check between chunks. Where this differs from the text above:
   `tests/cancel.rs` says which test pins what).
 
 
-Test policy applies throughout: every new case is mutation-tested (break the
-property, watch it fail, restore, note the mutation on the case); no existing
+**As built (step 3).** `Output`, `Feed`, `Placement`, `Target`, `FileTarget`,
+`BufferTarget`, `NormalizeSpec`, `GainSource`, `Produced` and `TargetError`
+(`tutti-export/src/output.rs`), `render` and `render_one` (`lib.rs`), and the
+pass behind them (`render/outputs.rs`). One block loop (`render::drive`) renders
+the graph once and hands each block to every output's lane: the lane reads its
+feed (the graph's planes, or a tap drained with `TapReader::pop_planes`, every
+block, whether or not the gate keeps it), folds it onto its target's layout,
+gates it (one latency and one length for all) and gives it to its sink: a
+streamed file's chain (resample, dither, encode), a spill, or planes. The
+`render_*` functions, `RenderPlan::new`, the `FrameSource` trait,
+`resample_rendered` and `tutti_export::Dither` are deleted; their callers
+(tests, the examples, the bench, `tutti-session`'s export, `clap_fork.rs`, the
+`tutti` example and test) call `render` or `render_one`. Where this differs from
+the text above:
+
+- **The config bundle and `write_buffers` stay.** `ExportConfig`,
+  `RenderConfig`, `EncodeConfig`, `Resample`, `EventLossPolicy` and
+  `write_buffers` are not deleted: the session's request still carries an
+  `ExportConfig` until step 5 replaces it, and `write_buffers` is the only way
+  to put planes with their own loss count and rate through the write pass. They
+  are now a bridge: `ExportConfig::{job, buffers_job, file_target,
+  buffer_target}` build what `render` takes (`buffers_job` keeps a span past
+  `MAX_FRAMES` the `RenderTooLarge` it was). The tests' `tests/support` module
+  keeps the three old names over `render_one`, so a test that renders one
+  output from a config reads as it did.
+- **`FileTarget::new` is infallible.** Section 4 says it validates the
+  format/width pair at construction; the file's rate is not known until the
+  render starts and the encoder's `Spec` needs it, so the format, width and
+  topology are checked when the render starts, before any frame is rendered
+  and before a path is touched (`open_file`: `check_fits`, then the encoder's
+  own `Spec` refusal). `with_topology`, `with_resample`, `with_dither` and
+  `with_normalize` are the setters.
+- **`Dither` is gone** (section 5.1): `FileTarget` and `ExportConfig` take
+  `Option<DitherShape>`. A consumer names `tutti_dsp::DitherShape`
+  (`tutti_session::DitherShape` under `record`).
+- **`Error::Job` and `Error::Rendered` are not added.** `render` takes a `Job`
+  that was built, and builds a `Rendered` only through the crate's own
+  unchecked constructor, so it returns neither error; `Job::new` and
+  `Rendered::new` return `JobError` and `RenderedError` themselves, and
+  `ExportConfig::job` still reports `ConfigError::Job`. The variants that
+  `render` does return are `Target { output, why: TargetError }` (a tap whose
+  lanes are not its placement's width, a placement the target cannot take, a
+  gain taken from an output that does not measure itself, two outputs with one
+  path), `NoOutputs`, `TapOverrun { output, lost }`, `TapStarved { output }` (a
+  tap that holds less than the block: it was not committed) and `NotCommitted
+  { landed, cause }`. A zero-width target is still `UnsupportedChannels`, and
+  the graph's channels not placing on a *master* output's target is still
+  `ConfigError::Placement` (the tests pin it); only a tap's placement is
+  `TargetError::Placement`. `Unmeasurable` has no `output` yet.
+- **The spill.** A normalizing output keeps its frames after the fold to its
+  width, at the render's rate, interleaved. The memory budget (`SpillBudget`,
+  512 MiB) is shared by the render's spills: a spill that cannot take a block
+  within it writes what it holds, and the rest, to a temporary file of
+  little-endian `f32` named `.<target>.<pid>.<n>.spill` in the target's
+  directory, and gives the memory back. The file is removed when the spill is
+  dropped, on every path out. The threshold is injectable through a
+  parameter of the crate-private `render_outputs` (the public `render` passes
+  the constant), not a `cfg(test)` seam, so the render-level test
+  (`render/outputs/tests.rs`) runs the real pass with a budget of zero.
+- **Normalize is two reads of the spill, not a conversion held in memory.**
+  Section 5.1 and the old two-pass path converted the whole render to the file's
+  rate and measured that. Now the measuring pass and the write pass each read
+  the spill through the same converter (`resampler_for`), so the render is
+  converted twice and no converted copy is held; the converter is
+  deterministic, so what is measured is what is written (the measurement is
+  still at the file's rate). The conversion is therefore part of a measure
+  chunk, not a stage of its own, and `Measuring` and `Writing` count the
+  frames of the spill read, at the render's rate, summed over the outputs the
+  stage covers (section 6.1 says the write's total is at the file's rate).
+  `Measuring` covers only the outputs that measure themselves. The matrix's row
+  "mid resample chunks" is gone for that reason (the measure chunk loop is its
+  check).
+- **A shared gain.** An output that takes another's
+  (`NormalizeSpec::from_output`) is written with that output's gain, headroom
+  included (a 16-bit stem takes a 24-bit master's gain as it is; clipping is
+  counted per output). Its `Written::gain` is that gain and `Written::measured`
+  is `None`: it measured nothing. The source must be another output that
+  measures itself, which `render` checks (`TargetError::GainSource`).
+- **The split of finalize and commit (step 2's deferral).** `tutti-codec`'s
+  `Encoder` has `finalize` (close the file beside its path) and
+  `Finalized::commit` (the rename), and `finish` is the two. `render` finalizes
+  every output into its temporary, checks the token once more, then commits in
+  order. The token is also checked between outputs' finalizes (the first is
+  covered by the check after `begin(Finalizing)`), and a reading at 0.5 of the
+  band follows the last finalize. A rename that fails after another landed is
+  `NotCommitted { landed, cause }`, the landed files kept and no output that did
+  not land left behind; a first rename that fails is the plain `Io` error
+  (nothing landed). The fork-health and event-loss checks now come right after
+  the render loop, before any measuring or finalizing, so a failing unit is
+  reported even when a cancel follows; only a cancel at the start of
+  `Finalizing` used to skip them.
+- **Progress names its output.** `Progress::output` is the output being
+  measured, written or finalized, by its index in the list.
+- **Not done here.** `Written::frames`, `Unmeasurable.output`, and the
+  `planned_frames`/`whole_hz` copy of section 5.1 (the encoder still takes the
+  planned frame count from `check_fits`); `beats_to_seconds` and
+  `duration_to_frames` are still public.
+
+Test policy applies throughout: every new case must be able to fail (checked once, said in the PR); no existing
 test is relaxed; the parallel path is compared to the serial render bit for bit;
 golden digests, if any, go through `assert_golden`.

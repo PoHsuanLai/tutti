@@ -196,14 +196,32 @@ impl<W: Write + Seek + Send + 'static> Encoder<W> {
     /// [`create_file`](Encoder::create_file) is a take that must be whole, so it
     /// is removed instead, what was at its path is left alone, and the first
     /// failure is returned. Otherwise a file made by `create_file` is moved
-    /// into place once the sink has been flushed.
+    /// into place once the sink has been flushed. This is
+    /// [`finalize`](Self::finalize) then [`Finalized::commit`].
     ///
     /// # Errors
     ///
     /// [`Error::Io`] or [`Error::Encoding`] when closing fails (the file is then
     /// removed if the encoder made it), or the first failed `write` of a file
     /// the encoder made.
-    pub fn finish(mut self) -> Result<W> {
+    pub fn finish(self) -> Result<W> {
+        self.finalize()?.commit()
+    }
+
+    /// Closes the file as [`finish`](Self::finish) does, but leaves it where it
+    /// was written: a file made by [`create_file`](Encoder::create_file) is
+    /// complete beside its path and not yet moved onto it. [`Finalized::commit`]
+    /// moves it; dropping the [`Finalized`] removes it and leaves what was at
+    /// the path alone.
+    ///
+    /// The split is for a caller that writes several files and wants every one
+    /// closed (the work that can fail for the file's own sake) before any is
+    /// put in place.
+    ///
+    /// # Errors
+    ///
+    /// As [`finish`](Self::finish), for everything but the move into place.
+    pub fn finalize(mut self) -> Result<Finalized<W>> {
         let mut sink: W = match self.inner {
             #[cfg(feature = "encode-wav")]
             Inner::Wav(w) => w.finish()?,
@@ -219,20 +237,56 @@ impl<W: Write + Seek + Send + 'static> Encoder<W> {
         // A buffered sink reports a failed write only when it is flushed, and
         // a writer that does not flush would lose it to the sink's `Drop`.
         sink.flush()?;
-        if let Some(staged) = self.staged.take() {
-            if let Some(error) = self.first_error.take() {
-                // Dropping `staged` removes the partial file.
-                return Err(error);
-            }
-            staged.commit()?;
+        let staged = self.staged.take();
+        if staged.is_some()
+            && let Some(error) = self.first_error.take()
+        {
+            // Dropping `staged` removes the partial file.
+            return Err(error);
         }
-        Ok(sink)
+        Ok(Finalized { sink, staged })
     }
 
     /// Discards the file: a file made by [`create_file`](Encoder::create_file)
     /// is removed, and what was at its path is left alone. Dropping the
     /// encoder does the same.
     pub fn abort(self) {}
+}
+
+/// An encoder's closed file, not yet put in place ([`Encoder::finalize`]).
+///
+/// A file made by [`Encoder::create_file`] is complete beside its path and
+/// [`commit`](Self::commit) renames it over the path; dropping a `Finalized`
+/// first removes the file and leaves what was at the path alone. For a plain
+/// sink there is nothing to move and `commit` returns the sink.
+#[must_use = "a finalized file is removed when dropped; commit it"]
+pub struct Finalized<W> {
+    sink: W,
+    staged: Option<Staged>,
+}
+
+impl<W> std::fmt::Debug for Finalized<W> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Finalized")
+            .field("file", &self.staged.is_some())
+            .finish_non_exhaustive()
+    }
+}
+
+impl<W> Finalized<W> {
+    /// Moves the file onto its path (replacing what is there, on Windows too)
+    /// and returns the sink. A rename that fails removes the file and
+    /// leaves what was at the path alone.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Io`] when the rename fails.
+    pub fn commit(self) -> Result<W> {
+        if let Some(staged) = self.staged {
+            staged.commit()?;
+        }
+        Ok(self.sink)
+    }
 }
 
 impl Encoder<BufWriter<File>> {

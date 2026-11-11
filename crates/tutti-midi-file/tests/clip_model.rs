@@ -713,3 +713,308 @@ fn a_long_gap_is_written_as_dcs_then_a_null() {
         "no DCS, Null, DCS, Null, DCS run in {words:08x?}"
     );
 }
+
+// ---- M2-116 conformance of the reader and the writer (doc 017 L1) -----------
+
+/// The packets of a written clip after the file header, in order.
+fn packets_of(bytes: &[u8]) -> Vec<Ump> {
+    let words: Vec<u32> = bytes[8..]
+        .chunks(4)
+        .map(|c| u32::from_be_bytes(c.try_into().unwrap()))
+        .collect();
+    tutti_ump::split_stream(&words).collect()
+}
+
+fn is_dcs(ump: Ump) -> bool {
+    matches!(
+        tutti_ump::decode(ump),
+        Ok(Message::Utility(Utility::DeltaClockstamp(_)))
+    )
+}
+
+/// A MIDI-CI message `7E 7F 0D <sub_id2> ...` as one System Exclusive packet.
+fn ci(sub_id2: u8, status: tutti_ump::SysexStatus) -> Ump {
+    sysex7(status, &[0x7E, 0x7F, 0x0D, sub_id2, 0, 0])
+}
+
+/// Section 3.2.1 and section 6: "The DCTPQ shall have a preceding Delta
+/// Clockstamp (DCS) with Number of Ticks Since Last Event set to 0x00000."
+#[test]
+fn the_dctpq_has_a_zero_delta_clockstamp_before_it() {
+    let tail = [dcs(0), start(), dcs(0), end()];
+    let with = |before: &[Ump]| -> Vec<Ump> {
+        let mut parts = before.to_vec();
+        parts.push(dctpq(TPQ));
+        parts.extend_from_slice(&tail);
+        parts
+    };
+    assert!(MidiFile::from_bytes(&clip(&with(&[dcs(0)]))).is_ok());
+    assert_eq!(clip_error(&with(&[])), ClipFileError::DctpqDelta);
+    assert_eq!(clip_error(&with(&[dcs(5)])), ClipFileError::DctpqDelta);
+    // It follows the Set Profile On messages, and its DCS is the one after them.
+    assert!(MidiFile::from_bytes(&clip(&with(&[set_profile_on(), dcs(0)]))).is_ok());
+    assert_eq!(
+        clip_error(&with(&[set_profile_on(), dcs(2)])),
+        ClipFileError::DctpqDelta
+    );
+}
+
+/// Section 6: "Set Profile On messages shall not have a prepended Delta
+/// Clockstamp (DCS)."
+#[test]
+fn a_set_profile_on_has_no_delta_clockstamp_before_it() {
+    let after = [dcs(0), dctpq(TPQ), dcs(0), start(), dcs(0), end()];
+    let with = |before: &[Ump]| -> Vec<Ump> {
+        let mut parts = before.to_vec();
+        parts.extend_from_slice(&after);
+        parts
+    };
+    assert!(MidiFile::from_bytes(&clip(&with(&[set_profile_on()]))).is_ok());
+    assert_eq!(
+        clip_error(&with(&[dcs(0), set_profile_on()])),
+        ClipFileError::ProfileOnDelta
+    );
+    // Nor before a later packet of one message.
+    let two = [
+        sysex7(
+            tutti_ump::SysexStatus::Start,
+            &[0x7E, 0x7F, 0x0D, 0x22, 1, 2],
+        ),
+        sysex7(tutti_ump::SysexStatus::End, &[3, 4]),
+    ];
+    assert!(MidiFile::from_bytes(&clip(&with(&two))).is_ok());
+    assert_eq!(
+        clip_error(&with(&[two[0], dcs(0), two[1]])),
+        ClipFileError::ProfileOnDelta
+    );
+}
+
+/// Section 6.1.2: the header's Set Time Signature "shall use the Delta
+/// Clockstamp which precedes the DCTPQ message or shall have a preceding Delta
+/// Clockstamp with Number of Ticks Since Last Event set to 0x00000", as the Set
+/// Tempo does (section 6.1.1).
+#[test]
+fn the_header_time_signature_is_at_delta_zero() {
+    for header in [
+        vec![dcs(5), time_signature()],
+        vec![dcs(0), set_tempo(100.0), dcs(5), time_signature()],
+    ] {
+        assert_eq!(
+            clip_error(&with_header(&header)),
+            ClipFileError::MisplacedHeaderTimeSignature,
+            "{header:?}"
+        );
+    }
+    // The constructor holds the model to the same rule.
+    let late = Track {
+        header: vec![(
+            Tick(5),
+            packet(tutti_ump::decode(time_signature()).unwrap()),
+        )],
+        header_end: Tick(5),
+        ..Track::default()
+    };
+    assert!(matches!(
+        MidiFile::clip(TPQ, late),
+        Err(Error::Clip(ClipFileError::MisplacedHeaderTimeSignature))
+    ));
+}
+
+/// Section 6.4: "Property Data for PE Resources shall not be included in a MIDI
+/// Clip File." Section 7.2: the sequence data holds "any MIDI messages in UMP
+/// Format, except Property Exchange messages". Property Exchange is MIDI-CI
+/// sub-ID#2 `0x30` to `0x3F` (M2-101 Table 5), so its neighbours are fine.
+#[test]
+fn property_exchange_is_refused_everywhere() {
+    use tutti_ump::SysexStatus::{Complete, Start};
+    for sub_id2 in [0x30, 0x34, 0x3F] {
+        for status in [Complete, Start] {
+            let pe = ci(sub_id2, status);
+            // In the sequence data...
+            let in_sequence = [
+                dcs(0),
+                dctpq(TPQ),
+                dcs(0),
+                start(),
+                dcs(0),
+                pe,
+                dcs(0),
+                end(),
+            ];
+            assert_eq!(
+                clip_error(&in_sequence),
+                ClipFileError::PropertyExchange,
+                "{sub_id2:#x}"
+            );
+            // ...and in the header.
+            assert_eq!(
+                clip_error(&with_header(&[dcs(0), pe])),
+                ClipFileError::PropertyExchange
+            );
+            // The writer's gate refuses it too.
+            let track = Track::new(vec![(Tick(0), packet(tutti_ump::decode(pe).unwrap()))]);
+            assert!(
+                matches!(MidiFile::clip(TPQ, track), Err(Error::InvalidConfig(_))),
+                "{sub_id2:#x}"
+            );
+            let header = Track {
+                header: vec![(Tick(0), packet(tutti_ump::decode(pe).unwrap()))],
+                ..Track::default()
+            };
+            assert!(matches!(
+                MidiFile::clip(TPQ, header),
+                Err(Error::InvalidConfig(_))
+            ));
+        }
+    }
+    // Profile Configuration (0x2F) and Process Inquiry (0x40) are not it.
+    for sub_id2 in [0x22, 0x2F, 0x40] {
+        let other = ci(sub_id2, Complete);
+        let parts = [
+            dcs(0),
+            dctpq(TPQ),
+            dcs(0),
+            start(),
+            dcs(0),
+            other,
+            dcs(0),
+            end(),
+        ];
+        assert!(MidiFile::from_bytes(&clip(&parts)).is_ok(), "{sub_id2:#x}");
+    }
+}
+
+/// Section 6.1: "the cumulative values of all Delta Clockstamp up to and
+/// including the Delta Clockstamp for the Start of Clip Message determines the
+/// total length of time allocated to the Clip Configuration Header." The last
+/// gap is kept, read and written.
+#[test]
+fn the_header_keeps_its_duration() {
+    // A header message at 4, then 26 more ticks to Start of Clip: it ends at 30.
+    let parts = [
+        dcs(0),
+        dctpq(TPQ),
+        dcs(4),
+        program_change(),
+        dcs(26),
+        start(),
+        dcs(0),
+        end(),
+    ];
+    let file = MidiFile::from_bytes(&clip(&parts)).unwrap();
+    let track = &file.tracks()[0];
+    assert_eq!(track.header.len(), 1);
+    assert_eq!(track.header[0].0, Tick(4));
+    assert_eq!(track.header_end, Tick(30));
+    // Written back with the same Delta Clockstamp before Start of Clip.
+    let bytes = file.to_bytes().unwrap();
+    let written = packets_of(&bytes);
+    let at = written.iter().position(|&u| u == start()).unwrap();
+    assert_eq!(written[at - 1], dcs(26));
+    assert_eq!(MidiFile::from_bytes(&bytes).unwrap(), file);
+    // A header with no message has its duration too.
+    let empty = [dcs(0), dctpq(TPQ), dcs(12), start(), dcs(0), end()];
+    let file = MidiFile::from_bytes(&clip(&empty)).unwrap();
+    assert_eq!(file.tracks()[0].header_end, Tick(12));
+    assert_eq!(
+        MidiFile::from_bytes(&file.to_bytes().unwrap()).unwrap(),
+        file
+    );
+    // None, as in `valid`, is zero.
+    let file = MidiFile::from_bytes(&clip(&valid())).unwrap();
+    assert_eq!(file.tracks()[0].header_end, Tick(0));
+}
+
+#[test]
+fn the_constructor_holds_the_header_duration_to_the_header() {
+    let message = (
+        Tick(8),
+        packet(tutti_ump::decode(program_change()).unwrap()),
+    );
+    let before = Track {
+        header: vec![message.clone()],
+        header_end: Tick(7),
+        ..Track::default()
+    };
+    assert!(matches!(
+        MidiFile::clip(TPQ, before),
+        Err(Error::InvalidConfig(_))
+    ));
+    let at = Track {
+        header: vec![message],
+        header_end: Tick(8),
+        ..Track::default()
+    };
+    assert!(MidiFile::clip(TPQ, at.clone()).is_ok());
+    // An SMF has no configuration header, so no duration.
+    let smf = Track {
+        header_end: Tick(1),
+        ..Track::default()
+    };
+    assert!(matches!(
+        MidiFile::smf(SmfFormat::SingleTrack, TPQ, vec![smf]),
+        Err(Error::InvalidConfig(_))
+    ));
+}
+
+fn text_packets(kind: tutti_ump::FlexTextKind, text: &str) -> Vec<(Tick, FileEvent)> {
+    tutti_ump::flex_text_packets(MidiGroup::FIRST, tutti_ump::FlexAddress::Group, kind, text)
+        .unwrap()
+        .map(|ump| (Tick(10), packet(tutti_ump::decode(ump).unwrap())))
+        .collect()
+}
+
+/// M2-104 sections 7.5.10 and 7.5.12: "When placed in a MIDI Clip File, all parts
+/// of the Lyric Data Message shall be placed at the same time, sharing a single
+/// Delta Clock Stamp", and M2-116 section 3.2.2: a Delta Clockstamp "declares the
+/// time of all following messages which occur before the next Delta Clockstamp
+/// message". The parts of a Lyric or Ruby message are written behind one DCS;
+/// the parts of any other message, and separate messages, keep their own.
+#[test]
+fn the_parts_of_a_lyric_or_ruby_message_share_one_delta_clockstamp() {
+    use tutti_ump::FlexTextKind::{Composer, Lyrics, Ruby};
+    // 20 bytes: a Start and an End packet (12 bytes each).
+    let syllable = "abcdefghijklmnopqrst";
+    for (kind, shared) in [(Lyrics, true), (Ruby, true), (Composer, false)] {
+        let events = text_packets(kind, syllable);
+        assert_eq!(events.len(), 2);
+        let bytes = MidiFile::clip(TPQ, Track::new(events.clone()))
+            .unwrap()
+            .to_bytes()
+            .unwrap();
+        let written = packets_of(&bytes);
+        let first = written
+            .iter()
+            .position(|&u| u == Ump::from(*events[0].1.message().unwrap()))
+            .unwrap();
+        assert_eq!(
+            is_dcs(written[first + 1]),
+            !shared,
+            "{kind:?}: a DCS between the parts"
+        );
+        assert!(
+            is_dcs(written[first - 1]),
+            "{kind:?}: a DCS before the first"
+        );
+        // Either way it reads back as the same events at the same ticks.
+        let back = MidiFile::from_bytes(&bytes).unwrap();
+        assert_eq!(back.tracks()[0].events, events, "{kind:?}");
+    }
+    // Two separate Lyric messages at one tick are two messages: each its own DCS.
+    let mut two = text_packets(Lyrics, "one");
+    two.extend(text_packets(Lyrics, "two"));
+    let bytes = MidiFile::clip(TPQ, Track::new(two.clone()))
+        .unwrap()
+        .to_bytes()
+        .unwrap();
+    let written = packets_of(&bytes);
+    let first = written
+        .iter()
+        .position(|&u| u == Ump::from(*two[0].1.message().unwrap()))
+        .unwrap();
+    assert!(is_dcs(written[first + 1]));
+    assert_eq!(
+        MidiFile::from_bytes(&bytes).unwrap().tracks()[0].events,
+        two
+    );
+}

@@ -6,32 +6,47 @@ slower) than real time. The `tutti` facade re-exports this crate as
 
 ## What is here
 
-The graph is *pulled* to a known frame count that `RenderConfig` fixes up front,
-then resampled, dithered and encoded on the way out. The entry points, and the
-names say which path a caller is on:
+The graph is *pulled* to a known frame count that a `Job` fixes up front, once,
+and every `Output` of the render is fed from that one pass. `render` takes the
+`Job`, a list of `Output`s and a `Control`:
 
-- `render_to_file` — render straight to disk. Streams: the pipeline pulls the
-  graph one block at a time and no PCM is held whole.
-- `render_to_buffers` — render into memory, as planar `Vec<f32>` planes.
-- `write_buffers` — encode planes a caller already holds.
-- `render_normalized_to_file` — render, measure, apply a gain, write: two
-  passes, so the whole render is held in memory. It is a separate function on
-  purpose — see below.
+- An `Output` is a `Feed` (the graph's outputs, or a plan tap, `Feed::Tap`, read
+  after every block and placed by a `Placement`) and a `Target`: a file
+  (`FileTarget`: path, format, width, speaker order, resample, dither,
+  normalize) or planes in memory (`BufferTarget`, returned as a `Rendered`).
+  `render` returns one `Produced` per output, in order; `render_one` is the
+  helper for a render of one.
+- A file output that does not normalize **streams**: each block goes through
+  its resample, dither and encoder as it arrives and no PCM is held.
+- A file output that normalizes keeps what the graph rendered for it (in memory
+  up to 512 MiB across the render, then in a temporary `f32` file beside its
+  target), measures it at the file's rate, and writes it again with the gain.
+  The graph is never rendered twice. An output can take another's gain
+  (`NormalizeSpec::from_output`), so a set of stems keeps the master's balance.
+- Every file is written to a temporary beside its path and put in place at the
+  end, after every output has been finalized and the fork and the event loss
+  have been checked. A render that fails or is cancelled leaves every path as it
+  was. The renames are the one step that is not undone: if one fails after others
+  landed the error is `Error::NotCommitted`, which names the files that did.
+- `write_buffers` encodes planes a caller already holds (with the
+  `ExportConfig` that describes the file).
 
-The three that render take a `Control`: a `CancelToken` they check (before
-every block, between stages, during the measurement and before the file is
-put in place) and a callback that is handed a `Progress`, a `Stage` and one
-fraction of the whole render. `Control::none()` is a render nobody watches or
-stops. A cancelled render is `Outcome::Cancelled`, with every temporary
-removed and every target as it was. Encoding is WAV, FLAC, AIFF or OGG Vorbis, each
+`Control` is how a host watches and stops the render: a `CancelToken` that is
+checked (before every block, between stages, during the measurement and the
+write, before each output is finalized and before the renames) and a callback
+that is handed a `Progress`, a `Stage` and one fraction of the whole render.
+`Control::none()` is a render nobody watches or stops. A cancelled render is
+`Outcome::Cancelled`, with every temporary removed and every target as it was.
+Encoding is WAV, FLAC, AIFF or OGG Vorbis, each
 behind its own feature (`wav`, `flac`, `aiff`, `ogg`). **None is on by default**:
 `ogg` links the C Vorbis library, so a consumer names the formats it writes. The
 umbrellas (`tutti`, `bevy-tutti`, `tutti-session`) forward them as `export-wav`,
 `export-flac`, `export-aiff` and `export-ogg`; their `export` feature implies
 `export-wav` only, so `export-ogg` is the one path to C.
 
-One `ExportConfig` serves all of them, and each reads only some of it; the
-list is on `ExportConfig`.
+`ExportConfig` is the bundle for one render of one file or one set of planes
+(`job()`, `file_target(path, normalize)`, `buffer_target()` build what `render`
+takes); it goes with the session's request when the session's bounce lands.
 
 ## What this crate does not own
 
@@ -44,9 +59,9 @@ list is on `ExportConfig`.
   to record one.
 - **Loudness measurement.** EBU R128 lives in `tutti-measure`, which is where
   the engine's `Config`/`State`/step analysis vocabulary is;
-  `render_normalized_to_file` measures with it. The edge is acyclic —
+  a normalizing output measures with it. The edge is acyclic —
   `tutti-measure` does not depend on this crate.
-- **Threads.** Every entry point is synchronous and runs on the calling
+- **Threads.** `render` is synchronous and runs on the calling
   thread. A host that wants a render off the main thread runs it on its own
   task pool.
 - **A buffering strategy.** Every format streams, because every codec library
@@ -70,14 +85,14 @@ forks it instead, with `RenderGraph::fork`.
 use tutti_transport::FrozenClock;
 use tutti_types::{Hz, SampleRate, Seconds};
 use tutti_export::{
-    render_to_buffers, render_to_file, ChannelLayout, Control, EncodeConfig, ExportConfig,
-    FlacLevel, Format, IntDepth, RenderConfig, RenderGraph,
+    render, render_one, ChannelLayout, Control, EncodeConfig, ExportConfig, FileTarget, FlacLevel,
+    Format, IntDepth, Output, Pcm, Produced, RenderConfig, RenderGraph,
 };
 use tutti_graph::GraphBuilder;
 use tutti_nodes::testing::Osc;
 
 let rate = SampleRate(48_000.0);
-// A render consumes its graph, so build one per render.
+// A render borrows its graph; build one per render.
 let tone = || {
     let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::STEREO);
     let osc = g.add(Osc::sine(Hz(440.0)));
@@ -98,43 +113,62 @@ let config = ExportConfig {
     },
     ..Default::default()
 };
+let job = config.job().expect("a half second");
 
 // To buffers: planar, one `Vec` per channel, and `frames()` is FRAMES per
 // plane rather than the total sample count.
-let rendered = render_to_buffers(tone(), &config, &FrozenClock, &mut Control::none())
-    .expect("a 0.5 s stereo render")
-    .finished()
-    .expect("nothing cancels it");
+let rendered = render_one(
+    &mut tone(),
+    &job,
+    &FrozenClock,
+    Output::master(config.buffer_target()),
+    &mut Control::none(),
+)
+.expect("a 0.5 s stereo render")
+.finished()
+.and_then(Produced::buffers)
+.expect("nothing cancels it");
 assert_eq!(rendered.channels(), 2);
 assert_eq!(rendered.frames().get(), 24_000);
 
-// Or straight to a file, which streams — no PCM is held whole.
+// Or straight to files, which streams — no PCM is held whole. One pass can
+// write several, each in its own format.
 let dir = tempfile::tempdir().expect("temp dir");
-let written = render_to_file(
-    tone(),
-    &config,
+let produced = render(
+    &mut tone(),
+    &job,
     &FrozenClock,
-    &dir.path().join("master.flac"),
+    vec![
+        Output::master(config.file_target(dir.path().join("master.flac"), None)),
+        Output::master(FileTarget::new(
+            dir.path().join("master.wav"),
+            Format::Wav(Pcm::Int16),
+            ChannelLayout::STEREO,
+        )),
+    ],
     &mut Control::none(),
 )
-.expect("flac encodes")
+.expect("flac and wav encode")
 .finished()
 .expect("nothing cancels it");
-assert!(written.bytes > 0, "a finalized export reports its size on disk");
+for output in produced {
+    let written = output.file().expect("a file output");
+    assert!(written.bytes > 0, "a finalized export reports its size on disk");
+}
 ```
 
-## Normalization is a separate entry point, not a config field
+## Normalization is part of an output, not of the render
 
 Choosing a gain means measuring the whole signal first, which is two passes. So
-normalization is not a field on `ExportConfig` that quietly changes what
-`render_to_file` costs — it is `render_normalized_to_file`, whose name says
-which path the caller is on. Hiding the two passes inside one export is what
-forces the whole signal into memory.
+an output that asks for it (`FileTarget::with_normalize`) does not stream: its
+audio waits in a spill while the graph renders, is measured at the file's rate
+(`Normalize::Peak` or `Normalize::Lufs`, which an integer format's headroom
+lowers) and is written with the gain, which `Written::gain` reports beside the
+reading it came from, `Written::measured`.
 
 For a gain that is logged, gated, or derived some other way, compose the steps
-directly: measure with `tutti_measure::measure_loudness` (a streaming meter, so it can
-run *while* rendering), take `Loudness::gain_to`, apply it with
-`Rendered::apply_gain`, and write with `write_buffers`.
+directly: render into a `BufferTarget`, take `Normalize::gain_for_rendered`,
+apply it with `Rendered::apply_gain`, and write with `write_buffers`.
 
 ## Features
 

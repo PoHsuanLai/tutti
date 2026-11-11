@@ -460,11 +460,13 @@ fn the_division_and_the_end_carry_over() {
         vec![
             Track {
                 header: vec![],
+                header_end: Tick(0),
                 events: vec![(Tick(10), note(0, 60))],
                 end: Tick(400),
             },
             Track {
                 header: vec![],
+                header_end: Tick(0),
                 events: vec![(Tick(10), note(1, 60))],
                 end: Tick(250),
             },

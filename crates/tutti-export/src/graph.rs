@@ -90,7 +90,7 @@ pub const GRAPH_MAX_BLOCK: Samples = Samples(1024);
 ///
 /// ```
 /// use tutti_types::{Hz, SampleRate, Seconds};
-/// use tutti_export::{render_to_buffers, Control, ExportConfig, FrozenClock, RenderConfig, RenderGraph};
+/// use tutti_export::{render_one, Control, ExportConfig, FrozenClock, Output, Produced, RenderConfig, RenderGraph};
 /// use tutti_graph::GraphBuilder;
 /// use tutti_nodes::testing::Osc;
 /// use tutti_types::ChannelLayout;
@@ -100,16 +100,23 @@ pub const GRAPH_MAX_BLOCK: Samples = Samples(1024);
 /// let tone = g.add(Osc::sine(Hz(440.0)));
 /// g.pipe_output(tone);
 /// let (editor, executor) = g.build(RenderGraph::prepare(rate)).expect("builds");
-/// let graph = RenderGraph::new(editor, executor).expect("built together, so paired");
+/// let mut graph = RenderGraph::new(editor, executor).expect("built together, so paired");
 ///
 /// let config = ExportConfig {
 ///     render: RenderConfig { sample_rate: rate, duration_seconds: Seconds(0.1), ..Default::default() },
 ///     ..Default::default()
 /// };
-/// let out = render_to_buffers(graph, &config, &FrozenClock, &mut Control::none())
-///     .expect("renders")
-///     .finished()
-///     .expect("nothing cancels it");
+/// let out = render_one(
+///     &mut graph,
+///     &config.job().expect("a render"),
+///     &FrozenClock,
+///     Output::master(config.buffer_target()),
+///     &mut Control::none(),
+/// )
+/// .expect("renders")
+/// .finished()
+/// .and_then(Produced::buffers)
+/// .expect("nothing cancels it");
 /// assert_eq!(out.frames().get(), 4_800);
 /// ```
 #[derive(Debug)]

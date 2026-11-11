@@ -1,6 +1,13 @@
 //! What to render and how to write it — plain data, filled in by struct
 //! literal.
 //!
+//! This is the bundle a caller that has one render and one file fills in
+//! (and what `tutti-session`'s export request still carries); it is not what
+//! the pipeline takes. [`render`](crate::render()) takes a [`Job`] and a list of
+//! [`Output`](crate::Output)s, and [`ExportConfig::job`] and
+//! [`ExportConfig::file_target`] are the bridge to them. It goes with the
+//! session's request in doc 019 step 5.
+//!
 //! There is no builder. Every field is public and every struct is `Default`, so
 //! a caller writes what it means and lets `..Default::default()` cover the rest:
 //!
@@ -23,7 +30,7 @@
 //! ```
 //!
 //! A literal is not a guarantee that every field is read: one config serves
-//! four entry points, and each ignores some of it. What each reads is on
+//! several uses, and each ignores some of it. What each reads is on
 //! [`ExportConfig`].
 //!
 //! This module is data, and only data. No method here reads a graph, opens a
@@ -33,9 +40,14 @@
 //! build up, log, diff, and hand around; one with an "ask the graph" mode is
 //! not.
 
-use crate::options::Dither;
+use crate::error::ConfigError;
+use crate::job::{Job, JobError};
+use crate::normalize::Normalize;
+use crate::output::{BufferTarget, FileTarget, NormalizeSpec};
 use crate::process::ChunkSize;
+use std::path::PathBuf;
 use tutti_codec::Format;
+use tutti_dsp::DitherShape;
 use tutti_types::{ChannelLayout, Samples};
 use tutti_types::{SampleRate, Seconds};
 
@@ -47,10 +59,10 @@ pub struct RenderConfig {
     pub sample_rate: SampleRate,
     /// Length of the audible span, in seconds; a render of no frames (this
     /// default's `0.0`, with no [`tail`](Self::tail)) is
-    /// [`ConfigError::EmptyRender`](crate::ConfigError::EmptyRender), and a
+    /// [`ConfigError::EmptyRender`], and a
     /// NaN, infinite or negative value
-    /// [`ConfigError::InvalidDuration`](crate::ConfigError::InvalidDuration).
-    /// See [`duration_to_frames`](crate::duration_to_frames) for the rounding.
+    /// [`ConfigError::InvalidDuration`].
+    /// The span is rounded to the nearest frame.
     pub duration_seconds: Seconds,
     /// Leading FRAMES to drop — look-ahead limiters, linear-phase filters.
     ///
@@ -132,7 +144,7 @@ pub struct EncodeConfig {
     /// width is folded onto it by speaker position: a wider one with the
     /// ITU/Dolby matrix, a narrower one by the engine's order, with the
     /// channels the source lacks left silent. A width the fold cannot place
-    /// is [`ConfigError::Placement`](crate::ConfigError::Placement), never a
+    /// is [`ConfigError::Placement`], never a
     /// dropped channel.
     pub channels: ChannelLayout,
     /// Which speaker each file channel feeds, for the WAV speaker mask and Ogg
@@ -196,33 +208,29 @@ impl Resample {
 /// (see the [crate-level example](crate)). The default renders at 44.1 kHz to
 /// a stereo WAV with triangular dither and no resample, and has **no
 /// duration**: a render of no frames is
-/// [`ConfigError::EmptyRender`](crate::ConfigError::EmptyRender), so set at
+/// [`ConfigError::EmptyRender`], so set at
 /// least [`RenderConfig::duration_seconds`] (a NaN, infinite or negative one
-/// is [`ConfigError::InvalidDuration`](crate::ConfigError::InvalidDuration)).
+/// is [`ConfigError::InvalidDuration`]).
 ///
-/// There is no `normalize` field: normalization needs the whole signal
-/// measured before a gain can be chosen, which is two passes. Use
-/// [`render_normalized_to_file`](crate::render_normalized_to_file), or measure
-/// with [`tutti_measure::measure_loudness`], take `Loudness::gain_to` and
-/// apply it with [`Rendered::apply_gain`](crate::Rendered::apply_gain).
+/// There is no `normalize` field: a file target asks for it
+/// ([`FileTarget::with_normalize`]), and [`file_target`](Self::file_target)
+/// takes it as an argument.
 ///
-/// # What each entry point reads
+/// # What each use reads
 ///
-/// One config serves every entry point, and a field an entry point has no use
-/// for is ignored, not refused:
+/// One config serves every use, and a field a use has no need of is ignored,
+/// not refused:
 ///
-/// - [`render_to_file`](crate::render_to_file): all of it.
-/// - [`render_normalized_to_file`](crate::render_normalized_to_file): all of
-///   it; `resample` is applied before the measurement, and for an integer
-///   format the peak target and ceiling are pulled down to leave the format's
-///   headroom.
-/// - [`render_to_buffers`](crate::render_to_buffers): `render`, and
-///   `encode.channels` and `encode.topology` for the fold. **Ignores**
-///   `encode.format`, `resample` and `dither`: the planes are not an output.
+/// - [`job`](Self::job): `render`.
+/// - [`file_target`](Self::file_target): all of `encode`, `resample` and
+///   `dither`.
+/// - [`buffer_target`](Self::buffer_target): `encode.channels` and
+///   `encode.topology` for the fold. **Ignores** `encode.format`, `resample`
+///   and `dither`: the planes are not an output.
 /// - [`write_buffers`](crate::write_buffers): `encode`, `resample` and
 ///   `dither`, and `render.on_event_loss` for the planes' own loss count.
-///   **Ignores** the rest of `render` (`sample_rate`, `duration_seconds`,
-///   `latency`, `tail`): the frames exist and carry their own rate.
+///   **Ignores** the rest of `render`: the frames exist and carry their own
+///   rate.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ExportConfig {
     /// What to produce, and for how long.
@@ -231,9 +239,92 @@ pub struct ExportConfig {
     pub encode: EncodeConfig,
     /// `None` writes at the render rate.
     pub resample: Option<Resample>,
-    /// Applied when quantizing to an integer width. Ignored for a format that
-    /// does not quantize (`Pcm::Float32`, and Ogg Vorbis).
-    pub dither: Dither,
+    /// Applied when quantizing to an integer width; `None` adds none. Ignored
+    /// for a format that does not quantize (`Pcm::Float32`, and Ogg Vorbis).
+    pub dither: Option<DitherShape>,
+}
+
+impl RenderConfig {
+    /// The [`Job`] this config describes.
+    ///
+    /// A tail-only render (no audible span, a tail) is a render, and `Job`
+    /// refuses a zero length, so its length is then the tail: the same frames
+    /// and the same trimmed head.
+    ///
+    /// # Errors
+    ///
+    /// [`ConfigError::InvalidDuration`] for a duration that is NaN, infinite
+    /// or negative; [`ConfigError::EmptyRender`] for a render that keeps no
+    /// frame; otherwise what [`Job::new`] refuses ([`ConfigError::Job`]).
+    pub fn job(&self) -> Result<Job, ConfigError> {
+        if !self.duration_seconds.get().is_finite() || self.duration_seconds.get() < 0.0 {
+            return Err(ConfigError::InvalidDuration);
+        }
+        let duration = crate::duration_to_frames(self.duration_seconds, self.sample_rate);
+        let (length, tail) = if duration == Samples(0) {
+            (self.tail, Samples(0))
+        } else {
+            (duration, self.tail)
+        };
+        Job::new(self.sample_rate, length, self.latency, tail)
+            .map(|job| job.with_event_loss(self.on_event_loss))
+            .map_err(|e| match e {
+                JobError::ZeroLength => ConfigError::EmptyRender,
+                other => ConfigError::Job(other),
+            })
+    }
+}
+
+impl ExportConfig {
+    /// The [`Job`] of `render` ([`RenderConfig::job`]).
+    ///
+    /// # Errors
+    ///
+    /// As [`RenderConfig::job`].
+    pub fn job(&self) -> Result<Job, ConfigError> {
+        self.render.job()
+    }
+
+    /// The job of a render held in memory: as [`job`](Self::job), except that
+    /// a span past [`MAX_FRAMES`](crate::MAX_FRAMES) is
+    /// [`Error::RenderTooLarge`](crate::Error::RenderTooLarge), the error of
+    /// planes that cannot be held.
+    ///
+    /// # Errors
+    ///
+    /// As [`job`](Self::job), and the one above.
+    pub fn buffers_job(&self) -> crate::Result<Job> {
+        match self.render.job() {
+            Err(ConfigError::Job(JobError::TooLong { total: Some(total) })) => {
+                Err(crate::Error::RenderTooLarge {
+                    frames: total,
+                    channels: self.encode.channels,
+                })
+            }
+            job => Ok(job?),
+        }
+    }
+
+    /// The file at `path` this config describes, normalized by `normalize`
+    /// (measured on this output) when given.
+    #[must_use]
+    pub fn file_target(
+        &self,
+        path: impl Into<PathBuf>,
+        normalize: Option<Normalize>,
+    ) -> FileTarget {
+        FileTarget::new(path, self.encode.format, self.encode.channels)
+            .with_topology(self.encode.topology.clone())
+            .with_resample(self.resample)
+            .with_dither(self.dither)
+            .with_normalize(normalize.map(NormalizeSpec::own))
+    }
+
+    /// The planes this config describes: `encode.channels` wide.
+    #[must_use]
+    pub fn buffer_target(&self) -> BufferTarget {
+        BufferTarget::new(self.encode.channels).with_topology(self.encode.topology.clone())
+    }
 }
 
 /// A 24-bit stereo WAV with no duration, which a render refuses until one is
@@ -245,7 +336,7 @@ impl Default for ExportConfig {
             render: RenderConfig::default(),
             encode: EncodeConfig::default(),
             resample: None,
-            dither: Dither::default(),
+            dither: Some(DitherShape::Triangular),
         }
     }
 }

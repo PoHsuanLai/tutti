@@ -46,7 +46,7 @@ pub struct TransportSettings {
     ///
     /// ```compile_fail,E0616
     /// let t = tutti_transport::Transport::new(48_000.0);
-    /// t.settings.beat.store(8.0, std::sync::atomic::Ordering::Release);
+    /// t.settings().beat.store(8.0, std::sync::atomic::Ordering::Release);
     /// ```
     ///
     /// A host that drives the playhead by hand takes the audio side and
@@ -60,7 +60,7 @@ pub struct TransportSettings {
     ///
     /// ```compile_fail,E0616
     /// let t = tutti_transport::Transport::new(48_000.0);
-    /// t.settings.segment_generation.store(0, std::sync::atomic::Ordering::Release);
+    /// t.settings().segment_generation.store(0, std::sync::atomic::Ordering::Release);
     /// ```
     pub(crate) segment_generation: Arc<AtomicU64>,
     /// Whether the transport is armed and capturing. Read by the metronome's
@@ -79,7 +79,7 @@ pub struct TransportSettings {
     ///
     /// ```compile_fail,E0616
     /// let t = tutti_transport::Transport::new(48_000.0);
-    /// t.settings.paused.store(false, std::sync::atomic::Ordering::Release);
+    /// t.settings().paused.store(false, std::sync::atomic::Ordering::Release);
     /// ```
     pub(crate) paused: Arc<AtomicBool>,
     /// Free-running sample count since the stream started, written by

@@ -19,7 +19,7 @@ use tutti_types::{Beat, SampleRate};
 /// # use tutti_transport::{LoopEdit, MotionEvent, Transport};
 /// # let transport = Transport::new(tutti_types::SampleRate(48_000.0));
 /// transport.motion.try_send(MotionEvent::Play)?; // a request; may be refused
-/// transport.settings.set_tempo(Bpm::of(140.0));      // a value; cannot fail
+/// transport.settings().set_tempo(Bpm::of(140.0));      // a value; cannot fail
 /// // Loop beats 0 to 4 from the next block; the engine owns the region.
 /// let range = tutti_types::LoopRange::new(tutti_types::Beat(0.0), tutti_types::Beat(4.0)).expect("ordered");
 /// transport.motion.schedule(At::NextBlock, LoopEdit::over(range))?;

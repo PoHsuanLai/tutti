@@ -19,7 +19,7 @@
 //! Run: `cargo run --release -p tutti-export --example render_export_cases -- <outdir>`
 
 use tutti_export::{
-    ChannelLayout, Dither, EncodeConfig, ExportConfig, FlacLevel, Format, Pcm, Quality,
+    ChannelLayout, Control, Dither, EncodeConfig, ExportConfig, FlacLevel, Format, Pcm, Quality,
     RenderConfig, RenderGraph, Resample, render_to_file,
 };
 use tutti_graph::GraphBuilder;
@@ -133,7 +133,15 @@ fn main() -> tutti_export::Result<()> {
     let mut count = 0usize;
     let mut write =
         |name: String, graph: RenderGraph, cfg: &ExportConfig| -> tutti_export::Result<()> {
-            let w = render_to_file(graph, cfg, &tutti_export::FrozenClock, dir.join(&name))?;
+            let w = render_to_file(
+                graph,
+                cfg,
+                &tutti_export::FrozenClock,
+                dir.join(&name),
+                &mut Control::none(),
+            )?
+            .finished()
+            .expect("nothing cancels a control with no token");
             println!("wrote {name} ({} bytes)", w.bytes);
             count += 1;
             Ok(())

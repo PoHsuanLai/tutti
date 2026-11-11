@@ -42,6 +42,8 @@
 
 #![cfg(all(feature = "wav", feature = "flac", feature = "aiff", feature = "ogg"))]
 
+mod support;
+
 use symphonia::core::audio::SampleBuffer;
 use symphonia::core::codecs::DecoderOptions;
 use symphonia::core::formats::FormatOptions;
@@ -50,9 +52,10 @@ use symphonia::core::meta::MetadataOptions;
 use symphonia::core::probe::Hint;
 use tutti_types::Seconds;
 
+use crate::support::render_to_file;
 use tutti_export::{
     ChannelLayout, Dither, EncodeConfig, ExportConfig, FlacLevel, Format, FrozenClock, Pcm,
-    Quality, RenderConfig, RenderGraph, render_to_file,
+    Quality, RenderConfig, RenderGraph,
 };
 use tutti_graph::GraphBuilder;
 use tutti_nodes::testing::{Const, Osc};

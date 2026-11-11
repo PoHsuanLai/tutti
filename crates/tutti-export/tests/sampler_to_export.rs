@@ -48,14 +48,16 @@
 
 #![cfg(feature = "wav")]
 
+mod support;
+
 use std::f32::consts::TAU;
 use std::sync::Arc;
 use tutti_types::Seconds;
 
+use crate::support::render_to_file;
 use tutti_codec::Wave;
 use tutti_export::{
     ChannelLayout, Dither, EncodeConfig, ExportConfig, Format, Pcm, RenderConfig, RenderGraph,
-    render_to_file,
 };
 use tutti_graph::GraphBuilder;
 use tutti_sampler::{MemorySource, Playback, SlotId, Voice, VoicePool, VoiceSource};

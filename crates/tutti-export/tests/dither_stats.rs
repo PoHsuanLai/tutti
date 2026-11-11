@@ -28,9 +28,12 @@
 
 #![cfg(feature = "wav")]
 
+mod support;
+
+use crate::support::render_to_file;
 use tutti_export::{
     ChannelLayout, Dither, EncodeConfig, ExportConfig, Format, FrozenClock, IntDepth, Pcm,
-    RenderConfig, RenderGraph, render_to_file,
+    RenderConfig, RenderGraph,
 };
 use tutti_graph::GraphBuilder;
 use tutti_nodes::testing::Const;

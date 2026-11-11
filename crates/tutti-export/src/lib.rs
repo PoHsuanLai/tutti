@@ -14,8 +14,8 @@ pub use tutti_codec::{FlacLevel, Format, IntDepth, Pcm, Quality};
 pub use tutti_types::ChannelLayout;
 
 mod control;
-use control::{Control, never_stop};
-pub use control::{Flow, Outcome, Pass, Progress};
+use control::Weights;
+pub use control::{CancelToken, Control, Outcome, Progress, Stage};
 
 mod job;
 pub use job::{Job, JobError, MAX_FRAMES};
@@ -27,7 +27,7 @@ mod config;
 pub use config::{EncodeConfig, EventLossPolicy, ExportConfig, RenderConfig, Resample};
 
 mod normalize;
-pub use normalize::{Normalize, render_normalized_to_file, render_normalized_to_file_with};
+pub use normalize::{Normalize, render_normalized_to_file};
 
 mod graph;
 pub use graph::{GRAPH_MAX_BLOCK, RenderGraph};
@@ -136,20 +136,19 @@ pub fn write_buffers(
     path: impl AsRef<Path>,
 ) -> Result<Written> {
     frame_width(config.encode.channels)?;
-    let written = encode::encode_planes(
-        rendered,
-        config,
-        path.as_ref(),
-        &mut Control::new(Pass::ONLY, &mut never_stop),
-    )?;
+    // No render stage: the write is the whole of it, in the bands a
+    // normalized render gives its write.
+    let mut control = Control::none();
+    control.weigh(Weights::Normalized);
+    let written = encode::encode_planes(rendered, config, path.as_ref(), &mut control)?;
     Ok(finished(written))
 }
 
-/// The value of an outcome no tick could have cancelled.
+/// The value of an outcome no token could have cancelled.
 fn finished<T>(outcome: Outcome<T>) -> T {
     match outcome {
         Outcome::Finished(t) => t,
-        Outcome::Cancelled => unreachable!("`never_stop` never cancels"),
+        Outcome::Cancelled => unreachable!("a control with no token is never cancelled"),
     }
 }
 
@@ -169,6 +168,16 @@ fn finished<T>(outcome: Outcome<T>) -> T {
 /// and rendered on a worker is brought back and dropped on the main thread.
 /// Blocks until the file is finalized.
 ///
+/// `control` is how a host watches and stops the render: it is told the
+/// [`Stage`] and fraction as the render goes (`Rendering`, then
+/// `Finalizing`), and a [`CancelToken`] it holds is checked at every point of
+/// doc 019 section 6.2 that this render has: before each block, between the
+/// stages, before the converter is flushed and before the file is finished
+/// and put in place. A cancelled render is [`Outcome::Cancelled`], not an
+/// error: the render was written to a temporary beside `path`, which is
+/// removed, and `path` keeps what it held. Pass [`Control::none`] for a render
+/// nobody watches.
+///
 /// # Errors
 ///
 /// As [`write_buffers`], plus [`Error::InvalidConfig`] if the graph was
@@ -181,37 +190,18 @@ fn finished<T>(outcome: Outcome<T>) -> T {
 /// [`Error::EventsDropped`] if the graph lost an event and
 /// `config.render.on_event_loss` is [`EventLossPolicy::Fail`] (the default):
 /// checked before the file is put in place, so `path` keeps what it held.
+/// A cancelled render is not an error.
 pub fn render_to_file(
-    graph: impl BorrowMut<RenderGraph>,
-    config: &ExportConfig,
-    clock: &dyn RenderClock,
-    path: impl AsRef<Path>,
-) -> Result<Written> {
-    render_to_file_with(graph, config, clock, path, &mut never_stop).map(finished)
-}
-
-/// [`render_to_file`], reporting to `tick` after each block.
-///
-/// `tick` sees the [`Progress`] of the pass (one frame count rising to its
-/// total) and answers [`Flow::Stop`] to end the render, which returns
-/// [`Outcome::Cancelled`]. The render is written to a temporary file beside
-/// `path` and renamed over it when it finishes, so a cancelled or failed
-/// render leaves what was at `path` as it was.
-///
-/// # Errors
-///
-/// As [`render_to_file`]. A cancelled render is not an error.
-pub fn render_to_file_with(
     mut graph: impl BorrowMut<RenderGraph>,
     config: &ExportConfig,
     clock: &dyn RenderClock,
     path: impl AsRef<Path>,
-    tick: &mut dyn FnMut(Progress) -> Flow,
+    control: &mut Control<'_>,
 ) -> Result<Outcome<Written>> {
     frame_width(config.encode.channels)?;
     let path = path.as_ref();
     let plan = render::RenderPlan::new(&config.render)?;
-    let mut control = Control::new(Pass::ONLY, tick);
+    control.weigh(Weights::Streaming);
     // The loss check is inside `encode_to_file`, before the rename.
     render::with_source(
         graph.borrow_mut(),
@@ -225,7 +215,8 @@ pub fn render_to_file_with(
                 &plan,
                 config,
                 path,
-                &mut control,
+                Stage::Rendering,
+                control,
             )
         },
     )
@@ -235,8 +226,10 @@ pub fn render_to_file_with(
 /// Renders `graph` ([`RenderGraph`]) into memory.
 ///
 /// Renders the same frames as [`render_to_file`] and reports the rate it
-/// actually rendered at. `graph` by value or as `&mut RenderGraph`, as there. Only `config.render` and `config.encode.channels` are
-/// read.
+/// actually rendered at. `graph` by value or as `&mut RenderGraph`, and
+/// `control`, as there; a cancelled render returns [`Outcome::Cancelled`] and
+/// the planes rendered so far are dropped. Only `config.render` and
+/// `config.encode.channels` are read.
 ///
 /// Neither resampled nor dithered, for the same reason in both cases: they
 /// are *output* steps, and these planes are not an output. `config.resample`
@@ -266,24 +259,20 @@ pub fn render_to_buffers(
     graph: impl BorrowMut<RenderGraph>,
     config: &ExportConfig,
     clock: &dyn RenderClock,
-) -> Result<Rendered> {
-    render_to_buffers_with(graph, config, clock, &mut never_stop).map(finished)
-}
-
-/// [`render_to_buffers`], reporting to `tick` after each block; see
-/// [`render_to_file_with`]. A cancelled render returns [`Outcome::Cancelled`]
-/// and the planes rendered so far are dropped.
-///
-/// # Errors
-///
-/// As [`render_to_buffers`].
-pub fn render_to_buffers_with(
-    graph: impl BorrowMut<RenderGraph>,
-    config: &ExportConfig,
-    clock: &dyn RenderClock,
-    tick: &mut dyn FnMut(Progress) -> Flow,
+    control: &mut Control<'_>,
 ) -> Result<Outcome<Rendered>> {
-    render_pass(graph, config, clock, &mut Control::new(Pass::ONLY, tick))
+    control.weigh(Weights::Streaming);
+    let Outcome::Finished(rendered) = render_pass(graph, config, clock, control)? else {
+        return Ok(Outcome::Cancelled);
+    };
+    // There is no file to finish: the stage is the last cancel check, and the
+    // one reading of 1.0.
+    control.begin(Stage::Finalizing, None);
+    if control.is_cancelled() {
+        return Ok(Outcome::Cancelled);
+    }
+    control.at(Stage::Finalizing, 1.0);
+    Ok(Outcome::Finished(rendered))
 }
 
 /// The error for planes that cannot be held.
@@ -342,6 +331,7 @@ fn render_pass(
                 src,
                 config.encode.channels,
                 &plan,
+                Stage::Rendering,
                 control,
                 config.render.on_event_loss,
                 |block| {

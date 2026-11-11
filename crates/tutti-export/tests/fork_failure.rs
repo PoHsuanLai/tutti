@@ -2,7 +2,7 @@
 //! file.
 //!
 //! The graph is one forkable node whose fork carries a health probe the test
-//! flips from the render's own tick, as a hosted plugin's server dying
+//! flips from the render's own progress callback, as a hosted plugin's server dying
 //! mid-render would. The render finishes (a dead unit renders silence), and
 //! the only place the failure shows is the probe.
 
@@ -10,10 +10,12 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use tutti_types::Seconds;
 
+mod support;
+
+use support::{render_normalized_to_file, render_to_buffers, render_to_file};
 use tutti_export::{
-    EncodeConfig, Error, ExportConfig, Flow, Format, FrozenClock, GRAPH_MAX_BLOCK, Normalize, Pcm,
-    RenderConfig, RenderGraph, render_normalized_to_file, render_to_buffers_with, render_to_file,
-    render_to_file_with,
+    CancelToken, Control, EncodeConfig, Error, ExportConfig, Format, FrozenClock, GRAPH_MAX_BLOCK,
+    Normalize, Pcm, Progress, RenderConfig, RenderGraph,
 };
 use tutti_graph::NodeKey;
 use tutti_graph::{
@@ -139,13 +141,20 @@ fn a_fork_that_dies_mid_render_does_not_replace_the_file() {
 
     let (graph, probe, _live) = fork();
     let mut blocks = 0;
-    let err = render_to_file_with(graph, &config(), &FrozenClock, &path, &mut |_| {
+    let token = CancelToken::new();
+    let mut flip = |_: &Progress| {
         blocks += 1;
         if blocks == 2 {
             probe.0.store(true, Ordering::SeqCst);
         }
-        Flow::Continue
-    })
+    };
+    let err = tutti_export::render_to_file(
+        graph,
+        &config(),
+        &FrozenClock,
+        &path,
+        &mut Control::new(&token).on_progress(&mut flip),
+    )
     .expect_err("the unit died");
     assert!(is_crash(&err), "{err:?}");
     assert_eq!(std::fs::read(&path).unwrap(), before, "the file is intact");
@@ -166,8 +175,7 @@ fn a_fork_that_dies_mid_render_does_not_replace_the_file() {
 fn a_fork_that_dies_fails_the_buffer_and_normalized_renders() {
     let (graph, probe, _live) = fork();
     probe.0.store(true, Ordering::SeqCst);
-    let err = render_to_buffers_with(graph, &config(), &FrozenClock, &mut |_| Flow::Continue)
-        .expect_err("the unit died");
+    let err = render_to_buffers(graph, &config(), &FrozenClock).expect_err("the unit died");
     assert!(is_crash(&err), "{err:?}");
 
     let dir = tempfile::tempdir().unwrap();
@@ -198,10 +206,18 @@ fn a_cancel_wins_over_a_fork_fault() {
     let path = dir.path().join("out.wav");
     std::fs::write(&path, b"old").unwrap();
     let (graph, probe, _live) = fork();
-    let outcome = render_to_file_with(graph, &config(), &FrozenClock, &path, &mut |_| {
+    let token = CancelToken::new();
+    let mut flip_and_cancel = |_: &Progress| {
         probe.0.store(true, Ordering::SeqCst);
-        Flow::Stop
-    })
+        token.cancel();
+    };
+    let outcome = tutti_export::render_to_file(
+        graph,
+        &config(),
+        &FrozenClock,
+        &path,
+        &mut Control::new(&token).on_progress(&mut flip_and_cancel),
+    )
     .expect("a cancelled render is not an error");
     assert_eq!(outcome, tutti_export::Outcome::Cancelled);
     assert_eq!(std::fs::read(&path).unwrap(), b"old");

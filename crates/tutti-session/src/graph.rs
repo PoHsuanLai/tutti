@@ -1712,6 +1712,39 @@ impl Graph {
         removed
     }
 
+    /// Declares a bus edge from output bus `from` into the **root**: the
+    /// graph's outputs, folded to the topology the root was declared with
+    /// ([`Session::declare_root_topology`](crate::Session::declare_root_topology)),
+    /// lowered at the commit to one lane per contribution on the output
+    /// channels, summed with any other source of them. A source already
+    /// connected is kept once. A later declaration that changes the root
+    /// re-lowers the edge at the next commit, and one it no longer folds to
+    /// fails that commit.
+    ///
+    /// # Errors
+    ///
+    /// [`BusError::RootUndeclared`] (the root has no declared topology), then
+    /// as [`connect_bus`](Self::connect_bus) with [`BusError::RootFold`] for
+    /// the fold; nothing is stored.
+    pub fn connect_bus_to_root(&mut self, from: BusSource) -> Result<(), BusError> {
+        self.editor.connect_bus_to_root(from)?;
+        self.edited = true;
+        Ok(())
+    }
+
+    /// Removes the bus edge `from -> root`, its lanes with it. Returns
+    /// whether it was connected, and marks the graph edited when it was.
+    pub fn disconnect_bus_from_root(&mut self, from: BusSource) -> bool {
+        let removed = self.editor.disconnect_bus_from_root(from);
+        self.edited |= removed;
+        removed
+    }
+
+    /// What feeds the root by a bus edge, in source order.
+    pub fn root_bus_sources(&self) -> Vec<BusSource> {
+        self.editor.spec().root_sources.clone()
+    }
+
     /// What feeds input bus `bus` of `node` by a bus edge, in source order.
     pub fn bus_sources(&self, node: NodeKey, bus: u8) -> Vec<BusSource> {
         self.editor
@@ -2656,6 +2689,19 @@ impl Graph {
         // leaves the graph as it was.
         if let (Some(output), Some(device)) = (&self.output, device) {
             output.declare_root(root.clone(), device)?;
+        }
+        // The bus form of the declaration; `check_root` held it to the
+        // engine's `MAX_ROOT_CHANNELS`, which fit a bus (asserted at build).
+        const _: () = assert!(tutti_graph::MAX_ROOT_CHANNELS <= tutti_types::MAX_BUS_CHANNELS);
+        let bus = root
+            .as_ref()
+            .map(|r| tutti_types::BusTopology::try_from(r).expect("a checked root fits a bus"));
+        let spec = self.editor.spec_mut();
+        if spec.root != bus {
+            spec.root = bus;
+            // The root's bus edges fold to the new topology at the next
+            // commit.
+            self.edited |= !spec.root_sources.is_empty();
         }
         self.root = root;
         self.widen_refusal = None;

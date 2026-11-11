@@ -9,8 +9,9 @@
 //! when they went to the stream grid (Q27: a solve at the first frame of each
 //! 16-frame segment counted from the last reset, the coefficients ramping to it
 //! over the segment, or for the crossover held over it; the ladder's drive joins
-//! the grid, a lane sampled per segment and a cell glided like the others);
-//! The coefficient
+//! the grid, a lane sampled per segment and a cell glided like the others). The
+//! SVF digest moved again with the one control reader (`Params`): a cell now glides
+//! while another control has a lane. The coefficient
 //! solves reach `libm` (`tan`, `powf`), so every assert goes through
 //! `assert_golden`: asserted on the recorded target only.
 //!
@@ -137,7 +138,7 @@ fn the_svf_renders_what_it_always_did() {
         },
     );
     println!("DIGEST svf {digest:#018x}");
-    assert_golden("svf_render", digest, 0xb59c_d87c_585f_e3d9);
+    assert_golden("svf_render", digest, 0x2b1e_55df_71fe_bdd7);
 }
 
 /// A stereo f32 bell at 44.1 kHz: the gain moves at block 30 and the cutoff by

@@ -12,9 +12,9 @@
 //!
 //! That inversion is why there is no `route()` in this module and no audio-path
 //! code: once a mapping is installed, the CC arrives through the ordinary
-//! [`send_midi`](crate::instance::AuInstance::send_midi) path and the AU moves
+//! [`send_midi`](crate::processor::AuProcessor::send_midi) path and the AU moves
 //! its own parameter. Verified end-to-end on macOS 15.6 — see
-//! [`AuInstance::add_parameter_midi_mapping`](crate::instance::AuInstance::add_parameter_midi_mapping).
+//! [`AuLoaded::add_parameter_midi_mapping`](crate::instance::AuLoaded::add_parameter_midi_mapping).
 //!
 //! # Honest status on this machine
 //!
@@ -319,7 +319,7 @@ pub struct AuMidiMapping {
     /// Not validated by the AU: an id no parameter uses is accepted with
     /// `noErr` and stored (measured — id `99999` on a ~10-parameter unit). A
     /// caller should cross-check against
-    /// [`get_parameter_list`](crate::instance::AuInstance::get_parameter_list).
+    /// [`get_parameter_list`](crate::instance::AuLoaded::get_parameter_list).
     pub parameter_id: u32,
     /// The MIDI message that triggers this mapping.
     pub trigger: MidiTrigger,

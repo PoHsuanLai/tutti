@@ -47,8 +47,8 @@
 //!
 //! | host call | property posted | first event at |
 //! |---|---|---|
-//! | `AuInstance::set_bypass` | `kAudioUnitProperty_BypassEffect` (21) | 202–216 ms |
-//! | `AuInstance::load_factory_preset` | `kAudioUnitProperty_PresentPreset` (36) | 204–214 ms |
+//! | `Au::set_bypass` | `kAudioUnitProperty_BypassEffect` (21) | 202–216 ms |
+//! | `Au::load_factory_preset` | `kAudioUnitProperty_PresentPreset` (36) | 204–214 ms |
 //!
 //! Those latencies track [`AuParameterListener`]'s 200 ms notification interval,
 //! so [`SETTLE`] is set well above them.
@@ -829,7 +829,7 @@ fn is_recording_and_is_cycling_read_their_own_flags() {
 /// A fresh `TransportState` must be stopped, not recording and not cycling.
 ///
 /// This is the state an AU sees between `install_host_callbacks` and the host's
-/// first `set_transport`, and it is a real window: `AuInstance::install_host_callbacks`
+/// first `set_transport`, and it is a real window: `Au::install_host_callbacks`
 /// hands the AU a pointer to exactly this. A default that reported `recording`
 /// would make a plugin arm itself on load.
 #[test]
@@ -908,7 +908,7 @@ fn stream_count_is_the_length_of_the_name_list_including_unnamed_slots() {
 /// `find_component` returns `Option<AudioComponent>` by turning a null
 /// `AudioComponentFindNext` result into `None`. If that null check were dropped —
 /// or inverted — the function would hand back a null `AudioComponent`, and
-/// `AuInstance::new` would call `AudioComponentInstanceNew` on it. The corpus's
+/// `Au::new` would call `AudioComponentInstanceNew` on it. The corpus's
 /// `AuRef::require` is built directly on this path, so a null slipping through
 /// turns every "unit is missing" diagnostic into a crash inside AudioToolbox.
 ///

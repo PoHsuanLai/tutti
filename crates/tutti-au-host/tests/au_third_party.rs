@@ -123,7 +123,7 @@ use support::corpus::{
     all_finite, peak, render, silence, sine,
 };
 
-use tutti_au_host::AuInstance;
+use crate::support::au::Au;
 use tutti_au_host::component::AuComponentInfo;
 use tutti_au_host::{AuError, BusDirection};
 use tutti_fixtures::midi;
@@ -233,8 +233,8 @@ fn assert_partial_resolution(found: usize, table_len: usize, what: &str) {
 }
 
 /// Instantiate `info` initialized, as `corpus::open_info` does for the ramp test.
-fn open(info: &AuComponentInfo, label: &str) -> AuInstance {
-    let mut au = AuInstance::new(info.component, RATE, BLOCK)
+fn open(info: &AuComponentInfo, label: &str) -> Au {
+    let mut au = Au::new(info.component, RATE, BLOCK)
         .unwrap_or_else(|e| panic!("{label}: instantiate failed: {e:?}"));
     au.initialize()
         .unwrap_or_else(|e| panic!("{label}: initialize failed: {e:?}"));
@@ -413,7 +413,7 @@ fn the_element_name_copy_rule_is_observed_by_retain_count() {
 
 /// The AU's own `ElementName` retain count, read without disturbing it.
 ///
-/// Reads the property directly rather than through `AuInstance::element_name`,
+/// Reads the property directly rather than through `Au::element_name`,
 /// because the host's version releases — and the count *after* that release is
 /// exactly what this needs to sample. The one reference this read itself acquires
 /// is given back before returning, so the observation is non-perturbing.
@@ -898,7 +898,7 @@ fn every_unit_renders_finite_audio_and_refuses_an_oversized_block() {
 /// not redundant with the bounded half: see
 /// `every_unit_renders_finite_audio_and_refuses_an_oversized_block` for why
 /// `peak` cannot see an all-NaN buffer.
-fn assert_renders_finite(au: &mut AuInstance, label: &str, when: &str) {
+fn assert_renders_finite(au: &mut Au, label: &str, when: &str) {
     let ch_in = au.num_inputs().max(1) as usize;
     let ch_out = au.num_outputs() as usize;
     let input = sine(ch_in, BLOCK as usize, 0, 0.5, RATE as f32);
@@ -1294,7 +1294,7 @@ fn bypass_round_trips_and_changes_the_audio() {
 /// generalizes. Falls back to the first writable parameter when nothing matches,
 /// and asserts that *something* was set — a silent no-op here would quietly
 /// restore the transparent-plugin problem this exists to solve.
-fn engage_processing(au: &mut AuInstance, label: &str) {
+fn engage_processing(au: &mut Au, label: &str) {
     let params = au.get_parameter_list();
     let mut touched = 0usize;
 

@@ -330,7 +330,7 @@ fn a_dropped_listener_stops_delivering() {
 /// internally without issuing a single `AUParameterSet`, so no listener hears
 /// about any of it. Apple's `ClassInfo` documentation mandates the compensating
 /// `AUParameterListenerNotify(kAUParameterListener_AnyParameter)` call for
-/// exactly this reason, and `AuInstance::set_state` makes it.
+/// exactly this reason, and `Au::set_state` makes it.
 ///
 /// Measured: AUDelay's 183-byte state blob produces notifications for all **4**
 /// of its parameters, first arriving at ~201 ms.
@@ -584,7 +584,7 @@ fn reset_leaves_parameters_untouched() {
 /// `reset` is accepted in the `Loaded` (pre-init) state, and the AU stays
 /// usable afterwards.
 ///
-/// This pins the documented decision on `AuInstance::reset`. Measured on macOS
+/// This pins the documented decision on `Au::reset`. Measured on macOS
 /// 15.6: **all nine** corpus units — AUDelay, AUMatrixReverb,
 /// AUDynamicsProcessor, AUNBandEQ, AULowpass, AUReverb2, AUDistortion, AUSampler
 /// and DLSMusicDevice — return `noErr` for `AudioUnitReset` before
@@ -609,7 +609,7 @@ fn reset_is_accepted_before_initialize() {
             panic!(
                 "{}: reset in the Loaded state failed with {e:?}. All nine \
                  corpus units accepted it when measured on macOS 15.6; if this \
-                 AU now refuses, `AuInstance::reset`'s documented pre-init \
+                 AU now refuses, `Au::reset`'s documented pre-init \
                  contract needs revisiting, not this assertion relaxing.",
                 unit.label
             )

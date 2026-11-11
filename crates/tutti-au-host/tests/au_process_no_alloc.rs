@@ -13,7 +13,7 @@
 //! enough. The operations below are the ones a DAW actually performs from its
 //! render thread, and each was *measured* rather than assumed:
 //!
-//! - **instrument render driven by MIDI**, because `AuInstance::send_midi`
+//! - **instrument render driven by MIDI**, because `Au::send_midi`
 //!   decodes every event (`tutti_ump::decode`, then `midi1` to MIDI 1.0
 //!   bytes) on what a host calls from the RT path.
 //!   That decode is the suspicious part, and it is why this file does not stop
@@ -50,8 +50,8 @@
 use std::sync::Mutex;
 use tutti_graph::UmpAt;
 
+use crate::support::au::Au;
 use assert_no_alloc::AllocDisabler;
-use tutti_au_host::AuInstance;
 use tutti_au_host::BusDirection;
 use tutti_au_host::parameters::{self, ParamAddress};
 use tutti_fixtures::midi;
@@ -124,7 +124,7 @@ impl Bufs {
     ///
     /// `expect` is not itself an allocation risk inside the guarded section: it
     /// formats only on the failure path, and a failure fails the test anyway.
-    fn render(&mut self, au: &mut AuInstance) {
+    fn render(&mut self, au: &mut Au) {
         let ins: &[&[f32]] = &[&self.in_l, &self.in_r];
         let outs: &mut [&mut [f32]] = &mut [&mut self.out_l[..], &mut self.out_r[..]];
         au.process(ins, outs, BLOCK).expect("steady-state render");
@@ -155,7 +155,7 @@ impl Bufs64 {
 
     /// Render one f64 block, asserting success for the same reason
     /// [`Bufs::render`] does.
-    fn render(&mut self, au: &mut AuInstance) {
+    fn render(&mut self, au: &mut Au) {
         let ins: &[&[f64]] = &[&self.in_l, &self.in_r];
         let outs: &mut [&mut [f64]] = &mut [&mut self.out_l[..], &mut self.out_r[..]];
         au.process_f64(ins, outs, BLOCK)
@@ -319,7 +319,7 @@ fn send_midi_decode_does_not_allocate() {
 /// Mutation (cannot be run on the Linux this was written on; the macOS CI job
 /// runs it): restore the local `let mut sysex_buf: Vec<u8> = Vec::new()` with
 /// `extend_from_slice` per packet → `assert_no_alloc` aborts in the guarded
-/// region; skip the reservation in `AuInstance::initialize` → every message
+/// region; skip the reservation in `Au::initialize` → every message
 /// is dropped and the first `assert_eq!` fails.
 #[test]
 fn a_long_sysex_does_not_allocate_and_an_oversized_one_is_dropped_counted() {

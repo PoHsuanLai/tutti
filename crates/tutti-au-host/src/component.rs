@@ -101,7 +101,7 @@ impl std::fmt::Display for AuType {
 ///
 /// Returned by `enumerate_components` and `enumerate_components_of_type`.
 /// The `component` field is an opaque handle suitable for passing to
-/// `AuInstance::new`.
+/// `AuLoaded::new`.
 #[derive(Debug, Clone)]
 pub struct AuComponentInfo {
     /// Human-readable display name (e.g. `"Apple: AUDelay"`).
@@ -199,7 +199,7 @@ pub fn find_component(desc: &AudioComponentDescription) -> Option<AuComponentRef
 }
 
 #[cfg(target_os = "macos")]
-fn component_info(component: AuComponentRef) -> Option<AuComponentInfo> {
+pub(crate) fn component_info(component: AuComponentRef) -> Option<AuComponentInfo> {
     let name = component
         .name()
         .unwrap_or_else(|| String::from("<unknown>"));

@@ -197,7 +197,7 @@ fn a_unit_with_both_latency_and_tail_reports_them_separately() {
 /// A unit with no tail reports exactly zero — and that is not the same fact as
 /// a unit that refuses the property.
 ///
-/// This pair is the reason [`AuInstance::get_tail_time`] propagates the refusal
+/// This pair is the reason [`Au::get_tail_time`] propagates the refusal
 /// instead of absorbing it into `Seconds(0.0)`. AUSampleDelay genuinely has no
 /// tail; AUSampler cannot say. Flattening the second into the first would tell a
 /// bounce that a unit of *unknown* tail has *none*, and it would truncate
@@ -848,7 +848,7 @@ fn host_callback_info_matches_apples_layout() {
 #[test]
 #[ignore = "requires the third-party TAL-NoiseMaker AU; no Apple unit calls host callbacks"]
 fn a_real_au_pulls_and_consumes_the_transport() {
-    use tutti_au_host::AuInstance;
+    use crate::support::au::Au;
     use tutti_au_host::component::{AuType, enumerate_components_of_type};
 
     let _g = lock();
@@ -866,7 +866,7 @@ fn a_real_au_pulls_and_consumes_the_transport() {
         return;
     };
 
-    let mut au = AuInstance::new(info.component, RATE, BLOCK).expect("instantiate");
+    let mut au = Au::new(info.component, RATE, BLOCK).expect("instantiate");
     au.install_host_callbacks().expect("install");
     au.initialize().expect("initialize");
 

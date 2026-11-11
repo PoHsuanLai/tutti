@@ -119,7 +119,7 @@ struct Watched {
     /// exactly the bug it prevents.
     #[allow(dead_code)]
     listener: Option<AuParameterListener>,
-    au: tutti_au_host::AuInstance,
+    au: crate::support::au::Au,
     log: Arc<Log>,
 }
 

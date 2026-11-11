@@ -131,7 +131,7 @@ fn write_bytes(label: &str, bytes: &[u8]) -> TempPreset {
 /// unit's transfer function. The finite check is not redundant with the magnitude
 /// check: `peak()` folds with `f32::max`, which returns the non-NaN operand, so an
 /// all-NaN buffer reports a peak of 0.0 and would pass a magnitude test alone.
-fn assert_still_renders(au: &mut tutti_au_host::AuInstance, context: &str) {
+fn assert_still_renders(au: &mut crate::support::au::Au, context: &str) {
     let input = silence(au.num_inputs().max(1) as usize, BLOCK as usize);
     let mut output = silence(au.num_outputs() as usize, BLOCK as usize);
     render(au, &input, &mut output, BLOCK)

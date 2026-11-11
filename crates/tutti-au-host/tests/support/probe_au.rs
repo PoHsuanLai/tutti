@@ -22,7 +22,7 @@
 //!
 //! Verified end-to-end before this module was written: a trivial registered AU
 //! was found by `enumerate_components_of_type`, instantiated through the real
-//! `AuInstance`, initialized, and rendered a block whose samples arrived in the
+//! `Au`, initialized, and rendered a block whose samples arrived in the
 //! host's output buffer.
 //!
 //! ## What "survive" means
@@ -54,7 +54,7 @@ use core_foundation::base::TCFType;
 use core_foundation::string::CFString;
 use coreaudio_sys as sys;
 
-use tutti_au_host::AuInstance;
+use crate::support::au::Au;
 use tutti_au_host::component::{AuComponentInfo, AuType, enumerate_components_of_type};
 
 /// Manufacturer code for every probe component. Distinct from `appl` so a probe
@@ -128,7 +128,7 @@ pub const PROBE_PROPERTY_RENDER_COUNT: u32 = 0x5474_746A;
 /// # Panics
 /// If the probe refuses the property, which would mean the component answering
 /// is not this file's probe.
-pub fn last_render_sample_time(au: &AuInstance) -> f64 {
+pub fn last_render_sample_time(au: &Au) -> f64 {
     // SAFETY: `raw_unit` is live for `&au`, and the probe answers this id with
     // exactly one `f64` (see `probe_get_property`).
     unsafe { read_probe_property::<f64>(au, PROBE_PROPERTY_LAST_RENDER_TIME) }
@@ -138,7 +138,7 @@ pub fn last_render_sample_time(au: &AuInstance) -> f64 {
 ///
 /// # Panics
 /// As [`last_render_sample_time`].
-pub fn render_count(au: &AuInstance) -> u32 {
+pub fn render_count(au: &Au) -> u32 {
     // SAFETY: as above; the probe answers this id with exactly one `u32`.
     unsafe { read_probe_property::<u32>(au, PROBE_PROPERTY_RENDER_COUNT) }
 }
@@ -258,7 +258,7 @@ impl HostPull {
 /// # Panics
 /// If the probe refuses the property, which would mean the component answering
 /// is not this file's probe.
-pub fn last_host_pull(au: &AuInstance) -> HostPull {
+pub fn last_host_pull(au: &Au) -> HostPull {
     // SAFETY: `raw_unit` is live for `&au`; the probe answers this id with
     // exactly one `HostPull`.
     unsafe { read_probe_property::<HostPull>(au, PROBE_PROPERTY_HOST_PULL) }
@@ -367,7 +367,7 @@ pub const PROBE_DEPENDENT_PARAMS: &[(u32, u32)] = &[
 /// # Panics
 /// If the probe refuses the read, which would mean the component answering is
 /// not this file's probe.
-pub fn last_presentation_latency(au: &AuInstance, scope: u32, element: u32) -> Option<f64> {
+pub fn last_presentation_latency(au: &Au, scope: u32, element: u32) -> Option<f64> {
     let mut out = f64::NAN;
     let mut size = std::mem::size_of::<f64>() as u32;
     // SAFETY: `raw_unit` is live for `&au`; the probe answers exactly one `f64`
@@ -405,7 +405,7 @@ pub const PROBE_INITIAL_PARAM_COUNT: u32 = 2;
 /// # Panics
 /// If the probe refuses the write, which would mean the component answering is
 /// not this file's probe.
-pub fn set_latency_seconds(au: &AuInstance, seconds: f64) {
+pub fn set_latency_seconds(au: &Au, seconds: f64) {
     // SAFETY: `raw_unit` is live for `&au`; the probe accepts exactly one `f64`
     // at this id (see `probe_set_property`).
     unsafe { write_probe_property(au, PROBE_PROPERTY_SET_LATENCY, seconds) }
@@ -415,7 +415,7 @@ pub fn set_latency_seconds(au: &AuInstance, seconds: f64) {
 ///
 /// # Panics
 /// As [`set_latency_seconds`].
-pub fn set_tail_seconds(au: &AuInstance, seconds: f64) {
+pub fn set_tail_seconds(au: &Au, seconds: f64) {
     // SAFETY: as above.
     unsafe { write_probe_property(au, PROBE_PROPERTY_SET_TAIL, seconds) }
 }
@@ -424,14 +424,14 @@ pub fn set_tail_seconds(au: &AuInstance, seconds: f64) {
 ///
 /// # Panics
 /// As [`set_latency_seconds`].
-pub fn set_param_count(au: &AuInstance, count: u32) {
+pub fn set_param_count(au: &Au, count: u32) {
     // SAFETY: as above, with a `u32`.
     unsafe { write_probe_property(au, PROBE_PROPERTY_SET_PARAM_COUNT, count) }
 }
 
 /// # Safety
 /// `id` must be a writable probe property whose value is exactly one `T`.
-unsafe fn write_probe_property<T>(au: &AuInstance, id: u32, value: T) {
+unsafe fn write_probe_property<T>(au: &Au, id: u32, value: T) {
     let status = unsafe {
         sys::AudioUnitSetProperty(
             au.raw_unit(),
@@ -451,7 +451,7 @@ unsafe fn write_probe_property<T>(au: &AuInstance, id: u32, value: T) {
 
 /// # Safety
 /// `id` must be a probe property whose value is exactly one `T`.
-unsafe fn read_probe_property<T>(au: &AuInstance, id: u32) -> T {
+unsafe fn read_probe_property<T>(au: &Au, id: u32) -> T {
     let mut out = std::mem::MaybeUninit::<T>::uninit();
     let mut size = std::mem::size_of::<T>() as u32;
     let status = unsafe {
@@ -644,7 +644,7 @@ impl Misbehaviour {
     /// Not initialized because several probes are *about* the initialize
     /// transition; tests that want a running unit call
     /// [`open_initialized`](Self::open_initialized).
-    pub fn open(self, rate: f64, block: u32) -> AuInstance {
+    pub fn open(self, rate: f64, block: u32) -> Au {
         self.try_open(rate, block)
             .unwrap_or_else(|e| panic!("{}: instantiate failed: {e:?}", self.label()))
     }
@@ -655,13 +655,13 @@ impl Misbehaviour {
     /// happens *after* construction, but a config the AU declines makes the
     /// constructor itself the thing under test — and a panicking opener can only
     /// assert that a load succeeded, never that it was correctly refused.
-    pub fn try_open(self, rate: f64, block: u32) -> tutti_au_host::Result<AuInstance> {
+    pub fn try_open(self, rate: f64, block: u32) -> tutti_au_host::Result<Au> {
         let info = self.require();
-        AuInstance::new(info.component, rate, block)
+        Au::new(info.component, rate, block)
     }
 
     /// Instantiate and initialize, panicking if either step fails.
-    pub fn open_initialized(self, rate: f64, block: u32) -> AuInstance {
+    pub fn open_initialized(self, rate: f64, block: u32) -> Au {
         let mut au = self.open(rate, block);
         au.initialize()
             .unwrap_or_else(|e| panic!("{}: initialize failed: {e:?}", self.label()));

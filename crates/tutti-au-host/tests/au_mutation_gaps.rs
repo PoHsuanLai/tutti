@@ -110,7 +110,7 @@ const BLOCK: u32 = 512;
 /// The reachable shape, and why this is not a synthetic worry: an **instrument**
 /// has zero input buses. Measured on macOS 15.6, AUSampler reports 0 in / 1 out
 /// and DLSMusicDevice 0 in / 2 out. A host that sizes its `PushScratch` honestly
-/// — from [`AuInstance::bus_count`], which is exactly what `PushScratch::new`'s
+/// — from [`Au::bus_count`], which is exactly what `PushScratch::new`'s
 /// docs instruct — therefore hands `process_push` a zero-input scratch for every
 /// instrument in the session. Without the guard that is a panic on the export
 /// path, and an export panic loses the user's bounce.
@@ -196,7 +196,7 @@ fn push_refuses_a_scratch_with_no_input_bus() {
 /// file's header explains.
 #[test]
 fn the_two_has_input_inferences_are_indistinguishable_on_this_machine() {
-    use tutti_au_host::AuInstance;
+    use crate::support::au::Au;
     use tutti_au_host::component::{AuType, enumerate_components_of_type};
 
     let _g = lock();
@@ -216,7 +216,7 @@ fn the_two_has_input_inferences_are_indistinguishable_on_this_machine() {
         for info in enumerate_components_of_type(ty) {
             // A unit that will not instantiate says nothing either way; several
             // output units refuse without hardware.
-            let Ok(au) = AuInstance::new(info.component, RATE, BLOCK) else {
+            let Ok(au) = Au::new(info.component, RATE, BLOCK) else {
                 continue;
             };
             let by_element_count = au.bus_count(BusDirection::Input) > 0;

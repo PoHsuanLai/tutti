@@ -1,4 +1,5 @@
 use super::*;
+use tutti_dsp::SpeakerLayout;
 use tutti_types::{Azimuth, Elevation, Seconds};
 
 /// `solve_block` lands on the exact one-pole response: after `N`
@@ -39,7 +40,7 @@ fn solve_block_follows_the_exact_one_pole_response() {
         let tol = 0.005 * rate as f32 / 48_000.0;
         let coeff = f64::from(Seconds(0.05).one_pole_coeff(SampleRate(rate)));
         let arc = f64::from(Azimuth(start.0).shortest_arc_to(target.azimuth).get());
-        let mut panner = VbapPanner::stereo().unwrap();
+        let mut panner = VbapPanner::new(SpeakerLayout::stereo());
         panner.set_sample_rate(SampleRate(rate));
         panner
             .smoother
@@ -79,7 +80,7 @@ fn solve_block_follows_the_exact_one_pole_response() {
 /// advance → fails (the source is frozen early, far from the target).
 #[test]
 fn a_held_source_settles_on_the_vbap_solution_at_its_target() {
-    let mut panner = VbapPanner::stereo().unwrap();
+    let mut panner = VbapPanner::new(SpeakerLayout::stereo());
     let target = Direction::new(Azimuth(40.0), Elevation::LEVEL);
     let mut gains = panner.solve_block(target, StereoWidth::NATURAL, Spread::POINT, 64);
     for _ in 0..2_000 {
@@ -112,7 +113,7 @@ fn a_held_source_settles_on_the_vbap_solution_at_its_target() {
 /// (a settled source skips every later advance) → fails.
 #[test]
 fn a_settled_source_moves_again_when_its_target_does() {
-    let mut panner = VbapPanner::stereo().unwrap();
+    let mut panner = VbapPanner::new(SpeakerLayout::stereo());
     let a = Direction::new(Azimuth(40.0), Elevation::LEVEL);
     for _ in 0..2_000 {
         panner.solve_block(a, StereoWidth::NATURAL, Spread::POINT, 64);
@@ -187,20 +188,20 @@ fn a_settled_source_is_released_by_a_retune_a_reseed_or_a_new_block_length() {
     let target = Direction::new(Azimuth(40.0), Elevation(10.0));
 
     // rate: the larger coefficient moves a state the smaller one held.
-    let mut panner = VbapPanner::stereo().unwrap();
+    let mut panner = VbapPanner::new(SpeakerLayout::stereo());
     panner.set_sample_rate(SampleRate(192_000.0));
     settle(&mut panner, target, 64);
     panner.set_sample_rate(SampleRate(8_000.0));
     solve_matches_an_unconditional_advance(&mut panner, target, 64);
 
     // reset: reseeded away from a target it had settled on.
-    let mut panner = VbapPanner::stereo().unwrap();
+    let mut panner = VbapPanner::new(SpeakerLayout::stereo());
     settle(&mut panner, target, 64);
     panner.reset_state(Direction::new(Azimuth(-20.0), Elevation::LEVEL));
     solve_matches_an_unconditional_advance(&mut panner, target, 64);
 
     // frames: stalled at 64-frame blocks, still moving at 1024.
-    let mut panner = VbapPanner::stereo().unwrap();
+    let mut panner = VbapPanner::new(SpeakerLayout::stereo());
     settle(&mut panner, target, 64);
     solve_matches_an_unconditional_advance(&mut panner, target, 1024);
 }
@@ -212,7 +213,7 @@ fn a_settled_source_is_released_by_a_retune_a_reseed_or_a_new_block_length() {
 /// `target - value` → fails (the value heads to 0).
 #[test]
 fn a_block_across_the_seam_takes_the_short_arc() {
-    let mut panner = VbapPanner::stereo().unwrap();
+    let mut panner = VbapPanner::new(SpeakerLayout::stereo());
     panner
         .smoother
         .reset_to_target(Direction::new(Azimuth(170.0), Elevation(0.0)));

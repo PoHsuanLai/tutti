@@ -327,7 +327,11 @@ mod round_trip {
                 let from = source
                     .iter()
                     .position(|&s| s == speaker)
-                    .or_else(|| source.iter().position(|&s| counterpart(s) == Some(speaker)))
+                    .or_else(|| {
+                        source
+                            .iter()
+                            .position(|&s| s.counterpart() == Some(speaker))
+                    })
                     .unwrap();
                 let got = rms(wave.channel(plane));
                 assert!(

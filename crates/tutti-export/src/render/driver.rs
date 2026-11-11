@@ -74,9 +74,7 @@ impl FileChannels<'_> {
         }
         let from = match root {
             Some(root) => root.clone(),
-            None => {
-                ChannelTopology::assumed(graph).unwrap_or_else(|| ChannelTopology::discrete(graph))
-            }
+            None => ChannelTopology::for_width(graph),
         };
         Fold::between(&from, topology).map_err(|e| ConfigError::Placement(e).into())
     }

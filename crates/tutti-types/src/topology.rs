@@ -131,6 +131,23 @@ impl Speaker {
     pub const fn is_discrete(self) -> bool {
         matches!(self, Self::Discrete)
     }
+
+    /// Returns the surround speaker this one is exchanged with: side for back
+    /// and back for side (`None` for any other speaker).
+    ///
+    /// The two spellings of one set of feeds (see [`ChannelTopology::quad`]):
+    /// a [`Fold`](crate::Fold) and an encoder's channel order both let a bed
+    /// use either.
+    #[must_use]
+    pub const fn counterpart(self) -> Option<Self> {
+        match self {
+            Self::SideLeft => Some(Self::BackLeft),
+            Self::SideRight => Some(Self::BackRight),
+            Self::BackLeft => Some(Self::SideLeft),
+            Self::BackRight => Some(Self::SideRight),
+            _ => None,
+        }
+    }
 }
 
 /// The speaker each channel of a bus feeds, in channel order.
@@ -324,6 +341,16 @@ impl ChannelTopology {
         }
     }
 
+    /// Returns what a bare width of `layout` channels feeds: [`assumed`](Self::assumed)
+    /// where it has an order, and [`discrete`](Self::discrete) channels where
+    /// it has none.
+    ///
+    /// The one answer for the edges that know only a count (a graph root, a
+    /// device, an export file, a decoded file read at its own width).
+    pub fn for_width(layout: ChannelLayout) -> Self {
+        Self::assumed(layout).unwrap_or_else(|| Self::discrete(layout))
+    }
+
     /// Returns the quad topology, `FL FR BL BR`: four speaker feeds.
     ///
     /// The spelling is WAVE's (`KSAUDIO_SPEAKER_QUAD`, mask `0x33`, is
@@ -387,7 +414,7 @@ mod tests {
     ///
     /// Pinned as an absolute index rather than by round-tripping through
     /// `lfe_index`, which would agree with any consistent-but-wrong order. 3 is
-    /// the number `downmix.rs` skips and `spatial::lfe_channel` returns.
+    /// the number `downmix.rs` skips.
     #[test]
     fn the_smpte_51_order_puts_lfe_at_index_three() {
         let t = ChannelTopology::smpte(ChannelLayout::from(6u16)).expect("6 has an order");
@@ -568,5 +595,49 @@ mod tests {
         ] {
             assert!(!other.is_lfe(), "{other:?} must not report as the LFE");
         }
+    }
+
+    /// A side and a back speaker exchange with each other, both ways; nothing
+    /// else has a counterpart.
+    ///
+    /// Mutation (run): `SideRight` mapped to `BackLeft` -> the pair check fails.
+    #[test]
+    fn side_and_back_are_each_others_counterparts() {
+        use Speaker::*;
+        for (a, b) in [(SideLeft, BackLeft), (SideRight, BackRight)] {
+            assert_eq!(a.counterpart(), Some(b));
+            assert_eq!(b.counterpart(), Some(a));
+        }
+        for sp in [
+            FrontLeft,
+            FrontRight,
+            FrontCenter,
+            LowFrequency,
+            TopFrontLeft,
+            Discrete,
+        ] {
+            assert_eq!(sp.counterpart(), None);
+        }
+    }
+
+    /// A bare width is the engine's order where it has one (quad at 4) and
+    /// discrete channels where it has none.
+    ///
+    /// Mutation (run): `for_width` as `smpte` alone -> 4 is discrete and fails.
+    #[test]
+    fn a_bare_width_is_assumed_else_discrete() {
+        assert_eq!(
+            ChannelTopology::for_width(ChannelLayout::from(4u16)),
+            ChannelTopology::quad()
+        );
+        assert_eq!(
+            ChannelTopology::for_width(ChannelLayout::from(6u16)).lfe_index(),
+            Some(3)
+        );
+        let odd = ChannelLayout::from(3u16);
+        assert_eq!(
+            ChannelTopology::for_width(odd),
+            ChannelTopology::discrete(odd)
+        );
     }
 }

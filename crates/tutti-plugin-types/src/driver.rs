@@ -230,7 +230,9 @@ impl<L: Loaded> Lifecycle<L> {
         }
     }
 
-    fn control_ref(&self) -> Option<&dyn Control> {
+    /// [`control`](Self::control), shared: for the reads that take `&self`.
+    #[must_use]
+    pub fn control_ref(&self) -> Option<&dyn Control> {
         match self {
             Self::Loaded(plugin) | Self::Refused { plugin, .. } => Some(plugin),
             Self::Active { controller, .. } => Some(controller),

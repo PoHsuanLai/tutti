@@ -276,6 +276,10 @@ impl Control for ClapLoaded {
         self.parameter_list(main)
     }
 
+    fn parameter_count(&self, main: &MainThread) -> usize {
+        ClapLoaded::parameter_count(self, main)
+    }
+
     /// Normalized `0..=1`; CLAP has no normalization concept, so the plugin
     /// answers in its plain range and the declared bounds map it back.
     fn parameter(&self, main: &MainThread, id: ParamId) -> Option<Normalized> {
@@ -532,6 +536,10 @@ impl Control for ClapController {
 
     fn parameters(&self, main: &MainThread) -> Vec<ParameterInfo> {
         Control::parameters(self.loaded(), main)
+    }
+
+    fn parameter_count(&self, main: &MainThread) -> usize {
+        Control::parameter_count(self.loaded(), main)
     }
 
     fn parameter(&self, main: &MainThread, id: ParamId) -> Option<Normalized> {

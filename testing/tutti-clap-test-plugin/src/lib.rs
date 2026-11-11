@@ -82,9 +82,9 @@ pub use threading::{
 pub mod params_state;
 
 pub use params_state::{
-    CapturedParamEvent, MAX_CAPTURED_PARAM_EVENTS, MAX_CAPTURED_STATE, PARAM_CMD_CLEAR,
-    PARAM_CMD_NONE, PARAM_CMD_REQUEST_FLUSH, PARAM_CMD_RESCAN_ALL, PARAM_CMD_RESCAN_VALUES,
-    ParamStateCapture, STATE_MAGIC,
+    CapturedParamEvent, EXTRA_PARAM_BASE, EXTRA_PARAMS_ENV, MAX_CAPTURED_PARAM_EVENTS,
+    MAX_CAPTURED_STATE, MAX_EXTRA_PARAMS, PARAM_CMD_CLEAR, PARAM_CMD_NONE, PARAM_CMD_REQUEST_FLUSH,
+    PARAM_CMD_RESCAN_ALL, PARAM_CMD_RESCAN_VALUES, ParamStateCapture, STATE_MAGIC,
 };
 
 /// RT-HAZARD probe: the switches that make the host's audio thread take the
@@ -515,6 +515,7 @@ unsafe extern "C" fn plugin_process(
     }
 
     *CAPTURE.lock().unwrap_or_else(|p| p.into_inner()) = cap;
+    unsafe { params_state::apply_extra_param_events(p.in_events) };
     unsafe { record_sysex_input(p) };
 
     // AUDIO-CORRECTNESS: write the closed-form output the routing oracle

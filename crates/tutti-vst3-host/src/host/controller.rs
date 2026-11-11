@@ -232,6 +232,10 @@ impl Control for Vst3Controller {
         Control::parameters(self.loaded(), main)
     }
 
+    fn parameter_count(&self, main: &MainThread) -> usize {
+        Control::parameter_count(self.loaded(), main)
+    }
+
     fn parameter(&self, main: &MainThread, id: ParamId) -> Option<Normalized> {
         Control::parameter(self.loaded(), main, id)
     }

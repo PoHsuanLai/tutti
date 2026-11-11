@@ -34,8 +34,9 @@ macro_rules! served_control {
             }
 
             /// Stays `Normalized` to the wire, which narrows it to an `f32`.
-            /// The server re-clamps on receipt: the wire is a foreign
-            /// boundary and the peer is another process.
+            /// The server's decode refuses a value outside 0..=1 (NaN
+            /// included): the wire is a foreign boundary and the peer is
+            /// another process.
             fn set_parameter_value(&self, id: ParamId, value: Normalized) {
                 let _ = self.link.bridge.set_parameter_rt(id, value);
             }

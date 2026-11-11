@@ -11,7 +11,7 @@ use std::fmt;
 use std::sync::Arc;
 
 use crate::NodeKey;
-use crate::{Edge, FeedbackFrom, InPort, OutPort, Source, Topology};
+use crate::{Edge, FeedbackFrom, InPort, OutPort, Sink, Source, Topology};
 
 use crate::editor::{CommitError, Editor};
 use crate::exec::Executor;
@@ -892,44 +892,55 @@ impl Editor {
         prepare: Prepare,
     ) -> Result<PendingFork, ForkError> {
         let live = self.spec();
-        let (keys, outputs) =
-            match target {
-                // What the global outputs hear, and nothing else: a node no
-                // output reaches renders nothing into the fork, so it is neither
-                // copied nor asked to be forkable (an unrouted mic monitor does
-                // not refuse the export; an unrouted plugin launches no server).
-                // The same reachability `graph_tail` folds over.
-                ForkTarget::Master => {
-                    (
-                        self.upstream(live.topology.outputs.iter().flatten().filter_map(
-                            |s| match s {
+        let (keys, outputs) = match target {
+            // What the global outputs hear, and nothing else: a node no
+            // output reaches renders nothing into the fork, so it is neither
+            // copied nor asked to be forkable (an unrouted mic monitor does
+            // not refuse the export; an unrouted plugin launches no server).
+            // The same reachability `graph_tail` folds over.
+            ForkTarget::Master => {
+                (
+                    // The lanes that drive the gain of an output edge are
+                    // heard through it: roots too.
+                    self.upstream(
+                        live.topology
+                            .outputs
+                            .iter()
+                            .flatten()
+                            .filter_map(|s| match s {
                                 Source::Node(p) => Some(p.node),
                                 _ => None,
-                            },
-                        )),
-                        live.topology.outputs.clone(),
-                    )
+                            })
+                            .chain(
+                                live.gains
+                                    .iter()
+                                    .filter(|(id, _)| matches!(id.sink, Sink::Output(_)))
+                                    .filter_map(|(_, g)| g.source.map(|s| s.node)),
+                            ),
+                    ),
+                    live.topology.outputs.clone(),
+                )
+            }
+            ForkTarget::Node(key) => {
+                let Some(shape) = self.shapes().get(&key) else {
+                    return Err(ForkError::NoSuchNode { key });
+                };
+                let outs = shape.audio_out.count();
+                if outs == 0 || live.topology.outputs.is_empty() {
+                    return Err(ForkError::NoOutputs { key });
                 }
-                ForkTarget::Node(key) => {
-                    let Some(shape) = self.shapes().get(&key) else {
-                        return Err(ForkError::NoSuchNode { key });
-                    };
-                    let outs = shape.audio_out.count();
-                    if outs == 0 || live.topology.outputs.is_empty() {
-                        return Err(ForkError::NoOutputs { key });
-                    }
-                    // Clamp, not wrap (see `Editor::fork`'s docs).
-                    let outputs = (0..live.topology.outputs.len())
-                        .map(|c| {
-                            vec![Source::Node(OutPort {
-                                node: key,
-                                port: (c as u16).min(outs - 1),
-                            })]
-                        })
-                        .collect();
-                    (self.upstream([key]), outputs)
-                }
-            };
+                // Clamp, not wrap (see `Editor::fork`'s docs).
+                let outputs = (0..live.topology.outputs.len())
+                    .map(|c| {
+                        vec![Source::Node(OutPort {
+                            node: key,
+                            port: (c as u16).min(outs - 1),
+                        })]
+                    })
+                    .collect();
+                (self.upstream([key]), outputs)
+            }
+        };
         // Every source first, so a refusal forks nothing (a fork may clone a
         // large unit, and would be thrown away).
         let mut sources = Vec::with_capacity(keys.len());
@@ -1107,7 +1118,18 @@ impl Editor {
                 .iter()
                 .filter(|(at, _)| at.node == node)
                 .filter_map(|(_, m)| m.source.map(|s| s.node));
-            for from in audio.chain(events).chain(params).collect::<Vec<_>>() {
+            // The lanes that drive the gain of an edge into the node.
+            let gains = spec
+                .gains
+                .iter()
+                .filter(|(id, _)| matches!(id.sink, Sink::Port(at) if at.node == node))
+                .filter_map(|(_, g)| g.source.map(|s| s.node));
+            for from in audio
+                .chain(events)
+                .chain(params)
+                .chain(gains)
+                .collect::<Vec<_>>()
+            {
                 if seen.insert(from) {
                     stack.push(from);
                 }

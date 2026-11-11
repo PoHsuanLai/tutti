@@ -16,8 +16,8 @@ use std::sync::Arc;
 
 use tutti_graph::NodeKey;
 use tutti_graph::{
-    CommitError, Editor, EventEdge, EventIn, EventKind, EventOut, ForkByClone, ParamIn, ParamRange,
-    ScheduleError,
+    CommitError, EdgeGain, EdgeId, Editor, EventEdge, EventIn, EventKind, EventOut, ForkByClone,
+    ParamIn, ParamRange, ParamRangeReader, ScheduleError, Sink,
 };
 use tutti_graph::{Edge, InPort, OutPort, Source};
 use tutti_modulation::{
@@ -26,7 +26,7 @@ use tutti_modulation::{
     compile,
 };
 use tutti_types::ChannelLayout;
-use tutti_types::{At, ParamAddr, ParamCell};
+use tutti_types::{At, AtomicF32, ParamAddr, ParamCell};
 
 use crate::automation::{ControlLaneNode, LaneControls};
 use crate::signal::{EnvelopeFollowerNode, NoteEnvelopeNode};
@@ -78,6 +78,22 @@ pub enum Target {
         /// The knob's first value.
         knob: Option<f32>,
     },
+    /// The gain of a graph edge (`TargetKey::Edge`): the edge the host's key
+    /// names. The lane drives it through
+    /// [`GraphSpec::connect_edge_gain`](tutti_graph::GraphSpec::connect_edge_gain)
+    /// and clamps to the entry's range. Its knob is the lane's own cell
+    /// (as a plugin parameter's is), starting at `knob`, and written later
+    /// through [`LaneControls::set_knob`] ([`Modulation::lane`]): the base
+    /// the lane's offsets add to, in the gain's own units (`1.0` is unity),
+    /// which `None` leaves to automation alone. The edge's entry is made when
+    /// the target first resolves (an edge with none is a plain addend), and
+    /// the lane is built once the commit that sends it has landed.
+    Edge {
+        /// The edge.
+        id: EdgeId,
+        /// The knob's first value.
+        knob: Option<f32>,
+    },
 }
 
 /// What feeds a signal source's node ([`ModHost::feed`]).
@@ -104,7 +120,8 @@ pub enum ReconcileError {
         route: RouteKey,
     },
     /// The host resolved a native (`Unit` or `Indexed`) target to a foreign parameter,
-    /// or a `ParamAddr::Id` one to a native port.
+    /// or a `ParamAddr::Id` one to a native port, or an edge key to a node's
+    /// param (or the other way round).
     WrongTarget(TargetKey),
     /// A native target whose node does not declare the param.
     NoSuchParam(TargetKey),
@@ -113,8 +130,9 @@ pub enum ReconcileError {
     /// A native target whose param port already takes an event source that
     /// is not one of this reconciler's lanes: the graph allows one per port.
     PortTaken(TargetKey),
-    /// Two native targets the host resolved to the same param port: one
-    /// lane each would be two event sources on it.
+    /// Two native targets the host resolved to the same param port (or two
+    /// edge targets to the same edge): one lane each would be two event
+    /// sources on it.
     SharedPort {
         /// The first, in key order.
         first: TargetKey,
@@ -202,6 +220,12 @@ enum Bind {
         knob: Option<f32>,
         generation: u32,
     },
+    Edge {
+        id: EdgeId,
+        knob: Option<f32>,
+        /// The edge's live range cell: a new entry has a new one.
+        range: ParamRangeReader,
+    },
 }
 
 impl Bind {
@@ -239,14 +263,27 @@ impl Bind {
                     ..
                 },
             ) => to == t2 && id == i2 && generation == g2,
+            (
+                Self::Edge { id, range, .. },
+                Self::Edge {
+                    id: i2, range: r2, ..
+                },
+            ) => id == i2 && range.same_cell(r2),
             _ => false,
         }
     }
 
-    fn node(&self) -> NodeKey {
+    /// The node whose input the lane's value reaches: the param's node, the
+    /// node of the port an edge goes into, and none for an edge into a
+    /// global output channel (nothing a node reads).
+    fn node(&self) -> Option<NodeKey> {
         match self {
-            Self::Native { at, .. } => at.node,
-            Self::Foreign { to, .. } => to.node,
+            Self::Native { at, .. } => Some(at.node),
+            Self::Foreign { to, .. } => Some(to.node),
+            Self::Edge { id, .. } => match id.sink {
+                Sink::Port(at) => Some(at.node),
+                Sink::Output(_) => None,
+            },
         }
     }
 }
@@ -374,7 +411,7 @@ struct SourcePlan {
 /// struct Host(NodeKey, Option<ParamCell>);
 /// impl ModHost for Host {
 ///     fn target(&self, t: TargetKey) -> Option<Target> {
-///         (t.node == 1).then(|| Target::Native { node: self.0, knob: self.1.clone() })
+///         (t.node() == Some(1)).then(|| Target::Native { node: self.0, knob: self.1.clone() })
 ///     }
 ///     fn feed(&self, _: SourceKey) -> Option<Feed> {
 ///         None
@@ -382,7 +419,7 @@ struct SourcePlan {
 /// }
 /// let host = Host(filter, params.cell(UnitParam::Cutoff));
 ///
-/// let cutoff = TargetKey { node: 1, param: ParamAddr::Unit(UnitParam::Cutoff) };
+/// let cutoff = TargetKey::param(1, ParamAddr::Unit(UnitParam::Cutoff));
 /// let sources = [(
 ///     SourceKey(1),
 ///     Source::Lfo {
@@ -497,6 +534,9 @@ enum Resolved {
         node: NodeKey,
         port: u16,
     },
+    Edge {
+        id: EdgeId,
+    },
 }
 
 impl Resolved {
@@ -511,6 +551,7 @@ impl Resolved {
                 node: *node,
                 port: *port,
             },
+            Some(Target::Edge { id, .. }) => Self::Edge { id: *id },
         }
     }
 
@@ -531,6 +572,7 @@ impl Resolved {
                     node: n2, port: p2, ..
                 }),
             ) => node == n2 && port == p2,
+            (Self::Edge { id }, Some(Target::Edge { id: i2, .. })) => id == i2,
             _ => false,
         }
     }
@@ -693,15 +735,34 @@ impl Modulation {
             .values()
             .filter_map(|l| match l.bind {
                 Bind::Native { at, .. } => Some((at, l.key)),
-                Bind::Foreign { .. } => None,
+                Bind::Foreign { .. } | Bind::Edge { .. } => None,
+            })
+            .collect();
+        // The same for the lanes wired into an edge's gain.
+        let own_edges: BTreeSet<(EdgeId, NodeKey)> = self
+            .lanes
+            .values()
+            .filter_map(|l| match &l.bind {
+                Bind::Edge { id, .. } => Some((*id, l.key)),
+                _ => None,
             })
             .collect();
         let mut binds = BTreeMap::new();
         let mut claimed: BTreeMap<ParamIn, TargetKey> = BTreeMap::new();
+        let mut claimed_edges: BTreeMap<EdgeId, TargetKey> = BTreeMap::new();
+        // Edges that have no entry yet: it is made below, and the target
+        // resolves once the commit that sends it has landed.
+        let mut to_enter: Vec<(EdgeId, TargetKey)> = Vec::new();
         for &target in compiled.programs.keys() {
             let to = host.target(target);
             resolved.push((target, Resolved::of(&to)));
-            match self.resolve_target(target, to, &own, editor)? {
+            if let Some(Target::Edge { id, .. }) = &to
+                && editor.spec().has_edge(*id)
+                && !editor.spec().gains.contains_key(id)
+            {
+                to_enter.push((*id, target));
+            }
+            match self.resolve_target(target, to, &own, &own_edges, editor)? {
                 Some(bind) => {
                     if let Bind::Native { at, .. } = bind {
                         if let Some(&first) = claimed.get(&at) {
@@ -711,6 +772,15 @@ impl Modulation {
                             });
                         }
                         claimed.insert(at, target);
+                    }
+                    if let Bind::Edge { id, .. } = &bind {
+                        if let Some(&first) = claimed_edges.get(id) {
+                            return Err(ReconcileError::SharedPort {
+                                first,
+                                second: target,
+                            });
+                        }
+                        claimed_edges.insert(*id, target);
                     }
                     binds.insert(target, bind);
                 }
@@ -777,6 +847,9 @@ impl Modulation {
                     editor.spec_mut().disconnect_param(at, out);
                 }
                 Bind::Foreign { to, .. } => remove_event_edge(editor, to, out),
+                Bind::Edge { id, .. } => {
+                    editor.spec_mut().disconnect_edge_gain(id, out);
+                }
             }
             *commit = true;
         }
@@ -896,6 +969,13 @@ impl Modulation {
             .iter()
             .map(|(k, d)| (*k, (d.min, d.max)))
             .collect();
+        for (id, target) in to_enter {
+            let (min, max) = targets[&target];
+            editor
+                .set_edge_gain_range(id, ParamRange::new(min, max))
+                .expect("checked: the edge exists, and compile refuses a NaN bound");
+            *commit = true;
+        }
         for (target, bind) in binds {
             let program = &compiled.programs[&target];
             let (min, max) = targets[&target];
@@ -930,6 +1010,22 @@ impl Modulation {
                     editor
                         .spec_mut()
                         .connect_param(*at, EventOut { node: key, port: 0 });
+                    controls
+                }
+                Bind::Edge { id, knob, range } => {
+                    editor
+                        .set_edge_gain_range(*id, ParamRange::new(min, max))
+                        .expect("checked: the edge, and compile refuses a NaN bound");
+                    let node = ControlLaneNode::for_unit(
+                        EdgeGain::ADDR,
+                        program.clone(),
+                        knob.map(|k| Arc::new(AtomicF32::new(k)).into()),
+                        Some(range.clone()),
+                    );
+                    let controls = editor.insert(key, "control-lane", node);
+                    editor
+                        .spec_mut()
+                        .connect_edge_gain(*id, EventOut { node: key, port: 0 });
                     controls
                 }
                 Bind::Foreign { to, id, knob, .. } => {
@@ -1054,14 +1150,46 @@ impl Modulation {
         target: TargetKey,
         to: Option<Target>,
         own: &BTreeSet<(ParamIn, NodeKey)>,
+        own_edges: &BTreeSet<(EdgeId, NodeKey)>,
         editor: &Editor,
     ) -> Result<Option<Bind>, ReconcileError> {
         let Some(resolved) = to else {
             return Ok(None);
         };
         let shape = |node: NodeKey| editor.shapes().get(&node).copied();
-        match (resolved, target.param) {
-            (Target::Native { node, knob }, addr) => {
+        let param = match target {
+            TargetKey::Param { param, .. } => Some(param),
+            TargetKey::Edge(_) => None,
+        };
+        match (resolved, param) {
+            (Target::Edge { id, knob }, None) => {
+                // An edge that is not in the graph (yet): no lane.
+                if !editor.spec().has_edge(id) {
+                    return Ok(None);
+                }
+                // One event source per gain: connecting a lane would replace
+                // another's (a host's own), silently.
+                let other = editor
+                    .spec()
+                    .gains
+                    .get(&id)
+                    .and_then(|g| g.source)
+                    .is_some_and(|out| !own_edges.contains(&(id, out.node)));
+                if other {
+                    return Err(ReconcileError::PortTaken(target));
+                }
+                // The range cell is the one the last commit sent with the
+                // entry: no entry or no commit yet, no lane (the entry is
+                // made by this apply, and a host re-applies after the commit).
+                let Some(range) = editor.edge_gain_range_cell(id) else {
+                    return Ok(None);
+                };
+                if !editor.spec().gains.contains_key(&id) {
+                    return Ok(None);
+                }
+                Ok(Some(Bind::Edge { id, knob, range }))
+            }
+            (Target::Native { node, knob }, Some(addr)) => {
                 // A foreign id is no native param, whatever the host resolved.
                 let Some(param) = addr.as_unit() else {
                     return Err(ReconcileError::WrongTarget(target));
@@ -1105,7 +1233,7 @@ impl Modulation {
                     generation: editor.spec().generation(node),
                 }))
             }
-            (Target::Foreign { node, port, knob }, ParamAddr::Id(id)) => {
+            (Target::Foreign { node, port, knob }, Some(ParamAddr::Id(id))) => {
                 let Some(shape) = shape(node) else {
                     return Ok(None);
                 };
@@ -1227,6 +1355,13 @@ impl Modulation {
                 link(from.node, at.node);
             }
         }
+        // A lane driving the gain of an edge into a port runs before the
+        // node.
+        for (id, g) in &spec.gains {
+            if let (Sink::Port(at), Some(from)) = (id.sink, g.source) {
+                link(from.node, at.node);
+            }
+        }
         // What this apply wires, by plan: the feed into each source, and
         // each source straight to its target's node (the lane between them
         // only passes it on).
@@ -1239,9 +1374,9 @@ impl Modulation {
             next.entry(from).or_default().insert(plan.key);
         }
         for (s, t) in edges {
-            next.entry(plans[s].key)
-                .or_default()
-                .insert(binds[t].node());
+            if let Some(node) = binds[t].node() {
+                next.entry(plans[s].key).or_default().insert(node);
+            }
         }
         let reaches = |from: NodeKey, to: NodeKey| {
             let mut seen = BTreeSet::new();
@@ -1266,7 +1401,10 @@ impl Modulation {
             if !edges.contains(&(route.source, t)) {
                 continue;
             }
-            if reaches(binds[&t].node(), plans[&route.source].key) {
+            if binds[&t]
+                .node()
+                .is_some_and(|node| reaches(node, plans[&route.source].key))
+            {
                 return Err(ReconcileError::Cycle { route: *key });
             }
         }
@@ -1304,6 +1442,11 @@ fn store_range(editor: &mut Editor, bind: &Bind, controls: &LaneControls, min: f
             editor
                 .set_param_range(*at, ParamRange::new(min, max))
                 .expect("checked: a node, and compile refuses a NaN bound");
+        }
+        Bind::Edge { id, .. } => {
+            editor
+                .set_edge_gain_range(*id, ParamRange::new(min, max))
+                .expect("checked: the edge, and compile refuses a NaN bound");
         }
         Bind::Foreign { .. } => {
             controls.set_range(min, max);

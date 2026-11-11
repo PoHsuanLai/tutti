@@ -203,10 +203,7 @@ struct HostDecl {
     targets: Vec<(TargetKey, TargetDecl)>,
 }
 
-const HOST_TARGET: TargetKey = TargetKey {
-    node: 1,
-    param: ParamAddr::Unit(UnitParam::Cutoff),
-};
+const HOST_TARGET: TargetKey = TargetKey::param(1, ParamAddr::Unit(UnitParam::Cutoff));
 
 impl HostDecl {
     fn new(range: bool) -> Self {
@@ -438,8 +435,13 @@ fn removing_a_node_forgets_its_declarations() {
 fn a_param_ref_round_trips_through_its_key() {
     let node = NodeKey(42);
     let p = ParamRef::unit(node, UnitParam::Cutoff);
-    assert_eq!(p.key().node, 42);
-    assert_eq!(ParamRef::from_key(p.key()), p);
+    assert_eq!(p.key().node(), Some(42));
+    assert_eq!(ParamRef::from_key(p.key()), Some(p));
+    assert_eq!(
+        ParamRef::from_key(TargetKey::edge(42)),
+        None,
+        "an edge is no param"
+    );
 }
 
 /// A source declaring `LATE` frames of latency: a look-ahead's bookkeeping.

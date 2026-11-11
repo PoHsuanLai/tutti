@@ -17,17 +17,11 @@ fn now(epoch: u32, play: u64) -> PlayReading {
 }
 
 fn target(node: u64) -> TargetKey {
-    TargetKey {
-        node,
-        param: ParamAddr::Unit(UnitParam::Cutoff),
-    }
+    TargetKey::param(node, ParamAddr::Unit(UnitParam::Cutoff))
 }
 
 fn plugin(node: u64, id: u32) -> TargetKey {
-    TargetKey {
-        node,
-        param: ParamAddr::Id(id),
-    }
+    TargetKey::param(node, ParamAddr::Id(id))
 }
 
 fn ranged(min: f32, max: f32) -> TargetDecl {
@@ -1165,4 +1159,29 @@ fn a_depth_by_scaler_reads_its_own_lfos_clock() {
         layer_clock(&c1, target(1), 100, Some(201)),
         c1.clocks[&SourceKey(10)]
     );
+}
+
+/// An edge's gain is a target like a node's param: a route to it compiles
+/// to its own program, keyed apart from a param target whose node bits are
+/// the same, and a range declared for it is its own.
+///
+/// Mutation (run, failed): make `TargetKey::edge` build
+/// `Param { node, param: Unit(Cutoff) }` -> the edge and the param share a
+/// key and the first assertion fails.
+#[test]
+fn an_edge_is_a_target_apart_from_a_param_of_the_same_bits() {
+    let edge = TargetKey::edge(1);
+    assert_ne!(edge, target(1));
+    assert_eq!(edge.node(), None);
+    assert_eq!(target(1).node(), Some(1));
+    let sources = [(SourceKey(1), lfo(LfoShape::Sine, seconds(1.0)))];
+    let routes = [
+        (RouteKey(1), route(1, RouteTarget::Param(edge), 0.5)),
+        (RouteKey(2), route(1, to(1), 0.25)),
+    ];
+    let targets = [(edge, ranged(-1.0, 1.0)), (target(1), ranged(20.0, 200.0))];
+    let c = run(&sources, &routes, &targets).expect("compiles");
+    assert!(c.programs.contains_key(&edge));
+    assert!(c.programs.contains_key(&target(1)));
+    assert_eq!(c.programs.len(), 2);
 }

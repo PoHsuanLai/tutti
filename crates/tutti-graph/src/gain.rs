@@ -35,17 +35,32 @@
 //!
 //! The lane's state advances every block, **whether or not its addend is
 //! silent** (a silent addend is skipped, its weight still moves).
+//!
+//! # A driven lane
+//!
+//! An entry with a [`source`](EdgeGain::source) is **driven**: an event
+//! output (a control lane) whose ramps and segments, addressed to
+//! [`EdgeGain::ADDR`], replace the base from the first one on, clamped to the
+//! entry's `range`. That is the param port's step, not a copy of it: a driven
+//! lane keeps a one-port [`ParamState`], and the sum asks it for the lane's
+//! value at every frame ([`Weight::Frames`]), with the port's rules (the
+//! declick over [`PARAM_DECLICK`](crate::PARAM_DECLICK) when the source
+//! changes or goes, the base before the first event, a first block that
+//! starts at its value). The state is sized when the plan is applied, so
+//! nothing allocates on the audio thread.
 
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
 use tutti_rt::PackedAtomic;
-use tutti_types::Amplitude;
+use tutti_types::{Amplitude, UnitAddr, UnitParam};
 
-use crate::param::ParamRange;
+use crate::event::Event;
+use crate::param::{ParamPorts, ParamRange, ParamRangeReader, ParamRanges, ParamState};
+use crate::spec::EventOut;
 
-/// What an edge carries beside the signal: a linear gain, `base`, and the
-/// `range` a driven value will be clamped to.
+/// What an edge carries beside the signal: a linear gain, `base`, the
+/// `range` a driven value is clamped to, and the `source` that drives it.
 ///
 /// Spec data beside the edge, keyed by [`EdgeId`](crate::EdgeId) in
 /// [`GraphSpec::gains`](crate::GraphSpec::gains), not inside
@@ -56,12 +71,8 @@ use crate::param::ParamRange;
 /// Compared and hashed by bits, as [`ParamRange`] is, so a spec holding one
 /// stays `Eq + Hash`.
 ///
-/// # As built (G1)
-///
-/// The entry has no `source` field yet: what drives a lane is the next stage
-/// (doc 013, "Staging"), and no unused state ships before it. `range` is
-/// carried and validated now and clamps nothing until a source drives the
-/// lane: the base is a control and is never clamped, as a param's base is not.
+/// The base is a control and is never clamped, as a param's base is not:
+/// `range` clamps only a value a `source` drives.
 #[derive(Clone, Copy, Debug)]
 pub struct EdgeGain {
     /// The linear multiplier. Finite ([`GraphInvalid::BadEdgeGain`]); a
@@ -71,9 +82,21 @@ pub struct EdgeGain {
     pub base: Amplitude,
     /// What a driven value is clamped to. A NaN bound is refused.
     pub range: ParamRange,
+    /// The event output that drives the gain, replacing the base from its
+    /// first event on ([`GraphSpec::connect_edge_gain`](crate::GraphSpec::connect_edge_gain)).
+    /// Its node must be in the graph; `None` reads the base.
+    pub source: Option<EventOut>,
 }
 
 impl EdgeGain {
+    /// The address a driving lane's ramps and segments carry: an edge's gain
+    /// is addressed by its edge, never by a kind and an index on a node (no
+    /// `UnitParam` kind is new), so the events that drive it name this one
+    /// fixed address and are read by the lane they are wired to. A control
+    /// lane for an edge is built with
+    /// `ControlLaneNode::for_unit(EdgeGain::ADDR, ..)`.
+    pub const ADDR: UnitAddr = UnitAddr::first(UnitParam::Volume);
+
     /// The range a new entry gets: finite, so `w * s` cannot meet infinity,
     /// and polarity is allowed (about +18 dB either way).
     pub const DEFAULT_RANGE: ParamRange = ParamRange::new(-8.0, 8.0);
@@ -84,6 +107,7 @@ impl EdgeGain {
         Self {
             base,
             range: Self::DEFAULT_RANGE,
+            source: None,
         }
     }
 
@@ -104,7 +128,9 @@ impl Default for EdgeGain {
 
 impl PartialEq for EdgeGain {
     fn eq(&self, other: &Self) -> bool {
-        self.base.get().to_bits() == other.base.get().to_bits() && self.range == other.range
+        self.base.get().to_bits() == other.base.get().to_bits()
+            && self.range == other.range
+            && self.source == other.source
     }
 }
 
@@ -114,41 +140,71 @@ impl Hash for EdgeGain {
     fn hash<H: Hasher>(&self, state: &mut H) {
         self.base.get().to_bits().hash(state);
         self.range.hash(state);
+        self.source.hash(state);
     }
 }
 
-/// One lane's live base: the cell [`Editor::set_edge_gain`] stores into and
-/// the executor snapshots once per block.
+/// One lane's live controls: its base, which [`Editor::set_edge_gain`] stores
+/// into and the executor snapshots once per block, and the range a driven
+/// value is clamped to.
 ///
 /// An [`Amplitude`] is a plain `f32` newtype but not `bytemuck::Pod` (that
 /// trait is not ours to implement for it), so the word holds the raw `f32` and
-/// the cell converts at its edge: nothing outside it sees a bare float.
+/// the cell converts at its edge: nothing outside it sees a bare float. The
+/// range is the param port's own cell ([`ParamRanges`] over the one address
+/// [`EdgeGain::ADDR`]), so the driven step clamps to it as a port does and a
+/// control lane reads it through the same [`ParamRangeReader`].
 ///
 /// [`Editor::set_edge_gain`]: crate::Editor::set_edge_gain
 #[derive(Clone, Debug)]
-pub(crate) struct GainCell(Arc<PackedAtomic<f32>>);
+pub(crate) struct GainCell {
+    base: Arc<PackedAtomic<f32>>,
+    range: Arc<ParamRanges>,
+}
 
 impl GainCell {
-    /// A cell holding `base`. Control side: allocates.
-    pub(crate) fn new(base: Amplitude) -> Self {
-        Self(Arc::new(PackedAtomic::new(base.get())))
+    /// A cell holding `base` and `range`. Control side: allocates.
+    pub(crate) fn new(base: Amplitude, range: ParamRange) -> Self {
+        let ranges = ParamRanges::new(ParamPorts::of(&[EdgeGain::ADDR]));
+        ranges.store(EdgeGain::ADDR, range);
+        Self {
+            base: Arc::new(PackedAtomic::new(base.get())),
+            range: ranges,
+        }
     }
 
     /// Store `base`. Wait-free.
     pub(crate) fn store(&self, base: Amplitude) {
-        self.0.store(base.get());
+        self.base.store(base.get());
+    }
+
+    /// Store `range`. Wait-free.
+    pub(crate) fn store_range(&self, range: ParamRange) {
+        self.range.store(EdgeGain::ADDR, range);
     }
 
     /// The base now. Wait-free.
     #[inline]
     pub(crate) fn load(&self) -> Amplitude {
-        Amplitude::new(self.0.load())
+        Amplitude::new(self.base.load())
+    }
+
+    /// A read-only view of the range cell, for a control lane.
+    pub(crate) fn range_reader(&self) -> ParamRangeReader {
+        self.range
+            .reader(EdgeGain::ADDR)
+            .expect("the cell holds the gain's own address")
+    }
+
+    /// The range cells, for a driven lane's state.
+    fn ranges(&self) -> Arc<ParamRanges> {
+        Arc::clone(&self.range)
     }
 }
 
 /// What one addend is multiplied by in one block.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub(crate) enum Weight {
+pub(crate) enum Weight<'a> {
     /// Exactly `1.0`, static: the plain add, no multiply.
     Unit,
     /// A static weight other than `1.0`: `w * a`, no ramp.
@@ -161,6 +217,9 @@ pub(crate) enum Weight {
         /// This block's.
         to: Amplitude,
     },
+    /// A driven lane: the weight at each frame, already clamped to the
+    /// lane's range (the param port's step).
+    Frames(&'a [f32]),
 }
 
 /// A weighted lane's state, kept in the executor by [`EdgeId`](crate::EdgeId)
@@ -169,15 +228,18 @@ pub(crate) enum Weight {
 /// A plain addend of a weighted op (an edge with no entry, or the previous
 /// result of a chain) has a lane with no cell: weight [`Weight::Unit`] and
 /// no state.
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub(crate) struct SumLane {
-    /// The live base; `None` for a plain addend.
+    /// The live controls; `None` for a plain addend.
     cell: Option<GainCell>,
     /// The base as this block's snapshot read it.
     target: Amplitude,
     /// The weight the previous block was given; `None` before the lane's
     /// first block (which has no ramp).
     prev: Option<Amplitude>,
+    /// The param port's state, for a lane a source drives (or one still
+    /// fading to its base after the source went): sized with the plan.
+    drive: Option<ParamState>,
 }
 
 impl SumLane {
@@ -187,22 +249,39 @@ impl SumLane {
             cell: None,
             target: Amplitude::UNITY,
             prev: None,
+            drive: None,
         }
     }
 
-    /// A lane reading `cell`. `carried` is the weight the same edge's lane
-    /// was last given, when a commit keeps it; `None` starts at the value.
-    pub(crate) fn weighted(cell: GainCell, carried: Option<Amplitude>) -> Self {
+    /// A lane reading `cell`. `carried` is what the same edge's lane held
+    /// when a commit keeps it (`Carried::default()` starts at the value).
+    /// `driven` says whether this plan's lane has a source; `max` is the
+    /// prepared block, which sizes the driven state's values.
+    pub(crate) fn weighted(cell: GainCell, carried: Carried, driven: bool, max: usize) -> Self {
+        let Carried { prev, drive } = carried;
+        // A driven lane keeps its state across the commit; an undriven one
+        // keeps it only while it fades to its base. A lane that has run
+        // before resumes (a source connected now is a connection to a
+        // running port); a new one is on its first block.
+        let drive = match drive {
+            Some(state) if (driven || state.busy()) && state.fits(max) => Some(state),
+            _ if driven => Some(ParamState::lane(max, cell.ranges(), prev.is_some())),
+            _ => None,
+        };
         Self {
             target: cell.load(),
             cell: Some(cell),
-            prev: carried,
+            prev,
+            drive,
         }
     }
 
-    /// The weight the last block was given, if the lane has run.
-    pub(crate) fn carried(&self) -> Option<Amplitude> {
-        self.prev
+    /// What the lane holds for the next plan's lane of the same edge.
+    pub(crate) fn carry(&mut self) -> Carried {
+        Carried {
+            prev: self.prev,
+            drive: self.drive.take(),
+        }
     }
 
     /// Read the cell, once, for this block. Called before the first op, so a
@@ -215,13 +294,32 @@ impl SumLane {
     }
 
     /// This block's weight, and the lane's state moved on to the next block.
-    /// Reads the snapshot, never the cell.
+    /// Reads the snapshot, never the cell. `source` is the lane's driving
+    /// event output and its events this block, when the plan has one.
+    ///
+    /// A lane with a driven state runs the param port's step first
+    /// ([`ParamState::port`]): when it delivers frames the weight is those
+    /// frames (and the lane's `prev` is the last of them, so a lane that
+    /// stops being driven carries on from where it was); otherwise the base,
+    /// as for an undriven lane.
     #[inline]
-    pub(crate) fn weight(&mut self) -> Weight {
+    pub(crate) fn weight<'a>(
+        &'a mut self,
+        frames: usize,
+        source: Option<(EventOut, &[Event])>,
+    ) -> Weight<'a> {
         if self.cell.is_none() {
             return Weight::Unit;
         }
         let to = self.target;
+        if let Some(drive) = &mut self.drive {
+            drive.begin();
+            drive.port(0, EdgeGain::ADDR, frames, source, Some(to.get()));
+            if let Some(f) = drive.frames(0, frames) {
+                self.prev = f.last().map(|&last| Amplitude::new(last));
+                return Weight::Frames(f);
+            }
+        }
         let from = self.prev.unwrap_or(to);
         self.prev = Some(to);
         if from.get() != to.get() {
@@ -232,6 +330,15 @@ impl SumLane {
             Weight::Static(to)
         }
     }
+}
+
+/// What a lane hands the next plan's lane of the same edge.
+#[derive(Debug, Default)]
+pub(crate) struct Carried {
+    /// The weight the lane was last given.
+    pub(crate) prev: Option<Amplitude>,
+    /// Its driven state, if it had one.
+    pub(crate) drive: Option<ParamState>,
 }
 
 /// `w[i]` of a ramp across `frames`: the doc's expression, spelled once.
@@ -246,7 +353,7 @@ fn ramp_at(from: f32, to: f32, i: usize, frames: f32) -> f32 {
 ///
 /// The `+0.0 +` is the fold's start and turns a `-0.0` product into `+0.0`.
 #[inline]
-pub(crate) fn first(out: &mut [f32], a: Option<&[f32]>, w: Weight) {
+pub(crate) fn first(out: &mut [f32], a: Option<&[f32]>, w: Weight<'_>) {
     let frames = out.len() as f32;
     match (a, w) {
         (Some(a), Weight::Unit) => {
@@ -283,13 +390,23 @@ pub(crate) fn first(out: &mut [f32], a: Option<&[f32]>, w: Weight) {
                 *o = 0.0 + ramp_at(from, to, i, frames) * *o;
             }
         }
+        (Some(a), Weight::Frames(w)) => {
+            for ((o, &x), &w) in out.iter_mut().zip(a).zip(w) {
+                *o = 0.0 + w * x;
+            }
+        }
+        (None, Weight::Frames(w)) => {
+            for (o, &w) in out.iter_mut().zip(w) {
+                *o = 0.0 + w * *o;
+            }
+        }
     }
 }
 
 /// A later live addend: `out = out + w * a`, a multiply and an add, two
 /// roundings (Rust never contracts them into a fused multiply-add).
 #[inline]
-pub(crate) fn add(out: &mut [f32], a: &[f32], w: Weight) {
+pub(crate) fn add(out: &mut [f32], a: &[f32], w: Weight<'_>) {
     let frames = out.len() as f32;
     match w {
         Weight::Unit => {
@@ -309,6 +426,11 @@ pub(crate) fn add(out: &mut [f32], a: &[f32], w: Weight) {
                 *o += ramp_at(from, to, i, frames) * x;
             }
         }
+        Weight::Frames(w) => {
+            for ((o, &x), &w) in out.iter_mut().zip(a).zip(w) {
+                *o += w * x;
+            }
+        }
     }
 }
 
@@ -321,8 +443,11 @@ mod tests {
     }
 
     fn lane(base: f32) -> (GainCell, SumLane) {
-        let cell = GainCell::new(amp(base));
-        (cell.clone(), SumLane::weighted(cell, None))
+        let cell = GainCell::new(amp(base), EdgeGain::DEFAULT_RANGE);
+        (
+            cell.clone(),
+            SumLane::weighted(cell, Carried::default(), false, 8),
+        )
     }
 
     /// The lane reads the snapshot, never the cell: a store after the
@@ -335,10 +460,10 @@ mod tests {
         let (cell, mut lane) = lane(0.5);
         lane.snapshot();
         cell.store(amp(2.0));
-        assert_eq!(lane.weight(), Weight::Static(amp(0.5)));
+        assert_eq!(lane.weight(8, None), Weight::Static(amp(0.5)));
         lane.snapshot();
         assert_eq!(
-            lane.weight(),
+            lane.weight(8, None),
             Weight::Ramp {
                 from: amp(0.5),
                 to: amp(2.0)
@@ -355,33 +480,33 @@ mod tests {
     fn first_block_has_no_ramp_and_a_static_weight_skips_it() {
         let (cell, mut lane) = lane(0.25);
         lane.snapshot();
-        assert_eq!(lane.weight(), Weight::Static(amp(0.25)));
+        assert_eq!(lane.weight(8, None), Weight::Static(amp(0.25)));
         lane.snapshot();
-        assert_eq!(lane.weight(), Weight::Static(amp(0.25)));
+        assert_eq!(lane.weight(8, None), Weight::Static(amp(0.25)));
         cell.store(amp(1.0));
         lane.snapshot();
         assert_eq!(
-            lane.weight(),
+            lane.weight(8, None),
             Weight::Ramp {
                 from: amp(0.25),
                 to: amp(1.0)
             }
         );
         lane.snapshot();
-        assert_eq!(lane.weight(), Weight::Unit);
+        assert_eq!(lane.weight(8, None), Weight::Unit);
     }
 
     #[test]
     fn a_plain_lane_is_unity_and_keeps_no_state() {
         let mut lane = SumLane::plain();
         lane.snapshot();
-        assert_eq!(lane.weight(), Weight::Unit);
-        assert_eq!(lane.carried(), None);
+        assert_eq!(lane.weight(8, None), Weight::Unit);
+        assert_eq!(lane.carry().prev, None);
     }
 
     #[test]
     fn the_cell_returns_what_was_stored() {
-        let cell = GainCell::new(amp(-1.5));
+        let cell = GainCell::new(amp(-1.5), EdgeGain::DEFAULT_RANGE);
         assert_eq!(cell.load(), amp(-1.5));
         cell.store(amp(0.125));
         assert_eq!(cell.load(), amp(0.125));

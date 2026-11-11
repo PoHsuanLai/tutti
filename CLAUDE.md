@@ -733,8 +733,8 @@ list (normal and build edges; dev-dependencies may go anywhere).
   the graph's param segments and ramps, modulation's `Amount.curve` and `shape()`, and
   the automation lanes and recorder all use `Law`. A law nothing in tutti uses is not
   added (`audio-automation`'s `Back`, `Elastic`, `Bounce`, `Circular` and cubic `Bezier`
-  were dropped). `tutti-polysynth`'s `PortamentoCurve` and `CrossfadeCurve`'s smootherstep
-  are the follow-up (doc 024 consolidation 6).
+  were dropped). `tutti-polysynth`'s portamento takes a `Law` (`PortamentoCurve` is gone);
+  `CrossfadeCurve`'s smootherstep is the follow-up (doc 024 consolidation 6).
 - `tutti-graph` depends on no tutti crate but `tutti-types`, `tutti-rt`, `tutti-ump` and `tutti-curve` (its outside
   deps are `bytemuck` and `ringbuf`, the editor→executor queue), keeps every
   module private (`tutti_graph::Plan`, never `tutti_graph::plan::Plan`; CI runs

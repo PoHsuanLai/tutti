@@ -179,6 +179,11 @@ required-features = ["plugin"]
 name = "modulation"
 required-features = ["modulation"]
 
+# A route onto an edge's gain (doc 013, "Edge gain", G2).
+[[test]]
+name = "edge_modulation"
+required-features = ["modulation"]
+
 # Modulation on control lanes through the session: renders, takes, refusals
 # and the node-side declarations (`export` and `synth` gate two cases inside
 # the file).

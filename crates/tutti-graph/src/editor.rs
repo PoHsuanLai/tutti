@@ -1544,12 +1544,12 @@ impl Editor {
     /// `id` is not an edge of the spec, and [`GraphInvalid::BadEdgeGain`]
     /// for a base that is not finite.
     pub fn set_edge_gain(&mut self, id: EdgeId, base: Amplitude) -> Result<(), GraphInvalid> {
-        let range = self
-            .spec
-            .gains
-            .get(&id)
-            .map_or(EdgeGain::DEFAULT_RANGE, |g| g.range);
-        let gain = EdgeGain { base, range };
+        // The entry keeps its range and its source: a move of the base is a
+        // control.
+        let gain = EdgeGain {
+            base,
+            ..self.spec.gains.get(&id).copied().unwrap_or_default()
+        };
         if !gain.is_sound() {
             return Err(GraphInvalid::BadEdgeGain { id, gain });
         }
@@ -1573,6 +1573,57 @@ impl Editor {
         Ok(())
     }
 
+    /// Clamps edge `id`'s driven value to `range` from the next block on,
+    /// without a new plan: [`set_param_range`](Self::set_param_range)'s
+    /// contract for an edge gain (the cell, the spec and the last committed
+    /// spec move together; the base is never clamped; no declick). Like
+    /// [`set_edge_gain`](Self::set_edge_gain) it gives an edge with no entry
+    /// one (unity, the new range), which is a recompile at the next commit.
+    ///
+    /// # Errors
+    ///
+    /// Refused, changing nothing: [`GraphInvalid::GainWithoutEdge`] when `id`
+    /// is not an edge of the spec, and [`GraphInvalid::BadEdgeGain`] for a
+    /// NaN bound.
+    pub fn set_edge_gain_range(
+        &mut self,
+        id: EdgeId,
+        range: ParamRange,
+    ) -> Result<(), GraphInvalid> {
+        let gain = EdgeGain {
+            range,
+            ..self.spec.gains.get(&id).copied().unwrap_or_default()
+        };
+        if !gain.is_sound() {
+            return Err(GraphInvalid::BadEdgeGain { id, gain });
+        }
+        if !self.spec.has_edge(id) {
+            return Err(GraphInvalid::GainWithoutEdge { id });
+        }
+        self.touch();
+        self.spec.set_edge_gain(id, gain);
+        if let Some(cell) = self.edge_gains.get(&id) {
+            cell.store_range(range);
+        }
+        if let Some((committed, _)) = &mut self.committed
+            && let Some(g) = committed.gains.get_mut(&id)
+        {
+            g.range = range;
+        }
+        Ok(())
+    }
+
+    /// A read-only view of edge `id`'s live range cell, the very cell its
+    /// driven lane clamps to and
+    /// [`set_edge_gain_range`](Self::set_edge_gain_range) stores into: the
+    /// edge's counterpart of [`param_range_cell`](Self::param_range_cell), for
+    /// a control lane. `None` until a commit has sent a plan with the edge's
+    /// entry (and again once a commit drops the entry: the view then reads a
+    /// range nothing writes).
+    pub fn edge_gain_range_cell(&self, id: EdgeId) -> Option<ParamRangeReader> {
+        self.edge_gains.get(&id).map(GainCell::range_reader)
+    }
+
     /// Edge `id`'s weight as the spec holds it, if the edge has an entry.
     pub fn edge_gain(&self, id: EdgeId) -> Option<Amplitude> {
         self.spec.gains.get(&id).map(|g| g.base)
@@ -1583,6 +1634,7 @@ impl Editor {
         for (id, cell) in &self.edge_gains {
             if let Some(g) = self.spec.gains.get(id) {
                 cell.store(g.base);
+                cell.store_range(g.range);
             }
         }
         for (&node, cells) in &self.param_ranges {
@@ -1656,6 +1708,13 @@ impl Editor {
         for m in self.spec.params.values_mut() {
             if m.source.is_some_and(|s| s.node == key) {
                 m.source = None;
+            }
+        }
+        // A lane the node drove stops driving: its edge keeps its entry and
+        // reads its base.
+        for g in self.spec.gains.values_mut() {
+            if g.source.is_some_and(|s| s.node == key) {
+                g.source = None;
             }
         }
         // The gain of an edge that went with the node goes with it.
@@ -2286,16 +2345,13 @@ impl Editor {
         let gains: BTreeMap<EdgeId, GainCell> = lanes
             .into_iter()
             .map(|id| {
-                let base = self
-                    .spec
-                    .gains
-                    .get(&id)
-                    .map_or(Amplitude::UNITY, |g| g.base);
+                let gain = self.spec.gains.get(&id).copied().unwrap_or_default();
                 let cell = self
                     .edge_gains
                     .entry(id)
-                    .or_insert_with(|| GainCell::new(base));
-                cell.store(base);
+                    .or_insert_with(|| GainCell::new(gain.base, gain.range));
+                cell.store(gain.base);
+                cell.store_range(gain.range);
                 (id, cell.clone())
             })
             .collect();

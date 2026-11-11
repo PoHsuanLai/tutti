@@ -483,11 +483,16 @@ impl Shared<'_, '_> {
                 let mut a = ArenaView {
                     view: self.arena.view(held_audio),
                 };
+                let e = EventsView {
+                    view: self.events.view(held_events),
+                };
                 sum_op(
                     &mut a,
                     flags,
+                    &e,
                     &self.plan.audio_list[srcs.range()],
                     &mut [],
+                    &[],
                     dst,
                     frames,
                 );
@@ -496,17 +501,24 @@ impl Shared<'_, '_> {
                 srcs,
                 dst,
                 lanes: span,
+                gains,
             } => {
                 let mut a = ArenaView {
                     view: self.arena.view(held_audio),
+                };
+                // The events of its driven lanes' sources, read-only.
+                let e = EventsView {
+                    view: self.events.view(held_events),
                 };
                 // The lanes of this op are its own: no other op names them.
                 let mut lanes = self.lanes.claim_run(span.range());
                 sum_op(
                     &mut a,
                     flags,
+                    &e,
                     &self.plan.audio_list[srcs.range()],
                     &mut lanes,
+                    &self.plan.gain_ports[gains.range()],
                     dst,
                     frames,
                 );

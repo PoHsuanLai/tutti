@@ -6,12 +6,12 @@
 // No `///` on these: a doc comment on a `pub mod` shadows the module's own
 // `//!` and re-resolves its intra-doc links in this scope.
 mod backend;
-pub mod capability;
-pub mod devices;
-pub mod endpoints;
-pub mod error;
-pub mod port;
-pub mod session;
+mod capability;
+mod devices;
+mod endpoints;
+mod error;
+mod port;
+mod session;
 
 // A backend with no OS behind it, for testing the session layer. See the
 // module's own docs for why it is exported rather than `#[cfg(test)]`.
@@ -34,10 +34,6 @@ pub use tutti_midi_device::{
 #[cfg(target_os = "macos")]
 pub use backend::coremidi::{UmpVirtualDestination, UmpVirtualSource};
 
-pub use tutti_midi_runtime::{
-    ClockTransportState, MidiClockDecoder, MtcDecoder, SmpteFrameRate, SmpteTimecode,
-};
-
 // --- Runtime delivery (the graph's MIDI border) ---
 //
 // The nodes a port feeds and is fed by (`MidiInputNode`, `MidiOutNode`), the
@@ -56,7 +52,7 @@ pub use tutti_midi_runtime::{
 // The file codecs live in `tutti-midi-file` and are deliberately *not*
 // re-exported. Reading a `.mid` and talking to a MIDI port are different jobs,
 // and a consumer that wants only the former should not link CoreMIDI. Depend
-// on `tutti-midi-file` directly for `smf`/`clip`.
+// on `tutti-midi-file` directly.
 
 /// The common types for a hardware MIDI app, for
 /// `use tutti_midi_hardware::prelude::*;`.
@@ -69,9 +65,9 @@ pub use tutti_midi_runtime::{
 ///   nodes), [`MidiMailbox`] / [`MidiSender`] / [`MidiReceiver`] (the lock-free
 ///   ring), and [`TimedMidiEvent`] (a clip's events).
 ///
-/// The rarer surfaces (sync decoders such as [`MidiClockDecoder`], MPE zone
-/// config) are not in the prelude; import them from the
-/// crate root by name. The SMF / Clip File codecs are not here at all:
+/// The sync decoders (`MidiClockDecoder`, `MtcDecoder`) are
+/// `tutti-midi-runtime`'s, and the MPE zone types `tutti-midi-protocol`'s;
+/// this crate does not re-export them. The SMF / Clip File codecs are not here at all:
 /// they are `tutti-midi-file`'s, and this crate does not re-export them.
 ///
 /// ```

@@ -103,7 +103,7 @@ Most of what a host names is in [`prelude`](crate::prelude).
 | `tutti::modulation` | `tutti-modulation` | modulation sources, routes and the compiler to per-param control programs | `modulation` |
 | `tutti::ump` | `tutti-ump` | the Universal MIDI Packet and its decoded `Message`, `Midi1Parser` for MIDI 1.0 bytes | `midi` |
 | `tutti::midi_protocol` | `tutti-midi-protocol` | MIDI 1.0 to 2.0 translation, MPE zones | `midi` |
-| `tutti::midi_runtime` | `tutti-midi-runtime` | MIDI graph nodes, MPE, MIDI-CI, SysEx | `midi` |
+| `tutti::midi_runtime` | `tutti-midi-runtime` | MIDI graph nodes, Beat Clock and MTC sync, JR timestamps, MPE ingest | `midi` |
 | `tutti::midi_file` | `tutti-midi-file` | Standard MIDI File and MIDI 2.0 Clip File codecs | `midi` |
 | `tutti::midi_hardware` | `tutti-midi-hardware` | OS MIDI I/O: endpoints, send and receive | `midi-hardware` |
 | `tutti::plugin` | `tutti-plugin` | VST2, VST3, CLAP and AU plugins as graph nodes | `plugin` + a format |

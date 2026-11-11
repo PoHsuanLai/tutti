@@ -13,8 +13,9 @@
 use super::*;
 use crate::fake::{Call, FakeLoaded, FakePlugin};
 use crate::{
-    AudioBuffer, AudioBufferMut, HostOp, MaxBlock, PluginIo, PluginTail, ProcessContext,
-    ProcessOutput, RenderMode, Request, RequestWord, SampleFormat, Samples, Stage, taken,
+    AudioBuffer, AudioBufferMut, ContentScale, HostOp, MaxBlock, PluginError, PluginIo, PluginTail,
+    ProcessContext, ProcessOutput, RenderMode, Request, RequestWord, SampleFormat, Samples, Stage,
+    WindowHandle, taken,
 };
 
 /// The test process's main thread: nextest runs each test in its own process,
@@ -799,4 +800,47 @@ fn a_refused_lend_is_offered_again_on_a_tick() {
     rig.tick();
     assert!(rig.lifecycle.processor().is_none(), "offered again");
     assert!(poll(&mut rt));
+}
+
+/// **The fake's explicit answers for the editor, render-mode, request and
+/// reported-edit entries of `Control` reach the host through
+/// [`Lifecycle::control`] in both states that hold a plugin**: no editor (and
+/// the floating window refused by its one default), no live render mode, no
+/// requests, no reported edits.
+///
+/// Mutation (run): the fake's `set_render_mode` returning `true` fails the
+/// first assertion; its `has_editor` returning `true` fails the second.
+#[test]
+fn the_fake_control_answers_nothing_in_either_state() {
+    let mut rig = Rig::new();
+    for active in [false, true] {
+        if active {
+            rig.op(HostOp::Activate(prepare(48_000.0)));
+            assert!(rig.lifecycle.processor().is_some());
+        }
+        let main = main();
+        let control = rig.lifecycle.control().expect("a plugin is held");
+
+        assert!(!control.set_render_mode(&main, RenderMode::Offline));
+        assert!(!control.has_editor(&main));
+        // SAFETY: the null handle is never dereferenced: the default refuses.
+        let parent = unsafe { WindowHandle::from_raw(std::ptr::null_mut()) };
+        assert!(matches!(
+            control.open_editor(&main, parent, ContentScale::IDENTITY),
+            Err(PluginError::Editor(_))
+        ));
+        assert!(matches!(
+            control.open_floating_editor(&main),
+            Err(PluginError::Editor(_))
+        ));
+        control.close_editor(&main);
+        control.editor_idle(&main);
+
+        let mut requests = Vec::new();
+        control.take_requests(&main, &mut requests);
+        assert!(requests.is_empty());
+        let mut edits = Vec::new();
+        control.take_reported_edits(&main, &mut edits);
+        assert!(edits.is_empty());
+    }
 }

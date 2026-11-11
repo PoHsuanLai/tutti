@@ -19,10 +19,11 @@ use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering}
 use tutti_rt::RequestWord;
 
 use crate::{
-    AudioBufferMut, ChannelLayout, Control, Controller, EditDrain, EditSink, FdId, Layout, Loaded,
-    LoadedPlugin, MainThread, Normalized, ParamId, ParameterInfo, PluginDescriptor, PluginError,
-    PluginIo, PluginResult, PluginTail, Prepare, Processor, Refused, RescanScope, RestartRules,
-    SampleRate, Samples, Stuck, TimerId, edits,
+    AudioBufferMut, ChannelLayout, ContentScale, Control, Controller, EditDrain, EditSink,
+    EditorError, EditorSize, EditorWindow, FdId, Layout, Loaded, LoadedPlugin, MainThread,
+    Normalized, ParamId, ParameterInfo, PluginDescriptor, PluginError, PluginIo, PluginResult,
+    PluginTail, Prepare, Processor, Refused, RenderMode, Request, RescanScope, RestartRules,
+    SampleRate, Samples, Stuck, TimerId, WindowHandle, edits,
 };
 
 /// One call the fake received.
@@ -466,6 +467,44 @@ macro_rules! fake_control {
             fn service_fd(&mut self, _main: &MainThread, id: FdId) {
                 self.shared.log.push(Call::ServiceFd(id));
             }
+
+            /// The fake never asks for anything.
+            fn take_requests(&mut self, _main: &MainThread, _out: &mut Vec<Request>) {}
+
+            /// The fake cannot change mode live.
+            fn set_render_mode(&mut self, _main: &MainThread, _mode: RenderMode) -> bool {
+                false
+            }
+
+            /// The fake reports no edits outside a block.
+            fn take_reported_edits(
+                &mut self,
+                _main: &MainThread,
+                _out: &mut Vec<(ParamId, Normalized)>,
+            ) {
+            }
+        }
+
+        /// The fake has no editor.
+        impl EditorWindow for $ty {
+            fn has_editor(&self, _main: &MainThread) -> bool {
+                false
+            }
+
+            fn open_editor(
+                &mut self,
+                _main: &MainThread,
+                _parent: WindowHandle,
+                _scale: ContentScale,
+            ) -> PluginResult<EditorSize> {
+                Err(PluginError::Editor(EditorError::PluginError(
+                    "the fake plugin has no editor".into(),
+                )))
+            }
+
+            fn close_editor(&mut self, _main: &MainThread) {}
+
+            fn editor_idle(&mut self, _main: &MainThread) {}
         }
     };
 }

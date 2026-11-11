@@ -20,18 +20,79 @@ use tutti_types::{Beat, Bpm, Seconds};
 /// first.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SmpteTimecode {
+    hours: u8,
+    minutes: u8,
+    seconds: u8,
+    frames: u8,
+    frame_rate: SmpteFrameRate,
+}
+
+impl SmpteTimecode {
+    /// The position `hours:minutes:seconds:frames` counted at `frame_rate`, or
+    /// `None` when a field is out of range: hours 0..=23, minutes and seconds
+    /// 0..=59, frames below the rate's label count (24, 25 or 30:
+    /// [`SmpteFrameRate::labels_per_second`]).
+    ///
+    /// The labels a drop-frame minute omits (`;00` and `;01`) are accepted:
+    /// they are in range, and [`frame_count`](Self::frame_count) reads each as
+    /// the next label that occurs.
+    #[must_use]
+    pub const fn new(
+        hours: u8,
+        minutes: u8,
+        seconds: u8,
+        frames: u8,
+        frame_rate: SmpteFrameRate,
+    ) -> Option<Self> {
+        if hours < 24
+            && minutes < 60
+            && seconds < 60
+            && (frames as u64) < frame_rate.labels_per_second()
+        {
+            Some(Self {
+                hours,
+                minutes,
+                seconds,
+                frames,
+                frame_rate,
+            })
+        } else {
+            None
+        }
+    }
+
     /// Hours, 0..=23. MTC carries this in 5 bits split across two nibbles.
-    pub hours: u8,
+    #[must_use]
+    pub const fn hours(&self) -> u8 {
+        self.hours
+    }
+
     /// Minutes, 0..=59.
-    pub minutes: u8,
+    #[must_use]
+    pub const fn minutes(&self) -> u8 {
+        self.minutes
+    }
+
     /// Seconds, 0..=59.
-    pub seconds: u8,
-    /// Frames within the second, 0..`frame_rate`.
-    pub frames: u8,
+    #[must_use]
+    pub const fn seconds(&self) -> u8 {
+        self.seconds
+    }
+
+    /// Frames within the second, below [`frame_rate`](Self::frame_rate)'s label
+    /// count.
+    #[must_use]
+    pub const fn frames(&self) -> u8 {
+        self.frames
+    }
+
     /// The rate this position is counted at. Carried in the same quarter-frame as
     /// the top hours bit, so it arrives with the position rather than being
     /// configured out of band.
-    pub frame_rate: SmpteFrameRate,
+    #[must_use]
+    pub const fn frame_rate(&self) -> SmpteFrameRate {
+        self.frame_rate
+    }
 }
 
 impl core::fmt::Display for SmpteTimecode {
@@ -200,13 +261,11 @@ impl MtcDecoder {
             _ => SmpteFrameRate::Fps30,
         };
 
-        self.timecode = Some(SmpteTimecode {
-            hours,
-            minutes,
-            seconds,
-            frames,
-            frame_rate,
-        });
+        // A position the wire framed but no clock reads (hour 28, frame 31) is
+        // a corrupt frame: it is dropped, and `timecode` keeps its last value.
+        if let Some(timecode) = SmpteTimecode::new(hours, minutes, seconds, frames, frame_rate) {
+            self.timecode = Some(timecode);
+        }
     }
 
     /// The most recently completed timecode, or `None` before the first full

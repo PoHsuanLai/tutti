@@ -484,7 +484,7 @@ fn a_restart_flag_is_the_request_the_core_plans_from() {
         (1 << 11, &[RescanParams(RescanScope::Info)]),
     ];
     let probe = Probe::behaving();
-    let loaded = probe.load();
+    let mut loaded = probe.load();
     for (flag, expected) in table {
         plugin_restart_component(&loaded, flag);
         let mut got = Vec::new();

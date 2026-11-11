@@ -44,6 +44,9 @@ pub trait Format {
     /// The cases this format fails, by name. [`contract!`](crate::contract)
     /// is given the number, so adding one is a second edit.
     const GAPS: &'static [(&'static str, Gap)];
+    /// What the format's control surface answers for the shared plugin (the
+    /// spec's row for it).
+    const SURFACE: crate::spec::Surface;
     /// Loads a fresh instance of the shared plugin.
     fn load() -> Self::L;
 

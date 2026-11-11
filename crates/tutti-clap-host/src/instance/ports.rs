@@ -199,12 +199,6 @@ impl ClapLoaded {
         self.plugin.tail(main)
     }
 
-    /// Switches between real-time (`false`) and offline (`true`) rendering
-    /// modes per `CLAP_EXT_RENDER`. Returns whether the plugin accepted.
-    pub fn set_render_mode(&mut self, main: &MainThread, offline: bool) -> bool {
-        self.plugin.set_render_offline(main, offline)
-    }
-
     /// Whether the plugin requires a hard real-time environment (e.g. it
     /// talks to hardware). Hosts should avoid running such plugins offline.
     #[must_use]

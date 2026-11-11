@@ -353,17 +353,19 @@ fn a_controller_write_is_direct_and_automation_lands_at_the_block_head() {
 /// call reports nothing to the host.
 ///
 /// Mutation (run): `apply_automation` writing without `host_write` -> the echo
-/// is queued -> `drain_param_changes` returns it -> fails.
+/// is queued -> `take_reported_edits` returns it -> fails.
 #[test]
 fn automation_is_a_host_write_and_its_echo_is_not_reported() {
     let probe = Probe::acquire();
-    let (mut processor, controller) = probe.activate();
+    let (mut processor, mut controller) = probe.activate();
     set_flag("tutti_vst2_probe_set_echo_set_parameter", true);
     let mut changes = ParameterChanges::reserved(1, 2);
     changes.add_change(ParamId::new(0), 0, 0.5);
     render_f32(&mut processor, &ProcessContext::new().params(&changes));
     set_flag("tutti_vst2_probe_set_echo_set_parameter", false);
-    assert_eq!(controller.loaded().drain_param_changes(), Vec::new());
+    let mut edits = Vec::new();
+    controller.take_reported_edits(&main_thread(), &mut edits);
+    assert_eq!(edits, Vec::new());
     assert_eq!(controller.loaded().dropped_param_changes(), 0);
     drop(rejoin(processor, controller));
 }
@@ -591,7 +593,7 @@ fn the_render_mode_changes_live_without_a_restart() {
     assert_eq!(capture().process_level, 4, "offline");
     assert!(controller.loaded().is_offline_render());
 
-    controller.loaded_mut().set_offline_render(false);
+    assert!(controller.set_render_mode(&main_thread(), RenderMode::Realtime));
     render_f32(&mut processor, &ProcessContext::new());
     assert_eq!(capture().process_level, 2, "realtime");
     let cap = capture();
@@ -678,10 +680,8 @@ impl Driven {
     /// then tick.
     fn pass(&mut self) {
         let mut asked = Vec::new();
-        if let Lifecycle::Active { controller, .. } = &self.lifecycle {
-            controller
-                .loaded()
-                .take_requests(&main_thread(), &mut asked);
+        if let Lifecycle::Active { controller, .. } = &mut self.lifecycle {
+            controller.take_requests(&main_thread(), &mut asked);
         }
         for request in asked {
             self.drive(Event::Request(request));

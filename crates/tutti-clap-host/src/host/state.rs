@@ -502,7 +502,7 @@ pub struct HostState {
     /// What the plugin asked of the host, by any callback on any thread: a
     /// restart, a main-thread callback, a latency or tail change, an
     /// audio-ports or parameter rescan. The main thread takes it once per
-    /// pass ([`ClapLoaded::take_requests`](crate::ClapLoaded::take_requests)).
+    /// pass ([`Control::take_requests`](tutti_plugin_types::Control::take_requests)).
     pub requests: RequestWord,
     /// Resume-processing requests.
     pub lifecycle: LifecycleFlags,

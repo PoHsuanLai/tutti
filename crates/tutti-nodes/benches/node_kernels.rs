@@ -80,8 +80,7 @@ fn run<N: Node>(
 /// The graph's fan-in (`Op::Sum`, doc 013 "Audio fan-in sums"), measured
 /// through the graph: `sources` groups of `width` global input channels, each
 /// output channel summing its channel of every group. No node runs, so the
-/// figure is the op's (the old `ChannelSumNode` rows, which this replaces,
-/// were the node's).
+/// figure is the op's.
 fn channel_sum(c: &mut Criterion) {
     use tutti_graph::{Editor, Prepare, Source, Transport};
     use tutti_types::{ChannelLayout, Samples};

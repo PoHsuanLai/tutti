@@ -19,7 +19,7 @@ use super::instance::Instance;
 use crate::host::handles::capabilities::{HostEditor, HostParams, HostRenderMode, HostState};
 use crate::host::node::ParameterChangeSink;
 use crate::util::window::{ContentScale, EditorSize};
-use tutti_plugin_types::{EditorError, StateError};
+use tutti_plugin_types::{EditorError, EditorWindow, PluginError, StateError};
 use tutti_plugin_types::{Normalized, ParamId, ParameterInfo, RenderMode};
 use tutti_plugin_types::{Preset, PresetId};
 
@@ -218,12 +218,15 @@ impl HostEditor for InProcessVst2Backend {
         let parent = unsafe { tutti_vst2_host::WindowHandle::from_ptr(parent_ptr) };
         let mut instance = self.inner.lock();
         instance
-            .open_editor(main, parent)
+            .open_editor(main, parent, ContentScale::IDENTITY)
             .map(|sz| EditorSize {
                 width: sz.width,
                 height: sz.height,
             })
-            .map_err(|e| EditorError::PluginError(e.to_string()))
+            .map_err(|e| match e {
+                PluginError::Editor(editor) => editor,
+                other => EditorError::PluginError(other.to_string()),
+            })
     }
 
     fn close_editor(&self, main: &MainThread) {
@@ -257,18 +260,15 @@ impl HostEditor for InProcessVst2Backend {
                 return;
             }
             instance.editor_idle(main);
-            (changes, instance.drain_param_changes())
+            (changes, instance.drain_param_changes(main))
         };
         // Drain any plugin-internal parameter changes (knob movement on
         // the editor surface) and forward them to the user sink. Fires
         // on the GUI thread — same threading contract as the parameter
         // sink callback for the subprocess backend (which fires on the
         // bridge thread). After the lock is released: a callback may call back.
-        for (index, value) in param_changes {
-            if let Ok(index) = u32::try_from(index) {
-                self.param_sink
-                    .fire((ParamId::new(index), Normalized::clamped(f64::from(value))));
-            }
+        for edit in param_changes {
+            self.param_sink.fire(edit);
         }
         use crate::handles::PluginInvalidation;
         if let Some(samples) = changes.latency {

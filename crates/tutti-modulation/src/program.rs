@@ -17,7 +17,7 @@
 use std::fmt;
 use std::sync::Arc;
 
-use tutti_curve::Law;
+use tutti_curve::{Law, Piece};
 use tutti_types::{
     Beat, BeatDuration, Depth, Frame, Hz, Phase, PhaseIncrement, SamplePosition, SampleRate,
 };
@@ -645,7 +645,7 @@ fn automation_at(curve: &dyn Curve, b: f64, limit: Limit) -> Option<f32> {
             if f64::from(t32) > t {
                 t32 = t32.next_down();
             }
-            return Some(shape.interpolate(from, to, t32));
+            return Some(Piece::new(from, to, shape).value(t32));
         }
     }
     curve.value_at(Beat(x))
@@ -977,7 +977,7 @@ fn drawn_value(points: &[PeriodPoint], frac: f64) -> f32 {
         (p, f64::from(p.at.get()), q, f64::from(q.at.get()))
     };
     let t = ((frac - start) / (end - start)) as f32;
-    p.curve.interpolate(p.value, q.value, t)
+    Piece::new(p.value, q.value, p.curve).value(t)
 }
 
 /// Where in `(0, 1)` a `curve` piece from `a` to `b` crosses zero, if its
@@ -994,7 +994,7 @@ fn crossing(curve: Law, a: f32, b: f32) -> Option<f64> {
     let below = a < 0.0;
     for _ in 0..30 {
         let mid = 0.5 * (lo + hi);
-        let v = curve.interpolate(a, b, mid);
+        let v = Piece::new(a, b, curve).value(mid);
         if (v < 0.0) == below {
             lo = mid;
         } else {

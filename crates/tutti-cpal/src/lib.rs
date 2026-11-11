@@ -31,8 +31,7 @@ pub use output::{AudioCallbackState, AudioEngine, MAX_FRAMES, process_audio};
 pub use poller::{DevicePoller, MIN_POLL_INTERVAL};
 pub use roster::{DeviceChange, DeviceId, DeviceRoster, Direction, Snapshot, SnapshotSource};
 
-// Re-exported for the same reason `tutti-midi-file` re-exports `midly`: this
-// crate's public surface already names cpal types (`SampleFormat` in
+// Re-exported because this crate's public surface already names cpal types (`SampleFormat` in
 // `OutputSpec`, `StreamError` in `ManualStream::fail`, cpal errors inside
 // `Error`), so a consumer needs the vocabulary and should not have to pin a
 // matching cpal version of its own.

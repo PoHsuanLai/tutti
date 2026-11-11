@@ -31,6 +31,7 @@ use tutti_fixtures::main_thread;
 use std::ffi::c_void;
 use std::path::{Path, PathBuf};
 
+use tutti_plugin_types::EditorWindow;
 use tutti_vst3_host::{ContentScale, EditorSize, KeyEvent, WindowHandle};
 
 #[path = "active.rs"]
@@ -479,7 +480,7 @@ fn supported_platform_type_still_opens() {
 
 gui_test! {
 /// This is the regression test for "nothing pumps the plugin run loop": before
-/// [`Vst3Loaded::run_editor_loop_iteration`] existed, `host-checker` (a VSTGUI
+/// [`EditorWindow::editor_idle`] existed, `host-checker` (a VSTGUI
 /// plugin, which drives its redraws off a registered timer) would register its
 /// timer and X file descriptor with us and then wait forever. The editor
 /// appeared, painted once, and froze.
@@ -532,7 +533,7 @@ fn open_editor_run_loop_is_pumped() {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
     let mut activity = registered;
     while std::time::Instant::now() < deadline {
-        inst.loaded_mut().run_editor_loop_iteration(&main_thread());
+        inst.loaded_mut().editor_idle(&main_thread());
         activity = inst.loaded().run_loop_activity();
         if activity.timers_fired > before_open.timers_fired
             && activity.fds_dispatched >= before_open.fds_dispatched
@@ -574,7 +575,7 @@ fn open_editor_run_loop_is_pumped() {
 
     // Pumping with the editor closed must stay safe (and is what a host does on
     // the frame after the user closes the window).
-    inst.loaded_mut().run_editor_loop_iteration(&main_thread());
+    inst.loaded_mut().editor_idle(&main_thread());
 }
 }
 

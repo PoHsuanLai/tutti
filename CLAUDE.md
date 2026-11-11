@@ -764,8 +764,15 @@ list (normal and build edges; dev-dependencies may go anywhere).
   (`scripts/check-layout.sh`). Its test-only knobs (`set_rate_timeout`,
   `settled_replies`) are behind `test-support`, which `tutti-plugin`'s
   dev-dependency turns on.
-- `tutti-midi-file` is OS-free. It holds the MIDI 2.0 Clip File codec (`ParsedClipFile`,
-  `write_clip_file*`, `ClipFileError`) beside SMF.
+- `tutti-midi-file` is OS-free and keeps every module private
+  (`tutti_midi_file::smf_to_bytes`; the per-module path gate is not in CI because the
+  parked `bevy-tutti` still names `tutti_midi_file::smf::`). It holds
+  the MIDI 2.0 Clip File codec (`ParsedClipFile`, `write_clip_file*`, `ClipFileError`)
+  beside SMF. An SMF event is a `tutti_ump::Voice1` (`SmfTimedEvent::msg`), a note's
+  key and velocity are `NoteNumber` and `U7`, and no public signature names `midly`.
+- `tutti-midi-hardware` keeps every module private but `test_support` (CI runs the
+  per-module path gate on it) and re-exports none of `tutti-midi-runtime`'s sync
+  types: `MidiClockDecoder`, `MtcDecoder` and `SmpteTimecode` are the runtime's.
 - `tutti-sf2` is the SoundFont 2 file as data (parse, presets, instruments,
   sample headers, sample data, raw generators) and holds nothing that plays.
   Its workspace dependencies are `tutti-ump` and `tutti-types` (the units its
@@ -987,8 +994,7 @@ Scalars use `Param<U>`.
   global output channel). Several sources into one audio input or output
   channel sum, in source order (`NodeKey`, then port), bit-identically on every
   executor (`Op::Sum`); one source is aliased and none is silence. Summing is
-  the graph's job: never add a node to sum (`ChannelSumNode` is going, doc 013
-  "Audio fan-in sums"). The calls that wire **add** a source
+  the graph's job: never add a node to sum (doc 013 "Audio fan-in sums"). The calls that wire **add** a source
   (`GraphBuilder::connect`, `Graph::add_source`, `add_output_source`); the
   `set_` forms (`set_source`, `set_sources`, `set_output_source`,
   `set_output_sources`) replace the set, and `remove_source` /
@@ -1089,7 +1095,8 @@ read the `Cargo.toml`, grep for the type, run the probe.
   `bevy-tutti/Cargo.toml` is the one exception. The `docs/` audits are dated
   records: fix only what claims to be current, and never "update" a reference
   to a new app-side path.
-- **Dead crate names:** `tutti-spatial` → `tutti-nodes` (the panner nodes, `VbapPannerNode`
+- **Dead crate names:** `ChannelSumNode` → deleted (a port or an output
+  channel sums its sources: `Op::Sum`, doc 013 "Audio fan-in sums"); `tutti-spatial` → `tutti-nodes` (the panner nodes, `VbapPannerNode`
   and `HrtfBinauralNode`; the algorithms are `tutti-dsp::spatial`); `build_vbap_mix` and
   `VbapMixParts` → deleted (a VBAP mix is a panner per source wired to the output
   channels, the graph sums the fan-in); `tutti_types::{Topology, NodeKey, Valid, TapId, TapSpec, TapAlign,

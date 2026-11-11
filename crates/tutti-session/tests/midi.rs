@@ -1095,3 +1095,58 @@ fn a_port_that_loses_events_is_reported() {
             .all(|e| !matches!(e, SessionEvent::EventsDropped { .. }))
     );
 }
+
+/// **A UMP Endpoint the session holds open is negotiated from `Phase::Poll`,
+/// and the outcome is a session event** (design 017 §5, M2-104 §7.1.6.1): the
+/// update that follows the connect sends the Endpoint Discovery on the
+/// device's output, the device (here the fake's, answering as an Endpoint
+/// does) replies into the input, and a later update reports
+/// `SessionEvent::MidiStream` once, with the Protocol in use.
+#[cfg(feature = "midi-hardware")]
+#[test]
+fn a_connected_ump_endpoint_is_negotiated_by_the_session_tick() {
+    use tutti_midi_hardware::{Basis, Capabilities, Endpoint};
+    use tutti_ump::Protocol;
+
+    let (mut s, fake) = hot_plug_session();
+    plug(&fake, 7, "Wire", Direction::Duplex);
+    s.update();
+    let io = s.midi_io().expect("the OS MIDI layer").clone();
+    io.connect_input_by_name("wire").expect("connects");
+
+    let mut device = Endpoint::new(Capabilities {
+        midi1: true,
+        midi2: true,
+        ..Capabilities::default()
+    });
+    let raw = EndpointId::from_raw(7);
+    let mut settled = Vec::new();
+    for _ in 0..20 {
+        settled.extend(s.update().into_iter().filter_map(|e| match e {
+            SessionEvent::MidiStream { device, stream } => Some((device, *stream)),
+            _ => None,
+        }));
+        let mut answers: Vec<Ump> = Vec::new();
+        for ump in fake.take_sent(raw) {
+            if let Ok(message) = tutti_ump::decode(ump) {
+                device.reply(message, &mut answers);
+            }
+        }
+        for ump in answers {
+            assert!(fake.send_input(raw, ump, Instant::now()));
+        }
+    }
+    let [(id, stream)] = settled.as_slice() else {
+        panic!("one MidiStream event expected, got {settled:?}");
+    };
+    assert_eq!(
+        io.inputs()
+            .iter()
+            .find(|d| d.id == *id)
+            .map(|d| d.name.as_str()),
+        Some("Wire")
+    );
+    assert_eq!(stream.basis(), Basis::Negotiated);
+    assert_eq!(stream.config().protocol, Protocol::Midi2);
+    assert_eq!(io.stream(id), Some(*stream));
+}

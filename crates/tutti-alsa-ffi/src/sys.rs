@@ -37,6 +37,10 @@ pub enum snd_seq_t {}
 #[derive(Debug)]
 pub enum snd_ump_block_info_t {}
 
+/// Opaque `snd_ump_endpoint_info_t`, by its getters like the block record.
+#[derive(Debug)]
+pub enum snd_ump_endpoint_info_t {}
+
 /// Opaque `snd_seq_client_info_t`.
 #[derive(Debug)]
 pub enum snd_seq_client_info_t {}
@@ -400,12 +404,62 @@ unsafe extern "C" {
         blk: c_int,
         info: *mut c_void,
     ) -> c_int;
+    pub fn snd_ump_block_info_get_block_id(info: *const snd_ump_block_info_t) -> c_uint;
+    pub fn snd_ump_block_info_get_active(info: *const snd_ump_block_info_t) -> c_uint;
+    pub fn snd_ump_block_info_get_flags(info: *const snd_ump_block_info_t) -> c_uint;
+    pub fn snd_ump_block_info_get_direction(info: *const snd_ump_block_info_t) -> c_uint;
+    pub fn snd_ump_block_info_get_first_group(info: *const snd_ump_block_info_t) -> c_uint;
+    pub fn snd_ump_block_info_get_num_groups(info: *const snd_ump_block_info_t) -> c_uint;
+    pub fn snd_ump_block_info_get_midi_ci_version(info: *const snd_ump_block_info_t) -> c_uint;
+    pub fn snd_ump_block_info_get_sysex8_streams(info: *const snd_ump_block_info_t) -> c_uint;
+    pub fn snd_ump_block_info_get_ui_hint(info: *const snd_ump_block_info_t) -> c_uint;
+    /// The block's name: a pointer into `info`, valid until it is freed.
+    pub fn snd_ump_block_info_get_name(info: *const snd_ump_block_info_t) -> *const c_char;
+
+    // The endpoint record. @@ALSA_1.2.10
+    /// Allocate an endpoint record; free it with `snd_ump_endpoint_info_free`.
+    pub fn snd_ump_endpoint_info_malloc(ptr: *mut *mut snd_ump_endpoint_info_t) -> c_int;
+    /// Free a record from `snd_ump_endpoint_info_malloc`.
+    pub fn snd_ump_endpoint_info_free(ptr: *mut snd_ump_endpoint_info_t);
+    /// @@ALSA_1.2.10
+    pub fn snd_seq_get_ump_endpoint_info(
+        seq: *mut snd_seq_t,
+        client: c_int,
+        info: *mut c_void,
+    ) -> c_int;
+    pub fn snd_ump_endpoint_info_get_protocol_caps(info: *const snd_ump_endpoint_info_t) -> c_uint;
+    pub fn snd_ump_endpoint_info_get_protocol(info: *const snd_ump_endpoint_info_t) -> c_uint;
+    pub fn snd_ump_endpoint_info_get_num_blocks(info: *const snd_ump_endpoint_info_t) -> c_uint;
+    /// The endpoint's name: a pointer into `info`, valid until it is freed.
+    pub fn snd_ump_endpoint_info_get_name(info: *const snd_ump_endpoint_info_t) -> *const c_char;
 }
 
 #[cfg(all(alsa_ump, feature = "test-support"))]
 unsafe extern "C" {
     /// Set the port's `SND_SEQ_PORT_CAP_*` bits.
     pub fn snd_seq_port_info_set_capability(info: *mut snd_seq_port_info_t, capability: c_uint);
+    /// Publish this client's endpoint record.
+    pub fn snd_seq_set_ump_endpoint_info(seq: *mut snd_seq_t, info: *const c_void) -> c_int;
+    /// Publish this client's block `blk`.
+    pub fn snd_seq_set_ump_block_info(
+        seq: *mut snd_seq_t,
+        blk: c_int,
+        info: *const c_void,
+    ) -> c_int;
+    pub fn snd_ump_endpoint_info_set_protocol_caps(
+        info: *mut snd_ump_endpoint_info_t,
+        caps: c_uint,
+    );
+    pub fn snd_ump_endpoint_info_set_protocol(info: *mut snd_ump_endpoint_info_t, protocol: c_uint);
+    pub fn snd_ump_endpoint_info_set_num_blocks(info: *mut snd_ump_endpoint_info_t, n: c_uint);
+    pub fn snd_ump_endpoint_info_set_name(info: *mut snd_ump_endpoint_info_t, name: *const c_char);
+    pub fn snd_ump_block_info_set_block_id(info: *mut snd_ump_block_info_t, id: c_uint);
+    pub fn snd_ump_block_info_set_active(info: *mut snd_ump_block_info_t, active: c_uint);
+    pub fn snd_ump_block_info_set_direction(info: *mut snd_ump_block_info_t, direction: c_uint);
+    pub fn snd_ump_block_info_set_first_group(info: *mut snd_ump_block_info_t, group: c_uint);
+    pub fn snd_ump_block_info_set_num_groups(info: *mut snd_ump_block_info_t, n: c_uint);
+    pub fn snd_ump_block_info_set_ui_hint(info: *mut snd_ump_block_info_t, hint: c_uint);
+    pub fn snd_ump_block_info_set_name(info: *mut snd_ump_block_info_t, name: *const c_char);
 }
 
 /// The measured `snd_seq_ump_event_t` size, alignment and field offsets, checked

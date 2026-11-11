@@ -69,6 +69,9 @@ pub struct PortInfo {
     /// lost. The lead the inlets place arrivals with
     /// ([`DeviceInlets`]) is what prevents it.
     pub late: u64,
+    /// How many UMP Stream messages the port's stream ring had no room for,
+    /// since the port opened.
+    pub stream_lost: u64,
 }
 
 impl PortInfo {
@@ -79,6 +82,7 @@ impl PortInfo {
             active: port.is_active(),
             dropped: port.dropped(),
             late: port.late(),
+            stream_lost: port.stream_lost(),
         }
     }
 }
@@ -250,6 +254,16 @@ impl HardwareMidiInputs {
             .flatten()
             .map(|port| PortInfo::of(port))
             .collect()
+    }
+
+    /// Hands `take` every UMP Stream message the port `id` names has held since
+    /// the last call, oldest first: what the device said about itself
+    /// (`InputProducerHandle::push` keeps them out of the inlet). Nothing for
+    /// a stale id. Control side.
+    pub fn drain_stream(&self, id: PortId, take: impl FnMut(tutti_ump::Ump)) {
+        if let Some(port) = self.port(id) {
+            port.drain_stream(take);
+        }
     }
 
     /// Sets whether the port `id` names delivers. Returns `false`, and changes

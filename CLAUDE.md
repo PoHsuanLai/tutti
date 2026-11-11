@@ -653,7 +653,7 @@ list (normal and build edges; dev-dependencies may go anywhere).
   `Extend<Ump>` and allocates nothing, `Connection` is Table 4 steps 2 to 4 as a
   state machine whose time is an `Instant` argument (`on_message`, `on_timeout`,
   `deadline`), never read from a clock; the bit fields stay in `tutti-ump`. The
-  CI codec takes `tutti-ump`'s `U7`, `MidiChannel` and `FunctionBlockId` for its fields. No backend feeds either yet. A consumer that persists a `DeviceInfo` depends on it with
+  CI codec takes `tutti-ump`'s `U7`, `MidiChannel` and `FunctionBlockId` for its fields. `tutti-midi-hardware` feeds them: one `Connection` per open UMP input, stepped by `MidiSession::poll(now)` from the session's `Phase::Poll`, with the device's Stream messages kept out of the graph (`InputProducerHandle::push`); `Endpoint::reply` has no caller, since tutti publishes no endpoint. A consumer that persists a `DeviceInfo` depends on it with
   its `serde` feature (no umbrella forwards it; renaming an `Identity` variant
   breaks saved files) and restores it with `Devices::resolve`. Only `Exact`
   is safe to bind unasked: an ALSA identity is a name, so a lone device with

@@ -87,6 +87,33 @@ impl Drop for BlockRecord {
     }
 }
 
+/// A `snd_ump_endpoint_info_t`.
+pub(crate) struct EndpointRecord(NonNull<sys::snd_ump_endpoint_info_t>);
+
+impl EndpointRecord {
+    pub(crate) fn new() -> Result<Self> {
+        let mut ptr: *mut sys::snd_ump_endpoint_info_t = std::ptr::null_mut();
+        // SAFETY: `ptr` is a valid out-pointer.
+        let rc = unsafe { sys::snd_ump_endpoint_info_malloc(&mut ptr) };
+        check(rc, "snd_ump_endpoint_info_malloc")?;
+        NonNull::new(ptr).map(Self).ok_or(crate::Error {
+            operation: "snd_ump_endpoint_info_malloc",
+            code: -12,
+        })
+    }
+
+    pub(crate) fn as_ptr(&self) -> *mut sys::snd_ump_endpoint_info_t {
+        self.0.as_ptr()
+    }
+}
+
+impl Drop for EndpointRecord {
+    fn drop(&mut self) {
+        // SAFETY: allocated by `new` and freed here, once.
+        unsafe { sys::snd_ump_endpoint_info_free(self.0.as_ptr()) };
+    }
+}
+
 /// A `snd_seq_queue_status_t`.
 pub(crate) struct StatusRecord(NonNull<sys::snd_seq_queue_status_t>);
 

@@ -525,7 +525,7 @@ fn run(pair: &mut Pair, blocks: &[usize], frame: &mut u64) {
 }
 
 proptest! {
-    #![proptest_config(ProptestConfig { cases: 256, ..ProptestConfig::default() })]
+    #![proptest_config(ProptestConfig { cases: tutti_fixtures::cases(256), ..ProptestConfig::default() })]
 
     /// The executor renders every random graph exactly as the reference does,
     /// at every block schedule.
@@ -960,7 +960,7 @@ fn random_costs(desc: &Desc, seed: u64) -> BTreeMap<NodeKey, tutti_graph::Cost> 
 }
 
 proptest! {
-    #![proptest_config(ProptestConfig { cases: 256, ..ProptestConfig::default() })]
+    #![proptest_config(ProptestConfig { cases: tutti_fixtures::cases(256), ..ProptestConfig::default() })]
 
     /// With random declared costs the compiler packs cheap tasks together
     /// (and `Plan::schedule` picks serial or parallel per plan, and per
@@ -1168,7 +1168,7 @@ fn close_a_cycle(desc: &mut Desc, rng: &mut Rng) -> bool {
 }
 
 proptest! {
-    #![proptest_config(ProptestConfig { cases: 256, ..ProptestConfig::default() })]
+    #![proptest_config(ProptestConfig { cases: tutti_fixtures::cases(256), ..ProptestConfig::default() })]
 
     /// A cycle no feedback edge breaks is rejected — by `validate` when it is
     /// all audio, by `compile` (naming its edges) when it runs through an
@@ -1257,7 +1257,7 @@ fn brute_force_interference(plan: &tutti_graph::Plan) {
 }
 
 proptest! {
-    #![proptest_config(ProptestConfig { cases: 512, ..ProptestConfig::default() })]
+    #![proptest_config(ProptestConfig { cases: tutti_fixtures::cases(512), ..ProptestConfig::default() })]
 
     /// Colouring is correct under any parallel schedule: the verifier accepts
     /// every plan, and an independent brute-force check agrees.
@@ -1842,7 +1842,7 @@ impl EditorPair {
 }
 
 proptest! {
-    #![proptest_config(ProptestConfig { cases: 128, ..ProptestConfig::default() })]
+    #![proptest_config(ProptestConfig { cases: tutti_fixtures::cases(128), ..ProptestConfig::default() })]
 
     /// Across a re-prepare — a new sample rate, a new `MaxBlock`, or both —
     /// the executor (two commits through the editor, units re-prepared on the
@@ -2035,7 +2035,7 @@ fn wait_for_credit(pair: &mut Pair, frame: &mut u64) {
 }
 
 proptest! {
-    #![proptest_config(ProptestConfig { cases: 256, ..ProptestConfig::default() })]
+    #![proptest_config(ProptestConfig { cases: tutti_fixtures::cases(256), ..ProptestConfig::default() })]
 
     /// Replaces with crossfades, bit for bit against the reference, whose
     /// fade semantics are its own: eight rounds of edits a random 1–300
@@ -2256,7 +2256,7 @@ fn weigh(desc: &mut Desc, rng: &mut Rng) {
 }
 
 proptest! {
-    #![proptest_config(ProptestConfig { cases: 256, ..ProptestConfig::default() })]
+    #![proptest_config(ProptestConfig { cases: tutti_fixtures::cases(256), ..ProptestConfig::default() })]
 
     /// Weighted lanes on the random graphs, serial and parallel, are the
     /// reference's bit for bit: with weights on a third of the edges (feedback
@@ -2399,7 +2399,7 @@ fn drive(desc: &mut Desc, rng: &mut Rng) {
 }
 
 proptest! {
-    #![proptest_config(ProptestConfig { cases: 256, ..ProptestConfig::default() })]
+    #![proptest_config(ProptestConfig { cases: tutti_fixtures::cases(256), ..ProptestConfig::default() })]
 
     /// Driven lanes on the random graphs, serial and parallel, are the
     /// reference's bit for bit: lanes of several periods and latencies drive
@@ -2527,7 +2527,7 @@ fn prune_modes(desc: &mut Desc) {
 }
 
 proptest! {
-    #![proptest_config(ProptestConfig { cases: 128, ..ProptestConfig::default() })]
+    #![proptest_config(ProptestConfig { cases: tutti_fixtures::cases(128), ..ProptestConfig::default() })]
 
     /// Modes on the random graphs, serial and parallel, are the reference's
     /// bit for bit: about one block in five a node (any: latent ones, event
@@ -2600,7 +2600,7 @@ fn prune_mixes(desc: &mut Desc) {
 }
 
 proptest! {
-    #![proptest_config(ProptestConfig { cases: 128, ..ProptestConfig::default() })]
+    #![proptest_config(ProptestConfig { cases: tutti_fixtures::cases(128), ..ProptestConfig::default() })]
 
     /// Mixes on the random graphs, serial and parallel, are the reference's bit
     /// for bit: about one block in four a node (any: latent ones, event ones,
@@ -2713,7 +2713,7 @@ fn prune_mix_lanes(desc: &mut Desc) {
 }
 
 proptest! {
-    #![proptest_config(ProptestConfig { cases: 192, ..ProptestConfig::default() })]
+    #![proptest_config(ProptestConfig { cases: tutti_fixtures::cases(192), ..ProptestConfig::default() })]
 
     /// Driven mixes on the random graphs, serial and parallel, are the
     /// reference's bit for bit: lanes of several periods and latencies drive
@@ -3011,7 +3011,7 @@ fn bus_graph(seed: u64) -> BusGraph {
 }
 
 proptest! {
-    #![proptest_config(ProptestConfig { cases: 256, ..ProptestConfig::default() })]
+    #![proptest_config(ProptestConfig { cases: tutti_fixtures::cases(256), ..ProptestConfig::default() })]
 
     /// A bus edge is nothing the interpreters know: the lowered spec renders
     /// the same on the executor, serial and parallel, as on the reference,
@@ -3099,7 +3099,7 @@ fn root_bus_graph(seed: u64) -> BusGraph {
 }
 
 proptest! {
-    #![proptest_config(ProptestConfig { cases: 256, ..ProptestConfig::default() })]
+    #![proptest_config(ProptestConfig { cases: tutti_fixtures::cases(256), ..ProptestConfig::default() })]
 
     /// A bus edge into the root is lanes on the output channels and nothing
     /// the interpreters know: the lowered spec renders the same on the

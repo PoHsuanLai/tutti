@@ -55,7 +55,7 @@ pub mod sf2;
 pub mod signal;
 
 pub use digest::{Fnv, Noise, digest, digest_planes, noise};
-pub use env::ScopedEnv;
+pub use env::{ScopedEnv, cases};
 pub use golden::{RECORDED_ARCH, RECORDED_GLIBC, assert_golden};
 pub use machine_lock::{MachineLock, machine_lock};
 #[cfg(feature = "plugin")]

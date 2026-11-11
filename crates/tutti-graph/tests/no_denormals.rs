@@ -35,6 +35,7 @@ mod common;
 
 use std::hint::black_box;
 use std::time::{Duration, Instant};
+use tutti_types::MaxBlock;
 
 use common::{WORKERS, test_pool};
 use tutti_graph::NodeKey;
@@ -82,7 +83,10 @@ enum Entry {
 }
 
 fn render_probes(workers: usize, entry: Entry) {
-    let (mut ed, mut exec) = Editor::new(Prepare::new(SampleRate(48_000.0), Samples(MAX_BLOCK)));
+    let (mut ed, mut exec) = Editor::new(Prepare::new(
+        SampleRate(48_000.0),
+        MaxBlock::of(Samples(MAX_BLOCK)),
+    ));
     if workers > 1 {
         exec.set_pool(Some(test_pool(workers)));
     }

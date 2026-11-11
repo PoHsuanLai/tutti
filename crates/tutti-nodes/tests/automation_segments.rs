@@ -17,6 +17,7 @@
 //! progress differ in the last bits).
 
 use std::sync::Arc;
+use tutti_types::MaxBlock;
 
 use tutti_curve::{Breakpoint, Law, Trajectory};
 use tutti_graph::NodeKey;
@@ -77,7 +78,7 @@ impl Node for Probe {
 
 /// A lane sending `curve` to the probe's cutoff.
 fn graph(lane: ControlLaneNode) -> (Editor, Executor) {
-    let (mut ed, exec) = Editor::new(Prepare::new(SampleRate(RATE), Samples(MAX)));
+    let (mut ed, exec) = Editor::new(Prepare::new(SampleRate(RATE), MaxBlock::of(Samples(MAX))));
     ed.insert(NodeKey(1), "lane", lane);
     ed.insert(NodeKey(2), "probe", Unforkable(Probe));
     let s = ed.spec_mut();

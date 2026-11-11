@@ -46,7 +46,7 @@
 //! let lp = g.add(ForkByClone(Lowpass { a: 0.1, y: 0.0 }));
 //! g.pipe_input(lp).pipe_output(lp);
 //! let mut r = g
-//!     .renderer(Prepare::new(SampleRate(48_000.0), Samples(256)))
+//!     .renderer(Prepare::new(SampleRate(48_000.0), MaxBlock::of(Samples(256))))
 //!     .expect("builds");
 //! let out = r.render_input(&[&[1.0; 1_000]]);
 //! assert!(out[0][999] > 0.9); // a lowpass passes DC

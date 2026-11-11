@@ -14,6 +14,7 @@ use tutti_fixtures::midi::{note_off, note_on};
 use tutti_graph::NodeKey;
 use tutti_graph::{Editor, Executor, Prepare, Transport};
 use tutti_midi_runtime::{MidiClipNode, TimedMidiEvent};
+use tutti_types::MaxBlock;
 use tutti_types::{Beat, Bpm, SampleRate, Samples};
 use tutti_ump::{MidiChannel, MidiGroup, Ump};
 
@@ -71,7 +72,10 @@ fn pad() -> Vec<TimedMidiEvent> {
 }
 
 fn rig(events: Vec<TimedMidiEvent>) -> Executor {
-    let (mut editor, exec) = Editor::new(Prepare::new(SampleRate(48_000.0), Samples(BLOCK)));
+    let (mut editor, exec) = Editor::new(Prepare::new(
+        SampleRate(48_000.0),
+        MaxBlock::of(Samples(BLOCK)),
+    ));
     editor.insert(NodeKey(1), "clip", MidiClipNode::new(events));
     editor.commit().expect("commits");
     exec

@@ -15,6 +15,7 @@ use tutti_modulation::Macro;
 use tutti_nodes::ReconcileError;
 use tutti_nodes::testing::Const;
 use tutti_session::{GraphSource, MixRef, ModRefusal, ModTarget, ParamRef, PassError, Session};
+use tutti_types::MaxBlock;
 use tutti_types::{ChannelLayout, Depth, InterleavedMut, Mix, SampleRate, Samples, UnitParam};
 
 const BLOCK: usize = 128;
@@ -43,7 +44,11 @@ impl Node for Halve {
 
 fn offline() -> Session {
     Session::builder()
-        .build_offline(SampleRate(48_000.0), ChannelLayout::STEREO, Samples(1_024))
+        .build_offline(
+            SampleRate(48_000.0),
+            ChannelLayout::STEREO,
+            MaxBlock::of(Samples(1_024)),
+        )
         .expect("builds")
 }
 

@@ -43,6 +43,7 @@
 mod clap_probe;
 use clap_probe::{ProbeEnv, load_probe, render};
 use tutti_fixtures::machine_lock;
+use tutti_types::MaxBlock;
 
 use tutti_graph::NodeKey;
 use tutti_graph::{GraphBuilder, Prepare, Renderer};
@@ -244,7 +245,10 @@ fn plugin_alone(plugin: PluginClient<Bound>) -> Rig {
 
 fn finish(g: GraphBuilder, plugin: NodeKey, controls: PluginControls) -> Rig {
     let graph = g
-        .renderer(Prepare::new(SampleRate(SAMPLE_RATE), Samples(BLOCK)))
+        .renderer(Prepare::new(
+            SampleRate(SAMPLE_RATE),
+            MaxBlock::of(Samples(BLOCK)),
+        ))
         .expect("the rig compiles");
     Rig {
         graph,

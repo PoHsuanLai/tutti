@@ -511,6 +511,7 @@ mod tests {
     use super::*;
     use tutti_graph::contract::{Direct, assert_param_fork};
     use tutti_graph::{Solo, Transport};
+    use tutti_types::MaxBlock;
     use tutti_types::{Beat, Bpm, Samples};
 
     /// **The ports and their bases.** A free-running LFO declares its depth
@@ -553,7 +554,7 @@ mod tests {
     /// `transport` as its own (advancing, when it rolls, by the block).
     fn render_at(node: LfoNode, transport: Transport, n: usize) -> Vec<f32> {
         let rate = SampleRate(48_000.0);
-        let mut solo = Solo::new(node, Prepare::new(rate, Samples(256)));
+        let mut solo = Solo::new(node, Prepare::new(rate, MaxBlock::of(Samples(256))));
         solo.renderer_mut().set_transport_fn(move |frame| {
             let mut clock = tutti_types::FrameClock::new(transport.beat(), transport.tempo, rate);
             if transport.playing {

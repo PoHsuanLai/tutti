@@ -95,7 +95,7 @@ fn graph_engine_with_timed_transport_is_allocation_free() {
     let transport = Transport::new(SampleRate::new(sample_rate));
     let (mut ed, exec) = Editor::new(Prepare::new(
         SampleRate(sample_rate),
-        tutti_types::Samples(512),
+        tutti_types::MaxBlock::of(tutti_types::Samples(512)),
     ));
     ed.insert(NodeKey(1), "tone", Unforkable(TransportTone));
     ed.spec_mut().topology.set_outputs((0..2).map(|port| {
@@ -189,7 +189,7 @@ fn a_published_tempo_map_is_taken_without_allocating() {
     let transport = Transport::new(SampleRate::new(48_000.0));
     let (mut ed, exec) = Editor::new(Prepare::new(
         SampleRate(48_000.0),
-        tutti_types::Samples(512),
+        tutti_types::MaxBlock::of(tutti_types::Samples(512)),
     ));
     ed.insert(NodeKey(1), "tone", Unforkable(TransportTone));
     ed.spec_mut().topology.set_outputs((0..2).map(|port| {
@@ -266,7 +266,7 @@ fn a_step_map_is_followed_without_allocating() {
     let transport = Transport::new(SampleRate::new(48_000.0));
     let (mut ed, exec) = Editor::new(Prepare::new(
         SampleRate(48_000.0),
-        tutti_types::Samples(512),
+        tutti_types::MaxBlock::of(tutti_types::Samples(512)),
     ));
     ed.insert(NodeKey(1), "tone", Unforkable(TransportTone));
     ed.spec_mut().topology.set_outputs((0..2).map(|port| {
@@ -330,7 +330,7 @@ fn a_step_map_is_followed_without_allocating() {
     let transport = Transport::new(SampleRate::new(48_000.0));
     let (mut ed, exec) = Editor::new(Prepare::new(
         SampleRate(48_000.0),
-        tutti_types::Samples(4_096),
+        tutti_types::MaxBlock::of(tutti_types::Samples(4_096)),
     ));
     ed.insert(NodeKey(1), "tone", Unforkable(TransportTone));
     ed.spec_mut().topology.set_outputs((0..2).map(|port| {
@@ -401,7 +401,7 @@ fn the_master_meter_is_allocation_free() {
         let transport = Transport::new(SampleRate::new(48_000.0));
         let (mut ed, exec) = Editor::new(Prepare::new(
             SampleRate(48_000.0),
-            tutti_types::Samples(512),
+            tutti_types::MaxBlock::of(tutti_types::Samples(512)),
         ));
         ed.insert(NodeKey(1), "tone", Unforkable(TransportTone));
         ed.spec_mut().topology.set_outputs((0..2).map(|port| {
@@ -454,7 +454,7 @@ fn the_heard_tap_is_allocation_free() {
     let transport = Transport::new(SampleRate::new(48_000.0));
     let (mut ed, exec) = Editor::new(Prepare::new(
         SampleRate(48_000.0),
-        tutti_types::Samples(512),
+        tutti_types::MaxBlock::of(tutti_types::Samples(512)),
     ));
     ed.insert(NodeKey(1), "tone", Unforkable(TransportTone));
     ed.spec_mut().topology.set_outputs((0..2).map(|port| {
@@ -558,7 +558,7 @@ fn graph_engine_with_env_clock_and_metronome_is_allocation_free() {
 
     let (mut ed, exec) = Editor::new(Prepare::new(
         SampleRate(sample_rate),
-        tutti_types::Samples(512),
+        tutti_types::MaxBlock::of(tutti_types::Samples(512)),
     ));
     let (clock, sink) = (NodeKey(1), NodeKey(2));
     ed.insert(clock, "clock", Unforkable(BeatWalk));
@@ -648,7 +648,7 @@ fn graph_engine_on_a_worker_pool_is_allocation_free() {
     let transport = Transport::new(SampleRate::new(sample_rate));
     let (mut ed, mut exec) = Editor::new(Prepare::new(
         SampleRate(sample_rate),
-        tutti_types::Samples(512),
+        tutti_types::MaxBlock::of(tutti_types::Samples(512)),
     ));
     // Parks quickly, so the gated blocks below wake parked helpers.
     let pool = tutti_graph::WorkerPool::builder()

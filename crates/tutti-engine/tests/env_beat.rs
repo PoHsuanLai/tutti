@@ -21,6 +21,7 @@
 //! reads it through the same `f32` split.
 
 use std::sync::{Arc, Mutex};
+use tutti_types::MaxBlock;
 
 mod support;
 
@@ -141,7 +142,7 @@ fn graph_engine(
     sink: impl IntoNode<Controls = ()>,
     width: u16,
 ) -> (Engine, Editor) {
-    let (mut ed, exec) = Editor::new(Prepare::new(SampleRate(SR), Samples(512)));
+    let (mut ed, exec) = Editor::new(Prepare::new(SampleRate(SR), MaxBlock::of(Samples(512))));
     wire_clock(&mut ed, sink, width);
     let engine = Engine::new(transport, &mut ed, exec).expect("within the limits");
     (engine, ed)
@@ -336,7 +337,7 @@ fn click_clicks_on_the_model_beats() {
     settings.set_mode(MetronomeMode::Always);
     settings.set_volume(Amplitude::new(1.0));
     let click = ClickNode::new(&transport, settings);
-    let (mut ed, exec) = Editor::new(Prepare::new(SampleRate(SR), Samples(512)));
+    let (mut ed, exec) = Editor::new(Prepare::new(SampleRate(SR), MaxBlock::of(Samples(512))));
     const CLICK: NodeKey = NodeKey(1);
     ed.insert(CLICK, "click", click);
     ed.spec_mut()
@@ -414,7 +415,10 @@ impl Node for EnvLog {
 
 /// An `EnvLog` at key 1, on the global output.
 fn env_graph(max_block: usize, log: &Arc<Mutex<Vec<Env>>>) -> (Editor, Executor) {
-    let (mut ed, exec) = Editor::new(Prepare::new(SampleRate(SR), Samples(max_block)));
+    let (mut ed, exec) = Editor::new(Prepare::new(
+        SampleRate(SR),
+        MaxBlock::of(Samples(max_block)),
+    ));
     ed.insert(NodeKey(1), "env", Unforkable(EnvLog(Arc::clone(log))));
     ed.spec_mut()
         .topology
@@ -536,7 +540,7 @@ fn the_offline_env_walk_starts_each_block_on_the_timeline() {
         loop_range: None,
     });
     let log = Log::default();
-    let (mut ed, mut exec) = Editor::new(Prepare::new(SampleRate(SR), Samples(512)));
+    let (mut ed, mut exec) = Editor::new(Prepare::new(SampleRate(SR), MaxBlock::of(Samples(512))));
     wire_clock(&mut ed, Unforkable(GraphBeats::new(&log)), 1);
     let mut out = vec![0.0f32; 512];
     let mut at = 0;

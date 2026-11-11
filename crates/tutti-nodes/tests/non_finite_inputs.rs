@@ -3,6 +3,7 @@
 //! infinity never reaches the output.
 
 use std::sync::atomic::Ordering;
+use tutti_types::MaxBlock;
 
 use tutti_graph::contract::drive;
 use tutti_graph::{Node, ParamNode, Prepare};
@@ -55,7 +56,7 @@ fn a_delay_with_an_unusable_maximum_saturates_to_an_empty_line() {
             DelayLineNode::stereo(Seconds(max), Seconds(0.01), Seconds(0.02), Feedback(0.3)),
         ] {
             let mut node = node;
-            node.prepare(&Prepare::new(RATE, Samples(64)));
+            node.prepare(&Prepare::new(RATE, MaxBlock::of(Samples(64))));
             assert!(renders_finite(&mut node, 4), "max {max}");
         }
     }
@@ -84,7 +85,7 @@ fn the_strip_holds_off_non_finite_volume_and_pan() {
     for (name, cell) in cells {
         for bad in BAD {
             let mut node = BusStripNode::new();
-            node.prepare(&Prepare::new(RATE, Samples(64)));
+            node.prepare(&Prepare::new(RATE, MaxBlock::of(Samples(64))));
             assert!(renders_finite(&mut node, 2));
             let atomic = cell(&node);
             atomic.store(bad, Ordering::Release);
@@ -117,7 +118,7 @@ fn the_limiters_and_the_eq_band_hold_off_non_finite_controls() {
         for bad in BAD {
             for k in 0..make().1.len() {
                 let (mut node, cells) = make();
-                node.prepare(&Prepare::new(RATE, Samples(64)));
+                node.prepare(&Prepare::new(RATE, MaxBlock::of(Samples(64))));
                 assert!(renders_finite(&mut *node, 2), "{name}");
                 for (j, (_, cell, alt)) in cells.iter().enumerate() {
                     cell.store(if j == k { bad } else { *alt }, Ordering::Release);

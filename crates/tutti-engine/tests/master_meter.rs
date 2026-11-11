@@ -9,6 +9,7 @@ use tutti_graph::{Editor, MeterReader, Prepare};
 use tutti_graph::{MeterId, MeterSpec, NodeKey};
 use tutti_graph::{OutPort, Source};
 use tutti_transport::Transport;
+use tutti_types::MaxBlock;
 use tutti_types::{ChannelLayout, InterleavedMut, SampleRate, Samples};
 
 const RATE: f64 = 48_000.0;
@@ -42,7 +43,7 @@ fn engine(
     capacity: Samples,
 ) -> (Engine, MeterReader) {
     let transport = Transport::new(SampleRate::new(RATE));
-    let (mut ed, exec) = Editor::new(Prepare::new(SampleRate(RATE), Samples(512)));
+    let (mut ed, exec) = Editor::new(Prepare::new(SampleRate(RATE), MaxBlock::of(Samples(512))));
     ed.insert(NodeKey(1), "dc", tutti_graph::Unforkable(Dc(level)));
     ed.spec_mut().topology.set_outputs((0..outputs).map(|c| {
         if channel.is_none_or(|only| only == c) {
@@ -189,7 +190,7 @@ fn the_pure_render_feeds_the_meter() {
 fn the_master_reads_before_the_declick() {
     use tutti_transport::MotionEvent;
     let transport = Transport::new(SampleRate::new(RATE));
-    let (mut ed, exec) = Editor::new(Prepare::new(SampleRate(RATE), Samples(512)));
+    let (mut ed, exec) = Editor::new(Prepare::new(SampleRate(RATE), MaxBlock::of(Samples(512))));
     ed.insert(NodeKey(1), "dc", tutti_graph::Unforkable(Dc(0.5)));
     ed.spec_mut()
         .topology
@@ -260,7 +261,7 @@ impl tutti_graph::Node for Step {
 #[test]
 fn a_block_longer_than_the_capacity_is_measured_whole() {
     let transport = Transport::new(SampleRate::new(RATE));
-    let (mut ed, exec) = Editor::new(Prepare::new(SampleRate(RATE), Samples(512)));
+    let (mut ed, exec) = Editor::new(Prepare::new(SampleRate(RATE), MaxBlock::of(Samples(512))));
     ed.insert(
         NodeKey(1),
         "step",

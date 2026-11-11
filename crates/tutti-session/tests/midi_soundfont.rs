@@ -26,6 +26,7 @@
 //! (`a_routed_hardware_note_sounds`).
 
 use std::sync::Arc;
+use tutti_types::MaxBlock;
 
 use tutti_fixtures::midi::{note_off, note_on};
 use tutti_graph::NodeKey;
@@ -76,7 +77,7 @@ fn soundfont() -> Arc<SoundFont> {
 fn rig() -> (Session, NodeKey) {
     let unit = SoundFontUnit::new(soundfont(), &Settings::new(RATE)).expect("builds the unit");
     let mut s = Session::builder()
-        .build_offline(RATE, ChannelLayout::STEREO, Samples(128))
+        .build_offline(RATE, ChannelLayout::STEREO, MaxBlock::of(Samples(128)))
         .expect("builds");
     let (synth, _) = s.graph().add(unit);
     s.graph().set_outputs_from(synth);

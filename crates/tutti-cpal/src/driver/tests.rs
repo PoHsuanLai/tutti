@@ -3,6 +3,7 @@ use crate::{AudioEngine, ManualStreamDriver, OutputSpec};
 use tutti_engine::Engine;
 use tutti_graph::{Editor, Prepare};
 use tutti_transport::Transport;
+use tutti_types::MaxBlock;
 use tutti_types::{ChannelLayout, SampleRate, Samples};
 
 fn spec_at(rate: f64) -> OutputSpec {
@@ -28,7 +29,10 @@ fn spec_at(rate: f64) -> OutputSpec {
 #[test]
 fn a_plain_restart_refuses_a_new_rate_and_stays_stopped() {
     let transport = Transport::new(SampleRate::new(44_100.0));
-    let (mut ed, exec) = Editor::new(Prepare::new(SampleRate(44_100.0), Samples(512)));
+    let (mut ed, exec) = Editor::new(Prepare::new(
+        SampleRate(44_100.0),
+        MaxBlock::of(Samples(512)),
+    ));
     let engine = Engine::new(&transport, &mut ed, exec).expect("an empty graph");
     let state = Arc::new(AudioCallbackState::new(engine));
     let mut driver = TuttiDriver::new(AudioEngine::from_spec(spec_at(44_100.0)), state);

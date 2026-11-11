@@ -852,7 +852,7 @@ mod tests {
         warm(&mut again);
         again.prepare(&Prepare::new(
             SampleRate(48_000.0),
-            tutti_types::Samples(64),
+            tutti_types::MaxBlock::of(tutti_types::Samples(64)),
         ));
         again.lfo.reset_phase();
         assert_eq!(render(&mut again), want, "after prepare at another block");

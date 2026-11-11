@@ -12,13 +12,14 @@
 
 use tutti_graph::{IntoNode, MODE_DECLICK, NodeMode, Prepare, Solo};
 use tutti_nodes::{BusStripNode, EqBandNode, SvfType};
+use tutti_types::MaxBlock;
 use tutti_types::{Amplitude, Db, Hz, Q, SampleRate, Samples, UnitParam};
 
 const RATE: SampleRate = SampleRate(48_000.0);
 const FRAMES: usize = 1024;
 
 fn solo<N: IntoNode>(node: N) -> Solo<N::Controls> {
-    Solo::new(node, Prepare::new(RATE, Samples(64)))
+    Solo::new(node, Prepare::new(RATE, MaxBlock::of(Samples(64))))
 }
 
 fn set_mode<C>(solo: &mut Solo<C>, mode: NodeMode) {

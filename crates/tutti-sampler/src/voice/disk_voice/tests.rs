@@ -3,6 +3,7 @@ use crate::streamer::{RegionBuffer, StreamId};
 use crate::testing::{MockTransport, block, play};
 use std::path::PathBuf;
 use tutti_graph::contract::Direct;
+use tutti_types::MaxBlock;
 use tutti_types::{Bpm, Samples};
 
 /// The rate the tests' blocks run at.
@@ -133,7 +134,7 @@ fn a_disk_voice_sizes_its_positions_from_max_block() {
     let mut voice = make_clip_reader(&[(0.0, 0.0); 8], Beat::new(0.0), None);
     assert_eq!(voice.positions.len(), 0);
     for max in [512usize, 1024, 64] {
-        voice.prepare(&Prepare::new(SampleRate(SR), Samples(max)));
+        voice.prepare(&Prepare::new(SampleRate(SR), MaxBlock::of(Samples(max))));
         assert_eq!(voice.positions.len(), max, "at {max}");
     }
     assert_eq!(voice.clone().positions.len(), 0);
@@ -1252,7 +1253,10 @@ fn cached_stride_reads_every_channel_at_width_six() {
 #[test]
 fn a_gain_change_reaches_a_cloned_voice() {
     let (mut unit, _) = rolling_voice(&[(1.0, 1.0); 256]);
-    unit.prepare(&Prepare::new(SampleRate(48_000.0), Samples(64)));
+    unit.prepare(&Prepare::new(
+        SampleRate(48_000.0),
+        MaxBlock::of(Samples(64)),
+    ));
     let (t_unit, t_copy) = (
         MockTransport::rolling(Beat::new(0.0), Bpm::of(120.0)),
         MockTransport::rolling(Beat::new(0.0), Bpm::of(120.0)),

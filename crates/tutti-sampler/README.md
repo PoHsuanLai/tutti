@@ -68,7 +68,7 @@ let source = MemorySource::new(Arc::new(wave)).expect("a stereo wave places");
 source.play();
 
 // No audio input: the voice is the source. Stereo out.
-let mut graph = Solo::new(source, Prepare::new(SampleRate(44_100.0), Samples(64)));
+let mut graph = Solo::new(source, Prepare::new(SampleRate(44_100.0), MaxBlock::of(Samples(64))));
 let out = graph.render(64);
 assert_eq!(out.len(), 2);
 assert!(out[0].iter().all(|&s| s != 0.0));

@@ -14,6 +14,7 @@
 use std::cell::Cell;
 use std::path::Path;
 use std::sync::Arc;
+use tutti_types::MaxBlock;
 
 use tutti_graph::{Env, ForkHealth, ForkMode, IntoNode, Node, Prepare, TransportChanges, contract};
 use tutti_sampler::testing::settle;
@@ -157,8 +158,10 @@ fn fork_unprepared(node: impl IntoNode) -> Fork {
 /// prepared.
 fn fork(voice: &DiskVoice, rate: f64) -> Fork {
     let mut f = fork_unprepared(voice.clone());
-    f.node
-        .prepare(&Prepare::new(SampleRate(rate), Samples(BLOCK)));
+    f.node.prepare(&Prepare::new(
+        SampleRate(rate),
+        MaxBlock::of(Samples(BLOCK)),
+    ));
     f
 }
 
@@ -222,7 +225,7 @@ fn a_fork_plays_the_file_from_the_frame_its_beat_falls_on() {
     let mut node_fork = fork_unprepared(node);
     node_fork
         .node
-        .prepare(&Prepare::new(SampleRate(SR), Samples(BLOCK)));
+        .prepare(&Prepare::new(SampleRate(SR), MaxBlock::of(Samples(BLOCK))));
     for (what, mut copy) in [
         ("a bare voice", fork(&voice, SR)),
         ("a voice node", node_fork),
@@ -863,7 +866,7 @@ fn a_fork_matches_the_memory_tier_bit_for_bit() {
         } else {
             Box::new(source)
         };
-        memory.prepare(&Prepare::new(SampleRate(SR), Samples(BLOCK)));
+        memory.prepare(&Prepare::new(SampleRate(SR), MaxBlock::of(Samples(BLOCK))));
         let mut copy = fork(&voice, SR);
 
         let mut sounded = 0usize;

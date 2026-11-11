@@ -16,12 +16,16 @@ use tutti_graph::NodeKey;
 use tutti_graph::{CommitError, Editor, ForkByClone, Prepare};
 use tutti_graph::{OutPort, Source};
 use tutti_transport::Transport;
+use tutti_types::MaxBlock;
 use tutti_types::{ChannelLayout, Hz, InterleavedMut, SampleRate, Samples};
 
 /// A graph whose root has `outputs` channels, with a sine at key 1 feeding
 /// the channels `wire` picks (the rest explicitly silent).
 fn root(outputs: usize, wire: &[usize]) -> (Editor, tutti_graph::Executor) {
-    let (mut ed, exec) = Editor::new(Prepare::new(SampleRate(48_000.0), Samples(256)));
+    let (mut ed, exec) = Editor::new(Prepare::new(
+        SampleRate(48_000.0),
+        MaxBlock::of(Samples(256)),
+    ));
     ed.insert(NodeKey(1), "sine", ForkByClone(Sine::new(Hz(440.0))));
     ed.spec_mut().topology.set_outputs((0..outputs).map(|ch| {
         if wire.contains(&ch) {

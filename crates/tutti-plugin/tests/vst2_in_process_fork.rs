@@ -23,6 +23,7 @@
 use std::sync::{Mutex, MutexGuard};
 use tutti_fixtures::main_thread;
 use tutti_plugin_types::Load;
+use tutti_types::MaxBlock;
 use tutti_vst2_host::Vst2Loaded;
 
 use tutti_graph::NodeKey;
@@ -165,7 +166,7 @@ fn load_with(tempo: tutti_transport::TempoReader) -> (PluginNode<Vst2Loaded>, Pl
 }
 
 fn prepare_at(rate: f64) -> Prepare {
-    Prepare::new(SampleRate(rate), Samples(BLOCK))
+    Prepare::new(SampleRate(rate), MaxBlock::of(Samples(BLOCK)))
 }
 
 /// A live editor holding `node` at `key`, both its outputs global.

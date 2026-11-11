@@ -17,6 +17,7 @@
 //! Each test names the mutation that fails it.
 
 use std::sync::{Arc, Mutex};
+use tutti_types::MaxBlock;
 
 use tutti_engine::Engine;
 use tutti_graph::{
@@ -69,7 +70,10 @@ impl Node for BeatLog {
 }
 
 fn graph(log: &Log) -> (Editor, Executor) {
-    let (mut ed, exec) = Editor::new(Prepare::new(SampleRate(SR), Samples(MAX_BLOCK)));
+    let (mut ed, exec) = Editor::new(Prepare::new(
+        SampleRate(SR),
+        MaxBlock::of(Samples(MAX_BLOCK)),
+    ));
     ed.insert(NodeKey(1), "beats", Unforkable(BeatLog(Arc::clone(log))));
     ed.spec_mut()
         .topology

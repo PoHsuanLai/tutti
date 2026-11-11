@@ -13,6 +13,7 @@
 //! must be finite.
 
 use std::sync::atomic::Ordering;
+use tutti_types::MaxBlock;
 
 use tutti_fixtures::Noise;
 use tutti_graph::contract::drive;
@@ -61,7 +62,7 @@ fn survives_node<N: Node>(name: &str, make: impl Fn() -> N, cells: impl Fn(&N) -
         let count = cells(&make()).len();
         for k in 0..count {
             let mut node = make();
-            node.prepare(&Prepare::new(a, Samples(64)));
+            node.prepare(&Prepare::new(a, MaxBlock::of(Samples(64))));
             assert!(
                 render_node_finite(&mut node, a, 4, 1),
                 "{name}: finite before"
@@ -79,7 +80,7 @@ fn survives_node<N: Node>(name: &str, make: impl Fn() -> N, cells: impl Fn(&N) -
                 render_node_finite(&mut node, a, 8, 10),
                 "{name}: {cell} = {bad} (with every other control moving) reached the output"
             );
-            node.prepare(&Prepare::new(b, Samples(64)));
+            node.prepare(&Prepare::new(b, MaxBlock::of(Samples(64))));
             assert!(
                 render_node_finite(&mut node, b, 8, 30),
                 "{name}: {cell} = {bad} reached the output through a rate change"
@@ -290,7 +291,10 @@ fn a_distortion_built_with_a_non_finite_drive_renders_finite() {
     use tutti_nodes::{DistortionNode, ShapeKind};
     for bad in BAD {
         let mut node = DistortionNode::new(ShapeKind::Tanh, Drive::new(bad));
-        node.prepare(&Prepare::new(SampleRate(48_000.0), Samples(64)));
+        node.prepare(&Prepare::new(
+            SampleRate(48_000.0),
+            MaxBlock::of(Samples(64)),
+        ));
         assert!(
             render_node_finite(&mut node, SampleRate(48_000.0), 4, 1),
             "drive {bad}"

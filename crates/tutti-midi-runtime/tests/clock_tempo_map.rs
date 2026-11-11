@@ -25,6 +25,7 @@
 //! Each test names the mutation that fails it.
 
 use std::sync::Arc;
+use tutti_types::MaxBlock;
 
 mod common;
 
@@ -141,8 +142,10 @@ struct Rig {
 
 /// A clock (enabled, MTC per `mtc`) under an event tap, on an engine over `map`.
 fn rig(map: &Arc<TempoMap>, mtc: bool) -> Rig {
-    let (mut ed, exec): (Editor, Executor) =
-        Editor::new(Prepare::new(SampleRate(SR), Samples(MAX_BLOCK)));
+    let (mut ed, exec): (Editor, Executor) = Editor::new(Prepare::new(
+        SampleRate(SR),
+        MaxBlock::of(Samples(MAX_BLOCK)),
+    ));
     let master = ed.insert(NodeKey(1), "clock", ClockNode::new());
     master.set_enabled(true);
     master.set_send_mtc(mtc);

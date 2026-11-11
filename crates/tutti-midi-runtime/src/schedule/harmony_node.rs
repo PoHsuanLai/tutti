@@ -127,7 +127,7 @@ impl Shared {
 /// use tutti_graph::{Editor, Harmony, Prepare};
 /// use tutti_midi_runtime::{HarmonyNode, TimedHarmony};
 ///
-/// let (mut editor, _exec) = Editor::new(Prepare::new(SampleRate(48_000.0), Samples(512)));
+/// let (mut editor, _exec) = Editor::new(Prepare::new(SampleRate(48_000.0), MaxBlock::of(Samples(512))));
 /// let c_major = Harmony::chord(60, 60, 0b1001_0001);
 /// let node = HarmonyNode::new([TimedHarmony::new(Beat(0.0), c_major)]);
 /// let controls = editor.insert(NodeKey(1), "harmony", node);

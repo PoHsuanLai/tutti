@@ -3,6 +3,7 @@ use crate::contract::{drive_input, prepared};
 use crate::event::{EventWriter, SortedEvents};
 use crate::node::{ConstantMask, Env, InPlaceMask, SilenceMask};
 use crate::{PlayClock, Transport, TransportChanges};
+use tutti_types::MaxBlock;
 use tutti_types::{Frame, SampleRate};
 
 const RATE: SampleRate = SampleRate(48_000.0);
@@ -141,7 +142,7 @@ fn the_inlet_refuses_to_fork() {
     use crate::{OutPort, Source};
 
     let (node, _prod) = ring_with(&[[1.0, 2.0]]);
-    let prepare = Prepare::new(RATE, Samples(64));
+    let prepare = Prepare::new(RATE, MaxBlock::of(Samples(64)));
     let (mut editor, _exec) = Editor::new(prepare);
     editor.insert(NodeKey(7), "inlet", node);
     editor.spec_mut().topology.set_outputs((0..2).map(|port| {
@@ -216,7 +217,7 @@ fn process_over(node: &mut InletNode, planes: usize, frames: usize, fill: f32) -
         arrival: tutti_types::Latency::ZERO,
         history: crate::TransportHistory::none(),
     };
-    let max = Prepare::new(RATE, Samples(frames)).max_block();
+    let max = Prepare::new(RATE, MaxBlock::of(Samples(frames))).max_block();
     let io = Io::new(
         max,
         frames,

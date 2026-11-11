@@ -6,6 +6,7 @@ use tutti_graph::{Editor, Prepare};
 use tutti_nodes::testing::Osc;
 use tutti_nodes::{SvfFilterNode, SvfType};
 use tutti_transport::{MotionEvent, Transport};
+use tutti_types::MaxBlock;
 use tutti_types::{Beat, BeatDuration};
 use tutti_types::{Hz, Q};
 use tutti_types::{SampleRate, Samples};
@@ -25,7 +26,10 @@ use tutti_types::{SampleRate, Samples};
 fn build_callback_state(sample_rate: f64) -> (Transport, AudioCallbackState) {
     let transport = Transport::new(SampleRate::new(sample_rate));
 
-    let (mut ed, exec) = Editor::new(Prepare::new(SampleRate(sample_rate), Samples(512)));
+    let (mut ed, exec) = Editor::new(Prepare::new(
+        SampleRate(sample_rate),
+        MaxBlock::of(Samples(512)),
+    ));
     let (source, filter) = (NodeKey(1), NodeKey(2));
     ed.insert(source, "sine", Osc::sine(Hz(220.0)));
     ed.insert(
@@ -127,7 +131,10 @@ fn manual_spec() -> OutputSpec {
 
 fn driver_over(engine: AudioEngine) -> crate::TuttiDriver {
     let transport = Transport::new(SampleRate::new(48_000.0));
-    let (mut ed, exec) = Editor::new(Prepare::new(SampleRate(48_000.0), Samples(512)));
+    let (mut ed, exec) = Editor::new(Prepare::new(
+        SampleRate(48_000.0),
+        MaxBlock::of(Samples(512)),
+    ));
     let graph = Engine::new(&transport, &mut ed, exec).expect("an empty graph");
     crate::TuttiDriver::new(engine, Arc::new(AudioCallbackState::new(graph)))
 }

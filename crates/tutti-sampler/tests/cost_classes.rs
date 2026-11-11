@@ -5,6 +5,7 @@
 //! the serial one.
 
 use std::sync::Arc;
+use tutti_types::MaxBlock;
 
 use tutti_graph::NodeKey;
 use tutti_graph::WorkerPool;
@@ -68,7 +69,10 @@ impl<N: Node> Node for Undeclared<N> {
 /// `bus`: every node summed by the graph (a fan-in onto each of two global outputs), or
 /// each on two global outputs of its own (a track wired straight out).
 fn graph(wave: &Arc<Wave>, workers: usize, declared: bool, bus: bool) -> Executor {
-    let (mut ed, mut exec) = Editor::new(Prepare::new(SampleRate(SR), Samples(MAX_BLOCK)));
+    let (mut ed, mut exec) = Editor::new(Prepare::new(
+        SampleRate(SR),
+        MaxBlock::of(Samples(MAX_BLOCK)),
+    ));
     if workers > 1 {
         exec.set_pool(Some(Arc::new(
             WorkerPool::builder()

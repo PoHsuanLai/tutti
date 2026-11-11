@@ -16,6 +16,7 @@ use tutti_fixtures::midi::{m1_note_off, m1_note_on};
 use tutti_graph::IntoNode;
 use tutti_graph::contract::BlockRig;
 use tutti_nodes::{DelayLineNode, LfoNode, LfoShape, ModDelayNode, PhaserNode};
+use tutti_types::MaxBlock;
 use tutti_types::{
     BeatDuration, ChannelLayout, Depth, Feedback, Hz, PhaseIncrement, SampleRate, Seconds,
 };
@@ -257,7 +258,10 @@ fn lane_graph(max: usize) -> (tutti_graph::Editor, tutti_graph::Executor) {
         lane(Arc::new(SineCurve)),
         lane(Arc::new(shaped)),
     ];
-    let (mut ed, exec) = tutti_graph::Editor::new(Prepare::new(SampleRate(48_000.0), Samples(max)));
+    let (mut ed, exec) = tutti_graph::Editor::new(Prepare::new(
+        SampleRate(48_000.0),
+        MaxBlock::of(Samples(max)),
+    ));
     let mut outputs = Vec::new();
     for (k, lane) in lanes.into_iter().enumerate() {
         let (l, p) = (NodeKey(10 + k as u64), NodeKey(20 + k as u64));
@@ -572,7 +576,10 @@ fn lanes_200(
     use tutti_graph::{EventOut, ParamIn, ParamRange, Prepare, Unforkable};
     use tutti_graph::{OutPort, Source};
     use tutti_types::Samples;
-    let (mut ed, exec) = tutti_graph::Editor::new(Prepare::new(SampleRate(48_000.0), Samples(max)));
+    let (mut ed, exec) = tutti_graph::Editor::new(Prepare::new(
+        SampleRate(48_000.0),
+        MaxBlock::of(Samples(max)),
+    ));
     let at = |k: usize| ParamIn {
         node: NodeKey(1000 + (k / 8) as u64),
         param: PROBE8[k % 8].into(),
@@ -856,7 +863,10 @@ fn signal_graph(max: usize) -> (tutti_graph::Editor, tutti_graph::Executor) {
     use tutti_nodes::automation::ControlLaneNode;
     use tutti_nodes::{EnvelopeFollowerNode, NoteEnvelopeNode};
     use tutti_types::{Amplitude, AtomicF32, Depth, Hz, ParamKey, Samples, Seconds, UnitParam};
-    let (mut ed, exec) = tutti_graph::Editor::new(Prepare::new(SampleRate(48_000.0), Samples(max)));
+    let (mut ed, exec) = tutti_graph::Editor::new(Prepare::new(
+        SampleRate(48_000.0),
+        MaxBlock::of(Samples(max)),
+    ));
     let probe = |k: usize| NodeKey(5000 + k as u64);
     let cutoff = |k: usize| ParamIn {
         node: probe(k),
@@ -1180,7 +1190,10 @@ fn an_apply_that_republishes_is_allocation_free_on_the_audio_thread() {
         curve: Law::Linear,
     };
 
-    let (mut ed, mut exec) = Editor::new(Prepare::new(SampleRate(48_000.0), Samples(128)));
+    let (mut ed, mut exec) = Editor::new(Prepare::new(
+        SampleRate(48_000.0),
+        MaxBlock::of(Samples(128)),
+    ));
     let (saw, filter) = (NodeKey(1 << 48), NodeKey((1 << 48) + 1));
     ed.insert(saw, "saw", ForkByClone(Osc::saw(Hz(110.0))));
     let params = ed.insert(

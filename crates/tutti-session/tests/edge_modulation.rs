@@ -13,6 +13,7 @@ mod common;
 
 use tutti_graph::ForkByClone;
 use tutti_session::{EdgeRef, GraphSource, ModTarget, ParamRef, Session};
+use tutti_types::MaxBlock;
 use tutti_types::{
     Amplitude, ChannelLayout, Depth, InterleavedMut, SampleRate, Samples, UnitParam,
 };
@@ -27,7 +28,11 @@ const B: f32 = 0.25;
 
 fn offline() -> Session {
     Session::builder()
-        .build_offline(SampleRate(RATE), ChannelLayout::STEREO, Samples(1_024))
+        .build_offline(
+            SampleRate(RATE),
+            ChannelLayout::STEREO,
+            MaxBlock::of(Samples(1_024)),
+        )
         .expect("builds")
 }
 

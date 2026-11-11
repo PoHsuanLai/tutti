@@ -49,7 +49,7 @@ let sample_rate = audio_engine.sample_rate();
 // The graph: an editor on the control thread, its executor for the audio
 // thread. Edits are `commit`ted across.
 let transport = Transport::new(sample_rate);
-let (mut editor, executor) = Editor::new(Prepare::new(sample_rate, Samples(512)));
+let (mut editor, executor) = Editor::new(Prepare::new(sample_rate, MaxBlock::of(Samples(512))));
 let tone = NodeKey(1);
 editor.insert(tone, "tone", Osc::sine(Hz(440.0)));
 editor.spec_mut().topology.set_outputs(vec![Source::Node(OutPort { node: tone, port: 0 }); 2]);

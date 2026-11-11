@@ -898,7 +898,7 @@ pub const MAX_EVENT_PORT_CAPACITY: u32 = 8_192;
 /// use tutti_types::{SampleRate, Samples};
 ///
 /// let one_per_frame = EventDensity::per_frame(1);
-/// let at = |block| one_per_frame.capacity(&Prepare::new(SampleRate(48_000.0), Samples(block)));
+/// let at = |block| one_per_frame.capacity(&Prepare::new(SampleRate(48_000.0), MaxBlock::of(Samples(block))));
 /// assert_eq!(at(64), 256); // the floor
 /// assert_eq!(at(1024), 1024);
 /// assert_eq!(at(1 << 20), 8_192); // the cap
@@ -1155,6 +1155,7 @@ pub(crate) fn merge_into(sources: &[&[Event]], out: &mut Vec<Event>, cap: usize)
 mod tests {
     use super::*;
     use tutti_fixtures::midi::{m1_note_off, m1_note_on};
+    use tutti_types::MaxBlock;
     use tutti_ump::{MidiChannel, NoteNumber, U7};
 
     fn ev(offset: u32, tag: u32) -> Event {
@@ -1516,7 +1517,7 @@ mod tests {
         let at = |density: EventDensity, block| {
             density.capacity(&crate::Prepare::new(
                 tutti_types::SampleRate(48_000.0),
-                Samples(block),
+                MaxBlock::of(Samples(block)),
             ))
         };
         let frame = EventDensity::per_frame(1);

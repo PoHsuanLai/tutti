@@ -6,13 +6,14 @@
 use tutti_engine::Engine;
 use tutti_graph::{Editor, Prepare};
 use tutti_transport::Transport;
+use tutti_types::MaxBlock;
 use tutti_types::{ChannelLayout, Frame, InterleavedMut, SampleRate, Samples};
 
 const RATE: f64 = 48_000.0;
 
 fn engine() -> Engine {
     let transport = Transport::new(SampleRate::new(RATE));
-    let (mut ed, exec) = Editor::new(Prepare::new(SampleRate(RATE), Samples(512)));
+    let (mut ed, exec) = Editor::new(Prepare::new(SampleRate(RATE), MaxBlock::of(Samples(512))));
     ed.commit().expect("commits");
     let engine = Engine::new(&transport, &mut ed, exec).expect("within limits");
     Box::leak(Box::new((ed, transport)));

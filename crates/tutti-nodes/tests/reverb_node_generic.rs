@@ -12,6 +12,7 @@ use tutti_graph::contract::{Driven, assert_honest_tail, drive_input, prepared};
 use tutti_graph::{Env, PlayClock, Status, Transport, TransportChanges};
 use tutti_graph::{Node, ParamNode, Prepare, Solo};
 use tutti_nodes::{ControlSet, DesignNode, NodeDesign};
+use tutti_types::MaxBlock;
 use tutti_types::{BusTopology, Frame, Mix, SampleRate, Samples, Seconds, UnitAddr, UnitParam};
 
 const SR: SampleRate = SampleRate(48_000.0);
@@ -332,7 +333,7 @@ fn the_graphs_mix_is_aligned_to_the_kernels_latency() {
             },
             (),
         ),
-        Prepare::new(SR, Samples(BLOCK)),
+        Prepare::new(SR, MaxBlock::of(Samples(BLOCK))),
     );
     let key = solo.key();
     solo.renderer_mut()

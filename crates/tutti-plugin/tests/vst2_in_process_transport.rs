@@ -17,6 +17,7 @@
 use std::sync::{Mutex, MutexGuard};
 use tutti_fixtures::main_thread;
 use tutti_plugin_types::Load;
+use tutti_types::MaxBlock;
 use tutti_vst2_host::Vst2Loaded;
 
 use tutti_graph::contract::Latent;
@@ -150,7 +151,10 @@ fn rig<N: IntoNode>(node: N, arrival: usize) -> (Renderer, N::Controls) {
     }
     g.pipe_output(key);
     let r = g
-        .renderer(Prepare::new(SampleRate(SAMPLE_RATE), Samples(BLOCK)))
+        .renderer(Prepare::new(
+            SampleRate(SAMPLE_RATE),
+            MaxBlock::of(Samples(BLOCK)),
+        ))
         .expect("the graph compiles");
     (r, controls)
 }

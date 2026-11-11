@@ -51,7 +51,7 @@ let synth = PolySynth::new(SynthConfig {
 
 // Into the graph: no audio input, stereo out, one MIDI event input (wire a
 // clip or a keyboard's queue node to it with `GraphSpec::connect_events`).
-let (mut editor, _executor) = Editor::new(Prepare::new(SampleRate(48_000.0), Samples(512)));
+let (mut editor, _executor) = Editor::new(Prepare::new(SampleRate(48_000.0), MaxBlock::of(Samples(512))));
 let synth_key = NodeKey(1);
 let params = editor.insert(synth_key, "synth", synth);
 editor.spec_mut().topology.set_outputs((0..2)

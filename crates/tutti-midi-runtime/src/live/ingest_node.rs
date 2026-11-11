@@ -194,7 +194,7 @@ const PORTS_PER_GROUP: usize = MIDI_INPUT_PORTS;
 /// use tutti_graph::{Editor, Prepare};
 /// use tutti_midi_runtime::MidiIngestNode;
 ///
-/// let (mut editor, _exec) = Editor::new(Prepare::new(SampleRate(48_000.0), Samples(512)));
+/// let (mut editor, _exec) = Editor::new(Prepare::new(SampleRate(48_000.0), MaxBlock::of(Samples(512))));
 /// // Four device slots, none wired yet.
 /// let controls = editor.insert(NodeKey(1), "midi in", MidiIngestNode::new(4));
 /// assert_eq!(controls.pending_mpe_mode(), None);

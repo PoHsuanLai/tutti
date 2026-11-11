@@ -18,6 +18,7 @@
 mod common;
 
 use std::collections::{BTreeMap, VecDeque};
+use tutti_types::MaxBlock;
 
 use common::prepare;
 use tutti_graph::NodeKey;
@@ -156,7 +157,7 @@ impl Rig {
     /// Re-prepares both at `rate`, with no block between the two commits.
     /// The ring is cleared: frames at the old rate name nothing at the new.
     fn reprepare(&mut self, rate: SampleRate) {
-        let p = Prepare::new(rate, Samples(MAX));
+        let p = Prepare::new(rate, MaxBlock::of(Samples(MAX)));
         self.ed.reprepare(p).expect("reprepares");
         self.exec.apply_pending(); // checks the units out
         self.ed.collect(); // re-prepares them, sends them back

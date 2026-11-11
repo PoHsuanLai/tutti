@@ -4,6 +4,7 @@
 //! pool every event leaves on the frame the serial walk sends it on.
 
 use std::sync::{Arc, Mutex};
+use tutti_types::MaxBlock;
 
 use tutti_fixtures::midi::note_on;
 
@@ -102,7 +103,10 @@ fn connect(ed: &mut Editor, from: NodeKey, to: NodeKey) {
 /// `declared`: the clips as shipped, or wrapped to declare nothing. The
 /// taps' sinks and the recorders' logs.
 fn graph(workers: usize, declared: bool) -> (Executor, Vec<common::Sink>, Vec<Seen>) {
-    let (mut ed, mut exec) = Editor::new(Prepare::new(SampleRate(SR), Samples(MAX_BLOCK)));
+    let (mut ed, mut exec) = Editor::new(Prepare::new(
+        SampleRate(SR),
+        MaxBlock::of(Samples(MAX_BLOCK)),
+    ));
     if workers > 1 {
         exec.set_pool(Some(Arc::new(
             WorkerPool::builder()

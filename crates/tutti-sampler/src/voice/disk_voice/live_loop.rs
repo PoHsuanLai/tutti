@@ -21,6 +21,7 @@
 
 use std::path::Path;
 use std::sync::Arc;
+use tutti_types::MaxBlock;
 
 use tutti_graph::{Node, Offset, Prepare, TransportChanges};
 use tutti_types::{Beat, Bpm, PlaybackRate, SamplePosition, SampleRate, Samples};
@@ -170,7 +171,7 @@ impl Live {
         }
         let clock = MockTransport::rolling(Beat::new(setup.beat), Bpm::of(120.0));
         let mut voice = DiskVoice::from_reader(reader, Beat(0.0), None);
-        voice.prepare(&Prepare::new(SampleRate(SR), Samples(BLOCK)));
+        voice.prepare(&Prepare::new(SampleRate(SR), MaxBlock::of(Samples(BLOCK))));
         voice.set_speed(PlaybackRate::new(setup.speed));
         Self {
             streamer,
@@ -254,7 +255,7 @@ impl Memory {
         let mut source = MemorySource::placed(wave, Beat(0.0), None).expect("a placeable wave");
         source.set_speed(PlaybackRate::new(speed));
         source.set_loop_setting(loop_);
-        source.prepare(&Prepare::new(SampleRate(SR), Samples(BLOCK)));
+        source.prepare(&Prepare::new(SampleRate(SR), MaxBlock::of(Samples(BLOCK))));
         Self { source, clock }
     }
 
@@ -771,7 +772,7 @@ fn a_fork_after_a_loop_edit_renders_the_edited_loop() {
 
     let clock = MockTransport::rolling(Beat::new(0.0), Bpm::of(120.0));
     let mut fork = live.voice.fork_copy();
-    fork.prepare(&Prepare::new(SampleRate(SR), Samples(BLOCK)));
+    fork.prepare(&Prepare::new(SampleRate(SR), MaxBlock::of(Samples(BLOCK))));
     let mut forked = Vec::new();
     for _ in 0..81 + 150 {
         forked.extend(block(&mut fork, &clock, SampleRate::new(SR), BLOCK).swap_remove(0));
@@ -1003,7 +1004,7 @@ fn pool_with(
     stream: Stream,
 ) -> (crate::VoicePool, crate::VoicePoolHandle) {
     let (mut pool, handle) = crate::VoicePool::new().with_handle();
-    pool.prepare(&Prepare::new(SampleRate(SR), Samples(BLOCK)));
+    pool.prepare(&Prepare::new(SampleRate(SR), MaxBlock::of(Samples(BLOCK))));
     handle
         .add_streaming(
             id,

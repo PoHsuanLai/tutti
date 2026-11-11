@@ -17,7 +17,7 @@
 //! use tutti_session::Session;
 //!
 //! let mut s = Session::builder()
-//!     .build_offline(SampleRate(48_000.0), ChannelLayout::MONO, Samples(512))
+//!     .build_offline(SampleRate(48_000.0), ChannelLayout::MONO, MaxBlock::of(Samples(512)))
 //!     .unwrap();
 //! let (osc, _) = s.graph().add(ForkByClone(Osc::sine(Hz(1_000.0))));
 //! s.graph().set_outputs_from(osc);

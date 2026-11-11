@@ -15,7 +15,7 @@ use tutti_nodes::testing::Osc;
 use tutti_session::{
     Backoff, DevicePolicy, DeviceRestart, GraphSource, Phase, PhaseCx, Session, SessionEvent,
 };
-use tutti_types::{ChannelLayout, Db, Hz, SampleRate, Samples};
+use tutti_types::{ChannelLayout, Db, Hz, MaxBlock, SampleRate, Samples};
 
 fn spec_at(rate: f64) -> OutputSpec {
     OutputSpec::new(
@@ -455,13 +455,13 @@ fn a_refused_restart_keeps_the_old_spec_and_is_retried_later() {
     fake.show(&["A", "B"], Some("B"));
     assert_eq!(wants(&poll(&mut session, base, 100)).len(), 1);
 
-    // The restart is refused (a zero max block), before the stream stops.
+    // The restart is refused (a block past the engine's capacity), before the stream stops.
     let (driver, _s) = ManualStreamDriver::new();
     let err = session.restart_on(
         &mut device,
         spec_at(96_000.0),
         driver,
-        Some(Samples(0)),
+        Some(MaxBlock::of(Samples(16_384))),
         |_| {},
     );
     assert!(err.is_err());

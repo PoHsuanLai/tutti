@@ -141,7 +141,7 @@ impl GraphUnit {
         let renderer = g
             .renderer(tutti_graph::Prepare::new(
                 tutti_types::SampleRate(SAMPLE_RATE),
-                tutti_types::Samples(BLOCK),
+                tutti_types::MaxBlock::of(tutti_types::Samples(BLOCK)),
             ))
             .expect("a one-plugin graph compiles");
         #[cfg(not(any(feature = "vst3", feature = "au")))]

@@ -33,7 +33,7 @@ use crate::reverb::DesignNode;
 /// use tutti_types::{SampleRate, Samples};
 ///
 /// let filter = SvfFilterNode::<f32>::new(SvfType::LowPass, Hz(800.0), Q(0.707));
-/// let mut solo = Solo::new(filter, Prepare::new(SampleRate(48_000.0), Samples(64)));
+/// let mut solo = Solo::new(filter, Prepare::new(SampleRate(48_000.0), MaxBlock::of(Samples(64))));
 /// let out = solo.render_input(&[&[1.0; 64]]);
 /// assert_eq!(out.len(), 1);
 ///

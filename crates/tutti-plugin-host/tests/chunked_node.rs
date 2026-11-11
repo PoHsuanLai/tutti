@@ -13,6 +13,7 @@ use std::num::NonZeroUsize;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
+use tutti_types::MaxBlock;
 
 use assert_no_alloc::AllocDisabler;
 use tutti_fixtures::main_thread;
@@ -726,7 +727,7 @@ fn a_chunked_processors_lost_midi_reaches_the_graphs_event_losses() {
     let (client, _handle): (InProcClient<Rec>, _) =
         load_client::<Rec>(&main_thread(), Path::new("rec"), &Load::new(), SR)
             .expect("the recording plugin loads");
-    let (mut editor, mut exec) = Editor::new(Prepare::new(SR, Samples(100)));
+    let (mut editor, mut exec) = Editor::new(Prepare::new(SR, MaxBlock::of(Samples(100))));
     let key = NodeKey(1);
     editor.insert(key, "rec", client.bind(tempo(None)));
     editor.commit().expect("commits");

@@ -19,7 +19,7 @@ use tutti_nodes::LimiterNode;
 use tutti_nodes::testing::{Osc, Through};
 use tutti_session::{Crossfade, Error, GraphSource, Session};
 use tutti_transport::MotionEvent;
-use tutti_types::{At, ChannelLayout, Db, Frame, Hz, SampleRate, Samples, Seconds};
+use tutti_types::{At, ChannelLayout, Db, Frame, Hz, MaxBlock, SampleRate, Samples, Seconds};
 
 const OLD: f64 = 44_100.0;
 const NEW: f64 = 48_000.0;
@@ -226,7 +226,7 @@ fn a_restart_past_the_block_capacity_is_refused_and_keeps_playing() {
             &mut device,
             spec_at(NEW),
             driver,
-            Some(Samples(16_384)),
+            Some(MaxBlock::of(Samples(16_384))),
             |_| {},
         )
         .expect_err("past the capacity");
@@ -252,7 +252,7 @@ fn a_restart_past_the_block_capacity_is_refused_and_keeps_playing() {
         &mut device,
         spec_with(NEW, 6),
         driver,
-        Some(Samples(2_048)),
+        Some(MaxBlock::of(Samples(2_048))),
         |_| {},
     )
     .expect("at a block the engine holds");

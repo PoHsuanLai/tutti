@@ -114,7 +114,7 @@ struct Pending {
 /// g.pipe_output(src); // mono → both channels
 ///
 /// let mut r = g
-///     .renderer(Prepare::new(SampleRate(48_000.0), Samples(64)))
+///     .renderer(Prepare::new(SampleRate(48_000.0), MaxBlock::of(Samples(64))))
 ///     .expect("builds");
 /// let out = r.render(100); // two 64-frame blocks, the second short
 /// assert_eq!(out.len(), 2);
@@ -149,7 +149,7 @@ struct Pending {
 /// g.connect(half, 0, gain, 0).connect_output(gain, 0, 1); // right = 2 × input
 ///
 /// let mut r = g
-///     .renderer(Prepare::new(SampleRate(48_000.0), Samples(64)))
+///     .renderer(Prepare::new(SampleRate(48_000.0), MaxBlock::of(Samples(64))))
 ///     .expect("builds");
 /// let out = r.render_input(&[&[1.0; 10]]);
 /// assert_eq!(out, vec![vec![0.5; 10], vec![2.0; 10]]);
@@ -750,7 +750,7 @@ type TransportFn = Box<dyn FnMut(Frame) -> Transport + Send>;
 /// g.chain(ForkByClone(Gain(1.0)));
 ///
 /// let mut r = g
-///     .renderer(Prepare::new(SampleRate(48_000.0), Samples(256)))
+///     .renderer(Prepare::new(SampleRate(48_000.0), MaxBlock::of(Samples(256))))
 ///     .expect("builds");
 /// r.set_block(Samples(200));
 /// let input: Vec<f32> = (0..500).map(|i| i as f32).collect();
@@ -992,7 +992,7 @@ impl Renderer {
 /// #     }
 /// #     fn reset(&mut self) {}
 /// # }
-/// let mut solo = Solo::new(ForkByClone(Half), Prepare::new(SampleRate(48_000.0), Samples(64)));
+/// let mut solo = Solo::new(ForkByClone(Half), Prepare::new(SampleRate(48_000.0), MaxBlock::of(Samples(64))));
 /// assert_eq!(solo.render_input(&[&[1.0; 3]]), vec![vec![0.5; 3]]);
 /// ```
 #[derive(Debug)]

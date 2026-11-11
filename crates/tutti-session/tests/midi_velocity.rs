@@ -12,6 +12,7 @@
 //! the assertion fails.
 
 use std::sync::{Arc, Mutex};
+use tutti_types::MaxBlock;
 
 use tutti_fixtures::midi::{note_off, note_on};
 use tutti_graph::{Cx, EventKind, IntoNode, Io, Node, NodeParts, Prepare, Shape, Status};
@@ -72,7 +73,11 @@ fn note(number: u8, velocity: u16) -> [TimedMidiEvent; 2] {
 #[test]
 fn velocity_keeps_its_full_width() {
     let mut s = Session::builder()
-        .build_offline(SampleRate(48_000.0), ChannelLayout::STEREO, Samples(1_024))
+        .build_offline(
+            SampleRate(48_000.0),
+            ChannelLayout::STEREO,
+            MaxBlock::of(Samples(1_024)),
+        )
         .expect("builds");
     let seen = Seen::default();
     let (tap, ()) = s.graph().add(Tap(Arc::clone(&seen)));

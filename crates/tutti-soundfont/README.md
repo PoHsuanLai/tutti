@@ -54,7 +54,7 @@ unit.program_change(MidiChannel::FIRST, U7::of(0)); // channel 0 → program 0
 // clip or a keyboard's queue node to it with `GraphSpec::connect_events`).
 // The graph runs at 48 kHz, so `prepare` rebuilds the synthesizer at 48 kHz,
 // keeping the preset.
-let (mut editor, _executor) = Editor::new(Prepare::new(SampleRate(48_000.0), Samples(512)));
+let (mut editor, _executor) = Editor::new(Prepare::new(SampleRate(48_000.0), MaxBlock::of(Samples(512))));
 let key = NodeKey(1);
 editor.insert(key, "piano", unit);
 editor.spec_mut().topology.set_outputs((0..2)

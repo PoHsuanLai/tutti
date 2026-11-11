@@ -17,6 +17,7 @@
 //! (`two_rules_on_one_target_take_the_union`).
 
 use std::collections::BTreeSet;
+use tutti_types::MaxBlock;
 
 use tutti_graph::NodeKey;
 use tutti_graph::{Cx, ForkByClone, Io, Node, Prepare, Shape, Status};
@@ -42,7 +43,11 @@ impl Node for Sink {
 
 fn session() -> (Session, NodeKey) {
     let mut s = Session::builder()
-        .build_offline(SampleRate(48_000.0), ChannelLayout::STEREO, Samples(1_024))
+        .build_offline(
+            SampleRate(48_000.0),
+            ChannelLayout::STEREO,
+            MaxBlock::of(Samples(1_024)),
+        )
         .expect("builds");
     let input = s.midi_nodes().expect("the builder's MIDI nodes").input;
     s.update();

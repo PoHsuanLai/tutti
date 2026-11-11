@@ -19,6 +19,7 @@
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+use tutti_types::MaxBlock;
 
 use assert_no_alloc::AllocDisabler;
 use tutti_fixtures::midi::{noop, note_on};
@@ -88,7 +89,8 @@ impl Rig {
     /// `inputs`' ports must be opened first: their inlets are added here.
     fn new(inputs: &HardwareMidiInputs) -> Self {
         let inlets = inputs.inlets();
-        let (mut editor, exec) = Editor::new(Prepare::new(SampleRate(RATE), Samples(1024)));
+        let (mut editor, exec) =
+            Editor::new(Prepare::new(SampleRate(RATE), MaxBlock::of(Samples(1024))));
         editor.insert(INGEST, "in", MidiIngestNode::new(inlets.slots()));
         for change in inlets.take_changes() {
             if let InletChange::Attach { slot, node } = change {

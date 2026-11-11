@@ -13,6 +13,7 @@
 mod common;
 
 use std::sync::Arc;
+use tutti_types::MaxBlock;
 
 use common::{Kind, TestNode, WORKERS, bits, test_pool};
 use tutti_graph::NodeKey;
@@ -323,7 +324,7 @@ fn build(ed: &mut Editor) {
 }
 
 fn prepare(max: usize) -> Prepare {
-    Prepare::new(SampleRate(48_000.0), Samples(max))
+    Prepare::new(SampleRate(48_000.0), MaxBlock::of(Samples(max)))
 }
 
 /// The block schedules: one frame, odd lengths, the maximum, and a ragged

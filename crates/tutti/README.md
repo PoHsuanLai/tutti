@@ -36,7 +36,7 @@ g.pipe_output(tone);
 // Building prepares every node at the render's rate and largest block. The
 // editor stays on the control thread; the executor goes to the engine.
 let (mut editor, executor) = g
-    .build(Prepare::new(SampleRate(48_000.0), Samples(256)))
+    .build(Prepare::new(SampleRate(48_000.0), MaxBlock::of(Samples(256))))
     .expect("the graph compiles");
 
 let transport = Transport::new(SampleRate(48_000.0));

@@ -1,6 +1,7 @@
 use super::*;
 use crate::testing::MockTransport;
 use tutti_types::Bpm;
+use tutti_types::MaxBlock;
 use tutti_types::Seconds;
 
 fn ramp_wave(len: usize, sample_rate: f64) -> Arc<Wave> {
@@ -1094,7 +1095,10 @@ fn prepare_updates_src_ratio() {
     let wave = ramp_wave(100, 48000.0);
     let mut sampler = MemorySource::new(wave).expect("a placeable wave");
 
-    sampler.prepare(&Prepare::new(SampleRate(24000.0), Samples(64)));
+    sampler.prepare(&Prepare::new(
+        SampleRate(24000.0),
+        MaxBlock::of(Samples(64)),
+    ));
 
     let mut out = [0.0f32; 2];
     frame_into(&mut sampler, None, &mut out);
@@ -1280,7 +1284,7 @@ fn a_gain_change_reaches_the_rendering_node() {
     let wave = ramp_wave(64, 44_100.0);
     let mut solo = Solo::new(
         MemorySource::with_channels(wave, 1u16).expect("a placeable wave"),
-        Prepare::new(SampleRate(SR), Samples(64)),
+        Prepare::new(SampleRate(SR), MaxBlock::of(Samples(64))),
     );
     assert!(solo.controls().set(UnitParam::Volume, 0.25));
     let out = solo.render(1);
@@ -1391,7 +1395,7 @@ fn a_mono_wave_goes_to_the_centre_of_a_node_that_has_one() {
         )
         .expect("a placeable wave")
         .placed_at(VoiceWindow::default());
-        lanes.prepare(&Prepare::new(SampleRate(SR), Samples(64)));
+        lanes.prepare(&Prepare::new(SampleRate(SR), MaxBlock::of(Samples(64))));
         assert!(lanes.gather.frames() >= 8, "the lane path is reachable");
         let free = planes(&mut free, None, 8);
         let placed = planes(&mut placed, Some(&transport), 8);

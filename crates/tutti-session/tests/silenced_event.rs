@@ -6,6 +6,7 @@
 //! the render calls the test makes.
 
 use std::time::Duration;
+use tutti_types::MaxBlock;
 
 use tutti_graph::{Cx, ForkByClone, Io, Node, Prepare, Shape, Status};
 use tutti_session::{GraphSource, Session, SessionEvent};
@@ -15,7 +16,11 @@ const RATE: f64 = 48_000.0;
 
 fn offline() -> Session {
     Session::builder()
-        .build_offline(SampleRate(RATE), ChannelLayout::STEREO, Samples(1_024))
+        .build_offline(
+            SampleRate(RATE),
+            ChannelLayout::STEREO,
+            MaxBlock::of(Samples(1_024)),
+        )
         .expect("builds")
 }
 

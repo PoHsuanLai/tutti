@@ -7,6 +7,7 @@
 //! 1 000 frames at 48 kHz.
 
 use std::sync::{Arc, Mutex};
+use tutti_types::MaxBlock;
 
 use tutti_fixtures::midi;
 use tutti_graph::{TapAlign, UmpAt};
@@ -39,7 +40,11 @@ impl Wire {
 /// A session with its clock enabled and a stamping-off output on `wire`.
 fn rig(wire: &Wire) -> Session {
     let mut s = Session::builder()
-        .build_offline(SampleRate(RATE), ChannelLayout::STEREO, Samples(1_024))
+        .build_offline(
+            SampleRate(RATE),
+            ChannelLayout::STEREO,
+            MaxBlock::of(Samples(1_024)),
+        )
         .expect("builds");
     s.update();
     s.midi_nodes().unwrap().clock_master.set_enabled(true);

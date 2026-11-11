@@ -7,6 +7,7 @@
 
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
+use tutti_types::MaxBlock;
 
 use tutti_fixtures::midi;
 use tutti_graph::NodeKey;
@@ -83,7 +84,7 @@ struct Drive {
 /// lane on its port when given (wired before the first block, so it drives
 /// the port from frame 0: a unit's first block is not declicked).
 fn render(synth: PolySynth, drive: Option<Drive>) -> [Vec<f32>; 2] {
-    let (mut ed, exec) = Editor::new(Prepare::new(SampleRate(RATE), Samples(BLOCK)));
+    let (mut ed, exec) = Editor::new(Prepare::new(SampleRate(RATE), MaxBlock::of(Samples(BLOCK))));
     let note = TimedMidiEvent::new(
         Beat(0.0),
         midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0xFFFF),

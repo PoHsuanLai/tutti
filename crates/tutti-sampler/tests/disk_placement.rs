@@ -15,6 +15,7 @@
 //! order (`ChannelTopology::smpte`), not from the placement under test.
 
 use std::path::Path;
+use tutti_types::MaxBlock;
 
 use tutti_graph::contract;
 use tutti_sampler::testing::{MockTransport, settle};
@@ -285,7 +286,7 @@ fn a_fork_places_the_file_as_the_live_voice_does() {
         .fork(ForkMode::Offline)
         .expect("forks");
     let mut node = forked.node;
-    node.prepare(&Prepare::new(SampleRate(SR), Samples(BLOCK)));
+    node.prepare(&Prepare::new(SampleRate(SR), MaxBlock::of(Samples(BLOCK))));
     let clock = MockTransport::rolling(Beat::new(0.0), Bpm::of(120.0));
     let env = clock.env(BLOCK, SampleRate::new(SR));
     let out = contract::drive_input(&mut *node, &env, &[], &[], &[]).audio;
@@ -493,7 +494,7 @@ fn fork(voice: &DiskVoice) -> Box<dyn tutti_graph::Node> {
     let mut node = fork_unprepared(voice);
     node.prepare(&tutti_graph::Prepare::new(
         SampleRate(SR),
-        tutti_types::Samples(BLOCK),
+        tutti_types::MaxBlock::of(tutti_types::Samples(BLOCK)),
     ));
     node
 }

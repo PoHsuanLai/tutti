@@ -31,6 +31,7 @@
 //! Each test names the mutation that fails it.
 
 use std::sync::Arc;
+use tutti_types::MaxBlock;
 
 use tutti_codec::Wave;
 use tutti_engine::Engine;
@@ -114,7 +115,10 @@ fn render(
         wave.push_frame(&[i as f32 / SCALE]);
     }
     let wave = Arc::new(wave);
-    let (mut ed, exec) = Editor::new(Prepare::new(SampleRate(SR), Samples(MAX_BLOCK)));
+    let (mut ed, exec) = Editor::new(Prepare::new(
+        SampleRate(SR),
+        MaxBlock::of(Samples(MAX_BLOCK)),
+    ));
     match voice {
         Some((start, duration)) => {
             let source = MemorySource::placed(wave, Beat(start), duration.map(BeatDuration::new))

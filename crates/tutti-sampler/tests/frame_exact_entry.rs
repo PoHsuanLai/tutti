@@ -43,6 +43,7 @@
 //!   mutation passes.)
 
 use std::sync::{Arc, Mutex};
+use tutti_types::MaxBlock;
 
 use tutti_codec::Wave;
 use tutti_engine::Engine;
@@ -135,7 +136,7 @@ fn play(engine: &Engine, t: &Transport) -> Vec<f32> {
 
 /// The pool on the outputs, and a probe beside it.
 fn graph_with(pool: VoicePool, probe: Arc<Mutex<Option<Beat>>>) -> (Editor, tutti_graph::Executor) {
-    let (mut ed, exec) = Editor::new(Prepare::new(SampleRate(SR), Samples(1024)));
+    let (mut ed, exec) = Editor::new(Prepare::new(SampleRate(SR), MaxBlock::of(Samples(1024))));
     ed.insert(NodeKey(1), "voice", pool);
     ed.insert(NodeKey(2), "probe", tutti_graph::Unforkable(Probe(probe)));
     ed.spec_mut().topology.set_outputs((0..2).map(|port| {

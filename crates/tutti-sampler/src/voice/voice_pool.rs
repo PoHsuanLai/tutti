@@ -17,6 +17,7 @@ use crossbeam_channel::bounded;
 use std::sync::Arc;
 use tutti_codec::Wave;
 use tutti_graph::{IntoNode, Node, NodeParts, Prepare};
+use tutti_types::MaxBlock;
 use tutti_types::SampleRate;
 use tutti_types::{Amplitude, Beat, Cents, ChannelLayout, SamplePosition, Seconds, StretchFactor};
 
@@ -57,7 +58,7 @@ fn fork_of(source: &dyn tutti_graph::ForkSource, rate: f64) -> Box<dyn Node> {
         .fork(tutti_graph::ForkMode::Live)
         .expect("a memory voice forks")
         .node;
-    node.prepare(&Prepare::new(SampleRate(rate), Samples(64)));
+    node.prepare(&Prepare::new(SampleRate(rate), MaxBlock::of(Samples(64))));
     node
 }
 
@@ -118,7 +119,7 @@ fn resetting_a_fork_leaves_the_live_voice_playing() {
     );
     assert!(node.slot.stretch.is_some(), "vacuous without a filter");
     let (mut live, source) = live_and_fork(node);
-    live.prepare(&Prepare::new(SampleRate(SR), Samples(64)));
+    live.prepare(&Prepare::new(SampleRate(SR), MaxBlock::of(Samples(64))));
 
     // Build real vocoder history. The playhead must ADVANCE: a placed
     // source derives its position from the transport every tick, so a frozen
@@ -197,8 +198,8 @@ fn a_standalone_voices_fork_shares_no_stretch_state() {
         "test is vacuous unless a filter is resident"
     );
     let (mut live, source) = live_and_fork(live);
-    live.prepare(&Prepare::new(SampleRate(SR), Samples(64)));
-    twin.prepare(&Prepare::new(SampleRate(SR), Samples(64)));
+    live.prepare(&Prepare::new(SampleRate(SR), MaxBlock::of(Samples(64))));
+    twin.prepare(&Prepare::new(SampleRate(SR), MaxBlock::of(Samples(64))));
     let mut out = [0.0f32; 1];
     let mut out_twin = [0.0f32; 1];
     for _ in 0..4096 {
@@ -259,12 +260,15 @@ fn a_pools_fork_shares_nothing_with_the_live_pool() {
         fork,
     } = pool.into_parts();
     let source = fork.expect("a pool forks");
-    live.prepare(&Prepare::new(SampleRate(SR), Samples(64)));
+    live.prepare(&Prepare::new(SampleRate(SR), MaxBlock::of(Samples(64))));
     let mut fork = source
         .fork(tutti_graph::ForkMode::Live)
         .expect("a pool forks")
         .node;
-    fork.prepare(&Prepare::new(SampleRate(96_000.0), Samples(64)));
+    fork.prepare(&Prepare::new(
+        SampleRate(96_000.0),
+        MaxBlock::of(Samples(64)),
+    ));
     assert_eq!(
         handle.rate.load(),
         SampleRate(SR),
@@ -597,7 +601,7 @@ fn a_stretched_placed_voice_holds_its_pitch_across_blocks() {
             })
             .expect("the command queue has room in a test");
 
-        pool.prepare(&Prepare::new(SampleRate(SR), Samples(BLOCK)));
+        pool.prepare(&Prepare::new(SampleRate(SR), MaxBlock::of(Samples(BLOCK))));
         let mut out = Vec::with_capacity(BLOCK * BLOCKS);
         for _ in 0..BLOCKS {
             out.extend(run(&mut pool, &transport, SR, BLOCK).swap_remove(0));
@@ -644,7 +648,10 @@ fn a_voice_node_reads_a_wave_at_another_rate_at_any_block_length() {
                 },
                 1u16,
             );
-            node.prepare(&Prepare::new(SampleRate(48_000.0), Samples(64)));
+            node.prepare(&Prepare::new(
+                SampleRate(48_000.0),
+                MaxBlock::of(Samples(64)),
+            ));
             let len = if via_tick { 1 } else { 64 };
             let out =
                 crate::testing::play(&mut node, &transport, SampleRate::new(48_000.0), 512, len)
@@ -1320,7 +1327,7 @@ fn a_voices_fork_keeps_its_window_and_reads_the_renders_transport() {
         other => panic!("expected a Memory source, got {other:?}"),
     }
     let mut node = VoiceNode::with_channels(fork, 1u16);
-    node.prepare(&Prepare::new(SampleRate(SR), Samples(64)));
+    node.prepare(&Prepare::new(SampleRate(SR), MaxBlock::of(Samples(64))));
     let at = |beat: f64| MockTransport::rolling(Beat::new(beat), Bpm::of(120.0));
     assert!(
         run(&mut node, &at(1.0), SR, 8)[0].iter().all(|&s| s == 0.0),

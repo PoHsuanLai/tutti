@@ -22,6 +22,7 @@
 use std::sync::{Arc, Mutex, MutexGuard};
 use tutti_fixtures::main_thread;
 use tutti_plugin_types::Load;
+use tutti_types::MaxBlock;
 use tutti_vst2_host::Vst2Loaded;
 
 use tutti_graph::contract::Direct;
@@ -245,7 +246,7 @@ fn an_export_renders_an_edit_made_in_the_plugin_as_live_does() {
     let (plugin, controls) = g.add_with_controls(client);
     g.connect_events(lane, 0, plugin, 0);
     g.pipe_output(plugin);
-    let prepare = Prepare::new(SampleRate(SAMPLE_RATE), Samples(BLOCK));
+    let prepare = Prepare::new(SampleRate(SAMPLE_RATE), MaxBlock::of(Samples(BLOCK)));
     let mut live = g.renderer(prepare).expect("the graph compiles");
     live.set_transport(Transport::new(true, Bpm::of(120.0), Beat(0.0), None));
     let channel_0 = |out: &[Vec<f32>]| out[0].last().copied();

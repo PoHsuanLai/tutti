@@ -601,15 +601,11 @@ pub struct Prepare {
 
 impl Prepare {
     /// Prepares for `sample_rate`, with blocks of up to `max_block` frames.
-    ///
-    /// # Panics
-    ///
-    /// If `max_block` is zero.
     #[must_use]
-    pub fn new(sample_rate: SampleRate, max_block: Samples) -> Self {
+    pub const fn new(sample_rate: SampleRate, max_block: MaxBlock) -> Self {
         Self {
             sample_rate,
-            max_block: MaxBlock::new(max_block).expect("a block holds at least one frame"),
+            max_block,
             quantum: None,
         }
     }
@@ -1352,7 +1348,7 @@ pub trait Node: Send + 'static {
 ///     fn process(&mut self, _: &Cx<'_>, _: Io<'_>) -> Status { Status::Modified }
 ///     fn reset(&mut self) {}
 /// }
-/// let (mut editor, _exec) = Editor::new(Prepare::new(SampleRate(48_000.0), Samples(64)));
+/// let (mut editor, _exec) = Editor::new(Prepare::new(SampleRate(48_000.0), MaxBlock::of(Samples(64))));
 /// // Forkable or not? Unsaid, so refused: `Silence: IntoNode` is not satisfied.
 /// editor.insert(NodeKey(1), "silence", Silence);
 /// ```
@@ -1452,7 +1448,7 @@ mod tests {
     /// `None` and the two compare equal → fails.
     #[test]
     fn a_prepare_carries_the_device_quantum_it_is_given() {
-        let p = Prepare::new(SampleRate(48_000.0), Samples(1024));
+        let p = Prepare::new(SampleRate(48_000.0), MaxBlock::of(Samples(1024)));
         assert_eq!(p.quantum(), None);
         let q = p.with_quantum(Samples(480));
         assert_eq!(q.quantum(), Some(Samples(480)));
@@ -1468,7 +1464,7 @@ mod tests {
     /// the `should_panic` half fails.
     #[test]
     fn scratch_fits_every_prepared_block() {
-        let p = Prepare::new(SampleRate(48_000.0), Samples(100));
+        let p = Prepare::new(SampleRate(48_000.0), MaxBlock::of(Samples(100)));
         let mut s = Scratch::new(p.max_block(), 2);
         assert_eq!(s.channel(1, 100).len(), 100);
         assert_eq!(s.channel(0, 7).len(), 7);

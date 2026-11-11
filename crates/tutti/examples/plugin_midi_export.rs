@@ -35,6 +35,7 @@ mod support;
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use tutti_types::MaxBlock;
 
 use tutti::codec::{Format, Pcm};
 use tutti::export::{Produced, Written};
@@ -50,7 +51,11 @@ fn play(
     midi: &Path,
     master: impl FnOnce(Bounce) -> Bounce,
 ) -> Result<Produced, Box<dyn std::error::Error>> {
-    let mut s = Session::builder().build_offline(RATE, ChannelLayout::STEREO, Samples(512))?;
+    let mut s = Session::builder().build_offline(
+        RATE,
+        ChannelLayout::STEREO,
+        MaxBlock::of(Samples(512)),
+    )?;
 
     let job = s.plugin_load(PluginLoadRequest {
         id: PluginId::from_path(plugin),

@@ -5,6 +5,7 @@
 //! definition of a freeze, not from another reverb's render.
 
 use std::sync::Arc;
+use tutti_types::MaxBlock;
 
 use tutti_dsp::{Design, FdnControls, FdnDesign, System};
 use tutti_graph::contract::{Driven, assert_honest_tail, assert_param_fork, drive_input, prepared};
@@ -297,7 +298,7 @@ fn a_lane_driving_the_decay_changes_how_long_it_rings() {
         g.connect_input(0, n, 0).connect_output(n, 0, 0);
         g.connect_output(n, 1, 1);
         let mut r = g
-            .renderer(Prepare::new(SR, Samples(100)))
+            .renderer(Prepare::new(SR, MaxBlock::of(Samples(100))))
             .expect("the graph builds");
         let at = ParamIn {
             node: n,

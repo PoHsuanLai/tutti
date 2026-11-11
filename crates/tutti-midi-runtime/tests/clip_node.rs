@@ -8,6 +8,7 @@
 //! frames, so a frame is exact in beats.
 
 use std::sync::{Arc, Mutex};
+use tutti_types::MaxBlock;
 
 use tutti_fixtures::midi::{cc, key_of, note_off, note_on, pitch_bend};
 use tutti_graph::NodeKey;
@@ -68,7 +69,7 @@ fn rig(clip: MidiClipNode, max: usize) -> (Editor, Executor, MidiClipControls, S
 }
 
 fn rig_with<N: IntoNode>(clip: N, max: usize) -> (Editor, Executor, N::Controls, Seen) {
-    let (mut ed, exec) = Editor::new(Prepare::new(SampleRate(RATE), Samples(max)));
+    let (mut ed, exec) = Editor::new(Prepare::new(SampleRate(RATE), MaxBlock::of(Samples(max))));
     let controls = ed.insert(NodeKey(1), "clip", clip);
     let seen = Seen::default();
     ed.insert(NodeKey(2), "sink", Unforkable(Sink(Arc::clone(&seen))));

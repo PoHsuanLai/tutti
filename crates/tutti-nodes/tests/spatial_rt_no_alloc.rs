@@ -12,6 +12,7 @@ use tutti_nodes::VbapPannerNode;
 use tutti_nodes::testing::aim;
 use tutti_types::Azimuth;
 use tutti_types::Elevation;
+use tutti_types::MaxBlock;
 use tutti_types::SampleRate;
 
 #[global_allocator]
@@ -232,7 +233,10 @@ fn hrtf_binaural_same_rate_prepare_is_allocation_free() {
     let bytes = synthetic_hrir_sphere(48_000, 64);
     let mut node =
         HrtfBinauralNode::new(&bytes, SampleRate::new(48_000.0)).expect("synthetic sphere parses");
-    let prepare = Prepare::new(SampleRate(48_000.0), tutti_types::Samples(256));
+    let prepare = Prepare::new(
+        SampleRate(48_000.0),
+        tutti_types::MaxBlock::of(tutti_types::Samples(256)),
+    );
     assert_no_alloc::assert_no_alloc(|| node.prepare(&prepare));
 }
 
@@ -253,7 +257,10 @@ fn hrtf_binaural_resampled_set_in_split_blocks_is_allocation_free() {
     let mut node =
         HrtfBinauralNode::new(&bytes, SampleRate::new(48_000.0)).expect("synthetic sphere parses");
     aim(&node.param_set(), Azimuth::new(30.0), Elevation::new(0.0));
-    node.prepare(&Prepare::new(SampleRate(44_100.0), Samples(100)));
+    node.prepare(&Prepare::new(
+        SampleRate(44_100.0),
+        MaxBlock::of(Samples(100)),
+    ));
     // 64 taps at 48 kHz are ceil(64 * 44 100 / 48 000) = 59 at 44.1 kHz:
     // the set was resampled, not reused.
     assert_eq!(node.shape().tail, Tail::Finite(Samples(59 - 1)));

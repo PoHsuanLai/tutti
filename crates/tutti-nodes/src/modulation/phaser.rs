@@ -629,7 +629,12 @@ mod tests {
     /// leaves the top at 3600 Hz after the rate rises and fails.
     #[test]
     fn a_rising_rate_restores_the_authored_sweep_top() {
-        let prep = |sr: f64| Prepare::new(SampleRate(sr), tutti_types::Samples(64));
+        let prep = |sr: f64| {
+            Prepare::new(
+                SampleRate(sr),
+                tutti_types::MaxBlock::of(tutti_types::Samples(64)),
+            )
+        };
         let mut phaser = PhaserNode::new(4);
         phaser.prepare(&prep(8_000.0));
         assert_eq!(phaser.range.max_hz, Hz(3_600.0), "0.90 of a 4 kHz Nyquist");

@@ -67,7 +67,7 @@ use super::Curve;
 ///
 /// // No inputs, one output (the curve's value).
 /// let lane = AutomationLaneNode::new(trajectory);
-/// let mut solo = Solo::new(lane, Prepare::new(SampleRate(48_000.0), Samples(64)));
+/// let mut solo = Solo::new(lane, Prepare::new(SampleRate(48_000.0), MaxBlock::of(Samples(64))));
 /// solo.renderer_mut()
 ///     .set_transport(Transport::new(false, Bpm::of(120.0), Beat(2.0), None));
 /// let out = solo.render(1);
@@ -224,6 +224,7 @@ mod tests {
     use std::sync::atomic::Ordering;
     use tutti_curve::{Breakpoint, Trajectory};
     use tutti_graph::{Solo, Transport};
+    use tutti_types::MaxBlock;
     use tutti_types::{AtomicF32, Bpm, SampleRate, Samples};
 
     fn ramp_trajectory() -> Trajectory {
@@ -237,7 +238,10 @@ mod tests {
     /// `frames` of `lane` through a graph at 48 kHz in one block, the
     /// transport `transport` at the block's start.
     fn render(lane: AutomationLaneNode, transport: Transport, frames: usize) -> Vec<f32> {
-        let mut solo = Solo::new(lane, Prepare::new(SampleRate(48_000.0), Samples(frames)));
+        let mut solo = Solo::new(
+            lane,
+            Prepare::new(SampleRate(48_000.0), MaxBlock::of(Samples(frames))),
+        );
         solo.renderer_mut().set_transport(transport);
         solo.render(frames).remove(0)
     }

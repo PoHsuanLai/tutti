@@ -20,6 +20,7 @@
 mod support;
 
 use std::time::{Duration, Instant};
+use tutti_types::MaxBlock;
 
 use support::{clap_probe, plugin_server};
 use tutti_graph::{Cx, ForkByClone, Io, Node, NodeKey, Prepare, Shape, Status};
@@ -84,7 +85,7 @@ struct Rig {
 fn rig(mode: NodeMode) -> Rig {
     set_server();
     let mut s = Session::builder()
-        .build_offline(RATE, ChannelLayout::STEREO, Samples(BLOCK))
+        .build_offline(RATE, ChannelLayout::STEREO, MaxBlock::of(Samples(BLOCK)))
         .expect("an offline session builds");
     let plugin = s
         .add_plugin_blocking(

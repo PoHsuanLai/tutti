@@ -42,6 +42,7 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
+use tutti_types::MaxBlock;
 
 use proptest::prelude::*;
 use tutti_graph::NodeKey;
@@ -58,7 +59,7 @@ use tutti_types::{
 const RATE: SampleRate = SampleRate(48_000.0);
 
 fn prepare(max: usize) -> Prepare {
-    Prepare::new(RATE, Samples(max))
+    Prepare::new(RATE, MaxBlock::of(Samples(max)))
 }
 
 /// A base cell, as a node's `Param<U>` would hand it out.

@@ -6,6 +6,7 @@
 
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
+use tutti_types::MaxBlock;
 
 use tutti_fixtures::midi::note_on;
 use tutti_graph::{
@@ -86,7 +87,8 @@ impl Rig {
         let Some(InletChange::Attach { node, .. }) = inlets.take_changes().pop() else {
             panic!("an open queues its inlet");
         };
-        let (mut editor, exec) = Editor::new(Prepare::new(SampleRate(RATE), Samples(BLOCK)));
+        let (mut editor, exec) =
+            Editor::new(Prepare::new(SampleRate(RATE), MaxBlock::of(Samples(BLOCK))));
         let seen = Seen::default();
         editor.insert(NodeKey(1), "inlet", node);
         editor.insert(NodeKey(2), "sink", Unforkable(Sink(Arc::clone(&seen))));

@@ -7,6 +7,7 @@
 use tutti_graph::NodeKey;
 use tutti_graph::{CommitError, Cx, Editor, Io, Limits, Node, Prepare, Shape, Status, Unforkable};
 use tutti_graph::{OutPort, Source};
+use tutti_types::MaxBlock;
 use tutti_types::{ChannelLayout, SampleRate, Samples};
 
 struct Wide(u16);
@@ -23,7 +24,7 @@ impl Node for Wide {
 }
 
 fn prep(max: usize) -> Prepare {
-    Prepare::new(SampleRate(48_000.0), Samples(max))
+    Prepare::new(SampleRate(48_000.0), MaxBlock::of(Samples(max)))
 }
 
 fn wire(ed: &mut Editor, width: u16) {

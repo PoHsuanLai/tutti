@@ -17,6 +17,7 @@ mod support;
 
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
+use tutti_types::MaxBlock;
 
 use support::{clap_probe, plugin_server};
 use tutti_export::Produced;
@@ -64,7 +65,7 @@ fn session_built(
         set_env(key, value);
     }
     build(Session::builder())
-        .build_offline(RATE, ChannelLayout::STEREO, Samples(BLOCK))
+        .build_offline(RATE, ChannelLayout::STEREO, MaxBlock::of(Samples(BLOCK)))
         .expect("an offline session builds")
 }
 

@@ -48,7 +48,7 @@ pub const CLOCK_EVENT_CAPACITY: usize = 256;
 /// use tutti_graph::{Editor, Prepare};
 /// use tutti_midi_runtime::ClockNode;
 ///
-/// let (mut editor, _exec) = Editor::new(Prepare::new(SampleRate(48_000.0), Samples(512)));
+/// let (mut editor, _exec) = Editor::new(Prepare::new(SampleRate(48_000.0), MaxBlock::of(Samples(512))));
 /// let clock = editor.insert(NodeKey(1), "clock", ClockNode::new());
 /// clock.set_enabled(true);
 /// ```

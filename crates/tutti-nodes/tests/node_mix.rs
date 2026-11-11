@@ -24,6 +24,7 @@ use tutti_graph::{IntoNode, Prepare, Solo};
 use tutti_nodes::{
     CompressorNode, CrossoverNode, DelayLineNode, DesignNode, GateNode, ModDelayNode, PhaserNode,
 };
+use tutti_types::MaxBlock;
 use tutti_types::{
     ChannelLayout, CompressionRatio, Db, Feedback, Hz, Mix, SampleRate, Samples, Seconds,
 };
@@ -33,7 +34,7 @@ const BLOCK: usize = 64;
 const FRAMES: usize = 1_024;
 
 fn solo<N: IntoNode>(node: N) -> Solo<N::Controls> {
-    Solo::new(node, Prepare::new(RATE, Samples(BLOCK)))
+    Solo::new(node, Prepare::new(RATE, MaxBlock::of(Samples(BLOCK))))
 }
 
 fn set_mix<C>(solo: &mut Solo<C>, mix: Mix) {
@@ -116,7 +117,7 @@ fn check_io<N: IntoNode>(
     let wet = rendered(make, &x, Mix::WET);
     let (mut alone, _) = make().into_node();
     alone = {
-        alone.prepare(&Prepare::new(RATE, Samples(BLOCK)));
+        alone.prepare(&Prepare::new(RATE, MaxBlock::of(Samples(BLOCK))));
         alone
     };
     let input = after_silence(&x);

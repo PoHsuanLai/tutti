@@ -20,6 +20,7 @@
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use tutti_fixtures::Noise;
+use tutti_types::MaxBlock;
 
 use tutti_curve::Law;
 use tutti_graph::NodeKey;
@@ -112,7 +113,10 @@ fn render(node: NodeParts<()>, fed: Option<(UnitParam, f32)>) -> Vec<Vec<f32>> {
         g.connect_output(n, c, c);
     }
     let mut r = g
-        .renderer(Prepare::new(SampleRate(48_000.0), Samples(100)))
+        .renderer(Prepare::new(
+            SampleRate(48_000.0),
+            MaxBlock::of(Samples(100)),
+        ))
         .expect("builds");
     if let Some((param, v)) = fed {
         let at = ParamIn {
@@ -158,7 +162,10 @@ fn render_mix(node: NodeParts<()>, mix: MixIs) -> Vec<Vec<f32>> {
         g.spec_mut().set_mix(n, Mix::new(v));
     }
     let mut r = g
-        .renderer(Prepare::new(SampleRate(48_000.0), Samples(100)))
+        .renderer(Prepare::new(
+            SampleRate(48_000.0),
+            MaxBlock::of(Samples(100)),
+        ))
         .expect("builds");
     if let MixIs::Fed(v) = mix {
         let at = ParamIn {
@@ -905,7 +912,10 @@ fn an_authored_write_moves_the_base_under_modulation() {
     };
     g.spec_mut().set_param_range(at, ParamRange::new(0.0, 10.0));
     let mut r = g
-        .renderer(Prepare::new(SampleRate(48_000.0), Samples(100)))
+        .renderer(Prepare::new(
+            SampleRate(48_000.0),
+            MaxBlock::of(Samples(100)),
+        ))
         .expect("builds");
     drive(r.editor_mut(), at, Arc::clone(&cell), vec![konst(0.05)]);
     let x = noise(7);
@@ -945,7 +955,10 @@ fn a_crossed_range_is_survivable() {
     };
     g.spec_mut().set_param_range(at, ParamRange::new(4.0, 2.0));
     let mut r = g
-        .renderer(Prepare::new(SampleRate(48_000.0), Samples(100)))
+        .renderer(Prepare::new(
+            SampleRate(48_000.0),
+            MaxBlock::of(Samples(100)),
+        ))
         .expect("builds");
     drive(r.editor_mut(), at, Arc::new(AtomicF32::new(100.0)), vec![]);
     let out = r.render_input(&[&noise(7)]).remove(0);
@@ -966,7 +979,10 @@ fn an_unmodulated_param_adds_nothing_to_the_plan() {
     let (n, _) = g.add_with_controls(node);
     g.connect_input(0, n, 0).connect_output(n, 0, 0);
     let mut r: Renderer = g
-        .renderer(Prepare::new(SampleRate(48_000.0), Samples(100)))
+        .renderer(Prepare::new(
+            SampleRate(48_000.0),
+            MaxBlock::of(Samples(100)),
+        ))
         .expect("builds");
     // The lane is in the graph, unconnected, from the start.
     let lane = ControlLaneNode::for_unit(
@@ -1038,7 +1054,7 @@ fn a_fork_modulates_as_the_live_graph_does() {
     let mut g = GraphBuilder::new(ChannelLayout::MONO, ChannelLayout::MONO);
     let (n, _) = g.add_with_controls(node);
     g.connect_input(0, n, 0).connect_output(n, 0, 0);
-    let prepare = Prepare::new(SampleRate(48_000.0), Samples(100));
+    let prepare = Prepare::new(SampleRate(48_000.0), MaxBlock::of(Samples(100)));
     let (mut editor, _exec) = g.build(prepare).expect("builds");
     let at = ParamIn {
         node: n,

@@ -5,6 +5,7 @@
 //! on a pool is bit for bit the serial one.
 
 use std::sync::Arc;
+use tutti_types::MaxBlock;
 
 use tutti_fixtures::midi;
 use tutti_graph::NodeKey;
@@ -82,7 +83,10 @@ fn notes(k: u64) -> Vec<TimedMidiEvent> {
 /// on a pool of `workers` when more than one. `declared`: the eight-voice
 /// synths as shipped, or wrapped to declare nothing.
 fn graph(workers: usize, declared: bool) -> Executor {
-    let (mut ed, mut exec) = Editor::new(Prepare::new(SampleRate(SR), Samples(MAX_BLOCK)));
+    let (mut ed, mut exec) = Editor::new(Prepare::new(
+        SampleRate(SR),
+        MaxBlock::of(Samples(MAX_BLOCK)),
+    ));
     if workers > 1 {
         exec.set_pool(Some(Arc::new(
             WorkerPool::builder()

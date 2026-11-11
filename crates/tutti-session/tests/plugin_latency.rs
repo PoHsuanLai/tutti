@@ -19,6 +19,7 @@
 mod support;
 
 use std::time::Instant;
+use tutti_types::MaxBlock;
 
 use support::{clap_probe, plugin_server};
 use tutti_cpal::{ManualStreamDriver, OutputSpec};
@@ -48,7 +49,7 @@ fn main_thread() -> tutti_plugin_types::MainThread {
 fn offline() -> Session {
     set_server();
     Session::builder()
-        .build_offline(RATE, ChannelLayout::STEREO, Samples(BLOCK))
+        .build_offline(RATE, ChannelLayout::STEREO, MaxBlock::of(Samples(BLOCK)))
         .expect("an offline session builds")
 }
 

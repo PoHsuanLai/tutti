@@ -7,6 +7,7 @@
 //! weights, so the weighted fold `(0.0 + w * a) + b` is exact in `f32`.
 
 use std::sync::Arc;
+use tutti_types::MaxBlock;
 
 use tutti_graph::NodeKey;
 use tutti_nodes::testing::{Const, Through};
@@ -19,7 +20,11 @@ const BLOCK: usize = 64;
 
 fn offline() -> Session {
     Session::builder()
-        .build_offline(SampleRate(48_000.0), ChannelLayout::STEREO, Samples(1_024))
+        .build_offline(
+            SampleRate(48_000.0),
+            ChannelLayout::STEREO,
+            MaxBlock::of(Samples(1_024)),
+        )
         .expect("builds")
 }
 

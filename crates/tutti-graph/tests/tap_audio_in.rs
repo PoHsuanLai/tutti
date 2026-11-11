@@ -6,6 +6,7 @@ use tutti_graph::{
 };
 use tutti_graph::{NodeKey, TapAlign, TapId};
 use tutti_graph::{OutPort, Source as Origin};
+use tutti_types::MaxBlock;
 use tutti_types::{Beat, Bpm, ChannelLayout, Pull, SampleRate, Samples, Source};
 
 /// A stereo source that plays `frames` in order, then silence: the graph the
@@ -44,8 +45,10 @@ fn tap_with(frames: &[(f32, f32)]) -> TapReader {
 
 /// [`tap_with`], the rings holding `ring` frames.
 fn tap_with_ring(frames: &[(f32, f32)], ring: usize) -> TapReader {
-    let (mut ed, mut exec): (Editor, Executor) =
-        Editor::new(Prepare::new(SampleRate(48_000.0), Samples(BLOCK)));
+    let (mut ed, mut exec): (Editor, Executor) = Editor::new(Prepare::new(
+        SampleRate(48_000.0),
+        MaxBlock::of(Samples(BLOCK)),
+    ));
     ed.insert(
         NodeKey(1),
         "play",
@@ -169,8 +172,10 @@ fn a_tap_is_accepted_where_a_live_source_is_required() {
 /// and this fails.
 #[test]
 fn the_layout_follows_the_taps_width() {
-    let (mut ed, _exec): (Editor, Executor) =
-        Editor::new(Prepare::new(SampleRate(48_000.0), Samples(BLOCK)));
+    let (mut ed, _exec): (Editor, Executor) = Editor::new(Prepare::new(
+        SampleRate(48_000.0),
+        MaxBlock::of(Samples(BLOCK)),
+    ));
     for width in [1usize, 2, 6] {
         let reader = ed
             .open_tap(

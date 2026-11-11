@@ -14,6 +14,7 @@
 //! somewhere else.
 
 use std::sync::Arc;
+use tutti_types::MaxBlock;
 
 use tutti_codec::Wave;
 use tutti_graph::NodeKey;
@@ -50,7 +51,7 @@ fn voice() -> Voice {
 }
 
 fn prepare() -> Prepare {
-    Prepare::new(RATE, Samples(64))
+    Prepare::new(RATE, MaxBlock::of(Samples(64)))
 }
 
 /// `node` at key 1 on every output channel of a `width`-wide graph; its

@@ -38,6 +38,7 @@
 mod common;
 
 use std::collections::{BTreeMap, BTreeSet};
+use tutti_types::MaxBlock;
 
 use common::{Kind, Pair, bits, input_signal};
 use proptest::prelude::*;
@@ -1992,7 +1993,7 @@ proptest! {
                 (96_000.0, 64),
                 (48_000.0, MAX_BLOCK),
             ][to];
-            let p = tutti_graph::Prepare::new(tutti_types::SampleRate(rate), Samples(max));
+            let p = tutti_graph::Prepare::new(tutti_types::SampleRate(rate), MaxBlock::of(Samples(max)));
             let ports: Vec<EventIn> = desc
                 .kinds
                 .keys()

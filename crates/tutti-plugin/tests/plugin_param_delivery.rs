@@ -22,6 +22,7 @@ mod param_probe;
 
 use std::sync::Arc;
 use std::time::Duration;
+use tutti_types::MaxBlock;
 
 use clap_probe::{ProbeEnv, Rig, load_probe, render};
 use param_probe::{knob, knobs, load_vst2_probe, until};
@@ -56,7 +57,7 @@ fn read(handle: &PluginHandle, i: usize) -> Option<f32> {
 
 /// A rolling graph with the plugin fed by `lanes`.
 fn rig(client: tutti_plugin::handles::PluginClient, lanes: Vec<ControlLaneNode>) -> Rig {
-    let prepare = Prepare::new(SampleRate(SAMPLE_RATE), Samples(BLOCK));
+    let prepare = Prepare::new(SampleRate(SAMPLE_RATE), MaxBlock::of(Samples(BLOCK)));
     let mut rig = Rig::prepared_with(
         client.bind(
             tutti_transport::TempoReader::constant(tutti_types::Bpm::of(120.0)).expect("a tempo"),
@@ -234,7 +235,7 @@ fn an_export_renders_an_edit_made_in_the_plugin_as_live_does() {
         .gain_enabled(true);
     let probe = load_probe(SAMPLE_RATE);
     let held = knob(GAIN_ID, gain_at(-6.0));
-    let prepare = Prepare::new(SampleRate(SAMPLE_RATE), Samples(FORK_BLOCK));
+    let prepare = Prepare::new(SampleRate(SAMPLE_RATE), MaxBlock::of(Samples(FORK_BLOCK)));
     let mut live = Rig::prepared_with(
         probe.client.bind(
             tutti_transport::TempoReader::constant(tutti_types::Bpm::of(120.0)).expect("a tempo"),

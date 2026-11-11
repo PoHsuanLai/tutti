@@ -20,6 +20,7 @@
 //! bound on `max_voices` (only 0 is refused).
 
 use assert_no_alloc::AllocDisabler;
+use tutti_types::MaxBlock;
 mod support;
 
 use support::Hand;
@@ -530,7 +531,10 @@ fn a_clip_into_a_synth_is_allocation_free() {
         };
         TimedMidiEvent::new(Beat((i * 37) as f64 / 24_000.0), event)
     }));
-    let (mut ed, mut exec) = Editor::new(Prepare::new(SampleRate(48_000.0), Samples(BLOCK)));
+    let (mut ed, mut exec) = Editor::new(Prepare::new(
+        SampleRate(48_000.0),
+        MaxBlock::of(Samples(BLOCK)),
+    ));
     ed.insert(NodeKey(1), "clip", clip);
     ed.insert(
         NodeKey(2),

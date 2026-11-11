@@ -491,28 +491,12 @@ fn handle_get_parameter_value() {
 fn handle_open_editor_errors_for_missing_plugin() {
     // open_editor loads the plugin GUI in-process (not via IPC), so with
     // a bogus plugin path it must surface a structured error rather than panic.
-    use raw_window_handle::{
-        AppKitWindowHandle, HasWindowHandle, RawWindowHandle, WindowHandle as RwhHandle,
-    };
-    use std::ptr::NonNull;
-
-    struct FakeWindow;
-    impl HasWindowHandle for FakeWindow {
-        fn window_handle(
-            &self,
-        ) -> std::result::Result<RwhHandle<'_>, raw_window_handle::HandleError> {
-            let ns_view = NonNull::new(0x1234_5678usize as *mut _).unwrap();
-            let raw = RawWindowHandle::AppKit(AppKitWindowHandle::new(ns_view));
-            Ok(unsafe { RwhHandle::borrow_raw(raw) })
-        }
-    }
-
     let (handle, _bridge_handle, _server_thread) = handle_with_mock_server(|_| None);
     assert!(
         handle
             .open_editor(
                 &main_thread(),
-                FakeWindow,
+                tutti_fixtures::StandInWindow,
                 tutti_plugin_types::ContentScale::IDENTITY
             )
             .is_err()

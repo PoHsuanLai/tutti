@@ -187,9 +187,12 @@ and the docs.rs build on a dated nightly); `cargo xtask check-loom` runs clippy 
 - **`unsafe`:** a library with none carries `#![forbid(unsafe_code)]`. Plugin FFI
   `unsafe` lives only in the per-format `-ffi` crates (`tutti-clap-ffi`,
   `tutti-vst3-ffi`, `tutti-au-ffi` and `tutti-vst2-ffi`); host crates forbid
-  `unsafe` (`scripts/check-plugin-ffi.sh`, design 016 §2.9). The one `unsafe` outside
-  them is the in-process editor's `WindowHandle` decode (the raw pointer of
-  `PluginHandle::open_editor`), why `tutti-plugin-host` is `deny`, not `forbid`.
+  `unsafe` (`scripts/check-plugin-ffi.sh`, design 016 §2.9). A higher crate calls a
+  safe wrapper and forbids `unsafe`: a parent window is
+  `WindowHandle::from_window(&impl HasWindowHandle)` (winit, Bevy, any
+  `raw-window-handle` 0.6 window), and the one `unsafe` constructor,
+  `WindowHandle::from_u64`, is for a number that crossed a process edge. Test-only
+  `unsafe` is `tutti-fixtures`' (`ScopedEnv`, `StandInWindow`).
 - **Toolchain:** `rust-toolchain.toml` pins the stable every gate runs on,
   and `Cargo.lock` is committed (`--locked` everywhere). To bump, edit
   `rust-toolchain.toml`, run `cargo xtask ci`, and fix the new lints in the same PR.
@@ -794,9 +797,8 @@ list (normal and build edges; dev-dependencies may go anywhere).
   alone among workspace crates (`scripts/check-layout.sh`): no `tutti-plugin-ipc`,
   no format host as a normal dependency, and not `tutti-plugin`. It keeps every
   module private (`tutti_plugin_host::PluginHandle`; CI runs the per-module path
-  gate on it), is `publish = false` and has no `bevy` feature. It is
-  `#![deny(unsafe_code)]` rather than forbid: `PluginHandle::open_editor`'s one
-  `WindowHandle` decode is its only `unsafe` (see design 021 §10.3). What it
+  gate on it), is `publish = false`, has no `bevy` feature and is
+  `#![forbid(unsafe_code)]`. What it
   exports for the served node in `tutti-plugin` (`ParamDelivery`,
   `TransportSource`, `TransportWalk`, ...) says who it is for. Its in-process
   tests load the reference VST2 plugin through a dev-dependency on

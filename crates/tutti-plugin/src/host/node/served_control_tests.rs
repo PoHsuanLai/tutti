@@ -13,7 +13,7 @@ use tutti_fixtures::{machine_lock, main_thread};
 use tutti_plugin_ipc::{BridgeConfig, Ipc, Launched};
 use tutti_plugin_types::{AnyThread, Control, Health, ParamId, RenderMode, SampleRate};
 
-use super::real_stall_tests::{ProbeEnv, plugin_server_path};
+use super::real_stall_tests::plugin_server_path;
 
 /// The probe's applied gain (`GAIN_PARAM_ID` in the plugin).
 const GAIN: ParamId = ParamId::new(77);
@@ -35,8 +35,8 @@ const GAIN: ParamId = ParamId::new(77);
 #[test]
 fn the_served_control_and_any_thread_answer_alike() {
     let _lock = machine_lock();
-    let mut env = ProbeEnv::new();
-    env.set("TUTTI_PLUGIN_SERVER", plugin_server_path().to_string());
+    let mut env = tutti_fixtures::ScopedEnv::new();
+    env.set("TUTTI_PLUGIN_SERVER", plugin_server_path());
     let Launched { ipc, .. } = Ipc::launch(
         BridgeConfig::default(),
         tutti_fixtures::clap_probe().to_path_buf(),

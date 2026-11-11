@@ -152,7 +152,6 @@ impl EditorWindow for AuGuiInstance {
         parent: WindowHandle,
         _scale: ContentScale,
     ) -> PluginResult<EditorSize> {
-        let parent_handle = unsafe { tutti_au_host::WindowHandle::from_raw(parent.as_ptr()) };
         // No size to offer here either: this entry point receives a
         // parent handle and a scale, no size. See the sibling in
         // `tutti-plugin-server`.
@@ -160,7 +159,7 @@ impl EditorWindow for AuGuiInstance {
             .inner
             .open_editor(
                 main,
-                parent_handle,
+                parent,
                 tutti_plugin_types::EditorSize {
                     width: 800,
                     height: 600,

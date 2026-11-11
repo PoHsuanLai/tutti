@@ -3515,7 +3515,7 @@ mod tests {
     /// A window handle for an editor test: the fake plugin never reads it.
     fn no_window() -> WindowHandle {
         // SAFETY: the fake plugins of these tests never dereference the handle.
-        unsafe { WindowHandle::from_ptr(ptr::null_mut()) }
+        unsafe { WindowHandle::from_u64(0) }
     }
 
     /// **`effClose` is the instance's drop, on its thread, and no handle outlives it.**

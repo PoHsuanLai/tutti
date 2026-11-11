@@ -14,10 +14,7 @@
 //! `tutti-plugin-ipc`'s, and `tutti-plugin` puts a served plugin behind these
 //! types. Nothing here is a dependency of either.
 
-// One `unsafe` block, the window decode of `PluginHandle::open_editor` (the raw
-// pointer it extracts): `deny` rather than `forbid` so
-// that one site can say so, with its `SAFETY` comment. Nothing else here is.
-#![deny(unsafe_code)]
+#![forbid(unsafe_code)]
 
 mod control_handle;
 mod controls;
@@ -34,7 +31,6 @@ mod transport_source;
 mod transport_walk;
 #[cfg(test)]
 mod walk_tests;
-mod window;
 
 pub use control_handle::{MainThreadControl, PluginHandle, PluginStatus};
 pub use controls::{ForkedSources, NodeControls, PluginControls, lock_tail};

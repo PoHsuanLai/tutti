@@ -44,6 +44,7 @@ tutti-graph = { path = "../tutti-graph" }
 tutti-rt = { path = "../tutti-rt" }
 tutti-ump = { path = "../tutti-ump", default-features = false }
 serde = { version = "1", features = ["derive"], optional = true }
+raw-window-handle = "0.6"
 # The result file's payload encoding, with `probe-wire`.
 bincode = { version = "1", optional = true }
 # Structured editor-open errors (`EditorError`).

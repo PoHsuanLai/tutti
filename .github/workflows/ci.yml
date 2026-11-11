@@ -155,32 +155,34 @@ jobs:
       # the superproject actually records. It belongs in this job because it is
       # the other static gate: no build of the workspace, just a claim checked.
       - run: cargo xtask check-submodule-pins
-      # Design 015 §8, check 4: `tutti-session` re-exports no crate whole.
-      # (Checks 3 and 5, over `bevy-tutti/src`, are skipped while it is parked.)
-      # Perl over the source, no build, so it belongs with the other static gates.
-      - run: scripts/check-adapter.sh
-      # Every CLAP host callback and VST3 host COM method runs in the panic
-      # guard (python3 over the source, no build).
-      - run: scripts/check-guards.sh
-      # CLAP and VST3 FFI `unsafe` lives only in `tutti-clap-ffi` and
-      # `tutti-vst3-ffi`: `tutti-clap-host` and `tutti-vst3-host` forbid it,
-      # and the server and GUI code that drive them carry none
-      # (python3 over the source, no build).
-      - run: scripts/check-plugin-ffi.sh
-      # ALSA and CoreMIDI FFI `unsafe` lives only in `tutti-alsa-ffi` and
-      # `tutti-coremidi-ffi`: `tutti-midi-hardware` forbids it and names no raw
-      # binding crate (python3 over the source, no build).
-      - run: scripts/check-midi-ffi.sh
+      # `tutti-session` is the Bevy-free API layer, not an umbrella (design 015
+      # §8): no Bevy crate in its normal closure with every feature on (`cargo
+      # tree`), no `bevy` feature in it or in `tutti-graph`, `tutti-ump` or
+      # `tutti-codec`, and no whole-crate re-export in its source. The adapter's
+      # own scans (checks 3 and 5) are `scripts/parked/check-bevy-tutti.sh`,
+      # which nothing runs while `bevy-tutti` is parked.
+      - run: cargo xtask check-session
+      # Every CLAP host callback, AU callback, VST3 host COM method and the VST2
+      # audioMaster callback runs in the panic guard (source scan, no build).
+      - run: cargo xtask check-guards
+      # `unsafe` lives only in the crates that hold it: every other crate root
+      # forbids it (the compiler then refuses a token anywhere in it), and the
+      # `-ffi` crates carry the lints that make each block document itself
+      # (source scan, no build).
+      - run: cargo xtask check-ffi
       # Every member sits directly in `crates/<package>` or `testing/<dir>`, no
-      # shipped crate builds on a `testing/` crate, and dependencies point down
-      # the layers in CLAUDE.md (`cargo metadata`, no build).
-      - run: scripts/check-layout.sh
+      # shipped crate builds on a `testing/` crate, dependencies point down the
+      # layers in CLAUDE.md, the codec libraries stay behind `tutti-codec`'s
+      # decode module, `export` alone reaches no C library (`cargo tree`), and a
+      # test finds a repo file through `tutti_fixtures`, never a path that
+      # depends on its own depth.
+      - run: cargo xtask check-layout
       # A tuple struct with a private field does not derive `Deserialize`
       # plainly: the derive skips `new` (`xtask` over the source, no build).
       - run: cargo xtask check-range-types
       # Every InProcess/OutOfProcess impl is listed in the plugin contract's
-      # `hostings` (python3 over the source, no build).
-      - run: scripts/check-hosting.sh
+      # `hostings` (`xtask` over the source, no build).
+      - run: cargo xtask check-hosting
 
   clippy:
     name: clippy
@@ -559,6 +561,7 @@ jobs:
       # Mirrors `cargo xtask bench`; adding a bench means adding a line in both.
       - run: |
           cargo bench --locked -p tutti-nodes     --bench engine_render  -- --test
+          cargo bench --locked -p tutti-graph     --bench graph_render   -- --test
           cargo bench --locked -p tutti-cpal      --bench audio_callback -- --test
           cargo bench --locked -p tutti-export    --bench offline_render -- --test
           cargo bench --locked -p tutti-polysynth --bench polysynth      -- --test
@@ -757,12 +760,6 @@ jobs:
             echo "FAIL: a bevy crate reached the Bevy-free facade."
             exit 1
           fi
-
-      # The session layer both umbrellas use (design 015 §8): no Bevy crate in
-      # its closure with every feature on (`--all-features`: a Bevy crate
-      # behind an optional feature is absent from the default tree), no `bevy`
-      # feature, and no whole-crate re-export (it is not an umbrella).
-      - run: scripts/check-bevy-free.sh
 
   doc:
     name: rustdoc

@@ -658,7 +658,7 @@ at 7; `tutti` and `bevy-tutti` at 8. **`tutti-plugin` stays at layer 6, so
 | Script | Change |
 |---|---|
 | `check-layout.sh` | Add both crates to `LAYERS` (4 and 5). New rules, in its `only(...)` style: `-ipc` and `-host` depend on no `tutti-*-host` format crate; no format host depends on `-ipc` or `-host`; `tutti-plugin-server` depends on neither `-host` nor `tutti-plugin`. It fails an unplaced crate, so the crates land with their rows |
-| `check-plugin-ffi.sh` | It scanned `tutti-plugin-server/src/loaders/<fmt>.rs` and `tutti-plugin/src/format/gui/<fmt>.rs`. Both are gone; it scans `tutti-<fmt>-host` and, whole, the server's `src/` (which forbids `unsafe`) |
+| `check-ffi` (was `check-plugin-ffi.sh`) | It scanned `tutti-plugin-server/src/loaders/<fmt>.rs` and `tutti-plugin/src/format/gui/<fmt>.rs`. Both are gone; the crate-root forbid covers the host crates and the server (`check-ffi`) |
 | `check-layout.sh` (probe) | `tutti-plugin-probe` is placed at layer 6 and depends on no `-ipc`, `-host` or `tutti-plugin`; nothing depends on it |
 | `check-adapter.sh`, `check-bevy-free.sh` | none: `bevy-tutti` reaches the plugin crates through `tutti-session` and `tutti-plugin` as now |
 | `check-paths` | `tutti_plugin::{PluginClient, …}` paths in code and `*.md` move to the new crates' roots |

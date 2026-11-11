@@ -88,7 +88,7 @@ sudo dnf install -y alsa-lib-devel pkgconf-pkg-config  # Fedora
 ## Workspace Structure
 
 One workspace, rooted at the repo root. Three roots, all flat: a member is
-directly `crates/<package-name>` or `testing/<dir>`, and `scripts/check-layout.sh`
+directly `crates/<package-name>` or `testing/<dir>`, and `cargo xtask check-layout`
 refuses anything nested.
 
 ```
@@ -722,12 +722,13 @@ comments and docs, and treat it as a bug when you find it:
   is right for every single-owner piece (design 015 §9.1–§9.3 moved those),
   but cannot hold the composition without inverting an edge. The crate is
   bounded by one sentence: it holds only code that names two or more engine
-  crates, or the order they run in. Three checks keep it so:
-  `scripts/check-bevy-free.sh` (no Bevy in its closure, no `bevy` feature),
-  and `scripts/check-adapter.sh`, which fails if `bevy-tutti/src` names a
+  crates, or the order they run in. These checks keep it so:
+  `cargo xtask check-session` (no Bevy in its closure, no `bevy` feature, and
+  no whole-crate re-export in `tutti-session`, which would make it a third
+  umbrella), and `scripts/parked/check-bevy-tutti.sh` (the former
+  `check-adapter.sh`), which fails if `bevy-tutti/src` names a
   type the session owns (`Editor`, `Executor`, `Modulation`, `TuttiDriver`,
-  `AudioCallbackState`, `Engine`, `RenderGraph`) or if `tutti-session`
-  re-exports a crate whole, which would make it a third umbrella.
+  `AudioCallbackState`, `Engine`, `RenderGraph`).
   It also fails on policy in the adapter: an `Instant::now` that is not the
   argument of a session phase, or a `const NAME: usize|Duration` (a throttle
   and a job limit were the two it found; each is an exception naming the lane
@@ -819,8 +820,9 @@ compensation), with the same feature gates. The tests that remain only in
 Two things followed from leaving the workspace. A workspace run no longer turns
 on `tutti-session`'s `device` and `record` (it was bevy-tutti's feature edge
 that did), so the dark-features job names `device` (and the ported suites' own
-`sampler` and `vst2`). `scripts/check-adapter.sh` skips its checks 3 and 5 while
-`ADAPTER_PARKED=1`, and `scripts/check-layout.sh` lets `crates/bevy-tutti` be a
-non-member only if it is its own `[workspace]` root. Un-parking is one
-migration PR: restore the member, the inheritance, the CI and xtask lines, and
-`ADAPTER_PARKED`, and fix what the weekly check has found.
+`sampler` and `vst2`). The adapter's checks 3 and 5 are
+`scripts/parked/check-bevy-tutti.sh`, which nothing runs while it is parked, and
+`cargo xtask check-layout` lets `crates/bevy-tutti` be a non-member only if it is
+its own `[workspace]` root. Un-parking is one migration PR: restore the member, the
+inheritance, the CI and xtask lines, port that script to a gate and run it in CI,
+and fix what the weekly check has found.

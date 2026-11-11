@@ -32,7 +32,7 @@ use tutti_ump::{
     BlockFilter, BlockSelect, DiscoveryFilter, Form, Message, Protocol, Stream, StreamConfig, Ump,
 };
 
-use crate::endpoint::{Endpoint, FunctionBlock, MAX_FUNCTION_BLOCKS, UMP_VERSION};
+use crate::endpoint::{Endpoint, MAX_FUNCTION_BLOCKS, UMP_VERSION};
 use crate::name::{Assembler, BlockName, EndpointName, ProductInstanceId};
 
 /// How long a step waits for its answer before it is sent again.
@@ -75,6 +75,12 @@ pub enum Action {
     Send(Ump),
     /// The connection is over; read [`Connection::endpoint`].
     Settled(Ending),
+    /// After a [`Negotiated`](Ending::Negotiated) settle, the peer told
+    /// something that changes what [`Connection::endpoint`] holds: a Stream
+    /// Configuration Notification that moves the Protocol or JR Timestamps in
+    /// use, or (when the Endpoint did not declare its Function Blocks static)
+    /// a Function Block Info or Name that differs from what is held.
+    Changed,
 }
 
 bitflags! {
@@ -180,15 +186,29 @@ impl Connection {
         }
     }
 
-    /// Folds one message from the peer. A message after the connection settled,
-    /// one that is not a UMP Stream message, and one the step does not wait for
-    /// are ignored.
+    /// Folds one message from the peer. One that is not a UMP Stream message,
+    /// and one the step does not wait for, are ignored.
+    ///
+    /// After a [`Negotiated`](Ending::Negotiated) settle the peer may still
+    /// change what it said, and the connection follows it, answering
+    /// [`Action::Changed`]: a Stream Configuration Notification is the
+    /// Protocol and JR Timestamps in use whenever it comes (§7.1.6.1 step 3:
+    /// the Sender starts "using the Protocol and JR Timestamps configuration
+    /// as declared in the Stream Configuration Notification"), but a Function
+    /// Block Info or Name is read only when the Endpoint did not declare its
+    /// Function Blocks static (§6.1.1: such an Endpoint "will not change any of
+    /// the properties of its Function Blocks after initial discovery", and
+    /// §7.1.8 and §7.1.9 send the Notifications for a change only from one that
+    /// has not). A Function Block outside the count Endpoint Info declared is
+    /// never read. After a [`Midi1Fallback`](Ending::Midi1Fallback) settle
+    /// everything is ignored: the peer is a MIDI 1.0 device.
     pub fn on_message(&mut self, message: Message, now: Instant) -> Action {
         let Message::Stream(stream) = message else {
             return Action::Wait;
         };
         match (self.step, stream) {
-            (Step::Done(_), _) => Action::Wait,
+            (Step::Done(Ending::Negotiated), _) => self.follow(stream),
+            (Step::Done(Ending::Midi1Fallback), _) => Action::Wait,
             (Step::Discover(heard), _) => self.discover(heard, stream, now),
             (Step::Request(_), Stream::StreamConfigurationNotification(config)) => {
                 self.endpoint.active = settle_protocol(config);
@@ -236,8 +256,12 @@ impl Connection {
     fn discover(&mut self, mut heard: Heard, stream: Stream, now: Instant) -> Action {
         match stream {
             Stream::EndpointInfo(info) => {
-                self.endpoint.apply_info(&info);
-                heard |= Heard::INFO;
+                // A count above 32 is not an Endpoint (§7.1.7: the numbers are
+                // 0 to 31): the Info is refused, so it is never heard and the
+                // step ends as a silent peer's does.
+                if self.endpoint.apply_info(&info) {
+                    heard |= Heard::INFO;
+                }
             }
             Stream::DeviceIdentity(identity) => self.endpoint.identity = Some(identity),
             Stream::EndpointName(form, bytes) => {
@@ -290,7 +314,7 @@ impl Connection {
     ) -> Action {
         match stream {
             Stream::FunctionBlockInfo(wire) => {
-                if let Some(block) = FunctionBlock::from_info(&wire) {
+                if let Some(block) = self.endpoint.read_block(&wire) {
                     info |= 1 << block.id().get();
                     self.endpoint.insert_block(block);
                 }
@@ -329,6 +353,59 @@ impl Connection {
             self.settle(Ending::Negotiated)
         } else {
             Action::Wait
+        }
+    }
+
+    /// A message after a negotiated settle (see [`on_message`](Self::on_message)).
+    fn follow(&mut self, stream: Stream) -> Action {
+        match stream {
+            Stream::StreamConfigurationNotification(config) => {
+                let active = settle_protocol(config);
+                if active == self.endpoint.active {
+                    return Action::Wait;
+                }
+                self.endpoint.active = active;
+                Action::Changed
+            }
+            _ if self.endpoint.static_function_blocks => Action::Wait,
+            Stream::FunctionBlockInfo(wire) => {
+                let Some(mut block) = self.endpoint.read_block(&wire) else {
+                    return Action::Wait;
+                };
+                // The Info carries no name: the one held stays.
+                block.name = self
+                    .endpoint
+                    .function_block(block.id())
+                    .and_then(|b| b.name);
+                if self.endpoint.function_block(block.id()) == Some(&block) {
+                    return Action::Wait;
+                }
+                self.endpoint.insert_block(block);
+                Action::Changed
+            }
+            Stream::FunctionBlockName { block, form, bytes } => {
+                if form == Form::Start || form == Form::Complete {
+                    self.block_name_of = block.get();
+                }
+                if block.get() != self.block_name_of {
+                    return Action::Wait;
+                }
+                let Some(text) = self.block_name.feed(form, &bytes) else {
+                    return Action::Wait;
+                };
+                let (Some(name), Some(Some(held))) = (
+                    BlockName::from_bytes(text),
+                    self.endpoint.blocks.get_mut(usize::from(block.get())),
+                ) else {
+                    return Action::Wait;
+                };
+                if held.name == Some(name) {
+                    return Action::Wait;
+                }
+                held.name = Some(name);
+                Action::Changed
+            }
+            _ => Action::Wait,
         }
     }
 

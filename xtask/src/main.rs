@@ -4,7 +4,7 @@
 //! the recipe) prints what would run.
 //!
 //! Std only, and no workspace dependency: the tool that builds and gates the
-//! workspace does not depend on what it builds (`scripts/check-layout.sh`).
+//! workspace does not depend on what it builds (`cargo xtask check-layout`).
 
 #![forbid(unsafe_code)]
 

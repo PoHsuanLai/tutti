@@ -149,7 +149,7 @@ sampler = ["wav", "dep:tutti-sampler", "tutti-session?/sampler"]
 audio-io = ["io", "tutti-cpal?/capture", "tutti-session?/audio-io"]
 # Export. `export` is the offline renderer and WAV, which is pure Rust; FLAC and
 # AIFF are pure Rust and opt-in, and `export-ogg` is the one path to C (the
-# Vorbis library, `ogg_next_sys`). `scripts/check-layout.sh` holds that a build
+# Vorbis library, `ogg_next_sys`). `cargo xtask check-layout` holds that a build
 # with `export` alone reaches no C.
 export = ["dep:tutti-export", "codec", "tutti-export/wav", "tutti-session?/export"]
 export-wav = ["export"]

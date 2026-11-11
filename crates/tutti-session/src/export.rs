@@ -1079,7 +1079,7 @@ mod tests {
         };
         let planes =
             |out: crate::Result<Outcome<ExportOutput>>| match out.expect("renders").finished() {
-                Some(ExportOutput::Buffers(r)) => r.planes,
+                Some(ExportOutput::Buffers(r)) => r.into_planes(),
                 _ => unreachable!("buffers were asked for"),
             };
 

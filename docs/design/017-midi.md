@@ -625,16 +625,70 @@ sounding until the node that tracks notes exists.
 
 ### Timing at the edge
 
-- **The clock map.** `ClockMap` converts an OS time to a frame. It is pure: it
-  takes the two clocks' readings and holds no clock itself.
-- **Input.** Take the OS's timestamp where one exists (CoreMIDI packets carry
-  host time, ALSA has queue timestamps). Replace ALSA's 1 ms sleep with a blocking
-  `poll` on the sequencer's descriptor, plus a descriptor to wake it for shutdown. Today's read-time stamp measured 1 ms of
-  jitter, about 48 samples at 48 kHz, and collapses a burst's spacing.
+**Stage 4c, part 1: the clock map and the timestamped input. Built.** Output
+scheduling (`OutputPlan`) is the next part and is not.
+
+- **The clock map.** `ClockMap` (`tutti-midi-runtime`: it needs `tutti-types`'
+  `Frame`, `SampleRate` and `Moment`, and `tutti-midi-device` is a layer too low
+  for them) converts an OS time to a frame (`frame_at`, `moment_at`) and a frame to
+  an OS time (`os_at`, which `OutputPlan` needs). It is pure and holds no clock:
+  it is built from one `ClockReading`, the OS instant and the graph's frame at the
+  same moment, and takes more as values (`observe`). The OS time is a
+  `std::time::Instant`, the OS's monotonic clock on every target, so the map is
+  tied to none; a backend whose stamps are on another scale converts them where it
+  reads them (below).
+  - **The rule.** The slope is the nominal rate, never fitted: the two crystals
+    differ by a small relative error `ε` that a fitted slope would estimate from
+    jittery readings. The map follows the *offset* instead. Each reading is
+    compared with where the anchor predicts its frame, and the anchor moves one
+    eighth of the way to the reading (`GAIN`), at the reading's frame. A reading
+    more than `RESYNC` (20 ms) from the prediction is a restart or a suspend, not
+    jitter, and re-anchors exactly.
+  - **The bound.** A query `Δ` after the latest reading is off by at most
+    `ε·(8·T + Δ)`, where `T` is the interval between readings, plus half a frame
+    of rounding, plus any reading's jitter over 8. For `ε = 100 ppm` and
+    `T = Δ = 10 ms` that is under 2 µs, a tenth of a frame at 48 kHz. One-sided
+    jitter (a wake-up is late, never early) biases the map late by its mean over
+    8, so the reader takes its readings at a fixed point of the device callback.
+  - **What it refuses.** A reading earlier than the anchor in OS time or in
+    frames, or at the anchor's frame at another time, is `Observed::Rejected` and
+    changes nothing. Before the first reading nothing is known, so a map exists
+    only from one, and a query extrapolates in either direction, to `None` only
+    before frame 0. A rate change (`set_rate`) moves the anchor's frame to the same
+    instant at the new rate (`Frame::rescaled`), as the executor does on a
+    re-prepare. A rate that is not finite and positive builds no map.
+- **Input.** Each backend gives its events the OS's own timestamp, as an
+  `Instant`, in place of the instant the thread read them.
+  - **ALSA.** The pump's port stamps every event with a queue's real time
+    (`snd_seq_port_info_set_timestamping`, a queue of the client's own, started).
+    The pump reads the queue's clock and `Instant::now()` together (one
+    `snd_seq_get_queue_status` per run of events, refreshed when an event is
+    stamped after it or the pairing is a second old) and places each event as long
+    before that reading as its stamp is before the queue's (`stamp::arrival`).
+    The 1 ms sleep this section once described is gone: the pump blocks in
+    `poll` on the sequencer's descriptors and a stop descriptor (a socket pair
+    closed on drop). A test holds the pump 400 ms after a wake and checks that
+    three notes sent 50 and 100 ms apart keep their spacing to 20 ms; the read-time
+    stamp collapsed it to microseconds. The drop waits for the pump at most 1 s
+    (`JOIN_BOUND`) and then leaves it running, still subscribed, with a warning.
+  - **CoreMIDI.** Each packet's `timeStamp` is mach host time. The callback reads
+    `mach_absolute_time` and `Instant::now()` together (`host_time::Pairing`) and
+    places the packet by `mach_timebase_info`'s ratio through the same
+    `stamp::arrival`; a 0 stamp is "now". The hardware virtual destination does
+    the same. **Not verified with real MIDI traffic**: it compiles and its unit
+    tests pass on a Mac (clippy `-D warnings` clean on macOS), and the timestamp
+    arithmetic is tested, but no device sent it a packet.
+  - **Where the frame is made.** Not yet by the producer. The ring still holds an
+    arrival `Instant` and the drain converts it to an `Offset` on the audio thread
+    (`read_inputs`), now from the better stamp. `ClockMap` exists, but the drain
+    does not use it: the producer cannot place an event until the session feeds a
+    map readings (the engine's block start and its frame, `observe`), and then
+    pushes `Moment`s into an event inlet. That is E5's remaining work (below).
 - **Output.** Schedule from the event's frame, on the OS's timestamp or queue.
   Today output is flushed once per Bevy frame with no timestamp, so MIDI clock
   leaves in bursts, and a headless `Session` does no better. This is the largest
-  timing defect that users can hear from external gear.
+  timing defect that users can hear from external gear. `ClockMap::os_at` is the
+  conversion it needs; the plan is the next part of stage 4c.
 
 ### MIDI-CI
 
@@ -1025,7 +1079,7 @@ as the audio inlet is.
 | The node | `EventInletNode` in `tutti-graph`, an inlet implementation like `InletNode`, not a node an author adds: no inputs, one event output, `Cost::Light`, event capacity the ring's | The graph already has a node-shaped place for "something outside feeds a port". An op would need the arena to wake it with no input edge; the node needs nothing new |
 | What the producer pushes | `EventInletWriter::push(at: At, ump: Ump) -> Result<(), Refused>`. `At::NextBlock` is "as soon as possible": the next block's first frame. `At::Frame(f)` is a frame on the graph's clock. `At::Beat` is refused (`Refused::Beat`): the producer has no transport, as `TimedSender::send` has none | `At` is the type a command takes elsewhere (`MotionFsm::schedule`), and `Env::due(At)` resolves it already. The node does not invent a second rule for late or early |
 | The clock the frame is on | The graph's, as `Moment { frame, rate }`: `EventInletWriter::clock() -> Moment` reads where the node's last block ended, published by the node through a `tutti-rt` `SeqWriter` (the `TimedQueueNode` mechanism). `push_at(moment, ump)` names an instant that survives a re-prepare at another rate: the node rescales waiting events with `Frame::rescaled`. `Moment` moves to `tutti-types`, which already holds `Frame` and `SampleRate` | The frame clock counts frames at the current rate; a re-prepare moves it to the same wall time at the new rate (`timed_queue.rs` docs). A raw frame read before and sent after is wrong, a `Moment` is not |
-| A timestamp from another clock | **Not this stage.** The writer takes graph-clock frames or `At::NextBlock` only. A producer holding an OS timestamp needs `ClockMap` (§5, "Timing at the edge", not built) to give a `Moment`, and calls `push_at`. Until then a producer that has no better stamp pushes `At::NextBlock`, which is what `MidiQueueNode` does today | `ClockMap` is pure and takes two clocks' readings; building it is stage 4's. The inlet's contract does not change when it lands: it only gives producers a better `Moment` |
+| A timestamp from another clock | **Not this stage.** The writer takes graph-clock frames or `At::NextBlock` only. A producer holding an OS timestamp needs `ClockMap` (§5, "Timing at the edge", built in stage 4c part 1) to give a `Moment` (`moment_at`), and calls `push_at`. A producer that has no better stamp pushes `At::NextBlock`, which is what `MidiKeys` does | `ClockMap` is pure and takes two clocks' readings. The inlet's contract does not change when it lands: it only gives producers a better `Moment` |
 | What the node does with the ring | Each block: drains the ring into a waiting list sized once at open (the ring's capacity), resolves each entry with `Env::due`: `In(offset)` is emitted on that offset, `Late` is emitted at offset 0 and counted late, `NotYet` waits. Emission order is due frame, then arrival order, so a note-off sent after its note-on never overtakes it | The waiting list is `TimedQueueNode`'s, kept whole. It is scheduling, not MIDI, and every producer that names a frame needs it |
 | Priority | When the waiting list is full, the latest-due event that is not a note-off is evicted; a note-off or CC 120 or 123 is kept in preference to any other. The predicate is one function in `tutti-ump` (`Ump::is_note_off` today; the panic controllers join it there, since `tutti-ump` owns the bit positions) | The rule `TimedQueueNode` has, and the one §8 gives ports. `tutti-graph` already knows the note-off (`note_off_room`) |
 | Capacity | An event count named at open: the ring, the waiting list and the port's declared capacity are that number. The port refuses what it cannot take and the node counts it with `Io::count_lost`, so an export watching `dropped_event_count` sees it | As `MidiQueueNode` and `TimedQueueNode` today. Default 256 events, which is theirs |
@@ -1173,7 +1227,7 @@ into the `UmpOut` and adds `take_lost` to the drop count that
 | `MidiQueueNode` | **Deleted (E4).** `EventInletNode` with `At::NextBlock` | `MidiKeys` (`tutti-midi-runtime`) is the key helpers (`note_on`, `note_off`, which build a `Voice2` into a `Ump`) over an `EventInletWriter`, which it derefs to; the graph builds no message. The session's live input (`LiveInput`) holds it behind the session's lock |
 | `TimedQueueNode`, `TimedSender`, `TimedSendError`, `Moment` | **Deleted (E4).** The node and its waiting list are `EventInletNode`, the sender is `EventInletWriter`, the error is `Refused`, `Moment` is in `tutti-types` | What remains in `tutti-midi-runtime` is nothing of it. `InstrumentHandle` (`instrument.rs`) holds the writer behind the session's lock (below) |
 | `MidiMailbox`, `MidiReceiver`, the `MidiOut` trait | **Audited in E4; E3 has landed: no graph crossing remains, the mailbox stays for the host's own outbound path, the trait stays.** `MidiMailbox`, `MidiSender` (its queue half) and `MidiReceiver` are used by the host's own outbound path, read in `drain_receiver_through`, and the clock master's tests; they go when that path is its own. `MidiOut` is not a graph crossing at all: it is the hardware's terminal sink (`tutti-midi-hardware`'s `MidiSession`, every backend's output, `UmpOut`), and it stays | See "Stage E4, as built" |
-| `MidiInputNode` | **Splits.** The wire side (the `MidiIn` poll, the arrival-time offset) becomes an inlet fed from the OS callback; `MidiIngestNode`, the translator, MPE and per-channel split, stays a node in `tutti-midi-runtime` with one event input and 17 outputs | **Blocked on `ClockMap`** (§5, "Timing at the edge"): today the `Instant` to `Offset` conversion runs on the audio thread in the drain, and an inlet's producer must give a `Moment`. Until then `MidiInputNode` is unchanged. It also needs one inlet per open device, since an inlet has one producer; the merge across devices is the graph's fan-in. That leaves the translator's per-channel state per device, where today it is shared across the merged ports |
+| `MidiInputNode` | **Splits.** The wire side (the `MidiIn` poll, the arrival-time offset) becomes an inlet fed from the OS callback; `MidiIngestNode`, the translator, MPE and per-channel split, stays a node in `tutti-midi-runtime` with one event input and 17 outputs | **`ClockMap` is built** (§5, "Timing at the edge"), so the first blocker is gone; what remains is wiring it. Today the `Instant` to `Offset` conversion runs on the audio thread in the drain, from the OS's own timestamp, and an inlet's producer must give a `Moment`. The producer thread needs a `ClockMap` that something feeds with readings (the engine's block start `Instant` and frame, each block, through a `tutti-rt` cell), the ring then carries `Moment`s, and the OS thread pushes through `EventInletWriter::push_at`. Until then `MidiInputNode` is unchanged. It also needs one inlet per open device, since an inlet has one producer; the merge across devices is the graph's fan-in. That leaves the translator's per-channel state per device, where today it is shared across the merged ports |
 
 `ClockNode`, `MidiClipNode`, the harmony node, `compile_routes` and
 `MpeIngest` compute events and stay. `bevy-tutti` is parked and is not
@@ -1299,7 +1353,7 @@ describes changes: each graph PR edits that document's primitive table.
 | **E2** (done) | The event inlet: `EventInletNode`, `EventInletWriter`, `Refused`, `Moment` to `tutti-types`, the panic predicate in `tutti-ump`, the waiting list moved from `TimedQueueNode`. Then `tutti-session`: `Graph::open_event_inlet` and `add_event_inlet` | Yes, and `tutti-types` and `tutti-ump` |
 | **E3** (done) | The hardware out: the session reads a tap on the clock; `MidiOutNode`, `MidiOutControls`, `MIDI_OUT_CAPACITY` and `MidiNodes::hardware_out` deleted; `drain_receiver_through` and `MidiOutRouter` take frames | No. After E1 |
 | **E4** (done) | The queues: `MidiQueueNode` and `TimedQueueNode` deleted, `MidiSender` slimmed to the key helpers over `EventInletWriter`, `InstrumentHandle` and the session's live inputs moved, `MidiMailbox` audited | No. After E2 |
-| **E5** | `MidiInputNode` split into the OS-side inlet and `MidiIngestNode` | No. After E2 and `ClockMap` (stage 4, timing) |
+| **E5** | `MidiInputNode` split into the OS-side inlet and `MidiIngestNode` | No. After E2 and `ClockMap` (built, stage 4c part 1); what is left is the readings' path from the engine to the producer threads, the per-device inlets and the per-device translator state |
 
 **Stage E4, as built.** Deleted: `MidiQueueNode` and `MIDI_QUEUE_CAPACITY`,
 `TimedQueueNode`, `TimedSender`, `TimedSendError` and `TIMED_QUEUE_CAPACITY`,
@@ -2055,24 +2109,31 @@ at any point; its CI codec move and `ci`/`negotiate` deletion (4a, done) shrink
      timestamp, so the spacing at the wire is the drain's (once per Bevy
      frame, §5 "Timing at the edge"). Correct the doc now, and again when
      scheduled output lands.
-   - **`ChangeSink::seed`.** "A backend seeds once, before any `send`" is only a
-     doc sentence (`tutti-midi-hardware/src/devices.rs`). Make a second or late
-     seed an error the type returns, or take the list in the constructor.
+   - **`ChangeSink::seed`. Done (4c).** `seed` returns `Result<(), SeedError>`: a
+     second seed, or one after any `send`, is refused and the list is left as it
+     was. The constructor does not take the list, because a backend reads the OS
+     after it has the sink (a change between the read and the registration needs
+     the watch to exist), so the type holds the order instead.
    - **Not verified, needs a Mac or a check.** (a) The CoreMIDI input callback
      has no panic guard; only the watch thread has `catch_unwind`
      (`backend/coremidi/watch.rs`). (b) The session MIDI input ring size
      is 256 in one place and 2048 in another per the audit; the drain chunk is 256
-     (`tutti-session/src/midi.rs`) and the other figure was not found. (c) `AlsaOutput` takes its
-     mutex with `.expect("output mutex poisoned")`, `unpack_id` in
-     `backend/alsa/enumerate.rs` decodes any `EndpointId` without checking it
-     was minted by the backend, and the input thread's drop joins without a
-     bound. (d) There is no benchmark of the hardware callback to the drain.
-   - **Bare frame counts at the edge.** `MidiIn::poll_block(block_size: usize, ..)` and
-     `ClockMaster::tick(.., block_size: usize, ..)` take a block length as `usize`, where
-     CLAUDE.md wants `Samples` for every count at an edge. In `outbound/jr_timestamp.rs`,
-     `origin_samples` and `sample_offset` are absolute frames carried as `u64` (they
-     should be `Frame`), and `block_samples`, `interval_samples()` and `block_span()` are
-     counts (they should be `Samples`). Type them as timing and output scheduling are rebuilt.
+     (`tutti-session/src/midi.rs`) and the other figure was not found. (c) **Done (4c).** `AlsaOutput` took its
+     mutex with `.expect("output mutex poisoned")`: it now recovers the guard, since
+     `Sender` is a client handle and two ids and is never left half-written, and a
+     panic in the output drain over a fault already past is worse than the send.
+     `unpack_id` returns `None` for an id with bits above either byte, which
+     `pack_id` cannot make, and `open` reports it (a watch's own handles are always
+     in range). The input thread's drop waits at most `JOIN_BOUND` (1 s) and then
+     detaches the pump with a warning. (d) There is no benchmark of the hardware callback to the drain.
+   - **Bare frame counts at the edge. Done (4c).** `MidiIn::poll_block` and
+     `ClockMaster::tick` take the block as `Samples`. In `outbound/jr_timestamp.rs`
+     the origin and the frame a tick is read at are `Frame` (`JrClock::ticks_at`,
+     `JrClockEmitter::due`, `JrStream::origin`, `JrStamper::stamp_block`), and the
+     counts are `Samples` (`JrClockEmitter::interval`, `JrStamper::block_span`,
+     `JrStream::stamp_span`); the session's `send_stamped_span` and `origin` follow.
+     `HardwareMidiDrain::cycle_start_read_all_inputs` still takes `nframes: usize`,
+     and goes with the drain's rebuild (E5).
 - **Stage 3d. The helpers the plugin crates drop their own for. Done.** The float
    converters (`u7_to_unit_f32`, `u16_to_unit_f32`, `u32_to_unit_f32`,
    `bend_u14_to_signed_f32`, `bend_u32_to_signed_f32`, `unit_f32_to_u16`,
@@ -2112,7 +2173,7 @@ at any point; its CI codec move and `ci`/`negotiate` deletion (4a, done) shrink
    E1 the tap in `tutti-graph` and its session API, E2 the inlet (built), E3 the hardware
    out on a tap (`MidiOutNode` deleted, built), E4 the queues on the inlet
    (`MidiQueueNode`, `TimedQueueNode` deleted), E5 `MidiInputNode` split, after
-   `ClockMap`. E1 and E2 touch `tutti-graph`. Behaviour change: a tap's frame is
+   `ClockMap` (built in stage 4c part 1). E1 and E2 touch `tutti-graph`. Behaviour change: a tap's frame is
    a `u64` where `MidiOutNode`'s stamp was a wrapping `u32`, and a note-off has
    room past the ring's capacity.
 7. **Capabilities** (§9).

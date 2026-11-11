@@ -778,7 +778,7 @@ fn the_editor_is_created_once_and_destroyed_once() {
     let mut plugin = load(Arc::default());
     let parent = {
         // SAFETY: the reference plugin never dereferences its parent.
-        unsafe { tutti_plugin_types::WindowHandle::from_raw(std::ptr::null_mut()) }
+        unsafe { tutti_plugin_types::WindowHandle::from_u64(0) }
     };
 
     assert_eq!(
@@ -1031,7 +1031,7 @@ fn dropping_a_plugin_destroys_its_open_editor() {
     let mut plugin = load(Arc::default());
     let parent = {
         // SAFETY: the reference plugin never dereferences its parent.
-        unsafe { tutti_plugin_types::WindowHandle::from_raw(std::ptr::null_mut()) }
+        unsafe { tutti_plugin_types::WindowHandle::from_u64(0) }
     };
     plugin
         .open_embedded(&main_thread(), &parent, 1.0)
@@ -1060,7 +1060,7 @@ fn a_drop_off_the_main_thread_is_destroyed_on_the_main_threads_next_tick() {
     let mut plugin = load(Arc::default());
     let parent = {
         // SAFETY: the reference plugin never dereferences its parent.
-        unsafe { tutti_plugin_types::WindowHandle::from_raw(std::ptr::null_mut()) }
+        unsafe { tutti_plugin_types::WindowHandle::from_u64(0) }
     };
     plugin.open_embedded(&main, &parent, 1.0).expect("opens");
     let before = tutti_clap_ffi::off_thread_drops();

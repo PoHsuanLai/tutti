@@ -95,7 +95,10 @@ that pays, and the compiler packs tasks too cheap to dispatch alone.
   `add_event_inlet` (`tutti-session`). No rate to refuse: a `Moment` carries
   its own. A note-off or panic controller (`Ump::is_panic_controller`) is kept
   over any other event; four counts (`lost`, `evicted`, `refused`, `late`);
-  its fork is silent, unlike the audio inlet's.
+  its fork is silent, unlike the audio inlet's. A producer holding an OS time gets
+  its `Moment` from `tutti_midi_runtime::ClockMap` (pure: readings of the OS
+  `Instant` and the graph's `Frame` in, `frame_at`/`moment_at`/`os_at` out; doc 017
+  §5, "Timing at the edge", has the rule and its bound).
 - Doc 013 records the defects found and the types that address them. Update
   it when the code it describes or a decision changes.
 - **Main-thread entries take a token.** An editor, timer, run-loop, state or
@@ -187,9 +190,12 @@ and the docs.rs build on a dated nightly); `cargo xtask check-loom` runs clippy 
 - **`unsafe`:** a library with none carries `#![forbid(unsafe_code)]`. Plugin FFI
   `unsafe` lives only in the per-format `-ffi` crates (`tutti-clap-ffi`,
   `tutti-vst3-ffi`, `tutti-au-ffi` and `tutti-vst2-ffi`); host crates forbid
-  `unsafe` (`scripts/check-plugin-ffi.sh`, design 016 §2.9). The one `unsafe` outside
-  them is the in-process editor's `WindowHandle` decode (the raw pointer of
-  `PluginHandle::open_editor`), why `tutti-plugin-host` is `deny`, not `forbid`.
+  `unsafe` (`scripts/check-plugin-ffi.sh`, design 016 §2.9). A higher crate calls a
+  safe wrapper and forbids `unsafe`: a parent window is
+  `WindowHandle::from_window(&impl HasWindowHandle)` (winit, Bevy, any
+  `raw-window-handle` 0.6 window), and the one `unsafe` constructor,
+  `WindowHandle::from_u64`, is for a number that crossed a process edge. Test-only
+  `unsafe` is `tutti-fixtures`' (`ScopedEnv`, `StandInWindow`).
 - **Toolchain:** `rust-toolchain.toml` pins the stable every gate runs on,
   and `Cargo.lock` is committed (`--locked` everywhere). To bump, edit
   `rust-toolchain.toml`, run `cargo xtask ci`, and fix the new lints in the same PR.
@@ -686,8 +692,11 @@ list (normal and build edges; dev-dependencies may go anywhere).
   time, so the de-zipper is the caller's; the nodes, the `Param` reads and the smoother stay in `tutti-nodes`' `spatial` module), the SVF, ladder and Linkwitz-Riley filters (and their `Real`
   float) and their models of doc 024 (`SvfModel`, an `Lti`; the small-signal
   `LadderModel`; `CrossoverModel`, the crossover's design apart from its state, a
-  multi-output `Lti`; `Biquad`, the shared second-order section; the realizations
-  and `Cadence::every(16)`'s use in the nodes (doc 024 §4.5) are step 2b's), the dynamics curves, followers and kernels, the partitioned
+  multi-output `Lti`; `Biquad`, the shared second-order section; the filters' one
+  `Design`, `Filter<K>` over a `ChannelKernel` (`Svf<F>`, `Ladder<F>`, `CrossoverTree`, with
+  `SvfDesign<F>`, `LadderDesign<F>` and `CrossoverDesign` its aliases), whose channels run
+  alone under `PerChannel`, with the glide of their coefficients and the held lane-group path
+  written once), the dynamics curves, followers and kernels, the partitioned
   convolver, the delay line and swept-delay kernel, the cubic Hermite kernel, the phaser's all-pass chain, the
   block ramps, the export resampler and its streaming
   bookkeeping (`StreamingResampler`, `ChunkSize`), the dither noise
@@ -698,8 +707,10 @@ list (normal and build edges; dev-dependencies may go anywhere).
   model of doc 024 (the `model` module, exported at the root: a `Design` maps controls
   to its `Model`, a `System` (`latency`, `tail`) and, for a linear time-invariant
   one, an `Lti` (`frequency_response`, `spectral_radius`, `l1_norm`, `hinf_norm`
-  and a stability test, all bounds stated as such); a `Realization<M>` is one
-  realization of a model and an `Effect<M>` its planar block shape, prepared from a
+  and a stability test, all bounds stated as such); a `Realization<M>` (`Clone`, with a
+  default `fresh`) is one realization of a model and an `Effect<M>` its planar block shape;
+  every effect moved onto it is the one `Realized<K>` over a `Kernel` (its per-frame math),
+  whose coefficients approach each new model by a `Glide` (`Lerp`, `Approach`); prepared from a
   `Setup` and the design's `Sizes`, moved to each model by `retarget`; `Ceiling<R>`
   over a family's `Range` (`MaxDecay` for a reverb), `Effort` and `Cadence` (a period and an anchor: only a
   stream-anchored one is block independent) are the
@@ -794,9 +805,8 @@ list (normal and build edges; dev-dependencies may go anywhere).
   alone among workspace crates (`scripts/check-layout.sh`): no `tutti-plugin-ipc`,
   no format host as a normal dependency, and not `tutti-plugin`. It keeps every
   module private (`tutti_plugin_host::PluginHandle`; CI runs the per-module path
-  gate on it), is `publish = false` and has no `bevy` feature. It is
-  `#![deny(unsafe_code)]` rather than forbid: `PluginHandle::open_editor`'s one
-  `WindowHandle` decode is its only `unsafe` (see design 021 §10.3). What it
+  gate on it), is `publish = false`, has no `bevy` feature and is
+  `#![forbid(unsafe_code)]`. What it
   exports for the served node in `tutti-plugin` (`ParamDelivery`,
   `TransportSource`, `TransportWalk`, ...) says who it is for. Its in-process
   tests load the reference VST2 plugin through a dev-dependency on

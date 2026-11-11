@@ -170,7 +170,7 @@ fn refill_one(
     if play < from || (play > to.saturating_add(far) && !parked && end.is_none_or(|end| play < end))
     {
         writer.reset(play.saturating_sub(HISTORY_FRAMES));
-        if writer.content().switch_at != 0 {
+        if writer.content().switch_at.is_some() {
             let mut content = Content::new(writer.content().current.clone());
             content.epoch = writer.content().epoch + 1;
             ring.publish_map(RingMap::plain(content.current.arrangement(), content.epoch));

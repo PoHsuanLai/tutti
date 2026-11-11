@@ -2,6 +2,7 @@
 
 use std::ffi::{CStr, CString};
 use std::os::raw::c_int;
+use std::time::Duration;
 
 use crate::error::Result;
 use tutti_alsa_ump_sys as sys;
@@ -138,6 +139,64 @@ impl SeqClient {
         }
     }
 
+    /// Starts a queue of this client's own and makes `port` stamp each event it
+    /// receives with that queue's real time, at the moment the kernel delivers
+    /// it. The queue is the clock [`QueueClock::now`] reads, and closes with the
+    /// client.
+    pub fn stamp_port(&self, port: c_int) -> Result<QueueClock> {
+        // SAFETY: `self.seq` is open.
+        let queue = check(
+            unsafe { sys::snd_seq_alloc_queue(self.seq) },
+            "snd_seq_alloc_queue",
+        )?;
+        // SAFETY: `self.seq` is open; a NULL event is the call's documented
+        // "send directly".
+        check(
+            unsafe {
+                sys::snd_seq_control_queue(
+                    self.seq,
+                    queue,
+                    sys::SND_SEQ_EVENT_START,
+                    0,
+                    std::ptr::null_mut(),
+                )
+            },
+            "snd_seq_control_queue",
+        )?;
+        // The control event is buffered, not sent, until the buffer is drained.
+        // SAFETY: `self.seq` is open.
+        check(
+            unsafe { sys::snd_seq_drain_output(self.seq) },
+            "snd_seq_drain_output",
+        )?;
+        let mut info: *mut sys::snd_seq_port_info_t = std::ptr::null_mut();
+        // SAFETY: `info` is a valid out-pointer, freed on every path below;
+        // `self.seq` is open.
+        let set = unsafe {
+            check(
+                sys::snd_seq_port_info_malloc(&mut info),
+                "snd_seq_port_info_malloc",
+            )?;
+            let set = check(
+                sys::snd_seq_get_port_info(self.seq, port, info),
+                "snd_seq_get_port_info",
+            )
+            .and_then(|_| {
+                sys::snd_seq_port_info_set_timestamping(info, 1);
+                sys::snd_seq_port_info_set_timestamp_real(info, 1);
+                sys::snd_seq_port_info_set_timestamp_queue(info, queue);
+                check(
+                    sys::snd_seq_set_port_info(self.seq, port, info),
+                    "snd_seq_set_port_info",
+                )
+            });
+            sys::snd_seq_port_info_free(info);
+            set
+        };
+        set?;
+        QueueClock::new(queue)
+    }
+
     /// Creates a port on this client.
     pub fn open_port(&self, name: &str, caps: u32, kind: u32) -> Result<c_int> {
         let cname = CString::new(name).unwrap_or_else(|_| CString::new("tutti").unwrap());
@@ -146,6 +205,50 @@ impl SeqClient {
             unsafe { sys::snd_seq_create_simple_port(self.seq, cname.as_ptr(), caps, kind) },
             "snd_seq_create_simple_port",
         )
+    }
+}
+
+/// A queue's real-time clock, read through a status record kept for the
+/// purpose. Made by [`SeqClient::stamp_port`].
+pub struct QueueClock {
+    queue: c_int,
+    status: *mut sys::snd_seq_queue_status_t,
+}
+
+// SAFETY: the record is plain memory alsa-lib fills on a call; it is owned by
+// this value alone and used through `&mut self`.
+unsafe impl Send for QueueClock {}
+
+impl QueueClock {
+    fn new(queue: c_int) -> Result<Self> {
+        let mut status: *mut sys::snd_seq_queue_status_t = std::ptr::null_mut();
+        // SAFETY: `status` is a valid out-pointer.
+        check(
+            unsafe { sys::snd_seq_queue_status_malloc(&mut status) },
+            "snd_seq_queue_status_malloc",
+        )?;
+        Ok(Self { queue, status })
+    }
+
+    /// The queue's real time now, as the time since it started; `None` if the
+    /// sequencer will not say. `seq` is the client that made the queue.
+    pub fn now(&mut self, seq: &SeqClient) -> Option<Duration> {
+        // SAFETY: `seq` is open and `status` is a live record.
+        let rc = unsafe { sys::snd_seq_get_queue_status(seq.seq, self.queue, self.status) };
+        if rc < 0 {
+            return None;
+        }
+        // SAFETY: `status` was just filled; the pointer is into it and read at
+        // once.
+        let time = unsafe { sys::snd_seq_queue_status_get_real_time(self.status).as_ref() }?;
+        Some(Duration::new(u64::from(time.tv_sec), time.tv_nsec))
+    }
+}
+
+impl Drop for QueueClock {
+    fn drop(&mut self) {
+        // SAFETY: allocated by `new`, freed once.
+        unsafe { sys::snd_seq_queue_status_free(self.status) };
     }
 }
 

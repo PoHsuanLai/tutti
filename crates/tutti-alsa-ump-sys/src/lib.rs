@@ -46,6 +46,20 @@ pub enum snd_seq_client_info_t {}
 #[derive(Debug)]
 pub enum snd_seq_port_info_t {}
 
+/// Opaque `snd_seq_queue_status_t`.
+#[derive(Debug)]
+pub enum snd_seq_queue_status_t {}
+
+/// `snd_seq_real_time_t`: a time on a queue's real-time clock.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct snd_seq_real_time_t {
+    /// Whole seconds.
+    pub tv_sec: c_uint,
+    /// Nanoseconds past the second.
+    pub tv_nsec: c_uint,
+}
+
 /// A sequencer address: `(client, port)`.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -68,9 +82,10 @@ pub struct snd_seq_addr_t {
 /// ```
 ///
 /// `time` is declared as an opaque 8-byte blob rather than the real
-/// `snd_seq_timestamp_t` union: this backend only ever sends events with
-/// "direct" dispatch (no queue), so the field is written as zero and never read.
-/// Declaring a union we do not use would be layout risk for nothing.
+/// `snd_seq_timestamp_t` union. A sent event is "direct" (no queue), so the
+/// field is zero; a received one carries the port's timestamp, read through
+/// [`real_time`](snd_seq_ump_event_t::real_time) when `flags` say it is real
+/// time. Declaring the union would be layout risk for nothing.
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
 pub struct snd_seq_ump_event_t {
@@ -82,7 +97,8 @@ pub struct snd_seq_ump_event_t {
     pub tag: u8,
     /// Queue id; `SND_SEQ_QUEUE_DIRECT` for immediate dispatch.
     pub queue: u8,
-    /// `snd_seq_timestamp_t`, unused — see the type doc.
+    /// `snd_seq_timestamp_t`: a union of a tick and a [`snd_seq_real_time_t`].
+    /// Read through [`snd_seq_ump_event_t::real_time`].
     pub time: [u8; 8],
     /// Sending address.
     pub source: snd_seq_addr_t,
@@ -90,6 +106,29 @@ pub struct snd_seq_ump_event_t {
     pub dest: snd_seq_addr_t,
     /// The UMP words. A message is 1–4 of them; the rest are zero.
     pub ump: [u32; 4],
+}
+
+impl snd_seq_ump_event_t {
+    /// The event's timestamp on its queue's real-time clock, when `flags` mark
+    /// it as one (`SND_SEQ_TIME_STAMP_REAL`; a tick stamp, or none, is `None`).
+    #[must_use]
+    pub fn real_time(&self) -> Option<snd_seq_real_time_t> {
+        if self.flags & SND_SEQ_TIME_STAMP_MASK != SND_SEQ_TIME_STAMP_REAL {
+            return None;
+        }
+        let word = |at: usize| {
+            u32::from_ne_bytes([
+                self.time[at],
+                self.time[at + 1],
+                self.time[at + 2],
+                self.time[at + 3],
+            ])
+        };
+        Some(snd_seq_real_time_t {
+            tv_sec: word(0),
+            tv_nsec: word(4),
+        })
+    }
 }
 
 impl Default for snd_seq_ump_event_t {
@@ -117,6 +156,9 @@ pub const SND_SEQ_CLIENT_SYSTEM: c_int = 0;
 /// whenever a client or port starts, exits or changes.
 pub const SND_SEQ_PORT_SYSTEM_ANNOUNCE: c_int = 1;
 
+/// `SND_SEQ_EVENT_START` — start a queue.
+pub const SND_SEQ_EVENT_START: c_int = 30;
+
 /// `SND_SEQ_EVENT_CLIENT_START` — announced when a client opens; the event's data
 /// begins with its `snd_seq_addr_t`.
 pub const SND_SEQ_EVENT_CLIENT_START: u8 = 60;
@@ -143,6 +185,13 @@ pub const SND_SEQ_EVENT_PORT_CHANGE: u8 = 65;
 /// the destination explicitly *on top of* a subscription is rejected with
 /// `-EINVAL`.
 pub const SND_SEQ_ADDRESS_SUBSCRIBERS: u8 = 254;
+
+/// `SND_SEQ_TIME_STAMP_MASK`: the bit of an event's `flags` that says whether
+/// `time` is a tick or a real time.
+pub const SND_SEQ_TIME_STAMP_MASK: u8 = 1 << 0;
+
+/// `SND_SEQ_TIME_STAMP_REAL`: `time` is a [`snd_seq_real_time_t`].
+pub const SND_SEQ_TIME_STAMP_REAL: u8 = 1 << 0;
 
 /// `SND_SEQ_QUEUE_DIRECT` — dispatch immediately instead of scheduling.
 ///
@@ -314,6 +363,46 @@ unsafe extern "C" {
         port: c_int,
         info: *mut snd_seq_port_info_t,
     ) -> c_int;
+    /// Whether events delivered to the port carry a timestamp.
+    pub fn snd_seq_port_info_set_timestamping(info: *mut snd_seq_port_info_t, enable: c_int);
+    /// Whether that timestamp is real time (not ticks).
+    pub fn snd_seq_port_info_set_timestamp_real(info: *mut snd_seq_port_info_t, real: c_int);
+    /// The queue the timestamp is read from.
+    pub fn snd_seq_port_info_set_timestamp_queue(info: *mut snd_seq_port_info_t, queue: c_int);
+
+    // Queues.
+    /// Create a queue owned by `seq`; its id, or negative. The sequencer frees
+    /// it when the client closes.
+    pub fn snd_seq_alloc_queue(seq: *mut snd_seq_t) -> c_int;
+    /// Send queue `q` the control event `type_` (`SND_SEQ_EVENT_START`...) with
+    /// `value`. `ev` may be NULL, which sends it directly. (`snd_seq_start_queue`
+    /// is a header macro over this, so it is not a symbol.)
+    pub fn snd_seq_control_queue(
+        seq: *mut snd_seq_t,
+        q: c_int,
+        type_: c_int,
+        value: c_int,
+        ev: *mut c_void,
+    ) -> c_int;
+    /// Send what `snd_seq_control_queue` and other buffered output left in the
+    /// client's output buffer; the count still buffered, or negative.
+    pub fn snd_seq_drain_output(seq: *mut snd_seq_t) -> c_int;
+    /// Allocate a queue-status record; free it with `snd_seq_queue_status_free`.
+    pub fn snd_seq_queue_status_malloc(ptr: *mut *mut snd_seq_queue_status_t) -> c_int;
+    /// Free a record from `snd_seq_queue_status_malloc`.
+    pub fn snd_seq_queue_status_free(ptr: *mut snd_seq_queue_status_t);
+    /// Fill `status` with queue `q`'s state now.
+    pub fn snd_seq_get_queue_status(
+        seq: *mut snd_seq_t,
+        q: c_int,
+        status: *mut snd_seq_queue_status_t,
+    ) -> c_int;
+    /// The queue's real time in `status`: a pointer into `status`, valid until
+    /// it is freed.
+    pub fn snd_seq_queue_status_get_real_time(
+        status: *const snd_seq_queue_status_t,
+    ) -> *const snd_seq_real_time_t;
+
     /// Advance `info` to the client's next port; negative when there is none.
     pub fn snd_seq_query_next_port(seq: *mut snd_seq_t, info: *mut snd_seq_port_info_t) -> c_int;
 
@@ -350,6 +439,7 @@ const _: () = {
     assert!(size_of::<snd_seq_ump_event_t>() == 32);
     assert!(align_of::<snd_seq_ump_event_t>() == 4);
     assert!(size_of::<snd_seq_addr_t>() == 2);
+    assert!(size_of::<snd_seq_real_time_t>() == 8);
     assert!(offset_of!(snd_seq_ump_event_t, type_) == 0);
     assert!(offset_of!(snd_seq_ump_event_t, flags) == 1);
     assert!(offset_of!(snd_seq_ump_event_t, tag) == 2);

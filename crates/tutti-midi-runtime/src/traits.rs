@@ -7,6 +7,7 @@
 //! sends each channel out of its own event port).
 
 use tutti_graph::UmpAt;
+use tutti_types::Samples;
 
 // -----------------------------------------------------------------------------
 // Delivery: write side (out) and read side (in)
@@ -65,7 +66,7 @@ pub trait MidiIn: Send {
     /// next block, so it defers rather than drops; one that cannot (it has
     /// consumed the events already) drops the overflow and counts it. Size
     /// `buffer` for the largest burst worth taking in one block.
-    fn poll_block(&mut self, block_size: usize, buffer: &mut [UmpAt]) -> usize;
+    fn poll_block(&mut self, block_size: Samples, buffer: &mut [UmpAt]) -> usize;
 
     /// Sizes the source for blocks of up to `events` events. Called on the
     /// control thread before the first [`poll_block`](Self::poll_block), and

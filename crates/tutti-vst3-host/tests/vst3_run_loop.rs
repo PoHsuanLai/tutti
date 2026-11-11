@@ -14,7 +14,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use tutti_fixtures::main_thread;
 
-use tutti_plugin_types::{ContentScale, MainThread, WindowHandle};
+use tutti_plugin_types::{ContentScale, MainThread};
 use tutti_vst3_ffi::{Module, Plugin};
 
 /// `core::EDITOR_*`, from the plugin's spec.
@@ -55,8 +55,8 @@ fn try_open(
     plugin: &mut Plugin,
     main: &MainThread,
 ) -> Result<Option<tutti_plugin_types::EditorSize>, tutti_vst3_ffi::EditorError> {
-    // SAFETY: the plugin ignores the handle; it is never dereferenced.
-    let parent = unsafe { WindowHandle::from_raw(std::ptr::dangling_mut()) };
+    // The plugin ignores the handle; it is never dereferenced.
+    let parent = tutti_fixtures::StandInWindow.handle();
     plugin.open_editor(main, parent, ContentScale::default())
 }
 

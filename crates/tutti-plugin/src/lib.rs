@@ -1,5 +1,6 @@
 #![doc = include_str!("../README.md")]
 #![cfg_attr(docsrs, feature(doc_cfg))]
+#![forbid(unsafe_code)]
 
 /// The errors a plugin host returns that `tutti-plugin-types` does not hold:
 /// the fork's render fault, beside the format-agnostic ones every host shares.

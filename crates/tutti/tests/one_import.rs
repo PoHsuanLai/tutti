@@ -90,8 +90,8 @@ fn a_graph_bounces_to_buffers_through_the_facade() {
     };
     let rendered = tutti::export::render_to_buffers(graph, &cfg, &tutti::transport::FrozenClock)
         .expect("a DC graph renders");
-    assert!(!rendered.planes.is_empty());
-    assert!(rendered.planes[0].iter().all(|&s| (s - 0.5).abs() < 1e-6));
+    assert!(!rendered.planes().is_empty());
+    assert!(rendered.planes()[0].iter().all(|&s| (s - 0.5).abs() < 1e-6));
 }
 
 /// A timed transport program is spelled from the prelude alone: `At`,

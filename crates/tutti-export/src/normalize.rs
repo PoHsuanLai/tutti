@@ -58,14 +58,14 @@ use crate::{render_to_buffers, render_to_file_with, write_buffers};
 ///
 /// A peak target (or a loudness ceiling) within the headroom of full scale is
 /// lowered on `Int16`/`Int24` (see `render_normalized_to_file`, "Headroom"), and
-/// [`Written::normalized`] reports the effective figure and the gain applied.
+/// [`Written::gain`] reports the gain applied and [`Written::measured`] the reading it came from.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Normalize {
     /// Bring the loudest true peak to `target` dBTP.
     ///
     /// Any audio with a reading is measurable, however quiet: a render whose
     /// true peak is -100 dBTP gets about +99 dB, and the gain is applied
-    /// (it is reported in [`Written::normalized`]). Only exact silence, a true
+    /// (it is reported in [`Written::gain`]). Only exact silence, a true
     /// peak at the floor ([`Db::FLOOR`]), is refused
     /// ([`Error::Unmeasurable`](crate::Error::Unmeasurable)); there is no
     /// invented threshold between the two.
@@ -147,17 +147,27 @@ impl Normalize {
     /// peak one): writing a hiss at full scale, or the file un-normalized, and
     /// reporting success is silent — nothing in [`Written`] records it.
     pub fn gain_for_rendered(&self, rendered: &crate::Rendered) -> Result<Db> {
+        Ok(self.gain_for(&self.measure(rendered)?))
+    }
+
+    /// The reading [`gain_for_rendered`](Self::gain_for_rendered) takes its
+    /// gain from, refused when it is not a measurement of the programme.
+    ///
+    /// # Errors
+    ///
+    /// As [`gain_for_rendered`](Self::gain_for_rendered).
+    fn measure(&self, rendered: &crate::Rendered) -> Result<tutti_measure::Loudness> {
         let unmeasurable = |reason| crate::Error::Unmeasurable {
             channels: rendered.layout(),
-            sample_rate: rendered.sample_rate,
+            sample_rate: rendered.sample_rate(),
             reason,
         };
-        let meter = LoudnessConfig::new(rendered.sample_rate, rendered.layout());
+        let meter = LoudnessConfig::new(rendered.sample_rate(), rendered.layout());
         let samples = rendered.interleaved();
         let reading = measure_loudness(&meter, Interleaved::new(&samples, rendered.layout()))
             .ok_or_else(|| unmeasurable(Unmeasured::Format))?;
         self.check(&reading).map_err(unmeasurable)?;
-        Ok(self.gain_for(&reading))
+        Ok(reading)
     }
 
     /// Whether `reading` measures the programme, for what this mode aims at.
@@ -261,14 +271,14 @@ const ABSOLUTE_GATE_LUFS: f32 = -70.0;
 /// (an LSB for no dither, 1.5 for rectangular, 2 for triangular): a peak
 /// normalized to 0 dBTP, plus dither, would be clamped by the quantizer.
 /// A target already under the limit is unchanged. [`Written::clipped_samples`]
-/// counts what is clamped all the same, and [`Written::normalized`] reports the
-/// effective target.
+/// counts what is clamped all the same, and [`Written::gain`] is the gain to the
+/// lowered target.
 ///
 /// # Quiet audio
 ///
 /// [`Normalize::Peak`] refuses only exact silence. Near-silence (-100 dBTP, say)
 /// is audio with a reading and gets its gain (about +99 dB); read
-/// [`Written::normalized`] to see what was applied.
+/// [`Written::gain`] to see what was applied.
 ///
 /// # Errors
 ///
@@ -316,7 +326,7 @@ pub fn render_normalized_to_file_with(
 
     // Convert first, so what is measured is what is written.
     let (mut rendered, config) = match config.resample {
-        Some(r) if r.target_rate.get().round() != rendered.sample_rate.get().round() => {
+        Some(r) if r.target_rate.get().round() != rendered.sample_rate().get().round() => {
             let converted = crate::process::resample_rendered(&rendered, r)?;
             // The conversion has happened, so the config must stop asking for
             // it — but `render.sample_rate` has to move with it. The header rate
@@ -325,19 +335,16 @@ pub fn render_normalized_to_file_with(
             // pre-conversion rate: right audio, wrong speed.
             let mut cfg = config.clone();
             cfg.resample = None;
-            cfg.render.sample_rate = converted.sample_rate;
+            cfg.render.sample_rate = converted.sample_rate();
             (converted, std::borrow::Cow::Owned(cfg))
         }
         _ => (rendered, std::borrow::Cow::Borrowed(config)),
     };
 
     let normalize = normalize.within(&config);
-    let gain = normalize.gain_for_rendered(&rendered)?;
+    let measured = normalize.measure(&rendered)?;
+    let gain = normalize.gain_for(&measured);
     rendered.apply_gain(gain);
-    let target = match normalize {
-        Normalize::Peak { target } => target,
-        Normalize::Lufs { ceiling, .. } => ceiling,
-    };
 
     crate::encode::encode_planes(
         &rendered,
@@ -347,22 +354,11 @@ pub fn render_normalized_to_file_with(
     )
     .map(|outcome| {
         outcome.map(|mut written| {
-            written.normalized = Some(Normalized { gain, target });
+            written.gain = Some(gain);
+            written.measured = Some(measured);
             written
         })
     })
-}
-
-/// What a normalizing export did ([`Written::normalized`]).
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct Normalized {
-    /// The gain applied to the render.
-    pub gain: Db,
-    /// The effective limit the gain was chosen against, in dBTP: the peak
-    /// target of [`Normalize::Peak`], or the ceiling of [`Normalize::Lufs`],
-    /// after the headroom an integer format keeps was taken off it (so a 0 dBTP
-    /// request on `Int16` reads a little under 0 here).
-    pub target: Db,
 }
 
 #[cfg(test)]

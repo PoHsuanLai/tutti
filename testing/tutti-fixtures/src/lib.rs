@@ -33,9 +33,13 @@
 //! against behaviour the tests no longer set, and can silently reverse a
 //! mutation-verification result.
 
-#![forbid(unsafe_code)]
+// Test-only `unsafe` the suites need lives here, each behind a safe call with
+// its argument at the site (`ScopedEnv`, `StandInWindow`); `deny` so every site is
+// a named `allow`.
+#![deny(unsafe_code)]
 
 mod digest;
+mod env;
 mod machine_lock;
 pub mod midi;
 #[cfg(feature = "plugin")]
@@ -44,9 +48,10 @@ mod range_contract;
 pub mod sf2;
 
 pub use digest::{Fnv, Noise, noise};
+pub use env::ScopedEnv;
 pub use machine_lock::{MachineLock, machine_lock};
 #[cfg(feature = "plugin")]
-pub use plugin::{Activation, Active, Whole, main_thread};
+pub use plugin::{Activation, Active, StandInWindow, Whole, main_thread};
 pub use range_contract::{RangeContract, check_range_contract};
 
 use std::path::{Path, PathBuf};

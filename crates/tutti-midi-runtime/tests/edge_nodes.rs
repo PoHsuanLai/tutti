@@ -127,7 +127,7 @@ impl Wire {
 }
 
 impl MidiIn for Wire {
-    fn poll_block(&mut self, _block_size: usize, buffer: &mut [UmpAt]) -> usize {
+    fn poll_block(&mut self, _block_size: Samples, buffer: &mut [UmpAt]) -> usize {
         let batch = self.0.pop_front().unwrap_or_default();
         let n = batch.len().min(buffer.len());
         buffer[..n].copy_from_slice(&batch[..n]);

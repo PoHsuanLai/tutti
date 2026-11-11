@@ -682,7 +682,9 @@ fn a_poll_into_a_small_buffer_defers_and_drops_nothing() {
     }
     let mut drain = drain_of(&manager);
     let mut buffer = [(Offset::ZERO, noop()); 10];
-    let taken: Vec<usize> = (0..4).map(|_| drain.poll_block(512, &mut buffer)).collect();
+    let taken: Vec<usize> = (0..4)
+        .map(|_| drain.poll_block(Samples(512), &mut buffer))
+        .collect();
     assert_eq!(taken, vec![10, 10, 10, 0]);
     assert_eq!(manager.dropped_events(), 0);
 }

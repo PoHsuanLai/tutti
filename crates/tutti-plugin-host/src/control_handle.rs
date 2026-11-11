@@ -547,17 +547,7 @@ impl PluginHandle {
         scale: ContentScale,
     ) -> Result<EditorSize, EditorError> {
         let control = self.editor_route()?;
-        let raw = parent
-            .window_handle()
-            .map_err(|e| EditorError::PluginError(format!("failed to get window handle: {e}")))?
-            .as_raw();
-        let ptr = crate::window::extract_platform_ptr(raw)?;
-        // SAFETY: `ptr` is the platform-native window pointer (NSView*, HWND,
-        // X11 window id) extracted from a caller-supplied `RawWindowHandle`,
-        // alive for the call; the plugin's format only forwards it to the
-        // plugin's own embed call.
-        #[allow(unsafe_code, reason = "the one window decode; see the SAFETY above")]
-        let parent = unsafe { WindowHandle::from_ptr(ptr) };
+        let parent = WindowHandle::from_window(&parent)?;
         Self::editor_call(control, |c| c.open_editor(main, parent, scale))
     }
 

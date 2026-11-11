@@ -104,10 +104,8 @@ impl Node for ClockNode {
         let mut dropped = 0u64;
         for (start, seg) in cx.env.segments() {
             let base = start.get();
-            self.master.tick(
-                &seg.transport,
-                seg.block_len.get(),
-                &mut |(at, ump): UmpAt| {
+            self.master
+                .tick(&seg.transport, seg.block_len, &mut |(at, ump): UmpAt| {
                     // Never grows on the audio thread: past the capacity the
                     // rest are refused, as the port would refuse them, and
                     // counted for the host.
@@ -116,8 +114,7 @@ impl Node for ClockNode {
                     if !pending.push((at, ump)) {
                         dropped += 1;
                     }
-                },
-            );
+                });
         }
         self.master.count_dropped(dropped);
         in_offset_order(self.pending.as_mut_slice());

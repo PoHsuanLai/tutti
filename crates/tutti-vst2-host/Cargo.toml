@@ -36,6 +36,8 @@ tutti-ump = { path = "../tutti-ump", default-features = false }
 tutti-vst2-ffi = { path = "../tutti-vst2-ffi" }
 
 [dev-dependencies]
+# The README's editor example takes any `raw-window-handle` window.
+raw-window-handle = "0.6"
 tutti-vst2-ffi = { path = "../tutti-vst2-ffi", features = ["test-support"] }
 # Finds the reference plugins and the plugin-server beside the test binary.
 tutti-fixtures = { path = "../../testing/tutti-fixtures", features = ["plugin"] }

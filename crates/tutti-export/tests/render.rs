@@ -441,8 +441,8 @@ fn buffers_report_their_own_shape() {
     )
     .unwrap();
     assert_eq!(out.channels(), 4, "a quad request yields four planes");
-    assert_eq!(out.sample_rate.get(), 44100.0);
-    assert!(out.planes.iter().all(|p| p.len() == out.frames().get()));
+    assert_eq!(out.sample_rate().get(), 44100.0);
+    assert!(out.planes().iter().all(|p| p.len() == out.frames().get()));
 }
 
 /// Normalization composes: measure with tutti-measure, apply the gain it
@@ -458,7 +458,7 @@ fn a_caller_can_compose_normalization() {
     long.render.duration_seconds = Seconds(2.0);
     let mut out = render_to_buffers(dc(RATE), &long, &FrozenClock).unwrap();
 
-    let cfg = LoudnessConfig::new(out.sample_rate, ChannelLayout::STEREO);
+    let cfg = LoudnessConfig::new(out.sample_rate(), ChannelLayout::STEREO);
     let flat = out.interleaved();
     let before = measure_loudness(&cfg, Interleaved::new(&flat, ChannelLayout::STEREO)).unwrap();
     let gain = before.gain_to(Db(-14.0), Db(-1.0));
@@ -625,7 +625,7 @@ fn write_buffers_resamples_from_the_frames_own_rate() {
     render_cfg.render.duration_seconds = Seconds(1.0);
     let audio =
         render_to_buffers(dc(render_cfg.render.sample_rate), &render_cfg, &FrozenClock).unwrap();
-    assert_eq!(audio.sample_rate.get(), 96_000.0);
+    assert_eq!(audio.sample_rate().get(), 96_000.0);
 
     // ...then write with a config whose `render` half is left at its DEFAULT
     // 44100 — the case the doc tells a caller is fine to ignore.
@@ -1312,7 +1312,7 @@ fn four_buses() -> RenderGraph {
 fn first_frame(graph: &mut RenderGraph, width: u16) -> Result<Vec<f32>, tutti_export::Error> {
     let cfg = config(Format::Wav(Pcm::Float32), ChannelLayout::from(width));
     let out = render_to_buffers(graph, &cfg, &FrozenClock)?;
-    Ok(out.planes.iter().map(|p| p[0]).collect())
+    Ok(out.planes().iter().map(|p| p[0]).collect())
 }
 
 /// A declared root is what the file is placed from: four `Discrete` buses into
@@ -1396,7 +1396,7 @@ fn silence_planes_carry_no_dither() {
     cfg.dither = tutti_export::Dither::Triangular;
     let out = render_to_buffers(built(g, RATE), &cfg, &FrozenClock).unwrap();
     assert!(out.frames().get() > 0);
-    assert!(out.planes.iter().flatten().all(|s| s.to_bits() == 0));
+    assert!(out.planes().iter().flatten().all(|s| s.to_bits() == 0));
 }
 
 /// Rings 4000 frames at most (its ceiling), and reports 100 each block.

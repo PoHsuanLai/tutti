@@ -8,6 +8,7 @@
 //! The streamer holds one [`record`] per open stream and changes the table by
 //! a pure step; the control side of a stream is [`Stream`], whose drop ends it.
 
+mod block;
 mod cache;
 mod cells;
 mod command;
@@ -36,7 +37,9 @@ pub(crate) use config::BufferConfig;
 pub(crate) use handlers::SessionRate;
 #[cfg(test)]
 pub(crate) use loops::GUARD_FRAMES;
-pub(crate) use loops::{Arrangement, RingControl, RingMap};
+#[cfg(test)]
+pub(crate) use loops::RingControl;
+pub(crate) use loops::{Arrangement, RingMap};
 pub(crate) use prefetch::SharedReader;
 #[cfg(any(test, feature = "test-support"))]
 pub use thread::ByHand;
@@ -50,7 +53,9 @@ pub(crate) type StreamerSender = crossbeam_channel::Sender<StreamerCommand>;
 
 // The streamer's public face: the handle a host holds to drive disk streaming,
 // and the one failure every stream-control command can report.
-pub use control::{StreamFile, StreamerGone};
+pub use block::Block;
+pub(crate) use block::RingReader;
+pub use control::{LoopError, StreamFile, StreamerGone};
 pub use open::{Open, OpenError, Opening, Placement, RefusedPlacement, StreamReader};
 pub(crate) use status::StatusCell;
 pub use status::{StreamFault, StreamPhase, StreamStatus};

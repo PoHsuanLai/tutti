@@ -31,7 +31,7 @@ use super::io::refill::Refilled;
 use super::prefetch::RegionOut;
 use super::status::{Served, StatusCell, StreamFault};
 use crate::voice::Direction;
-use tutti_types::{SampleRate, SrcRatio};
+use tutti_types::{SampleRate, Samples, SrcRatio};
 
 /// Where a stream is in its life. A closed stream has no record, so there is
 /// no `Closing`: the step that closes it removes the record.
@@ -61,7 +61,7 @@ pub(super) struct Record {
     file_rate: SampleRate,
     /// The file's length in frames, as the stream found it: what a loop's end
     /// is clamped to, as every tier clamps it (`LoopSpan::new`).
-    pub(super) file_frames: u64,
+    pub(super) file_frames: Samples,
     /// Keeps the streamed wave pinned in the cache for exactly the stream's
     /// life, so a fully-buffered (hence cold) stream is never evicted
     /// mid-read.
@@ -81,7 +81,7 @@ impl Record {
         out: RegionOut,
         cells: Arc<Cells>,
         file_rate: SampleRate,
-        file_frames: u64,
+        file_frames: Samples,
         pin: StreamPin,
         status: Arc<StatusCell>,
     ) -> Self {

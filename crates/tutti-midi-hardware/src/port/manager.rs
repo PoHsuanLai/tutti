@@ -660,12 +660,17 @@ impl tutti_midi_runtime::MidiIn for HardwareMidiDrain {
     /// Takes no more events than `buffer` holds: the rest stay in the port
     /// rings for the next block, so a small `buffer` defers events and drops
     /// none.
-    fn poll_block(&mut self, block_size: usize, buffer: &mut [UmpAt]) -> usize {
+    fn poll_block(&mut self, block_size: Samples, buffer: &mut [UmpAt]) -> usize {
         let mut written = 0usize;
-        self.read_limited(block_size, Instant::now(), buffer.len(), |_port, event| {
-            buffer[written] = event;
-            written += 1;
-        });
+        self.read_limited(
+            block_size.get(),
+            Instant::now(),
+            buffer.len(),
+            |_port, event| {
+                buffer[written] = event;
+                written += 1;
+            },
+        );
         written
     }
 

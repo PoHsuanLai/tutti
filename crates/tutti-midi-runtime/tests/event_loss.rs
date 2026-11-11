@@ -302,7 +302,7 @@ fn the_hardware_input_follows_the_block() {
 
     struct Wire(Arc<AtomicUsize>);
     impl MidiIn for Wire {
-        fn poll_block(&mut self, _: usize, _: &mut [UmpAt]) -> usize {
+        fn poll_block(&mut self, _: Samples, _: &mut [UmpAt]) -> usize {
             0
         }
         fn reserve(&mut self, events: usize) {

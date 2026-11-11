@@ -69,9 +69,10 @@ impl std::ops::Deref for Rig {
 
 impl Rig {
     fn tick(&self, block_size: usize) {
-        self.cm.tick(&self.transport.now(), block_size, &mut |e| {
-            let _ = self.out.queue(&[e]);
-        });
+        self.cm
+            .tick(&self.transport.now(), Samples(block_size), &mut |e| {
+                let _ = self.out.queue(&[e]);
+            });
     }
 }
 

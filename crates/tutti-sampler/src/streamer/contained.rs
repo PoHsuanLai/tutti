@@ -8,7 +8,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
-use tutti_types::{Beat, Bpm};
+use tutti_types::{Beat, Bpm, Samples};
 
 use super::command::StreamId;
 use super::decode::Seams;
@@ -16,6 +16,11 @@ use super::status::{StreamFault, StreamPhase};
 use super::*;
 use crate::testing::{MockTransport, play, prepared, settle, settle_threaded};
 use crate::{DiskStreamerConfig, DiskVoice, OpenError};
+
+/// The frames `a..e`, as a block's claimed range.
+fn span(a: u64, e: u64) -> std::ops::Range<Samples> {
+    Samples::new(a as usize)..Samples::new(e as usize)
+}
 
 const WAIT: Duration = Duration::from_secs(10);
 
@@ -204,7 +209,7 @@ fn the_end_of_the_file_is_ended_and_a_loop_has_none() {
     );
 
     // The reader plays near the end: the refill appends the last frames.
-    drop(reader.pos.claim(7_900, [(7_900, 7_904), (0, 0)]));
+    drop(reader.block(Samples::new(7_900), [span(7_900, 7_904), span(0, 0)]));
     let _ = sampler.step_until_settled(1_000);
     assert_eq!(stream.status().phase, StreamPhase::Ended);
 
@@ -318,11 +323,10 @@ fn a_panicking_decode_faults_only_its_stream(threaded: bool) {
 
         armed.store(true, Ordering::SeqCst);
         for (_, reader) in &mut open {
-            drop(
-                reader
-                    .pos
-                    .claim(near_end, [(near_end, near_end + 4), (0, 0)]),
-            );
+            drop(reader.block(
+                Samples::new(near_end as usize),
+                [span(near_end, near_end + 4), span(0, 0)],
+            ));
         }
 
         let status = |open: &[(Stream, StreamReader)], i: usize| open[i].0.status().phase;
@@ -483,13 +487,13 @@ fn a_file_that_cannot_seek_opens_through_the_decode_lane() {
             stream.status().phase,
             StreamPhase::Live | StreamPhase::Ended
         ));
-        let claim = reader.pos.claim(0, [(0, 8_000), (0, 0)]);
+        let claim = reader.block(Samples::new(0), [span(0, 8_000), span(0, 0)]);
         let mut sounded = false;
         for s in 0..8_000u64 {
             assert!(claim.holds(s), "frame {s} (threaded: {threaded})");
             for c in 0..2 {
                 let want = wave.at(c, s as usize);
-                assert_eq!(claim.sample(s, c), want, "frame {s} channel {c}");
+                assert_eq!(claim.frame(s).get(c), want, "frame {s} channel {c}");
                 sounded |= want != 0.0;
             }
         }
@@ -533,11 +537,10 @@ fn a_decode_held_open_does_not_stop_another_stream() {
         other => panic!("the decode is held, yet the open answered: {other:?}"),
     };
 
-    drop(
-        reader
-            .pos
-            .claim(near_end, [(near_end, near_end + 4), (0, 0)]),
-    );
+    drop(reader.block(
+        Samples::new(near_end as usize),
+        [span(near_end, near_end + 4), span(0, 0)],
+    ));
     driver.until("the other stream's refill, with the decode held", || {
         reader.ring.window().1 > before
     });

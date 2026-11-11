@@ -1,5 +1,8 @@
 #![doc = include_str!("../README.md")]
 #![cfg_attr(docsrs, feature(doc_cfg))]
+// One `unsafe` item: `WindowHandle::from_u64`, the constructor whose caller
+// vouches for a window number that crossed a process edge.
+#![deny(unsafe_code)]
 
 mod any_thread;
 mod automation;
@@ -71,8 +74,7 @@ pub use automation_mode::AutomationMode;
 pub use bend_ranges::PerNoteBendRanges;
 pub use bridge_error::{BridgeError, BridgeResult, PluginForkError};
 pub use channels::{
-    AudioBuffer, AudioBuffer32, AudioBuffer64, AudioBufferMut, BufferPtrs, MAX_BLOCK_CHANNELS,
-    Sample,
+    AudioBuffer, AudioBuffer32, AudioBuffer64, AudioBufferMut, MAX_BLOCK_CHANNELS, Sample,
 };
 pub use classification::{
     ClapFeature, PluginRole, Vst2Category, Vst3PlugType, Vst3SubCategories, clap_features_role,

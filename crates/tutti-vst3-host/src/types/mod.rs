@@ -18,7 +18,7 @@ pub use tutti_vst3_ffi::{
 };
 
 pub use tutti_plugin_types::{
-    AudioBuffer, BufferPtrs, ContentScale, EditorCapabilities, EditorSize, NoteExpressionIntValue,
+    AudioBuffer, ContentScale, EditorCapabilities, EditorSize, NoteExpressionIntValue,
     NoteExpressionType, NoteExpressionValue, ParameterChanges, ParameterPoint, ParameterQueue,
     Sample, SampleFormat, TransportInfo, WindowHandle, WireMidi,
 };

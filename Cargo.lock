@@ -3505,6 +3505,7 @@ dependencies = [
  "bitflags 2.13.2",
  "clap-sys",
  "libloading 0.8.9",
+ "raw-window-handle",
  "tempfile",
  "thiserror 2.0.21",
  "tutti-clap-ffi",
@@ -3631,6 +3632,7 @@ dependencies = [
 name = "tutti-fixtures"
 version = "0.0.1"
 dependencies = [
+ "raw-window-handle",
  "serde",
  "serde_json",
  "tempfile",
@@ -3712,6 +3714,7 @@ dependencies = [
  "coremidi",
  "coremidi-sys",
  "libc",
+ "mach2",
  "ringbuf",
  "thiserror 2.0.21",
  "tracing",
@@ -3801,7 +3804,6 @@ dependencies = [
  "libc",
  "libloading 0.8.9",
  "parking_lot",
- "raw-window-handle",
  "tempfile",
  "tracing",
  "tutti-au-host",
@@ -3966,6 +3968,7 @@ dependencies = [
  "bincode",
  "bitflags 2.13.2",
  "proptest",
+ "raw-window-handle",
  "serde",
  "serde_json",
  "tempfile",
@@ -4240,6 +4243,7 @@ dependencies = [
  "crossbeam-queue",
  "libloading 0.8.9",
  "parking_lot",
+ "raw-window-handle",
  "tempfile",
  "thiserror 2.0.21",
  "tutti-fixtures",

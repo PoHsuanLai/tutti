@@ -294,14 +294,16 @@ impl ClockMaster {
         self.mtc_fps.store(fps as u8, Ordering::Release);
     }
 
-    /// Generate the clock/timecode of `block_size` frames starting with the
+    /// Generate the clock/timecode of `block` frames starting with the
     /// transport at `transport`, handing each event (its [`Offset`] from
     /// the first of those frames) to `emit`. Call once per stretch of
     /// unchanging transport: a block, or each of its segments.
     ///
     /// Events come out in the order generated, not by offset: in each pass
     /// (the block cut at a loop wrap) the MTC quarter-frames follow its ticks.
-    pub fn tick(&self, transport: &Transport, block_size: usize, emit: &mut impl FnMut(UmpAt)) {
+    pub fn tick(&self, transport: &Transport, block: Samples, emit: &mut impl FnMut(UmpAt)) {
+        // The passes below index and split by frame count.
+        let block_size = block.get();
         // Once per block: a rate moved mid-block would split it in two. A
         // counted transport carries the rate its block runs at, and that is
         // the one its clock is rebuilt at (a master re-rated between the

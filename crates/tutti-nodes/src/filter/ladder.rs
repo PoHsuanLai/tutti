@@ -9,12 +9,12 @@
 //! ([`LadderDesign`]); the node is a [`DesignNode`] over it, and this file holds
 //! the cells and how a block reads them.
 
-use tutti_dsp::{Cadence, Design, LadderControls, LadderDesign, LadderType, Real};
+use tutti_dsp::{Ladder, LadderControls, LadderDesign, LadderType, Real};
 use tutti_types::{ChannelLayout, Drive, Hz, Resonance, UnitAddr, UnitParam};
 
-use crate::blend::NoBlend;
-use crate::params::{ControlSet, Params};
-use crate::reverb::{DesignNode, NodeDesign};
+use super::NodeKernel;
+use crate::params::ControlSet;
+use crate::reverb::DesignNode;
 
 /// A Moog-style four-stage ladder filter with resonance and drive, of any
 /// width: `N` audio inputs, `N` outputs.
@@ -22,7 +22,7 @@ use crate::reverb::{DesignNode, NodeDesign};
 /// The coefficients are solved once for every channel, and the channels'
 /// four-stage chains run side by side.
 ///
-/// Cutoff ([`Hz`]), [`Resonance`] and [`Drive`] are live [`Params`] shared
+/// Cutoff ([`Hz`]), [`Resonance`] and [`Drive`] are live [`Params`](crate::Params) shared
 /// across clones. A held value costs nothing: the model is designed again only
 /// when the cutoff or resonance moves past a small dead-band or the drive moves
 /// at all ([`LadderControls::moved_from`]). The filter is designed on a 16-frame
@@ -118,6 +118,10 @@ pub struct LadderSet(LadderType);
 impl ControlSet for LadderSet {
     type Controls = LadderControls;
 
+    fn moved(&self, applied: &LadderControls, target: &LadderControls) -> bool {
+        target.moved_from(applied)
+    }
+
     fn addrs(&self) -> &'static [UnitAddr] {
         const ADDRS: [UnitAddr; 3] = [
             UnitAddr::first(UnitParam::Cutoff),
@@ -145,20 +149,11 @@ impl ControlSet for LadderSet {
     }
 }
 
-impl<F: Real> NodeDesign for LadderDesign<F> {
-    type Params = Params<LadderSet>;
-    type Blend = NoBlend;
+impl<F: Real> NodeKernel for Ladder<F> {
+    type Set = LadderSet;
 
-    /// A filter declares an unknown tail and never parks.
-    const PARKS: bool = false;
-    const SAMPLING: Cadence = <Self as Design>::CADENCE;
-
-    fn params(&self, initial: LadderControls) -> Self::Params {
-        Params::new(LadderSet(initial.ty), &initial)
-    }
-
-    fn moved(applied: &LadderControls, target: &LadderControls) -> bool {
-        target.moved_from(applied)
+    fn set(&self, initial: &LadderControls) -> LadderSet {
+        LadderSet(initial.ty)
     }
 }
 

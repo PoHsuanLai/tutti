@@ -29,26 +29,6 @@ const INPUT_DC: f32 = 7.0;
 /// `TagPassthrough` adds the probe's tag (1.0) to channel 0.
 const LIVE: f32 = INPUT_DC + 1.0;
 
-struct Env(Vec<&'static str>);
-
-impl Env {
-    fn set(&mut self, key: &'static str, value: String) {
-        // SAFETY: the machine lock is held for the whole test, and every test
-        // that touches these variables takes it first.
-        unsafe { std::env::set_var(key, value) };
-        self.0.push(key);
-    }
-}
-
-impl Drop for Env {
-    fn drop(&mut self) {
-        for key in &self.0 {
-            // SAFETY: as in `set`.
-            unsafe { std::env::remove_var(key) };
-        }
-    }
-}
-
 /// **A plugin that answers a rate change after the bridge gave up on it
 /// still renders an offline fork, and the fork is healthy.**
 ///
@@ -64,14 +44,14 @@ impl Drop for Env {
 #[test]
 fn a_late_rate_answer_does_not_silence_an_offline_fork() {
     let _lock = machine_lock();
-    let mut env = Env(Vec::new());
+    let mut env = tutti_fixtures::ScopedEnv::new();
     env.set(
         "TUTTI_PLUGIN_SERVER",
         tutti_fixtures::plugin_server()
             .to_string_lossy()
             .into_owned(),
     );
-    env.set("TUTTI_CLAP_PROBE_RENDER_MODE", "1".to_string());
+    env.set("TUTTI_CLAP_PROBE_RENDER_MODE", "1");
     let live = PluginClient::new(
         BridgeConfig::default(),
         tutti_fixtures::clap_probe().to_path_buf(),

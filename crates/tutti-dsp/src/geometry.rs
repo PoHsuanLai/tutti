@@ -370,10 +370,6 @@ mod tests {
     /// 2048/512 is 4x overlap: exact for Hann, and a 2.1% amplitude ripple for
     /// Blackman, which needs 8x. Nothing about the grid changed — only the
     /// shape laid over it.
-    ///
-    /// Mutation check: giving `Blackman` a `cola_overlap` of 4 (which is what
-    /// its two raised-cosine neighbours use, and what an eyeballed table would
-    /// say) makes the first assertion here fail.
     #[test]
     fn a_hann_cola_grid_may_not_be_cola_for_another_window() {
         let hop = Samples(512);
@@ -434,8 +430,7 @@ mod tests {
     /// **The magnitude gain follows the window shape, not just its length.**
     ///
     /// This is what lets a display divide out the forward transform's window
-    /// gain without knowing which window produced it. Mutation check: hardcode
-    /// `0.5` for the coherent gain and the Blackman case fails.
+    /// gain without knowing which window produced it.
     #[test]
     fn magnitude_gain_tracks_the_window_shape() {
         let hann = geo(1024, 256);

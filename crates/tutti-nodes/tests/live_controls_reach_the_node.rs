@@ -22,10 +22,7 @@
 //!
 //! Every assertion is on **rendered audio**: the copy one can inspect is not
 //! the one that renders, and a test that reads a control back proves only
-//! that the write happened somewhere. Mutations (run): make `ParamSet::set`
-//! return `true` without storing → `a_param_set_through_the_controls_*`
-//! fails (re-run since the authored copy `set` used to write beside the
-//! cell was deleted); build the replacement band as the same bell → `a_by_value_change_*` fails.
+//! that the write happened somewhere.
 
 use tutti_graph::{CrossfadeCurve, Fade, IntoNode, NodeMode, Prepare, Solo};
 use tutti_nodes::{EqBandNode, SvfType};

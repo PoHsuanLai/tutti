@@ -106,12 +106,6 @@ fn drive_reported(
 /// A callback that cancels once it has seen `frames` rendered ends the drive
 /// at the block that delivered it, as `Cancelled`, having consumed exactly
 /// those frames and no more.
-///
-/// Mutation (run): `drive` not checking the token after it delivers progress
-/// (and not at the top of its loop) -> it renders all 16 blocks and returns
-/// `Finished`; fails.
-/// Mutation (run): `drive` delivering before it consumes the block -> the
-/// consumed count is one block short; fails.
 #[test]
 fn a_cancel_from_the_callback_ends_the_drive_after_that_block() {
     let block = GRAPH_MAX_BLOCK.get();
@@ -128,9 +122,6 @@ fn a_cancel_from_the_callback_ends_the_drive_after_that_block() {
 
 /// A token cancelled before the first block stops the drive having rendered
 /// none.
-///
-/// Mutation (run): no check at the top of the loop -> one block is consumed
-/// before the check after its delivery; fails.
 #[test]
 fn a_token_cancelled_first_renders_no_block() {
     let token = CancelToken::new();
@@ -142,9 +133,6 @@ fn a_token_cancelled_first_renders_no_block() {
 
 /// Progress rises, counts frames of the plan's total in the rendering stage,
 /// and the last reading is the total.
-///
-/// Mutation (run): `Control::advance` given `Samples(0)` for `done` -> not
-/// rising; fails.
 #[test]
 fn progress_rises_and_reaches_the_total() {
     let total = 5 * GRAPH_MAX_BLOCK.get() + 17;
@@ -163,9 +151,6 @@ fn progress_rises_and_reaches_the_total() {
 /// A mono graph rendered to a wider file must NOT be copied into every
 /// channel: it is the centre of a 5.1 file, and a full-level mono copy in the
 /// LFE and surrounds is the bug this pins.
-///
-/// Mutation (run): the fold replaced by `dst.fill(src[0])` for a one-channel
-/// source → channel 1 reads 0.5.
 #[test]
 fn a_mono_graph_does_not_fill_every_surround_channel() {
     let frames = render(&mut mono_dc(0.5), &FrozenClock, 6, 64);
@@ -185,9 +170,6 @@ fn a_mono_graph_does_not_fill_every_surround_channel() {
 ///
 /// Widths 3 and 5 are here on purpose: they are the ones a fixed enumeration
 /// of widths would refuse outright.
-///
-/// Mutation (run): the fold built for the file's width as its source width
-/// → it indexes a missing plane and panics.
 #[test]
 fn rendering_a_narrow_graph_to_a_wide_file_does_not_panic() {
     for ch in [2usize, 3, 4, 5, 12] {
@@ -201,10 +183,6 @@ fn rendering_a_narrow_graph_to_a_wide_file_does_not_panic() {
 /// narrowed in the spec with no `commit()` leave the executor's plan as wide
 /// as it was, and the render must carry every channel of it (an undersized
 /// plane list made the executor render silence in release).
-///
-/// Mutation (run): size `planes` from `editor.spec().topology.outputs`
-/// again → the plan is wider than the planes; the debug build asserts and
-/// release renders silence → fails.
 #[test]
 fn a_spec_narrowed_without_a_commit_still_renders_the_committed_width() {
     let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::STEREO);
@@ -226,10 +204,6 @@ fn a_spec_narrowed_without_a_commit_still_renders_the_committed_width() {
 ///
 /// The graph reads the beat from each block's transport, which this
 /// source hands it; here a test node calls `Env::for_each_beat`.
-///
-/// Mutation (run): `self.clock.advance(Samples(1))` before `render_graph`
-/// in `GraphSource::render_block` → the first frame reads a frame past the start
-/// beat.
 #[test]
 fn the_clock_advances_exactly_once_per_frame_and_never_ahead() {
     let start_beat = 4.0;
@@ -316,8 +290,6 @@ fn plane_source_zero_fills_a_missing_channel_every_block() {
 /// one refusal owed at the start, then one new refusal and one recovery (the
 /// older one, as the clip sends owed note-offs first): one event is lost. The
 /// old subtraction of `lost_event_count`s read 0.
-///
-/// Mutation: ignore `owed` in `lost_over` → 0 → fails.
 #[test]
 fn a_recovery_of_an_older_refusal_does_not_mask_a_new_loss() {
     assert_eq!(lost_over((1, 0), (2, 1)), 1);
@@ -403,11 +375,6 @@ mod loss {
     /// between (installing a commit can drop a note-off closing into a full
     /// delay) is in its figure; and a render settles the graph, so the next
     /// one does not count it again.
-    ///
-    /// Mutation (run): `with_source` handing `GraphSource::new` the executor's
-    /// current counts instead of `graph.settled()` -> 6 for the second
-    /// render, not 12; fails. Mutation (run): not calling `graph.settle` ->
-    /// 18 for the third; fails.
     #[test]
     fn a_render_counts_what_the_graph_dropped_since_it_settled() {
         let mut graph = lossy();

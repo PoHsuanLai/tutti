@@ -354,10 +354,6 @@ mod tests {
     /// A glide by a rate takes `ceil(distance / rate)` steps from where it is, lands
     /// on the target exactly, and is not restarted by an aim at the target it already
     /// has; `Fixed(0)` lands at once.
-    ///
-    /// Mutation (run): `floor` for `ceil` in `aim_by` makes the 2.5-over-1 glide 2
-    /// steps and fails the first count; dropping the `to == self.to` guard restarts
-    /// the glide at the repeated aim and fails the second.
     #[test]
     fn a_rate_is_a_number_of_steps_from_the_distance() {
         let count = |g: &mut Glide<f32>| (0..100).take_while(|_| g.step()).count();

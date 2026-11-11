@@ -193,11 +193,6 @@ mod tests {
     /// for speakers and for bands: what a node declares as its main bus
     /// (`main_output`, a prefix of the ports) is where the realization writes
     /// output 0, so the graph's dry path and the node's band 0 are one place.
-    ///
-    /// Mutation (each run, each failed): `port` channel-major
-    /// (`channel * bands + output`, with `of_port` to match) → band 0 of a
-    /// stereo crossover is ports 0 and 2, not the main output's 0 and 1;
-    /// `main_output` the full width for bands → ports 2 and 3 are not output 0.
     #[test]
     fn output_zeros_ports_are_the_main_output() {
         for channels in [

@@ -33,9 +33,6 @@ fn detached(outputs: usize) -> Session {
 /// The session is `Send`: a host may build it on one thread and hand it to
 /// its main thread (design 015 §4.2). The `Device`'s `!Send` is its own
 /// `compile_fail` doctest.
-///
-/// Mutation (run): a `std::rc::Rc<()>` field on `Session` → this fails to
-/// compile.
 #[test]
 fn a_session_is_send() {
     fn send<T: Send>() {}
@@ -191,9 +188,6 @@ impl<const IN: u16, const OUT: u16> Node for Events<IN, OUT> {
 /// port and on a global output: the translation to the spec's spelling and
 /// back is total and lossless. (Moved from `bevy-tutti`'s
 /// `AudioGraphRes` tests, whose methods now delegate here.)
-///
-/// Mutation (run): lowering `Input(port)` to `Zero` fails the `Input` row;
-/// lowering `Node` with a fixed port 0 fails the port-1 row.
 #[test]
 fn every_source_reads_back_as_written() {
     let mut s = Session::builder()
@@ -225,11 +219,6 @@ fn every_source_reads_back_as_written() {
 /// compiler's validation refuses), whichever setter wrote it: a port or output
 /// set to `Silence`, an output feed with no usable port, and a fresh or widened
 /// root. `planned_compensation` is `None` when the spec does not validate.
-///
-/// Mutation (run, recorded here): store `vec![Source::Zero]` instead of the
-/// empty set in `set_source`'s `Zero` arm, in `set_output_source`, in
-/// `feed_outputs`' `usable == 0` arm, or in `widen_outputs`' resize -> the
-/// matching step's assert fails (the spec stops validating).
 #[test]
 fn every_setter_stores_silence_as_the_empty_set() {
     let mut s = detached(2);
@@ -257,9 +246,6 @@ fn every_setter_stores_silence_as_the_empty_set() {
 
 /// `remove` says whether the node was there, so removing a node twice is a
 /// no-op rather than a panic.
-///
-/// Mutation (run): `Graph::remove` dropping its `nodes.remove` guard → the
-/// second call asks the editor again and answers `true`.
 #[test]
 fn removing_a_node_twice_is_a_no_op() {
     let mut s = detached(1);
@@ -273,9 +259,6 @@ fn removing_a_node_twice_is_a_no_op() {
 /// `root_width` is `max(project, device)` clamped to
 /// `1..=MAX_ROOT_CHANNELS`; each row is one way the rule is load-bearing.
 /// (Moved from `bevy-tutti`'s `engine::build`.)
-///
-/// Mutation (run): `root_width` returning `project.clamp(..)` (the device no
-/// floor) → the first row fails.
 #[test]
 fn root_width_takes_the_wider_side_within_the_scratch_bounds() {
     let cases: &[(usize, ChannelLayout, usize, &str)] = &[
@@ -332,10 +315,6 @@ fn root_width_takes_the_wider_side_within_the_scratch_bounds() {
 
 /// **An edit between two updates is committed by the next update.** One
 /// commit, and the plan it sends is a new one.
-///
-/// Mutation (run): `Phase::Commit` committing only on a flag nobody sets
-/// (`self.resumed && …` in place of `self.graph.is_edited()`) → the edit is
-/// never sent → fails.
 #[test]
 fn an_edit_between_updates_is_committed_by_the_next() {
     let mut s = detached(1);
@@ -363,9 +342,6 @@ fn an_edit_between_updates_is_committed_by_the_next() {
 
 /// **An update with no edit sends no plan**: the plan the audio side holds
 /// is the same `Arc`, and no commit was counted.
-///
-/// Mutation (run): `Phase::Commit` committing unconditionally (dropping the
-/// `is_edited()` test) → each update sends a plan → fails.
 #[test]
 fn an_update_with_no_edit_sends_no_plan() {
     let mut s = detached(1);
@@ -389,9 +365,6 @@ fn an_update_with_no_edit_sends_no_plan() {
 
 /// **A crossfade on a node that is gone is refused with the node named**, not
 /// with a message to parse: the caller matches `NoSuchNode(node)`.
-///
-/// Mutations (run):
-/// - `swap_unit` answering `Poisoned` for the missing node → fails.
 #[test]
 fn a_crossfade_on_a_removed_node_is_refused_naming_it() {
     let mut s = detached(1);
@@ -418,15 +391,6 @@ fn a_crossfade_on_a_removed_node_is_refused_naming_it() {
 ///
 /// `Editor::replace` refuses while re-preparing and consumes its unit, so
 /// without the wait the new unit would be lost.
-///
-/// Mutations (run):
-/// - `Graph::crossfade` turning `Busy` into `CrossfadeRefused` (not parking)
-///   → the request is refused → fails;
-/// - `Phase::Collect` not retrying the parked crossfades → it never lands
-///   → fails;
-/// - `Swap::swap` not addressing the incoming node's params → the landing's
-///   controls steer it, but `set_param` reaches nothing → the last check
-///   fails.
 #[test]
 fn a_crossfade_refused_busy_during_a_re_prepare_lands_on_a_later_update() {
     let mut s = detached(1);
@@ -493,9 +457,6 @@ fn a_crossfade_refused_busy_during_a_re_prepare_lands_on_a_later_update() {
 /// update will ever take it). The graph half of `bevy-tutti`'s
 /// `a_crossfade_on_a_poisoned_graph_is_refused_and_keeps_the_controls`
 /// (its entity half: the controls stay put).
-///
-/// Mutation (run): `Graph::replace` answering `Busy` on a poisoned graph →
-/// the request waits for good → fails.
 #[test]
 fn a_crossfade_on_a_poisoned_graph_is_refused() {
     let mut s = detached(1);
@@ -524,14 +485,6 @@ fn a_crossfade_on_a_poisoned_graph_is_refused() {
 /// `Graph::add` handed back. A fork starts from the values its cells hold.
 /// The graph half of `bevy-tutti`'s `every_param_write_path_reaches_a_fork`
 /// (its half: `AudioParam`, and the modulated paths).
-///
-/// Mutations (run; each fails its channel):
-/// - `Graph::set_param` skipping the node's `ParamSet` → channel 0 stays
-///   at 1, live and forked;
-/// - `Graph::add` not addressing the params (`set_node_params`) → channel
-///   0 stays at 1;
-/// - `Knob::fork_fresh` detaching from a fresh `Param` (not the written one)
-///   → both channels of the fork read 1.
 #[test]
 fn every_param_write_path_reaches_a_fork() {
     let mut s = detached(2);
@@ -558,14 +511,6 @@ fn every_param_write_path_reaches_a_fork() {
 /// a host whose sink was re-bound to a new node keeps what each feeder fed
 /// it, and the old sink is fed by nothing. Each feeder keeps its own entry,
 /// and the graph's event edges are their union.
-///
-/// Mutations (run):
-/// - `move_feeds` moving only the first feeder → the route's source is
-///   lost → fails;
-/// - `move_feeds` not rewriting `from` → the old sink keeps its edges →
-///   fails;
-/// - `set_feed` replacing the whole sink's map (not the feeder's entry) →
-///   the clip's entry goes when the route's is set → fails.
 #[test]
 fn move_feeds_moves_every_feeders_sources() {
     let mut s = detached(1);
@@ -628,12 +573,6 @@ fn pull(s: &Session, layout: ChannelLayout, frames: usize, block: usize) -> Vec<
 /// `1/√2` over a whole number of cycles (one second at 48 kHz is 1 000 of
 /// them), at 48 frames a cycle (the graph runs at the rate it was built
 /// at).
-///
-/// Mutations (run):
-/// - `Session::update` running no phase → nothing is committed, the render
-///   is silent → the RMS is 0 → fails;
-/// - `build_offline` building the graph at `SampleRate::DEFAULT` (44.1 kHz)
-///   → 44.1 frames a cycle → fails.
 #[test]
 fn an_offline_session_renders_a_sines_analytic_rms() {
     let mut s = Session::builder()
@@ -663,13 +602,6 @@ fn an_offline_session_renders_a_sines_analytic_rms() {
 /// the first sound is frame 38); the session publishes the figures before
 /// the first block: a total of 37, and a pre-roll of 37 on the dry channel
 /// (a source outside the graph seeks by it) and 0 on the latent one.
-///
-/// Mutations (run):
-/// - `Late` declaring no latency → the dry channel leads by 37 frames →
-///   fails;
-/// - `Session::publish_sent` not publishing the table → empty → fails;
-/// - `Session::commit` not publishing on `Sent` → the total reads 0 →
-///   fails.
 #[test]
 fn a_latent_branch_is_compensated_on_the_other_to_the_sample() {
     const N: usize = 37;
@@ -711,12 +643,6 @@ fn a_latent_branch_is_compensated_on_the_other_to_the_sample() {
 /// `debug_assert!` behind that feature.
 ///
 /// The session goes back to this thread to be dropped: its drop asserts too.
-///
-/// Mutations (run):
-/// - `Session::remove` asserting the main thread again → the removal
-///   panics → fails;
-/// - `Graph::pump_local` without its guard → the commit off the main
-///   thread frees unchecked and does not panic → fails.
 #[cfg(all(feature = "plugin", debug_assertions))]
 #[test]
 fn a_removal_is_any_threads_and_a_free_is_the_main_threads() {
@@ -765,10 +691,6 @@ fn a_removal_is_any_threads_and_a_free_is_the_main_threads() {
 /// `tests/midi.rs` (`midi-hardware`), a plugin's meter by `tests/plugin.rs`.
 /// (The compensation table is a plain lock, not a published cell: nothing
 /// to reclaim.)
-///
-/// Mutations (run): the `Reclaim` phase doing nothing → the old meter is
-/// still retired after the update, fails; `Session::reclaim` leaving out
-/// the project meter → fails.
 #[test]
 fn an_update_frees_what_a_block_held_across_a_replacement() {
     use tutti_transport::MeterSlot;
@@ -896,22 +818,6 @@ fn replace_under_a_held_borrow(controls: &PublishedControls) {
 /// place; the reclaimer goes with the node (replaced by the crossfade's,
 /// dropped by a raw replace and by the removal), so a node out of the graph
 /// is not swept.
-///
-/// Mutations (run):
-/// - `Session::reclaim` not sweeping the graph (`0` for
-///   `self.graph.reclaim()`) → the value is still retired after the
-///   update, fails;
-/// - `Graph::reclaim` summing nothing (the table's loop removed) → the
-///   value is still retired after the update, fails;
-/// - `Graph::add` not keeping the reclaimer (`params` alone) → fails the
-///   same way;
-/// - `Graph::crossfade` addressing params alone on `Landed` → the
-///   incoming node's value is never freed, fails;
-/// - `swap_unit` keeping the outgoing reclaimer → the raw replace leaves
-///   the second token's count at 2, fails (the crossfade alone overwrites
-///   it, so the raw replace is what pins this);
-/// - `Graph::remove` leaving the node's entry (`nodes.get` for
-///   `nodes.remove`) → the third token's count stays 2, fails.
 #[test]
 fn the_update_sweeps_each_nodes_reclaimer_while_it_is_in_the_graph() {
     let mut s = detached(1);
@@ -986,9 +892,6 @@ fn the_update_sweeps_each_nodes_reclaimer_while_it_is_in_the_graph() {
 
 /// A global input count no layout holds is refused when the session is built,
 /// not wrapped into a narrow one.
-///
-/// Mutation (run): `Graph::new` taking `inputs as u16` again builds a session
-/// with 2 inputs for 65 538, and this fails.
 #[test]
 fn an_input_count_past_a_layout_is_refused() {
     let Err(err) = Session::builder().inputs(65_538).build_detached(RATE) else {

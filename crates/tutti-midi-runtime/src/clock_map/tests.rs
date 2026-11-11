@@ -19,7 +19,6 @@ fn map_at(t0: Instant, frame: u64) -> ClockMap {
 }
 
 // Frames follow the rate from the anchor: 1 s is 48 000 frames, 10 ms is 480.
-// Mutation: `* self.rate.get()` to `* 44_100.0`: the first assertion fails.
 #[test]
 fn a_time_after_the_anchor_is_the_rate_times_the_distance() {
     let t0 = base();
@@ -37,7 +36,6 @@ fn a_time_after_the_anchor_is_the_rate_times_the_distance() {
 }
 
 // A time before the anchor is extrapolated back, to `None` before frame 0.
-// Mutation: add the distance instead of subtracting it: 520 reads 1480.
 #[test]
 fn a_time_before_the_anchor_is_extrapolated_back_until_frame_zero() {
     let t0 = base();
@@ -50,7 +48,6 @@ fn a_time_before_the_anchor_is_extrapolated_back_until_frame_zero() {
 
 // Half a frame rounds away from zero: at 48 kHz a frame is 20 833.33 ns, so
 // 10 417 ns is 0.5000 frame and 10 416 ns is under half.
-// Mutation: `.round()` to `.floor()`: the first assertion reads Frame(0).
 #[test]
 fn a_time_lands_on_the_nearest_frame() {
     let t0 = base();
@@ -67,7 +64,6 @@ fn a_time_lands_on_the_nearest_frame() {
 
 // The inverse: frame 49 000 is 1 s after the anchor, frame 520 is 10 ms before,
 // and a round trip returns every frame.
-// Mutation: `ahead` inverted: the first and second assertions swap sides.
 #[test]
 fn a_frame_maps_back_to_its_time() {
     let t0 = base();
@@ -79,15 +75,13 @@ fn a_frame_maps_back_to_its_time() {
         assert_eq!(map.frame_at(os), Some(Frame(f)), "frame {f}");
     }
     // A distance an `Instant` cannot hold is no instant (a rate of 1e-9 makes
-    // 2^64 frames 1e28 seconds). Mutation: `.ok()?` to `.unwrap()`: panics.
+    // 2^64 frames 1e28 seconds).
     let slow = ClockMap::new(SampleRate(1e-9), ClockReading::new(t0, Frame(0))).unwrap();
     assert_eq!(slow.os_at(Frame(u64::MAX)), None);
 }
 
 // One reading 8 ms late (frame 48 000 seen at 1 s + 8 ms) moves the map by one
 // eighth of 8 ms: the anchor is then at frame 48 000, 1 s + 1 ms.
-// Mutation: `GAIN` 8 to 1: the map takes the whole 8 ms and the second
-// assertion reads Frame(48_384).
 #[test]
 fn a_late_reading_moves_the_map_by_an_eighth() {
     let t0 = base();
@@ -103,7 +97,6 @@ fn a_late_reading_moves_the_map_by_an_eighth() {
 }
 
 // An early reading moves it the other way.
-// Mutation: add the step in both directions: the anchor lands 1 ms after.
 #[test]
 fn an_early_reading_moves_the_map_back_by_an_eighth() {
     let t0 = base();
@@ -114,7 +107,6 @@ fn an_early_reading_moves_the_map_back_by_an_eighth() {
 }
 
 // A reading 50 ms off is a restart or a suspend, not jitter: exact re-anchor.
-// Mutation: drop the `RESYNC` branch: the anchor is 6.25 ms off the reading.
 #[test]
 fn a_reading_far_off_re_anchors_exactly() {
     let t0 = base();
@@ -128,8 +120,6 @@ fn a_reading_far_off_re_anchors_exactly() {
 // the rate says) and a reading arrives every 512 frames for 2000 blocks (21 s,
 // 2.1 ms of drift). The map stays within the documented bound at any query
 // distance: `ε·(8T + Δ)` in time, plus half a frame.
-// Mutation: `GAIN` to `u32::MAX` (the map never follows): the error is the full
-// drift, about 100 frames, and the bound fails.
 #[test]
 fn the_map_follows_a_drifting_clock_within_its_bound() {
     let t0 = base();
@@ -158,8 +148,6 @@ fn the_map_follows_a_drifting_clock_within_its_bound() {
 
 // A reading earlier than the anchor in OS time, earlier in frames, or at the
 // same frame at another time changes nothing.
-// Mutation: drop the `at.os < anchor.os` check: the first reading is
-// `Followed` and the anchor moves.
 #[test]
 fn a_reading_that_goes_backwards_is_rejected() {
     let t0 = base();
@@ -180,7 +168,6 @@ fn a_reading_that_goes_backwards_is_rejected() {
 
 // A re-prepare at 44.1 kHz keeps the instant: the anchor at 48 000 frames
 // (1 s at 48 kHz) becomes frame 44 100, and a second later is 88 200.
-// Mutation: skip the rescale: frame_at(t0) reads 48 000.
 #[test]
 fn a_rate_change_keeps_the_instant_of_the_anchor() {
     let t0 = base();
@@ -196,7 +183,6 @@ fn a_rate_change_keeps_the_instant_of_the_anchor() {
 }
 
 // A rate that is not a rate builds no map and changes none.
-// Mutation: accept zero in `valid`: `new` returns a map that divides by zero.
 #[test]
 fn a_rate_that_is_not_finite_and_positive_is_refused() {
     let t0 = base();

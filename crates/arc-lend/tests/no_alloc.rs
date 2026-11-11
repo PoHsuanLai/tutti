@@ -20,10 +20,6 @@ static A: AllocDisabler = AllocDisabler;
 /// a destructor of a published value. The race-shaped half of the property
 /// (a publisher reclaiming concurrently) is the loom model's job,
 /// `tests/loom.rs`, not this test's.
-///
-/// Mutation: make `Reader::drop` reclaim (`self.cell.reclaim();` before its
-/// store). The first reader drop inside the second gate then frees the
-/// retired `Vec`, and `assert_no_alloc` aborts.
 #[test]
 fn the_reader_side_neither_allocates_nor_frees() {
     use arc_lend::ArcLend;

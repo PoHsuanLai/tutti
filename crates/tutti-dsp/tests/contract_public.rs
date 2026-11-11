@@ -7,14 +7,6 @@
 //! last reset, so it is the same on every block cut (the stream clock) and
 //! lands at once on its first retarget (the `landed` case), as a realization's
 //! ramp must.
-//!
-//! Mutations (run): a first `retarget` that slews from 0 instead of landing
-//! (`from` 0 and `done` 0 for the first call) fails `realization_contract_landed`,
-//! `reset`, `fresh`, `response` and `linear`;
-//! a `process` that restarts the slew at every block (`done` clamped to 1 on
-//! entry) fails `realization_contract_stream_clock` and `click_free`; a
-//! `hinf_norm` of half the l1 norm is under the response's peak and fails
-//! `contract_norms`; a response of `2 g` fails `contract_anchors` (and norms).
 
 use std::num::NonZeroU32;
 

@@ -47,10 +47,6 @@ const SHDR_RECORD: usize = 46;
 /// 7.2: the preset bag indices only grow, and the terminal one is the number
 /// of zones. A file where they do not is structurally defective: an `Err`,
 /// where reading it would slice past the zone list.
-///
-/// Mutation (run): dropping the monotonic test in `PresetInfo::read_from_chunk`
-/// fails the second row; dropping the terminal test in `Preset::create` fails
-/// the first and third.
 #[test]
 fn a_preset_bag_index_that_is_wrong_is_a_clean_error() {
     let file = bytes(&[preset("a", 0, 1), preset("b", 1, 1)], &[inst(1)]);
@@ -75,9 +71,6 @@ fn a_preset_bag_index_that_is_wrong_is_a_clean_error() {
 }
 
 /// 7.6: the same for the instrument bag indices.
-///
-/// Mutation (run): dropping the terminal test in `Instrument::create` fails
-/// the first row.
 #[test]
 fn an_instrument_bag_index_that_is_wrong_is_a_clean_error() {
     let file = bytes(&[preset("a", 0, 1)], &[inst(1), inst(1)]);
@@ -97,8 +90,6 @@ fn an_instrument_bag_index_that_is_wrong_is_a_clean_error() {
 
 /// 7.3: the generator indices of the bags only grow and end at the number of
 /// generators.
-///
-/// Mutation (run): dropping the terminal test in `Zone::create` fails it.
 #[test]
 fn a_generator_index_past_the_generators_is_a_clean_error() {
     let mut file = bytes(&[preset("a", 0, 1)], &[inst(1)]);
@@ -111,8 +102,6 @@ fn a_generator_index_past_the_generators_is_a_clean_error() {
 
 /// 7.2: "any preset with no zones should be ignored". It is not in the font and
 /// not an error; the presets after it keep their own.
-///
-/// Mutation (run): turning the empty preset back into an error fails the load.
 #[test]
 fn a_preset_with_no_zone_is_ignored() {
     let file = bytes(
@@ -130,9 +119,6 @@ fn a_preset_with_no_zone_is_ignored() {
 
 /// An instrument with no zone stays in the list (so the indices presets name
 /// keep their meaning) and plays nothing.
-///
-/// Mutation (run): dropping empty instruments from the list makes the preset's
-/// instrument index (1) name nothing and fails the load.
 #[test]
 fn an_instrument_with_no_zone_plays_nothing() {
     let file = bytes(
@@ -153,10 +139,6 @@ fn an_instrument_with_no_zone_plays_nothing() {
 /// 7.10: a header's `dwStart`, `dwEnd`, `dwStartloop`, `dwEndloop` and
 /// `dwSampleRate` are DWORDs. An address of 2^31 or more is past the sample
 /// data and refused cleanly, and a rate of 2^31 or more reads as positive.
-///
-/// Mutation (run): dropping `end >= len` from `SoundFont::sanity_check` loads
-/// the first row and then fails the test; reading `dwSampleRate` as an `i32`
-/// makes the rate negative and fails the last assertion.
 #[test]
 fn the_dwords_of_a_header_are_unsigned() {
     let file = bytes(&[preset("a", 0, 1)], &[inst(1)]);
@@ -192,8 +174,6 @@ fn the_dwords_of_a_header_are_unsigned() {
 
 /// 7.2: `dwLibrary`, `dwGenre` and `dwMorphology` are DWORDs "preserved as
 /// read".
-///
-/// Mutation (run): reading them as `i32` and widening fails the value.
 #[test]
 fn the_reserved_dwords_of_a_preset_are_preserved_as_read() {
     let mut file = bytes(&[preset("a", 0, 1)], &[inst(1)]);

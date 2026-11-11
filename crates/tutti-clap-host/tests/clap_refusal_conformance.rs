@@ -228,9 +228,6 @@ fn refused_activation(active: Active<f32>, rate: f64, frames: u32) -> (ClapLoade
 }
 
 /// A refused activation must be *reported*, not swallowed.
-///
-/// Mutation (run): `activate_now` returning `Ok` after a failed
-/// `activate_plugin` → the `expect_err` fails.
 #[test]
 fn refused_sample_rate_change_is_reported() {
     let probe = Probe::acquire();
@@ -265,10 +262,6 @@ fn refused_sample_rate_change_is_reported() {
 ///
 /// The oracle is plugin-side: one accepted activation before, one after, the
 /// second on the base rate.
-///
-/// Mutation (run): drop the `self.audio = previous;` restore on the refusal
-/// paths of `ClapLoaded::activate_now` → the handed-back plugin reports the
-/// refused rate and the first assertion fails.
 #[test]
 fn a_refused_activation_leaves_the_accepted_configuration_reported() {
     let probe = Probe::acquire();
@@ -308,9 +301,6 @@ fn a_refused_activation_leaves_the_accepted_configuration_reported() {
 /// `max_frames` at the refused value, `process` would accept a block larger than
 /// the plugin's declared ceiling — the plugin reads `frames_count` samples out of
 /// buffers it sized for less.
-///
-/// Mutation (run): as `a_refused_activation_leaves_the_accepted_configuration_reported`
-/// — `block_size()` reports 2048.
 #[test]
 fn a_refused_block_size_growth_leaves_the_accepted_ceiling() {
     let probe = Probe::acquire();
@@ -496,11 +486,8 @@ fn unrefused_context_save_takes_the_context_aware_path() {
 /// activating it again, must not call the plugin's `deactivate`, which CLAP
 /// allows only while active.
 ///
-/// Mutation (run): delete the `if !self.flags.active { return; }` guard in
-/// `ClapLoaded::deactivate_plugin` and set `flags.active` before the FFI call
-/// in `activate_plugin` → the plugin counts a deactivate while inactive → the
-/// first count assertion fails. The last assertions also pin that a refused
-/// plugin can be brought back once the plugin accepts.
+/// The last assertions also pin that a refused plugin can be brought back once the
+/// plugin accepts.
 #[test]
 fn a_refused_plugin_is_not_deactivated() {
     let probe = Probe::acquire();

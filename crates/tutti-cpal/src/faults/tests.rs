@@ -2,9 +2,6 @@ use super::*;
 
 /// `record` must never wait on a reader holding `last`: it counts the fault
 /// and drops the message.
-///
-/// Mutation (run): replace `try_lock` with `lock` in `record`; the test then
-/// deadlocks (the single thread re-locks a mutex it holds) and never returns.
 #[test]
 fn record_while_last_is_locked_counts_and_returns() {
     let faults = StreamFaults::new();
@@ -42,9 +39,6 @@ fn pollerr() -> cpal::StreamError {
 /// stream of errors, one per millisecond, and expects a disconnect once
 /// `STALL_GRACE` has passed, counted once at the start of the run and once at
 /// the promotion rather than once per error.
-///
-/// Mutation: classifying only `DeviceNotAvailable` (no promotion branch) fails
-/// the `is_disconnected` assertion; counting every error fails the count.
 #[test]
 fn a_spinning_backend_error_with_no_audio_becomes_a_disconnect() {
     let faults = StreamFaults::new();
@@ -77,9 +71,6 @@ fn a_spinning_backend_error_with_no_audio_becomes_a_disconnect() {
 /// **A transient xrun does not fail the stream.** Bursts of backend errors,
 /// each followed by delivered audio, never accumulate into a disconnect, even
 /// over far longer than the grace period.
-///
-/// Mutation: removing `run_start.store(0)` from `delivered` makes the runs add
-/// up and fails this.
 #[test]
 fn xruns_between_delivered_blocks_never_disconnect() {
     let faults = StreamFaults::new();

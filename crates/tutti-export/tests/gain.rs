@@ -46,11 +46,6 @@ fn sine(frequency: Hz) -> RenderGraph {
 /// A peak normalization reports the gain it applied and the reading it came
 /// from. The quarter-rate sine's samples are 0, 1, 0, -1, so its true peak is
 /// 0 dBTP, and the gain to -6 dBTP is -6 dB; a plain export reports neither.
-///
-/// Mutation (run, each fails this test): `written.gain = None` in
-/// `render_normalized_to_file`; `written.gain = Some(Db(0.0))`;
-/// `written.measured = None`; `encode_to_file` reporting `gain: Some(Db(0.0))`
-/// for a plain export (the `None` assertions fail).
 #[test]
 fn a_peak_normalized_export_reports_its_gain_and_reading() {
     let dir = tempfile::tempdir().unwrap();
@@ -86,11 +81,6 @@ fn a_peak_normalized_export_reports_its_gain_and_reading() {
 /// calibration: -0.691 + 10 log10 of the channel sum, K-weighting being unity
 /// at 1 kHz, to within 0.1 LU), so the gain to -23 LUFS is -23 dB within the
 /// same tolerance, and the file written with it reads -23 LUFS.
-///
-/// Mutation (run, each fails this test): `Normalize::gain_for` calling
-/// `gain_to(ceiling, ceiling)` (the gain reads -1 dB); `written.gain = None`;
-/// measuring after `apply_gain` and reporting that reading (it reads -23, not
-/// 0).
 #[test]
 fn a_loudness_normalized_export_reports_the_gain_to_its_target() {
     let dir = tempfile::tempdir().unwrap();

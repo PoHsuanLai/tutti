@@ -18,9 +18,6 @@ fn ramp() -> Trajectory {
 }
 
 /// No breakpoint, no value; one breakpoint is its value everywhere.
-///
-/// Mutation (run): an early `return Some(0.0)` for an empty list gives
-/// `Some(0.0)` for the empty one.
 #[test]
 fn an_empty_trajectory_has_no_value_and_one_breakpoint_is_everywhere() {
     assert_eq!(Trajectory::new().value_at(Beat(1.0)), None);
@@ -34,11 +31,6 @@ fn an_empty_trajectory_has_no_value_and_one_breakpoint_is_everywhere() {
 /// Before the first breakpoint and from the last on, the end values hold; between
 /// them a piece follows its starting breakpoint's law: here `t²` over `[1, 3]`, so
 /// beat 2 is `t = 1/2`, a quarter, and beat 2.5 is `t = 3/4`, 9/16.
-///
-/// Mutation (run): the piece taking the law of the breakpoint it ends at (`q`, a
-/// linear one) gives 0.5 at beat 2 and fails; `>=` written `>` in the last
-/// breakpoint's hold changes nothing observable (the closed form at `t = 1` is
-/// the last value), so it is not a mutation of this test.
 #[test]
 fn a_piece_follows_its_starting_breakpoints_law() {
     let e = ramp();
@@ -52,11 +44,6 @@ fn a_piece_follows_its_starting_breakpoints_law() {
 
 /// A breakpoint reads its own value, whatever the law before it, and each
 /// piece starts at its breakpoint.
-///
-/// Mutation (run): the piece taking the law of the breakpoint it ends at fails the
-/// first assertion (a `Hold` ends at 5 where its own start reads 0). Not a
-/// mutation of this test: `partition_point` with `<` for `<=`, which reads the
-/// breakpoint from the piece before it at `t = 1`, where every law gives `to`.
 #[test]
 fn a_breakpoint_reads_its_own_value() {
     let mut e = Trajectory::new();
@@ -70,9 +57,6 @@ fn a_breakpoint_reads_its_own_value() {
 
 /// Breakpoints sort by time as they come, and a breakpoint at an existing time replaces
 /// it.
-///
-/// Mutation (run): `Ok(i) => insert` instead of replace leaves 4 breakpoints;
-/// `Err(i) => push` leaves them unsorted.
 #[test]
 fn add_breakpoint_keeps_time_order_and_replaces_a_tie() {
     let mut e = Trajectory::new();
@@ -87,9 +71,6 @@ fn add_breakpoint_keeps_time_order_and_replaces_a_tie() {
 }
 
 /// A range clamps every value read, a held end and a piece's middle alike.
-///
-/// Mutation (run): `clamped` skipped on the interpolated arm lets the 2.0 at
-/// beat 1.5 through; `max` and `min` swapped clamps to the wrong ends.
 #[test]
 fn a_range_clamps_what_is_read() {
     let mut e = Trajectory::new().with_range(0.0, 1.0);
@@ -105,9 +86,6 @@ fn a_range_clamps_what_is_read() {
 
 /// Simplify drops a breakpoint its neighbours' piece already gives and keeps a
 /// corner; the ends always stay.
-///
-/// Mutation (run): the comparison `> tolerance` written `>= 0.0` keeps the
-/// collinear breakpoint; `<` written for `>` drops the corner.
 #[test]
 fn simplify_drops_the_redundant_and_keeps_the_corner() {
     let mut e = Trajectory::new();
@@ -125,9 +103,6 @@ fn simplify_drops_the_redundant_and_keeps_the_corner() {
 
 /// The test of redundancy is the neighbour's own law: a breakpoint on a `t²`
 /// piece is redundant, the same breakpoint on a line is not.
-///
-/// Mutation (run): `prev.law` replaced by `Law::Linear` in `simplify` keeps
-/// the first trajectory's middle breakpoint.
 #[test]
 fn simplify_reads_the_previous_breakpoints_law() {
     let build = |law| {

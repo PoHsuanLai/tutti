@@ -90,10 +90,6 @@ mod ready_fd_tests {
     /// it asked for. A host that reports every registered descriptor on every
     /// call wakes the plugin for nothing, and one that reports `READ` for a
     /// descriptor watched for `WRITE` hands it an event it never asked for.
-    ///
-    /// Mutations (run): report every watched descriptor (`Some((fd, flags))` for
-    /// all) → the first assertion fails. Drop `& flags` → the `WRITE`-only
-    /// assertion fails. Map `POLLHUP` to nothing → the hang-up assertion fails.
     #[test]
     fn only_ready_descriptors_are_reported_with_the_events_asked_for() {
         let (r, w) = pipe();

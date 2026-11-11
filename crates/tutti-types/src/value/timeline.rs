@@ -279,9 +279,6 @@ mod tests {
 
     /// `(tempo / 60) / sample_rate`: 120 BPM at 48 kHz is exactly 1/24 000
     /// beat per sample, and 90 BPM at 48 kHz is 1/32 000.
-    ///
-    /// Mutation (run): the tempo divided by 120 instead of 60 -> half the
-    /// rate -> fails.
     #[test]
     fn beats_per_sample_is_tempo_over_sixty_over_rate() {
         assert_eq!(
@@ -296,10 +293,6 @@ mod tests {
 
     /// A position within the tolerance of a whole frame is that frame, from
     /// either side; one further off, or halfway, keeps its fraction.
-    ///
-    /// Mutation (run): `snap_to_whole_frame` returning `position` → 128 ±
-    /// 1e-10 stays off the frame → fails. Mutation (run): snapping with
-    /// `floor` → 128 − 1e-10 stays → fails.
     #[test]
     fn a_position_a_hair_off_a_frame_is_that_frame() {
         assert_eq!(snap_to_whole_frame(128.0 + 1e-10), 128.0);
@@ -310,10 +303,6 @@ mod tests {
 
     /// At 90 BPM / 48 kHz, frame 96 000 is beat 3 and
     /// frame 32 000 is beat 1, to the bit, and they convert back.
-    ///
-    /// Mutation (run): `beat_at` as `origin + n * (tempo / 60 / rate)` (a
-    /// rounded per-frame step, then scaled) → at 140 BPM frame 144 000 is
-    /// not beat 7 → fails.
     #[test]
     fn a_frame_on_a_beat_is_that_beat_exactly() {
         let seg = TimelineSegment::new(Frame::ZERO, Beat(0.0), Bpm::of(90.0), SR);
@@ -337,9 +326,6 @@ mod tests {
 
     /// A beat a hair past a frame lands on it; one more than the tolerance
     /// past lands on the next; a hair before lands on it too.
-    ///
-    /// Mutation (run): drop the tolerance (`frames_ahead.ceil()`) → the beat an
-    /// ulp past frame 32 000 lands on 32 001 → fails.
     #[test]
     fn a_beat_lands_on_the_first_frame_at_or_after_it() {
         let seg = TimelineSegment::new(Frame::ZERO, Beat(0.0), Bpm::of(90.0), SR);
@@ -359,10 +345,6 @@ mod tests {
 
     /// Tiled blocks place every beat in exactly one of them, including beats
     /// between a block's last frame and its end.
-    ///
-    /// Mutation (run): `ceil` → `floor` in `first_frame_at_or_after` → a beat at
-    /// 63.5 frames lands in both the first block (63) and, from the second
-    /// block's origin, at -1 (before it) → the count is wrong → fails.
     #[test]
     fn tiled_blocks_place_every_beat_once() {
         let fpb = 32_000.0;
@@ -392,9 +374,6 @@ mod tests {
 
     /// **One rule for whether a tempo moves**: a rate that is not finite and
     /// above zero, or a non-finite frame count, is `None`.
-    ///
-    /// Mutation (run): drop the finite filter in `frames_per_beat` → the
-    /// smallest tempo gives `Some(inf)` → fails.
     #[test]
     fn frames_per_beat_is_none_when_nothing_moves() {
         assert_eq!(frames_per_beat(Bpm::of(120.0), SR), Some(24_000.0));
@@ -406,9 +385,6 @@ mod tests {
 
     /// The slowest tempo a `Bpm` holds is infinitely many frames a beat (a
     /// zero tempo cannot be built).
-    ///
-    /// Mutation (run): drop the finite filter in `frames_per_beat` → beat 2
-    /// "lands" on a frame → fails.
     #[test]
     fn a_segment_that_does_not_move_places_nothing() {
         let seg = TimelineSegment::new(Frame::ZERO, Beat(1.0), Bpm::of(f64::from_bits(1)), SR);
@@ -417,8 +393,6 @@ mod tests {
         assert_eq!(seg.beat_at(Frame(1_000)), Beat(1.0));
     }
 
-    /// Mutation (run): drop the tolerance in `first_frame_at_or_after` → the
-    /// start an ulp past the origin's beat is not reached there → fails.
     #[test]
     fn reached_by_is_the_frame_rule() {
         let seg = TimelineSegment::new(Frame(100), Beat(3.0), Bpm::of(90.0), SR);

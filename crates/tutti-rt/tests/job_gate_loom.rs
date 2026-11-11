@@ -18,34 +18,12 @@
 //!   generation once; checked by the per-run counts);
 //! - **indices are distinct** — each participant index runs at most once per
 //!   call;
-//! - **a busy `try_run` runs nothing** (`a_busy_try_run_runs_nothing`, with
-//!   its own mutation record);
-//! - **two helpers race for indices** (`two_helpers_*`, with their own
-//!   mutation record): the order of conflicting operations on `entered`,
+//! - **a busy `try_run` runs nothing** (`a_busy_try_run_runs_nothing`);
+//! - **two helpers race for indices** (`two_helpers_*`):
+//!   the order of conflicting operations on `entered`,
 //!   `next`, `state` and the job cell across two helpers. They do not witness
 //!   two helpers inside the job body at once (measured: at most one, at
 //!   bounds 3, 4 and 5).
-//!
-//! # Mutation record
-//!
-//! Each was applied to `src/job_gate.rs` and the model failed
-//! (`LOOM_MAX_PREEMPTIONS=3`):
-//!
-//! - the caller's wait for `entered` in `Close::drop` deleted → a causality
-//!   violation on the job cell (a helper reads after the overwrite);
-//! - the helper's re-read of `state` after entering deleted → the same;
-//! - either `SeqCst` fence (the caller's in `Close::drop`, the helper's in
-//!   `help`) removed → the same;
-//! - the exit's `Release` (`Leave::drop`) or the wait's `Acquire` weakened
-//!   to `Relaxed` → the same;
-//! - `help` made not to record the generation it served → "index 1 ran
-//!   twice".
-//!
-//! The close's spin-then-yield is a scheduling change, not an ordering one:
-//! its progress check is the same `Acquire` load of `entered` the exit test
-//! makes, and loom's `spin_loop` and `yield_now` both just schedule another
-//! thread. So removing the yield is not a mutation this model can see; the
-//! unit test `the_close_yields_while_a_helper_is_inside` catches it.
 
 #![cfg(loom)]
 
@@ -114,13 +92,6 @@ fn a_helper_never_outlives_the_call() {
 /// jobs never overlap (so no helper runs one caller's job with the other's
 /// state, and the refused caller never writes the job cell while the open
 /// one's helper may read it).
-///
-/// Mutation record (`LOOM_MAX_PREEMPTIONS=3`):
-///
-/// - `try_run`'s busy branch made to run `job(0)` before returning `false`
-///   → "a refused job ran";
-/// - `try_run`'s `busy` compare-exchange made not to refuse (every caller
-///   proceeds) → a causality violation: concurrent writes to the job cell.
 #[test]
 fn a_busy_try_run_runs_nothing() {
     loom::model(|| {
@@ -218,8 +189,6 @@ fn two_helpers(participants: usize) {
 
 /// Room for both helpers: they take indices 1 and 2 between them, each at
 /// most once.
-///
-/// Mutation record: on `two_helpers_beyond_the_participants_bail_out`.
 #[test]
 fn two_helpers_take_distinct_indices() {
     two_helpers(3);
@@ -234,16 +203,6 @@ fn two_helpers_take_distinct_indices() {
 /// job body's reads of the cell and its `ran[2]` increment) touch objects
 /// nothing else touches, and loom's partial-order reduction does not branch
 /// on them.
-///
-/// Mutation record (`LOOM_MAX_PREEMPTIONS=3`, applied to `src/job_gate.rs`):
-///
-/// - `help`'s `idx >= self.participants` as `>` -> only
-///   `two_helpers_beyond_the_participants_bail_out` fails ("index 2 is
-///   outside the gate");
-/// - `next.fetch_add(1)` split into a load and a store -> both models here
-///   fail ("index 1 ran twice"); the one-helper models pass;
-/// - the helper's re-read of `state` after entering deleted -> all four models
-///   fail with a causality violation, so these two add no coverage for it.
 #[test]
 fn two_helpers_beyond_the_participants_bail_out() {
     two_helpers(2);

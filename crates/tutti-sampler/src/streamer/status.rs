@@ -168,10 +168,6 @@ mod tests {
     /// phase: a `StreamerGone` after a `Panicked` does not hide it, and a
     /// refill that finds the file's end after a decode fault does not clear
     /// it.
-    ///
-    /// Mutation (run): `fault` overwriting unconditionally -> the second
-    /// fault replaces the first -> fails. Mutation (run): `set` overwriting
-    /// unconditionally -> a faulted stream reads `Ended` -> fails.
     #[test]
     fn the_first_fault_stays() {
         let cell = StatusCell::new();

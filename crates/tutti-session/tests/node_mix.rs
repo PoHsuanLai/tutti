@@ -81,9 +81,6 @@ fn all_are(block: &[f32], want: f32) -> bool {
 
 /// Each mix's steady output, through the session: WET `A / 2`, DRY `A`, one
 /// half `A / 2 * 0.5 + A * 0.5`, and WET again.
-///
-/// Mutation (run): `Graph::set_mix` returning `Ok(())` without calling the
-/// editor -> the DRY block reads `A / 2` and the test fails.
 #[test]
 fn each_mix_reaches_the_running_node() {
     let mut r = rig();
@@ -104,10 +101,6 @@ fn each_mix_reaches_the_running_node() {
 
 /// The mode wins over the mix, through the session: a bypassed node at a mix
 /// of one half is its aligned input, and muted is `+0.0`.
-///
-/// Mutation (run): the executor blending a Muted node (`NodeMode::Muted` arm
-/// of `Segments::blend` calling `blend_active`) -> the muted block is not
-/// silent.
 #[test]
 fn the_mode_wins_over_the_mix() {
     let mut r = rig();
@@ -127,9 +120,6 @@ fn the_mode_wins_over_the_mix() {
 
 /// `mix` reads back what `set_mix` stored, and is `WET` for a node never given
 /// one.
-///
-/// Mutation (run): `Graph::mix` returning `Mix::WET` always -> the read-back
-/// after the set fails.
 #[test]
 fn mix_reads_back_what_was_set() {
     let mut r = rig();
@@ -142,9 +132,6 @@ fn mix_reads_back_what_was_set() {
 
 /// A mix is a control: setting one marks nothing edited, and the next update
 /// sends no commit (the plan last sent is the same `Arc`).
-///
-/// Mutation (run): `set_mix` also setting `self.edited = true` -> the
-/// `is_edited` assertion fails.
 #[test]
 fn a_mix_is_not_an_edit() {
     let mut r = rig();
@@ -163,9 +150,6 @@ fn a_mix_is_not_an_edit() {
 /// A node that is not in the graph, or no longer is, is refused and reads
 /// `WET`; a mix off the scale (NaN, negative, above one) is refused and
 /// changes nothing.
-///
-/// Mutation (run): `Graph::set_mix` mapping the editor's refusal to `Ok(())`
-/// -> the refusal assertions fail.
 #[test]
 fn a_missing_node_and_a_bad_mix_are_refused() {
     let mut r = rig();
@@ -230,11 +214,6 @@ impl Node for Quarter {
 /// old node's figure goes on (`A/2 * 0.5 + A * 0.5`, or `A`), the graph stays
 /// edited, and once the host sets the mix to WET or the mode to Active the next
 /// update commits and the new node is heard alone (`A / 4`).
-///
-/// Mutation (each run, each failed): `check_passes` not called in `commit` →
-/// the replace commits and the first figure is the new node's blend; the
-/// session clearing the edit flag on a refused commit → the recovery never
-/// commits and the last figure is the old node's.
 #[test]
 fn a_refused_replace_keeps_the_last_plan_until_the_mix_or_mode_is_set_back() {
     for bypass in [false, true] {

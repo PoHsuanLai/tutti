@@ -414,9 +414,6 @@ mod tests {
     /// **A tail change from a plugin without `clap.tail` reports an unknown
     /// tail, not none.** The plugin signals `tail.changed` and the host has no
     /// extension to ask, so the event carries `Unknown`.
-    ///
-    /// Mutation (run): in `note_tail_change`, map `get_tail() == None` to
-    /// `PluginTail::None` → the assertion sees `None` → fails.
     #[cfg(feature = "clap")]
     #[test]
     fn a_tail_change_without_the_extension_is_an_unknown_tail() {

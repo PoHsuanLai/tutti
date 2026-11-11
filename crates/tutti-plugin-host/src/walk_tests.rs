@@ -203,12 +203,6 @@ fn ramps_map() -> TempoMap {
 /// 95 760). The engine's block carries the step as a tempo change at that
 /// frame (to 90 BPM at beat 4), which is no entry of its own: one entry,
 /// not two.
-///
-/// Mutation: in `Stretch::predict` ignore the map's points (the `point`
-/// candidate `None`) -> the tempo-only `Env` change is no entry and none
-/// is made -> no entry -> fails. Mutation: drop the filter that skips an
-/// `Env` change that is the stretch going on -> the step is an entry
-/// twice -> fails.
 #[test]
 fn a_step_inside_a_chunk_is_an_entry_at_its_frame() {
     let map = step_map();
@@ -230,14 +224,6 @@ fn a_step_inside_a_chunk_is_an_entry_at_its_frame() {
 /// segment's (-120 / 96 000). Beat 3.99 is 1.5967 s into the first ramp
 /// (`0.3125 s^2 + 2 s = 3.99`), 0.00334 s short of its end at 1.6 s:
 /// frame 161 (160.2 rounds up).
-///
-/// Mutation: in `slope`, read the tempo one stretch ahead at the chunk's
-/// end rather than held to the segment (`tempo_slope_with` replaced by the
-/// 5a difference `tempo_at_seconds(t1) - tempo` over the whole chunk) ->
-/// the first stretch reads the second ramp's falling tempo -> fails.
-/// Mutation: in `close`, read the slope at the first beat of the chunk
-/// (`Beat(0.0)` for `open.start.beat`) -> the second entry reads the
-/// first ramp's slope -> fails.
 #[test]
 fn a_ramp_ending_inside_a_chunk_splits_the_slope() {
     let s0 = (-2.0 + (4.0f64 + 1.25 * 3.99).sqrt()) / 0.625;
@@ -258,10 +244,6 @@ fn a_ramp_ending_inside_a_chunk_splits_the_slope() {
 /// whenever the chunk held a point; a chunk in the middle of a ramp has
 /// the ramp's), and the engine's own cell edges (a tempo change every 128
 /// frames of a ramp, in `Env::changes`) are no entries.
-///
-/// Mutation: `slope` returning `0.0` -> fails. Mutation: treat every
-/// `Env` change as an entry (drop the `continues` test) -> the cell edges
-/// are entries -> fails.
 #[test]
 fn a_ramp_chunk_has_its_slope_and_its_cell_edges_are_no_entries() {
     let mut rig = Rig::new(ramps_map());
@@ -288,12 +270,6 @@ fn a_ramp_chunk_has_its_slope_and_its_cell_edges_are_no_entries() {
 /// **A start, a stop, a seek and a loop wrap inside a chunk are entries**,
 /// each with the transport at its frame (play state, beat, loop), in
 /// order.
-///
-/// Mutation: skip an `Env` change whose play state differs (the
-/// `t.playing != self.playing` clause of `continues` removed) -> the stop
-/// and the start are no entries -> fails. Mutation: drop the wrap
-/// prediction (`wrap` candidate `None`) -> the wrap at frame 360 is no
-/// entry -> fails.
 #[test]
 fn a_stop_a_start_a_seek_and_a_wrap_are_entries() {
     let looped = LoopRange {
@@ -340,11 +316,6 @@ fn a_stop_a_start_a_seek_and_a_wrap_are_entries() {
 /// seek in the second call is an entry at the chunk frame it falls on
 /// (the first call's length and its frame in the second), though `begin`
 /// ran in the first call and saw only that call's `Env`.
-///
-/// Mutation: `take` not scanning (the `walk.scan` call removed) -> no
-/// entry -> fails. Mutation: the entry's frame taken as the call's frame
-/// (`p`) rather than the chunk's (`at + (p - from)`) -> 10, not 74 ->
-/// fails.
 #[test]
 fn a_chunk_spanning_two_calls_sees_the_second_calls_seek() {
     let mut rig = Rig::new(TempoMap::constant(Bpm::of(120.0)).expect("a tempo"));
@@ -366,8 +337,6 @@ fn a_chunk_spanning_two_calls_sees_the_second_calls_seek() {
 /// its input behind a latent path** (the change is in the executor's
 /// history), is told at the second call's first frame: the transport there
 /// is not the stretch continued.
-///
-/// Mutation: the `check_start` check removed -> no entry -> fails.
 #[test]
 fn a_seek_the_second_call_does_not_list_is_told_at_its_first_frame() {
     let mut rig = Rig::new(TempoMap::constant(Bpm::of(120.0)).expect("a tempo"));
@@ -388,9 +357,6 @@ fn a_seek_the_second_call_does_not_list_is_told_at_its_first_frame() {
 /// eighth entry's slope is zero when a seek after it was dropped (no slope
 /// describes a stretch the beat jumped in), while the entries before it
 /// keep the ramp's.
-///
-/// Mutation: never set `Open::tainted` -> the eighth entry keeps the
-/// ramp's slope -> fails.
 #[test]
 fn a_dropped_seek_leaves_its_stretch_without_a_slope() {
     let mut rig = Rig::new(ramps_map());
@@ -417,10 +383,6 @@ fn a_dropped_seek_leaves_its_stretch_without_a_slope() {
 /// Eight seeks fill the list (beats 3.928 to 3.998, each a jump of 0.01
 /// beat in 8 frames, where the ramp moves about 0.0005), and the point
 /// some 32 frames after the eighth is the ninth change.
-///
-/// Mutation: taint only for a dropped seek, wrap, start or stop (skip
-/// `Source::Predicted(Kind::Point(_))`) -> the eighth entry keeps the
-/// ramp's slope -> fails.
 #[test]
 fn a_dropped_point_leaves_its_stretch_without_a_slope() {
     let mut rig = Rig::new(ramps_map());
@@ -441,10 +403,6 @@ fn a_dropped_point_leaves_its_stretch_without_a_slope() {
 /// the frame the map puts beat 4 the block's beat is an ulp short of it.
 /// The block here runs at 170 BPM from beat 3.998 while the ramp nears
 /// 180, so it is short by more: the point is one entry, not two.
-///
-/// Mutation: never set `Stretch::told` -> the stretch the point started
-/// is before beat 4 and predicts it again a frame on -> two entries ->
-/// fails.
 #[test]
 fn a_point_the_engine_reaches_late_is_one_entry() {
     let mut rig = Rig::new(ramps_map());
@@ -459,12 +417,6 @@ fn a_point_the_engine_reaches_late_is_one_entry() {
 /// **Nine changes in one chunk: eight are sent, one is counted, and the
 /// ninth's transport is the next chunk's first.** Eight seeks in the
 /// first call and a ninth in the second, a chunk of 128 frames.
-///
-/// Mutation: the list's `is_full` guard removed (push regardless) -> the
-/// ninth panics the inline list (`ArrayVec::push`) -> fails. Mutation:
-/// `count_transport_dropped` not called -> 0 counted -> fails. Mutation:
-/// the ninth added at the expense of the first (keep the latest) -> the
-/// list's first entry is the ninth's -> the order assertion fails.
 #[test]
 fn nine_changes_send_eight_count_one_and_the_ninth_waits_for_the_next_chunk() {
     assert_eq!(MAX_TRANSPORT_CHANGES, 8);

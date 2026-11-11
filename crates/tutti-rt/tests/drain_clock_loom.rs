@@ -11,23 +11,6 @@
 //! interleaving it asserts that when the control thread's `two_since` answers
 //! true, some drain the audio thread has logged saw the write: a record entry
 //! is dropped only after a drain that must have seen it has begun.
-//!
-//! # Mutation record
-//!
-//! Each was applied to `src/drain_clock.rs`; the model failed as noted. The
-//! first row is what settles `+ 2`.
-//!
-//! - `two_since` as `>= mark + 1` (instead of `+ 2`) → "dropped before a drain
-//!   saw the write": the drain the mark counted read the slot before the write,
-//!   and the next count is already enough. This is why it is two;
-//! - no fence in `DrainBeat::begin` → the same (the store-load pair is broken);
-//! - no fence in `DrainWatch::mark` → the same;
-//! - `begin` with `Relaxed` instead of `Release` → the same (the log of an
-//!   earlier drain is not ordered before the count);
-//! - the test marking before it sends → the same.
-//!
-//! The model runs 1,148 executions (`LOOM_LOG=info` shows loom's own count; the
-//! test prints the number of times the closure ran).
 
 #![cfg(loom)]
 

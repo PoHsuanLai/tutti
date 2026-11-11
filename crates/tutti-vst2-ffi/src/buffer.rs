@@ -710,10 +710,6 @@ mod tests {
     /// `SendEventBuffer`'s header storage is aligned for `api::Events` and holds
     /// the whole struct at every capacity, `0` and `1` included (they formed a
     /// `&mut Events` over a 16-byte buffer).
-    ///
-    /// Mutation (run): size the buffer as `header_size + body_size` alone and
-    /// make it a `Vec<u8>` again: the size assertion fails for capacity 0 and 1
-    /// (the alignment half is the allocator's luck and cannot be shown).
     #[test]
     fn send_event_buffer_storage_holds_an_events_header_at_any_capacity() {
         use super::SendEventBuffer;

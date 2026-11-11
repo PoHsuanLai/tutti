@@ -1217,9 +1217,6 @@ mod tests {
     /// The vtable a plugin keeps reaches the embedder's callbacks after the
     /// `Host` has moved (the plugin holds the address, not the `Host`), and
     /// its thread-check answers come from the callbacks.
-    ///
-    /// Mutation: have `host_request_restart` ignore the callbacks: the count
-    /// stays 0 and the first assertion fails.
     #[test]
     fn a_hosts_vtable_reaches_its_callbacks_after_the_host_moves() {
         let counter = Arc::new(Count::default());
@@ -1253,9 +1250,6 @@ mod tests {
     ///
     /// A null host pointer is fine here: this callback answers from a constant
     /// and never dereferences it.
-    ///
-    /// Mutation: answer `true` unconditionally: the declined-flag tests below
-    /// fail (this one still passes).
     #[test]
     fn is_rescan_flag_supported_answers_for_the_flags_this_host_decodes() {
         let known = [
@@ -1280,8 +1274,6 @@ mod tests {
     /// the reason the answer is a mask rather than a constant: a rescan kind
     /// added by a later CLAP revision must be declined until someone has read
     /// its `[!active]` annotation and taught the host about it.
-    ///
-    /// Mutation: replace the `flag & !KNOWN == 0` test with `true`: fails.
     #[test]
     fn an_undecoded_rescan_flag_is_declined() {
         // Bit 6 and above are unassigned in ext/audio-ports.h as of clap-sys
@@ -1351,12 +1343,6 @@ mod tests {
     /// refused (`false`, or nothing for a void entry), so a plugin that
     /// registers a timer or a descriptor from `process` makes the host take no
     /// lock and allocate nothing. A `[thread-safe]` entry is never gated.
-    ///
-    /// Mutation: dispatch `host_timer_register` (or `host_state_mark_dirty`, or
-    /// `host_posix_fd_register`) through `guarded` instead of `main_only`: the
-    /// off-thread call reaches the embedder and its assertion fails; gate
-    /// `host_request_callback` with `main_only`: the thread-safe assertion
-    /// fails.
     #[test]
     fn main_thread_entries_reach_the_embedder_only_on_the_main_thread() {
         use clap_sys::ext::posix_fd_support::{
@@ -1406,10 +1392,6 @@ mod tests {
     /// An undo delta past the cap is refused unread: a plugin that claims a
     /// size no allocation has gets no slice made of it. The delta pointer here
     /// is dangling, so the refusal must come before it is used.
-    ///
-    /// Mutation: drop the `MAX_UNDO_DELTA_BYTES` comparison in
-    /// `host_undo_change_made`: the call reaches the embedder with a slice over
-    /// the dangling pointer and the count is not 0.
     #[test]
     fn an_undo_delta_past_the_cap_is_refused_unread() {
         use clap_sys::ext::draft::undo::{CLAP_EXT_UNDO, clap_host_undo};

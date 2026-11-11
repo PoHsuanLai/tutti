@@ -1519,10 +1519,6 @@ mod tests {
     /// A render longer than the block the buffers were sized for is refused
     /// before any buffer is bound: `bind` would otherwise advertise `frames`
     /// samples on a `block_size` buffer and the unit would write past it.
-    ///
-    /// Mutation (run): delete the `frames > block_size` check in
-    /// `Renderer::render` -> the call reaches the unit and returns
-    /// `RenderFailed`, not `Invalid`, so this fails.
     #[test]
     fn a_render_past_the_block_size_is_refused() {
         let desc = coreaudio_sys::AudioComponentDescription {

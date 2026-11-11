@@ -52,10 +52,6 @@ fn allocations(f: impl FnOnce()) -> usize {
 /// After one step has built the buffers and planned the FFT, further steps, a
 /// `reset` and a step, and a step under a config that differs only in tuning
 /// allocate nothing. A different geometry rebuilds the buffers, which does.
-///
-/// Mutation checked: `reset` as `*self = Self::default()` fails the reset
-/// case; rebuilding the buffers on every config change (`if true` for the
-/// geometry test in `adopt`) fails the tuning case.
 #[test]
 fn steps_after_the_first_do_not_allocate() {
     let geometry =

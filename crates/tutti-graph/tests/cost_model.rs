@@ -144,10 +144,6 @@ fn ragged() -> Vec<usize> {
 /// grains of work), and the plan, too cheap to pay for dispatch, renders
 /// serially on a pool. The same graph with gains that declare nothing
 /// spreads, a task per gain.
-///
-/// Mutations: drop pass 2 (`pack`) from `coarsen` → the light plan keeps
-/// its eighteen tasks → fails; make `cost::schedule`'s `pays` always true
-/// → fails.
 #[test]
 fn a_tiny_plan_packs_and_renders_serially() {
     let (mut ed, mut exec) = pair(4);
@@ -172,11 +168,6 @@ fn a_tiny_plan_packs_and_renders_serially() {
 /// Two `tiny`-shaped fans side by side keep several tasks (two sums each
 /// worth one), and the cost model still keeps them serial: spreading them
 /// would not pay for its dispatch.
-///
-/// Mutations: make `cost::schedule`'s `pays` always true (always
-/// parallel) → fails; make `par_for` build the parallel state whenever the
-/// plan has two tasks, ignoring the schedule → the
-/// `is_parallel` assert fails.
 #[test]
 fn a_cheap_plan_of_several_tasks_renders_serially() {
     let (mut ed, mut exec) = pair(4);
@@ -192,9 +183,6 @@ fn a_cheap_plan_of_several_tasks_renders_serially() {
 
 /// Eight chains of moderate nodes spread over every participant of a
 /// four-participant pool, from a short block length up.
-///
-/// Mutation: make `cost::schedule` return `Serial` (always serial) →
-/// fails.
 #[test]
 fn a_wide_plan_spreads() {
     let (mut ed, mut exec) = pair(4);
@@ -220,10 +208,6 @@ fn a_wide_plan_spreads() {
 /// pack (into fewer tasks than gains), each heavy one keeps a task of its
 /// own, and at every participant count and ragged block lengths the
 /// render is bit for bit the serial one.
-///
-/// Mutations: in `coarsen.rs`'s `finish`, skip the task edges out of any
-/// task of more than one op (a dependency dropped when merging) → the
-/// verifier refuses the plan in `compile` ("crosses task") → fails.
 #[test]
 fn packed_siblings_render_bit_identically() {
     let build = |workers: usize| {
@@ -298,9 +282,6 @@ impl tutti_graph::Pool for Counting {
 /// The executor honours the schedule's `from` per block: a block one frame
 /// shorter than `from` runs the serial walk (the pool is not asked), a
 /// block of exactly `from` frames is spread (the pool runs it once).
-///
-/// Mutations: make `Par::spreads` always true → the short block reaches
-/// the pool → fails; always false → the long block does not → fails.
 #[test]
 fn blocks_shorter_than_from_run_serially() {
     let (mut ed, mut exec) = Editor::new(common::prepare(MAX_BLOCK));

@@ -334,10 +334,6 @@ mod content_scale_tests {
     /// and never one on a logical-pixel system.** An HWND or X11 view is told
     /// 2.0; an `NSView` or `UIView`, which already lays out in logical pixels,
     /// is told nothing (it would apply the factor twice).
-    ///
-    /// Mutation: return `Some(1.0)` → the HWND view reads 1.0 → fails.
-    /// Mutation: drop the logical-pixel check → the `NSView` is told 2.0 →
-    /// fails.
     #[test]
     fn the_scale_is_sent_only_on_a_physical_pixel_window_system() {
         let two = ContentScale::new(2.0).expect("a scale");
@@ -369,9 +365,6 @@ mod rect_tests {
     /// non-negative and their subtraction fits.** A negative extent used to
     /// become about four billion, and a wide span overflowed (a panic in debug,
     /// a wrap in release).
-    ///
-    /// Mutation: return to `(right - left) as u32` -> the negative and the
-    /// overflowing rect fail (the latter panics in a debug build).
     #[test]
     fn a_rect_that_is_not_a_size_is_refused() {
         assert_eq!(
@@ -391,8 +384,6 @@ mod rect_tests {
     }
 
     /// **A size past `i32::MAX` saturates; it does not wrap negative.**
-    ///
-    /// Mutation: `size.width as i32` -> the right edge is negative -> fails.
     #[test]
     fn a_size_past_the_rect_saturates() {
         let r = rect_of_size(EditorSize {
@@ -473,9 +464,6 @@ mod attach_tests {
     /// The frame is set before `attached`; on the failure path nothing used to
     /// withdraw it, so a plugin that kept the pointer held a frame nothing
     /// would ever pump.
-    ///
-    /// Mutation: delete the `setFrame(nullptr)` in `Editor::open`'s failure
-    /// branch -> the log ends `[SetFrame]` and the assertion fails.
     #[test]
     fn a_failed_attach_withdraws_the_frame() {
         let calls = Arc::new(Mutex::new(Vec::new()));

@@ -469,9 +469,6 @@ mod measures_tests {
 
     /// The enum flag is a `Choice`, over a plain range; no unit is declared by
     /// anything else, so a parameter without the flag measures nothing.
-    ///
-    /// Mutation (run, 2026-11-11): `declared_measures` returning `None`
-    /// whatever the flags → the `Choice` row fails.
     #[test]
     fn the_enum_flag_gives_choice() {
         let choice = projected(ClapParamFlags::IS_ENUM | ClapParamFlags::STEPPED);
@@ -481,9 +478,6 @@ mod measures_tests {
     }
 
     /// The bypass flag is the `Bypass` role; no other flag gives a role.
-    ///
-    /// Mutation (run): `.then_some(UnitParam::Bypass)` changed to
-    /// `.then_some(UnitParam::Solo)` → the `Bypass` row fails.
     #[test]
     fn the_bypass_flag_gives_bypass() {
         assert_eq!(
@@ -496,9 +490,6 @@ mod measures_tests {
 
     /// `IS_ENUM` is the spec's bit 16 (`CLAP_PARAM_IS_ENUM`, clap/ext/params.h),
     /// read from the plugin's raw flag word rather than truncated away.
-    ///
-    /// Mutation (run, 2026-11-11): `IS_ENUM` defined as
-    /// `CLAP_PARAM_IS_STEPPED` → fails.
     #[test]
     fn the_raw_enum_bit_is_read() {
         assert_eq!(ClapParamFlags::IS_ENUM.bits(), 1 << 16);

@@ -15,9 +15,6 @@ use libloading::Library;
 use crate::ProcessCapture;
 
 /// The reference VST2 plugin, opened for its probe symbols.
-///
-/// Mutation (run): make `set_automate_burst` a no-op → the server's
-/// `a_parameter_the_plugin_moved_is_forwarded` sees no burst → fails.
 #[derive(Debug)]
 pub struct Vst2Probe {
     image: Library,

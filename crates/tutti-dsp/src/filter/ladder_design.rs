@@ -277,11 +277,6 @@ mod tests {
     /// frame `i` into a ladder with no state comes out as one `ladder_step` at the
     /// set `(i + 1) / 16` of the way from the old to the new, and at frame 15 as the
     /// held render of the new set gives it, bit for bit.
-    ///
-    /// Mutations (run): the blend at `i / 16` or `(i + 2) / 16` fails the frame-7
-    /// row; leaving the drive out of the blend (`drive: to.drive` in `LadderPoint::lerp`)
-    /// fails it too; `retarget` taking `prev = next` over a ramp cut short fails
-    /// `the_cut_ramp_goes_on_from_where_it_was`.
     #[test]
     fn a_blend_is_linear_and_arrives_on_the_new_set() {
         let d = design();
@@ -323,9 +318,6 @@ mod tests {
     /// from the set the ramp was heading for: 8 frames into a ramp to a cutoff, a
     /// retarget back leaves the first frame after it where the ramp was, one 16th of
     /// the way from there.
-    ///
-    /// Mutation (run): `prev = self.next` in `retarget` (a jump over the cut ramp)
-    /// fails.
     #[test]
     fn the_cut_ramp_goes_on_from_where_it_was() {
         let d = design();

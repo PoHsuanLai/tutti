@@ -465,10 +465,6 @@ mod tests {
     /// response, at DC, the cutoff, Nyquist and a log sweep between: magnitude and
     /// phase, to 1e-9 of the larger. The trapezoidal form that `SvfModel` reads
     /// and the direct form of the cookbook are two derivations of one `H(z)`.
-    ///
-    /// Mutations (run): `k = 1 / q` for a bell in `SvfCoeffs::new`, a shelf's `g`
-    /// left at `g0`, the `m1` of the band-pass doubled and `tan(w / 2)` taken as
-    /// `tan(w / 2.1)` in `at` each fail it.
     #[test]
     fn the_response_is_the_rbj_closed_form() {
         let rate = 48_000.0;
@@ -504,8 +500,6 @@ mod tests {
 
     /// `biquad()` is the same `H(z)` as `frequency_response`: the direct form that
     /// the two other realizations compute.
-    ///
-    /// Mutation (run): the sign of `m1 g` in `b2` flipped fails it.
     #[test]
     fn the_direct_form_is_the_same_response() {
         for ty in TYPES {
@@ -528,10 +522,6 @@ mod tests {
     /// denominator, found independently from `a1` and `a2` (a conjugate pair has
     /// `|p|^2 = a2`; a real pair is the quadratic's roots), and the model's poles are
     /// its roots.
-    ///
-    /// Mutation (run): the slow real root `2 / (k + sqrt(disc))` taken as the fast
-    /// one fails the Q 0.1 rows; the conjugate branch's `1 + g k + g^2` as
-    /// `1 - g k + g^2` fails the rest.
     #[test]
     fn the_radius_is_the_slowest_root_of_the_denominator() {
         for (q, fc) in [
@@ -564,9 +554,6 @@ mod tests {
     /// Non-finite controls take the family's default and a huge `Q` is held at
     /// `MAX_Q`, so every model is one that can be run: finite coefficients, a
     /// radius under 1.
-    ///
-    /// Mutations (run): dropping the finite guard on the cutoff fails the NaN row;
-    /// dropping the `Q` clamp fails the `1e30` row (the radius rounds to 1).
     #[test]
     fn a_hostile_control_still_gives_a_stable_model() {
         let rate = SampleRate(48_000.0);

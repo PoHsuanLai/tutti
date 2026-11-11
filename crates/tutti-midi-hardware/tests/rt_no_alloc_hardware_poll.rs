@@ -230,11 +230,6 @@ fn hardware_poll_with_stale_timestamps_is_allocation_free() {
 /// This pins the reader's code path, not the race: a single thread cannot
 /// exhaust the interleavings. The reclamation protocol itself is checked by
 /// `tutti-rt`' loom model.
-///
-/// Mutation: putting the port set back on `ArcSwap` (`load()` in the drain,
-/// `load` + clone + `store` in `open_input_port`) aborts this test on its
-/// first block: the store turns the drain's guard into the old set's last
-/// strong count, and the guard's drop frees that `Vec` inside the gate.
 #[test]
 fn hotplug_during_a_drain_frees_nothing_on_the_audio_thread() {
     let inputs = Arc::new(HardwareMidiInputs::new(256, SampleRate::new(48_000.0)));
@@ -286,12 +281,6 @@ fn hotplug_during_a_drain_frees_nothing_on_the_audio_thread() {
 /// borrows the set holding the port. The set is retired, so the port and its
 /// ring must be freed by the next publish (the next block's plug-in, outside
 /// the gate), never when the drain's borrow drops inside it.
-///
-/// Mutation: hold the port set in a `Mutex<Arc<_>>` that the drain reads as
-/// an `Arc` clone (an owning snapshot, as the old `ArcSwap` guard became) →
-/// the drain's snapshot is the old set's last owner, its drop frees the set,
-/// the port and its ring inside the gate, and `assert_no_alloc` aborts. (The
-/// same mutation aborts the plug-in gate above.)
 #[test]
 fn unplug_during_a_drain_frees_nothing_on_the_audio_thread() {
     let inputs = Arc::new(HardwareMidiInputs::new(256, SampleRate::new(48_000.0)));

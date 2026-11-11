@@ -1130,13 +1130,6 @@ mod tests {
 
     /// Rule 9, and the param reads the other rules see, each reject their
     /// own corruption of a driven plan.
-    ///
-    /// Mutations (run), one per group, each failed this test: delete the
-    /// `verify_params(plan)?` call (the two table corruptions pass); drop
-    /// the param reads from `accesses` (the unordered read passes).
-    /// (Doc 014 §12.6 removed the in-place, event-count and shaping groups
-    /// with what they checked: a param reads only an event slot, and a port
-    /// holds one unshaped source by construction.)
     #[test]
     fn the_verifier_rejects_each_param_corruption() {
         let (good, _) = modulated_plan();
@@ -1187,10 +1180,6 @@ mod tests {
     /// The verifier is not a rubber stamp: forcing two concurrent values into
     /// one slot — exactly what a serial-liveness colouring would do — is
     /// reported.
-    ///
-    /// Mutation: in rule 2, skip pairs where only one side writes
-    /// (`aw && bw` instead of `aw || bw`) → the generator/output-reader
-    /// overlap goes unreported → fails.
     #[test]
     fn the_verifier_rejects_a_slot_shared_by_concurrent_ops() {
         let good = independent_pair();
@@ -1221,10 +1210,6 @@ mod tests {
     /// of its *readers* is reported — the overlap only a read/write check
     /// sees. `A → B → W` and `A → C`: `W` writing into `A`'s slot follows `A`
     /// but can run while `C` still reads `A`.
-    ///
-    /// Mutation: in rule 2, require both sides to write (`aw && bw` instead
-    /// of `aw || bw`) → rules 3 and 4 do not see this shape either → no error
-    /// → fails.
     #[test]
     fn the_verifier_rejects_a_write_beside_a_concurrent_read() {
         let (a, b, w, c) = (NodeKey(1), NodeKey(2), NodeKey(3), NodeKey(4));
@@ -1344,11 +1329,6 @@ mod tests {
 
     /// A sum op adds two to `MAX_PORTS` addends, and writes only its first
     /// addend's slot among the slots it reads.
-    ///
-    /// Mutations (each run, each failed this test): delete `verify_sums` ->
-    /// the one-addend and 65-addend cases pass; make the `Op::Sum` arm of
-    /// rule 4's `declared` accept any write (`true`) -> the aliased-second-
-    /// addend case passes.
     #[test]
     fn the_verifier_rejects_a_malformed_sum() {
         let good = summed_pair();
@@ -1394,8 +1374,6 @@ mod tests {
     }
 
     /// A read the DAG does not order after its write is reported.
-    ///
-    /// Mutation: delete rule 3's `reach.before(v.writer, r)` check → fails.
     #[test]
     fn the_verifier_rejects_a_read_before_its_write() {
         let mut bad = independent_pair();
@@ -1408,11 +1386,6 @@ mod tests {
     /// A node record's declared latency and tail (the halves of `park_after`
     /// the silence skip rebuilds a narrowed figure from) must agree with its
     /// unit's shape: a record that lied would park a node on the wrong ring.
-    ///
-    /// Mutations (each applied, each failed this test): delete
-    /// `rec.latency != pu.shape.latency.samples()` from the verifier's
-    /// record comparison → the latency case passes; delete
-    /// `rec.tail != pu.shape.tail` → the tail case passes.
     #[test]
     fn the_verifier_rejects_a_record_whose_latency_or_tail_lies() {
         let good = independent_pair();
@@ -1431,13 +1404,6 @@ mod tests {
     }
 
     /// Every other structural rule rejects its own corruption.
-    ///
-    /// Mutations, one per case (each applied, each failed this test):
-    /// delete `verify_in_place`'s slot comparison; delete the "op is in two
-    /// tasks" check; delete the cross-task edge check; delete the
-    /// ascending-order check; compare activation to
-    /// `vec![0; tasks]`; delete the delay-uses check; delete the store-index
-    /// uniqueness check.
     #[test]
     fn the_verifier_rejects_each_structural_corruption() {
         let good = independent_pair();
@@ -1546,17 +1512,6 @@ mod tests {
     /// would otherwise be a proof about code that does not run. Each case is
     /// a mistake the *lowering* could make, which re-running the lowering
     /// would not notice.
-    ///
-    /// Mutations applied inside `NodeTables::lower`, which the verifier then
-    /// sees through `compile`'s debug check (every graph-building test
-    /// panics with "unsound plan"):
-    /// - lower the one-in/one-out shape as `Form::InPlace { slot: out }` →
-    ///   the "form" check fires;
-    /// - drop the output requests from the audio borrow run → the "borrows"
-    ///   check fires.
-    ///
-    /// Mutation: delete the `verify_lowered(plan)?` call → every corrupted
-    /// plan below passes → fails.
     #[test]
     fn the_verifier_rejects_node_tables_that_disagree_with_the_ops() {
         use crate::arena::Role;
@@ -1659,12 +1614,6 @@ mod tests {
     /// slot table wrong is refused. The executor would otherwise hand a
     /// channel another channel's buffer, and none of the rules about ops
     /// would notice.
-    ///
-    /// Mutation: in `Direct::lower`, give output `c` the role of output
-    /// `(c + 1) % outs` → the verifier refuses every stereo plan inside
-    /// `compile` ("form") → this test and the differential suite fail.
-    /// Mutation: make `direct_ok` return `true` → the corrupted records below
-    /// pass → fails.
     #[test]
     fn the_verifier_checks_the_direct_slot_table() {
         use crate::plan::{Direct, Form};
@@ -1761,11 +1710,6 @@ mod tests {
     /// A merge whose slot is smaller than its inputs together is refused —
     /// it could drop a note-off — in either currency: one source declares
     /// 5 events, the other takes the default.
-    ///
-    /// Mutation: delete the `holds` check on event values → the shrunken
-    /// slots pass → fails. Mutation: compare only `declared` in
-    /// `EventSlotCapacity::holds` → the slot short of a default passes →
-    /// fails.
     #[test]
     fn the_verifier_rejects_a_merge_slot_too_small() {
         use crate::spec::{EventEdge, EventIn, EventOut};
@@ -1836,13 +1780,6 @@ mod tests {
 
     /// Rule 8: a fade must name a key its delta replaces, once, between
     /// units whose shapes agree in all but the tail.
-    ///
-    /// Mutation: drop the "does not replace it" check → the fade on an
-    /// untouched key passes → fails. Mutation: drop the "twice" check →
-    /// fails. Mutation: compare the tails too → the tail-only change is
-    /// refused → fails. Mutation: drop the in-place comparison → fails.
-    /// Mutation: drop the event-capacity comparison → the fade to a unit
-    /// declaring another capacity passes → fails.
     #[test]
     fn fades_are_checked_against_both_plans() {
         use crate::fade::{CrossfadeCurve, Fade};

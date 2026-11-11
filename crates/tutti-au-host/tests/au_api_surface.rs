@@ -83,28 +83,15 @@
 //! A test that cannot fail is worse than none, so every assertion below was
 //! checked against a deliberate break in `src/`, reverted after:
 //!
-//! | mutation | caught by |
-//! |---|---|
-//! | `value_strings` passes the input scope instead of `GLOBAL` | `value_strings_at_is_answered_only_on_the_global_scope` |
-//! | `clump_name` passes the input scope instead of `GLOBAL` | `clump_name_at_is_answered_only_on_the_global_scope` |
-//! | `TransportState::is_recording` reads the `cycling` atomic | `is_recording_and_is_cycling_read_their_own_flags` |
-//! | `stream_count` counts only the `Some` entries | `stream_count_is_the_length_of_the_name_list_including_unnamed_slots` |
-//! | `fourcc_to_string` decodes little-endian | `fourcc_to_string_is_big_endian_and_survives_non_utf8` |
-//! | `find_component` drops its null check | `find_component_reports_absence_rather_than_a_null_handle` |
-//! | `watch_property` registers `ParameterValueChange` instead of `PropertyChange` | all five `watch_property` tests |
-//!
 //! That last row is worth its own note, because it is what makes registration
 //! failure *informative*: AudioToolbox validates **parameter** ids but not
 //! **property** ids, so the tag confusion surfaces as
 //! `kAudioUnitErr_InvalidParameter` (-10878) at registration for the very ids
 //! [`registration_never_refuses_a_property_id`] asserts are accepted.
 //!
-//! One mutation was **not** caught, and the test that should have caught it says
-//! so: see [`the_at_string_conversions_report_absence_rather_than_fabricating_zero`].
-//!
 //! Three assertions check set membership rather than an exact sequence, because
 //! delivery coalesces (see [`EventLog::settle_then_clear`]). All five
-//! `watch_property` tests still fail under the tag mutation.
+//! `watch_property` tests fail if the tag is confused.
 //!
 //! ## Judged internal rather than tested
 //!
@@ -648,14 +635,14 @@ fn clump_name_at_is_answered_only_on_the_global_scope() {
 /// than a fabricated success — relaxing it to "either works or doesn't" would
 /// make it unfalsifiable.
 ///
-/// ## What this test does NOT cover, verified by mutation
+/// ## What this test does NOT cover
 ///
 /// `value_from_string_at` seeds `outValue` with `f32::NAN` and rejects a
 /// non-finite result, so that an AU returning `noErr` without writing the field
 /// cannot be read as a genuine parse of `0.0` — a value the host would then
 /// commit to the user's preset. **This test cannot catch a regression in that
-/// sentinel.** Replacing `f32::NAN` with `0.0` was tried against this suite and
-/// every assertion still passed, because the guard is
+/// sentinel.** Replacing `f32::NAN` with `0.0` would leave
+/// every assertion passing, because the guard is
 /// `status != NO_ERR || !outValue.is_finite()` and on Apple's units the *status*
 /// arm always fires first — the sentinel is never reached. Proving it needs an AU
 /// that answers the property, and none exists on this machine (see the module

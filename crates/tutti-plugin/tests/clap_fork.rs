@@ -112,13 +112,6 @@ fn env() -> ProbeEnv {
 /// Every block the live pipeline collected is compared bit for bit with the
 /// fork's block at the same index (both are one block late), and the fork's are
 /// checked against the arithmetic too.
-///
-/// Mutation: drop the `load_state` call in `ServedFork::instance` → the fork
-/// renders at 0 dB → fails. Mutation: drop `set_offline_wait` → unpaced blocks
-/// read silence → fails. (A client is not `Clone`, so "return the live client
-/// as the fork" is not a mutation the code can express;
-/// `a_fork_and_the_live_instance_do_not_reach_each_other` runs the two
-/// overlapped.)
 #[test]
 fn a_fork_renders_like_the_live_instance_from_its_state() {
     let _lock = machine_lock();
@@ -175,12 +168,6 @@ fn a_fork_renders_like_the_live_instance_from_its_state() {
 /// The overlap is enforced, not hoped for: both threads start from a barrier,
 /// the fork keeps rendering until the live run is done, and the test asserts
 /// the fork rendered blocks while the live run was still going.
-///
-/// Mutation: have `ServedFork::instance` skip the fresh launch and return a
-/// client on the live bridge (`PluginBridge` shared) → the fork thread's
-/// blocks land in the live instance, and the live gain change reaches the
-/// "fork" → fails on both halves. Mutation: mark the live run done before it
-/// starts → the fork renders nothing while it runs → the overlap check fails.
 #[test]
 fn a_fork_and_the_live_instance_do_not_reach_each_other() {
     let _lock = machine_lock();
@@ -270,9 +257,6 @@ fn a_fork_and_the_live_instance_do_not_reach_each_other() {
 ///
 /// The refusal is armed after the live instance loaded, so only the fork's
 /// server (spawned later, inheriting the environment) refuses.
-///
-/// Mutation: ignore `load_state`'s result in `ServedFork::instance` →
-/// both forks succeed → fails.
 #[test]
 fn a_state_the_fresh_instance_refuses_is_a_named_fork_error() {
     let _lock = machine_lock();
@@ -323,9 +307,6 @@ fn a_state_the_fresh_instance_refuses_is_a_named_fork_error() {
 
 /// **A plugin that cannot save its state cannot be forked**, and says so
 /// before any fresh instance is started.
-///
-/// Mutation: treat a failed save as an empty state (`unwrap_or_default`) →
-/// the fork loads at the plugin's defaults and succeeds → fails.
 #[test]
 fn a_plugin_that_cannot_save_its_state_is_a_named_fork_error() {
     let _lock = machine_lock();
@@ -348,9 +329,6 @@ fn a_plugin_that_cannot_save_its_state_is_a_named_fork_error() {
 /// forkable, and the forked graph renders the plugin at the live instance's
 /// gain on the offline timeline — the path an export takes.
 /// With its inputs unwired the probe renders its tag, scaled.
-///
-/// Mutation: hand no fork source from `IntoNode for PluginClient<Bound>`
-/// (`fork: None`) → `ForkError::NotForkable` → fails.
 #[test]
 fn a_graph_holding_a_plugin_forks_and_renders_offline() {
     let _lock = machine_lock();
@@ -424,14 +402,6 @@ fn render_fork_of(client: PluginClient, blocks: usize) -> (Editor, Duration) {
 /// is armed after the live one loaded) aborts on its 8th block; the render
 /// finishes without waiting out any budget, and the forked editor reports
 /// `Crashed` for the plugin's key with a `PluginRenderFault::Crashed` cause.
-///
-/// Mutation: hand no health probe from `ServedFork::fork` → `fork_health` is
-/// `Ok` → fails. Mutation: never ask the process (`server_died`) in the
-/// batcher's wait → the bridge, sent nothing, never notices the death, and the
-/// block waits out its 5 s budget → the time bound fails. Mutation: drop the
-/// wait's `latch_crash` → on a machine that renders the 40 blocks inside one
-/// process poll, the bridge noticed the death but the executor holding it is
-/// dropped before `fork_health` asks → `Ok` → fails.
 #[test]
 fn a_fork_whose_server_dies_mid_render_is_a_crashed_fault() {
     let _lock = machine_lock();
@@ -457,10 +427,6 @@ fn a_fork_whose_server_dies_mid_render_is_a_crashed_fault() {
 /// not one budget per block.** The fork's server parks from its 5th block
 /// for good; with a 1 s budget the 30-block render takes about a second, and
 /// the forked editor reports `TimedOut`.
-///
-/// Mutation: drop the `gave_up` early return in `Batcher::await_output` →
-/// every later block waits its own second (~25 s) → the time bound fails.
-/// Mutation: never latch `gave_up` → the same, and `fork_health` is `Ok`.
 #[test]
 fn a_fork_whose_server_hangs_is_a_timed_out_fault_after_one_budget() {
     let _lock = machine_lock();
@@ -488,10 +454,6 @@ fn a_fork_whose_server_hangs_is_a_timed_out_fault_after_one_budget() {
 /// **A fork source whose live instance is gone says so at once**, without
 /// launching anything: `PluginForkError::LiveGone`. The source holds the live
 /// bridge weakly, so it cannot keep a dropped plugin alive either.
-///
-/// Mutation: answer a gone live bridge the way a strong `Arc` to a dead
-/// process would, `SaveState(PluginCrashed)` → not `LiveGone` →
-/// fails.
 #[test]
 fn a_fork_of_a_dropped_plugin_is_live_gone() {
     let _lock = machine_lock();
@@ -543,10 +505,6 @@ fn children() -> std::collections::BTreeSet<u32> {
 /// once the fork and its handle are gone, while the live server's still
 /// does. The probe is `clap_probe::is_alive` (`kill(pid, 0)` on Unix,
 /// `GetExitCodeProcess` on Windows), shared with `real_plugin_pressure.rs`.
-///
-/// Mutation: `std::mem::forget(fork)` instead of dropping it → the server
-/// runs on → fails. Mutation: skip `wait()` in `ProcessGuard::drop` → a
-/// zombie answers `kill(pid, 0)` → fails (Unix).
 #[test]
 fn a_dropped_forks_server_is_reaped() {
     let _lock = machine_lock();
@@ -581,10 +539,6 @@ fn a_dropped_forks_server_is_reaped() {
 /// started, then refused the state). Its pid never reaches the caller, so
 /// this reads this process's children from `/proc` instead: Linux only
 /// (`/proc/self/task/*/children`). The guard is the same code everywhere.
-///
-/// Mutation: `std::mem::forget(fork)` on the `LoadState` error path in
-/// `ServedFork::instance` → the refused fork's server stays a child →
-/// fails.
 #[cfg(target_os = "linux")]
 #[test]
 fn a_failed_forks_server_is_reaped() {
@@ -688,9 +642,6 @@ fn export_through_a_fork(live: &Editor) -> tutti_export::Result<tutti_export::Re
 /// a named error** — `Error::ForkFailed { key, kind, cause }` — instead of
 /// returning half a second of mostly silence as a successful render. A healthy
 /// fork exports fine (and audibly), so the check is not a blanket refusal.
-///
-/// Mutation: skip the `fork_health` check in tutti-export's `with_source` →
-/// both failing exports return `Ok` → fails.
 #[test]
 fn an_export_through_a_failing_fork_fails_by_name() {
     let _lock = machine_lock();
@@ -737,10 +688,6 @@ fn an_export_through_a_failing_fork_fails_by_name() {
 /// gate turns the note-on into its first non-zero frame, which lands at the
 /// note's frame plus the pipeline's one chunk. The note is at frame 6000, on
 /// neither a 64- nor a 1024-frame boundary.
-///
-/// Mutation (run): the clip node's fork an empty clip → the gate never
-/// opens → fails. (Here chunks and blocks coincide; where a chunk begins or
-/// ends inside a block is `a_clip_note_in_a_chunk_that_begins_…`.)
 #[test]
 fn a_clip_note_reaches_an_exported_plugin_on_its_frame() {
     let _lock = machine_lock();
@@ -828,11 +775,6 @@ fn feed_chord(live: &mut Editor, plugin: NodeKey, n: u8, on: usize, off: usize) 
 /// Before, the chunk kept the first 256 events: all 200 note-ons and 56
 /// note-offs, the gate stayed open to the end of the file, and the export
 /// returned `Ok`.
-///
-/// Mutation (run): `push_displacing` as `push` (a refused note-off is not
-/// kept) → 144 notes stay held, the gate never closes → fails. Mutation:
-/// drop `io.count_lost(host.lost)` in the plugin node → the default export
-/// is `Ok` → fails.
 #[test]
 fn a_chord_larger_than_a_chunk_ends_and_the_export_counts_the_loss() {
     let _lock = machine_lock();
@@ -922,10 +864,6 @@ fn feed_note(live: &mut Editor, plugin: NodeKey, frame: usize) {
 /// `Legacy` node was in the graph, and what any host rendering short calls
 /// does: the chunk from 6 240 then begins 48 frames into the pass from
 /// 6 192).
-///
-/// Mutation (run): an event's chunk frame taken as its offset in the call
-/// (`o` for `at + o - from` in `Chunks::take`) → the note lands late →
-/// fails.
 #[test]
 fn a_clip_note_in_a_chunk_that_begins_mid_block_lands_on_its_frame() {
     for passes in [false, true] {
@@ -986,13 +924,6 @@ fn a_clip_note_in_a_chunk_that_begins_mid_block_lands_on_its_frame() {
 /// [`a_clip_note_in_a_chunk_that_begins_mid_block_lands_on_its_frame`], but
 /// the note arrives on the event port: 480-frame chunks, 400-frame blocks,
 /// the note at 6 300 in the chunk from 6 240.
-///
-/// Mutation: `Chunks::take` sending nothing → the gate never opens → fails.
-/// Mutation: an event's chunk frame taken as its block offset (`o` for
-/// `at + o - from`) → the chunk from 6 240 begins 240 frames into the block
-/// from 6 000, so the note lands 240 frames late → fails. Mutation: no
-/// event input declared (`with_events(0, 0)`) → the edge is refused at
-/// compile → fails.
 #[test]
 fn a_clip_nodes_note_reaches_the_plugins_event_input_on_its_frame() {
     use tutti_fixtures::midi;
@@ -1093,14 +1024,6 @@ impl tutti_graph::Node for MidiSink {
 /// belongs to starts playing mid-block. Rendered three times: the export
 /// waits for each chunk's reply, so the frame never depends on how the
 /// reply raced the audio.
-///
-/// Mutation: emit at the chunk's frame, ignoring where the ring plays it
-/// (`host.emit(o, …)`) → the note-on comes out 240 frames early → fails.
-/// Mutation: no event output declared → the edge is refused at compile →
-/// fails. Mutation: skip the reply wait in `await_output` → a reply that
-/// loses the race to its chunk's audio is taken with the next chunk, at its
-/// frame 0 → fails (in 2 of 3 runs here: it is a race, which is why the
-/// test renders three times and why the wait exists).
 #[test]
 fn a_plugins_midi_out_keeps_its_place_against_its_audio() {
     use tutti_fixtures::midi;
@@ -1233,11 +1156,6 @@ impl tutti_graph::Node for RampSource {
 /// export's plan carries 137 + 24 + the render's chunk (its `MaxBlock`,
 /// `GRAPH_MAX_BLOCK`: an export has no device) and trims exactly that: the render is
 /// the ramp from frame 0, sample for sample, and the fork reports no fault.
-///
-/// Mutation: drop the `settle()` from the node's `prepare` → the plan is
-/// compiled against the realtime 201 while the plugin delays 225 → the
-/// render is 24 frames late, and (the backstop) the fork's health reports
-/// `Failed` with `PluginRenderFault::LatencyChanged` → fails.
 #[test]
 fn an_export_is_aligned_when_the_plugin_latency_moves_offline() {
     let _lock = machine_lock();
@@ -1316,10 +1234,6 @@ fn an_export_is_aligned_when_the_plugin_latency_moves_offline() {
 /// thread, once on a four-participant `WorkerPool`, where the two plugins'
 /// blocks go to their servers from different threads at once — and the two
 /// renders agree bit for bit on both channels.
-///
-/// Mutation: in `tutti-graph`'s `Shared::run_op`, run `Op::Output` for
-/// channel 0 from the slot of channel 1 → the pooled render's channel 0
-/// differs → fails.
 #[test]
 fn an_export_of_plugins_is_bit_identical_on_a_pool() {
     let _lock = machine_lock();
@@ -1405,9 +1319,6 @@ fn an_export_of_plugins_is_bit_identical_on_a_pool() {
 /// `MIDI_STACK_CAPACITY` (256); 300 note-ons on its event input in one
 /// 512-frame chunk send 256 and count the other 44 on its controls. A chunk
 /// within the cap adds nothing.
-///
-/// Mutation (run): the drop not counted (`count_midi_dropped` removed from
-/// `PluginChunks::take`, now the generic node's `count_midi_dropped` in its piece loop) → the count stays 0 → fails.
 #[test]
 fn midi_past_the_chunks_capacity_is_counted() {
     use tutti_fixtures::midi;
@@ -1460,11 +1371,6 @@ fn midi_past_the_chunks_capacity_is_counted() {
 /// the live one loaded) refuses the 96 kHz the fork is prepared at. Each chunk
 /// is collected without waiting out the budget, and the forked editor reports
 /// `Failed` with a `PluginRenderFault::RateRefused` cause, not `TimedOut`.
-///
-/// Mutation: drop the refusal check in `Batcher::await_output` → every chunk
-/// waits its budget (the first one latches `TimedOut`, 5 s) → the kind and the
-/// time bound fail. Drop `latch_refusal`'s use in `ForkWatch::fault` → the
-/// fork is reported healthy → fails.
 #[test]
 fn a_fork_of_a_refused_rate_is_silent_at_once_and_a_failed_fault() {
     let _lock = machine_lock();

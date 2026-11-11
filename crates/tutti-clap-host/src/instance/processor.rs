@@ -359,9 +359,6 @@ mod tests {
     /// The plugin server hands the CLAP host the wire's snapshot, and the
     /// host's own copy keeps the slope with the tempo: `tempo_inc` is what
     /// CLAP's transport event sends.
-    ///
-    /// Mutation (run): drop `.with_tempo_inc(..)` in `convert_transport` ->
-    /// the slope is 0.0 -> fails.
     #[test]
     fn the_wires_slope_survives_the_conversion() {
         let wire = SharedTransport::new()

@@ -582,9 +582,6 @@ mod state_container_tests {
     }
 
     /// The pending writes come back in order with both halves intact.
-    ///
-    /// Mutation (run): writing the count as 0 in `pack_state_with_pending`
-    /// fails this.
     #[test]
     fn pending_writes_round_trip_beside_both_halves() {
         let packed = pack_state_with_pending(b"component", &Some(b"ui".to_vec()), &writes());
@@ -605,9 +602,6 @@ mod state_container_tests {
 
     /// With nothing pending the blob is version 1's, byte for byte, for a
     /// plugin with a controller stream and for one without.
-    ///
-    /// Mutation (run): choosing version 2 whenever the slice is empty fails
-    /// both comparisons.
     #[test]
     fn nothing_pending_packs_to_the_version_1_container() {
         let ui = Some(b"ui".to_vec());
@@ -640,9 +634,8 @@ mod state_container_tests {
     /// like a malformed version 1: a length there is no reason to trust is not
     /// used to split the component.
     ///
-    /// Mutation (run): taking the body whole when `split_body` refuses it fails
-    /// this; so does a count of 0. Not covered: the `checked_mul` on the table
-    /// length, which only matters where `usize` is 32 bits.
+    /// Not covered: the `checked_mul` on the table length, which only matters where `usize`
+    /// is 32 bits.
     #[test]
     fn a_malformed_version_2_container_falls_back_to_the_whole_blob() {
         let good = pack_state_with_pending(b"component", &Some(b"ui".to_vec()), &writes());
@@ -674,9 +667,6 @@ mod state_container_tests {
     /// write per listed parameter at its latest value: what a first block has
     /// to prepend is bounded by the parameter list, whatever the blob holds.
     /// Counted, not timed.
-    ///
-    /// Mutation (run): returning the listed entries without merging duplicates
-    /// fails the length.
     #[test]
     fn duplicate_and_unlisted_writes_load_as_one_per_listed_parameter() {
         let listed: std::collections::HashSet<u32> = [7, 1].into();

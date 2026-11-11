@@ -237,9 +237,6 @@ mod tests {
     /// **A list past the cap is refused, not truncated.** The bytes of a list
     /// one event over the cap are built by hand (a length and that many
     /// events), since no `MidiEventVec` can hold them.
-    ///
-    /// Mutation (run): the `size_hint` check and the `try_push` error both
-    /// replaced by dropping the excess event → the decode succeeds → fails.
     #[test]
     fn a_list_past_the_cap_is_rejected() {
         let n = MIDI_STACK_CAPACITY as u64 + 1;
@@ -263,9 +260,6 @@ mod tests {
     /// varint, seven bits a byte with the low group first; a float is its
     /// little-endian bytes), so a layout change fails here instead of as a
     /// desync between two binaries built apart.
-    ///
-    /// Mutation (run): `normalized::serialize` writing the `f64` →
-    /// `SetParameter`, `ParameterValue` and `ParameterChanged` differ → fails.
     #[test]
     fn typed_parameter_and_rate_fields_keep_their_wire_widths() {
         use crate::protocol::{BridgeMessage, HostMessage, Normalized, ParamId};
@@ -401,9 +395,6 @@ mod tests {
     /// **`wire::bytes` is not a protocol change**: a byte field encodes to the
     /// bytes a plain `Vec<u8>` did, and decodes them. (What it buys, one copy
     /// rather than a call per byte, is speed, which no test here asserts.)
-    ///
-    /// Mutation (run): `serialize` writing `&bytes[1..]` → the encodings differ
-    /// → fails.
     #[test]
     fn a_byte_field_encodes_as_a_plain_vec_did() {
         #[derive(serde::Serialize, serde::Deserialize, PartialEq, Debug)]

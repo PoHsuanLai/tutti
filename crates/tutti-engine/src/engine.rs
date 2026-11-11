@@ -1172,9 +1172,6 @@ mod tests {
     /// timed `Play` records mid-block carries the tempo read at the block's
     /// start, and only the command's own effect (rolling). The store lands
     /// at the next block.
-    ///
-    /// Mutation (run): re-read the control inputs after a command in
-    /// `TransportAudio::fire` → the change carries 200 BPM → fails.
     #[test]
     fn an_untimed_store_during_the_walk_waits_for_the_next_block() {
         let transport = Transport::new(SampleRate::new(48_000.0));
@@ -1218,9 +1215,6 @@ mod tests {
     /// the graph held on the control side (`apply_pending` racing a callback)
     /// renders silence and leaves the command queue for the next block, which
     /// applies it.
-    ///
-    /// Mutations (run): `process` on a panicking `borrow_mut` → panics →
-    /// fails; the refused block not zeroed → its `1.0`s survive → fails.
     #[test]
     fn a_block_refused_the_graph_is_silent_and_retries() {
         use tutti_types::ChannelLayout;
@@ -1246,9 +1240,6 @@ mod tests {
     /// take's timing, as a recording of the device would, and the frames are
     /// written (not counted lost). The plan tap, an op of the graph, has no
     /// frames for a block the graph did not render.
-    ///
-    /// Mutation (run, recorded here): delete the `hearing.write` in the
-    /// refused-block path of `process` -> the tap holds no frames for it.
     #[test]
     fn a_refused_block_is_silence_in_the_heard_tap() {
         use tutti_types::ChannelLayout;
@@ -1275,11 +1266,6 @@ mod tests {
     /// The motion machine outlives the engine that ran it: an engine built
     /// after the first is dropped resumes the same state, so a transport
     /// left rolling can still be stopped.
-    ///
-    /// Mutations (run): `MotionAudio::drop` not handing the FSM back → the
-    /// second engine is refused → fails; handing a fresh FSM back → it is
-    /// `Stopped`, so the stop is a no-op → fails. There is no drop order to
-    /// keep: the claim is the machine's home, so it comes back with it.
     #[test]
     fn a_later_engine_resumes_the_motion_machine() {
         use tutti_types::ChannelLayout;
@@ -1305,9 +1291,6 @@ mod tests {
     /// A transport whose `motion` handle came from another transport shares
     /// that one's motion machine, which is where the one claim is held: an
     /// engine over it while the other's runs is refused.
-    ///
-    /// Mutation (run): `MotionFsm::audio` building a fresh machine instead
-    /// of popping the home → the second engine is built → fails.
     #[test]
     fn a_shared_motion_handle_is_refused_as_held() {
         let first = Transport::new(SampleRate::new(48_000.0));
@@ -1325,9 +1308,6 @@ mod tests {
     /// `try_send` and a `NextBlock` command are one queue, so they apply in
     /// the order they were sent: a `Stop` then a `Play` ends rolling, a
     /// `Play` then a `Stop` ends stopped.
-    ///
-    /// Mutation (run): break the walk's tie-break on `seq` (take the later
-    /// send first) → the stop-then-play case ends stopped → fails.
     #[test]
     fn try_send_and_a_next_block_command_apply_in_send_order() {
         use tutti_types::ChannelLayout;
@@ -1363,10 +1343,6 @@ mod tests {
     /// continues from the end of this one without taking the seek again.
     ///
     /// Analytic figures: 120 BPM at 48 kHz is 1/24 000 beat a frame.
-    ///
-    /// Mutation (run): `TransportAudio::fire` beginning with `take_seek`
-    /// false → the seek lands in the next block, so the first block's
-    /// published beat is 64 / 24 000, not the target's → fails.
     #[test]
     fn a_locate_on_the_first_frame_is_taken_once_and_a_wrap_counted_once() {
         use tutti_transport::LoopEdit;
@@ -1414,10 +1390,6 @@ mod tests {
     /// A block with no declicked command in sight plans no gain event, and
     /// the fader leaves the output untouched: the fast path is reachable.
     /// A command in sight plans its aim once, not at every walk step.
-    ///
-    /// Mutation (run): push an aim at every walk step regardless of change
-    /// → the quiet block's plan is not empty →
-    /// fails.
     #[test]
     fn a_quiet_block_plans_no_gain_event() {
         let transport = Transport::new(SampleRate::new(48_000.0));
@@ -1469,10 +1441,6 @@ mod tests {
     /// A block refused the graph is a dropout the meter counts, not times:
     /// `silenced` counts both entry points, `blocks` neither, and a reset
     /// zeroes it.
-    ///
-    /// Mutations (run): `process` not counting the refusal → `silenced` is
-    /// 1 → fails; the same in `process_segment` → fails; `reset` leaving
-    /// `silenced` → fails.
     #[test]
     fn a_block_refused_the_graph_counts_as_silenced() {
         use tutti_types::ChannelLayout;
@@ -1568,10 +1536,6 @@ mod tests {
     /// zero-filled. A narrowing with an unordered end (5 into 3, 8 into 7, 6
     /// into 5) has no fold, and renders a silent counted block rather than a
     /// truncation.
-    ///
-    /// Mutation (run): `Fold::widths` placing by index only → the 5.1 and mono
-    /// rows fail; the root index off by one in `OutputFolds::get` → every row
-    /// fails; `by_index` accepting a narrowing → the `None` rows fail.
     #[test]
     fn every_root_width_places_into_any_device() {
         let folds = OutputFolds::up_to(DEFAULT_DEVICE_WIDTHS);
@@ -1613,12 +1577,6 @@ mod tests {
     /// A device wider than the default is added on the control side, and a
     /// buffer of a width nobody added is a silent counted block rather than a
     /// fold built on the audio thread.
-    ///
-    /// Mutation (run): `support_output` publishing nothing → the 20-wide
-    /// block is silent and fails; `declared` forced to `true` in
-    /// `process_segment` → the 40-wide block is still silent but not counted,
-    /// and the `silenced` assertion fails (it survived while the check was a
-    /// release-only branch).
     #[test]
     fn a_wider_device_is_added_and_an_unsupported_width_is_silent() {
         let transport = Transport::new(SampleRate::new(48_000.0));
@@ -1652,10 +1610,6 @@ mod tests {
     /// width has no order, and two channels would be dropped) renders a silent
     /// block, counted, instead of its first three channels; into a wider device
     /// the same root plays.
-    ///
-    /// Mutation (run): `Fold::by_index` accepting a narrowing → the root plays
-    /// truncated and the first assertion fails; `unplaced` never recorded → the
-    /// count is 0.
     #[test]
     fn a_root_the_device_cannot_take_is_silent_and_counted() {
         let transport = Transport::new(SampleRate::new(48_000.0));
@@ -1688,11 +1642,6 @@ mod tests {
     /// A root of four independent buses, declared, stays by index on a 6-wide
     /// device: channels 2 and 3 land at 2 and 3. Undeclared, the same root is
     /// quad, and its rears land on the side pair at 4 and 5.
-    ///
-    /// Mutation (run): `root_fold` ignoring the declaration (always
-    /// `Fold::widths`) puts 43 and 44 at 4 and 5 and fails the declared row;
-    /// `declare_root` keeping the declaration when given `None` fails the
-    /// last row.
     #[test]
     fn a_declared_unassigned_root_keeps_its_channels_by_index() {
         let transport = Transport::new(SampleRate::new(48_000.0));
@@ -1720,9 +1669,6 @@ mod tests {
     /// The declared 5.1 is the figure the bare width gives, so the last row
     /// declares the same channels with the front pair swapped to show the
     /// declaration is what is folded.
-    ///
-    /// Mutation (run): `root_fold` ignoring the declaration → the swapped row
-    /// keeps the unswapped figure and fails.
     #[test]
     fn a_declared_surround_root_folds_by_its_speakers() {
         use tutti_types::Speaker::*;
@@ -1763,10 +1709,6 @@ mod tests {
     /// widths in a row (a quad of buses, a 5.1, a 7.1) leave the four-wide plan
     /// on the first one's by-index fold. Re-declaring at its own width replaces
     /// it at once, and undeclaring is the bare quad.
-    ///
-    /// Mutation (run): `declare_root` keeping only the latest declaration and
-    /// the one before it (the earlier single `previous` slot) → after the third
-    /// declaration the plan reads as quad and the rears land on the back pair (6 and 7).
     #[test]
     fn declarations_at_other_widths_leave_the_plan_in_flight_its_fold() {
         let transport = Transport::new(SampleRate::new(48_000.0));
@@ -1800,8 +1742,6 @@ mod tests {
 
     /// A fold set a block holds when it is replaced stays pinned until the
     /// block ends, and `OutputControl::reclaim` frees it afterwards.
-    ///
-    /// Mutation (run): `reclaim` returning 0 → the pinned count is not 1.
     #[test]
     fn a_replaced_fold_set_is_reclaimed_after_the_block() {
         let transport = Transport::new(SampleRate::new(48_000.0));
@@ -1825,9 +1765,6 @@ mod tests {
     /// A declaration the device cannot take is refused and publishes nothing:
     /// four buses into a stereo device would drop two, and a channel no
     /// speaker names has no place anywhere.
-    ///
-    /// Mutation (run): `declare_root` not checking the device → the first
-    /// call is `Ok` and the engine renders silence into stereo.
     #[test]
     fn an_unplaceable_declaration_is_refused() {
         let transport = Transport::new(SampleRate::new(48_000.0));
@@ -1864,10 +1801,6 @@ mod tests {
     /// block: this block renders the plan `settle` left, at its width, and
     /// the next one the new plan. Deterministic: the gap is staged, not
     /// timed. From no plan, then widening.
-    ///
-    /// Mutation (run): `render` calls `process_with_changes` (which applies
-    /// again) with `outs[..width]` → the first block panics (empty slice) →
-    /// fails.
     #[test]
     fn a_commit_between_settle_and_render_waits_for_the_next_block() {
         use std::cell::RefCell;
@@ -1895,10 +1828,6 @@ mod tests {
 
     /// A narrowing commit in the gap: this block folds the wide plan whole,
     /// the next the narrow one, with no stale channel in it.
-    ///
-    /// Mutation (run): `render` calls `process_with_changes` → the gap block
-    /// renders the narrow plan, folded at the wide width over stale channels
-    /// → fails.
     #[test]
     fn a_narrowing_commit_between_settle_and_render_waits_for_the_next_block() {
         use std::cell::RefCell;
@@ -1918,9 +1847,6 @@ mod tests {
     /// A re-prepare's resume landing in the gap changes neither the block
     /// bound nor the rate under the block: this block (settled at 512)
     /// renders at 512, and the next is bound at 256.
-    ///
-    /// Mutation (run): `render` calls `process_with_changes` → "block of 512
-    /// frames against a max of 256" → fails.
     #[test]
     fn a_resume_between_settle_and_render_waits_for_the_next_block() {
         use std::cell::RefCell;

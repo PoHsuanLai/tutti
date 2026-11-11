@@ -175,10 +175,6 @@ fn test_multiple_input_ports() {
 /// notification thread, a session's rescan). Reading the set, appending
 /// and publishing is not one atomic step, so two creators that interleave
 /// would each publish a copy missing the other's port.
-///
-/// Mutation: releasing `republish`'s `published` lock between the copy
-/// and the publish (the read, append and publish then run unserialized)
-/// fails this with fewer than 8 x 200 ports listed and repeated indices.
 #[test]
 #[cfg_attr(miri, ignore = "threaded stress test; too slow under miri")]
 fn concurrent_creators_all_land() {
@@ -378,11 +374,6 @@ fn the_default_rate_mistimes_an_event_the_set_rate_times_correctly() {
 /// and one above it (index 2) are each cycled 100 times, so both shapes of
 /// reuse run: an interior slot, and the trailing one (trimmed, then
 /// re-appended).
-///
-/// Mutations: `remove_input_port` only deactivating the port → the list
-/// grows by one per cycle and fails the length check. `open_input_port`
-/// always appending → the interior cycle lands at 2, 3, 4 … and fails the
-/// index check and the slot bound.
 #[test]
 fn hot_plug_cycles_reuse_freed_slots() {
     let manager = Arc::new(HardwareMidiInputs::new(16, SampleRate::new(44_100.0)));
@@ -425,10 +416,6 @@ fn hot_plug_cycles_reuse_freed_slots() {
 
 /// A removed port, and the ring its producer no longer holds, are freed by
 /// the control side's publish: nothing is left for the audio thread.
-///
-/// Mutation: `remove_input_port` deactivating the port instead of taking
-/// it out of the set → the published set keeps it alive and the weak
-/// reference still upgrades.
 #[test]
 fn a_removed_port_is_freed_by_the_publish_that_removes_it() {
     let manager = Arc::new(HardwareMidiInputs::new(16, SampleRate::new(44_100.0)));
@@ -456,7 +443,7 @@ fn a_removed_port_is_freed_by_the_publish_that_removes_it() {
 /// pointer into a ring the manager owned, so a driver thread pushing while
 /// its session tore down wrote into freed memory. Now the handle owns its
 /// half of the ring, so the ring lives exactly as long as someone holds it.
-/// There is no mutation to record: the old shape cannot be rebuilt without
+/// The old shape cannot be rebuilt without
 /// `unsafe`, and without it the compiler refuses a handle that borrows the
 /// manager. Run it under miri to check the claim directly.
 #[test]
@@ -623,9 +610,6 @@ fn collect_frees_a_port_removed_during_a_drain() {
 /// A drain sized for its block takes that many events in one cycle: four
 /// ports of 256 events offer 1,024, and a drain reserved for 1,024 takes all
 /// of them where the default takes 256.
-///
-/// Mutation: ignore `reserve`'s `events` (`want = CYCLE_SCRATCH_CAP`) → the
-/// cycle takes 256 → fails.
 #[test]
 fn a_reserved_drain_takes_a_longer_blocks_events() {
     let manager = Arc::new(HardwareMidiInputs::new(256, SampleRate::new(44_100.0)));
@@ -650,10 +634,6 @@ fn a_reserved_drain_takes_a_longer_blocks_events() {
 ///
 /// Before, the drain popped up to its own cap and dropped what the buffer had
 /// no room for, uncounted.
-///
-/// Mutation: poll with `self.limit` instead of `buffer.len()` in
-/// `poll_block` → the first poll takes 30, the buffer indexes past its end →
-/// fails.
 #[test]
 fn a_poll_into_a_small_buffer_defers_and_drops_nothing() {
     use tutti_midi_runtime::MidiIn;
@@ -675,10 +655,6 @@ fn a_poll_into_a_small_buffer_defers_and_drops_nothing() {
 /// in the manager's total, which keeps a removed port's count.
 ///
 /// Ring of 4: 10 pushes are 4 taken and 6 dropped.
-///
-/// Mutation: drop the `fetch_add` in `InputProducerHandle::push` → the
-/// counts read 0 → fails. Mutation: leave `retired_dropped` alone in
-/// `remove_input_port` → the total falls to 0 on removal → fails.
 #[test]
 fn a_full_ring_counts_what_it_drops() {
     let manager = Arc::new(HardwareMidiInputs::new(4, SampleRate::new(44_100.0)));

@@ -1,16 +1,6 @@
 //! A saved device reads back as the device it was, and the document's shape is
 //! the one apps persist: renaming a variant or a field breaks saved files, so
 //! the text is pinned for every `Identity`. Run with `--features serde`.
-//!
-//! Mutation record (planted, seen to fail, restored):
-//! - `serde(skip)` on `DeviceId`'s ordinal: `a_device_round_trips` fails
-//!   (every ordinal reads back 0), and so does the pinned text;
-//! - `serde(rename = "p")` on the `Alsa` variant's `port`: the pinned `Alsa`
-//!   text fails;
-//! - `serde(rename = "Pid")` on `Identity::Product`: the pinned `Product` text
-//!   fails; the same on `CoreMidi`: the pinned `CoreMidi` text fails;
-//! - a variant reordered in `Identity`: nothing fails, as JSON names the
-//!   variant (an equivalent mutant).
 #![cfg(feature = "serde")]
 
 use tutti_midi_device::{

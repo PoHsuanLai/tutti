@@ -2,11 +2,6 @@ use super::*;
 
 /// The controls report the mode last asked for, from the cell, and the
 /// node adopts it on its next block.
-///
-/// Mutation (run): `set_mpe_mode` publishing nothing (drop the `publish`) →
-/// `pending_mpe_mode` stays `None`, fails. The node built without a reader
-/// on the controls' cell (its `mpe_request` left registered on a cell of
-/// its own) → it never sees the request, fails (run).
 #[test]
 fn the_controls_report_the_mode_last_asked_for() {
     let parts = MidiInputNode::new(None).into_parts();
@@ -30,9 +25,6 @@ fn the_controls_report_the_mode_last_asked_for() {
 
 /// **A request the node held across the next `set_mpe_mode` is freed by
 /// the next `reclaim`**, with no further publish.
-///
-/// Mutation (run): `MidiInputControls::reclaim` returning 0 without
-/// reclaiming → one request is still retired, fails.
 #[test]
 fn reclaim_frees_a_request_a_block_held_across_the_next() {
     let mut node = MidiInputNode::new(None);
@@ -52,8 +44,6 @@ fn reclaim_frees_a_request_a_block_held_across_the_next() {
 
 /// A listener on one channel of a Group takes that channel's port and the
 /// Group's channelless one; an omni listener of a Group takes its seventeen.
-///
-/// Mutation: leave out the channelless port for a channel → fails.
 #[test]
 fn a_listener_takes_its_channel_and_the_channelless_port() {
     let first = MidiInputPorts::FIRST_GROUP;
@@ -89,9 +79,6 @@ fn events_leave_on_their_channels_port() {
 /// leaves from that Group's channelless port; a message with no Group
 /// (Utility) from the first Group's; a Group the node was not built to hear
 /// has no port.
-///
-/// Mutation: `port_of` ignoring the Group (the channel alone) → the first
-/// assertion fails.
 #[test]
 fn a_group_has_ports_of_its_own() {
     let two = MidiInputPorts::through(MidiGroup::of(1));

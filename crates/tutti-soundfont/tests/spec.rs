@@ -5,8 +5,7 @@
 //! numbers).
 //!
 //! The pitch is read off the sine of the built fonts (441 Hz at key 69, one
-//! voice a zone); the level off the summed magnitude of a render. Mutations
-//! are written beside each test, as run.
+//! voice a zone); the level off the summed magnitude of a render.
 
 mod support;
 
@@ -31,10 +30,6 @@ const RING_OUT: usize = 44_100 * 20;
 
 /// 9.2, CC 64: active from 64 up. A key-off while it is active is stored, not
 /// run, and runs when it goes inactive. (CC 64 at 63 is inactive.)
-///
-/// Mutation (run): `Controller::pedal` (`tutti-voicing`) comparing `> 64` fails
-/// the first line of the table; `Holds::key_up` ignoring the pedal fails the
-/// held row; `Holds::sustain_up` not releasing fails the last assertion.
 #[test]
 fn sustain_stores_key_offs_until_it_goes_inactive() {
     for (pedal, held) in [(63, false), (64, true)] {
@@ -56,11 +51,6 @@ fn sustain_stores_key_offs_until_it_goes_inactive() {
 
 /// 9.2, CC 64: the pedal holds notes in the key-on state. A note already
 /// released when the pedal goes down is not in it.
-///
-/// Mutation: none can be planted in the core (a released note is outside the
-/// set a pedal acts on). What it pins is the removal of the old per-block poll
-/// of the pedal, which held a released voice while the pedal was down; putting
-/// the poll back in `Voice::release_if_necessary` fails it.
 #[test]
 fn sustain_down_after_the_key_off_holds_nothing() {
     let mut rig = violin();
@@ -81,11 +71,6 @@ fn sustain_down_after_the_key_off_holds_nothing() {
 /// spec's: sostenuto holds the notes in key-on when it goes active; a note
 /// struck after it behaves normally; and what it holds stays held through the
 /// sustain pedal going on and off.
-///
-/// Mutation (run): `CCNumber::SOSTENUTO` 66 -> 67 in `Controller::effect` fails
-/// the first assertion; `Holds::sostenuto_down` not marking fails the second;
-/// `Holds::sustain_up` releasing a sostenuto-held note fails the third (the
-/// sustain pedal is down when the key goes up, so it holds the note too).
 #[test]
 fn sostenuto_holds_what_sounded_when_it_went_active() {
     // A note struck after the pedal went down behaves normally.
@@ -129,9 +114,6 @@ fn sostenuto_holds_what_sounded_when_it_went_active() {
 /// 9.2, CC 120: every note in key-on skips its release and is shut off,
 /// whatever the sustain or sostenuto positions: silent in the next block, with
 /// a key still down, a pedal down, or a sostenuto holding.
-///
-/// Mutation (run): `Effect::Stop(Stop::Cut)` turned into `Stop::Release` in
-/// `Controller::effect` leaves the pedal-held note ringing and fails it.
 #[test]
 fn all_sound_off_shuts_off_even_pedal_held_notes() {
     let mut rig = violin();
@@ -149,10 +131,6 @@ fn all_sound_off_shuts_off_even_pedal_held_notes() {
 
 /// 9.2, CC 123: every note in key-on enters its release at once (a tail, not a
 /// cut), pending its status under the sustain or sostenuto pedal.
-///
-/// Mutation (run): `Effect::Stop(Stop::Release)` made `Stop::Cut` fails the
-/// tail assertion; `Holds::key_up` ignoring the pedal in the `Stop::Release`
-/// arm of `Voicing::effect` fails the pedal one.
 #[test]
 fn all_notes_off_releases_unless_a_pedal_holds() {
     let mut rig = violin();
@@ -185,9 +163,6 @@ fn all_notes_off_releases_unless_a_pedal_holds() {
 
 /// 9.2, CC 121: the continuous controllers go to their defaults, and the notes
 /// sounding are not stopped by it. (Which defaults is MIDI's, RP-015.)
-///
-/// Mutation (run): the `0x79` arm of `Player::control` removed leaves the
-/// expression at 0 and the note silent.
 #[test]
 fn reset_all_controllers_restores_the_defaults_and_stops_nothing() {
     let mut rig = violin();
@@ -216,9 +191,6 @@ fn level(font: &std::sync::Arc<tutti_sf2::SoundFont>, key: u8, velocity: u8) -> 
 
 /// 8.1.2, generator 43 (keyRange): an instrument zone answers its keys, ends
 /// included, and no others.
-///
-/// Mutation (run): `InstrumentRegion::contains` testing `<` for the upper end
-/// fails key 72; ignoring the key range fails 59.
 #[test]
 fn a_zone_answers_the_keys_of_its_range() {
     let font = one_preset(vec![vec![(generator::KEY_RANGE, range(60, 72))]]);
@@ -229,8 +201,6 @@ fn a_zone_answers_the_keys_of_its_range() {
 
 /// 8.1.2, generator 44 (velRange): an instrument zone answers its velocities,
 /// ends included, and no others.
-///
-/// Mutation (run): ignoring the velocity range fails velocity 29.
 #[test]
 fn a_zone_answers_the_velocities_of_its_range() {
     let font = one_preset(vec![vec![(generator::VEL_RANGE, range(30, 90))]]);
@@ -246,9 +216,6 @@ fn a_zone_answers_the_velocities_of_its_range() {
 /// 9.4: a range generator at the preset level is an intersection filter on the
 /// instrument's range, not an addition to it. The instrument zone answers
 /// 60 to 72, the preset zone 66 to 80: the note is heard from 66 to 72.
-///
-/// Mutation (run): `PresetRegion::contains` ignoring the preset's key range
-/// fails key 62; testing only the preset's range fails key 75.
 #[test]
 fn a_preset_range_intersects_the_instruments() {
     let font = font(
@@ -279,10 +246,6 @@ fn a_preset_range_intersects_the_instruments() {
 /// on one key sound together, at twice the level of one; the executor plays
 /// the zone each pair names: a loud zone and a silent one on different keys
 /// are told apart.
-///
-/// Mutation (run): the patch stopping at its first match fails the first
-/// assertion; `Voices::execute` taking the zone from the tag's high half for
-/// both fails the second.
 #[test]
 fn each_matching_pair_is_a_voice_and_plays_its_own_zone() {
     let one = one_preset(vec![vec![]]);
@@ -365,10 +328,6 @@ fn kit_rig() -> Rig {
 /// note of that class. The key is still down, and the zone's own release is 5
 /// s; the note is gone within a tenth of a second. A note of class 0 ("no
 /// exclusive class; no special action") and one of another class leave it be.
-///
-/// Mutation (run): `Rules::exclusive_groups` false in `player::rules` fails the
-/// first assertion; the `group == 0` guard in `Voicing::damp_exclusive` removed
-/// makes class 0 end its own and fails the last.
 #[test]
 fn a_note_of_an_exclusive_class_ends_the_others_of_it() {
     let mut same = kit_rig();
@@ -403,9 +362,6 @@ fn a_note_of_an_exclusive_class_ends_the_others_of_it() {
 /// the note still sounds in the first millisecond (a cut is silent in the same
 /// block) and has fallen by a tenth of a second. The release is quick whatever
 /// the zone's own is (5 s here).
-///
-/// Mutation (run): `Voices::execute` turning `Damp` into `Cut` fails the first
-/// assertion; into `Release` (the zone's 5 s) fails the second.
 #[test]
 fn the_class_is_ended_quickly_not_cut_and_not_released_slowly() {
     let mut rig = kit_rig();
@@ -430,9 +386,6 @@ fn the_class_is_ended_quickly_not_cut_and_not_released_slowly() {
 /// 8.1.2, generator 57: "the scope of the exclusive class is the entire
 /// preset". The same class in another preset is another class; another channel
 /// playing the same preset shares it.
-///
-/// Mutation (run): scoping by channel (the scope set to the channel) fails the
-/// second assertion; no scope (0) fails the first.
 #[test]
 fn the_scope_of_an_exclusive_class_is_the_preset() {
     // Channel 1 plays preset 1: its class 1 is not preset 0's.
@@ -454,9 +407,6 @@ fn the_scope_of_an_exclusive_class_is_the_preset() {
 
 /// 8.1.2, generator 57 with 9.4: the voices of one note do not end each other.
 /// Two zones of class 1 on one key both sound.
-///
-/// Mutation (run): dropping the strike test in `Voicing::damp_exclusive` ends
-/// the first zone when the second starts.
 #[test]
 fn the_zones_one_note_starts_do_not_end_each_other() {
     let class = |class: i16| {
@@ -476,8 +426,6 @@ fn the_zones_one_note_starts_do_not_end_each_other() {
 // ---- 8.4.1 and 9.1.7: what a note does ---------------------------------------
 
 /// 8.4.1: a harder key is louder. (The scale is the player's.)
-///
-/// Mutation (run): ignoring the velocity in `Voice::start` fails it.
 #[test]
 fn a_harder_key_is_louder() {
     let font = one_preset(vec![vec![]]);
@@ -486,8 +434,6 @@ fn a_harder_key_is_louder() {
 
 /// 9.1.7: a key-off makes the envelope fall to zero in its release phase: the
 /// note ends, after a tail. (A pedal-less key-off.)
-///
-/// Mutation (run): `Voices::execute` ignoring `Release` fails it.
 #[test]
 fn a_key_off_ends_the_note_after_its_release() {
     let mut rig = violin();
@@ -505,8 +451,6 @@ fn a_key_off_ends_the_note_after_its_release() {
 /// here, a generator-38 figure of 2786 timecents, 9.3: a time ratio 2^(t/1200)
 /// from one second) and nothing more: the effects after the unit declare their
 /// own tails, so none is added here.
-///
-/// Mutation (run): a second added to the tail fails it.
 #[test]
 fn the_unit_declares_the_longest_release_as_its_tail() {
     let font = kit();
@@ -522,8 +466,6 @@ fn the_unit_declares_the_longest_release_as_its_tail() {
 
 /// The longest release is over every zone the font can start, not the first
 /// preset's: a quiet corner of the font with a long release sets the tail.
-///
-/// Mutation (run): taking only the first preset's regions fails it.
 #[test]
 fn the_tail_covers_every_preset() {
     let long = font(
@@ -562,10 +504,6 @@ fn the_tail_covers_every_preset() {
 /// `Node::reset` returns the node to the state of a freshly prepared one:
 /// every voice is cut (silent in the next block), the pedals and held keys are
 /// forgotten, and what the host selected stays (the program here).
-///
-/// Mutation (run): `reset` releasing instead of cutting fails the first
-/// assertion; leaving the core's pedals fails the second; resetting the
-/// program fails the third.
 #[test]
 fn reset_cuts_the_voices_forgets_the_pedals_and_keeps_the_program() {
     let mut rig = violin();
@@ -597,9 +535,6 @@ fn reset_cuts_the_voices_forgets_the_pedals_and_keeps_the_program() {
 /// four times the right one's amplitude, and both zones' pan is centre: the left
 /// output carries the left sample alone (and the right output the right alone),
 /// so the left is four times the right. A zone of a mono sample takes its pan.
-///
-/// Mutation (run): `Voice::start` ignoring `sample_side` (taking `region.pan()`
-/// whatever the side) puts both centred, left equals right, and fails the ratio.
 #[test]
 fn the_samples_of_a_stereo_pair_sound_on_their_own_sides() {
     use tutti_fixtures::sf2::SampleSpec;
@@ -650,8 +585,6 @@ fn the_samples_of_a_stereo_pair_sound_on_their_own_sides() {
 /// one. The sample is 441 Hz at key 69 and the zone forces 81 (an octave up), so
 /// a note at key 69 sounds at 882 Hz: twice the zero crossings of the same note
 /// in a zone without it.
-///
-/// Mutation (run): `Voice::start` not reading `forced_key` fails it (equal counts).
 #[test]
 fn keynum_forces_the_key_of_a_zone() {
     let crossings = |zone: Vec<(u16, i16)>| {
@@ -672,9 +605,6 @@ fn keynum_forces_the_key_of_a_zone() {
 /// 8.1.2, generator 47 (velocity): the zone sounds as if the velocity were the
 /// forced one. A strike at 127 in a zone forcing 32 is as loud as a strike at 32
 /// in a plain zone, and quieter than a plain 127.
-///
-/// Mutation (run): `Voice::start` not reading `forced_velocity` fails the first
-/// comparison.
 #[test]
 fn velocity_forces_the_velocity_of_a_zone() {
     let plain = one_preset(vec![vec![]]);

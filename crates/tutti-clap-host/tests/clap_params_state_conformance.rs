@@ -664,9 +664,6 @@ fn requests(inst: &mut ClapLoaded) -> Vec<Request> {
 
 /// `params.rescan(RESCAN_VALUES)` must reach the host as a *values* rescan that
 /// does not demand a restart.
-///
-/// Mutation (run): the params callback raising `All` for a values rescan → the
-/// list differs and the assertion fails.
 #[test]
 fn host_records_a_values_rescan_as_not_needing_deactivation() {
     let probe = Probe::acquire();
@@ -694,9 +691,6 @@ fn host_records_a_values_rescan_as_not_needing_deactivation() {
 /// The reason the scopes are separate requests rather than a bare boolean:
 /// conflating the two either restarts on every value tweak, or re-reads the
 /// parameter list underneath a running plugin.
-///
-/// Mutation (run): the params callback raising `Values` for `ALL` → the
-/// assertion fails.
 #[test]
 fn host_records_a_full_rescan_as_needing_deactivation() {
     let probe = Probe::acquire();
@@ -716,9 +710,6 @@ fn host_records_a_full_rescan_as_needing_deactivation() {
 /// Taking the requests is consuming: a second take with no intervening rescan
 /// must report nothing. Without this, a host that never cleared the word would
 /// pass every assertion above while permanently reporting a pending rescan.
-///
-/// Mutation (run): `take_requests_with` reading the word without clearing it
-/// (`load` for `swap`) → the second take repeats the request.
 #[test]
 fn taking_a_rescan_consumes_it() {
     let probe = Probe::acquire();

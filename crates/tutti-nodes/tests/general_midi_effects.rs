@@ -46,8 +46,6 @@ fn last_nonzero(channel: &[f32]) -> Option<usize> {
 /// (a dry path would pass it), and comes out later, inside the delay the
 /// config sweeps (2 ms +/- 1.9 ms, so frames 4 to 187 at 48 kHz, with a frame
 /// either side for the interpolation).
-///
-/// Mutation (run): `mix` 1.0 -> 0.5 in the const fails it.
 #[test]
 fn the_general_midi_chorus_is_wet_only() {
     let out = impulse_response(chorus(), 1_000);
@@ -65,10 +63,6 @@ fn the_general_midi_chorus_is_wet_only() {
 /// out once (a linear read spreads it over two adjacent frames at most), and
 /// raising the feedback through the node's param does not make it ring, since
 /// the config's ceiling is none.
-///
-/// Mutations (run): `feedback_max` left at `Feedback::MAX_STABLE` in the const
-/// fails it (the echoes repeat), and the clamp in `render` removed fails it the
-/// same way.
 #[test]
 fn the_general_midi_chorus_cannot_recirculate() {
     let node = chorus();
@@ -87,9 +81,6 @@ fn the_general_midi_chorus_cannot_recirculate() {
 /// `set_feedback`'s clamp: -0.9 (a negative would recirculate with a flipped
 /// sign) and 5.0 (past any ceiling) both leave the line a pure delay, so the
 /// declared finite tail stays true.
-///
-/// Mutation (run): `fb.clamp(0.0, max)` replaced by `fb.min(max)` fails the
-/// negative write.
 #[test]
 fn a_raw_write_cannot_make_the_general_midi_chorus_recirculate() {
     use std::sync::atomic::Ordering;
@@ -109,9 +100,6 @@ fn a_raw_write_cannot_make_the_general_midi_chorus_recirculate() {
 
 /// The chorus declares its delay as its tail, and the output never outlasts
 /// it. The tail is the config's `max_delay`, 5 ms: 240 frames at 48 kHz.
-///
-/// Mutations (run): `Tail::Finite(0)` fails the equality, and the tail left
-/// `Unknown` fails the match.
 #[test]
 fn the_general_midi_chorus_declares_its_delay_as_its_tail() {
     let node = prepared(chorus(), SR, BLOCK);
@@ -127,8 +115,6 @@ fn the_general_midi_chorus_declares_its_delay_as_its_tail() {
 
 /// The ceiling is the config's: the presets that recirculate keep their tail
 /// `Unknown`, as they were.
-///
-/// Mutation (run): `tail()` always finite fails.
 #[test]
 fn a_recirculating_chorus_keeps_an_unknown_tail() {
     for node in [
@@ -141,8 +127,6 @@ fn a_recirculating_chorus_keeps_an_unknown_tail() {
 
 /// The reverb is one channel in and two out, and silent until its first comb
 /// has gone round (a wet-only effect passes nothing straight through).
-///
-/// Mutation (run): `Shape::through_unassigned(STEREO)` fails the shape.
 #[test]
 fn the_reverb_is_mono_in_stereo_out_and_wet_only() {
     let node = FreeverbNode::general_midi();
@@ -159,8 +143,6 @@ fn the_reverb_is_mono_in_stereo_out_and_wet_only() {
 /// The reverb's declared tail covers its ring-out: the last frame of the wet
 /// signal at or above a thousandth (-60 dB) of its own peak is within it. The
 /// node is prepared at 48 kHz, so the tail is figured at that rate.
-///
-/// Mutation (run): the tail halved fails.
 #[test]
 fn the_reverbs_tail_covers_its_ring_out() {
     let node = prepared(FreeverbNode::general_midi(), SR, BLOCK);
@@ -189,8 +171,6 @@ fn the_reverbs_tail_covers_its_ring_out() {
 
 /// `reset` empties the room: after it the node answers an impulse as a fresh
 /// one does.
-///
-/// Mutation (run): `reset` doing nothing fails.
 #[test]
 fn reset_empties_the_room() {
     let mut node = prepared(FreeverbNode::general_midi(), SR, BLOCK);

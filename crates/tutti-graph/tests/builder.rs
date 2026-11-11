@@ -259,12 +259,6 @@ mod net_rule {
 /// bit-identical render. It covers every kind of wiring the builder writes:
 /// a global input, a node-to-node edge, a feedback edge, a global output
 /// fed by `set_output` and one by `connect_output`, and an event edge.
-///
-/// Mutation: drop the `outputs` copy in `GraphBuilder::build` → every
-/// output is `Zero` → specs differ → fails. Mutation: write
-/// `Edge::Direct(Source::Node(from))` in `feedback` → a cycle → build
-/// fails. Mutation: drop the `events` copy in `build` → the event edge is
-/// gone → specs differ → fails.
 #[test]
 fn builder_builds_what_a_hand_written_spec_builds() {
     let pre = prepare(64);
@@ -375,10 +369,6 @@ fn builder_builds_what_a_hand_written_spec_builds() {
 /// `pipe` connects ports in order, with its fan-out rule — over a
 /// grid of widths, including a source with no outputs, checked against the
 /// rule written out ([`net_rule::pipe_all`]) and by the figure it renders.
-///
-/// Mutation: `c % outs` → `(outs - 1).min(c)` (clamp) in `pipe` → mono
-/// source fine, 2 → 3 differs at input 2 → fails. Mutation: reverse the
-/// port order → fails at the first 2-wide case.
 #[test]
 fn pipe_connects_ports_in_order_as_net_pipe_all() {
     for outs in 0..=3 {
@@ -427,10 +417,6 @@ fn pipe_connects_ports_in_order_as_net_pipe_all() {
 /// every channel; stereo into six **wraps** (L R L R L R), it does not clamp
 /// to the last channel; a wider node's extra ports go unused; a node with no
 /// outputs feeds silence. Checked structurally and by the figure it renders.
-///
-/// Mutation: clamp (`c.min(outs - 1)`) instead of `c % outs` → stereo into
-/// six differs from the rule → fails. Mutation: feed a zero-output node's
-/// channels from port 0 → out of range → panics.
 #[test]
 fn pipe_output_fans_out_as_net_does() {
     for (w, outs) in [(0, 2), (1, 1), (1, 2), (1, 6), (2, 6), (3, 2), (6, 2)] {
@@ -474,11 +460,6 @@ fn pipe_output_fans_out_as_net_does() {
 
 /// `pipe_input` reads global input `c % inputs`, and silence with no global
 /// inputs.
-///
-/// Mutation: `Source::Global(c)` without the modulo → out of range → panics
-/// at 1 global input into 2 ports → fails. (Explicit `Zero` against an
-/// absent edge with no globals is not checked: the two read the same
-/// silence, and `source_of` maps absent to `Zero` on purpose.)
 #[test]
 fn pipe_input_wraps_as_net_does() {
     for globals in 0..=3 {
@@ -503,11 +484,6 @@ fn pipe_input_wraps_as_net_does() {
 /// global inputs, each later one reads what fed the global outputs
 /// (wrapping), and every one takes over the outputs. Across width changes,
 /// with and without global inputs, and to the bit in render.
-///
-/// Mutation: skip `pipe_input` for the first node in `link` → it reads
-/// silence where the rule reads the global input → fails. Mutation: read
-/// `outputs[c]` without the modulo → the 2-input node after a mono-output
-/// graph is out of range → panics → fails.
 #[test]
 fn chain_extends_the_series_as_net_does() {
     for globals in [0, 1, 2] {
@@ -527,9 +503,6 @@ fn chain_extends_the_series_as_net_does() {
 
 /// `chain` takes an `IntoNode` with controls too, and `add_with_controls` hands back what
 /// `IntoNode` returns.
-///
-/// Mutation: skip `pipe_input` for the first node in `link` → the chain
-/// reads silence → 0 instead of 6 → fails.
 #[test]
 fn chain_and_add_take_nodes() {
     struct Tagged;
@@ -563,9 +536,6 @@ fn chain_and_add_take_nodes() {
 
 /// An out-of-range port is a panic at the call, not a graph
 /// that fails later.
-///
-/// Mutation: drop the assert in `check_in` → the edge is written and
-/// nothing panics → fails.
 #[test]
 #[should_panic(expected = "port 1 is out of range")]
 fn an_out_of_range_port_panics_at_the_call() {
@@ -576,8 +546,6 @@ fn an_out_of_range_port_panics_at_the_call() {
 
 /// A graph the editor refuses is refused by `build` with the editor's own
 /// error: a feedback delay shorter than the block.
-///
-/// Mutation: `build` ignores `commit`'s result → `Ok` → fails.
 #[test]
 fn build_returns_the_editors_error() {
     let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::MONO);
@@ -594,10 +562,6 @@ fn build_returns_the_editors_error() {
 /// The renderer asks for the transport once per block, at the block's first
 /// frame, in blocks of the chosen length (the last one short), and
 /// interleaves frame by frame.
-///
-/// Mutation: pass `Frame(0)` to the transport function → frames differ →
-/// fails. Mutation: interleave channel-major → fails. Mutation: ignore
-/// `set_block` → one 250-frame block → fails.
 #[test]
 fn renderer_drives_blocks_and_interleaves() {
     let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::STEREO);
@@ -634,17 +598,6 @@ fn renderer_drives_blocks_and_interleaves() {
 /// Silence is the empty set and `Source::Zero` is never stored: every writer
 /// normalises, so two topologies built the old ways (a stored `Zero`, an
 /// absent key) compare and hash equal.
-///
-/// Mutation (run, recorded here): in `GraphBuilder::set_source`, store
-/// `vec![Edge::Direct(Zero)]` instead of removing the key -> the first
-/// assert fails. Mutation: in `GraphBuilder::new`, start each output as
-/// `vec![Zero]` -> the fresh-builder assert fails. Mutation: in
-/// `Topology::set_outputs`, keep `vec![Zero]` -> the second assert fails.
-/// Mutation: in `GraphBuilder::set_output`, store `vec![Zero]` -> the
-/// `outputs[1]` assert fails.
-/// Mutation: in `Topology::connect`, drop the `Zero` early return -> the third
-/// fails. Mutation: in `Editor::remove`, push `Zero` into an emptied channel
-/// -> the last assert fails.
 #[test]
 fn every_writer_normalises_silence_to_the_empty_set() {
     use std::collections::hash_map::DefaultHasher;
@@ -703,13 +656,6 @@ fn every_writer_normalises_silence_to_the_empty_set() {
 /// `set_output` replace it; `disconnect_from` removes one. Figures: a `Width`
 /// node's output `c` is `c + 1` plus its inputs, so `one` is 1, `two`'s port 1
 /// is 2, and `sink` reads `1 + (sum of what feeds it)`.
-///
-/// Mutations (each run, each fails this test): `connect` goes through
-/// `set_source` (replace) -> the first figure is 2, not 4; `add_output` writes
-/// `outputs[c] = vec![source]` -> the output figure is 1 (one replaced the sink), not 3;
-/// `disconnect_from` clears the whole port -> the figure after it is 1, not 2;
-/// `feedback` goes back to `edges.insert(at, vec![..])` -> the direct edge is
-/// gone and the last assert fails.
 #[test]
 fn connect_adds_and_set_source_replaces() {
     let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::MONO);

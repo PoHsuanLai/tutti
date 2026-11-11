@@ -197,11 +197,6 @@ mod tests {
     ///
     /// The shape declares what the node is: zero latency, an IIR's unknown tail,
     /// and a moderate cost.
-    ///
-    /// Mutation (run): `Tail::None` or `Cost::Heavy` in `shape` → fails.
-    ///
-    /// Mutation (run): index outputs `c * bands + b` → the silent right
-    /// channel's outputs carry the left's bands → fails.
     #[test]
     fn the_node_writes_bands_band_major_per_channel() {
         let mut node = prepared(CrossoverNode::new(ChannelLayout::STEREO, &[Hz(1_000.0)]).unwrap());
@@ -227,9 +222,6 @@ mod tests {
     /// A param write moves the split the node runs: crossover 0 at 2 kHz
     /// leaves a 2 kHz tone at half amplitude in the low band (each branch is
     /// -6.02 dB there), where the 500 Hz split passes almost none of it.
-    ///
-    /// Mutation (run): `process` never reading the cell (`|_| None` and a
-    /// constant) → the band keeps its 500 Hz split → fails.
     #[test]
     fn a_param_write_moves_the_split() {
         let node = CrossoverNode::new(ChannelLayout::MONO, &[Hz(500.0), Hz(4_000.0)]).unwrap();
@@ -244,9 +236,6 @@ mod tests {
 
     /// A fork starts from the frequencies set and shares no cell with the
     /// live node, whatever the index.
-    ///
-    /// Mutation (run): drop `splits.detach()` in `fork_fresh` → a write to
-    /// the live node reaches the fork → fails.
     #[test]
     fn a_fork_shares_no_cell() {
         tutti_graph::contract::assert_param_fork(
@@ -256,10 +245,6 @@ mod tests {
 
     /// The shape declares one cutoff port per crossover, indexed, and each
     /// port's base is its cell.
-    ///
-    /// Mutation (run): declare the ports with `UnitAddr::first` (every
-    /// index 0) → the shape refuses the duplicate → fails; `param_base`
-    /// answering port 0 for every port → fails.
     #[test]
     fn the_ports_are_the_indexed_cutoffs() {
         let node = CrossoverNode::new(
@@ -283,9 +268,6 @@ mod tests {
     /// A driven port moves its own crossover: port 0 at 2 kHz leaves a 2 kHz
     /// tone at half amplitude in the low band, and the cell (500 Hz) is only
     /// the base.
-    ///
-    /// Mutation (run): read the driven value of port 1 for crossover 0
-    /// (`block_driven(&io, i + 1)`) → the split stays at 500 Hz → fails.
     #[test]
     fn a_driven_port_moves_its_crossover() {
         use tutti_graph::contract::drive;
@@ -308,10 +290,6 @@ mod tests {
     }
 
     /// The node refuses a layout it has no ports for, and bad frequencies.
-    ///
-    /// Mutation (run): drop the `channels == 0 ||` test in `CrossoverNode::new`
-    /// → the empty layout builds → fails; `MAX_PORTS` to `MAX_PORTS + 4` →
-    /// the 66-port layout builds → fails.
     #[test]
     fn the_node_validates_its_layout_and_frequencies() {
         assert!(matches!(
@@ -340,9 +318,6 @@ mod tests {
     /// A node at 22.05 kHz with one frequency above its Nyquist still moves the
     /// others: the out-of-range one is held under the rate, not the whole set
     /// frozen.
-    ///
-    /// Mutation (run): `Params::read` reading a constant 200 Hz for the cell →
-    /// the 300 Hz split never lands → fails.
     #[test]
     fn a_frequency_above_the_rate_does_not_freeze_the_others() {
         let node = CrossoverNode::new(ChannelLayout::MONO, &[Hz(200.0), Hz(15_000.0)]).unwrap();
@@ -374,10 +349,6 @@ mod tests {
     /// transient.
     /// The filter's solved frequency is private, so it is read through its
     /// effect on a render.
-    ///
-    /// Mutation (run): the `set_frequencies` in `prepare` replaced by a no-op
-    /// → the first block ramps in from 500 Hz and the high band is well above
-    /// 2e-3 → fails.
     #[test]
     fn prepare_reads_the_cells() {
         let node = CrossoverNode::new(ChannelLayout::MONO, &[Hz(500.0)]).unwrap();

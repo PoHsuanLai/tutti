@@ -56,10 +56,6 @@ fn publish_frees_the_retired_value_on_the_publishing_thread() {
 /// deferred to the next publish, on the publisher's thread. This is the
 /// property an `ArcSwap` cannot promise: there, the last holder of a settled
 /// debt runs the destructor wherever it is.
-///
-/// Mutation: make `Reader::drop` reclaim (`self.cell.reclaim();` before its
-/// store). The reader thread then frees value 0, appears in `sites`, and the
-/// first assertion after the join fails.
 #[test]
 fn a_reader_releasing_a_retired_value_never_frees_it() {
     let (sites, make) = sites();
@@ -106,10 +102,6 @@ fn a_reader_releasing_a_retired_value_never_frees_it() {
 
 /// A reader holding a loan protects exactly its own value: a publish frees
 /// every other retired value, and keeps that one.
-///
-/// Mutation: in `Control::scan`, drop the announcement check
-/// (`is_announced`). Value 0 is then freed while `held` still points at it,
-/// and `sites` gains it at the first check.
 #[test]
 fn a_loan_protects_only_the_value_it_announced() {
     let (sites, make) = sites();
@@ -141,11 +133,6 @@ fn a_loan_protects_only_the_value_it_announced() {
 /// A parked loan pins at most one value per registered reader, however many
 /// publishes pass. Nesting takes one reader per level, and each
 /// level pins only the value it lent.
-///
-/// Mutation: in `Slots::read`, make an announcement pin everything
-/// (`floor = 0` in its arm), as a reader-count-blind epoch would. The retired
-/// list then grows by one per publish and the bound fails on the first loop
-/// iteration.
 #[test]
 fn parked_loans_pin_one_value_per_reader() {
     let (sites, make) = sites();
@@ -179,10 +166,6 @@ fn parked_loans_pin_one_value_per_reader() {
 
 /// `reclaim` frees what a `publish` would, without publishing, and reports
 /// what is still pinned.
-///
-/// Mutation: make `reclaim` return `0` without scanning. The first
-/// assertion fails (it reports 0 with value 1 still held), and the second
-/// (value 0 must be freed).
 #[test]
 fn reclaim_frees_without_publishing_and_reports_what_is_pinned() {
     let (sites, make) = sites();

@@ -172,30 +172,6 @@ fn watch_threads() -> usize {
         .count()
 }
 
-// Mutation record for this file, each seen to fail, then restored:
-// - `watch::start` returning `NoWatch` first: all six original tests fail (the
-//   added and removed waits time out, and the thread count stays 0);
-// - `AlsaWatch::drop` forgetting the stop descriptor and not joining:
-//   `dropping_devices_ends_the_watch_thread` fails;
-// - `devices` enumerating on a client it opens itself, not the watch's:
-//   `an_idle_devices_does_not_wake_itself` fails (about 20,000 wakes, and as
-//   many clients opened, in a second);
-// - `AlsaEndpoints::list` opening a client per call:
-//   `asking_for_capabilities_does_not_wake_the_watch` fails (1,000 opens);
-// - `SND_SEQ_PORT_CAP_SUBS_WRITE` back on the pump's port, or
-//   `SND_SEQ_PORT_CAP_SUBS_READ` on the output's:
-//   `the_engines_own_clients_are_not_listed` fails;
-// - `Reporter::report` with `departed` always false: `two_identical_clients...`
-//   `an_identical_device_that_takes_a_number_at_once...`,
-//   `an_input_held_when_its_device_vanishes...` and
-//   `devices::tests::a_handle_the_os_says_departed_is_a_new_device` fail;
-// - `Reporter::report` ignoring identity:
-//   `a_renamed_client_is_removed_and_added_under_its_new_name` fails;
-// - the `SND_SEQ_CLIENT_SYSTEM` skip removed:
-//   `the_kernels_system_client_is_not_listed` fails;
-// - no `catch_unwind` in the watch thread: `a_watch_that_panics_reports_its_failure`
-//   fails.
-//
 // - `watch::settle`'s loop bound `0..0` (the order the watch had before: a drain,
 //   a look):
 //   `a_device_that_takes_a_departed_clients_number_is_added_once` fails
@@ -236,8 +212,7 @@ fn a_client_that_exits_is_removed_and_unlisted() {
 
 /// On ALSA the identity is the name, so a saved device comes back as a
 /// same-name match and never as exact, whether it is the same client or
-/// another of that name. Mutation: the ALSA arm of `DeviceTable::resolve`
-/// answering `Exact` fails the last assertion.
+/// another of that name.
 #[test]
 fn a_saved_alsa_device_resolves_by_name_only() {
     let devices = Watched::open();
@@ -261,11 +236,6 @@ fn a_saved_alsa_device_resolves_by_name_only() {
 /// A port is listed once it has capabilities, in both directions it has: a
 /// duplex port with none yet is not listed, and when it gains them it is added
 /// once, as a duplex (one walk reads its capabilities once).
-///
-/// Mutations, done: `both` returning no outputs fails the direction
-/// assertion (Input, not Duplex). Two separate `endpoints` walks, as before
-/// the fix, pass alone and fail under load (11 of 120 runs of the suite, four
-/// at a time); with one walk, 0 of 120.
 #[test]
 fn a_port_gaining_its_capabilities_is_added_as_a_duplex() {
     let devices = Watched::open();
@@ -373,9 +343,6 @@ fn an_idle_devices_does_not_wake_itself() {
 
 /// Opening an input and an output on a device makes the engine's own clients
 /// (`tutti-in`, `tutti-out`); they are not devices, in this process or another.
-/// Mutation: restoring `SND_SEQ_PORT_CAP_SUBS_WRITE` on the pump's port lists
-/// `tutti-in` as an `Added` output, and `SND_SEQ_PORT_CAP_SUBS_READ` on the
-/// output's lists `tutti-out` as an input.
 #[test]
 fn the_engines_own_clients_are_not_listed() {
     let devices = Watched::open();
@@ -409,8 +376,7 @@ fn the_engines_own_clients_are_not_listed() {
 /// copies of the suite. So the exact-name case is given up: a skip of the
 /// single name `tutti-in` would not be caught here, though a skip by the
 /// `tutti-` prefix is. No function filters by name (there is nothing to unit
-/// test); the listing is by capability. Mutation: skipping clients whose name
-/// starts with `tutti-` hides it.
+/// test); the listing is by capability.
 #[test]
 fn a_device_called_like_an_engine_client_is_listed() {
     let devices = Watched::open();
@@ -425,9 +391,7 @@ fn a_device_called_like_an_engine_client_is_listed() {
 
 /// A device replaced at once by an identical one is two devices: the client
 /// exited and the next took its number before the watch looked. The
-/// announcement of the exit is what tells. Mutation: `Reporter::report` with
-/// `departed` always false never reports the removal when the two coalesce
-/// (this loop hits it within a few cycles; a miss only passes).
+/// announcement of the exit is what tells.
 #[test]
 fn an_identical_device_that_takes_a_number_at_once_is_a_new_device() {
     let devices = Watched::open();
@@ -446,8 +410,6 @@ fn an_identical_device_that_takes_a_number_at_once_is_a_new_device() {
 
 /// On ALSA a device is its name, so a renamed client is a different device:
 /// removed, then added under the new name, which closes a port held on the old.
-/// Mutation: `Reporter::report` ignoring the identity makes it `Changed` with
-/// the old id, and the wait for `Removed` times out.
 #[test]
 fn a_renamed_client_is_removed_and_added_under_its_new_name() {
     let devices = Watched::open();
@@ -465,8 +427,7 @@ fn a_renamed_client_is_removed_and_added_under_its_new_name() {
 /// A client renamed in place is reported removed and added (the identity is the
 /// name), and no exit follows it: an identical device that later takes the
 /// number must still be reported removed and added. The kernel posts the new
-/// client's start for it, whatever came before. Mutation: `Tracker::replaced`
-/// ignoring `ClientStart` makes the wait for `Removed` time out.
+/// client's start for it, whatever came before.
 #[test]
 fn a_renamed_client_replaced_by_an_identical_one_is_removed_then_added() {
     let devices = Watched::open();
@@ -486,8 +447,7 @@ fn a_renamed_client_replaced_by_an_identical_one_is_removed_then_added() {
     );
 }
 
-/// The kernel's own client is not a device. Mutation: dropping the
-/// `SND_SEQ_CLIENT_SYSTEM` skip lists `System: Announce` and `System: Timer`.
+/// The kernel's own client is not a device.
 #[test]
 fn the_kernels_system_client_is_not_listed() {
     let devices = Watched::open();
@@ -532,8 +492,7 @@ impl crate::MidiEndpoints for Panicky {
 }
 
 /// A watch that dies says so: `watch_failure` is set, not a frozen table with
-/// no word. Mutation: dropping the `catch_unwind` (the thread's panic is then
-/// only joined) leaves `watch_failure` `None`.
+/// no word.
 #[test]
 fn a_watch_that_panics_reports_its_failure() {
     let armed = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -553,8 +512,7 @@ fn a_watch_that_panics_reports_its_failure() {
 }
 
 /// Asking the backend what a device can carry enumerates, and must not open a
-/// client (each would be announced to every watch). Mutation:
-/// `AlsaEndpoints::list` opening a client per call fails with 1000 opens.
+/// client (each would be announced to every watch).
 #[test]
 fn asking_for_capabilities_does_not_wake_the_watch() {
     let devices = Watched::open();
@@ -584,9 +542,6 @@ fn asking_for_capabilities_does_not_wake_the_watch() {
 /// `.config/nextest.toml` runs the tests of this file at most four at a time
 /// (test group `sequencer`): parallel copies of the suite ran out of slots
 /// (`snd_seq_open` ENOMEM) with this test beside them.
-///
-/// Mutation: see the record above (`settle` with a bound of 0 reports
-/// `Added, Removed, Added` for `B`, under load).
 #[test]
 fn a_device_that_takes_a_departed_clients_number_is_added_once() {
     let devices = Watched::open();
@@ -672,8 +627,6 @@ impl Pumped {
 /// Input sent to a pump that has been idle arrives promptly: the pump is woken
 /// by the sequencer's descriptor, not by a timer. The median of nine, against a
 /// bound far above a wake and far below any timer the pump could be using.
-/// Mutation: `PollSet::wait` replaced by `std::thread::sleep(200 ms)` fails
-/// (median about 100 ms).
 #[test]
 fn input_sent_to_an_idle_pump_arrives_promptly() {
     let mut pumped = Pumped::open();
@@ -693,7 +646,6 @@ fn input_sent_to_an_idle_pump_arrives_promptly() {
 }
 
 /// An idle pump sleeps: it does not come back from `poll` on a timer.
-/// Mutation: ``Poller::wait`'s poll timeout `-1` changed to `1` fails (about 300 wakes).
 #[test]
 fn an_idle_pump_does_not_wake() {
     let pumped = Pumped::open();
@@ -707,8 +659,6 @@ fn an_idle_pump_does_not_wake() {
 }
 
 /// Dropping an input returns while its pump is blocked in `poll`.
-/// Mutation: `AlsaInput::drop` not closing `stop` first makes the join wait
-/// forever, and the test fails at its deadline.
 #[test]
 fn dropping_an_input_stops_a_blocked_pump_promptly() {
     let mut pumped = Pumped::open();
@@ -730,9 +680,6 @@ fn dropping_an_input_stops_a_blocked_pump_promptly() {
 /// holder can see that the device went silent, and `connect_input` replaces it.
 /// The failure is injected (`INJECT_READ_ERROR`): a healthy sequencer has no
 /// other way to a failing read.
-/// Mutations: `ErrorRun::failed` always false (the pump spins on the error for
-/// ever); the `died` store removed from `die`; `is_alive` always true. Each
-/// fails the final wait.
 #[test]
 fn an_input_whose_pump_fails_reads_as_gone() {
     let devices = Watched::open();
@@ -771,8 +718,6 @@ fn an_input_whose_pump_fails_reads_as_gone() {
 /// drain sees it must be the sender's, within the sequencer clock's resolution
 /// and the scheduler's, and a read-time stamp would put all three within
 /// microseconds.
-/// Mutation: `None => Instant::now()` taken for every event in the pump (the
-/// stamp ignored) collapses the spacing and fails the first assertion.
 #[test]
 fn events_keep_the_spacing_they_arrived_with_when_the_pump_is_late() {
     let rate = 44_100.0;
@@ -817,7 +762,6 @@ fn events_keep_the_spacing_they_arrived_with_when_the_pump_is_late() {
 
 /// Dropping an input does not wait for ever on a pump that will not stop: here
 /// one held 3 s after a wake, which `JOIN_BOUND` (1 s) must cut short.
-/// Mutation: `AlsaInput::drop` joining without the bounded wait takes 3 s.
 #[test]
 fn dropping_an_input_does_not_wait_on_a_stuck_pump() {
     super::input::PUMP_STALL_MS.store(3000, std::sync::atomic::Ordering::SeqCst);
@@ -842,8 +786,6 @@ fn dropping_an_input_does_not_wait_on_a_stuck_pump() {
 
 /// A send after a panic poisoned the output lock still goes: the guarded state
 /// is a client and two ids, never half-written.
-/// Mutation: `.unwrap_or_else(PoisonError::into_inner)` back to
-/// `.expect("output mutex poisoned")` makes the send panic.
 #[test]
 fn an_output_with_a_poisoned_lock_still_sends() {
     let target = plug(&unique("poisoned"));

@@ -174,10 +174,6 @@ mod tests {
 
     /// A set is solved with every split inside `1 Hz..=SOLVE_CEILING * rate` and none
     /// below the one before, whatever the controls say.
-    ///
-    /// Mutation (run): the running `floor` replaced by `1.0` (clamp each alone) →
-    /// `[5000, 4000]` stays out of order → fails; drop the `.min(cap)` → `[30000,
-    /// 25000]` stays at 30000 → fails.
     #[test]
     fn design_into_orders_and_caps_the_splits() {
         let rate = SampleRate(48_000.0);
@@ -302,9 +298,6 @@ mod tests {
     /// realization with no state answers with the product of the first coefficients of
     /// the band's sections (the low-pass twice, then the all-pass of the later split),
     /// from the model it was last retargeted to, and not a blend with the one before.
-    ///
-    /// Mutation (run): `retarget` ignoring the model (the body emptied) answers with
-    /// the first set's figure and fails.
     #[test]
     fn a_retarget_lands_whole() {
         let d = design();
@@ -328,8 +321,6 @@ mod tests {
 
     /// `CrossoverControls::new` is `Crossover::new`'s own check: it refuses what a
     /// crossover cannot run, and nothing else.
-    ///
-    /// Mutation (run): dropping the `validate` call accepts the disordered set.
     #[test]
     fn controls_refuse_what_a_crossover_cannot_run() {
         let rate = SampleRate(48_000.0);
@@ -341,8 +332,6 @@ mod tests {
     }
 
     /// The design refuses a band count the tree does not have and an empty layout.
-    ///
-    /// Mutation (run): dropping the `check_bands` call builds a one-band crossover.
     #[test]
     fn the_design_refuses_what_it_cannot_make() {
         assert!(CrossoverDesign::new(ChannelLayout::MONO, 1).is_err());

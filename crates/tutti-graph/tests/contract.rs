@@ -5,8 +5,8 @@
 //! generation bump upstream), across ragged blocks (1, 63, 64, 65, `MaxBlock`,
 //! random), and delivered by a scheduled `At::Frame` or `At::Beat` command.
 //!
-//! The harness is `tutti_graph::contract`; the mutation each path was seen
-//! to fail under is recorded on its `Path` variant. The node crates carry
+//! The harness is `tutti_graph::contract`; each path is a `Path` variant. The node
+//! crates carry
 //! their own rows (`tutti-nodes`: the latency-bearing
 //! nodes), and `tutti-engine` the engine-level ones.
 //!
@@ -34,9 +34,6 @@ use tutti_ump::{CCNumber, MidiChannel, MidiGroup, Ump};
 /// A MIDI 2.0 volume controller (CC 7): the event every event row is excited
 /// by. It is not a held key, so a recompile that replaces the feeder closes
 /// nothing at the sink.
-///
-/// Mutation (run): a note-on here -> the four `recompile_upstream_generation`
-/// rows fail, the sink hearing the close the replaced feeder owes.
 fn pulse_kind() -> EventKind {
     EventKind::Midi(cc(
         MidiGroup::FIRST,
@@ -112,11 +109,6 @@ fn lookahead_row() -> Row {
 /// Compiler-owned param modulation: a step in a modulator
 /// at frame `F` reaches the node's param at `F + arrival`, exactly — on the
 /// PDC path through the compiler's delay of the early param source.
-///
-/// Mutations (re-run with the source an event pulse): in
-/// `compile`, never lower a param source's delay (no
-/// `DelayKey::ParamEvent`) → the PDC paths fail. In `render_ramps`, take
-/// each event one frame late → every path fails.
 fn param_row() -> Row {
     Row::new(
         "ParamEcho on Cutoff",
@@ -246,9 +238,6 @@ fn fails(row: &Row, path: Path, what: &str) {
 /// A node one frame off its declaration, either way, fails the direct path,
 /// behind PDC and under the random schedule, naming both frames; the honest
 /// one (declared = actual) passes all three.
-///
-/// Mutation (run): in `Row::assert_responses`, accept a response wherever
-/// it starts (drop the start check) → the liars pass → fails.
 #[test]
 fn a_node_off_its_declared_latency_fails() {
     for path in [Path::Direct, Path::BehindPdc, Path::BlocksRandom] {
@@ -267,10 +256,6 @@ fn a_node_off_its_declared_latency_fails() {
 /// after its excitation passes with a lead of one and fails with none or
 /// two, on the direct path, behind PDC and under the random schedule. (What
 /// lets an instrument whose note starts from a zero sample have a row.)
-///
-/// Mutation (run): `assert_responses` ignoring the lead (`let e = e;`) →
-/// the row with a lead of one fails ("puts it at 5", the response at 6) →
-/// fails.
 #[test]
 fn a_rows_lead_is_held_exactly() {
     for path in [Path::Direct, Path::BehindPdc, Path::BlocksRandom] {
@@ -290,10 +275,6 @@ fn a_rows_lead_is_held_exactly() {
 
 /// A node that declares `Sample` but applies every event at its block's
 /// first frame fails the direct path at any non-zero offset.
-///
-/// Mutation (run): drop the start check in `Row::assert_responses` → the
-/// node passes → fails. (With only offset 0 in `OFFSETS` it would pass too;
-/// the first assertion pins that the sweep has others.)
 #[test]
 fn a_node_ignoring_offsets_fails() {
     assert!(OFFSETS.iter().any(|&k| k != 0));
@@ -312,11 +293,6 @@ fn a_node_ignoring_offsets_fails() {
 ///   and so does quantizing to 8 (up to 7 late).
 /// - A node finer than it declares (exact, declaring `Frames(8)` or
 ///   `Block`) passes.
-///
-/// Mutation (run): hold `Frames(n)` to the exact frame (tolerance 0 in
-/// `Row::run`) → the 7-late and the quantizing nodes fail → this test and
-/// every `chunked_pulse` path fail. Hold `Block` to
-/// the exact frame → the `block_pulse` rows fail.
 #[test]
 fn resolution_is_held_as_declared() {
     for path in [Path::Direct, Path::BlocksRandom] {
@@ -340,10 +316,6 @@ fn resolution_is_held_as_declared() {
 /// A row pinned to a latency other than the node declares fails before it
 /// renders, and an audio row asked for an event-only path refuses rather
 /// than passing a path it did not run.
-///
-/// Mutation (run): skip the `with_expected_latency` comparison in `Row::run` → the
-/// first half passes → fails. Drop the `needs_events` assert in
-/// `Row::check` → the second half fails on another message → fails.
 #[test]
 fn a_row_cannot_pass_what_it_does_not_run() {
     let msg = failure(|| {
@@ -384,9 +356,6 @@ impl Node for Tags {
 
 /// Fan-in at **equal** offsets: source order decides, at every offset of a
 /// block, three sources deep.
-///
-/// Mutation (run): in `merge_into`, break ties toward the later source
-/// (`<` → `<=`) → the order reverses → fails.
 #[test]
 fn a_fan_in_tie_goes_by_source_order() {
     for k in OFFSETS {
@@ -447,11 +416,6 @@ fn rolling_at_two() -> tutti_graph::Transport {
 /// `drive_input`, `Direct::block_in` and `BlockRig::block_in` hand the node
 /// the transport they are given (and `drive_input` its changes), where
 /// `Direct::block` and `BlockRig::block` hand it a stopped one at beat 0.
-///
-/// Mutation (run): `drive_input` building its `Cx` over a stopped `Env` of its
-/// own → frame 0 reads 0, not 2 → fails. Mutation (run): `Direct::block_in`
-/// ignoring its `env` → fails. Mutation (run): `BlockRig::block_in` passing
-/// `Transport::default()` to the executor → fails.
 #[test]
 fn the_transport_harnesses_hand_the_node_their_transport() {
     use tutti_graph::contract::{BlockRig, Direct, drive_input, prepared};
@@ -512,11 +476,6 @@ fn the_transport_harnesses_hand_the_node_their_transport() {
 /// and no less than its ring) passes, mono and stereo, with and without
 /// latency; one that reports too short is caught, and so is a ceiling below
 /// the ring.
-///
-/// Mutation (run): in `assert_honest_tail`, `silent_from = ... + 1 + 100000`
-/// (check far too late) → the short-report and low-ceiling cases do not
-/// panic → fails. A `Ringer` reporting half its ring (150 of 300) panics with
-/// "the reported tail is too short".
 #[test]
 fn the_tail_contract_catches_a_report_that_is_too_short() {
     use common::Ringer;

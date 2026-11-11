@@ -3,9 +3,7 @@
 //! on the in-repo reference plugin (`audio-probe`).
 //!
 //! The probe reads `TUTTI_PROBE_MISBEHAVIOUR` once per instance, so every test
-//! holds [`PROBE_LOCK`] and a [`Probe`] guard. Each test's comment names the
-//! mutation that makes it fail; every one was applied, the test watched to
-//! fail, and the code restored.
+//! holds [`PROBE_LOCK`] and a [`Probe`] guard.
 
 use std::path::PathBuf;
 use std::sync::{Mutex, MutexGuard};
@@ -156,10 +154,6 @@ fn render_f32(processor: &mut ProcessorAny) -> f64 {
 /// **`Loaded::activate` splits the plugin, and the Controller serves the
 /// reads.** The Processor renders at the width the `Prepare` named, and a block
 /// of the other width is an error rather than a mis-cast.
-///
-/// Mutation (run): `Loaded::activate` always taking the `f32` arm → the
-/// `is_f64` assertion in the second half fails; `ProcessorAny::render`
-/// matching `(F64, F32)` to the `F32` arm → the mismatch is not an error.
 #[test]
 fn activation_splits_the_plugin_and_renders_at_the_prepared_width() {
     let probe = Probe::behaving();
@@ -219,9 +213,6 @@ fn activation_splits_the_plugin_and_renders_at_the_prepared_width() {
 /// **A refused activation hands the plugin back**, loaded and not active, with
 /// the reason: the failure path used to consume it. The plugin's own parameters
 /// still read, which is what a caller that falls back to another format needs.
-///
-/// Mutation (run): `activate_typed` returning `plugin: None` in the refusal →
-/// the `expect` on the plugin fails.
 #[test]
 fn a_refused_activation_hands_the_plugin_back() {
     let probe = Probe::misbehaving(SET_ACTIVE_FAILS);
@@ -247,9 +238,6 @@ fn a_refused_activation_hands_the_plugin_back() {
 /// **A Controller write reaches the plugin at the head of the next block.** The
 /// probe's component is separate from its controller, so a write that only
 /// reached the controller never changes what it renders.
-///
-/// Mutation (run): the Processor not draining the ring (`drain_ring` a no-op) →
-/// the block still renders the tagged passthrough, not the ramp value → fails.
 #[test]
 fn a_controller_write_reaches_the_plugin_in_the_next_block() {
     let probe = Probe::behaving();
@@ -276,9 +264,6 @@ fn a_controller_write_reaches_the_plugin_in_the_next_block() {
 
 /// **The block's own automation has the last word over a queued write** that
 /// lands on the same frame.
-///
-/// Mutation (run): `ParamValueQueueImpl::prepend_point` pushing at the back
-/// (`try_push` for `try_push_front`) → the queued write wins → fails.
 #[test]
 fn automation_in_the_block_overrides_a_queued_write() {
     let probe = Probe::behaving();
@@ -304,9 +289,6 @@ fn automation_in_the_block_overrides_a_queued_write() {
 
 /// **A full ring keeps the latest write and the next tick retries it.** The
 /// writes the ring refused are not lost, and are not replayed stale.
-///
-/// Mutation (run): `queue_edit` not keeping a refused write
-/// (`self.unsent.push` removed) → the last write never arrives → fails.
 #[test]
 fn a_full_ring_keeps_the_latest_write_and_retries_it() {
     let probe = Probe::behaving();
@@ -340,10 +322,6 @@ fn a_full_ring_keeps_the_latest_write_and_retries_it() {
 /// **A write no block took survives the rejoin**, and reaches the plugin in
 /// the first block of the next activation: the ring dies with its Processor,
 /// and the probe's component never heard of the write any other way.
-///
-/// Mutation (run): `rejoin` not keeping what it took (`loaded.carried`
-/// assigned an empty list) → the next activation renders the tagged
-/// passthrough → fails.
 #[test]
 fn a_write_survives_a_rejoin() {
     let probe = Probe::behaving();
@@ -406,9 +384,6 @@ impl Block {
 
 /// **An erroring block does not allocate.** The audio thread builds the error
 /// for every failed block, so it is a constant.
-///
-/// Mutation (run): the `PluginError::Block` in `process_shared` replaced by
-/// `PluginError::Process(format!(..))` → aborts inside the gate.
 #[test]
 fn an_erroring_block_does_not_allocate() {
     let probe = Probe::misbehaving(PROCESS_FAILS);
@@ -427,9 +402,6 @@ fn an_erroring_block_does_not_allocate() {
 /// **A block that drains the ring does not allocate**, with the Controller's
 /// writes waiting for it: the drain merges them into scratch reserved at
 /// activation.
-///
-/// Mutation (run): `drain_ring` collecting the ring into a fresh `Vec` before
-/// merging → aborts inside the gate.
 #[test]
 fn draining_the_ring_does_not_allocate() {
     let probe = Probe::behaving();
@@ -459,9 +431,6 @@ fn draining_the_ring_does_not_allocate() {
 /// **Each `restartComponent` flag is the request the core plans from**, and the
 /// flags nothing acts on raise none. Raised by the plugin's own call into the
 /// host, as a plugin would, and taken as the shell takes them.
-///
-/// Mutation (run): `RestartFlags::raise_into` raising `Request::IoChanged` for
-/// `kLatencyChanged` (two arms swapped) → the latency row fails.
 #[test]
 fn a_restart_flag_is_the_request_the_core_plans_from() {
     use tutti_plugin_types::Request::{
@@ -504,9 +473,6 @@ fn a_restart_flag_is_the_request_the_core_plans_from() {
 
 /// **Halves of two activations are `Stuck`, not mixed**: both come back, and
 /// each pair still works afterwards.
-///
-/// Mutation (run): `rejoin` without its `Arc::ptr_eq` check → the foreign
-/// controller is rejoined with the wrong processor → the `expect_err` fails.
 #[test]
 fn halves_of_two_activations_are_stuck() {
     let probe = Probe::behaving();
@@ -535,9 +501,6 @@ fn halves_of_two_activations_are_stuck() {
 /// (`kReloadComponent`). The controller-only UI value is in the state stream
 /// that only `IEditController::getState` carries, so it tells a restored
 /// instance from a fresh one.
-///
-/// Mutation (run): `rebuild` not calling `load_state` on the fresh instance →
-/// the value is the default again → fails.
 #[test]
 fn a_rebuild_keeps_the_state() {
     let probe = Probe::behaving();
@@ -561,10 +524,6 @@ fn a_rebuild_keeps_the_state() {
 /// **A write queued to an active plugin is in the state it saves**, before any
 /// block has carried it: the write reaches the edit controller when it is made,
 /// and the state a save reads is that controller's.
-///
-/// Mutation (run): `Vst3Controller::set_parameter` queueing without applying
-/// (the `Control::set_parameter(self.loaded_mut(), ..)` line removed) → the saved
-/// state holds the old value → fails.
 #[test]
 fn a_write_is_in_the_state_saved_before_any_block() {
     let probe = Probe::behaving();
@@ -593,9 +552,6 @@ fn a_write_is_in_the_state_saved_before_any_block() {
 /// **A mode is delivered by the activation**, and a plugin that cannot take it
 /// is `Refused` with the plugin handed back: `kOffline` reaches the plugin in
 /// `setupProcessing` and nowhere else.
-///
-/// Mutation (run): `activate_typed` always mapping the mode to `Realtime` → the
-/// probe is not asked for offline, so the refusal never comes → fails.
 #[test]
 fn the_render_mode_is_the_activations() {
     let probe = Probe::misbehaving(REFUSES_OFFLINE);
@@ -619,9 +575,6 @@ fn the_render_mode_is_the_activations() {
 
 /// **A rate the plugin refuses leaves it loaded, and the next rate revives
 /// it.** (The server bridge's rollback to the previous rate is tested there.)
-///
-/// Mutation (run): `activate_typed` dropping the plugin on a refusal
-/// (`plugin: None`) → the `expect` on the returned plugin fails.
 #[test]
 fn a_refused_rate_leaves_the_plugin_loaded() {
     let probe = Probe::misbehaving(REFUSES_HIGH_RATES);
@@ -648,7 +601,7 @@ fn a_refused_rate_leaves_the_plugin_loaded() {
 /// plugin is destroyed when the last half goes. Dropped in the order a user
 /// who holds the Processor on a realtime thread might.
 ///
-/// Not mutation-tested: the property is the `Arc` the halves share, and a
+/// The property is the `Arc` the halves share, and a
 /// version that destroyed the plugin with the Controller crashes inside the
 /// plugin rather than failing an assertion.
 #[test]
@@ -700,9 +653,6 @@ const PASSTHROUGH: f64 = 1.0;
 /// **A write on a loaded plugin overrides the one a rejoin carried** for the
 /// same parameter: the user's later value is not put back under by the earlier
 /// one at the next activation.
-///
-/// Mutation (run): `Control::set_parameter` for `Vst3Loaded` not updating
-/// `carried` → the next activation renders the carried 0.3 → fails.
 #[test]
 fn a_write_on_a_loaded_plugin_overrides_a_carried_one() {
     let probe = Probe::behaving();
@@ -733,9 +683,6 @@ fn a_write_on_a_loaded_plugin_overrides_a_carried_one() {
 
 /// **A state load on a loaded plugin makes the carried writes stale**: they
 /// were written against a state it replaced.
-///
-/// Mutation (run): `Control::load_state` for `Vst3Loaded` keeping `carried` →
-/// the carried ramp mode is applied over the loaded state → fails.
 #[test]
 fn a_state_load_on_a_loaded_plugin_drops_the_carried_writes() {
     let probe = Probe::behaving();
@@ -761,10 +708,6 @@ fn a_state_load_on_a_loaded_plugin_drops_the_carried_writes() {
 
 /// **A state load on the Controller makes the writes queued before it stale**,
 /// and a write after it is not.
-///
-/// Mutation (run): `Vst3Controller::load_state` not calling `reset_edits` → the
-/// stale ramp mode reaches the block → fails; `drain_ring` ignoring
-/// `Edit::Reset` (the `pending.clear()` removed) → the same.
 #[test]
 fn a_state_load_makes_the_queued_writes_stale() {
     let probe = Probe::behaving();
@@ -803,9 +746,6 @@ fn a_state_load_makes_the_queued_writes_stale() {
 /// when it drops**: it hands it to a retirement queue that a control-side call
 /// empties. The Processor is dropped on another thread, as a realtime thread
 /// would drop it; the plugin is still there to be reaped on this one.
-///
-/// Mutation (run): `retire` dropping the shell in place → the plugin is gone
-/// before the reap, which finds nothing → fails.
 #[test]
 fn a_processor_dropped_last_leaves_the_teardown_to_the_control_side() {
     let probe = Probe::behaving();

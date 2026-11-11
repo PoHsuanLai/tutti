@@ -164,10 +164,6 @@ mod tests {
     }
 
     /// The imaginary parts of DC (and Nyquist, for an even size) are ignored.
-    ///
-    /// Mutation: add `half[0].im` into `half[0].re` before the transform, or
-    /// drop the zeroing of DC's and Nyquist's imaginary parts in
-    /// `tutti_types::RealFft::inverse` → fails.
     #[test]
     fn inverse_ignores_imaginary_dc_and_nyquist() {
         for size in [64usize, 63] {
@@ -252,9 +248,6 @@ mod tests {
 
     /// A rectangular-window sine of amplitude `a` on bin `k` has magnitude
     /// `a * N / 2` there and (to f32 rounding) nothing elsewhere.
-    ///
-    /// Mutation checked: scaling the forward output by 2 fails the peak
-    /// magnitude.
     #[test]
     fn a_sine_has_magnitude_half_n_times_amplitude_on_its_bin() {
         let (size, bin, amp) = (2048usize, 100usize, 0.75f32);
@@ -272,8 +265,6 @@ mod tests {
 
     /// DC is the sum of the samples and Nyquist the alternating sum; both are
     /// real for real input.
-    ///
-    /// Mutation checked: scaling the forward output by 2 fails both sums.
     #[test]
     fn dc_and_nyquist_bins_are_the_sum_and_the_alternating_sum() {
         let size = 64usize;
@@ -293,8 +284,6 @@ mod tests {
 
     /// Parseval: `sum x^2 == (|X0|^2 + |X_{N/2}|^2 + 2 sum_{0<k<N/2} |Xk|^2) / N`
     /// for even `N`, and with no Nyquist term for odd `N`. Both parities run.
-    ///
-    /// Mutation checked: counting the mirrored bins once (no factor 2) fails.
     #[test]
     fn parseval_holds_for_even_and_odd_sizes() {
         for size in [256usize, 255, 1000, 7] {
@@ -319,8 +308,6 @@ mod tests {
 
     /// An odd size round-trips and finds its tone, so the odd-length plan is
     /// the one doing the work.
-    ///
-    /// Mutation checked: doubling the inverse scale fails the round trip.
     #[test]
     fn odd_sizes_round_trip_and_find_the_tone() {
         let size = 301usize;
@@ -338,8 +325,6 @@ mod tests {
     }
 
     /// Spectral centroid of two equal tones at bins 40 and 120 is bin 80.
-    ///
-    /// Mutation checked: weighting by `bin + 1` instead of the bin fails.
     #[test]
     fn the_centroid_of_two_equal_tones_is_their_midpoint() {
         let size = 1024usize;

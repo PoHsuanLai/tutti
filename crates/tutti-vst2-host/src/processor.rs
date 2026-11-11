@@ -37,8 +37,8 @@ use crate::types::{MidiEventVec, Vst2ProcessContext};
 /// and nothing more: the plugin is closed by the Controller's `Vst2Loaded`, on its thread,
 /// and a Processor that outlives it renders silence.
 ///
-/// The doc test below is the guard (mutation, run: an `unsafe impl Sync` for the
-/// type makes it compile, and the test fails):
+/// The doc test below is the guard: an `unsafe impl Sync` for the
+/// type makes it compile, and the test fails:
 ///
 /// ```compile_fail
 /// fn needs_sync<T: Sync>() {}

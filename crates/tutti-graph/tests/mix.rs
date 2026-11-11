@@ -9,8 +9,6 @@
 //! A render is compared with another only as the doc prescribes: the executor
 //! against the reference interpreter (`Pair`, on every block of every test
 //! that uses it), serial against parallel.
-//!
-//! Mutations are recorded on each test (each run, each failed, then restored).
 
 #![allow(
     clippy::needless_range_loop,
@@ -175,11 +173,6 @@ const WORKERS: [usize; 3] = [1, 2, 4];
 /// NaN and `-0.0` into `+0.0`), whether or not the node has latency and
 /// whether the mix was set at the start or moved to the end. (No denormal:
 /// nodes run with denormals flushed, and a copy is not a node.)
-///
-/// Mutation (run, failed): WET run through the blend (`needs_input` true at
-/// WET, the early returns for `is_wet` in `mode_op` and `blend_active` and the
-/// `w == 1.0` arm removed) -> `-0.0 * 3 * 1 + x̂ * 0` is `+0.0` and the
-/// infinities read NaN.
 #[test]
 fn wet_is_the_nodes_output_bit_for_bit() {
     let special = [
@@ -224,11 +217,6 @@ fn wet_is_the_nodes_output_bit_for_bit() {
 /// itself), `-0.0`, NaN payloads, denormals and infinities included, because
 /// a steady DRY copies and never multiplies. The node is still **called every
 /// block** and never reset: DRY is not parked.
-///
-/// Mutation (each run, each failed): the static DRY arm of `blend_active`
-/// removed (the general `o * w + x * wx` runs) -> `-0.0` reads `+0.0` and the
-/// infinities NaN; parking the node at DRY (`is_parked` true for a steady
-/// Active node at mix 0) -> `calls` falls short.
 #[test]
 fn dry_is_the_aligned_input_bit_for_bit_and_the_node_keeps_running() {
     let special = [
@@ -331,12 +319,6 @@ impl Node for Counter {
 /// **A mix between the ends is `y * m + x̂ * (1 - m)`** on a latent node,
 /// `x̂` being the input `L` frames late (silence before): the figure is the
 /// exact expression, frame for frame, in blocks of every length.
-///
-/// Mutation (each run, each failed): the weights swapped (`o * (1 - m) + x *
-/// m`) -> fails at the first frame; the aligned input taken undelayed (the
-/// scratch fed from the input rather than the line's output) -> fails from
-/// the first frame. (A swap of the two products' order is no mutation: the
-/// sum is commutative.)
 #[test]
 fn a_mix_between_the_ends_blends_the_output_with_the_aligned_input() {
     for workers in WORKERS {
@@ -357,12 +339,6 @@ fn a_mix_between_the_ends_blends_the_output_with_the_aligned_input() {
 /// The blend on a node with no latency: the aligned input is the input itself
 /// (kept beside the output, since the node works in place), and the first
 /// block has no ramp.
-///
-/// Mutation (each run, each failed): `align` not copying the input to the
-/// scratch when the node has no line (`(None, true)` arm without the copy) ->
-/// `x̂` reads stale and the figure fails; a first block that ramps (the unit
-/// built with `mix_to` at `0.0` against a cell at the mix) -> the first block
-/// fails.
 #[test]
 fn the_first_block_has_no_ramp_and_a_plain_node_blends_with_its_input() {
     for workers in WORKERS {
@@ -378,12 +354,6 @@ fn the_first_block_has_no_ramp_and_a_plain_node_blends_with_its_input() {
 /// **A move ramps over the block it lands on**, per the doc's formula, from
 /// the mix the previous block was given to the new one, and holds still the
 /// block after; a move on a block of another length ramps across that block.
-///
-/// Mutation (each run, each failed): `ramp_at` with `i as f32 / frames` (starts
-/// at the old mix, never reaches the new) -> the ramp's first frame fails; the
-/// ramp across `MAX_BLOCK` rather than the block's frames -> the 100-frame
-/// block fails; `mix_from` not advanced by `snapshot` -> the block after the
-/// ramp ramps again.
 #[test]
 fn a_move_ramps_over_one_block_per_the_formula() {
     for workers in WORKERS {
@@ -425,10 +395,8 @@ fn a_move_ramps_over_one_block_per_the_formula() {
 /// `+0.0` whatever the mix, once the fade is over (the mix enters a fade only
 /// as the weights of the Active end).
 ///
-/// Mutation (run, failed): steady Muted blending (`blend_active` for the
-/// Muted arm) -> the muted output is not silence. (The Bypassed half is
-/// structural: a parked node never reads the mix. Its fade is
-/// `a_fade_runs_against_the_weights_of_the_mix`'s.)
+/// The Bypassed half is structural: a parked node never reads the mix. Its fade is
+/// `a_fade_runs_against_the_weights_of_the_mix`'s.
 #[test]
 fn the_mode_wins_over_the_mix() {
     for workers in WORKERS {
@@ -456,12 +424,6 @@ fn the_mode_wins_over_the_mix() {
 /// 0 + ((1 - m) - 0) * g(k))` with `g` the equal-amplitude gain of frame `k`,
 /// and after the fade the steady blend. And Active with a mix, toggled to
 /// Bypassed, fades from `(m, 1 - m)` to `(0, 1)`.
-///
-/// Mutation (each run, each failed): the fade targeting `(1, 0)` for Active
-/// (`heading.weights(1.0)` in the ramp) -> the fade frames fail; the unit's
-/// steady weights kept as `(1, 0)` rather than `(m, 1 - m)` (`step` writing
-/// `heading.weights(1.0)`) -> the fade to Bypassed starts from the wrong
-/// weights and fails.
 #[test]
 fn a_fade_runs_against_the_weights_of_the_mix() {
     const M: f32 = 0.25;
@@ -505,9 +467,6 @@ fn a_fade_runs_against_the_weights_of_the_mix() {
 /// follows the mix frame by frame. Pinned at the one frame the move's block
 /// starts on: the output there is the fade's blend at the ramp's first mix,
 /// not at the new mix.
-///
-/// Mutation (run, failed): the fade's target taken at the block's final mix
-/// (`self.mix.to` for every frame) -> the moving block fails.
 #[test]
 fn a_mix_moving_during_a_fade_follows_frame_by_frame() {
     for workers in WORKERS {
@@ -563,10 +522,6 @@ impl Node for Hook {
 /// (here from an upstream node's `process`, before the node's own op) reaches
 /// no op of that block, and the ramp is the next block's. Serial and
 /// parallel.
-///
-/// Mutation (run, failed): the mix read from the cell at the node's op
-/// (`is_plain` and `mix_run` reading `self.cell.load_mix()`) -> the node's op
-/// in the block already ramps.
 #[test]
 fn a_mix_stored_mid_block_lands_on_the_next_block() {
     for workers in WORKERS {
@@ -668,11 +623,6 @@ fn solo(mix: Option<Mix>) -> (Editor, tutti_graph::Executor) {
 /// executor hold is the same one after it, and a commit that has nothing else
 /// to send sends nothing; a mix edited in the spec directly lands at the next
 /// commit, still not a new plan.
-///
-/// Mutation (each run, each failed): `same_but_ranges` comparing `mixes` -> the
-/// commit after an edit of the spec's mixes compiles and sends a new plan;
-/// `sync_ranges` not writing the mix cells -> the mix edited in the spec never
-/// reaches the unit.
 #[test]
 fn set_mix_does_not_change_the_plan() {
     let (mut ed, mut exec) = solo(None);
@@ -711,10 +661,6 @@ fn set_mix_does_not_change_the_plan() {
 /// `set_mix` refuses a key with no node and a mix off `0..=1` (NaN, negative,
 /// above one), a spec with a mix for a missing node or a bad mix is invalid,
 /// and removing the node takes its mix with it. A refusal changes nothing.
-///
-/// Mutation (each run, each failed): drop the `contains_key` check in
-/// `set_mix`; drop the `is_sound` check there; drop the `MixWithoutNode` /
-/// `BadMix` pushes in `validate`; drop `spec.mixes.remove` in `Editor::remove`.
 #[test]
 fn mixes_name_nodes_and_stay_in_range() {
     let (mut ed, _exec) = solo(Some(Mix::new(0.5)));
@@ -751,9 +697,6 @@ fn mixes_name_nodes_and_stay_in_range() {
 /// **A fork copies the mixes and starts every unit at them**: the live graph,
 /// moved to a mix and forked, renders its fork the blend at that mix from the
 /// fork's first frame (steady, no ramp), and keeps its own.
-///
-/// Mutation (run, failed): `Editor::fork`'s spec built without `mixes` -> the
-/// fork renders `3 * x`.
 #[test]
 fn a_fork_copies_the_mix() {
     let (mut ed, mut exec) = solo(None);
@@ -790,11 +733,6 @@ fn a_fork_copies_the_mix() {
 /// path; `set_mix` short of WET is refused, and so is a commit of a spec that
 /// mixes it, bypasses it or drives its mix from a lane, each with the reason.
 /// `Mix::WET` and a node at one width are accepted.
-///
-/// Mutation (each run, each failed): `set_mix` not asking `check_pass` → the
-/// half mix is accepted; `check_passes` not called in `commit` → the spec's
-/// mix commits; its `heard` dropping the mode, or the lane's source → that
-/// commit is accepted.
 #[test]
 fn a_mix_of_a_node_with_no_pass_is_refused() {
     let (mut ed, _exec) = Editor::new(prepare(MAX_BLOCK));

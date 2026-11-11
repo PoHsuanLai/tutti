@@ -293,11 +293,6 @@ impl Node for Late {
 /// is rendered whole, and a graph whose only node never said (`Tail::Unknown`)
 /// renders none — not the cap, which would
 /// append silence.
-///
-/// Mutations (each run, each failed): `BounceJob::run` ignoring
-/// `latency_from_graph` → frame 0 reads 0; ignoring `tail_from_graph` → the
-/// render is `TAIL` frames short; resolving the tail as
-/// `samples().unwrap_or(cap)` → the unknown graph renders `cap` extra frames.
 #[test]
 fn latency_and_tail_come_from_the_graph() {
     let mut session = session();
@@ -340,11 +335,6 @@ fn latency_and_tail_come_from_the_graph() {
 /// puts a `LATE`-frame source on the output. Trimmed by what the hook left,
 /// the source's step lands on frame 0; by the live graph's figure (0), it
 /// would land on frame `LATE`.
-///
-/// Mutations (each run, each failed): `BounceJob::run` reading
-/// `reported_latency()` before the edit runs and using that figure; and the
-/// fork's commit after the edit skipped (`ForkedPair::commit` replaced by `Ok`),
-/// so the plan is still the live graph's and nothing is trimmed.
 #[test]
 fn the_trim_is_read_after_the_prepare_hook() {
     let mut session = session();
@@ -396,9 +386,6 @@ fn a_prepare_hook_that_swaps_the_editor_fails_the_export() {
 
 /// **An export of a graph with no outputs says so**, for the master and for
 /// a bounce that also names a stem — not that the stem's node is unheard.
-///
-/// Mutation (run, failed): the `outputs() == 0` check in `Session::bounce_start`
-/// disabled → neither export is refused as having no outputs.
 #[test]
 fn a_graph_with_no_outputs_says_so() {
     let mut session = session_with_outputs(0);
@@ -490,9 +477,6 @@ fn short() -> Bounce {
 /// other graph, or after the job was built, would leave the rendered signal
 /// at the graph's own 0.5 rather than the 0.25 this one writes. The hook
 /// edits the fork's editor and does not commit: the session does.
-///
-/// Mutation (run, failed): the session's commit of the fork after the hook
-/// (`BounceJob::run`, `pair.commit()` after the edit) skipped → renders 0.5.
 #[test]
 fn a_prepare_hook_reaches_the_graph_that_gets_rendered() {
     let (mut session, _node) = graph_with_one_node_on();
@@ -526,10 +510,6 @@ fn a_prepare_hook_reaches_the_graph_that_gets_rendered() {
 /// own (say 120 BPM at beat 0) while the renderer advanced the caller's would
 /// make the two disagree: a node the hook places on a 90 BPM project would
 /// land on a 120 BPM playhead that nothing advances.
-///
-/// Mutation (run, failed): `Session::bounce_start` handing the hook a context of
-/// its own (`ExportClock::frozen().offline()`) instead of the request's
-/// → the hook sees 120 BPM at beat 0, not 90 at beat 16.
 #[test]
 fn the_prepare_hook_sees_the_callers_timeline() {
     use tutti_transport::{OfflineTimeline, OfflineTimelineConfig};
@@ -569,10 +549,6 @@ fn the_prepare_hook_sees_the_callers_timeline() {
 }
 
 /// **A master export's `prepare` hook sees the caller's timeline too.**
-///
-/// Mutation (run, failed): `Session::bounce_start` handing the hook a context of
-/// its own (`ExportClock::frozen().offline()`) instead of the request's →
-/// the hook sees 120 BPM, not 90.
 #[test]
 fn a_master_exports_prepare_hook_sees_the_callers_timeline() {
     use tutti_transport::{OfflineTimeline, OfflineTimelineConfig};
@@ -664,11 +640,6 @@ impl Node for Counter {
 ///
 /// A plain clone would share the counter with the live graph, and fail this
 /// test by design.
-///
-/// Mutation (run, failed): `Counter`'s `into_parts` made a plain clone
-/// (`ForkByClone(self).into_parts()`) instead of [`CounterFork`] → the fork
-/// shares the live cell, and its reset and render move the live count, which
-/// jumps.
 #[test]
 fn live_playback_continues_unaffected_while_an_export_renders() {
     let mut session = session();
@@ -734,10 +705,6 @@ impl Node for Mic {
 /// **A master export forks what the outputs hear**: an unforkable node no
 /// output reaches (an unrouted mic) does not refuse it, and the render is
 /// the routed node's.
-///
-/// Mutation (run, failed): `ForkTarget::Master` forking every node of the
-/// editor (`upstream(shapes().keys())`) → refused as not forkable, naming the
-/// mic.
 #[test]
 fn an_unrouted_unforkable_node_does_not_refuse_a_master_export() {
     let mut session = session();
@@ -752,9 +719,6 @@ fn an_unrouted_unforkable_node_does_not_refuse_a_master_export() {
 /// host maps back to whatever it bound to the node; and so does a bounce
 /// whose stem names its sibling, since a stem renders in the master's fork,
 /// which holds every node an output hears.
-///
-/// Mutation (run, failed): `tutti_export`'s `fork_error` wrapping
-/// `NotForkable` in `Error::Fork` → the refusal is not `NotForkable { key }`.
 #[test]
 fn an_unforkable_node_refuses_the_export_by_key() {
     let mut session = session();
@@ -930,12 +894,7 @@ impl IntoNode for Level {
 /// own. The export renders the graph at the start: the slow node's level and
 /// the param's value then, on the outputs as they were.
 ///
-/// Mutation (run, failed): `Editor::fork_gather` running a deferred build in
-/// the gather (`Unit::Built(build())`) → the call waits out the build's
-/// three-second timeout and the build has finished when it returns. Mutation
-/// (run, failed): `Level::fork_fresh` not detaching its cell (the fork shares
-/// the live param) → the volume set after the start reaches the fork. The
-/// gather's own guarantee is pinned in tutti-graph's
+/// The gather's own guarantee is pinned in tutti-graph's
 /// `a_gathered_fork_is_the_live_graph_at_the_gather`.
 #[test]
 fn an_export_does_not_wait_for_a_slow_fork_and_takes_no_later_edit() {
@@ -1083,12 +1042,6 @@ fn all_main(what: &str, at: &Mutex<Vec<ThreadId>>) {
 /// in `Session::bounce_start`, and the unit it built is dropped by
 /// `finish_bounce`, on the main thread, after the render on a thread of its
 /// own. A slow deferred source beside it keeps the job busy for a while.
-///
-/// Mutation (run, failed): `fork_gather` treating a pinned unit as a
-/// `ForkBuild::ready` one (not prepared in the gather) → prepared on the
-/// render thread. (The session's `ToMain` drop sending nothing back does not
-/// fail this test, which finishes through `finish_bounce`; it fails the three
-/// below.)
 #[test]
 fn a_main_thread_only_fork_builds_and_drops_on_the_main_thread() {
     let mut session = session();
@@ -1133,11 +1086,6 @@ fn a_main_thread_only_fork_builds_and_drops_on_the_main_thread() {
 /// is handed to a thread that drops it unrun (as a cancelled task is dropped
 /// by a pool); whatever the job held goes back to the session, and
 /// `drop_bounce_leftovers` drops it on the main thread. No render happened.
-///
-/// Mutations (each run, each failed): the session's `ToMain` drop dropping
-/// its value where it is (`drop(value)`) → the pinned unit drops on the
-/// thread that dropped the job; the job's pending fork held in a `ToMain`
-/// whose receiver is gone → the same.
 #[test]
 fn a_dropped_export_job_drops_its_fork_on_the_main_thread() {
     let mut session = session();
@@ -1220,12 +1168,6 @@ impl IntoNode for Broken {
 /// node's key**, its cause kept whole, and what the build had made (a pinned
 /// unit, built in the gather) is dropped on the main thread, as a rendered
 /// graph is.
-///
-/// Mutations (each run, each failed): `BounceJob::run` dropping a failed
-/// build's `ForkRemains` where it is (`drop(remains)`) instead of sending it
-/// back → the pinned unit drops on the render thread; the `ToMain` drop
-/// dropping its value where it is → the same; `fork_gather` not preparing a
-/// pinned unit in the gather → prepared on the render thread.
 #[test]
 fn a_fork_build_that_fails_names_its_node_and_drops_on_the_main_thread() {
     let mut session = session();
@@ -1282,11 +1224,6 @@ fn witnessed(drops: &Arc<Mutex<Vec<ThreadId>>>) -> Bounce {
 /// cancelled task is dropped by whichever pool thread reaches it). An edit
 /// may capture anything the caller read on the main thread; until it runs it
 /// is that state.
-///
-/// Mutations (each run, each failed): the job's edit held in a `ToMain`
-/// whose receiver is gone (the edit effectively bare) → the witness drops on
-/// the render thread, or on the thread that dropped the job; the `ToMain`
-/// drop dropping its value where it is → the same.
 #[test]
 fn a_prepare_edit_that_never_runs_drops_on_the_main_thread() {
     // A build that fails.

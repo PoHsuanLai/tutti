@@ -315,12 +315,6 @@ fn send_midi_decode_does_not_allocate() {
 ///
 /// AUSampler, not `DLS_SYNTH`: `DLSMusicDevice` traps inside
 /// `MusicDeviceSysEx` (see `au_sysex.rs`).
-///
-/// Mutation (cannot be run on the Linux this was written on; the macOS CI job
-/// runs it): restore the local `let mut sysex_buf: Vec<u8> = Vec::new()` with
-/// `extend_from_slice` per packet → `assert_no_alloc` aborts in the guarded
-/// region; skip the reservation in `Au::initialize` → every message
-/// is dropped and the first `assert_eq!` fails.
 #[test]
 fn a_long_sysex_does_not_allocate_and_an_oversized_one_is_dropped_counted() {
     use tutti_ump::SYSEX7_MAX_PAYLOAD;

@@ -158,11 +158,6 @@ fn digest(planes: &[Vec<f32>]) -> u64 {
 /// scene's, delayed by the limiter's lookahead to the frame (silence
 /// first); its latent right channel is the saw through the limiter,
 /// hand-wired; and the whole render matches the golden digest, bit for bit.
-///
-/// Mutations (run in `bevy-tutti`; each failed this test): the forwarding
-/// `Boxed::latency` returning `None` (the editor never learns the lookahead,
-/// the left channel is not delayed); `AudioSide::render` dropping a trailing
-/// partial block (9 600 frames is 37½ blocks), whose tail is silent.
 #[test]
 fn a_compensated_scene_delays_its_dry_channel_by_the_lookahead() {
     let mut s = scene(true);
@@ -198,10 +193,6 @@ fn a_compensated_scene_delays_its_dry_channel_by_the_lookahead() {
 /// **A block length that is not a multiple of 64 changes nothing for
 /// per-sample nodes**: an oscillator, a filter and a waveshaper render the
 /// same samples in 100-frame blocks as in 64-frame blocks, to the bit.
-///
-/// Mutation (run in `bevy-tutti`): `AudioSide::render` rendering whole blocks
-/// only (`while done + block <= frames`) leaves the last 50 frames at zero
-/// and fails.
 #[test]
 fn unaligned_blocks_render_per_sample_units_identically() {
     // 4 850 = 48 × 100 + 50; the reference covers it in whole 64-frame
@@ -222,10 +213,6 @@ fn unaligned_blocks_render_per_sample_units_identically() {
 /// between two 256-frame blocks, the render from there on is the scene built
 /// with the new drive (the waveshaper holds no state), and before it the
 /// scene with the old one.
-///
-/// Mutation (run in `bevy-tutti`): `Graph::set_param` sending the setting
-/// with the enclosing node's address instead of the leaf's: the waveshaper
-/// ignores it and the render after the write stays the old scene's.
 #[test]
 fn a_param_write_lands_on_the_next_blocks_first_frame() {
     let mut s = scene(false);
@@ -299,11 +286,6 @@ impl Node for From {
 ///   the law written out here: `x = (k + 1) / 241`, `g_in = x³(6x² − 15x +
 ///   10)`, `g_out = 1 − g_in`. Within 1e-6: the blend and `tanh` are
 ///   computed in `f64` here, in `f32` by the graph.
-///
-/// Mutations (run in `bevy-tutti`): `Editor::replace_or_swap` not setting the
-/// fade when the shape fits (a hard swap), so the fade's frames are the new
-/// filter's; `CrossfadeCurve::gains` a linear `g_in = x`, so the fade's
-/// frames part from the law.
 #[test]
 fn a_crossfade_follows_its_law_to_the_new_filter() {
     const FADE_AT: usize = 1_024;
@@ -385,10 +367,6 @@ fn a_crossfade_follows_its_law_to_the_new_filter() {
 /// [`a_compensated_scene_delays_its_dry_channel_by_the_lookahead`]).
 ///
 /// This is what tells a compiled compensation from a spliced one.
-///
-/// Mutation (run in `bevy-tutti`): `Graph::lift` answering `Silence` for a
-/// node source. Here: the scene's output 0 declared from the filter instead
-/// of the waveshaper fails the source check.
 #[test]
 fn pdc_is_the_compilers() {
     let mut s = scene(true);

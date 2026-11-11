@@ -112,15 +112,6 @@ fn ducked(f: usize, ta: f64, tr: f64) -> f64 {
 /// BPM (4 Hz), within §5.3's bound past the connect's declick; and the pad
 /// (knob 0.8 in `0..=1`) dips with the kick through a follower (5 ms /
 /// 100 ms) at depth −0.6, analytically.
-///
-/// Mutations (run), each fails:
-/// - `OwnKeys::feed` answering `None` → the follower is unresolved, the
-///   pad never dips (`frame 4832: 0.8 vs 0.79…`);
-/// - `ModSession::modulation_phase` not applying the session's own
-///   declarations (`host.is_some()` alone as the declarer) → no lane, the
-///   cutoff reads 500 flat;
-/// - `ParamRef::key` keying the target by `!bits` → its node never
-///   resolves (`settle`: "every target resolved").
 #[test]
 fn the_8_1_example_renders_its_analytic_values() {
     let mut s = offline();
@@ -252,10 +243,6 @@ impl HostDecl {
 /// in that update: the apply finds it uncommitted, the commit places it,
 /// and `AfterCommit` re-applies and commits the lane, so after that one
 /// update nothing is unresolved and the lane exists.
-///
-/// Mutation (run): `ModSession::reapply` returning `false` → the target is
-/// still unresolved after the second update (it resolves on the third) →
-/// fails.
 #[test]
 fn a_target_placed_one_update_later_resolves_on_that_update() {
     let mut s = offline();
@@ -285,13 +272,6 @@ fn a_target_placed_one_update_later_resolves_on_that_update() {
 /// updates.** A target whose key names no node stays unresolved: a
 /// thousand updates at one instant report nothing, nor does one at 3.9 s;
 /// the one at 4 s reports it, once, and later ones do not repeat it.
-///
-/// Mutations (run), each fails:
-/// - the warning not measured on `now` (`waited` set to the threshold, an
-///   update-count rule with a count of one) → the first update reports
-///   it;
-/// - `>=` as `>` on the threshold → nothing at exactly 4 s;
-/// - the `warned` flag dropped → every later update repeats it.
 #[test]
 fn the_unresolved_warning_fires_after_four_seconds_not_n_updates() {
     let mut s = offline();
@@ -341,9 +321,6 @@ fn the_unresolved_warning_fires_after_four_seconds_not_n_updates() {
 /// a target with no range is refused by the compile, and the refusal names
 /// the `RouteKey` `s.mods()` returned. Reported once, held while it lasts,
 /// and cleared when the range arrives.
-///
-/// Mutation (run): `ModRefusal::route` answering `None` for
-/// `UndeclaredTarget` → fails.
 #[test]
 fn a_refusal_names_the_route_key_the_session_minted() {
     let mut s = offline();
@@ -382,9 +359,6 @@ fn a_refusal_names_the_route_key_the_session_minted() {
 /// **A session has one declarer.** While `s.mods()` holds declarations, a
 /// host's `ModInput` is refused (`ModRefusal::TwoDeclarers`) and applies
 /// nothing.
-///
-/// Mutation (run): `ModSession::declarer` not refusing (applying the
-/// host's) → no refusal, and the host's lane is built → fails.
 #[test]
 fn a_host_and_the_session_cannot_both_declare() {
     let mut s = offline();
@@ -408,11 +382,6 @@ fn a_host_and_the_session_cannot_both_declare() {
 /// **A removed node takes the session's declarations on it**: its range
 /// and the route into it go with it, so nothing is left to refuse or to
 /// warn about.
-///
-/// Mutations (run), each fails: `Session::remove` not calling
-/// `forget_node` → the target stays declared and unresolved;
-/// `forget_node` keeping the declarations built before it
-/// (`OwnMods::built` not cleared) → the same.
 #[test]
 fn removing_a_node_forgets_its_declarations() {
     let mut s = offline();
@@ -477,10 +446,6 @@ impl tutti_graph::Node for Late {
 /// probe's param port: that commit's plan has `LATE` frames on output 0,
 /// and the session publishes them, the total and the per-channel figures,
 /// before the update returns.
-///
-/// Mutation (run): the re-apply committing with `self.graph.commit()`, not
-/// `self.commit()` (no publish) → the latency still reads 0 after the
-/// update → fails.
 #[test]
 fn a_re_apply_that_moves_the_latency_publishes_it() {
     let mut s = offline();
@@ -527,10 +492,6 @@ fn a_re_apply_that_moves_the_latency_publishes_it() {
 /// the borrow goes the next update's `Reclaim` phase frees the old one with
 /// nothing published again. The lanes are inserted by the reconciler, not
 /// through `Graph::add`, so the session sweeps them itself.
-///
-/// Mutation (run): `Session::reclaim` leaving out the modulation
-/// (`self.mods.state.reclaim()`) → the old program is still retired after
-/// the update, fails.
 #[test]
 fn an_update_frees_a_program_a_block_held_across_a_route_edit() {
     let mut s = offline();
@@ -560,10 +521,6 @@ fn an_update_frees_a_program_a_block_held_across_a_route_edit() {
 /// session keeps its own declarations built between edits, and the
 /// reconciler skips an apply whose inputs are all unchanged; a route edit,
 /// a range edit and a new route each reach the graph on the next update.
-///
-/// Mutation (run): `Session::mods` not marking the declarations edited
-/// (`OwnMods::edited` dropped) → the kept build is applied, the edit is
-/// lost → fails ("the depth edit is republished").
 #[test]
 fn an_own_edit_after_a_steady_state_applies() {
     let mut s = offline();

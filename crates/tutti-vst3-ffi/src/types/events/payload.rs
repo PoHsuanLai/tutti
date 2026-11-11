@@ -138,8 +138,6 @@ impl ExpressionInt {
 ///
 /// let _ = Data { size: 1_000_000, data_type: 0, bytes: [0; 16] };
 /// ```
-// Mutation (type-level, no runtime test can show it): making `size` `pub`
-// again lets the doctest above compile, so it fails.
 pub struct Data {
     /// Valid bytes in `bytes`, at most 16.
     size: u32,

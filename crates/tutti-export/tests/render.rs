@@ -374,9 +374,6 @@ impl Node for Integrator {
 /// A feedback loop re-enters its own output, so it has no frame count of its
 /// own — the cap is the whole answer, and it is the caller's choice rather than
 /// a figure the engine invented.
-///
-/// Mutation: `Integrator` reporting `Tail::None` fails the `is_unbounded`
-/// assertion — the graph is then spendable and `resolve` ignores the cap.
 #[test]
 fn resolving_an_unbounded_graph_spends_the_cap() {
     let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::STEREO);

@@ -83,9 +83,6 @@ fn hash_of<T: Hash>(v: &T) -> u64 {
 ///
 /// The graph is the exact diagram in `latency.rs`'s module doc, so the answer
 /// must be the same 512, driven by a value a test can write down.
-///
-/// Mutation: make `LatencyGraph::inputs` yield the sink's own key instead of the
-/// source's → the merge no longer sees the 512 and `total()` is 0 → fails.
 #[test]
 fn latency_and_tail_are_folds_over_the_value() {
     let t = unequal_latency_diamond();
@@ -121,9 +118,6 @@ fn latency_and_tail_are_folds_over_the_value() {
 
 /// A node whose tail was never declared is counted, not collapsed to zero —
 /// `Tail::Unknown` is the `NodeSpec` default a catalog has not filled in.
-///
-/// Mutation: default `TailGraph::tail` to `Tail::None` instead of `Unknown` →
-/// `unknown_nodes()` is 0 → fails.
 #[test]
 fn an_undeclared_tail_is_counted_as_unknown() {
     let mut t = chain();
@@ -137,9 +131,6 @@ fn an_undeclared_tail_is_counted_as_unknown() {
 /// `validate` is the type-index replacement: it catches what a width-indexed
 /// node type would have, and reports **every** fault at once rather than the
 /// first — an author fixing a graph should not have to bisect.
-///
-/// Mutation: `?`-style short-circuit after the first fault (return `Err(errs)`
-/// inside the edge loop) → the assertion that all five kinds are present fails.
 #[test]
 fn validate_reports_every_fault_at_once() {
     let mut t = Topology::default();
@@ -196,11 +187,6 @@ fn validate_reports_every_fault_at_once() {
 /// one global output channel, is `DuplicateEdge`. Two different sources are
 /// not (that is a fan-in, which `validate` accepts and `compile` refuses for
 /// now), and neither is the same node on two ports.
-///
-/// Mutation (run, recorded here): in `Topology::validate`, drop the
-/// `edges[..n].contains(edge)` push (or the `sources[..n].contains(src)` one
-/// for outputs) -> the test fails. Mutation: guard the first with `n == 1 &&`
-/// -> the non-adjacent duplicate at index 2 is missed and the test fails.
 #[test]
 fn validate_refuses_a_duplicate_edge_in_one_set() {
     let mut t = Topology::default();
@@ -243,12 +229,6 @@ fn validate_refuses_a_duplicate_edge_in_one_set() {
 /// Silence has one representation, the empty set, so `validate` refuses a
 /// stored `Source::Zero`: alone, beside another source, at an input port or at
 /// an output channel. The empty set (and an absent key) is fine.
-///
-/// Mutation (run, recorded here): in `Topology::validate`, test
-/// `edges.len() > 1 && edges.contains(..)` (the old "beside" rule) -> the
-/// lone-`Zero` port case passes validation and the test fails; likewise
-/// `sources.len() > 1 && ..` for outputs. Mutation: drop the output check ->
-/// the output assertions fail.
 #[test]
 fn validate_refuses_a_stored_zero_alone_and_beside_others() {
     let mut t = Topology::default();
@@ -300,10 +280,6 @@ fn validate_refuses_a_stored_zero_alone_and_beside_others() {
 /// `connect` keeps each list sorted and free of duplicates, so two wirings of
 /// the same sources compare and hash equal; `disconnect` removes the key with
 /// the last edge, so a port that was wired and cleared equals one never wired.
-///
-/// Mutation (run, recorded here): in `connect`, push instead of
-/// `binary_search` + insert (insert at the end) -> the test fails. Mutation:
-/// in `disconnect`, never remove the emptied key -> the test fails.
 #[test]
 fn connect_and_disconnect_keep_the_set_canonical() {
     let from_a = Edge::Direct(Source::Node(out(A, 0)));
@@ -330,10 +306,6 @@ fn connect_and_disconnect_keep_the_set_canonical() {
 /// node's width, a node not in the map, a global input past the declared
 /// width) is not a fault: the compiler reads silence for it, so a display or
 /// a recording cannot wedge the graph. `validate` accepts all of them.
-///
-/// Mutation (run, recorded here): restore a loop in `Topology::validate` that
-/// pushes an error for a tap lane whose node port is past `outputs.count()`
-/// -> `validate` returns `Err` and the first assert fails.
 #[test]
 fn a_tap_lane_naming_a_missing_source_is_not_a_fault() {
     let mut t = chain();
@@ -356,9 +328,6 @@ fn a_tap_lane_naming_a_missing_source_is_not_a_fault() {
 /// An unbroken cycle is rejected; the same cycle with the returning edge
 /// declared as feedback validates, because the one-block delay rides on the edge
 /// *kind* and so cannot be forgotten.
-///
-/// Mutation: include `Edge::Feedback` in `direct_preds` → the feedback graph is
-/// reported as a cycle → the `expect("feedback breaks the cycle")` fails.
 #[test]
 fn a_cycle_is_rejected_unless_feedback_breaks_it() {
     let mut t = Topology::default();
@@ -420,9 +389,6 @@ fn a_cycle_is_rejected_unless_feedback_breaks_it() {
 /// An unconnected declared port is reported and does **not** block validity: a
 /// half-built graph is renderable and reads silence there, which is what a graph
 /// mid-edit looks like.
-///
-/// Mutation: make `Invalid::is_fatal` return `true` unconditionally → the
-/// `expect("unconnected is not fatal")` fails.
 #[test]
 fn unconnected_is_reported_but_not_fatal() {
     let mut t = chain();
@@ -440,10 +406,6 @@ fn unconnected_is_reported_but_not_fatal() {
 /// equal. This is what makes the value usable as a cache key and as the whole of
 /// a change check: a revision counter could order two states but not identify
 /// one.
-///
-/// Mutation: swap `Topology::nodes` to a `HashMap` → the derived `Hash` stops
-/// being order-independent and the hash assertion fails (intermittently, which
-/// is exactly why the field is a `BTreeMap`).
 #[test]
 fn insertion_order_does_not_change_the_value() {
     let forward = unequal_latency_diamond();
@@ -484,10 +446,6 @@ fn insertion_order_does_not_change_the_value() {
 /// A param differing by one ULP is a **different graph**. Structural, not
 /// numeric: this relation decides whether a node survives a recompile, and
 /// collapsing near-equal values would keep a unit built from the old number.
-///
-/// Mutation: `#[derive(PartialEq)]` on `ParamValue` instead of the hand-written
-/// bit-pattern impl → `0.0 == -0.0` and `NaN != NaN` → the last two assertions
-/// fail (and `Hash`/`Eq` silently disagree, which is what the derive costs).
 #[test]
 fn param_equality_is_structural() {
     let base = spec("gain", 1, 1).with_param("gain", ParamValue::Scalar(0.5));
@@ -522,9 +480,6 @@ fn param_equality_is_structural() {
 /// resolve against them instead of being rejected as out of range.
 /// `ChannelLayout` has no `Default`, so the impl is hand-written; this pins its
 /// *choice* of width, which the compiler cannot.
-///
-/// Mutation: `inputs: ChannelLayout::STEREO` in the hand-written impl → the
-/// out-of-range edge validates → both assertions fail.
 #[test]
 fn the_default_topology_has_no_global_inputs() {
     let t = Topology::default();
@@ -543,9 +498,6 @@ fn the_default_topology_has_no_global_inputs() {
 
 /// `topo_order` is a *function* of the value, not merely one valid answer: the
 /// queue is seeded from a `BTreeMap`, so the exact vector is assertable.
-///
-/// Mutation: seed the Kahn queue from a `HashMap` → the order varies run to run
-/// → this fails intermittently.
 #[test]
 fn topo_order_is_deterministic() {
     let t = unequal_latency_diamond();
@@ -566,10 +518,6 @@ fn topo_order_is_deterministic() {
 
 /// **`NodeKey::fresh` never hands out the same key twice**, from one thread
 /// or from several at once: 8 threads × 1000 calls, every key distinct.
-///
-/// Mutation (run): `fetch_add(0, …)` → every call returns the same key →
-/// fails. Mutation (run): a non-atomic `load` then `store(+1)` → racing
-/// threads read the same value → fails (in practice within one run of 8×1000).
 #[test]
 fn fresh_keys_are_distinct_across_threads() {
     use std::collections::HashSet;

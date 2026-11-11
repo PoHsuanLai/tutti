@@ -4,19 +4,6 @@
 //!
 //! Each scenario runs on the serial executor, on the parallel one and on the
 //! reference interpreter, and the three must log the same events.
-//!
-//! Mutations (each run, then restored):
-//! - `Held::observe` doing nothing: every close test fails.
-//! - `Held::close_into` writing nothing: every close test, the fork test and
-//!   the random property fail.
-//! - Not handing the parked tables back after a re-prepare:
-//!   `a_key_held_across_a_reprepare_is_closed`.
-//! - Not taking an event feedback FIFO's flush:
-//!   `a_cut_feedback_edge_delivers_what_is_in_flight_then_closes`.
-//! - `Shape::audio` setting `note_events: false`: the close tests and
-//!   `a_shape_carries_note_events_by_default`.
-//! - Allocating in `Held::observe`: `no_alloc::serial` and `no_alloc::parallel`
-//!   abort.
 
 mod common;
 
@@ -910,9 +897,6 @@ fn a_crossfaded_source_closes_its_sinks() {
 /// Two sources hold the same key into one sink and one is cut: the sink
 /// cannot tell whose note a key is, so the close ends the other's note too.
 /// The limit is documented in `held.rs`; this pins it.
-///
-/// Mutation (run): `Held::close_into` writing nothing -> the sink hears no
-/// `off60()` -> fails.
 #[test]
 fn fan_in_on_one_key_is_closed_by_either_source() {
     let mut r = Rig::new(Mode::Serial, &[2]);
@@ -946,9 +930,6 @@ fn fan_in_on_one_key_is_closed_by_either_source() {
 
 /// A re-prepare checks the units out and back; the tables go with them, so a
 /// key held across it is still closed.
-///
-/// Mutation (run): drop the parked tables in `Executor::apply` instead of
-/// handing them back -> the sink hears no `off60()` -> fails.
 #[test]
 fn a_key_held_across_a_reprepare_is_closed() {
     let mut r = Rig::new(Mode::Serial, &[2]);
@@ -969,9 +950,6 @@ fn a_key_held_across_a_reprepare_is_closed() {
 
 /// A feedback edge that is cut: the event in flight is delivered, and the
 /// close follows it.
-///
-/// Mutation (run): skip the feedback FIFO's `flushed()` -> the sink hears
-/// `off60()` with no `on60()` before it -> fails.
 #[test]
 fn a_cut_feedback_edge_delivers_what_is_in_flight_then_closes() {
     let logs: Vec<_> = MODES
@@ -997,11 +975,6 @@ fn a_cut_feedback_edge_delivers_what_is_in_flight_then_closes() {
 /// keeps writing until the second takes over, and its keys are closed then,
 /// at once for none of them. The reference interpreter does not model a
 /// crossfade, so this runs on the serial and the parallel executor.
-///
-/// Mutation (run): taking the table of a unit that keeps running when a
-/// second fade is queued (`waits` in `Executor::apply` always false) -> on61()
-/// is never closed -> fails. Not swapping the tables when the queued fade
-/// takes over (`end_fades`) -> neither is.
 #[test]
 fn a_second_fade_closes_the_first_replacements_keys_when_it_takes_over() {
     for mode in [Mode::Serial, Mode::Parallel] {
@@ -1056,8 +1029,6 @@ fn a_second_fade_closes_the_first_replacements_keys_when_it_takes_over() {
 
 /// A third replace while one waits: the waiting unit never runs, and the
 /// running one's keys are closed when the last takes over.
-///
-/// Mutation (run): as above.
 #[test]
 fn a_third_fade_supersedes_the_waiting_one() {
     for mode in [Mode::Serial, Mode::Parallel] {
@@ -1112,10 +1083,6 @@ fn swap_with_fade(r: &mut Rig, mail: &Mail, frames: usize) {
 /// A re-prepare with a fade queued: the running replacement is cut, the
 /// queued unit takes over, and the keys of the one that stopped are still
 /// closed, in the first block after the resume.
-///
-/// Mutation (run): hand the stale table to `spare_held` in the suspend branch
-/// of `Executor::apply` instead of keeping it in `next_held` -> the sink hears
-/// no `off60()` -> fails.
 #[test]
 fn a_reprepare_with_a_fade_queued_closes_the_stopped_units_keys() {
     let mut r = Rig::new(Mode::Serial, &[2]);
@@ -1150,9 +1117,6 @@ fn a_reprepare_with_a_fade_queued_closes_the_stopped_units_keys() {
 /// More keys to close than a block's slot takes: the rest close in the
 /// following blocks and none is lost. (The sink's own merge sheds controllers
 /// first when the block is dense.)
-///
-/// Mutation (run): `Held::close_ahead` forgetting every key, written or not
-/// -> the sink hears fewer than 200 offs -> fails.
 #[test]
 fn closes_that_do_not_fit_a_block_follow_in_the_next() {
     let mut r = Rig::new(Mode::Serial, &[2]);
@@ -1191,10 +1155,6 @@ fn closes_that_do_not_fit_a_block_follow_in_the_next() {
 /// A third fade queues while closes are still owed: the owed keys stay
 /// owed, the new unit's table starts empty, and every key is closed exactly
 /// once.
-///
-/// Mutation (run): `Keys::promote` swapping `held` with `owed` instead of
-/// merging into it -> a remainder lands in the running unit's table and is
-/// closed twice, or the old unit's keys are lost -> fails.
 #[test]
 fn a_third_fade_leaves_the_owed_remainder_owed() {
     let mut r = Rig::new(Mode::Serial, &[2]);
@@ -1333,9 +1293,6 @@ fn sweep(sinks: &[u64], act: impl Fn(&mut Rig), check: impl Fn(&Rig, &str)) {
 /// Removing the source at every block offset around the promotion: the
 /// sink hears the note end exactly once. Before the promotion the running
 /// unit's table closes at the commit; after it, what the unit owed does.
-///
-/// Mutation (run): `Keys::depart` not merging `owed` into what it returns
-/// -> the offsets just after the promotion leave the note on -> fails.
 #[test]
 fn removing_the_source_around_a_promotion_closes_once() {
     sweep(
@@ -1375,10 +1332,6 @@ fn a_hard_replace_around_a_promotion_closes_once() {
 /// One of two sinks is cut at every offset around the promotion: it hears
 /// the note end once, whether the cut or the owed close reaches it, and the
 /// other, still wired, hears it once too.
-///
-/// Mutation (run): not closing `Keys::owed` on a cut edge in
-/// `Executor::rebuild` -> the cut sink keeps the note when the cut falls just
-/// after the promotion -> fails.
 #[test]
 fn cutting_an_edge_around_a_promotion_closes_once() {
     sweep(
@@ -1398,10 +1351,6 @@ fn cutting_an_edge_around_a_promotion_closes_once() {
 
 /// The resume commit of a re-prepare replaces the held source: the old
 /// unit's tables are closed, not handed to the new one.
-///
-/// Mutation (run): `same(old_plan) == same(Some(plan))` replaced with `true`
-/// in the parked-tables restore -> the new unit inherits the table and the
-/// sink is never closed -> fails.
 #[test]
 fn a_source_replaced_by_the_resume_commit_is_closed() {
     let mut r = Rig::new(Mode::Serial, &[2]);
@@ -1428,9 +1377,6 @@ fn a_source_replaced_by_the_resume_commit_is_closed() {
 
 /// The source and its sink are both replaced as the edge is cut: the new
 /// sink never heard the note, so it is sent no close.
-///
-/// Mutation (run): drop the `departed.replaced.contains(&at.node)` skip in
-/// `Executor::rebuild` -> the new sink hears `off60()` -> fails.
 #[test]
 fn a_replaced_sink_is_not_sent_a_close() {
     let mut r = Rig::new(Mode::Serial, &[2]);
@@ -1462,9 +1408,6 @@ fn a_replaced_sink_is_not_sent_a_close() {
 
 /// The closes owed on a delayed edge past what its FIFO holds are counted as
 /// lost, not dropped silently.
-///
-/// Mutation (run): ignore the return of `EventFifo::push` in the close path
-/// -> the loss count stays 0 -> fails.
 #[test]
 fn closes_the_delay_cannot_hold_are_counted() {
     let mut r = Rig::with_lag(Mode::Serial, &[2], true);
@@ -1529,9 +1472,6 @@ fn a_source_without_note_events_closes_nothing() {
 
 /// A node that declared no note events and writes one breaks its declaration:
 /// a debug build says so, instead of leaving the note unclosed.
-///
-/// Mutation (run): remove the `debug_assert!` in `node_op_with` -> no panic ->
-/// fails.
 #[test]
 #[cfg(debug_assertions)]
 #[should_panic(expected = "declared no note events")]
@@ -1557,8 +1497,6 @@ fn a_note_from_a_source_that_declared_none_is_caught() {
 
 /// A shape claims note events unless it says otherwise, so a node that
 /// forgets the declaration is tracked, not left unclosed.
-///
-/// Mutation (run): `note_events: false` in `Shape::audio` -> fails.
 #[test]
 fn a_shape_carries_note_events_by_default() {
     let shape = Shape::EMPTY.with_events(0, 1);
@@ -1658,7 +1596,7 @@ fn a_fork_closes_what_it_has_seen() {
 /// cutting the edge in the fork sends its sink nothing for it. The documented
 /// limit: a fork closes only what it has seen itself.
 ///
-/// No mutation breaks this: it pins an absence. A fork that copied the live
+/// It pins an absence. A fork that copied the live
 /// tables would log an `off60()` and fail it, which is the change to make if
 /// the limit is ever lifted.
 #[test]
@@ -1853,9 +1791,6 @@ mod random {
         /// write, and no off for a key the source never wrote. Serial,
         /// parallel and reference agree, with and without a PDC delay. (The
         /// reference does not model a crossfade, so no fade is in this walk.)
-        ///
-        /// Mutation (run): `Held::close_into` also closing a key the port
-        /// never held (note 100) -> an off for a key never written -> fails.
         #[test]
         fn sinks_end_holding_nothing(steps in steps(), lag in any::<bool>()) {
             let (serial, sent) = run(Mode::Serial, lag, &steps);
@@ -1897,8 +1832,6 @@ mod no_alloc {
 
     /// Dense note traffic through tracked edges allocates nothing, serially
     /// and on a pool whose every participant is inside the gate.
-    ///
-    /// Mutation: allocate a `Vec` in `Held::observe` -> the gate aborts.
     fn run(workers: usize) {
         let prep = common::prepare(MAX);
         let (mut ed, mut exec) = Editor::with_event_capacity(prep, 64);

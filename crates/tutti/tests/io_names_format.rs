@@ -3,9 +3,7 @@
 //! build a WAV sink from it.
 //!
 //! Compiled only with `io`; `cargo xtask check-features` and CI's `dark features` job
-//! run it with `audio-io`. Mutation (run): `io = [.., "codec"]` without
-//! `tutti-codec/encode-wav` leaves `Format` with no value, so `Format::Wav` fails
-//! to compile; without `codec` the file fails to compile.
+//! run it with `audio-io`.
 #![cfg(feature = "io")]
 
 use tutti::codec::{FileOut, Format, Pcm, Spec};

@@ -69,9 +69,6 @@ fn process_steady_state_does_not_allocate() {
 
 /// With a project meter installed (`set_meter`), each block reads it — one
 /// borrow of the node's meter cell — and still does not allocate.
-///
-/// Mutation (run): allocate in `TransportFeed::block` only when a meter is
-/// installed → this test trips the gate, the two without a meter pass.
 #[test]
 fn process_with_a_meter_does_not_allocate() {
     use tutti_transport::ProjectMeter;
@@ -165,12 +162,6 @@ fn process_with_midi_does_not_allocate() {
 /// the Processor's automation write, which reads its bound without allocating.
 /// After the gate the plugin holds each parameter's last value, and nothing
 /// was dropped or merged for want of room.
-///
-/// Mutations (run), each fails (aborts inside the gate): the parameter
-/// bound read through `get_info()` again in `Vst2Loaded::param_index`
-/// (it clones the plugin's name and vendor); the node's staged list rebuilt
-/// per block (`self.staged = Vec::new()` for `clear()` in
-/// `ParamDelivery::settle`).
 #[test]
 fn two_hundred_moving_parameters_do_not_allocate() {
     use tutti_graph::ParamRamp;

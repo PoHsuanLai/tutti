@@ -452,10 +452,6 @@ fn pair(workers: usize) -> (Editor, Executor) {
 
 /// Every worker count and block schedule renders what the serial executor
 /// renders, sample for sample, on every output.
-///
-/// Mutation (each applied to `src/par.rs`, seen to fail, reverted): skip
-/// `Op::Capture` in `Shared::run_op` (the feedback loop's ring never fills)
-/// → diverges; run a task's ops in reverse → diverges.
 #[test]
 fn the_parallel_render_is_bit_identical_to_the_serial_one() {
     for blocks in schedules(MAX_BLOCK) {
@@ -483,10 +479,6 @@ fn the_parallel_render_is_bit_identical_to_the_serial_one() {
 /// More output slices than the plan has outputs are ignored the same way on
 /// every path: the serial render and each pool render the plan's channels,
 /// bit for bit, and leave the extra slices alone.
-///
-/// Mutation (run): hand `run_block` all of `outputs` instead of
-/// `outputs[..plan.global_outputs()]` → "a claim table of 5 words for 6
-/// elements" on every pool → fails.
 #[test]
 fn extra_output_slices_are_ignored_on_every_path() {
     let blocks = [MAX_BLOCK, 7, 64];
@@ -504,11 +496,6 @@ fn extra_output_slices_are_ignored_on_every_path() {
 /// The live range is read in the op code both paths share (`run_params`),
 /// at the same point of the same op, so the two cannot disagree on which
 /// block a move lands on.
-///
-/// Mutations (run): drop the cell read in `ParamState::port` (clamp to
-/// the unbounded range) → the ranged render equals the unranged one → the
-/// "ranges bite" assert fails. No mutation of one path alone exists to
-/// run: the read is not duplicated per path.
 #[test]
 fn ranges_moved_mid_render_stay_bit_identical() {
     for blocks in schedules(MAX_BLOCK) {
@@ -542,9 +529,6 @@ fn ranges_moved_mid_render_stay_bit_identical() {
 /// The plan really is parallel: several tasks, and the cost model spreads
 /// every block of it over all four participants (its nodes declare no
 /// cost, so each is assumed worth a thread).
-///
-/// Mutations: make `cost::schedule` return `Serial` → fails; clamp its
-/// `wake` to 2 → fails.
 #[test]
 fn the_graph_spreads() {
     let (_ed, exec) = pair(4);
@@ -562,9 +546,6 @@ fn the_graph_spreads() {
 /// An offline fork (what export renders) renders the same on a pool as
 /// alone, at the export's block size and at ragged ones — and the same as
 /// the live graph's own fresh render.
-///
-/// Mutation: in `Executor::set_pool`, build no parallel state (`par =
-/// None`) → the fork is not parallel → the `is_parallel` assert fails.
 #[test]
 fn an_offline_fork_renders_the_same_on_a_pool() {
     let (live_ed, _live) = pair(1);
@@ -594,10 +575,6 @@ fn an_offline_fork_renders_the_same_on_a_pool() {
 
 /// A node that panics on a worker aborts the block, and the caller panics
 /// with a message naming the cause once every participant has left.
-///
-/// Mutation: in `Shared::participate`, do not abort the task graph when a
-/// task panics → the other participants wait forever for the dead task's
-/// successors → the test hangs.
 #[test]
 #[should_panic(expected = "a node panicked on a parallel worker")]
 fn a_panic_on_a_worker_reaches_the_caller() {
@@ -657,10 +634,6 @@ fn a_panic_on_a_worker_reaches_the_caller() {
 /// caller, as nothing else can take it), so the helper finds nothing to take.
 /// (A helper descheduled for those 50 ms would pass either way; the test
 /// cannot fail spuriously.)
-///
-/// Mutation (run): build the block's `waits` from `BlockWaits::DEFAULT` in
-/// `par.rs` instead of `pool.waits()` → the helper leaves after 15 µs, with
-/// the slow task still running → fails.
 #[test]
 fn the_executor_waits_by_its_pools_budget() {
     use std::sync::atomic::{AtomicBool, Ordering};
@@ -796,13 +769,7 @@ fn the_executor_waits_by_its_pools_budget() {
 /// One-frame blocks make the call counts exact; the schedules of `schedules`
 /// cover the rest.
 ///
-/// Mutation (run): in `node_op_with`, drop the report (`u.reported = None`)
-/// → the serial run is called for the ceiling's 1000 quiet frames, not 300,
-/// and the calls assert fails. (The analytic last-frame check does not bite
-/// on a too-short report: a ringing node's output is not silent, and the skip
-/// also needs the previous output silent, so only a node whose output reads
-/// silent while its state still sounds could be cut. It pins that the pooled
-/// and serial skips lose nothing.)
+/// It pins that the pooled and serial skips lose nothing.
 #[test]
 fn reporting_nodes_render_bit_identically_on_a_pool() {
     use common::{NO_REPORT, Pulse, Ringer};

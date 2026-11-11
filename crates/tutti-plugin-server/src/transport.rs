@@ -384,10 +384,6 @@ mod recv_tests {
     /// A length prefix over the cap is a framing violation by the host, not
     /// this process crashing: the error names the frame and the limit, and is
     /// refused before any allocation (no body is ever sent).
-    ///
-    /// Mutation (run): restoring `BridgeError::ProcessCrashed` in `recv` fails
-    /// the `ConnectionFailed` match; changing `>` to `>=` passes this test,
-    /// which pins one past the cap only.
     #[test]
     fn an_oversize_inbound_frame_is_a_protocol_error_not_a_crash() {
         let (mut host, server) = UnixStream::pair().expect("socket pair");
@@ -426,9 +422,6 @@ mod watchdog_tests {
     /// The ordinary running case: the parent recorded at startup is still the
     /// parent. That is conclusive on its own — the kernel reparents only when
     /// a parent exits — so the answer must not depend on the oracle at all.
-    ///
-    /// Mutation: drop the `current == original` fast path and this fails under
-    /// `all_dead`, which is the point of asserting both oracles here.
     #[test]
     fn a_live_original_parent_reads_as_alive() {
         assert!(parent_is_alive_given(Some(4242), 4242, all_alive));
@@ -443,9 +436,8 @@ mod watchdog_tests {
     /// happens when a parent exits, so this is death regardless of what the
     /// oracle says about the recycled PID.
     ///
-    /// Mutation: rewrite the changed-parent arm as `current != 1` (the naive
-    /// orphan test) and this fails while [`reparenting_to_init_is_death`]
-    /// still passes. That asymmetry is why the two are separate tests.
+    /// [`reparenting_to_init_is_death`] is the separate test for a parent that became init;
+    /// this one is the recycled PID.
     #[test]
     fn reparenting_to_a_subreaper_is_still_death() {
         let original = 4242;
@@ -469,11 +461,6 @@ mod watchdog_tests {
     /// from the outset and never changes, so there is no reparenting to
     /// observe. The recorded host's own liveness is then the only evidence
     /// there is, and it must be consulted rather than assumed.
-    ///
-    /// Mutation: return `true` whenever the PIDs merely differ (i.e. assume a
-    /// non-changing ppid means alive) and this fails — that is precisely the
-    /// bug the integration test `a_subreaper_does_not_hide_the_hosts_death`
-    /// caught in the shipped implementation.
     #[test]
     fn a_host_that_was_never_our_parent_is_judged_by_its_own_liveness() {
         let host = 4242;
@@ -490,7 +477,7 @@ mod watchdog_tests {
 
     /// The oracle must be asked about the *host*, never about the current
     /// parent or this process. Getting that wrong is the "compares the wrong
-    /// pid" mutation, and it is silent: both PIDs are usually live, so the
+    /// pid" bug, and it is silent: both PIDs are usually live, so the
     /// answer would be right by coincidence in ordinary runs and wrong exactly
     /// when the host dies.
     #[test]
@@ -517,10 +504,6 @@ mod watchdog_tests {
     /// A library embedder that never called `record_parent_pid` falls back to
     /// the `> 1` test, so it is no worse off than under the check this
     /// replaced.
-    ///
-    /// Mutation: make the `None` arm return `true` unconditionally and the
-    /// second assertion fails — an unrecorded embedder would then never notice
-    /// an orphaning at all.
     #[test]
     fn without_a_recorded_pid_the_check_degrades_to_the_init_test() {
         assert!(parent_is_alive_given(None, 4242, all_dead));
@@ -538,9 +521,6 @@ mod watchdog_tests {
     /// Death is decided by evidence about the recorded host, never by the
     /// value of any PID — no particular reaper PID is special-cased. With a
     /// dead-host oracle, only "still our parent" reads as alive.
-    ///
-    /// Mutation: compare `current` against a hardcoded constant instead of
-    /// `original` and this fails across the sweep.
     #[test]
     fn only_still_being_our_parent_survives_a_dead_host() {
         for original in [2i32, 7, 1000, 32768, i32::MAX] {

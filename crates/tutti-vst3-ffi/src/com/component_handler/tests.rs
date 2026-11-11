@@ -61,11 +61,6 @@ fn restart_component_forwards_the_raw_flag_word() {
 
 /// Restart flags are cumulative: several requests between two takes reach
 /// the host as their union, and a take leaves nothing behind for the next.
-///
-/// Mutation: `fetch_or` replaced by `store` in `restartComponent` (the
-/// last request wins) fails the union assertion — the latency change is
-/// lost under the later I/O change. `swap(0, ..)` replaced by `load` fails
-/// the "second take is empty" assertion.
 #[test]
 fn restart_flags_merge_across_calls_and_reset_on_take() {
     let handler = ComponentHandler::new();
@@ -99,11 +94,6 @@ fn restart_flags_merge_across_calls_and_reset_on_take() {
 /// A full queue drops the newest notification and counts it; it neither
 /// grows nor evicts what is already queued. The drop raises the sticky
 /// overflow flag, which one take reports and clears.
-///
-/// Mutations: removing the `fetch_add` in `push` leaves the count at 0 and
-/// fails the first assertion; removing the `overflowed.store` fails the
-/// flag assertion; `take_overflowed` as a `load` (never cleared) fails
-/// the "reported once" assertion.
 #[test]
 fn overflow_is_counted_and_keeps_the_queued_events() {
     let handler = ComponentHandler::new();
@@ -149,12 +139,6 @@ fn overflow_is_counted_and_keeps_the_queued_events() {
 /// does the host's side (`take_restart_bits`, `pop_notification`, and
 /// dropping what it pops) — which is what the plugin server's restart
 /// poll calls.
-///
-/// Mutations: the queue swapped for `crossbeam_queue::SegQueue` (unbounded,
-/// allocating a block per 31 pushes — the growth the original
-/// `crossbeam_channel::unbounded` sender had) aborts inside the gate, and
-/// so does `ProgressDescription` holding a `String` (the old
-/// `utf16_to_string` decode).
 #[test]
 fn callbacks_and_the_host_drain_do_not_allocate() {
     let handler = ComponentHandler::new();
@@ -293,11 +277,6 @@ fn progress_start_mints_an_id_that_update_and_finish_quote_back() {
 /// A description longer than the inline capacity is cut at the last whole
 /// character that fits, never mid-character; unpaired surrogates become
 /// U+FFFD rather than ending the decode.
-///
-/// Mutations: `break` → `continue` on a character that does not fit
-/// (packing a later, smaller one into the gap) fails the length
-/// assertion; skipping an unpaired surrogate instead of replacing it
-/// fails the prefix assertion.
 #[test]
 fn a_long_progress_description_is_truncated_at_a_char_boundary() {
     // An unpaired high surrogate, then 'é' (2 bytes) and '€' (3 bytes)
@@ -372,9 +351,6 @@ fn unit_selection_and_program_list_changes_forward_their_ids() {
 
 /// The three kinds share one queue, so their relative order survives: a
 /// unit change the plugin made *before* an edit is read before it.
-///
-/// Mutation: giving progress its own queue (drained after edits, as the
-/// three separate channels were) puts `Progress` last and fails this.
 #[test]
 fn notifications_keep_their_order_across_kinds() {
     let handler = ComponentHandler::new();
@@ -432,9 +408,6 @@ fn concurrent_edits_all_reach_the_host() {
 /// **A plugin's `performEdit` value reaches the host inside `0..=1`.** The
 /// event documents a normalized value and a host writes automation from it, so
 /// a plugin's `f64` is clamped at the edge, as `addPoint`'s is.
-///
-/// Mutation (run, fails): pass `value_normalized` through unclamped -> 7.5 and -3.0 come out
-/// as sent and the test fails.
 #[test]
 fn an_edit_value_is_clamped_to_the_unit_interval() {
     let handler = ComponentHandler::new();
@@ -458,9 +431,6 @@ fn an_edit_value_is_clamped_to_the_unit_interval() {
 /// is refused and not forwarded.** The request is typed now (`MediaType`,
 /// `BusDirection`), so a value the SDK does not define has no bus to name:
 /// `kInvalidArgument`, nothing queued. A defined pair is forwarded typed.
-///
-/// Mutation (run, fails at the first `kInvalidArgument` assertion): forward a
-/// refused request again, falling back to `Audio`/`Input`.
 #[test]
 fn an_undefined_bus_activation_is_refused_and_not_forwarded() {
     let handler = ComponentHandler::new();
@@ -501,9 +471,6 @@ fn an_undefined_bus_activation_is_refused_and_not_forwarded() {
 
 /// **`IProgress::start` keeps what kind of operation it is**: the two SDK
 /// values name their variants and any other is carried as `Other`.
-///
-/// Mutation (run, fails): swap the two arms in `ProgressKind::from_raw` -> the
-/// named rows fail; return `Other(0)` for the fallback -> the `77` row fails.
 #[test]
 fn a_progress_kind_names_the_sdk_values_and_carries_the_rest() {
     assert_eq!(

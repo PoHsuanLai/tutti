@@ -130,9 +130,6 @@ mod tests {
     /// `new` and `TryFrom` agree on the edge of the range, a width of 16 is a
     /// bus and 17 is refused with its width, and the round trip through
     /// `ChannelTopology` is the identity.
-    ///
-    /// Mutations (run): `>=` for `>` in `unassigned` fails the width-16 line;
-    /// `Self::new` truncating instead of `?` fails the 17 refusal.
     #[test]
     fn a_bus_holds_sixteen_channels_and_refuses_more() {
         let sixteen = ChannelTopology::unassigned(ChannelLayout::from(16u16));
@@ -154,9 +151,6 @@ mod tests {
 
     /// Placement survives, and the slots past the length do not leak into
     /// equality: a 2-wide bus built two ways is equal.
-    ///
-    /// Mutation (run): filling the spare slots with `FrontLeft` in `EMPTY`
-    /// fails the equality line.
     #[test]
     fn speakers_keep_their_slots_and_spare_slots_are_canonical() {
         use Speaker::*;

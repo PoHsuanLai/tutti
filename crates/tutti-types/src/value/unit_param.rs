@@ -592,9 +592,6 @@ mod tests {
 
     /// Each typed key names the param its unit belongs to — a key is only as
     /// good as the pairing, and a swapped pair still compiles.
-    ///
-    /// Mutation: swap the ids of `ParamKey::<Db>::THRESHOLD` and
-    /// `ParamKey::<Db>::CEILING` → fails.
     #[test]
     fn typed_keys_name_their_params() {
         use super::super::units::{Db, Hz, Seconds};
@@ -633,9 +630,6 @@ mod tests {
     /// Every keyed param has exactly one key: no id appears twice (under the
     /// same unit or under two), so a value can never be read back in a unit
     /// it was not written in.
-    ///
-    /// Mutation: add `WET = Wet;` under `Depth` in `param_keys!` → `Wet`
-    /// appears twice → fails.
     #[test]
     fn every_keyed_param_has_one_unit() {
         let reg = ParamKey::registry();

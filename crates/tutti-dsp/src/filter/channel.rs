@@ -273,10 +273,6 @@ pub(crate) mod tests {
     /// stable region in `(a1, a2)` is a triangle and so convex, and the ladder's loop is
     /// stable while its feedback is under the resonance limit, which a blend of two
     /// reachable sets keeps under; a glide that extrapolates leaves both.
-    ///
-    /// Mutation (run, both callers): the blend at `t = 4k / n` (twice past the target at
-    /// the midpoint) in `Lerp::lerp` fails: the SVF's sets leave the triangle and the
-    /// ladder's feedback passes its limit, and neither rings down.
     pub(crate) fn assert_midpoints_decay<K>(d: &Filter<K>)
     where
         K: ChannelKernel,

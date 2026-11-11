@@ -21,9 +21,6 @@ fn event_is_copy() {
 
 /// Every tag the SDK defines decodes to its kind, and the payload's kind is the
 /// tag written to the C struct (the header cannot contradict its variant).
-///
-/// Mutation (run): `to_c` writing `EventKind::NoteOn` for every payload → the
-/// other kinds fail.
 #[test]
 fn the_wire_tag_is_derived_from_the_payload() {
     let mut arena = TextArena::new();
@@ -68,7 +65,6 @@ fn the_wire_tag_is_derived_from_the_payload() {
     assert_eq!(EventKind::try_from(c.r#type), Ok(EventKind::Data));
 }
 
-/// Mutation (run): `TryFrom<u16>` answering `Ok(Data)` for an unknown tag → fails.
 #[test]
 fn an_undefined_tag_is_refused() {
     assert_eq!(EventKind::try_from(0x1234), Err(UnknownEventKind(0x1234)));
@@ -162,9 +158,6 @@ fn note_expression_int_round_trips() {
 }
 
 /// Data past the inline room is cut to it, and a null or empty payload decodes to zeros.
-///
-/// Mutation (run): `from_c` copying `min(size, 8)` bytes instead of `min(size, 16)`
-/// → the payload is cut → fails.
 #[test]
 fn data_event_with_a_bad_size_decodes_within_its_inline_bytes() {
     let bytes = [7u8; 40];
@@ -195,8 +188,6 @@ fn data_event_with_a_bad_size_decodes_within_its_inline_bytes() {
     assert_eq!(d.payload(), &[0u8; 16]);
 }
 
-/// Mutation (run): `to_c` answering the arena's pointer for an out-of-range ref
-/// → the pointer is non-null → fails.
 #[test]
 fn a_text_ref_outside_the_arena_is_a_null_pointer() {
     let event = Event::at(
@@ -218,9 +209,6 @@ fn a_text_ref_outside_the_arena_is_a_null_pointer() {
 
 /// Each kind's tag is the SDK's own ordinal, asserted constant by constant: a
 /// table that paired two names with each other's ordinals would still round-trip.
-///
-/// Mutation (run): swapping the `NoteOn` and `NoteOff` ordinals in `event_kinds!`
-/// → both assertions fail.
 #[test]
 fn each_kind_is_the_sdk_ordinal() {
     use vst3::Steinberg::Vst::Event_::EventTypes_ as T;
@@ -252,10 +240,6 @@ fn each_kind_is_the_sdk_ordinal() {
 /// `Data::try_from_iter` holds what `Data::new` holds and refuses what it
 /// refuses, from any iterator: 16 bytes fit, a 17th does not, and an iterator
 /// with no end is refused rather than read to the end.
-///
-/// Mutation (run): the bound check removed (`inline.get_mut(size)` replaced by
-/// `inline.get_mut(size % 16)`) → the 17-byte case and the endless iterator
-/// fail.
 #[test]
 fn data_from_an_iterator_holds_what_new_holds() {
     for n in 0..=16u8 {
@@ -280,9 +264,6 @@ fn data_from_an_iterator_holds_what_new_holds() {
 /// array holds.** `to_c` hands the next plugin `size` with a pointer to 16
 /// bytes, so a `size` past 16 is an out-of-bounds read; the audit's probe saw
 /// 1,000,000 reach the plugin.
-///
-/// Mutation: drop the `.min(Self::CAPACITY as u32)` in `Data::from_plugin` ->
-/// the size is 1,000,000 on both sides and the test fails.
 #[test]
 fn a_data_event_never_claims_more_than_it_holds() {
     let bytes = [7u8; 40];

@@ -202,8 +202,6 @@ mod tests {
 
     /// A message longer than the event list holds is refused with the packet
     /// error, not written past it; an empty one is a no-op.
-    /// Mutation: dropping the `packet.is_null()` return reads a status from a
-    /// list that never took the message, and the error assertion fails.
     #[test]
     fn a_message_that_does_not_fit_is_refused() {
         let source = UmpSource::new("tutti-ffi-test").expect("CoreMIDI");

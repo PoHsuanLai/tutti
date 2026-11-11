@@ -256,9 +256,6 @@ mod tests {
 
     /// Abandoned blocks and replies are separate monotonic totals: a poller
     /// who sees the first grow while the second does not has a hang.
-    ///
-    /// Mutations (each run, each failed): `note_abandoned` not counting;
-    /// `note_replied` a no-op; `note_settled` not counting its replies.
     #[test]
     fn blocks_abandoned_and_replies_are_counted_apart() {
         let c = channels();
@@ -303,10 +300,6 @@ mod tests {
     /// allocates nothing.** The ring runs inside `assert_no_alloc` with the
     /// bridge parked, so the futex-wake path is the one gated, not just the
     /// fence and load.
-    ///
-    /// Mutations (run): the `self.bell.ring()` removed from
-    /// `try_push_command` -> the bridge sleeps on, the receive times out and
-    /// fails; the ring replaced by a `Box::new(0)` -> the gate aborts.
     #[test]
     fn a_push_wakes_a_parked_bridge_without_allocating() {
         let c = channels();
@@ -327,9 +320,6 @@ mod tests {
     /// answered before the next, race the bridge's park against the ring.
     /// A lost wake-up leaves one unanswered and the receive times out (there
     /// is no backstop timeout to hide it).
-    ///
-    /// Mutation (run): the ring removed from `try_push_command` -> the first
-    /// hand-off that finds the bridge parked never completes; fails.
     #[test]
     fn no_pushed_command_waits_on_a_missed_wake_up() {
         let c = channels();
@@ -351,8 +341,6 @@ mod tests {
 
     /// **`wake` ends a wait on a stop flag with no command queued**, which
     /// is how `shutdown` reaches a parked bridge when its queue was full.
-    ///
-    /// Mutation (run): `wake` a no-op -> the join hangs (nextest times out).
     #[test]
     fn wake_ends_a_wait_with_nothing_queued() {
         let c = channels();

@@ -580,9 +580,6 @@ mod tests {
 
     /// **A tempo too slow to count frames at has no frames per beat** (the
     /// run was `Some(inf)` before the one rule).
-    ///
-    /// Mutation (run): `Run::frames_per_beat` computing `rate * 60 / tempo`
-    /// unfiltered → `Some(inf)` → fails.
     #[test]
     fn the_slowest_tempo_has_no_frames_per_beat() {
         let slow = Transport::new(true, Bpm::of(f64::from_bits(1)), Beat(0.0), None);
@@ -610,11 +607,6 @@ mod tests {
     /// A block that starts where the last one left the playhead is no
     /// jump; one that starts anywhere else is, on its first frame, and
     /// moves the generation on. The first block continues nothing.
-    ///
-    /// Mutation (run): `breaks` answering `false` for a rolling transport
-    /// → the seek back is no jump → fails. Mutation (run): `continuation`
-    /// not advancing over the run (the next beat its start) → the second
-    /// block reads as a jump → fails.
     #[test]
     fn a_block_that_continues_the_last_is_no_jump_and_a_seek_is() {
         let mut clock = Clock::new();
@@ -641,10 +633,6 @@ mod tests {
     /// A stop, a seek while stopped, and a restart where the playhead
     /// stands are no jump (the playhead resumes where it stands): nothing
     /// buffered is stale.
-    ///
-    /// Mutation (run): `continuation` treating a stopped run as rolling
-    /// (the `!run.rolling` return removed) → the restart reads the playhead
-    /// 64 frames on, and is a jump → fails.
     #[test]
     fn a_stop_a_seek_while_stopped_and_a_restart_are_no_jump() {
         let mut clock = Clock::new();
@@ -668,9 +656,6 @@ mod tests {
 
     /// A seek inside a block is a run of its own, a jump on its frame,
     /// and the next block continues from it.
-    ///
-    /// Mutation (run): `Runs::seg_end` ignoring `Env::changes` (the block
-    /// one segment) → one run → fails.
     #[test]
     fn a_seek_inside_a_block_is_a_jump_on_its_frame() {
         let mut clock = Clock::new();
@@ -688,9 +673,6 @@ mod tests {
 
     /// A loop wrap inside a block is a jump on the wrap's frame, the
     /// run after it starting at the loop's start.
-    ///
-    /// Mutation (run): `Runs` not cutting at a wrap (`wrap_offset`
-    /// answering `None`) → one run, no jump → fails.
     #[test]
     fn a_loop_wrap_inside_a_block_is_a_jump_on_its_frame() {
         let looping = Some(tutti_graph::LoopRange {
@@ -716,10 +698,6 @@ mod tests {
     /// `false` over a jump would leave a stretch filter or a live read
     /// holding stale state. Over a continuation, a seek back, a seek inside
     /// a block, a stop and a restart.
-    ///
-    /// Mutation (run): `jumps` always `false` → the seek blocks fail.
-    /// Mutation (run): `jumps` set from the first run only → the in-block
-    /// seek fails.
     #[test]
     fn jumps_is_whether_any_run_jumps() {
         let mut clock = Clock::new();
@@ -777,11 +755,6 @@ mod tests {
 
     /// A wrap starts a crossfade on its frame, and it goes on across the
     /// blocks that follow until it is done.
-    ///
-    /// Mutation (run): `continuation` not carrying the run's crossfade
-    /// (`wrap: None` for a run without a wrap) → the second block has none →
-    /// fails. `Wrap::after` not adding the frames → the `ago` stops at 0 →
-    /// fails.
     #[test]
     fn a_wrap_starts_a_crossfade_that_outlasts_the_block() {
         let mut clock = Clock::new();
@@ -804,9 +777,6 @@ mod tests {
 
     /// A wrap on a block's last frame starts its crossfade on the next
     /// block's first.
-    ///
-    /// Mutation (run): `observe` taking the carried crossfade only when
-    /// `!jump` (the `|| n.wrapped` removed) → none → fails.
     #[test]
     fn a_wrap_on_the_block_edge_starts_the_crossfade_on_the_next_block() {
         let mut clock = Clock::new();
@@ -817,9 +787,6 @@ mod tests {
     }
 
     /// A seek between blocks ends the crossfade.
-    ///
-    /// Mutation (run): `observe` taking the carried crossfade across a jump
-    /// → the seek's block has one → fails.
     #[test]
     fn a_seek_between_blocks_ends_the_crossfade() {
         let mut clock = Clock::new();
@@ -829,9 +796,6 @@ mod tests {
     }
 
     /// The crossfade is [`WRAP_FADE`] at the rate, at most half a pass.
-    ///
-    /// Mutation (run): `Wrap::new` without the `min` → a 120 frame pass
-    /// fades over 240 → fails.
     #[test]
     fn the_crossfade_is_the_fade_or_half_a_pass() {
         let rate = SampleRate(48_000.0);
@@ -850,9 +814,6 @@ mod tests {
 
     /// A seek on the block right after an edge wrap is a seek, not the wrap:
     /// it starts no crossfade (the wrap's own jump is not a seek's).
-    ///
-    /// Mutation (run): `observe` without the `continues` filter on the carried
-    /// crossfade → the seek's block fades a ghost tail → fails.
     #[test]
     fn a_seek_right_after_an_edge_wrap_starts_no_crossfade() {
         let mut clock = Clock::new();

@@ -354,8 +354,6 @@ impl PluginInfo {
 ///     }
 /// }
 /// ```
-// Mutation (type-level): delete the `sealed::Sealed` supertrait and the doctest
-// above compiles (given the paths resolve), so it fails as a doctest.
 pub trait Vst3Sample: tutti_plugin_types::Sample + sealed::Sealed {
     /// The format of this sample type.
     const FORMAT: SampleFormat;
@@ -465,10 +463,6 @@ mod host_type_tests {
     use vst3::Steinberg::Vst::ePrefetchableSupport_ as P;
 
     /// Each SDK value maps to its own variant and anything else is carried.
-    ///
-    /// Mutation (run): swapping the `kIsYetPrefetchable` and
-    /// `kIsNotYetPrefetchable` arms in `from_raw` fails the second and third
-    /// rows; dropping the `Unknown` arm's payload (`Unknown(0)`) fails the last.
     #[test]
     fn prefetch_support_maps_each_sdk_value() {
         assert_eq!(
@@ -488,10 +482,6 @@ mod host_type_tests {
 
     /// The modifier bits are the SDK's `KeyModifier` values and combine and
     /// test as a set.
-    ///
-    /// Mutation (run): defining `CONTROL` as `COMMAND`'s bit fails the bit
-    /// table; replacing `|` with `^` in `bitor` fails the union of a modifier
-    /// with itself.
     #[test]
     fn key_modifiers_are_the_sdk_bits() {
         assert_eq!(KeyModifiers::SHIFT.bits(), 1);
@@ -510,9 +500,6 @@ mod host_type_tests {
     }
 
     /// A character key carries no virtual key, and a virtual key no character.
-    ///
-    /// Mutation (run): setting `character` in `KeyEvent::virtual_key` fails the
-    /// second assertion.
     #[test]
     fn key_constructors_fill_exactly_one_code() {
         let c = KeyEvent::character(97);

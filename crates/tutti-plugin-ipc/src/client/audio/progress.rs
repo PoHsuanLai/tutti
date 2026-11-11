@@ -179,14 +179,7 @@ impl StateProgress {
                 // `idle` accumulates only inside the no-progress branch, so
                 // either the guarded accumulate or this reset alone keeps the
                 // deadline honest, and deleting just one leaves the behaviour
-                // correct. Mutation-tested — the budget only degrades into a
-                // total when the accumulate is unguarded *and* the reset is
-                // gone, and that combination fails
-                // `a_slow_but_progressing_state_transfer_completes` part-way
-                // through the sequence, which is the production bug in
-                // miniature. Kept explicit because relying on the branch
-                // structure alone would make a later "simplification" of that
-                // structure silently reintroduce a total budget.
+                // correct.
                 seen = now;
                 idle = Duration::ZERO;
             }

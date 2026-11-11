@@ -145,8 +145,6 @@ const _: () = {
 mod tests {
     use super::*;
 
-    /// Mutations: `max(1)` -> `max(0)` fails the sub-millisecond case; `None`
-    /// -> 0 fails the first.
     #[test]
     fn a_timeout_is_whole_milliseconds_and_never_zero() {
         assert_eq!(timeout_ms(None), -1);
@@ -162,10 +160,6 @@ mod tests {
     /// tested without the sequencer (CI's kernel has no `snd-seq`): nothing
     /// readable times out, the stand-in readable is `Ready`, and a readable
     /// stop descriptor is `Stopped` even with input pending.
-    ///
-    /// Mutations: reporting `seq` input before `stop` -> the last assert
-    /// reads `Ready`; `ready == 0` -> `ready <= 1` reads one ready descriptor as a timeout; pushing the
-    /// stop descriptor first in `over` -> the stand-in's input reads `Stopped`.
     #[test]
     fn the_wait_reports_input_timeout_and_stop_with_stop_first() {
         use std::io::Write;

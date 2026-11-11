@@ -565,11 +565,6 @@ fn per_note_pitch_bend_becomes_tuning_expression() {
 /// stream sets one with RPN #00/07), on VST3's ±120-semitone tuning
 /// scale. A quarter bend at 48 is 12 semitones, 0.5 + 12/240; after a
 /// sensitivity of 24 on channel 3, 6 semitones there and 12 elsewhere.
-///
-/// Mutations (run): a `(bend + 1) / 2` map (full bend = ±120) →
-/// 0.625, fails; the sensitivity read but not stored → channel 3 reads
-/// 0.55, fails; the range set on every channel → channel 4 reads 0.525,
-/// fails.
 #[test]
 fn a_per_note_bend_is_tuned_over_its_channels_range() {
     use tutti_midi_protocol::PitchBendSensitivity;
@@ -708,9 +703,6 @@ fn single_packet_sysex_round_trips_through_data_event() {
 /// **No packet of a multi-packet SysEx converts on its own**: a lone
 /// `START` would hand the plugin an unterminated message. The event list
 /// reassembles them (`stage`'s SysEx tests pin that).
-///
-/// Mutation (run): best-effort `START` forwarding → the
-/// `START` converts → fails.
 #[test]
 fn a_sysex_fragment_does_not_convert_alone() {
     let mut frags = Vec::new();
@@ -764,8 +756,6 @@ fn legacy_cc(control: u8, channel: i8, value: i8, value2: i8) -> LegacyCcOut {
     })
 }
 
-/// Mutation (run): `decode_int` reading `e.value.cast_signed().abs()` → -1234
-/// comes back 1234 → fails.
 #[test]
 fn note_expression_int_round_trips_with_its_sign() {
     let value = NoteExpressionIntValue {
@@ -788,9 +778,6 @@ fn note_expression_int_round_trips_with_its_sign() {
 
 /// A chord, scale and text value stage into a list, intern their text, and read
 /// back from the event and the arena.
-///
-/// Mutation (run): `Utf16Chord::to_event` staging `bass_note` as the root →
-/// the chord comes back with root 48 → fails.
 #[test]
 fn harmony_values_round_trip_through_a_list() {
     let utf16 = |s: &str| s.encode_utf16().collect::<Vec<u16>>();
@@ -980,9 +967,6 @@ mod message {
     /// A MIDI 1.0 Note On at velocity 0 widens to a Note Off at velocity
     /// 0x8000 (M2-104 v1.1.2 D.3.1), which VST3 carries as the release
     /// velocity `0x8000 / 0xFFFF`, about 0.5. It was a release velocity of 0.
-    ///
-    /// Mutation (run): `voice1` building the Note Off with velocity 0 instead
-    /// of calling `widen` → 0.0 is not 0x8000 / 0xFFFF → fails.
     #[test]
     fn a_midi1_note_on_at_velocity_zero_is_a_note_off_at_one_half() {
         let event = packet(Message::Midi1(
@@ -1026,9 +1010,6 @@ mod message {
     /// A reserved attribute type (M2-104 Table 8, §7.4.14: reserved for senders,
     /// no receiver rule) does not stop the note, which plays; a Pitch attribute is read but not applied, so the Note On's
     /// `tuning` stays 0.
-    ///
-    /// Mutation (run): `voice2` returning `None` when the attribute is
-    /// `Attribute::Reserved` → no event for type 4 → fails.
     #[test]
     fn a_reserved_attribute_type_does_not_stop_the_note() {
         for attribute in [
@@ -1069,9 +1050,6 @@ mod message {
     /// `kMidiSysEx`, so an `Unknown` packet cannot be forwarded: it is `None`,
     /// not an error, and so is every kind with neither a VST3 event nor a
     /// MIDI 1.0 form.
-    ///
-    /// Mutation (run): the `Utility` arm of `message` returning a Data event
-    /// → fails on the Noop.
     #[test]
     fn what_vst3_has_no_event_for_is_a_sink() {
         let sinks = [
@@ -1123,9 +1101,6 @@ mod message {
 
     /// Each System message is carried as its MIDI 1.0 bytes; Song Position
     /// is LSB first.
-    ///
-    /// Mutation (run): `System::bytes` taking `[lsb, msb]` the other way
-    /// round for Song Position → fails.
     #[test]
     fn a_system_message_is_carried_as_its_midi1_bytes() {
         let cases = [
@@ -1152,9 +1127,6 @@ mod message {
 
     /// A MIDI 1.0 controller, program, pressure and bend are carried as they
     /// came; a MIDI 2.0 one is narrowed to the top bits (M2-115 §3.4).
-    ///
-    /// Mutation (run): `narrow_bend(bend)` replaced by `narrow_bend(bend >> 1)` in `voice2` →
-    /// the centre bend is 0x4000 → fails.
     #[test]
     fn controllers_are_carried_at_midi1_resolution() {
         let carried = |message| data_bytes(&encode(&packet(message)).expect("carried"));
@@ -1208,9 +1180,6 @@ mod message {
 
     /// Packets written out as M2-104 words, with unequal data bytes, give
     /// exactly the VST3 bytes below. Channel 3 throughout, group 0.
-    ///
-    /// Mutations (run), each failing this test: a MIDI 1.0 Program Change
-    /// sent as `program ^ 1`; a MIDI 1.0 Channel Pressure sent as 0.
     #[test]
     fn spec_words_give_the_exact_midi1_bytes() {
         let bytes = |words: &[u32]| data_bytes(&encode(&raw(words)).expect("carried"));
@@ -1261,11 +1230,6 @@ mod message {
 
     /// Per-note pressure and controllers written out as words. The type ids
     /// are the SDK's (volume 0, pan 1, brightness 5), not the host's table.
-    ///
-    /// Mutations (run), each failing this test: Registered Brightness mapped
-    /// to Pan; Registered Volume mapped to Pan; Registered Pan mapped to
-    /// Volume; Assignable index 7 mapped to Pan; the MIDI 2.0 Poly Pressure
-    /// value sent as 0.
     #[test]
     fn spec_words_give_the_exact_note_events() {
         let event = |words: &[u32]| encode(&raw(words)).expect("an event");
@@ -1318,9 +1282,6 @@ mod message {
     /// Program Change (M2-104 Figure 64: MSB at bits 15-8, LSB at bits 7-0).
     /// Bank `0x0085` is MSB 1 and LSB 5, so CC 0 = 1 and CC 32 = 5, and a
     /// Program Change with no bank is not a bank.
-    ///
-    /// Mutation (run): swapping the LSB and MSB in `Bank::bytes`
-    /// → CC 0 is 5 → fails on both packets.
     #[test]
     fn a_bank_is_msb_then_lsb() {
         let banked = (
@@ -1349,9 +1310,6 @@ mod message {
     /// A MIDI 1.0 message a plugin sends as raw bytes is widened on the way
     /// in: a Note On at velocity 0 is a Note Off at 0x8000, and a system
     /// message is forwarded unchanged.
-    ///
-    /// Mutation (run): `widened` returning its input for `Message::Midi1`
-    /// → the packet stays Channel Voice 1 → fails.
     #[test]
     fn raw_midi1_from_a_plugin_is_widened() {
         let on = Event::at(4, Payload::Data(Data::inline(0, [0x92, 60, 0])));
@@ -1380,10 +1338,6 @@ mod message {
     /// `assert_no_alloc`, and each packet is checked to decode to the kind it
     /// stands for, so a malformed packet cannot stand in for a kind. The VST3
     /// host has no worker pool: the calling thread is the only participant.
-    ///
-    /// Mutations (run): a `Box::new(message)` in `MidiEncoder::message`, one
-    /// in `bank_program`, and one in `widened` → `assert_no_alloc` aborts
-    /// each time.
     #[test]
     fn every_kind_of_message_is_read_without_allocating() {
         let ch = address(4);
@@ -1512,10 +1466,6 @@ mod message {
     /// stray `0xF7`, a truncated Note On, an undefined status, a data byte with
     /// its top bit set each read as nothing, inside
     /// `assert_no_alloc`; a good message beside them still reads.
-    ///
-    /// Mutation (run): `widen_bytes` in `decode` replaced by
-    /// `from_midi1_bytes` over `midly`'s `LiveEvent::parse` → the process
-    /// aborts on `[0xF7, 1, 2]`.
     #[test]
     fn a_stray_status_from_a_plugin_allocates_nothing() {
         let hostile: Vec<Event> = [
@@ -1541,10 +1491,6 @@ mod message {
     /// framed `0xF0 .. 0xF7` message of 7-bit bytes that fits one packet is
     /// forwarded, and one with no `0xF7`, a payload byte of 128 or more, or
     /// more than one packet's worth is dropped (never cut or masked).
-    ///
-    /// Mutation (run): `SysexMessage::new` in `decode` replaced by the
-    /// delimiters stripped if present (`F7` optional) → the unterminated
-    /// message is forwarded → fails.
     #[test]
     fn a_plugins_sysex_data_event_is_forwarded_only_when_whole() {
         let data = |bytes: &[u8]| Event::at(2, Payload::Data(Data::new(0, bytes).unwrap()));
@@ -1563,9 +1509,6 @@ mod message {
 
     /// A chord at one frame stages as three Note Ons, in order, each at the
     /// velocity it was sent at.
-    ///
-    /// Mutation (run): `Stager::stage` staging only the first MIDI event of the block →
-    /// two events → fails.
     #[test]
     fn a_chord_stages_as_three_note_ons_in_order() {
         let events: Vec<UmpAt> = [60u8, 64, 67]

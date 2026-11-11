@@ -2,7 +2,7 @@
 //! curve-segment events (doc 013, decision 7; doc 014 §5.4), rendered by the
 //! port per frame.
 //!
-//! What is pinned, each with the mutation it was seen to fail under:
+//! What is pinned:
 //!
 //! - an trajectory with non-linear pieces renders its own value at every
 //!   frame, not linear pieces between breakpoints, with breakpoints falling
@@ -180,11 +180,6 @@ fn shaped() -> Trajectory {
 /// curve at every frame, through breakpoints between frames, under ragged
 /// blocks: where linear pieces and the curve differ (halfway along the
 /// exponential piece, a quarter for a half), the port reads the curve.
-///
-/// Mutations (run), each fails: a segment carrying `PowerIn(2)` as
-/// `Linear`; the lane sending every piece as the piecewise-linear fallback
-/// (ignoring `segment_at`); the lane computing a segment's position from
-/// the piece's end instead of its start.
 #[test]
 fn an_exponential_lane_renders_the_curve_not_linear_pieces() {
     let curve = shaped();
@@ -204,10 +199,6 @@ fn an_exponential_lane_renders_the_curve_not_linear_pieces() {
 /// A loop wrapping inside blocks, then a seek, a tempo change and a stop
 /// landing mid-block, keep the port on the curve at every frame: the lane
 /// re-sends the piece it is on wherever the beat jumps.
-///
-/// Mutations (run), each fails: the lane not re-sending on a wrap (`wrapped`
-/// ignored); the lane re-sending only at a block's first piece (the
-/// transport changes' pieces skipped).
 #[test]
 fn wraps_seeks_and_tempo_changes_stay_on_the_curve() {
     let curve = shaped();
@@ -297,11 +288,6 @@ fn check_grid(curve: &dyn Curve, lane: ControlLaneNode, blocks: &[usize], tol: f
 /// Changed in doc 014 §12.2: this sampled the curve at block edges, which
 /// moved with block size (doc 014 §5.4); it is the grid now, and the two
 /// block schedules render the same bits.
-///
-/// Mutations (run), each fails: the fallback sending nothing (the port
-/// holds its last value); the grid on block edges (`grid` measured from the
-/// block's first frame rather than the play count) → the two schedules
-/// differ and frames miss the line.
 #[test]
 fn an_unrepresentable_piece_is_linear_on_the_grid() {
     let mut curve = Trajectory::new().with_range(0.0, 0.5);
@@ -323,8 +309,6 @@ fn an_unrepresentable_piece_is_linear_on_the_grid() {
 ///
 /// Changed in doc 014 §12.2: exact on each block's first and last frame
 /// before; on the grid now (doc 014 §5.4).
-///
-/// Mutation (run): the fallback sending nothing → the port holds 0 → fails.
 #[test]
 fn a_curve_without_pieces_takes_the_grid() {
     struct Sine;

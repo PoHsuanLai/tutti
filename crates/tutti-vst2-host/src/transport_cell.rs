@@ -193,11 +193,6 @@ mod tests {
 
     /// Every field survives the cell, bit for bit: each holds a value no
     /// other field does, negatives and the last frame rate included.
-    ///
-    /// Mutations (run): `From<Snapshot>` reading `smpte_offset` from
-    /// `samples_to_next_clock` → fails; `From<TimeInfo>` storing `ppq_pos`
-    /// in `tempo` → fails; `smpte_from_i32` missing `Smpte60fps` → the frame
-    /// rate reads back as the default → fails.
     #[test]
     fn every_field_round_trips() {
         let info = vst::api::TimeInfo {

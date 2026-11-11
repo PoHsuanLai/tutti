@@ -33,14 +33,6 @@ fn flushing() -> bool {
 // nothing else: they read and write MXCSR directly. Ignored under miri
 // rather than cfg'd out, so `cargo miri test` reports them as skipped
 // instead of silently covering a smaller surface than it appears to.
-//
-// Mutation record (each run, then restored). `Restore::drop` emptied, so
-// nothing restores: all five tests fail. The restore moved out of `Drop`
-// to a call after `f()`: only `after_a_panic` fails (the register stays
-// set after an unwind; `nested_panic` passes because the outer call's own
-// restore still runs). The `| 0x8040` removed from `Restore::set`:
-// `restores_state`, `nested`, `nested_panic` and the subnormal test fail
-// on the inside assertions.
 #[test]
 #[cfg_attr(miri, ignore = "reads MXCSR; miri has no x86 SSE intrinsics")]
 fn restores_state() {
@@ -123,8 +115,6 @@ fn nested_panic() {
     });
 }
 
-// Mutation: see the record above; the flush is also what the other
-// two mutations break (nothing restored: the product after the call is 0).
 #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 #[test]
 #[cfg_attr(miri, ignore = "reads MXCSR; miri has no x86 SSE intrinsics")]

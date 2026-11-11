@@ -1,30 +1,6 @@
 //! The `Translator` against M2-104 Appendix D.3 and M2-115, with figures
 //! written here from the spec, never read from the code under test.
 //!
-//! Mutation record (each planted in `src/translator.rs`, seen to fail at the
-//! named tests, restored):
-//! - a CC 6 sends at once, as the old translator did -> `a_cc_6_alone_waits_for_a_trigger`,
-//!   `cc_6_then_cc_38_is_one_controller`, `a_later_cc_6_ends_the_run_before_it`,
-//!   `a_new_cc_6_never_reuses_an_old_lsb` and the group tests;
-//! - a CC 38 before any CC 6 dropped -> `cc_38_then_cc_6_is_one_controller`,
-//!   `the_null_function_ends_a_run_and_drops_data_entry_after_it`;
-//! - a select resets the other half of the number to 0 -> `a_select_of_one_half_keeps_the_other`
-//!   and three more;
-//! - RPN and NRPN share one number -> `rpn_and_nrpn_keep_their_own_numbers`,
-//!   `a_select_of_one_half_keeps_the_other`;
-//! - the flush at a select removed -> `a_cc_6_alone_waits_for_a_trigger`,
-//!   `a_later_cc_6_ends_the_run_before_it`, `a_new_cc_6_never_reuses_an_old_lsb`,
-//!   `the_null_function_ends_a_run_and_drops_data_entry_after_it`;
-//! - registered data always scaled -> `bank_0_registered_controllers_0_to_31_are_zero_extended`;
-//! - registered data always zero-extended -> `other_controllers_are_scaled_min_center_max`;
-//! - state keyed by channel only -> `groups_keep_their_own_runs`;
-//! - every output on group 1, as the old translator did -> `the_group_and_channel_are_kept`,
-//!   `groups_keep_their_own_runs`;
-//! - a Program Change leaves `bank_set` -> `bank_select_rides_on_the_next_program_change_only`;
-//! - Data Entry with nothing selected sent as a Control Change ->
-//!   `data_entry_with_nothing_selected_is_dropped`;
-//! - the Reset All Controllers arm removed -> `reset_all_controllers_nulls_the_selection`.
-//!
 //! `midi_2_packets_pass_through_unchanged` has no line here: the translator
 //! has no MIDI 2.0 path to break (it decodes a MIDI 1.0 voice message or
 //! returns the packet), so the test pins that a fold is never added.

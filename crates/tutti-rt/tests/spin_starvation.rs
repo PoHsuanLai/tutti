@@ -248,13 +248,6 @@ fn same_core_caller_and_helper() {
     // The fix's property: at equal FIFO priority on one core, the caller's
     // yield lets the helper finish, so no block needs the watchdog; and at
     // least one run exercised the wait, so the property was tested.
-    //
-    // Mutation: make the caller never yield (`SpinThenYield::wait` spins
-    // only) → every exercised FIFO/FIFO run is aborted at 2 s → fails (run:
-    // 4/5 aborted at ≈ 2.0 s, the fifth not exercised). Mutation:
-    // drop the helper's mid-task sleep → an equal-priority FIFO caller cannot
-    // run until the helper has finished the task → no run is exercised →
-    // fails (run: 5/5 not exercised, waits 113–200 ns).
     if !fifo_equal.is_empty() {
         assert!(
             fifo_equal.iter().all(|o| !o.aborted),

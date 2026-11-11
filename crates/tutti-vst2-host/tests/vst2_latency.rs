@@ -111,9 +111,6 @@ impl Drop for Probe {
 /// pre-`effOpen` snapshot — so a plugin declaring here reported 0, and PDC
 /// compensated nothing for exactly the plugins that need it. The wiring now
 /// reads the `AEffect` when asked.
-///
-/// Mutation (run): `Vst2Loaded::latency_samples` reading `get_info()
-/// .initial_delay` (the snapshot) -> 0 -> fails.
 #[test]
 fn latency_declared_after_construction_reaches_the_metadata() {
     let probe = Probe::acquire();

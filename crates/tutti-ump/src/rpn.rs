@@ -69,8 +69,6 @@ mod tests {
 
     /// Each constant against the number the spec gives it, in one table
     /// (M2-104 sections 7.4.7 and 7.4.13.1: bank, index).
-    ///
-    /// Mutation: change `MPE_CONFIGURATION` to index 7 and the row fails.
     #[test]
     fn the_named_addresses_are_the_specs_numbers() {
         let table = [

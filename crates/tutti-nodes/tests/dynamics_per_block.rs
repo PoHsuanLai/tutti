@@ -177,11 +177,6 @@ fn print_goldens() {
 /// per-block read and the per-sample read coincide, and the table was
 /// captured from 64-frame blocks, so agreement also shows block rendering
 /// and frame-at-a-time rendering match.
-///
-/// Mutation (each tried): dropping the `* gain` for every channel but 0 in the
-/// planar apply loop fails `comp_stereo`; ignoring the threshold port in favour
-/// of the block's atomic fails `comp_stereo_port`, and the same in the gate
-/// fails `gate_stereo_port`.
 #[test]
 fn renders_match_the_per_sample_goldens() {
     let goldens: &[(&str, &[f32])] = GOLDENS;
@@ -209,9 +204,6 @@ fn run_block(node: &mut dyn Node, input: &[Vec<f32>]) -> Vec<f32> {
 /// A makeup change between blocks is picked up by the next block and ramps
 /// across it: the first frame is still near the old gain, the last frame is
 /// exactly where a node that always had the new makeup sits.
-///
-/// Mutation: making `ramp_db` return the end value at every frame (no ramp)
-/// fails the "first frame near the old gain" assertion.
 #[test]
 fn a_makeup_change_ramps_across_the_next_block() {
     let input = steady_block(1);
@@ -259,9 +251,6 @@ fn a_makeup_change_ramps_across_the_next_block() {
 /// the same statement seen from the writer, and its observable half is here
 /// and in the ramp tests — identical output up to the write, a changed next
 /// block, and (for makeup/range) a first frame still at the old value.
-///
-/// Mutation: pinning the block's threshold to the constructed -24 dB (a value
-/// cached rather than re-read) fails the "next block must see it" assertion.
 #[test]
 fn a_threshold_change_takes_effect_on_the_next_block() {
     let input = steady_block(2);
@@ -287,9 +276,6 @@ fn a_threshold_change_takes_effect_on_the_next_block() {
 
 /// The gate's range is ramped like the compressor's makeup: it multiplies the
 /// output directly, so a per-block step would click.
-///
-/// Mutation: making `ramp_db` return the end value at every frame fails the
-/// first-frame assertion.
 #[test]
 fn a_gate_range_change_ramps_across_the_next_block() {
     // A closed gate: a silent sidechain, so the output sits at the range floor.

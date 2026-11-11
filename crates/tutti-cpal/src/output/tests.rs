@@ -138,11 +138,6 @@ fn driver_over(engine: AudioEngine) -> crate::TuttiDriver {
 /// the open recorded, `Ok(None)` a driver the caller supplied (no device, by
 /// design), `Err` a device the host could not name. A start on a supplied
 /// driver ends in `Ok(None)`.
-///
-/// Mutations (run): `opened_name` mapping `Unnamed` to `Ok(None)` fails the
-/// `Err` assertion; mapping `Supplied` to `Err` fails the first assertion;
-/// `set_opened(Supplied)` left out of `TuttiDriver::restart_on` fails the
-/// last.
 #[test]
 fn the_opened_name_tells_a_supplied_driver_from_an_unnamed_device() {
     let mut engine = AudioEngine::from_spec(manual_spec());
@@ -164,9 +159,6 @@ fn the_opened_name_tells_a_supplied_driver_from_an_unnamed_device() {
 /// **A restart that fails leaves the name of the device still open.** The
 /// hook refuses after the new spec is in, before any stream starts; the name
 /// is recorded only once the stream runs.
-///
-/// Mutation (run): `set_opened` moved ahead of `rerate_or_restore` in
-/// `TuttiDriver::restart_on` makes the name `None` and fails this.
 #[test]
 fn a_failed_restart_keeps_the_opened_name() {
     let mut engine = AudioEngine::from_spec(manual_spec());
@@ -189,10 +181,6 @@ fn a_failed_restart_keeps_the_opened_name() {
 /// (`start` resolves a real device first, so it needs hardware; its guard is
 /// the same `is_running` check, ahead of any device call). After `stop` a
 /// start succeeds again.
-///
-/// Mutation (run): `start_with` returning `Ok(())` for a running engine →
-/// the `expect_err` fails; dropping the guard → the second driver opens
-/// (`second.is_open()`) and replaces the first.
 #[test]
 fn starting_a_running_engine_is_an_error() {
     let (_transport, state) = build_callback_state(44_100.0);

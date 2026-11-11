@@ -21,10 +21,6 @@ use tutti_types::SampleRate;
 /// main thread runs the session's update.** The answers are real: the state
 /// equals one saved on the main thread, and the parameter is the value written
 /// first.
-///
-/// Mutation (run): the `run_deferred` call removed from `Phase::Collect` in
-/// `Session::run_phase` -> the pool thread's calls wait out the deadline ->
-/// `Err(Unavailable)` and `None` -> fails.
 #[test]
 fn a_pool_thread_is_answered_while_the_main_thread_updates_the_session() {
     let main = MainThread::claim().expect("one test, one process");

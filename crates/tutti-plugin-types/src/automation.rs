@@ -701,9 +701,6 @@ mod serde_tests {
     ///
     /// Such ids are routine (plugins often hash a name into one) and are what a
     /// signed index could not carry.
-    ///
-    /// Mutation (run): `ParamId::get` masking the top bit -> the id read back
-    /// is another number, `queue(high)` finds nothing -> fails.
     #[test]
     fn an_id_above_i32_max_survives_the_wire() {
         let high = ParamId::new(0xF000_000A);
@@ -742,9 +739,6 @@ mod serde_tests {
     /// The expected bytes are the layout itself, written out, rather than a
     /// second container's encoding: every serde sequence encodes so, which is
     /// the property an older peer depends on.
-    ///
-    /// Mutation (run): `spare` serialized (no `serde(skip)`) → the bytes gain
-    /// the spares → fails.
     #[test]
     fn more_than_sixteen_queues_cross_the_wire_unchanged() {
         fn seq(len: usize, items: impl IntoIterator<Item = Vec<u8>>) -> Vec<u8> {
@@ -799,9 +793,6 @@ mod serde_tests {
     /// each queue's address and points), byte for byte the layout an
     /// unpooled set has, and decode to the same per-parameter, time-ordered
     /// points. The pool and the floors are not on the wire.
-    ///
-    /// Mutation (run): the pool serialized (no `serde(skip)` on `pool`) →
-    /// the bytes gain the spent pool's blocks → fails.
     #[test]
     fn a_pooled_set_crosses_the_wire_as_its_queues() {
         fn seq(len: usize, items: impl IntoIterator<Item = Vec<u8>>) -> Vec<u8> {
@@ -862,11 +853,6 @@ mod reserved_tests {
     /// block: what keeps a producer filling forty points a queue off the
     /// allocator. The heap pointer of each queue's points is the witness
     /// that the storage is the same allocation, never freed and rebuilt.
-    ///
-    /// Mutations (run), each fails: `clear` dropping the queues instead of
-    /// keeping them (the spare-room check `false`) → the second block's
-    /// queues have no room; `open_queue` ignoring the spares
-    /// (always `ParameterQueue::new`) → the same.
     #[test]
     fn a_reserved_set_keeps_its_point_storage_across_blocks() {
         let mut changes = ParameterChanges::reserved(3, 40);
@@ -911,10 +897,6 @@ mod reserved_tests {
     /// back last-first, so the unreserved queue filled the spares' last free
     /// place and a reserved queue was dropped, and every later chunk had a
     /// queue with no room among its 40-point ones.
-    ///
-    /// Mutation (run): `clear` without its `truncate` (every queue pushed
-    /// back to the spares, the unreserved one last, so opened first) → the
-    /// first queue opened has no room → fails.
     #[test]
     fn clear_keeps_the_reserved_queues_over_an_unreserved_one() {
         let mut changes = ParameterChanges::reserved(4, 40);
@@ -941,10 +923,6 @@ mod reserved_tests {
     /// changes point by point (a host draining a plugin's output list) into a
     /// reserved set it clears each block reuses the same point storage and
     /// never allocates. The heap pointers are the witness, as above.
-    ///
-    /// Mutation (run): `add_change` building `ParameterQueue::new` instead of
-    /// taking a spare → the queues have no reserved room and new storage
-    /// each block → fails.
     #[test]
     fn add_change_reuses_the_spare_queues() {
         let mut changes = ParameterChanges::reserved(2, 16);
@@ -987,11 +965,6 @@ mod pool_tests {
     /// it saves more is pooled (1 000 queues of 40). (Reworded with the one
     /// layout: the plain layout's floor was `FLOOR_POINTS` and its blocks
     /// `room`, under a quarter.)
-    ///
-    /// Mutations (run), each fails: `point_layout` always `(full, 0)`
-    /// (every queue at full room, the old layout) → the storage is `queues ×
-    /// (room + 1)`; `point_layout` pooling at any saving (`pooled < full`, as
-    /// it first did) → 300 queues of 40 are pooled.
     #[test]
     fn a_reserved_set_holds_its_budget_not_params_times_room() {
         for params in [2_000usize, 16_384] {
@@ -1035,11 +1008,6 @@ mod pool_tests {
     /// the blocks go back to the pool on `clear` (the same storage, by heap
     /// pointer), so the next block, with a different `POOLED_QUEUES` queues
     /// moving, has them all again.
-    ///
-    /// Mutations (run), each fails: `clear` not giving the blocks back (the
-    /// return skipped) → the second block's moving queues find the pool
-    /// spent; `make_room` growing past an empty pool (`true` with no block)
-    /// → the 257th moving queue takes a third point.
     #[test]
     fn pooled_queues_reach_full_room_and_one_past_is_refused() {
         const QUEUES: usize = 1_000;
@@ -1096,13 +1064,6 @@ mod pool_tests {
     /// pool ends on its latest value, and two points are counted. The empty
     /// set ([`ParameterChanges::new`]) stores nothing and counts each point.
     /// (Reworded with `PointBuf`: the empty set grew, uncounted, before.)
-    ///
-    /// Mutations (run), each fails: `push_point` pushing whatever
-    /// `make_room` says (`try_push` on no room, so the point is dropped
-    /// rather than kept as the latest) → the parameter past the pool ends on
-    /// its second point; the replacement not counted → `points_overflowed`
-    /// is 1; an address past the queues opened anyway (`open_queue` without
-    /// its room check) → a 1 001st queue, and nothing counted for it.
     #[test]
     fn add_change_on_a_reserved_set_never_grows_and_counts() {
         const QUEUES: usize = 1_000;
@@ -1162,10 +1123,6 @@ mod pool_tests {
     /// and the larger storage stays with the queue, in the spares.
     /// (Reworded with `PointBuf`: the large queue was a floor grown by the
     /// bridge's prepend, which can no longer grow.)
-    ///
-    /// Mutation (run): `clear` deciding which queues hold a block by their
-    /// capacity (`capacity >= block_room`, as it first did) → the large
-    /// queue's storage goes into the pool in place of a block → fails.
     #[test]
     fn clear_gives_back_exactly_the_blocks_it_lent() {
         const QUEUES: usize = 1_000;
@@ -1225,11 +1182,6 @@ mod pool_tests {
     /// Its points moved into the block, and the floor storage it gets back
     /// on `clear` must not still hold them, or the next chunk would send
     /// last chunk's points ahead of its own.
-    ///
-    /// Mutation (run): `clear` not emptying the queues it puts back (no
-    /// `queue.points.clear()`, so a floor swapped back keeps the points the
-    /// queue held before it took its block) → the reopened queues hold stale
-    /// points → fails.
     #[test]
     fn a_queue_that_held_a_block_starts_empty_when_reopened() {
         let mut changes = ParameterChanges::reserved(1_000, 30);
@@ -1259,11 +1211,6 @@ mod carried_tests {
     /// floor of `FLOOR_POINTS + 1` and blocks of `room + 1` when pooled,
     /// every queue at `room + 1` when not); a producer fills a queue of a
     /// plain set to `room + 1` and one of a bridged set to `room`.
-    ///
-    /// Mutations (run), each fails: `reserved` without the extra floor
-    /// point (`FLOOR_POINTS`, not `FLOOR_POINTS + 1`) → the storage is
-    /// `queues` short; `make_room` ignoring the carry slot → a bridged queue
-    /// takes `room + 1`.
     #[test]
     fn every_set_holds_the_one_budget_and_a_bridged_one_keeps_a_slot() {
         for (queues, room) in [(2_000usize, 20usize), (16_384, 132), (10, 40)] {
@@ -1294,17 +1241,10 @@ mod carried_tests {
     /// `reserved_bridged`: every queue filled to its floor, the last
     /// `POOLED_QUEUES` (so the floor queues before them had every chance to
     /// take a block) through `push_point` until `make_room` refuses, which
-    /// is at the room. (Reworded: the fill stopped at the room whatever
-    /// `make_room` said, so the carry-slot mutation below survived it.) Then a carried value goes ahead of every queue,
+    /// is at the room.
+    /// Then a carried value goes ahead of every queue,
     /// inside the no-alloc gate: each lands first, on frame 0, nothing is
     /// counted, and the storage is the reservation's.
-    ///
-    /// Mutations (run), each fails: `reserved_bridged` without the carry slot
-    /// (`carry_slot: 0`) → the producers fill the slot, and the queues have
-    /// none left for the carried value, counted; `prepend_carried` appending
-    /// (`try_push`) rather than inserting at the front → the carried value
-    /// is not first. (Reworded with the one layout: a third mutation, the
-    /// plain layout, no longer exists.)
     #[test]
     fn a_carried_value_takes_a_real_slot_at_the_pool_budget_without_allocating() {
         const PARAMS: usize = 2_000;
@@ -1359,9 +1299,6 @@ mod carried_tests {
     /// dropped and counted the same way. (Reworded with the one layout: a
     /// full queue fell back to the full-queue policy, which never took a
     /// carried value, always the earliest.)
-    ///
-    /// Mutation (run): `prepend_carried` not counting the miss → the count
-    /// is 0 → fails.
     #[test]
     fn a_carried_value_with_no_slot_is_dropped_counted() {
         let mut changes = ParameterChanges::reserved(1, 2);

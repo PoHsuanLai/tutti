@@ -703,9 +703,6 @@ mod tests {
 
     /// The FDN's declared cadence is its chunk clock, so it names the
     /// `BlockIndependent` group.
-    ///
-    /// Mutation (run): `CADENCE = Cadence::BLOCK` fails this and
-    /// `realization_contract_cadence`.
     #[test]
     fn the_fdn_declares_its_stream_grid() {
         assert_eq!(
@@ -851,8 +848,6 @@ mod tests {
 
     /// No hook of the FDN is vacuous: every case that Freeverb leaves empty has
     /// something to run here, so a case that stops running fails this test.
-    ///
-    /// Mutation (run): returning no pairs from `width_pairs` fails it.
     #[test]
     fn no_hook_of_the_fdn_is_vacuous() {
         let d = freezable();
@@ -881,9 +876,6 @@ mod tests {
     /// says so), full is the Householder matrix, and between is a unit vector
     /// that leans from one axis toward the flat vector, so the loop is
     /// orthogonal at every setting.
-    ///
-    /// Mutations (run): skipping the normalisation fails the unit-length
-    /// assertion; `diffusion <= 0.0` written `< 0.0` fails the first row.
     #[test]
     fn diffusion_is_the_reflection_vector() {
         let d = freezable();
@@ -915,9 +907,6 @@ mod tests {
     /// A freeze holds every gain at exactly one, shuts the input, stops the
     /// modulation and makes the network lossless with an unbounded tail; a
     /// design that is not freezable ignores it.
-    ///
-    /// Mutations (run): leaving the input open fails the input assertion;
-    /// `self.freezable && c.freeze` written `c.freeze` fails the last one.
     #[test]
     fn a_freeze_is_lossless_and_takes_no_input() {
         let (d, plain) = (freezable(), FdnDesign::default());
@@ -940,8 +929,6 @@ mod tests {
     /// Lengths are whole frames, grow with the size and scale with the rate, so
     /// a settled network delays by whole frames and a frozen one reads no
     /// fraction.
-    ///
-    /// Mutation (run): dropping the `round` fails the whole-frame assertion.
     #[test]
     fn lengths_are_whole_frames_that_grow_with_size_and_rate() {
         let d = FdnDesign::default();
@@ -961,8 +948,6 @@ mod tests {
     }
 
     /// The configuration refuses what the network cannot hold.
-    ///
-    /// Mutation (run): dropping the evenness test accepts 7 lines.
     #[test]
     fn a_configuration_refuses_what_it_cannot_hold() {
         let ok = Seconds(8.0);
@@ -984,11 +969,6 @@ mod tests {
     /// `wet * sum_j c_j b_j / (1 - g_j)`, with `g_j` the line's DC loop gain. A
     /// sign on one line's loop would make its term `c b / (1 + g)`, a small
     /// fraction of the figure at a long decay.
-    ///
-    /// Mutation (run): in `FdnKernel::retarget` aim `mix` at 1 for every matrix,
-    /// so a diagonal network is the reflection `I - 2 e0 e0^T` along line 0 (the
-    /// kernel's old realization of it, a sign on line 0's loop): this test and the
-    /// `response` case at diffusion 0 both fail.
     #[test]
     fn a_diagonal_network_is_the_identity_a_comb_a_line_with_a_positive_sign() {
         use crate::{Effect, Realization, Setup};
@@ -1049,9 +1029,6 @@ mod tests {
     /// ramp agrees to 0.01 dB. (The output's level would not do: it is the
     /// lines' energy over their lengths, and mixing moves energy between lines of
     /// different length.)
-    ///
-    /// Mutation (run): dropping the per-chunk renormalisation in
-    /// `FdnKernel::begin_chunk` loses 0.25 dB and fails.
     #[test]
     fn a_diffusion_ramp_keeps_a_frozen_tails_energy() {
         use crate::{Effect, Realization, Setup};
@@ -1103,8 +1080,6 @@ mod tests {
     /// reflection vector (applied every frame by `rt60_bound`) is a larger share
     /// of a frame's decay: the margin is computed from the rate and the longest
     /// decay, not a flat figure.
-    ///
-    /// Mutation (run): a margin of 1 fails at some diffusion below.
     #[test]
     fn the_bounds_dominate_where_rounding_matters() {
         let d = FdnDesign::default();

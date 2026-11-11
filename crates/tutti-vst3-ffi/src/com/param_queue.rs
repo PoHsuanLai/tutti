@@ -257,9 +257,6 @@ mod tests {
     use super::*;
 
     /// Plugin threads reading a queue at once all get it.
-    ///
-    /// Mutation (run): `AudioThreadCell::try_acquire_reader` exclusive → the
-    /// COM reads answer 0 / `kResultFalse` → fails.
     #[test]
     fn concurrent_reads_of_a_queue_both_succeed() {
         use std::sync::Barrier;
@@ -290,10 +287,6 @@ mod tests {
 
     /// A read while the queue is being written answers with the method's
     /// failure value instead of panicking into the plugin.
-    ///
-    /// Mutation (run): `getPoint` back on a panicking `borrow` → the panic
-    /// cannot unwind out of the COM thunk, and the test process aborts
-    /// (SIGABRT): the plugin-server crash this guards against.
     #[test]
     fn a_read_during_a_write_fails_at_the_com_level() {
         let queue = ParamValueQueueImpl::with_room(9, MIN_POINT_ROOM);
@@ -364,9 +357,6 @@ mod tests {
     /// queue's room is a chunk's (`ParameterQueue::chunk_room`, past 256 at
     /// every chunk size), and std's stable sort allocates its scratch past
     /// 256 points. Two interleaved runs, each in order.
-    ///
-    /// Mutation (run): the sort back to `points.sort_by_key(|p|
-    /// p.sample_offset)` aborts in the gate.
     #[test]
     fn refilling_an_unsorted_queue_past_256_points_does_not_allocate() {
         const RUN: i32 = 150;
@@ -450,10 +440,6 @@ mod tests {
     /// built for 32 points takes 32 without allocating, block after block,
     /// and a 33rd keeps the queue's latest value, the point left out
     /// returned for counting, still without allocating.
-    ///
-    /// Mutation (run): `refill_from_queue` with `try_push` (dropping past
-    /// the room) rather than `push_or_replace_last` → the queue ends on
-    /// frame 31, not 32 → fails.
     #[test]
     fn refill_from_queue_holds_its_room_and_never_grows() {
         let queue = ParamValueQueueImpl::with_room(0, 32);
@@ -479,12 +465,6 @@ mod tests {
     /// replaces its latest: `kResultOk` with the replaced slot's index, the
     /// lost point counted. An earlier point is dropped: `kResultFalse`,
     /// `index` untouched, counted. All inside the no-alloc gate.
-    ///
-    /// Mutations (run), each fails: `addPoint` dropping the point past the
-    /// room (no `replace_latest`) → the queue ends on its earlier value; the
-    /// miss not counted → `points_dropped` is 0; the replacement answered
-    /// `kResultFalse` (as it was) → the second result is wrong; the
-    /// replacement's index not written → `at` is still -1.
     #[test]
     fn add_point_past_the_room_keeps_the_latest_counted() {
         use vst3::Steinberg::Vst::IParamValueQueueTrait;

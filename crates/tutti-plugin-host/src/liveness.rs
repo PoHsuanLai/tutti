@@ -141,9 +141,6 @@ mod tests {
 
     /// The third consecutive unhealthy observation is a death once the run
     /// spans the window: at 0, 25 and 50 ms, the third is `Dead`.
-    ///
-    /// Mutation: `DEATHS` 4 (the third reads `Failing { 3 }`, failed);
-    /// comparing the span with `>` (50 ms is not past 50 ms, failed).
     #[test]
     fn the_third_unhealthy_observation_spanning_the_window_is_dead() {
         let t0 = Instant::now();
@@ -160,9 +157,6 @@ mod tests {
     /// Three unhealthy observations a microsecond apart are not a death: the
     /// count is reached, the window is not. A fourth once the window has
     /// passed is.
-    ///
-    /// Mutation: dropping the window test from `observe` (the third reads
-    /// `Dead`, failed).
     #[test]
     fn three_observations_a_microsecond_apart_are_not_dead() {
         let us = Duration::from_micros(1);
@@ -183,9 +177,6 @@ mod tests {
 
     /// Past the window, the count still holds: two unhealthy observations a
     /// second apart are not a death.
-    ///
-    /// Mutation: dropping the count test from `observe` (the second reads
-    /// `Dead`, failed).
     #[test]
     fn two_observations_past_the_window_are_not_dead() {
         let t0 = Instant::now();
@@ -200,11 +191,6 @@ mod tests {
     /// A healthy observation resets both the count and the window: after it,
     /// a new run needs three observations again, and the window counts from
     /// the new run's first.
-    ///
-    /// Mutations (each run, each failed): keeping the count across a healthy
-    /// observation (the run after it reads `Failing { 3 }` at its first);
-    /// keeping the run's start across it (the new run's third, 50 ms after
-    /// the old run began but 2 ms after its own, reads `Dead`).
     #[test]
     fn a_healthy_observation_resets_the_count_and_the_window() {
         let t0 = Instant::now();
@@ -232,9 +218,6 @@ mod tests {
 
     /// A death is latched: a healthy observation after it does not revive the
     /// plugin.
-    ///
-    /// Mutation: letting a healthy observation clear `dead` (the last reads
-    /// `Healthy`, failed).
     #[test]
     fn a_death_is_latched() {
         let t0 = Instant::now();
@@ -247,9 +230,6 @@ mod tests {
     }
 
     /// A plugin observed healthy is never written off, however long.
-    ///
-    /// Mutation: `observe` ignoring `healthy` (the first reads `Failing`,
-    /// failed).
     #[test]
     fn a_healthy_plugin_is_never_dead() {
         let t0 = Instant::now();

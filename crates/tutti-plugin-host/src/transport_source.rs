@@ -760,12 +760,6 @@ mod tests {
     /// advanced to a later frame at the tempo. The continuous counter is the
     /// node's own [`SteadyTime`], not `Env`'s frame (which a re-prepare starts
     /// over).
-    ///
-    /// Mutation: read `cx.env.transport` instead of `cx.transport_at(offset)`
-    /// in `Snapshot::at` → the beat at offset 24 stays 2.0 → fails. Mutation:
-    /// `continuous: env.frame_at(offset)` → the counter is 1024, not the
-    /// node's 7 024 → fails. Mutation: drop `.with_recording` in
-    /// `transport_info` → fails.
     #[test]
     fn the_snapshot_is_env_at_the_frame() {
         let t = Transport::new(true, Bpm::of(120.0), Beat(2.0), None).with_recording(true);
@@ -810,9 +804,6 @@ mod tests {
     /// A seek and a tempo change inside the block, and a loop wrap: the
     /// snapshot follows each at its frame, exactly as `Env::transport_at`
     /// reports it.
-    ///
-    /// Mutation: ignore `env.changes` (use the block's transport throughout)
-    /// → the post-seek snapshot reads the pre-seek beat → fails.
     #[test]
     fn a_seek_a_tempo_change_and_a_loop_wrap_inside_the_block_are_followed() {
         let looping = Some(LoopRange {
@@ -902,9 +893,6 @@ mod tests {
     /// Behind a latent path the snapshot is the transport the node's input
     /// was rendered at: `arrival` frames earlier, in an earlier block, before
     /// the seek this block starts with — not the block's own playhead.
-    ///
-    /// Mutation: read `cx.env.transport_at(offset)` in `Snapshot::at` → the
-    /// snapshot reads the post-seek beat 32 → fails.
     #[test]
     fn behind_a_latent_path_the_snapshot_is_the_inputs_transport() {
         let meter = MeterMap::default();
@@ -947,8 +935,6 @@ mod tests {
 
     /// The signature and bar fields come from the meter map. Left at their
     /// defaults, every hosted plugin is told the song is 4/4 at bar 0.
-    ///
-    /// Mutation: `with_bar(0.0, BarNumber(0))` → fails.
     #[test]
     fn the_snapshot_carries_the_meter_and_bar() {
         let seven_eight = TimeSignature::new(BeatsPerBar::of(7), NoteValue::EIGHTH);
@@ -1037,9 +1023,6 @@ mod tests {
     /// A chunk that starts on a step reports the step's own tempo: the map's
     /// instantaneous tempo at the chunk's beat, not the transport's (the
     /// engine's chord, 120 here), and no slope across a step.
-    ///
-    /// Mutation: keep `t.tempo` in `Snapshot::follow` (drop the
-    /// `tempo_at_with` line) -> the chunk at beat 4 reads 120 -> fails.
     #[test]
     fn a_chunk_on_a_step_is_told_the_steps_own_tempo() {
         let map = step_map();
@@ -1054,11 +1037,6 @@ mod tests {
     /// Inside a `RampTime` ramp the chunk is told the curve's instantaneous
     /// tempo at its start beat and the analytic slope, whatever the chunk's
     /// length (tempo is linear in time).
-    ///
-    /// Mutation: leave `tempo_inc` at 0.0 in `follow` -> fails. Mutation:
-    /// divide by `chunk + 1` -> the slope is off by 1/65 -> fails. Mutation:
-    /// `frames / (rate * 2.0)` in `t1` (the chunk's end at half its time) ->
-    /// the tempo gained is halved -> fails.
     #[test]
     fn a_chunk_in_a_ramp_is_told_the_curve_and_its_slope() {
         let map = ramp_map();
@@ -1084,12 +1062,6 @@ mod tests {
     /// not the change of tempo from the stretch's start to the tempo one
     /// stretch later, which past a point reads the next segment. A chunk that
     /// *starts* on a point has the point's segment's slope.
-    ///
-    /// Mutation: in `slope`, take `(tempo_at_seconds(t1) - tempo) / frames`
-    /// for the stretch (the 5a rule without its zero) -> the stretch reaching
-    /// beat 4 from 3.99 reads the next segment's falling tempo -> fails.
-    /// Mutation: return `0.0` when a point lies in the stretch (the 5a zero)
-    /// -> the stretch reaching beat 4 is told none -> fails.
     #[test]
     fn a_stretch_with_a_point_inside_is_told_its_segments_slope() {
         let map = TempoMap::new([
@@ -1121,9 +1093,6 @@ mod tests {
 
     /// A stopped transport has no slope, though the map has one at its
     /// playhead; the tempo is still the map's.
-    ///
-    /// Mutation: drop `!self.playing` from the early return -> the stopped
-    /// chunk is told the ramp's slope -> fails.
     #[test]
     fn a_stopped_transport_is_told_no_slope() {
         let stopped = Transport::new(false, Bpm::of(120.0), Beat(1.8), None);
@@ -1135,9 +1104,6 @@ mod tests {
     /// A chunk that crosses the loop's end is told no slope: the beat jumps
     /// back, so the ramp ahead is not what the plugin plays. One that stays
     /// inside the loop keeps it.
-    ///
-    /// Mutation: drop the `self.looping` check -> the crossing chunk is told
-    /// the slope -> fails.
     #[test]
     fn a_chunk_crossing_the_loop_end_is_told_no_slope() {
         let looped = |end: f64| {
@@ -1159,8 +1125,6 @@ mod tests {
     }
 
     /// A constant map is its tempo and no slope.
-    ///
-    /// Mutation: add `+ 1.0` to the slope in `follow` -> fails.
     #[test]
     fn a_constant_map_is_its_tempo_and_no_slope() {
         let got = told(&constant(97.0), rolling(2.0), 64);
@@ -1326,13 +1290,6 @@ mod tests {
     /// rises by exactly the frames rendered, and CLAP's seconds are the
     /// same time. Re-derived from the beat at the new tempo, frame 32 would
     /// jump back to 2 380 197.
-    ///
-    /// Mutation: always re-seat (`continued` ignored in `ProjectTime::at`)
-    /// → the reads leave the frames rendered (frame 32 reads 2 380 197) →
-    /// fails. Mutation (run): a new segment at another tempo re-seats (the
-    /// tempo change's branch of `played_between` returns `None`) → frame 32
-    /// reads 2 380 197 → fails. Mutation: seconds from `beats · 60 / tempo`
-    /// again → frame 32's seconds are 49.587 → fails.
     #[test]
     fn project_time_rolls_through_a_tempo_change() {
         let meter = MeterMap::default();
@@ -1356,15 +1313,6 @@ mod tests {
     /// the transport stood continues it. At 120 BPM and 48 kHz a beat is
     /// 24 000 frames; at 90 BPM, 32 000. Without a usable tempo there is
     /// none.
-    ///
-    /// Mutation (run): continue through a new segment at the same tempo
-    /// (`played_between`'s last branch returning the new segment's frames)
-    /// → the seek to beat 3 while stopped holds 512 023 → fails. Mutation
-    /// (run): the same segment counts the whole gap → the wrap reads 96 032
-    /// → fails. Mutation: drop `.with_position_samples` in
-    /// `transport_info` → `None` → fails. Mutation (run): re-seat a start
-    /// where it stood (the tempo change's branch returning `None`) → the
-    /// start at beat 3 reads 144 000 → fails.
     #[test]
     fn a_seek_a_loop_wrap_and_a_start_elsewhere_re_seat_project_time() {
         let mut h = Host::new(true, 120.0, 4.0);
@@ -1425,13 +1373,6 @@ mod tests {
     /// start (frame 264) land between two reads. Before the start the tempo
     /// changes to 90 BPM while stopped (frame 260), so a re-seat there would
     /// read 50 · 32 000 = 1 600 000.
-    ///
-    /// Mutation (run): the same segment re-seats (its branch of
-    /// `played_between` returns `None`) → frame 80 reads 2 380 237 → fails.
-    /// Mutation (run): the same segment counts the whole gap instead of the
-    /// frame counts' difference → frame 80 reads 2 400 080 → fails.
-    /// Mutation (run): the tempo change's branch leaves out the new
-    /// segment's frames → frame 272 reads the seat, not seat + 8 → fails.
     #[test]
     fn a_stop_holds_project_time_and_a_seek_while_stopped_re_seats_it() {
         let (first, mut h) = after_a_tempo_change();
@@ -1486,9 +1427,6 @@ mod tests {
     /// playing) count the 8 + 24 frames played, 2 400 096 at frame 128; a
     /// start at frame 200 and a stop at frame 232 (both reads stopped)
     /// count the 32 played between them.
-    ///
-    /// Mutation (run): the same segment re-seats → frame 128 re-seats to
-    /// 2 380 261, and every later read re-seats → fails.
     #[test]
     fn a_stop_and_a_start_inside_one_chunk_keep_project_time() {
         let (first, mut h) = after_a_tempo_change();
@@ -1511,10 +1449,6 @@ mod tests {
     /// starts again at frame 104, so the read at frame 128 is 2 400 064 +
     /// 8 + 24. A block that plays 16 frames at 60.5, doubles the tempo to
     /// 121 and plays 48 more counts 64.
-    ///
-    /// Mutation (run): count the frames before the new segment at its tempo
-    /// instead of the earlier read's → frame 128 reads 2 400 104, not
-    /// 2 400 096 → fails.
     #[test]
     fn a_tempo_change_between_two_reads_is_counted_exactly() {
         let (first, mut h) = after_a_tempo_change();
@@ -1539,10 +1473,6 @@ mod tests {
     /// more than the gap leaves, so the count is capped there: 64 frames
     /// played, where a re-seat would jump about 7 s back (2 057 203 at the
     /// second read).
-    ///
-    /// Mutation (run): drop the cap (the count before the new segment at
-    /// `from`'s tempo only) → the second read is 65 frames past a gap of 64
-    /// and re-seats to 2 057 203 → fails.
     #[test]
     fn a_tempo_ramp_that_speeds_up_inside_one_chunk_keeps_project_time() {
         let mut h = Host::new(true, 120.0, 100.0);
@@ -1562,16 +1492,6 @@ mod tests {
     /// to 130 BPM at frame 8. The beats moved take far more frames than
     /// the gap at either tempo, so the next read is the beat's time at
     /// 130 BPM.
-    ///
-    /// Mutation (run): drop the cap on the count (`filter(|&n| n <= gap)`
-    /// in `played_between`) → the seek is counted, 2 488 743 → fails (and
-    /// so does the seek at 90 BPM in
-    /// `a_seek_a_loop_wrap_and_a_start_elsewhere_re_seat_project_time`).
-    ///
-    /// Mutation (run): cap the count before the new segment at the room the
-    /// gap leaves whatever the fewest frames those beats take
-    /// (`frames_at(from.tempo).min(room)`) → the seek is counted as the
-    /// 64-frame gap, 2 400 128 → fails.
     #[test]
     fn a_seek_forward_with_a_tempo_change_inside_one_chunk_re_seats() {
         let (first, mut h) = after_a_tempo_change();
@@ -1588,10 +1508,6 @@ mod tests {
     /// 130 BPM on a segment whose beat is NaN, 64 frames on. No count of
     /// frames played comes from a NaN beat, and its own time is NaN, so
     /// the read is `None`.
-    ///
-    /// Mutation (run): drop the `!beats.is_finite()` return in
-    /// `played_between` → `min` and `max` drop the NaN and the count is the
-    /// room the gap leaves, `Some(2_400_064.0)` → fails.
     #[test]
     fn a_nan_beat_at_a_tempo_change_re_seats() {
         let counted = |bpm: f64, beat: f64, frame: u64| {
@@ -1615,14 +1531,6 @@ mod tests {
     /// them as frames played would carry the 19 803 frames the tempo change
     /// put between project time and the beat's time (at 90 BPM, the
     /// beat's time there).
-    ///
-    /// Mutation (run): ignore the segments (every read through
-    /// `continued_without_origin`) → the backward seek reads 2 400 588 → fails.
-    /// Mutation (run): a new segment at the same tempo counted like a tempo
-    /// change (its frames from the earlier read's beat) → the backward seek
-    /// reads 2 400 588 too → fails. Mutation (run): drop the same tempo
-    /// from the same segment's test → the seek back to the segment's first
-    /// beat at 90 BPM reads 2 401 048, not 3 201 059 → fails.
     #[test]
     fn a_seek_inside_one_chunk_re_seats() {
         let (first, h) = after_a_tempo_change();
@@ -1660,10 +1568,6 @@ mod tests {
     /// the playhead plays on through the old end (2 400 128 at frame 128);
     /// so does one extended there, and one switched off with a stop at frame
     /// 104 (2 400 104).
-    ///
-    /// Mutation (run): judge a loop edit a jump (the same segment's branch
-    /// also requiring an equal loop) → frame 128 re-seats to 2 380 293 →
-    /// fails.
     #[test]
     fn a_loop_edit_keeps_project_time() {
         let (first, mut h) = after_a_tempo_change();
@@ -1687,10 +1591,7 @@ mod tests {
     /// 4 760 586.
     ///
     /// Two rules re-seat it: the rate check in `ProjectTime::at`, and the
-    /// rate change's new segment at the same tempo. Either mutation alone
-    /// survives (run). Mutation (run): drop the rate check and continue
-    /// through a new segment at the same tempo (its new frames, none here)
-    /// → 2 400 064 → fails.
+    /// rate change's new segment at the same tempo. Either alone re-seats it.
     #[test]
     fn a_rate_change_re_seats_project_time() {
         let (first, mut h) = after_a_tempo_change();
@@ -1724,22 +1625,6 @@ mod tests {
     /// Every read goes through `Cx::transport_at`, which walks the block's
     /// transport to the frame: the walk of a bare beat has no origin, so
     /// these reads take the playhead's rule, not `played_between`.
-    ///
-    /// Mutation (run): the walk of a bare beat counted as the host's
-    /// (`Transport::walked_to` keeping `Position::Counted` for every
-    /// position) → each block looks like a new segment at the same tempo,
-    /// and the read playing on re-seats to 238 144 → fails.
-    /// Mutation (run): drop the loop-end check → the stop 20 frames past the
-    /// unchanged loop's end continues to 240 084 → fails. Mutation (run):
-    /// apply it with the loop changed too (drop `from.looping ==
-    /// to.looping`) → the loop switched off re-seats to 238 100 → fails.
-    /// Mutation (run): drop the check's `start < end` clause → the loop
-    /// behind re-seats to 238 100 → fails. Mutation (run): cap at twice the
-    /// gap → 66 continues to 240 130 → fails.
-    /// Mutation (run): `from`'s tempo only when both are stopped → the 40
-    /// at 242 re-seats to 119 080 → fails. Mutation (run): drop
-    /// `p.rate != rate` → the other rate holds 240 064, not 476 160 →
-    /// fails.
     #[test]
     fn a_transport_built_by_hand_is_read_by_the_playheads_rule() {
         let per = |n: f64, bpm: f64| n * bpm / 60.0 / 48_000.0;
@@ -1798,10 +1683,6 @@ mod tests {
     /// **The host clock is the block's reading advanced by the chunk's
     /// frames**, and an offline render (no reading) reports none. 48 frames at
     /// 48 kHz are 1 ms.
-    ///
-    /// Mutation: `HostClock::at` ignores `frames` → the chunk 48 frames in
-    /// reads the block's time → fails. Mutation: `system_time_ns` not passed
-    /// on in `transport_info` → `None` → fails.
     #[test]
     fn the_host_clock_is_the_blocks_reading_at_the_chunks_frame() {
         let meter = MeterMap::default();

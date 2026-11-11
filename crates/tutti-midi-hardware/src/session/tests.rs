@@ -221,10 +221,6 @@ fn the_midi_out_impl_routes_to_the_open_output() {
 ///
 /// Device 2 stays connected throughout, so device 1's slot is an interior
 /// one on every cycle after the first.
-///
-/// Mutation: `OpenInput::close` dropping the connection without
-/// `remove_input_port` (the old behaviour) → every cycle appends a port and
-/// the list is 101 long at the end.
 #[test]
 fn hot_plug_cycles_keep_the_port_set_bounded() {
     let (s, _, opens) = session();
@@ -318,10 +314,6 @@ fn logging_session(refuse: bool) -> (MidiSession, Arc<Mutex<Vec<&'static str>>>)
 
 /// Dropping the session closes its inputs before the backend they were
 /// opened on, and retires their ports from a manager that outlives it.
-///
-/// Mutations: declaring `devices` before `open` in `Inner` → the log reads
-/// `["backend", "connection"]`; `OpenInput::drop` not retiring its port → the
-/// shared manager still lists the session's port.
 #[test]
 fn dropping_the_session_closes_inputs_then_the_backend_and_retires_ports() {
     let (s, log) = logging_session(false);
@@ -338,10 +330,6 @@ fn dropping_the_session_closes_inputs_then_the_backend_and_retires_ports() {
 }
 
 /// An open the backend refuses leaves no port behind.
-///
-/// Mutation: `Devices::open_input` opening the backend connection before it
-/// builds the `OpenInput` that owns the port (an error then returns with the
-/// port still listed) → the manager lists one dead port per failed attempt.
 #[test]
 fn a_refused_open_leaves_no_port() {
     let (s, _log) = logging_session(true);

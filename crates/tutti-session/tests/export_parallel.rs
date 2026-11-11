@@ -157,11 +157,8 @@ fn export_with(workers: usize, stems: &[usize]) -> (Vec<Rendered>, usize) {
 /// The export on four workers is the export on one, to the bit, and it did
 /// run on more than one thread (so the comparison is of a parallel render).
 ///
-/// Mutation (run): `Sum` adding its inputs in reverse index order on the
-/// export's pool threads only (a branch on the thread's name) → the planes
-/// differ → fails. The thread-count assertions are what make the comparison one
-/// of a serial against a parallel render: with no pool, `ran_on` is 1 for
-/// both.
+/// The thread-count assertions are what make the comparison one of a serial against a
+/// parallel render: with no pool, `ran_on` is 1 for both.
 #[test]
 fn a_parallel_export_is_bit_identical_to_the_serial_one() {
     let (serial, serial_threads) = export(1);

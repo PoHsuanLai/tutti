@@ -196,10 +196,6 @@ fn activate(ipc: Ipc, block: usize) -> (IpcProcessor, IpcController) {
 /// was activated for, never past the slab's ceiling. It is what the graph
 /// node cuts a block by, so a Processor that answered the trait's default
 /// (`None`) would be handed whole blocks that span chunks.
-///
-/// Mutation (run): the `chunk` override deleted from `IpcProcessor`'s
-/// `Processor` impl (the trait default `None` applies) -> both assertions
-/// fail.
 #[test]
 fn the_processor_chunk_is_its_configured_chunk() {
     let _machine = machine_lock();
@@ -219,10 +215,6 @@ fn the_processor_chunk_is_its_configured_chunk() {
 /// chunk from the device quantum when there is one (the block otherwise), the
 /// latency it adds is that chunk, and the server is told the rate by a queued
 /// command. Taken off the main thread's proof, which is the point.
-///
-/// Mutation (run): `retune` passing `None` for the quantum to
-/// `Batcher::prepare` -> the chunk is the block -> fails. Mutation (run): the
-/// `set_sample_rate_rt` call dropped -> the server is never told -> fails.
 #[test]
 fn a_processor_follows_the_graphs_rate_block_and_quantum() {
     let _machine = machine_lock();
@@ -249,9 +241,6 @@ fn a_processor_follows_the_graphs_rate_block_and_quantum() {
 /// **Only the two halves of one activation rejoin.** A pair from two
 /// activations is refused with both halves back (`Stuck`); the pair that was
 /// split rejoins, and can be activated again.
-///
-/// Mutation (run): the `Arc::ptr_eq` check removed from `deactivate` -> the
-/// foreign pair rejoins -> fails.
 #[test]
 fn only_the_halves_of_one_activation_rejoin() {
     let _machine = machine_lock();
@@ -275,10 +264,6 @@ fn only_the_halves_of_one_activation_rejoin() {
 /// host that forwarded the bridge's events gets the event too. Parameters and
 /// the descriptor are the bridge's and the loaded plugin's, with no main
 /// thread's work in them.
-///
-/// Mutation (run): `Events::on` not storing the latency -> the figure stays 5
-/// -> fails. Mutation (run): the request not queued -> `take_requests` is
-/// empty -> fails.
 #[test]
 fn the_controller_reports_what_the_plugin_re_reports() {
     let _machine = machine_lock();
@@ -320,9 +305,6 @@ fn the_controller_reports_what_the_plugin_re_reports() {
 
 /// **A served plugin with no origin cannot be reopened, and says so**, through
 /// both the token-free reopen and the trait's.
-///
-/// Mutation (run): `reopen_restoring` building a config from nothing instead
-/// of refusing -> a launch is attempted and fails differently -> fails.
 #[test]
 fn a_plugin_with_no_origin_is_not_reopened() {
     let _machine = machine_lock();

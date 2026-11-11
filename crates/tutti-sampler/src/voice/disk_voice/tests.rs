@@ -64,9 +64,6 @@ fn make_unit(samples: &[(f32, f32)]) -> (DiskSource, Arc<Cells>) {
 /// quarter-tone sharp with its level and waveform intact. Reading by
 /// position has no fetch step to get wrong, but the step is still the one
 /// quantity that decides pitch, so it stays pinned.
-///
-/// Mutation (run, on the free-running read this test was written for): the
-/// position stepped by `n + 4` frames a block -> frame 64 reads 68 -> fails.
 #[test]
 fn process_reads_one_file_frame_per_output_frame_at_unity_rate() {
     const BLOCK: usize = 64;
@@ -125,9 +122,6 @@ fn make_clip_reader_at(
 /// and a re-prepare resizes them (512, then 1024, then 64); a voice
 /// never prepared (one that only plays in a pool) carries none, and
 /// neither does a clone.
-///
-/// Mutation (run): `prepare` not resizing the positions → 0 at 512 →
-/// fails.
 #[test]
 fn a_disk_voice_sizes_its_positions_from_max_block() {
     let mut voice = make_clip_reader(&[(0.0, 0.0); 8], Beat::new(0.0), None);
@@ -148,9 +142,6 @@ fn a_disk_voice_sizes_its_positions_from_max_block() {
 /// other streaming fixture hardcodes 44100 against a default `src_ratio` of
 /// 1.0 — the one value that makes a double-multiply invisible. Observed
 /// where the reader says it plays (`Ring::play`, what the streamer fills).
-///
-/// Mutation (run): the gate's rate composing the conversion
-/// (`window_rate` via `read_rate`) → ~104 490 → fails.
 #[test]
 fn placement_gate_applies_src_ratio_exactly_once() {
     let samples: Vec<_> = (1..64).map(|i| (i as f32, i as f32)).collect();
@@ -198,9 +189,6 @@ fn placement_gate_applies_src_ratio_exactly_once() {
 /// while the transport reports the same beat, at the same tempo, still
 /// rolling. The next block reads where the gate puts the playhead at the
 /// new speed and tells the streamer so (`Ring::play`), which fills there.
-///
-/// Mutation (run): the gate's rate ignoring varispeed → the voice reads
-/// on near 441 000 → fails.
 #[test]
 fn a_varispeed_change_moves_the_read_without_any_beat_discontinuity() {
     let samples: Vec<_> = (1..4096)
@@ -231,8 +219,6 @@ fn a_varispeed_change_moves_the_read_without_any_beat_discontinuity() {
 
 /// A fork past its window closes its file, and one inside it holds it
 /// open: a render of many voices keeps a file open per voice sounding.
-/// Mutation (run): the close removed from `offline_render`'s past-the-window
-/// branch → still open → fails.
 #[test]
 fn a_fork_closes_its_file_once_past_its_window() {
     let dir = tempfile::tempdir().expect("a temp dir");
@@ -282,9 +268,6 @@ fn a_fork_closes_its_file_once_past_its_window() {
 /// move), and the read must not run on as if it still rolled. The
 /// placement is the memory tier's too (`memory_source`'s
 /// `a_stopped_clock_silences_a_placed_read`).
-///
-/// Mutation (run): `place` ignoring `run.rolling()` → the read plays on
-/// through the stop → fails.
 #[test]
 fn a_stopped_clock_silences_a_fork() {
     let dir = tempfile::tempdir().expect("a temp dir");
@@ -339,10 +322,6 @@ fn a_stopped_clock_silences_a_fork() {
 /// Here the live voice claims a block, its source is severed, and it renders
 /// again: the ranges the live block claimed must still stand, and a clone
 /// of it renders nothing into them either.
-///
-/// Mutation (run, on the free-running source this test was written for):
-/// `sever` not letting go of the reader (`read.sever()` removed) -> the
-/// severed source's next block claims a new range -> fails.
 #[test]
 fn a_severed_copy_holds_no_live_reader() {
     let (mut writer, ring, pos) =
@@ -384,15 +363,6 @@ fn a_severed_copy_holds_no_live_reader() {
 /// `tests/offline_disk_voice.rs`'s. The node's fork source forks it for an
 /// offline render and refuses a live one, which would read the file
 /// on the audio thread.
-///
-/// Mutation (run): `fork_copy` keeping the live `shared_state` → the
-/// copy's gain write lands on the live cell → fails. Mutation (run):
-/// `fork_copy` returning the copy on the live path over the live cell
-/// (before it detaches the cell and hands the copy its file) → fails.
-/// Mutation (run): `DiskVoiceFork` not refusing `ForkMode::Live` →
-/// fails. (Not caught: `fork_copy` not severing its source alone — a
-/// clone of a source never holds the live reader, so severing it again
-/// changes nothing; `a_severed_copy_holds_no_live_reader` pins `sever`.)
 #[test]
 fn a_fork_never_touches_the_live_stream() {
     let samples: Vec<_> = (1..4096).map(|i| (i as f32, i as f32)).collect();
@@ -460,9 +430,6 @@ fn clip_reader_silent_outside_window_audible_inside() {
 
 /// A NaN or infinite gain is silence on a disk voice, in a window it plays
 /// (a placed read, inside and outside it): never NaN.
-///
-/// Mutation (run): `audible` returning its gain unguarded -> the placed read
-/// is NaN inside the window and inf * 0.0 = NaN outside it -> fails.
 #[test]
 fn a_non_finite_gain_is_silence_on_a_disk_voice() {
     let samples: Vec<_> = (1..64).map(|i| (i as f32, i as f32)).collect();
@@ -569,11 +536,6 @@ fn clip_reader_jump_edge_is_allocation_free() {
 /// frames at 120 BPM) and the ring's end (the ring holds 2,047 frames), so
 /// the run reaches the steady read, the underrun and the silence past the
 /// window.
-///
-/// Mutations (run): an allocation in `report_underrun`, in `read_ring`'s
-/// success branch, and in `render`'s all-`None` block past the window →
-/// each aborts. (`LiveRead::silence()`, the lanes path, is not reached
-/// through `Direct`.)
 #[test]
 fn clip_reader_single_frame_steady_state_is_allocation_free() {
     let transport = MockTransport::rolling(Beat::new(5.0), Bpm::of(120.0));
@@ -595,8 +557,6 @@ fn clip_reader_single_frame_steady_state_is_allocation_free() {
 /// scratch, a crossfade started), and the jump's per-block work allocates
 /// nothing at the shortest block either. A jump renders its continuation
 /// ([`OLD_FRAMES`] frames), so a few thousand blocks are enough.
-///
-/// Mutation: an allocation in `continue_from` (the jump's copy) → aborts.
 #[test]
 fn clip_reader_single_frame_jump_every_block_is_allocation_free() {
     let transport = MockTransport::rolling(Beat::new(5.0), Bpm::of(120.0));
@@ -614,9 +574,6 @@ fn clip_reader_single_frame_jump_every_block_is_allocation_free() {
 /// blocks of 1 to 512 frames — the longest in one piece through its own
 /// positions — on a transport that moves and winds back inside the
 /// window (a jump, and its crossfade, every few hundred blocks).
-///
-/// Mutation (run): `process` building its positions per block
-/// (`vec![None; frames]`) → aborts.
 #[test]
 fn clip_reader_ragged_blocks_at_max_block_512_are_allocation_free() {
     const RAGGED: [usize; 10] = [1, 37, 100, 511, 512, 64, 200, 129, 3, 65];
@@ -700,12 +657,6 @@ fn wide_expected(width: usize, k: u64, c: usize) -> f32 {
 /// reader's channel and a lane past the reader is silent. Every run is
 /// read along time (`steady_lanes`), and after the first block the read
 /// allocates nothing.
-///
-/// Mutation (run): the lanes cut to the reader's width
-/// (`&mut lanes[..w]`) → the 2-into-1 row panics, out of range.
-/// Mutation (run): `steady_lanes` answering `false` up front → no run
-/// is steady → fails. Mutation (run): `lanes_n` taken as the reader's
-/// width alone → the 2-into-1 row panics.
 #[test]
 fn a_steady_lane_read_writes_the_callers_lanes_as_put_does() {
     const BLOCK: usize = 64;
@@ -878,12 +829,6 @@ fn render_lanes_blocks(voice: &mut DiskVoice, n: usize) -> (Vec<Vec<f32>>, usize
 /// a 10-channel file folded into 8, with no allocation, and neither run is
 /// steady (`steady_lanes` reads whole channels, which only a ring read as it
 /// stands may be).
-///
-/// Mutation (run): `&& place.is_direct()` removed from `steady_lanes`' gate
-/// -> the 7.1 (as wide as the reader) is read along time in the file's order:
-/// its steady runs are 8, not 0, and its rears and sides are exchanged -> fails.
-/// Mutation (run): `read_ring` passing `Place::FAN` -> the 7.1 is in the file's
-/// order and the fold's 10 channels are cut -> fails.
 #[test]
 fn a_placed_ring_is_read_through_its_placement_by_lanes() {
     const BLOCK: usize = 64;
@@ -919,9 +864,6 @@ fn a_placed_ring_is_read_through_its_placement_by_lanes() {
 
 /// A jump inside a placed ring (the old continuation read from the ring, and a
 /// crossfade started) allocates nothing, for a permuted and a folded ring.
-///
-/// Mutation (run): `Place::frame` collecting the fold's source into a `Vec`
-/// -> the 10-channel row allocates in the guarded region and aborts.
 #[test]
 fn a_placed_ring_jump_edge_is_allocation_free() {
     for topology in [wav_seven_one(), named_ten()] {
@@ -944,10 +886,6 @@ fn a_placed_ring_jump_edge_is_allocation_free() {
 /// A streamed clip wider than its pool renders through the pool, the
 /// pool's channels taking the clip's first ones: a stereo clip in a mono
 /// pool, a 6-channel clip in a stereo pool, over 8 rolling blocks.
-///
-/// Mutation (run): the steady read's lanes cut to the reader's width
-/// (`&mut lanes[..w]`) → panics on the first block ("range end index 2
-/// out of range for slice of length 1") → fails.
 #[test]
 fn a_streamed_clip_wider_than_its_pool_mixes_its_first_channels() {
     use crate::voice::{Playback, SlotId, Voice, VoicePool, VoiceSource};
@@ -1244,11 +1182,6 @@ fn cached_stride_reads_every_channel_at_width_six() {
 /// gain a copy wrote (a copy holding the cell is how a host's handle,
 /// `DiskVoiceControls`, reaches it), and a clone, holding no reader,
 /// renders silence — it cannot claim the live ring.
-///
-/// Mutation (run): `LiveRead::clone` keeping the reader (a shared
-/// `Arc<Mutex<PosReader>>` again) → the clone renders the stream → fails.
-/// Mutation (run): `DiskVoice::set_gain` dropping the write instead
-/// of reaching the shared cell → the original renders at unity → fails.
 #[test]
 fn a_gain_change_reaches_a_cloned_voice() {
     let (mut unit, _) = rolling_voice(&[(1.0, 1.0); 256]);
@@ -1349,12 +1282,6 @@ fn scripted_pool(script: &Script, no_skip: bool) -> Vec<[Vec<u32>; 2]> {
 /// what it plays is the frame the clock names: a stopped transport holds
 /// the playhead, so the voice resumes at the frame it stopped on, and a
 /// seek lands on its own frame. Silent blocks are exactly +0.0.
-///
-/// Mutation (run): `render_lanes` answering `false` for every block (the
-/// skip applied to a sounding one) → the rolling blocks are silent →
-/// fails. Mutation (run): the skip never taken (`if false`) → this test
-/// still passes (the renders agree), which is why the other tests count
-/// the skips.
 #[test]
 fn a_silent_streamed_voice_resumes_at_the_right_frame_and_matches_the_unskipped_render() {
     const BLOCK: usize = 64;
@@ -1409,11 +1336,6 @@ fn a_silent_streamed_voice_resumes_at_the_right_frame_and_matches_the_unskipped_
 /// one with a frame does not: `render_lanes` answers `false` and leaves
 /// the caller's lanes as they were while the transport stands, and
 /// `true` (every lane written) once it rolls.
-///
-/// Mutation (run): the skip never taken (`if false`) → the stopped block
-/// returns `true` and clears the sentinel → fails. Mutation (run): the
-/// skip always taken (`if true`) → the rolling block returns `false` →
-/// fails.
 #[test]
 fn a_block_with_no_position_leaves_the_lanes_alone() {
     const BLOCK: usize = 64;
@@ -1454,10 +1376,6 @@ fn a_block_with_no_position_leaves_the_lanes_alone() {
 /// A skipped block forgets a crossfade in progress, as the rendered
 /// zeros do: a jump starts a fade, a silent block ends it and the
 /// position it continued.
-///
-/// Mutation (run): `LiveRead::silence` not clearing `st.fade` → the fade
-/// survives the silent block → fails. Mutation (run): not clearing
-/// `st.last` → fails.
 #[test]
 fn a_skipped_block_forgets_the_fade_and_the_last_position() {
     const BLOCK: usize = 64;
@@ -1510,9 +1428,6 @@ fn a_skipped_block_forgets_the_fade_and_the_last_position() {
 /// wide; the streamer restarts it where it aliases the slots the last
 /// block read, and its write is refused until the reader has
 /// acknowledged.
-///
-/// Mutation (run): `LiveRead::silence` not calling `reader.idle()` →
-/// the second push lands nothing → fails.
 #[test]
 fn a_skipped_block_releases_the_ring_to_the_writer() {
     const BLOCK: usize = 64;
@@ -1647,9 +1562,7 @@ fn streamer_fed(script: &Script, no_skip: bool) -> (Vec<Vec<u32>>, u64, usize) {
 ///
 /// The `reader.idle()` release is pinned by
 /// `a_skipped_block_releases_the_ring_to_the_writer`, not here: this
-/// script's streamer is never held off by a stale claim. Mutation (run):
-/// `silence` leaving `st.last` set → the resume after the seek is read
-/// as a continuation, not a jump (no crossfade) → bits differ → fails.
+/// script's streamer is never held off by a stale claim.
 #[test]
 fn the_streamers_ring_is_consistent_across_skipped_blocks() {
     let script: &Script = &[

@@ -2,9 +2,6 @@
 //! without allocating, events flowing — a wire's through the input node's
 //! translation onto its ports, a control thread's through the event inlet into
 //! the event tap's ring, and the clock's ticks.
-//!
-//! Mutation (run): a `Vec::new()` + push per block in `MidiInputNode::process`
-//! → the gate panics.
 
 use assert_no_alloc::AllocDisabler;
 use tutti_fixtures::midi;
@@ -111,9 +108,6 @@ impl MidiIn for BendRange {
 
 /// The input node fans a member channel's bend range out over its zone
 /// without allocating, and every member's port carries it.
-///
-/// Mutation (run): collect the fan-out into a `Vec` before writing it → the
-/// gate panics.
 #[test]
 fn the_mpe_bend_range_fan_out_processes_without_allocating() {
     let (mut ed, mut exec) = Editor::new(Prepare::new(SampleRate(48_000.0), Samples(512)));
@@ -165,9 +159,6 @@ impl MidiIn for Mcms {
 /// zone's reset) without allocating: before each gated block the host asks
 /// for a dual zone other than the one in force (outside the gate: a publish
 /// is control-side), and the wire alternates upper and lower MCMs.
-///
-/// Mutation (run): collect `zone_defaults` into a `Vec` in
-/// `adopt_mpe_request` → the gate panics.
 #[test]
 fn an_mpe_mode_change_and_an_mcm_process_without_allocating() {
     let (mut ed, mut exec) = Editor::new(Prepare::new(SampleRate(48_000.0), Samples(512)));
@@ -205,9 +196,6 @@ fn an_mpe_mode_change_and_an_mcm_process_without_allocating() {
 /// passes of a clip (a note on and off in each, the held note ended at each
 /// wrap, a sustain pedal and an off-centre bend returned at each) and of a harmony node (a chord change in each, the chord re-stated
 /// at each wrap), all without allocating, block after block.
-///
-/// Mutation (run): a `Vec` collected per pass in the walk's `pass` → the
-/// gate panics.
 #[test]
 fn a_block_of_many_loop_passes_walks_without_allocating() {
     const RATE: f64 = 48_000.0;
@@ -284,10 +272,6 @@ fn a_block_of_many_loop_passes_walks_without_allocating() {
 /// notes on a 64-frame block's port of 256 (44 note-ons refused, their
 /// note-offs withheld), then 200 notes ended and 200 started at once (104
 /// note-offs refused, owed, retried on the next block).
-///
-/// Mutation (run): a `Vec` allocated in `Sending::on`'s withhold branch →
-/// the gate panics. (The loss log's own full path is gated in tutti-graph's
-/// `rt_no_alloc`, `losses_past_the_log_and_the_ring_do_not_allocate`.)
 #[test]
 fn a_clip_overflowing_its_port_refuses_and_retries_without_allocating() {
     const RATE: f64 = 48_000.0;
@@ -352,9 +336,6 @@ fn a_clip_overflowing_its_port_refuses_and_retries_without_allocating() {
 /// on one frame into a port that takes 584 of them (the rest are owed and
 /// paid over the next blocks), a seek (every held note ended again) and a
 /// stop. None allocates.
-///
-/// Mutation (run): a `Vec` collected in `NoteLedger::pay` → the gate panics.
-/// A `Vec` in `Sending::on`'s full-table branch → the gate panics.
 #[test]
 fn a_clip_with_a_full_table_sends_and_pays_without_allocating() {
     let beat = |frame: u64| Beat(frame as f64 / 24_000.0);
@@ -429,9 +410,6 @@ fn a_clip_with_a_full_table_sends_and_pays_without_allocating() {
 /// The event inlet's audio side takes events from its ring, orders them, and
 /// sends them out of its port without allocating. The sends stay outside the
 /// gate: they are the control thread's.
-///
-/// Mutation (run): a `Vec::with_capacity` per block in
-/// `EventInletNode::process` aborts the gate.
 #[test]
 fn the_event_inlet_processes_without_allocating() {
     let (mut ed, mut exec) = Editor::new(Prepare::new(SampleRate(48_000.0), Samples(512)));
@@ -467,9 +445,6 @@ fn the_event_inlet_processes_without_allocating() {
 /// far-future events, each block takes a due event (it displaces the latest that
 /// may be lost), a far note-off (it displaces a note-on) and a later note-on (it
 /// is the one dropped), every block's processing inside the gate.
-///
-/// Mutation (run): a `Vec::new()` + push in `keep`'s full-list branch aborts the
-/// gate.
 #[test]
 fn the_event_inlet_with_a_full_list_processes_without_allocating() {
     let (mut ed, mut exec) = Editor::new(Prepare::new(SampleRate(48_000.0), Samples(512)));

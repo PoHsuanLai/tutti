@@ -128,9 +128,6 @@ mod tests {
 
     /// A push fills the slots in order, refuses the one past the capacity and
     /// hands the value back; equality ignores what is in the dead slots.
-    ///
-    /// Mutation (run): `>` for `==` in the `push` guard writes out of bounds
-    /// (panics); skipping `self.len += 1` fails the length.
     #[test]
     fn a_push_past_the_capacity_is_refused_with_the_value() {
         let mut list: Inline<u8, 2> = Inline::new();
@@ -142,10 +139,6 @@ mod tests {
 
     /// `from_slice` and `filled` refuse what does not fit, and equality compares
     /// the live items only.
-    ///
-    /// Mutation (run): `<` for `>` in the `from_slice` guard accepts 3
-    /// into 2 and fails; comparing `items` instead of the slices fails the last
-    /// assert.
     #[test]
     fn construction_refuses_what_does_not_fit_and_equality_reads_live_items() {
         assert!(Inline::<u8, 2>::from_slice(&[1, 2, 3]).is_none());
@@ -158,9 +151,6 @@ mod tests {
     }
 
     /// `Debug` shows the live items and nothing of the dead slots.
-    ///
-    /// Mutation (run): `self.iter()` -> `self.items.iter()` prints the dead
-    /// slot and fails.
     #[test]
     fn debug_prints_only_the_live_slots() {
         let list = Inline::<u8, 4>::from_slice(&[1, 2]).unwrap();

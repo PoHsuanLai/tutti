@@ -163,10 +163,6 @@ mod tests {
     /// A rate change reaches every clone: a clip reader holds the transport
     /// as its own `Arc<dyn Timeline>`, and a device restart sets the rate on
     /// the host's copy.
-    ///
-    /// Mutation (run): `sample_rate` a plain `SampleRate` field again (and
-    /// `set_sample_rate` taking `&mut self`, storing into it) → the clone
-    /// keeps 44.1 kHz and its beat is 22 050 frames → fails.
     #[test]
     fn a_rate_change_reaches_every_clone() {
         let a = Transport::new(SampleRate::new(44_100.0));
@@ -208,9 +204,6 @@ mod tests {
     /// **A tempo a caller got wrong stops at the type**: a zero, negative or
     /// non-finite number is refused before `set_tempo`, so the map the clock
     /// follows stays where it was.
-    ///
-    /// Mutation (run): `Bpm::new` tests `raw >= 0.0` instead of `raw > 0.0`;
-    /// the zero is let through to `set_tempo` and the tempo assertion fails.
     #[test]
     fn a_refused_tempo_never_reaches_the_clock() {
         let t = Transport::new(SampleRate::new(44100.0));

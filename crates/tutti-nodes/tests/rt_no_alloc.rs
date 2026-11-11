@@ -55,9 +55,6 @@ fn stereo_convolver_process_is_allocation_free() {
 /// The incremental accumulation runs in every block between two partition
 /// boundaries, so it is gated at host blocks that divide the partition, ones
 /// that do not (37, 100) and one longer than a partition (1000 against 256).
-///
-/// Mutation (run): a `vec!` inside `LevelState::accumulate_to` fails
-/// these.
 #[cfg(feature = "convolution")]
 #[test]
 fn convolver_mid_cycle_blocks_are_allocation_free() {
@@ -72,8 +69,6 @@ fn convolver_mid_cycle_blocks_are_allocation_free() {
 /// The bare convolver with call lengths from 1 to past two partitions, in an
 /// order that lands calls mid-cycle, across the boundary and exactly on it,
 /// over a signal that is not silent.
-///
-/// Mutation (run): the same `vec!` in `accumulate_to` fails it.
 #[cfg(feature = "convolution")]
 #[test]
 fn convolver_ragged_calls_are_allocation_free() {
@@ -102,9 +97,6 @@ fn convolver_ragged_calls_are_allocation_free() {
 /// the longest tail partition, over a signal that is not silent. The run is
 /// long enough for every level to complete many blocks, and it lands calls on
 /// and across each level's forward and inverse frames.
-///
-/// Mutation (run): a `vec!` inside `LevelState::forward` or
-/// `LevelState::inverse` fails it.
 #[cfg(feature = "convolution")]
 #[test]
 fn convolver_tail_levels_are_allocation_free() {
@@ -132,9 +124,6 @@ fn convolver_tail_levels_are_allocation_free() {
 /// block-long mono buffer, both sized before the first block (the frame at
 /// construction, the mono block at `prepare`), never grown in `process`. Six
 /// channels, so the fold does real work rather than the stereo average.
-///
-/// Mutation (run): building the mono block as a `vec!` inside `render`
-/// fails the no-alloc gate.
 #[cfg(feature = "convolution")]
 #[test]
 fn folded_six_channel_convolver_process_is_allocation_free() {
@@ -157,12 +146,6 @@ fn folded_six_channel_convolver_process_is_allocation_free() {
 /// drive port fed a per-frame ramp (the path that writes each frame's
 /// hardness into channel 0 and shapes it last), 1 000 blocks each under
 /// `assert_no_alloc`. `Direct` feeds the port, which `BlockRig` cannot.
-///
-/// Mutation (run): a `black_box(vec![0.0f32; size])` at the top of the
-/// unfed arm → the unfed gate fails; the same in the fed arm → the fed
-/// gate fails.
-/// Dropping the `feed` → the fed render equals the unfed one → the
-/// precondition fails.
 #[test]
 fn distortion_process_is_allocation_free_fed_and_unfed() {
     use tutti_graph::contract::Direct;

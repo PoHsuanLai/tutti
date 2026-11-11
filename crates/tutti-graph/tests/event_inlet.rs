@@ -7,8 +7,7 @@
 //! ring pre-filled, every participant inside `assert_no_alloc`).
 //!
 //! Every figure is analytic (a frame, an offset, a capacity), none read from
-//! another render. The mutations were run by hand and are recorded on each
-//! test.
+//! another render.
 
 mod common;
 
@@ -94,13 +93,6 @@ fn reprepare(d: &mut Direct<EventInletNode>, rate: SampleRate) {
 /// F minus the block's first frame, once, for block sizes 1, 64, 100 and 512
 /// and for frames on a block's first and last frame and either side of the
 /// edge, pushed in reverse order (the node sorts).
-///
-/// Mutation (run, recorded here): emitting at `Offset::ZERO` whatever the due
-/// offset is fails every size above 1; reading the frame from the block's own
-/// offset instead of `Env::due` (`w.frame % len`) fails 100 and 512 on the
-/// frames past the first block; an event sent one block early (the
-/// `NotYet` break removed, so a future event is emitted at offset 0) fails all
-/// of them.
 #[test]
 fn an_event_lands_on_its_frame_across_block_sizes() {
     for size in [1usize, 64, 100, 512] {
@@ -151,12 +143,6 @@ fn an_event_lands_on_its_frame_across_block_sizes() {
 /// `NextBlock` is the next block's first frame and is not late; a frame in the
 /// past lands at offset 0 and is counted late, not dropped; a frame ahead
 /// waits across blocks, is not lost, and lands on its offset.
-///
-/// Mutation (run, recorded here): dropping a late event (the clamp to `start`
-/// replaced by `continue`) fails the second block; not counting late fails the
-/// `late() == 1`; counting a `NextBlock` as late fails the first `late() == 0`;
-/// emitting an event ahead at once (a `NotYet` taken as `In(0)`) fails the
-/// empty blocks before frame 532.
 #[test]
 fn next_block_late_and_not_yet() {
     let (mut d, mut tx) = rig(256);
@@ -190,11 +176,6 @@ fn next_block_late_and_not_yet() {
 /// Events due together leave in the order they were pushed: a late one, a
 /// `NextBlock` and the same frame, and a note-off pushed after its note-on at
 /// one frame never overtakes it.
-///
-/// Mutation (run, recorded here): clamping nothing on arrival (a past frame
-/// kept as it is) sorts the past frame 5 before the earlier-pushed `NextBlock`
-/// and fails the order; `partition_point` with `<` instead of `<=` puts the
-/// note-off before its note-on and fails.
 #[test]
 fn equal_frames_leave_in_push_order() {
     let (mut d, mut tx) = rig(256);
@@ -221,10 +202,6 @@ fn equal_frames_leave_in_push_order() {
 }
 
 /// A beat is refused with its own error, queues nothing and is not a loss.
-///
-/// Mutation (run, recorded here): answering `Refused::Full` fails the error;
-/// queueing it as `NextBlock` fails the empty block; counting it in `lost`
-/// fails the count.
 #[test]
 fn a_beat_is_refused() {
     let (mut d, mut tx) = rig(8);
@@ -240,10 +217,6 @@ fn a_beat_is_refused() {
 /// A producer faster than the graph: the ring of 8 takes 8, refuses the rest
 /// with `Full`, never blocks, and `lost()` equals the refusals; what it held
 /// is emitted, and room returns once the node has drained.
-///
-/// Mutation (run, recorded here): not counting a refusal fails `lost`;
-/// counting in `evicted` instead fails the other counts; counting twice fails
-/// the figure of 4.
 #[test]
 fn a_full_ring_refuses_and_counts_lost() {
     let (mut d, mut tx) = rig(8);
@@ -283,19 +256,12 @@ fn full_list_keeps(last: Ump, survivor: Vec<u32>) {
 
 /// A full waiting list evicts the latest event that may be lost and keeps a
 /// note-off.
-///
-/// Mutation (run, recorded here): `must_arrive` answering false (the latest
-/// event goes whatever it is) loses the note-off: key 99 is missing; evicting
-/// the earliest instead of the latest loses key 10.
 #[test]
 fn a_full_list_keeps_the_note_off() {
     full_list_keeps(off(99), vec![10, 11, 12, 13, 14, 15, 99]);
 }
 
 /// And a panic controller (All Notes Off).
-///
-/// Mutation (run, recorded here): `must_arrive` ignoring
-/// `is_panic_controller` loses the controller: key 123 is missing.
 #[test]
 fn a_full_list_keeps_a_panic_controller() {
     full_list_keeps(cc(123), vec![10, 11, 12, 13, 14, 15, 123]);
@@ -304,9 +270,6 @@ fn a_full_list_keeps_a_panic_controller() {
 /// A list of nothing but note-offs and a panic that is full loses the latest
 /// of them, and counts it; the earlier ones stay and a new earlier one takes
 /// its place.
-///
-/// Mutation (run, recorded here): dropping the new event always (the `pop`
-/// removed) keeps the late one and loses the early one.
 #[test]
 fn a_list_of_nothing_but_note_offs_loses_the_latest() {
     let (mut d, mut tx) = rig(8);
@@ -325,10 +288,6 @@ fn a_list_of_nothing_but_note_offs_loses_the_latest() {
 /// A loseable event never displaces a must-arrive one: a note-on pushed
 /// earlier than a full list of note-offs is the event lost, and every
 /// note-off still goes out (a dropped note-off would leave its note hanging).
-///
-/// Mutation (run, recorded here): removing `must_arrive(ump) &&` from the
-/// `None` arm of `keep` pops the latest note-off for the note-on: key 30 is
-/// sent and key 27 is missing.
 #[test]
 fn a_note_on_never_displaces_a_waiting_note_off() {
     let (mut d, mut tx) = rig(8);
@@ -357,10 +316,6 @@ fn a_note_on_never_displaces_a_waiting_note_off() {
 /// A port narrower than the burst: the node's list holds 1500 events, the port
 /// (the harness's, 1024) takes 1024, and the other 476 are counted as
 /// refused by the port, and nowhere else.
-///
-/// Mutation (run, recorded here): counting the refusal in `evicted` fails
-/// `evicted == 0`; not counting it fails `refused`; counting it in `lost` fails
-/// `lost == 0`.
 #[test]
 fn a_port_narrower_than_the_burst_counts_refused() {
     let burst = HAND_EVENT_CAPACITY + 476;
@@ -377,10 +332,6 @@ fn a_port_narrower_than_the_burst_counts_refused() {
 /// The clock is where the last block ended, on the clock the node ran on and
 /// not a count of blocks, with the rate it was counted at; a new rate moves it
 /// to the same wall-clock time.
-///
-/// Mutation (run, recorded here): publishing `start` instead of the block's
-/// end fails the first two figures; `prepare` leaving `next` alone fails the
-/// last.
 #[test]
 fn the_writer_reads_the_clock_and_its_rate() {
     let (mut d, tx) = rig(8);
@@ -398,10 +349,6 @@ fn the_writer_reads_the_clock_and_its_rate() {
 
 /// Pushed before a rate change, an event lands at the rescaled frame: the
 /// same wall-clock time at the new rate, not the old frame number.
-///
-/// Mutation (run, recorded here): `prepare` not rescaling the waiting list
-/// leaves it at frame 1000, in the block of 976..1040, and the block at 912
-/// sees nothing.
 #[test]
 fn what_waits_is_rescaled_by_a_rate_change() {
     let (mut d, mut tx) = rig(8);
@@ -418,10 +365,6 @@ fn what_waits_is_rescaled_by_a_rate_change() {
 
 /// A reading taken at 48 kHz and pushed after the graph went to 44.1 kHz still
 /// names its instant: the read, the change and the push, in that order.
-///
-/// Mutation (run, recorded here): the arrival rescale returning the frame
-/// unrescaled lands it at 692, and the block at 628 sees nothing; stamping the
-/// push with the node's rate instead of the moment's does the same.
 #[test]
 fn a_moment_read_before_a_re_prepare_keeps_its_instant() {
     let (mut d, mut tx) = rig(8);
@@ -440,10 +383,6 @@ fn a_moment_read_before_a_re_prepare_keeps_its_instant() {
 /// A frame pushed with `push` is at the rate the node last published, even
 /// when the graph is re-prepared before the node has taken it from the ring:
 /// the same wall-clock time at the new rate.
-///
-/// Mutation (run, recorded here): `push` stamping no rate (0, "the node's")
-/// reads the frame at 44.1 kHz and lands it at 1000, not 918.75: the block at
-/// 912 sees nothing.
 #[test]
 fn a_frame_pushed_before_a_re_prepare_is_at_the_rate_it_was_pushed() {
     let (mut d, mut tx) = rig(8);
@@ -456,10 +395,6 @@ fn a_frame_pushed_before_a_re_prepare_is_at_the_rate_it_was_pushed() {
 /// An event whose frame passed while the node did not run (a re-prepare
 /// suspends it) lands on the first frame of the block that follows, in the
 /// order it was due, and is counted late.
-///
-/// Mutation (run, recorded here): without the clamp of what waits,
-/// `Env::due` is `Late` for the block and the event is emitted nowhere: the
-/// block at 500 sees nothing.
 #[test]
 fn what_came_due_while_the_node_slept_lands_on_the_first_frame() {
     let (mut d, mut tx) = rig(8);
@@ -472,8 +407,6 @@ fn what_came_due_while_the_node_slept_lands_on_the_first_frame() {
 }
 
 /// What waits survives a reset: a note-off waiting must still arrive.
-///
-/// Mutation (run, recorded here): `reset` clearing the waiting list fails it.
 #[test]
 fn what_waits_survives_a_reset() {
     let (mut d, mut tx) = rig(8);
@@ -686,11 +619,6 @@ fn script(k: u32) -> Vec<(At, Ump)> {
 /// bit in its audio, with inlet 1's tap listing every pushed event at its
 /// frame (the serial run is also checked against the script); every
 /// participant runs inside `assert_no_alloc`.
-///
-/// Mutation (run, recorded here): emitting every event at `Offset::ZERO`
-/// fails the analytic tap list and the audio; `partition_point` with `<`
-/// (equal frames in reverse push order) fails the tap list; an allocation in
-/// `process` (a `Vec::with_capacity`) aborts the gated pooled runs.
 #[test]
 fn the_parallel_render_equals_the_serial_one_and_allocates_nothing() {
     let run = |workers: usize, gated: bool| {
@@ -750,11 +678,6 @@ fn the_parallel_render_equals_the_serial_one_and_allocates_nothing() {
 /// The fork is silent: an export of a graph holding an inlet commits (the
 /// audio inlet would refuse it), renders no event from it, and takes none
 /// pushed afterwards, while the live graph hears the same pushes.
-///
-/// Mutation (run, recorded here): an `IntoNode` with `fork: None` makes the
-/// fork fail (`expect("forks")`); a fork that would carry the live ring is not
-/// constructible (the consumer is not `Clone`), so the silence assertions pin
-/// the live graph hearing what the fork does not.
 #[test]
 fn the_fork_is_silent() {
     let (mut ed, mut exec, mut writers, _) = graph(1, 1, false, false, false);

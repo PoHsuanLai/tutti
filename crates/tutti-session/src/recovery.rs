@@ -411,8 +411,6 @@ mod tests {
     }
 
     /// The wait doubles with each failure in the window, up to the cap.
-    ///
-    /// Mutation (run, failed): no doubling (a constant delay).
     #[test]
     fn the_backoff_doubles_to_a_cap() {
         let t0 = Instant::now();
@@ -432,9 +430,6 @@ mod tests {
 
     /// A plugin that crashes on load fails again and again, and is given up
     /// on at the failure past the budget, naming the last reason.
-    ///
-    /// Mutation (run, failed): the budget compared with `>=` instead of `>`
-    /// (given up one failure early).
     #[test]
     fn a_plugin_that_fails_every_load_is_given_up_on() {
         let t0 = Instant::now();
@@ -457,8 +452,6 @@ mod tests {
 
     /// Failures older than the window no longer count: a plugin that runs
     /// for longer than the window between crashes is never given up on.
-    ///
-    /// Mutation (run, failed): pruning skipped (the fourth death gives up).
     #[test]
     fn failures_leave_the_budget_with_the_window() {
         let t0 = Instant::now();
@@ -499,10 +492,6 @@ mod tests {
     /// A hang is declared only when blocks keep being abandoned, with no
     /// reply, for the window; it ends the server once, however long it is
     /// then watched.
-    ///
-    /// Mutations (each run, each failed): the window not checked (declared
-    /// at the first observation over the block count); `terminating` not
-    /// latched (a second `Terminate`).
     #[test]
     fn a_hang_needs_blocks_and_time() {
         let t0 = Instant::now();
@@ -534,8 +523,6 @@ mod tests {
 
     /// Few blocks over a long time is not a hang, and neither is a long run
     /// of blocks over a short time.
-    ///
-    /// Mutation (run, failed): the block count not checked.
     #[test]
     fn neither_time_nor_blocks_alone_is_a_hang() {
         let t0 = Instant::now();
@@ -555,9 +542,6 @@ mod tests {
     /// totals freeze, nothing new is abandoned, and a live plugin is left
     /// alone however long that lasts. It resumes as a suspicion only from
     /// the blocks abandoned after it.
-    ///
-    /// Mutation (run, failed): the stall not clearing the suspicion (the
-    /// frozen totals are held for the window and ended).
     #[test]
     fn a_count_that_stands_still_is_not_a_hang() {
         let t0 = Instant::now();
@@ -583,9 +567,6 @@ mod tests {
     /// and a block abandoned only every 48 ms (the bridge waits out each):
     /// most observations see no new block, and a hang is still declared
     /// after the window.
-    ///
-    /// Mutation (run, failed): `stall_gap` ignored (any observation without
-    /// growth clears the suspicion).
     #[test]
     fn a_hang_is_seen_by_an_observer_faster_than_the_blocks() {
         let t0 = Instant::now();
@@ -606,9 +587,6 @@ mod tests {
     /// arriving between observations, even when the abandoned total keeps
     /// growing. A reply between two observations restarts the suspicion
     /// however far the count has grown since.
-    ///
-    /// Mutations (each run, each failed): a changed reply total not clearing
-    /// the suspicion.
     #[test]
     fn a_plugin_that_still_answers_is_not_hung() {
         let t0 = Instant::now();

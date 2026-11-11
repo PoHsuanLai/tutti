@@ -410,10 +410,6 @@ mod tests {
 
     /// **A load at no rate or no block is refused** at the activation stage:
     /// zero, negative and non-finite rates, and a block of no frames.
-    ///
-    /// Mutation (run): `valid_rate` in `tutti-plugin-types` accepting every
-    /// rate, and `MaxBlock::new` accepting zero, each -> the matching case loads
-    /// -> fails.
     #[test]
     fn a_load_at_no_rate_or_no_block_is_refused() {
         for (rate, block) in [
@@ -447,14 +443,6 @@ mod tests {
     /// plugin stands, why) and a report for the control side
     /// (`PluginInvalidation::RateRefused`). A rate the plugin then takes reports the
     /// recovery once (`RateRestored`).
-    ///
-    /// Mutation (run): `valid_rate` in `tutti-plugin-types` accepting every
-    /// rate -> the zero rate is activated and kept as the configuration ->
-    /// `prepare` changes -> fails. Mutation (run): the `None` arm of
-    /// `set_sample_rate`'s match returning `Ok(())` -> the error assertion fails.
-    /// Mutation (run): `set_sample_rate` not storing `rate_report` -> the report assertion
-    /// fails. Mutation (run): the `Ok(()) if self.rate_refused` arm removed -> the
-    /// restored assertion fails.
     #[test]
     fn a_rate_that_is_no_rate_leaves_the_instance_alone_and_is_reported() {
         let (mut instance, _rt, _) = Instance::<Vst2Loaded>::load(
@@ -512,10 +500,6 @@ mod tests {
     /// it; the realtime end, at its next poll, stops it and returns it; the
     /// pump runs the parked plan and lends the new Processor, which the next
     /// poll takes.
-    ///
-    /// Mutation (run): `pump` not driving `Event::Tick` -> the returned
-    /// Processor is never collected, the plan stays parked and the last poll
-    /// finds nothing -> fails.
     #[test]
     fn a_parked_rate_change_completes_at_the_pump() {
         let main = main_thread();

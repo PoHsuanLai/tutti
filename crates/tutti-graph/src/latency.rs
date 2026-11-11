@@ -779,9 +779,6 @@ mod tests {
 
     /// A global input arrives at zero and is **aligned** where it meets a
     /// latent path, as the compiler aligns it.
-    ///
-    /// Mutation (run): `Feed::Outside => continue` → no delay on port 1 →
-    /// fails.
     #[test]
     fn a_global_input_meeting_a_latent_path_is_delayed() {
         //   0(48) ─▶ 1 port 0;  global input ─▶ 1 port 1   needs +48
@@ -801,9 +798,6 @@ mod tests {
     /// A node's arrival counts its other (event, param) sources: a dry audio
     /// input into a node whose events come from a latent node is delayed to
     /// them, and the lateness carries on to the output.
-    ///
-    /// Mutation (run): leave `other_sources` out of `predecessors` → node 2
-    /// arrives at 0 → no delay, total 0 → fails.
     #[test]
     fn other_sources_count_toward_arrival() {
         //   0(64) ─events─▶ 2;   1 ─audio─▶ 2 port 0   needs +64

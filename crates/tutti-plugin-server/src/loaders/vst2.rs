@@ -573,10 +573,6 @@ mod tests {
     /// The plugin writes a new `initialDelay` and pin count into its `AEffect`
     /// and calls the host, through the probe's export (a plugin does this on
     /// its own initiative; there is no host call that provokes it).
-    ///
-    /// Mutation (run): drop the `Plugin::Vst2` arm's `poll_changes` -> no
-    /// events -> fails. Mutation (run): `HostState::io_changed` returning
-    /// `false`/not latching (in `tutti-vst2-host`) -> no `IoChanged` -> fails.
     #[test]
     fn an_io_changed_callback_raises_latency_and_io_events() {
         use crate::plugin::{AsyncEvent, Plugin};
@@ -819,10 +815,6 @@ mod tests {
     /// seam (no suspend, no resume), the host is told nothing, and the error
     /// says where the plugin runs. A good rate afterwards takes. (The VST2 host
     /// cannot refuse a rate any other way, so there is no rollback to drive.)
-    ///
-    /// Mutation (run): `valid_rate` in `tutti-plugin-types` accepting every rate
-    /// -> the zero rate reaches `effSetSampleRate` and the plugin is suspended
-    /// and resumed -> the `set_sample_rate` `expect_err` fails.
     #[test]
     fn a_rate_that_is_no_rate_is_refused_before_the_plugin_is_touched() {
         let (mut p, _lock) = load_probe(&[]);
@@ -855,10 +847,6 @@ mod tests {
 
     /// **A load at no rate or no block is refused, and the plugin is never
     /// resumed**: zero, negative and non-finite rates, and a block of no frames.
-    ///
-    /// Mutation (run): `valid_rate` accepting every rate -> the rate cases load
-    /// -> the `Err` match fails. Mutation (run): `MaxBlock::new` accepting zero
-    /// -> the block case loads -> fails.
     #[test]
     fn a_load_at_no_rate_or_no_block_is_refused() {
         let _lock = crate::test_utils::plugin_load_lock();
@@ -890,9 +878,6 @@ mod tests {
 
     /// **The rate the plugin already runs at is a no-op**: nothing crosses the
     /// seam, so a caller that sets it every frame does not tear the plugin down.
-    ///
-    /// Mutation (run): the same-rate early return removed -> the plugin is
-    /// suspended and resumed again -> `suspend_count` is 1 -> fails.
     #[test]
     fn the_rate_the_plugin_runs_at_is_not_a_restart() {
         let (mut p, _lock) = load_probe(&[]);
@@ -906,11 +891,6 @@ mod tests {
     /// **The render mode is live, kept across a restart, and no restart**: the
     /// plugin reads the process level the mode names from the next block, and a
     /// rate change afterwards does not put the old mode back.
-    ///
-    /// Mutation (run): `set_render_mode` not recording the mode in the core
-    /// (`state.set_mode`) -> the rate change re-activates at realtime and the
-    /// level reads 2 -> fails. Mutation (run): not storing it in the host's
-    /// state -> the first level reads 2 -> fails.
     #[test]
     fn the_render_mode_is_live_and_survives_a_rate_change() {
         let (mut p, _lock) = load_probe(&[]);
@@ -929,9 +909,6 @@ mod tests {
 
     /// **A parameter the plugin moved itself is told to the host**, once, with
     /// the index and the value (a knob turned in its editor).
-    ///
-    /// Mutation (run): `poll` not draining the plugin's changes -> none are told
-    /// -> fails.
     #[test]
     fn a_parameter_the_plugin_moved_is_forwarded() {
         let (mut p, _lock) = load_probe(&[]);

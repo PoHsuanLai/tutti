@@ -90,11 +90,6 @@ fn lead() -> usize {
 /// synth's first sample is exactly that far after its first sample for a
 /// note at frame 0. A block late (the mailbox path's delivery) or at the
 /// block's start both miss.
-///
-/// Mutation (run): `render_events` applying every chunk's events before the
-/// first frame (offsets ignored) → the onset moves to 768 → fails. Mutation
-/// (run): `render_events` reading no event (only the chunks) → silence →
-/// fails.
 #[test]
 fn a_clip_note_sounds_on_its_frame_in_the_same_block() {
     let (ed, exec) = graph(1_000);
@@ -105,10 +100,6 @@ fn a_clip_note_sounds_on_its_frame_in_the_same_block() {
 /// **An exported graph plays the clip, on the render's timeline.** The live graph is forked offline and rendered; the
 /// fork's clip node reads its render's `Env`, so the note is on the same
 /// frame as live.
-///
-/// Mutation: a clip fork with no events → the fork is silent → fails.
-/// Mutation: the synth inserted with no fork source (`NodeParts { fork: None,
-/// .. }` in its `IntoNode`) → the fork is refused → fails.
 #[test]
 fn a_forked_graph_plays_the_clip() {
     let (live, _exec) = graph(1_000);

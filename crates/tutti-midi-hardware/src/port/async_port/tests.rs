@@ -107,10 +107,8 @@ fn test_active_flag_toggle() {
 /// in order. Small enough to run under miri, which is what checks the two
 /// halves for a data race.
 ///
-/// Mutation (run): `drain_limited` discarding one extra pop after each
-/// event it hands on → every other event is lost → fails. The aliasing this test cannot express (two producers on one ring) is
-/// no longer writable: `push` takes `&mut self` and the handle is not
-/// `Clone`.
+/// The aliasing this test cannot express (two producers on one ring) is no longer
+/// writable: `push` takes `&mut self` and the handle is not `Clone`.
 #[test]
 fn a_driver_thread_and_the_drain_run_concurrently() {
     const EVENTS: u32 = 200;

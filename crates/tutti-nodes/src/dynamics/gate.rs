@@ -479,9 +479,6 @@ mod tests {
 
     /// A fork starts from the values last set through the node's
     /// `ParamSet` and shares no cell with it.
-    ///
-    /// Mutation (run): drop `fork.core.timing.detach()` in `fork_fresh` →
-    /// "a live write reached the fork" for `Attack` → fails.
     #[test]
     fn a_fork_shares_no_cell() {
         assert_param_fork(GateNode::stereo(
@@ -494,9 +491,6 @@ mod tests {
 
     /// A block longer than 64 frames renders whole: the
     /// gain lane is sized from the prepared `MaxBlock`.
-    ///
-    /// Mutation (run): size the lane `vec![0.0; 64]` in `prepare` → the
-    /// 1024-frame block panics indexing past it → fails.
     #[test]
     fn a_block_up_to_the_prepared_maximum_renders() {
         let mut gate = prepared_at(
@@ -717,10 +711,6 @@ mod tests {
     /// changes the arity: audio plus sidechain, at every width. (Doc 014
     /// §12.6 widened the list: a route onto any of these was refused once
     /// the frame-rate driver went.)
-    ///
-    /// Mutation (run): declare no params in `shape` → the first assertion
-    /// fails. Mutation (run): `param_base(2)` answering the attack
-    /// cell → fails.
     #[test]
     fn gate_declares_its_params() {
         let m = GateNode::mono(
@@ -776,9 +766,6 @@ mod tests {
     /// A steady sidechain a hair above the threshold opens the gate, a hair
     /// below leaves it closed. The margin is 0.1 percent (0.009 dB), far
     /// outside the rounding the comparison carries.
-    ///
-    /// Mutation (run): compare `sc_level >= block.threshold_linear * 1.01` →
-    /// the "above" half fails; `* 0.99` → the "below" half fails.
     #[test]
     fn a_steady_level_just_either_side_of_the_threshold_opens_or_closes_the_gate() {
         let thr = 0.1f32; // -20 dB
@@ -799,10 +786,6 @@ mod tests {
     /// A threshold above 0 dB compares the same way: at `+6 dB` (1.995
     /// linear) a steady level 0.1 percent over opens the gate and 0.1 percent
     /// under leaves it closed.
-    ///
-    /// Mutation (run): clamp `threshold_linear` to at most 1.0 in
-    /// `begin_block` (`db_to_amplitude(threshold).get().min(1.0)`) → the
-    /// "below" half opens the gate and fails.
     #[test]
     fn a_threshold_above_zero_db_opens_above_and_stays_closed_below() {
         let thr = 10f32.powf(6.0 / 20.0);
@@ -831,10 +814,6 @@ mod tests {
     /// The hold keeps an opened gate fully open for exactly `floor(hold *
     /// rate)` frames after the level falls under the threshold; the release
     /// starts on the next one.
-    ///
-    /// Mutation (run): reload the counter with `hold_samples + 1` in
-    /// `GateEnvelopeFollower::step` → the gate still holds on the 450th frame
-    /// and the last assertion fails.
     #[test]
     fn the_hold_keeps_the_gate_open_for_its_whole_length() {
         let mut gate = gate_at_minus_20();
@@ -852,9 +831,6 @@ mod tests {
     }
 
     /// Closed, the gain is the range in dB as a linear factor: `10^(dB/20)`.
-    ///
-    /// Mutation (run): build `range_to_linear` from `range_to * 0.5` dB →
-    /// every range misses by far more than the tolerance.
     #[test]
     fn closed_the_gain_is_the_range_in_decibels() {
         for (range_db, linear) in [
@@ -889,9 +865,6 @@ mod tests {
     /// threshold at or under the floor opens on a silent sidechain and one
     /// above it does not. In the linear domain a silent `0.0` is under every
     /// positive threshold, so this is carried by `silence_opens`.
-    ///
-    /// Mutation (run): build the block with `silence_opens: false` → the
-    /// `-200 dB` and `-144 dB` cases stay closed and fail.
     #[test]
     fn a_threshold_at_or_under_the_floor_opens_on_silence() {
         for (threshold, opens) in [(-200.0f32, true), (-144.0, true), (-143.0, false)] {
@@ -926,10 +899,6 @@ mod tests {
 
     /// A threshold written between blocks is converted again for the next
     /// block: a level that was under it is over the lowered one.
-    ///
-    /// Mutation (run): build `threshold_linear` from a fixed `-20 dB` rather
-    /// than the cell in `begin_block` → the lowered threshold never opens →
-    /// fails.
     #[test]
     fn a_changed_threshold_applies_on_the_next_block() {
         let mut gate = gate_at_minus_20();
@@ -946,10 +915,6 @@ mod tests {
     /// A NaN detector level never makes the gate's state NaN: it compares as
     /// not over the threshold (closed), and the gate recovers on the next
     /// finite level. An infinite level is over every finite threshold.
-    ///
-    /// Mutation (run): in `gain` open the gate on
-    /// `!(sc_level < block.threshold_linear)` → a NaN level opens it and the
-    /// `gate_level() == 0.0` assertion fails.
     #[test]
     fn a_nan_detector_level_leaves_the_state_finite_and_closed() {
         let mut core = GateCore::new(

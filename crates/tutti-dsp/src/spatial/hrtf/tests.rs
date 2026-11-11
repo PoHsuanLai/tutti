@@ -29,10 +29,6 @@ fn tetrahedron(rate: u32) -> Vec<u8> {
 /// A clone (the fork's template, and every fork) shares the parsed
 /// sphere and its prepared spectra; only a new rate prepares a new set,
 /// and a re-prepare at the same rate keeps the one it has.
-///
-/// Mutations (run): `fresh` preparing its own set from the shared sphere
-/// → the first set `ptr_eq` fails; dropping `set_sample_rate`'s
-/// same-rate early return → the same-rate assertion fails.
 #[test]
 fn a_clone_shares_the_sphere_and_its_spectra() {
     let rate = SampleRate(48_000.0);
@@ -52,9 +48,6 @@ fn a_clone_shares_the_sphere_and_its_spectra() {
 
 /// Two graph rates above [`MAX_PREPARED_RATE`] share one prepared set, keyed
 /// at the ceiling; a set above it holds at most 50 ms at the ceiling.
-///
-/// Mutation (run): drop `.min(f64::from(MAX_PREPARED_RATE))` from `rate_key`
-/// → the second rate prepares its own set and the `ptr_eq` fails.
 #[test]
 fn a_prepare_above_the_ceiling_keeps_one_set() {
     let front = Direction::new(Azimuth::FRONT, Elevation::LEVEL);
@@ -73,14 +66,6 @@ fn a_prepare_above_the_ceiling_keeps_one_set() {
 /// cannot come from angles, so only the weights are checked with it) and
 /// must keep producing finite, non-silent audio: the tetrahedron's
 /// deltas pass the constant input through at every vertex.
-///
-/// Mutations (run), each of which fails the render half on its own
-/// (the weights loop disabled): in `HrtfSet::weights`, starting the
-/// fallback at `nearest = self.directions.len() as u32` and never
-/// updating it → the render hits `spectrum`'s `debug_assert`; and
-/// returning zero weights `w: [0.0; 3]` from the fallback → the render
-/// is silent and the audibility assertion fails. With the weights loop
-/// on, the first mutation also fails the vertex assertion.
 #[test]
 fn a_degenerate_direction_takes_a_real_vertex_and_renders_finite_audio() {
     let rate = SampleRate(48_000.0);

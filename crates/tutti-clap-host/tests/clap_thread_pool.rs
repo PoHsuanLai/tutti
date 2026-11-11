@@ -145,9 +145,6 @@ fn until_spread(mut one: impl FnMut()) -> ThreadPoolCapture {
 
 /// With no pool, every request is refused, so the plugin runs its tasks
 /// itself (`ext/thread-pool.h`: `false` means the host did not run them).
-///
-/// Mutation: make `request_exec` return `true` when no request is installed
-/// → `accepted` is 4 and `refused` 0 → fails.
 #[test]
 fn without_a_pool_every_request_is_refused() {
     let _l = PROBE_LOCK.lock().unwrap_or_else(|p| p.into_inner());
@@ -162,9 +159,6 @@ fn without_a_pool_every_request_is_refused() {
 
 /// A pool of one participant is no pool: the plugin's own fallback does as
 /// well, so the request is refused.
-///
-/// Mutation: drop the `participants() < 2` check in `pool_request` → the
-/// request is accepted (and run on the caller) → `accepted` is 4 → fails.
 #[test]
 fn a_pool_of_one_is_refused() {
     let _l = PROBE_LOCK.lock().unwrap_or_else(|p| p.into_inner());
@@ -179,13 +173,6 @@ fn a_pool_of_one_is_refused() {
 
 /// With a pool, every request is accepted; when `request_exec` returns,
 /// every task index has run exactly once; and the pool's helpers take part.
-///
-/// Mutations: (a) in `Tasks::drain`, `fetch_add(2)` → odd tasks never run
-/// → `accepted_incomplete` > 0 → fails; (b) have `request_exec` return
-/// `true` without running the tasks → every accepted request is incomplete
-/// → fails (run: after 10 s); (c) have `PoolRequest::run` run the job on the caller only
-/// (`(tasks.drain)()` instead of `pool.run`) → `spread` stays 0 until the
-/// deadline → fails (run: after 10 s).
 #[test]
 #[cfg_attr(miri, ignore = "threads and a dlopen'd plugin")]
 fn a_pool_runs_every_task_once_before_the_request_returns() {
@@ -205,9 +192,6 @@ fn a_pool_runs_every_task_once_before_the_request_returns() {
 }
 
 /// Taking the pool back makes the next request refused again.
-///
-/// Mutation: have `set_thread_pool` keep the old pool when given `None` →
-/// the last block is accepted → fails.
 #[test]
 fn removing_the_pool_refuses_again() {
     let _l = PROBE_LOCK.lock().unwrap_or_else(|p| p.into_inner());
@@ -223,10 +207,6 @@ fn removing_the_pool_refuses_again() {
 /// A request from inside a task — on a helper, or on the caller while its
 /// request runs — is refused: the header says it "can't be called ... from
 /// the thread pool".
-///
-/// Mutation: in `request_exec`, leave the request installed while the tasks
-/// run (drop `_taken`) → task 0, on the caller, has its nested call accepted
-/// → `nested_accepted` > 0 → fails.
 #[test]
 #[cfg_attr(miri, ignore = "threads and a dlopen'd plugin")]
 fn a_request_from_inside_a_task_is_refused() {
@@ -246,10 +226,6 @@ fn a_request_from_inside_a_task_is_refused() {
 /// running on the same pool — a parallel graph block's worker — has its
 /// request refused rather than waiting on the job it was made from: the
 /// block returns (no deadlock), and the plugin runs its tasks itself.
-///
-/// Mutation: have `WorkerPool::try_run` run the job whatever the gate
-/// (`self.run(wake, job); true`) → a nested request is accepted and run on
-/// the caller alone → every request is accepted → fails.
 #[test]
 #[cfg_attr(miri, ignore = "threads and a dlopen'd plugin")]
 fn a_request_from_a_pool_worker_is_refused() {
@@ -277,9 +253,6 @@ fn a_request_from_a_pool_worker_is_refused() {
 
 /// A request naming another instance's host is refused, even from inside
 /// this instance's `process` on the thread serving its request.
-///
-/// Mutation: drop the `ptr::eq(request.host, host)` check in `request_exec`
-/// → both foreign requests are accepted → `accepted` is 3 → fails.
 #[test]
 fn a_request_naming_another_instance_is_refused() {
     let _l = PROBE_LOCK.lock().unwrap_or_else(|p| p.into_inner());
@@ -304,12 +277,6 @@ fn a_request_naming_another_instance_is_refused() {
 /// A request made after `process` returned is refused, even on the thread
 /// that called `process` and with the instance's own host: the request is
 /// served only for the span of the call.
-///
-/// Mutation: drop the `current.is_null()` check in `request_exec` → the
-/// call dereferences null → panics, aborting the process → fails. (A
-/// thread-local left pointing at the finished request would be a dangling
-/// read this test cannot observe reliably; the unit test
-/// `a_swap_restores_the_previous_request_on_return_and_unwind` covers it.)
 #[test]
 fn a_request_after_process_returns_is_refused() {
     let _l = PROBE_LOCK.lock().unwrap_or_else(|p| p.into_inner());
@@ -359,9 +326,6 @@ fn gated(participants: usize) -> Arc<GraphPool> {
 
 /// Serving requests allocates nothing on the audio thread or on the
 /// helpers that run the tasks.
-///
-/// Mutation: box the task counter in `PoolRequest::run`
-/// (`Box::new(Tasks { .. })`) → the gate aborts the process.
 #[test]
 #[cfg_attr(miri, ignore = "threads and a dlopen'd plugin")]
 fn serving_requests_does_not_allocate() {
@@ -384,9 +348,6 @@ fn serving_requests_does_not_allocate() {
 /// whichever thread runs it, since the audio thread waits for it: the line
 /// is counted as dropped, not formatted, printed and kept (which allocates
 /// and locks).
-///
-/// Mutation: drop `in_served_task()` from `host_log`'s check → a helper's
-/// line allocates inside the gate → the process aborts → fails.
 #[test]
 #[cfg_attr(miri, ignore = "threads and a dlopen'd plugin")]
 fn a_task_that_logs_does_not_allocate() {

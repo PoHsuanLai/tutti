@@ -12,8 +12,7 @@ fn wav(pcm: Pcm) -> Format {
 }
 
 /// At `Float32` there is nothing to add: no spec, so the sink is the
-/// identity. Mutation (run): drop the `?` on `int_depth` (use `unwrap_or`
-/// `Int24`) and a spec appears.
+/// identity.
 #[test]
 fn float32_is_never_dithered() {
     assert_eq!(
@@ -23,9 +22,6 @@ fn float32_is_never_dithered() {
 }
 
 /// An Ogg export with dither on adds nothing.
-///
-/// Mutation (run): make `Format::int_depth` return `Some(IntDepth::default())`
-/// for `Vorbis` and a spec appears.
 #[test]
 fn ogg_is_never_dithered() {
     let cfg = config(
@@ -37,7 +33,6 @@ fn ogg_is_never_dithered() {
     assert_eq!(dither_spec(&cfg), None);
 }
 
-/// Mutation (run): default `None` to `Triangular` in `dither_spec` and a spec appears.
 #[test]
 fn off_has_no_spec() {
     assert_eq!(dither_spec(&config(None, wav(Pcm::Int16))), None);
@@ -45,7 +40,7 @@ fn off_has_no_spec() {
 
 /// The shape follows the option, and the LSB the depth: 16-bit is 2^-15 and
 /// 24-bit is 2^-23, derived from the depth, not read back from the
-/// implementation. Mutation (run): `dither_spec` always naming `Triangular` makes the rectangular row fail.
+/// implementation.
 #[test]
 fn the_spec_matches_the_option_and_the_depth() {
     let t16 = dither_spec(&config(Some(DitherShape::Triangular), wav(Pcm::Int16))).unwrap();

@@ -14,21 +14,6 @@
 //! nextest's per-test timeout. That is said plainly at the test rather than
 //! dressed up as a check.
 //!
-//! Mutations run against `the thread`, and which test each one broke. Every
-//! row was executed, not reasoned about:
-//!
-//! | mutation in `recorder.rs` | fails |
-//! |---|---|
-//! | `PumpPass::Ended => {}` | `a_finite_source_…` (poll count keeps climbing after drain) |
-//! | `while false && running.load(…)` | all three (nothing is ever pumped) |
-//! | `PumpPass::Starved => break` | `a_starving_source_…` (times out in `wait_until`) |
-//! | `.unwrap_or_else(…)` → `.unwrap()` | `a_panicking_source_…` |
-//! | `Recorder::wait` calls `finish_in_place()` rather than `join_pump()` | `wait_returns_a_complete_finite_take_…` (short file) |
-//! | `PumpPass::Ended => {}` | `is_finished_reports_…` (times out in `wait_until`) |
-//! | `JoinHandle`'s `is_finished` returns `false` | both `is_finished`/`request_stop` tests (time out) |
-//! | `PumpPass::Failed => {}` | `a_dead_source_ends_its_own_take` (times out in `wait_until`) |
-//! | `request_stop` stores `true` | `a_requested_stop_…` (fails at once at `!rec.is_running()`; the test holds the recorder in `ManuallyDrop`, so the unwind leaks the pump rather than joining a take the mutated `request_stop` can no longer end) |
-//!
 //! The last three tests are the Bevy-free half of `bevy-tutti`'s
 //! `audio_io_pump.rs` (design 015 moved its pump loop here): a finite
 //! source ends its own take and a frame loop can see that without blocking; a
@@ -105,11 +90,11 @@ struct Ramp {
     /// Wall time burned per poll, to give a take a measurable *duration*.
     ///
     /// [`std::time::Duration::ZERO`] everywhere except
-    /// `wait_returns_a_complete_finite_take_…`, whose mutation is "clear the
-    /// run flag before joining" — and at `SCRATCH_FRAMES` = 1024 per poll an
+    /// `wait_returns_a_complete_finite_take_…`, where a `wait` that would clear the
+    /// run flag before joining would truncate the take — and at `SCRATCH_FRAMES` = 1024 per poll an
     /// instant source can drain in so few passes that a truncating `wait`
     /// might still catch the whole take by luck. No assertion reads this or
-    /// any clock; it only widens the window the mutation has to land in, so
+    /// any clock; it only widens the window a truncating `wait` has to land in, so
     /// the difference between a complete take and a truncated one is not a
     /// coin flip.
     delay: std::time::Duration,
@@ -323,8 +308,8 @@ fn a_starving_source_is_ended_only_by_stop() {
 /// so a panicking source would have surfaced as… whatever `unwrap` does.
 ///
 /// Safe to run only because this repo uses nextest, which gives every test its
-/// own process: the panic is caught by the join here, but a mutation that
-/// replaces `unwrap_or_else` with `unwrap` aborts the *binary*, and
+/// own process: the panic is caught by the join here, but a pump that used
+/// `unwrap` rather than `unwrap_or_else` would abort the *binary*, and
 /// process-per-test keeps that from taking the other suites' results with it.
 /// Under plain `cargo test` this would be a much worse neighbour — see
 /// `CLAUDE.md` on why nextest is not optional here.
@@ -376,13 +361,7 @@ fn a_panicking_source_surfaces_as_a_recording_thread_panic() {
 /// So the body here is the assertion: `start`, `wait`, read the file. No
 /// `wait_until`, no published flag, no sleep in the test. If `wait` did not
 /// hold the loop open to the source's own [`Pull::Ended`], the frame
-/// count would come up short — which is exactly the mutation.
-///
-/// *Mutation:* make `Recorder::wait` call `finish_in_place()` instead of
-/// `join_pump()` — i.e. give it `stop`'s flag clear. The file comes back at
-/// one or two 1024-frame polls instead of all 20, and the count assertion
-/// fails. (`Ramp::delay` is what stops that from being a coin flip; see the
-/// field's own comment.)
+/// count would come up short — which is exactly what this pins.
 #[test]
 fn wait_returns_a_complete_finite_take_without_sequencing_on_the_pump() {
     let dir = tempfile::tempdir().unwrap();
@@ -562,9 +541,6 @@ fn a_dead_source_ends_its_own_take() {
 
 /// `wait` on a source that dies reports it instead of `Ok(())`, with the
 /// delivered frames in a valid file. `finish` does the same.
-///
-/// Mutation: dropping the `source_failed` check in `PumpLoop::finalize` makes
-/// both return `Ok`.
 #[test]
 fn wait_and_finish_report_a_failed_source() {
     for use_wait in [true, false] {
@@ -608,10 +584,6 @@ impl Source for AlwaysLive {
 /// thread never reaches `finalize` (and never stops): the RIFF/data sizes stay
 /// at their placeholders and the pump keeps polling. Both are observed: the
 /// file holds the frames and the poll count freezes once the drop returns.
-///
-/// Mutation (run): delete `impl Drop for Recorder`: the poll count keeps
-/// climbing after the drop and the header reads zero frames, so both
-/// assertions fail.
 #[test]
 fn dropping_a_live_recorder_still_finalizes_the_wav() {
     let dir = tempfile::tempdir().unwrap();
@@ -652,11 +624,6 @@ fn dropping_a_live_recorder_still_finalizes_the_wav() {
 /// A component holding a take cannot move it into `finish`, so it calls
 /// `finish_in_place` from a `&mut`. The first call returns the finalize result;
 /// every later one returns `None`, and the `Drop` that follows joins nothing.
-///
-/// *Mutations:* make `join_pump` return `Some(Ok(()))` when the handle is gone
-/// (the second-call assertion fails); make `finish_in_place` skip
-/// `request_stop` (the take never ends: `wait_until` times out in the join's
-/// place, guarded here by sequencing on `is_finished` after an explicit stop).
 #[test]
 fn finish_in_place_finalizes_in_place_exactly_once() {
     let dir = tempfile::tempdir().unwrap();

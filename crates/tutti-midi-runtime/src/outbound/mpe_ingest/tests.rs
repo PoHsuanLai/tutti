@@ -212,10 +212,6 @@ fn mcm_from_the_wire_configures_the_lower_zone() {
 /// **An MCM that would put both zones on one member channel is ignored**
 /// (RP-053 makes the sender keep the zones apart; here the arrangement type
 /// refuses the pair): absorbed, nothing sent, the zones as they were.
-///
-/// Mutation (run): the refusal arm of `reconfigure_from_mcm` returning `true`
-/// with the zones rebuilt as `Disabled` -> the mode changes, and the zone's
-/// ranges are sent, fails.
 #[test]
 fn an_mcm_that_would_overlap_the_zones_is_ignored() {
     let mut ingest = MpeIngest::new(tutti_fixtures::midi::lower_zone(10));
@@ -288,14 +284,6 @@ fn ranges_after(events: impl IntoIterator<Item = UmpAt>) -> Vec<(u8, u8, f32)> {
 /// on those members is back at ±48. The other zone of a dual setup keeps
 /// its ranges (nothing is sent for it), and a disabling MCM sends nothing.
 /// A host-set mode sends the same through `zone_defaults`, for each zone.
-///
-/// Mutation (run): the MCM arm returns `None` again (absorbed, nothing
-/// sent) → the receiver keeps ±12 → fails.
-/// Mutation (run): `zone_default_runs` emits #00/00 on the members → the
-/// receiver keeps ±12 → fails.
-/// Mutation (run): the MCM resets every zone of the new mode
-/// (`zone_defaults` in place of the configured side's runs) → the lower
-/// zone's ranges are sent too → fails.
 #[test]
 fn an_mcm_resets_its_zones_bend_ranges() {
     use tutti_plugin_types::PerNoteBendRanges;
@@ -385,15 +373,6 @@ fn bend_sensitivity(channel: u8, semitones: u8) -> UmpAt {
 /// 3, on member 13 on 12, 13 and 14, at the event's offset; on master 0 it
 /// passes through as it came. A per-note receiver reading the output then
 /// bends those channels' notes by the new range and the rest by ±48.
-///
-/// Mutation (run): the fan-out drops its `is_member` check → the master's
-/// sensitivity fans out too → fails.
-/// Mutation (run): the fan-out emits index #00/00 → the receiver keeps
-/// ±48 → fails.
-/// Mutation (run): the fan-out takes the lower zone's config for both
-/// sides → member 13's fans out over 1..=3 → fails.
-/// Mutation (run): one channel (`ch..=ch`) instead of the zone's range →
-/// fails.
 #[test]
 fn a_member_channels_bend_range_becomes_every_members_per_note_range() {
     use tutti_plugin_types::PerNoteBendRanges;
@@ -433,9 +412,6 @@ fn a_member_channels_bend_range_becomes_every_members_per_note_range() {
 /// **A MIDI 2.0 Note On at velocity 0 binds its member channel** (M2-104
 /// 7.4.2: it is a Note On; the translator before the ingest turns a MIDI 1.0
 /// one into a Note Off): a channel bend there folds onto the note.
-///
-/// Mutation: bind only at a nonzero velocity (unbind at 0, as before the
-/// translator moved) → the bend is dropped → fails.
 #[test]
 fn a_midi_2_note_on_at_velocity_0_binds_its_channel() {
     let mut ingest = MpeIngest::new(tutti_fixtures::midi::lower_zone(15));
@@ -456,11 +432,6 @@ fn a_midi_2_note_on_at_velocity_0_binds_its_channel() {
 /// not the note a bend on channel 2 of Group 1 is for (that bend holds no note
 /// in its Group and is dropped), and the per-note message built for Group 2's
 /// bend stays in Group 2.
-///
-/// Mutation: the held-note table shared by every Group (one table, as it was)
-/// -> Group 1's bend folds onto Group 2's note, so the second assertion
-/// fails; the folded message built at `Address::first` -> its Group is 1,
-/// so the last assertion fails.
 #[test]
 fn a_groups_member_channels_hold_notes_of_their_own() {
     let mut ingest = MpeIngest::new(tutti_fixtures::midi::lower_zone(15));
@@ -490,11 +461,6 @@ fn a_groups_member_channels_hold_notes_of_their_own() {
 /// other (M2-104 Appendix B.1: what a message does in one Group "does not
 /// apply to Channels in any other Group"), and its reset ranges go out on
 /// that Group.
-///
-/// Mutation: the MCM rebuilding the mode of every Group (or of the first
-/// Group always) -> Group 1 is a zone, or Group 2 is not, and the first two
-/// assertions fail; the reset ranges sent on the first Group -> the last
-/// fails.
 #[test]
 fn an_mcm_configures_its_own_group_only() {
     let mut ingest = MpeIngest::new(MpeMode::Disabled);

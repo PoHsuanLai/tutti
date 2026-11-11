@@ -149,9 +149,6 @@ mod tests {
     use super::*;
 
     /// Each named constant maps to its own variant and back, and has a message.
-    ///
-    /// Mutation (run): delete or swap an arm of `from_raw` (or of `message`) ->
-    /// the variant (or the "not unknown" assertion) fails for that constant.
     #[test]
     fn every_named_code_has_its_variant_and_message() {
         let named = [

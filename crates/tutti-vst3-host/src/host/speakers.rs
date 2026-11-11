@@ -137,9 +137,6 @@ mod tests {
     /// Every speaker bit decodes to its speaker, with the bit positions written
     /// as literals from `vstspeaker.h` (`kSpeakerL = 1 << 0` ... `kSpeakerTrr =
     /// 1 << 17`), not read back from the table or the SDK constants.
-    ///
-    /// Mutation (run): swapping the `kSpeakerTfl` and `kSpeakerTfr` rows of
-    /// `SPEAKER_BITS` fails this at bits 12 and 14.
     #[test]
     fn every_named_bit_decodes_to_its_speaker() {
         let spec: [(u32, Speaker); 18] = [

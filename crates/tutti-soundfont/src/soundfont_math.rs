@@ -80,9 +80,6 @@ mod tests {
 
     /// 9.3, absolute timecents: zero is one second, and a timecent is the 1200th
     /// root of two in time, so 1200 doubles it and -1200 halves it.
-    ///
-    /// Mutation (run): `1200` -> `1000` in `timecents_to_seconds` fails the
-    /// doubling.
     #[test]
     fn timecents_are_one_second_at_zero_and_double_every_1200() {
         assert_eq!(SoundFontMath::timecents_to_seconds(0.0), 1.0);
@@ -105,8 +102,6 @@ mod tests {
     }
 
     /// 9.3, absolute cents: 6900 is 440 Hz (A-440), and 1200 cents is an octave.
-    ///
-    /// Mutation (run): the 8.176 reference nudged to 8.0 fails the 440 Hz.
     #[test]
     fn absolute_cents_6900_is_440_hz_and_an_octave_is_1200() {
         assert!(close(SoundFontMath::cents_to_hertz(6900.0), 440.0, 1e-3));
@@ -132,8 +127,6 @@ mod tests {
     /// root of ten; so 200 centibels (20 dB) is a tenth in amplitude, and 60
     /// dB a thousandth. (The generators convert centibels to decibels with a
     /// factor of 0.1, tested at `RegionPair`.)
-    ///
-    /// Mutation (run): `0.05` -> `0.1` in `decibels_to_linear` fails both.
     #[test]
     fn decibels_are_twenty_log_amplitude() {
         assert!(close(SoundFontMath::decibels_to_linear(-20.0), 0.1, 1e-5));
@@ -146,8 +139,6 @@ mod tests {
     /// track the keyboard (an octave up halves it). The spec's own worked
     /// example: a hold of -7973 timecents (10 ms) with a key-number-to-hold of
     /// 50, played at key 36, is 20 ms.
-    ///
-    /// Mutation (run): `60 - key` -> `key - 60` fails it.
     #[test]
     fn key_number_scaling_follows_the_spec_example() {
         let base = SoundFontMath::timecents_to_seconds(-7973.0);

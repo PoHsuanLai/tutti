@@ -291,7 +291,6 @@ mod tests {
     }
 
     /// The blacklist, including a file that has no time, survives a restart.
-    /// Mutation: skip blacklisted rows in `save`.
     #[test]
     fn a_blacklist_persists_through_save_and_load() {
         let dir = TempDir::new().unwrap();
@@ -341,7 +340,7 @@ mod tests {
     }
 
     /// The current version with a body of the wrong shape is corrupt, not
-    /// another version. Mutation: map every parse failure to `Version`.
+    /// another version.
     #[test]
     fn the_current_version_with_a_bad_body_is_quarantined_as_corrupt() {
         let dir = TempDir::new().unwrap();
@@ -355,8 +354,6 @@ mod tests {
     /// A file of another version is refused and moved aside, whichever side of
     /// this version it is on. Each body is otherwise a valid current-version
     /// body, so a loader that ignored the version would read it.
-    /// Mutation: drop the `Some(Some(VERSION))` check (accept any integer
-    /// version).
     #[test]
     fn a_file_of_another_version_is_refused_rebuilt_and_kept() {
         let current = current_text();
@@ -382,8 +379,7 @@ mod tests {
         }
     }
 
-    /// A body with no version is not read as the current one. Mutation: treat a
-    /// missing version as current.
+    /// A body with no version is not read as the current one.
     #[test]
     fn a_body_with_no_version_is_refused() {
         let dir = TempDir::new().unwrap();
@@ -398,7 +394,7 @@ mod tests {
     }
 
     /// An old file in the layout before versions (a bare list of records) is
-    /// refused and rebuilt. Mutation: accept a top-level array.
+    /// refused and rebuilt.
     #[test]
     fn the_unversioned_record_list_layout_is_refused() {
         let dir = TempDir::new().unwrap();
@@ -414,7 +410,6 @@ mod tests {
     }
 
     /// A file that lists one path twice loads the later row, as `apply` would.
-    /// Mutation: apply the rows in reverse order in `parse`.
     #[test]
     fn a_later_row_for_one_path_wins() {
         let dir = TempDir::new().unwrap();
@@ -436,8 +431,7 @@ mod tests {
         assert_eq!(db.row(Path::new("/plugins/a.vst3")), Some(&second));
     }
 
-    /// A save must write the version `load` accepts. Mutation: write another
-    /// number in `save`.
+    /// A save must write the version `load` accepts.
     #[test]
     fn a_saved_file_declares_the_version_load_reads() {
         let dir = TempDir::new().unwrap();
@@ -473,7 +467,6 @@ mod tests {
     }
 
     /// A write that fails midway leaves the old file whole and no temp file.
-    /// Mutation: have `replace_file` write to `path` directly.
     #[test]
     fn a_failed_write_leaves_the_old_file_intact() {
         let dir = TempDir::new().unwrap();
@@ -499,7 +492,7 @@ mod tests {
     }
 
     /// A failure at the rename (the target is a directory) is an error, and
-    /// leaves no temp file. Mutation: skip the cleanup in `replace_file`.
+    /// leaves no temp file.
     #[test]
     fn a_failed_rename_is_an_error_and_leaves_no_temp_file() {
         let dir = TempDir::new().unwrap();
@@ -511,7 +504,7 @@ mod tests {
     }
 
     /// Rows come out in path order, so a saved file does not churn between
-    /// saves. Mutation: back the table with a `HashMap`.
+    /// saves.
     #[test]
     fn saving_twice_writes_the_same_bytes() {
         let dir = TempDir::new().unwrap();
@@ -523,7 +516,6 @@ mod tests {
     }
 
     /// A second unreadable file does not replace the first, for each kind.
-    /// Mutation: return the name without checking `exists` in `unused_name`.
     #[test]
     fn quarantined_files_are_never_overwritten() {
         let dir = TempDir::new().unwrap();
@@ -547,7 +539,7 @@ mod tests {
     }
 
     /// The temp file is a sibling of the target, so the rename stays on one
-    /// filesystem. Mutation: build the temp name under `std::env::temp_dir()`.
+    /// filesystem.
     #[test]
     fn the_temp_file_is_a_sibling_of_the_target() {
         let dir = TempDir::new().unwrap();
@@ -568,8 +560,7 @@ mod tests {
 
     /// A name that is not UTF-8 keeps its row, blacklist included, through a
     /// save and a load: a crashing plugin with such a name must not be probed
-    /// again after a restart. Mutation: skip rows whose path has no `to_str`
-    /// in `StoredPath::of` (return `None`).
+    /// again after a restart.
     #[cfg(unix)]
     #[test]
     fn a_non_utf8_path_round_trips_through_the_file() {

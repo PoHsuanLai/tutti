@@ -208,7 +208,7 @@ fn instruments_report_no_input_buses() {
 /// two inference methods agree on every single one — 55 with an input element,
 /// 77 without, zero disagreements. So the element-count form is *defensive*:
 /// correct per Apple's model, but with no locally observable behavioural
-/// difference. A mutation swapping it passes the entire suite, and that is a
+/// difference. Swapping it passes the entire suite, and that is a
 /// property of the available corpus, not a gap in the assertions.
 ///
 /// What it does pin is the invariant itself — the host's derived view never

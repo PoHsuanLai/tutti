@@ -903,11 +903,6 @@ mod tests {
     /// counted as settled; a query's late reply and the rest of a stalled
     /// state are taken without answering anything; the frame after them is
     /// the answer.
-    ///
-    /// Mutations (run), each fails: `take` returning `Some(msg)` at once (the
-    /// pre-fix pairing: every request read the oldest owed frame as its
-    /// answer); `StateRest` ending on any chunk (the second chunk is read as
-    /// the answer); a block's reply not forwarded (no MIDI response).
     #[test]
     fn owed_frames_are_taken_in_order_before_the_answer() {
         let channels = Channels::new(SampleRate(48_000.0));
@@ -943,10 +938,6 @@ mod tests {
     /// **An owed answer that is not coming does not swallow the replies after
     /// it.** A frame of another kind lets the owed item go and is weighed
     /// against the next; the server's `Error` answers any request.
-    ///
-    /// Mutations (run), each fails: `Late::Answer` taking any frame (the list
-    /// is swallowed as the late value); `StateRest` taking any frame (the same);
-    /// `Error` not answering an owed query (it is returned as the answer).
     #[test]
     fn a_frame_of_another_kind_lets_an_owed_answer_go() {
         let channels = Channels::new(SampleRate(48_000.0));
@@ -976,10 +967,6 @@ mod tests {
     /// queue pushed past the spares (the carry's own, with the inline room)
     /// later took a reserved queue's place on `clear` and left the buffer
     /// with a 10-point queue among its reserved ones.
-    ///
-    /// Mutation (run): `merge_carried` pushes the carried queue
-    /// (`changes.queues.push(kept)`) instead of opening a spare → the
-    /// merged queue has the room of its one point → fails.
     #[test]
     fn a_carried_value_fills_a_reserved_queue() {
         let mut owed = Owed::default();
@@ -1014,11 +1001,6 @@ mod tests {
     /// buffer still has one queue. The placeholder of a block with no
     /// changes (`ParameterChanges::new`) gets a queue for each of two
     /// carried values, though the first gives it queue room.
-    ///
-    /// Mutations (run), each fails: the no-spare case pushing a queue (as
-    /// it did) → the gate trips on the allocation; the placeholder decided
-    /// per value (`changes.capacity() == 0` inside the loop) → the second
-    /// value opens a queue with no point room and is dropped.
     #[test]
     fn a_carried_value_past_the_queues_is_dropped_but_the_placeholder_takes_all() {
         let mut skipped = ParameterChanges::reserved(2, 1);
@@ -1059,11 +1041,6 @@ mod tests {
     /// `merge_carried` puts each on frame 0 (the ten unmoved ones in spare
     /// queues): nothing is counted, every queue gained exactly its carried
     /// point ahead of its own, and the buffer's storage is what it was.
-    ///
-    /// Mutation (run): `ParameterChanges::reserved_bridged` without its
-    /// carry slot (`carry_slot: 0`) → `make_room` lets the full queues fill
-    /// the kept point, so their carried values have no slot and no block
-    /// left and are dropped, counted → fails.
     #[test]
     fn carried_values_take_real_slots_at_the_pool_budget_without_allocating() {
         const PARAMS: usize = 2_000;

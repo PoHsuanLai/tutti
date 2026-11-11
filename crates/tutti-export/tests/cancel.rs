@@ -181,11 +181,6 @@ fn done(p: &Progress) -> usize {
 /// A render cancelled by its callback after N frames is `Cancelled` (not an
 /// error, not a short file), has rendered exactly those frames, and leaves
 /// nothing at its path, in every format.
-///
-/// Mutation (run): `open_file` writing to `path` itself (`Encoder::create` over
-/// `File::create(path)`) -> the partial file stays and the `exists` assertion
-/// fails.
-/// Mutation (run): `drive` ignoring the token -> the outcome assertion fails.
 #[test]
 fn a_cancelled_file_render_is_cancelled_and_leaves_no_file() {
     let dir = tempfile::tempdir().unwrap();
@@ -217,11 +212,6 @@ fn names(dir: &std::path::Path) -> Vec<String> {
 /// A cancel never touches a file already at the path, whichever stage it
 /// lands in, and leaves no temporary beside it: the render is written aside
 /// and renamed over the target only when it finishes.
-///
-/// Mutation (run): `open_file` writing to `path` itself (no `Staged`) ->
-/// the old bytes are truncated and the comparison fails in every case.
-/// Mutation (run): `Staged::drop` not removing the temporary -> the
-/// directory listing holds a `.tmp` and fails.
 #[test]
 fn a_cancel_leaves_the_file_it_would_have_replaced() {
     for (format, ext) in formats() {
@@ -269,9 +259,6 @@ fn a_finished_render_replaces_the_old_file() {
 /// target is a directory) is an error, the target is untouched and the
 /// temporary is gone. A target in a directory that cannot hold the file
 /// still errors.
-///
-/// Mutation (run): `Staged::commit` marking the file kept before the rename
-/// -> the temporary stays behind; fails.
 #[test]
 fn a_failed_write_leaves_the_target_and_no_temporary() {
     for (format, ext) in formats() {
@@ -294,9 +281,6 @@ fn a_failed_write_leaves_the_target_and_no_temporary() {
 
 /// Rendering to memory stops the same way, with nothing returned, whether the
 /// token is cancelled while it renders or as its last stage begins.
-///
-/// Mutation (run): `finalize_files` skipping the check after `begin` of the
-/// finalizing stage -> the second case is `Finished`; fails.
 #[test]
 fn a_cancelled_buffer_render_is_cancelled() {
     let cfg = config(Format::Wav(Pcm::Int16));
@@ -324,10 +308,6 @@ fn a_cancelled_buffer_render_is_cancelled() {
 /// A normalized export renders, measures, writes and finalizes in order, and
 /// cancelling in the writing stage cancels the export and removes the file,
 /// after the whole render has run.
-///
-/// Mutation (run): the writing stage given a `Control::none()` (weighed as
-/// normalized) instead of the host's -> the outcome is `Finished` and the
-/// file exists; fails.
 #[test]
 fn the_writing_stage_of_a_normalized_export_stops() {
     let dir = tempfile::tempdir().unwrap();
@@ -357,9 +337,6 @@ fn the_writing_stage_of_a_normalized_export_stops() {
 
 /// Cancelling in the rendering stage of a normalized export never measures or
 /// writes.
-///
-/// Mutation (run): `drive` without either of its token checks -> the render
-/// runs on, and measuring readings follow; fails.
 #[test]
 fn cancelling_the_rendering_stage_of_a_normalized_export_never_measures() {
     let dir = tempfile::tempdir().unwrap();
@@ -378,9 +355,6 @@ fn cancelling_the_rendering_stage_of_a_normalized_export_never_measures() {
 /// A cancel on the final block's reading is `Cancelled` (the reading is
 /// delivered before the render is known to be complete), and the file is not
 /// delivered.
-///
-/// Mutation (run): `drive` not checking the token after it delivers progress
-/// -> the next stage begins before the cancel is seen; fails.
 #[test]
 fn a_cancel_on_the_final_reading_is_cancelled() {
     let dir = tempfile::tempdir().unwrap();
@@ -626,11 +600,7 @@ fn a_cancel_at_each_pipeline_point_stops_there_and_leaves_the_targets() {
 /// doc 019 section 6.1; `output` is `None` while rendering and `Some(0)`
 /// after; and no reading is `1.0` but the last.
 ///
-/// Mutations (each run, each failed): `NORMALIZED`'s `Measuring` band
-/// widened to 0.70 (the band check); `finalize_files` delivering
-/// `at(Finalizing, 1.0)` before the renames (the one-reading-at-1.0 check);
-/// `deliver` giving `Rendering` an output (the output check). Monotonic is
-/// the unit test's (`the_fraction_never_falls`), which reorders stages.
+/// Monotonic is the unit test's (`the_fraction_never_falls`).
 #[test]
 fn progress_is_monotonic_banded_and_ends_on_one_after_the_rename() {
     for shape in SHAPES {
@@ -726,10 +696,6 @@ fn progress_is_monotonic_banded_and_ends_on_one_after_the_rename() {
 /// On a long render no two readings of a stage are more than 4096 frames
 /// apart, a stage change is always delivered, and the render is not reported
 /// every block.
-///
-/// Mutations (each run, each failed): `DELIVERY_FRAMES` 4096 -> 8192 -> the
-/// gap check fails; `advance` delivering only on completion -> the gap check
-/// fails (and on every call, the `readings < blocks` check).
 #[test]
 fn readings_come_at_least_every_4096_frames_and_at_every_stage_change() {
     let blocks = 200;

@@ -1,9 +1,6 @@
 use super::*;
 
 /// Every decoder error maps to its own variant with its message intact.
-///
-/// Mutation (run): mapping `Symphonia::DecodeError` to `Unsupported` fails the
-/// first assertion; mapping `LimitError` to `Malformed` fails the fourth.
 #[test]
 fn each_decoder_error_has_its_own_variant() {
     assert!(matches!(
@@ -27,9 +24,6 @@ fn each_decoder_error_has_its_own_variant() {
 }
 
 /// Each way a seek can fail reads differently, and names no decoder type.
-///
-/// Mutation (run): `OutOfRange` reusing `ForwardOnly`'s message fails the
-/// distinctness check.
 #[test]
 fn seek_failures_keep_their_reason() {
     use symphonia::core::errors::SeekErrorKind::*;
@@ -45,8 +39,6 @@ fn seek_failures_keep_their_reason() {
 
 /// A copy keeps an I/O error's kind and text, which `FileIn` relies on to report
 /// a sticky fault again.
-///
-/// Mutation (run): rebuilding the `Io` copy with `ErrorKind::Other` fails.
 #[test]
 fn a_copy_keeps_the_io_kind_and_message() {
     let error = DecodeError::Io(io::Error::new(io::ErrorKind::UnexpectedEof, "cut short"));

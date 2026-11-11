@@ -90,12 +90,6 @@ fn same_at_every_block(what: &str, make: impl Fn() -> Box<dyn Fn(usize) -> Vec<V
 /// An SVF bell and an EQ band with a lane on every control it has, and the
 /// other cells moved before the first block, render the same bits whether the
 /// stream arrives in blocks of 1, 17, 64 or 512 frames.
-///
-/// Mutations (run): counting the grid from each block's start (the stream
-/// phase in `Cadence::steps` forced to 0) fails this at the blocks of 1, 17 and
-/// 64; sampling each lane at the end of its segment rather than its start
-/// (`solve_at`) fails this and the lag test; `COEFF_INTERVAL = 32` fails only the
-/// lag test (the grid is still the stream's).
 #[test]
 fn blocks_of_any_length_render_alike_with_lanes_and_moved_cells() {
     let inputs = [noise(1), noise(2)];
@@ -151,11 +145,6 @@ fn blocks_of_any_length_render_alike_with_lanes_and_moved_cells() {
 /// with the drive cell moved before the first block under a cutoff lane, render the
 /// same bits at blocks of 1, 17, 64 or 512 frames: the drive is on the grid like the
 /// coefficients (a lane sampled per segment, a cell held).
-///
-/// Mutations (run): counting the grid from each block's start (the stream phase in
-/// `Cadence::steps` forced to 0) fails both (blocks of 1, 17, 64 and 512 differ); reading the
-/// drive lane 15 frames late (`s[at.frame + 15]` in `Params::read`'s drive arm)
-/// fails the first.
 #[test]
 fn the_ladder_renders_alike_at_every_block_length_with_lanes() {
     let inputs = [noise(4), noise(5)];
@@ -213,11 +202,6 @@ fn the_ladder_renders_alike_at_every_block_length_with_lanes() {
 /// into a ladder with no state answers with the drive in force at that frame, so the
 /// output there is the held filter's with that drive, bit for bit. (Drive was once
 /// read per sample, outside the solve: a step at 40 would be in the render at 40.)
-///
-/// Mutations (run): sampling the drive lane 15 frames late (`s[at.frame + 15]`, the
-/// segment's end) reads the new drive at 47 and fails the first assertion; solving each
-/// step at its last frame (`solve_at` on the stream arm of `Cadence::steps`) fails it
-/// too.
 #[test]
 fn a_drive_lane_step_is_in_the_render_within_one_segment() {
     const STEP: usize = 40;
@@ -245,7 +229,7 @@ fn a_drive_lane_step_is_in_the_render_within_one_segment() {
 /// A cell moved before the first block (no lane) is held: every block length
 /// renders the same bits.
 ///
-/// Not sensitive to the grid mutations above (a held set has no ramp to cut);
+/// Not sensitive to the grid (a held set has no ramp to cut);
 /// it pins the path the lanes' case does not take, one retarget at the first
 /// grid point and none after.
 #[test]
@@ -276,11 +260,6 @@ fn held_cells_render_alike_at_every_block_length() {
 /// the first to read the new cutoff and its segment ends on that set at frame 63,
 /// so an impulse there is answered as the new held filter answers it: 16 frames
 /// after the last point that did not see the step, 24 after the step itself.
-///
-/// Mutations (run): sampling the lane at the segment's last frame rather than its
-/// first (`solve_at` on the stream arm of `Cadence::steps`) reads the new cutoff
-/// at 47 and fails the first assertion; `COEFF_INTERVAL = 32` (a 32-frame grid and
-/// ramp) leaves frame 47 and 63 on neither set and fails.
 #[test]
 fn a_lane_step_is_in_the_render_within_one_segment() {
     const STEP: usize = 40;
@@ -309,9 +288,6 @@ fn a_lane_step_is_in_the_render_within_one_segment() {
 /// A stereo three-band crossover with a lane on each split, and one with a lane on
 /// the upper split and the lower cell moved before the first block, render the same
 /// bits (all six outputs) at blocks of 1, 17, 64 or 512 frames.
-///
-/// Mutations (run): counting the grid from each block's start (the stream phase in
-/// `Cadence::steps` forced to 0) fails both at the blocks of 1, 17 and 64.
 #[test]
 fn the_crossover_renders_alike_at_every_block_length_with_lanes() {
     let inputs = [noise(6), noise(7)];
@@ -351,10 +327,6 @@ fn the_crossover_renders_alike_at_every_block_length_with_lanes() {
 /// same set at frame 48 and at frame 63 (the coefficients do not ramp). An impulse
 /// into a crossover with no state answers with the set in force at that frame, so
 /// the low band there is the held crossover's with that frequency, bit for bit.
-///
-/// Mutation (run): sampling the lane at the segment's last frame rather than its
-/// first (`solve_at` on the stream arm of `Cadence::steps`) reads the new frequency
-/// at 47 and fails the first assertion.
 #[test]
 fn a_crossover_lane_step_is_held_to_the_next_grid_point_then_whole() {
     const STEP: usize = 40;

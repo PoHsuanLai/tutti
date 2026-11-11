@@ -178,10 +178,6 @@ mod tests {
 
     /// Release: from the level at key-off, `fraction` of the release time on is
     /// `fraction` of 100 dB down.
-    ///
-    /// Mutation (run): the 100 dB constant (`HUNDRED_DB_NEPERS`) changed to the
-    /// 80 dB figure it replaced (9.226) puts the level at -40 dB at half time and
-    /// fails every row.
     #[test]
     fn a_release_falls_100_db_in_its_time() {
         // Key-off from full level, and from the sustain at -6 dB: the fall is
@@ -209,8 +205,6 @@ mod tests {
 
     /// Decay: the same figure, to a sustain level of 0 (a 100 dB sustain is
     /// below the voice's end).
-    ///
-    /// Mutation (run): the same constant in `start`'s decay slope.
     #[test]
     fn a_decay_falls_100_db_in_its_time() {
         let mut envelope = envelope(2.0, 0.0, 1.0);

@@ -103,10 +103,6 @@ fn probe_switch<T>(name: &[u8], arg: T) {
 /// the host's drain (`editor_idle`) hands it to the parameter callback, and
 /// the next update writes it into the lane's knob on parameter 0, leaving
 /// parameter 1's knob where the plugin started it.
-///
-/// Mutations (each run, each failed): the session's `Phase::Plugins` not
-/// writing the knob (the mirror alone: parameter 0's knob stays 0); writing
-/// every edit to parameter 1's knob (parameter 0's stays 0).
 #[test]
 fn a_plugin_gui_edit_becomes_the_knob() {
     let (mut s, node) = session_with_probe();
@@ -181,10 +177,6 @@ impl Node for EventSource1 {
 /// rewrite of the port's declared sources leaves the lane's edge where it was
 /// (`Graph::set_event_sources` keeps the edges it did not make), so
 /// `event_sources` still lists the lane and the plugin still reads `0.25`.
-///
-/// Mutation (run): `write_event_sources` dropping the edges it did not make
-/// (the `others` re-add removed) -> the lane is gone from the port after the
-/// first rewrite -> fails.
 #[test]
 fn a_plugins_midi_rewiring_keeps_its_lanes() {
     let (mut s, node) = session_with_probe();
@@ -247,9 +239,6 @@ fn a_plugins_midi_rewiring_keeps_its_lanes() {
 /// host drops a report made inside its own `setParameter` call
 /// (`tutti-vst2-host`'s `host_write`), so after four rounds of render, drain
 /// and update the knob is still 0 and the plugin still reads 0.25.
-///
-/// Mutation (run): `HostState::automate` without the `IN_HOST_WRITE` check ->
-/// the knob reads 0.25 after the first round -> fails.
 #[test]
 fn a_plugin_echoing_the_lane_keeps_its_knob() {
     let (mut s, node) = session_with_probe();

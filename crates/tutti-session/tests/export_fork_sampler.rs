@@ -102,16 +102,9 @@ fn on(seconds: f64, clock: &Arc<OfflineTimeline>) -> Bounce {
 /// frame 96 000 (at the default 120 BPM it would be 72 000). Silent before,
 /// the clip's own samples from there.
 ///
-/// Mutation (run, failed): `ExportClock::render_clock` answering
-/// `FrozenClock` for a named timeline → the voice never sounds. Mutation
-/// (run, failed): a frozen clock's render clock a rolling 120 BPM timeline →
-/// the frozen export of the voice at beat 0 sounds. (The voice reads the
-/// render's `Env`, not the fork's offline timeline: `ExportClock::offline`
-/// answering the stopped timeline for a named one passes here, and fails
-/// `export_fork`'s prepare-hook timeline tests. `Stopped::is_rolling`
-/// answering `true` passes here: no node reads the frozen fork's timeline
-/// while the render's transport is stopped. A `PrepareEdit` does:
-/// `a_frozen_exports_timeline_is_stopped_at_beat_zero` pins it.)
+/// The voice reads the render's `Env`, not the fork's offline timeline;
+/// `a_frozen_exports_timeline_is_stopped_at_beat_zero` pins the frozen export's
+/// timeline.
 #[test]
 fn a_node_export_follows_a_90_bpm_timeline() {
     let tone = |i: usize| (std::f32::consts::TAU * 440.0 * i as f32 / RATE as f32).sin();
@@ -244,15 +237,6 @@ fn node_of(source: VoiceSource) -> VoiceNode {
 /// one, which reads it a frame at a time. **And it is the same clip as a
 /// memory voice**: a node export of the file's frames in memory, placed
 /// the same, renders the same planes bit for bit.
-///
-/// Mutation (run, failed): `DiskVoice::fork_copy` not handing the copy its
-/// file (`Some(_file) => None`) → both exports silent; and `fork_copy`
-/// returning a plain clone of the live voice → the same. Recorded with the
-/// `bevy-tutti` original, not rerun in this port: both whole-frame rules
-/// removed (`snap_to_whole_frame` in the gate, and tutti-sampler
-/// `tap_indices`'s carry of a fraction that rounds to 1.0) → a frame of the
-/// clip reads an ulp off; `DiskVoiceFork` refusing an offline fork as it
-/// refuses a live one → the master export is refused.
 #[test]
 fn a_disk_voice_exports_its_file_from_its_beat_and_matches_memory() {
     const AT: usize = 96_000;
@@ -315,9 +299,6 @@ fn a_disk_voice_exports_its_file_from_its_beat_and_matches_memory() {
 }
 
 /// **A node export of a disk voice plays its file.**
-///
-/// Mutation (run, failed): `DiskVoice::fork_copy` not handing the copy its
-/// file → silent.
 #[test]
 fn a_node_export_of_a_disk_voice_plays_its_file() {
     let dir = tempfile::tempdir().expect("a temp dir");
@@ -345,10 +326,6 @@ fn a_node_export_of_a_disk_voice_plays_its_file() {
 /// frame `n` of the clip (a ramp, which the cubic kernel reproduces
 /// between frames up to rounding), and its one second of file lasts
 /// 48 000 render frames.
-///
-/// Mutation (run, failed): the fork's read rate without the conversion
-/// (`SrcRatio::for_rates` → `UNITY` in `DiskVoice::offline_read_rate`)
-/// → a file frame per render frame.
 #[test]
 fn a_disk_voice_at_another_rate_exports_resampled() {
     const AT: usize = 24_000;
@@ -392,15 +369,8 @@ fn a_disk_voice_at_another_rate_exports_resampled() {
 /// time: a render that popped its ring, or asked its streamer to seek,
 /// would show as a jump. The export plays the clip from its first frame.
 ///
-/// Mutation (run, failed): the fork a plain clone of the live voice
-/// (`DiskVoice::fork_copy` returning `self.clone()`) → the export reads
-/// nothing from the file → fails on the export's frames. Not caught
-/// here: a fork sharing the live control cell (`fork_copy` without
-/// `detached`) — the offline read never asks that cell's streamer to seek,
-/// so the live side plays on untouched with or without it (run: every
-/// disk test passes). A fork has no live path to take, so the live-side
-/// assertion pins an outcome the structure guarantees rather than one a
-/// one-line mutation can break.
+/// A fork has no live path to take, so the live-side assertion pins an outcome the
+/// structure guarantees.
 #[test]
 fn live_disk_playback_is_untouched_while_its_voice_exports() {
     const BLOCK: usize = 256;
@@ -495,10 +465,6 @@ fn open_handles(path: &Path) -> usize {
 ///
 /// Linux only: it counts handles through `/proc/self/fd`, which the other
 /// platforms do not have. What it pins is platform-independent.
-///
-/// Mutation (run, failed): the offline reader leaking a handle on the file
-/// (`std::mem::forget` of a `File::open` in `Open::open_path`) → one handle
-/// more after the export.
 #[cfg(target_os = "linux")]
 #[test]
 fn an_export_leaves_nothing_open_behind_it() {
@@ -528,10 +494,6 @@ fn an_export_leaves_nothing_open_behind_it() {
 /// is removed after the stream started (the live streamer keeps its own
 /// handle); the fork re-opens it by its path, cannot, and its render is
 /// `Error::ForkFailed` naming the voice's key.
-///
-/// Mutation (run, failed): `DiskVoiceFork::fork` not handing the graph the
-/// copy's health (`Forked::with_health` left off) → the export succeeds,
-/// silent.
 #[test]
 fn a_disk_voice_whose_file_cannot_be_read_fails_the_export_by_name() {
     let dir = tempfile::tempdir().expect("a temp dir");

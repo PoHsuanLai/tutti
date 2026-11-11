@@ -84,11 +84,11 @@ impl DesignCase for FdnDesign {
         n.min_delay() as usize
     }
 
-    /// The anchors of the FDN have no closed form to compare to (the lines
+    /// The figures of the FDN have no closed form to compare to (the lines
     /// are mixed): its response is held to the realization's, in the
     /// `response` case.
     fn vacant(&self) -> &'static [(Hook, &'static str)] {
-        &[(Hook::Anchors, "a mixing FDN has no closed-form response")]
+        &[(Hook::Figures, "a mixing FDN has no closed-form response")]
     }
 }
 

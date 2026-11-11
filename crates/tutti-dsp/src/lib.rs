@@ -30,7 +30,7 @@
 //!   [`LookaheadRing`].
 //! - **Reverb** (`reverb/`, design 022): the model, a [`Network`] of [`Stage`]s with
 //!   analytic queries ([`Network::rt60`], [`tail`](System::tail),
-//!   [`is_stable`](Lti::is_stable), the densities) and a [`Bounds`] worst case; and two
+//!   [`is_stable`](Lti::is_stable), the densities) and a [`NetworkSizes`] worst case; and two
 //!   designs over it, [`FreeverbDesign`] (run by [`FreeverbKernel`]) and [`FdnDesign`]
 //!   (run by [`FdnKernel`]). [`loop_gain`] and [`rt60_from_gain`] are the RT60 formula
 //!   both ways.
@@ -43,7 +43,7 @@
 //!   [`VbapGains`], a block's gains and one channel ramped between two) and the HRTF
 //!   convolver ([`HrtfBinaural`]).
 //! - **FFT** (`fft/`): [`RealFft`], a real-input FFT whose arithmetic does not depend on
-//!   the CPU; [`StagedRealFft`], the same transform in steps; [`FftScratch`], reusable
+//!   the CPU (the convolver also runs it in steps); [`FftScratch`], reusable
 //!   plans and buffers.
 //! - **STFT vocabulary** (`stft/`): [`CosineWindow`] and the [`Window`] trait,
 //!   [`StftGeometry`] (window, hop, shape and rate, validated together), and [`Grid`]
@@ -91,7 +91,7 @@ mod stft;
 mod testing;
 
 pub use balance::balance_gains;
-pub use control::{COEFF_CADENCE, COEFF_INTERVAL, LANES, Ramp, lane_group};
+pub use control::{COEFF_CADENCE, COEFF_INTERVAL, LANES, Ramp};
 pub use convolver::{Convolver, IrSpectra};
 pub use delay::{DelayLine, InterpolationMode, delay_step, fractional_samples};
 pub use dither::sink::{DitherSink, DitherSpec};
@@ -99,10 +99,9 @@ pub use dither::{DitherNoise, DitherShape};
 pub use dynamics::{
     CompressorBlock, CompressorKernel, EnvelopeFollower, GateBlock, GateEnvelopeFollower,
     GateKernel, LimiterBlock, LimiterCurve, LimiterKernel, LookaheadRing, amplitude_to_db,
-    brickwall_clip, compute_compressor_gain_reduction, compute_gate_gain, compute_limiter_gain,
-    db_to_amplitude, fold_peak, gate_gain_at, ramp_db, ramp_is_at_end,
+    brickwall_clip, compute_compressor_gain_reduction, compute_limiter_gain, fold_peak, ramp_db,
 };
-pub use fft::{Complex32, FftScratch, RealFft, StagedRealFft};
+pub use fft::{Complex32, FftScratch, RealFft};
 pub use filter::{
     Biquad, ChannelKernel, Crossover, CrossoverControls, CrossoverDesign, CrossoverError,
     CrossoverModel, CrossoverTree, DirectForm1, Filter, FilterSizes, Ladder, LadderCoeffs,
@@ -123,9 +122,9 @@ pub use reverb::fdn::kernel::FdnKernel;
 pub use reverb::freeverb::design::{FreeverbControls, FreeverbDesign};
 pub use reverb::freeverb::kernel::{Freeverb, FreeverbKernel};
 pub use reverb::network::{
-    Absorption, AllPass, AllPassForm, Band, Bounds, Fdn, FirSummary, Full, Gains, Inline, Line,
+    Absorption, AllPass, AllPassForm, Band, Fdn, FirSummary, Full, Gains, Inline, Line,
     MAX_CHANNELS, MAX_DENSE, MAX_LINES, MAX_STAGES, MAX_TAPS, Matrix, Modulation, Network,
-    OutputMap, Stage, Tap, Taps, loop_gain, pre_delay_frames, rt60_from_gain,
+    NetworkSizes, OutputMap, Stage, Tap, Taps, loop_gain, pre_delay_frames, rt60_from_gain,
 };
 pub use rustfft::num_complex::Complex64;
 pub use smoother::Smoother;
@@ -138,13 +137,4 @@ pub use stft::error::{Error, Result};
 pub use stft::geometry::StftGeometry;
 pub use stft::grid::{BinCount, BinIndex, FrameCount, FrameIndex, Grid};
 pub use stft::window::{CosineWindow, Window};
-pub use tutti_types::ChannelLayout;
 pub use waveshape::{ShapeKind, Shaper};
-
-/// A single frequency bin: a rectangular complex number.
-///
-/// `num_complex::Complex<f32>`, the type [`RealFft`] works in, so
-/// bins cross the FFT boundary without conversion. The vocoder in
-/// `tutti-sampler` and the [`Convolver`] work in the same type, so values cross
-/// freely between them.
-pub use Complex32 as Complex;

@@ -9,7 +9,7 @@
 
 use tutti_types::Samples;
 
-use tutti_dsp::Complex;
+use tutti_dsp::Complex32;
 use tutti_dsp::FftScratch;
 
 /// The linear cross-correlation of two buffers, at every lag they overlap.
@@ -109,7 +109,7 @@ pub(crate) fn cross_correlate_shaped(
     a: &[f32],
     b: &[f32],
     fft: &mut FftScratch,
-    shape: impl FnOnce(&mut [Complex]),
+    shape: impl FnOnce(&mut [Complex32]),
 ) -> CrossCorrelation {
     if a.is_empty() || b.is_empty() {
         return CrossCorrelation::default();
@@ -123,7 +123,7 @@ pub(crate) fn cross_correlate_shaped(
     let spectrum = |signal: &[f32], fft: &mut FftScratch| {
         let mut padded = vec![0.0f32; size];
         padded[..signal.len()].copy_from_slice(signal);
-        let mut out = vec![Complex::default(); bins];
+        let mut out = vec![Complex32::default(); bins];
         fft.forward(&padded, &ones, &mut out);
         out
     };
@@ -238,7 +238,7 @@ mod tests {
     fn the_shape_hook_reaches_the_cross_spectrum() {
         let mut fft = FftScratch::new();
         let x = noise(64, 5);
-        let r = cross_correlate_shaped(&x, &x, &mut fft, |bins| bins.fill(Complex::default()));
+        let r = cross_correlate_shaped(&x, &x, &mut fft, |bins| bins.fill(Complex32::default()));
         assert!(r.values().iter().all(|&v| v == 0.0));
     }
 }

@@ -670,7 +670,7 @@ fn a_block_past_the_announced_maximum_is_split_before_the_plugin() {
 fn an_io_change_reaches_on_invalidate_and_the_shape() {
     use std::sync::{Arc, Mutex};
     use tutti_graph::Node as _;
-    use tutti_plugin::handles::PluginInvalidation;
+    use tutti_plugin_types::PluginInvalidation;
 
     let _guard = lock_probe();
     let loaded = load();

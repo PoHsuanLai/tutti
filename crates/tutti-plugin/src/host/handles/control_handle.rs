@@ -5,14 +5,14 @@
 //! Audio never travels through here; this is the off-RT half.
 
 use crate::host::handles::capabilities::{
-    BlockCounts, HostAutomationState, HostEditor, HostParams, HostPresets, HostRenderMode,
-    HostState,
+    HostAutomationState, HostEditor, HostParams, HostPresets, HostRenderMode, HostState,
 };
 use crate::host::node::{InvalidateSink, ParameterChangeSink, RefreshSink};
 use crate::util::window::{ContentScale, EditorSize};
 use raw_window_handle::HasWindowHandle;
 use std::sync::Arc;
 use tutti_plugin_types::AutomationMode;
+use tutti_plugin_types::BlockCounts;
 use tutti_plugin_types::EditorError;
 use tutti_plugin_types::MainThread;
 use tutti_plugin_types::{

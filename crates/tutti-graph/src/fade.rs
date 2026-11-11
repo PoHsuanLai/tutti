@@ -149,7 +149,7 @@ mod tests {
     /// removed → the range assert fails.
     #[test]
     fn equal_amplitude_gains_are_bit_stable() {
-        let mut h = 0xcbf2_9ce4_8422_2325u64;
+        let mut h = tutti_fixtures::Fnv::new();
         for len in [1usize, 2, 3, 7, 64, 240, 1000, 4800] {
             for k in 0..len {
                 let (a, b) = CrossfadeCurve::EqualAmplitude.gains(k, len);
@@ -157,14 +157,11 @@ mod tests {
                     (0.0..=1.0).contains(&a) && (0.0..=1.0).contains(&b),
                     "{k}/{len}: ({a}, {b})"
                 );
-                for bits in [a.to_bits(), b.to_bits()] {
-                    for byte in bits.to_le_bytes() {
-                        h = (h ^ u64::from(byte)).wrapping_mul(0x0100_0000_01b3);
-                    }
-                }
+                h.f32(a);
+                h.f32(b);
             }
         }
-        assert_eq!(h, 10_403_808_708_279_920_321, "digest");
+        assert_eq!(h.finish(), 10_403_808_708_279_920_321, "digest");
     }
 
     /// Each curve keeps the law its name promises at every frame: the halves

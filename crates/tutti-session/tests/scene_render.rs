@@ -146,12 +146,11 @@ fn assert_sounds(out: &[Vec<f32>], what: &str) {
 
 /// FNV-1a over the planes' little-endian `f32` bits, plane after plane.
 fn digest(planes: &[Vec<f32>]) -> u64 {
-    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
-    for byte in planes.iter().flatten().flat_map(|s| s.to_le_bytes()) {
-        h ^= u64::from(byte);
-        h = h.wrapping_mul(0x0000_0100_0000_01b3);
+    let mut h = tutti_fixtures::Fnv::new();
+    for plane in planes {
+        h.f32s(plane);
     }
-    h
+    h.finish()
 }
 
 /// **The compensated scene**: its dry left channel is the uncompensated

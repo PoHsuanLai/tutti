@@ -11,6 +11,7 @@
 //! Mutation (run): the fold's mono scale `M3DB` -> 0.5 (in `Fold`'s mono row), or
 //! a channel read at the wrong index, changes the digests and fails.
 
+use tutti_fixtures::{Fnv, noise};
 use tutti_graph::contract::{drive, prepared};
 #[cfg(feature = "convolution")]
 use tutti_nodes::ConvolverNode;
@@ -21,32 +22,6 @@ use tutti_types::{ChannelLayout, ChannelTopology, SampleRate};
 
 const RATE: SampleRate = SampleRate(48_000.0);
 const BLOCK: usize = 64;
-
-fn noise(seed: u32, len: usize) -> Vec<f32> {
-    let mut state = seed.wrapping_mul(747_796_405).wrapping_add(2_891_336_453);
-    (0..len)
-        .map(|_| {
-            state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
-            (state >> 8) as f32 / (1u32 << 24) as f32 * 2.0 - 1.0
-        })
-        .collect()
-}
-
-struct Fnv(u64);
-
-impl Fnv {
-    fn new() -> Self {
-        Self(0xcbf2_9ce4_8422_2325)
-    }
-    fn eat(&mut self, samples: &[f32]) {
-        for s in samples {
-            for byte in s.to_bits().to_le_bytes() {
-                self.0 ^= u64::from(byte);
-                self.0 = self.0.wrapping_mul(0x0100_0000_01b3);
-            }
-        }
-    }
-}
 
 /// `width` channels of distinct seeded noise, `frames` long.
 fn input(width: usize, frames: usize) -> Vec<Vec<f32>> {
@@ -62,10 +37,10 @@ fn digest(node: &mut dyn tutti_graph::Node, x: &[Vec<f32>], mut between: impl Fn
         let n = BLOCK.min(frames - at);
         let block: Vec<&[f32]> = x.iter().map(|c| &c[at..at + n]).collect();
         for out in drive(node, RATE, &block, &[]) {
-            h.eat(&out);
+            h.f32s(&out);
         }
     }
-    h.0
+    h.finish()
 }
 
 /// Every width the engine has a matrix for, to stereo and to mono.
@@ -97,10 +72,10 @@ fn the_downmix_node_renders_what_the_width_folds_did() {
             BLOCK,
         );
         let d = digest(&mut node, &input(usize::from(src), 1000), |_| {});
-        all.eat(&[f32::from_bits(d as u32), f32::from_bits((d >> 32) as u32)]);
+        all.u64(d);
     }
-    println!("DIGEST downmix {:#018x}", all.0);
-    assert_eq!(all.0, DOWNMIX);
+    println!("DIGEST downmix {:#018x}", all.finish());
+    assert_eq!(all.finish(), DOWNMIX);
 }
 
 #[cfg(feature = "convolution")]
@@ -122,10 +97,10 @@ fn the_convolver_fold_renders_what_it_always_did() {
                 handle.store(0.8, std::sync::atomic::Ordering::Relaxed);
             }
         });
-        all.eat(&[f32::from_bits(d as u32), f32::from_bits((d >> 32) as u32)]);
+        all.u64(d);
     }
-    println!("DIGEST convolver {:#018x}", all.0);
-    assert_golden("the convolver's folded render", all.0, CONVOLVER);
+    println!("DIGEST convolver {:#018x}", all.finish());
+    assert_golden("the convolver's folded render", all.finish(), CONVOLVER);
 }
 
 const DOWNMIX: u64 = 0xa683_8aff_5759_c8b4;

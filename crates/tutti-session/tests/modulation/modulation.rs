@@ -20,7 +20,8 @@ use tutti_modulation::{
 };
 use tutti_nodes::{Feed, ReconcileError};
 use tutti_session::{
-    GraphSource, ModInput, ModKeys, ModRefusal, PHASES, ParamRef, PhaseCx, Session, SessionEvent,
+    GraphSource, ModInput, ModKeys, ModRefusal, PHASES, ParamRef, PhaseCx, RouteError, Session,
+    SessionEvent,
 };
 use tutti_transport::MotionEvent;
 use tutti_types::{BeatDuration, Depth, Hz, ParamAddr, UnitParam};
@@ -62,7 +63,7 @@ fn update_at(s: &mut Session, now: Instant, mods: Option<ModInput<'_>>) -> Vec<S
 /// Updates until nothing is left to resolve: nodes committed, then lanes.
 fn settle(s: &mut Session) {
     for _ in 0..4 {
-        s.update();
+        let _ = s.update();
     }
     assert_eq!(s.mod_state().refusal(), None, "the declarations apply");
     assert_eq!(
@@ -136,14 +137,14 @@ fn the_8_1_example_renders_its_analytic_values() {
     m.range(cutoff, 0.0, 1_000.0);
     m.range(gain, 0.0, 1.0);
     let wobble = m.lfo(Lfo::sine().rate(BeatDuration(0.5)));
-    m.route(wobble, cutoff, Depth(0.3));
+    m.route(wobble, cutoff, Depth(0.3)).unwrap();
     let kick = m.follower(Follower::default(), kick_bus);
-    m.route(kick, gain, Depth(-0.6)); // sidechain
+    m.route(kick, gain, Depth(-0.6)).unwrap(); // sidechain
     settle(&mut s);
 
     // Rolling from beat 0 at frame 0 (120 BPM, the transport's default).
     s.transport()
-        .motion
+        .motion()
         .try_send(MotionEvent::Play)
         .expect("room");
     let (total, block) = (24_000, 128);
@@ -322,10 +323,10 @@ fn the_unresolved_warning_fires_after_four_seconds_not_n_updates() {
     }
 }
 
-/// **A refusal names the host's own keys** (design 015 §4.7): a route to
-/// a target with no range is refused by the compile, and the refusal names
-/// the `RouteKey` `s.mods()` returned. Reported once, held while it lasts,
-/// and cleared when the range arrives.
+/// **A refusal names the host's own keys** (design 015 §4.7): a route whose
+/// target lost its range (`clear_range` after the route was made) is refused by
+/// the compile, and the refusal names the `RouteKey` `s.mods()` returned.
+/// Reported once, held while it lasts, and cleared when the range returns.
 #[test]
 fn a_refusal_names_the_route_key_the_session_minted() {
     let mut s = offline();
@@ -333,7 +334,9 @@ fn a_refusal_names_the_route_key_the_session_minted() {
     let cutoff = ParamRef::unit(probe, UnitParam::Cutoff);
     let mut m = s.mods();
     let lfo = m.lfo(Lfo::sine().hz(Hz(2.0)));
-    let route = m.route(lfo, cutoff, Depth(0.5));
+    m.range(cutoff, 0.0, 1_000.0);
+    let route = m.route(lfo, cutoff, Depth(0.5)).unwrap();
+    assert!(m.clear_range(cutoff));
 
     let refused: Vec<ModRefusal> = s
         .update()
@@ -357,8 +360,41 @@ fn a_refusal_names_the_route_key_the_session_minted() {
     );
 
     s.mods().range(cutoff, 0.0, 1_000.0);
-    s.update();
+    let _ = s.update();
     assert_eq!(s.mod_state().refusal(), None, "cleared once it applies");
+}
+
+/// **A route onto a target with no range is refused when it is made**, naming
+/// the target, and adds nothing: it used to be accepted, and the next apply
+/// refused with `UndeclaredTarget` and held back every later edit. Once the
+/// range is declared the same call succeeds, and the update applies clean.
+#[test]
+fn a_route_onto_an_unranged_target_is_refused_at_the_call() {
+    let mut s = offline();
+    let (probe, _) = s.graph().add(ProbeUnit::new(500.0));
+    let cutoff = ParamRef::unit(probe, UnitParam::Cutoff);
+    let mut m = s.mods();
+    let lfo = m.lfo(Lfo::sine().hz(Hz(2.0)));
+    assert_eq!(
+        m.route(lfo, cutoff, Depth(0.5)),
+        Err(RouteError::UndeclaredRange {
+            target: cutoff.into()
+        })
+    );
+    let events = s.update();
+    assert!(
+        !events
+            .iter()
+            .any(|e| matches!(e, SessionEvent::ModulationRefused(_))),
+        "nothing was added to refuse: {events:?}"
+    );
+    assert_eq!(s.mod_state().refusal(), None);
+
+    let mut m = s.mods();
+    m.range(cutoff, 0.0, 1_000.0);
+    assert!(m.route(lfo, cutoff, Depth(0.5)).is_ok());
+    let _ = s.update();
+    assert_eq!(s.mod_state().refusal(), None, "applies clean");
 }
 
 /// **A session has one declarer.** While `s.mods()` holds declarations, a
@@ -395,7 +431,7 @@ fn removing_a_node_forgets_its_declarations() {
     let mut m = s.mods();
     m.range(cutoff, 0.0, 1_000.0);
     let lfo = m.lfo(Lfo::sine().hz(Hz(2.0)));
-    m.route(lfo, cutoff, Depth(0.5));
+    m.route(lfo, cutoff, Depth(0.5)).unwrap();
     settle(&mut s);
     assert!(s.mod_state().lane(cutoff.key()).is_some());
 
@@ -455,7 +491,7 @@ impl tutti_graph::Node for Late {
 fn a_re_apply_that_moves_the_latency_publishes_it() {
     let mut s = offline();
     let (late, _) = s.graph().insert(ForkByClone(Late));
-    s.update();
+    let _ = s.update();
     assert_eq!(s.latency(), Samples(0), "precondition: nothing latent out");
 
     let (probe, _) = s.graph().add(ProbeUnit::new(500.0));
@@ -464,7 +500,7 @@ fn a_re_apply_that_moves_the_latency_publishes_it() {
     let mut m = s.mods();
     m.range(cutoff, 0.0, 1_000.0);
     let follower = m.follower(Follower::default(), late);
-    m.route(follower, cutoff, Depth(0.5));
+    m.route(follower, cutoff, Depth(0.5)).unwrap();
 
     let now = Instant::now();
     let mut out = Vec::new();
@@ -505,7 +541,7 @@ fn an_update_frees_a_program_a_block_held_across_a_route_edit() {
     let mut m = s.mods();
     m.range(cutoff, 0.0, 1_000.0);
     let lfo = m.lfo(Lfo::sine().hz(Hz(2.0)));
-    let route = m.route(lfo, cutoff, Depth(0.5));
+    let route = m.route(lfo, cutoff, Depth(0.5)).unwrap();
     settle(&mut s);
     let (_, lane) = s.mod_state().lane(cutoff.key()).expect("the lane");
     let lane = lane.clone();
@@ -515,10 +551,10 @@ fn an_update_frees_a_program_a_block_held_across_a_route_edit() {
     {
         let _held = block.lend();
         s.mods().route_mut(route).expect("the route").depth = Depth(0.25);
-        s.update();
+        let _ = s.update();
         assert_eq!(lane.retired_programs(), 1, "republished, the old held");
     }
-    s.update();
+    let _ = s.update();
     assert_eq!(lane.retired_programs(), 0, "the update freed it");
 }
 
@@ -534,10 +570,10 @@ fn an_own_edit_after_a_steady_state_applies() {
     let mut m = s.mods();
     m.range(cutoff, 0.0, 1_000.0);
     let lfo = m.lfo(Lfo::sine().hz(Hz(2.0)));
-    let route = m.route(lfo, cutoff, Depth(0.5));
+    let route = m.route(lfo, cutoff, Depth(0.5)).unwrap();
     settle(&mut s);
     for _ in 0..4 {
-        s.update();
+        let _ = s.update();
     }
     let program = |s: &Session| {
         s.mod_state()
@@ -549,14 +585,14 @@ fn an_own_edit_after_a_steady_state_applies() {
     let before = program(&s);
 
     s.mods().route_mut(route).expect("the route").depth = Depth(0.25);
-    s.update();
+    let _ = s.update();
     assert!(
         !std::sync::Arc::ptr_eq(&before, &program(&s)),
         "the depth edit is republished"
     );
 
     s.mods().range(cutoff, 0.0, 2_000.0);
-    s.update();
+    let _ = s.update();
     let range = s
         .graph()
         .param_mod(probe, UnitParam::Cutoff)

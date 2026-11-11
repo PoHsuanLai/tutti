@@ -1,4 +1,4 @@
-//! [`Bounds`]: the reverb's worst-case sizes, [`FreeverbDesign::Bounds`](crate::FreeverbDesign).
+//! [`NetworkSizes`]: the reverb's worst-case sizes, [`FreeverbDesign::Bounds`](crate::FreeverbDesign).
 
 use tutti_types::{Db, Samples};
 
@@ -11,7 +11,7 @@ use crate::{Ring, Sizes, System};
 /// [`Sizes::measure`] measures one network; [`Sizes::dominates`] says one bound holds
 /// another.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Bounds {
+pub struct NetworkSizes {
     /// Delay lines in all.
     pub lines: usize,
     /// Stages.
@@ -34,11 +34,11 @@ pub struct Bounds {
     pub tail: Ring,
 }
 
-impl Sizes for Bounds {
+impl Sizes for NetworkSizes {
     type Source = Network;
 
     fn measure(network: &Network, floor: Db) -> Self {
-        let mut b = Bounds {
+        let mut b = NetworkSizes {
             lines: 0,
             stages: network.stages.len(),
             taps: 0,
@@ -80,7 +80,7 @@ impl Sizes for Bounds {
         self.tail
     }
 
-    fn dominates(&self, other: &Bounds) -> bool {
+    fn dominates(&self, other: &NetworkSizes) -> bool {
         self.lines >= other.lines
             && self.stages >= other.stages
             && self.taps >= other.taps

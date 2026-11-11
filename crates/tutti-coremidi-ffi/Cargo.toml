@@ -3,7 +3,7 @@ name = "tutti-coremidi-ffi"
 version = "0.0.1"
 edition.workspace = true
 rust-version.workspace = true
-description = "The unsafe half of the macOS MIDI backend: a native-UMP virtual source and the host clock, behind safe handles"
+description = "The unsafe half of the macOS MIDI backend: a native-UMP virtual source, the UMP Endpoints and Function Blocks the OS reports, and the host clock, behind safe handles"
 license.workspace = true
 repository.workspace = true
 documentation = "https://docs.rs/tutti-coremidi-ffi"
@@ -23,6 +23,17 @@ core-foundation = { workspace = true }
 # `mach_absolute_time` and `mach_timebase_info`: CoreMIDI's packet timestamps
 # (libc marks its copies of these deprecated in favour of this crate).
 mach2 = "0.4"
+# The UMP Endpoint and Function Block classes (macOS 15), read behind a runtime
+# availability check.
+objc2 = { workspace = true }
+objc2-foundation = { workspace = true }
+objc2-core-midi = { workspace = true }
+
+[target.'cfg(target_os = "macos")'.dev-dependencies]
+# A test creates a virtual UMP endpoint with Function Blocks (macOS 15), so the
+# read has something real to read.
+block2 = "0.6"
+objc2-core-midi = { workspace = true, features = ["block2", "MIDIUMPMutableEndpoint", "MIDIUMPMutableFunctionBlock"] }
 
 [package.metadata.docs.rs]
 targets = ["aarch64-apple-darwin"]

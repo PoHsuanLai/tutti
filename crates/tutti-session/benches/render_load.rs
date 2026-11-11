@@ -345,7 +345,7 @@ fn scene(block: usize, workers: usize, variant: Variant) -> Session {
     }
     s.update();
     s.transport()
-        .motion
+        .motion()
         .try_send(MotionEvent::Play)
         .expect("room");
     s

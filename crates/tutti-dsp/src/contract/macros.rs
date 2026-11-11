@@ -46,7 +46,7 @@ macro_rules! __design_group {
         }
         #[test]
         fn contract_anchors() {
-            $crate::contract::cases::design::anchors(&$design).unwrap();
+            $crate::contract::cases::design::figures(&$design).unwrap();
         }
         #[test]
         fn contract_norms() {

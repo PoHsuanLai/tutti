@@ -1,4 +1,5 @@
 use super::*;
+use tutti_curve::{Curvature, Exponent};
 
 // ── LfoShape waveform math ──
 
@@ -71,12 +72,12 @@ fn shape_unipolar_maps_negative_to_zero_region() {
 const LAWS: [Law; 8] = [
     Law::Linear,
     Law::Hold,
-    Law::PowerIn(2.0),
-    Law::PowerOut(3.0),
-    Law::PowerInOut(2.0),
-    Law::PowerIn(0.5),
-    Law::PowerIn(1.7),
-    Law::Exp(3.0),
+    Law::PowerIn(Exponent::of(2.0)),
+    Law::PowerOut(Exponent::of(3.0)),
+    Law::PowerInOut(Exponent::of(2.0)),
+    Law::PowerIn(Exponent::of(0.5)),
+    Law::PowerIn(Exponent::of(1.7)),
+    Law::Exp(Curvature::of(3.0)),
 ];
 
 /// The response curve `shape` applies to a magnitude `x ∈ [0, 1]`.
@@ -121,10 +122,10 @@ fn no_curve_falls_or_leaves_the_unit_range() {
 #[test]
 fn quad_and_cubic_are_not_linear() {
     for (c, want) in [
-        (Law::PowerIn(2.0), 0.25),
-        (Law::PowerOut(2.0), 0.75),
-        (Law::PowerIn(3.0), 0.125),
-        (Law::PowerOut(3.0), 0.875),
+        (Law::PowerIn(Exponent::of(2.0)), 0.25),
+        (Law::PowerOut(Exponent::of(2.0)), 0.75),
+        (Law::PowerIn(Exponent::of(3.0)), 0.125),
+        (Law::PowerOut(Exponent::of(3.0)), 0.875),
     ] {
         let up = shape(0.5, Depth::FULL, Polarity::Bipolar, c);
         let down = shape(-0.5, Depth::FULL, Polarity::Bipolar, c);
@@ -133,7 +134,12 @@ fn quad_and_cubic_are_not_linear() {
         assert!((up - 0.5).abs() > 0.1, "{c:?} is linear");
     }
     // Unipolar: x = 0 is the middle of the curve.
-    let mid = shape(0.0, Depth::FULL, Polarity::Unipolar, Law::PowerIn(3.0));
+    let mid = shape(
+        0.0,
+        Depth::FULL,
+        Polarity::Unipolar,
+        Law::PowerIn(Exponent::of(3.0)),
+    );
     assert!((mid - 0.125).abs() < 1e-6, "CubicIn unipolar at 0: {mid}");
 }
 
@@ -141,6 +147,11 @@ fn quad_and_cubic_are_not_linear() {
 fn shape_scurve_is_flatter_at_extremes() {
     // SCurve magnitude at small |x| is below linear.
     let lin = shape(0.25, Depth::FULL, Polarity::Bipolar, Law::Linear);
-    let scv = shape(0.25, Depth::FULL, Polarity::Bipolar, Law::PowerInOut(2.0));
+    let scv = shape(
+        0.25,
+        Depth::FULL,
+        Polarity::Bipolar,
+        Law::PowerInOut(Exponent::of(2.0)),
+    );
     assert!(scv < lin);
 }

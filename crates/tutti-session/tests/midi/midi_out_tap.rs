@@ -46,12 +46,12 @@ fn rig(wire: &Wire) -> Session {
             MaxBlock::of(Samples(1_024)),
         )
         .expect("builds");
-    s.update();
+    let _ = s.update();
     s.midi_nodes().unwrap().clock_master.set_enabled(true);
     s.midi()
         .set_hardware_out(Some(UmpOut::new(Box::new(wire.clone()), SampleRate(RATE))));
     s.transport()
-        .motion
+        .motion()
         .try_send(MotionEvent::Play)
         .expect("room");
     s
@@ -81,7 +81,7 @@ fn the_clock_reaches_the_output_in_order_on_its_frames() {
     let wire = Wire::default();
     let mut s = rig(&wire);
     render(&s, 24_000);
-    s.update();
+    let _ = s.update();
     let batches = wire.batches();
     assert_eq!(batches.len(), 1, "one drain, one batch");
     let batch = &batches[0];
@@ -112,7 +112,7 @@ fn a_full_tap_counts_what_it_drops() {
         .graph()
         .open_event_tap(clock.into(), TapAlign::Raw, 8_192)
         .expect("the clock is in the graph");
-    s.update(); // commits the second tap
+    let _ = s.update(); // commits the second tap
     render(&s, 1_100_000);
     let mut total = 0;
     let mut chunk = [tutti_graph::TapEvent {
@@ -155,7 +155,7 @@ fn a_re_rated_graph_reopens_the_hardware_tap_at_the_next_update() {
     let mut s = rig(&wire);
     assert_eq!(s.midi().hardware_out_rate(), Some(SampleRate(RATE)));
     s.graph().set_sample_rate(SampleRate(44_100.0));
-    s.update();
+    let _ = s.update();
     assert_eq!(s.midi().hardware_out_rate(), Some(SampleRate(44_100.0)));
 }
 
@@ -176,7 +176,7 @@ fn reopening_one_tap_leaves_the_others_fed() {
         .graph()
         .open_event_tap(clock.into(), TapAlign::Raw, 64)
         .unwrap();
-    s.update();
+    let _ = s.update();
     s.graph().set_sample_rate(SampleRate(44_100.0));
     let reopened = s
         .graph()
@@ -186,9 +186,9 @@ fn reopening_one_tap_leaves_the_others_fed() {
     assert_eq!(reopened.id(), first.id());
     first = reopened;
     // The re-prepare's second half lands on a render, then the commit.
-    s.update();
+    let _ = s.update();
     render(&s, 4_096);
-    s.update();
+    let _ = s.update();
     render(&s, 4_096);
     let mut chunk = [tutti_graph::TapEvent {
         frame: tutti_types::Frame::ZERO,

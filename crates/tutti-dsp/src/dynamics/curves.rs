@@ -8,7 +8,7 @@ use tutti_types::{Amplitude, CompressionRatio, Db};
 /// Whether [`ramp_db`] returns `to` itself at frame `i`: a held value, or the
 /// block's last frame.
 #[inline]
-pub fn ramp_is_at_end(from: Db, to: Db, i: usize, n: usize) -> bool {
+pub(crate) fn ramp_is_at_end(from: Db, to: Db, i: usize, n: usize) -> bool {
     from == to || i + 1 >= n
 }
 
@@ -58,12 +58,6 @@ pub fn amplitude_to_db(amp: impl Into<Amplitude>) -> Db {
     }
 }
 
-/// `db` as a linear amplitude.
-#[inline]
-pub fn db_to_amplitude(db: impl Into<Db>) -> Amplitude {
-    db.into().to_amplitude()
-}
-
 /// Pure compressor gain reduction (hard/soft knee).
 #[inline]
 pub fn compute_compressor_gain_reduction(
@@ -99,13 +93,13 @@ pub fn compute_compressor_gain_reduction(
 
 /// Gate gain from gate level (unitless 0..1) and range in dB.
 #[inline]
-pub fn compute_gate_gain(gate_level: f32, range_db: impl Into<Db>) -> Amplitude {
-    gate_gain_at(gate_level, db_to_amplitude(range_db).get())
+pub(crate) fn compute_gate_gain(gate_level: f32, range_db: impl Into<Db>) -> Amplitude {
+    gate_gain_at(gate_level, range_db.into().to_amplitude().get())
 }
 
 /// [`compute_gate_gain`] with the range already converted to linear.
 #[inline]
-pub fn gate_gain_at(gate_level: f32, range_linear: f32) -> Amplitude {
+pub(crate) fn gate_gain_at(gate_level: f32, range_linear: f32) -> Amplitude {
     Amplitude(range_linear + gate_level * (1.0 - range_linear))
 }
 
@@ -115,7 +109,7 @@ pub fn gate_gain_at(gate_level: f32, range_linear: f32) -> Amplitude {
 #[inline]
 fn limiter_over_gain(peak_db: f32, threshold: f32, drive_db: f32) -> Amplitude {
     let reduction = peak_db - threshold;
-    db_to_amplitude(Db(-reduction + drive_db))
+    Db(-reduction + drive_db).to_amplitude()
 }
 
 /// Pure limiter gain computation: the transfer curve of [`LimiterCurve`] in
@@ -137,7 +131,7 @@ pub fn compute_limiter_gain(
     if peak_db > threshold {
         limiter_over_gain(peak_db, threshold, ceiling - threshold)
     } else {
-        db_to_amplitude(Db(ceiling - threshold))
+        Db(ceiling - threshold).to_amplitude()
     }
 }
 
@@ -188,11 +182,11 @@ impl LimiterCurve {
     pub fn new(threshold: Db, ceiling: Db) -> Self {
         let (threshold, ceiling) = (threshold.get(), ceiling.get());
         let gap = (ceiling - threshold).min(Self::MAX_GAP_DB);
-        let threshold_lin = db_to_amplitude(Db(threshold)).get().max(f32::MIN_POSITIVE);
+        let threshold_lin = Db(threshold).to_amplitude().get().max(f32::MIN_POSITIVE);
         Self {
             threshold: threshold_lin,
-            over: db_to_amplitude(Db(gap)).get() * threshold_lin,
-            below: db_to_amplitude(Db(gap)).get(),
+            over: Db(gap).to_amplitude().get() * threshold_lin,
+            below: Db(gap).to_amplitude().get(),
         }
     }
 

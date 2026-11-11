@@ -22,7 +22,7 @@ use std::thread::ThreadId;
 
 use tutti_export::{Produced, Rendered};
 use tutti_graph::{Cx, ForkByClone, Io, Node, Prepare, Shape, Status};
-use tutti_session::{Bounce, ExportClock, GraphSource, Range, Session, Stem, Tail};
+use tutti_session::{Bounce, BounceTail, ExportClock, GraphSource, Range, Session, Stem};
 use tutti_types::ChannelLayout;
 use tutti_types::{SampleRate, Samples, Seconds};
 
@@ -135,7 +135,7 @@ fn export_with(workers: usize, stems: &[usize]) -> (Vec<Rendered>, usize) {
         .range(Range::Seconds(Seconds(0.0), Seconds(0.5)))
         .sample_rate(RATE)
         .clock(ExportClock::frozen())
-        .tail(Tail::None);
+        .tail(BounceTail::None);
     for &stem in stems {
         bounce = bounce.stem_with(Stem::buffers(named[stem]));
     }

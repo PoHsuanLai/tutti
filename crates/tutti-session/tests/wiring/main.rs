@@ -2,6 +2,7 @@
 
 mod bus_edges;
 mod compensation;
+mod connect;
 mod edge_gain;
 mod engine;
 mod fan_in;
@@ -11,3 +12,4 @@ mod loop_region;
 mod outputs_from;
 mod root_topology;
 mod scene_render;
+mod transport_verbs;

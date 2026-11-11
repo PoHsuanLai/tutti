@@ -79,7 +79,7 @@ impl Split {
 ///
 /// The module docs state the stepping contract.
 #[derive(Clone, Debug)]
-pub struct StagedRealFft {
+pub(crate) struct StagedRealFft {
     fft: RealFft,
     ways: usize,
     split: Option<Arc<(Split, Split)>>,

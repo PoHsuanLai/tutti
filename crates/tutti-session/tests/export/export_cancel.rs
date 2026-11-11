@@ -10,7 +10,7 @@ use tutti_codec::{Format, Pcm};
 use tutti_export::{GRAPH_MAX_BLOCK, Normalize, Stage};
 use tutti_graph::{Cx, ForkByClone, Io, Node, NodeKey, Prepare, Shape, Status};
 use tutti_session::{
-    Bounce, BounceError, BounceHandle, ExportClock, FileMaster, Range, Session, Tail,
+    Bounce, BounceError, BounceHandle, BounceTail, ExportClock, FileMaster, Range, Session,
 };
 use tutti_types::ChannelLayout;
 use tutti_types::{Db, Frame, SampleRate, Samples};
@@ -81,7 +81,7 @@ fn bounce() -> Bounce {
         ))
         .sample_rate(RATE)
         .clock(ExportClock::frozen())
-        .tail(Tail::None)
+        .tail(BounceTail::None)
 }
 
 fn file_request(path: &Path, normalize: Option<Normalize>) -> Bounce<NodeKey, FileMaster> {

@@ -27,8 +27,8 @@ use tutti_plugin::catalog::PluginId;
 use tutti_plugin_host::PluginStatus;
 use tutti_session::BufferMaster;
 use tutti_session::{
-    Bounce, BounceError, ExportClock, Latency, Phase, PhaseCx, PluginLiveness, PluginLoadRequest,
-    Range, Session, SessionEvent, Tail,
+    Bounce, BounceError, BounceLatency, BounceTail, ExportClock, Phase, PhaseCx, PluginLiveness,
+    PluginLoadRequest, Range, Session, SessionEvent,
 };
 use tutti_types::{ChannelLayout, InterleavedMut, SampleRate, Samples};
 
@@ -141,8 +141,8 @@ fn request_for(seconds: f64) -> Bounce<NodeKey, BufferMaster> {
         ))
         .sample_rate(RATE)
         .clock(ExportClock::frozen())
-        .latency(Latency::Keep)
-        .tail(Tail::None)
+        .latency(BounceLatency::Keep)
+        .tail(BounceTail::None)
 }
 
 /// A short render into memory.
@@ -155,7 +155,7 @@ fn request() -> Bounce<NodeKey, BufferMaster> {
 fn wired_probe(s: &mut Session) -> (NodeKey, Samples) {
     let node = add_probe(s);
     s.graph().set_outputs_from(node);
-    s.update();
+    let _ = s.update();
     // Told Realtime by that update (it was never told): the latency it
     // reports realtime.
     let base = latency(s, node);
@@ -207,7 +207,7 @@ fn a_dropped_export_job_restores_realtime_on_the_next_update() {
         RenderMode::Offline,
         "nothing told on a drop"
     );
-    s.update();
+    let _ = s.update();
     assert!(!s.bounce_in_flight());
     assert_eq!(s.render_mode(), RenderMode::Realtime);
     await_latency(&s, node, base, "the update after a dropped job");
@@ -218,7 +218,7 @@ fn a_dropped_export_job_restores_realtime_on_the_next_update() {
     let done = std::thread::spawn(move || job.run()).join().unwrap();
     assert!(s.bounce_in_flight(), "the return holds the token");
     drop(done);
-    s.update();
+    let _ = s.update();
     assert_eq!(s.render_mode(), RenderMode::Realtime);
     await_latency(&s, node, base, "the update after a dropped return");
 }
@@ -232,14 +232,14 @@ fn a_plugin_added_mid_export_is_told_offline() {
     let mut s = session(&[]);
     let (dc, _) = s.graph().insert(tutti_nodes::testing::Const::mono(0.0));
     s.graph().set_outputs_from(dc);
-    s.update();
+    let _ = s.update();
     let job = s.bounce_start(request()).expect("starts");
     assert_eq!(s.render_mode(), RenderMode::Offline);
 
     let late = add_probe(&mut s);
     let base = latency(&s, late);
     stays_latency(&s, late, base, "not told before its first update");
-    s.update();
+    let _ = s.update();
     await_latency(
         &s,
         late,
@@ -371,7 +371,7 @@ fn export_leftovers_drop_on_the_main_thread() {
     s.graph()
         .set_source(probe, 1, tutti_session::GraphSource::Node(witness, 1));
     s.graph().set_outputs_from(probe);
-    s.update();
+    let _ = s.update();
     drops.lock().unwrap().clear();
 
     let job = s.bounce_start(request()).expect("starts");
@@ -395,7 +395,7 @@ fn export_leftovers_drop_on_the_main_thread() {
 fn an_update_frees_a_plugin_meter_cleared_while_a_block_held_it() {
     let mut s = session(&[]);
     let probe = add_probe(&mut s);
-    s.update();
+    let _ = s.update();
     let meter = s
         .plugin(probe)
         .expect("hosted")
@@ -408,10 +408,10 @@ fn an_update_frees_a_plugin_meter_cleared_while_a_block_held_it() {
     {
         let _held = block.lend();
         meter.clear_meter();
-        s.update();
+        let _ = s.update();
         assert_eq!(meter.retired_len(), 1, "held across the clear");
     }
-    s.update();
+    let _ = s.update();
     assert_eq!(meter.retired_len(), 0, "the update freed it");
 }
 
@@ -657,7 +657,7 @@ fn a_crashed_plugin_comes_back_at_its_node_with_its_last_state() {
 
     // The commit re-plans PDC for the new latency, and the outputs (never
     // re-wired) read the replacement.
-    s.update();
+    let _ = s.update();
     let total_after = s.latency();
     assert_eq!(
         total_after.0,
@@ -921,7 +921,7 @@ fn a_replacement_with_other_ports_is_refused_and_the_graph_stays_editable() {
     // An edit made now commits.
     let (extra, _) = s.graph().insert(ForkByClone(DropWitness(Arc::default())));
     assert!(s.graph_ref().is_edited());
-    s.update();
+    let _ = s.update();
     assert!(
         !s.graph_ref().is_edited(),
         "the commit was refused: the topology is invalid"
@@ -945,7 +945,7 @@ fn a_replacement_with_other_ports_is_refused_and_the_graph_stays_editable() {
         "the user's last state goes out with the event"
     );
     assert!(!s.graph_ref().contains(node));
-    s.update();
+    let _ = s.update();
     assert!(!s.graph_ref().is_edited());
 }
 
@@ -1224,7 +1224,7 @@ fn a_cancelled_export_frees_the_token_and_the_forked_server() {
     s.graph()
         .set_source(cancel, 1, tutti_session::GraphSource::Node(probe, 1));
     s.graph().set_outputs_from(cancel);
-    s.update();
+    let _ = s.update();
     let live = servers();
 
     let job = s.bounce_start(request_for(5.0)).expect("starts");

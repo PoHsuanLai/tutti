@@ -5,4 +5,4 @@
 pub(crate) mod flaws;
 mod signals;
 
-pub(crate) use signals::{amplitude_at, lock_in, sine};
+pub(crate) use signals::{amplitude_at, lock_in};

@@ -83,14 +83,14 @@ fn rig() -> (Session, NodeKey, MultibandControls) {
                 .set(UnitAddr::new(UnitParam::Ratio, band), 1.0)
         );
     }
-    s.update();
+    let _ = s.update();
     (s, mb, controls)
 }
 
 /// Renders `frames` frames from a rolling transport, in blocks of 128.
 fn render(s: &mut Session, frames: usize) -> [Vec<f32>; 2] {
     s.transport()
-        .motion
+        .motion()
         .try_send(MotionEvent::Play)
         .expect("room");
     let mut all = [Vec::new(), Vec::new()];
@@ -229,9 +229,9 @@ fn a_route_to_band_1_modulates_band_1_only() {
     let mut m = s.mods();
     m.range(band1, -24.0, 24.0);
     let lfo = m.lfo(Lfo::sine().rate(BeatDuration(0.5)));
-    m.route(lfo, band1, Depth(0.25));
+    m.route(lfo, band1, Depth(0.25)).unwrap();
     for _ in 0..4 {
-        s.update();
+        let _ = s.update();
     }
     assert_eq!(s.mod_state().refusal(), None, "the declarations apply");
     assert_eq!(s.mod_state().unresolved_targets(), &[], "and resolve");

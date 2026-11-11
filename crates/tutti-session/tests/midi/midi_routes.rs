@@ -44,7 +44,7 @@ fn session() -> (Session, NodeKey) {
         )
         .expect("builds");
     let input = s.midi_nodes().expect("the builder's MIDI nodes").input;
-    s.update();
+    let _ = s.update();
     (s, input)
 }
 

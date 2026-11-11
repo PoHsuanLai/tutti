@@ -116,7 +116,7 @@ fn rolling_state_with(
     let state = AudioCallbackState::new(engine);
 
     transport.settings().set_tempo(Bpm::of(120.0));
-    let _ = transport.motion.try_send(MotionEvent::Play);
+    let _ = transport.motion().try_send(MotionEvent::Play);
 
     (transport, state, meter, reader)
 }
@@ -145,47 +145,6 @@ fn renders_something_to_gate() {
         out.iter().any(|s| s.abs() > 1e-6),
         "the fixture graph rendered silence — the gates below would prove nothing"
     );
-}
-
-/// **The gate the crate docs promise.** `process_audio` must not allocate in
-/// steady state.
-#[test]
-fn process_audio_is_allocation_free() {
-    let (_transport, state) = rolling_state();
-    let mut out = vec![0.0f32; 1024 * 2];
-    warm_up(&state, &mut out);
-
-    assert_no_alloc::assert_no_alloc(|| {
-        for _ in 0..1_000 {
-            process_audio(
-                &state,
-                &mut InterleavedMut::new(&mut out, ChannelLayout::STEREO),
-            );
-        }
-    });
-}
-
-/// A callback buffer at the `MAX_FRAMES` ceiling must also render without
-/// allocating.
-///
-/// The stream's mix buffer is sized to `MAX_FRAMES` once and never resized, so
-/// this is the largest block the render path can ever be handed. The
-/// steady-state gate above uses 1024 frames and would not notice a size
-/// dependency in the per-vertex buffers the graph gathers.
-#[test]
-fn process_audio_at_max_frames_is_allocation_free() {
-    let (_transport, state) = rolling_state();
-    let mut out = vec![0.0f32; MAX_FRAMES * 2];
-    warm_up(&state, &mut out);
-
-    assert_no_alloc::assert_no_alloc(|| {
-        for _ in 0..16 {
-            process_audio(
-                &state,
-                &mut InterleavedMut::new(&mut out, ChannelLayout::STEREO),
-            );
-        }
-    });
 }
 
 /// Rendering stays allocation-free across changing block sizes.

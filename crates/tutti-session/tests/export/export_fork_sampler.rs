@@ -23,7 +23,9 @@ use tutti_sampler::{
     Voice, VoiceNode, VoiceSource,
 };
 use tutti_session::BufferMaster;
-use tutti_session::{Bounce, BounceError, ExportClock, Latency, Range, Session, Stem, Tail};
+use tutti_session::{
+    Bounce, BounceError, BounceLatency, BounceTail, ExportClock, Range, Session, Stem,
+};
 use tutti_transport::{OfflineTimeline, OfflineTimelineConfig};
 use tutti_types::ChannelLayout;
 use tutti_types::{Beat, Bpm, SampleRate, Seconds};
@@ -39,8 +41,8 @@ fn bounce_of(seconds: f64, rate: f64, clock: ExportClock) -> Bounce<NodeKey, Buf
         .range(Range::Seconds(Seconds(0.0), Seconds(seconds)))
         .sample_rate(SampleRate(rate))
         .clock(clock)
-        .latency(Latency::Keep)
-        .tail(Tail::None)
+        .latency(BounceLatency::Keep)
+        .tail(BounceTail::None)
 }
 
 fn render(session: &mut Session, bounce: Bounce<NodeKey, BufferMaster>) -> Vec<Vec<f32>> {

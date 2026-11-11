@@ -16,6 +16,7 @@
 #![cfg(feature = "clap")]
 
 use assert_no_alloc::AllocDisabler;
+use tutti_nodes::automation::Exponent;
 use tutti_types::MaxBlock;
 
 #[global_allocator]
@@ -117,7 +118,7 @@ fn a_bound_plugin_does_not_allocate_on_the_audio_thread() {
         env.add_breakpoint(Breakpoint::with_law(
             Beat::new(f64::from(k) * 2.0),
             v,
-            Law::PowerIn(2.0),
+            Law::PowerIn(Exponent::of(2.0)),
         ));
     }
     let lane = ControlLaneNode::for_foreign(

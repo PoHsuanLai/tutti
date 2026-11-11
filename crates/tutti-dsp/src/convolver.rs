@@ -69,7 +69,8 @@
 
 use std::sync::Arc;
 
-use crate::{Complex32, StagedRealFft};
+use crate::Complex32;
+use crate::fft::StagedRealFft;
 
 /// Default FFT block size when the caller doesn't pick one. A power of two,
 /// as every partition size here is.

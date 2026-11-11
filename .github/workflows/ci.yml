@@ -411,7 +411,7 @@ jobs:
       #                         tests/probe.rs: their descriptors, and a crash, a
       #                         hang and a print in init, through a real plugin-probe
       #   tutti/clap          — the umbrella's §5.1 and §5.2 examples
-      #                         (`headless_modulation`; `plugin_midi_export`,
+      #                         (`headless_modulation`, `song_bounce`; `plugin_midi_export`,
       #                         `test = true`, which plays the reference
       #                         plugin through a real plugin-server) and its
       #                         prelude's request types.
@@ -423,7 +423,7 @@ jobs:
           cargo clippy --locked -p tutti-cpal --features capture --all-targets -- -D warnings
           cargo clippy --locked -p tutti-session --features audio-io --all-targets -- -D warnings
           cargo clippy --locked -p tutti-session --features clap,export,modulation,midi-hardware,synth,soundfont,sampler,vst2,device --all-targets -- -D warnings
-          cargo clippy --locked -p tutti --features clap,export,modulation --all-targets -- -D warnings
+          cargo clippy --locked -p tutti --features clap,export,modulation,sampler,dsp --all-targets -- -D warnings
           cargo clippy --locked -p tutti --features audio-io --all-targets -- -D warnings
           cargo clippy --locked -p tutti --no-default-features --features io --all-targets -- -D warnings
           cargo clippy --locked -p tutti-export --lib -- -D warnings
@@ -470,7 +470,7 @@ jobs:
           cargo nextest run --locked -p tutti-cpal --features capture
           cargo nextest run --locked -p tutti-session --features audio-io
           cargo nextest run --locked -p tutti-session --features clap,export,modulation,midi-hardware,synth,soundfont,sampler,vst2,device
-          cargo nextest run --locked -p tutti --features clap,export,modulation
+          cargo nextest run --locked -p tutti --features clap,export,modulation,sampler,dsp
           cargo nextest run --locked -p tutti --features audio-io
           cargo nextest run --locked -p tutti --no-default-features --features io
           cargo nextest run --locked -p tutti-session --features export-flac,export-aiff,export-ogg

@@ -10,6 +10,7 @@ mod aiff;
 #[cfg(all(test, encode))]
 mod contract;
 mod decode;
+mod decode_error;
 mod encoder;
 mod error;
 mod file_out;
@@ -33,8 +34,9 @@ mod writer;
 #[cfg(feature = "encode-aiff")]
 pub use aiff::AiffWriter;
 #[cfg(decode)]
-pub use decode::{DecodeError, FileIn, WaveMetadata};
+pub use decode::{FileIn, WaveMetadata};
 pub use decode::{can_decode, decodable_extensions};
+pub use decode_error::DecodeError;
 pub use encoder::{Encoder, Finalized};
 pub use error::{Codec, Error, Result, SpecError};
 pub use file_out::FileOut;

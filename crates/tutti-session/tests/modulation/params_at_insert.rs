@@ -45,13 +45,13 @@ fn modulate_drive(s: &mut Session, node: NodeKey) {
     let mut m = s.mods();
     m.range(drive, 0.0, 10.0);
     let offset = m.macro_(1.0);
-    m.route(offset, drive, Depth(0.1));
+    m.route(offset, drive, Depth(0.1)).unwrap();
     settle(s);
 }
 
 fn settle(s: &mut Session) {
     for _ in 0..4 {
-        s.update();
+        let _ = s.update();
     }
     assert_eq!(s.mod_state().refusal(), None, "the declarations apply");
 }

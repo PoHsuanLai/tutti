@@ -22,10 +22,9 @@
 use crate::InputProducerHandle;
 use crate::capability::EndpointInfo;
 use crate::devices::ChangeSink;
-use crate::endpoints::{InputConnection, MidiEndpoints, NoWatch, Watch};
+use crate::endpoints::{DeviceOut, InputConnection, MidiEndpoints, NoWatch, Watch};
 use crate::error::{Error, Result};
 use tutti_midi_device::EndpointId;
-use tutti_midi_runtime::MidiOut;
 
 /// Why every call here fails, in the error a caller will surface.
 const REASON: &str = "no native-UMP MIDI backend on this platform (Windows, or alsa-lib < 1.2.10)";
@@ -63,7 +62,7 @@ impl MidiEndpoints for StubEndpoints {
         Err(Error::Unsupported(REASON))
     }
 
-    fn open_output(&self, _id: EndpointId) -> Result<Box<dyn MidiOut>> {
+    fn open_output(&self, _id: EndpointId) -> Result<Box<dyn DeviceOut>> {
         Err(Error::Unsupported(REASON))
     }
 }

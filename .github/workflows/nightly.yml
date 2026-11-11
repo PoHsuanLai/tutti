@@ -1,0 +1,51 @@
+# Nightly tier: the suites CI runs per PR, with every randomized suite's case
+# budget raised (`tutti_fixtures::cases` reads PROPTEST_CASES), then the
+# `#[ignore]`d tests. Caches are restored, never saved (CI saves on main).
+
+name: Nightly
+
+on:
+  schedule:
+    - cron: '17 3 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+  CARGO_PROFILE_DEV_DEBUG: line-tables-only
+  CARGO_PROFILE_TEST_DEBUG: line-tables-only
+  CARGO_PROFILE_DEV_OPT_LEVEL: '1'
+  RUST_BACKTRACE: 1
+  TUTTI_GOLDEN: require
+
+jobs:
+  nightly:
+    name: nightly (more cases, ignored tests)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Install Linux audio deps
+        uses: ./.github/actions/linux-audio-deps
+      - run: rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: false
+      - uses: taiki-e/install-action@nextest
+      - name: Build plugin-server and plugin-probe (suites spawn them)
+        run: cargo build --locked -p tutti-plugin-server -p tutti-plugin-probe
+      - name: Test with more cases
+        env:
+          PROPTEST_CASES: '1024'
+        run: |
+          cargo nextest run --locked --workspace --no-fail-fast \
+            -E 'not binary(gui_lifecycle_main) and not binary(au_gui_lifecycle_main)'
+      - name: Ignored tests
+        run: |
+          cargo nextest run --locked --workspace --no-fail-fast --run-ignored only \
+            -E 'not binary(gui_lifecycle_main) and not binary(au_gui_lifecycle_main)'

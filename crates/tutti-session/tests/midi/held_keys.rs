@@ -134,12 +134,12 @@ fn retarget_with_a_held_clip_note() {
             ],
         )
         .unwrap();
-    s.update();
-    s.transport().motion.try_send(MotionEvent::Play).unwrap();
+    let _ = s.update();
+    s.transport().motion().try_send(MotionEvent::Play).unwrap();
     blocks(&s, 20); // the note starts at about frame 2,400
     assert_eq!(ons(&a_seen), 1, "A heard the note start");
     s.midi().retarget(clip, b).unwrap();
-    s.update();
+    let _ = s.update();
     blocks(&s, 20);
     assert_eq!(offs(&a_seen), 1, "A is told the note ended");
     // The clip's own off comes at beat 8.1 (about 194,000 frames): render on.
@@ -168,13 +168,13 @@ fn set_routes_with_a_held_key() {
     };
     let to = |k: u8| [MidiRouteRule::<u8>::any_channel().to(k)];
     s.midi().set_routes(src, &to(1), None, resolve).unwrap();
-    s.update();
+    let _ = s.update();
     mail.lock().unwrap().push([0x2090_3c64, 0, 0, 0]);
     blocks(&s, 2);
     assert_eq!(ons(&a_seen), 1);
 
     s.midi().set_routes(src, &to(2), None, resolve).unwrap();
-    s.update();
+    let _ = s.update();
     blocks(&s, 2);
     assert_eq!(offs(&a_seen), 1, "A is told the note ended");
 
@@ -189,7 +189,7 @@ fn set_routes_with_a_held_key() {
     s.midi()
         .set_routes(src, &[] as &[MidiRouteRule<u8>], None, resolve)
         .unwrap();
-    s.update();
+    let _ = s.update();
     blocks(&s, 2);
     assert_eq!(offs(&b_seen), 2, "B is told when the routes go");
 }

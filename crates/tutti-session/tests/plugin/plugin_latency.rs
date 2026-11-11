@@ -64,7 +64,7 @@ fn add_probe_on_outputs(s: &mut Session) -> tutti_graph::NodeKey {
         )
         .expect("the reference CLAP plugin loads");
     s.graph().set_output_source(0, GraphSource::Node(node, 0));
-    s.update();
+    let _ = s.update();
     node
 }
 
@@ -138,7 +138,7 @@ fn a_plugins_latency_is_the_sessions_and_follows_the_plugin() {
     );
 
     controls.set_latency(Samples(10_000_000));
-    s.update();
+    let _ = s.update();
     assert_eq!(
         s.graph_ref().node_latency(node),
         tutti_graph::MAX_NODE_LATENCY,
@@ -173,8 +173,8 @@ fn a_crossfaded_plugins_latency_is_the_incoming_ones() {
         )
         .expect("the crossfade is accepted");
     assert!(matches!(landed, Crossfade::Landed(())), "nothing waits");
-    s.update();
-    s.update();
+    let _ = s.update();
+    let _ = s.update();
 
     assert!(s.graph_ref().contains(node), "the node keeps its key");
     assert_ne!(
@@ -188,7 +188,7 @@ fn a_crossfaded_plugins_latency_is_the_incoming_ones() {
         "the graph plans against the incoming plugin's declared latency"
     );
     controls.set_latency(Samples(INCOMING + 7));
-    s.update();
+    let _ = s.update();
     assert_eq!(
         s.graph_ref().node_latency(node),
         Samples(INCOMING + 7 + BLOCK),
@@ -217,15 +217,16 @@ fn a_restart_to_another_callback_size_re_declares_a_plugins_latency() {
     let (driver, stream) = ManualStreamDriver::new();
     let (mut s, mut device) = Session::builder()
         .build_device_on(spec(512), driver)
-        .expect("builds with no device");
+        .expect("builds with no device")
+        .into_parts();
 
     let client = PluginClient::new(tutti_plugin::BridgeConfig::default(), clap_probe(), RATE)
         .expect("the reference plugin loads");
     let node = s.graph().insert_plugin(Box::new(client));
     s.graph().set_output_source(0, GraphSource::Node(node, 0));
-    s.update();
+    let _ = s.update();
     let _ = stream.render_block(512).expect("the stream is open");
-    s.update();
+    let _ = s.update();
     assert_eq!(
         s.graph_ref().node_latency(node),
         Samples(137 + 512),

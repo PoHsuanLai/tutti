@@ -14,8 +14,8 @@ use tutti_types::{Amplitude, Semitones};
 use tutti_ump::Voice2;
 use tutti_ump::{MidiChannel, NoteId, NoteNumber};
 use tutti_voicing::{
-    Command, Mode, NoteControl, Order, Patch, Retrigger, Rules, Steal, VoiceSpec, VoiceView,
-    Voicing,
+    ChannelState, Command, Glide, Mode, NoteControl, Order, Patch, Retrigger, Rules, Steal,
+    VoiceSpec, VoiceView, Voicing,
 };
 
 pub use tutti_voicing::VoiceId;
@@ -305,6 +305,8 @@ pub(crate) enum Gate {
         channel: MidiChannel,
         velocity: f32,
         legato: bool,
+        /// The glide the stream asked for, if any.
+        glide: Option<Glide>,
     },
 }
 
@@ -377,6 +379,7 @@ impl VoiceAllocator {
                     key,
                     steal,
                     velocity: velocity16,
+                    glide,
                     ..
                 } => {
                     let (note_id, velocity) = Self::strike_of(strike, channel, key, velocity16);
@@ -397,6 +400,7 @@ impl VoiceAllocator {
                         channel,
                         velocity,
                         legato: false,
+                        glide,
                     });
                     result = if stolen.is_some() && self.config.mode == VoiceMode::Poly {
                         AllocationResult::Stolen { slot_index }
@@ -408,6 +412,7 @@ impl VoiceAllocator {
                     id,
                     key,
                     velocity: velocity16,
+                    glide,
                 } => {
                     if let Some(slot_index) = self.slot_of_voice(id) {
                         let channel = self.slots[slot_index].channel;
@@ -421,6 +426,7 @@ impl VoiceAllocator {
                             channel,
                             velocity,
                             legato: true,
+                            glide,
                         });
                         result = AllocationResult::LegatoRetrigger { slot_index };
                     }
@@ -619,6 +625,12 @@ impl VoiceAllocator {
     pub(crate) fn holds_of(&self, slot_index: usize) -> Option<tutti_voicing::Holds> {
         let s = self.slots.get(slot_index).filter(|s| !s.is_idle())?;
         self.core.holds(s.voice_id())
+    }
+
+    /// What `channel` has been told apart from its notes (the note logic's
+    /// [`ChannelState`]): the controllers a voice's render reads.
+    pub(crate) fn channel_state(&self, channel: MidiChannel) -> &ChannelState {
+        self.core.channel(channel)
     }
 
     /// Runs a message that starts and releases no note (a bend, a sensitivity,

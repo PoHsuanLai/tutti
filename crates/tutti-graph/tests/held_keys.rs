@@ -1785,7 +1785,7 @@ mod random {
     }
 
     proptest! {
-        #![proptest_config(ProptestConfig { cases: 300, ..ProptestConfig::default() })]
+        #![proptest_config(ProptestConfig { cases: tutti_fixtures::cases(300), ..ProptestConfig::default() })]
 
         /// Every sink ends with nothing held, hears no on the source did not
         /// write, and no off for a key the source never wrote. Serial,

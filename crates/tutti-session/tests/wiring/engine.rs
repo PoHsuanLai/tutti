@@ -47,7 +47,10 @@ fn offline() -> Session {
 /// beat 0.75 between two blocks past the first 60 000 frames.
 fn run(s: &Session, frames: usize, block: usize, seek: bool) -> Vec<f32> {
     let transport = s.transport();
-    transport.motion.try_send(MotionEvent::Play).expect("room");
+    transport
+        .motion()
+        .try_send(MotionEvent::Play)
+        .expect("room");
     let mut out = Vec::with_capacity(frames * 2);
     let mut buf = vec![0.0f32; block * 2];
     let mut located = !seek;
@@ -57,7 +60,7 @@ fn run(s: &Session, frames: usize, block: usize, seek: bool) -> Vec<f32> {
         if !located && out.len() >= 2 * 60_000 {
             located = true;
             transport
-                .motion
+                .motion()
                 .try_send(MotionEvent::Locate {
                     beat: tutti_types::Beat(0.75),
                     fade: tutti_transport::FadeOut::Immediate,
@@ -87,7 +90,7 @@ fn render_click(frames: usize) -> Vec<f32> {
         s.graph()
             .set_output_source(port, GraphSource::Node(click, port));
     }
-    s.update();
+    let _ = s.update();
     run(&s, frames, 512, true)
 }
 
@@ -190,7 +193,7 @@ fn render_voice(cents: f32, frames: usize, block: usize) -> Vec<f32> {
         s.graph()
             .set_output_source(port, GraphSource::Node(voice, port));
     }
-    s.update();
+    let _ = s.update();
     run(&s, frames, block, false)
 }
 
@@ -280,13 +283,10 @@ fn a_voice_plays_in_time(block: usize) {
 }
 
 #[test]
-fn a_voice_plays_in_time_at_256_frame_blocks() {
-    a_voice_plays_in_time(256);
-}
-
-#[test]
-fn a_voice_plays_in_time_at_512_frame_blocks() {
-    a_voice_plays_in_time(512);
+fn a_voice_plays_in_time_at_every_device_block_size() {
+    for block in [256, 512] {
+        a_voice_plays_in_time(block);
+    }
 }
 
 /// An offline session's [`Session::render`] feeds its load meter, one block
@@ -319,7 +319,7 @@ fn an_offline_render_feeds_the_master_meter() {
     let (dc, _) = s.graph().insert(Const::mono(0.5));
     s.graph().set_output_source(0, GraphSource::Node(dc, 0));
     s.graph().set_output_source(1, GraphSource::Node(dc, 0));
-    s.update();
+    let _ = s.update();
     let mut block = vec![0.0f32; 128 * 2];
     s.render(&mut InterleavedMut::new(&mut block, ChannelLayout::STEREO));
     let r = meter.read();
@@ -402,7 +402,7 @@ fn a_track_meter_reads_a_nodes_port_and_goes_with_the_node() {
     let (b, _) = s.graph().insert(Const::mono(0.25));
     s.graph().set_output_source(0, GraphSource::Node(a, 0));
     // The meters are the only edit of the second update.
-    s.update();
+    let _ = s.update();
     let mut track = s.graph().open_node_meter(a).expect("the sources exist");
     let mut other = s
         .graph()
@@ -413,7 +413,7 @@ fn a_track_meter_reads_a_nodes_port_and_goes_with_the_node() {
         .expect("the sources exist");
     track.enable();
     other.enable();
-    s.update();
+    let _ = s.update();
     let mut block = vec![0.0f32; 64 * 2];
     s.render(&mut InterleavedMut::new(&mut block, ChannelLayout::STEREO));
     assert_eq!(track.channels(), 1);
@@ -422,7 +422,7 @@ fn a_track_meter_reads_a_nodes_port_and_goes_with_the_node() {
     assert_eq!((o[0].peak.get(), o[1].peak.get()), (0.5, 0.25));
 
     s.graph().remove(b);
-    s.update();
+    let _ = s.update();
     s.render(&mut InterleavedMut::new(&mut block, ChannelLayout::STEREO));
     let o = other.read();
     assert_eq!((o[0].peak.get(), o[1].peak.get()), (0.5, 0.0));
@@ -445,16 +445,16 @@ fn a_dropped_meter_reader_leaves_the_plan_at_the_reclaim_phase() {
     let mut s = offline();
     let (a, _) = s.graph().insert(Const::mono(0.5));
     let track = s.graph().open_node_meter(a).expect("the sources exist");
-    s.update();
+    let _ = s.update();
     assert_eq!(meters(&s), 2, "the master's and the track's");
     drop(track);
-    s.update();
+    let _ = s.update();
     assert_eq!(
         meters(&s),
         2,
         "the reclaim of this update closed it; the plan is the last commit's"
     );
-    s.update();
+    let _ = s.update();
     assert_eq!(meters(&s), 1, "the master's stays");
 }
 
@@ -467,13 +467,13 @@ fn an_offline_render_feeds_an_output_tap() {
     let (dc, _) = s.graph().insert(Const::mono(0.5));
     s.graph().set_output_source(0, GraphSource::Node(dc, 0));
     // The tap is the only edit of the second update.
-    s.update();
+    let _ = s.update();
     let mut tap = s
         .graph()
         .open_output_tap(Samples(1_024))
         .expect("the sources exist");
     assert_eq!(tap.width(), 2);
-    s.update();
+    let _ = s.update();
     let mut block = vec![0.0f32; 64 * 2];
     s.render(&mut InterleavedMut::new(&mut block, ChannelLayout::STEREO));
 
@@ -499,11 +499,11 @@ fn an_output_tap_follows_a_rewired_output() {
         .graph()
         .open_output_tap(Samples(1_024))
         .expect("the sources exist");
-    s.update();
+    let _ = s.update();
     let mut block = vec![0.0f32; 64 * 2];
     s.render(&mut InterleavedMut::new(&mut block, ChannelLayout::STEREO));
     s.graph().set_output_source(0, GraphSource::Node(b, 0));
-    s.update();
+    let _ = s.update();
     s.render(&mut InterleavedMut::new(&mut block, ChannelLayout::STEREO));
 
     let mut got = vec![f32::NAN; 128 * 2];
@@ -531,16 +531,16 @@ fn a_dropped_reader_leaves_the_plan_at_the_reclaim_phase() {
         .graph()
         .open_output_tap(Samples(64))
         .expect("the sources exist");
-    s.update();
+    let _ = s.update();
     assert_eq!(taps(&s), 1, "one op a tap while it is open");
     drop(tap);
-    s.update();
+    let _ = s.update();
     assert_eq!(
         taps(&s),
         1,
         "the reclaim of this update closed it; the plan is the last commit's"
     );
-    s.update();
+    let _ = s.update();
     assert_eq!(taps(&s), 0, "closed");
 }
 
@@ -618,8 +618,8 @@ fn a_tap_steps_at_a_transport_stop_where_the_output_fades() {
         .graph()
         .open_output_tap(Samples(16_384))
         .expect("the sources exist");
-    s.update();
-    let motion = &s.transport().motion;
+    let _ = s.update();
+    let motion = &s.transport().motion();
     motion.try_send(MotionEvent::Play).expect("room");
     motion
         .schedule(At::Frame(Frame(2_000)), MotionEvent::stop())
@@ -676,8 +676,8 @@ fn the_heard_tap_carries_the_fade_at_a_stop() {
         .open_output_tap(Samples(16_384))
         .expect("the sources exist");
     let mut heard = s.open_heard_tap(Samples(16_384)).expect("an engine");
-    s.update();
-    let motion = &s.transport().motion;
+    let _ = s.update();
+    let motion = &s.transport().motion();
     motion.try_send(MotionEvent::Play).expect("room");
     motion
         .schedule(At::Frame(Frame(2_000)), MotionEvent::stop())
@@ -726,7 +726,7 @@ fn render_feeds_the_heard_tap_and_a_fork_does_not() {
     let (dc, _) = s.graph().insert(Const::mono(0.5));
     s.graph().set_output_source(0, GraphSource::Node(dc, 0));
     s.graph().set_output_source(1, GraphSource::Node(dc, 0));
-    s.update();
+    let _ = s.update();
     let tap = s.open_heard_tap(Samples(1_024)).expect("an engine");
     assert_eq!(
         s.open_heard_tap(Samples(8)).err(),
@@ -763,7 +763,7 @@ fn a_dropped_heard_reader_frees_the_tap() {
     let mut s = offline();
     let tap = s.open_heard_tap(Samples(64)).expect("an engine");
     drop(tap);
-    s.update();
+    let _ = s.update();
     let mut block = vec![0.0f32; 64 * 2];
     s.render(&mut InterleavedMut::new(&mut block, ChannelLayout::STEREO));
     assert!(s.open_heard_tap(Samples(64)).is_ok());

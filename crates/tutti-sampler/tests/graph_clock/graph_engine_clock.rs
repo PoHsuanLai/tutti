@@ -102,7 +102,10 @@ fn play(
     blocks: usize,
     mut between: impl FnMut(usize),
 ) -> Vec<f32> {
-    transport.motion.try_send(MotionEvent::Play).expect("room");
+    transport
+        .motion()
+        .try_send(MotionEvent::Play)
+        .expect("room");
     let mut all = Vec::with_capacity(n * blocks * 2);
     let mut buf = vec![0.0f32; n * 2];
     for i in 0..blocks {
@@ -186,35 +189,17 @@ fn plays_in_time(n: usize) {
     }
 }
 
+/// A voice plays in time at every device block size: 256, 512, the export's
+/// block (`GRAPH_MAX_BLOCK`, 1024, live), 480 (not a multiple of 64: the
+/// voice reads each device block in pieces from its own start, 7 x 64 + 32;
+/// the dry voice is still the tone, the pitched one's pieces differ from the
+/// 64-frame grid's so it is only heard) and 2048 (past the graph's prepared
+/// `MaxBlock`: the engine splits the device block into graph blocks).
 #[test]
-fn a_voice_plays_in_time_at_256_frame_blocks() {
-    plays_in_time(256);
-}
-
-/// Not a multiple of 64: the voice reads each device block in pieces from
-/// its own start, 7 × 64 + 32. The dry voice is still the tone (the pitched
-/// one's pieces differ from the 64-frame grid's, so it is only heard).
-#[test]
-fn a_voice_plays_in_time_at_480_frame_blocks() {
-    plays_in_time(480);
-}
-
-#[test]
-fn a_voice_plays_in_time_at_512_frame_blocks() {
-    plays_in_time(512);
-}
-
-/// The export's block (`GRAPH_MAX_BLOCK`), live.
-#[test]
-fn a_voice_plays_in_time_at_1024_frame_blocks() {
-    plays_in_time(1024);
-}
-
-/// Past the graph's prepared `MaxBlock` (1024): the engine splits the
-/// device block into graph blocks.
-#[test]
-fn a_voice_plays_in_time_at_2048_frame_blocks() {
-    plays_in_time(2048);
+fn a_voice_plays_in_time_at_every_device_block_size() {
+    for block in [256, 480, 512, 1024, 2048] {
+        plays_in_time(block);
+    }
 }
 
 /// Two nodes over one transport (two clones of one pool) both render the
@@ -296,7 +281,7 @@ fn a_crossfaded_voice_plays_on_through_the_fade() {
 fn a_loop_wrap_plays_the_tone_a_loop_back_from_its_frame() {
     let blocks = 60_000 / 512;
     let t = Transport::new(SampleRate::new(SR));
-    t.motion
+    t.motion()
         .schedule(
             At::NextBlock,
             LoopEdit::over(LoopRange::new(Beat::new(1.0), Beat::new(1.51)).expect("ordered")),
@@ -341,7 +326,7 @@ fn a_scheduled_locate_lands_on_its_frame() {
     let at = 10_037;
     let target = FPB / 4;
     let locate = |t: &Transport| {
-        t.motion
+        t.motion()
             .schedule(
                 At::Frame(Frame(at as u64)),
                 MotionEvent::Locate {

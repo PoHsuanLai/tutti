@@ -23,7 +23,7 @@ use tutti_ump::StreamConfig;
 
 use crate::backend;
 use crate::capability::{EndpointInfo, UmpCapability};
-use crate::endpoints::{InputConnection, MidiEndpoints, Watch};
+use crate::endpoints::{DeviceOut, InputConnection, MidiEndpoints, Watch};
 use crate::error::{Error, Result};
 use crate::wire::Wire;
 use crate::{HardwareMidiInputs, PortId};
@@ -438,9 +438,11 @@ impl Devices {
         let (info, handle) = self.present(id, Direction::is_output)?;
         // What the OS says it speaks, until a negotiation says better.
         let described = self.capability(id).unwrap_or_default().endpoint().active();
+        let sink = self.inner.backend.open_output(handle)?;
+        sink.follow(described.protocol);
         Ok(OpenOutput {
             info,
-            sink: self.inner.backend.open_output(handle)?,
+            sink,
             wire: Mutex::new(Wire::new(described)),
         })
     }
@@ -636,7 +638,7 @@ impl OpenInput {
 /// holds). UMP Stream messages pass in every form.
 pub struct OpenOutput {
     info: DeviceInfo,
-    sink: Box<dyn MidiOut>,
+    sink: Box<dyn DeviceOut>,
     /// Behind a lock because `queue` takes `&self`; control side.
     wire: Mutex<Wire>,
 }
@@ -675,7 +677,9 @@ impl OpenOutput {
     /// Sends in `config` from now on: what the device's UMP Stream negotiation
     /// settled.
     pub fn set_config(&self, config: StreamConfig) {
-        self.wire().set_config(config);
+        let mut wire = self.wire();
+        wire.set_config(config);
+        self.sink.follow(config.protocol);
     }
 }
 

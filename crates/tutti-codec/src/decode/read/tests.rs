@@ -23,3 +23,19 @@ fn bytes_that_are_no_audio_are_an_error() {
     assert!(Wave::from_bytes(vec![0x5a; 4096]).is_err());
     assert!(Wave::from_bytes(Vec::new()).is_err());
 }
+
+/// A track that states no sample rate is refused with `NoSampleRate`, never
+/// given one of ours: the file would play at the wrong pitch with no error.
+/// (A container that states none cannot be built from bytes here, since the
+/// demuxers refuse a zero rate themselves, so the track's parameters are.)
+#[test]
+fn a_track_with_no_sample_rate_is_refused() {
+    use symphonia::core::codecs::CodecParameters;
+    let mut params = CodecParameters::new();
+    assert!(matches!(
+        sample_rate_of(&params),
+        Err(DecodeError::NoSampleRate)
+    ));
+    params.with_sample_rate(48_000);
+    assert_eq!(sample_rate_of(&params).expect("stated"), 48_000);
+}

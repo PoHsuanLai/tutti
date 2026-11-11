@@ -20,8 +20,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
 
-use tutti_graph::InletCounts;
-use tutti_midi_runtime::{DeviceInput, DeviceSlot};
+use tutti_midi_runtime::{DeviceInput, DeviceSlot, InletCounts};
 use tutti_ump::Ump;
 
 use super::PortId;

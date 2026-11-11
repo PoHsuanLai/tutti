@@ -34,3 +34,5 @@ pub use schedule::{
 };
 pub use sync::{ClockTransportState, MidiClockDecoder, MtcDecoder, SmpteFrameRate, SmpteTimecode};
 pub use traits::MidiOut;
+// The counts a device's inlet keeps, as `DeviceInput::counts` returns them.
+pub use tutti_graph::InletCounts;

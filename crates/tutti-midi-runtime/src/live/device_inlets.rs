@@ -23,7 +23,7 @@
 //! it arrived, whatever the block boundaries, and the spacing between events
 //! is the map's: within the bound doc 017 section 5 states
 //! ([`ClockMap`]). An event is late, and counted so
-//! ([`InletCounts::late`](tutti_graph::InletCounts::late)), only when the
+//! ([`InletCounts::late`]), only when the
 //! thread's push comes more than the lead after its arrival.
 //!
 //! # Slots

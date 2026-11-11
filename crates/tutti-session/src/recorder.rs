@@ -11,6 +11,10 @@
 //! - [`PumpLoop::new`] and [`Recorder::start`] refuse a source and sink whose
 //!   channel widths disagree, before any frame moves. The same check is a
 //!   `debug_assert` in the pass itself (`pump`, private: nothing else calls it).
+//! - A recording does not dither unless asked. To dither a take as an export
+//!   does, wrap the file sink in one line:
+//!   `Recorder::start(src, DitherSink::new(file, Some(DitherSpec { shape, lsb })))`,
+//!   with `lsb` from the file's depth (`IntDepth::lsb`).
 //! - The scratch buffer is allocated once, so the loop never allocates.
 //! - An empty pull means "back off", "finished" or "broken" according to the
 //!   source's own [`Pull`] verdict. `Starved` sources (every

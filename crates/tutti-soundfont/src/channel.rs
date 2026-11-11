@@ -12,7 +12,7 @@ const SEND_AMOUNT: f32 = 0.2;
 /// A 14-bit controller with its most significant 7 bits replaced (CC 0 to 31).
 /// The least significant 7 bits go to zero: M1 p.12, "When an MSB is received,
 /// the receiver should set its concept of the LSB to zero."
-fn with_msb(_current: U14, msb: U7) -> U14 {
+fn with_msb(msb: U7) -> U14 {
     U14::masked(u16::from(msb.get()) << 7)
 }
 
@@ -74,9 +74,9 @@ impl Channel {
         self.patch_number = 0;
 
         self.modulation = U14::of(0);
-        self.volume = with_msb(U14::of(0), U7::of(100));
-        self.pan = with_msb(U14::of(0), U7::of(64));
-        self.expression = with_msb(U14::of(0), U7::of(127));
+        self.volume = with_msb(U7::of(100));
+        self.pan = with_msb(U7::of(64));
+        self.expression = with_msb(U7::of(127));
 
         self.reverb_send = 40;
         self.chorus_send = 0;
@@ -87,13 +87,13 @@ impl Channel {
 
     pub(crate) fn reset_all_controllers(&mut self) {
         self.modulation = U14::of(0);
-        self.expression = with_msb(U14::of(0), U7::of(127));
+        self.expression = with_msb(U7::of(127));
     }
 
     /// Bank Select, coarse (CC 0): held for the next Program Change, and the
     /// pending LSB goes to zero (M1 p.12).
     pub(crate) fn select_bank_coarse(&mut self, value: U7) {
-        self.pending_bank = with_msb(self.pending_bank, value);
+        self.pending_bank = with_msb(value);
     }
 
     /// Bank Select, fine (CC 32): held for the next Program Change.
@@ -114,7 +114,7 @@ impl Channel {
     }
 
     pub(crate) fn set_modulation_coarse(&mut self, value: U7) {
-        self.modulation = with_msb(self.modulation, value);
+        self.modulation = with_msb(value);
     }
 
     pub(crate) fn set_modulation_fine(&mut self, value: U7) {
@@ -122,7 +122,7 @@ impl Channel {
     }
 
     pub(crate) fn set_volume_coarse(&mut self, value: U7) {
-        self.volume = with_msb(self.volume, value);
+        self.volume = with_msb(value);
     }
 
     pub(crate) fn set_volume_fine(&mut self, value: U7) {
@@ -130,7 +130,7 @@ impl Channel {
     }
 
     pub(crate) fn set_pan_coarse(&mut self, value: U7) {
-        self.pan = with_msb(self.pan, value);
+        self.pan = with_msb(value);
     }
 
     pub(crate) fn set_pan_fine(&mut self, value: U7) {
@@ -138,7 +138,7 @@ impl Channel {
     }
 
     pub(crate) fn set_expression_coarse(&mut self, value: U7) {
-        self.expression = with_msb(self.expression, value);
+        self.expression = with_msb(value);
     }
 
     pub(crate) fn set_expression_fine(&mut self, value: U7) {

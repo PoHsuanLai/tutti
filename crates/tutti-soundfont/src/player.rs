@@ -334,8 +334,9 @@ impl Player {
 
     /// What a Control Change sets in the channel.
     ///
-    /// Followed: bank select (held until the next program change), modulation, volume, pan, expression, reverb
-    /// and chorus send, and reset all controllers. RPN and NRPN arrive
+    /// Followed: bank select (held until the next program change),
+    /// modulation, volume, pan, expression, reverb and chorus send, and reset
+    /// all controllers. RPN and NRPN arrive
     /// assembled, as Registered and Assignable Controllers (the input edge's
     /// translator, design 017 §4), not as Data Entry. The pedals (64, 66), all sound off (120), all
     /// notes off (123) and the mode messages are the core's

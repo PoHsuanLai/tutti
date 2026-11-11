@@ -787,7 +787,7 @@ mod tests {
     /// 997 Hz is the `+0.691` dB that offset cancels, so two channels read
     /// `10 log10(a^2) = 20 log10(a)`.
     fn stereo_lufs(a: f64) -> f32 {
-        (20.0 * a.log10()) as f32
+        Db::from_amplitude(Amplitude::new(a as f32)).get()
     }
 
     fn windowed_cfg(rate: f64) -> WindowedLoudnessConfig {
@@ -845,7 +845,7 @@ mod tests {
             // The peak of an amplitude-0.1 tone is 20 log10(0.1) dBTP, a figure of
             // its own; the 4x oversampled meter adds under 0.3 dB, as in
             // `true_peak_is_the_signals_amplitude`.
-            let peak_want = (20.0 * 0.1f64.log10()) as f32;
+            let peak_want = Db::from_amplitude(Amplitude::new(0.1)).get();
             assert!((at(3500).true_peak.get() - peak_want).abs() < 0.3);
         }
     }
@@ -1043,7 +1043,7 @@ mod tests {
     #[test]
     fn the_true_peak_is_the_loudest_channels() {
         let cfg = windowed_cfg(48_000.0);
-        let want = (20.0 * 0.5f64.log10()) as f32;
+        let want = Db::from_amplitude(Amplitude::new(0.5)).get();
         for (left, right) in [(0.0f64, 0.5f64), (0.5, 0.0), (0.1, 0.5)] {
             let signal: Vec<f32> = (0..24_000)
                 .flat_map(|i| {

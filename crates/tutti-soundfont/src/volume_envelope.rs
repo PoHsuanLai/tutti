@@ -173,7 +173,7 @@ mod tests {
     }
 
     fn db(level: f32) -> f32 {
-        20.0 * level.log10()
+        tutti_types::Db::from_amplitude(tutti_types::Amplitude::new(level)).get()
     }
 
     /// Release: from the level at key-off, `fraction` of the release time on is
@@ -183,7 +183,7 @@ mod tests {
         // Key-off from full level, and from the sustain at -6 dB: the fall is
         // the same 100 dB a release time, from wherever it starts.
         for (sustain_db, fractions) in [(0.0_f32, [0.1, 0.3, 0.5]), (6.0, [0.1, 0.3, 0.5])] {
-            let sustain = 10f32.powf(-sustain_db / 20.0);
+            let sustain = tutti_types::Db::new(-sustain_db).to_amplitude().get();
             let mut envelope = envelope(1.0, sustain, 2.0);
             envelope.process(RATE as usize / 2);
             let before = db(envelope.value());

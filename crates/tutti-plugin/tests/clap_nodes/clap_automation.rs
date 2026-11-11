@@ -47,7 +47,7 @@ impl Curve for Constant {
 /// normalized `v` sets.
 fn gained(v: f64) -> f32 {
     let db = GAIN_DB.0 + v * (GAIN_DB.1 - GAIN_DB.0);
-    10f64.powf(db / 20.0) as f32
+    tutti_types::Db::new(db as f32).to_amplitude().get()
 }
 
 /// **Automation reaches the plugin.** The probe renders its tag (1.0 on

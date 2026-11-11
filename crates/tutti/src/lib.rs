@@ -75,7 +75,9 @@ pub use tutti_codec as codec;
 /// which `audio-io` implies.
 #[cfg(feature = "io")]
 pub mod io {
-    pub use tutti_session::{IDLE_PARK, PumpLoop, PumpPass, Recorder, RecorderError};
+    pub use tutti_session::{
+        DitherShape, DitherSink, DitherSpec, IDLE_PARK, PumpLoop, PumpPass, Recorder, RecorderError,
+    };
 }
 
 /// Offline rendering and export (`tutti-export`). Feature `export`.

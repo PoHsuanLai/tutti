@@ -124,6 +124,8 @@ pub use session::MidiNodes;
 #[cfg(feature = "modulation")]
 pub use session::ModInput;
 pub use session::{PHASES, Phase, PhaseCx, RootTopologyStatus, Session, SessionEvent};
+#[cfg(feature = "record")]
+pub use tutti_dsp::{DitherShape, DitherSink, DitherSpec};
 pub use tutti_graph::{BusError, BusRef, BusSource, Buses, MissingSource};
 pub use tutti_graph::{MixError, ModeError, NodeMode};
 #[cfg(feature = "midi")]

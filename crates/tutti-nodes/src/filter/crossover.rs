@@ -346,8 +346,8 @@ mod tests {
     /// others: the out-of-range one is held under the rate, not the whole set
     /// frozen.
     ///
-    /// Mutation (run): the design's `design_into` ignoring the cell → the 300 Hz
-    /// split never lands → fails.
+    /// Mutation (run): `Params::read` reading a constant 200 Hz for the cell →
+    /// the 300 Hz split never lands → fails.
     #[test]
     fn a_frequency_above_the_rate_does_not_freeze_the_others() {
         let node = CrossoverNode::new(ChannelLayout::MONO, &[Hz(200.0), Hz(15_000.0)]).unwrap();

@@ -221,8 +221,9 @@ mod tests {
     /// A set is solved with every split inside `1 Hz..=SOLVE_CEILING * rate` and none
     /// below the one before, whatever the controls say.
     ///
-    /// Mutation (run): drop the running `floor` (clamp each alone) → `[5000, 4000]`
-    /// stays out of order → fails; drop the `.min(cap)` → `30000` stays → fails.
+    /// Mutation (run): the running `floor` replaced by `1.0` (clamp each alone) →
+    /// `[5000, 4000]` stays out of order → fails; drop the `.min(cap)` → `[30000,
+    /// 25000]` stays at 30000 → fails.
     #[test]
     fn design_into_orders_and_caps_the_splits() {
         let rate = SampleRate(48_000.0);

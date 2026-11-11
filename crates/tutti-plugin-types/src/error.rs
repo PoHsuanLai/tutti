@@ -1,14 +1,11 @@
-//! Format-agnostic plugin error, returned by the plugin-instance capability
-//! traits ([`PluginState`], [`PluginAudio`]).
+//! Format-agnostic plugin error, returned by the hosting traits
+//! ([`Control`](crate::Control), [`Processor`](crate::Processor)).
 //!
 //! This is the *lean* error the shared traits speak — it carries only the
 //! failure modes a format loader can produce (load, state, process, editor),
 //! never the IPC/host-coupled variants (`ServerNotFound`, `ProtocolMismatch`,
 //! `IpcError`, …) that live on `tutti-plugin`'s `BridgeError`. The host crate
 //! maps `PluginError` into its richer `BridgeError` at the IPC boundary.
-//!
-//! [`PluginState`]: crate::PluginState
-//! [`PluginAudio`]: crate::PluginAudio
 
 use crate::editor::EditorError;
 use crate::load_stage::LoadStage;

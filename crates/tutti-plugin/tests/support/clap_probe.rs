@@ -317,6 +317,13 @@ impl ProbeEnv {
         self
     }
 
+    /// Make the plugin advertise `n` extra parameters after its table (ids from
+    /// `tutti_clap_test_plugin::EXTRA_PARAM_BASE`).
+    pub fn extra_params(mut self, n: usize) -> Self {
+        self.set("TUTTI_CLAP_PROBE_EXTRA_PARAMS", n.to_string());
+        self
+    }
+
     /// Make the plugin's `clap.state` load refuse.
     pub fn refuse_state_load(mut self, on: bool) -> Self {
         self.set(

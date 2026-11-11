@@ -23,7 +23,8 @@
 use std::ffi::{CStr, c_char};
 use std::ptr;
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::OnceLock;
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 
 use clap_sys::events::{
     CLAP_CORE_EVENT_SPACE_ID, CLAP_EVENT_PARAM_GESTURE_BEGIN, CLAP_EVENT_PARAM_GESTURE_END,
@@ -43,6 +44,39 @@ use clap_sys::string_sizes::{CLAP_NAME_SIZE, CLAP_PATH_SIZE};
 // ---------------------------------------------------------------------------
 // The parameter table.
 // ---------------------------------------------------------------------------
+
+/// The environment variable that makes the probe advertise that many **extra**
+/// parameters after its table, read once when the plugin first answers a
+/// parameter query. A host that moves hundreds of parameters at once (a chunk
+/// of changes past any fixed queue count) needs a plugin that has them;
+/// the extras are plain `0..1` values, default `0`, with ids from
+/// [`EXTRA_PARAM_BASE`], and affect nothing a block renders. Set in the
+/// environment of the process the plugin runs in (a `plugin-server` takes it
+/// from its spawner).
+pub const EXTRA_PARAMS_ENV: &str = "TUTTI_CLAP_PROBE_EXTRA_PARAMS";
+
+/// The id of the first extra parameter ([`EXTRA_PARAMS_ENV`]); extra `n` has id
+/// `EXTRA_PARAM_BASE + n`, past every id of the table.
+pub const EXTRA_PARAM_BASE: u32 = 100_000;
+
+/// The most extras the probe holds values for.
+pub const MAX_EXTRA_PARAMS: usize = 256;
+
+/// How many extras this process advertises.
+fn extra_count() -> usize {
+    static COUNT: OnceLock<usize> = OnceLock::new();
+    *COUNT.get_or_init(|| {
+        std::env::var(EXTRA_PARAMS_ENV)
+            .ok()
+            .and_then(|n| n.parse::<usize>().ok())
+            .map_or(0, |n| n.min(MAX_EXTRA_PARAMS))
+    })
+}
+
+/// The extras' live values, as `f64` bit patterns. Zero bits are `0.0`, the
+/// default of every extra.
+static EXTRA_VALUES: [AtomicU64; MAX_EXTRA_PARAMS] =
+    [const { AtomicU64::new(0) }; MAX_EXTRA_PARAMS];
 
 /// One parameter the probe advertises. `pub` and reachable through the rlib so
 /// the conformance test asserts against *this* table rather than a hand-copied
@@ -191,6 +225,40 @@ pub unsafe fn apply_param_events_through(list: *const clap_input_events, frame: 
     }
 }
 
+/// Apply every `PARAM_VALUE` event for an **extra** parameter ([`EXTRA_PARAMS_ENV`]) in
+/// the host's list, at once: the extras take their last value of a block, and a
+/// block's events are all there is to say about them. The table's own parameters
+/// are not touched (the gain's are applied per sample, at their `time`).
+///
+/// # Safety
+/// `list` must be null or the live `clap_input_events` the host passed to
+/// `process`.
+pub unsafe fn apply_extra_param_events(list: *const clap_input_events) {
+    if list.is_null() || extra_count() == 0 {
+        return;
+    }
+    let (Some(size_fn), Some(get_fn)) = (unsafe { (*list).size }, unsafe { (*list).get }) else {
+        return;
+    };
+    let n = unsafe { size_fn(list) };
+    for i in 0..n {
+        let hdr_ptr = unsafe { get_fn(list, i) };
+        if hdr_ptr.is_null() {
+            continue;
+        }
+        let hdr: &clap_event_header = unsafe { &*hdr_ptr };
+        if hdr.type_ != CLAP_EVENT_PARAM_VALUE {
+            continue;
+        }
+        let pv = unsafe { &*(hdr_ptr as *const clap_event_param_value) };
+        if pv.param_id >= EXTRA_PARAM_BASE
+            && let Some(idx) = index_of_id(pv.param_id)
+        {
+            store_value(idx, pv.value);
+        }
+    }
+}
+
 /// Live parameter values, index-parallel to [`PARAMS`], stored as `f64` bit
 /// patterns so the table can be a `static` without a lock on the audio thread.
 /// Initialised lazily from `default` on first read — 0 is not a legal sentinel,
@@ -207,8 +275,12 @@ static VALUES: [AtomicU32; 8] = [
 ];
 static VALUES_INIT: AtomicBool = AtomicBool::new(false);
 
-/// Store `value` for parameter `index` as two `u32` halves.
+/// Store `value` for parameter `index` as two `u32` halves (an extra: one `u64`).
 fn store_value(index: usize, value: f64) {
+    if let Some(extra) = index.checked_sub(PARAMS.len()) {
+        EXTRA_VALUES[extra].store(value.to_bits(), Ordering::Release);
+        return;
+    }
     let bits = value.to_bits();
     VALUES[index * 2].store((bits >> 32) as u32, Ordering::Release);
     VALUES[index * 2 + 1].store(bits as u32, Ordering::Release);
@@ -216,6 +288,9 @@ fn store_value(index: usize, value: f64) {
 
 /// Load parameter `index`'s value.
 fn load_value(index: usize) -> f64 {
+    if let Some(extra) = index.checked_sub(PARAMS.len()) {
+        return f64::from_bits(EXTRA_VALUES[extra].load(Ordering::Acquire));
+    }
     let hi = VALUES[index * 2].load(Ordering::Acquire) as u64;
     let lo = VALUES[index * 2 + 1].load(Ordering::Acquire) as u64;
     f64::from_bits((hi << 32) | lo)
@@ -229,13 +304,19 @@ fn ensure_values_init() {
     for (i, p) in PARAMS.iter().enumerate() {
         store_value(i, p.default);
     }
+    for value in &EXTRA_VALUES {
+        value.store(0, Ordering::Release);
+    }
 }
 
 /// Index of the parameter with `id`, or `None`. The linear scan is the point:
 /// the only lookup correct for a sparse id space, and what makes a host passing
 /// an index fail rather than silently hit the wrong parameter.
 fn index_of_id(id: u32) -> Option<usize> {
-    PARAMS.iter().position(|p| p.id == id)
+    PARAMS.iter().position(|p| p.id == id).or_else(|| {
+        let extra = usize::try_from(id.checked_sub(EXTRA_PARAM_BASE)?).ok()?;
+        (extra < extra_count()).then_some(PARAMS.len() + extra)
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -460,7 +541,7 @@ pub(crate) static PARAMS_EXT: clap_plugin_params = clap_plugin_params {
 };
 
 unsafe extern "C" fn params_count(_plugin: *const clap_plugin) -> u32 {
-    PARAMS.len() as u32
+    (PARAMS.len() + extra_count()) as u32
 }
 
 /// Copy `src` into a fixed-size `c_char` array, NUL-padded. Truncates rather
@@ -491,7 +572,7 @@ unsafe extern "C" fn params_get_info(
     // `param_index` is an *index*, so out-of-range is a hard reject — this is
     // what catches a host feeding an id in here: 101 and 4242 are past the end.
     let Some(p) = PARAMS.get(param_index as usize) else {
-        return false;
+        return extra_info(param_index as usize - PARAMS.len(), info);
     };
     ensure_values_init();
 
@@ -508,6 +589,25 @@ unsafe extern "C" fn params_get_info(
     info.min_value = p.min;
     info.max_value = p.max;
     info.default_value = p.default;
+    true
+}
+
+/// Describes extra `extra` ([`EXTRA_PARAMS_ENV`]), or `false` past the last.
+fn extra_info(extra: usize, info: *mut clap_param_info) -> bool {
+    if extra >= extra_count() {
+        return false;
+    }
+    // SAFETY: `info` is the non-null pointer `params_get_info` checked, valid
+    // per the CLAP ABI.
+    let info = unsafe { &mut *info };
+    info.id = EXTRA_PARAM_BASE + extra as u32;
+    info.flags = CLAP_PARAM_IS_AUTOMATABLE;
+    info.cookie = ptr::null_mut();
+    fill_cstr_array(&mut info.name, format!("Extra {extra}").as_bytes());
+    fill_cstr_array(&mut info.module, b"Extra");
+    info.min_value = 0.0;
+    info.max_value = 1.0;
+    info.default_value = 0.0;
     true
 }
 

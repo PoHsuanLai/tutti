@@ -6,7 +6,7 @@
 
 use crate::session::{Reaction, Session};
 use crate::transport::{Transport, TransportListener};
-use tutti_plugin::server::{BridgeConfig, BridgeMessage, PROTOCOL_VERSION};
+use tutti_plugin_ipc::{BridgeConfig, BridgeMessage, PROTOCOL_VERSION};
 use tutti_plugin_types::MainThread;
 use tutti_plugin_types::{BridgeError, BridgeResult};
 

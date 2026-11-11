@@ -142,7 +142,7 @@ impl ClapLoaded {
     /// The declared `[min, max]` for one parameter, or `None` if the plugin
     /// does not declare it.
     ///
-    /// The direct `PluginParams` path needs a single parameter's range, where
+    /// The direct `Control::parameter` path needs a single parameter's range, where
     /// `process` needs the whole table — so this walks rather than building a
     /// map. That is the right trade here: it is called once per host-driven
     /// read or write (a knob turn, a preset apply), never per block.

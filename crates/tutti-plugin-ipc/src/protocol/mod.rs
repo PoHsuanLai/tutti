@@ -46,7 +46,12 @@ pub(crate) mod wire;
 ///   tags are varints, so every message reads differently. A version-26 server
 ///   is refused at the handshake (`handshake` names a server whose first frame
 ///   does not decode as one from another build).
-pub const PROTOCOL_VERSION: u32 = 27;
+/// - **Version 28** added `load` to `LoadPlugin`: which plugin of a file that
+///   exports several to load (a CLAP plugin id, a VST3 class name, an AU
+///   descriptor id), which the server hands its format's
+///   `OutOfProcess::load_served`. Before it a file always loaded its first
+///   plugin.
+pub const PROTOCOL_VERSION: u32 = 28;
 
 /// Largest control-socket frame body either end will allocate for, in bytes.
 ///
@@ -165,7 +170,7 @@ mod tests {
     use std::path::PathBuf;
     use tutti_fixtures::midi;
     use tutti_plugin_types::{
-        ChordValue, NoteExpressionIntValue, NoteExpressionTextValue, ScaleValue, WireMidi,
+        ChordValue, Load, NoteExpressionIntValue, NoteExpressionTextValue, ScaleValue, WireMidi,
     };
     use tutti_types::SampleRate;
     use tutti_ump::{CCNumber, Message, MidiChannel, MidiGroup, Ump, Voice2};
@@ -271,6 +276,7 @@ mod tests {
         assert_eq!(tag(&first), 1, "UnloadPlugin follows LoadPlugin, the first");
         let load = postcard::to_allocvec(&HostMessage::LoadPlugin {
             path: PathBuf::new(),
+            load: Load::new(),
             sample_rate: SampleRate(48_000.0),
             block_size: 64,
             preferred_format: SampleFormat::Float32,
@@ -655,6 +661,7 @@ mod tests {
     fn test_load_plugin_f64_serialization() {
         let msg = HostMessage::LoadPlugin {
             path: PathBuf::from("/test/reverb.vst3"),
+            load: Load::new().plugin("Reverb Plus"),
             sample_rate: SampleRate(96000.0),
             block_size: 1024,
             preferred_format: SampleFormat::Float64,
@@ -668,12 +675,18 @@ mod tests {
         match decoded {
             HostMessage::LoadPlugin {
                 path,
+                load,
                 sample_rate,
                 block_size,
                 preferred_format,
                 ..
             } => {
                 assert_eq!(path, PathBuf::from("/test/reverb.vst3"));
+                assert_eq!(
+                    load.chosen(),
+                    Some("Reverb Plus"),
+                    "the choice crosses the wire"
+                );
                 assert_eq!(sample_rate, SampleRate(96000.0));
                 assert_eq!(block_size, 1024);
                 assert_eq!(preferred_format, SampleFormat::Float64);

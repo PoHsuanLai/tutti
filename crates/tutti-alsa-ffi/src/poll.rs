@@ -68,12 +68,18 @@ impl Poller {
             )
         };
         check(rc, "snd_seq_poll_descriptors")?;
+        Ok(Self::over(polls, stop))
+    }
+
+    /// The sequencer's `polls`, then `stop` for input: the one place the
+    /// stop descriptor goes last, which [`wait`](Self::wait) reads.
+    fn over(mut polls: Vec<libc::pollfd>, stop: RawFd) -> Self {
         polls.push(libc::pollfd {
             fd: stop,
-            events,
+            events: libc::POLLIN,
             revents: 0,
         });
-        Ok(Self { polls })
+        Self { polls }
     }
 
     /// Blocks until the sequencer has input, the stop descriptor fires, or
@@ -152,22 +158,32 @@ mod tests {
         );
     }
 
-    /// A stop descriptor that is already readable ends the wait at once, and
-    /// one that is not times out. Uses a client of its own: needs the
-    /// sequencer (`snd-seq`), like the backend's suites.
+    /// A socket stands in for the sequencer's descriptor, so the wait is
+    /// tested without the sequencer (CI's kernel has no `snd-seq`): nothing
+    /// readable times out, the stand-in readable is `Ready`, and a readable
+    /// stop descriptor is `Stopped` even with input pending.
+    ///
+    /// Mutations: reporting `seq` input before `stop` -> the last assert
+    /// reads `Ready`; `ready == 0` -> `ready <= 1` reads one ready descriptor as a timeout; pushing the
+    /// stop descriptor first in `over` -> the stand-in's input reads `Stopped`.
     #[test]
-    fn a_readable_stop_descriptor_wakes_the_wait() {
+    fn the_wait_reports_input_timeout_and_stop_with_stop_first() {
         use std::io::Write;
         use std::os::fd::AsRawFd;
         use std::os::unix::net::UnixStream;
-        let client = Client::open("tutti-ffi-poll", true).expect("a sequencer (modprobe snd-seq)");
-        let (mut tx, rx) = UnixStream::pair().unwrap();
-        let mut poller = Poller::new(&client, rx.as_raw_fd()).unwrap();
-        assert_eq!(
-            poller.wait(Some(Duration::from_millis(20))).unwrap(),
-            Wait::Timeout
-        );
-        tx.write_all(b"x").unwrap();
+        let (mut seq_tx, seq_rx) = UnixStream::pair().unwrap();
+        let (mut stop_tx, stop_rx) = UnixStream::pair().unwrap();
+        let seq = libc::pollfd {
+            fd: seq_rx.as_raw_fd(),
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        let mut poller = Poller::over(vec![seq], stop_rx.as_raw_fd());
+        let short = Some(Duration::from_millis(20));
+        assert_eq!(poller.wait(short).unwrap(), Wait::Timeout);
+        seq_tx.write_all(b"x").unwrap();
+        assert_eq!(poller.wait(short).unwrap(), Wait::Ready);
+        stop_tx.write_all(b"x").unwrap();
         assert_eq!(poller.wait(None).unwrap(), Wait::Stopped);
     }
 }

@@ -5,9 +5,11 @@
 use std::time::{Duration, Instant};
 use tutti_types::SampleRate;
 
-use super::client::SeqClient;
 use crate::{Devices, HardwareMidiInputs};
-use tutti_alsa_ump_sys as sys;
+use tutti_alsa_ffi::Client;
+use tutti_alsa_ffi::{
+    CAP_READ, CAP_SUBS_READ, CAP_SUBS_WRITE, CAP_WRITE, TYPE_APPLICATION, TYPE_MIDI_GENERIC,
+};
 use tutti_midi_device::{DeviceEvent, DeviceId, DeviceInfo, Identity};
 
 /// Long enough to be a failure, not a race: the announce arrives at once.
@@ -56,7 +58,7 @@ impl std::ops::Deref for Watched {
 }
 
 /// A device named `name` until dropped.
-struct Virtual(SeqClient);
+struct Virtual(Client);
 
 impl Virtual {
     fn rename(&self, name: &str) {
@@ -65,17 +67,10 @@ impl Virtual {
 }
 
 fn plug(name: &str) -> Virtual {
-    let seq = SeqClient::open(name, true).expect("a sequencer to open (modprobe snd-seq)");
-    let caps = sys::SND_SEQ_PORT_CAP_READ
-        | sys::SND_SEQ_PORT_CAP_SUBS_READ
-        | sys::SND_SEQ_PORT_CAP_WRITE
-        | sys::SND_SEQ_PORT_CAP_SUBS_WRITE;
-    seq.open_port(
-        "port",
-        caps,
-        sys::SND_SEQ_PORT_TYPE_MIDI_GENERIC | sys::SND_SEQ_PORT_TYPE_APPLICATION,
-    )
-    .expect("a port");
+    let seq = super::client::open(name, true).expect("a sequencer to open (modprobe snd-seq)");
+    let caps = CAP_READ | CAP_SUBS_READ | CAP_WRITE | CAP_SUBS_WRITE;
+    seq.open_port("port", caps, TYPE_MIDI_GENERIC | TYPE_APPLICATION)
+        .expect("a port");
     Virtual(seq)
 }
 
@@ -275,16 +270,13 @@ fn a_saved_alsa_device_resolves_by_name_only() {
 fn a_port_gaining_its_capabilities_is_added_as_a_duplex() {
     let devices = Watched::open();
     let name = unique("caps");
-    let seq = SeqClient::open(&name, true).expect("a sequencer to open (modprobe snd-seq)");
-    let kind = sys::SND_SEQ_PORT_TYPE_MIDI_GENERIC | sys::SND_SEQ_PORT_TYPE_APPLICATION;
+    let seq = super::client::open(&name, true).expect("a sequencer to open (modprobe snd-seq)");
+    let kind = TYPE_MIDI_GENERIC | TYPE_APPLICATION;
     let port = seq.open_port("port", 0, kind).expect("a port");
     let want = format!("{name}: port");
     assert!(devices.list().iter().all(|d| d.name != want));
 
-    let caps = sys::SND_SEQ_PORT_CAP_READ
-        | sys::SND_SEQ_PORT_CAP_SUBS_READ
-        | sys::SND_SEQ_PORT_CAP_WRITE
-        | sys::SND_SEQ_PORT_CAP_SUBS_WRITE;
+    let caps = CAP_READ | CAP_SUBS_READ | CAP_WRITE | CAP_SUBS_WRITE;
     seq.set_port_caps(port, caps).expect("capabilities");
     let added = info(until(&devices, added(&name)));
     assert_eq!(added.direction, tutti_midi_device::Direction::Duplex);
@@ -628,22 +620,10 @@ fn a_device_that_takes_a_departed_clients_number_is_added_once() {
 /// Sends a note-on (UMP MIDI 1.0 channel voice, group 0) from `device`'s port 0
 /// to whoever is subscribed.
 fn send_note(device: &Virtual) {
-    let mut ev = sys::snd_seq_ump_event_t {
-        source: sys::snd_seq_addr_t {
-            client: device.0.id().unwrap() as u8,
-            port: 0,
-        },
-        dest: sys::snd_seq_addr_t {
-            client: sys::SND_SEQ_ADDRESS_SUBSCRIBERS,
-            port: 0,
-        },
-        queue: sys::SND_SEQ_QUEUE_DIRECT,
-        ..Default::default()
-    };
-    ev.ump[0] = 0x2090_3C64;
-    // SAFETY: the client is open; `ev` is fully initialised and not retained.
-    let rc = unsafe { sys::snd_seq_ump_event_output_direct(device.0.raw(), &mut ev) };
-    assert!(rc >= 0, "send failed: {rc}");
+    device
+        .0
+        .send_to_subscribers(0, &[0x2090_3C64])
+        .expect("send failed");
 }
 
 /// A device and an input pump connected to its port, with the ring the pump
@@ -659,7 +639,7 @@ impl Pumped {
     fn open() -> Self {
         let ports = std::sync::Arc::new(HardwareMidiInputs::new(64, SampleRate::new(44_100.0)));
         let device = plug(&unique("pump"));
-        let id = super::enumerate::pack_id(device.0.id().unwrap(), 0);
+        let id = super::enumerate::pack_id(device.0.id(), 0);
         let producer = ports.open_input_port("pump");
         let connection = super::input::open(id, producer).expect("the pump to open");
         let drain = crate::HardwareMidiDrain::new(std::sync::Arc::clone(&ports));
@@ -713,7 +693,7 @@ fn input_sent_to_an_idle_pump_arrives_promptly() {
 }
 
 /// An idle pump sleeps: it does not come back from `poll` on a timer.
-/// Mutation: `libc::poll`'s timeout `-1` changed to `1` fails (about 300 wakes).
+/// Mutation: ``Poller::wait`'s poll timeout `-1` changed to `1` fails (about 300 wakes).
 #[test]
 fn an_idle_pump_does_not_wake() {
     let pumped = Pumped::open();
@@ -867,7 +847,7 @@ fn dropping_an_input_does_not_wait_on_a_stuck_pump() {
 #[test]
 fn an_output_with_a_poisoned_lock_still_sends() {
     let target = plug(&unique("poisoned"));
-    let id = super::enumerate::pack_id(target.0.id().unwrap(), 0);
+    let id = super::enumerate::pack_id(target.0.id(), 0);
     let output = super::output::connect(id).expect("the output to open");
     output.poison();
     output.send_ump(&[0x2090_3C64]).expect("the send to go");

@@ -170,6 +170,7 @@ scripts/check-adapter.sh           # tutti-session re-exports no crate whole (be
 cargo xtask check-doc-features     # rustdoc per feature for tutti-session, tutti
 scripts/check-guards.sh            # every host callback runs under the panic guard
 scripts/check-plugin-ffi.sh        # no CLAP/VST3/AU unsafe outside the -ffi crates; the forbids; VST2 held to its pins
+scripts/check-midi-ffi.sh          # no ALSA/CoreMIDI unsafe outside tutti-alsa-ffi/tutti-coremidi-ffi; the forbid; the -ffi lints
 scripts/check-layout.sh            # flat crates/ and testing/, no crates->testing edges, layering
 cargo xtask check-range-types      # no plain derived Deserialize on a private tuple field
 scripts/check-hosting.sh           # every InProcess/OutOfProcess impl is in the contract's hostings
@@ -202,6 +203,10 @@ and the docs.rs build on a dated nightly); `cargo xtask check-loom` runs clippy 
   entry point and two in one test binary do not link.
   `tutti-plugin-ipc` and `tutti-plugin-server` forbid `unsafe` too: the process
   edge's is `tutti-plugin-ipc-ffi`'s.
+  MIDI's OS `unsafe` lives only in `tutti-alsa-ffi` (Linux) and `tutti-coremidi-ffi`
+  (macOS), which `deny` `undocumented_unsafe_blocks` and `missing_safety_doc`;
+  `tutti-midi-hardware` forbids `unsafe` and names no raw-binding crate
+  (`scripts/check-midi-ffi.sh`, design 017 stage 4d).
 - **Toolchain:** `rust-toolchain.toml` pins the stable every gate runs on,
   and `Cargo.lock` is committed (`--locked` everywhere). To bump, edit
   `rust-toolchain.toml`, run `cargo xtask ci`, and fix the new lints in the same PR.
@@ -454,8 +459,10 @@ crates/          everything shipped; directory name = package name; no nesting
   tutti-soundfont (the SoundFont player: the node, the voices, the patch that
                  turns a note into voices; it executes `tutti-voicing`'s
                  commands), tutti-sf2 (the SoundFont 2 file as data)
-  tutti-midi-{runtime,hardware,file}, tutti-alsa-ump-sys
-                 (raw ALSA UMP FFI that alsa-sys lacks; Linux only). The Clip File codec
+  tutti-midi-{runtime,hardware,file}, tutti-alsa-ffi (all ALSA unsafe, the raw UMP
+                 bindings that alsa-sys lacks folded in as a private module; Linux
+                 only, empty elsewhere), tutti-coremidi-ffi (all CoreMIDI and Mach
+                 clock unsafe; macOS only, empty elsewhere). The Clip File codec
                  (both halves) is `tutti-midi-file`'s; the inbound sync decoders
                  (`MidiClockDecoder`, `MtcDecoder`, `SmpteTimecode`) are
                  `tutti-midi-runtime`'s, beside `ClockMaster`. `tutti-midi-types` and the
@@ -507,7 +514,7 @@ vendor/          third-party code we never edit
 list (normal and build edges; dev-dependencies may go anywhere).
 `scripts/check-layout.sh` holds the table and fails on an unplaced crate:
 
-0. `arc-lend`, `tutti-alsa-ump-sys`, `tutti-ump`, `tutti-types`, `tutti-plugin-ipc-ffi`
+0. `arc-lend`, `tutti-alsa-ffi`, `tutti-coremidi-ffi`, `tutti-ump`, `tutti-types`, `tutti-plugin-ipc-ffi`
 1. `tutti-rt`, `tutti-midi-protocol`, `tutti-midi-device`, `tutti-curve`
 2. `tutti-graph`, `tutti-dsp`, `tutti-modulation`, `tutti-metering`,
    `tutti-codec`, `tutti-tempo`, `tutti-voicing`, `tutti-sf2`

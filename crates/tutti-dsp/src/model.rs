@@ -16,7 +16,7 @@ mod system;
 
 pub use cadence::{Anchor, Cadence, Period, Step};
 pub use ceiling::{Ceiling, MaxDecay, MaxDecayError, Range};
-pub use design::{Channels, Design, Sizes};
+pub use design::{Channels, Design, Placement, Sizes};
 pub use lti::Lti;
 pub use realization::{Effect, Effort, Realization, Setup};
 #[cfg(test)]

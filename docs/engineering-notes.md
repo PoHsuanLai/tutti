@@ -118,7 +118,7 @@ crates/             everything shipped, directory name = package name
   tutti-polysynth   # Polyphonic subtractive/wavetable synth
   tutti-soundfont   # SoundFont (.sf2) playback: the voice render (derived from rustysynth) under tutti-voicing
   tutti-sf2         # A SoundFont 2 file as data (no synth).
-  tutti-midi-runtime / -hardware / -file, tutti-alsa-ump-sys
+  tutti-midi-runtime / -hardware / -file, tutti-alsa-ffi, tutti-coremidi-ffi
   tutti-plugin / -types / -server / -ipc / -host / -db / -probe
   tutti-{vst2,vst3,clap,au}-host, tutti-clap-ffi, tutti-vst3-ffi
   tutti-vst2-ffi    # Host half of our fork of the vst crate (all VST2 unsafe)

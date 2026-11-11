@@ -9,10 +9,10 @@
 //! which takes UMP words directly, and even `Properties::protocol_id()` for
 //! capability detection.
 //!
-//! Raw `coremidi-sys` is confined to exactly one place, [`virtual_source`],
-//! because the wrapper has `virtual_destination_with_protocol` but **no**
-//! `virtual_source_with_protocol` — publishing a MIDI-2.0-protocol virtual
-//! source needs `MIDISourceCreateWithProtocol` by hand.
+//! The one raw call it lacks, `MIDISourceCreateWithProtocol` (the wrapper has
+//! `virtual_destination_with_protocol` but **no** `virtual_source_with_protocol`),
+//! and the Mach clock are `tutti-coremidi-ffi`'s, behind safe handles
+//! ([`virtual_source`], `host_time`); this crate forbids `unsafe`.
 //!
 //! # Protocol is asked, not assumed
 //!
@@ -68,7 +68,7 @@ pub(crate) fn shared_client() -> std::result::Result<&'static Client, coremidi::
 
 /// Starts the device watch's client. CoreMIDI sends notifications to the run
 /// loop of the process's first client, so every place this backend creates a
-/// client (`shared_client`, `virtual_source::shared_raw_client`) calls this
+/// client (`shared_client`, `UmpVirtualSource::new`) calls this
 /// first, before taking its own lock.
 ///
 /// Rule: nothing the hub thread runs may call back into those two functions
@@ -289,11 +289,6 @@ struct CoreMidiInput {
     _port: InputPortWithContext<()>,
 }
 
-// SAFETY: `InputPortWithContext` owns an opaque `MIDIPortRef` — a `UInt32`
-// handle into CoreMIDI, whose objects are internally synchronised. The same
-// contract `UmpVirtualSource` relies on.
-unsafe impl Send for CoreMidiInput {}
-
 impl InputConnection for CoreMidiInput {}
 
 /// An open CoreMIDI output, as a [`MidiOut`].
@@ -309,10 +304,6 @@ struct CoreMidiOutput {
     destination: coremidi::Destination,
     protocol: Protocol,
 }
-
-// SAFETY: as `CoreMidiInput` — opaque CoreMIDI handles, internally synchronised.
-unsafe impl Send for CoreMidiOutput {}
-unsafe impl Sync for CoreMidiOutput {}
 
 impl CoreMidiOutput {
     /// Send one UMP message, surfacing the real error.

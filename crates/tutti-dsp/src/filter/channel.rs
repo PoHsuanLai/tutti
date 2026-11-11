@@ -102,14 +102,14 @@ impl<K: ChannelKernel> Design for Filter<K> {
     const CADENCE: Cadence = COEFF_STREAM;
 
     fn channels(&self) -> Channels {
-        let outputs = self.kernel.outputs();
-        Channels {
-            input: self.channels,
-            output: if outputs == 1 {
-                self.channels
-            } else {
-                ChannelLayout::from_count(self.channels.count() * outputs as u16)
-            },
+        // One output per input sits where the input does; several (a
+        // crossover's bands) are not speaker feeds.
+        match self.kernel.outputs() {
+            1 => Channels::speakers(self.channels, self.channels),
+            n => Channels::discrete(
+                self.channels,
+                ChannelLayout::from_count(self.channels.count() * n as u16),
+            ),
         }
     }
 

@@ -8,14 +8,53 @@ use tutti_types::{ChannelLayout, Db, SampleRate};
 
 use super::{Cadence, Ceiling, Range, Realization, Ring, System};
 
-/// The channel widths a [`Design`] is made for: what its node's ports and its
-/// realization's [`Setup`](super::Setup) are.
+/// The channels a [`Design`] is made for: what its node's ports and its
+/// realization's [`Setup`](super::Setup) are, and where they sit.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Channels {
     /// The input width.
     pub input: ChannelLayout,
     /// The output width.
     pub output: ChannelLayout,
+    /// Where the channels sit: what a node declares as its main buses, so the
+    /// graph's dry path (mix, bypass) folds the input onto the outputs by
+    /// speaker, not by index.
+    pub placement: Placement,
+}
+
+impl Channels {
+    /// Channels in the engine's speaker order for each width
+    /// (`ChannelTopology::assumed`): a mono input is a centre, a stereo output a
+    /// left and right pair.
+    #[must_use]
+    pub const fn speakers(input: ChannelLayout, output: ChannelLayout) -> Self {
+        Self {
+            input,
+            output,
+            placement: Placement::Speakers,
+        }
+    }
+
+    /// Channels by index, at no speaker: a crossover's bands.
+    #[must_use]
+    pub const fn discrete(input: ChannelLayout, output: ChannelLayout) -> Self {
+        Self {
+            input,
+            output,
+            placement: Placement::Discrete,
+        }
+    }
+}
+
+/// Where a design's channels sit (see [`Channels::placement`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Placement {
+    /// The engine's speaker order for each width, where the width has one: a
+    /// mono source is a centre, which the graph's fold sends to both sides of a
+    /// stereo output (`Fold::between`).
+    Speakers,
+    /// By index, at no speaker: an output that is not a speaker feed.
+    Discrete,
 }
 
 /// The sizes a realization allocates for the worst case of a design: lines, taps,

@@ -7,7 +7,7 @@ LSB at 16-bit is 1/32767, an 18 kHz tone above the new Nyquist must be gone
 rather than folded -- never read from the Rust source. The point is a second
 opinion that cannot inherit the implementation's assumptions.
 
-This complements rather than duplicates the Rust suite. `tests/roundtrip.rs`
+This complements rather than duplicates the Rust suite. `tests/formats/roundtrip.rs`
 reads files back with hound, which only speaks WAV, so FLAC/AIFF/Ogg are checked
 there by frame count and header alone. soundfile decodes all four uniformly,
 which is what makes "does the FLAC hold the same samples as the WAV" answerable

@@ -196,7 +196,7 @@ fn reset_on_a_clone_does_not_move_the_original() {
 /// taken at insert, so a snapshotting clone would freeze every later export at
 /// whatever spread or width happened to be set at insert and silently
 /// ignore every later move. (The fork itself detaches; see
-/// `tests/spatial_param_fork.rs`.) It is also the premise of
+/// `tests/spatial/spatial_param_fork.rs`.) It is also the premise of
 /// `reset_on_a_clone_does_not_move_the_original` -- `reset` must not write
 /// these cells precisely because the write would reach back through every
 /// handle.

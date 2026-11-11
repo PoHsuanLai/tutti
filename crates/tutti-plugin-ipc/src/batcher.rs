@@ -48,7 +48,7 @@
 //! a 480-frame callback every chunk but the first is collected microseconds
 //! after it was submitted, and 186 of 200 blocks rendered silent (441: 198;
 //! 1024: 187); with the callback as the chunk, 0 of 200
-//! (`tests/clap_live.rs`). A chunk that is not the callback — a host
+//! (`tests/clap_nodes/clap_live.rs`). A chunk that is not the callback — a host
 //! that does not know its quantum, a device calling back with more than
 //! `MAX_CHUNK` frames, or one whose callbacks vary — still delays exactly
 //! `chunk` frames, but may collect chunks the server had no time to answer.

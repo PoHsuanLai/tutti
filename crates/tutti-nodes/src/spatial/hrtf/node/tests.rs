@@ -370,7 +370,7 @@ fn reset_drops_the_convolution_tail() {
 /// A clone is the fork source's template, taken at insert, so a
 /// snapshotting clone would silently freeze every later export at the
 /// bearing set at insert. (The fork itself detaches; see
-/// `tests/spatial_param_fork.rs`.)
+/// `tests/spatial/spatial_param_fork.rs`.)
 #[test]
 fn clone_shares_the_position_atomics() {
     let node = make_node();

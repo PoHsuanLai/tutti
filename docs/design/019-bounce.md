@@ -491,7 +491,7 @@ the entity that failed to resolve.
 | `crates/tutti-session/tests/{export_cancel,root_topology,plugin}.rs` | Through `bounce_start`/`BounceHandle`; `root_topology` asserts the master's declaration and a stem's own. |
 | `crates/bevy-tutti/tests/{export_cancel,export_fork,export_surface}.rs`, `plugin_capture`, `mod_lanes`, `mod_plugin` | `BounceRequest`; the `plugin` tests need `cargo build -p tutti-plugin-server` as today. |
 | `crates/bevy-tutti/examples/offline_export.rs` | `BounceRequest`. |
-| `crates/tutti-plugin/tests/clap_fork.rs` | Uses `RenderGraph::assemble` with a session-supplied fork, or moves to the session's bounce. |
+| `crates/tutti-plugin/tests/clap_nodes/clap_fork.rs` | Uses `RenderGraph::assemble` with a session-supplied fork, or moves to the session's bounce. |
 | `README.md` files (tutti-export, bevy-tutti) | Rewritten to the new surface; the stale "does not normalize" and "no builder" lines go. |
 | `CLAUDE.md`, doc 015 §4.3 | The export lines in the workspace table and the "offline render" role update in the last PR. |
 
@@ -603,7 +603,7 @@ render) and the check between chunks. Where this differs from the text above:
   `begin(Measuring)`, the one before the converter's flush in the conversion
   and the one at the top of the render loop are each followed by another that
   catches the same cancel before anything observable happens (the matrix in
-  `tests/cancel.rs` says which test pins what).
+  `tests/render/cancel.rs` says which test pins what).
 
 
 **As built (step 3).** `Output`, `Feed`, `Placement`, `Target`, `FileTarget`,
@@ -836,7 +836,7 @@ itself. Every caller is migrated (the session suites, `clap_fork.rs`, the
   is exported with `export` as with `record`.
 - **Still step 6's:** stems, `Placement` on the session side, `StemGain`, the
   serial-versus-parallel test with stems and the cancel test for each point of
-  section 6.2 on a bounce (`tests/cancel.rs` holds the pipeline's). Tempo stage 6
+  section 6.2 on a bounce (`tests/render/cancel.rs` holds the pipeline's). Tempo stage 6
   (doc 020) needs only what is here: the session derives range and clock from
   the map, and `beats_to_seconds` and `duration_to_frames` are retired.
 

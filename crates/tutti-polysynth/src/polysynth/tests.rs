@@ -2870,8 +2870,7 @@ fn voice_of(synth: &PolySynth, note: u8) -> &SynthVoice {
 
 /// Per-Note Management read from literal words (M2-104 Figure 51: D is bit 1
 /// and S bit 0), so neither the encoder nor the decoder can be wrong in step
-/// with the other. Mutation: testing `reset` before `detach` in `voice2` made
-/// both halves fail (as did `if reset` for `if detach` in the handler).
+/// with the other.
 #[test]
 fn per_note_management_flags_are_read_from_the_spec_bits() {
     let on = ump(Message::Midi2(

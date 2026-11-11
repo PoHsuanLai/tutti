@@ -57,10 +57,10 @@ use tutti_au_ffi::property::ParametersForOverview;
 use tutti_au_ffi::{Property, Scope};
 
 use support::corpus::{
-    DELAY, DLS_SYNTH, DYNAMICS, INVALID_PROPERTY, MATRIX_REVERB, every_component, open_info,
+    DELAY, DLS_SYNTH, DYNAMICS, INVALID_PROPERTY, MATRIX_REVERB, every_component,
 };
 use support::probe_au::{Misbehaviour, PROBE_MANUFACTURER};
-use tutti_au_host::AuError;
+use tutti_au_host::{AuError, AuInstance};
 
 /// AudioToolbox tolerates concurrent use of *distinct* units, but component
 /// discovery walks a process-global registry, and the two sweeps here
@@ -89,7 +89,10 @@ fn every_unit_round_trips_a_context_name() {
     let _g = lock();
     let mut checked = 0;
     for info in every_component() {
-        let Ok(au) = std::panic::catch_unwind(|| open_info(&info, 48_000.0, 512)) else {
+        // Loaded, not initialized: a property read needs no `initialize`, and a
+        // sweep that initializes every unit can lose the process
+        // (`may_initialize_in_a_sweep`).
+        let Ok(au) = AuInstance::new(info.component, 48_000.0, 512) else {
             continue;
         };
         au.set_context_name("track 3")
@@ -329,7 +332,10 @@ fn the_string_readers_report_a_missing_property_as_an_error() {
     // Returning early can only ever reach one of the two readers.
     let mut icon_refusals = 0;
     for info in every_component() {
-        let Ok(au) = std::panic::catch_unwind(|| open_info(&info, 48_000.0, 512)) else {
+        // Loaded, not initialized: a property read needs no `initialize`, and a
+        // sweep that initializes every unit can lose the process
+        // (`may_initialize_in_a_sweep`).
+        let Ok(au) = AuInstance::new(info.component, 48_000.0, 512) else {
             continue;
         };
         if let Err(e) = au.icon_location() {
@@ -431,7 +437,10 @@ fn an_icon_url_names_a_file_that_exists() {
     let mut with_icon = 0;
     let mut checked = 0;
     for info in every_component() {
-        let Ok(au) = std::panic::catch_unwind(|| open_info(&info, 48_000.0, 512)) else {
+        // Loaded, not initialized: a property read needs no `initialize`, and a
+        // sweep that initializes every unit can lose the process
+        // (`may_initialize_in_a_sweep`).
+        let Ok(au) = AuInstance::new(info.component, 48_000.0, 512) else {
             continue;
         };
         checked += 1;

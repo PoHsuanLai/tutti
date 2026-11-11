@@ -35,7 +35,7 @@ pub use normalize::Normalize;
 mod spill;
 
 mod graph;
-pub use graph::{GRAPH_MAX_BLOCK, RenderGraph};
+pub use graph::{GRAPH_MAX_BLOCK, RenderGraph, Setup};
 /// Frame-count arithmetic — pure, and public so a caller can size a render
 /// before committing to one.
 pub use render::plan::{beats_to_seconds, duration_to_frames};
@@ -120,7 +120,7 @@ fn frame_width(layout: ChannelLayout) -> Result<usize> {
 /// set of stems keeps the master's balance.
 ///
 /// The render is the `job`'s: its rate (the graph must be prepared at it:
-/// [`RenderGraph::prepare`] or [`RenderGraph::fork`]), the audible span, the
+/// [`RenderGraph::prepare`]), the audible span, the
 /// latency trimmed from the head of every output, the tail kept past the end
 /// and what to do about a dropped event. `clock` is advanced once per block,
 /// after the graph processes ([`RenderClock::render_graph`]); pass

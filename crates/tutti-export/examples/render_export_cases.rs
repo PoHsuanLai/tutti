@@ -21,7 +21,7 @@
 use tutti_dsp::DitherShape;
 use tutti_export::{
     ChannelLayout, Control, EncodeConfig, ExportConfig, FlacLevel, Format, Output, Pcm, Quality,
-    RenderConfig, RenderGraph, Resample, render_one,
+    RenderConfig, RenderGraph, Resample, Setup, render_one,
 };
 use tutti_graph::GraphBuilder;
 use tutti_nodes::testing::{Const, Osc};
@@ -41,7 +41,7 @@ fn built(g: GraphBuilder) -> RenderGraph {
     let (editor, executor) = g
         .build(RenderGraph::prepare(tutti_types::SampleRate(SR)))
         .expect("builds");
-    RenderGraph::new(editor, executor).expect("built together")
+    RenderGraph::assemble(editor, executor, Setup::new()).expect("built together")
 }
 
 /// A steady tone at −6 dBFS, in stereo.

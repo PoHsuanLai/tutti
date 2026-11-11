@@ -15,7 +15,8 @@ use support::{render_buffers_under, render_file_under, render_to_file};
 use tutti_export::{
     CancelToken, ChannelLayout, Control, EncodeConfig, ExportConfig, FileTarget, FlacLevel, Format,
     FrozenClock, GRAPH_MAX_BLOCK, IntDepth, Normalize, NormalizeSpec, Outcome, Output, Pcm,
-    Produced, Progress, Quality, RenderConfig, RenderGraph, Resample, Stage, Written, render,
+    Produced, Progress, Quality, RenderConfig, RenderGraph, Resample, Setup, Stage, Written,
+    render,
 };
 use tutti_graph::GraphBuilder;
 use tutti_nodes::testing::Const;
@@ -35,7 +36,7 @@ fn graph() -> RenderGraph {
     let id = g.add(Const::frame(&[0.25, 0.25]));
     g.pipe_output(id);
     let (editor, executor) = g.build(RenderGraph::prepare(RATE)).expect("builds");
-    RenderGraph::new(editor, executor).expect("built together")
+    RenderGraph::assemble(editor, executor, Setup::new()).expect("built together")
 }
 
 /// FLAC at 24 bit and the default level.

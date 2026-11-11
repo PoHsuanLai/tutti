@@ -56,6 +56,8 @@ mod edge;
 mod error;
 #[cfg(feature = "export")]
 mod export;
+#[cfg(feature = "export")]
+mod fork;
 #[cfg(feature = "soundfont")]
 mod general_midi;
 mod graph;
@@ -83,8 +85,8 @@ pub use edge::{EdgeGainError, EdgeRef, EdgeSink};
 pub use error::{Error, HeardTapError, InletError, Result};
 #[cfg(feature = "export")]
 pub use export::{
-    EXPORT_STALL_WARNING, ExportClock, ExportHandle, ExportJob, ExportOutput, ExportRendered,
-    ExportRequest, ExportSource, ExportTarget, PrepareEdit, PreparedGraph,
+    EXPORT_STALL_WARNING, ExportClock, ExportConfigError, ExportHandle, ExportJob, ExportOutput,
+    ExportRendered, ExportRequest, ExportSource, ExportTarget, PrepareEdit, PreparedGraph,
 };
 #[cfg(feature = "soundfont")]
 pub use general_midi::GeneralMidi;

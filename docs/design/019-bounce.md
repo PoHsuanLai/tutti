@@ -203,7 +203,7 @@ is `vec![Output::master(target)]`.
 | `Produced` | `File(Written)` or `Buffers(Rendered)` | One per `Output`, in order. |
 | `Written` | `path`, `bytes`, `frames: Samples`, `dropped_events: u64`, `clipped_samples: u64`, `gain: Option<Db>`, `measured: Option<Loudness>` | Private fields, getters. `clipped_samples` counts samples the quantizer clamped, and non-finite ones (E1, built). |
 | `Rendered` | `planes`, `rate`, `dropped_events` | `Rendered::new(planes, rate, dropped) -> Result<_, RenderedError>` checks equal plane lengths, at least one plane, valid rate. `frames()`, `channels()`, `planes()`, `into_planes()`. No public fields. |
-| `RenderGraph` | an installed, paired `(Editor, Executor)` plus `Setup { pool, root }` | `RenderGraph::assemble(editor, executor, Setup) -> Result<_>` checks pairing and rate. `prepare(rate)`, `reported_latency()`, `reported_tail()` stay. The rest of the fork machinery is not here (§5). |
+| `RenderGraph` | an installed, paired `(Editor, Executor)` plus `Setup { pool, root }` | `RenderGraph::assemble(editor, executor, Setup) -> Result<_>` checks pairing and that the prepared rate is a rate. `prepare(rate)`, `reported_latency()`, `reported_tail()` stay. The rest of the fork machinery is not here (§5). |
 
 Built today (steps 1 to 3), for comparison: `Job` (`Job::new`, `with_event_loss`,
 getters, `JobError::{InvalidRate, ZeroLength, TooLong}`, and `MAX_FRAMES`, which
@@ -223,7 +223,7 @@ pipeline-side variants of section 8, except `Error::Job` and `Error::Rendered`:
 see the step 3 note in section 11). `ExportConfig`, `RenderConfig`,
 `EncodeConfig` and `write_buffers` are still here as the one-render bundle the
 session's request carries, and go with it in step 5; `RenderGraph`'s sealing
-is step 4.
+is step 4 (built: see its note in section 11).
 
 What leaves `tutti-export`'s public surface: `ExportConfig`, `RenderConfig`,
 `EncodeConfig`, the five `render_*` functions and `write_buffers`,
@@ -697,6 +697,46 @@ the text above:
   `planned_frames`/`whole_hz` copy of section 5.1 (the encoder still takes the
   planned frame count from `check_fits`); `beats_to_seconds` and
   `duration_to_frames` are still public.
+
+**As built (step 4).** `RenderGraph` is sealed: `RenderGraph::assemble(editor,
+executor, Setup)` is the one constructor, and `new`, `fork`, `gather`, `build`,
+`set_pool`, `set_root_topology`, `root_topology`, `editor`, `editor_mut`,
+`commit` and `is_parallel` are gone from the public surface. `RenderGraph::prepare`,
+`reported_latency`, `reported_tail` and `GRAPH_MAX_BLOCK` stay. `Setup` is a value
+with private fields (`Setup::new`, `with_pool`, `with_root`). The session owns the
+mechanism in a private module (`tutti-session/src/fork.rs`): `PendingExport` (the
+gather, on the main thread), `ForkedPair` (the built, installed, still editable
+pair: `editor_mut`, `commit`) and `ForkedPair::assemble`. Where this differs from
+the text above:
+
+- **Nothing is edited after assembly.** Sealing means the editor and executor are
+  never handed out again, so the edit and its commit happen on the `ForkedPair`
+  and `assemble` is last. That makes the render's second pairing check (a
+  `mem::replace` through `editor_mut`) unwritable by type, and the test that
+  pinned it (`an_editor_swapped_after_construction_is_refused_at_render`) is
+  deleted with the door it tested. The same swap is still writable in the
+  session's edit hook, which holds an `&mut Editor`; the job checks the pair
+  before it seals it (`ExportConfigError::PrepareHookUnpaired`, with a test).
+- **`PreparedGraph` hands the hook the fork's `Editor`**, not the
+  `RenderGraph`: its public field is `editor: &mut Editor` (was `graph`).
+  Section 5's "exposes only `fresh_key` and the timeline" is read as "not the
+  `RenderGraph`"; an edit has to reach an editor.
+- **`assemble` checks pairing and that the prepared rate is finite and
+  positive** (`ConfigError::UnpairedGraph`, `ConfigError::InvalidRate`). That the
+  pair's rate is the render's cannot be checked there, since `assemble` does not
+  see the `Job`: it stays the render's check (`ConfigError::RateMismatch`).
+  A pool the executor already runs on stays when `Setup` names none, so a caller
+  can read `Executor::is_parallel` before sealing (the pooled-equals-serial
+  test in `clap_fork.rs` does).
+- **The session-only `ConfigError` variants moved**, to
+  `tutti_session::ExportConfigError` (`TargetHasNoOutputs`, `GraphHasNoOutputs`,
+  `PrepareHookUncommittable`, and the new `PrepareHookUnpaired`), carried by
+  `Error::ExportConfig`; step 5 renames it `BounceConfigError`.
+  `ExportRendered`'s result is now the session's `Result`.
+  `tutti_export::Error::{NotForkable, Fork}` stay: the session raises them.
+- **`clap_fork.rs`, `tutti-export`'s tests and the examples** build a pair
+  themselves (`Editor::fork` or `GraphBuilder::build`) and assemble it. A test
+  that edited a built graph (opening a tap) edits the pair before assembling.
 
 Test policy applies throughout: every new case must be able to fail (checked once, said in the PR); no existing
 test is relaxed; the parallel path is compared to the serial render bit for bit;

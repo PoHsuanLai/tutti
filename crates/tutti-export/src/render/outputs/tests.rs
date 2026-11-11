@@ -1,4 +1,5 @@
 use super::*;
+use crate::Setup;
 use crate::spill::SPILL_MEMORY_BYTES;
 use crate::{BufferTarget, FrozenClock, Normalize, NormalizeSpec, Pcm, Progress};
 use tutti_graph::GraphBuilder;
@@ -13,7 +14,7 @@ fn graph() -> RenderGraph {
     let id = g.add(tutti_nodes::testing::Const::frame(&[0.25, 0.125]));
     g.pipe_output(id);
     let (editor, executor) = g.build(RenderGraph::prepare(RATE)).expect("builds");
-    RenderGraph::new(editor, executor).expect("built together")
+    RenderGraph::assemble(editor, executor, Setup::new()).expect("built together")
 }
 
 fn names(dir: &std::path::Path) -> Vec<String> {
@@ -155,7 +156,7 @@ fn a_cancelled_or_failed_render_removes_its_spill() {
         let id = g.add(tutti_nodes::testing::Const::frame(&[0.0, 0.0]));
         g.pipe_output(id);
         let (editor, executor) = g.build(RenderGraph::prepare(RATE)).expect("builds");
-        RenderGraph::new(editor, executor).expect("built together")
+        RenderGraph::assemble(editor, executor, Setup::new()).expect("built together")
     };
     let err = render_outputs(
         &mut silent,

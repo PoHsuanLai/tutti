@@ -19,12 +19,12 @@ mod support;
 use crate::support::{render_to_buffers, render_to_file};
 use tutti_export::{
     ChannelLayout, EncodeConfig, ExportConfig, FlacLevel, Format, FrozenClock, IntDepth, Pcm,
-    Quality, RenderClock, RenderConfig, RenderGraph, Resample,
+    Quality, RenderClock, RenderConfig, RenderGraph, Resample, Setup,
 };
 use tutti_graph::{Cx, ForkByClone, GraphBuilder, Io, Node, Prepare, Shape, Status};
 use tutti_nodes::testing::{Const, Osc};
 use tutti_types::Seconds;
-use tutti_types::{Amplitude, Drive, Hz, SampleRate};
+use tutti_types::{Amplitude, ChannelTopology, Drive, Hz, SampleRate};
 
 /// The rate [`config`] renders at.
 const RATE: SampleRate = SampleRate(44_100.0);
@@ -32,8 +32,13 @@ const RATE: SampleRate = SampleRate(44_100.0);
 /// `g`, built for an export at `rate` — which must be the config's render
 /// rate: a graph prepared at another is refused, not re-rated.
 fn built(g: GraphBuilder, rate: SampleRate) -> RenderGraph {
+    built_with(g, rate, Setup::new())
+}
+
+/// [`built`] with the root declared (or not) as `setup` says.
+fn built_with(g: GraphBuilder, rate: SampleRate, setup: Setup) -> RenderGraph {
     let (editor, executor) = g.build(RenderGraph::prepare(rate)).expect("builds");
-    RenderGraph::new(editor, executor).expect("built together")
+    RenderGraph::assemble(editor, executor, setup).expect("built together")
 }
 
 /// A stereo DC at 0.5, built for an export at `rate`.
@@ -1290,11 +1295,11 @@ fn a_graph_with_no_place_in_the_file_is_refused() {
 }
 
 /// A four-wide graph whose channels are 0.1, 0.2, 0.3, 0.4.
-fn four_buses() -> RenderGraph {
+fn four_buses(root: Option<ChannelTopology>) -> RenderGraph {
     let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::QUAD);
     let id = g.add(Const::frame(&[0.1, 0.2, 0.3, 0.4]));
     g.pipe_output(id);
-    built(g, RATE)
+    built_with(g, RATE, Setup::new().with_root(root))
 }
 
 /// The first frame of every plane of a render.
@@ -1313,12 +1318,12 @@ fn first_frame(graph: &mut RenderGraph, width: u16) -> Result<Vec<f32>, tutti_ex
 fn a_declared_root_is_what_the_file_is_placed_from() {
     use tutti_export::ConfigError;
     use tutti_types::{ChannelTopology, FoldError, Speaker};
-    let mut graph = four_buses();
+    let mut graph = four_buses(None);
     assert_eq!(
         first_frame(&mut graph, 6).unwrap(),
         [0.1, 0.2, 0.0, 0.0, 0.3, 0.4]
     );
-    graph.set_root_topology(Some(ChannelTopology::discrete(ChannelLayout::QUAD)));
+    let mut graph = four_buses(Some(ChannelTopology::discrete(ChannelLayout::QUAD)));
     assert_eq!(
         first_frame(&mut graph, 6).unwrap(),
         [0.1, 0.2, 0.3, 0.4, 0.0, 0.0]
@@ -1331,7 +1336,7 @@ fn a_declared_root_is_what_the_file_is_placed_from() {
         )))
     ));
     // A declaration of another width than the graph is refused.
-    graph.set_root_topology(Some(ChannelTopology::discrete(ChannelLayout::from(6u16))));
+    let mut graph = four_buses(Some(ChannelTopology::discrete(ChannelLayout::from(6u16))));
     assert!(matches!(
         first_frame(&mut graph, 6),
         Err(tutti_export::Error::InvalidConfig(ConfigError::Placement(
@@ -1339,18 +1344,20 @@ fn a_declared_root_is_what_the_file_is_placed_from() {
         )))
     ));
     // Declared as a 5.1 (six wide), a six-channel graph folds to stereo by it.
-    let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::from(6u16));
-    let id = g.add(Const::frame(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]));
-    g.pipe_output(id);
-    let mut six = built(g, RATE);
-    let mut swapped = ChannelTopology::smpte(ChannelLayout::from(6u16)).unwrap();
+    let six_channels = |root: ChannelTopology| {
+        let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::from(6u16));
+        let id = g.add(Const::frame(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]));
+        g.pipe_output(id);
+        built_with(g, RATE, Setup::new().with_root(Some(root)))
+    };
+    let swapped = ChannelTopology::smpte(ChannelLayout::from(6u16)).unwrap();
     assert!(swapped.index_of(Speaker::FrontLeft).is_some());
-    six.set_root_topology(Some(swapped.clone()));
+    let mut six = six_channels(swapped);
     let m = tutti_types::M3DB;
     let stereo = first_frame(&mut six, 2).unwrap();
     assert_eq!(stereo, [1.0 + m * 3.0 + m * 5.0, 2.0 + m * 3.0 + m * 6.0]);
     // The same six, the front pair declared the other way round.
-    swapped = ChannelTopology::new([
+    let swapped = ChannelTopology::new([
         Speaker::FrontRight,
         Speaker::FrontLeft,
         Speaker::FrontCenter,
@@ -1358,7 +1365,7 @@ fn a_declared_root_is_what_the_file_is_placed_from() {
         Speaker::SideLeft,
         Speaker::SideRight,
     ]);
-    six.set_root_topology(Some(swapped));
+    let mut six = six_channels(swapped);
     assert_eq!(
         first_frame(&mut six, 2).unwrap(),
         [2.0 + m * 3.0 + m * 5.0, 1.0 + m * 3.0 + m * 6.0]

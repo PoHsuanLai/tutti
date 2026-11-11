@@ -11,7 +11,7 @@ mod support;
 use support::{render_buffers_under, render_file_under, render_to_buffers, render_to_file};
 use tutti_export::{
     CancelToken, Control, Error, EventLossPolicy, ExportConfig, FrozenClock, Progress,
-    RenderConfig, RenderGraph, write_buffers,
+    RenderConfig, RenderGraph, Setup, write_buffers,
 };
 use tutti_graph::{Cx, Event, GraphBuilder, Io, Node, Prepare, Shape, Status};
 use tutti_nodes::testing::Osc;
@@ -65,7 +65,7 @@ fn graph() -> RenderGraph {
     g.connect_events(burst, 0, sink, 0);
     g.pipe_output(tone);
     let (editor, executor) = g.build(RenderGraph::prepare(RATE)).expect("builds");
-    RenderGraph::new(editor, executor).expect("paired")
+    RenderGraph::assemble(editor, executor, Setup::new()).expect("paired")
 }
 
 fn config(policy: EventLossPolicy) -> ExportConfig {

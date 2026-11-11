@@ -1,6 +1,6 @@
 use super::*;
-use crate::GRAPH_MAX_BLOCK;
 use crate::control::{CancelToken, Progress, Stage};
+use crate::{GRAPH_MAX_BLOCK, Setup};
 use tutti_graph::GraphBuilder;
 use tutti_transport::{FrozenClock, OfflineTimeline, OfflineTimelineConfig};
 use tutti_types::{Beat, Bpm, SampleRate};
@@ -15,7 +15,7 @@ fn mono_dc(v: f32) -> RenderGraph {
     let k = g.add(tutti_nodes::testing::Const::mono(v));
     g.pipe_output(k);
     let (editor, executor) = g.build(RenderGraph::prepare(RATE)).expect("builds");
-    RenderGraph::new(editor, executor).expect("built together")
+    RenderGraph::assemble(editor, executor, Setup::new()).expect("built together")
 }
 
 /// Render `frames` frames of `graph` at a runtime width under `clock`,
@@ -208,11 +208,11 @@ fn a_spec_narrowed_without_a_commit_still_renders_the_committed_width() {
     let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::STEREO);
     let k = g.add(tutti_nodes::testing::Const::mono(0.5));
     g.pipe_output(k);
-    let (editor, executor) = g.build(RenderGraph::prepare(RATE)).expect("builds");
-    let mut graph = RenderGraph::new(editor, executor).expect("built together");
-    let committed = graph.editor().spec().topology.outputs.len();
+    let (mut editor, executor) = g.build(RenderGraph::prepare(RATE)).expect("builds");
+    let committed = editor.spec().topology.outputs.len();
     assert!(committed >= 2, "a stereo graph has two outputs");
-    graph.editor_mut().spec_mut().topology.outputs.truncate(1);
+    editor.spec_mut().topology.outputs.truncate(1);
+    let mut graph = RenderGraph::assemble(editor, executor, Setup::new()).expect("built together");
     let frames = render(&mut graph, &FrozenClock, 2, 16);
     assert!(frames.iter().all(|f| f[0] == 0.5 && f[1] == 0.5));
 }
@@ -260,7 +260,7 @@ fn the_clock_advances_exactly_once_per_frame_and_never_ahead() {
     let clock = g.add(tutti_graph::Unforkable(BeatPorts));
     g.connect_output(clock, 0, 0).connect_output(clock, 1, 1);
     let (editor, executor) = g.build(RenderGraph::prepare(RATE)).expect("builds");
-    let mut graph = RenderGraph::new(editor, executor).expect("built together");
+    let mut graph = RenderGraph::assemble(editor, executor, Setup::new()).expect("built together");
 
     let timeline = OfflineTimeline::new(&OfflineTimelineConfig {
         start_beat: Beat(start_beat),
@@ -374,7 +374,7 @@ mod loss {
         g.connect_events(burst, 0, sink, 0);
         g.pipe_output(k);
         let (editor, executor) = g.build(RenderGraph::prepare(RATE)).expect("builds");
-        RenderGraph::new(editor, executor).expect("built together")
+        RenderGraph::assemble(editor, executor, Setup::new()).expect("built together")
     }
 
     fn lost_in_one_block(graph: &mut RenderGraph) -> u64 {

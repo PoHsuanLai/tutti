@@ -58,7 +58,7 @@ use crate::support::render_to_file;
 use tutti_codec::Wave;
 use tutti_dsp::DitherShape;
 use tutti_export::{
-    ChannelLayout, EncodeConfig, ExportConfig, Format, Pcm, RenderConfig, RenderGraph,
+    ChannelLayout, EncodeConfig, ExportConfig, Format, Pcm, RenderConfig, RenderGraph, Setup,
 };
 use tutti_graph::GraphBuilder;
 use tutti_sampler::{MemorySource, Playback, SlotId, Voice, VoicePool, VoiceSource};
@@ -135,7 +135,7 @@ fn voice_graph(stretch: f32, cents: f32) -> (RenderGraph, Arc<OfflineTimeline>) 
         .build(RenderGraph::prepare(SampleRate(SR)))
         .expect("builds");
     (
-        RenderGraph::new(editor, executor).expect("built together"),
+        RenderGraph::assemble(editor, executor, Setup::new()).expect("built together"),
         transport,
     )
 }

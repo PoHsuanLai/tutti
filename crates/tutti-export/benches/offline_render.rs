@@ -30,7 +30,7 @@ use tutti_types::Seconds;
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use tutti_export::{
     Control, EncodeConfig, ExportConfig, Format, Normalize, Output, Pcm, RenderConfig, RenderGraph,
-    Rendered, Resample, Written, render_one,
+    Rendered, Resample, Setup, Written, render_one,
 };
 use tutti_graph::GraphBuilder;
 use tutti_nodes::testing::{Const, Osc};
@@ -48,7 +48,7 @@ fn built(g: GraphBuilder, rate: f64) -> RenderGraph {
     let (editor, executor) = g
         .build(RenderGraph::prepare(SampleRate(rate)))
         .expect("builds");
-    RenderGraph::new(editor, executor).expect("built together")
+    RenderGraph::assemble(editor, executor, Setup::new()).expect("built together")
 }
 
 fn tone_graph(rate: f64) -> RenderGraph {

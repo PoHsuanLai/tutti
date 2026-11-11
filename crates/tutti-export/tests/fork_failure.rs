@@ -19,8 +19,8 @@ use tutti_export::{
 };
 use tutti_graph::NodeKey;
 use tutti_graph::{
-    Cx, Editor, ForkCause, ForkFaultKind, ForkHealth, ForkMode, ForkSource, ForkTarget, Forked,
-    IntoNode, Io, Node, NodeParts, Prepare, Shape, Status,
+    Cx, Editor, ForkCause, ForkFaultKind, ForkHealth, ForkMode, ForkSource, Forked, IntoNode, Io,
+    Node, NodeParts, Prepare, Shape, Status,
 };
 use tutti_graph::{OutPort, Source};
 use tutti_types::{ChannelLayout, Db, SampleRate};
@@ -97,8 +97,7 @@ fn fork() -> (RenderGraph, Arc<Crashed>, Editor) {
             node: NodeKey(1),
             port: 0,
         })]);
-    let graph = RenderGraph::fork(&live, ForkTarget::Master, ForkMode::Offline, RATE)
-        .expect("the node forks");
+    let graph = support::fork_offline(&live, RATE);
     (graph, probe, live)
 }
 

@@ -159,6 +159,12 @@ pub enum Error {
     #[error("Export: {0}")]
     Export(#[from] tutti_export::Error),
 
+    /// An export that cannot start or finish for a reason of the session's
+    /// own: an empty graph or source, or an edit that spoiled the fork.
+    #[cfg(feature = "export")]
+    #[error("Export: {0}")]
+    ExportConfig(#[from] crate::ExportConfigError),
+
     /// Another export is in flight: its job, or what the job returned, is
     /// still alive (`Session::export`). Finish or drop it first.
     #[cfg(feature = "export")]

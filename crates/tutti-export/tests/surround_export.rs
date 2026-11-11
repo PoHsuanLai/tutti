@@ -15,7 +15,7 @@
 
 mod support;
 
-use tutti_export::{ChannelLayout, EncodeConfig, ExportConfig, RenderConfig, RenderGraph};
+use tutti_export::{ChannelLayout, EncodeConfig, ExportConfig, RenderConfig, RenderGraph, Setup};
 use tutti_graph::GraphBuilder;
 use tutti_types::Azimuth;
 use tutti_types::Seconds;
@@ -30,7 +30,7 @@ const RATE: tutti_types::SampleRate = tutti_types::SampleRate(48_000.0);
 fn export(g: GraphBuilder, layout: ChannelLayout, secs: f64, path: &std::path::Path) {
     let (editor, executor) = g.build(RenderGraph::prepare(RATE)).expect("builds");
     crate::support::render_to_file(
-        RenderGraph::new(editor, executor).expect("built together"),
+        RenderGraph::assemble(editor, executor, Setup::new()).expect("built together"),
         &ExportConfig {
             render: RenderConfig {
                 sample_rate: RATE,

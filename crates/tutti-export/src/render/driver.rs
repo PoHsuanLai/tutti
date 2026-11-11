@@ -117,10 +117,9 @@ pub(crate) struct GraphSource<'a> {
 impl<'a> GraphSource<'a> {
     /// Refuses a pair it cannot render as configured rather than rendering
     /// something else: an executor prepared at a rate other than the
-    /// render's. (The pairing is `RenderGraph`'s check, made before this is
-    /// built.) An executor's units are prepared for one rate
+    /// render's. (The pairing is `RenderGraph::assemble`'s check.) An executor's units are prepared for one rate
     /// on the control side, which is what `RenderGraph::prepare` and
-    /// `RenderGraph::fork` are for; re-rating them here would be preparing
+    /// the session's fork are for; re-rating them here would be preparing
     /// them on the render thread.
     pub(crate) fn new(
         editor: &'a mut tutti_graph::Editor,
@@ -291,9 +290,6 @@ pub(crate) fn with_source<T>(
     clock: &dyn RenderClock,
     f: impl FnOnce(&mut GraphSource<'_>) -> crate::Result<Outcome<T>>,
 ) -> crate::Result<(Outcome<T>, u64)> {
-    // Again at render, as a real error: `editor_mut` can swap the editor
-    // after `RenderGraph::new` checked it (see `RenderGraph`, "The pair").
-    graph.check_paired()?;
     let root = graph.root_topology().cloned();
     let settled = graph.settled();
     let (editor, executor) = graph.parts_mut();

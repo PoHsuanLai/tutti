@@ -12,8 +12,8 @@
 
 use tutti_export::{
     ChannelLayout, Control, EncodeConfig, ExportConfig, FileTarget, FlacLevel, Format, IntDepth,
-    Normalize, NormalizeSpec, Output, Pcm, Produced, Quality, RenderConfig, RenderGraph, render,
-    render_one,
+    Normalize, NormalizeSpec, Output, Pcm, Produced, Quality, RenderConfig, RenderGraph, Setup,
+    render, render_one,
 };
 use tutti_graph::GraphBuilder;
 use tutti_measure::{LoudnessConfig, measure_loudness};
@@ -31,7 +31,7 @@ const RATE: SampleRate = SampleRate(48_000.0);
 /// is built for the render that takes it.
 fn built(g: GraphBuilder) -> RenderGraph {
     let (editor, executor) = g.build(RenderGraph::prepare(RATE)).expect("builds");
-    RenderGraph::new(editor, executor).expect("built together")
+    RenderGraph::assemble(editor, executor, Setup::new()).expect("built together")
 }
 
 /// A 440 Hz tone at −12 dBFS, in stereo.

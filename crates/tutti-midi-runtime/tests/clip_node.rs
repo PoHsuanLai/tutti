@@ -9,7 +9,7 @@
 
 use std::sync::{Arc, Mutex};
 
-use tutti_fixtures::midi::{note_off, note_on};
+use tutti_fixtures::midi::{key_of, note_off, note_on};
 use tutti_graph::NodeKey;
 use tutti_graph::{
     Cx, Editor, EventEdge, EventIn, EventKind, EventOut, Executor, IntoNode, Io, LoopRange, Node,
@@ -23,8 +23,8 @@ use tutti_ump::{MidiChannel, MidiGroup};
 const RATE: f64 = 48_000.0;
 const FRAMES_PER_BEAT: f64 = 24_000.0;
 
-/// `(absolute frame, first UMP word)` of every event the sink received.
-type Seen = Arc<Mutex<Vec<(u64, u32)>>>;
+/// `(absolute frame, packet)` of every event the sink received.
+type Seen = Arc<Mutex<Vec<(u64, Ump)>>>;
 
 struct Sink(Seen);
 
@@ -40,10 +40,10 @@ impl Node for Sink {
     fn process(&mut self, cx: &Cx<'_>, io: Io<'_>) -> Status {
         let mut seen = self.0.lock().unwrap();
         for e in io.events(0) {
-            let EventKind::Midi(Ump(w)) = e.kind else {
+            let EventKind::Midi(ump) = e.kind else {
                 panic!("a clip sends MIDI")
             };
-            seen.push((cx.env.frame.get() + u64::from(e.offset.get()), w[0]));
+            seen.push((cx.env.frame.get() + u64::from(e.offset.get()), ump));
         }
         Status::Silent
     }
@@ -104,11 +104,6 @@ fn roll(exec: &mut Executor, frames: u64, block: usize) {
     }
 }
 
-/// The first word of a note-on / note-off for `note` on group 0, channel 0.
-fn word(e: Ump) -> u32 {
-    e.0[0]
-}
-
 /// **Notes land on their frames, whatever the blocks.** Onsets inside a
 /// block, on a block's first and last frames, and a note-off, each at its
 /// absolute frame, rendered in 256- and 100-frame blocks.
@@ -153,11 +148,7 @@ fn a_seek_inside_a_block_plays_from_the_seek() {
     exec.process_with_changes(512, &rolling(0), &changes, &[], &mut []);
     assert_eq!(
         *seen.lock().unwrap(),
-        vec![
-            (24, word(on(60))),
-            (200, word(off(60))),
-            (300, word(on(62)))
-        ]
+        vec![(24, on(60)), (200, off(60)), (300, on(62))]
     );
 }
 
@@ -185,11 +176,11 @@ fn a_loop_that_wraps_inside_a_block_plays_its_start() {
     assert_eq!(
         *seen.lock().unwrap(),
         vec![
-            (50, word(on(60))),
-            (150, word(on(64))),
-            (200, word(off(60))),
-            (200, word(off(64))),
-            (248, word(on(62))),
+            (50, on(60)),
+            (150, on(64)),
+            (200, off(60)),
+            (200, off(64)),
+            (248, on(62)),
         ]
     );
 }
@@ -207,10 +198,7 @@ fn stopping_ends_the_held_notes_once() {
     let stopped = Transport::new(false, Bpm::of(120.0), beat_of(64), None);
     exec.process(64, &stopped, &[], &mut []);
     exec.process(64, &stopped, &[], &mut []);
-    assert_eq!(
-        *seen.lock().unwrap(),
-        vec![(10, word(on(60))), (64, word(off(60)))]
-    );
+    assert_eq!(*seen.lock().unwrap(), vec![(10, on(60)), (64, off(60))]);
 }
 
 /// **A new clip ends the old clip's notes, and plays from where playback
@@ -229,7 +217,7 @@ fn a_new_clip_ends_the_old_clips_notes() {
     exec.process(64, &rolling(64), &[], &mut []);
     assert_eq!(
         *seen.lock().unwrap(),
-        vec![(10, word(on(60))), (64, word(off(60))), (100, word(on(72)))]
+        vec![(10, on(60)), (64, off(60)), (100, on(72))]
     );
 }
 
@@ -250,7 +238,7 @@ fn a_fork_plays_the_clip_as_it_was_at_the_fork() {
     controls.set_events([at(100, on(72))]);
     let (_ed, mut exec, (), seen) = rig_with(Unforkable(forked.node), 256);
     roll(&mut exec, 512, 256);
-    assert_eq!(*seen.lock().unwrap(), vec![(300, word(on(60)))]);
+    assert_eq!(*seen.lock().unwrap(), vec![(300, on(60))]);
 }
 
 /// **A loop that wraps exactly at a block's end ends the notes held across
@@ -272,10 +260,7 @@ fn a_loop_that_wraps_at_a_block_edge_ends_its_held_notes() {
     exec.process(100, &looping(23_800), &[], &mut []);
     exec.process(100, &looping(23_900), &[], &mut []);
     exec.process(100, &looping(0), &[], &mut []);
-    assert_eq!(
-        *seen.lock().unwrap(),
-        vec![(50, word(on(60))), (200, word(off(60)))]
-    );
+    assert_eq!(*seen.lock().unwrap(), vec![(50, on(60)), (200, off(60))]);
 }
 
 /// **A beat that is not finite is dropped, not the clip.** A NaN made at run
@@ -290,7 +275,7 @@ fn a_nan_beat_does_not_silence_the_clip() {
     let clip = MidiClipNode::new([TimedMidiEvent::new(nan, on(61)), at(100, on(60))]);
     let (_ed, mut exec, _c, seen) = rig(clip, 256);
     roll(&mut exec, 256, 256);
-    assert_eq!(*seen.lock().unwrap(), vec![(100, word(on(60)))]);
+    assert_eq!(*seen.lock().unwrap(), vec![(100, on(60))]);
 }
 
 /// **Note-offs the port refuses go out in the blocks after, until none is
@@ -321,7 +306,7 @@ fn refused_note_offs_are_retried_until_none_is_held() {
     let seen = seen.lock().unwrap();
     let offs: Vec<u64> = seen
         .iter()
-        .filter(|(_, w)| (w >> 20) & 0xf == 0x8)
+        .filter(|(_, ump)| key_of(ump).is_some_and(|(_, _, on)| !on))
         .map(|&(f, _)| f)
         .collect();
     assert_eq!(offs.len(), 400, "every started note is ended");
@@ -343,7 +328,7 @@ fn setting_the_same_events_cuts_nothing() {
     exec.process(64, &rolling(0), &[], &mut []);
     controls.set_events([events[1], events[0]]);
     exec.process(64, &rolling(64), &[], &mut []);
-    assert_eq!(*seen.lock().unwrap(), vec![(10, word(on(60)))]);
+    assert_eq!(*seen.lock().unwrap(), vec![(10, on(60))]);
 }
 
 /// **A note lands on its frame where the beat is not a whole number of
@@ -372,7 +357,7 @@ fn a_note_lands_on_its_frame_at_ninety_bpm() {
     }
     assert_eq!(
         *seen.lock().unwrap(),
-        vec![(32_000, word(on(60))), (96_000, word(on(62)))]
+        vec![(32_000, on(60)), (96_000, on(62))]
     );
 }
 
@@ -398,11 +383,11 @@ fn a_loop_shorter_than_a_block_plays_every_pass() {
     let looping = |f: u64| Transport::new(true, Bpm::of(120.0), beat_of(f), lp);
     exec.process(512, &looping(0), &[], &mut []);
     exec.process(512, &looping(12), &[], &mut []);
-    let mut want: Vec<(u64, u32)> = (0..11)
-        .map(|k| (10 + 100 * k, word(on(60))))
-        .chain((0..10).map(|k| (60 + 100 * k, word(off(60)))))
+    let mut want: Vec<(u64, Ump)> = (0..11)
+        .map(|k| (10 + 100 * k, on(60)))
+        .chain((0..10).map(|k| (60 + 100 * k, off(60))))
         .collect();
-    want.sort_unstable();
+    want.sort_unstable_by_key(|&(f, u)| (f, u.0));
     assert_eq!(*seen.lock().unwrap(), want);
 }
 
@@ -425,18 +410,13 @@ fn a_note_started_twice_and_ended_once_leaves_nothing_sounding() {
     let seen = seen.lock().unwrap();
     assert_eq!(
         *seen,
-        vec![
-            (10, word(on(60))),
-            (20, word(off(60))),
-            (20, word(on(60))),
-            (64, word(off(60))),
-        ]
+        vec![(10, on(60)), (20, off(60)), (20, on(60)), (64, off(60)),]
     );
     // A receiver that starts a voice per note-on and ends one per note-off.
-    let voices = seen.iter().fold(0i32, |v, &(_, w)| match (w >> 20) & 0xf {
-        0x9 => v + 1,
-        0x8 => (v - 1).max(0),
-        _ => v,
+    let voices = seen.iter().fold(0i32, |v, (_, ump)| match key_of(ump) {
+        Some((_, _, true)) => v + 1,
+        Some((_, _, false)) => (v - 1).max(0),
+        None => v,
     });
     assert_eq!(voices, 0, "nothing left sounding");
 }
@@ -464,12 +444,7 @@ fn overlapping_notes_of_one_key_keep_the_newer_whole() {
     exec.process(256, &rolling(0), &[], &mut []);
     assert_eq!(
         *seen.lock().unwrap(),
-        vec![
-            (0, word(on(60))),
-            (50, word(off(60))),
-            (50, word(on(60))),
-            (150, word(off(60))),
-        ]
+        vec![(0, on(60)), (50, off(60)), (50, on(60)), (150, off(60)),]
     );
 }
 
@@ -495,12 +470,7 @@ fn a_note_nested_in_another_of_its_key_ends_at_its_own_end() {
     exec.process(256, &rolling(0), &[], &mut []);
     assert_eq!(
         *seen.lock().unwrap(),
-        vec![
-            (0, word(on(60))),
-            (20, word(off(60))),
-            (20, word(on(60))),
-            (50, word(off(60))),
-        ]
+        vec![(0, on(60)), (20, off(60)), (20, on(60)), (50, off(60)),]
     );
 }
 
@@ -529,12 +499,12 @@ fn three_overlapping_notes_of_one_key_leave_the_newest_whole() {
     assert_eq!(
         *seen.lock().unwrap(),
         vec![
-            (0, word(on(60))),
-            (10, word(off(60))),
-            (10, word(on(60))),
-            (20, word(off(60))),
-            (20, word(on(60))),
-            (50, word(off(60))),
+            (0, on(60)),
+            (10, off(60)),
+            (10, on(60)),
+            (20, off(60)),
+            (20, on(60)),
+            (50, off(60)),
         ]
     );
 }
@@ -569,14 +539,14 @@ fn a_keys_owner_starts_over_at_a_loop_wrap() {
             &mut [],
         );
     }
-    let want: Vec<(u64, u32)> = (0..6)
+    let want: Vec<(u64, Ump)> = (0..6)
         .flat_map(|k| {
             let p = 100 * k;
             [
-                (p + 10, word(on(60))),
-                (p + 30, word(off(60))),
-                (p + 50, word(on(60))),
-                (p + 100, word(off(60))),
+                (p + 10, on(60)),
+                (p + 30, off(60)),
+                (p + 50, on(60)),
+                (p + 100, off(60)),
             ]
         })
         .filter(|&(f, _)| f < 600)
@@ -618,7 +588,7 @@ fn a_pass_ending_on_a_block_edge_ends_what_it_held() {
         .lock()
         .unwrap()
         .iter()
-        .filter(|&&(_, w)| w == word(off(60)))
+        .filter(|&&(_, w)| w == off(60))
         .map(|&(f, _)| f)
         .collect();
     assert_eq!(offs, (1..10).map(|k| 100 * k).collect::<Vec<u64>>());
@@ -653,20 +623,14 @@ fn a_tempo_change_inside_a_block_re_times_the_passes() {
         &mut [],
     );
     let seen = seen.lock().unwrap();
-    let frames = |w: u32| -> Vec<u64> {
+    let frames = |w: Ump| -> Vec<u64> {
         seen.iter()
             .filter(|&&(_, x)| x == w)
             .map(|&(f, _)| f)
             .collect()
     };
-    assert_eq!(
-        frames(word(on(60))),
-        vec![10, 110, 210, 280, 330, 380, 430, 480]
-    );
-    assert_eq!(
-        frames(word(off(60))),
-        vec![60, 160, 255, 305, 355, 405, 455, 505]
-    );
+    assert_eq!(frames(on(60)), vec![10, 110, 210, 280, 330, 380, 430, 480]);
+    assert_eq!(frames(off(60)), vec![60, 160, 255, 305, 355, 405, 455, 505]);
 }
 
 /// **Every pass lands where the host's clock reaches its beats**, at a tempo
@@ -722,7 +686,7 @@ fn every_pass_lands_where_the_hosts_clock_reaches_it() {
                 Some(p) => p + tol < n,
             };
             if reached && fresh {
-                want.push((f, word(on(60 + i as u8))));
+                want.push((f, on(60 + i as u8)));
             }
         }
         prev = Some(b);
@@ -735,7 +699,7 @@ fn every_pass_lands_where_the_hosts_clock_reaches_it() {
     );
     // The clip also ends what it held at each wrap; the reference counts
     // only where each pass's note-ons land.
-    let ons: Vec<u32> = (0..notes.len()).map(|i| word(on(60 + i as u8))).collect();
+    let ons: Vec<Ump> = (0..notes.len()).map(|i| on(60 + i as u8)).collect();
     let mut got: Vec<_> = seen
         .lock()
         .unwrap()
@@ -743,15 +707,15 @@ fn every_pass_lands_where_the_hosts_clock_reaches_it() {
         .copied()
         .filter(|(_, w)| ons.contains(w))
         .collect();
-    got.sort_unstable();
-    want.sort_unstable();
+    got.sort_unstable_by_key(|&(f, u)| (f, u.0));
+    want.sort_unstable_by_key(|&(f, u)| (f, u.0));
     assert_eq!(got, want);
 }
 
 /// Renders four 64-frame blocks of a clip with one note at the loop's start,
 /// rolling from it, on a thread, and returns what the sink saw, or `None`
 /// when that takes longer than a generous deadline.
-fn sub_frame_loop(start: Beat, end: Beat) -> Option<Vec<(u64, u32)>> {
+fn sub_frame_loop(start: Beat, end: Beat) -> Option<Vec<(u64, Ump)>> {
     let (tx, rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
         let clip = MidiClipNode::new([TimedMidiEvent::new(start, on(60))]);
@@ -794,8 +758,8 @@ fn a_loop_shorter_than_a_frame_costs_one_pass_a_frame() {
     ] {
         let seen = sub_frame_loop(start, end)
             .unwrap_or_else(|| panic!("[{start:?}, {end:?}) did not finish"));
-        let ons = seen.iter().filter(|&&(_, w)| w == word(on(60))).count();
-        let offs = seen.iter().filter(|&&(_, w)| w == word(off(60))).count();
+        let ons = seen.iter().filter(|&&(_, w)| w == on(60)).count();
+        let offs = seen.iter().filter(|&&(_, w)| w == off(60)).count();
         assert_eq!((ons, offs), (256, 255), "[{start:?}, {end:?})");
     }
 }

@@ -1158,6 +1158,8 @@ pub(crate) fn merge_into(sources: &[&[Event]], out: &mut Vec<Event>, cap: usize)
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tutti_fixtures::midi::{m1_note_off, m1_note_on};
+    use tutti_ump::{MidiChannel, NoteNumber, U7};
 
     fn ev(offset: u32, tag: u32) -> Event {
         Event::midi(Offset::raw(offset), Ump([tag, 0, 0, 0]))
@@ -1382,8 +1384,9 @@ mod tests {
     /// assertion fails.
     #[test]
     fn only_a_midi_note_off_event_is_a_note_off() {
-        assert!(Event::midi(Offset::ZERO, Ump([0x2080_3c40, 0, 0, 0])).is_note_off());
-        assert!(!Event::midi(Offset::ZERO, Ump([0x2090_3c40, 0, 0, 0])).is_note_off());
+        let (c, n, v) = (MidiChannel::FIRST, NoteNumber::of(60), U7::of(0x40));
+        assert!(Event::midi(Offset::ZERO, m1_note_off(c, n, v)).is_note_off());
+        assert!(!Event::midi(Offset::ZERO, m1_note_on(c, n, v)).is_note_off());
         assert!(!Event::ramp(Offset::ZERO, ParamRamp::foreign(1, 0.0, Samples(0))).is_note_off());
     }
 
@@ -1439,7 +1442,10 @@ mod tests {
     }
 
     fn off(offset: u32) -> Event {
-        Event::midi(Offset::raw(offset), Ump([0x2080_3c00, 0, 0, 0]))
+        Event::midi(
+            Offset::raw(offset),
+            m1_note_off(MidiChannel::FIRST, NoteNumber::of(60), U7::of(0)),
+        )
     }
 
     /// A merge that must cut keeps the note-offs and cuts the others, later

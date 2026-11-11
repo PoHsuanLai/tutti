@@ -24,6 +24,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use assert_no_alloc::AllocDisabler;
 use common::{Kind, TestNode, prepare};
+use tutti_fixtures::midi::m1_note_on;
 use tutti_graph::NodeKey;
 use tutti_graph::{
     CrossfadeCurve, Cx, Editor, EventEdge, EventIn, EventKind, EventOut, Fade, Io, Law, Node,
@@ -31,7 +32,7 @@ use tutti_graph::{
 };
 use tutti_graph::{Edge, FeedbackFrom, InPort, OutPort, Source};
 use tutti_types::{At, Beat, ChannelLayout, Frame, Latency, Samples, Tail};
-use tutti_ump::Ump;
+use tutti_ump::{MidiChannel, NoteNumber, U7, Ump};
 
 #[global_allocator]
 static A: AllocDisabler = AllocDisabler;
@@ -218,7 +219,11 @@ fn process_is_allocation_free_in_steady_state_on(workers: usize) {
         let kind = if k % 3 == 0 {
             EventKind::Ramp(ParamRamp::foreign(1, 0.5, Samples(16)))
         } else {
-            EventKind::Midi(Ump([0x2090_3c64, 0, 0, 0]))
+            EventKind::Midi(m1_note_on(
+                MidiChannel::FIRST,
+                NoteNumber::of(60),
+                U7::of(100),
+            ))
         };
         ed.schedule(
             At::Frame(Frame(2_000 + k * 700)),
@@ -428,7 +433,14 @@ impl Node for Spray {
         for at in cx.env.offsets() {
             if cx.env.frame_at(at).get().is_multiple_of(256) {
                 for i in 0..self.burst {
-                    let e = tutti_graph::Event::midi(at, Ump([0x2090_3c64 | i, 0, 0, 0]));
+                    let e = tutti_graph::Event::midi(
+                        at,
+                        m1_note_on(
+                            MidiChannel::FIRST,
+                            NoteNumber::of(60),
+                            U7::of(100 | i as u8),
+                        ),
+                    );
                     if io.event_out(0).push(e).is_err() {
                         self.refused.fetch_add(1, Ordering::Relaxed);
                     }
@@ -855,11 +867,15 @@ fn direct_driving_events_does_not_allocate() {
         .map(|k| {
             Event::midi(
                 Offset::new(k, Samples(64)).expect("inside"),
-                Ump([0x2090_3c64, 0, 0, 0]),
+                m1_note_on(MidiChannel::FIRST, NoteNumber::of(60), U7::of(100)),
             )
         })
         .collect();
-    let note = EventKind::Midi(Ump([0x2090_3c64, 0, 0, 0]));
+    let note = EventKind::Midi(m1_note_on(
+        MidiChannel::FIRST,
+        NoteNumber::of(60),
+        U7::of(100),
+    ));
     let mut emitter = Direct::new(Emitter::new(Frame(70), note), rate, 64);
     emitter.set_transport(rolling);
     assert_no_alloc::assert_no_alloc(|| {

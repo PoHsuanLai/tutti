@@ -6,7 +6,8 @@ mod common;
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use tutti_ump::Ump;
+use tutti_fixtures::midi::{m1_note_off, m1_note_on};
+use tutti_ump::{MidiChannel, NoteNumber, U7, Ump};
 
 use common::{Kind, TestNode, prepare};
 use tutti_graph::NodeKey;
@@ -843,7 +844,7 @@ fn run_synth(synth: Synth, on_at: u64, off_at: u64, blocks: usize) -> Vec<f32> {
         "on",
         Unforkable(OneShot {
             at: on_at,
-            words: [0x2090_3c64, 0, 0, 0],
+            words: m1_note_on(MidiChannel::FIRST, NoteNumber::of(60), U7::of(100)).0,
         }),
     );
     ed.insert(
@@ -851,7 +852,7 @@ fn run_synth(synth: Synth, on_at: u64, off_at: u64, blocks: usize) -> Vec<f32> {
         "off",
         Unforkable(OneShot {
             at: off_at,
-            words: [0x2080_3c00, 0, 0, 0],
+            words: m1_note_off(MidiChannel::FIRST, NoteNumber::of(60), U7::of(0)).0,
         }),
     );
     ed.insert(key, "synth", Unforkable(synth));
@@ -923,7 +924,7 @@ fn a_merge_holds_all_its_inputs_so_no_note_off_is_lost() {
                     io.event_out(0)
                         .push(tutti_graph::Event::midi(
                             tutti_graph::Offset::ZERO,
-                            Ump([0x2080_0000 | (n << 8), 0, 0, 0]),
+                            m1_note_off(MidiChannel::FIRST, NoteNumber::of(n), U7::of(0)),
                         ))
                         .expect("30 fit in 32");
                 }

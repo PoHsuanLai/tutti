@@ -44,18 +44,18 @@ fn at(group: u8, channel: u8) -> Address {
 
 const A: (u8, u8) = (0, 0);
 
-fn cc_on(address: Address, controller: u8, value: u8) -> Ump {
+fn cc_on(address: Address, controller: CCNumber, value: u8) -> Ump {
     Message::Midi1(
         address,
         Voice1::ControlChange {
-            controller: CCNumber::of(controller),
+            controller,
             value: U7::of(value),
         },
     )
     .into()
 }
 
-fn cc(controller: u8, value: u8) -> Ump {
+fn cc(controller: CCNumber, value: u8) -> Ump {
     cc_on(at(A.0, A.1), controller, value)
 }
 
@@ -98,6 +98,7 @@ fn assignable(bank: u8, index: u8, value: u32) -> Message {
 
 /// RPN 0/0 data zero-extended: `MSB << 7 | LSB` in the top 14 bits.
 fn zx(msb: u8, lsb: u8) -> u32 {
+    // M2-115 §3: a 14-bit value is left-justified in the 32-bit field (shift 18).
     ((u32::from(msb) << 7) | u32::from(lsb)) << 18
 }
 
@@ -106,7 +107,15 @@ fn zx(msb: u8, lsb: u8) -> u32 {
 #[test]
 fn cc_6_then_cc_38_is_one_controller() {
     let mut t = Translator::new();
-    let out = run(&mut t, &[cc(101, 0), cc(100, 0), cc(6, 12), cc(38, 50)]);
+    let out = run(
+        &mut t,
+        &[
+            cc(CCNumber::RPN_MSB, 0),
+            cc(CCNumber::RPN_LSB, 0),
+            cc(CCNumber::DATA_ENTRY, 12),
+            cc(CCNumber::DATA_ENTRY_LSB, 50),
+        ],
+    );
     assert_eq!(
         out,
         vec![vec![], vec![], vec![], vec![registered(0, 0, zx(12, 50))]]
@@ -121,11 +130,11 @@ fn a_cc_6_alone_waits_for_a_trigger() {
     let out = run(
         &mut t,
         &[
-            cc(101, 0),
-            cc(100, 0),
-            cc(6, 12),
-            cc(101, 127),
-            cc(100, 127),
+            cc(CCNumber::RPN_MSB, 0),
+            cc(CCNumber::RPN_LSB, 0),
+            cc(CCNumber::DATA_ENTRY, 12),
+            cc(CCNumber::RPN_MSB, 127),
+            cc(CCNumber::RPN_LSB, 127),
         ],
     );
     assert_eq!(
@@ -143,7 +152,15 @@ fn a_cc_6_alone_waits_for_a_trigger() {
 #[test]
 fn cc_38_then_cc_6_is_one_controller() {
     let mut t = Translator::new();
-    let out = run(&mut t, &[cc(101, 0), cc(100, 0), cc(38, 50), cc(6, 12)]);
+    let out = run(
+        &mut t,
+        &[
+            cc(CCNumber::RPN_MSB, 0),
+            cc(CCNumber::RPN_LSB, 0),
+            cc(CCNumber::DATA_ENTRY_LSB, 50),
+            cc(CCNumber::DATA_ENTRY, 12),
+        ],
+    );
     assert_eq!(
         out,
         vec![vec![], vec![], vec![], vec![registered(0, 0, zx(12, 50))]]
@@ -153,11 +170,19 @@ fn cc_38_then_cc_6_is_one_controller() {
 #[test]
 fn a_later_cc_6_ends_the_run_before_it() {
     let mut t = Translator::new();
-    let out = run(&mut t, &[cc(101, 0), cc(100, 0), cc(6, 12), cc(6, 24)]);
+    let out = run(
+        &mut t,
+        &[
+            cc(CCNumber::RPN_MSB, 0),
+            cc(CCNumber::RPN_LSB, 0),
+            cc(CCNumber::DATA_ENTRY, 12),
+            cc(CCNumber::DATA_ENTRY, 24),
+        ],
+    );
     assert_eq!(out[3], vec![registered(0, 0, zx(12, 0))]);
     // And the second is pending: the next select sends it.
     assert_eq!(
-        run(&mut t, &[cc(100, 1)]),
+        run(&mut t, &[cc(CCNumber::RPN_LSB, 1)]),
         vec![vec![registered(0, 0, zx(24, 0))]]
     );
 }
@@ -168,12 +193,12 @@ fn a_new_cc_6_never_reuses_an_old_lsb() {
     let out = run(
         &mut t,
         &[
-            cc(101, 0),
-            cc(100, 0),
-            cc(6, 12),
-            cc(38, 50),
-            cc(6, 3),
-            cc(100, 1),
+            cc(CCNumber::RPN_MSB, 0),
+            cc(CCNumber::RPN_LSB, 0),
+            cc(CCNumber::DATA_ENTRY, 12),
+            cc(CCNumber::DATA_ENTRY_LSB, 50),
+            cc(CCNumber::DATA_ENTRY, 3),
+            cc(CCNumber::RPN_LSB, 1),
         ],
     );
     assert_eq!(out[3], vec![registered(0, 0, zx(12, 50))]);
@@ -186,7 +211,13 @@ fn a_cc_38_after_a_sent_run_refines_it() {
     let mut t = Translator::new();
     let out = run(
         &mut t,
-        &[cc(101, 0), cc(100, 0), cc(6, 12), cc(38, 50), cc(38, 51)],
+        &[
+            cc(CCNumber::RPN_MSB, 0),
+            cc(CCNumber::RPN_LSB, 0),
+            cc(CCNumber::DATA_ENTRY, 12),
+            cc(CCNumber::DATA_ENTRY_LSB, 50),
+            cc(CCNumber::DATA_ENTRY_LSB, 51),
+        ],
     );
     assert_eq!(out[4], vec![registered(0, 0, zx(12, 51))]);
 }
@@ -197,13 +228,13 @@ fn the_null_function_ends_a_run_and_drops_data_entry_after_it() {
     let out = run(
         &mut t,
         &[
-            cc(101, 0),
-            cc(100, 0),
-            cc(38, 9),
-            cc(101, 127),
-            cc(100, 127),
-            cc(6, 1),
-            cc(38, 2),
+            cc(CCNumber::RPN_MSB, 0),
+            cc(CCNumber::RPN_LSB, 0),
+            cc(CCNumber::DATA_ENTRY_LSB, 9),
+            cc(CCNumber::RPN_MSB, 127),
+            cc(CCNumber::RPN_LSB, 127),
+            cc(CCNumber::DATA_ENTRY, 1),
+            cc(CCNumber::DATA_ENTRY_LSB, 2),
         ],
     );
     // A CC 38 with no CC 6 is sent at the select that ends it, MSB 0.
@@ -214,7 +245,13 @@ fn the_null_function_ends_a_run_and_drops_data_entry_after_it() {
 #[test]
 fn data_entry_with_nothing_selected_is_dropped() {
     let mut t = Translator::new();
-    assert_eq!(run(&mut t, &[cc(6, 1), cc(38, 2)]), vec![vec![], vec![]]);
+    assert_eq!(
+        run(
+            &mut t,
+            &[cc(CCNumber::DATA_ENTRY, 1), cc(CCNumber::DATA_ENTRY_LSB, 2)]
+        ),
+        vec![vec![], vec![]]
+    );
 }
 
 #[test]
@@ -224,15 +261,16 @@ fn a_select_of_one_half_keeps_the_other() {
     let out = run(
         &mut t,
         &[
-            cc(101, 1),
-            cc(100, 2),
-            cc(6, 0),
-            cc(38, 0),
-            cc(100, 5),
-            cc(6, 7),
-            cc(38, 0),
+            cc(CCNumber::RPN_MSB, 1),
+            cc(CCNumber::RPN_LSB, 2),
+            cc(CCNumber::DATA_ENTRY, 0),
+            cc(CCNumber::DATA_ENTRY_LSB, 0),
+            cc(CCNumber::RPN_LSB, 5),
+            cc(CCNumber::DATA_ENTRY, 7),
+            cc(CCNumber::DATA_ENTRY_LSB, 0),
         ],
     );
+    // M2-115 §3: a 7-bit value is left-justified in the 32-bit field (shift 25).
     let scaled = |msb: u32| msb << 25;
     assert_eq!(out[3], vec![registered(1, 2, scaled(0))]);
     assert_eq!(out[6], vec![registered(1, 5, scaled(7))]);
@@ -240,13 +278,13 @@ fn a_select_of_one_half_keeps_the_other() {
     let out = run(
         &mut t,
         &[
-            cc(99, 3),
-            cc(98, 4),
-            cc(6, 0),
-            cc(38, 0),
-            cc(99, 6),
-            cc(6, 7),
-            cc(38, 0),
+            cc(CCNumber::NRPN_MSB, 3),
+            cc(CCNumber::NRPN_LSB, 4),
+            cc(CCNumber::DATA_ENTRY, 0),
+            cc(CCNumber::DATA_ENTRY_LSB, 0),
+            cc(CCNumber::NRPN_MSB, 6),
+            cc(CCNumber::DATA_ENTRY, 7),
+            cc(CCNumber::DATA_ENTRY_LSB, 0),
         ],
     );
     assert_eq!(out[3], vec![assignable(3, 4, 0)]);
@@ -260,7 +298,13 @@ fn rpn_and_nrpn_keep_their_own_numbers() {
     // own (never selected: 0), not the RPN's 3.
     let out = run(
         &mut t,
-        &[cc(101, 3), cc(100, 4), cc(98, 9), cc(6, 0), cc(38, 0)],
+        &[
+            cc(CCNumber::RPN_MSB, 3),
+            cc(CCNumber::RPN_LSB, 4),
+            cc(CCNumber::NRPN_LSB, 9),
+            cc(CCNumber::DATA_ENTRY, 0),
+            cc(CCNumber::DATA_ENTRY_LSB, 0),
+        ],
     );
     assert_eq!(out[4], vec![assignable(0, 9, 0)]);
 }
@@ -275,7 +319,12 @@ fn bank_0_registered_controllers_0_to_31_are_zero_extended() {
         let mut t = Translator::new();
         let out = run(
             &mut t,
-            &[cc(101, 0), cc(100, index), cc(6, 127), cc(38, 127)],
+            &[
+                cc(CCNumber::RPN_MSB, 0),
+                cc(CCNumber::RPN_LSB, index),
+                cc(CCNumber::DATA_ENTRY, 127),
+                cc(CCNumber::DATA_ENTRY_LSB, 127),
+            ],
         );
         assert_eq!(
             out[3],
@@ -290,11 +339,17 @@ fn other_controllers_are_scaled_min_center_max() {
     // Registered bank 0 index 32, registered bank 1, and every NRPN.
     for (selects, make) in [
         (
-            [cc(101, 0), cc(100, 32)],
+            [cc(CCNumber::RPN_MSB, 0), cc(CCNumber::RPN_LSB, 32)],
             registered as fn(u8, u8, u32) -> Message,
         ),
-        ([cc(101, 1), cc(100, 0)], registered),
-        ([cc(99, 0), cc(98, 0)], assignable),
+        (
+            [cc(CCNumber::RPN_MSB, 1), cc(CCNumber::RPN_LSB, 0)],
+            registered,
+        ),
+        (
+            [cc(CCNumber::NRPN_MSB, 0), cc(CCNumber::NRPN_LSB, 0)],
+            assignable,
+        ),
     ] {
         let number = |t: &mut Translator| {
             let mut n = (0, 0);
@@ -315,7 +370,13 @@ fn other_controllers_are_scaled_min_center_max() {
         for (msb, lsb, want) in [(127, 127, 0xFFFF_FFFF), (64, 0, 0x8000_0000), (0, 0, 0)] {
             let mut t = Translator::new();
             let (bank, index) = number(&mut t);
-            let out = run(&mut t, &[cc(6, msb), cc(38, lsb)]);
+            let out = run(
+                &mut t,
+                &[
+                    cc(CCNumber::DATA_ENTRY, msb),
+                    cc(CCNumber::DATA_ENTRY_LSB, lsb),
+                ],
+            );
             assert_eq!(out[1], vec![make(bank, index, want)], "{msb}/{lsb}");
         }
     }
@@ -327,10 +388,10 @@ fn the_group_and_channel_are_kept() {
     let a = at(5, 3);
     let mut out = Vec::new();
     for ump in [
-        cc_on(a, 101, 0),
-        cc_on(a, 100, 0),
-        cc_on(a, 6, 2),
-        cc_on(a, 38, 0),
+        cc_on(a, CCNumber::RPN_MSB, 0),
+        cc_on(a, CCNumber::RPN_LSB, 0),
+        cc_on(a, CCNumber::DATA_ENTRY, 2),
+        cc_on(a, CCNumber::DATA_ENTRY_LSB, 0),
     ] {
         t.feed(ump, |u| out.push(decode(u).unwrap()));
     }
@@ -354,14 +415,14 @@ fn groups_keep_their_own_runs() {
     let mut out = Vec::new();
     // Interleaved runs on the same channel of two groups.
     for ump in [
-        cc_on(g0, 101, 0),
-        cc_on(g1, 99, 1),
-        cc_on(g0, 100, 0),
-        cc_on(g1, 98, 2),
-        cc_on(g0, 6, 4),
-        cc_on(g1, 6, 0),
-        cc_on(g0, 38, 0),
-        cc_on(g1, 38, 0),
+        cc_on(g0, CCNumber::RPN_MSB, 0),
+        cc_on(g1, CCNumber::NRPN_MSB, 1),
+        cc_on(g0, CCNumber::RPN_LSB, 0),
+        cc_on(g1, CCNumber::NRPN_LSB, 2),
+        cc_on(g0, CCNumber::DATA_ENTRY, 4),
+        cc_on(g1, CCNumber::DATA_ENTRY, 0),
+        cc_on(g0, CCNumber::DATA_ENTRY_LSB, 0),
+        cc_on(g1, CCNumber::DATA_ENTRY_LSB, 0),
     ] {
         t.feed(ump, |u| out.push(decode(u).unwrap()));
     }
@@ -407,7 +468,14 @@ fn bank_select_rides_on_the_next_program_change_only() {
     };
     let out = run(
         &mut t,
-        &[cc(0, 1), cc(32, 2), pc(5), pc(6), cc(32, 3), pc(7)],
+        &[
+            cc(CCNumber::BANK_SELECT, 1),
+            cc(CCNumber::BANK_SELECT_LSB, 2),
+            pc(5),
+            pc(6),
+            cc(CCNumber::BANK_SELECT_LSB, 3),
+            pc(7),
+        ],
     );
     assert_eq!(
         out,
@@ -449,7 +517,7 @@ fn stateless_messages_are_widened() {
     );
     // Data Increment stays a Control Change, widened (M2-115: 127 to max).
     assert_eq!(
-        run(&mut t, &[cc(96, 127)]),
+        run(&mut t, &[cc(CCNumber::of(96), 127)]),
         vec![vec![Message::Midi2(
             at(A.0, A.1),
             Voice2::ControlChange {
@@ -491,12 +559,12 @@ fn reset_all_controllers_nulls_the_selection() {
     let out = run(
         &mut t,
         &[
-            cc(101, 0),
-            cc(100, 0),
-            cc(6, 12),
-            cc(121, 0),
-            cc(6, 3),
-            cc(38, 0),
+            cc(CCNumber::RPN_MSB, 0),
+            cc(CCNumber::RPN_LSB, 0),
+            cc(CCNumber::DATA_ENTRY, 12),
+            cc(CCNumber::RESET_ALL, 0),
+            cc(CCNumber::DATA_ENTRY, 3),
+            cc(CCNumber::DATA_ENTRY_LSB, 0),
         ],
     );
     assert_eq!(
@@ -508,7 +576,7 @@ fn reset_all_controllers_nulls_the_selection() {
             vec![Message::Midi2(
                 at(A.0, A.1),
                 Voice2::ControlChange {
-                    controller: CCNumber::of(121),
+                    controller: CCNumber::RESET_ALL,
                     value: 0,
                 }
             )],

@@ -1363,6 +1363,7 @@ fn test_pitch_7_25_retunes_only_the_addressed_note() {
         MidiChannel::of(1),
         60,
         3,
+        // M2-115 §3: 69 as a 7-bit value, left-justified (shift 25).
         69u32 << 25,
         true,
     );

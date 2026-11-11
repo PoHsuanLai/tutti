@@ -23,6 +23,7 @@ mod common;
 use std::sync::{Arc, Mutex};
 
 use common::TestPool;
+use tutti_fixtures::midi::{self, MID_VELOCITY, m1_cc, m1_note_off, m1_note_on};
 use tutti_graph::NodeSpec;
 use tutti_graph::{
     Cx, Editor, Event, EventEdge, EventIn, EventKind, EventOut, Executor, Fade, ForkByClone,
@@ -31,7 +32,7 @@ use tutti_graph::{
 };
 use tutti_graph::{NodeKey, Topology};
 use tutti_types::{ChannelLayout, Samples};
-use tutti_ump::Ump;
+use tutti_ump::{Address, CCNumber, Message, MidiChannel, MidiGroup, NoteNumber, U7, Ump, Voice1};
 
 type Words = [u32; 4];
 type Mail = Arc<Mutex<Vec<(u32, Words)>>>;
@@ -120,10 +121,48 @@ fn at(n: u64) -> EventIn {
     }
 }
 
-const ON60: Words = [0x2090_3c64, 0, 0, 0];
-const OFF60: Words = [0x2080_3c00, 0, 0, 0];
-const ON61: Words = [0x2090_3d64, 0, 0, 0];
-const OFF61: Words = [0x2080_3d00, 0, 0, 0];
+/// A MIDI 1.0 Note On, group 0, velocity 100.
+fn m1_on(ch: u8, note: u8) -> Words {
+    m1_note_on(MidiChannel::of(ch), NoteNumber::of(note), U7::of(100)).0
+}
+
+/// A MIDI 1.0 Note Off, group 0, velocity 0.
+fn m1_off(ch: u8, note: u8) -> Words {
+    m1_note_off(MidiChannel::of(ch), NoteNumber::of(note), U7::of(0)).0
+}
+
+/// A MIDI 1.0 Note On at velocity 0, which MIDI 1.0 reads as an off.
+fn m1_on_vel0(ch: u8, note: u8) -> Words {
+    m1_note_on(MidiChannel::of(ch), NoteNumber::of(note), U7::of(0)).0
+}
+
+/// A MIDI 2.0 Note On, group 0, the midpoint velocity.
+fn m2_on(ch: u8, note: u8) -> Words {
+    midi::note_on(MidiGroup::FIRST, MidiChannel::of(ch), note, MID_VELOCITY).0
+}
+
+/// A MIDI 2.0 Note Off, group 0, velocity 0.
+fn m2_off(ch: u8, note: u8) -> Words {
+    midi::note_off(MidiGroup::FIRST, MidiChannel::of(ch), note, 0).0
+}
+
+fn on60() -> Words {
+    m1_on(0, 60)
+}
+fn off60() -> Words {
+    m1_off(0, 60)
+}
+fn on61() -> Words {
+    m1_on(0, 61)
+}
+fn off61() -> Words {
+    m1_off(0, 61)
+}
+
+/// A MIDI 1.0 Control Change on channel 0, group 0.
+fn m1_controller(controller: CCNumber, value: u8) -> Words {
+    m1_cc(MidiChannel::FIRST, controller, U7::of(value)).0
+}
 
 /// Which engine a scenario runs on.
 #[derive(Clone, Copy, Debug)]
@@ -460,11 +499,11 @@ fn retarget_closes_the_old_sink_and_passes_the_orphan_off() {
     let logs = on_all(
         |r| {
             r.wire(&[(1, 2)]);
-            r.send(ON60);
+            r.send(on60());
             r.block();
             r.wire(&[(1, 3)]);
             r.block();
-            r.send(OFF60);
+            r.send(off60());
             r.block();
             r.block();
         },
@@ -473,12 +512,12 @@ fn retarget_closes_the_old_sink_and_passes_the_orphan_off() {
     same(&logs);
     assert_eq!(
         sink_words(&logs[0], 2),
-        vec![ON60, OFF60],
+        vec![on60(), off60()],
         "A: note, then its close"
     );
     assert_eq!(
         sink_words(&logs[0], 3),
-        vec![OFF60],
+        vec![off60()],
         "B hears the orphan off, which ends nothing"
     );
 }
@@ -489,8 +528,8 @@ fn unroute_closes_the_sink() {
     let logs = on_all(
         |r| {
             r.wire(&[(1, 2)]);
-            r.send(ON60);
-            r.send(ON61);
+            r.send(on60());
+            r.send(on61());
             r.block();
             r.wire(&[]);
             r.block();
@@ -498,7 +537,10 @@ fn unroute_closes_the_sink() {
         &[2],
     );
     same(&logs);
-    assert_eq!(sink_words(&logs[0], 2), vec![ON60, ON61, OFF60, OFF61]);
+    assert_eq!(
+        sink_words(&logs[0], 2),
+        vec![on60(), on61(), off60(), off61()]
+    );
 }
 
 /// A fan-out: only the sink that loses the edge is closed; the other keeps
@@ -508,20 +550,20 @@ fn fan_out_closes_only_the_cut_sink() {
     let logs = on_all(
         |r| {
             r.wire(&[(1, 2), (1, 3)]);
-            r.send(ON60);
+            r.send(on60());
             r.block();
             r.wire(&[(1, 3)]);
             r.block();
-            r.send(OFF60);
+            r.send(off60());
             r.block();
         },
         &[2, 3],
     );
     same(&logs);
-    assert_eq!(sink_words(&logs[0], 2), vec![ON60, OFF60]);
-    assert_eq!(sink_words(&logs[0], 3), vec![ON60, OFF60]);
-    let a = logs[0].iter().find(|e| e.0 == 2 && e.2 == OFF60).unwrap();
-    let b = logs[0].iter().find(|e| e.0 == 3 && e.2 == OFF60).unwrap();
+    assert_eq!(sink_words(&logs[0], 2), vec![on60(), off60()]);
+    assert_eq!(sink_words(&logs[0], 3), vec![on60(), off60()]);
+    let a = logs[0].iter().find(|e| e.0 == 2 && e.2 == off60()).unwrap();
+    let b = logs[0].iter().find(|e| e.0 == 3 && e.2 == off60()).unwrap();
     assert!(
         a.1 < b.1,
         "A's close is at the commit, B's off a block later"
@@ -535,22 +577,25 @@ fn a_new_edge_hears_the_stream_as_it_comes() {
     let logs = on_all(
         |r| {
             r.wire(&[(1, 2)]);
-            r.send(ON60);
+            r.send(on60());
             r.block();
             r.wire(&[(1, 2), (1, 3)]);
-            r.send(OFF60);
-            r.send(ON60);
+            r.send(off60());
+            r.send(on60());
             r.block();
-            r.send(OFF60);
+            r.send(off60());
             r.block();
         },
         &[2, 3],
     );
     same(&logs);
-    assert_eq!(sink_words(&logs[0], 2), vec![ON60, OFF60, ON60, OFF60]);
+    assert_eq!(
+        sink_words(&logs[0], 2),
+        vec![on60(), off60(), on60(), off60()]
+    );
     assert_eq!(
         sink_words(&logs[0], 3),
-        vec![OFF60, ON60, OFF60],
+        vec![off60(), on60(), off60()],
         "B: the orphan off, then the new note whole"
     );
 }
@@ -562,9 +607,9 @@ fn no_cut_no_change() {
     let logs = on_all(
         |r| {
             r.wire(&[(1, 2)]);
-            r.send(ON60);
+            r.send(on60());
             r.block();
-            r.send(OFF60);
+            r.send(off60());
             r.block();
             r.wire(&[]);
             r.block();
@@ -574,7 +619,7 @@ fn no_cut_no_change() {
     same(&logs);
     assert_eq!(
         sink_words(&logs[0], 2),
-        vec![ON60, OFF60],
+        vec![on60(), off60()],
         "nothing held at the cut: nothing sent"
     );
 }
@@ -582,10 +627,9 @@ fn no_cut_no_change() {
 /// MIDI 1.0 spells an off as a Note On at velocity 0; MIDI 2.0 does not.
 #[test]
 fn velocity_zero_is_an_off_in_midi1_and_an_on_in_midi2() {
-    let m1_on = [0x2091_4064, 0, 0, 0];
-    let m1_on0 = [0x2091_4000, 0, 0, 0];
-    let m2_on = [0x4091_4000, 0x8000_0000, 0, 0];
-    let m2_on0 = [0x4092_4100, 0, 0, 0];
+    let (m1_on, m1_on0) = (m1_on(1, 0x40), m1_on_vel0(1, 0x40));
+    let m2_on0 = midi::note_on(MidiGroup::FIRST, MidiChannel::of(2), 0x41, 0).0;
+    let m2_on = m2_on(1, 0x40);
     let logs = on_all(
         |r| {
             r.wire(&[(1, 2)]);
@@ -603,7 +647,7 @@ fn velocity_zero_is_an_off_in_midi1_and_an_on_in_midi2() {
     let got = sink_words(&logs[0], 2);
     assert_eq!(
         &got[4..],
-        &[[0x4081_4000, 0, 0, 0], [0x4082_4100, 0, 0, 0]],
+        &[m2_off(1, 0x40), m2_off(2, 0x41)],
         "M1 on then velocity 0 holds nothing; the two M2 notes are closed as M2 offs"
     );
 }
@@ -611,11 +655,22 @@ fn velocity_zero_is_an_off_in_midi1_and_an_on_in_midi2() {
 /// Group and channel are part of the key.
 #[test]
 fn group_and_channel_are_part_of_the_key() {
-    let g1c2 = [0x2192_3c64, 0, 0, 0];
+    // Group 1, channel 2: the group is the only thing the fixtures' MIDI 1.0
+    // builders fix, so this one is built as the message.
+    let address = Address {
+        group: MidiGroup::of(1),
+        channel: MidiChannel::of(2),
+    };
+    let voice = |v| Ump::from(Message::Midi1(address, v)).0;
+    let key = NoteNumber::of(60);
+    let g1c2 = voice(Voice1::NoteOn {
+        note: key,
+        velocity: U7::of(100),
+    });
     let logs = on_all(
         |r| {
             r.wire(&[(1, 2)]);
-            r.send(ON60);
+            r.send(on60());
             r.send(g1c2);
             r.block();
             r.wire(&[]);
@@ -626,7 +681,13 @@ fn group_and_channel_are_part_of_the_key() {
     same(&logs);
     assert_eq!(
         &sink_words(&logs[0], 2)[2..],
-        &[OFF60, [0x2182_3c00, 0, 0, 0]]
+        &[
+            off60(),
+            voice(Voice1::NoteOff {
+                note: key,
+                velocity: U7::of(0)
+            })
+        ]
     );
 }
 
@@ -634,14 +695,14 @@ fn group_and_channel_are_part_of_the_key() {
 /// the pedal up.
 #[test]
 fn a_held_sustain_pedal_is_released() {
-    let down = [0x20b0_407f, 0, 0, 0];
-    let up = [0x20b0_4000, 0, 0, 0];
+    let down = m1_controller(CCNumber::SUSTAIN, 127);
+    let up = m1_controller(CCNumber::SUSTAIN, 0);
     let logs = on_all(
         |r| {
             r.wire(&[(1, 2)]);
-            r.send(ON60);
+            r.send(on60());
             r.send(down);
-            r.send(OFF60);
+            r.send(off60());
             r.block();
             r.wire(&[]);
             r.block();
@@ -649,7 +710,7 @@ fn a_held_sustain_pedal_is_released() {
         &[2],
     );
     same(&logs);
-    assert_eq!(sink_words(&logs[0], 2), vec![ON60, down, OFF60, up]);
+    assert_eq!(sink_words(&logs[0], 2), vec![on60(), down, off60(), up]);
 }
 
 /// The source replaced by a new unit: the sink is closed for the old one's
@@ -659,7 +720,7 @@ fn a_replaced_source_closes_its_sinks() {
     let logs = on_all(
         |r| {
             r.wire(&[(1, 2)]);
-            r.send(ON60);
+            r.send(on60());
             r.block();
             r.replace_source();
             r.block();
@@ -667,7 +728,7 @@ fn a_replaced_source_closes_its_sinks() {
         &[2],
     );
     same(&logs);
-    assert_eq!(sink_words(&logs[0], 2), vec![ON60, OFF60]);
+    assert_eq!(sink_words(&logs[0], 2), vec![on60(), off60()]);
 }
 
 /// A removed source closes the sinks it fed (executor only).
@@ -675,11 +736,11 @@ fn a_replaced_source_closes_its_sinks() {
 fn a_removed_source_closes_its_sinks() {
     let mut r = Rig::new(Mode::Serial, &[2]);
     r.wire(&[(1, 2)]);
-    r.send(ON60);
+    r.send(on60());
     r.block();
     r.remove_source();
     r.block();
-    assert_eq!(r.words(2), vec![ON60, OFF60]);
+    assert_eq!(r.words(2), vec![on60(), off60()]);
 }
 
 /// A sink that goes away with the edge: nothing to send, and nothing breaks.
@@ -687,7 +748,7 @@ fn a_removed_source_closes_its_sinks() {
 fn a_removed_sink_is_not_sent_anything() {
     let mut r = Rig::new(Mode::Serial, &[2, 3]);
     r.wire(&[(1, 2), (1, 3)]);
-    r.send(ON60);
+    r.send(on60());
     r.block();
     {
         let ed = r.ed.as_mut().unwrap();
@@ -696,10 +757,10 @@ fn a_removed_sink_is_not_sent_anything() {
         r.exec.as_mut().unwrap().apply_pending();
         ed.collect();
     }
-    r.send(OFF60);
+    r.send(off60());
     r.block();
-    assert_eq!(r.words(2), vec![ON60]);
-    assert_eq!(r.words(3), vec![ON60, OFF60]);
+    assert_eq!(r.words(2), vec![on60()]);
+    assert_eq!(r.words(3), vec![on60(), off60()]);
 }
 
 fn on_all_lagged(scenario: impl Fn(&mut Rig), sinks: &[u64]) -> Vec<Vec<(u64, u64, Words)>> {
@@ -720,7 +781,7 @@ fn a_close_follows_the_events_in_flight_on_a_delayed_edge() {
     let logs = on_all_lagged(
         |r| {
             r.wire(&[(1, 2)]);
-            r.send(ON60);
+            r.send(on60());
             r.block();
             r.wire(&[]);
             r.block();
@@ -729,7 +790,7 @@ fn a_close_follows_the_events_in_flight_on_a_delayed_edge() {
         &[2],
     );
     same(&logs);
-    assert_eq!(sink_words(&logs[0], 2), vec![ON60, OFF60]);
+    assert_eq!(sink_words(&logs[0], 2), vec![on60(), off60()]);
     let f: Vec<u64> = logs[0].iter().map(|e| e.1).collect();
     assert!(f[0] <= f[1], "in order: {f:?}");
 }
@@ -741,8 +802,8 @@ fn a_released_note_in_flight_is_not_closed_twice() {
     let logs = on_all_lagged(
         |r| {
             r.wire(&[(1, 2)]);
-            r.send(ON60);
-            r.send(OFF60);
+            r.send(on60());
+            r.send(off60());
             r.block();
             r.wire(&[]);
             r.block();
@@ -751,7 +812,7 @@ fn a_released_note_in_flight_is_not_closed_twice() {
         &[2],
     );
     same(&logs);
-    assert_eq!(sink_words(&logs[0], 2), vec![ON60, OFF60]);
+    assert_eq!(sink_words(&logs[0], 2), vec![on60(), off60()]);
 }
 
 /// A new edge behind a delay passes the orphan off through it.
@@ -760,11 +821,11 @@ fn a_new_delayed_edge_passes_the_orphan_off() {
     let logs = on_all_lagged(
         |r| {
             r.wire(&[(1, 2)]);
-            r.send(ON60);
+            r.send(on60());
             r.block();
             r.wire(&[(1, 3)]);
             r.block();
-            r.send(OFF60);
+            r.send(off60());
             r.block();
             r.block();
             r.block();
@@ -772,8 +833,8 @@ fn a_new_delayed_edge_passes_the_orphan_off() {
         &[2, 3],
     );
     same(&logs);
-    assert_eq!(sink_words(&logs[0], 3), vec![OFF60]);
-    assert_eq!(sink_words(&logs[0], 2), vec![ON60, OFF60]);
+    assert_eq!(sink_words(&logs[0], 3), vec![off60()]);
+    assert_eq!(sink_words(&logs[0], 2), vec![on60(), off60()]);
 }
 
 /// Two sources into one sink: cutting one closes only its keys.
@@ -803,14 +864,14 @@ fn fan_in_closes_the_cut_sources_keys_only() {
         ed.collect();
     };
     both(&mut r, &[(1, 2), (5, 2)]);
-    r.send(ON60);
-    mail2.lock().unwrap().push((0, ON61));
+    r.send(on60());
+    mail2.lock().unwrap().push((0, on61()));
     r.block();
     both(&mut r, &[(5, 2)]);
     r.block();
     assert_eq!(
         r.words(2),
-        vec![ON60, ON61, OFF60],
+        vec![on60(), on61(), off60()],
         "only source 1's key closed"
     );
 }
@@ -822,7 +883,7 @@ fn a_crossfaded_source_closes_its_sinks() {
     let mut r = Rig::new(Mode::Serial, &[2]);
     let mail2: Mail = Arc::default();
     r.wire(&[(1, 2)]);
-    r.send(ON60);
+    r.send(on60());
     r.block();
     {
         let ed = r.ed.as_mut().unwrap();
@@ -839,11 +900,11 @@ fn a_crossfaded_source_closes_its_sinks() {
         ed.collect();
     }
     r.block();
-    mail2.lock().unwrap().push((0, ON61));
+    mail2.lock().unwrap().push((0, on61()));
     r.block();
     r.block();
     r.block();
-    assert_eq!(r.words(2), vec![ON60, OFF60, ON61]);
+    assert_eq!(r.words(2), vec![on60(), off60(), on61()]);
 }
 
 /// Two sources hold the same key into one sink and one is cut: the sink
@@ -851,7 +912,7 @@ fn a_crossfaded_source_closes_its_sinks() {
 /// The limit is documented in `held.rs`; this pins it.
 ///
 /// Mutation (run): `Held::close_into` writing nothing -> the sink hears no
-/// `OFF60` -> fails.
+/// `off60()` -> fails.
 #[test]
 fn fan_in_on_one_key_is_closed_by_either_source() {
     let mut r = Rig::new(Mode::Serial, &[2]);
@@ -875,24 +936,24 @@ fn fan_in_on_one_key_is_closed_by_either_source() {
         ed.collect();
     };
     wire(&mut r, &[(1, 2), (5, 2)]);
-    r.send(ON60);
-    mail2.lock().unwrap().push((0, ON60));
+    r.send(on60());
+    mail2.lock().unwrap().push((0, on60()));
     r.block();
     wire(&mut r, &[(5, 2)]);
     r.block();
-    assert_eq!(r.words(2), vec![ON60, ON60, OFF60]);
+    assert_eq!(r.words(2), vec![on60(), on60(), off60()]);
 }
 
 /// A re-prepare checks the units out and back; the tables go with them, so a
 /// key held across it is still closed.
 ///
 /// Mutation (run): drop the parked tables in `Executor::apply` instead of
-/// handing them back -> the sink hears no `OFF60` -> fails.
+/// handing them back -> the sink hears no `off60()` -> fails.
 #[test]
 fn a_key_held_across_a_reprepare_is_closed() {
     let mut r = Rig::new(Mode::Serial, &[2]);
     r.wire(&[(1, 2)]);
-    r.send(ON60);
+    r.send(on60());
     r.block();
     let (ed, exec) = (r.ed.as_mut().unwrap(), r.exec.as_mut().unwrap());
     ed.reprepare(common::prepare(MAX * 2)).expect("reprepares");
@@ -903,14 +964,14 @@ fn a_key_held_across_a_reprepare_is_closed() {
     r.block();
     r.wire(&[]);
     r.block();
-    assert_eq!(r.words(2), vec![ON60, OFF60]);
+    assert_eq!(r.words(2), vec![on60(), off60()]);
 }
 
 /// A feedback edge that is cut: the event in flight is delivered, and the
 /// close follows it.
 ///
 /// Mutation (run): skip the feedback FIFO's `flushed()` -> the sink hears
-/// `OFF60` with no `ON60` before it -> fails.
+/// `off60()` with no `on60()` before it -> fails.
 #[test]
 fn a_cut_feedback_edge_delivers_what_is_in_flight_then_closes() {
     let logs: Vec<_> = MODES
@@ -919,13 +980,13 @@ fn a_cut_feedback_edge_delivers_what_is_in_flight_then_closes() {
             let mut r = Rig::new(m, &[2]);
             r.feedback = Some(Samples(MAX * 4));
             r.wire(&[(1, 2)]);
-            r.send(ON60);
+            r.send(on60());
             r.block();
             assert!(r.words(2).is_empty(), "the note is still in the FIFO");
             r.wire(&[]);
             r.block();
             let words = r.words(2);
-            assert_eq!(words, vec![ON60, OFF60], "{m:?}");
+            assert_eq!(words, vec![on60(), off60()], "{m:?}");
             r.log.lock().unwrap().clone()
         })
         .collect();
@@ -938,7 +999,7 @@ fn a_cut_feedback_edge_delivers_what_is_in_flight_then_closes() {
 /// crossfade, so this runs on the serial and the parallel executor.
 ///
 /// Mutation (run): taking the table of a unit that keeps running when a
-/// second fade is queued (`waits` in `Executor::apply` always false) -> ON61
+/// second fade is queued (`waits` in `Executor::apply` always false) -> on61()
 /// is never closed -> fails. Not swapping the tables when the queued fade
 /// takes over (`end_fades`) -> neither is.
 #[test]
@@ -958,13 +1019,17 @@ fn a_second_fade_closes_the_first_replacements_keys_when_it_takes_over() {
         };
         let (m2, m3): (Mail, Mail) = Default::default();
         swap(&mut r, &m2);
-        m2.lock().unwrap().push((0, ON60));
+        m2.lock().unwrap().push((0, on60()));
         r.block();
         swap(&mut r, &m3);
-        m2.lock().unwrap().push((0, ON61));
+        m2.lock().unwrap().push((0, on61()));
         r.block();
         for sink in [2, 3] {
-            assert_eq!(r.words(sink), vec![ON60, ON61], "{mode:?}: still sounding");
+            assert_eq!(
+                r.words(sink),
+                vec![on60(), on61()],
+                "{mode:?}: still sounding"
+            );
         }
         for _ in 0..8 {
             r.block();
@@ -972,18 +1037,18 @@ fn a_second_fade_closes_the_first_replacements_keys_when_it_takes_over() {
         for sink in [2, 3] {
             assert_eq!(
                 r.words(sink),
-                vec![ON60, ON61, OFF60, OFF61],
+                vec![on60(), on61(), off60(), off61()],
                 "{mode:?}: closed once the second fade took over"
             );
         }
         // The new unit's own notes are its own.
-        m3.lock().unwrap().push((0, [0x2090_3e64, 0, 0, 0]));
+        m3.lock().unwrap().push((0, m1_on(0, 0x3e)));
         r.block();
         r.wire(&[]);
         r.block();
         assert_eq!(
             r.words(2).last(),
-            Some(&[0x2080_3e00, 0, 0, 0]),
+            Some(&m1_off(0, 0x3e)),
             "{mode:?}: and closed at its edge"
         );
     }
@@ -1010,20 +1075,20 @@ fn a_third_fade_supersedes_the_waiting_one() {
         };
         let (m2, m3, m4): (Mail, Mail, Mail) = Default::default();
         swap(&mut r, &m2);
-        m2.lock().unwrap().push((0, ON60));
+        m2.lock().unwrap().push((0, on60()));
         r.block();
         swap(&mut r, &m3);
         r.block();
         swap(&mut r, &m4);
-        m2.lock().unwrap().push((0, ON61));
-        m3.lock().unwrap().push((0, [0x2090_4064, 0, 0, 0]));
+        m2.lock().unwrap().push((0, on61()));
+        m3.lock().unwrap().push((0, m1_on(0, 0x40)));
         for _ in 0..10 {
             r.block();
         }
         for sink in [2, 3] {
             assert_eq!(
                 r.words(sink),
-                vec![ON60, ON61, OFF60, OFF61],
+                vec![on60(), on61(), off60(), off61()],
                 "{mode:?}: the waiting unit never ran"
             );
         }
@@ -1050,7 +1115,7 @@ fn swap_with_fade(r: &mut Rig, mail: &Mail, frames: usize) {
 ///
 /// Mutation (run): hand the stale table to `spare_held` in the suspend branch
 /// of `Executor::apply` instead of keeping it in `next_held` -> the sink hears
-/// no `OFF60` -> fails.
+/// no `off60()` -> fails.
 #[test]
 fn a_reprepare_with_a_fade_queued_closes_the_stopped_units_keys() {
     let mut r = Rig::new(Mode::Serial, &[2]);
@@ -1058,11 +1123,11 @@ fn a_reprepare_with_a_fade_queued_closes_the_stopped_units_keys() {
     r.block();
     let (m2, m3): (Mail, Mail) = Default::default();
     swap_with_fade(&mut r, &m2, MAX * 8);
-    m2.lock().unwrap().push((0, ON60));
+    m2.lock().unwrap().push((0, on60()));
     r.block();
     swap_with_fade(&mut r, &m3, MAX * 8);
     r.block();
-    assert_eq!(r.words(2), vec![ON60], "still sounding");
+    assert_eq!(r.words(2), vec![on60()], "still sounding");
     let (ed, exec) = (r.ed.as_mut().unwrap(), r.exec.as_mut().unwrap());
     ed.reprepare(common::prepare(MAX * 2)).expect("reprepares");
     exec.apply_pending();
@@ -1072,10 +1137,14 @@ fn a_reprepare_with_a_fade_queued_closes_the_stopped_units_keys() {
     for _ in 0..6 {
         r.block();
     }
-    assert_eq!(r.words(2), vec![ON60, OFF60], "closed after the resume");
+    assert_eq!(r.words(2), vec![on60(), off60()], "closed after the resume");
     r.wire(&[]);
     r.block();
-    assert_eq!(r.words(2), vec![ON60, OFF60], "and nothing more is owed");
+    assert_eq!(
+        r.words(2),
+        vec![on60(), off60()],
+        "and nothing more is owed"
+    );
 }
 
 /// More keys to close than a block's slot takes: the rest close in the
@@ -1094,7 +1163,7 @@ fn closes_that_do_not_fit_a_block_follow_in_the_next() {
     // 200 keys held by the running replacement, 50 a block.
     for block in 0..4u32 {
         for note in 0..50u32 {
-            let w = [0x2090_0000 | (block << 16) | (note << 8) | 100, 0, 0, 0];
+            let w = m1_on(block as u8, note as u8);
             m2.lock().unwrap().push((0, w));
         }
         r.block();
@@ -1104,7 +1173,7 @@ fn closes_that_do_not_fit_a_block_follow_in_the_next() {
     }
     // The queued unit takes over; it writes a dense block of controllers
     // every block, leaving the slot little room for closes.
-    let dense = [0x20b0_0764, 0, 0, 0];
+    let dense = m1_controller(CCNumber::VOLUME, 100);
     for _ in 0..20 {
         for _ in 0..64 {
             m3.lock().unwrap().push((0, dense));
@@ -1135,7 +1204,7 @@ fn a_third_fade_leaves_the_owed_remainder_owed() {
     swap_with_fade(&mut r, &m2, MAX * 8);
     for block in 0..4u32 {
         for note in 0..50u32 {
-            let w = [0x2090_0000 | (block << 16) | (note << 8) | 100, 0, 0, 0];
+            let w = m1_on(block as u8, note as u8);
             m2.lock().unwrap().push((0, w));
         }
         r.block();
@@ -1143,7 +1212,7 @@ fn a_third_fade_leaves_the_owed_remainder_owed() {
             swap_with_fade(&mut r, &m3, MAX * 8);
         }
     }
-    let dense = [0x20b0_0764, 0, 0, 0];
+    let dense = m1_controller(CCNumber::VOLUME, 100);
     let offs = |r: &Rig| {
         r.words(2)
             .into_iter()
@@ -1162,7 +1231,7 @@ fn a_third_fade_leaves_the_owed_remainder_owed() {
     // The remainder is still owed; the running unit holds a key of its own,
     // and a third fade queues behind it.
     assert!(offs(&r).len() < 200, "a remainder is pending");
-    m3.lock().unwrap().push((0, [0x2097_6364, 0, 0, 0]));
+    m3.lock().unwrap().push((0, m1_on(7, 0x63)));
     swap_with_fade(&mut r, &m4, MAX * 8);
     for _ in 0..40 {
         for _ in 0..64 {
@@ -1198,7 +1267,7 @@ fn a_hard_replace_during_a_fade_closes_the_running_units_keys() {
         r.exec.as_mut().unwrap().apply_pending();
         ed.collect();
     }
-    m2.lock().unwrap().push((0, ON60));
+    m2.lock().unwrap().push((0, on60()));
     r.block();
     {
         let ed = r.ed.as_mut().unwrap();
@@ -1213,10 +1282,10 @@ fn a_hard_replace_during_a_fade_closes_the_running_units_keys() {
         ed.collect();
     }
     r.block();
-    assert_eq!(r.words(2), vec![ON60, OFF60]);
+    assert_eq!(r.words(2), vec![on60(), off60()]);
 }
 
-/// The first replacement holds `ON60` under a fade of `fade_blocks` blocks; a second waits
+/// The first replacement holds `on60()` under a fade of `fade_blocks` blocks; a second waits
 /// behind it. `then` runs `j` blocks after the second is queued (the first
 /// fade ends, and the second takes over, in the course of these, so `j` up to
 /// `fade_blocks + 4` crosses the promotion), with the
@@ -1234,7 +1303,7 @@ fn around_promotion(
     r.block();
     let (m2, m3): (Mail, Mail) = Default::default();
     swap_with_fade(&mut r, &m2, MAX * fade_blocks);
-    m2.lock().unwrap().push((0, ON60));
+    m2.lock().unwrap().push((0, on60()));
     r.block();
     swap_with_fade(&mut r, &m3, MAX * fade_blocks);
     for _ in 0..j {
@@ -1273,7 +1342,7 @@ fn removing_the_source_around_a_promotion_closes_once() {
         &[2],
         |r| r.remove_source(),
         |r, label| {
-            assert_eq!(r.words(2), vec![ON60, OFF60], "removed {label}");
+            assert_eq!(r.words(2), vec![on60(), off60()], "removed {label}");
         },
     );
 }
@@ -1298,7 +1367,7 @@ fn a_hard_replace_around_a_promotion_closes_once() {
             ed.collect();
         },
         |r, label| {
-            assert_eq!(r.words(2), vec![ON60, OFF60], "replaced {label}");
+            assert_eq!(r.words(2), vec![on60(), off60()], "replaced {label}");
         },
     );
 }
@@ -1317,7 +1386,11 @@ fn cutting_an_edge_around_a_promotion_closes_once() {
         |r| r.wire(&[(1, 3)]),
         |r, label| {
             for sink in [2, 3] {
-                assert_eq!(r.words(sink), vec![ON60, OFF60], "sink {sink}, cut {label}");
+                assert_eq!(
+                    r.words(sink),
+                    vec![on60(), off60()],
+                    "sink {sink}, cut {label}"
+                );
             }
         },
     );
@@ -1333,7 +1406,7 @@ fn cutting_an_edge_around_a_promotion_closes_once() {
 fn a_source_replaced_by_the_resume_commit_is_closed() {
     let mut r = Rig::new(Mode::Serial, &[2]);
     r.wire(&[(1, 2)]);
-    r.send(ON60);
+    r.send(on60());
     r.block();
     let (ed, exec) = (r.ed.as_mut().unwrap(), r.exec.as_mut().unwrap());
     ed.replace(
@@ -1350,19 +1423,19 @@ fn a_source_replaced_by_the_resume_commit_is_closed() {
     exec.apply_pending();
     ed.collect();
     r.block();
-    assert_eq!(r.words(2), vec![ON60, OFF60]);
+    assert_eq!(r.words(2), vec![on60(), off60()]);
 }
 
 /// The source and its sink are both replaced as the edge is cut: the new
 /// sink never heard the note, so it is sent no close.
 ///
 /// Mutation (run): drop the `departed.replaced.contains(&at.node)` skip in
-/// `Executor::rebuild` -> the new sink hears `OFF60` -> fails.
+/// `Executor::rebuild` -> the new sink hears `off60()` -> fails.
 #[test]
 fn a_replaced_sink_is_not_sent_a_close() {
     let mut r = Rig::new(Mode::Serial, &[2]);
     r.wire(&[(1, 2)]);
-    r.send(ON60);
+    r.send(on60());
     r.block();
     {
         let log = r.log.clone();
@@ -1383,7 +1456,7 @@ fn a_replaced_sink_is_not_sent_a_close() {
         ed.collect();
     }
     r.block();
-    assert_eq!(r.words(2), vec![ON60]);
+    assert_eq!(r.words(2), vec![on60()]);
     assert!(r.words(22).is_empty(), "the new sink hears nothing");
 }
 
@@ -1401,7 +1474,7 @@ fn closes_the_delay_cannot_hold_are_counted() {
     for block in 0..8u32 {
         for k in 0..64u32 {
             let (note, ch) = (k, block);
-            r.send([0x2090_0000 | (ch << 16) | (note << 8) | 100, 0, 0, 0]);
+            r.send(m1_on(ch as u8, note as u8));
         }
         r.block();
     }
@@ -1427,9 +1500,10 @@ fn a_source_without_note_events_closes_nothing() {
         }
         fn prepare(&mut self, _: &Prepare) {}
         fn process(&mut self, _: &Cx<'_>, mut io: Io<'_>) -> Status {
-            let _ = io
-                .event_out(0)
-                .push(Event::midi(Offset::ZERO, Ump([0x20b0_0764, 0, 0, 0])));
+            let _ = io.event_out(0).push(Event::midi(
+                Offset::ZERO,
+                Ump(m1_controller(CCNumber::VOLUME, 100)),
+            ));
             Status::Modified
         }
         fn reset(&mut self) {}
@@ -1452,7 +1526,7 @@ fn a_source_without_note_events_closes_nothing() {
     r.block();
     edit(&mut r, false);
     r.block();
-    assert_eq!(r.words(2), vec![[0x20b0_0764, 0, 0, 0]]);
+    assert_eq!(r.words(2), vec![m1_controller(CCNumber::VOLUME, 100)]);
 }
 
 /// A node that declared no note events and writes one breaks its declaration:
@@ -1473,7 +1547,7 @@ fn a_note_from_a_source_that_declared_none_is_caught() {
         }
         fn prepare(&mut self, _: &Prepare) {}
         fn process(&mut self, _: &Cx<'_>, mut io: Io<'_>) -> Status {
-            let _ = io.event_out(0).push(Event::midi(Offset::ZERO, Ump(ON60)));
+            let _ = io.event_out(0).push(Event::midi(Offset::ZERO, Ump(on60())));
             Status::Modified
         }
         fn reset(&mut self) {}
@@ -1496,7 +1570,7 @@ fn a_shape_carries_note_events_by_default() {
     assert!(!shape.with_no_note_events().note_events);
 }
 
-/// Fork fixtures: a source that sends `ON60` once, and a sink that logs. A
+/// Fork fixtures: a source that sends `on60()` once, and a sink that logs. A
 /// clone of the source starts as the given flag says: unsent, or already
 /// mid-note (its table in the fork is still empty).
 struct Once(bool, bool);
@@ -1512,7 +1586,7 @@ impl Node for Once {
     fn prepare(&mut self, _: &Prepare) {}
     fn process(&mut self, _: &Cx<'_>, mut io: Io<'_>) -> Status {
         if !std::mem::replace(&mut self.0, true) {
-            let _ = io.event_out(0).push(Event::midi(Offset::ZERO, Ump(ON60)));
+            let _ = io.event_out(0).push(Event::midi(Offset::ZERO, Ump(on60())));
         }
         Status::Modified
     }
@@ -1575,13 +1649,13 @@ fn a_fork_closes_what_it_has_seen() {
     let mut out_buf = [0.0f32; MAX];
     let t = Transport::default();
     fexec.process(MAX, &t, &[], &mut [&mut out_buf[..]]);
-    assert_eq!(sink_words(&log.lock().unwrap(), 2), vec![ON60]);
+    assert_eq!(sink_words(&log.lock().unwrap(), 2), vec![on60()]);
     fed.spec_mut().events.clear();
     fed.commit().unwrap();
     fexec.apply_pending();
     fed.collect();
     fexec.process(MAX, &t, &[], &mut [&mut out_buf[..]]);
-    assert_eq!(sink_words(&log.lock().unwrap(), 2), vec![ON60, OFF60]);
+    assert_eq!(sink_words(&log.lock().unwrap(), 2), vec![on60(), off60()]);
 }
 
 /// A key held when the graph is forked: the fork starts with empty tables, so
@@ -1589,7 +1663,7 @@ fn a_fork_closes_what_it_has_seen() {
 /// limit: a fork closes only what it has seen itself.
 ///
 /// No mutation breaks this: it pins an absence. A fork that copied the live
-/// tables would log an `OFF60` and fail it, which is the change to make if
+/// tables would log an `off60()` and fail it, which is the change to make if
 /// the limit is ever lifted.
 #[test]
 fn a_fork_does_not_close_a_key_held_at_fork_time() {
@@ -1597,7 +1671,7 @@ fn a_fork_does_not_close_a_key_held_at_fork_time() {
     let (mut fed, mut fexec) = forked(&log, 1, true);
     assert_eq!(
         sink_words(&log.lock().unwrap(), 2),
-        vec![ON60],
+        vec![on60()],
         "live heard it"
     );
     let mut out_buf = [0.0f32; MAX];
@@ -1610,7 +1684,7 @@ fn a_fork_does_not_close_a_key_held_at_fork_time() {
     fexec.process(MAX, &t, &[], &mut [&mut out_buf[..]]);
     assert_eq!(
         sink_words(&log.lock().unwrap(), 2),
-        vec![ON60],
+        vec![on60()],
         "the fork sent nothing for the key it never saw start"
     );
 }
@@ -1645,10 +1719,10 @@ mod random {
         let ch = u32::from(k / 3);
         let m2 = k % 2 == 1;
         match (m2, on) {
-            (false, true) => [0x2090_0000 | (ch << 16) | (note << 8) | 100, 0, 0, 0],
-            (false, false) => [0x2080_0000 | (ch << 16) | (note << 8), 0, 0, 0],
-            (true, true) => [0x4090_0000 | (ch << 16) | (note << 8), 0x8000_0000, 0, 0],
-            (true, false) => [0x4080_0000 | (ch << 16) | (note << 8), 0, 0, 0],
+            (false, true) => m1_on(ch as u8, note as u8),
+            (false, false) => m1_off(ch as u8, note as u8),
+            (true, true) => m2_on(ch as u8, note as u8),
+            (true, false) => m2_off(ch as u8, note as u8),
         }
     }
 
@@ -1861,8 +1935,19 @@ mod no_alloc {
                     let mut m = mail.lock().unwrap();
                     let key = i % 40;
                     tog = !tog;
-                    let w = if tog { 0x2090_0000 } else { 0x2080_0000 } | ((key + 20) << 8) | 100;
-                    m.push((0, [w, 0, 0, 0]));
+                    let note = (key + 20) as u8;
+                    // An off that carries velocity 100 as well, as the on does.
+                    let vel = U7::of(100);
+                    let (ch, key) = (MidiChannel::FIRST, NoteNumber::of(note));
+                    m.push((
+                        0,
+                        if tog {
+                            m1_note_on(ch, key, vel)
+                        } else {
+                            m1_note_off(ch, key, vel)
+                        }
+                        .0,
+                    ));
                 }
                 exec.process(MAX, &t, &[], &mut []);
             }

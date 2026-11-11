@@ -16,12 +16,13 @@
 //! `IntoNode` with `fork: None` (`an_export_fork_is_accepted`: the fork is
 //! refused naming the inlet).
 
+use tutti_fixtures::midi::{key_of, m1_note_on};
 use tutti_graph::{Cx, ForkByClone, Io, Node, Prepare, Shape, Status};
 use tutti_graph::{EventInletNode, EventTapReader, Refused, TapAlign, TapEvent};
 use tutti_session::{EventSource, GraphSource, Session};
 use tutti_types::ChannelLayout;
 use tutti_types::{At, Frame, SampleRate};
-use tutti_ump::Ump;
+use tutti_ump::{MidiChannel, NoteNumber, U7, Ump};
 
 fn session() -> Session {
     Session::builder()
@@ -30,8 +31,9 @@ fn session() -> Session {
         .expect("builds")
 }
 
-fn note(n: u32) -> Ump {
-    Ump([0x2090_0000 | n << 8 | 100, 0, 0, 0])
+/// A MIDI 1.0 note-on, channel 0, velocity 100.
+fn note(n: u8) -> Ump {
+    m1_note_on(MidiChannel::FIRST, NoteNumber::of(n), U7::of(100))
 }
 
 fn frames(n: usize, s: &mut Session) {
@@ -41,7 +43,7 @@ fn frames(n: usize, s: &mut Session) {
     }
 }
 
-fn drain(tap: &mut EventTapReader) -> Vec<(u64, u32)> {
+fn drain(tap: &mut EventTapReader) -> Vec<(u64, u8)> {
     let mut buf = [TapEvent {
         frame: Frame(0),
         ump: Ump::default(),
@@ -49,7 +51,7 @@ fn drain(tap: &mut EventTapReader) -> Vec<(u64, u32)> {
     let n = tap.pop_into(&mut buf);
     buf[..n]
         .iter()
-        .map(|e| (e.frame.get(), (e.ump.0[0] >> 8) & 0x7f))
+        .map(|e| (e.frame.get(), key_of(&e.ump).expect("a note").1.get()))
         .collect()
 }
 

@@ -10,9 +10,76 @@
 
 use tutti_midi_protocol::{MpeMode, MpeZone, MpeZoneConfig, MpeZones, widen};
 use tutti_ump::{
-    Address, Bank, CCNumber, Message, MidiChannel, MidiGroup, NoteNumber,
-    RegisteredPerNoteController, Rpn, System, U7, U14, Ump, Utility, Voice1, Voice2,
+    Address, Bank, CCNumber, Message, Midi1Parser, MidiChannel, MidiGroup, NoteNumber,
+    RegisteredPerNoteController, Rpn, Sysex7Packets, System, U7, U14, Ump, Utility, Voice1, Voice2,
+    decode,
 };
+
+/// A MIDI 2.0 velocity at the midpoint of its 16-bit range: M2-115 section 3
+/// widens a MIDI 1.0 velocity of 64 to `0x8000` (a velocity of 0 is `0`).
+pub const MID_VELOCITY: u16 = 0x8000;
+
+/// A MIDI 1.0 channel voice message in the first Group.
+pub fn m1(channel: MidiChannel, v: Voice1) -> Ump {
+    Message::Midi1(Address::first(channel), v).into()
+}
+
+/// A MIDI 2.0 channel voice message in the first Group.
+pub fn m2(channel: MidiChannel, v: Voice2) -> Ump {
+    voice(MidiGroup::FIRST, channel, v)
+}
+
+/// A MIDI 1.0 Note On in the first Group (a velocity of 0 is a note-off on
+/// the wire, M1-4.2).
+pub fn m1_note_on(channel: MidiChannel, note: NoteNumber, velocity: U7) -> Ump {
+    m1(channel, Voice1::NoteOn { note, velocity })
+}
+
+/// A MIDI 1.0 Note Off in the first Group.
+pub fn m1_note_off(channel: MidiChannel, note: NoteNumber, velocity: U7) -> Ump {
+    m1(channel, Voice1::NoteOff { note, velocity })
+}
+
+/// A MIDI 1.0 Control Change in the first Group.
+pub fn m1_cc(channel: MidiChannel, controller: CCNumber, value: U7) -> Ump {
+    m1(channel, Voice1::ControlChange { controller, value })
+}
+
+/// The packet of the first Group that one MIDI 1.0 message's bytes make
+/// (`Midi1Parser::message`: a status byte and its data, padding ignored), or
+/// `None` for what it refuses.
+pub fn from_midi1_bytes(bytes: &[u8]) -> Option<Ump> {
+    Midi1Parser::message(MidiGroup::FIRST, bytes).map(Ump::from)
+}
+
+/// The packets of one SysEx7 message of `payload` (7-bit bytes, without
+/// `F0`/`F7`) in the first Group. Panics on a byte with its top bit set or a
+/// payload past `SYSEX7_MAX_PAYLOAD`.
+pub fn sysex7_packets(payload: &[u8]) -> Vec<Ump> {
+    Sysex7Packets::checked(MidiGroup::FIRST, payload)
+        .expect("a payload of 7-bit bytes")
+        .collect()
+}
+
+/// `len` 7-bit bytes, counting up from 1 and wrapping inside `0..=0x7F`, so
+/// a payload of any length is valid SysEx data and neighbours differ.
+pub fn sysex_payload(len: usize) -> Vec<u8> {
+    (0..len).map(|i| ((i + 1) % 0x80) as u8).collect()
+}
+
+/// The `(channel, note, on)` of a Note On or Note Off packet of either
+/// protocol, as its message type says (a MIDI 1.0 Note On with velocity 0 is
+/// still `on` here: this reads the status, not the held-key meaning). `None`
+/// for anything else.
+pub fn key_of(ump: &Ump) -> Option<(MidiChannel, NoteNumber, bool)> {
+    match decode(*ump).ok()? {
+        Message::Midi1(a, Voice1::NoteOn { note, .. })
+        | Message::Midi2(a, Voice2::NoteOn { note, .. }) => Some((a.channel, note, true)),
+        Message::Midi1(a, Voice1::NoteOff { note, .. })
+        | Message::Midi2(a, Voice2::NoteOff { note, .. }) => Some((a.channel, note, false)),
+        _ => None,
+    }
+}
 
 fn voice(group: MidiGroup, channel: MidiChannel, v: Voice2) -> Ump {
     Message::Midi2(Address { group, channel }, v).into()
@@ -38,7 +105,7 @@ pub fn wide_velocity(v: u8) -> u16 {
 /// A 7-bit Control Change value as the 32-bit value M2-115 section 3 gives it.
 pub fn wide_value(v: u8) -> u32 {
     let cc = Voice1::ControlChange {
-        controller: CCNumber::of(1),
+        controller: CCNumber::MOD_WHEEL,
         value: U7::of(v),
     };
     let Voice2::ControlChange { value, .. } = widen(cc) else {
@@ -353,6 +420,44 @@ fn zones(lower: Option<u8>, upper: Option<u8>) -> MpeMode {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // Pins the MIDI 1.0 builders to M1-4.2 / M2-104 figures: type 2, group 0,
+    // status nibble, channel, then the two data bytes. Mutations (each run,
+    // each fails this test): `m1_note_on` building a Note Off; `sysex_payload`
+    // counting from 0 instead of 1; `key_of` reporting a Note Off as `on`.
+    #[test]
+    fn the_midi1_builders_have_the_spec_layout() {
+        let (c, n) = (MidiChannel::of(0), NoteNumber::of(60));
+        assert_eq!(m1_note_on(c, n, U7::of(100)).0, [0x2090_3C64, 0, 0, 0]);
+        assert_eq!(
+            m1_note_off(MidiChannel::of(3), n, U7::of(0)).0,
+            [0x2083_3C00, 0, 0, 0]
+        );
+        assert_eq!(
+            m1_cc(MidiChannel::of(2), CCNumber::VOLUME, U7::of(100)).0,
+            [0x20B2_0764, 0, 0, 0]
+        );
+        assert_eq!(
+            from_midi1_bytes(&[0x90, 60, 100]),
+            Some(m1_note_on(c, n, U7::of(100)))
+        );
+        assert_eq!(from_midi1_bytes(&[0xF0, 1, 0xF7]), None);
+        assert_eq!(MID_VELOCITY, wide_velocity(64));
+        assert_eq!(
+            key_of(&m1_note_off(MidiChannel::of(3), n, U7::of(0))),
+            Some((MidiChannel::of(3), n, false))
+        );
+        assert_eq!(
+            key_of(&note_on(MidiGroup::FIRST, c, 61, 1)),
+            Some((c, NoteNumber::of(61), true))
+        );
+        assert_eq!(key_of(&timing_clock(MidiGroup::FIRST)), None);
+        assert_eq!(&sysex_payload(3), &[1, 2, 3]);
+        assert_eq!(sysex_payload(130)[126..], [0x7F, 0, 1, 2]);
+        // M2-104 Table 18: a payload of 6 or fewer bytes is one Complete packet.
+        assert_eq!(sysex7_packets(&[1, 2, 3]).len(), 1);
+        assert_eq!(sysex7_packets(&sysex_payload(7)).len(), 2);
+    }
 
     // Pins the encoder against M2-104's figures for the two messages most
     // tests send, so a helper that built the wrong message would fail here

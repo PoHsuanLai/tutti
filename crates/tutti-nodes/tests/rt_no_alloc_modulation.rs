@@ -12,13 +12,14 @@
 //! and range edits between blocks.
 
 use assert_no_alloc::AllocDisabler;
+use tutti_fixtures::midi::{m1_note_off, m1_note_on};
 use tutti_graph::IntoNode;
 use tutti_graph::contract::BlockRig;
 use tutti_nodes::{DelayLineNode, LfoNode, LfoShape, ModDelayNode, PhaserNode};
 use tutti_types::{
     BeatDuration, ChannelLayout, Depth, Feedback, Hz, Mix, PhaseIncrement, SampleRate, Seconds,
 };
-use tutti_ump::Ump;
+use tutti_ump::{MidiChannel, NoteNumber, U7};
 
 #[global_allocator]
 static A: AllocDisabler = AllocDisabler;
@@ -826,17 +827,16 @@ impl tutti_graph::Node for Notes {
         let (base, n) = (cx.env.frame.get(), cx.env.block_len);
         let q = self.period / 4;
         for i in 0..n.get() {
-            let words = match (base + i as u64) % self.period {
-                0 => 0x2090_3c64,
-                x if x == q => 0x2090_3e64,
-                x if x == 2 * q => 0x2080_3c00,
-                x if x == 3 * q => 0x2080_3e00,
+            let (c, v) = (MidiChannel::FIRST, U7::of(100));
+            let ump = match (base + i as u64) % self.period {
+                0 => m1_note_on(c, NoteNumber::of(60), v),
+                x if x == q => m1_note_on(c, NoteNumber::of(62), v),
+                x if x == 2 * q => m1_note_off(c, NoteNumber::of(60), U7::of(0)),
+                x if x == 3 * q => m1_note_off(c, NoteNumber::of(62), U7::of(0)),
                 _ => continue,
             };
             let at = tutti_graph::Offset::new(i, n).expect("in the block");
-            let _ = io
-                .event_out(0)
-                .push(tutti_graph::Event::midi(at, Ump([words, 0, 0, 0])));
+            let _ = io.event_out(0).push(tutti_graph::Event::midi(at, ump));
         }
         tutti_graph::Status::Modified
     }

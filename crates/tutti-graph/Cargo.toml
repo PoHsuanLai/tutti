@@ -48,6 +48,7 @@ ringbuf = { version = "0.6", default-features = false, features = ["alloc"] }
 # Turns `contract` on for this crate's own tests (the pattern `tutti-nodes`
 # uses for `testing`).
 tutti-graph = { path = ".", features = ["contract"] }
+tutti-fixtures = { path = "../../testing/tutti-fixtures" }
 assert_no_alloc = { version = "1", default-features = false }
 criterion.workspace = true
 proptest = "1.9.0"

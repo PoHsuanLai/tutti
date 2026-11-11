@@ -213,11 +213,11 @@ fn polysynth_every_decoded_message_is_allocation_free() {
             pressure: U7::of(50),
         }),
         m1(Voice1::ControlChange {
-            controller: CCNumber::of(1),
+            controller: CCNumber::MOD_WHEEL,
             value: U7::of(20),
         }),
         m1(Voice1::ControlChange {
-            controller: CCNumber::of(64),
+            controller: CCNumber::SUSTAIN,
             value: U7::of(127),
         }),
         m1(Voice1::PitchBend(U14::of(9000))),
@@ -277,11 +277,11 @@ fn polysynth_every_decoded_message_is_allocation_free() {
             value: 7 << 25,
         }),
         m1(Voice1::ControlChange {
-            controller: CCNumber::of(121),
+            controller: CCNumber::RESET_ALL,
             value: U7::of(0),
         }),
         m1(Voice1::ControlChange {
-            controller: CCNumber::of(123),
+            controller: CCNumber::ALL_NOTES_OFF,
             value: U7::of(0),
         }),
         m2(Voice2::Assignable {
@@ -290,7 +290,7 @@ fn polysynth_every_decoded_message_is_allocation_free() {
             value: 3,
         }),
         m2(Voice2::ControlChange {
-            controller: CCNumber::of(7),
+            controller: CCNumber::VOLUME,
             value: 1 << 31,
         }),
         m2(Voice2::PitchBend(0x9000_0000)),

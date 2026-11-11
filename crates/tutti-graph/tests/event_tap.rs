@@ -19,6 +19,7 @@ mod common;
 
 use assert_no_alloc::AllocDisabler;
 use common::{Kind, TestNode, prepare};
+use tutti_fixtures::midi::{m1_note_off, m1_note_on};
 use tutti_graph::{
     Cx, Edge, Editor, Event, EventOut, Executor, ForkByClone, ForkCause, ForkMode, ForkSource,
     ForkTarget, Forked, InPort, IntoNode, Io, MissingSource, Node, NodeKey, NodeParts, Offset, Op,
@@ -26,7 +27,7 @@ use tutti_graph::{
 };
 use tutti_graph::{EventTapId, EventTapReader};
 use tutti_types::{ChannelLayout, Frame, Latency, Samples};
-use tutti_ump::Ump;
+use tutti_ump::{MidiChannel, NoteNumber, U7, Ump};
 
 #[global_allocator]
 static A: AllocDisabler = AllocDisabler;
@@ -58,13 +59,13 @@ impl IntoNode for Forkable {
     }
 }
 
+/// MIDI 1.0, group 0, channel 0, note-on, velocity 100.
 fn on(key: u32) -> Ump {
-    // MIDI 1.0 channel voice, group 0, channel 0, note-on, velocity 100.
-    Ump([0x2090_0000 | (key << 8) | 100, 0, 0, 0])
+    m1_note_on(MidiChannel::FIRST, NoteNumber::of(key as u8), U7::of(100))
 }
 
 fn off(key: u32) -> Ump {
-    Ump([0x2080_0000 | (key << 8), 0, 0, 0])
+    m1_note_off(MidiChannel::FIRST, NoteNumber::of(key as u8), U7::of(0))
 }
 
 /// What a port of the script node carries: the script's packet with word 1

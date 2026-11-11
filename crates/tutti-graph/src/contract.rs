@@ -20,13 +20,17 @@
 //! ```
 //! use tutti_graph::contract::{Detect, Excite, Path, Pulse, Row};
 //! use tutti_graph::EventKind;
-//! use tutti_ump::Ump;
+//! use tutti_fixtures::midi::note_on;
+//! use tutti_ump::{MidiChannel, MidiGroup};
 //! use tutti_types::{Latency, Samples};
 //!
 //! let row = Row::new(
 //!     "pulse, 37 frames late",
 //!     || Box::new(Pulse::new(Latency::new(Samples(37)))),
-//!     Excite::Event { port: 0, kind: EventKind::Midi(Ump([0x4090_3c00, 0xC800_0000, 0, 0])) },
+//!     Excite::Event {
+//!         port: 0,
+//!         kind: EventKind::Midi(note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0xC800)),
+//!     },
 //!     Detect::Exact(vec![1.0]),
 //! );
 //! row.check(Path::BehindPdc);
@@ -1711,14 +1715,18 @@ impl Node for Sum {
 /// ```
 /// use tutti_graph::contract::{Detect, Excite, Lookahead, Pulse, Row};
 /// use tutti_graph::EventKind;
-/// use tutti_ump::Ump;
+/// use tutti_fixtures::midi::note_on;
+/// use tutti_ump::{MidiChannel, MidiGroup};
 /// use tutti_types::{Latency, Samples};
 ///
 /// fn pulse_row() -> Row {
 ///     Row::new(
 ///         "Pulse",
 ///         || Box::new(Pulse::new(Latency::ZERO)),
-///         Excite::Event { port: 0, kind: EventKind::Midi(Ump([0x4090_3c00, 0xC800_0000, 0, 0])) },
+///         Excite::Event {
+///             port: 0,
+///             kind: EventKind::Midi(note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0xC800)),
+///         },
 ///         Detect::Exact(vec![1.0]),
 ///     )
 /// }

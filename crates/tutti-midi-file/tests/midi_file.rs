@@ -18,7 +18,8 @@ use tutti_midi_file::{
 use tutti_midi_protocol::channel_voice;
 use tutti_types::{Beat, Bpm, Seconds};
 use tutti_ump::{
-    Flex, KeyEvent, Message, MidiChannel, MidiGroup, NoteNumber, U7, Ump, Voice1, Voice2,
+    Address, CCNumber, Flex, KeyEvent, Message, MidiChannel, MidiGroup, NoteNumber, U7, Ump,
+    Voice1, Voice2, decode,
 };
 
 /// The note a packet starts or ends, either protocol.
@@ -405,22 +406,40 @@ fn an_smfs_controllers_bends_and_programs_reach_the_timed_stream() {
     let timed: Vec<(Beat, Ump)> = file.iter().collect();
     assert_eq!(timed.len(), 5, "every channel message: {timed:?}");
 
-    // MIDI 2.0 Channel Voice: type 4, the opcode in word 0, the value in word 1.
-    let op = |e: &Ump| (e.words()[0] >> 28, (e.words()[0] >> 20) & 0xF);
+    // Each is a MIDI 2.0 Channel Voice message (type 4), read as decoded,
+    // not widened again.
+    let m2 = |e: Ump| match decode(e) {
+        Ok(Message::Midi2(address, voice)) => (address, voice),
+        other => panic!("a MIDI 2.0 channel voice message, got {other:?}"),
+    };
+    let ch2 = Address::first(MidiChannel::of(2));
     let (_, cc) = timed[0];
-    assert_eq!(op(&cc), (0x4, 0xB));
-    assert_eq!((cc.words()[0] >> 8) & 0x7F, 7, "the controller index");
-    assert_eq!(cc.words()[1], 0xC924_9249);
-    assert_eq!(cc.channel(), Some(MidiChannel::of(2)));
+    assert_eq!(
+        m2(cc),
+        (
+            ch2,
+            Voice2::ControlChange {
+                controller: CCNumber::VOLUME,
+                value: 0xC924_9249
+            }
+        )
+    );
 
     let (at, bend) = timed[1];
     assert_eq!(at, Beat(0.25));
-    assert_eq!(op(&bend), (0x4, 0xE));
-    assert_eq!(bend.words()[1], 0x8000_0000);
+    assert_eq!(m2(bend), (ch2, Voice2::PitchBend(0x8000_0000)));
 
     let (_, program) = timed[2];
-    assert_eq!(op(&program), (0x4, 0xC));
-    assert_eq!(program.words()[1] >> 24, 5);
+    assert_eq!(
+        m2(program),
+        (
+            ch2,
+            Voice2::ProgramChange {
+                program: U7::of(5),
+                bank: None
+            }
+        )
+    );
 
     let (_, on) = timed[3];
     assert!(matches!(on.key_event(), Some(KeyEvent::On(_))));
@@ -432,7 +451,10 @@ fn an_smfs_controllers_bends_and_programs_reach_the_timed_stream() {
         off.is_note_off() && !matches!(off.key_event(), Some(KeyEvent::On(_))),
         "{off:?}"
     );
-    assert_eq!(op(&off), (0x4, 0x8), "an explicit MIDI 2.0 note-off");
+    assert!(
+        matches!(m2(off).1, Voice2::NoteOff { .. }),
+        "an explicit MIDI 2.0 note-off"
+    );
 }
 
 /// **A NaN beat is refused by the SMF writer, not a panic.** The sort used

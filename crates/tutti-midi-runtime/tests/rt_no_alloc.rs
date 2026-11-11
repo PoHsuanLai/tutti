@@ -7,6 +7,7 @@
 //! → the gate panics.
 
 use assert_no_alloc::AllocDisabler;
+use tutti_fixtures::midi;
 use tutti_fixtures::midi::{note_off, registered_rpn};
 use tutti_graph::NodeKey;
 use tutti_graph::UmpAt;
@@ -18,13 +19,18 @@ use tutti_midi_runtime::{
     MidiQueueNode, TimedHarmony, TimedMidiEvent, TimedQueueNode,
 };
 use tutti_types::{At, Beat, Bpm, Frame, FrameClock, SampleRate, Samples};
-use tutti_ump::{MidiChannel, MidiGroup, NoteNumber, Ump};
+use tutti_ump::{MidiChannel, MidiGroup, NoteNumber, U7, Ump};
 
 #[global_allocator]
 static A: AllocDisabler = AllocDisabler;
 
 fn note_on(ch: u8, note: u8) -> Ump {
-    tutti_fixtures::midi::note_on(MidiGroup::FIRST, MidiChannel::of(ch), note, 0x8000)
+    midi::note_on(
+        MidiGroup::FIRST,
+        MidiChannel::of(ch),
+        note,
+        midi::MID_VELOCITY,
+    )
 }
 
 /// A wire with a fresh note on four channels every poll.
@@ -492,7 +498,7 @@ fn the_timed_queue_processes_without_allocating() {
     exec.process(512, &t, &[], &mut []);
     let _ = out.poll_into(&mut drain);
 
-    let msg = tutti_ump::Ump([0x2090_3C64, 0, 0, 0]);
+    let msg = midi::m1_note_on(MidiChannel::FIRST, NoteNumber::of(60), U7::of(100));
     let mut heard = 0;
     for b in 1..200u64 {
         // Control side, outside the gate: a send takes the handle's lock,
@@ -539,8 +545,8 @@ fn the_timed_queue_with_a_full_list_processes_without_allocating() {
     ed.commit().unwrap();
     let t = Transport::new(true, Bpm::of(120.0), Beat(0.0), None);
     let mut drain = [(0, Ump([0; 4])); 256];
-    let on = tutti_ump::Ump([0x2090_3C64, 0, 0, 0]);
-    let off = tutti_ump::Ump([0x2080_3C00, 0, 0, 0]);
+    let on = midi::m1_note_on(MidiChannel::FIRST, NoteNumber::of(60), U7::of(100));
+    let off = midi::m1_note_off(MidiChannel::FIRST, NoteNumber::of(60), U7::of(0));
     // Outside the gate: fill the list with events for frames far ahead.
     for k in 0..256u64 {
         tx.send(At::Frame(Frame(10_000_000 + k)), on).unwrap();

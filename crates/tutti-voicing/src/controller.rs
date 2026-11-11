@@ -78,15 +78,15 @@ mod tests {
     #[test]
     fn the_pedal_is_down_at_64() {
         assert_eq!(
-            Controller::effect(CCNumber::of(64), U7::of(63)),
+            Controller::effect(CCNumber::SUSTAIN, U7::of(63)),
             Some(Effect::Sustain(false))
         );
         assert_eq!(
-            Controller::effect(CCNumber::of(64), U7::of(64)),
+            Controller::effect(CCNumber::SUSTAIN, U7::of(64)),
             Some(Effect::Sustain(true))
         );
         assert_eq!(
-            Controller::effect(CCNumber::of(66), U7::of(127)),
+            Controller::effect(CCNumber::SOSTENUTO, U7::of(127)),
             Some(Effect::Sostenuto(true))
         );
     }
@@ -95,15 +95,15 @@ mod tests {
     #[test]
     fn the_panics_differ_in_what_they_cut() {
         assert_eq!(
-            Controller::effect(CCNumber::of(120), U7::of(0)),
+            Controller::effect(CCNumber::ALL_SOUND_OFF, U7::of(0)),
             Some(Effect::Stop(Stop::Cut))
         );
         assert_eq!(
-            Controller::effect(CCNumber::of(123), U7::of(0)),
+            Controller::effect(CCNumber::ALL_NOTES_OFF, U7::of(0)),
             Some(Effect::Stop(Stop::Release))
         );
         assert_eq!(
-            Controller::effect(CCNumber::of(121), U7::of(0)),
+            Controller::effect(CCNumber::RESET_ALL, U7::of(0)),
             Some(Effect::ResetControllers)
         );
     }

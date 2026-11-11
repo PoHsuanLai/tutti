@@ -140,7 +140,7 @@ fn a_bound_plugin_does_not_allocate_on_the_audio_thread() {
         None,
         (0.0, 1.0),
     );
-    let (mut rig, sender) = Rig::prepared_with_keys(
+    let (mut rig, mut sender) = Rig::prepared_with_keys(
         probe
             .client
             .bind(tutti_transport::TempoReader::fixed(Arc::new(
@@ -177,7 +177,8 @@ fn a_bound_plugin_does_not_allocate_on_the_audio_thread() {
                 tutti_fixtures::midi::wide_velocity(100),
             );
             let off = midi::note_off(MidiGroup::FIRST, MidiChannel::of(1), note, 0);
-            sender.queue(&[(Offset::ZERO, on), (Offset::ZERO, off)]);
+            sender.push(tutti_types::At::NextBlock, on).unwrap();
+            sender.push(tutti_types::At::NextBlock, off).unwrap();
         }
         let n = BLOCK;
         let t = Transport::new(true, Bpm::of(120.0), Beat(b as f64), None).with_recording(true);

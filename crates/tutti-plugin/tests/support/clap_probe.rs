@@ -74,13 +74,13 @@ impl Rig {
     }
 
     /// As [`prepared_with`](Self::prepared_with), with a keyboard: a
-    /// `MidiQueueNode` feeding the plugin's event input too, and its sender.
+    /// an event inlet feeding the plugin's event input too, and its writer.
     #[allow(dead_code)]
     pub fn prepared_with_keys(
         client: PluginClient<Bound>,
         prepare: Prepare,
         lanes: Vec<tutti_nodes::automation::ControlLaneNode>,
-    ) -> (Self, tutti_midi_runtime::MidiSender) {
+    ) -> (Self, tutti_midi_runtime::MidiKeys) {
         let (rig, keys) = Self::build(client, prepare, lanes, true);
         (rig, keys.expect("asked for keys"))
     }
@@ -90,7 +90,7 @@ impl Rig {
         prepare: Prepare,
         lanes: Vec<tutti_nodes::automation::ControlLaneNode>,
         keys: bool,
-    ) -> (Self, Option<tutti_midi_runtime::MidiSender>) {
+    ) -> (Self, Option<tutti_midi_runtime::MidiKeys>) {
         let (inputs, outputs) = (client.inputs(), client.outputs());
         let layout = |n: usize| ChannelLayout::from_count(u16::try_from(n).expect("a few ports"));
         let mut g = GraphBuilder::new(layout(inputs), layout(outputs));
@@ -101,9 +101,11 @@ impl Rig {
             g.connect_events(from, 0, key, 0);
         }
         let sender = keys.then(|| {
-            let (from, sender) = g.add_with_controls(tutti_midi_runtime::MidiQueueNode::new());
+            let (node, writer) =
+                tutti_graph::EventInletNode::pair(tutti_midi_runtime::LIVE_INLET_CAPACITY);
+            let from = g.add(node);
             g.connect_events(from, 0, key, 0);
-            sender
+            tutti_midi_runtime::MidiKeys::new(writer)
         });
         let renderer = g.renderer(prepare).expect("a one-plugin graph compiles");
         (

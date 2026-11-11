@@ -11,16 +11,18 @@ Pure MIDI values live in `tutti-ump` and `tutti-midi-protocol`; OS ports live in
 `tutti-midi-hardware`. This crate owns the runtime state that connects them:
 
 - **MIDI as graph nodes**, sending on `tutti-graph` event ports:
-  [`MidiInputNode`] (a wire, one port per channel), [`MidiQueueNode`] (what a
-  control thread sends, a keyboard's notes), [`MidiClipNode`] and
+  [`MidiInputNode`] (a wire, one port per channel), [`MidiClipNode`] and
   [`HarmonyNode`] (a timeline), [`ClockNode`] (Beat Clock and MTC), and
   [`MidiOutNode`], the sink handing MIDI back to a control thread (a hardware
   pump).
 - [`NoteLedger`]: the notes a node has started and not ended, and the only way
   it writes to its port; [`MidiClipNode`] uses it.
+- [`MidiKeys`]: the key helpers (`note_on`, `note_off`) over `tutti-graph`'s
+  event inlet, which is how a control thread sends MIDI into the graph.
 - [`MidiMailbox`] / [`MidiSender`] / [`MidiReceiver`]: the lock-free ring MIDI
-  crosses a thread boundary on (into a [`MidiQueueNode`], out of a
-  [`MidiOutNode`]).
+  crosses a thread boundary on out of the graph (a [`MidiOutNode`]; design 017
+  stage E3 removes the node, and the ring with it once the host's outbound path
+  is its own).
 - [`ClockMaster`], [`JrClock`] and [`JrStamper`]: engine-produced MIDI *out*
   (Beat Clock, MTC, JR timestamps).
 - [`MidiClockDecoder`], [`MtcDecoder`], [`SmpteTimecode`] and
@@ -75,16 +77,36 @@ optional fallback takes every port no rule covers.
 
 ## MIDI across a thread boundary
 
-A `MidiQueueNode`'s controls are the push half of its ring: a control thread
-sends, and the node drains the ring at the top of its block. Nothing here
-allocates or locks, which is what lets either half sit on the audio thread.
+Into the graph, a control thread pushes into an event inlet's writer
+(`Graph::open_event_inlet`), held on the graph's clock until its frame, and
+`MidiKeys` adds the key helpers. Nothing here allocates or locks on the audio
+thread.
 
 ```rust
+use tutti_graph::EventInletNode;
+use tutti_midi_runtime::{LIVE_INLET_CAPACITY, MidiKeys};
+use tutti_types::At;
+use tutti_ump::{MidiChannel, NoteNumber};
+
+let (_node, writer) = EventInletNode::pair(LIVE_INLET_CAPACITY);
+let mut keys = MidiKeys::new(writer);
+keys.note_on(At::NextBlock, MidiChannel::FIRST, NoteNumber::of(60), 0xC800)
+    .unwrap();
+```
+
+Out of the graph, a mailbox is a lock-free ring a control thread drains:
+
+```rust
+use tutti_graph::Offset;
 use tutti_midi_runtime::MidiMailbox;
-use tutti_ump::{KeyEvent, MidiChannel, NoteNumber, U7, Ump};
+use tutti_ump::{KeyEvent, MidiChannel, NoteNumber, Ump, Voice2, Address, Message};
 
 let (tx, rx) = MidiMailbox::pair();
-assert!(tx.note_on(MidiChannel::FIRST, NoteNumber::of(60), 0xC800));
+let on = Ump::from(Message::Midi2(
+    Address::first(MidiChannel::FIRST),
+    Voice2::note_on(NoteNumber::of(60), 0xC800),
+));
+assert_eq!(tx.queue(&[(Offset::ZERO, on)]), 1);
 
 let mut block = [(0, Ump([0; 4])); 8];
 assert_eq!(rx.poll_into(&mut block), 1);

@@ -3980,7 +3980,7 @@ Decisions:
    | node | ns / frame / channel | class |
    |---|---|---|
    | `BusStripNode` (tutti-nodes), channel-major kernel, measured on another box (the note below) | 0.06 steady, 0.4 ramping every block, 0.6–1.0 with the volume fed per frame | `Light` (fed: borderline) |
-   | `MidiClipNode`, `ClockNode` (measured); `HarmonyNode`, `MidiQueueNode`, `MidiInputNode`, `MidiOutNode` (the same shape of work) | 0 (event-only: about 0.3 µs a block at any length; a gain's 256 frames take 0.2) | `Light` |
+   | `MidiClipNode`, `ClockNode` (measured); `HarmonyNode`, `EventInletNode` (once `MidiQueueNode`), `MidiInputNode`, `MidiOutNode` (the same shape of work) | 0 (event-only: about 0.3 µs a block at any length; a gain's 256 frames take 0.2) | `Light` |
    | `DistortionNode` (tutti-nodes), stereo, by curve, measured on another box (the note below) | `HardClip` 0.11, `Softsign` 0.22 (fed 0.8 both); `Crush` 2.2 (fed 2.8), `SoftCrush` 2.8 (fed 3.5), `Atan` 7.6 (fed 9.0), `Tanh` 15–16 (fed 18) | `Light` for `HardClip` and `Softsign`, `Moderate` for the other four |
    | `ClickNode` | 3.8 | `Moderate` |
    | `InletNode` (then `MicMonitorNode`), one block copy out of the ring, measured on another box (the note below) | 0.4–0.6 | `Light` |
@@ -7371,7 +7371,8 @@ fourth.
     (`input_ports`); the routing table, `MidiRoute`, `MidiRoutingSnapshot`
     and `MAX_TARGETS_PER_ROUTE` are gone, and so is `MidiRouter`. Its fork
     reads no wire.
-  - **`MidiQueueNode`**: what a control thread sends (a keyboard, a
+  - **`MidiQueueNode`** (deleted, doc 017 stage E4: the event inlet
+    replaced it): what a control thread sends (a keyboard, a
     preview), out of one port, each event on its offset clamped into the
     block. Its controls are the push half of a `MidiMailbox`, which is now
     just the ring MIDI crosses threads on (no unit id). Its fork is silent.

@@ -1,17 +1,19 @@
 //! [`MidiMailbox`]: a bounded, lock-free ring of MIDI events between one
 //! thread and another, split into a [`MidiSender`] and a [`MidiReceiver`].
 //!
-//! It carries MIDI across a thread boundary the graph does not: into the
-//! graph from a control thread ([`MidiQueueNode`](crate::MidiQueueNode), a
-//! keyboard's notes), and out of it to a control thread
-//! ([`MidiOutNode`](crate::MidiOutNode), what a hardware pump sends). Inside
-//! the graph MIDI travels on event ports, never through a mailbox.
+//! It carries MIDI out of the graph to a control thread
+//! ([`MidiOutNode`](crate::MidiOutNode), what a hardware pump sends) and a
+//! host's own outbound MIDI to the session's drain. It does not carry MIDI
+//! *into* the graph: that is `tutti-graph`'s event inlet
+//! ([`MidiKeys`](crate::MidiKeys)). Inside the graph MIDI travels on event
+//! ports, never through a mailbox. It goes with `MidiOutNode` (design 017,
+//! stage E3) and the host's outbound path.
 
 use std::sync::Arc;
 use tutti_graph::UmpAt;
 
 use crossbeam_queue::ArrayQueue;
-use tutti_ump::{Address, Message, MidiChannel, NoteNumber, Ump, Voice2};
+use tutti_ump::Ump;
 
 use crate::traits::MidiOut;
 
@@ -23,8 +25,8 @@ pub const MAILBOX_CAPACITY: usize = 256;
 pub struct MidiMailbox {
     /// Each event with a raw `u32` stamp, not an `Offset`: the ring crosses
     /// threads ahead of any block, and what the stamp means is the reader's
-    /// (the queue node clamps it into the block that plays it; the out node
-    /// writes the graph-clock frame wrapped at 2^32). The types stop here; a
+    /// (the out node writes the graph-clock frame wrapped at 2^32; a host's
+    /// own events carry a block offset). The types stop here; a
     /// stamp becomes an `Offset` where a block is known.
     events: ArrayQueue<(u32, Ump)>,
 }
@@ -98,35 +100,12 @@ impl MidiSender {
         }
         accepted
     }
-
-    /// Pushes a MIDI 2.0 Note On at `velocity` (16 bits) on group 1. A velocity
-    /// of 0 is a Note On (M2-104 §7.4.2). Returns `false` if the ring was full.
-    pub fn note_on(&self, channel: MidiChannel, note: NoteNumber, velocity: u16) -> bool {
-        self.slot
-            .events
-            .push((0, voice(channel, Voice2::note_on(note, velocity))))
-            .is_ok()
-    }
-
-    /// Pushes a MIDI 2.0 Note Off at release velocity 0 on group 1. Returns `false` if the ring was
-    /// full (which would leave the note stuck).
-    pub fn note_off(&self, channel: MidiChannel, note: NoteNumber) -> bool {
-        self.slot
-            .events
-            .push((0, voice(channel, Voice2::note_off(note, 0))))
-            .is_ok()
-    }
 }
 
 impl MidiOut for MidiSender {
     fn queue(&self, events: &[UmpAt]) -> usize {
         self.queue(events)
     }
-}
-
-/// A group-1 channel voice message as a packet.
-fn voice(channel: MidiChannel, v: Voice2) -> Ump {
-    Message::Midi2(Address::first(channel), v).into()
 }
 
 /// The pop half of a [`MidiMailbox`]. One reader at a time: two polling the

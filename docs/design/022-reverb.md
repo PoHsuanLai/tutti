@@ -328,7 +328,7 @@ ChannelLayout }`. `Effort` is a three-variant enum here because `Cost` is
 | `Design::design` | The functional mapping, the pure part. It is called with `Copy` controls so a test, a UI and the node call the same function |
 | `Design::bounds` | Allocation and the graph's ceiling come from one analysis, not from a realization's private constants |
 | `Realization::prepare(bounds, setup)` | Control side, like `Node::prepare` and the stretcher. A realization sizes itself from `bounds`; it never inspects a `Network` to allocate |
-| `Realization::retarget(&Network)` | The only coupling between model and runtime: a realization reads what it wants from the network and moves toward it. Freeverb copies `feedback` and `damp` into its combs; the FDN slews its lengths and interpolates its absorption coefficients; convolution reads nothing but pre-delay and gain |
+| `Realization::retarget(&Network)` | The only coupling between model and runtime: a realization reads what it wants from the network and moves toward it. Freeverb aims a glide of `feedback` and `damp` (20 ms, doc 024 section 4.3a), copied into its combs as it runs; the FDN slews its lengths and interpolates its absorption coefficients; convolution reads nothing but pre-delay and gain |
 | `process` | Controls are not an argument: they are in the realization via `retarget`. Planar slices fit the node's `Io` and keep width runtime |
 | `reset`, `fresh` | Seek/stop, and the fork rule from the stretcher decision. A fork starts from silence; the graph's `PrerollTable` warms it |
 | `latency` | `Samples`, wrapped in `Latency::new` by the node; a separate method so "musical delay is not latency" is checked by type and test |
@@ -863,7 +863,7 @@ channel), against Freeverb's 2.4 us.
 
 **Retargeting ramps (`retarget` only sets targets).** Every sounding parameter
 (each line's three loop gains, the reflection vector, the input and output
-gains, the wet gain, the width, the modulation depth) is a `Slew` that moves to
+gains, the wet gain, the width, the modulation depth) is a `Glide` (doc 024 section 4.3a; it was a private `Slew`) that moves to
 its target in 20 ms of whole 32-frame chunks and lands on it exactly (so a freeze
 is exactly lossless once it has arrived). The reflection vector is renormalised to
 its length every chunk (a straight line between two unit vectors dips to

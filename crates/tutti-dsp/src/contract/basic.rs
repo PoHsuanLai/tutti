@@ -298,8 +298,8 @@ pub(super) mod realization {
     ///
     /// Mutations (run, in `fdn_design.rs`): `Defect::RampFirst` (the first
     /// retarget goes to a model that is not the target, and the target ramps) fails
-    /// the first render; `FdnKernel::reset` that empties the lines and leaves
-    /// the ramps where they were (a test-only flaw) fails the second and the
+    /// the first render; `Realized::reset` that empties the lines and leaves
+    /// the glides where they were (a test-only flaw) fails the second and the
     /// third.
     pub fn landed<D: RealizationCase>(d: &D) -> Result<(), String> {
         let rate = rate_of(d);
@@ -348,8 +348,8 @@ pub(super) mod realization {
     /// controls through the render, where a ramp that restarts at a block's edge
     /// shows.
     ///
-    /// Mutation (run, in `fdn_design.rs`): `FdnKernel::process` that restarts its
-    /// chunk count at every call (a test-only flaw) fails.
+    /// Mutation (run, in `fdn_design.rs`): `Realized::process` that restarts its
+    /// step count at every call (a test-only flaw) fails.
     pub fn stream_clock<D: RealizationCase>(d: &D) -> Result<(), String> {
         const SPAN: usize = 8704;
         let rate = rate_of(d);

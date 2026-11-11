@@ -132,7 +132,7 @@ pub use grid::{BinCount, BinIndex, FrameCount, FrameIndex, Grid};
 pub use interp::cubic_hermite;
 pub use model::{
     Anchor, Approach, Cadence, Ceiling, Channels, Design, Effect, Effort, Glide, Kernel, Lerp, Lti,
-    MaxDecay, MaxDecayError, Period, Range, Realization, Realized, Ring, Setup, Sizes, Step,
+    MaxDecay, MaxDecayError, Period, Range, Realization, Realized, Ring, Setup, Sizes, Step, Steps,
     System,
 };
 pub use network::{
@@ -141,7 +141,7 @@ pub use network::{
     OutputMap, Stage, Tap, Taps, loop_gain, pre_delay_frames, rt60_from_gain,
 };
 pub use resample::{ChunkSize, FftResampler, ResampleError, StreamingResampler, WindowedSinc};
-pub use reverb::Freeverb;
+pub use reverb::{Freeverb, FreeverbKernel};
 pub use reverb_design::{FreeverbControls, FreeverbDesign};
 pub use rustfft::num_complex::Complex64;
 pub use smoother::Smoother;

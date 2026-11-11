@@ -84,7 +84,12 @@ impl PluginRef {
         self.format == other.format
             && match (&self.id, &other.id) {
                 (Some(a), Some(b)) => a == b,
-                _ => self.path == other.path,
+                // Canonical, as a scan keys a file: a link and the file it
+                // names are one plugin.
+                _ => {
+                    tutti_plugin_db::canonical_path(&self.path)
+                        == tutti_plugin_db::canonical_path(&other.path)
+                }
             }
     }
 
@@ -230,6 +235,24 @@ mod tests {
         assert!(!first.is_same_plugin(&elsewhere));
         let other_format = entry_ref("/p/bundle.clap", PluginFormat::Vst3, Some("a"));
         assert!(!a.is_same_plugin(&other_format), "the format is part of it");
+    }
+
+    /// **A link and the file it names are one plugin**, as a scan keys them
+    /// (macOS's temp dir is such a link: `/var` to `/private/var`).
+    #[cfg(unix)]
+    #[test]
+    fn a_link_and_its_file_are_one_plugin() {
+        let dir = std::env::temp_dir().join(format!("tutti-ref-link-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("synth.clap");
+        let link = dir.join("link.clap");
+        std::fs::write(&file, b"x").unwrap();
+        std::fs::remove_file(&link).ok();
+        std::os::unix::fs::symlink(&file, &link).unwrap();
+        let by_file = PluginRef::file(&file).unwrap();
+        let by_link = PluginRef::file(&link).unwrap();
+        assert!(by_file.is_same_plugin(&by_link));
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     /// **A file's ref has the extension's format, and refuses what is no plugin.**

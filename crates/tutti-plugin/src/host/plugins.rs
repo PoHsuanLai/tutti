@@ -384,9 +384,12 @@ impl Plugins {
     /// ref's file with the ref's id, or the file's first when the ref has
     /// none.
     pub fn info(&self, plugin: &PluginRef) -> Option<&PluginDescriptor> {
+        // Rows are keyed by canonical path; a ref keeps the path it was given
+        // (a link's extension is what names its format).
+        let file = key(plugin.path());
         self.db
             .plugins()
-            .find(|p| p.path == plugin.path() && plugin.id().is_none_or(|id| p.descriptor.id == id))
+            .find(|p| p.path == file && plugin.id().is_none_or(|id| p.descriptor.id == id))
             .map(|p| p.descriptor)
     }
 
@@ -647,6 +650,17 @@ mod tests {
         assert_eq!(plugins.find("two"), Some(refs[1].clone()));
         let by_file = PluginRef::file(&path).unwrap();
         assert_eq!(plugins.info(&by_file).map(|d| d.id.as_str()), Some("one"));
+        // A ref through a link names the scanned file (macOS's temp dir is
+        // one: `/var` links to `/private/var`).
+        #[cfg(unix)]
+        {
+            let link = std::env::temp_dir().join("tutti-two-plugins-link.clap");
+            std::fs::remove_file(&link).ok();
+            std::os::unix::fs::symlink(&path, &link).unwrap();
+            let by_link = PluginRef::file(&link).unwrap();
+            assert_eq!(plugins.info(&by_link).map(|d| d.id.as_str()), Some("one"));
+            std::fs::remove_file(&link).ok();
+        }
 
         std::fs::remove_file(&path).ok();
     }

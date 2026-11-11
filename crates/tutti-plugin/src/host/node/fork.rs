@@ -136,8 +136,9 @@ use tutti_types::{Latency, SampleRate};
 use super::controls::ForkedSources;
 use super::{Bound, PluginClient, PluginControls, ProcessGuard, Unbound};
 use tutti_plugin_ipc::PluginBridge;
+use tutti_plugin_ipc::PluginRenderFault;
 use tutti_plugin_ipc::{BridgeConfig, unique_socket_path};
-use tutti_plugin_ipc::{PluginForkError, PluginRenderFault};
+use tutti_plugin_types::PluginForkError;
 use tutti_plugin_types::RenderMode;
 use tutti_plugin_types::StateError;
 

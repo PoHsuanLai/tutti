@@ -23,7 +23,8 @@
 //! A constant signal would separate none of those, which is why the ramp is
 //! load-bearing rather than decorative.
 
-use crate::host::node::batcher::{Batcher, ChunkCounters};
+use crate::host::node::ChunkCounters;
+use crate::host::node::batcher::Batcher;
 use tutti_fixtures::machine_lock;
 use tutti_plugin_ipc::BridgeThread;
 use tutti_plugin_ipc::PluginBridge;
@@ -1007,7 +1008,8 @@ fn the_chunk_counters_report_misses_and_answers() {
     let (bridge, mut bridge_thread, _server, slab) =
         bridge_with_server_stall(std::time::Duration::from_millis(50));
     let counters = Arc::new(ChunkCounters::default());
-    counters.attach(bridge.audio_buffer());
+    let answered_in = Arc::clone(bridge.audio_buffer());
+    counters.attach(move |seq| answered_in.has_output(seq));
     let mut batcher = Batcher::new(CHANNELS, CHANNELS, SampleFormat::Float32, BATCH_SIZE, slab)
         .with_counters(Arc::clone(&counters));
 

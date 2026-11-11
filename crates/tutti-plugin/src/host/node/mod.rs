@@ -104,34 +104,35 @@ pub(crate) use crate::util::node::{InvalidateSink, RefreshSink};
 pub use crate::util::node::{Listener, ParameterChangeSink};
 pub use capability_view::TransportView;
 pub(crate) use capability_view::is_declined;
+pub(crate) use controls::ChunkCounters;
 pub use controls::{NodeControls, PluginControls};
 pub use meter::PluginMeter;
 pub use param_delivery::ParamDeliveryStats;
-pub(crate) use tutti_plugin_ipc::MidiIntake;
+pub(crate) use tutti_plugin_types::MidiIntake;
 // The in-process node (`crate::format::in_process`) delivers its parameters
 // through the same slots, segments and event walk as this node: one copy of
 // each.
 pub(crate) use param_delivery::{DeliveryCounters, ParamDelivery};
 pub(crate) use process::ProcessGuard;
 pub(crate) use segment_points::SegmentPoints;
-// The largest chunk that can cross the process edge: `tutti-plugin-ipc`'s,
-// which sizes the shared-memory slab from it, so the slab and the batcher
-// agree on the per-chunk ceiling.
-pub(crate) use batcher::MAX_CHUNK;
+// The largest chunk that can cross the process edge: `tutti-plugin-types`',
+// which `tutti-plugin-ipc` sizes the shared-memory slab from, so the slab and
+// the batcher agree on the per-chunk ceiling.
 
 use batcher::Batcher;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use tutti_plugin_ipc::BridgeConfig;
+use tutti_plugin_ipc::BridgeEvent;
 use tutti_plugin_ipc::HarmonyInputs;
 use tutti_plugin_ipc::PluginBridge;
-use tutti_plugin_ipc::Result;
-use tutti_plugin_ipc::{BridgeEvent, PluginInvalidation, ResyncClass};
 use tutti_plugin_types::PluginTail;
+use tutti_plugin_types::{BridgeResult, MAX_CHUNK};
 use tutti_plugin_types::{
     LoadedPlugin, MidiEventVec, Normalized, ParamId, PluginDescriptor, SampleFormat, TransportInfo,
 };
+use tutti_plugin_types::{PluginInvalidation, ResyncClass};
 use tutti_types::{SampleRate, Samples};
 
 /// The typestate of a [`PluginClient`] that is loaded but not yet a graph node.
@@ -308,14 +309,14 @@ impl PluginClient<Unbound> {
     ///
     /// # Errors
     ///
-    /// Returns a [`BridgeError`](crate::BridgeError) if the plugin-server
+    /// Returns a [`BridgeError`](tutti_plugin_types::BridgeError) if the plugin-server
     /// cannot be found or spawned, the handshake fails or times out, the
     /// plugin fails to load, or the IPC bridge cannot be set up.
     pub fn new(
         config: BridgeConfig,
         plugin_path: PathBuf,
         sample_rate: impl Into<SampleRate>,
-    ) -> Result<Self> {
+    ) -> BridgeResult<Self> {
         Self::new_with_state(config, plugin_path, sample_rate, None).map(|(client, _)| client)
     }
 
@@ -333,7 +334,7 @@ impl PluginClient<Unbound> {
         plugin_path: PathBuf,
         sample_rate: impl Into<SampleRate>,
         state: Option<&[u8]>,
-    ) -> Result<(Self, Option<std::result::Result<(), String>>)> {
+    ) -> BridgeResult<(Self, Option<std::result::Result<(), String>>)> {
         let sample_rate = sample_rate.into();
         let server = tutti_plugin_ipc::launch(&config, &plugin_path, sample_rate, state)?;
         let state_restore = server.state_restore.clone();
@@ -479,7 +480,8 @@ impl PluginClient<Unbound> {
     #[must_use]
     pub fn bind(self, tempo: tutti_transport::TempoReader) -> PluginClient<Bound> {
         let chunks = self.controls.chunk_counters();
-        chunks.attach(self.bridge.audio_buffer());
+        let slab = Arc::clone(self.bridge.audio_buffer());
+        chunks.attach(move |seq| slab.has_output(seq));
         self.controls
             .delivery_counters()
             .attach_bridge_midi(self.bridge.dropped_midi_cell());

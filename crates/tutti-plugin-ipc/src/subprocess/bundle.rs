@@ -4,9 +4,9 @@
 //! `Contents/` subtree); VST2 is a plain shared library. This module maps a
 //! bundle path to the actual binary inside it so the caller can `dlopen` it.
 
-use crate::error::{BridgeError, Result};
 use std::path::{Path, PathBuf};
 use tutti_plugin_types::bundle::ModuleKind;
+use tutti_plugin_types::{BridgeError, BridgeResult};
 
 /// Architecture subdirectories under `Contents/` to probe, in preference
 /// order, for the *build target* this binary was compiled for.
@@ -36,7 +36,7 @@ pub(crate) fn arch_subdirs() -> &'static [&'static str] {
 /// Returns [`BridgeError::BundleResolutionFailed`] when `path` is a directory
 /// holding no module this target can load; the error lists the directories
 /// probed.
-pub fn resolve_bundle(path: &Path) -> Result<PathBuf> {
+pub fn resolve_bundle(path: &Path) -> BridgeResult<PathBuf> {
     if path.is_file() || !path.is_dir() {
         return Ok(path.to_path_buf());
     }

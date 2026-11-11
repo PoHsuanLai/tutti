@@ -14,8 +14,8 @@ use tutti_plugin::server::{
     AudioSlab, BridgeMessage, ContentScale, HostMessage, MAX_STATE_BYTES, MidiEventVec, Normalized,
     ParameterQueue, SampleFormat, SlabWriter, StagedState, WindowHandle,
 };
-use tutti_plugin::{BridgeError, Result};
 use tutti_plugin_types::MainThread;
+use tutti_plugin_types::{BridgeError, BridgeResult};
 
 /// A block's plugin MIDI-out for the wire. Already capped at
 /// `MIDI_STACK_CAPACITY` (the pipeline's list cannot hold more), so the reply
@@ -163,7 +163,7 @@ impl Session {
     /// Returns an error only when a failure cannot be expressed as a reply the
     /// host can act on. Plugin-level failures — a load that fails, a request
     /// with no plugin loaded — come back as an error-carrying `Reply` instead.
-    pub(crate) fn handle(&mut self, main: &MainThread, msg: HostMessage) -> Result<Reaction> {
+    pub(crate) fn handle(&mut self, main: &MainThread, msg: HostMessage) -> BridgeResult<Reaction> {
         self.handle_with(main, msg, &mut |_| {})
     }
 
@@ -177,7 +177,7 @@ impl Session {
         main: &MainThread,
         msg: HostMessage,
         interim: &mut dyn FnMut(BridgeMessage),
-    ) -> Result<Reaction> {
+    ) -> BridgeResult<Reaction> {
         use HostMessage as M;
         match msg {
             M::LoadPlugin {
@@ -474,7 +474,7 @@ impl Session {
         preferred_format: SampleFormat,
         declared: Option<StagedState>,
         interim: &mut dyn FnMut(BridgeMessage),
-    ) -> Result<Reaction> {
+    ) -> BridgeResult<Reaction> {
         // What a host staged for this load, restored before the activation: only
         // when the load declares exactly it. Staged here or declared here and not
         // the other, or of another length, is a host that is out of step with
@@ -558,7 +558,7 @@ impl Session {
         fits
     }
 
-    fn handle_process(&mut self, block: AudioBlock<'_>) -> Result<Reaction> {
+    fn handle_process(&mut self, block: AudioBlock<'_>) -> BridgeResult<Reaction> {
         // Read before `block` is moved into the pipeline: every reply below
         // echoes it.
         let seq = block.seq;

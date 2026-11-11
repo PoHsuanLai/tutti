@@ -20,13 +20,13 @@ mod payload_pool;
 mod progress;
 mod thread;
 
-use crate::error::{Delivered, Result, StateError};
 use crate::protocol::{
     ChordChanges, MidiEventVec, Normalized, NoteExpressionChanges, NoteExpressionIntChanges,
     NoteExpressionTextChanges, ParamId, ParameterChanges, ParameterInfo, Preset, PresetId,
     ScaleChanges, TransportChanges, TransportInfo,
 };
 use crate::transport::shm::AudioSlab;
+use tutti_plugin_types::{BridgeResult, Delivered, StateError};
 use tutti_types::SampleRate;
 
 /// VST3 sequencer-context inputs for one process block, bundled to keep
@@ -72,7 +72,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-pub use messages::{BridgeEvent, PluginInvalidation, PluginRefresh, ResyncClass, ResyncKind};
+pub use messages::BridgeEvent;
 pub use thread::BridgeThread;
 
 const PARAM_TIMEOUT: Duration = Duration::from_secs(5);
@@ -121,7 +121,7 @@ impl AudioBridge {
         socket_path: PathBuf,
         audio_buffer: Arc<AudioSlab>,
         sample_rate: SampleRate,
-    ) -> Result<(Self, BridgeThread)> {
+    ) -> BridgeResult<(Self, BridgeThread)> {
         // The rate lives on `Channels`, not here: the bridge thread sizes its
         // own reply timeout from the same block period, and two copies of the
         // rate would let the two timeouts drift apart.
@@ -211,9 +211,9 @@ impl AudioBridge {
     /// owed and taken back off the socket), ever. The bridge thread writes
     /// them and any thread reads them: relaxed atomics, no lock, no
     /// allocation.
-    pub fn block_counts(&self) -> crate::BlockCounts {
+    pub fn block_counts(&self) -> tutti_plugin_types::BlockCounts {
         let (abandoned, replies) = self.channels.block_counts();
-        crate::BlockCounts { abandoned, replies }
+        tutti_plugin_types::BlockCounts { abandoned, replies }
     }
 
     /// Latches `cause` as the reason the bridge is dead (the first cause

@@ -11,12 +11,12 @@
 mod au;
 
 use std::path::Path;
-use tutti_plugin_ipc::{BridgeError, Result};
 use tutti_plugin_types::LoadStage;
+use tutti_plugin_types::{BridgeError, BridgeResult};
 use tutti_plugin_types::{Editor, MainThread};
 
 #[cfg(all(any(feature = "vst3", feature = "clap", feature = "au"), unix))]
-pub(crate) fn load_gui_instance(main: &MainThread, path: &Path) -> Result<Box<dyn Editor>> {
+pub(crate) fn load_gui_instance(main: &MainThread, path: &Path) -> BridgeResult<Box<dyn Editor>> {
     use tutti_plugin_db::{PluginFormat, format_from_path};
 
     let format = format_from_path(path).ok_or_else(|| BridgeError::LoadFailed {
@@ -58,7 +58,7 @@ fn editor<F: tutti_plugin_types::OutOfProcess>(
     main: &MainThread,
     path: &Path,
     format: &str,
-) -> Result<Box<dyn Editor>>
+) -> BridgeResult<Box<dyn Editor>>
 where
     F::Editor: 'static,
 {
@@ -73,7 +73,7 @@ where
 }
 
 #[cfg(not(all(any(feature = "vst3", feature = "clap", feature = "au"), unix)))]
-pub(crate) fn load_gui_instance(_main: &MainThread, path: &Path) -> Result<Box<dyn Editor>> {
+pub(crate) fn load_gui_instance(_main: &MainThread, path: &Path) -> BridgeResult<Box<dyn Editor>> {
     Err(BridgeError::LoadFailed {
         path: path.to_path_buf(),
         stage: LoadStage::Opening,

@@ -16,9 +16,9 @@
 //! every syscall while `read_exact` loops. Both are needed and neither
 //! subsumes the other.
 
-use crate::error::{BridgeError, Result};
 use crate::protocol::frame::{decode_body, decode_prefix, write_frame};
 use crate::protocol::{BridgeMessage, HostMessage};
+use tutti_plugin_types::{BridgeError, BridgeResult};
 
 use interprocess::local_socket::traits::Stream as _;
 #[cfg(not(windows))]
@@ -85,7 +85,7 @@ pub const SEND_TIMEOUT: Duration = Duration::from_secs(10);
 /// # Errors
 ///
 /// The socket name is invalid or nothing is listening on it.
-pub fn connect(socket: &Path) -> Result<ControlStream> {
+pub fn connect(socket: &Path) -> BridgeResult<ControlStream> {
     connect_within(socket, SEND_TIMEOUT)
 }
 
@@ -96,7 +96,7 @@ pub fn connect(socket: &Path) -> Result<ControlStream> {
 /// pipe, as it does for reads, and there a hung server's writes end when the
 /// server is ended (the session's hang verdict kills it, closing the pipe).
 /// Arming is therefore best-effort and its failure is not an error.
-pub(crate) fn connect_within(socket: &Path, send_timeout: Duration) -> Result<ControlStream> {
+pub(crate) fn connect_within(socket: &Path, send_timeout: Duration) -> BridgeResult<ControlStream> {
     let name = socket_name(socket)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, e))?;
     let stream = Stream::connect(name)?;
@@ -113,7 +113,7 @@ pub(crate) fn connect_within(socket: &Path, send_timeout: Duration) -> Result<Co
 /// itself declines is not a crash. A write the peer does not take within the
 /// send deadline is [`BridgeError::Timeout`] with `partial` set: some of the
 /// frame may be on the wire, and the connection cannot go on.
-pub fn send(stream: &mut ControlStream, msg: &HostMessage) -> Result<()> {
+pub fn send(stream: &mut ControlStream, msg: &HostMessage) -> BridgeResult<()> {
     write_frame(stream, msg).map_err(|e| match e {
         BridgeError::Io(io)
             if io.kind() == std::io::ErrorKind::TimedOut
@@ -385,7 +385,7 @@ fn recv_by(
     deadline: Instant,
     partial: &mut PartialFrame,
     wakeup: &Wakeup,
-) -> Result<BridgeMessage> {
+) -> BridgeResult<BridgeMessage> {
     if !partial.have_len {
         let mut prefix = partial.prefix;
         let r = read_exact_by(
@@ -447,7 +447,7 @@ fn recv_by(
 /// Still deadline-bounded, by [`HANDSHAKE_TIMEOUT`]: "no timeout" on a socket
 /// means a peer that never speaks parks this thread forever, and the handshake
 /// runs before any crash reporting exists to notice.
-pub fn recv(stream: &mut ControlStream) -> Result<BridgeMessage> {
+pub fn recv(stream: &mut ControlStream) -> BridgeResult<BridgeMessage> {
     let deadline = Instant::now() + HANDSHAKE_TIMEOUT;
     // The handshake has no resume path — a failure here ends the connection —
     // so the cursor is local and dropped with the frame it describes.
@@ -469,7 +469,7 @@ pub fn recv(stream: &mut ControlStream) -> Result<BridgeMessage> {
 /// to survive a timeout and keep the connection must use [`recv_resumable`]
 /// instead; this one is for the paths where a timeout is already fatal
 /// (handshake, probe, launch).
-pub fn recv_within(stream: &mut ControlStream, timeout: Duration) -> Result<BridgeMessage> {
+pub fn recv_within(stream: &mut ControlStream, timeout: Duration) -> BridgeResult<BridgeMessage> {
     let mut partial = PartialFrame::default();
     recv_resumable(stream, timeout, &mut partial)
 }
@@ -488,7 +488,7 @@ pub fn recv_resumable(
     stream: &mut ControlStream,
     timeout: Duration,
     partial: &mut PartialFrame,
-) -> Result<BridgeMessage> {
+) -> BridgeResult<BridgeMessage> {
     let deadline = Instant::now() + timeout;
     with_poll_timeout(stream, timeout, |s, wakeup| {
         recv_by(s, deadline, partial, wakeup)
@@ -553,8 +553,8 @@ pub fn recv_resumable(
 fn with_poll_timeout<T>(
     stream: &mut ControlStream,
     budget: Duration,
-    f: impl FnOnce(&mut ControlStream, &Wakeup) -> Result<T>,
-) -> Result<T> {
+    f: impl FnOnce(&mut ControlStream, &Wakeup) -> BridgeResult<T>,
+) -> BridgeResult<T> {
     let poll = budget.min(POLL_INTERVAL).max(Duration::from_millis(1));
     let wakeup = Wakeup::arm(stream, poll);
     let result = f(stream, &wakeup);

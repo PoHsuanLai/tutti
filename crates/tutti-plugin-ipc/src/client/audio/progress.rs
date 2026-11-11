@@ -54,10 +54,10 @@
 //! [`MAX_STATE_BYTES`]: crate::protocol::MAX_STATE_BYTES
 
 use super::ask::Ask;
-use crate::error::StateError;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
+use tutti_plugin_types::StateError;
 
 /// How long a state transfer may make no progress before it is declared stalled.
 ///

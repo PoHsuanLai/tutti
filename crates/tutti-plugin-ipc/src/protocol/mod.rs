@@ -110,13 +110,13 @@ pub const STATE_CHUNK_BYTES: usize = 4 * 1024 * 1024;
 ///
 /// # Errors
 ///
-/// [`BridgeError::ProtocolMismatch`](crate::BridgeError::ProtocolMismatch)
+/// [`BridgeError::ProtocolMismatch`](tutti_plugin_types::BridgeError::ProtocolMismatch)
 /// when the versions differ.
-pub fn check_protocol_version(got: u32) -> crate::error::Result<()> {
+pub fn check_protocol_version(got: u32) -> tutti_plugin_types::BridgeResult<()> {
     if got == PROTOCOL_VERSION {
         Ok(())
     } else {
-        Err(crate::error::BridgeError::ProtocolMismatch {
+        Err(tutti_plugin_types::BridgeError::ProtocolMismatch {
             expected: PROTOCOL_VERSION,
             got,
         })
@@ -128,8 +128,6 @@ pub use process::ProcessAudioData;
 pub use shm::SlabLayout;
 pub use tutti_plugin_types::MidiEventVec;
 pub use tutti_plugin_types::SampleFormat;
-
-pub use tutti_plugin_types::WireMidi;
 
 // Types that are owned elsewhere but speak on the wire, adopted here so
 // `crate::protocol::{...}` is the single import point for the bridge.
@@ -156,7 +154,7 @@ mod tests {
     use std::path::PathBuf;
     use tutti_fixtures::midi;
     use tutti_plugin_types::{
-        ChordValue, NoteExpressionIntValue, NoteExpressionTextValue, ScaleValue,
+        ChordValue, NoteExpressionIntValue, NoteExpressionTextValue, ScaleValue, WireMidi,
     };
     use tutti_types::SampleRate;
     use tutti_ump::{CCNumber, Message, MidiChannel, MidiGroup, Ump, Voice2};

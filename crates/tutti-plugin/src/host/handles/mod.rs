@@ -20,7 +20,7 @@ pub(crate) mod control_handle;
 pub use crate::host::node::{
     Bound, NodeControls, ParamDeliveryStats, PluginClient, PluginControls, PluginMeter, Unbound,
 };
-pub use tutti_plugin_ipc::{PluginInvalidation, PluginRefresh, ResyncKind};
+pub use tutti_plugin_types::{PluginInvalidation, PluginRefresh, ResyncKind};
 // The per-block installer, reachable only when the plugin can receive that
 // input. Named here because a caller matching on the `Option` a
 // `PluginClient` accessor returns has to be able to name what is inside it.

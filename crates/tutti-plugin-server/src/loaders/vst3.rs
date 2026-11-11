@@ -8,13 +8,14 @@
 use std::path::Path;
 use tutti_plugin_types::MainThread;
 
+use tutti_plugin::LoadStage;
 use tutti_plugin::server::{
     AudioBufferMut, AutomationMode, ContentScale, EditorSize, LoadedPlugin, Normalized, ParamId,
     ParameterInfo, PluginAudio, PluginDescriptor, PluginEditorHost, PluginError, PluginMeta,
     PluginParams, PluginPresets, PluginResult, PluginState, Preset, PresetId, ProcessContext,
     ProcessOutput, RenderMode, WindowHandle,
 };
-use tutti_plugin::{BridgeError, LoadStage, Result};
+use tutti_plugin_types::{BridgeError, BridgeResult};
 use tutti_plugin_types::{
     Control, EditorWindow, Event, Hand, HostOp, Lifecycle, MaxBlock, Notice, Prepare, Request,
     SampleFormat, SampleRate, Samples, Stage, State,
@@ -78,7 +79,7 @@ impl Vst3Instance {
         sample_rate: f64,
         block_size: usize,
         prefer_f64: bool,
-    ) -> Result<Self> {
+    ) -> BridgeResult<Self> {
         Self::load_with_state(
             main,
             path,
@@ -104,7 +105,7 @@ impl Vst3Instance {
         prefer_f64: bool,
         state: Option<&[u8]>,
         before_restore: &mut dyn FnMut(),
-    ) -> Result<(Self, Option<String>)> {
+    ) -> BridgeResult<(Self, Option<String>)> {
         let resolved = tutti_plugin::server::resolve_bundle(path)?;
         let loaded = Vst3Loaded::load(main, &resolved, LoadOptions::new())
             .map_err(|e| map_vst3_error(e, path))?;

@@ -31,7 +31,8 @@ use tutti_graph::{
 };
 use tutti_graph::{OutPort, Source};
 use tutti_plugin::handles::PluginHandle;
-use tutti_plugin::{PluginForkError, PluginNode, PresetId, RenderMode, load_client};
+use tutti_plugin::{PluginNode, PresetId, RenderMode, load_client};
+use tutti_plugin_types::PluginForkError;
 use tutti_plugin_types::{Normalized, ParamId};
 use tutti_types::{
     Beat, BeatsPerBar, Bpm, MeterChange, MeterMap, NoteValue, SampleRate, Samples, TimeSignature,

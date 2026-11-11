@@ -12,7 +12,6 @@ use crate::host::node::{InvalidateSink, ParameterChangeSink, RefreshSink};
 use crate::util::window::{ContentScale, EditorSize};
 use raw_window_handle::HasWindowHandle;
 use std::sync::Arc;
-use tutti_plugin_ipc::{PluginInvalidation, PluginRefresh};
 use tutti_plugin_types::AutomationMode;
 use tutti_plugin_types::EditorError;
 use tutti_plugin_types::MainThread;
@@ -20,6 +19,7 @@ use tutti_plugin_types::{
     ChannelTopology, LayoutSupport, LoadedPlugin, Normalized, ParamId, PluginDescriptor,
     PresetSupport,
 };
+use tutti_plugin_types::{PluginInvalidation, PluginRefresh};
 
 /// The capabilities a backend may or may not honour, for
 /// [`PluginHandle::from_backend`].

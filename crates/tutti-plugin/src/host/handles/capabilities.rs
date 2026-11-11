@@ -35,7 +35,7 @@ use tutti_plugin_types::{
 };
 use tutti_plugin_types::{EditorError, StateError};
 
-pub use tutti_plugin_ipc::BlockCounts;
+pub use tutti_plugin_types::BlockCounts;
 
 /// Parameter catalog, live-value reads and writes, and the backend's liveness.
 ///

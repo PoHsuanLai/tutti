@@ -28,7 +28,7 @@
 
 use std::sync::Arc;
 
-use tutti_types::{Azimuth, ChannelLayout, Elevation, Fold, Mix, Radians, SampleRate};
+use tutti_types::{ChannelLayout, Direction, Fold, Mix, Radians, SampleRate};
 
 use super::sphere::{HrirSphere, HrtfSet, Weights};
 use crate::Complex32;
@@ -204,7 +204,7 @@ impl HrtfBinaural {
     pub fn new(
         hrir_bytes: &[u8],
         sample_rate: SampleRate,
-        aim: (Azimuth, Elevation),
+        aim: Direction,
     ) -> Result<Self, HrtfBinauralError> {
         let sphere = Arc::new(HrirSphere::parse(hrir_bytes)?);
         let set = Arc::new(HrtfSet::build(&sphere, rate_key(sample_rate), HRTF_STEP));
@@ -213,13 +213,12 @@ impl HrtfBinaural {
 
     /// A renderer over a prepared set, with cleared streaming state, aimed
     /// at `aim`.
-    fn over(sphere: Arc<HrirSphere>, set: Arc<HrtfSet>, aim: (Azimuth, Elevation)) -> Self {
+    fn over(sphere: Arc<HrirSphere>, set: Arc<HrtfSet>, aim: Direction) -> Self {
         let n = set.fft_len;
         let bins = set.fft.bins();
         let zero = Complex32::new(0.0, 0.0);
         let mut face_hint = 0;
-        let (az, el) = aim;
-        let current = set.weights(direction_from_degrees(az, el), &mut face_hint);
+        let current = set.weights(unit_vector(aim), &mut face_hint);
         Self {
             history: vec![0.0; n],
             fill: 0,
@@ -254,11 +253,7 @@ impl HrtfBinaural {
     /// block size keeps the tail in flight. Two graph rates above
     /// [`MAX_PREPARED_RATE`] share one set. Allocates on a new rate: control
     /// thread only.
-    pub fn set_sample_rate(
-        &mut self,
-        sample_rate: SampleRate,
-        aim: impl FnOnce() -> (Azimuth, Elevation),
-    ) {
+    pub fn set_sample_rate(&mut self, sample_rate: SampleRate, aim: impl FnOnce() -> Direction) {
         let rate = rate_key(sample_rate);
         if rate == self.set.rate {
             return;
@@ -269,22 +264,20 @@ impl HrtfBinaural {
 
     /// Zero the streaming buffers and aim at `aim`, so the next step renders
     /// there with no crossfade in from elsewhere.
-    pub fn reset_state(&mut self, aim: (Azimuth, Elevation)) {
+    pub fn reset_state(&mut self, aim: Direction) {
         self.history.fill(0.0);
         self.fill = 0;
         self.wet_left.fill(0.0);
         self.wet_right.fill(0.0);
         self.dry.fill(0.0);
-        self.current = self
-            .set
-            .weights(direction_from_degrees(aim.0, aim.1), &mut self.face_hint);
+        self.current = self.set.weights(unit_vector(aim), &mut self.face_hint);
     }
 
     /// Shares the parsed sphere and its prepared set (nothing is reparsed or
     /// re-planned), with cleared streaming state aimed at `aim`. Allocates
     /// the streaming buffers: control thread.
     #[must_use]
-    pub fn fresh(&self, aim: (Azimuth, Elevation)) -> Self {
+    pub fn fresh(&self, aim: Direction) -> Self {
         Self::over(self.sphere.clone(), self.set.clone(), aim)
     }
 
@@ -297,7 +290,7 @@ impl HrtfBinaural {
         blend: Mix,
         input: (&[f32], &[f32]),
         output: (&mut [f32], &mut [f32]),
-        mut aim: impl FnMut() -> (Azimuth, Elevation),
+        mut aim: impl FnMut() -> Direction,
     ) {
         let frames = output.0.len();
         let start = self.history.len() - HRTF_STEP;
@@ -332,10 +325,8 @@ impl HrtfBinaural {
     }
 
     /// Convolve the full step into the wet buffers and slide the history.
-    fn render_step(&mut self, (az, el): (Azimuth, Elevation)) {
-        let next = self
-            .set
-            .weights(direction_from_degrees(az, el), &mut self.face_hint);
+    fn render_step(&mut self, aim: Direction) {
+        let next = self.set.weights(unit_vector(aim), &mut self.face_hint);
         let set = &*self.set;
         let start = set.fft_len - HRTF_STEP;
         self.dry.copy_from_slice(&self.history[start..]);
@@ -411,13 +402,11 @@ fn blend_into(
 /// right-handed frame: +x right, +y up, +z toward the listener's back.
 ///
 /// Convention (matching the rest of `spatial`): azimuth 0 = front, +90 = left;
-/// elevation 0 = ear level, +90 = up. Takes the typed angles rather than two
-/// bare `f32`s: transposed, they would compile and put the source somewhere
-/// else on the sphere.
+/// elevation 0 = ear level, +90 = up.
 #[inline]
-fn direction_from_degrees(azimuth: Azimuth, elevation: Elevation) -> [f32; 3] {
-    let az = Radians::from(azimuth);
-    let el = Radians::from(elevation);
+fn unit_vector(aim: Direction) -> [f32; 3] {
+    let az = Radians::from(aim.azimuth);
+    let el = Radians::from(aim.elevation);
     let cos_el = el.cos();
     // +90° azimuth (left) → -x; front (0°) → -z.
     [-az.sin() * cos_el, el.sin(), -az.cos() * cos_el]

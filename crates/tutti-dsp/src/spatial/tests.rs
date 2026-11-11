@@ -4,7 +4,7 @@
 //! not a comparison with another implementation.
 
 use super::*;
-use tutti_types::{Azimuth, Elevation, Spread};
+use tutti_types::{Azimuth, Direction, Elevation, Spread};
 
 type Position = (f32, f32);
 
@@ -43,7 +43,7 @@ const ATMOS: [Position; 11] = [
 fn layout(positions: &[Position]) -> SpeakerLayout {
     let p: Vec<_> = positions
         .iter()
-        .map(|&(a, e)| (Azimuth(a), Elevation(e)))
+        .map(|&(a, e)| Direction::new(Azimuth(a), Elevation(e)))
         .collect();
     SpeakerLayout::new(&p).unwrap()
 }
@@ -485,7 +485,10 @@ fn a_triangle_with_a_speaker_inside_is_split() {
 #[test]
 fn a_layout_that_cannot_be_tiled_is_refused() {
     let make = |p: &[Position]| {
-        let p: Vec<_> = p.iter().map(|&(a, e)| (Azimuth(a), Elevation(e))).collect();
+        let p: Vec<_> = p
+            .iter()
+            .map(|&(a, e)| Direction::new(Azimuth(a), Elevation(e)))
+            .collect();
         SpeakerLayout::new(&p).unwrap_err()
     };
     assert_eq!(

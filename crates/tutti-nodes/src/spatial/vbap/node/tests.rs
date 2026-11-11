@@ -316,7 +316,7 @@ fn a_clone_ramps_at_the_originals_sample_rate() {
 /// value, renders finite audio, and follows the next finite write.
 ///
 /// Mutation (each run, each fails): reading the azimuth, elevation, spread
-/// or width raw (no `hold_finite`) — the first two leave the smoother, and
+/// or width raw (no `LastGood`) — the first two leave the smoother, and
 /// so every later frame, NaN.
 #[test]
 fn a_non_finite_control_never_reaches_the_smoother() {

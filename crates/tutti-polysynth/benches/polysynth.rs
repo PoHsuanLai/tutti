@@ -33,12 +33,13 @@
 use std::hint::black_box;
 
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
+use tutti_curve::Law;
 use tutti_fixtures::midi;
 use tutti_graph::contract::Direct;
 use tutti_graph::{Event, Offset};
 use tutti_polysynth::{
-    Adsr, FilterType, OscillatorType, PolySynth, PortamentoConfig, PortamentoCurve, PortamentoMode,
-    SvfMode, SynthConfig, UnisonConfig,
+    Adsr, FilterType, OscillatorType, PolySynth, PortamentoConfig, PortamentoMode, SvfMode,
+    SynthConfig, UnisonConfig,
 };
 use tutti_types::{Amplitude, Hz, Q, Resonance, SampleRate, Samples, Seconds};
 use tutti_ump::{
@@ -204,10 +205,7 @@ fn bench_unison(c: &mut Criterion) {
 fn bench_portamento(c: &mut Criterion) {
     let mut group = c.benchmark_group("voices/portamento");
     group.throughput(Throughput::Elements(BLOCK as u64));
-    for (name, curve) in [
-        ("linear", PortamentoCurve::Linear),
-        ("logarithmic", PortamentoCurve::Logarithmic),
-    ] {
+    for (name, curve) in [("linear", Law::Linear), ("square-root", Law::PowerIn(0.5))] {
         let mut synth = held(
             SynthConfig {
                 portamento: Some(PortamentoConfig {

@@ -3964,6 +3964,7 @@ dependencies = [
  "assert_no_alloc",
  "criterion",
  "thiserror 2.0.21",
+ "tutti-curve",
  "tutti-dsp",
  "tutti-fixtures",
  "tutti-graph",

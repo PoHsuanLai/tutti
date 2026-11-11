@@ -10,7 +10,7 @@
 //! # The sphere
 //!
 //! An octagonal bipyramid (8 equatorial vertices every 45°, plus the poles)
-//! whose vertex positions match `direction_from_degrees` in `tutti-dsp`'s `spatial/hrtf.rs`:
+//! whose vertex positions match `unit_vector` in `tutti-dsp`'s `spatial/hrtf.rs`:
 //! azimuth 0 = front (−z), +90 = left (−x), −90 = right (+x). Each equatorial
 //! vertex stores:
 //!
@@ -55,7 +55,7 @@ fn push_f32(b: &mut Vec<u8>, v: f32) {
     b.extend_from_slice(&v.to_le_bytes());
 }
 
-/// Match `direction_from_degrees` in `tutti-dsp`'s `spatial/hrtf.rs`: 0 = front/−z, +90 = left/−x.
+/// Match `unit_vector` in `tutti-dsp`'s `spatial/hrtf.rs`: 0 = front/−z, +90 = left/−x.
 fn cartesian(azimuth: Azimuth, elevation: Elevation) -> [f32; 3] {
     let az = Radians::from(azimuth);
     let el = Radians::from(elevation);
@@ -247,7 +247,7 @@ fn assert_between(mid: &[f32], a: &[f32], b: &[f32], ear: &str) {
 /// At a measured equatorial vertex the interpolated IR equals that vertex's
 /// encoded IR within 1e-6.
 ///
-/// Mutation: snap azimuth to a 90° grid in `direction_from_degrees` → fails at 45° (rounds to 90°, left peak 1.5 not 1.354).
+/// Mutation: snap azimuth to a 90° grid in `unit_vector` → fails at 45° (rounds to 90°, left peak 1.5 not 1.354).
 #[test]
 fn measured_vertex_ir_matches_the_encoded_hrir() {
     let mut node = make_node();
@@ -263,7 +263,7 @@ fn measured_vertex_ir_matches_the_encoded_hrir() {
 /// not a snap to either one: every sample lies in the neighbour min/max, and
 /// both neighbour taps are present.
 ///
-/// Mutation: snap azimuth to a 45° grid in `direction_from_degrees` → fails at 22.5° (rounds to 45°, drops the t=0 right-ear tap).
+/// Mutation: snap azimuth to a 45° grid in `unit_vector` → fails at 22.5° (rounds to 45°, drops the t=0 right-ear tap).
 #[test]
 fn midway_azimuth_interpolates_between_neighbours() {
     let mut node = make_node();
@@ -289,7 +289,7 @@ fn midway_azimuth_interpolates_between_neighbours() {
 /// opposite. `Azimuth` has no `Ord` — the sign lives in which ear peaks first,
 /// not in a comparison of bearings.
 ///
-/// Mutation: flip the sign of `x` in `direction_from_degrees` (`-az.sin()` → `az.sin()`) → +90° delays the left ear (peak t=6).
+/// Mutation: flip the sign of `x` in `unit_vector` (`-az.sin()` → `az.sin()`) → +90° delays the left ear (peak t=6).
 #[test]
 fn itd_sign_follows_the_near_ear() {
     let mut node = make_node();
@@ -324,7 +324,7 @@ fn itd_sign_follows_the_near_ear() {
 
 /// The near ear is louder by the encoded factor `(1+ILD)/(1−ILD)`.
 ///
-/// Mutation: flip the sign of `x` in `direction_from_degrees` → at +90° the far ear is louder (L/R ratio 1/3 not 3).
+/// Mutation: flip the sign of `x` in `unit_vector` → at +90° the far ear is louder (L/R ratio 1/3 not 3).
 #[test]
 fn ild_sign_makes_the_near_ear_louder() {
     let mut node = make_node();
@@ -356,7 +356,7 @@ fn ild_sign_makes_the_near_ear_louder() {
 /// as back (marker ≈ −1). Poles are well-defined: finite samples, finite
 /// energy, no NaN, for any azimuth at ±90° elevation.
 ///
-/// Mutation: fold azimuth with `rem_euclid(180)` in `direction_from_degrees` → 359° maps to 179° (back, marker −0.993) while 1° stays front.
+/// Mutation: fold azimuth with `rem_euclid(180)` in `unit_vector` → 359° maps to 179° (back, marker −0.993) while 1° stays front.
 #[test]
 fn wrap_seam_is_continuous_and_poles_are_finite() {
     let mut node = make_node();
@@ -413,7 +413,7 @@ fn wrap_seam_is_continuous_and_poles_are_finite() {
 /// poles; the bound leaves room for interpolation without accepting silence
 /// or a doubled IR.
 ///
-/// Mutation: snap azimuth to a 45° grid in `direction_from_degrees` → 1° step to 23° jumps by the full neighbour difference (1.0, bound 0.25).
+/// Mutation: snap azimuth to a 45° grid in `unit_vector` → 1° step to 23° jumps by the full neighbour difference (1.0, bound 0.25).
 #[test]
 fn azimuth_sweep_is_continuous_and_energy_bounded() {
     let mut node = make_node();

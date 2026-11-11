@@ -114,7 +114,6 @@ impl Ring {
     }
 
     /// Slots, in frames.
-    #[cfg(test)]
     pub(crate) fn frames(&self) -> usize {
         self.core.frames()
     }

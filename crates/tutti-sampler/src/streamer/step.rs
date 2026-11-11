@@ -2,26 +2,24 @@
 //!
 //! The streamer's work is a loop over one step after its commands: refill the
 //! rings (following each reader to where it plays). It is not asynchronous: it
-//! walks the stream table, decodes from a file, and writes into a ring. The only
-//! async in the streamer is the *pacing* — the timer the loop parks on when
-//! there is nothing urgent to do. (What a *command* does to the table is the
-//! pure [`step`](super::record::step), not this.)
+//! walks the stream table, decodes from a file, and writes into a ring. What
+//! the thread adds is only the sleeping between cycles, on the
+//! [`Bell`](super::bell::Bell). (What a *command* does to the table is the pure
+//! [`step`](super::record::step), not this.)
 //!
-//! This module is that work with the pacing removed. [`StreamerCycle::step`]
-//! drains the command queue, runs the refill, and reports what the pacing
-//! layer should do next as a [`StepOutcome`]. The async loop in
-//! [`loop_body`](super::loop_body) is then the pacing layer and nothing else.
+//! This module is that work with the sleeping removed. [`StreamerCycle::step`]
+//! drains the command queue, runs the refill, and reports what the loop should
+//! do next as a [`StepOutcome`]. The loop in [`loop_body`](super::loop_body) is
+//! then the sleeping layer and nothing else.
 //!
 //! # Why the split earns its name
 //!
 //! A test that has to observe a streamer-driven stream otherwise has only wall
 //! clock to work with: send a command, sleep, look, sleep again. That is not a
-//! stylistic complaint. The streamer parks 1 ms when idle and 3 ms when every
-//! ring is healthy, so a poller reading at 5–10 ms is racing a producer it
-//! cannot see, and every such test carries a timeout that is really a guess
-//! about the machine it runs on. Driving the same steps directly makes the
-//! question "has the streamer done the work" answerable by *counting* rather
-//! than by waiting — `step` returns only after the work is done.
+//! stylistic complaint: every such test carries a timeout that is really a
+//! guess about the machine it runs on. Driving the same steps directly makes
+//! the question "has the streamer done the work" answerable by *counting*
+//! rather than by waiting: `step` returns only after the work is done.
 //!
 //! It is the same seam the production loop uses, not a parallel test path:
 //! `streamer_loop` is written in terms of `StreamerCycle::step`, so a
@@ -32,20 +30,22 @@ use super::command::StreamerCommand;
 use super::config::BufferConfig;
 use super::handlers::{Handles, Local, handle_command};
 use super::io::refill::{FILL_THRESHOLD, refill_all, refill_all_parallel};
-use super::record::Streams;
+use super::record::{Record, Streams};
 
-/// What the pacing layer should do after one streamer cycle.
+/// What the loop should do after one streamer cycle.
 ///
-/// The streamer runs at maximum thread priority, so "keep going" and "there is
-/// nothing to do" must be distinguishable — spinning either one costs a core.
-/// The step itself has no opinion on *how long* to park, only on whether
-/// parking is safe, which is why this carries no duration.
+/// "Keep going" and "there is nothing to do until rung" must be
+/// distinguishable: spinning either one costs a core. The step has no opinion
+/// on *how long* to sleep (the loop sleeps until a source rings the bell, or
+/// the backstop passes), only on whether sleeping is safe, which is why this
+/// carries no duration.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StepOutcome {
-    /// No channel is streaming. Nothing to refill; park on the command queue.
+    /// No stream is live: none is open, or each is still opening or faulted.
+    /// Nothing to refill; sleep.
     Idle,
-    /// Every streaming ring is at or above its refill threshold. The work ran,
-    /// and none of it was urgent — park on the command queue.
+    /// Every live ring is at or above its refill threshold. The work ran, and
+    /// none of it was urgent: sleep.
     Healthy,
     /// At least one ring is below its refill threshold and this cycle moved
     /// frames into one. Come straight back; there is more to do.
@@ -54,23 +54,24 @@ pub enum StepOutcome {
     /// into it.
     ///
     /// The threshold is a fraction of ring *capacity*, and capacity is sized
-    /// from the whole file — so a stream reading its last seconds can never
+    /// from the whole file, so a stream reading its last seconds can never
     /// reach it however many cycles run. Reporting that as `Busy` makes the
-    /// pacing layer skip its park and re-run immediately, which spins a
-    /// max-priority thread flat out for the whole tail of every clip.
+    /// loop skip its sleep and re-run immediately, which spins a thread flat
+    /// out for the whole tail of every clip. (A voice does not ring for it
+    /// either: [`needs_refill`](super::io::refill::needs_refill) is the one
+    /// predicate, and it calls a window that holds all the mapping writes
+    /// satisfied.)
     ///
     /// It is also what a step-driven caller needs: "the streamer has done all it
     /// can" is a *fixed point*, and a caller that waited for `Healthy` instead
     /// would wait forever near the end of a file.
     Stalled,
-    /// Shutdown was signalled. Stop.
-    Shutdown,
 }
 
 /// The streamer's per-cycle state and the step over it.
 ///
 /// Owns [`Local`] (streamer-thread-local: the stream table, scratch) and
-/// borrows nothing. Both the async loop and a test driver build one
+/// borrows nothing. Both the thread's loop and a test driver build one
 /// and call [`step`](Self::step) repeatedly; the only difference between them is
 /// what happens *between* the calls.
 pub(crate) struct StreamerCycle {
@@ -110,10 +111,6 @@ impl StreamerCycle {
         mut drain: impl FnMut() -> Option<StreamerCommand>,
     ) -> StepOutcome {
         while let Some(cmd) = drain() {
-            if matches!(cmd, StreamerCommand::Shutdown) {
-                handle_command(cmd, shared, &self.config, &mut self.local);
-                return StepOutcome::Shutdown;
-            }
             handle_command(cmd, shared, &self.config, &mut self.local);
         }
 
@@ -125,7 +122,9 @@ impl StreamerCycle {
             record.out.ring().reclaim_control();
         }
 
-        if self.local.streams.is_empty() {
+        // Idle is "no stream is live", not "no stream is open": a table
+        // holding only an opening or a faulted record has nothing to refill.
+        if !self.local.streams.records().iter().any(Record::is_live) {
             return StepOutcome::Idle;
         }
 
@@ -166,7 +165,7 @@ impl StreamerCycle {
 /// Summed rather than compared per stream because the question it answers is
 /// about the cycle as a whole: did *any* refill land? A per-stream comparison
 /// would report a stall for a stream at EOF even while its neighbours were
-/// still filling, and the pacing layer must keep running for those.
+/// still filling, and the loop must keep running for those.
 fn total_buffered(streams: &Streams) -> usize {
     streams
         .records()
@@ -176,8 +175,8 @@ fn total_buffered(streams: &Streams) -> usize {
         .sum()
 }
 
-/// True when no stream needs a refill — i.e. the loop can safely park on a
-/// short timer instead of spinning.
+/// True when no stream needs a refill: the loop can safely sleep until rung
+/// instead of spinning.
 fn buffers_healthy(streams: &Streams) -> bool {
     // Every live stream must be at or above its refill threshold.
     streams
@@ -194,6 +193,7 @@ mod tests {
 
     use tutti_types::SampleRate;
 
+    use super::super::bell::Bell;
     use super::super::cache::LruCache;
     use super::super::command::StreamId;
     use super::super::decode::Seams;
@@ -202,6 +202,50 @@ mod tests {
     use super::super::metrics::Metrics;
     use super::super::record::{Cmd, step};
     use super::*;
+
+    /// `Idle` means no stream is **live**, not that no stream is open: a table
+    /// holding only a stream that is still opening has nothing to refill, so
+    /// the loop sleeps (it used to report `Healthy` once any record existed, and
+    /// before the first stream polled at 1 kHz). Once the stream is answered
+    /// (`Cmd::Opened`) it is live and the cycle refills it.
+    ///
+    /// Mutation (run): `step` testing `streams.is_empty()` instead of "no
+    /// record is live" -> the opening record is not idle -> fails on the first
+    /// assertion.
+    #[test]
+    fn a_cycle_is_idle_until_a_stream_is_live() {
+        let config = BufferConfig::default();
+        let shared = Handles {
+            cache: Arc::new(LruCache::new(
+                config.cache_max_entries,
+                config.cache_max_bytes,
+            )),
+            metrics: Arc::new(Metrics::new()),
+            bell: Bell::new(),
+            session_rate: SessionRate::new(SampleRate(48_000.0)),
+            seams: Seams::default(),
+        };
+        let (reports, _queue) = crossbeam_channel::bounded(8);
+        let mut cycle = StreamerCycle::new(config, StreamerSender::from(reports));
+        assert_eq!(cycle.step(&shared, || None), StepOutcome::Idle, "no stream");
+
+        let id = StreamId(1);
+        let (record, _ring, _pos) =
+            super::super::record::tests::record(id, PathBuf::from("t.wav"), 1024, 1u16);
+        let _ = step(&mut cycle.local.streams, Cmd::Open(Box::new(record)));
+        assert_eq!(
+            cycle.step(&shared, || None),
+            StepOutcome::Idle,
+            "a stream still opening is not live"
+        );
+
+        let _ = step(&mut cycle.local.streams, Cmd::Opened(id));
+        assert_ne!(
+            cycle.step(&shared, || None),
+            StepOutcome::Idle,
+            "a live stream is refilled"
+        );
+    }
 
     /// A `RingControl` the reader held across the streamer's last publish is
     /// freed by the streamer's next cycle, with no further publish, whether or
@@ -218,10 +262,12 @@ mod tests {
                 config.cache_max_bytes,
             )),
             metrics: Arc::new(Metrics::new()),
+            bell: Bell::new(),
             session_rate: SessionRate::new(SampleRate(48_000.0)),
             seams: Seams::default(),
         };
         let (reports, _queue) = crossbeam_channel::bounded(8);
+        let reports = StreamerSender::from(reports);
         let mut cycle = StreamerCycle::new(config, reports);
         let id = StreamId(1);
         let (record, ring, _pos) =
@@ -262,10 +308,12 @@ mod tests {
                 config.cache_max_bytes,
             )),
             metrics: Arc::new(Metrics::new()),
+            bell: Bell::new(),
             session_rate: SessionRate::new(SampleRate(48_000.0)),
             seams: Seams::default(),
         };
         let (reports, _queue) = crossbeam_channel::bounded(8);
+        let reports = StreamerSender::from(reports);
         let mut cycle = StreamerCycle::new(config, reports);
         let (record, ring, _pos) =
             super::super::record::tests::record(StreamId(1), PathBuf::from("t.wav"), 1024, 1u16);

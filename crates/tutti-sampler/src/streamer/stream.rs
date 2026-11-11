@@ -31,8 +31,8 @@ pub(crate) struct StreamerPort {
 }
 
 impl StreamerPort {
-    pub(crate) fn new(tx: StreamerSender) -> Self {
-        Self { tx }
+    pub(crate) fn new(tx: impl Into<StreamerSender>) -> Self {
+        Self { tx: tx.into() }
     }
 
     /// Queues `cmd` for the streamer. `Ok` means it was *queued*: the streamer

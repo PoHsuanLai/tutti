@@ -29,7 +29,7 @@
 //!
 //! ## Why the push path is a separate module and not a `process` variant
 //!
-//! [`AuActive::process`](crate::instance::AuActive::process) is a *pull* render:
+//! [`AuProcessor::render_f32`](crate::processor::AuProcessor::render_f32) is a *pull* render:
 //! it stages input into the heap-pinned `RenderScratch`, then `AudioUnitRender`
 //! calls back into that scratch to fetch it. The push path never installs a
 //! callback — with `AudioUnitProcess` the `ioData` buffer list carries the
@@ -120,7 +120,7 @@ pub(crate) fn is_offline_render(unit: &Unit) -> Result<bool> {
 /// ## Width: 4 bytes, and a narrower write also works here
 ///
 /// `AudioUnitGetPropertyInfo` reports size 4 (`UInt32`), and — unlike
-/// [`AuInstance::set_bypass`](crate::instance::AuInstance::set_bypass)'s
+/// [`AuLoaded::set_bypass`](crate::instance::AuLoaded::set_bypass)'s
 /// `BypassEffect`, which refuses a 1-byte write with `-10851` — a 1-byte write to
 /// `OfflineRender` is accepted with `noErr` by both instruments. The `u32` is
 /// used anyway since that's what the header declares; the leniency is one

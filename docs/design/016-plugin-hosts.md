@@ -2185,6 +2185,24 @@ splits: `AuProcessor` (render and MIDI from the render thread) and `AuController
 | `AuParameterListener`, property listener (`listener.rs`) | feed a `RequestWord`; constructed from `&AuLoaded` or `&AuController` |
 | server `AuInstance`, `PropertyWatch`, `poll_changes` (`loaders/au.rs`) | deleted |
 
+**As built (AU-1).** `AuLoaded` implements `Loaded` and `Control` with
+`RESTARTS = RestartRules::NONE`; `activate` applies the `Prepare`'s rate and block
+ceiling (rolled back on refusal), writes its render mode before
+`AudioUnitInitialize`, and installs the input render callback; the typed form is
+`AuLoaded::initialize(prepare) -> Result<_, (Option<Self>, AuError)>`, and
+`activate` wraps it. `AuProcessor` holds the renderer and uninitialize guard, the
+SysEx assembler (reserved at activation), the transport state (an `Arc` shared
+with the `HostCallbacks` the unit pulls from) and a `Reader` of the range table;
+`AuController` holds the `AuLoaded` and derefs to it. Parameter writes are applied
+directly by the Controller (`AudioUnitSetParameter` is callable from any thread),
+so there is no `Edit` ring. The property listener raises latency, tail and
+parameter-list bits of a `RequestWord`; it does not watch the stream format,
+which this host sets itself at every activation and the listener cannot tell
+from the unit's own change. `AuInstance` and its `State` are deleted; the
+server's `loaders/au.rs` drives `Lifecycle<AuLoaded>` as the CLAP loader does.
+`AuLoaded` implements no `InProcess` or `OutOfProcess` yet: the contract has no
+AU format, and its editor mirror (`format/gui/au.rs`) is the editor move.
+
 ## 4. What is deleted
 
 > Superseded by doc 021 §2.3 and §10 step 5 (`Served<F>`).

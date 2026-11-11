@@ -75,7 +75,7 @@ use support::corpus::{
     may_initialize_in_a_sweep,
 };
 
-use tutti_au_host::AuInstance;
+use crate::support::au::Au;
 use tutti_au_host::{AuError, AuMidiMapping, MidiTrigger};
 use tutti_fixtures::midi;
 use tutti_graph::Offset;
@@ -115,7 +115,7 @@ const REFUSERS: &[AuRef] = &[DELAY, LOWPASS, N_BAND_EQ];
 /// Not `set_parameter_midi_mappings(&[])` for its own sake — that *is* the
 /// read-then-remove path — but named so a failure here reads as "setup", not as
 /// the assertion under test.
-fn clear(au: &mut AuInstance) {
+fn clear(au: &mut Au) {
     au.set_parameter_midi_mappings(&[])
         .expect("clearing the table must be accepted");
     assert!(
@@ -185,7 +185,7 @@ fn exactly_two_installed_components_implement_the_mapping_family() {
     let mut found: Vec<String> = Vec::new();
 
     for info in every_component() {
-        let Ok(mut au) = AuInstance::new(info.component, RATE, BLOCK) else {
+        let Ok(mut au) = Au::new(info.component, RATE, BLOCK) else {
             // A unit that cannot be instantiated cannot be probed. AUAudioTapIO
             // is the one such unit here; it is an output unit, and the family is
             // an instrument surface, so nothing is lost.
@@ -246,7 +246,7 @@ fn nothing_implements_the_deprecated_midi_control_mapping_property() {
     let mut hits: Vec<String> = Vec::new();
 
     for info in every_component() {
-        let Ok(mut au) = AuInstance::new(info.component, RATE, BLOCK) else {
+        let Ok(mut au) = Au::new(info.component, RATE, BLOCK) else {
             continue;
         };
         for phase in ["loaded", "initialized"] {
@@ -312,7 +312,7 @@ fn no_installed_third_party_unit_implements_the_mapping_family() {
     for unit in THIRD_PARTY {
         let Some(info) = unit.find() else { continue };
         probed += 1;
-        let Ok(mut au) = AuInstance::new(info.component, RATE, BLOCK) else {
+        let Ok(mut au) = Au::new(info.component, RATE, BLOCK) else {
             continue;
         };
         let _ = au.initialize();
@@ -1064,7 +1064,7 @@ fn a_unit_without_mapping_support_refuses_every_write() {
     // Plain `fn` pointers rather than boxed closures: each takes the same
     // `(unit, mappings)` shape, so nothing needs to be captured, and a table of
     // four `fn`s reads at a glance where four `Box<dyn FnOnce>`s do not.
-    type Write = fn(&mut AuInstance, &[AuMidiMapping]) -> tutti_au_host::Result<()>;
+    type Write = fn(&mut Au, &[AuMidiMapping]) -> tutti_au_host::Result<()>;
     let attempts: [(&str, Write); 4] = [
         ("add", |au, m| au.add_parameter_midi_mapping(m)),
         ("remove", |au, m| au.remove_parameter_midi_mapping(m)),

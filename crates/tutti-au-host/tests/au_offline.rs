@@ -1063,7 +1063,7 @@ impl RtBufs {
     /// whole no-alloc assertion vacuous — it would pass just as readily with no
     /// audio being produced at all. It formats only on the failure path, which
     /// fails the test anyway.
-    fn push(&mut self, au: &mut tutti_au_host::AuInstance, scratch: &mut PushScratch) {
+    fn push(&mut self, au: &mut crate::support::au::Au, scratch: &mut PushScratch) {
         let ins: &[&[f32]] = &[&self.in_l, &self.in_r];
         assert!(scratch.stage_input(0, ins, RT_BLOCK), "input bus 0 exists");
         au.process_push(scratch, RT_BLOCK)
@@ -1076,7 +1076,7 @@ impl RtBufs {
     }
 
     /// As [`Self::push`], through `AudioUnitProcessMultiple`.
-    fn push_multiple(&mut self, au: &mut tutti_au_host::AuInstance, scratch: &mut PushScratch) {
+    fn push_multiple(&mut self, au: &mut crate::support::au::Au, scratch: &mut PushScratch) {
         let ins: &[&[f32]] = &[&self.in_l, &self.in_r];
         assert!(scratch.stage_input(0, ins, RT_BLOCK), "input bus 0 exists");
         au.process_push_multiple(scratch, RT_BLOCK)
@@ -1176,7 +1176,7 @@ fn offline_flagged_render_does_not_allocate() {
         midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0xC000),
     )]);
     let mut b = RtBufs::new();
-    let drive = |au: &mut tutti_au_host::AuInstance, b: &mut RtBufs| {
+    let drive = |au: &mut crate::support::au::Au, b: &mut RtBufs| {
         let ins: &[&[f32]] = &[&b.in_l, &b.in_r];
         let outs: &mut [&mut [f32]] = &mut [&mut b.out_l[..], &mut b.out_r[..]];
         au.process(ins, outs, RT_BLOCK).expect("offline render");

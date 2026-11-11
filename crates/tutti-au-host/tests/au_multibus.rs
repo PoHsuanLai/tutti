@@ -102,7 +102,7 @@ fn assert_invalid_element<T: std::fmt::Debug>(result: Result<T, AuError>, what: 
 ///
 /// Measured across all 22 Apple `aufx` units on macOS 15.6: input element count
 /// 1, output element count 1, without exception. The single-bus render path in
-/// `AuInstance::process` is correct *because* of this, so if it ever stops
+/// `Au::process` is correct *because* of this, so if it ever stops
 /// holding the render path needs revisiting rather than this assertion relaxing.
 #[test]
 fn effects_have_exactly_one_bus_per_direction() {
@@ -709,7 +709,7 @@ fn the_default_parameter_address_is_still_global_element_zero() {
 /// (two output elements) and able to initialize, so it is the one subject where
 /// "does multi-bus topology break rendering?" can be asked at all.
 ///
-/// Only bus 0 is rendered — `AuInstance::process` drives the primary bus, and
+/// Only bus 0 is rendered — `Au::process` drives the primary bus, and
 /// this change adds topology *discovery*, not per-bus rendering. The assertion
 /// is therefore that discovering a second bus did not disturb the first: a
 /// NoteOn still produces finite, audible audio, exactly as

@@ -44,7 +44,7 @@ impl StreamConfig {
     /// layout.
     ///
     /// Bus 0 only, deliberately: this layout is what the render scratch is sized
-    /// from, and [`AuInstance::process`](crate::instance::AuInstance::process)
+    /// from, and [`AuProcessor::render_f32`](crate::processor::AuProcessor::render_f32)
     /// renders bus 0 alone. Multi-bus units are *described* by
     /// [`crate::bus`] — `bus_count` / `bus_layout` — but not yet rendered
     /// per-bus, so widening the probe would size buffers for buses nothing
@@ -199,7 +199,7 @@ impl StreamConfig {
     /// AU is uninitialized, and an AU that clamps to its own maximum returns
     /// `noErr` while keeping a smaller figure. Recording the larger requested
     /// number then breaks
-    /// [`AuInstance::process`](crate::instance::AuInstance::process)'s
+    /// [`AuProcessor::render_f32`](crate::processor::AuProcessor::render_f32)'s
     /// `num_frames > block_size` guard in the dangerous direction — the render is
     /// admitted and the AU writes past buffers it sized for fewer frames.
     ///
@@ -210,7 +210,7 @@ impl StreamConfig {
     /// Called on both paths that write the property: every load, through
     /// [`AuLoaded`](crate::instance::AuLoaded)'s shared constructor tail, and
     /// every resize, through
-    /// [`AuInstance::set_block_size`](crate::instance::AuInstance::set_block_size).
+    /// an activation's block ceiling.
     /// The load path is the one a host cannot avoid taking.
     ///
     /// # Errors

@@ -13,10 +13,10 @@
 /// One factory preset the AU advertises: its selector and its display name.
 ///
 /// `number` is the value to hand back to
-/// [`AuInstance::load_factory_preset`](crate::instance::AuInstance::load_factory_preset).
+/// [`AuLoaded::load_factory_preset`](crate::instance::AuLoaded::load_factory_preset).
 /// It is an AU-assigned selector, not an index: presets are commonly numbered
 /// `0..n`, but the AU is free to number them sparsely, so never derive one from
-/// a position in the [`factory_presets`](crate::instance::AuInstance::factory_presets)
+/// a position in the [`factory_presets`](crate::instance::AuLoaded::factory_presets)
 /// vec.
 ///
 /// Plain `i32`/`String` and no unit newtype: a preset number is an opaque

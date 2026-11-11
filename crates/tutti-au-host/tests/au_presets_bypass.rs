@@ -282,7 +282,7 @@ fn loading_a_preset_changes_parameter_values() {
         "this test needs a unit with at least two presets and some parameters"
     );
 
-    let snapshot = |au: &tutti_au_host::AuInstance| -> Vec<f32> {
+    let snapshot = |au: &crate::support::au::Au| -> Vec<f32> {
         params
             .iter()
             .map(|p| au.get_parameter(p.id).expect("parameter is readable"))

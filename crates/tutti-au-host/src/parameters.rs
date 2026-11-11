@@ -15,7 +15,7 @@
 //! those through element 0 would collapse a whole mixer's per-channel strip
 //! onto a single control, which is why the `_at` functions take an element.
 //!
-//! LIMITATION (intentional): [`ParamView`] and [`crate::AuInstance`]'s
+//! LIMITATION (intentional): [`ParamView`] and [`crate::AuLoaded`]'s
 //! parameter methods stay global/element-0. They are the DAW-facing surface, and
 //! the DAW hosts effects and instruments, none of which put parameters anywhere
 //! else. A mixer-hosting caller reaches for the `_at` functions directly. That
@@ -398,7 +398,7 @@ impl std::fmt::Display for ParameterUnit {
 
 /// Lifetime-bounded view over the parameter state of an AU.
 ///
-/// Borrowed from [`crate::instance::AuInstance::parameters`]; the view is
+/// Borrowed from [`crate::instance::AuLoaded::parameters`]; the view is
 /// tied to the instance's lifetime so the raw `AudioUnit` pointer can't
 /// outlive its owner.
 pub struct ParamView<'a> {
@@ -596,7 +596,7 @@ pub fn info_at(unit: &Unit, addr: ParamAddress, param_id: u32) -> Result<AuParam
 /// names the value `range.min + i`.
 ///
 /// Empty is the "no value strings" answer, not an error, for the reason
-/// [`crate::instance::AuInstance::factory_presets`] returns an empty vec — the
+/// [`crate::instance::AuLoaded::factory_presets`] returns an empty vec — the
 /// property is optional and most parameters do not implement it, so a refusal and
 /// an empty list are the same answer to the caller's question.
 ///

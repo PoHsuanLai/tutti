@@ -7,5 +7,6 @@
 
 #![allow(dead_code)]
 
+pub mod au;
 pub mod corpus;
 pub mod probe_au;

@@ -411,7 +411,7 @@ fn an_unsupported_layout_is_refused_and_changes_nothing() {
 /// Called out separately from the tables because it is the finding a host author
 /// will otherwise hit as a bug report. Reading
 /// `supported_layout_tags` and setting an entry from it is the obvious thing to
-/// do, and at the width `AuInstance::new` picks it fails for every surround entry
+/// do, and at the width `Au::new` picks it fails for every surround entry
 /// — which looks exactly like the AU publishing tags it does not support.
 ///
 /// Both halves are asserted on the *same* tag and the *same* unit, so nothing but
@@ -815,7 +815,7 @@ fn third_party_element_names_read_repeatedly_without_leaking() {
         else {
             continue;
         };
-        let Ok(au) = tutti_au_host::AuInstance::new(info.component, RATE, BLOCK) else {
+        let Ok(au) = crate::support::au::Au::new(info.component, RATE, BLOCK) else {
             continue;
         };
         let dir = direction(*is_output);

@@ -18,7 +18,7 @@ use tutti_types::value::units::Seconds;
 ///
 /// # Why `Seconds` and not samples
 ///
-/// [`get_latency`](crate::instance::AuInstance::get_latency) converts the AU's
+/// [`get_latency`](crate::instance::AuLoaded::get_latency) converts the AU's
 /// seconds to samples because latency is consumed as a *delay-line length* —
 /// an integer count of frames to compensate. Tail is consumed as a *duration*:
 /// the offline bounce asks "how much longer do I keep rendering", and the
@@ -49,7 +49,7 @@ pub(crate) fn tail_time(unit: &Unit) -> crate::error::Result<Seconds> {
 /// Tells the AU how far *downstream* of it the listener is, on one bus.
 ///
 /// The direction is the opposite of every other latency call in this crate.
-/// [`tail_time`] and [`get_latency`](crate::instance::AuInstance::get_latency)
+/// [`tail_time`] and [`get_latency`](crate::instance::AuLoaded::get_latency)
 /// ask the AU what it costs the host; this tells the AU what the rest of the
 /// signal chain costs it. Apple's header: "This property is set by a host to
 /// describe to the audio unit the presentation latency of both any of its input
@@ -102,7 +102,7 @@ pub(crate) fn tail_time(unit: &Unit) -> crate::error::Result<Seconds> {
 /// the property is advisory — discards the `Result` deliberately at the call
 /// site. Absorbing it here would make the `Result` unable to be `Err` and every
 /// caller's handling unreachable, which is the bug
-/// [`get_latency`](crate::instance::AuInstance::get_latency) already carried
+/// [`get_latency`](crate::instance::AuLoaded::get_latency) already carried
 /// once.
 pub(crate) fn set_presentation_latency(
     unit: &Unit,

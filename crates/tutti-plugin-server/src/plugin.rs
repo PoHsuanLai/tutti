@@ -328,24 +328,7 @@ impl Plugin {
             #[cfg(feature = "clap")]
             Plugin::Clap(clap) => out.extend(clap.poll(main)),
             #[cfg(all(feature = "au", target_os = "macos"))]
-            Plugin::Au(au) => {
-                let changes = au.poll_changes();
-                if let Some(samples) = changes.latency {
-                    out.push(AsyncEvent::LatencyChanged { samples });
-                }
-                if let Some(tail) = changes.tail {
-                    out.push(AsyncEvent::TailChanged { tail });
-                }
-                // `ParamTitlesChanged`, not `ParamValuesChanged`:
-                // `kAudioUnitProperty_ParameterList` reports which parameters
-                // *exist*, so the client has to re-pull the list rather than
-                // re-read values against ids that may no longer be there. A
-                // value change on an unchanged list arrives on the parameter
-                // listener path instead.
-                if changes.param_list_changed {
-                    out.push(AsyncEvent::ParamTitlesChanged);
-                }
-            }
+            Plugin::Au(au) => out.extend(au.poll(main)),
             #[allow(unreachable_patterns)]
             // Unreachable only when every format feature is on; partial builds need it.
             _ => {}
@@ -550,27 +533,22 @@ mod tests {
     ///
     /// Without a `Plugin::Au` arm in `poll_async_events` the match falls through
     /// `_ => {}`, and an AU that changes its latency on a mode switch leaves PDC
-    /// compensating the load-time figure permanently — with the `AUEventListener`
-    /// machinery carrying the signal working perfectly and nobody reading it.
+    /// compensating the load-time figure permanently, with the property listener
+    /// carrying the signal and nobody reading it.
     ///
-    /// The flags are raised directly rather than by making a plugin move its
+    /// The requests are raised directly rather than by making a plugin move its
     /// latency, which is the same fixture `a_clap_tail_change_reaches_the_event_list`
     /// uses and for the same reason: what is under test here is the *wiring*
-    /// from flag to `AsyncEvent`, and nothing installed on this machine changes
-    /// its latency on request. The listener half — that a real
-    /// `kAudioUnitProperty_Latency` notification raises the flag — is pinned
-    /// separately in `tutti-au-host`'s `au_property_watch.rs`, against a probe
-    /// that can post one.
-    ///
-    /// A missing listener fails the test rather than skipping it: `poll_changes`
-    /// returns an empty result when `watch` is `None`, so a silent skip would
-    /// make every assertion below vacuous. That is the *listener*, though — a
-    /// missing **plugin** is a machine fact and skips, per [`au_fixture`].
+    /// from request to `AsyncEvent`, and nothing installed on this machine changes
+    /// its latency on request. The listener half (a real
+    /// `kAudioUnitProperty_Latency` notification raises the request) is pinned
+    /// in `tutti-au-host`'s `au_property_watch.rs`, against a probe that can post
+    /// one.
     #[cfg(all(feature = "au", target_os = "macos"))]
     #[test]
     fn an_au_property_change_reaches_the_event_list() {
         use crate::loaders::au::AuInstance;
-        use std::sync::atomic::Ordering;
+        use tutti_plugin_types::{Request, RescanScope};
 
         let _lock = crate::test_utils::plugin_load_lock();
         let Some(fixture) = au_fixture() else {
@@ -581,15 +559,13 @@ mod tests {
         let mut plugin = Plugin::Au(instance);
 
         // Nothing pending: the drain must be empty, or the assertions below
-        // would pass on a stuck flag rather than on the ones raised here.
+        // would pass on a stuck request rather than on the ones raised here.
         assert!(
             plugin.poll_async_events(&main_thread()).is_empty(),
             "a freshly loaded plugin reported an async event nobody raised"
         );
 
-        // The `Arc` is cloned rather than borrowed so the flag writes and the
-        // drain below do not overlap a borrow of `plugin`.
-        let flags = {
+        {
             // `Plugin`'s variants are each feature-gated, so an `au`-only build
             // leaves one and clippy can prove the `else` dead. It is not dead in
             // any multi-format build, and deleting it would make this test stop
@@ -598,14 +574,11 @@ mod tests {
             let Plugin::Au(au) = &mut plugin else {
                 unreachable!("constructed as Au immediately above")
             };
-            std::sync::Arc::clone(au.property_flags().expect(
-                "the AU property listener was not installed, so every assertion \
-                 below would pass against a host that noticed nothing",
-            ))
-        };
-        flags.latency.store(true, Ordering::Release);
-        flags.tail.store(true, Ordering::Release);
-        flags.param_list.store(true, Ordering::Release);
+            let requests = au.requests_for_test();
+            Request::LatencyChanged.raise(&requests);
+            Request::TailChanged.raise(&requests);
+            Request::RescanParams(RescanScope::Info).raise(&requests);
+        }
 
         let events = plugin.poll_async_events(&main_thread());
         assert!(
@@ -628,12 +601,12 @@ mod tests {
              got {events:?}"
         );
 
-        // All three flags are consumed, so a second drain is quiet — an event
-        // that re-fired every block would spam the host with resyncs, and a
-        // latency event does a PDC re-plan each time.
+        // All three are consumed, so a second drain is quiet: an event that
+        // re-fired every block would spam the host with resyncs, and a latency
+        // event does a PDC re-plan each time.
         assert!(
             plugin.poll_async_events(&main_thread()).is_empty(),
-            "the change flags were not cleared by the drain"
+            "the requests were not cleared by the drain"
         );
     }
 
@@ -649,8 +622,8 @@ mod tests {
     #[test]
     fn an_au_latency_poll_refreshes_the_cached_metadata() {
         use crate::loaders::au::AuInstance;
-        use std::sync::atomic::Ordering;
         use tutti_plugin::server::PluginMeta;
+        use tutti_plugin_types::Request;
 
         let _lock = crate::test_utils::plugin_load_lock();
         let Some(fixture) = au_fixture() else {
@@ -659,36 +632,39 @@ mod tests {
         let mut au = AuInstance::load(&main_thread(), Path::new(&fixture), 44100.0, 512)
             .expect("the AU fixture resolved but would not load");
 
-        let flags = std::sync::Arc::clone(
-            au.property_flags()
-                .expect("the AU property listener was not installed"),
-        );
         // Poison the cache before polling. Without this the test cannot fail:
         // no installed AU changes its latency on request, so `loaded()` and the
         // re-read both return the load-time figure and agree whether or not the
-        // refresh happened. Deleting the refresh line survives this test without
-        // the poisoning — verified by mutation.
+        // refresh happened.
         let real_latency = au.loaded().latency_samples;
         au.poison_cached_latency(Samples(real_latency.0 + 1234));
 
-        flags.latency.store(true, Ordering::Release);
-        flags.tail.store(true, Ordering::Release);
+        let requests = au.requests_for_test();
+        Request::LatencyChanged.raise(&requests);
+        Request::TailChanged.raise(&requests);
 
-        let changes = au.poll_changes();
-        let reported_latency = changes
-            .latency
-            .expect("a raised latency flag must produce a re-read");
-        let reported_tail = changes
-            .tail
-            .expect("a raised tail flag must produce a re-read");
+        let events = au.poll(&main_thread());
+        let reported_latency = events
+            .iter()
+            .find_map(|e| match e {
+                AsyncEvent::LatencyChanged { samples } => Some(*samples),
+                _ => None,
+            })
+            .expect("a raised latency request must produce a re-read");
+        let reported_tail = events
+            .iter()
+            .find_map(|e| match e {
+                AsyncEvent::TailChanged { tail } => Some(*tail),
+                _ => None,
+            })
+            .expect("a raised tail request must produce a re-read");
 
-        // The re-read must report the AU's real figure, not the poisoned one —
-        // otherwise `poll_changes` echoed the cache instead of asking the unit.
+        // The re-read must report the AU's real figure, not the poisoned one:
+        // otherwise the poll echoed the cache instead of asking the unit.
         assert_eq!(
             reported_latency, real_latency,
             "the emitted latency must come from a fresh read, not the cache"
         );
-
         assert_eq!(
             au.loaded().latency_samples,
             reported_latency,

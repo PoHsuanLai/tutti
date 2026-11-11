@@ -23,7 +23,7 @@
 use std::sync::Mutex;
 
 use tutti_au_host::AuEditor;
-use tutti_au_host::AuInstance;
+use crate::support::au::Au;
 use tutti_au_host::types::K_AUDIO_UNIT_ERR_INVALID_PROPERTY;
 use tutti_au_host::AuError;
 
@@ -55,10 +55,10 @@ const BLOCK: u32 = 512;
 /// on this machine instantiate headless.
 ///
 /// # Safety
-/// `au` must be a live, initialized `AuInstance`, and the caller must be on the
+/// `au` must be a live, initialized `Au`, and the caller must be on the
 /// macOS main thread — which is the whole point of the `harness = false`
 /// runner.
-unsafe fn open_headless(au: &AuInstance) -> tutti_au_host::Result<AuEditor> {
+unsafe fn open_headless(au: &Au) -> tutti_au_host::Result<AuEditor> {
     // The size the host would like; a plugin is free to ignore it. 800×600 is
     // what this crate hardcoded before the parameter existed, kept here so
     // these tests exercise the same request they always did.
@@ -73,7 +73,7 @@ unsafe fn open_headless(au: &AuInstance) -> tutti_au_host::Result<AuEditor> {
 ///
 /// Absence of an AU is a hard failure (see `support/corpus.rs`); this keeps
 /// that rule on the editor path too.
-fn ready(unit: &AuRef) -> AuInstance {
+fn ready(unit: &AuRef) -> Au {
     unit.open(RATE, BLOCK)
 }
 

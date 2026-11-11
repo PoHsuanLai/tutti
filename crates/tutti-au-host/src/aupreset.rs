@@ -8,7 +8,7 @@
 //!
 //! ## Why this module exists rather than reusing `get_state`/`set_state`
 //!
-//! [`AuInstance::get_state`](crate::instance::AuInstance::get_state) already
+//! [`AuLoaded::get_state`](crate::instance::AuLoaded::get_state) already
 //! returns the `ClassInfo` dictionary as a binary plist, and that is *almost* the
 //! file format. Two things separate them: the identity keys must be populated
 //! from the AU's own component description, not from anything the caller
@@ -60,7 +60,7 @@
 //! [`read_preset_metadata`] parses the identity and name and stops. A preset
 //! browser lists hundreds of files and must not instantiate an AU per row, let
 //! alone push state into a live one — so listing is a free function that never
-//! touches an `AuInstance`.
+//! touches an `AuLoaded`.
 
 #![cfg(target_os = "macos")]
 
@@ -126,7 +126,7 @@ impl AuPresetIdentity {
 /// Reads a `.aupreset`'s identity and name **without applying it** to any AU.
 ///
 /// This is what a preset browser lists from. It deliberately takes a path rather
-/// than an `AuInstance`: a browser scanning a preset folder has hundreds of files
+/// than an `AuLoaded`: a browser scanning a preset folder has hundreds of files
 /// and no reason to instantiate a plugin per row, and pushing state into a live
 /// AU merely to read its label would be a side effect a listing must not have.
 ///
@@ -163,7 +163,7 @@ pub fn read_preset_metadata(path: &Path) -> Result<AuPresetIdentity> {
 /// # Safety
 /// `unit` must be a live `AudioUnit` and `component` the `AudioComponent` it was
 /// instantiated from. Both are dereferenced by AudioToolbox during the call. Prefer
-/// [`AuInstance::save_preset_file`](crate::instance::AuInstance::save_preset_file),
+/// [`AuLoaded::save_preset_file`](crate::instance::AuLoaded::save_preset_file),
 /// which supplies both from an owned instance and so cannot get them wrong.
 ///
 /// # Errors
@@ -225,7 +225,7 @@ pub fn save_preset_file(
 /// # Safety
 /// As [`save_preset_file`]: `unit` must be a live `AudioUnit` and `component` the
 /// `AudioComponent` it was instantiated from. Prefer
-/// [`AuInstance::load_preset_file`](crate::instance::AuInstance::load_preset_file),
+/// [`AuLoaded::load_preset_file`](crate::instance::AuLoaded::load_preset_file),
 /// which supplies both from an owned instance and additionally issues the
 /// parameter-change notification an open editor needs.
 ///

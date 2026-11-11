@@ -953,7 +953,7 @@ fn scheduling_does_not_validate_the_parameter_id() {
 /// An empty event slice must be a no-op that never reaches AudioToolbox.
 ///
 /// A host draining an empty automation queue does this every block on the audio
-/// thread. Asserted through the public `AuInstance` path as well as the module's
+/// thread. Asserted through the public `Au` path as well as the module's
 /// own unit test, because this is the shape a caller actually uses.
 #[test]
 fn scheduling_an_empty_batch_is_a_no_op() {
@@ -998,11 +998,7 @@ fn render_info_with_schedule(
 
 /// Shared body: install a notify that schedules `event` on every pre-render,
 /// render one block of 0.5 DC, and return the channel-0 envelope.
-fn schedule_one_block(
-    au: &mut tutti_au_host::AuInstance,
-    param: u32,
-    event: ParamEvent,
-) -> Vec<f32> {
+fn schedule_one_block(au: &mut crate::support::au::Au, param: u32, event: ParamEvent) -> Vec<f32> {
     let unit = au.render_unit();
     let notify = au
         .add_render_notify(move |n| {

@@ -39,7 +39,7 @@ all = ["vst3", "clap", "au"]
 # other end (the host's is the same crate).
 tutti-plugin-ipc = { path = "../tutti-plugin-ipc" }
 # The shared bundle-layout walk (`bundle::any_module_in_bundle`). Direct rather
-# than reached through `tutti-plugin`, because this is a dependency in its own
+# than reached through the wire crate, because this is a dependency in its own
 # right and a re-export would hide that.
 tutti-plugin-types = { path = "../tutti-plugin-types" }
 

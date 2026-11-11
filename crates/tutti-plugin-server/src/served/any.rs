@@ -2,7 +2,7 @@
 //!
 //! A row is a variant, the format's [`Loaded`](tutti_plugin_types::Loaded)
 //! type, and the extension its files carry. The row's type is the argument of
-//! [`Served`](super::Served), which is bounded by
+//! [`Served`], which is bounded by
 //! [`OutOfProcess`](tutti_plugin_types::OutOfProcess) (through
 //! [`ServerSide`](super::ServerSide)), so a row for a format that cannot be
 //! served from another process (VST2: its `AEffect` fuses editor and audio,

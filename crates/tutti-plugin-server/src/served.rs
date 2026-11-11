@@ -3,10 +3,10 @@
 //! The host crate of each format is the interpreter of its plugin's lifecycle
 //! (activation, restarts, requests). This is the server's one shell over them:
 //! it loads through [`OutOfProcess::load_served`], activates through
-//! [`Loaded::activate`] into the realtime [`Processor`] and the main-thread
+//! [`Loaded::activate`](tutti_plugin_types::Loaded::activate) into the realtime [`Processor`] and the main-thread
 //! [`Controller`](tutti_plugin_types::Controller), and runs both through
 //! [`Lifecycle`], so a format is a type argument and a row of the
-//! [`served!`](crate::served!) table, not a loader.
+//! `served!` table, not a loader.
 //!
 //! What the formats still differ in, that only this process does, is
 //! [`ServerSide`]'s.
@@ -63,7 +63,7 @@ pub(crate) trait Render {
 /// What the session asks of the loaded plugin, with its format erased.
 ///
 /// Object-safe, implemented by [`Served<F>`] alone; the
-/// [`served!`](crate::served!) table's enum lends it as a trait object.
+/// `served!` table's enum lends it as a trait object.
 pub(crate) trait ServedPlugin: Render {
     /// The plugin's catalog identity.
     fn descriptor(&self) -> &PluginDescriptor;
@@ -573,7 +573,7 @@ impl<F: ServerSide> ServedPlugin for Served<F> {
     }
 
     /// A format that takes the mode live (CLAP's `render.set`, VST2's callback)
-    /// is told through [`Control::set_render_mode`]; one that reads it only at
+    /// is told through [`Control::set_render_mode`](tutti_plugin_types::Control::set_render_mode); one that reads it only at
     /// activation (VST3's `setupProcessing`, AU's `AudioUnitInitialize`) is
     /// activated again in the mode, keeping its instance and state. A refusal
     /// is rolled back to the mode the plugin was running in, and answers

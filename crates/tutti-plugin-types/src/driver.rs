@@ -47,7 +47,7 @@ impl<P> Hand<P> {
 
     /// The end for a user that renders on a realtime thread, and that
     /// thread's end, which polls between blocks ([`tutti_rt::Rt::poll`], with
-    /// [`Processor::stop`] as its last step).
+    /// [`Processor::stop`](crate::Processor::stop) as its last step).
     #[must_use]
     pub fn threaded() -> (Self, tutti_rt::Rt<P>)
     where

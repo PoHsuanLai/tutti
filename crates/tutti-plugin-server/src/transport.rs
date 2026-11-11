@@ -1,7 +1,7 @@
 //! IPC transport — sync wire framing for host↔server message pairs.
 //!
 //! Framing: u32 big-endian length prefix + postcard payload. The payload's
-//! schema and its version constant are `tutti_plugin::server`'s; this module
+//! schema and its version constant are `tutti_plugin_ipc`'s; this module
 //! only moves bytes.
 //!
 //! The other duty here is **not outliving the host**. A subprocess parked in

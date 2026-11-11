@@ -56,7 +56,7 @@ pub enum HostMessage {
         path: PathBuf,
         /// Which plugin of the file to load, when it exports several (a CLAP
         /// plugin id, a VST3 class name, an AU descriptor id): the same
-        /// [`Load`](tutti_plugin_types::Load) the server hands its format's
+        /// [`Load`] the server hands its format's
         /// `OutOfProcess::load_served`. The file's first plugin when it chooses
         /// none; a format whose files hold one refuses a choice.
         load: Load,

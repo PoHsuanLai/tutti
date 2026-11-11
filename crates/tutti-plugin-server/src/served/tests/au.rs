@@ -272,7 +272,7 @@ fn test_au_parameter_list_via_trait() {
     let params = au.parameters(&main_thread());
     assert!(
         !params.is_empty(),
-        "AUDelay should have parameters via PluginInstance trait"
+        "AUDelay should have parameters through `ServedPlugin`"
     );
 }
 
@@ -459,7 +459,7 @@ fn a_unit_without_the_callbacks_is_not_published_to() {
     assert!(au.loaded_ref().and_then(|l| l.transport()).is_none());
 }
 
-/// The live half of the direct path: `PluginParams` is normalized for every
+/// The live half of the direct path: `Control::parameter` is normalized for every
 /// format, so a write of `1.0` must reach AUDelay's cutoff as 22050 Hz and
 /// read back as `1.0`, not as the 1 Hz that writing the normalized value
 /// straight through would set.
@@ -516,7 +516,7 @@ fn test_au_state_roundtrip_via_trait() {
 ///
 /// Full-scale automation must land on the parameter's declared MAXIMUM, not
 /// on `1.0` (the denormalization), and `get_parameter` must answer `1.0`
-/// rather than the maximum (the `PluginParams` contract, normalized for every
+/// rather than the maximum (the `Control` contract, normalized for every
 /// format). Both directions in one test because either alone can pass while
 /// the pair is inconsistent.
 #[test]

@@ -207,7 +207,7 @@ pub(crate) struct AudioPipeline {
     buffers: AudioBuffers,
     /// The plugin's non-audio outputs for the current block.
     ///
-    /// Owned here, and handed to `PluginAudio::process` as an out-parameter,
+    /// Owned here, and handed to `Render::render` as an out-parameter,
     /// so its storage persists across blocks. A loader that copies
     /// out of a borrowing `ProcessOutputRef` copies into *this*, which is what
     /// makes the copy allocation-free once warm.

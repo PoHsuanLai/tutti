@@ -99,7 +99,7 @@ struct Pending {
 /// # #[derive(Clone)]
 /// # struct Dc(f32);
 /// # impl Node for Dc {
-/// #     fn shape(&self) -> Shape { Shape::source_discrete(ChannelLayout::MONO) }
+/// #     fn shape(&self) -> Shape { Shape::source_unassigned(ChannelLayout::MONO) }
 /// #     fn prepare(&mut self, _: &Prepare) {}
 /// #     fn process(&mut self, _: &Cx<'_>, mut io: Io<'_>) -> Status {
 /// #         let (_, mut outs) = io.split();
@@ -132,7 +132,7 @@ struct Pending {
 /// # #[derive(Clone)]
 /// # struct Gain(f32);
 /// # impl Node for Gain {
-/// #     fn shape(&self) -> Shape { Shape::through_discrete(ChannelLayout::MONO) }
+/// #     fn shape(&self) -> Shape { Shape::through_unassigned(ChannelLayout::MONO) }
 /// #     fn prepare(&mut self, _: &Prepare) {}
 /// #     fn process(&mut self, _: &Cx<'_>, mut io: Io<'_>) -> Status {
 /// #         let (ins, mut outs) = io.split();
@@ -736,7 +736,7 @@ type TransportFn = Box<dyn FnMut(Frame) -> Transport + Send>;
 /// # #[derive(Clone)]
 /// # struct Gain(f32);
 /// # impl Node for Gain {
-/// #     fn shape(&self) -> Shape { Shape::through_discrete(ChannelLayout::MONO) }
+/// #     fn shape(&self) -> Shape { Shape::through_unassigned(ChannelLayout::MONO) }
 /// #     fn prepare(&mut self, _: &Prepare) {}
 /// #     fn process(&mut self, _: &Cx<'_>, mut io: Io<'_>) -> Status {
 /// #         let (ins, mut outs) = io.split();
@@ -983,7 +983,7 @@ impl Renderer {
 /// # #[derive(Clone)]
 /// # struct Half;
 /// # impl Node for Half {
-/// #     fn shape(&self) -> Shape { Shape::through_discrete(ChannelLayout::MONO) }
+/// #     fn shape(&self) -> Shape { Shape::through_unassigned(ChannelLayout::MONO) }
 /// #     fn prepare(&mut self, _: &Prepare) {}
 /// #     fn process(&mut self, _: &Cx<'_>, mut io: Io<'_>) -> Status {
 /// #         let (ins, mut outs) = io.split();

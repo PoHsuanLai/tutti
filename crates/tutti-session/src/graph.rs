@@ -2637,7 +2637,7 @@ impl Graph {
         } else if channels > tutti_graph::MAX_ROOT_CHANNELS {
             Some(tutti_types::FoldError::Unplaced {
                 channel: tutti_graph::MAX_ROOT_CHANNELS,
-                speaker: tutti_types::Speaker::Discrete,
+                speaker: tutti_types::Speaker::Unassigned,
             })
         } else {
             None

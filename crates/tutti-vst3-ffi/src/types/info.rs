@@ -167,7 +167,7 @@ impl Vst3ParameterInfo {
         self.flags.contains(ParameterFlags::IS_BYPASS)
     }
 
-    /// True if the parameter is a discrete list (`kIsList`): its `stepCount`
+    /// True if the parameter is an unassigned list (`kIsList`): its `stepCount`
     /// positions have names the plugin gives through `getParamStringByValue`.
     #[must_use]
     pub fn is_list(&self) -> bool {
@@ -218,7 +218,7 @@ bitflags::bitflags! {
         const IS_READ_ONLY = ParameterFlags_::kIsReadOnly;
         /// Parameter wraps around at its extremes (e.g. phase).
         const IS_WRAP = ParameterFlags_::kIsWrapAround;
-        /// Parameter is a discrete list (maps to `stepCount` entries).
+        /// Parameter is an unassigned list (maps to `stepCount` entries).
         const IS_LIST = ParameterFlags_::kIsList;
         /// Parameter should be hidden from host UI.
         const IS_HIDDEN = ParameterFlags_::kIsHidden;

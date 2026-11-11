@@ -18,7 +18,7 @@ pub const MAX_BUS_CHANNELS: usize = 16;
 /// as for any empty topology.
 ///
 /// `new` refuses a list wider than a bus can hold; it never truncates. The
-/// slots past the length are always [`Speaker::Discrete`], so the derived
+/// slots past the length are always [`Speaker::Unassigned`], so the derived
 /// equality compares the bus and nothing else.
 ///
 /// ```
@@ -27,7 +27,7 @@ pub const MAX_BUS_CHANNELS: usize = 16;
 /// let stereo = BusTopology::new([Speaker::FrontLeft, Speaker::FrontRight]).unwrap();
 /// assert_eq!(stereo.layout(), ChannelLayout::STEREO);
 /// assert_eq!(ChannelTopology::from(stereo), ChannelTopology::smpte(ChannelLayout::STEREO).unwrap());
-/// assert!(BusTopology::new([Speaker::Discrete; 17]).is_none());
+/// assert!(BusTopology::new([Speaker::Unassigned; 17]).is_none());
 /// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct BusTopology {
@@ -58,7 +58,7 @@ impl BusTopology {
     /// A bus with no channels.
     pub const EMPTY: Self = Self {
         len: 0,
-        speakers: [Speaker::Discrete; MAX_BUS_CHANNELS],
+        speakers: [Speaker::Unassigned; MAX_BUS_CHANNELS],
     };
 
     /// A stereo pair: front left, front right.
@@ -84,7 +84,7 @@ impl BusTopology {
     /// [`MAX_BUS_CHANNELS`]. A width is not a placement: this is the bus a
     /// node that states only a count has.
     #[must_use]
-    pub const fn discrete(width: ChannelLayout) -> Option<Self> {
+    pub const fn unassigned(width: ChannelLayout) -> Option<Self> {
         if width.count() as usize > MAX_BUS_CHANNELS {
             return None;
         }
@@ -131,22 +131,25 @@ mod tests {
     /// bus and 17 is refused with its width, and the round trip through
     /// `ChannelTopology` is the identity.
     ///
-    /// Mutations (run): `>=` for `>` in `discrete` fails the width-16 line;
+    /// Mutations (run): `>=` for `>` in `unassigned` fails the width-16 line;
     /// `Self::new` truncating instead of `?` fails the 17 refusal.
     #[test]
     fn a_bus_holds_sixteen_channels_and_refuses_more() {
-        let sixteen = ChannelTopology::discrete(ChannelLayout::from(16u16));
+        let sixteen = ChannelTopology::unassigned(ChannelLayout::from(16u16));
         let bus = BusTopology::try_from(&sixteen).unwrap();
         assert_eq!(bus.layout().count(), 16);
         assert_eq!(ChannelTopology::from(bus), sixteen);
-        assert_eq!(BusTopology::discrete(ChannelLayout::from(16u16)), Some(bus));
+        assert_eq!(
+            BusTopology::unassigned(ChannelLayout::from(16u16)),
+            Some(bus)
+        );
 
-        let seventeen = ChannelTopology::discrete(ChannelLayout::from(17u16));
+        let seventeen = ChannelTopology::unassigned(ChannelLayout::from(17u16));
         assert_eq!(
             BusTopology::try_from(&seventeen),
             Err(BusTooWide { width: 17 })
         );
-        assert_eq!(BusTopology::discrete(ChannelLayout::from(17u16)), None);
+        assert_eq!(BusTopology::unassigned(ChannelLayout::from(17u16)), None);
     }
 
     /// Placement survives, and the slots past the length do not leak into
@@ -159,12 +162,12 @@ mod tests {
         use Speaker::*;
         let a = BusTopology::new([FrontRight, FrontLeft]).unwrap();
         assert_eq!(a.positions(), &[FrontRight, FrontLeft]);
-        let wide = BusTopology::new([FrontRight, FrontLeft, Discrete]).unwrap();
+        let wide = BusTopology::new([FrontRight, FrontLeft, Unassigned]).unwrap();
         assert_ne!(a, wide);
         assert_eq!(BusTopology::new([]).unwrap(), BusTopology::EMPTY);
         assert_eq!(
-            BusTopology::discrete(ChannelLayout::STEREO),
-            BusTopology::new([Discrete, Discrete])
+            BusTopology::unassigned(ChannelLayout::STEREO),
+            BusTopology::new([Unassigned, Unassigned])
         );
     }
 }

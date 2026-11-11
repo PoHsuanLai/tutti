@@ -33,7 +33,7 @@ struct Probe {
 
 impl Node for Probe {
     fn shape(&self) -> Shape {
-        Shape::source_discrete(ChannelLayout::MONO)
+        Shape::source_unassigned(ChannelLayout::MONO)
             .with_events(1, 0)
             .with_tail(Tail::Unknown)
     }
@@ -413,7 +413,7 @@ struct Impulse(Arc<Mutex<Vec<(u64, u32)>>>);
 
 impl Node for Impulse {
     fn shape(&self) -> Shape {
-        Shape::through_discrete(ChannelLayout::MONO)
+        Shape::through_unassigned(ChannelLayout::MONO)
             .with_events(1, 0)
             .with_tail(Tail::Unknown)
     }

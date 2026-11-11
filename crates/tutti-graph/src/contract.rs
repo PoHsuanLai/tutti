@@ -1332,7 +1332,7 @@ impl ParamEcho {
 
 impl Node for ParamEcho {
     fn shape(&self) -> Shape {
-        Shape::through_discrete(ChannelLayout::MONO).with_param_addrs(&[self.param])
+        Shape::through_unassigned(ChannelLayout::MONO).with_param_addrs(&[self.param])
     }
 
     fn prepare(&mut self, _: &Prepare) {}
@@ -1408,7 +1408,7 @@ impl Pulse {
 
 impl Node for Pulse {
     fn shape(&self) -> Shape {
-        Shape::source_discrete(ChannelLayout::MONO)
+        Shape::source_unassigned(ChannelLayout::MONO)
             .with_events(1, 0)
             .with_latency(self.latency)
             .with_tail(tutti_types::Tail::Unknown)
@@ -1485,7 +1485,7 @@ impl Lookahead {
 
 impl Node for Lookahead {
     fn shape(&self) -> Shape {
-        Shape::through_discrete(ChannelLayout::MONO)
+        Shape::through_unassigned(ChannelLayout::MONO)
             .with_latency(self.latency)
             // Pure delay: nothing rings once the latency is compensated.
             .with_tail(tutti_types::Tail::None)
@@ -1530,7 +1530,7 @@ impl Latent {
 
 impl Node for Latent {
     fn shape(&self) -> Shape {
-        Shape::source_discrete(ChannelLayout::MONO)
+        Shape::source_unassigned(ChannelLayout::MONO)
             .with_events(0, 1)
             .with_latency(self.latency)
     }
@@ -1689,8 +1689,8 @@ pub struct Sum;
 impl Node for Sum {
     fn shape(&self) -> Shape {
         Shape::buses(
-            crate::Buses::discrete(ChannelLayout::STEREO),
-            crate::Buses::discrete(ChannelLayout::MONO),
+            crate::Buses::unassigned(ChannelLayout::STEREO),
+            crate::Buses::unassigned(ChannelLayout::MONO),
         )
     }
 

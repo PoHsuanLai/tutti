@@ -80,7 +80,7 @@ struct Clocked;
 
 impl Node for Clocked {
     fn shape(&self) -> Shape {
-        Shape::source_discrete(ChannelLayout::from_count(3)).with_tail(Tail::Unbounded)
+        Shape::source_unassigned(ChannelLayout::from_count(3)).with_tail(Tail::Unbounded)
     }
     fn prepare(&mut self, _: &Prepare) {}
     fn process(&mut self, cx: &Cx<'_>, mut io: Io<'_>) -> Status {
@@ -106,7 +106,7 @@ struct Gate {
 
 impl Node for Gate {
     fn shape(&self) -> Shape {
-        Shape::source_discrete(ChannelLayout::MONO).with_tail(Tail::Unbounded)
+        Shape::source_unassigned(ChannelLayout::MONO).with_tail(Tail::Unbounded)
     }
     fn prepare(&mut self, _: &Prepare) {}
     fn process(&mut self, cx: &Cx<'_>, mut io: Io<'_>) -> Status {
@@ -129,7 +129,7 @@ struct NoteLog(Arc<Mutex<Vec<u64>>>);
 
 impl Node for NoteLog {
     fn shape(&self) -> Shape {
-        Shape::source_discrete(ChannelLayout::MONO)
+        Shape::source_unassigned(ChannelLayout::MONO)
             .with_events(1, 0)
             .with_tail(Tail::Unbounded)
     }
@@ -156,7 +156,7 @@ struct Surround {
 
 impl Node for Surround {
     fn shape(&self) -> Shape {
-        Shape::source_discrete(
+        Shape::source_unassigned(
             ChannelLayout::try_from(self.channels).expect("a test width is small"),
         )
         .with_tail(Tail::Unbounded)
@@ -402,7 +402,7 @@ struct DcLog(Arc<Mutex<Vec<(u64, f64, bool)>>>);
 
 impl Node for DcLog {
     fn shape(&self) -> Shape {
-        Shape::source_discrete(ChannelLayout::MONO).with_tail(Tail::Unbounded)
+        Shape::source_unassigned(ChannelLayout::MONO).with_tail(Tail::Unbounded)
     }
     fn prepare(&mut self, _: &Prepare) {}
     fn process(&mut self, cx: &Cx<'_>, mut io: Io<'_>) -> Status {
@@ -424,7 +424,7 @@ struct RecLog(Arc<Mutex<Vec<(bool, bool)>>>);
 
 impl Node for RecLog {
     fn shape(&self) -> Shape {
-        Shape::source_discrete(ChannelLayout::MONO).with_tail(Tail::Unbounded)
+        Shape::source_unassigned(ChannelLayout::MONO).with_tail(Tail::Unbounded)
     }
     fn prepare(&mut self, _: &Prepare) {}
     fn process(&mut self, cx: &Cx<'_>, _: Io<'_>) -> Status {
@@ -1198,7 +1198,7 @@ fn the_published_playhead_is_the_closed_form_over_ten_minutes() {
     struct FirstBeat(Arc<Mutex<f64>>);
     impl Node for FirstBeat {
         fn shape(&self) -> Shape {
-            Shape::source_discrete(ChannelLayout::MONO).with_tail(Tail::Unbounded)
+            Shape::source_unassigned(ChannelLayout::MONO).with_tail(Tail::Unbounded)
         }
         fn prepare(&mut self, _: &Prepare) {}
         fn process(&mut self, cx: &Cx<'_>, mut io: Io<'_>) -> Status {

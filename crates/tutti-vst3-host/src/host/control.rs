@@ -369,7 +369,7 @@ impl Control for Vst3Loaded {
         }
         let normalized = self.parameter(main, param_id)?.get();
         // Inverse of the write: `FromNormalized` is `value * stepCount`, then
-        // rounded; the parameter is a discrete list, so a value between two
+        // rounded; the parameter is an unassigned list, so a value between two
         // steps belongs to the nearer one.
         let index = (normalized * f64::from(step_count)).round();
         if !index.is_finite() || index < 0.0 {

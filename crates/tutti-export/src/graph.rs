@@ -58,7 +58,7 @@ impl Setup {
     }
 
     /// States what the graph's output channels are, for the fold to the file:
-    /// [`ChannelTopology::discrete`] for independent buses, a named topology
+    /// [`ChannelTopology::unassigned`] for independent buses, a named topology
     /// for speaker feeds. `None` (the default) is the engine's order for the
     /// width, as for a live graph that declared nothing.
     ///

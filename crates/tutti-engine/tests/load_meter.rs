@@ -29,7 +29,7 @@ struct Spin {
 
 impl tutti_graph::Node for Spin {
     fn shape(&self) -> tutti_graph::Shape {
-        tutti_graph::Shape::source_discrete(ChannelLayout::MONO)
+        tutti_graph::Shape::source_unassigned(ChannelLayout::MONO)
     }
     fn prepare(&mut self, _: &tutti_graph::Prepare) {}
     fn process(
@@ -149,7 +149,7 @@ struct Burst {
 
 impl tutti_graph::Node for Burst {
     fn shape(&self) -> tutti_graph::Shape {
-        tutti_graph::Shape::source_discrete(ChannelLayout::MONO).with_events(0, 1)
+        tutti_graph::Shape::source_unassigned(ChannelLayout::MONO).with_events(0, 1)
     }
     fn prepare(&mut self, _: &tutti_graph::Prepare) {}
     fn process(

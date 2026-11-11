@@ -1030,7 +1030,7 @@ mod tests {
     use tutti_types::{ChannelLayout, Latency};
 
     fn shape(latency: usize) -> Shape {
-        Shape::through_discrete(ChannelLayout::MONO).with_latency(Latency::new(Samples(latency)))
+        Shape::through_unassigned(ChannelLayout::MONO).with_latency(Latency::new(Samples(latency)))
     }
 
     /// A unit of `shape` at `mix`, steady Active, after the block's snapshot.

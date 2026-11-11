@@ -154,7 +154,7 @@ impl Node for DistortionNode {
             ShapeKind::Softsign | ShapeKind::HardClip => tutti_graph::Cost::Light,
             _ => tutti_graph::Cost::Moderate,
         };
-        Shape::through_discrete(width)
+        Shape::through_unassigned(width)
             .with_cost(cost)
             .with_tail(Tail::None)
             .with_params(&DISTORTION_PARAMS)

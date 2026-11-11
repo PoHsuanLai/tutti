@@ -37,7 +37,7 @@ struct Scale(f32);
 
 impl Node for Scale {
     fn shape(&self) -> Shape {
-        Shape::through_discrete(ChannelLayout::STEREO)
+        Shape::through_unassigned(ChannelLayout::STEREO)
     }
     fn prepare(&mut self, _: &Prepare) {}
     fn process(&mut self, _: &Cx<'_>, mut io: Io<'_>) -> Status {
@@ -416,7 +416,7 @@ fn a_tap_that_cannot_be_placed_is_a_named_error() {
             Output::master(wav(&dir.path().join("m.wav"), Pcm::Int16)),
             Output::tap(
                 narrow,
-                Placement::new(ChannelTopology::discrete(ChannelLayout::from(3u16))),
+                Placement::new(ChannelTopology::unassigned(ChannelLayout::from(3u16))),
                 wav(&dir.path().join("b.wav"), Pcm::Int16),
             ),
         ],
@@ -450,9 +450,9 @@ fn a_placement_the_target_cannot_take_is_a_target_error_and_leaves_nothing() {
             Output::master(wav(&dir.path().join("m.wav"), Pcm::Int16)),
             Output::tap(
                 reader,
-                // Two discrete feeds onto a mono file: discrete channels are
+                // Two unassigned feeds onto a mono file: unassigned channels are
                 // not downmixed, so there is no place for them.
-                Placement::new(ChannelTopology::discrete(ChannelLayout::STEREO)),
+                Placement::new(ChannelTopology::unassigned(ChannelLayout::STEREO)),
                 FileTarget::new(
                     dir.path().join("t.wav"),
                     Format::Wav(Pcm::Int16),
@@ -462,7 +462,7 @@ fn a_placement_the_target_cannot_take_is_a_target_error_and_leaves_nothing() {
         ],
         &mut Control::none(),
     )
-    .expect_err("discrete feeds are not L and R");
+    .expect_err("unassigned feeds are not L and R");
     assert!(
         matches!(
             err,

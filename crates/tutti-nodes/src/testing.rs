@@ -115,7 +115,7 @@ impl Node for Const {
     /// convention a graph's tail walk relies on (`Unbounded` here would make
     /// every graph with a stimulus in it unspendable).
     fn shape(&self) -> Shape {
-        Shape::source_discrete(
+        Shape::source_unassigned(
             ChannelLayout::try_from(self.values.len()).expect("a stimulus has few channels"),
         )
         .with_cost(tutti_graph::Cost::Light)
@@ -267,7 +267,7 @@ impl Osc {
 impl Node for Osc {
     /// A generator at zero latency; `Tail::None`, as [`Const`]'s.
     fn shape(&self) -> Shape {
-        Shape::source_discrete(self.layout).with_cost(tutti_graph::Cost::Moderate)
+        Shape::source_unassigned(self.layout).with_cost(tutti_graph::Cost::Moderate)
     }
 
     fn prepare(&mut self, prepare: &Prepare) {
@@ -316,7 +316,7 @@ impl Through {
 impl Node for Through {
     /// A copy stops with its input: `Tail::None`.
     fn shape(&self) -> Shape {
-        Shape::through_discrete(self.layout).with_cost(tutti_graph::Cost::Light)
+        Shape::through_unassigned(self.layout).with_cost(tutti_graph::Cost::Light)
     }
 
     fn prepare(&mut self, _: &Prepare) {}
@@ -351,8 +351,8 @@ impl Node for Split {
     /// A copy stops with its input: `Tail::None`.
     fn shape(&self) -> Shape {
         Shape::buses(
-            tutti_graph::Buses::discrete(ChannelLayout::MONO),
-            tutti_graph::Buses::discrete(self.layout),
+            tutti_graph::Buses::unassigned(ChannelLayout::MONO),
+            tutti_graph::Buses::unassigned(self.layout),
         )
         .with_cost(tutti_graph::Cost::Light)
     }
@@ -392,7 +392,7 @@ impl Sink {
 
 impl Node for Sink {
     fn shape(&self) -> Shape {
-        Shape::sink_discrete(self.layout).with_cost(tutti_graph::Cost::Light)
+        Shape::sink_unassigned(self.layout).with_cost(tutti_graph::Cost::Light)
     }
 
     fn prepare(&mut self, _: &Prepare) {}

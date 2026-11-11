@@ -213,7 +213,7 @@ impl Declared {
 /// format gave it.
 ///
 /// A bus without a [`placement`](PluginBus::placement) (unknown, or one that
-/// does not have its width's channels) is `Discrete` at that width: a count is
+/// does not have its width's channels) is `Unassigned` at that width: a count is
 /// not a placement. The list stops at the first bus past
 /// [`MAX_BUSES`](tutti_graph::MAX_BUSES) or wider than a bus holds; the
 /// plugin's remaining channels are ports the node still has.
@@ -221,7 +221,7 @@ fn buses_of(plugin: &[PluginBus]) -> Buses {
     let mut buses = Buses::NONE;
     for bus in plugin {
         let placed = bus.placement().and_then(|t| BusTopology::try_from(t).ok());
-        let Some(topology) = placed.or_else(|| BusTopology::discrete(bus.channels)) else {
+        let Some(topology) = placed.or_else(|| BusTopology::unassigned(bus.channels)) else {
             break;
         };
         match buses.with(Bus {
@@ -1202,7 +1202,7 @@ mod declared_buses {
     /// A plugin's buses are the node's, in order, each with the plugin's role
     /// and placement: a stereo main, a mono sidechain and an aux. A bus
     /// without a placement (or with one that disagrees with its width) is
-    /// `Discrete`, and the shape's ports are every channel.
+    /// `Unassigned`, and the shape's ports are every channel.
     ///
     /// Mutations (run), each failing this test: `PluginBus::placement`'s
     /// width filter removed (the disagreeing bus keeps its two speakers); the
@@ -1233,8 +1233,8 @@ mod declared_buses {
             ins,
             [
                 (BusRole::Main, vec![Speaker::FrontLeft, Speaker::FrontRight]),
-                (BusRole::Sidechain, vec![Speaker::Discrete]),
-                (BusRole::Aux, vec![Speaker::Discrete; 3]),
+                (BusRole::Sidechain, vec![Speaker::Unassigned]),
+                (BusRole::Aux, vec![Speaker::Unassigned; 3]),
             ]
         );
         assert_eq!(shape.buses_in().first_port(2), Some(3));

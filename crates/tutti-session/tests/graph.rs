@@ -68,7 +68,7 @@ impl Knob {
 
 impl Node for Knob {
     fn shape(&self) -> Shape {
-        Shape::source_discrete(ChannelLayout::MONO).with_params(&[UnitParam::Drive])
+        Shape::source_unassigned(ChannelLayout::MONO).with_params(&[UnitParam::Drive])
     }
     fn prepare(&mut self, _: &Prepare) {}
     fn process(&mut self, _: &Cx<'_>, mut io: Io<'_>) -> Status {
@@ -119,7 +119,7 @@ struct Grenade;
 
 impl Node for Grenade {
     fn shape(&self) -> Shape {
-        Shape::source_discrete(ChannelLayout::MONO)
+        Shape::source_unassigned(ChannelLayout::MONO)
     }
     fn prepare(&mut self, prepare: &Prepare) {
         assert!(prepare.sample_rate().get() < 90_000.0, "no such rate");
@@ -150,7 +150,7 @@ impl<const N: usize> Late<N> {
 
 impl<const N: usize> Node for Late<N> {
     fn shape(&self) -> Shape {
-        Shape::through_discrete(ChannelLayout::MONO).with_latency(Latency::new(Samples(N)))
+        Shape::through_unassigned(ChannelLayout::MONO).with_latency(Latency::new(Samples(N)))
     }
     fn prepare(&mut self, _: &Prepare) {}
     fn process(&mut self, _: &Cx<'_>, mut io: Io<'_>) -> Status {
@@ -175,7 +175,7 @@ struct Events<const IN: u16, const OUT: u16>;
 
 impl<const IN: u16, const OUT: u16> Node for Events<IN, OUT> {
     fn shape(&self) -> Shape {
-        Shape::source_discrete(ChannelLayout::MONO).with_events(IN, OUT)
+        Shape::source_unassigned(ChannelLayout::MONO).with_events(IN, OUT)
     }
     fn prepare(&mut self, _: &Prepare) {}
     fn process(&mut self, _: &Cx<'_>, mut io: Io<'_>) -> Status {
@@ -851,7 +851,7 @@ impl Published {
 
 impl Node for PublishedNode {
     fn shape(&self) -> Shape {
-        Shape::source_discrete(ChannelLayout::MONO)
+        Shape::source_unassigned(ChannelLayout::MONO)
     }
     fn prepare(&mut self, _: &Prepare) {}
     fn process(&mut self, _: &Cx<'_>, mut io: Io<'_>) -> Status {

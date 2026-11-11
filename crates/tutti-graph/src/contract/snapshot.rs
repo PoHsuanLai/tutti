@@ -63,7 +63,7 @@ type Write<N> = Box<dyn Fn(&N)>;
 /// # #[derive(Clone)]
 /// # struct Gain(Param<Amplitude>);
 /// # impl Node for Gain {
-/// #     fn shape(&self) -> Shape { Shape::through_discrete(ChannelLayout::MONO) }
+/// #     fn shape(&self) -> Shape { Shape::through_unassigned(ChannelLayout::MONO) }
 /// #     fn prepare(&mut self, _: &Prepare) {}
 /// #     fn process(&mut self, _: &Cx<'_>, mut io: Io<'_>) -> Status {
 /// #         let g = self.0.load().get();
@@ -266,7 +266,7 @@ mod tests {
 
     impl Node for TwoCells {
         fn shape(&self) -> Shape {
-            Shape::through_discrete(ChannelLayout::MONO)
+            Shape::through_unassigned(ChannelLayout::MONO)
         }
 
         fn prepare(&mut self, _: &Prepare) {}

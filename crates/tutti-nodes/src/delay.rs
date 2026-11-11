@@ -570,7 +570,7 @@ impl Node for DelayLineNode {
     /// to be late.
     fn shape(&self) -> Shape {
         let width = ChannelLayout::try_from(self.width()).expect("the width came from a layout");
-        Shape::through_discrete(width)
+        Shape::through_unassigned(width)
             .with_cost(tutti_graph::Cost::Moderate)
             .with_params(&DELAY_PARAMS)
             .with_tail(Tail::Unknown)

@@ -29,8 +29,8 @@ fn named(n: u16) -> BusTopology {
     BusTopology::try_from(&ChannelTopology::smpte(layout(n)).expect("an SMPTE width")).unwrap()
 }
 
-fn discrete(n: u16) -> BusTopology {
-    BusTopology::discrete(layout(n)).unwrap()
+fn unassigned(n: u16) -> BusTopology {
+    BusTopology::unassigned(layout(n)).unwrap()
 }
 
 /// Constant `values` on its output channels, declaring `out` as its bus.
@@ -62,7 +62,7 @@ impl Node for Pass {
     fn shape(&self) -> Shape {
         Shape::buses(
             Buses::main(self.input),
-            Buses::discrete(self.input.layout()),
+            Buses::unassigned(self.input.layout()),
         )
     }
     fn prepare(&mut self, _: &Prepare) {}
@@ -179,7 +179,7 @@ fn a_refused_bus_edge_changes_nothing() {
     let g = r.s.graph();
     let (three, _) = g.add(Unforkable(Src {
         values: vec![0.0; 3],
-        out: discrete(3),
+        out: unassigned(3),
     }));
     r.s.update();
     let g = r.s.graph();
@@ -191,7 +191,7 @@ fn a_refused_bus_edge_changes_nothing() {
         BusError::Fold {
             from: BusSource::Node(bus(three)),
             to: bus(r.sink),
-            error: FoldError::Discrete {
+            error: FoldError::Unassigned {
                 src: layout(3),
                 dst: layout(1)
             }
@@ -343,10 +343,10 @@ fn a_redeclared_root_relowers_its_edges_and_a_misfit_refuses_the_commit() {
     assert!(all_are(&l, 0.25) && all_are(&r, 0.75));
 
     // Same width, another topology: the root's lanes are re-lowered, so the
-    // graph is edited though no width moved (stereo named to stereo discrete
+    // graph is edited though no width moved (stereo named to stereo unassigned
     // is the identity, so the render is the same).
-    s.declare_root_topology(Some(ChannelTopology::discrete(layout(2))))
-        .expect("a discrete pair");
+    s.declare_root_topology(Some(ChannelTopology::unassigned(layout(2))))
+        .expect("an unassigned pair");
     assert!(s.graph_ref().is_edited());
     let [l, r] = stereo_block(&mut s);
     assert!(all_are(&l, 0.25) && all_are(&r, 0.75));
@@ -356,9 +356,9 @@ fn a_redeclared_root_relowers_its_edges_and_a_misfit_refuses_the_commit() {
     let [l, _] = stereo_block(&mut s);
     assert!(all_are(&l, 0.5), "{:?}", &l[..2]);
 
-    // Named stereo has no place in one discrete channel.
-    s.declare_root_topology(Some(ChannelTopology::discrete(layout(1))))
-        .expect("a discrete mono root");
+    // Named stereo has no place in one unassigned channel.
+    s.declare_root_topology(Some(ChannelTopology::unassigned(layout(1))))
+        .expect("an unassigned mono root");
     assert_eq!(s.commit(), Committed::Refused);
     let [l, _] = stereo_block(&mut s);
     assert!(all_are(&l, 0.5), "the plan sent last stands");

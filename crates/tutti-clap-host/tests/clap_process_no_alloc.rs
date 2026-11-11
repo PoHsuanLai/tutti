@@ -1292,7 +1292,7 @@ fn exactly_sixteen_channels_per_side_does_not_allocate() {
 /// 20 channels a side is past the inline bound, so the unfixed host
 /// heap-allocated two small-vector backing buffers on every block.
 ///
-/// 20 is what a 7.1.4 bed plus a discrete stereo pair presents.
+/// 20 is what a 7.1.4 bed plus an unassigned stereo pair presents.
 #[test]
 fn twenty_channels_per_side_does_not_allocate() {
     let _lock = PROBE_LOCK.lock().unwrap_or_else(|p| p.into_inner());

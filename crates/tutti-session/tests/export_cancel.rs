@@ -26,7 +26,7 @@ struct CancelAt {
 
 impl Node for CancelAt {
     fn shape(&self) -> Shape {
-        Shape::source_discrete(ChannelLayout::MONO).with_tail(tutti_types::Tail::Unbounded)
+        Shape::source_unassigned(ChannelLayout::MONO).with_tail(tutti_types::Tail::Unbounded)
     }
     fn prepare(&mut self, _: &Prepare) {}
     fn process(&mut self, _: &Cx<'_>, mut io: Io<'_>) -> Status {

@@ -223,4 +223,11 @@ inherits = "release"
 debug = "line-tables-only"
 strip = "none"
 
+# CI builds its tests with `CARGO_PROFILE_DEV_OPT_LEVEL=1` (the suite is CPU bound).
+# This crate's `aeffect_params` compares function addresses across crates, which
+# only holds when nothing is optimized (inlining and folding give the same
+# function two addresses), so it stays at 0.
+[profile.dev.package.tutti-vst2-author]
+opt-level = 0
+
 # NOTE: no `[patch.crates-io]` here: no member depends on a git repository.

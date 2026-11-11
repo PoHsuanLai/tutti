@@ -22,6 +22,10 @@ default = []
 # tests turn it on through the self dev-dependency below; a node crate adding
 # rows turns it on in its dev-dependency on this crate.
 contract = []
+# `Reference`, the naive interpreter the differential suites compare the
+# executor with: test support (about 2,700 lines), so off by default. This
+# crate's own tests turn it on through the self dev-dependency below.
+testing = []
 
 [dependencies]
 # The value (`Topology`, `NodeKey`, ports), the unit newtypes and the latency /
@@ -45,9 +49,9 @@ bytemuck = { version = "1.16", features = ["derive"] }
 ringbuf = { version = "0.6", default-features = false, features = ["alloc"] }
 
 [dev-dependencies]
-# Turns `contract` on for this crate's own tests (the pattern `tutti-nodes`
-# uses for `testing`).
-tutti-graph = { path = ".", features = ["contract"] }
+# Turns `contract` and `testing` on for this crate's own tests (the pattern
+# `tutti-nodes` uses for `testing`).
+tutti-graph = { path = ".", features = ["contract", "testing"] }
 tutti-fixtures = { path = "../../testing/tutti-fixtures" }
 assert_no_alloc = { version = "1", default-features = false }
 criterion.workspace = true

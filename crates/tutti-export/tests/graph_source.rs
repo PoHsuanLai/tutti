@@ -23,8 +23,7 @@
 //!   They catch the drift an analytic tolerance lets through (an output
 //!   scaled by `1 + f32::EPSILON`), but they pin `sin`/`cos`/`exp`, which are
 //!   libm quality-of-implementation and differ in the last ulp between C
-//!   runtimes (the reason `render_is_bit_identical_to_the_audionode_era` is
-//!   gated off MSVC). So they are asserted only where they were recorded
+//!   runtimes. So they are asserted only where they were recorded
 //!   (`tutti_fixtures::assert_golden`); CI's Linux jobs run them. The
 //!   one libm-free case (a dithered DC level) is asserted everywhere.
 //!

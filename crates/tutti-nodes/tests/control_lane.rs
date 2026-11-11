@@ -357,15 +357,6 @@ fn triangle(cycles: f64) -> f64 {
 ///   at frame 12 150, off the grid (12 150 = 379·32 + 22), and holds it: on
 ///   a native port (exact mode; the port clamps) and on a plugin lane, which
 ///   clamps its own pieces and splits the grid piece at the crossing.
-///
-/// Mutations (run), each fails: the base as `knob + automation`
-/// (`ControlProgram::evaluate`) → the plugin lane reads 1500; the layers'
-/// offsets divided by the span (a span of 1) → 500.125; the plugin lane's
-/// clamp dropped (`clamp` returns `v`) → past 5.0625; the split dropped
-/// (`if let Some(..) = cross` made dead) → frame 12 150 reads 5.0596 on the
-/// unsplit line; the split's `f32` tolerance dropped → this crossing, on
-/// frame 22 of its piece, computes a hair past it and splits a frame late
-/// (frame 12 134 reads 5.05572 against 5.05583).
 #[test]
 fn automation_replaces_the_knob_and_the_clamp_is_per_frame() {
     // Knob 1000, automation 500.
@@ -443,13 +434,6 @@ fn automation_replaces_the_knob_and_the_clamp_is_per_frame() {
 /// in exact mode, automation under a layer) on native ports, and a plugin
 /// lane's points. Live runs stopped first, then starts inside a block on
 /// frame 421 (not a grid multiple), and renders ragged blocks.
-///
-/// Mutations (run), each fails: a lane re-sending at every block's first
-/// frame (`due` always true) → pieces restart at live's block edges; the
-/// grid counted from the block's first frame (`grid = stride - p % stride`)
-/// → the grid moves with the blocks; the grid on the executor's frame
-/// rather than the play clock (`grid` from `abs`) → live's grid is 421
-/// frames off the export's.
 #[test]
 fn an_export_is_the_live_render_bit_for_bit() {
     let lanes: Vec<ControlProgram> = {
@@ -617,10 +601,6 @@ fn an_export_is_the_live_render_bit_for_bit() {
 /// program, wired in later at a frame off the grid, renders the first's
 /// bits from its first grid point after its connect crossfade (the port
 /// fades in from its base over `PARAM_DECLICK`, doc 014 §5.6).
-///
-/// Mutation (run): a point's next point one step on (`grid` as
-/// `self.stride`) rather than at the next grid multiple → the late lane's
-/// points sit off the first's → fails.
 #[test]
 fn one_lfo_on_two_targets_is_phase_coherent() {
     let p = || {
@@ -668,12 +648,6 @@ fn one_lfo_on_two_targets_is_phase_coherent() {
 /// anchor and 5 Hz from it, continuously, with no step larger than one
 /// frame's slope; and after a stop and a play start (a new epoch) the stale
 /// anchor is ignored: the layer runs at 5 Hz from phase 0.
-///
-/// Mutations (run), each fails: the anchor ignored (`cycles` never takes
-/// it) → the phase jumps at the anchor; a stale anchor honoured (the epoch
-/// check dropped) → after the restart the phase is the anchor's; the
-/// anchor's frame not a corner (`next_corner` without it) → the piece
-/// across it misses the kink by more than the tolerance.
 #[test]
 fn a_rate_anchor_holds_two_lanes_in_phase() {
     let tri = |clock| {
@@ -760,10 +734,6 @@ fn a_rate_anchor_holds_two_lanes_in_phase() {
 /// reads 600; the range moves to 100..700 between blocks, and the lane
 /// glides from 600 to 575 (0.125 of 600) by the next grid point and holds
 /// it.
-///
-/// Mutations (run), each fails: the span read once when the lane is built
-/// → still 600; the range left out of `changed` → no glide (600 held to the
-/// grid point, then a step).
 #[test]
 fn a_range_edit_rescales_on_the_next_block() {
     let (mut ed, mut exec) = probes(128, &[2], (100.0, 900.0));
@@ -799,9 +769,6 @@ fn a_range_edit_rescales_on_the_next_block() {
 /// A plugin lane under shaped automation sends linear grid pieces, never
 /// exact mode (doc 014 §5.4): every segment it sends is `Linear`, a point
 /// lands on every grid frame, and the value there is the curve's.
-///
-/// Mutation (run): `for_foreign` building with `native: true` → the
-/// exponential piece goes as one `Exponential` segment → fails.
 #[test]
 fn a_plugin_lane_sends_linear_grid_pieces() {
     let mut e = Trajectory::new();
@@ -840,10 +807,6 @@ fn a_plugin_lane_sends_linear_grid_pieces() {
 /// sin(2π · 2.5 · play / rate)` on every grid frame before the edit and
 /// after it (within 1e-6 of depth): the republish changes the depth, not
 /// the phase.
-///
-/// Mutation (run): every point reading the play clock at its block's first
-/// frame (`cx.play_at(Offset::ZERO)` in `point`) → the phase stalls inside
-/// a block → fails.
 #[test]
 fn an_lfos_phase_survives_a_depth_edit() {
     let sine = |depth| {
@@ -884,10 +847,6 @@ fn an_lfos_phase_survives_a_depth_edit() {
 /// A `Linear` triangle is exact at every frame (its pieces are lines
 /// between corners), and a `Linear` sine at 10 Hz stays within §5.3's
 /// bound, `(2πfh)²/8` of its depth (2.2e-4 at h = 32), at every frame.
-///
-/// Mutations (run), each fails: the triangle's peaks dropped from its
-/// corners → the grid cuts each peak; the grid step doubled (`stride` 64)
-/// → the sine's error is four times the bound.
 #[test]
 fn a_triangle_is_exact_and_a_sine_within_the_bound() {
     let (mut ed, mut exec) = probes(128, &[2, 3], (-10_000.0, 10_000.0));
@@ -941,12 +900,6 @@ fn a_triangle_is_exact_and_a_sine_within_the_bound() {
 /// smooth curves' figures are pinned to 10 % (they read `sin` and `powf`,
 /// which differ in the last bits across targets); `Stepped`'s are exact
 /// fractions, pinned to 1e-3.
-///
-/// Mutations (run), each fails: the grid step doubled (`stride` 64) →
-/// `Logarithmic` errs 0.072, past its 0.0512; a triangle's peaks dropped
-/// from its corners (`corners_in`) → the `Stepped` triangle errs 1.0, not
-/// 0.9375. Dropping the zero-crossing corners does not fail it: this
-/// sine's crossings fall on grid frames.
 #[test]
 fn the_curves_with_no_bound_err_as_measured() {
     let cases: [(LfoShape, Law, f64, f64); 3] = [
@@ -996,11 +949,6 @@ fn the_curves_with_no_bound_err_as_measured() {
 /// a 140.625 Hz square in 16 384-frame blocks (512 grid points and 96
 /// edges a block) thins its grid to stay within 256 and counts each block,
 /// still exact (a square is flat between its edges).
-///
-/// Mutations (run), each fails: the capacity check at 200 → the 4096 case
-/// thins; no thinning (straight to truncation) → the 16 384 case truncates
-/// and misses edges; a square's falling edge left out of its corners
-/// (`corners_in`) → that edge lands on the next grid frame.
 #[test]
 fn the_lane_keeps_every_corner_within_its_capacity() {
     for (max, rate, cycles_per_frame, thinned) in [
@@ -1031,11 +979,6 @@ fn the_lane_keeps_every_corner_within_its_capacity() {
 /// 0.25 reads 34.0 then 22.0 from the step's own frame (300, off the
 /// grid); a ramp to 1.0 lands 58.0 on its arrival frame. Stopped, so the
 /// lane holds between input events.
-///
-/// Mutations (run), each fails: the input layers left out of the sum →
-/// 10; an input event not a point (left out of `run`'s next point) → the
-/// step lands on the next grid frame; the arrival not a point (`moving`
-/// ignored) → the ramp's end lands late.
 #[test]
 fn an_input_offset_is_exact_from_its_frame() {
     let (mut ed, mut exec) = probes(128, &[2], (0.0, 96.0));
@@ -1100,10 +1043,6 @@ fn feed_into(ed: &mut Editor, feed: u64, lane: u64) {
 /// review: the eight stale slots were never freed, so source 9's
 /// events were dropped, uncounted, and the lane held 10.)
 ///
-/// Mutation (run): the slot fallback only a free slot (`Option::is_none`,
-/// not a slot whose source the program no longer reads) → 10.0 from frame
-/// 640 → fails.
-///
 /// Changed in doc 014 §12.4 (the mutation record only): a lane now frees
 /// every slot its new program does not read when it takes the program, so
 /// a free slot is the only fallback. Mutation (run): that freeing dropped
@@ -1152,13 +1091,6 @@ fn a_republished_program_reads_a_new_source() {
 /// has not sent yet: it contributes 0, so the lane reads 10.0, never the
 /// removed source's 0.5. When the new source sends 0.25 on frame 1 000,
 /// 22.0.
-///
-/// Mutation (run): the lane keeping unread slots when it takes a program
-/// (the sweep in `process` dropped) → after the second republish (from
-/// frame 513) the lane glides back to 34.0 → fails. The case where both
-/// republishes land before one block (the lane never sees the program
-/// between) is closed by the compiler, which never gives an id twice
-/// (`tutti-modulation`'s `a_signal_source_keeps_its_id`).
 #[test]
 fn a_reused_source_id_starts_from_nothing() {
     let (mut ed, mut exec) = probes(128, &[2], (0.0, 96.0));
@@ -1209,10 +1141,6 @@ fn a_reused_source_id_starts_from_nothing() {
 /// whose program reads source 7 sends one piece at frame 0 and holds; a
 /// feed sending source 99 (which it does not read) every 10 frames adds no
 /// piece, so an unread source (or MIDI) uses none of the lane's capacity.
-///
-/// Mutation (run): `run`'s next input point taken from any event
-/// (`.find(|_| true)` for the first `input_of`) → a piece on every tenth
-/// frame → fails.
 #[test]
 fn an_unread_source_is_no_point() {
     let (mut ed, mut exec) = probes(128, &[], (0.0, 1.0));
@@ -1247,9 +1175,6 @@ fn an_unread_source_is_no_point() {
 /// at frame 0: probe 3 hears it on that block's first frame (through the
 /// port's connect crossfade) and reads 250.0 once the crossfade ends. This
 /// is what the reconcile calls after it re-wires a lane.
-///
-/// Mutation (run): `process` ignoring the resync flag (`let resync =
-/// false`) → probe 3 never reads 250 → fails.
 #[test]
 fn a_resync_sends_a_steady_lane_to_its_new_target() {
     let (mut ed, mut exec) = probes(64, &[2, 3], (0.0, 1000.0));
@@ -1298,15 +1223,10 @@ fn a_resync_sends_a_steady_lane_to_its_new_target() {
     }
 }
 
-/// A lane-fed fork reads its value at frame 0 (ported from
-/// `a_fork_carries_its_event_sources_ramps`, doc 014 §5.6): the fork's lane
+/// A lane-fed fork reads its value at frame 0 (doc 014 §5.6): the fork's lane
 /// is fresh and sends on its first frame, from the program, knob and range
 /// at the gather; a later live knob write and republish reach the live
 /// lane, not the fork.
-///
-/// Mutations (run), each fails: `fork_fresh` sharing the live knob cell →
-/// the fork reads 700; the fork's lane built on the live lane's `Shared`
-/// (`LaneFork` not calling `fork_fresh`) → it reads 50.
 #[test]
 fn a_lane_fed_fork_reads_its_value_at_frame_0() {
     let (mut ed, mut exec) = probes(64, &[2], (0.0, 1000.0));
@@ -1350,11 +1270,6 @@ fn a_lane_fed_fork_reads_its_value_at_frame_0() {
 /// `LaneControls`' cells: a plugin lane's knob and range are its own, a
 /// native lane's range is its port's (set through the editor), and a lane
 /// built without a knob refuses one.
-///
-/// Mutations (run), each fails: `set_range` accepting a native lane's
-/// range (`RangeSource::Port(_) => true`); a native lane snapshotting its
-/// port's range into a cell of its own when built → it accepts
-/// `set_range`, and misses the editor's edit.
 #[test]
 fn lane_controls_reach_their_own_cells() {
     let plugin = ControlLaneNode::for_foreign(1, ControlProgram::default(), Some(0.25), (0.0, 1.0));
@@ -1385,13 +1300,6 @@ fn lane_controls_reach_their_own_cells() {
 /// stopped, at 0 on beat 0), also when that sine's `depth_by` is a
 /// constant on a seconds clock: a macro costs the lane one held value, not
 /// a piece every `CONTROL_STEP` frames.
-///
-/// Mutations (run), each fails: the lane's "what moves" counting every
-/// layer (`let layers = !self.program.layers().is_empty() || …`) → the
-/// rolling lane sends a piece on every grid frame; `has_seconds` counting
-/// a constant layer's clock → the stopped lane beside the sine does;
-/// `has_seconds` counting a constant `depth_by`'s clock → the stopped lane
-/// with the scaled sine does.
 #[test]
 fn a_constant_layer_is_one_held_value() {
     let konst = |clock| layer(1, clock, Wave::Const(1.0), amount(0.5));

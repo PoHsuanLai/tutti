@@ -785,7 +785,10 @@ list (normal and build edges; dev-dependencies may go anywhere).
   deps are `bytemuck` and `ringbuf`, the editor→executor queue), keeps every
   module private but `contract`, the sample-accuracy suite's harness behind the
   off-by-default `contract` feature (`tutti_graph::Plan`, never `tutti_graph::plan::Plan`; CI runs
-  the per-module path gate on it) and is `#![forbid(unsafe_code)]`.
+  the per-module path gate on it) and is `#![forbid(unsafe_code)]`. `Reference`, the naive
+  interpreter the differential suites check the executor against, is behind the
+  off-by-default `testing` feature; the crate's own tests turn both on through a self
+  dev-dependency.
 - `tutti-session` keeps every module private too (`tutti_session::Graph`;
   CI runs the per-module path gate on it), has no `bevy` feature and
   re-exports no crate whole (`scripts/check-adapter.sh`).
@@ -1245,8 +1248,6 @@ read the `Cargo.toml`, grep for the type, run the probe.
   `PluginClient<Bound>` holds and boxes (a test drives it with `contract::Direct::boxed`); the chunk walk
   is the generic node's, the fork is `ServedFork` over `Ipc`'s reopen). A comment or doc that
   disagrees with the code is the bug.
-- **MSVC render gate:** `render_is_bit_identical_to_the_audionode_era` is
-  gated off MSVC, because `sin` differs in the last ulp between CRTs.
 
 ## Consumers: the pin that must stay in step
 

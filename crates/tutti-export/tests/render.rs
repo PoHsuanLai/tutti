@@ -419,10 +419,6 @@ fn resolving_a_reported_graph_keeps_its_own_figure() {
 /// This is what makes the mechanism usable: one unreporting node on the output
 /// path makes the whole graph's tail unspendable, so declaring `None` on the
 /// nodes that genuinely have none is load-bearing, not cosmetic.
-///
-/// Mutation (run): `.with_tail(Tail::Unknown)` in `DistortionNode::shape` →
-/// fails. (`Shape::audio` starts at `Tail::None`, so a node that forgot to
-/// declare would pass here; the declaration is kept explicit on the node.)
 #[test]
 fn a_stateless_node_reports_no_tail_rather_than_an_unknown_one() {
     use tutti_graph::Node;
@@ -787,9 +783,6 @@ fn file_true_peak(path: &std::path::Path) -> f32 {
 /// render is `Unmeasurable { BelowGate }` and writes nothing, where it used to
 /// write a finite file at that invented gain. A PEAK normalization of the same
 /// render is measurable (a true peak needs no gate) and stays finite.
-///
-/// Mutation (run): drop the `ABSOLUTE_GATE_LUFS` check in `Normalize::check` →
-/// the LUFS render succeeds and writes `path` → fails.
 #[test]
 fn a_sub_gating_block_render_cannot_be_loudness_normalized() {
     use crate::support::render_normalized_to_file;
@@ -953,11 +946,6 @@ fn find_from(hay: &[u8], needle: &[u8], from: usize) -> Option<usize> {
 ///
 /// (The planes `render_to_buffers` returns for silence are checked directly by
 /// `silence_planes_carry_no_dither`.)
-///
-/// Mutation (run): drop the `Db::FLOOR` check in `Normalize::check` → the
-/// silent render is written and the `expect_err` fails. Mutation (run):
-/// `DitherState::for_config(config).apply` over the planes in `render_pass` →
-/// the silence has a reading, the render succeeds → fails.
 #[test]
 fn normalizing_silence_is_refused() {
     use crate::support::render_normalized_to_file;
@@ -1103,20 +1091,14 @@ fn an_unmeasurable_rate_fails_rather_than_writing_un_normalized_audio() {
     );
 }
 
-/// The width bug. A master whose channel count is not one of 1/2/4/6/8/12 —
-/// `Multi(3)`, `Multi(5)`, `Multi(7)` — must export.
-///
-/// It could not, and this test could not have been written before. The render
-/// pipeline was const-generic in its frame width, and `dispatch_channels!`
-/// resolved the runtime `ChannelLayout` to one of exactly six monomorphizations,
-/// returning `Error::UnsupportedChannels` for anything else. The app passes
-/// `ChannelLayout::from(master_width)` straight through, so a 3- or 5-wide
-/// master failed at the entry point with no way for a caller to work around it.
+/// A master whose channel count is not one of 1/2/4/6/8/12 (3, 5, 7 or 9
+/// wide) exports at that width: the width is runtime, and a caller passes
+/// `ChannelLayout::from(master_width)` straight through.
 ///
 /// Asserted through the file header and the samples, not the return value: "no
 /// error" would also pass if the export quietly wrote a stereo file.
 #[test]
-fn a_width_the_old_dispatch_rejected_now_exports() {
+fn an_unnamed_master_width_exports_at_that_width() {
     let d = tempfile::tempdir().unwrap();
 
     for width in [3u16, 5, 7, 9] {
@@ -1269,9 +1251,6 @@ fn a_zero_width_export_is_rejected_not_a_divide_by_zero() {
 /// no channel order, is refused with `ConfigError::Placement` rather than cut to
 /// its first channels; widened (or into an ordered file it folds into) it
 /// renders.
-///
-/// Mutation (run): `Fold::by_index` accepting a narrowing → the 3-wide export
-/// succeeds and truncates, and the first assertion fails.
 #[test]
 fn a_graph_with_no_place_in_the_file_is_refused() {
     use tutti_export::{ConfigError, Error};
@@ -1328,11 +1307,6 @@ fn first_frame(graph: &mut RenderGraph, width: u16) -> Result<Vec<f32>, tutti_ex
 /// quad and its rears land on the side pair at 4 and 5), a declared 5.1 folds
 /// into stereo by the 5.1 rules, and a declaration the file cannot take, or
 /// that is not as wide as the graph, is `ConfigError::Placement`.
-///
-/// Mutation (run): `fold_from` ignoring `root` → the declared row is
-/// `[.1, .2, 0, 0, .3, .4]` and fails; dropping the width check → the
-/// 6-wide declaration over a 4-wide graph renders instead of being refused;
-/// `Fold::declared` replaced by `Fold::to_width` → the declared row fails.
 #[test]
 fn a_declared_root_is_what_the_file_is_placed_from() {
     use tutti_export::ConfigError;
@@ -1392,9 +1366,6 @@ fn a_declared_root_is_what_the_file_is_placed_from() {
 /// `render_to_buffers` of silence gives exactly 0.0 at an integer depth with
 /// dither on: dither belongs to the encode boundary, not to the planes a meter
 /// reads.
-///
-/// Mutation (run): `DitherState::apply` over the planes in `render_pass` →
-/// they carry noise → fails.
 #[test]
 fn silence_planes_carry_no_dither() {
     let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::STEREO);
@@ -1434,9 +1405,6 @@ impl Node for Narrowing {
 /// only at the programme's end has nowhere to go without a second phase in
 /// all of them. Until that lands the figure is the spec's: a node that
 /// narrows its tail renders the longer, safe ceiling.
-///
-/// Mutation (run): declare the node's ceiling as `Finite(100)` (what it
-/// reports) → the figure and the render length fail against 4000.
 #[test]
 fn export_spends_the_ceiling_of_a_node_that_narrows_its_tail() {
     let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::MONO);

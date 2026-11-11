@@ -266,8 +266,7 @@ config's `duration_seconds` is then derived from the project's map.
 
 Pinned bit for bit today: `FrameClock` (`tutti-types` tests and the
 long-run random-tempo property), `OfflineTimeline` vs `TransportClock`
-sample for sample (`offline.rs`), `render_is_bit_identical_to_the_audionode_era`
-(MSVC-gated), the `tutti-nodes` golden digests (`assert_golden`), the
+sample for sample (`offline.rs`), the `tutti-nodes` golden digests (`assert_golden`), the
 differential suite's `modes` and `tests/parallel.rs`.
 
 **Nothing moves, and the design guarantees it structurally:**

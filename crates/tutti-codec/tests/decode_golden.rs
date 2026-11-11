@@ -103,9 +103,8 @@ const GOLDEN: &[(&str, u64, u64)] = &[
 /// (`symphonia-bundle-mp3`'s `hybrid_synthesis.rs`/`synthesis.rs`/`stereo.rs`,
 /// `symphonia-core`'s `dsp::mdct`, `symphonia-codec-vorbis`'s `window.rs` and
 /// `floor.rs`). Those are libm quality-of-implementation, not IEEE
-/// correctly-rounded, and differ in the last ulp between the platform libms —
-/// the same reason `render_is_bit_identical_to_the_audionode_era` is gated off
-/// MSVC. The MP3 digest did differ on macOS CI. The Ogg one happened to match
+/// correctly-rounded, and differ in the last ulp between the platform libms.
+/// The MP3 digest did differ on macOS CI. The Ogg one happened to match
 /// there, which is luck rather than a property, so it is gated too.
 fn bit_portable(name: &str) -> bool {
     !(name.ends_with(".mp3") || name.ends_with(".ogg"))

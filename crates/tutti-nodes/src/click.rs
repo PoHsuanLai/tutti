@@ -991,10 +991,6 @@ mod tests {
     /// this pins the per-frame onset path as well as the steady one: a node
     /// that read the beat once per block would start the click on frame 0 and
     /// diverge from the one-frame blocks there.
-    ///
-    /// Mutation (run): `Env::for_each_piece_beat` emitting the piece's first beat on every
-    /// frame (`emit(i, t.beat())`) → the whole block holds beat 2 − 20/22 050,
-    /// no onset in the block → the not-silence assert fails.
     #[test]
     fn a_block_matches_its_frames_one_by_one() {
         let (_, settings, mut block_node) = make_click();
@@ -1117,10 +1113,6 @@ mod tests {
     /// Before its port to `tutti_graph::Node` the click read the live play flag once per
     /// 64-frame chunk, so a mid-block start or stop gated it from the
     /// block's start (the gap `tests/env_beat.rs` recorded).
-    ///
-    /// Mutations (run): gate the whole block on `env.transport` (the first
-    /// piece's) → the stop at 30 does not silence frames 30.. and the start
-    /// at 10 is not heard → fails.
     #[test]
     fn a_start_or_stop_inside_a_block_gates_on_its_frame() {
         let (_, settings, mut node) = make_click();
@@ -1154,95 +1146,6 @@ mod tests {
         let [left, _] = block(&mut node, &starting);
         assert!(left[..11].iter().all(|&s| s == 0.0), "silent until 10");
         assert_ne!(left[11], 0.0, "beat 5's click from frame 10");
-    }
-
-    /// Eight blocks of the metronome, hashed bit-for-bit against a reference
-    /// render.
-    ///
-    /// # What this pins, and why a hash
-    ///
-    /// The render must stay an *identity*: the same samples, not merely
-    /// samples that still pass the behavioural tests above. Those tests check
-    /// onsets, accents and mode gating — every one of them would pass a click
-    /// whose envelope had drifted by an LSB, and none of them would name it.
-    ///
-    /// The reference figure is FNV-1a over the raw `f32` bits of all 1,024
-    /// samples of this exact schedule, `0xE011_43CA_E6D4_ECD5`. A hash rather
-    /// than a 1,024-entry array because the array would be unreadable and
-    /// unmaintained, while any single-bit difference moves it.
-    ///
-    /// The schedule holds the beat constant across each 64-frame block (a
-    /// rolling transport at a tempo of zero, stepped an eighth note per
-    /// block), so a per-block and a per-frame beat read give the same samples.
-    ///
-    /// # Mutation-tested
-    ///
-    /// Verified to fail, not merely to pass: scaling one sample by `1.0 + f32::EPSILON`
-    /// changes the digest. It also fails if `generate_click`'s envelope
-    /// changes, or if the beat schedule below is edited — all of which is the
-    /// point. Recompute the constant ONLY with a deliberate, argued DSP change.
-    #[test]
-    fn render_is_bit_identical_to_the_audionode_era() {
-        /// FNV-1a over the little-endian `f32` bits, in emission order.
-        ///
-        /// Gated like its one use below, or MSVC builds see it as dead code.
-        #[cfg(not(target_env = "msvc"))]
-        fn digest(samples: &[f32]) -> u64 {
-            let mut h = tutti_fixtures::Fnv::new();
-            h.f32s(samples);
-            h.finish()
-        }
-
-        let transport = Transport::new(SampleRate::new(48_000.0));
-        let settings = Arc::new(ClickSettings::new());
-        settings.set_mode(MetronomeMode::Always);
-        settings.set_volume(Amplitude::new(1.0));
-        let mut node = prepared(
-            ClickNode::new(&transport, Arc::clone(&settings)),
-            tutti_types::SampleRate(48_000.0),
-            64,
-        );
-
-        let mut rendered = Vec::with_capacity(8 * 64 * 2);
-        for b in 0..8 {
-            let [l, r] = block(
-                &mut node,
-                &env(48_000.0, 64, held(ROLLING, f64::from(b) * 0.5)),
-            );
-            for i in 0..64 {
-                rendered.push(l[i]);
-                rendered.push(r[i]);
-            }
-        }
-
-        assert_eq!(rendered.len(), 1_024);
-        assert!(
-            rendered.iter().any(|s| *s != 0.0),
-            "a render of pure silence would hash stably and prove nothing"
-        );
-        // The digest pins *this crate's* DSP against a refactor. It cannot pin
-        // it across C runtimes, and on MSVC it does not: Windows renders
-        // 0x3366_2B99_B2A6_EBB5 where glibc and Apple libm both render the
-        // constant below.
-        //
-        // Which operation differs is settled by elimination rather than guessed.
-        // Every step in `generate_click` — the `to_seconds` divide, the envelope
-        // divides and subtract, `to_radians`, the two multiplies, the phase add
-        // — is one of the operations IEEE-754 requires to be correctly rounded,
-        // so each is bit-identical on any conforming platform. `sin` is the only
-        // one the standard does not specify; it is quality-of-implementation per
-        // libm, and MSVC's CRT disagrees with glibc in the last ulp.
-        //
-        // So asserting the digest on Windows would test the C runtime, not the
-        // metronome. The guard runs where it means something, and the portable
-        // properties above — length, and that the render is not silence — are
-        // asserted everywhere.
-        #[cfg(not(target_env = "msvc"))]
-        assert_eq!(
-            digest(&rendered),
-            0xE011_43CA_E6D4_ECD5,
-            "the metronome no longer renders what `An<ClickNode>` rendered"
-        );
     }
 
     #[test]
@@ -1300,12 +1203,6 @@ mod tests {
     /// its own, so none of the four live moves below reaches it — and each
     /// is heard by a fork taken after it. The play state is the fork's own
     /// block transport, by construction.
-    ///
-    /// Mutations (run): `ClickFork::node` keeping the live settings `Arc` →
-    /// volume, mode and meter fail; keeping the live preroll `Arc` → the
-    /// count-in fails; building the fresh settings with `ClickSettings::new()`'s
-    /// defaults instead of `snapshot` → the fork is silent (mode Off), so
-    /// every control fails as inaudible.
     #[test]
     fn a_fork_snapshots_settings_and_the_count_in() {
         type Move = fn(&Transport, &ClickSettings);

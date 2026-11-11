@@ -847,8 +847,8 @@ mod golden {
     ///
     /// The tolerance is relative (`1e-5` of the value, floored at `1e-5`) and
     /// not bit-exact on purpose: the FFT's twiddle factors come from the
-    /// platform's `sin`/`cos`, which differ in the last ulp between C runtimes
-    /// (CLAUDE.md, "one live platform difference"), and a convolution sums
+    /// platform's `sin`/`cos`, which differ in the last ulp between C runtimes,
+    /// and a convolution sums
     /// hundreds of products. Every mutation below moves samples by orders of
     /// magnitude more.
     ///

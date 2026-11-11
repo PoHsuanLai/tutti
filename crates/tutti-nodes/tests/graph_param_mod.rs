@@ -16,11 +16,6 @@
 //! - the lane's knob is the node's own control, so a write to it moves the
 //!   driven param, the lane's offset riding on it
 //!   (`an_authored_write_moves_the_base_under_modulation`).
-//!
-//! Ported from an audio-rate source (`ParamFrom::Audio` of
-//! a `Const`, gone with audio-rate param sources, §10, §11) to the lane an
-//! engine wires; the shaping oracle (`param_mod_oracle.rs`) went with
-//! `ParamModShaping`.
 
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
@@ -726,13 +721,6 @@ fn settled(out: &[Vec<f32>]) -> impl Iterator<Item = (usize, usize, f32)> + '_ {
 /// The port of `param_ports.rs`' "the advertised port is the one the DSP
 /// reads at every width".
 ///
-/// Mutation (run): in the SVF's `process`, read the Q port as its cutoff
-/// (`io.param(1)` for `io.param(0)`) → "svf cutoff" sounds nothing like a
-/// cutoff → fails. Declare `DELAY_PARAMS` in the other order →
-/// fails. (A swapped `param_base` is not seen here, since the lane drives
-/// the value whatever the base: the nodes' own `the_feed_declares_*` /
-/// `the_shape_is_*` tests pin the bases.)
-///
 /// The block-rate cases (`block_rate_cases`, the params doc 014 §12.6 made
 /// ports) were each run with the node ignoring that driven port and reading
 /// its cell instead, and each failed: the LFO rate (chorus and phaser), the
@@ -904,10 +892,6 @@ fn plain_distortion(d: f32) -> Vec<f32> {
 /// Changed in doc 014 §12.6: the offset was an audio source added to the
 /// node's base by the port; it is now the lane's constant layer (`Wave::Const`,
 /// a twentieth of the port's 0..10 span), added to the knob by the lane.
-///
-/// Mutation (run): the lane building its knob from a snapshot of the cell
-/// (`Arc::new(AtomicF32::new(knob.load()))` in `drive`'s call) → the write
-/// never reaches the driven drive → fails.
 #[test]
 fn an_authored_write_moves_the_base_under_modulation() {
     let node = DistortionNode::with_channels(1u16, ShapeKind::Tanh, Drive::new(1.0));
@@ -949,9 +933,6 @@ fn an_authored_write_moves_the_base_under_modulation() {
 
 /// A crossed range (its min above its max) is ordered, never a panic: a
 /// value past it clamps to the higher bound.
-///
-/// Mutation (run): `ParamRange::ordered` returning `(min, max)` as given →
-/// `f32::clamp` panics on the crossed bounds → fails.
 #[test]
 fn a_crossed_range_is_survivable() {
     let node = DistortionNode::with_channels(1u16, ShapeKind::Tanh, Drive::new(1.0));
@@ -978,12 +959,6 @@ fn a_crossed_range_is_survivable() {
 /// port — and connecting and disconnecting a lane is a commit that keeps
 /// the unit (the same generation throughout: nothing is rebuilt, so a
 /// stateful node's state would survive), with no step reaching the output.
-///
-/// Mutation (run): in `ParamState::port`, drop the declick (`fading =
-/// false`) → the connect steps the drive from 1 to 5 in one frame, a step
-/// of 0.6 on a steady tone → fails. Drop the `resync` after connecting →
-/// the steady lane sends nothing, the port reads its base → "the
-/// connection was heard" fails.
 #[test]
 fn an_unmodulated_param_adds_nothing_to_the_plan() {
     let node = DistortionNode::with_channels(1u16, ShapeKind::Tanh, Drive::new(1.0));
@@ -1057,12 +1032,6 @@ fn an_unmodulated_param_adds_nothing_to_the_plan() {
 /// fork's lane is fresh, so it sends its value on its first block (doc 014
 /// §10's fork requirement). From the fork's first frame: a forked unit's
 /// first block is not a change of sources, so nothing fades in.
-///
-/// Mutation (run): drop `fork.params` from `Editor::fork` → the fork plays
-/// the distortion at its base drive → fails. Drop the param sources from
-/// `upstream` → the lane is not forked and the fork refuses to compile the
-/// port → fails. Declick a port's first block (drop the `st.fresh` branch
-/// in `ParamState::port`) → the first frames fade in from drive 1 → fails.
 #[test]
 fn a_fork_modulates_as_the_live_graph_does() {
     let node = DistortionNode::with_channels(1u16, ShapeKind::Tanh, Drive::new(1.0));

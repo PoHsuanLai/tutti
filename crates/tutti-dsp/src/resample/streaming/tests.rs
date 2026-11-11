@@ -1,5 +1,6 @@
 use super::*;
-use crate::testing::sine;
+use tutti_fixtures::signal::{impulse_at, sine};
+use tutti_types::{Amplitude, Hz, Samples};
 
 /// Push `planes` through a [`StreamingResampler`] in blocks of `block` frames
 /// (`None` is the whole signal at once, the two-pass path), then finish.
@@ -189,8 +190,7 @@ fn every_preset_satisfies_its_own_constructor() {
 fn an_impulse_keeps_its_position() {
     let n = 8192;
     let at = 1000usize;
-    let mut plane = vec![0.0f32; n];
-    plane[at] = 1.0;
+    let plane = impulse_at(Samples(n), Samples(at));
 
     for q in [
         ChunkSize::N512,
@@ -198,7 +198,7 @@ fn an_impulse_keeps_its_position() {
         ChunkSize::N2048,
         ChunkSize::N4096,
     ] {
-        let out = resample(&[plane.clone()], 44100, 48000, q);
+        let out = resample(std::slice::from_ref(&plane), 44100, 48000, q);
         let peak = out[0]
             .iter()
             .enumerate()
@@ -219,8 +219,7 @@ fn an_impulse_keeps_its_position() {
 #[test]
 fn the_tail_is_flushed_not_truncated() {
     let n = 4096;
-    let mut plane = vec![0.0f32; n];
-    plane[n - 1] = 1.0;
+    let plane = impulse_at(Samples(n), Samples(n - 1));
     let out = resample(&[plane], 44100, 48000, ChunkSize::N1024);
     let tail_peak = out[0]
         .iter()
@@ -261,7 +260,13 @@ fn level_at(x: &[f32], rate: f64, f_hz: f64, from: usize, to: usize) -> f64 {
 
 /// `n` samples of a sine of amplitude `amp` at `hz`.
 fn tone(hz: f64, rate: f64, n: usize, amp: f32) -> Vec<f32> {
-    sine(hz, rate, n).into_iter().map(|v| v * amp).collect()
+    // `hz` narrows to the unit's `f32`; the probes sit within 1e-3 Hz of it.
+    sine(
+        Hz::new(hz as f32),
+        Amplitude::new(amp),
+        SampleRate::new(rate),
+        Samples(n),
+    )
 }
 
 /// A sine keeps its frequency and amplitude: a 1 kHz, 0.5-amplitude sine
@@ -372,8 +377,7 @@ fn length_and_latency_match_the_documented_values() {
     let r = FftResampler::new(44_100, 48_000, 1024, 2, 1).unwrap();
     assert_eq!(r.output_delay(), 320);
     for q in ChunkSize::PRESETS {
-        let mut plane = vec![0.0f32; 8192];
-        plane[1000] = 1.0;
+        let plane = impulse_at(Samples(8192), Samples(1000));
         let out = resample(&[plane], 44_100, 48_000, q);
         let peak = out[0]
             .iter()

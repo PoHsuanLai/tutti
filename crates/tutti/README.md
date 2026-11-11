@@ -59,6 +59,10 @@ lines. To write a file
 instead, turn on `export` (it brings the `codec` module with it) and bounce the
 session: a `Bounce` names a range and a master, and optionally stems, and
 `Session::bounce` renders it (`examples/headless_export.rs`).
+`examples/song_bounce.rs` is the whole common path, from one
+`use tutti::prelude::*;`: a sampler `Clip` into a filter into a reverb, an LFO
+on the cutoff, `Session::play`, and eight beats bounced to a WAV, with `?`
+through the one `tutti::Error`.
 
 ## How the pieces fit
 

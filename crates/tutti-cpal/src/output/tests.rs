@@ -67,7 +67,7 @@ fn test_transport_advances_with_graph() {
     let (transport, state) = build_callback_state(sample_rate);
 
     transport.settings().set_tempo(tutti_types::Bpm::of(120.0));
-    let _ = transport.motion.try_send(MotionEvent::Play);
+    let _ = transport.motion().try_send(MotionEvent::Play);
 
     let frames = 256;
     let mut output = vec![0.0f32; frames * 2];
@@ -91,7 +91,7 @@ fn test_transport_loop_wrapping() {
 
     transport.settings().set_tempo(tutti_types::Bpm::of(120.0));
     transport
-        .motion
+        .motion()
         .schedule(
             tutti_types::At::NextBlock,
             tutti_transport::LoopEdit::over(
@@ -99,8 +99,8 @@ fn test_transport_loop_wrapping() {
             ),
         )
         .expect("room");
-    let _ = transport.motion.try_send(MotionEvent::Play);
-    let _ = transport.motion.try_send(MotionEvent::locate(Beat(3.99)));
+    let _ = transport.motion().try_send(MotionEvent::Play);
+    let _ = transport.motion().try_send(MotionEvent::locate(Beat(3.99)));
 
     let frames = 1024;
     let mut output = vec![0.0f32; frames * 2];

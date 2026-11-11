@@ -37,9 +37,10 @@ use symphonia::core::formats::{FormatReader, SeekMode, SeekTo};
 use tutti_types::{ChannelLayout, ChannelTopology, SampleRate, Samples};
 use tutti_types::{Pull, Source};
 
-use super::error::{DecodeError, convert};
+use super::error::convert;
 use super::placement::{topology_of, unstated};
 use super::read::{decode_packet_into, first_audio_track, probe_path};
+use crate::DecodeError;
 
 /// A frame count from the file's `u64`, saturating where `usize` is narrower.
 fn frames(n: u64) -> Samples {

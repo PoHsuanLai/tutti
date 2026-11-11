@@ -27,7 +27,7 @@ fn offline() -> Session {
 
 /// Commits and renders one 64-frame block; returns output channel 0.
 fn left(s: &mut Session) -> Vec<f32> {
-    s.update();
+    let _ = s.update();
     let mut block = vec![f32::NAN; 64 * 2];
     s.render(&mut InterleavedMut::new(&mut block, ChannelLayout::STEREO));
     block.iter().step_by(2).copied().collect()
@@ -51,7 +51,7 @@ fn rig() -> Rig {
     let (c, _) = g.insert(Const::mono(C));
     let (sink, _) = g.insert(Through::mono());
     g.set_output_source(0, GraphSource::Node(sink, 0));
-    s.update();
+    let _ = s.update();
     assert!(!s.graph_ref().is_edited());
     Rig { s, a, b, c, sink }
 }
@@ -129,7 +129,7 @@ fn an_unchanged_set_marks_nothing_edited() {
     let mut r = rig();
     r.s.graph().set_sources(r.sink, 0, &[node(r.a), node(r.b)]);
     assert!(r.s.graph_ref().is_edited(), "a change");
-    r.s.update();
+    let _ = r.s.update();
     r.s.graph().set_sources(r.sink, 0, &[node(r.b), node(r.a)]);
     assert!(!r.s.graph_ref().is_edited(), "the same set, reordered");
     r.s.graph().add_source(r.sink, 0, node(r.a));

@@ -135,7 +135,7 @@ fn on_stage(on: On<BounceStage>) { /* fired when the stage changes */ }
 `Result<Outcome<Bounced>, BounceError>` with node keys already mapped back to
 entities in the error. bevy's prelude re-exports the whole config vocabulary
 (`Bounce`, `Stem`, `Range`, `Format`, `Normalize`, `StemGain`, `Dither`,
-`Resample`, `Latency`, `Tail`, `Progress`, `Stage`, `Outcome`).
+`Resample`, `BounceLatency`, `BounceTail`, `Progress`, `Stage`, `Outcome`).
 
 ## 3. Derived defaults and their overrides
 
@@ -149,8 +149,8 @@ common case.
 | Clock | An offline timeline built from the same project tempo source (so it matches playback), started at the range's start beat, with the loop region off. Transport-driven nodes read the same tempo path playback does. | `.clock(ExportClock::frozen())` for an effect or patch bounce; `.clock(ExportClock::timeline(t))` for a hand-built one |
 | Render rate | The session's rate. | `.sample_rate(r)`: the graph is forked and prepared at `r`. |
 | File rate | The render rate. | `.resample(Resample::to(rate))` |
-| Latency | The compiled plan's total latency, trimmed from the head of every target. | `.latency(Latency::Keep \| Frames(n))` |
-| Tail | `GraphTail::resolve(cap)` with `cap` = 10 s, plus any untrimmed latency; added to the audible span. | `.tail(Tail::None \| Frames(n) \| Graph { cap })` |
+| BounceLatency | The compiled plan's total latency, trimmed from the head of every target. | `.latency(BounceLatency::Keep \| Frames(n))` |
+| BounceTail | `GraphTail::resolve(cap)` with `cap` = 10 s, plus any untrimmed latency; added to the audible span. | `.tail(BounceTail::None \| Frames(n) \| Graph { cap })` |
 | Root topology | The session's declared root topology (`declare_root_topology`), for the master. A stem takes its own (§7.3), never the master's. | `.root_topology(Option<ChannelTopology>)` |
 | Master width | The root's width. Wider-than-file folds through `Fold`, never truncates. | `.channels(layout)`, `.file_topology(t)` |
 | Plugin forks | State-transfer fork per hosted plugin, one `plugin-server` per plugin for the whole bounce (not per target); Offline announced at start, Realtime at finish. | None: the bounce cannot render without it. |
@@ -164,7 +164,7 @@ common case.
 The tail row owns what [022](022-reverb.md) §12.4 deferred: the phase that resolves
 the tail at the programme's end, from what the graph reports then, instead of the
 ceiling. Step 0b shipped the fallback (export spends the ceiling against `cap`),
-and this design's `Tail::Graph { cap }` is where the second phase goes; the
+and this design's `BounceTail::Graph { cap }` is where the second phase goes; the
 executor view and `reported_tail_now()` of 022 §12.4 are built with it.
 
 Rule: a derived figure is computed once, at one point (job start or the fork
@@ -525,7 +525,7 @@ proceed in parallel with E3.
 | 2 | `Control`, `Progress`, `Stage`, `CancelToken` | Replace `Flow`/`Pass`/`_with`; add the weight table; cancel checks in measure, resample flush, finalize (needs E1's chunked measurer). Session's `ExportHandle` wraps `CancelToken`. | The five `render_*` functions keep their names and lose the twins in the same PR; callers migrate in it. |
 | 3 | `Output`, `Feed`, `Target`, `render` | The multi-sink pass, tap draining, the shared-gain normalize and the spill; `render` replaces the `render_*` functions, which are deleted with their callers' migration (tests, examples, session). | One PR, because the old and new entry points cannot both own the block loop. |
 | 4 | Sealed `RenderGraph` | Move `gather/build/set_pool/set_root_topology/editor_mut/commit` into a private session `Fork`; add `RenderGraph::assemble`; move the session-only `ConfigError` variants to the session. | Session is the only caller of the machinery; `clap_fork.rs` migrates here. |
-| 5 | `Bounce`, master only | `Bounce`, `Range`, `Latency`, `Tail`, `Stem` (declared, rejected as unsupported until step 6), `Session::{bounce, bounce_start, finish_bounce}`, `BounceHandle`, `BounceError`; derived defaults including the project-tempo clock; `ExportRequest` and friends deleted in the same PR with `tutti` examples migrated. bevy still compiles against a temporary thin wrapper over `Bounce`. | The wrapper is removed in step 7. |
+| 5 | `Bounce`, master only | `Bounce`, `Range`, `BounceLatency`, `BounceTail`, `Stem` (declared, rejected as unsupported until step 6), `Session::{bounce, bounce_start, finish_bounce}`, `BounceHandle`, `BounceError`; derived defaults including the project-tempo clock; `ExportRequest` and friends deleted in the same PR with `tutti` examples migrated. bevy still compiles against a temporary thin wrapper over `Bounce`. | The wrapper is removed in step 7. |
 | 6 | Stems | Tap opening on the fork, `Placement`, `StemGain`, `TapOverrun`, alignment test (stem equals master when the stem is the only source; stems sum to the master within one LSB), serial-versus-parallel bit identity with stems, cancel tests for every point in §6.2. | Additive; a bounce without stems is unchanged. |
 | 7 | bevy | `BounceRequest`, `BounceDone`, `BounceInFlight`, `BounceStage`, `BouncePlugin`, entity resolution, prelude re-exports; delete the mirror and the wrapper; tests and example migrated. | |
 | 8 | Docs and cleanup | READMEs, CLAUDE.md workspace table, doc 015 §4.3 note, this doc's status line, `check-adapter.sh` exception review. | |
@@ -745,7 +745,7 @@ the text above:
   themselves (`Editor::fork` or `GraphBuilder::build`) and assemble it. A test
   that edited a built graph (opening a tap) edits the pair before assembling.
 
-**As built (step 5).** `Bounce`, `Range`, `Latency`, `Tail`, `Bounced`,
+**As built (step 5).** `Bounce`, `Range`, `BounceLatency`, `BounceTail`, `Bounced`,
 `BounceJob`, `BounceHandle`, `BounceRendered`, `BounceError` and
 `BounceConfigError` (`tutti-session/src/bounce.rs`, the old `export.rs`);
 `Session::{bounce, bounce_start, finish_bounce, finish_bounce_unannounced,
@@ -789,11 +789,11 @@ itself. Every caller is migrated (the session suites, `clap_fork.rs`, the
 - **The clock** defaults to an `OfflineTimeline` over that same map, seated
   at the range's first beat with the loop off. Its config takes the map
   (`OfflineTimelineConfig::tempo_map`, doc 020 stage 6).
-- **Latency and tail.** `Latency` has the default as a variant (`Graph`,
-  `Keep`, `Frames`); `Tail::Graph { cap }` takes the cap in `Seconds` (10 s,
-  `Tail::CAP`), converted at the render's rate. The latency the bounce does not
+- **BounceLatency and tail.** `BounceLatency` has the default as a variant (`Graph`,
+  `Keep`, `Frames`); `BounceTail::Graph { cap }` takes the cap in `Seconds` (10 s,
+  `BounceTail::CAP`), converted at the render's rate. The latency the bounce does not
   trim is added to the tail in **every** tail mode, not only the graph's, since
-  a tail excludes latency and `Tail::None` with `Latency::Keep` would otherwise
+  a tail excludes latency and `BounceTail::None` with `BounceLatency::Keep` would otherwise
   cut the programme's end.
 - **The master's width** is the root's (`ChannelLayout::clamped(outputs)`)
   unless `.channels(..)`; a node's is the node's. `.normalize` on
@@ -948,6 +948,8 @@ from the text above:
   on it; `finish_bounce`, `finish_bounce_unannounced` and `bounce` return
   `Result<Bounced<M>, BounceError>` and the session no longer names `Outcome`.
   `tutti-export`'s own `render` keeps `Outcome` for its own callers.
+
+- **The policies are `BounceLatency` and `BounceTail`.** Named `Latency` and `Tail` they shadowed `tutti_types::Latency` and `Tail` (what `Shape::with_latency` and `with_tail` take) in the prelude and gave E0308 in a node's shape. The prelude now carries the graph's `Latency` and `Tail` under their own names.
 
 Test policy applies throughout: every new case must be able to fail (checked once, said in the PR); no existing
 test is relaxed; the parallel path is compared to the serial render bit for bit;

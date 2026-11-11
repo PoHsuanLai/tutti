@@ -53,7 +53,7 @@ fn the_graph_sees_each_reverbs_ceiling() {
         FdnDesign::new(8, Seconds(8.0), true).unwrap(),
         FdnControls::DEFAULT,
     ));
-    s.update();
+    let _ = s.update();
     let Tail::Finite(n) = s.graph_ref().node_tail(plain) else {
         panic!("finite")
     };

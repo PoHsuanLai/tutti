@@ -34,7 +34,7 @@ fn an_update_runs_the_work_a_thread_deferred_to_the_main_thread() {
         "not run by the deferring thread"
     );
 
-    session.update();
+    let _ = session.update();
     assert!(
         ran_on_main.load(Ordering::SeqCst),
         "the update did not run the deferred work on the main thread"

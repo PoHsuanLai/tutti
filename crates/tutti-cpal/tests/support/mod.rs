@@ -80,7 +80,7 @@ pub fn rolling_state(outputs: usize) -> (Transport, Arc<AudioCallbackState>) {
     let state = AudioCallbackState::new(engine);
 
     transport.settings().set_tempo(Bpm::of(120.0));
-    let _ = transport.motion.try_send(MotionEvent::Play);
+    let _ = transport.motion().try_send(MotionEvent::Play);
 
     (transport, Arc::new(state))
 }

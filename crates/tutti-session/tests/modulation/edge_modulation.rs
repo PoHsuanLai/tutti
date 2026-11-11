@@ -38,7 +38,7 @@ fn offline() -> Session {
 
 fn settle(s: &mut Session) {
     for _ in 0..6 {
-        s.update();
+        let _ = s.update();
     }
     assert_eq!(s.mod_state().refusal(), None, "the declarations apply");
     assert_eq!(

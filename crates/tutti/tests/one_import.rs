@@ -106,17 +106,17 @@ fn a_graph_bounces_to_buffers_through_the_facade() {
 fn a_timed_transport_program_needs_only_the_prelude() {
     let transport = Transport::new(SampleRate::new(48_000.0));
     transport
-        .motion
+        .motion()
         .schedule(At::Frame(Frame(128)), MotionEvent::Play)
         .expect("room");
     transport
-        .motion
+        .motion()
         .schedule(
             At::Beat(Beat(16.0)),
             TransportCommand::Motion(MotionEvent::stop()),
         )
         .expect("room");
-    assert_eq!(transport.motion.scheduled_outstanding(), 2);
+    assert_eq!(transport.motion().scheduled_outstanding(), 2);
 
     let map = MeterMap::default();
     let bar: BarNumber = map.bar_numbers()[0];

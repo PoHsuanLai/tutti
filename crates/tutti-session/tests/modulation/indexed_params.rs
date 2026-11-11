@@ -35,7 +35,7 @@ fn offline() -> Session {
 /// returns the two output channels.
 fn render(s: &mut Session, frames: usize) -> [Vec<f32>; 2] {
     s.transport()
-        .motion
+        .motion()
         .try_send(MotionEvent::Play)
         .expect("room");
     let mut all = [Vec::new(), Vec::new()];
@@ -58,7 +58,7 @@ fn set_param_writes_the_index_it_names() {
     let (node, _) = s.graph().add(Bands::new(100.0, 500.0));
     s.graph().set_output_source(0, GraphSource::Node(node, 0));
     s.graph().set_output_source(1, GraphSource::Node(node, 1));
-    s.update();
+    let _ = s.update();
 
     let [a, b] = render(&mut s, 256);
     assert!(a.iter().all(|&x| x == 100.0) && b.iter().all(|&x| x == 500.0));
@@ -86,7 +86,7 @@ fn set_param_writes_the_index_it_names() {
 fn the_graph_declares_each_index() {
     let mut s = offline();
     let (node, _) = s.graph().add(Bands::new(0.0, 0.0));
-    s.update();
+    let _ = s.update();
     assert!(s.graph().declares_param(node, BAND0));
     assert!(s.graph().declares_param(node, BAND1));
     assert!(s.graph().declares_param(node, UnitParam::Threshold));
@@ -127,7 +127,7 @@ fn a_route_to_index_1_does_not_touch_index_0() {
     let lfo = m.lfo(Lfo::sine().rate(BeatDuration(0.5)));
     m.route(lfo, band1, Depth(0.3));
     for _ in 0..4 {
-        s.update();
+        let _ = s.update();
     }
     assert_eq!(s.mod_state().refusal(), None, "the declarations apply");
     assert_eq!(s.mod_state().unresolved_targets(), &[], "and resolve");

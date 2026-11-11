@@ -385,7 +385,7 @@ crates/          everything shipped; directory name = package name; no nesting
                  `Recorder` / `PumpLoop`, a source pumped into a sink (feature `record`; a
                  recording dithers only by wrapping its sink in `tutti_dsp::DitherSink`), and
                  the bounce (feature `export`, doc 019): `Bounce` (the master's fork, a
-                 `Range`, `Latency`, `Tail`, `stem`s, each a plan tap) through
+                 `Range`, `BounceLatency`, `BounceTail`, `stem`s, each a plan tap) through
                  `Session::{bounce, bounce_start, finish_bounce}`, `BounceJob`,
                  `BounceHandle` and `BounceError`; it derives the figures and
                  `tutti-export` renders them.
@@ -489,7 +489,8 @@ crates/          everything shipped; directory name = package name; no nesting
                  builds no other crate's error: the frame limit is the encoder's
                  (`Encoder::create_file_planned`), a resampled length the resampler's
                  (`StreamingResampler::output_frames`), the clamp count the encoder's
-  tutti-nodes (the `Node` adapters, the VBAP and HRTF panners among them), tutti-sampler, tutti-polysynth,
+  tutti-nodes (the `Node` adapters, the VBAP and HRTF panners among them), tutti-sampler
+                 (a placed sample is a `Clip`, itself a graph node; `memory_voice` is for pools), tutti-polysynth,
   tutti-soundfont (the SoundFont player: the node, the voices, the patch that
                  turns a note into voices; it executes `tutti-voicing`'s
                  commands), tutti-sf2 (the SoundFont 2 file as data)
@@ -1114,6 +1115,9 @@ Scalars use `Param<U>`.
   declared ports that differ into the session graph's spec, and the frame's
   commit compiles it iff the graph was edited (`Graph::is_edited`); PDC is
   the compiler's, and nothing is spliced into the graph.
+- `Graph::connect(from, to)` adds `from`'s main output as sources of `to`'s main input,
+  channel by channel, and `Graph::chain` does it down a list; a width mismatch is
+  `ConnectError::Width` (never a truncation: a width change is `connect_bus`).
 - A headless `Session` declares through its own spec, keyed by
   `NodeKey`, and `Session::update()` commits iff the graph was edited.
 - **The root's channels are declared too** (`MasterTopology`, a pure
@@ -1340,7 +1344,8 @@ read the `Cargo.toml`, grep for the type, run the probe.
   `Bounce::node` → a `stem` of the master's fork; `Field::Master`, `Bounced::{targets, into_targets}`
   and the session's `Outcome<Bounced>` → `Bounce<N, M>` over a `Master` kind (`FileMaster`,
   `BufferMaster`), `Bounced<M>::{master, stems, into_master, into_parts}` and
-  `BounceError::Cancelled`; `Transport`'s public `settings` field → `Transport::settings()`. `bevy-tutti`'s `ExportRequest`,
+  `BounceError::Cancelled`; the bounce's `Latency` and `Tail` → `BounceLatency` and `BounceTail` (the graph's `tutti_types::{Latency, Tail}` keep their names); `Transport`'s public `settings` and `motion` fields → `Transport::settings()` and
+  `Transport::motion()` (and the session's `play`, `stop`, `locate`, `schedule`, `set_tempo`). `bevy-tutti`'s `ExportRequest`,
   `ExportPlugin`, `ExportDone` and `ExportInFlight` stay until step 7 un-parks it.
 
 ## Consumers: the pin that must stay in step

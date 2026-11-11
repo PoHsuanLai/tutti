@@ -125,7 +125,7 @@ fn graph_engine_with_timed_transport_is_allocation_free() {
         .expect("room");
     }
 
-    let m = &transport.motion;
+    let m = &transport.motion();
     assert_no_alloc::assert_no_alloc(|| {
         for round in 0..20u64 {
             let base = 1024 * (1 + 8 * round);
@@ -261,7 +261,7 @@ fn a_step_map_is_followed_without_allocating() {
     let engine = Engine::new(&transport, &mut ed, exec).expect("within the limits");
     transport.settings().set_tempo_map(dense(90.0));
     transport
-        .motion
+        .motion()
         .try_send(MotionEvent::play_from(Beat(0.0)))
         .expect("room");
     let mut output = vec![0.0f32; 1024 * 2];
@@ -273,7 +273,7 @@ fn a_step_map_is_followed_without_allocating() {
         transport
             .settings()
             .set_tempo_map(dense(80.0 + f64::from(round)));
-        let m = &transport.motion;
+        let m = &transport.motion();
         m.schedule(
             At::NextBlock,
             LoopEdit::over(LoopRange::new(Beat::new(0.0), Beat::new(0.02)).expect("ordered")),
@@ -327,7 +327,7 @@ fn a_step_map_is_followed_without_allocating() {
         .settings()
         .set_tempo_map(ramp(60.0, Shape::RampTime));
     transport
-        .motion
+        .motion()
         .try_send(MotionEvent::play_from(Beat(0.0)))
         .expect("room");
     let mut output = vec![0.0f32; 4_096 * 2];
@@ -346,7 +346,7 @@ fn a_step_map_is_followed_without_allocating() {
         transport
             .settings()
             .set_tempo_map(ramp(50.0 + f64::from(round), shape));
-        let m = &transport.motion;
+        let m = &transport.motion();
         m.schedule(
             At::NextBlock,
             LoopEdit::over(LoopRange::new(Beat::new(0.1), Beat::new(0.3)).expect("ordered")),
@@ -393,7 +393,7 @@ fn the_heard_tap_is_allocation_free() {
     }));
     ed.commit().expect("commits");
     let engine = Engine::new(&transport, &mut ed, exec).expect("within the limits");
-    let _ = transport.motion.try_send(MotionEvent::Play);
+    let _ = transport.motion().try_send(MotionEvent::Play);
     let taps = engine.heard_taps();
     let mut output = vec![0.0f32; 1024 * 2];
     let layout = ChannelLayout::STEREO;
@@ -501,9 +501,9 @@ fn graph_engine_with_env_clock_and_metronome_is_allocation_free() {
     // Applying the commit allocates; that is the control side's price.
     engine.process(&mut InterleavedMut::new(&mut output, four));
     ed.collect();
-    let _ = transport.motion.try_send(MotionEvent::Play);
+    let _ = transport.motion().try_send(MotionEvent::Play);
 
-    let m = &transport.motion;
+    let m = &transport.motion();
     let mut clicked = false;
     assert_no_alloc::assert_no_alloc(|| {
         for round in 0..20u64 {

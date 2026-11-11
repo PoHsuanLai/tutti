@@ -104,7 +104,7 @@ fn chain_engine(outputs: usize) -> Engine {
     let engine = Engine::new(&transport, &mut ed, exec).expect("within the limits");
 
     transport.settings().set_tempo(Bpm::of(120.0));
-    let _ = transport.motion.try_send(MotionEvent::Play);
+    let _ = transport.motion().try_send(MotionEvent::Play);
     engine
 }
 

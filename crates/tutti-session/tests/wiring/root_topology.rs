@@ -27,7 +27,7 @@ fn feed(session: &mut Session, values: &[f32]) {
 /// Frame 0 of the second device block (the first installs the plan), after the
 /// session commits. `device` channels wide.
 fn heard(session: &mut Session, device: u16) -> Vec<f32> {
-    session.update();
+    let _ = session.update();
     let layout = ChannelLayout::from(device);
     let mut out = vec![-9.0f32; usize::from(device) * 64];
     for _ in 0..2 {
@@ -218,11 +218,11 @@ fn a_refusal_is_a_status_not_a_log_line() {
 #[test]
 fn declaring_the_same_topology_again_changes_nothing() {
     let mut s = offline(Session::builder().root_topology(buses(4)), 6).unwrap();
-    s.update();
+    let _ = s.update();
     let sent = s.graph_ref().commits_sent();
     s.declare_root_topology(Some(buses(4))).unwrap();
-    s.update();
-    s.update();
+    let _ = s.update();
+    let _ = s.update();
     assert_eq!(s.root_topology(), Some(&buses(4)));
     assert_eq!(s.graph_ref().commits_sent(), sent);
     assert_eq!(s.root_topology_status(), RootTopologyStatus::Applied);
@@ -233,7 +233,7 @@ fn declaring_the_same_topology_again_changes_nothing() {
 #[cfg(feature = "export")]
 #[test]
 fn an_export_is_placed_from_the_declaration() {
-    use tutti_session::{Bounce, ExportClock, Latency, Range, Tail};
+    use tutti_session::{Bounce, BounceLatency, BounceTail, ExportClock, Range};
     let planes = |s: &mut Session| {
         let request = Bounce::project()
             .master_buffers()
@@ -244,8 +244,8 @@ fn an_export_is_placed_from_the_declaration() {
             ))
             .sample_rate(RATE)
             .clock(ExportClock::frozen())
-            .latency(Latency::Keep)
-            .tail(Tail::None);
+            .latency(BounceLatency::Keep)
+            .tail(BounceTail::None);
         let rendered = s.bounce(request).unwrap().into_master();
         rendered.planes().iter().map(|p| p[0]).collect::<Vec<_>>()
     };

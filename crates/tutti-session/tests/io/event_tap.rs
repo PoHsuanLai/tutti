@@ -140,16 +140,16 @@ fn a_dropped_reader_leaves_the_plan_at_the_reclaim_phase() {
         .graph()
         .open_event_tap(source, TapAlign::Raw, 64)
         .expect("the port exists");
-    s.update();
+    let _ = s.update();
     assert_eq!(tap_ops(&s), 1, "one op a tap while it is open");
     drop(tap);
-    s.update();
+    let _ = s.update();
     assert_eq!(
         tap_ops(&s),
         1,
         "the reclaim of this update closed it; the plan is the last commit's"
     );
-    s.update();
+    let _ = s.update();
     assert_eq!(tap_ops(&s), 0, "closed");
 }
 

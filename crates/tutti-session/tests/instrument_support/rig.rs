@@ -43,7 +43,7 @@ impl Rig {
     /// A rig over a handle the session already made.
     pub fn wired(mut session: Session, handle: InstrumentHandle) -> Self {
         session.graph().set_outputs_from(handle.out());
-        session.update();
+        let _ = session.update();
         Self {
             session,
             node: handle.node(),
@@ -67,7 +67,7 @@ impl Rig {
         let mut buf = vec![0.0f32; BLOCK * 2];
         self.session
             .render(&mut InterleavedMut::new(&mut buf, ChannelLayout::STEREO));
-        self.session.update();
+        let _ = self.session.update();
         std::thread::sleep(self.pace);
         for f in buf.as_chunks::<2>().0 {
             self.left.push(f[0]);

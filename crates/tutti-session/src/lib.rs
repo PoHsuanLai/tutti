@@ -81,14 +81,14 @@ mod watch;
 #[cfg(feature = "export")]
 pub use bounce::{
     BOUNCE_STALL_WARNING, Bounce, BounceConfigError, BounceError, BounceHandle, BounceJob,
-    BounceRendered, Bounced, BufferMaster, ExportClock, Field, FileMaster, Latency, Master,
-    NoMaster, PrepareEdit, PreparedGraph, Range, Stem, StemGain, Tail,
+    BounceLatency, BounceRendered, BounceTail, Bounced, BufferMaster, ExportClock, Field,
+    FileMaster, Master, NoMaster, PrepareEdit, PreparedGraph, Range, Stem, StemGain,
 };
 pub use builder::{SessionBuilder, root_width};
 #[cfg(feature = "device")]
 pub use device::{Device, DeviceRestart, DeviceRestarted};
 pub use edge::{EdgeGainError, EdgeRef, EdgeSink};
-pub use error::{Error, HeardTapError, InletError, Result};
+pub use error::{ConnectError, Error, HeardTapError, InletError, Result};
 #[cfg(feature = "soundfont")]
 pub use general_midi::GeneralMidi;
 #[cfg(feature = "modulation")]

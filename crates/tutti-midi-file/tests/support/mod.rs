@@ -1,16 +1,12 @@
 //! A second opinion on SMF bytes: an encoder and decoder written from the
-//! spec, sharing no code with `midly`.
+//! spec, sharing no code with the crate.
 //!
 //! # Why this exists rather than an oracle crate
 //!
-//! `tutti-midi-file` wraps `midly`, so `midly` cannot be its own second
-//! opinion — it *is* the thing under test at the chunk/varint layer. The
-//! alternatives were checked and none qualifies: `nodi` wraps midly, `rimd` is
-//! unmaintained, and `midi-file` is a thin reader. So the repo's oracle
-//! pattern (`tests/oracle_decode.rs` encodes with hound and decodes with
-//! symphonia; `tests/oracle_pitch.rs` checks tutti's YIN against another
-//! crate's) has no off-the-shelf partner here, and the honest substitute is to
-//! write one.
+//! The crate reads and writes the bytes itself, so it cannot be its own
+//! second opinion at the chunk/varint layer. No off-the-shelf crate qualifies
+//! as a partner (`nodi` wraps a reader, `rimd` is unmaintained, `midi-file` is
+//! a thin reader), so the honest substitute is to write one from the spec.
 //!
 //! # Why this rather than checked-in `.mid` fixtures
 //!
@@ -28,8 +24,8 @@
 //! Enough of SMF 1.0 to be a real cross-check: `MThd`/`MTrk` framing, the
 //! variable-length quantity, running status, meta events (tempo, time
 //! signature, track name, end-of-track), sysex, and both metrical and SMPTE
-//! division headers. It is intentionally literal — no cleverness, so that when
-//! it and `midly` disagree, the disagreement is informative.
+//! division headers. It is intentionally literal: no cleverness, so that when
+//! it and the crate disagree, the spec says which is wrong.
 
 #![allow(dead_code)]
 // Each integration-test binary compiles this tree separately, and no single
@@ -39,8 +35,8 @@
 // ---------------------------------------------------------------- writing --
 
 /// The variable-length quantity: 7 bits per byte, big-endian, continuation bit
-/// set on every byte but the last. Spelled out rather than borrowed, because
-/// the encoder under test delegates exactly this to `midly`.
+/// set on every byte but the last. Spelled out rather than borrowed, so the
+/// oracle shares no code with the encoder under test.
 pub fn write_vlq(out: &mut Vec<u8>, mut value: u32) {
     let mut buf = [0u8; 4];
     let mut n = 0;
@@ -125,7 +121,7 @@ impl RawEvent {
     }
 
     /// A channel message with its status byte omitted — legal when the
-    /// previous event carried the same status. `midly` must reinstate it.
+    /// previous event carried the same status. a reader must reinstate it.
     pub fn running_status(delta: u32, data: impl Into<Vec<u8>>) -> Self {
         Self::new(delta, data)
     }

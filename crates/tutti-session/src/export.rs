@@ -21,8 +21,10 @@
 //!
 //! **Cancelling and watching.** A job carries an [`ExportHandle`]
 //! ([`ExportJob::handle`]), cloned to whoever watches: [`cancel`](ExportHandle::cancel)
-//! stops the render at its next block (or before it starts), and
-//! [`progress`](ExportHandle::progress) reads how far it is. A cancelled job
+//! stops the render at the next point the pipeline checks (every block,
+//! between its stages, and before each file is finalized and put in place; or
+//! before it starts), and [`progress`](ExportHandle::progress) reads its
+//! stage and fraction. A cancelled job
 //! returns [`Outcome::Cancelled`] from [`Session::finish_export`] like any
 //! other job returns, drops its token when the render has stopped, and
 //! leaves a [`File`](ExportTarget::File) target's path as it was.
@@ -42,14 +44,13 @@
 //! thread. Something sent once the session is gone drops where it is.
 
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
 use tutti_export::{
-    ConfigError, ExportConfig, Flow, Normalize, Outcome, Progress, RenderClock, RenderGraph,
-    Rendered, Written,
+    CancelToken, ConfigError, Control, ExportConfig, Normalize, Outcome, Progress, RenderClock,
+    RenderGraph, Rendered, Written,
 };
 use tutti_graph::NodeKey;
 use tutti_transport::OfflineTransport;
@@ -503,60 +504,50 @@ impl<T: Send + 'static> Drop for ToMain<T> {
     }
 }
 
-/// What a job and its handles share: a stop request and the latest
-/// [`Progress`]. The render writes the reading once per block on its own
-/// thread and a host reads it on its own; neither is an audio thread, so a
-/// lock is enough.
-#[derive(Debug, Default)]
-struct Shared {
-    stop: AtomicBool,
-    progress: Mutex<Option<Progress>>,
-}
-
 /// A handle on a running export: stops it, and reads how far it is. Cheap
 /// to clone, `Send` and `Sync`; any host reads the same reading, from any
 /// thread, without waiting on the render.
+///
+/// It wraps the render's [`CancelToken`] and the latest [`Progress`]. The
+/// render writes the reading when the pipeline delivers one (every 4096
+/// frames of a stage that counts them, and at every stage change) on its own
+/// thread and a host reads it on its own; neither is an audio thread, so a
+/// lock is enough.
 #[derive(Debug, Clone, Default)]
-pub struct ExportHandle(Arc<Shared>);
+pub struct ExportHandle {
+    cancel: CancelToken,
+    progress: Arc<Mutex<Option<Progress>>>,
+}
 
 impl ExportHandle {
-    /// Asks the render to stop. It does at the end of its current block
-    /// (before the first, for a job that has not rendered one), reports
-    /// [`Outcome::Cancelled`] and drops the export's token; the file it
-    /// was writing is removed and the target path is untouched. A cancel
-    /// after the last block's tick is too late and the render is `Finished`.
+    /// Asks the render to stop. It does at the next point the pipeline checks
+    /// (every block, between stages, during the measurement and the
+    /// conversion, before each file is finalized and before it is put in
+    /// place: doc 019 section 6.2), or before it starts for a job that has not
+    /// run. It reports [`Outcome::Cancelled`] and drops the export's token;
+    /// every temporary file is removed and the target path is untouched. A
+    /// cancel after the file is in place is too late and the render is
+    /// `Finished`.
     pub fn cancel(&self) {
-        self.0.stop.store(true, Ordering::Release);
+        self.cancel.cancel();
     }
 
-    /// How far the render is: the latest block's reading, or `None` before
-    /// the first block. For a normalized file export the passes come in
-    /// order ([`Progress::pass`]).
+    /// How far the render is: the latest reading the pipeline delivered, or
+    /// `None` before the first. Its [`stage`](Progress::stage) says what the
+    /// render is doing and its [`fraction`](Progress::fraction) how far
+    /// through the whole of it, the pipeline's own weights.
     #[must_use]
     pub fn progress(&self) -> Option<Progress> {
-        *self
-            .0
-            .progress
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
+        *self.progress.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
     fn stop_requested(&self) -> bool {
-        self.0.stop.load(Ordering::Acquire)
+        self.cancel.is_cancelled()
     }
 
-    /// The render's tick: records the block and answers whether to go on.
-    fn tick(&self, p: Progress) -> Flow {
-        *self
-            .0
-            .progress
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner) = Some(p);
-        if self.stop_requested() {
-            Flow::Stop
-        } else {
-            Flow::Continue
-        }
+    /// The render's callback: records the reading.
+    fn record(&self, p: &Progress) {
+        *self.progress.lock().unwrap_or_else(PoisonError::into_inner) = Some(*p);
     }
 }
 
@@ -691,29 +682,34 @@ impl ExportJob {
                 _token: token,
             };
         }
-        let tick = &mut |p| handle.tick(p);
+        let record = &mut |p: &Progress| handle.record(p);
+        let mut control = Control::new(&handle.cancel).on_progress(record);
         let result = match target {
             ExportTarget::File {
                 path,
                 normalize: None,
-            } => {
-                tutti_export::render_to_file_with(&mut *graph, &config, clock.as_ref(), &path, tick)
-                    .map(|o| o.map(ExportOutput::File))
-            }
+            } => tutti_export::render_to_file(
+                &mut *graph,
+                &config,
+                clock.as_ref(),
+                &path,
+                &mut control,
+            )
+            .map(|o| o.map(ExportOutput::File)),
             ExportTarget::File {
                 path,
                 normalize: Some(normalize),
-            } => tutti_export::render_normalized_to_file_with(
+            } => tutti_export::render_normalized_to_file(
                 &mut *graph,
                 &config,
                 clock.as_ref(),
                 normalize,
                 &path,
-                tick,
+                &mut control,
             )
             .map(|o| o.map(ExportOutput::File)),
             ExportTarget::Buffers => {
-                tutti_export::render_to_buffers_with(&mut *graph, &config, clock.as_ref(), tick)
+                tutti_export::render_to_buffers(&mut *graph, &config, clock.as_ref(), &mut control)
                     .map(|o| o.map(ExportOutput::Buffers))
             }
         };

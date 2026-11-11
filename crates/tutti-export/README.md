@@ -18,8 +18,12 @@ names say which path a caller is on:
   passes, so the whole render is held in memory. It is a separate function on
   purpose — see below.
 
-Each has a `_with` twin that takes a tick (progress and cancel) except
-`write_buffers`, which has none. Encoding is WAV, FLAC, AIFF or OGG Vorbis, each
+The three that render take a `Control`: a `CancelToken` they check (before
+every block, between stages, during the measurement and before the file is
+put in place) and a callback that is handed a `Progress`, a `Stage` and one
+fraction of the whole render. `Control::none()` is a render nobody watches or
+stops. A cancelled render is `Outcome::Cancelled`, with every temporary
+removed and every target as it was. Encoding is WAV, FLAC, AIFF or OGG Vorbis, each
 behind its own feature (`wav`, `flac`, `aiff`, `ogg`). **None is on by default**:
 `ogg` links the C Vorbis library, so a consumer names the formats it writes. The
 umbrellas (`tutti`, `bevy-tutti`, `tutti-session`) forward them as `export-wav`,
@@ -66,7 +70,7 @@ forks it instead, with `RenderGraph::fork`.
 use tutti_transport::FrozenClock;
 use tutti_types::{Hz, SampleRate, Seconds};
 use tutti_export::{
-    render_to_buffers, render_to_file, ChannelLayout, EncodeConfig, ExportConfig,
+    render_to_buffers, render_to_file, ChannelLayout, Control, EncodeConfig, ExportConfig,
     FlacLevel, Format, IntDepth, RenderConfig, RenderGraph,
 };
 use tutti_graph::GraphBuilder;
@@ -97,15 +101,25 @@ let config = ExportConfig {
 
 // To buffers: planar, one `Vec` per channel, and `frames()` is FRAMES per
 // plane rather than the total sample count.
-let rendered = render_to_buffers(tone(), &config, &FrozenClock)
-    .expect("a 0.5 s stereo render");
+let rendered = render_to_buffers(tone(), &config, &FrozenClock, &mut Control::none())
+    .expect("a 0.5 s stereo render")
+    .finished()
+    .expect("nothing cancels it");
 assert_eq!(rendered.channels(), 2);
 assert_eq!(rendered.frames().get(), 24_000);
 
 // Or straight to a file, which streams — no PCM is held whole.
 let dir = tempfile::tempdir().expect("temp dir");
-let written = render_to_file(tone(), &config, &FrozenClock, &dir.path().join("master.flac"))
-    .expect("flac encodes");
+let written = render_to_file(
+    tone(),
+    &config,
+    &FrozenClock,
+    &dir.path().join("master.flac"),
+    &mut Control::none(),
+)
+.expect("flac encodes")
+.finished()
+.expect("nothing cancels it");
 assert!(written.bytes > 0, "a finalized export reports its size on disk");
 ```
 

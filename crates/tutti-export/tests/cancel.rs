@@ -1,15 +1,21 @@
-//! Stopping a render from its tick, and what that leaves behind.
+//! Stopping a render, watching it, and what both leave behind (doc 019
+//! section 6).
 //!
-//! No hardware and no sleeps: the tick counts blocks and answers `Stop`.
-//! The graph renders in blocks of `GRAPH_MAX_BLOCK` frames, so a render of
-//! `BLOCKS` of them ticks `BLOCKS` times per pass.
+//! No hardware and no sleeps: a progress callback sets a `CancelToken` at a
+//! chosen reading, and the render stops at the check that follows. The graph
+//! renders in blocks of `GRAPH_MAX_BLOCK` frames; a stage that counts frames
+//! reports every 4096 of them, so a render of `BLOCKS` blocks reports every
+//! fourth.
 
 #![cfg(all(feature = "wav", feature = "flac", feature = "aiff", feature = "ogg"))]
 
+mod support;
+
+use support::render_to_file;
 use tutti_export::{
-    ChannelLayout, EncodeConfig, ExportConfig, FlacLevel, Flow, Format, FrozenClock,
-    GRAPH_MAX_BLOCK, IntDepth, Normalize, Outcome, Pass, Pcm, Progress, Quality, RenderConfig,
-    RenderGraph, render_normalized_to_file_with, render_to_buffers_with, render_to_file_with,
+    CancelToken, ChannelLayout, Control, EncodeConfig, ExportConfig, FlacLevel, Format,
+    FrozenClock, GRAPH_MAX_BLOCK, IntDepth, Normalize, Outcome, Pcm, Progress, Quality,
+    RenderConfig, RenderGraph, Resample, Stage, Written,
 };
 use tutti_graph::GraphBuilder;
 use tutti_nodes::testing::Const;
@@ -17,7 +23,12 @@ use tutti_types::Seconds;
 use tutti_types::{Db, SampleRate, Samples};
 
 const RATE: SampleRate = SampleRate(48_000.0);
+/// Blocks in a short render: three reports of 4096 frames.
 const BLOCKS: usize = 12;
+/// A render of two and a half seconds: three one-second measuring chunks.
+const LONG_FRAMES: usize = 120_000;
+/// The rate a converting render is written at.
+const FILE_RATE: SampleRate = SampleRate(44_100.0);
 
 fn graph() -> RenderGraph {
     let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::STEREO);
@@ -42,11 +53,11 @@ fn vorbis() -> Format {
     }
 }
 
-fn config(format: Format) -> ExportConfig {
+fn config_of(format: Format, frames: usize) -> ExportConfig {
     ExportConfig {
         render: RenderConfig {
             sample_rate: RATE,
-            duration_seconds: Seconds((BLOCKS * GRAPH_MAX_BLOCK.get()) as f64 / RATE.get()),
+            duration_seconds: Seconds(frames as f64 / RATE.get()),
             ..Default::default()
         },
         encode: EncodeConfig {
@@ -58,6 +69,10 @@ fn config(format: Format) -> ExportConfig {
     }
 }
 
+fn config(format: Format) -> ExportConfig {
+    config_of(format, BLOCKS * GRAPH_MAX_BLOCK.get())
+}
+
 fn formats() -> [(Format, &'static str); 4] {
     [
         (Format::Wav(Pcm::Int16), "wav"),
@@ -67,43 +82,71 @@ fn formats() -> [(Format, &'static str); 4] {
     ]
 }
 
-/// A tick that stops once it has been told of `n` blocks of `pass`.
-fn stop_after(n: usize, pass: u8, seen: &mut Vec<Progress>) -> impl FnMut(Progress) -> Flow + '_ {
-    move |p| {
-        seen.push(p);
-        let in_pass = seen.iter().filter(|q| q.pass.index() == pass).count();
-        if p.pass.index() == pass && in_pass >= n {
-            Flow::Stop
-        } else {
-            Flow::Continue
-        }
-    }
+/// What a render reported, and what it returned.
+struct Run {
+    outcome: Outcome<Written>,
+    seen: Vec<Progress>,
 }
 
-/// A render stopped after N blocks is `Cancelled` (not an error, not a short
-/// file), has rendered exactly N blocks, and leaves nothing at its path, in
-/// every format.
+/// Renders `config` (normalized when `normalize` is set) to `path`, recording
+/// every reading and cancelling the token at the first one `cancel_at`
+/// accepts.
+fn run(
+    config: &ExportConfig,
+    normalize: Option<Normalize>,
+    path: &std::path::Path,
+    cancel_at: impl Fn(&Progress) -> bool,
+) -> Run {
+    let token = CancelToken::new();
+    let mut seen = Vec::new();
+    let mut report = |p: &Progress| {
+        seen.push(*p);
+        if cancel_at(p) {
+            token.cancel();
+        }
+    };
+    let mut control = Control::new(&token).on_progress(&mut report);
+    let outcome = match normalize {
+        None => tutti_export::render_to_file(graph(), config, &FrozenClock, path, &mut control),
+        Some(n) => tutti_export::render_normalized_to_file(
+            graph(),
+            config,
+            &FrozenClock,
+            n,
+            path,
+            &mut control,
+        ),
+    }
+    .expect("a cancelled or finished render is not an error");
+    Run { outcome, seen }
+}
+
+/// The frames a reading has done, 0 for one that counts none.
+fn done(p: &Progress) -> usize {
+    p.frames().map_or(0, |(done, _)| done.get())
+}
+
+/// A render cancelled by its callback after N frames is `Cancelled` (not an
+/// error, not a short file), has rendered exactly those frames, and leaves
+/// nothing at its path, in every format.
 ///
 /// Mutation (run): `encode_to_file` writing to `path` itself -> the partial
 /// file stays and the `exists` assertion fails.
-/// Mutation (run): `drive` ignoring the tick's answer -> the outcome
-/// assertion fails.
+/// Mutation (run): `drive` ignoring the token -> the outcome assertion fails.
 #[test]
-fn a_stopped_file_render_is_cancelled_and_leaves_no_file() {
+fn a_cancelled_file_render_is_cancelled_and_leaves_no_file() {
     let dir = tempfile::tempdir().unwrap();
     for (format, ext) in formats() {
         let path = dir.path().join(format!("a.{ext}"));
-        let mut seen = Vec::new();
-        let outcome = render_to_file_with(
-            graph(),
-            &config(format),
-            &FrozenClock,
-            &path,
-            &mut stop_after(3, 0, &mut seen),
-        )
-        .unwrap_or_else(|e| panic!("{ext}: {e}"));
-        assert_eq!(outcome, Outcome::Cancelled, "{ext}");
-        assert_eq!(seen.len(), 3, "{ext}: stopped at the third block");
+        let r = run(&config(format), None, &path, |p| {
+            p.stage() == Stage::Rendering && done(p) >= 2 * 4096
+        });
+        assert_eq!(r.outcome, Outcome::Cancelled, "{ext}");
+        assert_eq!(
+            done(r.seen.last().unwrap()),
+            2 * 4096,
+            "{ext}: stopped at the reading that cancelled"
+        );
         assert!(!path.exists(), "{ext}: a cancelled export left a file");
     }
 }
@@ -118,7 +161,7 @@ fn names(dir: &std::path::Path) -> Vec<String> {
     v
 }
 
-/// A cancel never touches a file already at the path, whichever pass it
+/// A cancel never touches a file already at the path, whichever stage it
 /// lands in, and leaves no temporary beside it: the render is written aside
 /// and renamed over the target only when it finishes.
 ///
@@ -133,37 +176,21 @@ fn a_cancel_leaves_the_file_it_would_have_replaced() {
         let name = format!("old.{ext}");
         let path = dir.path().join(&name);
         let old = b"an earlier export, byte for byte".to_vec();
-        for (normalize, pass) in [
-            (None, 0u8),
-            (Some(Normalize::peak(Db(-6.0))), 0),
-            (Some(Normalize::peak(Db(-6.0))), 1),
+        for (normalize, stage) in [
+            (None, Stage::Rendering),
+            (Some(Normalize::peak(Db(-6.0))), Stage::Rendering),
+            (Some(Normalize::peak(Db(-6.0))), Stage::Writing),
         ] {
             std::fs::write(&path, &old).unwrap();
-            let mut seen = Vec::new();
-            let outcome = match normalize {
-                None => render_to_file_with(
-                    graph(),
-                    &config(format),
-                    &FrozenClock,
-                    &path,
-                    &mut stop_after(2, pass, &mut seen),
-                ),
-                Some(n) => render_normalized_to_file_with(
-                    graph(),
-                    &config(format),
-                    &FrozenClock,
-                    n,
-                    &path,
-                    &mut stop_after(2, pass, &mut seen),
-                ),
-            }
-            .unwrap();
-            assert_eq!(outcome, Outcome::Cancelled, "{ext} pass {pass}");
-            assert_eq!(std::fs::read(&path).unwrap(), old, "{ext} pass {pass}");
+            let r = run(&config(format), normalize, &path, |p| {
+                p.stage() == stage && done(p) >= 4096
+            });
+            assert_eq!(r.outcome, Outcome::Cancelled, "{ext} {stage:?}");
+            assert_eq!(std::fs::read(&path).unwrap(), old, "{ext} {stage:?}");
             assert_eq!(
                 names(dir.path()),
                 std::slice::from_ref(&name),
-                "{ext} pass {pass}"
+                "{ext} {stage:?}"
             );
         }
     }
@@ -178,13 +205,7 @@ fn a_finished_render_replaces_the_old_file() {
         let name = format!("r.{ext}");
         let path = dir.path().join(&name);
         std::fs::write(&path, b"old").unwrap();
-        let out = render_to_file_with(graph(), &config(format), &FrozenClock, &path, &mut |_| {
-            Flow::Continue
-        })
-        .unwrap();
-        let Outcome::Finished(written) = out else {
-            panic!("{ext} cancelled")
-        };
+        let written = render_to_file(graph(), &config(format), &FrozenClock, &path).unwrap();
         assert_eq!(written.path, path);
         assert!(written.bytes > 3 && std::fs::metadata(&path).unwrap().len() == written.bytes);
         assert_eq!(names(dir.path()), [name], "{ext}");
@@ -205,174 +226,464 @@ fn a_failed_write_leaves_the_target_and_no_temporary() {
         let target = dir.path().join(format!("d.{ext}"));
         std::fs::create_dir(&target).unwrap();
         std::fs::write(target.join("keep"), b"x").unwrap();
-        let err = render_to_file_with(graph(), &config(format), &FrozenClock, &target, &mut |_| {
-            Flow::Continue
-        })
-        .expect_err("a directory cannot be replaced by a file");
+        let err = render_to_file(graph(), &config(format), &FrozenClock, &target)
+            .expect_err("a directory cannot be replaced by a file");
         assert!(matches!(err, tutti_export::Error::Io(_)), "{ext}: {err}");
         assert!(target.join("keep").exists(), "{ext}");
         assert_eq!(names(dir.path()), [format!("d.{ext}")], "{ext}");
 
         let missing = dir.path().join("no-such-dir").join(format!("m.{ext}"));
-        let err = render_to_file_with(
-            graph(),
-            &config(format),
-            &FrozenClock,
-            &missing,
-            &mut |_| Flow::Continue,
-        )
-        .expect_err("the directory does not exist");
+        let err = render_to_file(graph(), &config(format), &FrozenClock, &missing)
+            .expect_err("the directory does not exist");
         assert!(matches!(err, tutti_export::Error::Io(_)), "{ext}: {err}");
     }
 }
 
-/// Rendering to memory stops the same way, with nothing returned.
+/// Rendering to memory stops the same way, with nothing returned, whether the
+/// token is cancelled while it renders or as its last stage begins.
+///
+/// Mutation (run): `render_to_buffers` skipping the check after `begin` of
+/// the finalizing stage -> the second case is `Finished`; fails.
 #[test]
-fn a_stopped_buffer_render_is_cancelled() {
-    let mut seen = Vec::new();
-    let outcome = render_to_buffers_with(
-        graph(),
-        &config(Format::Wav(Pcm::Int16)),
-        &FrozenClock,
-        &mut stop_after(2, 0, &mut seen),
-    )
-    .unwrap();
-    assert!(matches!(outcome, Outcome::Cancelled));
-    assert_eq!(seen.len(), 2);
+fn a_cancelled_buffer_render_is_cancelled() {
+    let cfg = config(Format::Wav(Pcm::Int16));
+    for at in [Stage::Rendering, Stage::Finalizing] {
+        let token = CancelToken::new();
+        let mut seen = Vec::new();
+        let mut report = |p: &Progress| {
+            seen.push(*p);
+            if p.stage() == at && (at != Stage::Rendering || done(p) >= 4096) {
+                token.cancel();
+            }
+        };
+        let outcome = tutti_export::render_to_buffers(
+            graph(),
+            &cfg,
+            &FrozenClock,
+            &mut Control::new(&token).on_progress(&mut report),
+        )
+        .unwrap();
+        assert!(matches!(outcome, Outcome::Cancelled), "{at:?}");
+        assert_eq!(seen.last().unwrap().stage(), at, "{at:?}: nothing after");
+    }
 }
 
-/// Normalize is two passes, and stopping in the second (the write) cancels
-/// the export and removes the file, after the whole render has run.
+/// A normalized export renders, measures, writes and finalizes in order, and
+/// cancelling in the writing stage cancels the export and removes the file,
+/// after the whole render has run.
 ///
-/// Mutation (run): the second pass given a tick that never stops instead of
-/// the host's -> the outcome is `Finished` and the file exists; fails.
+/// Mutation (run): the writing stage given a `Control::none()` (weighed as
+/// normalized) instead of the host's -> the outcome is `Finished` and the
+/// file exists; fails.
 #[test]
-fn the_second_normalize_pass_stops() {
+fn the_writing_stage_of_a_normalized_export_stops() {
     let dir = tempfile::tempdir().unwrap();
     for (format, ext) in formats() {
         let path = dir.path().join(format!("n.{ext}"));
-        let mut seen = Vec::new();
-        let outcome = render_normalized_to_file_with(
-            graph(),
+        let r = run(
             &config(format),
-            &FrozenClock,
-            Normalize::peak(Db(-6.0)),
+            Some(Normalize::peak(Db(-6.0))),
             &path,
-            &mut stop_after(2, 1, &mut seen),
-        )
-        .unwrap_or_else(|e| panic!("{ext}: {e}"));
-        assert_eq!(outcome, Outcome::Cancelled, "{ext}");
-        let first = seen.iter().filter(|p| p.pass.index() == 0).count();
-        let second = seen.iter().filter(|p| p.pass.index() == 1).count();
-        assert_eq!(first, BLOCKS, "{ext}: the render pass ran to its end");
-        assert_eq!(second, 2, "{ext}");
+            |p| p.stage() == Stage::Writing && done(p) >= 4096,
+        );
+        assert_eq!(r.outcome, Outcome::Cancelled, "{ext}");
+        let total = Samples(BLOCKS * GRAPH_MAX_BLOCK.get());
+        let rendering_end = r
+            .seen
+            .iter()
+            .rfind(|p| p.stage() == Stage::Rendering)
+            .unwrap();
+        assert_eq!(
+            rendering_end.frames(),
+            Some((total, total)),
+            "{ext}: the render ran to its end"
+        );
         assert!(!path.exists(), "{ext}");
     }
 }
 
-/// Stopping in the first pass never starts the second.
+/// Cancelling in the rendering stage of a normalized export never measures or
+/// writes.
+///
+/// Mutation (run): `drive` without either of its token checks -> the render
+/// runs on, and measuring readings follow; fails.
 #[test]
-fn stopping_the_first_normalize_pass_never_writes() {
+fn cancelling_the_rendering_stage_of_a_normalized_export_never_measures() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("n.wav");
-    let mut seen = Vec::new();
-    let outcome = render_normalized_to_file_with(
-        graph(),
+    let r = run(
         &config(Format::Wav(Pcm::Int16)),
-        &FrozenClock,
-        Normalize::peak(Db(-6.0)),
+        Some(Normalize::peak(Db(-6.0))),
         &path,
-        &mut stop_after(4, 0, &mut seen),
-    )
-    .unwrap();
-    assert_eq!(outcome, Outcome::Cancelled);
-    assert!(seen.iter().all(|p| p.pass.index() == 0));
+        |p| p.stage() == Stage::Rendering && done(p) >= 4096,
+    );
+    assert_eq!(r.outcome, Outcome::Cancelled);
+    assert!(r.seen.iter().all(|p| p.stage() == Stage::Rendering));
     assert!(!path.exists());
 }
 
-/// Progress names its pass, rises within each, and ends each at its total;
-/// a normalized export reports pass 0 of 2 then pass 1 of 2, and a plain one
-/// pass 0 of 1.
+/// A cancel on the final block's reading is `Cancelled` (the reading is
+/// delivered before the render is known to be complete), and the file is not
+/// delivered.
 ///
-/// Mutation (run): `Control::report` passing `Samples(0)` as `produced` ->
-/// the rising assertion fails. Mutation (run): the second pass reporting as
-/// `FIRST_OF_TWO` -> the second-pass assertions fail.
+/// Mutation (run): `drive` not checking the token after it delivers progress
+/// -> the next stage begins before the cancel is seen; fails.
 #[test]
-fn progress_is_monotonic_per_pass_and_reaches_the_total() {
-    let dir = tempfile::tempdir().unwrap();
-    let total = Samples(BLOCKS * GRAPH_MAX_BLOCK.get());
-
-    let mut plain = Vec::new();
-    let outcome = render_to_file_with(
-        graph(),
-        &config(Format::Wav(Pcm::Int16)),
-        &FrozenClock,
-        dir.path().join("p.wav"),
-        &mut |p| {
-            plain.push(p);
-            Flow::Continue
-        },
-    )
-    .unwrap();
-    assert!(matches!(outcome, Outcome::Finished(_)));
-    assert!(
-        plain
-            .iter()
-            .all(|p| p.pass == Pass::ONLY && p.total == total)
-    );
-    assert!(plain.windows(2).all(|w| w[0].produced < w[1].produced));
-    assert_eq!(plain.last().unwrap().produced, total);
-
-    let mut two = Vec::new();
-    let cfg = config(Format::Wav(Pcm::Int16));
-    let outcome = render_normalized_to_file_with(
-        graph(),
-        &cfg,
-        &FrozenClock,
-        Normalize::peak(Db(-6.0)),
-        dir.path().join("n.wav"),
-        &mut |p| {
-            two.push(p);
-            Flow::Continue
-        },
-    )
-    .unwrap();
-    assert!(matches!(outcome, Outcome::Finished(_)));
-    for index in 0..2u8 {
-        let pass: Vec<_> = two.iter().filter(|p| p.pass.index() == index).collect();
-        assert!(pass.iter().all(|p| p.pass.count() == 2), "pass {index}");
-        assert!(pass.windows(2).all(|w| w[0].produced < w[1].produced));
-        assert_eq!(pass.last().unwrap().produced, total, "pass {index}");
-        assert_eq!(pass.last().unwrap().total, total, "pass {index}");
-    }
-    // The passes come in order.
-    let order: Vec<u8> = two.iter().map(|p| p.pass.index()).collect();
-    assert!(order.windows(2).all(|w| w[0] <= w[1]));
-}
-
-/// `Stop` on the final block's tick is `Cancelled` (the tick runs before the
-/// render is known to be complete), and the file is not delivered.
-///
-/// Mutation (run): `drive` skipping the tick after the last block -> the
-/// outcome is `Finished`; fails.
-#[test]
-fn a_stop_on_the_final_tick_is_cancelled() {
+fn a_cancel_on_the_final_reading_is_cancelled() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("last.wav");
-    let outcome = render_to_file_with(
-        graph(),
-        &config(Format::Wav(Pcm::Int16)),
-        &FrozenClock,
-        &path,
-        &mut |p| {
-            if p.produced == p.total {
-                Flow::Stop
-            } else {
-                Flow::Continue
-            }
-        },
-    )
-    .unwrap();
-    assert_eq!(outcome, Outcome::Cancelled);
+    let r = run(&config(Format::Wav(Pcm::Int16)), None, &path, |p| {
+        p.stage() == Stage::Rendering && p.frames().is_some_and(|(d, t)| d == t)
+    });
+    assert_eq!(r.outcome, Outcome::Cancelled);
+    assert_eq!(
+        r.seen.last().unwrap().stage(),
+        Stage::Rendering,
+        "the render went on to its next stage"
+    );
     assert!(!path.exists());
+}
+
+/// The render's shape: how it is configured, for the matrices below.
+#[derive(Clone, Copy, Debug)]
+struct Shape {
+    normalize: bool,
+    resample: bool,
+}
+
+const SHAPES: [Shape; 4] = [
+    Shape {
+        normalize: false,
+        resample: false,
+    },
+    Shape {
+        normalize: false,
+        resample: true,
+    },
+    Shape {
+        normalize: true,
+        resample: false,
+    },
+    Shape {
+        normalize: true,
+        resample: true,
+    },
+];
+
+impl Shape {
+    fn config(self, frames: usize) -> ExportConfig {
+        let mut cfg = config_of(Format::Wav(Pcm::Int16), frames);
+        if self.resample {
+            cfg.resample = Some(Resample::to(FILE_RATE));
+        }
+        cfg
+    }
+
+    fn normalize(self) -> Option<Normalize> {
+        self.normalize.then(|| Normalize::peak(Db(-6.0)))
+    }
+}
+
+/// One place in the pipeline at which doc 019 section 6.2 has a render check
+/// its token, as the reading that cancels there.
+struct Point {
+    name: &'static str,
+    /// Whether a render of this shape has the point.
+    exists: fn(Shape) -> bool,
+    /// The reading at which the callback cancels: the first one accepted.
+    at: fn(Shape, &Progress) -> bool,
+}
+
+const POINTS: [Point; 12] = [
+    Point {
+        name: "before the first block",
+        exists: |_| true,
+        at: |_, p| p.stage() == Stage::Rendering && done(p) == 0,
+    },
+    Point {
+        name: "mid render (every block)",
+        exists: |_| true,
+        at: |_, p| p.stage() == Stage::Rendering && done(p) >= 4096,
+    },
+    Point {
+        name: "after the last block",
+        exists: |_| true,
+        at: |_, p| p.stage() == Stage::Rendering && p.frames().is_some_and(|(d, t)| d == t),
+    },
+    Point {
+        name: "between render and measure",
+        exists: |s| s.normalize,
+        at: |_, p| p.stage() == Stage::Measuring && done(p) == 0,
+    },
+    Point {
+        name: "mid resample chunks",
+        exists: |s| s.normalize && s.resample,
+        at: |_, p| p.stage() == Stage::Measuring && done(p) >= 48_000 && done(p) < LONG_FRAMES,
+    },
+    Point {
+        name: "between measure chunks",
+        exists: |s| s.normalize,
+        at: |s, p| {
+            let converted = if s.resample { LONG_FRAMES } else { 0 };
+            p.stage() == Stage::Measuring && done(p) >= converted + 48_000
+        },
+    },
+    Point {
+        name: "after the last measure chunk",
+        exists: |s| s.normalize,
+        at: |_, p| p.stage() == Stage::Measuring && p.frames().is_some_and(|(d, t)| d == t),
+    },
+    Point {
+        name: "between measure and write",
+        exists: |s| s.normalize,
+        at: |_, p| p.stage() == Stage::Writing && done(p) == 0,
+    },
+    Point {
+        name: "mid write pass",
+        exists: |s| s.normalize,
+        at: |_, p| p.stage() == Stage::Writing && done(p) >= 4096,
+    },
+    Point {
+        name: "before the resample flush and the finalize",
+        exists: |_| true,
+        at: |_, p| p.stage() == Stage::Finalizing && p.fraction() < 0.96,
+    },
+    Point {
+        name: "before the commit",
+        exists: |_| true,
+        at: |_, p| p.stage() == Stage::Finalizing && p.fraction() > 0.96 && p.fraction() < 1.0,
+    },
+    Point {
+        name: "(a reading after the commit cannot stop it)",
+        exists: |_| true,
+        at: |_, p| p.stage() == Stage::Finalizing && p.fraction() == 1.0,
+    },
+];
+
+/// A cancel at each point of doc 019 section 6.2 that the pipeline owns, in
+/// each shape of render (with and without normalize, with and without a
+/// conversion): the render is `Cancelled`, the next thing it would have done
+/// is not done (the cancelling reading is the last one), no temporary is
+/// left, and the target is as it was: absent where it did not exist,
+/// byte for byte where it did.
+///
+/// The last row is the exception the doc names: once the file is in place
+/// the render has finished, and the cancel comes too late.
+///
+/// Mutations (each run, each failed): `drive` without its check after the
+/// reading (the "after the last block" row, and with
+/// `a_cancel_on_the_final_reading_is_cancelled`); `Normalize::measure`
+/// without the check at the top of its chunk loop ("between measure
+/// chunks") and without the one after it ("after the last measure chunk");
+/// `resample_rendered` without the one at the top of its loop ("mid resample
+/// chunks"); `encode_to_file` without the check after `begin(Finalizing)`
+/// ("before the resample flush and the finalize") and without the one after
+/// `at(Finalizing, 0.5)` ("before the commit").
+///
+/// Not pinned by a row, because the next check catches the same cancel
+/// before anything observable happens: the check after `begin(Measuring)`
+/// (the chunk loops' own top-of-loop checks come next), the one before
+/// `rs.finish` in `resample_rendered` (the measure loop's follows it), and the
+/// one at the top of `drive`'s loop (a cancel at its entry reading is also
+/// caught after the first block; `driver::tests` pins that one).
+#[test]
+fn a_cancel_at_each_pipeline_point_stops_there_and_leaves_the_targets() {
+    let old = b"an earlier export, byte for byte".to_vec();
+    for shape in SHAPES {
+        for point in &POINTS {
+            if !(point.exists)(shape) {
+                continue;
+            }
+            for existing in [false, true] {
+                let dir = tempfile::tempdir().unwrap();
+                let path = dir.path().join("t.wav");
+                if existing {
+                    std::fs::write(&path, &old).unwrap();
+                }
+                let before = names(dir.path());
+                let r = run(&shape.config(LONG_FRAMES), shape.normalize(), &path, |p| {
+                    (point.at)(shape, p)
+                });
+                let ctx = format!("{shape:?} at `{}` (existing {existing})", point.name);
+                let at = |p: &Progress| (point.at)(shape, p);
+                if point.name.starts_with('(') {
+                    // Too late: finished, and the new file is in place.
+                    assert!(matches!(r.outcome, Outcome::Finished(_)), "{ctx}");
+                    assert_ne!(
+                        std::fs::read(&path).ok().as_deref(),
+                        Some(&old[..]),
+                        "{ctx}"
+                    );
+                    continue;
+                }
+                assert_eq!(r.outcome, Outcome::Cancelled, "{ctx}");
+                let hits = r.seen.iter().filter(|p| at(p)).count();
+                assert_eq!(
+                    (hits, at(r.seen.last().unwrap())),
+                    (1, true),
+                    "{ctx}: it went on after the cancelling reading"
+                );
+                assert_eq!(names(dir.path()), before, "{ctx}: a temporary or a target");
+                if existing {
+                    assert_eq!(std::fs::read(&path).unwrap(), old, "{ctx}");
+                } else {
+                    assert!(!path.exists(), "{ctx}");
+                }
+            }
+        }
+    }
+}
+
+/// Every reading of a render, in every shape: the fraction never falls; the
+/// first reading is the first stage the pipeline owns, at the start of its
+/// band; the last is `Finalizing` at exactly 1.0, delivered after the file is
+/// in place and not before; each stage's readings stay inside its band of
+/// doc 019 section 6.1; `output` is `None` while rendering and `Some(0)`
+/// after; and no reading is `1.0` but the last.
+///
+/// Mutations (each run, each failed): `NORMALIZED`'s `Measuring` band
+/// widened to 0.70 (the band check); `encode_to_file` delivering
+/// `at(Finalizing, 1.0)` before `encoder.finish()` (the file-exists check);
+/// `deliver` giving `Rendering` an output (the output check). Monotonic is
+/// the unit test's (`the_fraction_never_falls`), which reorders stages.
+#[test]
+fn progress_is_monotonic_banded_and_ends_on_one_after_the_rename() {
+    for shape in SHAPES {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("p.wav");
+        let token = CancelToken::new();
+        let mut seen: Vec<(Progress, bool)> = Vec::new();
+        let mut report = |p: &Progress| seen.push((*p, path.exists()));
+        let mut control = Control::new(&token).on_progress(&mut report);
+        let cfg = shape.config(BLOCKS * GRAPH_MAX_BLOCK.get());
+        let outcome = match shape.normalize() {
+            None => tutti_export::render_to_file(graph(), &cfg, &FrozenClock, &path, &mut control),
+            Some(n) => tutti_export::render_normalized_to_file(
+                graph(),
+                &cfg,
+                &FrozenClock,
+                n,
+                &path,
+                &mut control,
+            ),
+        }
+        .unwrap();
+        assert!(matches!(outcome, Outcome::Finished(_)), "{shape:?}");
+
+        let band = |stage: Stage| -> (f32, f32) {
+            match (shape.normalize, stage) {
+                (false, Stage::Rendering) => (0.05, 0.95),
+                (true, Stage::Rendering) => (0.03, 0.55),
+                (true, Stage::Measuring) => (0.55, 0.62),
+                (true, Stage::Writing) => (0.62, 0.95),
+                (_, Stage::Finalizing) => (0.95, 1.0),
+                (_, other) => panic!("{shape:?} has no {other:?} stage"),
+            }
+        };
+        let readings: Vec<Progress> = seen.iter().map(|(p, _)| *p).collect();
+        assert!(
+            readings
+                .windows(2)
+                .all(|w| w[0].fraction() <= w[1].fraction()),
+            "{shape:?}: not monotonic"
+        );
+        let first = readings.first().unwrap();
+        assert_eq!(first.stage(), Stage::Rendering, "{shape:?}");
+        assert_eq!(first.fraction(), band(Stage::Rendering).0, "{shape:?}");
+        let last = readings.last().unwrap();
+        assert_eq!((last.stage(), last.fraction()), (Stage::Finalizing, 1.0));
+        assert_eq!(
+            readings.iter().filter(|p| p.fraction() >= 1.0).count(),
+            1,
+            "{shape:?}: only the last reading is 1.0"
+        );
+        for (p, exists) in &seen {
+            let (from, to) = band(p.stage());
+            assert!(
+                (from..=to).contains(&p.fraction()),
+                "{shape:?}: {:?} at {} is outside {from}..{to}",
+                p.stage(),
+                p.fraction()
+            );
+            assert_eq!(
+                p.output(),
+                (p.stage() != Stage::Rendering).then_some(0),
+                "{shape:?} {:?}",
+                p.stage()
+            );
+            assert_eq!(
+                *exists,
+                p.fraction() == 1.0,
+                "{shape:?}: the file is in place exactly at the 1.0 reading"
+            );
+        }
+        // Stages come in order, and each is entered at the start of its band.
+        let stages: Vec<Stage> = {
+            let mut v: Vec<Stage> = readings.iter().map(Progress::stage).collect();
+            v.dedup();
+            v
+        };
+        let want: &[Stage] = if shape.normalize {
+            &[
+                Stage::Rendering,
+                Stage::Measuring,
+                Stage::Writing,
+                Stage::Finalizing,
+            ]
+        } else {
+            &[Stage::Rendering, Stage::Finalizing]
+        };
+        assert_eq!(stages, want, "{shape:?}");
+        for stage in want {
+            let entry = readings.iter().find(|p| p.stage() == *stage).unwrap();
+            assert_eq!(entry.fraction(), band(*stage).0, "{shape:?} {stage:?}");
+        }
+    }
+}
+
+/// On a long render no two readings of a stage are more than 4096 frames
+/// apart, a stage change is always delivered, and the render is not reported
+/// every block.
+///
+/// Mutations (each run, each failed): `DELIVERY_FRAMES` 4096 -> 8192 -> the
+/// gap check fails; `advance` delivering only on completion -> the gap check
+/// fails (and on every call, the `readings < blocks` check).
+#[test]
+fn readings_come_at_least_every_4096_frames_and_at_every_stage_change() {
+    let blocks = 200;
+    let frames = blocks * GRAPH_MAX_BLOCK.get();
+    for shape in [SHAPES[0], SHAPES[2]] {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("c.wav");
+        let r = run(&shape.config(frames), shape.normalize(), &path, |_| false);
+        assert!(matches!(r.outcome, Outcome::Finished(_)));
+        for stage in [Stage::Rendering, Stage::Writing] {
+            let at: Vec<usize> = r
+                .seen
+                .iter()
+                .filter(|p| p.stage() == stage)
+                .map(done)
+                .collect();
+            if at.is_empty() {
+                continue;
+            }
+            assert_eq!(at.first(), Some(&0), "{shape:?} {stage:?} entry");
+            assert_eq!(at.last(), Some(&frames), "{shape:?} {stage:?} completion");
+            assert!(
+                at.windows(2).all(|w| w[1] - w[0] <= 4096),
+                "{shape:?} {stage:?}: a gap past 4096 frames"
+            );
+            assert!(at.len() < blocks, "{shape:?} {stage:?}: one per block");
+        }
+        let stages: Vec<Stage> = {
+            let mut v: Vec<Stage> = r.seen.iter().map(Progress::stage).collect();
+            v.dedup();
+            v
+        };
+        assert_eq!(
+            stages.len(),
+            if shape.normalize { 4 } else { 2 },
+            "{shape:?}: every stage change was delivered"
+        );
+    }
 }

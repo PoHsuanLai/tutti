@@ -90,7 +90,7 @@ pub const GRAPH_MAX_BLOCK: Samples = Samples(1024);
 ///
 /// ```
 /// use tutti_types::{Hz, SampleRate, Seconds};
-/// use tutti_export::{render_to_buffers, ExportConfig, FrozenClock, RenderConfig, RenderGraph};
+/// use tutti_export::{render_to_buffers, Control, ExportConfig, FrozenClock, RenderConfig, RenderGraph};
 /// use tutti_graph::GraphBuilder;
 /// use tutti_nodes::testing::Osc;
 /// use tutti_types::ChannelLayout;
@@ -106,7 +106,10 @@ pub const GRAPH_MAX_BLOCK: Samples = Samples(1024);
 ///     render: RenderConfig { sample_rate: rate, duration_seconds: Seconds(0.1), ..Default::default() },
 ///     ..Default::default()
 /// };
-/// let out = render_to_buffers(graph, &config, &FrozenClock).expect("renders");
+/// let out = render_to_buffers(graph, &config, &FrozenClock, &mut Control::none())
+///     .expect("renders")
+///     .finished()
+///     .expect("nothing cancels it");
 /// assert_eq!(out.frames().get(), 4_800);
 /// ```
 #[derive(Debug)]

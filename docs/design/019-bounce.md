@@ -7,7 +7,7 @@ Dependencies on other lanes (this doc assumes they land first or alongside):
 
 | Lane | What this doc needs from it |
 |---|---|
-| E1 | Correctness. **Landed:** the fork-health check before the file lands (`Error::ForkFailed`), `Error::Unmeasurable` on silent or below-gate audio, clip counting (`Written::clipped_samples`) and integer headroom for normalize (`tutti-export/src/normalize.rs`). **Not found in the code:** a chunked measurer (step 2's cancel points in the measurement need one) and a serial-versus-parallel bit-identity test of an export; steps 2 and 6 still carry them. |
+| E1 | Correctness. **Landed:** the fork-health check before the file lands (`Error::ForkFailed`), `Error::Unmeasurable` on silent or below-gate audio, clip counting (`Written::clipped_samples`) and integer headroom for normalize (`tutti-export/src/normalize.rs`). **Landed in step 2:** a chunked measurer. **Not found in the code:** a serial-versus-parallel bit-identity test of an export; step 6 still carries it. |
 | E2 | **Landed:** `tutti-export` has `default = []`, and the umbrellas carry `export-*` features. |
 | E3 | Tempo. The live transport is single-tempo too and nothing in the engine reads `TempoMap`; the owner chose a separate design doc ([020](020-tempo-map-transport.md), tempo maps) for one tempo model shared by live playback and offline render. This doc does not design it. It needs only a *project tempo source*: today the single transport tempo, later `TempoMap`, and an offline clock built from the same source. |
 | E5 | **Landed:** `DitherNoise` and `StreamingResampler` are in `tutti-dsp`; the pipeline calls them. |
@@ -205,14 +205,17 @@ is `vec![Output::master(target)]`.
 | `Rendered` | `planes`, `rate`, `dropped_events` | `Rendered::new(planes, rate, dropped) -> Result<_, RenderedError>` checks equal plane lengths, at least one plane, valid rate. `frames()`, `channels()`, `planes()`, `into_planes()`. No public fields. |
 | `RenderGraph` | an installed, paired `(Editor, Executor)` plus `Setup { pool, root }` | `RenderGraph::assemble(editor, executor, Setup) -> Result<_>` checks pairing and rate. `prepare(rate)`, `reported_latency()`, `reported_tail()` stay. The rest of the fork machinery is not here (§5). |
 
-Built today (step 1), for comparison: `Job` (`Job::new`, `with_event_loss`,
+Built today (steps 1 and 2), for comparison: `Job` (`Job::new`, `with_event_loss`,
 getters, `JobError::{InvalidRate, ZeroLength, TooLong}`, and `MAX_FRAMES`, which
 is `u32::MAX`); `Rendered` is sealed (`Rendered::new`, `RenderedError::{NoPlanes,
 UnequalPlanes, InvalidRate}`, getters `planes`, `into_planes`, `sample_rate`,
 `dropped_events`); `Written` has `path`, `bytes`, `dropped_events`,
-`clipped_samples`, `gain` and `measured` (no `frames` yet). `Output`, `Feed`,
-`Target`, `Stage`, `CancelToken` and `render` do not exist yet; `Control`'s role
-is played by `Flow` and `Pass`.
+`clipped_samples`, `gain` and `measured` (no `frames` yet). `Control`
+(`Control::new(&CancelToken)`, `.on_progress(&mut f)`, `Control::none()`, with
+`is_cancelled`), `CancelToken`, `Progress` (private fields; `stage`, `fraction`,
+`output`, `frames`) and `Stage` exist, and the three `render_*` functions take a
+`&mut Control` and return `Result<Outcome<_>>`; `Flow`, `Pass` and the `_with`
+twins are gone. `Output`, `Feed`, `Target` and `render` do not exist yet.
 
 What leaves `tutti-export`'s public surface: `ExportConfig`, `RenderConfig`,
 `EncodeConfig`, the five `render_*` functions and `write_buffers`,
@@ -532,6 +535,61 @@ the `Normalized` type with it. The split from section 4, and why:
   rate. The effective target the old `Normalized::target` carried is
   `measured.true_peak + gain` for a peak target. `Written::frames` is step 2 or
   later, not this PR.
+
+
+**As built (step 2).** `Control`, `CancelToken`, `Progress` and `Stage`
+(`tutti-export/src/control.rs`); the weight table is `STREAMING` and
+`NORMALIZED` there, one place, tested to tile `[0, 1]`. The three `render_*`
+functions (`render_to_file`, `render_to_buffers`, `render_normalized_to_file`)
+keep their names, take `control: &mut Control<'_>` as their last argument and
+return `Result<Outcome<_>>`; `Flow`, `Pass`, the `_with` twins and the old
+`Progress` fields (`pass`, `produced`, `total`) are removed, and their callers
+(tests, examples, the bench, `clap_fork.rs`, `tutti-session`) are migrated. The
+tests of `tutti-export` that render with nothing to cancel call the functions
+through `tests/support/mod.rs`, which supplies `Control::none()` and unwraps the
+finished value. `Session`'s `ExportHandle` wraps a `CancelToken` and the latest
+`Progress`. A chunked measurer is `Measurer` in `normalize.rs`: `tutti-measure`'s
+`LoudnessState` already accumulated (`measure_loudness` folds it), so it adds
+only the planar-to-interleaved copy of one chunk (chunks of at most one second,
+the figures the one-shot reading gave, and no whole interleaved copy of the
+render) and the check between chunks. Where this differs from the text above:
+
+- **Delivery has no wall-clock bound.** Section 6.1 says every 4096 frames or
+  50 ms, whichever is later, and also asks for no gap longer than 4096
+  frames. They cannot both hold on a render faster than 80 kHz of audio, so the
+  frame bound is the rule (`DELIVERY_FRAMES`) and no clock is read. A reading is
+  delivered at each stage change, at a stage's completion, and after every 4096
+  frames of a stage that counts them.
+- **The pipeline begins at `Rendering`.** `Preparing` is the session's (the
+  fork's steps) and the session does not report them yet, so the first reading
+  is `Rendering` at the start of its band (0.05, or 0.03 with normalize) and
+  `ExportHandle::progress` is `None` before it. `Stage::Preparing` and its band
+  exist for step 5.
+- **Finalizing has two readings per output, not one.** The flush of the
+  converter, the fork-health and event-loss checks come after the first
+  (0.95) and the file is finished and renamed after the second (the middle of
+  the band); the reading of exactly 1.0 is delivered after the rename. The
+  codec's `Encoder::finish` is both the finalize and the commit, so the checks
+  "before each output's finalize" and "before the commit" are one check before
+  it (after the second reading); the check before the converter's flush follows
+  the first. Splitting them is step 3's, with several outputs.
+- **A normalize render's conversion is counted in `Measuring`.** The two-pass
+  path still converts the rate before it measures (step 3 moves the conversion
+  into the write pass, section 5.1), so `Measuring` counts the conversion's
+  frames (against an estimate of twice the render's length) and then the
+  measurement's (against the converted length, which replaces the estimate);
+  with no conversion the stage is the render's length. The conversion pushes the render through
+  the converter in chunks of at most one second so the token is checked between
+  them and before the flush; the figures it gives are unchanged.
+- **`render_to_buffers` has a `Finalizing` stage of no work**, so that every
+  render ends on a reading of 1.0 and has the same last cancel check.
+- **`write_buffers` has no `Control`** (it did not have a tick): it is the
+  normalized render's write pass alone.
+- **A check not pinned by the observable behaviour:** the one after
+  `begin(Measuring)`, the one before the converter's flush in the conversion
+  and the one at the top of the render loop are each followed by another that
+  catches the same cancel before anything observable happens (the matrix in
+  `tests/cancel.rs` says which test pins what).
 
 
 Test policy applies throughout: every new case is mutation-tested (break the

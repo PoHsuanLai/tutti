@@ -127,7 +127,7 @@ query, and a query only one family answers stays an inherent method of its model
 
 **Wet/dry is the graph's.** No family here proposes a node-level dry/wet. Doc
 013's M4 makes the per-node mix a graph primitive (`Editor::set_mix`), and
-`Blend`/`DryWet` is being retired, so new designs use `NoBlend` and the mix is
+`Blend`/`DryWet` is gone (doc 024 PR9), so a design node is the wet signal and the mix is
 applied by the graph, aligned by the node's declared `latency`.
 
 ### 2.1 Amendments proposed to doc 024

@@ -291,6 +291,23 @@ for name, p in pkgs.items():
     for d in p["dependencies"]:
         if d["name"] in CODEC_LIBS and (d["kind"] or "normal") != "dev":
             fail(f"{d['name']} is a {d['kind'] or 'normal'} dependency of {name}; the codec libraries are tutti-codec's alone")
+# ---- `winnow` is tutti-midi-file's SMF reader alone -------------------------
+# A normal dependency of `tutti-midi-file` only, and named only in its
+# `src/smf/read.rs`: no other file there, and no signature, field or error of
+# the crate holds a winnow type (the same rule as symphonia in tutti-codec).
+for name, p in pkgs.items():
+    for d in p["dependencies"]:
+        if d["name"] == "winnow" and (d["kind"] or "normal") != "dev" and name != "tutti-midi-file":
+            fail(f"winnow is a {d['kind'] or 'normal'} dependency of {name}; it is tutti-midi-file's SMF reader alone")
+import re
+winnow_home = os.path.join("crates", "tutti-midi-file", "src", "smf", "read.rs")
+for dirpath, _, files in os.walk(os.path.join(root, "crates", "tutti-midi-file", "src")):
+    for f in files:
+        path = os.path.join(dirpath, f)
+        if f.endswith(".rs") and os.path.relpath(path, root) != winnow_home:
+            if "winnow" in re.sub(r"//[^\n]*", "", open(path, encoding="utf-8").read()):
+                fail(f"{os.path.relpath(path, root)} names winnow outside {winnow_home}")
+
 if "tutti-codec" in pkgs:
     encoders = {"flacenc", "aifc", "vorbis_rs", "md-5"}
     for feat, enables in pkgs["tutti-codec"]["features"].items():

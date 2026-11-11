@@ -1,6 +1,6 @@
 #![doc = include_str!("../README.md")]
 #![cfg_attr(docsrs, feature(doc_cfg))]
-#![deny(unsafe_code)]
+#![forbid(unsafe_code)]
 //!
 //! ## Sample rate
 //!
@@ -118,15 +118,6 @@ pub use dynamics::{
 // spatial concept.
 mod strip;
 pub use strip::{BusStripNode, STRIP_PARAMS};
-
-// The dry path's delay, shared by the nodes that blend a processed signal with
-// their input.
-mod dry_align;
-
-// What a `DesignNode` does with its input around the realization: the dry path
-// and its mix (`DryWet`), or nothing (`NoBlend`).
-mod blend;
-pub use blend::{Blend, DryWet, NoBlend};
 
 // The reverb: any `tutti_dsp::Design` as a node, and the Freeverb send (mono in,
 // stereo wet out) the SoundFont player's General MIDI setup uses.

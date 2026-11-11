@@ -99,7 +99,4 @@ pub(crate) enum StreamerCommand {
     /// sending this): re-derive every open stream's conversion ratio against
     /// the rate as it now is.
     SessionRate,
-
-    /// Shutdown the streamer thread.
-    Shutdown,
 }

@@ -112,8 +112,8 @@ fn shaped_byte(rng: &mut Rng) -> u8 {
     }
 }
 
-/// The stray status and the truncated message that aborted the `midly` path
-/// under `assert_no_alloc`.
+/// The stray status and the truncated message that aborted an earlier
+/// parser under `assert_no_alloc`.
 #[test]
 fn a_stray_status_and_a_truncated_message_allocate_nothing() {
     assert_no_alloc(|| {
@@ -324,4 +324,23 @@ fn generated_streams_read_back_to_their_messages() {
     }
     assert_eq!(streams, 20_000);
     assert!(sysex_packets > 10_000, "{sysex_packets}");
+}
+
+/// `Voice1::data_len` is the MIDI 1.0 table: Program Change and Channel
+/// Pressure take one data byte, the other channel voice statuses two, and
+/// nothing else has a count.
+///
+/// Mutation (run, seen to fail, restored): the `0x80..=0xEF` arm of
+/// `Voice1::data_len` widened to `0x80..=0xFF` fails the system statuses.
+#[test]
+fn a_channel_status_says_how_many_data_bytes_follow() {
+    use tutti_ump::Voice1;
+    for status in 0..=255u8 {
+        let expected = match status {
+            0x80..=0xBF | 0xE0..=0xEF => Some(2),
+            0xC0..=0xDF => Some(1),
+            _ => None,
+        };
+        assert_eq!(Voice1::data_len(status), expected, "status {status:#04x}");
+    }
 }

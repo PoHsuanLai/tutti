@@ -19,6 +19,7 @@ use crossbeam_channel::{Receiver, TryRecvError};
 use tutti_rt::{ArcLend, PosReader};
 use tutti_types::{ChannelLayout, SamplePosition, SampleRate, Samples};
 
+use super::bell::Bell;
 use super::block::{Block, RingReader};
 use super::cells::Cells;
 use super::command::StreamId;
@@ -128,6 +129,8 @@ pub(crate) struct Opened {
     pub(crate) control: Arc<ArcLend<RingControl>>,
     pub(crate) place: Place,
     pub(crate) width: ChannelLayout,
+    /// What the reader rings when its ring wants the streamer.
+    pub(crate) bell: Arc<Bell>,
 }
 
 impl std::fmt::Debug for Opened {
@@ -275,7 +278,8 @@ impl StreamReader {
     fn new(opened: Opened) -> Self {
         Self {
             id: opened.id,
-            reader: RingReader::new(opened.pos, opened.ring.control_reader()),
+            reader: RingReader::new(opened.pos, opened.ring.control_reader())
+                .ringing(opened.bell, opened.ring.frames()),
             ring: opened.ring,
             cells: opened.cells,
             file: opened.file,

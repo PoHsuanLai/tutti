@@ -917,7 +917,7 @@ for a valid one.
 `type Set: ControlSet` and `fn set(&self, &Controls)` where it had `Params` and `params`, `moved` is `ControlSet::moved`
 (the SVF's and the ladder's override it), and `DesignNode` holds `Params<D::Set>`. The three filters are one
 `impl NodeDesign for Filter<K>` over a `NodeKernel` (a `ChannelKernel` that names its `ControlSet`), `PARKS = false`,
-`SAMPLING = CADENCE`, `NoBlend`. Freeverb and the FDN keep their own impls (their `Blend` leaves in PR9).
+`SAMPLING = CADENCE`. Freeverb and the FDN keep their own impls (their `Blend` left in PR9).
 
 ### 4.4 The engineering layer
 
@@ -1478,7 +1478,7 @@ pub struct DesignNode<D: NodeDesign> { /* design, realization, params: Params<D:
 ```
 
 `Blend` leaves (B2): a node's dry/wet is the graph's mix (`Graph::set_mix`, doc 013 M4; the convolver,
-delay, chorus/flanger and phaser went wet-only in #542, the reverbs follow). A modulated dry/wet is a route
+delay, chorus/flanger and phaser went wet-only in #542, the reverbs in PR9). A modulated dry/wet is a route
 onto `ModTarget::Mix(MixRef::of(node))` (#537), and DRY is bit-identical to `Bypassed`. The bar per node: at
 WET the graph renders the node alone bit for bit, and at DRY the aligned input bit for bit. HRTF keeps its
 own centre-fold blend (its dry is not the input). The `SAMPLING` default stays
@@ -1496,35 +1496,25 @@ macro was weighed and dropped, because what it would generate is the one part wo
 | The tail report and the `ring` high-water rule | `io.report_tail(tail_of(self.ring))` | **Always**, from `Model: System::tail` |
 | `longest()` for the tail over a block | `ReverbParams::longest` | Only for a family whose model has a controllable tail: `Params::longest` returns `None` by default; section 8.2 makes it a declared direction |
 | Parking: scan for the last non-zero input frame, owe `ring + latency` frames, cut to the frame, `reset`, `Status::Idle` | the body of `process` | **Always**, and uniformly from `System::tail`: a memoryless model owes zero frames; dither's `Unbounded` never parks; a realization that lies about its tail is caught by `assert_honest_tail` (doc 013 step 0b) and the node contract |
-| Dry/wet | `mix: Param<Mix>`, `DryAlign`, the blend loop | **Leaves under B2** for the graph's mix (doc 013 M4); until the reverbs move, optional through `D::Blend` |
+| Dry/wet | `mix: Param<Mix>`, `DryAlign`, the blend loop | **Left (B2, PR9)** for the graph's mix (doc 013 M4): a design node is the wet signal alone |
 | A readout | not on `main` | **Optional through `D::Readouts`** |
 | Fork | `fork_fresh`: design clone, `Realization::fresh`, cells detached, `ParamNode` | Always; export forks with preroll (doc 013) |
 | Shape | `Shape::audio(..).with_cost(effort).with_latency(realization.latency()).with_tail(ceiling).with_param_addrs(..)` | Always; `Cost` is a `match` over `Effort` |
 
 ### 5.2 Optional parts are associated types, not flags
 
-```rust
-pub trait Blend: Send + 'static {
-    /// The addresses it adds to the node's ports, ahead of the algorithm's.
-    const ADDRS: &'static [UnitAddr];
-    fn prepare(&mut self, latency: Samples, width: usize, max_block: MaxBlock);   // DryAlign rings
-    fn finish(&mut self, io: &mut Io<'_>, cut: usize, size: usize);               // the blend loop
-}
-pub struct NoBlend;   // ADDRS = [], every method empty: the node's ports start at 0
-pub struct DryWet { /* mix: Param<Mix>, good_mix: LastGood, dry: Vec<DryAlign>, dry_buf, last_mix */ }
-```
-
-`NoBlend::finish` is an empty function the optimiser removes; a filter pays no
-branch and no `Param<Mix>`. `Readouts<K>` is the same with `fn publish(&mut self,
+(`Blend`, with `DryWet` and `NoBlend`, was the first of these; it is deleted, PR9: the
+dry/wet is the graph's.) `Readouts<K>` is, when it lands, `fn publish(&mut self,
 realization: &mut K)` called once at the end of `process`; `()` implements it for any
 `K`, and a family with a readout names a type that implements it for its realization
 (section 7). Nothing is a runtime flag in the audio path: the choice is a type
 parameter fixed when the node is built.
 
-One consequence for ports: `ReverbNode` puts `Wet` at port 0 and the algorithm's
-addresses after it (`first = 1`). With `NoBlend` the algorithm's start at 0, so
-`first` is `D::Blend::ADDRS.len()`. A test pins the port order of the reverb
-unchanged (it is persisted in saved graphs by `UnitAddr`).
+One consequence for ports: the reverbs once put `Wet` at port 0 and the algorithm's
+addresses after it. With the blend gone every design node's ports start at 0 (the
+reverbs' ports moved down by one; `UnitParam::Wet` is no port of theirs, and the mix is
+addressed as the graph's `NodeMix::ADDR`). `design_node_ports.rs` and
+`reverb_node.rs` pin the order.
 
 ### 5.3 A published model
 
@@ -1651,7 +1641,7 @@ and the contract treats them so. The cases that need a node and a graph (not jus
 `Cargo.toml` line 29), over `tutti_graph::contract::Driven`: the declared tail
 is honest after the cut (`assert_honest_tail`), park and wake equal a fresh node,
 a port-driven block equals a cell-driven one, the dry path is aligned to the
-realization's latency and not its delay (`Blend` families only), a fork renders from
+realization's latency and not its delay (the graph's mix, `reverb_node_generic.rs`), a fork renders from
 silence, and a serial/pooled render is bit-identical (`tests/parallel.rs`). The
 "lying design" fixture (an echo that rings past its claim, with a latency) becomes
 a shared test double.
@@ -1957,7 +1947,7 @@ implementation (scipy) in a report that is not a CI dependency; our own past ren
 oracle. Bit-identity stays only where it is a correctness rule: the parallel render equals the
 serial one, block independence, the contract macros, fork determinism, codec and MIDI bytes. At
 most five golden tripwires remain (section "Step 2b as built"), each through
-`tutti_nodes::testing::assert_golden` on the target it was recorded on. No test compares a render
+`tutti_fixtures::assert_golden` on the target it was recorded on. No test compares a render
 against another reference render.
 
 | Step | Content | Moves | Proves it | After |
@@ -2192,9 +2182,9 @@ Step 2b ran as one lane of PRs; amendments B (Summary) re-cut what follows it.
 | 5 | the crossover on the stream grid; one `FilterSizes` | #539 |
 | 6 | one control reader, `Params<S: ControlSet>`; the readers' floors and clamps go to the models | #544 |
 | 8a | the convolver, delay, chorus/flanger and phaser wet only; their blend is the graph's mix | #542 |
-| 7 | **B1 and B2:** `Glide`, `Approach`, `Kernel`, `Realized<K>`, `ChannelKernel`/`PerChannel`, `Filter<K>`; the SVF, ladder, crossover, Freeverb and FDN onto them (Freeverb gains a glide); `ControlParams` deleted, `NodeDesign` as in section 5; `Realization: Clone` with a default `fresh`; `tutti_dsp::Ramp` and `Slew` replaced by `Glide` | 7a and 7b built (Freeverb, FDN, `Slew` gone); 7c (`Ramp`) next |
-| 8 | the second paths go: the multiband onto `Realized<PerChannel<CrossoverTree>>` (`Crossover::split_block` and its helpers deleted), the phaser onto the stream grid (`Cadence::every`, `Anchor::Block` and `COEFF_CADENCE` deleted) | |
-| 9 | the reverbs' own dry/wet goes; `Blend`, `DryWet`, `NoBlend` leave `NodeDesign`. HRTF keeps its centre-fold blend (its dry is not the input) | |
+| 7 | **B1 and B2:** `Glide`, `Approach`, `Kernel`, `Realized<K>`, `ChannelKernel`/`PerChannel`, `Filter<K>`; the SVF, ladder, crossover, Freeverb and FDN onto them (Freeverb gains a glide); `ControlParams` deleted, `NodeDesign` as in section 5; `Realization: Clone` with a default `fresh`; `tutti_dsp::Ramp` and `Slew` replaced by `Glide` | 7a and 7b built (Freeverb, FDN, `Slew` gone); 7c is folded into the family lanes (below) |
+| 8 | **folded into the family lanes (below):** the second paths go: the multiband onto `Realized<PerChannel<CrossoverTree>>` (`Crossover::split_block` and its helpers deleted), the phaser onto the stream grid (`Cadence::every`, `Anchor::Block` and `COEFF_CADENCE` deleted) | |
+| 9 | the reverbs' own dry/wet goes; `Blend`, `DryWet`, `NoBlend` leave `NodeDesign`; `DryAlign` and `blend.rs` deleted. HRTF keeps its centre-fold blend (its dry is not the input). **Built** (`dsp/r9`): the reverbs' mix port is gone, so their ports start at the first cell; the mix invariants for both are in `tests/node_mix.rs` | built |
 | 10 | tests from the spec replace the past-render digests; at most five tripwires stay (the SVF lane, the limiter, VBAP stereo, the reverb GM render, the SoundFont voice); the scipy validation report | |
 
 Proof for PR7: the contract macros on every kernel, block independence, and the SVF and ladder digests
@@ -2203,6 +2193,12 @@ in the generic); a new contract case that a glide's midpoint between two reachab
 stable (a biquad's stable region in `(a1, a2)` is a triangle, so convex), with a mutation (lerp past 1).
 The FDN may move in the last bits; Freeverb moves where a control moves (its new glide), and both are
 listed in the PR.
+
+**PR7c and PR8 are folded into the family lanes below.** `tutti_dsp::Ramp`'s remaining users are the
+delay, chorus/flanger, phaser and convolver nodes, `params.rs`'s cell glide (`blend.rs`, a user, went in PR9),
+each rewritten by its lane, so `Ramp` goes with the last of them. The multiband's move onto
+`Realized<PerChannel<CrossoverTree>>` is the dynamics lane's, and the phaser's stream grid (`Cadence::every`,
+`Anchor::Block` and `COEFF_CADENCE` deleted) is the delay and modulation lane's.
 
 **The lanes after step 2b** (each moves a family group onto `Realized<K>`, deletes its `Ramp` uses and
 becomes block independent; each builds the addition it is the first user of):

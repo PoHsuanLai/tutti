@@ -5,8 +5,6 @@
 //!
 //! - [`Const`] and [`Osc`] are sources: a constant, or a naive sine, saw,
 //!   square or triangle ([`Waveform`]).
-//! - [`assert_golden`] pins a render's digest where its libm was recorded and
-//!   skips out loud elsewhere (see the `TUTTI_GOLDEN` modes: unset, `require`, `record`).
 //! - [`vbap_mix`] and [`bass_send`] wire a panner per source onto the output
 //!   channels (and the LFE's low-passed send, found from the topology).
 //! - [`Through`], [`Split`] and [`Sink`] are plumbing: pass-through, fan-out
@@ -43,9 +41,7 @@
 //! synth does not. `tutti-polysynth` owns the audio-rate oscillators an
 //! instrument plays.
 
-mod golden;
 mod vbap_mix;
-pub use golden::{RECORDED_ARCH, RECORDED_GLIBC, assert_golden};
 pub use vbap_mix::{bass_send, vbap_mix};
 
 use std::f64::consts::TAU;

@@ -78,6 +78,22 @@ impl Arrangement {
         self.reverse
     }
 
+    /// One past the last straight position worth writing: the file's length,
+    /// or `None` for a forward loop, which never ends (and for a forward
+    /// stream of an unknown length). A reversed stream of an unknown length
+    /// has nothing to mirror: it writes nothing. What the streamer writes up
+    /// to and what the audio side asks a refill for ([`needs_refill`]) agree
+    /// on.
+    ///
+    /// [`needs_refill`]: super::io::refill::needs_refill
+    pub(crate) fn end(&self) -> Option<u64> {
+        match (self.span, self.len) {
+            (Some(_), _) => None,
+            (None, Some(len)) => Some(len.get() as u64),
+            (None, None) => self.reverse.then_some(0),
+        }
+    }
+
     /// An unlooped forward stream of a file `len` long.
     pub(crate) fn plain(len: Samples) -> Self {
         Self {
@@ -416,11 +432,7 @@ impl Mapping {
     /// stream of an unknown length). A reversed stream of an unknown length
     /// has nothing to mirror: it writes nothing.
     pub(crate) fn end(&self) -> Option<u64> {
-        match (self.active_loop(), self.len) {
-            (Some(_), _) => None,
-            (None, Some(len)) => Some(len.get() as u64),
-            (None, None) => self.reverse.then_some(0),
-        }
+        self.arrangement().end()
     }
 
     fn key(&self, s: u64) -> Key {

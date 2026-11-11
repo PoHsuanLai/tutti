@@ -1,6 +1,5 @@
 use super::*;
 use crate::config::{EncodeConfig, RenderConfig};
-use crate::control::{Pass, never_stop};
 use crate::{Format, Pcm};
 use tutti_types::SampleRate;
 use tutti_types::Seconds;
@@ -50,7 +49,8 @@ fn a_plan_that_cannot_fit_is_refused_before_the_file_is_touched() {
         &plan,
         &config,
         &path,
-        &mut Control::new(Pass::ONLY, &mut never_stop),
+        Stage::Rendering,
+        &mut Control::none(),
     )
     .expect_err("2^32 mono 16-bit frames do not fit a WAV file");
     assert!(
@@ -142,7 +142,8 @@ fn the_topology_reaches_the_file_and_must_match_its_width() {
             &plan,
             &cfg,
             &path,
-            &mut Control::new(Pass::ONLY, &mut never_stop),
+            Stage::Rendering,
+            &mut Control::none(),
         )
         .unwrap();
         let bytes = std::fs::read(&path).unwrap();
@@ -167,7 +168,8 @@ fn the_topology_reaches_the_file_and_must_match_its_width() {
         &plan,
         &cfg,
         &path,
-        &mut Control::new(Pass::ONLY, &mut never_stop),
+        Stage::Rendering,
+        &mut Control::none(),
     )
     .expect_err("a quad topology is not stereo");
     assert!(

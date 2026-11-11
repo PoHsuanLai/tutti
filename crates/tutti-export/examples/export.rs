@@ -10,7 +10,7 @@
 //! Run: `cargo run --example export -- <outdir>`
 
 use tutti_export::{
-    ChannelLayout, EncodeConfig, ExportConfig, FlacLevel, Format, IntDepth, Pcm, Quality,
+    ChannelLayout, Control, EncodeConfig, ExportConfig, FlacLevel, Format, IntDepth, Pcm, Quality,
     RenderConfig, RenderGraph, render_to_buffers, render_to_file,
 };
 use tutti_graph::GraphBuilder;
@@ -84,7 +84,15 @@ fn main() -> tutti_export::Result<()> {
     // placed voices takes the `OfflineTimeline` those voices read — the clock is
     // a required argument precisely so a silent render is not something you can
     // get by forgetting one.
-    let written = render_to_file(tone(), &config, &FrozenClock, dir.join("tone.flac"))?;
+    let written = render_to_file(
+        tone(),
+        &config,
+        &FrozenClock,
+        dir.join("tone.flac"),
+        &mut Control::none(),
+    )?
+    .finished()
+    .expect("nothing cancels a control with no token");
     println!("wrote {} ({} bytes)", written.path.display(), written.bytes);
 
     // Every format goes through the same call. Each is written block by
@@ -106,7 +114,15 @@ fn main() -> tutti_export::Result<()> {
             },
             ..config.clone()
         };
-        let w = render_to_file(tone(), &s, &FrozenClock, dir.join(format!("tone.{ext}")))?;
+        let w = render_to_file(
+            tone(),
+            &s,
+            &FrozenClock,
+            dir.join(format!("tone.{ext}")),
+            &mut Control::none(),
+        )?
+        .finished()
+        .expect("nothing cancels a control with no token");
         println!("wrote {} ({} bytes)", w.path.display(), w.bytes);
     }
 
@@ -126,7 +142,10 @@ fn main() -> tutti_export::Result<()> {
             ..config
         },
         &FrozenClock,
-    )?;
+        &mut Control::none(),
+    )?
+    .finished()
+    .expect("nothing cancels a control with no token");
     let peaks: Vec<f32> = quad
         .planes()
         .iter()
@@ -145,7 +164,9 @@ fn main() -> tutti_export::Result<()> {
     // point. Done by hand, as here, the measurement streams (`tutti_measure` wraps
     // an online R128 meter) and the gain is one value you apply where you
     // like — including on a second render, without ever holding the audio.
-    let mut audio = render_to_buffers(tone(), &config, &FrozenClock)?;
+    let mut audio = render_to_buffers(tone(), &config, &FrozenClock, &mut Control::none())?
+        .finished()
+        .expect("nothing cancels a control with no token");
 
     let cfg = LoudnessConfig::new(audio.sample_rate(), ChannelLayout::STEREO);
     let flat = audio.interleaved();

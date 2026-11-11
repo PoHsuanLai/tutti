@@ -97,11 +97,11 @@ impl<S: ControlSet> Params<S> {
 
     /// Each control's lowest and highest value in the block (the cell's where no
     /// lane drives it), or `None` when no lane does.
-    fn extremes(&self, io: &Io<'_>, first: usize) -> Option<[[f32; MAX_CONTROLS]; 2]> {
+    fn extremes(&self, io: &Io<'_>) -> Option<[[f32; MAX_CONTROLS]; 2]> {
         let mut out = [[0.0; MAX_CONTROLS]; 2];
         let mut driven = false;
         for (k, cell) in self.cells.iter().enumerate() {
-            let lane = io.param(first + k).frames();
+            let lane = io.param(k).frames();
             driven |= lane.is_some();
             let base = cell.load(Acquire);
             let fold = |pick: fn(f32, f32) -> f32| {
@@ -117,7 +117,7 @@ impl<S: ControlSet> Params<S> {
         driven.then_some(out)
     }
 
-    /// The addresses of the cells, in port order after the blend's.
+    /// The addresses of the cells, in port order.
     pub(crate) fn addrs(&self) -> &'static [UnitAddr] {
         self.set.addrs()
     }
@@ -138,8 +138,8 @@ impl<S: ControlSet> Params<S> {
 
     /// The controls at `at.frame`: each cell, or the value its port carries when the
     /// graph modulates it, read through [`LastGood`] so a non-finite write reads as
-    /// unchanged. `first` is the port of the first address: the number of the blend's.
-    pub(crate) fn read(&mut self, io: &Io<'_>, first: usize, at: At<S::Controls>) -> S::Controls {
+    /// unchanged.
+    pub(crate) fn read(&mut self, io: &Io<'_>, at: At<S::Controls>) -> S::Controls {
         let n = self.cells.len();
         let mut from = [0.0; MAX_CONTROLS];
         if let Some(applied) = &at.applied {
@@ -147,7 +147,7 @@ impl<S: ControlSet> Params<S> {
         }
         let mut value = [0.0; MAX_CONTROLS];
         for (k, v) in value[..n].iter_mut().enumerate() {
-            *v = match io.param(first + k).frames() {
+            *v = match io.param(k).frames() {
                 Some(lane) => self.good[k].read(lane[at.frame]),
                 None => {
                     let to = self.good[k].read(self.cells[k].load(Relaxed));
@@ -163,14 +163,14 @@ impl<S: ControlSet> Params<S> {
 
     /// Whether a port drives a control, so the controls can differ between the frames
     /// of the block.
-    pub(crate) fn driven(&self, io: &Io<'_>, first: usize) -> bool {
-        (first..first + self.cells.len()).any(|k| io.param(k).frames().is_some())
+    pub(crate) fn driven(&self, io: &Io<'_>) -> bool {
+        (0..self.cells.len()).any(|k| io.param(k).frames().is_some())
     }
 
     /// The controls that ring longest among the values a modulated port takes anywhere
     /// in the block, or `None` when nothing is modulated.
-    pub(crate) fn longest(&self, io: &Io<'_>, first: usize) -> Option<S::Controls> {
-        let [lowest, highest] = self.extremes(io, first)?;
+    pub(crate) fn longest(&self, io: &Io<'_>) -> Option<S::Controls> {
+        let [lowest, highest] = self.extremes(io)?;
         let n = self.cells.len();
         Some(self.set.longest(
             &self.set.assemble(&lowest[..n]),

@@ -454,7 +454,7 @@ fn compensation_of(plan: &tutti_graph::Plan) -> Compensation {
 pub(crate) fn prepare_for(
     rate: SampleRate,
     max_block: MaxBlock,
-    quantum: Option<Samples>,
+    quantum: Option<MaxBlock>,
 ) -> Prepare {
     let p = Prepare::new(rate, max_block);
     match quantum {
@@ -479,7 +479,7 @@ impl Graph {
         outputs: usize,
         rate: SampleRate,
         max_block: MaxBlock,
-        quantum: Option<Samples>,
+        quantum: Option<MaxBlock>,
         tempo: tutti_transport::TempoReader,
     ) -> Self {
         let (mut editor, exec) = Editor::new(prepare_for(rate, max_block, quantum));
@@ -657,7 +657,7 @@ impl Graph {
         &mut self,
         rate: SampleRate,
         max_block: Option<MaxBlock>,
-        quantum: Option<Samples>,
+        quantum: Option<MaxBlock>,
     ) -> Result<(), CommitError> {
         let current = *self.editor.prepare();
         let prepare = prepare_for(rate, max_block.unwrap_or(current.max_block()), quantum);

@@ -112,19 +112,9 @@ impl AuLoaded {
         mut self,
         prepare: Prepare,
     ) -> Result<(AuProcessor, AuController), (Option<Self>, AuError)> {
-        let Ok(block_size) = u32::try_from(prepare.max_block().get()) else {
-            let error = AuError::InvalidBuffer(format!(
-                "a block of {} frames exceeds the unit's 32-bit frame count",
-                prepare.max_block().get()
-            ));
-            return Err((Some(self), error));
-        };
-        // Zero would fail every render's `num_frames > block_size` check and size
-        // the scratch to empty buffers.
-        if block_size == 0 {
-            let error = AuError::InvalidBuffer("block_size must be non-zero".to_string());
-            return Err((Some(self), error));
-        }
+        // The unit's frame count is a `u32`, the bound `MaxBlock` holds, and a
+        // `MaxBlock` is never zero.
+        let block_size = prepare.max_block().get_u32();
         if let Err(e) = self.apply_stream(prepare.rate().0, block_size) {
             return Err((Some(self), e));
         }

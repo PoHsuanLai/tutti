@@ -14,7 +14,7 @@
 use std::sync::{Arc, Mutex};
 
 use cpal::traits::{DeviceTrait, StreamTrait};
-use tutti_types::{ChannelLayout, SampleRate, Samples};
+use tutti_types::{ChannelLayout, MaxBlock, SampleRate, Samples};
 
 use crate::MAX_FRAMES;
 use crate::block::OutputBlock;
@@ -45,13 +45,13 @@ pub struct OutputSpec {
     /// (`tutti_graph::Prepare::with_quantum`), so a node that keeps work in
     /// step with the device — a hosted out-of-process plugin, which ships one
     /// callback's worth to its server per callback — can.
-    pub quantum: Option<Samples>,
+    pub quantum: Option<MaxBlock>,
 }
 
 /// The callback size asked of a device that offers a range: 512 frames
 /// (10.7 ms at 48 kHz), a common DAW default, clamped into what the device
 /// supports.
-pub const PREFERRED_QUANTUM: Samples = Samples(512);
+pub const PREFERRED_QUANTUM: MaxBlock = MaxBlock::of(Samples(512));
 
 impl OutputSpec {
     /// Creates a spec with no fixed callback size (the backend's default).
@@ -72,9 +72,10 @@ impl OutputSpec {
     /// Returns this spec with a fixed `quantum`-frame callback buffer.
     ///
     /// Keep `quantum` at or below [`MAX_FRAMES`]; a larger callback is
-    /// clamped and its tail silenced.
+    /// clamped and its tail silenced. A quantum is a [`MaxBlock`], so a zero
+    /// one cannot be written.
     #[must_use]
-    pub fn with_quantum(mut self, quantum: Samples) -> Self {
+    pub fn with_quantum(mut self, quantum: MaxBlock) -> Self {
         self.quantum = Some(quantum);
         self
     }
@@ -93,8 +94,7 @@ impl OutputSpec {
             channels: self.channels.count(),
             sample_rate: cpal::SampleRate(self.sample_rate.get().round() as u32),
             buffer_size: match self.quantum {
-                // `u32` at the cpal boundary; a quantum is at most `MAX_FRAMES`.
-                Some(q) => cpal::BufferSize::Fixed(u32::try_from(q.get()).unwrap_or(u32::MAX)),
+                Some(q) => cpal::BufferSize::Fixed(q.get_u32()),
                 None => cpal::BufferSize::Default,
             },
         }
@@ -105,11 +105,13 @@ impl OutputSpec {
 /// clamped into the range it reports, and never past [`MAX_FRAMES`] (the
 /// callback's own buffers). `None` for a device that reports no range, which
 /// is opened with its default buffer.
-fn quantum_for(range: &cpal::SupportedBufferSize) -> Option<Samples> {
+fn quantum_for(range: &cpal::SupportedBufferSize) -> Option<MaxBlock> {
     match *range {
         cpal::SupportedBufferSize::Range { min, max } => {
-            let (min, max) = (min as usize, (max as usize).min(MAX_FRAMES));
-            (min <= max).then(|| Samples(PREFERRED_QUANTUM.get().clamp(min.max(1), max)))
+            // A device reporting a range with no usable size (a zero `max`)
+            // has no quantum to open with.
+            let (min, max) = ((min as usize).max(1), (max as usize).min(MAX_FRAMES));
+            (min <= max).then(|| MaxBlock::of(Samples(PREFERRED_QUANTUM.get().clamp(min, max))))
         }
         cpal::SupportedBufferSize::Unknown => None,
     }

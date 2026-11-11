@@ -235,6 +235,30 @@ fn a_refused_activation_hands_the_plugin_back() {
     );
 }
 
+/// **A block VST3 cannot carry is refused, before any buffer is sized.**
+/// `maxSamplesPerBlock` is an `i32`; a `MaxBlock` goes to `u32::MAX`. The
+/// plugin comes back, and a block of exactly `i32::MAX` is not refused for size.
+#[cfg(target_pointer_width = "64")]
+#[test]
+fn a_block_past_i32_max_is_refused() {
+    let probe = Probe::behaving();
+    let too_big = Prepare::new(
+        SampleRate(48_000.0),
+        MaxBlock::of(Samples(i32::MAX as usize + 1)),
+    )
+    .expect("a real rate");
+    let refused = probe
+        .load()
+        .activate(&main_thread(), too_big)
+        .expect_err("a block past i32::MAX");
+    assert!(refused.plugin.is_some(), "the plugin comes back");
+    assert!(
+        matches!(&refused.reason, PluginError::Other(why) if why.contains("i32")),
+        "{:?}",
+        refused.reason
+    );
+}
+
 /// **A Controller write reaches the plugin at the head of the next block.** The
 /// probe's component is separate from its controller, so a write that only
 /// reached the controller never changes what it renders.

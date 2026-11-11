@@ -4,7 +4,7 @@
 use crate::scale;
 use crate::voice::widen;
 use tutti_ump::{
-    Address, Bank, CCNumber, Message, MidiChannel, MidiGroup, U7, Ump, Voice1, Voice2,
+    Address, Attribute, Bank, CCNumber, Message, MidiChannel, MidiGroup, U7, Ump, Voice1, Voice2,
 };
 
 /// The byte that, in both halves of a parameter number, is the Null Function.
@@ -55,6 +55,9 @@ struct Channel {
     bank_lsb: U7,
     /// Whether a Bank Select arrived since the last Program Change.
     bank_set: bool,
+    /// The low 7 bits a High Resolution Velocity Prefix (CC 88) gave the next
+    /// Note On or Note Off on this channel.
+    velocity_low: Option<U7>,
 }
 
 /// MIDI 1.0 in, MIDI 2.0 out: the translation an input edge runs once, so
@@ -81,7 +84,18 @@ struct Channel {
 ///   other half as last selected, separately for RPN and NRPN. The Null
 ///   Function (`7F 7F`) ends the run and is not translated: Data Entry after
 ///   it is dropped. So does Reset All Controllers (CC 121, RP-015), which
-///   passes on as a Control Change and drops what the run had not sent.
+///   passes on as a Control Change, drops what the run had not sent and sets
+///   both halves of both numbers to null (127), so a later select of one half
+///   pairs with a null other.
+/// - **A High Resolution Velocity Prefix** (CC 88, CA-031) is absorbed and
+///   becomes the low 7 bits of the next Note On or Note Off's 14-bit velocity
+///   on that channel (the Note's byte is the high 7), scaled Min-Center-Max to
+///   the 16 bits; the prefix is then cleared. A Note On at velocity 0 is the
+///   Note Off it always was, and the prefix has no effect on it. M2-104 section
+///   7.4.6 says CC 88 "shall not be used for High Resolution Velocity" in the
+///   MIDI 2.0 Protocol: this is the MIDI 1.0 input edge, which is the one
+///   place a prefix can arrive, so the fold is here and a CC 88 never reaches
+///   a receiver.
 /// - **Bank Select** (CC 0 and 32) is absorbed and rides on the channel's next
 ///   Program Change as its bank. The halves are kept across Program Changes,
 ///   so a lone CC 32 pairs with the CC 0 last sent (0 if never); a Program
@@ -164,6 +178,7 @@ impl Translator {
             bank_msb: ZERO,
             bank_lsb: ZERO,
             bank_set: false,
+            velocity_low: None,
         };
         Self {
             channels: [EMPTY; SLOTS],
@@ -221,7 +236,41 @@ impl Translator {
                 channel.bank_set = false;
                 send(Voice2::ProgramChange { program, bank });
             }
-            other => send(widen(other)),
+            Voice1::NoteOn { note, velocity } if velocity.get() != 0 => send(Voice2::NoteOn {
+                note,
+                velocity: channel.velocity(velocity),
+                attribute: Attribute::None,
+            }),
+            Voice1::NoteOff { note, velocity } => send(Voice2::NoteOff {
+                note,
+                velocity: channel.velocity(velocity),
+                attribute: Attribute::None,
+            }),
+            other => {
+                // A Note On at velocity 0 is a Note Off, and the prefix has no
+                // effect on it (CA-031), but the Note On/Off it was for is parsed.
+                if matches!(other, Voice1::NoteOn { .. }) {
+                    channel.velocity_low = None;
+                }
+                send(widen(other));
+            }
+        }
+    }
+}
+
+impl Channel {
+    /// The 16-bit velocity of a Note On or Off whose 7 high bits are `high`:
+    /// with a pending High Resolution Velocity Prefix the 14-bit velocity
+    /// (`high << 7 | prefix`) scaled Min-Center-Max; the prefix is then
+    /// cleared ("After the standard Note On or Note Off message has been
+    /// parsed, the lower 7 bits of the receiver's 14-bit velocity register
+    /// should be cleared", CA-031).
+    fn velocity(&mut self, high: U7) -> u16 {
+        match self.velocity_low.take() {
+            Some(low) => {
+                scale::upscale((u32::from(high.get()) << 7) | u32::from(low.get()), 14, 16) as u16
+            }
+            None => scale::velocity(high.get()),
         }
     }
 }
@@ -280,12 +329,24 @@ fn controller_change(
         // run had not sent is dropped with it (sending it as well would make
         // two packets of one); the message itself goes on.
         CCNumber::RESET_ALL => {
+            let null = Number {
+                bank: U7::of(NULL),
+                index: U7::of(NULL),
+            };
+            channel.rpn = null;
+            channel.nrpn = null;
             channel.kind = Kind::None;
             channel.msb = None;
             channel.pending = false;
             channel.early_lsb = None;
             send(widen(Voice1::ControlChange { controller, value }));
         }
+        // CA-031: Bn 58 vv is the lower 7 bits of the next Note On or Note Off's
+        // velocity on this channel. It is the MIDI 1.0 spelling of what the
+        // 16-bit velocity carries, so it is absorbed (M2-104 section 7.4.6: "In
+        // MIDI 2.0 Protocol, Control Change 88 shall not be used for High
+        // Resolution Velocity").
+        CCNumber::VELOCITY_PREFIX => channel.velocity_low = Some(value),
         CCNumber::BANK_SELECT => {
             channel.bank_msb = value;
             channel.bank_set = true;

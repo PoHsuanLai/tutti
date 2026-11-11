@@ -71,6 +71,8 @@ where
             ChannelLayout::from_count(this.declared.inputs.count()),
             ChannelLayout::from_count(this.declared.outputs.count()),
         )
+        .with_buses_in(this.declared.buses_in)
+        .with_buses_out(this.declared.buses_out)
         .with_events(1, midi_out)
         .with_latency(latency)
         .with_tail(tail)

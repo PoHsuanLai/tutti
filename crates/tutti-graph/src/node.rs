@@ -24,6 +24,7 @@ use tutti_types::{
     SegmentOrigin, Tail, UnitAddr, UnitParam,
 };
 
+use crate::bus::Buses;
 use crate::cost::Cost;
 use crate::fork::ForkSource;
 use crate::history::TransportHistory;
@@ -52,6 +53,15 @@ pub struct Shape {
     pub audio_in: ChannelLayout,
     /// Audio output channels.
     pub audio_out: ChannelLayout,
+    /// How the input ports group into buses: one [`Main`](crate::BusRole::Main)
+    /// bus of [`Discrete`](tutti_types::Speaker::Discrete) channels for a
+    /// node that states only a width (what [`Shape::audio`] builds), or what
+    /// [`with_buses_in`](Self::with_buses_in) declared. A grouping over the
+    /// ports `audio_in` counts: nothing the compiler or the executor reads
+    /// changes with it.
+    pub buses_in: Buses,
+    /// How the output ports group into buses. See [`buses_in`](Self::buses_in).
+    pub buses_out: Buses,
     /// Event input ports.
     pub event_in: u16,
     /// Event output ports.
@@ -202,6 +212,8 @@ impl Shape {
         Self {
             audio_in,
             audio_out,
+            buses_in: Buses::of_width(audio_in),
+            buses_out: Buses::of_width(audio_out),
             event_in: 0,
             event_out: 0,
             event_capacity: None,
@@ -213,6 +225,44 @@ impl Shape {
             cost: Cost::Heavy,
             note_events: true,
         }
+    }
+
+    /// This shape, with its input ports grouped into `buses`: a node that
+    /// knows where its channels sit says so (a plugin's buses, a decoded
+    /// file's topology), instead of the one `Discrete` main bus
+    /// [`audio`](Self::audio) builds.
+    ///
+    /// The buses cover a prefix of the `audio_in` ports, and `audio_in` is
+    /// unchanged: a node with more channels than its buses hold keeps them
+    /// all.
+    ///
+    /// # Panics
+    ///
+    /// If the buses are wider than `audio_in` (in a `const` context, at
+    /// compile time): a bus over ports the node does not have.
+    #[must_use]
+    pub const fn with_buses_in(mut self, buses: Buses) -> Self {
+        assert!(
+            buses.width() <= self.audio_in.count() as usize,
+            "input buses wider than the input ports"
+        );
+        self.buses_in = buses;
+        self
+    }
+
+    /// [`with_buses_in`](Self::with_buses_in) for the output ports.
+    ///
+    /// # Panics
+    ///
+    /// If the buses are wider than `audio_out`.
+    #[must_use]
+    pub const fn with_buses_out(mut self, buses: Buses) -> Self {
+        assert!(
+            buses.width() <= self.audio_out.count() as usize,
+            "output buses wider than the output ports"
+        );
+        self.buses_out = buses;
+        self
     }
 
     /// This shape with `event_in` / `event_out` event ports.

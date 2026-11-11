@@ -1263,7 +1263,13 @@ read the `Cargo.toml`, grep for the type, run the probe.
   and `ParamDelivery` fields, and `migration_old_and_new_served_nodes_agree`) → deleted (doc 021
   step 4b, PR 3b: the node is `tutti_plugin_host::PluginNode<tutti_plugin_ipc::Ipc>`, which
   `PluginClient<Bound>` holds and boxes (a test drives it with `contract::Direct::boxed`); the chunk walk
-  is the generic node's, the fork is `ServedFork` over `Ipc`'s reopen). A comment or doc that
+  is the generic node's, the fork is `ServedFork` over `Ipc`'s reopen). `TransportCommand::Tempo`,
+  `TransportSettings::tempo`, `Transport::samples_per_beat`, `Timeline::tempo`,
+  `OfflineTimeline::{tempo, beats_per_sample, with_tempo_map}` and
+  `OfflineTimelineConfig::tempo` → deleted (doc 020 stage 6: the project's tempo is one
+  `TempoMap`: `TransportSettings::set_tempo` / `set_tempo_map` publish it, `Timeline::tempo_map`
+  and `OfflineTimelineConfig::tempo_map` carry it, and a tempo is `TempoMap::tempo_at` a beat).
+  A comment or doc that
   disagrees with the code is the bug.
 
 ## Consumers: the pin that must stay in step

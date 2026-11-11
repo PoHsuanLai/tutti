@@ -88,7 +88,7 @@ fn graph_engine_with_timed_transport_is_allocation_free() {
     use tutti_graph::{Editor, EventIn, EventKind, Prepare, Unforkable};
     use tutti_graph::{OutPort, Source};
     use tutti_transport::{MotionEvent, TransportCommand};
-    use tutti_types::{At, Beat, Bpm, Frame};
+    use tutti_types::{At, Beat, Frame};
     use tutti_ump::{MidiChannel, NoteNumber, U7};
 
     let sample_rate = 48_000.0;
@@ -135,11 +135,6 @@ fn graph_engine_with_timed_transport_is_allocation_free() {
             let base = 1024 * (1 + 8 * round);
             m.schedule(At::Frame(Frame(base + 300)), MotionEvent::Play)
                 .expect("room");
-            m.schedule(
-                At::Frame(Frame(base + 1500)),
-                TransportCommand::Tempo(Bpm::of(90.0 + round as f64)),
-            )
-            .expect("room");
             m.schedule(
                 At::Frame(Frame(base + 2100)),
                 TransportCommand::Loop(LoopEdit::over(
@@ -535,7 +530,7 @@ fn graph_engine_with_env_clock_and_metronome_is_allocation_free() {
     use tutti_graph::{OutPort, Source};
     use tutti_transport::{MotionEvent, TransportCommand};
     use tutti_types::Tail;
-    use tutti_types::{At, Beat, Bpm, Frame};
+    use tutti_types::{At, Beat, Frame};
 
     /// The beat of every frame, whole beats then the fraction.
     struct BeatWalk;
@@ -589,11 +584,6 @@ fn graph_engine_with_env_clock_and_metronome_is_allocation_free() {
     assert_no_alloc::assert_no_alloc(|| {
         for round in 0..20u64 {
             let base = 1024 * (1 + 8 * round);
-            m.schedule(
-                At::Frame(Frame(base + 300)),
-                TransportCommand::Tempo(Bpm::of(110.0 + round as f64)),
-            )
-            .expect("room");
             m.schedule(
                 At::Frame(Frame(base + 1500)),
                 TransportCommand::Loop(LoopEdit::over(

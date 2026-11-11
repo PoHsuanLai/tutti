@@ -25,7 +25,7 @@ use std::sync::{Arc, Mutex};
 
 mod support;
 
-use support::{Change, Segment, model_beats};
+use support::{Change, Segment, beat_of_frame, model_beats, step_map};
 use tutti_engine::Engine;
 use tutti_fixtures::midi::m1_note_on;
 use tutti_graph::NodeKey;
@@ -702,11 +702,10 @@ fn tempo_and_loop_change_on_their_frames() {
     );
     let m = &transport.motion;
     m.try_send(MotionEvent::Play).expect("room");
-    m.schedule(
-        At::Frame(Frame(1_200)),
-        TransportCommand::Tempo(Bpm::of(240.0)),
-    )
-    .expect("room");
+    transport.settings.set_tempo_map(step_map(&[
+        (0.0, 120.0),
+        (beat_of_frame(1_200, 120.0, SR), 240.0),
+    ]));
     m.schedule(
         At::Frame(Frame(2_000)),
         TransportCommand::Loop(LoopEdit::over(
@@ -793,11 +792,6 @@ fn env_beats_are_the_closed_form_of_each_segment() {
     let blocks = [512usize, 300, 512, 77, 512, 512, 400, 512, 512];
     let m = &transport.motion;
     m.try_send(MotionEvent::Play).expect("room");
-    m.schedule(
-        At::Frame(Frame(1_000)),
-        TransportCommand::Tempo(Bpm::of(97.0)),
-    )
-    .expect("room");
     // Armed with the playhead inside it (beat ~0.065): one wrap at ~2 140,
     // disarmed before the next.
     m.schedule(
@@ -821,11 +815,16 @@ fn env_beats_are_the_closed_form_of_each_segment() {
         },
     )
     .expect("room");
-    // Block 6 starts at 2 425: an untimed edit there, as a UI makes one,
-    // reaches the block's first frame.
+    // Untimed edits between blocks, as a UI makes them, reach the next
+    // block's first frame: 97 BPM from block 2 (frame 812), 133 from block 6
+    // (frame 2 425).
+    let early_at: usize = blocks[..2].iter().sum();
     let untimed_at: usize = blocks[..6].iter().sum();
     let mut published = Vec::new();
     for (i, &n) in blocks.iter().enumerate() {
+        if i == 2 {
+            transport.settings.set_tempo(Bpm::of(97.0));
+        }
         if i == 6 {
             transport.settings.set_tempo(Bpm::of(133.0));
         }
@@ -837,7 +836,7 @@ fn env_beats_are_the_closed_form_of_each_segment() {
         SR,
         120.0,
         &[
-            (1_000, Change::Tempo(97.0)),
+            (early_at as u64, Change::Tempo(97.0)),
             (1_700, Change::Loop(Some((0.02, 0.08)))),
             (untimed_at as u64, Change::Tempo(133.0)),
             (2_900, Change::Loop(None)),
@@ -1208,7 +1207,7 @@ fn the_published_playhead_is_the_closed_form_over_ten_minutes() {
         }
         fn reset(&mut self) {}
     }
-    const TEMPO_AT: u64 = 48_000 * 200 + 17;
+    const TEMPO_AT: u64 = 48_000 * 200;
     const LOOP_AT: u64 = 48_000 * 400 + 5;
     let (loop_start, loop_end) = (800.0, 816.0);
 
@@ -1217,13 +1216,6 @@ fn the_published_playhead_is_the_closed_form_over_ten_minutes() {
     let (engine, _ed) = graph_engine(&transport, 64, Unforkable(FirstBeat(Arc::clone(&first))), 1);
     transport.settings.set_tempo(Bpm::of(123.0));
     transport.motion.try_send(MotionEvent::Play).expect("room");
-    transport
-        .motion
-        .schedule(
-            At::Frame(Frame(TEMPO_AT)),
-            TransportCommand::Tempo(Bpm::of(91.5)),
-        )
-        .expect("room");
     transport
         .motion
         .schedule(
@@ -1254,6 +1246,10 @@ fn the_published_playhead_is_the_closed_form_over_ten_minutes() {
     let mut wrapped = false;
     let mut last = 0.0f64;
     for i in 0..blocks as u64 {
+        if 64 * i == TEMPO_AT {
+            // An untimed edit between blocks lands on the next block's frame.
+            transport.settings.set_tempo(Bpm::of(91.5));
+        }
         engine.process(&mut InterleavedMut::new(&mut buf, ChannelLayout::MONO));
         if i > 0 {
             assert_eq!(

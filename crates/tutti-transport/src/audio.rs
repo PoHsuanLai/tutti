@@ -114,20 +114,20 @@ impl TransportAudio {
         // The count first, then the tempo: a publish between the two is taken
         // at the first block, never missed.
         let seen = settings.map_generation.load(Ordering::Acquire);
-        let tempo = settings.tempo();
         let mut tempo_map = settings.tempo_reader();
-        let mut clock = TransportClock::new(transport.links(), rate);
         // A map with steps published before this audio side was taken (an
         // engine built after the project's tempo was set, or rebuilt by a
         // device restart) is followed from the first block, as a later publish
         // would be.
-        let stepped = {
+        let (clock, tempo, stepped) = {
             let map = tempo_map.lend();
+            let tempo = map.points()[0].tempo;
+            let mut clock = TransportClock::new(transport.links(), rate, tempo);
             let stepped = map.constant_tempo().is_none();
             if stepped {
                 clock.follow(&map);
             }
-            stepped
+            (clock, tempo, stepped)
         };
         Ok(Self {
             clock,
@@ -166,9 +166,8 @@ impl TransportAudio {
     }
 
     /// The tempo this block renders at: the published map's when a publish
-    /// landed since the last block, else the one in force (which a timed
-    /// `Tempo` command may have moved). The map is lent only then, once, and
-    /// the loan ends here.
+    /// landed since the last block, else the one in force. The map is lent
+    /// only then, once, and the loan ends here.
     ///
     /// A map that changes tempo is taken here too: the clock re-seats on it at
     /// the current beat (doc 020, section 3), and from then on follows it, the
@@ -406,29 +405,6 @@ mod tests {
         assert_eq!(a.begin_block().tempo, Bpm::of(143.5), "set_tempo is a map");
     }
 
-    /// A timed `Tempo` command is applied on the audio thread, which cannot
-    /// publish: its tempo holds across blocks until the next publish, which
-    /// wins.
-    ///
-    /// Mutation (run): `tempo_for_block` lending the map every block -> the
-    /// command's 90 reverts to the map's 120 at the next block -> fails.
-    #[test]
-    fn a_timed_tempo_holds_until_the_next_publish() {
-        let t = Transport::new(SampleRate::new(48_000.0));
-        let mut a = t.audio(SampleRate::new(48_000.0)).expect("first");
-        t.motion
-            .schedule(At::NextBlock, TransportCommand::Tempo(Bpm::of(90.0)))
-            .expect("room");
-        a.gather();
-        let _ = a.begin_block();
-        let (_, after) = a.fire(0, false);
-        assert_eq!(after.tempo, Bpm::of(90.0));
-        assert_eq!(a.begin_block().tempo, Bpm::of(90.0), "held");
-        assert_eq!(t.settings.tempo(), Bpm::of(90.0), "readers see it");
-        t.settings.set_tempo(Bpm::of(100.0));
-        assert_eq!(a.begin_block().tempo, Bpm::of(100.0), "a publish wins");
-    }
-
     /// A rolling transport over `points` (steps), at `rate`.
     fn rolling(rate: f64, points: &[(f64, f64)]) -> (Transport, TransportAudio) {
         rolling_on(rate, steps(points))
@@ -634,25 +610,6 @@ mod tests {
         let (_t, mut a) = rolling(48_000.0, &[(0.0, 120.0), (1.0, 120.0005)]);
         let _ = roll(&mut a, 24_000);
         assert_eq!(a.begin_block().tempo, Bpm::of(120.0005));
-    }
-
-    /// While a map with steps is in force it is the tempo: a timed `Tempo`
-    /// command (retired in stage 6) changes the scalar mirror and not the
-    /// clock, which the next publish would have overridden anyway.
-    ///
-    /// Mutation (run): `TransportClock::begin` taking `control.tempo` under a
-    /// map -> the clock runs at 90 -> fails.
-    #[test]
-    fn a_timed_tempo_does_not_override_a_step_map() {
-        let (t, mut a) = rolling(48_000.0, &[(0.0, 120.0), (4.0, 60.0)]);
-        t.motion
-            .schedule(At::NextBlock, TransportCommand::Tempo(Bpm::of(90.0)))
-            .expect("room");
-        a.gather();
-        let _ = a.begin_block();
-        let (_, after) = a.fire(0, false);
-        assert_eq!(after.tempo, Bpm::of(120.0));
-        assert_eq!(a.begin_block().tempo, Bpm::of(120.0));
     }
 
     /// A map with steps published before the audio side is taken (an engine

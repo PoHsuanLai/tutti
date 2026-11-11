@@ -1179,14 +1179,14 @@ fn test_mpe_per_voice_pitch_bend() {
         .unwrap();
 
     assert!(
-        voice_ch1.mpe_state().pitch_bend_semitones.get() > 40.0,
+        voice_ch1.per_note_bend().get() > 40.0,
         "the addressed note should have a large pitch bend, got {}",
-        voice_ch1.mpe_state().pitch_bend_semitones
+        voice_ch1.per_note_bend()
     );
     assert!(
-        voice_ch2.mpe_state().pitch_bend_semitones.get().abs() < 0.01,
+        voice_ch2.per_note_bend().get().abs() < 0.01,
         "the other note should be untouched, got {}",
-        voice_ch2.mpe_state().pitch_bend_semitones
+        voice_ch2.per_note_bend()
     );
 }
 
@@ -1238,14 +1238,14 @@ fn test_midi2_per_note_pitch_bend_addresses_one_voice() {
         .unwrap();
 
     assert!(
-        voice_60.mpe_state().pitch_bend_semitones.get() > 40.0,
+        voice_60.per_note_bend().get() > 40.0,
         "note 60 should be bent, got {}",
-        voice_60.mpe_state().pitch_bend_semitones
+        voice_60.per_note_bend()
     );
     assert!(
-        voice_64.mpe_state().pitch_bend_semitones.get().abs() < 0.01,
+        voice_64.per_note_bend().get().abs() < 0.01,
         "note 64 (same channel) must be untouched, got {}",
-        voice_64.mpe_state().pitch_bend_semitones
+        voice_64.per_note_bend()
     );
 }
 
@@ -1294,8 +1294,7 @@ fn test_midi2_per_note_management_reset_zeroes_only_addressed_voice() {
             .iter()
             .find(|v| v.is_active() && v.note() == NoteNumber::of(note))
             .unwrap()
-            .mpe_state()
-            .pitch_bend_semitones
+            .per_note_bend()
             .get()
     };
     assert!(bent(&synth, 60) > 40.0, "note 60 should start bent");
@@ -1421,8 +1420,7 @@ fn test_per_note_management_detach_freezes_the_note() {
             .iter()
             .find(|v| v.is_active() && v.note() == NoteNumber::of(60))
             .unwrap()
-            .mpe_state()
-            .pitch_bend_semitones
+            .per_note_bend()
             .get()
     };
     let frozen_at = bent(&synth);
@@ -1499,8 +1497,7 @@ fn test_per_note_pitch_bend_sensitivity_rpn_updates_range() {
         .iter()
         .find(|v| v.is_active() && v.note() == NoteNumber::of(60))
         .unwrap()
-        .mpe_state()
-        .pitch_bend_semitones
+        .per_note_bend()
         .get();
     assert!(
         (bend - 12.0).abs() < 0.5,
@@ -1633,8 +1630,7 @@ fn the_per_note_bend_sensitivity_is_one_channels() {
             .iter()
             .find(|v| v.is_active() && v.channel() == MidiChannel::of(channel))
             .unwrap()
-            .mpe_state()
-            .pitch_bend_semitones
+            .per_note_bend()
             .get()
     };
     assert!((bend(1) - 12.0).abs() < 0.5, "{}", bend(1));
@@ -1685,8 +1681,7 @@ fn test_reset_all_controllers_spares_per_note() {
         .iter()
         .find(|v| v.is_active() && v.note() == NoteNumber::of(60))
         .unwrap()
-        .mpe_state()
-        .pitch_bend_semitones
+        .per_note_bend()
         .get();
     assert!(
         bend > 40.0,
@@ -1959,13 +1954,17 @@ fn test_mpe_disabled_global_pitch_bend() {
     queue_midi(&mut synth, &[bend]);
     synth.tick(&[], &mut output);
 
-    // Both voices should have zero MPE pitch bend (global bend is handled differently)
+    // Both voices sound exactly the channel's bend from their keys: the
+    // wheel is the channel's, and no per-note pitch comes of it.
     for voice in &synth.voices {
         if voice.is_active() {
+            let wheel = 12.0 * synth.bend_ratio(voice.channel()).log2();
+            assert!(wheel.abs() > 0.5, "precondition: the wheel moved");
             assert!(
-                voice.mpe_state().pitch_bend_semitones.get().abs() < 0.01,
-                "Non-MPE mode should not set MPE pitch bend"
+                (voice.per_note_bend().get() - wheel).abs() < 0.01,
+                "Non-MPE mode should not set a per-note pitch bend"
             );
+            assert!(voice.tuned().is_none());
         }
     }
 }
@@ -2161,8 +2160,7 @@ fn disabling_mpe_clears_latent_per_note_state() {
             .iter()
             .find(|v| v.is_active())
             .unwrap()
-            .mpe_state()
-            .pitch_bend_semitones
+            .per_note_bend()
             .get()
             .abs()
             > 0.01,
@@ -2177,8 +2175,7 @@ fn disabling_mpe_clears_latent_per_note_state() {
             .iter()
             .find(|v| v.is_active())
             .unwrap()
-            .mpe_state()
-            .pitch_bend_semitones
+            .per_note_bend()
             .get()
             .abs()
             < 0.01,
@@ -2811,6 +2808,20 @@ fn mpe_synth() -> PolySynth {
     .expect("synth builds")
 }
 
+/// What a voice sounds, as an offset from its key's equal-tempered frequency
+/// (A4 = 440 Hz) in semitones: the analytic figure of the per-note pitch
+/// (channel bend not removed: these tests leave the channel's wheel centred).
+trait SoundsAt {
+    fn per_note_bend(&self) -> tutti_types::Semitones;
+}
+
+impl SoundsAt for SynthVoice {
+    fn per_note_bend(&self) -> tutti_types::Semitones {
+        let key = 440.0_f32 * 2.0_f32.powf((f32::from(self.note().get()) - 69.0) / 12.0);
+        tutti_types::Semitones(12.0 * (self.sounding_freq().get() / key).log2())
+    }
+}
+
 fn voice_of(synth: &PolySynth, note: u8) -> &SynthVoice {
     synth
         .voices
@@ -2846,29 +2857,20 @@ fn per_note_management_flags_are_read_from_the_spec_bits() {
     let mut synth = mpe_synth();
     synth.apply_midi(on);
     synth.apply_midi(bend(0xFFFF_FFFF));
-    let held = voice_of(&synth, 60).mpe_state().pitch_bend_semitones.get();
+    let held = voice_of(&synth, 60).per_note_bend().get();
     assert!(held > 0.0);
     synth.apply_midi(Ump([0x40F1_3C02, 0, 0, 0]));
     synth.apply_midi(bend(0x8000_0000));
-    assert_eq!(
-        voice_of(&synth, 60).mpe_state().pitch_bend_semitones.get(),
-        held
-    );
+    assert!((voice_of(&synth, 60).per_note_bend().get() - held).abs() < 1e-3);
 
     // S = 1: the bend resets, and the note keeps responding.
     let mut synth = mpe_synth();
     synth.apply_midi(on);
     synth.apply_midi(bend(0xFFFF_FFFF));
     synth.apply_midi(Ump([0x40F1_3C01, 0, 0, 0]));
-    assert_eq!(
-        voice_of(&synth, 60).mpe_state().pitch_bend_semitones.get(),
-        0.0
-    );
+    assert!(voice_of(&synth, 60).per_note_bend().get().abs() < 1e-3);
     synth.apply_midi(bend(0xFFFF_FFFF));
-    assert_eq!(
-        voice_of(&synth, 60).mpe_state().pitch_bend_semitones.get(),
-        held
-    );
+    assert!((voice_of(&synth, 60).per_note_bend().get() - held).abs() < 1e-3);
 }
 
 /// A note with a reserved attribute type (4 and up) sounds and ends: Table 8

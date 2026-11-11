@@ -1,6 +1,6 @@
 //! A voice's per-note (MPE) expression, and the one place it is applied.
 
-use tutti_types::{Amplitude, Semitones};
+use tutti_types::Amplitude;
 
 /// Slide (CC74) centre: "no timbre shift". The cutoff factor is
 /// `4^(slide - SLIDE_CENTER)`, so a note with no CC74 must start here.
@@ -9,8 +9,6 @@ pub(crate) const SLIDE_CENTER: f32 = 0.5;
 /// One per-note expression value, as a message addresses it.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) enum MpeControl {
-    /// Bend in semitones.
-    PitchBend(Semitones),
     /// Key pressure, `0..=1`.
     Pressure(f32),
     /// Slide (CC74), `0..=1`, centred at [`SLIDE_CENTER`].
@@ -25,8 +23,6 @@ pub(crate) enum MpeControl {
 #[derive(Debug, Clone, Copy)]
 pub struct MpeVoiceState {
     enabled: bool,
-    /// Per-note pitch bend.
-    pub pitch_bend_semitones: Semitones,
     /// Per-note pressure, `0..=1`.
     pub pressure: f32,
     /// Per-note slide, `0..=1`, centred at [`SLIDE_CENTER`].
@@ -39,7 +35,6 @@ impl MpeVoiceState {
     pub(crate) fn new(enabled: bool) -> Self {
         Self {
             enabled,
-            pitch_bend_semitones: Semitones(0.0),
             pressure: 0.0,
             slide: SLIDE_CENTER,
             gain: Amplitude::UNITY,
@@ -67,7 +62,6 @@ impl MpeVoiceState {
     /// Stores one controller.
     pub(crate) fn apply(&mut self, control: MpeControl) {
         match control {
-            MpeControl::PitchBend(bend) => self.pitch_bend_semitones = bend,
             MpeControl::Pressure(p) => self.pressure = p.clamp(0.0, 1.0),
             MpeControl::Slide(s) => self.slide = s.clamp(0.0, 1.0),
             // Per-note Volume's `0..1`, narrower than `Amplitude`'s own floor.
@@ -78,12 +72,6 @@ impl MpeVoiceState {
     /// Returns the controllers to their defaults.
     pub(crate) fn reset(&mut self) {
         *self = Self::new(self.enabled);
-    }
-
-    /// The bend in effect: `None` when disabled or inaudibly small.
-    pub(crate) fn effective_bend(&self) -> Option<Semitones> {
-        (self.enabled && self.pitch_bend_semitones.get().abs() > 0.001)
-            .then_some(self.pitch_bend_semitones)
     }
 
     /// The slide in effect: `None` when disabled or at centre.

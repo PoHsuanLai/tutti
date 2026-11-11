@@ -285,7 +285,7 @@ fn an_export_is_placed_from_the_declaration() {
         );
         match s.export_blocking(request).unwrap() {
             Outcome::Finished(ExportOutput::Buffers(r)) => {
-                r.planes.iter().map(|p| p[0]).collect::<Vec<_>>()
+                r.planes().iter().map(|p| p[0]).collect::<Vec<_>>()
             }
             _ => panic!("expected buffers"),
         }

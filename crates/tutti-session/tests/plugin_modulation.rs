@@ -473,7 +473,7 @@ fn an_export_is_the_live_render_on_a_clap_gain() {
     else {
         panic!("the export finishes into memory")
     };
-    for (c, (l, e)) in live.iter().zip(&export.planes).enumerate() {
+    for (c, (l, e)) in live.iter().zip(export.planes()).enumerate() {
         assert!(e.len() >= total, "channel {c}: {} frames", e.len());
         let moving = l.iter().filter(|&&v| v != 0.0).collect::<Vec<_>>();
         assert!(

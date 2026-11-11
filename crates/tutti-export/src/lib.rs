@@ -17,13 +17,17 @@ mod control;
 use control::{Control, never_stop};
 pub use control::{Flow, Outcome, Pass, Progress};
 
+mod job;
+pub use job::{Job, JobError, MAX_FRAMES};
+
+mod rendered;
+pub use rendered::{Rendered, RenderedError};
+
 mod config;
 pub use config::{EncodeConfig, EventLossPolicy, ExportConfig, RenderConfig, Resample};
 
 mod normalize;
-pub use normalize::{
-    Normalize, Normalized, render_normalized_to_file, render_normalized_to_file_with,
-};
+pub use normalize::{Normalize, render_normalized_to_file, render_normalized_to_file_with};
 
 mod graph;
 pub use graph::{GRAPH_MAX_BLOCK, RenderGraph};
@@ -43,7 +47,8 @@ pub use tutti_transport::{FrozenClock, RenderClock};
 
 use std::borrow::BorrowMut;
 use std::path::{Path, PathBuf};
-use tutti_types::Samples;
+use tutti_measure::Loudness;
+use tutti_types::Db;
 
 /// A file an export wrote, returned by [`render_to_file`], [`write_buffers`]
 /// and [`render_normalized_to_file`].
@@ -67,101 +72,17 @@ pub struct Written {
     /// below full scale for an integer format, so this stays `0` unless the
     /// programme itself was past full scale.
     pub clipped_samples: u64,
-    /// The gain and effective target of a normalizing export
-    /// ([`render_normalized_to_file`]); `None` for the others.
-    pub normalized: Option<Normalized>,
-}
-
-/// Rendered audio held in memory, one `Vec` per channel.
-///
-/// Returned by [`render_to_buffers`]; written with [`write_buffers`]. Planes
-/// rather than a `(left, right)` pair, so a surround render keeps every
-/// channel.
-#[derive(Clone, PartialEq)]
-pub struct Rendered {
-    /// One `Vec` per channel, all the same length. Planar, not interleaved —
-    /// [`interleaved`](Self::interleaved) is the conversion.
-    pub planes: Vec<Vec<f32>>,
-    /// The rate these samples are at, which is not necessarily the rate a
-    /// config asked to write: [`render_to_buffers`] does not resample, so this
-    /// is always the render rate. An encoder must read it from here rather than
-    /// from a config, or it converts from a rate the samples were never at.
-    pub sample_rate: tutti_types::SampleRate,
-    /// Events the graph lost during the render (not a note-off it refused and
-    /// sent again); nonzero only under [`EventLossPolicy::Allow`] (under `Fail`
-    /// the render is an error instead). A lost note-on or note-off makes the
-    /// audio wrong.
-    pub dropped_events: u64,
-}
-
-impl std::fmt::Debug for Rendered {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Rendered")
-            .field("channels", &self.channels())
-            .field("frames", &self.frames())
-            .field("sample_rate", &self.sample_rate)
-            .field("dropped_events", &self.dropped_events)
-            .finish_non_exhaustive()
-    }
-}
-
-impl Rendered {
-    /// Returns the frames per plane — the length of one channel, not the total
-    /// sample count.
-    pub fn frames(&self) -> Samples {
-        Samples(self.planes.first().map_or(0, |p| p.len()))
-    }
-
-    /// Returns the channel count — the interleave stride, and the number of
-    /// planes.
-    pub fn channels(&self) -> usize {
-        self.planes.len()
-    }
-
-    /// Returns the width these planes carry as a [`ChannelLayout`].
-    ///
-    /// [`channels`](Self::channels) is the same number as a raw stride.
-    pub fn layout(&self) -> ChannelLayout {
-        ChannelLayout::from(u16::try_from(self.planes.len()).unwrap_or(u16::MAX))
-    }
-
-    /// Multiplies every sample by `gain` — the apply half of a
-    /// measure-then-apply normalization.
-    pub fn apply_gain(&mut self, gain: tutti_types::Db) {
-        let scale = gain.to_amplitude().get();
-        for plane in self.planes.iter_mut() {
-            for s in plane.iter_mut() {
-                *s *= scale;
-            }
-        }
-    }
-
-    /// Returns the planes interleaved — the shape a meter or an encoder takes.
-    ///
-    /// Allocates the whole render. A `Rendered` holds an entire offline
-    /// pass in memory, so this doubles that for the duration of the call; on a
-    /// long export it is the largest single allocation in the crate. Prefer
-    /// [`interleaved_into`](Self::interleaved_into) wherever the interleaved
-    /// copy is read and dropped rather than kept.
-    pub fn interleaved(&self) -> Vec<f32> {
-        let mut out = Vec::new();
-        self.interleaved_into(&mut out);
-        out
-    }
-
-    /// Interleaves into a caller-owned buffer, reusing its allocation.
-    ///
-    /// `out` is cleared first, so it is a destination and not an accumulator.
-    /// Prefer it over [`interleaved`](Self::interleaved) when interleaving more
-    /// than once.
-    pub fn interleaved_into(&self, out: &mut Vec<f32>) {
-        out.clear();
-        if self.planes.is_empty() {
-            return;
-        }
-        out.resize(self.frames().interleaved_len(self.layout()), 0.0);
-        tutti_types::InterleavedMut::new(out, self.layout()).interleave_from(&self.planes, 0);
-    }
+    /// The gain a normalizing export applied ([`render_normalized_to_file`]);
+    /// `None` for the others, so `None` means the file is as rendered. Chosen
+    /// against the target or ceiling after an integer format's headroom was
+    /// taken off it, so for [`Normalize::Peak`] it is
+    /// `target - measured.true_peak` of that lowered target.
+    pub gain: Option<Db>,
+    /// What a normalizing export read from the audio before it applied
+    /// [`gain`](Self::gain): the programme at the file's rate (after any
+    /// resample, which moves the true peak), measured once. `None` where
+    /// `gain` is.
+    pub measured: Option<Loudness>,
 }
 
 /// The file's channels, for the fold from the graph's.
@@ -381,7 +302,18 @@ fn render_pass(
     control: &mut Control<'_>,
 ) -> Result<Outcome<Rendered>> {
     let ch = frame_width(config.encode.channels)?;
-    let plan = render::RenderPlan::new(&config.render)?;
+    // A span past `MAX_FRAMES` cannot be held, which is this render's own
+    // error rather than a malformed job; a sum that overflows a frame count
+    // is malformed and stays `ConfigError::Job`.
+    let plan = match render::RenderPlan::new(&config.render) {
+        Err(ConfigError::Job(JobError::TooLong { total: Some(total) })) => {
+            return Err(Error::RenderTooLarge {
+                frames: total,
+                channels: config.encode.channels,
+            });
+        }
+        planned => planned?,
+    };
 
     // `vec![Vec::with_capacity(n); ch]` would clone ONE empty Vec `ch` times,
     // and a clone does not carry capacity — every plane would reallocate.
@@ -430,9 +362,5 @@ fn render_pass(
         render::check_loss(config.render.on_event_loss, lost)?;
     }
 
-    Ok(driven.map(|()| Rendered {
-        planes,
-        sample_rate: config.render.sample_rate,
-        dropped_events: lost,
-    }))
+    Ok(driven.map(|()| Rendered::from_render(planes, config.render.sample_rate, lost)))
 }

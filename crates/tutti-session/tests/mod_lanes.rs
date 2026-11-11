@@ -256,7 +256,7 @@ fn an_export_is_the_live_render_on_a_native_param() {
     else {
         panic!("the export finishes into memory")
     };
-    let export = rendered.planes;
+    let export = rendered.into_planes();
 
     // Live: rolling from beat 0 (the play clock restarts there), in
     // ragged blocks.

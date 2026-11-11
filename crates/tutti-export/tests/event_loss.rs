@@ -112,10 +112,10 @@ fn an_allowed_loss_is_reported() {
     let mut g = graph();
     let first =
         render_to_buffers(&mut g, &config(EventLossPolicy::Allow), &FrozenClock).expect("allowed");
-    assert_eq!(first.dropped_events, 12);
+    assert_eq!(first.dropped_events(), 12);
     let second =
         render_to_buffers(&mut g, &config(EventLossPolicy::Allow), &FrozenClock).expect("allowed");
-    assert_eq!(second.dropped_events, 12);
+    assert_eq!(second.dropped_events(), 12);
 }
 
 /// A render that lost events puts nothing in place: the file already at the
@@ -199,7 +199,7 @@ fn a_render_that_lost_events_replaces_nothing() {
 fn write_buffers_applies_the_event_loss_policy() {
     let rendered =
         render_to_buffers(graph(), &config(EventLossPolicy::Allow), &FrozenClock).expect("allowed");
-    assert_eq!(rendered.dropped_events, 12);
+    assert_eq!(rendered.dropped_events(), 12);
 
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("out.wav");

@@ -108,7 +108,7 @@ fn a_bound_plugin_does_not_allocate_on_the_audio_thread() {
         tutti_types::SampleRate(SAMPLE_RATE),
         MaxBlock::of(Samples(BLOCK)),
     )
-    .with_quantum(Samples(QUANTUM));
+    .with_quantum(MaxBlock::of(Samples(QUANTUM)));
     // Curve segments on another parameter: an exponential trajectory, so
     // each segment runs across chunks and the node follows it.
     let mut env = Trajectory::new();

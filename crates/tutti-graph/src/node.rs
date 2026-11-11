@@ -596,7 +596,7 @@ impl Shape {
 pub struct Prepare {
     sample_rate: SampleRate,
     max_block: MaxBlock,
-    quantum: Option<Samples>,
+    quantum: Option<MaxBlock>,
 }
 
 impl Prepare {
@@ -621,22 +621,20 @@ impl Prepare {
     /// whole device period to answer. `None` (the default) when the host does
     /// not know, or renders offline.
     ///
-    /// # Panics
-    ///
-    /// If `quantum` is zero.
+    /// A quantum is a [`MaxBlock`]: the longest callback is the same quantity
+    /// as the longest block (one frame to `u32::MAX`), so a zero quantum cannot
+    /// be written. It is not required to be at most [`max_block`](Self::max_block):
+    /// it is a hint about the host, not a bound on blocks, so there is no
+    /// relation to refuse.
     #[must_use]
-    pub fn with_quantum(mut self, quantum: Samples) -> Self {
-        assert!(
-            !quantum.is_zero(),
-            "a device callback holds at least one frame"
-        );
+    pub const fn with_quantum(mut self, quantum: MaxBlock) -> Self {
         self.quantum = Some(quantum);
         self
     }
 
     /// The host's device callback size, when it knows one. See
     /// [`with_quantum`](Self::with_quantum).
-    pub const fn quantum(&self) -> Option<Samples> {
+    pub const fn quantum(&self) -> Option<MaxBlock> {
         self.quantum
     }
 
@@ -1444,8 +1442,8 @@ mod tests {
     fn a_prepare_carries_the_device_quantum_it_is_given() {
         let p = Prepare::new(SampleRate(48_000.0), MaxBlock::of(Samples(1024)));
         assert_eq!(p.quantum(), None);
-        let q = p.with_quantum(Samples(480));
-        assert_eq!(q.quantum(), Some(Samples(480)));
+        let q = p.with_quantum(MaxBlock::of(Samples(480)));
+        assert_eq!(q.quantum(), Some(MaxBlock::of(Samples(480))));
         assert_eq!(q.max_block(), p.max_block());
         assert_ne!(p, q);
     }

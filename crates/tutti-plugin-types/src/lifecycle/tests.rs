@@ -1543,7 +1543,20 @@ fn a_max_block_keeps_the_range_contract() {
         new: MaxBlock::new,
         get: MaxBlock::samples,
         of: Some(MaxBlock::of),
-        valid: &[Samples(1), Samples(64), Samples(4096), Samples(usize::MAX)],
+        valid: &[
+            Samples(1),
+            Samples(64),
+            Samples(4096),
+            Samples(u32::MAX as usize),
+        ],
+        // The bound is `u32::MAX` frames; a `usize` wider than that is refused.
+        #[cfg(target_pointer_width = "64")]
+        invalid: &[
+            Samples(0),
+            Samples(u32::MAX as usize + 1),
+            Samples(usize::MAX),
+        ],
+        #[cfg(not(target_pointer_width = "64"))]
         invalid: &[Samples(0)],
     });
 }

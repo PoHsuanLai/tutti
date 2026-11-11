@@ -137,18 +137,8 @@ impl ClapLoaded {
             reason: plugin_error(error),
         };
 
-        // `Samples` counts frames; CLAP's `max_frames_count` is a `u32`, and a
-        // block past it is refused rather than saturated: the scratch is sized
-        // for `max_frames` in every channel, so `u32::MAX` would be gigabytes.
-        // (`MaxBlock` has no upper bound of its own; the host's is a runtime
-        // `Limits::max_block`.)
-        let Ok(max_frames) = u32::try_from(prepare.max_block().get()) else {
-            let err = ClapError::NotSupported(format!(
-                "a block of {} frames exceeds CLAP's max_frames_count (u32)",
-                prepare.max_block().get()
-            ));
-            return Err(refuse(self, err));
-        };
+        // CLAP's `max_frames_count` is a `u32`, the bound `MaxBlock` holds.
+        let max_frames = prepare.max_block().get_u32();
         // The rate and block size are fixed by `activate`; a refusal below
         // leaves the previous ones in place.
         let previous = self.audio;

@@ -270,7 +270,7 @@ impl SessionBuilder {
         &mut self,
         rate: SampleRate,
         max_block: MaxBlock,
-        quantum: Option<Samples>,
+        quantum: Option<MaxBlock>,
         outputs: usize,
     ) -> Result<Parts> {
         // Built first so its port list can feed the graph's MIDI input.
@@ -284,7 +284,7 @@ impl SessionBuilder {
             let inlets = Arc::new(tutti_midi_runtime::DeviceInlets::new(
                 self.midi_devices,
                 crate::midi::MIDI_INPUT_INLET_CAPACITY,
-                crate::midi::input_lead(quantum.unwrap_or(max_block.samples()), rate),
+                crate::midi::input_lead(quantum.unwrap_or(max_block).samples(), rate),
             ));
             let ports = Arc::new(tutti_midi_hardware::HardwareMidiInputs::new(inlets));
             let io = match backend {

@@ -530,7 +530,7 @@ full-depth value there and ramps back to 0 over the next piece, a spike up
 to full depth whose width depends on where the grid falls. A sine's peak is
 not a corner, so a frame on it reads full depth while the lane reads 0. The
 error is up to the whole depth, and
-`the_curves_with_no_bound_err_as_measured` (`tutti-nodes/tests/control_lane.rs`)
+`the_curves_with_no_bound_err_as_measured` (`tutti-nodes/tests/control/control_lane.rs`)
 pins each curve's measured error at 10 Hz as a figure. **A
 triangle or a saw renders exactly only with a `Linear` curve**, the only one
 that keeps them linear between corners; under another curve they fall under
@@ -1692,7 +1692,7 @@ pointer names this design.
 
 **Existing tests whose assertions change, with the reason:**
 
-- The floor, `crates/tutti-graph/tests/param_mod.rs`:
+- The floor, `crates/tutti-graph/tests/mixing/param_mod.rs`:
   - `an_event_sources_held_value_survives_another_source_joining`:
     reshaping the event source is now refused
     (`ShapedEventParamSource`); it asserts the refusal, then reconnects
@@ -1709,12 +1709,12 @@ pointer names this design.
     `a_counting_host_keeps_only_the_jumps_whatever_the_reach`: the size
     bound moves to 24..=28 KiB (a history piece carries the play reading).
 - **Unchanged** though listed when this was planned: `a_fork_carries_its_event_sources_ramps`,
-  `crates/tutti-graph/tests/parallel.rs:288` and
+  `crates/tutti-graph/tests/executor/parallel.rs:288` and
   `crates/tutti-graph/tests/rt_no_alloc.rs:712`. Their ports' base is
   0, so base + event and event alone render the same; the fork test is
   still ported with the lane (below), when `ParamTap`'s seed stops being its
   mechanism.
-- The lane, `crates/tutti-nodes/tests/automation_segments.rs`:
+- The lane, `crates/tutti-nodes/tests/control/automation_segments.rs`:
   `an_unrepresentable_piece_is_linear_between_block_edges` and
   `a_curve_without_pieces_takes_the_fallback` assert block-edge sampling,
   which moves to the play-clock grid (§5.4).
@@ -1790,7 +1790,7 @@ choices: peak over channels, linear ADSR segments, play start read as
 an epoch change at the input's time, `ForkByClone`, `from_decl` in
 `tutti-nodes`. The hazard closed in both the lane and the compiler (§7).
 
-- **Properties, each a test** (`tutti-nodes/tests/signal_sources.rs`
+- **Properties, each a test** (`tutti-nodes/tests/control/signal_sources.rs`
   unless named): the follower's one-step lag against the analytic one-pole
   `1 − c^(g − t₀)`, the same events bit for bit at block sizes 1, 7, 32,
   100, 128 and ragged; both nodes reset on the start's frame inside a
@@ -1846,7 +1846,7 @@ that need an app or a plugin.
   LFO and a follower on an SVF's cutoff and Q; now in
   `crates/tutti/examples`), and a doctest on
   `Modulation`.
-- **Properties, each a test** (`tutti-nodes/tests/modulation_reconcile.rs`
+- **Properties, each a test** (`tutti-nodes/tests/control/modulation_reconcile.rs`
   unless named): the §8.1 example's analytic cutoff and the pad's
   analytic dip; a depth edit keeps phase with no plan and no commit;
   range and depth edits need no commit and a follower route exactly one;

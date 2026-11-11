@@ -267,7 +267,7 @@ config's `duration_seconds` is then derived from the project's map.
 Pinned bit for bit today: `FrameClock` (`tutti-types` tests and the
 long-run random-tempo property), `OfflineTimeline` vs `TransportClock`
 sample for sample (`offline.rs`), the `tutti-nodes` golden digests (`assert_golden`), the
-differential suite's `modes` and `tests/parallel.rs`.
+differential suite's `modes` and `tests/executor/parallel.rs`.
 
 **Nothing moves, and the design guarantees it structurally:**
 
@@ -489,7 +489,7 @@ not change, and the `Env` holds no earlier tempo, so the voice reads the map:
   seconds too, so they are exact over a changing map. A time-locked voice (a
   free-running `MemorySource`) reads no transport and no map and is unchanged.
 
-`tutti-sampler`'s `tests/tempo_map.rs` renders a ramp-valued wave (sample `i` is
+`tutti-sampler`'s `tests/graph_clock/tempo_map.rs` renders a ramp-valued wave (sample `i` is
 `i / 2^17`, so the output says which source frame it played) through the live
 engine over a published map and pins, against the map's definition written in
 the test: `a_step_map_puts_a_clips_frames_where_the_map_says` (clips from

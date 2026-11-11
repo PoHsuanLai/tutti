@@ -482,7 +482,7 @@ name):
   taker, `take_disk_voice*`, always passes `placed = true` (`ports.rs:387`).
 - `Command::Seek` is documented a no-op for a placed voice (`ports.rs:95`), the
   only kind there is. Its only senders are tests (`streamer/mod.rs`,
-  `voice/disk_voice/live_loop.rs`, `tests/tier_parity.rs`, where the send is
+  `voice/disk_voice/live_loop.rs`, `tests/voice/tier_parity.rs`, where the send is
   redundant beside the clock seek next to it); no non-test caller exists.
 - `DiskSource::play` and `stop` are called only by tests
   (`voice/disk_voice/tests.rs`, `voice/disk_voice/live_loop.rs`).
@@ -827,7 +827,7 @@ The review of the streamer widens that list. Stage 6 also does:
 8. **Correct the stale comments in the same PR.** "Maximum priority" (wrong
    since #341) in `loop_body.rs`, `step.rs` and the doc on `thread.rs`'s
    `start`; "the async loop" and `streamer_loop_async`, which do not exist,
-   in `step.rs` and `tests/tier_parity.rs`; and `streamer/mod.rs`'s "one SPSC
+   in `step.rs` and `tests/voice/tier_parity.rs`; and `streamer/mod.rs`'s "one SPSC
    ring per channel; the audio thread only ever pops" (the ring is
    position-indexed, one per stream, never popped).
 
@@ -1588,7 +1588,7 @@ Each stage is one PR that stays green. Line figures are estimates.
    Some(spec)))`; a recorder with no wrap writes what it always did.
    `tutti-session` (feature `record`) and `tutti::io` re-export `DitherSink`,
    `DitherSpec` and `DitherShape`.
-   `tests/dither_agrees.rs` in `tutti-session` is decision A's test: a take
+   `tests/export/dither_agrees.rs` in `tutti-session` is decision A's test: a take
    pulled in 100-frame blocks and an export of the same planes, both 16-bit
    triangular, write the same samples.
 8. **`Cue`** only with a measured gap.

@@ -252,7 +252,7 @@ mod tests {
     /// **Every engine node whose controls publish to it keeps a
     /// reclaimer**: the clip, the harmony track, the live input and the
     /// voice. What each one frees is pinned with a held loan in its own
-    /// crate; the graph's sweep of them in `tests/graph.rs`.
+    /// crate; the graph's sweep of them in `tests/wiring/graph.rs`.
     #[test]
     fn every_publishing_node_keeps_a_reclaimer() {
         #[cfg(feature = "midi")]

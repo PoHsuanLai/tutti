@@ -950,7 +950,7 @@ mod golden {
     /// A wet-gain change made between blocks is read by the next block
     /// and ramped across it (it scales the output directly, so a step
     /// clicks), ending exactly on the new value. (A mix change is the graph's:
-    /// `tutti-graph/tests/mix.rs`.)
+    /// `tutti-graph/tests/mixing/mix.rs`.)
     #[test]
     fn a_gain_change_is_read_next_block_and_ramped_across_it() {
         use crate::test_support::{change_between_node_blocks, noise};

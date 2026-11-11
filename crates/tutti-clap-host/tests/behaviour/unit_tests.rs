@@ -1,0 +1,2047 @@
+//! Unit tests for the CLAP host's event translation.
+
+use std::ffi::c_void;
+
+use clap_sys::events::{
+    CLAP_CORE_EVENT_SPACE_ID, CLAP_EVENT_MIDI, CLAP_EVENT_NOTE_CHOKE, CLAP_EVENT_NOTE_END,
+    CLAP_EVENT_NOTE_EXPRESSION, CLAP_EVENT_NOTE_OFF, CLAP_EVENT_NOTE_ON,
+    CLAP_EVENT_PARAM_GESTURE_BEGIN, CLAP_EVENT_PARAM_GESTURE_END, CLAP_EVENT_PARAM_MOD,
+    CLAP_EVENT_PARAM_VALUE, clap_event_header, clap_event_note, clap_event_note_expression,
+    clap_event_param_gesture, clap_event_param_mod, clap_event_param_value,
+};
+use tutti_clap_host::{
+    ClapEvent, ClapHost, EventList, HostState, InputEventList, InputStream, NoteExpressionType,
+    OutputEventList, OutputStream, ParameterChanges, ParameterQueue,
+};
+use tutti_fixtures::midi as fx;
+use tutti_graph::Offset;
+use tutti_midi_protocol::{channel_voice, midi1};
+use tutti_types::Samples;
+use tutti_ump::{CCNumber, KeyEvent, Message, MidiChannel, MidiGroup, NoteNumber, Voice2, decode};
+
+/// A block long enough for every offset these tests use.
+const BLOCK: usize = 1_000;
+
+/// The offset `k` frames into the block.
+fn at(k: u32) -> Offset {
+    Offset::new(k as usize, Samples(BLOCK)).expect("inside the block")
+}
+
+/// The first event `event` adds to a fresh list.
+fn first(event: &(Offset, tutti_ump::Ump)) -> Option<ClapEvent> {
+    let mut list = InputEventList::new();
+    list.add_midi(event);
+    list.take_events().into_iter().next()
+}
+
+use crate::support;
+use support::main_thread;
+#[allow(unused_imports)]
+use support::raw::{HostRaw, InputListRaw, InputStreamRaw, OutputListRaw, OutputStreamRaw};
+
+// ── MIDI conversion via `(Offset, Ump)` and `WireMidi` ──
+//
+// clap-host's `ClapEvent::{from,to}_midi_event` bridge between VST3/CLAP's
+// typed event structs and Tutti's UMP events. These tests cover each
+// MIDI-1 message shape we expect to round-trip cleanly.
+
+/// NoteOn maps to CLAP's typed `note` event (NoteOn variant).
+#[test]
+fn test_note_on_roundtrip() {
+    // Build with MIDI-2 velocity (half of u16 max ≈ 0x8000).
+    let event = (
+        at(10),
+        fx::note_on(MidiGroup::FIRST, MidiChannel::of(3), 60, fx::MID_VELOCITY),
+    );
+    let clap = first(&event).expect("NoteOn should convert");
+    assert!(matches!(clap, ClapEvent::NoteOn(_)));
+    let back = clap.to_midi().expect("round-trip should succeed");
+    assert_eq!(back.offset, 10);
+    assert!(matches!(
+        channel_voice(back.ump),
+        Some((_, Voice2::NoteOn { note, .. })) if note == NoteNumber::of(60)
+    ));
+}
+
+/// NoteOff maps to CLAP's typed `note` event (NoteOff variant).
+#[test]
+fn test_note_off_roundtrip() {
+    let event = (
+        at(20),
+        fx::note_off(MidiGroup::FIRST, MidiChannel::of(5), 72, 0x4000),
+    );
+    let clap = first(&event).expect("NoteOff should convert");
+    assert!(matches!(clap, ClapEvent::NoteOff(_)));
+    let back = clap.to_midi().expect("round-trip should succeed");
+    assert_eq!(back.offset, 20);
+    assert!(matches!(
+        channel_voice(back.ump),
+        Some((_, Voice2::NoteOff { note, .. })) if note == NoteNumber::of(72)
+    ));
+}
+
+/// ControlChange falls through to CLAP's generic `Midi` (3-byte wire) event.
+#[test]
+fn test_control_change_roundtrip() {
+    let event = (
+        at(5),
+        fx::cc(
+            MidiGroup::FIRST,
+            MidiChannel::of(2),
+            CCNumber::BRIGHTNESS,
+            tutti_fixtures::midi::wide_value(100),
+        ),
+    );
+    let clap = first(&event).expect("CC should convert");
+    // CC goes through the generic Midi event
+    match clap {
+        ClapEvent::Midi(e) => {
+            assert_eq!(e.data[0], 0xB0 | 2, "CC status byte");
+            assert_eq!(e.data[1], 74, "controller number");
+            assert_eq!(e.data[2], 100, "CC value");
+        }
+        _ => panic!("Expected Midi event for ControlChange"),
+    }
+}
+
+/// PitchBend falls through to CLAP's generic `Midi` event. The 14-bit
+/// bend value is split across bytes 1 (LSB) and 2 (MSB).
+#[test]
+fn test_pitch_bend_roundtrip() {
+    // MIDI-1 center = 8192 (0x2000).
+    let event = (
+        at(0),
+        fx::pitch_bend(
+            MidiGroup::FIRST,
+            MidiChannel::FIRST,
+            tutti_fixtures::midi::wide_bend(8192),
+        ),
+    );
+    let clap = first(&event).expect("PitchBend should convert");
+    match clap {
+        ClapEvent::Midi(e) => {
+            assert_eq!(e.data[0] & 0xF0, 0xE0, "PitchBend status nibble");
+            // Recover 14-bit value: LSB | (MSB << 7)
+            let value = (e.data[1] as u16) | ((e.data[2] as u16) << 7);
+            assert_eq!(value, 8192, "PitchBend should round-trip to center");
+        }
+        _ => panic!("Expected Midi event for PitchBend"),
+    }
+}
+
+/// ProgramChange is a 2-byte MIDI-1 event, passed through as generic `Midi`.
+#[test]
+fn test_program_change_roundtrip() {
+    let event = (
+        at(100),
+        fx::program_change(MidiGroup::FIRST, MidiChannel::of(9), 42, None),
+    );
+    let clap = first(&event).expect("ProgramChange should convert");
+    match clap {
+        ClapEvent::Midi(e) => {
+            assert_eq!(e.data[0], 0xC0 | 9, "ProgramChange status byte");
+            assert_eq!(e.data[1], 42, "program number");
+        }
+        _ => panic!("Expected Midi event for ProgramChange"),
+    }
+}
+
+/// Note events pushed through `InputEventList::add_midi` should appear in
+/// the FFI event table.
+#[test]
+fn test_input_event_list_add_midi_counts_correctly() {
+    let mut list = InputEventList::new();
+    list.add_midi(&(
+        at(0),
+        fx::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, fx::MID_VELOCITY),
+    ));
+    list.add_midi(&(
+        at(100),
+        fx::note_off(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0),
+    ));
+
+    let raw = list.as_raw();
+    unsafe {
+        let size_fn = (*raw).size.unwrap();
+        assert_eq!(size_fn(raw), 2);
+
+        let get_fn = (*raw).get.unwrap();
+        let header0 = &*get_fn(raw, 0);
+        assert_eq!(header0.time, 0);
+
+        let header1 = &*get_fn(raw, 1);
+        assert_eq!(header1.time, 100);
+
+        // Out of bounds returns null
+        assert!(get_fn(raw, 2).is_null());
+    }
+}
+
+/// Output NoteOn events survive the FFI round-trip back through
+/// `to_midi_events()`.
+#[test]
+fn test_output_event_list_push_note_on() {
+    let mut list = OutputEventList::new();
+    let raw = list.as_raw_mut();
+
+    let note = clap_event_note {
+        header: clap_event_header {
+            size: std::mem::size_of::<clap_event_note>() as u32,
+            time: 50,
+            space_id: CLAP_CORE_EVENT_SPACE_ID,
+            type_: CLAP_EVENT_NOTE_ON,
+            flags: 0,
+        },
+        note_id: 1,
+        port_index: 0,
+        channel: 0,
+        key: 64,
+        velocity: 0.9,
+    };
+
+    unsafe {
+        let push_fn = (*raw).try_push.unwrap();
+        let ok = push_fn(raw as *const _, &note.header as *const _);
+        assert!(ok);
+    }
+
+    assert_eq!(list.len(), 1);
+    let midi_out = list.to_midi_events();
+    assert_eq!(midi_out.len(), 1);
+    let event = &midi_out[0];
+    assert!(matches!(
+        channel_voice(event.ump),
+        Some((_, Voice2::NoteOn { note, .. })) if note == NoteNumber::of(64)
+    ));
+    assert_eq!(event.offset, 50);
+}
+
+/// A wildcard note-off must not be re-pointed at one phantom voice.
+///
+/// CLAP types `channel`/`key` as `i16` with `-1` meaning "all channels" / "all
+/// keys" (`clap/events.h`). Masking them like ordinary values silently invents a
+/// different event: `-1i16 as u8` is `0xFF`, so `& 0x0F` gives channel 15 and
+/// `& 0x7F` gives note 127. A plugin panicking every voice off then aims that at
+/// a single phantom voice and every real voice keeps sounding — an audible stuck
+/// note on the normal instrument output path.
+///
+/// The event carries a `note_id`, so the address is recoverable and the event
+/// must resolve to *that* voice rather than to (15, 127).
+#[test]
+fn a_wildcard_note_off_resolves_by_note_id_not_by_masking() {
+    const CHANNEL: u8 = 2;
+    const NOTE: u8 = 60;
+
+    let mut list = OutputEventList::new();
+    let raw = list.as_raw_mut();
+
+    let note = clap_event_note {
+        header: clap_event_header {
+            size: std::mem::size_of::<clap_event_note>() as u32,
+            time: 0,
+            space_id: CLAP_CORE_EVENT_SPACE_ID,
+            type_: CLAP_EVENT_NOTE_OFF,
+            flags: 0,
+        },
+        // The spec's id: `channel * 128 + note` (`tutti_ump::NoteId`).
+        note_id: tutti_ump::NoteId::from_channel_note(
+            MidiChannel::of(CHANNEL),
+            NoteNumber::of(NOTE),
+        )
+        .raw() as i32,
+        port_index: 0,
+        // The wildcard under test.
+        channel: -1,
+        key: -1,
+        velocity: 0.0,
+    };
+
+    unsafe {
+        let push_fn = (*raw).try_push.unwrap();
+        assert!(push_fn(raw as *const _, &note.header as *const _));
+    }
+
+    let midi_out = list.to_midi_events();
+    assert_eq!(midi_out.len(), 1, "the note-off must survive conversion");
+    let event = &midi_out[0];
+    assert!(event.ump.is_note_off());
+    assert_eq!(
+        event.ump.key_event().map(|key| match key {
+            KeyEvent::On(key) | KeyEvent::Off(key) => key.note(),
+            KeyEvent::Sustain { .. } => unreachable!("a note-off"),
+        }),
+        Some(NOTE),
+        "a wildcard key must resolve through note_id, not mask to 127 — \
+         masking leaves every real voice ringing"
+    );
+    assert_eq!(
+        match decode(event.ump) {
+            Ok(Message::Midi1(a, _) | Message::Midi2(a, _)) => Some(a.channel),
+            _ => None,
+        },
+        Some(MidiChannel::of(CHANNEL)),
+        "a wildcard channel must resolve through note_id, not mask to 15"
+    );
+}
+
+/// A wildcard with no decodable `note_id` is dropped rather than misaddressed.
+///
+/// Plugins may mint their own `note_id` space, which the host cannot decode.
+/// Dropping the event is recoverable; aiming it at a voice the plugin never
+/// named is not.
+#[test]
+fn a_wildcard_note_off_with_an_opaque_note_id_is_dropped() {
+    let mut list = OutputEventList::new();
+    let raw = list.as_raw_mut();
+
+    let note = clap_event_note {
+        header: clap_event_header {
+            size: std::mem::size_of::<clap_event_note>() as u32,
+            time: 0,
+            space_id: CLAP_CORE_EVENT_SPACE_ID,
+            type_: CLAP_EVENT_NOTE_OFF,
+            flags: 0,
+        },
+        // Outside the host-minted range, so undecodable.
+        note_id: -1,
+        port_index: 0,
+        channel: -1,
+        key: -1,
+        velocity: 0.0,
+    };
+
+    unsafe {
+        let push_fn = (*raw).try_push.unwrap();
+        assert!(push_fn(raw as *const _, &note.header as *const _));
+    }
+
+    assert!(
+        list.to_midi_events().is_empty(),
+        "an unaddressable wildcard must be dropped, not bound to a phantom voice"
+    );
+}
+
+/// Output generic `Midi` (CC) events survive the FFI round-trip.
+#[test]
+fn test_output_event_list_push_midi_cc() {
+    use clap_sys::events::clap_event_midi;
+    let mut list = OutputEventList::new();
+    let raw = list.as_raw_mut();
+
+    let midi = clap_event_midi {
+        header: clap_event_header {
+            size: std::mem::size_of::<clap_event_midi>() as u32,
+            time: 33,
+            space_id: CLAP_CORE_EVENT_SPACE_ID,
+            type_: CLAP_EVENT_MIDI,
+            flags: 0,
+        },
+        port_index: 0,
+        data: [0xB2, 74, 100],
+    };
+
+    unsafe {
+        let push_fn = (*raw).try_push.unwrap();
+        assert!(push_fn(raw as *const _, &midi.header as *const _));
+    }
+
+    let midi_out = list.to_midi_events();
+    assert_eq!(midi_out.len(), 1);
+    let event = &midi_out[0];
+    assert_eq!(event.offset, 33);
+    // Back to wire bytes, the CC is the original payload.
+    let bytes: Vec<_> = midi1(decode(event.ump).expect("a CC"))
+        .map(|bytes| bytes.as_slice().to_vec())
+        .collect();
+    assert_eq!(bytes, [[0xB2, 74, 100]]);
+}
+
+/// Events added to the input list should sort by frame offset after
+/// calling `sort_by_time()`.
+#[test]
+fn test_input_event_list_sort_by_time() {
+    let mut list = InputEventList::new();
+    list.add_midi(&(
+        at(200),
+        fx::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, fx::MID_VELOCITY),
+    ));
+    list.add_midi(&(
+        at(50),
+        fx::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 64, 0x5000),
+    ));
+    list.add_midi(&(
+        at(100),
+        fx::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 67, 0x7000),
+    ));
+    list.sort_by_time();
+
+    let events = list.events();
+    assert_eq!(events[0].header().time, 50);
+    assert_eq!(events[1].header().time, 100);
+    assert_eq!(events[2].header().time, 200);
+}
+
+#[test]
+fn test_output_event_list_push_param_value() {
+    let mut list = OutputEventList::new();
+    let raw = list.as_raw_mut();
+
+    let param = clap_event_param_value {
+        header: clap_event_header {
+            size: std::mem::size_of::<clap_event_param_value>() as u32,
+            time: 0,
+            space_id: CLAP_CORE_EVENT_SPACE_ID,
+            type_: CLAP_EVENT_PARAM_VALUE,
+            flags: 0,
+        },
+        param_id: 7,
+        cookie: std::ptr::null_mut(),
+        note_id: -1,
+        port_index: -1,
+        channel: -1,
+        key: -1,
+        value: 0.42,
+    };
+
+    unsafe {
+        let push_fn = (*raw).try_push.unwrap();
+        push_fn(raw as *const _, &param.header as *const _);
+    }
+
+    let changes = list.to_param_changes();
+    assert_eq!(changes.queues.len(), 1);
+    assert_eq!(changes.queues[0].param_id, 7u32.into());
+    assert!((changes.queues[0].points[0].value.get() - 0.42).abs() < 0.001);
+}
+
+// sort_by_time test removed alongside other MIDI-shape-dependent tests.
+
+// ── Parameter changes grouping ──
+
+#[test]
+fn test_param_changes_through_input_list() {
+    let mut changes = ParameterChanges::new();
+    let mut q1 = ParameterQueue::with_capacity(1u32.into(), 2);
+    q1.add_point(0, 0.0);
+    q1.add_point(128, 1.0);
+    changes.add_queue(q1);
+
+    let mut q2 = ParameterQueue::with_capacity(2u32.into(), 1);
+    q2.add_point(64, 0.5);
+    changes.add_queue(q2);
+
+    let mut list = InputEventList::new();
+    // No range map and no claim of params → pass-through (this test only
+    // asserts event count, not denormalized values; the denorm math is covered
+    // in the events unit tests).
+    list.add_param_changes(&changes, &[], false);
+
+    assert_eq!(list.len(), 3);
+}
+
+// ── Note expression through event list ──
+
+#[test]
+fn test_note_expression_roundtrip_through_output_list() {
+    let mut list = OutputEventList::new();
+    let raw = list.as_raw_mut();
+
+    let expr = clap_event_note_expression {
+        header: clap_event_header {
+            size: std::mem::size_of::<clap_event_note_expression>() as u32,
+            time: 10,
+            space_id: CLAP_CORE_EVENT_SPACE_ID,
+            type_: CLAP_EVENT_NOTE_EXPRESSION,
+            flags: 0,
+        },
+        expression_id: clap_sys::events::CLAP_NOTE_EXPRESSION_TUNING,
+        note_id: 5,
+        port_index: 0,
+        channel: 0,
+        key: 60,
+        value: 0.25,
+    };
+
+    unsafe {
+        let push_fn = (*raw).try_push.unwrap();
+        push_fn(raw as *const _, &expr.header as *const _);
+    }
+
+    let expressions = list.to_note_expressions();
+    assert_eq!(expressions.len(), 1);
+    assert_eq!(expressions[0].expression_type, NoteExpressionType::Tuning);
+    assert_eq!(expressions[0].note_id, 5);
+    assert!((expressions[0].value - 0.25).abs() < 0.001);
+}
+
+// ── Stream I/O ──
+
+#[test]
+fn test_output_stream_write_and_read_back() {
+    let mut stream = OutputStream::new();
+    let raw = stream.as_raw();
+
+    let data = b"CLAP state data here";
+    unsafe {
+        let write_fn = (*raw).write.unwrap();
+        let written = write_fn(raw, data.as_ptr() as *const c_void, data.len() as u64);
+        assert_eq!(written, data.len() as i64);
+    }
+
+    assert_eq!(stream.data(), data);
+}
+
+#[test]
+fn test_input_stream_read() {
+    let data = b"saved plugin state";
+    let mut stream = InputStream::new(data);
+    let raw = stream.as_raw();
+
+    let mut buf = [0u8; 32];
+    unsafe {
+        let read_fn = (*raw).read.unwrap();
+        let bytes_read = read_fn(raw, buf.as_mut_ptr() as *mut c_void, 32);
+        assert_eq!(bytes_read, data.len() as i64);
+        assert_eq!(&buf[..data.len()], data);
+    }
+
+    assert_eq!(stream.position(), data.len());
+    assert_eq!(stream.remaining(), 0);
+}
+
+#[test]
+fn test_input_stream_partial_reads() {
+    let data = b"ABCDEFGHIJ";
+    let mut stream = InputStream::new(data);
+    let raw = stream.as_raw();
+
+    let mut buf = [0u8; 4];
+    unsafe {
+        let read_fn = (*raw).read.unwrap();
+
+        let n = read_fn(raw, buf.as_mut_ptr() as *mut c_void, 4);
+        assert_eq!(n, 4);
+        assert_eq!(&buf, b"ABCD");
+
+        let n = read_fn(raw, buf.as_mut_ptr() as *mut c_void, 4);
+        assert_eq!(n, 4);
+        assert_eq!(&buf, b"EFGH");
+
+        let n = read_fn(raw, buf.as_mut_ptr() as *mut c_void, 4);
+        assert_eq!(n, 2);
+        assert_eq!(&buf[..2], b"IJ");
+
+        let n = read_fn(raw, buf.as_mut_ptr() as *mut c_void, 4);
+        assert_eq!(n, 0);
+    }
+}
+
+// ── Host ──
+
+#[test]
+fn test_clap_host_as_raw_not_null() {
+    let host = ClapHost::new(std::sync::Arc::new(HostState::new(&main_thread())));
+    assert!(!host.as_raw().is_null());
+}
+
+// ── Mixed event types through output ──
+
+#[test]
+fn test_output_list_filters_midi_from_mixed_events() {
+    let mut list = OutputEventList::new();
+    let raw = list.as_raw_mut();
+
+    // Push a note on
+    let note = clap_event_note {
+        header: clap_event_header {
+            size: std::mem::size_of::<clap_event_note>() as u32,
+            time: 0,
+            space_id: CLAP_CORE_EVENT_SPACE_ID,
+            type_: CLAP_EVENT_NOTE_ON,
+            flags: 0,
+        },
+        note_id: -1,
+        port_index: 0,
+        channel: 0,
+        key: 60,
+        velocity: 0.8,
+    };
+
+    // Push a param value
+    let param = clap_event_param_value {
+        header: clap_event_header {
+            size: std::mem::size_of::<clap_event_param_value>() as u32,
+            time: 10,
+            space_id: CLAP_CORE_EVENT_SPACE_ID,
+            type_: CLAP_EVENT_PARAM_VALUE,
+            flags: 0,
+        },
+        param_id: 1,
+        cookie: std::ptr::null_mut(),
+        note_id: -1,
+        port_index: -1,
+        channel: -1,
+        key: -1,
+        value: 0.5,
+    };
+
+    unsafe {
+        let push_fn = (*raw).try_push.unwrap();
+        push_fn(raw as *const _, &note.header as *const _);
+        push_fn(raw as *const _, &param.header as *const _);
+    }
+
+    assert_eq!(list.len(), 2);
+    // to_param_changes should only return the param, not the note
+    assert_eq!(list.to_param_changes().queues.len(), 1);
+}
+
+// ── Event types through the output list FFI ──
+
+#[test]
+fn test_output_list_push_note_choke() {
+    let mut list = OutputEventList::new();
+    let raw = list.as_raw_mut();
+
+    let note = clap_event_note {
+        header: clap_event_header {
+            size: std::mem::size_of::<clap_event_note>() as u32,
+            time: 30,
+            space_id: CLAP_CORE_EVENT_SPACE_ID,
+            type_: CLAP_EVENT_NOTE_CHOKE,
+            flags: 0,
+        },
+        note_id: 42,
+        port_index: 0,
+        channel: 2,
+        key: 60,
+        velocity: 0.0,
+    };
+
+    unsafe {
+        let push_fn = (*raw).try_push.unwrap();
+        assert!(push_fn(raw as *const _, &note.header as *const _));
+    }
+
+    assert_eq!(list.len(), 1);
+    let events = list.events();
+    match &events[0] {
+        ClapEvent::NoteChoke(e) => {
+            assert_eq!(e.header.time, 30);
+            assert_eq!(e.note_id, 42);
+            assert_eq!(e.channel, 2);
+            assert_eq!(e.key, 60);
+        }
+        _ => panic!("Expected NoteChoke"),
+    }
+}
+
+#[test]
+fn test_output_list_push_note_end() {
+    let mut list = OutputEventList::new();
+    let raw = list.as_raw_mut();
+
+    let note = clap_event_note {
+        header: clap_event_header {
+            size: std::mem::size_of::<clap_event_note>() as u32,
+            time: 99,
+            space_id: CLAP_CORE_EVENT_SPACE_ID,
+            type_: CLAP_EVENT_NOTE_END,
+            flags: 0,
+        },
+        note_id: 7,
+        port_index: 0,
+        channel: 0,
+        key: 72,
+        velocity: 0.0,
+    };
+
+    unsafe {
+        let push_fn = (*raw).try_push.unwrap();
+        assert!(push_fn(raw as *const _, &note.header as *const _));
+    }
+
+    assert_eq!(list.len(), 1);
+    let events = list.events();
+    match &events[0] {
+        ClapEvent::NoteEnd(e) => {
+            assert_eq!(e.header.time, 99);
+            assert_eq!(e.note_id, 7);
+            assert_eq!(e.key, 72);
+        }
+        _ => panic!("Expected NoteEnd"),
+    }
+}
+
+#[test]
+fn test_output_list_push_param_gesture_begin_end() {
+    let mut list = OutputEventList::new();
+    let raw = list.as_raw_mut();
+
+    let begin = clap_event_param_gesture {
+        header: clap_event_header {
+            size: std::mem::size_of::<clap_event_param_gesture>() as u32,
+            time: 0,
+            space_id: CLAP_CORE_EVENT_SPACE_ID,
+            type_: CLAP_EVENT_PARAM_GESTURE_BEGIN,
+            flags: 0,
+        },
+        param_id: 5,
+    };
+
+    let end = clap_event_param_gesture {
+        header: clap_event_header {
+            size: std::mem::size_of::<clap_event_param_gesture>() as u32,
+            time: 100,
+            space_id: CLAP_CORE_EVENT_SPACE_ID,
+            type_: CLAP_EVENT_PARAM_GESTURE_END,
+            flags: 0,
+        },
+        param_id: 5,
+    };
+
+    unsafe {
+        let push_fn = (*raw).try_push.unwrap();
+        assert!(push_fn(raw as *const _, &begin.header as *const _));
+        assert!(push_fn(raw as *const _, &end.header as *const _));
+    }
+
+    assert_eq!(list.len(), 2);
+
+    let events = list.events();
+    match &events[0] {
+        ClapEvent::ParamGestureBegin(e) => {
+            assert_eq!(e.header.time, 0);
+            assert_eq!(e.param_id, 5);
+        }
+        _ => panic!("Expected ParamGestureBegin"),
+    }
+    match &events[1] {
+        ClapEvent::ParamGestureEnd(e) => {
+            assert_eq!(e.header.time, 100);
+            assert_eq!(e.param_id, 5);
+        }
+        _ => panic!("Expected ParamGestureEnd"),
+    }
+
+    // Gesture events should not appear as param changes
+    assert_eq!(list.to_param_changes().queues.len(), 0);
+}
+
+// ── Transport constants ──
+
+#[test]
+fn test_transport_flags_are_distinct_bits() {
+    use clap_sys::events::{
+        CLAP_TRANSPORT_HAS_BEATS_TIMELINE, CLAP_TRANSPORT_HAS_SECONDS_TIMELINE,
+        CLAP_TRANSPORT_HAS_TEMPO, CLAP_TRANSPORT_HAS_TIME_SIGNATURE, CLAP_TRANSPORT_IS_LOOP_ACTIVE,
+        CLAP_TRANSPORT_IS_PLAYING, CLAP_TRANSPORT_IS_RECORDING,
+    };
+
+    let all_flags = [
+        CLAP_TRANSPORT_HAS_TEMPO,
+        CLAP_TRANSPORT_HAS_BEATS_TIMELINE,
+        CLAP_TRANSPORT_HAS_SECONDS_TIMELINE,
+        CLAP_TRANSPORT_HAS_TIME_SIGNATURE,
+        CLAP_TRANSPORT_IS_PLAYING,
+        CLAP_TRANSPORT_IS_RECORDING,
+        CLAP_TRANSPORT_IS_LOOP_ACTIVE,
+    ];
+
+    // Verify all flags are distinct powers of 2
+    for flag in &all_flags {
+        assert!(flag.is_power_of_two(), "Flag {flag:#x} is not a power of 2");
+    }
+
+    // Verify no two flags are equal
+    for i in 0..all_flags.len() {
+        for j in (i + 1)..all_flags.len() {
+            assert_ne!(all_flags[i], all_flags[j]);
+        }
+    }
+}
+
+// ── Host state + extensions ──
+
+#[test]
+fn test_host_state_take_clears_flag() {
+    use std::sync::atomic::Ordering;
+
+    let state = HostState::new(&main_thread());
+    state
+        .lifecycle
+        .process_requested
+        .store(true, Ordering::Release);
+
+    // First take returns true and clears
+    assert!(state.take(&state.lifecycle.process_requested));
+    // Second take returns false
+    assert!(!state.take(&state.lifecycle.process_requested));
+}
+
+/// The main thread is the one thread that proved it with a token, and no
+/// other. The answer is `ThreadRoles`' alone (`HostState` keeps no second copy
+/// of the thread to drift from it).
+#[test]
+fn test_host_state_main_thread_is_the_one_that_proved_it() {
+    let state = std::sync::Arc::new(HostState::new(&main_thread()));
+    assert!(state.is_main_thread());
+    let elsewhere = {
+        let state = std::sync::Arc::clone(&state);
+        std::thread::spawn(move || state.is_main_thread())
+            .join()
+            .unwrap()
+    };
+    assert!(!elsewhere, "another thread is not the main thread");
+}
+
+/// The host does not route a plugin's `request_show` / `request_hide` to its
+/// editor window, so it says so: `true` would tell a floating GUI its window
+/// state changed when it did not.
+#[test]
+fn host_gui_show_and_hide_requests_are_declined() {
+    use clap_sys::ext::gui::{CLAP_EXT_GUI, clap_host_gui};
+
+    let host = ClapHost::new(std::sync::Arc::new(HostState::new(&main_thread())));
+    let raw = host.as_raw();
+    let get_ext = unsafe { (*raw).get_extension.unwrap() };
+    let gui_ext = unsafe { &*(get_ext(raw, CLAP_EXT_GUI.as_ptr()) as *const clap_host_gui) };
+    assert!(!unsafe { gui_ext.request_show.unwrap()(raw) });
+    assert!(!unsafe { gui_ext.request_hide.unwrap()(raw) });
+}
+
+#[test]
+fn host_gui_closed_was_destroyed_latches_window_destroyed() {
+    // gui.closed(was_destroyed = true) records that the plugin's *window* is
+    // gone, which is what makes close_editor skip gui.hide. It does not record
+    // that the gui object was released — the host still owes it a gui.destroy.
+    // With was_destroyed = false the latch stays clear.
+    use clap_sys::ext::gui::{CLAP_EXT_GUI, clap_host_gui};
+    use std::sync::atomic::Ordering;
+
+    let host = ClapHost::new(std::sync::Arc::new(HostState::new(&main_thread())));
+    let raw = host.as_raw();
+    let get_ext = unsafe { (*raw).get_extension.unwrap() };
+    let gui_ext = unsafe { get_ext(raw, CLAP_EXT_GUI.as_ptr()) as *const clap_host_gui };
+    assert!(!gui_ext.is_null());
+    let closed = unsafe { (*gui_ext).closed.unwrap() };
+
+    // was_destroyed = false: closed flag set, but no window_destroyed latch.
+    unsafe { closed(raw, false) };
+    assert!(host.state().gui.closed.load(Ordering::Acquire));
+    assert!(
+        !host.state().gui.window_destroyed.load(Ordering::Acquire),
+        "was_destroyed=false must not latch window_destroyed"
+    );
+
+    // was_destroyed = true: latch set — close_editor will skip hide.
+    unsafe { closed(raw, true) };
+    assert!(
+        host.state().gui.window_destroyed.load(Ordering::Acquire),
+        "was_destroyed=true must latch window_destroyed"
+    );
+
+    // Emulate close_editor consuming the latch (swap → false).
+    let was = host
+        .state()
+        .gui
+        .window_destroyed
+        .swap(false, Ordering::AcqRel);
+    assert!(was, "latch was set");
+    assert!(!host.state().gui.window_destroyed.load(Ordering::Acquire));
+}
+
+/// Every extension `clap_host_get_extension` dispatches must hand back a
+/// non-null vtable. The list mirrors the `dispatch_extension!` arms in
+/// `src/host/mod.rs` one for one: an arm added there without a row here is an
+/// extension nothing checks, and a row here without an arm fails immediately.
+///
+/// A plugin reads a null as "the host does not support this" and takes its
+/// degraded path silently, so a dropped arm is invisible at runtime.
+#[test]
+fn test_host_get_extension_returns_non_null_for_supported() {
+    use clap_sys::ext::ambisonic::CLAP_EXT_AMBISONIC;
+    use clap_sys::ext::audio_ports::CLAP_EXT_AUDIO_PORTS;
+    use clap_sys::ext::audio_ports_config::CLAP_EXT_AUDIO_PORTS_CONFIG;
+    use clap_sys::ext::context_menu::CLAP_EXT_CONTEXT_MENU;
+    use clap_sys::ext::draft::resource_directory::CLAP_EXT_RESOURCE_DIRECTORY;
+    use clap_sys::ext::draft::transport_control::CLAP_EXT_TRANSPORT_CONTROL;
+    use clap_sys::ext::draft::triggers::CLAP_EXT_TRIGGERS;
+    use clap_sys::ext::draft::tuning::CLAP_EXT_TUNING;
+    use clap_sys::ext::draft::undo::CLAP_EXT_UNDO;
+    use clap_sys::ext::event_registry::CLAP_EXT_EVENT_REGISTRY;
+    use clap_sys::ext::gui::CLAP_EXT_GUI;
+    use clap_sys::ext::latency::CLAP_EXT_LATENCY;
+    use clap_sys::ext::log::CLAP_EXT_LOG;
+    use clap_sys::ext::note_name::CLAP_EXT_NOTE_NAME;
+    use clap_sys::ext::note_ports::CLAP_EXT_NOTE_PORTS;
+    use clap_sys::ext::params::CLAP_EXT_PARAMS;
+    use clap_sys::ext::preset_load::CLAP_EXT_PRESET_LOAD;
+    use clap_sys::ext::remote_controls::CLAP_EXT_REMOTE_CONTROLS;
+    use clap_sys::ext::state::CLAP_EXT_STATE;
+    use clap_sys::ext::surround::CLAP_EXT_SURROUND;
+    use clap_sys::ext::tail::CLAP_EXT_TAIL;
+    use clap_sys::ext::thread_check::CLAP_EXT_THREAD_CHECK;
+    use clap_sys::ext::thread_pool::CLAP_EXT_THREAD_POOL;
+    use clap_sys::ext::timer_support::CLAP_EXT_TIMER_SUPPORT;
+    use clap_sys::ext::track_info::CLAP_EXT_TRACK_INFO;
+    use clap_sys::ext::voice_info::CLAP_EXT_VOICE_INFO;
+
+    let host = ClapHost::new(std::sync::Arc::new(HostState::new(&main_thread())));
+    let raw = host.as_raw();
+    let get_ext = unsafe { (*raw).get_extension.unwrap() };
+
+    let supported = [
+        CLAP_EXT_THREAD_CHECK,
+        CLAP_EXT_LOG,
+        CLAP_EXT_PARAMS,
+        CLAP_EXT_STATE,
+        CLAP_EXT_LATENCY,
+        CLAP_EXT_TAIL,
+        CLAP_EXT_GUI,
+        CLAP_EXT_AUDIO_PORTS,
+        CLAP_EXT_NOTE_PORTS,
+        CLAP_EXT_TIMER_SUPPORT,
+        CLAP_EXT_NOTE_NAME,
+        CLAP_EXT_VOICE_INFO,
+        CLAP_EXT_PRESET_LOAD,
+        CLAP_EXT_AUDIO_PORTS_CONFIG,
+        CLAP_EXT_REMOTE_CONTROLS,
+        CLAP_EXT_TRACK_INFO,
+        CLAP_EXT_EVENT_REGISTRY,
+        CLAP_EXT_TRANSPORT_CONTROL,
+        CLAP_EXT_CONTEXT_MENU,
+        CLAP_EXT_THREAD_POOL,
+        CLAP_EXT_AMBISONIC,
+        CLAP_EXT_SURROUND,
+        CLAP_EXT_TRIGGERS,
+        CLAP_EXT_TUNING,
+        CLAP_EXT_RESOURCE_DIRECTORY,
+        CLAP_EXT_UNDO,
+    ];
+
+    for ext_id in &supported {
+        let ptr = unsafe { get_ext(raw, ext_id.as_ptr()) };
+        assert!(!ptr.is_null(), "Extension {:?} returned null", ext_id);
+    }
+
+    // `posix_fd_support` is the one arm behind a `cfg`, so it is checked
+    // behind the same one rather than folded into the table above.
+    #[cfg(unix)]
+    {
+        use clap_sys::ext::posix_fd_support::CLAP_EXT_POSIX_FD_SUPPORT;
+        let ptr = unsafe { get_ext(raw, CLAP_EXT_POSIX_FD_SUPPORT.as_ptr()) };
+        assert!(
+            !ptr.is_null(),
+            "Extension {CLAP_EXT_POSIX_FD_SUPPORT:?} returned null"
+        );
+    }
+}
+
+#[test]
+fn test_host_get_extension_returns_null_for_unknown() {
+    let host = ClapHost::new(std::sync::Arc::new(HostState::new(&main_thread())));
+    let raw = host.as_raw();
+    let get_ext = unsafe { (*raw).get_extension.unwrap() };
+
+    let ptr = unsafe { get_ext(raw, c"clap.nonexistent".as_ptr()) };
+    assert!(ptr.is_null());
+}
+
+#[test]
+fn test_host_get_extension_returns_null_for_null_id() {
+    let host = ClapHost::new(std::sync::Arc::new(HostState::new(&main_thread())));
+    let raw = host.as_raw();
+    let get_ext = unsafe { (*raw).get_extension.unwrap() };
+
+    let ptr = unsafe { get_ext(raw, std::ptr::null()) };
+    assert!(ptr.is_null());
+}
+
+/// `request_restart` raises `Request::Restart` once.
+#[test]
+fn test_host_request_restart_raises_the_request() {
+    use std::sync::Arc;
+    use tutti_plugin_types::{Request, taken};
+
+    let state = Arc::new(HostState::new(&main_thread()));
+    let host = ClapHost::new(state.clone());
+    let raw = host.as_raw();
+    let request_restart = unsafe { (*raw).request_restart.unwrap() };
+
+    assert_eq!(taken(&state.requests).count(), 0);
+    unsafe { request_restart(raw) };
+    assert_eq!(
+        taken(&state.requests).collect::<Vec<_>>(),
+        [Request::Restart]
+    );
+    assert_eq!(taken(&state.requests).count(), 0, "taken once");
+}
+
+#[test]
+fn test_host_request_process_sets_flag() {
+    use std::sync::Arc;
+
+    let state = Arc::new(HostState::new(&main_thread()));
+    let host = ClapHost::new(state.clone());
+    let raw = host.as_raw();
+    let request_process = unsafe { (*raw).request_process.unwrap() };
+
+    unsafe { request_process(raw) };
+    assert!(state.take(&state.lifecycle.process_requested));
+}
+
+/// `request_callback` raises `Request::Callback`.
+#[test]
+fn test_host_request_callback_raises_the_request() {
+    use std::sync::Arc;
+    use tutti_plugin_types::{Request, taken};
+
+    let state = Arc::new(HostState::new(&main_thread()));
+    let host = ClapHost::new(state.clone());
+    let raw = host.as_raw();
+    let request_callback = unsafe { (*raw).request_callback.unwrap() };
+
+    unsafe { request_callback(raw) };
+    assert_eq!(
+        taken(&state.requests).collect::<Vec<_>>(),
+        [Request::Callback]
+    );
+}
+
+#[test]
+fn test_host_thread_check_main_thread() {
+    use clap_sys::ext::thread_check::clap_host_thread_check;
+
+    let host = ClapHost::new(std::sync::Arc::new(HostState::new(&main_thread())));
+    let raw = host.as_raw();
+    let get_ext = unsafe { (*raw).get_extension.unwrap() };
+    let tc_ptr = unsafe { get_ext(raw, c"clap.thread-check".as_ptr()) };
+    let tc = unsafe { &*(tc_ptr as *const clap_host_thread_check) };
+
+    // Current thread should be the main thread
+    assert!(unsafe { tc.is_main_thread.unwrap()(raw) });
+    // Current thread should NOT be audio thread
+    assert!(!unsafe { tc.is_audio_thread.unwrap()(raw) });
+}
+
+#[test]
+fn test_host_thread_check_audio_thread() {
+    use clap_sys::ext::thread_check::clap_host_thread_check;
+    use std::sync::Arc;
+
+    let state = Arc::new(HostState::new(&main_thread()));
+    let state2 = Arc::clone(&state);
+    let host = ClapHost::new(state);
+    let raw = host.as_raw();
+    let get_ext = unsafe { (*raw).get_extension.unwrap() };
+    let tc_ptr = unsafe { get_ext(raw, c"clap.thread-check".as_ptr()) };
+    let tc = unsafe { &*(tc_ptr as *const clap_host_thread_check) };
+
+    let raw_val = raw as usize;
+    let is_main = tc.is_main_thread.unwrap();
+    let is_audio = tc.is_audio_thread.unwrap();
+
+    // A random thread should NOT be the audio thread (no audio_thread_id set)
+    let handle = std::thread::spawn(move || {
+        let raw = raw_val as *const clap_sys::host::clap_host;
+        let main = unsafe { is_main(raw) };
+        let audio = unsafe { is_audio(raw) };
+        (main, audio)
+    });
+
+    let (main, audio) = handle.join().unwrap();
+    assert!(!main, "Other thread should not be main");
+    assert!(
+        !audio,
+        "Random thread should not be audio (no audio_thread_id set)"
+    );
+
+    // Claim the audio-thread role on this thread, then check.
+    let claim = state2.claim_audio_thread();
+    assert!(
+        unsafe { is_audio(raw) },
+        "Current thread should be audio while holding the claim"
+    );
+    drop(claim);
+    assert!(
+        !unsafe { is_audio(raw) },
+        "Releasing the claim must clear the audio-thread identity"
+    );
+}
+
+/// `is_main_thread` and `is_audio_thread` must be
+/// **mutually exclusive**.
+///
+/// The spec lets a host mark any OS thread — including the main thread — as the
+/// audio thread, but they are alternative *roles*, not simultaneous identities.
+/// Answering `true` to both at once while `start_processing` runs on the main
+/// thread would make every plugin-side thread assertion unfalsifiable: a plugin
+/// asserting `!is_main_thread()` inside an `[audio-thread]` call could never
+/// detect that it was on the wrong thread.
+#[test]
+fn thread_check_roles_are_mutually_exclusive_c1() {
+    use clap_sys::ext::thread_check::clap_host_thread_check;
+    use std::sync::Arc;
+
+    let state = Arc::new(HostState::new(&main_thread()));
+    let state2 = Arc::clone(&state);
+    let host = ClapHost::new(state);
+    let raw = host.as_raw();
+    let get_ext = unsafe { (*raw).get_extension.unwrap() };
+    let tc_ptr = unsafe { get_ext(raw, c"clap.thread-check".as_ptr()) };
+    let tc = unsafe { &*(tc_ptr as *const clap_host_thread_check) };
+    let is_main = tc.is_main_thread.unwrap();
+    let is_audio = tc.is_audio_thread.unwrap();
+
+    // Baseline: this IS the main thread, and nothing is the audio thread.
+    assert!(unsafe { is_main(raw) });
+    assert!(!unsafe { is_audio(raw) });
+
+    {
+        // While the main thread holds the audio-thread claim (exactly what
+        // `set_sample_rate` / `deactivate` / `Drop` do when they stop
+        // processing), it must report as the audio thread and NOT as main.
+        let _claim = state2.claim_audio_thread();
+        assert!(
+            unsafe { is_audio(raw) },
+            "the claiming thread must report as the audio thread"
+        );
+        assert!(
+            !unsafe { is_main(raw) },
+            "the host must not assert both identities at once — a plugin's own \
+             `assert(!is_main_thread())` inside start_processing has to be able \
+             to fail"
+        );
+    }
+
+    // Released: the main thread is the main thread again.
+    assert!(unsafe { is_main(raw) });
+    assert!(!unsafe { is_audio(raw) });
+}
+
+/// The audio-thread claim is real mutual exclusion, not
+/// an assertion. A second thread trying to enter an `[audio-thread]` region
+/// must block until the first has left — this is the serialization CLAP's
+/// "`params.flush` must not be called concurrently to `process()`" requires,
+/// and which a `debug_assert!` (compiled out in release) could not provide.
+#[test]
+fn audio_thread_claim_serializes_across_threads_c2() {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+
+    let state = Arc::new(HostState::new(&main_thread()));
+    // Counts concurrent occupants of the claimed region; must never exceed 1.
+    let inside = Arc::new(AtomicU32::new(0));
+    let overlapped = Arc::new(AtomicBool::new(false));
+
+    let mut handles = Vec::new();
+    for _ in 0..8 {
+        let state = Arc::clone(&state);
+        let inside = Arc::clone(&inside);
+        let overlapped = Arc::clone(&overlapped);
+        handles.push(std::thread::spawn(move || {
+            for _ in 0..200 {
+                let _claim = state.claim_audio_thread();
+                if inside.fetch_add(1, Ordering::SeqCst) != 0 {
+                    overlapped.store(true, Ordering::SeqCst);
+                }
+                // The claiming thread must see itself as the audio thread for
+                // the whole region — no other claim can have overwritten it.
+                assert!(state.is_audio_thread());
+                inside.fetch_sub(1, Ordering::SeqCst);
+            }
+        }));
+    }
+    for h in handles {
+        h.join().unwrap();
+    }
+
+    assert!(
+        !overlapped.load(Ordering::SeqCst),
+        "two threads were inside the [audio-thread] region at once"
+    );
+    assert!(
+        !state.is_audio_thread(),
+        "no claim outstanding, so no thread should be the audio thread"
+    );
+}
+
+// ── Miscellaneous ──
+
+#[test]
+fn test_param_value_event_construction() {
+    let event = ClapEvent::param_value(42, 7, 0.75);
+    let header = event.header();
+    assert_eq!(header.time, 42);
+    match &event {
+        ClapEvent::ParamValue(e) => {
+            assert_eq!(e.param_id, 7);
+            assert!((e.value - 0.75).abs() < f64::EPSILON);
+        }
+        _ => panic!("Expected ParamValue"),
+    }
+}
+
+#[test]
+fn test_output_event_list_take_events() {
+    use clap_sys::events::{CLAP_CORE_EVENT_SPACE_ID, CLAP_EVENT_NOTE_ON};
+
+    let mut list = OutputEventList::new();
+    let raw = list.as_raw_mut();
+
+    let note = clap_event_note {
+        header: clap_event_header {
+            size: std::mem::size_of::<clap_event_note>() as u32,
+            time: 0,
+            space_id: CLAP_CORE_EVENT_SPACE_ID,
+            type_: CLAP_EVENT_NOTE_ON,
+            flags: 0,
+        },
+        note_id: -1,
+        port_index: 0,
+        channel: 0,
+        key: 60,
+        velocity: 0.8,
+    };
+
+    unsafe {
+        let push_fn = (*raw).try_push.unwrap();
+        push_fn(raw as *const _, &note.header as *const _);
+    }
+
+    assert_eq!(list.len(), 1);
+    let taken = list.take_events();
+    assert_eq!(taken.len(), 1);
+    assert_eq!(list.len(), 0); // Should be empty after take
+}
+
+#[test]
+fn test_input_event_list_from_events() {
+    let events = vec![
+        ClapEvent::param_value(10, 1, 0.5),
+        ClapEvent::param_value(5, 2, 0.3),
+    ];
+
+    let mut list = tutti_clap_host::InputEventList::from_events(events);
+    assert_eq!(list.len(), 2);
+
+    list.sort_by_time();
+    // After sorting, event at time 5 should be first
+    let raw = list.as_raw();
+    unsafe {
+        let size_fn = (*raw).size.unwrap();
+        assert_eq!(size_fn(raw), 2);
+
+        let get_fn = (*raw).get.unwrap();
+        let first = get_fn(raw, 0);
+        assert_eq!((*first).time, 5);
+        let second = get_fn(raw, 1);
+        assert_eq!((*second).time, 10);
+    }
+}
+
+/// `dialect_to_send` must never answer with a dialect this host does not
+/// send. `host_note_ports_supported_dialects` advertises CLAP and MIDI 1.0
+/// only, so MIDI 2.0 and MPE are never valid answers however the port is
+/// described.
+#[test]
+fn test_note_port_dialect_to_send() {
+    use tutti_clap_host::{NoteDialect, NoteDialects, NotePortInfo};
+
+    let port = |supported: NoteDialects, preferred: Option<NoteDialect>| NotePortInfo {
+        id: 0,
+        name: String::new(),
+        supported_dialects: supported,
+        preferred_dialect: preferred,
+    };
+
+    // A preference this host can speak is honoured.
+    assert_eq!(
+        port(
+            NoteDialects::CLAP | NoteDialects::MIDI,
+            Some(NoteDialect::Midi)
+        )
+        .dialect_to_send(),
+        Some(NoteDialect::Midi),
+    );
+
+    // No preference stated: fall back to a supported dialect rather than
+    // inventing one (for example, reporting Midi2).
+    assert_eq!(
+        port(NoteDialects::CLAP | NoteDialects::MIDI, None).dialect_to_send(),
+        Some(NoteDialect::Clap),
+    );
+    assert_eq!(
+        port(NoteDialects::MIDI, None).dialect_to_send(),
+        Some(NoteDialect::Midi),
+    );
+
+    // A preference this host cannot send falls back to what the port also
+    // supports, rather than being echoed back at the caller.
+    assert_eq!(
+        port(
+            NoteDialects::MIDI | NoteDialects::MIDI2,
+            Some(NoteDialect::Midi2)
+        )
+        .dialect_to_send(),
+        Some(NoteDialect::Midi),
+    );
+
+    // Nothing in common: the caller must see that, not a fabricated dialect.
+    assert_eq!(
+        port(NoteDialects::MIDI2, Some(NoteDialect::Midi2)).dialect_to_send(),
+        None,
+    );
+    assert_eq!(port(NoteDialects::MIDI_MPE, None).dialect_to_send(), None,);
+}
+
+// ── Remaining plan items: voice info, note name, sysex, timer ──
+
+#[test]
+fn test_host_timer_register_unregister() {
+    use clap_sys::ext::timer_support::{CLAP_EXT_TIMER_SUPPORT, clap_host_timer_support};
+    use std::sync::Arc;
+
+    let state = Arc::new(HostState::new(&main_thread()));
+    let host = ClapHost::new(state.clone());
+    let raw = host.as_raw();
+    let get_ext = unsafe { (*raw).get_extension.unwrap() };
+    let ts_ptr = unsafe { get_ext(raw, CLAP_EXT_TIMER_SUPPORT.as_ptr()) };
+    let ts = unsafe { &*(ts_ptr as *const clap_host_timer_support) };
+
+    let mut timer_id: u32 = 0;
+    let ok = unsafe { ts.register_timer.unwrap()(raw, 100, &mut timer_id) };
+    assert!(ok);
+    assert!(timer_id > 0);
+
+    // Register a second timer — should get a different ID
+    let mut timer_id2: u32 = 0;
+    let ok = unsafe { ts.register_timer.unwrap()(raw, 200, &mut timer_id2) };
+    assert!(ok);
+    assert_ne!(timer_id, timer_id2);
+
+    // Unregister first
+    let ok = unsafe { ts.unregister_timer.unwrap()(raw, timer_id) };
+    assert!(ok);
+
+    // Unregister second
+    let ok = unsafe { ts.unregister_timer.unwrap()(raw, timer_id2) };
+    assert!(ok);
+
+    // Unregister again should fail (already removed)
+    let ok = unsafe { ts.unregister_timer.unwrap()(raw, timer_id) };
+    assert!(!ok);
+}
+
+// ── Extension types ──
+
+/// A track's advertised channel count is the layout's, so the count and the port
+/// tag cannot disagree.
+///
+/// A pair of `Option<i32>` + `Option<String>` would make `Some(6)` alongside
+/// `Some("stereo")` representable with nothing to catch it. Reading the count
+/// *through* the layout is what makes that unconstructable.
+#[test]
+#[cfg(feature = "clap-extras")]
+fn track_audio_count_comes_from_the_layout() {
+    use tutti_clap_host::{ChannelLayout, TrackAudio, TrackPortType};
+
+    let surround = TrackAudio {
+        layout: ChannelLayout::from(6u16),
+        port_type: Some(TrackPortType::Surround),
+    };
+    assert_eq!(surround.layout.count(), 6);
+
+    // `from_layout` tags mono/stereo (where the count IS the topology) and
+    // leaves anything wider untagged rather than guessing surround vs ambisonic.
+    assert_eq!(
+        TrackAudio::from_layout(ChannelLayout::MONO).port_type,
+        Some(TrackPortType::Mono)
+    );
+    assert_eq!(
+        TrackAudio::from_layout(ChannelLayout::STEREO).port_type,
+        Some(TrackPortType::Stereo)
+    );
+    assert_eq!(
+        TrackAudio::from_layout(ChannelLayout::from(6u16)).port_type,
+        None,
+        "a bare count cannot distinguish 5.1 from ambisonic, so it must not claim either"
+    );
+    // Canonicalization still applies: a 2-count is Stereo, so it tags as stereo.
+    assert_eq!(
+        TrackAudio::from_layout(ChannelLayout::from(2u16)).port_type,
+        Some(TrackPortType::Stereo)
+    );
+}
+
+// ── New host extension vtable tests ──
+
+#[test]
+fn test_host_track_info_get_returns_false_when_empty() {
+    use clap_sys::ext::track_info::{CLAP_EXT_TRACK_INFO, clap_host_track_info, clap_track_info};
+
+    let host = ClapHost::new(std::sync::Arc::new(HostState::new(&main_thread())));
+    let raw = host.as_raw();
+    let get_ext = unsafe { (*raw).get_extension.unwrap() };
+    let ti_ptr = unsafe { get_ext(raw, CLAP_EXT_TRACK_INFO.as_ptr()) };
+    let ti = unsafe { &*(ti_ptr as *const clap_host_track_info) };
+
+    // No track info set yet — should return false
+    let mut info: clap_track_info = unsafe { std::mem::zeroed() };
+    let ok = unsafe { ti.get.unwrap()(raw, &mut info) };
+    assert!(!ok);
+}
+
+/// The host sends and takes core events only, so it claims no other event
+/// space: every name is unknown (`false`, `UINT16_MAX`).
+#[test]
+fn test_host_event_registry_claims_no_space() {
+    use clap_sys::ext::event_registry::{CLAP_EXT_EVENT_REGISTRY, clap_host_event_registry};
+    use std::sync::Arc;
+
+    let state = Arc::new(HostState::new(&main_thread()));
+    let host = ClapHost::new(state.clone());
+    let raw = host.as_raw();
+    let get_ext = unsafe { (*raw).get_extension.unwrap() };
+    let er_ptr = unsafe { get_ext(raw, CLAP_EXT_EVENT_REGISTRY.as_ptr()) };
+    let er = unsafe { &*(er_ptr as *const clap_host_event_registry) };
+
+    let mut space_id: u16 = 0;
+    let ok = unsafe { er.query.unwrap()(raw, c"com.example.my-events".as_ptr(), &mut space_id) };
+    assert!(!ok);
+    assert_eq!(space_id, u16::MAX);
+}
+
+#[test]
+fn test_host_transport_control_callbacks_exist() {
+    use clap_sys::ext::draft::transport_control::{
+        CLAP_EXT_TRANSPORT_CONTROL, clap_host_transport_control,
+    };
+
+    let host = ClapHost::new(std::sync::Arc::new(HostState::new(&main_thread())));
+    let raw = host.as_raw();
+    let get_ext = unsafe { (*raw).get_extension.unwrap() };
+    let tc_ptr = unsafe { get_ext(raw, CLAP_EXT_TRANSPORT_CONTROL.as_ptr()) };
+    let tc = unsafe { &*(tc_ptr as *const clap_host_transport_control) };
+
+    // All 11 callbacks should be present
+    assert!(tc.request_start.is_some());
+    assert!(tc.request_stop.is_some());
+    assert!(tc.request_continue.is_some());
+    assert!(tc.request_pause.is_some());
+    assert!(tc.request_toggle_play.is_some());
+    assert!(tc.request_jump.is_some());
+    assert!(tc.request_loop_region.is_some());
+    assert!(tc.request_toggle_loop.is_some());
+    assert!(tc.request_enable_loop.is_some());
+    assert!(tc.request_record.is_some());
+    assert!(tc.request_toggle_record.is_some());
+}
+
+#[test]
+fn test_host_audio_ports_config_rescan() {
+    use clap_sys::ext::audio_ports_config::{
+        CLAP_EXT_AUDIO_PORTS_CONFIG, clap_host_audio_ports_config,
+    };
+    use std::sync::Arc;
+    use std::sync::atomic::Ordering;
+
+    let state = Arc::new(HostState::new(&main_thread()));
+    let host = ClapHost::new(state.clone());
+    let raw = host.as_raw();
+    let get_ext = unsafe { (*raw).get_extension.unwrap() };
+    let apc_ptr = unsafe { get_ext(raw, CLAP_EXT_AUDIO_PORTS_CONFIG.as_ptr()) };
+    let apc = unsafe { &*(apc_ptr as *const clap_host_audio_ports_config) };
+
+    assert!(!state.audio_ports.config_changed.load(Ordering::Acquire));
+    unsafe { apc.rescan.unwrap()(raw) };
+    assert!(state.audio_ports.config_changed.load(Ordering::Acquire));
+}
+
+#[test]
+fn test_host_remote_controls_changed_and_suggest() {
+    use clap_sys::ext::remote_controls::{CLAP_EXT_REMOTE_CONTROLS, clap_host_remote_controls};
+    use std::sync::Arc;
+    use std::sync::atomic::Ordering;
+
+    let state = Arc::new(HostState::new(&main_thread()));
+    let host = ClapHost::new(state.clone());
+    let raw = host.as_raw();
+    let get_ext = unsafe { (*raw).get_extension.unwrap() };
+    let rc_ptr = unsafe { get_ext(raw, CLAP_EXT_REMOTE_CONTROLS.as_ptr()) };
+    let rc = unsafe { &*(rc_ptr as *const clap_host_remote_controls) };
+
+    assert!(!state.remote_controls.changed.load(Ordering::Acquire));
+    unsafe { rc.changed.unwrap()(raw) };
+    assert!(state.remote_controls.changed.load(Ordering::Acquire));
+
+    unsafe { rc.suggest_page.unwrap()(raw, 42) };
+    // suggest_page stores internally — verified by the fact the callback didn't crash
+}
+
+// ── thread_pool, audio_ports_activation, extensible_audio_ports ──
+
+/// `ext/thread-pool.h`: `true` means the host *did execute* all the tasks,
+/// and a call from outside the plugin's `process` must be rejected. No
+/// process call is in flight here (and no pool), so every request must be
+/// rejected — a `true` tells the plugin its tasks completed when nothing ran
+/// them. The served case is `tests/clap_thread_pool.rs`.
+#[test]
+fn test_host_thread_pool_request_exec_rejects() {
+    use clap_sys::ext::thread_pool::{CLAP_EXT_THREAD_POOL, clap_host_thread_pool};
+    use std::sync::Arc;
+
+    let host = ClapHost::new(Arc::new(HostState::new(&main_thread())));
+    let raw = host.as_raw();
+    let get_ext = unsafe { (*raw).get_extension.unwrap() };
+    let tp_ptr = unsafe { get_ext(raw, CLAP_EXT_THREAD_POOL.as_ptr()) };
+    let tp = unsafe { &*(tp_ptr as *const clap_host_thread_pool) };
+
+    for num_tasks in [0, 1, 16, u32::MAX] {
+        assert!(
+            !unsafe { tp.request_exec.unwrap()(raw, num_tasks) },
+            "request_exec({num_tasks}) must reject: accepting claims {num_tasks} \
+             tasks ran, and this host has no pool to run them"
+        );
+    }
+}
+
+// ── ambisonic, surround ──
+
+/// Every id CLAP defines maps to a named position, and anything else is
+/// carried rather than discarded.
+///
+/// 18 is `CLAP_SURROUND_TSL` (`surround.h:55`) — a position CLAP does define —
+/// so it must decode to a named position, not `None`.
+#[test]
+fn test_surround_channel_from_position() {
+    use tutti_clap_host::SurroundChannel;
+    assert_eq!(
+        SurroundChannel::from_position(0),
+        SurroundChannel::FrontLeft
+    );
+    assert_eq!(
+        SurroundChannel::from_position(3),
+        SurroundChannel::LowFrequency
+    );
+    assert_eq!(
+        SurroundChannel::from_position(17),
+        SurroundChannel::TopBackRight
+    );
+    // The two that were missing.
+    assert_eq!(
+        SurroundChannel::from_position(18),
+        SurroundChannel::TopSideLeft
+    );
+    assert_eq!(
+        SurroundChannel::from_position(19),
+        SurroundChannel::TopSideRight
+    );
+    // Past the last CLAP position: named as unknown, not discarded.
+    assert_eq!(
+        SurroundChannel::from_position(255),
+        SurroundChannel::Unknown(255)
+    );
+}
+
+/// `position` inverts `from_position` for every id in the byte range.
+///
+/// The two tables are written out by hand, so nothing but a round trip stops
+/// one from drifting — a transposed pair would still compile and still decode
+/// "successfully", just to the wrong speaker.
+#[test]
+fn a_surround_position_round_trips_through_the_enum() {
+    use tutti_clap_host::SurroundChannel;
+    for raw in 0u8..=255 {
+        assert_eq!(
+            SurroundChannel::from_position(raw).position(),
+            raw,
+            "position {raw} did not survive the round trip"
+        );
+    }
+}
+
+#[test]
+fn test_host_ambisonic_changed_callback() {
+    use clap_sys::ext::ambisonic::{CLAP_EXT_AMBISONIC, clap_host_ambisonic};
+    use std::sync::Arc;
+    use std::sync::atomic::Ordering;
+
+    let state = Arc::new(HostState::new(&main_thread()));
+    let host = ClapHost::new(state.clone());
+    let raw = host.as_raw();
+    let get_ext = unsafe { (*raw).get_extension.unwrap() };
+    let amb_ptr = unsafe { get_ext(raw, CLAP_EXT_AMBISONIC.as_ptr()) };
+    let amb = unsafe { &*(amb_ptr as *const clap_host_ambisonic) };
+
+    assert!(!state.audio_ports.ambisonic_changed.load(Ordering::Acquire));
+    unsafe { amb.changed.unwrap()(raw) };
+    assert!(state.audio_ports.ambisonic_changed.load(Ordering::Acquire));
+}
+
+#[test]
+fn test_host_surround_changed_callback() {
+    use clap_sys::ext::surround::{CLAP_EXT_SURROUND, clap_host_surround};
+    use std::sync::Arc;
+    use std::sync::atomic::Ordering;
+
+    let state = Arc::new(HostState::new(&main_thread()));
+    let host = ClapHost::new(state.clone());
+    let raw = host.as_raw();
+    let get_ext = unsafe { (*raw).get_extension.unwrap() };
+    let sur_ptr = unsafe { get_ext(raw, CLAP_EXT_SURROUND.as_ptr()) };
+    let sur = unsafe { &*(sur_ptr as *const clap_host_surround) };
+
+    assert!(!state.audio_ports.surround_changed.load(Ordering::Acquire));
+    unsafe { sur.changed.unwrap()(raw) };
+    assert!(state.audio_ports.surround_changed.load(Ordering::Acquire));
+}
+
+// ── POSIX FD support tests (unix only) ──
+
+#[cfg(unix)]
+#[test]
+fn test_host_posix_fd_register_and_unregister() {
+    use clap_sys::ext::posix_fd_support::{
+        CLAP_EXT_POSIX_FD_SUPPORT, CLAP_POSIX_FD_READ, clap_host_posix_fd_support,
+    };
+    use std::sync::Arc;
+
+    let state = Arc::new(HostState::new(&main_thread()));
+    let host = ClapHost::new(state.clone());
+    let raw = host.as_raw();
+    let get_ext = unsafe { (*raw).get_extension.unwrap() };
+    let fd_ptr = unsafe { get_ext(raw, CLAP_EXT_POSIX_FD_SUPPORT.as_ptr()) };
+    let fd_ext = unsafe { &*(fd_ptr as *const clap_host_posix_fd_support) };
+
+    // Register a file descriptor
+    assert!(unsafe { fd_ext.register_fd.unwrap()(raw, 42, CLAP_POSIX_FD_READ) });
+
+    // Duplicate registration should fail
+    assert!(!unsafe { fd_ext.register_fd.unwrap()(raw, 42, CLAP_POSIX_FD_READ) });
+
+    // Verify it was stored
+    {
+        let fds = state.resources.posix_fds.lock().unwrap();
+        assert_eq!(fds.len(), 1);
+        assert_eq!(fds[0].fd, 42);
+        assert_eq!(fds[0].flags, CLAP_POSIX_FD_READ);
+    }
+
+    // Unregister
+    assert!(unsafe { fd_ext.unregister_fd.unwrap()(raw, 42) });
+
+    // Verify removed
+    {
+        let fds = state.resources.posix_fds.lock().unwrap();
+        assert_eq!(fds.len(), 0);
+    }
+
+    // Unregister again should fail
+    assert!(!unsafe { fd_ext.unregister_fd.unwrap()(raw, 42) });
+}
+
+#[cfg(unix)]
+#[test]
+fn test_host_posix_fd_modify() {
+    use clap_sys::ext::posix_fd_support::{
+        CLAP_EXT_POSIX_FD_SUPPORT, CLAP_POSIX_FD_READ, CLAP_POSIX_FD_WRITE,
+        clap_host_posix_fd_support,
+    };
+    use std::sync::Arc;
+
+    let state = Arc::new(HostState::new(&main_thread()));
+    let host = ClapHost::new(state.clone());
+    let raw = host.as_raw();
+    let get_ext = unsafe { (*raw).get_extension.unwrap() };
+    let fd_ptr = unsafe { get_ext(raw, CLAP_EXT_POSIX_FD_SUPPORT.as_ptr()) };
+    let fd_ext = unsafe { &*(fd_ptr as *const clap_host_posix_fd_support) };
+
+    // Modify non-existent fd should fail
+    assert!(!unsafe { fd_ext.modify_fd.unwrap()(raw, 99, CLAP_POSIX_FD_WRITE) });
+
+    // Register then modify
+    assert!(unsafe { fd_ext.register_fd.unwrap()(raw, 99, CLAP_POSIX_FD_READ) });
+    assert!(unsafe {
+        fd_ext.modify_fd.unwrap()(raw, 99, CLAP_POSIX_FD_READ | CLAP_POSIX_FD_WRITE)
+    });
+
+    {
+        let fds = state.resources.posix_fds.lock().unwrap();
+        assert_eq!(fds[0].flags, CLAP_POSIX_FD_READ | CLAP_POSIX_FD_WRITE);
+    }
+}
+
+// ── Triggers extension tests ──
+
+#[test]
+#[cfg(feature = "clap-extras")]
+fn test_trigger_info_type() {
+    use tutti_clap_host::TriggerInfo;
+
+    let info = TriggerInfo {
+        id: 1,
+        flags: 0x03,
+        name: "My Trigger".to_string(),
+        module: "triggers/main".to_string(),
+    };
+    assert_eq!(info.id, 1);
+    assert_eq!(info.flags, 0x03);
+    assert_eq!(info.name, "My Trigger");
+    assert_eq!(info.module, "triggers/main");
+}
+
+#[test]
+fn test_host_triggers_rescan_callback() {
+    use clap_sys::ext::draft::triggers::{CLAP_EXT_TRIGGERS, clap_host_triggers};
+    use std::sync::Arc;
+    use std::sync::atomic::Ordering;
+
+    let state = Arc::new(HostState::new(&main_thread()));
+    let host = ClapHost::new(state.clone());
+    let raw = host.as_raw();
+    let get_ext = unsafe { (*raw).get_extension.unwrap() };
+    let trig_ptr = unsafe { get_ext(raw, CLAP_EXT_TRIGGERS.as_ptr()) };
+    let trig = unsafe { &*(trig_ptr as *const clap_host_triggers) };
+
+    assert!(
+        !state
+            .resources
+            .triggers_rescan_requested
+            .load(Ordering::Acquire)
+    );
+    unsafe { trig.rescan.unwrap()(raw, 0) };
+    assert!(
+        state
+            .resources
+            .triggers_rescan_requested
+            .load(Ordering::Acquire)
+    );
+}
+
+// ── Tuning extension tests ──
+
+#[test]
+#[cfg(feature = "clap-extras")]
+fn test_tuning_info_type() {
+    use tutti_clap_host::TuningInfo;
+
+    let info = TuningInfo {
+        tuning_id: 42,
+        name: "Just Intonation".to_string(),
+        is_dynamic: false,
+    };
+    assert_eq!(info.tuning_id, 42);
+    assert_eq!(info.name, "Just Intonation");
+    assert!(!info.is_dynamic);
+}
+
+#[test]
+fn test_host_tuning_callbacks() {
+    use clap_sys::ext::draft::tuning::{CLAP_EXT_TUNING, clap_host_tuning};
+
+    let host = ClapHost::new(std::sync::Arc::new(HostState::new(&main_thread())));
+    let raw = host.as_raw();
+    let get_ext = unsafe { (*raw).get_extension.unwrap() };
+    let tuning_ptr = unsafe { get_ext(raw, CLAP_EXT_TUNING.as_ptr()) };
+    let tuning = unsafe { &*(tuning_ptr as *const clap_host_tuning) };
+
+    // get_relative returns 0.0 (equal temperament)
+    let rel = unsafe { tuning.get_relative.unwrap()(raw, 0, 0, 60, 0) };
+    assert!((rel - 0.0).abs() < f64::EPSILON);
+
+    // should_play returns true
+    assert!(unsafe { tuning.should_play.unwrap()(raw, 0, 0, 60) });
+
+    // get_tuning_count returns 0 (no tunings configured)
+    assert_eq!(unsafe { tuning.get_tuning_count.unwrap()(raw) }, 0);
+}
+
+// ── Resource directory extension tests ──
+
+#[test]
+fn test_host_resource_directory_callbacks() {
+    use clap_sys::ext::draft::resource_directory::{
+        CLAP_EXT_RESOURCE_DIRECTORY, clap_host_resource_directory,
+    };
+
+    let host = ClapHost::new(std::sync::Arc::new(HostState::new(&main_thread())));
+    let raw = host.as_raw();
+    let get_ext = unsafe { (*raw).get_extension.unwrap() };
+    let res_ptr = unsafe { get_ext(raw, CLAP_EXT_RESOURCE_DIRECTORY.as_ptr()) };
+    let res = unsafe { &*(res_ptr as *const clap_host_resource_directory) };
+
+    // No directory configured, request should return false
+    assert!(!unsafe { res.request_directory.unwrap()(raw, true) });
+    assert!(!unsafe { res.request_directory.unwrap()(raw, false) });
+
+    // Release should not panic even when nothing is configured
+    unsafe { res.release_directory.unwrap()(raw, true) };
+    unsafe { res.release_directory.unwrap()(raw, false) };
+}
+
+// ── Undo extension tests ──
+
+#[test]
+#[cfg(feature = "clap-extras")]
+fn test_undo_delta_properties_type() {
+    use tutti_clap_host::UndoDeltaProperties;
+
+    let props = UndoDeltaProperties {
+        has_delta: true,
+        are_deltas_persistent: false,
+        format_version: 1,
+    };
+    assert!(props.has_delta);
+    assert!(!props.are_deltas_persistent);
+    assert_eq!(props.format_version, 1);
+}
+
+#[test]
+#[cfg(feature = "clap-extras")]
+fn test_undo_change_type() {
+    use tutti_clap_host::UndoChange;
+
+    let change = UndoChange {
+        name: "Set volume".to_string(),
+        delta: vec![1, 2, 3, 4],
+        delta_can_undo: true,
+    };
+    assert_eq!(change.name, "Set volume");
+    assert_eq!(change.delta.len(), 4);
+    assert!(change.delta_can_undo);
+}
+
+#[test]
+fn test_host_undo_begin_cancel_change() {
+    use clap_sys::ext::draft::undo::{CLAP_EXT_UNDO, clap_host_undo};
+    use std::sync::Arc;
+    use std::sync::atomic::Ordering;
+
+    let state = Arc::new(HostState::new(&main_thread()));
+    let host = ClapHost::new(state.clone());
+    let raw = host.as_raw();
+    let get_ext = unsafe { (*raw).get_extension.unwrap() };
+    let undo_ptr = unsafe { get_ext(raw, CLAP_EXT_UNDO.as_ptr()) };
+    let undo = unsafe { &*(undo_ptr as *const clap_host_undo) };
+
+    assert!(!state.undo.in_progress.load(Ordering::Acquire));
+
+    unsafe { undo.begin_change.unwrap()(raw) };
+    assert!(state.undo.in_progress.load(Ordering::Acquire));
+
+    unsafe { undo.cancel_change.unwrap()(raw) };
+    assert!(!state.undo.in_progress.load(Ordering::Acquire));
+}
+
+#[test]
+fn test_host_undo_change_made() {
+    use clap_sys::ext::draft::undo::{CLAP_EXT_UNDO, clap_host_undo};
+    use std::sync::Arc;
+
+    let state = Arc::new(HostState::new(&main_thread()));
+    let host = ClapHost::new(state.clone());
+    let raw = host.as_raw();
+    let get_ext = unsafe { (*raw).get_extension.unwrap() };
+    let undo_ptr = unsafe { get_ext(raw, CLAP_EXT_UNDO.as_ptr()) };
+    let undo = unsafe { &*(undo_ptr as *const clap_host_undo) };
+
+    let name = c"Set volume";
+    let delta = [1u8, 2, 3, 4];
+    unsafe {
+        undo.begin_change.unwrap()(raw);
+        undo.change_made.unwrap()(
+            raw,
+            name.as_ptr(),
+            delta.as_ptr() as *const _,
+            delta.len(),
+            true,
+        );
+    }
+
+    let changes = state.undo.changes.lock().unwrap();
+    assert_eq!(changes.len(), 1);
+    assert_eq!(changes[0].name, "Set volume");
+    assert_eq!(changes[0].delta, vec![1, 2, 3, 4]);
+    assert!(changes[0].delta_can_undo);
+}
+
+#[test]
+fn test_host_undo_request_undo_redo() {
+    use clap_sys::ext::draft::undo::{CLAP_EXT_UNDO, clap_host_undo};
+    use std::sync::Arc;
+    use std::sync::atomic::Ordering;
+
+    let state = Arc::new(HostState::new(&main_thread()));
+    let host = ClapHost::new(state.clone());
+    let raw = host.as_raw();
+    let get_ext = unsafe { (*raw).get_extension.unwrap() };
+    let undo_ptr = unsafe { get_ext(raw, CLAP_EXT_UNDO.as_ptr()) };
+    let undo = unsafe { &*(undo_ptr as *const clap_host_undo) };
+
+    assert!(!state.undo.requested.load(Ordering::Acquire));
+    assert!(!state.undo.redo_requested.load(Ordering::Acquire));
+
+    unsafe { undo.request_undo.unwrap()(raw) };
+    assert!(state.undo.requested.load(Ordering::Acquire));
+
+    unsafe { undo.request_redo.unwrap()(raw) };
+    assert!(state.undo.redo_requested.load(Ordering::Acquire));
+}
+
+#[test]
+fn test_host_undo_wants_context_updates() {
+    use clap_sys::ext::draft::undo::{CLAP_EXT_UNDO, clap_host_undo};
+    use std::sync::Arc;
+    use std::sync::atomic::Ordering;
+
+    let state = Arc::new(HostState::new(&main_thread()));
+    let host = ClapHost::new(state.clone());
+    let raw = host.as_raw();
+    let get_ext = unsafe { (*raw).get_extension.unwrap() };
+    let undo_ptr = unsafe { get_ext(raw, CLAP_EXT_UNDO.as_ptr()) };
+    let undo = unsafe { &*(undo_ptr as *const clap_host_undo) };
+
+    assert!(!state.undo.wants_context.load(Ordering::Acquire));
+
+    unsafe { undo.set_wants_context_updates.unwrap()(raw, true) };
+    assert!(state.undo.wants_context.load(Ordering::Acquire));
+
+    unsafe { undo.set_wants_context_updates.unwrap()(raw, false) };
+    assert!(!state.undo.wants_context.load(Ordering::Acquire));
+}
+
+// ── Note name host extension tests ──
+
+#[test]
+fn test_host_note_name_changed_callback() {
+    use clap_sys::ext::note_name::{CLAP_EXT_NOTE_NAME, clap_host_note_name};
+    use std::sync::Arc;
+    use std::sync::atomic::Ordering;
+
+    let state = Arc::new(HostState::new(&main_thread()));
+    let host = ClapHost::new(state.clone());
+    let raw = host.as_raw();
+    let get_ext = unsafe { (*raw).get_extension.unwrap() };
+    let nn_ptr = unsafe { get_ext(raw, CLAP_EXT_NOTE_NAME.as_ptr()) };
+    let nn = unsafe { &*(nn_ptr as *const clap_host_note_name) };
+
+    assert!(!state.notes.names_changed.load(Ordering::Acquire));
+    unsafe { nn.changed.unwrap()(raw) };
+    assert!(state.notes.names_changed.load(Ordering::Acquire));
+}
+
+// ── Voice info host extension tests ──
+
+#[test]
+fn test_host_voice_info_changed_callback() {
+    use clap_sys::ext::voice_info::{CLAP_EXT_VOICE_INFO, clap_host_voice_info};
+    use std::sync::Arc;
+    use std::sync::atomic::Ordering;
+
+    let state = Arc::new(HostState::new(&main_thread()));
+    let host = ClapHost::new(state.clone());
+    let raw = host.as_raw();
+    let get_ext = unsafe { (*raw).get_extension.unwrap() };
+    let vi_ptr = unsafe { get_ext(raw, CLAP_EXT_VOICE_INFO.as_ptr()) };
+    let vi = unsafe { &*(vi_ptr as *const clap_host_voice_info) };
+
+    assert!(!state.notes.voice_info_changed.load(Ordering::Acquire));
+    unsafe { vi.changed.unwrap()(raw) };
+    assert!(state.notes.voice_info_changed.load(Ordering::Acquire));
+}
+
+// ── Preset load host extension tests ──
+
+#[test]
+fn test_host_preset_load_loaded_callback() {
+    use clap_sys::ext::preset_load::{CLAP_EXT_PRESET_LOAD, clap_host_preset_load};
+    use std::sync::Arc;
+    use std::sync::atomic::Ordering;
+
+    let state = Arc::new(HostState::new(&main_thread()));
+    let host = ClapHost::new(state.clone());
+    let raw = host.as_raw();
+    let get_ext = unsafe { (*raw).get_extension.unwrap() };
+    let pl_ptr = unsafe { get_ext(raw, CLAP_EXT_PRESET_LOAD.as_ptr()) };
+    let pl = unsafe { &*(pl_ptr as *const clap_host_preset_load) };
+
+    assert!(!state.processing.preset_loaded.load(Ordering::Acquire));
+
+    let location = c"/path/to/preset.clap";
+    unsafe {
+        pl.loaded.unwrap()(raw, 0, location.as_ptr(), std::ptr::null());
+    }
+    assert!(state.processing.preset_loaded.load(Ordering::Acquire));
+}
+
+#[test]
+fn test_host_preset_load_on_error_doesnt_panic() {
+    use clap_sys::ext::preset_load::{CLAP_EXT_PRESET_LOAD, clap_host_preset_load};
+
+    let host = ClapHost::new(std::sync::Arc::new(HostState::new(&main_thread())));
+    let raw = host.as_raw();
+    let get_ext = unsafe { (*raw).get_extension.unwrap() };
+    let pl_ptr = unsafe { get_ext(raw, CLAP_EXT_PRESET_LOAD.as_ptr()) };
+    let pl = unsafe { &*(pl_ptr as *const clap_host_preset_load) };
+
+    let location = c"/path/to/preset.clap";
+    let msg = c"File not found";
+    unsafe {
+        pl.on_error.unwrap()(
+            raw,
+            0,
+            location.as_ptr(),
+            std::ptr::null(),
+            -1,
+            msg.as_ptr(),
+        );
+    }
+}
+
+// ── ParamMod event FFI ──
+
+#[test]
+fn test_param_mod_event_ffi() {
+    let event = clap_event_param_mod {
+        header: clap_event_header {
+            size: std::mem::size_of::<clap_event_param_mod>() as u32,
+            time: 42,
+            space_id: CLAP_CORE_EVENT_SPACE_ID,
+            type_: CLAP_EVENT_PARAM_MOD,
+            flags: 0,
+        },
+        param_id: 123,
+        cookie: std::ptr::null_mut(),
+        note_id: 7,
+        port_index: 0,
+        channel: 1,
+        key: 60,
+        amount: 0.75,
+    };
+
+    let clap_event = ClapEvent::ParamMod(event);
+
+    // Verify header fields are accessible and correct
+    let header = clap_event.header();
+    assert_eq!(header.time, 42);
+    assert_eq!(header.space_id, CLAP_CORE_EVENT_SPACE_ID);
+    assert_eq!(header.type_, CLAP_EVENT_PARAM_MOD);
+    assert_eq!(
+        header.size,
+        std::mem::size_of::<clap_event_param_mod>() as u32
+    );
+
+    // Verify data fields via pattern match
+    match &clap_event {
+        ClapEvent::ParamMod(e) => {
+            assert_eq!(e.param_id, 123);
+            assert_eq!(e.note_id, 7);
+            assert_eq!(e.channel, 1);
+            assert_eq!(e.key, 60);
+            assert!((e.amount - 0.75).abs() < f64::EPSILON);
+        }
+        _ => panic!("Expected ParamMod"),
+    }
+}

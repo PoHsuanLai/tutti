@@ -358,18 +358,18 @@ jobs:
       #                         with them all and `serde`, the pinned bytes and
       #                         Quality's range contract run
       #   tutti-session/clap  — src/plugin.rs and src/export.rs's plugin half:
-      #                         tests/plugin.rs hosts the reference CLAP
+      #                         tests/plugin/plugin.rs hosts the reference CLAP
       #                         plugin through a real plugin-server.
       #                         `export,modulation` so the render mode and the
       #                         GUI-edit drain compile with it.
-      #   tutti-session/midi-hardware — tests/midi.rs's hardware-port reclaim test
+      #   tutti-session/midi-hardware — tests/midi/midi.rs's hardware-port reclaim test
       #                         and its hot-plug tests
       #   tutti-session/sampler,vst2 — the suites ported from the parked
       #                         `bevy-tutti`: the sampler voice's export fork
       #                         (`export_fork_sampler`) and the reference VST2
       #                         plugin in process (`vst2_meter`,
       #                         `vst2_modulation`).
-      #   tutti-session/device — tests/device.rs (the device-free restart and
+      #   tutti-session/device — tests/io/device.rs (the device-free restart and
       #                         watch tests over `ManualStreamDriver`). A
       #                         workspace run turned it on only through the
       #                         adapter that is now parked.
@@ -387,7 +387,7 @@ jobs:
       #                         never skips, without `/dev/snd/seq`
       #   tutti-plugin-types/test-support — the `FakePlugin` a consumer's tests
       #                         link, built and its suite run with it on
-      #   tutti-clap-host/clap-extras — tests/unit_tests.rs's 5 extension tests
+      #   tutti-clap-host/clap-extras — tests/behaviour/unit_tests.rs's 5 extension tests
       #                         and the extension code they cover
       #   tutti-plugin-db/json — `save`, `load` and their tests
       #   tutti-plugin/clap,vst2 — the CLAP tests (the `clap_*` and
@@ -451,7 +451,7 @@ jobs:
           cargo clippy --locked -p tutti-plugin-db --features json --all-targets -- -D warnings
           cargo clippy --locked -p tutti-plugin-contract --features server --all-targets -- -D warnings
 
-      # `tests/plugin_capture.rs` (and tutti-session's `tests/plugin.rs` and
+      # `tests/plugin_capture.rs` (and tutti-session's `tests/plugin/plugin.rs` and
       # tutti's `plugin_midi_export` example) spawn the `plugin-server`
       # binary, which no test build produces (it would be a dependency cycle through
       # `tutti-plugin`), so it is built here, before the tests, as the `test`
@@ -476,7 +476,7 @@ jobs:
           cargo nextest run --locked -p tutti-codec --features encode-flac
           cargo nextest run --locked -p tutti-codec --features encode-vorbis
           cargo nextest run --locked -p tutti-codec --all-features
-          # This step names tutti-ump/serde so tests/serde.rs runs whether or not
+          # This step names tutti-ump/serde so tests/messages/serde.rs runs whether or not
           # another member's dependency edge turns it on.
           cargo nextest run --locked -p tutti-ump --features serde
           cargo nextest run --locked -p tutti-midi-protocol --features serde

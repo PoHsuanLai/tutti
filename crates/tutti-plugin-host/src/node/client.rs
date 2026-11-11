@@ -1,5 +1,6 @@
 //! `InProcClient`: the graph node (`node.rs`) that drives an in-process
-//! plugin of any [`InProcess`] format from the host audio thread.
+//! plugin of any hosting ([`Loaded`]: an [`InProcess`](tutti_plugin_types::InProcess)
+//! format, or a served plugin, `tutti-plugin-ipc`'s `Ipc`) from the host audio thread.
 //!
 //! The audio thread renders through the Processor the node's realtime end
 //! ([`tutti_rt::Rt`]) holds, and takes no lock. The plugin's control side
@@ -20,7 +21,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use tutti_graph::UmpAt;
 use tutti_plugin_types::{
-    AudioBuffer, AudioBufferMut, InProcess, MainThread, Origin, PluginDescriptor, PluginIo,
+    AudioBuffer, AudioBufferMut, Loaded, MainThread, Origin, PluginDescriptor, PluginIo,
     PluginTail, ProcessContext, ProcessOutput, Processor,
 };
 use tutti_rt::Rt;
@@ -62,15 +63,20 @@ use tutti_plugin_types::{
 /// library, restored from this one's saved state. See
 /// [`PluginNode::fork_instance`]. The client becomes a graph node by
 /// [`bind`](Self::bind)ing it to the project's tempo map.
-pub struct InProcClient<F: InProcess> {
+pub struct InProcClient<F: Loaded> {
     /// The plugin's control side. Control threads only: the audio thread
     /// renders through `rt`.
     pub(super) inner: Arc<Mutex<Instance<F>>>,
     /// The realtime end the plugin's Processor is lent to.
     pub(super) rt: Rt<F::Processor>,
     pub(super) descriptor: PluginDescriptor,
-    /// Where the plugin came from: what a fork loads again.
-    pub(super) origin: Origin,
+    /// Where the plugin came from, for an in-process one: what a fork loads
+    /// again. `None` for a hosting that reopens another way.
+    pub(super) origin: Option<Origin>,
+    /// What the Processor adds to the plugin's own latency
+    /// ([`Processor::latency`]), as the last `prepare` read it: the served
+    /// pipeline's chunk.
+    pub(super) pipeline: Samples,
     /// The pin counts, latency and tail the plugin declared when the node was
     /// built: what `shape` and `process` size by while the instance lock is
     /// held elsewhere. Moves are reported through the handle
@@ -135,9 +141,19 @@ pub struct InProcClient<F: InProcess> {
     /// a block of a chunked Processor ([`Processor::chunk`]) is cut. Always
     /// zero for one that is not.
     pub(super) phase: Samples,
-    /// The transport changes inside the piece being rendered.
+    /// The walk of the transport across the chunk being filled, between pieces.
     pub(super) walk: TransportWalk,
+    /// The transport at the chunk's first frame (final at the piece that
+    /// completes it), and the chunk's changes so far, on chunk frames: what
+    /// every piece of a chunked Processor is handed.
+    pub(super) chunk_info: TransportInfo,
     pub(super) changes: TransportChanges,
+    /// MIDI the chunked Processor holds for the chunk in flight (taken by the
+    /// pieces so far), which a reset or a re-prepare drops.
+    pub(super) chunk_midi: u64,
+    /// Dropped MIDI the next block reports to the executor (`Io::count_lost`):
+    /// a reset has no `Io`.
+    pub(super) owed_lost: u64,
     /// The chords and scales in the piece being rendered, for a plugin that
     /// takes sequencer context.
     pub(super) chords: ChordChanges,
@@ -148,7 +164,7 @@ pub struct InProcClient<F: InProcess> {
 }
 
 /// Omits `inner`: formatting must not wait on the control side's lock.
-impl<F: InProcess> std::fmt::Debug for InProcClient<F> {
+impl<F: Loaded> std::fmt::Debug for InProcClient<F> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("InProcClient")
             .field("descriptor", &self.descriptor)
@@ -244,6 +260,12 @@ impl TransportFeed {
         feed
     }
 
+    /// No host clock from here on: the render runs at its own speed, so
+    /// `nanoSeconds` must not be claimed ([`TransportSource::go_offline`]).
+    pub(super) fn go_offline(&mut self) {
+        self.source.go_offline();
+    }
+
     /// What one block reads of the transport, for a node that reads it at
     /// several frames ([`TransportSource::block`]); count the block's frames
     /// after it with [`advance`](Self::advance).
@@ -291,26 +313,26 @@ impl TransportFeed {
 /// [`Node`](tutti_graph::Node) and an [`IntoNode`](tutti_graph::IntoNode);
 /// the loaded client is neither. It derefs to the client for its control
 /// surface (`controls`, `set_meter`, ...).
-pub struct PluginNode<F: InProcess> {
+pub struct PluginNode<F: Loaded> {
     pub(super) client: InProcClient<F>,
     pub(super) tempo: TempoReader,
     pub(super) cursor: Cursor,
 }
 
-impl<F: InProcess> std::fmt::Debug for PluginNode<F> {
+impl<F: Loaded> std::fmt::Debug for PluginNode<F> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("PluginNode").finish_non_exhaustive()
     }
 }
 
-impl<F: InProcess> std::ops::Deref for PluginNode<F> {
+impl<F: Loaded> std::ops::Deref for PluginNode<F> {
     type Target = InProcClient<F>;
     fn deref(&self) -> &InProcClient<F> {
         &self.client
     }
 }
 
-impl<F: InProcess> std::ops::DerefMut for PluginNode<F> {
+impl<F: Loaded> std::ops::DerefMut for PluginNode<F> {
     fn deref_mut(&mut self) -> &mut InProcClient<F> {
         &mut self.client
     }
@@ -341,7 +363,7 @@ pub(super) fn queue_sample_rate(cell: &AtomicU64, rate: f64) {
 /// [`queue_sample_rate`] opens. The Processor is on the audio thread, so the
 /// change starts with a recall and finishes at a later pump, once the audio
 /// thread has handed it back.
-pub(super) fn drain_sample_rate<F: InProcess>(
+pub(super) fn drain_sample_rate<F: Loaded>(
     main: &MainThread,
     cell: &AtomicU64,
     inner: &Mutex<Instance<F>>,
@@ -358,22 +380,30 @@ pub(super) fn drain_sample_rate<F: InProcess>(
     true
 }
 
-impl<F: InProcess> InProcClient<F> {
+impl<F: Loaded> InProcClient<F> {
     pub(super) fn new(
         inner: Arc<Mutex<Instance<F>>>,
         rt: Rt<F::Processor>,
         descriptor: PluginDescriptor,
-        origin: Origin,
+        origin: Option<Origin>,
         declared: Declared,
         features: Features,
         sample_rate: f64,
         pending_sample_rate: Arc<AtomicU64>,
         unlent: Arc<AtomicU64>,
         parameters: impl IntoIterator<Item = ParamId>,
+        spares: usize,
     ) -> Self {
         // A slot per declared parameter: every parameter can move in one
-        // block. Its point room is sized in `prepare`.
-        let params = ParamDelivery::closed(parameters, Arc::new(DeliveryCounters::default()));
+        // block. Its point room is sized in `prepare`. `spares` is how many
+        // addresses the plugin did not list the delivery may learn (none:
+        // the node addresses only its declared parameters).
+        let mut rt = rt;
+        let pipeline = rt
+            .poll(Processor::stop)
+            .map_or(Samples(0), |processor| processor.latency());
+        let params =
+            ParamDelivery::with_spares(parameters, Arc::new(DeliveryCounters::default()), spares);
         let mut segments = SegmentPoints::default();
         segments.prepare(params.room());
         Self {
@@ -381,6 +411,7 @@ impl<F: InProcess> InProcClient<F> {
             rt,
             descriptor,
             origin,
+            pipeline,
             declared,
             midi: MidiEventVec::new(),
             intake: MidiIntake::default(),
@@ -397,7 +428,10 @@ impl<F: InProcess> InProcClient<F> {
             segments,
             phase: Samples(0),
             walk: TransportWalk::default(),
+            chunk_info: TransportInfo::default(),
             changes: TransportChanges::default(),
+            chunk_midi: 0,
+            owed_lost: 0,
             chords: ChordChanges::default(),
             scales: ScaleChanges::default(),
             out_events: MidiEventVec::new(),
@@ -434,6 +468,14 @@ impl<F: InProcess> InProcClient<F> {
         }
     }
 
+    /// Drops the host clock the transport tells the plugin
+    /// (`TransportInfo::system_time_ns`): for an offline render, which has none.
+    /// A fork of the in-process node does this itself; a served plugin's fork
+    /// (`tutti-plugin`) does it through this.
+    pub fn go_offline(&mut self) {
+        self.transport.go_offline();
+    }
+
     /// Returns how many blocks the node rendered silent because its realtime
     /// end held no Processor (recalled for a rate change, or a plugin that
     /// refused its rate), since construction.
@@ -453,7 +495,39 @@ impl<F: InProcess> InProcClient<F> {
     }
 }
 
-impl<F: InProcess> InProcClient<F> {
+impl<F: Loaded> InProcClient<F> {
+    /// The chunk in flight is dropped (a reset, a re-prepare): the walk of its
+    /// transport ends, and the MIDI the Processor held for it is lost, counted
+    /// now in the delivery's dropped MIDI and in the executor's at the next
+    /// block.
+    pub(super) fn drop_chunk(&mut self) {
+        self.walk.clear();
+        let lost = std::mem::take(&mut self.chunk_midi);
+        self.params.count_midi_dropped(lost);
+        self.owed_lost += lost;
+    }
+
+    /// Offers `p`'s rate, block ceiling and quantum to the Processor
+    /// ([`Processor::retune`]) and reads the latency it adds afterwards.
+    /// `true` when it took them live: the plugin is told no restart, needs no
+    /// main thread, and [`set_rate`](Self::set_rate) is not run. `false` when
+    /// it has none in hand or does not follow the graph (an in-process one).
+    pub(super) fn retune(&mut self, p: &tutti_graph::Prepare) -> bool {
+        let rate = p.sample_rate();
+        let max_block = Samples(p.max_block().get());
+        let Some(processor) = self.rt.poll(Processor::stop) else {
+            return false;
+        };
+        if !processor.retune(rate, max_block, p.quantum()) {
+            return false;
+        }
+        self.pipeline = processor.latency();
+        self.sample_rate = rate.get();
+        self.rate_refused = false;
+        self.inner.lock().retuned(rate);
+        true
+    }
+
     /// Take `sample_rate` as the rate blocks run at, and hand it to the
     /// plugin as [`RateDelivery`] says: parked for the main thread (see
     /// `pending_sample_rate`), or, on a fork, dispatched here. What the

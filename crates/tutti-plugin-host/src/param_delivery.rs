@@ -3,7 +3,7 @@
 //!
 //! Both plugin nodes deliver through it: the out-of-process node, whose
 //! chunk is the pipeline's and is handed to the bridge, and the in-process
-//! node (`format::in_process`), whose chunk is the block and is
+//! node (`node`), whose chunk is the block and is
 //! handed to the plugin's Processor as the block's parameter changes. What
 //! follows says "the bridge"; for the in-process node read "the plugin
 //! instance", and "no free buffer" as "no Processor in hand".
@@ -94,7 +94,7 @@
 //! - **a fork** starts from it: the live node's record is read just before
 //!   the live state is saved, and the fork's delivery is seeded with it
 //!   ([`seed`](ParamDelivery::seed), `fork.rs` and
-//!   `in_process/fork.rs`), so a fork loaded with that state sends
+//!   `node/fork.rs`), so a fork loaded with that state sends
 //!   what the live one would, and an export renders what live playback
 //!   plays (as a DAW's does). A value delivered between the read and the
 //!   save is in the state and is sent to the fork once more, harmlessly.
@@ -498,6 +498,7 @@ impl ParamDelivery {
     /// Slots for `params` only: an address the list does not name is
     /// refused and counted dropped, never learned (module docs, "A closed
     /// list"). Control thread: allocates.
+    #[cfg(test)]
     pub(crate) fn closed(
         params: impl IntoIterator<Item = ParamId>,
         counters: Arc<DeliveryCounters>,
@@ -505,7 +506,7 @@ impl ParamDelivery {
         Self::with_spares(params, counters, 0)
     }
 
-    fn with_spares(
+    pub(crate) fn with_spares(
         params: impl IntoIterator<Item = ParamId>,
         counters: Arc<DeliveryCounters>,
         spares: usize,

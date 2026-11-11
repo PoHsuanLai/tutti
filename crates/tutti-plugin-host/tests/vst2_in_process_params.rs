@@ -228,7 +228,7 @@ fn a_held_value_is_sent_once_and_an_edit_on_the_plugin_survives_it() {
 /// on, and the export renders 501 too.
 ///
 /// Mutation (run): the fork's delivery not seeded (no
-/// `fork.params.seed(&delivered)` in `in_process/fork.rs`) → the fork
+/// `fork.params.seed(&delivered)` in `node/fork.rs`) → the fork
 /// sends the lane's 0.25 over the loaded 0.5 → the export renders 251 →
 /// fails.
 #[test]

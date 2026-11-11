@@ -54,7 +54,8 @@ pub struct ProcessContext<'a> {
     pub note_expression: Option<&'a NoteExpressionChanges>,
     /// Sent only when the plugin advertised [`Features::TRANSPORT`](crate::Features).
     pub transport: Option<&'a TransportInfo>,
-    /// The transport changes inside the block, in time order, each at its
+    /// The transport changes inside the block (for a chunked Processor, the
+    /// chunk's so far: see [`Processor::chunk`](crate::Processor::chunk)), in time order, each at its
     /// frame ([`TransportChange`]); `transport` is the one at the first frame.
     /// Empty when there are none, or for a plugin told no transport. Only a
     /// format with an inter-block transport event reads it (CLAP); VST3,

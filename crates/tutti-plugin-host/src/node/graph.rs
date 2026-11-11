@@ -38,11 +38,11 @@ use tutti_types::{ChannelLayout, Samples};
 use super::client::{InProcClient, Inputs, PluginNode, Rendered, render_with};
 use crate::{Call, NodeControls, Snapshot, param_input, transport_info};
 use tutti_plugin_types::{
-    ChordChanges, ChordValue, ExpressiveContext, Features, InProcess, MAX_BLOCK_CHANNELS,
+    ChordChanges, ChordValue, ExpressiveContext, Features, InProcess, Loaded, MAX_BLOCK_CHANNELS,
     Processor, ScaleChanges, ScaleValue, TransportInfo, WireMidi,
 };
 
-impl<F: InProcess + 'static> Node for PluginNode<F>
+impl<F: Loaded + 'static> Node for PluginNode<F>
 where
     F::Processor: 'static,
 {
@@ -58,12 +58,12 @@ where
         // plugin here), falling back to this node's copy while the control
         // thread holds the instance.
         let (latency, tail) = match this.inner.try_lock() {
-            Some(instance) => {
-                let (latency, tail) = instance.figures();
-                (Latency::new(latency), tail)
-            }
-            None => (Latency::new(this.declared.latency), this.declared.tail),
+            Some(instance) => instance.figures(),
+            None => (this.declared.latency, this.declared.tail),
         };
+        // The plugin's own latency, and what the Processor adds to it (the
+        // served pipeline's chunk).
+        let latency = Latency::new(Samples(latency.get() + this.pipeline.get()));
         Shape::audio(
             ChannelLayout::from_count(this.declared.inputs.count()),
             ChannelLayout::from_count(this.declared.outputs.count()),
@@ -81,16 +81,23 @@ where
     /// over); what was delivered to the plugin is kept.
     fn prepare(&mut self, p: &Prepare) {
         let this = &mut self.client;
-        this.set_rate(p.sample_rate());
+        // A Processor that follows the graph takes its rate, block and
+        // quantum live (no restart, no main thread); one that does not is
+        // told the rate by the lifecycle.
+        if !this.retune(p) {
+            this.set_rate(p.sample_rate());
+        }
         // A chunked Processor's delivery chunk is its own (`Processor::chunk`),
         // and it starts counting from here.
         this.phase = Samples(0);
+        this.drop_chunk();
         let chunk = this
             .rt
             .held()
             .and_then(|processor| processor.chunk())
-            .map_or(0, NonZeroUsize::get);
-        this.params.prepare(p.max_block().get().max(chunk));
+            .map(NonZeroUsize::get);
+        this.params
+            .prepare(chunk.unwrap_or_else(|| p.max_block().get()));
         this.segments.prepare(this.params.room());
     }
 
@@ -101,6 +108,10 @@ where
             cursor,
         } = self;
         let size = io.frames();
+        // The MIDI a reset or a re-prepare dropped with the chunk in flight.
+        if this.owed_lost > 0 {
+            io.count_lost(std::mem::take(&mut this.owed_lost));
+        }
         if this.rate_refused {
             // The plugin was not told this node's rate (`set_rate`): silence,
             // not audio at another rate.
@@ -189,18 +200,25 @@ where
                 this.params.count_midi_dropped(midi_dropped);
                 lost += midi_dropped;
 
-                // The transport at the piece's first frame, and the changes
-                // inside it, as the served node walks a chunk.
-                let mut info = TransportInfo::default();
-                this.changes.clear();
-                if let Some(offset) = Offset::new(at, Samples(size))
-                    && features.contains(Features::TRANSPORT)
-                {
+                // The transport across the chunk, one walk over its pieces as
+                // the served node walked it: read at the chunk's first frame,
+                // scanned for changes in each piece (on chunk frames), and
+                // finished at the piece that completes the chunk, which writes
+                // the slope to the chunk's end.
+                let completes = phase + n == chunk;
+                if phase == 0 {
+                    this.changes.clear();
+                }
+                if features.contains(Features::TRANSPORT) {
                     let (meter, steady, project, block_ns) = block.parts();
-                    let mut s = Snapshot::at(cx, offset, steady.at(at), project, block_ns);
-                    let settled = s.settle(&map, cursor);
-                    this.walk.begin(&s, settled);
-                    info = transport_info(&s, meter);
+                    if phase == 0 {
+                        // `at < size` here: the piece has frames.
+                        let offset = Offset::new(at, Samples(size)).expect("inside the block");
+                        let mut s = Snapshot::at(cx, offset, steady.at(at), project, block_ns);
+                        let settled = s.settle(&map, cursor);
+                        this.walk.begin(&s, settled);
+                        this.chunk_info = transport_info(&s, meter);
+                    }
                     let call = Call {
                         cx,
                         frames: size,
@@ -213,21 +231,25 @@ where
                         &call,
                         cursor,
                         project,
-                        &mut info,
+                        &mut this.chunk_info,
                         &mut this.changes,
                         at,
                         n,
-                        0,
+                        phase,
                     );
-                    this.walk.finish(
-                        &map,
-                        cursor,
-                        cx.env.sample_rate,
-                        n,
-                        &mut info,
-                        &mut this.changes,
-                    );
+                    if completes {
+                        this.walk.finish(
+                            &map,
+                            cursor,
+                            cx.env.sample_rate,
+                            chunk,
+                            &mut this.chunk_info,
+                            &mut this.changes,
+                        );
+                    }
                     this.params.count_transport_dropped(over);
+                } else if phase == 0 {
+                    this.chunk_info = TransportInfo::default();
                 }
 
                 let piece_midi = this.midi.len();
@@ -245,7 +267,7 @@ where
                     &mut this.midi,
                     &mut this.out,
                     Inputs {
-                        transport: &info,
+                        transport: &this.chunk_info,
                         changes: this.changes.as_slice(),
                         expressive: expressive(features, &this.chords, &this.scales),
                     },
@@ -259,8 +281,9 @@ where
                         out.fill(0.0);
                     }
                 }
-                let completes = phase + n == chunk;
                 if rendered == Rendered::Ran {
+                    // In the chunk the Processor holds until it ships it.
+                    this.chunk_midi += piece_midi as u64;
                     this.params.refused(this.out.params_refused() as u64);
                     // What the Processor shipped in this call, and lost.
                     let reported = this.out.midi_lost() as u64;
@@ -291,6 +314,9 @@ where
                     this.params.count_midi_dropped(piece_midi as u64);
                     lost += piece_midi as u64;
                     this.intake.lost();
+                }
+                if completes {
+                    this.chunk_midi = 0;
                 }
                 phase = if completes { 0 } else { phase + n };
                 at += n;
@@ -440,6 +466,7 @@ where
         this.params.abandon();
         // The Processor's chunk starts over, so a block is cut from here.
         this.phase = Samples(0);
+        this.drop_chunk();
         // A SysEx open across the reset is not completed past it: its rest
         // is skipped (the Processor drops its own open message, counted).
         this.intake.lost();
@@ -527,12 +554,13 @@ where
     type Controls = NodeControls;
 
     fn into_parts(self) -> NodeParts<NodeControls> {
-        let fork = super::fork::Fork::of(&self);
+        // A plugin with no origin to load again has no fork.
+        let fork = super::fork::Fork::of(&self).map(|fork| Box::new(fork) as _);
         let controls = self.client.controls();
         NodeParts {
             node: Box::new(self),
             controls,
-            fork: Some(Box::new(fork)),
+            fork,
         }
     }
 }
@@ -628,7 +656,7 @@ mod owed_tests {
     /// Starts a rate change the way one parked for the main thread's pump
     /// does: the Processor is recalled, so the node's next block hands it
     /// back and renders without it.
-    fn recall(inner: &parking_lot::Mutex<crate::in_process::instance::Instance<Vst2Loaded>>) {
+    fn recall(inner: &parking_lot::Mutex<crate::node::instance::Instance<Vst2Loaded>>) {
         inner
             .lock()
             .set_sample_rate(&main_thread(), 44_100.0, None)
@@ -636,7 +664,7 @@ mod owed_tests {
     }
 
     /// Finishes it: the pump collects the Processor and lends the new one.
-    fn pump(inner: &parking_lot::Mutex<crate::in_process::instance::Instance<Vst2Loaded>>) {
+    fn pump(inner: &parking_lot::Mutex<crate::node::instance::Instance<Vst2Loaded>>) {
         let _ = inner.lock().pump(&main_thread());
     }
 

@@ -71,6 +71,12 @@ mod fork;
 mod graph_node;
 
 #[cfg(test)]
+mod differential_tests;
+#[cfg(test)]
+mod ipc_node_tests;
+#[cfg(test)]
+mod mock_server;
+#[cfg(test)]
 mod param_delivery_tests;
 // The block-budget suite driven by a REAL plugin subprocess, as opposed to
 // `tutti-plugin-ipc`'s `process_pipeline_tests` mock servers. A unit test rather than an

@@ -14,7 +14,9 @@ use super::instance::Instance;
 use crate::ParameterChangeSink;
 use crate::PluginHandle;
 use tutti_plugin_types::{BridgeError, BridgeResult};
-use tutti_plugin_types::{Features, InProcess, Load};
+use tutti_plugin_types::{
+    Features, InProcess, Load, LoadStage, Loaded, LoadedPlugin, ParamId, PluginDescriptor,
+};
 use tutti_types::ChannelLayout;
 
 /// The maximum block size the plugin is told (`Prepare::max_block`). A graph
@@ -81,7 +83,7 @@ where
     // `.get()` here and not at the caller: this is the last hop before
     // `Instance::load`, which takes a bare rate into the activation.
     let sample_rate = sample_rate.into().get();
-    let (mut inner, rt, restored) =
+    let (inner, rt, restored) =
         Instance::<F>::load(main, path, load, sample_rate, MAX_BLOCK_SIZE, restore).map_err(
             |(stage, reason)| BridgeError::LoadFailed {
                 path: path.to_path_buf(),
@@ -90,53 +92,22 @@ where
             },
         )?;
 
-    let origin = inner.origin().clone();
-    let Some(control) = inner.control() else {
-        return Err(BridgeError::LoadFailed {
+    let origin = inner.origin().cloned();
+    let Wired {
+        client,
+        inner,
+        pending_sample_rate,
+        descriptor,
+        loaded,
+    } = wire(main, inner, rt, origin, sample_rate, 0).map_err(|(stage, reason)| {
+        BridgeError::LoadFailed {
             path: path.to_path_buf(),
-            stage: tutti_plugin_types::LoadStage::Activation,
-            reason: "the plugin was lost in its activation".into(),
-        });
-    };
-    let descriptor = control.info().clone();
-    // What the format's wiring declares, asked of the plugin now: its widths,
-    // latency, tail and the capabilities the node gates its per-block sends
-    // on. The snapshot of the transport is the host's to give, not the
-    // plugin's to request, and the node honours the claim by reading it from
-    // the block's `Cx` into each `ProcessContext`.
-    let mut loaded = control.wiring(main);
-    let parameters = control.parameters(main);
-    // A plugin with presets can be listed and sent one. A format whose
-    // wiring already says so keeps it; one with none says nothing either
-    // way, so a plugin with none is not marked as declining them.
-    if !control.presets(main).is_empty() {
-        loaded.features.insert(Features::PRESET_LIST);
-        loaded.features.insert(Features::PRESET_LOAD);
-    }
-
-    let declared = Declared {
-        inputs: ChannelLayout::clamped(loaded.total_inputs()),
-        outputs: ChannelLayout::clamped(loaded.total_outputs()),
-        latency: loaded.latency_samples,
-        tail: loaded.tail,
-    };
-    let inner = Arc::new(Mutex::new(inner));
-    let unlent = Arc::new(AtomicU64::new(0));
+            stage,
+            reason,
+        }
+    })?;
     let param_sink = ParameterChangeSink::new();
     let invalidate_sink = crate::InvalidateSink::new();
-
-    // Built here rather than inside the node so the node's producer end and the
-    // backend's drain end are the same cell: the audio thread parks a rate in
-    // it, `editor_idle` dispatches from it.
-    //
-    // **Limit:** `editor_idle` is the only main-thread tick an in-process
-    // plugin has, and bevy-tutti calls it only while an editor is open. So a
-    // parked rate change, and the re-reads of latency, tail and pin counts
-    // (`Instance::pump`, raised as `PluginInvalidation` through the handle's
-    // `on_invalidate`), happen only while the editor pump runs. The session
-    // does not tick an in-process plugin's handle; a host that wants them
-    // without an editor calls `PluginHandle::editor_idle` on its own tick.
-    let pending_sample_rate = Arc::new(AtomicU64::new(super::client::NO_PENDING_RATE));
 
     let backend = Arc::new(ControlBackend {
         inner: Arc::clone(&inner),
@@ -145,21 +116,6 @@ where
         invalidate_sink: invalidate_sink.clone(),
     });
 
-    // `loaded.features`, not a local copy, so the node gates its per-block
-    // transport send on the exact value the handle reports. One value, read
-    // twice, cannot drift into a declared-but-undelivered capability.
-    let client = InProcClient::new(
-        Arc::clone(&inner),
-        rt,
-        descriptor.clone(),
-        origin,
-        declared,
-        loaded.features,
-        sample_rate,
-        pending_sample_rate,
-        Arc::clone(&unlent),
-        parameters.iter().map(|p| p.id),
-    );
     // The same backend Arc serves every optional slot, so a mode set through
     // the handle reaches the very instance the node renders.
     let editor: Arc<dyn crate::HostEditor> = backend.clone();
@@ -180,4 +136,137 @@ where
     .with_invalidate_sink(invalidate_sink);
 
     Ok((client, handle, restored))
+}
+
+/// What [`wire`] builds around an activated plugin.
+struct Wired<H: Loaded> {
+    client: InProcClient<H>,
+    /// The control side the client and a handle both reach.
+    inner: Arc<Mutex<Instance<H>>>,
+    /// Where the audio side parks a rate for the main thread's pump; drained
+    /// by the handle's backend.
+    pending_sample_rate: Arc<AtomicU64>,
+    descriptor: PluginDescriptor,
+    /// The wiring as the plugin reports it, with the presets it can list.
+    loaded: LoadedPlugin,
+}
+
+/// The client over an activated plugin: its declared widths, latency, tail and
+/// parameter addresses read now, and the cells the node and a handle share.
+/// `spares` is how many parameter addresses beyond the plugin's list the
+/// node's delivery may learn.
+fn wire<H>(
+    main: &MainThread,
+    mut inner: Instance<H>,
+    rt: tutti_rt::Rt<H::Processor>,
+    origin: Option<tutti_plugin_types::Origin>,
+    sample_rate: f64,
+    spares: usize,
+) -> Result<Wired<H>, (LoadStage, String)>
+where
+    H: Loaded + 'static,
+    H::Processor: 'static,
+{
+    let Some(control) = inner.control() else {
+        return Err((
+            LoadStage::Activation,
+            "the plugin was lost in its activation".into(),
+        ));
+    };
+    let descriptor = control.info().clone();
+    // What the format's wiring declares, asked of the plugin now: its widths,
+    // latency, tail and the capabilities the node gates its per-block sends
+    // on. The snapshot of the transport is the host's to give, not the
+    // plugin's to request, and the node honours the claim by reading it from
+    // the block's `Cx` into each `ProcessContext`.
+    let mut loaded = control.wiring(main);
+    let parameters = control.parameters(main);
+    // A plugin with presets can be listed and sent one. A format whose
+    // wiring already says so keeps it; one with none says nothing either
+    // way, so a plugin with none is not marked as declining them.
+    if !control.presets(main).is_empty() {
+        loaded.features.insert(Features::PRESET_LIST);
+        loaded.features.insert(Features::PRESET_LOAD);
+    }
+    let declared = Declared {
+        inputs: ChannelLayout::clamped(loaded.total_inputs()),
+        outputs: ChannelLayout::clamped(loaded.total_outputs()),
+        latency: loaded.latency_samples,
+        tail: loaded.tail,
+    };
+    let inner = Arc::new(Mutex::new(inner));
+    let unlent = Arc::new(AtomicU64::new(0));
+    // Built here rather than inside the node so the node's producer end and the
+    // backend's drain end are the same cell: the audio thread parks a rate in
+    // it, `editor_idle` dispatches from it.
+    //
+    // **Limit:** `editor_idle` is the only main-thread tick an in-process
+    // plugin has, and bevy-tutti calls it only while an editor is open. So a
+    // parked rate change, and the re-reads of latency, tail and pin counts
+    // (`Instance::pump`, raised as `PluginInvalidation` through the handle's
+    // `on_invalidate`), happen only while the editor pump runs. The session
+    // does not tick an in-process plugin's handle; a host that wants them
+    // without an editor calls `PluginHandle::editor_idle` on its own tick.
+    let pending_sample_rate = Arc::new(AtomicU64::new(super::client::NO_PENDING_RATE));
+    // `loaded.features`, not a local copy, so the node gates its per-block
+    // transport send on the exact value the handle reports. One value, read
+    // twice, cannot drift into a declared-but-undelivered capability.
+    let ids: Vec<ParamId> = parameters.iter().map(|p| p.id).collect();
+    let client = InProcClient::new(
+        Arc::clone(&inner),
+        rt,
+        descriptor.clone(),
+        origin,
+        declared,
+        loaded.features,
+        sample_rate,
+        Arc::clone(&pending_sample_rate),
+        unlent,
+        ids.iter().copied(),
+        spares,
+    );
+    Ok(Wired {
+        client,
+        inner,
+        pending_sample_rate,
+        descriptor,
+        loaded,
+    })
+}
+
+/// A client over a plugin of any hosting that is already loaded, activated at
+/// `sample_rate` and blocks of up to `block_size` (what a graph node's
+/// `prepare` then follows): the generic node for a hosting that is not
+/// [`InProcess`], as `tutti-plugin` builds one for a served plugin.
+///
+/// The client has no origin, so it has no fork of its own yet (a served
+/// plugin reopens with `Ipc::reopen_restoring`), and no handle: its control
+/// is the hosting's. A parameter address the plugin did not list is learned
+/// into `spares` spare slots, as the served node's delivery does.
+///
+/// # Errors
+///
+/// The activation is refused, or the plugin was lost in it.
+pub fn client_over<H>(
+    main: &MainThread,
+    loaded: H,
+    sample_rate: impl Into<tutti_types::SampleRate>,
+    block_size: usize,
+    spares: usize,
+) -> BridgeResult<InProcClient<H>>
+where
+    H: Loaded + 'static,
+    H::Processor: 'static,
+{
+    let sample_rate = sample_rate.into().get();
+    let failed = |(stage, reason): (LoadStage, String)| BridgeError::LoadFailed {
+        path: std::path::PathBuf::new(),
+        stage,
+        reason,
+    };
+    let (inner, rt) =
+        Instance::<H>::start(main, loaded, None, sample_rate, block_size).map_err(failed)?;
+    wire(main, inner, rt, None, sample_rate, spares)
+        .map(|wired| wired.client)
+        .map_err(failed)
 }

@@ -326,6 +326,12 @@ impl Batcher {
         self.reset();
     }
 
+    /// The slab's input writer, given back: a served plugin's deactivation
+    /// rejoins it with the rest of the plugin (`Ipc::deactivate`).
+    pub fn into_slab(self) -> SlabWriter {
+        self.slab
+    }
+
     /// The frames every submission carries.
     pub fn chunk(&self) -> usize {
         self.chunk

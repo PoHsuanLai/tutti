@@ -15,7 +15,7 @@ use std::path::Path;
 use tutti_plugin_types::MainThread;
 
 use tutti_plugin_types::{
-    Event, Hand, HostOp, InProcess, Lifecycle, Load, MaxBlock, Notice, Origin, PluginError,
+    Event, Hand, HostOp, InProcess, Lifecycle, Load, Loaded, MaxBlock, Notice, Origin, PluginError,
     Prepare, Processor, RenderMode, SampleRate, Samples, State, standing,
 };
 use tutti_rt::Rt;
@@ -38,14 +38,15 @@ pub(super) struct Changes {
     pub(super) io: bool,
 }
 
-/// A plugin of format `F` and where it is in its life.
-pub(super) struct Instance<F: InProcess> {
+/// A plugin of hosting `F` and where it is in its life.
+pub(super) struct Instance<F: Loaded> {
     lifecycle: Lifecycle<F>,
     state: State,
     /// The Processor's way to the node's realtime end.
     hand: Hand<F::Processor>,
-    /// Where the plugin came from: what a fork loads again.
-    origin: Origin,
+    /// Where the plugin came from, for an in-process one: what a fork loads
+    /// again. `None` for a hosting that reopens another way.
+    origin: Option<Origin>,
     /// What the plugin runs at, or was last asked to. Its `mode` follows the
     /// live render mode ([`set_render_mode`](Self::set_render_mode)), so
     /// a rate change activates in the mode the plugin was told.
@@ -87,6 +88,26 @@ impl<F: InProcess> Instance<F> {
         })?;
         let origin = loaded.origin().clone();
         let restored = restore.map(|restore| restore(&mut loaded));
+        let (this, rt) = Self::start(main, loaded, Some(origin), sample_rate, block_size)?;
+        Ok((this, rt, restored))
+    }
+}
+
+impl<F: Loaded> Instance<F> {
+    /// Activates `loaded` at `sample_rate` and blocks of up to `block_size`,
+    /// 32-bit, in realtime mode, and lends its Processor to the realtime end
+    /// this returns. Main thread.
+    ///
+    /// # Errors
+    ///
+    /// The stage that failed and the reason.
+    pub(super) fn start(
+        main: &MainThread,
+        loaded: F,
+        origin: Option<Origin>,
+        sample_rate: f64,
+        block_size: usize,
+    ) -> Result<(Self, Rt<F::Processor>), (LoadStage, String)> {
         let prepare = MaxBlock::new(Samples(block_size))
             .and_then(|block| Prepare::new(SampleRate(sample_rate), block))
             .ok_or_else(|| {
@@ -117,7 +138,7 @@ impl<F: InProcess> Instance<F> {
         }
         // What the activation read is the baseline, not a change.
         this.changes = Changes::default();
-        Ok((this, rt, restored))
+        Ok((this, rt))
     }
 
     /// Steps `event` and keeps what it told; the reason of a refused
@@ -335,9 +356,23 @@ impl<F: InProcess> Instance<F> {
         self.prepare.rate()
     }
 
-    /// Where the plugin came from: what a fork loads again.
-    pub(super) fn origin(&self) -> &Origin {
-        &self.origin
+    /// Where the plugin came from, for an in-process one: what a fork loads
+    /// again.
+    pub(super) fn origin(&self) -> Option<&Origin> {
+        self.origin.as_ref()
+    }
+
+    /// The rate a Processor that follows the graph (`Processor::retune`) took
+    /// live: the activation a later reconfiguration starts from is at it, and
+    /// a refusal of the rate before it is over.
+    pub(super) fn retuned(&mut self, rate: SampleRate) {
+        if let Some(prepare) = self.prepare.with_rate(rate) {
+            self.prepare = prepare;
+        }
+        if self.rate_refused {
+            self.rate_refused = false;
+            self.rate_report = Some(None);
+        }
     }
 }
 

@@ -2196,6 +2196,8 @@ pub struct Direct<N> {
     outputs: Vec<Vec<f32>>,
     events_in: Vec<Vec<Event>>,
     events_out: Vec<Vec<Event>>,
+    /// What the node reported with `Io::count_lost`, over every block.
+    lost: u64,
 }
 
 impl<N> std::fmt::Debug for Direct<N> {
@@ -2252,7 +2254,15 @@ impl<N: Node> Direct<N> {
             transport: Transport::default(),
             inputs: vec![vec![0.0; frames]; ins],
             outputs: vec![vec![0.0; frames]; outs],
+            lost: 0,
         }
+    }
+
+    /// The events the node reported lost (`Io::count_lost`) over every block
+    /// since this driver was built: what an executor adds to its lost-event
+    /// count. Cumulative: reading it does not drain or reset it.
+    pub fn lost(&self) -> u64 {
+        self.lost
     }
 
     /// The input channels, to fill before a block.
@@ -2380,6 +2390,7 @@ impl<N: Node> Direct<N> {
             *slot = SortedEvents::new(list, len).expect("sorted events inside the block");
         }
         let dropped = crate::event::PortCount::default();
+        let lost = core::cell::Cell::new(0u32);
         let n_ev_out = self.events_out.len();
         let mut bufs = self.events_out.iter_mut();
         let mut writers: [EventWriter<'_>; crate::node::MAX_PORTS] = core::array::from_fn(|_| {
@@ -2405,8 +2416,10 @@ impl<N: Node> Direct<N> {
             &sorted[..self.events_in.len()],
             &mut writers[..n_ev_out],
         )
-        .with_params(&params[..n_par]);
+        .with_params(&params[..n_par])
+        .with_lost(&lost);
         let status = self.node.process(&cx, io);
+        self.lost += u64::from(lost.get());
         for list in &mut self.events_in {
             list.clear();
         }

@@ -7694,7 +7694,8 @@ the source stands ("Shaped ramps" below).
   segment is **absolute**: its start and end values, a `Law`, and
   where along itself it is at the event's frame (`position`) over its
   `length`, both in fractional frames. Frame `j` after the event reads
-  `from + (to - from) · shape.eval((position + j) / length)`, and `to`
+  `Piece { from, to, law }.value((position + j) / length)` (`tutti_curve::Piece`, i.e.
+  `from + (to - from) · shape.eval(t)`), and `to`
   from the frame that progress reaches 1 (a zero length is a step).
   `ParamSegment::new` is the ramp convention (position 1: the event's
   frame is one step in, `to` on the last frame); `resumed` sets the
@@ -7748,7 +7749,7 @@ the source stands ("Shaped ramps" below).
   LUT.
 - **Shaped ramps.** `ParamRamp::with_shape(Law)` (default
   `Linear`) makes the relative move follow a shape: frame `j` after the
-  event reads `from + (target - from) · shape.eval((j + 1) / duration)`,
+  event reads `Piece::value` at `(j + 1) / duration` (`from + (target - from) · shape.eval(t)`),
   `from` being the source's value on the frame before the event (for a
   source not yet started, the base at the event's own frame), and
   `target` from frame `duration - 1` on: a segment in the ramp convention

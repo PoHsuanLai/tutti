@@ -4,7 +4,7 @@
 use super::Law;
 use crate::Piece;
 
-const LAWS: [Law; 8] = [
+const LAWS: [Law; 9] = [
     Law::Linear,
     Law::Hold,
     Law::PowerIn(2.0),
@@ -13,6 +13,7 @@ const LAWS: [Law; 8] = [
     Law::PowerIn(1.7),
     Law::Exp(3.0),
     Law::Exp(-2.5),
+    Law::Smootherstep,
 ];
 
 /// The unit steps: `Linear` is `t`, `Hold` is 0 until the end.
@@ -183,7 +184,7 @@ fn progress_is_clamped() {
 /// Mutations (run), each fails: `PowerOut` as `pow(t, p)` (the ease-in);
 /// `PowerInOut`'s first half as `pow(t, p)` (no `2t`); `Exp` with
 /// `exp_m1(k)` and `exp_m1(k t)` swapped; dropping the `valid_exponent`
-/// guard (`PowerIn(-1)` gives `inf` at 0).
+/// guard (`PowerIn(-1)` gives `inf` at 0); `Smootherstep`'s `10.0` as `9.0`.
 #[test]
 fn every_law_meets_its_closed_form() {
     use Law as S;
@@ -199,6 +200,7 @@ fn every_law_meets_its_closed_form() {
                 let k = f64::from(k);
                 ((k * t).exp() - 1.0) / (k.exp() - 1.0)
             }
+            S::Smootherstep => t * t * t * (6.0 * t * t - 15.0 * t + 10.0),
         }
     };
     let shapes = [
@@ -212,6 +214,7 @@ fn every_law_meets_its_closed_form() {
         S::PowerInOut(2.0),
         S::PowerInOut(4.0),
         S::Exp(5.0),
+        S::Smootherstep,
         S::Exp(-3.0),
     ];
     for s in shapes {
@@ -226,7 +229,11 @@ fn every_law_meets_its_closed_form() {
                 (f64::from(g) - want).abs() < 2e-6,
                 "{s:?} at {t}: {g} vs {want}"
             );
-            assert!(g >= prev, "{s:?} is monotone at {t}");
+            // `Smootherstep` is the crossfade's bit-exact `f32` polynomial,
+            // whose cancellation near 1 costs up to 2.3e-6 of monotonicity
+            // (and the same overshoot of 1): see its docs.
+            let slack = if s == S::Smootherstep { 3e-6 } else { 0.0 };
+            assert!(g + slack >= prev, "{s:?} is monotone at {t}");
             prev = g;
         }
     }
@@ -243,4 +250,24 @@ fn every_law_meets_its_closed_form() {
     assert_eq!(S::Exp(2.0).eval(-1.0), 0.0);
     assert_eq!(S::PowerIn(2.0).eval(f32::NAN), 0.0);
     assert!(S::Exp(1e9).eval(0.5).is_finite());
+}
+
+/// `Linear` returns `t` bit for bit on `[0, 1]` (the clamp is the identity
+/// there), so a linear [`Piece`] is `from + (to - from) * t` to the bit: what
+/// the graph's edge-gain ramp and param ramps write.
+///
+/// Mutation (run): `Linear` as `t * 0.999_999_9` → fails.
+#[test]
+fn linear_is_the_identity_on_the_unit_interval() {
+    for n in [1u32, 3, 7, 64, 97, 128, 1000] {
+        for i in 0..n {
+            let t = (i + 1) as f32 / n as f32;
+            assert_eq!(Law::Linear.eval(t).to_bits(), t.to_bits());
+            let (from, to) = (0.3f32, -7.9f32);
+            assert_eq!(
+                Piece::new(from, to, Law::Linear).value(t).to_bits(),
+                (from + (to - from) * t).to_bits()
+            );
+        }
+    }
 }

@@ -4,13 +4,14 @@
 ///
 /// A **closed set**, so a segment stays a `Copy` value a few words long on the
 /// audio thread rather than an `Arc<dyn Curve>`. Every law is monotone between
-/// its endpoints, so a piece never leaves `[from, to]`.
+/// its endpoints, so a piece never leaves `[from, to]` (but for
+/// [`Smootherstep`](Self::Smootherstep)'s few ulps of `f32` rounding).
 ///
 /// A parameter that is not finite, or out of the range a variant states,
 /// evaluates as [`Linear`](Self::Linear): the audio thread never computes a
 /// NaN from a law.
 ///
-/// **Platform figures.** `Linear`, `Hold`, and the power laws at exponents 0.5
+/// **Platform figures.** `Linear`, `Hold`, `Smootherstep` and the power laws at exponents 0.5
 /// and 1–5 evaluate with IEEE-exact operations (multiplication, `sqrt`), so
 /// they give the same bits on every target. Other exponents (`powf`) and
 /// [`Exp`](Self::Exp) (`exp_m1`) go through the platform's libm and may differ
@@ -48,6 +49,17 @@ pub enum Law {
     /// `k` near 0 is linear. `k = ln(to / from)` makes the value geometric (a
     /// frequency sweep linear in pitch).
     Exp(f32),
+    /// `t³(6t² - 15t + 10)`: Perlin's smootherstep, the fifth-order polynomial
+    /// with zero first and second derivatives at both ends, an S-curve that
+    /// meets its neighbours smoothly. (Named for the theory: "smoothstep"
+    /// is the third-order `3t² - 2t³`, and this is its successor.) It is
+    /// the amplitude law of the graph's equal-amplitude crossfade.
+    ///
+    /// Evaluated in `f32` in this Horner form, which the crossfade's gains
+    /// pin bit for bit, it loses a few ulps to cancellation near 1: it is
+    /// monotone and inside `[0, 1]` only to about `2.3e-6` (it reaches
+    /// `1.000_001_1` just below `t = 1`; `g(1)` is exactly 1).
+    Smootherstep,
 }
 
 /// The largest `|k|` [`Law::Exp`] evaluates: `e^64` is far inside `f32`, so the
@@ -81,6 +93,7 @@ impl Law {
                     1.0 - pow(2.0 - 2.0 * t, p) / 2.0
                 }
             }
+            Self::Smootherstep => t * t * t * (t * (t * 6.0 - 15.0) + 10.0),
             Self::Exp(k) if k.is_finite() => {
                 let k = k.clamp(-EXP_CURVATURE_MAX, EXP_CURVATURE_MAX);
                 if k.abs() < 1e-4 {

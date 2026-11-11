@@ -2200,8 +2200,9 @@ parameter-list bits of a `RequestWord`; it does not watch the stream format,
 which this host sets itself at every activation and the listener cannot tell
 from the unit's own change. `AuInstance` and its `State` are deleted; the
 server's `loaders/au.rs` drives `Lifecycle<AuLoaded>` as the CLAP loader does.
-`AuLoaded` implements no `InProcess` or `OutOfProcess` yet: the contract has no
-AU format, and its editor mirror (`format/gui/au.rs`) is the editor move.
+`AuLoaded` implements `InProcess` and `OutOfProcess` (doc 021 step 7): the
+editor-only instance is `AuEditorInstance`, in this crate, and the contract's AU
+format loads Apple's AUDelay, since the shared plugin has no AU build.
 
 ## 4. What is deleted
 

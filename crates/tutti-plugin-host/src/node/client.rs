@@ -28,7 +28,7 @@ use tutti_rt::Rt;
 
 use arrayvec::ArrayVec;
 use parking_lot::Mutex;
-use tutti_graph::{Bus, Buses, Cx, Offset};
+use tutti_graph::{Bus, Buses, Cx, Offset, Shape};
 use tutti_plugin_types::{LoadedPlugin, PluginBus};
 use tutti_tempo::{Cursor, TempoMap};
 use tutti_transport::TempoReader;
@@ -184,13 +184,9 @@ impl<F: Loaded> std::fmt::Debug for InProcClient<F> {
 /// What the plugin declared when the node was built.
 #[derive(Clone, Copy, Debug)]
 pub(super) struct Declared {
-    pub(super) inputs: ChannelLayout,
-    pub(super) outputs: ChannelLayout,
-    /// The plugin's input buses, as the node's [`Shape`](tutti_graph::Shape)
-    /// declares them.
-    pub(super) buses_in: Buses,
-    /// The plugin's output buses.
-    pub(super) buses_out: Buses,
+    /// The plugin's channels as the node's ports: its buses as the node's
+    /// buses, in bus order, and the channels past them as ports.
+    pub(super) ports: Shape,
     pub(super) latency: Samples,
     pub(super) tail: PluginTail,
 }
@@ -199,10 +195,10 @@ impl Declared {
     /// What the plugin reported at load.
     pub(super) fn of(loaded: &LoadedPlugin) -> Self {
         Self {
-            inputs: ChannelLayout::clamped(loaded.total_inputs()),
-            outputs: ChannelLayout::clamped(loaded.total_outputs()),
-            buses_in: buses_of(&loaded.inputs),
-            buses_out: buses_of(&loaded.outputs),
+            ports: Shape::buses(buses_of(&loaded.inputs), buses_of(&loaded.outputs)).with_ports(
+                ChannelLayout::clamped(loaded.total_inputs()),
+                ChannelLayout::clamped(loaded.total_outputs()),
+            ),
             latency: loaded.latency_samples,
             tail: loaded.tail,
         }
@@ -1188,7 +1184,7 @@ mod render_tests {
 #[cfg(test)]
 mod declared_buses {
     use super::*;
-    use tutti_graph::{BusRole, Shape};
+    use tutti_graph::BusRole;
     use tutti_plugin_types::{ChannelTopology, Speaker};
 
     fn width(n: u16) -> ChannelLayout {
@@ -1220,9 +1216,7 @@ mod declared_buses {
             outputs: vec![PluginBus::main(width(2)).placed(Some(stereo()))],
             ..LoadedPlugin::default()
         };
-        let declared = Declared::of(&loaded);
-        let shape = Shape::buses(declared.buses_in, declared.buses_out)
-            .with_ports(declared.inputs, declared.outputs);
+        let shape = Declared::of(&loaded).ports;
         assert_eq!(shape.audio_in(), width(6));
         let ins: Vec<_> = shape
             .buses_in()
@@ -1253,23 +1247,20 @@ mod declared_buses {
     /// equivalent to `continue`: a full list refuses every later bus.)
     #[test]
     fn what_does_not_fit_stays_a_port() {
-        let none = Declared::of(&LoadedPlugin::default());
-        assert!(none.buses_in.is_empty() && none.buses_out.is_empty());
+        let none = Declared::of(&LoadedPlugin::default()).ports;
+        assert!(none.buses_in().is_empty() && none.buses_out().is_empty());
 
         let many = LoadedPlugin {
             inputs: vec![PluginBus::main(width(1)); 5],
             outputs: [2, 20, 2].map(|n| PluginBus::main(width(n))).to_vec(),
             ..LoadedPlugin::default()
         };
-        let declared = Declared::of(&many);
-        assert_eq!(declared.inputs, width(5));
-        assert_eq!(declared.buses_in.len(), tutti_graph::MAX_BUSES);
+        let shape = Declared::of(&many).ports;
+        assert_eq!(shape.audio_in(), width(5));
+        assert_eq!(shape.buses_in().len(), tutti_graph::MAX_BUSES);
         // The 20-wide bus is past a bus; the one after it is not reached.
-        assert_eq!(declared.outputs, width(24));
-        assert_eq!(declared.buses_out.len(), 1);
-        assert_eq!(declared.buses_out.width(), 2);
-        let shape = Shape::buses(declared.buses_in, declared.buses_out)
-            .with_ports(declared.inputs, declared.outputs);
         assert_eq!(shape.audio_out(), width(24));
+        assert_eq!(shape.buses_out().len(), 1);
+        assert_eq!(shape.buses_out().width(), 2);
     }
 }

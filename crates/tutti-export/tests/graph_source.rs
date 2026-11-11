@@ -571,7 +571,7 @@ fn the_latency_trim_drops_the_lookahead() {
 /// Mutations (run): `LimiterNode::shape` declaring its old
 /// `lookahead_samples - 1` tail → `Some(239)` against `Some(0)`, and the
 /// first assertion fails; each channel's ring 1000 frames longer than the
-/// declared latency (`CircularBuffer::new(n + 1000)`) → frame 241 is still
+/// declared latency (`FixedDelay::new(n + 1000)`) → frame 241 is still
 /// in the ring, zero, and the onset assertion fails.
 #[test]
 fn a_limiter_adds_no_tail_to_the_render() {

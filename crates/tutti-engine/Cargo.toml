@@ -19,6 +19,7 @@ workspace = true
 thiserror.workspace = true
 tutti-types = { version = "0.0.1", path = "../tutti-types" }
 tutti-rt = { path = "../tutti-rt" }
+bytemuck = { version = "1.16", features = ["derive"] }
 # `Engine` renders a `tutti_graph::Executor`.
 tutti-graph = { version = "0.0.1", path = "../tutti-graph" }
 tutti-transport = { path = "../tutti-transport" }

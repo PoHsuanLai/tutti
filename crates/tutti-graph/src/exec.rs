@@ -2654,6 +2654,7 @@ fn fading_node_op<A: AudioSlots, F: SlotFlags + ?Sized, E: EventSlots + ?Sized>(
             &evin[..ein.len()],
             &mut evout[..eout.len()],
         )
+        .with_main(h.rec.main)
         .with_params(params);
         let cx = Cx {
             env: h.env,
@@ -3118,6 +3119,7 @@ impl<'p> Call<'p, '_> {
             &[],
             &mut [],
         )
+        .with_main(self.rec.main)
         .with_params(self.params)
         .with_tail(self.reported);
         node.process(&self.cx(), io)
@@ -3220,6 +3222,7 @@ impl<'p> Call<'p, '_> {
             &evin[..e_in],
             &mut evout[..e_out],
         )
+        .with_main(rec.main)
         .with_params(self.params)
         .with_lost(&unplaced)
         .with_tail(self.reported);

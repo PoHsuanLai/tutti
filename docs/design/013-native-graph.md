@@ -7586,6 +7586,23 @@ that says "unassigned" for such a channel predates the rename.
   on `Node`. Stable Rust has no defaulted associated types, so every `Node` impl in the workspace would name one, for a
   guarantee the bounded views already give.
 
+**As built (T2).**
+
+- The shape issues the handles: `Shape::input_bus(i)` / `output_bus(i)` for bus `i` in port order, and
+  `spare_in()` / `spare_out()` for the ports past the buses (`with_ports`). `input_handles()` / `output_handles()` give
+  a side's every port that way, one handle a bus. A node builds its shape on the control side, keeps the handles it
+  needs as fields, and reads `Io::bus_in(h)` / `bus_out(h)`, or `Inputs::bus` / `Outputs::bus` after `split()`, each
+  a `BusIn` / `BusOut` bounded to the bus. `Outputs::buses(&[OutBus])` lends several output buses at once, in port
+  order, and refuses a handle out of order (two views of one port).
+- `io.input(c)`, `io.output(c)`, `split()`'s `get(c)` and `iter_mut()`, `input_count()` and `output_count()` cover the
+  main bus: input `c` past it panics, naming the handle. A side that declares no bus is its own main bus, every port;
+  a side whose buses name no main one has none.
+- The gate and the compressor keep their shape and their key's handle (`tutti-nodes`' `keyed`); `Keyed` is gone. The
+  crossover's bands past the first are its ports past the main bus until T3: `DesignNode` holds the main bus's
+  handle and the spare one, and hands the realization their channels in port order. The plugin node's `Declared`
+  holds its `Shape`, and the plugin's channel list is the handles of every bus in port order, so an aux or sidechain
+  bus reaches the plugin where it declared it.
+
 **T3. A design speaks in buses.**
 
 - `tutti_dsp::Channels` becomes the design's bus structure, in `tutti-types` vocabulary (`tutti-dsp` depends on

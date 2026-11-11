@@ -611,9 +611,6 @@ fn decoded(ingest: &mut MpeIngest, event: &UmpAt) -> Vec<(u8, Voice2)> {
 /// first). The ingest remembers the bend of the member channel with no note,
 /// and the note that starts there is told it ahead of its Note On; the last of
 /// two bends is the one.
-///
-/// Mutation (run): the member arm not storing the bend (`told[slot].bend =
-/// Some(value)` removed) -> the Note On is alone -> fails.
 #[test]
 fn a_member_bend_before_the_note_on_is_the_notes_start() {
     let mut ingest = MpeIngest::new(tutti_fixtures::midi::lower_zone(15));
@@ -635,9 +632,6 @@ fn a_member_bend_before_the_note_on_is_the_notes_start() {
 /// Channel before Note On. A receiver shall continue to track Channel Pressure
 /// messages even when no note is playing"; section 2.2.8 the same of Control
 /// Change #74).
-///
-/// Mutation (run): the pressure arm not storing -> no Poly Pressure ahead of
-/// the Note On -> fails; likewise the CC 74 arm.
 #[test]
 fn member_pressure_and_cc74_before_the_note_on_are_the_notes_start() {
     let mut ingest = MpeIngest::new(tutti_fixtures::midi::lower_zone(15));
@@ -660,9 +654,6 @@ fn member_pressure_and_cc74_before_the_note_on_are_the_notes_start() {
 /// What a member channel was told stays its own: another member's note does
 /// not start with it, and a channel never told sends no per-note message
 /// ahead of its Note On.
-///
-/// Mutation (run): one `Told` for every channel -> channel 3's note starts
-/// with channel 2's bend -> fails.
 #[test]
 fn what_a_member_was_told_is_its_own() {
     let mut ingest = MpeIngest::new(tutti_fixtures::midi::lower_zone(15));
@@ -680,9 +671,6 @@ fn what_a_member_was_told_is_its_own() {
 /// "the MPE control messages shall not affect a note after the Note Off
 /// message has been received"), while the channel goes on tracking them for
 /// the next note.
-///
-/// Mutation (run): the Note Off not releasing the channel -> the bend after it
-/// is sent for the ended note -> fails.
 #[test]
 fn a_released_note_ignores_the_members_bend_and_the_next_note_starts_with_it() {
     let mut ingest = MpeIngest::new(tutti_fixtures::midi::lower_zone(15));
@@ -704,10 +692,6 @@ fn a_released_note_ignores_the_members_bend_and_the_next_note_starts_with_it() {
 /// of Control Change #74; Appendix D: Max is one way). The manager's value,
 /// told with no note sounding, is every new note's floor; told while notes
 /// sound, it reaches each of them, as the greater of it and the member's own.
-///
-/// Mutation (run): the master arm sending nothing to the members -> the held
-/// note hears no manager pressure -> fails; the combine taking the member's
-/// value alone -> the floor is lost -> fails.
 #[test]
 fn a_managers_pressure_and_cc74_reach_every_members_note() {
     let mut ingest = MpeIngest::new(tutti_fixtures::midi::lower_zone(3));
@@ -754,9 +738,6 @@ fn a_managers_pressure_and_cc74_reach_every_members_note() {
 /// (125). Reset All Controllers (121), Local Control (122), All Notes Off
 /// (123) and Omni Off (124) are Optional and pass, on the master and on a
 /// member alike, as do 120, 126 and 127 on a member.
-///
-/// Mutation (run): the `Role::Master` arm of `mpe11_receive` matching only 120
-/// -> 126 and 127 pass -> fails; the `omni` check removed -> fails.
 #[test]
 fn the_receive_table_ignores_what_it_prohibits() {
     let mut ingest = MpeIngest::new(tutti_fixtures::midi::lower_zone(5));
@@ -791,9 +772,6 @@ fn the_receive_table_ignores_what_it_prohibits() {
 /// RPN #6 on Member Channels, "P"): on a member that is not a master's channel
 /// it is ignored, and the zones stand. On a channel outside every zone, RPN 6
 /// is ordinary traffic.
-///
-/// Mutation (run): the `Role::Member` arm for the registered controller
-/// removed -> the member's passes -> fails.
 #[test]
 fn an_mcm_on_a_member_channel_is_ignored() {
     let mut ingest = MpeIngest::new(tutti_fixtures::midi::lower_zone(5));
@@ -827,10 +805,6 @@ fn an_mcm_on_a_member_channel_is_ignored() {
 /// (channel 1 of a lower zone) it lets members' Program Changes through, and
 /// Poly Mode On there takes them away again. The manager's Program Change
 /// always passes.
-///
-/// Mutation (run): the mode switch accepted on any channel -> the first
-/// assertion after the manager's 126 fails; the switch accepted on the manager
-/// only -> the lowest member's switch does nothing -> fails.
 #[test]
 fn program_change_on_a_member_follows_the_zones_midi_mode() {
     let mut ingest = MpeIngest::new(tutti_fixtures::midi::lower_zone(5));
@@ -859,9 +833,6 @@ fn program_change_on_a_member_follows_the_zones_midi_mode() {
 /// "Any MIDI Channels not assigned to any Zone remain available for
 /// conventional use."): notes, bends, pressure and CC 74 there pass as they
 /// came, whatever the zones are.
-///
-/// Mutation (run): the `role` lookup returning `None` -> the event is dropped
-/// (as it was) -> fails.
 #[test]
 fn a_channel_outside_the_zones_passes_everything() {
     let mut ingest = MpeIngest::new(tutti_fixtures::midi::lower_zone(5));
@@ -886,10 +857,6 @@ fn a_channel_outside_the_zones_passes_everything() {
 /// those two (All Sound Off, then Reset All Controllers) and no other; the
 /// notes the other channels hold, and what they were told, stand; the same MCM
 /// again changes nothing and stops nothing.
-///
-/// Mutation (run): `send_stops` over every channel of the zone -> the stops
-/// name 0 to 3 as well -> fails; `reconfigure` keeping `held` for a changed
-/// channel -> channel 4's stale note still takes a bend -> fails.
 #[test]
 fn an_mcm_stops_only_the_channels_it_moves() {
     let mut ingest = MpeIngest::new(tutti_fixtures::midi::lower_zone(3));
@@ -928,10 +895,6 @@ fn an_mcm_stops_only_the_channels_it_moves() {
 /// (section 2.2.3, "reset all controls ... on each Channel entering or leaving
 /// MPE control"): shrink a zone past a channel that held a note and had been
 /// bent, grow it back, and the channel starts clean.
-///
-/// Mutation (run): `reconfigure` not releasing the changed channel's note ->
-/// the bend folds onto the stale note -> fails; not clearing `told` -> the
-/// next note starts with the old bend -> fails.
 #[test]
 fn a_channel_that_left_the_zone_forgets_its_note_and_its_bend() {
     let regrown = || {
@@ -954,8 +917,6 @@ fn a_channel_that_left_the_zone_forgets_its_note_and_its_bend() {
 
 /// A disabling MCM stops the zone's channels, the master's too, and its
 /// notes are forgotten (section 2.2.3, "entering or leaving MPE control").
-///
-/// Mutation (run): the disable arm not calling `send_stops` -> fails.
 #[test]
 fn a_disabling_mcm_stops_every_channel_of_the_zone() {
     let mut ingest = MpeIngest::new(tutti_fixtures::midi::lower_zone(2));
@@ -980,10 +941,6 @@ fn a_disabling_mcm_stops_every_channel_of_the_zone() {
 /// that did not: lower zone of 3 members to one of 2 stops channel 3 alone;
 /// to Disabled stops channels 0 to 2; the notes of the unchanged channels were
 /// kept until then (section 2.2.3).
-///
-/// Mutation (run): `set_mode` rebuilding the ingest whole (`*self =
-/// Self::new(mode)`, as it did) -> channel 1's note is forgotten -> fails;
-/// `entered` left at 0 -> no stops -> fails.
 #[test]
 fn a_host_set_mode_stops_the_channels_that_enter_or_leave() {
     let mut ingest = MpeIngest::new(tutti_fixtures::midi::lower_zone(3));

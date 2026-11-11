@@ -51,7 +51,7 @@ const DEFAULT_LANE: usize = 512;
 /// graph's PDC compensates a dry path mixed against it.
 ///
 /// The minimum gain over the lookahead window is tracked with a
-/// [`MonotonicMinDeque`](tutti_dsp::MonotonicMinDeque), so each sample costs O(1) amortized regardless of
+/// monotonic deque (`tutti_dsp::LookaheadRing`), so each sample costs O(1) amortized regardless of
 /// lookahead length. Nothing in the RT path allocates: the rings and the gain
 /// lane are sized at construction, and again when the graph prepares it.
 ///
@@ -867,7 +867,7 @@ mod tests {
     /// Mutation (run): declaring the ring's `lookahead - 1` as the tail (the
     /// old figure) → the tail assertion fails. Mutation (run): each channel's
     /// ring one slot longer than the declared latency
-    /// (`CircularBuffer::new(n + 1)`) → the last non-zero frame is one past
+    /// (`FixedDelay::new(n + 1)`) → the last non-zero frame is one past
     /// the latency and the second assertion fails.
     #[test]
     fn the_limiter_stops_at_its_latency_and_declares_no_tail() {

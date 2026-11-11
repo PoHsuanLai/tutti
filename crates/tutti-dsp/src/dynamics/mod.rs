@@ -7,6 +7,7 @@ mod envelope;
 mod gate;
 mod limiter;
 mod limiter_kernel;
+mod window;
 
 pub use compressor::{CompressorBlock, CompressorKernel};
 pub use curves::{

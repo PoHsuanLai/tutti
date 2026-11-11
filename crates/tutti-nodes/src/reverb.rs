@@ -20,7 +20,8 @@ use tutti_dsp::{
     MAX_CHANNELS, Range, Realization, Ring, Setup, Sizes, System,
 };
 use tutti_graph::{
-    Cost, Cx, IntoNode, Io, Node, NodeParts, ParamNode, ParamSet, Prepare, Shape, Status,
+    BusOut, Cost, Cx, IntoNode, Io, Node, NodeParts, OutBus, ParamNode, ParamSet, Prepare, Shape,
+    Status,
 };
 use tutti_types::{Db, Latency, MaxBlock, Mix, SampleRate, Samples, Tail, UnitAddr, UnitParam};
 
@@ -172,6 +173,9 @@ pub struct DesignNode<D: NodeDesign> {
     ceiling: u64,
     rate: SampleRate,
     channels: Channels,
+    /// Every output by handle in port order: the main bus, then the outputs
+    /// past it (a split's bands after the first).
+    outs: OutBuses,
     /// Frames of ring-out after the last non-silent input frame that the
     /// settings in force since may still need.
     ring: u64,
@@ -217,6 +221,7 @@ impl<D: NodeDesign> DesignNode<D> {
     fn build(design: D, controls: D::Controls, mode: Mode<D::Controls>) -> Self {
         let rate = SampleRate::DEFAULT;
         let channels = design.channels();
+        let outs = OutBuses::of(&ports(channels));
         let realization = design.realization();
         let params = Params::new(design.set(&controls), &controls);
         let (network, longest) = (Box::new(design.blank(rate)), Box::new(design.blank(rate)));
@@ -232,6 +237,7 @@ impl<D: NodeDesign> DesignNode<D> {
             ceiling: 0,
             rate,
             channels,
+            outs,
             ring: 0,
             since: UNBOUNDED,
             silent: true,
@@ -361,7 +367,8 @@ impl<D: NodeDesign> DesignNode<D> {
             *slot = &ins.get(c)[frames.clone()];
         }
         let mut output: [&mut [f32]; MAX_CHANNELS] = std::array::from_fn(|_| Default::default());
-        for (slot, ch) in output.iter_mut().zip(outs.iter_mut()) {
+        let channels = outs.buses(self.outs.get()).flat_map(BusOut::into_channels);
+        for (slot, ch) in output.iter_mut().zip(channels) {
             *slot = &mut ch[frames.clone()];
         }
         let width = usize::from(self.channels.output.count());
@@ -453,25 +460,56 @@ fn cost(effort: Effort) -> Cost {
     }
 }
 
+/// A design's ports: its main buses, and a split's bands past the first as
+/// ports past them.
+fn ports(channels: Channels) -> Shape {
+    Shape::buses(main_bus(channels.input), main_bus(channels.main_output()))
+        .with_ports(channels.input, channels.output)
+}
+
+/// A design's output handles in port order: the main bus, and the outputs
+/// past it when there are any.
+#[derive(Clone, Copy, Debug)]
+struct OutBuses {
+    handles: [OutBus; 2],
+    count: usize,
+}
+
+impl OutBuses {
+    fn of(shape: &Shape) -> Self {
+        let main = shape.output_bus(0).expect("a design has an output");
+        match shape.spare_out() {
+            Some(rest) => Self {
+                handles: [main, rest],
+                count: 2,
+            },
+            None => Self {
+                handles: [main, main],
+                count: 1,
+            },
+        }
+    }
+
+    fn get(&self) -> &[OutBus] {
+        &self.handles[..self.count]
+    }
+}
+
 impl<D: NodeDesign> Node for DesignNode<D> {
     fn shape(&self) -> Shape {
         let addrs = match self.mode {
             Mode::Live => self.params.addrs(),
             Mode::Fixed(_) => &[],
         };
-        Shape::buses(
-            main_bus(self.channels.input),
-            main_bus(self.channels.main_output()),
-        )
-        .with_ports(self.channels.input, self.channels.output)
-        .with_cost(cost(self.realization.effort()))
-        .with_latency(Latency::new(self.realization.latency()))
-        .with_tail(if D::PARKS {
-            tail_of(self.ceiling)
-        } else {
-            Tail::Unknown
-        })
-        .with_param_addrs(addrs)
+        ports(self.channels)
+            .with_cost(cost(self.realization.effort()))
+            .with_latency(Latency::new(self.realization.latency()))
+            .with_tail(if D::PARKS {
+                tail_of(self.ceiling)
+            } else {
+                Tail::Unknown
+            })
+            .with_param_addrs(addrs)
     }
 
     fn prepare(&mut self, p: &Prepare) {
@@ -529,7 +567,7 @@ impl<D: NodeDesign> Node for DesignNode<D> {
         }
         if cut < size {
             let (_, mut outs) = io.split();
-            for ch in outs.iter_mut() {
+            for ch in outs.buses(self.outs.get()).flat_map(BusOut::into_channels) {
                 ch[cut..size].fill(0.0);
             }
             if !self.silent {
@@ -569,6 +607,7 @@ impl<D: NodeDesign> Clone for DesignNode<D> {
             ceiling: self.ceiling,
             rate: self.rate,
             channels: self.channels,
+            outs: self.outs,
             ring: 0,
             since: UNBOUNDED,
             silent: true,

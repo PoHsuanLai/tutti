@@ -261,33 +261,26 @@ fn declaring_the_same_topology_again_changes_nothing() {
 #[cfg(feature = "export")]
 #[test]
 fn an_export_is_placed_from_the_declaration() {
-    use tutti_export::{EncodeConfig, ExportConfig, Format, Outcome, Pcm, RenderConfig};
-    use tutti_session::{ExportClock, ExportOutput, ExportRequest, ExportSource, ExportTarget};
+    use tutti_export::{Outcome, Produced};
+    use tutti_session::{Bounce, ExportClock, Latency, Range, Tail};
     let planes = |s: &mut Session| {
-        let config = ExportConfig {
-            render: RenderConfig {
-                sample_rate: RATE,
-                duration_seconds: tutti_types::Seconds(0.01),
-                ..Default::default()
+        let request = Bounce::project()
+            .master_buffers()
+            .channels(ChannelLayout::from(6u16))
+            .range(Range::Seconds(
+                tutti_types::Seconds(0.0),
+                tutti_types::Seconds(0.01),
+            ))
+            .sample_rate(RATE)
+            .clock(ExportClock::frozen())
+            .latency(Latency::Keep)
+            .tail(Tail::None);
+        match s.bounce(request).unwrap() {
+            Outcome::Finished(b) => match b.into_master() {
+                Produced::Buffers(r) => r.planes().iter().map(|p| p[0]).collect::<Vec<_>>(),
+                _ => panic!("expected buffers"),
             },
-            encode: EncodeConfig {
-                format: Format::Wav(Pcm::Float32),
-                channels: ChannelLayout::from(6u16),
-                topology: None,
-            },
-            ..Default::default()
-        };
-        let request = ExportRequest::new(
-            ExportSource::Mix,
-            ExportTarget::Buffers,
-            config,
-            ExportClock::frozen(),
-        );
-        match s.export_blocking(request).unwrap() {
-            Outcome::Finished(ExportOutput::Buffers(r)) => {
-                r.planes().iter().map(|p| p[0]).collect::<Vec<_>>()
-            }
-            _ => panic!("expected buffers"),
+            Outcome::Cancelled => panic!("expected buffers"),
         }
     };
     let mut declared = Session::builder()

@@ -174,6 +174,20 @@ pub(crate) enum Weights {
 }
 
 impl Weights {
+    /// The table `outputs` render under: normalized if any file output
+    /// measures a gain, streaming otherwise. The one rule, for the render and
+    /// for whoever reports [`Stage::Preparing`] before it.
+    pub(crate) fn of(outputs: &[crate::Output]) -> Self {
+        let normalizes = outputs
+            .iter()
+            .any(|o| matches!(o.target(), crate::Target::File(f) if f.normalize().is_some()));
+        if normalizes {
+            Self::Normalized
+        } else {
+            Self::Streaming
+        }
+    }
+
     fn table(self) -> &'static [Band] {
         match self {
             Self::Streaming => &STREAMING,
@@ -282,6 +296,24 @@ impl<'a> Control<'a> {
     /// next reading on.
     pub(crate) fn set_output(&mut self, output: usize) {
         self.output = output;
+    }
+
+    /// Reports [`Stage::Preparing`]: `done` of `of` steps of building what
+    /// `outputs` will be rendered from, in the band they will render under.
+    ///
+    /// The session calls this between its steps (the gather, the fork's
+    /// build, the edit, the commit), before [`render`](crate::render()); the
+    /// render then starts at the end of the band, so the fraction does not
+    /// fall. `done == of` is the end of the band. A reading carries no
+    /// frames.
+    pub fn preparing(&mut self, outputs: &[crate::Output], done: u32, of: u32) {
+        self.weigh(Weights::of(outputs));
+        let within = if of == 0 {
+            1.0
+        } else {
+            (done as f32 / of as f32).clamp(0.0, 1.0)
+        };
+        self.at(Stage::Preparing, within);
     }
 
     /// Enters `stage`: always delivered, at the start of its band.

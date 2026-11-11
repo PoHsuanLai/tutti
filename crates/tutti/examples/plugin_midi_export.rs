@@ -2,10 +2,11 @@
 //! §5.2).
 //!
 //! The plugin is loaded as a job and added to an offline session; the file's
-//! events become a clip on the plugin's event input; the export renders the
-//! file's length (integrated over its tempo map), trims the latency the plan
-//! compensated, and renders the plugin's declared tail. The plugin hears
-//! Offline from `export` and Realtime from `finish_export`.
+//! events become a clip on the plugin's event input; the project adopts the
+//! file's tempo map, and the bounce renders the file's beats (so their length
+//! is the map's, steps included), trims the latency the plan compensated, and
+//! renders the plugin's declared tail. The plugin hears Offline from
+//! `bounce_start` and Realtime from `finish_bounce`.
 //!
 //! With no arguments it plays a two-bar phrase it writes itself through the
 //! reference CLAP plugin (`tutti-clap-test-plugin`), which needs the
@@ -32,7 +33,7 @@ mod support;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use tutti::export::Written;
+use tutti::export::{Format, Pcm, Written};
 use tutti::prelude::*;
 
 const RATE: SampleRate = SampleRate(48_000.0);
@@ -51,7 +52,11 @@ fn play(plugin: &Path, midi: &Path, out: &Path) -> Result<Written, Box<dyn std::
     s.graph().set_outputs_from(synth);
 
     let file = MidiFile::read(midi)?; // an SMF or a Clip File
-    let tempo = file.tempo_map().tempo_at(Beat(0.0)); // the tempo at beat 0
+    // A file's tempo track is the file's data, not the project's: the project
+    // adopts it on import, here, by an explicit call.
+    s.transport()
+        .settings
+        .set_tempo_map(Arc::new(file.tempo_map().clone()));
     // Its messages on the file's timeline (a format 2 file has none), as the
     // packets they are: the clip translates them when it is loaded.
     let timeline = file.events().ok_or("a format 2 file has no one timeline")?;
@@ -65,27 +70,24 @@ fn play(plugin: &Path, midi: &Path, out: &Path) -> Result<Written, Box<dyn std::
             )))
         }),
     )?;
-    s.transport().settings.set_tempo(tempo);
     s.update();
 
-    let mut config = ExportConfig::default();
-    config.render.sample_rate = RATE;
-    // The file's length in seconds, integrated over its tempo map.
-    config.render.duration_seconds = file.seconds_at(file.end_beat());
-    let job = s.export(
-        ExportRequest::file(out, config)
-            .on_timeline(Arc::new(OfflineTimeline::new(&OfflineTimelineConfig {
-                tempo,
-                sample_rate: RATE,
-                ..Default::default()
-            })))
-            .trim_reported_latency() // RenderConfig::latency, from the plan
-            .with_reported_tail(Samples(48_000 * 10)), // the plugin's declared tail
+    // Everything else is derived: the clock is the project's tempo map from
+    // beat 0, the latency is the plan's, the tail is the plugin's declared
+    // one, and the file is as wide as the root.
+    let job = s.bounce_start(
+        Bounce::project()
+            .format(Format::Wav(Pcm::Int24))
+            .range(Range::Beats(Beat(0.0), file.end_beat()))
+            .master(out),
     )?; // the plugin hears Offline from here
-    let Some(ExportOutput::File(written)) = s.finish_export(job.run())?.finished() else {
-        unreachable!("a file request writes a file");
+    let Some(bounced) = s.finish_bounce(job.run())?.finished() else {
+        unreachable!("nothing cancels it");
     }; // and Realtime from here
-    Ok(written)
+    Ok(bounced
+        .into_master()
+        .file()
+        .expect("a file master writes a file"))
 }
 
 /// Two bars: a note on each beat, 120 BPM for the first four beats and 60
@@ -149,7 +151,7 @@ mod tests {
     /// The length is pinned in frames: four beats at 120 BPM and four at 60
     /// are 2 s + 4 s; past them, the probe's declared tail (8191 frames,
     /// `REPORTED_TAIL_SAMPLES`); the latency the plan compensated is trimmed
-    /// from the front, not added. The export's default is 24-bit stereo,
+    /// from the front, not added. The file is 24-bit stereo,
     /// 6 bytes a frame, after a header of at least 44 bytes.
     ///
     /// Mutation (run, failed): the duration at the file's first tempo

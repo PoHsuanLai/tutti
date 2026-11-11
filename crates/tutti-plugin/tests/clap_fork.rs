@@ -644,17 +644,18 @@ fn fork_graph(live: &Editor, rate: SampleRate) -> tutti_export::RenderGraph {
         .expect("forked together")
 }
 
-/// `config`'s render of `graph` into memory under a control nobody cancels.
+/// `config`'s render of `graph` into memory (a job and the planes' width) under
+/// a control nobody cancels.
 fn render_to_buffers(
     mut graph: tutti_export::RenderGraph,
-    config: &tutti_export::ExportConfig,
+    config: &(tutti_export::Job, tutti_export::ChannelLayout),
     clock: &dyn tutti_export::RenderClock,
 ) -> tutti_export::Result<tutti_export::Outcome<tutti_export::Rendered>> {
     tutti_export::render_one(
         &mut graph,
-        &config.buffers_job()?,
+        &config.0,
         clock,
-        tutti_export::Output::master(config.buffer_target()),
+        tutti_export::Output::master(tutti_export::BufferTarget::new(config.1)),
         &mut tutti_export::Control::none(),
     )
     .map(|outcome| outcome.map(|produced| produced.buffers().expect("a buffers output")))
@@ -666,19 +667,16 @@ fn render_to_buffers(
 fn export_through_a_fork(live: &Editor) -> tutti_export::Result<tutti_export::Rendered> {
     let rate = SampleRate(SAMPLE_RATE);
     let graph = fork_graph(live, rate);
-    let config = tutti_export::ExportConfig {
-        render: tutti_export::RenderConfig {
-            sample_rate: rate,
-            duration_seconds: tutti_types::Seconds(0.5),
-            ..Default::default()
-        },
-        encode: tutti_export::EncodeConfig {
-            channels: tutti_export::ChannelLayout::MONO,
-            ..Default::default()
-        },
-        dither: None,
-        ..Default::default()
-    };
+    let config = (
+        tutti_export::Job::new(
+            rate,
+            tutti_types::Seconds(0.5).to_samples(rate),
+            Samples(0),
+            Samples(0),
+        )
+        .expect("a render"),
+        tutti_export::ChannelLayout::MONO,
+    );
     render_to_buffers(graph, &config, &tutti_export::FrozenClock).map(|outcome| {
         outcome
             .finished()
@@ -762,19 +760,16 @@ fn a_clip_note_reaches_an_exported_plugin_on_its_frame() {
     // The pipeline holds one chunk, the export block. (The probe reports a
     // latency of its own in every mode but delays audio only in `Latency`.)
     let chunk = tutti_export::GRAPH_MAX_BLOCK;
-    let config = tutti_export::ExportConfig {
-        render: tutti_export::RenderConfig {
-            sample_rate: SampleRate(SAMPLE_RATE),
-            duration_seconds: tutti_types::Seconds(0.25),
-            ..Default::default()
-        },
-        encode: tutti_export::EncodeConfig {
-            channels: tutti_export::ChannelLayout::MONO,
-            ..Default::default()
-        },
-        dither: None,
-        ..Default::default()
-    };
+    let config = (
+        tutti_export::Job::new(
+            SampleRate(SAMPLE_RATE),
+            tutti_types::Seconds(0.25).to_samples(SampleRate(SAMPLE_RATE)),
+            Samples(0),
+            Samples(0),
+        )
+        .expect("a render"),
+        tutti_export::ChannelLayout::MONO,
+    );
     let rendered = render_to_buffers(graph, &config, timeline.as_ref())
         .expect("the fork exports")
         .finished()
@@ -851,20 +846,17 @@ fn a_chord_larger_than_a_chunk_ends_and_the_export_counts_the_loss() {
             ..Default::default()
         }));
         let graph = fork_graph(&live, SampleRate(SAMPLE_RATE));
-        let config = tutti_export::ExportConfig {
-            render: tutti_export::RenderConfig {
-                sample_rate: SampleRate(SAMPLE_RATE),
-                duration_seconds: tutti_types::Seconds(0.25),
-                on_event_loss: policy,
-                ..Default::default()
-            },
-            encode: tutti_export::EncodeConfig {
-                channels: tutti_export::ChannelLayout::MONO,
-                ..Default::default()
-            },
-            dither: None,
-            ..Default::default()
-        };
+        let config = (
+            tutti_export::Job::new(
+                SampleRate(SAMPLE_RATE),
+                tutti_types::Seconds(0.25).to_samples(SampleRate(SAMPLE_RATE)),
+                Samples(0),
+                Samples(0),
+            )
+            .expect("a render")
+            .with_event_loss(policy),
+            tutti_export::ChannelLayout::MONO,
+        );
         render_to_buffers(graph, &config, timeline.as_ref()).map(|outcome| {
             outcome
                 .finished()
@@ -1289,20 +1281,16 @@ fn an_export_is_aligned_when_the_plugin_latency_moves_offline() {
         Samples(137 + 24 + tutti_export::GRAPH_MAX_BLOCK.get()),
         "the plan carries the offline latency"
     );
-    let config = tutti_export::ExportConfig {
-        render: tutti_export::RenderConfig {
-            sample_rate: rate,
-            duration_seconds: tutti_types::Seconds(0.1),
+    let config = (
+        tutti_export::Job::new(
+            rate,
+            tutti_types::Seconds(0.1).to_samples(rate),
             latency,
-            ..Default::default()
-        },
-        encode: tutti_export::EncodeConfig {
-            channels: tutti_export::ChannelLayout::MONO,
-            ..Default::default()
-        },
-        dither: None,
-        ..Default::default()
-    };
+            Samples(0),
+        )
+        .expect("a render"),
+        tutti_export::ChannelLayout::MONO,
+    );
     let rendered = render_to_buffers(graph, &config, &tutti_export::FrozenClock)
         .expect("a fork whose latency settled exports without a fault")
         .finished()
@@ -1380,19 +1368,16 @@ fn an_export_of_plugins_is_bit_identical_on_a_pool() {
         let graph =
             tutti_export::RenderGraph::assemble(editor, executor, tutti_export::Setup::new())
                 .expect("forked together");
-        let config = tutti_export::ExportConfig {
-            render: tutti_export::RenderConfig {
-                sample_rate: rate,
-                duration_seconds: tutti_types::Seconds(0.5),
-                ..Default::default()
-            },
-            encode: tutti_export::EncodeConfig {
-                channels: tutti_export::ChannelLayout::STEREO,
-                ..Default::default()
-            },
-            dither: None,
-            ..Default::default()
-        };
+        let config = (
+            tutti_export::Job::new(
+                rate,
+                tutti_types::Seconds(0.5).to_samples(rate),
+                Samples(0),
+                Samples(0),
+            )
+            .expect("a render"),
+            tutti_export::ChannelLayout::STEREO,
+        );
         let rendered = render_to_buffers(graph, &config, &tutti_export::FrozenClock)
             .expect("the fork exports")
             .finished()

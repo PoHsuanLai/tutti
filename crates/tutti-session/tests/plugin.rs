@@ -19,15 +19,15 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use support::{clap_probe, plugin_server};
-use tutti_export::{ExportConfig, RenderConfig};
+use tutti_export::Produced;
 use tutti_graph::ForkByClone;
 use tutti_graph::NodeKey;
 use tutti_plugin::RenderMode;
 use tutti_plugin::catalog::PluginId;
 use tutti_plugin_host::PluginStatus;
 use tutti_session::{
-    ExportClock, ExportRequest, ExportSource, ExportTarget, Phase, PhaseCx, PluginLiveness,
-    PluginLoadRequest, Session, SessionEvent,
+    Bounce, ExportClock, Latency, Phase, PhaseCx, PluginLiveness, PluginLoadRequest, Range,
+    Session, SessionEvent, Tail,
 };
 use tutti_types::{ChannelLayout, InterleavedMut, SampleRate, Samples};
 
@@ -128,17 +128,25 @@ fn stays_latency(s: &Session, node: NodeKey, want: Samples, why: &str) {
     }
 }
 
-/// A short render of `source` into memory.
-fn request(source: ExportSource) -> ExportRequest {
-    let config = ExportConfig {
-        render: RenderConfig {
-            sample_rate: RATE,
-            duration_seconds: tutti_types::Seconds(0.05),
-            ..Default::default()
-        },
-        ..Default::default()
-    };
-    ExportRequest::new(source, ExportTarget::Buffers, config, ExportClock::frozen())
+/// A render of `seconds` into memory: stereo at `RATE`, trimming nothing and
+/// keeping no tail, on a frozen clock.
+fn request_for(seconds: f64) -> Bounce {
+    Bounce::project()
+        .master_buffers()
+        .channels(ChannelLayout::STEREO)
+        .range(Range::Seconds(
+            tutti_types::Seconds(0.0),
+            tutti_types::Seconds(seconds),
+        ))
+        .sample_rate(RATE)
+        .clock(ExportClock::frozen())
+        .latency(Latency::Keep)
+        .tail(Tail::None)
+}
+
+/// A short render into memory.
+fn request() -> Bounce {
+    request_for(0.05)
 }
 
 /// The probe on the outputs, its render mode announced (Realtime) by an
@@ -157,11 +165,11 @@ fn wired_probe(s: &mut Session) -> (NodeKey, Samples) {
 /// **An export announces Offline before its first block, and Realtime after
 /// it.** `export` runs `Phase::RenderMode` before it returns: the probe
 /// renders offline (its latency moves by the extra) while the job is still
-/// unrun, so before the fork can render a block. `finish_export` releases
+/// unrun, so before the fork can render a block. `finish_bounce` releases
 /// the token and runs the phase again: back to realtime, with no update.
 ///
 /// Mutations (each run, each failed): `Session::export` not running the
-/// phase (the session still says Realtime after `export`); `finish_export`
+/// phase (the session still says Realtime after `export`); `finish_bounce`
 /// not running it (still Offline after it); `render_mode_phase` recording
 /// the mode without calling `set_render_mode` (the latency stays realtime
 /// while the job waits).
@@ -171,35 +179,33 @@ fn an_export_announces_offline_before_its_first_block_and_realtime_after() {
     let (node, base) = wired_probe(&mut s);
     let offline = Samples(base.0 + OFFLINE_EXTRA);
 
-    let job = s
-        .export(request(ExportSource::Mix))
-        .expect("the export starts");
+    let job = s.bounce_start(request()).expect("the export starts");
     assert_eq!(s.render_mode(), RenderMode::Offline);
     await_latency(&s, node, offline, "told Offline before the job runs");
-    assert!(s.export_in_flight());
+    assert!(s.bounce_in_flight());
 
     let done = job.run();
     let output = s
-        .finish_export(done)
+        .finish_bounce(done)
         .expect("the export renders")
         .finished();
     assert!(matches!(
-        output,
-        Some(tutti_session::ExportOutput::Buffers(_))
+        output.as_ref().map(|b| b.master()),
+        Some(Produced::Buffers(_))
     ));
-    assert!(!s.export_in_flight());
+    assert!(!s.bounce_in_flight());
     assert_eq!(s.render_mode(), RenderMode::Realtime);
-    await_latency(&s, node, base, "told Realtime by finish_export");
+    await_latency(&s, node, base, "told Realtime by finish_bounce");
 }
 
 /// **A dropped job, or a dropped return, restores Realtime on the next
 /// update** (§4.3: the render mode is a level). Neither reaches
-/// `finish_export`; each drops the export's token, and the update after
+/// `finish_bounce`; each drops the export's token, and the update after
 /// finds none alive. Until that update the session still says Offline:
 /// nothing is announced from a drop (it may be a worker's).
 ///
 /// Mutations (each run, each failed): announcing Realtime only in
-/// `finish_export` (the `Phase::RenderMode` arm of `run_phase` emptied) →
+/// `finish_bounce` (the `Phase::RenderMode` arm of `run_phase` emptied) →
 /// the session still says Offline after the update; `render_mode_phase`
 /// recording the mode without calling `set_render_mode` → the latency never
 /// moves offline.
@@ -210,7 +216,7 @@ fn a_dropped_export_job_restores_realtime_on_the_next_update() {
     let offline = Samples(base.0 + OFFLINE_EXTRA);
 
     // The job, dropped unrun (a cancelled task).
-    let job = s.export(request(ExportSource::Mix)).expect("starts");
+    let job = s.bounce_start(request()).expect("starts");
     await_latency(&s, node, offline, "the job's export is in flight");
     drop(job);
     assert_eq!(
@@ -219,15 +225,15 @@ fn a_dropped_export_job_restores_realtime_on_the_next_update() {
         "nothing told on a drop"
     );
     s.update();
-    assert!(!s.export_in_flight());
+    assert!(!s.bounce_in_flight());
     assert_eq!(s.render_mode(), RenderMode::Realtime);
     await_latency(&s, node, base, "the update after a dropped job");
 
     // Its return, dropped unfinished (a worker that ran it, then went).
-    let job = s.export(request(ExportSource::Mix)).expect("starts again");
+    let job = s.bounce_start(request()).expect("starts again");
     await_latency(&s, node, offline, "the second export is in flight");
     let done = std::thread::spawn(move || job.run()).join().unwrap();
-    assert!(s.export_in_flight(), "the return holds the token");
+    assert!(s.bounce_in_flight(), "the return holds the token");
     drop(done);
     s.update();
     assert_eq!(s.render_mode(), RenderMode::Realtime);
@@ -248,7 +254,7 @@ fn a_plugin_added_mid_export_is_told_offline() {
     let (dc, _) = s.graph().insert(tutti_nodes::testing::Const::mono(0.0));
     s.graph().set_outputs_from(dc);
     s.update();
-    let job = s.export(request(ExportSource::Mix)).expect("starts");
+    let job = s.bounce_start(request()).expect("starts");
     assert_eq!(s.render_mode(), RenderMode::Offline);
 
     let late = add_probe(&mut s);
@@ -262,7 +268,7 @@ fn a_plugin_added_mid_export_is_told_offline() {
         "a plugin added mid-export, after its first update",
     );
 
-    let out = s.finish_export(job.run()).expect("renders");
+    let out = s.finish_bounce(job.run()).expect("renders");
     assert!(out.finished().is_some(), "not cancelled");
     await_latency(&s, late, base, "told Realtime once the export ends");
 }
@@ -379,10 +385,10 @@ impl tutti_graph::Node for DropWitness {
 /// **An export's leftovers drop on the main thread.** The live graph holds a
 /// [`DropWitness`] beside the probe, both on the outputs (through a plugin
 /// input: the probe's fork comes too), so the export's fork carries a clone
-/// of the witness. The job runs on a spawned thread and `finish_export` on
+/// of the witness. The job runs on a spawned thread and `finish_bounce` on
 /// this one: every drop of the fork's witness is this thread's.
 ///
-/// Mutation (run, failed): `ExportJob::run` dropping the rendered graph
+/// Mutation (run, failed): `BounceJob::run` dropping the rendered graph
 /// inside `run()` (`graph.take()` dropped before it returns) → the
 /// witness's drop is recorded on the worker.
 #[test]
@@ -401,9 +407,9 @@ fn export_leftovers_drop_on_the_main_thread() {
     s.update();
     drops.lock().unwrap().clear();
 
-    let job = s.export(request(ExportSource::Mix)).expect("starts");
+    let job = s.bounce_start(request()).expect("starts");
     let done = std::thread::spawn(move || job.run()).join().unwrap();
-    let out = s.finish_export(done).expect("renders");
+    let out = s.finish_bounce(done).expect("renders");
     assert!(out.finished().is_some(), "not cancelled");
 
     let main = std::thread::current().id();
@@ -1201,13 +1207,13 @@ fn an_export_during_the_recovery_window_is_refused() {
         s.plugin(node).unwrap().liveness(),
         PluginLiveness::Recovering { .. }
     ));
-    let refused = s.export(request(ExportSource::Mix));
+    let refused = s.bounce_start(request());
     let refusal = format!("{:?}", refused.as_ref().err());
     assert!(
         refusal.contains("SaveState(PluginCrashed)"),
         "the fork of a dead plugin is refused: {refusal}"
     );
-    assert!(!s.export_in_flight());
+    assert!(!s.bounce_in_flight());
     assert_eq!(s.render_mode(), RenderMode::Realtime);
 }
 
@@ -1216,7 +1222,7 @@ fn an_export_during_the_recovery_window_is_refused() {
 #[derive(Clone)]
 struct CancelOnSecondBlock {
     blocks: Arc<std::sync::atomic::AtomicUsize>,
-    handle: Arc<std::sync::OnceLock<tutti_session::ExportHandle>>,
+    handle: Arc<std::sync::OnceLock<tutti_session::BounceHandle>>,
 }
 
 impl tutti_graph::Node for CancelOnSecondBlock {
@@ -1276,14 +1282,14 @@ fn servers() -> Option<usize> {
 }
 
 /// **A cancelled export over a hosted plugin's fork** stops at its second
-/// block, reports `Cancelled`, releases the token on `finish_export`, takes
+/// block, reports `Cancelled`, releases the token on `finish_bounce`, takes
 /// its forked `plugin-server` with it (the fork dies with the rendered graph,
 /// on the main thread), and the next export, forking a fresh server, succeeds.
 /// The server count is read from `/proc`, so that part is Linux only.
 ///
-/// Mutation (run): `ExportHandle::tick` ignoring the stop request -> the
+/// Mutation (run): `BounceHandle::cancel` ignoring the stop request -> the
 /// render runs to its end and the outcome is `Finished`; fails.
-/// Mutation (run): `finish_export_unannounced` forgetting the rendered graph
+/// Mutation (run): `finish_bounce_unannounced` forgetting the rendered graph
 /// -> the forked server is still running after the finish; fails.
 #[test]
 fn a_cancelled_export_frees_the_token_and_the_forked_server() {
@@ -1304,22 +1310,20 @@ fn a_cancelled_export_frees_the_token_and_the_forked_server() {
     s.update();
     let live = servers();
 
-    let mut long = request(ExportSource::Mix);
-    long.config.render.duration_seconds = tutti_types::Seconds(5.0);
-    let job = s.export(long).expect("starts");
+    let job = s.bounce_start(request_for(5.0)).expect("starts");
     handle.set(job.handle()).ok();
     let rendered = job.run();
     assert!(
         blocks.load(std::sync::atomic::Ordering::SeqCst) < 20,
         "the render stopped at the cancel, not at its end of 235 blocks"
     );
-    assert!(s.export_in_flight(), "the token lives until the finish");
+    assert!(s.bounce_in_flight(), "the token lives until the finish");
     if let Some(live) = live {
         assert_eq!(servers(), Some(live + 1), "the export's fork has a server");
     }
-    let out = s.finish_export(rendered).expect("a cancel is not an error");
+    let out = s.finish_bounce(rendered).expect("a cancel is not an error");
     assert!(out.finished().is_none(), "cancelled");
-    assert!(!s.export_in_flight(), "the token is released");
+    assert!(!s.bounce_in_flight(), "the token is released");
     if let Some(live) = live {
         let deadline = Instant::now() + Duration::from_secs(10);
         while servers() != Some(live) {
@@ -1328,9 +1332,7 @@ fn a_cancelled_export_frees_the_token_and_the_forked_server() {
         }
     }
 
-    let next = s
-        .export_blocking(request(ExportSource::Mix))
-        .expect("the next export is not refused");
+    let next = s.bounce(request()).expect("the next export is not refused");
     assert!(next.finished().is_some(), "and renders to its end");
 }
 

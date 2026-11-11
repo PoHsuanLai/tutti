@@ -7,11 +7,11 @@
 //! all.
 
 mod support;
+use crate::support::{ExportConfig, RenderConfig, write_buffers};
 
 use support::{render_buffers_under, render_file_under, render_to_buffers, render_to_file};
 use tutti_export::{
-    CancelToken, Control, Error, EventLossPolicy, ExportConfig, FrozenClock, Progress,
-    RenderConfig, RenderGraph, Setup, write_buffers,
+    CancelToken, Control, Error, EventLossPolicy, FrozenClock, Progress, RenderGraph, Setup,
 };
 use tutti_graph::{Cx, Event, GraphBuilder, Io, Node, Prepare, Shape, Status};
 use tutti_nodes::testing::Osc;

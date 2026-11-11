@@ -20,14 +20,14 @@
 
 use tutti_dsp::DitherShape;
 use tutti_export::{
-    ChannelLayout, Control, EncodeConfig, ExportConfig, FlacLevel, Format, Output, Pcm, Quality,
-    RenderConfig, RenderGraph, Resample, Setup, render_one,
+    ChannelLayout, Control, FileTarget, FlacLevel, Format, Job, Normalize, NormalizeSpec, Output,
+    Pcm, Quality, RenderGraph, Resample, Setup, render_one,
 };
 use tutti_graph::GraphBuilder;
 use tutti_nodes::testing::{Const, Osc};
 use tutti_types::Amplitude;
 use tutti_types::Hz;
-use tutti_types::Seconds;
+use tutti_types::{Samples, Seconds};
 
 const SR: f64 = 48_000.0;
 const DUR: f64 = 1.0;
@@ -107,20 +107,42 @@ fn container(ext: &str, depth: Pcm) -> Option<Format> {
     }
 }
 
-fn base(format: Format, channels: ChannelLayout) -> ExportConfig {
-    ExportConfig {
-        render: RenderConfig {
-            sample_rate: tutti_types::SampleRate(SR),
-            duration_seconds: Seconds(DUR),
-            ..Default::default()
-        },
-        encode: EncodeConfig {
-            format,
-            channels,
-            topology: None,
-        },
+/// One render and one file: what these cases vary.
+#[derive(Clone)]
+struct Case {
+    job: Job,
+    format: Format,
+    channels: ChannelLayout,
+    resample: Option<Resample>,
+    dither: Option<tutti_dsp::DitherShape>,
+}
+
+impl Case {
+    fn job(&self) -> Job {
+        self.job
+    }
+
+    fn file_target(
+        &self,
+        path: impl Into<std::path::PathBuf>,
+        normalize: Option<Normalize>,
+    ) -> FileTarget {
+        FileTarget::new(path, self.format, self.channels)
+            .with_resample(self.resample)
+            .with_dither(self.dither)
+            .with_normalize(normalize.map(NormalizeSpec::own))
+    }
+}
+
+fn base(format: Format, channels: ChannelLayout) -> Case {
+    let rate = tutti_types::SampleRate(SR);
+    Case {
+        job: Job::new(rate, Seconds(DUR).to_samples(rate), Samples(0), Samples(0))
+            .expect("a render"),
+        format,
+        channels,
+        resample: None,
         dither: None,
-        ..Default::default()
     }
 }
 
@@ -133,10 +155,10 @@ fn main() -> tutti_export::Result<()> {
 
     let mut count = 0usize;
     let mut write =
-        |name: String, mut graph: RenderGraph, cfg: &ExportConfig| -> tutti_export::Result<()> {
+        |name: String, mut graph: RenderGraph, cfg: &Case| -> tutti_export::Result<()> {
             let w = render_one(
                 &mut graph,
-                &cfg.job()?,
+                &cfg.job(),
                 &tutti_export::FrozenClock,
                 Output::master(cfg.file_target(dir.join(&name), None)),
                 &mut Control::none(),

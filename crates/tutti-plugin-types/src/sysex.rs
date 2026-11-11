@@ -30,16 +30,16 @@ pub const SYSEX_MESSAGE_CAPACITY: usize = SYSEX7_MAX_PAYLOAD + 2;
 
 /// The assembler every plugin input path uses: `tutti_ump::SysexAssembler`
 /// over a boxed buffer of [`SysexAssembler::room_for`]
-/// [`SYSEX_MESSAGE_CAPACITY`] bytes and a [`MIDI_STACK_CAPACITY`] block of
-/// packets (about 66 KiB), the open run carried into a block being shorter
-/// than one message and each packet adding at most eight bytes.
+/// [`SYSEX_MESSAGE_CAPACITY`] bytes, a [`MIDI_STACK_CAPACITY`] block of
+/// packets and one lane (about 132 KiB): a plugin format takes one stream of
+/// whole messages, so one message is open at a time.
 ///
 /// Off the audio thread: it allocates the buffer once, and the assembler
 /// never grows it, so every call on the audio thread is allocation-free.
 #[must_use]
 pub fn sysex_assembler() -> SysexAssembler<Box<[u8]>> {
-    let room = SysexAssembler::room_for(SYSEX_MESSAGE_CAPACITY, MIDI_STACK_CAPACITY);
-    SysexAssembler::new(vec![0; room].into_boxed_slice(), SYSEX_MESSAGE_CAPACITY)
+    let room = SysexAssembler::room_for(SYSEX_MESSAGE_CAPACITY, MIDI_STACK_CAPACITY, 1);
+    SysexAssembler::new(vec![0; room].into_boxed_slice(), SYSEX_MESSAGE_CAPACITY, 1)
 }
 
 /// A SysEx message without its `0xF0` and `0xF7` delimiters, if it has them:

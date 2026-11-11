@@ -1,4 +1,4 @@
-//! Stopping an export and reading its progress (`ExportHandle`), on an
+//! Stopping a bounce and reading its progress (`BounceHandle`), on an
 //! offline session. No hardware and no sleeps: a node in the graph cancels
 //! the job from inside the render, at a block the test picks.
 
@@ -6,16 +6,10 @@ use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, OnceLock};
 
-use tutti_export::{
-    ChannelLayout, EncodeConfig, ExportConfig, Format, GRAPH_MAX_BLOCK, Normalize, Outcome, Pcm,
-    RenderConfig, Stage,
-};
+use tutti_export::{ChannelLayout, Format, GRAPH_MAX_BLOCK, Normalize, Outcome, Pcm, Stage};
 use tutti_graph::{Cx, ForkByClone, Io, Node, Prepare, Shape, Status};
-use tutti_session::{
-    Error, ExportClock, ExportHandle, ExportOutput, ExportRequest, ExportSource, ExportTarget,
-    Session,
-};
-use tutti_types::{Db, SampleRate, Samples, Tail};
+use tutti_session::{Bounce, BounceError, BounceHandle, ExportClock, Range, Session, Tail};
+use tutti_types::{Db, Frame, SampleRate, Samples};
 
 const RATE: SampleRate = SampleRate(48_000.0);
 const BLOCKS: usize = 20;
@@ -27,12 +21,12 @@ const BLOCKS: usize = 20;
 struct CancelAt {
     at: usize,
     blocks: Arc<AtomicUsize>,
-    handle: Arc<OnceLock<ExportHandle>>,
+    handle: Arc<OnceLock<BounceHandle>>,
 }
 
 impl Node for CancelAt {
     fn shape(&self) -> Shape {
-        Shape::source_unassigned(ChannelLayout::MONO).with_tail(Tail::Unbounded)
+        Shape::source_unassigned(ChannelLayout::MONO).with_tail(tutti_types::Tail::Unbounded)
     }
     fn prepare(&mut self, _: &Prepare) {}
     fn process(&mut self, _: &Cx<'_>, mut io: Io<'_>) -> Status {
@@ -48,7 +42,7 @@ impl Node for CancelAt {
 struct Rig {
     session: Session,
     blocks: Arc<AtomicUsize>,
-    handle: Arc<OnceLock<ExportHandle>>,
+    handle: Arc<OnceLock<BounceHandle>>,
 }
 
 fn rig(at: usize) -> Rig {
@@ -69,34 +63,27 @@ fn rig(at: usize) -> Rig {
     }
 }
 
-fn config() -> ExportConfig {
-    ExportConfig {
-        render: RenderConfig {
-            sample_rate: RATE,
-            duration_seconds: tutti_types::Seconds(
-                (BLOCKS * GRAPH_MAX_BLOCK.get()) as f64 / RATE.get(),
-            ),
-            ..Default::default()
-        },
-        encode: EncodeConfig {
-            format: Format::Wav(Pcm::Int16),
-            channels: ChannelLayout::STEREO,
-            topology: None,
-        },
-        ..Default::default()
-    }
+/// A bounce of `BLOCKS` graph blocks: 16-bit stereo, nothing trimmed and no
+/// tail (the node reports an unbounded one), on a frozen clock.
+fn bounce() -> Bounce {
+    Bounce::project()
+        .format(Format::Wav(Pcm::Int16))
+        .channels(ChannelLayout::STEREO)
+        .range(Range::Frames(
+            Frame(0),
+            Frame((BLOCKS * GRAPH_MAX_BLOCK.get()) as u64),
+        ))
+        .sample_rate(RATE)
+        .clock(ExportClock::frozen())
+        .tail(Tail::None)
 }
 
-fn file_request(path: &Path, normalize: Option<Normalize>) -> ExportRequest {
-    ExportRequest::new(
-        ExportSource::Mix,
-        ExportTarget::File {
-            path: path.to_path_buf(),
-            normalize,
-        },
-        config(),
-        ExportClock::frozen(),
-    )
+fn file_request(path: &Path, normalize: Option<Normalize>) -> Bounce {
+    let bounce = bounce().master(path);
+    match normalize {
+        Some(n) => bounce.normalize(n),
+        None => bounce,
+    }
 }
 
 const TOTAL: Samples = Samples(BLOCKS * 1024);
@@ -107,9 +94,9 @@ const TOTAL: Samples = Samples(BLOCKS * 1024);
 /// the render stopped (the render's entry: a reading comes every 4096 frames,
 /// and three blocks are fewer).
 ///
-/// Mutation (run): `ExportHandle::cancel` not setting its token -> all 20
+/// Mutation (run): `BounceHandle::cancel` not setting its token -> all 20
 /// blocks render and the outcome is `Finished`; fails.
-/// Mutation (run): `ExportRendered` kept in `finish_export` (token not
+/// Mutation (run): `ExportRendered` kept in `finish_bounce` (token not
 /// dropped) -> the following export is refused; fails.
 #[test]
 fn a_cancel_stops_the_render_and_frees_the_session() {
@@ -117,7 +104,7 @@ fn a_cancel_stops_the_render_and_frees_the_session() {
     let path = dir.path().join("a.wav");
     let mut r = rig(3);
 
-    let job = r.session.export(file_request(&path, None)).unwrap();
+    let job = r.session.bounce_start(file_request(&path, None)).unwrap();
     let handle = job.handle();
     r.handle.set(handle.clone()).ok();
     assert!(
@@ -125,8 +112,8 @@ fn a_cancel_stops_the_render_and_frees_the_session() {
         "nothing before the first block"
     );
     assert!(matches!(
-        r.session.export(file_request(&path, None)),
-        Err(Error::ExportInFlight)
+        r.session.bounce_start(file_request(&path, None)),
+        Err(BounceError::InFlight)
     ));
 
     let rendered = job.run();
@@ -136,23 +123,20 @@ fn a_cancel_stops_the_render_and_frees_the_session() {
         "stopped at the third block"
     );
     assert!(
-        r.session.export_in_flight(),
+        r.session.bounce_in_flight(),
         "the token lives until the main thread finishes the job"
     );
-    let outcome = r.session.finish_export(rendered).unwrap();
+    let outcome = r.session.finish_bounce(rendered).unwrap();
     assert!(matches!(outcome, Outcome::Cancelled));
-    assert!(!r.session.export_in_flight(), "the token is released");
+    assert!(!r.session.bounce_in_flight(), "the token is released");
     assert!(!path.exists(), "no partial file");
     let seen = handle.progress().unwrap();
     assert_eq!(seen.stage(), Stage::Rendering);
     assert_eq!(seen.frames(), Some((Samples(0), TOTAL)));
 
     // The next export is not refused, and runs to its end.
-    let again = r
-        .session
-        .export_blocking(file_request(&path, None))
-        .unwrap();
-    assert!(matches!(again, Outcome::Finished(ExportOutput::File(_))));
+    let again = r.session.bounce(file_request(&path, None)).unwrap();
+    assert!(matches!(again, Outcome::Finished(_)));
     assert!(path.exists());
     assert_eq!(r.blocks.load(Ordering::SeqCst), 3 + BLOCKS);
 }
@@ -166,30 +150,22 @@ fn a_job_cancelled_before_it_runs_renders_nothing() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("b.wav");
     let mut r = rig(usize::MAX);
-    let job = r.session.export(file_request(&path, None)).unwrap();
+    let job = r.session.bounce_start(file_request(&path, None)).unwrap();
     job.handle().cancel();
-    let outcome = r.session.finish_export(job.run()).unwrap();
+    let outcome = r.session.finish_bounce(job.run()).unwrap();
     assert!(matches!(outcome, Outcome::Cancelled));
     assert_eq!(r.blocks.load(Ordering::SeqCst), 0);
     assert!(!path.exists());
-    assert!(!r.session.export_in_flight());
+    assert!(!r.session.bounce_in_flight());
 }
 
 /// A rendering to memory stops the same way.
 #[test]
 fn a_buffer_export_cancels() {
     let mut r = rig(2);
-    let job = r
-        .session
-        .export(ExportRequest::new(
-            ExportSource::Mix,
-            ExportTarget::Buffers,
-            config(),
-            ExportClock::frozen(),
-        ))
-        .unwrap();
+    let job = r.session.bounce_start(bounce().master_buffers()).unwrap();
     r.handle.set(job.handle()).ok();
-    let outcome = r.session.finish_export(job.run()).unwrap();
+    let outcome = r.session.finish_bounce(job.run()).unwrap();
     assert!(matches!(outcome, Outcome::Cancelled));
     assert_eq!(r.blocks.load(Ordering::SeqCst), 2);
 }
@@ -199,7 +175,7 @@ fn a_buffer_export_cancels() {
 /// pipeline last delivered, the one reading the session does not weight
 /// itself.
 ///
-/// Mutation (run): `ExportHandle::record` storing only the first reading ->
+/// Mutation (run): `BounceHandle::record` storing only the first reading ->
 /// the stage and fraction assertions fail.
 #[test]
 fn progress_ends_at_one_in_the_finalizing_stage() {
@@ -209,10 +185,10 @@ fn progress_ends_at_one_in_the_finalizing_stage() {
     for (name, normalize) in [("p.wav", None), ("n.wav", Some(Normalize::peak(Db(-6.0))))] {
         let job = r
             .session
-            .export(file_request(&dir.path().join(name), normalize))
+            .bounce_start(file_request(&dir.path().join(name), normalize))
             .unwrap();
         let handle = job.handle();
-        let outcome = r.session.finish_export(job.run()).unwrap();
+        let outcome = r.session.finish_bounce(job.run()).unwrap();
         assert!(matches!(outcome, Outcome::Finished(_)));
         let last = handle.progress().unwrap();
         assert_eq!(

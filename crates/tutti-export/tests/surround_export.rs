@@ -14,8 +14,9 @@
 #![cfg(feature = "wav")]
 
 mod support;
+use crate::support::{EncodeConfig, ExportConfig, RenderConfig};
 
-use tutti_export::{ChannelLayout, EncodeConfig, ExportConfig, RenderConfig, RenderGraph, Setup};
+use tutti_export::{ChannelLayout, RenderGraph, Setup};
 use tutti_graph::GraphBuilder;
 use tutti_types::Azimuth;
 use tutti_types::Seconds;

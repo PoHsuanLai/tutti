@@ -109,14 +109,14 @@ impl Setup {
 /// [`reported_latency`](Self::reported_latency) and
 /// [`reported_tail`](Self::reported_tail) answer from what the graph already
 /// holds — the compiled plan's worst-case output latency and the tail fold
-/// over its spec. The figures go into [`RenderConfig`](crate::RenderConfig),
-/// where the leading trim and the tail extension are plain arithmetic.
+/// over its spec. The figures go into the [`Job`](crate::Job), where the leading
+/// trim and the tail extension are plain arithmetic.
 ///
 /// # Example
 ///
 /// ```
-/// use tutti_types::{Hz, SampleRate, Seconds};
-/// use tutti_export::{render_one, Control, ExportConfig, FrozenClock, Output, Produced, RenderConfig, RenderGraph, Setup};
+/// use tutti_types::{Hz, SampleRate, Samples, Seconds};
+/// use tutti_export::{render_one, BufferTarget, Control, FrozenClock, Job, Output, Produced, RenderGraph, Setup};
 /// use tutti_graph::GraphBuilder;
 /// use tutti_nodes::testing::Osc;
 /// use tutti_types::ChannelLayout;
@@ -128,15 +128,12 @@ impl Setup {
 /// let (editor, executor) = g.build(RenderGraph::prepare(rate)).expect("builds");
 /// let mut graph = RenderGraph::assemble(editor, executor, Setup::new()).expect("built together, so paired");
 ///
-/// let config = ExportConfig {
-///     render: RenderConfig { sample_rate: rate, duration_seconds: Seconds(0.1), ..Default::default() },
-///     ..Default::default()
-/// };
+/// let job = Job::new(rate, Seconds(0.1).to_samples(rate), Samples(0), Samples(0)).expect("a render");
 /// let out = render_one(
 ///     &mut graph,
-///     &config.job().expect("a render"),
+///     &job,
 ///     &FrozenClock,
-///     Output::master(config.buffer_target()),
+///     Output::master(BufferTarget::new(ChannelLayout::STEREO)),
 ///     &mut Control::none(),
 /// )
 /// .expect("renders")
@@ -232,24 +229,23 @@ impl RenderGraph {
     }
 
     /// The look-ahead latency the graph reports, as a frame count — the
-    /// figure to put in [`RenderConfig::latency`](crate::RenderConfig::latency)
-    /// to trim it.
+    /// figure to trim from the head of a render ([`Job::new`](crate::Job::new)).
     ///
     /// Read from the compiled plan: the worst-case latency across the
     /// graph's outputs (`Plan::total_latency`), the figure its PDC aligned
     /// every output to, at the rate the graph was prepared at. An executor
     /// with no plan installed has nothing to delay, and reports zero.
     ///
-    /// It is a method rather than a `LatencyTrim::Reported` mode on the
-    /// config because asking a graph is an *action*, and folding it into a
-    /// value would drag a graph into arithmetic that is otherwise pure:
+    /// It is a method rather than a `LatencyTrim::Reported` mode on the job
+    /// because asking a graph is an *action*, and folding it into a value
+    /// would drag a graph into arithmetic that is otherwise pure:
     ///
     /// ```
     /// # use tutti_types::{Hz, SampleRate};
-    /// # use tutti_export::{ExportConfig, RenderConfig, RenderGraph, Setup};
+    /// # use tutti_export::{Job, RenderGraph, Setup};
     /// # use tutti_graph::GraphBuilder;
     /// # use tutti_nodes::testing::Osc;
-    /// # use tutti_types::ChannelLayout;
+    /// # use tutti_types::{ChannelLayout, Samples};
     /// # let rate = SampleRate(48_000.0);
     /// # let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::STEREO);
     /// # let tone = g.add(Osc::sine(Hz(440.0)));
@@ -257,11 +253,8 @@ impl RenderGraph {
     /// # let (editor, executor) = g.build(RenderGraph::prepare(rate)).unwrap();
     /// # let graph = RenderGraph::assemble(editor, executor, Setup::new()).unwrap();
     /// let latency = graph.reported_latency();
-    /// let config = ExportConfig {
-    ///     render: RenderConfig { sample_rate: rate, latency, ..Default::default() },
-    ///     ..Default::default()
-    /// };
-    /// # let _ = config;
+    /// let job = Job::new(rate, Samples(4_800), latency, Samples(0));
+    /// # let _ = job;
     /// ```
     ///
     /// Whole frames: the plan's latency is a frame count already.
@@ -276,8 +269,7 @@ impl RenderGraph {
     /// (`tutti_graph::graph_tail`), whose per-node tails the editor probed
     /// from each prepared unit.
     ///
-    /// For a caller that wants [`RenderConfig::tail`](crate::RenderConfig::tail)
-    /// to be whatever the graph says: a reverb, a convolver, a hosted plugin
+    /// For a caller that wants a [`Job`](crate::Job)'s tail to be whatever the graph says: a reverb, a convolver, a hosted plugin
     /// that declared a decay. It returns the figure and its caveats
     /// rather than a frame count, because for two graphs there is no count:
     /// one that never decays, and one whose nodes were never taught to
@@ -286,10 +278,10 @@ impl RenderGraph {
     ///
     /// ```
     /// # use tutti_types::{Hz, SampleRate, Seconds};
-    /// # use tutti_export::{ExportConfig, RenderConfig, RenderGraph, Setup};
+    /// # use tutti_export::{Job, RenderGraph, Setup};
     /// # use tutti_graph::GraphBuilder;
     /// # use tutti_nodes::testing::Osc;
-    /// # use tutti_types::ChannelLayout;
+    /// # use tutti_types::{ChannelLayout, Samples};
     /// # let rate = SampleRate(48_000.0);
     /// # let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::STEREO);
     /// # let tone = g.add(Osc::sine(Hz(440.0)));
@@ -301,11 +293,8 @@ impl RenderGraph {
     ///     // This bounce stops four seconds into an unbounded tail.
     ///     Seconds(4.0).to_samples(rate)
     /// });
-    /// let config = ExportConfig {
-    ///     render: RenderConfig { sample_rate: rate, tail, ..Default::default() },
-    ///     ..Default::default()
-    /// };
-    /// # let _ = config;
+    /// let job = Job::new(rate, Samples(4_800), Samples(0), tail);
+    /// # let _ = job;
     /// ```
     pub fn reported_tail(&self) -> GraphTail {
         tutti_graph::graph_tail(&self.editor.spec().topology)

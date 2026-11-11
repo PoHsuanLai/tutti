@@ -15,7 +15,7 @@ use control::Weights;
 pub use control::{CancelToken, Control, Outcome, Progress, Stage};
 
 mod job;
-pub use job::{Job, JobError, MAX_FRAMES};
+pub use job::{EventLossPolicy, Job, JobError, MAX_FRAMES};
 
 mod rendered;
 pub use rendered::{Rendered, RenderedError};
@@ -26,8 +26,8 @@ pub use output::{
     TargetError,
 };
 
-mod config;
-pub use config::{EncodeConfig, EventLossPolicy, ExportConfig, RenderConfig, Resample};
+mod resample;
+pub use resample::Resample;
 
 mod normalize;
 pub use normalize::Normalize;
@@ -36,9 +36,6 @@ mod spill;
 
 mod graph;
 pub use graph::{GRAPH_MAX_BLOCK, RenderGraph, Setup};
-/// Frame-count arithmetic — pure, and public so a caller can size a render
-/// before committing to one.
-pub use render::plan::{beats_to_seconds, duration_to_frames};
 
 pub(crate) mod encode;
 pub(crate) mod process;
@@ -50,7 +47,7 @@ pub use process::ChunkSize;
 /// transport" answer.
 pub use tutti_transport::{FrozenClock, RenderClock};
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use tutti_measure::Loudness;
 use tutti_types::Db;
 
@@ -205,45 +202,56 @@ fn the_one(mut produced: Vec<Produced>) -> Produced {
     produced.pop().expect("one output produces one result")
 }
 
-/// Writes already-rendered audio to `path`.
+/// Writes already-rendered audio into the file `target` describes.
 ///
 /// With a [`BufferTarget`] output and [`Rendered::apply_gain`] this makes
 /// measure-then-apply possible by hand: render to planes, measure
 /// ([`Normalize::gain_for_rendered`]), apply a gain, write.
 ///
-/// `config.encode` is honoured as-is, `channels` and `topology` included:
-/// planes of another width than `config.encode.channels` are folded onto it
-/// the way a graph's outputs are (the engine's order for the plane width, the
-/// file's `topology` for the file; a 5.1 render written as stereo carries its
+/// The target is honoured as-is, its `channels` and `topology` included:
+/// planes of another width than `target.channels()` are folded onto it the
+/// way a graph's outputs are (the engine's order for the plane width, the
+/// target's topology for the file; a 5.1 render written as stereo carries its
 /// centre and surrounds at -3 dB), and planes of the file's own width are
-/// written as they are. `config.render` is not consulted — the
-/// frames already exist and carry their own rate in [`Rendered::sample_rate`] —
-/// but `config.resample` still applies, so a caller can convert on the way out.
-/// Dither is applied here, at the real depth and after any resample, which is
-/// the only point where one LSB is known.
+/// written as they are. The frames already exist and carry their own rate
+/// ([`Rendered::sample_rate`]), but the target's resample still applies, so a
+/// caller can convert on the way out. Dither is applied here, at the real
+/// depth and after any resample, which is the only point where one LSB is
+/// known. `on_event_loss` judges the planes' own count of lost events
+/// ([`Rendered::dropped_events`]) before anything is written.
+///
+/// The target's normalize is refused: the planes are not measured here, so a
+/// gain is applied to them first ([`Rendered::apply_gain`]).
 ///
 /// # Errors
 ///
-/// [`Error::UnsupportedChannels`] for a zero-channel `config.encode.channels`;
-/// [`Error::InvalidConfig`] ([`ConfigError::Placement`]) for a plane width the
-/// fold cannot place onto the file's — a channel is never dropped to make it
-/// fit; [`Error::Resample`] or [`Error::Encode`] from the resample and encode
-/// stages.
+/// [`Error::UnsupportedChannels`] for a zero-channel target;
+/// [`Error::Target`] with [`TargetError::NormalizeOfPlanes`] for a target that
+/// asks to normalize; [`Error::InvalidConfig`] ([`ConfigError::Placement`]) for
+/// a plane width the fold cannot place onto the file's (a channel is never
+/// dropped to make it fit); [`Error::EventsDropped`] under
+/// [`EventLossPolicy::Fail`]; [`Error::Resample`] or [`Error::Encode`] from the
+/// resample and encode stages.
 pub fn write_buffers(
     rendered: &Rendered,
-    config: &ExportConfig,
-    path: impl AsRef<Path>,
+    target: &FileTarget,
+    on_event_loss: EventLossPolicy,
 ) -> Result<Written> {
-    frame_width(config.encode.channels)?;
+    frame_width(target.channels())?;
+    if target.normalize().is_some() {
+        return Err(Error::Target {
+            output: 0,
+            why: TargetError::NormalizeOfPlanes,
+        });
+    }
     // No render stage: the write is the whole of it, in the bands a
     // normalized render gives its write.
     let mut control = Control::none();
     control.weigh(Weights::Normalized);
-    let target = config.file_target(path.as_ref(), None);
-    // The planes carry the events their render lost: judged by this config's
-    // policy, before anything is written.
-    render::check_loss(config.render.on_event_loss, rendered.dropped_events())?;
-    let Outcome::Finished(chain) = encode::write_planes(rendered, &target, &mut control)? else {
+    // The planes carry the events their render lost: judged by the policy,
+    // before anything is written.
+    render::check_loss(on_event_loss, rendered.dropped_events())?;
+    let Outcome::Finished(chain) = encode::write_planes(rendered, target, &mut control)? else {
         unreachable!("a control with no token is never cancelled");
     };
     let files = vec![render::outputs::PendingFile {

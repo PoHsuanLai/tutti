@@ -13,7 +13,7 @@
 //! reads a byte stream into [`Message`]s. [`NoteId`] is a note's identity
 //! (`channel * 128 + note`, the plugin formats' wire value), and [`SysexMessage`]
 //! and [`SysexAssembler`] are a checked complete SysEx and the one SysEx7
-//! reassembler, over a buffer the caller owns; [`sysex7_packets`] is its inverse,
+//! reassembler (a stream per Group), over a buffer the caller owns; [`sysex7_packets`] is its inverse,
 //! the one writer of a payload as SysEx7 packets, as [`flex_text_packets`] is of a text as Flex
 //! Data packets. [`split_stream`] cuts a buffer
 //! of concatenated packets (a native-UMP transport's) into [`Ump`]s.

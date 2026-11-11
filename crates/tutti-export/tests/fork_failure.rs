@@ -11,11 +11,12 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use tutti_types::Seconds;
 
 mod support;
+use crate::support::{EncodeConfig, ExportConfig, RenderConfig};
 
 use support::{render_file_under, render_normalized_to_file, render_to_buffers, render_to_file};
 use tutti_export::{
-    CancelToken, Control, EncodeConfig, Error, ExportConfig, Format, FrozenClock, GRAPH_MAX_BLOCK,
-    Normalize, Pcm, Progress, RenderConfig, RenderGraph,
+    CancelToken, Control, Error, Format, FrozenClock, GRAPH_MAX_BLOCK, Normalize, Pcm, Progress,
+    RenderGraph,
 };
 use tutti_graph::NodeKey;
 use tutti_graph::{

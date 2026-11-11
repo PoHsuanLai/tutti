@@ -4,8 +4,7 @@
 //! produce and how many leading frames the sink drops.
 
 use crate::Job;
-use tutti_types::{BeatDuration, Bpm, Samples};
-use tutti_types::{SampleRate, Seconds};
+use tutti_types::Samples;
 
 /// Fixed scheduling parameters for one render.
 ///
@@ -39,38 +38,6 @@ impl RenderPlan {
             latency: job.latency(),
         }
     }
-}
-
-/// Frames a `seconds` span covers at `rate`.
-///
-/// The one duration conversion in the crate, so the rounding happens once. A
-/// non-finite or negative span is no frames rather than a panic or a wrapped
-/// length; a render refuses such a span before it gets here
-/// ([`ConfigError::InvalidDuration`](crate::ConfigError::InvalidDuration)), so this is for a caller sizing one.
-///
-/// A [`Seconds`] is an `f64`, so a *derived* length keeps
-/// its frame: 2000 beats at 93 bpm and 8000 at 111 bpm land on the frame they
-/// name, where an `f32` span landed 2 and 6 frames off.
-pub fn duration_to_frames(seconds: Seconds, rate: SampleRate) -> Samples {
-    let seconds = seconds.get();
-    if !seconds.is_finite() || seconds <= 0.0 {
-        return Samples(0);
-    }
-    Samples((seconds * rate.get()).round() as usize)
-}
-
-/// Seconds covering `len` beats at `tempo` — the musical-vocabulary form.
-///
-/// Routed through [`beats_per_sample`](tutti_types::beats_per_sample)
-/// rather than `BeatDuration::to_seconds`, which groups the arithmetic
-/// differently and would round a frame differently. `(tempo / 60) / rate` is
-/// the one spelling of the rate — see that function.
-pub fn beats_to_seconds(len: BeatDuration, tempo: Bpm, rate: SampleRate) -> Seconds {
-    let bps = tutti_types::beats_per_sample(tempo, rate).get();
-    if bps <= 0.0 {
-        return Seconds(0.0);
-    }
-    Seconds((len.get() / bps) / rate.get())
 }
 
 #[cfg(test)]

@@ -10,7 +10,7 @@
 #![cfg(all(feature = "record", feature = "export"))]
 
 use tutti_codec::{FileOut, Format, IntDepth, Pcm, Spec};
-use tutti_export::{EncodeConfig, ExportConfig, Rendered, write_buffers};
+use tutti_export::{EventLossPolicy, FileTarget, Rendered, write_buffers};
 use tutti_session::{DitherShape, DitherSink, DitherSpec, IDLE_PARK, Recorder};
 use tutti_types::{ChannelLayout, Pull, SampleRate, Samples, Source};
 
@@ -75,16 +75,9 @@ fn record(path: &std::path::Path, dither: Option<DitherShape>) {
 
 fn export(path: &std::path::Path, dither: Option<DitherShape>) {
     let rendered = Rendered::new(planes(), RATE, 0).expect("planes");
-    let config = ExportConfig {
-        encode: EncodeConfig {
-            format: Format::Wav(Pcm::Int16),
-            channels: ChannelLayout::STEREO,
-            ..Default::default()
-        },
-        dither,
-        ..Default::default()
-    };
-    write_buffers(&rendered, &config, path).expect("writes");
+    let target =
+        FileTarget::new(path, Format::Wav(Pcm::Int16), ChannelLayout::STEREO).with_dither(dither);
+    write_buffers(&rendered, &target, EventLossPolicy::Fail).expect("writes");
 }
 
 /// The 16-bit samples of a dithered take and of an export are the same, for

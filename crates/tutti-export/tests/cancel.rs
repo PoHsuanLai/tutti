@@ -10,13 +10,13 @@
 #![cfg(all(feature = "wav", feature = "flac", feature = "aiff", feature = "ogg"))]
 
 mod support;
+use crate::support::{EncodeConfig, ExportConfig, RenderConfig};
 
 use support::{render_buffers_under, render_file_under, render_to_file};
 use tutti_export::{
-    CancelToken, ChannelLayout, Control, EncodeConfig, ExportConfig, FileTarget, FlacLevel, Format,
-    FrozenClock, GRAPH_MAX_BLOCK, IntDepth, Normalize, NormalizeSpec, Outcome, Output, Pcm,
-    Produced, Progress, Quality, RenderConfig, RenderGraph, Resample, Setup, Stage, Written,
-    render,
+    CancelToken, ChannelLayout, Control, FileTarget, FlacLevel, Format, FrozenClock,
+    GRAPH_MAX_BLOCK, IntDepth, Normalize, NormalizeSpec, Outcome, Output, Pcm, Produced, Progress,
+    Quality, RenderGraph, Resample, Setup, Stage, Written, render,
 };
 use tutti_graph::GraphBuilder;
 use tutti_nodes::testing::Const;

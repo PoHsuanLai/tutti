@@ -1,7 +1,7 @@
 //! `DesignNode<D>` over a design that is not Freeverb: a test-only echo with a
 //! realization latency and a tail the test can make lie. What Freeverb cannot show
-//! (it has no latency and a tail longer than a block): the dry path aligned to
-//! the realization's latency, the cut at `tail + latency` inside a block, and a
+//! (it has no latency and a tail longer than a block): the graph's mix aligned
+//! to the realization's latency, the cut at `tail + latency` inside a block, and a
 //! block-aligned park. Every figure is the definition of a delay.
 
 use tutti_dsp::{
@@ -10,8 +10,8 @@ use tutti_dsp::{
 };
 use tutti_graph::contract::{Driven, assert_honest_tail, drive_input, prepared};
 use tutti_graph::{Env, PlayClock, Status, Transport, TransportChanges};
-use tutti_graph::{Node, ParamNode};
-use tutti_nodes::{ControlSet, DesignNode, DryWet, NodeDesign};
+use tutti_graph::{Node, ParamNode, Prepare, Solo};
+use tutti_nodes::{ControlSet, DesignNode, NodeDesign};
 use tutti_types::{ChannelLayout, Frame, Mix, SampleRate, Samples, Seconds, UnitAddr, UnitParam};
 
 const SR: SampleRate = SampleRate(48_000.0);
@@ -138,7 +138,6 @@ impl ControlSet for NoParams {
 
 impl NodeDesign for Echo {
     type Set = NoParams;
-    type Blend = DryWet;
 
     fn set(&self, _: &()) -> NoParams {
         NoParams
@@ -316,28 +315,41 @@ fn a_block_aligned_cut_parks_and_resets() {
     assert_eq!(woken, new);
 }
 
-/// The dry path is aligned to the realization's latency, never to the tail or the
-/// echo: at a mix of 0.5 an impulse comes out half-strength at `latency` (the
-/// dry, delayed to line up) and half-strength at `latency + echo` (the wet).
+/// The graph's mix aligns the dry input to the realization's declared latency,
+/// never to the tail or the echo: at a mix of 0.5 an impulse comes out
+/// half-strength at `latency` (the input, delayed to line up) and half-strength at
+/// `latency + echo` (the wet). A block of silence first, so the mix's ramp from
+/// the unit's `WET` start is over before the impulse.
 ///
-/// Mutation (run): stepping the dry by `latency - 1`, or not at all, moves the
-/// first spike and fails.
+/// Mutation (run): the shape declaring `latency - 1` (the graph's aligned input
+/// one frame early) moves the first spike and fails.
 #[test]
-fn the_dry_path_is_aligned_to_the_kernels_latency() {
+fn the_graphs_mix_is_aligned_to_the_kernels_latency() {
     let (claimed, latency) = (25, 7);
-    let n = node(Echo {
-        claimed,
-        actual: claimed,
-        latency,
-    });
-    n.mix().store(Mix(0.5));
-    let mut rig = Rig { node: n, frame: 0 };
-    let out = rig.block(&impulse_block()).audio.remove(0);
+    let mut solo = Solo::new(
+        DesignNode::live(
+            Echo {
+                claimed,
+                actual: claimed,
+                latency,
+            },
+            (),
+        ),
+        Prepare::new(SR, Samples(BLOCK)),
+    );
+    let key = solo.key();
+    solo.renderer_mut()
+        .editor_mut()
+        .set_mix(key, Mix(0.5))
+        .expect("a mix");
+    let mut x = vec![0.0; BLOCK];
+    x.extend(impulse_block());
+    let out = solo.render_input(&[&x]).remove(0);
     let spikes: Vec<(usize, f32)> = out
         .iter()
         .enumerate()
         .filter(|&(_, &s)| s != 0.0)
-        .map(|(i, &s)| (i, s))
+        .map(|(i, &s)| (i - BLOCK, s))
         .collect();
     assert_eq!(
         spikes,
@@ -346,44 +358,15 @@ fn the_dry_path_is_aligned_to_the_kernels_latency() {
     );
 }
 
-/// The echo reports no cells and declares only the mix.
+/// The echo reports no cells and declares no port: its dry/wet is the graph's.
 #[test]
-fn a_design_without_cells_offers_the_mix_alone() {
+fn a_design_without_cells_offers_no_ports() {
     let n = node(Echo {
         claimed: 4,
         actual: 4,
         latency: 0,
     });
-    assert_eq!(n.shape().params.len(), 1);
-    assert_eq!(n.param_set().params().count(), 1);
-    assert!(n.param_set().get(UnitParam::Wet).is_some());
-}
-
-/// A mix that moves between blocks is ramped across the next one, ending exactly
-/// on the new value (a stepped blend is a click): with the room silent (an echo
-/// far longer than the block) and a constant input, the output is the dry's share,
-/// rising by equal steps from the old mix to the new.
-///
-/// Mutation (run): a ramp that starts at its target (`Ramp::new(to, to, size)`)
-/// steps at once and fails the first assertion.
-#[test]
-fn a_mix_change_is_ramped_across_the_block() {
-    let n = node(Echo {
-        claimed: 10_000,
-        actual: 10_000,
-        latency: 0,
-    });
-    let mix = n.mix();
-    let mut rig = Rig { node: n, frame: 0 };
-    let ones = vec![1.0f32; BLOCK];
-    rig.block(&ones);
-    mix.store(Mix(0.0));
-    let out = rig.block(&ones).audio.remove(0);
-    assert!(
-        out[0] < 0.1,
-        "starts near the old mix (all wet): {}",
-        out[0]
-    );
-    assert_eq!(out[BLOCK - 1], 1.0, "ends on the new mix (all dry)");
-    assert!(out.windows(2).all(|w| w[1] > w[0]), "a ramp, not a step");
+    assert_eq!(n.shape().params.len(), 0);
+    assert_eq!(n.param_set().params().count(), 0);
+    assert!(n.param_set().get(UnitParam::Wet).is_none());
 }

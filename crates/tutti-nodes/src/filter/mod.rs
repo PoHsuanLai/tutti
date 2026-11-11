@@ -14,7 +14,6 @@ pub use svf::SvfFilterNode;
 
 use tutti_dsp::{Cadence, ChannelKernel, Design, Filter};
 
-use crate::blend::NoBlend;
 use crate::params::ControlSet;
 use crate::reverb::NodeDesign;
 
@@ -32,7 +31,6 @@ pub trait NodeKernel: ChannelKernel {
 /// grid, so a control that moves inside a block is in the render within 16 frames.
 impl<K: NodeKernel> NodeDesign for Filter<K> {
     type Set = K::Set;
-    type Blend = NoBlend;
 
     const PARKS: bool = false;
     const SAMPLING: Cadence = <Self as Design>::CADENCE;

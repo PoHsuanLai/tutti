@@ -102,7 +102,7 @@ fn energy(blocks: &[Driven]) -> f64 {
         .sum()
 }
 
-/// A design that cannot freeze offers the mix and ten params and a finite tail
+/// A design that cannot freeze offers ten params and a finite tail
 /// ceiling; one that can offers an eleventh, the freeze, and an unbounded
 /// ceiling (so an export spends its cap: freeze is opt-in for that reason). The
 /// addresses are the doc's: three decays at indices 0 (mid), 1 (low), 2 (high).
@@ -115,8 +115,8 @@ fn the_freeze_is_a_port_only_where_the_design_can_freeze() {
         node(plain(), FdnControls::DEFAULT),
         node(freezable(), FdnControls::DEFAULT),
     );
-    assert_eq!(p.shape().params.len(), 11);
-    assert_eq!(f.shape().params.len(), 12);
+    assert_eq!(p.shape().params.len(), 10);
+    assert_eq!(f.shape().params.len(), 11);
     assert!(matches!(p.shape().tail, Tail::Finite(_)));
     assert_eq!(f.shape().tail, Tail::Unbounded);
     let (set_p, set_f) = (p.param_set(), f.param_set());
@@ -128,7 +128,11 @@ fn the_freeze_is_a_port_only_where_the_design_can_freeze() {
             Some(secs)
         );
     }
-    assert_eq!(set_p.get(UnitParam::Wet), Some(1.0));
+    assert_eq!(
+        set_p.get(UnitParam::Wet),
+        None,
+        "no mix port: the graph blends"
+    );
     let Tail::Finite(ceiling) = p.shape().tail else {
         unreachable!()
     };
@@ -233,9 +237,9 @@ fn a_modulated_decay_is_read_at_the_end_and_its_peak_sets_the_tail() {
         },
     ));
     let none: Option<&[f32]> = None;
-    // Port 1 is the mid decay (after the mix at port 0).
+    // Port 0 is the mid decay.
     for chunk in x.chunks(BLOCK) {
-        let a = by_port.block(chunk, &[none, Some(&rising)]).audio;
+        let a = by_port.block(chunk, &[Some(&rising)]).audio;
         let b = by_cell.block(chunk, &[]).audio;
         assert_eq!(a, b);
     }
@@ -243,7 +247,7 @@ fn a_modulated_decay_is_read_at_the_end_and_its_peak_sets_the_tail() {
     let mut rig = Rig::new(node(plain(), FdnControls::DEFAULT));
     let d = rig.block(
         &impulse(),
-        &[none, Some(&falling), Some(&falling), Some(&falling)],
+        &[Some(&falling), Some(&falling), Some(&falling)],
     );
     let at_peak = FdnControls {
         decay: [Seconds(2.5); 3],
@@ -268,7 +272,7 @@ fn a_modulated_decay_is_read_at_the_end_and_its_peak_sets_the_tail() {
     let mut rig = Rig::new(node(plain(), FdnControls::DEFAULT));
     let d = rig.block(
         &impulse(),
-        &[none, none, none, none, Some(&high), none, Some(&low)],
+        &[none, none, none, Some(&high), none, Some(&low)],
     );
     assert!(
         finite(&d) >= tail_of(&plain(), &big),
@@ -359,9 +363,7 @@ fn a_non_finite_write_is_ignored() {
     for (i, chunk) in noise(4, 8_192).chunks(BLOCK).enumerate() {
         if i == 3 {
             for addr in set.params().collect::<Vec<_>>() {
-                if addr.param != UnitParam::Wet {
-                    set.set(addr, f32::NAN);
-                }
+                set.set(addr, f32::NAN);
             }
         }
         assert_eq!(
@@ -379,14 +381,10 @@ fn a_kind_spawns_its_node() {
     let SpawnedReverb::Freeverb(f) = ReverbKind::Freeverb.spawn() else {
         panic!("a Freeverb")
     };
-    assert_eq!(
-        f.param_set().params().count(),
-        3,
-        "the mix, the room, the damping"
-    );
+    assert_eq!(f.param_set().params().count(), 2, "the room, the damping");
     let SpawnedReverb::Fdn(n) = ReverbKind::Fdn(freezable()).spawn() else {
         panic!("an FDN")
     };
-    assert_eq!(n.param_set().params().count(), 12);
+    assert_eq!(n.param_set().params().count(), 11);
     assert_eq!(n.shape().audio_out, ChannelLayout::STEREO);
 }

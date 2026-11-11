@@ -391,11 +391,11 @@ impl Devices {
         }
     }
 
-    /// Opens `id` for input. Its events land in a ring of `ports`, drained by
-    /// the audio thread; the returned [`OpenInput`] holds the connection and the
-    /// ring's port, and dropping it closes both.
+    /// Opens `id` for input. Its events land in an event inlet of `ports`, read
+    /// by the audio thread on their frames; the returned [`OpenInput`] holds the
+    /// connection and the port, and dropping it closes both.
     ///
-    /// Control thread only: it takes a ring from `ports` (which publishes) and
+    /// Control thread only: it takes a slot of `ports` and
     /// the backend may start a thread.
     ///
     /// Opening an id that is already open opens a second connection to the
@@ -409,11 +409,12 @@ impl Devices {
     /// # Errors
     ///
     /// [`Error::NoDevice`] when `id` is not present, [`Error::WrongDirection`]
-    /// when it is not an input, or the platform error from opening it. A failed
-    /// open leaves no port in `ports`.
+    /// when it is not an input, [`Error::NoFreeSlot`] when every slot is held,
+    /// or the platform error from opening it. A failed open leaves no port in
+    /// `ports`.
     pub fn open_input(&self, id: &DeviceId, ports: &Arc<HardwareMidiInputs>) -> Result<OpenInput> {
         let (info, handle) = self.present(id, Direction::is_input)?;
-        let producer = ports.open_input_port(info.name.as_str());
+        let producer = ports.open_input_port(info.name.as_str())?;
         let mut input = OpenInput {
             connection: None,
             port: producer.port_id(),
@@ -608,8 +609,7 @@ impl OpenInput {
         self.connection.as_ref().is_some_and(|c| c.is_alive())
     }
 
-    /// The port its events land in, for the ring manager's
-    /// `set_port_active` and the drain's tag.
+    /// The port its events land in, for the list's `set_port_active`.
     #[must_use]
     pub fn port_id(&self) -> PortId {
         self.port

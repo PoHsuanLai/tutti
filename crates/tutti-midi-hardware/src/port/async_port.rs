@@ -1,69 +1,52 @@
-//! One hardware input port: its ring's consumer, its active flag, and the
-//! producer handle a driver callback pushes through.
+//! One hardware input port: the producer handle a driver callback pushes
+//! through, and the port's entry in the list.
 //!
-//! [`HardwareMidiInput`] is the per-connection half; [`HardwareMidiInputs`] in
-//! `manager` holds N of them and drives the per-block drain across all of them.
+//! [`HardwareMidiInput`] is the entry [`HardwareMidiInputs`] keeps;
+//! the [`InputProducerHandle`] is the only way events enter.
 //!
-//! # Who owns which half of the ring
+//! # Who owns what
 //!
-//! Each port is one `ringbuf` `HeapRb`, split once at creation. The halves are
-//! never stored together:
-//!
-//! - The **producer** half goes into the [`InputProducerHandle`] the creator is
-//!   handed, and nowhere else. The handle owns it, is not `Clone`, and pushes
-//!   through `&mut self`, so the borrow checker is what keeps a ring to one
-//!   pusher: there is no second producer to reach.
-//! - The **consumer** half stays in the port, in an [`AudioThreadCell`]: the
-//!   audio thread's drain is its only reader (the control side never touches
-//!   it), which is exactly that cell's "one borrow at a time" contract.
-//!
-//! Both halves hold the ring by `Arc`, so whichever is dropped last frees it,
-//! and neither can outlive the memory it points at. A driver thread still
-//! pushing after its port was retired pushes into a ring nobody drains, and
-//! frees it when it stops; it can never write through a dangling pointer.
+//! The handle owns the device's end of its inlet
+//! ([`DeviceInput`](tutti_midi_runtime::DeviceInput)), is not `Clone`, and
+//! pushes through `&mut self`: the borrow checker keeps an inlet to one
+//! pusher. The entry holds a view of the inlet's counts and the active flag
+//! the handle reads, so the control side reads and sets them without touching
+//! the thread that pushes. A driver thread still pushing after its port was
+//! retired pushes into an inlet nothing reads.
 //!
 //! [`HardwareMidiInputs`]: super::HardwareMidiInputs
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
 
-use ringbuf::traits::{Consumer, Producer, Split};
-use ringbuf::{HeapCons, HeapProd, HeapRb};
-use tutti_rt::AudioThreadCell;
+use tutti_graph::InletCounts;
+use tutti_midi_runtime::{DeviceInput, DeviceSlot};
 use tutti_ump::Ump;
 
 use super::PortId;
 
-/// The producer end of one port's input ring (timestamped events).
+/// The producer end of one port: the driver thread's. Owns the inlet's only
+/// writer. It is `Send`, so it moves to the thread the OS delivers on, and
+/// **not** `Clone`: [`push`](Self::push) takes `&mut self`, so an inlet has
+/// exactly one pusher by construction. A driver callback that is an `FnMut`
+/// (CoreMIDI's, ALSA's pump loop) owns its handle outright.
 ///
-/// Owns the ring's only producer half. It is `Send`, so it moves to the thread
-/// the OS delivers on, and **not** `Clone`: [`push`](Self::push) takes
-/// `&mut self`, so a ring has exactly one pusher by construction. A driver
-/// callback that is an `FnMut` (CoreMIDI's, ALSA's pump loop) owns its handle
-/// outright.
-///
-/// Dropping the handle closes the producer side. The port's events already in
-/// the ring stay there for the drain; the ring itself is freed by whichever of
-/// the handle and the port goes last.
-///
-/// There is no second handle to a ring. It cannot be cloned:
+/// There is no second handle to a port. It cannot be cloned:
 ///
 /// ```compile_fail,E0599
-/// let inputs = tutti_midi_hardware::HardwareMidiInputs::new(16, 44_100.0);
-/// let handle = inputs.open_input_port("In");
-/// let second = handle.clone();
+/// fn second(handle: tutti_midi_hardware::InputProducerHandle) {
+///     let _ = handle.clone();
+/// }
 /// ```
 ///
-/// and the manager hands one out only from
+/// and the list hands one out only from
 /// [`open_input_port`](super::HardwareMidiInputs::open_input_port).
 pub struct InputProducerHandle {
-    // An arrival `Instant` and the packet: the offset is made by the drain,
-    // which knows the block (the ring crosses threads ahead of any block).
-    producer: HeapProd<(Instant, Ump)>,
+    input: DeviceInput,
     port: PortId,
-    /// Events [`push`](Self::push) found no room for, shared with the port.
-    dropped: Arc<AtomicU64>,
+    /// Whether the port delivers: shared with the port's entry.
+    active: Arc<AtomicBool>,
 }
 
 impl core::fmt::Debug for InputProducerHandle {
@@ -75,81 +58,79 @@ impl core::fmt::Debug for InputProducerHandle {
 }
 
 impl InputProducerHandle {
-    /// Pushes one event with its arrival `timestamp`, which the drain converts
-    /// into an [`Offset`](tutti_graph::Offset) within the block that reads it.
-    /// The ring holds the bare [`Ump`] beside its `Instant`: no block exists
-    /// when a driver pushes, so there is no offset to hold yet.
+    /// Pushes one event the OS delivered at `timestamp`: it is placed on the
+    /// frame the engine's clock puts that time on, plus the inlets' lead
+    /// ([`DeviceInlets`](tutti_midi_runtime::DeviceInlets)), so the order and
+    /// spacing of the device's events are kept to the clock map's accuracy.
     ///
-    /// Returns `false` when the ring is full; the event is then dropped, not
-    /// queued, and counted
+    /// Returns `false` when the device's inlet is full; the event is then
+    /// dropped, not queued, and counted
     /// ([`HardwareMidiInputs::dropped_events`](super::HardwareMidiInputs::dropped_events)).
+    /// An **inactive** port ([`set_port_active`](super::HardwareMidiInputs::set_port_active))
+    /// discards the event and returns `true`: it was not lost for want of room.
     /// Lock-free and allocation-free, so it is safe to call from a driver
     /// callback.
     #[inline]
     pub fn push(&mut self, event: Ump, timestamp: Instant) -> bool {
-        let taken = self.producer.try_push((timestamp, event)).is_ok();
-        if !taken {
-            self.dropped.fetch_add(1, Ordering::Relaxed);
+        if !self.active.load(Ordering::Acquire) {
+            return true;
         }
-        taken
+        self.input.push(event, timestamp)
     }
 
     /// The identity of the port this handle feeds: the key to pass to
     /// [`HardwareMidiInputs`](super::HardwareMidiInputs)' `set_port_active` or
-    /// `remove_input_port`, and the tag the drain puts on its events.
+    /// `remove_input_port`.
     #[must_use]
     pub fn port_id(&self) -> PortId {
         self.port
     }
 }
 
-/// A hardware **input** port: the consumer end of a lock-free ring fed by the
-/// driver callback thread (each event paired with its arrival `Instant`) and
-/// drained by the engine cycle. This is the one MIDI path that genuinely needs
-/// a cross-thread SPSC ring with wall-clock timestamps, which the
-/// engine-internal [`MidiMailbox`](tutti_midi_runtime::MidiMailbox) mailbox
-/// (the single MIDI-*out* ring) does not model. There is no output counterpart
-/// here: outbound MIDI rides the mailbox to a
-/// [`MidiOut`](tutti_midi_runtime::MidiOut) sink instead.
+/// A hardware **input** port in the list: its name, whether it delivers, and
+/// the counts of its inlet. There is no output counterpart here: outbound MIDI
+/// rides an event tap to a [`MidiOut`](tutti_midi_runtime::MidiOut) sink.
 pub(crate) struct HardwareMidiInput {
     id: PortId,
     name: String,
-    active: std::sync::atomic::AtomicBool,
-    /// Reached only by the audio thread's drain, one borrow at a time.
-    input: AudioThreadCell<HeapCons<(Instant, Ump)>>,
-    /// Events the producer found the ring full for.
-    dropped: Arc<AtomicU64>,
+    active: Arc<AtomicBool>,
+    counts: InletCounts,
+    slot: DeviceSlot,
 }
 
 impl HardwareMidiInput {
-    /// A port named `name` whose ring holds `fifo_size` events, and the one
-    /// producer handle for it, both named `port`.
+    /// A port named `name` over `input`, and the producer handle for it, both
+    /// named `port`.
     pub(crate) fn new(
         name: impl Into<String>,
-        fifo_size: usize,
+        input: DeviceInput,
         port: PortId,
     ) -> (Self, InputProducerHandle) {
-        let (producer, consumer) = HeapRb::new(fifo_size).split();
-        let dropped = Arc::new(AtomicU64::new(0));
+        let active = Arc::new(AtomicBool::new(true));
         (
             Self {
                 id: port,
                 name: name.into(),
-                active: std::sync::atomic::AtomicBool::new(true),
-                input: AudioThreadCell::new(consumer),
-                dropped: Arc::clone(&dropped),
+                active: Arc::clone(&active),
+                counts: input.counts(),
+                slot: input.slot(),
             },
             InputProducerHandle {
-                producer,
+                input,
                 port,
-                dropped,
+                active,
             },
         )
     }
 
-    /// How many events the producer dropped for want of room in the ring.
+    /// How many events the inlet had no room for.
     pub(crate) fn dropped(&self) -> u64 {
-        self.dropped.load(Ordering::Relaxed)
+        self.counts.lost()
+    }
+
+    /// How many events the graph found already past.
+    pub(crate) fn late(&self) -> u64 {
+        self.counts.late()
     }
 
     pub(crate) fn id(&self) -> PortId {
@@ -160,38 +141,18 @@ impl HardwareMidiInput {
         &self.name
     }
 
+    pub(crate) fn slot(&self) -> DeviceSlot {
+        self.slot
+    }
+
     #[inline]
     pub(crate) fn is_active(&self) -> bool {
-        self.active.load(std::sync::atomic::Ordering::Acquire)
+        self.active.load(Ordering::Acquire)
     }
 
     #[inline]
     pub(crate) fn set_active(&self, active: bool) {
-        self.active
-            .store(active, std::sync::atomic::Ordering::Release);
-    }
-
-    /// Pops at most `limit` events from this port's ring, passing each to `f`,
-    /// and returns how many were taken.
-    ///
-    /// The unpopped remainder stays in the ring for the next block. `limit` is
-    /// what keeps the caller's fixed-capacity sink from overflowing: the audio
-    /// thread passes its remaining headroom. Audio thread only: this is the
-    /// consumer's single reader.
-    #[inline]
-    pub(crate) fn drain_limited(&self, limit: usize, mut f: impl FnMut(Instant, Ump)) -> usize {
-        let mut consumer = self.input.borrow_mut();
-        let mut taken = 0;
-        while taken < limit {
-            match consumer.try_pop() {
-                Some((timestamp, event)) => {
-                    f(timestamp, event);
-                    taken += 1;
-                }
-                None => break,
-            }
-        }
-        taken
+        self.active.store(active, Ordering::Release);
     }
 }
 
@@ -202,6 +163,3 @@ impl core::fmt::Debug for HardwareMidiInput {
             .finish()
     }
 }
-
-#[cfg(test)]
-mod tests;

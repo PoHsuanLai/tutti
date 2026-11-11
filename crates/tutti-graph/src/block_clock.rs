@@ -26,8 +26,9 @@ const RETRIES: usize = 1_000;
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
 #[repr(C)]
 struct Wire {
-    /// The block's start, in nanoseconds after the pair's epoch.
-    nanos: u64,
+    /// The block's start, in nanoseconds after the pair's epoch (before it,
+    /// when negative).
+    nanos: i64,
     frame: u64,
     rate: f64,
 }
@@ -60,12 +61,15 @@ impl BlockClock {
     }
 
     /// Publishes that the block beginning at graph frame `frame` (counted at
-    /// `rate`) began at `os`. Audio thread: a few stores. An `os` before the
-    /// epoch reads as the epoch.
+    /// `rate`) began at `os`. Audio thread: a few stores.
     pub fn write(&mut self, os: Instant, frame: Frame, rate: SampleRate) {
-        let nanos = os.saturating_duration_since(self.epoch).as_nanos();
+        let nanos = match os.checked_duration_since(self.epoch) {
+            Some(after) => i64::try_from(after.as_nanos()).unwrap_or(i64::MAX),
+            None => i64::try_from(self.epoch.duration_since(os).as_nanos())
+                .map_or(i64::MIN, |before| -before),
+        };
         self.cell.write(Wire {
-            nanos: u64::try_from(nanos).unwrap_or(u64::MAX),
+            nanos,
             frame: frame.get(),
             rate: rate.get(),
         });
@@ -94,7 +98,12 @@ impl BlockClockReader {
     #[must_use]
     pub fn read(&self) -> Option<(Instant, Moment)> {
         let wire = self.cell.read(RETRIES).ok().flatten()?;
-        let os = self.epoch.checked_add(Duration::from_nanos(wire.nanos))?;
+        let span = Duration::from_nanos(wire.nanos.unsigned_abs());
+        let os = if wire.nanos >= 0 {
+            self.epoch.checked_add(span)?
+        } else {
+            self.epoch.checked_sub(span)?
+        };
         Some((os, Moment::new(Frame(wire.frame), SampleRate(wire.rate))))
     }
 }

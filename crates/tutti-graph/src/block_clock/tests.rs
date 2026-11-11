@@ -32,3 +32,15 @@ fn a_cloned_reader_reads_the_same_clock() {
     clock.write(os, Frame(1), SampleRate(44_100.0));
     assert_eq!(reader.read().map(|(o, _)| o), Some(os));
 }
+
+/// **A time before the clock's epoch is kept, not clamped**: a block that
+/// began before the pair was made reads back at that time.
+#[test]
+fn a_time_before_the_epoch_reads_back_unchanged() {
+    let early = Instant::now();
+    std::thread::sleep(Duration::from_millis(2));
+    let mut clock = BlockClock::new();
+    let reader = clock.reader();
+    clock.write(early, Frame(7), SampleRate(48_000.0));
+    assert_eq!(reader.read().map(|(os, _)| os), Some(early));
+}

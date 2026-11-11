@@ -9,7 +9,7 @@
 //! [`Translator`] is the stateful rest of the translation (M2-104 Appendix
 //! D.3): RPN and NRPN runs into Registered and Assignable Controllers, and
 //! Bank Select onto the next Program Change, per group and channel. An input
-//! edge runs it once (`tutti-midi-runtime`'s `MidiInputNode`, and a clip as it
+//! edge runs it once (`tutti-midi-runtime`'s `MidiIngestNode`, and a clip as it
 //! is loaded), so what follows carries MIDI 2.0 channel voice messages. It
 //! calls `widen` for every message that needs no state.
 //!

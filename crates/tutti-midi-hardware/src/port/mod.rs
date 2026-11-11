@@ -1,16 +1,18 @@
-//! The ring-buffer plumbing between a driver callback and the audio thread.
+//! The hardware inputs: what a driver thread pushes through, and the list of
+//! them.
 //!
-//! A backend pushes inbound events into an [`InputProducerHandle`] from whatever
-//! thread the OS delivers on; the audio thread drains every port for the block
-//! through [`HardwareMidiInputs`]. Each port is a lock-free SPSC ring split
-//! once: the handle owns the producer half and the port keeps the consumer, so
-//! a ring has one pusher and one drainer by ownership, with no `unsafe` here.
+//! A backend pushes inbound events into an [`InputProducerHandle`] from
+//! whatever thread the OS delivers on. The handle stamps each event with the
+//! frame the engine's clock puts its arrival on and pushes it into the event
+//! inlet of its device (`tutti-midi-runtime`'s [`DeviceInlets`]): the audio
+//! thread reads an inlet's events on their frames and converts no time. This
+//! crate keeps the list of the open ports ([`HardwareMidiInputs`]): their
+//! names, which are active, and what each lost.
 //!
-//! Nothing here allocates on the drain path — the per-block scratch is
-//! fixed-capacity, and a flood spreads across blocks rather than growing it.
+//! [`DeviceInlets`]: tutti_midi_runtime::DeviceInlets
 
 pub(crate) mod async_port;
 mod manager;
 
 pub use async_port::InputProducerHandle;
-pub use manager::{HardwareMidiDrain, HardwareMidiInputs, PortId, PortInfo};
+pub use manager::{HardwareMidiInputs, PortId, PortInfo};

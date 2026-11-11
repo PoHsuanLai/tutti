@@ -11,11 +11,15 @@ Pure MIDI values live in `tutti-ump` and `tutti-midi-protocol`; OS ports live in
 `tutti-midi-hardware`. This crate owns the runtime state that connects them:
 
 - **MIDI as graph nodes**, sending on `tutti-graph` event ports:
-  [`MidiInputNode`] (a wire, one port per channel), [`MidiClipNode`] and
+  [`MidiIngestNode`] (the device inlets in, one port per Group and channel), [`MidiClipNode`] and
   [`HarmonyNode`] (a timeline), [`ClockNode`] (Beat Clock and MTC). MIDI leaves the graph
   through an event tap (`tutti-graph`'s `EventTapReader`).
 - [`ClockMap`]: the pure OS-time to graph-frame map (and back), built from
   readings of the OS `Instant` and the graph's `Frame`; it holds no clock.
+- [`DeviceInlets`] and [`DeviceInput`]: one event inlet per hardware MIDI
+  device. The device's thread places each arrival on a frame with a `ClockMap`
+  fed the engine's block clock and pushes it into its inlet, so the audio thread
+  converts no time; the ingest node has one event input per device slot.
 - [`NoteLedger`]: the notes a node has started and not ended, and the only way
   it writes to its port; [`MidiClipNode`] uses it.
 - [`MidiKeys`]: the key helpers (`note_on`, `note_off`) over `tutti-graph`'s
@@ -32,7 +36,7 @@ Pure MIDI values live in `tutti-ump` and `tutti-midi-protocol`; OS ports live in
   spread into native MIDI 2.0 per-note messages.
 
 The MPE zone types (`MpeMode`, `MpeZoneConfig`, ...) are
-`tutti-midi-protocol`'s; `MidiInputNode::with_mpe` takes a `MpeMode` from there.
+`tutti-midi-protocol`'s; `MidiIngestNode::with_mpe` takes a `MpeMode` from there.
 
 ## What it does not own
 
@@ -55,12 +59,12 @@ expression themselves.
 
 ## Routing is wiring
 
-A `MidiInputNode` sends each event out of the port of its Group and channel,
+A `MidiIngestNode` sends each event out of the port of its Group and channel,
 and a Group's System, SysEx and Flex messages out of that Group's channelless
 port (`CHANNELLESS_PORT` for the first). A Group is a channel space of its own
 (M2-104 section 2.1.2, Appendix B.1), so each Group the node hears has seventeen
 ports; the node hears the first Group unless built with
-`MidiInputNode::hearing(MidiInputPorts::through(last))`, so a one-Group device is
+`MidiIngestNode::hearing(MidiInputPorts::through(last))`, so a one-Group device is
 `MIDI_INPUT_PORTS` ports and costs nothing more. A message with no Group
 (Utility, UMP Stream) leaves the first Group's channelless port. Which node hears
 which channel is which ports it takes event edges from: `MidiInputPorts::listening`

@@ -99,6 +99,15 @@ that pays, and the compiler packs tasks too cheap to dispatch alone.
   its `Moment` from `tutti_midi_runtime::ClockMap` (pure: readings of the OS
   `Instant` and the graph's `Frame` in, `frame_at`/`moment_at`/`os_at` out; doc 017
   §5, "Timing at the edge", has the rule and its bound).
+  The hardware MIDI input is such a producer, one inlet per device
+  (`tutti_midi_runtime::DeviceInlets`, `DeviceInput`): the engine writes each
+  render call's OS time and frame (`Engine::block_clock`, `tutti_graph::BlockClock`,
+  a `tutti-rt` sequence cell), the device's thread holds a `ClockMap` fed those
+  readings, places each arrival on a frame plus a fixed lead (one block) and
+  pushes it with `push_at`; the audio thread converts no time. The graph side
+  is `MidiIngestNode`, one event input per device slot with a translator and
+  MPE state each, and the session wires a device's inlet to its slot in
+  `Phase::Poll` (doc 017 E5, open question 8).
 - Doc 013 records the defects found and the types that address them. Update
   it when the code it describes or a decision changes.
 - **Main-thread entries take a token.** An editor, timer, run-loop, state or
@@ -601,7 +610,7 @@ list (normal and build edges; dev-dependencies may go anywhere).
   and nothing is pinned against another implementation. **An instrument plays one
   Group's sixteen channels** (`SynthConfig::group`, `Settings::with_group`; a message of
   another Group is not read, M2-104 section 2.1.2, Appendix B.1), so `step` never sees a
-  Group; the input node routes by (Group, channel) (`MidiInputPorts`, doc 017 L3). Mono and legato follow
+  Group; the ingest node routes by (Group, channel) (`MidiInputPorts`, doc 017 L3). Mono and legato follow
   tutti's named rule (last-note priority over a per-channel stack of held keys),
   which MIDI 1.0 does not specify.
 - `tutti-midi-device` depends on `tutti-ump` alone, keeps every module private

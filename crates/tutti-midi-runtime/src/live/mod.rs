@@ -2,8 +2,8 @@
 //! of it is an event tap, `tutti-graph`'s). Inside the graph MIDI travels on event
 //! ports; these are the nodes at its border.
 //!
-//! - [`MidiInputNode`] polls a [`MidiIn`](crate::MidiIn) (the
-//!   hardware ports), translates, and sends each event out of its channel's
+//! - [`MidiIngestNode`] reads the event inlets of the hardware devices
+//!   ([`DeviceInlets`]), translates, and sends each event out of its channel's
 //!   port: routing by channel is which ports a listener is wired to.
 //! - [`MidiKeys`] is the key helpers over `tutti-graph`'s event inlet, which
 //!   is how a control thread sends into the graph (a keyboard, a preview).
@@ -11,15 +11,17 @@
 //! - [`compile_routes`] turns inbound routing rules into which of the input
 //!   node's ports each listener takes.
 
-pub mod input_node;
+pub mod device_inlets;
+pub mod ingest_node;
 pub mod keys;
 pub mod mailbox;
 pub(crate) mod order;
 mod route;
 
-pub use input_node::{
+pub use device_inlets::{DeviceInlets, DeviceInput, DeviceSlot, InletChange, NoFreeSlot};
+pub use ingest_node::{
     CHANNELLESS_PORT, MIDI_INPUT_DENSITY, MIDI_INPUT_EVENT_CAPACITY, MIDI_INPUT_PORTS,
-    MidiInputControls, MidiInputNode, MidiInputPorts,
+    MidiIngestControls, MidiIngestNode, MidiInputPorts,
 };
 pub use keys::{LIVE_INLET_CAPACITY, MidiKeys};
 pub use mailbox::{MAILBOX_CAPACITY, MidiMailbox, MidiReceiver, MidiSender};

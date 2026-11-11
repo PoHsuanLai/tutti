@@ -35,6 +35,25 @@ use crate::{Error, EventSource, MidiNodes, Result};
 /// any sane tempo is a handful of events, so this is generous headroom.
 const DRAIN_CHUNK: usize = 256;
 
+/// How many hardware MIDI devices may be connected at once by default
+/// ([`SessionBuilder::midi_devices`](crate::SessionBuilder::midi_devices)).
+pub const MIDI_INPUT_DEVICES: usize = 8;
+
+/// Events one connected device's inlet holds: the ring its thread pushes into,
+/// and as many waiting for their frame.
+#[cfg(feature = "midi-hardware")]
+pub(crate) const MIDI_INPUT_INLET_CAPACITY: usize = 2048;
+
+/// How long after an event arrives the hardware inlets place it: one block of
+/// the device's callback (its `quantum` when known, else the largest block), so
+/// an event that arrived between two blocks is on a frame of the next and is
+/// not late (doc 017 stage E5). The spacing between events is kept; the
+/// whole is that much later than the OS delivered it.
+#[cfg(feature = "midi-hardware")]
+pub(crate) fn input_lead(block: Samples, rate: tutti_types::SampleRate) -> Duration {
+    Duration::from_secs_f64(block.to_seconds(rate).get())
+}
+
 /// The hardware out's tap, in events: the ring the clock's output is copied
 /// into between two updates (a note-off is kept up to
 /// [`note_off_room`](tutti_graph::note_off_room) of it).
@@ -486,6 +505,10 @@ pub(crate) struct MidiState {
     /// when.
     #[cfg(feature = "midi-hardware")]
     input_drops_seen: u64,
+    /// The inlet node each device slot of the ingest node is fed from, `None`
+    /// where no device holds the slot.
+    #[cfg(feature = "midi-hardware")]
+    inlet_keys: Vec<Option<NodeKey>>,
     /// The session's subscription to the device list: `Phase::Poll` reads it
     /// and nothing else does.
     #[cfg(feature = "midi-hardware")]
@@ -520,7 +543,7 @@ impl std::fmt::Debug for MidiState {
 /// a clock running with no output drops ticks on every update.
 pub const MIDI_OUT_DROP_REPORT: Duration = Duration::from_secs(1);
 
-/// How often a rising count of events the hardware input's rings dropped is
+/// How often a rising count of events the hardware inputs' inlets dropped is
 /// reported at most
 /// (`SessionEvent::MidiInputDropped`, feature `midi-hardware`):
 /// a stalled audio callback with a busy controller drops on every update.
@@ -558,17 +581,21 @@ impl MidiState {
     }
 
     /// `Phase::Poll`: reports the devices that came and went, retires a held
-    /// input or output whose device vanished, and reports the events the
-    /// hardware input's rings dropped when their total rose, at most once per
-    /// [`MIDI_INPUT_DROP_REPORT`] of `now`.
+    /// input or output whose device vanished, wires the event inlets of the
+    /// devices that connected to their slots of the ingest node (and takes out
+    /// those of devices that closed), and reports the events the hardware
+    /// inputs' inlets dropped when their total rose, at most once per
+    /// [`MIDI_INPUT_DROP_REPORT`] of `now`. Whether the graph was edited.
     #[cfg(feature = "midi-hardware")]
     pub(crate) fn midi_input_phase(
         &mut self,
         io: Option<&tutti_midi_hardware::MidiSession>,
+        nodes: Option<&MidiNodes>,
+        graph: &mut Graph,
         now: Instant,
         out: &mut Vec<crate::SessionEvent>,
-    ) {
-        let Some(io) = io else { return };
+    ) -> bool {
+        let Some(io) = io else { return false };
         let events = self.device_events.as_ref();
         for event in events.into_iter().flat_map(|events| events.try_iter()) {
             out.push(crate::SessionEvent::MidiDevice(event.clone()));
@@ -583,6 +610,7 @@ impl MidiState {
                 }
             }
         }
+        let wired = wire_inlets(&mut self.inlet_keys, io.ports().inlets(), nodes, graph);
         if !self.watch_failure_reported
             && let Some(why) = events.and_then(tutti_midi_hardware::DeviceEvents::failure)
         {
@@ -598,6 +626,7 @@ impl MidiState {
             self.input_reported_at = Some(now);
             out.push(crate::SessionEvent::MidiInputDropped(total));
         }
+        wired
     }
 
     /// Reads the hardware out's tap dry and routes what it held to the
@@ -682,6 +711,44 @@ pub struct Midi<'a> {
     pub(crate) graph: &'a mut Graph,
     pub(crate) state: &'a mut MidiState,
     pub(crate) nodes: Option<&'a MidiNodes>,
+}
+
+/// Applies the devices' inlet changes: an inlet added to the graph and
+/// wired to its slot's event input of the ingest node (whose slot
+/// then starts over, so the device before it leaves no half-sent run), or
+/// taken out. Whether the graph was edited. A session with no ingest node
+/// has nothing to wire, and the changes are dropped with it.
+#[cfg(feature = "midi-hardware")]
+fn wire_inlets(
+    inlet_keys: &mut Vec<Option<NodeKey>>,
+    inlets: &tutti_midi_runtime::DeviceInlets,
+    nodes: Option<&MidiNodes>,
+    graph: &mut Graph,
+) -> bool {
+    use tutti_midi_runtime::InletChange;
+    let changes = inlets.take_changes();
+    let Some(nodes) = nodes else { return false };
+    let edited = !changes.is_empty();
+    for change in changes {
+        match change {
+            InletChange::Attach { slot, node } => {
+                let key = graph.add_event_inlet(node);
+                nodes.input_controls.restart_slot(slot);
+                graph.set_event_sources(nodes.input, slot as u16, &[EventSource::new(key, 0)]);
+                if inlet_keys.len() <= slot {
+                    inlet_keys.resize(slot + 1, None);
+                }
+                inlet_keys[slot] = Some(key);
+            }
+            InletChange::Detach { slot } => {
+                if let Some(key) = inlet_keys.get_mut(slot).and_then(Option::take) {
+                    graph.set_event_sources(nodes.input, slot as u16, &[]);
+                    graph.remove(key);
+                }
+            }
+        }
+    }
+    edited
 }
 
 impl Midi<'_> {
@@ -907,7 +974,7 @@ impl Midi<'_> {
         self.state.rules = rules;
     }
 
-    /// Routes `input` (a `MidiInputNode`: one event output per channel and
+    /// Routes `input` (a `MidiIngestNode`: one event output per channel and
     /// one for channelless messages, in each Group it hears) by `rules`, keyed by the host's own
     /// `T` and resolved to nodes through `resolve`, replacing every route
     /// before (the session's own rules included).

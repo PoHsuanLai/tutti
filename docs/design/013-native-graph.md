@@ -1635,7 +1635,7 @@ nothing to move):
 | `ParamSumNode` (deleted with compiler-owned modulation) | tutti-nodes | clamp bounds | fresh bounds | yes | `param_sum` |
 | `AtomicSourceNode` (deleted with compiler-owned modulation) | tutti-nodes | base cell | fresh cell | yes | `atomic_source` |
 | `ParamShaperNode` (deleted with compiler-owned modulation), `AutomationLaneNode` | tutti-nodes | none: an immutable LUT / `Arc<dyn Curve>` (`set_curve` is `&mut`) | — | yes | — |
-| `ChannelSumNode`, `DownmixNode`, `testing::*` | tutti-nodes | none | — | yes | — |
+| `ChannelSumNode`, `DownmixNode` (both deleted: B3 for the second), `testing::*` | tutti-nodes | none | — | yes | — |
 | `VbapPannerNode` | tutti-nodes | azimuth, elevation, spread, width (the inner panner holds none; the node passes them in per block) | detaches all | yes | `spatial_param_fork::vbap_forks_from_its_params` |
 | `HrtfBinauralNode` | tutti-nodes | azimuth, elevation, blend | detaches all | yes | `spatial_param_fork::hrtf_forks_from_its_params` |
 | `ClickNode` | tutti-nodes | `Arc<ClickSettings>` (volume, mode, meter); the live transport's play, count-in and record flags | fresh settings at the current values; flags frozen | yes | `click::…::isolate_snapshots_settings_and_session_flags` |
@@ -6760,8 +6760,8 @@ left open.
   and `ValidGraph::modes` (`GraphInvalid::ModeWithoutNode` for a node that is
   not there), `Editor::set_mode` and `mode` (the Editor entry is in M1 because
   the tests need it; the session's `Graph::set_mode` and `mode` and the hosts
-  are M2). `ModeError` has `NoSuchNode` only: `Unplaced` arrives with the
-  declared buses (B3), and until then the mapping is the width rule above.
+  are M2). `ModeError` had `NoSuchNode` only: `Unplaced` arrived with the
+  declared buses (B3, "As built (B3)"); M1 shipped the width rule above.
   The cell is an `AtomicU8` the editor keeps per key (`mode_cells`) and ships
   with the unit in the commit that places it (`Commit::build`), and
   `set_mode` is a store plus the spec; a commit that differs only in modes
@@ -7351,6 +7351,66 @@ bypass rule are untouched (B3).
   PDC per lane, a fork, the editor and session round trips, and executor,
   parallel and reference agreeing on random graphs of folds.
 
+**As built (B3).** `DownmixNode` is deleted, and a bypass is the fold of the
+main buses. No plan op changes; a graph with no named bus renders as before,
+bit for bit (the M1 tests, unedited, are the proof).
+
+- **`DownmixNode` is gone** (`tutti-nodes`: the node, its export and README line,
+  the bench group, the `rt_no_alloc` gate; `tutti-session`: its `SessionNode`
+  impl; `narrows()` with it). Its users and what became of each: the unit tests
+  that pinned its figures (7.1 to stereo as a matrix, widening zero-fills, the
+  ITU rows and mono, already B2's) are `bus_edges.rs`'s
+  `seven_one_into_stereo_reads_out_the_matrix` and
+  `widening_zero_fills_the_new_channels`, through the bus edge; the
+  `rt_no_alloc` fold gate is `bus_no_alloc.rs` (a bus edge and the bypass fold
+  on the serial executor and on every participant of a pool); `fold_digests.rs`'s
+  digest tested `Fold`, not the node, so it stays, now applying `Fold` directly
+  with its recorded value unchanged (a bus edge lowers to weighted lanes, which
+  match the fold to rounding only, so the digest is not the lanes'); the
+  session's reclaimer catalog test uses `AutomationLaneNode` as its
+  node that publishes nothing. Export folds onto the file with `Fold` in
+  `GraphSource::new`, as before, and used no node. The remaining hits of the
+  word "downmix" are unrelated code.
+- **The bypass mapping** is `Pass` (`tutti-graph/src/pass.rs`), built on the
+  control side from the shape's `Main` input and `Main` output buses and kept in
+  the unit's `ModeState`; the reference builds the same value. Three cases:
+  (1) either side has no `Main` bus, or **both are `Discrete`** (what
+  `Shape::audio` builds, which names no placement): the width rule, output `c` is
+  input `c` below the narrower width, silence past it, unchanged to the bit;
+  (2) a named pair that folds to the identity: the same copy; (3) a named pair
+  (or one named side): `Fold::between`, applied with
+  `Fold::planar_channel` over the aligned inputs, so a 5.1 bus bypassed into a
+  stereo bus is the ITU rows, delayed by the declared latency. Every input
+  channel of the input bus has a ring of the declared latency; output `o` is the
+  fold of the rings' output. A node at a mix off `WET` reads the same fold as
+  its aligned input (`fold_aligned`). The fold's work costs a second arena of
+  `max_block` frames per output channel, only for a pass that folds.
+- **Unfoldable main buses are refused, not guessed.** `Editor::set_mode(key,
+  Bypassed)` returns `ModeError::Unplaced { node, error: FoldError }` when the
+  main buses name channels and do not fold (six `Discrete` channels into a named
+  stereo bus), and nothing changes; any other mode, and a node built from
+  widths, are not refused. The width rule is not the fallback: reading a bare
+  width as a placement is the guess "a width is not a placement" forbids. A
+  node replaced, while Bypassed or at a mix, by one whose main buses do not fold
+  passes nothing (its aligned input is absent: silence, as a channel past the
+  narrower width is) until it is set again; the commit does not fail on it, as
+  it does for a bus edge whose fold went away, because a mode is a control and
+  not an edit.
+- **Not built: the root as a bus sink.** A bus edge into the root needs the
+  editor to know the root's declared topology, which lives in the session
+  (`Graph::root_topology`, set by `declare_root_topology`) and in the engine's
+  output control. The editor would have to hold it in the spec
+  (`GraphSpec::root: Option<BusTopology>`, kept in step by the session's
+  declaration), the edge's sink would stop being a `BusRef` (a `BusSink` of
+  `Node(BusRef)` and `Root`, or a separate list of the root's sources), and the
+  lowering would write `Sink::Output` lanes. A root past `MAX_BUS_CHANNELS` (16)
+  channels cannot be a `BusTopology` and would be refused as `GlobalTooWide`
+  is. These are each small; the choice among them changes B2's `bus_edges` key
+  or adds a second map, and a declaration that narrows a root under existing
+  edges needs a rule. It is left for its own change so the owner picks them; a
+  graph is wired to its outputs per channel, as now, and an undeclared root
+  takes no bus edge because none can name it.
+
 #### What else is, and is not, a graph primitive
 
 The test this document applies: a **primitive** says where a signal goes, how
@@ -7422,11 +7482,11 @@ itself.
 | 1 | Fan-in | the six PRs of "Audio fan-in sums", point 10 |
 | 2 | Edge gain | **G1**: `EdgeGain`, `Sink`, `EdgeId`, validate, the weighted kernel and ramp, cell and `set_edge_gain`, reference, tests (static and ramped weights). **G2**: the driven lane: `connect_edge_gain`, `DelayKey::EdgeGain`, `GainPort`, the session's `ModTarget` and `EdgeRef`, tests. **G3**: session API. The audit is done here: no shipped node exists only to scale one source (the `Gain` nodes are test doubles), and `BusStripNode` keeps its volume and pan (below), so G3 deletes nothing. |
 | 3 | Bypass, mute and mix | independent of 1 and 2, in any order after the design merges. **M4** (built; the static half, then **M4b**, the `ModTarget`, see "As built (M4)" and "As built (M4b)"): the blend above, `Editor::set_mix`, its `ModTarget`, the reference, tests (`Mix` 1.0 bit-identical to `Active`, 0.0 bit-identical to `Bypassed` in steady state); `Mix`'s docs, and `DRY`'s and `WET`'s, say what the ends are (all of the aligned input, all of the node's output) instead of the studio words alone. **M1** (built): `NodeMode`, the cell, the executor's steady states, the bypass line, the declick and un-bypass sequence, the reference, tests. **M2** (session half built): `Editor::set_mode`, the session API, hosts (plugins, AU property). **M3** (built): delete `EqBandNode`'s flag, `BusStripNode`'s mute (and `add_general_midi`'s binding of it through `UnitParam::Mute`, which becomes `NodeMode::Muted` on the channel's strip), per-node bypass; bit-exact tests replace the tolerance one; CLAUDE.md's dead-names list gains the strip mute and `EqBandNode`'s flag. |
-| 4 | Buses and coercion | needs 1 and 2. **B1** (built, "As built (B1)"): `BusTopology`, `Buses` and `Shape`'s buses with one `Main` bus built from widths; `Fold::contributions`; hosts fill their buses (generically, sidechain roles pending the hosts). **B2** (built, "As built (B2)"): `BusRef`, `bus_edges`, validate, lowering to weighted lanes, `connect_bus`, session API, tests; the root as a sink bus waits for B3. **B3**: delete `DownmixNode` and migrate its users; bypass uses the main buses' fold. |
+| 4 | Buses and coercion | needs 1 and 2. **B1** (built, "As built (B1)"): `BusTopology`, `Buses` and `Shape`'s buses with one `Main` bus built from widths; `Fold::contributions`; hosts fill their buses (generically, sidechain roles pending the hosts). **B2** (built, "As built (B2)"): `BusRef`, `bus_edges`, validate, lowering to weighted lanes, `connect_bus`, session API, tests; the root as a sink bus waits for B3. **B3** (built, "As built (B3)"): `DownmixNode` deleted and its users migrated; bypass is the fold of the main buses (`ModeError::Unplaced`); **the root as a sink bus is not built** (the design question in the note). |
 
 Bypass's channel mapping for buses with different declared topologies uses
-B1's types; M1 ships the width rule (`Status::Bypass`'s) and B3 switches the
-declared case to the fold. Nothing in the first three lanes waits on the
+B1's types; M1 shipped the width rule (`Status::Bypass`'s) and B3 switched the
+declared case to the fold. Nothing in the first three lanes waited on the
 fourth.
 
 #### The clip node and the native synth

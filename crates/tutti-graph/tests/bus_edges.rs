@@ -348,6 +348,63 @@ fn mono_into_stereo_copies_to_both_sides() {
     assert_eq!(bits(&got), [x.clone(), x]);
 }
 
+/// 7.1 into stereo, read out as the matrix: the lowering's lane weight from
+/// source channel `k` into destination channel `o` is the fold's entry, with
+/// a missing lane a zero. `Lo` takes FL and, at -3 dB, C, Ls and Lb; `Ro` the
+/// mirror; the LFE neither. (This is what `DownmixNode`'s unit-pulse test
+/// pinned, now through the bus edge it was deleted for.)
+///
+/// Mutations (run), each failing this test: the lowering reading destination
+/// channel 0 for every sink port; the lowering swapping each source for its
+/// pair (`k ^ 1`).
+#[test]
+fn seven_one_into_stereo_reads_out_the_matrix() {
+    let m = M3DB;
+    let want = [
+        [1.0, 0.0, m, 0.0, m, 0.0, m, 0.0],
+        [0.0, 1.0, m, 0.0, 0.0, m, 0.0, m],
+    ];
+    let lowering = fold_rig(8, 2).lowering().unwrap();
+    for (o, row) in want.iter().enumerate() {
+        for (k, &entry) in row.iter().enumerate() {
+            let got = lowering
+                .lanes
+                .get(&lane(2, o as u16, out_port(1, k as u16)))
+                .map_or(0.0, |w| w.get());
+            assert_eq!(got, entry, "destination {o}, source {k}");
+        }
+    }
+}
+
+/// Widening zero-fills: stereo into 5.1 passes the pair through at unity and
+/// leaves the four new channels silent; nothing invents a centre (placement
+/// is a panner's, put there on purpose). A silent destination channel has no
+/// lane at all.
+///
+/// Mutations (run), each failing this test: the lowering feeding the centre
+/// from channel 0; the lowering dropping the pair's second channel.
+#[test]
+fn widening_zero_fills_the_new_channels() {
+    let rig = fold_rig(2, 6);
+    let lowering = rig.lowering().unwrap();
+    assert_eq!(
+        lowering.lanes.keys().copied().collect::<Vec<_>>(),
+        [lane(2, 0, out_port(1, 0)), lane(2, 1, out_port(1, 1))]
+    );
+    let blocks = 4;
+    let got = rig.render_both(blocks);
+    let (l, r) = (global(0, blocks), global(1, blocks));
+    assert_eq!(bits(&got[..2]), [bits_of(&l), bits_of(&r)]);
+    assert!(l.iter().any(|&x| x != 0.0), "not a vacuous test");
+    for (c, channel) in got.iter().enumerate().skip(2) {
+        assert!(channel.iter().all(|&x| x.to_bits() == 0), "channel {c}");
+    }
+}
+
+fn bits_of(x: &[f32]) -> Vec<u32> {
+    x.iter().map(|v| v.to_bits()).collect()
+}
+
 // ---------------------------------------------------------------------------
 // The identity: plain edges, the hand-wired plan.
 // ---------------------------------------------------------------------------

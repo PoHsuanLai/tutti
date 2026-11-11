@@ -1426,9 +1426,20 @@ impl Reference {
             if want != m.heading && m.toggle(want) {
                 self.units.get_mut(&key).expect("unit present").1.reset();
             }
-            xhat = ins.iter().take(m.passed).cloned().collect();
+            xhat = ins.iter().take(m.pass.inputs()).cloned().collect();
             for (x, line) in xhat.iter_mut().zip(&mut m.lines) {
                 delay_line(line, x);
+            }
+            if m.pass.folds() {
+                // Output `c` is the fold of the main buses over the aligned
+                // inputs (`pass.rs`).
+                xhat = (0..m.pass.outputs())
+                    .map(|c| {
+                        let mut out = vec![0.0; frames];
+                        m.pass.fold_into(|i| xhat[i].as_slice(), c, &mut out);
+                        out
+                    })
+                    .collect();
             }
             parked = m.parked();
             if m.heading == NodeMode::Bypassed {
@@ -1959,9 +1970,8 @@ struct RefMode {
     warm: usize,
     stale: bool,
     latency: usize,
-    /// Channels the bypass passes: output `c` is input `c` below the narrower
-    /// width.
-    passed: usize,
+    /// Which input channel feeds which output channel (`pass.rs`).
+    pass: crate::pass::Pass,
     /// The aligned input: one delay line of the declared latency per passed
     /// channel; empty at latency zero.
     lines: Vec<VecDeque<f32>>,
@@ -2013,7 +2023,7 @@ impl RefMode {
             warm: 0,
             stale: mode == NodeMode::Bypassed,
             latency,
-            passed: shape.audio_in.count().min(shape.audio_out.count()) as usize,
+            pass: crate::pass::Pass::of_or_nothing(shape),
             lines: Vec::new(),
             held_in: (0..shape.event_in).map(|_| RefHeld::default()).collect(),
             owed: BTreeMap::new(),
@@ -2030,7 +2040,7 @@ impl RefMode {
         self.lines = if latency == 0 {
             Vec::new()
         } else {
-            vec![VecDeque::from(vec![0.0; latency]); self.passed]
+            vec![VecDeque::from(vec![0.0; latency]); self.pass.inputs()]
         };
     }
 

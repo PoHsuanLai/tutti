@@ -1738,8 +1738,9 @@ impl Graph {
     ///
     /// # Errors
     ///
-    /// [`ModeError::NoSuchNode`] when `node` is not in the graph; nothing
-    /// changes.
+    /// [`ModeError::NoSuchNode`] when `node` is not in the graph;
+    /// [`ModeError::Unplaced`] to bypass a node whose `Main` buses name their
+    /// channels and do not fold; nothing changes.
     pub fn set_mode(&mut self, node: NodeKey, mode: NodeMode) -> Result<(), ModeError> {
         self.editor.set_mode(node, mode)
     }

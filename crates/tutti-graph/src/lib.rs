@@ -247,6 +247,7 @@ mod mode;
 mod node;
 mod par;
 mod param;
+mod pass;
 mod plan;
 mod play;
 mod pool;

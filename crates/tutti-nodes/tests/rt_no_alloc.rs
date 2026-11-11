@@ -153,47 +153,6 @@ fn folded_six_channel_convolver_process_is_allocation_free() {
     gate(ConvolverNode::folded(&refs, 256));
 }
 
-/// `DownmixNode::process` folds each output channel over whole slices with
-/// `tutti_types::Fold::planar_channel`, which reads the stored matrix and
-/// keeps its group scratch on the stack, so the fold at any width allocates
-/// nothing.
-/// Driven alone in a graph (`BlockRig`).
-///
-/// 6→2 is the shape that matters: it is the only one where the fold does real
-/// work (an equal-width or upmix fold is a copy), and it is what a 5.1 bus
-/// feeding a stereo master looks like.
-///
-/// Mutation (run): collect the input slices into a `Vec` inside `process`
-/// → fails.
-#[test]
-fn downmix_process_is_allocation_free() {
-    // Imported here rather than at file scope: the module-level imports are
-    // gated on `convolution`, and this node needs it not.
-    use tutti_graph::contract::BlockRig;
-    use tutti_nodes::DownmixNode;
-    use tutti_types::{ChannelLayout, SampleRate};
-
-    let node =
-        DownmixNode::assuming_smpte(ChannelLayout::from(6u16), ChannelLayout::STEREO).unwrap();
-    let (mut rig, ()) = BlockRig::new(node, SampleRate(48_000.0), 64);
-    for (c, x) in rig.inputs_mut().iter_mut().enumerate() {
-        x.fill(0.1 * (c + 1) as f32);
-    }
-
-    // Warm up: first-touch faults must not be counted against the RT path.
-    rig.block();
-    assert!(
-        rig.output(0).iter().any(|s| s.abs() > 1e-6),
-        "the fold rendered silence; the gate would walk no DSP"
-    );
-
-    assert_no_alloc::assert_no_alloc(|| {
-        for _ in 0..1_000 {
-            rig.block();
-        }
-    });
-}
-
 /// Every curve of the shaper, unfed (the block-rate drive) and with its
 /// drive port fed a per-frame ramp (the path that writes each frame's
 /// hardness into channel 0 and shapes it last), 1 000 blocks each under

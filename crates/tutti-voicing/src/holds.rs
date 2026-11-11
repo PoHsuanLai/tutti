@@ -85,7 +85,6 @@ impl Holds {
 mod tests {
     use super::*;
 
-    /// Mutation (run): `key_up` ignoring `pedal_down` fails this.
     #[test]
     fn the_pedal_holds_a_released_key() {
         let mut h = Holds::struck();
@@ -99,8 +98,6 @@ mod tests {
         assert!(Holds::struck().key_up(false));
     }
 
-    /// Mutation (run): dropping the `!self.sostenuto` test in `sustain_up`
-    /// fails this.
     #[test]
     fn sostenuto_keeps_what_the_sustain_pedal_lets_go() {
         let mut h = Holds::struck();

@@ -14,11 +14,6 @@ fn offline() -> Session {
 
 /// Frames pushed to an inlet come out of the graph's outputs in order, then
 /// silence once the ring runs dry.
-///
-/// Mutation (run, recorded here): `Graph::add_inlet` returning the key without
-/// the node's `insert` (or the node not being wired) leaves the outputs
-/// silent and fails the first assertion; the node popping nothing (an empty
-/// `process`) fails it too.
 #[test]
 fn pushed_frames_reach_the_outputs_in_order() {
     let mut s = offline();
@@ -52,10 +47,6 @@ fn pushed_frames_reach_the_outputs_in_order() {
 
 /// A producer at another rate is refused with a typed error carrying both
 /// rates, and nothing is opened.
-///
-/// Mutation (run, recorded here): delete the `producer_rate != graph` check in
-/// `Graph::add_inlet` and the 44.1 kHz producer is accepted: the first
-/// assertion fails.
 #[test]
 fn a_producer_at_another_rate_is_refused() {
     let mut s = offline();

@@ -2,16 +2,6 @@
 //!
 //! The expected bytes are written out from M2-104 Appendix D and M2-115, or
 //! follow from `widen` and the figures `tests/narrow.rs` pins.
-//!
-//! Mutation record (each planted in `src/midi1.rs`, seen to fail, restored):
-//! - `NOTE_ON_FLOOR` removed from the Note On arm of `narrow` ->
-//!   `a_note_on_never_narrows_to_velocity_zero`;
-//! - the same floor applied to Note Off too -> `a_note_off_keeps_a_zero_velocity`
-//!   and `narrow_returns_what_widen_was_given`;
-//! - the bank LSB sent as CC 33 (in `Bank::bytes`), the Program Change sent
-//!   before the bank, and the bank not sent -> `a_bank_is_three_messages`;
-//! - a per-note pitch bend narrowed to a channel pitch bend ->
-//!   `messages_without_a_midi1_form_send_nothing`.
 
 use tutti_midi_protocol::{midi1, narrow, widen};
 use tutti_ump::{

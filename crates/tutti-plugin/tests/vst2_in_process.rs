@@ -150,9 +150,8 @@ fn handle_state_roundtrip() {
     assert!(!original.is_empty(), "a declared chunk must not be empty");
 
     // Load a blob that is *different* from the one saved. Round-tripping the
-    // same bytes would pass even if `load_state` did nothing at all — that
-    // mutation was run against an earlier draft of this test and survived,
-    // because the probe's chunk store is only rewritten by a load that lands.
+    // same bytes would pass even if `load_state` did nothing at all, because the probe's chunk
+    // store is only rewritten by a load that lands.
     let mut modified = original.clone();
     modified.extend_from_slice(b"tutti-roundtrip-marker");
 
@@ -336,10 +335,6 @@ fn a_vst2_plugin_reports_no_channel_topology() {
 /// The probe answers `effCanDo` with `Maybe` here, so each direction resolves
 /// from its declared pins: its default `Yes` outranks the pins (see
 /// `tutti-vst2-host`'s resolution order) and would make every probe a sender.
-///
-/// Mutation (run): `sends_midi` asking `MIDI_IN` → the first probe reads as
-/// sending → fails. Mutation (run): the node's event output count not gated
-/// on `MIDI_OUT` → the first probe's node has one → fails.
 #[test]
 fn the_node_carries_midi_on_its_event_ports() {
     let _lock = lock_probe();
@@ -462,9 +457,6 @@ fn the_node_reports_the_decoded_tail_rather_than_unknown() {
 /// 300 note-ons on the node's event input in one 512-frame block: the plugin
 /// is handed `MIDI_STACK_CAPACITY` (256) of them, and the controls count the
 /// other 44. A block within the cap adds nothing.
-///
-/// Mutation (run): the drop not counted (`count_midi_dropped` of the event
-/// walk's refusals removed from `process`) → the count stays 0 → fails.
 #[test]
 fn midi_past_the_blocks_capacity_is_counted() {
     use tutti_fixtures::midi;

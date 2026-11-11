@@ -846,8 +846,7 @@ fn most_blocked(steps: usize) -> usize {
 /// **Why the blocked signal is needed on Linux:** under that load a poll to a
 /// wall-clock deadline spends the deadline mostly runnable but not running,
 /// which [`StepClock`] subtracts as load. The time-only version of these
-/// assertions passed every wait mutation tried under it (every call, every
-/// 3rd and every 8th on eight plugins, every call on one), 2 runs of 2 each.
+/// assertions could not tell a design that waits from one that does not.
 /// Wall time would not do either: the same load stretches correct steps by
 /// milliseconds.
 ///
@@ -1118,7 +1117,7 @@ fn assert_stalled(label: &str, run: &Run, stalled: impl Iterator<Item = usize>) 
 /// It only **reports** each block's wall time against the callback deadline.
 /// That used to be asserted (the median block under [`PERIOD`]) and could
 /// not catch a waiting design: with every plugin answering in time, a
-/// mutation that waits on every step paid nothing and passed it, at a
+/// design that waits on every step paid nothing and passed it, at a
 /// 1.27 ms median block. Under bursty load it failed on unchanged code, every
 /// run: the host's own work on a contended core sums past the period. It
 /// measures the machine. For the same reason [`warm_up`] is a best effort
@@ -1132,35 +1131,6 @@ fn assert_stalled(label: &str, run: &Run, stalled: impl Iterator<Item = usize>) 
 /// A synchronous design makes this arrangement hopeless: four stalled plugins
 /// x 667 us of budget each = 2.7 ms against a 1.33 ms deadline, on every
 /// block.
-///
-/// Mutations. The waits go in `Batcher::collect`, after `await_output`:
-/// poll `has_output(expect_seq)` every 50 us until a 667 us deadline, on
-/// calls chosen by a counter shared by every batcher in the process. Each
-/// failed 2 runs of 2 idle, and the four marked *load* 1 run of 1 under the
-/// bursty load in [`assert_no_waiting`]'s notes.
-/// - Wait on every call: 2000 of 4000 steps blocked (the stalled half) →
-///   fails the blocked bound (20). *Load:* fails first at the working-step
-///   bound, a 208 us median (the waits hand the shared core to the servers),
-///   and at 1 stalled instance 199 of 200 blocked, of which only 5 took the
-///   budget: blocking is what shows the wait there.
-/// - Every 3rd: 666 blocked; every 4th: 1000; every 8th: 499-500; every
-///   16th: 250; every 32nd (one stalled plugin, every 4th block): 125 →
-///   each fails the blocked bound. Before the bound, a wait on a minority
-///   like the every-32nd one passed. *Load,* every 32nd: 124 blocked, of
-///   which 50 took the budget.
-/// - Spin 300 us in every collect, no wait: the answering steps' median is
-///   352-355 us of on-CPU time → fails [`assert_working_steps_cheap`].
-///   *Load:* 379 us.
-/// - Drop every 3rd collected block (count only the collectable ones, render
-///   silence): answering plugin 1 carries audio in 328-334 of 500 → fails
-///   [`assert_heard`]. *Load:* 309 of 500.
-/// - `stall_every_block` dropped from [`load_stalled`]: every plugin answers
-///   in time and carries audio in 474-499 of 500 blocks → fails
-///   [`assert_stalled`] (recorded before this revision; that path is
-///   unchanged).
-/// - `TAG_PASSTHROUGH` dropped from [`load_n_from_probe`] (the probe renders
-///   `Inert`, nothing): the answering plugins carry audio in 0 of 500 blocks
-///   → fails [`assert_heard`] (likewise).
 ///
 /// The starvation property, that a starved block yields silence rather than
 /// the input echoed back, is asserted separately in
@@ -1197,16 +1167,6 @@ fn eight_real_plugins_half_stalled_never_wait_for_replies() {
 ///
 /// No plugin here answers in time, so this says nothing about what a working
 /// step costs: [`working_plugins_cost_under_the_old_ceiling`] does.
-///
-/// Mutations, as in [`eight_real_plugins_half_stalled_never_wait_for_replies`],
-/// 2 runs of 2 idle, each failing at 1 instance on the blocked bound
-/// (at most 2 of 200): every call 200 blocked, every 3rd 66, every 4th 50,
-/// every 8th 25, every 16th 13, every 32nd 6. Before that bound, the
-/// every-8th one passed at 1 and 2 instances and failed only at 4, and the
-/// every-32nd one passed outright. The spin and drop mutations do not fail
-/// here, and are not meant to: no plugin answers in time.
-/// `stall_every_block` dropped: fails [`assert_stalled`] at 1 instance,
-/// audio in 198-199 of 200 blocks (recorded before this revision).
 #[cfg(feature = "clap")]
 #[test]
 fn stalled_plugins_cost_no_waiting_at_any_count() {
@@ -1249,13 +1209,6 @@ fn stalled_plugins_cost_no_waiting_at_any_count() {
 /// (100, 75 and 65 us idle), against 66-148 us over 10 runs when each
 /// follows a stalled probe, whose server sleeps through the block. That is the machine, not
 /// the bridge, so the arrangement keeps it out of the figure.
-///
-/// Mutation: spin 300 us in every collect gives a working median of
-/// 362-364 us at 1 pair → fails [`assert_working_steps_cheap`], 2 runs of 2
-/// idle. Dropping every 3rd collected block (133-134 of 200) passes this
-/// floor and fails the eight-plugin test's; the wait mutations pass here
-/// too, since they wait only for a stalled plugin, whose steps this test
-/// does not bound.
 #[cfg(feature = "clap")]
 #[test]
 fn working_plugins_cost_under_the_old_ceiling() {
@@ -1295,12 +1248,8 @@ fn working_plugins_cost_under_the_old_ceiling() {
 /// no `CAP_SYS_NICE`), both stay where they started, and this checks only
 /// that the server did not end up anywhere else; it says so.
 ///
-/// Mutation: `request_audio_priority()` commented out of `PluginServer::run`.
-/// As root, the server reads `(0, 0, 0)` against the scratch thread's
-/// `(0, 0, -20)` and this fails, 2 runs of 2. With `CAP_SYS_NICE` dropped
-/// (`setpriv --inh-caps=-sys_nice --bounding-set=-sys_nice`, `RLIMIT_NICE`
-/// 0, CI's case) both read `(0, 0, 0)` and it passes, saying the OS
-/// refused.
+/// Without `CAP_SYS_NICE` (CI's case) both read `(0, 0, 0)` and it passes, saying the
+/// OS refused.
 #[cfg(all(feature = "clap", target_os = "linux"))]
 #[test]
 fn plugin_server_audio_thread_is_raised_where_the_os_allows() {
@@ -1436,10 +1385,6 @@ fn starving_the_subprocesses_yields_silence_not_input_echo() {
 /// synchronously when the last `Arc` goes, and the unit and the handle are the
 /// only holders. So by the time `drop(handles)` returns, each server is already
 /// reaped.
-///
-/// Mutation: `std::mem::forget` one round's `handles` instead of dropping
-/// them. That server's guard never runs, and this fails naming its pid on
-/// every OS.
 #[cfg(any(feature = "clap", feature = "vst3"))]
 #[test]
 fn repeated_load_and_drop_leaves_no_subprocesses() {

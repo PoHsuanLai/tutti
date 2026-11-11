@@ -623,8 +623,6 @@ mod tests {
     /// it: the server said it began restoring, and a restore has the window of its
     /// own.
     ///
-    /// Mutation (run): not changing the wait on `RestoringState` (the bridge's
-    /// timeout kept) times the launch out, as `StateRestoreError`, and this fails.
     /// Needs `cargo build -p tutti-plugin-server` first.
     #[test]
     #[cfg(unix)]
@@ -642,9 +640,6 @@ mod tests {
 
     /// **A restore that never returns is the state's to answer for**: past its
     /// window the launch fails as `StateRestoreError`.
-    ///
-    /// Mutation (run): the failure after `RestoringState` returned as the plain
-    /// timeout (`Err(e) if restoring` disabled) fails the `matches!`.
     #[test]
     #[cfg(unix)]
     fn a_restore_that_outlasts_its_window_is_blamed_on_the_state() {
@@ -661,9 +656,6 @@ mod tests {
     }
 
     /// **A plugin that dies in its state restore is blamed on the state.**
-    ///
-    /// Mutation (run): the failure after `RestoringState` returned as the plain
-    /// error fails the `matches!`.
     #[test]
     #[cfg(unix)]
     fn a_crash_in_the_restore_is_blamed_on_the_state() {
@@ -681,9 +673,6 @@ mod tests {
 
     /// **A plugin that dies before the restore is not blamed on the state**: it
     /// dies initializing, which comes first, and the launch fails as any load does.
-    ///
-    /// Mutation (run): `restoring` true from the start of `load_plugin` makes
-    /// this a `StateRestoreError` and fails the `matches!`.
     #[test]
     #[cfg(unix)]
     fn a_crash_before_the_restore_is_not_blamed_on_the_state() {
@@ -710,9 +699,6 @@ mod tests {
     /// (`Unsupported plugin format`), which is the failure this test excludes.
     ///
     /// Needs `cargo build -p tutti-plugin-server` first (`CLAUDE.md`).
-    ///
-    /// Mutation: restore the `?` on `Plugin::load` in the server's
-    /// `Session::handle_load` and the launch reports `ProcessCrashed`.
     #[test]
     #[cfg(unix)]
     fn a_library_that_is_not_a_plugin_fails_the_launch_with_the_loaders_reason() {
@@ -843,9 +829,6 @@ mod tests {
     /// A direction with no buses (an instrument's inputs) is one bus of no
     /// channels at the slab, which refuses an empty list: it occupies no
     /// bytes, and the output ring is sized as before.
-    ///
-    /// Mutation (run): `SlabLayout::new` passing an empty list through → the
-    /// input list is empty → fails.
     #[test]
     fn a_direction_with_no_buses_is_one_bus_of_no_channels() {
         let layout = slab_layout_for(
@@ -884,8 +867,6 @@ mod tests {
     /// callback, at most `MAX_CHUNK` — not to `max_buffer_size`, which is the
     /// plugin's own buffer bound. A live plugin gets a whole device callback
     /// per chunk, and the slab holds the largest one.
-    ///
-    /// Mutation: size the slab to `max_buffer_size` → 8192 ≠ 4096 → fails.
     #[test]
     fn slab_is_sized_to_the_largest_chunk_not_the_configured_maximum() {
         let l = loaded(&[ChannelLayout::STEREO], &[ChannelLayout::STEREO]);
@@ -1084,9 +1065,6 @@ mod tests {
     /// reporting a failure whose cause was known in milliseconds. The elapsed
     /// assertion is the point — a test that only checked for `Err` would pass
     /// on the slow path too.
-    ///
-    /// Mutation: delete the `try_wait` early return in `connect_when_listening`
-    /// and this fails on the elapsed assertion (the loop runs the full 5 s).
     #[test]
     fn a_server_that_never_binds_is_reported_before_the_timeout() {
         let path = std::env::temp_dir().join(format!("tutti_never_bound_{}", std::process::id()));

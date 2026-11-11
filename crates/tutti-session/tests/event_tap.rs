@@ -6,15 +6,6 @@
 //! This is the session's half: the open marks the graph edited, a close stops
 //! the copy, a reader dropped first is closed by the `Reclaim` phase, and the
 //! taps are opened again at the graph's new rate.
-//!
-//! Mutations (run, recorded here): `Graph::open_event_tap` not marking the graph
-//! edited (`opening_a_tap_yields_the_events_rendered_since_the_open`: with
-//! nothing else edited after the first render the reader stays empty);
-//! `Graph::close_event_tap` doing nothing (`closing_the_tap_stops_the_copy`);
-//! deleting `self.graph.reap_event_taps()` from the `Phase::Reclaim` arm
-//! (`a_dropped_reader_leaves_the_plan_at_the_reclaim_phase`); a
-//! `Graph::reopen_event_taps` that drops each reader it opens
-//! (`reopening_replaces_the_tap_at_the_new_rate`: no reader comes back).
 
 use tutti_graph::{
     Cx, Event, Io, MissingSource, Node, Op, Prepare, Shape, Status, TapAlign, TapEvent, Unforkable,

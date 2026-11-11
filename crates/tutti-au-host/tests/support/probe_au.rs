@@ -542,7 +542,7 @@ pub enum Misbehaviour {
     /// No registered unit reaches this, for the reason the whole item's docs
     /// give: none implements the property at all. This variant exists because
     /// the alternative was an unfalsifiable assertion — `chunks_exact` versus
-    /// `chunks` survived mutation with no input in the suite able to tell them
+    /// `chunks` went undetected with no input in the suite able to tell them
     /// apart.
     RaggedDependentParameters,
     /// Refuses a write of `kAudioUnitProperty_HostCallbacks` (property 27) with

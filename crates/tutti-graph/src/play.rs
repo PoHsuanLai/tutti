@@ -226,9 +226,6 @@ mod tests {
     }
 
     /// A reading round-trips through its word.
-    ///
-    /// Mutation (run): `unpack` shifting by `EPOCH_BITS` instead of
-    /// `64 - EPOCH_BITS` → the epoch reads back wrong → fails.
     #[test]
     fn a_reading_packs_into_one_word() {
         let r = PlayReading {
@@ -243,11 +240,6 @@ mod tests {
     /// Inside a block the clock runs one per frame, and a start inside it
     /// restarts it at 0 on the start's frame, in the next reserved epoch; a
     /// stop or a seek while playing restarts nothing.
-    ///
-    /// Mutation (run): restart on every change to playing (drop the
-    /// `!playing &&`) → the seek at 40 restarts the clock → fails.
-    /// Mutation (run): restart one frame late (`from = c.at.index() + 1`)
-    /// → frame 20 reads 0 at 21 → fails.
     #[test]
     fn a_start_inside_a_block_restarts_the_clock_on_its_frame() {
         let clock = PlayClock {
@@ -322,9 +314,6 @@ mod tests {
     /// to block, a start between blocks restarts it at the next block's
     /// first frame in a fresh epoch, and the published reading is the next
     /// block's start.
-    ///
-    /// Mutation (run): `begin` ignoring `self.playing` (restart whenever the
-    /// block plays) → the second playing block restarts → fails.
     #[test]
     fn a_start_between_blocks_restarts_the_next_block() {
         let published = Arc::new(AtomicU64::new(0));
@@ -345,10 +334,6 @@ mod tests {
     }
 
     /// A block of no frames advances the clock by nothing.
-    ///
-    /// Mutation (run): `end` reading the last frame as
-    /// `len.saturating_sub(1)` and adding one (as it first did) → the empty
-    /// block advances the clock by 1 → fails.
     #[test]
     fn an_empty_block_advances_nothing() {
         let published = Arc::new(AtomicU64::new(0));

@@ -2,8 +2,6 @@ use super::*;
 
 // A packet stamped 10 ms of ticks before the reading is 10 ms before it; a 0
 // stamp is the reading.
-// Mutation: drop the `host_time == 0` branch: a 0 stamp reads as an event 50 s
-// before the reading, and the last assertion fails.
 #[test]
 fn a_packets_stamp_places_it_before_the_reading() {
     let base = Timebase::new(1, 1).unwrap();

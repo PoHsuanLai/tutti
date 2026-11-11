@@ -226,19 +226,6 @@ fn drive(
 }
 
 proptest! {
-    // Mutation record, each seen to fail, then restored:
-    // - the ordinal search starts at 1: `two_identical_devices_get_distinct_ordinals`
-    //   and `ids_order_by_identity_then_ordinal` fail;
-    // - `gone` leaves the `by_handle` entry: `list_agrees_with_the_os` and
-    //   `a_re_enumeration_is_silent_and_keeps_ids` fail;
-    // - `present` never reports a rename (`unchanged` always true):
-    //   `a_rename_is_changed_and_keeps_the_id`, `a_direction_change_is_changed`
-    //   and `list_agrees_with_the_os` fail;
-    // - `present` never finds a known handle (every Present is new):
-    //   `a_repeat_of_a_known_state_is_none`, `a_re_enumeration_changes_nothing`
-    //   and `a_re_enumeration_is_silent_and_keeps_ids` fail;
-    // - a rename returns `Added` instead of `Changed`:
-    //   `added_and_removed_alternate_per_id` fails.
     #[test]
     fn added_and_removed_alternate_per_id(changes in prop::collection::vec(change(), 0..60)) {
         let mut listed: BTreeMap<DeviceId, DeviceInfo> = BTreeMap::new();
@@ -293,24 +280,6 @@ proptest! {
 
 // resolve: a saved device against the devices present now. Every case below
 // is derived from the rule in `resolve`'s doc, not from a recorded run.
-//
-// Mutation record, each planted, seen to fail, restored:
-// - the `saved.id.ordinal() == 0` guard dropped from the ALSA arm:
-//   `a_saved_ordinal_above_zero_is_ambiguous_even_with_one_device_present`
-//   fails;
-// - the ALSA arm answering `Exact` in place of `SameName`:
-//   `a_lone_device_with_the_saved_name_is_only_the_same_name` fails;
-// - `take_while` removed: `a_neighbouring_identity_is_not_a_candidate` fails
-//   (the next identity's devices are listed);
-// - the ALSA arm without its `serves` check: `a_lone_device_that_no_longer_goes_the_saved_way_is_ambiguous`
-//   fails;
-// - `serves` comparing directions with `==`: `a_duplex_device_still_serves_a_saved_input` fails;
-// - the `(_, [])` arm resolving `Ambiguous`: `nothing_alike_is_missing` fails;
-// - the Product arm ignoring direction:
-//   `a_unit_port_is_told_by_name_and_direction` fails;
-// - the Product arm ignoring the name: the same test fails;
-// - the Product arm answering `Exact` for the first of several matching
-//   ports: `a_unit_with_two_identical_ports_is_ambiguous` fails.
 
 fn keys_info(table: &mut DeviceTable, n: u64) -> DeviceInfo {
     added(table.apply(OsChange::Present(keys(n))))

@@ -393,10 +393,6 @@ mod tests {
     ///
     /// `node` stands for the node's own handle, which its `prepare` restamps;
     /// `held` for the host's copy, taken first.
-    ///
-    /// Mutation: storing the rate per clone (give `PluginControls` a hand-written
-    /// `Clone` that copies `sample_rate` into a fresh `Arc`) leaves `held` at
-    /// 44.1 kHz → fails.
     #[test]
     fn a_handle_taken_before_a_rate_change_reads_the_new_rate() {
         let node = controls();
@@ -409,10 +405,6 @@ mod tests {
     /// control its transport snapshot reads besides its own graph's `Env`:
     /// a meter installed on the live node between the gather and the build
     /// does not reach it.
-    ///
-    /// Mutation: drop the meter copy from `ForkedSources::install` → fails.
-    /// Mutation (run): `sources_now` keeping the live slot (`self.meter.clone()`)
-    /// and `install` reading it then → the fork gets the later meter → fails.
     #[test]
     fn a_fork_gets_the_live_meter() {
         let live = controls();
@@ -431,10 +423,6 @@ mod tests {
     }
 
     /// Latency and tail written through one handle are read through another.
-    ///
-    /// Mutation: minting a fresh `latency` cell in `Clone` makes a host's
-    /// handle read the load-time figure forever — a latency change that never
-    /// re-plans PDC.
     #[test]
     fn latency_and_tail_are_shared_between_handles() {
         let node = controls();
@@ -449,11 +437,6 @@ mod tests {
     /// both read live off shared cells: a host holding a handle taken at load
     /// sees a latency change and a re-prepared chunk alike, which is what it
     /// hands `Editor::set_latency`.
-    ///
-    /// Mutation: `declared_latency` returning `Latency::new(self.latency())`
-    /// (dropping the pipeline) → 512 ≠ 576 → fails. Mutation: a per-handle
-    /// `pipeline` cell → the held handle keeps 64 after the node's re-prepare
-    /// to 32 → fails.
     #[test]
     fn the_declared_latency_is_the_plugins_plus_the_pipelines() {
         let node = controls();

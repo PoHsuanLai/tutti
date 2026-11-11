@@ -201,11 +201,6 @@ mod tests {
     /// quality-of-implementation and differ in the last ulp between C runtimes
     /// (the same reason `tutti-nodes`'s click digest is gated off MSVC), so those
     /// two are pinned against the f64 closed form with a tolerance instead.
-    ///
-    /// Mutation: dropping `Crush`'s `max(1.0)` floor fails the drive-0.5 row
-    /// (round(0.6·0.5) is 0, not 1); dropping Atan's `2/π`
-    /// rescale fails its row by ~0.36; swapping Softsign's `abs` for the signed
-    /// value fails the −3 row (−3/−2 = 1.5).
     #[test]
     fn curves_are_pinned() {
         let exact = [

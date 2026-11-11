@@ -252,8 +252,7 @@ mod tests {
     use super::*;
 
     /// `ready`, `map` and `stop` agree on every arm, so a caller can use any of
-    /// them. Mutation: map `Ended` to `Stop::Starved` in `ready` and the first
-    /// assertion fails.
+    /// them.
     #[test]
     fn a_pull_names_why_it_has_no_frames() {
         assert_eq!(Pull::Frames(Samples(3)).ready(), Ok(Samples(3)));

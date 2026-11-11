@@ -15,10 +15,6 @@ const BLOCK: usize = 64;
 
 /// No `Wet` port in any of them: the filter's ports are its cutoff, Q and gain, in
 /// that order, a live Freeverb's its room and damping, and a fixed one has none.
-///
-/// Mutation (run): `DesignNode::shape` putting `UnitAddr::first(UnitParam::Wet)`
-/// first in the declared addresses fails the filter's and the live reverb's
-/// assertions; `param_base` returning the cell at `k + 1` fails the base ones.
 #[test]
 fn a_design_nodes_ports_start_at_its_first_cell() {
     let filter = prepared(

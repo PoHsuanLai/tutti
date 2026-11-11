@@ -339,8 +339,6 @@ mod tests {
     }
 
     /// d'(0) is 1 by definition, for any signal the difference function can see.
-    ///
-    /// Mutation: write `0.0` at lag 0 instead of `1.0` → fails, "d'(0) must be 1 by definition, got 0".
     #[test]
     fn cmndf_equals_one_at_lag_zero() {
         let mut det = detector();
@@ -353,8 +351,6 @@ mod tests {
     }
 
     /// A pure sine's CMNDF dips below the YIN threshold at the true period.
-    ///
-    /// Mutation: store `1.0` at every lag instead of `d(τ)·τ / Σ d(j)` → fails, "d'(109) = 1 was not below threshold 0.1".
     #[test]
     fn cmndf_dips_below_threshold_at_the_true_period() {
         let freq = Hz(440.0);
@@ -373,8 +369,6 @@ mod tests {
     /// is deeper. A 110 Hz saw is periodic at T *and* 2T; 2T is the global
     /// minimum — the second-harmonic dip of the period — but the first
     /// below-threshold dip is the fundamental.
-    ///
-    /// Mutation: return the global minimum instead of the first below-threshold local min → fails, "first-local-minimum should return ~436.4 (fundamental), got 873".
     #[test]
     fn first_local_minimum_beats_a_deeper_later_dip() {
         let freq = Hz(110.0);
@@ -409,8 +403,6 @@ mod tests {
 
     /// Parabolic interpolation recovers a half-sample period; the integer lag
     /// alone is off by half a sample.
-    ///
-    /// Mutation: return `tau as f64` and skip the parabolic adjustment → fails, "interpolated period 100 should be within 0.05 of 100.5".
     #[test]
     fn parabolic_interpolation_recovers_a_half_sample_period() {
         let true_period = 100.5;
@@ -432,8 +424,6 @@ mod tests {
 
     /// All-zero, DC, and white-noise buffers are unvoiced: no lag falls below
     /// threshold, so the detector must not invent a pitch.
-    ///
-    /// Mutation: fallback returns `(best_tau, best_val)` even when `best_val >= 0.5` → fails, "zeros: a lag of 24 (aperiodicity 1) fell out of an aperiodic buffer".
     #[test]
     fn aperiodic_buffers_are_unvoiced() {
         for (label, samples) in [
@@ -463,8 +453,6 @@ mod tests {
 
     /// YIN's CMNDF is a ratio, so a 40 dB amplitude change must not move the
     /// frequency.
-    ///
-    /// Mutation: multiply the reported frequency by mean-abs amplitude → fails, "440 Hz read as 2.7983882 at amp 0.01 but 279.83868 at amp 1.0".
     #[test]
     fn the_estimate_is_invariant_to_amplitude_scaling() {
         let freq = Hz(440.0);
@@ -496,9 +484,6 @@ mod tests {
     /// The FFT-derived difference function equals its definition
     /// `d(tau) = sum_{j<W} (x[j] - x[j+tau])^2`, summed directly, and is zero
     /// at a lag that is a whole number of periods.
-    ///
-    /// Mutation checked: skipping the conjugate in the cross-power product
-    /// (`*buf = *a * *buf`) fails both checks.
     #[test]
     fn the_difference_function_matches_its_definition() {
         // 480 Hz at 48 kHz: exactly 100 samples per period.

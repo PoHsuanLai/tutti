@@ -189,9 +189,6 @@ mod tests {
     /// A line for 0.1 s at 48 kHz holds 4800 frames: `0.1 * 48000` is 4800 in
     /// `f64`, so its `_ceil` is 4800, where the `f32` nearest 0.1 times 48000
     /// is 4800.00007 and rounds up to 4801.
-    ///
-    /// Mutation (run): rounding `max_delay_secs` through `f32` (`Seconds::from_f32(s.to_f32())`) before `to_samples_ceil`
-    /// (the old `f32` detour) makes the line 4801 frames and fails.
     #[test]
     fn a_line_is_sized_from_the_exact_seconds() {
         let from_secs = DelayLine::from_seconds(Seconds(0.1), SampleRate(48_000.0));
@@ -212,10 +209,6 @@ mod tests {
     /// An integer read is a delay of exactly that many frames, at every
     /// delay the line holds and every cursor position: an impulse pushed at
     /// frame `k` reads back at `d` only on frame `k + d`.
-    ///
-    /// Mutation (run): drop the wrap's subtract in `read_at` → reads past the
-    /// end → panics; wrap at `idx > len` → reads index `len` → panics;
-    /// subtract one fewer → the impulse lands a frame early → fails.
     #[test]
     fn an_integer_read_delays_by_exactly_that_many_frames() {
         const MAX: usize = 6;

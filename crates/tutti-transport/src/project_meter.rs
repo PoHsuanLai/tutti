@@ -322,12 +322,6 @@ mod tests {
     /// as one shared cell did. A slot that stops following, or follows
     /// another meter, no longer hears it.
     ///
-    /// Mutations (run): `set_meter` not publishing to the followers → the
-    /// slots read the old meter, fails; `forget` not removing the slot from
-    /// the list → the unfollowed slot reads 5/4, fails; `follow` not
-    /// forgetting the meter it followed before → the moved slot reads 5/4,
-    /// fails.
-    ///
     /// Not covered here: that a moved slot goes from the old meter's map to
     /// the new one's in one publish, never through `None`. The two would be
     /// consecutive publishes inside one `follow` call, which a reader on one
@@ -378,10 +372,6 @@ mod tests {
     /// **Following the same meter again lists the slot once**, so a host
     /// that re-installs the project meter (each `PluginControls::set_meter`)
     /// does not make every later `set_meter` publish into the node N times.
-    ///
-    /// Mutation (run): `attach` pushing without first removing the slot's
-    /// own entry (`!Weak::ptr_eq(f, &me)` dropped from its `retain`) → five
-    /// follows list five followers, fails.
     #[test]
     fn following_the_same_meter_again_lists_the_slot_once() {
         let project = ProjectMeter::default();
@@ -400,9 +390,6 @@ mod tests {
 
     /// A slot whose node and handles are gone is dropped from the project's
     /// list, not kept alive or published to.
-    ///
-    /// Mutation (run): `set_meter` keeping a follower whose slot is gone
-    /// (`None => true` in its `retain`) → the dead slot stays listed, fails.
     #[test]
     fn a_dropped_slot_leaves_the_list() {
         let project = ProjectMeter::default();
@@ -419,12 +406,6 @@ mod tests {
     /// **A meter a block still held when `set_meter` replaced it is freed by
     /// the next `reclaim`**, with no further publish: in the metronome's cell
     /// and in a following slot's.
-    ///
-    /// Mutations (run): `ProjectMeter::reclaim` not reclaiming the
-    /// metronome's cell → the old meter is still alive, fails; not
-    /// reclaiming the followers → still alive (the slot's retired value
-    /// holds it), fails; `MeterSlot::reclaim` returning 0 without
-    /// reclaiming → the unfollowed slot's old meter is still alive, fails.
     #[test]
     fn reclaim_frees_a_meter_a_block_held_across_its_replacement() {
         let old = meter_of(3);

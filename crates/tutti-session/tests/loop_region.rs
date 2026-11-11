@@ -6,10 +6,6 @@
 //! `LoopEdit`; the region is the engine's, so a read shows an edit only once
 //! a block has applied it. `LoopRange::new` is where an inverted brace is
 //! refused.
-//!
-//! Mutation (run): `LoopRegion::with` keeping the old `armed` whatever the
-//! edit says → the disarm leaves `bounds()` right but the armed assertions
-//! fail.
 
 use tutti_transport::{LoopEdit, LoopRegion};
 use tutti_types::Beat;

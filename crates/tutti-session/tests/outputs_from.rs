@@ -9,11 +9,6 @@
 //! Nothing warns, nothing logs, and the first node is simply gone from the
 //! output: that is the documented behaviour, pinned so it stays the
 //! behaviour a host wires `MasterSources`-style declarations around.
-//!
-//! Mutation (run in `bevy-tutti`): `Graph::set_outputs_from` writing only the
-//! channels that read nothing yet (a layering "mix") → the second claim does
-//! not land and the first test fails. Run here: `feed_outputs` skipping a
-//! channel that already has a source, the same mutation.
 
 use tutti_graph::ForkByClone;
 use tutti_nodes::testing::Osc;

@@ -87,9 +87,6 @@ fn a_tidy_editor_registers_and_unregisters() {
 /// are not called afterwards.** A VSTGUI frame that fails to unregister leaves
 /// raw pointers into a view the host has released; the next `run_iteration`,
 /// for any plugin of the module, would call them.
-///
-/// Mutation: drop the `purge_run_loop` call in `Plugin::release_editor` -> the
-/// registrations stay (the first assertion fails) and the leaked timer fires.
 #[test]
 fn a_leaked_registration_is_purged_when_the_editor_closes() {
     let main = MainThread::claim().unwrap();
@@ -112,10 +109,6 @@ fn a_leaked_registration_is_purged_when_the_editor_closes() {
 
 /// **A plugin that leaks and is dropped with its editor open does not leave
 /// its registrations to the module's other plugins.**
-///
-/// Mutation: drop the `purge_run_loop` calls (in `release_editor` and in
-/// `Plugin::drop`) -> the second plugin sees (1, 1) and its `run_iteration`
-/// fires the dead plugin's timer.
 #[test]
 fn a_dropped_plugin_leaves_nothing_in_the_run_loop() {
     let main = MainThread::claim().unwrap();
@@ -134,9 +127,6 @@ fn a_dropped_plugin_leaves_nothing_in_the_run_loop() {
 /// **A view that registers and then fails `attached` leaves nothing in the run
 /// loop.** `open_editor` returns the error; the registration the view made
 /// before failing has no editor to be closed with.
-///
-/// Mutation (run, fails): drop the `purge_run_loop` call in `open_editor`'s
-/// error arm -> the module's run loop still holds (1, 1).
 #[test]
 fn a_failed_attach_leaves_nothing_in_the_run_loop() {
     let main = MainThread::claim().unwrap();
@@ -153,10 +143,6 @@ fn a_failed_attach_leaves_nothing_in_the_run_loop() {
 /// `onSize`) is the plugin's, and goes when its editor closes.** It arrives
 /// through the module's own host context, which names no owner; the scope
 /// every token-taking call runs under is what names one.
-///
-/// Mutation (run, fails): drop the `let _scope = self.scoped(main)` in
-/// `resize_editor` -> the registration is unowned, the purge leaves it, and the
-/// last assertion reads (1, 1).
 #[test]
 fn a_registration_from_a_later_call_is_purged_on_close() {
     let main = MainThread::claim().unwrap();
@@ -181,10 +167,6 @@ fn a_registration_from_a_later_call_is_purged_on_close() {
 /// **A class whose `initialize` fails is not terminated.** The shared plugin's
 /// second class refuses `initialize`, and aborts the process on `terminate`
 /// without a successful one.
-///
-/// Mutation (run, aborts): terminate the component whether or not it
-/// initialized (`if true` for the `component_initialized` check in
-/// `Plugin::drop`).
 #[test]
 fn a_plugin_whose_initialize_failed_is_not_terminated() {
     let module = module();
@@ -200,10 +182,6 @@ fn a_plugin_whose_initialize_failed_is_not_terminated() {
 /// **A plugin that never initialized is not terminated.** The SDK allows
 /// `terminate` after a successful `initialize` only, and the shared plugin
 /// aborts the process on any other.
-///
-/// Mutation: drop the `component_initialized` check around
-/// `self.component.terminate()` in `Plugin::drop` -> the plugin aborts and the
-/// test process dies.
 #[test]
 fn a_plugin_never_initialized_is_not_terminated() {
     let module = module();
@@ -216,9 +194,6 @@ fn a_plugin_never_initialized_is_not_terminated() {
 /// off the attaching thread or `terminate` off the initializing one, as a real
 /// plugin may crash). `Drop` has no token, so with an editor open and no main
 /// thread under it, it tears nothing down; the run loop is purged all the same.
-///
-/// Mutation (run, aborts): skip the leak (`if false && ...` for the check at the
-/// head of `Plugin::drop`) -> `terminate` runs on the spawned thread.
 #[test]
 fn a_plugin_dropped_off_the_main_thread_is_not_detached_there() {
     let main = MainThread::claim().unwrap();
@@ -234,9 +209,6 @@ fn a_plugin_dropped_off_the_main_thread_is_not_detached_there() {
 /// **`activate_bus` reports the plugin's refusal.** The shared plugin has the
 /// one bus of each kind, at index 0, and refuses any other index; the result
 /// used to be dropped and `Ok(())` returned.
-///
-/// Mutation (run, fails): discard the `activateBus` result in
-/// `Plugin::activate_bus` and return `Ok(())` again.
 #[test]
 fn activate_bus_reports_a_refusal() {
     let main = MainThread::claim().unwrap();

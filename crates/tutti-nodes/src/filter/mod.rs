@@ -13,6 +13,7 @@ pub use ladder::LadderFilterNode;
 pub use svf::SvfFilterNode;
 
 use tutti_dsp::{Cadence, ChannelKernel, Design, Filter};
+use tutti_types::{BusTopology, ChannelLayout};
 
 use crate::params::ControlSet;
 use crate::reverb::NodeDesign;
@@ -38,6 +39,16 @@ impl<K: NodeKernel> NodeDesign for Filter<K> {
     fn set(&self, initial: &K::Controls) -> K::Set {
         self.kernel().set(initial)
     }
+}
+
+/// The bus a filter built for a width runs on: the engine's order for it
+/// ([`BusTopology::assumed`]).
+///
+/// # Panics
+///
+/// Past 16 channels: a filter is one bus.
+fn filter_bus(width: ChannelLayout) -> BusTopology {
+    BusTopology::assumed(width).expect("a filter is at most 16 channels wide")
 }
 
 #[cfg(test)]

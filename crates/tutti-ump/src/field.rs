@@ -236,8 +236,6 @@ mod tests {
     use super::Pitch;
     use crate::Attribute;
 
-    // Mutation record: `from_q7_9` shifting by 15 -> `q7_9_is_widened_by_zero_extension`;
-    // `note_number` dividing by 1 << 24 -> `the_note_number_is_the_integer_part_plus_the_fraction`.
     #[test]
     fn q7_9_is_widened_by_zero_extension() {
         for bits in [0u16, 1, 0x0200, 0x8C30, 0xFE00, 0xFFFF] {

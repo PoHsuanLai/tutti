@@ -8,15 +8,9 @@ use crate::slots::{Padded, Slot};
 /// with one reader pays for one slot, and `n` readers registered at once
 /// hold `n.next_power_of_two()`.
 ///
-/// Mutations: make `register` grow by one slot (`let grow = 1;`); the count
-/// after three readers is 3, not 4. Make it grow by sixteen
-/// (`let grow = 16;`); the count after one reader is 16. In `Slots::slot`,
-/// map every slot of a block to its first (`Some(k) => (k as usize + 1, 0)`);
-/// the slots that alias an owned one look owned, so registration skips them
-/// and grows the list early: the count after four readers is 8. (A bad
-/// mapping cannot make two readers share a slot: `register` takes only a
-/// slot whose `owned` it read as false. That readers lend through distinct
-/// slots across blocks is `parked_loans_pin_one_value_per_reader`'s.)
+/// Two readers never share a slot: `register` takes only a slot whose `owned` it read
+/// as false. That readers lend through distinct slots across blocks is
+/// `parked_loans_pin_one_value_per_reader`'s.
 #[test]
 fn the_list_doubles_from_one_slot() {
     let cell = Arc::new(ArcLend::new(0u32));
@@ -30,9 +24,6 @@ fn the_list_doubles_from_one_slot() {
 /// Slots of dropped readers are reused, so the slot list stays at the
 /// high-water mark of readers registered at once, and doubles past it. A
 /// clone is a registration of its own.
-///
-/// Mutation: make `Reader::drop` do nothing. The re-registrations then take
-/// new slots and the count after them is 32, not 16.
 #[test]
 fn slots_are_reused_and_the_list_keeps_its_high_water_mark() {
     let cell = Arc::new(ArcLend::new(0u32));
@@ -62,10 +53,6 @@ fn slots_are_reused_and_the_list_keeps_its_high_water_mark() {
 /// A loan passed to `mem::forget` leaves its announcement in the slot, which
 /// pins that one value until the reader lends again or its slot is handed to
 /// a new reader. It never pins more.
-///
-/// Mutation: delete `slot.word.store(FREE, ..)` in `Slots::take`. The
-/// forgotten announcement then survives the slot's re-registration and the
-/// last `reclaim` reports 1.
 #[test]
 fn a_forgotten_loan_pins_one_value_until_its_slot_is_reused() {
     let (sites, make) = sites();
@@ -99,9 +86,6 @@ fn a_forgotten_loan_pins_one_value_until_its_slot_is_reused() {
 /// A slot is one padded unit, a cache line or two, so a cell with one reader
 /// holds one such unit for its slots and no reader's slot shares a line with
 /// another's.
-///
-/// Mutation: remove `repr(align)` from `Padded`; its alignment falls to a
-/// word's and the first assertion fails.
 #[test]
 fn a_slot_has_its_own_cache_line() {
     assert!(std::mem::align_of::<Padded<Slot>>() >= 64);
@@ -141,11 +125,6 @@ fn slot_state<T>(reader: &Reader<T>) -> (usize, bool, usize) {
 /// as they were. A counter in the `Reader` would make readers kept side by
 /// side in a `Vec` share a line that every lend writes; one on the cell would
 /// share it among all readers.
-///
-/// Mutations: give `Reader` a `generation: Cell<usize>` field that
-/// `next_claim` bumps instead of the slot's; the reader grows by a word, and
-/// its slot's counter would stay put. Make `next_claim` bump a static counter
-/// instead; the slot's counter stays put.
 #[test]
 fn a_lend_writes_only_its_own_slot() {
     let cell = Arc::new(ArcLend::new(0u32));

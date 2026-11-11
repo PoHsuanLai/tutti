@@ -419,9 +419,6 @@ mod tests {
 
     /// A take delayed by a whole number of samples is found at exactly that
     /// lag, either sign, short or long, with a distinct peak.
-    ///
-    /// Mutation checked: aligning `take` against `reference` the other way
-    /// round (`align(take, reference)`) flips every lag's sign and fails.
     #[test]
     fn a_delayed_copy_is_found_at_exactly_its_delay() {
         let x = noise(4096, 1);
@@ -439,9 +436,6 @@ mod tests {
 
     /// A band-limited signal delayed by a fraction of a sample is recovered
     /// to within a tenth of a sample by the parabolic refinement.
-    ///
-    /// Mutation checked: returning `offset = 0.0` leaves the half-sample
-    /// delays 0.5 off and fails; negating the offset fails the 10.5 case.
     #[test]
     fn a_fractional_delay_is_recovered_within_a_tenth_of_a_sample() {
         for delay in [10.5f32, 3.25, -7.75, 100.5] {
@@ -455,9 +449,6 @@ mod tests {
     /// confidence: the PHAT floor is relative to the spectrum's own level.
     /// The inputs carry a hum, so that a weighting that falls back to energy
     /// at low level (plain correlation) would follow the hum, not the delay.
-    ///
-    /// Mutation checked: an absolute floor (`let floor = PHAT_FLOOR;`) damps
-    /// every bin of the 1e-6 cases and the lag follows the hum, so it fails.
     #[test]
     fn scaling_an_input_changes_nothing() {
         let x = noise(8192, 2);
@@ -482,10 +473,6 @@ mod tests {
 
     /// A loud interferer (a tone with its own phase in each take) steals plain
     /// cross-correlation; PHAT weights every bin alike and keeps the delay.
-    ///
-    /// Mutation checked: making `phase_transform` leave the bins unnormalised
-    /// (`*bin / (bin.norm() + floor)` as `*bin`) lands on the tone's lag and
-    /// fails.
     #[test]
     fn phat_keeps_the_delay_where_plain_correlation_follows_a_hum() {
         let x = noise(8192, 2);
@@ -504,9 +491,6 @@ mod tests {
     /// The same on a source whose spectrum falls 12 dB per octave, with a hum
     /// well above it: whitening has to span the source's own dynamic range, and
     /// plain correlation has neither the hum nor the tilt in its favour.
-    ///
-    /// Mutation checked: no normalisation (as above) fails; so does a floor of
-    /// 1e-2 (`PHAT_FLOOR`), which damps the weak high bins of the tilt.
     #[test]
     fn phat_keeps_the_delay_of_a_steeply_tilted_source_under_a_hum() {
         let x = tilted_noise(8192, 21);
@@ -524,9 +508,6 @@ mod tests {
 
     /// A band keeps what two takes share: a narrow common signal under
     /// independent broadband noise is sharper within the band than outside it.
-    ///
-    /// Mutation checked: treating every bin as in band (`in_band` always
-    /// true) makes the two readings equal and fails.
     #[test]
     fn a_band_limit_leaves_out_what_does_not_correlate() {
         let n = 2048;
@@ -571,9 +552,6 @@ mod tests {
     /// Out-of-band energy does not set the PHAT level: with bins a million
     /// times stronger outside the band, the in-band bins still come out at
     /// unit magnitude, and out-of-band bins are zero.
-    ///
-    /// Mutation checked: taking `strongest` over every bin (dropping the
-    /// `in_band` filter) leaves the in-band bins near 1e-2 and fails.
     #[test]
     fn out_of_band_energy_does_not_set_the_level() {
         // 9 bins of a 16-point transform; at rate 16, bin `k` is `k` Hz.
@@ -596,9 +574,8 @@ mod tests {
 
     /// A decaying, reverb-like filter on the take leaves the lag where it was.
     ///
-    /// Mutation checked: negating the reported lag fails the pin. It is a
-    /// robustness pin, not a discriminator: plain correlation also finds this
-    /// lag, and the hum tests are the ones that tell PHAT from it.
+    /// It is a robustness pin, not a discriminator: plain correlation also finds this lag,
+    /// and the hum tests are the ones that tell PHAT from it.
     #[test]
     fn a_decaying_filter_on_the_take_keeps_the_lag() {
         let x = noise(8192, 4);
@@ -620,11 +597,6 @@ mod tests {
 
     /// Only lags within the bound are chosen, the bound itself included; a
     /// window of one lag has no competitor and reads no confidence.
-    ///
-    /// Mutation checked: searching the whole overlap (`peak()` in place of
-    /// `peak_within`) returns 200 and fails; an exclusive bound fails the
-    /// edge case; returning `1.0` for an empty competitor set (`map_or(
-    /// Confidence::CERTAIN, ..)`) fails the last assertion.
     #[test]
     fn the_max_lag_bound_is_respected() {
         let x = noise(2048, 6);
@@ -639,10 +611,6 @@ mod tests {
 
     /// A peak that spans several lags (a band-limited signal, a perfect delay)
     /// still reads as clear: the flanks of its lobe are not a second peak.
-    ///
-    /// Mutation checked: skipping both walks along the lobe (`while at != limit`
-    /// loops removed from `edge`) puts the flank in as the second peak and the
-    /// confidence falls to about 0.06 and fails.
     #[test]
     fn a_wide_peak_is_not_its_own_runner_up() {
         let cfg = AlignConfig::new(Samples(300))
@@ -670,11 +638,6 @@ mod tests {
     /// ripple above half height stays in the lobe, the flank beyond half height
     /// is walked down before the runner-up is read, an exact tie at the top
     /// does not read as zero, and a lobe that fills the window has no runner-up.
-    ///
-    /// Mutation checked: without the `LOBE_FRACTION` loop the ripple case reads
-    /// 0.05; without the descent loop the flank case reads 0.55; a
-    /// `LOBE_FRACTION` of 2.0 (strict descent only) reads 0.0 on the tie and
-    /// 0.05 on the ripple.
     #[test]
     fn the_lobe_rule_on_made_up_profiles() {
         let read = |profile: &[f32], lag: isize| {
@@ -708,9 +671,6 @@ mod tests {
     /// `1 / sqrt(2 ln n)` of a deviation against a maximum near `3.5`
     /// deviations, so confidence sits near 0.07; the bound allows four times
     /// that.
-    ///
-    /// Mutation checked: reporting a constant `Confidence::CERTAIN` fails the
-    /// bound.
     #[test]
     fn unrelated_noise_has_low_confidence() {
         for seed in 10..14 {
@@ -722,9 +682,6 @@ mod tests {
     /// The parabola is used only where the three points bend down: a delta one
     /// lag to the right of the fitted lag has `curvature > 0`, and NaN has
     /// neither sign; both give zero rather than a clamped nonsense offset.
-    ///
-    /// Mutation checked: `curvature != 0.0` in place of `curvature < 0.0`
-    /// returns -0.5 for the delta (and NaN for the NaN) and fails.
     #[test]
     fn the_parabola_is_used_only_where_it_bends_down() {
         let mut fft = FftScratch::new();
@@ -746,10 +703,6 @@ mod tests {
     }
 
     /// Delay in samples and seconds, and the input checks.
-    ///
-    /// Mutation checked: scaling the seconds by two fails the figure;
-    /// replacing the empty-input, finite, Nyquist, range, rate or silence
-    /// check with `if false` fails the matching assertion.
     #[test]
     fn delay_converts_and_bad_input_is_refused() {
         let a = Alignment {

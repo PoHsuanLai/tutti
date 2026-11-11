@@ -1,22 +1,6 @@
 //! The SMF byte layer: variable-length quantities, running status, framing
 //! and the writer's byte output, against bytes built from the SMF 1.0 spec
 //! (`support`, which shares no code with the crate).
-//!
-//! Mutations run (each planted, seen to fail, restored), in `src/smf/`:
-//!
-//! | mutation | fails |
-//! |---|---|
-//! | `read.rs` `vlq`: `repeat(0..=3, ..)` widened to `0..=4` | `a_five_byte_quantity_is_refused` |
-//! | `read.rs` `vlq`: the 7-bit mask `0x7F` dropped from the fold | `a_quantity_reads_to_its_value` |
-//! | `read.rs` `event`: a sysex returns `Some(status)` for the status after it | `a_sysex_cancels_running_status` |
-//! | `read.rs` `event`: a meta event returns `Some(status)` | `a_meta_event_cancels_running_status` |
-//! | `read.rs` `event`: the running status is dropped after a channel event (`Some(status)` -> `None`) | `running_status_repeats_the_last_channel_status` |
-//! | `read.rs` `smf`: an alien chunk is an error | `an_alien_chunk_is_skipped` |
-//! | `read.rs` `read`: the `bodies.len() > declared` check removed | `more_tracks_than_declared_is_malformed` |
-//! | `write.rs` `vlq`: the `filter` keeps every group (leading zeros written) | `a_quantity_writes_to_its_bytes` |
-//! | `write.rs` `append`: the elision test always false (status always written) | `the_writer_elides_a_repeated_status` |
-//! | `write.rs` `append`: running status kept across a meta (`is_channel.then_some` -> `running`) | `the_writer_restates_a_status_after_a_meta_event` |
-//! | `write.rs` `chunk`: the length written as `body.len() + 1` | `the_writer_is_read_by_a_foreign_decoder` (smf_model), `a_written_file_reads_back_equal` |
 
 mod support;
 

@@ -288,8 +288,6 @@ mod tests {
     /// **An empty chunk before `last` is refused** (doc 027 D8): it makes no
     /// progress, so a peer sending them could hold a reader forever under the
     /// byte limit. An empty `last` chunk is the empty state, and stays valid.
-    ///
-    /// Mutation (run): drop the `Empty` check → the empty chunk is taken → fails.
     #[test]
     fn an_empty_chunk_before_the_last_is_refused() {
         let mut r = Reassembler::default();

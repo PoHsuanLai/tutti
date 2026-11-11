@@ -11,6 +11,7 @@ use tutti_dsp::{Real, Svf, SvfControls, SvfDesign, SvfType};
 use tutti_types::{ChannelLayout, Db, Hz, Q, UnitAddr, UnitParam};
 
 use super::NodeKernel;
+use super::filter_bus;
 use crate::params::ControlSet;
 use crate::reverb::DesignNode;
 
@@ -125,7 +126,7 @@ impl<F: Real> SvfFilterNode<F> {
     /// fixed here: a node with another one is another node.
     #[must_use]
     pub fn with_controls(channels: impl Into<ChannelLayout>, controls: SvfControls) -> Self {
-        Self::live(SvfDesign::new(channels.into()), controls)
+        Self::live(SvfDesign::new(filter_bus(channels.into())), controls)
     }
 }
 
@@ -203,11 +204,6 @@ mod tests {
     /// A fork starts from the values last set through the node's
     /// `ParamSet` and shares no cell with it. See
     /// `tutti_graph::contract::assert_param_fork` for what it pins.
-    ///
-    /// Mutation (run): drop the Q `detach` in `fork_fresh` → "a live write
-    /// reached the fork" for `Q`. Mutation (run): leave `GainDb` out of
-    /// `param_set` → the gain is unreachable by address, and the count
-    /// assertion below fails.
     #[test]
     fn a_fork_starts_from_the_authored_values_and_shares_nothing() {
         let node = SvfFilterNode::<f64>::with_controls(
@@ -313,9 +309,6 @@ mod tests {
     }
 
     /// `reset` clears the integrators: silence in is silence out.
-    ///
-    /// Mutation (run): an empty `Node::reset` → the ringing state leaks
-    /// into the silent block → fails.
     #[test]
     fn test_svf_reset() {
         let mut filter = prepared(SvfFilterNode::<f64>::new(
@@ -468,11 +461,6 @@ mod tests {
     /// cutoff, Q and gain as its modulatable params, and reports
     /// `Tail::Unknown`. (Doc 014 §12.6 added the gain port: a route onto an
     /// SVF's gain was refused once the frame-rate driver went.)
-    ///
-    /// Mutation (run): swap `SVF_PARAMS`' order → the params assertion fails.
-    /// Mutation (run): drop `.with_tail(Tail::Unknown)` → the shape's default
-    /// `Tail::None` → the tail assertion fails. Mutation (run):
-    /// `param_base(2)` answering the Q cell → fails.
     #[test]
     fn the_shape_is_the_width_and_declares_cutoff_q_and_gain() {
         let f = SvfFilterNode::<f64>::with_channels(
@@ -597,10 +585,6 @@ mod tests {
     /// (A write *during* a block cannot be staged in a single-threaded test —
     /// the control thread writes between callbacks — so "between blocks" is the
     /// observable form of "not before the next block".)
-    ///
-    /// Mutation: solving straight at the target and rendering the block held
-    /// (a jump) fails `assert_ramps_in`; dropping the `self.applied = Some(controls)`
-    /// in `DesignNode::apply` (the block's final solve) fails the controls check.
     #[test]
     fn a_cutoff_change_is_read_next_block_and_ramped_across_it() {
         use crate::test_support::{change_between_node_blocks, noise};
@@ -631,9 +615,6 @@ mod tests {
     /// is below the type's floor. A low-pass at 800 Hz on an 800 Hz sine has a
     /// steady-state gain of Q at the cutoff, so RMS is `0.7071 · 0.7071 = 0.5` (0.457 measured: the bilinear warp costs a few percent);
     /// a later finite Q takes effect, and `reset` keeps the output finite.
-    ///
-    /// Mutation (run): the Q `LastGood` fallback `Q::BUTTERWORTH` → `0.0` → RMS
-    /// settles near 0.007 → fails.
     #[test]
     fn a_nan_q_at_construction_is_butterworth_and_recovers() {
         let x = generate_sine(800.0, 44_100.0, 8 * 1024);
@@ -665,10 +646,6 @@ mod tests {
     /// block where another control moves and forces a re-solve, which is the
     /// case a threshold comparison alone lets through. The filter keeps
     /// running at the last good cutoff, and picks up the next finite write.
-    ///
-    /// Mutation: reading the cutoff cell raw in `Params::read` (no
-    /// `LastGood`) fails the second assertion — the NaN reaches the solve and
-    /// the output goes NaN for good.
     #[test]
     fn a_nan_in_a_raw_cell_never_reaches_the_state() {
         use crate::test_support::noise;

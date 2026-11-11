@@ -569,10 +569,6 @@ mod factory_flag_tests {
 
     /// **A bit the plugin sets that this host does not name survives the
     /// decode**, so a caller sees exactly what the plugin said.
-    ///
-    /// Mutation (run, fails): `from_bits_truncate` in `FactoryInfo::from_c`
-    /// together with removing `FactoryFlags`'s `const _ = !0` -> the unnamed bit
-    /// is gone (`from_bits_truncate` alone passes: the const names every bit).
     #[test]
     fn an_unnamed_factory_flag_bit_survives() {
         let mut raw: vst3::Steinberg::PFactoryInfo = zeroed();

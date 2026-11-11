@@ -117,10 +117,6 @@ fn covered(name: &str) -> Vec<(f64, f64)> {
 /// 7-10 and 5-10. The front wall is (0,2,7), (2,7,8) and (1,2,8), and each
 /// side wall three triangles. Thirteen triangles, none overlapping, none with a
 /// speaker inside.
-///
-/// Mutations (each run, each fails): the pair's long-way-round gap test dropped
-/// (stereo lists `[0, 1]` again); the crossing rule of `accepted_edges` removed
-/// (the square lists all four of its triangles).
 #[test]
 fn the_tuple_sets_of_the_presets_are_the_hand_derived_ones() {
     let want: [(&str, Vec<Vec<u16>>); 5] = [
@@ -169,9 +165,6 @@ fn the_tuple_sets_of_the_presets_are_the_hand_derived_ones() {
 
 /// Pulkki's normalisation: inside the coverage of its tuples the gains'
 /// squares sum to 1.
-///
-/// Mutation (run, fails): the solve's `norm` fixed at `1.0` (the tuple's raw
-/// solution, whose power is 1 only on a speaker).
 #[test]
 fn the_sum_of_squared_gains_is_one() {
     for (name, layout, _) in presets() {
@@ -193,12 +186,6 @@ fn the_sum_of_squared_gains_is_one() {
 /// pair. The bound is `f32` accumulation over at most 12 gains, each narrowed
 /// from `f64`; the failures it is here for (a missing or doubled
 /// normalisation, a clamped-away arc) are order 1.
-///
-/// Mutations (each run, each fails): the renormalisation in
-/// `unit_power_gains` removed (stereo at 45 degrees, spread 0: 0.933 against
-/// 1); the elevation retreat removed, the solve run once (Atmos at -90 degrees
-/// and the horizontal layouts at +-90, all gains zero); `apply_spread`'s
-/// renormalisation removed (every preset at spread 0.5 is off unit power).
 #[test]
 fn the_corrected_gains_are_unit_power_everywhere() {
     for (name, layout, _) in presets() {
@@ -229,10 +216,6 @@ fn the_corrected_gains_are_unit_power_everywhere() {
 /// degrees and everything beyond it on that side is the one speaker, and a
 /// pan through 180 degrees never goes silent. The figures are the pan law
 /// at 15 degrees (`0.939071`, `0.343724`) and the equal-power centre.
-///
-/// Mutations (each run, each fails): the clamp applied without the correction
-/// (90 degrees at half energy); the fold without the renormalisation (the same
-/// figure at 90); the renormalisation without the fold (180 degrees silent).
 #[test]
 fn a_front_only_pair_mirrors_the_rear_and_hard_pans_outside_it() {
     let layout = SpeakerLayout::stereo();
@@ -265,9 +248,6 @@ fn a_front_only_pair_mirrors_the_rear_and_hard_pans_outside_it() {
 /// The fold is for a front-only array and nothing else: quad has speakers
 /// behind the listener, so a rear bearing lights the rear pair and a front
 /// bearing the front pair (speakers FL, FR, RL, RR).
-///
-/// Mutation (run, fails): the `has_rear_speakers` gate dropped so every
-/// layout folds (quad at 180 degrees lights the front pair).
 #[test]
 fn a_surrounding_layout_does_not_fold_its_rear_arc() {
     let layout = SpeakerLayout::quad();
@@ -292,9 +272,6 @@ fn a_surrounding_layout_does_not_fold_its_rear_arc() {
 
 /// The gains are never negative, in or out of the coverage (the clamp), and
 /// the corrected solve's are unit power everywhere.
-///
-/// Mutation (run, fails): the clamp `.max(0.0)` removed (outside the coverage
-/// a gain is negative).
 #[test]
 fn gains_are_not_negative() {
     for (name, layout, _) in presets() {
@@ -319,9 +296,6 @@ fn gains_are_not_negative() {
 
 /// At most two gains are non-zero for a horizontal layout and three for one
 /// with height: a source is placed by one tuple.
-///
-/// Mutation (run, fails): every tuple's gains written out (the loop's
-/// `best` replaced by an accumulation), so neighbours' gains survive.
 #[test]
 fn a_source_uses_at_most_a_tuple() {
     for (name, layout, _) in presets() {
@@ -341,10 +315,6 @@ fn a_source_uses_at_most_a_tuple() {
 
 /// A source at a speaker puts all its power there, through the corrected
 /// solve too.
-///
-/// Mutation (run, fails): the second and third columns of a triplet's matrix
-/// swapped in `SpeakerLayout::new` (Atmos's heights land on the wrong
-/// speakers).
 #[test]
 fn a_source_at_a_speaker_puts_all_its_gain_there() {
     for (name, layout, positions) in presets() {
@@ -368,11 +338,6 @@ fn a_source_at_a_speaker_puts_all_its_gain_there() {
 /// slope of 14 per radian that the steepest tuple (a thin triangle near the
 /// pole) stays under and a jump between overlapping tuples (0.1 and up) does
 /// not.
-///
-/// Mutations (each run, each fails): the crossing rule removed from
-/// `accepted_edges` (the overhead square keeps both diagonals, and the tuple
-/// that wins flips between two triangulations along the line where their
-/// smallest gains meet).
 #[test]
 fn gains_are_continuous_across_every_tuple_edge() {
     const STEP: f64 = 0.05;
@@ -415,10 +380,6 @@ fn gains_are_continuous_across_every_tuple_edge() {
 
 /// Straddling an edge shared by two triangles by a millionth of a radian, the
 /// gains agree: the tuples share the edge and its two speakers' gains.
-///
-/// Mutation (run, fails): the `beyond > EPS` rejection removed from `facets`
-/// (a triangle across the overhead cap, with speakers behind its plane,
-/// overlaps its neighbours and the gain jumps at their shared edge).
 #[test]
 fn a_shared_edge_has_the_same_gains_on_both_sides() {
     let layout = SpeakerLayout::atmos_7_1_4();
@@ -463,10 +424,6 @@ fn a_shared_edge_has_the_same_gains_on_both_sides() {
 /// the three triangles around the zenith and not the large one over it. (A
 /// speaker on the sphere is never inside a planar triangle of three others, so
 /// "inside" is "beyond the corners' plane".)
-///
-/// Mutation (run, fails): the `beyond > EPS` rejection removed from `facets`
-/// (the large triangle `[0, 1, 2]` joins the three, and its gains, positive
-/// across the cap, overlap theirs).
 #[test]
 fn a_triangle_with_a_speaker_inside_is_split() {
     let cap = layout(&[(0.0, 20.0), (120.0, 20.0), (-120.0, 20.0), (0.0, 90.0)]);
@@ -477,11 +434,6 @@ fn a_triangle_with_a_speaker_inside_is_split() {
 }
 
 /// A layout the method cannot tile is refused with the reason.
-///
-/// Mutations (each run, each fails): the duplicate-corner rule removed from
-/// `facets` (the layout builds, with two identical tuples); the
-/// coplanar-with-listener volume test removed from `facets` and from
-/// `inverse3` (the great-circle triple is a tuple).
 #[test]
 fn a_layout_that_cannot_be_tiled_is_refused() {
     let make = |p: &[Position]| {

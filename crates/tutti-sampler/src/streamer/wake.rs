@@ -91,10 +91,6 @@ fn claim(reader: &mut StreamReader, play: u64) {
 
 /// **An open wakes a sleeping streamer**: the open's command rings, the
 /// streamer answers, well inside the backstop.
-///
-/// Mutation (run): `StreamerSender::send` without its `self.bell.ring()` ->
-/// the open is not answered for 60 s -> `settle_threaded` fails at its 10 s
-/// bound.
 #[test]
 fn an_open_wakes_a_sleeping_streamer() {
     let dir = tempfile::tempdir().expect("a temp dir");
@@ -107,9 +103,6 @@ fn an_open_wakes_a_sleeping_streamer() {
 /// **A ring below its refill threshold wakes a sleeping streamer**: the
 /// reader plays on inside its window until fewer than three quarters of the
 /// ring are ahead of it, and its block rings; the streamer extends the window.
-///
-/// Mutation (run): `RingReader::block` without its `ring_refill` call -> the
-/// window never grows -> fails at the bound.
 #[test]
 fn a_ring_below_threshold_wakes_a_sleeping_streamer() {
     let dir = tempfile::tempdir().expect("a temp dir");
@@ -124,10 +117,6 @@ fn a_ring_below_threshold_wakes_a_sleeping_streamer() {
 /// **A jump outside the window wakes a sleeping streamer**: the reader seeks
 /// far past the window's end, and its block rings; the streamer moves the
 /// window to hold it. (`refill_one` used to find this by polling.)
-///
-/// Mutation (run): `RingReader::block` without its `ring_refill` call -> the
-/// window never moves -> fails at the bound. Mutation (run): `needs_refill`
-/// returning `Satisfied` for a jump -> the same.
 #[test]
 fn a_jump_outside_the_window_wakes_a_sleeping_streamer() {
     let dir = tempfile::tempdir().expect("a temp dir");
@@ -182,10 +171,6 @@ impl Gate {
 /// that cannot seek is handed to the lane, the streamer goes back to sleep with
 /// the decode held, and the lane's reply (a command on the streamer's own
 /// queue) rings it.
-///
-/// Mutation (run): `StreamerSender::send` ringing for every command but
-/// `Decoded` -> the open is answered only at the 60 s backstop -> fails at
-/// `settle_threaded`'s bound.
 #[cfg(feature = "mp3")]
 #[test]
 fn a_decode_reply_wakes_a_sleeping_streamer() {
@@ -213,9 +198,6 @@ fn a_decode_reply_wakes_a_sleeping_streamer() {
 /// the streamer thread parked on the bell for the first of them and running for
 /// the rest (so both the unpark and the already-awake path are taken). The
 /// allocator's trap covers frees too.
-///
-/// Mutation (run): `Bell::ring_refill` allocating (`std::hint::black_box(
-/// Box::new(0u8))`) -> the first ringing block aborts the process.
 #[test]
 fn a_voices_ring_is_allocation_free() {
     let dir = tempfile::tempdir().expect("a temp dir");

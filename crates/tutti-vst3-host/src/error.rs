@@ -115,10 +115,6 @@ mod tests {
 
     /// A load failure reads with its stage and the cause's own message, and a
     /// missing class names what the bundle does export.
-    ///
-    /// Mutation (run): dropping `{cause}` from the `LoadFailed` format string
-    /// fails the first assertion; dropping `offered` from `ClassNotFound`'s
-    /// message fails the second.
     #[test]
     fn load_failed_displays_its_cause() {
         let err = Vst3Error::LoadFailed {

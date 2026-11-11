@@ -19,9 +19,9 @@
 
 use tutti_graph::Offset;
 use tutti_graph::UmpAt;
-use tutti_midi_protocol::{midi1, widen_bytes};
+use tutti_midi_protocol::{Narrower, widen_bytes};
 use tutti_plugin_types::WireMidi;
-use tutti_ump::{Midi1Bytes, MidiGroup, Ump, decode};
+use tutti_ump::{Message, MidiGroup, Ump, decode};
 
 /// A block's plugin-to-host MIDI, reserved once and reused.
 pub type MidiEventVec = Vec<WireMidi>;
@@ -129,33 +129,47 @@ pub fn to_midi(event: &crate::api::MidiEvent) -> Option<WireMidi> {
 /// channel/poly pressure, program change (everything with a 3-byte MIDI-1
 /// form). SysEx is not a `api::MidiEvent` in VST2: [`MidiSendBuffer::stage_piece`]
 /// reassembles it into a `SysExEvent`.
-/// Returns `None` when the packet is not exactly one MIDI 1.0 message: per-note
-/// pitch bend, per-note controllers and management (no MIDI-1 analogue), and a
-/// Program Change with a bank (three messages; `stage_piece` sends all three).
+/// Returns `None` when the packet is not exactly one MIDI 1.0 message, on a
+/// stream that has sent nothing before it: per-note pitch bend, per-note
+/// controllers and management (no MIDI-1 analogue), a Program Change with a
+/// bank (three messages) and an RPN or NRPN (four). [`MidiSendBuffer`] sends all
+/// of them, through a [`Narrower`] that keeps the stream's state.
 pub fn from_midi(event: &WireMidi) -> Option<crate::api::MidiEvent> {
-    let mut messages = midi1_of(event.ump);
-    let only = messages.next()?;
-    messages
-        .next()
-        .is_none()
-        .then(|| midi_event(event.offset, only))
+    let mut messages = [[0u8; 3]; MAX_MESSAGES];
+    match narrowed(&mut Narrower::new(), event.ump, &mut messages) {
+        1 => Some(midi_event(event.offset, messages[0])),
+        _ => None,
+    }
 }
 
-/// The MIDI 1.0 messages `ump` stands for, in send order (none when it has no
-/// MIDI 1.0 form, or does not decode).
-fn midi1_of(ump: Ump) -> impl Iterator<Item = Midi1Bytes> {
-    decode(ump).ok().into_iter().flat_map(midi1)
+/// The most MIDI 1.0 messages one UMP stands for: an RPN or NRPN's select and
+/// data.
+const MAX_MESSAGES: usize = 4;
+
+/// The MIDI 1.0 messages `ump` stands for through `narrower`, in send order, into
+/// `out`; how many. None when it has no MIDI 1.0 form (a per-note controller, a
+/// relative controller) or does not decode.
+fn narrowed(narrower: &mut Narrower, ump: Ump, out: &mut [[u8; 3]; MAX_MESSAGES]) -> usize {
+    let mut n = 0;
+    if let Ok(message) = decode(ump) {
+        narrower.feed(message, |bytes| {
+            if n < MAX_MESSAGES {
+                // VST2's `midi_data` is a fixed `[u8; 3]`: a short message is zero-padded.
+                out[n] = bytes.padded();
+                n += 1;
+            }
+        });
+    }
+    n
 }
 
 /// One MIDI-1 message as a VST2 event at `frame_offset`.
-fn midi_event(frame_offset: u32, message: Midi1Bytes) -> crate::api::MidiEvent {
+fn midi_event(frame_offset: u32, midi_data: [u8; 3]) -> crate::api::MidiEvent {
     use crate::api;
     use std::mem;
 
-    // VST2's `midi_data` is a fixed `[u8; 3]`: a short message is zero-padded.
-    // A message with no 3-byte form (SysEx) never reaches here: `midi1` has
+    // A message with no 3-byte form (SysEx) never reaches here: the narrower has
     // none for it, and `stage_piece` sends SysEx as a `SysExEvent`.
-    let midi_data = message.padded();
 
     // `frame_offset` is `u32`; VST2's `delta_frames` is `i32`. A value past
     // `i32::MAX` wraps negative, and the plugin offsets into its own buffers
@@ -215,6 +229,13 @@ pub struct MidiSendBuffer {
     /// Reassembles SysEx7 packets and owns the bytes a `SysExEvent` points
     /// at. Reserved at construction; an open message carries across blocks.
     sysex: SysexAssembler<Box<[u8]>>,
+    /// The MIDI 2.0 to MIDI 1.0 state of what the plugin has been sent: which RPN,
+    /// NRPN and bank each channel has had selected. VST2 has one MIDI input, so
+    /// only Group 0's channels are in it.
+    narrower: Narrower,
+    /// Channel voice messages of a Group other than 0, which VST2's one MIDI
+    /// input cannot tell from Group 0's.
+    groups_dropped: u64,
     /// The SysEx messages the block completed, each with the index of its
     /// `END` packet and the frame (clamped to the block) it lands on, filled once at the block's first piece and
     /// selected from by every piece. A message is assembled once per block: a
@@ -274,6 +295,8 @@ impl MidiSendBuffer {
             sysex_events: Vec::with_capacity(events),
             order: Vec::with_capacity(events),
             sysex: sysex_assembler(),
+            narrower: Narrower::new(),
+            groups_dropped: 0,
             completed: Vec::with_capacity(events),
             event_ptrs: Vec::with_capacity(events),
             header: Vec::with_capacity(header_words(events)),
@@ -391,17 +414,32 @@ impl MidiSendBuffer {
             let Some(delta) = delta_in_piece(*offset) else {
                 continue;
             };
-            // One UMP can be several MIDI-1 messages (a Program Change with a
-            // bank is CC 0, CC 32, PC): each takes a slot at the same frame,
-            // and all of them fit or none is staged (a bank is not sent
-            // without its program).
-            let n = midi1_of(*ev).count();
-            if self.order.len() + n > self.room {
-                self.events_dropped += n as u64;
+            // VST2 has one MIDI input, which is Group 0's: a channel voice
+            // message of another Group names channels this plugin cannot tell
+            // from Group 0's (M2-104 section 2.1.2), so it is dropped and counted,
+            // never heard on them. A message with no Group's channels (System,
+            // Utility) is not a Group's.
+            if ev.group().is_some_and(|group| group != MidiGroup::FIRST)
+                && matches!(decode(*ev), Ok(Message::Midi1(..) | Message::Midi2(..)))
+            {
+                self.groups_dropped += 1;
                 continue;
             }
-            for message in midi1_of(*ev) {
-                let mut api = midi_event(offset.get(), message);
+            // One UMP can be several MIDI-1 messages (a Program Change with a
+            // bank is CC 0, CC 32, PC; an RPN or NRPN is CC 101 and 100 or 99
+            // and 98, then CC 6 and 38): each takes a slot at the same frame,
+            // and all of them fit or none is staged (a bank is not sent
+            // without its program). The narrower keeps what the plugin has had
+            // selected, so a refusal makes it forget: the next one is in full.
+            let mut messages = [[0u8; 3]; MAX_MESSAGES];
+            let n = narrowed(&mut self.narrower, *ev, &mut messages);
+            if self.order.len() + n > self.room {
+                self.events_dropped += n as u64;
+                self.narrower.reset();
+                continue;
+            }
+            for message in &messages[..n] {
+                let mut api = midi_event(offset.get(), *message);
                 api.delta_frames = delta;
                 self.order.push(Staged::Midi(self.api_events.len()));
                 self.api_events.push(api);
@@ -499,9 +537,20 @@ impl MidiSendBuffer {
     }
 
     /// The plugin was reset: drops a SysEx message open across the reset
-    /// (counted in [`sysex_dropped`](Self::sysex_dropped)). Never allocates.
-    pub fn reset_sysex(&mut self) {
+    /// (counted in [`sysex_dropped`](Self::sysex_dropped)) and forgets which RPN,
+    /// NRPN and bank each channel has had selected, so the next controller selects
+    /// in full. Never allocates.
+    pub fn reset_midi(&mut self) {
         self.sysex.reset();
+        self.narrower.reset();
+    }
+
+    /// Channel voice messages dropped since this buffer was made because they
+    /// were of a Group other than 0: VST2 has one MIDI input, which takes Group
+    /// 0's channels only. Each is dropped whole and counted, never heard on
+    /// Group 0's channels (M2-104 section 2.1.2).
+    pub fn groups_dropped(&self) -> u64 {
+        self.groups_dropped
     }
 
     /// Events refused since this buffer was made because a block staged more
@@ -560,9 +609,6 @@ mod tests {
     /// **Draining a full inbox does not allocate**: the out-list was reserved
     /// for the inbox's whole capacity when it was built, and is cleared, not
     /// rebuilt, between blocks.
-    ///
-    /// Mutation (run): `MidiIo::new` building `out` with `MidiEventVec::new()` → the first
-    /// drain grows the list inside the gate → aborts.
     #[test]
     fn draining_a_full_inbox_does_not_allocate() {
         let inbox = Arc::new(ArrayQueue::new(256));
@@ -582,9 +628,6 @@ mod tests {
     /// **A split block's pieces cannot grow the MIDI-out list**: each piece
     /// drains a full inbox, the list holds one inbox's worth, and what does not
     /// fit is counted, not pushed. Inside the no-alloc gate.
-    ///
-    /// Mutation (run): drop the `self.out.len() >= self.room` guard -> the
-    /// second piece grows the list inside the gate -> aborts.
     #[test]
     fn a_split_block_with_full_inboxes_does_not_grow_the_out_list() {
         let inbox = Arc::new(ArrayQueue::new(256));
@@ -756,9 +799,6 @@ mod tests {
     /// `from_midi` is one event: a Program Change with a bank is three, so it
     /// has none (`stage_piece` sends the three), and a MIDI 2.0 Note On at
     /// velocity 0 goes out at velocity 1, not as a MIDI 1.0 Note Off (M2-104).
-    ///
-    /// Mutation (run): `from_midi` returning the first of `midi1`'s messages →
-    /// the bank's CC 0 → fails.
     #[test]
     fn from_midi_is_one_message_or_none() {
         let banked = wire(
@@ -913,10 +953,6 @@ mod tests {
     /// whatever the caller gave: an offset past the block is clamped to its
     /// last frame (as JUCE clamps with `jlimit`) and out-of-order events are
     /// delivered sorted, stably.
-    ///
-    /// Mutation (run): drop the `insertion_sort_by_key` -> delivered in input
-    /// order -> fails. Mutation (run): `delta_in_piece` without the `.min(last)`
-    /// -> the event at 9000 is dropped as out of the block -> fails.
     #[test]
     fn stage_clamps_and_sorts_delta_frames() {
         let mut buf = MidiSendBuffer::new();
@@ -928,9 +964,6 @@ mod tests {
 
     /// A piece of a split block gets the events that fall in it, rebased to
     /// the piece, and each event is delivered in exactly one piece.
-    ///
-    /// Mutation (run): rebase by nothing (`at` for `at - start`) -> the second
-    /// piece reads 70 -> fails.
     #[test]
     fn stage_piece_delivers_each_event_once_rebased() {
         let mut buf = MidiSendBuffer::new();
@@ -956,9 +989,6 @@ mod tests {
     /// completed the run and discarded it as out-of-piece, piece 1 then saw
     /// the `END` with no run open, and a run still open at the block's end
     /// was counted dropped once per extra piece.
-    ///
-    /// Mutation (run): assemble in every piece (`begin_block` and the feed
-    /// outside the `start == 0` guard) -> piece 1 delivers nothing -> fails.
     #[test]
     fn a_sysex_ending_in_a_later_piece_is_delivered_once() {
         let body: Vec<u8> = (0..20).map(|i| i as u8 + 1).collect();
@@ -993,9 +1023,6 @@ mod tests {
     /// **A SysEx keeps its input position among events at the same frame**:
     /// one whose `END` is listed before a note at that frame reaches the
     /// plugin first.
-    ///
-    /// Mutation (run): stage the completed SysEx after every plain event
-    /// (a second loop) -> the note comes first -> fails.
     #[test]
     fn a_sysex_keeps_input_order_at_an_equal_frame() {
         let body: Vec<u8> = (0..20).map(|i| i as u8 + 1).collect();
@@ -1052,10 +1079,6 @@ mod tests {
     /// A Program Change with a bank reaches the plugin as CC 0, CC 32, PC at one
     /// offset, in that order, each in its own slot. With room for fewer than
     /// three, none is staged and all three are counted.
-    ///
-    /// Mutation (run): `stage_piece` sending the event through `from_midi` (one
-    /// message) → only the PC → fails; staging each message on its own room
-    /// check (the old per-message loop) → a partial bank → fails.
     #[test]
     fn a_banked_program_change_stages_as_three_events() {
         let pc = at(
@@ -1108,9 +1131,6 @@ mod tests {
     /// **A multi-packet SysEx reaches the plugin as one `SysExEvent`**, in
     /// order beside the block's MIDI, `0xF0 … 0xF7`; one spanning two blocks
     /// arrives in the second.
-    ///
-    /// Mutation (run): `stage` sending every event through `from_midi` (no
-    /// reassembly) → no SysEx event → fails.
     #[test]
     fn a_multi_packet_sysex_reaches_the_plugin_whole() {
         let body: Vec<u8> = (0..40).collect();
@@ -1156,10 +1176,6 @@ mod tests {
     /// past it is refused and counted.** Notes and complete SysEx messages
     /// fill every list (`api_events`, `sysex_events`, `order`, `header`) to
     /// [`MIDI_STACK_CAPACITY`]; then one more of each.
-    ///
-    /// Mutation (run): `new()` reserving the old 64 events → the lists grow
-    /// inside the gate → aborts. Mutation (run): the `full` refusal removed
-    /// → the lists grow past their room → aborts.
     #[test]
     fn staging_the_whole_cap_does_not_allocate() {
         let note = at(
@@ -1197,10 +1213,6 @@ mod tests {
     /// are valid, banked, undefined and malformed goes through `stage_piece`
     /// inside `assert_no_alloc`; only System, MIDI 1.0 and MIDI 2.0 channel
     /// voice packets stage anything.
-    ///
-    /// Mutation (run): the message-type gate removed from
-    /// `to_midi1_messages` → a Flex Data or Stream packet reaches the
-    /// `midi2` decoder and `assert_no_alloc` aborts.
     #[test]
     fn staging_a_packet_of_any_message_type_allocates_nothing() {
         const BODIES: [u32; 8] = [
@@ -1232,8 +1244,6 @@ mod tests {
 
     /// **The staged `api::Events` pointer is 8-aligned for every list size**,
     /// and its pointer table starts at the flexible array's offset.
-    ///
-    /// Mutation (run): return `words_ptr.byte_add(1)` from `stage_piece` → fails.
     #[test]
     fn the_staged_events_pointer_is_8_aligned() {
         let note = at(
@@ -1263,9 +1273,6 @@ mod tests {
 
     /// **A SysEx left open by a later `START` is dropped whole and counted**,
     /// and the later one arrives.
-    ///
-    /// Mutation (run): the assembler's `START` not abandoning the open run
-    /// → the two are spliced and delivered → fails.
     #[test]
     fn a_start_left_open_is_dropped_and_counted() {
         let a: Vec<u8> = (0..30).collect();
@@ -1279,5 +1286,111 @@ mod tests {
         );
         assert_eq!(staged, vec![(2, framed(&[1, 2, 3, 4, 5, 6, 7]))]);
         assert_eq!(buf.sysex_dropped(), 1);
+    }
+    /// The bytes of what one block of `midi` hands the plugin, through `buf`.
+    fn staged_bytes(buf: &mut MidiSendBuffer, midi: &[UmpAt]) -> Vec<Vec<u8>> {
+        buf.stage_piece(midi, 0, 4096, 4096)
+            .map(read_staged)
+            .unwrap_or_default()
+            .into_iter()
+            .map(|(_, bytes)| bytes)
+            .collect()
+    }
+
+    /// **VST2 has one MIDI input, which takes Group 0 only**: a channel voice
+    /// message of another Group is dropped and counted, never heard on Group 0's
+    /// channels (M2-104 section 2.1.2). A message with no Group's channels (a
+    /// System Real Time message) is still sent.
+    #[test]
+    fn only_group_zero_reaches_the_one_midi_input() {
+        use tutti_ump::{MidiChannel, MidiGroup};
+        let group = |n| MidiGroup::new(n).unwrap();
+        let mut buf = MidiSendBuffer::new();
+        let midi = [
+            at(0, midi::note_on(group(0), MidiChannel::FIRST, 60, 0x8000)),
+            at(0, midi::note_on(group(1), MidiChannel::FIRST, 61, 0x8000)),
+            at(
+                0,
+                midi::cc(
+                    group(2),
+                    MidiChannel::FIRST,
+                    tutti_ump::CCNumber::BRIGHTNESS,
+                    0,
+                ),
+            ),
+            at(0, midi::timing_clock(group(1))),
+        ];
+        assert_eq!(
+            staged_bytes(&mut buf, &midi),
+            [vec![0x90, 60, 64], vec![0xF8, 0, 0]]
+        );
+        assert_eq!(buf.groups_dropped(), 2);
+    }
+
+    /// **An RPN is four Control Changes through the stateful narrower** (M2-104
+    /// Appendix D.2.3): CC 101 and 100 select, CC 6 and 38 carry the top 14 bits
+    /// (12 << 25 is MSB 12, LSB 0); the select is not repeated for the same
+    /// parameter, across blocks, and is sent in full again after a reset.
+    #[test]
+    fn an_rpn_is_four_control_changes_and_the_select_is_not_repeated() {
+        use tutti_ump::{MidiChannel, MidiGroup};
+        let rpn = |value| {
+            at(
+                0,
+                midi::registered_controller(MidiGroup::FIRST, MidiChannel::of(1), 0, 0, value),
+            )
+        };
+        let mut buf = MidiSendBuffer::new();
+        assert_eq!(
+            staged_bytes(&mut buf, &[rpn(12 << 25)]),
+            [
+                vec![0xB1, 101, 0],
+                vec![0xB1, 100, 0],
+                vec![0xB1, 6, 12],
+                vec![0xB1, 38, 0],
+            ]
+        );
+        assert_eq!(
+            staged_bytes(&mut buf, &[rpn(24 << 25)]),
+            [vec![0xB1, 6, 24], vec![0xB1, 38, 0]]
+        );
+        buf.reset_midi();
+        assert_eq!(staged_bytes(&mut buf, &[rpn(12 << 25)]).len(), 4);
+    }
+
+    /// **A bank is resent only when it changes** (M2-104 Appendix D.2.4), and a
+    /// refused message (past the room) makes the narrower forget, so the next
+    /// one is sent in full.
+    #[test]
+    fn a_bank_is_resent_only_when_it_changes() {
+        use tutti_ump::{MidiChannel, MidiGroup};
+        let pc = |program, bank| {
+            at(
+                0,
+                midi::program_change(MidiGroup::FIRST, MidiChannel::FIRST, program, bank),
+            )
+        };
+        let bank = Some(5 << 7 | 9);
+        let mut buf = MidiSendBuffer::new();
+        assert_eq!(
+            staged_bytes(&mut buf, &[pc(3, bank)]),
+            [vec![0xB0, 0, 5], vec![0xB0, 32, 9], vec![0xC0, 3, 0]]
+        );
+        assert_eq!(staged_bytes(&mut buf, &[pc(4, bank)]), [vec![0xC0, 4, 0]]);
+        assert_eq!(staged_bytes(&mut buf, &[pc(4, Some(6 << 7))]).len(), 3);
+
+        // A buffer with room for three: a note then the three-message bank for
+        // bank B does not fit, so the bank is refused whole, and the narrower
+        // forgets it sent bank B: the next Program Change of B is in full.
+        let note = at(
+            0,
+            midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000),
+        );
+        let mut tight = MidiSendBuffer::with_capacity(3);
+        let bank_b = Some(7 << 7);
+        assert_eq!(staged_bytes(&mut tight, &[pc(3, bank)]).len(), 3);
+        assert_eq!(staged_bytes(&mut tight, &[note, pc(4, bank_b)]).len(), 1);
+        assert_eq!(tight.events_dropped(), 3);
+        assert_eq!(staged_bytes(&mut tight, &[pc(5, bank_b)]).len(), 3);
     }
 }

@@ -366,9 +366,6 @@ mod tests {
 
     /// The credit is the back-pressure: with every one held the command is
     /// handed back, and applying one frees one.
-    ///
-    /// Mutation: check `held > limit` → one more is taken past the bound
-    /// → the refusal is not returned → fails.
     #[test]
     fn a_full_schedule_refuses_and_hands_the_command_back() {
         let s = Schedule::new();
@@ -388,10 +385,6 @@ mod tests {
     /// Timed commands cannot use the immediate reserve: the 65th is refused
     /// while `IMMEDIATE_RESERVE` immediate commands still fit, and the next
     /// is handed back.
-    ///
-    /// Mutation (run): the limit `IN_FLIGHT_MAX` for every `At` → the 65th
-    /// timed command is accepted → fails; `SCHEDULE_CAPACITY` for every `At`
-    /// → the first immediate command past 64 is refused → fails.
     #[test]
     fn immediate_commands_have_a_reserve_timed_ones_cannot_use() {
         let s = Schedule::new();
@@ -416,9 +409,6 @@ mod tests {
 
     /// Cancelling drops what was sent before it, frees its credit, and
     /// leaves later commands alone.
-    ///
-    /// Mutation: skip `release` in `gather` → the credit stays held →
-    /// `outstanding` is 3 → fails.
     #[test]
     fn cancel_drops_what_was_sent_before_it() {
         let s = Schedule::new();

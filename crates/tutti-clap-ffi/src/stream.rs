@@ -182,9 +182,6 @@ mod tests {
     /// A panic inside a real stream callback answers CLAP's `-1` (error)
     /// instead of aborting. A position past the end makes the slice bounds
     /// check panic (unwinding), in release builds too.
-    ///
-    /// Mutation: drop the `guard` from `istream_read`: the panic crosses the
-    /// `extern "C"` boundary and the test process aborts.
     #[test]
     fn a_panic_inside_a_stream_callback_answers_an_error() {
         let bytes = [1u8, 2, 3];
@@ -200,9 +197,6 @@ mod tests {
 
     /// A zero-length write with a null buffer is a no-op answering 0, not a
     /// slice built from null.
-    ///
-    /// Mutation: remove the `size == 0` early return: `from_raw_parts(null, 0)`
-    /// trips the debug precondition check and aborts the test process.
     #[test]
     fn an_empty_write_with_a_null_buffer_is_a_no_op() {
         let mut stream = OutputStream::new();
@@ -215,9 +209,6 @@ mod tests {
     }
 
     /// The bytes a plugin writes arrive in order.
-    ///
-    /// Mutation: make `ostream_write` overwrite instead of extend: the second
-    /// write replaces the first and the assertion fails.
     #[test]
     fn writes_accumulate() {
         let mut stream = OutputStream::new();
@@ -236,10 +227,6 @@ mod tests {
     /// A write that no slice can describe, or that would pass the cap, is
     /// refused (`-1`) before the plugin's buffer is read: the buffer here is a
     /// dangling pointer, so a read would crash. What was written stays.
-    ///
-    /// Mutation: drop the `MAX_STATE_BYTES` comparison in `ostream_write`: the
-    /// huge write builds a slice over the dangling pointer and the process
-    /// faults instead of answering `-1`.
     #[test]
     fn a_write_past_the_cap_is_refused_before_it_is_read() {
         let mut stream = OutputStream::new();

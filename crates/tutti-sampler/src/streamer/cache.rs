@@ -249,9 +249,6 @@ mod tests {
     }
 
     /// A wave larger than the whole budget is refused, and evicts nothing.
-    ///
-    /// Mutation (run): the size check removed → the resident entry is evicted
-    /// to make room and the oversize wave admitted → fails.
     #[test]
     fn a_wave_larger_than_the_budget_is_refused() {
         // Two-channel waves of 100 frames: 800 bytes each.
@@ -268,10 +265,6 @@ mod tests {
     /// A pin released releases exactly what it took: a pin on an absent path
     /// (an incremental stream) holds nothing, so dropping it must not unpin an
     /// entry that was inserted for the same path afterwards.
-    ///
-    /// Mutation (run): `StreamPin` decrementing the entry under its path again
-    /// (not the counter it incremented) -> the live pin is cancelled, the
-    /// entry is evicted for the newcomer -> fails.
     #[test]
     fn a_pin_releases_only_what_it_took() {
         // One entry fits: any insert of another path must evict an unpinned one.

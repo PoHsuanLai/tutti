@@ -177,11 +177,6 @@ fn load_with_env(block: usize, env: &[(&str, &str)]) -> Active {
 ///
 /// Before the fix `load` stopped at `effMainsChanged(1)`: the first
 /// `set_sample_rate` then sent `effStopProcess` for a process never started.
-///
-/// Mutation (run): drop `start_process()` from `Loaded::activate` -> the
-/// activation trace has no `START_PROCESS` -> fails. Mutation (run): drop the
-/// `Processor::stop` from the rejoin -> the reconfigure traces lack
-/// `STOP_PROCESS` -> fails.
 #[test]
 fn activation_starts_processing_and_a_reconfigure_is_a_balanced_bracket() {
     let _guard = lock_probe();
@@ -235,11 +230,6 @@ fn activation_starts_processing_and_a_reconfigure_is_a_balanced_bracket() {
 /// A resumed plugin is stopped, then suspended, as it is dropped; one that is
 /// already rejoined, or was never activated, is neither stopped nor suspended a
 /// second time.
-///
-/// Mutation (run): `PluginInstance::close` suspending unconditionally (the `resumed`
-/// guard dropped) -> the second and third traces gain a `MAINS_CHANGED(0)` -> fails.
-/// Mutation (run): `PluginInstance::close` not stopping processing -> the first trace
-/// lacks `STOP_PROCESS` -> fails.
 #[test]
 fn drop_stops_then_suspends_only_a_resumed_plugin() {
     let _guard = lock_probe();
@@ -284,12 +274,6 @@ fn requests(instance: &mut Active) -> Vec<Request> {
 /// A plugin that reports `audioMasterIOChanged` is answered 1 ("handled"), and
 /// the host is told to re-read its pins, latency and tail, which it then reads
 /// live.
-///
-/// Mutation (run): `HostState::io_changed` returning `false` -> the plugin
-/// reads 0 -> fails the first assert. Mutation (run): `pins()` reading the
-/// `get_info()` snapshot instead of the `AEffect` -> the pin count stays 2 ->
-/// fails. (That the requests are raised, and consumed, is pinned in
-/// `host::tests` and `vst2_host_opcodes`.)
 #[test]
 fn an_io_change_is_answered_and_re_read() {
     let _guard = lock_probe();
@@ -332,9 +316,6 @@ fn an_io_change_is_answered_and_re_read() {
 ///
 /// The probe recomputes its latency on `effSetSampleRate` (a linear-phase EQ
 /// does); the figure is read live after the activation that follows.
-///
-/// Mutation (run): `Controller::latency` returning a constant instead of
-/// reading the plugin -> the recomputed figure is not seen -> fails.
 #[test]
 fn a_rate_change_that_moves_latency_is_read() {
     let _guard = lock_probe();
@@ -376,9 +357,6 @@ fn a_rate_change_that_moves_latency_is_read() {
 
 /// A plugin asking the host for the rate or block size from inside the setter
 /// reads the figure being set, not the previous one.
-///
-/// Mutation (run): `HostState::set_sample_rate` / `set_block_size` called
-/// after the dispatch -> the plugin reads the old figures -> fails.
 #[test]
 fn the_host_answers_the_figure_being_set_from_inside_the_setter() {
     let _guard = lock_probe();
@@ -401,9 +379,6 @@ fn the_host_answers_the_figure_being_set_from_inside_the_setter() {
 /// A plugin that finalises its pin and parameter counts inside `effOpen` is
 /// read after it: the counts the host sizes its scratch and parameter
 /// snapshot from are the settled ones.
-///
-/// Mutation (run): `PluginInstance::init` not refreshing the effect fields ->
-/// the construction-time 2 inputs and 4 parameters are read -> fails.
 #[test]
 fn counts_finalised_in_eff_open_are_read() {
     let _guard = lock_probe();
@@ -429,9 +404,6 @@ fn counts_finalised_in_eff_open_are_read() {
 
 /// A plugin asking the host what it can do is told what it does: MIDI in and
 /// out and time info yes, window sizing no, anything else "don't know".
-///
-/// Mutation (run): the `can_do` arm of `host_dispatch` back to a log and
-/// fall-through -> all answers read 0 -> fails.
 #[test]
 fn can_do_answers_reach_the_plugin() {
     let _guard = lock_probe();
@@ -463,9 +435,6 @@ fn can_do_answers_reach_the_plugin() {
 
 /// `editor_idle` dispatches `effEditIdle` to an open editor, once per call, and
 /// to none that is closed.
-///
-/// Mutation (run): `PluginInstance::idle_editor` back to an empty body -> no
-/// `EDIT_IDLE` in the trace -> fails.
 #[test]
 fn editor_idle_reaches_an_open_editor() {
     let _guard = lock_probe();
@@ -527,10 +496,6 @@ fn render_f32(
 ///
 /// The probe's oracle is `out = in + channel_tag(ch)`: a piece copied to the
 /// wrong place, or skipped, shows in the samples.
-///
-/// Mutation (run): `process_f32` rendering the block in one call -> the
-/// largest call is 200 -> fails. Mutation (run): `copy_out_f32_range` writing
-/// at 0 instead of `start` -> the later pieces overwrite the first -> fails.
 #[test]
 fn a_block_longer_than_the_announced_maximum_is_split() {
     let _guard = lock_probe();
@@ -555,9 +520,6 @@ fn a_block_longer_than_the_announced_maximum_is_split() {
 
 /// The announced maximum follows `set_block_size`: after raising it the same
 /// block is one call, and the plugin is told the new figure.
-///
-/// Mutation (run): `set_block_size` not updating `self.block_size` -> the
-/// block still splits at 64 -> fails.
 #[test]
 fn raising_the_block_size_stops_the_split() {
     let _guard = lock_probe();
@@ -577,11 +539,6 @@ fn raising_the_block_size_stops_the_split() {
 /// The probe's capture holds the last `processEvents` call, so the event in
 /// the last piece (frame 150 of 200, piece 128..192 -> delta 22) is what it
 /// shows; the earlier piece's event is counted in `total_event_count`.
-///
-/// Mutation (run): `stage_piece` not rebasing (`at` instead of `at - start`)
-/// -> delta 150 -> fails. Mutation (run): the piece filter removed -> every
-/// event is delivered in every piece -> `total_event_count` is 4, not 2 ->
-/// fails.
 #[test]
 fn midi_is_delivered_in_the_piece_it_falls_in() {
     let _guard = lock_probe();
@@ -608,9 +565,6 @@ fn midi_is_delivered_in_the_piece_it_falls_in() {
 
 /// A later piece's transport snapshot is the block's advanced by the frames
 /// before it: the sample position and the musical position (while rolling).
-///
-/// Mutation (run): `advance_transport` not called -> every piece reads the
-/// block's start -> fails.
 #[test]
 fn a_later_piece_sees_the_transport_advanced() {
     let _guard = lock_probe();
@@ -642,12 +596,6 @@ fn a_later_piece_sees_the_transport_advanced() {
 /// 4/4 at 120 BPM, 48 kHz: a 64-frame piece is 0.002667 quarters, so a block
 /// starting at 3.995 crosses the bar line at 4.0 in its third piece (start
 /// 128), whose bar start is then 4.0, not the block's 0.0.
-///
-/// Mutation (run): drop the bar-line step in `advance_transport` -> the last
-/// piece still reads bar start 0.0 -> fails. Mutation (run): the
-/// `ctx.transport.is_some()` guard removed -> the transport-less block's
-/// later pieces advance the old snapshot, so its sample position moves ->
-/// fails.
 #[test]
 fn a_bar_line_in_a_later_piece_moves_the_bar_start() {
     let _guard = lock_probe();

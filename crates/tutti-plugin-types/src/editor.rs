@@ -277,10 +277,6 @@ mod tests {
     /// **A content scale is finite and positive**: anything else is refused,
     /// on construction and on the wire, since a plugin multiplies its
     /// geometry by it.
-    ///
-    /// Mutation: drop `factor > 0.0` from `ContentScale::new` → 0.0 and
-    /// -2.0 are accepted → fails. Mutation: drop `is_finite` → infinity is
-    /// accepted → fails.
     #[test]
     fn a_content_scale_is_finite_and_positive() {
         for good in [0.5, 1.0, 1.25, 2.0, 3.0] {
@@ -295,12 +291,6 @@ mod tests {
 
     /// The range contract (`new`, `TryFrom`, `Into`, serde), checked by the
     /// shared helper. `ContentScale` has no `of`.
-    ///
-    /// Mutation: drop `is_finite` from `ContentScale::new` → the helper
-    /// reports "new accepted inf". `try_from` refusing above 100 → "try_from(
-    /// 1.7976931348623157e308)" fails; `new` refusing at or below 1e-300 → "new refused valid
-    /// 2.2250738585072014e-308"; `InvalidContentScale(0.0)` in `try_from` →
-    /// "the error for -0.0 does not carry it".
     #[cfg(feature = "serde")]
     #[test]
     fn a_content_scale_keeps_the_range_contract() {

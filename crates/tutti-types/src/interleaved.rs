@@ -488,9 +488,6 @@ mod tests {
 
     /// Appending keeps what the planes held: a render collected block by
     /// block is the concatenation of its blocks, channel by channel.
-    ///
-    /// Mutation (run): `plane.clear()` at the top of `append_to_planes` →
-    /// the first block is lost and the planes read `[3.0]` / `[-3.0]`.
     #[test]
     fn append_to_planes_accumulates_across_blocks() {
         let mut planes = vec![Vec::new(), Vec::new()];
@@ -509,10 +506,6 @@ mod tests {
     /// Every sample of every whole frame is written from its plane at
     /// `start`, and nothing of a dirty buffer survives: a missing plane and
     /// the frames past a short plane are zero. The ragged tail is untouched.
-    ///
-    /// Mutations (run): drop the zero-fill loop → the third channel and
-    /// the short plane's last frame keep 7.0; read `planes[c][i]` without
-    /// `start` → frame 0 reads 10.0, not 11.0.
     #[test]
     fn interleave_from_writes_every_whole_frame() {
         let planes = [vec![10.0f32, 11.0, 12.0, 13.0], vec![20.0, 21.0, 22.0]];
@@ -527,9 +520,6 @@ mod tests {
 
     /// `interleave_from` is the inverse of `deinterleave_into` at every
     /// width, so the two cannot drift apart on a stride.
-    ///
-    /// Mutation (run): `interleave_from` striding by `ch.max(2)` → width 1
-    /// writes every other sample and leaves NaN between → fails.
     #[test]
     fn interleave_from_inverts_deinterleave_into() {
         for width in 1u16..=8 {
@@ -568,9 +558,6 @@ mod tests {
     /// that has a matrix, ignores a ragged tail and overwrites a dirtied `out`.
     /// The expected figures are the analytic ones: a frame's mono is its
     /// average at two channels and `(Lo + Ro) * M3DB` from three up.
-    ///
-    /// Mutation (run): the resize counting one frame too many
-    /// (`data.len() / stride + 1`) fails the width-1 length.
     #[test]
     fn fold_into_folds_whole_frames_at_each_width() {
         use crate::{Fold, M3DB};
@@ -604,9 +591,6 @@ mod tests {
 
     /// A window folds only the frames it names — the reason `window` is
     /// denominated in frames at all.
-    ///
-    /// Mutation (run): `fold_into` reading `self.data` whole instead of
-    /// `iter_frames` fails.
     #[test]
     fn folding_a_window_folds_only_that_window() {
         let buf = [1.0f32, 1.0, 2.0, 2.0, 3.0, 3.0];

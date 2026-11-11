@@ -6,7 +6,7 @@
 //! gain, the stretch filter's tick) is the same arithmetic in any piece,
 //! and the placed read re-seats at each block's first frame where its step
 //! would have put it (the seat and the step are one model; a seat that
-//! landed elsewhere is the drift the mutations below plant). So the same
+//! landed elsewhere is the drift this test catches). So the same
 //! voice, under the same transport, renders the same samples, bit for bit,
 //! prepared at 64 frames in 64-frame blocks, at 512 in 512-frame blocks, and
 //! at 512 in a ragged schedule (one frame, a prime, a block one short of
@@ -35,18 +35,6 @@
 //! blocks with transport changes inside them against 64), this covers the
 //! larger and ragged blocks and each voice node on its own: a `VoiceNode`,
 //! a `MemorySource` and a `DiskVoice`.
-//!
-//! Mutations (each run): the memory tier's step disagreeing with its seat
-//! (`placed_positions`' step `× 1.0001`) → every reseat lands elsewhere per
-//! schedule → "pool, plain" fails at frame 64; the disk tier's the same
-//! (`live_render`'s rate `× 1.0001`) → "disk voice node" fails at frame 64;
-//! the stretch filter forgetting its intake debt between calls (`start =
-//! 0.0`) → "pool, pitch +700c" fails. The cold path (a block longer than
-//! the scratch, in pieces), each node's rendering only its first piece
-//! (`from = frames`): the pool's → "pool, plain" fails, `VoiceNode`'s →
-//! "voice node, plain", `MemorySource`'s → "memory source, placed",
-//! `DiskVoice`'s → "disk voice node", each "prepared at 64, 512-frame
-//! blocks" at frame 64.
 //!
 //! Not caught here, by design: a node that ignored `max_block` and kept
 //! rendering 64-frame pieces renders the same frames (that is the

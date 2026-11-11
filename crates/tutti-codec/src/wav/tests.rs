@@ -44,10 +44,6 @@ fn u32_at(b: &[u8], at: usize) -> u32 {
 
 /// The header of a stereo 16-bit file is the 44-byte `PCMWAVEFORMAT` one, field
 /// by field, with the sizes back-patched to the frames written.
-///
-/// Mutation: writing the extensible header whenever `pcm.bits() >= 16` makes
-/// the file 68 bytes and fails the length and `fmt ` size checks; taking
-/// `riff` from `data` alone (without the header) fails the RIFF size.
 #[test]
 fn a_stereo_16_bit_file_has_the_plain_44_byte_header() {
     let bytes = write_all(&spec(2, Pcm::Int16), &ramp(2, 5));
@@ -68,12 +64,6 @@ fn a_stereo_16_bit_file_has_the_plain_44_byte_header() {
 
 /// More than two channels, or more than 16 bits, is `WAVE_FORMAT_EXTENSIBLE`
 /// with the container size, valid bits, speaker mask and sub-format.
-///
-/// Mutation: writing `pcm.bits()` for the container size (not whole bytes)
-/// is the same for 24 and 32, so use the sub-format: swapping the PCM and
-/// float GUIDs fails the 32-bit rows; taking the valid bits from the
-/// container fails nothing here (they are equal at these widths), so that
-/// field is pinned by the read-back through `hound` below.
 #[test]
 fn wider_or_deeper_files_are_extensible_with_their_mask_and_subformat() {
     for (channels, pcm, mask, float) in [
@@ -107,10 +97,6 @@ fn wider_or_deeper_files_are_extensible_with_their_mask_and_subformat() {
 
 /// An independent reader (`hound`) recovers the quantized ramp at every width
 /// and a spread of channel counts: the header and the data agree.
-///
-/// Mutation: writing the 24-bit sample's high three bytes (`[1..4]`) instead of
-/// the low three fails every Int24 row; writing `v.to_le_bytes()` for the
-/// 16-bit sample as an `i32` doubles its width and fails the Int16 rows.
 #[test]
 fn an_independent_reader_recovers_the_samples_at_every_width() {
     for channels in [1u16, 2, 3, 6] {
@@ -146,10 +132,6 @@ fn an_independent_reader_recovers_the_samples_at_every_width() {
 
 /// The topology picks the mask, and one of another width is refused as a spec
 /// error before anything is written.
-///
-/// Mutation: ignoring `spec.topology` in `create` leaves quad at `0` and fails
-/// the first assertion; deleting the width check lets a stereo file declare a
-/// quad mask and fails the refusal.
 #[test]
 fn a_topology_sets_the_mask_and_must_match_the_width() {
     let quad = Spec {
@@ -179,10 +161,6 @@ fn a_topology_sets_the_mask_and_must_match_the_width() {
 
 /// A rate no header can hold (zero, not finite, past `u32::MAX` Hz) is refused
 /// before the header, rather than saturated into one.
-///
-/// Mutation (run): returning `Ok(NonZeroU32::MIN)` for a rate that rounds to
-/// zero fails the first rows; dropping the `<= u32::MAX` test saturates 1e10 to
-/// `u32::MAX` and fails the 1e10 and 4 294 967 296 rows.
 #[test]
 fn a_zero_rate_is_refused() {
     for rate in [
@@ -211,11 +189,6 @@ fn a_zero_rate_is_refused() {
 /// The write that would pass the limit writes the frames that fit, then
 /// fails; the running total is exact, so a write that ends exactly at the limit
 /// is clean and the next frame is the failure.
-///
-/// Mutation: `min(room)` replaced by the whole block (writing it all) leaves 8
-/// frames and fails the length assertion; `fits < block.len()` changed to
-/// `<=` fails the exact-limit write; dropping the early return after the
-/// short write lets the error be lost.
 #[test]
 fn the_limit_stops_at_a_whole_frame_and_a_take_ending_on_it_is_clean() {
     let s = spec(2, Pcm::Int16);
@@ -255,9 +228,6 @@ fn the_limit_stops_at_a_whole_frame_and_a_take_ending_on_it_is_clean() {
 }
 
 /// A limit above the format's own is ignored: the limit only comes down.
-///
-/// Mutation: `min` replaced by plain assignment lets `u64::MAX` through and
-/// fails the equality.
 #[test]
 fn the_limit_only_comes_down() {
     let s = spec(2, Pcm::Int16);
@@ -273,9 +243,6 @@ fn the_limit_only_comes_down() {
 /// The figures are literal: `u32::MAX - 60` data bytes (4 294 967 235) over the
 /// frame size, rounded down. Frame sizes: mono 16 bit 2 bytes, stereo 24 bit 6,
 /// six channels of float 24, eight channels of 24 bit 24.
-///
-/// Mutation (run): `RIFF_HEADER_BYTES = 0` changes every figure and fails the
-/// literals; so does counting a 24-bit sample as 4 bytes (stereo row).
 #[test]
 fn the_frame_limit_fits_both_32_bit_sizes() {
     for (n, pcm, frames, frame_bytes) in [
@@ -297,9 +264,6 @@ fn the_frame_limit_fits_both_32_bit_sizes() {
 }
 
 /// A trailing partial frame is not written: the file always holds whole frames.
-///
-/// Mutation: writing `block.samples()` whole (not `fits * stride`) writes the
-/// stray sample and fails the length.
 #[test]
 fn a_trailing_partial_frame_is_not_written() {
     let s = spec(2, Pcm::Int16);
@@ -316,11 +280,6 @@ fn a_trailing_partial_frame_is_not_written() {
 /// readable once the header is back-patched over bytes already there.
 ///
 /// The sink takes the header and 6 whole frames of 4 bytes, no more.
-///
-/// Mutation: swallowing the `write_all` error (`let _ = ...`) makes the write
-/// return `Ok` and fails the `expect_err`; counting `fits` frames before the
-/// write succeeds would report 10 frames in the header and fail the
-/// read-back length.
 #[test]
 fn a_full_disk_mid_take_fails_the_write_that_hit_it() {
     let s = spec(2, Pcm::Int16);
@@ -345,9 +304,6 @@ fn a_full_disk_mid_take_fails_the_write_that_hit_it() {
 /// back-patches its sizes, so what was written is a readable file.
 ///
 /// The reader is `hound`, independent of the writer.
-///
-/// Mutation (run): deleting the `Drop` impl leaves both sizes zero and `hound`
-/// reads no samples.
 #[test]
 fn a_dropped_writer_leaves_a_readable_file() {
     let s = spec(2, Pcm::Int16);
@@ -361,9 +317,6 @@ fn a_dropped_writer_leaves_a_readable_file() {
 }
 
 /// A finished writer's drop does not patch twice or touch the returned sink.
-///
-/// Mutation (run): clearing the `sink.take()` in `finish` makes `drop` patch a
-/// sink it no longer holds and fails the `expect` in `finish`.
 #[test]
 fn a_finished_writer_hands_back_its_sink_untouched_by_drop() {
     let s = spec(2, Pcm::Int16);

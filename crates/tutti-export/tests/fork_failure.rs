@@ -129,10 +129,6 @@ fn is_crash(err: &Error) -> bool {
 /// A unit that dies mid-render fails the export and leaves the file at the
 /// path byte for byte as it was, with no temporary beside it; the same render
 /// with a healthy unit replaces it.
-///
-/// Mutation: remove `src.check_health()?` from `encode_to_file` (the
-/// `with_source` fallback still reports `ForkFailed`, but only after the
-/// encoder renamed the new file into place) → the file differs → fails.
 #[test]
 fn a_fork_that_dies_mid_render_does_not_replace_the_file() {
     let dir = tempfile::tempdir().unwrap();
@@ -170,9 +166,6 @@ fn a_fork_that_dies_mid_render_does_not_replace_the_file() {
 
 /// The planes of a render a unit died in are not handed back, and the
 /// normalizing path leaves the file alone too.
-///
-/// Mutation: remove the `src.check_health()?` in `render_pass` AND the
-/// fallback in `with_source` → both return `Ok` → fails.
 #[test]
 fn a_fork_that_dies_fails_the_buffer_and_normalized_renders() {
     let (graph, probe, _live) = fork();
@@ -199,9 +192,6 @@ fn a_fork_that_dies_fails_the_buffer_and_normalized_renders() {
 
 /// A render the caller cancels is not judged: a fault that came before the
 /// cancel does not turn `Cancelled` into `ForkFailed`, and the file is intact.
-///
-/// Mutation (run): `with_source` running `check_health` for a `Cancelled`
-/// outcome too → `ForkFailed` → fails.
 #[test]
 fn a_cancel_wins_over_a_fork_fault() {
     let dir = tempfile::tempdir().unwrap();

@@ -63,8 +63,6 @@ fn dropped_receiver_keeps_sender_pushable() {
 }
 
 /// A partial accept reports the prefix that landed, not the count offered.
-///
-/// Mutation: `queue` returning `events.len()` → fails.
 #[test]
 fn a_partial_accept_reports_how_many_landed() {
     let (sender, _receiver) = MidiMailbox::with_capacity(5);

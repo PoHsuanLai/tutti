@@ -278,10 +278,6 @@ mod tests {
     /// scalar loop over values chosen so rounding shows (thirds, added to
     /// values of like size): equal bit for bit, so a vectorised kernel can
     /// never be the reason a block read differs from the per-sample one.
-    ///
-    /// Mutation (run): `accumulate` computing `*d += s * 1.000_000_1` →
-    /// fails. Mutation (run): `accumulate` stopping one short (`..n - 1`) →
-    /// the last frame differs → fails.
     #[test]
     fn the_kernels_are_the_per_element_arithmetic() {
         // One 64-frame lane's worth (the length the lanes had when this was
@@ -308,9 +304,6 @@ mod tests {
     /// frames of 6 it holds 64 in six lanes; and its bytes are the ones
     /// [`BYTES_PER_FRAME_FIXED`] and [`BYTES_PER_FRAME_CHANNEL`] state (57 a
     /// stereo frame).
-    ///
-    /// Mutations (each run): `resize` skipping `raw` → fails; `Lanes::resize`
-    /// sizing every lane (ignoring `width`) → fails.
     #[test]
     fn a_resize_sizes_every_buffer_to_the_width() {
         let mut s = BlockScratch::new(UNPREPARED_FRAMES, 1);
@@ -357,11 +350,6 @@ mod tests {
     /// node's lanes are two wide, not `MAX_SAMPLER_CHANNELS`. Unprepared, the pool
     /// and the node hold `UNPREPARED_FRAMES` and the source none. (The disk voice's own check is
     /// `disk_voice::tests::a_disk_voice_sizes_its_positions_from_max_block`.)
-    ///
-    /// Mutations (each run): `VoicePool::prepare` not resizing its scratch
-    /// → fails; `VoiceNode::prepare` the same → fails;
-    /// `MemorySource::prepare` not sizing its positions → fails;
-    /// `VoiceNode::prepare` sizing to `MAX_SAMPLER_CHANNELS` → fails.
     #[test]
     fn every_voice_node_sizes_its_scratch_from_max_block() {
         use crate::voice::{MemorySource, Voice, VoiceNode, VoicePool, VoiceSource};

@@ -213,10 +213,6 @@ fn soundfont_one_frame_blocks_are_allocation_free() {
 /// dropped), every non-channel-voice message, and a packet `decode` refuses.
 /// The sound is on, so a note and a bend, a controller and a program change
 /// all reach the synthesizer inside the gate.
-///
-/// Mutation (run): a `Box::new(0u8)` kept alive in the `Voice2::PitchBend` arm
-/// of `Player::apply`, and separately in `apply_event` when a packet is not
-/// channel voice, each aborts inside the gate.
 #[test]
 fn soundfont_every_decoded_message_is_allocation_free() {
     let mut unit = unit();
@@ -404,12 +400,6 @@ fn drum(key: u8, offset: u32) -> UmpAt {
 /// them, All Notes Off, All Sound Off and Reset All Controllers, an exclusive
 /// class ending the others of its class (a quick release), and a reset of the
 /// node itself.
-///
-/// Mutation (run): a `std::mem::forget(Box::new(0u8))` in each of the `Damp`,
-/// `Release` and `Cut` arms of `Voices::execute`, in `Player::reset` and in
-/// `Player::control`, aborts inside this gate. (A pool one voice short does
-/// not: its `Vec` grows in the warm-up, outside the gate, and the other gates,
-/// which have no warm-up of a full pool, catch it.)
 #[test]
 fn soundfont_note_logic_is_allocation_free() {
     let font = load_test_soundfont();

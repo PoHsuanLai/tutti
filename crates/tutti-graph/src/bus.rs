@@ -82,25 +82,74 @@ impl OutBus {
     }
 }
 
-/// One bus: where its channels sit, and what it is for.
+/// One bus: where its channels sit, what it is for, and how many times it
+/// repeats.
+///
+/// A bus is usually one copy of its topology. A crossover's outputs are its
+/// input's speakers once per band, so they are one bus of `bands` copies,
+/// band-major ([`bands`](Self::bands)): band 0 is the one a
+/// [`Main`](BusRole::Main) bus's dry path and [`Io::output`](crate::Io::output)
+/// see, and a bus edge names the band it reads ([`BusRef::band`](crate::BusRef)).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct Bus {
-    /// The speaker each channel feeds, in channel order.
+    /// The speaker each channel of one band feeds, in channel order.
     pub topology: BusTopology,
     /// What the bus is for.
     pub role: BusRole,
+    /// How many copies of `topology`, at least 1.
+    bands: u8,
 }
 
 impl Bus {
-    const NONE: Self = Self {
-        topology: BusTopology::EMPTY,
-        role: BusRole::Aux,
-    };
+    const NONE: Self = Self::new(BusTopology::EMPTY, BusRole::Aux);
 
-    /// The channel count.
+    /// One copy of `topology`, for `role`.
+    #[must_use]
+    pub const fn new(topology: BusTopology, role: BusRole) -> Self {
+        Self {
+            topology,
+            role,
+            bands: 1,
+        }
+    }
+
+    /// A [`Main`](BusRole::Main) bus of `topology`.
+    #[must_use]
+    pub const fn main(topology: BusTopology) -> Self {
+        Self::new(topology, BusRole::Main)
+    }
+
+    /// `bands` copies of `topology`, band-major (a crossover's outputs), or
+    /// `None` for no band.
+    #[must_use]
+    pub const fn banded(topology: BusTopology, role: BusRole, bands: u8) -> Option<Self> {
+        if bands == 0 {
+            return None;
+        }
+        Some(Self {
+            topology,
+            role,
+            bands,
+        })
+    }
+
+    /// How many copies of the topology the bus holds: 1 but for a split's
+    /// bands.
+    #[must_use]
+    pub const fn bands(&self) -> usize {
+        self.bands as usize
+    }
+
+    /// The channels of one band.
+    #[must_use]
+    pub const fn band_width(&self) -> usize {
+        self.topology.layout().count() as usize
+    }
+
+    /// The channel count: every band's.
     #[must_use]
     pub const fn width(&self) -> usize {
-        self.topology.layout().count() as usize
+        self.band_width() * self.bands as usize
     }
 }
 
@@ -121,8 +170,8 @@ impl Bus {
 /// let stereo = BusTopology::new([Speaker::FrontLeft, Speaker::FrontRight]).unwrap();
 /// let key = BusTopology::unassigned(ChannelLayout::MONO).unwrap();
 /// let buses = Buses::NONE
-///     .with(Bus { topology: stereo, role: BusRole::Main }).unwrap()
-///     .with(Bus { topology: key, role: BusRole::Sidechain }).unwrap();
+///     .with(Bus::main(stereo)).unwrap()
+///     .with(Bus::new(key, BusRole::Sidechain)).unwrap();
 /// assert_eq!(buses.width(), 3);
 /// assert_eq!(buses.first_port(1), Some(2));
 /// ```
@@ -144,10 +193,7 @@ impl Buses {
     #[must_use]
     pub const fn main(topology: BusTopology) -> Self {
         let mut buses = Self::NONE;
-        buses.buses[0] = Bus {
-            topology,
-            role: BusRole::Main,
-        };
+        buses.buses[0] = Bus::main(topology);
         buses.len = 1;
         buses
     }

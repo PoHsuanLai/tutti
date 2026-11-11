@@ -55,8 +55,7 @@ impl<T> Current<T> {
     /// holding the control lock, which the caller holds too, so the mutex
     /// already orders its contents before us, and what readers did with it
     /// reaches the free through the scan's `Acquire` slot reads. (`AcqRel`
-    /// here was redundant with the lock; see the loom model's mutation
-    /// record.)
+    /// here was redundant with the lock.)
     pub(crate) fn swap(&self, value: Arc<T>) -> Arc<T> {
         let old = self
             .ptr

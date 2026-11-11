@@ -229,9 +229,6 @@ mod tests {
     /// `1 - exp(-1 / (0.01 * 48000))` in `f64`, rounded once to `f32`
     /// (0.0020811646). Rounding 0.01 through `f32` first gives
     /// 0.0020811649, a different `f32`.
-    ///
-    /// Mutation (run): `attack.to_f32()` then `Seconds::from_f32` before
-    /// `one_pole_coeff` (the old detour) fails the attack assert.
     #[test]
     fn coefficients_come_from_the_exact_times() {
         let want = |t: f64| (1.0 - libm::exp(-1.0 / (t * 48_000.0))) as f32;
@@ -315,10 +312,6 @@ mod tests {
     /// closes in one. (It used to freeze: the coefficient was the
     /// retention, 1 at zero time, so a zero-attack compressor never
     /// reduced.)
-    ///
-    /// Mutation (run): `Smoother::toward` with the retention form
-    /// `coeff * current + (1 - coeff) * target` (the old convention, under
-    /// which a coefficient of 1 holds) → fails.
     #[test]
     fn a_zero_attack_or_release_is_instant() {
         let mut env = EnvelopeFollower::new(

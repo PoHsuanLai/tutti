@@ -199,10 +199,6 @@ mod tests {
 
     /// Every request with a bit round-trips through the word, once each, and a
     /// timer or descriptor has none.
-    ///
-    /// Mutation (run): two requests sharing a bit in `WORD_REQUESTS` (the
-    /// `Info` rescan on bit 6) → the `Values` and `Info` rescans collapse and
-    /// the count fails.
     #[test]
     fn every_request_with_a_bit_is_taken_once() {
         let word = RequestWord::new();
@@ -220,9 +216,6 @@ mod tests {
 
     /// An edit survives the ring's encoding, in order; a full ring refuses and
     /// counts.
-    ///
-    /// Mutation (run): `decode` reading `raw[1]` as the id's word → the value
-    /// check fails.
     #[test]
     fn edits_round_trip_in_order() {
         let (mut sink, mut drain) = edits(2);
@@ -246,13 +239,7 @@ mod tests {
     /// An entry with an unknown tag is dropped and counted, and the edits
     /// around it still arrive.
     ///
-    /// Mutation (run): `drain` applying nothing for `None` but not counting →
-    /// the count assertion fails; `decode` accepting any tag → the unknown
-    /// entry is applied and the sequence assertion fails.
     /// A `Reset` survives the ring in order, between the writes it separates.
-    ///
-    /// Mutation: `decode` answering `None` for `RESET_TAG` → the reset is
-    /// dropped and counted, not delivered → fails.
     #[test]
     fn a_reset_round_trips_between_writes() {
         let (mut sink, mut drain) = edits(4);
@@ -292,9 +279,6 @@ mod tests {
 
     /// A drain applies what was queued when it began, not what arrives during
     /// it: a producer that pushes from inside `apply` cannot extend the call.
-    ///
-    /// Mutation (run): `drain` looping `while let Some(raw) = pop()` → the
-    /// count is the ring's capacity worth, not 2.
     #[test]
     fn a_drain_is_bounded_by_what_was_queued() {
         let (mut sink, mut drain) = edits(8);

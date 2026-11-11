@@ -918,11 +918,6 @@ mod tests {
     /// put a run boundary mid-call, before the first drain, and exactly on the
     /// drain — the three places the lockstep argument in `process_block` could
     /// be wrong.
-    ///
-    /// Mutation: dropping `p.output_cursor += run` (or reading
-    /// `p.output[..run]` instead of from the cursor) makes the block path
-    /// repeat the head of each output partition and fails this on the first
-    /// call after the first drain.
     #[test]
     fn block_path_is_bit_identical_to_the_per_sample_path() {
         let ir: Vec<f32> = vec![0.7, -0.35, 0.2, 0.9, -0.1, 0.05, 0.42, -0.6, 0.3];
@@ -966,13 +961,8 @@ mod tests {
     /// history for two FFT cycles and in the overlap for one more; past the
     /// latency plus three blocks the output is pure convolution of zeros.
     ///
-    /// The inverse's handling of those parts is mutation-tested in
+    /// The inverse's handling of those parts is tested in
     /// `tutti-types`; here the NaN reaches the output with or without them.
-    ///
-    /// Mutation (run): the overlap keeps a NaN it already holds → the NaN
-    /// outlasts its partition → fails.
-    /// Mutation (run): `*o = y + v` without the overlap `v` → the NaN is
-    /// gone from the third block → fails the early-exit check.
     #[test]
     fn a_nan_input_propagates_and_then_leaves() {
         let ir: Vec<f32> = vec![0.9, 0.8, 0.7, 0.6, 0.5, 0.4, 0.3, 0.2];
@@ -1030,11 +1020,6 @@ mod tests {
     /// not, ones that straddle the boundary and ones longer than a partition.
     ///
     /// The tolerance is float rounding of a 2000-tap sum of terms below 1.
-    ///
-    /// Mutation (run): `accumulate_to` starting its loop at
-    /// `self.accumulated + 2` skips a partition per call → fails. Mutation (run):
-    /// dropping `self.accumulated = 0` or `self.begun = false` in
-    /// `process` leaves the next cycle with a stale or doubled sum → fails.
     #[test]
     fn incremental_path_matches_direct_convolution_at_any_call_length() {
         let ir = long_ir(2000);
@@ -1093,10 +1078,6 @@ mod tests {
     /// (the whole sum at the boundary) agree for a many-partition IR. This
     /// pins the split and a loop reversal; an order both paths share is
     /// pinned by `the_spread_sum_is_the_ascending_sum`.
-    ///
-    /// Mutation (run): `accumulate_to` starting its loop at
-    /// `self.accumulated + 2` leaves a partition out on the block path only →
-    /// fails.
     #[test]
     fn incremental_path_is_bit_identical_to_the_boundary_sum() {
         let ir = long_ir(1500);
@@ -1123,10 +1104,6 @@ mod tests {
     /// The sum is spread, not deferred: with 8-frame calls into a 64-frame
     /// partition no call advances more than its share (plus rounding), and
     /// every partition is in before the call that crosses the boundary.
-    ///
-    /// Mutation (run): scheduling `accumulate_to(older)` at the first call of
-    /// a cycle, or not at all (everything at the boundary), fails the
-    /// per-call bound or the done-before-boundary check respectively.
     #[test]
     fn accumulation_is_spread_across_the_calls_of_a_partition() {
         let part = 64;
@@ -1167,11 +1144,6 @@ mod tests {
     /// complete after the third call of a cycle; it is recomputed here from
     /// the spectra and the history and compared bit for bit. It is same-run
     /// data, so it does not depend on libm.
-    ///
-    /// Mutation (run): a descending walk shared by both paths (`let i =
-    /// count - k` for `k` in the loop range of `accumulate_to`) fails.
-    /// A literal `.rev()` of that loop fails this and
-    /// `incremental_path_is_bit_identical_to_the_boundary_sum`.
     #[test]
     fn the_spread_sum_is_the_ascending_sum() {
         let part = 16;
@@ -1215,9 +1187,6 @@ mod tests {
     /// boundary work: the transforms and the newest partition. With calls
     /// 20, 20, 20, 50 into a 64-frame partition the 50 crosses with 46
     /// frames left over.
-    ///
-    /// Mutation (run): dropping the `crossed` guard in `process_block` leaves
-    /// `accumulated` above 0 after the crossing call → fails.
     #[test]
     fn a_call_that_crosses_a_boundary_leaves_the_next_cycle_unstarted() {
         let part = 64;
@@ -1245,9 +1214,6 @@ mod tests {
     /// renders the same bits), so the observable is `accumulated`. Calls of
     /// one frame into a cut 256-frame level: some call that ran an inverse
     /// step and no forward one leaves `accumulated` higher than before.
-    ///
-    /// Mutation (run): `crossed |= true` in `process_block` (any step) leaves
-    /// no such call → fails.
     #[test]
     fn an_inverse_step_does_not_suppress_the_spread() {
         let mut c = Convolver::with_parts_split(&long_ir(8000), 64, &[64, 256], 16);
@@ -1386,11 +1352,7 @@ mod tests {
     /// lengths that divide a partition, ones that do not, ones that straddle
     /// the transforms' frames and ones longer than the longest partition.
     ///
-    /// The tolerance is [`tolerance`]'s. Mutations (run): `inverse` summing
-    /// into the output ring with `delay` left out, or with `delay + 1`, puts
-    /// a tail level's block at the wrong frame → fails at every length that
-    /// reaches a tail level; `build_plan` giving the last level one partition
-    /// fewer fails the lengths that end in it.
+    /// The tolerance is [`tolerance`]'s.
     #[test]
     fn non_uniform_output_equals_direct_convolution() {
         let x = noise(900);
@@ -1427,8 +1389,6 @@ mod tests {
     /// Checked at IR lengths of 700, 3000 and 9000 taps (the longer ones
     /// exercise transforms of up to 128 points with many partitions per
     /// level), over every layout.
-    ///
-    /// Mutation (run): `tolerance`'s constant 2 raised to 4096 fails.
     #[test]
     fn the_tolerance_is_tight_enough() {
         let x = noise(900);
@@ -1455,10 +1415,6 @@ mod tests {
     /// An impulse in gives the IR out, at exactly the declared latency: exact
     /// silence for the `latency` frames, then the IR's taps in order from the
     /// impulse's frame.
-    ///
-    /// Mutation (run): `delay` computed as `start + block_size - part + 1`
-    /// shifts every tail tap by one frame → fails at the first tap of the
-    /// first tail level.
     #[test]
     fn an_impulse_gives_the_ir_at_the_declared_latency() {
         for (head, parts) in LAYOUTS {
@@ -1498,10 +1454,6 @@ mod tests {
     /// tap is the level's first or last or the IR ends part-way through a
     /// partition: a unit impulse through an IR of zeros but for its last tap
     /// comes out as a single unit at `latency + len - 1`.
-    ///
-    /// Mutations (run): `build_plan` leaving the last level's last partition
-    /// out, or `inverse` summing its block at the wrong frame (no `delay`),
-    /// fails: the unit never comes out.
     #[test]
     fn the_tail_reaches_the_output() {
         for (head, parts) in LAYOUTS {
@@ -1536,10 +1488,6 @@ mod tests {
     /// The render does not depend on how the host cuts its calls: odd
     /// lengths, one frame, a call longer than the longest partition, and the
     /// per-sample path all give the same bits, through every level.
-    ///
-    /// Mutation (run): `accumulate_to` ignoring `accumulated` (re-adding the
-    /// partitions already in, as often as there are calls) fails the bitwise
-    /// comparison.
     #[test]
     fn the_render_is_independent_of_the_call_lengths() {
         let x = noise(2500);
@@ -1585,13 +1533,6 @@ mod tests {
     /// makes its output due `block_size` frames after its uniform latency;
     /// the offsets of its two transforms fall in that slack, in order, inside
     /// one partition; and the rings hold what the levels read and write.
-    ///
-    /// Mutations (run): `next / part` for `next / part - 1` in `build_plan`
-    /// starts the third level of a forced layout past its own partition
-    /// size → fails the start check; `output_ring` sized from the largest
-    /// `part` alone (no `delay`) fails the ring check and the
-    /// direct-convolution test, whose tail blocks then wrap onto frames not
-    /// yet read.
     #[test]
     fn layouts_are_contiguous_and_schedule_inside_their_slack() {
         // Forced layouts of three and four levels follow the same rule.
@@ -1644,9 +1585,6 @@ mod tests {
 
     /// A 6000-tap IR at a 32-frame head is cut into more than one level (the
     /// node's long-IR render test relies on it).
-    ///
-    /// Mutation (run): `MIN_GAIN` lowered to 0.0 keeps the layout uniform →
-    /// fails.
     #[test]
     fn a_long_ir_is_cut_into_levels() {
         let ir = vec![0.1f32; 6000];
@@ -1658,11 +1596,6 @@ mod tests {
     /// [`MAX_TAIL_RATIO`] times the head; a head of [`MAX_PARTITION`] or more
     /// has no larger partition to offer. A chosen non-uniform layout costs at
     /// most [`MIN_GAIN`] of the uniform one.
-    ///
-    /// Mutations (run): `MIN_GAIN` raised to 2.0 sends the 0.5 s IR (modelled
-    /// at 0.81 of the uniform cost, which measures no better) to a split
-    /// layout → fails; lowered to 0.0 keeps every layout uniform → the
-    /// long-IR assertion fails.
     #[test]
     fn the_cost_model_picks_uniform_for_short_irs_and_levels_for_long_ones() {
         let shape =
@@ -1694,11 +1627,6 @@ mod tests {
     /// two (it has no slack) share a call with nothing else. The last two
     /// layouts split their tail transforms into up to eight and sixteen
     /// sub-FFTs, so each transform's steps are spread over that many calls.
-    ///
-    /// Mutations (run): every tail step given the offset of the first (all at
-    /// `slot`) puts several steps in one call → fails; `max_sub` ignored
-    /// (`ways = 1`) leaves the split layout with one step per transform → the
-    /// `forward_steps` check fails.
     #[test]
     fn transforms_land_in_different_host_blocks() {
         let steps_run = |st: &LevelState, lv: &Level| {
@@ -1767,11 +1695,6 @@ mod tests {
     /// the same layout unsplit within twice that, being off from the exact
     /// sum by at most the tolerance each. Call lengths divide a partition,
     /// straddle the steps' frames, and exceed the longest partition.
-    ///
-    /// Mutations (run): the spectra built with the last forward step left
-    /// out (`0..fft.forward_steps() - 1`) fails every length that reaches a
-    /// tail level; `inverse` leaving out the newest partition's multiply
-    /// fails the same.
     #[test]
     fn split_output_equals_direct_convolution() {
         let x = noise(900);
@@ -1813,10 +1736,6 @@ mod tests {
     /// calls: one frame at a time, odd lengths, and calls that hold several
     /// steps or none give the same bits, though the steps of a transform
     /// land in different calls.
-    ///
-    /// Mutation (run): `process_block` running the whole call as one run
-    /// (not cut at the frames of the steps) runs the steps after later frames
-    /// are written, and fails the bitwise comparison.
     #[test]
     fn a_split_render_is_independent_of_the_call_lengths() {
         let x = noise(2500);
@@ -1845,10 +1764,6 @@ mod tests {
     }
 
     /// An empty IR is silence at the declared latency, with no panic.
-    ///
-    /// Mutation (run): `unwrap_or(1)` for the next transform frame of a
-    /// convolver with no level never advances past that frame: the call
-    /// hangs (checked under a timeout).
     #[test]
     fn an_empty_ir_is_silence() {
         let mut c = Convolver::new(&[], 64);
@@ -1860,9 +1775,6 @@ mod tests {
 
     /// `reset` clears every level, not just the head: after a reset, silence
     /// in is silence out, with a tail level mid-flight.
-    ///
-    /// Mutation (run): `reset` calling `st.reset` for the first level only
-    /// → the tail level's overlap and history ring out → fails.
     #[test]
     fn reset_clears_every_level() {
         let ir = flat_ir(400);
@@ -1882,13 +1794,6 @@ mod tests {
     /// slots, level partitions and ring wraps, with call lengths that
     /// straddle them; layouts are non-uniform, uniform with several
     /// partitions, and the cost model's own pick for a long IR.
-    ///
-    /// Mutations (run), each fails: `LevelState::reset` without
-    /// `self.step = 0` (a split transform resumes part-way); without
-    /// `self.base = ...` (the steps run on the old schedule);
-    /// `Convolver::reset` without `self.output.fill` (the old output ring
-    /// plays); `self.pushed = 0` left out (the rings' positions and the
-    /// schedule disagree).
     #[test]
     fn a_reset_convolver_renders_as_a_fresh_one() {
         let x = noise(1500);

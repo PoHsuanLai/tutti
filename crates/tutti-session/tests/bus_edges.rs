@@ -85,7 +85,7 @@ fn all_are(block: &[f32], want: f32) -> bool {
 }
 
 fn bus(node: NodeKey) -> BusRef {
-    BusRef { node, bus: 0 }
+    BusRef::new(node, 0)
 }
 
 struct Rig {
@@ -123,10 +123,6 @@ fn rig() -> Rig {
 /// Connect, render, disconnect: the fold sums beside an ordinary source of the
 /// sink's port while it is connected, and removing it leaves the ordinary
 /// source alone. The declared buses read back.
-///
-/// Mutations (run), each failing this test: `connect_bus` not marking the
-/// graph edited (the first render is silent); `disconnect_bus` removing the
-/// sink's own sources too; `bus_sources` reading the sink's per-port sources.
 #[test]
 fn connecting_and_disconnecting_a_bus_edge_round_trips() {
     let mut r = rig();
@@ -170,9 +166,6 @@ fn connecting_and_disconnecting_a_bus_edge_round_trips() {
 
 /// A refused bus edge changes nothing and marks nothing edited: the fold's
 /// reason, a bus that is not there, a node that is not there.
-///
-/// Mutation (run): `connect_bus` marking the graph edited before the editor's
-/// check.
 #[test]
 fn a_refused_bus_edge_changes_nothing() {
     let mut r = rig();
@@ -198,13 +191,7 @@ fn a_refused_bus_edge_changes_nothing() {
         }
     );
     assert!(matches!(
-        g.connect_bus(
-            BusSource::Node(BusRef {
-                node: r.stereo,
-                bus: 4
-            }),
-            bus(r.sink)
-        ),
+        g.connect_bus(BusSource::Node(BusRef::new(r.stereo, 4)), bus(r.sink)),
         Err(BusError::NoSuchBus { .. })
     ));
     assert!(matches!(
@@ -218,10 +205,6 @@ fn a_refused_bus_edge_changes_nothing() {
 /// The weights of a bus edge's lanes are the fold's: the session refuses an
 /// edge gain on a lane by name, and removing a node takes its bus edges with
 /// it so the next commit stands.
-///
-/// Mutations (run), each failing this test: `set_edge_gain` mapping the lane
-/// refusal to `NoSuchEdge`; `Editor::remove` leaving the removed node among a
-/// bus edge's sources (the edge is still listed).
 #[test]
 fn a_lane_takes_no_session_gain_and_a_removed_node_takes_its_bus_edges() {
     let mut r = rig();
@@ -274,11 +257,6 @@ fn root_rig() -> (Session, NodeKey) {
 /// centre at -3 dB, surround at -3 dB, no LFE) on the outputs, through
 /// `declare_root_topology`; disconnecting it silences them and the graph is
 /// marked edited both ways.
-///
-/// Mutations (run), each failing this test: `declare_root` not writing the
-/// spec's `root` (the connect is refused as undeclared); `connect_bus_to_root`
-/// not marking the graph edited (the first render is silent);
-/// `disconnect_bus_from_root` not marking it edited.
 #[test]
 fn a_bus_into_the_declared_root_renders_the_itu_rows() {
     let (mut s, src) = root_rig();
@@ -305,9 +283,6 @@ fn a_bus_into_the_declared_root_renders_the_itu_rows() {
 /// An undeclared root refuses a root edge by name, storing nothing and
 /// marking nothing edited. (No root is too wide for a bus: the engine's is 8
 /// channels, a bus 16.)
-///
-/// Mutation (run): `connect_bus_to_root` marking the graph edited before the
-/// editor's check.
 #[test]
 fn an_undeclared_root_refuses_a_bus_edge() {
     let mut r = rig();
@@ -323,11 +298,6 @@ fn an_undeclared_root_refuses_a_bus_edge() {
 /// A re-declaration that changes the root under a root edge re-lowers it at
 /// the next commit (stereo to mono is `0.5 L + 0.5 R`), and one the edge no
 /// longer folds to is a refused commit, the plan sent last standing.
-///
-/// Mutations (run), each failing this test: `declare_root` not marking the
-/// graph edited when `root` changes under a root edge (the same-width
-/// re-declaration is not edited); the lowering skipping a root source that
-/// does not fold (the commit is sent).
 #[test]
 fn a_redeclared_root_relowers_its_edges_and_a_misfit_refuses_the_commit() {
     let mut s = offline();

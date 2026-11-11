@@ -117,9 +117,6 @@ mod tests {
 
     /// Every named variant round-trips through its code, and an unnamed code
     /// keeps its value.
-    ///
-    /// Mutation: map `kNotImplemented` to `Self::InvalidArgument` in
-    /// `from_code` and the round trip of that variant fails.
     #[test]
     fn a_code_round_trips_through_its_name() {
         for e in [
@@ -138,9 +135,6 @@ mod tests {
 
     /// `kResultOk` is the only success, and `kResultFalse` is an error to
     /// `check` but an answer to `check_bool`.
-    ///
-    /// Mutation: have `check` accept `kResultFalse` and the second assert
-    /// fails.
     #[test]
     fn only_ok_is_success_and_false_is_an_answer_to_check_bool() {
         assert_eq!(check(kResultOk), Ok(()));

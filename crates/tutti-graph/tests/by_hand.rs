@@ -57,12 +57,6 @@ fn at(k: usize, block: usize) -> Offset {
 /// `drive_input` plays each event on its frame, hands the node the `Env`'s
 /// transport (rolling, so the beat moves across the block), and returns
 /// what the node wrote to its event output.
-///
-/// Mutations (run): `drive_input` handing `SortedEvents::EMPTY` for every
-/// input → no frame is marked → fails; building its `Cx` over a
-/// `Transport::default()` env instead of the caller's → the beat reads 0 →
-/// fails; dropping the event writers (`&mut []`) → the node's `event_out`
-/// panics.
 #[test]
 fn drive_in_plays_events_under_the_env() {
     let env = Env {
@@ -93,11 +87,6 @@ fn drive_in_plays_events_under_the_env() {
 /// by block (so a node placing something at an absolute frame finds it in
 /// the right block), honours a shorter block length, and keeps the
 /// transport it was given.
-///
-/// Mutations (run): not advancing `frame` after a block → the emitter at
-/// frame 70 fires in block 0 never (its frame is never reached) → fails;
-/// not clearing the event inputs after a block → the note sounds again in
-/// block 1 → fails; `set_block_len` ignored → `output` is 64 long → fails.
 #[test]
 fn direct_plays_events_once_advances_and_rolls() {
     let mut probe = Direct::new(Probe, RATE, 64);

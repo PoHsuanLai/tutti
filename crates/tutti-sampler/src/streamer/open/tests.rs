@@ -55,11 +55,6 @@ fn first_block(reader: StreamReader) -> Vec<Vec<f32>> {
 /// `Placement` keeps the range-checked contract: `new`, `TryFrom` and serde
 /// agree (serde as the bare `f64`), and a negative, NaN or infinite position
 /// is refused, never clamped.
-///
-/// Mutation (each run): widening `new` to accept `-1.0` (`>= -1.0`) fails the
-/// `-0.5` row; dropping the `is_finite` test fails the infinity row; replacing
-/// the serde `try_from` with `transparent` lets `-0.5` deserialize and fails
-/// the "deserialize accepted" check.
 #[test]
 fn placement_keeps_the_range_contract() {
     use tutti_fixtures::{RangeContract, check_range_contract};
@@ -74,9 +69,6 @@ fn placement_keeps_the_range_contract() {
 
 /// A fractional start is floored to the frame it falls in, and the stream's
 /// window opens there: the reader plays from frame 4 000 for 4 000.7.
-///
-/// Mutation (run): `Placement::frame` rounding (`.round()`) -> frame 4 001
-/// -> fails.
 #[test]
 fn a_fractional_start_opens_at_its_frame() {
     let (_dir, path) = constant_file(0.25);
@@ -91,9 +83,6 @@ fn a_fractional_start_opens_at_its_frame() {
 /// Before the streamer has run, an open is `Pending` and hands the `Opening`
 /// back; after it has, the poll is `Ready`. The reader is the reply: there is
 /// nothing to poll for that was not asked for.
-///
-/// Mutation (run): `poll` answering `Ready` from a stream table in place of
-/// the reply (it has none to read before the step) -> no `Pending` -> fails.
 #[test]
 fn an_open_is_pending_until_the_streamer_answers() {
     let (_dir, path) = constant_file(0.25);
@@ -120,9 +109,6 @@ fn an_open_is_pending_until_the_streamer_answers() {
 /// has two holders after the open (the stream's handle, which reads the
 /// applied loop, and the one reader), and still two with the voice built and
 /// playing, so nothing on the audio thread registers (which allocates).
-///
-/// Mutation (run): `DiskVoice::from_reader` registering a second reader
-/// (`ring.control_reader()`) -> two readers -> fails.
 #[test]
 fn a_ready_reader_has_registered_its_control_before_it_is_returned() {
     let (_dir, path) = constant_file(0.25);
@@ -147,9 +133,6 @@ fn a_ready_reader_has_registered_its_control_before_it_is_returned() {
 
 /// Variant `Io`: a path with no file fails the open with the kind the
 /// filesystem reported, where the stream used to stay unopened for ever with no error.
-///
-/// Mutation (run): `unreadable` answering `Format` for a file it cannot open
-/// -> fails.
 #[test]
 fn a_missing_file_fails_with_io() {
     let dir = tempfile::tempdir().expect("a temp dir");
@@ -163,9 +146,6 @@ fn a_missing_file_fails_with_io() {
 
 /// Variant `Format`: a file that opens but is not audio fails the open as
 /// such.
-///
-/// Mutation (run): `unreadable` answering `Io` for a file it can open ->
-/// fails.
 #[test]
 fn a_file_that_is_not_audio_fails_with_format() {
     let dir = tempfile::tempdir().expect("a temp dir");
@@ -183,9 +163,6 @@ fn a_file_that_is_not_audio_fails_with_format() {
 /// channel mask is a second LFE) fails the open with the placement's refusal,
 /// at the file's own width and at stereo. (`tests/disk_placement.rs` has the
 /// rest of the placements, through the same open.)
-///
-/// Mutation (run): `open_stream_region` not building the `Place` (the open
-/// answering `Ok` for the file) -> fails.
 #[test]
 fn a_wave_with_an_unnamed_channel_fails_with_placement() {
     let dir = tempfile::tempdir().expect("a temp dir");
@@ -236,9 +213,6 @@ fn write_extensible_wav(path: &Path, channels: u16, mask: u32) {
 /// Variant `StreamerGone`: an open on a streamer whose thread is gone is never
 /// answered, and says so at the first poll rather than staying `Pending` for
 /// ever.
-///
-/// Mutation (run): `poll` answering `Pending` on a disconnected reply -> the
-/// loop below never ends -> fails (it is bounded).
 #[test]
 fn an_open_on_a_gone_streamer_fails_with_streamer_gone() {
     let (_dir, path) = constant_file(0.25);
@@ -261,9 +235,6 @@ fn an_open_on_a_gone_streamer_fails_with_streamer_gone() {
 /// A caller that drops its `Opening` abandons the open: the streamer that
 /// answers into nobody closes the stream it opened, and keeps no record or
 /// region for it.
-///
-/// Mutation (run): `handle_open` not closing the stream when the reply cannot
-/// be sent -> the record is still held -> fails.
 #[test]
 fn an_abandoned_open_is_closed() {
     let (_dir, path) = constant_file(0.25);
@@ -289,14 +260,6 @@ fn an_abandoned_open_is_closed() {
 ///
 /// How it passes: each `Opening` owns its own reply cell, written once by the
 /// streamer for that open's id, so `A.poll` can only return A's reader.
-///
-/// Mutation (run): `Opening::poll` reading one reply shared by the streamer's
-/// opens, the newest overwriting (the channel's current link, as
-/// the voice lookup read it) -> `first.poll` takes the second stream's
-/// answer, so the second open is never answered (and had the polls been the
-/// other way round, the readers' ids would be swapped) -> fails at "the second
-/// open was not answered". (Recorded as a patch: `DiskStreamer` keeps the
-/// newest open's `Receiver` in a field and `Opening::poll` receives from that.)
 #[test]
 fn two_opens_each_yield_the_reader_of_their_own_stream() {
     let dir = tempfile::tempdir().expect("a temp dir");
@@ -362,10 +325,6 @@ fn two_opens_each_yield_the_reader_of_their_own_stream() {
 /// Two streams of one file: a loop set through A's handle is A's alone (B's
 /// reader, and a fork of it, still see no loop); and then through B's, B's
 /// alone.
-///
-/// Mutation (run): `handle_loop` applying the effect to the first record
-/// (`records_mut().first_mut()`) instead of the one the effect names -> B's
-/// loop is set instead of A's -> fails.
 #[test]
 fn a_loop_set_through_one_stream_leaves_the_other_unchanged() {
     let (_dir, path) = constant_file(0.25);
@@ -404,9 +363,6 @@ fn a_loop_set_through_one_stream_leaves_the_other_unchanged() {
 /// command could still be sent through) setting a loop beside a stream that
 /// is open: the open one keeps the loop it had, and the streamer neither
 /// panics nor keeps anything of the closed one.
-///
-/// Mutation (run): `handle_loop` applying the loop to the newest record
-/// whatever the step answered -> B takes the stale loop -> fails.
 #[test]
 fn a_stopped_streams_handle_commands_nothing() {
     let (_dir, path) = constant_file(0.25);

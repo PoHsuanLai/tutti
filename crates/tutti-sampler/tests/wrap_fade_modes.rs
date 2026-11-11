@@ -11,9 +11,6 @@
 //! nodes. The fade is asserted to have run: the voice placed before the loop
 //! start steps across the wrap by less than a cut's step, which the wave
 //! gives analytically.
-//!
-//! Mutation (run): `Wrap::new` always `None` (no fade) → the step at the wrap
-//! is the cut's → fails, for both hosts.
 
 use std::sync::Arc;
 

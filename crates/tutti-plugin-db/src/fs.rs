@@ -357,7 +357,6 @@ mod tests {
     /// A symlink back to an ancestor must not be walked again. Without the seen
     /// set the walk follows `loop` until the OS refuses (about 40 links deep) and
     /// reports the plugin once per level.
-    /// Mutation: drop the `seen.insert` test in `Walk::dir`.
     #[cfg(unix)]
     #[test]
     fn a_symlink_cycle_ends_the_walk_and_reports_each_plugin_once() {
@@ -374,9 +373,7 @@ mod tests {
     }
 
     /// Two routes to one plugin report it once (a file link and a directory
-    /// link), and a dangling link not at all. Mutation: drop the `seen.insert`
-    /// test in `Walk::plugin` (the file link then appears twice); or push
-    /// before canonicalising (the dangling link then appears).
+    /// link), and a dangling link not at all.
     #[cfg(unix)]
     #[test]
     fn a_plugin_reached_twice_is_reported_once_and_a_dangling_link_not_at_all() {
@@ -396,8 +393,7 @@ mod tests {
 
     /// A plugin is reported under its canonical path with the format of the name
     /// it was found under, so a link to a file named anything keeps its format
-    /// and two routes give one key. Mutation: report the walked path; or take the
-    /// format from the canonical path.
+    /// and two routes give one key.
     #[cfg(unix)]
     #[test]
     fn a_link_is_reported_under_its_target_with_the_links_format() {
@@ -416,7 +412,6 @@ mod tests {
     }
 
     /// The seen set spans the roots: a root inside another is not walked twice.
-    /// Mutation: build a new `Walk` per root in `discover`.
     #[test]
     fn overlapping_roots_report_each_plugin_once() {
         let dir = TempDir::new().unwrap();
@@ -454,9 +449,7 @@ mod tests {
     }
 
     /// Replacing a bundle's binary leaves the directory's own time alone; the
-    /// facts must still move, for every bundle format. Mutation: drop the `max`
-    /// with the module's in `FileFacts::read`; and, per format, map that format
-    /// to `return None` in `module_in_bundle`.
+    /// facts must still move, for every bundle format.
     #[cfg(unix)]
     #[test]
     fn a_bundle_whose_binary_changed_reads_as_changed() {

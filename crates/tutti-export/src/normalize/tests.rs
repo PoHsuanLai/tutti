@@ -64,9 +64,6 @@ mod headroom {
     /// An integer format keeps one LSB plus the dither's amplitude below full
     /// scale: none for no dither, half an LSB for rectangular, one for
     /// triangular.
-    ///
-    /// Mutation (run): `(1.0 + dither_peak)` → `1.0` in `headroom_ceiling` →
-    /// the rectangular and triangular rows read 1 LSB's worth and fail.
     #[test]
     fn an_integer_format_keeps_an_lsb_and_its_dither_below_full_scale() {
         for (pcm, bits) in [(Pcm::Int16, 16), (Pcm::Int24, 24)] {
@@ -88,9 +85,6 @@ mod headroom {
     /// A target above the limit is pulled to it, one under it is left, the
     /// loudness target is never touched (only its ceiling), and a format that
     /// does not quantize has no limit.
-    ///
-    /// Mutation (run): `within` returning `self` → the 0 dBTP rows keep 0 →
-    /// fails.
     #[test]
     fn a_target_above_the_limit_is_pulled_to_it() {
         let int16 = config(Pcm::Int16, Some(DitherShape::Triangular));
@@ -165,9 +159,6 @@ mod measurer {
     }
 
     /// The chunk is one second of audio, at least a frame.
-    ///
-    /// Mutation (run): `chunk_frames` returning twice the rate -> fails here
-    /// and in the cancel test below.
     #[test]
     fn a_chunk_is_at_most_a_second() {
         assert_eq!(chunk_frames(RATE), 48_000);
@@ -187,10 +178,6 @@ mod measurer {
     /// `10 log10 0.625` (the mean squares, a^2/2 and a^2/8, sum to 0.625 a^2): -22.04 LUFS at a = 0.1. Its true peak is the larger
     /// amplitude, -20 dBTP. The tolerance on both (0.1) covers the gain at
     /// 1 kHz not being the one at 997 Hz.
-    ///
-    /// Mutation (run): `Measurer::feed` interleaving `&planes[..1]` (the right
-    /// channel reads silence) -> the loudness is off by 1 LU and the one-shot
-    /// comparison by as much; fails.
     #[test]
     fn the_chunked_reading_is_the_analytic_one_and_the_one_shot_one() {
         let rendered = sine(5, 0.1);
@@ -227,10 +214,6 @@ mod measurer {
 
     /// Where the stream is cut does not move the reading: 777-frame spans
     /// (not a divisor of anything here) read what one-second ones do.
-    ///
-    /// Mutation (run): `Measurer::feed` sizing its scratch one sample long
-    /// (a ragged tail the meter carries onto the next span's first channel)
-    /// -> the readings differ; fails.
     #[test]
     fn the_cut_does_not_move_the_reading() {
         let rendered = sine(3, 0.25);
@@ -252,10 +235,6 @@ mod measurer {
 
     /// A cancel between chunks stops the measurement there: the callback
     /// cancels on the second chunk's reading, and no third chunk is fed.
-    ///
-    /// Mutation (run): the `is_cancelled` check at the top of `measure`'s
-    /// chunk loop removed -> the other check (after the loop) still ends it,
-    /// but after five chunks; fails.
     #[test]
     fn a_cancel_between_chunks_stops_the_measurement() {
         let rendered = sine(5, 0.1);

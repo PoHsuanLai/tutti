@@ -38,10 +38,6 @@ fn zeroed() -> CEvent {
 /// Plugin threads reading the list at once all get it: a read taken on
 /// another thread is live (barriers hold it) while this one calls the
 /// COM reads, and both succeed.
-///
-/// Mutation (run): `AudioThreadCell::try_acquire_reader` exclusive (a
-/// compare-exchange from 0 to 1) → `getEventCount` answers 0 and
-/// `getEvent` `kResultFalse` → fails.
 #[test]
 fn concurrent_reads_of_the_list_both_succeed() {
     use std::sync::Barrier;
@@ -72,10 +68,6 @@ fn concurrent_reads_of_the_list_both_succeed() {
 /// A read while the list is being written answers with the method's
 /// failure value instead of panicking (a panic would unwind into the
 /// plugin's frame and abort the process); once the write ends it reads.
-///
-/// Mutation (run): `getEvent` back on a panicking `borrow` → the panic
-/// cannot unwind out of the COM thunk, and the test process aborts
-/// (SIGABRT): the plugin-server crash this guards against.
 #[test]
 fn a_read_during_a_write_fails_at_the_com_level() {
     let list = EventList::input();
@@ -129,10 +121,6 @@ fn sysex_payload(len: usize) -> Vec<u8> {
 /// output list keeps every byte of it: capping it at the 16 inline bytes, or
 /// at one UMP packet (6 bytes), would mean no message of 7 bytes or more ever
 /// reached the host.
-///
-/// Mutation (run): drop the SysEx branch in `addEvent` so the event goes
-/// through `Event::from_c` (16 inline bytes) → the 40-byte and the 17-byte
-/// messages come back cut or missing → fails.
 #[test]
 fn a_sysex_from_the_plugin_reaches_the_host_whole() {
     for len in [4usize, 7, 14, 16, 17, 40, 100] {
@@ -153,9 +141,6 @@ fn a_sysex_from_the_plugin_reaches_the_host_whole() {
 
 /// A SysEx the output list cannot hold is dropped whole and counted; the
 /// list keeps working for the next message.
-///
-/// Mutation (run): truncate to the arena's room instead of refusing →
-/// the oversize message arrives cut (no `0xF7`) → fails.
 #[test]
 fn a_sysex_past_the_output_room_is_dropped_whole_and_counted() {
     let list = EventList::output();
@@ -181,12 +166,6 @@ fn a_sysex_past_the_output_room_is_dropped_whole_and_counted() {
 /// could not pack into one packet; a data event of another type is not SysEx
 /// whatever its bytes; and a raw channel-voice message carried as data
 /// (status byte first) stays a MIDI-1 message.
-///
-/// Mutations (run): detect by `size > 16 || bytes[0] == 0xF0` alone → the
-/// unframed 7/10/16-byte messages are cut or missing, and the other-type
-/// 40-byte event is staged as SysEx → fails; drop the `< 0x80` arm → the
-/// unframed messages fail; drop the `0xF0`/`< 0x80` guard (type alone) →
-/// the raw note-on becomes a SysEx and fails.
 #[test]
 fn a_sysex_is_detected_by_its_data_type() {
     for len in [7usize, 10, 16] {
@@ -236,9 +215,6 @@ fn a_sysex_is_detected_by_its_data_type() {
 /// **`getEvent` on an output list reads a SysEx back from the output
 /// list's own buffer**, not the input list's reassembly buffer (which an
 /// output list has none of).
-///
-/// Mutation (run): `getEvent` passing `inner.sysex.bytes()` → the event
-/// reads back with size 0 and a null pointer → fails.
 #[test]
 fn get_event_reads_an_output_lists_sysex_back() {
     let list = EventList::output();
@@ -262,10 +238,6 @@ fn get_event_reads_an_output_lists_sysex_back() {
 
 /// **The plugin-SysEx path is allocation-free**: a 200-byte message
 /// through `addEvent`, then more until the list refuses one.
-///
-/// Mutation (run): a `Vec` copy of the message in `stage_plugin_sysex`
-/// (`let _v = std::slice::from_raw_parts(bytes, size).to_vec();`) →
-/// `assert_no_alloc` aborts.
 #[test]
 fn the_plugin_sysex_path_is_allocation_free() {
     let list = EventList::output();
@@ -325,9 +297,6 @@ fn fetch_all(list: &ComWrapper<EventList>) -> Vec<CEvent> {
 /// each returned `Event` (and its borrowed `bytes` pointer) live for the rest of
 /// `process`. Staged well past any small inline scratch, every pointer must
 /// still read its own event's bytes after the whole batch has been fetched.
-///
-/// Mutation (run): `getEvent` ignoring the index (`events.get(i * 0)`) → every
-/// event reads event 0's bytes → fails (as does the text test below).
 #[test]
 fn data_event_bytes_stay_valid_after_fetching_every_event() {
     const N: u8 = 32;
@@ -377,9 +346,6 @@ fn chord_event(staging: &mut Staging<'_>, root: i16, name: &[u16]) -> Event {
 /// The same hazard on the text side: chord / scale / text events hand out a
 /// `text` pointer into the arena. Fetching every event first and reading
 /// after must still resolve each name correctly.
-///
-/// Mutation (run): `getEvent` ignoring the index (`events.get(i * 0)`) → every
-/// chord reads the first root and name → fails.
 #[test]
 fn text_pointers_stay_valid_after_fetching_every_event() {
     let names: Vec<Vec<u16>> = (0..16).map(|i| utf16(&format!("Chord{i}"))).collect();
@@ -409,12 +375,6 @@ fn text_pointers_stay_valid_after_fetching_every_event() {
 /// read after, as a plugin does; the names that fit read back intact,
 /// the ones past the room are staged with an empty text and counted, and
 /// staging the block, the very first time included, allocates nothing.
-///
-/// Mutations (run), each fails: interning without the room check (the
-/// arena grows past its reservation) → the over-room texts arrive and the
-/// drop count is 0; not counting the refusal → the drop count;
-/// `TextArena::new` reserving nothing → the first staging allocates in
-/// the gate.
 #[test]
 fn a_full_text_arena_refuses_rather_than_moving_its_pointers() {
     const LONG: usize = 256;
@@ -472,9 +432,6 @@ fn get_event_rejects_bad_indices() {
 }
 
 /// Staging and `clear` run every block; they reuse the reserved capacity.
-///
-/// Mutation (run): a `Vec::with_capacity(8)` in `Staging::push` → `assert_no_alloc`
-/// aborts.
 #[test]
 fn staging_is_allocation_free_after_warmup() {
     let list = EventList::input();
@@ -495,7 +452,6 @@ fn staging_is_allocation_free_after_warmup() {
     });
 }
 
-/// Mutation (run): `Inner::clear` not clearing `events` → the count stays 2 → fails.
 #[test]
 fn clear_empties_a_staged_block() {
     let list = EventList::input();
@@ -508,10 +464,6 @@ fn clear_empties_a_staged_block() {
 /// **A negative offset sorts before zero.** A per-note expression's
 /// `sample_offset` is a wire `i32` nothing clamps, so a negative one
 /// reaches the sort.
-///
-/// Mutation (run): the sort key without the sign flip
-/// (`e.sample_offset().cast_unsigned()`) puts -1 after every
-/// non-negative offset and fails here.
 #[test]
 fn a_negative_offset_sorts_before_zero() {
     let list = EventList::input();
@@ -523,10 +475,6 @@ fn a_negative_offset_sorts_before_zero() {
 
 /// Past the room, a note-off is kept and a note-on gives way, and every
 /// loss is counted once; the list never grows.
-///
-/// Mutations (run): `Inner::push` returning `false` for every event past
-/// the room (no eviction) fails the note-off assertion; the
-/// `self.dropped += 1` removed fails the count.
 #[test]
 fn past_the_room_a_note_off_evicts_and_the_rest_are_counted() {
     let list = EventList::input();
@@ -567,11 +515,6 @@ fn past_the_room_a_note_off_evicts_and_the_rest_are_counted() {
 /// next, without growing.
 ///
 /// A refused chord spends none of the text arena.
-///
-/// Mutations (run): `addEvent`'s room check removed fails the arena
-/// assertion (the chord's text is interned, then the event refused);
-/// that and `Inner::push` growing past the room together abort in the
-/// gate.
 #[test]
 fn add_event_refuses_past_the_room() {
     let list = EventList::input();
@@ -618,9 +561,6 @@ fn add_event_refuses_past_the_room() {
 
 /// A text event the plugin adds is copied into the arena, whatever the
 /// pointer's lifetime.
-///
-/// Mutation (run): `from_c` interning nothing (an empty `TextRef`) → the text
-/// reads back empty → fails.
 #[test]
 fn a_plugin_text_is_copied_into_the_arena() {
     let list = EventList::output();
@@ -652,8 +592,6 @@ fn a_plugin_text_is_copied_into_the_arena() {
 /// **A plugin thread inside a list call makes the host skip, not panic.** The
 /// audio thread's `try_begin` and `try_with_events` used to `borrow`, which
 /// panics when a plugin thread is inside `getEventCount` or `getEvent`.
-///
-/// Mutation (run, fails): make `try_begin` use `borrow_mut` again -> the first call panics.
 #[test]
 fn a_list_in_use_by_the_plugin_is_skipped_and_counted() {
     let list = EventList::input();

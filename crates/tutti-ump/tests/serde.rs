@@ -1,14 +1,5 @@
 //! The address types read back only what they would construct, and write the
 //! bare number. Run with `--features serde`.
-//!
-//! Mutation record (planted, seen to fail, restored):
-//! - `serde(transparent)` in place of `try_from = "u8", into = "u8"` on any of
-//!   the three types -> `a_number_above_the_range_is_refused` (200 and 255
-//!   deserialize);
-//! - the `what` of `OutOfRange` taken from another type -> the same test;
-//! - `into = "u8"` dropped from `MidiChannel` -> nothing fails: serde writes a
-//!   newtype as its inner value in JSON, so the bytes are the same (an
-//!   equivalent mutant).
 #![cfg(feature = "serde")]
 
 use serde::{Serialize, de::DeserializeOwned};

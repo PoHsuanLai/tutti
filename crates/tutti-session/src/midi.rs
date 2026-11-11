@@ -1281,11 +1281,6 @@ mod tests {
     /// inclusive.** Frames 1 000, 1 250 and 1 999 (given out of order) reach
     /// the sink as offsets 250, 0 and 999 of a 1 000-frame span, and a
     /// stamping output advances its origin by that span: 1 000 frames.
-    ///
-    /// Mutation (run): the offset taken from the frame unrebased (the
-    /// first is 1 000, not in the span) → fails. (A span one too long does
-    /// not: the stamper reads the span off the last offset, the bound only
-    /// checks the offsets.)
     #[test]
     fn a_batch_of_frames_is_a_block_from_its_first_frame() {
         let log = Arc::new(std::sync::Mutex::new(Vec::new()));
@@ -1316,9 +1311,6 @@ mod tests {
     /// **A host's mailbox is drained with its stamps' spacing kept, across
     /// the `u32` wrap.** Stamps `u32::MAX - 4` and 5 are 10 frames apart (the
     /// counter wrapped between them): the sink gets offsets 0 and 10.
-    ///
-    /// Mutation (run): not subtracting the first stamp (wrapping) → the
-    /// second event is 4 294 967 286 frames after the first.
     #[test]
     fn a_mailbox_drain_keeps_the_stamps_spacing() {
         let log = Arc::new(std::sync::Mutex::new(Vec::new()));

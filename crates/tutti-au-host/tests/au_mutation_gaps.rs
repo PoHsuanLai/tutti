@@ -1,7 +1,7 @@
-//! Assertions that catch plausible mutations of `src/` no other suite catches.
+//! Assertions that catch plausible bugs in `src/` that no other suite catches.
 //!
 //! Each test targets a bug that, introduced into `src/`, leaves the rest of the
-//! suite passing. Each doc comment names the mutation it kills, so a refactor
+//! suite passing. Each doc comment names the bug it catches, so a refactor
 //! that reintroduces it fails here rather than shipping.
 //!
 //! ## What is deliberately *not* here

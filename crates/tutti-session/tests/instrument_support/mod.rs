@@ -10,27 +10,6 @@
 //! The expected figures are here, in the cases: a frame index the subject's
 //! declaration implies, silence, a pitch in Hz. None is imported from a
 //! subject, and no case compares a render with another render.
-//!
-//! # Mutations (run)
-//!
-//! Each was made, watched to fail the named tests, and restored:
-//!
-//! - `Rig::clock_of` returning the rendered count instead of the engine's
-//!   clock (the frame skew of E6): `a_rate_change_keeps_the_note_on_its_frame`
-//!   fails for `PolySynth` and the plugin, 18 to 21 frames late.
-//! - `InstrumentHandle::send` ignoring its `At`: `note_on_sounds_at_its_stamp`
-//!   and `a_beat_is_refused`.
-//! - `InstrumentHandle::set_gain` storing nothing: `gain_reaches_the_output`.
-//! - the strip reading outputs `[0, 1]` whatever the instrument names:
-//!   `the_pair_a_node_names_is_the_one_played`.
-//! - the role check skipped: `an_effect_plugin_is_refused`.
-//! - the server not re-activating a plugin after a state restored before its
-//!   first block: every plugin case (the plugin stays in its load-time mode),
-//!   and the fork case alone 5 runs in 6.
-//!
-//! This lives under `tests/` and not in a crate: it needs `tutti-session`,
-//! which only the umbrellas may depend on, and a dev-dependency is how a test
-//! reaches it (`scripts/check-layout.sh`).
 #![allow(dead_code, unused_imports, unused_macros)]
 
 pub mod cases;

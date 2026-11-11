@@ -5,7 +5,6 @@
 use tutti_fixtures::{RangeContract, check_range_contract};
 use tutti_tempo::{CellGrid, CellGridError};
 
-/// Mutation (run): `CellGrid::new` refuses 1 instead of 0; the contract check fails on `new(0)`.
 #[test]
 fn a_grid_is_never_zero() {
     check_range_contract(&RangeContract {

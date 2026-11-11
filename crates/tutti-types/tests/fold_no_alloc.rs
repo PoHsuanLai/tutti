@@ -16,11 +16,6 @@ fn smpte(n: u16) -> ChannelTopology {
 /// 12 -> 2 is the summed group, 6 -> 1 the mono mix, the permutation and
 /// 2 -> 6 the copy and zero rows, 5.1 -> 2 plain sums. 200 frames is past the
 /// planar group's 64-frame chunk.
-///
-/// Mutation (run): the planar group scratch `[0.0f32; CHUNK]` made
-/// `vec![0.0f32; CHUNK]` -> the 12 -> 2 gate fails; the same in
-/// `planar_to_interleaved` -> every gate fails; `Vec` collected in
-/// `Fold::frame` -> every gate fails.
 #[test]
 fn applying_a_fold_is_allocation_free() {
     use Speaker::*;

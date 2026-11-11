@@ -936,8 +936,7 @@ mod tests {
     /// macOS 15.6, **no** installed AU reports unit 12 — the `Unknown` codes
     /// that do appear are 1, 5, 7, 9, 10, 16, 18, 21, 24 and 25. So nothing on
     /// this machine can exercise the arm end-to-end, and a real-AU test would be
-    /// vacuous. This one is not: deleting the match arm makes it fail, which was
-    /// verified by mutation.
+    /// vacuous. This one is not: deleting the match arm makes it fail.
     ///
     /// The `Display` output is asserted too, because that is the whole reason
     /// the arm exists — `Unknown(12)` prints `unit(12)`, and a value of `74`

@@ -77,10 +77,6 @@ impl tutti_graph::Node for TransportTone {
 /// changes: the walk, the change list, the executor and the fold never
 /// allocate. Device blocks of 1 024 frames against a 512-frame `MaxBlock`,
 /// so the split into graph blocks runs too.
-///
-/// Mutation (run): allocate a `Vec` at the top of `Engine::walk` → the gate
-/// panics → fails; box a value in `LoopOwner::apply` (the loop edits publish
-/// a snapshot) → fails.
 #[test]
 fn graph_engine_with_timed_transport_is_allocation_free() {
     use tutti_fixtures::midi::m1_note_on;
@@ -175,10 +171,6 @@ fn graph_engine_with_timed_transport_is_allocation_free() {
 /// the sweep run outside the gate (they allocate and free, as they may); the
 /// blocks run inside it, and the clock really takes each tempo (a lend that
 /// never happened would pass by measuring nothing).
-///
-/// Mutation (run): a `Box::new(0u8)` in `TransportAudio::tempo_for_block`'s
-/// lend branch -> the gate panics -> fails; the clock not taking the map (the
-/// lend removed) -> `tempo_in_force` stays 120 -> the assertion fails.
 #[test]
 fn a_published_tempo_map_is_taken_without_allocating() {
     use tutti_graph::NodeKey;
@@ -223,22 +215,12 @@ fn a_published_tempo_map_is_taken_without_allocating() {
 /// it; the clock really takes the steps (`tempo_in_force` reaches the last
 /// step's tempo), so a walk that never ran would not pass.
 ///
-/// Mutation (run): a `Vec::with_capacity(1)` in `TempoWalk::roll` -> the gate
-/// panics -> fails; a `Vec::with_capacity(1)` in `TransportAudio::tempo_ahead`
-/// -> fails; the walk not running (`stepped` left false in `tempo_for_block`) -> the tempo stays
-/// 120 -> the assertion fails.
-///
 /// The ramp case (doc 020, stage 4) runs the same calls over a ramp, whose
 /// cells are a change each: the graph takes 4 096-frame blocks, so a call
 /// crosses 32 cell edges and the engine cuts it at every 8th change; loop
 /// wraps inside the ramp re-seat on a cell, and a seek back and a map swap
 /// land in the middle of it. Its clock really takes the cells
 /// (`tempo_in_force` is the chord of a ramp cell, strictly between the ends).
-///
-/// Mutation (run): a `Vec::with_capacity(1)` in `chord_cell_with` (reached
-/// through `TempoWalk::frames_to_edge`) -> the gate panics -> fails; the ramp
-/// not followed (`stepped` left false) -> `tempo_in_force` stays at the
-/// scalar 120 -> the assertion fails.
 #[test]
 fn a_step_map_is_followed_without_allocating() {
     use tutti_graph::NodeKey;
@@ -387,9 +369,6 @@ fn a_step_map_is_followed_without_allocating() {
 /// The master meter on the audio thread: the meter op over a stereo and a
 /// wide root never allocates, and the meter really reads (a gated-off meter
 /// would pass by measuring nothing).
-///
-/// Mutation (run, recorded here): `Vec::with_capacity(1)` in `meter_op`
-/// -> the gate panics.
 #[test]
 fn the_master_meter_is_allocation_free() {
     use tutti_graph::{Editor, Prepare, Unforkable};
@@ -440,10 +419,6 @@ fn the_master_meter_is_allocation_free() {
 /// back, not freed (the engine enters `RtScope`, where a `TapWriter` drop is a
 /// debug panic). The installs and closes are queued before each gate; the
 /// engine takes them inside it.
-///
-/// Mutation (run, recorded here): `Vec::with_capacity(1)` in
-/// `TapWriter::push_interleaved` -> the gate panics; dropping the replaced
-/// writer in `Hearing::swap` -> the debug panic.
 #[test]
 fn the_heard_tap_is_allocation_free() {
     use tutti_graph::NodeKey;
@@ -519,10 +494,6 @@ fn the_heard_tap_is_allocation_free() {
 /// touching the meter, hence the `clicked` check.
 ///
 /// [`ArcLend`]: tutti_rt::ArcLend
-///
-/// Mutations (run): collect `env.segments()` into a `Vec` in
-/// `EnvClock::process` (the walk now in `Env::for_each_beat`), or in
-/// `ClickNode::render` → the gate panics → fails.
 #[test]
 fn graph_engine_with_env_clock_and_metronome_is_allocation_free() {
     use tutti_graph::NodeKey;
@@ -635,9 +606,6 @@ impl tutti_graph::Pool for GatedPool {
 /// allocates or frees while a block runs. The helpers' idle loop between
 /// blocks (spin, yield, park) runs outside the job and is not gated; it
 /// touches only atomics and `Thread::park`.
-///
-/// Mutation: in `WorkerPool::run`, collect the sleepers to wake into a `Vec`
-/// → the callback's gate aborts.
 #[test]
 fn graph_engine_on_a_worker_pool_is_allocation_free() {
     use tutti_graph::NodeKey;

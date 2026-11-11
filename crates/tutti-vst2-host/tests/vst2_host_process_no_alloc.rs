@@ -337,10 +337,6 @@ fn process_f32_with_midi_does_not_allocate() {
 /// already-suspended plugin dispatched a second `effMainsChanged(0)` and then
 /// silently resumed on the way out; now a suspended plugin is a `Vst2Loaded`
 /// with no halves to reconfigure.
-///
-/// Mutation (run): `PluginInstance::close` suspending without checking `resumed` ->
-/// the dropped plugin suspends a second time -> fails. Mutation (run):
-/// `activate` not setting `resumed` -> the rejoin does not suspend -> fails.
 #[test]
 fn a_rejoin_suspends_once_and_an_activation_resumes_once() {
     let _guard = lock_probe();
@@ -387,9 +383,6 @@ fn a_rejoin_suspends_once_and_an_activation_resumes_once() {
 /// A rate or block that is none cannot be built into a `Prepare`, and a valid
 /// activation after the refused ones is the first resume. (The refusal reaching
 /// the plugin is tested through the server loaders, which take a bare rate.)
-///
-/// Mutation (run): the finite and positive check removed from `Prepare::new` ->
-/// the zero and NaN rates build a `Prepare` -> the `is_none` fails.
 #[test]
 fn a_prepare_that_is_no_rate_cannot_be_built() {
     let _guard = lock_probe();

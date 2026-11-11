@@ -9,7 +9,7 @@ use rand::{Rng, SeedableRng};
 use tutti_types::{MaxBlock, SampleRate, Samples};
 
 use super::DesignCase;
-use crate::{Channels, Design, Effect, Realization, Setup};
+use crate::{Design, Effect, Realization, Setup};
 
 /// The longest block the cases prepare for.
 pub const MAX_BLOCK: usize = 512;
@@ -42,8 +42,8 @@ pub fn built<D: DesignCase>(
 /// The input and output widths of `d`.
 #[must_use]
 pub fn widths<D: Design>(d: &D) -> (usize, usize) {
-    let Channels { input, output, .. } = d.channels();
-    (usize::from(input.count()), usize::from(output.count()))
+    let channels = d.channels();
+    (channels.input_width(), channels.output_width())
 }
 
 /// Renders `input` (the same signal on every input channel) through `k` in

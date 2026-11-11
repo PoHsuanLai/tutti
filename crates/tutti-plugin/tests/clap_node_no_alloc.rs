@@ -74,24 +74,7 @@ const PASSES: usize = QUANTUM / BLOCK;
 /// play clock's 32-frame grid across it.
 ///
 /// Transport changes inside every chunk (a map point and a seek in each
-/// pass, doc 020 stage 5b) are walked inside the guard too. Mutation: build a
-/// `Vec` of the chunk's entries in `TransportWalk::scan` -> aborts.
-///
-/// Mutation: allocate in the node's chunk walk (a `Vec` of the chunk's
-/// input slices in place of the stack array in the generic node's chunk walk) → the
-/// guarded blocks allocate → the test aborts. Mutation: build a fresh
-/// `MeterMap::default()` per block in place of the prebuilt
-/// `Bound::default_meter` → it allocates → aborts. Mutation: collect each
-/// payload's MIDI into a `Vec` before cloning it into the payload → aborts.
-/// Mutation: let a chunk's parameter queue grow past its point room (no
-/// `has_room` check in `ParamDelivery::place`) → eight blocks of points
-/// outgrow the queue's reserved storage → aborts.
-/// Mutation (run, on the lanes' segments): allocate where
-/// the node starts following a segment (a `Vec` per
-/// `SegmentPoints::start`) → aborts. (Growing the slots past what
-/// `prepare` reserved is not seen here: each lane has one segment in
-/// flight on its own parameter, so two slots are ever live; the overflow
-/// path's fallback is pinned by `segment_points`' unit tests.)
+/// pass, doc 020 stage 5b) are walked inside the guard too.
 ///
 /// The LFO is a lane's LFO layer around its knob.
 #[test]

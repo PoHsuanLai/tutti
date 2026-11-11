@@ -15,29 +15,11 @@
 //! asserts the AU's answer differs from the naive one a host would otherwise
 //! guess.
 //!
-//! ## Every test here was proven load-bearing by mutation
+//! ## Round trips, not statuses
 //!
-//! Each mutation below was applied to `src/identity.rs`, the suite run, and the
-//! mutation reverted.
-//!
-//! | mutation to `src/identity.rs` | caught by |
-//! |---|---|
-//! | `stride = 16` instead of `size_of::<AudioUnitParameter>()` (24) | `every_overview_entry_addresses_a_readable_parameter`, `the_overview_is_a_strict_subset_for_a_unit_that_curates` |
-//! | `sort_unstable_by_key` the decoded overview | `the_overview_order_is_not_the_parameter_list_order` |
-//! | `set_nick_name` writes `ContextName` | `a_nick_name_round_trips_and_can_be_replaced`, `a_nick_name_survives_non_ascii_text`, `two_instances_of_one_au_hold_independent_nick_names` |
-//! | `icon_location` returns a path that does not exist | `an_icon_url_names_a_file_that_exists` |
-//! | `parameters_for_overview` collapses `Err` into an empty list | `a_non_implementing_unit_reports_the_gap_rather_than_an_empty_list` |
-//! | **`set_context_name` replaced by `Ok(())`** | `every_unit_round_trips_a_context_name` |
-//! | **`nick_name` collapses `Err` into `Ok(None)`** | `the_string_readers_report_a_missing_property_as_an_error` |
-//! | **`icon_location` collapses `Err` into `Ok(None)`** | `the_string_readers_report_a_missing_property_as_an_error` |
-//! | **overview count `saturating_sub(1)`** (drop last entry) | `the_overview_decodes_every_entry_the_au_reported` |
-//! | **`element: p.mElement.wrapping_add(7)`** | `the_overview_decodes_every_entry_the_au_reported` |
-//!
-//! The five in bold are the easy ones to miss. The first is the instructive
-//! one: a sweep that asserts only that the write returned `Ok` lets
-//! `set_context_name` be replaced by `Ok(())` outright — exactly the "a
-//! property that is merely accepted proves nothing" trap this header warns
-//! about.
+//! A sweep that asserts only that the write returned `Ok` proves nothing: a property that
+//! is merely accepted is not a property, so each sweep reads the value back. The overview
+//! decode is checked entry by entry, including the last entry and each entry's `element`.
 //!
 //! ## Running
 //!
@@ -378,7 +360,7 @@ fn the_string_readers_report_a_missing_property_as_an_error() {
 /// The overview decode reports every entry the AU wrote, and each entry's
 /// address is decoded field-for-field.
 ///
-/// Pins the two mutations the existential subset/order tests miss: dropping the
+/// Pins the two things the existential subset/order tests miss: dropping the
 /// last entry (they only check what is present), and corrupting `element`
 /// (nothing else asserts it). The counts are the AU's own, re-derived from the
 /// property size rather than hardcoded, so this tracks the machine.

@@ -2,7 +2,7 @@
 //! params of one kind, `Threshold` at index 0 and at index 1, each its own
 //! cell, its own param port and its own modulation target.
 //!
-//! What is pinned here, each with the mutation it was seen to fail under:
+//! What is pinned here:
 //!
 //! - `ParamSet::{set, get, cell}` address each index independently, and a
 //!   bare `UnitParam` is index 0;
@@ -167,9 +167,6 @@ fn graph(to: &[(UnitAddr, f32)]) -> (Editor, tutti_graph::Executor, ParamSet) {
 
 /// `set`, `get` and `cell` reach each index's own cell and no other, and a
 /// bare `UnitParam` is index 0.
-///
-/// Mutation (run): in `ParamSet::slot`, compare `s.param.param == param.param`
-/// (ignore the index) → the write to index 1 lands on index 0 → fails.
 #[test]
 fn set_and_get_address_each_index_independently() {
     let b = Bands::new(-10.0, -20.0);
@@ -201,9 +198,6 @@ fn set_and_get_address_each_index_independently() {
 
 /// An index the node does not have is refused and writes nothing, even
 /// though its kind is there.
-///
-/// Mutation (run): in `ParamSet::slot`, compare the kind alone and ignore the
-/// index (as above) → index 2 reaches a cell → fails.
 #[test]
 fn an_index_the_node_lacks_is_refused() {
     let b = Bands::new(-10.0, -20.0);
@@ -218,9 +212,6 @@ fn an_index_the_node_lacks_is_refused() {
 }
 
 /// The same kind at another index is accepted by the builder.
-///
-/// Mutation (run): the builder's duplicate check on the kind alone → the
-/// second `Threshold` panics → fails.
 #[test]
 fn the_same_kind_at_another_index_is_accepted() {
     let a = Param::new(Db(0.0));
@@ -236,9 +227,6 @@ fn the_same_kind_at_another_index_is_accepted() {
 
 /// A duplicate full address is refused at build, whether the index was spelled
 /// out or came from a bare `UnitParam`.
-///
-/// Mutation (run): drop the duplicate check from `param` → no panic →
-/// fails.
 #[test]
 #[should_panic(expected = "twice")]
 fn a_duplicate_full_address_is_refused() {
@@ -250,9 +238,6 @@ fn a_duplicate_full_address_is_refused() {
 
 /// Index 0 spelled as a bare `UnitParam` and as `UnitAddr::new(.., 0)` is
 /// one address.
-///
-/// Mutation (run): `UnitAddr::first` (the `From<UnitParam>` widening) at
-/// index 1 → the two addresses differ, no panic → fails.
 #[test]
 #[should_panic(expected = "twice")]
 fn a_bare_param_is_index_zero_for_the_duplicate_check() {
@@ -264,9 +249,6 @@ fn a_bare_param_is_index_zero_for_the_duplicate_check() {
 
 /// A node's port list takes the same kind at several indices, refuses a
 /// duplicate full address, and finds each port by full address.
-///
-/// Mutation (run): `try_of`'s duplicate check comparing `.param` only → the
-/// two bands are refused as a duplicate → fails.
 #[test]
 fn param_ports_key_on_the_full_address() {
     let ports = ParamPorts::of(&[BAND0, BAND1, UnitAddr::from(UnitParam::Ratio)]);
@@ -294,11 +276,6 @@ fn param_ports_key_on_the_full_address() {
 /// A source addressed to index 1 drives port 1 and leaves port 0 reading its
 /// base, even with the same source connected to both ports: a port takes
 /// the events for its own full address and no other's.
-///
-/// Mutation (run): `ParamSegment::is_for` comparing the kind alone (the low
-/// byte of the packed id) → port 0 follows index 1's steps too → fails.
-/// `render_ramps` wanting `UnitAddr::first(param.param)` (the index dropped)
-/// → port 1 hears nothing → fails.
 #[test]
 fn a_lane_for_index_1_does_not_touch_index_0() {
     let (mut ed, mut exec, _) = graph(&[(BAND1, -3.0)]);
@@ -318,8 +295,6 @@ fn a_lane_for_index_1_does_not_touch_index_0() {
 }
 
 /// The mirror: a source addressed to index 0 leaves port 1 on its base.
-///
-/// Mutation (run): as above, in either direction.
 #[test]
 fn a_lane_for_index_0_does_not_touch_index_1() {
     let (mut ed, mut exec, _) = graph(&[(BAND0, -3.0)]);
@@ -335,9 +310,6 @@ fn a_lane_for_index_0_does_not_touch_index_1() {
 /// Both bands driven by their own addresses from one source, each to its own
 /// value, and an undriven base still follows its cell: the base is read per
 /// index.
-///
-/// Mutation (run): `param_base` returning `thr[0]` for every port → band 1's
-/// base reads -10 → fails.
 #[test]
 fn each_index_reads_its_own_base_and_its_own_source_value() {
     let (mut ed, mut exec, controls) = graph(&[(BAND0, -1.0), (BAND1, -2.0)]);
@@ -364,10 +336,6 @@ fn each_index_reads_its_own_base_and_its_own_source_value() {
 }
 
 /// A fork starts from each index's own value, and its cells are its own.
-///
-/// Mutation (run): `Bands::fork_fresh` not detaching (a shared cell) → the
-/// write after the fork reaches it → fails; `param_set` adding the same cell
-/// at both indices → band 1 forks at band 0's value → fails.
 #[test]
 fn a_fork_starts_from_each_indexs_value() {
     let (mut ed, mut exec, controls) = graph(&[]);
@@ -389,9 +357,6 @@ fn a_fork_starts_from_each_indexs_value() {
 
 /// The contract's fork check covers every index of a set: each is a cell a
 /// fork starts from and does not share.
-///
-/// Mutation (run): `Bands::fork_fresh` not detaching its cells (so a fork
-/// shares them) → the check fails.
 #[test]
 fn the_contract_fork_check_covers_each_index() {
     tutti_graph::contract::assert_param_fork(Bands::new(-10.0, -20.0));
@@ -401,11 +366,6 @@ fn the_contract_fork_check_covers_each_index() {
 /// addresses of one kind, refuses a 33rd, and a node declaring 32 renders with
 /// its last port driven (the per-block input array, the range cells and the
 /// executor's held views are all sized for the cap).
-///
-/// Mutations (run), each fails: `MAX_PARAM_PORTS` = 31 → the 32-address list
-/// is refused; `try_of`'s cap check as `>=` → likewise; `try_of` checking
-/// `> MAX_PARAM_PORTS + 1` → the 33rd is accepted; `ParamState::inputs` returning its array for 31 ports (`take(31)`) →
-/// port 31 reads its base.
 #[test]
 fn a_node_declares_up_to_the_cap_and_no_more() {
     assert_eq!(MAX_PARAM_PORTS, 32);

@@ -4,9 +4,7 @@
 
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
-use tutti_types::{
-    Amplitude, ChannelLayout, Db, Hz, Mix, SampleRate, Samples, Seconds, StereoWidth,
-};
+use tutti_types::{Amplitude, BusTopology, Db, Hz, Mix, SampleRate, Samples, Seconds, StereoWidth};
 
 use super::{Anchor, DesignCase, Hook, LtiCase, RealizationCase, ReverbCase};
 use crate::network::{
@@ -297,7 +295,7 @@ impl Design for ToyFdn {
     }
 
     fn channels(&self) -> Channels {
-        Channels::speakers(ChannelLayout::MONO, ChannelLayout::STEREO)
+        Channels::new(BusTopology::MONO, BusTopology::STEREO)
     }
 
     fn realization(&self) -> Unrun {

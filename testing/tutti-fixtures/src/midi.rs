@@ -19,6 +19,43 @@ use tutti_ump::{
 /// widens a MIDI 1.0 velocity of 64 to `0x8000` (a velocity of 0 is `0`).
 pub const MID_VELOCITY: u16 = 0x8000;
 
+/// A receiver of the per-note bend sensitivity (RPN #00/07, M2-104 section
+/// 7.4.13), for a test that checks what a stream tells one: each channel
+/// starts at the MPE default, ±48 (RP-053), and [`observe`](Self::observe)
+/// follows each message of the RPN. It reads the Group's channels as one
+/// 16-channel space and ignores which Group a message is in.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct BendRanges([f32; 16]);
+
+impl Default for BendRanges {
+    fn default() -> Self {
+        Self([48.0; 16])
+    }
+}
+
+impl BendRanges {
+    /// The range on `channel`, in semitones.
+    #[must_use]
+    pub fn semitones(&self, channel: MidiChannel) -> f32 {
+        self.0[usize::from(channel.get())]
+    }
+
+    /// Follows `ump`: a per-note bend sensitivity sets its channel's range, and
+    /// `true` says it was one. Anything else leaves the ranges as they are.
+    pub fn observe(&mut self, ump: &Ump) -> bool {
+        let Ok(Message::Midi2(address, Voice2::Registered { bank, index, value })) = decode(*ump)
+        else {
+            return false;
+        };
+        if Rpn::new(bank, index) != Rpn::PER_NOTE_PITCH_BEND_SENSITIVITY {
+            return false;
+        }
+        self.0[usize::from(address.channel.get())] =
+            tutti_midi_protocol::PitchBendSensitivity::from_rpn_bits(value).as_semitones_f32();
+        true
+    }
+}
+
 /// A MIDI 1.0 channel voice message in the first Group.
 pub fn m1(channel: MidiChannel, v: Voice1) -> Ump {
     Message::Midi1(Address::first(channel), v).into()
@@ -422,9 +459,7 @@ mod tests {
     use super::*;
 
     // Pins the MIDI 1.0 builders to M1-4.2 / M2-104 figures: type 2, group 0,
-    // status nibble, channel, then the two data bytes. Mutations (each run,
-    // each fails this test): `m1_note_on` building a Note Off; `sysex_payload`
-    // counting from 0 instead of 1; `key_of` reporting a Note Off as `on`.
+    // status nibble, channel, then the two data bytes.
     #[test]
     fn the_midi1_builders_have_the_spec_layout() {
         let (c, n) = (MidiChannel::of(0), NoteNumber::of(60));
@@ -461,8 +496,7 @@ mod tests {
 
     // Pins the encoder against M2-104's figures for the two messages most
     // tests send, so a helper that built the wrong message would fail here
-    // rather than make every caller agree with it. Mutation: swap NoteOn's
-    // status nibble for NoteOff's in `note_on` and the first assert fails.
+    // rather than make every caller agree with it.
     #[test]
     fn note_on_and_off_have_the_spec_layout() {
         let g = MidiGroup::of(2);

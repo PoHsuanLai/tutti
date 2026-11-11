@@ -15,7 +15,7 @@
 
 use core::num::NonZeroU32;
 
-use tutti_types::{Amplitude, ChannelLayout, Mix, SampleRate};
+use tutti_types::{Amplitude, BusTopology, Mix, SampleRate};
 
 use crate::fdn::CHUNK;
 use crate::network::{
@@ -112,7 +112,7 @@ impl Design for FreeverbDesign {
     });
 
     fn channels(&self) -> Channels {
-        Channels::speakers(ChannelLayout::MONO, ChannelLayout::STEREO)
+        Channels::new(BusTopology::MONO, BusTopology::STEREO)
     }
 
     fn blank(&self, rate: SampleRate) -> Network {
@@ -498,10 +498,6 @@ mod tests {
     /// At the General MIDI controls the network carries `Freeverb`'s own
     /// constants to the bit: the comb loop gain, the damping, the all-pass
     /// feedback and the input gain.
-    ///
-    /// Mutations (run): `form: AllPassForm::Freeverb` -> `Lattice` fails the
-    /// form assertion; `* 0.28 + 0.7` written `* 0.28 + 0.70001` in the design
-    /// fails the first assertion; `0.4` -> `0.41` fails the second.
     #[test]
     fn the_general_midi_controls_give_todays_coefficients_to_the_bit() {
         let n = FreeverbDesign.design(&FreeverbControls::GENERAL_MIDI, SampleRate(44_100.0));
@@ -542,9 +538,6 @@ mod tests {
     /// The network's lines are those of a `Freeverb` built at the same rate,
     /// and its coefficients are the ones in the combs, at several rates (the
     /// rate is rounded to whole hertz as `Freeverb::new` does).
-    ///
-    /// Mutation (run): `COMBS_RIGHT` taking `CF_TUNING_L*` fails the right
-    /// combs; skipping the `round` of the rate fails the 44 100.4 Hz case.
     #[test]
     fn the_network_has_the_lines_of_a_freeverb_built_at_the_rate() {
         for hz in [
@@ -602,9 +595,6 @@ mod tests {
     /// and the next eight to the right. The tunings are Freeverb's (1116, 1188,
     /// 1277, 1356, 1422, 1491, 1557, 1617 and 556, 441, 341, 225), so the total
     /// delay is their sum, a figure fixed by the definition.
-    ///
-    /// Mutation (run): a spread of 0 fails the right lengths; swapping the two
-    /// rows of `C` fails the row check.
     #[test]
     fn the_tunings_and_the_stereo_spread_are_freeverbs() {
         let n = FreeverbDesign.design(&FreeverbControls::GENERAL_MIDI, SampleRate(44_100.0));
@@ -641,8 +631,6 @@ mod tests {
     /// `-3 * 1640 / (44100 * log10 0.84)` = 1.5 s; the one-pole at 0.2 leaves
     /// the Nyquist band `0.84 * 0.8 / 1.2` = 0.56 of it per trip. The tail to
     /// -60 dB is the longest line, the all-passes' trains and that RT60.
-    ///
-    /// Mutation (run): `ROOM_FEEDBACK` 0.84 -> 0.85 moves the RT60 and fails.
     #[test]
     fn the_general_midi_network_decays_as_the_definition_says() {
         let n = FreeverbDesign.design(&FreeverbControls::GENERAL_MIDI, SampleRate(44_100.0));
@@ -668,9 +656,6 @@ mod tests {
 
     /// The bounds of Freeverb are the design at room 1, whatever the ceiling's
     /// decay: it has no decay control to cap.
-    ///
-    /// Mutation (run): `Mix(1.0)` -> `Mix(0.5)` in `bounds` fails the
-    /// dominance case (and this one).
     #[test]
     fn the_bounds_are_the_largest_design() {
         let ceiling = Ceiling::at(SampleRate(48_000.0)).unwrap();
@@ -689,9 +674,6 @@ mod tests {
 
     /// A non-finite control takes the General MIDI value and a control out of
     /// range is clamped, so the design is total.
-    ///
-    /// Mutation (run): dropping the `is_finite` test lets NaN through: the
-    /// first assertion fails.
     #[test]
     fn a_hostile_control_is_made_safe() {
         let rate = SampleRate(44_100.0);
@@ -871,10 +853,6 @@ mod realization_tests {
     /// processing loops are untouched and the figures they read are the same
     /// bits. (An invariant of the coefficients, not a render compared with
     /// another render.)
-    ///
-    /// Mutation (run): `1_f32 - damp` written `1.0001 - damp` in `set_combs`
-    /// fails the `damp2` comparison; `ROOM_FEEDBACK` moved by one ulp in the
-    /// design fails the first.
     #[test]
     fn retargeting_to_the_general_midi_network_changes_no_coefficient() {
         let rate = SampleRate(44_100.0);
@@ -894,9 +872,6 @@ mod realization_tests {
     /// A network the realization does not understand leaves it as it was: no
     /// recirculating stage, a stage that is not a one-pole, and figures that are
     /// not a stable loop.
-    ///
-    /// Mutation (run): dropping the `feedback < 1` range test lets the unstable
-    /// network through and fails the last assertion.
     #[test]
     fn a_network_it_does_not_understand_is_ignored() {
         let rate = SampleRate(44_100.0);
@@ -917,9 +892,6 @@ mod realization_tests {
 
     /// A realization prepared at another rate keeps the coefficients it was
     /// retargeted to, and its lines are those of a `Freeverb` built at that rate.
-    ///
-    /// Mutation (run): `prepare` returning early leaves the 44 100 Hz lines and
-    /// fails the lengths.
     #[test]
     fn prepare_retunes_the_lines_and_keeps_the_coefficients() {
         let mut realization = FreeverbDesign.realization();

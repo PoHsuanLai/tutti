@@ -8,8 +8,6 @@
 //! A render is compared with another only as the doc prescribes: the
 //! executor against the reference interpreter (`Pair`, on every block of every
 //! test that uses it), serial against parallel.
-//!
-//! Mutations are recorded on each test (each run, each failed, then restored).
 
 #![allow(
     clippy::needless_range_loop,
@@ -161,11 +159,6 @@ fn chain(t: &mut Topology) {
 /// steady bypass copies, it never multiplies (a multiply by one flushes the
 /// denormal). Two nodes side by side (one in place, one not), so the parallel
 /// executor has two tasks.
-///
-/// Mutation (run): a `* 1.0` loop after the parked path's `copy_slot` → the
-/// denormal reads `0.0` → fails. (That the node is not called while parked is
-/// not visible in the output, which is the aligned input either way: it is
-/// `a_bypassed_node_is_not_called_after_the_fade`'s.)
 #[test]
 fn a_steady_bypass_is_the_input_bit_for_bit() {
     let special = [
@@ -218,10 +211,6 @@ fn a_steady_bypass_is_the_input_bit_for_bit() {
 /// its declared latency 480: the delay is `100 + 480`, neither the arrival
 /// nor the compensated figure alone (the PDC the plan holds has the node's
 /// output at `total latency`, which here is its own departure).
-///
-/// Mutation (each run, each failed): the line one frame short (`L - 1`);
-/// the line sized from the node's arrival (`rec.arrival`) rather than its
-/// declared latency (480 → 100).
 #[test]
 fn a_latent_bypass_is_the_input_delayed_by_the_declared_latency() {
     for workers in WORKERS {
@@ -258,10 +247,6 @@ fn a_latent_bypass_is_the_input_delayed_by_the_declared_latency() {
 
 /// A node with `L > 0` fed a click and bypassed passes the click `L` frames
 /// late, and the frames before it are silent.
-///
-/// Mutation: the line pushing after it pops (`run`'s order swapped to
-/// `push` then `pop` of the same frame) → the click arrives `L - 1` late →
-/// fails. (Same mutation as the delay test: this one reads one impulse.)
 #[test]
 fn a_click_passes_l_frames_late() {
     let click = |f: u64| if f == 100 { 1.0 } else { 0.0 };
@@ -291,9 +276,6 @@ fn a_click_passes_l_frames_late() {
 /// declared as its latency, bypassed, lines up with the same node active (the
 /// two renders are bit-identical), and with a dry path next to it the plan
 /// aligned by 480 (the outputs are one signal).
-///
-/// Mutation (run): the line `L - 1` → the bypassed render differs from the
-/// active one by a frame → fails.
 #[test]
 fn a_bypassed_latent_node_stays_aligned_with_an_active_one() {
     let kinds = [
@@ -331,11 +313,6 @@ impl Rig {
 /// output is heard on both sides at gain 1, not on the left alone: the fold
 /// between the main buses (the general case is
 /// `a_bypass_is_the_fold_between_the_main_buses`).
-///
-/// Mutation (each run, each failed): `Pass::of` passing a placed pair by index
-/// (`Self::by_index(src.width().min(dst.width()))` before the fold) → the
-/// second output is silence; the parked path filling a missing input's output
-/// from input 0 → the stereo case's second output is the first input.
 #[test]
 fn a_bypass_is_by_index_at_one_width_and_by_speaker_across() {
     let spec = |ins, outs, latency| Kind::Spec {
@@ -410,10 +387,10 @@ fn bused(ins: usize, outs: usize, latency: usize, input: Bus, output: Bus) -> Ki
 }
 
 fn main_bus(topology: ChannelTopology) -> Bus {
-    Bus {
-        topology: BusTopology::try_from(&topology).expect("fits a bus"),
-        role: BusRole::Main,
-    }
+    Bus::new(
+        BusTopology::try_from(&topology).expect("fits a bus"),
+        BusRole::Main,
+    )
 }
 
 fn smpte(n: u16) -> Bus {
@@ -435,13 +412,6 @@ fn unassigned(n: u16) -> Bus {
 ///
 /// The same holds for a node that runs at `Mix::DRY` (all of the aligned
 /// input), which reads the fold through the blend and not the parked path.
-///
-/// Mutation (each run, each failed): `Pass::of` passing a
-/// named pair by index -> `L` is `FL` alone and `R` is `FR` alone; `park_folded`
-/// skipping the rings' `align` -> the parked case is silence; `park_folded`
-/// writing a constant instead of `fold_aligned_into` -> the parked case
-/// fails; `moded_node_op` without `fold_aligned` -> the `Mix::DRY` case
-/// reads an unfolded (zero) slot.
 #[test]
 fn a_bypass_is_the_fold_between_the_main_buses() {
     for workers in WORKERS {
@@ -496,12 +466,6 @@ fn a_bypass_is_the_fold_between_the_main_buses() {
 /// placement, and six unplaced channels into a named stereo pair say nothing of
 /// where each goes (`PassError::Unplaced`: by index, the first two inputs would
 /// be a guess). Any other mode, and a bypass at one width, is not refused.
-///
-/// Mutation (each run, each failed): `Editor::set_mode` not asking
-/// `check_pass` → the bypasses are accepted; asking it for every mode → the
-/// Muted assertion fails; `Pass::of` passing an unassigned side of another width
-/// by index again (the `unassigned(src) || unassigned(dst)` arm removed) → the six
-/// into a named two folds by index and is accepted.
 #[test]
 fn a_bypass_with_no_pass_is_refused() {
     let (mut ed, _exec) = Editor::new(prepare(MAX_BLOCK));
@@ -514,9 +478,11 @@ fn a_bypass_with_no_pass_is_refused() {
             tail: Tail::None,
         }))
     };
-    let named = |s: &[Speaker]| Bus {
-        topology: BusTopology::new(s.iter().copied()).expect("a bus"),
-        role: BusRole::Main,
+    let named = |s: &[Speaker]| {
+        Bus::new(
+            BusTopology::new(s.iter().copied()).expect("a bus"),
+            BusRole::Main,
+        )
     };
     let stereo = [Speaker::FrontLeft, Speaker::FrontRight];
     let centre_lfe = [Speaker::FrontCenter, Speaker::LowFrequency];
@@ -569,9 +535,6 @@ fn a_bypass_with_no_pass_is_refused() {
 
 /// **`Muted`: every output is `+0.0`** (the bit pattern of positive zero),
 /// whatever the node would have made.
-///
-/// Mutation (run): `NodeMode::Muted` steady arm leaves the output alone
-/// (`=> {}`) → the output is `3 * x` → fails.
 #[test]
 fn a_muted_node_is_positive_zero() {
     for workers in WORKERS {
@@ -619,12 +582,6 @@ fn a_muted_node_is_positive_zero() {
 ///
 /// A block is 64 frames, so the fade is four blocks; the toggle lands on the
 /// first frame of a block.
-///
-/// Mutation (each run, each failed): fade with `EqualPower` (`gain` in
-/// `mode.rs` taking `CrossfadeCurve::EqualPower`); the fade one frame early
-/// (`gain(r.k + j)` → `gain(r.k + j + 1)` in `Segments::blend`);
-/// `MODE_DECLICK` 255. (A toggle that does not restart the fade is not
-/// reachable from a steady mode: `a_toggle_mid_fade_does_not_jump` has it.)
 #[test]
 fn the_declick_follows_the_equal_amplitude_gains() {
     let one = |_: u64| 1.0f32;
@@ -675,12 +632,6 @@ fn the_declick_follows_the_equal_amplitude_gains() {
 /// second fade is the previous frame plus one fade step, and the whole of it
 /// is the doc's formula from the weights the first fade had reached:
 /// `w = w0 + (w1 - w0) * g(k)`.
-///
-/// Mutation (each run, each failed): the second fade starting from the steady
-/// weights of the mode it left (`from: self.heading.weights()` in `toggle`) →
-/// the output jumps back toward `y`; a toggle that keeps the fade it is in
-/// (`if self.ramp.is_none()` around the restart) → the weights jump to the
-/// old fade's start.
 #[test]
 fn a_toggle_mid_fade_does_not_jump() {
     let one = |_: u64| 1.0f32;
@@ -728,10 +679,6 @@ fn a_toggle_mid_fade_does_not_jump() {
 /// `L`, where the input is the one the node had been sent *before* the toggle
 /// (the line is fed every block, not only once bypassed). The node is a gain
 /// of 2 declaring 100 frames: `y * g_out + x̂ * g_in`, `x̂` of 100 frames ago.
-///
-/// Mutation (run, in `ModeState::align`): the line fed only when the blend
-/// needs the aligned input (`(Some(ring), false)` pushing nothing) → the
-/// first 100 frames of the fade blend `y` with silence → fails.
 #[test]
 fn the_line_is_fed_while_the_node_is_active() {
     const L: usize = 100;
@@ -775,12 +722,6 @@ fn the_line_is_fed_while_the_node_is_active() {
 /// A bypassed node's output carries its input's flags: a loud input is not
 /// flagged silent (a downstream node must not skip it), a silent one is, and
 /// through a bypass line the output is silent only once the line has run dry.
-///
-/// Mutation (each run, each failed): the parked path with no latency flagging
-/// every output silent (`SILENT | CONSTANT` after the copy) → the downstream
-/// node is told the loud blocks are silent; the line's own flag
-/// (`flag(silent, silent)` in the parked path) replaced by `flag(true, true)`
-/// → the block in which the line still holds the click is flagged silent.
 #[test]
 fn a_bypassed_output_carries_its_inputs_flags() {
     for (latency, want) in [
@@ -813,9 +754,6 @@ fn a_bypassed_output_carries_its_inputs_flags() {
 /// then the 256-frame fade runs from the aligned input to the output:
 /// `y * g_in + x̂ * g_out`. The node is a gain of 2 declaring 100 frames it
 /// does not realise, so `y` is `2x` now and `x̂` is `x` of 100 frames ago.
-///
-/// Mutation (each run, each failed): skip the warm-up (`self.warm = 0` always
-/// in `toggle`) → the fade starts at the toggle; warm up for `L - 1`.
 #[test]
 fn un_bypass_warms_up_for_the_latency_then_fades_in() {
     const L: usize = 100;
@@ -1035,12 +973,6 @@ fn probe_chain(first: Probe, second: Option<Probe>) -> Solo {
 /// output is `+0.0` flagged silent (a downstream node sees the flag), and
 /// **un-mute needs no reset and no warm-up**: the very first frame back is
 /// `y * g_in(0)`.
-///
-/// Mutation (each run, each failed): reset on mute (`stale` set when a toggle
-/// goes to Muted) → `resets` is 1 after un-mute; flag a muted output not
-/// silent (`flags.set(s, 0)` for the Muted arm) → the downstream node never
-/// sees `silent`. (Parking a muted node would show as `calls` falling short;
-/// the mode has no path that does, which this pins.)
 #[test]
 fn a_muted_node_keeps_running_and_un_muting_needs_nothing() {
     let (p, q) = (Probe::new(3.0), Probe::new(1.0));
@@ -1077,9 +1009,6 @@ fn a_muted_node_keeps_running_and_un_muting_needs_nothing() {
 
 /// Un-mute has no warm-up even for a node with latency: the fade is the
 /// first thing heard, whereas un-bypass keeps the aligned input for `L`.
-///
-/// Mutation (run): `toggle` setting `warm = latency` whatever the mode left
-/// (outside `if reset`) → the first `L` frames are `x̂`, not `y * g_in` → fails.
 #[test]
 fn un_mute_has_no_warm_up() {
     let mut p = Probe::new(2.0);
@@ -1101,11 +1030,6 @@ fn un_mute_has_no_warm_up() {
 /// frames is 4 blocks of 64 (or 3 of 100), counted — and a silent input leaves
 /// its output flagged silent, so a downstream node that parks on silence
 /// parks. A node with `L > 0` is parked too.
-///
-/// Mutation (each run, each failed): call `process` while parked (`is_parked`
-/// always false) → `calls` keeps counting; never flag a parked output silent
-/// (`flag(silent, silent)` → `0`) → the downstream `Ringer` is called every
-/// block.
 #[test]
 fn a_bypassed_node_is_not_called_after_the_fade() {
     for (len, fade_blocks, latency) in [
@@ -1152,10 +1076,6 @@ fn a_bypassed_node_is_not_called_after_the_fade() {
 /// state is never heard**: an integrator (it holds what it has summed until
 /// reset) is fed a signal, bypassed, parked, then un-bypassed on silence:
 /// every frame after is `+0.0`, and `reset` ran exactly once.
-///
-/// Mutation (each run, each failed): skip the `reset` (`toggle` returning
-/// `false`) → the integrator holds its old sum and the output is not zero;
-/// reset on every toggle (so also on the toggle to Bypassed) → `resets` is 2.
 #[test]
 fn un_bypass_resets_once_and_old_state_is_never_heard() {
     for workers_len in [64usize, 100] {
@@ -1221,11 +1141,6 @@ fn ev_in(n: u64) -> EventIn {
 /// sends the node the off during the fade, and later events are discarded. A
 /// note-on after the toggle never reaches it; the node is not called once the
 /// fade is over and nothing is held.
-///
-/// Mutation (each run, each failed): do not drain `held_in` into the overlay
-/// (`held.drain_into` removed) → the node never sees the off; deliver the
-/// block's own events (`discards_events` false) → the second note-on is seen;
-/// never observe the input (`held.observe` removed) → no off.
 #[test]
 fn a_held_input_note_is_closed_on_bypass() {
     let mail = Arc::new(Mutex::new(Vec::new()));
@@ -1267,10 +1182,6 @@ fn a_held_input_note_is_closed_on_bypass() {
 /// The close reaches a node the silence skip would otherwise leave alone: one
 /// that answers `Status::Idle` ("park me until input"), on a silent input, is
 /// skipped by the executor — and a bypass sends it the off all the same.
-///
-/// Mutation (run): drop the `holds_input` guard on the skip in `node_op_with`
-/// → the idle node is skipped through the fade, never sees the off, and is
-/// never parked (it holds a key for good) → fails.
 #[test]
 fn a_held_input_note_is_closed_on_an_idle_node() {
     let mail = Arc::new(Mutex::new(Vec::new()));
@@ -1311,10 +1222,6 @@ fn a_held_input_note_is_closed_on_an_idle_node() {
 /// **A bypassed source closes what it holds downstream**: a note source
 /// bypassed and parked has the off of its held note written to its event
 /// output in the first parked block, and nothing after.
-///
-/// Mutation (each run, each failed): `owe_held` not called when parking, or
-/// the parked path not writing what is owed (`close_port` removed) → the sink
-/// never sees the off.
 #[test]
 fn a_bypassed_source_closes_its_notes() {
     let mail = Arc::new(Mutex::new(Vec::new()));
@@ -1389,11 +1296,6 @@ impl Node for Hook {
 /// runs — here from an upstream node's `process`, before the node's own op —
 /// reaches no op of that block, and the fade starts on the next. Serial and
 /// parallel.
-///
-/// Mutation (run): the mode read from the cell at the node's op
-/// (`is_plain` answering `self.plain && self.cell.load() == Active`, and
-/// `seen()` calling `cell.load()`) → the node's op in the block already
-/// fades → fails.
 #[test]
 fn a_mode_stored_mid_block_lands_on_the_next_block() {
     for workers in WORKERS {
@@ -1460,11 +1362,6 @@ fn a_mode_stored_mid_block_lands_on_the_next_block() {
 /// **`set_mode` does not change the plan**: the `Arc` the editor and the
 /// executor hold is the same one after it, and a commit that has nothing else
 /// to send sends nothing.
-///
-/// Mutation (each run, each failed): `same_but_ranges` comparing `modes` → the
-/// commit after an edit of the spec's modes compiles and sends a new plan;
-/// `sync_ranges` not writing the mode cells → the mode edited in the spec
-/// never reaches the unit.
 #[test]
 fn set_mode_does_not_change_the_plan() {
     let mut s = probe_chain(Probe::new(2.0), None);
@@ -1496,10 +1393,6 @@ fn set_mode_does_not_change_the_plan() {
 
 /// `set_mode` refuses a key with no node, a spec with a mode for one is
 /// invalid, and removing the node takes its mode with it.
-///
-/// Mutation (each run, each failed): drop the `contains_key` check in
-/// `set_mode`; drop the `ModeWithoutNode` push in `validate`; drop
-/// `spec.modes.remove` in `Editor::remove`.
 #[test]
 fn modes_name_nodes() {
     let mut s = probe_chain(Probe::new(2.0), None);
@@ -1522,11 +1415,6 @@ fn modes_name_nodes() {
 /// the live graph, mid-fade to Bypassed, forked, renders its fork the input
 /// bit for bit from the fork's first frame (an export hears the state, not a
 /// toggle), and keeps fading itself.
-///
-/// Mutation (each run, each failed): the fork not copying `modes`
-/// (`fork.modes = spec.modes` removed) → the fork renders `3 * x`; the fork's
-/// unit starting with `heading: Active` and the cell at Bypassed (a toggle,
-/// so a fade, on its first block) → the first fork frames are not `x`.
 #[test]
 fn a_fork_copies_the_mode_and_starts_steady() {
     let (mut ed, mut exec) = Editor::new(prepare(MAX_BLOCK));

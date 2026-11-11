@@ -147,11 +147,6 @@ use tutti_vst2_test_plugin::{
 /// This is the only test that matches what the installed plugins actually do,
 /// which is why it exists: the decode tests below all require a plugin that
 /// answers, and none is available here.
-///
-/// Mutation that catches it: making `parameter_properties` return
-/// `Some(decoded)` unconditionally (dropping the `supported != 1` check in
-/// `tutti-vst2-ffi`'s `parameter_properties`) turns every `None` here into a `Some`
-/// full of zeros — exactly the bug of reading an unwritten buffer.
 #[test]
 fn real_world_plugins_decline_these_opcodes() {
     let _guard = lock_probe();
@@ -215,10 +210,6 @@ fn real_world_plugins_decline_these_opcodes() {
 /// The numbers are the probe's, not invented here: a wrong `#[repr(C)]` field
 /// order makes the plugin write `flags` where the host reads `min_integer`, and
 /// this is what detects it end to end rather than only in the offset unit test.
-///
-/// Mutation that catches it: swapping `min_integer` and `max_integer` in
-/// `api::ParameterProperties` — `size_of` is unchanged and the offset test and
-/// this one both fail, reporting min=127/max=0.
 #[test]
 fn an_answering_plugin_round_trips_every_property_field() {
     let _guard = lock_probe();
@@ -262,10 +253,6 @@ fn an_answering_plugin_round_trips_every_property_field() {
 /// The probe deliberately writes `min_integer = 999, max_integer = -999` on
 /// these parameters: values a host cannot mistake for plausible, and that a
 /// decode ignoring the flag gate would publish as an inverted range.
-///
-/// Mutation that catches it: replacing
-/// `flags.uses_int_step.then_some(..)` with an unconditional `Some(..)` in
-/// `ParameterProperties::decode` surfaces `min=999, max=-999`.
 #[test]
 fn ungated_integer_fields_are_not_reported_as_a_range() {
     let _guard = lock_probe();
@@ -301,10 +288,6 @@ fn ungated_integer_fields_are_not_reported_as_a_range() {
 ///
 /// VST2 plugins are not required to bounds-check the index, so a host that
 /// forwards `numParams + 1` invites the plugin to read past its own table.
-///
-/// Mutation (run): `Vst2Loaded::param_index` accepting every id (the bound
-/// check removed) — the probe answers `1` for any index, so the host would
-/// report properties for a parameter that does not exist.
 #[test]
 fn an_out_of_range_parameter_index_is_refused_before_dispatch() {
     let _guard = lock_probe();
@@ -335,10 +318,6 @@ fn an_out_of_range_parameter_index_is_refused_before_dispatch() {
 
 /// The MIDI-program family decodes name, program number, bank pair and the
 /// drum-kit flag across the FFI.
-///
-/// Mutation that catches it: reordering `midi_bank_msb`/`midi_bank_lsb` in
-/// `api::MidiProgramName` swaps the reported pair; dropping the
-/// `IS_OMNI` decode makes `is_drum_kit` false for program 1.
 #[test]
 fn midi_program_metadata_round_trips() {
     let _guard = lock_probe();
@@ -383,10 +362,6 @@ fn midi_program_metadata_round_trips() {
 /// all three installed plugins answer `-1` here, so a host testing `!= 0` reads
 /// a refusal as success — and, symmetrically, reads a genuine "program 0" as
 /// failure.
-///
-/// Mutation that catches it: changing the `current < 0` check in `tutti-vst2-ffi`'s
-/// `current_midi_program` to `current == 0` (the "0 means unsupported" reflex)
-/// turns the probe's valid program 0 into `None`.
 #[test]
 fn current_midi_program_zero_is_a_valid_answer_not_a_failure() {
     let _guard = lock_probe();
@@ -417,9 +392,6 @@ fn current_midi_program_zero_is_a_valid_answer_not_a_failure() {
 /// The host gates on `effGetMidiProgramName`, whose zero is unambiguous. The
 /// measured plugins answer `-1` and so would pass a `-1`-only guard, which is
 /// why the probe — falling through to vst-rs's `0` — is needed to expose it.
-///
-/// Mutation that catches it: removing the `self.midi_program(channel, 0)?`
-/// gate from `current_midi_program` restores the invented program 0.
 #[test]
 fn a_declining_plugin_is_not_reported_as_sitting_on_program_zero() {
     let _guard = lock_probe();
@@ -453,10 +425,6 @@ fn a_declining_plugin_is_not_reported_as_sitting_on_program_zero() {
 /// The probe advertises 5 while naming 2. A host that trusts the advertised
 /// count produces three programs with empty names, which render as blank rows
 /// in a preset menu.
-///
-/// Mutation that catches it: replacing the `None => break` arm in
-/// `midi_programs` with `None => programs.push(<default>)`, or walking
-/// `0..serviced` and unwrapping — the length assertion below fails at 5.
 #[test]
 fn an_advertised_program_count_above_the_serviced_one_does_not_produce_blanks() {
     let _guard = lock_probe();
@@ -486,10 +454,6 @@ fn an_advertised_program_count_above_the_serviced_one_does_not_produce_blanks() 
 
 /// Key names cover only the keys the plugin names; unnamed keys are omitted so
 /// a caller can fall back to the note number.
-///
-/// Mutation that catches it: making `midi_key_name` return
-/// `Some(<empty name>)` on a `0` return (i.e. dropping the `supported != 1`
-/// check) yields 128 entries instead of 1.
 #[test]
 fn only_named_keys_are_reported() {
     let _guard = lock_probe();
@@ -527,10 +491,6 @@ fn only_named_keys_are_reported() {
 /// MIDI 1.0 has 16 channels and 128 keys; a negative or oversized index is a
 /// caller bug that must not reach the plugin, which is not required to
 /// bounds-check it.
-///
-/// Mutation that catches it: deleting the range guards in
-/// `Active::midi_key_name` — the probe keys only on `this_key_number`,
-/// so channel 99 would answer as happily as channel 0.
 #[test]
 fn out_of_range_midi_coordinates_are_refused() {
     let _guard = lock_probe();
@@ -592,10 +552,6 @@ fn out_of_range_midi_coordinates_are_refused() {
 
 /// `effHasMidiProgramsChanged` and `effGetMidiProgramCategory` reach the plugin
 /// and their answers are decoded.
-///
-/// Mutation that catches it: changing `midi_programs_changed`'s `== 1` to
-/// `== 0` inverts it, and dropping the category `serviced <= 0` guard would
-/// report a category from a declining plugin.
 #[test]
 fn the_change_flag_and_category_query_reach_the_plugin() {
     let _guard = lock_probe();
@@ -831,10 +787,6 @@ fn the_automatable_flag_is_probed_rather_than_left_unasked() {
 ///
 /// All three entry points (`parameter_info`, `parameter`, `write_parameter`)
 /// are checked, so the guard is a requirement rather than a convention.
-///
-/// Mutation (run): `index_of` as `let index = id.get() as i32; (index <
-/// count as i32).then_some(index)` (a wrapped id reads as negative and
-/// passes) -> the plugin is asked about parameter -1 -> fails.
 #[test]
 fn an_out_of_range_id_never_reaches_the_plugin() {
     let _guard = lock_probe();
@@ -1066,9 +1018,6 @@ fn the_display_string_describes_only_the_current_value() {
 /// value coming back, and `drain_param_changes` must not hand it on: a host
 /// that takes reported values as the user's (a modulation lane's knob in
 /// `bevy-tutti`) would adopt the modulated value as its base and ratchet it.
-///
-/// Mutation (run): `HostState::automate` without the `IN_HOST_WRITE` check
-/// → the drain returns `[(0, 0.5)]` → fails.
 #[test]
 fn a_plugins_echo_of_a_host_write_is_not_reported() {
     let _guard = lock_probe();

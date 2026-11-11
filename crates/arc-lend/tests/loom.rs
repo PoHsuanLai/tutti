@@ -39,83 +39,10 @@
 //! depends on reacts to `cfg(loom)` (it has no dependencies), and the cell is
 //! ordinary heap state: no mmap, no FFI.
 //!
-//! # Mutation record
-//!
-//! Each of these was applied to the shipped code (then all in `src/lend.rs`,
-//! since split into `cell.rs`, `slots.rs`, `current.rs` and `reader.rs`;
-//! each mutation names the code it changed, not the file) and the models run
-//! (at `LOOM_MAX_PREEMPTIONS=3`, each model on its own, because an aborting
-//! model hides the rest). The failing models are named.
-//!
-//! The file has nine models. "All eight" below means `one_reader_two_publishes`, `two_readers_one_publish`,
-//! `a_reader_lends_twice`, `nested_readers`, `two_publishers_and_a_reader`,
-//! `reclaim_while_a_reader_lends`, `registering_and_dropping_readers` and
-//! `reclaim_with_nothing_retired`. The last was added with `reclaim`'s early
-//! return, and every mutation below but the last was re-run against it alone
-//! (at the same bound); the record includes its result. The
-//! `Reader::drop`-reclaims mutation was re-run for it as `self.cell.reclaim()`
-//! after the `owned` store, which `reclaim`'s early return skips while nothing
-//! is retired.
-//!
-//! `current_while_publishing` is the ninth, and not one of the eight. It was added with
-//! `ArcLend::current` and has no reader, so the reader- and scan-ordering
-//! mutations below were not re-run against it; its own mutation is the last
-//! entry.
-//!
-//! - the reader's `fence(SeqCst)` removed → all eight (a causality
-//!   violation: the scan misses the claim and frees what the reader loads);
-//! - the publisher's `fence(SeqCst)` (in `Control::scan`) removed → all eight;
-//! - the lend's `current.load(Acquire)` weakened to `Relaxed` → all eight
-//!   (the reader sees the pointer before the payload's write);
-//! - the claim's `store(claim, Release)` weakened to `Relaxed` →
-//!   `a_reader_lends_twice` and `reclaim_with_nothing_retired` (whose
-//!   reader also lends twice): the scan reads the second lend's claim,
-//!   which no longer carries the first lend's reads of value 0 with it, and
-//!   frees 0 under them;
-//! - the loan drop's `store(FREE, Release)` weakened to `Relaxed` → all
-//!   eight (a scan that reads the `FREE` no longer happens-after the
-//!   reader's last read);
-//! - the scan's slot load weakened from `Acquire` to `Relaxed` → all eight;
-//! - the publish's `swap(Release)` weakened to `Relaxed` → all eight (a
-//!   causality violation: a reader's `Acquire` load of the new pointer no
-//!   longer sees the payload's construction);
-//! - every claim given a fresh floor (`scanned_at`, as if the last scan had
-//!   not seen it) → all but `two_readers_one_publish` (which has one
-//!   publish, so no claim spans two scans): a reader preempted between its
-//!   fence and its announcement across two publishes loads value 0, which
-//!   the second publish frees;
-//! - a claim made to pin nothing (`floor` left at `u64::MAX`) → all eight;
-//! - the announcement check removed from the retired filter → all eight;
-//! - `Reader::drop` made to reclaim (lock, `scan`, free) → all eight, with
-//!   "reader thread freed value N";
-//! - `Reader::drop`'s `owned.store(false, Release)` weakened to `Relaxed` →
-//!   `registering_and_dropping_readers` only: the new owner's registration
-//!   no longer happens-after the old owner's last `FREE`, and a scan that
-//!   reads that `FREE` frees the new owner's value;
-//! - `current` loading the pointer before it takes the lock (the load, then
-//!   `lock()`, then the strong-count increment) → `current_while_publishing`
-//!   ("read value 1 after it was freed": a publish retires and frees the
-//!   value between the load and the increment). The seven run beside it
-//!   pass, since none calls `current`; `registering_and_dropping_readers`
-//!   (which does not call it either) was not run against this mutation.
-//!
-//! The swap was `AcqRel` until a review found that weakening it to `Release`
-//! survives every model: the outgoing value was stored by a publisher holding
-//! the same lock, so the mutex already orders its contents before this
-//! publisher, and the `Acquire` half added nothing. `Release` is what ships.
-
-//! Two mutations survive, by construction, because both only make the
-//! publisher keep *more*:
-//!
-//! - dropping the generation from the claim (`next_claim` returning `1`):
-//!   every claim then looks like the one the last scan saw, so each keeps the
-//!   oldest floor. Safe, but a reader that keeps lending pins every value
-//!   retired since its first claim. The unit test
-//!   `a_new_claim_pins_only_from_the_last_scan` catches it.
-//! - not resetting a reused slot's word to `FREE` at registration: a stale
-//!   announcement pins one value until the new owner's first lend. The unit
-//!   test `a_forgotten_loan_pins_one_value_until_its_slot_is_reused`
-//!   catches it.
+//! Two properties are the unit tests', not this model's, because breaking either only makes
+//! the publisher keep *more*: a new claim pins only from the last scan
+//! (`a_new_claim_pins_only_from_the_last_scan`), and a forgotten loan pins one value until
+//! its slot is reused (`a_forgotten_loan_pins_one_value_until_its_slot_is_reused`).
 
 #![cfg(loom)]
 
@@ -423,14 +350,6 @@ fn reclaim_while_a_reader_lends() {
 /// A reclaim with nothing retired (the early return, no fence, no scan)
 /// before a publish, and a reclaim after it, while a reader lends twice: the
 /// skipped scan must leave the claim bookkeeping as safe as a scan would.
-///
-/// Mutations: the header's record (this model fails under all of them but
-/// `Reader::drop`'s `owned` store weakened to `Relaxed`, which only
-/// `registering_and_dropping_readers` catches). The early return itself
-/// has no unsafe mutation for this model to
-/// catch: with nothing retired, a skipped scan (or a reclaim that never
-/// scans) only keeps more. That it still frees once something is retired is
-/// the unit test `reclaim_frees_without_publishing_and_reports_what_is_pinned`.
 #[test]
 fn reclaim_with_nothing_retired() {
     model(|| {

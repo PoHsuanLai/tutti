@@ -37,8 +37,8 @@ use crate::types::{MidiEventVec, Vst2ProcessContext};
 /// and nothing more: the plugin is closed by the Controller's `Vst2Loaded`, on its thread,
 /// and a Processor that outlives it renders silence.
 ///
-/// The doc test below is the guard (mutation, run: an `unsafe impl Sync` for the
-/// type makes it compile, and the test fails):
+/// The doc test below is the guard: an `unsafe impl Sync` for the
+/// type makes it compile, and the test fails:
 ///
 /// ```compile_fail
 /// fn needs_sync<T: Sync>() {}
@@ -167,6 +167,15 @@ impl Vst2Processor {
     #[must_use]
     pub fn dropped_sysex(&self) -> u64 {
         self.midi.send.sysex_dropped()
+    }
+
+    /// Returns how many incoming channel voice messages were **dropped** since
+    /// load because they were of a Group other than 0: VST2 has one MIDI input,
+    /// which takes Group 0's channels only, and a message of another Group is
+    /// never heard on them. Monotonic.
+    #[must_use]
+    pub fn groups_dropped(&self) -> u64 {
+        self.midi.send.groups_dropped()
     }
 
     /// Returns how many incoming MIDI events were **dropped** since load because
@@ -486,9 +495,10 @@ impl Processor for Vst2Processor {
     }
 
     /// VST 2.4 has no opcode that clears a plugin's DSP state, so this drops
-    /// only the host's SysEx reassembly: a message open across the reset does
-    /// not complete on the far side of it.
+    /// only the host's MIDI state: a SysEx message open across the reset does
+    /// not complete on the far side of it, and the RPN, NRPN and bank each
+    /// channel had selected are sent in full again.
     fn reset(&mut self) {
-        self.midi.send.reset_sysex();
+        self.midi.send.reset_midi();
     }
 }

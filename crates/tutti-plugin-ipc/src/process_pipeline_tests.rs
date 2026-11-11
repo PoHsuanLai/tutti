@@ -290,9 +290,6 @@ fn bridge_with_server(
 /// node's port 2 is what the plugin reads on its sidechain. The mock server
 /// here outputs the sidechain (input 2) on output 0 and the main left
 /// (input 0) on output 1, one chunk late.
-///
-/// Mutation: stage `input.iter().take(2)` (the main bus only) in
-/// `Batcher::process` → output 0 reads silence → fails.
 #[test]
 fn a_sidechain_port_reaches_the_plugin() {
     let _lock = machine_lock();
@@ -846,11 +843,6 @@ fn stalled_plugins_do_not_stall_the_audio_thread() {
          so this looks like the audio thread is waiting for replies again."
     );
 
-    // Mutation: make the live path wait — in `Batcher::collect`, before
-    // `collectable`, poll `has_output(expect_seq)` every 50 us until a 667 us
-    // deadline. Idle, every step from block 2 on then takes >= 667 us (57 of
-    // 60 over the limit); under bursty load on one core, 45-56 of 60. Either
-    // way the median is one of them: it failed 6/6 runs, idle and loaded.
     let every_step = median(step_times.iter().copied());
     assert!(
         every_step < STEP_LIMIT,
@@ -858,12 +850,6 @@ fn stalled_plugins_do_not_stall_the_audio_thread() {
          {every_step:?}, over the {STEP_LIMIT:?} limit ({shape}). {regressed}"
     );
 
-    // Mutation: the same wait on plugin 0's steps only (a call counter shared
-    // by the three batchers, waiting when it is 0 mod 3) → 19-20 of 60 steps
-    // slow, so the median above stays fast, and plugin 0's median is ~750 us
-    // → fails here, 4/4 runs, idle and loaded. (Its blocks would also fail
-    // the block median below; a 300 us wait, steps of ~450 us, fails here
-    // too.)
     for p in 0..PLUGINS {
         let plugin = median(step_times.iter().skip(p).step_by(PLUGINS).copied());
         assert!(
@@ -873,10 +859,6 @@ fn stalled_plugins_do_not_stall_the_audio_thread() {
         );
     }
 
-    // Mutation: the same wait on every 4th step only (the shared counter, 0
-    // mod 4) → 15 of 60 steps slow and 5 of each plugin's 20, so neither
-    // median above moves, but 15 of 20 blocks hold a wait and the median
-    // block takes ~740 us → fails here, 4/4 runs, idle and loaded.
     let block_limit = STEP_LIMIT * PLUGINS as u32;
     let block = median(
         step_times
@@ -1007,12 +989,6 @@ fn a_stalled_but_live_server_does_not_allocate_on_the_audio_thread() {
 /// The pipeline's counters report what the node played: a chunk in flight
 /// reads unanswered until the server answers it, a block collected after the
 /// answer is no miss, and a block that outruns a stalled server is counted.
-///
-/// Mutations, each run and each failing: dropping the `missed` `fetch_add` in
-/// `collect` (0 missed after the back-to-back blocks); storing 0 for
-/// `in_flight` in `submit`, or answering `in_flight_answered` without asking
-/// the slab (answered while the server still sleeps); skipping the wait for
-/// the answer (the next block is counted a miss).
 #[test]
 fn the_chunk_counters_report_misses_and_answers() {
     let (bridge, mut bridge_thread, _server, slab) =
@@ -1324,12 +1300,8 @@ fn a_timed_out_reply_is_drained_rather_than_paired_with_a_later_block() {
     // scheduler, not of the drain. An exact `== 1` read 2 or 3 there. What the
     // drain owes is what was abandoned, so that is the bound.
     //
-    // Mutations: stub `settle` to `0` → `settled == 0` → the second assert fails
-    // every run. Over-count the drain (`note_settled(taken * 2)`) → `settled`
-    // exceeds `abandoned` → the third fails (every run on an unloaded machine,
-    // where block 1 is the only one abandoned).
-    // `settled` first: its `Acquire` makes every `abandoned` bump that owed
-    // those replies visible to the read after it.
+    // `settled` is read first: its `Acquire` makes every `abandoned` bump that owed those
+    // replies visible to the read after it.
     let settled = bridge.settled_replies();
     let abandoned = bridge.abandoned_replies();
     assert!(
@@ -1561,9 +1533,6 @@ impl crate::Chunks for LossProbe {
 /// **A chunk whose audio cannot be staged reports its MIDI lost**, so the
 /// plugin node counts it and cuts the SysEx open in it. A batcher wider
 /// than the slab fails to stage its third channel on every chunk.
-///
-/// Mutation (run): the `host.unsent()` call removed from `submit` → nothing
-/// reported → fails.
 #[test]
 fn an_unstaged_chunk_reports_its_midi_lost() {
     let _lock = machine_lock();
@@ -1591,9 +1560,6 @@ fn an_unstaged_chunk_reports_its_midi_lost() {
 /// **A chunk the bridge refuses reports its MIDI lost, with how many events
 /// it carried.** A bridge that never connected is crashed, and refuses
 /// every chunk.
-///
-/// Mutation (run): the `host.refused(midi)` call removed from `submit` →
-/// nothing reported → fails.
 #[test]
 fn a_refused_chunk_reports_its_midi_lost() {
     let _lock = machine_lock();
@@ -1639,12 +1605,6 @@ fn a_refused_chunk_reports_its_midi_lost() {
 /// (`RING_SLOTS` = 2) and skips them: their MIDI is lost, counted, and the
 /// rest of the message open in them (in block 3) is not sent either. The
 /// message after it, and a note, arrive.
-///
-/// Mutation (run): the bridge's `retain` through its intake removed → the
-/// cut message's tail reaches the server → fails. Mutation (run): the stale
-/// branch's `owed.intake.lost()` removed, or its loop admitting the stale
-/// payload's events → the same → fails. Mutation (run): the stale payload's
-/// MIDI not counted → the count is short by six → fails.
 #[test]
 fn a_stale_block_never_lets_a_sysex_through_with_a_gap() {
     use tutti_ump::{MidiChannel, MidiGroup};
@@ -1681,9 +1641,6 @@ fn a_stale_block_never_lets_a_sysex_through_with_a_gap() {
 /// **A stale block holding only a message's `START` cuts that message.**
 /// The bridge must record the `START` as open before it marks the block's
 /// open messages cut, or the message's `END` in the next block sent passes.
-///
-/// Mutation (run): the stale branch calling `owed.intake.lost()` before
-/// admitting the payload's events → the `END` is sent → fails.
 #[test]
 fn a_stale_block_holding_only_a_start_cuts_its_message() {
     use tutti_ump::{MidiChannel, MidiGroup};

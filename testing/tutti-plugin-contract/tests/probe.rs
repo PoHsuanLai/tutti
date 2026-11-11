@@ -49,8 +49,6 @@ fn assert_named(d: &PluginDescriptor, format: &str, name: &str) {
     assert_eq!(d.class.format_name(), format, "{d:?}");
 }
 
-// Mutation (run): `descriptor_of` in the probe binary swapped for
-// `PluginDescriptor::default()` fails the format's test (each asserts the name).
 #[test]
 fn clap_is_probed_through_the_binary() {
     let d = probe(&clap_path()).expect("probes");
@@ -86,10 +84,6 @@ fn clap_named(dir: &tempfile::TempDir, name: &str) -> PathBuf {
 
 /// **A plugin that aborts in its init is a crash, and a blacklistable one**: no
 /// result file, a signal for an exit.
-///
-/// Mutation (run): the plugin's `InitMode::Crash` arm returning `true` makes the
-/// probe succeed and fails this; the host mapping "no file, exited" to anything
-/// but `ProcessCrashed` fails the match.
 #[test]
 fn a_plugin_that_crashes_in_init_is_a_crash() {
     let dir = tempfile::tempdir().unwrap();
@@ -102,11 +96,6 @@ fn a_plugin_that_crashes_in_init_is_a_crash() {
 
 /// **A plugin that never returns from its init is a timeout**, and the probe is
 /// killed rather than waited for. The deadline is the caller's: two seconds here.
-///
-/// Mutation (run): the plugin's `InitMode::Hang` arm returning `true` makes the
-/// probe succeed and fails this; the host not killing the child at the deadline
-/// leaves the loop in `wait` blocked on the plugin forever, which the test
-/// harness' timeout reports.
 #[test]
 fn a_plugin_that_hangs_in_init_times_out() {
     let dir = tempfile::tempdir().unwrap();
@@ -126,10 +115,6 @@ fn a_plugin_that_hangs_in_init_times_out() {
 
 /// A plugin whose init refuses is a result: the probe finished, with the
 /// plugin's reason, and the scan records it.
-///
-/// Mutation (run): the probe binary writing `Described(default)` for an error
-/// fails the `LoadFailed` match; the host dropping the message fails the
-/// reason assertion.
 #[test]
 fn a_plugin_that_refuses_to_load_is_a_typed_failure() {
     let dir = tempfile::tempdir().unwrap();
@@ -145,12 +130,6 @@ fn a_plugin_that_refuses_to_load_is_a_typed_failure() {
 /// **A plugin that prints from its init still probes**: stdout and stderr carry
 /// nothing the host reads, so two thousand lines of each corrupt nothing and
 /// fill no pipe the probe would block on.
-///
-/// Mutation (run): the host spawning the probe with `Stdio::piped()` for stdout
-/// and never reading it blocks the probe once the pipe fills, and the probe
-/// times out; the plugin's `InitMode::Print` arm not printing leaves the test
-/// passing for the wrong reason, which is why the first assertion reads the
-/// plugin's own output from a direct run.
 #[test]
 fn a_plugin_that_prints_during_init_still_probes() {
     let dir = tempfile::tempdir().unwrap();

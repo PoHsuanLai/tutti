@@ -293,9 +293,7 @@ mod tests {
 
     /// The header readers against packets written out from M2-104's
     /// layouts: Group in bits 27-24, Channel in 19-16 of a channel voice
-    /// message. Mutation: `group` answering for Utility or Stream, or
-    /// `address` for System (`0x1`) -> fails; reading the Channel from bits
-    /// 23-20 (the status) -> fails.
+    /// message.
     #[test]
     fn the_header_readers_follow_the_message_type() {
         // MIDI 2.0 Note On, group 5, channel 9; MIDI 1.0 CC, group 2,
@@ -329,8 +327,6 @@ mod tests {
         }
     }
 
-    /// Mutation: move `0xB | 0xC` into the 4-word default, or `0x6 | 0x7` into
-    /// the 2-word arm -> the lengths fail.
     #[test]
     fn the_word_count_follows_the_message_type() {
         let want = [1, 1, 1, 2, 2, 4, 1, 1, 2, 2, 2, 3, 3, 4, 4, 4];
@@ -341,8 +337,6 @@ mod tests {
         }
     }
 
-    /// Mutation: drop the velocity-0 note-on arm, or let the type `0x4` arm
-    /// accept status 0x9 -> fails.
     #[test]
     fn note_offs_are_recognised() {
         let m1 =
@@ -361,11 +355,6 @@ mod tests {
     /// Controllers 120 and 123 of a Control Change, in either protocol, on any
     /// channel and group, are panics; no other controller, no other message
     /// type, and no other status with the same data byte is.
-    ///
-    /// Mutation (run): matching only 123 fails the 120 rows; matching 121 or
-    /// 124 as well fails the channel-mode rows; dropping the status test
-    /// accepts the note-on with data byte 120; dropping the type test
-    /// accepts the SysEx7 packet.
     #[test]
     fn panic_controllers_are_recognised() {
         let m1 = |status: u32, cc: u32| Ump([0x2000_0000 | (status << 16) | (cc << 8), 0, 0, 0]);

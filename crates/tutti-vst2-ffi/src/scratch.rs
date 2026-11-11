@@ -48,9 +48,6 @@ use crate::host::RenderHandle;
 /// scratch.render_f32(handle, 1 << 20);
 /// # }
 /// ```
-///
-/// Mutation (run): make the `output_ptrs` field or `render_f32` `pub` again: its doctest
-/// compiles and fails.
 pub struct RenderScratch {
     inputs: Vec<Vec<f32>>,
     outputs: Vec<Vec<f32>>,
@@ -424,8 +421,6 @@ mod tests {
 
     /// **A render longer than the block the Vecs were sized for is refused**, before the
     /// plugin sees pointers that would run past them.
-    ///
-    /// Mutation (run): delete the `assert!` in `check_block`: no panic and the test fails.
     #[test]
     #[should_panic(expected = "exceeds the scratch's block size")]
     fn a_render_past_the_block_size_is_refused() {

@@ -20,9 +20,6 @@ fn f32_to_i24_clamps() {
 
 /// Rounding, not truncation: 0.7 x 32767 = 22936.9 is 22937. The endpoints
 /// agree under both, which is how a truncating converter survives unnoticed.
-///
-/// Mutation: replacing `.round()` with `.trunc()` in `f32_to_i16` gives 22936
-/// and fails the first assertion.
 #[test]
 fn quantization_rounds_to_nearest() {
     assert_eq!(f32_to_i16(0.7), 22937);
@@ -32,9 +29,6 @@ fn quantization_rounds_to_nearest() {
 
 /// `quantize` dispatches to the converters, at every width, endpoints
 /// included, since clamping is where a wrong arm shows up first.
-///
-/// Mutation: swapping the `Int16` and `Int24` arms of `Pcm::quantize` fails
-/// every row.
 #[test]
 fn quantize_agrees_with_the_converters_at_every_width() {
     for &s in &[0.0f32, 0.5, -0.5, 1.0, -1.0, 1.5, -1.5] {
@@ -71,9 +65,6 @@ fn each_width_is_distinguishable_at_the_call_site() {
 
 /// One LSB is `2^-(bits - 1)`, derived from the width and not read back from
 /// the formula: 16 bit is 2^-15, 24 bit is 2^-23.
-///
-/// Mutation (run): use `bits()` instead of `bits() - 1` in `IntDepth::lsb` and
-/// both assertions fail.
 #[test]
 fn the_lsb_is_the_reciprocal_of_full_scale() {
     assert_eq!(IntDepth::Int16.lsb().0, 1.0 / 32768.0);

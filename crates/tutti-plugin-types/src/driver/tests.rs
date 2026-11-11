@@ -1,10 +1,6 @@
 //! [`Lifecycle`] against a [`FakePlugin`]: the interpreter's contract without
 //! a plugin.
 //!
-//! Each test's comment names the mutation that makes it fail. Every mutation
-//! was applied to `driver.rs` (or `fake.rs`), the test watched to fail, and
-//! the code restored.
-//!
 //! Most tests hold the Processor here (a local `Hand`). The lent-Processor
 //! paths (a recall that answers `Lent`, a parked plan resumed by
 //! `Event::Returned`) run with a threaded one, whose realtime end the test
@@ -120,10 +116,6 @@ fn activations(calls: &[Call]) -> usize {
 /// **An activation splits the plugin, reads latency, tail and layout, and
 /// leaves the Processor in the seat.** The reads are the Controller's, after
 /// `activate` and before anything renders.
-///
-/// Mutation (run): `Lifecycle::activate` putting `Seat::Lent` instead of
-/// `Held` → `processor()` is `None` and `render` fails; `ReadTail` answering
-/// `NotActive` → the call log has no `Tail`.
 #[test]
 fn activation_splits_the_plugin_and_reads_its_figures() {
     let mut rig = Rig::new();
@@ -147,9 +139,6 @@ fn activation_splits_the_plugin_and_reads_its_figures() {
 
 /// **A refused activation leaves `Refused` with the plugin intact and no half
 /// pair; a later rate revives it.** The host is told once.
-///
-/// Mutation (run): `Lifecycle::activate` dropping the plugin on `Err`
-/// (leaving `Poisoned`) → the stage assertion fails.
 #[test]
 fn a_refused_rate_leaves_the_plugin_loaded_and_a_later_rate_revives_it() {
     let mut rig = Rig::new();
@@ -175,10 +164,6 @@ fn a_refused_rate_leaves_the_plugin_loaded_and_a_later_rate_revives_it() {
 }
 
 /// **A refusal that hands no plugin back poisons, after the host was told.**
-///
-/// Mutation (run): `drive` not stepping `Died` for a poisoned lifecycle → the
-/// stage stays `Refused`; clearing the queue without delivering its notices →
-/// the `Refused` notice is missing.
 #[test]
 fn a_lost_plugin_poisons_and_the_refusal_is_still_told() {
     let mut rig = Rig::new();
@@ -198,9 +183,6 @@ fn a_lost_plugin_poisons_and_the_refusal_is_still_told() {
 }
 
 /// **A panic in `activate` poisons the same way.**
-///
-/// Mutation (run): `Lifecycle::activate` without `catch_unwind` → the test
-/// panics instead of observing `Poisoned`.
 #[test]
 fn a_panic_in_activate_poisons() {
     let mut rig = Rig::new();
@@ -213,9 +195,6 @@ fn a_panic_in_activate_poisons() {
 
 /// **A plugin that will not stop stays active with both halves, and the host
 /// is told; the next deactivation takes.**
-///
-/// Mutation (run): `Lifecycle::deactivate` leaving `Poisoned` on `Err(Stuck)` →
-/// `render` cannot find the Processor.
 #[test]
 fn stuck_restores_both_halves() {
     let mut rig = Rig::new();
@@ -247,9 +226,6 @@ fn stuck_restores_both_halves() {
 /// **What a `Loaded` must do with a pair from two activations: refuse it, and
 /// hand both halves back.** This pins the fake's implementation of the
 /// contract; each format's own `deactivate` carries its own check and test.
-///
-/// Mutation (run): `FakeLoaded::deactivate` skipping the `Arc::ptr_eq` check →
-/// the second pair's plugin is returned `Ok` and the assertion fails.
 #[test]
 fn a_pair_from_two_activations_is_refused() {
     let (plugin, loaded) = FakePlugin::new();
@@ -267,9 +243,6 @@ fn a_pair_from_two_activations_is_refused() {
 }
 
 /// **A reconfigure deactivates then activates once, and re-reads.**
-///
-/// Mutation (run): `drive` dropping the reply of `CallDeactivate` → the plan
-/// stops and the second activation is missing.
 #[test]
 fn a_reconfigure_is_one_deactivate_and_one_activate() {
     let mut rig = Rig::new();
@@ -294,9 +267,6 @@ fn a_reconfigure_is_one_deactivate_and_one_activate() {
 
 /// **A latency the plugin announces restarts it once and reaches the host as a
 /// notice; the restart's own re-read is not a second restart.**
-///
-/// Mutation (run): `Lifecycle::apply` answering `ReadLatency` with
-/// `NotActive` → no `LatencyChanged` notice.
 #[test]
 fn a_latency_change_restarts_once_and_is_announced() {
     let mut rig = Rig::new();
@@ -318,9 +288,6 @@ fn a_latency_change_restarts_once_and_is_announced() {
 }
 
 /// **A tail that changes is re-read in place, without a restart.**
-///
-/// Mutation (run): `Lifecycle::apply` answering `ReadTail` with `Done` → no
-/// notice.
 #[test]
 fn a_tail_change_is_read_in_place() {
     let mut rig = Rig::new();
@@ -340,9 +307,6 @@ fn a_tail_change_is_read_in_place() {
 
 /// **A failed rebuild leaves `Refused`, tells the host once, and the next
 /// activation rebuilds before it activates.**
-///
-/// Mutation (run): `Lifecycle::rebuild` returning `Reply::Rebuilt` on `Err` →
-/// the stage is `Loaded` and no notice is sent.
 #[test]
 fn a_failed_rebuild_is_refused_and_the_next_activation_rebuilds_first() {
     let mut rig = Rig::new();
@@ -373,10 +337,6 @@ fn a_failed_rebuild_is_refused_and_the_next_activation_rebuilds_first() {
 
 /// **A parameter set on an active plugin reaches the Processor once, at the
 /// head of its next block, in order; on a loaded plugin it is applied now.**
-///
-/// Mutation (run): `FakeController::set_parameter` not sending the edit → no
-/// `Edit` call; `FakeProcessor::process` draining after logging `Process` →
-/// the order assertion fails.
 #[test]
 fn a_parameter_set_reaches_the_processor_at_the_next_block() {
     let mut rig = Rig::new();
@@ -414,9 +374,8 @@ fn a_parameter_set_reaches_the_processor_at_the_next_block() {
 
 /// **After `Died` no effect reaches the plugin.**
 ///
-/// The property is the core's (`Poisoned` absorbs every later event, mutation-
-/// tested with `step`); this pins that `drive` then applies nothing. No
-/// mutation of `driver.rs` is specific to it.
+/// The property is the core's (`Poisoned` absorbs every later event, tested
+/// with `step`); this pins that `drive` then applies nothing.
 #[test]
 fn nothing_runs_after_died() {
     let mut rig = Rig::new();
@@ -433,9 +392,6 @@ fn nothing_runs_after_died() {
 }
 
 /// **The control surface is reachable in every state that has a plugin.**
-///
-/// Mutation (run): `Lifecycle::control` answering `None` for `Refused` → the
-/// last assertion fails; for `Active` → the second fails.
 #[test]
 fn control_is_reachable_loaded_active_and_refused() {
     let mut rig = Rig::new();
@@ -450,9 +406,6 @@ fn control_is_reachable_loaded_active_and_refused() {
 }
 
 /// **State round-trips through the control surface, loaded and active.**
-///
-/// Mutation (run): `FakeController::load_state` not storing the bytes → the
-/// saved state is empty and the assertion fails.
 #[test]
 fn state_round_trips_through_hosted() {
     let mut rig = Rig::new();
@@ -466,9 +419,6 @@ fn state_round_trips_through_hosted() {
 
 /// **A block through the Processor, and the edit drain at its head, neither
 /// allocate nor lock.**
-///
-/// Mutation (run): `FakeProcessor::process` collecting the drained edits into a
-/// `Vec` → the gate aborts.
 #[test]
 fn the_processor_renders_without_allocating() {
     let mut rig = Rig::new();
@@ -505,9 +455,6 @@ fn the_processor_renders_without_allocating() {
 
 /// **Requests raised on another thread, while the main thread takes, arrive
 /// once each.**
-///
-/// Mutation (run): `taken` yielding every request whether or not its bit is
-/// set → the first take returns all twelve and the final comparison fails.
 #[test]
 fn requests_raised_while_taking_arrive_once() {
     let word = std::sync::Arc::new(RequestWord::new());
@@ -530,9 +477,6 @@ fn requests_raised_while_taking_arrive_once() {
 }
 
 /// **A panic in `deactivate` poisons and the death is stepped.**
-///
-/// Mutation (run): `Lifecycle::deactivate` without `catch_unwind` → the test
-/// panics.
 #[test]
 fn a_panic_in_deactivate_poisons() {
     let mut rig = Rig::new();
@@ -544,9 +488,6 @@ fn a_panic_in_deactivate_poisons() {
 }
 
 /// **A panic in `rebuild` poisons.**
-///
-/// Mutation (run): `Lifecycle::rebuild` without `catch_unwind` → the test
-/// panics.
 #[test]
 fn a_panic_in_rebuild_poisons() {
     let mut rig = Rig::new();
@@ -561,9 +502,6 @@ fn a_panic_in_rebuild_poisons() {
 /// **A panic out of a read poisons, and the `State` is not lost with the
 /// unwind.** `drive` takes the state by value, so a panic that escaped would
 /// drop it.
-///
-/// Mutation (run): `Lifecycle::apply` calling `apply_in_place` without
-/// `guarded` → the test panics.
 #[test]
 fn a_panic_in_a_read_poisons_without_losing_the_state() {
     let mut rig = Rig::new();
@@ -578,9 +516,6 @@ fn a_panic_in_a_read_poisons_without_losing_the_state() {
 
 /// **A deactivation that is stuck, then a reconfigure, ends active at the new
 /// rate once the plugin lets go.**
-///
-/// Mutation (run): `Lifecycle::deactivate` poisoning on `Err(Stuck)` → the
-/// stage is `Poisoned`.
 #[test]
 fn stuck_then_reconfigure_settles_at_the_new_rate() {
     let mut rig = Rig::new();
@@ -603,9 +538,6 @@ fn stuck_then_reconfigure_settles_at_the_new_rate() {
 
 /// **A rebuild that is refused twice stays `Refused` with no rate, and the
 /// attempt that takes revives it.**
-///
-/// Mutation (run): `Lifecycle::rebuild` recording `Some(rate)` from a stale
-/// field instead of carrying `rate` → the `rate: None` match fails.
 #[test]
 fn a_refused_rebuild_is_retried_with_no_rate() {
     let mut rig = Rig::new();
@@ -625,10 +557,6 @@ fn a_refused_rebuild_is_retried_with_no_rate() {
 
 /// **An edit the full ring refused arrives, latest value only, when the idle
 /// pass retries.**
-///
-/// Mutation (run): `drive` not calling `flush_edits` on `Tick` → no `Edit`
-/// after the block; `FakeController::flush_edits` resending zero
-/// instead of the latest → the value assertion fails.
 #[test]
 fn a_refused_edit_is_retried_on_the_next_tick() {
     let mut rig = Rig::new();
@@ -669,9 +597,6 @@ fn a_refused_edit_is_retried_on_the_next_tick() {
 
 /// **A VST3 mapping change reaches the plugin as one rebuild, and a
 /// note-expression change as one notice.**
-///
-/// Mutation (run): `Lifecycle::apply_in_place` answering `RebuildMidiMapping`
-/// with `Done` without calling the control → no `RebuildMidiMapping` call.
 #[test]
 fn a_mapping_change_rebuilds_the_mapping_once() {
     let mut rig = Rig::new();
@@ -692,9 +617,6 @@ fn a_mapping_change_rebuilds_the_mapping_once() {
 /// **A panic out of the idle flush or a read tells the host the plugin is
 /// lost.** Without the notice the lifecycle poisons silently and the host
 /// keeps a plugin that renders nothing.
-///
-/// Mutation (run): removing both `Notice::Lost` sends in `drive` → no notice
-/// arrives and the assertions fail.
 #[test]
 fn a_panic_outside_a_transition_is_told_to_the_host() {
     let mut rig = Rig::new();
@@ -712,9 +634,6 @@ fn a_panic_outside_a_transition_is_told_to_the_host() {
 }
 
 /// **A panic in a transition is told once, by `Refused`.**
-///
-/// Mutation (run): sending `Notice::Lost` for a transition too → the count
-/// of `Lost` notices is one and the assertion fails.
 #[test]
 fn a_panic_in_a_transition_is_not_told_twice() {
     let mut rig = Rig::new();
@@ -735,11 +654,6 @@ fn poll(rt: &mut tutti_rt::Rt<<FakeLoaded as Loaded>::Processor>) -> bool {
 /// recalls it, parks, and resumes when the realtime thread returns it.** The
 /// realtime end stops it before it hands it back; the next tick collects it,
 /// rejoins, activates at the new rate and lends again.
-///
-/// Mutation (run): `drive` not collecting a returned Processor on a tick
-/// (`trade` answering `false` for `Lent`) → the plan stays parked and the
-/// second activation never comes; `recall` answering `Returned` while lent →
-/// the plan runs without the Processor, and this test and the next fail.
 #[test]
 fn a_rate_change_recalls_the_lent_processor_and_lends_the_new_one() {
     let (mut rig, mut rt) = Rig::threaded();
@@ -764,9 +678,6 @@ fn a_rate_change_recalls_the_lent_processor_and_lends_the_new_one() {
 
 /// **A recall before the realtime thread took the Processor withdraws it at
 /// once:** the plan runs in the same drive, with no tick and no stop.
-///
-/// Mutation (run): `recall` ignoring what `tutti_rt::Hand::recall` withdrew
-/// (answering `Lent`) → the plan parks and the second activation is missing.
 #[test]
 fn a_recall_before_the_realtime_thread_took_it_is_immediate() {
     let (mut rig, mut rt) = Rig::threaded();
@@ -785,9 +696,6 @@ fn a_recall_before_the_realtime_thread_took_it_is_immediate() {
 /// **A lend the handoff refuses keeps the Processor here and is offered again
 /// on a tick.** A recall raised with nothing lent refuses the next lend until
 /// the realtime end clears it.
-///
-/// Mutation (run): `trade` not offering a held Processor again → the realtime
-/// end never gets it.
 #[test]
 fn a_refused_lend_is_offered_again_on_a_tick() {
     let (mut rig, mut rt) = Rig::threaded();
@@ -807,9 +715,6 @@ fn a_refused_lend_is_offered_again_on_a_tick() {
 /// [`Lifecycle::control`] in both states that hold a plugin**: no editor (and
 /// the floating window refused by its one default), no live render mode, no
 /// requests, no reported edits.
-///
-/// Mutation (run): the fake's `set_render_mode` returning `true` fails the
-/// first assertion; its `has_editor` returning `true` fails the second.
 #[test]
 fn the_fake_control_answers_nothing_in_either_state() {
     let mut rig = Rig::new();
@@ -844,14 +749,6 @@ fn the_fake_control_answers_nothing_in_either_state() {
 /// replies an activation gets, so the stage, the `Prepare`, the latency, the
 /// tail and the layout are what `drive` records, and the Processor is on the
 /// realtime thread's end, not in the seat.
-///
-/// Mutation (run): `adopt` answering `Reply::Activated` and nothing else (no
-/// reads) -> the latency, tail and layout are `None` -> fails. Mutation
-/// (run): `adopt` not calling `lend` -> the realtime end polls nothing and
-/// the seat holds the Processor -> fails. Mutation (run): the `ReadLayout`
-/// arm dropped (moved into the `unreachable!` group) -> the core's layout read
-/// panics -> fails. Mutation (run): the latency reply withheld -> the core
-/// still awaits it, and the post-condition (active, nothing planned) fails.
 #[test]
 fn an_adopted_plugin_is_in_the_state_a_driven_activation_leaves() {
     let mut driven = Rig::new();

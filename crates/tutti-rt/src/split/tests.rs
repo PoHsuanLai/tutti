@@ -1,9 +1,6 @@
 use super::*;
 
 /// Exclusive claims exclude, and release on drop.
-///
-/// Mutation: make `Claimed::drop` a no-op → the second claim of 1 after
-/// the first guard drops conflicts → fails.
 #[test]
 fn claims_exclude_and_release() {
     let mut v = [1, 2, 3];
@@ -20,9 +17,6 @@ fn claims_exclude_and_release() {
 
 /// A run claims every element, and a conflict inside it releases the ones
 /// already taken before panicking.
-///
-/// Mutation: drop the release loop in `claim_run`'s conflict branch →
-/// element 0 stays claimed after the caught panic → fails.
 #[test]
 fn a_refused_run_releases_what_it_took() {
     let mut v = [0; 4];
@@ -43,10 +37,6 @@ fn a_refused_run_releases_what_it_took() {
 
 /// Views share reads, exclude writes, find their own claims, and upgrade
 /// a sole read.
-///
-/// Mutation: in `acquire_write`, claim afresh instead of finding the
-/// view's own claim → `get_mut` after `get` of chunk 0 in one view
-/// conflicts with itself → fails.
 #[test]
 fn views_share_reads_and_exclude_writes() {
     let mut v = [0u8; 8];
@@ -69,10 +59,6 @@ fn views_share_reads_and_exclude_writes() {
 }
 
 /// One `Held` backs one live view at a time.
-///
-/// Mutation: drop the `in_use` assert in `SplitRw::view` → the second
-/// view is built, finds the first's exclusive claim on chunk 0 as its
-/// own, and hands out a second `&mut` → the `should_panic` fails.
 #[test]
 #[should_panic(expected = "already in use")]
 fn a_held_list_backs_one_view_at_a_time() {
@@ -87,9 +73,6 @@ fn a_held_list_backs_one_view_at_a_time() {
 }
 
 /// `split` hands out disjoint chunks and refuses an aliasing request.
-///
-/// Mutation: delete the written-twice `assert!` in `split` → the request
-/// list below gets two `&mut` to chunk 1 → the `should_panic` fails.
 #[test]
 #[should_panic(expected = "written and also borrowed")]
 fn split_refuses_a_write_that_aliases() {
@@ -104,12 +87,6 @@ fn split_refuses_a_write_that_aliases() {
 /// `split` asks `is_write` once per request, so a closure whose answers
 /// change cannot make the check and the hand-out disagree: whatever it
 /// answers, no chunk is handed out as `&mut` twice, or as `&mut` and `&`.
-///
-/// Mutation: restore the old shape (call `is_write` in a separate pair
-/// check, claim loop and hand-out loop) -> the counter answers `false`
-/// for the pair check, then `true` for the claims and the hand-out, and
-/// the view hands `write` chunk 0 twice -> `writes` is 2 and the
-/// assertion fails.
 #[test]
 fn a_stateful_is_write_never_aliases() {
     let mut v = [0u8; 2];
@@ -137,11 +114,6 @@ fn a_stateful_is_write_never_aliases() {
 
 /// A full `Held` refuses a claim before taking it, so the panic leaves
 /// no claim behind with no entry to release it.
-///
-/// Mutation (run): drop the `ensure_room` call in `acquire_read` -> the
-/// read of chunk 1 claims it, then `record` panics, and chunk 1 keeps a
-/// shared count after the view drops -> the last `try_get_mut` conflicts
-/// -> fails.
 #[test]
 fn a_full_held_leaves_no_claim_behind() {
     let mut v = [0u8; 2];
@@ -160,10 +132,6 @@ fn a_full_held_leaves_no_claim_behind() {
 
 /// The same for a write: a full `Held` refuses an exclusive claim before
 /// taking it.
-///
-/// Mutation (run): drop the `ensure_room` call in `acquire_write`'s
-/// `None` arm -> chunk 1 stays exclusively claimed after the view drops
-/// -> the last `try_get_mut` conflicts -> fails.
 #[test]
 fn a_full_held_leaves_no_write_claim_behind() {
     let mut v = [0u8; 2];
@@ -181,9 +149,6 @@ fn a_full_held_leaves_no_write_claim_behind() {
 }
 
 /// `split`'s reads and writes land on the right chunks.
-///
-/// Mutation: in `split`, hand `write` the chunk at `i + 1` → the written
-/// value lands in chunk 3 → fails.
 #[test]
 fn split_hands_each_request_its_chunk() {
     let mut v = [0u8, 1, 2, 3];

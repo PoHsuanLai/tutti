@@ -86,9 +86,6 @@ mod tests {
     /// from the generator tutti-export shipped before the move (xorshift32 with
     /// shifts 13, 17, 5 from 0x12345678, checked outside Rust), so every
     /// export's dither stays bit-identical.
-    ///
-    /// Mutation (run): change a shift constant (13 -> 14) and the first state
-    /// moves.
     #[test]
     fn the_seeded_sequence_is_pinned() {
         let mut n = DitherNoise::new();
@@ -105,8 +102,6 @@ mod tests {
         assert!(s.iter().any(|x| x.abs() > 0.4), "the range is used");
     }
 
-    /// Mutation (run): add instead of subtract the second draw in
-    /// `triangular` and the bound of 1 LSB is exceeded.
     #[test]
     fn triangular_stays_within_one_lsb() {
         let mut n = DitherNoise::new();
@@ -116,7 +111,7 @@ mod tests {
         assert!(s.iter().any(|x| x.abs() > 0.8), "the range is used");
     }
 
-    /// One block of N equals two of N/2. Mutation (run): reseed in `apply`.
+    /// One block of N equals two of N/2.
     #[test]
     fn the_sequence_continues_across_calls() {
         let mut whole = [0.0f32; 16];

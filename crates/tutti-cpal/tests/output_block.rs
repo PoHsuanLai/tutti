@@ -13,14 +13,6 @@
 //! asking the function under test what it should have produced is not a
 //! second opinion.
 //!
-//! Mutations run against `block.rs`, and which test each broke:
-//!
-//! | mutation | fails |
-//! |---|---|
-//! | scale the conversion by 0.5 in `write_output` | `every_sample_format_carries_the_dc_level_it_was_given` |
-//! | `frame < rendered_frames` → `true` (no tail silencing) | `an_oversized_callback_silences_its_tail` |
-//! | drop `.min(MAX_FRAMES)` | `an_oversized_callback_silences_its_tail` (index panic) |
-//!
 //! The master meter's tests (the centre of a wide device, the analytic
 //! level, enabled against disabled) are `tutti-engine`'s `tests/master_meter.rs`:
 //! the meter is an op in the graph's plan, not this callback's.
@@ -62,7 +54,7 @@ fn every_sample_format_carries_the_dc_level_it_was_given() {
     // derived from each format's width rather than from the conversion: the
     // scale factor is the *magnitude* 2^(bits-1), with the positive extreme
     // clamped, which is why i16 gives 16384 and not 16383. Stating it this way
-    // is what makes a mutation to the scale factor visible.
+    // is what makes a wrong scale factor visible.
     dc_and_check::<f32>(0.5, 0.5, "f32");
     dc_and_check::<f64>(0.5, 0.5, "f64");
     dc_and_check::<i16>(0.5, 1 << 14, "i16"); // 0.5 * 2^15

@@ -99,8 +99,6 @@ mod tests {
 
     #[test]
     fn a_panicking_body_returns_the_fallback() {
-        // Mutation: replace `catch_unwind(..)` with `Ok(f())`: the panic
-        // propagates and the test fails.
         let r = guard(7_u32, || -> u32 { panic!("callback body") });
         assert_eq!(r, 7);
         let p = guard(std::ptr::null::<u8>(), || -> *const u8 { panic!("again") });
@@ -109,7 +107,6 @@ mod tests {
 
     #[test]
     fn a_returning_body_keeps_its_value() {
-        // Mutation: return `fallback` unconditionally: fails here.
         assert_eq!(guard(0_u32, || 41 + 1), 42);
     }
 }

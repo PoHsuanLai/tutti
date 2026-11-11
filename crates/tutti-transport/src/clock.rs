@@ -555,9 +555,6 @@ mod tests {
     /// thread, and stepping *writes* `position_writeback` every block. The
     /// derivation must sever it, or the worker stomps the live playhead the
     /// rest of the app reads as "current beat".
-    ///
-    /// Mutation (run): `severed` keeping the live links (drop its
-    /// `links.severed()`) → the live playhead reads the stream's beat → fails.
     #[test]
     fn a_derived_stream_severs_live_position_writeback() {
         let (tempo, paused) = create_test_atomics();
@@ -637,9 +634,6 @@ mod tests {
 
     /// `steady_time` is `Arc`-shared, so it is subject to the same cut as the
     /// position writeback: an offline render must not advance the live counter.
-    ///
-    /// Mutation (run): `ClockLinks::severed` keeping `steady_time` → the live
-    /// counter reads 10 000 → fails.
     #[test]
     fn a_derived_stream_severs_steady_time() {
         let (tempo, paused) = create_test_atomics();
@@ -783,9 +777,6 @@ mod tests {
     /// force, not from a request the hysteresis is holding back: the clock
     /// keeps running at the tempo it publishes, the one a graph engine's
     /// `Env` reports and `Env::for_each_beat` steps by.
-    ///
-    /// Mutation (run): derive it from the asked tempo in `set_sample_rate`
-    /// → the first step is 120.0005 BPM's → fails.
     #[test]
     fn a_rate_change_keeps_the_tempo_in_force() {
         let (tempo, paused) = create_test_atomics();

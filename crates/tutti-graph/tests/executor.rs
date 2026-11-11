@@ -113,10 +113,6 @@ impl Node for TailProbe {
 ///
 /// `Const { value: 0.0 }` returns `Status::Constant` with `+0.0`, so its
 /// output is *flagged* silent — which is what the skip reads.
-///
-/// Mutation: in `tail_elapsed`, return `false` for `Tail::None` → the probe is
-/// called every block → the first case fails. Return `true` for
-/// `Tail::Unknown` → the last case fails.
 #[test]
 fn silent_inputs_skip_nodes_whose_tail_has_elapsed() {
     let (_ed, mut exec, calls) = counted_after_silence(Tail::None);
@@ -160,10 +156,6 @@ fn silent_inputs_skip_nodes_whose_tail_has_elapsed() {
 ///
 /// The second case is a pure delay (`Tail::None`): still called for `D`
 /// frames, because its line holds `D` frames of input when the input stops.
-///
-/// Mutation (run): `Shape::park_after` returning `self.tail` (dropping the
-/// latency) → the first case fails with 23 calls against 60 (the second
-/// would see 1 against 37).
 #[test]
 fn the_skip_waits_for_latency_plus_tail() {
     const D: usize = 37;
@@ -184,9 +176,6 @@ fn the_skip_waits_for_latency_plus_tail() {
 
 /// A node that writes garbage and returns `Status::Silent` produces silence,
 /// and its flag lets the next node be skipped.
-///
-/// Mutation: in `finish`, make `Status::Silent` only set the flags without
-/// zero-filling → the garbage reaches the output → fails.
 #[test]
 fn status_silent_zeroes_and_flags() {
     struct Liar;
@@ -234,9 +223,6 @@ fn status_silent_zeroes_and_flags() {
 
 /// A node reports per-channel silence with `Status::Masked`, and the
 /// downstream node sees it in its `Io::silent` mask.
-///
-/// Mutation: in `finish`, ignore the `Masked` silent mask (treat as
-/// `Modified`) → the observer sees no silent channel → fails.
 #[test]
 fn masked_status_reaches_the_next_nodes_mask() {
     struct HalfSilent;
@@ -297,9 +283,6 @@ fn masked_status_reaches_the_next_nodes_mask() {
 /// thread for the whole block. The probe is the check every control-freed
 /// value in the graph makes (`NodeBox`, a crossfade, a commit):
 /// `RtScope::check_outside` from its `Drop`.
-///
-/// Mutation: delete `let _rt = RtScope::enter();` from
-/// `Executor::process` → the drop is silent → fails.
 #[test]
 #[cfg(debug_assertions)]
 fn freeing_a_control_freed_value_inside_process_panics_in_debug() {
@@ -343,10 +326,6 @@ fn freeing_a_control_freed_value_inside_process_panics_in_debug() {
 
 /// A block longer than the prepared maximum is refused before any node sees
 /// it — which is what lets a node skip the clamp.
-///
-/// Mutation: delete the `frames <= max` half of the assert in `process` →
-/// `Io::new` still refuses (its own assert) — so the test pins that *some*
-/// check stands between the caller and the node; delete both → fails.
 #[test]
 #[should_panic(expected = "against a")]
 fn a_block_past_max_block_is_refused() {
@@ -368,9 +347,6 @@ fn queue_two_outputs(ed: &mut Editor) {
 
 /// `render_applied` does not apply: a commit queued before it waits for the
 /// next block, whatever its width; `process` applies it first.
-///
-/// Mutation (run): have `render_applied` call `apply_pending` → the first
-/// render writes the new plan's channels → fails.
 #[test]
 fn render_applied_leaves_a_queued_commit_for_the_next_block() {
     let (mut ed, mut exec) = Editor::new(prepare(64));
@@ -391,9 +367,6 @@ fn render_applied_leaves_a_queued_commit_for_the_next_block() {
 /// Fewer slices than the plan has outputs is a caller bug: a debug build
 /// asserts, a release build renders silence into what it was given and runs
 /// no node. Neither panics on an index.
-///
-/// Mutation (run): drop the guard in `process_with_changes` → "index out of
-/// bounds" in release, a different message in debug → fails.
 #[test]
 #[cfg(debug_assertions)]
 #[should_panic(expected = "for a plan with 0 global inputs and 2 outputs")]
@@ -447,9 +420,6 @@ impl Node for GainNode {
 
 /// `Editor::insert` returns the builder's typed controls, and writing them
 /// reaches the running unit.
-///
-/// Mutation: have `GainBuilder::into_node` give the node its own fresh
-/// `Param` → the write never reaches it → fails.
 #[test]
 fn insert_returns_typed_controls() {
     let (mut ed, mut exec) = Editor::new(prepare(8));
@@ -482,10 +452,6 @@ fn const_node(value: f32) -> TestNode {
 /// returned **before** anything is compiled or the plan advances. Once the
 /// executor runs a block, every queued commit is applied in the order sent
 /// and the next commit goes through.
-///
-/// Mutation: in `Editor::commit`, advance `self.plan` before the capacity
-/// check (or drop the check) → the refused commit changes the base, or the
-/// push hits a full queue → fails.
 #[test]
 fn commits_queue_up_to_capacity_then_backpressure_without_advancing() {
     let (mut ed, mut exec) = Editor::new(prepare(8));
@@ -524,9 +490,6 @@ fn commits_queue_up_to_capacity_then_backpressure_without_advancing() {
 
 /// Commits apply in the order they were sent, each on top of the last — a
 /// linear chain — even when several are queued before a block runs.
-///
-/// Mutation: pop the queue in reverse (collect, then apply newest first) →
-/// the final plan is the first one sent → fails.
 #[test]
 fn queued_commits_apply_in_fifo_order() {
     let (mut ed, mut exec) = Editor::new(prepare(8));
@@ -567,10 +530,6 @@ fn queued_commits_apply_in_fifo_order() {
 /// flight; c3 (inserts node 3) sent behind it. The caller never holds a
 /// commit, so none can be dropped unapplied: c2 and c3 queue, run in order,
 /// and the next commit applies.
-///
-/// Mutation: in `Editor::send`, set `self.plan` to the plan the executor
-/// last applied instead of the one just sent (a rebase) → the next commit's
-/// delta re-inserts node 2, whose unit is gone → `MissingUnit` → fails.
 #[test]
 fn probe_d_can_no_longer_be_expressed_and_its_interleaving_works() {
     let (a, b, c) = (NodeKey(1), NodeKey(2), NodeKey(3));
@@ -603,10 +562,6 @@ fn probe_d_can_no_longer_be_expressed_and_its_interleaving_works() {
 /// Nothing a commit carries is freed while the executor applies or renders:
 /// the whole exchange runs under the audio-thread marker, and the old plan,
 /// units and state come back to the editor to be freed.
-///
-/// Mutation: drop a retired or a replaced unit inside applying instead of
-/// keeping it in the box → the unit's `Drop` check fires under the marker →
-/// panics → fails (each path mutated separately).
 #[test]
 fn applying_frees_nothing_on_the_audio_thread() {
     let (mut ed, mut exec) = Editor::new(prepare(8));
@@ -642,9 +597,6 @@ fn applying_frees_nothing_on_the_audio_thread() {
 /// Re-inserting at a key is a new generation: the unit is replaced, the old
 /// one comes back to the control side, and removing then re-adding never
 /// revives the old identity.
-///
-/// Mutation: in `Editor::insert`, reuse generation 0 every time → the second
-/// insert compiles to no delta, the old unit keeps running → fails.
 #[test]
 fn reinserting_a_key_replaces_its_unit() {
     let (mut ed, mut exec) = Editor::new(prepare(8));
@@ -798,10 +750,6 @@ impl Node for OneShot {
 /// A held note on a finite-tail synth keeps sounding — its event input is
 /// quiet for as long as the note is held, and that is not an idle node — and
 /// once released and `Idle` it is skipped.
-///
-/// Mutation: for nodes with event inputs, skip on `last_quiet` + tail (the
-/// audio-node rule) instead of `last_idle` → the held note's synth is skipped
-/// once its tail has run under quiet inputs → silent held note → fails.
 #[test]
 fn a_held_note_keeps_sounding_and_a_released_one_is_skipped() {
     let calls = Arc::new(AtomicUsize::new(0));
@@ -823,10 +771,6 @@ fn a_held_note_keeps_sounding_and_a_released_one_is_skipped() {
 /// An honest `Silent` does not mean parked forever: a synth whose attack
 /// starts 200 frames after its note-on is silent, with quiet inputs, well past
 /// its 40-frame tail — and must still be called, because it is not idle.
-///
-/// Mutation: treat `Status::Silent` like `Status::Idle` for the skip (set
-/// `last_idle` for either) → the synth is parked during the delay and the
-/// note never sounds → fails.
 #[test]
 fn a_silent_but_busy_node_is_not_parked() {
     let calls = Arc::new(AtomicUsize::new(0));
@@ -884,9 +828,6 @@ fn run_synth(synth: Synth, on_at: u64, off_at: u64, blocks: usize) -> Vec<f32> {
 
 /// A plan compiled for another `Prepare` is refused when applied — the units
 /// in it were prepared for a `MaxBlock` this executor does not keep.
-///
-/// Mutation: delete the `assert_eq!(plan.prepare, self.prepare)` in
-/// `Executor::apply` → the foreign plan installs → fails.
 #[test]
 #[should_panic(expected = "another Prepare")]
 fn applying_refuses_a_plan_for_another_prepare() {
@@ -911,9 +852,6 @@ fn applying_refuses_a_plan_for_another_prepare() {
 
 /// A merge never drops past one slot's capacity. The probe: capacity 32, two sources each sending 30 note-offs
 /// on one frame into one port — 60 must arrive, none dropped.
-///
-/// Mutation: size merged slots at one capacity (all `event_slot_weight` 1)
-/// → 28 note-offs are lost → fails.
 #[test]
 fn a_merge_holds_all_its_inputs_so_no_note_off_is_lost() {
     struct Offs;
@@ -1066,12 +1004,6 @@ fn out_of_band_graph(node: OutOfBand) -> Executor {
 /// written, and the next block carries the level. Run for a node with an
 /// audio input wired to silence (the live hazard: a plugin instrument with a
 /// sidechain) and for a 0-input source (a mic monitor).
-///
-/// Mutation (run): in `exec.rs`'s `node_op`, treat `Status::Modified` as a
-/// claim of silence on every output → the 1-input node is parked after its
-/// first silent block → fails. The 0-input case does not fail on that
-/// alone — the executor never skips a node without audio inputs — and
-/// fails when that rule (`!ain.is_empty()` in `node_op`) is dropped as well.
 #[test]
 fn a_node_that_claims_no_silence_is_heard_after_silence() {
     for inputs in [1u16, 0] {
@@ -1102,9 +1034,6 @@ fn a_node_that_claims_no_silence_is_heard_after_silence() {
 /// The same node, **claiming** the silence it wrote, is parked — which is
 /// what the claim means. Pins that the claim is the switch, so the test
 /// above is not passing because nothing is ever skipped.
-///
-/// Mutation (run): drop the skip in `node_op` (always call the node) → the
-/// node is called every block and the late level is heard → fails.
 #[test]
 fn a_node_that_claims_silence_is_parked() {
     let node = OutOfBand::new(1, 1, true);
@@ -1123,10 +1052,6 @@ fn a_node_that_claims_silence_is_parked() {
 /// A node with **no outputs** is never parked, even claiming silence with a
 /// silent input and `Tail::None`: it is a sink, called for its side effects
 /// (a meter, a tap), and "every output silent" is vacuous for it.
-///
-/// Mutation (run): drop the `!(aout.is_empty() && eout.is_empty())` term
-/// from `last_quiet` in `exec.rs`'s `node_op` → called once, then skipped →
-/// fails.
 #[test]
 fn a_sink_is_never_parked() {
     let node = OutOfBand::new(1, 0, true);
@@ -1142,15 +1067,6 @@ fn a_sink_is_never_parked() {
 /// still sends: an edit through `spec_mut`, a new unit, a latency set by
 /// hand. The unchanged commits leave `in_flight` and the base plan where
 /// they were, so a host committing every frame compiles only when it edits.
-///
-/// Mutation (run): drop the unchanged check in `Editor::commit` → the second
-/// commit is in flight → fails here, and tutti-engine's
-/// `a_no_op_commit_allocates_a_bounded_amount` allocates ~100 KiB → fails.
-/// Mutation (run): compare only the spec, not the shapes, and drop the
-/// `latency_cuts` term → still passes: `set_latency` writes the figure into
-/// the spec's node as well, so the spec comparison alone sees it. Those two
-/// terms are defensive (every path that writes a shape writes the spec
-/// too); nothing here can reach one without the other.
 #[test]
 fn an_unchanged_commit_sends_nothing_and_a_change_still_sends() {
     let (mut ed, mut exec) = Editor::new(prepare(8));
@@ -1197,9 +1113,6 @@ fn an_unchanged_commit_sends_nothing_and_a_change_still_sends() {
 
 /// An input the plan reads, with no slice for it: the same caller bug as a
 /// short `outputs`, caught before `global_in` indexes `inputs`.
-///
-/// Mutation (run): drop the `inputs.len()` half of the guard → "index out of
-/// bounds" in `global_in` → fails.
 #[test]
 #[cfg(debug_assertions)]
 #[should_panic(expected = "for a plan with 1 global inputs and 1 outputs")]
@@ -1272,10 +1185,6 @@ fn ringer_calls(ringer: common::Ringer, frames: usize) -> usize {
 /// reported one: the ceiling `Shape::tail` is only the upper bound. Latency
 /// still comes first (`D + reported`), `Unknown` reported says nothing, and
 /// an `Unbounded` ceiling narrows to a finite report.
-///
-/// Mutation (run): in `node_op_with`, store `u.reported = None` whatever the
-/// node reported → the 10-frame report is called for the ceiling's 100
-/// frames → the first assert fails (100 against 10).
 #[test]
 fn a_reported_tail_shorter_than_the_ceiling_is_what_the_skip_waits() {
     use common::{REPORT_UNKNOWN, Ringer};
@@ -1306,10 +1215,6 @@ fn a_reported_tail_shorter_than_the_ceiling_is_what_the_skip_waits() {
 /// A report above the ceiling is clamped to it, and `Unbounded` reported
 /// under a finite ceiling is no more than the ceiling; `Unbounded` under an
 /// `Unbounded` ceiling is never skipped.
-///
-/// Mutation (run): in `narrow_tail`, return the report unclamped
-/// (`(c, r) => Some(r)` for the finite pair) → the 500-frame report waits
-/// 300 frames, not 20 → the first assert fails (300 against 20).
 #[test]
 fn a_reported_tail_above_the_ceiling_is_clamped() {
     use common::{REPORT_UNBOUNDED, Ringer};
@@ -1336,10 +1241,6 @@ fn a_reported_tail_above_the_ceiling_is_clamped() {
 ///
 /// Five calls report 10, then the node stops reporting; the ceiling's 100
 /// quiet frames are then what the skip waits.
-///
-/// Mutation (run): in `node_op_with`, assign `u.reported` only when the call
-/// reported (keep the old value otherwise) → the stale 10 parks the node
-/// after 10 calls, not 100 → fails.
 #[test]
 fn a_call_that_reports_nothing_restores_the_ceiling() {
     use common::{NO_REPORT, Ringer};
@@ -1360,12 +1261,7 @@ fn a_call_that_reports_nothing_restores_the_ceiling() {
 /// the old unit's report (the report is the unit's, and a replace is a new
 /// unit).
 ///
-/// Mutation: none distinguishes. Every site that makes a new unit also
-/// clears `last_quiet`, which forces a call, and the call rewrites `reported`;
-/// so the `reported = None` resets in `Unit::new`, `cut_fades`, the crossfade
-/// start and `end_fades` are belt and braces (tried: removing them all, or
-/// starting `Some(Tail::None)`, leaves this passing). The test pins the
-/// observable rule, not those lines.
+/// The test pins the observable rule, not the individual resets.
 #[test]
 fn a_new_unit_starts_at_its_ceiling() {
     use common::{NO_REPORT, Ringer};
@@ -1390,10 +1286,6 @@ fn a_new_unit_starts_at_its_ceiling() {
 /// in: mono (the split form), stereo in and out (`Direct`), three channels
 /// (the general audio form) and a node with an event output (the general
 /// form, `Call::run`).
-///
-/// Mutation (run): drop `.with_tail(self.reported)` from `Call::run` → the
-/// event-output case is called for the ceiling's 100 frames, not 10 → fails;
-/// the same in `Call::process` → every case fails.
 #[test]
 fn a_report_reaches_every_call_form() {
     use common::Ringer;
@@ -1412,9 +1304,6 @@ fn a_report_reaches_every_call_form() {
 
 /// An `Unknown` ceiling bounds nothing, so no report narrows it: a node that
 /// declares no tail is never skipped.
-///
-/// Mutation (run): `(Tail::Unknown, r) => Some(r)` in `narrow_tail` → the
-/// 10-frame report parks it → fails.
 #[test]
 fn nothing_narrows_an_unknown_ceiling() {
     use common::Ringer;

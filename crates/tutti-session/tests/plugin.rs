@@ -167,12 +167,6 @@ fn wired_probe(s: &mut Session) -> (NodeKey, Samples) {
 /// renders offline (its latency moves by the extra) while the job is still
 /// unrun, so before the fork can render a block. `finish_bounce` releases
 /// the token and runs the phase again: back to realtime, with no update.
-///
-/// Mutations (each run, each failed): `Session::bounce_start` not running the
-/// phase (the session still says Realtime after `export`); `finish_bounce`
-/// not running it (still Offline after it); `render_mode_phase` recording
-/// the mode without calling `set_render_mode` (the latency stays realtime
-/// while the job waits).
 #[test]
 fn an_export_announces_offline_before_its_first_block_and_realtime_after() {
     let mut s = session(&[]);
@@ -203,12 +197,6 @@ fn an_export_announces_offline_before_its_first_block_and_realtime_after() {
 /// `finish_bounce`; each drops the export's token, and the update after
 /// finds none alive. Until that update the session still says Offline:
 /// nothing is announced from a drop (it may be a worker's).
-///
-/// Mutations (each run, each failed): announcing Realtime only in
-/// `finish_bounce` (the `Phase::RenderMode` arm of `run_phase` emptied) →
-/// the session still says Offline after the update; `render_mode_phase`
-/// recording the mode without calling `set_render_mode` → the latency never
-/// moves offline.
 #[test]
 fn a_dropped_export_job_restores_realtime_on_the_next_update() {
     let mut s = session(&[]);
@@ -244,10 +232,6 @@ fn a_dropped_export_job_restores_realtime_on_the_next_update() {
 /// `needs_announcement`'s `!told` half, end to end. The mode has not changed
 /// since the export announced it, so only "never told" reaches the new
 /// plugin.
-///
-/// Mutation (run, failed): `render_mode_phase` asking
-/// `needs_announcement(changed, true)` (every plugin counted as told) → the
-/// late plugin keeps its realtime latency.
 #[test]
 fn a_plugin_added_mid_export_is_told_offline() {
     let mut s = session(&[]);
@@ -281,13 +265,6 @@ fn a_plugin_added_mid_export_is_told_offline() {
 /// with the node in place; the first past the window is Dead, the node is
 /// removed and `PluginDied` names it, with the engine's cause; no update
 /// after reports it again.
-///
-/// Mutations (each run, each failed): the phase observing every plugin
-/// healthy (never Failing); the `Dead` arm not removing the node (still in
-/// the graph); `Graph::remove` keeping the plugin's record, with the phase
-/// not skipping a dead one (the record check). "Reported once" is then held
-/// by the record's removal: no mutation leaves the record and passes the
-/// record check, so the two last asserts guard a regression in that order.
 #[test]
 fn a_plugin_dead_for_the_window_is_removed_and_reported_once() {
     let mut s = session_built(&[("TUTTI_CLAP_PROBE_CRASH_ON_BLOCK", "1")], |b| {
@@ -387,10 +364,6 @@ impl tutti_graph::Node for DropWitness {
 /// input: the probe's fork comes too), so the export's fork carries a clone
 /// of the witness. The job runs on a spawned thread and `finish_bounce` on
 /// this one: every drop of the fork's witness is this thread's.
-///
-/// Mutation (run, failed): `BounceJob::run` dropping the rendered graph
-/// inside `run()` (`graph.take()` dropped before it returns) → the
-/// witness's drop is recorded on the worker.
 #[test]
 fn export_leftovers_drop_on_the_main_thread() {
     let mut s = session(&[]);
@@ -425,9 +398,6 @@ fn export_leftovers_drop_on_the_main_thread() {
 /// it**: once cleared the node's meter slot follows no project meter, so
 /// only the session's sweep of its plugins' meters reaches what the clear
 /// retired, on the next update with nothing published again.
-///
-/// Mutation (run): `Graph::reclaim` leaving out the plugins' meters → the
-/// cleared meter is still retired after the update, fails.
 #[test]
 fn an_update_frees_a_plugin_meter_cleared_while_a_block_held_it() {
     let mut s = session(&[]);
@@ -565,15 +535,6 @@ impl Drive {
 /// `PluginRecovered` saying the state was restored, how old, and that the
 /// latency moved by the replacement's extra (the plan's total with it: the
 /// commit re-plans PDC).
-///
-/// Mutations (each run, each failed): `install_reload` not calling
-/// `replace_plugin` (the node stays dead: no sound, no `PluginRecovered`);
-/// the job built with `state: None` (the parameter reads its default);
-/// `install_reload` not putting the snapshot back after the swap, which
-/// clears it (no recovery point after the first recovery); the latency pair
-/// not read after the swap (`(before, before)`); writing the old mirror's
-/// load-time values to the replacement after the swap (the parameter is
-/// overwritten again over the blocks that follow).
 #[test]
 fn a_crashed_plugin_comes_back_at_its_node_with_its_last_state() {
     const EXTRA: usize = 48;
@@ -724,9 +685,6 @@ fn a_crashed_plugin_comes_back_at_its_node_with_its_last_state() {
 /// Every server aborts on its first block, so each reload comes up and dies:
 /// two reloads (the policy's budget), then `PluginGaveUp` naming the failures,
 /// the node and its record gone, and no `PluginDied`.
-///
-/// Mutations (each run, each failed): the budget compared past its limit (a
-/// third reload); `GiveUp` not removing the node (`contains` still true).
 #[test]
 fn a_plugin_that_crashes_every_time_is_given_up_on() {
     let mut s = session_built(&[("TUTTI_CLAP_PROBE_CRASH_ON_BLOCK", "1")], |b| {
@@ -766,9 +724,6 @@ fn a_plugin_that_crashes_every_time_is_given_up_on() {
 
 /// **A reload job dropped unrun is a failed attempt**, and the next one is
 /// handed out: nothing waits on a job that will never land.
-///
-/// Mutation (run, failed): the sole-owner check of the job's token removed
-/// (no second `PluginReloading`, the first job's slot waits forever).
 #[test]
 fn a_reload_job_dropped_unrun_is_a_failed_attempt() {
     let once = once_file("recovery-dropped.once");
@@ -848,12 +803,6 @@ fn quick_hang_policy() -> tutti_session::RecoveryPolicy {
 /// node is kept, and when the replacement's load is handed out the hung
 /// server is already gone: a live server is never left beside its
 /// replacement. The replacement renders.
-///
-/// Mutations (each run, each failed): the hang verdict not calling
-/// `terminate` (the hung server is never ended: no `PluginReloading`);
-/// `terminate` not latching its cause (the death reads "Bridge process
-/// crashed", not "stopped answering"); `terminate` not killing the server
-/// (the server is still alive when the load is handed out).
 #[cfg(target_os = "linux")]
 #[test]
 fn a_plugin_that_stops_answering_is_ended_and_replaced() {
@@ -910,12 +859,6 @@ fn a_plugin_that_stops_answering_is_ended_and_replaced() {
 /// Abandoned blocks pass the policy's 16 many times over, but replies keep
 /// arriving between the readings, so the plugin is left alone for four
 /// seconds; both totals did rise (else the test proves nothing).
-///
-/// Mutation (run, failed): `Channels::note_replied` not counting (no reply
-/// is an answer): the abandoned total grows with the replies flat, and the
-/// verdict ends the server. (Not counting an owed reply alone survives here:
-/// this plugin's replies also reach the bridge as the answer to the next
-/// block; the owed path is pinned by `Channels`' own test.)
 #[test]
 fn a_slow_plugin_that_still_answers_is_not_declared_hung() {
     let mut s = session_built(
@@ -951,10 +894,6 @@ fn a_slow_plugin_that_still_answers_is_not_declared_hung() {
 /// the swap: the next attempt is scheduled (the same refusal again, until
 /// the budget is spent), the reason reaches `PluginGaveUp`, and an edit made
 /// meanwhile commits.
-///
-/// Mutation (run, failed): the port comparison removed from
-/// `install_reload` (the swap happens: the edit stays uncommitted, and the
-/// plugin is reported recovered).
 #[test]
 fn a_replacement_with_other_ports_is_refused_and_the_graph_stays_editable() {
     let once = once_file("recovery-ports.once");
@@ -1054,13 +993,6 @@ fn recovered_state(drive: &Drive) -> Vec<tutti_session::StateRestore> {
 /// so it is never reported recovered; the second goes without the state,
 /// comes up, and says so: `StateRestore::Withheld`, the snapshot gone from
 /// the record.
-///
-/// Mutations (each run, each failed): `withhold_snapshot` not clearing the
-/// snapshot (every attempt carries it: budget spent, `PluginGaveUp`, no
-/// recovery); the dead-on-arrival check removed from `install_reload` (the
-/// dead replacement is installed and reported `Restored`); the withheld
-/// bytes not kept (`withheld_snapshot` is `None`); `land_snapshot` replacing
-/// them (the default-state snapshot overwrites them).
 #[test]
 fn a_snapshot_that_kills_the_load_is_withheld_from_the_next_attempt() {
     let once = once_file("recovery-withheld.once");
@@ -1138,9 +1070,6 @@ fn a_snapshot_that_kills_the_load_is_withheld_from_the_next_attempt() {
 /// takes the snapshot (`Restored`) and dies within the probation, so the
 /// next load goes without it (`Withheld`); a death outside the probation
 /// would have used the snapshot again.
-///
-/// Mutation (run, failed): `probation_until` never set on a restore (the
-/// second replacement is `Restored` again, off the same snapshot).
 #[test]
 fn a_plugin_that_dies_soon_after_restoring_loses_the_snapshot() {
     let mut s = session_built(&[("TUTTI_CLAP_PROBE_CRASH_ON_BLOCK", "3")], |b| {
@@ -1181,7 +1110,7 @@ fn a_plugin_that_dies_soon_after_restoring_loses_the_snapshot() {
 /// the failure; the session and its render mode are left as they were, and an
 /// export started after the recovery works.
 ///
-/// Not mutation-tested: it pins what the fork of a dead plugin does today.
+/// It pins what the fork of a dead plugin does today.
 #[test]
 fn an_export_during_the_recovery_window_is_refused() {
     let once = once_file("recovery-export.once");
@@ -1286,11 +1215,6 @@ fn servers() -> Option<usize> {
 /// its forked `plugin-server` with it (the fork dies with the rendered graph,
 /// on the main thread), and the next export, forking a fresh server, succeeds.
 /// The server count is read from `/proc`, so that part is Linux only.
-///
-/// Mutation (run): `BounceHandle::cancel` ignoring the stop request -> the
-/// render runs to its end and the outcome is `Finished`; fails.
-/// Mutation (run): `finish_bounce_unannounced` forgetting the rendered graph
-/// -> the forked server is still running after the finish; fails.
 #[test]
 fn a_cancelled_export_frees_the_token_and_the_forked_server() {
     use std::sync::atomic::AtomicUsize;
@@ -1341,9 +1265,6 @@ fn a_cancelled_export_frees_the_token_and_the_forked_server() {
 /// replacement is `Refused` (it never restored anything), and its death is
 /// not the snapshot's doing: the snapshot is offered again (`Refused`
 /// again), none is withheld.
-///
-/// Mutation (run, failed): `probation_until` also set on a refusal (the
-/// second replacement is `Withheld` and the snapshot is gone).
 #[test]
 fn a_death_after_a_refused_restore_does_not_withhold_the_snapshot() {
     let mut s = session_built(

@@ -550,11 +550,6 @@ mod tests {
 
     /// More caller channels than table slots: only the filled slots reach
     /// the bus, and the surplus channel is never read.
-    ///
-    /// Mutation: in `bind_in`, drop the `zip` cap (index `live` by the channel
-    /// number instead) -> the fourth channel indexes past the three-slot table
-    /// and panics (miri reports the overrun), so the assertions below never
-    /// hold.
     #[test]
     fn surplus_caller_channels_are_not_read_past_the_table() {
         let mut bb =
@@ -582,9 +577,6 @@ mod tests {
 
     /// A bound direction's capacity is the shortest bound channel, so a block
     /// longer than any of its channels is refused before the plugin sees it.
-    ///
-    /// Mutation: have `capacity` return `self.buffers.max_block()` alone and
-    /// the second assert fails.
     #[test]
     fn a_bound_direction_is_no_longer_than_its_shortest_channel() {
         let mut bb =

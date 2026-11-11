@@ -14,10 +14,6 @@ fn session() -> Session {
 
 /// `Graph::set_param` at a decay's index reaches that decay's cell and no other,
 /// and the freeze is addressable only where the design can freeze.
-///
-/// Mutation (run): registering `FdnNode` as a `SessionNode` without its params
-/// (`impl SessionNode for FdnNode {}`) makes `set_param` a no-op and fails the
-/// `low` assertion.
 #[test]
 fn set_param_reaches_the_decay_it_names() {
     let mut s = session();
@@ -42,9 +38,6 @@ fn set_param_reaches_the_decay_it_names() {
 
 /// The tail each reverb declares to the graph: finite for a design that cannot
 /// freeze (the room at its longest decay), unbounded for one that can.
-///
-/// Mutation (run): a finite ceiling for the freezable design fails the second
-/// assertion.
 #[test]
 fn the_graph_sees_each_reverbs_ceiling() {
     let mut s = session();

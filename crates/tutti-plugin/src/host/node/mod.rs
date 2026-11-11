@@ -49,9 +49,6 @@
 //! }
 //! ```
 //!
-//! (Mutation-tested: an `IntoNode` impl for `PluginClient<Unbound>` makes the
-//! first compile and fail as a doctest; a `Node` impl makes both.)
-//!
 //! Inserting a bound client hands back its [`PluginControls`] (its
 //! `IntoNode::Controls`) and a fork source, so the host never needs to reach
 //! into the graph for the node again.

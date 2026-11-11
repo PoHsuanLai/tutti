@@ -102,16 +102,11 @@ mod tests {
         FileRow::blacklisted("crashed".into(), &facts(mtime))
     }
 
-    // Mutation records: each rule below names the edit that makes its test fail.
-
-    /// Mutation: return `UpToDate` or `Blacklisted` for `None`.
     #[test]
     fn an_unknown_plugin_is_probed() {
         assert_eq!(classify(None, &facts(Some(T))), ScanDecision::Probe);
     }
 
-    /// Mutation: compare with `<` or `>` instead of `!=` in `needs_rescan`
-    /// (the older and the newer file cases each fail one of the two asserts).
     #[test]
     fn a_changed_file_is_probed_whichever_way_the_time_moved() {
         let r = healthy(Some(T));
@@ -119,15 +114,12 @@ mod tests {
         assert_eq!(classify(Some(&r), &facts(Some(T - 1))), ScanDecision::Probe);
     }
 
-    /// Mutation: make `classify` return `Probe` for an unchanged row.
     #[test]
     fn an_unchanged_row_is_up_to_date() {
         let r = healthy(Some(T));
         assert_eq!(classify(Some(&r), &facts(Some(T))), ScanDecision::UpToDate);
     }
 
-    /// Mutation: test `needs_rescan` before the blacklist in `classify`
-    /// (an unchanged blacklisted row then reports `UpToDate`).
     #[test]
     fn an_unchanged_blacklisted_row_is_skipped_as_blacklisted() {
         let r = bad(Some(T));
@@ -137,8 +129,6 @@ mod tests {
         );
     }
 
-    /// Mutation: drop the `!needs_rescan` term from `is_blacklisted_and_unchanged`
-    /// (a changed blacklisted file is then skipped forever).
     #[test]
     fn a_changed_blacklisted_file_is_readmitted() {
         let r = bad(Some(T));
@@ -146,7 +136,6 @@ mod tests {
         assert!(!is_blacklisted_and_unchanged(&r, &facts(Some(T + 5))));
     }
 
-    /// Mutation: drop the blacklist term from `is_blacklisted_and_unchanged`.
     #[test]
     fn a_healthy_unchanged_row_is_not_blacklisted() {
         let r = healthy(Some(T));
@@ -154,8 +143,6 @@ mod tests {
     }
 
     /// A file with no readable time matches only a row stamped without one.
-    /// Mutation: `facts.mtime.is_some() &&` or `row.mtime.is_some() &&` before
-    /// the comparison in `needs_rescan` (each fails one of the asserts).
     #[test]
     fn a_missing_time_matches_only_a_row_stamped_without_one() {
         assert!(!needs_rescan(&healthy(None), &facts(None)));
@@ -165,8 +152,7 @@ mod tests {
 
     /// Facts at T2 over a row at T1, then a blacklisting with those facts: the
     /// classification skips it. This is the scanner's path (a probe fails, the
-    /// row is stamped with the facts the decision saw). Mutation: stamp the old
-    /// row's time in `FileRow::blacklisted`; `classify` then returns `Probe`.
+    /// row is stamped with the facts the decision saw).
     #[test]
     fn blacklisting_a_changed_file_with_the_facts_makes_it_skipped() {
         let r = healthy(Some(T));
@@ -177,8 +163,6 @@ mod tests {
         assert_eq!(classify(Some(&out), &f), ScanDecision::Blacklisted);
     }
 
-    /// Mutation: stamp no time instead of the facts' time; or take the format
-    /// from anything but the facts.
     #[test]
     fn a_blacklisted_row_takes_the_format_and_the_time_from_the_facts() {
         let out = FileRow::blacklisted("boom".into(), &facts(Some(T)));
@@ -188,7 +172,6 @@ mod tests {
         assert!(out.plugins().is_empty());
     }
 
-    /// Mutation: default to `Clap` (or drop the default) instead of `Vst3`.
     #[test]
     fn a_blacklisted_row_for_an_unrecognised_extension_defaults_to_vst3() {
         let none = FileFacts {
@@ -201,7 +184,6 @@ mod tests {
         assert_eq!(out.mtime, None);
     }
 
-    /// Mutation: invert the `contains` test, or return every path.
     #[test]
     fn missing_is_exactly_the_paths_not_present() {
         let a = Path::new("/plugins/a.clap");

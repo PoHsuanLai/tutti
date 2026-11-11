@@ -2,20 +2,6 @@
 //! message kinds: a MIDI 1.0 channel voice message reads as the MIDI 2.0 one
 //! `widen` gives, a MIDI 2.0 one as it came (its Note On at velocity 0 a Note
 //! On, M2-104 §7.4.2), and nothing else reads as channel voice.
-//!
-//! Mutation record (each planted in `src/voice.rs`, seen to fail at the named
-//! tests, restored):
-//! - `channel_voice` decoding without `widen_message` (a MIDI 1.0 message reads
-//!   as `None`) -> `a_midi_1_message_reads_widened`;
-//! - `channel_voice` folding a MIDI 2.0 Note On at velocity 0 into a Note Off ->
-//!   `a_midi_2_note_on_at_velocity_0_stays_a_note_on`;
-//! - `widen_message` moving the message to group 1 ->
-//!   `a_midi_1_message_reads_widened`, `the_address_is_kept`;
-//! - `widen_bytes` skipping `widen_message` -> `bytes_widen_to_a_packet`;
-//! - `widen_bytes` answering a packet for bytes `Midi1Parser::message` refuses ->
-//!   `bytes_that_are_not_one_message_are_none`;
-//! - `widen_message`'s `other => other` arm returning a Timing Clock ->
-//!   `other_messages_pass_through_widen_message` (and the MIDI 2.0 test).
 
 use tutti_midi_protocol::{channel_voice, widen, widen_bytes, widen_message};
 use tutti_ump::{

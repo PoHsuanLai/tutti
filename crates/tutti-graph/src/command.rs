@@ -633,8 +633,6 @@ mod tests {
     use tutti_types::Frame;
     use tutti_ump::Ump;
 
-    // Mutation: make `is_transient` return true for `Poisoned` (or false for
-    // `Backpressure`); this fails.
     #[test]
     fn only_a_missing_plan_or_a_full_queue_is_transient() {
         let to = EventIn {
@@ -669,8 +667,6 @@ mod tests {
 
     /// An id this pair never issued — a number past the last it sent — is
     /// refused, not queued for a command that never comes.
-    ///
-    /// Mutation: drop the `id.seq >= self.sent` check → accepted → fails.
     #[test]
     fn a_never_issued_id_is_refused() {
         let (mut tx, _rx) = command_channel();
@@ -691,12 +687,6 @@ mod tests {
     /// command ring just before the editor pushed both). Staged here by
     /// pushing the cancel into its ring first. The cancel must be held and
     /// applied when the command arrives — for `One` and for `Below`.
-    ///
-    /// Mutation: drop a cancel that names nothing pulled yet (make
-    /// `apply_cancel` return `true` for an unseen `One`) → the command
-    /// survives its cancel → fails. Mutation: resolve a `Below` at once
-    /// (`true` regardless of `next_seq`) → the later-arriving command
-    /// survives → fails.
     #[test]
     fn a_cancel_seen_before_its_command_is_held_until_it_arrives() {
         let (mut tx, mut rx) = command_channel();

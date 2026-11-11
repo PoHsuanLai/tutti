@@ -19,9 +19,6 @@ fn preset(name: &'static str, bank: u16, program: u16) -> Preset {
 /// 7.2: "if the value in either field is not a valid MIDI value of zero
 /// through 127, or 128 for wBank, the preset cannot be played but should be
 /// maintained". The preset is kept, with no bank or no program.
-///
-/// Mutation (run): `Bank::new` accepting up to 255 gives bank 200 a `Some` and
-/// fails the second row; `Preset::patch` without the `U7` check fails the third.
 #[test]
 fn a_preset_outside_midis_values_is_kept_and_says_it_cannot_be_played() {
     let file = bytes(

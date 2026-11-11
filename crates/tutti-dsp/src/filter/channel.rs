@@ -10,7 +10,7 @@
 
 use core::ops::Range;
 
-use tutti_types::{ChannelLayout, SampleRate};
+use tutti_types::{BusTopology, ChannelLayout, SampleRate};
 
 use super::sizes::FilterSizes;
 use crate::control::COEFF_STREAM;
@@ -43,8 +43,8 @@ pub trait ChannelKernel: Clone + core::fmt::Debug + Send + 'static {
     /// glide; doc 024 section 4.5).
     const STEPS: u32;
 
-    /// How many outputs each input channel makes, at most `MAX_OUTPUTS` (6). Output `o`
-    /// of channel `c` is port [`Channels::port`]`(o, c)`.
+    /// How many outputs each input channel makes, at most `MAX_OUTPUTS` (6): the bands
+    /// of [`Channels::bands`], output `o` of every channel in band `o`.
     fn outputs(&self) -> usize {
         1
     }
@@ -62,7 +62,7 @@ pub trait ChannelKernel: Clone + core::fmt::Debug + Send + 'static {
     fn tick(c: &Self::Coeffs, state: &mut Self::State, x: f32) -> Self::Frame;
 }
 
-/// The [`Design`] of a filter over a [`ChannelKernel`], `channels` wide.
+/// The [`Design`] of a filter over a [`ChannelKernel`], on one input bus.
 ///
 /// Solved every 16 frames on the stream clock, at the first frame of each segment
 /// (doc 024 Q27), so the render is a function of the stream and not of how it is cut
@@ -71,12 +71,12 @@ pub trait ChannelKernel: Clone + core::fmt::Debug + Send + 'static {
 #[derive(Clone, Copy, Debug)]
 pub struct Filter<K> {
     kernel: K,
-    channels: ChannelLayout,
+    input: BusTopology,
 }
 
 impl<K> Filter<K> {
-    pub(crate) fn over(kernel: K, channels: ChannelLayout) -> Self {
-        Self { kernel, channels }
+    pub(crate) fn over(kernel: K, input: BusTopology) -> Self {
+        Self { kernel, input }
     }
 
     /// The kernel.
@@ -88,7 +88,7 @@ impl<K> Filter<K> {
     /// The input width; each output is this wide.
     #[must_use]
     pub fn layout(&self) -> ChannelLayout {
-        self.channels
+        self.input.layout()
     }
 }
 
@@ -103,11 +103,9 @@ impl<K: ChannelKernel> Design for Filter<K> {
 
     fn channels(&self) -> Channels {
         // One output per input sits where the input does; several are a
-        // crossover's bands, band-major.
-        match self.kernel.outputs() {
-            1 => Channels::speakers(self.channels, self.channels),
-            n => Channels::bands(self.channels, n as u16),
-        }
+        // crossover's bands, each where the input is.
+        Channels::bands(self.input, self.kernel.outputs() as u8)
+            .expect("a kernel makes at least one output")
     }
 
     fn blank(&self, rate: SampleRate) -> K::Model {
@@ -123,12 +121,11 @@ impl<K: ChannelKernel> Design for Filter<K> {
     }
 
     fn realization(&self) -> Self::Realization {
-        let width = usize::from(self.channels.count()).max(1);
+        let width = usize::from(self.layout().count()).max(1);
         Realized::new(
             PerChannel {
                 kernel: self.kernel.clone(),
                 width,
-                ports: self.channels(),
             },
             &self.blank(SampleRate::DEFAULT),
         )
@@ -139,12 +136,13 @@ impl<K: ChannelKernel> Design for Filter<K> {
 /// width, built with the design and never resized) and a [`Glide`] of the coefficients
 /// every channel shares.
 #[derive(Clone, Debug)]
+///
+/// The outputs are the design's bands in order ([`Channels`]): band `o` is the
+/// `o`-th run of `width` output slices, and channel `c`'s output `o` is channel `c`
+/// of it.
 pub struct PerChannel<C> {
     kernel: C,
     width: usize,
-    /// The design's channels: the port each output of each channel is written
-    /// to ([`Channels::port`]), the order its node declares its buses from.
-    ports: Channels,
 }
 
 impl<C: ChannelKernel> PerChannel<C> {
@@ -168,10 +166,9 @@ impl<C: ChannelKernel> PerChannel<C> {
         let xs: [&[f32]; N] = core::array::from_fn(|k| &input[first + k][frames.clone()]);
         let mut ys: [&mut [f32]; LANES * MAX_OUTPUTS] =
             core::array::from_fn(|_| Default::default());
-        for (slot, out) in output.iter_mut().enumerate() {
-            let (o, ch) = self.ports.of_port(slot);
-            if o < outputs && (first..first + N).contains(&ch) {
-                ys[(ch - first) * MAX_OUTPUTS + o] = &mut out[frames.clone()];
+        for (o, band) in output.chunks_mut(self.width).take(outputs).enumerate() {
+            for (k, out) in band[first..first + N].iter_mut().enumerate() {
+                ys[k * MAX_OUTPUTS + o] = &mut out[frames.clone()];
             }
         }
         let mut st: [C::State; N] = core::array::from_fn(|k| state[first + k]);
@@ -225,8 +222,9 @@ impl<C: ChannelKernel> Kernel for PerChannel<C> {
             let (i, outputs) = (frames.start, self.kernel.outputs());
             for (ch, s) in state.iter_mut().enumerate() {
                 let frame = C::tick(&c, s, input[ch][i]);
-                for (o, &y) in frame.as_ref().iter().take(outputs).enumerate() {
-                    output[self.ports.port(o, ch)][i] = y;
+                let bands = output.chunks_mut(self.width).take(outputs);
+                for (band, &y) in bands.zip(frame.as_ref()) {
+                    band[ch][i] = y;
                 }
             }
             return;
@@ -273,10 +271,6 @@ pub(crate) mod tests {
     /// stable region in `(a1, a2)` is a triangle and so convex, and the ladder's loop is
     /// stable while its feedback is under the resonance limit, which a blend of two
     /// reachable sets keeps under; a glide that extrapolates leaves both.
-    ///
-    /// Mutation (run, both callers): the blend at `t = 4k / n` (twice past the target at
-    /// the midpoint) in `Lerp::lerp` fails: the SVF's sets leave the triangle and the
-    /// ladder's feedback passes its limit, and neither rings down.
     pub(crate) fn assert_midpoints_decay<K>(d: &Filter<K>)
     where
         K: ChannelKernel,

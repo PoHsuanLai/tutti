@@ -960,9 +960,6 @@ mod main_thread_work_tests {
 
     /// **With no timer and no descriptor the pass does not read the clock**,
     /// and a pass over registered ones does.
-    ///
-    /// Mutation (run): make `work_needs_clock` return `true` → the first
-    /// assertion fails.
     #[test]
     fn nothing_registered_needs_no_clock() {
         assert!(!work_needs_clock(TimerState::NONE, false));
@@ -971,9 +968,6 @@ mod main_thread_work_tests {
     }
 
     /// **The timers are scanned only once the earliest deadline has passed.**
-    ///
-    /// Mutation (run): change `>=` to `<` in `work_due`'s timer test → the
-    /// three assertions fail.
     #[test]
     fn timers_wait_for_the_earliest_deadline() {
         let epoch = Instant::now();
@@ -987,9 +981,6 @@ mod main_thread_work_tests {
 
     /// **The descriptors are polled at most once per scan period, and only
     /// while one is registered.**
-    ///
-    /// Mutation (run): drop the `FD_SCAN_PERIOD` comparison (`|_| true`) → the
-    /// "just scanned" assertion fails.
     #[test]
     fn descriptors_are_polled_once_per_period() {
         let epoch = Instant::now();
@@ -1029,9 +1020,6 @@ mod main_thread_work_tests {
 
     /// **A timer an earlier callback of the same pass unregistered is not
     /// fired**, as a descriptor is not.
-    ///
-    /// Mutation (run): delete the `registered` re-check in `fire_due_timers`
-    /// → timer 2 fires and the assertion fails.
     #[test]
     fn a_timer_unregistered_earlier_in_the_pass_does_not_fire() {
         let state = state_with(&[(1, 0), (2, 0)]);
@@ -1048,9 +1036,6 @@ mod main_thread_work_tests {
 
     /// **The pass leaves the cached deadline at the earliest timer's**, and at
     /// none once none is left.
-    ///
-    /// Mutation (run): delete `state.set_next_due(next)` → the first
-    /// assertion fails (the cache stays at `NONE`).
     #[test]
     fn the_pass_caches_the_next_deadline() {
         let state = state_with(&[(1, 30), (2, 10)]);

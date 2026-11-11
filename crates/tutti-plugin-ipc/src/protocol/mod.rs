@@ -283,8 +283,8 @@ mod tests {
         // Absolute tags, not a relative comparison. A variant inserted
         // *between* two existing ones keeps both the tag-0 anchor and any
         // "later than" ordering intact while renumbering everything after the
-        // insertion point — so only pinned numbers catch it. Verified by
-        // mutation: inserting ahead of `SetRenderMode` survives a relative
+        // insertion point — so only pinned numbers catch it: inserting ahead of
+        // `SetRenderMode` survives a relative
         // check and fails these.
         assert_eq!(
             tag(&postcard::to_allocvec(&HostMessage::SetRenderMode {
@@ -554,9 +554,6 @@ mod tests {
     /// bits a byte, low group first). The bytes are
     /// written out, so a layout change fails here instead of as a desync
     /// between two binaries built apart.
-    ///
-    /// Mutation (run): the adapter encoding each event as `(data,
-    /// offset)` → the bytes differ → fails.
     #[test]
     fn audio_processed_midi_out_has_pinned_bytes() {
         #[rustfmt::skip]
@@ -744,9 +741,6 @@ mod tests {
 
     /// **A parameter's typed unit and role cross the wire**, in a `ParameterList`
     /// and a `ParameterInfoResponse`, and an untyped one stays untyped.
-    ///
-    /// Mutation (run, 2026-11-11): `#[serde(skip)]` on `ParameterInfo::measures`
-    /// → it arrives `None` → fails.
     #[test]
     fn a_parameters_unit_and_role_cross_the_wire() {
         use tutti_plugin_types::ParamUnit;

@@ -243,9 +243,6 @@ mod tests {
     use super::*;
 
     /// Advancing adds the count, and saturates instead of wrapping.
-    ///
-    /// Mutation: make `Add` wrap (`wrapping_add`) → the saturation assertion
-    /// sees a tiny frame → fails.
     #[test]
     fn advancing_adds_and_saturates() {
         assert_eq!(Frame(100) + Samples(28), Frame(128));
@@ -255,9 +252,6 @@ mod tests {
     }
 
     /// `since` is a checked distance: a later frame is not "some frames ago".
-    ///
-    /// Mutation: `saturating_sub` in `since` → the reversed call returns
-    /// `Some(Samples(0))` → fails.
     #[test]
     fn since_is_checked() {
         assert_eq!(Frame(600).since(Frame(88)), Some(Samples(512)));

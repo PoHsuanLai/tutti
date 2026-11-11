@@ -47,9 +47,6 @@ fn bits(x: &[f32]) -> Vec<u32> {
 /// A bypassed EQ band passes its input bit for bit (`-0.0` and the denormal
 /// included) once the declick is over, though its +24 dB bell would have
 /// multiplied the tone by ~250; the band is not called to do it.
-///
-/// Mutations (run): `NodeMode::Active` in place of `Bypassed` → the +24 dB
-/// bell is heard → fails; `Muted` → the output is silence → fails.
 #[test]
 fn a_bypassed_band_is_its_input_bit_for_bit() {
     let mut s = solo(EqBandNode::<f32>::new(
@@ -67,10 +64,6 @@ fn a_bypassed_band_is_its_input_bit_for_bit() {
 
 /// A muted strip is `+0.0` once the declick is over, and un-muted it is its
 /// fader again, exactly: the mute never touched the fader's cell.
-///
-/// Mutations (run): `Bypassed` in place of `Muted` → the input passes → the
-/// silence fails; the un-mute left out → the strip stays silent → the
-/// fader's figure fails.
 #[test]
 fn a_muted_strip_is_silence_and_un_muted_is_its_fader() {
     let mut s = solo(BusStripNode::new());

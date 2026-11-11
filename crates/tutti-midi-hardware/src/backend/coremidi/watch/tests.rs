@@ -60,8 +60,8 @@ fn until(devices: &Watched, want: impl Fn(&DeviceEvent) -> bool) -> DeviceEvent 
 /// A virtual destination that appears is `Added` and, dropped, `Removed`; the
 /// watch's registration ends with `Devices`. On GitHub's macOS runner CoreMIDI
 /// sent the background client no notification, so this passes on the hub's own
-/// look (see `watch.rs`); mutation: with `IDLE_LOOK` never reached (`hub.notify`
-/// removed from the idle branch) the first wait times out there.
+/// look (see `watch.rs`); without `hub.notify` in the idle branch (`IDLE_LOOK`
+/// never reached) the first wait times out there.
 #[test]
 fn a_virtual_destination_comes_and_goes_and_the_watch_unregisters() {
     let name = format!("tutti-test-{}", std::process::id());
@@ -87,8 +87,6 @@ fn a_virtual_destination_comes_and_goes_and_the_watch_unregisters() {
 /// The notification path itself: with the engine's shared client created first,
 /// as `Devices::open` does, CoreMIDI still delivers the hub's notifications, and
 /// they arrive on the hub's client (`CALLBACKS`), not through the idle look.
-/// Mutation: `shared_client` not starting the hub first leaves `CALLBACKS` at 0
-/// (measured on the runner: no fire in four seconds), and this times out.
 #[test]
 fn notifications_reach_the_hub_when_the_shared_client_is_created() {
     let _ = crate::backend::coremidi::shared_client().expect("shared client");
@@ -109,8 +107,7 @@ fn notifications_reach_the_hub_when_the_shared_client_is_created() {
 }
 
 /// As above, with a virtual source first: its raw client is the other creation
-/// site. Mutation: no `hub_first()` in `shared_raw_client` leaves `CALLBACKS`
-/// at 0 here (the same ordering failure measured for `shared_client`).
+/// site.
 #[test]
 fn notifications_reach_the_hub_when_a_virtual_source_comes_first() {
     use crate::backend::coremidi::UmpVirtualSource;

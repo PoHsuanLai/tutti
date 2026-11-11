@@ -115,10 +115,6 @@ mod tests {
     /// The attack is instant: a peak whose target is lower than the envelope
     /// takes the envelope to the target in the same frame, and the release
     /// then climbs back by the one-pole step, `e + coeff * (target - e)`.
-    ///
-    /// Mutation (run): `target_gain < self.envelope` replaced by `false` (the
-    /// attack smoothed like the release) -> the first assertion fails;
-    /// `release_coeff()` replaced by `1.0` -> the second fails.
     #[test]
     fn the_attack_is_instant_and_the_release_is_one_pole() {
         let release = Seconds(0.05);
@@ -141,10 +137,6 @@ mod tests {
 
     /// A ceiling lane overrides the block's ceiling per frame, and reaches the
     /// curve at frame `i`.
-    ///
-    /// Mutation (run): index the lane at `0` instead of `i` -> frame 1 reads
-    /// the first value and fails; ignore the lane -> both frames equal the
-    /// block's and it fails.
     #[test]
     fn a_ceiling_lane_overrides_the_block_per_frame() {
         let lane = [-6.0f32, -12.0];

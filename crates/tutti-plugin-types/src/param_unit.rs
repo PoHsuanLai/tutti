@@ -275,9 +275,6 @@ mod tests {
     }
 
     /// Every string on the closed list maps to its unit, and to that one only.
-    ///
-    /// Mutation (run, 2026-11-11): the `ct` arm's `Some(Self::Cents)` changed
-    /// to `Some(Self::Semitones)` → this test fails on the `ct` row.
     #[test]
     fn every_accepted_label_maps() {
         let table = [
@@ -296,9 +293,6 @@ mod tests {
     }
 
     /// Surrounding ASCII spaces are trimmed; a non-ASCII space is not.
-    ///
-    /// Mutation (run): `trim_matches(' ')` changed to `trim()` → the no-break
-    /// and ideographic spaces map, and this test fails.
     #[test]
     fn only_ascii_space_is_trimmed() {
         assert_eq!(ParamUnit::from_label(" Hz"), Some(ParamUnit::Hertz));
@@ -317,9 +311,6 @@ mod tests {
     }
 
     /// Near-misses are `None`: case, a prefix, a qualifier, a long name, empty.
-    ///
-    /// Mutation (run): the `dB` arm widened to `"dB" | "Db"` → `Db` maps, and
-    /// this test fails.
     #[test]
     fn near_misses_are_not_units() {
         for label in [
@@ -352,11 +343,6 @@ mod tests {
     }
 
     /// A range that does not fit its unit is refused; one that does is kept.
-    ///
-    /// Mutations (run): the `Percent` arm's `max <= 100.0` changed to
-    /// `max <= 1000.0` → the `0..1000` percent row fails; the non-negative
-    /// arm's `min >= 0.0` (Hertz, Seconds, ...) changed to `min >= -5.0` → the
-    /// negative-minimum Hertz row fails.
     #[test]
     fn a_range_that_does_not_fit_is_refused() {
         use ParamUnit as U;
@@ -393,9 +379,6 @@ mod tests {
 
     /// A unit needs a plain range; a normalized-only parameter fits only
     /// `Choice` and `Toggle`.
-    ///
-    /// Mutation (run): the `let ... else`'s `return false` changed to
-    /// `return true` → `Hertz` fits a normalized range, and this test fails.
     #[test]
     fn a_normalized_range_fits_only_choice_and_toggle() {
         let normalized = ParamRange::Normalized { default: 0.0 };
@@ -406,9 +389,6 @@ mod tests {
     }
 
     /// `with_measures` keeps a unit the range fits and drops one it does not.
-    ///
-    /// Mutation (run): `.filter(|u| u.fits(&self.range))` removed → the
-    /// `0..1000` percent parameter keeps `Percent`, and this test fails.
     #[test]
     fn with_measures_applies_the_range_check() {
         let p = |max| {
@@ -423,10 +403,6 @@ mod tests {
     }
 
     /// `typed` scales a percent by 100 and a millisecond by 1000, once.
-    ///
-    /// Mutation (run): `plain / 1000.0` changed to `plain` in the
-    /// `Milliseconds` arm → the seconds figure is 250, and this test fails;
-    /// `plain / 100.0` changed to `plain / 10.0` → the `Mix` figure fails.
     #[test]
     fn typed_scales_percent_and_milliseconds() {
         let percent = ParameterInfo::new(ParamId::new(1), "Mix")
@@ -448,10 +424,6 @@ mod tests {
 
     /// `typed` answers `None` for a normalized-only parameter, for a unit the
     /// target does not read, for no unit at all and for a non-finite value.
-    ///
-    /// Mutation (run): the `Plain` check in `typed` removed, with `measures`
-    /// set by hand → the normalized-only row returns `Some`, and this test
-    /// fails.
     #[test]
     fn typed_is_none_where_it_cannot_say() {
         let mut normalized = ParameterInfo::new(ParamId::new(1), "Cutoff");
@@ -470,10 +442,6 @@ mod tests {
     }
 
     /// A value its target type cannot hold is `None`, not clamped.
-    ///
-    /// Mutation (run, 2026-11-11): `Mix`'s range check `(0.0..=1.0)` widened to
-    /// `(-1.0..=1.0)` → the `-50` percent row returns `Some`, and this test
-    /// fails.
     #[test]
     fn typed_refuses_a_value_outside_the_target() {
         let percent = ParameterInfo::new(ParamId::new(1), "Bal")
@@ -488,10 +456,6 @@ mod tests {
     }
 
     /// Each implementor reads its own unit and no other.
-    ///
-    /// Mutation (run): the `Cents` implementor's guard changed to
-    /// `ParamUnit::Semitones` → the `Cents` row returns `None`, and this test
-    /// fails.
     #[test]
     fn each_target_reads_its_own_unit() {
         use ParamUnit as U;

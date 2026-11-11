@@ -331,14 +331,6 @@ fn points_sharing_a_sample_offset_keep_their_insertion_order() {
 /// instance. The first block after the rebuild is then routed inside
 /// the no-alloc gate with no warm-up, which the reservation makes
 /// allocation-free.
-///
-/// Mutations (run): `new` reserving regardless of the mapping (the
-/// previous code) → the empty route's `capacity()` is 16384 → fails;
-/// `set_mapping` not reserving when the mapping becomes non-empty →
-/// `capacity()` stays 0 → fails (and the next test, whose `new` goes
-/// through `set_mapping`, aborts in its gate); `set_mapping` keeping the
-/// scratch when the mapping empties → the last `capacity()` is 16384 →
-/// fails.
 #[test]
 fn cc_route_reserves_only_while_mapped() {
     const QUEUES: usize = 1 << 14;
@@ -382,10 +374,6 @@ fn cc_route_reserves_only_while_mapped() {
 /// controllers back to the plugin as MIDI. The Processor cannot own a
 /// mapping the control thread changes, so it lends the current one per
 /// block; the scratch was reserved at activation.
-///
-/// Mutation (run): `route` reading its own `mapping` instead of the lent
-/// one (`shared` ignored) → the published table is never used → the first
-/// assertion fails.
 #[test]
 fn a_following_route_uses_the_published_mapping() {
     use tutti_rt::ArcLend;
@@ -424,12 +412,6 @@ fn a_following_route_uses_the_published_mapping() {
 /// CC point it appends push into existing storage. This is what the
 /// `points` argument buys; the warm-up test below cannot see it, because
 /// its warm-up grows the queues before the gate.
-///
-/// Mutation (run): `CcRoute::new(mapping, 4, 0)` (reserved queues with
-/// no chunk room, only the carried value's point) → the host queue
-/// keeps one point (its latest), not four, and the assertion inside the
-/// gate aborts → fails. (Reworded with
-/// `PointBuf`: the seeded points allocated inside the gate before.)
 #[test]
 fn cc_route_first_block_is_allocation_free_without_warmup() {
     let events = [
@@ -473,10 +455,6 @@ fn cc_route_first_block_is_allocation_free_without_warmup() {
 /// allocates, the mapped parameter ends on its latest CC value, and one
 /// point is counted. (Reworded with `PointBuf` and the carried layout:
 /// three CCs, past a floor of `FLOOR_POINTS`, before.)
-///
-/// Mutation (run): `PointBuf::replace_latest` dropping the point (the
-/// queue keeping its earlier points) → the mapped parameter ends on its
-/// third CC's value → fails.
 #[test]
 fn cc_points_past_the_scratch_pool_give_way_without_allocating() {
     const QUEUES: usize = 1_000;
@@ -538,12 +516,6 @@ fn cc_points_past_the_scratch_pool_give_way_without_allocating() {
 /// copies it in queue order; nothing is counted, with or without a CC
 /// for the mapped parameter (which takes a spare queue), and nothing
 /// allocates.
-///
-/// Mutation (run): the seed pushing into each queue's own room only
-/// (`try_push` on the queue, no block borrowed) → the full queues'
-/// points past their floor are counted → fails. (Reworded with the one
-/// layout: the mutation was the scratch in the plain layout, which no
-/// longer exists.)
 #[test]
 fn a_bridged_chunk_reaches_the_route_whole() {
     const QUEUES: usize = 2_000;
@@ -604,11 +576,7 @@ fn a_bridged_chunk_reaches_the_route_whole() {
 /// keeping its latest value (one counted), and the third queue, past
 /// the reservation, is dropped with its two points counted.
 ///
-/// Mutations (run), each fails: the seed not counting a point past a
-/// queue's room → the count is 2; not counting a queue past the
-/// reservation → the count is 1. Not covered: the seed's cost, linear in
-/// the chunk (through `add_change`, as it was, it scanned the open
-/// queues for every point); nothing but time observes it.
+/// Not covered: the seed's cost, linear in the chunk; nothing but time observes it.
 #[test]
 fn the_seed_copies_the_host_chunk_and_counts_what_it_cannot_hold() {
     let mut host = ParameterChanges::reserved(3, 4);
@@ -640,14 +608,6 @@ fn the_seed_copies_the_host_chunk_and_counts_what_it_cannot_hold() {
 /// spent. The CC is earlier than the host's latest point, so the host's
 /// point stays and the queue ends on it; a CC later than every host
 /// point takes the latest's place and the queue ends on the CC.
-///
-/// Mutation (run): the merge replacing the queue's last point whatever
-/// the new point's time (`PointBuf::replace_latest` without its `>=`
-/// check, as the `pop` and push did) → the early CC evicts the host's
-/// frame-400 point and the sorted queue ends on frame 300 → fails. (The
-/// last point *added* rather than the latest in time, `.last()` in
-/// `replace_latest`, survives here, since the host's points arrive in
-/// order; `push_or_replace_last_keeps_the_latest_value` kills it.)
 #[test]
 fn a_queue_with_host_and_cc_points_ends_on_its_latest_value() {
     const MAPPED: u32 = 7;
@@ -694,12 +654,6 @@ fn a_queue_with_host_and_cc_points_ends_on_its_latest_value() {
 /// The result is in time order, holds every point, and a CC that shares
 /// a frame with a host point comes after it (the host's points are
 /// seeded first).
-///
-/// Mutation (run): `sort_param_points` back to `queue.points
-/// .sort_by_key(|point| point.sample_offset)` → std's stable sort
-/// allocates its scratch for 386 points → the gate aborts. (Before the
-/// raised room this could not be seen: a queue held at most 133 points,
-/// under std's 256-point stack buffer.)
 #[test]
 fn the_merge_sorts_a_full_room_queue_without_allocating() {
     const MAPPED: u32 = 7;
@@ -759,10 +713,6 @@ fn the_merge_sorts_a_full_room_queue_without_allocating() {
 /// discipline is what changed when the queues stopped holding points
 /// inline (a queue dropped by `queues.clear()` and rebuilt has no room,
 /// so its first point allocates), and a copy would not have followed it.
-///
-/// Mutation (run): `route` clearing with `queues.clear()` (dropping the
-/// queues, the old discipline) instead of `ParameterChanges::clear` →
-/// every block rebuilds its queues inside the gate → fails.
 #[test]
 fn route_cc_events_is_allocation_free_after_warmup() {
     let mapping = mod_wheel_mapping(500);
@@ -828,10 +778,6 @@ fn sysex_packets(payload: &[u8]) -> Vec<UmpAt> {
 /// block of the node's whole MIDI cap (a mapped CC and 255 SysEx packets)
 /// and the rest of the message in the next block arrive as one complete
 /// message, nothing dropped.
-///
-/// Mutation (run): the route's MIDI scratch back to `RtMidiEvents` (64
-/// events) → the first block's packets past 64 are lost, the message is
-/// dropped → fails.
 #[test]
 fn a_mapped_route_passes_a_sysex_spanning_blocks_whole() {
     // 266 packets: 255 in the first block, 11 in the second.
@@ -884,10 +830,6 @@ fn a_mapped_route_passes_a_sysex_spanning_blocks_whole() {
 /// than splicing its later packets onto the kept ones.** A direct caller
 /// may stage more than a block's cap; the route keeps the first
 /// [`MIDI_STACK_CAPACITY`].
-///
-/// Mutation (run): the `lose_sysex_tail` call removed from
-/// `stage_input_events` → the next block's packets complete the message
-/// with the lost ones missing → fails.
 #[test]
 fn a_route_overflow_drops_the_open_sysex() {
     let payload: Vec<u8> = (0..6 * 400).map(|i| (i % 0x7F) as u8).collect();
@@ -915,10 +857,6 @@ fn a_route_overflow_drops_the_open_sysex() {
 /// A MIDI 1.0 controller and a MIDI 2.0 one map to the same slot, and a
 /// packet that is not channel voice, or that `decode` cannot frame, maps to
 /// nothing.
-///
-/// Mutation (run): the `Err(Unknown(_))` arm of `midi_to_mapped_controller`
-/// returning `Some((0, 1, 0.0))` → the reserved packet maps → fails; dropping
-/// the `widen` of a `Midi1` message → the MIDI 1.0 CC is `None` → fails.
 #[test]
 fn a_packet_is_mapped_by_what_it_decodes_to() {
     use tutti_ump::{Address, Message, U7, Ump, Voice1};

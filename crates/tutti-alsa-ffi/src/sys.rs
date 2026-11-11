@@ -463,8 +463,7 @@ unsafe extern "C" {
 }
 
 /// The measured `snd_seq_ump_event_t` size, alignment and field offsets, checked
-/// at compile time (they need no libasound). Mutation, done: changing the
-/// expected `dest` offset 14 -> 15 made `cargo check` fail; restored.
+/// at compile time (they need no libasound).
 const _: () = {
     use std::mem::{align_of, offset_of, size_of};
     assert!(size_of::<snd_seq_ump_event_t>() == 32);

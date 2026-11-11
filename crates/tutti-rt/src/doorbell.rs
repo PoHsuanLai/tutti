@@ -226,9 +226,6 @@ mod tests {
     }
 
     /// A parked sleeper is woken by a ring (`ring` reports it), however late.
-    ///
-    /// Mutation (run): make `ring` return without the unpark -> the join
-    /// hangs (the test times out under nextest).
     #[test]
     fn a_ring_wakes_a_parked_sleeper() {
         let bell = Arc::new(Doorbell::new());
@@ -259,8 +256,6 @@ mod tests {
     }
 
     /// A timed wait with nothing pending returns on its own.
-    ///
-    /// Mutation: ignore the timeout (plain `park`) -> the test hangs.
     #[test]
     fn a_timed_wait_returns_without_a_ring() {
         let bell = Doorbell::new();
@@ -270,8 +265,6 @@ mod tests {
     }
 
     /// A closure that is already true keeps the sleeper from parking.
-    ///
-    /// Mutation: park regardless of `pending` -> the test hangs.
     #[test]
     fn a_pending_wait_does_not_park() {
         let bell = Doorbell::new();

@@ -99,8 +99,6 @@ mod tests {
 
     /// Equality is bitwise: `-0.0` differs from `0.0`, and a NaN stage equals
     /// itself.
-    ///
-    /// Mutation (run): comparing the floats with `==` -> fails.
     #[test]
     fn equality_is_bitwise() {
         let a = Adsr::new(Seconds(0.0), Seconds(0.1), Amplitude(0.5), Seconds(0.2));
@@ -116,8 +114,6 @@ mod tests {
     }
 
     /// The presets and the default keep their stages.
-    ///
-    /// Mutation (run): `pluck` with sustain 1.0 -> fails.
     #[test]
     fn presets_hold_their_stages() {
         assert_eq!(Adsr::organ().sustain, Amplitude(1.0));

@@ -19,29 +19,6 @@
 //!   lend's write, and a second lend writes only after the first was taken.
 //! - **a lend never erases a recall** for a value the audio end still holds
 //!   (Core's review of #494): the lend is refused and the value comes back.
-//!
-//! # Mutation record
-//!
-//! Each was applied to `src/handoff.rs` and run; the model failed as noted.
-//!
-//! - `poll` moving an offer out after its `Acquire` load, without claiming it
-//!   (the first draft) → the first model: loom reports a causality violation
-//!   on the slot (a recall withdrawing the same offer reaches it too);
-//! - `set_slot` as a `fetch_and` then a `fetch_or` (the first draft) → the
-//!   second model, "each value in one place": the control end claims the field
-//!   while it reads empty between the two, and a value goes missing;
-//! - `claim`'s compare-exchange `Relaxed` on success → the third model: a
-//!   causality violation (the second lend's write is not ordered after the
-//!   take of the first);
-//! - `set_slot`'s compare-exchange `Relaxed` → the third model: a causality
-//!   violation (the take reads the slot before the lend's write is visible);
-//! - `recall` raising the bit with a plain `store` → the first model: the slot
-//!   field it overwrote is lost, so the recall never returns the value.
-//! - `lend` claiming without `not_while_recalled` (as first written, where it
-//!   cleared the bit) → the fourth model: B is lent, the bit is gone, and A is
-//!   never returned ("A comes back").
-//!
-//! The test prints the number of executions loom ran.
 
 #![cfg(loom)]
 

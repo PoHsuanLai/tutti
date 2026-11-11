@@ -133,11 +133,6 @@ impl Rig {
 /// the pipeline's chunk, so at least [`BLOCK`]); the click comes out at
 /// `FIRE + L` as `1.0` and every other frame is `+0.0`, the first `L` being
 /// what the bypass line held (silence at start).
-///
-/// Mutation (run): the bypass line built with `L - 1` frames of capacity
-/// (`BypassLine::for_shape` in `tutti-graph`'s `mode.rs`) → the click lands one
-/// frame early (frame 1260 for `L` = 1161: the probe's 137 and the 1024-frame
-/// chunk) and the test fails there.
 #[test]
 fn a_bypassed_plugin_passes_a_click_its_declared_latency_late() {
     let mut r = rig(NodeMode::Bypassed);
@@ -162,10 +157,6 @@ fn a_bypassed_plugin_passes_a_click_its_declared_latency_late() {
 /// **A bypassed plugin is parked: its server is not called.** Bypassed from
 /// the start (so no fade), its server answers no block; made active again, it
 /// is reset, called and heard (its tag is not silence).
-///
-/// Mutation (run): `ModeState::is_parked` always `false` (the executor calls
-/// a bypassed unit) → the server answers blocks while bypassed and the test
-/// fails.
 #[test]
 fn a_bypassed_plugin_is_not_called_and_comes_back() {
     let mut r = rig(NodeMode::Bypassed);

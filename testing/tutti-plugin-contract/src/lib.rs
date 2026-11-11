@@ -37,8 +37,6 @@ pub use tutti_plugin_types::{InProcess, OutOfProcess};
 #[macro_export]
 macro_rules! contract {
     ($fmt:ty, gaps = $gaps:expr, hostings = [$($hosting:ident),+ $(,)?]) => {
-        // Mutation (run): list `OutOfProcess` for `Vst2` → E0277, does not
-        // compile.
         const _: fn() = || {
             $({
                 fn hosted<T: $crate::$hosting>() {}
@@ -80,7 +78,6 @@ macro_rules! contract {
 
         $( #[test] fn $case() { $crate::run::<$fmt>(stringify!($case), $crate::$case::<$fmt>) } )*
 
-        // Mutation (run): `gaps = 1` over an empty `GAPS` fails.
         #[test]
         fn the_gaps_are_the_declared_ones() {
             use $crate::Format as _;

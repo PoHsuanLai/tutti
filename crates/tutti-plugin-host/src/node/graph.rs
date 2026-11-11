@@ -667,9 +667,7 @@ mod owed_tests {
     /// thread's proof; off that thread it cannot, so the node records the
     /// refusal, renders silence, and a `prepare` on the main thread clears it.
     ///
-    /// Mutation (run): `set_rate` not recording the refusal off the main
-    /// thread -> `refused` is false -> fails. The silence `process` renders
-    /// while refused is not covered here.
+    /// The silence `process` renders while refused is not covered here.
     #[test]
     fn a_fork_prepared_off_the_main_thread_is_refused() {
         let main = main_thread();
@@ -716,11 +714,6 @@ mod owed_tests {
     /// sent and the block is counted deferred. Once the pump has lent the new
     /// Processor, the next block carries no event, and the owed value reaches
     /// the plugin on it.
-    ///
-    /// Mutation (run): `self.params.handed_off(true)` in `process` (the
-    /// unlent block counted as delivered) → nothing deferred, and the
-    /// value is recorded as sent, so the empty block sends nothing and the
-    /// plugin keeps `1 / 16` → fails.
     #[test]
     fn an_unlent_block_owes_its_values_to_the_next() {
         let (client, handle) = load_client(
@@ -793,11 +786,6 @@ mod owed_tests {
     /// Processor was recalled; the tail and a second dump follow on the new
     /// Processor. The node skips the cut dump's tail; the plugin's host never
     /// completes the cut dump: it drops it at the second dump's `START`.
-    ///
-    /// Mutation (run): the `intake.lost()` in `process`'s unlent branch
-    /// removed → the tail is delivered and counted nowhere → the count is
-    /// short → fails. Mutation (run): the unlent block's MIDI not counted →
-    /// the count is short by three → fails.
     #[test]
     fn an_unlent_block_cuts_the_sysex_open_in_it() {
         let (client, _handle) = load_client(
@@ -840,10 +828,6 @@ mod owed_tests {
     /// **A SysEx open across the node's reset is not completed past it**:
     /// its tail is skipped, counted, and the plugin's host drops it at the
     /// next `START`, as the CLAP and VST3 hosts do on a plugin reset.
-    ///
-    /// Mutation (run): the `intake.lost()` in `reset` removed → the tail
-    /// completes the dump across the reset → `dropped_sysex` stays 0 →
-    /// fails.
     #[test]
     fn a_sysex_open_across_a_reset_is_not_completed() {
         use tutti_graph::Node as _;
@@ -884,13 +868,6 @@ mod harmony_tests {
     /// at their frames, for a plugin that takes sequencer context; a plugin
     /// that does not gets none. Past the inline capacity the rest are dropped
     /// (no allocation).
-    ///
-    /// Mutation: drop the `SEQUENCER_CONTEXT` gate → the second plugin gets
-    /// the chord → fails. Mutation: bass from the root (`i16::from(h.root())`)
-    /// → the slash chord's bass is wrong → fails. Mutation: `push_harmony`
-    /// through `changes.push` rather than `add_change` → the fifth chord
-    /// panics past the cap → fails. (That the node routes a harmony event here
-    /// is pinned by `chunked_node`'s `midi_and_harmony_arrive_on_the_frames_of_their_piece`.)
     #[test]
     fn harmony_becomes_chord_and_scale_changes_for_a_plugin_that_takes_it() {
         let (mut chords, mut scales) = (ChordChanges::default(), ScaleChanges::default());

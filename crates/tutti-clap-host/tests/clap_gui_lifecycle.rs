@@ -412,10 +412,6 @@ fn open_editor_runs_the_spec_embed_sequence() {
 /// the one the plugin is sent: 2.0 here, so a placeholder 1.0 (the identity,
 /// which hid both bugs) cannot pass.
 ///
-/// Mutation: pass `1.0` to `embed_editor_sequence` instead of
-/// `scale.get()` → the probe reads 1.0 on x11/win32 → fails. Mutation: drop
-/// the `api_uses_logical_pixels` gate → macOS reads 2.0 (run on macOS only).
-///
 /// Read `last_scale` alongside the call log, because they answer different
 /// questions: `last_scale` is 0.0 both when the host correctly skipped the call
 /// and when the probe was never asked anything at all. The `created` assertion

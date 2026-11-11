@@ -150,9 +150,6 @@ fn peak_freq(x: &[f32], rate: f64, lo: f64, hi: f64) -> f64 {
 /// reads its input at the wrong stride emits a tone at 48000/44100 times the
 /// right frequency — an 8.8% pitch error, plainly audible, and invisible to
 /// every assertion in `render.rs`.
-///
-/// Mutation: swap the source and target rates handed to `FftResampler::new` ->
-/// fails, the tone landing at 830 Hz instead of 1000.
 #[test]
 fn a_tone_keeps_its_frequency_across_a_rate_change() {
     let d = tempfile::tempdir().unwrap();
@@ -212,9 +209,6 @@ fn a_tone_keeps_its_frequency_across_a_rate_change() {
 /// nowhere to go: a correct resampler filters it out, and one without an
 /// anti-alias filter mirrors it to 44100 - 23000 = 21100 Hz, which is a loud
 /// tone that was never in the source.
-///
-/// Mutation: swap the source and target rates handed to `FftResampler::new` ->
-/// fails, an image surviving at 0.189 (19420 Hz) against a 0.005 floor.
 #[test]
 fn a_tone_above_the_new_nyquist_is_filtered_not_aliased() {
     let d = tempfile::tempdir().unwrap();

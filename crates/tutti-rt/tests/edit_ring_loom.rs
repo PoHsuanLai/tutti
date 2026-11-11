@@ -22,28 +22,6 @@
 //!
 //! Two rings: capacity 2, and capacity 1, where every value reuses the one
 //! slot.
-//!
-//! # Mutation record
-//!
-//! Each was applied to `src/edits.rs`; the model failed as noted.
-//!
-//! - `push`'s store of `head` weakened to `Relaxed` → a causality violation
-//!   (the consumer reads a slot whose write it is not ordered after);
-//! - `pop`'s load of `head` weakened to `Relaxed` → the same;
-//! - `pop`'s store of `tail` weakened to `Relaxed` → a causality violation
-//!   (the producer rewrites a slot the consumer's read is not ordered before);
-//! - `push`'s load of `tail` weakened to `Relaxed` → the same;
-//! - `push` ignoring a full ring (no `head - tail` check) → a causality
-//!   violation (the producer writes a slot the consumer has not finished);
-//! - `pop` not advancing `tail` → the same value pops repeatedly and the
-//!   equality of popped and accepted values fails (the final drain is bounded
-//!   by what was accepted, so a repeat fails the assertion rather than loom's
-//!   branch limit);
-//! - `pop` skipping a queued entry (advancing `tail` by two) → the model fails
-//!   (a causality violation, or the same equality).
-//!
-//! The two orderings on `tail` are caught only because the slots are loom
-//! `UnsafeCell`s: with atomic words the same mutations survived.
 
 #![cfg(loom)]
 

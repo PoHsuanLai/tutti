@@ -17,13 +17,6 @@
 //! Before cut 2 the session handed the streamer that same table, so the disk
 //! tier read `L` frames earlier on top of the compiler's own ring: it lagged
 //! the memory tier by `L` (the memory tier, which never pre-rolled, was right).
-//!
-//! Mutation (run, failed): put the preroll back (the streamer's table subscription
-//! wired to the session's table, `handle_stream_file` opening the window at
-//! `offset - preroll`, `DiskVoice::live_place` reading `clock - preroll`: the
-//! cut reverted) -> the disk tier fails at file frame 1, which sounds at
-//! output frame `24 000 + L + 1` as the held first frame (`1e-5`) instead of
-//! `2e-5`. The memory tier passes with or without it.
 
 use std::path::Path;
 use std::time::{Duration, Instant};

@@ -41,6 +41,14 @@ use tutti::session::Master;
 
 const RATE: SampleRate = SampleRate(48_000.0);
 
+/// What `Session::update` found: faults and dropouts (a refused commit, a
+/// plugin that died, a lost block). A host logs them; here they are printed.
+fn report(events: Vec<SessionEvent>) {
+    for event in events {
+        eprintln!("session event: {event:?}");
+    }
+}
+
 /// §5.2, as written there: `plugin` (restored from `state`, if any) plays
 /// `midi` into the master `master` names (a file or memory, which `M` says
 /// and the result's type follows).
@@ -84,7 +92,7 @@ fn play<M: Master>(
             )))
         }),
     )?;
-    s.update();
+    report(s.update());
 
     // Everything else is derived: the clock is the project's tempo map from
     // beat 0, the latency is the plan's, the tail is the plugin's declared

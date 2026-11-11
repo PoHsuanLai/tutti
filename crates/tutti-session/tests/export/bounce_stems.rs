@@ -17,8 +17,8 @@ use tutti_export::{Error, Normalize, Produced, Resample, TargetError};
 use tutti_graph::{Cx, ForkByClone, Io, Node, NodeKey, Prepare, Shape, Status};
 use tutti_nodes::testing::Const;
 use tutti_session::{
-    Bounce, BounceConfigError, BounceError, ExportClock, GraphSource, Latency, PreparedGraph,
-    Range, Session, Stem, StemGain, Tail,
+    Bounce, BounceConfigError, BounceError, BounceLatency, BounceTail, ExportClock, GraphSource,
+    PreparedGraph, Range, Session, Stem, StemGain,
 };
 use tutti_session::{Bounced, BufferMaster, Master};
 use tutti_types::ChannelLayout;
@@ -41,8 +41,8 @@ fn base(seconds: f64) -> Bounce {
     Bounce::project()
         .range(Range::Seconds(Seconds(0.0), Seconds(seconds)))
         .clock(ExportClock::frozen())
-        .latency(Latency::Keep)
-        .tail(Tail::None)
+        .latency(BounceLatency::Keep)
+        .tail(BounceTail::None)
 }
 
 /// [`base`] into memory.
@@ -158,7 +158,7 @@ fn stems_are_aligned_with_the_master_and_sum_to_it() {
             .stem_with(Stem::buffers(late))
     };
 
-    // Latency kept: the programme starts `LATE` frames in.
+    // BounceLatency kept: the programme starts `LATE` frames in.
     let kept = planes(session.bounce(stems(bounce(seconds))));
     let [master, constant, step] = kept.as_slice() else {
         panic!("the master and two stems")
@@ -188,8 +188,8 @@ fn stems_are_aligned_with_the_master_and_sum_to_it() {
     }
     assert_eq!(master[0], master[1], "both master channels hear both");
 
-    // Latency trimmed: the programme from frame 0, and the same length.
-    let trimmed = planes(session.bounce(stems(bounce(seconds).latency(Latency::Graph))));
+    // BounceLatency trimmed: the programme from frame 0, and the same length.
+    let trimmed = planes(session.bounce(stems(bounce(seconds).latency(BounceLatency::Graph))));
     for (what, plane, level) in [
         ("master", &trimmed[0][0], 1.5),
         ("constant", &trimmed[1][0], 0.5),

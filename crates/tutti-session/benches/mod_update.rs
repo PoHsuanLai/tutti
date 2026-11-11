@@ -67,7 +67,7 @@ fn scene(n: usize, modulated: bool) -> (Session, Vec<NodeKey>) {
         );
     }
     for _ in 0..8 {
-        s.update();
+        let _ = s.update();
     }
     if modulated {
         assert_eq!(s.mod_state().refusal(), None, "the declarations apply");

@@ -73,7 +73,7 @@ fn rig() -> (Session, NodeKey) {
         .expect("builds");
     let (synth, _) = s.graph().add(unit);
     s.graph().set_outputs_from(synth);
-    s.update();
+    let _ = s.update();
     (s, synth)
 }
 
@@ -105,7 +105,7 @@ fn a_declared_note_produces_audio() {
     s.midi()
         .play_clip(synth, note(60, Beat(0.0), BeatDuration(2.0)))
         .expect("a synth takes a clip");
-    s.update();
+    let _ = s.update();
     play(&s);
 
     // Half a second at 120 BPM covers the note-on comfortably.
@@ -128,7 +128,7 @@ fn the_note_waits_for_its_beat() {
     s.midi()
         .play_clip(synth, note(60, Beat(4.0), BeatDuration(4.0)))
         .expect("a synth takes a clip");
-    s.update();
+    let _ = s.update();
     play(&s);
 
     // Still well before beat 4.
@@ -161,7 +161,7 @@ fn preview_still_sounds_under_an_installed_clip() {
     s.midi()
         .play_clip(synth, note(60, Beat(100.0), BeatDuration(1.0)))
         .expect("a synth takes a clip");
-    s.update();
+    let _ = s.update();
     play(&s);
 
     let quiet = rms(&render(&s, 6_000));
@@ -175,7 +175,7 @@ fn preview_still_sounds_under_an_installed_clip() {
         .midi()
         .live_input(synth)
         .expect("a synth takes a live input");
-    s.update();
+    let _ = s.update();
     live.send(
         At::NextBlock,
         note_on(MidiGroup::FIRST, MidiChannel::FIRST, 67, 0xFFFF),
@@ -204,7 +204,7 @@ fn routed_level(channel: MidiChannel) -> f32 {
     s.midi()
         .set_routes(input, [&rule], None, Some)
         .expect("one declarer");
-    s.update();
+    let _ = s.update();
 
     device
         .push(

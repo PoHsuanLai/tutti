@@ -184,7 +184,7 @@ pub use tutti_plugin_host as plugin_host;
 /// (`Session`, `SessionBuilder`, `SessionEvent`, `Phase`, `GraphSource`, and
 /// with `device` its `Device`), with the requests a session takes, each
 /// behind the features that gate it: `ParamRef` (`modulation`),
-/// `Bounce`, `Bounced`, `BounceError`, `Range` and `Latency` (`export`),
+/// `Bounce`, `Bounced`, `BounceError`, `Range`, `BounceLatency` and `BounceTail` (`export`),
 /// `PluginLoadRequest` and `PluginId` (`plugin`), and `MidiFile` and
 /// `TimedMidiEvent` (`midi`), with the offline timeline an export runs on.
 /// The one `Error`, the sampler's `Clip` and `LoopSetting` (`sampler`), `Wave`
@@ -211,6 +211,10 @@ pub mod prelude {
         OfflineTimelineConfig, Then, Timeline, Transport, TransportCommand,
     };
     pub use tutti_types::prelude::*;
+    // The graph's own `Latency` (what `Shape::with_latency` takes), beside the
+    // `Tail` the types prelude carries: the bounce's policies are
+    // `BounceLatency` and `BounceTail`.
+    pub use tutti_types::Latency;
     pub use tutti_types::{At, BarNumber, LoopRange, Meter};
     pub use tutti_ump::{CCNumber, MidiChannel, MidiGroup};
 
@@ -263,5 +267,7 @@ pub mod prelude {
     #[cfg(all(feature = "session", feature = "plugin"))]
     pub use tutti_session::PluginLoadRequest;
     #[cfg(all(feature = "session", feature = "export"))]
-    pub use tutti_session::{Bounce, BounceError, Bounced, Latency, Range, Stem, StemGain};
+    pub use tutti_session::{
+        Bounce, BounceError, BounceLatency, BounceTail, Bounced, Range, Stem, StemGain,
+    };
 }

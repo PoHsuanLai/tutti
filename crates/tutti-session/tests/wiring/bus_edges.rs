@@ -79,7 +79,7 @@ impl Node for Pass {
 
 /// Commits and renders a block; returns output channel 0.
 fn out0(s: &mut Session) -> Vec<f32> {
-    s.update();
+    let _ = s.update();
     let mut block = vec![f32::NAN; BLOCK * 2];
     s.render(&mut InterleavedMut::new(&mut block, ChannelLayout::STEREO));
     block.iter().step_by(2).copied().collect()
@@ -115,7 +115,7 @@ fn rig() -> Rig {
     }));
     let (sink, _) = g.add(Unforkable(Pass { input: named(1) }));
     g.set_output_source(0, GraphSource::Node(sink, 0));
-    s.update();
+    let _ = s.update();
     assert!(!s.graph_ref().is_edited());
     Rig {
         s,
@@ -179,7 +179,7 @@ fn a_refused_bus_edge_changes_nothing() {
         values: vec![0.0; 3],
         out: unassigned(3),
     }));
-    r.s.update();
+    let _ = r.s.update();
     let g = r.s.graph();
     let refused = g
         .connect_bus(BusSource::Node(bus(three)), bus(r.sink))
@@ -239,7 +239,7 @@ fn smpte(n: u16) -> ChannelTopology {
 
 /// Both output channels of a committed block.
 fn stereo_block(s: &mut Session) -> [Vec<f32>; 2] {
-    s.update();
+    let _ = s.update();
     let mut block = vec![f32::NAN; BLOCK * 2];
     s.render(&mut InterleavedMut::new(&mut block, ChannelLayout::STEREO));
     [0, 1].map(|c| block.iter().skip(c).step_by(2).copied().collect())
@@ -254,7 +254,7 @@ fn root_rig() -> (Session, NodeKey) {
         values: vec![0.5, 0.25, 0.125, 0.0, 0.0625, 0.03125],
         out: named(6),
     }));
-    s.update();
+    let _ = s.update();
     (s, src)
 }
 

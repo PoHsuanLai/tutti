@@ -71,7 +71,7 @@ fn master(s: &mut Session, nodes: &[NodeKey]) {
 /// Updates until nothing is left to resolve: nodes committed, then lanes.
 fn settle(s: &mut Session) {
     for _ in 0..4 {
-        s.update();
+        let _ = s.update();
     }
     assert_eq!(s.mod_state().refusal(), None, "the declarations apply");
     assert_eq!(
@@ -173,7 +173,7 @@ impl Node for Late {
 #[cfg(feature = "export")]
 #[test]
 fn an_export_is_the_live_render_on_a_native_param() {
-    use tutti_session::{Bounce, ExportClock, Latency, Range, Tail};
+    use tutti_session::{Bounce, BounceLatency, BounceTail, ExportClock, Range};
     use tutti_transport::{OfflineTimeline, OfflineTimelineConfig};
 
     let (mut s, mut side) = rig(2);
@@ -193,7 +193,7 @@ fn an_export_is_the_live_render_on_a_native_param() {
     // Past the connect's declick, stopped; then the knobs move.
     render_n(&mut side, 2, 1_024, 128);
     s.graph().set_param(a, UnitParam::Cutoff, 450.0);
-    s.update();
+    let _ = s.update();
     // The same write lands on the live side before it plays.
     render_n(&mut side, 2, 128, 128);
 
@@ -213,8 +213,8 @@ fn an_export_is_the_live_render_on_a_native_param() {
         ))
         .sample_rate(SampleRate(RATE))
         .clock(ExportClock::timeline(timeline))
-        .latency(Latency::Keep)
-        .tail(Tail::None);
+        .latency(BounceLatency::Keep)
+        .tail(BounceTail::None);
     let export = s
         .bounce(request)
         .expect("the export runs")
@@ -332,12 +332,12 @@ fn a_knob_written_after_a_route_edit_is_the_knob() {
     render(&mut side, 1_024, 128);
 
     s.graph().set_param(probe, UnitParam::Cutoff, 300.0);
-    s.update();
+    let _ = s.update();
     s.mods().route_mut(route).expect("the route").depth = Depth(0.2);
-    s.update();
+    let _ = s.update();
     let a = render(&mut side, 2_048, 128);
     s.graph().set_param(probe, UnitParam::Cutoff, 700.0);
-    s.update();
+    let _ = s.update();
     let b = render(&mut side, 2_048, 128);
 
     assert_eq!(
@@ -399,7 +399,7 @@ fn a_held_note_envelope_newly_routed_reads_its_level_at_once() {
     assert!((got[1][4_095] - 0.1).abs() < 1e-7, "probe 2 at its knob");
 
     s.mods().route(env, c2, Depth(0.5));
-    s.update();
+    let _ = s.update();
     assert_eq!(
         s.mod_state().resyncs_owed(),
         0,
@@ -443,7 +443,7 @@ fn a_take_suspends_the_automation_then_restores_it() {
         .expect("the take is open")
         .recorder_mut()
         .touch(Beat(0.0), 650.0);
-    s.update();
+    let _ = s.update();
     assert_eq!(
         last(&render(&mut side, 512, 128)),
         300.0,
@@ -455,7 +455,7 @@ fn a_take_suspends_the_automation_then_restores_it() {
         .expect("still open")
         .recorder_mut()
         .release(Beat(1.0), 650.0);
-    s.update();
+    let _ = s.update();
     assert!(s.mods().take_mut(cutoff).is_none(), "the take closed");
     assert_eq!(
         last(&render(&mut side, 512, 128)),
@@ -670,7 +670,7 @@ fn a_node_crossfaded_to_another_param_list_keeps_modulating() {
         .expect("the crossfade starts");
     // The update that commits the new node re-applies after its commit: the
     // first block it plays is modulated.
-    s.update();
+    let _ = s.update();
     let out = render(&mut side, 1_024, 128);
     assert_eq!(
         *out[0].last().unwrap(),
@@ -682,7 +682,7 @@ fn a_node_crossfaded_to_another_param_list_keeps_modulating() {
     assert_eq!(*out[0].last().unwrap(), 650.0, "the new node, modulated");
 
     s.mods().range(cutoff, 0.0, 2_000.0);
-    s.update();
+    let _ = s.update();
     let out = render(&mut side, 1_024, 128);
     assert_eq!(*out[0].last().unwrap(), 900.0, "a later range edit lands");
 }
@@ -708,7 +708,7 @@ fn a_host_edit_committed_for_a_target_publishes_its_latency() {
     let offset = m.macro_(1.0);
     m.route(offset, cutoff, Depth(0.1));
 
-    s.update();
+    let _ = s.update();
     assert_eq!(
         s.latency(),
         Samples(LATE),
@@ -888,7 +888,7 @@ fn idle(s: &Session) -> bool {
 
 /// One update, then a block rendered, as a device would between updates.
 fn frame(s: &mut Session, side: &mut AudioSide) {
-    s.update();
+    let _ = s.update();
     render(side, 128, 128);
 }
 
@@ -1019,7 +1019,7 @@ fn a_depth_slider_keeps_phase() {
     }
 
     s.mods().route_mut(route).unwrap().depth = Depth(0.1);
-    s.update();
+    let _ = s.update();
     assert!(Arc::ptr_eq(&sent(&s), &settled), "a depth edit sent a plan");
     let after = render(&mut side, 12_000, 128).swap_remove(0);
     let start = start + before.len();
@@ -1062,7 +1062,7 @@ fn a_fork_renders_a_modulated_param_as_live_does() {
     }
     settle(&mut s);
     s.graph().set_param(written, UnitParam::Drive, 6.0);
-    s.update();
+    let _ = s.update();
 
     // Past the lanes' connect declick (256 frames).
     let mut live = [0.0f32; 2];

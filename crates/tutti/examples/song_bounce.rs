@@ -17,6 +17,14 @@ use tutti::session::{BusRef, BusSource};
 
 const RATE: SampleRate = SampleRate(48_000.0);
 
+/// What `Session::update` found: faults and dropouts (a refused commit, a
+/// plugin that died, a lost block). A host logs them; here they are printed.
+fn report(events: Vec<SessionEvent>) {
+    for event in events {
+        eprintln!("session event: {event:?}");
+    }
+}
+
 /// Two seconds of a 110 Hz saw, mono: four beats at 120 BPM, and enough
 /// harmonics for the filter to sweep.
 fn saw() -> Wave {
@@ -91,8 +99,8 @@ fn song(dir: &std::path::Path) -> Result<Written, tutti::Error> {
     m.route(wobble, cutoff, Depth(0.5));
 
     // Commit the graph and the lanes, then roll the transport.
-    s.update();
-    s.update();
+    report(s.update());
+    report(s.update());
     s.play()?;
 
     // Eight beats, to a 24-bit WAV.

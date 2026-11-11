@@ -3,9 +3,7 @@
 
 use tutti_session::Session;
 use tutti_transport::{FadeOut, MotionEvent};
-use tutti_types::{
-    At, Beat, Bpm, ChannelLayout, Frame, InterleavedMut, MaxBlock, SampleRate, Samples,
-};
+use tutti_types::{Beat, Bpm, ChannelLayout, Frame, InterleavedMut, MaxBlock, SampleRate, Samples};
 
 fn offline() -> Session {
     Session::builder()
@@ -51,9 +49,22 @@ fn locate_play_and_stop_move_the_playhead_on_the_set_tempo() {
 fn a_scheduled_play_starts_on_its_frame() {
     let s = offline();
     s.set_tempo(Bpm::of(60.0));
-    s.schedule(At::Frame(Frame(24_000)), MotionEvent::Play)
-        .unwrap();
+    s.schedule(Frame(24_000), MotionEvent::Play).unwrap();
     render(&s, 48_000);
     let beat = s.transport().settings().beat().get();
     assert!((beat - 0.5).abs() < 1e-3, "{beat}");
+}
+
+/// **A beat schedules as it stands**: a stop scheduled at beat 1 of a rolling
+/// 60 BPM transport halts the playhead there.
+#[test]
+fn a_stop_scheduled_at_a_beat_halts_there() {
+    let s = offline();
+    s.set_tempo(Bpm::of(60.0));
+    s.schedule(Beat(1.0), MotionEvent::stop_unfaded()).unwrap();
+    s.play().unwrap();
+    render(&s, 3_000);
+    render(&s, 45_000);
+    let beat = s.transport().settings().beat().get();
+    assert!((beat - 1.0).abs() < 0.01, "{beat}");
 }

@@ -80,7 +80,7 @@ fn velocity_keeps_its_full_width() {
     let mut events = note(60, MF).to_vec();
     events.extend(note(64, MF + 1));
     s.midi().play_clip(tap, events).expect("a tap takes a clip");
-    s.update();
+    let _ = s.update();
     s.transport()
         .motion()
         .try_send(MotionEvent::Play)

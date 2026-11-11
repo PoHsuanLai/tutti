@@ -126,13 +126,13 @@ impl From<std::ops::Range<Frame>> for Range {
 /// silence ahead of the programme.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[non_exhaustive]
-pub enum Latency {
+pub enum BounceLatency {
     /// The compiled plan's total latency, asked of the graph that renders (after
     /// the edit). The default.
     #[default]
     Graph,
     /// Nothing: the file starts with the latency's silence, and keeps the
-    /// programme's last frames ([`Tail`] adds the latency that is not trimmed).
+    /// programme's last frames ([`BounceTail`] adds the latency that is not trimmed).
     Keep,
     /// This many frames.
     Frames(Samples),
@@ -142,15 +142,15 @@ pub enum Latency {
 /// repeats, a plugin's declared tail.
 ///
 /// A tail excludes latency, so whatever of the graph's latency the bounce does
-/// not trim ([`Latency`]) is rendered on top of the tail whichever this is,
+/// not trim ([`BounceLatency`]) is rendered on top of the tail whichever this is,
 /// or the programme's last frames are cut.
 #[derive(Debug, Clone, Copy, PartialEq)]
 #[non_exhaustive]
-pub enum Tail {
+pub enum BounceTail {
     /// The tail the graph reports, by `GraphTail::resolve`'s rule against
     /// `cap`: a graph that never decays renders `cap`; otherwise what its nodes
     /// reported, at most `cap` (a node that said nothing counts as none). The
-    /// default, with a cap of [`Tail::CAP`].
+    /// default, with a cap of [`BounceTail::CAP`].
     Graph {
         /// The most it renders.
         cap: Seconds,
@@ -161,12 +161,12 @@ pub enum Tail {
     Frames(Samples),
 }
 
-impl Tail {
+impl BounceTail {
     /// The default cap: ten seconds.
     pub const CAP: Seconds = Seconds(10.0);
 }
 
-impl Default for Tail {
+impl Default for BounceTail {
     fn default() -> Self {
         Self::Graph { cap: Self::CAP }
     }
@@ -286,8 +286,8 @@ pub struct Bounce<N = NodeKey, M = NoMaster> {
     clock: Option<ExportClock>,
     sample_rate: Option<SampleRate>,
     resample: Option<Resample>,
-    latency: Latency,
-    tail: Tail,
+    latency: BounceLatency,
+    tail: BounceTail,
     root_topology: Option<Option<ChannelTopology>>,
     channels: Option<ChannelLayout>,
     file_topology: Option<ChannelTopology>,
@@ -315,8 +315,8 @@ impl<N> Bounce<N, NoMaster> {
             clock: None,
             sample_rate: None,
             resample: None,
-            latency: Latency::default(),
-            tail: Tail::default(),
+            latency: BounceLatency::default(),
+            tail: BounceTail::default(),
             root_topology: None,
             channels: None,
             file_topology: None,
@@ -515,14 +515,14 @@ impl<N, M> Bounce<N, M> {
         self
     }
 
-    /// What to trim from the head; see [`Latency`].
-    pub fn latency(mut self, latency: Latency) -> Self {
+    /// What to trim from the head; see [`BounceLatency`].
+    pub fn latency(mut self, latency: BounceLatency) -> Self {
         self.latency = latency;
         self
     }
 
-    /// What to render past the end; see [`Tail`].
-    pub fn tail(mut self, tail: Tail) -> Self {
+    /// What to render past the end; see [`BounceTail`].
+    pub fn tail(mut self, tail: BounceTail) -> Self {
         self.tail = tail;
         self
     }
@@ -1240,8 +1240,8 @@ struct Figures {
     rate: SampleRate,
     /// The audible span, in frames at `rate`.
     length: Samples,
-    latency: Latency,
-    tail: Tail,
+    latency: BounceLatency,
+    tail: BounceTail,
     on_event_loss: EventLossPolicy,
     /// What the buffers' target would be too large to hold, for the error
     /// of a span past [`tutti_export::MAX_FRAMES`]: its width.
@@ -1253,17 +1253,17 @@ impl Figures {
     fn job(&self, graph: &tutti_export::RenderGraph) -> Result<Job, BounceError> {
         let reported = graph.reported_latency();
         let latency = match self.latency {
-            Latency::Graph => reported,
-            Latency::Keep => Samples(0),
-            Latency::Frames(n) => n,
+            BounceLatency::Graph => reported,
+            BounceLatency::Keep => Samples(0),
+            BounceLatency::Frames(n) => n,
         };
         let tail = match self.tail {
-            Tail::None => Samples(0),
-            Tail::Frames(n) => n,
+            BounceTail::None => Samples(0),
+            BounceTail::Frames(n) => n,
             // `resolve`, not `samples().unwrap_or(cap)`: a node that never
             // said (`Tail::Unknown`) is spent at what the others reported,
             // not at the cap, which would append silence.
-            Tail::Graph { cap } => graph.reported_tail().resolve(cap.to_samples(self.rate)),
+            BounceTail::Graph { cap } => graph.reported_tail().resolve(cap.to_samples(self.rate)),
         };
         // A tail excludes latency: the programme leaves the graph its
         // reported latency late, so the part of that latency the render does
@@ -1811,12 +1811,12 @@ impl Session {
         // once it is.
         figures.provisional(
             match latency {
-                Latency::Frames(n) => n,
-                Latency::Graph | Latency::Keep => Samples(0),
+                BounceLatency::Frames(n) => n,
+                BounceLatency::Graph | BounceLatency::Keep => Samples(0),
             },
             match tail {
-                Tail::Frames(n) => n,
-                Tail::Graph { .. } | Tail::None => Samples(0),
+                BounceTail::Frames(n) => n,
+                BounceTail::Graph { .. } | BounceTail::None => Samples(0),
             },
         )?;
 
@@ -2287,7 +2287,7 @@ mod tests {
                 .range(Range::Frames(Frame(0), Frame(DURATION as u64)))
         };
 
-        let untrimmed = planes(session.bounce(request().latency(Latency::Keep)));
+        let untrimmed = planes(session.bounce(request().latency(BounceLatency::Keep)));
         assert_eq!(untrimmed[0].len(), DURATION + LATENCY, "duration + latency");
         assert!(untrimmed[0][..LATENCY].iter().all(|&s| s == 0.0));
         assert!(

@@ -3324,7 +3324,7 @@ mod tests {
 
     /// The hold, staged deterministically: the race it guards (the executor
     /// pulls a command before the commit it was checked against, which only
-    /// a concurrent editor can cause — see `tests/commands.rs` for the
+    /// a concurrent editor can cause — see `tests/events/commands.rs` for the
     /// threaded version) is reproduced by running the executor's command
     /// pass before it applies the queued commit. The command must wait, not
     /// be judged against the old plan (where its node does not exist), and

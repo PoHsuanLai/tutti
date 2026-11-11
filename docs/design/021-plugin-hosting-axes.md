@@ -790,7 +790,7 @@ a `Loaded`.
   editor's error text says "plugin editor error" where it said "IPC protocol
   error".
 - The CLAP editor's timer test moved with its instance, to
-  `tutti-clap-host/tests/clap_editor_instance.rs` (it reaches the probe through
+  `tutti-clap-host/tests/behaviour/clap_editor_instance.rs` (it reaches the probe through
   `libloading`, which the crate's `src/` forbids).
 - **Step 2 built the state-back (Q8).** `Editor` gains `save_state` and
   `take_dirty` (CLAP `state.mark_dirty`, VST3 `setDirty(true)`; AU has none

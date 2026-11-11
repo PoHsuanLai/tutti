@@ -247,7 +247,7 @@ impl Gate {
 /// (its scratch is sized from `Prepare::max_block`), so the read re-seats on
 /// the clock once per block; a seat lands where the step would have put it,
 /// so the positions do not depend on how the blocks are cut (to rounding;
-/// bit for bit at the clocks `tests/block_length_invariance.rs` pins). The step
+/// bit for bit at the clocks `tests/voice/block_length_invariance.rs` pins). The step
 /// is the read's own rate (with the conversion to the render rate), the
 /// origin the gate's (in the source's frames); they agree to rounding.
 ///

@@ -196,7 +196,7 @@ pub enum Detect {
 
 /// One path through the graph. Each is a separate case (see
 /// [`contract_tests!`](crate::contract_tests)); a node's own rows are in the
-/// node crates' `tests/contract.rs`.
+/// node crates' `tests/executor/contract.rs`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Path {
     /// The excitation straight in: an upstream event source, or the global
@@ -228,7 +228,7 @@ pub enum Path {
     /// `a_fan_in_tie_goes_by_source_order`) hold that property; the
     /// instrument rows did not hold it with the same key either.
     ///
-    /// Ties are `tests/contract.rs`'s `a_fan_in_tie_goes_by_source_order`.
+    /// Ties are `tests/executor/contract.rs`'s `a_fan_in_tie_goes_by_source_order`.
     EventFanIn,
     /// Behind PDC, with an unrelated node inserted and committed while the
     /// excitation is in flight (between its frame and its response). After

@@ -7,7 +7,7 @@
 //! its own unit.
 
 use super::*;
-use crate::mode::NodeMode;
+use crate::mode::{MixState, NodeMode};
 
 /// [`node_dispatch`] for a unit that is not plain steady Active: toggle if
 /// the block's mode snapshot differs, then either park the node (the aligned
@@ -55,7 +55,7 @@ pub(super) fn moded_node_op<A: AudioSlots, F: SlotFlags + ?Sized, E: EventSlots 
     let ended = run_node_op(u, head, st);
 
     let seg = u.mode.step(frames);
-    if seg.is_steady() && seg.steady == NodeMode::Active {
+    if seg.is_steady() && seg.steady == NodeMode::Active && seg.mix.is_wet() {
         return ended;
     }
     for (c, &s) in aout.iter().enumerate() {
@@ -63,7 +63,23 @@ pub(super) fn moded_node_op<A: AudioSlots, F: SlotFlags + ?Sized, E: EventSlots 
         seg.blend(st.arena.slot_mut(s, frames), x);
         if seg.is_steady() {
             match seg.steady {
-                NodeMode::Active => {}
+                NodeMode::Active => {
+                    // A blend off the ends: silent only where both of its
+                    // terms are (a channel with no input has one term, and
+                    // at DRY it is silence).
+                    let node_silent = st.flags.get(s) & SILENT != 0;
+                    let no_input = c >= main;
+                    let x_silent = no_input || input_silent & (1 << c) != 0;
+                    match seg.mix.state() {
+                        MixState::Wet => {}
+                        MixState::Dry => st.flags.set(s, flag(x_silent, x_silent)),
+                        MixState::Between => {
+                            let silent = node_silent && x_silent;
+                            st.flags.set(s, flag(silent, silent));
+                        }
+                        MixState::Moving => st.flags.set(s, 0),
+                    }
+                }
                 NodeMode::Muted => st.flags.set(s, SILENT | CONSTANT),
                 NodeMode::Bypassed => {
                     let silent = c >= main || input_silent & (1 << c) != 0;

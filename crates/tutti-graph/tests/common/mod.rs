@@ -653,10 +653,15 @@ impl Pair {
         }
         // And `set_mode` checks the node against it, and a unit placed now
         // starts in the spec's mode.
-        if !graph.modes().is_empty() || !self.editor.spec_mut().modes.is_empty() {
+        if !graph.modes().is_empty()
+            || !self.editor.spec_mut().modes.is_empty()
+            || !graph.mixes().is_empty()
+            || !self.editor.spec_mut().mixes.is_empty()
+        {
             let live = self.editor.spec_mut();
             live.topology = graph.topology().clone();
             live.modes = graph.modes().clone();
+            live.mixes = graph.mixes().clone();
         }
         // Back on the control side, where the box and what it retired are
         // freed.
@@ -694,6 +699,19 @@ impl Pair {
             .set_mode(key, mode)
             .expect("the harness's editor holds the graph's nodes");
         self.reference.set_mode(key, mode);
+    }
+
+    /// Move `key`'s mix in both, as a host moving a send knob: the editor's
+    /// `set_mix` (a store, no commit) and the reference's.
+    pub fn set_mix(&mut self, key: NodeKey, mix: tutti_types::Mix) {
+        if !self.editor.spec().topology.nodes.contains_key(&key) {
+            let graph = self.graph.as_ref().expect("a graph was switched to");
+            self.editor.spec_mut().topology = graph.topology().clone();
+        }
+        self.editor
+            .set_mix(key, mix)
+            .expect("the harness's editor holds the graph's nodes");
+        self.reference.set_mix(key, mix);
     }
 
     /// Move edge `id`'s range in both: the editor's `set_edge_gain_range` (a

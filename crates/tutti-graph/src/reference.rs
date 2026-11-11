@@ -99,7 +99,7 @@ use crate::MAX_NODE_LATENCY;
 use crate::NodeKey;
 use crate::{CrossfadeCurve, Edge, EdgeId, InPort, OutPort, Sink, Source};
 use tutti_rt::with_no_denormals;
-use tutti_types::{Amplitude, At, Frame, Latency, Samples};
+use tutti_types::{Amplitude, At, Frame, Latency, Mix, Samples};
 
 use crate::event::{Event, EventKind, EventWriter, SortedEvents};
 use crate::history::TransportHistory;
@@ -238,6 +238,8 @@ pub struct Reference {
     gain_ranges: BTreeMap<EdgeId, ParamRange>,
     /// The mode each node was last told to be in: the executor's cell.
     wanted: BTreeMap<NodeKey, NodeMode>,
+    /// The mix each node is to have from the next block on (`set_mix`).
+    wanted_mix: BTreeMap<NodeKey, Mix>,
     /// What each node's mode has done so far.
     modes: BTreeMap<NodeKey, RefMode>,
     /// The transport's jumps, kept as the executor keeps them: the same type.
@@ -353,6 +355,7 @@ impl Reference {
             gain_ports: BTreeMap::new(),
             gain_ranges: BTreeMap::new(),
             wanted: BTreeMap::new(),
+            wanted_mix: BTreeMap::new(),
             modes: BTreeMap::new(),
             playhead: RefPlayhead::default(),
             suspended: None,
@@ -546,6 +549,12 @@ impl Reference {
         self.wanted.insert(key, mode);
     }
 
+    /// `Editor::set_mix`'s contract: the node's mix from the next block on,
+    /// reached across that block.
+    pub fn set_mix(&mut self, key: NodeKey, mix: Mix) {
+        self.wanted_mix.insert(key, mix);
+    }
+
     /// `Editor::set_edge_gain_range`'s contract.
     pub fn set_edge_gain_range(&mut self, id: EdgeId, range: ParamRange) {
         self.gain_ranges.insert(id, range);
@@ -668,9 +677,11 @@ impl Reference {
         // state of one placed fresh starts steady in it, and a swap with a
         // fade keeps what it had.
         let spec_mode = |k: NodeKey| graph.modes().get(&k).copied().unwrap_or_default();
+        let spec_mix = |k: NodeKey| graph.mixes().get(&k).map_or(Mix::WET, |m| m.mix);
         for &key in &replaced {
             if t.nodes.contains_key(&key) {
                 self.wanted.insert(key, spec_mode(key));
+                self.wanted_mix.insert(key, spec_mix(key));
             }
         }
         self.units.retain(|k, (generation, _)| {
@@ -688,9 +699,15 @@ impl Reference {
                 let shape = unit.shape();
                 self.units.insert(key, (graph.generation(key), unit));
                 self.wanted.insert(key, spec_mode(key));
+                self.wanted_mix.insert(key, spec_mix(key));
                 self.modes.insert(
                     key,
-                    RefMode::new(spec_mode(key), &shape, t.nodes[&key].latency.get()),
+                    RefMode::new(
+                        spec_mode(key),
+                        spec_mix(key).get(),
+                        &shape,
+                        t.nodes[&key].latency.get(),
+                    ),
                 );
                 // A new unit, or a swapped one: its params start over. (A
                 // crossfade keeps the key's, as the unit slot stays.)
@@ -701,6 +718,7 @@ impl Reference {
         self.params.retain(|at, _| units.contains_key(&at.node));
         self.modes.retain(|k, _| t.nodes.contains_key(k));
         self.wanted.retain(|k, _| t.nodes.contains_key(k));
+        self.wanted_mix.retain(|k, _| t.nodes.contains_key(k));
         // A kept node whose declared latency changed has its line rebuilt
         // (`Editor::set_latency`): derived from the two specs.
         if let Some(old) = self.graph.as_ref() {
@@ -1397,6 +1415,8 @@ impl Reference {
         let mut parked = false;
         if let Some(m) = &mut mode {
             let want = self.wanted.get(&key).copied().unwrap_or_default();
+            // The mix as the block starts: the previous block's is its start.
+            m.take_mix(self.wanted_mix.get(&key).map_or(1.0, |m| m.get()));
             if want != m.heading && m.toggle(want) {
                 self.units.get_mut(&key).expect("unit present").1.reset();
             }
@@ -1557,8 +1577,17 @@ impl Reference {
                                     (false, false) => 0.0,
                                 }
                             }
-                            RefFrame::Steady => match m.heading {
-                                NodeMode::Active => *y,
+                            RefFrame::Steady { mix, moving } => match m.heading {
+                                // WET is the node's own output, DRY the aligned
+                                // input (while the mix holds still); otherwise
+                                // the blend (a channel with no input has one
+                                // term).
+                                NodeMode::Active if !moving && mix == 1.0 => *y,
+                                NodeMode::Active if !moving && mix == 0.0 => x.unwrap_or(0.0),
+                                NodeMode::Active => match x {
+                                    Some(x) => *y * mix + x * (1.0 - mix),
+                                    None => *y * mix,
+                                },
                                 NodeMode::Muted => 0.0,
                                 NodeMode::Bypassed => x.unwrap_or(0.0),
                             },
@@ -1863,6 +1892,9 @@ struct RefMode {
     heading: NodeMode,
     y: f32,
     x: f32,
+    /// The mix the previous block was given, and this block's.
+    mix_from: f32,
+    mix_to: f32,
     /// `(y, x)` at the start of the fade, and the fade's frames done.
     fade: Option<((f32, f32), usize)>,
     warm: usize,
@@ -1892,24 +1924,27 @@ enum RefFrame {
         y_on: bool,
         x_on: bool,
     },
-    Steady,
+    /// The mode's steady frame, at this frame's mix.
+    Steady { mix: f32, moving: bool },
 }
 
-fn weights_of(mode: NodeMode) -> (f32, f32) {
+fn weights_of(mode: NodeMode, mix: f32) -> (f32, f32) {
     match mode {
-        NodeMode::Active => (1.0, 0.0),
+        NodeMode::Active => (mix, 1.0 - mix),
         NodeMode::Bypassed => (0.0, 1.0),
         NodeMode::Muted => (0.0, 0.0),
     }
 }
 
 impl RefMode {
-    fn new(mode: NodeMode, shape: &crate::node::Shape, latency: usize) -> Self {
-        let (y, x) = weights_of(mode);
+    fn new(mode: NodeMode, mix: f32, shape: &crate::node::Shape, latency: usize) -> Self {
+        let (y, x) = weights_of(mode, mix);
         let mut m = Self {
             heading: mode,
             y,
             x,
+            mix_from: mix,
+            mix_to: mix,
             fade: None,
             warm: 0,
             stale: mode == NodeMode::Bypassed,
@@ -1944,6 +1979,13 @@ impl RefMode {
                 .all(|h| h.notes.is_empty() && h.pedals.is_empty())
     }
 
+    /// This block's mix: the one the previous block was given is where the
+    /// ramp starts.
+    fn take_mix(&mut self, to: f32) {
+        self.mix_from = self.mix_to;
+        self.mix_to = to;
+    }
+
     /// Take the mode `want`; whether the node is to be reset first.
     fn toggle(&mut self, want: NodeMode) -> bool {
         self.warm = 0;
@@ -1954,40 +1996,57 @@ impl RefMode {
                 self.warm = self.latency;
             }
         }
-        self.fade = ((self.y, self.x) != weights_of(want)).then_some(((self.y, self.x), 0));
+        self.fade =
+            ((self.y, self.x) != weights_of(want, self.mix_to)).then_some(((self.y, self.x), 0));
         self.heading = want;
         reset
     }
 
-    /// What each of `frames` frames does; walks the state past them.
+    /// What each of `frames` frames does; walks the state past them. The mix
+    /// ramps from the previous block's to this one's across the frames
+    /// (`from + (to - from) * ((i + 1) / frames)`), or is its value when it
+    /// does not move.
     fn frames(&mut self, frames: usize) -> Vec<RefFrame> {
-        let target = weights_of(self.heading);
+        let (from, to) = (self.mix_from, self.mix_to);
+        let mix_at = |i: usize| {
+            if from == to {
+                to
+            } else {
+                from + (to - from) * ((i + 1) as f32 / frames as f32)
+            }
+        };
         (0..frames)
-            .map(|_| {
+            .map(|i| {
+                let mix = mix_at(i);
+                let target = weights_of(self.heading, mix);
                 if self.warm > 0 {
                     self.warm -= 1;
                     return RefFrame::Warm;
                 }
-                let Some((from, k)) = self.fade else {
-                    return RefFrame::Steady;
+                let Some((begin, k)) = self.fade else {
+                    (self.y, self.x) = target;
+                    return RefFrame::Steady {
+                        mix,
+                        moving: from != to,
+                    };
                 };
                 let g = CrossfadeCurve::EqualAmplitude
                     .gains(k, MODE_DECLICK.get())
                     .0;
-                let wy = from.0 + (target.0 - from.0) * g;
-                let wx = from.1 + (target.1 - from.1) * g;
+                let wy = begin.0 + (target.0 - begin.0) * g;
+                let wx = begin.1 + (target.1 - begin.1) * g;
                 (self.y, self.x) = (wy, wx);
                 self.fade = if k + 1 == MODE_DECLICK.get() {
                     (self.y, self.x) = target;
                     None
                 } else {
-                    Some((from, k + 1))
+                    Some((begin, k + 1))
                 };
                 RefFrame::Fade {
                     wy,
                     wx,
-                    y_on: from.0 != 0.0 || target.0 != 0.0,
-                    x_on: from.1 != 0.0 || target.1 != 0.0,
+                    y_on: begin.0 != 0.0 || target.0 != 0.0,
+                    x_on: begin.1 != 0.0 || target.1 != 0.0,
                 }
             })
             .collect()

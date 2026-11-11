@@ -327,6 +327,7 @@ impl PendingFork {
         fork.params = spec.params;
         fork.gains = spec.gains;
         fork.modes = spec.modes;
+        fork.mixes = spec.mixes;
         for (key, node) in fork.topology.nodes.iter_mut() {
             node.params = spec.topology.nodes[key].params.clone();
         }
@@ -1019,6 +1020,7 @@ impl Editor {
                 .collect(),
             gains: BTreeMap::new(),
             modes: BTreeMap::new(),
+            mixes: BTreeMap::new(),
         };
         // The edge gains whose edge the fork kept (an output channel the
         // fork rewired to one node has none): the fork sums as the live graph
@@ -1041,6 +1043,12 @@ impl Editor {
             .iter()
             .filter(|(key, _)| keys.contains(key))
             .map(|(key, mode)| (*key, *mode))
+            .collect();
+        spec.mixes = live
+            .mixes
+            .iter()
+            .filter(|(key, _)| keys.contains(key))
+            .map(|(key, mix)| (*key, *mix))
             .collect();
 
         let mut units = Vec::with_capacity(sources.len());

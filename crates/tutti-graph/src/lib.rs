@@ -293,7 +293,7 @@ pub use latency::{
     OutputDelay, PortFeed, delays, plan as latency_plan,
 };
 pub use loss::EventLoss;
-pub use mode::{MODE_DECLICK, ModeError, NodeMode};
+pub use mode::{MODE_DECLICK, MixError, ModeError, NodeMix, NodeMode};
 pub use node::{
     ConstantMask, Cx, Env, InPlaceMask, IntoNode, LoopRange, MAX_PORTS, MAX_TRANSPORT_CHANGES,
     Node, NodeParts, Prepare, Resolution, Scratch, Shape, SilenceMask, Status, Transport,

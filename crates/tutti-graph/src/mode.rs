@@ -1,6 +1,7 @@
-//! Bypass and mute as graph state (doc 013, "Bypass and mute are graph state"):
-//! [`NodeMode`], the cell a mode is stored in, and the state the executor
-//! keeps to apply one.
+//! Bypass, mute and mix as graph state (doc 013, "Bypass and mute are graph
+//! state"): [`NodeMode`], a node's [`Mix`] (its blend with the aligned input),
+//! the cell they are stored in, and the state the executor keeps to apply
+//! them.
 //!
 //! # What a mode is
 //!
@@ -36,6 +37,32 @@
 //! mode copies (Bypassed), leaves (Active) or zero-fills (Muted), never
 //! multiplies, so a steady bypass is the input bit for bit.
 //!
+//! # The mix
+//!
+//! A node's [`Mix`] `m` is a blend of the node's output `y` with the aligned
+//! input `x̂`: `out = y * m + x̂ * (1 - m)` per channel through the bypass's
+//! mapping. It is the weight pair of an [`Active`](NodeMode::Active) node:
+//! `(m, 1 - m)`, so [`Mix::WET`] (all of the node's output) *is* `(1, 0)` and
+//! [`Mix::DRY`] (all of the aligned input) *is* `(0, 1)`, Bypassed's.
+//!
+//! - **The mode wins.** Bypassed and Muted ignore the mix (their weights are
+//!   `(0, 1)` and `(0, 0)` whatever it is), and a toggle to Active fades to
+//!   the mix's weights, not to `(1, 0)`.
+//! - **WET pays nothing.** A steady `Mix::WET` is the plain op: the aligned
+//!   input is not kept beside the output, and nothing is blended (a node
+//!   with latency feeds its bypass line, as it does at any mix). The output
+//!   is the node's, bit for bit.
+//! - **DRY runs the node.** A steady `Mix::DRY` writes `x̂` (a copy, bit for
+//!   bit what Bypassed writes in steady state), but the node keeps being
+//!   called: its state stays warm, and a move off DRY needs no reset and no
+//!   warm-up. Only Bypassed parks a node.
+//! - **A move ramps over one block**, as an edge's gain does: the cell is read
+//!   once per block, before the first op, and
+//!   `m[i] = m_prev + (m_new - m_prev) * ((i + 1) / frames)` where `m_prev`
+//!   is what the previous block was given (the first block starts at its
+//!   value). A fade between modes runs against these per-frame weights, so a
+//!   mix that moves during one does not jump.
+//!
 //! # Un-bypass
 //!
 //! A bypassed unit is not called, so its state is stale. The toggle that
@@ -48,11 +75,12 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU8, Ordering};
 
-use tutti_types::Samples;
+use tutti_types::{AtomicF32, Mix, Samples};
 
 use crate::NodeKey;
 use crate::arena::Arena;
 use crate::fade::CrossfadeCurve;
+use crate::gain::ramp_at;
 use crate::held::Held;
 use crate::kernels::AudioRing;
 use crate::node::Shape;
@@ -107,10 +135,13 @@ impl NodeMode {
         }
     }
 
-    /// The weights a steady mode holds.
-    fn weights(self) -> Weights {
+    /// The weights a steady mode holds, at mix `m` (only Active reads it).
+    fn weights(self, m: f32) -> Weights {
         match self {
-            Self::Active => Weights::ACTIVE,
+            Self::Active => Weights {
+                node: m,
+                input: 1.0 - m,
+            },
             Self::Bypassed => Weights::BYPASSED,
             Self::Muted => Weights::MUTED,
         }
@@ -138,27 +169,108 @@ impl std::fmt::Display for ModeError {
 
 impl std::error::Error for ModeError {}
 
-/// A unit's mode, shared between the editor (the one writer) and the unit
-/// (the executor reads it once per block). An `AtomicU8`: a mode is a
-/// control, not a rewire.
+/// A node's [`Mix`] as the spec holds it (doc 013, "Bypass and mute are graph
+/// state", M4): the blend of the node's output with its aligned input,
+/// `out = y * m + x̂ * (1 - m)`. [`Mix::WET`] (all of the node's output) is
+/// the canonical absent entry of [`GraphSpec::mixes`](crate::GraphSpec::mixes).
+///
+/// Compared and hashed by bits, as [`ParamRange`](crate::ParamRange) is, so a
+/// spec holding one stays `Eq + Hash`.
+#[derive(Clone, Copy, Debug)]
+pub struct NodeMix {
+    /// The blend position: finite and in `0..=1`
+    /// ([`GraphInvalid::BadMix`](crate::GraphInvalid::BadMix)).
+    pub mix: Mix,
+}
+
+impl NodeMix {
+    /// Whether `mix` can be one: finite and in `0..=1` (what
+    /// [`Mix::new_clamped`] makes).
+    #[must_use]
+    pub(crate) fn is_sound(mix: Mix) -> bool {
+        (0.0..=1.0).contains(&mix.get())
+    }
+}
+
+impl PartialEq for NodeMix {
+    fn eq(&self, other: &Self) -> bool {
+        self.mix.get().to_bits() == other.mix.get().to_bits()
+    }
+}
+
+impl Eq for NodeMix {}
+
+impl std::hash::Hash for NodeMix {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.mix.get().to_bits().hash(state);
+    }
+}
+
+/// Why [`Editor::set_mix`](crate::Editor::set_mix) refused.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum MixError {
+    /// The spec has no node at the key.
+    NoSuchNode {
+        /// The key.
+        node: NodeKey,
+    },
+    /// The mix is not in `0..=1` (or is NaN): a blend position off the ends of
+    /// the blend, which is [`Mix::new_clamped`]'s to make, not the graph's.
+    OutOfRange,
+}
+
+impl std::fmt::Display for MixError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NoSuchNode { node } => write!(f, "no node {} to set the mix of", node.0),
+            Self::OutOfRange => write!(f, "a mix must be in 0..=1"),
+        }
+    }
+}
+
+impl std::error::Error for MixError {}
+
+/// A unit's mode and mix, shared between the editor (the one writer) and the
+/// unit (the executor reads each once per block). An `AtomicU8` and the
+/// mix's raw `f32` (`Mix` is not `Pod`; the cell converts at its edge): a
+/// mode and a mix are controls, not rewires. **The mix cell is the mix's one
+/// writer's**: [`Editor::set_mix`](crate::Editor::set_mix) stores into it.
 #[derive(Clone, Debug)]
-pub(crate) struct ModeCell(Arc<AtomicU8>);
+pub(crate) struct ModeCell {
+    mode: Arc<AtomicU8>,
+    mix: Arc<AtomicF32>,
+}
 
 impl ModeCell {
-    /// A cell holding `mode`. Control side: allocates.
-    pub(crate) fn new(mode: NodeMode) -> Self {
-        Self(Arc::new(AtomicU8::new(mode.to_bits())))
+    /// A cell holding `mode` and `mix`. Control side: allocates.
+    pub(crate) fn new(mode: NodeMode, mix: Mix) -> Self {
+        Self {
+            mode: Arc::new(AtomicU8::new(mode.to_bits())),
+            mix: Arc::new(AtomicF32::new(mix.get())),
+        }
     }
 
     /// Store `mode`. Wait-free.
     pub(crate) fn store(&self, mode: NodeMode) {
-        self.0.store(mode.to_bits(), Ordering::Release);
+        self.mode.store(mode.to_bits(), Ordering::Release);
+    }
+
+    /// Store `mix`. Wait-free.
+    pub(crate) fn store_mix(&self, mix: Mix) {
+        self.mix.store(mix.get(), Ordering::Release);
     }
 
     /// The mode now. Wait-free.
     #[inline]
     pub(crate) fn load(&self) -> NodeMode {
-        NodeMode::from_bits(self.0.load(Ordering::Acquire))
+        NodeMode::from_bits(self.mode.load(Ordering::Acquire))
+    }
+
+    /// The mix now. Wait-free.
+    #[inline]
+    pub(crate) fn load_mix(&self) -> Mix {
+        Mix::new(self.mix.load(Ordering::Acquire))
     }
 }
 
@@ -172,10 +284,6 @@ pub(crate) struct Weights {
 }
 
 impl Weights {
-    pub(crate) const ACTIVE: Self = Self {
-        node: 1.0,
-        input: 0.0,
-    };
     pub(crate) const BYPASSED: Self = Self {
         node: 0.0,
         input: 1.0,
@@ -205,22 +313,88 @@ pub(crate) struct Ramp {
 }
 
 /// What a block makes of one unit, in order: `warm` frames of the aligned
-/// input alone, then the frames of `ramp`, then `steady`.
+/// input alone, then the frames of `ramp`, then `steady`, all against the
+/// block's `mix`.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct Segments {
     pub(crate) warm: usize,
     pub(crate) ramp: Option<RampRun>,
     pub(crate) steady: NodeMode,
+    pub(crate) mix: MixRun,
 }
 
-/// The part of a fade a block runs.
+/// The part of a fade a block runs: from the weights the fade began at, toward
+/// the weights of `heading` at each frame's mix.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct RampRun {
     from: Weights,
-    to: Weights,
+    heading: NodeMode,
     /// The fade's frame the block's first ramp frame is.
     k: usize,
     len: usize,
+}
+
+/// A block's mix: the previous block's to this one's, across `frames`
+/// ([`ramp_at`], as an edge's gain ramps).
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct MixRun {
+    from: f32,
+    to: f32,
+    frames: usize,
+}
+
+/// What a block's mix is, for the flags of the output.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum MixState {
+    /// Steady `Mix::WET`.
+    Wet,
+    /// Steady `Mix::DRY`.
+    Dry,
+    /// Steady, off the ends.
+    Between,
+    /// Moving across the block.
+    Moving,
+}
+
+impl MixRun {
+    /// Whether the whole block is steady [`Mix::WET`]: nothing to blend.
+    pub(crate) fn is_wet(&self) -> bool {
+        self.from.to_bits() == 1.0f32.to_bits() && self.to.to_bits() == 1.0f32.to_bits()
+    }
+
+    /// Which of the four things a block's mix is.
+    pub(crate) fn state(&self) -> MixState {
+        if self.is_wet() {
+            MixState::Wet
+        } else if !self.is_static() {
+            MixState::Moving
+        } else if self.to == 0.0 {
+            MixState::Dry
+        } else {
+            MixState::Between
+        }
+    }
+
+    /// Whether the mix does not move across the block.
+    fn is_static(&self) -> bool {
+        self.from.to_bits() == self.to.to_bits()
+    }
+
+    /// The mix at frame `i` of the block.
+    #[inline]
+    fn at(&self, i: usize) -> f32 {
+        if self.is_static() {
+            self.to
+        } else {
+            ramp_at(self.from, self.to, i, self.frames as f32)
+        }
+    }
+
+    /// The mix of the block's last frame (a ramp's last sample, which
+    /// `from + (to - from) * 1.0` need not make exactly `to`).
+    fn last(&self) -> f32 {
+        self.at(self.frames - 1)
+    }
 }
 
 impl Segments {
@@ -235,7 +409,9 @@ impl Segments {
     ///
     /// A term whose weight is zero at both ends of the fade is left out, so a
     /// NaN in a term that is off is never heard; the steady modes copy,
-    /// leave or fill, never multiply.
+    /// leave or fill, never multiply. A steady Active block at a mix off the
+    /// ends is `y * m + x * (1 - m)` (a channel with no `x` is `y * m`); at
+    /// `Mix::WET` it leaves `out` alone and at `Mix::DRY` it copies `x`.
     pub(crate) fn blend(&self, out: &mut [f32], x: Option<&[f32]>) {
         let put = |out: &mut [f32], range: std::ops::Range<usize>| match x {
             Some(x) => out[range.clone()].copy_from_slice(&x[range]),
@@ -244,11 +420,13 @@ impl Segments {
         put(out, 0..self.warm);
         let mut at = self.warm;
         if let Some(r) = self.ramp {
-            let node_on = r.from.node != 0.0 || r.to.node != 0.0;
-            let input_on = x.is_some() && (r.from.input != 0.0 || r.to.input != 0.0);
+            let input = x.is_some();
             for j in 0..r.len {
-                let w = r.from.toward(r.to, gain(r.k + j));
                 let i = at + j;
+                let to = r.heading.weights(self.mix.at(i));
+                let w = r.from.toward(to, gain(r.k + j));
+                let node_on = r.from.node != 0.0 || to.node != 0.0;
+                let input_on = input && (r.from.input != 0.0 || to.input != 0.0);
                 out[i] = match (node_on, input_on) {
                     (true, true) => out[i] * w.node + x.map_or(0.0, |x| x[i]) * w.input,
                     (true, false) => out[i] * w.node,
@@ -259,9 +437,44 @@ impl Segments {
             at += r.len;
         }
         match self.steady {
-            NodeMode::Active => {}
+            NodeMode::Active => self.blend_active(out, x, at),
             NodeMode::Muted => out[at..].fill(0.0),
             NodeMode::Bypassed => put(out, at..out.len()),
+        }
+    }
+
+    /// The steady Active frames from `at` on, against the block's mix.
+    fn blend_active(&self, out: &mut [f32], x: Option<&[f32]>, at: usize) {
+        let m = self.mix;
+        if m.is_wet() {
+            return;
+        }
+        if m.is_static() {
+            let w = m.to;
+            match x {
+                _ if w == 1.0 => {}
+                Some(x) if w == 0.0 => out[at..].copy_from_slice(&x[at..]),
+                None if w == 0.0 => out[at..].fill(0.0),
+                Some(x) => {
+                    let wx = 1.0 - w;
+                    for (o, &x) in out[at..].iter_mut().zip(&x[at..]) {
+                        *o = *o * w + x * wx;
+                    }
+                }
+                None => {
+                    for o in &mut out[at..] {
+                        *o *= w;
+                    }
+                }
+            }
+            return;
+        }
+        for i in at..out.len() {
+            let w = m.at(i);
+            out[i] = match x {
+                Some(x) => out[i] * w + x[i] * (1.0 - w),
+                None => out[i] * w,
+            };
         }
     }
 }
@@ -306,6 +519,10 @@ pub(crate) struct ModeState {
     seen: NodeMode,
     /// Whether this block's op is the plain one (`snapshot` decides, once).
     plain: bool,
+    /// The mix the previous block was given, and this block's snapshot of
+    /// the cell: the ends of this block's ramp.
+    mix_from: f32,
+    mix_to: f32,
     /// The mode the weights are heading for.
     heading: NodeMode,
     /// The weights as the last frame left them.
@@ -336,13 +553,16 @@ impl ModeState {
     /// scratch and its tables.
     pub(crate) fn new(cell: ModeCell, shape: &Shape, max_block: usize) -> Self {
         let mode = cell.load();
+        let mix = cell.load_mix().get();
         let main = main_channels(shape);
         Self {
             cell,
             seen: mode,
             plain: false,
+            mix_from: mix,
+            mix_to: mix,
             heading: mode,
-            weights: mode.weights(),
+            weights: mode.weights(mix),
             ramp: None,
             warm: 0,
             // A unit that begins bypassed has not run: un-bypassing resets it.
@@ -362,17 +582,31 @@ impl ModeState {
     #[inline]
     pub(crate) fn snapshot(&mut self) {
         self.seen = self.cell.load();
+        // The mix advances every block, parked or silent or not, so a move
+        // made while the node was out has arrived when it is heard.
+        self.mix_from = self.mix_to;
+        self.mix_to = self.cell.load_mix().get();
         self.plain = self.inert
             || (self.seen == NodeMode::Active
                 && self.heading == NodeMode::Active
+                && self.mix_run(0).is_wet()
                 && self.ramp.is_none()
                 && self.warm == 0
                 && self.line.is_none()
                 && self.held_in.is_empty());
     }
 
-    /// Whether this block's op is the plain one: steady Active with nothing
-    /// to feed or track, or nothing a mode could act on.
+    /// The block's mix: the previous block's to this one's, across `frames`.
+    fn mix_run(&self, frames: usize) -> MixRun {
+        MixRun {
+            from: self.mix_from,
+            to: self.mix_to,
+            frames,
+        }
+    }
+
+    /// Whether this block's op is the plain one: steady Active at `Mix::WET`
+    /// with nothing to feed or track, or nothing a mode could act on.
     #[inline]
     pub(crate) fn is_plain(&self) -> bool {
         self.plain
@@ -421,7 +655,7 @@ impl ModeState {
                 self.warm = self.latency;
             }
         }
-        self.ramp = (self.weights != want.weights()).then_some(Ramp {
+        self.ramp = (self.weights != want.weights(self.mix_to)).then_some(Ramp {
             from: self.weights,
             k: 0,
         });
@@ -454,9 +688,10 @@ impl ModeState {
     pub(crate) fn needs_input(&self) -> bool {
         self.warm > 0
             || self.heading == NodeMode::Bypassed
-            || self
-                .ramp
-                .is_some_and(|r| r.from.input != 0.0 || self.heading.weights().input != 0.0)
+            || (self.heading == NodeMode::Active && !self.mix_run(0).is_wet())
+            || self.ramp.is_some_and(|r| {
+                r.from.input != 0.0 || self.heading.weights(self.mix_to).input != 0.0
+            })
     }
 
     /// Channels the aligned input has.
@@ -521,30 +756,110 @@ impl ModeState {
     pub(crate) fn step(&mut self, frames: usize) -> Segments {
         let warm = self.warm.min(frames);
         self.warm -= warm;
+        let mix = self.mix_run(frames);
         let mut seg = Segments {
             warm,
             ramp: None,
             steady: self.heading,
+            mix,
         };
         if warm == frames {
             return seg;
         }
         if let Some(r) = &mut self.ramp {
-            let to = self.heading.weights();
             let len = (MODE_DECLICK.get() - r.k).min(frames - warm);
             seg.ramp = Some(RampRun {
                 from: r.from,
-                to,
+                heading: self.heading,
                 k: r.k,
                 len,
             });
             r.k += len;
+            let to = self.heading.weights(mix.at(warm + len - 1));
             self.weights = r.from.toward(to, gain(r.k - 1));
             if r.k == MODE_DECLICK.get() {
                 self.ramp = None;
-                self.weights = to;
             }
         }
+        if self.ramp.is_none() {
+            self.weights = self.heading.weights(mix.last());
+        }
         seg
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tutti_types::{ChannelLayout, Latency};
+
+    fn shape(latency: usize) -> Shape {
+        Shape::audio(ChannelLayout::MONO, ChannelLayout::MONO)
+            .with_latency(Latency::new(Samples(latency)))
+    }
+
+    /// A unit of `shape` at `mix`, steady Active, after the block's snapshot.
+    fn at(shape: &Shape, mix: f32) -> (ModeCell, ModeState) {
+        let cell = ModeCell::new(NodeMode::Active, Mix::new(mix));
+        let mut state = ModeState::new(cell.clone(), shape, 64);
+        state.snapshot();
+        (cell, state)
+    }
+
+    /// **WET pays nothing.** A plain node (no latency, no event inputs) at
+    /// steady WET takes the plain op, and needs no aligned input; a latent one
+    /// is never plain (it feeds its line, as it does at any mix) but at WET does
+    /// not keep the aligned input beside its output. Off WET (DRY included) a
+    /// block needs it, and so does the block a mix arrives back at WET on (its
+    /// ramp), after which the node is plain again.
+    ///
+    /// Mutation (each run, each failed): `snapshot` leaving `plain` without the
+    /// `mix_run(0).is_wet()` term -> the plain node is plain off WET;
+    /// `needs_input` without its mix term -> a blend has no `x̂`; `is_wet`
+    /// comparing only `to` -> the ramp block back at WET is plain and the last
+    /// assertion fails.
+    #[test]
+    fn a_node_at_wet_takes_the_plain_op_and_keeps_no_aligned_input() {
+        let (_, plain) = at(&shape(0), 1.0);
+        assert!(plain.is_plain());
+        assert!(!plain.needs_input());
+
+        let (_, latent) = at(&shape(480), 1.0);
+        assert!(!latent.is_plain(), "a latent node feeds its line");
+        assert!(!latent.needs_input(), "but keeps nothing beside its output");
+
+        for m in [0.0, 0.25, 0.999] {
+            let (_, plain) = at(&shape(0), m);
+            assert!(!plain.is_plain(), "mix {m}");
+            assert!(plain.needs_input(), "mix {m}");
+            let (_, latent) = at(&shape(480), m);
+            assert!(latent.needs_input(), "mix {m}");
+        }
+
+        let (cell, mut state) = at(&shape(0), 0.5);
+        cell.store_mix(Mix::WET);
+        state.snapshot();
+        assert!(!state.is_plain(), "the ramp block back at WET");
+        assert!(state.needs_input());
+        state.step(64);
+        state.snapshot();
+        assert!(state.is_plain(), "and the block after it");
+        assert!(!state.needs_input());
+    }
+
+    /// A moving mix is a ramp of one block from what the previous block was
+    /// given, and every block advances it, whether or not the node was called
+    /// (`step`): a move made while the node was parked has arrived when it is
+    /// heard.
+    ///
+    /// Mutation: advancing `mix_from` in `step` rather than `snapshot` -> the
+    /// parked blocks never advance and the block after them ramps.
+    #[test]
+    fn the_mix_advances_every_block_called_or_not() {
+        let (cell, mut state) = at(&shape(0), 1.0);
+        cell.store_mix(Mix::new(0.25));
+        state.snapshot();
+        state.snapshot(); // a block the node was not called in
+        assert_eq!(state.step(64).mix.state(), MixState::Between);
     }
 }

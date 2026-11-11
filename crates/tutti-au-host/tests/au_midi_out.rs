@@ -34,7 +34,7 @@
 //! 45 of the units that publish **no** MIDI outputs nonetheless accept the
 //! property-48 write, AUDelay and AULowpass among them. A successful install is
 //! therefore worthless as a capability signal, which is why
-//! `AuInstance::midi_output_info` is the gate and why
+//! `Au::midi_output_info` is the gate and why
 //! `accepting_the_callback_write_does_not_mean_the_au_emits_midi` pins the
 //! asymmetry — a future host that started gating installs on property 47 would
 //! change observable behaviour, and this is what notices.
@@ -243,7 +243,7 @@ fn no_installed_au_publishes_midi_output_info() {
         if matches!(info.component_type, AuType::Output) {
             continue;
         }
-        let Ok(au) = tutti_au_host::AuInstance::new(info.component, RATE, BLOCK) else {
+        let Ok(au) = crate::support::au::Au::new(info.component, RATE, BLOCK) else {
             // A unit that will not instantiate cannot be asked. Not a skip that
             // hides anything: it also cannot emit MIDI to this host.
             continue;

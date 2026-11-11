@@ -42,7 +42,7 @@
 
 #![cfg(target_os = "macos")]
 
-use tutti_au_host::AuInstance;
+use crate::support::au::Au;
 use tutti_au_host::BusDirection;
 use tutti_fixtures::main_thread;
 use tutti_types::Samples;
@@ -63,7 +63,7 @@ const RATE: f64 = 48_000.0;
 /// nothing leaves zeroes rather than the previous block's values — the
 /// distinction `renders_nothing_does_not_leak_stale_scratch` depends on. Returns
 /// the host's `process` result alongside the output so callers can assert both.
-fn render_fresh(au: &mut AuInstance) -> (tutti_au_host::Result<()>, Vec<Vec<f32>>) {
+fn render_fresh(au: &mut Au) -> (tutti_au_host::Result<()>, Vec<Vec<f32>>) {
     render_prefilled(au, 0.0)
 }
 
@@ -72,7 +72,7 @@ fn render_fresh(au: &mut AuInstance) -> (tutti_au_host::Result<()>, Vec<Vec<f32>
 /// Pre-filling is how "the host wrote nothing into my buffer" is told apart from
 /// "the host wrote silence": both leave a buffer a plain zero-check cannot
 /// distinguish.
-fn render_prefilled(au: &mut AuInstance, fill: f32) -> (tutti_au_host::Result<()>, Vec<Vec<f32>>) {
+fn render_prefilled(au: &mut Au, fill: f32) -> (tutti_au_host::Result<()>, Vec<Vec<f32>>) {
     let input = vec![vec![0.0f32; BLOCK as usize]; 2];
     let mut output = vec![vec![fill; BLOCK as usize]; 2];
     let result = {

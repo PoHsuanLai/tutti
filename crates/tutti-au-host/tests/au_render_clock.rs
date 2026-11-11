@@ -9,7 +9,7 @@
 //! block-to-block delta from it is using it as documented.
 //!
 //! That makes the timestamp part of what
-//! [`AuInstance::reset`](tutti_au_host::AuInstance::reset) has to
+//! [`Au::reset`](crate::support::au::Au::reset) has to
 //! answer for. `AudioUnitReset` flushes the AU's signal history; the clock those
 //! flushed samples were measured against lives in *this* crate, where
 //! AudioToolbox cannot see it. Left running, it tells the AU the block after a
@@ -53,7 +53,7 @@
 
 #![cfg(target_os = "macos")]
 
-use tutti_au_host::AuInstance;
+use crate::support::au::Au;
 use tutti_plugin_types::ChannelLayout;
 
 mod support;
@@ -63,7 +63,7 @@ const BLOCK: u32 = 64;
 const RATE: f64 = 48_000.0;
 
 /// Render one block through the pull path.
-fn render(au: &mut AuInstance) {
+fn render(au: &mut Au) {
     let input = vec![vec![0.0f32; BLOCK as usize]; 2];
     let mut output = vec![vec![0.0f32; BLOCK as usize]; 2];
     let ins: Vec<&[f32]> = input.iter().map(|v| v.as_slice()).collect();
@@ -282,7 +282,7 @@ fn resetting_the_push_scratch_restarts_its_clock() {
     );
 }
 
-/// `AuInstance::reset` must **not** touch the push scratch's clock.
+/// `Au::reset` must **not** touch the push scratch's clock.
 ///
 /// Not an oversight — the correct division. `PushScratch` is host-owned: the
 /// host constructs it and lends it per render, so `reset` never sees it. The two
@@ -308,7 +308,7 @@ fn an_instance_reset_leaves_the_push_clock_alone() {
     assert_eq!(
         last_render_sample_time(&au),
         f64::from(3 * BLOCK),
-        "the push cursor is the host's; AuInstance::reset must not reach into it"
+        "the push cursor is the host's; Au::reset must not reach into it"
     );
 
     // The pull cursor *was* reset by the same call — the positive half, without

@@ -30,7 +30,7 @@
 
 #![cfg(target_os = "macos")]
 
-use tutti_au_host::AuInstance;
+use crate::support::au::Au;
 use tutti_au_host::component::{AuComponentInfo, AuType, enumerate_components_of_type};
 use tutti_au_host::{AuLayoutTag, BusDirection};
 use tutti_types::Samples;
@@ -93,9 +93,9 @@ impl AuRef {
     }
 
     /// Instantiate this unit at `rate`/`block`, already initialized.
-    pub fn open(&self, rate: f64, block: u32) -> AuInstance {
+    pub fn open(&self, rate: f64, block: u32) -> Au {
         let info = self.require();
-        let mut au = AuInstance::new(info.component, rate, block)
+        let mut au = Au::new(info.component, rate, block)
             .unwrap_or_else(|e| panic!("{}: instantiate failed: {e:?}", self.label));
         au.initialize()
             .unwrap_or_else(|e| panic!("{}: initialize failed: {e:?}", self.label));
@@ -103,9 +103,9 @@ impl AuRef {
     }
 
     /// Instantiate without initializing, for tests that drive the transition.
-    pub fn open_uninitialized(&self, rate: f64, block: u32) -> AuInstance {
+    pub fn open_uninitialized(&self, rate: f64, block: u32) -> Au {
         let info = self.require();
-        AuInstance::new(info.component, rate, block)
+        Au::new(info.component, rate, block)
             .unwrap_or_else(|e| panic!("{}: instantiate failed: {e:?}", self.label))
     }
 }
@@ -282,7 +282,7 @@ pub fn impulse(channels: usize, frames: usize) -> Vec<Vec<f32>> {
 /// Render one block, borrowing `input` and `output` in the shapes `process`
 /// wants. Returns whatever `process` returned so callers can assert on it.
 pub fn render(
-    au: &mut AuInstance,
+    au: &mut Au,
     input: &[Vec<f32>],
     output: &mut [Vec<f32>],
     frames: u32,
@@ -517,8 +517,8 @@ pub fn optional_third_party(
 
 /// Open an arbitrary [`AuComponentInfo`] initialized, for units reached through
 /// [`optional_third_party`] rather than an [`AuRef`].
-pub fn open_info(info: &AuComponentInfo, rate: f64, block: u32) -> AuInstance {
-    let mut au = AuInstance::new(info.component, rate, block)
+pub fn open_info(info: &AuComponentInfo, rate: f64, block: u32) -> Au {
+    let mut au = Au::new(info.component, rate, block)
         .unwrap_or_else(|e| panic!("{}: instantiate failed: {e:?}", info.name));
     au.initialize()
         .unwrap_or_else(|e| panic!("{}: initialize failed: {e:?}", info.name));
@@ -903,7 +903,7 @@ pub const CURRENT_LAYOUT_UNITS: &[(AuRef, bool, AuLayoutTag)] = &[
 /// AUSampler's output is the case Apple's header describes ("Requesting the value
 /// of this property when it is implemented but not set results in a
 /// kAudioUnitErr_PropertyNotInUse error") and it is the reason
-/// `AuInstance::layout_tag` returns `Result` rather than an `Option` or a default:
+/// `Au::layout_tag` returns `Result` rather than an `Option` or a default:
 /// this unit *does* publish `[Mono, Stereo]` as supported, so "no tags" cannot be
 /// used to predict it, and a fabricated `Stereo` would be a claim about speaker
 /// order the host cannot back up.
@@ -1031,8 +1031,8 @@ pub fn direction(is_output: bool) -> BusDirection {
 /// Returns `(instance, accepted_width)` rather than asserting the width took:
 /// several units refuse a narrowing and keep their own, and a caller asserting on
 /// a layout needs to know which it got. `has_input` is taken from the AU's own
-/// probe by way of `AuInstance`, so an instrument is not handed a phantom input.
-pub fn open_at_output_width(unit: &AuRef, rate: f64, block: u32, width: u16) -> (AuInstance, u16) {
+/// probe by way of `Au`, so an instrument is not handed a phantom input.
+pub fn open_at_output_width(unit: &AuRef, rate: f64, block: u32, width: u16) -> (Au, u16) {
     use tutti_au_host::{AuBusLayout, StreamConfig};
     use tutti_types::ChannelLayout;
 
@@ -1041,7 +1041,7 @@ pub fn open_at_output_width(unit: &AuRef, rate: f64, block: u32, width: u16) -> 
     // the flag up front, and getting it wrong sends an input stream format to a
     // unit with no input element.
     let has_input = {
-        let probe = AuInstance::new(info.component, rate, block)
+        let probe = Au::new(info.component, rate, block)
             .unwrap_or_else(|e| panic!("{}: probe instantiate failed: {e:?}", unit.label));
         probe.num_inputs() > 0
     };
@@ -1054,7 +1054,7 @@ pub fn open_at_output_width(unit: &AuRef, rate: f64, block: u32, width: u16) -> 
             has_input,
         },
     );
-    let au = AuInstance::new_with_config(info.component, config)
+    let au = Au::new_with_config(info.component, config)
         .unwrap_or_else(|e| panic!("{}: instantiate at {width}ch failed: {e:?}", unit.label));
     let accepted = au.num_outputs() as u16;
     (au, accepted)

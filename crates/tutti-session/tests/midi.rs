@@ -10,7 +10,6 @@ use tutti_graph::UmpAt;
 use std::time::{Duration, Instant};
 use tutti_fixtures::midi;
 use tutti_graph::NodeKey;
-use tutti_graph::Offset;
 use tutti_graph::{Cx, EventKind, IntoNode, Io, Node, NodeParts, Prepare, Shape, Status};
 #[cfg(feature = "midi-hardware")]
 use tutti_midi_hardware::{Direction, EndpointId};

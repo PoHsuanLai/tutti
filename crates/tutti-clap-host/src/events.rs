@@ -670,9 +670,6 @@ fn control_expression(
                 f64::from(pitch.note_number()) - f64::from(note.get()),
             )
         }),
-        NoteControl::Bend(semitones) => {
-            Some((NoteExpressionType::Tuning, f64::from(semitones.get())))
-        }
         NoteControl::Pressure(value) => Some((
             NoteExpressionType::Pressure,
             f64::from(u32_to_unit_f32(value)),
@@ -986,13 +983,12 @@ impl InputEventList {
     /// note expressions; a per-note controller reaches every note of its key
     /// that has not been detached, and a Per-Note Management Detach or Reset
     /// ends or resets them. A Note Off names no id (CLAP's `-1`): the plugin
-    /// matches it by port, channel and key. A per-note bend is a `TUNING` in
-    /// semitones over its channel's RPN #00/07 sensitivity, a Registered
-    /// Per-Note Controller #3 Pitch or an Attribute Pitch a `TUNING` relative
-    /// to the key. Where a Note On's held Pitch and held bend both reach
-    /// the new note they are one `TUNING`, their sum; a Pitch and a bend sent
-    /// after, in separate messages, each replace the last (CLAP has one tuning
-    /// per note and the list keeps no per-note sum).
+    /// matches it by port, channel and key. A per-note bend, a Registered
+    /// Per-Note Controller #3 Pitch and an Attribute Pitch are one `TUNING`,
+    /// in semitones from the key: the note's sounding pitch
+    /// ([`PerNoteState`]'s sum of the told pitch and the bend over the
+    /// channel's RPN #00/07 sensitivity), sent when it changes; a Reset puts
+    /// it back to 0, and a note told nothing has none.
     ///
     /// A per-note bend sensitivity (RPN #00/07) is consumed: CLAP has no
     /// event for it. Every other CLAP-less message with a MIDI 1.0 form (a
@@ -1239,14 +1235,9 @@ impl InputEventList {
                 }
             }
         };
-        // A note started by this message, its key, and the tuning its held
-        // Pitch and bend add up to: CLAP has one tuning for a note.
-        let mut started: Option<(NoteId, NoteNumber)> = None;
-        let (mut pitch, mut bend) = (None::<f64>, None::<f64>);
         for event in self.notes.step(address, &voice) {
             match *event {
                 NoteEvent::Started { id, note, .. } => {
-                    started = Some((id, note));
                     let on = ClapEvent::note_on(
                         time,
                         i16::from(channel.get()),
@@ -1256,23 +1247,19 @@ impl InputEventList {
                     .addressed(port, plugin_note_id(id));
                     push(&mut self.events, Some(on));
                 }
-                NoteEvent::Control { id, control } => {
-                    let key = note;
-                    match (started, control) {
-                        (Some((own, note)), NoteControl::Pitch(p)) if own == id => {
-                            pitch = Some(f64::from(p.note_number()) - f64::from(note.get()));
-                        }
-                        (Some((own, _)), NoteControl::Bend(b)) if own == id => {
-                            bend = Some(f64::from(b.get()));
-                        }
-                        _ => {
-                            let expression =
-                                control_expression(&control, key).and_then(|(ty, value)| {
-                                    Self::expression(time, ty, id, port, channel, key, value)
-                                });
-                            push(&mut self.events, expression);
-                        }
-                    }
+                NoteEvent::Control {
+                    id,
+                    note: key,
+                    control,
+                } => {
+                    // A Pitch is the note's sounding pitch, already the told
+                    // pitch with its bend: CLAP's one tuning is its distance
+                    // from the key.
+                    let key = Some(key);
+                    let expression = control_expression(&control, key).and_then(|(ty, value)| {
+                        Self::expression(time, ty, id, port, channel, key, value)
+                    });
+                    push(&mut self.events, expression);
                 }
                 NoteEvent::Reset { id } => {
                     for (ty, value) in EXPRESSION_DEFAULTS {
@@ -1281,21 +1268,6 @@ impl InputEventList {
                     }
                 }
             }
-        }
-        if let Some((id, note)) = started
-            && (pitch.is_some() || bend.is_some())
-        {
-            let tuning = pitch.unwrap_or(0.0) + bend.unwrap_or(0.0);
-            let event = Self::expression(
-                time,
-                NoteExpressionType::Tuning,
-                id,
-                port,
-                channel,
-                Some(note),
-                tuning,
-            );
-            push(&mut self.events, event);
         }
         self.midi_dropped += dropped;
     }

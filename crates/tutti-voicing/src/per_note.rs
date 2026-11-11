@@ -116,6 +116,9 @@ pub enum NoteEvent {
     Control {
         /// The note.
         id: NoteId,
+        /// The Note Number the note was started on: the key a [`NoteControl::Pitch`]
+        /// is measured from.
+        note: NoteNumber,
         /// The controller and its value.
         control: NoteControl,
     },
@@ -369,7 +372,7 @@ impl PerNoteState {
         for &(code, value) in &held.set[..held.len] {
             if code != Held::PITCH && code != Held::BEND {
                 let control = self.resolve(code, value);
-                self.out.push(NoteEvent::Control { id, control });
+                self.out.push(NoteEvent::Control { id, note, control });
             }
         }
         // A note told nothing sounds at its key, which is the instrument's
@@ -377,7 +380,7 @@ impl PerNoteState {
         let sounding = self.sounding(at, address, told);
         if sounding.q7_25() != ((at % KEYS) as u32) << 25 {
             let control = NoteControl::Pitch(sounding);
-            self.out.push(NoteEvent::Control { id, control });
+            self.out.push(NoteEvent::Control { id, note, control });
         }
         &self.out
     }
@@ -423,15 +426,16 @@ impl PerNoteState {
         }
         let control = self.resolve(code, value);
         for &id in self.live[at].ids() {
-            self.out.push(NoteEvent::Control { id, control });
+            self.out.push(NoteEvent::Control { id, note, control });
         }
     }
 
     /// Each live note of slot `at` is told its sounding pitch.
     fn sound_all(&mut self, at: usize, address: Address) {
+        let note = NoteNumber::masked((at % KEYS) as u8);
         for (id, told) in self.live[at].notes() {
             let control = NoteControl::Pitch(self.sounding(at, address, told));
-            self.out.push(NoteEvent::Control { id, control });
+            self.out.push(NoteEvent::Control { id, note, control });
         }
     }
 
@@ -561,9 +565,10 @@ mod tests {
         }
     }
 
-    fn pitch_event(id: NoteId, hcu: u32) -> NoteEvent {
+    fn pitch_event(id: NoteId, note: u8, hcu: u32) -> NoteEvent {
         NoteEvent::Control {
             id,
+            note: key(note),
             control: NoteControl::Pitch(Pitch::from_q7_25(hcu << 25)),
         }
     }
@@ -589,7 +594,7 @@ mod tests {
         let e = start(&mut s, at(0, 0), 0);
         let id = started(&e);
         assert_eq!(e.len(), 2, "{e:?}");
-        assert_eq!(e[1], pitch_event(id, 60));
+        assert_eq!(e[1], pitch_event(id, 0, 60));
     }
 
     /// M2-104 section 7.4.5, Detach: the current note stops taking per-note
@@ -609,7 +614,7 @@ mod tests {
         let e = start(&mut s, a, 5);
         let new = started(&e);
         assert_ne!(new, old);
-        assert_eq!(e[1], pitch_event(new, 60));
+        assert_eq!(e[1], pitch_event(new, 5, 60));
         // Only the new note answers now.
         let e = bend(&mut s, a, 5, 0xC000_0000);
         assert!(
@@ -756,7 +761,7 @@ mod tests {
         let a = at(0, 0);
         let e = s.start(a, key(0), Attribute::Pitch(60 << 9)).to_vec();
         let id = started(&e);
-        assert_eq!(e.last(), Some(&pitch_event(id, 60)));
+        assert_eq!(e.last(), Some(&pitch_event(id, 0, 60)));
         assert_eq!(start(&mut s, a, 0).len(), 1, "the key's");
     }
 

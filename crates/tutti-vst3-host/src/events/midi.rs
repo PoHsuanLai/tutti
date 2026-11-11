@@ -124,13 +124,12 @@ impl MidiEncoder {
     /// every note of its key that has not been detached, and a Per-Note
     /// Management Detach or Reset ends or resets them. A Note Off names no id
     /// (VST3's `-1`): the plugin matches it by channel and pitch. A per-note
-    /// bend is a tuning expression in semitones over its channel's RPN #00/07
-    /// sensitivity (consumed: VST3 has no event for it), and a Registered
-    /// Per-Note Controller #3 Pitch or an Attribute Pitch is a tuning relative
-    /// to the key. Where a Note On's held Pitch and held bend both reach the new
-    /// note they are one tuning event, their sum; a Pitch and a bend sent after,
-    /// in separate messages, each replace the last (VST3 has one tuning for a
-    /// note, and the encoder keeps no per-note sum). A Note On at MIDI 2.0
+    /// bend, a Registered Per-Note Controller #3 Pitch and an Attribute Pitch
+    /// are one tuning expression in semitones: the note's sounding pitch
+    /// ([`PerNoteState`]'s sum of the told pitch and the bend over the
+    /// channel's RPN #00/07 sensitivity, consumed: VST3 has no event for it)
+    /// relative to the key, sent when it changes; a Reset puts it back to 0 and a
+    /// note told nothing has none. A Note On at MIDI 2.0
     /// velocity 0 goes at the smallest velocity above 0, which VST3 plugins do
     /// not read as a release.
     ///
@@ -283,14 +282,9 @@ impl MidiEncoder {
             | Voice2::PerNoteManagement { note, .. } => (Some(note), None),
             _ => (None, None),
         };
-        // A note started by this message, its key, and the tuning its held Pitch
-        // and bend add up to: VST3 has one tuning for a note.
-        let mut started: Option<(NoteId, NoteNumber)> = None;
-        let (mut pitch, mut bend) = (None::<f64>, None::<f64>);
         for event in self.notes.step(address, &voice) {
             let made = match *event {
                 NoteEvent::Started { id, note, .. } => {
-                    started = Some((id, note));
                     // A MIDI 2.0 Note On at velocity 0 is a Note On (M2-104
                     // §7.4.2: velocity 0 "does not function as a Note Off"). VST3
                     // plugins, and the SDK's own MIDI conversion, read a NoteOnEvent
@@ -306,17 +300,12 @@ impl MidiEncoder {
                     ));
                     continue;
                 }
-                NoteEvent::Control { id, control } => match (started, control) {
-                    (Some((own, note)), NoteControl::Pitch(p)) if own == id => {
-                        pitch = Some(f64::from(p.note_number()) - f64::from(note.get()));
-                        continue;
-                    }
-                    (Some((own, _)), NoteControl::Bend(b)) if own == id => {
-                        bend = Some(f64::from(b.get()));
-                        continue;
-                    }
-                    _ => control_event(offset, channel, note, id, &control),
-                },
+                // A Pitch is the note's sounding pitch, the told pitch with its
+                // bend already in it: VST3's one tuning is its distance from the
+                // key.
+                NoteEvent::Control { id, note, control } => {
+                    control_event(offset, channel, Some(note), id, &control)
+                }
                 NoteEvent::Reset { id } => {
                     for (expression_type, value) in EXPRESSION_DEFAULTS {
                         let reset = NoteExpressionValue {
@@ -336,18 +325,6 @@ impl MidiEncoder {
                 }
             };
             self.out.extend(made.map(|e| on_bus(e, bus)));
-        }
-        if let Some((id, _)) = started
-            && (pitch.is_some() || bend.is_some())
-        {
-            let tuning = NoteExpressionValue {
-                sample_offset: offset,
-                note_id: plugin_note_id(id),
-                expression_type: NoteExpressionType::Tuning,
-                value: tuning_expression(pitch.unwrap_or(0.0) + bend.unwrap_or(0.0)),
-            }
-            .to_event();
-            self.out.extend(tuning.map(|e| on_bus(e, bus)));
         }
     }
 }
@@ -412,10 +389,6 @@ fn control_event(
                 tuning_expression(f64::from(pitch.note_number()) - f64::from(note.get())),
             )
         }
-        NoteControl::Bend(semitones) => expression(
-            NoteExpressionType::Tuning,
-            tuning_expression(f64::from(semitones.get())),
-        ),
         NoteControl::Pressure(value) => Some(pressure_event(
             offset,
             channel,

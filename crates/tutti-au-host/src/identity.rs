@@ -175,7 +175,7 @@ pub fn nick_name(unit: &Unit) -> Result<Option<String>> {
 /// returned, which invites a host to ask for "the top 3". That is a worse
 /// interface than it looks: the AU has *already* ranked them, so truncating is
 /// the caller's business and doing it here would silently discard the tail. This
-/// asks for the full list — via [`get_property_bytes`], which sizes the buffer
+/// asks for the full list — via [`Unit::get_array`], which sizes the buffer
 /// from the AU's own `GetPropertyInfo` — and lets the caller take what it wants.
 ///
 /// An AU that implements the property but curates nothing returns an empty vec.

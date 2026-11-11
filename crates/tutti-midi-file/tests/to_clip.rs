@@ -118,6 +118,7 @@ fn a_set_tempo_is_ten_ns_units_per_quarter() {
             0,
             meta(Meta::Tempo {
                 micros_per_quarter: 500_000,
+                extra: Box::default(),
             }),
         ),
         (0, note(0, 60)),
@@ -132,6 +133,7 @@ fn a_set_tempo_is_ten_ns_units_per_quarter() {
         0,
         meta(Meta::Tempo {
             micros_per_quarter: 0xFF_FFFF,
+            extra: Box::default(),
         }),
     )]);
     let clip = slow.to_clip().unwrap().clip;
@@ -149,6 +151,7 @@ fn a_time_signature_is_a_signature_and_a_metronome() {
             0,
             meta(Meta::Tempo {
                 micros_per_quarter: 500_000,
+                extra: Box::default(),
             }),
         ),
         (
@@ -158,6 +161,7 @@ fn a_time_signature_is_a_signature_and_a_metronome() {
                 denominator_power: 3,
                 clocks_per_click: 36,
                 thirty_seconds_per_quarter: 8,
+                extra: Box::default(),
             }),
         ),
     ]);
@@ -183,7 +187,14 @@ fn a_key_signature_is_the_sharps_and_the_tonic() {
         (7, false, Letter::C),
         (0, true, Letter::A),
     ] {
-        let smf = format0(vec![(0, meta(Meta::KeySignature { sharps, minor }))]);
+        let smf = format0(vec![(
+            0,
+            meta(Meta::KeySignature {
+                sharps,
+                minor,
+                extra: Box::default(),
+            }),
+        )]);
         let clip = smf.to_clip().unwrap().clip;
         let key = events_of(&clip)
             .iter()
@@ -375,12 +386,14 @@ fn the_first_tempo_and_signature_lead_the_clip() {
                         denominator_power: 2,
                         clocks_per_click: 24,
                         thirty_seconds_per_quarter: 8,
+                        extra: Box::default(),
                     }),
                 ),
                 (
                     0,
                     meta(Meta::Tempo {
                         micros_per_quarter: 1_000_000,
+                        extra: Box::default(),
                     }),
                 ),
             ]),
@@ -409,6 +422,7 @@ fn a_file_with_no_tempo_or_signature_gets_the_smf_defaults() {
             960,
             meta(Meta::Tempo {
                 micros_per_quarter: 250_000,
+                extra: Box::default(),
             }),
         ),
     ]);
@@ -439,6 +453,7 @@ fn a_tempo_at_tick_zero_is_not_defaulted() {
         0,
         meta(Meta::Tempo {
             micros_per_quarter: 1_000_000,
+            extra: Box::default(),
         }),
     )]);
     let clip = smf.to_clip().unwrap().clip;
@@ -494,6 +509,7 @@ fn what_has_no_successor_is_reported_with_its_tick() {
         denominator_power: 0,
         clocks_per_click: 24,
         thirty_seconds_per_quarter: 8,
+        extra: Box::default(),
     });
     let events = vec![
         (0, other(0x00)), // sequence number
@@ -515,6 +531,7 @@ fn what_has_no_successor_is_reported_with_its_tick() {
                 denominator_power: 2,
                 clocks_per_click: 24,
                 thirty_seconds_per_quarter: 8,
+                extra: Box::default(),
             }),
         ),
         (
@@ -522,6 +539,7 @@ fn what_has_no_successor_is_reported_with_its_tick() {
             meta(Meta::KeySignature {
                 sharps: 8,
                 minor: false,
+                extra: Box::default(),
             }),
         ),
         (15, other(0x30)), // unregistered
@@ -713,6 +731,7 @@ fn the_clip_round_trips_through_its_bytes() {
                     0,
                     meta(Meta::Tempo {
                         micros_per_quarter: 500_000,
+                        extra: Box::default(),
                     }),
                 ),
                 (
@@ -732,6 +751,7 @@ fn the_clip_round_trips_through_its_bytes() {
                     meta(Meta::KeySignature {
                         sharps: -3,
                         minor: true,
+                        extra: Box::default(),
                     }),
                 ),
                 (480, note(1, 64)),

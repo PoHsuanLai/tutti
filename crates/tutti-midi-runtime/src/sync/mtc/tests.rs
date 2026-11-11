@@ -36,9 +36,10 @@ fn joining_mid_cycle_waits_for_the_next_piece_zero() {
     assert_eq!(decoder.timecode(), None);
     feed_timecode(&mut decoder, 1, 2, 3, 4, 1);
     let tc = decoder.timecode().expect("a full cycle after piece 0");
+    // 1:02:03:04 and the receiver's +2 frames.
     assert_eq!(
         (tc.hours(), tc.minutes(), tc.seconds(), tc.frames()),
-        (1, 2, 3, 4)
+        (1, 2, 3, 6)
     );
 }
 
@@ -52,25 +53,34 @@ fn joining_mid_cycle_waits_for_the_next_piece_zero() {
 /// functions where a swapped pair reads as two independent tests.
 #[test]
 fn eight_quarter_frames_assemble_into_a_timecode_at_every_rate() {
-    // (h, m, s, f, rate bits, expected rate)
+    // (fed h, m, s, f, rate bits, expected rate, reported h, m, s, f): the
+    // reported position is the fed one plus the receiver's +2 frames.
     let cases = [
-        (1u8, 2u8, 3u8, 4u8, 0u8, SmpteFrameRate::Fps24),
-        (10, 30, 0, 0, 1, SmpteFrameRate::Fps25),
-        (0, 0, 0, 0, 2, SmpteFrameRate::Fps2997Df),
-        (1, 2, 3, 4, 3, SmpteFrameRate::Fps30),
+        (
+            1u8,
+            2u8,
+            3u8,
+            4u8,
+            0u8,
+            SmpteFrameRate::Fps24,
+            (1u8, 2u8, 3u8, 6u8),
+        ),
+        (10, 30, 0, 0, 1, SmpteFrameRate::Fps25, (10, 30, 0, 2)),
+        (0, 0, 0, 0, 2, SmpteFrameRate::Fps2997Df, (0, 0, 0, 2)),
+        (1, 2, 3, 4, 3, SmpteFrameRate::Fps30, (1, 2, 3, 6)),
         // A frame number needing both nibbles, so the high-nibble piece is
-        // not silently dropped.
-        (0, 0, 1, 23, 0, SmpteFrameRate::Fps24),
+        // not silently dropped; two frames on, it carries into the second.
+        (0, 0, 1, 23, 0, SmpteFrameRate::Fps24, (0, 0, 2, 1)),
     ];
 
-    for (h, m, s, f, rate_bits, expected_rate) in cases {
+    for (h, m, s, f, rate_bits, expected_rate, shown) in cases {
         let mut decoder = MtcDecoder::new();
         feed_timecode(&mut decoder, h, m, s, f, rate_bits);
 
         let tc = decoder.timecode().expect("eight pieces is a full timecode");
         assert_eq!(
             (tc.hours, tc.minutes, tc.seconds, tc.frames),
-            (h, m, s, f),
+            shown,
             "rate bits {rate_bits}"
         );
         assert_eq!(tc.frame_rate, expected_rate, "rate bits {rate_bits}");
@@ -112,9 +122,10 @@ fn test_resyncs_on_next_piece_zero() {
 
     feed_timecode(&mut decoder, 1, 2, 3, 4, 3);
     let tc = decoder.timecode().unwrap();
+    // 1:02:03:04 and the receiver's +2 frames.
     assert_eq!(
         (tc.hours(), tc.minutes(), tc.seconds(), tc.frames()),
-        (1, 2, 3, 4)
+        (1, 2, 3, 6)
     );
 }
 
@@ -206,23 +217,23 @@ fn test_sequential_updates() {
 
     feed_timecode(&mut decoder, 0, 0, 0, 0, 3);
     let tc1 = decoder.timecode().unwrap();
-    assert_eq!(tc1.frames, 0);
+    assert_eq!(tc1.frames, 2, "0 and the receiver's +2 frames");
 
     feed_timecode(&mut decoder, 0, 0, 0, 1, 3);
     let tc2 = decoder.timecode().unwrap();
-    assert_eq!(tc2.frames, 1);
+    assert_eq!(tc2.frames, 3);
 }
 
 #[test]
 fn test_hours_above_15() {
     let mut decoder = MtcDecoder::new();
     // Hour 23: low nibble = 7 (0x07), bit4 = 1
-    feed_timecode(&mut decoder, 23, 59, 59, 29, 3);
+    feed_timecode(&mut decoder, 23, 59, 59, 25, 3);
     let tc = decoder.timecode().unwrap();
     assert_eq!(tc.hours, 23);
     assert_eq!(tc.minutes, 59);
     assert_eq!(tc.seconds, 59);
-    assert_eq!(tc.frames, 29);
+    assert_eq!(tc.frames, 27, "25 and the receiver's +2 frames");
 }
 
 /// `new` refuses each field one past its range, per rate, and accepts the
@@ -260,4 +271,61 @@ fn a_corrupt_position_is_dropped_and_the_last_good_one_kept() {
     // Hour 28 at 30 fps: the five hour bits hold it, no clock does.
     feed_timecode(&mut decoder, 28, 2, 3, 4, 3);
     assert_eq!(decoder.timecode(), good);
+}
+
+/// MTC, Quarter Frame Message Implementation: "A receiver of this time must
+/// keep an internal offset of +2 frames for displaying." The reported time
+/// carries across the second, the minute (drop-frame labels `;00` and `;01`
+/// are skipped: 00:00:59:29 plus two frames is 00:01:00:03) and the day.
+/// Mutation (run): the offset made 0 fails every case.
+#[test]
+fn the_reported_time_is_two_frames_on_across_every_carry() {
+    for (fed, rate_bits, expected) in [
+        ((0u8, 0u8, 0u8, 29u8), 3u8, (0u8, 0u8, 1u8, 1u8)), // 30 fps, second
+        ((0, 0, 59, 29), 2, (0, 1, 0, 3)),                  // drop-frame minute
+        ((0, 59, 59, 29), 3, (1, 0, 0, 1)),                 // hour
+        ((23, 59, 59, 29), 3, (0, 0, 0, 1)),                // the day wraps
+    ] {
+        let mut decoder = MtcDecoder::new();
+        feed_timecode(&mut decoder, fed.0, fed.1, fed.2, fed.3, rate_bits);
+        let tc = decoder.timecode().unwrap();
+        assert_eq!(
+            (tc.hours(), tc.minutes(), tc.seconds(), tc.frames()),
+            expected,
+            "from {fed:?}"
+        );
+    }
+}
+
+/// MTC, Quarter Frame Messages: the bits above each count are "Undefined and
+/// reserved for future use. Transmitter must set these bits to 0 and receiver
+/// should ignore!" A cycle with every reserved bit set (frame bits 5-7,
+/// seconds and minutes bits 6-7, hours bit 7, which is bit 3 of piece 7) reads
+/// as the cycle with them clear, not as a corrupt frame.
+/// Mutation (run): the frame field's mask dropped (`n[1] & 0x01` to `n[1]`)
+/// makes the frame 4 + 14 * 16 and the cycle is refused, so no
+/// timecode is reported.
+#[test]
+fn reserved_bits_of_the_quarter_frames_are_ignored() {
+    let mut decoder = MtcDecoder::new();
+    // 01:02:03:04 at 30 fps (rate 3).
+    let nibbles = [
+        4,              // frames low
+        0xE,            // frames high: bit 0 is the 16s, bits 1-3 reserved
+        3,              // seconds low
+        0xC,            // seconds high: bits 0-1 count, bits 2-3 reserved
+        2,              // minutes low
+        0xC,            // minutes high, as seconds
+        1,              // hours low
+        (3 << 1) | 0x8, // hours high bit 0 clear, rate 3, bit 3 reserved
+    ];
+    for (piece, nibble) in nibbles.into_iter().enumerate() {
+        decoder.feed(make_quarter_frame(piece as u8, nibble));
+    }
+    let tc = decoder.timecode().expect("not a corrupt frame");
+    // 1:02:03:04 and the receiver's +2 frames.
+    assert_eq!(
+        (tc.hours(), tc.minutes(), tc.seconds(), tc.frames()),
+        (1, 2, 3, 6)
+    );
 }

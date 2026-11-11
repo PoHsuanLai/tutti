@@ -10,7 +10,7 @@ use crate::writer::FormatWriter;
 use std::fs::File;
 use std::io::{BufWriter, Seek, Write};
 use std::path::Path;
-use tutti_types::{ChannelLayout, Interleaved};
+use tutti_types::{ChannelLayout, Interleaved, Samples};
 
 /// Writes blocks of audio as one file of a [`Format`](crate::Format): the
 /// [`FormatWriter`](crate::FormatWriter) of
@@ -311,6 +311,31 @@ impl Encoder<BufWriter<File>> {
         let mut encoder = Self::create(spec, sink)?;
         encoder.staged = Some(staged);
         Ok(encoder)
+    }
+
+    /// Starts a file at `path` that will hold `frames` frames, refusing a
+    /// count the format's file cannot hold before the temporary exists.
+    ///
+    /// For a caller that knows the length up front (an export), so it learns
+    /// that a WAV is too long before it renders a frame, from the codec's own
+    /// limit ([`crate::Format::max_frames`]) and its own error. It does not lower the
+    /// limit on the writes.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::WavTooLarge`] when `frames` is past [`crate::Format::max_frames`] for
+    /// the spec's width; otherwise as [`create_file`](Self::create_file).
+    pub fn create_file_planned(
+        spec: &Spec,
+        path: impl AsRef<Path>,
+        frames: Samples,
+    ) -> Result<Self> {
+        if let Some(limit_frames) = spec.format.max_frames(spec.layout)
+            && frames.get() as u64 > limit_frames
+        {
+            return Err(Error::WavTooLarge { limit_frames });
+        }
+        Self::create_file(spec, path)
     }
 }
 

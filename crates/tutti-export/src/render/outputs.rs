@@ -22,7 +22,7 @@ use tutti_types::{ChannelLayout, Db, Fold, Interleaved, InterleavedMut, SampleRa
 
 use crate::control::{Control, Outcome, Stage, Weights};
 use crate::encode::{
-    Chain, ClippedFile, Resampler, open_file, output_rate, replay_through, resampler_for, written,
+    Chain, Landed, Resampler, open_file, output_rate, replay_through, resampler_for, written,
 };
 use crate::normalize::{Measurer, Normalize, chunk_frames};
 use crate::output::{FileTarget, GainSource, NormalizeSpec, Output, Produced, Target, TargetError};
@@ -365,7 +365,7 @@ fn finish(
             let w = waiting_of(&lanes[i]);
             let normalize = w.spec.mode().within(&w.target);
             let Outcome::Finished((reading, at)) =
-                measure(w, lanes[i].layout, rate, normalize, done, total, control)?
+                measure(w, i, lanes[i].layout, rate, normalize, done, total, control)?
             else {
                 return Ok(Outcome::Cancelled);
             };
@@ -482,6 +482,7 @@ fn waiting_of(lane: &Lane) -> &Waiting {
 /// programme.
 fn measure(
     waiting: &Waiting,
+    output: usize,
     layout: ChannelLayout,
     rate: SampleRate,
     normalize: Normalize,
@@ -491,6 +492,7 @@ fn measure(
 ) -> Result<Outcome<(Loudness, Samples)>> {
     let out_rate = output_rate(&waiting.target, rate);
     let unmeasurable = |reason: Unmeasured| Error::Unmeasurable {
+        output: Some(output),
         channels: layout,
         sample_rate: out_rate,
         reason,
@@ -572,7 +574,7 @@ pub(crate) struct PendingFile {
 pub(crate) fn finalize_files(
     files: Vec<PendingFile>,
     control: &mut Control<'_>,
-) -> Result<Outcome<Vec<(usize, PathBuf, ClippedFile)>>> {
+) -> Result<Outcome<Vec<(usize, PathBuf, Landed)>>> {
     let count = files.len();
     control.set_output(files.first().map_or(0, |f| f.index));
     control.begin(Stage::Finalizing, None);

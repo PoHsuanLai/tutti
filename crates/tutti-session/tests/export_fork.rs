@@ -21,7 +21,7 @@ use std::sync::{Arc, Mutex};
 use std::thread::ThreadId;
 use std::time::Duration;
 
-use tutti_export::{ChannelLayout, Produced};
+use tutti_export::Produced;
 use tutti_fixtures::assert_golden;
 use tutti_graph::NodeKey;
 use tutti_graph::{
@@ -34,6 +34,7 @@ use tutti_session::{
     Bounce, BounceConfigError, BounceError, ExportClock, GraphSource, Latency, PreparedGraph,
     Range, Session, Stem,
 };
+use tutti_types::ChannelLayout;
 use tutti_types::{Amplitude, Hz, Param, Q, SampleRate, Samples, Seconds, Tail, UnitParam};
 
 const RATE: f64 = 48_000.0;
@@ -158,9 +159,10 @@ fn digest(planes: &[Vec<f32>]) -> u64 {
 /// which is what a fresh graph is.
 fn chain_fresh(seconds: f64) -> (Vec<Vec<f32>>, Vec<Vec<f32>>) {
     use tutti_export::{
-        BufferTarget, Control, FrozenClock, Job, Output, Produced, RenderGraph, Setup, render_one,
+        BufferTarget, Control, Job, Output, Produced, RenderGraph, Setup, render_one,
     };
     use tutti_graph::GraphBuilder;
+    use tutti_transport::FrozenClock;
     let render = |master: bool| {
         let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::STEREO);
         let osc = g.add(Osc::saw(Hz(110.0)));
@@ -292,7 +294,7 @@ impl Node for Late {
 /// renders none — not the cap, which would
 /// append silence.
 ///
-/// Mutations (each run, each failed): `ExportJob::run` ignoring
+/// Mutations (each run, each failed): `BounceJob::run` ignoring
 /// `latency_from_graph` → frame 0 reads 0; ignoring `tail_from_graph` → the
 /// render is `TAIL` frames short; resolving the tail as
 /// `samples().unwrap_or(cap)` → the unknown graph renders `cap` extra frames.
@@ -339,7 +341,7 @@ fn latency_and_tail_come_from_the_graph() {
 /// the source's step lands on frame 0; by the live graph's figure (0), it
 /// would land on frame `LATE`.
 ///
-/// Mutations (each run, each failed): `ExportJob::run` reading
+/// Mutations (each run, each failed): `BounceJob::run` reading
 /// `reported_latency()` before the edit runs and using that figure; and the
 /// fork's commit after the edit skipped (`ForkedPair::commit` replaced by `Ok`),
 /// so the plan is still the live graph's and nothing is trimmed.
@@ -395,7 +397,7 @@ fn a_prepare_hook_that_swaps_the_editor_fails_the_export() {
 /// **An export of a graph with no outputs says so**, for the master and for
 /// a bounce that also names a stem — not that the stem's node is unheard.
 ///
-/// Mutation (run, failed): the `outputs() == 0` check in `Session::export`
+/// Mutation (run, failed): the `outputs() == 0` check in `Session::bounce_start`
 /// disabled → neither export is refused as having no outputs.
 #[test]
 fn a_graph_with_no_outputs_says_so() {
@@ -490,7 +492,7 @@ fn short() -> Bounce {
 /// edits the fork's editor and does not commit: the session does.
 ///
 /// Mutation (run, failed): the session's commit of the fork after the hook
-/// (`ExportJob::run`, `pair.commit()` after the edit) skipped → renders 0.5.
+/// (`BounceJob::run`, `pair.commit()` after the edit) skipped → renders 0.5.
 #[test]
 fn a_prepare_hook_reaches_the_graph_that_gets_rendered() {
     let (mut session, _node) = graph_with_one_node_on();
@@ -525,7 +527,7 @@ fn a_prepare_hook_reaches_the_graph_that_gets_rendered() {
 /// make the two disagree: a node the hook places on a 90 BPM project would
 /// land on a 120 BPM playhead that nothing advances.
 ///
-/// Mutation (run, failed): `Session::export` handing the hook a context of
+/// Mutation (run, failed): `Session::bounce_start` handing the hook a context of
 /// its own (`ExportClock::frozen().offline()`) instead of the request's
 /// → the hook sees 120 BPM at beat 0, not 90 at beat 16.
 #[test]
@@ -568,7 +570,7 @@ fn the_prepare_hook_sees_the_callers_timeline() {
 
 /// **A master export's `prepare` hook sees the caller's timeline too.**
 ///
-/// Mutation (run, failed): `Session::export` handing the hook a context of
+/// Mutation (run, failed): `Session::bounce_start` handing the hook a context of
 /// its own (`ExportClock::frozen().offline()`) instead of the request's →
 /// the hook sees 120 BPM, not 90.
 #[test]
@@ -921,7 +923,7 @@ impl IntoNode for Level {
 /// **An export does not wait for a slow fork, and is the graph as it was
 /// when it started.** A node whose fork build blocks until released (the
 /// shape of a hosted plugin's `plugin-server` launch) is exported beside
-/// a `ParamNode`. `Session::export` returns with the build not yet run (it
+/// a `ParamNode`. `Session::bounce_start` returns with the build not yet run (it
 /// gathers; the job builds); there the live graph is edited — the slow
 /// node's cell and the param moved, the outputs rewired to another node —
 /// and only then is the build released and the job run on a thread of its
@@ -1078,14 +1080,14 @@ fn all_main(what: &str, at: &Mutex<Vec<ThreadId>>) {
 /// **A main-thread-only fork source builds on the main thread** though the
 /// job builds the rest of its fork on the thread that runs it: a pinned
 /// source (an in-process VST2 plugin's) is built and prepared in the gather,
-/// in `Session::export`, and the unit it built is dropped by
-/// `finish_export`, on the main thread, after the render on a thread of its
+/// in `Session::bounce_start`, and the unit it built is dropped by
+/// `finish_bounce`, on the main thread, after the render on a thread of its
 /// own. A slow deferred source beside it keeps the job busy for a while.
 ///
 /// Mutation (run, failed): `fork_gather` treating a pinned unit as a
 /// `ForkBuild::ready` one (not prepared in the gather) → prepared on the
 /// render thread. (The session's `ToMain` drop sending nothing back does not
-/// fail this test, which finishes through `finish_export`; it fails the three
+/// fail this test, which finishes through `finish_bounce`; it fails the three
 /// below.)
 #[test]
 fn a_main_thread_only_fork_builds_and_drops_on_the_main_thread() {
@@ -1219,7 +1221,7 @@ impl IntoNode for Broken {
 /// unit, built in the gather) is dropped on the main thread, as a rendered
 /// graph is.
 ///
-/// Mutations (each run, each failed): `ExportJob::run` dropping a failed
+/// Mutations (each run, each failed): `BounceJob::run` dropping a failed
 /// build's `ForkRemains` where it is (`drop(remains)`) instead of sending it
 /// back → the pinned unit drops on the render thread; the `ToMain` drop
 /// dropping its value where it is → the same; `fork_gather` not preparing a

@@ -115,8 +115,9 @@ impl Setup {
 /// # Example
 ///
 /// ```
+/// use tutti_transport::FrozenClock;
 /// use tutti_types::{Hz, SampleRate, Samples, Seconds};
-/// use tutti_export::{render_one, BufferTarget, Control, FrozenClock, Job, Output, Produced, RenderGraph, Setup};
+/// use tutti_export::{render_one, BufferTarget, Control, Job, Output, Produced, RenderGraph, Setup};
 /// use tutti_graph::GraphBuilder;
 /// use tutti_nodes::testing::Osc;
 /// use tutti_types::ChannelLayout;

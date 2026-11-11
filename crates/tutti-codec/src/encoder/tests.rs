@@ -327,6 +327,32 @@ fn a_file_that_crosses_its_limit_is_never_put_in_place() {
     assert_eq!(listing(dir.path()), ["take.wav"]);
 }
 
+/// A planned length past the format's limit is refused by the codec's own
+/// error before the temporary exists, and a length at the limit is not.
+#[cfg(feature = "encode-wav")]
+#[test]
+fn a_planned_length_past_the_limit_is_refused_before_the_file_exists() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("take.wav");
+    std::fs::write(&path, b"previous").unwrap();
+    let format = Format::Wav(crate::Pcm::Int16);
+    let spec = spec(format, 2);
+    let limit = format.max_frames(spec.layout).unwrap();
+
+    let err = Encoder::create_file_planned(&spec, &path, Samples(limit as usize + 1))
+        .map(drop)
+        .expect_err("one frame past the limit");
+    assert!(
+        matches!(err, Error::WavTooLarge { limit_frames } if limit_frames == limit),
+        "{err}"
+    );
+    assert_eq!(std::fs::read(&path).unwrap(), b"previous");
+    assert_eq!(listing(dir.path()), ["take.wav"], "no temporary was made");
+
+    Encoder::create_file_planned(&spec, &path, Samples(limit as usize))
+        .expect("the limit itself fits");
+}
+
 /// A plain sink keeps today's behaviour: `finish` after the limit closes what
 /// was written, a readable prefix, and hands the sink back.
 ///

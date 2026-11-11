@@ -6,9 +6,11 @@ use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, OnceLock};
 
-use tutti_export::{ChannelLayout, Format, GRAPH_MAX_BLOCK, Normalize, Outcome, Pcm, Stage};
+use tutti_codec::{Format, Pcm};
+use tutti_export::{GRAPH_MAX_BLOCK, Normalize, Outcome, Stage};
 use tutti_graph::{Cx, ForkByClone, Io, Node, Prepare, Shape, Status};
 use tutti_session::{Bounce, BounceError, BounceHandle, ExportClock, Range, Session, Tail};
+use tutti_types::ChannelLayout;
 use tutti_types::{Db, Frame, SampleRate, Samples};
 
 const RATE: SampleRate = SampleRate(48_000.0);
@@ -98,7 +100,7 @@ const TOTAL: Samples = Samples(BLOCKS * 1024);
 ///
 /// Mutation (run): `BounceHandle::cancel` not setting its token -> all 20
 /// blocks render and the outcome is `Finished`; fails.
-/// Mutation (run): `ExportRendered` kept in `finish_bounce` (token not
+/// Mutation (run): `BounceRendered` kept in `finish_bounce` (token not
 /// dropped) -> the following export is refused; fails.
 #[test]
 fn a_cancel_stops_the_render_and_frees_the_session() {

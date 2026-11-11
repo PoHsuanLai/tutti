@@ -54,15 +54,16 @@ use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
+use tutti_codec::Format;
 use tutti_dsp::DitherShape;
 use tutti_export::{
-    BufferTarget, CancelToken, Control, EventLossPolicy, FileTarget, Format, GRAPH_MAX_BLOCK, Job,
-    JobError, Normalize, NormalizeSpec, Outcome, Output, Placement, Produced, Progress,
-    RenderClock, Resample, Target,
+    BufferTarget, CancelToken, Control, EventLossPolicy, FileTarget, GRAPH_MAX_BLOCK, Job,
+    JobError, Normalize, NormalizeSpec, Outcome, Output, Placement, Produced, Progress, Resample,
+    Target,
 };
 use tutti_graph::{CommitError, Editor, MissingSource, NodeKey, OutPort, TapAlign, TapId};
 use tutti_tempo::TempoMap;
-use tutti_transport::{OfflineTimeline, OfflineTimelineConfig, OfflineTransport};
+use tutti_transport::{OfflineTimeline, OfflineTimelineConfig, OfflineTransport, RenderClock};
 use tutti_types::{Beat, ChannelLayout, ChannelTopology, Frame, SampleRate, Samples, Seconds};
 
 use crate::Session;
@@ -162,7 +163,7 @@ enum Master {
 ///
 /// ```no_run
 /// # use tutti_session::{Bounce, Range, Session};
-/// # use tutti_export::{Format, Pcm};
+/// # use tutti_codec::{Format, Pcm};
 /// # use tutti_graph::NodeKey;
 /// # use tutti_types::Beat;
 /// # fn go(session: &mut Session, drums: NodeKey) -> Result<(), tutti_session::BounceError> {

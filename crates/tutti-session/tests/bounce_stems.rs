@@ -12,15 +12,15 @@
 use std::collections::HashMap;
 use std::path::Path;
 
-use tutti_export::{
-    ChannelLayout, Error, Format, Normalize, Outcome, Pcm, Produced, Resample, TargetError,
-};
+use tutti_codec::{Format, Pcm};
+use tutti_export::{Error, Normalize, Outcome, Produced, Resample, TargetError};
 use tutti_graph::{Cx, ForkByClone, Io, Node, Prepare, Shape, Status};
 use tutti_nodes::testing::Const;
 use tutti_session::{
     Bounce, BounceConfigError, BounceError, ExportClock, GraphSource, Latency, PreparedGraph,
     Range, Session, Stem, StemGain, Tail,
 };
+use tutti_types::ChannelLayout;
 use tutti_types::{Db, SampleRate, Samples, Seconds};
 
 const RATE: SampleRate = SampleRate(48_000.0);

@@ -56,7 +56,9 @@ To play through a sound card, turn on `device` and let the session (the
 reports: `SessionBuilder::build_device` hands back a `Session` and its
 `Device`, and `examples/headless_engine.rs` plays a tone in under twenty
 lines. To write a file
-instead, turn on `export` and a codec: see `examples/headless_export.rs`.
+instead, turn on `export` (it brings the `codec` module with it) and bounce the
+session: a `Bounce` names a range and a master, and optionally stems, and
+`Session::bounce` renders it (`examples/headless_export.rs`).
 
 ## How the pieces fit
 
@@ -92,9 +94,9 @@ Most of what a host names is in [`prelude`](crate::prelude).
 | `tutti::graph` | `tutti-graph` | the audio graph: builder, compiler, `Editor` / `Executor` | always |
 | `tutti::nodes` | `tutti-nodes` | built-in nodes: filters, delays, dynamics, LFOs, mixing, automation, VBAP and HRTF panners | always |
 | `tutti::device` | `tutti-cpal` | the sound card: CPAL output stream, mic capture, driver lifecycle | `device` |
-| `tutti::codec` | `tutti-codec` | audio file codecs: `Wave`, `FileIn`, the decoders, `FileOut`, the encoders | `codec` (implied by every format) |
+| `tutti::codec` | `tutti-codec` | audio file codecs: `Wave`, `FileIn`, the decoders, `FileOut`, the encoders | `codec` (implied by every format and by `export`) |
 | `tutti::io` | `tutti-session` | recording: `Recorder` and its `PumpLoop` (the sink is `tutti::codec::FileOut`; a graph tap is a `Source` as it is) | `io` |
-| `tutti::export` | `tutti-export` | offline render of a graph to a buffer or a file | `export` |
+| `tutti::export` | `tutti-export` | the offline render pipeline a `Bounce` drives: one pass of a graph into files or buffers, with progress and cancel | `export` |
 | `tutti::sampler` | `tutti-sampler` | sample playback: in-memory and streamed voices, time stretch | `sampler` |
 | `tutti::polysynth` | `tutti-polysynth` | polyphonic subtractive synth node | `synth` |
 | `tutti::soundfont` | `tutti-soundfont` | SoundFont (.sf2) playback node | `soundfont` |

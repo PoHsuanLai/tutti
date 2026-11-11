@@ -17,16 +17,18 @@ use symphonia::core::formats::FormatOptions;
 use symphonia::core::io::MediaSourceStream;
 use symphonia::core::meta::MetadataOptions;
 use symphonia::core::probe::Hint;
+use tutti_codec::{FlacLevel, Format, IntDepth, Pcm};
 use tutti_export::{
-    BufferTarget, ChannelLayout, Control, Error, FileTarget, FlacLevel, Format, FrozenClock,
-    IntDepth, Job, Normalize, NormalizeSpec, Output, Pcm, Placement, Produced, RenderGraph, Setup,
-    TargetError, render,
+    BufferTarget, Control, Error, FileTarget, Job, Normalize, NormalizeSpec, Output, Placement,
+    Produced, RenderGraph, Setup, TargetError, render,
 };
 use tutti_graph::{
     Cx, Editor, Executor, ForkByClone, GraphBuilder, Io, Node, NodeKey, OutPort, Prepare, Shape,
     Source, Status, TapAlign, TapId, TapReader,
 };
 use tutti_nodes::testing::{Const, Osc};
+use tutti_transport::FrozenClock;
+use tutti_types::ChannelLayout;
 use tutti_types::{Amplitude, ChannelTopology, Db, Hz, SampleRate, Samples};
 
 const RATE: SampleRate = SampleRate(48_000.0);
@@ -700,4 +702,58 @@ fn outputs_that_contradict_each_other_are_named_errors() {
         "{err:?}"
     );
     assert!(names(dir.path()).is_empty());
+}
+
+/// An output whose audio cannot be normalized names itself: with an audible
+/// master first and a silent stem second, `Unmeasurable` is the second's.
+#[test]
+fn an_unmeasurable_output_names_its_index() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::STEREO);
+    let loud = g.add(Const::frame(&[0.5, 0.5]));
+    let silent = g.add(Const::frame(&[0.0, 0.0]));
+    stereo_out(&mut g, loud);
+    stereo_out(&mut g, silent);
+    let mut rig = rig(g);
+    let reader = rig.tap(1, silent);
+    let mut graph = rig.assemble();
+
+    let err = render(
+        &mut graph,
+        &job(2_000),
+        &FrozenClock,
+        vec![
+            Output::master(
+                FileTarget::new(
+                    dir.path().join("m.wav"),
+                    Format::Wav(Pcm::Float32),
+                    ChannelLayout::STEREO,
+                )
+                .with_normalize(Some(NormalizeSpec::own(Normalize::peak(Db(-6.0))))),
+            ),
+            Output::tap(
+                reader,
+                stereo_placement(),
+                FileTarget::new(
+                    dir.path().join("s.wav"),
+                    Format::Wav(Pcm::Float32),
+                    ChannelLayout::STEREO,
+                )
+                .with_normalize(Some(NormalizeSpec::own(Normalize::peak(Db(-6.0))))),
+            ),
+        ],
+        &mut Control::none(),
+    )
+    .expect_err("silence has no peak to normalize");
+    assert!(
+        matches!(
+            err,
+            Error::Unmeasurable {
+                output: Some(1),
+                ..
+            }
+        ),
+        "{err:?}"
+    );
+    assert!(names(dir.path()).is_empty(), "nothing was put in place");
 }

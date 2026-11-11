@@ -28,9 +28,10 @@ use std::hint::black_box;
 use tutti_types::Seconds;
 
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
+use tutti_codec::{Format, Pcm};
 use tutti_export::{
-    BufferTarget, Control, FileTarget, Format, Job, Normalize, NormalizeSpec, Output, Pcm,
-    RenderGraph, Rendered, Resample, Setup, Written, render_one,
+    BufferTarget, Control, FileTarget, Job, Normalize, NormalizeSpec, Output, RenderGraph,
+    Rendered, Resample, Setup, Written, render_one,
 };
 use tutti_graph::GraphBuilder;
 use tutti_nodes::testing::{Const, Osc};
@@ -213,15 +214,15 @@ fn bench_encode(c: &mut Criterion) {
     formats.push((
         "flac",
         Format::Flac {
-            depth: tutti_export::IntDepth::Int24,
-            level: tutti_export::FlacLevel::default(),
+            depth: tutti_codec::IntDepth::Int24,
+            level: tutti_codec::FlacLevel::default(),
         },
     ));
     #[cfg(feature = "ogg")]
     formats.push((
         "ogg",
         Format::Vorbis {
-            quality: tutti_export::Quality::default(),
+            quality: tutti_codec::Quality::default(),
         },
     ));
 

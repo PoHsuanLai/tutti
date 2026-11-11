@@ -18,12 +18,12 @@ mod support;
 use crate::support::{EncodeConfig, ExportConfig, RenderConfig};
 
 use crate::support::{render_to_buffers, render_to_file};
-use tutti_export::{
-    ChannelLayout, FlacLevel, Format, FrozenClock, IntDepth, Pcm, Quality, RenderClock,
-    RenderGraph, Resample, Setup,
-};
+use tutti_codec::{FlacLevel, Format, IntDepth, Pcm, Quality};
+use tutti_export::{RenderGraph, Resample, Setup};
 use tutti_graph::{Cx, ForkByClone, GraphBuilder, Io, Node, Prepare, Shape, Status};
 use tutti_nodes::testing::{Const, Osc};
+use tutti_transport::{FrozenClock, RenderClock};
+use tutti_types::ChannelLayout;
 use tutti_types::Seconds;
 use tutti_types::{Amplitude, ChannelTopology, Drive, Hz, SampleRate};
 
@@ -817,6 +817,7 @@ fn a_sub_gating_block_render_cannot_be_loudness_normalized() {
             err,
             tutti_export::Error::Unmeasurable {
                 reason: Unmeasured::BelowGate,
+                output: Some(0),
                 channels,
                 sample_rate,
             } if channels == ChannelLayout::STEREO && sample_rate == RATE

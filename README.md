@@ -53,7 +53,7 @@ and an inlet (`InletNode`) copies outside audio into the graph (`tutti-graph`),
 `FileOut` is the file sink (`tutti-codec`), and `Recorder` pumps one into the
 other (`tutti-session`). `tutti-export` is its
 deliberate opposite number: the *offline* edge, rendering a graph faster than
-real time.
+real time (a project's bounce, `tutti-session`'s `Bounce`, drives it).
 
 **The subsystems.**
 

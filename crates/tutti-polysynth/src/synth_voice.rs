@@ -113,11 +113,11 @@ fn channel_level(channel: &ChannelState) -> f32 {
 /// channel alone thus has RP-036's gains exactly; a unison stack, whose
 /// sub-voices spread about the centre, is balanced by it.
 fn channel_pan(channel: &ChannelState) -> (f32, f32) {
-    let angle = std::f32::consts::FRAC_PI_4 * (channel.pan().get() + 1.0);
-    (
-        std::f32::consts::SQRT_2 * angle.cos(),
-        std::f32::consts::SQRT_2 * angle.sin(),
-    )
+    // `sqrt(2) cos(Pi/4 + d)` is `cos d - sin d` and `sqrt(2) sin(Pi/4 + d)` is
+    // `cos d + sin d`, with `d` the angle off the centre: written so, the centre
+    // is 1 exactly, where `SQRT_2 * FRAC_PI_4.cos()` is one ulp short in `f32`.
+    let (sin, cos) = (std::f32::consts::FRAC_PI_4 * channel.pan().get()).sin_cos();
+    (cos - sin, cos + sin)
 }
 
 impl SynthVoice {

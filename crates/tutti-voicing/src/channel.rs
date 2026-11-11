@@ -346,7 +346,7 @@ mod tests {
     fn the_modulation_depth_range_follows_gm2() {
         let mut c = ChannelState::new(Semitones(2.0));
         assert_eq!(c.modulation_range(), Cents(50.0));
-        c.set_modulation_range((8u32 << 18) | 0);
+        c.set_modulation_range(8u32 << 18);
         assert!((c.modulation_range().get() - 6.25).abs() < 1e-4);
         c.set_modulation_range(1 << 25);
         assert_eq!(c.modulation_range(), Cents(100.0));

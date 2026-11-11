@@ -1019,7 +1019,9 @@ Scalars use `Param<U>`.
   declaration sets the root's width (no device floor) and the width cannot
   leave it: `Graph::widen_outputs` refuses to widen a declared root, and a
   declaration the device or file cannot place is `FoldError`, never a silent
-  drop (doc 013, "Channel placement").
+  drop (doc 013, "Channel placement"). A declared root is also a bus sink:
+  `Graph::connect_bus_to_root` folds a node's output bus to it (an undeclared
+  root refuses, `BusError::RootUndeclared`).
 - A declaration may be partial: a port a short `PortSources` leaves out, and
   every output channel while `MasterSources` is empty, belong to whoever
   wires them through `AudioGraphRes`. The rebuild's debug check

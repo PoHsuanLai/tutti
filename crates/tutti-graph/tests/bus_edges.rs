@@ -1007,3 +1007,291 @@ fn a_fork_of_a_bus_edge_renders_the_fold() {
     assert!(got[0].iter().all(|&x| x == want), "{:?}", &got[0][..4]);
     drop((ed, exec));
 }
+
+// ---------------------------------------------------------------------------
+// The root as a bus sink (doc 013, "Buses", B4).
+// ---------------------------------------------------------------------------
+
+fn root_lane(channel: u16, from: Source) -> EdgeId {
+    EdgeId {
+        sink: Sink::Output(channel),
+        from: Edge::Direct(from),
+    }
+}
+
+/// `src` channels of SMPTE global input through a source node (key 1) into a
+/// declared root of `dst` SMPTE channels by one bus edge, and nothing else:
+/// the outputs are the root's width and no ordinary source feeds them.
+fn root_rig(src: usize, dst: usize) -> Rig {
+    let mut rig = Rig::new(src);
+    rig.add(1, source(src, smpte(src)));
+    rig.feed_globals(1, src);
+    rig.spec.root = Some(smpte(dst).topology);
+    rig.spec.topology.outputs = vec![Vec::new(); dst];
+    assert!(rig.spec.connect_bus_to_root(from(1, 0)));
+    rig
+}
+
+/// 5.1 into a declared stereo root is the fold's ITU table on the output
+/// channels: each side takes its front, the centre at -3 dB and its
+/// surround at -3 dB, the LFE dropped, as lanes of the outputs' sums in
+/// source-port order; serial, parallel and the reference agree.
+///
+/// Mutations (run), each failing this test: the lowering writing every root
+/// lane at output channel 0; the lowering swapping each contribution's source
+/// channel for its pair (`k ^ 1`); the lowering dropping the weighted entries
+/// (every root lane plain).
+#[test]
+fn five_one_into_a_stereo_root_follows_the_itu_rows() {
+    let rig = root_rig(6, 2);
+    let lowering = rig.lowering().unwrap();
+    let weights: Vec<(EdgeId, f32)> = lowering
+        .lanes
+        .iter()
+        .map(|(&id, w)| (id, w.get()))
+        .collect();
+    let expect = [
+        (root_lane(0, out_port(1, 0)), 1.0),
+        (root_lane(0, out_port(1, 2)), M3DB),
+        (root_lane(0, out_port(1, 4)), M3DB),
+        (root_lane(1, out_port(1, 1)), 1.0),
+        (root_lane(1, out_port(1, 2)), M3DB),
+        (root_lane(1, out_port(1, 5)), M3DB),
+    ];
+    assert_eq!(weights, expect);
+    assert!(lowering.spec.root_sources.is_empty() && lowering.spec.bus_edges.is_empty());
+
+    let blocks = 6;
+    let got = rig.render_both(blocks);
+    let ch6: Vec<Vec<f32>> = (0..6).map(|c| global(c, blocks)).collect();
+    let side = |front: usize, surround: usize| -> Vec<u32> {
+        (0..ch6[0].len())
+            .map(|i| {
+                weighted_fold(
+                    &[(1.0, &ch6[front]), (M3DB, &ch6[2]), (M3DB, &ch6[surround])],
+                    i,
+                )
+                .to_bits()
+            })
+            .collect()
+    };
+    assert_eq!(bits(&got), [side(0, 4), side(1, 5)]);
+}
+
+/// A root edge between equal topologies lowers to plain output sources, and
+/// the plan is the hand-wired graph's (the plans are compared, not renders).
+///
+/// Mutations (run), each failing this test: dropping the unity shortcut for
+/// root lanes (an `EdgeGain` on each, so the plan holds weighted sums); a
+/// unity lane weighted by `0.5`.
+#[test]
+fn a_same_topology_root_edge_is_the_hand_wired_plan() {
+    let bus = root_rig(2, 2);
+    let mut wired = bus.clone();
+    wired.spec.root_sources.clear();
+    wired.output_all(1, 2);
+
+    let lowering = bus.lowering().unwrap();
+    assert_eq!(lowering.spec.topology, wired.spec.topology);
+    assert!(lowering.spec.gains.is_empty());
+    assert_eq!(bus.plan(), wired.plan());
+    assert_eq!(weighted_ops(&bus.plan()), 0);
+}
+
+/// A root edge with no declared root is refused at the call with
+/// [`BusError::RootUndeclared`], storing nothing and moving no revision; and
+/// a bus edge that cannot fold to the declared root is `RootFold`.
+///
+/// Mutations (run), each failing this test: `connect_bus_to_root` touching
+/// the revision or storing before the check; the lowering treating an
+/// undeclared root as an empty one (no error at the commit).
+#[test]
+fn an_undeclared_root_refuses_a_bus_edge_and_stores_nothing() {
+    let (mut ed, _exec) = editor(&[(1, source(2, smpte(2)))], 2);
+    ed.spec_mut().topology.outputs = vec![Vec::new(); 2];
+    let before = ed.revision();
+    assert_eq!(
+        ed.connect_bus_to_root(from(1, 0)),
+        Err(BusError::RootUndeclared)
+    );
+    assert!(ed.spec().root_sources.is_empty());
+    assert_eq!(ed.revision(), before, "nothing marked edited");
+
+    // Declared, but three discrete channels have no place in a named stereo.
+    let (mut ed, _exec) = editor(&[(1, source(3, discrete(3)))], 3);
+    ed.spec_mut().root = Some(smpte(2).topology);
+    ed.spec_mut().topology.outputs = vec![Vec::new(); 2];
+    let before = ed.revision();
+    assert!(matches!(
+        ed.connect_bus_to_root(from(1, 0)),
+        Err(BusError::RootFold {
+            error: FoldError::Unplaced { .. } | FoldError::Discrete { .. },
+            ..
+        })
+    ));
+    assert!(ed.spec().root_sources.is_empty());
+    assert_eq!(ed.revision(), before);
+}
+
+/// A root lane on an output channel an ordinary source already feeds is
+/// refused, whichever came first: at the call when the ordinary source is
+/// there, at the commit when it came after.
+///
+/// Mutations (run), each failing this test: `check_lane` ignoring
+/// `Sink::Output` (`has_edge` answering false for outputs); `connect_bus_to_root`
+/// skipping the lane check.
+#[test]
+fn a_root_lane_on_an_ordinary_output_source_is_refused() {
+    let (mut ed, _exec) = editor(&[(1, source(2, smpte(2)))], 2);
+    ed.spec_mut().root = Some(smpte(2).topology);
+    ed.spec_mut().topology.outputs = vec![vec![out_port(1, 0)], Vec::new()];
+    let lane = root_lane(0, out_port(1, 0));
+    assert_eq!(
+        ed.connect_bus_to_root(from(1, 0)),
+        Err(BusError::Overlaps { id: lane })
+    );
+    assert!(ed.spec().root_sources.is_empty());
+
+    // The other order: the ordinary source arrives after the root edge.
+    ed.spec_mut().topology.outputs = vec![Vec::new(), Vec::new()];
+    ed.connect_bus_to_root(from(1, 0)).unwrap();
+    ed.spec_mut().topology.outputs[0] = vec![out_port(1, 0)];
+    let refused = ed.commit().unwrap_err();
+    assert!(
+        matches!(
+            refused,
+            CommitError::Compile(CompileError::Bus(BusError::Overlaps { id })) if id == lane
+        ),
+        "{refused:?}"
+    );
+}
+
+/// A root re-declared to a topology the edge no longer folds to fails the
+/// commit with the bus error, never a silent drop; declared back, it
+/// commits. The plan sent last stays in between.
+///
+/// Mutations (run), each failing this test: `lower_and_validate` taking the
+/// unlowered spec when only `root_sources` is set (it checks `bus_edges`
+/// alone); the lowering skipping a source that no longer folds.
+#[test]
+fn a_redeclared_root_that_no_longer_folds_fails_the_commit() {
+    let (mut ed, mut exec) = editor(&[(1, source(2, smpte(2)))], 2);
+    for c in 0..2u16 {
+        ed.spec_mut()
+            .topology
+            .connect(at(1, c), Edge::Direct(Source::Global(c)));
+    }
+    ed.spec_mut().root = Some(smpte(2).topology);
+    ed.spec_mut().topology.outputs = vec![Vec::new(); 2];
+    ed.connect_bus_to_root(from(1, 0)).unwrap();
+    ed.commit().expect("commits");
+    exec.apply_pending();
+    ed.collect();
+
+    // Named stereo has no place in one discrete channel.
+    ed.spec_mut().root = Some(discrete(1).topology);
+    let refused = ed.commit().unwrap_err();
+    assert!(
+        matches!(
+            refused,
+            CommitError::Compile(CompileError::Bus(BusError::RootFold { .. }))
+        ),
+        "{refused:?}"
+    );
+    // Undeclared fails the same commit, by its own name.
+    ed.spec_mut().root = None;
+    let refused = ed.commit().unwrap_err();
+    assert!(
+        matches!(
+            refused,
+            CommitError::Compile(CompileError::Bus(BusError::RootUndeclared))
+        ),
+        "{refused:?}"
+    );
+    // A re-declaration it folds to re-lowers: stereo to mono is 0.5 L + 0.5 R.
+    ed.spec_mut().root = Some(smpte(1).topology);
+    ed.spec_mut().topology.outputs = vec![Vec::new()];
+    ed.commit().expect("commits");
+    exec.apply_pending();
+    ed.collect();
+    let x = input_signal(0, BLOCK);
+    let inputs = vec![x.clone(), x.iter().map(|v| v * 0.5).collect()];
+    let got = render_block(&mut exec, &inputs, 1);
+    let expected: Vec<u32> = (0..BLOCK)
+        .map(|i| weighted_fold(&[(0.5, &inputs[0]), (0.5, &inputs[1])], i).to_bits())
+        .collect();
+    assert_eq!(bits(&got), [expected]);
+}
+
+/// Connecting and removing a root edge round trips through the editor (the
+/// disconnect reports whether it was there), and removing a node drops its
+/// root bus edges, as it drops its other bus edges; a stale one would fail
+/// every later commit.
+///
+/// Mutations (run), each failing this test: `Editor::remove` leaving the
+/// removed node among the root's sources; `disconnect_bus_from_root` always
+/// answering true.
+#[test]
+fn root_edges_connect_disconnect_and_go_with_their_node() {
+    let (mut ed, mut exec) = editor(&[(1, source(2, smpte(2))), (3, source(2, smpte(2)))], 0);
+    ed.spec_mut().root = Some(smpte(2).topology);
+    ed.spec_mut().topology.outputs = vec![Vec::new(); 2];
+    ed.connect_bus_to_root(from(3, 0)).unwrap();
+    ed.connect_bus_to_root(from(1, 0)).unwrap();
+    ed.connect_bus_to_root(from(1, 0)).unwrap();
+    assert_eq!(
+        ed.spec().root_sources,
+        [from(1, 0), from(3, 0)],
+        "source order, once"
+    );
+    assert!(ed.disconnect_bus_from_root(from(3, 0)));
+    assert!(!ed.disconnect_bus_from_root(from(3, 0)));
+    ed.connect_bus_to_root(from(3, 0)).unwrap();
+    ed.remove(key(1));
+    assert_eq!(ed.spec().root_sources, [from(3, 0)]);
+    ed.commit().expect("commits");
+    exec.apply_pending();
+}
+
+/// A fork of a graph with a bus edge into the root is the lowered graph: the
+/// source is forked (reachability over the root lanes) and the fork renders
+/// the fold on the outputs, which is what an export of the master hears.
+///
+/// Mutations (run), each failing this test: `fork_gather` testing only
+/// `bus_edges` for the lowering (a root-only spec forks unlowered: the output
+/// is silent).
+#[test]
+fn a_fork_of_a_root_edge_renders_the_fold() {
+    use tutti_graph::{Cx, ForkByClone, ForkMode, ForkTarget, Io, Renderer, Shape, Status};
+
+    #[derive(Clone)]
+    struct Stereo;
+    impl Node for Stereo {
+        fn shape(&self) -> Shape {
+            Shape::audio(ChannelLayout::EMPTY, ChannelLayout::STEREO)
+                .with_buses_out(buses(&[smpte(2)]))
+        }
+        fn prepare(&mut self, _: &tutti_graph::Prepare) {}
+        fn process(&mut self, _: &Cx<'_>, mut io: Io<'_>) -> Status {
+            io.output(0)[0] = 0.25;
+            io.output(1)[0] = 0.75;
+            Status::Constant
+        }
+        fn reset(&mut self) {}
+    }
+
+    let (mut ed, exec) = Editor::new(prepare(BLOCK));
+    ed.insert(key(1), "stereo", ForkByClone(Stereo));
+    ed.spec_mut().root = Some(smpte(1).topology);
+    ed.spec_mut().topology.outputs = vec![Vec::new()];
+    ed.connect_bus_to_root(from(1, 0)).unwrap();
+    ed.commit().expect("commits");
+    let (fork_ed, fork_exec) = ed
+        .fork(ForkTarget::Master, ForkMode::Live, prepare(BLOCK))
+        .expect("forkable");
+    let got = Renderer::new(fork_ed, fork_exec).render(2 * BLOCK);
+    assert_eq!(got.len(), 1);
+    let want = (0.0f32 + 0.5 * 0.25) + 0.5 * 0.75;
+    assert!(got[0].iter().all(|&x| x == want), "{:?}", &got[0][..4]);
+    drop((ed, exec));
+}

@@ -8,9 +8,7 @@
 //! One width-generic node, [`LadderFilterNode`]: the coefficients are solved
 //! once for every channel, and the channels run side by side in groups.
 
-use std::sync::Arc;
 use tutti_dsp::Real;
-use tutti_types::AtomicF32;
 
 use tutti_graph::{
     Cx, Inputs, IntoNode, Io, Node, NodeParts, Outputs, ParamNode, ParamSet, Prepare, Shape, Status,
@@ -153,68 +151,6 @@ impl<F: Real> LadderFilterNode<F> {
     #[inline]
     fn width(&self) -> usize {
         self.stages.len()
-    }
-
-    /// The shared cutoff cell in [`Hz`], governing every channel.
-    ///
-    /// Read once per block; the coefficient computation clamps to
-    /// `1.0..=0.998 * Nyquist`, since `tan` diverges at Nyquist. **A cutoff
-    /// the graph feeds overrides it.** Shared across clones.
-    ///
-    /// A non-finite value written here (NaN, ±∞) reads as *unchanged*: the
-    /// filter keeps the last finite value, so it never reaches the coefficient
-    /// solve or the filter state, and the next finite write takes effect.
-    pub fn frequency(&self) -> Arc<AtomicF32> {
-        self.frequency.as_atomic()
-    }
-
-    /// The shared [`Resonance`] cell, `0.0..=1.0`, governing every channel.
-    ///
-    /// Scales the ladder feedback: `0.0` no emphasis, near `1.0` approaching
-    /// self-oscillation. The computation clamps to that range regardless of
-    /// what is written here. Read once per block. **A resonance the graph
-    /// feeds overrides it.**
-    ///
-    /// A non-finite value written here (NaN, ±∞) reads as *unchanged*: the
-    /// filter keeps the last finite value, so it never reaches the coefficient
-    /// solve or the filter state, and the next finite write takes effect.
-    pub fn resonance(&self) -> Arc<AtomicF32> {
-        self.resonance.as_atomic()
-    }
-
-    /// The shared [`Drive`] cell — input gain into the `tanh` saturator,
-    /// governing every channel.
-    ///
-    /// Read once per block and ramped across it when it moves, so it needs no
-    /// coefficient solve and never steps. `1.0` is clean; higher adds
-    /// harmonics and compresses. **A drive the graph feeds overrides it per
-    /// sample.**
-    pub fn drive(&self) -> Arc<AtomicF32> {
-        self.drive.as_atomic()
-    }
-
-    /// Sets the cutoff in [`Hz`] for every channel, floored at 1 Hz.
-    ///
-    /// The upper bound is applied when coefficients are computed, at `0.998` of
-    /// Nyquist. While the graph modulates the cutoff this sets the *base* its
-    /// modulation rides on.
-    pub fn set_frequency(&self, hz: impl Into<Hz>) {
-        self.frequency.store(Hz(hz.into().get().max(1.0)));
-    }
-
-    /// Sets the [`Resonance`] for every channel, clamped to `0.0..=1.0`.
-    pub fn set_resonance(&self, res: impl Into<Resonance>) {
-        self.resonance
-            .store(Resonance::new_clamped(res.into().get()));
-    }
-
-    /// Sets the [`Drive`] into the saturator for every channel, floored at
-    /// `0.1`.
-    ///
-    /// The floor keeps drive from silencing the filter: it multiplies the
-    /// input, so `0.0` would mute rather than clean up.
-    pub fn set_drive(&self, drive: impl Into<Drive>) {
-        self.drive.store(Drive(drive.into().get().max(0.1)));
     }
 
     /// Read the three control cells, once, with non-finite values held off.
@@ -676,7 +612,7 @@ mod tests {
             LadderFilterNode::<f64>::new(LadderType::LP24, Hz::new(5000.0), Resonance::new(0.0)),
             RATE_44K,
         );
-        driven.set_drive(Drive::new(10.0));
+        assert!(driven.param_set().set(UnitParam::Drive, 10.0));
 
         let sine = generate_sine(440.0, 44100.0, 4096);
 
@@ -937,7 +873,9 @@ mod tests {
         let x = noise(5, 128);
         let run = change_between_node_blocks(
             ladder_48k,
-            |n| n.set_frequency(Hz::new(7_000.0)),
+            |n| {
+                assert!(n.param_set().set(UnitParam::Cutoff, 7_000.0));
+            },
             &[&x[..64], &x[..64]],
             &[&x[64..], &x[64..]],
         );
@@ -965,7 +903,9 @@ mod tests {
                     Resonance::new(0.4),
                 )
             },
-            |n| n.set_drive(Drive::new(9.0)),
+            |n| {
+                assert!(n.param_set().set(UnitParam::Drive, 9.0));
+            },
             &[&x[..64], &x[..64]],
             &[&x[64..], &x[64..]],
         );

@@ -16,14 +16,14 @@ use std::sync::atomic::Ordering;
 
 use tutti_fixtures::Noise;
 use tutti_graph::contract::drive;
-use tutti_graph::{Node, Prepare};
+use tutti_graph::{Node, ParamNode, Prepare};
 use tutti_nodes::{
     CompressorNode, DelayLineNode, GateNode, LadderFilterNode, LadderType, ModDelayNode,
     PhaserNode, SvfFilterNode, SvfType,
 };
 use tutti_types::{
     ChannelLayout, CompressionRatio, Db, Drive, Feedback, Hz, Mix, ParamCell, Q, Resonance,
-    SampleRate, Samples, Seconds,
+    SampleRate, Samples, Seconds, UnitParam,
 };
 
 const BAD: [f32; 3] = [f32::NAN, f32::INFINITY, f32::NEG_INFINITY];
@@ -120,9 +120,13 @@ fn svf_ladder_delay_moddelay_phaser_compressor_gate_hold_off_non_finite_controls
         },
         |n| {
             vec![
-                ("cutoff", n.frequency().into(), 2_000.0),
-                ("q", n.q().into(), 3.0),
-                ("gain", n.gain_db().into(), 6.0),
+                (
+                    "cutoff",
+                    n.param_set().cell(UnitParam::Cutoff).unwrap(),
+                    2_000.0,
+                ),
+                ("q", n.param_set().cell(UnitParam::Q).unwrap(), 3.0),
+                ("gain", n.param_set().cell(UnitParam::GainDb).unwrap(), 6.0),
             ]
         },
     );
@@ -138,9 +142,13 @@ fn svf_ladder_delay_moddelay_phaser_compressor_gate_hold_off_non_finite_controls
         },
         |n| {
             vec![
-                ("cutoff", n.frequency().into(), 3_000.0),
-                ("resonance", n.resonance().into(), 0.8),
-                ("drive", n.drive().into(), 3.0),
+                (
+                    "cutoff",
+                    n.param_set().cell(UnitParam::Cutoff).unwrap(),
+                    3_000.0,
+                ),
+                ("resonance", n.param_set().cell(UnitParam::Q).unwrap(), 0.8),
+                ("drive", n.param_set().cell(UnitParam::Drive).unwrap(), 3.0),
             ]
         },
     );

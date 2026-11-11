@@ -17,18 +17,17 @@
 //! remains"); the recursive filters can carry such an ulp for a while, which is
 //! why this is looser than a feed-forward node would need.
 
-use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
 use tutti_graph::contract::drive;
-use tutti_graph::{Node, Prepare};
+use tutti_graph::{Node, ParamNode, Prepare};
 use tutti_nodes::{
     DelayLineNode, InterpolationMode, LadderFilterNode, LadderType, ModDelayNode, PhaserNode,
-    SvfFilterNode, SvfType,
+    SvfControls, SvfFilterNode, SvfType,
 };
 use tutti_types::{
-    AtomicF32, ChannelLayout, Db, Depth, Drive, Feedback, Hz, Mix, PhaseIncrement, Q, Resonance,
-    SampleRate, Samples, Seconds,
+    ChannelLayout, Db, Depth, Feedback, Hz, Mix, ParamCell, PhaseIncrement, Q, Resonance,
+    SampleRate, Samples, Seconds, UnitParam,
 };
 
 const SR: SampleRate = SampleRate(48_000.0);
@@ -92,7 +91,8 @@ fn node_case(name: &'static str, node: impl Node, inputs: Vec<Vec<f32>>) -> Case
 }
 
 /// Automate `cell` block by block with `f(block)`.
-fn automate(cell: Arc<AtomicF32>, f: impl Fn(usize) -> f32 + 'static) -> Option<Automation> {
+fn automate(cell: impl Into<ParamCell>, f: impl Fn(usize) -> f32 + 'static) -> Option<Automation> {
+    let cell = cell.into();
     Some(Box::new(move |k| cell.store(f(k), Ordering::Release)))
 }
 
@@ -141,8 +141,15 @@ fn cases() -> Vec<Case> {
     ));
     v.push(node_case(
         "svf_mono_bell",
-        SvfFilterNode::<f64>::new(SvfType::Bell, Hz::new(900.0), Q::new(1.4))
-            .with_gain_db(Db::new(6.0)),
+        SvfFilterNode::<f64>::with_controls(
+            ChannelLayout::MONO,
+            SvfControls {
+                ty: SvfType::Bell,
+                freq: Hz::new(900.0),
+                q: Q::new(1.4),
+                gain: Db::new(6.0),
+            },
+        ),
         noise_channels(1),
     ));
     v.push(node_case(
@@ -157,13 +164,15 @@ fn cases() -> Vec<Case> {
     ));
     v.push(node_case(
         "svf_wide6_highshelf",
-        SvfFilterNode::<f64>::with_channels(
+        SvfFilterNode::<f64>::with_controls(
             6u16,
-            SvfType::HighShelf,
-            Hz::new(2_000.0),
-            Q::new(0.7),
-        )
-        .with_gain_db(Db::new(-4.0)),
+            SvfControls {
+                ty: SvfType::HighShelf,
+                freq: Hz::new(2_000.0),
+                q: Q::new(0.7),
+                gain: Db::new(-4.0),
+            },
+        ),
         noise_channels(6),
     ));
     v.push(Case {
@@ -185,7 +194,9 @@ fn cases() -> Vec<Case> {
         Hz::new(500.0),
         Q::new(0.8),
     );
-    let automation = automate(node.frequency(), |k| 300.0 + 700.0 * (k % 5) as f32);
+    let automation = automate(node.param_set().cell(UnitParam::Cutoff).unwrap(), |k| {
+        300.0 + 700.0 * (k % 5) as f32
+    });
     v.push(Case {
         automation,
         ..node_case("svf_stereo_automated", node, noise_channels(2))
@@ -194,7 +205,7 @@ fn cases() -> Vec<Case> {
     // ── Ladder ──
     let node =
         LadderFilterNode::<f64>::new(LadderType::LP24, Hz::new(1_100.0), Resonance::new(0.7));
-    node.set_drive(Drive::new(2.5));
+    assert!(node.param_set().set(UnitParam::Drive, 2.5));
     v.push(node_case(
         "ladder_mono_lp24_driven",
         node,
@@ -239,7 +250,9 @@ fn cases() -> Vec<Case> {
         Hz::new(800.0),
         Resonance::new(0.5),
     );
-    let automation = automate(node.drive(), |k| 1.0 + (k % 4) as f32);
+    let automation = automate(node.param_set().cell(UnitParam::Drive).unwrap(), |k| {
+        1.0 + (k % 4) as f32
+    });
     v.push(Case {
         automation,
         ..node_case("ladder_stereo_drive_automated", node, noise_channels(2))

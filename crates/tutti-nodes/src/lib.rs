@@ -105,7 +105,7 @@ pub use filter::{
 // The types in the filter nodes' signatures stay reachable from here; the
 // algorithms behind them (`SvfCoeffs`, `LadderCoeffs`, `Crossover`) are
 // `tutti-dsp`'s only.
-pub use tutti_dsp::{CrossoverError, LadderType, Real, SvfType};
+pub use tutti_dsp::{CrossoverError, LadderType, Real, SvfControls, SvfType};
 
 mod dynamics;
 pub use dynamics::{

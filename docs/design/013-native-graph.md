@@ -7393,7 +7393,7 @@ bit for bit (the M1 tests, unedited, are the proof).
   work costs a second arena of `max_block` frames per output channel, only for a
   pass that folds.
 - **A pass the graph would have to guess is refused, wherever it would be
-  heard** (`PassError`): main buses of different widths of which either names
+  heard** (the stopgap; amendment T, "Typed ports" below, makes it unwritable) (`PassError`): main buses of different widths of which either names
   no placement (`Unplaced { inputs, outputs }`; `Fold::between` would take a
   named source onto an unplaced destination by index, zero-filling, which suits
   an edge that knows only a width and is the same guess for a dry path; by index, the old width rule, a mono input
@@ -7479,6 +7479,116 @@ took B3's recommendation.
   from its own stream (`seed ^ 0x0B05_4007`, drawn after `bus_graph`, so no
   existing seed moves); `tutti-session`'s `bus_edges.rs`: the round trip through
   `declare_root_topology`, the undeclared refusal, re-declaration.
+
+#### Typed ports (amendment T, proposed 2026-11)
+
+**Why.** A node's audio ports were described up to four times, and none was derived from another:
+
+1. the widths in `Shape::audio(in, out)`;
+2. the `Buses` over those ports, optional, defaulting to one `Main` bus of `Discrete` channels, which states nothing;
+3. index arithmetic in `process` (`ins.get(ch + c)` for a key, `o * width + c` for a band);
+4. for a design, `tutti_dsp::Channels` and its `Placement`.
+
+`Fold::between` also held a by-index rule: a named source onto a `Discrete` destination is taken by index, zero-filling.
+Every defect of the dry path came from two of these disagreeing, or from the default standing in for a statement
+nobody made. The reverbs' mono dry was heard on the left alone (2 standing in for a placement, #567). The gate, the
+compressor and the crossover were right only because (3) happened to match (2). #570 makes the guess loud: `PassError`
+at every door that would hear a pass. This amendment makes it unwritable. **One description of a node's ports, from
+which everything else is derived.** The refusals of #570 stay, for buses that are declared and still do not fold.
+
+**T1. A shape is built from its buses.**
+
+- The width-only constructors are the three with nothing to guess:
+  - `Shape::through(layout)`: `layout` in and `layout` out; its pass is output `c` = input `c`.
+  - `Shape::source(out)`: no audio input; nothing passes.
+  - `Shape::sink(in)`: no audio output; nothing passes.
+- Every other shape is `Shape::buses(inputs: Buses, outputs: Buses)`, and its widths are the buses' widths. A bus names
+  its speakers, or says `Bus::discrete(n)`: unplaced is a statement, never a default.
+- `Shape::audio(in, out)` goes. Its equal-width calls become `through`, and its unequal ones state their buses. A
+  mono-in, stereo-out node with no placement must write `Bus::discrete(2)` on its output, and then it has no pass
+  (`PassError::Unplaced`), visibly in its own constructor.
+- **The pass is a property of the shape.** `Shape::pass() -> Result<&Pass, PassError>` is computed when the shape is
+  built. The editor's doors (`set_mode`, `set_mix`, a commit that bypasses, mixes or drives a mix, the reconciler's
+  route) read it, and a node's own test can assert it. `Pass::of` becomes that constructor.
+- **A crossover's bands are one bus repeated, not six buses.** `Bus` gains a count:
+  - `Bus::bands(topology, n)` is `n` consecutive copies of `topology`, band-major; band 0 is the `Main` one.
+  - A handle addresses `(bus, band)`.
+  - `MAX_BUSES` stays 4 and `Shape` keeps its size: measured 664 bytes, of which 274 per `Buses` and 68 per `Bus`, plus
+    one byte for the count.
+  - Raising `MAX_BUSES` to 8 instead would make `Shape` about 1.2 KB, which plan apply copies once per unit.
+- **`Fold` splits by intent.** `Fold::between` takes two topologies that both name their speakers, or two identical
+  ones (a relabelling). A `Discrete` side meeting a named one at another width is `FoldError::Discrete`. By index exists
+  only where a caller asks for it: `Fold::by_index`, `Fold::widths`, `Fold::to_width`, `Fold::select`, for an edge that
+  knows only a width (a device, a file, the graph root undeclared). Today's three callers of `between`:
+  - the pass: named pairs only, as #570 already enforces;
+  - `bus_edge`: a named bus into a `Discrete` sink bus of another width is refused, where today it went by index. An
+    edge that wants index order says so: `connect_bus` takes an explicit `Fold::by_index` choice (a `BusFold::ByIndex`
+    argument, or a `connect_bus_by_index`), never a fallback. B2's "a named source into a wider discrete bus is accepted
+    (zero-fill)" becomes that explicit option.
+  - export's driver calls `Fold::between(root or ChannelTopology::for_width(graph), file topology)` today. It changes
+    only where the file's topology is `Discrete` at another width than a named root. Today that goes by index; under T1
+    it becomes an explicit `Fold::to_width(root, file width)`, because a file of an unordered width knows only its width.
+    Named into named, and an equal-width relabelling, do not change.
+  - **Measured** (the workspace, and `tutti-session` with
+    `clap,export,modulation,device,record,midi,sampler`, with `between` refusing a named source into a `Discrete`
+    destination of another width): the only test that flips is `tutti-types`' `fold::tests::discrete_channels_map_one_to_one`,
+    whose "a named source into a wider discrete bus is an index copy" case becomes a refusal. No bus-edge test flips:
+    `bus_edges.rs::widening_zero_fills_the_new_channels` is SMPTE stereo into SMPTE 5.1, named into named, and stays
+    zero-filled.
+
+**T2. Bus handles, not indices.**
+
+- Declaring a bus returns a handle (`InBus`, `OutBus`: the bus, and a band for a repeated bus), issued only by the
+  declaration.
+- **There is no flat port space in `Io` any more.** `io.input(c)`, `io.output(c)` and `split()`'s `get(c)` stay, but
+  cover the `Main` bus only: `c` runs over the main bus's channels. Every other port is reached only through its
+  handle: `io.bus_in(h).channel(c)`, `io.bus_out(h).channel(c)`, each a view bounded to that bus.
+- So index arithmetic cannot survive beside the handles. `ch + c` on the main view is out of bounds in every build,
+  as a slice is, never another bus's port. This is enforced by what the views cover, not a debug assertion.
+- A single-bus node (`through`, `source`, `sink`, most nodes) changes nothing in `process`.
+- What moves: the gate and the compressor (the key by handle; `tutti-nodes`' `Keyed` goes), the crossover and the
+  multiband (band `b` by handle), plugin nodes with aux buses, and the test nodes that sum or split.
+- Bus edges (`connect_bus`) and the pass already address buses, and read the same handles.
+- A type-level split was considered and not proposed: `Io<'_, Single>` / `Io<'_, Multi>` through an associated type
+  on `Node`. Stable Rust has no defaulted associated types, so every `Node` impl in the workspace would name one, for a
+  guarantee the bounded views already give.
+
+**T3. A design speaks in buses.**
+
+- `tutti_dsp::Channels` becomes the design's bus structure, in `tutti-types` vocabulary (`tutti-dsp` depends on
+  `tutti-types` alone, which holds `BusTopology`): an input `BusTopology` and its outputs, one of
+  - `Same`: one output per input, where the input is (a filter);
+  - `Topology(t)`: another set of speakers (a reverb's stereo from a mono centre);
+  - `Bands(n)`: the input's speakers once per band (a crossover).
+- `DesignNode` maps it one to one onto `Shape::buses`, and hands the realization its outputs grouped by bus. Band `b`'s
+  channel `c` is then `outputs[b][c]`, a slice of a group, not a formula.
+- `Placement`, `Channels::port`, `of_port` and `main_output` go.
+
+**What it costs, measured (2026-11-11).**
+
+- `Shape::audio`: 69 production calls and 285 in tests, most at equal width, so mechanical.
+- `Shape`: 664 bytes, unchanged (bands are one repeated bus).
+- Index reads in node code: about 830, but single-bus nodes keep `io.input(c)`. Only the multi-bus nodes listed in T2
+  change their `process`.
+- `Fold::between`: three callers, above.
+- `bevy-tutti` is parked and is not migrated.
+
+**Order.** T1, T2 and T3 are one PR each, in that order, each green alone:
+
+- T1 removes `Shape::audio` and splits `Fold`.
+- T2 adds the handles and moves the multi-bus nodes.
+- T3 moves the designs and deletes `Placement` and `Keyed`.
+
+They come before `tutti-dsp`'s PR10 and the family lanes (doc 024 §10), which rewrite node shapes and `process` and
+would otherwise be written once on the old API and migrated again.
+
+**Open for review.**
+
+- (a) The spelling of the explicit by-index bus edge (`BusFold::ByIndex` on `connect_bus`, or `connect_bus_by_index`).
+- (b) Whether `through` should also cover a node that is the same width and declares a placement (a stereo EQ), or
+  whether that node states `Shape::buses` (proposed: `through(layout)` takes the engine's speakers for `layout` where
+  it has an order, which is what a placed bus would say, so the two agree).
+- (c) The handle types' names.
 
 #### What else is, and is not, a graph primitive
 

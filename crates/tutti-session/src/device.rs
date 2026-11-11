@@ -579,7 +579,8 @@ impl Session {
         #[cfg(feature = "midi-hardware")]
         if let Some(io) = &self.midi_io {
             io.ports().inlets().set_lead(crate::midi::input_lead(
-                spec.quantum.unwrap_or(self.graph.prepared().max_block()),
+                spec.quantum
+                    .unwrap_or(self.graph.prepared().max_block().into()),
                 rate,
             ));
         }

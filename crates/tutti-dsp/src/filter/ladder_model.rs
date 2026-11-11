@@ -25,35 +25,101 @@ use super::biquad::decay_ring;
 use super::{LadderCoeffs, LadderType};
 use crate::{Complex64, Lti, Ring, System};
 
+/// What a ladder's controls are: its type, cutoff, resonance and the drive into
+/// the saturator.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct LadderControls {
+    /// The tap taken as the output.
+    pub ty: LadderType,
+    /// The cutoff.
+    pub freq: Hz,
+    /// The feedback, `0..=1` (not a [`Q`](tutti_types::Q)).
+    pub res: Resonance,
+    /// The gain into the saturator.
+    pub drive: Drive,
+}
+
+impl LadderControls {
+    /// The controls a non-finite value falls back to: a 1 kHz 12 dB low-pass with
+    /// no resonance and unity drive.
+    pub const DEFAULT: LadderControls = LadderControls {
+        ty: LadderType::LP12,
+        freq: Hz(1_000.0),
+        res: Resonance(0.0),
+        drive: Drive::UNITY,
+    };
+
+    /// Whether these controls are past the dead-band of `applied`, the controls a
+    /// model was last designed from: a cutoff or resonance past `FREQ_EPS` or
+    /// `RES_EPS`, or any change of the type or the drive. Drive is exact: it
+    /// multiplies straight into the saturator, so a small step is not inaudible
+    /// the way a small cutoff one is.
+    ///
+    /// The bands alone would not keep a NaN out (`|NaN - last| > eps` is false, so
+    /// a NaN is held off only until another control moves); a node reads its cells
+    /// through `LastGood`, which does.
+    #[must_use]
+    pub fn moved_from(&self, applied: &Self) -> bool {
+        const FREQ_EPS: f32 = 0.01;
+        const RES_EPS: f32 = 0.0001;
+        self.ty != applied.ty
+            || self.drive != applied.drive
+            || (self.freq.get() - applied.freq.get()).abs() > FREQ_EPS
+            || (self.res.get() - applied.res.get()).abs() > RES_EPS
+    }
+
+    /// These controls with every non-finite figure replaced by the default's.
+    /// A cutoff, resonance or drive out of range is the coefficients' to clamp.
+    fn sanitized(self) -> Self {
+        let finite = |v: f32, d: f32| if v.is_finite() { v } else { d };
+        Self {
+            ty: self.ty,
+            freq: Hz(finite(self.freq.get(), Self::DEFAULT.freq.get())),
+            res: Resonance(finite(self.res.get(), Self::DEFAULT.res.get())),
+            drive: Drive(finite(self.drive.get(), Self::DEFAULT.drive.get()).max(0.0)),
+        }
+    }
+}
+
 /// The small-signal model of a ladder filter at a rate.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct LadderModel {
-    ty: LadderType,
+    controls: LadderControls,
     coeffs: LadderCoeffs,
-    drive: f64,
     rate: SampleRate,
 }
 
 impl LadderModel {
-    /// The model of a ladder of type `ty` at cutoff `freq`, resonance `res` and
-    /// drive `drive` (a gain on the input of the linearised system), at `rate`.
-    /// The cutoff and resonance are clamped as [`LadderCoeffs::new`] clamps them;
-    /// a non-finite drive is unity.
+    /// The model of `controls` at `rate`; the drive is a gain on the input of the
+    /// linearised system. Total: a non-finite control takes the default's, the
+    /// cutoff and resonance are clamped as [`LadderCoeffs::new`] clamps them and a
+    /// negative drive is 0.
     #[must_use]
-    pub fn new(ty: LadderType, freq: Hz, res: Resonance, drive: Drive, rate: SampleRate) -> Self {
-        let d = f64::from(drive.get());
+    pub fn new(controls: LadderControls, rate: SampleRate) -> Self {
+        let controls = controls.sanitized();
         Self {
-            ty,
-            coeffs: LadderCoeffs::new(freq, res, rate),
-            drive: if d.is_finite() { d.max(0.0) } else { 1.0 },
+            controls,
+            coeffs: LadderCoeffs::new(controls.freq, controls.res, rate),
             rate,
         }
+    }
+
+    /// The controls it is the model of (sanitised).
+    #[must_use]
+    pub fn controls(&self) -> LadderControls {
+        self.controls
     }
 
     /// The type.
     #[must_use]
     pub fn ladder_type(&self) -> LadderType {
-        self.ty
+        self.controls.ty
+    }
+
+    /// The drive, a gain on the input, as the `f32` it was set from.
+    #[must_use]
+    pub fn drive(&self) -> f64 {
+        f64::from(self.controls.drive.get())
     }
 
     /// The coefficients the ladder is solved at.
@@ -77,9 +143,9 @@ impl LadderModel {
     /// The response at `z^-1 = zi`.
     fn at(&self, zi: Complex64) -> Complex64 {
         let (l, f) = self.stage(zi);
-        let u = self.drive / (1.0 + self.coeffs.k * f * l * l * l);
+        let u = f64::from(self.controls.drive.get()) / (1.0 + self.coeffs.k * f * l * l * l);
         let one_minus = 1.0 - l;
-        u * match self.ty {
+        u * match self.controls.ty {
             LadderType::LP12 => l * l,
             LadderType::LP24 => l * l * l * l,
             LadderType::HP12 => one_minus * one_minus,
@@ -208,13 +274,25 @@ impl Lti for LadderModel {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::filter::{LadderCoefficients, ladder_step};
+    use crate::filter::ladder::{LadderCoefficients, ladder_step};
     use crate::{Complex32, RealFft};
 
     const RATE: SampleRate = SampleRate(48_000.0);
 
     fn model(ty: LadderType, fc: f32, res: f32) -> LadderModel {
-        LadderModel::new(ty, Hz(fc), Resonance(res), Drive::UNITY, RATE)
+        LadderModel::new(
+            LadderControls {
+                ty,
+                freq: Hz(fc),
+                res: Resonance(res),
+                drive: Drive::UNITY,
+            },
+            RATE,
+        )
+    }
+
+    fn coefficients(freq: Hz, res: Resonance) -> LadderCoefficients<f64> {
+        LadderCoefficients::from(&LadderCoeffs::new(freq, res, RATE))
     }
 
     fn at(m: &LadderModel, f: f32) -> Complex64 {
@@ -276,7 +354,7 @@ mod tests {
         ] {
             for res in [0.0f32, 0.4, 0.8] {
                 let m = model(ty, 1_200.0, res);
-                let c = LadderCoefficients::<f64>::solve(Hz(1_200.0), Resonance(res), RATE);
+                let c = coefficients(Hz(1_200.0), Resonance(res));
                 let mut s = [0.0f64; 4];
                 let ir: Vec<f32> = (0..N)
                     .map(|n| {
@@ -312,7 +390,7 @@ mod tests {
     #[test]
     fn the_model_is_the_small_signal_system_and_loud_signals_leave_it() {
         const N: usize = 1 << 14;
-        let c = LadderCoefficients::<f64>::solve(Hz(1_200.0), Resonance(0.9), RATE);
+        let c = coefficients(Hz(1_200.0), Resonance(0.9));
         let run = |amp: f64| {
             let mut s = [0.0f64; 4];
             (0..N)
@@ -344,7 +422,7 @@ mod tests {
         const N: usize = 1 << 17;
         let amp = 1e-7f64;
         let m = model(LadderType::LP24, 300.0, 0.8);
-        let c = LadderCoefficients::<f64>::solve(Hz(300.0), Resonance(0.8), RATE);
+        let c = coefficients(Hz(300.0), Resonance(0.8));
         let mut s = [0.0f64; 4];
         let ir: Vec<f64> = (0..N)
             .map(|n| {

@@ -157,7 +157,10 @@
 //! successor's first event input: offset 0 of its first block, ahead of
 //! everything else there. A successor without an event input drops them,
 //! counted, as is what the buffer refused. A fade's outgoing node is not
-//! sent anything, and a replace waiting behind a running fade is not chased.
+//! sent anything. A replace waiting behind a running fade is not chased
+//! (its predecessor has not taken over, and delivering later would need a
+//! second path into the flushed events); it is counted,
+//! [`Executor::chase_skipped_count`].
 //!
 //! # Held keys
 //!
@@ -845,6 +848,8 @@ pub struct Executor {
     /// (`Node::chase`), sized when a plan is built from what its nodes
     /// declare (`Shape::chase`), so the swap never allocates it.
     chase: Vec<Event>,
+    /// Replaces that would have chased but waited behind a running fade.
+    chase_skipped: u64,
     /// The sample rate changed in a re-prepare: the next rebuild carries no
     /// time-based state (see `Editor::reprepare`).
     reset_time: bool,
@@ -937,6 +942,7 @@ impl Executor {
             next_prepare: None,
             parked: Vec::new(),
             chase: Vec::new(),
+            chase_skipped: 0,
             reset_time: false,
             history: TransportHistory::new(),
             play: PlayState::new(ends.play),
@@ -1029,6 +1035,13 @@ impl Executor {
     /// reads the same through [`Editor::play_reading`](crate::Editor::play_reading).
     pub fn play_reading(&self) -> PlayReading {
         self.play.reading()
+    }
+
+    /// Replaces of a chasing node that were not chased because they waited
+    /// behind a crossfade already running (`Node::chase`): the successor
+    /// starts from its own state. Counted when the commit is applied.
+    pub fn chase_skipped_count(&self) -> u64 {
+        self.chase_skipped
     }
 
     /// Events refused so far: writer overflow, and delay or feedback FIFO
@@ -1209,6 +1222,9 @@ impl Executor {
                 .as_ref()
                 .and_then(|p| p.unit(old.key))
                 .and_then(|u| u.shape.chase);
+            if running && capacity.is_some() {
+                self.chase_skipped += 1;
+            }
             let node = self.store.get(old.idx.0 as usize).and_then(Option::as_ref);
             if let (false, Some(capacity), Some(u)) = (running, capacity, node) {
                 let from = departed.chase_events.len();
@@ -2012,6 +2028,7 @@ impl Executor {
                 next_prepare: _,
                 parked: _,
                 chase: _,
+                chase_skipped: _,
                 reset_time: _,
                 history,
                 play,

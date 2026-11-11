@@ -389,3 +389,40 @@ fn a_chase_renders_bit_identically_in_parallel() {
         assert_eq!(render(w), serial, "{w} participants");
     }
 }
+
+/// A replace queued behind a running crossfade (A to B fading, B to C
+/// waiting) is not chased, and the skip is counted: C starts from its own
+/// state. The same swap with no fade running is not a skip.
+#[test]
+fn a_replace_queued_behind_a_fade_is_counted_as_skipped() {
+    let (a, b, c) = (Log::default(), Log::default(), Log::default());
+    let set = cc(7, 90);
+    let (mut ed, mut exec) = rig(Keeper::new(Some(set), true, 8, &a));
+    block(&mut exec);
+    let fade = || Fade::new(Samples(8 * BLOCK), CrossfadeCurve::EqualPower);
+    ed.replace(
+        NodeKey(1),
+        Unforkable(Keeper::new(None, true, 8, &b)),
+        fade(),
+    )
+    .expect("fits");
+    ed.commit().expect("commits");
+    block(&mut exec);
+    assert_eq!(exec.chase_skipped_count(), 0, "the first swap chased");
+    ed.replace(
+        NodeKey(1),
+        Unforkable(Keeper::new(None, true, 8, &c)),
+        fade(),
+    )
+    .expect("fits");
+    ed.commit().expect("commits");
+    for _ in 0..12 {
+        block(&mut exec);
+    }
+    assert_eq!(exec.chase_skipped_count(), 1);
+    assert_eq!(b.lock().unwrap().as_slice(), &[(0, 0, set.words()[0])]);
+    assert!(
+        c.lock().unwrap().is_empty(),
+        "the queued successor was not chased"
+    );
+}

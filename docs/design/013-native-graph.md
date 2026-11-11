@@ -3781,7 +3781,9 @@ Decisions:
    counted (`Executor::dropped_event_count`). During a crossfade only the
    incoming node is chased (the outgoing one is not sent anything); a
    replace that waits behind a crossfade already running is not chased (its
-   predecessor has not taken over); a re-prepare keeps its units and a mode
+   predecessor has not taken over, and delivering at the takeover would
+   need a second path into the flushed events): it is counted
+   (`Executor::chase_skipped_count`); a re-prepare keeps its units and a mode
    change swaps nothing, so neither chases; a fork does not, its copy
    carries the state. What the two instruments write is in doc 017, "L4d".
 7. **The caller spins, then yields** while it waits on a helper (on the

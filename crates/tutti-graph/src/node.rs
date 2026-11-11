@@ -1378,7 +1378,7 @@ pub trait Node: Send + 'static {
     /// During a crossfade only the incoming node is chased. A fork is not:
     /// a forked node carries its state in the copy. A replace that waits
     /// behind a crossfade already running is not chased either (its
-    /// predecessor has not yet taken over). Audio thread: must not
+    /// predecessor has not yet taken over; [`Executor::chase_skipped_count`](crate::Executor::chase_skipped_count)). Audio thread: must not
     /// allocate, lock or block.
     fn chase(&self, out: &mut Chase<'_>) {
         let _ = out;

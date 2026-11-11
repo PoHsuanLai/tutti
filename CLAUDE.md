@@ -403,7 +403,7 @@ crates/          everything shipped; directory name = package name; no nesting
                  `Sysex7Packet::data` and `SysexRef::new`; no
                  dependencies but `bytemuck` (and optional `serde`)
   tutti-midi-protocol  MIDI 1.0 to MIDI 2.0 translation (design 017 §4 and §6): the
-                 stateless `widen`, `narrow` and `midi1`, the M2-115 scaling, and the
+                 stateless `widen`, `narrow` and `midi1`, the stateful `Translator` and `Narrower`, the M2-115 scaling, and the
                  float converters (`u32_to_unit_f32` and kin), and the MPE zone
                  values (`MpeZoneConfig`, `MpeZones`, `MpeMode`, `MpeZone`); depends on
                  `tutti-ump` alone
@@ -590,8 +590,11 @@ list (normal and build edges; dev-dependencies may go anywhere).
   `MPE_CONFIGURATION`, `PER_NOTE_PITCH_BEND_SENSITIVITY`), never a bare `u8` pair.
 - `tutti-midi-protocol` depends on `tutti-ump` alone, keeps every module
   private (`tutti_midi_protocol::widen`; CI runs the per-module path gate on
-  it) and is `#![forbid(unsafe_code)]`. It holds no state and allocates
-  nothing. A consumer's call to `widen` is transitional: the stage 3 translator
+  it) and is `#![forbid(unsafe_code)]`. Its functions (`widen`, `narrow`,
+  `midi1`) hold no state; its two translators, `Translator` (MIDI 1.0 in) and
+  `Narrower` (MIDI 2.0 out, per group and channel: RPN/NRPN selects, Bank
+  Select), are fixed-size values, hold no clock, and allocate nothing after
+  `new`. A consumer's call to `widen` is transitional: the stage 3 translator
   calls it at the input edge and consumers drop theirs. It also holds
   `PitchBendSensitivity`, the 7.25 fixed-point range of RPN #00/07 (its `serde`
   feature is optional and carries the bits, for `MpeZoneConfig`), and the MPE
@@ -614,7 +617,7 @@ list (normal and build edges; dev-dependencies may go anywhere).
   sized in `new` and a `Clone` keeps their capacity; the instrument passes
   `VoiceView`s sorted by id, and only for a note-on (liveness is read there).
   The spec is the only oracle: a rule gets a test from the spec and a mutation,
-  and nothing is pinned against another implementation. **An instrument plays one
+  and nothing is pinned against another implementation. The per-note controller state (M2-104 section 7.4) is `PerNoteState`, which `Voicing` uses and a plugin host uses too. **An instrument plays one
   Group's sixteen channels** (`SynthConfig::group`, `Settings::with_group`; a message of
   another Group is not read, M2-104 section 2.1.2, Appendix B.1), so `step` never sees a
   Group; the input node routes by (Group, channel) (`MidiInputPorts`, doc 017 L3). Mono and legato follow

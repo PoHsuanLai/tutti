@@ -585,3 +585,74 @@ fn reset_all_controllers_nulls_the_selection() {
         ]
     );
 }
+
+// A stream that ends: `flush` sends what a trigger would have.
+
+/// **`flush` sends a CC 6 that no CC 38 followed, at LSB 0** (D.3.3's
+/// triggers are a CC 38, a later CC 6 or a new select; the end of a stream is
+/// the fourth a clip's loader supplies), and a second flush sends nothing.
+#[test]
+fn flush_sends_a_lone_cc_6_once() {
+    let mut t = Translator::new();
+    run(
+        &mut t,
+        &[
+            cc(CCNumber::RPN_MSB, 0),
+            cc(CCNumber::RPN_LSB, 0),
+            cc(CCNumber::DATA_ENTRY, 12),
+        ],
+    );
+    let mut sent = Vec::new();
+    t.flush(|address, ump| sent.push((address, decode(ump).unwrap())));
+    assert_eq!(sent, [(at(0, 0), registered(0, 0, zx(12, 0)))]);
+    let mut again = 0;
+    t.flush(|_, _| again += 1);
+    assert_eq!(again, 0);
+}
+
+/// **`flush` sends a CC 38 that had no CC 6, at MSB 0**, and names the
+/// channel's own group and channel.
+#[test]
+fn flush_sends_a_lone_cc_38_on_its_own_channel() {
+    let mut t = Translator::new();
+    let a = at(3, 5);
+    for ump in [
+        cc_on(a, CCNumber::NRPN_MSB, 1),
+        cc_on(a, CCNumber::NRPN_LSB, 2),
+        cc_on(a, CCNumber::DATA_ENTRY_LSB, 9),
+    ] {
+        t.feed(ump, |_| {});
+    }
+    let mut sent = Vec::new();
+    t.flush(|address, ump| sent.push((address, decode(ump).unwrap())));
+    let Message::Midi2(_, Voice2::Assignable { bank, index, .. }) = sent[0].1 else {
+        panic!("an Assignable Controller, got {:?}", sent[0].1);
+    };
+    assert_eq!(
+        (sent.len(), sent[0].0, bank.get(), index.get()),
+        (1, a, 1, 2)
+    );
+}
+
+/// **CC 96 and 97 stay Control Changes after an RPN select** (D.3.3: "They
+/// should not be translated to MIDI 2.0 Relative Registered Controller and
+/// Relative Assignable Controller Messages").
+#[test]
+fn increment_and_decrement_stay_control_changes() {
+    let mut t = Translator::new();
+    let out = run(
+        &mut t,
+        &[
+            cc(CCNumber::RPN_MSB, 0),
+            cc(CCNumber::RPN_LSB, 0),
+            cc(CCNumber::of(96), 1),
+            cc(CCNumber::of(97), 1),
+        ],
+    );
+    for sent in &out[2..] {
+        assert!(
+            matches!(sent[..], [Message::Midi2(_, Voice2::ControlChange { .. })]),
+            "{sent:?}"
+        );
+    }
+}

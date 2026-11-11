@@ -396,24 +396,17 @@ fn messages_with_no_synthesizer_setter_change_nothing() {
             value: u32::MAX,
         }),
         m2(Voice2::ChannelPressure(u32::MAX)),
-        m2(Voice2::PerNotePitchBend {
-            note: n,
-            value: u32::MAX,
-        }),
+        // A Registered Per-Note Controller no voice generator carries
+        // (Breath), and an Assignable one, which names nothing.
         m2(Voice2::RegisteredPerNote {
             note: n,
-            controller: RegisteredPerNoteController::Volume,
+            controller: RegisteredPerNoteController::Breath,
             value: 0,
         }),
         m2(Voice2::AssignablePerNote {
             note: n,
             controller: 7,
             value: 0,
-        }),
-        m2(Voice2::PerNoteManagement {
-            note: n,
-            detach: true,
-            reset: true,
         }),
         m2(Voice2::Registered {
             bank: U7::of(0),

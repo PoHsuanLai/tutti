@@ -357,9 +357,25 @@ impl Translator {
   On at velocity 0 becomes a Note Off with velocity `0x8000` (D.3.1 in v1.1.2); a
   MIDI 2.0 Note On at velocity 0 stays a Note On; RPN data is zero-extended for
   index 0 to 31 (M2-115 §4.1), which `rpn.rs` scales with Min-Center-Max.
-- Translating back is D.2: an RPN or NRPN becomes its four Control Changes
-  (D.2.3). Today it has no MIDI 1.0 form, so a keyboard's pitch bend range never
-  reaches a CLAP, VST2, AU or SoundFont consumer.
+- Translating back is D.2, `Narrower` (`tutti-midi-protocol`, built; no host
+  calls it yet): an RPN or NRPN becomes its four Control Changes (D.2.3), the
+  select skipped while the same parameter stays selected on that group and
+  channel (MIDI 1.0 rule 6), and no Null Function after the run (D.2.3 gives
+  four messages, D.3.3 says Null "is not translated"). Data narrows with
+  rounding for RPN bank 0, index 0 to 31 (M2-115 §4.1, §4.4, the rule the
+  `Translator` zero-extends by) and by the plain shift for every other
+  controller. A Program Change's bank is sent only when it differs from the one
+  last sent (D.2.4), and a Note On that narrows to velocity 0 is 1 (D.2.1). One
+  `Narrower` serves one output, so each plugin host and the hardware out holds
+  its own. Until a host calls it, a keyboard's pitch bend range does not reach
+  a CLAP, VST2, AU or SoundFont consumer as MIDI 1.0.
+- **The clip's end flushes a CC 6-only run** (`Translator::flush`, called by
+  `MidiClipNode`'s loader after the last event): a file that sets a range with
+  `B0 65 00, B0 64 00, B0 06 0C` and nothing after keeps it, on the CC 6's own
+  beat. The live "short timeout after receiving a CC 6" of D.3.3 ("some
+  translators may wish to") is not built: the `Translator` holds no clock, and an
+  input that has one can call `flush` itself. CC 96 and 97 stay Control Changes
+  (D.3.3, quoted in `Translator`'s docs).
 - MPE is a dialect on MIDI 1.0, handled here. Channels outside a zone pass through
   ("remain available for conventional use", RP-053), and bend, pressure and CC74
   sent before a note-on bind to it instead of being dropped. The group is kept.
@@ -2097,8 +2113,9 @@ at any point; its CI codec move and `ci`/`negotiate` deletion (4a, done) shrink
    - D.3.3's triggers, exactly: a CC 6 waits for a CC 38, a later CC 6 or a new
      select (LSB 0 when none came); a CC 38 before any CC 6 waits for it and goes
      with it; a new CC 6 never reuses an earlier run's LSB. A sender that ends an
-     RPN with a lone CC 6 and nothing after it is never heard: that is the spec's
-     rule, and the reason senders close a run with the Null Function.
+     RPN with a lone CC 6 and nothing after it is never heard live: that is the
+     spec's rule, and the reason senders close a run with the Null Function. A
+     clip's loader flushes it (`Translator::flush`, §4).
    - Each half of a parameter number is kept per kind (RPN and NRPN apart) until
      selected again; Reset All Controllers (CC 121, RP-015) sets both to null,
      drops what the run had not sent and passes on.
@@ -2502,6 +2519,63 @@ channel 1 played as Group 1 channel 1. Now:
   VST3 hosts' event conversion read `address.channel` and drop the Group, and
   `tutti_plugin_types::PerNoteBendRanges` is keyed by channel, so a plugin fed from two Groups
   merges them; a served plugin is one Group's wire until those take the Group.
+
+### L4: per-note controllers are state (done)
+
+M2-104 section 7.4.15.2: "Controllers create persistent state, so all notes that follow this
+message use the tuning of the Registered Per-Note Controller #3: Pitch 7.25", and Appendix C.3's
+rotation sequence sends Per-Note Management and the Pitch *before* the Note On. The instruments
+applied a per-note message only to a voice that already sounded, so a value sent first was lost, a
+Pitch after a Detach retuned the detached voice, D=1 with S=1 skipped the Reset, the per-note bend
+range was one value for every channel (section 7.4.13: one per channel), and the SoundFont
+ignored all of it. Now:
+
+- **The state is `PerNoteState`**, a pure type in `tutti-voicing` that `Voicing` uses
+  inside and a plugin host (which allocates no voices) can use as it is: one copy of the rules.
+  `PerNoteState::new(groups, default_range)` sizes it (about 270 KiB for each Group; `Voicing`
+  passes 1, since an instrument plays one Group); `step(address, &Voice2) -> &[NoteEvent]` reads
+  one message, `start` is the Note On path, and `clear` drops everything held in place. It keeps
+  one slot for each (Group, channel, Note Number) (`NOTE_CONTROLS` distinct controllers each, the
+  one set longest ago forgotten past that): a Registered or Assignable Per-Note Controller,
+  Polyphonic Pressure and Per-Note Pitch Bend are held when they arrive, whether or not a note
+  sounds. Reset All Controllers leaves them (Appendix B.2). `Voicing::reset` is `clear`;
+  `forget_notes` keeps the state, as it keeps the bends.
+- **Every started note has an id**, a `NoteId` above `NoteId::MAX_CHANNEL_NOTE` that names no
+  (channel, note) pair, so two notes on one key are two ids and a Detach separates them. A number
+  keeps the set of its notes that still respond (`LIVE_NOTES`, 4: tutti's bound, the oldest
+  dropped past it), and a controller or a Reset reaches every one, a releasing tail included
+  (section 7.4.5: after a Detach "all currently playing notes and previous notes" stop
+  responding, so before it they respond). Detach empties the set; `end(id)` removes one note,
+  for an owner that knows it is over (`Voicing` calls it when the last voice of a strike is
+  freed; a host on the plugin's note-end); a Note Off is not an end.
+- **What it says** is a `NoteEvent`: `Started { id, address, note }`, then `Control { id,
+  control: NoteControl }` for each value the number holds in the order told (`NoteControl`:
+  `Pitch`, `Bend` already in semitones over the channel's sensitivity, `Pressure`, `Registered`,
+  `Assignable`), also sent when a message arrives for the current note, and `Reset { id }`.
+  `Voicing` turns them into its own `Command`s: `Control { id, control }` for each voice of the
+  noted id (the voices of one strike share it) and `ResetControls(id)`. An instrument applies
+  what its voice has a place for and drops the rest; it holds no per-note state of its own and
+  no detach flag.
+- **Detach and Reset** are section 7.4.5. Detach empties the number's live set: those notes keep
+  their values and answer nothing more (no event is sent; the next Note On has a new id). Reset
+  clears the number's held values and resets the live notes. With D=1 and S=1 the Detach runs first, so the playing note is told nothing and the
+  next one starts at the defaults.
+- **Attribute Pitch 7.9** on a Note On is the note's own `Control(Pitch)` after the stored ones,
+  and is not stored (section 7.4.15.3: not valid for later notes).
+- **The per-note bend sensitivity** (RPN 0/7) is one value for each channel
+  (`Rules::per_note_bend_range` until it is set). A new one sends each voice that holds a bend its
+  new size, since a held bend is a position over the sensitivity.
+- **The polysynth** carries `Control` out on its voices (Pitch, bend, pressure, Volume and
+  Brightness; the assignable indexes 7 and 74 by its convention) and has no global per-note range
+  and no detach of its own. **The SoundFont** carries Pitch (the key still chooses the sample and
+  the envelope scaling), bend, Volume (the GM law) and Pan (replacing the channel's for that note);
+  pressure, modulation, breath, balance, the sound controllers, effects depths and the assignable
+  controllers have no generator in a SoundFont voice and are dropped.
+- **Not done, in the plugin hosts.** CLAP and VST3 address a note by an id minted per (channel,
+  key), drop Pitch 7.25 and Attribute 7.9, and drop Per-Note Management, so after a Detach their
+  per-note expressions still reach the previous note. They take `PerNoteState` events instead: the
+  minted id as the note id, `Control`s as the note's expressions (the held values as the new
+  note's initial ones), `Reset` as an expression reset.
 
 ## 11. Testing
 

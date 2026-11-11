@@ -300,7 +300,7 @@ fn assert_same_outside(what: &str, live: &[f32], memory: &[f32], allowed: &[(usi
 /// the first fade → fails. Mutation (run): `place_frame` wrapping to `start`
 /// rather than `resume` → the row from frame 0 parts at its first wrap →
 /// fails. Mutation (run): the loop's end not clamped to the file on the ring
-/// (the file's length → `usize::MAX` in `handle_set_stream_loop`) → the
+/// (the end left unclamped in `handle_set_stream_loop`) → the
 /// past-the-file row parts at the file's end → fails. Mutation (run): a
 /// refill that moves a looped ring's window every cycle (a flush at the
 /// loop's end) → the ring moves → fails.

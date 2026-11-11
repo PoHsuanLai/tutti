@@ -121,9 +121,9 @@ pub use voice::{VoicePoolNode, VoicePoolRef};
 pub(crate) mod streamer;
 
 pub use streamer::{
-    DiskStreamer, DiskStreamerConfig, Open, OpenError, Opening, Placement, RefusedPlacement,
-    Running, Stream, StreamFault, StreamFile, StreamId, StreamPhase, StreamReader, StreamStatus,
-    StreamerGone,
+    Block, DiskStreamer, DiskStreamerConfig, LoopError, Open, OpenError, Opening, Placement,
+    RefusedPlacement, Running, Stream, StreamFault, StreamFile, StreamId, StreamPhase,
+    StreamReader, StreamStatus, StreamerGone,
 };
 
 // The hand-driven streamer cycle, alongside `DiskStreamer::manual`: its driver

@@ -86,16 +86,21 @@ pub(crate) struct LoopTap {
 
 impl LoopSpan {
     /// The loop `[start, end)` in whole file frames of a file `len` frames
-    /// long (`usize::MAX` where the length is not known; `end` is clamped to
-    /// it), fading over `crossfade_frames` (see the module docs for the two
-    /// modes). `None` for a range with nothing in it, which does not loop.
+    /// long (`end` is clamped to it), fading over `crossfade_frames` (see the
+    /// module docs for the two modes). `None` for a range with nothing in it,
+    /// which does not loop.
     pub(crate) fn new(
         start: usize,
         end: usize,
         crossfade_frames: usize,
         len: usize,
     ) -> Option<Self> {
-        let end = end.min(len);
+        Self::unbounded(start, end.min(len), crossfade_frames)
+    }
+
+    /// [`new`](Self::new) for a file whose length is not known: `end` is
+    /// taken as it is.
+    pub(crate) fn unbounded(start: usize, end: usize, crossfade_frames: usize) -> Option<Self> {
         if end <= start {
             return None;
         }
@@ -274,8 +279,6 @@ fn whole_frame(pos: SamplePosition) -> usize {
 mod tests {
     use super::*;
 
-    const ANY: usize = usize::MAX;
-
     /// `plain` is exactly the frames whose looped taps are the file's
     /// own `idx - 1 ..= idx + 2`, none in the fade: a looped block read
     /// takes those four straight from the wave, so a `plain` frame whose
@@ -328,7 +331,7 @@ mod tests {
     /// frame 16 weighs 0 → fails.
     #[test]
     fn the_fade_blends_the_tail_toward_what_leads_into_start() {
-        let span = LoopSpan::new(10, 20, 4, ANY).expect("a loop");
+        let span = LoopSpan::unbounded(10, 20, 4).expect("a loop");
         assert_eq!(span.fade_at(15), None);
         assert_eq!(span.fade_at(16), Some((6, 0.2)));
         assert_eq!(span.fade_at(19), Some((9, 0.8)));
@@ -349,7 +352,7 @@ mod tests {
     /// fails.
     #[test]
     fn with_too_little_before_start_the_fade_goes_into_the_head() {
-        let span = LoopSpan::new(2, 20, 4, ANY).expect("a loop");
+        let span = LoopSpan::unbounded(2, 20, 4).expect("a loop");
         assert_eq!((span.fade(), span.resume()), (4, 6));
         assert_eq!(span.fade_at(16), Some((2, 0.2)));
         assert_eq!(span.fade_at(19), Some((5, 0.8)));
@@ -360,9 +363,9 @@ mod tests {
         for pos in [0, 5, 19, 20, 33, 34, 47, 1_000] {
             assert_eq!(span.place_frame(pos) as f64, span.place(pos as f64).0);
         }
-        let whole = LoopSpan::new(0, 1_000, 256, ANY).expect("a loop");
+        let whole = LoopSpan::unbounded(0, 1_000, 256).expect("a loop");
         assert_eq!((whole.fade(), whole.resume()), (256, 256));
-        let short = LoopSpan::new(0, 100, 256, ANY).expect("a loop");
+        let short = LoopSpan::unbounded(0, 100, 256).expect("a loop");
         assert_eq!((short.fade(), short.resume()), (50, 50));
     }
 
@@ -373,10 +376,10 @@ mod tests {
     #[test]
     fn a_fade_is_clamped_to_its_loop_and_the_loop_to_its_file() {
         assert_eq!(
-            LoopSpan::new(500, 520, 100, ANY).map(|s| s.fade()),
+            LoopSpan::unbounded(500, 520, 100).map(|s| s.fade()),
             Some(20)
         );
-        assert_eq!(LoopSpan::new(20, 20, 4, ANY), None);
+        assert_eq!(LoopSpan::unbounded(20, 20, 4), None);
         let clamped = LoopSpan::new(100, 5_000, 0, 1_000).expect("a loop");
         assert_eq!(clamped.end(), 1_000);
         assert_eq!(LoopSpan::new(2_000, 5_000, 0, 1_000), None);
@@ -391,7 +394,7 @@ mod tests {
     /// `looped` → 3 499.. → fails.
     #[test]
     fn a_position_before_the_loop_reads_the_file_behind_it() {
-        let span = LoopSpan::new(2_000, 4_000, 0, ANY).expect("a loop");
+        let span = LoopSpan::unbounded(2_000, 4_000, 0).expect("a loop");
         for looped in [false, true] {
             let (taps, _) = span.taps(10_000, 1_500.5, looped);
             assert_eq!(taps.map(|t| t.frame), [1_499, 1_500, 1_501, 1_502]);
@@ -406,7 +409,7 @@ mod tests {
     /// removed → `[9, 10, 11, 12]` after a wrap → fails.
     #[test]
     fn taps_wrap_through_the_loop() {
-        let span = LoopSpan::new(10, 20, 0, ANY).expect("a loop");
+        let span = LoopSpan::unbounded(10, 20, 0).expect("a loop");
         let frames = |pos, looped| {
             let (taps, _) = span.taps(100, pos, looped);
             taps.map(|t| t.frame)

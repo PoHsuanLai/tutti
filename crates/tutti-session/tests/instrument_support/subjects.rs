@@ -134,7 +134,7 @@ impl Subject for Plugin {
             .session
             .plugin(rig.node)?
             .handle()
-            .state()
+            .any_thread()
             .save_state()
             .expect("the plugin saves its state");
         // Not `complete()`: its overflow flag is also set by more blocks than the

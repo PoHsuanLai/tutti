@@ -494,6 +494,15 @@ impl Ipc {
         &self.link.guard
     }
 
+    /// Another view of this plugin's control side, for a handle: it shares the
+    /// link, so it answers from the same bridge and ends the same server
+    /// ([`Health::terminate`](tutti_plugin_types::Health::terminate)).
+    pub fn controller(&self) -> IpcController {
+        IpcController {
+            link: Arc::clone(&self.link),
+        }
+    }
+
     /// The pipeline's counters: the chunk in flight and the chunks the server
     /// had not answered. For the node's controls.
     pub fn chunk_counters(&self) -> &Arc<ChunkCounters> {
@@ -504,6 +513,7 @@ impl Ipc {
 /// The main-thread half of an activated served plugin: the bridge's control
 /// methods behind [`Control`](tutti_plugin_types::Control), and the latency and tail it re-reports behind
 /// [`Controller`].
+#[derive(Clone)]
 pub struct IpcController {
     pub(crate) link: Arc<Link>,
 }
@@ -520,6 +530,11 @@ impl IpcController {
     /// The bridge, for a caller that has no [`MainThread`] to hold.
     pub fn bridge(&self) -> &Arc<PluginBridge> {
         &self.link.bridge
+    }
+
+    /// The server's OS process id, fixed at launch.
+    pub fn server_pid(&self) -> Option<u32> {
+        self.link.guard.pid()
     }
 }
 

@@ -98,7 +98,7 @@ fn load() -> (PluginNode<Vst2Loaded>, PluginHandle) {
 /// The plugin's own value for parameter `i`.
 fn read(handle: &PluginHandle, i: u32) -> Option<f32> {
     handle
-        .params()
+        .any_thread()
         .parameter_value(ParamId::new((i32::try_from(i).expect("small")) as u32))
         .map(|v| v.get() as f32)
 }
@@ -194,7 +194,7 @@ fn a_held_value_is_sent_once_and_an_edit_on_the_plugin_survives_it() {
     assert_eq!(controls.param_delivery().points_sent, 1, "sent once");
 
     handle
-        .params()
+        .any_thread()
         .set_parameter_value(ParamId::new((p as i32) as u32), Normalized::of(0.75));
     assert_eq!(read(&handle, p), Some(0.75), "the edit reached the plugin");
     held(&mut unit, 0.25, 32);
@@ -256,7 +256,7 @@ fn an_export_renders_an_edit_made_in_the_plugin_as_live_does() {
         "live, held"
     );
     handle
-        .params()
+        .any_thread()
         .set_parameter_value(ParamId::new(0), Normalized::of(0.5));
     assert_eq!(
         channel_0(&live.render(BLOCK * 8)),

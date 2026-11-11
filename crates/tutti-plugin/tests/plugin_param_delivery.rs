@@ -49,7 +49,7 @@ fn value(i: usize) -> f32 {
 /// The plugin's value for parameter `i`, read from the plugin-server.
 fn read(handle: &PluginHandle, i: usize) -> Option<f32> {
     handle
-        .params()
+        .any_thread()
         .parameter_value(ParamId::new((i32::try_from(i).expect("small")) as u32))
         .map(|v| v.get() as f32)
 }
@@ -182,7 +182,7 @@ fn an_edit_on_the_plugin_survives_a_held_host_value() {
         },
         || read(&handle, p) == Some(0.25),
     ));
-    handle.params().set_parameter_value(
+    handle.any_thread().set_parameter_value(
         ParamId::new((p as i32) as u32),
         tutti_plugin_types::Normalized::of(0.75),
     );
@@ -282,7 +282,7 @@ fn an_export_renders_an_edit_made_in_the_plugin_as_live_does() {
     );
 
     // The edit, behind the node's back.
-    probe.handle.params().set_parameter_value(
+    probe.handle.any_thread().set_parameter_value(
         GAIN,
         tutti_plugin_types::Normalized::clamped(f64::from(gain_at(-15.0))),
     );

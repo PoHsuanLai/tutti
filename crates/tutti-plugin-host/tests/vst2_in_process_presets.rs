@@ -2,7 +2,7 @@
 //!
 //! `PluginHandle` is the only surface a host keeps: `into_parts` consumes the
 //! `Plugin` at load, so a preset browser holds a handle and nothing else. These
-//! tests drive that route end to end — `handle.presets()` → `handle.load_preset`
+//! tests drive that route end to end — `handle.presets(main)` → `handle.load_preset`
 //! → the program the plugin actually switched to — rather than the
 //! `Vst2Loaded` methods underneath, which `tutti-vst2-host`'s own suite
 //! already covers.
@@ -83,19 +83,21 @@ fn a_listed_preset_loads_the_program_it_names() {
     let _guard = lock_probe();
     let handle = load_handle(&[("TUTTI_VST2_PROBE_PROGRAMS", "3")]);
 
-    let cap = handle.presets().expect("the VST2 path carries presets");
-    let presets = cap.presets(&main_thread());
+    let presets = handle
+        .presets(&main_thread())
+        .expect("the VST2 path carries presets");
     assert_eq!(presets.len(), 3, "the probe declared 3 programs");
 
     // Deliberately not `PresetId::Number(2)`: the id is opaque, and taking it
     // from the listing is what a caller does.
     let wanted = presets[2].id.clone();
-    assert!(
-        cap.load_preset(&main_thread(), &wanted),
+    assert_eq!(
+        handle.load_preset(&main_thread(), &wanted),
+        Some(true),
         "loading a preset the plugin listed must be accepted"
     );
     assert_eq!(
-        cap.current_preset(&main_thread()),
+        handle.current_preset(&main_thread()),
         Some(wanted),
         "the plugin must report the program the handle just loaded"
     );
@@ -112,32 +114,32 @@ fn an_id_from_another_format_is_refused() {
     let _guard = lock_probe();
     let handle = load_handle(&[("TUTTI_VST2_PROBE_PROGRAMS", "3")]);
 
-    // Bound once rather than re-fetched per call: `presets()` returning `None`
-    // would make every `is_some_and` below read as a refusal, so a lost preset
-    // route would pass this test rather than fail it.
-    let cap = handle.presets().expect("the VST2 path carries presets");
-    let before = cap.current_preset(&main_thread());
+    // `Some(false)`, not "not true": a lost preset route answers `None`, which
+    // would otherwise read as a refusal and pass this test rather than fail it.
+    let before = handle.current_preset(&main_thread());
 
-    assert!(
-        !cap.load_preset(
+    assert_eq!(
+        handle.load_preset(
             &main_thread(),
             &PresetId::Program {
                 list_id: 0,
                 index: 1
             }
         ),
+        Some(false),
         "a VST3 program id addresses no VST2 program"
     );
-    assert!(
-        !cap.load_preset(
+    assert_eq!(
+        handle.load_preset(
             &main_thread(),
             &PresetId::Location(PathBuf::from("/x.clap-preset"))
         ),
+        Some(false),
         "a CLAP preset path addresses no VST2 program"
     );
 
     assert_eq!(
-        cap.current_preset(&main_thread()),
+        handle.current_preset(&main_thread()),
         before,
         "a refused load must not move the program"
     );
@@ -171,12 +173,9 @@ fn a_plugin_with_no_programs_declines_rather_than_going_silent() {
     // and the distinction is the whole point: `None` would mean this host
     // cannot ask, which a browser must not confuse with a plugin that was asked
     // and has nothing. The capability handle splits them, so assert both.
-    let cap = handle
-        .presets()
-        .expect("the route exists even for a plugin with no programs");
     assert_eq!(
-        cap.presets(&main_thread()),
-        Vec::new(),
+        handle.presets(&main_thread()),
+        Some(Vec::new()),
         "the plugin was asked and listed nothing"
     );
 }

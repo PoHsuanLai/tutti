@@ -2640,7 +2640,7 @@ mechanical split of `vst-tutti` with no behaviour change; the typed handles (§2
   hands the core to the main thread to be freed when dropped off it, so the host box and host
   state never free on an audio thread, whether or not the graph's retire path already keeps a
   unit off it.
-- **`HostState::save_state` on an in-process plugin runs on the main thread (doc 021 step
+- **`AnyThread::save_state` (then `HostState::save_state`) on an in-process plugin runs on the main thread (doc 021 step
   4a-3c-2).** `effGetChunk` is a main-thread opcode (`PluginInstance::try_get_preset_data`
   takes the token), but the session calls `save_state` from a task-pool job on purpose (a
   subprocess save is a blocking round trip with a ten-second timeout). The off-main exception
@@ -2651,7 +2651,7 @@ mechanical split of `vst-tutti` with no behaviour change; the typed handles (§2
   `idle_editor`, `editor_size`. `SendEditor` and the `Editor` object it boxed are gone, so
   the editor cannot outlive the plugin or move off it. The server loader's
   `WindowHandle::from_ptr` hop was a no-op re-wrap of the same type and is gone; the
-  in-process backend's remains (it takes `HostEditor::open_editor`'s raw pointer).
+  in-process backend's remains (it takes the raw pointer of `PluginHandle::open_editor`, doc 021 §10.4 PR 4).
 - The host crate: the Controller **owns** the `Vst2Loaded`; the Processor holds only the
   render handle. `Shell`, `Hold`, the retirement queue and `ControlCell` are deleted, and
   `deactivate` pairs the halves by `RenderHandle::is_of`. The §2.2 invariant's clause 4

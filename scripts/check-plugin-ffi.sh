@@ -25,7 +25,7 @@
 #   whose path has `vst2` in it or that names `tutti_vst2_host` or `tutti_vst2_ffi` is pinned
 #   to the known caller sites (`VST2_CALLERS`, none now: the in-process node is generic over
 #   the format and names no VST2 type; its `WindowHandle` decode for
-#   `HostEditor::open_editor`'s raw pointer is the same one `subprocess_backend.rs` makes). A
+#   `PluginHandle::open_editor`'s raw pointer, in `tutti-plugin-host`). A
 #   new one fails here, and so does a removed one until its pin is lowered.
 #
 # Comments and string literals are not code: prose that says "unsafe" is fine.

@@ -85,8 +85,10 @@ lifetime — it dies only when the last of either drops:
   node and is what a graph inserts. `Plugin` does this for you when inserted directly.
 - [`PluginHandle`](tutti_plugin_host::PluginHandle) (`tutti-plugin-host`'s;
   [`PluginClient::handle`](handles::PluginClient::handle) makes one) — the
-  main-thread control surface: editor, parameters, state, presets. Cheap to
-  clone (`Arc`-shared).
+  control surface: the editor, state restore and presets (main thread), and the
+  parameters, state save and render mode (`PluginHandle::any_thread`, from any
+  thread: a served plugin answers concurrently, an in-process one hops to the
+  main thread with a deadline). Cheap to clone (`Arc`-shared).
 
 Per-block inputs (MIDI, chord/scale context, parameter automation) are gated
 on what the plugin reported at load: an accessor answers `None` or `false`
@@ -207,7 +209,7 @@ number, `AEffect::numPrograms`. Like `AUTOMATION_STATE` and `RENDER_MODE`, the
 preset bits are edge-triggered host→plugin actions, so none of them joins
 `Features::CONSUMES`.
 
-[`PluginHandle::presets`](tutti_plugin_host::PluginHandle::presets) is the cross-format
+[`PluginHandle::presets`](tutti_plugin_host::PluginHandle::presets) (and `load_preset`) is the cross-format
 surface, over an opaque [`PresetId`] that carries each format's own identifier
 (an AU selector, a VST3 `(list, index)` pair, a CLAP path, a VST2 index) — a
 single index would silently corrupt AU's sparse numbering.

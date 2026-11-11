@@ -211,6 +211,24 @@ pub trait EditorWindow {
     /// that has no such tick does nothing here. An [`Editor`] has no
     /// `Lifecycle` to feed, so its idle serves those requests itself.
     fn editor_idle(&mut self, main: &MainThread);
+
+    /// The view's static resize capabilities.
+    fn editor_capabilities(&mut self, main: &MainThread) -> EditorCapabilities;
+
+    /// Asks the view to take `requested`; it answers with the size it took.
+    ///
+    /// # Errors
+    ///
+    /// The format or the plugin cannot resize.
+    fn set_editor_size(
+        &mut self,
+        main: &MainThread,
+        requested: EditorSize,
+    ) -> PluginResult<EditorSize>;
+
+    /// A size the plugin asked its window to take, if it asked since the last
+    /// poll.
+    fn poll_editor_resize_request(&mut self, main: &MainThread) -> Option<EditorSize>;
 }
 
 /// The editor-only instance an [`OutOfProcess`] format loads in the host
@@ -260,34 +278,5 @@ pub trait Editor: EditorWindow + Send {
     /// without the concept.
     fn set_automation_state(&mut self, main: &MainThread, mode: AutomationMode) {
         let _ = (main, mode);
-    }
-
-    /// The view's static resize capabilities.
-    fn editor_capabilities(&mut self, main: &MainThread) -> EditorCapabilities {
-        let _ = main;
-        EditorCapabilities::default()
-    }
-
-    /// Asks the view to take `requested`; it answers with the size it took.
-    ///
-    /// # Errors
-    ///
-    /// The format or the plugin cannot resize.
-    fn set_editor_size(
-        &mut self,
-        main: &MainThread,
-        requested: EditorSize,
-    ) -> PluginResult<EditorSize> {
-        let _ = (main, requested);
-        Err(PluginError::Editor(EditorError::PluginError(
-            "set_editor_size not supported".into(),
-        )))
-    }
-
-    /// A size the plugin asked its window to take, if it asked since the last
-    /// poll.
-    fn poll_editor_resize_request(&mut self, main: &MainThread) -> Option<EditorSize> {
-        let _ = main;
-        None
     }
 }

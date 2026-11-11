@@ -255,6 +255,7 @@ impl From<PluginError> for BridgeError {
                 reason,
             },
             PluginError::State(msg) => BridgeError::StateSaveError(msg),
+            PluginError::StateFailed(err) => BridgeError::StateSaveError(err.to_string()),
             PluginError::Process(msg) => BridgeError::ProcessError(msg),
             PluginError::Block(why) => BridgeError::ProcessError(why.to_string()),
             PluginError::Editor(err) => BridgeError::EditorError(err.to_string()),

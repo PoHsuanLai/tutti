@@ -176,11 +176,6 @@ fn the_handle_accepts_a_render_mode() {
     let loaded = load();
 
     assert!(
-        loaded.handle.render_mode().is_some(),
-        "the in-process VST2 handle must carry a render-mode route; without one \
-         a bounce cannot reach the plugin at all"
-    );
-    assert!(
         loaded.handle.set_render_mode(RenderMode::Offline),
         "VST2 answers the process level from a host callback, so there is no \
          query a plugin could decline — this must not report a refusal"

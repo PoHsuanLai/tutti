@@ -510,6 +510,33 @@ macro_rules! fake_control {
             fn close_editor(&mut self, _main: &MainThread) {}
 
             fn editor_idle(&mut self, _main: &MainThread) {}
+
+            /// The default capabilities: this surface reports no resize support.
+            fn editor_capabilities(
+                &mut self,
+                _main: &crate::MainThread,
+            ) -> crate::EditorCapabilities {
+                crate::EditorCapabilities::default()
+            }
+
+            /// Not supported here.
+            fn set_editor_size(
+                &mut self,
+                _main: &crate::MainThread,
+                _requested: crate::EditorSize,
+            ) -> crate::PluginResult<crate::EditorSize> {
+                Err(crate::PluginError::Editor(crate::EditorError::PluginError(
+                    "set_editor_size not supported".into(),
+                )))
+            }
+
+            /// Nothing asked: this surface never queues a resize request.
+            fn poll_editor_resize_request(
+                &mut self,
+                _main: &crate::MainThread,
+            ) -> Option<crate::EditorSize> {
+                None
+            }
         }
     };
 }

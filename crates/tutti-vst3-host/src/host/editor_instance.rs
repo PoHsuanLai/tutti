@@ -119,6 +119,36 @@ impl Editor for Vst3Editor {
         self.drain(main);
         std::mem::take(&mut self.dirty)
     }
+}
+
+impl EditorWindow for Vst3Editor {
+    fn has_editor(&self, main: &MainThread) -> bool {
+        EditorWindow::has_editor(&self.inner, main)
+    }
+
+    fn open_editor(
+        &mut self,
+        main: &MainThread,
+        parent: WindowHandle,
+        scale: ContentScale,
+    ) -> PluginResult<EditorSize> {
+        let size = self
+            .inner
+            .embed_editor(main, parent, scale)
+            .map_err(|e| editor_error(format!("VST3 open_editor failed: {e}")))?;
+        Ok(EditorSize {
+            width: size.width,
+            height: size.height,
+        })
+    }
+
+    fn close_editor(&mut self, main: &MainThread) {
+        EditorWindow::close_editor(&mut self.inner, main);
+    }
+
+    fn editor_idle(&mut self, _main: &MainThread) {
+        // VST3 editors don't have explicit idle.
+    }
 
     fn editor_capabilities(&mut self, main: &MainThread) -> EditorCapabilities {
         let inner = self.inner.editor_capabilities(main);
@@ -157,35 +187,5 @@ impl Editor for Vst3Editor {
                 width: sz.width,
                 height: sz.height,
             })
-    }
-}
-
-impl EditorWindow for Vst3Editor {
-    fn has_editor(&self, main: &MainThread) -> bool {
-        EditorWindow::has_editor(&self.inner, main)
-    }
-
-    fn open_editor(
-        &mut self,
-        main: &MainThread,
-        parent: WindowHandle,
-        scale: ContentScale,
-    ) -> PluginResult<EditorSize> {
-        let size = self
-            .inner
-            .embed_editor(main, parent, scale)
-            .map_err(|e| editor_error(format!("VST3 open_editor failed: {e}")))?;
-        Ok(EditorSize {
-            width: size.width,
-            height: size.height,
-        })
-    }
-
-    fn close_editor(&mut self, main: &MainThread) {
-        EditorWindow::close_editor(&mut self.inner, main);
-    }
-
-    fn editor_idle(&mut self, _main: &MainThread) {
-        // VST3 editors don't have explicit idle.
     }
 }

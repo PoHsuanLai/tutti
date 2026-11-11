@@ -203,7 +203,7 @@ fn an_mpe_mode_change_and_an_mcm_process_without_allocating() {
 
 /// A loop of 64 frames walked in 512-frame blocks: each block is eight loop
 /// passes of a clip (a note on and off in each, the held note ended at each
-/// wrap) and of a harmony node (a chord change in each, the chord re-stated
+/// wrap, a sustain pedal and an off-centre bend returned at each) and of a harmony node (a chord change in each, the chord re-stated
 /// at each wrap), all without allocating, block after block.
 ///
 /// Mutation (run): a `Vec` collected per pass in the walk's `pass` → the
@@ -220,6 +220,21 @@ fn a_block_of_many_loop_passes_walks_without_allocating() {
         MidiClipNode::new([
             TimedMidiEvent::new(beat(1_010.0), note_on(0, 60)),
             TimedMidiEvent::new(beat(1_040.0), note_on(0, 64)),
+            // Held across every wrap, so each wrap lifts the pedal and
+            // centres the bend.
+            TimedMidiEvent::new(
+                beat(1_020.0),
+                midi::cc(
+                    MidiGroup::FIRST,
+                    MidiChannel::FIRST,
+                    tutti_ump::CCNumber::SUSTAIN,
+                    u32::MAX,
+                ),
+            ),
+            TimedMidiEvent::new(
+                beat(1_030.0),
+                midi::pitch_bend(MidiGroup::FIRST, MidiChannel::FIRST, 0xA000_0000),
+            ),
         ]),
     );
     ed.insert(
@@ -258,7 +273,9 @@ fn a_block_of_many_loop_passes_walks_without_allocating() {
             sent += block(&mut exec, &mut clock);
         }
     });
-    assert!(sent >= 100 * 16, "every block walked its passes: {sent}");
+    // Per pass the clip sends two note-ons, the pedal and the bend, then at the
+    // wrap two note-offs, the pedal-up and the centred bend.
+    assert!(sent >= 100 * 8 * 8, "every block walked its passes: {sent}");
     assert_eq!(out.dropped(), 0);
 }
 

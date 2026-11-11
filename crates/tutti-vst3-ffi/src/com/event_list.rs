@@ -187,7 +187,7 @@ impl Class for EventList {
 
 impl EventList {
     /// A plugin's input list: reserves the SysEx reassembly buffer
-    /// ([`sysex_assembler`], about 66 KiB) with the event storage.
+    /// ([`sysex_assembler`], about 132 KiB) with the event storage.
     /// Off the audio thread.
     pub fn input() -> ComWrapper<Self> {
         Self::with_sysex(sysex_assembler(), 0)
@@ -196,7 +196,7 @@ impl EventList {
     /// A plugin's output list, which the plugin fills through `addEvent`: no
     /// reassembly buffer. Off the audio thread.
     pub fn output() -> ComWrapper<Self> {
-        Self::with_sysex(SysexAssembler::new(Box::default(), 0), SYSEX_OUT_ROOM)
+        Self::with_sysex(SysexAssembler::new(Box::default(), 0, 0), SYSEX_OUT_ROOM)
     }
 
     fn with_sysex(sysex: SysexAssembler<Box<[u8]>>, sysex_out_room: usize) -> ComWrapper<Self> {

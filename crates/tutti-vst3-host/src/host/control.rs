@@ -5,17 +5,17 @@
 use tutti_plugin_types::MainThread;
 use tutti_plugin_types::features::probed;
 use tutti_plugin_types::{
-    AutomationMode, BusChannels, ContentScale, Control, EditorPresence, EditorSize, EditorWindow,
-    Features, LoadedPlugin, Normalized, ParamId, ParameterInfo, PluginClass, PluginDescriptor,
-    PluginError, PluginResult, PluginTail, Preset, PresetId, RenderMode, Request, RescanScope,
-    Samples, Vst3SubCategories, WindowHandle,
+    AutomationMode, ContentScale, Control, EditorPresence, EditorSize, EditorWindow, Features,
+    LoadedPlugin, Normalized, ParamId, ParameterInfo, PluginClass, PluginDescriptor, PluginError,
+    PluginResult, PluginTail, Preset, PresetId, RenderMode, Request, RescanScope, Samples,
+    Vst3SubCategories, WindowHandle,
 };
 
 use crate::error::Vst3Error;
 use crate::types::PluginInfo;
 
-use super::instance::bus_layout;
 use super::loaded::Vst3Loaded;
+use crate::BusDirection;
 
 /// A `Vst3Error` as the shared vocabulary's error.
 pub(crate) fn plugin_error(error: Vst3Error) -> PluginError {
@@ -52,18 +52,6 @@ pub fn descriptor_of(info: &PluginInfo, editor: EditorPresence) -> PluginDescrip
             category: Vst3SubCategories::parse(info.sub_categories.as_deref().unwrap_or_default()),
         },
         editor,
-    }
-}
-
-/// Per-bus channel counts for one direction. The host already enumerates every
-/// audio bus; the full list is carried verbatim so sidechain and aux buses
-/// survive. Falls back to a single main bus of `main_channels` when the host
-/// reported no per-bus list.
-fn bus_channels(host_buses: &[usize], main_channels: usize) -> BusChannels {
-    if host_buses.is_empty() {
-        vec![bus_layout(main_channels)]
-    } else {
-        host_buses.iter().map(|&c| bus_layout(c)).collect()
     }
 }
 
@@ -239,10 +227,8 @@ impl Control for Vst3Loaded {
             Samples(0)
         };
         LoadedPlugin {
-            inputs: bus_channels(&self.info.input_bus_channels, self.info.num_inputs),
-            outputs: bus_channels(&self.info.output_bus_channels, self.info.num_outputs),
-            input_topology: self.input_bus_topologies(main).into_iter().collect(),
-            output_topology: self.output_bus_topologies(main).into_iter().collect(),
+            inputs: self.buses(main, BusDirection::Input),
+            outputs: self.buses(main, BusDirection::Output),
             latency_samples,
             tail: self.tail_figure(main),
             features: self.features(main),

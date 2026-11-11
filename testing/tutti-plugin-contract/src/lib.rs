@@ -46,6 +46,7 @@ macro_rules! contract {
         $crate::contract!(@each $fmt, $gaps,
             routing_tag_oracle,
             reconfigure_keeps_rendering,
+            buses_reported,
             latency_reported,
             latency_applied,
             reset_clears_the_delay_line,

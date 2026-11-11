@@ -854,6 +854,41 @@ mod tests {
         assert_eq!(loaded.total_outputs(), 3);
     }
 
+    /// **A CLAP port's role is its `CLAP_AUDIO_PORT_IS_MAIN` flag**: the
+    /// flagged port is `Main` and the unflagged aux `Aux`, on both sides; and
+    /// an instrument (no input port) has no input bus, not one of no
+    /// channels.
+    ///
+    /// Mutations (run): `ClapLoaded::buses` giving every port `Main` → the aux
+    /// roles fail; its fallback answering a zero total with a main bus of no
+    /// channels → the instrument's input list is not empty → fails.
+    #[test]
+    fn a_ports_role_is_its_main_flag_and_an_instrument_has_no_input_bus() {
+        use tutti_plugin::server::BusRole;
+        let _lock = crate::test_utils::plugin_load_lock();
+        let path = Path::new(clap_plugin());
+        let roles = |buses: &[tutti_plugin::server::PluginBus]| {
+            buses.iter().map(|b| b.role).collect::<Vec<_>>()
+        };
+
+        let aux = crate::test_utils::clap_probe_port_layout(
+            tutti_clap_test_plugin::PortLayoutMode::AsymmetricAux as u32,
+        );
+        let instance = ClapInstance::load(&main_thread(), path, 44100.0, 512, false).expect("load");
+        let loaded = instance.loaded();
+        assert_eq!(roles(&loaded.inputs), [BusRole::Main, BusRole::Aux]);
+        assert_eq!(roles(&loaded.outputs), [BusRole::Main, BusRole::Aux]);
+        drop((instance, aux));
+
+        let _instrument = crate::test_utils::clap_probe_port_layout(
+            tutti_clap_test_plugin::PortLayoutMode::Instrument as u32,
+        );
+        let instance = ClapInstance::load(&main_thread(), path, 44100.0, 512, false).expect("load");
+        let loaded = instance.loaded();
+        assert!(loaded.inputs.is_empty(), "{:?}", loaded.inputs);
+        assert_eq!(roles(&loaded.outputs), [BusRole::Main]);
+    }
+
     /// **A plugin that withdraws its 64-bit flags after it was opened loads as
     /// 32-bit.** The session asked for 64-bit on the answer the plugin gave at
     /// open; activation asks again, and the refusal is not a failed load.

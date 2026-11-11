@@ -6,9 +6,9 @@ use tutti_fixtures::midi;
 use tutti_graph::Offset;
 use tutti_graph::UmpAt;
 use tutti_plugin_types::{
-    AudioBuffer, AudioBufferMut, Control, Controller, Loaded, Normalized, ParamFlags,
-    ParameterChanges, PluginIo, PluginTail, ProcessContext, ProcessOutput, Processor, Reopen,
-    SampleFormat, Samples, TransportChange, TransportInfo,
+    AudioBuffer, AudioBufferMut, BusRole, Control, Controller, Loaded, Normalized, ParamFlags,
+    ParameterChanges, PluginBus, PluginIo, PluginTail, ProcessContext, ProcessOutput, Processor,
+    Reopen, SampleFormat, Samples, TransportChange, TransportInfo,
 };
 use tutti_plugin_types::{ParamId, RenderMode, Request};
 use tutti_ump::{MidiChannel, MidiGroup};
@@ -101,6 +101,24 @@ pub fn reconfigure_keeps_rendering<F: Format>() {
     assert_eq!(t.prepares, 2);
     assert_eq!((t.calls, t.frames), (1, 128), "counted from the activation");
     assert_eq!((t.level, t.aux), (0.5, 0.25), "the defaults");
+}
+
+/// The plugin's buses as the host reports them, loaded and active: one stereo
+/// main bus a side, with the role the format gives it.
+// Mutation (run): each host's role mapping giving its main bus `Aux` (CLAP's
+//   `ClapLoaded::buses`, VST3's `Vst3Loaded::buses`, VST2's `PluginBus::single`)
+//   -> fails in that host's formats.
+pub fn buses_reported<F: Format>() {
+    let main = main_thread();
+    let want = [(spec::MAIN_BUS, BusRole::Main)];
+    let of =
+        |buses: &[PluginBus]| -> Vec<_> { buses.iter().map(|b| (b.channels, b.role)).collect() };
+    let loaded = F::load().wiring(&main);
+    assert_eq!(of(&loaded.inputs), want, "loaded inputs");
+    assert_eq!(of(&loaded.outputs), want, "loaded outputs");
+    let active = active_in::<F>(Mode::Tag).controller().wiring(&main);
+    assert_eq!(of(&active.inputs), want, "active inputs");
+    assert_eq!(of(&active.outputs), want, "active outputs");
 }
 
 /// Reported latency follows the plugin's mode.

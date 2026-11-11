@@ -24,12 +24,14 @@ use std::sync::{Arc, Mutex};
 
 use common::{Kind, Pair, Ringer, SpecBehaviour, TestNode, bits, prepare};
 use tutti_graph::{
-    CrossfadeCurve, Cx, Edge, Editor, Event, EventEdge, EventIn, EventKind, EventOut, Executor,
-    ForkByClone, ForkMode, ForkTarget, GraphInvalid, GraphSpec, InPort, Io, ModeError, Node,
-    NodeKey, NodeMode, NodeSpec, Offset, OutPort, Prepare, Shape, Source, Status, Topology,
-    Transport, Unforkable, ValidGraph,
+    Bus, BusRole, Buses, CrossfadeCurve, Cx, Edge, Editor, Event, EventEdge, EventIn, EventKind,
+    EventOut, Executor, ForkByClone, ForkMode, ForkTarget, GraphInvalid, GraphSpec, InPort, Io,
+    ModeError, Node, NodeKey, NodeMode, NodeSpec, Offset, OutPort, Prepare, Shape, Source, Status,
+    Topology, Transport, Unforkable, ValidGraph,
 };
-use tutti_types::{ChannelLayout, Latency, Samples, Tail};
+use tutti_types::{
+    BusTopology, ChannelLayout, ChannelTopology, FoldError, Latency, M3DB, Samples, Tail,
+};
 use tutti_ump::Ump;
 
 const BLOCK: usize = 64;
@@ -324,8 +326,9 @@ impl Rig {
 
 /// **The channel mapping, without declared buses: `Status::Bypass`'s rule.**
 /// Output `c` is input `c` below the narrower width; an output past the
-/// input's width is silence. (A declared fold, and `ModeError::Unplaced`,
-/// are the buses' stage B3; there are no declared buses yet.)
+/// input's width is silence. (Every node here is built from widths, so its
+/// main buses are `Discrete` and name no placement to fold between; a node
+/// that names one is `a_bypass_is_the_fold_between_the_main_buses`.)
 ///
 /// Mutation (run): the parked path fills a missing input's output from input
 /// 0 (`ain.get(c).unwrap_or(&ain[0])`) → the mono-to-stereo case's second
@@ -408,6 +411,146 @@ fn the_bypass_follows_the_width_rule() {
             }
         }
     }
+}
+
+/// A node of `ins` channels in, `outs` out, declaring `input` and `output` as
+/// its `Main` buses (the node itself is `Fan`, with a declared `latency`).
+fn bused(ins: usize, outs: usize, latency: usize, input: Bus, output: Bus) -> Kind {
+    Kind::Bused {
+        inner: Box::new(Kind::Spec {
+            behaviour: SpecBehaviour::Fan,
+            ins,
+            outs,
+            latency,
+            tail: Tail::None,
+        }),
+        buses_in: Box::new(Buses::new(&[input]).expect("one bus")),
+        buses_out: Box::new(Buses::new(&[output]).expect("one bus")),
+    }
+}
+
+fn main_bus(topology: ChannelTopology) -> Bus {
+    Bus {
+        topology: BusTopology::try_from(&topology).expect("fits a bus"),
+        role: BusRole::Main,
+    }
+}
+
+fn smpte(n: u16) -> Bus {
+    main_bus(ChannelTopology::smpte(ChannelLayout::from_count(n)).expect("an SMPTE width"))
+}
+
+fn discrete(n: u16) -> Bus {
+    main_bus(ChannelTopology::discrete(ChannelLayout::from_count(n)))
+}
+
+/// **A bypass is the fold between the main buses.** A node whose `Main` input
+/// bus is named 5.1 and whose `Main` output bus is named stereo, bypassed,
+/// writes the ITU downmix of its input (delayed by the declared latency), not
+/// its first two channels: `L = FL + 3dB*FC + 3dB*SL`, `R = FR + 3dB*FC +
+/// 3dB*SR`, the LFE dropped. Global input `c` is the signal scaled by `2^-c`,
+/// so every channel is distinct. (Those are `Fold::contributions`' rows for
+/// the pair, written out; a rounding of the sum differs, so the comparison is
+/// to `1e-5`.) The executor is also held to the reference at every block.
+///
+/// The same holds for a node that runs at `Mix::DRY` (all of the aligned
+/// input), which reads the fold through the blend and not the parked path.
+///
+/// Mutation (each run, each failed): `Pass::of` taking the width rule for a
+/// named pair -> `L` is `FL` alone and `R` is `FR` alone; `park_folded`
+/// skipping the rings' `align` -> the parked case is silence; `park_folded`
+/// writing a constant instead of `fold_aligned_into` -> the parked case
+/// fails; `moded_node_op` without `fold_aligned` -> the `Mix::DRY` case
+/// reads an unfolded (zero) slot.
+#[test]
+fn a_bypass_is_the_fold_between_the_main_buses() {
+    for workers in WORKERS {
+        for (latency, parked) in [(0usize, true), (40, true), (0, false), (40, false)] {
+            // Parked (Bypassed) and running at `Mix::DRY`: the node's own
+            // output is Fan's, and not what is heard.
+            let modes = [(1, NodeMode::Bypassed)];
+            let mut rig = Rig::new(
+                workers,
+                &[bused(6, 2, latency, smpte(6), smpte(2))],
+                6,
+                |t| {
+                    for c in 0..6 {
+                        t.connect(at(1, c), Edge::Direct(Source::Global(c)));
+                    }
+                    t.set_outputs(vec![out(1, 0), out(1, 1)]);
+                },
+                if parked { &modes } else { &[] },
+            );
+            if !parked {
+                rig.pair.set_mix(key(1), tutti_types::Mix::DRY);
+            }
+            let got = rig.frames(256, &wave);
+            let input = |c: u32, f: u64| {
+                if f >= latency as u64 {
+                    wave(f - latency as u64) * 0.5f32.powi(c as i32)
+                } else {
+                    0.0
+                }
+            };
+            // A mix that moves ramps across the block it lands on: from the
+            // second block, it holds still at DRY.
+            let from = if parked { 0 } else { BLOCK as u64 };
+            for n in from..256u64 {
+                let left = input(0, n) + M3DB * input(2, n) + M3DB * input(4, n);
+                let right = input(1, n) + M3DB * input(2, n) + M3DB * input(5, n);
+                let i = n as usize;
+                assert!((got[0][i] - left).abs() < 1e-5, "left, {n}: {}", got[0][i]);
+                assert!(
+                    (got[1][i] - right).abs() < 1e-5,
+                    "right, {n}: {}",
+                    got[1][i]
+                );
+            }
+        }
+    }
+}
+
+/// **A bypass whose main buses name channels and do not fold is refused**, with
+/// the fold's reason, and nothing changes: six discrete channels into a named
+/// stereo bus have no relabelling (`FoldError::Discrete`). Any other mode, and
+/// a bypass of a node built from widths, is not refused.
+///
+/// Mutation (each run, each failed): `Editor::set_mode` not asking
+/// `Pass::of` -> the bypass is accepted; asking it for every mode -> the
+/// Muted assertion fails.
+#[test]
+fn a_bypass_of_unfoldable_main_buses_is_refused() {
+    let (mut ed, _exec) = Editor::new(prepare(MAX_BLOCK));
+    ed.insert(
+        key(1),
+        "named",
+        Unforkable(TestNode::new(bused(6, 2, 0, discrete(6), smpte(2)))),
+    );
+    ed.insert(
+        key(2),
+        "widths",
+        Unforkable(TestNode::new(Kind::Spec {
+            behaviour: SpecBehaviour::Fan,
+            ins: 6,
+            outs: 2,
+            latency: 0,
+            tail: Tail::None,
+        })),
+    );
+    let refused = ed.set_mode(key(1), NodeMode::Bypassed);
+    assert!(
+        matches!(
+            refused,
+            Err(ModeError::Unplaced {
+                error: FoldError::Discrete { .. },
+                ..
+            })
+        ),
+        "{refused:?}"
+    );
+    assert_eq!(ed.mode(key(1)), NodeMode::Active, "nothing changed");
+    assert_eq!(ed.set_mode(key(1), NodeMode::Muted), Ok(()));
+    assert_eq!(ed.set_mode(key(2), NodeMode::Bypassed), Ok(()));
 }
 
 /// **`Muted`: every output is `+0.0`** (the bit pattern of positive zero),

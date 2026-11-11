@@ -315,7 +315,7 @@ Four rules decide which word a name uses (the owner's decision of 2026-11-11).
 | envelope follower | **envelope detector** (rectifier plus one-pole low-pass) | `tutti-dsp` `dynamics` (`EnvelopeFollower`, `GateEnvelopeFollower`), the stereo and spectrum ballistics in `tutti-measure` |
 | attack, release | **time constants** (rise and fall) of a detector | kernels: `tutti-dsp` `dynamics`; nodes keep `attack` and `release` (rule 4) |
 | smoothing, slew, de-zipper | **one-pole low-pass of a control signal** (time constant `tau`, `Seconds::one_pole_coeff`) | `tutti-dsp` `Smoother`, the FDN's `Slew`, `tutti-nodes` `spatial::smoothing`, `tutti-measure` `Smoothing` |
-| pan law, downmix, upmix | **gain vector**; **linear map** or **change of basis** (`Fold`, a matrix `M` with the metric of section 2.1) | `tutti_types::Fold`, `balance_gains` (`tutti-dsp`), `DownmixNode` (`tutti-nodes`) |
+| pan law, downmix, upmix | **gain vector**; **linear map** or **change of basis** (`Fold`, a matrix `M` with the metric of section 2.1) | `tutti_types::Fold`, `balance_gains` (`tutti-dsp`); a bus edge between declared buses (`DownmixNode` is deleted, doc 013 B3) |
 | dry-wet | **convex combination** `(1 - m) x + m y` | `Blend`, `DryAlign`, the `mix` control of every insert; `wet`, `dry` inside a kernel are the two operands |
 | tail, ring-out | **decay time**, **impulse-response length** (`Ring`, `System::tail(floor)`) | model code and `tutti-dsp` kernels; `Shape::tail` is the node's declared ceiling (rule 4) |
 | latency | **pure delay** of the processing (not **group delay**, which varies with frequency and is a property of `H(e^jw)`; musical delay is neither) | `System::latency`, `Shape` latency, PDC |

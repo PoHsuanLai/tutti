@@ -39,8 +39,9 @@
 //! - Spatial: [`VbapPannerNode`] ([`VbapError`]) and [`HrtfBinauralNode`],
 //!   steered by their params ([`VBAP_PANNER_PARAMS`], [`HRTF_BINAURAL_PARAMS`]:
 //!   bearing, height, and the VBAP spread and width or the HRTF blend).
-//! - Mixing: [`DownmixNode`], [`BusStripNode`]. Summing is the graph's
-//!   (a port or an output channel sums its sources), not a node's.
+//! - Mixing: [`BusStripNode`]. Summing is the graph's (a port or an output
+//!   channel sums its sources), not a node's, and so is folding between
+//!   channel layouts (a bus edge between declared buses).
 //! - Param ports: each node's `*_PARAMS` port list (for example
 //!   [`DELAY_PARAMS`]), which a control lane drives
 //!   ([`ControlLaneNode`](automation::ControlLaneNode)).
@@ -112,9 +113,6 @@ pub use dynamics::{
     BAND_PARAMS, BRICKWALL_PARAMS, BrickwallLimiterNode, COMPRESSOR_PARAMS, CompressorNode,
     GATE_PARAMS, GateNode, LIMITER_PARAMS, LimiterNode, MultibandCompressorNode, MultibandControls,
 };
-
-mod downmix_unit;
-pub use downmix_unit::DownmixNode;
 
 // The mixer strip: volume, stereo balance, mute. Ungated: a fader is not a
 // spatial concept.

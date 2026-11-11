@@ -49,7 +49,7 @@ pub(super) fn moded_node_op<A: AudioSlots, F: SlotFlags + ?Sized, E: EventSlots 
     // node's own history), and kept beside the node's output when this
     // block's blend needs it. Before the call: a node that works in place
     // overwrites its input.
-    let main = u.mode.main();
+    let main = u.mode.inputs();
     let need = u.mode.needs_input();
     let mut input_silent = 0u64;
     for (c, &s) in ain.iter().enumerate().take(main) {
@@ -66,9 +66,13 @@ pub(super) fn moded_node_op<A: AudioSlots, F: SlotFlags + ?Sized, E: EventSlots 
     if seg.is_steady() && seg.steady == NodeMode::Active && seg.mix.is_wet() {
         return ended;
     }
+    if need {
+        u.mode.fold_aligned(frames);
+    }
     let lane = u.mode.lane(frames);
+    let main = u.mode.outputs();
     for (c, &s) in aout.iter().enumerate() {
-        let x = (c < main && need).then(|| u.mode.aligned(c, frames));
+        let x = (c < main && need).then(|| u.mode.passed(c, frames));
         seg.blend(st.arena.slot_mut(s, frames), x, lane);
         if seg.is_steady() {
             match seg.steady {
@@ -78,7 +82,7 @@ pub(super) fn moded_node_op<A: AudioSlots, F: SlotFlags + ?Sized, E: EventSlots 
                     // at DRY it is silence).
                     let node_silent = st.flags.get(s) & SILENT != 0;
                     let no_input = c >= main;
-                    let x_silent = no_input || input_silent & (1 << c) != 0;
+                    let x_silent = no_input || u.mode.passes_silence(c, input_silent);
                     match seg.mix.state() {
                         MixState::Wet => {}
                         MixState::Dry => st.flags.set(s, flag(x_silent, x_silent)),
@@ -91,7 +95,7 @@ pub(super) fn moded_node_op<A: AudioSlots, F: SlotFlags + ?Sized, E: EventSlots 
                 }
                 NodeMode::Muted => st.flags.set(s, SILENT | CONSTANT),
                 NodeMode::Bypassed => {
-                    let silent = c >= main || input_silent & (1 << c) != 0;
+                    let silent = c >= main || u.mode.passes_silence(c, input_silent);
                     st.flags.set(s, flag(silent, silent));
                 }
             }
@@ -111,7 +115,7 @@ fn park<A: AudioSlots, F: SlotFlags + ?Sized, E: EventSlots + ?Sized>(
     st: &mut OpState<'_, A, F, E>,
     [ain, aout, ein, eout]: [&[u32]; 4],
 ) {
-    let (rec, frames) = (head.rec, head.frames);
+    let rec = head.rec;
     // Its params go on stepping, as a skipped node's do: their ramps and
     // declick follow the timeline while it is out.
     if rec.params.len != 0 || u.params.busy() {
@@ -124,9 +128,50 @@ fn park<A: AudioSlots, F: SlotFlags + ?Sized, E: EventSlots + ?Sized>(
         u.keys.owe_held();
     }
 
-    // Output `c` is input `c` below the narrower width, silence past it
-    // (`Status::Bypass`'s rule), delayed by the declared latency.
-    let main = u.mode.main();
+    // The outputs are the inputs delayed by the declared latency: output `c`
+    // is input `c` below the narrower width, silence past it (the width rule),
+    // or the fold of the main buses (`pass.rs`).
+    if u.mode.folds() {
+        park_folded(u, head, st, ain, aout);
+    } else {
+        park_by_index(u, head, st, ain, aout);
+    }
+
+    for (port, &s) in eout.iter().enumerate() {
+        let events = st.events.ev_mut(s);
+        events.clear();
+        u.keys.close_port(port, events);
+    }
+    u.keys.settle();
+
+    // Events sent to a parked node are discarded: flushed ones and commands.
+    if !ein.is_empty() {
+        let unit = rec.unit;
+        if st.has_inject[st.at] {
+            for inj in st.inject.iter_mut().filter(|i| i.unit == unit) {
+                inj.events.clear();
+                inj.merged.clear();
+                inj.live = false;
+            }
+            st.has_inject[st.at] = false;
+        }
+        st.has_due[st.at] = false;
+    }
+    u.quiet = 0;
+    u.last_quiet = false;
+    u.last_idle = false;
+}
+
+/// A parked node's outputs by the width rule: output `c` is input `c`.
+fn park_by_index<A: AudioSlots, F: SlotFlags + ?Sized, E: EventSlots + ?Sized>(
+    u: &mut Unit,
+    head: &Head<'_, '_>,
+    st: &mut OpState<'_, A, F, E>,
+    ain: &[u32],
+    aout: &[u32],
+) {
+    let frames = head.frames;
+    let main = u.mode.inputs();
     for (c, &s) in aout.iter().enumerate() {
         if c >= main {
             st.arena.slot_mut(s, frames).fill(0.0);
@@ -153,28 +198,38 @@ fn park<A: AudioSlots, F: SlotFlags + ?Sized, E: EventSlots + ?Sized>(
             }
         }
     }
+}
 
-    for (port, &s) in eout.iter().enumerate() {
-        let events = st.events.ev_mut(s);
-        events.clear();
-        u.keys.close_port(port, events);
-    }
-    u.keys.settle();
-
-    // Events sent to a parked node are discarded: flushed ones and commands.
-    if !ein.is_empty() {
-        let unit = rec.unit;
-        if st.has_inject[st.at] {
-            for inj in st.inject.iter_mut().filter(|i| i.unit == unit) {
-                inj.events.clear();
-                inj.merged.clear();
-                inj.live = false;
-            }
-            st.has_inject[st.at] = false;
+/// A parked node's outputs as the fold of its main buses: every input through
+/// its ring into the scratch first (an output may share an input's slot), then
+/// each output channel folded from the scratch.
+fn park_folded<A: AudioSlots, F: SlotFlags + ?Sized, E: EventSlots + ?Sized>(
+    u: &mut Unit,
+    head: &Head<'_, '_>,
+    st: &mut OpState<'_, A, F, E>,
+    ain: &[u32],
+    aout: &[u32],
+) {
+    let frames = head.frames;
+    let mut silent_in = 0u64;
+    for (c, &i) in ain.iter().enumerate().take(u.mode.inputs()) {
+        let silent = st.flags.get(i) & SILENT != 0;
+        if u.mode
+            .align(c, st.arena.slot(i, frames), silent, true, frames)
+        {
+            silent_in |= 1 << c;
         }
-        st.has_due[st.at] = false;
     }
-    u.quiet = 0;
-    u.last_quiet = false;
-    u.last_idle = false;
+    let outputs = u.mode.outputs();
+    for (c, &s) in aout.iter().enumerate() {
+        if c >= outputs {
+            st.arena.slot_mut(s, frames).fill(0.0);
+            st.flags.set(s, SILENT | CONSTANT);
+            continue;
+        }
+        u.mode
+            .fold_aligned_into(c, st.arena.slot_mut(s, frames), frames);
+        let silent = u.mode.passes_silence(c, silent_in);
+        st.flags.set(s, flag(silent, silent));
+    }
 }

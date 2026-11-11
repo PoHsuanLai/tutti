@@ -25,8 +25,8 @@ use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_m
 use tutti_graph::Node;
 use tutti_graph::contract::Direct;
 use tutti_nodes::{
-    BrickwallLimiterNode, CompressorNode, DelayLineNode, DesignNode, DistortionNode, DownmixNode,
-    FdnControls, FreeverbNode, GateNode, LimiterNode, ShapeKind,
+    BrickwallLimiterNode, CompressorNode, DelayLineNode, DesignNode, DistortionNode, FdnControls,
+    FreeverbNode, GateNode, LimiterNode, ShapeKind,
 };
 use tutti_types::{ChannelLayout, CompressionRatio, Db, Drive, Feedback, SampleRate, Seconds};
 
@@ -207,21 +207,6 @@ fn brickwall(c: &mut Criterion) {
         || BrickwallLimiterNode::with_channels(ChannelLayout::from(6u16), Db::new(-3.0)),
         Some(ceiling_sweep),
     );
-}
-
-fn downmix(c: &mut Criterion) {
-    for (src, dst) in [(6u16, 2u16), (8, 2), (12, 2), (6, 1), (2, 6)] {
-        run(
-            c,
-            "downmix",
-            &format!("{src}to{dst}"),
-            || {
-                DownmixNode::assuming_smpte(ChannelLayout::from(src), ChannelLayout::from(dst))
-                    .unwrap()
-            },
-            None,
-        );
-    }
 }
 
 fn delay(c: &mut Criterion) {
@@ -416,7 +401,6 @@ criterion_group!(
     channel_sum,
     distortion,
     brickwall,
-    downmix,
     delay,
     limiter,
     dynamics,
@@ -428,7 +412,6 @@ criterion_group!(
     channel_sum,
     distortion,
     brickwall,
-    downmix,
     delay,
     limiter,
     dynamics,

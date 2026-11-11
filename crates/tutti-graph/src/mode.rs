@@ -110,6 +110,7 @@ use crate::held::Held;
 use crate::kernels::AudioRing;
 use crate::node::Shape;
 use crate::param::{ParamPorts, ParamRange, ParamRangeReader, ParamRanges, ParamState};
+use crate::pass::Pass;
 use crate::spec::EventOut;
 
 /// How long a change of mode crossfades: 256 frames, [`PARAM_DECLICK`](crate::PARAM_DECLICK)'s
@@ -184,12 +185,25 @@ pub enum ModeError {
         /// The key.
         node: NodeKey,
     },
+    /// The node's `Main` input and output buses name their channels and do not
+    /// fold into each other, so a bypass would have nowhere to put them.
+    Unplaced {
+        /// The key.
+        node: NodeKey,
+        /// Why the buses do not fold.
+        error: tutti_types::FoldError,
+    },
 }
 
 impl std::fmt::Display for ModeError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::NoSuchNode { node } => write!(f, "no node {} to set the mode of", node.0),
+            Self::Unplaced { node, error } => write!(
+                f,
+                "node {}'s main buses do not fold, so it cannot be bypassed: {error}",
+                node.0
+            ),
         }
     }
 }
@@ -594,17 +608,11 @@ impl BypassLine {
     /// channel to pass. Control side: allocates.
     pub(crate) fn for_shape(shape: &Shape) -> Option<Self> {
         let latency = shape.latency.samples();
-        let main = main_channels(shape);
+        let main = Pass::of_or_nothing(shape).inputs();
         (!latency.is_zero() && main > 0).then(|| Self {
             rings: (0..main).map(|_| AudioRing::new(latency)).collect(),
         })
     }
-}
-
-/// The channels a bypass passes: output `c` is input `c` for `c` below the
-/// narrower width (`Status::Bypass`'s rule).
-fn main_channels(shape: &Shape) -> usize {
-    shape.audio_in.count().min(shape.audio_out.count()) as usize
 }
 
 /// A unit's mode as the executor keeps it. Lives in the unit's record in the
@@ -633,11 +641,16 @@ pub(crate) struct ModeState {
     inert: bool,
     /// The declared latency, in frames.
     latency: usize,
-    main: usize,
+    /// Which input channel feeds which output channel when the node is not
+    /// called ([`Pass`]).
+    pass: Pass,
     line: Option<BypassLine>,
     /// The aligned input of a block that needs it away from the node's own
     /// slots: one slot per passed channel.
     scratch: Option<Arena>,
+    /// The fold of that aligned input onto the outputs, one slot per output
+    /// channel: only for a pass that folds.
+    folded: Option<Arena>,
     /// What each event input has been sent and not ended, to close when the
     /// node is bypassed.
     held_in: Vec<Held>,
@@ -660,7 +673,9 @@ impl ModeState {
     pub(crate) fn new(cell: ModeCell, shape: &Shape, max_block: usize) -> Self {
         let mode = cell.load();
         let mix = cell.load_mix().get();
-        let main = main_channels(shape);
+        let pass = Pass::of_or_nothing(shape);
+        let main = pass.inputs();
+        let folded = pass.folds().then(|| Arena::new(pass.outputs(), max_block));
         Self {
             cell,
             seen: mode,
@@ -675,9 +690,10 @@ impl ModeState {
             stale: mode == NodeMode::Bypassed,
             inert: shape.audio_out.count() == 0 && shape.event_out == 0,
             latency: shape.latency.samples().get(),
-            main,
+            pass,
             line: BypassLine::for_shape(shape),
             scratch: (main > 0).then(|| Arena::new(main, max_block)),
+            folded,
             held_in: (0..shape.event_in).map(|_| Held::new()).collect(),
             drive: None,
             lane_on: false,
@@ -850,9 +866,55 @@ impl ModeState {
             })
     }
 
-    /// Channels the aligned input has.
-    pub(crate) fn main(&self) -> usize {
-        self.main
+    /// Input channels the aligned path carries.
+    pub(crate) fn inputs(&self) -> usize {
+        self.pass.inputs()
+    }
+
+    /// Output channels the aligned input reaches; the rest have none.
+    pub(crate) fn outputs(&self) -> usize {
+        self.pass.outputs()
+    }
+
+    /// Whether output channel `c`'s aligned input is silent when the inputs
+    /// in `silent` (bit `i`) are.
+    pub(crate) fn passes_silence(&self, c: usize, silent: u64) -> bool {
+        self.pass.silent(c, silent)
+    }
+
+    /// Fold the aligned inputs onto the outputs the blend reads
+    /// ([`passed`](Self::passed)); a pass that does not fold has nothing to do.
+    pub(crate) fn fold_aligned(&mut self, frames: usize) {
+        let Self {
+            pass,
+            scratch,
+            folded,
+            ..
+        } = self;
+        if let (Some(src), Some(dst)) = (scratch.as_ref(), folded.as_mut()) {
+            for c in 0..pass.outputs() {
+                pass.fold_into(
+                    |i| src.slot(i as u32, frames),
+                    c,
+                    dst.slot_mut(c as u32, frames),
+                );
+            }
+        }
+    }
+
+    /// Fold the aligned inputs into output channel `c`'s own slot `out`
+    /// (a parked node's output). Only for a pass that [`folds`](Self::folds).
+    pub(crate) fn fold_aligned_into(&self, c: usize, out: &mut [f32], frames: usize) {
+        let src = self
+            .scratch
+            .as_ref()
+            .expect("a node with a channel to pass has a scratch");
+        self.pass.fold_into(|i| src.slot(i as u32, frames), c, out);
+    }
+
+    /// Whether the pass folds channels (it is not output `c` = input `c`).
+    pub(crate) fn folds(&self) -> bool {
+        self.pass.folds()
     }
 
     /// Feed channel `c`'s input through the aligned-input path: its ring
@@ -890,10 +952,12 @@ impl ModeState {
             .slot_mut(c as u32, frames)
     }
 
-    /// Channel `c`'s aligned input, as [`align`](Self::align) left it.
-    pub(crate) fn aligned(&self, c: usize, frames: usize) -> &[f32] {
-        self.scratch
+    /// Output channel `c`'s aligned input, as [`align`](Self::align) (and
+    /// [`fold_aligned`](Self::fold_aligned), when the pass folds) left it.
+    pub(crate) fn passed(&self, c: usize, frames: usize) -> &[f32] {
+        self.folded
             .as_ref()
+            .or(self.scratch.as_ref())
             .expect("a node with a channel to pass has a scratch")
             .slot(c as u32, frames)
     }

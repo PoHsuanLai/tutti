@@ -37,8 +37,9 @@ node without a lock.
   control lane evaluates): an audio generator, whose output feeds a node's
   audio input.
 - **Dry/wet** — the convolver, delay, chorus/flanger and phaser output their wet signal only; blend with the input through the graph's `set_mix`.
-- **Mixing** — `DownmixNode` and `BusStripNode` (volume / balance; a mute or bypass is the graph's `NodeMode`).
-  Summing is the graph's: a port or an output channel sums its sources.
+- **Mixing** — `BusStripNode` (volume / balance; a mute or bypass is the graph's `NodeMode`).
+  Summing is the graph's: a port or an output channel sums its sources; so is
+  folding between layouts (a bus edge between declared buses).
 - **Spatial** — `VbapPannerNode` (stereo in, one output per speaker of a 2, 4,
   6, 8 or 12 channel layout) and `HrtfBinauralNode` (two outputs, by FFT
   convolution against a caller-supplied HRIR sphere), both steered by their

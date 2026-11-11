@@ -126,9 +126,6 @@ impl SessionNode for tutti_nodes::MultibandCompressorNode {
     }
 }
 
-/// The width adapter: no controls, forked by clone.
-impl SessionNode for tutti_nodes::DownmixNode {}
-
 // The delay, modulation and LFO nodes.
 param_session_node!(
     tutti_nodes::DelayLineNode,
@@ -288,11 +285,9 @@ mod tests {
         }
         // A node that publishes nothing keeps none.
         assert!(!keeps_one(
-            tutti_nodes::DownmixNode::assuming_smpte(
-                tutti_types::ChannelLayout::STEREO,
-                tutti_types::ChannelLayout::MONO,
+            tutti_nodes::automation::AutomationLaneNode::new(
+                tutti_nodes::automation::Trajectory::new()
             )
-            .unwrap()
         ));
     }
 }

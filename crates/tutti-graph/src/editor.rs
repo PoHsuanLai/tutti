@@ -77,6 +77,7 @@ use crate::meter::{MeterReader, MeterWriter};
 use crate::mode::{MixError, ModeCell, ModeError, ModeState, NodeMix, NodeMode};
 use crate::node::{IntoNode, Node, NodeParts, Prepare, Resolution, Shape};
 use crate::param::{ParamIn, ParamRange, ParamRangeReader, ParamRanges, ParamState};
+use crate::pass::Pass;
 use crate::plan::{Delta, Placement, Plan};
 use crate::spec::{EventEdge, EventIn, EventOut, GraphInvalid, GraphSpec, ValidGraph};
 use crate::tap::{TapReader, TapWriter};
@@ -1745,11 +1746,19 @@ impl Editor {
     ///
     /// # Errors
     ///
-    /// [`ModeError::NoSuchNode`] when the spec has no node at `key`; nothing
-    /// changes.
+    /// [`ModeError::NoSuchNode`] when the spec has no node at `key`;
+    /// [`ModeError::Unplaced`] to bypass a node whose `Main` buses name their
+    /// channels and do not fold (a bypass is the fold between them, doc 013
+    /// "As built (B3)"); nothing changes.
     pub fn set_mode(&mut self, key: NodeKey, mode: NodeMode) -> Result<(), ModeError> {
         if !self.spec.topology.nodes.contains_key(&key) {
             return Err(ModeError::NoSuchNode { node: key });
+        }
+        if mode == NodeMode::Bypassed
+            && let Some(shape) = self.shapes.get(&key)
+            && let Err(error) = Pass::of(shape)
+        {
+            return Err(ModeError::Unplaced { node: key, error });
         }
         self.touch();
         self.spec.set_mode(key, mode);

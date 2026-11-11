@@ -50,7 +50,7 @@ fn a_late_rate_answer_does_not_silence_an_offline_fork() {
     env.set("TUTTI_CLAP_PROBE_RENDER_MODE", "1");
     let live = PluginClient::new(
         BridgeConfig::default(),
-        tutti_fixtures::clap_probe().to_path_buf(),
+        &crate::catalog::PluginRef::file(tutti_fixtures::clap_probe()).expect("a plugin file"),
         SampleRate::new(LOAD_RATE),
     )
     .expect("load the reference CLAP plugin through a real plugin-server");

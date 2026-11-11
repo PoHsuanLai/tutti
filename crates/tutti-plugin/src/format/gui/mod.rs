@@ -7,12 +7,16 @@
 //! lives in its format's host crate.
 
 use std::path::Path;
-use tutti_plugin_types::LoadStage;
 use tutti_plugin_types::{BridgeError, BridgeResult};
 use tutti_plugin_types::{Editor, MainThread};
+use tutti_plugin_types::{Load, LoadStage};
 
 #[cfg(all(any(feature = "vst3", feature = "clap", feature = "au"), unix))]
-pub(crate) fn load_gui_instance(main: &MainThread, path: &Path) -> BridgeResult<Box<dyn Editor>> {
+pub(crate) fn load_gui_instance(
+    main: &MainThread,
+    path: &Path,
+    load: &Load,
+) -> BridgeResult<Box<dyn Editor>> {
     use tutti_plugin_db::{PluginFormat, format_from_path};
 
     let format = format_from_path(path).ok_or_else(|| BridgeError::LoadFailed {
@@ -23,11 +27,11 @@ pub(crate) fn load_gui_instance(main: &MainThread, path: &Path) -> BridgeResult<
 
     match format {
         #[cfg(feature = "vst3")]
-        PluginFormat::Vst3 => editor::<tutti_vst3_host::Vst3Loaded>(main, path, "VST3"),
+        PluginFormat::Vst3 => editor::<tutti_vst3_host::Vst3Loaded>(main, path, load, "VST3"),
         #[cfg(feature = "clap")]
-        PluginFormat::Clap => editor::<tutti_clap_host::ClapLoaded>(main, path, "CLAP"),
+        PluginFormat::Clap => editor::<tutti_clap_host::ClapLoaded>(main, path, load, "CLAP"),
         #[cfg(all(feature = "au", target_os = "macos"))]
-        PluginFormat::AudioUnit => editor::<tutti_au_host::AuLoaded>(main, path, "AU"),
+        PluginFormat::AudioUnit => editor::<tutti_au_host::AuLoaded>(main, path, load, "AU"),
         PluginFormat::Vst2 => Err(BridgeError::LoadFailed {
             path: path.to_path_buf(),
             stage: LoadStage::Opening,
@@ -56,23 +60,26 @@ pub(crate) fn load_gui_instance(main: &MainThread, path: &Path) -> BridgeResult<
 fn editor<F: tutti_plugin_types::OutOfProcess>(
     main: &MainThread,
     path: &Path,
+    load: &Load,
     format: &str,
 ) -> BridgeResult<Box<dyn Editor>>
 where
     F::Editor: 'static,
 {
-    let editor = F::load_editor(main, path, &tutti_plugin_types::Load::new()).map_err(|e| {
-        BridgeError::LoadFailed {
-            path: path.to_path_buf(),
-            stage: LoadStage::Opening,
-            reason: format!("{format} GUI-only load failed: {e}"),
-        }
+    let editor = F::load_editor(main, path, load).map_err(|e| BridgeError::LoadFailed {
+        path: path.to_path_buf(),
+        stage: LoadStage::Opening,
+        reason: format!("{format} GUI-only load failed: {e}"),
     })?;
     Ok(Box::new(editor))
 }
 
 #[cfg(not(all(any(feature = "vst3", feature = "clap", feature = "au"), unix)))]
-pub(crate) fn load_gui_instance(_main: &MainThread, path: &Path) -> BridgeResult<Box<dyn Editor>> {
+pub(crate) fn load_gui_instance(
+    _main: &MainThread,
+    path: &Path,
+    _load: &Load,
+) -> BridgeResult<Box<dyn Editor>> {
     Err(BridgeError::LoadFailed {
         path: path.to_path_buf(),
         stage: LoadStage::Opening,

@@ -24,7 +24,6 @@
 use std::path::PathBuf;
 
 use tutti::plugin::catalog::{CatalogConfig, Plugins};
-use tutti::plugin::{Normalized, ParamId};
 use tutti::prelude::*;
 use tutti::ump::{Address, Message, NoteNumber, U7, Ump, Voice1};
 

@@ -156,8 +156,12 @@ fn a_crossfaded_plugins_latency_is_the_incoming_ones() {
     let node = add_probe_on_outputs(&mut s);
     let outgoing = s.graph_ref().node_latency(node);
 
-    let incoming = PluginClient::new(tutti_plugin::BridgeConfig::default(), clap_probe(), RATE)
-        .expect("load a second instance of the reference plugin");
+    let incoming = PluginClient::new(
+        tutti_plugin::BridgeConfig::default(),
+        &PluginRef::file(clap_probe()).expect("a plugin file"),
+        RATE,
+    )
+    .expect("load a second instance of the reference plugin");
     incoming.set_latency(Samples(INCOMING));
     let controls = incoming.controls();
     let landed = s
@@ -217,8 +221,12 @@ fn a_restart_to_another_callback_size_re_declares_a_plugins_latency() {
         .expect("builds with no device")
         .into_parts();
 
-    let client = PluginClient::new(tutti_plugin::BridgeConfig::default(), clap_probe(), RATE)
-        .expect("the reference plugin loads");
+    let client = PluginClient::new(
+        tutti_plugin::BridgeConfig::default(),
+        &PluginRef::file(clap_probe()).expect("a plugin file"),
+        RATE,
+    )
+    .expect("the reference plugin loads");
     let node = s.graph().insert_plugin(Box::new(client));
     s.graph().set_output_source(0, GraphSource::Node(node, 0));
     let _ = s.update();

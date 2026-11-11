@@ -72,6 +72,7 @@ const STATE_PROGRESS_TIMEOUT: Duration = Duration::from_millis(400);
 fn no_editor(
     _: &tutti_plugin_types::MainThread,
     path: &std::path::Path,
+    _: &tutti_plugin_types::Load,
 ) -> tutti_plugin_types::BridgeResult<Box<dyn tutti_plugin_types::Editor>> {
     Err(tutti_plugin_types::BridgeError::LoadFailed {
         path: path.to_path_buf(),
@@ -251,7 +252,7 @@ impl MockServer {
         let (bridge, thread) = PluginBridge::new_with_state_progress_timeout(
             path.clone(),
             slab,
-            std::path::PathBuf::from("test.vst3"),
+            tutti_plugin_types::Origin::new("test.vst3", tutti_plugin_types::Load::new()),
             no_editor,
             SampleRate(48_000.0),
             state_progress_timeout,

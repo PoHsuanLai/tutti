@@ -279,8 +279,12 @@ fn a_crossfaded_plugin_keeps_its_lane_and_a_removed_one_drops_it() {
         "precondition: the lane feeds the outgoing plugin"
     );
 
-    let incoming = PluginClient::new(tutti_plugin::BridgeConfig::default(), clap_probe(), RATE)
-        .expect("load a second instance of the reference plugin");
+    let incoming = PluginClient::new(
+        tutti_plugin::BridgeConfig::default(),
+        &PluginRef::file(clap_probe()).expect("a plugin file"),
+        RATE,
+    )
+    .expect("load a second instance of the reference plugin");
     let landed = s
         .graph()
         .crossfade_plugin(

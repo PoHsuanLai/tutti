@@ -253,11 +253,13 @@ it is (its origin's file and the id it reports), so `Graph::insert_plugin` and
 `add_plugin` need no more; `Graph::host_plugin` takes the ref as an argument,
 because a bare handle does not know its file. `PluginGaveUp` carries the
 `PluginState` (`state`), and `state().restore` takes the `MainThread` the
-handle's `load_state` takes. Two things stay for later steps: the editor-only
-instance of a served plugin is still loaded with `Load::new()` (the bridge's
-`EditorLoader` is not given the choice: step 2, which rewrites the editor's
-load), and the probe describes only the first plugin of a file, so a catalog
-lists one plugin per bundle until step 6 makes it list them all.
+handle's `load_state` takes. The editor-only instance of a served plugin loads the same plugin: the ipc
+`EditorLoader` takes the `Load`, and the `PluginBridge` is made with the
+`Origin` (file and `Load`) it serves. One thing stays for step 6: the probe
+describes only the first plugin of a file, so a catalog lists one plugin per
+bundle until the probe lists them all. `PluginClient::new` and `open` take a
+`&PluginRef` (`PluginRef::file` is the explicit "the file's first"); no
+path-only open is left.
 
 ## Lane order
 

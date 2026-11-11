@@ -367,7 +367,7 @@ impl Ipc {
         let (bridge, thread) = PluginBridge::new(
             config.socket_path.clone(),
             Arc::clone(server.slab.slab()),
-            path.clone(),
+            tutti_plugin_types::Origin::new(path.clone(), load.clone()),
             load_editor,
             rate,
         )?;

@@ -176,13 +176,13 @@ impl Plugin {
         sample_rate: impl Into<SampleRate>,
         state: Option<&[u8]>,
     ) -> BridgeResult<(Self, Option<std::result::Result<(), String>>)> {
-        let path = plugin.path();
         let sample_rate = sample_rate.into();
         #[cfg(not(feature = "vst2"))]
         let _ = main;
 
         #[cfg(feature = "vst2")]
-        if Self::opens_in_process(path) {
+        if Self::opens_in_process(plugin.path()) {
+            let path = plugin.path();
             // A VST2 plugin loads in this process, on the main thread: the
             // caller says it is there by passing the token.
             let Some(main) = main else {
@@ -211,17 +211,13 @@ impl Plugin {
             return Ok((Self::from_in_process(client, handle, plugin), restored));
         }
 
-        let ((client, restored), handle) = PluginClient::open(
-            audio.to_bridge_config(),
-            path.to_path_buf(),
-            plugin.load(),
-            sample_rate,
-            state,
-        )
-        .map(|(client, restored)| {
-            let handle = client.handle();
-            ((client, restored), handle)
-        })?;
+        let ((client, restored), handle) =
+            PluginClient::open(audio.to_bridge_config(), plugin, sample_rate, state).map(
+                |(client, restored)| {
+                    let handle = client.handle();
+                    ((client, restored), handle)
+                },
+            )?;
         Ok((Self::from_subprocess(client, handle), restored))
     }
 

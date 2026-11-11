@@ -7226,6 +7226,54 @@ Mutations: lower a fold with the wrong gain; with source channels swapped;
 drop the identity shortcut (the plan then differs); store the `Fold` in the
 spec.
 
+**As built (B1).** The vocabulary and the declaration; nothing reads a bus
+yet, so no plan, op or render moves.
+
+- **Types.** `tutti_types::BusTopology` (`new(impl IntoIterator<Item =
+  Speaker>) -> Option`, `discrete(ChannelLayout) -> Option` (const), `EMPTY`,
+  `positions`, `layout`, `From<BusTopology> for ChannelTopology`,
+  `TryFrom<&ChannelTopology>` with `BusTooWide { width }`), `MAX_BUS_CHANNELS =
+  16`. `tutti_graph::{Bus, BusRole, Buses, MAX_BUSES}` in their own private
+  module `bus.rs` (not `node.rs`: that file is long enough), and
+  `Shape::{buses_in, buses_out, with_buses_in, with_buses_out}`. `Buses` is a
+  `Copy` inline list with `NONE`, `main`, `of_width`, `with`, `new`, `get`,
+  `iter`, `main_bus`, `width`, `first_port`.
+- **`Shape::audio` builds `Discrete`, not `assumed`.** The text above says
+  `Discrete` of that width with no placement claim; the staging note's "built
+  from widths" is the same. `ChannelTopology::assumed` is the guess "a width is
+  not a placement" forbids, and it would make a 6-wide node a 5.1 that a
+  `Discrete(2)` sink refuses by luck of the count. So a width-only node's bus
+  folds to another `Discrete` bus of equal width and to nothing else.
+- **The buses cover a prefix of the ports.** The text says `audio_in` "equals
+  the sum of the buses' widths". That cannot hold for a node of 17 to 64
+  channels (`MAX_PORTS` is 64, a bus is 16), nor for a plugin with more than
+  `MAX_BUSES` buses. So the rule is: the buses cover the first
+  `buses.width()` ports, `buses.width() <= audio_in`, and the rest are reached
+  by port, as the text already says of a plugin's fifth bus. A width of 0 or
+  past 16 has no bus from `Shape::audio`. `with_buses_*` panics (const) when
+  the buses are wider than the ports, and leaves `audio_in` alone. An empty
+  bus (a plugin bus declared with no channels) keeps its slot so the bus index
+  is the plugin's.
+- **Size.** `Shape` goes from about 100 to 664 bytes (a `BusTopology` is 68
+  bytes, a `Bus` 68, `Buses` 274, twice). The text's "near 150 bytes" was
+  low. `Shape` is built by `Node::shape` and kept once per unit in the plan,
+  never on the audio thread. A smaller `Bus` (speakers packed to a byte, with
+  `Unknown` out of line) is a later change if the plan's size shows.
+- **`Fold::contributions(dst_c) -> impl Iterator<Item = (usize, f32)>`**: the
+  fold as a matrix row, ascending in source channel, one pair per channel (a
+  channel reached by two paths has its gains added), the dropped LFE and a
+  silent destination channel having no pair. A `Mix` row's `scale` multiplies
+  its terms' gains; a grouped term's gain goes to each of its sources. It is
+  the fold to rounding only, as this section says of the lowering.
+- **Plugins.** `PluginNode::shape` declares the plugin's buses from
+  `LoadedPlugin`'s `inputs`/`outputs` widths and `input_topology`/
+  `output_topology`, in bus order, first `Main`, the rest `Aux`. A bus whose
+  topology is `None` or disagrees with its width is `Discrete`. It stops at
+  the first bus past `MAX_BUSES` or past 16 channels. **Sidechain is not
+  declared yet:** `LoadedPlugin` does not say which input bus is one, so the
+  hosts have to report a role (list in the hand-off) and `buses_of` then
+  maps it to `BusRole::Sidechain`.
+
 #### What else is, and is not, a graph primitive
 
 The test this document applies: a **primitive** says where a signal goes, how
@@ -7297,7 +7345,7 @@ itself.
 | 1 | Fan-in | the six PRs of "Audio fan-in sums", point 10 |
 | 2 | Edge gain | **G1**: `EdgeGain`, `Sink`, `EdgeId`, validate, the weighted kernel and ramp, cell and `set_edge_gain`, reference, tests (static and ramped weights). **G2**: the driven lane: `connect_edge_gain`, `DelayKey::EdgeGain`, `GainPort`, the session's `ModTarget` and `EdgeRef`, tests. **G3**: session API. The audit is done here: no shipped node exists only to scale one source (the `Gain` nodes are test doubles), and `BusStripNode` keeps its volume and pan (below), so G3 deletes nothing. |
 | 3 | Bypass, mute and mix | independent of 1 and 2, in any order after the design merges. **M4** (built; the static half, then **M4b**, the `ModTarget`, see "As built (M4)" and "As built (M4b)"): the blend above, `Editor::set_mix`, its `ModTarget`, the reference, tests (`Mix` 1.0 bit-identical to `Active`, 0.0 bit-identical to `Bypassed` in steady state); `Mix`'s docs, and `DRY`'s and `WET`'s, say what the ends are (all of the aligned input, all of the node's output) instead of the studio words alone. **M1** (built): `NodeMode`, the cell, the executor's steady states, the bypass line, the declick and un-bypass sequence, the reference, tests. **M2** (session half built): `Editor::set_mode`, the session API, hosts (plugins, AU property). **M3** (built): delete `EqBandNode`'s flag, `BusStripNode`'s mute (and `add_general_midi`'s binding of it through `UnitParam::Mute`, which becomes `NodeMode::Muted` on the channel's strip), per-node bypass; bit-exact tests replace the tolerance one; CLAUDE.md's dead-names list gains the strip mute and `EqBandNode`'s flag. |
-| 4 | Buses and coercion | needs 1 and 2. **B1**: `BusTopology`, `Buses` and `Shape`'s buses with one `Main` bus built from widths; `Fold::contributions`; hosts fill their buses. **B2**: `BusRef`, `bus_edges`, validate, lowering to weighted lanes, `connect_bus`, session API, tests. **B3**: delete `DownmixNode` and migrate its users; bypass uses the main buses' fold. |
+| 4 | Buses and coercion | needs 1 and 2. **B1** (built, "As built (B1)"): `BusTopology`, `Buses` and `Shape`'s buses with one `Main` bus built from widths; `Fold::contributions`; hosts fill their buses (generically, sidechain roles pending the hosts). **B2**: `BusRef`, `bus_edges`, validate, lowering to weighted lanes, `connect_bus`, session API, tests. **B3**: delete `DownmixNode` and migrate its users; bypass uses the main buses' fold. |
 
 Bypass's channel mapping for buses with different declared topologies uses
 B1's types; M1 ships the width rule (`Status::Bypass`'s) and B3 switches the

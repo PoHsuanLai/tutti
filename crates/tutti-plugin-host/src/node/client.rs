@@ -28,10 +28,11 @@ use tutti_rt::Rt;
 
 use arrayvec::ArrayVec;
 use parking_lot::Mutex;
-use tutti_graph::{Cx, Offset};
+use tutti_graph::{Bus, BusRole, Buses, Cx, Offset};
+use tutti_plugin_types::{BusChannels, BusTopologies, LoadedPlugin};
 use tutti_tempo::{Cursor, TempoMap};
 use tutti_transport::TempoReader;
-use tutti_types::{ChannelLayout, Samples};
+use tutti_types::{BusTopology, ChannelLayout, Samples};
 
 use super::instance::Instance;
 use crate::{BlockTransport, TransportSource, TransportWalk};
@@ -185,8 +186,55 @@ impl<F: Loaded> std::fmt::Debug for InProcClient<F> {
 pub(super) struct Declared {
     pub(super) inputs: ChannelLayout,
     pub(super) outputs: ChannelLayout,
+    /// The plugin's input buses, as the node's [`Shape`](tutti_graph::Shape)
+    /// declares them.
+    pub(super) buses_in: Buses,
+    /// The plugin's output buses.
+    pub(super) buses_out: Buses,
     pub(super) latency: Samples,
     pub(super) tail: PluginTail,
+}
+
+impl Declared {
+    /// What the plugin reported at load.
+    pub(super) fn of(loaded: &LoadedPlugin) -> Self {
+        Self {
+            inputs: ChannelLayout::clamped(loaded.total_inputs()),
+            outputs: ChannelLayout::clamped(loaded.total_outputs()),
+            buses_in: buses_of(&loaded.inputs, &loaded.input_topology),
+            buses_out: buses_of(&loaded.outputs, &loaded.output_topology),
+            latency: loaded.latency_samples,
+            tail: loaded.tail,
+        }
+    }
+}
+
+/// The buses a plugin's per-bus widths and topologies make, in bus order: the
+/// first is [`Main`](BusRole::Main), the rest [`Aux`](BusRole::Aux) (the
+/// wiring data does not yet say which of them is a sidechain).
+///
+/// A bus whose topology is unknown (`None`) or does not have its width's
+/// channels is `Discrete` at that width: a count is not a placement. The
+/// list stops at the first bus past [`MAX_BUSES`](tutti_graph::MAX_BUSES) or wider than a bus holds;
+/// the plugin's remaining channels are ports the node still has.
+fn buses_of(widths: &BusChannels, topologies: &BusTopologies) -> Buses {
+    let mut buses = Buses::NONE;
+    for (i, &width) in widths.iter().enumerate() {
+        let placed = topologies
+            .get(i)
+            .and_then(Option::as_ref)
+            .filter(|t| t.layout() == width)
+            .and_then(|t| BusTopology::try_from(t).ok());
+        let Some(topology) = placed.or_else(|| BusTopology::discrete(width)) else {
+            break;
+        };
+        let role = if i == 0 { BusRole::Main } else { BusRole::Aux };
+        match buses.with(Bus { topology, role }) {
+            Some(more) => buses = more,
+            None => break,
+        }
+    }
+    buses
 }
 
 /// Who tells the plugin the rate the node is prepared at.
@@ -1136,5 +1184,98 @@ mod render_tests {
             out.midi_events.is_empty(),
             "last block's MIDI is not this one's"
         );
+    }
+}
+
+#[cfg(test)]
+mod declared_buses {
+    use super::*;
+    use tutti_graph::Shape;
+    use tutti_plugin_types::{ChannelTopology, Speaker};
+
+    fn width(n: u16) -> ChannelLayout {
+        ChannelLayout::from(n)
+    }
+
+    fn stereo() -> ChannelTopology {
+        ChannelTopology::new([Speaker::FrontLeft, Speaker::FrontRight])
+    }
+
+    /// The plugin's buses are the node's, in bus order and with their
+    /// placement: a stereo main and a mono key. The first is `Main`; a count
+    /// without a topology (or one that disagrees with it) is `Discrete`, and
+    /// the shape's ports are every channel.
+    ///
+    /// Mutations (run), each failing this test: the topology filter on
+    /// `layout() == width` removed (the disagreeing bus keeps its two
+    /// speakers); `i == 0` -> `i == 1` for `Main`; `buses_of` reading
+    /// `outputs` for the input side.
+    #[test]
+    fn a_plugins_buses_are_the_nodes_in_order_and_placed() {
+        let loaded = LoadedPlugin {
+            inputs: vec![width(2), width(1), width(3)],
+            outputs: vec![width(2)],
+            input_topology: vec![
+                Some(stereo()),
+                None,
+                // Declares two speakers for a three-channel bus.
+                Some(stereo()),
+            ],
+            output_topology: vec![Some(stereo())],
+            ..LoadedPlugin::default()
+        };
+        let declared = Declared::of(&loaded);
+        let shape = Shape::audio(declared.inputs, declared.outputs)
+            .with_buses_in(declared.buses_in)
+            .with_buses_out(declared.buses_out);
+        assert_eq!(shape.audio_in, width(6));
+        let ins: Vec<_> = shape
+            .buses_in
+            .iter()
+            .map(|b| (b.role, b.topology.positions().to_vec()))
+            .collect();
+        assert_eq!(
+            ins,
+            [
+                (BusRole::Main, vec![Speaker::FrontLeft, Speaker::FrontRight]),
+                (BusRole::Aux, vec![Speaker::Discrete]),
+                (BusRole::Aux, vec![Speaker::Discrete; 3]),
+            ]
+        );
+        assert_eq!(shape.buses_in.first_port(2), Some(3));
+        assert_eq!(
+            shape.buses_out.get(0).unwrap().topology.positions(),
+            &[Speaker::FrontLeft, Speaker::FrontRight]
+        );
+    }
+
+    /// A plugin with no bus list has no buses; one with more than the node
+    /// holds, or a bus wider than a bus holds, keeps the first ones and every
+    /// channel as a port.
+    ///
+    /// Mutation (run): the wide bus's `else` arm returning `Buses::NONE` for
+    /// the whole side fails this test. (The `break` on a refused `with` is
+    /// equivalent to `continue`: a full list refuses every later bus.)
+    #[test]
+    fn what_does_not_fit_stays_a_port() {
+        let none = Declared::of(&LoadedPlugin::default());
+        assert!(none.buses_in.is_empty() && none.buses_out.is_empty());
+
+        let many = LoadedPlugin {
+            inputs: vec![width(1); 5],
+            outputs: vec![width(2), width(20), width(2)],
+            ..LoadedPlugin::default()
+        };
+        let declared = Declared::of(&many);
+        assert_eq!(declared.inputs, width(5));
+        assert_eq!(declared.buses_in.len(), tutti_graph::MAX_BUSES);
+        // The 20-wide bus is past a bus; the one after it is not reached.
+        assert_eq!(declared.outputs, width(24));
+        assert_eq!(declared.buses_out.len(), 1);
+        assert_eq!(declared.buses_out.width(), 2);
+        let shape = Shape::audio(declared.inputs, declared.outputs)
+            .with_buses_in(declared.buses_in)
+            .with_buses_out(declared.buses_out);
+        assert_eq!(shape.audio_out, width(24));
     }
 }

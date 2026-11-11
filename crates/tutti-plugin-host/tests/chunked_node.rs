@@ -23,10 +23,11 @@ use tutti_graph::{
 };
 use tutti_plugin_host::{InProcClient, NodeControls, PluginNode, load_client};
 use tutti_plugin_types::{
-    AudioBufferMut, ChannelLayout, ContentScale, Control, Controller, EditorError, EditorSize,
-    EditorWindow, Features, InProcess, Load, Loaded, LoadedPlugin, MainThread, Normalized, Origin,
-    ParamId, ParameterInfo, PluginDescriptor, PluginError, PluginIo, PluginResult, PluginTail,
-    Prepare, Processor, Refused, RestartRules, Samples, Stuck, WindowHandle,
+    AudioBufferMut, ChannelLayout, ChannelTopology, ContentScale, Control, Controller, EditorError,
+    EditorSize, EditorWindow, Features, InProcess, Load, Loaded, LoadedPlugin, MainThread,
+    Normalized, Origin, ParamId, ParameterInfo, PluginDescriptor, PluginError, PluginIo,
+    PluginResult, PluginTail, Prepare, Processor, Refused, RestartRules, Samples, Speaker, Stuck,
+    WindowHandle,
 };
 use tutti_tempo::{Shape, TempoMap, TempoPoint};
 use tutti_transport::TempoReader;
@@ -69,6 +70,8 @@ struct Rig {
     lose: AtomicUsize,
     /// Report the completed chunk's parameter changes as unsent.
     unsent: AtomicBool,
+    /// Declare a second input bus (one placed channel) beside the stereo main.
+    key_bus: AtomicBool,
 }
 
 impl Rig {
@@ -81,6 +84,7 @@ impl Rig {
             resets: AtomicUsize::new(0),
             lose: AtomicUsize::new(0),
             unsent: AtomicBool::new(false),
+            key_bus: AtomicBool::new(false),
         })
     }
 
@@ -118,12 +122,22 @@ macro_rules! rec_control {
                 &self.descriptor
             }
             fn wiring(&self, _: &MainThread) -> LoadedPlugin {
-                LoadedPlugin {
+                let stereo = ChannelTopology::new([Speaker::FrontLeft, Speaker::FrontRight]);
+                let mut wiring = LoadedPlugin {
                     inputs: vec![ChannelLayout::STEREO],
                     outputs: vec![ChannelLayout::STEREO],
+                    input_topology: vec![Some(stereo.clone())],
+                    output_topology: vec![Some(stereo)],
                     features: self.rig.features,
                     ..LoadedPlugin::default()
+                };
+                if self.rig.key_bus.load(Ordering::Relaxed) {
+                    wiring.inputs.push(ChannelLayout::MONO);
+                    wiring
+                        .input_topology
+                        .push(Some(ChannelTopology::new([Speaker::FrontCenter])));
                 }
+                wiring
             }
             fn parameters(&self, _: &MainThread) -> Vec<ParameterInfo> {
                 vec![ParameterInfo::new(ParamId::new(PARAM), "p")]
@@ -844,4 +858,43 @@ fn transport_changes_past_the_bound_are_dropped_and_counted() {
     assert_eq!(controls.dropped_transport_changes(), 4);
     let seen = rig.seen.lock().unwrap();
     assert_eq!(seen[0].changes.len(), 8, "the bound");
+}
+
+/// The node's shape carries the plugin's buses with their placement: a
+/// stereo main on each side and, when the plugin has one, a second input bus
+/// after it, whose ports begin after the main's two.
+///
+/// Mutations (run), each failing this test: `PluginNode::shape` not calling
+/// `with_buses_in` (the shape keeps the one `Discrete` main bus of the three
+/// ports); not calling `with_buses_out` (the output is `Discrete`, not
+/// placed).
+#[test]
+fn the_shape_declares_the_plugins_buses_with_their_placement() {
+    let shape = |key_bus: bool| {
+        let rig = Rig::new(None, Features::empty());
+        rig.key_bus.store(key_bus, Ordering::Relaxed);
+        ROUTE.with(|r| *r.borrow_mut() = Some(rig));
+        let (client, _handle): (InProcClient<Rec>, _) =
+            load_client::<Rec>(&main_thread(), Path::new("rec"), &Load::new(), SR)
+                .expect("the recording plugin loads");
+        client.bind(tempo(None)).shape()
+    };
+    let stereo = [Speaker::FrontLeft, Speaker::FrontRight];
+
+    let plain = shape(false);
+    assert_eq!(plain.buses_in.len(), 1);
+    assert_eq!(plain.buses_in.get(0).unwrap().topology.positions(), &stereo);
+    assert_eq!(
+        plain.buses_out.get(0).unwrap().topology.positions(),
+        &stereo
+    );
+
+    let keyed = shape(true);
+    assert_eq!(keyed.audio_in, ChannelLayout::from(3u16));
+    assert_eq!(keyed.buses_in.len(), 2);
+    assert_eq!(keyed.buses_in.first_port(1), Some(2));
+    assert_eq!(
+        keyed.buses_in.get(1).unwrap().topology.positions(),
+        &[Speaker::FrontCenter]
+    );
 }

@@ -19,6 +19,7 @@ pub mod value;
 
 // Private: everything public in these is re-exported at the root below, so the
 // module path would be a second name for a type that already has one.
+mod bus;
 mod channels;
 mod fold;
 mod interleaved;
@@ -52,6 +53,7 @@ pub use value::{
 };
 
 // Channel layout — how many channels.
+pub use bus::{BusTooWide, BusTopology, MAX_BUS_CHANNELS};
 pub use channels::{ChannelCountOutOfRange, ChannelLayout};
 
 // Channel topology — which speaker each channel feeds. Distinct from the count

@@ -10,15 +10,14 @@ use tutti_plugin_types::MainThread;
 
 use tutti_plugin::LoadStage;
 use tutti_plugin::server::{
-    AudioBufferMut, ContentScale, EditorSize, LoadedPlugin, Normalized, ParamId, ParameterInfo,
-    PluginAudio, PluginDescriptor, PluginEditorHost, PluginError, PluginMeta, PluginParams,
-    PluginPresets, PluginResult, PluginState, Preset, PresetId, ProcessContext, ProcessOutput,
-    RenderMode, WindowHandle,
+    AudioBufferMut, LoadedPlugin, Normalized, ParamId, ParameterInfo, PluginAudio,
+    PluginDescriptor, PluginError, PluginMeta, PluginParams, PluginPresets, PluginResult,
+    PluginState, Preset, PresetId, ProcessContext, ProcessOutput, RenderMode,
 };
 use tutti_plugin_types::{BridgeError, BridgeResult};
 use tutti_plugin_types::{
-    Control, EditorWindow, Event, Hand, HostOp, Lifecycle, MaxBlock, Notice, Prepare, Request,
-    SampleFormat, SampleRate, Samples, Stage, State,
+    Control, Event, Hand, HostOp, Lifecycle, MaxBlock, Notice, Prepare, Request, SampleFormat,
+    SampleRate, Samples, Stage, State,
 };
 use tutti_vst2_host::{Vst2Error, Vst2Loaded, Vst2Processor};
 
@@ -463,27 +462,6 @@ impl PluginParams for Vst2Instance {
     }
 }
 
-impl PluginEditorHost for Vst2Instance {
-    /// `_scale` is unused: VST2 has no call that takes a content scale.
-    fn open_editor(
-        &mut self,
-        main: &MainThread,
-        parent: WindowHandle,
-        scale: ContentScale,
-    ) -> PluginResult<EditorSize> {
-        let loaded = self
-            .loaded_mut()
-            .ok_or_else(|| PluginError::Other("the plugin is lost".to_string()))?;
-        EditorWindow::open_editor(loaded, main, parent, scale)
-    }
-
-    fn close_editor(&mut self, main: &MainThread) {
-        if let Some(loaded) = self.loaded_mut() {
-            EditorWindow::close_editor(loaded, main);
-        }
-    }
-}
-
 impl PluginPresets for Vst2Instance {
     /// VST2 programs. The index **is** the identifier — `effProgramChange`
     /// takes a position in `[0, numPrograms)` — so unlike AU's sparse selectors
@@ -532,36 +510,6 @@ mod tests {
 
     use tutti_plugin::server::{Features, PluginTail};
 
-    /// Every `TUTTI_VST2_PROBE_*` key the reference plugin reads at
-    /// construction, so one test's configuration cannot leak into the next.
-    /// Listed rather than derived: the probe owns the set, and a key added
-    /// there without being added here would leak silently.
-    const PROBE_ENV_KEYS: &[&str] = &[
-        "TUTTI_VST2_PROBE_EDITOR",
-        "TUTTI_VST2_PROBE_EFFECT_NAME",
-        "TUTTI_VST2_PROBE_INPUTS",
-        "TUTTI_VST2_PROBE_IS_SYNTH",
-        "TUTTI_VST2_PROBE_LATENCY",
-        "TUTTI_VST2_PROBE_MIDI_INPUTS",
-        "TUTTI_VST2_PROBE_MIDI_OUTPUTS",
-        "TUTTI_VST2_PROBE_NO_CAN_REPLACING",
-        "TUTTI_VST2_PROBE_NO_CHUNKS",
-        "TUTTI_VST2_PROBE_OUTPUTS",
-        "TUTTI_VST2_PROBE_PARAMS",
-        "TUTTI_VST2_PROBE_PROGRAMS",
-        "TUTTI_VST2_PROBE_SERVICED_PARAMS",
-        "TUTTI_VST2_PROBE_SERVICED_PROGRAMS",
-        "TUTTI_VST2_PROBE_TAIL_SIZE",
-    ];
-
-    fn clear_probe_env() {
-        for key in PROBE_ENV_KEYS {
-            // SAFETY: every caller holds the plugin-load lock, so no other test
-            // thread is reading or writing the environment concurrently.
-            unsafe { std::env::remove_var(key) };
-        }
-    }
-
     /// Load the reference plugin with `env` applied at construction.
     ///
     /// The probe reads its metadata once, while the `AEffect` is being built,
@@ -573,56 +521,27 @@ mod tests {
     /// second load race this one.
     fn load_probe(env: &[(&str, &str)]) -> (Vst2Instance, std::sync::MutexGuard<'static, ()>) {
         let lock = crate::test_utils::plugin_load_lock();
-        clear_probe_env();
+        let mut scoped = tutti_fixtures::ScopedEnv::new();
         for (k, v) in env {
-            // SAFETY: as in `clear_probe_env` — the lock is held.
-            unsafe { std::env::set_var(k, v) };
+            scoped.set(k, v);
         }
         let path = crate::test_utils::vst2_probe_path();
         let loaded = Vst2Instance::load(&main_thread(), Path::new(path), 48_000.0, 512, false);
-        clear_probe_env();
+        drop(scoped);
         (
             loaded.unwrap_or_else(|e| panic!("loading the VST2 probe at {path} failed: {e:?}")),
             lock,
         )
     }
 
-    /// One of the probe's `extern "C"` exports, called through `dlopen`: the
-    /// linked rlib is a separate image with separate statics. The handle is
-    /// leaked so the image stays mapped and the write survives.
-    fn with_probe_symbol<R>(symbol: &str, f: impl FnOnce(*mut std::ffi::c_void) -> R) -> R {
-        let name = format!("{symbol}\0");
-        let path = crate::test_utils::vst2_probe_path();
-        // SAFETY: the path is the cdylib the dev-dependency built.
-        let lib = unsafe { libloading::Library::new(path) }.expect("re-open the probe");
-        // SAFETY: the symbol names are the probe's `#[no_mangle]` exports.
-        let sym: libloading::Symbol<*mut std::ffi::c_void> =
-            unsafe { lib.get(name.as_bytes()) }.expect("probe export");
-        let r = f(*sym);
-        std::mem::forget(lib);
-        r
-    }
-
     fn probe_capture() -> tutti_vst2_test_plugin::ProcessCapture {
-        let mut cap = tutti_vst2_test_plugin::ProcessCapture::empty();
-        with_probe_symbol("tutti_vst2_probe_capture", |p| {
-            let f: unsafe extern "C" fn(*mut tutti_vst2_test_plugin::ProcessCapture) -> bool =
-                unsafe { std::mem::transmute(p) };
-            unsafe { f(&mut cap) };
-        });
-        cap
+        crate::test_utils::vst2().capture()
     }
 
     fn reset_probe() {
-        for symbol in [
-            "tutti_vst2_probe_reset_capture",
-            "tutti_vst2_probe_reset_switches",
-        ] {
-            with_probe_symbol(symbol, |p| {
-                let f: extern "C" fn() = unsafe { std::mem::transmute(p) };
-                f();
-            });
-        }
+        let probe = crate::test_utils::vst2();
+        probe.reset_capture();
+        probe.reset_switches();
     }
 
     /// One silent stereo block of `frames` through `plugin` as the pipeline
@@ -669,18 +588,7 @@ mod tests {
             "nothing was reported yet"
         );
 
-        let path = crate::test_utils::vst2_probe_path();
-        // SAFETY: the path is the cdylib the dev-dependency built; the symbol
-        // is the probe's `#[no_mangle]` export.
-        let lib = unsafe { libloading::Library::new(path) }.expect("re-open the probe");
-        let answered = unsafe {
-            let f: libloading::Symbol<extern "C" fn(i32, i32) -> isize> = lib
-                .get(b"tutti_vst2_probe_fire_io_changed\0")
-                .expect("probe export");
-            f(777, 4)
-        };
-        // Leaked, as the other suites do: the image must stay mapped.
-        std::mem::forget(lib);
+        let answered = crate::test_utils::vst2().fire_io_changed(777, 4);
         assert_eq!(answered, 1, "the host handles audioMasterIOChanged");
 
         let events = plugin.poll_async_events(&main_thread());
@@ -950,7 +858,6 @@ mod tests {
     #[test]
     fn a_load_at_no_rate_or_no_block_is_refused() {
         let _lock = crate::test_utils::plugin_load_lock();
-        clear_probe_env();
         reset_probe();
         let path = crate::test_utils::vst2_probe_path();
         for (rate, block) in [
@@ -1025,15 +932,9 @@ mod tests {
     fn a_parameter_the_plugin_moved_is_forwarded() {
         let (mut p, _lock) = load_probe(&[]);
         reset_probe();
-        with_probe_symbol("tutti_vst2_probe_set_automate_burst", |f| {
-            let f: extern "C" fn(u32) = unsafe { std::mem::transmute(f) };
-            f(3);
-        });
+        crate::test_utils::vst2().set_automate_burst(3);
         render(&mut p, 64).expect("renders");
-        with_probe_symbol("tutti_vst2_probe_set_automate_burst", |f| {
-            let f: extern "C" fn(u32) = unsafe { std::mem::transmute(f) };
-            f(0);
-        });
+        crate::test_utils::vst2().set_automate_burst(0);
         let moved: Vec<_> = p
             .poll(&main_thread())
             .into_iter()

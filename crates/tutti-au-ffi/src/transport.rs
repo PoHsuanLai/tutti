@@ -341,6 +341,49 @@ impl TransportState {
         )
     }
 
+    /// Pulls the four procs once, the way AudioToolbox does, with this state
+    /// as `hostUserData` and every out-param a valid local.
+    ///
+    /// A safe door for a test above this crate, which forbids `unsafe`: the
+    /// procs and the user data are this state's own, so the call is sound by
+    /// construction.
+    #[cfg(feature = "test-support")]
+    #[doc(hidden)]
+    pub fn test_pull(&self) -> TestPull {
+        let user = self as *const Self as *mut c_void;
+        let (mut beat, mut tempo) = (f64::NAN, f64::NAN);
+        let (mut delta, mut num, mut den, mut downbeat) = (u32::MAX, f32::NAN, u32::MAX, 0.0);
+        let (mut playing, mut changed, mut sample, mut cycling) = (0, 0, 0.0, 0);
+        let (mut c0, mut c1) = (0.0, 0.0);
+        // SAFETY: each proc is one of this file's own `extern "C"` functions
+        // and `user` is `self`, which they read through as a `&TransportState`;
+        // `self` is borrowed for the call. Every out-param is a valid local.
+        let status = unsafe {
+            let status = beat_and_tempo_proc(user, &mut beat, &mut tempo);
+            musical_time_location_proc(user, &mut delta, &mut num, &mut den, &mut downbeat);
+            transport_state_proc(
+                user,
+                &mut playing,
+                &mut changed,
+                &mut sample,
+                &mut cycling,
+                &mut c0,
+                &mut c1,
+            );
+            status
+        };
+        TestPull {
+            status,
+            beat,
+            tempo,
+            delta,
+            numerator: num,
+            denominator: den,
+            changed: changed != 0,
+            playing: playing != 0,
+        }
+    }
+
     /// Builds the `HostCallbackInfo` that points AudioToolbox at this state.
     ///
     /// Both transport procs are filled. See the module docs for the measurement
@@ -657,4 +700,28 @@ impl Drop for HostCallbacks {
         // Otherwise the AU may still pull from the state, and other `Unit`
         // clones can keep it rendering: leak it rather than free memory it reads.
     }
+}
+
+/// What [`TransportState::test_pull`] read: the beat-and-tempo status, beat,
+/// tempo, musical-time fields, and the v1 transport's `changed` and `playing`.
+#[cfg(feature = "test-support")]
+#[doc(hidden)]
+#[derive(Debug, Clone, Copy)]
+pub struct TestPull {
+    /// The beat-and-tempo proc's `OSStatus`.
+    pub status: OSStatus,
+    /// The current beat.
+    pub beat: f64,
+    /// The tempo, in beats per minute.
+    pub tempo: f64,
+    /// Frames to the next whole beat.
+    pub delta: u32,
+    /// The time signature's numerator.
+    pub numerator: f32,
+    /// The time signature's denominator.
+    pub denominator: u32,
+    /// The v1 transport's state-changed flag.
+    pub changed: bool,
+    /// The v1 transport's playing flag.
+    pub playing: bool,
 }

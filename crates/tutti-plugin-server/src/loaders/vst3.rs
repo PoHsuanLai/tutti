@@ -10,15 +10,14 @@ use tutti_plugin_types::MainThread;
 
 use tutti_plugin::LoadStage;
 use tutti_plugin::server::{
-    AudioBufferMut, AutomationMode, ContentScale, EditorSize, LoadedPlugin, Normalized, ParamId,
-    ParameterInfo, PluginAudio, PluginDescriptor, PluginEditorHost, PluginError, PluginMeta,
-    PluginParams, PluginPresets, PluginResult, PluginState, Preset, PresetId, ProcessContext,
-    ProcessOutput, RenderMode, WindowHandle,
+    AudioBufferMut, AutomationMode, LoadedPlugin, Normalized, ParamId, ParameterInfo, PluginAudio,
+    PluginDescriptor, PluginError, PluginMeta, PluginParams, PluginPresets, PluginResult,
+    PluginState, Preset, PresetId, ProcessContext, ProcessOutput, RenderMode,
 };
 use tutti_plugin_types::{BridgeError, BridgeResult};
 use tutti_plugin_types::{
-    Control, EditorWindow, Event, Hand, HostOp, Lifecycle, MaxBlock, Notice, Prepare, Request,
-    SampleFormat, SampleRate, Samples, Stage, State,
+    Control, Event, Hand, HostOp, Lifecycle, MaxBlock, Notice, Prepare, Request, SampleFormat,
+    SampleRate, Samples, Stage, State,
 };
 use tutti_vst3_host::{LoadOptions, ProcessorAny, Vst3Loaded};
 
@@ -523,33 +522,6 @@ impl PluginParams for Vst3Instance {
     }
 }
 
-impl PluginEditorHost for Vst3Instance {
-    fn open_editor(
-        &mut self,
-        main: &MainThread,
-        parent: WindowHandle,
-        scale: ContentScale,
-    ) -> PluginResult<EditorSize> {
-        // `parent` was validated at the IPC boundary in server.rs.
-        let loaded = self
-            .loaded_mut()
-            .ok_or_else(|| PluginError::Other("the plugin is lost".to_string()))?;
-        loaded
-            .open_editor(main, parent, scale)
-            .map(|size| EditorSize {
-                width: size.width,
-                height: size.height,
-            })
-            .map_err(|e| PluginError::Editor(tutti_plugin::EditorError::PluginError(e.to_string())))
-    }
-
-    fn close_editor(&mut self, main: &MainThread) {
-        if let Some(loaded) = self.loaded_mut() {
-            loaded.close_editor(main);
-        }
-    }
-}
-
 impl PluginPresets for Vst3Instance {
     /// The plugin's programs, flattened out of its named program lists; see
     /// [`Control::presets`].
@@ -622,33 +594,14 @@ mod tests {
     use tutti_plugin::server::{AudioBuffer, AudioBuffer64, AudioBufferMut, Features};
     use tutti_ump::{MidiChannel, MidiGroup};
 
-    /// Sets `TUTTI_PROBE_MISBEHAVIOUR` for the life of the guard and restores
-    /// the previous value on drop, a panic included. Take it while holding
-    /// `plugin_load_lock()`, and drop it before the lock (declare it after).
-    struct ProbeMisbehaviour {
-        previous: Option<std::ffi::OsString>,
-    }
-
-    impl ProbeMisbehaviour {
-        fn set(code: &str) -> Self {
-            let previous = std::env::var_os("TUTTI_PROBE_MISBEHAVIOUR");
-            // SAFETY: the caller holds `plugin_load_lock()`, which every test here that loads
-            // the probe (the only reader of this variable) also takes, so none runs meanwhile.
-            // Process-wide `std::env` access from code that does not take the lock is not
-            // excluded, only absent from this crate's tests.
-            unsafe { std::env::set_var("TUTTI_PROBE_MISBEHAVIOUR", code) };
-            Self { previous }
-        }
-    }
-
-    impl Drop for ProbeMisbehaviour {
-        fn drop(&mut self) {
-            // SAFETY: as in `set`; the lock outlives this guard.
-            match self.previous.take() {
-                Some(v) => unsafe { std::env::set_var("TUTTI_PROBE_MISBEHAVIOUR", v) },
-                None => unsafe { std::env::remove_var("TUTTI_PROBE_MISBEHAVIOUR") },
-            }
-        }
+    /// Sets `TUTTI_PROBE_MISBEHAVIOUR` until the guard drops (a panic
+    /// included). Take it while holding `plugin_load_lock()`, which every test
+    /// here that loads the probe (the only reader of the variable) also takes,
+    /// and drop it before the lock (declare it after).
+    fn probe_misbehaviour(code: &str) -> tutti_fixtures::ScopedEnv {
+        let mut env = tutti_fixtures::ScopedEnv::new();
+        env.set("TUTTI_PROBE_MISBEHAVIOUR", code);
+        env
     }
 
     /// The reference VST3 plugin, built by `tutti-vst3-host`'s build script
@@ -814,7 +767,7 @@ mod tests {
     fn a_latency_that_follows_the_rate_is_reread_after_a_rate_change() {
         let _lock = crate::test_utils::plugin_load_lock();
         // `kMisbehaveLatencyFollowsRate`: the latency is the rate in kHz.
-        let _misbehaviour = ProbeMisbehaviour::set("12");
+        let _misbehaviour = probe_misbehaviour("12");
         let mut instance = Vst3Instance::load(
             &main_thread(),
             Path::new(vst3_plugin()),
@@ -924,7 +877,7 @@ mod tests {
     fn a_refused_rate_is_rolled_back_to_the_previous_one() {
         let _lock = crate::test_utils::plugin_load_lock();
         // `kMisbehaveRefusesHighRates`: `setActive(true)` fails above 50 kHz.
-        let _misbehaviour = ProbeMisbehaviour::set("14");
+        let _misbehaviour = probe_misbehaviour("14");
         let mut instance = Vst3Instance::load(
             &main_thread(),
             Path::new(vst3_plugin()),
@@ -1060,7 +1013,7 @@ mod tests {
     fn a_render_mode_change_activates_the_plugin_again_in_the_new_mode() {
         let _lock = crate::test_utils::plugin_load_lock();
         // `kMisbehaveRefusesOffline`: `setActive(true)` fails under `kOffline`.
-        let _misbehaviour = ProbeMisbehaviour::set("15");
+        let _misbehaviour = probe_misbehaviour("15");
         let mut instance = Vst3Instance::load(
             &main_thread(),
             Path::new(vst3_plugin()),

@@ -7,7 +7,7 @@
 use crate::common;
 
 use tutti_modulation::Lfo;
-use tutti_session::{GraphSource, ParamRef, Session};
+use tutti_session::{OutPort, ParamRef, Root, Session};
 use tutti_transport::MotionEvent;
 use tutti_types::MaxBlock;
 use tutti_types::{BeatDuration, Depth, ParamAddr, UnitAddr, UnitParam};
@@ -56,8 +56,12 @@ fn render(s: &mut Session, frames: usize) -> [Vec<f32>; 2] {
 fn set_param_writes_the_index_it_names() {
     let mut s = offline();
     let (node, _) = s.graph().add(Bands::new(100.0, 500.0));
-    s.graph().set_output_source(0, GraphSource::Node(node, 0));
-    s.graph().set_output_source(1, GraphSource::Node(node, 1));
+    s.graph()
+        .set_sources(Root::output(0), [OutPort::new(node, 0)])
+        .unwrap();
+    s.graph()
+        .set_sources(Root::output(1), [OutPort::new(node, 1)])
+        .unwrap();
     let _ = s.update();
 
     let [a, b] = render(&mut s, 256);
@@ -107,8 +111,12 @@ fn the_graph_declares_each_index() {
 fn a_route_to_index_1_does_not_touch_index_0() {
     let mut s = offline();
     let (node, _) = s.graph().add(Bands::new(100.0, 500.0));
-    s.graph().set_output_source(0, GraphSource::Node(node, 0));
-    s.graph().set_output_source(1, GraphSource::Node(node, 1));
+    s.graph()
+        .set_sources(Root::output(0), [OutPort::new(node, 0)])
+        .unwrap();
+    s.graph()
+        .set_sources(Root::output(1), [OutPort::new(node, 1)])
+        .unwrap();
 
     let band1 = ParamRef::unit_at(node, UnitParam::Threshold, 1);
     assert_eq!(

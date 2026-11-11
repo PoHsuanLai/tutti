@@ -34,6 +34,7 @@
 mod support;
 
 use std::path::{Path, PathBuf};
+use tutti::prelude::Root;
 
 use tutti::export::Written;
 use tutti::prelude::*;
@@ -71,7 +72,7 @@ fn play<M: Master>(
     // The thread that opens an in-process plugin is the main thread: claim it once.
     let main = tutti::plugin::MainThread::claim()?;
     let synth = s.add_plugin(&main, job.run())?;
-    s.graph().set_outputs_from(synth);
+    s.graph().connect(synth, Root).unwrap();
 
     let file = MidiFile::read(midi)?; // an SMF or a Clip File
     // A file's tempo track is the file's data, not the project's: the project

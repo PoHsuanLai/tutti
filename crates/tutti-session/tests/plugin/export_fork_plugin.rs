@@ -10,6 +10,7 @@
 //! test here fails, naming that command. They must fail rather than skip.
 
 use crate::support;
+use tutti_session::Root;
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -25,8 +26,8 @@ use tutti_plugin::catalog::PluginId;
 use tutti_plugin_types::PluginForkError;
 use tutti_session::BufferMaster;
 use tutti_session::{
-    Bounce, BounceError, BounceLatency, BounceTail, ExportClock, GraphSource, PluginLoadRequest,
-    Range, Session, Stem,
+    Bounce, BounceError, BounceLatency, BounceTail, ExportClock, InPort, OutPort,
+    PluginLoadRequest, Range, Session, Stem,
 };
 use tutti_transport::{OfflineTimeline, OfflineTimelineConfig};
 use tutti_types::ChannelLayout;
@@ -123,7 +124,7 @@ fn session_with_probe_at(mode: u32, path: std::path::PathBuf) -> (Session, NodeK
             },
         )
         .expect("the reference CLAP plugin loads");
-    session.graph().set_outputs_from(probe);
+    session.graph().connect(probe, Root).unwrap();
     let _ = session.update();
     (session, probe)
 }
@@ -142,10 +143,12 @@ fn feed_with(
     let (source, ()) = session.graph().insert(node);
     session
         .graph()
-        .set_source(probe, 0, GraphSource::Node(source, 0));
+        .set_sources(InPort::new(probe, 0), [OutPort::new(source, 0)])
+        .unwrap();
     session
         .graph()
-        .set_source(probe, 1, GraphSource::Node(source, 0));
+        .set_sources(InPort::new(probe, 1), [OutPort::new(source, 0)])
+        .unwrap();
     let _ = session.update();
 }
 

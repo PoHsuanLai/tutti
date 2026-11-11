@@ -20,7 +20,7 @@ use tutti_modulation::{
 };
 use tutti_nodes::{Feed, ReconcileError};
 use tutti_session::{
-    GraphSource, ModInput, ModKeys, ModRefusal, PHASES, ParamRef, PhaseCx, RouteError, Session,
+    ModInput, ModKeys, ModRefusal, OutPort, PHASES, ParamRef, PhaseCx, Root, RouteError, Session,
     SessionEvent,
 };
 use tutti_transport::MotionEvent;
@@ -128,8 +128,12 @@ fn the_8_1_example_renders_its_analytic_values() {
         to: 7_200,
         level: 0.8,
     }));
-    s.graph().set_output_source(0, GraphSource::Node(filter, 0));
-    s.graph().set_output_source(1, GraphSource::Node(pad, 0));
+    s.graph()
+        .set_sources(Root::output(0), [OutPort::new(filter, 0)])
+        .unwrap();
+    s.graph()
+        .set_sources(Root::output(1), [OutPort::new(pad, 0)])
+        .unwrap();
 
     let cutoff = ParamRef::unit(filter, UnitParam::Cutoff);
     let gain = ParamRef::unit(pad, UnitParam::Volume);
@@ -263,7 +267,7 @@ fn a_target_placed_one_update_later_resolves_on_that_update() {
     assert!(s.mod_state().lane(HOST_TARGET).is_none());
 
     let (probe, _) = s.graph().add(ProbeUnit::new(500.0));
-    keys.node.set(Some(probe));
+    keys.node.set(Some(probe.erase()));
     update_at(&mut s, now, Some(decl.input(&keys)));
     assert_eq!(
         s.mod_state().unresolved_targets(),
@@ -406,7 +410,7 @@ fn a_host_and_the_session_cannot_both_declare() {
     let (probe, _) = s.graph().add(ProbeUnit::new(500.0));
     s.mods().macro_(0.5);
     let keys = HostKeys {
-        node: Cell::new(Some(probe)),
+        node: Cell::new(Some(probe.erase())),
     };
     let decl = HostDecl::new(true);
     let events = update_at(&mut s, Instant::now(), Some(decl.input(&keys)));
@@ -495,7 +499,9 @@ fn a_re_apply_that_moves_the_latency_publishes_it() {
     assert_eq!(s.latency(), Samples(0), "precondition: nothing latent out");
 
     let (probe, _) = s.graph().add(ProbeUnit::new(500.0));
-    s.graph().set_output_source(0, GraphSource::Node(probe, 0));
+    s.graph()
+        .set_sources(Root::output(0), [OutPort::new(probe, 0)])
+        .unwrap();
     let cutoff = ParamRef::unit(probe, UnitParam::Cutoff);
     let mut m = s.mods();
     m.range(cutoff, 0.0, 1_000.0);

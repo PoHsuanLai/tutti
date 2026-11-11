@@ -16,6 +16,7 @@
 //! modulation sources) is named through `tutti::`.
 
 use std::sync::Arc;
+use tutti::prelude::{InPort, OutPort, Root};
 
 use tutti::graph::{Cx, ForkByClone, Io, Node, Prepare, Shape, Status};
 use tutti::nodes::testing::Osc;
@@ -91,8 +92,12 @@ fn main() -> Result<(), tutti::Error> {
         Q(0.7),
     ));
     let (kick, _) = s.graph().insert(ForkByClone(Kick));
-    s.graph().set_source(filter, 0, GraphSource::Node(saw, 0));
-    s.graph().set_output_source(0, GraphSource::Node(filter, 0));
+    s.graph()
+        .set_sources(InPort::new(filter, 0), [OutPort::new(saw, 0)])
+        .unwrap();
+    s.graph()
+        .set_sources(Root::output(0), [OutPort::new(filter, 0)])
+        .unwrap();
 
     let cutoff = ParamRef::unit(filter, UnitParam::Cutoff);
     let resonance = ParamRef::unit(filter, UnitParam::Q);

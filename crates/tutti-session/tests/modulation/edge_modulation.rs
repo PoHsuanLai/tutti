@@ -1,5 +1,5 @@
 //! A modulation route onto the **gain of an edge** (doc 013, "Edge gain",
-//! G2): `Mods::route(source, EdgeRef, depth)` gives the edge's sink sum a
+//! G2): `Mods::route(source, Edge, depth)` gives the edge's sink sum a
 //! driven lane, as a route onto a param gives a port one.
 //!
 //! The figures are analytic. Two constant sources sum at global output 0;
@@ -12,7 +12,7 @@
 use crate::common;
 
 use tutti_graph::ForkByClone;
-use tutti_session::{EdgeRef, GraphSource, ModTarget, ParamRef, Session};
+use tutti_session::{Edge, ModTarget, OutPort, ParamRef, Root, Session};
 use tutti_types::MaxBlock;
 use tutti_types::{
     Amplitude, ChannelLayout, Depth, InterleavedMut, SampleRate, Samples, UnitParam,
@@ -60,7 +60,7 @@ fn render(s: &mut Session, blocks: usize) -> Vec<f32> {
 }
 
 /// Two always-on sources summed at output 0; the edge of the first.
-fn mixer(s: &mut Session) -> EdgeRef {
+fn mixer(s: &mut Session) -> Edge {
     let level = |level| {
         ForkByClone(Pulse {
             from: 0,
@@ -70,9 +70,13 @@ fn mixer(s: &mut Session) -> EdgeRef {
     };
     let (a, _) = s.graph().add(level(A));
     let (b, _) = s.graph().add(level(B));
-    s.graph().add_output_source(0, GraphSource::Node(a, 0));
-    s.graph().add_output_source(0, GraphSource::Node(b, 0));
-    EdgeRef::output(0, GraphSource::Node(a, 0))
+    s.graph()
+        .connect(OutPort::new(a, 0), Root::output(0))
+        .unwrap();
+    s.graph()
+        .connect(OutPort::new(b, 0), Root::output(0))
+        .unwrap();
+    Edge::new(OutPort::new(a, 0), Root::output(0))
 }
 
 /// A route onto an edge's gain modulates the sum by the analytic amount. The
@@ -146,8 +150,7 @@ fn the_base_is_the_lanes_knob_and_a_route_returns_to_it() {
     let mut s = offline();
     let edge = mixer(&mut s);
     settle(&mut s);
-    s.graph()
-        .set_edge_gain(edge, Amplitude::new(0.5))
+    edge.set_gain(s.graph(), Amplitude::new(0.5))
         .expect("an edge");
     settle(&mut s);
 
@@ -167,12 +170,11 @@ fn the_base_is_the_lanes_knob_and_a_route_returns_to_it() {
     settle(&mut s);
     figure(&mut s, 1.5, "the base plus the route's offset");
 
-    s.graph()
-        .set_edge_gain(edge, Amplitude::new(0.25))
+    edge.set_gain(s.graph(), Amplitude::new(0.25))
         .expect("an edge");
     settle(&mut s);
     figure(&mut s, 1.25, "the base moved while routed");
-    assert_eq!(s.graph_ref().edge_gain(edge), Some(Amplitude::new(0.25)));
+    assert_eq!(edge.gain(s.graph_ref()), Some(Amplitude::new(0.25)));
 
     s.mods().remove_route(route);
     settle(&mut s);

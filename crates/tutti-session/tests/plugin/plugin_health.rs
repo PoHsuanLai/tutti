@@ -100,7 +100,7 @@ fn session_with(cause: Option<&str>) -> (Session, NodeKey) {
     assert!(s.graph().host_plugin(node, handle_with(cause)));
     // The insert is an edit: send it, so the flag starts clear.
     s.commit();
-    (s, node)
+    (s, node.erase())
 }
 
 /// `Phase::Plugins` at `t0 + ms`: the deaths it reported.

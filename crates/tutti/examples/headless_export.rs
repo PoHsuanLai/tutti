@@ -20,6 +20,7 @@
 
 use tutti::measure::{LoudnessConfig, measure_loudness};
 use tutti::nodes::testing::{Const, Osc};
+use tutti::prelude::Root;
 use tutti::prelude::*;
 
 /// The rate every render below runs at.
@@ -31,7 +32,7 @@ fn session_with(node: impl tutti::graph::IntoNode) -> Session {
         .build_detached(RATE)
         .expect("a detached session builds");
     let (node, _) = session.graph().insert(node);
-    session.graph().set_outputs_from(node);
+    session.graph().connect(node, Root).unwrap();
     session
 }
 

@@ -12,7 +12,7 @@
 use tutti_fixtures::midi::{key_of, m1_note_on};
 use tutti_graph::{Cx, ForkByClone, Io, Node, Prepare, Shape, Status};
 use tutti_graph::{EventInletNode, EventTapReader, Refused, TapAlign, TapEvent};
-use tutti_session::{EventSource, GraphSource, Session};
+use tutti_session::{EventSource, OutPort, Root, Session};
 use tutti_types::ChannelLayout;
 use tutti_types::{At, Frame, SampleRate};
 use tutti_ump::{MidiChannel, NoteNumber, U7, Ump};
@@ -115,7 +115,9 @@ fn an_export_fork_is_accepted_and_silent() {
     let (hear, ()) = s.graph().insert(ForkByClone(Hear));
     s.graph()
         .set_event_sources(hear, 0, &[EventSource::new(key, 0)]);
-    s.graph().set_output_source(0, GraphSource::Node(hear, 0));
+    s.graph()
+        .set_sources(Root::output(0), [OutPort::new(hear, 0)])
+        .unwrap();
     let _ = s.update();
     writer.push(At::NextBlock, note(1)).unwrap();
     let mut fork = s.graph_ref().fork_live().expect("an inlet forks");

@@ -794,7 +794,7 @@ fn wire_inlets(
     for change in changes {
         match change {
             InletChange::Attach { slot, node } => {
-                let key = graph.add_event_inlet(node);
+                let key = graph.add_event_inlet(node).erase();
                 nodes.input_controls.restart_slot(slot);
                 graph.set_event_sources(nodes.input, slot as u16, &[EventSource::new(key, 0)]);
                 if inlet_keys.len() <= slot {
@@ -833,7 +833,8 @@ impl Midi<'_> {
     ///
     /// [`Error::NoEventInput`] when `target` is not in the graph or takes
     /// no MIDI.
-    pub fn live_input(&mut self, target: NodeKey) -> Result<LiveInput> {
+    pub fn live_input(&mut self, target: impl Into<NodeKey>) -> Result<LiveInput> {
+        let target = target.into();
         self.takes_midi(target)?;
         if let Some((node, live)) = self.fed_by(target, Feeder::LiveInput, &self.state.live) {
             return Ok(LiveInput {
@@ -842,6 +843,7 @@ impl Midi<'_> {
             });
         }
         let (node, keys) = SharedKeys::open(self.graph);
+        let node = node.erase();
         self.graph
             .set_feed(target, Feeder::LiveInput, vec![node.into()]);
         self.state.live.insert(
@@ -871,9 +873,10 @@ impl Midi<'_> {
     /// no MIDI.
     pub fn play_clip(
         &mut self,
-        target: NodeKey,
+        target: impl Into<NodeKey>,
         events: impl IntoIterator<Item = TimedMidiEvent>,
     ) -> Result<NodeKey> {
+        let target = target.into();
         self.takes_midi(target)?;
         let clip = match self.clip(target) {
             Some(clip) => {
@@ -882,6 +885,7 @@ impl Midi<'_> {
             }
             None => {
                 let (clip, controls) = self.graph.add(MidiClipNode::new(events));
+                let clip = clip.erase();
                 self.state.clips.insert(clip, Clip { controls, target });
                 clip
             }
@@ -896,7 +900,8 @@ impl Midi<'_> {
     /// Empties `target`'s clip, ending the notes it left sounding. The clip
     /// stays, to play the next [`play_clip`](Self::play_clip). `false`
     /// when `target` has none.
-    pub fn stop_clip(&mut self, target: NodeKey) -> bool {
+    pub fn stop_clip(&mut self, target: impl Into<NodeKey>) -> bool {
+        let target = target.into();
         match self.clip(target) {
             Some(clip) => {
                 self.state.clips[&clip].controls.clear();
@@ -907,7 +912,8 @@ impl Midi<'_> {
     }
 
     /// `target`'s clip node, if it has one.
-    pub fn clip(&self, target: NodeKey) -> Option<NodeKey> {
+    pub fn clip(&self, target: impl Into<NodeKey>) -> Option<NodeKey> {
+        let target = target.into();
         self.fed_by(target, Feeder::Sequencer, &self.state.clips)
             .map(|(clip, _)| clip)
     }
@@ -938,7 +944,9 @@ impl Midi<'_> {
     /// [`Error::NoEventInput`] when `target` is not in the graph or takes
     /// no MIDI; [`Error::NotSessionMidi`] when `node` is not a clip or live
     /// input of this session's.
-    pub fn retarget(&mut self, node: NodeKey, target: NodeKey) -> Result<()> {
+    pub fn retarget(&mut self, node: impl Into<NodeKey>, target: impl Into<NodeKey>) -> Result<()> {
+        let node = node.into();
+        let target = target.into();
         self.takes_midi(target)?;
         let (old, feeder) = if let Some(clip) = self.state.clips.get_mut(&node) {
             (
@@ -1060,11 +1068,12 @@ impl Midi<'_> {
     /// Nothing is changed.
     pub fn set_routes<'r, T: Copy + Ord + 'r>(
         &mut self,
-        input: NodeKey,
+        input: impl Into<NodeKey>,
         rules: impl IntoIterator<Item = &'r MidiRouteRule<T>>,
         fallback: Option<T>,
         resolve: impl Fn(T) -> Option<NodeKey>,
     ) -> Result<()> {
+        let input = input.into();
         if !self.state.rules.is_empty() || self.state.fallback.is_some() {
             return Err(Error::TwoRouteDeclarers("the session's own `route`"));
         }

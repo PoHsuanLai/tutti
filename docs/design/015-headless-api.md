@@ -531,8 +531,8 @@ device.stop(); device.start()?;
 ```rust
 let (pad, _) = s.graph().insert(PolySynth::new(SynthConfig::default())?);
 let (filter, _) = s.graph().insert(SvfFilterNode::<f64>::new(SvfType::LowPass, Hz(1_000.0), Q(0.7)));
-s.graph().set_source(filter, 0, GraphSource::node(pad, 0));
-s.graph().set_outputs_from(filter);
+s.graph().connect(pad.out(0), filter.input(0))?;
+s.graph().connect(filter, Root)?;
 s.graph().crossfade(filter, other_filter, Seconds(0.005))?;  // retried by update() while Busy
 ```
 
@@ -887,8 +887,8 @@ let (mut s, _device) = Session::builder().build_device(DeviceSelector::Default)?
 let (filter, _) = s.graph().insert(SvfFilterNode::<f64>::new(SvfType::LowPass, Hz(1_000.0), Q(0.7)));
 let (pad, _) = s.graph().insert(PolySynth::new(SynthConfig::default())?);
 let (kick_bus, _) = s.graph().insert(BusStripNode::new());
-s.graph().set_source(filter, 0, GraphSource::node(pad, 0));
-s.graph().set_outputs_from(filter);
+s.graph().connect(pad.out(0), filter.input(0))?;
+s.graph().connect(filter, Root)?;
 
 let cutoff = ParamRef::unit(filter, UnitParam::Cutoff);
 let gain = ParamRef::unit(pad, UnitParam::Volume);
@@ -926,7 +926,7 @@ let mut s = Session::builder()
 
 let job = s.plugin_load(PluginLoadRequest { id: PluginId::from_path("Synth.clap"), state: None });
 let synth = s.add_plugin(job.run())?;
-s.graph().set_outputs_from(synth);
+s.graph().connect(synth, Root)?;
 
 let file = MidiFile::read("song.mid")?;                 // tutti-midi-file: sniffs SMF vs Clip File
 let tempo = file.tempo().unwrap_or(Bpm::of(120.0));         // the tempo at beat 0; an SMF always has one

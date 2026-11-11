@@ -8,6 +8,7 @@
 //! 96 kHz), placed to the frame since clips place on integer frames.
 
 use std::sync::Arc;
+use tutti_session::Root;
 
 use tutti_export::Produced;
 use tutti_fixtures::midi::{note_off, note_on};
@@ -115,9 +116,15 @@ fn session_with<N: tutti_graph::IntoNode>(unit: N) -> (Session, NodeKey) {
         .expect("a detached session builds");
     session.graph().set_sample_rate(SampleRate(RATE));
     let (synth, _) = session.graph().insert(unit);
-    session.graph().set_outputs_from(synth);
+    // The dry pair; the unit's other outputs are sends.
+    for c in 0..2 {
+        session
+            .graph()
+            .connect(synth.out(c), Root::output(c))
+            .unwrap();
+    }
     let _ = session.update();
-    (session, synth)
+    (session, synth.erase())
 }
 
 /// Middle C from beat 1 to beat 2.
@@ -249,7 +256,7 @@ fn a_param_on_a_synth_reaches_it_and_its_fork() {
             .expect("a detached session builds");
         session.graph().set_sample_rate(SampleRate(RATE));
         let (synth, controls) = session.graph().add(poly());
-        session.graph().set_outputs_from(synth);
+        session.graph().connect(synth, Root).unwrap();
         let _ = session.update();
         if let Some(v) = volume {
             session.graph().set_param(synth, UnitParam::Volume, v);
@@ -260,7 +267,7 @@ fn a_param_on_a_synth_reaches_it_and_its_fork() {
                 "the write reaches the live synth's volume cell"
             );
         }
-        install_clip(&mut session, synth);
+        install_clip(&mut session, synth.erase());
         let planes = render(&mut session, request(RATE));
         planes[0].iter().fold(0.0f32, |a, s| a.max(s.abs()))
     };

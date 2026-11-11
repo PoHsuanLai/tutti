@@ -18,6 +18,7 @@
 
 use std::sync::Arc;
 use tutti_fixtures::signal::rms;
+use tutti_session::Root;
 use tutti_types::MaxBlock;
 
 use tutti_fixtures::midi::{note_off, note_on};
@@ -72,9 +73,12 @@ fn rig() -> (Session, NodeKey) {
         .build_offline(RATE, ChannelLayout::STEREO, MaxBlock::of(Samples(128)))
         .expect("builds");
     let (synth, _) = s.graph().add(unit);
-    s.graph().set_outputs_from(synth);
+    // The dry pair; the unit's other outputs are sends.
+    for c in 0..2 {
+        s.graph().connect(synth.out(c), Root::output(c)).unwrap();
+    }
     let _ = s.update();
-    (s, synth)
+    (s, synth.erase())
 }
 
 /// `frames` frames from the session, in 128-frame blocks.

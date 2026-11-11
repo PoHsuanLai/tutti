@@ -9,7 +9,7 @@ use std::time::Duration;
 use tutti_types::MaxBlock;
 
 use tutti_graph::{Cx, ForkByClone, Io, Node, Prepare, Shape, Status};
-use tutti_session::{GraphSource, Session, SessionEvent};
+use tutti_session::{OutPort, Root, Session, SessionEvent};
 use tutti_types::{ChannelLayout, InterleavedMut, SampleRate, Samples};
 
 const RATE: f64 = 48_000.0;
@@ -112,8 +112,12 @@ fn a_meter_reset_is_no_event_and_restarts_the_count() {
 fn over_budget_alone_is_no_event() {
     let mut s = offline();
     let (slow, _) = s.graph().insert(ForkByClone(Slow));
-    s.graph().set_output_source(0, GraphSource::Node(slow, 0));
-    s.graph().set_output_source(1, GraphSource::Node(slow, 0));
+    s.graph()
+        .set_sources(Root::output(0), [OutPort::new(slow, 0)])
+        .unwrap();
+    s.graph()
+        .set_sources(Root::output(1), [OutPort::new(slow, 0)])
+        .unwrap();
     let events = s.update();
     assert!(silenced(&events).is_empty());
     good_block(&s);

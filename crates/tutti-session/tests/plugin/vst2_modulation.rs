@@ -11,6 +11,7 @@
 //! reference VST2 probe, in process.
 
 use std::time::{Duration, Instant};
+use tutti_session::Root;
 
 use tutti_graph::NodeKey;
 use tutti_graph::{Cx, Io, Node, Prepare, Shape, Status};
@@ -47,7 +48,7 @@ fn session_with_probe() -> (Session, NodeKey) {
             },
         )
         .expect("the in-process VST2 loads");
-    s.graph().set_outputs_from(node);
+    s.graph().connect(node, Root).unwrap();
     let _ = s.update();
     assert!(
         s.plugin(node)
@@ -225,7 +226,7 @@ fn a_plugins_midi_rewiring_keeps_its_lanes() {
     check(&mut s, &[lane], "before");
     s.graph()
         .set_feed(node, Feeder::Declared, vec![clip.into()]);
-    check(&mut s, &[lane, clip], "a MIDI source added");
+    check(&mut s, &[lane, clip.erase()], "a MIDI source added");
     s.graph().set_feed(node, Feeder::Declared, Vec::new());
     check(&mut s, &[lane], "the MIDI source removed");
 }

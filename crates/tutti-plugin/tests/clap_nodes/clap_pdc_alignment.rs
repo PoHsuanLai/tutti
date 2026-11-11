@@ -42,6 +42,7 @@
 use crate::clap_probe;
 use clap_probe::{ProbeEnv, load_probe, render};
 use tutti_fixtures::machine_lock;
+use tutti_session::InPort;
 use tutti_types::MaxBlock;
 
 use tutti_graph::NodeKey;
@@ -215,9 +216,11 @@ fn two_paths(plugin: PluginClient<Bound>) -> Rig {
     // alone cannot produce.
 
     for port in 0..plugin_inputs {
-        g.set_source(key, port, Source::Global(0));
+        g.set_sources(InPort::new(key, port), [Source::Global(0)])
+            .unwrap();
     }
-    g.set_source(dry, 0, Source::Global(0));
+    g.set_sources(InPort::new(dry, 0), [Source::Global(0)])
+        .unwrap();
     g.add_output(0, Source::Node(OutPort { node: key, port: 0 }));
     g.add_output(0, Source::Node(OutPort { node: dry, port: 0 }));
     finish(g, key, controls)
@@ -231,7 +234,8 @@ fn plugin_alone(plugin: PluginClient<Bound>) -> Rig {
     let mut g = GraphBuilder::new(ChannelLayout::MONO, ChannelLayout::MONO);
     let (key, controls) = g.add_with_controls(plugin);
     for port in 0..plugin_inputs {
-        g.set_source(key, port, Source::Global(0));
+        g.set_sources(InPort::new(key, port), [Source::Global(0)])
+            .unwrap();
     }
     g.set_output(0, Source::Node(OutPort { node: key, port: 0 }));
     finish(g, key, controls)

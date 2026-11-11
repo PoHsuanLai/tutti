@@ -26,7 +26,7 @@ use tutti_cpal::{ManualStreamDriver, OutputSpec};
 use tutti_plugin::catalog::PluginId;
 use tutti_plugin::handles::PluginClient;
 use tutti_session::{
-    Crossfade, GraphSource, PHASES, Phase, PhaseCx, PluginLoadRequest, Session, SessionEvent,
+    Crossfade, OutPort, PHASES, Phase, PhaseCx, PluginLoadRequest, Root, Session, SessionEvent,
 };
 use tutti_types::{ChannelLayout, SampleRate, Samples};
 
@@ -63,7 +63,9 @@ fn add_probe_on_outputs(s: &mut Session) -> tutti_graph::NodeKey {
             },
         )
         .expect("the reference CLAP plugin loads");
-    s.graph().set_output_source(0, GraphSource::Node(node, 0));
+    s.graph()
+        .set_sources(Root::output(0), [OutPort::new(node, 0)])
+        .unwrap();
     let _ = s.update();
     node
 }
@@ -223,7 +225,9 @@ fn a_restart_to_another_callback_size_re_declares_a_plugins_latency() {
     let client = PluginClient::new(tutti_plugin::BridgeConfig::default(), clap_probe(), RATE)
         .expect("the reference plugin loads");
     let node = s.graph().insert_plugin(Box::new(client));
-    s.graph().set_output_source(0, GraphSource::Node(node, 0));
+    s.graph()
+        .set_sources(Root::output(0), [OutPort::new(node, 0)])
+        .unwrap();
     let _ = s.update();
     let _ = stream.render_block(512).expect("the stream is open");
     let _ = s.update();

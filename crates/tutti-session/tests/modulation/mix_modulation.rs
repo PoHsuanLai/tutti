@@ -14,7 +14,9 @@ use tutti_graph::{Cx, ForkByClone, Io, Node, NodeKey, Prepare, Shape, Status};
 use tutti_modulation::Macro;
 use tutti_nodes::ReconcileError;
 use tutti_nodes::testing::Const;
-use tutti_session::{GraphSource, MixRef, ModRefusal, ModTarget, ParamRef, PassError, Session};
+use tutti_session::{
+    InPort, MixRef, ModRefusal, ModTarget, OutPort, ParamRef, PassError, Root, Session,
+};
 use tutti_types::MaxBlock;
 use tutti_types::{ChannelLayout, Depth, InterleavedMut, Mix, SampleRate, Samples, UnitParam};
 
@@ -80,9 +82,11 @@ fn rig(s: &mut Session) -> NodeKey {
     let g = s.graph();
     let (a, _) = g.insert(Const::mono(A));
     let (halve, _) = g.insert(ForkByClone(Halve));
-    g.set_source(halve, 0, GraphSource::Node(a, 0));
-    g.set_output_source(0, GraphSource::Node(halve, 0));
-    halve
+    g.set_sources(InPort::new(halve, 0), [OutPort::new(a, 0)])
+        .unwrap();
+    g.set_sources(Root::output(0), [OutPort::new(halve, 0)])
+        .unwrap();
+    halve.erase()
 }
 
 fn blend(m: f32) -> f32 {
@@ -217,8 +221,10 @@ fn a_route_onto_the_mix_of_a_node_with_no_pass_is_refused() {
     let g = s.graph();
     let (a, _) = g.insert(Const::mono(A));
     let (spread, _) = g.insert(ForkByClone(Spread));
-    g.set_source(spread, 0, GraphSource::Node(a, 0));
-    g.set_output_source(0, GraphSource::Node(spread, 0));
+    g.set_sources(InPort::new(spread, 0), [OutPort::new(a, 0)])
+        .unwrap();
+    g.set_sources(Root::output(0), [OutPort::new(spread, 0)])
+        .unwrap();
     settle(&mut s);
     assert!(
         s.graph().set_mix(spread, Mix::new(0.5)).is_err(),

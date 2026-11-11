@@ -17,7 +17,7 @@ use tutti_graph::NodeKey;
 use tutti_graph::{CrossfadeCurve, ForkByClone};
 use tutti_nodes::LimiterNode;
 use tutti_nodes::testing::{Osc, Through};
-use tutti_session::{Crossfade, Error, GraphSource, Session};
+use tutti_session::{Crossfade, Error, InPort, OutPort, Root, Session};
 use tutti_transport::MotionEvent;
 use tutti_types::{At, ChannelLayout, Db, Frame, Hz, MaxBlock, SampleRate, Samples, Seconds};
 
@@ -57,11 +57,17 @@ fn engine() -> (
         Db(0.0),
         Db(0.0),
     ));
-    s.graph().set_source(lim, 0, GraphSource::Node(osc, 0));
-    s.graph().set_output_source(0, GraphSource::Node(osc, 0));
-    s.graph().set_output_source(1, GraphSource::Node(lim, 0));
+    s.graph()
+        .set_sources(InPort::new(lim, 0), [OutPort::new(osc, 0)])
+        .unwrap();
+    s.graph()
+        .set_sources(Root::output(0), [OutPort::new(osc, 0)])
+        .unwrap();
+    s.graph()
+        .set_sources(Root::output(1), [OutPort::new(lim, 0)])
+        .unwrap();
     let _ = s.update();
-    (s, device, stream, osc, lim)
+    (s, device, stream, osc.erase(), lim.erase())
 }
 
 /// Render `blocks` device blocks of `frames` on `stream`, an update of the
@@ -305,9 +311,11 @@ fn a_restart_after_a_failed_hook_recovers_on_the_old_device() {
     let (mut s, mut device, old, osc, lim) = engine();
     let (loop_back, ()) = s.graph().insert(Through::mono());
     s.graph()
-        .set_source(loop_back, 0, GraphSource::Node(lim, 0));
+        .set_sources(InPort::new(loop_back, 0), [OutPort::new(lim, 0)])
+        .unwrap();
     s.graph()
-        .set_source(lim, 0, GraphSource::Node(loop_back, 0));
+        .set_sources(InPort::new(lim, 0), [OutPort::new(loop_back, 0)])
+        .unwrap();
     let (driver, new) = ManualStreamDriver::new();
     s.restart_on(&mut device, spec_at(NEW), driver, None, |_| {})
         .expect_err("the graph no longer compiles");
@@ -316,7 +324,9 @@ fn a_restart_after_a_failed_hook_recovers_on_the_old_device() {
     assert_eq!(device.spec().sample_rate, SampleRate(OLD));
 
     // The declared wiring writes the limiter's input back.
-    s.graph().set_source(lim, 0, GraphSource::Node(osc, 0));
+    s.graph()
+        .set_sources(InPort::new(lim, 0), [OutPort::new(osc, 0)])
+        .unwrap();
     s.graph().remove(loop_back);
     let _ = s.update();
     let (driver, back) = ManualStreamDriver::new();

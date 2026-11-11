@@ -248,9 +248,9 @@ fn profile_bench_keeps_its_defaults_and_its_glob() {
 #[test]
 fn verify_audio_defaults_its_out_dir() {
     let s = dry("verify-audio", &[]);
-    assert_eq!(s.len(), 9);
+    assert_eq!(s.len(), 11);
     assert!(s[0].ends_with("render_cases -- /tmp/tutti-verify/sampler"));
-    assert!(dry("verify-audio", &["o"])[8].ends_with("verify_synth.py o/synth"));
+    assert!(dry("verify-audio", &["o"])[10].ends_with("verify_dsp.py o/dsp"));
 }
 
 #[test]

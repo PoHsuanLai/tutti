@@ -310,9 +310,9 @@ pub(crate) enum Retried {
 ///
 /// # Why opaque
 ///
-/// Every method is named in graph terms (insert a node, set a port's source,
-/// replace a node under a fade) and takes an [`NodeKey`] and a
-/// [`GraphSource`], never a runtime type. There is no access to the
+/// Every method is named in graph terms (insert a node, connect two ports,
+/// replace a node under a fade) and takes a node as `impl Into<NodeKey>` and
+/// ports as [`OutPort`] and [`InPort`], never a runtime type. There is no access to the
 /// `Editor`: the edit/commit boundary stays visible.
 pub struct Graph {
     editor: Editor,
@@ -1807,7 +1807,7 @@ impl Graph {
     ///   must be the same width, and a bus into the root may be narrower than
     ///   it (it feeds the first channels); a connection never truncates or
     ///   zero-fills, so a width change is a bus edge;
-    /// - a [`BusSource`] into a [`BusRef`] (`key.bus_out(i)`,
+    /// - a [`BusSource`] into a [`BusRef`](tutti_graph::BusRef) (`key.bus_out(i)`,
     ///   `key.bus_in(i)`) or into [`Root`]: **a bus edge**, a fold between two
     ///   declared topologies, lowered at the commit to one weighted lane per
     ///   contribution (`Fold::contributions`) and summed with any other source
@@ -1825,7 +1825,7 @@ impl Graph {
     /// [`ConnectError`], with nothing stored: a node or port that does not
     /// exist, a node fed by itself, a node with no main bus on the side used,
     /// two main buses of different widths, or, for a bus edge, the
-    /// [`BusError`] (a fold that does not exist is `FoldError`, never a silent
+    /// [`BusError`](tutti_graph::BusError) (a fold that does not exist is `FoldError`, never a silent
     /// drop).
     pub fn connect<F: Outlet, T: Inlet<F::Wire>>(
         &mut self,
@@ -2258,8 +2258,8 @@ impl Graph {
     /// sources feed is heard whole, each source delayed to the output time and
     /// added ([`TapSpec::Outputs`](tutti_graph::TapSpec::Outputs)). It follows
     /// the outputs when they are re-wired
-    /// ([`set_output_sources`](Self::set_output_sources),
-    /// [`set_outputs_from`](Self::set_outputs_from)); its width is the
+    /// ([`set_sources`](Self::set_sources),
+    /// [`connect`](Self::connect)); its width is the
     /// output count when it was opened, and a later
     /// [`widen_outputs`](Self::widen_outputs) does not widen it. When the root
     /// **narrows** (a declared topology narrower than the root was), the lanes

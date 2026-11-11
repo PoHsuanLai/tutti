@@ -227,7 +227,7 @@ impl Root {
 
 /// One audio edge, named: what feeds which channel. What
 /// [`Graph::connect`] adds and a modulation route onto its gain
-/// ([`ModTarget`](crate::ModTarget), feature `modulation`) drives: the
+/// (`ModTarget`, feature `modulation`) drives: the
 /// **gain** of an edge is a weight of the sum its sink holds (doc 013, "Edge
 /// gain"). The edge must exist; a target whose edge is not in the graph yet
 /// is unresolved until it is.

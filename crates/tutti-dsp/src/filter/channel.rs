@@ -216,6 +216,7 @@ impl<C: ChannelKernel> Kernel for PerChannel<C> {
         input: &[&[f32]],
         output: &mut [&mut [f32]],
         frames: Range<usize>,
+        _: usize,
     ) {
         let c = coeffs.now();
         if frames.len() == 1 {

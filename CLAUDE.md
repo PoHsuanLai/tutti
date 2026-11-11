@@ -694,10 +694,11 @@ list (normal and build edges; dev-dependencies may go anywhere).
   convolver, the delay line and swept-delay kernel, the cubic Hermite kernel, the phaser's all-pass chain, the
   block ramps, the export resampler and its streaming
   bookkeeping (`StreamingResampler`, `ChunkSize`), the dither noise
-  (`DitherNoise`), the Freeverb reverb (`Freeverb`, which is also the
-  `Realization` of `FreeverbDesign`), the feedback delay network (`FdnDesign`,
-  `FdnKernel`: its kernel ramps between `retarget`s, in 32-frame chunks counted
-  from the last reset, so the output does not depend on the block length), the
+  (`DitherNoise`), the Freeverb reverb (`Freeverb`, the state of
+  `FreeverbKernel`, the `Kernel` of `FreeverbDesign`), the feedback delay network
+  (`FdnDesign`, `FdnKernel`: both run by `Realized`, whose glides step between
+  `retarget`s in 32-frame chunks counted from the last reset, so the output does
+  not depend on the block length), the
   model of doc 024 (the `model` module, exported at the root: a `Design` maps controls
   to its `Model`, a `System` (`latency`, `tail`) and, for a linear time-invariant
   one, an `Lti` (`frequency_response`, `spectral_radius`, `l1_norm`, `hinf_norm`

@@ -19,5 +19,7 @@ pub use ceiling::{Ceiling, MaxDecay, MaxDecayError, Range};
 pub use design::{Channels, Design, Sizes};
 pub use lti::Lti;
 pub use realization::{Effect, Effort, Realization, Setup};
-pub use realized::{Approach, Glide, Kernel, Lerp, Realized};
+#[cfg(test)]
+pub(crate) use realized::Flaw;
+pub use realized::{Approach, Glide, Kernel, Lerp, Realized, Steps};
 pub use system::{Ring, System};

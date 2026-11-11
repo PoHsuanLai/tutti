@@ -17,12 +17,13 @@ use core::num::NonZeroU32;
 
 use tutti_types::{Amplitude, ChannelLayout, Mix, SampleRate};
 
+use crate::fdn::CHUNK;
 use crate::network::{
     Absorption, AllPass, AllPassForm, Bounds, Fdn, Gains, Inline, Line, MAX_CHANNELS, MAX_LINES,
     Matrix, Modulation, Network, OutputMap, Stage,
 };
-use crate::reverb::Freeverb;
-use crate::{Cadence, Ceiling, Channels, Design, MaxDecay, Sizes};
+use crate::reverb::{Freeverb, FreeverbKernel};
+use crate::{Cadence, Ceiling, Channels, Design, MaxDecay, Realized, Sizes};
 
 const COMBS_LEFT: [usize; 8] = [
     Freeverb::CF_TUNING_L1,
@@ -100,12 +101,15 @@ impl Design for FreeverbDesign {
     type Model = Network;
     type Bounds = Bounds;
     type Range = MaxDecay;
-    type Realization = Freeverb;
+    type Realization = Realized<FreeverbKernel>;
 
-    // A retarget lands at once and nothing ramps: the render is a function of
-    // the stream whatever the blocks (the design is still sampled per block, as
-    // for the FDN, doc 024 Q27).
-    const CADENCE: Cadence = Cadence::stream(NonZeroU32::MIN);
+    // The comb feedback and damping glide in whole chunks counted from the last
+    // reset, so the render is a function of the stream whatever the blocks (the
+    // design is still sampled per block, as for the FDN, doc 024 Q27).
+    const CADENCE: Cadence = Cadence::stream(match NonZeroU32::new(CHUNK as u32) {
+        Some(n) => n,
+        None => unreachable!(),
+    });
 
     fn channels(&self) -> Channels {
         Channels {
@@ -119,8 +123,8 @@ impl Design for FreeverbDesign {
     }
 
     /// A [`Freeverb`] at the default rate; the node's `prepare` re-tunes it.
-    fn realization(&self) -> Freeverb {
-        Freeverb::new(SampleRate::DEFAULT)
+    fn realization(&self) -> Realized<FreeverbKernel> {
+        Realized::new(FreeverbKernel::new(), &self.blank(SampleRate::DEFAULT))
     }
 
     fn design_into(&self, controls: &FreeverbControls, rate: SampleRate, out: &mut Network) {
@@ -813,7 +817,7 @@ mod realization_tests {
         let m = Defective {
             inner: FreeverbDesign,
             defect: Defect::None,
-            tweak: |k| k.lengthen_last_comb(1722),
+            tweak: |k| k.parts_mut().2.lengthen_last_comb(1722),
         };
         fails(cases::line_lengths(&m), "first echo");
         // reset that does nothing; fresh that keeps the state; a gain that
@@ -879,7 +883,7 @@ mod realization_tests {
         let rate = SampleRate(44_100.0);
         let fresh = Freeverb::new(rate);
         // Start from other figures so the retarget is seen to set them.
-        let mut realization = Freeverb::new(rate);
+        let mut realization = FreeverbDesign.realization();
         realization.retarget(&FreeverbDesign.design(&controls(0.9, 0.9), rate));
         assert_ne!(realization.figures().comb, fresh.figures().comb);
         realization.retarget(&FreeverbDesign.design(&FreeverbControls::GENERAL_MIDI, rate));
@@ -899,7 +903,7 @@ mod realization_tests {
     #[test]
     fn a_network_it_does_not_understand_is_ignored() {
         let rate = SampleRate(44_100.0);
-        let mut realization = Freeverb::new(rate);
+        let mut realization = FreeverbDesign.realization();
         let before = realization.figures().comb;
         realization.retarget(&Network::new(rate));
         let mut flat = FreeverbDesign.design(&controls(0.9, 0.9), rate);

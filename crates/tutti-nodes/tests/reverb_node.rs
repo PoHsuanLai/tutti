@@ -7,7 +7,8 @@
 use std::sync::Arc;
 
 use tutti_dsp::{
-    Design, FdnControls, FdnDesign, Freeverb, FreeverbControls, FreeverbDesign, Realization, System,
+    Ceiling, Design, Effect, FdnControls, FdnDesign, Freeverb, FreeverbControls, FreeverbDesign,
+    Realization, Setup, System,
 };
 use tutti_fixtures::{Fnv, Noise};
 use tutti_graph::contract::{assert_honest_tail, assert_param_fork, drive_input, prepared};
@@ -19,7 +20,8 @@ use tutti_modulation::ControlProgram;
 use tutti_nodes::automation::ControlLaneNode;
 use tutti_nodes::{DesignNode, FdnNode, FreeverbNode};
 use tutti_types::{
-    AtomicF32, ChannelLayout, Db, Frame, Mix, SampleRate, Samples, Tail, UnitAddr, UnitParam,
+    AtomicF32, ChannelLayout, Db, Frame, MaxBlock, Mix, SampleRate, Samples, Tail, UnitAddr,
+    UnitParam,
 };
 
 const SR: SampleRate = SampleRate(48_000.0);
@@ -249,13 +251,20 @@ fn the_reported_tail_is_honest() {
 fn the_cut_discards_only_what_is_below_the_floor() {
     for c in [gm(), controls(0.9, 0.2), controls(0.1, 0.9)] {
         let tail = tail_of(c);
-        let mut tuned = Freeverb::new(SR);
+        let mut tuned = FreeverbDesign.realization();
+        tuned.prepare(
+            &FreeverbDesign.bounds(&Ceiling::at(SR).unwrap()),
+            &Setup {
+                rate: SR,
+                max_block: MaxBlock::of(Samples(BLOCK)),
+            },
+        );
         tuned.retarget(&FreeverbDesign.design(&c, SR));
         let frames = tail + 20_000;
         let mut x = vec![0.0f32; frames];
         x[0] = 1.0;
         let (mut l, mut r) = (vec![0.0f32; frames], vec![0.0f32; frames]);
-        tuned.process(&x, &mut l, &mut r);
+        tuned.process(&[&x], &mut [&mut l, &mut r]);
         let peak = l.iter().chain(&r).fold(0.0f32, |m, s| m.max(s.abs()));
         let after = l[tail + 1..]
             .iter()

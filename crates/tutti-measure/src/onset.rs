@@ -14,7 +14,7 @@
 use tutti_types::{Amplitude, SampleRate, Samples, Seconds};
 
 use crate::Result;
-use tutti_dsp::Complex;
+use tutti_dsp::Complex32;
 use tutti_dsp::FftScratch;
 use tutti_dsp::FrameIndex;
 use tutti_dsp::StftGeometry;
@@ -44,7 +44,7 @@ pub enum DetectionFunction {
 ///
 /// Only *growth* counts: a bin that quietens contributes nothing, which is
 /// what makes this an onset detector rather than a change detector.
-pub fn spectral_flux(previous: &[f32], current: &[Complex]) -> f32 {
+pub fn spectral_flux(previous: &[f32], current: &[Complex32]) -> f32 {
     current
         .iter()
         .zip(previous)
@@ -56,7 +56,7 @@ pub fn spectral_flux(previous: &[f32], current: &[Complex]) -> f32 {
 ///
 /// Bright transients concentrate energy at high frequencies, so weighting by
 /// bin favours them over low-frequency rumble.
-pub fn high_frequency_content(current: &[Complex]) -> f32 {
+pub fn high_frequency_content(current: &[Complex32]) -> f32 {
     current
         .iter()
         .enumerate()
@@ -81,7 +81,7 @@ pub fn spectral_energy(frame: &[f32]) -> f32 {
 /// sensitive to tonal onsets where energy moves between bins rather than
 /// simply arriving. It compares magnitudes only (`previous` holds the last
 /// frame's magnitudes); no phase enters it.
-pub fn complex_domain_deviation(previous: &[f32], current: &[Complex]) -> f32 {
+pub fn complex_domain_deviation(previous: &[f32], current: &[Complex32]) -> f32 {
     current
         .iter()
         .zip(previous)
@@ -223,7 +223,7 @@ pub struct OnsetState {
     /// takes its output slice from the caller — the buffer is this state's to
     /// own, and it sits beside `previous` because the two are resized by the
     /// same bin count on the same line.
-    spectrum: Vec<Complex>,
+    spectrum: Vec<Complex32>,
     /// The analysis window of `config`'s geometry, built when the config is
     /// adopted.
     window: Vec<f32>,
@@ -297,7 +297,7 @@ pub fn step_onset(
     // Resized, not rebuilt: `forward` overwrites every bin it is handed, so the
     // contents carry nothing between frames — only the allocation does.
     if state.spectrum.len() != bins {
-        state.spectrum.resize(bins, Complex::default());
+        state.spectrum.resize(bins, Complex32::default());
     }
 
     let position = Samples(frame.get() * cfg.geometry.hop().get());
@@ -444,7 +444,7 @@ fn pick_peaks(cfg: &OnsetConfig, novelty: &[(Samples, f32)]) -> Vec<Onset> {
         .collect()
 }
 
-fn store_magnitudes(previous: &mut [f32], spectrum: &[Complex]) {
+fn store_magnitudes(previous: &mut [f32], spectrum: &[Complex32]) {
     for (slot, bin) in previous.iter_mut().zip(spectrum) {
         *slot = bin.norm();
     }
@@ -565,7 +565,7 @@ mod tests {
     /// The per-frame spectrum buffer is allocated once, not per frame.
     ///
     /// `detect_onsets` folds `step_onset` over every frame of the buffer, so a
-    /// fresh `vec![Complex; bins]` there cost one allocation per frame — tens
+    /// fresh `vec![Complex32; bins]` there cost one allocation per frame — tens
     /// of thousands for a few minutes of audio.
     ///
     /// Asserted by **writing a sentinel into the buffer and seeing it survive**
@@ -838,23 +838,23 @@ mod tests {
 
     #[test]
     fn detection_functions_respond_to_what_they_are_for() {
-        let quiet = vec![Complex::new(0.1, 0.0); 16];
-        let loud = vec![Complex::new(1.0, 0.0); 16];
+        let quiet = vec![Complex32::new(0.1, 0.0); 16];
+        let loud = vec![Complex32::new(1.0, 0.0); 16];
         let previous = vec![0.1f32; 16];
 
         // Flux counts growth only.
         assert!(spectral_flux(&previous, &loud) > 0.0);
-        let falling = vec![Complex::new(0.01, 0.0); 16];
+        let falling = vec![Complex32::new(0.01, 0.0); 16];
         assert_eq!(spectral_flux(&previous, &falling), 0.0);
 
         // Complex-domain counts change in either direction.
         assert!(complex_domain_deviation(&previous, &falling) > 0.0);
 
         // HFC weights high bins more than low ones.
-        let mut low = vec![Complex::default(); 16];
-        low[1] = Complex::new(1.0, 0.0);
-        let mut high = vec![Complex::default(); 16];
-        high[15] = Complex::new(1.0, 0.0);
+        let mut low = vec![Complex32::default(); 16];
+        low[1] = Complex32::new(1.0, 0.0);
+        let mut high = vec![Complex32::default(); 16];
+        high[15] = Complex32::new(1.0, 0.0);
         assert!(high_frequency_content(&high) > high_frequency_content(&low));
 
         assert!(spectral_energy(&[1.0, 1.0, 1.0, 1.0]) > spectral_energy(&[0.1; 4]));

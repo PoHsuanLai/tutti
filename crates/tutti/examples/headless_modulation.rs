@@ -16,7 +16,7 @@
 //! modulation sources) is named through `tutti::`.
 
 use std::sync::Arc;
-use tutti_types::MaxBlock;
+use tutti::types::MaxBlock;
 
 use tutti::graph::{Cx, ForkByClone, Io, Node, Prepare, Shape, Status};
 use tutti::modulation::{Follower, Lfo};

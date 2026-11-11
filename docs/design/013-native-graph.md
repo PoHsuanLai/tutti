@@ -5972,7 +5972,9 @@ commit, like any wiring change:
   and **survive the commit with their history**, and the ring of a removed
   source goes with its key, so the old source's past audio is never played
   out of the new wiring (the rule `DelayKey` already states).
-- **No automatic declick of audio wiring**, as today: a source connected at
+- **No automatic declick of audio wiring** in `Editor` (**superseded for the
+  session graph** by [doc 030](030-core-api.md) §4, 2026-11-12: the session's
+  `connect`/`disconnect` fade over `EDGE_DECLICK` unless `.hard()`): a source connected at
   full level steps in. A host that wants a declick wires the edge with a
   weight of `0.0` and ramps it to `1.0` (Edge gain), and ramps down before
   it removes the edge. That is the same advice the engine's own editors give
@@ -10421,6 +10423,48 @@ Decided 2026-11-08 (SoundFont stage 3b). The reverb and chorus left
   off. The old default (effects on) had the reverb mixed into the pair; that
   mix is now the setup's sum, whose float order differs, so it is a new sound
   rather than the old one.
+
+## The session graph's surface
+
+Decided 2026-11-12. `tutti_session::Graph` has 97 public methods: one wiring
+idea spelled once per kind of sink, ports as bare `usize`, and the session's
+own plumbing on the same type as `connect`. This section is the target; two
+lanes reach it after the umbrella's prelude lane (which adds `Graph::connect`
+and `Graph::chain` over node keys, shaped as the first piece of it).
+
+- **Typed ports.** `OutPort` and `InPort` are values made from a node's key
+  (`lp.out(0)`, `verb.input(1)`; with typed keys, `Key<N>`, the node's own
+  params are methods too). The root's channels are a sink like a node's inputs:
+  `g.output()` hands out `InPort`s, and a global input is an `OutPort`. A
+  swapped index, a node port taken for a global channel, or arguments in the
+  wrong order no longer compile.
+- **One wiring vocabulary.** `connect(from, to)` adds an edge and returns it,
+  `.gain(..)` sets its weight (the edge gain of [Edge gain](#edge-gain-a-mixer-is-a-weighted-sum)),
+  `disconnect(from, to)` and `disconnect_all(to)` remove, `set_sources(to, ..)`
+  replaces. Buses are `connect` between bus handles. These replace the
+  node-input, root-output, bus, bus-to-root and `_weighted` families
+  (`set_source`, `add_source`, `set_output_source`, `add_output_source`,
+  `connect_bus_to_root`, `add_source_weighted`, ...).
+- **No `GraphSource::Silence`.** Silence is the empty set (as
+  [Audio fan-in sums](#audio-fan-in-sums) says); a type that can spell it as a
+  stored value is the defect. Clearing a sink is `disconnect_all`.
+- **Two facets for observing.** Taps, event taps and meters move to
+  `g.taps()` and `g.meters()`; the graph's own type keeps adding, removing and
+  wiring.
+- **Plumbing out of the surface.** What only the session drives
+  (`take_audio_side`, `render`, `tick`, `set_transport`, `prepared`,
+  `is_repreparing`, `sent_plan`, `commits_sent`, `sent_compensation`,
+  `refresh_node_latency`) becomes `pub(crate)`, or `testing`-gated where a
+  test reads it.
+- **One failure rule.** A call naming a key or port that does not exist fails
+  at the call with an error, as opening a tap does (`MissingSource`), never
+  later at commit and never as silence. A port that goes missing *after* a
+  successful call still reads silence, as now.
+
+**Lanes.** First, typed keys and ports, the one wiring vocabulary and the end of
+`Silence`, together, since all three reshape the same calls. Second, the
+facets, the plumbing and the failure rule. The parked `bevy-tutti` is not
+updated; un-parking ports it.
 
 ## Decisions for the owner
 

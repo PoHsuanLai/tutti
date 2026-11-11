@@ -121,7 +121,7 @@ fn a_defective_design_fails_its_case() {
 
     // bounds: one line short.
     let mut m = toy(|_| {});
-    m.bounds = |b| Bounds {
+    m.bounds = |b| NetworkSizes {
         lines: b.lines - 1,
         ..b
     };

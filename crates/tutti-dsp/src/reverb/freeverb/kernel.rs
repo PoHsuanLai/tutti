@@ -24,7 +24,7 @@ use tutti_types::{Db, SampleRate, Seconds};
 use core::ops::Range;
 
 use crate::reverb::fdn::kernel::{CHUNK, ramp};
-use crate::reverb::network::{Absorption, Bounds, Network, Stage};
+use crate::reverb::network::{Absorption, Network, NetworkSizes, Stage};
 use crate::{Approach, Effort, Glide, Kernel, Setup, Steps};
 
 /// A Freeverb at one sample rate: mono in, stereo out, with the comb feedback and
@@ -305,7 +305,7 @@ impl FreeverbKernel {
 
 impl Kernel for FreeverbKernel {
     type Model = Network;
-    type Bounds = Bounds;
+    type Bounds = NetworkSizes;
     type Coeffs = FreeverbCoeffs;
     type State = Freeverb;
 
@@ -324,7 +324,13 @@ impl Kernel for FreeverbKernel {
     /// Re-tunes the lines when the graph runs at another rate than they were
     /// built for, to the rounded hertz [`Freeverb::new`] uses. The coefficients
     /// are kept.
-    fn prepare(&mut self, _: &Bounds, setup: &Setup, _: &mut FreeverbCoeffs, state: &mut Freeverb) {
+    fn prepare(
+        &mut self,
+        _: &NetworkSizes,
+        setup: &Setup,
+        _: &mut FreeverbCoeffs,
+        state: &mut Freeverb,
+    ) {
         self.ramp = ramp(setup.rate.get());
         if setup.rate.get().round() != state.rate.get() {
             *state = Freeverb::new(setup.rate);

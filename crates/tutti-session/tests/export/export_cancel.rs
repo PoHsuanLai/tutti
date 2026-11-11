@@ -7,9 +7,11 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, OnceLock};
 
 use tutti_codec::{Format, Pcm};
-use tutti_export::{GRAPH_MAX_BLOCK, Normalize, Outcome, Stage};
-use tutti_graph::{Cx, ForkByClone, Io, Node, Prepare, Shape, Status};
-use tutti_session::{Bounce, BounceError, BounceHandle, ExportClock, Range, Session, Tail};
+use tutti_export::{GRAPH_MAX_BLOCK, Normalize, Stage};
+use tutti_graph::{Cx, ForkByClone, Io, Node, NodeKey, Prepare, Shape, Status};
+use tutti_session::{
+    Bounce, BounceError, BounceHandle, ExportClock, FileMaster, Range, Session, Tail,
+};
 use tutti_types::ChannelLayout;
 use tutti_types::{Db, Frame, SampleRate, Samples};
 
@@ -82,7 +84,7 @@ fn bounce() -> Bounce {
         .tail(Tail::None)
 }
 
-fn file_request(path: &Path, normalize: Option<Normalize>) -> Bounce {
+fn file_request(path: &Path, normalize: Option<Normalize>) -> Bounce<NodeKey, FileMaster> {
     let bounce = bounce().master(path);
     match normalize {
         Some(n) => bounce.normalize(n),
@@ -125,8 +127,8 @@ fn a_cancel_stops_the_render_and_frees_the_session() {
         r.session.bounce_in_flight(),
         "the token lives until the main thread finishes the job"
     );
-    let outcome = r.session.finish_bounce(rendered).unwrap();
-    assert!(matches!(outcome, Outcome::Cancelled));
+    let outcome = r.session.finish_bounce(rendered);
+    assert!(matches!(outcome, Err(BounceError::Cancelled)));
     assert!(!r.session.bounce_in_flight(), "the token is released");
     assert!(!path.exists(), "no partial file");
     let seen = handle.progress().unwrap();
@@ -134,8 +136,7 @@ fn a_cancel_stops_the_render_and_frees_the_session() {
     assert_eq!(seen.frames(), Some((Samples(0), TOTAL)));
 
     // The next export is not refused, and runs to its end.
-    let again = r.session.bounce(file_request(&path, None)).unwrap();
-    assert!(matches!(again, Outcome::Finished(_)));
+    r.session.bounce(file_request(&path, None)).unwrap();
     assert!(path.exists());
     assert_eq!(r.blocks.load(Ordering::SeqCst), 3 + BLOCKS);
 }
@@ -148,8 +149,8 @@ fn a_job_cancelled_before_it_runs_renders_nothing() {
     let mut r = rig(usize::MAX);
     let job = r.session.bounce_start(file_request(&path, None)).unwrap();
     job.handle().cancel();
-    let outcome = r.session.finish_bounce(job.run()).unwrap();
-    assert!(matches!(outcome, Outcome::Cancelled));
+    let outcome = r.session.finish_bounce(job.run());
+    assert!(matches!(outcome, Err(BounceError::Cancelled)));
     assert_eq!(r.blocks.load(Ordering::SeqCst), 0);
     assert!(!path.exists());
     assert!(!r.session.bounce_in_flight());
@@ -161,8 +162,8 @@ fn a_buffer_export_cancels() {
     let mut r = rig(2);
     let job = r.session.bounce_start(bounce().master_buffers()).unwrap();
     r.handle.set(job.handle()).ok();
-    let outcome = r.session.finish_bounce(job.run()).unwrap();
-    assert!(matches!(outcome, Outcome::Cancelled));
+    let outcome = r.session.finish_bounce(job.run());
+    assert!(matches!(outcome, Err(BounceError::Cancelled)));
     assert_eq!(r.blocks.load(Ordering::SeqCst), 2);
 }
 
@@ -182,7 +183,7 @@ fn progress_ends_at_one_in_the_finalizing_stage() {
             .unwrap();
         let handle = job.handle();
         let outcome = r.session.finish_bounce(job.run()).unwrap();
-        assert!(matches!(outcome, Outcome::Finished(_)));
+        drop(outcome);
         let last = handle.progress().unwrap();
         assert_eq!(
             (last.stage(), last.fraction()),
@@ -195,7 +196,7 @@ fn progress_ends_at_one_in_the_finalizing_stage() {
 /// A bounce of the master and a stem of the node into `dir`, normalized when
 /// `normalize` is set (the stem then takes the master's gain, so the pass
 /// keeps both for its measurement).
-fn with_stem(r: &Rig, dir: &Path, normalize: bool) -> Bounce {
+fn with_stem(r: &Rig, dir: &Path, normalize: bool) -> Bounce<NodeKey, FileMaster> {
     let bounce = bounce()
         .master(dir.join("master.wav"))
         .stem(r.node, dir.join("stem.wav"));
@@ -223,9 +224,9 @@ fn a_cancel_leaves_no_file_of_any_target() {
             .bounce_start(with_stem(&r, dir.path(), normalize))
             .unwrap();
         r.handle.set(job.handle()).ok();
-        let outcome = r.session.finish_bounce(job.run()).unwrap();
+        let outcome = r.session.finish_bounce(job.run());
         assert!(
-            matches!(outcome, Outcome::Cancelled),
+            matches!(outcome, Err(BounceError::Cancelled)),
             "normalize {normalize}"
         );
         assert_eq!(r.blocks.load(Ordering::SeqCst), 3, "stopped at block 3");
@@ -244,14 +245,13 @@ fn a_cancel_leaves_no_file_of_any_target() {
         .bounce_start(with_stem(&r, dir.path(), false))
         .unwrap();
     job.handle().cancel();
-    let outcome = r.session.finish_bounce(job.run()).unwrap();
-    assert!(matches!(outcome, Outcome::Cancelled));
+    let outcome = r.session.finish_bounce(job.run());
+    assert!(matches!(outcome, Err(BounceError::Cancelled)));
     assert_eq!(r.blocks.load(Ordering::SeqCst), 0, "nothing rendered");
     assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
 
     // And one nobody cancels lands both files.
-    let done = r.session.bounce(with_stem(&r, dir.path(), false)).unwrap();
-    assert!(matches!(done, Outcome::Finished(_)));
+    r.session.bounce(with_stem(&r, dir.path(), false)).unwrap();
     assert!(dir.path().join("master.wav").exists());
     assert!(dir.path().join("stem.wav").exists());
 }

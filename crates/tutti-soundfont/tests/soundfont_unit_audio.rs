@@ -608,15 +608,7 @@ fn a_preset_units_first_note_on_renders_that_preset() {
     assert!(rms(&out) > 1e-3, "the note sounds: rms {}", rms(&out));
 
     let got = digest(&out);
-    // RustySynth's voices call `sin`, `exp` and `pow`, so the digest is libm's.
-    // What this pins: the unit's dry pair (outputs 0 and 1) alone. The effects
-    // left the unit (stage 3b), so the pair has no reverb in it; the digest was
-    // 0xcf94_549c_015d_9f17 while the in-unit reverb was mixed in by default,
-    // and the dry pair equals what that code rendered with its effects off.
-    // Doc 024 consolidation 4 (owner-approved, 2026-11-11): the voice's low-pass
-    // is `tutti-dsp`'s biquad, so this digest moves in the last bits. It was
-    // 0xfbb4_4b59_223f_1840 on the rustysynth biquad. RP-036 (MIDI L4c) puts
-    // CC 10 = 64 at the centre exactly, where the rustysynth mapping put it
-    // 0.003% right; it was 0x9bbb_c7d3_8add_15d0 before.
+    // The voice calls `sin`, `exp` and `pow`, so the digest is libm's. It pins the
+    // unit's dry pair (outputs 0 and 1) alone: the effects are not in the unit.
     assert_golden("the soundfont voice", got, 0x5c2f_0b4b_6293_6239);
 }

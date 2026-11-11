@@ -6,7 +6,7 @@ use tutti_types::{Amplitude, Db, Hz, SampleRate, Samples, Seconds};
 use super::core::{check_vacuity, every};
 use super::harness::{Burst, WINDOW, built, burst, energy, noise, rate_of, render, rms, widths};
 use super::{Hook, RealizationCase, ReverbCase};
-use crate::{Absorption, Band, Bounds, Lti, Network, Realization, Ring, Stage, System};
+use crate::{Absorption, Band, Lti, Network, NetworkSizes, Realization, Ring, Stage, System};
 
 fn close(a: f32, b: f32, relative: f32) -> bool {
     a == b || (a - b).abs() <= relative * a.abs().max(b.abs())
@@ -14,7 +14,7 @@ fn close(a: f32, b: f32, relative: f32) -> bool {
 
 /// The helpers the RT60 cases share.
 /// How many frames of burst plateau make `lines` trips of the longest line.
-pub(super) fn burst_frames(bounds: &Bounds, lines: f32) -> usize {
+pub(super) fn burst_frames(bounds: &NetworkSizes, lines: f32) -> usize {
     (lines * bounds.line) as usize
 }
 
@@ -28,7 +28,7 @@ pub(super) fn measured_rt60(
     out: &[Vec<f32>],
     b: &Burst,
     rate: SampleRate,
-    bounds: &Bounds,
+    bounds: &NetworkSizes,
     (from, to): (f64, f64),
 ) -> Result<f32, String> {
     // Windows twice the longest line, stepping by `WINDOW`: a train of echoes

@@ -19,8 +19,8 @@ use tutti_types::{Amplitude, BusTopology, Mix, SampleRate};
 use crate::reverb::fdn::kernel::CHUNK;
 use crate::reverb::freeverb::kernel::{Freeverb, FreeverbKernel};
 use crate::reverb::network::{
-    Absorption, AllPass, AllPassForm, Bounds, Fdn, Gains, Inline, Line, MAX_CHANNELS, MAX_LINES,
-    Matrix, Modulation, Network, OutputMap, Stage,
+    Absorption, AllPass, AllPassForm, Fdn, Gains, Inline, Line, MAX_CHANNELS, MAX_LINES, Matrix,
+    Modulation, Network, NetworkSizes, OutputMap, Stage,
 };
 use crate::{Cadence, Ceiling, Channels, Design, MaxDecay, Realized, Sizes};
 
@@ -98,7 +98,7 @@ fn position(mix: Mix, default: f32) -> f32 {
 impl Design for FreeverbDesign {
     type Controls = FreeverbControls;
     type Model = Network;
-    type Bounds = Bounds;
+    type Bounds = NetworkSizes;
     type Range = MaxDecay;
     type Realization = Realized<FreeverbKernel>;
 
@@ -192,12 +192,12 @@ impl Design for FreeverbDesign {
     /// room 1 (the low band's loop gain is the room's alone), so the worst case
     /// is that design. `max_decay` does not apply: Freeverb has no decay
     /// control, and its longest RT60 is what room 1 makes it.
-    fn bounds(&self, ceiling: &Ceiling<MaxDecay>) -> Bounds {
+    fn bounds(&self, ceiling: &Ceiling<MaxDecay>) -> NetworkSizes {
         let worst = FreeverbControls {
             room: Mix(1.0),
             damp: Mix(0.0),
         };
-        Bounds::measure(&self.design(&worst, ceiling.rate()), ceiling.floor())
+        NetworkSizes::measure(&self.design(&worst, ceiling.rate()), ceiling.floor())
     }
 }
 

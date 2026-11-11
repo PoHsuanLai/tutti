@@ -42,7 +42,7 @@
 use core::ops::Range;
 
 use super::design::CROSSOVER;
-use crate::reverb::network::{Absorption, Band, Bounds, Matrix, Network, Stage};
+use crate::reverb::network::{Absorption, Band, Matrix, Network, NetworkSizes, Stage};
 use crate::{Approach, Effort, Glide, Kernel, Setup, Steps};
 
 /// The frames between control updates: every ramp advances once a chunk.
@@ -362,7 +362,7 @@ fn read(buf: &[f32], w: usize, delay: f32) -> f32 {
 
 impl Kernel for FdnKernel {
     type Model = Network;
-    type Bounds = Bounds;
+    type Bounds = NetworkSizes;
     type Coeffs = FdnCoeffs;
     type State = FdnState;
 
@@ -372,7 +372,13 @@ impl Kernel for FdnKernel {
         (FdnCoeffs::new(self.max_lines), FdnState::new(self))
     }
 
-    fn prepare(&mut self, bounds: &Bounds, setup: &Setup, c: &mut FdnCoeffs, s: &mut FdnState) {
+    fn prepare(
+        &mut self,
+        bounds: &NetworkSizes,
+        setup: &Setup,
+        c: &mut FdnCoeffs,
+        s: &mut FdnState,
+    ) {
         self.rate = setup.rate.get();
         self.ramp = ramp(self.rate);
         self.max_lines = bounds.lines;

@@ -30,6 +30,7 @@ use tutti_graph::{
 };
 use tutti_nodes::testing::{Const, Osc, Sink};
 use tutti_nodes::{SvfFilterNode, SvfType};
+use tutti_session::BufferMaster;
 use tutti_session::{
     Bounce, BounceConfigError, BounceError, ExportClock, GraphSource, Latency, PreparedGraph,
     Range, Session, Stem,
@@ -57,7 +58,7 @@ fn session_with_outputs(outputs: usize) -> Session {
 /// A bounce of the mix into memory for `seconds`: stereo at `rate`, on a
 /// frozen clock, trimming nothing and keeping no tail (what the figures it
 /// does not name come to is each test's to ask for).
-fn bounce_at(seconds: f64, rate: f64) -> Bounce {
+fn bounce_at(seconds: f64, rate: f64) -> Bounce<NodeKey, BufferMaster> {
     Bounce::project()
         .master_buffers()
         .range(Range::Seconds(Seconds(0.0), Seconds(seconds)))
@@ -68,35 +69,31 @@ fn bounce_at(seconds: f64, rate: f64) -> Bounce {
         .tail(tutti_session::Tail::None)
 }
 
-fn buffers(seconds: f64) -> Bounce {
+fn buffers(seconds: f64) -> Bounce<NodeKey, BufferMaster> {
     bounce_at(seconds, RATE)
 }
 
 /// The planes `bounce` renders, run on this thread.
-fn render(session: &mut Session, bounce: Bounce) -> Vec<Vec<f32>> {
-    match session
+fn render(session: &mut Session, bounce: Bounce<NodeKey, BufferMaster>) -> Vec<Vec<f32>> {
+    session
         .bounce(bounce)
         .expect("the bounce renders")
-        .finished()
-        .map(|b| b.into_master())
-    {
-        Some(Produced::Buffers(rendered)) => rendered.into_planes(),
-        other => panic!("expected rendered buffers, got {other:?}"),
-    }
+        .into_master()
+        .into_planes()
 }
 
 /// The planes `bounce` renders for each of its stems, in memory, run on this
 /// thread: the master is rendered with them and not returned.
-fn render_stems(session: &mut Session, bounce: Bounce) -> Vec<Vec<Vec<f32>>> {
-    let produced = session
+fn render_stems(
+    session: &mut Session,
+    bounce: Bounce<NodeKey, BufferMaster>,
+) -> Vec<Vec<Vec<f32>>> {
+    let (_, stems) = session
         .bounce(bounce)
         .expect("the bounce renders")
-        .finished()
-        .expect("nothing cancels it")
-        .into_targets();
-    produced
+        .into_parts();
+    stems
         .into_iter()
-        .skip(1)
         .map(|p| match p {
             Produced::Buffers(rendered) => rendered.into_planes(),
             other => panic!("expected rendered buffers, got {other:?}"),
@@ -112,12 +109,12 @@ fn stem_of(session: &mut Session, node: NodeKey, seconds: f64) -> Vec<Vec<f32>> 
 }
 
 /// What the session refuses `bounce` with, started and run on this thread.
-fn refused(session: &mut Session, bounce: Bounce) -> BounceError {
+fn refused(session: &mut Session, bounce: Bounce<NodeKey, BufferMaster>) -> BounceError {
     match session.bounce(bounce) {
         Err(e) => e,
         Ok(out) => panic!(
-            "expected a refusal, the bounce reported {:?}",
-            out.finished()
+            "expected a refusal, the bounce rendered {} stems",
+            out.stems().len()
         ),
     }
 }
@@ -457,7 +454,7 @@ fn graph_with_one_node_on() -> (Session, NodeKey) {
     (session, node)
 }
 
-fn short() -> Bounce {
+fn short() -> Bounce<NodeKey, BufferMaster> {
     bounce_at(0.05, 44_100.0)
 }
 
@@ -922,15 +919,11 @@ fn an_export_does_not_wait_for_a_slow_fork_and_takes_no_later_edit() {
     let rendered = std::thread::spawn(move || job.run())
         .join()
         .expect("the render thread");
-    let planes = match session
+    let planes = session
         .finish_bounce(rendered)
         .expect("the export renders")
-        .finished()
-        .map(|b| b.into_master())
-    {
-        Some(Produced::Buffers(r)) => r.into_planes(),
-        other => panic!("expected buffers, got {other:?}"),
-    };
+        .into_master()
+        .into_planes();
     assert!(built.load(Ordering::SeqCst), "the build ran");
     assert!(
         planes[0].iter().all(|&s| s == 0.5),
@@ -1054,15 +1047,11 @@ fn a_main_thread_only_fork_builds_and_drops_on_the_main_thread() {
     let rendered = std::thread::spawn(move || job.run())
         .join()
         .expect("the render thread");
-    let planes = match session
+    let planes = session
         .finish_bounce(rendered)
         .expect("the export renders")
-        .finished()
-        .map(|b| b.into_master())
-    {
-        Some(Produced::Buffers(r)) => r.into_planes(),
-        other => panic!("expected buffers, got {other:?}"),
-    };
+        .into_master()
+        .into_planes();
     assert!(
         planes[1].iter().all(|&s| s == 1.0),
         "the pinned unit renders"
@@ -1202,7 +1191,7 @@ impl Drop for EditWitness {
 
 /// A request for the mix whose `prepare` edit captures an
 /// [`EditWitness`] recording into `drops`.
-fn witnessed(drops: &Arc<Mutex<Vec<ThreadId>>>) -> Bounce {
+fn witnessed(drops: &Arc<Mutex<Vec<ThreadId>>>) -> Bounce<NodeKey, BufferMaster> {
     let witness = EditWitness(Arc::clone(drops));
     buffers(0.05).edit(Box::new(move |_prepared: PreparedGraph<'_>| {
         let _ = &witness;

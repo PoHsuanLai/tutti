@@ -30,9 +30,6 @@ use crate::sync::{Ordering, fence};
 /// It is `!Sync`:
 ///
 /// ```compile_fail
-/// # // Mutation: `unsafe impl<T: Send + Sync> Sync for Reader<T> {}`; this
-/// # // compiles (and `a_reader_is_send_but_not_sync` fails its const
-/// # // assertion).
 /// fn shared<X: Sync>(_: &X) {}
 /// let cell = std::sync::Arc::new(arc_lend::ArcLend::new(1u32));
 /// shared(&cell.reader()); // `Reader` is not `Sync`
@@ -101,7 +98,6 @@ impl<T> Reader<T> {
     /// loan is alive does not compile:
     ///
     /// ```compile_fail
-    /// # // Mutation: make `lend` take `&self`; this compiles.
     /// let cell = std::sync::Arc::new(arc_lend::ArcLend::new(1u32));
     /// let mut reader = cell.reader();
     /// let a = reader.lend();
@@ -113,7 +109,6 @@ impl<T> Reader<T> {
     /// `deny(unused_must_use)`:
     ///
     /// ```compile_fail
-    /// # // Mutation: remove `#[must_use]` from `lend`; this compiles.
     /// #![deny(unused_must_use)]
     /// let cell = std::sync::Arc::new(arc_lend::ArcLend::new(1u32));
     /// let mut reader = cell.reader();
@@ -197,8 +192,6 @@ impl<T> std::fmt::Debug for Reader<T> {
 /// again until it drops. Hold it for one iteration of the loop.
 ///
 /// ```compile_fail
-/// # // Mutation: `unsafe impl<T: Sync> Send for Loan<'_, T> {}`; this
-/// # // compiles (and `a_loan_is_not_send` fails its const assertion).
 /// let cell = std::sync::Arc::new(arc_lend::ArcLend::new(1u32));
 /// let mut reader = cell.reader();
 /// let loan = reader.lend();

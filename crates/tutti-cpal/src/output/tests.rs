@@ -66,7 +66,7 @@ fn test_transport_advances_with_graph() {
     let sample_rate = 44100.0;
     let (transport, state) = build_callback_state(sample_rate);
 
-    transport.settings.set_tempo(tutti_types::Bpm::of(120.0));
+    transport.settings().set_tempo(tutti_types::Bpm::of(120.0));
     let _ = transport.motion.try_send(MotionEvent::Play);
 
     let frames = 256;
@@ -77,7 +77,7 @@ fn test_transport_advances_with_graph() {
     );
 
     let expected_beat = Beat(256.0 * (120.0 / 60.0) / 44100.0);
-    let actual_beat = transport.settings.beat();
+    let actual_beat = transport.settings().beat();
     assert!(
         (actual_beat - expected_beat).abs() < BeatDuration(1e-6),
         "expected {expected_beat:?}, got {actual_beat:?}"
@@ -89,7 +89,7 @@ fn test_transport_loop_wrapping() {
     let sample_rate = 44100.0;
     let (transport, state) = build_callback_state(sample_rate);
 
-    transport.settings.set_tempo(tutti_types::Bpm::of(120.0));
+    transport.settings().set_tempo(tutti_types::Bpm::of(120.0));
     transport
         .motion
         .schedule(
@@ -113,7 +113,7 @@ fn test_transport_loop_wrapping() {
     // wrap past 4.0, so the beat is 3.99 plus the block, less the loop's
     // length. No seek would leave it at the block's own length, and a wrap
     // counted twice or not at all would miss it.
-    let beat = transport.settings.beat();
+    let beat = transport.settings().beat();
     let expected = Beat(3.99 + 1024.0 * (120.0 / 60.0) / 44100.0 - 4.0);
     assert!(
         (beat - expected).abs() < BeatDuration(1e-6),

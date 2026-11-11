@@ -25,15 +25,15 @@
 //! modulation moves a line by a few frames around its centre and the queries do
 //! not model that.
 
-mod bounds;
 mod gain;
 mod inline;
 mod queries;
 mod response;
+mod sizes;
 
-pub use bounds::Bounds;
 pub use gain::{loop_gain, rt60_from_gain};
 pub use inline::{Full, Inline};
+pub use sizes::NetworkSizes;
 
 use tutti_types::{Amplitude, Db, Hz, SampleRate, Samples, Seconds, StereoWidth};
 

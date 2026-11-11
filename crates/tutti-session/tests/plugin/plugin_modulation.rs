@@ -334,7 +334,7 @@ fn a_crossfaded_plugin_keeps_its_lane_and_a_removed_one_drops_it() {
 #[test]
 fn an_export_is_the_live_render_on_a_clap_gain() {
     use std::sync::Arc;
-    use tutti_export::{Outcome, Produced};
+
     use tutti_session::{Bounce, ExportClock, Latency, Range, Tail};
     use tutti_transport::{OfflineTimeline, OfflineTimelineConfig};
     use tutti_types::{Beat, Bpm, ChannelLayout};
@@ -436,12 +436,7 @@ fn an_export_is_the_live_render_on_a_clap_gain() {
     }
 
     let request = config.clock(ExportClock::timeline(timeline));
-    let Outcome::Finished(bounced) = s.bounce(request).expect("the export renders") else {
-        panic!("the export finishes into memory")
-    };
-    let Produced::Buffers(export) = bounced.into_master() else {
-        panic!("the export finishes into memory")
-    };
+    let export = s.bounce(request).expect("the export renders").into_master();
     for (c, (l, e)) in live.iter().zip(export.planes()).enumerate() {
         assert!(e.len() >= total, "channel {c}: {} frames", e.len());
         let moving = l.iter().filter(|&&v| v != 0.0).collect::<Vec<_>>();

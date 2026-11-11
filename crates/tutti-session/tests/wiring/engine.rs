@@ -144,7 +144,7 @@ fn the_graph_runs_at_the_rate_it_was_built_at() {
 fn the_transport_converts_at_the_sessions_rate() {
     let s = offline();
     assert_eq!(s.transport().sample_rate(), SampleRate(RATE));
-    let beat = (s.transport().settings.tempo_map())
+    let beat = (s.transport().settings().tempo_map())
         .frame_at_or_after(Beat(1.0), s.transport().sample_rate());
     assert_eq!(beat.get(), 24_000, "one beat at 120 BPM and 48 kHz");
 }
@@ -280,13 +280,10 @@ fn a_voice_plays_in_time(block: usize) {
 }
 
 #[test]
-fn a_voice_plays_in_time_at_256_frame_blocks() {
-    a_voice_plays_in_time(256);
-}
-
-#[test]
-fn a_voice_plays_in_time_at_512_frame_blocks() {
-    a_voice_plays_in_time(512);
+fn a_voice_plays_in_time_at_every_device_block_size() {
+    for block in [256, 512] {
+        a_voice_plays_in_time(block);
+    }
 }
 
 /// An offline session's [`Session::render`] feeds its load meter, one block

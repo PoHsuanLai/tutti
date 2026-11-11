@@ -10,7 +10,7 @@
 
 use std::num::NonZeroU32;
 
-use tutti_dsp::contract::{Anchor, DesignCase, Hook, LtiCase, RealizationCase};
+use tutti_dsp::contract::{DesignCase, Figure, Hook, LtiCase, RealizationCase};
 use tutti_dsp::{
     Cadence, Ceiling, Channels, Complex64, Design, Effect, Lti, Realization, Ring, Setup, Sizes,
     System, design_contract, realization_contract,
@@ -201,10 +201,10 @@ impl RealizationCase for GainDesign {
 
 impl LtiCase for GainDesign {
     /// A gain is its value at every frequency.
-    fn anchors(&self) -> Vec<Anchor<f32>> {
+    fn figures(&self) -> Vec<Figure<f32>> {
         [0.1, 0.5, 0.9]
             .into_iter()
-            .map(|g| Anchor {
+            .map(|g| Figure {
                 controls: g,
                 rate: SampleRate(48_000.0),
                 output: 0,

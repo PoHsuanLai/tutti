@@ -1019,7 +1019,7 @@ impl Session {
     pub(crate) fn reclaim(&self) -> usize {
         let mut pinned = self.graph.reclaim();
         pinned += self.click_settings.project_meter().reclaim();
-        pinned += self.transport.settings.reclaim_tempo();
+        pinned += self.transport.settings().reclaim_tempo();
         // The engine's output folds are swept by the graph (`Graph::reclaim`),
         // offline or on a device, through the `OutputControl` it kept.
         #[cfg(feature = "modulation")]

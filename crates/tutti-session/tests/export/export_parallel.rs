@@ -20,7 +20,7 @@ use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
 use std::thread::ThreadId;
 
-use tutti_export::{Outcome, Produced, Rendered};
+use tutti_export::{Produced, Rendered};
 use tutti_graph::{Cx, ForkByClone, Io, Node, Prepare, Shape, Status};
 use tutti_session::{Bounce, ExportClock, GraphSource, Range, Session, Stem, Tail};
 use tutti_types::ChannelLayout;
@@ -139,16 +139,12 @@ fn export_with(workers: usize, stems: &[usize]) -> (Vec<Rendered>, usize) {
     for &stem in stems {
         bounce = bounce.stem_with(Stem::buffers(named[stem]));
     }
-    let Outcome::Finished(bounced) = session.bounce(bounce).unwrap() else {
-        panic!("the bounce finishes into memory")
-    };
-    let targets = bounced
-        .into_targets()
-        .into_iter()
-        .map(|p| match p {
+    let (master, stems) = session.bounce(bounce).unwrap().into_parts();
+    let targets = std::iter::once(master)
+        .chain(stems.into_iter().map(|p| match p {
             Produced::Buffers(rendered) => rendered,
             other => panic!("the bounce finishes into memory, got {other:?}"),
-        })
+        }))
         .collect();
     let ran_on = threads.lock().unwrap().len();
     (targets, ran_on)

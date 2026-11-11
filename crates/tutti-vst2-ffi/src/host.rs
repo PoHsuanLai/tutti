@@ -2455,8 +2455,6 @@ impl<T: Float> HostBuffer<T> {
     ///
     /// ```compile_fail
     /// # use tutti_vst2_ffi::host::HostBuffer;
-    /// // Mutation (run): give `bind` the old signature (`&'a mut self`, `&[I]`, `&mut [O]`,
-    /// // `I: 'a`, `O: 'a`) and this compiles, so the doctest fails.
     /// let mut host_buffer: HostBuffer<f32> = HostBuffer::new(1, 1);
     /// let mut buffer = {
     ///     let inputs = vec![vec![0.0f32; 4]];

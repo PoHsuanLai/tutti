@@ -67,8 +67,6 @@ pub mod consts {
 ///
 /// ```compile_fail
 /// # use tutti_vst2_ffi::api::{AEffect, HostCallbackProc, PluginMain};
-/// // Mutation (run): declare `PluginMain` as a plain `fn` again and this compiles,
-/// // so the doctest fails.
 /// fn rust_abi_main(_: HostCallbackProc) -> *mut AEffect {
 ///     std::ptr::null_mut()
 /// }

@@ -510,6 +510,7 @@ impl Voice {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tutti_types::Amplitude;
 
     const RATE: SampleRate = SampleRate(44_100.0);
     const CUTOFF: f32 = 500.0;
@@ -575,7 +576,7 @@ mod tests {
                 .map(|hz| gain(resonance, hz as f32))
                 .fold(0.0f64, f64::max);
             let want = f64::from(resonance);
-            let peak_db = 20.0 * peak.log10();
+            let peak_db = Db::from_amplitude(Amplitude::new(peak as f32)).get();
             // 0 dB asks for no peak: the Butterworth maximum is 1.
             assert!(
                 (peak / want - 1.0).abs() < 0.03 || (db == 0.0 && (peak_db < 0.1)),
@@ -595,7 +596,10 @@ mod tests {
             let want = closed_form(q, f64::from(hz));
             assert!((got / want - 1.0).abs() < 0.02, "{hz} Hz: {got} vs {want}");
         }
-        let octave = 20.0 * (gain(resonance, 4_000.0) / gain(resonance, 2_000.0)).log10();
+        let octave = Db::from_amplitude(Amplitude::new(
+            (gain(resonance, 4_000.0) / gain(resonance, 2_000.0)) as f32,
+        ))
+        .get();
         assert!((octave + 12.0).abs() < 1.0, "{octave} dB per octave");
     }
 

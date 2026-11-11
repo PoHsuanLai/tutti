@@ -165,7 +165,6 @@ impl<T> ArcLend<T> {
     /// compile under `deny(unused_must_use)`:
     ///
     /// ```compile_fail
-    /// # // Mutation: remove `#[must_use]` from `reader`; this compiles.
     /// #![deny(unused_must_use)]
     /// let cell = std::sync::Arc::new(arc_lend::ArcLend::new(1u32));
     /// cell.reader(); // registered, then dropped: nothing will lend

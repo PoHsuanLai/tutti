@@ -11,7 +11,7 @@ fn forward_finds_a_tone_in_the_right_bin() {
     let window = vec![1.0f32; size]; // rectangular, so the peak is sharp
 
     let mut fft = FftScratch::new();
-    let mut out = vec![Complex::default(); size / 2 + 1];
+    let mut out = vec![Complex32::default(); size / 2 + 1];
     fft.forward(&input, &window, &mut out);
 
     let peak = out
@@ -31,7 +31,7 @@ fn forward_and_inverse_round_trip() {
     let window = vec![1.0f32; size];
 
     let mut fft = FftScratch::new();
-    let mut bins = vec![Complex::default(); size / 2 + 1];
+    let mut bins = vec![Complex32::default(); size / 2 + 1];
     fft.forward(&input, &window, &mut bins);
 
     let mut out = vec![0.0f32; size];
@@ -49,7 +49,7 @@ fn inverse_ignores_imaginary_dc_and_nyquist() {
         let input: Vec<f32> = (0..size).map(|i| (i as f32 / 5.0).sin() + 0.25).collect();
         let window = vec![1.0f32; size];
         let mut fft = FftScratch::new();
-        let mut bins = vec![Complex::default(); size / 2 + 1];
+        let mut bins = vec![Complex32::default(); size / 2 + 1];
         fft.forward(&input, &window, &mut bins);
         bins[0].im = 0.0;
         if size % 2 == 0 {
@@ -77,19 +77,19 @@ fn reused_scratch_gives_identical_results() {
     let window = CosineWindow::HANN.coefficients(size);
 
     let mut shared = FftScratch::new();
-    let mut first = vec![Complex::default(); size / 2 + 1];
+    let mut first = vec![Complex32::default(); size / 2 + 1];
     shared.forward(&a, &window, &mut first);
     // Run something else through the same scratch, then repeat.
-    let mut other = vec![Complex::default(); size / 2 + 1];
+    let mut other = vec![Complex32::default(); size / 2 + 1];
     shared.forward(&b, &window, &mut other);
-    let mut again = vec![Complex::default(); size / 2 + 1];
+    let mut again = vec![Complex32::default(); size / 2 + 1];
     shared.forward(&a, &window, &mut again);
 
     assert_eq!(first, again);
 
     // And a fresh scratch agrees with the reused one.
     let mut fresh = FftScratch::new();
-    let mut clean = vec![Complex::default(); size / 2 + 1];
+    let mut clean = vec![Complex32::default(); size / 2 + 1];
     fresh.forward(&a, &window, &mut clean);
     assert_eq!(first, clean);
 }
@@ -101,7 +101,7 @@ fn switching_sizes_replans() {
     for size in [64usize, 128, 64, 256, 64] {
         let input: Vec<f32> = (0..size).map(|i| i as f32 / size as f32).collect();
         let window = vec![1.0f32; size];
-        let mut out = vec![Complex::default(); size / 2 + 1];
+        let mut out = vec![Complex32::default(); size / 2 + 1];
         fft.forward(&input, &window, &mut out);
 
         let mut back = vec![0.0f32; size];
@@ -118,9 +118,9 @@ fn tone(size: usize, bin: f32, amp: f32, phase: f32) -> Vec<f32> {
         .collect()
 }
 
-fn spectrum(input: &[f32]) -> Vec<Complex> {
+fn spectrum(input: &[f32]) -> Vec<Complex32> {
     let size = input.len();
-    let mut out = vec![Complex::default(); size / 2 + 1];
+    let mut out = vec![Complex32::default(); size / 2 + 1];
     FftScratch::new().forward(input, &vec![1.0; size], &mut out);
     out
 }

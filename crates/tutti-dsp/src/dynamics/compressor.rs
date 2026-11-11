@@ -1,7 +1,7 @@
 //! The compressor's per-sample gain: the static curve, the attack/release
 //! follower on the reduction, and the makeup ramp.
 
-use super::curves::{amplitude_to_db, compute_compressor_gain_reduction, db_to_amplitude, ramp_db};
+use super::curves::{amplitude_to_db, compute_compressor_gain_reduction, ramp_db};
 use super::envelope::EnvelopeFollower;
 use tutti_types::{Amplitude, CompressionRatio, Db, SampleRate, Seconds};
 
@@ -109,7 +109,7 @@ impl CompressorKernel {
         let gain_reduction = self.follower.smooth(target_reduction.get());
         self.envelope = sc_level;
         let makeup = ramp_db(block.makeup_from, block.makeup_to, i, n);
-        db_to_amplitude(Db::new(-gain_reduction + makeup.get())).get()
+        Db::new(-gain_reduction + makeup.get()).to_amplitude().get()
     }
 }
 

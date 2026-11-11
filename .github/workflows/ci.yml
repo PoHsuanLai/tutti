@@ -318,6 +318,8 @@ jobs:
     # Suites run here may assert golden digests; see the `test` job.
     env:
       TUTTI_GOLDEN: require
+      # As in `test`: optimized, with debug assertions and overflow checks on.
+      CARGO_PROFILE_DEV_OPT_LEVEL: '1'
     steps:
       # The submodules are the VST3 SDK: `tutti-plugin-contract` builds the VST3
       # shells and the C++ witness against it.

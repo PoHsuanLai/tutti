@@ -49,7 +49,8 @@ const NOTICE_TIMEOUT: Duration = Duration::from_secs(10);
 /// The real deadline, used by every mock that is not testing the deadline.
 const PRODUCTION_STATE_PROGRESS_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// The shortened deadline the two progress tests run with.
+/// The shortened deadline the stall tests run with (the slow-transfer test has
+/// its own, wider one).
 ///
 /// Two orders of magnitude under production, so a stalled transfer is detected
 /// in a fraction of a second, and comfortably over the 20 ms poll interval so a
@@ -1329,10 +1330,16 @@ fn an_oversized_load_state_is_refused_without_killing_the_bridge() {
 /// **Scaled, not literal.** Proving this with real sizes would mean moving a
 /// gigabyte through a socket. Instead the *ratio* is reproduced: 30 chunks at a
 /// gap that sums to comfortably more than the deadline any single-budget
-/// implementation would impose. With `STATE_PROGRESS_TIMEOUT` at 400 ms and a
-/// 40 ms gap the transfer takes ~1.2 s — 3x a total budget, while no single gap
-/// comes close to it. Under a total budget this is a timeout; under a progress
-/// deadline it simply works.
+/// implementation would impose. With `SLOW_TRANSFER_TIMEOUT` at 2 s and a
+/// 50 ms gap the transfer takes ~3 s — 1.5x a total budget, while no single gap
+/// comes within 40x of it. Under a total budget this is a timeout; under a
+/// progress deadline it simply works.
+///
+/// **Its own deadline, wider than the stall tests'.** This test fails if any
+/// one gap outlasts the deadline, so a scheduler pause on a loaded runner is a
+/// failure here, where in the stall tests it only delays detection. At 400 ms
+/// it failed on a shared macOS runner with `Stalled { bytes: 1 }`: the first
+/// 40 ms gap took over 400 ms of wall clock.
 ///
 /// **Mutation note**, and the first attempt at it was wrong in a way worth
 /// recording. Turning `StateProgress::wait` into a total budget takes *two*
@@ -1343,8 +1350,8 @@ fn an_oversized_load_state_is_refused_without_killing_the_bridge() {
 ///
 /// Verified to fail:
 /// - Accumulating `idle` unconditionally **and** dropping the reset — a genuine
-///   total budget — fails this at chunk 13 of 30 with
-///   `Stalled { bytes: 13 }`, which is the production bug reproduced in
+///   total budget — fails this at chunk 40 of 60 with
+///   `Stalled { bytes: 40 }`, which is the production bug reproduced in
 ///   miniature: a transfer that is visibly advancing, killed by the clock.
 /// - Removing `progress.advance(bytes.len())` from `recv_state` fails it, since
 ///   the caller then sees a counter that never moves.
@@ -1352,8 +1359,9 @@ fn an_oversized_load_state_is_refused_without_killing_the_bridge() {
 fn a_slow_but_progressing_state_transfer_completes() {
     /// Enough chunks that the total dwarfs the deadline while each gap stays
     /// well under it.
-    const CHUNKS: usize = 30;
-    const GAP: Duration = Duration::from_millis(40);
+    const CHUNKS: usize = 60;
+    const GAP: Duration = Duration::from_millis(50);
+    const SLOW_TRANSFER_TIMEOUT: Duration = Duration::from_secs(2);
 
     // One byte per chunk: this test is about *timing*, and materialising a
     // realistically-sized state to prove a deadline would make it slow for a
@@ -1370,7 +1378,7 @@ fn a_slow_but_progressing_state_transfer_completes() {
 
     let mock = MockServer::start_with_state_progress_timeout(
         "slow-state",
-        STATE_PROGRESS_TIMEOUT,
+        SLOW_TRANSFER_TIMEOUT,
         move |msg| match msg {
             HostMessage::SaveState => Action::ReplyManySlowly {
                 msgs: msgs.clone(),
@@ -1399,8 +1407,8 @@ fn a_slow_but_progressing_state_transfer_completes() {
     // fit inside one deadline — at which point it no longer distinguishes a
     // progress budget from a total one.
     assert!(
-        elapsed > STATE_PROGRESS_TIMEOUT,
-        "the transfer finished in {elapsed:?}, inside the {STATE_PROGRESS_TIMEOUT:?} \
+        elapsed > SLOW_TRANSFER_TIMEOUT,
+        "the transfer finished in {elapsed:?}, inside the {SLOW_TRANSFER_TIMEOUT:?} \
          deadline — it would have passed under a fixed total budget too, so it \
          does not test what it claims"
     );

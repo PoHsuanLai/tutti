@@ -27,7 +27,7 @@ use vst3::Steinberg::{
 };
 use vst3::{Class, ComWrapper};
 
-use tutti_plugin_types::{Normalized, PointBuf, PointPool};
+use tutti_plugin_types::{Normalized, ParamId, PointBuf, PointPool};
 use tutti_plugin_types::{ParameterPoint, ParameterQueue};
 use tutti_rt::{AudioThreadCell, BorrowGuard};
 
@@ -40,7 +40,7 @@ pub const MIN_POINT_ROOM: usize = 16;
 /// borrow of the queue's cell, so the host cannot touch it without holding the
 /// boundary the plugin's COM calls respect.
 pub(crate) struct QueueState {
-    param_id: u32,
+    param_id: ParamId,
     points: PointBuf,
 }
 
@@ -63,7 +63,7 @@ impl QueueState {
     }
 
     /// The parameter this queue is filed under.
-    pub(crate) fn param_id(&self) -> u32 {
+    pub(crate) fn param_id(&self) -> ParamId {
         self.param_id
     }
 
@@ -92,7 +92,7 @@ impl QueueState {
     /// the host's authoring convention; `Normalized` carries that guard.
     pub(crate) fn refill(&mut self, queue: &ParameterQueue) -> u64 {
         // Same boundary as `from_queue`: unwrap the opaque handle for the ABI.
-        self.param_id = queue.param_id.get();
+        self.param_id = queue.param_id;
         let points = &mut self.points;
         points.clear();
         let mut left_out = 0;
@@ -126,7 +126,7 @@ impl QueueState {
     }
 
     /// Empties this queue for `param_id`, keeping its point storage.
-    pub(crate) fn reset(&mut self, param_id: u32) {
+    pub(crate) fn reset(&mut self, param_id: ParamId) {
         self.param_id = param_id;
         self.points.clear();
     }
@@ -154,7 +154,7 @@ impl ParamValueQueueImpl {
     /// An empty queue with room for exactly `points` points (a pooled list's
     /// queue draws on the list's shared pool past them). Allocates; call it
     /// off the audio thread.
-    pub fn with_room(param_id: u32, points: usize) -> ComWrapper<Self> {
+    pub fn with_room(param_id: ParamId, points: usize) -> ComWrapper<Self> {
         ComWrapper::new(Self {
             state: AudioThreadCell::new(QueueState {
                 param_id,
@@ -179,7 +179,7 @@ impl ParamValueQueueImpl {
 
     /// The parameter this queue is filed under, or `None` while another
     /// thread is resetting the queue.
-    pub(crate) fn try_param_id(&self) -> Option<u32> {
+    pub(crate) fn try_param_id(&self) -> Option<ParamId> {
         self.state.try_borrow().map(|s| s.param_id)
     }
 
@@ -209,7 +209,10 @@ impl ParamValueQueueImpl {
 impl IParamValueQueueTrait for ParamValueQueueImpl {
     /// `kNoParamId` while another thread is resetting the queue.
     unsafe fn getParameterId(&self) -> u32 {
-        guard(kNoParamId, || self.try_param_id().unwrap_or(kNoParamId))
+        // The ABI's bare `ParamID`, which is where the opaque id leaves.
+        guard(kNoParamId, || {
+            self.try_param_id().map_or(kNoParamId, ParamId::get)
+        })
     }
 
     /// Zero while another thread is writing the queue.
@@ -292,7 +295,7 @@ mod tests {
     #[test]
     fn concurrent_reads_of_a_queue_both_succeed() {
         use std::sync::Barrier;
-        let queue = ParamValueQueueImpl::with_room(9, MIN_POINT_ROOM);
+        let queue = ParamValueQueueImpl::with_room(ParamId::new(9), MIN_POINT_ROOM);
         queue.stage().refill(&queue_with_points(2));
         let (taken, done) = (Barrier::new(2), Barrier::new(2));
         std::thread::scope(|scope| {
@@ -325,7 +328,7 @@ mod tests {
     /// (SIGABRT): the plugin-server crash this guards against.
     #[test]
     fn a_read_during_a_write_fails_at_the_com_level() {
-        let queue = ParamValueQueueImpl::with_room(9, MIN_POINT_ROOM);
+        let queue = ParamValueQueueImpl::with_room(ParamId::new(9), MIN_POINT_ROOM);
         queue.stage().refill(&queue_with_points(2));
         let ptr = queue.to_com_ptr::<IParamValueQueue>().unwrap();
         let (mut offset, mut value) = (0, 0.0);
@@ -376,7 +379,7 @@ mod tests {
         source.add_point(0, 0.25);
         source.add_point(128, 0.5);
 
-        let queue = ParamValueQueueImpl::with_room(0, MIN_POINT_ROOM);
+        let queue = ParamValueQueueImpl::with_room(ParamId::new(0), MIN_POINT_ROOM);
         queue.stage().refill(&source);
 
         let mut got = Vec::new();
@@ -407,7 +410,7 @@ mod tests {
         for i in 0..RUN {
             source.add_point(2 * i + 1, 0.75);
         }
-        let queue = ParamValueQueueImpl::with_room(0, 2 * RUN as usize);
+        let queue = ParamValueQueueImpl::with_room(ParamId::new(0), 2 * RUN as usize);
         let left_out = assert_no_alloc::assert_no_alloc(|| queue.stage().refill(&source));
         assert_eq!(left_out, 0);
         let mut got = Vec::new();
@@ -424,7 +427,7 @@ mod tests {
         source.add_point(64, 0.1); // old value
         source.add_point(64, 0.9); // new value at the same instant
 
-        let queue = ParamValueQueueImpl::with_room(0, MIN_POINT_ROOM);
+        let queue = ParamValueQueueImpl::with_room(ParamId::new(0), MIN_POINT_ROOM);
         queue.stage().refill(&source);
 
         let mut got = Vec::new();
@@ -446,7 +449,7 @@ mod tests {
             source.add_point(i * 8, f64::from(i) * 0.01);
         }
 
-        let queue = ParamValueQueueImpl::with_room(0, MIN_POINT_ROOM);
+        let queue = ParamValueQueueImpl::with_room(ParamId::new(0), MIN_POINT_ROOM);
         queue.stage().refill(&source); // warm up capacity
 
         assert_no_alloc::assert_no_alloc(|| {
@@ -462,7 +465,7 @@ mod tests {
     /// automation path where a DAW streams per-buffer points.
     #[test]
     fn refill_from_queue_is_allocation_free() {
-        let queue = ParamValueQueueImpl::with_room(0, MIN_POINT_ROOM);
+        let queue = ParamValueQueueImpl::with_room(ParamId::new(0), MIN_POINT_ROOM);
         let source = queue_with_points(8);
 
         // Warm up.
@@ -486,7 +489,7 @@ mod tests {
     /// frame 31, not 32 → fails.
     #[test]
     fn refill_from_queue_holds_its_room_and_never_grows() {
-        let queue = ParamValueQueueImpl::with_room(0, 32);
+        let queue = ParamValueQueueImpl::with_room(ParamId::new(0), 32);
         let big = queue_with_points(32);
         let over = queue_with_points(33);
         let left_out = assert_no_alloc::assert_no_alloc(|| {
@@ -520,7 +523,7 @@ mod tests {
     #[test]
     fn add_point_past_the_room_keeps_the_latest_counted() {
         use vst3::Steinberg::Vst::IParamValueQueueTrait;
-        let queue = ParamValueQueueImpl::with_room(3, MIN_POINT_ROOM);
+        let queue = ParamValueQueueImpl::with_room(ParamId::new(3), MIN_POINT_ROOM);
         let ptr = queue.to_com_ptr::<IParamValueQueue>().unwrap();
         // SAFETY: the test calls a COM method on a live object it owns, with arguments valid
         // for the call.

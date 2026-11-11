@@ -23,11 +23,17 @@ fn a_prepended_point_without_room_is_counted_not_grown_into() {
     let mut staging = list.begin();
     staging.refill(&changes).unwrap();
 
-    staging.prepend(7, Normalized::of(0.9)).unwrap();
+    staging
+        .prepend(ParamId::new(7), Normalized::of(0.9))
+        .unwrap();
     assert_eq!(list.points_dropped(), 1, "the queue of 7 is full");
-    staging.prepend(9, Normalized::of(0.4)).unwrap();
+    staging
+        .prepend(ParamId::new(9), Normalized::of(0.4))
+        .unwrap();
     assert_eq!(list.points_dropped(), 1, "the free queue took 9");
-    staging.prepend(11, Normalized::of(0.5)).unwrap();
+    staging
+        .prepend(ParamId::new(11), Normalized::of(0.5))
+        .unwrap();
     assert_eq!(list.points_dropped(), 2, "no queue left for 11");
     drop(staging);
 
@@ -663,7 +669,10 @@ fn staging_while_a_plugin_holds_a_queue_or_the_list_is_refused_and_counted() {
         let mut staging = list.begin();
         assert_eq!(staging.refill(&changes_with(2, 1)), Err(Busy));
         assert_eq!(list.busy(), 1, "the refill is counted");
-        assert_eq!(staging.prepend(99, Normalized::of(0.5)), Err(Busy));
+        assert_eq!(
+            staging.prepend(ParamId::new(99), Normalized::of(0.5)),
+            Err(Busy)
+        );
         assert_eq!(list.busy(), 2, "so is the prepend");
     }
     // The plugin's output: a live queue the host reads while a plugin thread holds it.

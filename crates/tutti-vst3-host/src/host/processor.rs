@@ -194,7 +194,7 @@ pub struct Vst3Processor<T: Vst3Sample> {
     /// The writes taken for the block in hand, latest per parameter, and what
     /// a rejoin carried over from the last activation before the first block.
     /// Reserved for the ring's room, so no block grows it.
-    pending: Vec<(u32, Normalized)>,
+    pending: Vec<(ParamId, Normalized)>,
     /// Edits the block could not hold, since activation.
     edits_dropped: u64,
     /// Whether `setProcessing(1)` is the plugin's last word.
@@ -221,7 +221,7 @@ pub(super) struct ProcessorParts {
     pub context_requirements: Option<ProcessContextRequirements>,
     pub drain: EditDrain,
     pub beat: DrainBeat,
-    pub carried: Vec<(u32, Normalized)>,
+    pub carried: Vec<(ParamId, Normalized)>,
 }
 
 impl<T: Vst3Sample> Vst3Processor<T> {
@@ -280,7 +280,7 @@ impl<T: Vst3Sample> Vst3Processor<T> {
     /// that must not lose them, as a rejoin must not.
     pub fn take_edits(&mut self, out: &mut Vec<(ParamId, Normalized)>) {
         self.drain_ring();
-        out.extend(self.pending.drain(..).map(|(id, v)| (ParamId::new(id), v)));
+        out.append(&mut self.pending);
     }
 
     /// Writes the ring held that no block took, since activation, for want of
@@ -301,7 +301,7 @@ impl<T: Vst3Sample> Vst3Processor<T> {
         } = self;
         drain.drain(|edit| {
             let (id, value) = match edit {
-                Edit::Param { id, value } => (id.get(), value),
+                Edit::Param { id, value } => (id, value),
                 // What came before is stale; what came after is not.
                 Edit::Reset => {
                     pending.clear();

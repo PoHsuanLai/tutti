@@ -26,7 +26,7 @@ use vst3::{Class, ComWrapper};
 
 use super::param_queue::ParamValueQueueImpl;
 use std::sync::atomic::{AtomicU64, Ordering};
-use tutti_plugin_types::{Normalized, PointPool};
+use tutti_plugin_types::{Normalized, ParamId, PointPool};
 use tutti_plugin_types::{ParameterChanges, ParameterPoint};
 
 use tutti_rt::{AudioThreadCell, BorrowGuard};
@@ -90,7 +90,7 @@ impl ParameterChangesImpl {
             inner: AudioThreadCell::new(Inner { live: 0, pool }),
             // Placeholder param ids: each queue is refilled before it is live.
             queues: (0..queues)
-                .map(|_| ParamValueQueueImpl::with_room(0, floor))
+                .map(|_| ParamValueQueueImpl::with_room(ParamId::new(0), floor))
                 .collect(),
             dropped: AtomicU64::new(0),
             busy: AtomicU64::new(0),
@@ -215,7 +215,7 @@ impl ParameterChangesImpl {
                 return false;
             };
             // The plugin answered with a bare `ParamID`, and VST3 ids are opaque: tag it.
-            let param_id = state.param_id().into();
+            let param_id = state.param_id();
             state.for_each_point(|point| {
                 out.add_change(param_id, point.sample_offset, point.value.get());
             });
@@ -306,7 +306,7 @@ impl ParamStaging<'_> {
     /// # Errors
     ///
     /// [`Busy`] if a plugin thread holds a queue it needs.
-    pub fn prepend(&mut self, param_id: u32, value: Normalized) -> Result<(), Busy> {
+    pub fn prepend(&mut self, param_id: ParamId, value: Normalized) -> Result<(), Busy> {
         let point = ParameterPoint {
             sample_offset: 0,
             value,
@@ -404,7 +404,7 @@ impl IParameterChangesTrait for ParameterChangesImpl {
             }
             // SAFETY: `id` is non-null (checked above) and, by the ABI, valid for
             // a read of one `ParamID` for this call.
-            let param_id = unsafe { *id };
+            let param_id = ParamId::new(unsafe { *id });
             let Some(mut inner) = self.inner.try_borrow_mut() else {
                 self.count_dropped(1);
                 return std::ptr::null_mut();

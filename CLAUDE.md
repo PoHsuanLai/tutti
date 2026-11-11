@@ -366,7 +366,8 @@ crates/          everything shipped; directory name = package name; no nesting
   bevy-tutti     PARKED (out of the workspace, see above): Bevy umbrella + adapter; the only Bevy-mandatory crate.
   tutti-session  Bevy-free API layer: the cross-crate composition both umbrellas use
                  (design 015: `Session`, `Graph`, `SessionBuilder`, `Device`), and
-                 `Recorder` / `PumpLoop`, a source pumped into a sink (feature `record`).
+                 `Recorder` / `PumpLoop`, a source pumped into a sink (feature `record`; a
+                 recording dithers only by wrapping its sink in `tutti_dsp::DitherSink`).
   arc-lend       The publish cell (`ArcLend`/`Loan`): a general-purpose crate with
                  no dependencies, `publish = false`, re-exported by tutti-rt.
   tutti-rt       Real-time-safe shared-memory primitives for the audio thread:
@@ -718,7 +719,8 @@ list (normal and build edges; dev-dependencies may go anywhere).
   convolver, the delay line and swept-delay kernel, the cubic Hermite kernel, the phaser's all-pass chain, the
   block ramps, the export resampler and its streaming
   bookkeeping (`StreamingResampler`, `ChunkSize`), the dither noise
-  (`DitherNoise`), the Freeverb reverb (`Freeverb`, the state of
+  (`DitherNoise`, and `DitherSink`, the `tutti_types::Sink` adapter that applies it:
+  the one dither path export and a recording opting in share, doc 025 stage 7), the Freeverb reverb (`Freeverb`, the state of
   `FreeverbKernel`, the `Kernel` of `FreeverbDesign`), the feedback delay network
   (`FdnDesign`, `FdnKernel`: both run by `Realized`, whose glides step between
   `retarget`s in 32-frame chunks counted from the last reset, so the output does

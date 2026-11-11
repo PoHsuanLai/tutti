@@ -1,0 +1,76 @@
+name: Linux audio deps
+description: >
+  Installs the system packages the engine builds against, from a cache of the
+  .deb files, so a mirror outage cannot fail a job once one run has filled it.
+inputs:
+  extra:
+    description: Further apt packages (space separated), cached with the rest.
+    required: false
+    default: ''
+runs:
+  using: composite
+  steps:
+    - name: Resolve the package list and cache key
+      id: pkgs
+      shell: bash
+      env:
+        EXTRA: ${{ inputs.extra }}
+      run: |
+        # The one place the list lives.
+        # libasound2-dev:    tutti-cpal (ALSA).
+        # libdbus-1-dev:     cpal -> audio_thread_priority -> dbus, the
+        #                    RT-priority request on Linux.
+        # pkg-config:        finds them.
+        pkgs="libasound2-dev libdbus-1-dev pkg-config $EXTRA"
+        hash=$(echo "$pkgs" | sha256sum | cut -c1-16)
+        echo "list=$pkgs" >> "$GITHUB_OUTPUT"
+        echo "dir=$HOME/apt-debs" >> "$GITHUB_OUTPUT"
+        echo "key=apt-debs-$RUNNER_OS-${ImageOS:-na}-${ImageVersion:-na}-$hash" >> "$GITHUB_OUTPUT"
+    # Saves on any ref (it is a few MB and must survive); not the Rust caches'
+    # main-only rule.
+    - name: Restore the .deb cache
+      id: debs
+      uses: actions/cache@v4
+      with:
+        path: ~/apt-debs
+        key: ${{ steps.pkgs.outputs.key }}
+    - name: Download the .debs (cache miss)
+      if: steps.debs.outputs.cache-hit != 'true'
+      shell: bash
+      env:
+        PKGS: ${{ steps.pkgs.outputs.list }}
+        DIR: ${{ steps.pkgs.outputs.dir }}
+      run: |
+        # An empty archive dir, so every dependency the image lacks is captured.
+        rm -rf "$DIR"; mkdir -p "$DIR/partial"
+        fetch() {
+          sudo apt-get -o Acquire::Retries=5 update &&
+          sudo apt-get -o Acquire::Retries=5 -o Dir::Cache::archives="$DIR" \
+            install -y --no-install-recommends --download-only $PKGS
+        }
+        if fetch; then
+          echo "apt: default sources worked"
+        else
+          echo "::warning::apt: default sources failed; falling back to archive.ubuntu.com"
+          sudo sed -i -E 's#mirror\+file:/etc/apt/apt-mirrors\.txt#http://archive.ubuntu.com/ubuntu#; s#https?://(azure\.archive|security)\.ubuntu\.com/ubuntu/?#http://archive.ubuntu.com/ubuntu#' \
+            /etc/apt/sources.list.d/ubuntu.sources /etc/apt/sources.list 2>/dev/null || true
+          if fetch; then
+            echo "apt: FALLBACK archive.ubuntu.com worked"
+          else
+            echo "::warning::apt: archive.ubuntu.com failed; falling back to mirrors.edge.kernel.org"
+            sudo sed -i 's#http://archive\.ubuntu\.com/ubuntu#http://mirrors.edge.kernel.org/ubuntu#' \
+              /etc/apt/sources.list.d/ubuntu.sources /etc/apt/sources.list 2>/dev/null || true
+            fetch
+            echo "apt: FALLBACK mirrors.edge.kernel.org worked"
+          fi
+        fi
+        rm -rf "$DIR/partial" "$DIR/lock"
+        sudo chown -R "$(id -u):$(id -g)" "$DIR"
+        ls "$DIR"
+    - name: Install from the cached .debs
+      shell: bash
+      env:
+        DIR: ${{ steps.pkgs.outputs.dir }}
+      run: |
+        # Local files only: no apt index, no network.
+        sudo dpkg -i "$DIR"/*.deb

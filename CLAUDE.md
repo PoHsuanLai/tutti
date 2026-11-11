@@ -1139,7 +1139,7 @@ read the `Cargo.toml`, grep for the type, run the probe.
   the master meter is now a plan op, `Editor::open_meter`) and `tutti-engine` (`Engine`; `MAX_ROOT_CHANNELS`
   is `tutti-graph`'s), `tutti-node` and `fundsp-tutti` →
   deleted (the node contract is `tutti_graph::Node`; the filters' `Real` is
-  `tutti-nodes`'), `tutti-mod` → `tutti-modulation` (renamed: "mod" is unclear), `audio-automation` (an external git dependency until Q25 of doc 024) → `tutti-curve` (`CurveType` → `tutti_curve::Law`, `Trajectory` and `Breakpoint` copied in minimal; `AutomationClip`, `AutomationState` and `ParameterRange` were not), and tutti-modulation's runtime (`ModMatrix`, `ModParams`, `ParamFrom`,
+  `tutti-nodes`'), `BusStripNode`'s mute (`set_muted`, `is_muted`, `UnitParam::Mute`, `GeneralMidi::set_muted`) and `EqBandNode`'s `BandState`, `set_enabled` and `set_state` → `NodeMode` (`Graph::set_mode`; a General MIDI setup's mute is `set_mode(gm.out(), NodeMode::Muted)`), `tutti-mod` → `tutti-modulation` (renamed: "mod" is unclear), `audio-automation` (an external git dependency until Q25 of doc 024) → `tutti-curve` (`CurveType` → `tutti_curve::Law`, `Trajectory` and `Breakpoint` copied in minimal; `AutomationClip`, `AutomationState` and `ParameterRange` were not), and tutti-modulation's runtime (`ModMatrix`, `ModParams`, `ParamFrom`,
   `modulation::legacy`) → deleted (doc 014 §10: `tutti_modulation::compile` and
   a `ControlLaneNode` per param), `tutti_plugin::{handles, host::node, format::in_process}`'s
   format-generic items (`PluginHandle`, `NodeControls`, `PluginMeter`, `TransportSource`,

@@ -1467,8 +1467,9 @@ differences from it:
   coefficient then exceeds 1 in magnitude and the stages diverge, a
   defect older than the ports.
 - **Kept knob-only:** `BusStripNode`'s `Mute`, a toggle (`>= 0.5` is
-  muted) the strip folds in as a factor it never modulates. A route onto it
-  is refused with `NoSuchParam`. Nothing else in the table is kept;
+  muted) the strip folded in as a factor it never modulated. A route onto it
+  was refused with `NoSuchParam`. (Gone since: a mute is `NodeMode::Muted`,
+  doc 013, "Bypass and mute are graph state".) Nothing else in the table is kept;
   `AutomationLaneNode::new` (the audio lane) and `LfoNode` stay, as the
   table and §11 say.
 
@@ -1982,7 +1983,7 @@ bevy-tutti drops `modulation::legacy`, `LegacyModulationPlugin`,
 node's params are addressed at insert by `GraphNode::params`).
 `AudioGraphRes::set_param_mod` takes an `Option<AudioNode>` event source
 and a range. Every param a node addresses is a port a lane can drive,
-except the bus strip's `Mute` (§10). Audio-rate modulation (`ParamFrom::Audio`) went with nothing
+except the bus strip's `Mute` (§10; deleted since, it is `NodeMode::Muted`). Audio-rate modulation (`ParamFrom::Audio`) went with nothing
 in its place but §11's: a node's own audio input.
 
 Tests went with what they tested. Ported: bevy-tutti's

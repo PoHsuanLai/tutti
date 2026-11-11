@@ -6838,6 +6838,38 @@ above); the host half is the plugin test, a hosted plugin bypassed through
 not against a second render), and dropping the AU host's `BypassEffect` use
 where it reaches the graph.
 
+**As built (M3).** The flags went, and `NodeMode` is the one bypass and mute.
+
+- **`EqBandNode`**: `BandState`, `set_enabled`, `is_enabled`, `state`,
+  `set_state` and the copy in `process` are gone, and `BandState` is no longer
+  exported (`tutti-nodes`' `lib.rs`, `filter/mod.rs`). The band stays a
+  mono `SvfFilterNode` wrapper with the EQ constructor. `test_eq_band_bypass`
+  (`1e-4`) went with the flag; its replacement is `tests/node_mode.rs`, a
+  bypassed band through `Editor::set_mode`: its output is its input bit for
+  bit (`-0.0` and a denormal included) once the 256-frame declick is over.
+  `live_controls_reach_the_node.rs` keeps its two rules (a `ParamSet` write
+  reaches the running node; a by-value change is a replace), now over the
+  filter type instead of the flag.
+- **`BusStripNode`**: the `muted` cell, `set_muted`, `is_muted`, the `live`
+  factor in the gains and the `UnitParam::Mute` binding are gone; volume and
+  pan stay, with their ramp. The mute tests went with it: the strip's mute is
+  `tests/node_mode.rs`'s (muted is `+0.0` after the declick, un-muted is the
+  fader's figure exactly), and the ramp's endpoint and fed-branch coverage is
+  kept over a fader pulled to zero and a fader ramp under a fed pan.
+- **General MIDI**: `GeneralMidi::set_muted` is gone. The setup's fader is
+  `GeneralMidi::out()`, a node key, so a mute is the graph's one path,
+  `Graph::set_mode(gm.out(), NodeMode::Muted)`, which silences the effects with
+  it; no second method on the handle (it holds no graph).
+- **`UnitParam::Mute`** is deleted: nothing else read it (a multiband's
+  per-band toggles are `Bypass` and `Solo`, whose docs now carry the `>= 0.5`
+  encoding). The explicit discriminants keep every other id and every packed
+  `UnitAddr` where it was; **21 is retired, a gap that decodes as unknown**
+  (`UnitParam::try_from(21)` is `Err`), not reused. A persisted `Mute` id was
+  only ever the strip's cell.
+- **Not touched**: the plugin hosts (the AU host's `BypassEffect` is the
+  plugin session's), `Status::Bypass`, a multiband's per-band `Bypass`, and
+  `bevy-tutti` (parked).
+
 #### Buses and coercion between declared layouts
 
 Decided by the owner. When two ports' declared channel layouts disagree, the
@@ -7064,7 +7096,7 @@ itself.
 |---|---|---|
 | 1 | Fan-in | the six PRs of "Audio fan-in sums", point 10 |
 | 2 | Edge gain | **G1**: `EdgeGain`, `Sink`, `EdgeId`, validate, the weighted kernel and ramp, cell and `set_edge_gain`, reference, tests (static and ramped weights). **G2**: the driven lane: `connect_edge_gain`, `DelayKey::EdgeGain`, `GainPort`, the session's `ModTarget` and `EdgeRef`, tests. **G3**: session API. The audit is done here: no shipped node exists only to scale one source (the `Gain` nodes are test doubles), and `BusStripNode` keeps its volume and pan (below), so G3 deletes nothing. |
-| 3 | Bypass, mute and mix | independent of 1 and 2, in any order after the design merges. **M4** (after M1): the blend above, `Editor::set_mix`, its `ModTarget`, the reference, tests (`Mix` 1.0 bit-identical to `Active`, 0.0 bit-identical to `Bypassed` in steady state); `Mix`'s docs, and `DRY`'s and `WET`'s, say what the ends are (all of the aligned input, all of the node's output) instead of the studio words alone. **M1** (built): `NodeMode`, the cell, the executor's steady states, the bypass line, the declick and un-bypass sequence, the reference, tests. **M2**: `Editor::set_mode`, the session API, hosts (plugins, AU property). **M3**: delete `EqBandNode`'s flag, `BusStripNode`'s mute (and `add_general_midi`'s binding of it through `UnitParam::Mute`, which becomes `NodeMode::Muted` on the channel's strip), per-node bypass; bit-exact tests replace the tolerance one; CLAUDE.md's dead-names list gains the strip mute and `EqBandNode`'s flag. |
+| 3 | Bypass, mute and mix | independent of 1 and 2, in any order after the design merges. **M4** (after M1): the blend above, `Editor::set_mix`, its `ModTarget`, the reference, tests (`Mix` 1.0 bit-identical to `Active`, 0.0 bit-identical to `Bypassed` in steady state); `Mix`'s docs, and `DRY`'s and `WET`'s, say what the ends are (all of the aligned input, all of the node's output) instead of the studio words alone. **M1** (built): `NodeMode`, the cell, the executor's steady states, the bypass line, the declick and un-bypass sequence, the reference, tests. **M2** (session half built): `Editor::set_mode`, the session API, hosts (plugins, AU property). **M3** (built): delete `EqBandNode`'s flag, `BusStripNode`'s mute (and `add_general_midi`'s binding of it through `UnitParam::Mute`, which becomes `NodeMode::Muted` on the channel's strip), per-node bypass; bit-exact tests replace the tolerance one; CLAUDE.md's dead-names list gains the strip mute and `EqBandNode`'s flag. |
 | 4 | Buses and coercion | needs 1 and 2. **B1**: `BusTopology`, `Buses` and `Shape`'s buses with one `Main` bus built from widths; `Fold::contributions`; hosts fill their buses. **B2**: `BusRef`, `bus_edges`, validate, lowering to weighted lanes, `connect_bus`, session API, tests. **B3**: delete `DownmixNode` and migrate its users; bypass uses the main buses' fold. |
 
 Bypass's channel mapping for buses with different declared topologies uses
@@ -9095,8 +9127,8 @@ crossover `i` as `Cutoff` at index `i`. `MultibandCompressorNode` addresses a ba
 `Threshold`, `Knee`, `Ratio`, `Attack`, `Release` and make-up (`GainDb`, the compressor's
 address) at the band's index, and its crossovers as `Cutoff`: 27 ports at four bands,
 band by band and then the crossovers. `Knee`, `Bypass` and `Solo` are `UnitParam`
-kinds appended for it. The toggles are cells with no port, encoded `>= 0.5` is on as
-`Mute` is: a block-rate on/off a lane would only flap, and eight more ports would pass
+kinds appended for it. The toggles are cells with no port, encoded `>= 0.5` is on (the
+`Bypass` doc): a block-rate on/off a lane would only flap, and eight more ports would pass
 the cap. A `ParamSet` write cannot be refused, so the node validates on read: a
 crossover set that is not strictly increasing and above 0 is refused as a whole and
 the last good set stands, a ratio under 1 reads as 1, a time or a knee under 0 as 0,

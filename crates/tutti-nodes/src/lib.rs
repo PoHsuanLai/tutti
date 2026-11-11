@@ -99,7 +99,7 @@ pub use tutti_dsp::ShapeKind;
 
 mod filter;
 pub use filter::{
-    BandState, CrossoverNode, EqBandNode, LADDER_PARAMS, LadderFilterNode, SvfFilterNode, SvfParams,
+    CrossoverNode, EqBandNode, LADDER_PARAMS, LadderFilterNode, SvfFilterNode, SvfParams,
 };
 // The types in the filter nodes' signatures stay reachable from here; the
 // algorithms behind them (`SvfCoeffs`, `LadderCoeffs`, `Crossover`) are

@@ -36,9 +36,9 @@
 //! - Signal-driven modulation sources (design doc 014 §6), feeding a
 //!   control lane's event input: [`EnvelopeFollowerNode`] and
 //!   [`NoteEnvelopeNode`].
-//! - Spatial: [`VbapPannerNode`] ([`VbapPannerControls`], [`VbapError`]) and
-//!   [`HrtfBinauralNode`] ([`HrtfBinauralControls`]), steered by a
-//!   [`SpatialTarget`].
+//! - Spatial: [`VbapPannerNode`] ([`VbapError`]) and [`HrtfBinauralNode`],
+//!   steered by their params ([`VBAP_PANNER_PARAMS`], [`HRTF_BINAURAL_PARAMS`]:
+//!   bearing, height, and the VBAP spread and width or the HRTF blend).
 //! - Mixing: [`DownmixNode`], [`BusStripNode`]. Summing is the graph's
 //!   (a port or an output channel sums its sources), not a node's.
 //! - Param ports: each node's `*_PARAMS` port list (for example
@@ -105,7 +105,7 @@ pub use filter::{
 // The types in the filter nodes' signatures stay reachable from here; the
 // algorithms behind them (`SvfCoeffs`, `LadderCoeffs`, `Crossover`) are
 // `tutti-dsp`'s only.
-pub use tutti_dsp::{CrossoverError, LadderType, Real, SvfType};
+pub use tutti_dsp::{CrossoverError, LadderType, Real, SvfControls, SvfType};
 
 mod dynamics;
 pub use dynamics::{
@@ -145,8 +145,7 @@ pub use tutti_dsp::{FdnControls, FdnDesign, FreeverbControls, FreeverbDesign};
 // The spatial panners: VBAP speaker panning and binaural HRTF rendering.
 mod spatial;
 pub use spatial::{
-    HrtfBinauralControls, HrtfBinauralNode, SpatialTarget, VbapError, VbapPannerControls,
-    VbapPannerNode,
+    HRTF_BINAURAL_PARAMS, HrtfBinauralNode, VBAP_PANNER_PARAMS, VbapError, VbapPannerNode,
 };
 
 mod modulation;

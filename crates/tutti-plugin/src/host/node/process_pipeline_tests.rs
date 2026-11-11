@@ -1522,7 +1522,7 @@ impl super::batcher::Chunks for LossProbe {
                 tutti_ump::MidiGroup::FIRST,
                 tutti_ump::MidiChannel::FIRST,
                 60,
-                0x8000,
+                tutti_fixtures::midi::MID_VELOCITY,
             ),
         };
         BlockPayload {

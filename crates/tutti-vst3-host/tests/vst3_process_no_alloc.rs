@@ -234,7 +234,7 @@ fn process_with_midi_does_not_allocate() {
         let warm = [
             (
                 Offset::ZERO,
-                midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000),
+                midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, midi::MID_VELOCITY),
             ),
             (
                 Offset::ZERO,
@@ -251,7 +251,7 @@ fn process_with_midi_does_not_allocate() {
 
     let on_event = [(
         Offset::ZERO,
-        midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000),
+        midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, midi::MID_VELOCITY),
     )];
     let off_event = [(
         Offset::ZERO,
@@ -308,7 +308,12 @@ fn process_with_hundreds_of_events_does_not_allocate() {
             let e = if i % 2 == 0 {
                 (
                     Offset::ZERO,
-                    midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, note, 0x8000),
+                    midi::note_on(
+                        MidiGroup::FIRST,
+                        MidiChannel::FIRST,
+                        note,
+                        midi::MID_VELOCITY,
+                    ),
                 )
             } else {
                 (

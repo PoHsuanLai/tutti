@@ -16,6 +16,7 @@
 use arrayvec::ArrayVec;
 use tutti_graph::MAX_TRANSPORT_CHANGES;
 use tutti_types::{BarNumber, Seconds, TimeSignature};
+use tutti_ump::System;
 
 /// A transport that takes effect part-way into a chunk: from frame
 /// [`offset`](Self::offset) of the chunk on, the transport is
@@ -380,7 +381,7 @@ impl TransportInfo {
     /// assert_eq!(t.samples_to_nearest_clock(), Some(-250));
     /// ```
     pub fn samples_to_nearest_clock(&self) -> Option<i32> {
-        const CLOCKS_PER_QUARTER: f64 = 24.0;
+        let clocks_per_quarter = f64::from(System::TIMING_CLOCKS_PER_QUARTER);
         let (quarters, tempo, rate) = (self.position.quarters, self.timing.tempo, self.sample_rate);
         if !(is_usable(quarters) && is_usable(tempo) && is_usable(rate))
             || tempo <= 0.0
@@ -388,8 +389,8 @@ impl TransportInfo {
         {
             return None;
         }
-        let clocks = quarters * CLOCKS_PER_QUARTER;
-        let to_nearest = (clocks.round() - clocks) / CLOCKS_PER_QUARTER;
+        let clocks = quarters * clocks_per_quarter;
+        let to_nearest = (clocks.round() - clocks) / clocks_per_quarter;
         let frames = (to_nearest * 60.0 / tempo * rate).round();
         // Half a clock at the slowest tempo a plugin is told is far inside
         // `i32`; a pathological tempo saturates rather than wraps.
@@ -595,7 +596,7 @@ mod tests {
     /// Mutation: `clocks.ceil()` for `clocks.round()` (the *next* clock) →
     /// the -250 case reads 750 → fails. Mutation: drop the `tempo <= 0.0`
     /// gate → a zero tempo saturates to `Some(i32::MAX)` → fails. Mutation:
-    /// `/ CLOCKS_PER_QUARTER` dropped from `to_nearest` → 24 times too far →
+    /// `/ clocks_per_quarter` dropped from `to_nearest` → 24 times too far →
     /// fails.
     #[test]
     fn samples_to_nearest_clock_is_the_signed_distance_on_the_24_ppq_grid() {

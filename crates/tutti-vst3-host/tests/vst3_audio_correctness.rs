@@ -809,7 +809,7 @@ fn note_on_takes_effect_at_its_sample_offset() {
     for &offset in &[0usize, 1, 63, 128, 511] {
         let midi = [(
             at(offset as u32),
-            midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000),
+            midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, midi::MID_VELOCITY),
         )];
         let rendered = render(&mut inst, FRAMES, &midi, None, |_, _, _| 0.0);
         let ch0 = &rendered.out[0][0];
@@ -957,7 +957,7 @@ fn full_midi_event_list_survives_intact() {
         ),
         (
             at(0),
-            midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000),
+            midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, midi::MID_VELOCITY),
         ),
         (
             at(100),
@@ -1205,7 +1205,7 @@ fn note_expression_reaches_the_plugin_with_its_value() {
     // types and values at distinct offsets.
     let midi = [(
         at(0),
-        midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000),
+        midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, midi::MID_VELOCITY),
     )];
     let expressions = [
         NoteExpressionValue {
@@ -1316,7 +1316,7 @@ fn a_per_note_pitch_bend_reaches_the_plugin_as_tuning() {
     let midi = [
         (
             at(0),
-            midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000),
+            midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, midi::MID_VELOCITY),
         ),
         quarter_bend(64),
         (

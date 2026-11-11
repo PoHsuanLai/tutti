@@ -83,7 +83,8 @@ fn for_topology_dispatches_and_rejects_unsupported() {
         assert_eq!(
             VbapPannerNode::for_topology(&topology)
                 .unwrap()
-                .num_channels(),
+                .channels()
+                .count() as usize,
             usize::from(width)
         );
     }

@@ -327,7 +327,7 @@ fn a_source_uses_at_most_a_tuple() {
     for (name, layout, _) in presets() {
         let most = match layout.mode() {
             PanningMode::Horizontal => 2,
-            PanningMode::Surround => 3,
+            PanningMode::Spherical => 3,
         };
         for a in -180..180 {
             for e in (-90..=90).step_by(5) {

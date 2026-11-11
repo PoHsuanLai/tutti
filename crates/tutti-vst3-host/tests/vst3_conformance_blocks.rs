@@ -549,7 +549,7 @@ fn note_lifecycle_across_blocks_is_spec_clean() {
         let on = [
             (
                 at(0),
-                midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000),
+                midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, midi::MID_VELOCITY),
             ),
             (
                 at(64),
@@ -705,7 +705,7 @@ fn midi_event_list_is_spec_clean() {
     let midi = [
         (
             at(200),
-            midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000),
+            midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, midi::MID_VELOCITY),
         ),
         (
             at(50),

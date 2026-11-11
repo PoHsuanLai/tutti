@@ -28,8 +28,8 @@ use std::sync::atomic::Ordering;
 use tutti_curve::Law;
 use tutti_graph::NodeKey;
 use tutti_graph::{
-    Editor, EventOut, GraphBuilder, IntoNode, NodeParts, PARAM_DECLICK, ParamIn, ParamRange,
-    Prepare, Renderer,
+    Editor, EventOut, GraphBuilder, IntoNode, NodeParts, PARAM_DECLICK, ParamIn, ParamNode,
+    ParamRange, Prepare, Renderer,
 };
 use tutti_modulation::{Amount, Clock, ControlProgram, Layer, LayerId, Polarity, Wave};
 use tutti_nodes::automation::ControlLaneNode;
@@ -216,7 +216,7 @@ fn cases() -> Vec<Case> {
             make: |w, v| {
                 let n = svf(w);
                 if let Some(v) = v {
-                    n.set_frequency(Hz::new(v));
+                    assert!(n.param_set().set(UnitParam::Cutoff, v));
                 }
                 parts_of(n)
             },
@@ -229,7 +229,7 @@ fn cases() -> Vec<Case> {
             make: |w, v| {
                 let n = svf(w);
                 if let Some(v) = v {
-                    n.set_q(Q::new(v));
+                    assert!(n.param_set().set(UnitParam::Q, v));
                 }
                 parts_of(n)
             },
@@ -242,7 +242,7 @@ fn cases() -> Vec<Case> {
             make: |w, v| {
                 let n = ladder(w);
                 if let Some(v) = v {
-                    n.set_frequency(Hz::new(v));
+                    assert!(n.param_set().set(UnitParam::Cutoff, v));
                 }
                 parts_of(n)
             },
@@ -255,7 +255,7 @@ fn cases() -> Vec<Case> {
             make: |w, v| {
                 let n = ladder(w);
                 if let Some(v) = v {
-                    n.set_resonance(Resonance::new(v));
+                    assert!(n.param_set().set(UnitParam::Q, v));
                 }
                 parts_of(n)
             },
@@ -268,7 +268,7 @@ fn cases() -> Vec<Case> {
             make: |w, v| {
                 let n = ladder(w);
                 if let Some(v) = v {
-                    n.set_drive(Drive::new(v));
+                    assert!(n.param_set().set(UnitParam::Drive, v));
                 }
                 parts_of(n)
             },
@@ -485,7 +485,7 @@ fn block_rate_cases() -> Vec<Case> {
                     Q::new(0.707),
                 );
                 if let Some(v) = v {
-                    n.set_gain_db(Db::new(v));
+                    assert!(n.param_set().set(UnitParam::GainDb, v));
                 }
                 parts_of(n)
             },

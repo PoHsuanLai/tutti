@@ -40,16 +40,13 @@ use tutti_plugin_types::{
 use crate::types::RtNoteExpressions;
 use tutti_midi_protocol::{
     PitchBendSensitivity, bend_u32_to_signed_f32, midi1, narrow, u16_to_unit_f32, u32_to_unit_f32,
-    widen, widen_message,
+    widen, widen_bytes,
 };
 use tutti_plugin_types::PerNoteBendRanges;
 use tutti_ump::{
-    Address, Attribute, Message, Midi1Parser, MidiChannel, MidiGroup, NoteNumber,
-    RegisteredPerNoteController, SysexAssembler, SysexStep, Ump, Unknown, Voice1, Voice2, decode,
+    Address, CCNumber, Message, MidiChannel, MidiGroup, NoteNumber, SysexAssembler, SysexStep, U7,
+    Ump, Unknown, Voice1, Voice2, decode,
 };
-// Only the tests name it; the conversion code works in raw CC numbers.
-#[cfg(test)]
-use tutti_ump::CCNumber;
 
 /// A single CLAP event, wrapping the underlying `#[repr(C)]` `clap_sys`
 /// struct so a pointer to its `header` field can be cast back by the plugin.
@@ -111,16 +108,23 @@ fn emitted_bend_range_semitones() -> f64 {
     f64::from(PitchBendSensitivity::MPE_DEFAULT.as_semitones_f32())
 }
 
-/// Maps a MIDI-2 per-note controller index to the CLAP note-expression it
-/// corresponds to (volume = 7, pan = 10, brightness = 74), or `None` when
-/// there's no standard counterpart.
+/// The per-note controllers with a CLAP note expression, and the expression
+/// each is: the one table both directions read (registered and assignable
+/// per-note controllers share the number).
+const PER_NOTE_EXPRESSIONS: [(CCNumber, NoteExpressionType); 3] = [
+    (CCNumber::VOLUME, NoteExpressionType::Volume),
+    (CCNumber::PAN, NoteExpressionType::Pan),
+    (CCNumber::BRIGHTNESS, NoteExpressionType::Brightness),
+];
+
+/// Maps a MIDI-2 per-note controller number to the CLAP note-expression it
+/// corresponds to ([`PER_NOTE_EXPRESSIONS`]), or `None` when there's no
+/// standard counterpart.
 fn per_note_controller_expression(index: u8) -> Option<NoteExpressionType> {
-    match index {
-        7 => Some(NoteExpressionType::Volume),
-        10 => Some(NoteExpressionType::Pan),
-        74 => Some(NoteExpressionType::Brightness),
-        _ => None,
-    }
+    PER_NOTE_EXPRESSIONS
+        .iter()
+        .find(|(controller, _)| controller.get() == index)
+        .map(|&(_, expression)| expression)
 }
 
 /// The MIDI 1.0 bytes of a poly pressure packet, narrowed to 7 bits when it is
@@ -214,12 +218,10 @@ fn expression_value_to_unit(ty: NoteExpressionType, value: f64) -> f32 {
 
 /// Inverse of [`per_note_controller_expression`].
 fn expression_to_per_note_controller_index(ty: NoteExpressionType) -> Option<u8> {
-    match ty {
-        NoteExpressionType::Volume => Some(7),
-        NoteExpressionType::Pan => Some(10),
-        NoteExpressionType::Brightness => Some(74),
-        _ => None,
-    }
+    PER_NOTE_EXPRESSIONS
+        .iter()
+        .find(|&&(_, expression)| expression == ty)
+        .map(|(controller, _)| controller.get())
 }
 
 /// A CLAP event struct's size for its `clap_event_header::size` field.
@@ -251,24 +253,12 @@ const fn header_size<T>() -> u32 {
 /// recoverable, misaddressing it is not.
 ///
 /// Shared by the note-on, note-off and note-expression paths.
-/// A MIDI 2.0 channel voice packet on group 1 and `channel` (masked to 4 bits).
-fn voice2(channel: u8, voice: Voice2) -> Ump {
-    Message::Midi2(
-        Address {
-            group: MidiGroup::FIRST,
-            channel: MidiChannel::masked(channel),
-        },
-        voice,
-    )
-    .into()
+/// A MIDI 2.0 channel voice packet on group 1 and `channel`.
+fn voice2(channel: MidiChannel, voice: Voice2) -> Ump {
+    Message::Midi2(Address::first(channel), voice).into()
 }
 
-/// A note number, masked to the 7 bits MIDI carries.
-fn note_number(note: u8) -> NoteNumber {
-    NoteNumber::new(note & 0x7F).unwrap_or_default()
-}
-
-fn note_address(channel: i16, key: i16, note_id: i32) -> Option<(u8, u8)> {
+fn note_address(channel: i16, key: i16, note_id: i32) -> Option<(MidiChannel, NoteNumber)> {
     if channel >= 0 && key >= 0 {
         // Both are `>= 0` in this branch (the wildcard case returned above),
         // and each is masked to the width MIDI wants, so neither narrowing can
@@ -277,9 +267,12 @@ fn note_address(channel: i16, key: i16, note_id: i32) -> Option<(u8, u8)> {
             clippy::cast_possible_truncation,
             reason = "non-negative in this branch and masked to 4/7 bits"
         )]
-        Some((channel as u8 & 0x0F, key as u8 & 0x7F))
+        Some((
+            MidiChannel::masked(channel as u8),
+            NoteNumber::masked(key as u8),
+        ))
     } else {
-        note_id_to_channel_note(note_id).map(|(channel, note)| (channel.get(), note.get()))
+        note_id_to_channel_note(note_id)
     }
 }
 
@@ -402,9 +395,9 @@ impl ClapEvent {
         reason = "velocity is clamped to 0..=127 before the cast"
     )]
     fn into_midi_dialect(self, key_pressure: Option<[u8; 3]>) -> Option<Self> {
-        let (status, e) = match self {
-            ClapEvent::NoteOn(e) => (0x90, e),
-            ClapEvent::NoteOff(e) => (0x80, e),
+        let (note_on, e) = match self {
+            ClapEvent::NoteOn(e) => (true, e),
+            ClapEvent::NoteOff(e) => (false, e),
             ClapEvent::NoteExpression(e) => {
                 return Some(ClapEvent::midi(e.header.time, 0, key_pressure?));
             }
@@ -412,13 +405,19 @@ impl ClapEvent {
         };
         // A note-on at velocity 0 is a note-off in MIDI 1.0, so the lowest
         // audible note-on velocity is 1.
-        let floor = if status == 0x90 { 1.0 } else { 0.0 };
-        let velocity = (e.velocity * 127.0).round().clamp(floor, 127.0) as u8;
+        let floor = if note_on { 1.0 } else { 0.0 };
+        let velocity = U7::new((e.velocity * 127.0).round().clamp(floor, 127.0) as u8)?;
         let (channel, key) = (u8::try_from(e.channel).ok()?, u8::try_from(e.key).ok()?);
+        let (channel, note) = (MidiChannel::masked(channel), NoteNumber::masked(key));
+        let voice = if note_on {
+            Voice1::NoteOn { note, velocity }
+        } else {
+            Voice1::NoteOff { note, velocity }
+        };
         Some(ClapEvent::midi(
             e.header.time,
             0,
-            [status | (channel & 0x0F), key & 0x7F, velocity],
+            voice.bytes(channel).padded(),
         ))
     }
 
@@ -648,7 +647,7 @@ impl ClapEvent {
                 NoteExpressionType::Tuning,
                 channel,
                 note,
-                f64::from(bend_u32_to_signed_f32(value)) * f64::from(ranges.semitones(ch)),
+                f64::from(bend_u32_to_signed_f32(value)) * f64::from(ranges.semitones(channel)),
             ),
             // Poly (per-key) pressure is a CLAP pressure expression, `[0, 1]`.
             Voice2::PolyPressure { note, value } => Self::per_note_expression(
@@ -677,39 +676,16 @@ impl ClapEvent {
                     expression_value_from_unit(ty, u32_to_unit_f32(value)),
                 )
             }
-            // A registered per-note controller carries its meaning by name. Only
-            // Volume, Pan and Brightness have a CLAP expression; the others
-            // (Modulation, Breath, Pitch 7.25, ...) have none.
+            // A registered per-note controller carries its meaning by name, the
+            // same number table: only Volume, Pan and Brightness have a CLAP
+            // expression; the others (Modulation, Breath, Pitch 7.25, ...) have
+            // none.
             Voice2::RegisteredPerNote {
                 note,
                 controller,
                 value,
             } => {
-                let ty = match controller {
-                    RegisteredPerNoteController::Volume => NoteExpressionType::Volume,
-                    RegisteredPerNoteController::Pan => NoteExpressionType::Pan,
-                    RegisteredPerNoteController::Brightness => NoteExpressionType::Brightness,
-                    RegisteredPerNoteController::Modulation
-                    | RegisteredPerNoteController::Breath
-                    | RegisteredPerNoteController::Pitch
-                    | RegisteredPerNoteController::Balance
-                    | RegisteredPerNoteController::Expression
-                    | RegisteredPerNoteController::SoundVariation
-                    | RegisteredPerNoteController::Timbre
-                    | RegisteredPerNoteController::ReleaseTime
-                    | RegisteredPerNoteController::AttackTime
-                    | RegisteredPerNoteController::DecayTime
-                    | RegisteredPerNoteController::VibratoRate
-                    | RegisteredPerNoteController::VibratoDepth
-                    | RegisteredPerNoteController::VibratoDelay
-                    | RegisteredPerNoteController::SoundController10
-                    | RegisteredPerNoteController::ReverbSend
-                    | RegisteredPerNoteController::Effects2Depth
-                    | RegisteredPerNoteController::ChorusSend
-                    | RegisteredPerNoteController::Effects4Depth
-                    | RegisteredPerNoteController::Effects5Depth
-                    | RegisteredPerNoteController::Reserved(_) => return None,
-                };
+                let ty = per_note_controller_expression(controller.number())?;
                 Self::per_note_expression(
                     time,
                     ty,
@@ -775,11 +751,7 @@ impl ClapEvent {
                     offset: e.header.time,
                     ump: voice2(
                         channel,
-                        Voice2::NoteOn {
-                            note: note_number(note),
-                            velocity: unit_f32_to_u16(e.velocity as f32),
-                            attribute: Attribute::None,
-                        },
+                        Voice2::note_on(note, unit_f32_to_u16(e.velocity as f32)),
                     ),
                 })
             }
@@ -791,11 +763,7 @@ impl ClapEvent {
                     offset: e.header.time,
                     ump: voice2(
                         channel,
-                        Voice2::NoteOff {
-                            note: note_number(note),
-                            velocity: unit_f32_to_u16(e.velocity as f32),
-                            attribute: Attribute::None,
-                        },
+                        Voice2::note_off(note, unit_f32_to_u16(e.velocity as f32)),
                     ),
                 })
             }
@@ -803,13 +771,10 @@ impl ClapEvent {
             // Promote the MIDI-1 bytes to Channel Voice 2 at this edge, so the
             // engine sees one vocabulary regardless of source — matching the
             // hardware input path. System / SysEx messages pass through unchanged.
-            ClapEvent::Midi(e) => {
-                let message = Midi1Parser::message(MidiGroup::FIRST, &e.data)?;
-                Some(WireMidi {
-                    offset: e.header.time,
-                    ump: Ump::from(widen_message(message)),
-                })
-            }
+            ClapEvent::Midi(e) => Some(WireMidi {
+                offset: e.header.time,
+                ump: widen_bytes(MidiGroup::FIRST, &e.data)?,
+            }),
             _ => None,
         }
     }
@@ -845,7 +810,7 @@ impl ClapEvent {
                 voice2(
                     channel,
                     Voice2::PerNotePitchBend {
-                        note: note_number(note),
+                        note,
                         value: signed_f32_to_bend_u32(signed),
                     },
                 )
@@ -853,7 +818,7 @@ impl ClapEvent {
             NoteExpressionType::Pressure => voice2(
                 channel,
                 Voice2::PolyPressure {
-                    note: note_number(note),
+                    note,
                     value: unit_f32_to_u32(e.value as f32),
                 },
             ),
@@ -862,7 +827,7 @@ impl ClapEvent {
                 voice2(
                     channel,
                     Voice2::AssignablePerNote {
-                        note: note_number(note),
+                        note,
                         controller: index,
                         // VOLUME arrives as a CLAP gain (`0 < x <= 4`), not a
                         // unit fraction — convert before the unit encoding, or a
@@ -1965,6 +1930,7 @@ impl EventSink for OutputEventList {
 mod tests {
     use super::*;
     use tutti_fixtures::midi as fx;
+
     use tutti_graph::Offset;
     use tutti_plugin_types::{MIDI_STACK_CAPACITY, RT_MIDI_CAPACITY};
     use tutti_types::Samples;
@@ -1973,6 +1939,16 @@ mod tests {
     /// A block long enough for every offset these tests use (the largest is
     /// 9,999).
     const BLOCK: usize = 10_000;
+
+    /// The `note_id` the spec gives `(channel, note)`: `channel * 128 + note`
+    /// (`tutti_ump::NoteId`), not read from `note_id_for`, the code under test.
+    fn spec_note_id(channel: u8, note: u8) -> i32 {
+        i32::try_from(
+            tutti_ump::NoteId::from_channel_note(MidiChannel::of(channel), NoteNumber::of(note))
+                .raw(),
+        )
+        .unwrap()
+    }
 
     /// The offset `k` frames into the block.
     fn at(k: u32) -> Offset {
@@ -1990,9 +1966,7 @@ mod tests {
     fn midi1_event(bytes: &[u8]) -> UmpAt {
         (
             at(0),
-            tutti_ump::Midi1Parser::message(tutti_ump::MidiGroup::FIRST, bytes)
-                .expect("a MIDI 1.0 message")
-                .into(),
+            fx::from_midi1_bytes(bytes).expect("a MIDI 1.0 message"),
         )
     }
 
@@ -2116,7 +2090,7 @@ mod tests {
         for _ in 0..room.saturating_sub(1) {
             tight.add_midi(&(
                 at(0),
-                fx::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000),
+                fx::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, fx::MID_VELOCITY),
             ));
         }
         let before = tight.events().len();
@@ -2128,12 +2102,12 @@ mod tests {
         while tight.events().len() < cap {
             tight.add_midi(&(
                 at(0),
-                fx::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 61, 0x8000),
+                fx::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 61, fx::MID_VELOCITY),
             ));
         }
         tight.add_midi(&(
             at(0),
-            fx::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 62, 0x8000),
+            fx::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 62, fx::MID_VELOCITY),
         ));
         assert_eq!(tight.events().len(), cap);
         assert_eq!(tight.events.capacity(), cap, "did not grow");
@@ -2260,7 +2234,7 @@ mod tests {
         match message(&midi) {
             Message::Midi2(address, Voice2::NoteOff { note, velocity, .. }) => {
                 assert_eq!((address.channel.get(), note.get()), (3, 61));
-                assert_eq!(velocity, 0x8000);
+                assert_eq!(velocity, fx::MID_VELOCITY);
             }
             other => panic!("expected a MIDI 2.0 Note Off, got {other:?}"),
         }
@@ -2452,11 +2426,71 @@ mod tests {
         );
     }
 
+    /// **A note on a MIDI-dialect note port is `clap_event_midi` bytes built
+    /// from its typed message**: the status of its kind and channel, the key,
+    /// and the velocity at 7 bits by rounding (not the truncation of
+    /// `narrow`), a Note On never below 1 (0 is a Note Off in MIDI 1.0), a
+    /// Note Off's own velocity kept.
+    ///
+    /// Mutations (each run, each fails here): the Note On floor of 1.0 set to
+    /// 0.0 (the tiny velocity stages 0); the Note Off built as a `Voice1::NoteOn`
+    /// (status `0x9n`); the channel replaced by `MidiChannel::FIRST` (the
+    /// channel-3 case); `round` replaced by `floor` (the first case stages 63).
+    #[test]
+    fn notes_on_a_midi_dialect_port_stage_exact_bytes() {
+        let staged = |words: &[u32]| staged_midi(words, true);
+        // Note On, channel 3, key 60, velocity 0x8000: 63.5 rounds to 64.
+        assert_eq!(
+            staged(&[0x4093_3C00, 0x8000_0000]),
+            vec![(11, [0x93, 60, 64])]
+        );
+        // A velocity that rounds to 0 is raised to 1.
+        assert_eq!(
+            staged(&[0x4093_3C00, 0x0001_0000]),
+            vec![(11, [0x93, 60, 1])]
+        );
+        // The top of both ranges.
+        assert_eq!(
+            staged(&[0x409F_7F00, 0xFFFF_0000]),
+            vec![(11, [0x9F, 127, 127])]
+        );
+        // Note Off keeps its release velocity, zero included.
+        assert_eq!(
+            staged(&[0x4083_3C00, 0xFFFF_0000]),
+            vec![(11, [0x83, 60, 127])]
+        );
+        assert_eq!(
+            staged(&[0x4083_3C00, 0x0000_0000]),
+            vec![(11, [0x83, 60, 0])]
+        );
+    }
+
+    /// **A CLAP note event's `channel` and `key` are masked to 4 and 7 bits**
+    /// on the way to a packet, and a negative wildcard is not masked but
+    /// resolved through the `note_id`.
+    ///
+    /// Mutations (each run, each fails here): the channel replaced by
+    /// `MidiChannel::FIRST` (channel 0); the key replaced by `NoteNumber::of(0)`.
+    #[test]
+    fn a_note_events_channel_and_key_are_masked_to_the_wire_widths() {
+        // Channel 19 is 3 in 4 bits, key 130 is 2 in 7 bits.
+        let wire = ClapEvent::note_on(5, 19, 130, 0.5).to_midi().unwrap();
+        assert_eq!(
+            fx::key_of(&wire.ump),
+            Some((MidiChannel::of(3), NoteNumber::of(2), true))
+        );
+        let wire = ClapEvent::note_off(5, 31, 255, 0.5).to_midi().unwrap();
+        assert_eq!(
+            fx::key_of(&wire.ump),
+            Some((MidiChannel::of(15), NoteNumber::of(127), false))
+        );
+    }
+
     /// **A registered per-note controller maps to its own CLAP expression**:
     /// Volume (7) to volume at its gain, Pan (10) to pan, Brightness (74) to
     /// brightness, each at its own value.
     ///
-    /// Mutation (run): `RegisteredPerNoteController::Brightness` mapped to
+    /// Mutation (run): the `PER_NOTE_EXPRESSIONS` Brightness row mapped to
     /// `NoteExpressionType::Pan` → the brightness case fails.
     #[test]
     fn registered_per_note_controllers_map_to_their_own_expressions() {
@@ -2517,7 +2551,7 @@ mod tests {
                 ));
                 list.add_midi(&(
                     at(frame),
-                    fx::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000),
+                    fx::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, fx::MID_VELOCITY),
                 ));
             }
             list
@@ -2712,7 +2746,7 @@ mod tests {
         let mut list = InputEventList::new();
         list.add_midi(&(
             at(17),
-            fx::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000),
+            fx::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, fx::MID_VELOCITY),
         ));
         list.clamp_times(64);
         assert_eq!(first_time(&list), 17);
@@ -2759,7 +2793,7 @@ mod tests {
         let mut list = InputEventList::new();
         list.add_midi(&(
             at(10),
-            fx::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000),
+            fx::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, fx::MID_VELOCITY),
         ));
         list.add_transport(5, transport(100.0, 0.5));
         list.add_transport(20, transport(90.0, -0.25));
@@ -2882,6 +2916,28 @@ mod tests {
         );
     }
 
+    /// **A plugin's Volume, Pan and Brightness expressions go back as the
+    /// assignable per-note controllers 7, 10 and 74** (the spec's numbers, not
+    /// read from the host's table), and the dimensions with none are dropped.
+    ///
+    /// Mutation (run): the reverse lookup `find` matching `Volume` whatever
+    /// the expression → Pan and Brightness come back as 7 → fails.
+    #[test]
+    fn expressions_return_as_their_per_note_controller_numbers() {
+        let controller = |ty| {
+            let clap =
+                ClapEvent::per_note_expression(0, ty, MidiChannel::of(1), NoteNumber::of(64), 0.5)?;
+            match message(&clap.to_midi()?) {
+                Message::Midi2(_, Voice2::AssignablePerNote { controller, .. }) => Some(controller),
+                other => panic!("expected a per-note controller, got {other:?}"),
+            }
+        };
+        assert_eq!(controller(NoteExpressionType::Volume), Some(7));
+        assert_eq!(controller(NoteExpressionType::Pan), Some(10));
+        assert_eq!(controller(NoteExpressionType::Brightness), Some(74));
+        assert_eq!(controller(NoteExpressionType::Expression), None);
+    }
+
     #[test]
     fn clap_volume_round_trips_and_saturates_boost_l6() {
         use tutti_midi_protocol::u32_to_unit_f32;
@@ -2928,10 +2984,7 @@ mod tests {
             ClapEvent::NoteExpression(e) => {
                 assert_eq!(e.header.time, 11);
                 assert_eq!(e.expression_id, CLAP_NOTE_EXPRESSION_TUNING);
-                assert_eq!(
-                    e.note_id,
-                    note_id_for(MidiChannel::of(3), NoteNumber::of(60))
-                );
+                assert_eq!(e.note_id, spec_note_id(3, 60));
                 assert_eq!(e.channel, 3);
                 assert_eq!(e.key, 60);
                 let expected = 0.5 * emitted_bend_range_semitones();
@@ -3042,10 +3095,7 @@ mod tests {
         {
             ClapEvent::NoteExpression(e) => {
                 assert_eq!(e.expression_id, CLAP_NOTE_EXPRESSION_PRESSURE);
-                assert_eq!(
-                    e.note_id,
-                    note_id_for(MidiChannel::of(2), NoteNumber::of(48))
-                );
+                assert_eq!(e.note_id, spec_note_id(2, 48));
                 assert!((e.value - 0.75).abs() < 0.01, "pressure {}", e.value);
             }
             _ => panic!("expected NoteExpression(Pressure)"),
@@ -3071,10 +3121,7 @@ mod tests {
         {
             ClapEvent::NoteExpression(e) => {
                 assert_eq!(e.expression_id, CLAP_NOTE_EXPRESSION_BRIGHTNESS);
-                assert_eq!(
-                    e.note_id,
-                    note_id_for(MidiChannel::of(1), NoteNumber::of(64))
-                );
+                assert_eq!(e.note_id, spec_note_id(1, 64));
                 assert!((e.value - 0.6).abs() < 0.01, "brightness {}", e.value);
             }
             _ => panic!("expected NoteExpression(Brightness)"),
@@ -3103,7 +3150,7 @@ mod tests {
     fn from_midi_event_note_on_decodes_to_typed_note_on() {
         let midi = (
             at(7),
-            fx::note_on(MidiGroup::FIRST, MidiChannel::of(1), 60, 0x8000),
+            fx::note_on(MidiGroup::FIRST, MidiChannel::of(1), 60, fx::MID_VELOCITY),
         );
         match ClapEvent::from_midi(&midi, &PerNoteBendRanges::default()).expect("note on converts")
         {
@@ -3113,10 +3160,7 @@ mod tests {
                 assert_eq!(e.key, 60);
                 assert!((e.velocity - 0.5).abs() < 0.01, "velocity {}", e.velocity);
                 // The note_id must match what the expression path mints.
-                assert_eq!(
-                    e.note_id,
-                    note_id_for(MidiChannel::of(1), NoteNumber::of(60))
-                );
+                assert_eq!(e.note_id, spec_note_id(1, 60));
             }
             _ => panic!("expected NoteOn"),
         }
@@ -3138,7 +3182,7 @@ mod tests {
         let on = ClapEvent::from_midi(
             &(
                 at(0),
-                fx::note_on(MidiGroup::FIRST, MidiChannel::of(CH), KEY, 0x8000),
+                fx::note_on(MidiGroup::FIRST, MidiChannel::of(CH), KEY, fx::MID_VELOCITY),
             ),
             &PerNoteBendRanges::default(),
         )
@@ -3184,10 +3228,7 @@ mod tests {
             off.note_id, on.note_id,
             "the note-off must release the voice the note-on opened"
         );
-        assert_eq!(
-            on.note_id,
-            note_id_for(MidiChannel::of(CH), NoteNumber::of(KEY))
-        );
+        assert_eq!(on.note_id, spec_note_id(CH, KEY));
     }
 
     /// `note_id_for` only covers channels 0..16 and keys 0..128. A
@@ -3625,20 +3666,16 @@ mod tests {
             .collect()
     }
 
+    /// The SysEx7 packets of `payload`, each `time` frames into the block.
     fn sysex_packets(payload: &[u8], time: u32) -> Vec<UmpAt> {
-        let mut out = Vec::new();
-        out.extend(
-            tutti_ump::Sysex7Packets::checked(MidiGroup::FIRST, payload).expect("a 7-bit payload"),
-        );
-        out.into_iter().map(|ump| (at(time), ump)).collect()
+        fx::sysex7_packets(payload)
+            .into_iter()
+            .map(|ump| (at(time), ump))
+            .collect()
     }
 
     fn framed(payload: &[u8]) -> Vec<u8> {
         tutti_ump::frame(payload).collect()
-    }
-
-    fn sysex_payload(len: usize) -> Vec<u8> {
-        (0..len).map(|i| (i * 5 % 0x7F) as u8).collect()
     }
 
     /// **A multi-packet SysEx reaches the plugin as one `MIDI_SYSEX` event**,
@@ -3649,8 +3686,8 @@ mod tests {
     /// alone (no reassembly) → SysEx dropped → fails.
     #[test]
     fn a_multi_packet_sysex_reaches_the_plugin_whole() {
-        let body = sysex_payload(50);
-        let long = sysex_payload(MIDI_STACK_CAPACITY * 6 + 30);
+        let body = fx::sysex_payload(50);
+        let long = fx::sysex_payload(MIDI_STACK_CAPACITY * 6 + 30);
         let long_packets = sysex_packets(&long, 1);
         let (first, second) = long_packets.split_at(MIDI_STACK_CAPACITY);
         let short = sysex_packets(&body, 3);
@@ -3691,7 +3728,7 @@ mod tests {
 
         let mut list = InputEventList::new();
         list.reserve_sysex();
-        let over = sysex_payload(SYSEX_MESSAGE_CAPACITY - 1); // framed: one past
+        let over = fx::sysex_payload(SYSEX_MESSAGE_CAPACITY - 1); // framed: one past
         for block in sysex_packets(&over, 0).chunks(MIDI_STACK_CAPACITY) {
             list.clear();
             list.add_midi_events(block);
@@ -3699,8 +3736,8 @@ mod tests {
         }
         assert_eq!(list.sysex_dropped(), 1);
 
-        let a = sysex_payload(30);
-        let b = sysex_payload(12);
+        let a = fx::sysex_payload(30);
+        let b = fx::sysex_payload(12);
         let mut midi = sysex_packets(&a, 0);
         midi.truncate(2);
         midi.extend(sysex_packets(&b, 2));

@@ -412,11 +412,11 @@ fn no_delivery_arrives_after_the_callback_is_withdrawn() {
     let notes = [
         (
             Offset::ZERO,
-            midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000),
+            midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, midi::MID_VELOCITY),
         ),
         (
             Offset::ZERO,
-            midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 64, 0x8000),
+            midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 64, midi::MID_VELOCITY),
         ),
     ];
     au.send_midi(&notes);

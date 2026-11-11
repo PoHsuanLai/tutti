@@ -7,9 +7,11 @@
 //! `apply_spread`.
 
 use tutti_graph::Node;
+use tutti_graph::ParamNode;
 use tutti_graph::contract::drive;
 use tutti_nodes::VbapPannerNode;
-use tutti_types::{Azimuth, Elevation, SampleRate, Spread, StereoWidth};
+use tutti_nodes::testing::aim;
+use tutti_types::{Azimuth, Elevation, SampleRate, UnitParam};
 
 /// One block of one frame, written to `out`.
 ///
@@ -38,18 +40,21 @@ fn tick(node: &mut VbapPannerNode, input: [f32; 2], out: &mut [f32]) {
 #[test]
 fn spread_reaches_the_stereo_width_path() {
     let mut node = VbapPannerNode::surround_5_1();
-    node.controls().set_width(StereoWidth::new(1.0f32)); // the width>0 branch
-    node.controls()
-        .set_position(Azimuth::new(0.0f32), Elevation::new(0.0f32));
+    node.param_set().set(UnitParam::StereoWidth, 1.0); // the width>0 branch
+    aim(
+        &node.param_set(),
+        Azimuth::new(0.0f32),
+        Elevation::new(0.0f32),
+    );
 
-    let mut out = vec![0.0f32; node.num_channels()];
+    let mut out = vec![0.0f32; node.channels().count() as usize];
 
-    node.controls().set_spread(Spread::new(0.0f32));
+    node.param_set().set(UnitParam::Spread, 0.0);
     Node::reset(&mut node);
     tick(&mut node, [1.0, 1.0], &mut out);
     let point_lit = out.iter().filter(|g| g.abs() > 0.05).count();
 
-    node.controls().set_spread(Spread::new(1.0f32));
+    node.param_set().set(UnitParam::Spread, 1.0);
     Node::reset(&mut node);
     tick(&mut node, [1.0, 1.0], &mut out);
     let diffuse_lit = out.iter().filter(|g| g.abs() > 0.05).count();

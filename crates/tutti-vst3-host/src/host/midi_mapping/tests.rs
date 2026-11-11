@@ -24,8 +24,8 @@ fn at(k: u32) -> Offset {
 fn empty_mapping_returns_none() {
     let m = MidiCcMapping::empty();
     assert!(m.is_empty());
-    assert_eq!(m.lookup(0, 1), None);
-    assert_eq!(m.lookup(0, CTRL_PITCH_BEND), None);
+    assert_eq!(m.lookup(MidiChannel::of(0), 1), None);
+    assert_eq!(m.lookup(MidiChannel::of(0), CTRL_PITCH_BEND), None);
 }
 
 #[test]
@@ -40,17 +40,16 @@ fn lookup_resolves_mapped_slots() {
         any_mapped: true,
     };
     assert!(!m.is_empty());
-    assert_eq!(m.lookup(0, 1), Some(100));
-    assert_eq!(m.lookup(3, CTRL_PITCH_BEND), Some(200));
+    assert_eq!(m.lookup(MidiChannel::of(0), 1), Some(100));
+    assert_eq!(m.lookup(MidiChannel::of(3), CTRL_PITCH_BEND), Some(200));
     // Unmapped slot on a channel that has other mappings.
-    assert_eq!(m.lookup(0, 7), None);
-    // Out-of-range channel / controller.
-    assert_eq!(m.lookup(16, 1), None);
-    assert_eq!(m.lookup(0, NUM_CONTROLLERS), None);
+    assert_eq!(m.lookup(MidiChannel::of(0), 7), None);
+    // Out-of-range controller (a channel above 15 is not a `MidiChannel`).
+    assert_eq!(m.lookup(MidiChannel::of(0), NUM_CONTROLLERS), None);
 }
 
 /// Run a `(Offset, Ump)` through `midi_to_mapped_controller`.
-fn mapped(event: &UmpAt) -> Option<(u8, usize, f64)> {
+fn mapped(event: &UmpAt) -> Option<(MidiChannel, usize, f64)> {
     midi_to_mapped_controller(&event.1)
 }
 
@@ -67,7 +66,7 @@ fn cc_decodes_to_controller_and_normalized_value() {
         ),
     ))
     .unwrap();
-    assert_eq!(ch, 2);
+    assert_eq!(ch, MidiChannel::of(2));
     assert_eq!(ctrl, 74);
     assert!((value - 64.0 / 127.0).abs() < 0.01);
 }
@@ -83,7 +82,7 @@ fn channel_pressure_decodes_to_aftertouch() {
         ),
     ))
     .unwrap();
-    assert_eq!(ch, 0);
+    assert_eq!(ch, MidiChannel::of(0));
     assert_eq!(ctrl, CTRL_AFTERTOUCH);
     assert!((value - 1.0).abs() < 0.01);
 }
@@ -99,7 +98,7 @@ fn pitch_bend_center_is_half() {
         ),
     ))
     .unwrap();
-    assert_eq!(ch, 4);
+    assert_eq!(ch, MidiChannel::of(4));
     assert_eq!(ctrl, CTRL_PITCH_BEND);
     // Center bend maps to the middle of the unit range.
     assert!((value - 0.5).abs() < 0.01);
@@ -110,7 +109,7 @@ fn note_on_is_not_a_mapped_controller() {
     assert_eq!(
         mapped(&(
             Offset::ZERO,
-            midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000)
+            midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, midi::MID_VELOCITY)
         )),
         None
     );
@@ -142,7 +141,7 @@ fn route_cc_events_splits_mapped_cc_into_params() {
         ),
         (
             at(0),
-            midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000),
+            midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, midi::MID_VELOCITY),
         ),
         (
             at(0),
@@ -445,7 +444,7 @@ fn cc_route_first_block_is_allocation_free_without_warmup() {
         ),
         (
             at(0),
-            midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000),
+            midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, midi::MID_VELOCITY),
         ),
     ];
     let mut host = ParameterChanges::reserved(1, 4);
@@ -779,7 +778,7 @@ fn route_cc_events_is_allocation_free_after_warmup() {
         ),
         (
             at(0),
-            midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000),
+            midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, midi::MID_VELOCITY),
         ),
         (
             at(64),
@@ -819,11 +818,10 @@ fn sysex_in(list: &EventList) -> Vec<Vec<u8>> {
 }
 
 fn sysex_packets(payload: &[u8]) -> Vec<UmpAt> {
-    let mut out = Vec::new();
-    out.extend(
-        tutti_ump::Sysex7Packets::checked(MidiGroup::FIRST, payload).expect("a 7-bit payload"),
-    );
-    out.into_iter().map(|ump| (Offset::ZERO, ump)).collect()
+    midi::sysex7_packets(payload)
+        .into_iter()
+        .map(|ump| (Offset::ZERO, ump))
+        .collect()
 }
 
 /// **A plugin with a CC mapping gets a SysEx spanning blocks whole**: a
@@ -938,7 +936,7 @@ fn a_packet_is_mapped_by_what_it_decodes_to() {
         },
     ));
     // Full scale widens to 0xFFFF_FFFF, which is exactly 1.0.
-    assert_eq!(mapped(&one_cc), Some((2, 1, 1.0)));
+    assert_eq!(mapped(&one_cc), Some((MidiChannel::of(2), 1, 1.0)));
     assert_eq!(
         mapped(&(Offset::ZERO, midi::timing_clock(MidiGroup::FIRST))),
         None

@@ -50,8 +50,18 @@ pub use vbap_mix::{bass_send, vbap_mix};
 
 use std::f64::consts::TAU;
 
-use tutti_graph::{Cx, ForkByClone, IntoNode, Io, Node, NodeParts, Prepare, Shape, Status};
-use tutti_types::{Amplitude, ChannelLayout, Hz, Phase, SampleRate};
+use tutti_graph::{
+    Cx, ForkByClone, IntoNode, Io, Node, NodeParts, ParamSet, Prepare, Shape, Status,
+};
+use tutti_types::{Amplitude, Azimuth, ChannelLayout, Elevation, Hz, Phase, SampleRate, UnitParam};
+
+/// Aims a panner at `azimuth` and `elevation` through its [`ParamSet`]: the
+/// two writes a test makes together. The panner wraps the bearing and clamps
+/// the height when it reads them.
+pub fn aim(params: &ParamSet, azimuth: Azimuth, elevation: Elevation) {
+    params.set(UnitParam::Azimuth, azimuth.get());
+    params.set(UnitParam::Elevation, elevation.get());
+}
 
 /// Each stimulus node is its own [`IntoNode`]: forkable by clone, as none
 /// shares state with its clones.

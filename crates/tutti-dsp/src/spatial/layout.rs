@@ -32,7 +32,7 @@ const ENERGY_EPSILON: f32 = 1e-10;
 const POWER_FLOOR: f64 = 1e-10;
 
 /// A speaker above or below the horizontal plane by more than this many
-/// degrees makes a layout [`PanningMode::Surround`].
+/// degrees makes a layout [`PanningMode::Spherical`].
 const PLANE_TOLERANCE_DEG: f64 = 1e-6;
 
 /// An elevation retreat that lands within this many degrees of the horizontal
@@ -44,9 +44,9 @@ const ELEVATION_SNAP_DEG: f64 = 1e-4;
 pub enum PanningMode {
     /// Every speaker is on the horizontal plane: a source lies between two.
     Horizontal,
-    /// At least one speaker has height: a source lies inside a triangle of
-    /// three.
-    Surround,
+    /// At least one speaker has height, so the speakers lie on a sphere, not
+    /// a ring: a source lies inside a triangle of three.
+    Spherical,
 }
 
 /// A pair or triplet of speakers a source can be placed between, with the
@@ -120,13 +120,13 @@ impl SpeakerLayout {
             .map(|d| (f64::from(d.azimuth.get()), f64::from(d.elevation.get())))
             .collect();
         let mode = if degrees.iter().any(|&(_, e)| e.abs() > PLANE_TOLERANCE_DEG) {
-            PanningMode::Surround
+            PanningMode::Spherical
         } else {
             PanningMode::Horizontal
         };
         let required = match mode {
             PanningMode::Horizontal => 2,
-            PanningMode::Surround => 3,
+            PanningMode::Spherical => 3,
         };
         if count < required {
             return Err(SpeakerGeometryError::InsufficientSpeakers {
@@ -152,7 +152,7 @@ impl SpeakerLayout {
                     })
                     .collect()
             }
-            PanningMode::Surround => select::triplets(&degrees)
+            PanningMode::Spherical => select::triplets(&degrees)
                 .into_iter()
                 .filter_map(|[i, j, k]| {
                     let column = |s: u16| {

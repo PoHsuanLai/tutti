@@ -77,7 +77,7 @@ fn feed_dispatches_transport_events_like_the_direct_methods() {
 
     // A non-transport event is ignored and reported as unrecognised.
     assert!(!clock.feed(
-        &midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000),
+        &midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, midi::MID_VELOCITY),
         ts
     ));
 }

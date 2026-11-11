@@ -1,13 +1,19 @@
 use super::error::{Result, VbapError};
 use tutti_dsp::{SpeakerLayout, VbapGains};
-use tutti_graph::{Cx, IntoNode, Io, Node, NodeParts, Prepare, Shape, Status};
+use tutti_graph::{Cx, IntoNode, Io, Node, NodeParts, ParamNode, ParamSet, Prepare, Shape, Status};
 use tutti_types::{Azimuth, Direction, Elevation, Param, SampleRate, Spread, StereoWidth, Tail};
-use tutti_types::{ChannelLayout, ChannelTopology, Fold};
+use tutti_types::{ChannelLayout, ChannelTopology, Fold, UnitParam};
 
 use super::panner::VbapPanner;
-use crate::ramp::LastGood;
-use crate::spatial::SpatialTarget;
-use crate::spatial::fork::{FreshFork, fresh_fork_parts};
+use crate::ramp::{LastGood, block_driven};
+
+/// The params a [`VbapPannerNode`] lets the graph modulate, in port order.
+pub const VBAP_PANNER_PARAMS: [UnitParam; 4] = [
+    UnitParam::Azimuth,
+    UnitParam::Elevation,
+    UnitParam::Spread,
+    UnitParam::StereoWidth,
+];
 
 /// The last finite value each control cell held.
 #[derive(Clone, Copy, Debug)]
@@ -26,8 +32,11 @@ struct Held {
 /// [`atmos_7_1_4`](Self::atmos_7_1_4)), or from a topology
 /// ([`for_topology`](Self::for_topology), with
 /// [`ChannelTopology::for_width`] for a bare count). It is a graph node
-/// (`tutti_graph::Node`); inserting it hands back its
-/// [`VbapPannerControls`], which move the source lock-free while it renders.
+/// (`tutti_graph::Node` and [`ParamNode`]); inserting it hands back its
+/// [`ParamSet`] ([`UnitParam::Azimuth`], [`Elevation`](UnitParam::Elevation),
+/// [`Spread`](UnitParam::Spread) and [`StereoWidth`](UnitParam::StereoWidth)),
+/// which move the source lock-free while it renders, and a graph's control
+/// lanes may drive all four ([`VBAP_PANNER_PARAMS`]).
 /// Position changes are de-zippered over 50 ms. A mono source presents the
 /// same sample on both inputs. Rendering allocates nothing and reports no
 /// latency.
@@ -35,12 +44,12 @@ struct Held {
 /// # Examples
 ///
 /// ```
-/// use tutti_types::{Azimuth, Elevation, SampleRate, Samples};
-/// use tutti_graph::{Prepare, Solo};
+/// use tutti_types::{SampleRate, Samples, UnitParam};
+/// use tutti_graph::{ParamNode, Prepare, Solo};
 /// use tutti_nodes::VbapPannerNode;
 ///
 /// let panner = VbapPannerNode::quad();
-/// panner.controls().set_position(Azimuth(45.0), Elevation(0.0)); // front-left
+/// panner.param_set().set(UnitParam::Azimuth, 45.0); // front-left
 ///
 /// let mut solo = Solo::new(panner, Prepare::new(SampleRate(48_000.0), Samples(64)));
 /// let out = solo.render_input(&[&[1.0; 64], &[1.0; 64]]);
@@ -91,9 +100,17 @@ struct Held {
 pub struct VbapPannerNode {
     panner: VbapPanner,
     layout: ChannelLayout,
-    /// The position, spread and width cells — the same ones the
-    /// [`VbapPannerControls`] an insert hands back write.
-    controls: VbapPannerControls,
+    /// Bearing, wrapped onto the circle when read.
+    azimuth: Param<Azimuth>,
+    /// Height, clamped to the poles when read.
+    elevation: Param<Elevation>,
+    /// VBAP diffusion, `0..1`: how many speakers a point source is smeared
+    /// across. See [`Spread`]: it is not a `Mix`, because it blends nothing.
+    spread: Param<Spread>,
+    /// Mid/side stereo width, `0..`: 1.0 is unchanged, above 1.0 is wider
+    /// than the source. NOT an `Amplitude` despite the matching range: it
+    /// scales the SIDE component against the mid. See [`StereoWidth`].
+    width: Param<StereoWidth>,
     sample_rate: SampleRate,
     /// Output-channel → speaker gather map, derived from the bed's topology
     /// (see `speaker_of_channel`). `None` marks a channel no speaker feeds:
@@ -113,94 +130,6 @@ pub struct VbapPannerNode {
     /// de-zipper smoother is recursive, so one NaN or ±∞ bearing would leave
     /// it NaN for good; a non-finite write reads as unchanged instead.
     good: Held,
-}
-
-/// The live controls of a [`VbapPannerNode`]: its position, [`Spread`] and
-/// [`StereoWidth`], shared with the node and every clone of these controls.
-///
-/// Inserting the node hands these back ([`IntoNode::Controls`]);
-/// [`VbapPannerNode::controls`] returns them too. Every method is lock-free
-/// and may be called from any thread while the node renders; a write lands
-/// on the node's next block, which reads every cell once.
-///
-/// Its own type rather than a [`tutti_graph::ParamSet`]: `UnitParam` has no
-/// bearing, height, spread or width to address these by, and a position is
-/// a pair (a bearing wraps, a height saturates), which a single `f32` address
-/// would split.
-#[derive(Clone, Debug)]
-pub struct VbapPannerControls {
-    target: SpatialTarget,
-    /// VBAP diffusion, `0..1`: how many speakers a point source is smeared
-    /// across. See [`Spread`] — it is not a `Mix`, because it blends nothing.
-    spread: Param<Spread>,
-    /// Mid/side stereo width, `0..` — 1.0 is unchanged, above 1.0 is wider
-    /// than the source. NOT an `Amplitude` despite the matching range: it
-    /// scales the SIDE component against the mid. See [`StereoWidth`].
-    width: Param<StereoWidth>,
-}
-
-impl VbapPannerControls {
-    fn new() -> Self {
-        Self {
-            target: SpatialTarget::new(),
-            spread: Param::new(Spread::POINT),
-            width: Param::new(StereoWidth::NATURAL),
-        }
-    }
-
-    /// Sets the source's position, in degrees. Lock-free.
-    ///
-    /// - `azimuth`: bearing, wraps onto the circle (0 = front, 90 = left, -90 = right)
-    /// - `elevation`: height, clamped to -90..90 (0 = ear level, positive = up)
-    ///
-    /// The panner glides to the new position over 50 ms.
-    pub fn set_position(&self, azimuth: impl Into<Azimuth>, elevation: impl Into<Elevation>) {
-        self.target.store(azimuth, elevation);
-    }
-
-    /// Returns the commanded bearing in [`Azimuth`] degrees: the target, not
-    /// the smoothed position the panner is currently at.
-    pub fn azimuth(&self) -> Azimuth {
-        self.target.azimuth.load()
-    }
-
-    /// Returns the commanded height in [`Elevation`] degrees: the target, not
-    /// the smoothed position the panner is currently at.
-    pub fn elevation(&self) -> Elevation {
-        self.target.elevation.load()
-    }
-
-    /// Sets the VBAP diffusion, clamped to [`Spread`]'s `0..1`: 0 is a point
-    /// source, 1 smears it across the whole speaker field. Lock-free.
-    pub fn set_spread(&self, spread: impl Into<Spread>) {
-        self.spread.store(Spread::new_clamped(spread.into().get()));
-    }
-
-    /// Returns the current [`Spread`], `0..1`.
-    pub fn spread(&self) -> Spread {
-        self.spread.load()
-    }
-
-    /// Sets the mid/side width applied to a stereo input, clamped to
-    /// [`StereoWidth`]: 0 is mono, 1 unchanged, above 1 wider than the source.
-    /// Lock-free.
-    pub fn set_width(&self, width: impl Into<StereoWidth>) {
-        self.width
-            .store(StereoWidth::new_clamped(width.into().get()));
-    }
-
-    /// Returns the current [`StereoWidth`].
-    pub fn width(&self) -> StereoWidth {
-        self.width.load()
-    }
-
-    /// Stop sharing every cell, keeping the values (see `Param::detach`):
-    /// what a fork's copy does, so it renders the placement it was taken at.
-    fn detach(&mut self) {
-        self.target.detach();
-        self.spread.detach();
-        self.width.detach();
-    }
 }
 
 impl VbapPannerNode {
@@ -262,7 +191,10 @@ impl VbapPannerNode {
         Self {
             panner: VbapPanner::new(speakers),
             layout,
-            controls: VbapPannerControls::new(),
+            azimuth: Param::new(Azimuth::FRONT),
+            elevation: Param::new(Elevation::LEVEL),
+            spread: Param::new(Spread::POINT),
+            width: Param::new(StereoWidth::NATURAL),
             sample_rate: SampleRate::SR_48K,
             speaker_of_channel: speaker_of_channel(&topology),
             ramp_from: None,
@@ -277,26 +209,29 @@ impl VbapPannerNode {
         }
     }
 
-    /// Returns the node's controls: a handle sharing its cells, the same one
-    /// inserting the node hands back.
-    pub fn controls(&self) -> VbapPannerControls {
-        self.controls.clone()
+    /// The output channels: the speaker layout's width.
+    pub fn channels(&self) -> ChannelLayout {
+        self.layout
     }
 
-    /// Returns the output channel count: the speaker layout's width.
-    pub fn num_channels(&self) -> usize {
-        self.layout.count() as usize
-    }
-
-    /// The position and spread cells, read once: non-finite values held at
-    /// the last finite one, the bearing wrapped and the height and spread
-    /// clamped.
+    /// The position and spread cells, read once (`driven` is the block's
+    /// azimuth, elevation and spread where a lane drives them): non-finite
+    /// values held at the last finite one, the bearing wrapped and the height
+    /// and spread clamped.
     #[inline]
-    fn placement(&mut self) -> (Direction, Spread) {
-        let aim = self.controls.target.load();
-        let azimuth = self.good.azimuth.read(aim.azimuth.get());
-        let elevation = self.good.elevation.read(aim.elevation.get());
-        let spread = self.good.spread.read(self.controls.spread.load().get());
+    fn placement(&mut self, [azimuth, elevation, spread]: [Option<f32>; 3]) -> (Direction, Spread) {
+        let azimuth = self
+            .good
+            .azimuth
+            .read(azimuth.unwrap_or_else(|| self.azimuth.load().get()));
+        let elevation = self
+            .good
+            .elevation
+            .read(elevation.unwrap_or_else(|| self.elevation.load().get()));
+        let spread = self
+            .good
+            .spread
+            .read(spread.unwrap_or_else(|| self.spread.load().get()));
         (
             Direction::new(Azimuth(azimuth).wrap(), Elevation::new_clamped(elevation)),
             Spread::new_clamped(spread),
@@ -310,9 +245,14 @@ impl VbapPannerNode {
     /// once per block. The end point is remembered as the next block's start,
     /// which is what keeps consecutive blocks continuous: a block boundary is
     /// a point on the ramp, never a step.
-    fn block_gains(&mut self, frames: usize) -> (VbapGains, VbapGains) {
-        let (aim, spread) = self.placement();
-        let width = StereoWidth(self.good.width.read(self.controls.width.load().get()));
+    fn block_gains(&mut self, frames: usize, driven: [Option<f32>; 4]) -> (VbapGains, VbapGains) {
+        let [azimuth, elevation, spread, width] = driven;
+        let (aim, spread) = self.placement([azimuth, elevation, spread]);
+        let width = StereoWidth(
+            self.good
+                .width
+                .read(width.unwrap_or_else(|| self.width.load().get())),
+        );
         let from = match self.ramp_from {
             Some(gains) => gains,
             None => self.panner.gains_now(width, spread),
@@ -364,6 +304,7 @@ impl Node for VbapPannerNode {
     fn shape(&self) -> Shape {
         Shape::audio(ChannelLayout::STEREO, self.layout)
             .with_tail(Tail::Unknown)
+            .with_params(&VBAP_PANNER_PARAMS)
             // A ramped gain pair per output channel and frame, and the
             // smoother stepped per frame: measured 10.9 ns per frame and
             // channel at stereo, 4.3 at 5.1 while the source moves, against
@@ -390,7 +331,10 @@ impl Node for VbapPannerNode {
         if size == 0 {
             return Status::Modified;
         }
-        let (from, to) = self.block_gains(size);
+        // A lane that drives a param overrides its cell for the block, at the
+        // block's last frame (`block_driven`).
+        let driven = [0, 1, 2, 3].map(|k| block_driven(&io, k));
+        let (from, to) = self.block_gains(size, driven);
         let (inputs, mut outputs) = io.split();
         let (left, right) = (&inputs.get(0)[..size], &inputs.get(1)[..size]);
         for (ch, out) in outputs.iter_mut().enumerate() {
@@ -412,31 +356,53 @@ impl Node for VbapPannerNode {
         // `set_position` → `reset` with no block between resumes there.
         // Dropping `ramp_from` discards the previous block's gains along with
         // the ramp.
-        let (aim, _) = self.placement();
+        let (aim, _) = self.placement([None; 3]);
         self.panner.reset_state(aim);
         self.ramp_from = None;
     }
+
+    fn param_base(&self, k: usize) -> Option<f32> {
+        match k {
+            0 => Some(self.azimuth.load().get()),
+            1 => Some(self.elevation.load().get()),
+            2 => Some(self.spread.load().get()),
+            3 => Some(self.width.load().get()),
+            _ => None,
+        }
+    }
 }
 
-impl FreshFork for VbapPannerNode {
-    /// A clone with its position, spread and width cells detached (at their
-    /// values now) and its ramp reset.
+impl ParamNode for VbapPannerNode {
+    /// The bearing, height, spread and width.
+    fn param_set(&self) -> ParamSet {
+        ParamSet::builder()
+            .param(UnitParam::Azimuth, self.azimuth.cell())
+            .param(UnitParam::Elevation, self.elevation.cell())
+            .param(UnitParam::Spread, self.spread.cell())
+            .param(UnitParam::StereoWidth, self.width.cell())
+            .build()
+    }
+
+    /// A clone with its four cells detached (at their values now) and its
+    /// ramp reset.
     fn fork_fresh(&self) -> Self {
         let mut fork = self.clone();
-        fork.controls.detach();
+        fork.azimuth.detach();
+        fork.elevation.detach();
+        fork.spread.detach();
+        fork.width.detach();
         Node::reset(&mut fork);
         fork
     }
 }
 
-/// Inserted with its [`VbapPannerControls`], and a fork that shares nothing
-/// with it and starts from the placement last set through them.
+/// Inserted with its [`ParamSet`] as its controls and a fork from the values
+/// last set through it ([`tutti_graph::param_parts`]).
 impl IntoNode for VbapPannerNode {
-    type Controls = VbapPannerControls;
+    type Controls = ParamSet;
 
-    fn into_parts(self) -> NodeParts<VbapPannerControls> {
-        let controls = self.controls();
-        fresh_fork_parts(self, controls)
+    fn into_parts(self) -> NodeParts<ParamSet> {
+        tutti_graph::param_parts(self)
     }
 }
 

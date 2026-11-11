@@ -10,9 +10,11 @@
 //! land in the next block as a ramp that ends on the per-frame solve.
 
 use tutti_graph::Node;
+use tutti_graph::ParamNode;
 use tutti_graph::contract::{drive, prepared};
 use tutti_nodes::VbapPannerNode;
-use tutti_types::{Azimuth, ChannelLayout, ChannelTopology, Elevation, SampleRate, StereoWidth};
+use tutti_nodes::testing::aim;
+use tutti_types::{Azimuth, ChannelLayout, ChannelTopology, Elevation, SampleRate, UnitParam};
 
 const BLOCK: usize = 64;
 const EDGE_TOL: f32 = 1e-5;
@@ -54,7 +56,7 @@ fn dc_stream(
     blocks: usize,
     per_block: impl Fn(&VbapPannerNode, usize),
 ) -> Vec<Vec<f32>> {
-    let mut stream = vec![Vec::new(); node.num_channels()];
+    let mut stream = vec![Vec::new(); node.channels().count() as usize];
     for b in 0..blocks {
         per_block(node, b);
         for (s, out) in stream.iter_mut().zip(process(node, input)) {
@@ -101,9 +103,8 @@ fn the_gain_ramp_is_continuous_across_block_boundaries() {
                 )))
                 .unwrap(),
             );
-            node.controls().set_width(StereoWidth(width));
-            node.controls()
-                .set_position(Azimuth(-20.0), Elevation::LEVEL);
+            node.param_set().set(UnitParam::StereoWidth, width);
+            aim(&node.param_set(), Azimuth(-20.0), Elevation::LEVEL);
             Node::reset(&mut node);
             let stream = dc_stream(&mut node, &dc_block(1.0, 0.5), 24, |n, b| {
                 // A 140° jump, then a sweep that moves the target every block.
@@ -112,7 +113,7 @@ fn the_gain_ramp_is_continuous_across_block_boundaries() {
                 } else {
                     120.0 - 15.0 * (b - 11) as f32
                 };
-                n.controls().set_position(Azimuth(az), Elevation::LEVEL);
+                aim(&n.param_set(), Azimuth(az), Elevation::LEVEL);
             });
             assert_boundaries_are_on_the_ramp(
                 &stream,
@@ -135,13 +136,12 @@ fn the_gain_ramp_is_continuous_across_block_boundaries() {
 #[test]
 fn a_width_crossing_the_fold_threshold_crossfades() {
     let mut node = prep(VbapPannerNode::stereo());
-    node.controls()
-        .set_position(Azimuth(-15.0), Elevation::LEVEL);
+    aim(&node.param_set(), Azimuth(-15.0), Elevation::LEVEL);
     Node::reset(&mut node);
     // L only: the two-source branch and the fold weigh it differently.
     let stream = dc_stream(&mut node, &dc_block(1.0, 0.0), 8, |n, b| {
-        n.controls()
-            .set_width(StereoWidth(if b % 2 == 0 { 1.0 } else { 0.0 }));
+        n.param_set()
+            .set(UnitParam::StereoWidth, if b % 2 == 0 { 1.0 } else { 0.0 });
     });
     // The crossings must actually move the output, or the continuity check
     // below would pass on a node that ignores width.
@@ -177,7 +177,7 @@ fn a_width_crossing_the_fold_threshold_crossfades() {
 fn a_position_change_lands_in_the_next_block_as_a_ramp() {
     let setup = || {
         let mut n = prep(VbapPannerNode::surround_5_1());
-        n.controls().set_position(Azimuth(0.0), Elevation::LEVEL);
+        aim(&n.param_set(), Azimuth(0.0), Elevation::LEVEL);
         Node::reset(&mut n);
         n
     };
@@ -191,8 +191,7 @@ fn a_position_change_lands_in_the_next_block_as_a_ramp() {
         assert_eq!(out[c][0], s, "ch {c} moved without a change");
     }
 
-    node.controls()
-        .set_position(Azimuth(90.0), Elevation::LEVEL);
+    aim(&node.param_set(), Azimuth(90.0), Elevation::LEVEL);
     let out = process(&mut node, &input);
 
     let mut reference = setup();
@@ -200,9 +199,7 @@ fn a_position_change_lands_in_the_next_block_as_a_ramp() {
     for _ in 0..BLOCK {
         tick(&mut reference, [0.8, 0.8], &mut frame);
     }
-    reference
-        .controls()
-        .set_position(Azimuth(90.0), Elevation::LEVEL);
+    aim(&reference.param_set(), Azimuth(90.0), Elevation::LEVEL);
     for _ in 0..BLOCK {
         tick(&mut reference, [0.8, 0.8], &mut frame);
     }

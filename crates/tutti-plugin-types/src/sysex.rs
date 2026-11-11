@@ -135,10 +135,6 @@ mod tests {
         done
     }
 
-    fn payload(len: usize) -> Vec<u8> {
-        (0..len).map(|i| (i % 0x7F) as u8).collect()
-    }
-
     /// **The plugin assembler is sized for the longest message carried across
     /// blocks of a full MIDI cap each, without allocating**, and its buffer's
     /// address never moves. (The assembler's own policy is
@@ -150,7 +146,7 @@ mod tests {
     /// fit → counted → fails.
     #[test]
     fn the_longest_message_fits_without_allocating() {
-        let body = payload(SYSEX7_MAX_PAYLOAD);
+        let body = tutti_fixtures::midi::sysex_payload(SYSEX7_MAX_PAYLOAD);
         let pkts = packets(MidiGroup::FIRST, &body);
         let mut asm = sysex_assembler();
         assert_eq!(asm.max_message(), SYSEX_MESSAGE_CAPACITY);
@@ -192,7 +188,7 @@ mod tests {
     fn a_plugins_sysex_of_any_length_arrives_whole() {
         let mut asm = sysex_assembler();
         for len in [0, 1, 6, 7, 14, 17, 40, 63 * 6] {
-            let body = payload(len);
+            let body = tutti_fixtures::midi::sysex_payload(len);
             for message in [framed(&body), body.clone()] {
                 let mut out = RtMidiEvents::new();
                 assert!(push_sysex(&mut out, 9, &message), "{len} bytes");
@@ -236,7 +232,7 @@ mod tests {
     fn a_message_past_the_pool_is_dropped_whole() {
         let mut out = RtMidiEvents::new();
         let room = out.remaining();
-        let too_long = payload(room * 6 + 1);
+        let too_long = tutti_fixtures::midi::sysex_payload(room * 6 + 1);
         assert!(!push_sysex(&mut out, 0, &too_long));
         assert!(out.is_empty(), "no partial message");
         assert!(out.is_overflowed());
@@ -245,11 +241,24 @@ mod tests {
         let mut out = RtMidiEvents::new();
         assert!(out.push(WireMidi {
             offset: 0,
-            ump: tutti_fixtures::midi::note_on(MidiGroup::FIRST, MidiChannel::of(0), 60, 0x8000)
+            ump: tutti_fixtures::midi::note_on(
+                MidiGroup::FIRST,
+                MidiChannel::of(0),
+                60,
+                tutti_fixtures::midi::MID_VELOCITY
+            )
         }));
-        assert!(!push_sysex(&mut out, 0, &payload((room - 1) * 6 + 1)));
+        assert!(!push_sysex(
+            &mut out,
+            0,
+            &tutti_fixtures::midi::sysex_payload((room - 1) * 6 + 1)
+        ));
         assert_eq!(out.len(), 1);
-        assert!(push_sysex(&mut out, 0, &payload((room - 1) * 6)));
+        assert!(push_sysex(
+            &mut out,
+            0,
+            &tutti_fixtures::midi::sysex_payload((room - 1) * 6)
+        ));
         assert_eq!(out.len(), room);
     }
 }

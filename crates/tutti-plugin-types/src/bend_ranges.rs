@@ -2,7 +2,7 @@
 
 use tutti_midi_protocol::PitchBendSensitivity;
 use tutti_ump::Ump;
-use tutti_ump::{Message, Rpn, Voice2, decode};
+use tutti_ump::{Message, MidiChannel, Rpn, Voice2, decode};
 
 /// The per-note pitch-bend range of each MIDI channel: what a per-note pitch
 /// bend's full scale means, in semitones, for a receiver that turns one into
@@ -33,7 +33,7 @@ use tutti_ump::{Message, Rpn, Voice2, decode};
 /// use tutti_ump::{MidiChannel, MidiGroup, Rpn};
 ///
 /// let mut ranges = PerNoteBendRanges::default();
-/// assert_eq!(ranges.semitones(3), 48.0);
+/// assert_eq!(ranges.semitones(MidiChannel::of(3)), 48.0);
 /// let rpn = registered_rpn(
 ///     MidiGroup::FIRST,
 ///     MidiChannel::of(3),
@@ -41,8 +41,8 @@ use tutti_ump::{Message, Rpn, Voice2, decode};
 ///     PitchBendSensitivity::of(24).to_rpn_bits(),
 /// );
 /// assert!(ranges.observe(&rpn));
-/// assert_eq!(ranges.semitones(3), 24.0);
-/// assert_eq!(ranges.semitones(4), 48.0);
+/// assert_eq!(ranges.semitones(MidiChannel::of(3)), 24.0);
+/// assert_eq!(ranges.semitones(MidiChannel::of(4)), 48.0);
 /// ```
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PerNoteBendRanges([PitchBendSensitivity; 16]);
@@ -55,13 +55,13 @@ impl Default for PerNoteBendRanges {
 }
 
 impl PerNoteBendRanges {
-    /// The range on `channel` (0-indexed; the low four bits are read).
-    pub fn get(&self, channel: u8) -> PitchBendSensitivity {
-        self.0[usize::from(channel & 0x0F)]
+    /// The range on `channel`.
+    pub fn get(&self, channel: MidiChannel) -> PitchBendSensitivity {
+        self.0[usize::from(channel.get())]
     }
 
     /// The range on `channel`, in semitones.
-    pub fn semitones(&self, channel: u8) -> f32 {
+    pub fn semitones(&self, channel: MidiChannel) -> f32 {
         self.get(channel).as_semitones_f32()
     }
 
@@ -72,7 +72,7 @@ impl PerNoteBendRanges {
     pub fn observe(&mut self, ump: &Ump) -> bool {
         match per_note_bend_sensitivity(ump) {
             Some((channel, range)) => {
-                self.0[usize::from(channel & 0x0F)] = range;
+                self.0[usize::from(channel.get())] = range;
                 true
             }
             None => false,
@@ -82,17 +82,13 @@ impl PerNoteBendRanges {
 
 /// The channel and range of a per-note bend sensitivity message (RPN
 /// #00/07), or `None` for any other packet.
-fn per_note_bend_sensitivity(ump: &Ump) -> Option<(u8, PitchBendSensitivity)> {
+fn per_note_bend_sensitivity(ump: &Ump) -> Option<(MidiChannel, PitchBendSensitivity)> {
     let Ok(Message::Midi2(address, Voice2::Registered { bank, index, value })) = decode(*ump)
     else {
         return None;
     };
-    (Rpn::new(bank, index) == Rpn::PER_NOTE_PITCH_BEND_SENSITIVITY).then(|| {
-        (
-            address.channel.get(),
-            PitchBendSensitivity::from_rpn_bits(value),
-        )
-    })
+    (Rpn::new(bank, index) == Rpn::PER_NOTE_PITCH_BEND_SENSITIVITY)
+        .then(|| (address.channel, PitchBendSensitivity::from_rpn_bits(value)))
 }
 
 #[cfg(test)]

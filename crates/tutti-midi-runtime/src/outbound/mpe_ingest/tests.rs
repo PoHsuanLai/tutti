@@ -309,15 +309,19 @@ fn an_mcm_resets_its_zones_bend_ranges() {
     for ev in ingest.translated(&bend_sensitivity(13, 12)) {
         receiver.observe(&ev.1);
     }
-    assert_eq!(receiver.semitones(13), 12.0);
+    assert_eq!(receiver.semitones(tutti_ump::MidiChannel::of(13)), 12.0);
     for ev in ingest.translated(&mcm) {
         receiver.observe(&ev.1);
     }
     for channel in 12..=14 {
-        assert_eq!(receiver.semitones(channel), 48.0, "channel {channel}");
+        assert_eq!(
+            receiver.semitones(tutti_ump::MidiChannel::of(channel)),
+            48.0,
+            "channel {channel}"
+        );
     }
     assert_eq!(
-        receiver.semitones(1),
+        receiver.semitones(tutti_ump::MidiChannel::of(1)),
         12.0,
         "the lower zone keeps its range"
     );
@@ -406,7 +410,11 @@ fn a_member_channels_bend_range_becomes_every_members_per_note_range() {
             12..=14 => 24.0,
             _ => 48.0,
         };
-        assert_eq!(receiver.semitones(channel), want, "channel {channel}");
+        assert_eq!(
+            receiver.semitones(tutti_ump::MidiChannel::of(channel)),
+            want,
+            "channel {channel}"
+        );
     }
 }
 

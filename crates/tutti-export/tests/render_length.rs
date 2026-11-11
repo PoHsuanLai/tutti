@@ -5,7 +5,7 @@ mod support;
 
 use crate::support::{render_normalized_to_file, render_to_buffers, render_to_file};
 use tutti_export::{
-    ConfigError, Error, ExportConfig, FrozenClock, Normalize, RenderConfig, RenderGraph,
+    ConfigError, Error, ExportConfig, FrozenClock, Normalize, RenderConfig, RenderGraph, Setup,
 };
 use tutti_graph::GraphBuilder;
 use tutti_nodes::testing::Const;
@@ -19,7 +19,7 @@ fn graph() -> RenderGraph {
     let id = g.add(Const::frame(&[0.5, 0.5]));
     g.pipe_output(id);
     let (editor, executor) = g.build(RenderGraph::prepare(RATE)).expect("builds");
-    RenderGraph::new(editor, executor).expect("paired")
+    RenderGraph::assemble(editor, executor, Setup::new()).expect("paired")
 }
 
 fn config(duration_seconds: f64) -> ExportConfig {

@@ -33,7 +33,7 @@ mod support;
 use crate::support::render_to_file;
 use tutti_export::{
     ChannelLayout, EncodeConfig, ExportConfig, FlacLevel, Format, FrozenClock, IntDepth, Pcm,
-    RenderConfig, RenderGraph,
+    RenderConfig, RenderGraph, Setup,
 };
 use tutti_graph::GraphBuilder;
 use tutti_nodes::testing::Const;
@@ -48,7 +48,7 @@ fn built(g: GraphBuilder) -> RenderGraph {
     let (editor, executor) = g
         .build(RenderGraph::prepare(tutti_types::SampleRate(SR)))
         .expect("builds");
-    RenderGraph::new(editor, executor).expect("built together")
+    RenderGraph::assemble(editor, executor, Setup::new()).expect("built together")
 }
 
 /// A graph emitting the constant `level` on both channels.

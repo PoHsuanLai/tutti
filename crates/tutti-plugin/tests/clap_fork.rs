@@ -626,6 +626,24 @@ fn live_graph(client: PluginClient) -> (Editor, tutti_graph::Executor) {
     (live, exec)
 }
 
+/// The master of `live` forked offline at `rate`: the pair an export
+/// assembles.
+fn fork_pair(live: &Editor, rate: SampleRate) -> (Editor, tutti_graph::Executor) {
+    live.fork(
+        ForkTarget::Master,
+        ForkMode::Offline,
+        tutti_export::RenderGraph::prepare(rate),
+    )
+    .expect("a graph holding a plugin forks")
+}
+
+/// [`fork_pair`], assembled as an export does.
+fn fork_graph(live: &Editor, rate: SampleRate) -> tutti_export::RenderGraph {
+    let (editor, executor) = fork_pair(live, rate);
+    tutti_export::RenderGraph::assemble(editor, executor, tutti_export::Setup::new())
+        .expect("forked together")
+}
+
 /// `config`'s render of `graph` into memory under a control nobody cancels.
 fn render_to_buffers(
     mut graph: tutti_export::RenderGraph,
@@ -643,12 +661,11 @@ fn render_to_buffers(
 }
 
 /// Export the plugin through `tutti_export` exactly as an export does: fork
-/// the live graph offline with `RenderGraph::fork`, render half a second to
+/// the live graph offline (`fork_graph`), render half a second to
 /// buffers.
 fn export_through_a_fork(live: &Editor) -> tutti_export::Result<tutti_export::Rendered> {
     let rate = SampleRate(SAMPLE_RATE);
-    let graph = tutti_export::RenderGraph::fork(live, ForkTarget::Master, ForkMode::Offline, rate)
-        .expect("a graph holding a plugin forks");
+    let graph = fork_graph(live, rate);
     let config = tutti_export::ExportConfig {
         render: tutti_export::RenderConfig {
             sample_rate: rate,
@@ -741,13 +758,7 @@ fn a_clip_note_reaches_an_exported_plugin_on_its_frame() {
         sample_rate: SampleRate(SAMPLE_RATE),
         ..Default::default()
     }));
-    let graph = tutti_export::RenderGraph::fork(
-        &live,
-        ForkTarget::Master,
-        ForkMode::Offline,
-        SampleRate(SAMPLE_RATE),
-    )
-    .expect("a graph holding a plugin forks");
+    let graph = fork_graph(&live, SampleRate(SAMPLE_RATE));
     // The pipeline holds one chunk, the export block. (The probe reports a
     // latency of its own in every mode but delays audio only in `Latency`.)
     let chunk = tutti_export::GRAPH_MAX_BLOCK;
@@ -839,13 +850,7 @@ fn a_chord_larger_than_a_chunk_ends_and_the_export_counts_the_loss() {
             sample_rate: SampleRate(SAMPLE_RATE),
             ..Default::default()
         }));
-        let graph = tutti_export::RenderGraph::fork(
-            &live,
-            ForkTarget::Master,
-            ForkMode::Offline,
-            SampleRate(SAMPLE_RATE),
-        )
-        .expect("a graph holding a plugin forks");
+        let graph = fork_graph(&live, SampleRate(SAMPLE_RATE));
         let config = tutti_export::ExportConfig {
             render: tutti_export::RenderConfig {
                 sample_rate: SampleRate(SAMPLE_RATE),
@@ -1284,8 +1289,7 @@ fn an_export_is_aligned_when_the_plugin_latency_moves_offline() {
         .topology
         .set_outputs(vec![Source::Node(OutPort { node: key, port: 0 })]);
 
-    let graph = tutti_export::RenderGraph::fork(&live, ForkTarget::Master, ForkMode::Offline, rate)
-        .expect("the graph forks");
+    let graph = fork_graph(&live, rate);
     let latency = graph.reported_latency();
     assert_eq!(
         latency,
@@ -1370,17 +1374,19 @@ fn an_export_of_plugins_is_bit_identical_on_a_pool() {
     ]);
     let export = |pooled: bool| {
         let rate = SampleRate(SAMPLE_RATE);
-        let mut graph =
-            tutti_export::RenderGraph::fork(&live, ForkTarget::Master, ForkMode::Offline, rate)
-                .expect("a graph holding plugins forks");
+        let (editor, mut executor) = fork_pair(&live, rate);
         if pooled {
-            graph.set_pool(Some(Arc::new(
+            executor.set_pool(Some(Arc::new(
                 tutti_graph::WorkerPool::builder()
                     .num_threads(4)
                     .build()
                     .expect("a worker pool"),
             )));
         }
+        let parallel = executor.is_parallel();
+        let graph =
+            tutti_export::RenderGraph::assemble(editor, executor, tutti_export::Setup::new())
+                .expect("forked together");
         let config = tutti_export::ExportConfig {
             render: tutti_export::RenderConfig {
                 sample_rate: rate,
@@ -1394,7 +1400,6 @@ fn an_export_of_plugins_is_bit_identical_on_a_pool() {
             dither: None,
             ..Default::default()
         };
-        let parallel = graph.is_parallel();
         let rendered = render_to_buffers(graph, &config, &tutti_export::FrozenClock)
             .expect("the fork exports")
             .finished()

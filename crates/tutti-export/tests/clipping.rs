@@ -7,6 +7,7 @@ use crate::support::{render_normalized_to_file, render_to_file};
 use tutti_dsp::DitherShape;
 use tutti_export::{
     EncodeConfig, ExportConfig, Format, FrozenClock, Normalize, Pcm, RenderConfig, RenderGraph,
+    Setup,
 };
 use tutti_graph::GraphBuilder;
 use tutti_nodes::testing::{Const, Osc};
@@ -34,7 +35,7 @@ fn config(pcm: Pcm, dither: Option<DitherShape>) -> ExportConfig {
 
 fn built(g: GraphBuilder) -> RenderGraph {
     let (editor, executor) = g.build(RenderGraph::prepare(RATE)).expect("builds");
-    RenderGraph::new(editor, executor).expect("paired")
+    RenderGraph::assemble(editor, executor, Setup::new()).expect("paired")
 }
 
 fn dc(value: f32) -> RenderGraph {

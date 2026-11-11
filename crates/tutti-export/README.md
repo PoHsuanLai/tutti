@@ -78,15 +78,16 @@ render.
 
 The graph is `tutti_graph`'s, built with its `GraphBuilder` and
 prepared at the render's rate (`RenderGraph::prepare`): a graph prepared at
-another rate is refused rather than re-rated. A host exporting its live graph
-forks it instead, with `RenderGraph::fork`.
+another rate is refused rather than re-rated. A graph is made one way, `RenderGraph::assemble(editor, executor, Setup)`,
+which checks that the pair was built together; a host exporting its live graph
+forks it and assembles the fork (`tutti-session` does both).
 
 ```rust
 use tutti_transport::FrozenClock;
 use tutti_types::{Hz, SampleRate, Seconds};
 use tutti_export::{
     render, render_one, ChannelLayout, Control, EncodeConfig, ExportConfig, FileTarget, FlacLevel,
-    Format, IntDepth, Output, Pcm, Produced, RenderConfig, RenderGraph,
+    Format, IntDepth, Output, Pcm, Produced, RenderConfig, RenderGraph, Setup,
 };
 use tutti_graph::GraphBuilder;
 use tutti_nodes::testing::Osc;
@@ -98,7 +99,7 @@ let tone = || {
     let osc = g.add(Osc::sine(Hz(440.0)));
     g.pipe_output(osc);
     let (editor, executor) = g.build(RenderGraph::prepare(rate)).expect("builds");
-    RenderGraph::new(editor, executor).expect("built together")
+    RenderGraph::assemble(editor, executor, Setup::new()).expect("built together")
 };
 
 let config = ExportConfig {

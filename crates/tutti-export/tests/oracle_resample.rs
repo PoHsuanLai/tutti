@@ -47,7 +47,7 @@ mod support;
 use crate::support::render_to_file;
 use tutti_export::{
     ChannelLayout, EncodeConfig, ExportConfig, Format, FrozenClock, Pcm, RenderConfig, RenderGraph,
-    Resample,
+    Resample, Setup,
 };
 use tutti_graph::GraphBuilder;
 use tutti_nodes::testing::Osc;
@@ -64,7 +64,7 @@ fn built(g: GraphBuilder) -> RenderGraph {
     let (editor, executor) = g
         .build(RenderGraph::prepare(tutti_types::SampleRate(IN_RATE)))
         .expect("builds");
-    RenderGraph::new(editor, executor).expect("built together")
+    RenderGraph::assemble(editor, executor, Setup::new()).expect("built together")
 }
 
 fn sine_graph(freq: f32) -> RenderGraph {

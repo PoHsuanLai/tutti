@@ -19,12 +19,12 @@ use symphonia::core::meta::MetadataOptions;
 use symphonia::core::probe::Hint;
 use tutti_export::{
     BufferTarget, ChannelLayout, Control, Error, FileTarget, FlacLevel, Format, FrozenClock,
-    IntDepth, Job, Normalize, NormalizeSpec, Output, Pcm, Placement, Produced, RenderGraph,
+    IntDepth, Job, Normalize, NormalizeSpec, Output, Pcm, Placement, Produced, RenderGraph, Setup,
     TargetError, render,
 };
 use tutti_graph::{
-    Cx, ForkByClone, GraphBuilder, Io, Node, NodeKey, OutPort, Prepare, Shape, Source, Status,
-    TapAlign, TapId, TapReader,
+    Cx, Editor, Executor, ForkByClone, GraphBuilder, Io, Node, NodeKey, OutPort, Prepare, Shape,
+    Source, Status, TapAlign, TapId, TapReader,
 };
 use tutti_nodes::testing::{Const, Osc};
 use tutti_types::{Amplitude, ChannelTopology, Db, Hz, SampleRate, Samples};
@@ -56,22 +56,41 @@ fn stereo_out(g: &mut GraphBuilder, node: NodeKey) {
     g.connect_output(node, 0, 0).connect_output(node, 1, 1);
 }
 
-fn finish(g: GraphBuilder) -> RenderGraph {
-    let (editor, executor) = g.build(RenderGraph::prepare(RATE)).expect("builds");
-    RenderGraph::new(editor, executor).expect("built together")
+/// A built graph still open to edits: taps are opened on its editor, and
+/// [`Rig::assemble`] seals it into the `RenderGraph` a render takes.
+struct Rig {
+    editor: Editor,
+    executor: Executor,
 }
 
-/// A tap on both channels of `node`, on the outputs' time, committed.
-fn tap(graph: &mut RenderGraph, id: u32, node: NodeKey) -> TapReader {
-    let sources = (0..2)
-        .map(|port| Source::Node(OutPort { node, port }))
-        .collect();
-    let reader = graph
-        .editor_mut()
-        .open_tap(TapId(id), sources, TapAlign::ToOutput, Samples(2048))
-        .expect("the node exists");
-    graph.commit().expect("commits");
-    reader
+fn rig(g: GraphBuilder) -> Rig {
+    let (editor, executor) = g.build(RenderGraph::prepare(RATE)).expect("builds");
+    Rig { editor, executor }
+}
+
+impl Rig {
+    /// A tap on both channels of `node`, on the outputs' time, committed.
+    fn tap(&mut self, id: u32, node: NodeKey) -> TapReader {
+        let sources = (0..2)
+            .map(|port| Source::Node(OutPort { node, port }))
+            .collect();
+        let reader = self
+            .editor
+            .open_tap(TapId(id), sources, TapAlign::ToOutput, Samples(2048))
+            .expect("the node exists");
+        self.editor.commit().expect("commits");
+        self.executor.apply_pending();
+        self.editor.collect();
+        reader
+    }
+
+    fn assemble(self) -> RenderGraph {
+        RenderGraph::assemble(self.editor, self.executor, Setup::new()).expect("built together")
+    }
+}
+
+fn finish(g: GraphBuilder) -> RenderGraph {
+    rig(g).assemble()
 }
 
 fn stereo_placement() -> Placement {
@@ -245,13 +264,13 @@ fn two_outputs_of_different_formats_are_each_their_own_quantization_of_one_pass(
 
 /// Stereo `0.5` through a `0.5` gain, on the master, with a tap on each of the
 /// source (before the gain) and the gain (after it).
-fn gain_graph() -> (RenderGraph, NodeKey, NodeKey) {
+fn gain_graph() -> (Rig, NodeKey, NodeKey) {
     let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::STEREO);
     let source = g.add(Const::frame(&[0.5, 0.5]));
     let gain = g.add(ForkByClone(Scale(0.5)));
     g.pipe(source, gain);
     stereo_out(&mut g, gain);
-    (finish(g), source, gain)
+    (rig(g), source, gain)
 }
 
 /// A tap on a node's port renders that node's own signal, not the master's:
@@ -260,9 +279,10 @@ fn gain_graph() -> (RenderGraph, NodeKey, NodeKey) {
 /// pass.
 #[test]
 fn a_tap_renders_the_signal_of_the_node_it_is_on() {
-    let (mut graph, source, gain) = gain_graph();
-    let before = tap(&mut graph, 1, source);
-    let after = tap(&mut graph, 2, gain);
+    let (mut rig, source, gain) = gain_graph();
+    let before = rig.tap(1, source);
+    let after = rig.tap(2, gain);
+    let mut graph = rig.assemble();
     let produced = render(
         &mut graph,
         &job(3_000),
@@ -321,8 +341,9 @@ fn a_tap_is_drained_and_gated_like_the_master() {
     let gain = g.add(ForkByClone(Scale(0.5)));
     g.pipe(osc, gain);
     stereo_out(&mut g, gain);
-    let mut graph = finish(g);
-    let reader = tap(&mut graph, 1, gain);
+    let mut rig = rig(g);
+    let reader = rig.tap(1, gain);
+    let mut graph = rig.assemble();
     let job = Job::new(RATE, Samples(2_000), Samples(1_500), Samples(0)).expect("a render");
     let produced = render(
         &mut graph,
@@ -356,9 +377,10 @@ fn a_tap_is_drained_and_gated_like_the_master() {
 #[test]
 fn a_tap_that_cannot_be_placed_is_a_named_error() {
     let dir = tempfile::tempdir().unwrap();
-    let (mut graph, source, gain) = gain_graph();
-    let wide = tap(&mut graph, 1, source);
-    let narrow = tap(&mut graph, 2, gain);
+    let (mut rig, source, gain) = gain_graph();
+    let wide = rig.tap(1, source);
+    let narrow = rig.tap(2, gain);
+    let mut graph = rig.assemble();
 
     // Two lanes, a placement of one.
     let err = render(
@@ -417,8 +439,9 @@ fn a_tap_that_cannot_be_placed_is_a_named_error() {
 #[test]
 fn a_placement_the_target_cannot_take_is_a_target_error_and_leaves_nothing() {
     let dir = tempfile::tempdir().unwrap();
-    let (mut graph, source, _) = gain_graph();
-    let reader = tap(&mut graph, 1, source);
+    let (mut rig, source, _) = gain_graph();
+    let reader = rig.tap(1, source);
+    let mut graph = rig.assemble();
     let err = render(
         &mut graph,
         &job(1_000),
@@ -468,8 +491,9 @@ fn stems_that_take_the_masters_gain_still_sum_to_it() {
     let b = g.add(Const::frame(&[0.1, 0.25]));
     stereo_out(&mut g, a);
     stereo_out(&mut g, b);
-    let mut graph = finish(g);
-    let (ta, tb) = (tap(&mut graph, 1, a), tap(&mut graph, 2, b));
+    let mut rig = rig(g);
+    let (ta, tb) = (rig.tap(1, a), rig.tap(2, b));
+    let mut graph = rig.assemble();
 
     let mode = Normalize::peak(Db(-6.0));
     let files: Vec<std::path::PathBuf> = ["master.wav", "a.wav", "b.wav"]

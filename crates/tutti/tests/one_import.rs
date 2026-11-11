@@ -78,7 +78,9 @@ fn a_graph_bounces_to_buffers_through_the_facade() {
     let (editor, executor) = g
         .build(tutti::export::RenderGraph::prepare(rate))
         .expect("builds");
-    let mut graph = tutti::export::RenderGraph::new(editor, executor).expect("built together");
+    let mut graph =
+        tutti::export::RenderGraph::assemble(editor, executor, tutti::export::Setup::new())
+            .expect("built together");
 
     let cfg = tutti::export::ExportConfig {
         render: tutti::export::RenderConfig {

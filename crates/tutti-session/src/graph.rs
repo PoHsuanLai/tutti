@@ -39,6 +39,9 @@ use std::any::Any;
 use std::collections::{BTreeMap, VecDeque};
 use std::sync::Arc;
 
+#[cfg(feature = "export")]
+use crate::fork::PendingExport;
+
 use tutti_graph::Compensation;
 use tutti_graph::CrossfadeCurve;
 use tutti_graph::{BusError, BusRef, BusSource, Buses};
@@ -927,14 +930,14 @@ impl Graph {
 
     /// The control-thread half of a copy of `target` for an offline render
     /// at `rate`, sharing no state with this graph: `Editor::fork_gather`
-    /// with `ForkMode::Offline`, through tutti-export
-    /// (`RenderGraph::gather`). [`PendingExport::build`] makes the rest on a
+    /// with `ForkMode::Offline`, prepared as an export is
+    /// (`RenderGraph::prepare`). [`PendingExport::build`] makes the rest on a
     /// worker.
     ///
     /// # Errors
     ///
-    /// What `RenderGraph::gather` refuses (a node with no outputs or not in
-    /// the graph, a node that cannot be forked).
+    /// What the gather refuses (a node with no outputs or not in the graph, a
+    /// node that cannot be forked: [`tutti_export::Error::NotForkable`]).
     #[cfg(feature = "export")]
     pub(crate) fn gather_for_export(
         &self,
@@ -951,21 +954,12 @@ impl Graph {
             AudioNodeTarget::Master => tutti_graph::ForkTarget::Master,
             AudioNodeTarget::Node(node) => tutti_graph::ForkTarget::Node(node),
         };
-        let fork = tutti_export::RenderGraph::gather(
-            &self.editor,
-            target,
-            tutti_graph::ForkMode::Offline,
-            rate,
-        )?;
-        Ok(PendingExport {
-            fork,
-            // Its own pool, not the live engine's: the live callback would
-            // find a shared one busy with the export's job and render alone.
-            // No start hook: an export's threads are not the callback's, and
-            // promoting them would take cores from it.
-            pool: self.render_pool("tutti-export", None),
-            root,
-        })
+        // Its own pool, not the live engine's: the live callback would find a
+        // shared one busy with the export's job and render alone. No start
+        // hook: an export's threads are not the callback's, and promoting
+        // them would take cores from it.
+        let pool = self.render_pool("tutti-export", None);
+        PendingExport::gather(&self.editor, target, rate, pool, root)
     }
 
     /// Runs every node's reclaimer ([`SessionNode::reclaimer`], kept by
@@ -3097,36 +3091,5 @@ impl AudioSide {
             }
             done += len;
         }
-    }
-}
-
-/// An export's fork, gathered on the main thread
-/// ([`Graph::gather_for_export`]) and not yet built: `Send`, holding nothing
-/// of the live graph.
-#[cfg(feature = "export")]
-pub(crate) struct PendingExport {
-    fork: tutti_graph::PendingFork,
-    pool: Option<Arc<dyn tutti_graph::Pool>>,
-    /// The live root's declared topology, for an export of the master: the
-    /// file is placed from it, as the device is.
-    root: Option<tutti_types::ChannelTopology>,
-}
-
-#[cfg(feature = "export")]
-impl PendingExport {
-    /// Build the fork (on a worker: a hosted plugin's `plugin-server` launch
-    /// is here) into the graph the export renders.
-    ///
-    /// # Errors
-    ///
-    /// A deferred fork source's failure, or a fork that does not commit,
-    /// with what was built, to drop on the main thread.
-    pub(crate) fn build(
-        self,
-    ) -> Result<tutti_export::RenderGraph, (tutti_export::Error, tutti_graph::ForkRemains)> {
-        let mut graph = tutti_export::RenderGraph::build(self.fork)?;
-        graph.set_pool(self.pool);
-        graph.set_root_topology(self.root);
-        Ok(graph)
     }
 }

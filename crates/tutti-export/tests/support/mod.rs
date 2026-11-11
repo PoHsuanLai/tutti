@@ -13,8 +13,24 @@ use std::path::Path;
 
 use tutti_export::{
     Control, ExportConfig, Normalize, Outcome, Output, Produced, RenderClock, RenderGraph,
-    Rendered, Result, Written, render_one,
+    Rendered, Result, Setup, Written, render_one,
 };
+use tutti_graph::{Editor, ForkMode, ForkTarget};
+use tutti_types::SampleRate;
+
+/// The master of `live`, forked offline at `rate` and assembled: what an
+/// export gets from a live graph (the session's fork, without its pool or
+/// root).
+pub fn fork_offline(live: &Editor, rate: SampleRate) -> RenderGraph {
+    let (editor, executor) = live
+        .fork(
+            ForkTarget::Master,
+            ForkMode::Offline,
+            RenderGraph::prepare(rate),
+        )
+        .expect("every node here is forkable");
+    RenderGraph::assemble(editor, executor, Setup::new()).expect("forked together")
+}
 
 /// The value of a render nothing could have cancelled.
 fn finished<T>(outcome: Outcome<T>) -> T {

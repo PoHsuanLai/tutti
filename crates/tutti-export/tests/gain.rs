@@ -8,6 +8,7 @@ use crate::support::{render_normalized_to_file, render_to_file};
 use tutti_dsp::DitherShape;
 use tutti_export::{
     EncodeConfig, ExportConfig, Format, FrozenClock, Normalize, Pcm, RenderConfig, RenderGraph,
+    Setup,
 };
 use tutti_graph::GraphBuilder;
 use tutti_measure::{LoudnessConfig, measure_loudness};
@@ -39,7 +40,7 @@ fn sine(frequency: Hz) -> RenderGraph {
     let id = g.add(Osc::sine(frequency));
     g.pipe_output(id);
     let (editor, executor) = g.build(RenderGraph::prepare(RATE)).expect("builds");
-    RenderGraph::new(editor, executor).expect("paired")
+    RenderGraph::assemble(editor, executor, Setup::new()).expect("paired")
 }
 
 /// A peak normalization reports the gain it applied and the reading it came

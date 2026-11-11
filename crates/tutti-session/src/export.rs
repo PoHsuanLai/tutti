@@ -49,15 +49,15 @@ use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
 use tutti_export::{
-    CancelToken, ConfigError, Control, ExportConfig, Normalize, Outcome, Output, Produced,
-    Progress, RenderClock, RenderGraph, Rendered, Written,
+    CancelToken, Control, ExportConfig, Normalize, Outcome, Output, Produced, Progress,
+    RenderClock, RenderGraph, Rendered, Written,
 };
-use tutti_graph::NodeKey;
+use tutti_graph::{CommitError, Editor, NodeKey};
 use tutti_transport::OfflineTransport;
 use tutti_types::Samples;
 
+use crate::fork::PendingExport;
 use crate::graph::AudioNodeTarget;
-use crate::graph::PendingExport;
 use crate::{Error, Session};
 
 /// Which audio an export renders. `N` names a node: the graph's
@@ -335,18 +335,39 @@ impl tutti_transport::Timeline for Stopped {
     }
 }
 
+/// What an export refuses that no render would: a graph or a source node with
+/// nothing to export, and an edit that left the fork unusable. The pipeline's
+/// own refusals are [`tutti_export::Error`] ([`Error::Export`]).
+#[derive(Debug, Clone, PartialEq, thiserror::Error)]
+#[non_exhaustive]
+pub enum ExportConfigError {
+    /// The export's source node has no audio outputs, or is not in the graph.
+    #[error("export target node has no audio outputs")]
+    TargetHasNoOutputs,
+    /// The graph has no outputs to export.
+    #[error("the graph has no outputs to export")]
+    GraphHasNoOutputs,
+    /// A prepare hook left the forked graph in a state that cannot commit.
+    #[error("the prepare hook left the forked graph uncommittable: {0:?}")]
+    PrepareHookUncommittable(CommitError),
+    /// A prepare hook replaced the fork's editor with another graph's: it no
+    /// longer feeds the fork's executor.
+    #[error("the prepare hook replaced the forked graph's editor")]
+    PrepareHookUnpaired,
+}
+
 /// The graph an export is about to render, handed to its
 /// [`PrepareEdit`] on the job's thread once the fork is built.
 ///
-/// `graph` is the engine's own [`RenderGraph`], its executor installed:
-/// edit it through `graph.editor_mut()` (insert nodes, `spec_mut`); the
-/// job commits whatever the edit leaves, and a commit the fork refuses
-/// fails the export with the reason. A fork's units are on its executor by
-/// now, so a unit already in it cannot be refilled: insert a new one.
+/// `editor` is the fork's: edit it (insert nodes, `spec_mut`); the job
+/// commits whatever the edit leaves, and a commit the fork refuses fails the
+/// export with the reason. A fork's units are on its executor by now, so a
+/// unit already in it cannot be refilled: insert a new one. The fork's
+/// executor, pool and root are the job's; the edit does not see them.
 #[derive(Debug)]
 pub struct PreparedGraph<'a> {
-    /// The graph about to be rendered.
-    pub graph: &'a mut RenderGraph,
+    /// The fork's editor.
+    pub editor: &'a mut Editor,
     /// The render's timeline, which the renderer advances. A node in the
     /// graph reads it through its block's `Env`; this is for the edit
     /// itself (to place what it inserts, say).
@@ -478,6 +499,13 @@ impl<T: Send + 'static> ToMain<T> {
     /// The value, no longer sent anywhere: its new owner drops it.
     fn take(mut self) -> T {
         self.value.take().expect("taken once")
+    }
+
+    /// The same value, its type forgotten, still sent back to be dropped on
+    /// the main thread.
+    fn erase(self) -> ToMain<Box<dyn Send>> {
+        let to = self.to.clone();
+        ToMain::new(Box::new(self.take()), to)
     }
 }
 
@@ -629,12 +657,12 @@ impl ExportJob {
                 _token: token,
             };
         }
-        let mut graph = match pending.take().build() {
-            Ok(graph) => ToMain::new(graph, drops),
+        let mut pair = match pending.take().build() {
+            Ok(pair) => ToMain::new(pair, drops.clone()),
             Err((e, remains)) => {
                 drop(ToMain::new(remains, drops));
                 return ExportRendered {
-                    result: Err(e),
+                    result: Err(e.into()),
                     graph: None,
                     _token: token,
                 };
@@ -642,19 +670,40 @@ impl ExportJob {
         };
         if let Some(edit) = edit {
             (edit.take())(PreparedGraph {
-                graph: &mut graph,
+                editor: pair.editor_mut(),
                 ctx: &ctx,
             });
         }
         // A fork's editor holds whatever the edit left, uncommitted: send
         // it, and apply it here so the render's first block runs it.
-        if let Err(e) = graph.commit() {
+        if let Err(e) = pair.commit() {
             return ExportRendered {
-                result: Err(ConfigError::PrepareHookUncommittable(e).into()),
-                graph: Some(graph),
+                result: Err(ExportConfigError::PrepareHookUncommittable(e).into()),
+                graph: Some(pair.erase()),
                 _token: token,
             };
         }
+        // The edit held `&mut Editor`, which can be swapped for another
+        // graph's: seal only a pair that is still one, and keep an unpaired
+        // one to drop on the main thread, where a pinned unit belongs.
+        if !pair.is_paired() {
+            return ExportRendered {
+                result: Err(ExportConfigError::PrepareHookUnpaired.into()),
+                graph: Some(pair.erase()),
+                _token: token,
+            };
+        }
+        let mut graph = match pair.take().assemble() {
+            Ok(graph) => ToMain::new(graph, drops),
+            Err(e) => {
+                // Not reached: the pair was just checked.
+                return ExportRendered {
+                    result: Err(e.into()),
+                    graph: None,
+                    _token: token,
+                };
+            }
+        };
         // The graph's own figures, asked of the graph that renders: after
         // the edit, which may have changed it.
         if latency_from_graph {
@@ -678,16 +727,17 @@ impl ExportJob {
             // launches here, half a second or more).
             return ExportRendered {
                 result: Ok(Outcome::Cancelled),
-                graph: Some(graph),
+                graph: Some(graph.erase()),
                 _token: token,
             };
         }
         let record = &mut |p: &Progress| handle.record(p);
         let mut control = Control::new(&handle.cancel).on_progress(record);
-        let result = render_request(&mut graph, &config, clock.as_ref(), target, &mut control);
+        let result = render_request(&mut graph, &config, clock.as_ref(), target, &mut control)
+            .map_err(Error::from);
         ExportRendered {
             result,
-            graph: Some(graph),
+            graph: Some(graph.erase()),
             _token: token,
         }
     }
@@ -725,8 +775,9 @@ fn render_request(
 /// export's token. `Send`.
 #[must_use = "finish the export with `Session::finish_export` (or `finish_export_unannounced`)"]
 pub struct ExportRendered {
-    result: tutti_export::Result<Outcome<ExportOutput>>,
-    graph: Option<ToMain<RenderGraph>>,
+    result: crate::Result<Outcome<ExportOutput>>,
+    /// The fork, sealed or not: whatever it holds is dropped on the main thread.
+    graph: Option<ToMain<Box<dyn Send>>>,
     _token: Arc<()>,
 }
 
@@ -774,7 +825,7 @@ impl Session {
             return Err(Error::ExportInFlight);
         }
         if self.graph.outputs() == 0 {
-            return Err(tutti_export::Error::from(ConfigError::GraphHasNoOutputs).into());
+            return Err(ExportConfigError::GraphHasNoOutputs.into());
         }
         let ExportRequest {
             source,
@@ -801,7 +852,7 @@ impl Session {
             Err(tutti_export::Error::Fork(
                 tutti_graph::ForkError::NoOutputs { .. }
                 | tutti_graph::ForkError::NoSuchNode { .. },
-            )) => return Err(tutti_export::Error::from(ConfigError::TargetHasNoOutputs).into()),
+            )) => return Err(ExportConfigError::TargetHasNoOutputs.into()),
             Err(e) => return Err(e.into()),
         };
         // A new export: its own stall clock, from its first collect.
@@ -884,7 +935,7 @@ impl Session {
         }
         self.export.drop_leftovers();
         drop(_token);
-        Ok(result?)
+        result
     }
 
     /// [`export`](Self::export), run on this thread, and finished.

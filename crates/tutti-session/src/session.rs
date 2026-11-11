@@ -735,7 +735,7 @@ impl Session {
     /// ([`root_width`](crate::root_width)). Afterwards the width and the
     /// declaration cannot disagree: [`Graph::widen_outputs`] refuses to widen a
     /// declared root. Declare again to change both. An export of the master
-    /// places the file from the declaration (`RenderGraph::set_root_topology`).
+    /// places the file from the declaration (`tutti_export::Setup::with_root`, set by the export's fork).
     ///
     /// The device a declaration must place on is the one the session renders
     /// to (`build_offline`'s layout, or the open device's, and the new one on a

@@ -8,25 +8,13 @@ use std::sync::Arc;
 use tutti_types::SampleRate;
 
 use tutti_graph::GraphTail;
-use tutti_graph::{
-    CommitError, Editor, Executor, ForkError, ForkMode, ForkRemains, ForkTarget, PendingFork, Pool,
-    Prepare,
-};
+use tutti_graph::{Editor, Executor, Pool, Prepare};
 use tutti_types::{ChannelTopology, Samples};
 
-use crate::{ConfigError, Error, Result};
-
-/// A fork's refusal as the render reports it: [`Error::NotForkable`] for
-/// the one a host acts on, [`Error::Fork`] for the rest.
-fn fork_error(e: ForkError) -> Error {
-    match e {
-        ForkError::NotForkable { key } => Error::NotForkable { key },
-        other => Error::Fork(other),
-    }
-}
+use crate::{ConfigError, Result};
 
 /// The largest block, in frames, a graph is prepared for in an export
-/// ([`RenderGraph::prepare`], [`RenderGraph::fork`]).
+/// ([`RenderGraph::prepare`]).
 ///
 /// 1024 frames: long enough that the executor's per-block walk is paid rarely
 /// on a long bounce, short enough that a block's planes stay in cache.
@@ -39,35 +27,73 @@ fn fork_error(e: ForkError) -> Error {
 // frames do not depend on its blocks).
 pub const GRAPH_MAX_BLOCK: Samples = Samples(1024);
 
+/// How a [`RenderGraph`] is assembled beyond its pair: the pool the render
+/// spreads its blocks over, and what the graph's output channels are.
+///
+/// `Setup::default()` is the render's own thread and the engine's order for
+/// the width, which is what a graph built in a test or a simple host wants.
+#[derive(Debug, Clone, Default)]
+pub struct Setup {
+    pool: Option<Arc<dyn Pool>>,
+    root: Option<ChannelTopology>,
+}
+
+impl Setup {
+    /// A render on its own thread, the output channels in the engine's order
+    /// for the width.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Render on `pool` (the parallel executor, doc 013), or with `None` on
+    /// the render's own thread. The render is bit for bit the same either
+    /// way; a pool only spreads each block's independent nodes across its
+    /// threads. Give an export its own pool (a `tutti_graph::WorkerPool`),
+    /// not the live engine's: a job finds a pool busy with another caller's
+    /// and runs on its caller alone.
+    #[must_use]
+    pub fn with_pool(mut self, pool: Option<Arc<dyn Pool>>) -> Self {
+        self.pool = pool;
+        self
+    }
+
+    /// States what the graph's output channels are, for the fold to the file:
+    /// [`ChannelTopology::discrete`] for independent buses, a named topology
+    /// for speaker feeds. `None` (the default) is the engine's order for the
+    /// width, as for a live graph that declared nothing.
+    ///
+    /// The render refuses a declaration that is not as wide as the graph's
+    /// outputs, or that the file cannot take
+    /// ([`ConfigError::Placement`]). Give it for a fork of a live graph that
+    /// declared its root, so the file is placed as the device was.
+    #[must_use]
+    pub fn with_root(mut self, root: Option<ChannelTopology>) -> Self {
+        self.root = root;
+        self
+    }
+}
+
 /// The graph an export renders: a `tutti_graph` editor/executor pair.
 ///
 /// The pair is already installed (the executor running its plan) and
-/// prepared at the render's sample rate — the render refuses any other
+/// prepared at the render's sample rate: the render refuses any other
 /// rate rather than re-rating it, since a unit's preparation is the control
-/// side's job. Get one of two ways:
+/// side's job. A `RenderGraph` is made one way, [`RenderGraph::assemble`], from
+/// a pair that was built together:
 ///
-/// - [`RenderGraph::fork`] a live graph: the export path. It forks at the
-///   render's rate and [`GRAPH_MAX_BLOCK`], and a node that cannot be forked
-///   is [`Error::NotForkable`] naming it.
-/// - Build one at [`RenderGraph::prepare`] (a `GraphBuilder` in a test or a
-///   simple host) and wrap the pair with [`RenderGraph::new`].
+/// - build it at [`RenderGraph::prepare`] (a `GraphBuilder` in a test or a
+///   simple host) and assemble what `build` returns;
+/// - or, for a fork of a live graph, `tutti-session` forks, edits and
+///   assembles it (the fork machinery is the session's, not this crate's).
 ///
 /// # The pair
 ///
 /// The editor must feed the executor: it is what the render drains of the
 /// units and commits the executor retires, and an editor paired with some
-/// other executor would never see them. The fields are private and both
-/// constructors check it, so a `RenderGraph` holds a matched pair from the
-/// start. A caller edits the graph before it renders through
-/// [`editor_mut`](Self::editor_mut) and sends the edit with
-/// [`commit`](Self::commit) (bevy-tutti's export hook does both); the
-/// executor is never handed out.
-///
-/// The render checks the pairing again, as a real error rather than a
-/// `debug_assert`: `editor_mut` hands out `&mut Editor`, which
-/// `std::mem::replace` can swap for an editor of another graph, and a check
-/// that costs one comparison per render is cheaper than a render whose
-/// retirees are never collected.
+/// other executor would never see them. [`assemble`](Self::assemble) checks
+/// it, and nothing afterwards can break it: a `RenderGraph` hands out neither
+/// half (an edit is made on the pair before it is assembled), so the
+/// check is made once, at the one constructor.
 ///
 /// The executor renders in blocks of its prepared `MaxBlock`, each handed the
 /// transport the render's clock reports ([`RenderClock::graph_block`]), and
@@ -90,7 +116,7 @@ pub const GRAPH_MAX_BLOCK: Samples = Samples(1024);
 ///
 /// ```
 /// use tutti_types::{Hz, SampleRate, Seconds};
-/// use tutti_export::{render_one, Control, ExportConfig, FrozenClock, Output, Produced, RenderConfig, RenderGraph};
+/// use tutti_export::{render_one, Control, ExportConfig, FrozenClock, Output, Produced, RenderConfig, RenderGraph, Setup};
 /// use tutti_graph::GraphBuilder;
 /// use tutti_nodes::testing::Osc;
 /// use tutti_types::ChannelLayout;
@@ -100,7 +126,7 @@ pub const GRAPH_MAX_BLOCK: Samples = Samples(1024);
 /// let tone = g.add(Osc::sine(Hz(440.0)));
 /// g.pipe_output(tone);
 /// let (editor, executor) = g.build(RenderGraph::prepare(rate)).expect("builds");
-/// let mut graph = RenderGraph::new(editor, executor).expect("built together, so paired");
+/// let mut graph = RenderGraph::assemble(editor, executor, Setup::new()).expect("built together, so paired");
 ///
 /// let config = ExportConfig {
 ///     render: RenderConfig { sample_rate: rate, duration_seconds: Seconds(0.1), ..Default::default() },
@@ -128,8 +154,7 @@ pub struct RenderGraph {
     /// only thing that runs it.
     executor: Executor,
     /// What the graph's output channels are, when the live graph declared it
-    /// ([`set_root_topology`](Self::set_root_topology)); `None` is the engine's
-    /// order for the width.
+    /// ([`Setup::with_root`]); `None` is the engine's order for the width.
     root: Option<ChannelTopology>,
     /// The executor's `(dropped, recovered)` event counts where the last
     /// render ended, or where the pair was wrapped: the next render counts its
@@ -139,31 +164,44 @@ pub struct RenderGraph {
 }
 
 impl RenderGraph {
-    /// Wrap an installed editor/executor pair for a render.
+    /// Assemble an installed editor/executor pair, with its [`Setup`], for a
+    /// render. The one constructor.
+    ///
+    /// A pool the executor already runs on stays unless `setup` names one.
+    ///
+    /// The pair is already installed: edit and commit the editor before this
+    /// (`Editor::commit`, then `Executor::apply_pending` and `Editor::collect`),
+    /// because nothing here hands either half out again.
     ///
     /// # Errors
     ///
-    /// [`Error::InvalidConfig`] if `editor` does not feed `executor`
+    /// [`ConfigError::UnpairedGraph`] if `editor` does not feed `executor`
     /// (`Editor::is_paired_with`): pass the pair built or forked together.
-    /// The rate is checked at render, against the render's config.
-    pub fn new(editor: Editor, executor: Executor) -> Result<Self> {
-        let graph = Self::wrap(editor, executor);
-        graph.check_paired()?;
-        Ok(graph)
-    }
-
-    /// The pair as it stands, counting event losses from now.
-    fn wrap(editor: Editor, executor: Executor) -> Self {
+    /// [`ConfigError::InvalidRate`] if the pair was prepared at a rate that is
+    /// not finite and positive. That the pair's rate is the render's is
+    /// checked at render, where the [`Job`](crate::Job) names it
+    /// ([`ConfigError::RateMismatch`]).
+    pub fn assemble(editor: Editor, mut executor: Executor, setup: Setup) -> Result<Self> {
+        if !editor.is_paired_with(&executor) {
+            return Err(ConfigError::UnpairedGraph.into());
+        }
+        let prepared = executor.prepare().sample_rate().get();
+        if !(prepared.is_finite() && prepared > 0.0) {
+            return Err(ConfigError::InvalidRate { prepared }.into());
+        }
+        if setup.pool.is_some() {
+            executor.set_pool(setup.pool);
+        }
         let settled = (
             executor.dropped_event_count(),
             executor.recovered_event_count(),
         );
-        Self {
+        Ok(Self {
             editor,
             executor,
-            root: None,
+            root: setup.root,
             settled,
-        }
+        })
     }
 
     /// Where the next render counts its event losses from.
@@ -176,74 +214,9 @@ impl RenderGraph {
         self.settled = counts;
     }
 
-    /// Refuse a pair whose editor does not feed its executor. [`new`](Self::new)
-    /// and the render both ask (see "The pair" above for why twice).
-    pub(crate) fn check_paired(&self) -> Result<()> {
-        if self.editor.is_paired_with(&self.executor) {
-            Ok(())
-        } else {
-            Err(ConfigError::UnpairedGraph.into())
-        }
-    }
-
-    /// States what the graph's output channels are, for the fold to the file:
-    /// [`ChannelTopology::discrete`] for independent buses, a named topology for
-    /// speaker feeds. `None` (the default) is the engine's order for the width,
-    /// as for a live graph that declared nothing.
-    ///
-    /// The render refuses a declaration that is not as wide as the graph's
-    /// outputs, or that the file cannot take
-    /// ([`ConfigError::Placement`]). Use it on a fork of a live graph that
-    /// declared its root, so the file is placed as the device was.
-    pub fn set_root_topology(&mut self, root: Option<ChannelTopology>) {
-        self.root = root;
-    }
-
-    /// The declared output topology ([`set_root_topology`](Self::set_root_topology)).
-    pub fn root_topology(&self) -> Option<&ChannelTopology> {
+    /// The declared output topology ([`Setup::with_root`]).
+    pub(crate) fn root_topology(&self) -> Option<&ChannelTopology> {
         self.root.as_ref()
-    }
-
-    /// The graph's editor, to read its spec.
-    pub fn editor(&self) -> &Editor {
-        &self.editor
-    }
-
-    /// The graph's editor, to edit the graph before it renders (insert a
-    /// node, rewire through `spec_mut`). Send the edit with
-    /// [`commit`](Self::commit); the render does not commit for you.
-    pub fn editor_mut(&mut self) -> &mut Editor {
-        &mut self.editor
-    }
-
-    /// Send what [`editor_mut`](Self::editor_mut) edited, and install it on
-    /// the executor now, so the render's first block already runs it.
-    ///
-    /// # Errors
-    ///
-    /// The editor's [`CommitError`] if the edit does not compile (a cycle, a
-    /// port out of range) or the editor is poisoned; nothing is installed.
-    pub fn commit(&mut self) -> std::result::Result<(), CommitError> {
-        self.editor.commit()?;
-        self.executor.apply_pending();
-        self.editor.collect();
-        Ok(())
-    }
-
-    /// Render on `pool` (the parallel executor, doc 013), or with
-    /// `None` on the render's own thread. Returns the pool it replaces. The
-    /// render is bit for bit the same either way; a pool only spreads each
-    /// block's independent nodes across its threads. Give an export its own
-    /// pool (a `tutti_graph::WorkerPool`), not the live engine's: a job finds
-    /// a pool busy with another caller's and runs on its caller alone.
-    pub fn set_pool(&mut self, pool: Option<Arc<dyn Pool>>) -> Option<Arc<dyn Pool>> {
-        self.executor.set_pool(pool)
-    }
-
-    /// Whether the render spreads its blocks over a pool (see
-    /// [`set_pool`](Self::set_pool) and `Executor::is_parallel`).
-    pub fn is_parallel(&self) -> bool {
-        self.executor.is_parallel()
     }
 
     /// Both halves, for the render. Crate-private: outside the crate the
@@ -256,86 +229,6 @@ impl RenderGraph {
     /// rate, and [`GRAPH_MAX_BLOCK`].
     pub fn prepare(sample_rate: SampleRate) -> Prepare {
         Prepare::new(sample_rate, GRAPH_MAX_BLOCK)
-    }
-
-    /// Fork `target` out of the live graph `live` for an export at
-    /// `sample_rate`. The live graph is not touched (`Editor::fork` reads the
-    /// spec and the nodes' fork sources, and sends nothing).
-    ///
-    /// `mode` is normally `ForkMode::Offline`.
-    ///
-    /// # Errors
-    ///
-    /// [`Error::NotForkable`] naming the first node that cannot be forked (a
-    /// mic monitor, a node inserted `Unforkable`), checked before anything is
-    /// forked; any other fork failure is [`Error::Fork`] (a plugin fork whose
-    /// fresh instance did not load or refused the state is
-    /// `ForkError::Source`).
-    ///
-    /// # Threading
-    ///
-    /// Call on the main thread when the graph may hold an in-process VST2
-    /// plugin: its fork loads a second instance (`VSTPluginMain`, through a
-    /// loader whose entry-point slot is a process global) and dispatches its
-    /// state, which VST2 confines to the main thread. Drop the graph there
-    /// too, after rendering it anywhere: dropping the fork closes that instance
-    /// (`effMainsChanged`, `effClose`). A fork that fails *during* the render is
-    /// [`Error::ForkFailed`] from the render call.
-    pub fn fork(
-        live: &Editor,
-        target: ForkTarget,
-        mode: ForkMode,
-        sample_rate: SampleRate,
-    ) -> Result<Self> {
-        let (editor, executor) = live
-            .fork(target, mode, Self::prepare(sample_rate))
-            .map_err(fork_error)?;
-        // A fork returns its own installed pair; checked all the same, so no
-        // constructor skips the pairing.
-        Self::new(editor, executor)
-    }
-
-    /// [`fork`](Self::fork)'s control-thread half: `Editor::fork_gather`
-    /// at the render's `Prepare`. Everything the fork reads of the live
-    /// graph is read here; [`build`](Self::build) makes the rest on any
-    /// thread (a hosted plugin's `plugin-server` launch is the slow part).
-    ///
-    /// # Errors
-    ///
-    /// As [`fork`](Self::fork), for what fails at the gather.
-    ///
-    /// # Threading
-    ///
-    /// The gather is where an in-process VST2 plugin's fork is built and
-    /// prepared (it is pinned, `ForkBuild::pinned`): call it on the **main
-    /// thread** when the graph may hold one, and drop what it returns there
-    /// (see [`fork`](Self::fork)'s threading).
-    pub fn gather(
-        live: &Editor,
-        target: ForkTarget,
-        mode: ForkMode,
-        sample_rate: SampleRate,
-    ) -> Result<PendingFork> {
-        live.fork_gather(target, mode, Self::prepare(sample_rate))
-            .map_err(fork_error)
-    }
-
-    /// [`fork`](Self::fork)'s other half: build what
-    /// [`gather`](Self::gather) gathered (`PendingFork::build`), on any
-    /// thread, into a graph to render.
-    ///
-    /// # Errors
-    ///
-    /// A deferred source's failure ([`Error::Fork`] with
-    /// `ForkError::Source`, naming its node) or a fork that does not
-    /// commit, with what the build had made: drop the `ForkRemains` where
-    /// a pinned unit belongs (the main thread, for an in-process VST2
-    /// plugin), as the rendered graph is.
-    pub fn build(pending: PendingFork) -> std::result::Result<Self, (Error, ForkRemains)> {
-        let (editor, executor) = pending.build().map_err(|(e, r)| (fork_error(e), r))?;
-        // `PendingFork::build` returns the pair it built and installed
-        // together; the render checks the pairing again.
-        Ok(Self::wrap(editor, executor))
     }
 
     /// The look-ahead latency the graph reports, as a frame count — the
@@ -353,7 +246,7 @@ impl RenderGraph {
     ///
     /// ```
     /// # use tutti_types::{Hz, SampleRate};
-    /// # use tutti_export::{ExportConfig, RenderConfig, RenderGraph};
+    /// # use tutti_export::{ExportConfig, RenderConfig, RenderGraph, Setup};
     /// # use tutti_graph::GraphBuilder;
     /// # use tutti_nodes::testing::Osc;
     /// # use tutti_types::ChannelLayout;
@@ -362,7 +255,7 @@ impl RenderGraph {
     /// # let tone = g.add(Osc::sine(Hz(440.0)));
     /// # g.pipe_output(tone);
     /// # let (editor, executor) = g.build(RenderGraph::prepare(rate)).unwrap();
-    /// # let graph = RenderGraph::new(editor, executor).unwrap();
+    /// # let graph = RenderGraph::assemble(editor, executor, Setup::new()).unwrap();
     /// let latency = graph.reported_latency();
     /// let config = ExportConfig {
     ///     render: RenderConfig { sample_rate: rate, latency, ..Default::default() },
@@ -393,7 +286,7 @@ impl RenderGraph {
     ///
     /// ```
     /// # use tutti_types::{Hz, SampleRate, Seconds};
-    /// # use tutti_export::{ExportConfig, RenderConfig, RenderGraph};
+    /// # use tutti_export::{ExportConfig, RenderConfig, RenderGraph, Setup};
     /// # use tutti_graph::GraphBuilder;
     /// # use tutti_nodes::testing::Osc;
     /// # use tutti_types::ChannelLayout;
@@ -402,7 +295,7 @@ impl RenderGraph {
     /// # let tone = g.add(Osc::sine(Hz(440.0)));
     /// # g.pipe_output(tone);
     /// # let (editor, executor) = g.build(RenderGraph::prepare(rate)).unwrap();
-    /// # let graph = RenderGraph::new(editor, executor).unwrap();
+    /// # let graph = RenderGraph::assemble(editor, executor, Setup::new()).unwrap();
     /// let reported = graph.reported_tail();
     /// let tail = reported.samples().unwrap_or_else(|| {
     ///     // This bounce stops four seconds into an unbounded tail.

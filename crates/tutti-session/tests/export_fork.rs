@@ -21,9 +21,7 @@ use std::sync::{Arc, Mutex};
 use std::thread::ThreadId;
 use std::time::Duration;
 
-use tutti_export::{
-    ChannelLayout, ConfigError, EncodeConfig, ExportConfig, Format, Pcm, RenderConfig,
-};
+use tutti_export::{ChannelLayout, EncodeConfig, ExportConfig, Format, Pcm, RenderConfig};
 use tutti_fixtures::assert_golden;
 use tutti_graph::NodeKey;
 use tutti_graph::{
@@ -33,8 +31,8 @@ use tutti_graph::{
 use tutti_nodes::testing::{Const, Osc, Sink};
 use tutti_nodes::{SvfFilterNode, SvfType};
 use tutti_session::{
-    Error, ExportClock, ExportOutput, ExportRequest, ExportSource, ExportTarget, GraphSource,
-    PreparedGraph, Session,
+    Error, ExportClock, ExportConfigError, ExportOutput, ExportRequest, ExportSource, ExportTarget,
+    GraphSource, PreparedGraph, Session,
 };
 use tutti_types::{Amplitude, Hz, Param, Q, SampleRate, Samples, Tail, UnitParam};
 
@@ -93,10 +91,9 @@ fn render(session: &mut Session, request: ExportRequest) -> Vec<Vec<f32>> {
 }
 
 /// What the session refuses `request` with, started and run on this thread.
-fn refused(session: &mut Session, request: ExportRequest) -> tutti_export::Error {
+fn refused(session: &mut Session, request: ExportRequest) -> Error {
     match session.export_blocking(request) {
-        Err(Error::Export(e)) => e,
-        Err(other) => panic!("expected an export error, got {other:?}"),
+        Err(e) => e,
         Ok(out) => panic!(
             "expected a refusal, the export reported {:?}",
             out.finished()
@@ -140,7 +137,7 @@ fn digest(planes: &[Vec<f32>]) -> u64 {
 /// node clamped across a stereo root). A fork starts reset, which is what a
 /// fresh graph is.
 fn chain_fresh(seconds: f64) -> (Vec<Vec<f32>>, Vec<Vec<f32>>) {
-    use tutti_export::{Control, FrozenClock, Output, Produced, RenderGraph, render_one};
+    use tutti_export::{Control, FrozenClock, Output, Produced, RenderGraph, Setup, render_one};
     use tutti_graph::GraphBuilder;
     let render = |master: bool| {
         let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::STEREO);
@@ -155,7 +152,8 @@ fn chain_fresh(seconds: f64) -> (Vec<Vec<f32>>, Vec<Vec<f32>>) {
         let (editor, executor) = g
             .build(RenderGraph::prepare(SampleRate(RATE)))
             .expect("builds");
-        let mut graph = RenderGraph::new(editor, executor).expect("built together");
+        let mut graph =
+            RenderGraph::assemble(editor, executor, Setup::new()).expect("built together");
         let config = config(seconds);
         render_one(
             &mut graph,
@@ -313,7 +311,7 @@ fn latency_and_tail_come_from_the_graph() {
 ///
 /// Mutations (each run, each failed): `ExportJob::run` reading
 /// `reported_latency()` before the edit runs and using that figure; and the
-/// fork's commit after the edit skipped (`graph.commit()` replaced by `Ok`),
+/// fork's commit after the edit skipped (`ForkedPair::commit` replaced by `Ok`),
 /// so the plan is still the live graph's and nothing is trimmed.
 #[test]
 fn the_trim_is_read_after_the_prepare_hook() {
@@ -324,7 +322,7 @@ fn the_trim_is_read_after_the_prepare_hook() {
         .trim_reported_latency()
         .with_edit(Box::new(|prepared: PreparedGraph<'_>| {
             let key = prepared.fresh_key();
-            let editor = prepared.graph.editor_mut();
+            let editor = prepared.editor;
             editor.insert(key, "test:late", ForkByClone(Late { pos: 0 }));
             for out in editor.spec_mut().topology.outputs.iter_mut() {
                 *out = vec![tutti_graph::Source::Node(tutti_graph::OutPort {
@@ -340,6 +338,30 @@ fn the_trim_is_read_after_the_prepare_hook() {
     );
 }
 
+/// **A prepare hook that swaps the fork's editor for another graph's fails the
+/// export; it is not rendered**: the editor would never see what the fork's
+/// executor retires. The hook holds `&mut Editor`, so `mem::replace` is
+/// writable; the job checks the pair before it seals it.
+#[test]
+fn a_prepare_hook_that_swaps_the_editor_fails_the_export() {
+    let mut session = session();
+    let (dc, _) = session.graph().insert(Const::mono(0.5));
+    session.graph().set_outputs_from(dc);
+    let request =
+        buffers(ExportSource::Mix, 0.01).with_edit(Box::new(|prepared: PreparedGraph<'_>| {
+            let (other, _executor) = tutti_graph::Editor::new(Prepare::new(
+                SampleRate(RATE),
+                tutti_export::GRAPH_MAX_BLOCK,
+            ));
+            drop(std::mem::replace(prepared.editor, other));
+        }));
+    match refused(&mut session, request) {
+        Error::ExportConfig(ExportConfigError::PrepareHookUnpaired) => {}
+        other => panic!("expected the unpaired refusal, got {other:?}"),
+    }
+    assert!(!session.export_in_flight(), "the token is released");
+}
+
 /// **An export of a graph with no outputs says so**, for the master and for
 /// a node — not that the node has none.
 ///
@@ -351,7 +373,7 @@ fn a_graph_with_no_outputs_says_so() {
     let (node, _) = session.graph().insert(Osc::sine(Hz(220.0)));
     for source in [ExportSource::Mix, ExportSource::Node(node)] {
         match refused(&mut session, buffers(source, 0.01)) {
-            tutti_export::Error::InvalidConfig(ConfigError::GraphHasNoOutputs) => {}
+            Error::ExportConfig(ExportConfigError::GraphHasNoOutputs) => {}
             other => panic!("{source:?}: expected a refusal naming the outputs, got {other:?}"),
         }
     }
@@ -373,7 +395,7 @@ fn an_unrenderable_node_is_refused() {
     // `Sink::mono()` consumes one channel and produces nothing.
     let (orphan, _) = session.graph().insert(Sink::mono());
     match refused(&mut session, buffers(ExportSource::Node(orphan), 0.01)) {
-        tutti_export::Error::InvalidConfig(ConfigError::TargetHasNoOutputs) => {}
+        Error::ExportConfig(ExportConfigError::TargetHasNoOutputs) => {}
         other => panic!("expected TargetHasNoOutputs, got {other:?}"),
     }
     // An unwired source still renders: it has an output.
@@ -428,7 +450,7 @@ fn short() -> ExportRequest {
 /// edits the fork's editor and does not commit: the session does.
 ///
 /// Mutation (run, failed): the session's commit of the fork after the hook
-/// (`ExportJob::run`, `graph.commit()` after the edit) skipped → renders 0.5.
+/// (`ExportJob::run`, `pair.commit()` after the edit) skipped → renders 0.5.
 #[test]
 fn a_prepare_hook_reaches_the_graph_that_gets_rendered() {
     let (mut session, _node) = graph_with_one_node_on();
@@ -436,7 +458,7 @@ fn a_prepare_hook_reaches_the_graph_that_gets_rendered() {
     let request = short().with_edit(Box::new(move |prepared: PreparedGraph<'_>| {
         // Replace the whole graph's output with a constant.
         let key = prepared.fresh_key();
-        let editor = prepared.graph.editor_mut();
+        let editor = prepared.editor;
         editor.insert(key, "test:level", Const::mono(level));
         for out in editor.spec_mut().topology.outputs.iter_mut() {
             *out = vec![tutti_graph::Source::Node(tutti_graph::OutPort {
@@ -687,7 +709,7 @@ fn an_unforkable_node_refuses_the_export_by_key() {
         .set_output_source(1, GraphSource::Node(osc, 0));
 
     match refused(&mut session, buffers(ExportSource::Mix, 0.05)) {
-        tutti_export::Error::NotForkable { key } => {
+        Error::Export(tutti_export::Error::NotForkable { key }) => {
             assert_eq!(key, mic);
             assert!(
                 tutti_export::Error::NotForkable { key }

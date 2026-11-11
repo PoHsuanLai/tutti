@@ -34,7 +34,7 @@ use crate::support::render_to_file;
 use tutti_dsp::DitherShape;
 use tutti_export::{
     ChannelLayout, EncodeConfig, ExportConfig, Format, FrozenClock, IntDepth, Pcm, RenderConfig,
-    RenderGraph,
+    RenderGraph, Setup,
 };
 use tutti_graph::GraphBuilder;
 use tutti_nodes::testing::Const;
@@ -50,7 +50,7 @@ fn built(g: GraphBuilder) -> RenderGraph {
     let (editor, executor) = g
         .build(RenderGraph::prepare(tutti_types::SampleRate(SR)))
         .expect("builds");
-    RenderGraph::new(editor, executor).expect("built together")
+    RenderGraph::assemble(editor, executor, Setup::new()).expect("built together")
 }
 
 fn dc_graph(level: f32) -> RenderGraph {

@@ -54,12 +54,10 @@ use crate::support::{render_normalized_to_file, render_to_buffers, render_to_fil
 use tutti_dsp::DitherShape;
 use tutti_export::{
     ChannelLayout, EncodeConfig, Error, ExportConfig, Format, FrozenClock, GRAPH_MAX_BLOCK,
-    Normalize, Pcm, RenderConfig, RenderGraph, Rendered, Resample, write_buffers,
+    Normalize, Pcm, RenderConfig, RenderGraph, Rendered, Resample, Setup, write_buffers,
 };
 use tutti_fixtures::assert_golden;
-use tutti_graph::{
-    Cx, ForkMode, ForkTarget, GraphBuilder, Io, Node, Prepare, Shape, Status, Unforkable,
-};
+use tutti_graph::{Cx, GraphBuilder, Io, Node, Prepare, Shape, Status, Unforkable};
 use tutti_nodes::testing::{Const, Osc, vbap_mix};
 use tutti_transport::{OfflineTimeline, OfflineTimelineConfig};
 use tutti_types::{Amplitude, Azimuth, Beat, Bpm, Hz, SampleRate};
@@ -104,7 +102,7 @@ fn config(bit_depth: Pcm, channels: ChannelLayout) -> ExportConfig {
 /// The builder's graph, built for the export.
 fn built(g: GraphBuilder) -> RenderGraph {
     let (editor, executor) = g.build(RenderGraph::prepare(RATE)).expect("builds");
-    RenderGraph::new(editor, executor).expect("built together")
+    RenderGraph::assemble(editor, executor, Setup::new()).expect("built together")
 }
 
 /// The builder's graph as an export gets it from a live one: built at a
@@ -116,8 +114,7 @@ fn built(g: GraphBuilder) -> RenderGraph {
 /// there from front-centre.
 fn forked(g: GraphBuilder) -> RenderGraph {
     let (live, _exec) = g.build(Prepare::new(RATE, Samples(256))).expect("builds");
-    RenderGraph::fork(&live, ForkTarget::Master, ForkMode::Offline, RATE)
-        .expect("every node here is forkable")
+    support::fork_offline(&live, RATE)
 }
 
 /// `graph` into buffers under `config`.
@@ -633,46 +630,17 @@ fn the_tail_extends_the_render_by_the_ring_out() {
     }
 }
 
-/// A graph holding a node that cannot be forked (a mic monitor, a live disk
-/// voice — here a constant inserted `Unforkable`) is refused with the node's key, and
-/// nothing renders.
-///
-/// Mutation (run): `ForkError::NotForkable` wrapped in `Error::Fork` in
-/// `RenderGraph::fork` → the match below fails.
-#[test]
-fn an_unforkable_node_is_an_export_error_naming_it() {
-    let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::STEREO);
-    let fine = g.add(Const::mono(0.1));
-    let plugin = g.add(Unforkable(Const::mono(0.2)));
-    g.connect_output(fine, 0, 0).connect_output(plugin, 0, 1);
-    let (live, _exec) = g.build(Prepare::new(RATE, Samples(256))).expect("builds");
-
-    let err = match RenderGraph::fork(&live, ForkTarget::Master, ForkMode::Live, RATE) {
-        Ok(_) => panic!("forked a graph holding an unforkable node"),
-        Err(e) => e,
-    };
-    let text = err.to_string();
-    match err {
-        Error::NotForkable { key } => assert_eq!(key, plugin),
-        other => panic!("expected NotForkable, got {other:?}"),
-    }
-    assert!(text.contains(&format!("{plugin:?}")), "{text}");
-
-    // Only what the target needs must fork: the other branch does.
-    assert!(RenderGraph::fork(&live, ForkTarget::Node(fine), ForkMode::Live, RATE).is_ok());
-}
-
 /// An editor that does not feed the executor beside it is refused when the
-/// `RenderGraph` is made, not first at render.
+/// `RenderGraph` is assembled, not first at render.
 ///
-/// Mutation (run): `RenderGraph::new` skipping `check_paired` → it wraps
-/// the crossed pair.
+/// Mutation (run): `RenderGraph::assemble` skipping the pairing check → it
+/// wraps the crossed pair.
 #[test]
 fn a_crossed_pair_is_refused_at_construction() {
     let (editor_a, executor_a) = sine(1000.0).build(RenderGraph::prepare(RATE)).unwrap();
     let (editor_b, executor_b) = sine(500.0).build(RenderGraph::prepare(RATE)).unwrap();
     for (editor, executor) in [(editor_a, executor_b), (editor_b, executor_a)] {
-        let r = RenderGraph::new(editor, executor);
+        let r = RenderGraph::assemble(editor, executor, Setup::new());
         assert!(
             matches!(r, Err(Error::InvalidConfig(_))),
             "a crossed pair was wrapped"
@@ -680,22 +648,21 @@ fn a_crossed_pair_is_refused_at_construction() {
     }
 }
 
-/// An editor swapped in through `editor_mut` after construction is refused
-/// at render: the render keeps the pairing check as a real error.
-///
-/// Mutation (run): drop `check_paired` from `render::with_source` → it
-/// renders the crossed pair.
+/// A pair prepared at a rate that is not a sample rate (zero, negative, NaN,
+/// infinite) is refused when the `RenderGraph` is assembled, naming the rate.
 #[test]
-fn an_editor_swapped_after_construction_is_refused_at_render() {
-    let mut graph = built(sine(1000.0));
-    let (other, _exec) = sine(500.0).build(RenderGraph::prepare(RATE)).unwrap();
-    let _live = std::mem::replace(graph.editor_mut(), other);
-    let r = render_to_buffers(
-        graph,
-        &config(Pcm::Float32, ChannelLayout::STEREO),
-        &FrozenClock,
-    );
-    assert!(matches!(r, Err(Error::InvalidConfig(_))), "{r:?}");
+fn a_pair_prepared_at_no_rate_is_refused_at_assembly() {
+    for bad in [0.0, -48_000.0, f64::INFINITY] {
+        let (editor, executor) = sine(1000.0)
+            .build(RenderGraph::prepare(SampleRate(bad)))
+            .expect("the builder does not judge the rate");
+        match RenderGraph::assemble(editor, executor, Setup::new()) {
+            Err(Error::InvalidConfig(tutti_export::ConfigError::InvalidRate { prepared })) => {
+                assert!(prepared.to_bits() == bad.to_bits(), "{prepared} for {bad}");
+            }
+            other => panic!("{bad}: expected InvalidRate, got {other:?}"),
+        }
+    }
 }
 
 /// A pair prepared at another rate is refused, not rendered at the wrong one.
@@ -708,7 +675,7 @@ fn a_graph_prepared_at_another_rate_is_refused() {
         .build(RenderGraph::prepare(SampleRate(44_100.0)))
         .expect("builds");
     let r = render_to_buffers(
-        RenderGraph::new(editor, executor).expect("built together"),
+        RenderGraph::assemble(editor, executor, Setup::new()).expect("built together"),
         &config(Pcm::Float32, ChannelLayout::STEREO),
         &FrozenClock,
     );
@@ -987,8 +954,7 @@ fn a_forked_clip_reader_renders_the_tone_at_the_graph_block() {
         "sanity: the live reader played before the fork"
     );
     let graph_clock = timeline();
-    let forked = RenderGraph::fork(&live, ForkTarget::Master, ForkMode::Offline, RATE)
-        .expect("a memory source is forkable");
+    let forked = support::fork_offline(&live, RATE);
     let b = render_under(forked, &graph_clock, ChannelLayout::MONO);
     assert_audible(&b);
     assert_the_tone("forked", &b[0]);

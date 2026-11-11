@@ -75,7 +75,7 @@ pub enum Error {
 
     /// The graph could not be forked for the render because the node at
     /// `key` cannot be: it handed the editor no fork source (a mic monitor, a
-    /// node inserted `Unforkable`), so a copy would share the live node. From [`RenderGraph::fork`](crate::RenderGraph::fork);
+    /// node inserted `Unforkable`), so a copy would share the live node. From the session's fork of a live graph;
     /// nothing was rendered.
     ///
     /// A variant of its own rather than inside [`Fork`](Self::Fork) because it
@@ -244,10 +244,17 @@ pub enum ConfigError {
     /// [`MAX_FRAMES`](crate::MAX_FRAMES).
     #[error("the render cannot be a job: {0}")]
     Job(JobError),
+    /// The graph was prepared at a rate that is not finite and positive
+    /// ([`RenderGraph::assemble`](crate::RenderGraph::assemble)).
+    #[error("the graph is prepared at {prepared} Hz, which is not a sample rate")]
+    InvalidRate {
+        /// The rate the graph was prepared at, in Hz.
+        prepared: f64,
+    },
     /// The graph is prepared at another rate than the render.
     #[error(
         "the graph is prepared at {prepared} Hz and the render is at {render} Hz; \
-         prepare it with `RenderGraph::prepare` or fork it with `RenderGraph::fork`"
+         prepare it with `RenderGraph::prepare`"
     )]
     RateMismatch {
         /// The rate the graph was prepared at, in Hz.
@@ -255,15 +262,6 @@ pub enum ConfigError {
         /// The rate the render asks for, in Hz.
         render: f64,
     },
-    /// The export's target node has no audio outputs.
-    #[error("export target node has no audio outputs")]
-    TargetHasNoOutputs,
-    /// The graph has no outputs to export.
-    #[error("the graph has no outputs to export")]
-    GraphHasNoOutputs,
-    /// A prepare hook left the forked graph in a state that cannot commit.
-    #[error("the prepare hook left the forked graph uncommittable: {0:?}")]
-    PrepareHookUncommittable(tutti_graph::CommitError),
     /// The graph's channels have no place in the file's: the topology the file
     /// states cannot take them, or is not as wide as the file.
     #[error("the graph's channels cannot be placed into the file's: {0}")]

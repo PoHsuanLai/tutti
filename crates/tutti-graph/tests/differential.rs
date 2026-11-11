@@ -2812,6 +2812,177 @@ proptest! {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Driven mixes (doc 013, M4b): a control lane drives a node's mix.
+// ---------------------------------------------------------------------------
+
+/// The keys of the mix lane nodes (`Kind::MixDriver`), clear of every other
+/// property's.
+const MIX_LANE_KEYS: u64 = 2_000_000;
+
+/// The address of `key`'s mix.
+fn mix_port(key: NodeKey) -> tutti_graph::ParamIn {
+    tutti_graph::ParamIn {
+        node: key,
+        param: tutti_graph::NodeMix::ADDR,
+    }
+}
+
+/// Adds the mix lane nodes (once) and, for about a third of the nodes, a
+/// source among them (or none: a source that goes, declicked) and a range,
+/// from `rng`: a stream of its own, so no other property's graphs move.
+fn drive_mixes(desc: &mut Desc, rng: &mut Rng) {
+    if !desc.kinds.contains_key(&NodeKey(MIX_LANE_KEYS)) {
+        for (i, &latency) in LANE_LATENCIES.iter().enumerate() {
+            let key = NodeKey(MIX_LANE_KEYS + i as u64);
+            let kind = Kind::MixDriver {
+                period: 8 + 9 * i as u64,
+                latency,
+            };
+            desc.spec.topology.nodes.insert(key, spec_for(&kind));
+            desc.kinds.insert(key, kind);
+            desc.used.insert(key);
+        }
+    }
+    for key in desc.order.clone() {
+        if !rng.chance(33) {
+            continue;
+        }
+        let at = mix_port(key);
+        if rng.chance(80) {
+            let from = EventOut {
+                node: NodeKey(MIX_LANE_KEYS + rng.below(LANE_LATENCIES.len() as u64)),
+                port: 0,
+            };
+            desc.spec.connect_param(at, from);
+        } else if let Some(m) = desc.spec.params.get_mut(&at) {
+            m.source = None;
+        }
+        if rng.chance(50) {
+            let (min, max) = LANE_RANGES[rng.below(LANE_RANGES.len() as u64) as usize];
+            desc.spec
+                .set_param_range(at, tutti_graph::ParamRange::new(min, max));
+        }
+    }
+}
+
+/// Drops the lanes of nodes `mutate` removed.
+fn prune_mix_lanes(desc: &mut Desc) {
+    let nodes = &desc.spec.topology.nodes;
+    desc.spec
+        .params
+        .retain(|at, _| nodes.contains_key(&at.node));
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig { cases: 192, ..ProptestConfig::default() })]
+
+    /// Driven mixes on the random graphs, serial and parallel, are the
+    /// reference's bit for bit: lanes of several periods and latencies drive
+    /// the mix of about a third of the nodes (latent ones, event ones, sources,
+    /// sinks, in-place ones, nodes behind PDC), with ranges that clamp, a mix
+    /// moved under a driven lane, a range moved between blocks, and modes
+    /// (a driven mix meets a fade, the warm-up and a parked node); an edit
+    /// halfway rewires, removes and regenerates nodes and re-draws every source
+    /// (a source that changes or goes is declicked, a regenerated node's lane
+    /// starts at its value). Own RNGs, so no other property's seeds moved.
+    ///
+    /// Mutations (each run, each failed): the reference's lane dropped while
+    /// the node is bypassed; the executor carrying no lane state across a
+    /// commit (`set_driven` rebuilding it); aligning the mix's source with
+    /// `by = 0` in `compile`; the reference taking `fresh` as `true` always;
+    /// `MixRun::is_static` without its `!self.driven` term (the case that
+    /// found it: a block whose ends agree).
+    #[test]
+    fn driven_mixes_are_bit_identical_to_the_reference(seed in any::<u64>(), which in 0usize..5) {
+        for workers in modes(seed) {
+            let mut rng = Rng::new(seed ^ 0xED17);
+            let mut draws = Rng::new(seed ^ 0x31D5_0F17);
+            let mut lanes = Rng::new(seed ^ 0x6D12_17E5);
+            let mut desc = random_graph(seed);
+            drive_mixes(&mut desc, &mut lanes);
+            let mut pair = Pair::with_workers(MAX_BLOCK, workers);
+            pair.switch(&desc.spec.validate().expect("generated graphs are valid"), &desc.kinds);
+            let blocks = schedule(which, seed, 1400);
+            let half = blocks.len() / 2;
+            let mut frame = 0u64;
+            for (i, &n) in blocks.iter().enumerate() {
+                if i == half {
+                    let mut edited = mutate(&desc, &mut rng);
+                    prune_modes(&mut edited);
+                    prune_mixes(&mut edited);
+                    prune_mix_lanes(&mut edited);
+                    drive_mixes(&mut edited, &mut lanes);
+                    pair.switch(&edited.spec.validate().expect("valid"), &edited.kinds);
+                    desc = edited;
+                }
+                if draws.chance(20)
+                    && let Some((key, mix)) = pick_mix(&desc, &mut draws)
+                {
+                    pair.set_mix(key, mix);
+                    desc.spec.set_mix(key, mix);
+                }
+                if draws.chance(15)
+                    && let Some(key) = draws.pick(&desc.order)
+                {
+                    let (min, max) = LANE_RANGES[draws.below(LANE_RANGES.len() as u64) as usize];
+                    let range = tutti_graph::ParamRange::new(min, max);
+                    pair.set_mix_range(key, range);
+                    desc.spec.set_param_range(mix_port(key), range);
+                }
+                if draws.chance(8)
+                    && let Some((key, mode)) = pick_mode(&desc, &mut draws)
+                {
+                    pair.set_mode(key, mode);
+                    note_mode(&mut desc, key, mode);
+                }
+                let input = input_signal(frame, n);
+                let (a, b) = pair.block(n, &input);
+                prop_assert_eq!(bits(&a), bits(&b), "diverged at frame {} ({} frames)", frame, n);
+                frame += n as u64;
+            }
+        }
+    }
+}
+
+/// The driven-mix property is not vacuous: over the seeds a good share of the
+/// graphs have driven mixes, and the plans hold mix ports, lane event rings (a
+/// lane earlier than its node) and nodes that wait for a late lane.
+#[test]
+fn the_generator_draws_driven_mixes() {
+    let (mut driven, mut ports, mut rings) = (0, 0, 0);
+    for seed in 0..300u64 {
+        let mut lanes = Rng::new(seed ^ 0x6D12_17E5);
+        let mut desc = random_graph(seed);
+        drive_mixes(&mut desc, &mut lanes);
+        if desc.spec.params.values().all(|m| m.source.is_none()) {
+            continue;
+        }
+        let valid = desc.spec.validate().expect("valid");
+        let shapes: BTreeMap<NodeKey, tutti_graph::Shape> = desc
+            .kinds
+            .iter()
+            .map(|(&k, kind)| (k, shape(kind)))
+            .collect();
+        let (plan, _) = tutti_graph::compile(&valid, &shapes, &common::prepare(MAX_BLOCK), None)
+            .expect("compiles");
+        driven += 1;
+        ports += plan.param_ports().iter().filter(|p| p.is_mix()).count();
+        rings += plan
+            .delays()
+            .iter()
+            .filter(|d| {
+                matches!(d.key, tutti_graph::DelayKey::ParamEvent { at, .. }
+                    if at.param == tutti_graph::NodeMix::ADDR)
+            })
+            .count();
+    }
+    eprintln!("graphs {driven}, mix lanes {ports}, lane rings {rings}");
+    assert!(driven > 200, "only {driven} graphs with driven mixes");
+    assert!(ports > 400, "only {ports} driven mixes");
+    assert!(rings > 20, "only {rings} lane event rings");
+}
+
 /// The mix property is not vacuous: over the seeds the draws put a mix between
 /// the ends on latent nodes, on nodes behind PDC-free chains, and on nodes
 /// that a mode draw also reaches.

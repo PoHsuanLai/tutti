@@ -1,28 +1,35 @@
 //! The filter nodes' renders, pinned by digests (doc 024 step 2): what the SVF,
 //! the ladder, the crossover and the EQ band do with seeded noise, a cell moved
 //! between blocks (the block-rate ramp) and lanes driving a cutoff and a Q inside
-//! a block (the 16-frame solve schedule, `Every(16)`).
+//! a block (the 16-frame solve schedule).
 //!
 //! Each digest is FNV-1a over the bits of every output sample, channel by channel
-//! of each 64-frame block, recorded **before** the filters became models and
-//! realizations. The coefficient solves reach `libm` (`tan`, `powf`), so every
-//! assert goes through `assert_golden`: asserted on the recorded target only.
+//! of each 64-frame block. The crossover was recorded **before** the filters became
+//! models and realizations and has not moved (it is on the block-anchored 16-frame
+//! grid until doc 024 step 2b's PR5). The SVF, the bell and the EQ band **moved
+//! once**, in step 2b's PR3, and the ladder once, in PR4, when they went to the
+//! stream grid (Q27: a solve at the first frame of each 16-frame segment counted
+//! from the last reset, the coefficients ramping to it over the segment; the
+//! ladder's drive joins the grid, a lane sampled per segment and a cell glided
+//! like the others);
+//! the `held` digests below, which no grid touches, did not. The coefficient
+//! solves reach `libm` (`tan`, `powf`), so every assert goes through
+//! `assert_golden`: asserted on the recorded target only.
 //!
 //! The first render of a lane block is the one that pins the schedule: a lane
-//! sampled at the solve points (each 16th frame and the block's last) with the
-//! coefficients interpolated between them, so a node that solved at another
-//! interval, or interpolated another way, changes the digest.
+//! sampled at each segment's first frame with the coefficients interpolated over
+//! the segment, so a node that solved at another interval, or interpolated another
+//! way, changes the digest.
 //!
 //! Mutations (run): `COEFF_INTERVAL` 16 -> 8 in `tutti-dsp`'s `control.rs` changes
 //! the lane digests; `Ramp::at` taking `step * i` changes the cell digests; the
 //! crossover's `end as f64 / n as f64` -> `(end - 1) as f64 / n as f64` changes
-//! the crossover digest.
-//! `Cadence::steps` solving at `frames.start` instead of `frames.end - 1` changes the
-//! lane digests and the cell ones; `DesignNode::render_steps` reading with the
-//! controls of the step before (`applied: self.applied` in its `At`) instead of
-//! the block's start restarts the cell glide at each step and changes the cell
-//! digests. (Locally `assert_golden` only prints on another libm: compare the
-//! `DIGEST` lines.)
+//! the crossover digest. `Cadence::steps` solving a stream step at its end instead of
+//! `frames.start` changes the lane digests and the cell ones;
+//! `DesignNode::render_steps` reading with the controls of the step before
+//! (`applied: self.applied` in its `At`) instead of the block's start restarts the
+//! cell glide at each step and changes the cell digests. (Locally `assert_golden`
+//! only prints on another libm: compare the `DIGEST` lines.)
 
 use tutti_graph::contract::{drive_input, prepared};
 use tutti_graph::{Env, Node, ParamNode, PlayClock, Transport, TransportChanges};
@@ -132,7 +139,7 @@ fn the_svf_renders_what_it_always_did() {
         },
     );
     println!("DIGEST svf {digest:#018x}");
-    assert_golden("svf_render", digest, 0xf13a_ae01_ca0d_27c9);
+    assert_golden("svf_render", digest, 0xb59c_d87c_585f_e3d9);
 }
 
 /// A stereo f32 bell at 44.1 kHz: the gain moves at block 30 and the cutoff by
@@ -164,7 +171,7 @@ fn the_svf_bell_renders_what_it_always_did() {
         },
     );
     println!("DIGEST svf_bell {digest:#018x}");
-    assert_golden("svf_bell_render", digest, 0xc913_d3e2_bb80_c6df);
+    assert_golden("svf_bell_render", digest, 0xb197_e19b_d353_0dfe);
 }
 
 /// The EQ band: a mono high shelf, its gain and cutoff cells moved at block 50, a
@@ -186,7 +193,7 @@ fn the_eq_band_renders_what_it_always_did() {
         },
     );
     println!("DIGEST eq_band {digest:#018x}");
-    assert_golden("eq_band_render", digest, 0x93db_5839_71fc_e46b);
+    assert_golden("eq_band_render", digest, 0xa4d0_46fb_d4ba_0ef2);
 }
 
 /// A stereo 24 dB ladder: the resonance and cutoff cells move at block 40, the
@@ -216,7 +223,7 @@ fn the_ladder_renders_what_it_always_did() {
         },
     );
     println!("DIGEST ladder {digest:#018x}");
-    assert_golden("ladder_render", digest, 0xfacb_ee3a_dce1_3507);
+    assert_golden("ladder_render", digest, 0xc146_444c_b50a_5bee);
 }
 
 /// A stereo three-band crossover: the first split moves by its cell at block 40
@@ -248,7 +255,7 @@ fn the_crossover_renders_what_it_always_did() {
 // reach `libm`, so each goes through `assert_golden`, recorded on glibc 2.39.
 //
 // Mutations (run): `SvfCoefficients::solve`'s `a1` times 1.001 changes the SVF and
-// EQ digests, `LadderCoefficients::solve`'s `g1` times 1.001 the ladder's, and the
+// EQ digests, `LadderCoefficients::from`'s `g1` times 1.001 the ladder's, and the
 // crossover's `solve` scaling the first low-pass `b0` by 1.001 the crossover's; each
 // changes every digest of its node, held ones included.
 

@@ -105,7 +105,7 @@ impl ParamRef {
     }
 
     /// The `ParamRef` a key of the session's own names; `None` for the key
-    /// of an edge ([`EdgeRef`]).
+    /// of an edge ([`EdgeRef`]) or a mix ([`MixRef`]).
     #[must_use]
     pub fn from_key(target: TargetKey) -> Option<Self> {
         match target {
@@ -113,21 +113,58 @@ impl ParamRef {
                 node: NodeKey(node),
                 param,
             }),
-            TargetKey::Edge(_) => None,
+            TargetKey::Edge(_) | TargetKey::Mix(_) => None,
         }
     }
 }
 
+/// The mix of a node in the session's graph (doc 013, "Bypass and mute are
+/// graph state"): the node's blend with its aligned input, which
+/// [`Graph::set_mix`] sets and a modulation route onto it ([`ModTarget`])
+/// drives. Its range is `0..=1`: a route's depth is a fraction of the range
+/// declared for it (`Mods::range`), and the value is clamped to the blend.
+/// The mix is the lane's knob (one cell), so a route modulates around the mix
+/// the graph holds and removing it returns to that mix.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct MixRef {
+    /// The node whose mix it is.
+    pub node: NodeKey,
+}
+
+impl MixRef {
+    /// The mix of `node`.
+    #[must_use]
+    pub const fn of(node: NodeKey) -> Self {
+        Self { node }
+    }
+
+    /// The reconciler's key: the node's key bits. What a refusal of the
+    /// session's own declarations names.
+    #[must_use]
+    pub fn key(self) -> TargetKey {
+        TargetKey::mix(self.node.0)
+    }
+}
+
 /// What a modulation route, range or automation names: a param of a node
-/// ([`ParamRef`]) or the gain of an edge ([`EdgeRef`]). Both convert:
-/// `mods.route(source, param_ref, depth)` and
-/// `mods.route(source, edge_ref, depth)`.
+/// ([`ParamRef`]), the gain of an edge ([`EdgeRef`]) or the mix of a node
+/// ([`MixRef`]). Each converts: `mods.route(source, param_ref, depth)`,
+/// `mods.route(source, edge_ref, depth)` and `mods.route(source, mix_ref,
+/// depth)`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum ModTarget {
     /// A param of a node.
     Param(ParamRef),
     /// The gain of an edge.
     Edge(EdgeRef),
+    /// The mix of a node.
+    Mix(MixRef),
+}
+
+impl From<MixRef> for ModTarget {
+    fn from(m: MixRef) -> Self {
+        Self::Mix(m)
+    }
 }
 
 impl From<ParamRef> for ModTarget {
@@ -579,10 +616,11 @@ impl OwnMods {
     }
 
     /// `target`'s key for the reconciler: a param's is its node's bits and
-    /// address, an edge's a key minted for it.
+    /// address, a mix's its node's bits, an edge's a key minted for it.
     fn key_of(&mut self, target: ModTarget) -> TargetKey {
         match target {
             ModTarget::Param(p) => p.key(),
+            ModTarget::Mix(m) => m.key(),
             ModTarget::Edge(e) => {
                 let id = e.id();
                 let key = match self.edge_keys.get(&id) {
@@ -661,7 +699,7 @@ impl OwnMods {
         self.edge_refs.retain(|k, _| !dead.contains(k));
         self.edge_keys.retain(|_, k| !dead.contains(k));
         let gone = |t: &TargetKey| match t {
-            TargetKey::Param { node, .. } => *node == bits,
+            TargetKey::Param { node: n, .. } | TargetKey::Mix(n) => *n == bits,
             TargetKey::Edge(k) => dead.contains(k),
         };
         self.ranges.retain(|t, _| !gone(t));
@@ -949,7 +987,8 @@ impl Mods<'_> {
 
     /// The key the reconciler holds `target` under: what
     /// [`ModState::lane`] and [`ModRefusal::target`] speak. A param's is
-    /// [`ParamRef::key`]; an edge's is minted on first use and kept.
+    /// [`ParamRef::key`], a mix's [`MixRef::key`]; an edge's is minted on first
+    /// use and kept.
     pub fn key(&mut self, target: impl Into<ModTarget>) -> TargetKey {
         self.own.key_of(target.into())
     }

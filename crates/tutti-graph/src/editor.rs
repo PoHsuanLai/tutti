@@ -1499,7 +1499,12 @@ impl Editor {
         }
         self.touch();
         self.spec.set_param_range(at, range);
-        if let Some(cells) = self.param_ranges.get(&at.node) {
+        if at.param == NodeMix::ADDR {
+            // The node's mix: its range is the mode cell's.
+            if let Some(cell) = self.mode_cells.get(&at.node) {
+                cell.store_range(range);
+            }
+        } else if let Some(cells) = self.param_ranges.get(&at.node) {
             cells.store(at.param, range);
         }
         // The cells hold it now, so the spec last committed holds it too: a
@@ -1527,6 +1532,9 @@ impl Editor {
     /// list gives the key fresh cells, and an old view then reads ranges
     /// nothing writes. Ask again after such a commit (a rebind).
     pub fn param_range_cell(&self, at: ParamIn) -> Option<ParamRangeReader> {
+        if at.param == NodeMix::ADDR {
+            return self.mode_cells.get(&at.node).map(ModeCell::range_reader);
+        }
         self.param_ranges
             .get(&at.node)
             .and_then(|cells| cells.reader(at.param))
@@ -1721,9 +1729,24 @@ impl Editor {
     }
 
     /// `key`'s mix: [`Mix::WET`] unless [`set_mix`](Self::set_mix) (or an edit
-    /// of [`GraphSpec::mixes`]) set another.
+    /// of [`GraphSpec::mixes`]) set another. The live cell's once a commit has
+    /// placed the unit (the one writer's, whether it is `set_mix` or a lane's
+    /// knob), the spec's before; it is the base a driving lane modulates
+    /// around, not the lane's value.
     pub fn mix(&self, key: NodeKey) -> Mix {
-        self.spec.mix(key)
+        self.mode_cells
+            .get(&key)
+            .filter(|_| self.spec.topology.nodes.contains_key(&key))
+            .map_or_else(|| self.spec.mix(key), ModeCell::load_mix)
+    }
+
+    /// `key`'s live mix: the very cell [`set_mix`](Self::set_mix) stores into,
+    /// which a control lane reads as its knob (a native param's knob is the
+    /// node's own cell; a node's mix is this), so `set_mix` and a route are
+    /// one writer. `None` until a commit has placed the unit. Writing it moves
+    /// the mix without touching the spec: [`mix`](Self::mix) reads the cell.
+    pub fn mix_cell(&self, key: NodeKey) -> Option<ParamCell> {
+        self.mode_cells.get(&key).map(ModeCell::knob)
     }
 
     /// Edge `id`'s base, if the edge has an entry: the live cell's once a
@@ -1755,12 +1778,29 @@ impl Editor {
         }
     }
 
+    /// Writes `mix`, the spec's, into `cell` when the spec's mix moved since
+    /// the last commit (a spec edit that bypassed [`set_mix`](Self::set_mix)).
+    /// Otherwise the cell is left as it is: it is a driving lane's knob and
+    /// its one writer's, and the spec's copy may be behind it.
+    fn carry_mix(
+        committed: &Option<(GraphSpec, Shapes)>,
+        node: NodeKey,
+        cell: &ModeCell,
+        mix: Mix,
+    ) {
+        let seen = committed.as_ref().map(|(spec, _)| spec.mix(node));
+        if seen.is_none_or(|s| s.get().to_bits() != mix.get().to_bits()) {
+            cell.store_mix(mix);
+        }
+    }
+
     /// Write every live range cell, and every edge gain's range, from the spec,
     /// and a base the spec moved; and every live mode.
     fn sync_ranges(&self) {
         for (&node, cell) in &self.mode_cells {
             cell.store(self.spec.mode(node));
-            cell.store_mix(self.spec.mix(node));
+            Self::carry_mix(&self.committed, node, cell, self.spec.mix(node));
+            cell.store_range(mix_range_of(&self.spec, node));
         }
         for (id, cell) in &self.edge_gains {
             if let Some(g) = self.spec.gains.get(id) {
@@ -2499,9 +2539,10 @@ impl Editor {
         let modes = |key: NodeKey| {
             let cell = mode_cells
                 .entry(key)
-                .or_insert_with(|| ModeCell::new(NodeMode::Active, Mix::WET));
+                .or_insert_with(|| ModeCell::new(NodeMode::Active, spec.mix(key)));
             cell.store(spec.mode(key));
-            cell.store_mix(spec.mix(key));
+            Self::carry_mix(committed, key, cell, spec.mix(key));
+            cell.store_range(mix_range_of(spec, key));
             let shape = &plan.unit(key).expect("a placed unit is in its plan").shape;
             ModeState::new(cell.clone(), shape, max_block)
         };
@@ -2522,6 +2563,11 @@ impl Editor {
                 meters,
             },
         );
+        // A mix's range is the spec's for every unit the plan keeps, as the
+        // gains' are (a unit placed now has it from `modes`).
+        for (&key, cell) in &self.mode_cells {
+            cell.store_range(mix_range_of(&self.spec, key));
+        }
         self.param_ranges.retain(|k, _| plan.unit(*k).is_some());
         self.mode_cells.retain(|k, _| plan.unit(*k).is_some());
         if self.channels.to_executor.try_push(commit).is_err() {
@@ -2538,6 +2584,16 @@ fn range_of(spec: &GraphSpec, at: ParamIn) -> ParamRange {
     spec.params
         .get(&at)
         .map_or(ParamRange::UNBOUNDED, |m| m.range)
+}
+
+/// Node `key`'s mix range as `spec` holds it: the whole blend without an entry.
+fn mix_range_of(spec: &GraphSpec, key: NodeKey) -> ParamRange {
+    spec.params
+        .get(&ParamIn {
+            node: key,
+            param: NodeMix::ADDR,
+        })
+        .map_or(NodeMix::DEFAULT_RANGE, |m| m.range)
 }
 
 /// The crossfades `delta` starts: one per fade that is not a plain swap.

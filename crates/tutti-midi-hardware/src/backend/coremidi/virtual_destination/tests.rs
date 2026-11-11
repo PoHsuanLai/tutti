@@ -57,7 +57,12 @@ fn callback_receives_each_decoded_event() {
         let _ = tx.send(event);
     };
 
-    let note = tutti_fixtures::midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000);
+    let note = tutti_fixtures::midi::note_on(
+        MidiGroup::FIRST,
+        MidiChannel::FIRST,
+        60,
+        tutti_fixtures::midi::MID_VELOCITY,
+    );
     let clock = tutti_fixtures::midi::timing_clock(MidiGroup::FIRST);
     let mut words = Vec::new();
     words.extend_from_slice(note.words());

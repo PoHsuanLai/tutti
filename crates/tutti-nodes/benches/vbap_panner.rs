@@ -19,8 +19,10 @@
 use std::hint::black_box;
 
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
+use tutti_graph::ParamNode;
 use tutti_graph::contract::Direct;
 use tutti_nodes::VbapPannerNode;
+use tutti_nodes::testing::aim;
 use tutti_types::{Azimuth, ChannelLayout, ChannelTopology, Elevation, SampleRate};
 
 /// Warmup before measuring, in frames: two seconds at 48 kHz, 40 time
@@ -48,8 +50,8 @@ fn bench(c: &mut Criterion) {
                 ChannelLayout::from(speakers),
             ))
             .unwrap();
-            node.controls()
-                .set_position(Azimuth(20.0), Elevation::LEVEL);
+            let params = node.param_set();
+            aim(&params, Azimuth(20.0), Elevation::LEVEL);
             let mut d = Direct::new(node, SampleRate(48_000.0), block);
             fill_noise(d.inputs_mut());
             for _ in 0..WARMUP_FRAMES / block {
@@ -65,9 +67,7 @@ fn bench(c: &mut Criterion) {
                         } else {
                             bearing + 7.0
                         };
-                        d.node
-                            .controls()
-                            .set_position(Azimuth(bearing), Elevation::LEVEL);
+                        aim(&params, Azimuth(bearing), Elevation::LEVEL);
                     }
                     d.block();
                     black_box(d.output(0)[block - 1]);

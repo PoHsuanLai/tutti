@@ -6,12 +6,14 @@
 use std::sync::Arc;
 
 use tutti_graph::NodeKey;
+use tutti_graph::ParamNode;
 use tutti_graph::WorkerPool;
 use tutti_graph::{
     Cost, Cx, Editor, Executor, Io, Node, Prepare, Schedule, Shape, Status, Transport, Unforkable,
 };
 use tutti_graph::{Edge, InPort, OutPort, Source};
 use tutti_nodes::VbapPannerNode;
+use tutti_nodes::testing::aim;
 use tutti_types::{Azimuth, Beat, Bpm, ChannelLayout, Elevation, SampleRate, Samples};
 
 const SR: f64 = 48_000.0;
@@ -43,8 +45,11 @@ impl<N: Node> Node for Undeclared<N> {
 /// A stereo panner aimed by `k`.
 fn panner(k: u64) -> VbapPannerNode {
     let node = VbapPannerNode::stereo();
-    node.controls()
-        .set_position(Azimuth(-30.0 + 4.0 * k as f32), Elevation(0.0));
+    aim(
+        &node.param_set(),
+        Azimuth(-30.0 + 4.0 * k as f32),
+        Elevation(0.0),
+    );
     node
 }
 

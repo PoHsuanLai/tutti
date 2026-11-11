@@ -63,7 +63,10 @@ pub use tutti_types::{BarNumber, BeatsPerBar, NoteValue, Seconds, TimeSignature}
 pub use automation::{ParameterChanges, ParameterPoint, ParameterQueue};
 pub use automation_mode::AutomationMode;
 pub use bend_ranges::PerNoteBendRanges;
-pub use channels::{AudioBuffer, AudioBuffer32, AudioBuffer64, AudioBufferMut, BufferPtrs, Sample};
+pub use channels::{
+    AudioBuffer, AudioBuffer32, AudioBuffer64, AudioBufferMut, BufferPtrs, MAX_BLOCK_CHANNELS,
+    Sample,
+};
 pub use classification::{
     ClapFeature, PluginRole, Vst2Category, Vst3PlugType, Vst3SubCategories, clap_features_role,
 };

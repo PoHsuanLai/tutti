@@ -40,8 +40,8 @@ node without a lock.
   Summing is the graph's: a port or an output channel sums its sources.
 - **Spatial** — `VbapPannerNode` (stereo in, one output per speaker of a 2, 4,
   6, 8 or 12 channel layout) and `HrtfBinauralNode` (two outputs, by FFT
-  convolution against a caller-supplied HRIR sphere), both steered by lock-free
-  controls and a de-zippered `SpatialTarget`. A mix of several panned sources
+  convolution against a caller-supplied HRIR sphere), both steered by their
+  params (bearing, height, spread and width, or the blend), de-zippered. A mix of several panned sources
   is plain fan-in: wire each panner's outputs to the same graph ports.
 - **Param ports** — each modulatable node declares its params (its
   `*_PARAMS` list: `LADDER_PARAMS`, `DELAY_PARAMS`, …) as param ports, filled per

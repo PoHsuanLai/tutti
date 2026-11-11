@@ -1,4 +1,4 @@
-//! VST3 `SpeakerArrangement` ↔ [`ChannelTopology`] conversion.
+//! VST3 `SpeakerArrangement` → [`ChannelTopology`] decoding.
 //!
 //! # The one thing to know about VST3 arrangements
 //!
@@ -8,18 +8,14 @@
 //! of set bits *below* a speaker, so a bus's channel order is strictly
 //! ascending bit index, and `vstcomponent.cpp:192` relies on exactly that.
 //!
-//! Two consequences, and both shape this module:
+//! Decoding is total and lossless: walk the set bits low-to-high and the
+//! channel order falls out. Nothing needs a table beyond the bit names.
 //!
-//! 1. **Decoding is total and lossless.** Walk the set bits low-to-high and the
-//!    channel order falls out. Nothing needs a table.
-//! 2. **Encoding can fail.** A [`ChannelTopology`] is an ordered list, so it can
-//!    describe an order VST3 cannot represent — `MPEG_5_1_B`
-//!    (`L R Ls Rs C LFE`) is the same six speakers as `k51` in a different
-//!    order, and a mask cannot tell them apart. [`to_arrangement`] returns
-//!    `None` there rather than silently proposing an arrangement whose channel
-//!    order is not the caller's.
-//!
-//! That asymmetry is the whole reason the shared type is a list.
+//! The inverse does not exist here. A [`ChannelTopology`] is an ordered list,
+//! so it can describe an order VST3 cannot represent (`MPEG_5_1_B`, `L R Ls Rs
+//! C LFE`, is the same six speakers as `k51` in a different order, and a mask
+//! cannot tell them apart); and the host only ever has channel *counts* to
+//! propose, which `instance::default_arrangement_for` serves.
 //!
 //! # Why width alone is not enough
 //!
@@ -46,10 +42,8 @@ use vst3::Steinberg::Vst::{
 
 /// One VST3 speaker bit and the shared [`Speaker`] it means.
 ///
-/// A table rather than two `match` arms because the mapping must be a
-/// bijection: the decode walks it to name a bit, the encode walks it to find a
-/// bit, and a value appearing in one direction but not the other is the bug
-/// class a round-trip test catches. See `every_named_speaker_round_trips`.
+/// A table the decode walks to name a bit; `every_named_bit_decodes_to_its_speaker`
+/// pins it against the SDK's bit positions.
 ///
 /// **Bit order is load-bearing.** This is listed ascending, and the decode
 /// depends on that to produce channel order — see the module docs.
@@ -69,8 +63,7 @@ const SPEAKER_BITS: &[(SpeakerArrangement, Speaker)] = &[
     (kSpeakerLc, Speaker::FrontLeftOfCenter),
     (kSpeakerRc, Speaker::FrontRightOfCenter),
     // `kSpeakerCs` is an *alias* of `kSpeakerS` (both bit 8, `vstspeaker.h:50`),
-    // so only one of the two names may appear here — listing both would make
-    // the round trip ambiguous in the encode direction.
+    // so only one of the two names may appear here.
     (kSpeakerCs, Speaker::BackCenter),
     // `Sl`/`Sr` are the *additional* pair `k71Music` adds on top of `k51`'s
     // `Ls`/`Rs` (`vstspeaker.h:170-173`), so within a 7.1 bus they are the
@@ -95,10 +88,9 @@ const SPEAKER_BITS: &[(SpeakerArrangement, Speaker)] = &[
 /// The engine's own mono is `FrontCenter` ([`ChannelTopology::smpte`] of width
 /// 1), so the two vocabularies disagree about what one channel means.
 ///
-/// It is kept out of [`SPEAKER_BITS`] and handled as a special case at both
-/// ends, for two reasons. In the table it would break the bijection —
-/// `FrontCenter` would map to two different bits, and whichever came first
-/// would silently win. And its bit index (19) is above every placement bit, so
+/// It is kept out of [`SPEAKER_BITS`] and handled as a special case in
+/// the decode, for two reasons. In the table `FrontCenter` would be named by two
+/// bits. And its bit index (19) is above every placement bit, so
 /// a mono-plus-anything mask would sort mono *last* in channel order, which is
 /// meaningless.
 ///
@@ -136,117 +128,59 @@ pub(crate) fn from_arrangement(arr: SpeakerArrangement) -> ChannelTopology {
     }))
 }
 
-/// Encodes a topology as a VST3 arrangement, or `None` if VST3 cannot express
-/// this channel order.
-///
-/// Fails — rather than proposing a near-miss — in three cases, all of which
-/// would otherwise put the plugin's channels somewhere the caller did not
-/// intend:
-///
-/// - **An order VST3 cannot represent.** A mask has no order of its own, so it
-///   can only describe a topology already in ascending-bit-index order.
-///   `MPEG_5_1_B` has the same speakers as `k51` in a different order and is
-///   simply not expressible.
-/// - **A speaker with no VST3 bit**, including any [`Speaker::Unknown`] — the
-///   payload is the *source format's* raw value, which is meaningless here.
-/// - **A duplicate speaker**, which a set cannot represent at all.
-///
-/// `None` is a real answer for a caller to act on: `setBusArrangements` is a
-/// proposal, so the honest move is to propose nothing and take what the plugin
-/// reports back.
-///
-/// Not called outside tests: `negotiate_bus_arrangements` only has channel
-/// *counts* to work from, so it uses `instance::default_arrangement_for`, the
-/// width-only fallback. It is kept because `SPEAKER_BITS` must stay a
-/// bijection and `every_named_speaker_round_trips` is the only thing that
-/// checks it — and that test exercises the decode direction production *does*
-/// use.
-#[cfg_attr(not(test), allow(dead_code))]
-pub(crate) fn to_arrangement(topology: &ChannelTopology) -> Option<SpeakerArrangement> {
-    // The inverse of the mono case in `from_arrangement`: a single-channel bus
-    // is `kMono`, not `kSpeakerC`. See [`MONO_BIT`].
-    if topology.positions() == [Speaker::FrontCenter] {
-        return Some(MONO_BIT);
-    }
-
-    let mut mask: SpeakerArrangement = 0;
-    let mut previous_bit: Option<u32> = None;
-
-    for speaker in topology.positions() {
-        let bit = SPEAKER_BITS
-            .iter()
-            .find(|(_, s)| s == speaker)
-            .map(|(b, _)| *b)?;
-
-        // A set holds each speaker once; a repeat means the list said something
-        // a mask cannot.
-        if mask & bit != 0 {
-            return None;
-        }
-
-        // Ascending order is what makes the mask's *derived* order equal the
-        // caller's *stated* one. Out of order, the plugin would receive the
-        // right speakers with the channels permuted — silent, and audible.
-        let index = bit.trailing_zeros();
-        if previous_bit.is_some_and(|p| index <= p) {
-            return None;
-        }
-        previous_bit = Some(index);
-
-        mask |= bit;
-    }
-
-    Some(mask)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use tutti_types::ChannelLayout;
     use vst3::Steinberg::Vst::{SpeakerArr, kSpeakerLfe2};
 
-    /// Every speaker in the table survives a round trip through the mask.
+    /// Every speaker bit decodes to its speaker, with the bit positions written
+    /// as literals from `vstspeaker.h` (`kSpeakerL = 1 << 0` ... `kSpeakerTrr =
+    /// 1 << 17`), not read back from the table or the SDK constants.
     ///
-    /// The table is the bijection this module rests on: the decode looks up by
-    /// bit, the encode by speaker. An entry reachable one way but not the other
-    /// compiles and silently mis-routes, so it is checked rather than reviewed.
+    /// Mutation (run): swapping the `kSpeakerTfl` and `kSpeakerTfr` rows of
+    /// `SPEAKER_BITS` fails this at bits 12 and 14.
     #[test]
-    fn every_named_speaker_round_trips() {
-        for (bit, speaker) in SPEAKER_BITS {
-            let decoded = from_arrangement(*bit);
+    fn every_named_bit_decodes_to_its_speaker() {
+        let spec: [(u32, Speaker); 18] = [
+            (0, Speaker::FrontLeft),
+            (1, Speaker::FrontRight),
+            (2, Speaker::FrontCenter),
+            (3, Speaker::LowFrequency),
+            (4, Speaker::SideLeft),
+            (5, Speaker::SideRight),
+            (6, Speaker::FrontLeftOfCenter),
+            (7, Speaker::FrontRightOfCenter),
+            (8, Speaker::BackCenter),
+            (9, Speaker::BackLeft),
+            (10, Speaker::BackRight),
+            (11, Speaker::TopCenter),
+            (12, Speaker::TopFrontLeft),
+            (13, Speaker::TopFrontCenter),
+            (14, Speaker::TopFrontRight),
+            (15, Speaker::TopBackLeft),
+            (16, Speaker::TopBackCenter),
+            (17, Speaker::TopBackRight),
+        ];
+        for (bit, speaker) in spec {
             assert_eq!(
-                decoded.positions(),
-                &[*speaker],
-                "bit {} decoded wrong",
-                bit.trailing_zeros()
-            );
-
-            // A lone `FrontCenter` is the engine's *mono* bus, which encodes to
-            // `kMono` rather than `kSpeakerC` — see `MONO_BIT`. Pairing it with
-            // another speaker keeps this a test of the table rather than of
-            // that deliberate special case, which
-            // `mono_maps_to_the_mono_marker_not_the_centre_speaker` covers.
-            let (probe, expected) = if *speaker == Speaker::FrontCenter {
-                (
-                    ChannelTopology::new([Speaker::FrontLeft, Speaker::FrontCenter]),
-                    kSpeakerL | *bit,
-                )
-            } else {
-                (decoded, *bit)
-            };
-            assert_eq!(
-                to_arrangement(&probe),
-                Some(expected),
-                "{speaker:?} did not encode back to its own bit"
+                from_arrangement(1u64 << bit).positions(),
+                &[speaker],
+                "bit {bit} decoded wrong"
             );
         }
+        assert_eq!(
+            SPEAKER_BITS.len(),
+            spec.len(),
+            "a bit the spec does not list"
+        );
     }
 
     /// No two table entries share a bit or a speaker.
     ///
     /// `kSpeakerCs` aliases `kSpeakerS` (`vstspeaker.h:50`), and VST3 has
-    /// several such pairs. Listing both names of one bit would make the encode
-    /// direction ambiguous — whichever came first would win, silently.
+    /// several such pairs. Listing both names of one bit would make the decode
+    /// ambiguous — whichever came first would win, silently.
     #[test]
     fn the_speaker_table_has_no_duplicate_bits_or_speakers() {
         for (i, (bit_a, spk_a)) in SPEAKER_BITS.iter().enumerate() {
@@ -305,7 +239,6 @@ mod tests {
             ],
             "k40Music is L R Ls Rs, and VST3's Ls/Rs are the 5.1 surround pair"
         );
-        assert_eq!(to_arrangement(&decoded), Some(SpeakerArr::k40Music));
 
         // What a low-bits conversion produces, named so the difference is explicit.
         let old_mask: SpeakerArrangement = (1u64 << 4) - 1;
@@ -350,13 +283,6 @@ mod tests {
             vst3_four,
             ChannelTopology::quad(),
             "but they name different speakers, and conflating them would move audio"
-        );
-
-        // The engine's quad is expressible in VST3 — as a *different* mask.
-        assert_ne!(
-            to_arrangement(&ChannelTopology::quad()),
-            Some(SpeakerArr::k40Music),
-            "the engine's rear-pair quad must not encode as the side-pair layout"
         );
     }
 
@@ -421,7 +347,6 @@ mod tests {
     fn an_empty_arrangement_decodes_to_no_channels() {
         let decoded = from_arrangement(SpeakerArr::kEmpty);
         assert_eq!(decoded.layout(), ChannelLayout::EMPTY);
-        assert_eq!(to_arrangement(&decoded), Some(SpeakerArr::kEmpty));
     }
 
     /// An unnamed bit keeps its channel slot rather than vanishing.
@@ -441,16 +366,13 @@ mod tests {
         assert!(!decoded.is_fully_named());
     }
 
-    /// Mono round-trips as `kMono`, not as the centre speaker.
+    /// `kMono` decodes to the engine's mono, not to a placed centre speaker.
     ///
     /// VST3's `kMono` is `kSpeakerM` (bit 19) — a marker above the whole
     /// placement range — while the engine's one-channel bus is `FrontCenter`.
-    /// Encoding mono as `kSpeakerC` would ask a plugin for the centre channel
-    /// of a surround arrangement, which a mono-only plugin may refuse outright.
     #[test]
-    fn mono_maps_to_the_mono_marker_not_the_centre_speaker() {
+    fn the_mono_marker_decodes_to_the_engines_mono() {
         let engine_mono = ChannelTopology::smpte(ChannelLayout::MONO).expect("mono has an order");
-        assert_eq!(to_arrangement(&engine_mono), Some(SpeakerArr::kMono));
         assert_ne!(
             SpeakerArr::kMono,
             kSpeakerC,
@@ -474,63 +396,6 @@ mod tests {
         let decoded = from_arrangement(odd);
         assert_eq!(decoded.layout(), ChannelLayout::from(3u16));
         assert_eq!(decoded.positions()[2], Speaker::Unknown(19));
-    }
-
-    /// A topology VST3 cannot order is refused, not approximated.
-    ///
-    /// `MPEG_5_1_B` is `k51`'s speakers in a different order. Encoding it as
-    /// `k51` would hand the plugin the right speakers with the channels
-    /// permuted — centre where the LFE belongs — which is silent and audible.
-    #[test]
-    fn an_order_vst3_cannot_express_is_refused() {
-        // The same six speakers as `k51` — note `SideLeft`/`SideRight`, which
-        // are VST3's bits 4/5 — with centre and LFE moved to the end.
-        let mpeg_51_b = ChannelTopology::new([
-            Speaker::FrontLeft,
-            Speaker::FrontRight,
-            Speaker::SideLeft,
-            Speaker::SideRight,
-            Speaker::FrontCenter,
-            Speaker::LowFrequency,
-        ]);
-        assert_eq!(
-            to_arrangement(&mpeg_51_b),
-            None,
-            "a mask cannot carry this order, so proposing one would permute the channels"
-        );
-
-        // Same speakers, ascending order: expressible, and it is exactly k51.
-        let smpte = ChannelTopology::smpte(ChannelLayout::from(6u16)).expect("6 has an order");
-        assert_eq!(to_arrangement(&smpte), Some(SpeakerArr::k51));
-    }
-
-    /// A speaker with no VST3 bit refuses the whole encode.
-    #[test]
-    fn a_speaker_vst3_does_not_define_is_refused() {
-        let with_unknown =
-            ChannelTopology::new([Speaker::FrontLeft, Speaker::FrontRight, Speaker::Unknown(7)]);
-        assert_eq!(
-            to_arrangement(&with_unknown),
-            None,
-            "an Unknown payload is another format's value and names no VST3 bit"
-        );
-    }
-
-    /// A discrete channel names no VST3 bit, so it refuses like an unknown one.
-    ///
-    /// Mutation (run): `to_arrangement` skipping non-table speakers instead of
-    /// refusing returns a shorter arrangement and fails this.
-    #[test]
-    fn a_discrete_channel_is_refused() {
-        let topology = ChannelTopology::new([Speaker::FrontLeft, Speaker::Discrete]);
-        assert_eq!(to_arrangement(&topology), None);
-    }
-
-    /// A repeated speaker refuses, since a set cannot hold one twice.
-    #[test]
-    fn a_duplicate_speaker_is_refused() {
-        let doubled = ChannelTopology::new([Speaker::FrontLeft, Speaker::FrontLeft]);
-        assert_eq!(to_arrangement(&doubled), None);
     }
 
     /// Decoded width always equals the mask's popcount.

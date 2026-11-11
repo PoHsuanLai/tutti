@@ -1,75 +1,11 @@
-//! Where a source is aimed, and how it gets there without zippering.
-//! Algorithm-neutral: [`SpatialTarget`] is the control→RT storage,
-//! [`AngleSmoother`] the de-zipper both panners step per frame.
+//! How a source gets to where it is aimed without zippering: the
+//! [`AngleSmoother`] both panners step.
 
 use tutti_dsp::Smoother;
-use tutti_types::{Azimuth, Direction, Elevation, Param, SampleRate, Samples, Seconds};
+use tutti_types::{Azimuth, Direction, Elevation, SampleRate, Samples, Seconds};
 
 /// The time constant of the position de-zipper, in audio time.
 const SMOOTH_TIME: Seconds = Seconds(0.05);
-
-/// A source's bearing and height as a pair of lock-free [`Param`] cells.
-///
-/// Both panners hold one and read it once per block on the audio thread; the
-/// control thread writes it through [`store`](Self::store) (usually via a
-/// panner's controls). Clones share the same cells, so a write through any
-/// clone reaches the node.
-///
-/// The two fields are different types on purpose: a bearing wraps (190° is
-/// 170° to the right), a height saturates (past straight up, you stop).
-#[derive(Clone, Debug)]
-pub struct SpatialTarget {
-    /// Bearing in [`Azimuth`] degrees, wrapped onto the circle: 0 is front,
-    /// 90 left, -90 right. Written lock-free from the control thread and read
-    /// once per block by the panner.
-    pub azimuth: Param<Azimuth>,
-    /// Height in [`Elevation`] degrees, clamped to -90..90: 0 is ear level,
-    /// positive is up. Saturates at the poles rather than wrapping.
-    pub elevation: Param<Elevation>,
-}
-
-impl SpatialTarget {
-    /// Creates a target aimed straight ahead at ear level
-    /// ([`Azimuth::FRONT`] / [`Elevation::LEVEL`]).
-    #[must_use]
-    pub fn new() -> Self {
-        Self {
-            azimuth: Param::new(Azimuth::FRONT),
-            elevation: Param::new(Elevation::LEVEL),
-        }
-    }
-
-    /// Returns the current bearing and height. Lock-free; safe on the audio
-    /// thread.
-    #[inline]
-    pub fn load(&self) -> Direction {
-        Direction::new(self.azimuth.load(), self.elevation.load())
-    }
-
-    /// Stores a bearing and height, normalized on the way in: the bearing
-    /// wraps onto -180..180, the height clamps to -90..90. Lock-free.
-    pub fn store(&self, azimuth: impl Into<Azimuth>, elevation: impl Into<Elevation>) {
-        self.azimuth.store(azimuth.into().wrap());
-        self.elevation
-            .store(Elevation::new_clamped(elevation.into().get()));
-    }
-
-    /// Stops sharing both cells with other clones, keeping the current values
-    /// (see [`Param::detach`]).
-    ///
-    /// A panner's fork calls this so it renders the position it was taken at,
-    /// unaffected by later moves of the live node.
-    pub fn detach(&mut self) {
-        self.azimuth.detach();
-        self.elevation.detach();
-    }
-}
-
-impl Default for SpatialTarget {
-    fn default() -> Self {
-        Self::new()
-    }
-}
 
 /// One smoother per coordinate, each with its own arithmetic: the bearing takes
 /// the short arc, the height is a plain ramp.

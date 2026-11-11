@@ -19,9 +19,9 @@
 
 use tutti_graph::Offset;
 use tutti_graph::UmpAt;
-use tutti_midi_protocol::{midi1, widen_message};
+use tutti_midi_protocol::{midi1, widen_bytes};
 use tutti_plugin_types::WireMidi;
-use tutti_ump::{Midi1Bytes, Midi1Parser, MidiGroup, Ump, decode};
+use tutti_ump::{Midi1Bytes, MidiGroup, Ump, decode};
 
 /// A block's plugin-to-host MIDI, reserved once and reused.
 pub type MidiEventVec = Vec<WireMidi>;
@@ -117,10 +117,7 @@ pub fn to_midi(event: &crate::api::MidiEvent) -> Option<WireMidi> {
     // Widen the MIDI-1 message to Channel Voice 2 at this edge, so the engine
     // sees one vocabulary regardless of source (a Note On at velocity 0 is a
     // Note Off). System messages pass through unchanged.
-    Midi1Parser::message(MidiGroup::FIRST, &event.midi_data).map(|message| WireMidi {
-        offset: frame,
-        ump: widen_message(message).into(),
-    })
+    widen_bytes(MidiGroup::FIRST, &event.midi_data).map(|ump| WireMidi { offset: frame, ump })
 }
 
 /// Serializes a Tutti UMP [`WireMidi`] to a VST2 `crate::api::MidiEvent`.
@@ -1042,11 +1039,10 @@ mod tests {
     }
 
     fn sysex_packets(payload: &[u8], frame: u32) -> Vec<UmpAt> {
-        let mut out = Vec::new();
-        out.extend(
-            tutti_ump::Sysex7Packets::checked(MidiGroup::FIRST, payload).expect("a 7-bit payload"),
-        );
-        out.into_iter().map(|e| at(frame as usize, e)).collect()
+        midi::sysex7_packets(payload)
+            .into_iter()
+            .map(|e| at(frame as usize, e))
+            .collect()
     }
 
     fn framed(payload: &[u8]) -> Vec<u8> {

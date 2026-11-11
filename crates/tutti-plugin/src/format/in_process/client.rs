@@ -36,7 +36,8 @@ use super::instance::Instance;
 use crate::host::node::transport_source::TransportSource;
 use crate::host::node::{DeliveryCounters, MidiIntake, ParamDelivery, PluginMeter, SegmentPoints};
 use tutti_plugin_types::{
-    Features, MIDI_STACK_CAPACITY, MidiEventVec, ParamId, ParameterChanges, TransportInfo,
+    Features, MAX_BLOCK_CHANNELS, MIDI_STACK_CAPACITY, MidiEventVec, ParamId, ParameterChanges,
+    TransportInfo,
 };
 
 /// A plugin running inside the host process, as a graph node, whatever its
@@ -494,11 +495,6 @@ pub(super) fn block_context<'a>(
         .transport(transport)
 }
 
-/// The most channels a block hands the plugin (the stack tables `process`
-/// builds from its `Io`). A wider plugin's channels past it read silence and
-/// its graph outputs past it are silent.
-pub(super) const MAX_CHANNELS: usize = 16;
-
 /// What a block did to the plugin.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Rendered {
@@ -557,9 +553,9 @@ pub(super) fn render<P: Processor>(
     // table whose borrow is this call's own. An array, not an `ArrayVec`: a
     // type with a `Drop` would need its data to outlive the borrow of the
     // table.
-    let width = outputs.len().min(MAX_CHANNELS);
+    let width = outputs.len().min(MAX_BLOCK_CHANNELS);
     let mut rest = outputs.iter_mut();
-    let mut table: [&mut [f32]; MAX_CHANNELS] =
+    let mut table: [&mut [f32]; MAX_BLOCK_CHANNELS] =
         std::array::from_fn(|_| rest.next().map_or(&mut [][..], |o| &mut **o));
     let mut io = PluginIo {
         buffer: AudioBufferMut::F32(AudioBuffer {

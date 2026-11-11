@@ -51,10 +51,10 @@
 
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 use tutti_curve::{Law, Piece};
 
-use tutti_rt::PackedAtomic;
-use tutti_types::{Amplitude, UnitAddr, UnitParam};
+use tutti_types::{Amplitude, AtomicF32, ParamCell, UnitAddr, UnitParam};
 
 use crate::event::Event;
 use crate::param::{ParamPorts, ParamRange, ParamRangeReader, ParamRanges, ParamState};
@@ -149,9 +149,12 @@ impl Hash for EdgeGain {
 /// into and the executor snapshots once per block, and the range a driven
 /// value is clamped to.
 ///
-/// An [`Amplitude`] is a plain `f32` newtype but not `bytemuck::Pod` (that
-/// trait is not ours to implement for it), so the word holds the raw `f32` and
-/// the cell converts at its edge: nothing outside it sees a bare float. The
+/// An [`Amplitude`] is a plain `f32` newtype, so the cell holds the raw `f32`
+/// (an `AtomicF32`, which is what a control lane's knob is) and converts at its
+/// edge: nothing outside it sees a bare float. **The base is the lane's
+/// knob, and the cell is its one writer's**: [`Editor::set_edge_gain`] and a
+/// route's `ModState::set_knob` store into the same cell, so a routed
+/// modulation moves around the base and the base is what the gain returns to. The
 /// range is the param port's own cell ([`ParamRanges`] over the one address
 /// [`EdgeGain::ADDR`]), so the driven step clamps to it as a port does and a
 /// control lane reads it through the same [`ParamRangeReader`].
@@ -159,7 +162,7 @@ impl Hash for EdgeGain {
 /// [`Editor::set_edge_gain`]: crate::Editor::set_edge_gain
 #[derive(Clone, Debug)]
 pub(crate) struct GainCell {
-    base: Arc<PackedAtomic<f32>>,
+    base: Arc<AtomicF32>,
     range: Arc<ParamRanges>,
 }
 
@@ -169,14 +172,14 @@ impl GainCell {
         let ranges = ParamRanges::new(ParamPorts::of(&[EdgeGain::ADDR]));
         ranges.store(EdgeGain::ADDR, range);
         Self {
-            base: Arc::new(PackedAtomic::new(base.get())),
+            base: Arc::new(AtomicF32::new(base.get())),
             range: ranges,
         }
     }
 
     /// Store `base`. Wait-free.
     pub(crate) fn store(&self, base: Amplitude) {
-        self.base.store(base.get());
+        self.base.store(base.get(), Ordering::Release);
     }
 
     /// Store `range`. Wait-free.
@@ -187,7 +190,15 @@ impl GainCell {
     /// The base now. Wait-free.
     #[inline]
     pub(crate) fn load(&self) -> Amplitude {
-        Amplitude::new(self.base.load())
+        Amplitude::new(self.base.load(Ordering::Acquire))
+    }
+
+    /// The base as a width-erased cell: the very cell the executor reads and
+    /// [`store`](Self::store) writes, handed to a control lane as its knob (a
+    /// native param's knob is the node's own cell, and an edge's is its
+    /// gain). Clones the `Arc`: control side.
+    pub(crate) fn knob(&self) -> ParamCell {
+        Arc::clone(&self.base).into()
     }
 
     /// A read-only view of the range cell, for a control lane.

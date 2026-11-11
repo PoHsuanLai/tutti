@@ -1,7 +1,8 @@
 use super::*;
-use core::sync::atomic::Ordering;
 use tutti_graph::contract::{drive, prepared};
-use tutti_types::ChannelTopology;
+use tutti_types::{ChannelTopology, UnitParam};
+
+use crate::testing::aim;
 
 const RATE: SampleRate = SampleRate(48_000.0);
 
@@ -25,9 +26,7 @@ fn tick_at(node: &mut VbapPannerNode, rate: SampleRate, input: &[f32; 2], out: &
 #[test]
 fn vbap_panner_tick() {
     let mut panner = prep(VbapPannerNode::stereo());
-    panner
-        .controls()
-        .set_position(Azimuth::new(0.0), Elevation::new(0.0));
+    aim(&panner.param_set(), Azimuth::new(0.0), Elevation::new(0.0));
 
     let input = [1.0f32, 1.0f32];
     let mut output = [0.0f32; 2];
@@ -48,33 +47,31 @@ fn vbap_panner_tick() {
 #[test]
 fn reset_keeps_the_authored_placement() {
     let mut panner = prep(VbapPannerNode::surround_5_1());
-    panner
-        .controls()
-        .set_position(Azimuth(45.0), Elevation(15.0));
-    panner.controls().set_spread(Spread(0.3));
-    panner.controls().set_width(StereoWidth(1.5));
+    aim(&panner.param_set(), Azimuth(45.0), Elevation(15.0));
+    panner.spread.store(Spread(0.3));
+    panner.width.store(StereoWidth(1.5));
 
     Node::reset(&mut panner);
 
     assert!(
-        (panner.controls().azimuth().get() - 45.0).abs() < 0.001,
+        (panner.azimuth.load().get() - 45.0).abs() < 0.001,
         "reset moved the bearing to {}",
-        panner.controls().azimuth().get()
+        panner.azimuth.load().get()
     );
     assert!(
-        (panner.controls().elevation().get() - 15.0).abs() < 0.001,
+        (panner.elevation.load().get() - 15.0).abs() < 0.001,
         "reset moved the height to {}",
-        panner.controls().elevation().get()
+        panner.elevation.load().get()
     );
     assert!(
-        (panner.controls().spread().get() - 0.3).abs() < 0.001,
+        (panner.spread.load().get() - 0.3).abs() < 0.001,
         "reset changed the spread to {}",
-        panner.controls().spread().get()
+        panner.spread.load().get()
     );
     assert!(
-        (panner.controls().width().get() - 1.5).abs() < 0.001,
+        (panner.width.load().get() - 1.5).abs() < 0.001,
         "reset changed the width to {}",
-        panner.controls().width().get()
+        panner.width.load().get()
     );
 }
 
@@ -91,10 +88,10 @@ fn reset_keeps_the_authored_placement() {
 ///
 /// # The setup deliberately does not tick before the reset
 ///
-/// A `set_position` → `tick` → `reset` sequence would pass even if `reset`
+/// An aim → `tick` → `reset` sequence would pass even if `reset`
 /// left the smoother where it was, because the leading tick's 50 ms
 /// ramp would carry it most of the way. The reset must read the
-/// [`SpatialTarget`] itself.
+/// azimuth and elevation cells itself.
 ///
 /// This test therefore resets with no intervening tick, which is the
 /// sequence a caller writes. The `-90°` half is
@@ -113,9 +110,7 @@ fn reset_seats_the_smoother_on_the_commanded_position() {
         // Where the panner ends up once the 50 ms ramp has run out: a hard
         // pan, so the opposite channel is silent.
         let mut settled = prep(VbapPannerNode::stereo());
-        settled
-            .controls()
-            .set_position(Azimuth(bearing), Elevation::LEVEL);
+        aim(&settled.param_set(), Azimuth(bearing), Elevation::LEVEL);
         let mut reference = [0.0f32; 2];
         for _ in 0..48_000 {
             tick(&mut settled, &input, &mut reference);
@@ -125,12 +120,10 @@ fn reset_seats_the_smoother_on_the_commanded_position() {
             "the settled reference at {bearing} should be a hard pan, got {reference:?}"
         );
 
-        // No tick between `set_position` and `reset`: the reset must find
+        // No tick between the aim and `reset`: the reset must find
         // the commanded bearing on its own.
         let mut panner = prep(VbapPannerNode::stereo());
-        panner
-            .controls()
-            .set_position(Azimuth(bearing), Elevation::LEVEL);
+        aim(&panner.param_set(), Azimuth(bearing), Elevation::LEVEL);
         Node::reset(&mut panner);
 
         let mut after = [0.0f32; 2];
@@ -154,18 +147,14 @@ fn the_de_zipper_ramp_is_in_flight_without_a_reset() {
     let input = [1.0f32, 1.0f32];
 
     let mut settled = prep(VbapPannerNode::stereo());
-    settled
-        .controls()
-        .set_position(Azimuth(90.0), Elevation::LEVEL);
+    aim(&settled.param_set(), Azimuth(90.0), Elevation::LEVEL);
     let mut reference = [0.0f32; 2];
     for _ in 0..48_000 {
         tick(&mut settled, &input, &mut reference);
     }
 
     let mut panner = prep(VbapPannerNode::stereo());
-    panner
-        .controls()
-        .set_position(Azimuth(90.0), Elevation::LEVEL);
+    aim(&panner.param_set(), Azimuth(90.0), Elevation::LEVEL);
     let mut mid_ramp = [0.0f32; 2];
     tick(&mut panner, &input, &mut mid_ramp);
     assert!(
@@ -181,41 +170,39 @@ fn the_de_zipper_ramp_is_in_flight_without_a_reset() {
 #[test]
 fn reset_on_a_clone_does_not_move_the_original() {
     let panner = VbapPannerNode::stereo();
-    panner
-        .controls()
-        .set_position(Azimuth(-60.0), Elevation(20.0));
+    aim(&panner.param_set(), Azimuth(-60.0), Elevation(20.0));
 
     let mut cloned = panner.clone();
     Node::reset(&mut cloned);
 
     assert!(
-        (panner.controls().azimuth().get() - (-60.0)).abs() < 0.001,
+        (panner.azimuth.load().get() - (-60.0)).abs() < 0.001,
         "resetting the clone moved the original to {}",
-        panner.controls().azimuth().get()
+        panner.azimuth.load().get()
     );
     assert!(
-        (panner.controls().elevation().get() - 20.0).abs() < 0.001,
+        (panner.elevation.load().get() - 20.0).abs() < 0.001,
         "resetting the clone moved the original to {}",
-        panner.controls().elevation().get()
+        panner.elevation.load().get()
     );
 }
 
 /// Every separately shared cell survives a clone as a shared handle,
 /// not as a snapshot.
 ///
-/// `Clone` hands on `target`, `spread` and `width` by handle (a `Param`
-/// clone shares its cell), so all three are asserted -- one per shared
-/// field. Covering only `target` leaves a hole the compiler cannot see: a
-/// hand-written `VbapPannerControls::clone` building `spread` with
+/// `Clone` hands on `azimuth`, `elevation`, `spread` and `width` by handle
+/// (a `Param` clone shares its cell), so all four are asserted -- one per
+/// shared field. Covering only the position leaves a hole the compiler
+/// cannot see: a hand-written `Clone` building `spread` with
 /// `Param::new(spread.load())` is a snapshotting clone that still passes a
 /// position-only test.
 ///
 /// Why sharing is the required behaviour rather than an implementation
-/// detail: a clone is the fork source's template (`crate::fork`), taken at
-/// insert, so a snapshotting clone would freeze every later export at
+/// detail: a clone is the fork source's template (`tutti_graph::param_parts`),
+/// taken at insert, so a snapshotting clone would freeze every later export at
 /// whatever spread or width happened to be set at insert and silently
 /// ignore every later move. (The fork itself detaches; see
-/// `tests/isolate_snapshots.rs`.) It is also the premise of
+/// `tests/spatial_param_fork.rs`.) It is also the premise of
 /// `reset_on_a_clone_does_not_move_the_original` -- `reset` must not write
 /// these cells precisely because the write would reach back through every
 /// handle.
@@ -229,63 +216,67 @@ fn vbap_clone_shares_atomics() {
     let cloned = panner.clone();
 
     // -- target: azimuth + elevation, set on the original.
-    panner
-        .controls()
-        .set_position(Azimuth::new(90.0), Elevation::new(45.0));
-    assert!(
-        (cloned.controls().azimuth().get() - 90.0).abs() < 0.001,
-        "the clone did not see the original's bearing: {}",
-        cloned.controls().azimuth().get()
+    aim(
+        &panner.param_set(),
+        Azimuth::new(90.0),
+        Elevation::new(45.0),
     );
     assert!(
-        (cloned.controls().elevation().get() - 45.0).abs() < 0.001,
+        (cloned.azimuth.load().get() - 90.0).abs() < 0.001,
+        "the clone did not see the original's bearing: {}",
+        cloned.azimuth.load().get()
+    );
+    assert!(
+        (cloned.elevation.load().get() - 45.0).abs() < 0.001,
         "the clone did not see the original's height: {}",
-        cloned.controls().elevation().get()
+        cloned.elevation.load().get()
     );
 
     // And vice versa.
-    cloned
-        .controls()
-        .set_position(Azimuth::new(-60.0), Elevation::new(10.0));
-    assert!(
-        (panner.controls().azimuth().get() - (-60.0)).abs() < 0.001,
-        "the original did not see the clone's bearing: {}",
-        panner.controls().azimuth().get()
+    aim(
+        &cloned.param_set(),
+        Azimuth::new(-60.0),
+        Elevation::new(10.0),
     );
     assert!(
-        (panner.controls().elevation().get() - 10.0).abs() < 0.001,
+        (panner.azimuth.load().get() - (-60.0)).abs() < 0.001,
+        "the original did not see the clone's bearing: {}",
+        panner.azimuth.load().get()
+    );
+    assert!(
+        (panner.elevation.load().get() - 10.0).abs() < 0.001,
         "the original did not see the clone's height: {}",
-        panner.controls().elevation().get()
+        panner.elevation.load().get()
     );
 
     // -- spread: its own cell.
-    panner.controls().set_spread(Spread(0.3));
+    panner.spread.store(Spread(0.3));
     assert!(
-        (cloned.controls().spread().get() - 0.3).abs() < 0.001,
+        (cloned.spread.load().get() - 0.3).abs() < 0.001,
         "the clone did not see the original's spread: {} -- a snapshotting \
          clone would freeze an offline render at the clone-time value",
-        cloned.controls().spread().get()
+        cloned.spread.load().get()
     );
-    cloned.controls().set_spread(Spread(0.8));
+    cloned.spread.store(Spread(0.8));
     assert!(
-        (panner.controls().spread().get() - 0.8).abs() < 0.001,
+        (panner.spread.load().get() - 0.8).abs() < 0.001,
         "the original did not see the clone's spread: {}",
-        panner.controls().spread().get()
+        panner.spread.load().get()
     );
 
     // -- width: its own cell too, and previously uncovered in either
     //    direction.
-    panner.controls().set_width(StereoWidth(1.5));
+    panner.width.store(StereoWidth(1.5));
     assert!(
-        (cloned.controls().width().get() - 1.5).abs() < 0.001,
+        (cloned.width.load().get() - 1.5).abs() < 0.001,
         "the clone did not see the original's width: {}",
-        cloned.controls().width().get()
+        cloned.width.load().get()
     );
-    cloned.controls().set_width(StereoWidth(0.4));
+    cloned.width.store(StereoWidth(0.4));
     assert!(
-        (panner.controls().width().get() - 0.4).abs() < 0.001,
+        (panner.width.load().get() - 0.4).abs() < 0.001,
         "the original did not see the clone's width: {}",
-        panner.controls().width().get()
+        panner.width.load().get()
     );
 }
 
@@ -301,9 +292,7 @@ fn a_clone_ramps_at_the_originals_sample_rate() {
     let rate = SampleRate(96_000.0);
     let mut original = prepared(VbapPannerNode::stereo(), rate, 64);
     let mut clone = original.clone();
-    original
-        .controls()
-        .set_position(Azimuth(60.0), Elevation::LEVEL);
+    aim(&original.param_set(), Azimuth(60.0), Elevation::LEVEL);
     let (mut a, mut b) = ([0.0f32; 2], [0.0f32; 2]);
     for i in 0..2_000 {
         tick_at(&mut original, rate, &[1.0, 1.0], &mut a);
@@ -325,8 +314,7 @@ fn a_non_finite_control_never_reaches_the_smoother() {
     for value in bad {
         for which in 0..4 {
             let mut node = prep(VbapPannerNode::surround_5_1());
-            node.controls()
-                .set_position(Azimuth(30.0), Elevation::LEVEL);
+            aim(&node.param_set(), Azimuth(30.0), Elevation::LEVEL);
             let (mut out, input) = ([0.0f32; 6], [0.5f32, -0.25]);
             let mut all_finite = true;
             let mut run = |node: &mut VbapPannerNode, frames: usize| {
@@ -337,74 +325,47 @@ fn a_non_finite_control_never_reaches_the_smoother() {
             };
             run(&mut node, 64);
             match which {
-                0 => node
-                    .controls
-                    .target
-                    .azimuth
-                    .as_atomic()
-                    .store(value, Ordering::Release),
-                1 => node
-                    .controls
-                    .target
-                    .elevation
-                    .as_atomic()
-                    .store(value, Ordering::Release),
-                2 => node
-                    .controls
-                    .spread
-                    .as_atomic()
-                    .store(value, Ordering::Release),
-                _ => node
-                    .controls
-                    .width
-                    .as_atomic()
-                    .store(value, Ordering::Release),
+                0 => node.azimuth.store(Azimuth(value)),
+                1 => node.elevation.store(Elevation(value)),
+                2 => node.spread.store(Spread(value)),
+                _ => node.width.store(StereoWidth(value)),
             }
             // Everything else moves in the same block.
             if which != 0 {
-                node.controls
-                    .target
-                    .azimuth
-                    .as_atomic()
-                    .store(-70.0, Ordering::Release);
+                node.azimuth.store(Azimuth(-70.0));
             }
             if which != 2 {
-                node.controls
-                    .spread
-                    .as_atomic()
-                    .store(0.4, Ordering::Release);
+                node.spread.store(Spread(0.4));
             }
             run(&mut node, 4_800);
-            node.controls().set_position(Azimuth(10.0), Elevation(5.0));
-            node.controls().set_spread(Spread(0.1));
-            node.controls().set_width(StereoWidth(1.0));
+            aim(&node.param_set(), Azimuth(10.0), Elevation(5.0));
+            node.spread.store(Spread(0.1));
+            node.width.store(StereoWidth(1.0));
             run(&mut node, 4_800);
             assert!(all_finite, "control {which} = {value} reached the output");
         }
     }
 }
 
-/// The controls an insert hands back are the node's own cells: a move
-/// through them reaches the running node, which the graph owns.
+/// The `ParamSet` an insert hands back addresses the node's own cells: a move
+/// through it reaches the running node, which the graph owns.
 ///
-/// Mutation (run): `into_parts` hands back `VbapPannerControls::new()`
-/// (cells of its own) → the source stays front-centre, `[0.707, 0.707]`
-/// → fails.
+/// Mutation (run): `param_set` builds its cells with `Param::new` (cells of
+/// its own) → the source stays front-centre, `[0.707, 0.707]` → fails.
 #[test]
-fn the_inserted_controls_move_the_running_node() {
+fn the_inserted_params_move_the_running_node() {
     use tutti_graph::Solo;
     use tutti_types::Samples;
 
     let mut solo = Solo::new(VbapPannerNode::stereo(), Prepare::new(RATE, Samples(64)));
-    solo.controls()
-        .set_position(Azimuth(90.0), Elevation::LEVEL);
+    aim(solo.controls(), Azimuth(90.0), Elevation::LEVEL);
     // 100 ms: past the 50 ms de-zipper.
     let ones = vec![1.0f32; 4_800];
     let out = solo.render_input(&[&ones, &ones]);
     let (l, r) = (out[0][4_799], out[1][4_799]);
     assert!(
         l > 0.9 && r < 0.1,
-        "a hard-left move through the controls should have landed: [{l}, {r}]"
+        "a hard-left move through the params should have landed: [{l}, {r}]"
     );
 }
 
@@ -475,7 +436,150 @@ fn a_topology_that_is_not_a_bed_is_refused_by_name() {
     }
     let quad = ChannelTopology::quad();
     assert_eq!(
-        VbapPannerNode::for_topology(&quad).unwrap().num_channels(),
+        VbapPannerNode::for_topology(&quad)
+            .unwrap()
+            .channels()
+            .count() as usize,
         4
     );
+}
+
+/// The ports a lane can drive are the params the node declares, each with
+/// its cell as the base the graph's modulation rides on.
+///
+/// Mutation (run): `param_base(3)` answering the spread cell -> fails.
+#[test]
+fn the_panner_declares_its_params() {
+    let node = VbapPannerNode::stereo();
+    node.azimuth.store(Azimuth(10.0));
+    node.elevation.store(Elevation(20.0));
+    node.spread.store(Spread(0.3));
+    node.width.store(StereoWidth(1.5));
+    assert_eq!(node.shape().params.as_slice(), &VBAP_PANNER_PARAMS[..]);
+    let bases: Vec<_> = (0..5).map(|k| node.param_base(k)).collect();
+    assert_eq!(
+        bases,
+        [Some(10.0), Some(20.0), Some(0.3), Some(1.5), None],
+        "each port's base is its cell"
+    );
+}
+
+/// A lane that drives a param is heard as the cell would be: a node whose
+/// lane holds the value, over a cell at another, settles on the render of a
+/// node whose cell holds it, for each of the four ports.
+///
+/// The cell and the lane are told apart by the default: a render at the
+/// value differs from one at the default (else the row would pass on a node
+/// that ignored both).
+///
+/// Mutation (run): `process` reading every param from its cell
+/// (`driven` all `None`) -> every row fails.
+#[test]
+fn a_lane_drives_each_param_as_its_cell_would() {
+    let (left, right) = ([0.5f32; 64], [-0.25f32; 64]);
+    let settle = |node: &mut VbapPannerNode, lane: Option<(usize, f32)>| {
+        let held = lane.map(|(_, v)| [v; 64]);
+        let mut params: [Option<&[f32]>; 4] = [None; 4];
+        if let Some((k, _)) = lane {
+            params[k] = held.as_ref().map(|v| &v[..]);
+        }
+        // Ten 50 ms time constants of blocks.
+        let mut last = Vec::new();
+        for _ in 0..(RATE.get() as usize / 2).div_ceil(64) {
+            last = drive(node, RATE, &[&left, &right], &params);
+        }
+        last.iter().map(|c| c[63]).collect::<Vec<f32>>()
+    };
+    for (k, param, value) in [
+        (0, UnitParam::Azimuth, 90.0f32),
+        (1, UnitParam::Elevation, 45.0),
+        (2, UnitParam::Spread, 0.8),
+        (3, UnitParam::StereoWidth, 0.2),
+    ] {
+        let fresh = || prep(VbapPannerNode::atmos_7_1_4());
+        let mut default = fresh();
+        let at_default = settle(&mut default, None);
+
+        let mut cell = fresh();
+        assert!(cell.param_set().set(param, value));
+        Node::reset(&mut cell);
+        let at_cell = settle(&mut cell, None);
+        assert!(
+            at_cell
+                .iter()
+                .zip(&at_default)
+                .any(|(a, b)| (a - b).abs() > 0.01),
+            "{param:?}: the value does not change the render, so the row proves nothing"
+        );
+
+        let mut lane = fresh();
+        let at_lane = settle(&mut lane, Some((k, value)));
+        for (ch, (a, b)) in at_lane.iter().zip(&at_cell).enumerate() {
+            assert!(
+                (a - b).abs() < 1e-3,
+                "{param:?}, channel {ch}: the lane settled at {a}, the cell at {b}"
+            );
+        }
+    }
+}
+
+/// A lane-driven bearing that crosses the seam takes the short arc: 170 degrees
+/// driven to 190 (which is -170) glides 20 degrees through the rear, and
+/// the speakers silent at both ends (the front pair of a quad) stay silent
+/// along the way. The long way round, 340 degrees through the front, lights
+/// them.
+///
+/// The speakers that are silent at both ends are found by rendering both
+/// ends settled, not named, so the row follows the bed.
+///
+/// Mutation (run): `AngleSmoother::advance` taking the arc as
+/// `target - current` with no wrap (`ArcDegrees(target.azimuth.get() -
+/// current.get())`) -> the glide sweeps through the front pair -> fails.
+#[test]
+fn a_lane_driven_bearing_crosses_the_seam_the_short_way() {
+    let ones = [1.0f32; 64];
+    let at = |bearing: f32| {
+        let mut node = prep(VbapPannerNode::quad());
+        node.azimuth.store(Azimuth(bearing));
+        Node::reset(&mut node);
+        drive(&mut node, RATE, &[&ones[..1], &ones[..1]], &[])
+            .iter()
+            .map(|c| c[0])
+            .collect::<Vec<f32>>()
+    };
+    let (start, end) = (at(170.0), at(-170.0));
+    let front: Vec<usize> = (0..4)
+        .filter(|&c| start[c] < 0.05 && end[c] < 0.05)
+        .collect();
+    assert_eq!(
+        front.len(),
+        2,
+        "the rear pair carries both ends: {start:?} {end:?}"
+    );
+
+    let mut node = prep(VbapPannerNode::quad());
+    node.azimuth.store(Azimuth(170.0));
+    Node::reset(&mut node);
+    let lane = [190.0f32; 64];
+    let mut loudest_front = 0.0f32;
+    let mut last = Vec::new();
+    // Ten 50 ms time constants: the glide is over.
+    for _ in 0..(RATE.get() as usize / 2).div_ceil(64) {
+        last = drive(&mut node, RATE, &[&ones, &ones], &[Some(&lane)]);
+        for &c in &front {
+            loudest_front = last[c].iter().fold(loudest_front, |m, s| m.max(s.abs()));
+        }
+    }
+    assert!(
+        loudest_front < 0.05,
+        "the glide from 170 to 190 lit the front pair ({loudest_front}): the long way round"
+    );
+    for c in 0..4 {
+        assert!(
+            (last[c][63] - end[c]).abs() < 1e-3,
+            "channel {c}: settled at {}, the bearing -170 renders {}",
+            last[c][63],
+            end[c]
+        );
+    }
 }

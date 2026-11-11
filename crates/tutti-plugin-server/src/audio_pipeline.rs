@@ -19,12 +19,8 @@ use tutti_plugin::server::{
     PluginInstance, ProcessContext, ProcessOutput, SampleFormat, Samples, ScaleChanges, SlabWriter,
     TransportChange, TransportInfo, WireMidi,
 };
+use tutti_plugin_types::MAX_BLOCK_CHANNELS;
 use tutti_ump::Ump;
-
-/// Maximum channel count handled by the audio pipeline's stack-array
-/// slice tables. 16 covers every realistic plugin layout (most are mono
-/// or stereo; surround tops out at 7.1 = 8 channels).
-const MAX_CHANNELS: usize = 16;
 
 /// Sample-rate + negotiated sample format; travel together.
 ///
@@ -416,10 +412,13 @@ impl AudioPipeline {
             }
 
             let sample_rate = clock.sample_rate;
-            debug_assert!(num_channels <= MAX_CHANNELS, "channel count > 16");
+            debug_assert!(
+                num_channels <= MAX_BLOCK_CHANNELS,
+                "channel count > {MAX_BLOCK_CHANNELS}"
+            );
             // Per-direction channel widths, clamped to the slice-table capacity.
-            let in_n = total_in.min(MAX_CHANNELS);
-            let out_n = total_out.min(MAX_CHANNELS);
+            let in_n = total_in.min(MAX_BLOCK_CHANNELS);
+            let out_n = total_out.min(MAX_BLOCK_CHANNELS);
             // Set false by any channel whose write into the slab failed. Publishing
             // a slot whose later channels never landed is worse than not publishing
             // at all: the host's sequence check would pass and it would read the
@@ -595,7 +594,7 @@ fn note_failed_block(count: &mut u64, error: &tutti_plugin::server::PluginError)
 
 /// Build a stack-allocated [`AudioBufferMut::F32`] from owned channel vecs
 /// and hand it to the FnOnce `f`. Allocation-free — the `&[&[f32]]` and
-/// `&mut [&mut [f32]]` slice tables live in fixed `MAX_CHANNELS`-wide stack
+/// `&mut [&mut [f32]]` slice tables live in fixed `MAX_BLOCK_CHANNELS`-wide stack
 /// arrays, which is what makes this callable on the audio thread.
 ///
 /// The output table is filled by a plain `for … zip` loop, which is possible
@@ -610,15 +609,15 @@ fn with_audio_buffer_f32<R>(
     sample_rate: f64,
     f: impl FnOnce(AudioBufferMut<'_, '_>) -> R,
 ) -> R {
-    let in_n = inputs.len().min(MAX_CHANNELS);
-    let out_n = outputs.len().min(MAX_CHANNELS);
+    let in_n = inputs.len().min(MAX_BLOCK_CHANNELS);
+    let out_n = outputs.len().min(MAX_BLOCK_CHANNELS);
 
-    let mut in_refs: [&[f32]; MAX_CHANNELS] = [&[]; MAX_CHANNELS];
+    let mut in_refs: [&[f32]; MAX_BLOCK_CHANNELS] = [&[]; MAX_BLOCK_CHANNELS];
     for (slot, chan) in in_refs[..in_n].iter_mut().zip(inputs) {
         *slot = &chan[..size];
     }
 
-    let mut out_refs: [&mut [f32]; MAX_CHANNELS] = Default::default();
+    let mut out_refs: [&mut [f32]; MAX_BLOCK_CHANNELS] = Default::default();
     for (slot, chan) in out_refs[..out_n].iter_mut().zip(outputs.iter_mut()) {
         *slot = &mut chan[..size];
     }
@@ -639,15 +638,15 @@ fn with_audio_buffer_f64<R>(
     sample_rate: f64,
     f: impl FnOnce(AudioBufferMut<'_, '_>) -> R,
 ) -> R {
-    let in_n = inputs.len().min(MAX_CHANNELS);
-    let out_n = outputs.len().min(MAX_CHANNELS);
+    let in_n = inputs.len().min(MAX_BLOCK_CHANNELS);
+    let out_n = outputs.len().min(MAX_BLOCK_CHANNELS);
 
-    let mut in_refs: [&[f64]; MAX_CHANNELS] = [&[]; MAX_CHANNELS];
+    let mut in_refs: [&[f64]; MAX_BLOCK_CHANNELS] = [&[]; MAX_BLOCK_CHANNELS];
     for (slot, chan) in in_refs[..in_n].iter_mut().zip(inputs) {
         *slot = &chan[..size];
     }
 
-    let mut out_refs: [&mut [f64]; MAX_CHANNELS] = Default::default();
+    let mut out_refs: [&mut [f64]; MAX_BLOCK_CHANNELS] = Default::default();
     for (slot, chan) in out_refs[..out_n].iter_mut().zip(outputs.iter_mut()) {
         *slot = &mut chan[..size];
     }

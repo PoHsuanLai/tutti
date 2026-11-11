@@ -39,7 +39,14 @@ struct BlockClock(
 
 impl BlockClock {
     fn new() -> Self {
-        Self(Default::default())
+        let cell = Self(Default::default());
+        // On macOS std's `Mutex` boxes its pthread mutex on the first `lock`,
+        // so the first read from the driver thread (before any `write`) would
+        // allocate there. The engine's own clock is lock-free; this stand-in
+        // takes its lock once here, on the control side, as a real one is
+        // built.
+        drop(cell.0.lock().unwrap());
+        cell
     }
 
     fn reader(&self) -> tutti_midi_runtime::ArrivalClock {

@@ -49,7 +49,8 @@ fn engine() -> (
     let (driver, stream) = ManualStreamDriver::new();
     let (mut s, device) = Session::builder()
         .build_device_on(spec_at(OLD), driver)
-        .expect("builds with no device");
+        .expect("builds with no device")
+        .into_parts();
     let (osc, _) = s.graph().add(ForkByClone(Osc::sine(Hz(1_000.0))));
     let (lim, _) = s.graph().add(LimiterNode::with_channels(
         ChannelLayout::MONO,
@@ -59,7 +60,7 @@ fn engine() -> (
     s.graph().set_source(lim, 0, GraphSource::Node(osc, 0));
     s.graph().set_output_source(0, GraphSource::Node(osc, 0));
     s.graph().set_output_source(1, GraphSource::Node(lim, 0));
-    s.update();
+    let _ = s.update();
     (s, device, stream, osc, lim)
 }
 
@@ -71,7 +72,7 @@ fn play(s: &mut Session, stream: &ManualStream, frames: usize, blocks: usize) ->
     for _ in 0..blocks {
         let block = stream.render_block(frames).expect("the stream is open");
         left.extend(block.iter().step_by(2));
-        s.update();
+        let _ = s.update();
     }
     left
 }
@@ -119,8 +120,8 @@ fn period(x: &[f32]) -> f64 {
 fn a_restart_at_a_new_rate_re_rates_the_graph_and_everything_on_it() {
     let (mut s, mut device, old, _, lim) = engine();
     let t = s.transport().clone();
-    t.motion.try_send(MotionEvent::Play).expect("room");
-    t.motion
+    t.motion().try_send(MotionEvent::Play).expect("room");
+    t.motion()
         .schedule(At::Frame(Frame(66_150)), MotionEvent::stop_unfaded())
         .expect("room");
     let before = play(&mut s, &old, 441, 100);
@@ -156,7 +157,7 @@ fn a_restart_at_a_new_rate_re_rates_the_graph_and_everything_on_it() {
     // Sent after the restart, before the first block at the new rate: already
     // in 48 kHz frames (1.75 s of wall clock), so the rate's adoption must
     // leave it where it is.
-    t.motion
+    t.motion()
         .schedule(At::Frame(Frame(84_000)), MotionEvent::Play)
         .expect("room");
 
@@ -173,14 +174,14 @@ fn a_restart_at_a_new_rate_re_rates_the_graph_and_everything_on_it() {
     );
     after.extend(play(&mut s, &new, 480, 54));
     // One frame of 48 kHz is 1/24 000 of a beat: 1e-9 pins the frame.
-    assert!(t.motion.is_stopped(), "the stop landed");
+    assert!(t.motion().is_stopped(), "the stop landed");
     assert!(
         (t.settings().beat().get() - 3.0).abs() < 1e-9,
         "the stop lands on 1.5 s of wall clock, frame 72 000 (beat 3), not at beat {}",
         t.settings().beat().get()
     );
     after.extend(play(&mut s, &new, 480, 45));
-    assert!(t.motion.is_playing(), "the later play landed");
+    assert!(t.motion().is_playing(), "the later play landed");
     assert!(
         (t.settings().beat().get() - 3.5).abs() < 1e-9,
         "rolling again from frame 84 000, 12 000 frames to go (beat 3.5), not beat {}",
@@ -273,7 +274,7 @@ fn a_restart_onto_a_wider_device_widens_the_root() {
     for _ in 0..4 {
         let block = surround.render_block(480).expect("the stream is open");
         assert_eq!(block.len(), 480 * 6);
-        s.update();
+        let _ = s.update();
     }
     assert_eq!(
         s.compensation().to_vec().len(),
@@ -317,7 +318,7 @@ fn a_restart_after_a_failed_hook_recovers_on_the_old_device() {
     // The declared wiring writes the limiter's input back.
     s.graph().set_source(lim, 0, GraphSource::Node(osc, 0));
     s.graph().remove(loop_back);
-    s.update();
+    let _ = s.update();
     let (driver, back) = ManualStreamDriver::new();
     s.restart_on(&mut device, spec_at(OLD), driver, None, |_| {})
         .expect("recovers");

@@ -11,6 +11,7 @@
 //! is the direct comparison, on one graph that has everything at once.
 
 use tutti_graph::testing as common;
+use tutti_graph::{Curvature, Exponent};
 
 use std::sync::Arc;
 use tutti_types::MaxBlock;
@@ -124,9 +125,9 @@ impl Node for RampEvery {
                     // A curve segment spanning the next event: interrupted.
                     k => {
                         let shape = [
-                            Law::PowerIn(2.0),
-                            Law::Exp(3.0),
-                            Law::PowerInOut(1.5),
+                            Law::PowerIn(Exponent::of(2.0)),
+                            Law::Exp(Curvature::of(3.0)),
+                            Law::PowerInOut(Exponent::of(1.5)),
                             Law::Hold,
                         ][(f / 111) as usize % 4];
                         let seg = ParamSegment::unit(

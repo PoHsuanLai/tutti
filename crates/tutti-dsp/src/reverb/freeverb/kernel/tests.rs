@@ -10,8 +10,7 @@ fn the_all_pass_is_the_freeverb_form_not_the_lattice() {
     let (d, g) = (8usize, 0.5f32);
     let mut ap = AllPassFilter::new(d);
     ap.feedback = g;
-    let mut h = vec![0.0f32; 18 * d + 1];
-    h[0] = 1.0;
+    let mut h = tutti_fixtures::signal::impulse(tutti_types::Samples(18 * d + 1));
     ap.process(&mut h);
     assert!((h[0] + 1.0).abs() < 1e-6, "h[0] = {}", h[0]);
     for k in 1..=17usize {

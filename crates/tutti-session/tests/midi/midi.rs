@@ -109,7 +109,7 @@ fn note(number: u8, start: Beat, duration: BeatDuration) -> [TimedMidiEvent; 2] 
 /// blocks.
 fn roll(s: &Session, frames: usize) {
     s.transport()
-        .motion
+        .motion()
         .try_send(MotionEvent::Play)
         .expect("room");
     let mut buf = vec![0.0f32; 512 * 2];
@@ -143,7 +143,7 @@ fn a_clip_plays_its_note_on_its_frame() {
     s.midi()
         .play_clip(synth, note(60, Beat(1.0 / 3.0), BeatDuration(1.0)))
         .expect("the tap takes MIDI");
-    s.update();
+    let _ = s.update();
     roll(&s, 9_000);
     assert_eq!(note_ons(&seen), vec![(8_000, 60)]);
 }
@@ -159,21 +159,21 @@ fn a_clip_edit_updates_in_place() {
         .midi()
         .play_clip(synth, note(60, Beat(0.0), BeatDuration(1.0)))
         .unwrap();
-    s.update();
+    let _ = s.update();
     let nodes = plan_nodes(&s);
 
     let edited = s
         .midi()
         .play_clip(synth, note(64, Beat(1.0 / 3.0), BeatDuration(1.0)))
         .unwrap();
-    s.update();
+    let _ = s.update();
     assert_eq!(edited, clip, "the same clip");
     assert_eq!(plan_nodes(&s), nodes, "and no node more");
     roll(&s, 9_000);
     assert_eq!(note_ons(&seen), vec![(8_000, 64)], "playing the new events");
 
     assert!(s.midi().stop_clip(synth));
-    s.update();
+    let _ = s.update();
     assert_eq!(s.midi().clip(synth), Some(clip), "the emptied clip stays");
     assert!(s.graph_ref().contains(clip));
 }
@@ -212,7 +212,7 @@ fn a_clip_and_a_live_input_survive_a_re_bind() {
         .play_clip(old, note(60, Beat(1.0 / 3.0), BeatDuration(1.0)))
         .unwrap();
     let live = s.midi().live_input(old).unwrap();
-    s.update();
+    let _ = s.update();
 
     assert!(s.remove(old));
     let (new, new_seen) = tap(&mut s);
@@ -220,7 +220,7 @@ fn a_clip_and_a_live_input_survive_a_re_bind() {
     s.midi()
         .retarget(live.node, new)
         .expect("the queue re-aims");
-    s.update();
+    let _ = s.update();
     assert_eq!(s.midi().clip(new), Some(clip), "the same clip");
     assert_eq!(s.midi().live_input(new).unwrap().node, live.node);
     let mut fed = s.graph_ref().event_sources(new, 0);
@@ -257,7 +257,7 @@ fn a_live_inputs_clones_send_in_order_through_one_writer() {
     let a = s.midi().live_input(target).unwrap();
     let b = s.midi().live_input(target).unwrap();
     assert_eq!(a.node, b.node, "one inlet");
-    s.update();
+    let _ = s.update();
 
     a.note_on(At::NextBlock, MidiChannel::FIRST, NoteNumber::of(60), MF)
         .unwrap();
@@ -456,7 +456,7 @@ impl tutti_midi_runtime::MidiOut for CountingSink {
 /// reaches the hardware out node.
 fn clocked() -> Session {
     let mut s = offline();
-    s.update(); // the builder's nodes, committed
+    let _ = s.update(); // the builder's nodes, committed
     s.midi_nodes().unwrap().clock_master.set_enabled(true);
     roll(&s, 24_000);
     s
@@ -646,7 +646,7 @@ fn a_device_that_comes_and_goes_is_a_session_event() {
 fn a_held_input_that_vanishes_is_retired_and_reported() {
     let (mut s, fake) = hot_plug_session();
     plug(&fake, 1, "Keys", Direction::Input);
-    s.update();
+    let _ = s.update();
     let io = s.midi_io().expect("the OS MIDI layer").clone();
     io.connect_input_by_name("keys").expect("connects");
     assert_eq!(io.connected_input_names(), ["Keys"]);
@@ -700,7 +700,7 @@ fn keyboards(
     s.midi()
         .route(MidiRouteRule::any_channel().to(synth))
         .expect("routes");
-    s.update();
+    let _ = s.update();
     (s, fake, seen)
 }
 
@@ -711,7 +711,7 @@ fn connect(s: &mut Session, name: &str) {
         .expect("the OS MIDI layer")
         .connect_input_by_name(name)
         .expect("connects");
-    s.update();
+    let _ = s.update();
 }
 
 /// A note-on on channel `channel`.
@@ -758,7 +758,7 @@ fn two_devices_are_two_inlets_and_one_leaving_takes_only_its_own() {
     s.midi_io()
         .expect("the OS MIDI layer")
         .disconnect_input_by_name("keys");
-    s.update();
+    let _ = s.update();
     assert_eq!(
         plan_nodes(&s),
         before + 1,
@@ -849,7 +849,7 @@ fn a_device_past_the_slots_is_refused() {
 fn a_held_output_that_vanishes_is_closed_and_reported() {
     let (mut s, fake) = hot_plug_session();
     plug(&fake, 10, "Synth", Direction::Output);
-    s.update();
+    let _ = s.update();
     let io = s.midi_io().expect("the OS MIDI layer").clone();
     io.connect_output_by_name("synth").expect("connects");
     assert!(io.is_output_connected());
@@ -898,7 +898,7 @@ fn a_remembered_device_resolves_through_the_session() {
     use tutti_midi_hardware::Resolved;
     let (mut s, fake) = hot_plug_session();
     plug(&fake, 1, "Keys", Direction::Input);
-    s.update();
+    let _ = s.update();
     let io = s.midi_io().expect("the OS MIDI layer").clone();
     let saved = io.devices().list().remove(0);
     assert_eq!(
@@ -906,7 +906,7 @@ fn a_remembered_device_resolves_through_the_session() {
         Resolved::SameName(saved.clone())
     );
     fake.unplug(EndpointId::from_raw(1));
-    s.update();
+    let _ = s.update();
     assert_eq!(io.devices().resolve(&saved), Resolved::Missing);
 }
 
@@ -918,7 +918,7 @@ fn another_devices_removal_leaves_a_held_input_open() {
     plug(&fake, 1, "Keys", Direction::Input);
     plug(&fake, 2, "Pads", Direction::Input);
     plug(&fake, 10, "Synth", Direction::Output);
-    s.update();
+    let _ = s.update();
     let io = s.midi_io().expect("the OS MIDI layer").clone();
     io.connect_input_by_name("keys").expect("connects");
     io.connect_output_by_name("synth").expect("connects");
@@ -960,7 +960,7 @@ fn a_hand_wired_event_edge_survives_the_sequencers_feed() {
         .midi()
         .play_clip(synth, note(60, Beat(1.0 / 3.0), BeatDuration(1.0)))
         .unwrap();
-    s.update();
+    let _ = s.update();
     assert_eq!(
         sorted(s.graph_ref().event_sources(synth, 0)),
         sorted(vec![hand.into(), clip.into()]),
@@ -1008,7 +1008,7 @@ fn a_port_that_loses_events_is_reported() {
         )
     });
     s.midi().play_clip(synth, chord).expect("takes MIDI");
-    s.update();
+    let _ = s.update();
     roll(&s, 512);
     let lost: Vec<_> = s
         .update()
@@ -1040,7 +1040,7 @@ fn a_connected_ump_endpoint_is_negotiated_by_the_session_tick() {
 
     let (mut s, fake) = hot_plug_session();
     plug(&fake, 7, "Wire", Direction::Duplex);
-    s.update();
+    let _ = s.update();
     let io = s.midi_io().expect("the OS MIDI layer").clone();
     io.connect_input_by_name("wire").expect("connects");
 
@@ -1096,7 +1096,7 @@ fn the_hardware_out_stamps_as_the_devices_configuration_says() {
 
     let (mut s, fake) = hot_plug_session();
     plug(&fake, 7, "Dev", Direction::Duplex);
-    s.update();
+    let _ = s.update();
     let raw = EndpointId::from_raw(7);
     let io = s.midi_io().expect("the OS MIDI layer").clone();
     io.connect_input_by_name("dev").expect("connects");

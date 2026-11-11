@@ -112,7 +112,7 @@ fn live(map: &Arc<TempoMap>, start: f64, blocks: &[usize], total: usize) -> Seen
     let engine = Engine::new(&transport, &mut ed, exec).expect("within the limits");
     transport.settings().set_tempo_map(Arc::clone(map));
     transport
-        .motion
+        .motion()
         .try_send(MotionEvent::play_from(Beat(start)))
         .expect("room");
     let mut done = 0;
@@ -274,7 +274,7 @@ fn a_seek_seats_at_the_exact_beat_in_its_step() {
     let (mut ed, exec) = graph(&log);
     let engine = Engine::new(&transport, &mut ed, exec).expect("within the limits");
     transport.settings().set_tempo_map(steps(&points));
-    let m = &transport.motion;
+    let m = &transport.motion();
     m.try_send(MotionEvent::play_from(Beat(0.0))).expect("room");
     render(&engine, 1_000);
     let locate = |beat: f64| MotionEvent::Locate {
@@ -320,14 +320,14 @@ fn a_loop_wrap_takes_the_tempo_where_it_lands() {
     let engine = Engine::new(&transport, &mut ed, exec).expect("within the limits");
     transport.settings().set_tempo_map(steps(&points));
     transport
-        .motion
+        .motion()
         .schedule(
             At::NextBlock,
             LoopEdit::over(LoopRange::new(Beat::new(3.0), Beat::new(5.0)).expect("ordered")),
         )
         .expect("room");
     transport
-        .motion
+        .motion()
         .try_send(MotionEvent::play_from(Beat(3.5)))
         .expect("room");
     let total = 150_000;

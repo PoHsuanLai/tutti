@@ -103,7 +103,7 @@ let engine = Engine::new(&transport, &mut editor, executor).expect("within the l
 // renders.
 transport.settings().set_tempo(Bpm::of(90.0));
 transport
-    .motion
+    .motion()
     .try_send(MotionEvent::play_from(Beat(8.0)))
     .expect("the motion queue has room at startup");
 

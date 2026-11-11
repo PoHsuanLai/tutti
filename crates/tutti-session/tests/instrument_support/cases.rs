@@ -460,7 +460,7 @@ pub fn a_fork_starts_silent_and_plays<S: Subject>() {
             )],
         )
         .expect("an instrument takes a clip");
-    rig.session.update();
+    let _ = rig.session.update();
     let mut fork = rig
         .session
         .graph_ref()

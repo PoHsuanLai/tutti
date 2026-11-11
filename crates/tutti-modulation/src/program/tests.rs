@@ -3,6 +3,7 @@
 
 use super::*;
 use tutti_curve::{Breakpoint, Trajectory};
+use tutti_curve::{Curvature, Exponent};
 
 const SR: f64 = 48_000.0;
 
@@ -249,7 +250,7 @@ fn each_wave_has_its_corners() {
     };
     let lin = amount(1.0);
     let curved = Amount {
-        curve: Law::PowerIn(2.0),
+        curve: Law::PowerIn(Exponent::of(2.0)),
         ..lin
     };
     assert_eq!(corner(LfoShape::Square, lin, 0.5), Some(Beat(2.0)));
@@ -285,11 +286,11 @@ fn every_non_linear_curve_kinks_a_bipolar_sine() {
     assert_eq!(corner(Law::Linear), None);
     for c in [
         Law::Hold,
-        Law::PowerIn(2.0),
-        Law::PowerOut(3.0),
-        Law::PowerInOut(2.0),
-        Law::PowerIn(0.5),
-        Law::Exp(3.0),
+        Law::PowerIn(Exponent::of(2.0)),
+        Law::PowerOut(Exponent::of(3.0)),
+        Law::PowerInOut(Exponent::of(2.0)),
+        Law::PowerIn(Exponent::of(0.5)),
+        Law::Exp(Curvature::of(3.0)),
     ] {
         assert_eq!(corner(c), Some(Beat(2.0)), "{c:?}");
     }
@@ -461,7 +462,7 @@ fn a_drawn_wave_follows_its_points() {
         PeriodPoint {
             at: Phase(0.5),
             value: -1.0,
-            curve: Law::PowerIn(2.0),
+            curve: Law::PowerIn(Exponent::of(2.0)),
         },
         PeriodPoint {
             at: Phase(0.9),
@@ -556,7 +557,7 @@ fn a_curved_bipolar_depth_by_kinks_at_its_zero_crossings() {
     let curved = Amount {
         depth: Depth(0.5),
         polarity: Polarity::Bipolar,
-        curve: Law::PowerIn(2.0),
+        curve: Law::PowerIn(Exponent::of(2.0)),
     };
     let p = program(vec![scaled(curved)]);
     assert_eq!(p.next_corner(&at_beat(1.0)).beat, Some(Beat(2.0)));

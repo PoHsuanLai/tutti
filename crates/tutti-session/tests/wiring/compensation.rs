@@ -56,7 +56,7 @@ fn a_graph_with_no_latency_reports_none() {
     let (a, _) = s.graph().insert(Const::mono(1.0));
     s.graph().set_output_source(0, GraphSource::Node(a, 0));
     s.graph().set_output_source(1, GraphSource::Node(a, 0));
-    s.update();
+    let _ = s.update();
 
     assert_eq!(s.latency(), Samples(0));
     assert!(
@@ -81,7 +81,7 @@ fn the_published_figures_are_the_plans_and_nothing_is_spliced_in() {
         s.graph_ref().output_sources(0),
         s.graph_ref().output_sources(1),
     ];
-    s.update();
+    let _ = s.update();
     assert!(!s.graph_ref().is_edited(), "committed");
 
     let sent = s
@@ -123,12 +123,12 @@ fn the_published_figures_are_the_plans_and_nothing_is_spliced_in() {
 fn an_update_with_no_edit_publishes_nothing() {
     let mut s = detached();
     skewed(&mut s);
-    s.update();
+    let _ = s.update();
     assert!(!s.graph_ref().is_edited());
     let sentinel = vec![Samples(99)];
     s.compensation().set(&sentinel);
 
-    s.update();
+    let _ = s.update();
 
     assert_eq!(s.compensation().to_vec(), sentinel, "no table published");
 }
@@ -159,13 +159,13 @@ fn the_latency_fold_and_the_compiled_plan_agree() {
 
     let mut s = detached();
     let (_, lat) = skewed(&mut s);
-    s.update();
+    let _ = s.update();
     assert_eq!(figures(&s).1, lat);
 
     let mut s = detached();
     let (a, _) = s.graph().insert(Const::mono(1.0));
     s.graph().set_outputs_from(a);
-    s.update();
+    let _ = s.update();
     assert_eq!(figures(&s).1, Samples(0));
 }
 
@@ -184,7 +184,7 @@ fn a_re_prepare_republishes_the_figures_once_it_resumes() {
     s.graph().set_output_source(1, GraphSource::Node(a, 0));
     let at_44k = s.graph_ref().node_latency(eff);
     let mut side = s.graph().take_audio_side();
-    s.update();
+    let _ = s.update();
     assert_eq!(s.latency(), at_44k);
     let mut out = [0.0f32; 2];
     side.tick(&[], &mut out);
@@ -192,7 +192,7 @@ fn a_re_prepare_republishes_the_figures_once_it_resumes() {
     s.graph().set_sample_rate(SampleRate(48_000.0));
     for _ in 0..3 {
         side.tick(&[], &mut out);
-        s.update();
+        let _ = s.update();
     }
     let at_48k = s.graph_ref().node_latency(eff);
     assert_ne!(at_48k, at_44k, "the lookahead moved in samples");

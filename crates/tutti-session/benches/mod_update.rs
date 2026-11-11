@@ -57,17 +57,18 @@ fn scene(n: usize, modulated: bool) -> (Session, Vec<NodeKey>) {
             let cutoff = ParamRef::unit(f, UnitParam::Cutoff);
             m.range(cutoff, 20.0, 20_000.0);
             let lfo = m.lfo(Lfo::sine().rate(BeatDuration(0.25 + i as f64 / 64.0)));
-            m.route(lfo, cutoff, Depth(0.1));
+            m.route(lfo, cutoff, Depth(0.1)).unwrap();
         }
         let follower = m.follower(Follower::new(), filters[0]);
         m.route(
             follower,
             ParamRef::unit(last, UnitParam::Cutoff),
             Depth(-0.2),
-        );
+        )
+        .unwrap();
     }
     for _ in 0..8 {
-        s.update();
+        let _ = s.update();
     }
     if modulated {
         assert_eq!(s.mod_state().refusal(), None, "the declarations apply");

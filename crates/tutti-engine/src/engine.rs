@@ -1217,7 +1217,7 @@ mod tests {
         ));
         let engine = Engine::new(&transport, &mut ed, exec).expect("empty graph");
         transport
-            .motion
+            .motion()
             .schedule(At::Frame(Frame(100)), MotionEvent::Play)
             .expect("room");
         let settings = &transport.settings();
@@ -1263,7 +1263,7 @@ mod tests {
             MaxBlock::of(Samples(512)),
         ));
         let engine = Engine::new(&transport, &mut ed, exec).expect("empty graph");
-        let _ = transport.motion.try_send(MotionEvent::Play);
+        let _ = transport.motion().try_send(MotionEvent::Play);
         let mut buf = vec![1.0f32; 64 * 2];
         let mut seg = vec![1.0f32; 64 * 2];
         {
@@ -1273,9 +1273,9 @@ mod tests {
         }
         assert!(buf.iter().all(|&x| x == 0.0), "a refused block is silent");
         assert!(seg.iter().all(|&x| x == 0.0), "a refused segment is silent");
-        assert!(transport.motion.is_stopped(), "the queued Play waits");
+        assert!(transport.motion().is_stopped(), "the queued Play waits");
         engine.process(&mut InterleavedMut::new(&mut buf, ChannelLayout::STEREO));
-        assert!(transport.motion.is_playing(), "the next block applies it");
+        assert!(transport.motion().is_playing(), "the next block applies it");
     }
 
     /// A refused block is silence in the heard tap too: the tap keeps a
@@ -1322,31 +1322,29 @@ mod tests {
                 MaxBlock::of(Samples(512)),
             ));
             let engine = Engine::new(&transport, &mut ed, exec).expect("empty graph");
-            let _ = transport.motion.try_send(MotionEvent::Play);
+            let _ = transport.motion().try_send(MotionEvent::Play);
             engine.process(&mut InterleavedMut::new(&mut buf, ChannelLayout::STEREO));
-            assert!(transport.motion.is_playing());
+            assert!(transport.motion().is_playing());
         }
         let (mut ed, exec) = Editor::new(Prepare::new(
             SampleRate(48_000.0),
             MaxBlock::of(Samples(512)),
         ));
         let engine = Engine::new(&transport, &mut ed, exec).expect("the first engine is gone");
-        let _ = transport.motion.try_send(MotionEvent::stop_unfaded());
+        let _ = transport.motion().try_send(MotionEvent::stop_unfaded());
         engine.process(&mut InterleavedMut::new(&mut buf, ChannelLayout::STEREO));
         assert!(
-            transport.motion.is_stopped(),
+            transport.motion().is_stopped(),
             "the machine knew it was rolling"
         );
     }
 
-    /// A transport whose `motion` handle came from another transport shares
-    /// that one's motion machine, which is where the one claim is held: an
-    /// engine over it while the other's runs is refused.
+    /// A clone of a transport shares its motion machine, which is where the
+    /// one claim is held: an engine over it while the other's runs is refused.
     #[test]
     fn a_shared_motion_handle_is_refused_as_held() {
         let first = Transport::new(SampleRate::new(48_000.0));
-        let mut second = Transport::new(SampleRate::new(48_000.0));
-        second.motion = first.motion.clone();
+        let second = first.clone();
         let (mut ed, exec) = Editor::new(Prepare::new(
             SampleRate(48_000.0),
             MaxBlock::of(Samples(512)),
@@ -1377,21 +1375,27 @@ mod tests {
             let engine = Engine::new(&transport, &mut ed, exec).expect("empty graph");
             let stop = MotionEvent::stop_unfaded();
             if first_is_play {
-                transport.motion.try_send(MotionEvent::Play).expect("room");
                 transport
-                    .motion
+                    .motion()
+                    .try_send(MotionEvent::Play)
+                    .expect("room");
+                transport
+                    .motion()
                     .schedule(At::NextBlock, stop)
                     .expect("room");
             } else {
                 transport
-                    .motion
+                    .motion()
                     .schedule(At::NextBlock, stop)
                     .expect("room");
-                transport.motion.try_send(MotionEvent::Play).expect("room");
+                transport
+                    .motion()
+                    .try_send(MotionEvent::Play)
+                    .expect("room");
             }
             let mut buf = vec![0.0f32; 64 * 2];
             engine.process(&mut InterleavedMut::new(&mut buf, ChannelLayout::STEREO));
-            transport.motion.is_playing()
+            transport.motion().is_playing()
         };
         assert!(!run(true), "play then stop ends stopped");
         assert!(run(false), "stop then play ends rolling");
@@ -1418,7 +1422,7 @@ mod tests {
         let transport = Transport::new(SampleRate::new(48_000.0));
         let engine = engine_for(&transport);
         transport
-            .motion
+            .motion()
             .try_send(MotionEvent::play_from(Beat(8.0)))
             .expect("room");
         let mut buf = vec![0.0f32; 64 * 2];
@@ -1433,14 +1437,14 @@ mod tests {
         let transport = Transport::new(SampleRate::new(48_000.0));
         let engine = engine_for(&transport);
         transport
-            .motion
+            .motion()
             .schedule(
                 At::NextBlock,
                 LoopEdit::over(LoopRange::new(Beat::new(0.0), Beat::new(4.0)).expect("ordered")),
             )
             .expect("room");
         transport
-            .motion
+            .motion()
             .try_send(MotionEvent::play_from(Beat(3.99)))
             .expect("room");
         let mut buf = vec![0.0f32; 1024 * 2];
@@ -1461,7 +1465,7 @@ mod tests {
             MaxBlock::of(Samples(512)),
         ));
         let engine = Engine::new(&transport, &mut ed, exec).expect("empty graph");
-        let _ = transport.motion.try_send(MotionEvent::Play);
+        let _ = transport.motion().try_send(MotionEvent::Play);
         let mut render = engine.graph.borrow_mut();
         let mut pieces = GraphPieces {
             changes: TransportChanges::NONE,
@@ -1486,7 +1490,7 @@ mod tests {
 
         // A declicked stop 300 frames into the next block: one aim, at 0.
         transport
-            .motion
+            .motion()
             .schedule(At::Frame(Frame(812)), tutti_transport::MotionEvent::stop())
             .expect("room");
         let walk = engine.walk(

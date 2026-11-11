@@ -192,6 +192,13 @@ required-features = ["session", "export", "dsp", "wav"]
 name = "headless_engine"
 required-features = ["session", "device"]
 
+# The whole common path through one import: a sampler, a filter, a reverb, an
+# LFO on the cutoff, the transport and a bounce to a WAV.
+[[example]]
+name = "song_bounce"
+required-features = ["session", "export", "sampler", "dsp", "modulation"]
+test = true
+
 # Design 015 §5.1: doc 014 §8.1's modulation, headless, in one import.
 [[example]]
 name = "headless_modulation"

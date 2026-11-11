@@ -288,7 +288,7 @@ pub use fork::{
     ForkBuild, ForkByClone, ForkCause, ForkError, ForkFault, ForkFaultKind, ForkHealth, ForkMode,
     ForkRemains, ForkSource, ForkTarget, Forked, PendingFork, Unforkable,
 };
-pub use tutti_curve::Law;
+pub use tutti_curve::{Curvature, Exponent, Law};
 // The audio graph as a value, and the two passes over it. `plan` is the
 // latency pass and is exported as `latency_plan`.
 pub use bus::{Bus, BusRole, Buses, InBus, MAX_BUSES, OutBus};

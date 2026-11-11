@@ -208,7 +208,7 @@ fn a_modulation_lane_on_the_plugin_survives_its_replacement() {
         let mut m = s.mods();
         m.range(gain, 0.0, 1.0);
         let source = m.macro_(1.0);
-        m.route(source, gain, Depth(-0.25));
+        m.route(source, gain, Depth(-0.25)).unwrap();
     }
     lane_of(&mut drive, &mut s, gain);
     // The default is 60/72 of the range; the lane moves it down a quarter.
@@ -273,7 +273,7 @@ fn a_crossfaded_plugin_keeps_its_lane_and_a_removed_one_drops_it() {
         let mut m = s.mods();
         m.range(gain, 0.0, 1.0);
         let offset = m.macro_(0.0);
-        m.route(offset, gain, Depth(1.0));
+        m.route(offset, gain, Depth(1.0)).unwrap();
     }
     let outgoing_lane = lane_of(&mut drive, &mut s, gain);
     assert_eq!(
@@ -335,7 +335,7 @@ fn a_crossfaded_plugin_keeps_its_lane_and_a_removed_one_drops_it() {
 fn an_export_is_the_live_render_on_a_clap_gain() {
     use std::sync::Arc;
 
-    use tutti_session::{Bounce, ExportClock, Latency, Range, Tail};
+    use tutti_session::{Bounce, BounceLatency, BounceTail, ExportClock, Range};
     use tutti_transport::{OfflineTimeline, OfflineTimelineConfig};
     use tutti_types::{Beat, Bpm, ChannelLayout};
 
@@ -355,7 +355,7 @@ fn an_export_is_the_live_render_on_a_clap_gain() {
         let mut m = s.mods();
         m.range(gain, 0.0, 1.0);
         let lfo = m.lfo(Lfo::sine().hz(Hz(3.0)));
-        m.route(lfo, gain, Depth(0.1));
+        m.route(lfo, gain, Depth(0.1)).unwrap();
     }
     lane_of(&mut drive, &mut s, gain);
     let knob = s
@@ -386,8 +386,8 @@ fn an_export_is_the_live_render_on_a_clap_gain() {
             Seconds(total as f64 / RATE.get()),
         ))
         .sample_rate(RATE)
-        .latency(Latency::Keep)
-        .tail(Tail::None);
+        .latency(BounceLatency::Keep)
+        .tail(BounceTail::None);
 
     // Live: rolling from beat 0 in device-sized blocks, a frame between each
     // as a device's callbacks would leave. The plugin's pipeline plays each

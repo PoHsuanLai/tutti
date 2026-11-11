@@ -35,11 +35,12 @@ use symphonia::core::codecs::{CODEC_TYPE_FLAC, Decoder, DecoderOptions};
 use symphonia::core::errors::Error;
 use symphonia::core::formats::{FormatReader, SeekMode, SeekTo};
 use tutti_types::{ChannelLayout, ChannelTopology, SampleRate, Samples};
-use tutti_types::{Pull, Source};
+use tutti_types::{FiniteSource, Pull, Source};
 
-use super::error::{DecodeError, convert};
+use super::error::convert;
 use super::placement::{topology_of, unstated};
-use super::read::{decode_packet_into, first_audio_track, probe_path};
+use super::read::{decode_packet_into, first_audio_track, probe_path, sample_rate_of};
+use crate::DecodeError;
 
 /// A frame count from the file's `u64`, saturating where `usize` is narrower.
 fn frames(n: u64) -> Samples {
@@ -173,14 +174,15 @@ impl FileIn {
     /// # Errors
     ///
     /// A [`DecodeError`] if the file cannot be opened, its container is not one
-    /// this build reads, or it has no audio track this build can decode.
+    /// this build reads, it has no audio track this build can decode, or the
+    /// track states no sample rate ([`DecodeError::NoSampleRate`]).
     pub fn open<P: AsRef<Path>>(path: P) -> Result<Self, DecodeError> {
         let reader = probe_path(path.as_ref()).map_err(convert)?;
         let track = first_audio_track(&*reader)?;
         let track_id = track.id;
 
         let total_frames = track.codec_params.n_frames;
-        let sample_rate = SampleRate::from(track.codec_params.sample_rate.unwrap_or(44100));
+        let sample_rate = SampleRate::from(sample_rate_of(&track.codec_params)?);
         // At least one channel, so the interleave stride is never zero. Untested:
         // no container this build reads yields a zero-channel track, and a
         // fixture cannot be built or stubbed (symphonia's `Channels` come from
@@ -470,6 +472,8 @@ impl FileIn {
 /// [`topology`](FileIn::topology).
 ///
 /// A file is synchronous, so it never answers [`Pull::Starved`].
+impl FiniteSource for FileIn {}
+
 impl Source for FileIn {
     /// The file's own width, which is what [`pull`](Self::pull) produces.
     fn layout(&self) -> ChannelLayout {

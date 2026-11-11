@@ -17,6 +17,7 @@
 //! progress differ in the last bits).
 
 use std::sync::Arc;
+use tutti_curve::Exponent;
 use tutti_types::MaxBlock;
 
 use tutti_curve::{Breakpoint, Law, Trajectory};
@@ -169,9 +170,21 @@ fn frames_per_beat() -> f64 {
 /// breakpoints between frames.
 fn shaped() -> Trajectory {
     let mut e = Trajectory::new();
-    e.add_breakpoint(Breakpoint::with_law(Beat(0.0), 0.0, Law::PowerIn(2.0)));
-    e.add_breakpoint(Breakpoint::with_law(Beat(0.25), 1.0, Law::PowerOut(3.0)));
-    e.add_breakpoint(Breakpoint::with_law(Beat(0.4), 0.2, Law::PowerInOut(2.0)));
+    e.add_breakpoint(Breakpoint::with_law(
+        Beat(0.0),
+        0.0,
+        Law::PowerIn(Exponent::of(2.0)),
+    ));
+    e.add_breakpoint(Breakpoint::with_law(
+        Beat(0.25),
+        1.0,
+        Law::PowerOut(Exponent::of(3.0)),
+    ));
+    e.add_breakpoint(Breakpoint::with_law(
+        Beat(0.4),
+        0.2,
+        Law::PowerInOut(Exponent::of(2.0)),
+    ));
     e.add_breakpoint(Breakpoint::with_law(Beat(0.55), 0.9, Law::Linear));
     e.add_breakpoint(Breakpoint::new(Beat(0.6), 0.4));
     e
@@ -292,7 +305,11 @@ fn check_grid(curve: &dyn Curve, lane: ControlLaneNode, blocks: &[usize], tol: f
 #[test]
 fn an_unrepresentable_piece_is_linear_on_the_grid() {
     let mut curve = Trajectory::new().with_range(0.0, 0.5);
-    curve.add_breakpoint(Breakpoint::with_law(Beat(0.0), 0.0, Law::PowerIn(2.0)));
+    curve.add_breakpoint(Breakpoint::with_law(
+        Beat(0.0),
+        0.0,
+        Law::PowerIn(Exponent::of(2.0)),
+    ));
     curve.add_breakpoint(Breakpoint::new(Beat(0.2), 1.0));
     let total = (0.15 * frames_per_beat()) as usize;
     let lane = || automation(curve.clone());

@@ -31,9 +31,10 @@
 mod support;
 
 use crate::support::render_to_file;
+use tutti_dsp::DitherShape;
 use tutti_export::{
-    ChannelLayout, Dither, EncodeConfig, ExportConfig, Format, FrozenClock, IntDepth, Pcm,
-    RenderConfig, RenderGraph,
+    ChannelLayout, EncodeConfig, ExportConfig, Format, FrozenClock, IntDepth, Pcm, RenderConfig,
+    RenderGraph,
 };
 use tutti_graph::GraphBuilder;
 use tutti_nodes::testing::Const;
@@ -59,7 +60,7 @@ fn dc_graph(level: f32) -> RenderGraph {
     built(g)
 }
 
-fn config(dither: Dither, bit_depth: Pcm) -> ExportConfig {
+fn config(dither: Option<DitherShape>, bit_depth: Pcm) -> ExportConfig {
     ExportConfig {
         render: RenderConfig {
             sample_rate: tutti_types::SampleRate(SR),
@@ -81,7 +82,7 @@ fn config(dither: Dither, bit_depth: Pcm) -> ExportConfig {
 /// Integers, not floats: dither is defined in LSBs, and comparing in the
 /// quantized domain is what makes "within one LSB" an exact statement rather
 /// than a float-tolerance argument.
-fn render_i16(dither: Dither, level: f32, path: &std::path::Path) -> Vec<i32> {
+fn render_i16(dither: Option<DitherShape>, level: f32, path: &std::path::Path) -> Vec<i32> {
     render_to_file(
         dc_graph(level),
         &config(dither, Pcm::Int16),
@@ -103,7 +104,7 @@ fn render_i16(dither: Dither, level: f32, path: &std::path::Path) -> Vec<i32> {
 #[test]
 fn dither_off_leaves_a_constant_perfectly_flat() {
     let d = tempfile::tempdir().unwrap();
-    let samples = render_i16(Dither::Off, 0.25, &d.path().join("off.wav"));
+    let samples = render_i16(None, 0.25, &d.path().join("off.wav"));
 
     let first = samples[0];
     assert!(
@@ -131,7 +132,10 @@ fn dither_off_leaves_a_constant_perfectly_flat() {
 fn both_dither_modes_perturb_a_constant() {
     let d = tempfile::tempdir().unwrap();
 
-    for mode in [Dither::Rectangular, Dither::Triangular] {
+    for mode in [
+        Some(DitherShape::Rectangular),
+        Some(DitherShape::Triangular),
+    ] {
         let samples = render_i16(mode, 0.25, &d.path().join(format!("{mode:?}.wav")));
         let distinct = {
             let mut v = samples.clone();
@@ -156,8 +160,12 @@ fn both_dither_modes_perturb_a_constant() {
 #[test]
 fn rectangular_and_triangular_are_not_the_same_mode() {
     let d = tempfile::tempdir().unwrap();
-    let rect = render_i16(Dither::Rectangular, 0.25, &d.path().join("r.wav"));
-    let tri = render_i16(Dither::Triangular, 0.25, &d.path().join("t.wav"));
+    let rect = render_i16(
+        Some(DitherShape::Rectangular),
+        0.25,
+        &d.path().join("r.wav"),
+    );
+    let tri = render_i16(Some(DitherShape::Triangular), 0.25, &d.path().join("t.wav"));
 
     assert_eq!(rect.len(), tri.len(), "same config, same length");
     assert!(
@@ -178,7 +186,10 @@ fn rectangular_and_triangular_are_not_the_same_mode() {
 fn each_mode_spans_the_width_its_distribution_implies() {
     let d = tempfile::tempdir().unwrap();
 
-    for (mode, max_span) in [(Dither::Rectangular, 2), (Dither::Triangular, 3)] {
+    for (mode, max_span) in [
+        (Some(DitherShape::Rectangular), 2),
+        (Some(DitherShape::Triangular), 3),
+    ] {
         let samples = render_i16(mode, 0.25, &d.path().join(format!("span_{mode:?}.wav")));
         let lo = *samples.iter().min().unwrap();
         let hi = *samples.iter().max().unwrap();
@@ -210,7 +221,10 @@ fn dither_does_not_bias_the_signal() {
     let level = 0.25f32;
     let exact = level * 32_767.0; // the unquantized target, in integer units
 
-    for mode in [Dither::Rectangular, Dither::Triangular] {
+    for mode in [
+        Some(DitherShape::Rectangular),
+        Some(DitherShape::Triangular),
+    ] {
         let samples = render_i16(mode, level, &d.path().join(format!("bias_{mode:?}.wav")));
         let mean = samples.iter().map(|&s| s as f64).sum::<f64>() / samples.len() as f64;
 
@@ -259,12 +273,12 @@ fn triangular_noise_carries_more_variance_than_rectangular() {
     };
 
     let rect = variance(&render_i16(
-        Dither::Rectangular,
+        Some(DitherShape::Rectangular),
         level,
         &d.path().join("vr.wav"),
     ));
     let tri = variance(&render_i16(
-        Dither::Triangular,
+        Some(DitherShape::Triangular),
         level,
         &d.path().join("vt.wav"),
     ));
@@ -292,7 +306,11 @@ fn float32_output_is_never_dithered_at_any_mode() {
     let d = tempfile::tempdir().unwrap();
     let level = 0.25f32;
 
-    for mode in [Dither::Off, Dither::Rectangular, Dither::Triangular] {
+    for mode in [
+        None,
+        Some(DitherShape::Rectangular),
+        Some(DitherShape::Triangular),
+    ] {
         let path = d.path().join(format!("f32_{mode:?}.wav"));
         render_to_file(
             dc_graph(level),
@@ -329,7 +347,7 @@ fn noise_scales_with_the_target_bit_depth() {
 
     render_to_file(
         dc_graph(level),
-        &config(Dither::Triangular, Pcm::Int24),
+        &config(Some(DitherShape::Triangular), Pcm::Int24),
         &FrozenClock,
         &path,
     )

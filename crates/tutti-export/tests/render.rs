@@ -977,7 +977,7 @@ fn normalizing_silence_is_refused() {
     let path = dir.path().join("silence.wav");
 
     let mut cfg = config(Format::Wav(Pcm::Int16), ChannelLayout::STEREO);
-    cfg.dither = tutti_export::Dither::Triangular;
+    cfg.dither = Some(tutti_dsp::DitherShape::Triangular);
 
     for (normalize, want) in [
         (Normalize::peak(Db(-1.0)), Unmeasured::Silent),
@@ -1403,7 +1403,7 @@ fn silence_planes_carry_no_dither() {
     let id = g.add(Const::frame(&[0.0, 0.0]));
     g.pipe_output(id);
     let mut cfg = config(Format::Wav(Pcm::Int16), ChannelLayout::STEREO);
-    cfg.dither = tutti_export::Dither::Triangular;
+    cfg.dither = Some(tutti_dsp::DitherShape::Triangular);
     let out = render_to_buffers(built(g, RATE), &cfg, &FrozenClock).unwrap();
     assert!(out.frames().get() > 0);
     assert!(out.planes().iter().flatten().all(|s| s.to_bits() == 0));

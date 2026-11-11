@@ -7,7 +7,8 @@ use tutti_types::{SampleRate, Samples};
 
 /// Rendered audio held in memory, one `Vec` per channel.
 ///
-/// Returned by [`render_to_buffers`](crate::render_to_buffers); written with
+/// Returned by a [`BufferTarget`](crate::BufferTarget) output of
+/// [`render`](crate::render()) ([`Produced::Buffers`](crate::Produced::Buffers)); written with
 /// [`write_buffers`](crate::write_buffers). Planes rather than a
 /// `(left, right)` pair, so a surround render keeps every channel.
 ///
@@ -159,7 +160,7 @@ impl Rendered {
     }
 
     /// The rate these samples are at, which is not necessarily the rate a
-    /// config asked to write: [`render_to_buffers`](crate::render_to_buffers)
+    /// config asked to write: a buffers output
     /// does not resample, so this is the render rate. An encoder must read it
     /// from here rather than from a config, or it converts from a rate the
     /// samples were never at.

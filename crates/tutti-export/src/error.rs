@@ -4,7 +4,7 @@
 //! render, resample, dither, encode) reports through it, so a caller matches one
 //! type whichever entry point it used.
 
-use crate::JobError;
+use crate::{JobError, TargetError};
 use std::io;
 use thiserror::Error;
 use tutti_types::ChannelLayout;
@@ -99,7 +99,7 @@ pub enum Error {
     /// a full delay): the audio of a dropped note-on or note-off is wrong, and
     /// a note whose note-off was dropped may sound to the end. Raised under
     /// [`EventLossPolicy::Fail`](crate::EventLossPolicy::Fail), the default;
-    /// a file export removes the file. The render stops at the first block
+    /// a file output is not put in place. The render stops at the first block
     /// that lost an event, so `count` is the executor's `lost_event_count`
     /// from when the render began (or, for a graph that had a commit
     /// installed since its last render, from that render's end) to the end of
@@ -112,8 +112,7 @@ pub enum Error {
         count: u64,
     },
 
-    /// The render would hold its planes in memory ([`render_to_buffers`](crate::render_to_buffers),
-    /// [`render_normalized_to_file`](crate::render_normalized_to_file)) and
+    /// The render would hold its planes in memory (a [`BufferTarget`](crate::BufferTarget)) and
     /// the allocation for `frames` frames of `channels` channels failed or
     /// overflowed. Nothing was rendered. A file export streams and never asks
     /// for this much.
@@ -123,6 +122,56 @@ pub enum Error {
         frames: tutti_types::Samples,
         /// The planes it needed them for.
         channels: ChannelLayout,
+    },
+
+    /// An output cannot be rendered as it was given ([`TargetError`] says why);
+    /// `output` is its index in the list given to [`render`](crate::render()).
+    /// Nothing was rendered.
+    #[error("output {output} cannot be rendered: {why}")]
+    Target {
+        /// The output's index.
+        output: usize,
+        /// What is wrong with it.
+        why: TargetError,
+    },
+
+    /// A render was given no outputs.
+    #[error("a render needs at least one output")]
+    NoOutputs,
+
+    /// A tap's ring lost frames: the render did not drain it as fast as the
+    /// graph filled it, and what was written would have a hole. With rings of
+    /// `2 x max_block` frames and one drain after each block it cannot happen;
+    /// this is the guard, not a mode.
+    #[error("output {output}'s tap lost {lost:?} frames: its ring was too small")]
+    TapOverrun {
+        /// The output's index.
+        output: usize,
+        /// The frames lost.
+        lost: tutti_types::Samples,
+    },
+
+    /// A tap had fewer frames than the block rendered: it was never committed
+    /// to the graph being rendered, or its source is not in it.
+    #[error("output {output}'s tap held less than the block rendered; was it committed?")]
+    TapStarved {
+        /// The output's index.
+        output: usize,
+    },
+
+    /// A rename failed after earlier files were put in place: the files that
+    /// landed (`landed`) are kept, nothing is rolled back, and no output that
+    /// did not land is left behind. The failure of the first rename is the
+    /// plain error: nothing had landed then.
+    #[error(
+        "{} file(s) were put in place before a rename failed: {cause}",
+        .landed.len()
+    )]
+    NotCommitted {
+        /// The files that landed, in the order they were given.
+        landed: Vec<std::path::PathBuf>,
+        /// The rename's failure.
+        cause: tutti_codec::Error,
     },
 
     /// A forked unit failed while the render ran: a hosted plugin's

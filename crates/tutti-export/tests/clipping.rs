@@ -4,9 +4,9 @@
 mod support;
 
 use crate::support::{render_normalized_to_file, render_to_file};
+use tutti_dsp::DitherShape;
 use tutti_export::{
-    Dither, EncodeConfig, ExportConfig, Format, FrozenClock, Normalize, Pcm, RenderConfig,
-    RenderGraph,
+    EncodeConfig, ExportConfig, Format, FrozenClock, Normalize, Pcm, RenderConfig, RenderGraph,
 };
 use tutti_graph::GraphBuilder;
 use tutti_nodes::testing::{Const, Osc};
@@ -15,7 +15,7 @@ use tutti_types::{ChannelLayout, Db, Hz, SampleRate};
 
 const RATE: SampleRate = SampleRate(48_000.0);
 
-fn config(pcm: Pcm, dither: Dither) -> ExportConfig {
+fn config(pcm: Pcm, dither: Option<DitherShape>) -> ExportConfig {
     ExportConfig {
         render: RenderConfig {
             sample_rate: RATE,
@@ -69,31 +69,13 @@ fn the_samples_the_quantizer_clamps_are_counted() {
     let path = dir.path().join("clip.wav");
     let frames = 4_800u64;
 
-    let over = render_to_file(
-        dc(1.2),
-        &config(Pcm::Int16, Dither::Off),
-        &FrozenClock,
-        &path,
-    )
-    .unwrap();
+    let over = render_to_file(dc(1.2), &config(Pcm::Int16, None), &FrozenClock, &path).unwrap();
     assert_eq!(over.clipped_samples, 2 * frames);
 
-    let at = render_to_file(
-        dc(1.0),
-        &config(Pcm::Int16, Dither::Off),
-        &FrozenClock,
-        &path,
-    )
-    .unwrap();
+    let at = render_to_file(dc(1.0), &config(Pcm::Int16, None), &FrozenClock, &path).unwrap();
     assert_eq!(at.clipped_samples, 0, "full scale is not clipping");
 
-    let float = render_to_file(
-        dc(1.2),
-        &config(Pcm::Float32, Dither::Off),
-        &FrozenClock,
-        &path,
-    )
-    .unwrap();
+    let float = render_to_file(dc(1.2), &config(Pcm::Float32, None), &FrozenClock, &path).unwrap();
     assert_eq!(float.clipped_samples, 0, "a float file stores 1.2 as it is");
 }
 
@@ -125,9 +107,9 @@ fn a_zero_dbtp_target_leaves_an_integer_format_its_headroom() {
     let path = dir.path().join("zero.wav");
     for (pcm, bits) in [(Pcm::Int16, 16u32), (Pcm::Int24, 24)] {
         for (dither, lsbs) in [
-            (Dither::Off, 1.0f64),
-            (Dither::Rectangular, 1.5),
-            (Dither::Triangular, 2.0),
+            (None, 1.0f64),
+            (Some(DitherShape::Rectangular), 1.5),
+            (Some(DitherShape::Triangular), 2.0),
         ] {
             let written = render_normalized_to_file(
                 quarter_rate_sine(),
@@ -167,13 +149,8 @@ fn non_finite_samples_are_counted() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("nan.wav");
     for value in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
-        let written = render_to_file(
-            dc(value),
-            &config(Pcm::Int16, Dither::Off),
-            &FrozenClock,
-            &path,
-        )
-        .unwrap();
+        let written =
+            render_to_file(dc(value), &config(Pcm::Int16, None), &FrozenClock, &path).unwrap();
         assert_eq!(written.clipped_samples, 2 * 4_800, "{value}");
     }
 }

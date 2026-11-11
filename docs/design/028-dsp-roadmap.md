@@ -89,7 +89,7 @@ verified or not.
 | Synthesis | `f32x8` oscillator bank: sine, saw and pulse with PolyBLEP, triangle with PolyBLAMP, white and pink noise, `tanh`; unison, portamento, MPE; no wavetable, FM or granular | `tutti-polysynth/src/kernel.rs` |
 | Resampling, stretch | FFT resampler (adapted from rubato), a windowed-sinc kernel, cubic Hermite for the sampler read; a phase-vocoder stretch that doc 026 replaces | `resample/`, `interp.rs`, `tutti-sampler` |
 | Spatial | VBAP over the `vbap` crate; HRTF binaural by partitioned FFT convolution over an HRIR sphere in the `hrir_sphere_builder` format (not SOFA); `ChannelTopology` records that B-format is not speaker positions, and doc 023 G11 plans only the topology tag | `tutti-spatial`, `tutti-types/src/topology.rs` |
-| Export | measure-then-apply loudness and peak normalisation (`Normalize`, `render_normalized_to_file`) | `tutti-export/src/normalize.rs` |
+| Export | measure-then-apply loudness and peak normalisation (`Normalize`, a normalizing `FileTarget`) | `tutti-export/src/normalize.rs` |
 
 ### 1.2 The gaps
 

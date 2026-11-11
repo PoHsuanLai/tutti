@@ -49,17 +49,10 @@ fn lufs_defaults_to_a_minus_one_dbtp_ceiling() {
 #[cfg(feature = "wav")]
 mod headroom {
     use super::*;
-    use crate::{Dither, EncodeConfig, ExportConfig, Format, Pcm};
+    use crate::{ChannelLayout, Format, Pcm};
 
-    fn config(pcm: Pcm, dither: Dither) -> ExportConfig {
-        ExportConfig {
-            encode: EncodeConfig {
-                format: Format::Wav(pcm),
-                ..Default::default()
-            },
-            dither,
-            ..Default::default()
-        }
+    fn config(pcm: Pcm, dither: Option<DitherShape>) -> FileTarget {
+        FileTarget::new("unused.wav", Format::Wav(pcm), ChannelLayout::STEREO).with_dither(dither)
     }
 
     /// dBFS of `1 - lsbs / 2^(bits - 1)`: `lsbs` LSBs below full scale.
@@ -77,9 +70,9 @@ mod headroom {
     fn an_integer_format_keeps_an_lsb_and_its_dither_below_full_scale() {
         for (pcm, bits) in [(Pcm::Int16, 16), (Pcm::Int24, 24)] {
             for (dither, lsbs) in [
-                (Dither::Off, 1.0),
-                (Dither::Rectangular, 1.5),
-                (Dither::Triangular, 2.0),
+                (None, 1.0),
+                (Some(DitherShape::Rectangular), 1.5),
+                (Some(DitherShape::Triangular), 2.0),
             ] {
                 let got = headroom_ceiling(&config(pcm, dither)).expect("quantizes");
                 let want = below_full_scale(bits, lsbs);
@@ -99,7 +92,7 @@ mod headroom {
     /// fails.
     #[test]
     fn a_target_above_the_limit_is_pulled_to_it() {
-        let int16 = config(Pcm::Int16, Dither::Triangular);
+        let int16 = config(Pcm::Int16, Some(DitherShape::Triangular));
         let limit = Db(below_full_scale(16, 2.0));
         let near = |a: Db, b: Db| (a.get() - b.get()).abs() < 1e-7;
 
@@ -127,7 +120,7 @@ mod headroom {
             "the default -1 dBTP ceiling is under the limit"
         );
 
-        let float = config(Pcm::Float32, Dither::Triangular);
+        let float = config(Pcm::Float32, Some(DitherShape::Triangular));
         assert_eq!(
             Normalize::peak(Db(0.0)).within(&float),
             Normalize::peak(Db(0.0))

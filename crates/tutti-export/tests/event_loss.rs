@@ -8,7 +8,7 @@
 
 mod support;
 
-use support::{render_to_buffers, render_to_file};
+use support::{render_buffers_under, render_file_under, render_to_buffers, render_to_file};
 use tutti_export::{
     CancelToken, Control, Error, EventLossPolicy, ExportConfig, FrozenClock, Progress,
     RenderConfig, RenderGraph, write_buffers,
@@ -95,7 +95,7 @@ fn a_render_that_dropped_events_stops_at_the_first_block_that_did() {
     let mut rendered_frames = Vec::new();
     let token = CancelToken::new();
     let mut record = |p: &Progress| rendered_frames.push(p.frames().map(|(done, _)| done.get()));
-    let err = tutti_export::render_to_buffers(
+    let err = render_buffers_under(
         graph(),
         &config(EventLossPolicy::Fail),
         &FrozenClock,
@@ -175,10 +175,11 @@ fn a_render_that_lost_events_replaces_nothing() {
     // Cancelled before the first block: not an error, and still untouched.
     let token = CancelToken::new();
     token.cancel();
-    let cancelled = tutti_export::render_to_file(
+    let cancelled = render_file_under(
         graph(),
         &config(EventLossPolicy::Fail),
         &FrozenClock,
+        None,
         &path,
         &mut Control::new(&token),
     )

@@ -1,7 +1,13 @@
 use super::*;
 
+use crate::ConfigError;
 use crate::config::RenderConfig;
 use tutti_types::{BeatDuration, Bpm, Seconds};
+
+/// The plan of a config's job.
+fn plan_of(config: &RenderConfig) -> Result<RenderPlan, ConfigError> {
+    config.job().map(|job| RenderPlan::of(&job))
+}
 
 #[test]
 fn beats_and_seconds_agree_at_the_same_length() {
@@ -54,7 +60,7 @@ fn config(latency: Samples) -> RenderConfig {
 /// checked as arithmetic.
 #[test]
 fn no_trim_renders_exactly_the_audible_span() {
-    let plan = RenderPlan::new(&config(Samples(0))).unwrap();
+    let plan = plan_of(&config(Samples(0))).unwrap();
     assert_eq!(plan.output_length, Samples(48_000));
     assert_eq!(plan.total, Samples(48_000));
     assert_eq!(plan.latency, Samples(0));
@@ -64,7 +70,7 @@ fn no_trim_renders_exactly_the_audible_span() {
 /// the file comes out short by exactly the trim.
 #[test]
 fn a_trim_extends_the_render_by_that_much() {
-    let plan = RenderPlan::new(&config(Samples(512))).unwrap();
+    let plan = plan_of(&config(Samples(512))).unwrap();
     assert_eq!(plan.output_length, Samples(48_000));
     assert_eq!(plan.total, Samples(48_512));
     assert_eq!(plan.latency, Samples(512));
@@ -79,7 +85,7 @@ fn a_trim_extends_the_render_by_that_much() {
 /// arithmetic test that checked one field could see.
 #[test]
 fn a_tail_extends_both_what_is_rendered_and_what_is_kept() {
-    let plan = RenderPlan::new(&RenderConfig {
+    let plan = plan_of(&RenderConfig {
         tail: Samples(48_000),
         ..config(Samples(512))
     })
@@ -100,7 +106,7 @@ fn a_tail_extends_both_what_is_rendered_and_what_is_kept() {
 /// render. (`duration_to_frames` alone maps all of these to 0 frames, which is
 /// why the plan asks first.)
 ///
-/// Mutation (run): drop the `is_finite`/sign check in `RenderPlan::new` → NaN,
+/// Mutation (run): drop the `is_finite`/sign check in `RenderConfig::job` → NaN,
 /// infinity and -1 all reach `EmptyRender` (or, for infinity, a render of
 /// `usize::MAX` frames saturated to 0 by `duration_to_frames`) → fails.
 #[test]
@@ -111,7 +117,7 @@ fn a_duration_that_is_not_a_length_is_refused() {
             ..config(Samples(0))
         };
         assert_eq!(
-            RenderPlan::new(&config),
+            plan_of(&config),
             Err(ConfigError::InvalidDuration),
             "{seconds}"
         );
@@ -130,9 +136,9 @@ fn a_render_of_no_frames_is_refused() {
         duration_seconds: Seconds(0.0),
         ..config(Samples(512))
     };
-    assert_eq!(RenderPlan::new(&none), Err(ConfigError::EmptyRender));
+    assert_eq!(plan_of(&none), Err(ConfigError::EmptyRender));
     assert_eq!(
-        RenderPlan::new(&RenderConfig::default()),
+        plan_of(&RenderConfig::default()),
         Err(ConfigError::EmptyRender)
     );
     // Half a frame at 48 kHz rounds to nothing (0.4 frames).
@@ -140,13 +146,10 @@ fn a_render_of_no_frames_is_refused() {
         duration_seconds: Seconds(0.4 / 48_000.0),
         ..none
     };
-    assert_eq!(RenderPlan::new(&sub_frame), Err(ConfigError::EmptyRender));
+    assert_eq!(plan_of(&sub_frame), Err(ConfigError::EmptyRender));
     let tail_only = RenderConfig {
         tail: Samples(10),
         ..none
     };
-    assert_eq!(
-        RenderPlan::new(&tail_only).unwrap().output_length,
-        Samples(10)
-    );
+    assert_eq!(plan_of(&tail_only).unwrap().output_length, Samples(10));
 }

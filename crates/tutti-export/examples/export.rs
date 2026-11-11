@@ -1,17 +1,19 @@
 //! What using this crate looks like, end to end.
 //!
-//! Three cases, in the order a caller meets them:
+//! Four cases, in the order a caller meets them:
 //!
 //! 1. render a graph to a file,
-//! 2. render into memory and inspect it,
-//! 3. normalize — which the crate does not do for you, and this shows why
-//!    that is a feature rather than a gap.
+//! 2. render once into several files of different formats,
+//! 3. render into memory and inspect it,
+//! 4. normalize, which keeps the render and measures it rather than rendering
+//!    twice.
 //!
 //! Run: `cargo run --example export -- <outdir>`
 
 use tutti_export::{
-    ChannelLayout, Control, EncodeConfig, ExportConfig, FlacLevel, Format, IntDepth, Pcm, Quality,
-    RenderConfig, RenderGraph, render_to_buffers, render_to_file,
+    ChannelLayout, Control, EncodeConfig, ExportConfig, FileTarget, FlacLevel, Format, IntDepth,
+    Normalize, NormalizeSpec, Output, Pcm, Produced, Quality, RenderConfig, RenderGraph, render,
+    render_one,
 };
 use tutti_graph::GraphBuilder;
 use tutti_measure::{LoudnessConfig, measure_loudness};
@@ -62,8 +64,9 @@ fn main() -> tutti_export::Result<()> {
     // ---- 1. a graph to a file -------------------------------------------
     //
     // Configuration is a struct literal: fill in what you mean, let `Default`
-    // cover the rest. Every field is read by `render_to_file`; the other entry
-    // points ignore some (see `ExportConfig`'s "What each entry point reads").
+    // cover the rest. `ExportConfig` is the bundle for one render and one file:
+    // its `job()` is what is rendered and its `file_target(path, None)` is where
+    // it goes.
     let config = ExportConfig {
         render: RenderConfig {
             sample_rate: RATE,
@@ -79,25 +82,31 @@ fn main() -> tutti_export::Result<()> {
         },
         ..Default::default()
     };
+    let job = config.job().expect("a two-second render");
 
     // `FrozenClock` says "this graph has no transport" out loud. A graph WITH
     // placed voices takes the `OfflineTimeline` those voices read — the clock is
     // a required argument precisely so a silent render is not something you can
     // get by forgetting one.
-    let written = render_to_file(
-        tone(),
-        &config,
+    let target = config.file_target(dir.join("tone.flac"), None);
+    let written = render_one(
+        &mut tone(),
+        &job,
         &FrozenClock,
-        dir.join("tone.flac"),
+        Output::master(target),
         &mut Control::none(),
     )?
     .finished()
+    .and_then(Produced::file)
     .expect("nothing cancels a control with no token");
     println!("wrote {} ({} bytes)", written.path.display(), written.bytes);
 
-    // Every format goes through the same call. Each is written block by
-    // block through `tutti-codec`'s encoder.
-    for (format, ext) in [
+    // ---- 2. one render, several files ------------------------------------
+    //
+    // The graph is stepped once per block however many outputs there are; each
+    // output has its own format, resample, dither and normalize. Every format
+    // is written block by block through `tutti-codec`'s encoder.
+    let outputs: Vec<Output> = [
         (Format::Wav(Pcm::Int24), "wav"),
         (
             Format::Vorbis {
@@ -106,45 +115,52 @@ fn main() -> tutti_export::Result<()> {
             "ogg",
         ),
         (Format::Aiff(Pcm::Int24), "aiff"),
-    ] {
-        let s = ExportConfig {
-            encode: EncodeConfig {
-                format,
-                ..config.encode.clone()
-            },
-            ..config.clone()
-        };
-        let w = render_to_file(
-            tone(),
-            &s,
-            &FrozenClock,
+    ]
+    .into_iter()
+    .map(|(format, ext)| {
+        Output::master(FileTarget::new(
             dir.join(format!("tone.{ext}")),
-            &mut Control::none(),
-        )?
-        .finished()
-        .expect("nothing cancels a control with no token");
+            format,
+            ChannelLayout::STEREO,
+        ))
+    })
+    .collect();
+    let produced = render(
+        &mut tone(),
+        &job,
+        &FrozenClock,
+        outputs,
+        &mut Control::none(),
+    )?
+    .finished()
+    .expect("nothing cancels a control with no token");
+    for p in produced {
+        let w = p.file().expect("a file output");
         println!("wrote {} ({} bytes)", w.path.display(), w.bytes);
     }
 
-    // ---- 2. a graph into memory -----------------------------------------
+    // ---- 3. a graph into memory -----------------------------------------
     //
     // `Rendered` is one plane per channel, so a surround render survives it. A
     // mono graph asked for as quad is placed by the engine's order: the front
     // pair carries the signal and the rears are silent — not four copies of the
     // same thing.
-    let quad = render_to_buffers(
-        mono_tone(),
-        &ExportConfig {
-            encode: EncodeConfig {
-                channels: ChannelLayout::QUAD,
-                ..Default::default()
-            },
-            ..config
+    let quad_config = ExportConfig {
+        encode: EncodeConfig {
+            channels: ChannelLayout::QUAD,
+            ..Default::default()
         },
+        ..config.clone()
+    };
+    let quad = render_one(
+        &mut mono_tone(),
+        &job,
         &FrozenClock,
+        Output::master(quad_config.buffer_target()),
         &mut Control::none(),
     )?
     .finished()
+    .and_then(Produced::buffers)
     .expect("nothing cancels a control with no token");
     let peaks: Vec<f32> = quad
         .planes()
@@ -156,37 +172,53 @@ fn main() -> tutti_export::Result<()> {
         quad.frames().get()
     );
 
-    // ---- 3. normalization, composed by the caller ------------------------
+    // ---- 4. normalization ------------------------------------------------
     //
-    // `render_to_file` never normalizes: choosing a gain means measuring the
-    // whole signal first, and a stage that hides two passes has to hold the
-    // signal to do it. `render_normalized_to_file` is the named two-pass entry
-    // point. Done by hand, as here, the measurement streams (`tutti_measure` wraps
-    // an online R128 meter) and the gain is one value you apply where you
-    // like — including on a second render, without ever holding the audio.
-    let mut audio = render_to_buffers(tone(), &config, &FrozenClock, &mut Control::none())?
-        .finished()
-        .expect("nothing cancels a control with no token");
+    // Choosing a gain means measuring the whole signal first, so an output that
+    // asks for it keeps what the graph rendered (in memory, or in a temporary
+    // file past 512 MiB), measures it at the file's rate and writes it with the
+    // gain. The graph is not rendered twice; `Written::gain` is what was applied.
+    //
+    // −14 LUFS with a −1 dBTP ceiling — the usual streaming target.
+    let normalized = config
+        .file_target(dir.join("tone-normalized.flac"), None)
+        .with_normalize(Some(NormalizeSpec::own(Normalize::lufs(Db(-14.0)))));
+    let written = render_one(
+        &mut tone(),
+        &job,
+        &FrozenClock,
+        Output::master(normalized),
+        &mut Control::none(),
+    )?
+    .finished()
+    .and_then(Produced::file)
+    .expect("nothing cancels a control with no token");
+    println!(
+        "normalize: gain {:.2} dB, measured {:.2} LUFS before",
+        written
+            .gain
+            .expect("a normalized output reports its gain")
+            .get(),
+        written.measured.expect("and the reading").lufs.get()
+    );
 
+    // The measurement is also a plain function over planes, when a caller
+    // wants to hold the audio and decide for itself.
+    let audio = render_one(
+        &mut tone(),
+        &job,
+        &FrozenClock,
+        Output::master(config.buffer_target()),
+        &mut Control::none(),
+    )?
+    .finished()
+    .and_then(Produced::buffers)
+    .expect("nothing cancels a control with no token");
     let cfg = LoudnessConfig::new(audio.sample_rate(), ChannelLayout::STEREO);
     let flat = audio.interleaved();
     let before = measure_loudness(&cfg, Interleaved::new(&flat, ChannelLayout::STEREO))
         .expect("stereo is meterable");
-
-    // −14 LUFS with a −1 dBTP ceiling — the usual streaming target.
-    let gain = before.gain_to(Db(-14.0), Db(-1.0));
-    audio.apply_gain(gain);
-
-    let flat = audio.interleaved();
-    let after = measure_loudness(&cfg, Interleaved::new(&flat, ChannelLayout::STEREO))
-        .expect("stereo is meterable");
-    println!(
-        "normalize: {:.2} LUFS + {:.2} dB -> {:.2} LUFS (peak {:.2} dBTP)",
-        before.lufs.get(),
-        gain.get(),
-        after.lufs.get(),
-        after.true_peak.get()
-    );
+    println!("by hand: {:.2} LUFS", before.lufs.get());
 
     Ok(())
 }

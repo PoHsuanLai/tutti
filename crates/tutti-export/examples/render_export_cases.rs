@@ -18,9 +18,10 @@
 //!
 //! Run: `cargo run --release -p tutti-export --example render_export_cases -- <outdir>`
 
+use tutti_dsp::DitherShape;
 use tutti_export::{
-    ChannelLayout, Control, Dither, EncodeConfig, ExportConfig, FlacLevel, Format, Pcm, Quality,
-    RenderConfig, RenderGraph, Resample, render_to_file,
+    ChannelLayout, Control, EncodeConfig, ExportConfig, FlacLevel, Format, Output, Pcm, Quality,
+    RenderConfig, RenderGraph, Resample, render_one,
 };
 use tutti_graph::GraphBuilder;
 use tutti_nodes::testing::{Const, Osc};
@@ -118,7 +119,7 @@ fn base(format: Format, channels: ChannelLayout) -> ExportConfig {
             channels,
             topology: None,
         },
-        dither: Dither::Off,
+        dither: None,
         ..Default::default()
     }
 }
@@ -132,15 +133,16 @@ fn main() -> tutti_export::Result<()> {
 
     let mut count = 0usize;
     let mut write =
-        |name: String, graph: RenderGraph, cfg: &ExportConfig| -> tutti_export::Result<()> {
-            let w = render_to_file(
-                graph,
-                cfg,
+        |name: String, mut graph: RenderGraph, cfg: &ExportConfig| -> tutti_export::Result<()> {
+            let w = render_one(
+                &mut graph,
+                &cfg.job()?,
                 &tutti_export::FrozenClock,
-                dir.join(&name),
+                Output::master(cfg.file_target(dir.join(&name), None)),
                 &mut Control::none(),
             )?
             .finished()
+            .and_then(tutti_export::Produced::file)
             .expect("nothing cancels a control with no token");
             println!("wrote {name} ({} bytes)", w.bytes);
             count += 1;
@@ -221,9 +223,9 @@ fn main() -> tutti_export::Result<()> {
     // and mean: the modes must differ from each other, stay inside their
     // distribution's width, and none may shift the signal.
     for (mode, tag) in [
-        (Dither::Off, "off"),
-        (Dither::Rectangular, "rect"),
-        (Dither::Triangular, "tri"),
+        (None, "off"),
+        (Some(DitherShape::Rectangular), "rect"),
+        (Some(DitherShape::Triangular), "tri"),
     ] {
         let mut cfg = base(Format::Wav(Pcm::Int16), ChannelLayout::STEREO);
         cfg.dither = mode;

@@ -5,9 +5,9 @@
 mod support;
 
 use crate::support::{render_normalized_to_file, render_to_file};
+use tutti_dsp::DitherShape;
 use tutti_export::{
-    Dither, EncodeConfig, ExportConfig, Format, FrozenClock, Normalize, Pcm, RenderConfig,
-    RenderGraph,
+    EncodeConfig, ExportConfig, Format, FrozenClock, Normalize, Pcm, RenderConfig, RenderGraph,
 };
 use tutti_graph::GraphBuilder;
 use tutti_measure::{LoudnessConfig, measure_loudness};
@@ -16,7 +16,7 @@ use tutti_types::{ChannelLayout, Db, Hz, Interleaved, SampleRate, Seconds};
 
 const RATE: SampleRate = SampleRate(48_000.0);
 
-fn config(pcm: Pcm, dither: Dither, seconds: f64) -> ExportConfig {
+fn config(pcm: Pcm, dither: Option<DitherShape>, seconds: f64) -> ExportConfig {
     ExportConfig {
         render: RenderConfig {
             sample_rate: RATE,
@@ -57,7 +57,7 @@ fn a_peak_normalized_export_reports_its_gain_and_reading() {
     for target in [-6.0f32, -3.0] {
         let written = render_normalized_to_file(
             sine(Hz(RATE.get() as f32 / 4.0)),
-            &config(Pcm::Int16, Dither::Triangular, 0.1),
+            &config(Pcm::Int16, Some(DitherShape::Triangular), 0.1),
             &FrozenClock,
             Normalize::peak(Db(target)),
             &path,
@@ -71,7 +71,7 @@ fn a_peak_normalized_export_reports_its_gain_and_reading() {
 
     let plain = render_to_file(
         sine(Hz(1_000.0)),
-        &config(Pcm::Int16, Dither::Off, 0.1),
+        &config(Pcm::Int16, None, 0.1),
         &FrozenClock,
         &path,
     )
@@ -96,7 +96,7 @@ fn a_loudness_normalized_export_reports_the_gain_to_its_target() {
     let path = dir.path().join("lufs.wav");
     let written = render_normalized_to_file(
         sine(Hz(1_000.0)),
-        &config(Pcm::Float32, Dither::Off, 3.0),
+        &config(Pcm::Float32, None, 3.0),
         &FrozenClock,
         Normalize::lufs(Db(-23.0)),
         &path,

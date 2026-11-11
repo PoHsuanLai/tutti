@@ -8,7 +8,7 @@
 //! use tutti_measure::{measure_loudness, LoudnessConfig};
 //! use tutti_types::{Amplitude, Hz, SampleRate};
 //! use tutti_transport::FrozenClock;
-//! use tutti_export::{render_to_buffers, render_to_file, RenderGraph, ...};
+//! use tutti_export::{Output, RenderGraph, render_one, ...};
 //! use tutti_graph::GraphBuilder;
 //! use tutti_types::{Db, Interleaved};
 //! ```
@@ -28,8 +28,8 @@
 //!        --example headless_export -- <outdir>`
 
 use tutti::export::{
-    EncodeConfig, ExportConfig, Format, Pcm, RenderConfig, RenderGraph, render_to_buffers,
-    render_to_file,
+    Control, EncodeConfig, ExportConfig, Format, Output, Pcm, Produced, RenderConfig, RenderGraph,
+    render_one,
 };
 use tutti::graph::GraphBuilder;
 use tutti::measure::{LoudnessConfig, measure_loudness};
@@ -93,25 +93,29 @@ fn main() -> tutti::export::Result<()> {
 
     // 1. A graph to a file.
     let path = dir.join("tone.wav");
-    let written = render_to_file(
-        tone(),
-        &config(1.0, ChannelLayout::STEREO),
+    let cfg = config(1.0, ChannelLayout::STEREO);
+    let written = render_one(
+        &mut tone(),
+        &cfg.job().expect("a one-second render"),
         &FrozenClock,
-        &path,
+        Output::master(cfg.file_target(&path, None)),
         &mut Control::none(),
     )?
     .finished()
+    .and_then(Produced::file)
     .expect("nothing cancels a control with no token");
     println!("wrote {} ({written:?})", path.display());
 
     // 2. The same graph into memory, and a measurement of it.
-    let rendered = render_to_buffers(
-        tone(),
-        &config(1.0, ChannelLayout::STEREO),
+    let rendered = render_one(
+        &mut tone(),
+        &cfg.job().expect("a one-second render"),
         &FrozenClock,
+        Output::master(cfg.buffer_target()),
         &mut Control::none(),
     )?
     .finished()
+    .and_then(Produced::buffers)
     .expect("nothing cancels a control with no token");
     let flat = rendered.interleaved();
     let cfg = LoudnessConfig::new(rendered.sample_rate(), ChannelLayout::STEREO);
@@ -126,11 +130,12 @@ fn main() -> tutti::export::Result<()> {
     // 3. A mono graph into a stereo file — the fold, which the export layer
     //    does for you and the graph does not.
     let mono_path = dir.join("mono-to-stereo.wav");
-    render_to_file(
-        mono_tone(),
-        &config(0.5, ChannelLayout::STEREO),
+    let mono_cfg = config(0.5, ChannelLayout::STEREO);
+    render_one(
+        &mut mono_tone(),
+        &mono_cfg.job().expect("a half-second render"),
         &FrozenClock,
-        &mono_path,
+        Output::master(mono_cfg.file_target(&mono_path, None)),
         &mut Control::none(),
     )?
     .finished()

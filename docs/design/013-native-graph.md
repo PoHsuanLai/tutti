@@ -10437,7 +10437,7 @@ and `Graph::chain` over node keys, shaped as the first piece of it).
   swapped index, a node port taken for a global channel, or arguments in the
   wrong order no longer compile.
 - **One wiring vocabulary.** `connect(from, to)` adds an edge and returns it,
-  `.gain(..)` sets its weight (the edge gain of [Edge gain](#edge-gain)),
+  `.gain(..)` sets its weight (the edge gain of [Edge gain](#edge-gain-a-mixer-is-a-weighted-sum)),
   `disconnect(from, to)` and `disconnect_all(to)` remove, `set_sources(to, ..)`
   replaces. Buses are `connect` between bus handles. These replace the
   node-input, root-output, bus, bus-to-root and `_weighted` families

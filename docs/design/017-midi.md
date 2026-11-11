@@ -376,9 +376,33 @@ impl Translator {
   translators may wish to") is not built: the `Translator` holds no clock, and an
   input that has one can call `flush` itself. CC 96 and 97 stay Control Changes
   (D.3.3, quoted in `Translator`'s docs).
-- MPE is a dialect on MIDI 1.0, handled here. Channels outside a zone pass through
-  ("remain available for conventional use", RP-053), and bend, pressure and CC74
-  sent before a note-on bind to it instead of being dropped. The group is kept.
+- MPE is a dialect on MIDI 1.0, handled here, by M1-100 (MPE 1.1, the MCM) read in full.
+  The receive rules are `MpeIngest`'s `MpeSpec`, a value, so the MIDI-CI MPE Profile
+  (M2-120, L10b) is another variant of it and not a branch in the code:
+  - Channels outside a zone pass through (§2.2.1, "remain available for conventional use").
+  - A member's bend, pressure and CC 74 are tracked per channel "even when no note is
+    playing" (§2.2.6 to 2.2.8) and sent as per-note messages ahead of the channel's next
+    Note On (a note's number is known only then); a held note takes them at once. A
+    manager's pressure and CC 74 reach every note of its zone, combined with the member's
+    by Max (Appendix D leaves the choice); a manager's bend is `Voicing`'s, summed with the
+    member's (Appendix C.5). After a Note Off the channel's messages wait for the next note.
+  - A manager's pedal, All Notes Off and Reset All Controllers are the zone's
+    (`Voicing`, §2.3.1: "all Sounding Notes across the Manager Channel and all Member
+    Channels"); a member's is its own.
+  - Table 5 (Appendix E), receive side: a prohibited message is ignored (§2.3.1, "it should
+    ignore them"): 120, 126, 127 on a manager, 125 anywhere, RPN 6 on a member, Program
+    Change on a member in Mode 3 (§2.3.3; Bank Select travels in it). 121 to 124 pass. A
+    Mono or Poly Mode On on the zone's lowest member switches Mode 4 and 3 (§2.2.4.3); the
+    ingest keeps only that, the instrument's own `Rules` decide what Mono means. Poly Key
+    Pressure on a member is not filtered: it cannot be told from a native per-note message.
+  - A zone change stops and resets "each Channel entering or leaving MPE control" (§2.2.3):
+    All Sound Off and Reset All Controllers on each, ahead of the zone's default ranges, from
+    an MCM that moves channels and from a host-set mode (`zone_defaults`); the channels that
+    did not change keep their notes and what they were told. The per-note held values of a
+    channel that left are not reset (one `PerNoteManagement` per note number would not fit a
+    block): a note that starts there later is told the ingest's values again.
+  - Sensitivity: an MCM sets a manager to 2 and every member to 48 (§2.2.5); a member's RPN 0
+    is every member's (RPN #00/07 on each).
 
 A plugin host that wants MIDI 2.0 data takes `Midi2` directly. One that speaks
 MIDI 1.0 asks the translator for D.2, so the rule lives in one place. Hosts then
@@ -2620,6 +2644,7 @@ such as reassembled SysEx; that is decided when that code is written.
 - **Device-side MIDI 2.0 on ALSA.** Group-to-port mapping is read from kernel docs,
   and no UMP hardware has been tested. Needs a real device before stage 4 is
   declared done.
-- **MPE details.** RP-053 v1.0 was read from a public copy, and M1-100 v1.1 was not
-  available. Check before stage 3 pins MPE tests.
+- **MPE details.** M1-100 v1.1 is read (see "MPE is a dialect on MIDI 1.0"); the Manager
+  Channel rules of its Table 5 that M2-120 changes (the Profile's manager-only sensitivity
+  and 48 default, §3.5) are L10b's.
 - **The MPE Profile, GM2 and other profiles** are out of the core set and unread.

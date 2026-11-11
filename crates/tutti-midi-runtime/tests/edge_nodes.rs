@@ -261,7 +261,9 @@ fn an_rpn_run_split_across_blocks_is_assembled() {
 /// each of the next two blocks folds into a per-note bend on the note. The
 /// request latches, so it is read every block. Adopting it sends the zone's
 /// default bend ranges once, in the first block (master and six members:
-/// seven registered controllers).
+/// seven registered controllers), after the All Sound Off and Reset All
+/// Controllers of the seven channels that entered MPE control (M1-100
+/// section 2.2.3).
 ///
 /// Mutation: adopt without comparing against the mode in force (`set_mode`
 /// every block) → the voice map resets → the bends resolve to nothing and
@@ -300,9 +302,21 @@ fn a_requested_mpe_mode_is_adopted_once() {
             Ok(Message::Midi2(_, Voice2::Registered { .. }))
         )
     };
+    let is_stop = |ev: &Ump| {
+        matches!(
+            decode(*ev),
+            Ok(Message::Midi2(_, Voice2::ControlChange { controller, .. }))
+                if controller == CCNumber::ALL_SOUND_OFF || controller == CCNumber::RESET_ALL
+        )
+    };
     let resets: Vec<u64> = seen.iter().filter(|s| is_rpn(&s.2)).map(|s| s.1).collect();
     assert_eq!(resets, vec![0; 7], "the ranges, once, at frame 0: {seen:?}");
-    let music: Vec<_> = seen.iter().filter(|s| !is_rpn(&s.2)).collect();
+    let stops: Vec<u64> = seen.iter().filter(|s| is_stop(&s.2)).map(|s| s.1).collect();
+    assert_eq!(stops, vec![0; 14], "the stops, once, at frame 0: {seen:?}");
+    let music: Vec<_> = seen
+        .iter()
+        .filter(|s| !is_rpn(&s.2) && !is_stop(&s.2))
+        .collect();
     let folded: Vec<Option<u8>> = music[1..].iter().map(|s| note_of(s.2)).collect();
     assert_eq!(folded, vec![Some(60), Some(60)], "{seen:?}");
 }

@@ -140,6 +140,61 @@ fn the_mpe_bend_range_fan_out_processes_without_allocating() {
     assert_eq!(reached, 50, "the last member's port carries one per block");
 }
 
+/// A wire of one MPE gesture on member channel 2 of a lower zone: a bend,
+/// pressure and CC 74 before the Note On, the manager's pressure, then the
+/// Note Off.
+struct Gesture;
+
+impl MidiIn for Gesture {
+    fn poll_block(&mut self, _block_size: Samples, buffer: &mut [UmpAt]) -> usize {
+        let (g, ch) = (MidiGroup::FIRST, MidiChannel::of(2));
+        let events = [
+            midi::pitch_bend(g, ch, 0xC000_0000),
+            midi::channel_pressure(g, ch, 0x4000_0000),
+            midi::cc(g, ch, tutti_ump::CCNumber::BRIGHTNESS, 0x2000_0000),
+            note_on(2, 60),
+            midi::channel_pressure(g, MidiChannel::FIRST, 0x6000_0000),
+            midi::cc(g, MidiChannel::FIRST, tutti_ump::CCNumber::BRIGHTNESS, 7),
+            note_off(g, ch, 60, 0),
+        ];
+        for (slot, ev) in buffer.iter_mut().zip(events) {
+            *slot = (Offset::ZERO, ev);
+        }
+        events.len()
+    }
+}
+
+/// The values a member was told before its Note On, the manager's pressure
+/// and CC 74 combined into each held note, and a Note Off's release process
+/// without allocating, block after block.
+///
+/// Mutation (run): collect the setup of a Note On into a `Vec` before sending
+/// it -> the gate panics.
+#[test]
+fn the_mpe_expression_paths_process_without_allocating() {
+    let (mut ed, mut exec) = Editor::new(Prepare::new(SampleRate(48_000.0), Samples(512)));
+    ed.insert(
+        NodeKey(1),
+        "in",
+        MidiInputNode::new(Some(Box::new(Gesture))).with_mpe(tutti_fixtures::midi::lower_zone(15)),
+    );
+    let mut out = common::sink(&mut ed, 0, &[(1, 2)]);
+    ed.commit().unwrap();
+    let t = Transport::default();
+    let mut drain = [(0, Ump([0; 4])); 256];
+    exec.process(512, &t, &[], &mut []);
+    let _ = out.poll_into(&mut drain);
+
+    let mut reached = 0;
+    assert_no_alloc::assert_no_alloc(|| {
+        for _ in 0..50 {
+            exec.process(512, &t, &[], &mut []);
+            reached += out.poll_into(&mut drain);
+        }
+    });
+    assert!(reached > 0, "channel 2's port carries the gesture");
+}
+
 /// A wire alternating an upper-zone and a lower-zone MPE Configuration
 /// Message, one per poll.
 struct Mcms(bool);

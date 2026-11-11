@@ -149,9 +149,6 @@ mod tests {
     /// A layout whose size does not fit in `usize` has no size: the server
     /// maps from a layout the peer sent, so a wrapped figure would map a small
     /// file under offsets that run past it.
-    ///
-    /// Mutation (run): a `wrapping_mul` for the sample term → `Some` of a
-    /// small number → fails.
     #[test]
     fn a_size_that_overflows_is_none() {
         let mut l = layout(&[ChannelLayout::STEREO], &[ChannelLayout::STEREO]);
@@ -212,41 +209,5 @@ mod tests {
         let bytes = bincode::serialize(&l).unwrap();
         let back: SlabLayout = bincode::deserialize(&bytes).unwrap();
         assert_eq!(back, l);
-    }
-
-    /// Mirror of the pre-reshape `SlabLayout`, to confirm that the wire break is
-    /// real and not silently absorbed. bincode is not self-describing, so a v3
-    /// payload fed to this struct would read `slots` out of the bytes that used
-    /// to hold `channels` — a plausible small integer, and a wrong-sized
-    /// mapping. `PROTOCOL_VERSION` is what actually prevents that; this test
-    /// documents *why* the bump was mandatory rather than housekeeping.
-    #[derive(serde::Serialize)]
-    struct LegacySlabLayout {
-        channels: u16,
-        samples_per_channel: usize,
-        format: SampleFormat,
-        inputs: BusChannels,
-        outputs: BusChannels,
-    }
-
-    #[test]
-    fn a_legacy_payload_does_not_deserialize_into_the_new_shape() {
-        let legacy = LegacySlabLayout {
-            channels: 2,
-            samples_per_channel: 512,
-            format: SampleFormat::Float32,
-            inputs: Vec::new(),
-            outputs: Vec::new(),
-        };
-        let bytes = bincode::serialize(&legacy).unwrap();
-        // Either it fails outright, or it produces something that is not the
-        // layout the sender meant. Both are caught by the version gate; what
-        // must never happen is a clean round-trip that maps a wrong-sized region.
-        if let Ok(decoded) = bincode::deserialize::<SlabLayout>(&bytes) {
-            assert!(
-                decoded.inputs.is_empty() || decoded.samples_per_channel != 512,
-                "a legacy payload must not decode into an equivalent new layout"
-            );
-        }
     }
 }

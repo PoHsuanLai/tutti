@@ -223,22 +223,12 @@ mod tests {
         0xe7, 0x40, 0x01, 0x08, 0x07, 0x06, 0x05, 0x04, 0x03, 0x02, 0x01,
     ];
 
-    /// **A fully populated block encodes to the bytes the code before this
-    /// change produced, and decodes from them.** Recorded from the old code,
-    /// not restated from the layout: a host and a server built on either
-    /// side of the change exchange the same `ProcessAudio` body, note
-    /// expressions and texts included. `ProcessAudioData` has no
-    /// `PartialEq`, so the decode is checked by re-encoding and by reading
-    /// back the fields the change touched.
-    ///
-    /// Mutation (run): `chords` and `scales` swapped in `ProcessAudioData`'s
-    /// declaration → the encoding differs → fails. Mutation (run):
-    /// `#[serde(skip)]` on `TransportInfo::system_time_ns` → the nine
-    /// trailing bytes are missing → fails. Mutation: `#[serde(skip)]` on
-    /// `ProcessAudioData::transport_changes` → the 145 trailing bytes are
-    /// missing → fails.
+    /// **A fully populated block encodes to the pinned bytes, and decodes from
+    /// them**: a host and a server exchange the same `ProcessAudio` body, note
+    /// expressions and texts included. `ProcessAudioData` has no `PartialEq`, so
+    /// the decode is checked by re-encoding and by reading back its fields.
     #[test]
-    fn a_block_encodes_as_before_smallvec_was_removed() {
+    fn a_block_has_the_pinned_wire_encoding() {
         assert_eq!(bincode::serialize(&golden_block()).unwrap(), GOLDEN_BLOCK);
 
         let back: ProcessAudioData = bincode::deserialize(&GOLDEN_BLOCK).unwrap();
@@ -265,9 +255,6 @@ mod tests {
     /// **The transport's project-time position and host clock cross the
     /// wire**: the plugin server fills VST3 `projectTimeSamples` /
     /// `systemTime` and VST2 `samplePos` / `nanoSeconds` from what arrives.
-    ///
-    /// Mutation (run): `#[serde(skip)]` on `TransportInfo::system_time_ns`
-    /// → it arrives `None` → fails.
     #[test]
     fn the_transport_clocks_cross_the_wire() {
         let block = ProcessAudioData {
@@ -284,9 +271,6 @@ mod tests {
 
     /// **The tempo and its slope cross the wire**: the plugin server hands
     /// CLAP's `tempo_inc` the host's figure.
-    ///
-    /// Mutation (run): `#[serde(skip)]` on `MusicalTiming::tempo_inc` → it
-    /// arrives `0.0` → fails.
     #[test]
     fn the_tempo_slope_crosses_the_wire() {
         let block = ProcessAudioData {

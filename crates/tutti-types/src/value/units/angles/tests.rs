@@ -96,10 +96,9 @@ fn elevation_lerp_needs_no_seam_handling() {
 }
 
 #[test]
-fn phase_wrap_is_correct_for_negatives_where_the_old_ones_were_not() {
-    // The two wraps this type replaces, reproduced: both keep the sign of
-    // the input, so a negative phase stays negative and indexes off the
-    // front of a shape table.
+fn phase_wrap_lands_a_negative_phase_in_range() {
+    // `%` and `fract` keep the sign of the input, so a negative phase would
+    // stay negative and index off the front of a shape table.
     assert_eq!(-0.25_f32 % 1.0, -0.25);
     assert_eq!((-0.25_f32).fract(), -0.25);
     // `rem_euclid` — the only wrap `Phase` performs.

@@ -8,15 +8,8 @@
 //! `UnitParam` alone, and each cell has one address (the compressor's makeup
 //! is `GainDb`).
 //!
-//! Ported from routes through a `ModMatrix` onto an
-//! `AtomicTarget` mirroring the cell (both deleted, §10): the address checks
-//! now write through `ParamSet::set`, and the end-to-end check drives a
-//! control lane whose knob is the filter's cell.
-//!
-//! Mutation (run): `ParamSet::cell` answering every param with the set's
-//! first cell → every test asking for a param the set lacks, or one that is
-//! not its first, fails (5 of 7, with `convolution`); the two that address
-//! the SVF's cutoff, its first param, pass, as they must.
+//! The address checks write through `ParamSet::set`, and the end-to-end check
+//! drives a control lane whose knob is the filter's cell.
 
 use std::sync::atomic::Ordering;
 
@@ -115,10 +108,6 @@ impl Node for Probe {
 /// port around that cell's value, both ways and inside the range; a write
 /// through the filter's set moves the centre of the sweep on the next
 /// block, so the knob the lane reads is the node's cell, not a copy.
-///
-/// Mutation (run): build the lane's knob from a snapshot of the cell
-/// (`Arc::new(AtomicF32::new(cell.load(..)))`) → the second sweep stays
-/// centred on 1000 → fails.
 #[test]
 fn an_lfo_lane_sweeps_around_a_real_filters_cutoff_cell() {
     let filter = svf();
@@ -271,12 +260,6 @@ fn render_chorus(
 /// §4.2). The rate is a port ([`MOD_DELAY_PARAMS`]). The claim the old
 /// `chorus_rate_route_moves_the_nodes_own_cell` made, on the lane.
 ///
-/// Mutation (run): `ModDelayNode` not declaring its ports (the
-/// `.with_params(&MOD_DELAY_PARAMS)` dropped) → the lane's port does not
-/// exist and the connect is refused at commit → fails. Mutation (run):
-/// `LfoDrive::fill_block` ignoring the driven rate → the chorus runs at
-/// 1 Hz → fails.
-///
 /// [`MOD_DELAY_PARAMS`]: tutti_nodes::MOD_DELAY_PARAMS
 #[test]
 fn a_lane_modulates_a_chorus_rate_around_its_own_cell() {
@@ -415,17 +398,6 @@ fn render_lfo(param: UnitParam, range: ParamRange, depth: f32) -> (Vec<f32>, f32
 /// render) once, at frame 48 000. The LFO's clock is exact, so each crossing
 /// is pinned to within a frame of where it belongs; a count alone would
 /// miss a clock that drifts. Neither cell moves.
-///
-/// Mutation (run): the LFO reading its depth cell, not the driven
-/// port (`block_driven(&io, 0)` replaced by `None`) → it peaks at 0.25 →
-/// fails. Mutation (run): reading its rate cell (`block_driven(&io,
-/// 1)` replaced by `None`) → one crossing → fails. Mutation (run): the
-/// free-running position accumulated in f32 (`self.position =
-/// f64::from(self.position as f32 + step as f32)`) → the 1 Hz crossing
-/// lands at 47 970 and the 3 Hz ones at 15 998, 32 006 and 48 015 → fails.
-/// An f32-rounded step (accumulated in f64) still lands every crossing on
-/// its frame here: its relative error is under 6e-8, so it takes over 10^7
-/// frames to move a crossing by one.
 ///
 /// [`LFO_PARAMS`]: tutti_nodes::LFO_PARAMS
 #[test]
@@ -592,13 +564,6 @@ fn a_limiter_driven_below_its_release_floor_still_releases() {
 ///
 /// And the depth gets `set_depth`'s clamp: driven to 8 it sounds as it
 /// does driven to exactly 1 (the knob at 1, nothing added).
-///
-/// Mutation (run): `LinearMod::load` without
-/// `Depth::new_clamped` → the sweep hold keeps the +8 drive bounded, but it
-/// sweeps unlike depth 1 → the last assertion fails. Mutation (run):
-/// `allpass_coeff` without the sweep hold → the −7.5 drive
-/// diverges → fails. (A depth of −1 reaches the second through `set_depth` itself, so
-/// the hold also fixes a divergence that predates the port.)
 #[test]
 fn a_phaser_driven_past_its_depth_range_stays_stable() {
     let mut state = 0x9e37_79b9_u32;
@@ -649,12 +614,6 @@ fn a_phaser_driven_past_its_depth_range_stays_stable() {
 /// `depth_max`, it sounds as it does at a 40 ms knob; driven to −5 Hz
 /// (range `-10..=10`), below `set_rate`'s 0.01 Hz floor, as it does at a
 /// 0.01 Hz knob.
-///
-/// Mutation (run): the block's depth without
-/// `ModDelayConfig::clamp_depth` → a 0.5 s sweep reads past the line's
-/// capacity, unlike 40 ms → fails. Mutation (run):
-/// `LfoDrive::fill_block` taking a driven rate unclamped → the LFO runs
-/// backwards at 5 Hz → fails.
 #[test]
 fn a_chorus_driven_past_its_depth_and_rate_gets_the_setters_clamps() {
     let mut state = 0x2545_f491_u32;

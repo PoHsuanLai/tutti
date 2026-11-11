@@ -143,17 +143,15 @@ fn cycles_of_reads_the_divisor_as_a_span_not_a_frequency() {
     assert_eq!(c.floor(), 2.0);
     assert_eq!(c.fract(), 0.5);
 
-    // One guard, replacing three that disagreed — a non-positive span
-    // froze on one path and ran backwards on another.
+    // One guard: a non-positive span has no cycle count.
     assert_eq!(Beat(4.0).cycles_of(BeatDuration(0.0)), None);
     assert_eq!(Beat(4.0).cycles_of(BeatDuration(-2.0)), None);
 }
 
 #[test]
-fn cycles_of_stays_in_f64_where_the_callers_used_to_narrow() {
-    // Every call site divided `beat as f32` by an f32 span. That is exact
-    // for power-of-two spans, which is why it went unnoticed, and drifts on
-    // everything else.
+fn cycles_of_is_computed_in_f64() {
+    // Dividing `beat as f32` by an f32 span is exact for power-of-two spans
+    // and drifts on everything else.
     let beat = Beat(1_000_000.0);
     let span = BeatDuration(3.0);
     let wide = beat.cycles_of(span).unwrap();

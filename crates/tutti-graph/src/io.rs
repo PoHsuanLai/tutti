@@ -42,7 +42,7 @@ pub enum PortKind {
 /// One node call's buffers: audio in and out, events in and out, and the
 /// block's param values, handed to [`Node::process`](crate::Node::process).
 ///
-/// Only the executor (or the [`Reference`](crate::Reference) interpreter)
+/// Only the executor (or the `Reference` interpreter)
 /// builds one, and it guarantees every audio slice is exactly
 /// [`frames`](Self::frames) long, at most the [`MaxBlock`] the node was
 /// prepared with — so a node never needs to clamp. Buffers are planar `f32`

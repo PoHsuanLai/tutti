@@ -309,7 +309,7 @@ mod tests {
     }
 
     #[test]
-    fn rejects_every_invalid_instance_the_old_structs_admitted() {
+    fn rejects_a_zero_window_a_zero_hop_and_a_non_positive_rate() {
         assert_eq!(
             StftGeometry::new(SampleRate::new(44100.0), Samples(0), Samples(512)),
             Err(Error::ZeroWindow)
@@ -494,9 +494,6 @@ mod tests {
     /// The latency is the window over the rate in `f64`, with no `f32` on the
     /// way: 2048 / 44100 = 0.046439909297052155 s, where an `f32` round trip
     /// reads 0.04643991.
-    ///
-    /// Mutation (run): `latency` computed as
-    /// `Seconds::from_f32(window as f32 / rate as f32)` fails.
     #[test]
     fn latency_is_exact() {
         let g = geo(2048, 512);

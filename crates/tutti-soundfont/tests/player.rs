@@ -1,10 +1,6 @@
 //! The behaviour of the unit's controllers and notes over the reference
 //! SoundFont, driven through MIDI 1.0 messages as a keyboard sends them.
 //!
-//! Ported from the tests of `tutti-rustysynth`'s `Synthesizer`, which this
-//! unit replaced: the same properties, now through the unit's message face.
-//! (Two properties went with the type they tested: the block size is no longer
-//! a setting, and the polyphony is 1 to 4096 where it was 8 to 256.)
 
 mod support;
 
@@ -27,8 +23,6 @@ fn refused(settings: Settings) -> Error {
     SoundFontUnit::new(timgm6mb(), &settings).unwrap_err()
 }
 
-// Mutation (run): widening the lower bound of the rate range to 15_000 lets
-// 15_999 Hz through and fails the first assertion.
 #[test]
 fn a_rate_outside_16_to_192_khz_is_refused_with_the_rate() {
     for hz in [15_999_u32, 192_001] {
@@ -46,9 +40,6 @@ fn a_rate_outside_16_to_192_khz_is_refused_with_the_rate() {
 // one voice is enough: a second note takes the first's place, so two notes
 // sound at the power of one, where a pool of two sounds both (two sines an
 // octave apart add in power, twice the one).
-//
-// Mutation (run): `Player::new` reading the polyphony as 64 whatever the
-// settings say lets both sound at once and fails the last assertion.
 #[test]
 fn a_pool_of_one_voice_gives_way_to_the_next_note() {
     let font = support::font::one_preset(vec![vec![]]);
@@ -74,9 +65,6 @@ fn a_pool_of_one_voice_gives_way_to_the_next_note() {
 // A count of voices past `Settings::MAX_POLYPHONY` is refused with its value
 // instead of panicking in the pool's allocation (`usize::MAX` overflows it);
 // the maximum itself and one voice build.
-//
-// Mutation (run): removing the upper bound in `Player::new` panics with a
-// capacity overflow on `usize::MAX` and fails the test.
 #[test]
 fn a_polyphony_past_the_maximum_is_refused_and_the_maximum_builds() {
     let at = |voices: usize| Settings::new(RATE).with_polyphony(NonZeroUsize::new(voices).unwrap());
@@ -102,9 +90,6 @@ fn the_rate_is_whole_hertz() {
     assert_eq!(unit.unwrap().sample_rate(), RATE);
 }
 
-// Mutation (run): swapping the `Cut` and `Release` effects of CC 120 and CC 123
-// in `Controller::effect` (`tutti-voicing`) leaves the cut note ringing and
-// fails the first assertion.
 #[test]
 fn cut_silences_at_once_and_release_rings_out() {
     let mut cut = dry();
@@ -122,8 +107,6 @@ fn cut_silences_at_once_and_release_rings_out() {
     assert!(energy(&mut release, 512) > 0.0, "the release tail sounds");
 }
 
-// Mutation (run): matching the note's channel against its key in
-// `Voicing::effect` cuts the wrong voices and fails one of the two assertions.
 #[test]
 fn a_channel_cut_leaves_the_other_channels_sounding() {
     let mut synthesizer = dry();
@@ -139,10 +122,6 @@ fn a_channel_cut_leaves_the_other_channels_sounding() {
     assert_eq!(energy(&mut synthesizer, 512), 0.0);
 }
 
-// Mutation (run): `widen` (`tutti-midi-protocol`) keeping a velocity-0 Note On a
-// Note On starts a second voice instead of releasing the first (the retrigger
-// rule releases the earlier strike but the new one then sustains), and fails
-// the last assertion.
 #[test]
 fn a_note_on_at_velocity_zero_is_a_note_off() {
     let mut synthesizer = dry();
@@ -528,9 +507,6 @@ fn an_unfollowed_controller_leaves_the_note_sounding() {
 // The font: preset 0 has bank 300 (unplayable) and a loud zone; preset 1 is
 // bank 0, program 3 and silent (144 dB down). A channel on bank 0, program 0
 // names nothing, so it falls back, and must land on the silent preset 1.
-//
-// Mutation (run): the default left at preset 0 in `Player::new` plays the loud
-// unplayable one and fails the first assertion.
 #[test]
 fn an_unplayable_preset_is_never_chosen() {
     use support::font::{Inst, Preset, font};
@@ -564,9 +540,6 @@ fn an_unplayable_preset_is_never_chosen() {
 
 // A font none of whose presets is playable is refused, not built into a unit
 // that is silent or plays what the file says cannot be played.
-//
-// Mutation (run): the `NoPlayablePreset` return removed builds the unit and
-// fails the assertion.
 #[test]
 fn a_font_with_nothing_playable_is_refused() {
     use support::font::{Inst, Preset, font};
@@ -596,9 +569,6 @@ fn a_font_with_nothing_playable_is_refused() {
 
 // SF2 2.04 section 7.2: of two presets with one bank and program, "the first
 // occurring preset in the PHDR chunk is the active preset".
-//
-// Mutation (run): `entry().or_insert` back to `insert` in `Player::new` lets
-// the last win, the loud one, and fails the assertion.
 #[test]
 fn the_first_of_two_presets_with_one_bank_and_program_is_active() {
     use support::font::{Inst, Preset, font};

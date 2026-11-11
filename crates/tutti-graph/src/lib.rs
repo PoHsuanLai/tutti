@@ -190,8 +190,8 @@
 //!
 //! # Testing
 //!
-//! - [`Reference`] is a naive interpreter the executor is checked against,
-//!   bit for bit.
+//! - `Reference` (feature `testing`) is a naive interpreter the executor is
+//!   checked against, bit for bit.
 //! - [`Plan::verify`] and [`Plan::verify_fades`] check a [`Plan`] against its
 //!   op DAG; [`compile()`] runs `verify` in every debug build.
 //! - [`GraphBuilder::renderer`] returns a [`Renderer`] that drives an
@@ -203,6 +203,9 @@
 //!   harness that checks a node responds on exactly the frame its declared
 //!   latency and resolution promise, on every path the graph can put it on.
 //!   Test support: enable it from a dev-dependency.
+//! - `testing` (off by default): `Reference`, the naive interpreter this
+//!   crate's differential suites check the executor against. Test support:
+//!   this crate's own tests turn it on through a self dev-dependency.
 //!
 //! # Import paths
 //!
@@ -252,6 +255,7 @@ mod plan;
 mod play;
 mod pool;
 mod preroll;
+#[cfg(feature = "testing")]
 mod reference;
 mod slots;
 mod spec;
@@ -321,6 +325,7 @@ pub use tail::{GraphTail, MAX_NODE_TAIL, TailGraph, graph_tail};
 // The reading is a value type, `tutti-types`' (the modulation compiler
 // carries one without naming the graph); the clock that keeps it is here.
 pub use meter::{Level, MeterReader, MeterWriter};
+#[cfg(feature = "testing")]
 pub use reference::Reference;
 pub use spec::{EventEdge, EventIn, EventOut, GraphInvalid, GraphSpec, ValidGraph};
 pub use tap::{TapReader, TapWriter};

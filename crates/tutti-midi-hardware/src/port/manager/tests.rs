@@ -481,12 +481,6 @@ fn a_producer_outliving_its_manager_pushes_into_its_own_ring() {
 /// the rate). (The *same* drain cannot be re-entered at all: it is polled
 /// through `&mut self`, which `HardwareMidiDrain`'s `compile_fail`
 /// doctest pins.)
-///
-/// Ported from `RtEventBuf`'s `drain_each_callback_may_reborrow_the_buffer`.
-///
-/// Mutation (run): dropping the `draining` guard → the nested drains take
-/// the events pushed during the visits, so `nested` is 4 and the next
-/// block finds none → fails.
 #[test]
 fn a_drain_re_entered_from_its_visitor_hands_out_every_event() {
     let manager = Arc::new(HardwareMidiInputs::new(16, SampleRate::new(44_100.0)));
@@ -528,10 +522,6 @@ fn a_drain_re_entered_from_its_visitor_hands_out_every_event() {
 ///
 /// Port A is removed and port B created in the same slot. A's id must not
 /// remove, toggle or describe B, and B's events carry B's id, not A's.
-///
-/// Mutation (run): `PortId`'s generation ignored (the lookup and the
-/// removal compare `index` only, as keys did before) → A's id removes B →
-/// fails.
 #[test]
 fn a_stale_port_id_cannot_reach_the_port_that_reused_its_slot() {
     let manager = Arc::new(HardwareMidiInputs::new(16, SampleRate::new(44_100.0)));
@@ -558,11 +548,6 @@ fn a_stale_port_id_cannot_reach_the_port_that_reused_its_slot() {
 /// The sample rate may be set from a control thread while the audio thread
 /// drains: no shared borrow, no torn value, and the rate a drain uses is
 /// one of those set.
-///
-/// Mutation (run): the rate back in an `AudioThreadCell` written with
-/// `borrow_mut` (the old shape) → the two threads trip the cell's in-use
-/// flag and the test panics (in a debug build when this was run; the flag
-/// is checked in release builds too now).
 #[test]
 #[cfg_attr(miri, ignore = "threaded stress test; too slow under miri")]
 fn the_sample_rate_can_be_set_while_a_drain_runs() {
@@ -605,9 +590,6 @@ fn the_sample_rate_can_be_set_while_a_drain_runs() {
 /// A port removed while a drain holds the set is not freed by the drain;
 /// `collect` frees it on the control side once the drain is done, with no
 /// further change needed.
-///
-/// Mutation (run): `collect` not reclaiming (returning `retired_len` only)
-/// → the port stays alive → fails.
 #[test]
 fn collect_frees_a_port_removed_during_a_drain() {
     let manager = Arc::new(HardwareMidiInputs::new(16, SampleRate::new(44_100.0)));

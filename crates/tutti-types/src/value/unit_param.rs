@@ -676,9 +676,6 @@ mod tests {
 
     /// The reverb kinds are appended after `Solo` and the next id is still
     /// unknown, so an older build meets `Decay` as an unknown id to ignore.
-    ///
-    /// Mutation (run): swap the two ids in `TryFrom<u16>` (`25 => Diffusion`)
-    /// → both asserts on the ids fail.
     #[test]
     fn the_reverb_kinds_are_appended() {
         assert_eq!(u16::from(UnitParam::Decay), 25);
@@ -732,16 +729,11 @@ mod tests {
         (UnitParam::StereoWidth, 31),
     ];
 
-    /// **Index 0 is bit-identical to the id before indices existed**, for
-    /// every param: the packed form of `UnitAddr::from(p)` is `p`'s old
-    /// `u16`, and that old `u16` decodes to `p` at index 0. This is the
-    /// compatibility argument for persisted ids and `AudioParam<U, P>`.
-    ///
-    /// Mutation (run): pack the index into the *low* byte
-    /// (`(self.param as u16) << 8 | self.index`) → index 0 of `Cutoff` is
-    /// still 0 but `Q` packs to 0x0100, not 1 → fails.
+    /// **Index 0 is the plain id**, for every param: the packed form of
+    /// `UnitAddr::from(p)` is `p`'s `u16`, and that `u16` decodes to `p` at
+    /// index 0. This is the argument for persisted ids and `AudioParam<U, P>`.
     #[test]
-    fn index_zero_is_the_old_id_for_every_param() {
+    fn index_zero_is_the_plain_id_for_every_param() {
         for (p, id) in PINNED {
             assert_eq!(u16::from(p), id, "{p:?} was renumbered");
             assert_eq!(UnitAddr::from(p).to_u16(), id);
@@ -752,9 +744,6 @@ mod tests {
 
     /// The index rides the high byte, the kind the low, for every param and
     /// a spread of indices (and the extremes), and decoding inverts it.
-    ///
-    /// Mutation (run): decode with `(id >> 4) as u8` for the index → index 1
-    /// decodes as 16 → fails.
     #[test]
     fn index_is_the_high_byte() {
         for (p, id) in PINNED {
@@ -771,9 +760,6 @@ mod tests {
     /// A packed id whose low byte is not a known kind is refused whatever its
     /// index, and a bare `UnitParam` refuses an indexed id: `UnitParam::try_from`
     /// stays the strict, index-free decode.
-    ///
-    /// Mutation (run): `UnitParam::try_from(id & 0xFF)` → `UnitParam::try_from(id >> 8)`
-    /// in `TryFrom<u16> for UnitAddr` → `0x010A` decodes the wrong param → fails.
     #[test]
     fn unknown_kinds_and_indexed_ids_are_refused_by_the_right_decoder() {
         assert_eq!(UnitAddr::try_from(0x0120), Err(UnitParamOutOfRange(0x0120)));
@@ -791,8 +777,6 @@ mod tests {
 
     /// The error names the id whole and its low byte (the kind a `u16`
     /// decode looks at).
-    ///
-    /// Mutation (run): drop the low byte from the `Display` text → fails.
     #[test]
     fn the_out_of_range_error_names_the_low_byte() {
         let e = UnitAddr::try_from(0x0120).unwrap_err();
@@ -801,9 +785,6 @@ mod tests {
 
     /// An address is equal to a bare param only at index 0, in both
     /// directions.
-    ///
-    /// Mutation (run): drop `self.index == 0 &&` from `PartialEq<UnitParam>`
-    /// → `Threshold` at index 1 equals `Threshold` → fails.
     #[test]
     fn an_address_equals_a_bare_param_only_at_index_zero() {
         let t = UnitParam::Threshold;
@@ -816,9 +797,6 @@ mod tests {
 
     /// `ParamAddr` keeps one value per address: index 0 is `Unit`, a non-zero
     /// index `Indexed`, and `as_unit` inverts both.
-    ///
-    /// Mutation (run): `ParamAddr::unit` returning `Indexed` for index 0 too
-    /// (use `NonZeroU8::MIN` for zero) → `Unit(Threshold) != unit(Threshold@0)` → fails.
     #[test]
     fn param_addr_has_one_form_per_address() {
         for (p, _) in PINNED {
@@ -846,9 +824,6 @@ mod tests {
 
     /// A typed key moved to another index keeps its kind and unit, changes
     /// its address, and compares unequal to the index-0 key.
-    ///
-    /// Mutation (run): `at` ignoring `index` (`UnitAddr::first`) → the keys
-    /// compare equal → fails.
     #[test]
     fn a_key_at_an_index_is_a_different_key() {
         use super::super::units::Db;

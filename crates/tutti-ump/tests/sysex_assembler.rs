@@ -1,9 +1,8 @@
 //! `SysexAssembler`: SysEx7 packets in, complete `0xF0 .. 0xF7` messages out,
 //! inside a buffer the caller provides.
 //!
-//! Ported from the plugin layer's `SysExAssembler` tests; each case keeps its
-//! mutation record. The assembler holds no `Vec`: it cannot allocate by
-//! construction, and the two tests that push through `assert_no_alloc` pin it.
+//! The assembler holds no `Vec`: it cannot allocate by construction, and the
+//! two tests that push through `assert_no_alloc` pin it.
 
 use assert_no_alloc::{AllocDisabler, assert_no_alloc};
 use tutti_ump::{Message, MidiGroup, Sysex7Packet, SysexAssembler, SysexStatus, SysexStep, Ump};
@@ -76,9 +75,6 @@ fn payload(len: usize) -> Vec<u8> {
 
 /// **A multi-packet message completes as one framed message on its
 /// `END`**, with every payload byte in order.
-///
-/// Mutation (run): `END` not appending its own payload → the last bytes
-/// are missing → fails.
 #[test]
 fn a_multi_packet_message_completes_on_its_end() {
     let body = payload(40);
@@ -92,9 +88,6 @@ fn a_multi_packet_message_completes_on_its_end() {
 
 /// **A message spans a block boundary**: an open run survives
 /// `begin_block`, and completes in the next block.
-///
-/// Mutation (run): `begin_block` clearing the buffer and the run whatever
-/// the run's state → the `END` finds no run → nothing completes → fails.
 #[test]
 fn an_open_run_carries_across_blocks() {
     let body = payload(30);
@@ -113,11 +106,6 @@ fn an_open_run_carries_across_blocks() {
 
 /// **A message past capacity is dropped whole and counted once**; the
 /// next message is delivered intact.
-///
-/// Mutations (run): the capacity check removed → the long message
-/// completes → fails; the dropped run truncated but left `Assembling`
-/// (not `Discarding`) → its tail completes as a headless message →
-/// fails.
 #[test]
 fn a_message_past_capacity_is_dropped_whole_and_counted() {
     let mut asm = SysexAssembler::new(vec![0; SysexAssembler::room_for(20, BLOCK)], 20);
@@ -135,9 +123,6 @@ fn a_message_past_capacity_is_dropped_whole_and_counted() {
 
 /// **A `START` with no `END` before the next `START` drops the open
 /// message, counted**, and the second message is delivered whole.
-///
-/// Mutation (run): `START` not abandoning the open run → the second
-/// message is appended to the first → fails.
 #[test]
 fn a_start_before_the_open_runs_end_drops_it() {
     let a = payload(20);
@@ -156,9 +141,6 @@ fn a_start_before_the_open_runs_end_drops_it() {
 
 /// **A `SINGLE` on another group completes beside an open run without
 /// disturbing it**, and on the run's own group it ends the run.
-///
-/// Mutation (run): `single` appending after the run instead of rotating
-/// in front of it → the run's bytes are split by the single → fails.
 #[test]
 fn a_single_beside_an_open_run() {
     let body = payload(25);
@@ -184,9 +166,6 @@ fn a_single_beside_an_open_run() {
 
 /// **Other messages pass through an open run** (`NotSysex`) and do not
 /// end it.
-///
-/// Mutation (run): a non-SysEx event abandoning the run → the message
-/// never completes → fails.
 #[test]
 fn other_messages_do_not_end_a_run() {
     let body = payload(20);
@@ -201,10 +180,6 @@ fn other_messages_do_not_end_a_run() {
 /// **An assembler with no room drops (and counts) every message**, rather
 /// than writing past its buffer: with a zero message cap, and with a cap the
 /// empty buffer cannot hold.
-///
-/// Mutation (run): the room check removed from `single` -> the one-packet
-/// message is written past the empty buffer (a panic) -> fails; the room
-/// check removed from `append` -> likewise for the long message.
 #[test]
 fn an_assembler_with_no_room_drops_everything() {
     for max_message in [0, 100] {
@@ -218,10 +193,6 @@ fn an_assembler_with_no_room_drops_everything() {
 
 /// **The longest message fits, carried across blocks of a full MIDI cap
 /// each, without allocating**, and the buffer's address never moves.
-///
-/// Mutation (run): `room_for` returning `max_message` alone (no block of
-/// packets on top) → a single beside the carried run does not fit →
-/// counted → fails.
 #[test]
 fn the_longest_message_fits_without_allocating() {
     let body = payload(MAX_PAYLOAD);
@@ -259,10 +230,6 @@ fn the_longest_message_fits_without_allocating() {
 /// message that would overflow it, counted, without allocating.** A
 /// complete longest message fills the message part of the buffer; the
 /// next message, short of the message cap but past the room, is dropped.
-///
-/// Mutation (run): `|| self.len + added > self.room()` removed from
-/// `append` → a write past the buffer → the slice index panics (aborts under
-/// `assert_no_alloc`'s handler) → fails.
 #[test]
 fn more_packets_than_room_drop_without_allocating() {
     let longest = packets(MidiGroup::FIRST, &payload(MAX_PAYLOAD));
@@ -285,9 +252,6 @@ fn more_packets_than_room_drop_without_allocating() {
 
 /// **A tail lost upstream drops the open message, counted, and the rest
 /// of its packets in a later block are not spliced onto it.**
-///
-/// Mutation (run): `lost_tail` a no-op → the later packets complete the
-/// run as one message missing its middle → fails.
 #[test]
 fn a_lost_tail_drops_the_open_message() {
     let body = payload(60);
@@ -305,9 +269,6 @@ fn a_lost_tail_drops_the_open_message() {
 
 /// **A reset drops the open message, counted**, so its remaining packets
 /// after the reset are skipped rather than completing it.
-///
-/// Mutation (run): `reset` only clearing the buffer (the run left
-/// `Assembling`) → not counted → fails.
 #[test]
 fn a_reset_drops_the_open_message() {
     let body = payload(30);
@@ -323,10 +284,6 @@ fn a_reset_drops_the_open_message() {
 
 /// **A packet that is not a well-formed SysEx7 packet is `Held` and has no
 /// effect**, even inside an open run; a packet of another type is `NotSysex`.
-///
-/// Mutation (run): `push` answering `NotSysex` for an undecodable type-3
-/// packet -> the first two assertions fail; letting a malformed packet reach
-/// the run -> the message does not complete whole -> fails.
 #[test]
 fn a_malformed_packet_is_held_and_ignored() {
     let body = payload(20);
@@ -345,9 +302,6 @@ fn a_malformed_packet_is_held_and_ignored() {
 
 /// **A completed message is a checked `SysexMessage`**, and its payload is
 /// the bytes between the delimiters.
-///
-/// Mutation (run): `message` returning the range one byte short -> the
-/// `expect` in `message` panics.
 #[test]
 fn a_completed_message_is_a_sysex_message() {
     let body = payload(40);
@@ -364,9 +318,6 @@ fn a_completed_message_is_a_sysex_message() {
 
 /// **A new block forgets the last block's completed messages** and keeps the
 /// buffer's use bounded.
-///
-/// Mutation (run): `begin_block` leaving `len` alone when no run is open ->
-/// `bytes()` still holds the old message -> fails.
 #[test]
 fn a_new_block_forgets_the_completed_messages() {
     let mut asm = assembler();

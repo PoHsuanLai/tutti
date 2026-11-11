@@ -595,14 +595,6 @@ knowing because the same shapes recur:
   arbitrary, so "take the first file" hands the loader an import library and
   reports a healthy plugin as corrupt. See the bundle rule below.
 
-**One live platform difference remains, and it is not a bug.**
-`tutti-nodes`'s `render_is_bit_identical_to_the_audionode_era` is gated off MSVC.
-The digest pins this crate's DSP against a refactor; it cannot pin it across C
-runtimes. Every operation in `generate_click` is one IEEE-754 requires to be
-correctly rounded *except* `sin`, which is libm quality-of-implementation and
-differs in the last ulp between MSVC's CRT and glibc. The portable properties
-are asserted everywhere.
-
 ## Check Windows before you push, not after
 
 **You do not need a Windows machine, and both halves work on a stock Linux

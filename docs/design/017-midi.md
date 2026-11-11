@@ -1894,6 +1894,60 @@ running status): 16 MB, 4 million events, read 222 ms (55 ns an event, against 6
 for `midly` without `parallel`), write 33 ms (8 ns an event, against 29 ns); 16 KB,
 4000 events, read 174 us, write 31 us. A third of the read is `Midi1Parser::message`.
 
+**Stage 6c, done: an SMF converts to a Clip File.** `MidiFile::to_clip` (`tutti-midi-file/src/file/to_clip.rs`)
+turns a format 0 or 1 SMF into a Clip File as M2-116 intends: section 3.3, "Messages
+Replace the Former Meta Events in SMF v1", says the meta events "have been replaced by new
+MIDI messages in the UMP Format", mostly Flex Data (type D), and Appendix B lists them.
+It returns `Converted { clip, dropped }`: a conversion that returned the clip alone would
+lose events without a word, and one that failed on the first would make a file with one
+marker unconvertible, so each event the clip lacks comes back as a `Dropped { track,
+tick, event, reason: DropReason }` in clip order. A format 2 file is `ToClipError::Sequential`
+(a clip is one sequence: one Start of Clip, one End of Clip, section 7) and a Clip File
+`ToClipError::AlreadyClip`. Fields are M2-104 section 7.5's, as `tutti_ump::Flex` models them.
+
+| SMF | Clip File |
+|---|---|
+| channel message | the same `Midi1` packet, group 0 |
+| Set Tempo `FF 51`, us per quarter | Flex Set Tempo, `us * 100` (10 ns units per quarter; 24 bits times 100 fits `u32`) |
+| Time Signature `FF 58` `nn dd cc bb` | Flex Set Time Signature (`nn`, `dd`, `bb`) then Set Metronome (`cc` clocks per click; accents and subdivisions 0, "none") |
+| Key Signature `FF 59` `sf mi` | Flex Set Key Signature on the group: `sf` sharps or flats, and the tonic's letter (the field has no accidental or mode: the circle of fifths F C G D A E B at `sf + 1`, a minor key's from `sf + 3`, so 3 sharps minor is F) |
+| Copyright `FF 02` | Flex Copyright Notice |
+| Lyric `FF 05` | Flex Lyrics |
+| Track Name `FF 03`, format 0 or track 0 of format 1 | Flex Composition Name: SMF 1.0 section 3.3, the first track's name is the sequence's |
+| Text `FF 01` | Flex Unknown Metadata Text (M2-104 Table 16: the message for text of no named kind) |
+| `F0` event, complete 7-bit `F0 .. F7` | SysEx7 packets (`SysexMessage::packets`) |
+| division | the DCTPQ; deltas carry over as ticks |
+| End of Track | End of Clip at the longest track's end |
+
+Long text is split over Flex packets by `tutti_ump::flex_text_packets` (12 bytes a
+packet, Start, Continue, End, zero padded; a text with a NUL is refused as zero is the
+padding). Format 1 merges by tick, ties in track order then the track's own, the rule of
+`MidiFile::events`. Placement follows sections 7.1.1 and 7.1.2: at tick 0 the Set Tempo
+messages come first, then the Set Time Signature messages (each with its Set Metronome),
+then the rest, all in the Clip Sequence Data right after Start of Clip (the header stays
+empty); a file with no Set Tempo at tick 0 gets the SMF default 120 bpm and one with no
+Time Signature 4/4 with 24 clocks and 8 32nds (SMF 1.0 section 3.3: "If no tempo is
+specified, 120 beats per minute is assumed", 4/4 likewise), so the clip states what an
+SMF reader assumed. A later tempo or signature stays on its tick: "where MIDI clocks
+would be located" and "the beginning of a bar" are asks of the author's grid, and
+moving an event would change the music.
+
+No successor (`DropReason`), each reported with its tick: Sequence Number, Marker, Cue
+Point, Instrument, Program and Device Name, SMPTE Offset, Sequencer Specific, any
+other meta event, and an `F7` escape (`NoSuccessor`: Appendix B lists no message for
+them; SMPTE Offset and Extended MIDI Time Code are listed there, but `tutti-ump` models
+neither); Channel Prefix and MIDI Port Prefix (`ReplacedByAddressing`: the UMP carries a
+channel in the packet and a port as a group, and every meta message here is addressed
+to the group); the name of any track but the first (`TrackName`: a clip has no tracks);
+a text that is not UTF-8 or has a NUL (`TextNotUtf8`, `TextHasNul`); a Key Signature
+beyond 7 sharps or flats and a Time Signature whose denominator power is 0
+(`KeySignatureOutOfRange`, `WholeNoteDenominator`: the Flex fields hold no such value,
+and 0 reads "non-standard"); a `F0` event that is not one complete 7-bit message
+(`SysexNotCompleteSevenBit`: a divided message and its `F7` continuations are each
+reported, not joined). Not settled from the specs in hand: whether M2-104's Set Metronome
+reads 0 in the accent and subdivision fields as "none" (assumed from the field names), and
+the encoding of Flex text (UTF-8 assumed).
+
 ## 10. Stages
 
 Each stage lands on its own, with renders bit-identical except where a stage names

@@ -847,6 +847,7 @@ list (normal and build edges; dev-dependencies may go anywhere).
   public signature, field or error, and no file but `read.rs` names `winnow`
   (`scripts/check-layout.sh`, like symphonia in `tutti-codec`). A test builds files from
   `tests/support`'s encoder written from the spec, not from the crate's own writer.
+  `MidiFile::to_clip` (doc 017 stage 6c) converts a format 0 or 1 SMF to a Clip File, its meta events to Flex Data (M2-116 section 3.3, Appendix B) and everything with no UMP form returned beside the clip as `Converted::dropped`, never lost silently.
 - `tutti-midi-hardware` keeps every module private but `test_support` (CI runs the
   per-module path gate on it) and re-exports none of `tutti-midi-runtime`'s sync
   types: `MidiClockDecoder`, `MtcDecoder` and `SmpteTimecode` are the runtime's.

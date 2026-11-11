@@ -200,6 +200,14 @@ impl FileEvent {
 /// file put it.
 #[derive(Clone, Debug, PartialEq, Eq, Default)]
 pub struct Track {
+    /// A Clip File's configuration header (M2-116 section 6): the messages
+    /// between the file header and Start of Clip that configure a receiver
+    /// (Set Profile On, Bank Select, Program Change, volume, System
+    /// Exclusive, and at most one Set Tempo and one Set Time Signature), in
+    /// order. They are *not* events of the sequence and do not sound at its
+    /// start. Their ticks are the header's own clock, counted from the DCTPQ;
+    /// the leading Set Profile On messages are at 0. Empty for an SMF.
+    pub header: Vec<(Tick, FileEvent)>,
     /// The events, in file order. Their ticks do not decrease.
     pub events: Vec<(Tick, FileEvent)>,
     /// Where the track ends: an SMF's End of Track, a Clip File's End of
@@ -211,7 +219,11 @@ impl Track {
     /// A track of `events`, ending at the last of them.
     pub fn new(events: Vec<(Tick, FileEvent)>) -> Self {
         let end = events.last().map_or(Tick(0), |&(tick, _)| tick);
-        Self { events, end }
+        Self {
+            header: Vec::new(),
+            events,
+            end,
+        }
     }
 
     /// The track's name: its first Track Name event, if it is UTF-8 text.
@@ -396,16 +408,20 @@ impl MidiFile {
         Self::build(Container::Smf(format), ticks_per_quarter, tracks)
     }
 
-    /// A Clip File of division `ticks_per_quarter` over one sequence.
+    /// A Clip File of division `ticks_per_quarter` over one sequence and its
+    /// [`header`](Track::header).
     ///
     /// # Errors
     ///
-    /// [`Error::InvalidConfig`] if the division is zero, the events are out of
-    /// order or past the track's end, two are further apart than a `u32`, or
-    /// an event is not a packet (`SysEx`, `Escape` and `Meta` are SMF's) or is
-    /// the file's own structure (a Delta Clockstamp, the DCTPQ, a Null,
-    /// Start or End of Clip); [`Error::Tempo`] if the Set Tempo messages do
-    /// not make a [`TempoMap`].
+    /// [`Error::InvalidConfig`] if the division is zero, the events or the
+    /// header's are out of order or the events past the track's end, two are
+    /// further apart than a `u32`, or an event is not a packet (`SysEx`,
+    /// `Escape` and `Meta` are SMF's) or is the file's own structure (a Delta
+    /// Clockstamp, the DCTPQ, a Null, Start or End of Clip);
+    /// [`Error::Clip`] if the header breaks a rule of sections 6.1 to 6.1.2
+    /// (a second Set Tempo or Set Time Signature, one misplaced);
+    /// [`Error::Tempo`] if the Set Tempo messages do not make a
+    /// [`TempoMap`].
     pub fn clip(ticks_per_quarter: u16, track: Track) -> Result<Self> {
         Self::build(Container::Clip, ticks_per_quarter, vec![track])
     }
@@ -435,6 +451,31 @@ impl MidiFile {
             Container::Clip => u64::from(u32::MAX),
         };
         for (i, track) in tracks.iter().enumerate() {
+            if !track.header.is_empty() {
+                if container != Container::Clip {
+                    return invalid(format!("track {i}: an SMF has no configuration header"));
+                }
+                let mut at = Tick(0);
+                let mut packets = Vec::with_capacity(track.header.len());
+                for (tick, event) in &track.header {
+                    if *tick < at || tick.0 - at.0 > max_gap {
+                        return invalid(format!(
+                            "header: tick {} out of order or too far on",
+                            tick.0
+                        ));
+                    }
+                    at = *tick;
+                    if let Some(why) = refuses(container, event) {
+                        return invalid(format!("header: {why}"));
+                    }
+                    match event {
+                        FileEvent::Message(m) => packets.push((tick.0, Ump::from(*m))),
+                        FileEvent::Unknown(u) => packets.push((tick.0, u.0)),
+                        _ => {}
+                    }
+                }
+                clip_file::header_rules(&packets, clip_file::leading_profile_len(&packets))?;
+            }
             let mut at = Tick(0);
             for (tick, event) in &track.events {
                 if *tick < at {
@@ -504,19 +545,21 @@ impl MidiFile {
             }
             Some(MidiFileKind::ClipFile) => {
                 let clip = clip_file::parse(bytes)?;
-                let events = clip
-                    .events
-                    .into_iter()
-                    .map(|(tick, ump)| {
-                        let event = match tutti_ump::decode(ump) {
-                            Ok(message) => FileEvent::Message(message),
-                            Err(unknown) => FileEvent::Unknown(unknown),
-                        };
-                        (Tick(tick), event)
-                    })
-                    .collect();
+                let events = |packets: Vec<(u64, Ump)>| -> Vec<(Tick, FileEvent)> {
+                    packets
+                        .into_iter()
+                        .map(|(tick, ump)| {
+                            let event = match tutti_ump::decode(ump) {
+                                Ok(message) => FileEvent::Message(message),
+                                Err(unknown) => FileEvent::Unknown(unknown),
+                            };
+                            (Tick(tick), event)
+                        })
+                        .collect()
+                };
                 let track = Track {
-                    events,
+                    header: events(clip.header),
+                    events: events(clip.events),
                     end: Tick(clip.end),
                 };
                 Self::build(Container::Clip, clip.ticks_per_quarter, vec![track])
@@ -552,19 +595,21 @@ impl MidiFile {
             Container::Smf(format) => smf::write(format, self.ticks_per_quarter, &self.tracks),
             Container::Clip => {
                 let track = &self.tracks[0];
-                let events: Vec<(u64, Ump)> = track
-                    .events
-                    .iter()
-                    .filter_map(|(tick, event)| match event {
-                        FileEvent::Message(m) => Some((tick.0, Ump::from(*m))),
-                        FileEvent::Unknown(u) => Some((tick.0, u.0)),
-                        // Refused at construction: not a packet.
-                        _ => None,
-                    })
-                    .collect();
+                let packets = |events: &[(Tick, FileEvent)]| -> Vec<(u64, Ump)> {
+                    events
+                        .iter()
+                        .filter_map(|(tick, event)| match event {
+                            FileEvent::Message(m) => Some((tick.0, Ump::from(*m))),
+                            FileEvent::Unknown(u) => Some((tick.0, u.0)),
+                            // Refused at construction: not a packet.
+                            _ => None,
+                        })
+                        .collect()
+                };
                 Ok(clip_file::write(
                     self.ticks_per_quarter,
-                    &events,
+                    &packets(&track.header),
+                    &packets(&track.events),
                     track.end.0,
                 ))
             }
@@ -649,7 +694,8 @@ impl MidiFile {
         self.beat_at(end)
     }
 
-    /// Every event of the file's one timeline as `(position, event)`, in
+    /// Every event of the file's one timeline (a Clip File's
+    /// [`header`](Track::header) is not on it) as `(position, event)`, in
     /// order: the tracks merged by tick, ties in track order and then in the
     /// track's own order. `None` for a format 2 file, whose sequences are
     /// independent and have no common timeline to merge on: read each
@@ -711,6 +757,17 @@ fn tempo_map(container: Container, ticks_per_quarter: u16, tracks: &[Track]) -> 
     let default = Bpm::of(120.0);
     let mut changes: Vec<(Tick, Bpm)> = Vec::new();
     for track in tracks {
+        // A Clip File's header Set Tempo counts from the start of the
+        // sequence: the header runs before it, so its tempo is the one at tick
+        // 0 (a Set Tempo at tick 0 of the sequence, later in the stream,
+        // overrides it).
+        for (_, event) in &track.header {
+            if let (Container::Clip, FileEvent::Message(message)) = (container, event)
+                && let Some(bpm) = flex::tempo(message)
+            {
+                changes.push((Tick(0), bpm));
+            }
+        }
         for (tick, event) in &track.events {
             let bpm = match (container, event) {
                 (Container::Smf(_), FileEvent::Meta(meta)) => meta.bpm(),

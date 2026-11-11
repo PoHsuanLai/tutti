@@ -743,6 +743,7 @@ fn events_out_of_order_are_refused() {
     let out_of_order = Track {
         events: vec![(Tick(10), on(0, 60, 1)), (Tick(5), off(0, 60, 1))],
         end: Tick(10),
+        ..Track::default()
     };
     assert!(matches!(
         MidiFile::smf(SmfFormat::SingleTrack, TPQ, vec![out_of_order]),
@@ -752,6 +753,7 @@ fn events_out_of_order_are_refused() {
     let early_end = Track {
         events: vec![(Tick(10), on(0, 60, 1))],
         end: Tick(5),
+        ..Track::default()
     };
     assert!(matches!(
         MidiFile::smf(SmfFormat::SingleTrack, TPQ, vec![early_end]),

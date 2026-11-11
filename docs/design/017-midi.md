@@ -1677,7 +1677,7 @@ What is built, and where it differs from the sketch this section started from:
 
 ```rust
 pub struct MidiFile { /* private */ }          // container, division, tracks, tempo maps
-pub struct Track { pub events: Vec<(Tick, FileEvent)>, pub end: Tick }  // name() is derived
+pub struct Track { pub header: Vec<(Tick, FileEvent)>, pub events: Vec<(Tick, FileEvent)>, pub end: Tick }  // name() is derived; header is a Clip File's
 
 pub enum FileEvent {
     Message(Message),      // SMF: Midi1 on group 0. Clip File: as stored.
@@ -1758,15 +1758,39 @@ impl Track { pub fn notes(&self) -> impl Iterator<Item = PairedNote>; }
   transport.
 - **Integer ticks.** Events keep their tick and the file its division, so a write is
   exact with no rounding, and `events()` gives callers `Beat`.
-- **The Clip File reader checks structure order** (M2-116: DCTPQ first and once,
-  Start of Clip before any event, End of Clip last), one error variant and one test per
-  rule: `ClipFileError::DctpqNotFirst`, `DuplicateDctpq`, `EventBeforeStartOfClip`,
-  `DuplicateStartOfClip` and (the existing) `TrailingData`, beside the missing and zero
-  cases. A Delta Clockstamp, a Null and a JR message are not content and may come
-  before the DCTPQ. Every message other than Start and End of Clip and the DCTPQ is an
-  event, so a Stream message (an endpoint name, say) before Start of Clip is refused
-  with the rest; if a registered header message turns up that the format allows
-  there, it is a case to add.
+- **The Clip File reader checks structure order** (M2-116 v1.0 sections 6 to 7.3), one
+  error variant and one test per rule. Everything from the file header up to the DCS of
+  Start of Clip is the **Clip Configuration Header** (section 6), kept as
+  `Track::header` (ticks on the header's own clock, from the DCTPQ; not on `events()`,
+  and not sounding at the sequence's start):
+  - Section 6: Set Profile On messages (a Universal SysEx `7E dev 0D 22`, recognised
+    packet by packet) may lead the file with no DCS; the DCTPQ follows them, behind a DCS
+    of 0. Any other message before the DCTPQ is `DctpqNotFirst`; a second DCTPQ is
+    `DuplicateDctpq`. The writer puts the leading tick-0 Set Profile On packets back
+    before the DCTPQ.
+  - Section 6, 6.3: any other UMP messages between the DCTPQ and Start of Clip
+    (Program Change, Control Change, System Exclusive, ...) are header messages, each
+    behind its own DCS, kept in order with their delta times and written back. They are
+    not an error.
+  - Sections 6.1 to 6.1.2: at most one Set Tempo and one Set Time Signature
+    (`DuplicateHeaderTempo`, `DuplicateHeaderTimeSignature`). The "shall"s on placement
+    are refused too: the Set Tempo must be the first message after the DCTPQ at a delta
+    of 0 or sharing the DCTPQ's DCS (`MisplacedHeaderTempo`), and the Set Time Signature
+    right behind it, or first if there is no Set Tempo (`MisplacedHeaderTimeSignature`).
+    The header's Set Tempo is the tempo from tick 0 of the sequence (the header's clock
+    runs before Start of Clip, so its tick is not a sequence tick); a Set Tempo in the
+    sequence is an ordinary change, and one at tick 0 overrides the header's. The
+    constructor `MidiFile::clip` holds a header to the same rules (`Error::Clip`).
+  - Section 7: Start of Clip is the first UMP of the sequence data (`MissingStartOfClip`,
+    `DuplicateStartOfClip`); section 7.3: End of Clip is last and nothing follows it
+    (`TrailingData`, `MissingEndOfClip`). The DCS before End of Clip is the clip's
+    length (`Track::end`).
+  - Section 3.2.2: a gap past 1,048,575 ticks is written as a DCS of 1,048,575 and a
+    Null message, once per restart, then the remainder's DCS (pinned by word in
+    `a_long_gap_is_written_as_dcs_then_a_null`).
+  A Delta Clockstamp, a Null and a JR message are not content and may come anywhere
+  before the DCTPQ. The refused-event-before-Start-of-Clip rule of the first draft of
+  this stage was wrong: such a message is a header message.
 - **A lossless round trip** is the test (`tests/smf_model.rs`, `tests/clip_model.rs`):
   a file read and written holds the same events, including SysEx and meta, over hand-built
   files with every event kind in formats 0, 1 and 2, checked also by a decoder written

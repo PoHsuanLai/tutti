@@ -814,8 +814,9 @@ list (normal and build edges; dev-dependencies may go anywhere).
   (`Error::MidiUnsupportedTiming`); a cut-off file is `Error::Truncated`. The file layer
   does not translate (an SMF message is `Midi1` on group 0, a velocity-0 Note On stays
   one). The Clip File codec under it (`clip_file.rs`) is private; its structure rules
-  (DCTPQ first and once, Start of Clip before any event, End of Clip last) are one
-  `ClipFileError` variant each. No public signature names `midly`; its `strict`
+  (M2-116 sections 6 to 7.3: Set Profile On then the DCTPQ once, a configuration header
+  kept as `Track::header` with at most one Set Tempo and one Set Time Signature placed as
+  the spec says, Start of Clip, End of Clip last) are one `ClipFileError` variant each. No public signature names `midly`; its `strict`
   feature is on and `parallel` is off (measured, doc 017). A test builds files from
   `tests/support`'s encoder written from the spec, not from the crate's own writer.
 - `tutti-midi-hardware` keeps every module private but `test_support` (CI runs the

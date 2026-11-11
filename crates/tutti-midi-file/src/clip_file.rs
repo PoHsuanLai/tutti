@@ -5,9 +5,17 @@
 //! sections 4 to 7, all big-endian):
 //!
 //! ```text
-//! ["SMF2CLIP" 8 bytes] [DCS=0] [DCTPQ] [DCS] [StartOfClip]
-//!   [ (DCS * UMP)* ] [DCS] [EndOfClip]
+//! ["SMF2CLIP" 8 bytes] [Set Profile On]* [DCS=0] [DCTPQ] [ (DCS * UMP)* ]
+//!   [DCS] [StartOfClip] [ (DCS * UMP)* ] [DCS] [EndOfClip]
 //! ```
+//!
+//! Everything from the file header up to the DCS of Start of Clip is the
+//! **Clip Configuration Header** (M2-116 section 6): leading Set Profile On
+//! messages (no DCS), the DCTPQ, and any UMP messages that configure a
+//! receiver (Bank Select, Program Change, volume, System Exclusive), each
+//! behind its own DCS. It holds at most one Set Tempo and one Set Time
+//! Signature (sections 6.1 to 6.1.2). The rest, from Start of Clip to End of
+//! Clip, is the Sequence Data (section 7).
 //!
 //! Every UMP is preceded by a **Delta Clockstamp** (DCS) giving the ticks since
 //! the previous event; the tick unit is declared once by the **DCTPQ** (Delta
@@ -21,7 +29,10 @@
 
 use std::vec::Vec;
 
-use tutti_ump::{DeltaTicks, Message, Stream, Ump, Utility, decode, split_stream};
+use tutti_ump::{
+    DeltaTicks, Flex, Message, Stream, Sysex7Packet, SysexStatus, Ump, Utility, decode,
+    split_stream,
+};
 
 /// The 8-byte file header: ASCII "SMF2CLIP" (M2-116 section 5).
 pub(crate) const CLIP_FILE_MAGIC: [u8; 8] = *b"SMF2CLIP";
@@ -32,6 +43,11 @@ pub(crate) const CLIP_FILE_MAGIC: [u8; 8] = *b"SMF2CLIP";
 pub(crate) struct ParsedClip {
     /// Ticks per quarter note (the DCTPQ), never zero.
     pub(crate) ticks_per_quarter: u16,
+    /// The header's messages after the file header, as `(tick, packet)`: the
+    /// leading Set Profile On packets at 0, then each message behind its DCS,
+    /// ticks counted from the DCTPQ (the header's own clock, which runs
+    /// before the sequence).
+    pub(crate) header: Vec<(u64, Ump)>,
     /// Every packet between Start of Clip and End of Clip that is not itself
     /// structure (a DCS, a Null, a JR message, the DCTPQ), at its absolute
     /// tick, in file order.
@@ -44,11 +60,14 @@ pub(crate) struct ParsedClip {
 /// "this isn't a clip file" from "this clip file is malformed" so a caller can
 /// react differently (e.g. try another importer vs. report corruption).
 ///
-/// The structure rules are one variant each: [`DctpqNotFirst`](Self::DctpqNotFirst),
-/// [`DuplicateDctpq`](Self::DuplicateDctpq),
-/// [`EventBeforeStartOfClip`](Self::EventBeforeStartOfClip),
-/// [`DuplicateStartOfClip`](Self::DuplicateStartOfClip) and
-/// [`TrailingData`](Self::TrailingData).
+/// The structure rules are one variant each: [`DctpqNotFirst`](Self::DctpqNotFirst)
+/// and [`DuplicateDctpq`](Self::DuplicateDctpq) (section 6),
+/// [`DuplicateHeaderTempo`](Self::DuplicateHeaderTempo),
+/// [`MisplacedHeaderTempo`](Self::MisplacedHeaderTempo),
+/// [`DuplicateHeaderTimeSignature`](Self::DuplicateHeaderTimeSignature) and
+/// [`MisplacedHeaderTimeSignature`](Self::MisplacedHeaderTimeSignature)
+/// (sections 6.1 to 6.1.2), [`DuplicateStartOfClip`](Self::DuplicateStartOfClip)
+/// (section 7) and [`TrailingData`](Self::TrailingData) (section 7.3).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
 #[non_exhaustive]
 pub enum ClipFileError {
@@ -72,8 +91,9 @@ pub enum ClipFileError {
     /// divided by this.
     #[error("clip file declares zero ticks per quarter note")]
     ZeroDctpq,
-    /// The DCTPQ is not the first message of the file. M2-116 section 6: the
-    /// header opens with it, and the sequence data follows.
+    /// A message other than a Set Profile On comes before the DCTPQ. M2-116
+    /// section 6: the DCTPQ follows the Set Profile On messages, or the file
+    /// header if there are none.
     #[error("clip file has a message before its DCTPQ")]
     DctpqNotFirst,
     /// A second DCTPQ. The tick unit is declared once.
@@ -86,10 +106,22 @@ pub enum ClipFileError {
     /// A second Start of Clip. Section 7 asks for one.
     #[error("clip file has more than one Start of Clip message")]
     DuplicateStartOfClip,
-    /// A message of the sequence before its Start of Clip. Section 7 makes
-    /// Start of Clip the first UMP message of the sequence data.
-    #[error("clip file has a message before its Start of Clip")]
-    EventBeforeStartOfClip,
+    /// A second Set Tempo in the header. Section 6.1: the header holds at
+    /// most one.
+    #[error("clip header has more than one Set Tempo")]
+    DuplicateHeaderTempo,
+    /// A second Set Time Signature in the header. Section 6.1.2: at most one.
+    #[error("clip header has more than one Set Time Signature")]
+    DuplicateHeaderTimeSignature,
+    /// The header's Set Tempo is not the first message after the DCTPQ, or its
+    /// Delta Clockstamp is not 0. Section 6.1.1: "shall" be first, with a DCS
+    /// of 0 or sharing the DCTPQ's.
+    #[error("clip header's Set Tempo is not first after the DCTPQ at delta 0")]
+    MisplacedHeaderTempo,
+    /// The header's Set Time Signature does not immediately follow the Set
+    /// Tempo (or the DCTPQ, in a header with no Set Tempo). Section 6.1.2.
+    #[error("clip header's Set Time Signature does not immediately follow the Set Tempo")]
+    MisplacedHeaderTimeSignature,
     /// No End of Clip message. Section 7: "A Clip Sequence Data shall include
     /// one End of Clip message as the last UMP message."
     #[error("clip file has no End of Clip message")]
@@ -122,6 +154,11 @@ pub(crate) fn parse(bytes: &[u8]) -> Result<ParsedClip, ClipFileError> {
     let mut content = false;
     let mut started = false;
     let mut end = None;
+    // The header: Set Profile On packets before the DCTPQ (counted by `pre`),
+    // then what follows the DCTPQ up to Start of Clip.
+    let mut header: Vec<(u64, Ump)> = Vec::new();
+    let mut pre = 0;
+    let mut profile = ProfileScan::default();
 
     // Words consumed so far: `split_stream` ends at a truncated packet without
     // saying so, and the words it left are what `taken` falls short of.
@@ -149,6 +186,10 @@ pub(crate) fn parse(bytes: &[u8]) -> Result<ParsedClip, ClipFileError> {
                             return Err(ClipFileError::DctpqNotFirst);
                         }
                         ticks_per_quarter = Some(ticks);
+                        // The DCTPQ's DCS is 0 and starts the header's clock.
+                        tick = 0;
+                        pending_delta = 0;
+                        banked_delta = 0;
                     }
                     // NOOP = the Null message that restarts the delta count
                     // (M2-116 section 3.2.2). Bank what the preceding DCS
@@ -167,8 +208,10 @@ pub(crate) fn parse(bytes: &[u8]) -> Result<ParsedClip, ClipFileError> {
                 if started {
                     return Err(ClipFileError::DuplicateStartOfClip);
                 }
+                header_rules(&header, pre)?;
                 started = true;
                 content = true;
+                tick = 0;
                 // The DCS before it is not an event's delta: the sequence
                 // starts at tick 0 however the file spells it.
                 pending_delta = 0;
@@ -190,9 +233,27 @@ pub(crate) fn parse(bytes: &[u8]) -> Result<ParsedClip, ClipFileError> {
             }
             _ => {}
         }
-        // A real event, which Start of Clip must precede.
+        // Before the DCTPQ only Set Profile On messages are allowed (section
+        // 6), with no DCS; anything else is content the DCTPQ must not follow (a
+        // Set Profile On after such content is kept, and the DCTPQ's arrival
+        // names the error).
+        if ticks_per_quarter.is_none() {
+            if decode(ev).is_ok_and(|m| profile.accepts(&m)) {
+                header.push((0, ev));
+                pre += 1;
+            } else {
+                content = true;
+            }
+            continue;
+        }
+        // After the DCTPQ and before Start of Clip: a header message, on the
+        // header's own clock.
         if !started {
-            return Err(ClipFileError::EventBeforeStartOfClip);
+            tick += u64::from(banked_delta) + u64::from(pending_delta);
+            header.push((tick, ev));
+            pending_delta = 0;
+            banked_delta = 0;
+            continue;
         }
         content = true;
         // Its delta is the current count plus everything banked by NOOP
@@ -222,24 +283,123 @@ pub(crate) fn parse(bytes: &[u8]) -> Result<ParsedClip, ClipFileError> {
 
     Ok(ParsedClip {
         ticks_per_quarter,
+        header,
         events,
         end,
     })
 }
 
-/// Serializes a clip: header, DCTPQ, Start of Clip, each event behind its
-/// Delta Clockstamp, and End of Clip behind the DCS that makes the clip `end`
-/// ticks long. `events` are absolute ticks in order, none past `end`, and no
-/// two more than `u32::MAX` apart (the caller checks; [`MidiFile`] does).
+/// Tracks whether the packets it is fed are a Set Profile On message (MIDI-CI
+/// sub-ID 2 `0x22`, a Universal SysEx `7E <device> 0D 22 ...`), packet by
+/// packet: a message's first packet says what it is, and its Continue and End
+/// packets belong to it.
+#[derive(Default)]
+struct ProfileScan {
+    open: bool,
+}
+
+impl ProfileScan {
+    fn accepts(&mut self, message: &Message) -> bool {
+        let Message::Sysex7(_, packet) = message else {
+            self.open = false;
+            return false;
+        };
+        let is_set_profile_on = |p: &Sysex7Packet| matches!(p.data(), [0x7E, _, 0x0D, 0x22, ..]);
+        match packet.status() {
+            SysexStatus::Complete => {
+                self.open = false;
+                is_set_profile_on(packet)
+            }
+            SysexStatus::Start => {
+                self.open = is_set_profile_on(packet);
+                self.open
+            }
+            SysexStatus::Continue => self.open,
+            SysexStatus::End => std::mem::take(&mut self.open),
+        }
+    }
+}
+
+/// How many packets at the head of `header` are Set Profile On messages at
+/// tick 0: the ones a write puts before the DCTPQ, where they carry no DCS.
+pub(crate) fn leading_profile_len(header: &[(u64, Ump)]) -> usize {
+    let mut scan = ProfileScan::default();
+    header
+        .iter()
+        .take_while(|(tick, ump)| *tick == 0 && decode(*ump).is_ok_and(|m| scan.accepts(&m)))
+        .count()
+}
+
+/// The header's own rules (M2-116 sections 6.1 to 6.1.2) over `header`, whose
+/// first `pre` packets precede the DCTPQ: at most one Set Tempo and one Set
+/// Time Signature; the Set Tempo first after the DCTPQ at delta 0; the Set
+/// Time Signature right behind it (first, if there is no Set Tempo).
+///
+/// # Errors
+///
+/// The [`ClipFileError`] naming the rule broken.
+pub(crate) fn header_rules(header: &[(u64, Ump)], pre: usize) -> Result<(), ClipFileError> {
+    let (mut tempo, mut signature) = (false, false);
+    for (i, (tick, ump)) in header[pre..].iter().enumerate() {
+        match decode(*ump) {
+            Ok(Message::Flex(_, Flex::SetTempo(_))) => {
+                if tempo {
+                    return Err(ClipFileError::DuplicateHeaderTempo);
+                }
+                if i != 0 || *tick != 0 {
+                    return Err(ClipFileError::MisplacedHeaderTempo);
+                }
+                tempo = true;
+            }
+            Ok(Message::Flex(_, Flex::SetTimeSignature(_))) => {
+                if signature {
+                    return Err(ClipFileError::DuplicateHeaderTimeSignature);
+                }
+                if i != usize::from(tempo) {
+                    return Err(ClipFileError::MisplacedHeaderTimeSignature);
+                }
+                signature = true;
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+/// Serializes a clip: the leading Set Profile On packets (no DCS), the DCTPQ,
+/// the rest of the header, Start of Clip, each event behind its Delta
+/// Clockstamp, and End of Clip behind the DCS that makes the clip `end` ticks
+/// long. `header` and `events` are absolute ticks in order (the header's on
+/// its own clock), `events` none past `end`, no two more than `u32::MAX` apart
+/// (the caller checks; [`MidiFile`] does).
 ///
 /// [`MidiFile`]: crate::MidiFile
-pub(crate) fn write(ticks_per_quarter: u16, events: &[(u64, Ump)], end: u64) -> Vec<u8> {
-    let mut out = Vec::with_capacity(8 + (events.len() + 4) * 8);
+pub(crate) fn write(
+    ticks_per_quarter: u16,
+    header: &[(u64, Ump)],
+    events: &[(u64, Ump)],
+    end: u64,
+) -> Vec<u8> {
+    let mut out = Vec::with_capacity(8 + (header.len() + events.len() + 4) * 8);
     out.extend_from_slice(&CLIP_FILE_MAGIC);
+
+    // Set Profile On messages come first and carry no DCS (section 6).
+    let pre = leading_profile_len(header);
+    for (_, ump) in &header[..pre] {
+        push_words(&mut out, ump.words());
+    }
 
     // DCTPQ declares the tick unit (preceded by a zero DCS per section 3.2.1).
     push_words(&mut out, delta_clockstamp(0).words());
     push_words(&mut out, dctpq(ticks_per_quarter).words());
+
+    // The rest of the header, each message behind its DCS.
+    let mut at = 0u64;
+    for &(tick, ump) in &header[pre..] {
+        push_delta(&mut out, tick.saturating_sub(at));
+        push_words(&mut out, ump.words());
+        at = tick;
+    }
 
     // Start of Clip (preceded by a zero DCS: the sequence begins here).
     push_words(&mut out, delta_clockstamp(0).words());

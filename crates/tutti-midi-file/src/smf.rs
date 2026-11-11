@@ -132,6 +132,7 @@ fn track_of(track: &[TrackEvent<'_>]) -> Track {
         events.push((Tick(tick), kind));
     }
     Track {
+        header: Vec::new(),
         end: Tick(end.unwrap_or(tick)),
         events,
     }

@@ -8,10 +8,19 @@
 //! | mutation | fails |
 //! |---|---|
 //! | the `ticks_per_quarter.is_some()` check of the DCTPQ arm removed | `a_second_dctpq_is_refused` |
-//! | the `content` check of the DCTPQ arm removed | `a_dctpq_after_a_message_is_refused` |
-//! | the `started` check before an event removed | `an_event_before_start_of_clip_is_refused` |
-//! | the `started` check of the Start of Clip arm removed | `a_second_start_of_clip_is_refused` |
-//! | the `taken < words.len()` check of the End of Clip arm removed | `data_after_end_of_clip_is_refused` |
+//! | the `content` check of the DCTPQ arm removed | `a_dctpq_after_a_message_is_refused`, `a_message_before_the_dctpq_is_refused` |
+//! //! | the `started` check of the Start of Clip arm removed | `a_second_start_of_clip_is_refused` |
+//! | `ProfileScan::accepts` refuses every packet | `set_profile_on_before_the_dctpq_is_accepted` |
+//! | the header branch (`if !started`) drops the message instead of keeping it | `a_header_with_program_change_cc_and_sysex_round_trips` |
+//! | `write` puts the leading Set Profile On packets after the DCTPQ | `set_profile_on_before_the_dctpq_is_accepted` |
+//! | `header_rules` without the `tempo` duplicate check | `two_header_set_tempos_are_refused` |
+//! | `header_rules` without the `i != 0 \|\| *tick != 0` check | `a_header_set_tempo_not_first_or_not_at_delta_zero_is_misplaced` |
+//! | `header_rules` without the `signature` duplicate check | `two_header_time_signatures_are_refused` |
+//! | `header_rules` `i != usize::from(tempo)` replaced by `false` | `a_header_time_signature_must_follow_the_set_tempo_immediately` |
+//! | `tempo_map` ignores `track.header` | `the_header_set_tempo_is_the_tempo_from_the_start_of_the_sequence` |
+//! | `MidiFile::build` skips `header_rules` | `the_constructor_holds_a_header_to_the_same_rules` |
+//! | `push_delta` writes the restart's DCS as `DCS_MAX - 1`, or no NOOP | `a_long_gap_is_written_as_dcs_then_a_null` |
+//! | the `taken < words.len()` of the End of Clip arm removed | `data_after_end_of_clip_is_refused` |
 //! | `MissingStartOfClip` check removed | `a_clip_without_start_of_clip_is_refused` |
 //! | `end` taken as the last event's tick | `the_clip_length_is_the_delta_before_end_of_clip` |
 //! | `push_delta` writes no NOOP restarts (clamps to `DCS_MAX`) | `a_gap_past_the_dcs_field_round_trips` |
@@ -235,21 +244,6 @@ fn a_second_dctpq_is_refused() {
 }
 
 #[test]
-fn an_event_before_start_of_clip_is_refused() {
-    let parts = [
-        dcs(0),
-        dctpq(TPQ),
-        dcs(0),
-        on(60, 1),
-        dcs(0),
-        start(),
-        dcs(0),
-        end(),
-    ];
-    assert_eq!(clip_error(&parts), ClipFileError::EventBeforeStartOfClip);
-}
-
-#[test]
 fn a_second_start_of_clip_is_refused() {
     let mut parts = valid();
     parts.splice(4..4, [dcs(0), start()]);
@@ -435,4 +429,287 @@ fn an_smf_and_a_clip_of_the_same_messages_pair_the_same_notes() {
         b.tracks()[0].notes().collect::<Vec<_>>()
     );
     assert_eq!(a.tracks()[0].events[0], b.tracks()[0].events[0]);
+}
+
+// ---- the configuration header (M2-116 sections 6 to 6.1.2) ----------------
+
+fn sysex7(status: tutti_ump::SysexStatus, data: &[u8]) -> Ump {
+    Message::Sysex7(
+        MidiGroup::FIRST,
+        tutti_ump::Sysex7Packet::new(status, data).unwrap(),
+    )
+    .into()
+}
+
+/// A Set Profile On: Universal SysEx `7E <device> 0D 22 ...` (MIDI-CI).
+fn set_profile_on() -> Ump {
+    sysex7(
+        tutti_ump::SysexStatus::Complete,
+        &[0x7E, 0x7F, 0x0D, 0x22, 1, 2],
+    )
+}
+
+fn program_change() -> Ump {
+    Message::Midi1(
+        Address::first(MidiChannel::FIRST),
+        Voice1::ProgramChange(U7::of(5)),
+    )
+    .into()
+}
+
+fn time_signature() -> Ump {
+    Message::Flex(
+        MidiGroup::FIRST,
+        Flex::SetTimeSignature(tutti_ump::TimeSignature {
+            numerator: 3,
+            denominator: 2,
+            thirty_seconds: 8,
+        }),
+    )
+    .into()
+}
+
+/// A clip whose header after the DCTPQ is `header` (each behind a DCS of 0
+/// unless it is a `dcs`), then Start of Clip, a note and End of Clip.
+fn with_header(header: &[Ump]) -> Vec<Ump> {
+    let mut parts = vec![dcs(0), dctpq(TPQ)];
+    parts.extend_from_slice(header);
+    parts.extend([
+        dcs(0),
+        start(),
+        dcs(0),
+        on(60, 1),
+        dcs(10),
+        off(60),
+        dcs(0),
+        end(),
+    ]);
+    parts
+}
+
+/// Section 6: Set Profile On messages come first, carry no DCS, and the DCTPQ
+/// follows them. Kept in the header, written back before the DCTPQ.
+#[test]
+fn set_profile_on_before_the_dctpq_is_accepted() {
+    let two_packets = [
+        sysex7(
+            tutti_ump::SysexStatus::Start,
+            &[0x7E, 0x7F, 0x0D, 0x22, 1, 2],
+        ),
+        sysex7(tutti_ump::SysexStatus::End, &[3, 4]),
+    ];
+    let mut parts = vec![set_profile_on(), two_packets[0], two_packets[1]];
+    parts.extend(with_header(&[]));
+    let file = MidiFile::from_bytes(&clip(&parts)).unwrap();
+    let header = &file.tracks()[0].header;
+    assert_eq!(header.len(), 3);
+    assert!(header.iter().all(|(t, _)| *t == Tick(0)));
+    // The write puts them before the DCTPQ again, with no DCS between.
+    let written = file.to_bytes().unwrap();
+    let mut expected = MAGIC.to_vec();
+    for ump in [
+        set_profile_on(),
+        two_packets[0],
+        two_packets[1],
+        dcs(0),
+        dctpq(TPQ),
+    ] {
+        for w in ump.words() {
+            expected.extend_from_slice(&w.to_be_bytes());
+        }
+    }
+    assert!(written.starts_with(&expected));
+    assert_eq!(MidiFile::from_bytes(&written).unwrap(), file);
+}
+
+/// Anything else before the DCTPQ is not allowed: a note, or a SysEx that is
+/// not a Set Profile On.
+#[test]
+fn a_message_before_the_dctpq_is_refused() {
+    let mut note_first = vec![dcs(0), on(60, 1)];
+    note_first.extend(with_header(&[]));
+    assert_eq!(clip_error(&note_first), ClipFileError::DctpqNotFirst);
+    let other_sysex = sysex7(tutti_ump::SysexStatus::Complete, &[0x7E, 0x7F, 0x06, 0x01]);
+    let mut parts = vec![other_sysex];
+    parts.extend(with_header(&[]));
+    assert_eq!(clip_error(&parts), ClipFileError::DctpqNotFirst);
+}
+
+/// Section 6: the header may hold other messages that configure a receiver,
+/// each behind its own DCS. They are in the model, in order with their delta
+/// times, are not events of the sequence, and write back.
+#[test]
+fn a_header_with_program_change_cc_and_sysex_round_trips() {
+    let control = Ump::from(Message::Midi2(
+        Address::first(MidiChannel::FIRST),
+        tutti_ump::Voice2::ControlChange {
+            controller: tutti_ump::CCNumber::of(7),
+            value: 0x8000_0000,
+        },
+    ));
+    let sysex = sysex7(tutti_ump::SysexStatus::Complete, &[0x7D, 1, 2, 3]);
+    let file = MidiFile::from_bytes(&clip(&with_header(&[
+        dcs(0),
+        program_change(),
+        dcs(10),
+        control,
+        dcs(5),
+        sysex,
+    ])))
+    .unwrap();
+    let track = &file.tracks()[0];
+    let ticks: Vec<u64> = track.header.iter().map(|(t, _)| t.0).collect();
+    assert_eq!(ticks, [0, 10, 15]);
+    assert_eq!(
+        track.header[2].1,
+        FileEvent::Message(tutti_ump::decode(sysex).unwrap())
+    );
+    // Not on the sequence's timeline, not sounding at bar 1.
+    assert_eq!(track.events.len(), 2);
+    assert_eq!(file.events().unwrap().count(), 2);
+    assert_eq!(
+        MidiFile::from_bytes(&file.to_bytes().unwrap()).unwrap(),
+        file
+    );
+}
+
+#[test]
+fn two_header_set_tempos_are_refused() {
+    let parts = with_header(&[dcs(0), set_tempo(100.0), dcs(0), set_tempo(90.0)]);
+    assert_eq!(clip_error(&parts), ClipFileError::DuplicateHeaderTempo);
+}
+
+/// Section 6.1.1: the Set Tempo "shall" be the first message after the DCTPQ,
+/// at a delta of 0 (or sharing the DCTPQ's DCS, which is also 0).
+#[test]
+fn a_header_set_tempo_not_first_or_not_at_delta_zero_is_misplaced() {
+    let after_other = with_header(&[dcs(0), program_change(), dcs(0), set_tempo(100.0)]);
+    assert_eq!(
+        clip_error(&after_other),
+        ClipFileError::MisplacedHeaderTempo
+    );
+    let late = with_header(&[dcs(7), set_tempo(100.0)]);
+    assert_eq!(clip_error(&late), ClipFileError::MisplacedHeaderTempo);
+    // Sharing the DCTPQ's DCS (no DCS of its own) is first at delta 0.
+    let sharing = with_header(&[set_tempo(100.0)]);
+    assert!(MidiFile::from_bytes(&clip(&sharing)).is_ok());
+}
+
+#[test]
+fn two_header_time_signatures_are_refused() {
+    let parts = with_header(&[dcs(0), time_signature(), dcs(0), time_signature()]);
+    assert_eq!(
+        clip_error(&parts),
+        ClipFileError::DuplicateHeaderTimeSignature
+    );
+}
+
+/// Section 6.1.2: the Set Time Signature follows the Set Tempo immediately (or
+/// is first when there is no Set Tempo).
+#[test]
+fn a_header_time_signature_must_follow_the_set_tempo_immediately() {
+    let behind_other = with_header(&[
+        dcs(0),
+        set_tempo(100.0),
+        dcs(0),
+        program_change(),
+        dcs(0),
+        time_signature(),
+    ]);
+    assert_eq!(
+        clip_error(&behind_other),
+        ClipFileError::MisplacedHeaderTimeSignature
+    );
+    let before_tempo = with_header(&[dcs(0), time_signature(), dcs(0), set_tempo(100.0)]);
+    // The tempo is then not first.
+    assert_eq!(
+        clip_error(&before_tempo),
+        ClipFileError::MisplacedHeaderTempo
+    );
+    let after_other_no_tempo = with_header(&[dcs(0), program_change(), dcs(0), time_signature()]);
+    assert_eq!(
+        clip_error(&after_other_no_tempo),
+        ClipFileError::MisplacedHeaderTimeSignature
+    );
+    for ok in [
+        with_header(&[dcs(0), set_tempo(100.0), dcs(0), time_signature()]),
+        with_header(&[dcs(0), time_signature()]),
+    ] {
+        assert!(MidiFile::from_bytes(&clip(&ok)).is_ok());
+    }
+}
+
+/// **The header's Set Tempo is the tempo from the start of the sequence**: the
+/// header's clock runs before Start of Clip, so its tempo is at sequence tick
+/// 0, and a Set Tempo in the sequence is an ordinary change after it.
+#[test]
+fn the_header_set_tempo_is_the_tempo_from_the_start_of_the_sequence() {
+    let q = u32::from(TPQ);
+    let mut parts = vec![
+        dcs(0),
+        dctpq(TPQ),
+        dcs(0),
+        set_tempo(100.0),
+        dcs(0),
+        start(),
+    ];
+    parts.extend([dcs(q), set_tempo(50.0), dcs(q), on(60, 1), dcs(0), end()]);
+    let file = MidiFile::from_bytes(&clip(&parts)).unwrap();
+    let map = file.tempo_map();
+    assert_eq!(map.tempo_at(Beat(0.5)), Bpm::of(100.0));
+    assert_eq!(map.tempo_at(Beat(1.5)), Bpm::of(50.0));
+    // One beat at 100 BPM (0.6 s) and one at 50 (1.2 s).
+    let close = |a: Seconds, b: f64| assert!((a.0 - b).abs() < 1e-9, "{a:?} vs {b}");
+    close(file.seconds_at(Beat(2.0)), 1.8);
+    assert_eq!(file.tracks()[0].header.len(), 1);
+}
+
+/// The constructor holds a header to the rules the reader does, and an SMF has
+/// none.
+#[test]
+fn the_constructor_holds_a_header_to_the_same_rules() {
+    let tempo = |bpm| (Tick(0), packet(tutti_ump::decode(set_tempo(bpm)).unwrap()));
+    let twice = Track {
+        header: vec![tempo(100.0), tempo(90.0)],
+        ..Track::default()
+    };
+    assert!(matches!(
+        MidiFile::clip(TPQ, twice.clone()),
+        Err(Error::Clip(ClipFileError::DuplicateHeaderTempo))
+    ));
+    let once = Track {
+        header: vec![tempo(100.0)],
+        ..Track::default()
+    };
+    let file = MidiFile::clip(TPQ, once.clone()).unwrap();
+    assert_eq!(
+        MidiFile::from_bytes(&file.to_bytes().unwrap()).unwrap(),
+        file
+    );
+    assert!(matches!(
+        MidiFile::smf(SmfFormat::SingleTrack, TPQ, vec![once]),
+        Err(Error::InvalidConfig(_))
+    ));
+}
+
+/// Section 3.2.2: a gap past 1,048,575 ticks is written as a DCS of 1,048,575
+/// followed by a Null message, once per restart, then the remainder's DCS.
+#[test]
+fn a_long_gap_is_written_as_dcs_then_a_null() {
+    let gap: u32 = 2 * 0x000F_FFFF + 3;
+    let track = track(vec![
+        (0, packet(tutti_ump::decode(on(60, 1)).unwrap())),
+        (u64::from(gap), packet(tutti_ump::decode(off(60)).unwrap())),
+    ]);
+    let bytes = MidiFile::clip(TPQ, track).unwrap().to_bytes().unwrap();
+    let words: Vec<u32> = bytes[8..]
+        .chunks(4)
+        .map(|c| u32::from_be_bytes(c.try_into().unwrap()))
+        .collect();
+    let (max, noop) = (dcs(0x000F_FFFF).words()[0], 0u32);
+    let expect = [max, noop, max, noop, dcs(3).words()[0]];
+    assert!(
+        words.windows(5).any(|w| w == expect),
+        "no DCS, Null, DCS, Null, DCS run in {words:08x?}"
+    );
 }

@@ -1,5 +1,5 @@
 //! Format-agnostic plugin error, returned by the plugin-instance capability
-//! traits ([`PluginState`], [`PluginAudio`], [`PluginEditorHost`]).
+//! traits ([`PluginState`], [`PluginAudio`]).
 //!
 //! This is the *lean* error the shared traits speak — it carries only the
 //! failure modes a format loader can produce (load, state, process, editor),
@@ -9,7 +9,6 @@
 //!
 //! [`PluginState`]: crate::PluginState
 //! [`PluginAudio`]: crate::PluginAudio
-//! [`PluginEditorHost`]: crate::PluginEditorHost
 
 use crate::editor::EditorError;
 use crate::load_stage::LoadStage;

@@ -2,7 +2,6 @@
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
 mod audio_pipeline;
-mod editor;
 mod loaders;
 mod plugin;
 mod server;

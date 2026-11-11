@@ -10,15 +10,14 @@ use tutti_plugin_types::MainThread;
 
 use tutti_plugin::LoadStage;
 use tutti_plugin::server::{
-    AudioBufferMut, ContentScale, EditorSize, LoadedPlugin, Normalized, ParamId, ParameterInfo,
-    PluginAudio, PluginDescriptor, PluginEditorHost, PluginError, PluginMeta, PluginParams,
-    PluginPresets, PluginResult, PluginState, Preset, PresetId, ProcessContext, ProcessOutput,
-    RenderMode, WindowHandle,
+    AudioBufferMut, LoadedPlugin, Normalized, ParamId, ParameterInfo, PluginAudio,
+    PluginDescriptor, PluginError, PluginMeta, PluginParams, PluginPresets, PluginResult,
+    PluginState, Preset, PresetId, ProcessContext, ProcessOutput, RenderMode,
 };
 use tutti_plugin_types::{BridgeError, BridgeResult};
 use tutti_plugin_types::{
-    Control, EditorWindow, Event, Hand, HostOp, Lifecycle, MaxBlock, Notice, Prepare, Request,
-    SampleFormat, SampleRate, Samples, Stage, State,
+    Control, Event, Hand, HostOp, Lifecycle, MaxBlock, Notice, Prepare, Request, SampleFormat,
+    SampleRate, Samples, Stage, State,
 };
 use tutti_vst2_host::{Vst2Error, Vst2Loaded, Vst2Processor};
 
@@ -460,27 +459,6 @@ impl PluginParams for Vst2Instance {
 
     fn parameter_count(&self, _main: &MainThread) -> usize {
         self.loaded_ref().map_or(0, Vst2Loaded::parameter_count)
-    }
-}
-
-impl PluginEditorHost for Vst2Instance {
-    /// `_scale` is unused: VST2 has no call that takes a content scale.
-    fn open_editor(
-        &mut self,
-        main: &MainThread,
-        parent: WindowHandle,
-        scale: ContentScale,
-    ) -> PluginResult<EditorSize> {
-        let loaded = self
-            .loaded_mut()
-            .ok_or_else(|| PluginError::Other("the plugin is lost".to_string()))?;
-        EditorWindow::open_editor(loaded, main, parent, scale)
-    }
-
-    fn close_editor(&mut self, main: &MainThread) {
-        if let Some(loaded) = self.loaded_mut() {
-            EditorWindow::close_editor(loaded, main);
-        }
     }
 }
 

@@ -96,8 +96,7 @@ pub use requests::{Edit, EditDrain, EditSink, edits, taken};
 pub use error::{Delivered, PluginError, Result as PluginResult, StateError};
 pub use features::{FeatureReport, Features};
 pub use format_host::{
-    PluginAudio, PluginEditorHost, PluginInstance, PluginMeta, PluginParams, PluginPresets,
-    PluginState,
+    PluginAudio, PluginInstance, PluginMeta, PluginParams, PluginPresets, PluginState,
 };
 pub use harmony::{
     ChordChanges, ChordValue, HARMONY_CAPACITY, NoteExpressionIntChanges, NoteExpressionIntValue,

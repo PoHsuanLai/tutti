@@ -33,8 +33,11 @@ pub(crate) mod wire;
 ///   a `ParameterInfo`, so none needed re-recording.
 /// - An **enum variant** is a varint discriminant over declaration order, so a
 ///   peer receiving a tag it has no arm for fails the decode mid-stream rather
-///   than at a message boundary.
-pub const PROTOCOL_VERSION: u32 = 24;
+///   than at a message boundary. Removing one renumbers every variant after it:
+///   **version 25** removed `OpenEditor`, `CloseEditor`, `EditorOpened` and
+///   `EditorClosed`, which nothing sent (the host opens an editor in its own
+///   process, through its `EditorLoader`).
+pub const PROTOCOL_VERSION: u32 = 25;
 
 /// Largest control-socket frame body either end will allocate for, in bytes.
 ///
@@ -141,11 +144,10 @@ pub use tutti_plugin_types::SampleFormat;
 //   cross-format vocabulary shared with the host crates
 //   (`tutti-{vst2,vst3,clap,au}-host`) via `tutti-plugin-types`.
 pub use tutti_plugin_types::{
-    AutomationMode, BusChannels, ChannelLayout, ChordChanges, ContentScale, LoadedPlugin,
-    Normalized, NoteExpressionChanges, NoteExpressionIntChanges, NoteExpressionTextChanges,
-    ParamId, ParameterChanges, ParameterInfo, ParameterPoint, ParameterQueue, PluginDescriptor,
-    PluginTail, Preset, PresetId, RenderMode, Samples, ScaleChanges, TransportChanges,
-    TransportInfo,
+    AutomationMode, BusChannels, ChannelLayout, ChordChanges, LoadedPlugin, Normalized,
+    NoteExpressionChanges, NoteExpressionIntChanges, NoteExpressionTextChanges, ParamId,
+    ParameterChanges, ParameterInfo, ParameterPoint, ParameterQueue, PluginDescriptor, PluginTail,
+    Preset, PresetId, RenderMode, Samples, ScaleChanges, TransportChanges, TransportInfo,
 };
 
 #[cfg(test)]

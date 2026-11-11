@@ -1,18 +1,16 @@
 //! Pure message dispatch — no I/O, no async, no sockets.
 //!
-//! [`Session`] owns the plugin + shared memory + audio pipeline + editor
-//! state. [`Session::handle`] translates one [`HostMessage`] into state
+//! [`Session`] owns the plugin + shared memory + audio pipeline. [`Session::handle`] translates one [`HostMessage`] into state
 //! changes and returns a [`Reaction`] describing what the transport
 //! loop should do next. Because it has no `async` and no `Transport`
 //! dependency, it's unit-testable without tokio or sockets.
 
 use crate::audio_pipeline::{AudioBlock, AudioPipeline, Clock, ProcessExtras};
-use crate::editor::EditorState;
 use crate::plugin::{AsyncEvent, Plugin};
 use tutti_plugin::server::state_chunk::{self, ChunkError, Reassembler};
 use tutti_plugin::server::{
-    AudioSlab, BridgeMessage, ContentScale, HostMessage, MAX_STATE_BYTES, MidiEventVec, Normalized,
-    ParameterQueue, SampleFormat, SlabWriter, StagedState, WindowHandle,
+    AudioSlab, BridgeMessage, HostMessage, MAX_STATE_BYTES, MidiEventVec, Normalized,
+    ParameterQueue, SampleFormat, SlabWriter, StagedState,
 };
 use tutti_plugin_types::MainThread;
 use tutti_plugin_types::{BridgeError, BridgeResult};
@@ -98,8 +96,6 @@ pub(crate) struct Session {
     /// Per-block scratch and the process driver. Outlives individual plugins so
     /// its buffers survive a reload without re-allocating.
     pub(crate) pipeline: AudioPipeline,
-    /// Whether the plugin's editor window is open, and its native handle.
-    pub(crate) editor: EditorState,
     /// Sample rate + negotiated format. Written on load and on an explicit
     /// `SetSampleRate`; read by every block.
     pub(crate) clock: Clock,
@@ -132,7 +128,7 @@ pub(crate) struct Session {
 }
 
 impl Session {
-    /// An empty session: no plugin, no slab, editor closed, and a default
+    /// An empty session: no plugin, no slab, and a default
     /// [`Clock`] that the first load overwrites.
     pub(crate) fn new() -> Self {
         let clock = Clock::default();
@@ -140,7 +136,6 @@ impl Session {
             plugin: None,
             shm: None,
             pipeline: AudioPipeline::new(clock.format),
-            editor: EditorState::Closed,
             clock,
             rate_refused: None,
             max_block: 0,
@@ -310,17 +305,6 @@ impl Session {
                 Ok(BridgeMessage::ParameterInfoResponse { info }.into())
             }
 
-            M::OpenEditor {
-                parent_handle,
-                scale,
-            } => Ok(self.handle_open_editor(main, parent_handle, scale).into()),
-            M::CloseEditor => {
-                if let Some(plugin) = self.plugin.as_mut() {
-                    plugin.instance_mut().close_editor(main);
-                    self.editor = EditorState::Closed;
-                }
-                Ok(Reaction::None)
-            }
             M::SetSampleRate { rate } => {
                 // The wire's rate is not range-checked on decode: refuse one no
                 // clock can run at before the clock or the plugin sees it. The
@@ -444,18 +428,6 @@ impl Session {
                 AsyncEvent::Reloaded => BridgeMessage::PluginReloaded,
             })
             .collect()
-    }
-
-    /// Close the editor cleanly (if open). Called by `PluginServer`'s
-    /// `Drop` so a subprocess teardown doesn't leak a floating editor
-    /// window.
-    pub(crate) fn close_editor_on_drop(&mut self, main: &MainThread) {
-        if self.editor.is_open() {
-            if let Some(plugin) = self.plugin.as_mut() {
-                plugin.instance_mut().close_editor(main);
-            }
-            self.editor = EditorState::Closed;
-        }
     }
 
     /// Forgets a state staged for a load that has not come: the stage belongs to
@@ -630,34 +602,6 @@ impl Session {
             midi_out: encode_midi_out(self.pipeline.midi_out(), self.pipeline.midi_dropped()),
         }
         .into())
-    }
-
-    fn handle_open_editor(
-        &mut self,
-        main: &MainThread,
-        parent_handle: u64,
-        scale: ContentScale,
-    ) -> BridgeMessage {
-        let Some(plugin) = self.plugin.as_mut() else {
-            return BridgeMessage::Error {
-                message: "No plugin loaded".to_string(),
-            };
-        };
-        // SAFETY: parent_handle is a raw platform window pointer carried
-        // as u64 over IPC; the single unsafe boundary for editor embedding.
-        let handle = unsafe { WindowHandle::from_u64(parent_handle) };
-        match plugin.instance_mut().open_editor(main, handle, scale) {
-            Ok(size) => {
-                self.editor = EditorState::Open;
-                BridgeMessage::EditorOpened {
-                    width: size.width,
-                    height: size.height,
-                }
-            }
-            Err(e) => BridgeMessage::Error {
-                message: format!("Failed to open editor: {e}"),
-            },
-        }
     }
 
     /// Answer `SaveState` as a `StateChunk` sequence.
@@ -856,7 +800,6 @@ mod tests {
         assert_eq!(s.clock.format, SampleFormat::Float32);
         assert!(s.plugin.is_none());
         assert!(s.shm.is_none());
-        assert!(!s.editor.is_open());
     }
 
     /// Every request a host can send before a plugin is loaded must be
@@ -915,14 +858,6 @@ mod tests {
                 Refusal("No plugin loaded"),
             ),
             (
-                "OpenEditor",
-                HostMessage::OpenEditor {
-                    parent_handle: 0,
-                    scale: ContentScale::IDENTITY,
-                },
-                Refusal("No plugin loaded"),
-            ),
-            (
                 "SetParameter",
                 HostMessage::SetParameter {
                     param_id: ParamId::new(0),
@@ -930,7 +865,6 @@ mod tests {
                 },
                 Silent,
             ),
-            ("CloseEditor", HostMessage::CloseEditor, Silent),
             ("Reset", HostMessage::Reset, Silent),
         ];
 

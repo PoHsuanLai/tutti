@@ -15,9 +15,8 @@ use tutti_plugin::server::{
 #[cfg(all(target_os = "macos", feature = "au"))]
 use tutti_plugin::server::{
     ContentScale, EditorSize, Normalized, ParamFlags, ParamId, ParamRange, ParamSteps,
-    ParameterInfo, PluginAudio, PluginEditorHost, PluginMeta, PluginParams, PluginPresets,
-    PluginResult, PluginState, PluginTail, Preset, PresetId, ProcessContext, ProcessOutput,
-    RenderMode, WindowHandle,
+    ParameterInfo, PluginAudio, PluginMeta, PluginParams, PluginPresets, PluginResult, PluginState,
+    PluginTail, Preset, PresetId, ProcessContext, ProcessOutput, RenderMode, WindowHandle,
 };
 use tutti_plugin_types::MainThread;
 #[cfg(all(target_os = "macos", feature = "au"))]
@@ -986,40 +985,6 @@ impl PluginParams for AuInstance {
                 .with_role(tutti_au_host::unit_role(p.unit_code))
             })
             .collect()
-    }
-}
-
-#[cfg(all(target_os = "macos", feature = "au"))]
-impl PluginEditorHost for AuInstance {
-    /// `_scale` is unused: an AU view is an `NSView`, which lays out in
-    /// logical pixels and reads its backing scale itself.
-    fn open_editor(
-        &mut self,
-        main: &MainThread,
-        parent: WindowHandle,
-        _scale: ContentScale,
-    ) -> PluginResult<EditorSize> {
-        // No size to offer: `PluginEditorHost::open_editor` carries a parent
-        // handle and a scale but no size, so the host has not told this layer
-        // how big the window is. 800×600 is the request; the plugin is free to
-        // ignore it, and `AuInstance::open_editor` returns the size the view
-        // actually made.
-        let preferred = EditorSize {
-            width: 800,
-            height: 600,
-        };
-        let size = self
-            .inner
-            .open_editor(main, parent, preferred)
-            .map_err(|e| BridgeError::EditorError(e.to_string()))?;
-        Ok(EditorSize {
-            width: size.width,
-            height: size.height,
-        })
-    }
-
-    fn close_editor(&mut self, main: &MainThread) {
-        self.inner.close_editor(main);
     }
 }
 

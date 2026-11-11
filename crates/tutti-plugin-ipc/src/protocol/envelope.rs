@@ -9,7 +9,6 @@
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
-use super::ContentScale;
 use super::MidiEventVec;
 use super::Normalized;
 use super::ParamId;
@@ -145,17 +144,6 @@ pub enum HostMessage {
         #[serde(with = "super::wire::bytes")]
         bytes: Vec<u8>,
     },
-    /// Open the plugin's editor window.
-    OpenEditor {
-        /// Native parent window handle, cast to `u64` for the wire — an `NSView*`
-        /// on macOS, an `HWND` on Windows, an X11 window id on Linux.
-        parent_handle: u64,
-        /// The parent window's backing-store scale, forwarded where the
-        /// format takes one.
-        scale: ContentScale,
-    },
-    /// Close the plugin's editor window.
-    CloseEditor,
     /// Point the subprocess at the shared-memory audio slab.
     SetupSharedMemory {
         /// OS name of the shared-memory object to map.
@@ -318,15 +306,6 @@ pub enum BridgeMessage {
         #[serde(with = "super::wire::bytes")]
         bytes: Vec<u8>,
     },
-    /// The editor window opened, at the size the plugin asked for.
-    EditorOpened {
-        /// Editor width in pixels.
-        width: u32,
-        /// Editor height in pixels.
-        height: u32,
-    },
-    /// The editor window closed, whether the host or the plugin closed it.
-    EditorClosed,
     /// The plugin moved one of its own parameters, typically from its editor.
     ParameterChanged {
         /// The parameter, by the id the plugin reported (VST2: its index).

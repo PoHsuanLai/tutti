@@ -10,15 +10,14 @@ use tutti_plugin_types::MainThread;
 
 use tutti_plugin::LoadStage;
 use tutti_plugin::server::{
-    AudioBufferMut, AutomationMode, ContentScale, EditorSize, LoadedPlugin, Normalized, ParamId,
-    ParameterInfo, PluginAudio, PluginDescriptor, PluginEditorHost, PluginError, PluginMeta,
-    PluginParams, PluginPresets, PluginResult, PluginState, Preset, PresetId, ProcessContext,
-    ProcessOutput, RenderMode, WindowHandle,
+    AudioBufferMut, AutomationMode, LoadedPlugin, Normalized, ParamId, ParameterInfo, PluginAudio,
+    PluginDescriptor, PluginError, PluginMeta, PluginParams, PluginPresets, PluginResult,
+    PluginState, Preset, PresetId, ProcessContext, ProcessOutput, RenderMode,
 };
 use tutti_plugin_types::{BridgeError, BridgeResult};
 use tutti_plugin_types::{
-    Control, EditorWindow, Event, Hand, HostOp, Lifecycle, MaxBlock, Notice, Prepare, Request,
-    SampleFormat, SampleRate, Samples, Stage, State,
+    Control, Event, Hand, HostOp, Lifecycle, MaxBlock, Notice, Prepare, Request, SampleFormat,
+    SampleRate, Samples, Stage, State,
 };
 use tutti_vst3_host::{LoadOptions, ProcessorAny, Vst3Loaded};
 
@@ -520,33 +519,6 @@ impl PluginParams for Vst3Instance {
     fn parameter_count(&self, main: &MainThread) -> usize {
         self.loaded_ref()
             .map_or(0, |loaded| loaded.parameter_count(main) as usize)
-    }
-}
-
-impl PluginEditorHost for Vst3Instance {
-    fn open_editor(
-        &mut self,
-        main: &MainThread,
-        parent: WindowHandle,
-        scale: ContentScale,
-    ) -> PluginResult<EditorSize> {
-        // `parent` was validated at the IPC boundary in server.rs.
-        let loaded = self
-            .loaded_mut()
-            .ok_or_else(|| PluginError::Other("the plugin is lost".to_string()))?;
-        loaded
-            .open_editor(main, parent, scale)
-            .map(|size| EditorSize {
-                width: size.width,
-                height: size.height,
-            })
-            .map_err(|e| PluginError::Editor(tutti_plugin::EditorError::PluginError(e.to_string())))
-    }
-
-    fn close_editor(&mut self, main: &MainThread) {
-        if let Some(loaded) = self.loaded_mut() {
-            loaded.close_editor(main);
-        }
     }
 }
 

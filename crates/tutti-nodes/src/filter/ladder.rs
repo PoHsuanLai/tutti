@@ -256,7 +256,7 @@ impl<F: Real> LadderFilterNode<F> {
             let (f, r) = param_at(0);
             prev = LadderCoefficients::solve(f, r, self.sample_rate);
         }
-        for step in COEFF_CADENCE.steps(size, unprimed) {
+        for step in COEFF_CADENCE.steps(0, size, unprimed) {
             let (start, end) = (step.frames.start, step.frames.end);
             let (f, r) = param_at(end - 1);
             let next = self.solve_toward(&prev, f, r);

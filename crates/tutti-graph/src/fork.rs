@@ -1044,12 +1044,12 @@ impl Editor {
             .filter(|(key, _)| keys.contains(key))
             .map(|(key, mode)| (*key, *mode))
             .collect();
-        spec.mixes = live
-            .mixes
-            .iter()
-            .filter(|(key, _)| keys.contains(key))
-            .map(|(key, mix)| (*key, *mix))
-            .collect();
+        // The mix is the live cell's (a driving lane's knob writes it, so the
+        // spec's copy, or its absence, may be behind): the fork starts at the
+        // base, a lane's value being the fork's own route's to give.
+        for &key in &keys {
+            spec.set_mix(key, self.mix(key));
+        }
 
         let mut units = Vec::with_capacity(sources.len());
         for (key, source) in sources {

@@ -1712,6 +1712,10 @@ impl Graph {
     /// node that is [`Bypassed`](NodeMode::Bypassed) or
     /// [`Muted`](NodeMode::Muted) ignores the mix: the mode wins.
     ///
+    /// A modulation route onto the mix (`Mods::route` (feature `modulation`)
+    /// with a `MixRef`) has this as its base: `set_mix` is the one writer of
+    /// the mix, routed or not.
+    ///
     /// # Errors
     ///
     /// [`MixError::NoSuchNode`] when `node` is not in the graph,
@@ -1723,6 +1727,12 @@ impl Graph {
 
     /// `node`'s mix, [`Mix::WET`] for a node never given one (and for a key not
     /// in the graph).
+    ///
+    /// Once the graph has committed the node this reads its live cell, which is
+    /// also the knob of a modulation route onto the node's mix (`Mods::route`
+    /// (feature `modulation`) with a `MixRef`): the base the route modulates
+    /// around, and what the mix returns to when the route goes. It is the base,
+    /// not the lane's value.
     pub fn mix(&self, node: NodeKey) -> Mix {
         self.editor.mix(node)
     }
@@ -2813,6 +2823,14 @@ impl tutti_nodes::ModHost for ModHostOver<'_> {
             param: addr,
         } = target
         else {
+            // A node's mix: the node the host's key names. The mix's knob is
+            // the unit's own cell, which the reconciler takes from the
+            // editor: `Graph::set_mix` is the one writer.
+            if let tutti_modulation::TargetKey::Mix(bits) = target {
+                return Some(tutti_nodes::Target::Mix {
+                    node: self.keys.node(bits)?,
+                });
+            }
             // An edge's gain: the edge the host's key names, if it names one.
             let tutti_modulation::TargetKey::Edge(key) = target else {
                 return None;

@@ -17,7 +17,7 @@ use std::sync::Arc;
 use tutti_graph::NodeKey;
 use tutti_graph::{
     CommitError, EdgeGain, EdgeId, Editor, EventEdge, EventIn, EventKind, EventOut, ForkByClone,
-    ParamIn, ParamRange, ParamRangeReader, ScheduleError, Sink,
+    NodeMix, ParamIn, ParamRange, ParamRangeReader, ScheduleError, Sink,
 };
 use tutti_graph::{Edge, InPort, OutPort, Source};
 use tutti_modulation::{
@@ -94,6 +94,20 @@ pub enum Target {
         /// The edge.
         id: EdgeId,
     },
+    /// The mix of a node (`TargetKey::Mix`): the node's blend with its aligned
+    /// input (doc 013, "Bypass and mute are graph state"). The lane drives it
+    /// through [`GraphSpec::connect_param`](tutti_graph::GraphSpec::connect_param)
+    /// at [`NodeMix::ADDR`] and clamps to the port's range (narrowed to
+    /// `0..=1`). Its knob is the node's own mix cell
+    /// ([`Editor::mix_cell`]), as an edge's is its gain cell: the base the
+    /// lane's offsets add to, written by whoever sets the mix
+    /// ([`Editor::set_mix`], [`LaneControls::set_knob`]: one cell, so one
+    /// writer). A route modulates around the base and its removal returns to
+    /// it. The lane is built once a commit has placed the node's unit.
+    Mix {
+        /// The node.
+        node: NodeKey,
+    },
 }
 
 /// What feeds a signal source's node ([`ModHost::feed`]).
@@ -121,7 +135,7 @@ pub enum ReconcileError {
     },
     /// The host resolved a native (`Unit` or `Indexed`) target to a foreign parameter,
     /// or a `ParamAddr::Id` one to a native port, or an edge key to a node's
-    /// param (or the other way round).
+    /// param, or a mix key to anything but a mix (or the other way round).
     WrongTarget(TargetKey),
     /// A native target whose node does not declare the param.
     NoSuchParam(TargetKey),
@@ -227,6 +241,15 @@ enum Bind {
         /// The edge's live range cell: a new entry has a new one.
         range: ParamRangeReader,
     },
+    Mix {
+        /// The node's mix port.
+        at: ParamIn,
+        /// The unit's live mix cell: a node removed and inserted again has
+        /// a new one.
+        knob: ParamCell,
+        /// Its live range cell.
+        range: ParamRangeReader,
+    },
 }
 
 impl Bind {
@@ -270,6 +293,14 @@ impl Bind {
                     id: i2, range: r2, ..
                 },
             ) => id == i2 && range.same_cell(r2),
+            (
+                Self::Mix { at, knob, range },
+                Self::Mix {
+                    at: a2,
+                    knob: k2,
+                    range: r2,
+                },
+            ) => at == a2 && knob.ptr_eq(k2) && range.same_cell(r2),
             _ => false,
         }
     }
@@ -279,7 +310,7 @@ impl Bind {
     /// global output channel (nothing a node reads).
     fn node(&self) -> Option<NodeKey> {
         match self {
-            Self::Native { at, .. } => Some(at.node),
+            Self::Native { at, .. } | Self::Mix { at, .. } => Some(at.node),
             Self::Foreign { to, .. } => Some(to.node),
             Self::Edge { id, .. } => match id.sink {
                 Sink::Port(at) => Some(at.node),
@@ -538,6 +569,9 @@ enum Resolved {
     Edge {
         id: EdgeId,
     },
+    Mix {
+        node: NodeKey,
+    },
 }
 
 impl Resolved {
@@ -553,6 +587,7 @@ impl Resolved {
                 port: *port,
             },
             Some(Target::Edge { id, .. }) => Self::Edge { id: *id },
+            Some(Target::Mix { node }) => Self::Mix { node: *node },
         }
     }
 
@@ -574,6 +609,7 @@ impl Resolved {
                 }),
             ) => node == n2 && port == p2,
             (Self::Edge { id }, Some(Target::Edge { id: i2, .. })) => id == i2,
+            (Self::Mix { node }, Some(Target::Mix { node: n2 })) => node == n2,
             _ => false,
         }
     }
@@ -735,7 +771,7 @@ impl Modulation {
             .lanes
             .values()
             .filter_map(|l| match l.bind {
-                Bind::Native { at, .. } => Some((at, l.key)),
+                Bind::Native { at, .. } | Bind::Mix { at, .. } => Some((at, l.key)),
                 Bind::Foreign { .. } | Bind::Edge { .. } => None,
             })
             .collect();
@@ -765,7 +801,7 @@ impl Modulation {
             }
             match self.resolve_target(target, to, &own, &own_edges, editor)? {
                 Some(bind) => {
-                    if let Bind::Native { at, .. } = bind {
+                    if let Bind::Native { at, .. } | Bind::Mix { at, .. } = bind {
                         if let Some(&first) = claimed.get(&at) {
                             return Err(ReconcileError::SharedPort {
                                 first,
@@ -842,7 +878,7 @@ impl Modulation {
                 port: 0,
             };
             match lane.bind {
-                Bind::Native { at, .. } => {
+                Bind::Native { at, .. } | Bind::Mix { at, .. } => {
                     // Only the source it wired: a port another source has
                     // taken since is left alone.
                     editor.spec_mut().disconnect_param(at, out);
@@ -1029,6 +1065,22 @@ impl Modulation {
                         .connect_edge_gain(*id, EventOut { node: key, port: 0 });
                     controls
                 }
+                Bind::Mix { at, knob, range } => {
+                    editor
+                        .set_param_range(*at, ParamRange::new(min, max))
+                        .expect("checked: the node, and compile refuses a NaN bound");
+                    let node = ControlLaneNode::for_unit(
+                        NodeMix::ADDR,
+                        program.clone(),
+                        Some(knob.clone()),
+                        Some(range.clone()),
+                    );
+                    let controls = editor.insert(key, "control-lane", node);
+                    editor
+                        .spec_mut()
+                        .connect_param(*at, EventOut { node: key, port: 0 });
+                    controls
+                }
                 Bind::Foreign { to, id, knob, .. } => {
                     let node =
                         ControlLaneNode::for_foreign(*id, program.clone(), *knob, (min, max));
@@ -1160,10 +1212,40 @@ impl Modulation {
         let shape = |node: NodeKey| editor.shapes().get(&node).copied();
         let param = match target {
             TargetKey::Param { param, .. } => Some(param),
-            TargetKey::Edge(_) => None,
+            TargetKey::Edge(_) | TargetKey::Mix(_) => None,
         };
         match (resolved, param) {
-            (Target::Edge { id }, None) => {
+            (Target::Mix { node }, None) if matches!(target, TargetKey::Mix(_)) => {
+                // A node that is not in the graph (yet): no lane.
+                if !editor.spec().topology.nodes.contains_key(&node) {
+                    return Ok(None);
+                }
+                let at = ParamIn {
+                    node,
+                    param: NodeMix::ADDR,
+                };
+                // One event source per mix: connecting a lane would replace
+                // another's (a host's own), silently.
+                let other = editor
+                    .spec()
+                    .params
+                    .get(&at)
+                    .and_then(|m| m.source)
+                    .is_some_and(|out| !own.contains(&(at, out.node)));
+                if other {
+                    return Err(ReconcileError::PortTaken(target));
+                }
+                // The cells are the unit's once a commit has placed it: a
+                // node not in the last plan yet has none, and a host
+                // re-applies after the commit.
+                let (Some(knob), Some(range)) =
+                    (editor.mix_cell(node), editor.param_range_cell(at))
+                else {
+                    return Ok(None);
+                };
+                Ok(Some(Bind::Mix { at, knob, range }))
+            }
+            (Target::Edge { id }, None) if matches!(target, TargetKey::Edge(_)) => {
                 // An edge that is not in the graph (yet): no lane.
                 if !editor.spec().has_edge(id) {
                     return Ok(None);
@@ -1442,7 +1524,7 @@ fn owe_resyncs(
 /// commit), the lane's own for a plugin lane.
 fn store_range(editor: &mut Editor, bind: &Bind, controls: &LaneControls, min: f32, max: f32) {
     match bind {
-        Bind::Native { at, .. } => {
+        Bind::Native { at, .. } | Bind::Mix { at, .. } => {
             editor
                 .set_param_range(*at, ParamRange::new(min, max))
                 .expect("checked: a node, and compile refuses a NaN bound");

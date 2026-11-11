@@ -4,14 +4,12 @@
 //! a block (the 16-frame solve schedule).
 //!
 //! Each digest is FNV-1a over the bits of every output sample, channel by channel
-//! of each 64-frame block. The crossover was recorded **before** the filters became
-//! models and realizations and has not moved (it is on the block-anchored 16-frame
-//! grid until doc 024 step 2b's PR5). The SVF, the bell and the EQ band **moved
-//! once**, in step 2b's PR3, and the ladder once, in PR4, when they went to the
-//! stream grid (Q27: a solve at the first frame of each 16-frame segment counted
-//! from the last reset, the coefficients ramping to it over the segment; the
-//! ladder's drive joins the grid, a lane sampled per segment and a cell glided
-//! like the others);
+//! of each 64-frame block. The SVF, the bell and the EQ band **moved
+//! once**, in step 2b's PR3, the ladder once, in PR4, and the crossover once, in PR5,
+//! when they went to the stream grid (Q27: a solve at the first frame of each
+//! 16-frame segment counted from the last reset, the coefficients ramping to it
+//! over the segment, or for the crossover held over it; the ladder's drive joins
+//! the grid, a lane sampled per segment and a cell glided like the others);
 //! the `held` digests below, which no grid touches, did not. The coefficient
 //! solves reach `libm` (`tan`, `powf`), so every assert goes through
 //! `assert_golden`: asserted on the recorded target only.
@@ -227,7 +225,7 @@ fn the_ladder_renders_what_it_always_did() {
 }
 
 /// A stereo three-band crossover: the first split moves by its cell at block 40
-/// (ramped across the block), the second is driven by a lane at blocks 100 to
+/// (glided across the block), the second is driven by a lane at blocks 100 to
 /// 139.
 #[test]
 fn the_crossover_renders_what_it_always_did() {
@@ -245,7 +243,8 @@ fn the_crossover_renders_what_it_always_did() {
         },
     );
     println!("DIGEST crossover {digest:#018x}");
-    assert_golden("crossover_render", digest, 0xe487_a6a1_7b13_6f8d);
+    // Placeholder until recorded on glibc 2.39 (it moved in PR5: was 0xe487_a6a1_7b13_6f8d).
+    assert_golden("crossover_render", digest, 0);
 }
 
 // Held controls (doc 024 step 2b, PR1): no cell moves and no lane drives, so the

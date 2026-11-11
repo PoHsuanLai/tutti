@@ -17,7 +17,7 @@ node without a lock.
 - **Filters** — `SvfFilterNode`, `LadderFilterNode` (both any width, one
   coefficient solve shared across the channels) and `EqBandNode`.
 - **Crossover** — `CrossoverNode`, which makes `bands × channels` outputs from
-  `tutti_dsp::Crossover`, a 2 to 6 band Linkwitz-Riley 4th-order split (the
+  `tutti_dsp::CrossoverDesign`, a 2 to 6 band Linkwitz-Riley 4th-order split (the
   bands sum to flat magnitude; IIR, so not linear-phase and no latency). Each
   crossover is an indexed `Cutoff` param (`UnitAddr::new(UnitParam::Cutoff, i)`).
 - **Delay** — `DelayLineNode` (any width, with a cross-feedback routing

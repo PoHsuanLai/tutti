@@ -129,15 +129,53 @@ impl std::error::Error for CrossoverError {}
 
 /// A biquad's two state words (transposed direct form II).
 #[derive(Clone, Copy, Debug, Default)]
-struct State([f64; 2]);
+struct Section([f64; 2]);
 
-impl State {
+impl Section {
     #[inline]
     fn tick(&mut self, c: &Biquad, x: f64) -> f64 {
         let y = c.b0 * x + self.0[0];
         self.0[0] = c.b1 * x - c.a1 * y + self.0[1];
         self.0[1] = c.b2 * x - c.a2 * y;
         y
+    }
+}
+
+/// The state of one channel of a crossover tree: the sections' words, apart from the
+/// model whose coefficients run them ([`CrossoverModel`]).
+#[derive(Clone, Copy, Debug, Default)]
+pub(super) struct CrossoverState {
+    /// Per split, the two cascaded sections of its low-pass and high-pass.
+    low: [[Section; 2]; MAX_SPLITS],
+    high: [[Section; 2]; MAX_SPLITS],
+    /// `all_pass[j][k]`: band `j`'s all-pass for the later split `k > j`.
+    all_pass: [[Section; MAX_SPLITS]; MAX_SPLITS],
+}
+
+impl CrossoverState {
+    /// One sample through the tree `model` describes: its bands, lowest first, in
+    /// the first entries of the result (the rest are 0).
+    #[inline]
+    pub(super) fn tick(&mut self, model: &CrossoverModel, x: f32) -> [f32; Crossover::MAX_BANDS] {
+        let mut out = [0.0f32; Crossover::MAX_BANDS];
+        let splits = model.bands - 1;
+        let mut rest = f64::from(x);
+        for (j, slot) in out.iter_mut().enumerate().take(splits) {
+            let c = &model.coeffs[j];
+            let mut lo = rest;
+            lo = self.low[j][0].tick(&c.low, lo);
+            lo = self.low[j][1].tick(&c.low, lo);
+            let mut hi = rest;
+            hi = self.high[j][0].tick(&c.high, hi);
+            hi = self.high[j][1].tick(&c.high, hi);
+            for k in j + 1..splits {
+                lo = self.all_pass[j][k].tick(&model.coeffs[k].all_pass, lo);
+            }
+            *slot = lo as f32;
+            rest = hi;
+        }
+        out[splits] = rest as f32;
+        out
     }
 }
 
@@ -173,11 +211,7 @@ pub struct Crossover {
     model: CrossoverModel,
     /// The frequencies set; the model's ramp to them.
     target: [f64; MAX_SPLITS],
-    /// Per split, the two cascaded sections of its low-pass and high-pass.
-    low: [[State; 2]; MAX_SPLITS],
-    high: [[State; 2]; MAX_SPLITS],
-    /// `all_pass[j][k]`: band `j`'s all-pass for the later split `k > j`.
-    all_pass: [[State; MAX_SPLITS]; MAX_SPLITS],
+    state: CrossoverState,
 }
 
 impl Crossover {
@@ -201,9 +235,7 @@ impl Crossover {
         let mut xo = Self {
             model: CrossoverModel::unsolved(frequencies.len() + 1, rate.get()),
             target: [0.0; MAX_SPLITS],
-            low: [[State::default(); 2]; MAX_SPLITS],
-            high: [[State::default(); 2]; MAX_SPLITS],
-            all_pass: [[State::default(); MAX_SPLITS]; MAX_SPLITS],
+            state: CrossoverState::default(),
         };
         for (j, f) in frequencies.iter().enumerate() {
             xo.target[j] = f64::from(f.get());
@@ -298,9 +330,7 @@ impl Crossover {
 
     /// Clears the filter state, and takes any pending frequency change whole.
     pub fn reset(&mut self) {
-        self.low = [[State::default(); 2]; MAX_SPLITS];
-        self.high = [[State::default(); 2]; MAX_SPLITS];
-        self.all_pass = [[State::default(); MAX_SPLITS]; MAX_SPLITS];
+        self.state = CrossoverState::default();
         self.settle();
     }
 
@@ -373,38 +403,26 @@ impl Crossover {
 
     #[inline]
     fn tick(&mut self, x: f32) -> [f32; Self::MAX_BANDS] {
-        let mut out = [0.0f32; Self::MAX_BANDS];
-        let splits = self.splits();
-        let mut rest = f64::from(x);
-        for (j, slot) in out.iter_mut().enumerate().take(splits) {
-            let c = &self.model.coeffs[j];
-            let mut lo = rest;
-            lo = self.low[j][0].tick(&c.low, lo);
-            lo = self.low[j][1].tick(&c.low, lo);
-            let mut hi = rest;
-            hi = self.high[j][0].tick(&c.high, hi);
-            hi = self.high[j][1].tick(&c.high, hi);
-            for k in j + 1..splits {
-                lo = self.all_pass[j][k].tick(&self.model.coeffs[k].all_pass, lo);
-            }
-            *slot = lo as f32;
-            rest = hi;
-        }
-        out[splits] = rest as f32;
-        out
+        self.state.tick(&self.model, x)
+    }
+}
+
+/// Checks the band count against what a crossover supports.
+pub(super) fn check_bands(bands: usize) -> Result<(), CrossoverError> {
+    if (Crossover::MIN_BANDS..=Crossover::MAX_BANDS).contains(&bands) {
+        Ok(())
+    } else {
+        Err(CrossoverError::Bands {
+            bands,
+            min: Crossover::MIN_BANDS,
+            max: Crossover::MAX_BANDS,
+        })
     }
 }
 
 /// Checks a whole set: count, then each frequency in order.
 pub(super) fn validate(frequencies: &[Hz], rate: SampleRate) -> Result<(), CrossoverError> {
-    let bands = frequencies.len() + 1;
-    if !(Crossover::MIN_BANDS..=Crossover::MAX_BANDS).contains(&bands) {
-        return Err(CrossoverError::Bands {
-            bands,
-            min: Crossover::MIN_BANDS,
-            max: Crossover::MAX_BANDS,
-        });
-    }
+    check_bands(frequencies.len() + 1)?;
     if !(rate.get().is_finite() && rate.get() > 0.0) {
         return Err(CrossoverError::SampleRate);
     }

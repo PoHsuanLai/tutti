@@ -14,8 +14,8 @@ ramps and the graph shape. Here they take plain typed values per call.
 - **Filters** — `SvfCoeffs` and `SvfDesign<F>` (Simper's trapezoidal
   state-variable filter, eight responses by `SvfType`);
   `LadderCoeffs` and `LadderDesign<F>` (the Moog
-  ladder, `tanh` feedback); `Crossover`, a 2 to 6 band Linkwitz-Riley 4th-order
-  split with ramped frequency changes. `Real` is the `f32` or `f64` the state
+  ladder, `tanh` feedback); `CrossoverDesign` and `Crossover`, a 2 to 6 band Linkwitz-Riley 4th-order
+  split (the design on a 16-frame grid, the state with ramped frequency changes). `Real` is the `f32` or `f64` the state
   runs in; its transcendentals call `libm`, so results do not depend on the
   platform's C math library.
 - **Dynamics** — `EnvelopeFollower` and `GateEnvelopeFollower`; the curves

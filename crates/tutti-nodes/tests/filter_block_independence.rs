@@ -1,4 +1,4 @@
-//! The SVF, the EQ band and the ladder on the stream grid (doc 024 Q27): the render is a
+//! The SVF, the EQ band, the ladder and the crossover on the stream grid (doc 024 Q27): the render is a
 //! function of the stream, not of how it is cut into blocks, and a control reaches
 //! the render within one 16-frame segment of the grid point that sampled it.
 //!
@@ -9,8 +9,12 @@
 
 use tutti_graph::contract::{drive_input, prepared};
 use tutti_graph::{Env, Node, ParamNode, PlayClock, Transport, TransportChanges};
-use tutti_nodes::{EqBandNode, LadderFilterNode, LadderType, SvfControls, SvfFilterNode, SvfType};
-use tutti_types::{ChannelLayout, Db, Frame, Hz, Q, Resonance, SampleRate, Samples, UnitParam};
+use tutti_nodes::{
+    CrossoverNode, EqBandNode, LadderFilterNode, LadderType, SvfControls, SvfFilterNode, SvfType,
+};
+use tutti_types::{
+    ChannelLayout, Db, Frame, Hz, Q, Resonance, SampleRate, Samples, UnitAddr, UnitParam,
+};
 
 const RATE: SampleRate = SampleRate(48_000.0);
 const FRAMES: usize = 2_048;
@@ -38,7 +42,7 @@ fn render<N: Node + ParamNode + 'static>(
     let mut node = prepared(node, RATE, 512);
     act(&node.param_set());
     let len = inputs[0].len();
-    let mut out = vec![Vec::new(); inputs.len()];
+    let mut out: Vec<Vec<f32>> = Vec::new();
     for start in (0..len).step_by(block) {
         let end = (start + block).min(len);
         let ins: Vec<&[f32]> = inputs.iter().map(|c| &c[start..end]).collect();
@@ -55,6 +59,7 @@ fn render<N: Node + ParamNode + 'static>(
             play: PlayClock::ZERO,
         };
         let driven = drive_input(&mut node as &mut dyn Node, &env, &ins, &params, &[]).audio;
+        out.resize(driven.len(), Vec::new());
         for (all, part) in out.iter_mut().zip(driven) {
             all.extend(part);
         }
@@ -299,4 +304,79 @@ fn a_lane_step_is_in_the_render_within_one_segment() {
         "frame 47 is still on the old set"
     );
     assert_eq!(response(None, 63), at_new, "frame 63 is on the new set");
+}
+
+/// A stereo three-band crossover with a lane on each split, and one with a lane on
+/// the upper split and the lower cell moved before the first block, render the same
+/// bits (all six outputs) at blocks of 1, 17, 64 or 512 frames.
+///
+/// Mutations (run): counting the grid from each block's start (the stream phase in
+/// `Cadence::steps` forced to 0) fails both at the blocks of 1, 17 and 64.
+#[test]
+fn the_crossover_renders_alike_at_every_block_length_with_lanes() {
+    let inputs = [noise(6), noise(7)];
+    same_at_every_block("crossover, a lane on each split", || {
+        let inputs = inputs.clone();
+        Box::new(move |block| {
+            let lanes = [Some(sweep(200.0, 1_500.0)), Some(sweep(2_500.0, 9_000.0))];
+            render(
+                CrossoverNode::new(ChannelLayout::STEREO, &[Hz(300.0), Hz(3_000.0)]).unwrap(),
+                block,
+                &inputs,
+                &lanes,
+                |_| {},
+            )
+        })
+    });
+    same_at_every_block("crossover, a lane and a moved cell", || {
+        let inputs = inputs.clone();
+        Box::new(move |block| {
+            render(
+                CrossoverNode::new(ChannelLayout::STEREO, &[Hz(300.0), Hz(3_000.0)]).unwrap(),
+                block,
+                &inputs,
+                &[None, Some(sweep(2_500.0, 9_000.0))],
+                |set| {
+                    // Before the first block: nothing to glide from.
+                    assert!(set.set(UnitAddr::new(UnitParam::Cutoff, 0), 900.0));
+                },
+            )
+        })
+    });
+}
+
+/// A step in a crossover's lane at frame 40 is held to the next grid point and then
+/// whole: the point at 32 reads the old frequency and its segment runs on that set
+/// to frame 47; the point at 48 reads the new one and its segment runs on it, the
+/// same set at frame 48 and at frame 63 (the coefficients do not ramp). An impulse
+/// into a crossover with no state answers with the set in force at that frame, so
+/// the low band there is the held crossover's with that frequency, bit for bit.
+///
+/// Mutation (run): sampling the lane at the segment's last frame rather than its
+/// first (`solve_at` on the stream arm of `Cadence::steps`) reads the new frequency
+/// at 47 and fails the first assertion.
+#[test]
+fn a_crossover_lane_step_is_held_to_the_next_grid_point_then_whole() {
+    const STEP: usize = 40;
+    let (old, new) = (400.0f32, 4_000.0f32);
+    let lane: Vec<f32> = (0..64).map(|i| if i < STEP { old } else { new }).collect();
+    let response = |cutoff: Option<f32>, at: usize| -> f64 {
+        let mut x = vec![0.0f32; 64];
+        x[at] = 1.0;
+        let held = cutoff.map(|c| vec![c; 64]);
+        let lanes = [Some(held.unwrap_or_else(|| lane.clone()))];
+        let node = CrossoverNode::new(ChannelLayout::MONO, &[Hz(old)]).unwrap();
+        let out = render(node, 64, &[x], &lanes, |_| {});
+        f64::from(out[0][at])
+    };
+    let at_old = response(Some(old), 47);
+    let at_new = response(Some(new), 48);
+    assert_ne!(at_old, at_new, "the two frequencies must be told apart");
+    assert_eq!(
+        response(None, 47),
+        at_old,
+        "frame 47 is still on the old set"
+    );
+    assert_eq!(response(None, 48), at_new, "frame 48 is on the new set");
+    assert_eq!(response(None, 63), at_new, "and so is frame 63");
 }

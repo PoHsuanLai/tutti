@@ -1127,7 +1127,7 @@ impl Midi<'_> {
     /// **Whether it JR-stamps is the device's.** With the `midi-hardware`
     /// feature, each `MidiOut` phase sets the output's stamping from the
     /// configuration of the output device the session holds
-    /// ([`MidiSession::output_config`](tutti_midi_hardware::MidiSession::output_config)):
+    /// (`tutti_midi_hardware::MidiSession::output_config`):
     /// on only when the device receives JR Timestamps (`rx_jr`, which the
     /// session asks for off, so a device that does not turn it on itself is
     /// sent none), and the device's own output refuses a JR message otherwise.

@@ -66,7 +66,9 @@ fn no_choice_loads_the_first_audio_unit_and_never_an_afil_entry() {
 #[test]
 fn an_afil_entry_cannot_be_chosen() {
     let reason = scanning_reason(load_id("au.afil.MooV.appl"));
-    assert!(!reason.contains("au.afil"), "{reason}");
+    let (_, declared) = reason.split_once("it declares: ").expect(&reason);
+    assert!(!declared.contains("au.afil"), "{declared}");
+    assert!(declared.contains("au.aufx.nbeq.appl"), "{declared}");
 }
 
 /// An id the bundle does not declare is refused at `Scanning`, naming the ids

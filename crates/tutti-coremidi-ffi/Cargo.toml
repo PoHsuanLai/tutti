@@ -29,5 +29,11 @@ objc2 = { workspace = true }
 objc2-foundation = { workspace = true }
 objc2-core-midi = { workspace = true }
 
+[target.'cfg(target_os = "macos")'.dev-dependencies]
+# A test creates a virtual UMP endpoint with Function Blocks (macOS 15), so the
+# read has something real to read.
+block2 = "0.6"
+objc2-core-midi = { workspace = true, features = ["block2", "MIDIUMPMutableEndpoint", "MIDIUMPMutableFunctionBlock"] }
+
 [package.metadata.docs.rs]
 targets = ["aarch64-apple-darwin"]

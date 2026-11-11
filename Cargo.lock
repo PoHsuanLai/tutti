@@ -2122,6 +2122,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f171af1a0d1762fb4ca116a58a584cf0238f7b02e9cf7af08a10755424c15950"
 dependencies = [
  "bitflags 2.13.2",
+ "block2 0.6.2",
  "objc2 0.6.5",
  "objc2-core-foundation",
  "objc2-foundation 0.3.2",
@@ -3585,6 +3586,7 @@ dependencies = [
 name = "tutti-coremidi-ffi"
 version = "0.0.1"
 dependencies = [
+ "block2 0.6.2",
  "core-foundation 0.10.1",
  "coremidi-sys",
  "mach2",

@@ -30,8 +30,10 @@ use std::sync::Arc;
 
 use tutti_types::{ChannelLayout, Direction, Fold, Mix, Radians, SampleRate};
 
-use super::sphere::{HrirSphere, HrtfSet, Weights};
+mod sphere;
+
 use crate::Complex32;
+use sphere::{HrirSphere, HrtfSet, Weights};
 
 /// Frames per convolution step, and the crossfade length of a direction
 /// change.

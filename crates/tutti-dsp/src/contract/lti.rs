@@ -2,7 +2,7 @@
 
 use tutti_types::{Db, Hz, SampleRate};
 
-use super::basic::{check_vacuity, every};
+use super::core::{check_vacuity, every};
 use super::harness::{WINDOW, built, burst, noise, rate_of, render, rms, widths};
 use super::{Hook, LtiCase, RealizationCase};
 use crate::{Complex32, Complex64, Lti, RealFft, Realization, Ring, System};

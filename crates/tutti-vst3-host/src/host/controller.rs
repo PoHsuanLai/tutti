@@ -450,22 +450,17 @@ impl Vst3Loaded {
         // What an earlier rejoin carried over reaches the plugin in the first
         // block, unless this activation is refused, which keeps it.
         let carried = std::mem::take(&mut self.carried);
-        let staged = match Staged::<T>::stage(
-            main,
-            self,
-            prepare.rate().0,
-            prepare.max_block().get(),
-            mode,
-        ) {
-            Ok(staged) => staged,
-            Err((mut plugin, error)) => {
-                plugin.carried = carried;
-                return Err(Refused {
-                    plugin: Some(plugin),
-                    reason: plugin_error(error),
-                });
-            }
-        };
+        let staged =
+            match Staged::<T>::stage(main, self, prepare.rate(), prepare.max_block().get(), mode) {
+                Ok(staged) => staged,
+                Err((mut plugin, error)) => {
+                    plugin.carried = carried;
+                    return Err(Refused {
+                        plugin: Some(plugin),
+                        reason: plugin_error(error),
+                    });
+                }
+            };
         let Staged { loaded, audio, .. } = staged;
         // The plugin may announce its latency from inside `setActive`; the
         // figure is read right after every activation, so the announcement is

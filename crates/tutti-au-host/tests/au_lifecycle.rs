@@ -554,7 +554,7 @@ mod halves {
             .activate(&main_thread(), offline)
             .unwrap_or_else(|e| panic!("AUDelay activates: {}", e.reason));
         assert!(c.render_mode_accepted(), "AUDelay takes the offline-render property");
-        assert_eq!(c.is_offline_render().unwrap(), true);
+        assert!(c.is_offline_render().unwrap());
         drop(p);
     }
 }

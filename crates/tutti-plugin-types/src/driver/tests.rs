@@ -854,7 +854,10 @@ fn the_fake_control_answers_nothing_in_either_state() {
 /// Mutation (run): `adopt` answering `Reply::Activated` and nothing else (no
 /// reads) -> the latency, tail and layout are `None` -> fails. Mutation
 /// (run): `adopt` not calling `lend` -> the realtime end polls nothing and
-/// the seat holds the Processor -> fails.
+/// the seat holds the Processor -> fails. Mutation (run): the `ReadLayout`
+/// arm dropped (moved into the `unreachable!` group) -> the core's layout read
+/// panics -> fails. Mutation (run): the latency reply withheld -> the core
+/// still awaits it, and the post-condition (active, nothing planned) fails.
 #[test]
 fn an_adopted_plugin_is_in_the_state_a_driven_activation_leaves() {
     let mut driven = Rig::new();

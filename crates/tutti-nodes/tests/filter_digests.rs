@@ -87,7 +87,7 @@ fn run<N: Node + ParamNode + 'static>(
 ) -> u64 {
     let mut node = prepared(node, rate, BLOCK);
     let set = node.param_set();
-    let width = usize::from(node.shape().audio_in.count());
+    let width = usize::from(node.shape().audio_in().count());
     let inputs: Vec<Vec<f32>> = (0..width)
         .map(|c| noise(3 + c as u32, BLOCK * BLOCKS, 0.8))
         .collect();

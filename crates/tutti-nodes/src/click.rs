@@ -40,7 +40,7 @@ use tutti_rt::Reader;
 use tutti_transport::{ProjectMeter, Transport};
 use tutti_types::AtomicF32;
 use tutti_types::value::{Amplitude, Beat, Hz, Phase, PhaseIncrement, Samples, Seconds};
-use tutti_types::{ChannelLayout, Tail};
+use tutti_types::{BusTopology, Tail};
 use tutti_types::{Meter, MeterMap};
 
 /// How far two beat onsets must differ to count as different beats.
@@ -555,7 +555,7 @@ impl Node for ClickNode {
     /// the transport rather than an input, so [`Tail::Unbounded`]: never
     /// skipped as silent.
     fn shape(&self) -> Shape {
-        Shape::audio(ChannelLayout::EMPTY, ChannelLayout::STEREO)
+        Shape::source(BusTopology::STEREO)
             .with_tail(Tail::Unbounded)
             // A beat derived and compared per frame: measured 3.8 ns per
             // frame and channel, against a gain's 0.2 and `SvfFilterNode`'s

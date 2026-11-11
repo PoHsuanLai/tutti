@@ -1249,8 +1249,8 @@ fn voice_node_is_a_standalone_graph_node() {
 
     // As a standalone node: 0 in, 2 out, produces audio.
     let mut node = VoiceNode::new(voice);
-    assert_eq!(node.shape().audio_in.count(), 0);
-    assert_eq!(node.shape().audio_out.count(), 2);
+    assert_eq!(node.shape().audio_in().count(), 0);
+    assert_eq!(node.shape().audio_out().count(), 2);
 
     let mut out = [0.0f32; 2];
     tick(&mut node, &transport, SR, &mut out);
@@ -2261,7 +2261,7 @@ fn indexed_wave(channels: usize, len: usize) -> Arc<Wave> {
 fn reader_and_voice_node_default_to_stereo() {
     let (unit, _h) = VoicePool::new().with_handle();
     assert_eq!(unit.channels(), ChannelLayout::STEREO);
-    assert_eq!(unit.shape().audio_out, ChannelLayout::STEREO);
+    assert_eq!(unit.shape().audio_out(), ChannelLayout::STEREO);
 }
 
 /// A pool wider than the sampler reads is refused, by name, where one
@@ -2356,8 +2356,8 @@ fn both_nodes_declare_their_width() {
             ChannelLayout::try_from(w).expect("a test width is small"),
         );
         for (what, shape) in [("pool", unit.shape()), ("voice node", vn.shape())] {
-            assert_eq!(shape.audio_out.count() as usize, w, "{what} at width {w}");
-            assert_eq!(shape.audio_in.count(), 0, "{what}: no inputs");
+            assert_eq!(shape.audio_out().count() as usize, w, "{what} at width {w}");
+            assert_eq!(shape.audio_in().count(), 0, "{what}: no inputs");
             assert_eq!(shape.latency.samples(), Samples(0), "{what}: no latency");
             assert_eq!(
                 shape.tail,

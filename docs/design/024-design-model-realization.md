@@ -1509,7 +1509,7 @@ macro was weighed and dropped, because what it would generate is the one part wo
 | Dry/wet | `mix: Param<Mix>`, `DryAlign`, the blend loop | **Left (B2, PR9)** for the graph's mix (doc 013 M4): a design node is the wet signal alone |
 | A readout | not on `main` | **Optional through `D::Readouts`** |
 | Fork | `fork_fresh`: design clone, `Realization::fresh`, cells detached, `ParamNode` | Always; export forks with preroll (doc 013) |
-| Shape | `Shape::audio(..).with_cost(effort).with_latency(realization.latency()).with_tail(ceiling).with_param_addrs(..)` | Always; `Cost` is a `match` over `Effort` |
+| Shape | `Shape::buses(..).with_cost(effort).with_latency(realization.latency()).with_tail(ceiling).with_param_addrs(..)` | Always; `Cost` is a `match` over `Effort` |
 
 ### 5.2 Optional parts are associated types, not flags
 

@@ -56,7 +56,7 @@ impl<F: Real + 'static> Node for EqBandNode<F> {
     /// params: a band is set, not swept.
     /// Its tail is the inner filter's: [`Tail::Unknown`](tutti_types::Tail::Unknown).
     fn shape(&self) -> Shape {
-        Shape::audio(ChannelLayout::MONO, ChannelLayout::MONO)
+        Shape::through_discrete(ChannelLayout::MONO)
             .with_cost(tutti_graph::Cost::Moderate)
             .with_tail(self.svf.shape().tail)
     }

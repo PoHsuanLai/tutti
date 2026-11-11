@@ -233,7 +233,7 @@ const TAIL: usize = 300;
 
 impl Node for Late {
     fn shape(&self) -> Shape {
-        Shape::audio(ChannelLayout::EMPTY, ChannelLayout::MONO)
+        Shape::source_discrete(ChannelLayout::MONO)
             .with_latency(tutti_types::Latency::new(Samples(LATE)))
             .with_tail(Tail::Finite(Samples(TAIL)))
     }
@@ -552,7 +552,7 @@ impl IntoNode for Counter {
 
 impl Node for Counter {
     fn shape(&self) -> Shape {
-        Shape::audio(ChannelLayout::EMPTY, ChannelLayout::MONO).with_tail(Tail::Unknown)
+        Shape::source_discrete(ChannelLayout::MONO).with_tail(Tail::Unknown)
     }
     fn prepare(&mut self, _: &Prepare) {}
     fn process(&mut self, _: &Cx<'_>, mut io: Io<'_>) -> Status {
@@ -632,7 +632,7 @@ struct Mic;
 
 impl Node for Mic {
     fn shape(&self) -> Shape {
-        Shape::audio(ChannelLayout::EMPTY, ChannelLayout::MONO)
+        Shape::source_discrete(ChannelLayout::MONO)
     }
     fn prepare(&mut self, _: &Prepare) {}
     fn process(&mut self, _: &Cx<'_>, mut io: Io<'_>) -> Status {
@@ -704,7 +704,7 @@ struct Held(f32);
 
 impl Node for Held {
     fn shape(&self) -> Shape {
-        Shape::audio(ChannelLayout::EMPTY, ChannelLayout::MONO)
+        Shape::source_discrete(ChannelLayout::MONO)
     }
     fn prepare(&mut self, _: &Prepare) {}
     fn process(&mut self, _: &Cx<'_>, mut io: Io<'_>) -> Status {
@@ -726,7 +726,7 @@ struct Slow {
 
 impl Node for Slow {
     fn shape(&self) -> Shape {
-        Shape::audio(ChannelLayout::EMPTY, ChannelLayout::MONO)
+        Shape::source_discrete(ChannelLayout::MONO)
     }
     fn prepare(&mut self, _: &Prepare) {}
     fn process(&mut self, _: &Cx<'_>, mut io: Io<'_>) -> Status {
@@ -799,7 +799,7 @@ struct Level(Param<Amplitude>);
 
 impl Node for Level {
     fn shape(&self) -> Shape {
-        Shape::audio(ChannelLayout::EMPTY, ChannelLayout::MONO)
+        Shape::source_discrete(ChannelLayout::MONO)
     }
     fn prepare(&mut self, _: &Prepare) {}
     fn process(&mut self, _: &Cx<'_>, mut io: Io<'_>) -> Status {
@@ -925,7 +925,7 @@ struct Pinned {
 
 impl Node for Pinned {
     fn shape(&self) -> Shape {
-        Shape::audio(ChannelLayout::EMPTY, ChannelLayout::MONO)
+        Shape::source_discrete(ChannelLayout::MONO)
     }
     fn prepare(&mut self, _: &Prepare) {
         here(&self.threads.prepared);
@@ -1092,7 +1092,7 @@ struct Broken;
 
 impl Node for Broken {
     fn shape(&self) -> Shape {
-        Shape::audio(ChannelLayout::EMPTY, ChannelLayout::MONO)
+        Shape::source_discrete(ChannelLayout::MONO)
     }
     fn prepare(&mut self, _: &Prepare) {}
     fn process(&mut self, _: &Cx<'_>, _: Io<'_>) -> Status {

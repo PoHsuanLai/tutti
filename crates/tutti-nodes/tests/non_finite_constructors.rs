@@ -15,7 +15,7 @@ const RATE: SampleRate = SampleRate(48_000.0);
 const BAD: [f32; 5] = [f32::NAN, f32::INFINITY, f32::NEG_INFINITY, -1.0, -1e30];
 
 fn finite(node: &mut dyn Node) -> bool {
-    let width = usize::from(node.shape().audio_in.count());
+    let width = usize::from(node.shape().audio_in().count());
     let mut ok = true;
     for k in 0..4 {
         let chans: Vec<Vec<f32>> = (0..width)

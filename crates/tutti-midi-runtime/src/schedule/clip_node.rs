@@ -53,7 +53,6 @@ use tutti_graph::{
 };
 use tutti_midi_protocol::Translator;
 use tutti_rt::{ArcLend, Reader};
-use tutti_types::ChannelLayout;
 use tutti_ump::Ump;
 
 use crate::ledger::{Class, NoteKey, NoteLedger, Sending};
@@ -409,7 +408,7 @@ impl Node for MidiClipNode {
     /// No audio, one MIDI event output of [`CLIP_EVENT_DENSITY`] per frame of
     /// the block it was prepared for.
     fn shape(&self) -> Shape {
-        Shape::audio(ChannelLayout::EMPTY, ChannelLayout::EMPTY)
+        Shape::EMPTY
             .with_events(0, 1)
             .with_event_capacity(self.capacity)
             // Event-only: a walk over the block's events, nothing per frame

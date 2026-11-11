@@ -46,7 +46,7 @@ struct Emitter {
 
 impl Node for Emitter {
     fn shape(&self) -> Shape {
-        Shape::audio(ChannelLayout::EMPTY, ChannelLayout::EMPTY).with_events(0, 1)
+        Shape::EMPTY.with_events(0, 1)
     }
     fn prepare(&mut self, _: &Prepare) {}
     fn process(&mut self, cx: &Cx<'_>, mut io: Io<'_>) -> Status {
@@ -80,7 +80,7 @@ struct Recorder {
 
 impl Node for Recorder {
     fn shape(&self) -> Shape {
-        Shape::audio(ChannelLayout::MONO, ChannelLayout::EMPTY).with_events(self.ports, 0)
+        Shape::sink_discrete(ChannelLayout::MONO).with_events(self.ports, 0)
     }
     fn prepare(&mut self, _: &Prepare) {}
     fn process(&mut self, cx: &Cx<'_>, io: Io<'_>) -> Status {
@@ -106,7 +106,7 @@ struct Lag {
 
 impl Node for Lag {
     fn shape(&self) -> Shape {
-        Shape::audio(ChannelLayout::MONO, ChannelLayout::MONO)
+        Shape::through_discrete(ChannelLayout::MONO)
             .with_latency(Latency::new(Samples(self.latency)))
             .with_tail(Tail::Unknown)
     }
@@ -147,24 +147,20 @@ fn spec_of(ph: &Phase, emitters: &[(u32, u64)]) -> (GraphSpec, Shapes) {
     let mut add = |t: &mut Topology, k: NodeKey, s: Shape| {
         t.nodes.insert(
             k,
-            NodeSpec::new("n", s.audio_in, s.audio_out)
+            NodeSpec::new("n", s.audio_in(), s.audio_out())
                 .with_latency(s.latency.samples())
                 .with_tail(s.tail),
         );
         shapes.insert(k, s);
     };
     for (i, _) in emitters.iter().enumerate() {
-        add(
-            &mut t,
-            NodeKey(i as u64),
-            Shape::audio(ChannelLayout::EMPTY, ChannelLayout::EMPTY).with_events(0, 1),
-        );
+        add(&mut t, NodeKey(i as u64), Shape::EMPTY.with_events(0, 1));
     }
     add(&mut t, LAG, Lag { latency: ph.lag }.shape());
     add(
         &mut t,
         REC,
-        Shape::audio(ChannelLayout::MONO, ChannelLayout::EMPTY).with_events(REC_PORTS, 0),
+        Shape::sink_discrete(ChannelLayout::MONO).with_events(REC_PORTS, 0),
     );
     t.edges.insert(
         InPort { node: REC, port: 0 },
@@ -526,16 +522,16 @@ fn wide_event_fan_in_is_a_merge_tree_in_source_order() {
         let mut t = Topology::default();
         let mut shapes = Shapes::new();
         for i in 0..width {
-            let s = Shape::audio(ChannelLayout::EMPTY, ChannelLayout::EMPTY).with_events(0, 1);
+            let s = Shape::EMPTY.with_events(0, 1);
             t.nodes.insert(
                 NodeKey(i as u64),
-                NodeSpec::new("e", s.audio_in, s.audio_out),
+                NodeSpec::new("e", s.audio_in(), s.audio_out()),
             );
             shapes.insert(NodeKey(i as u64), s);
         }
-        let rs = Shape::audio(ChannelLayout::MONO, ChannelLayout::EMPTY).with_events(1, 0);
+        let rs = Shape::sink_discrete(ChannelLayout::MONO).with_events(1, 0);
         t.nodes
-            .insert(REC, NodeSpec::new("r", rs.audio_in, rs.audio_out));
+            .insert(REC, NodeSpec::new("r", rs.audio_in(), rs.audio_out()));
         shapes.insert(REC, rs);
         let mut g = GraphSpec::new(t);
         // Listed in the REVERSE of key order (by hand, not through
@@ -618,7 +614,7 @@ struct Clock;
 
 impl Node for Clock {
     fn shape(&self) -> Shape {
-        Shape::audio(ChannelLayout::EMPTY, ChannelLayout::MONO).with_events(0, 1)
+        Shape::source_discrete(ChannelLayout::MONO).with_events(0, 1)
     }
     fn prepare(&mut self, _: &Prepare) {}
     fn process(&mut self, cx: &Cx<'_>, mut io: Io<'_>) -> Status {
@@ -643,7 +639,7 @@ struct Tap(Inbox);
 
 impl Node for Tap {
     fn shape(&self) -> Shape {
-        Shape::audio(ChannelLayout::MONO, ChannelLayout::MONO)
+        Shape::through_discrete(ChannelLayout::MONO)
             .with_events(1, 0)
             .with_tail(Tail::Unknown)
     }
@@ -689,10 +685,10 @@ fn feedback_delays_by_its_declared_delay_at_any_max_block() {
             let cs = Clock.shape();
             let ts = Tap(Arc::default()).shape();
             t.nodes
-                .insert(clock, NodeSpec::new("c", cs.audio_in, cs.audio_out));
+                .insert(clock, NodeSpec::new("c", cs.audio_in(), cs.audio_out()));
             t.nodes.insert(
                 tap,
-                NodeSpec::new("t", ts.audio_in, ts.audio_out).with_tail(Tail::Unknown),
+                NodeSpec::new("t", ts.audio_in(), ts.audio_out()).with_tail(Tail::Unknown),
             );
             t.edges.insert(
                 InPort { node: tap, port: 0 },
@@ -780,10 +776,10 @@ fn a_feedback_delay_shorter_than_max_block_is_refused() {
     let cs = Clock.shape();
     let ts = Tap(Arc::default()).shape();
     t.nodes
-        .insert(clock, NodeSpec::new("c", cs.audio_in, cs.audio_out));
+        .insert(clock, NodeSpec::new("c", cs.audio_in(), cs.audio_out()));
     t.nodes.insert(
         tap,
-        NodeSpec::new("t", ts.audio_in, ts.audio_out).with_tail(Tail::Unknown),
+        NodeSpec::new("t", ts.audio_in(), ts.audio_out()).with_tail(Tail::Unknown),
     );
     t.edges.insert(
         InPort { node: tap, port: 0 },
@@ -819,16 +815,16 @@ fn wide_fan_in_matches_the_reference() {
     let mut t = Topology::default();
     let mut shapes = Shapes::new();
     for i in 0..width {
-        let s = Shape::audio(ChannelLayout::EMPTY, ChannelLayout::EMPTY).with_events(0, 1);
+        let s = Shape::EMPTY.with_events(0, 1);
         t.nodes.insert(
             NodeKey(i as u64),
-            NodeSpec::new("e", s.audio_in, s.audio_out),
+            NodeSpec::new("e", s.audio_in(), s.audio_out()),
         );
         shapes.insert(NodeKey(i as u64), s);
     }
-    let rs = Shape::audio(ChannelLayout::MONO, ChannelLayout::EMPTY).with_events(1, 0);
+    let rs = Shape::sink_discrete(ChannelLayout::MONO).with_events(1, 0);
     t.nodes
-        .insert(REC, NodeSpec::new("r", rs.audio_in, rs.audio_out));
+        .insert(REC, NodeSpec::new("r", rs.audio_in(), rs.audio_out()));
     shapes.insert(REC, rs);
     let mut g = GraphSpec::new(t);
     for i in (0..width).rev() {

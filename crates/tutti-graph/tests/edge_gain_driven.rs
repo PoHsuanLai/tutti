@@ -79,7 +79,7 @@ fn driver(latency: usize) -> Kind {
 
 fn spec_of(kind: &Kind) -> NodeSpec {
     let s = Node::shape(&common::TestNode::new(kind.clone()));
-    NodeSpec::new("test", s.audio_in, s.audio_out)
+    NodeSpec::new("test", s.audio_in(), s.audio_out())
         .with_latency(s.latency.samples())
         .with_tail(s.tail)
 }

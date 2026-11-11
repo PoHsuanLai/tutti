@@ -27,8 +27,8 @@ use common::{Kind, TestNode, prepare};
 use tutti_fixtures::midi::m1_note_on;
 use tutti_graph::NodeKey;
 use tutti_graph::{
-    CrossfadeCurve, Cx, Editor, EventEdge, EventIn, EventKind, EventOut, Fade, Io, Law, Node,
-    ParamRamp, ParamSegment, Prepare, Shape, Status, Transport, Unforkable,
+    Buses, CrossfadeCurve, Cx, Editor, EventEdge, EventIn, EventKind, EventOut, Fade, Io, Law,
+    Node, ParamRamp, ParamSegment, Prepare, Shape, Status, Transport, Unforkable,
 };
 use tutti_graph::{Edge, FeedbackFrom, InPort, OutPort, Source};
 use tutti_types::{At, Beat, ChannelLayout, Frame, Latency, Samples, Tail};
@@ -424,9 +424,7 @@ struct Spray {
 
 impl Node for Spray {
     fn shape(&self) -> Shape {
-        Shape::audio(ChannelLayout::EMPTY, ChannelLayout::EMPTY)
-            .with_events(0, 1)
-            .with_event_capacity(self.cap)
+        Shape::EMPTY.with_events(0, 1).with_event_capacity(self.cap)
     }
     fn prepare(&mut self, _: &Prepare) {}
     fn process(&mut self, cx: &Cx<'_>, mut io: Io<'_>) -> Status {
@@ -458,7 +456,7 @@ struct LateEvents;
 
 impl Node for LateEvents {
     fn shape(&self) -> Shape {
-        Shape::audio(ChannelLayout::EMPTY, ChannelLayout::EMPTY)
+        Shape::EMPTY
             .with_events(0, 1)
             .with_latency(Latency::new(Samples(141)))
             .with_tail(Tail::Finite(Samples(141)))
@@ -475,7 +473,7 @@ struct Tally([Arc<AtomicU64>; 2]);
 
 impl Node for Tally {
     fn shape(&self) -> Shape {
-        Shape::audio(ChannelLayout::EMPTY, ChannelLayout::EMPTY).with_events(2, 0)
+        Shape::EMPTY.with_events(2, 0)
     }
     fn prepare(&mut self, _: &Prepare) {}
     fn process(&mut self, _: &Cx<'_>, io: Io<'_>) -> Status {
@@ -640,7 +638,7 @@ struct ParamSink;
 
 impl Node for ParamSink {
     fn shape(&self) -> Shape {
-        Shape::audio(ChannelLayout::MONO, ChannelLayout::MONO)
+        Shape::through_discrete(ChannelLayout::MONO)
             .with_params(&[tutti_types::UnitParam::Cutoff, tutti_types::UnitParam::Q])
     }
     fn prepare(&mut self, _: &Prepare) {}
@@ -664,9 +662,7 @@ struct RampEvery;
 
 impl Node for RampEvery {
     fn shape(&self) -> Shape {
-        Shape::audio(ChannelLayout::EMPTY, ChannelLayout::EMPTY)
-            .with_events(0, 1)
-            .with_event_capacity(16)
+        Shape::EMPTY.with_events(0, 1).with_event_capacity(16)
     }
     fn prepare(&mut self, _: &Prepare) {}
     fn process(&mut self, cx: &Cx<'_>, mut io: Io<'_>) -> Status {
@@ -1242,9 +1238,8 @@ impl Node for Wire {
         // The first `outs` inputs are its main bus, which its bypass and mix
         // pass by index; a wider input's rest are ports.
         let main = ch(self.ins.min(self.outs));
-        Shape::audio(ch(self.ins), ch(self.outs))
-            .with_buses_in(tutti_graph::Buses::of_width(main))
-            .with_buses_out(tutti_graph::Buses::of_width(main))
+        Shape::buses(Buses::discrete(main), Buses::discrete(main))
+            .with_ports(ch(self.ins), ch(self.outs))
             .with_latency(Latency::new(Samples(self.latency)))
             .with_events(self.ein, self.eout)
             .with_tail(Tail::None)

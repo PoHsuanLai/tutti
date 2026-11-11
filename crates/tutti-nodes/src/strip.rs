@@ -372,7 +372,7 @@ impl Node for BusStripNode {
     /// ([`STRIP_PARAMS`]). Volume and pan are per-frame gains, so it stops
     /// with its input.
     fn shape(&self) -> Shape {
-        Shape::audio(self.layout, self.layout)
+        Shape::through_discrete(self.layout)
             // Measured (doc 013, "The cost model and coarsening"): steady
             // and ramping are far under the `Light`/`Moderate` boundary.
             // With the volume fed per frame it is borderline: about 0.7 of
@@ -555,7 +555,7 @@ mod tests {
             &[UnitParam::Volume, UnitParam::Pan][..]
         );
         assert_eq!(
-            (s.shape().audio_in.count(), s.shape().audio_out.count()),
+            (s.shape().audio_in().count(), s.shape().audio_out().count()),
             (6, 6)
         );
         s.set_volume(Amplitude(0.5));

@@ -47,7 +47,7 @@ struct Pulse {
 
 impl Node for Pulse {
     fn shape(&self) -> Shape {
-        Shape::audio(ChannelLayout::EMPTY, self.width)
+        Shape::source_discrete(self.width)
     }
     fn prepare(&mut self, _: &Prepare) {}
     fn process(&mut self, cx: &Cx<'_>, mut io: Io<'_>) -> Status {
@@ -79,7 +79,7 @@ struct Kick {
 
 impl Node for Kick {
     fn shape(&self) -> Shape {
-        Shape::audio(ChannelLayout::EMPTY, ChannelLayout::STEREO)
+        Shape::source_discrete(ChannelLayout::STEREO)
     }
     fn prepare(&mut self, _: &Prepare) {}
     fn process(&mut self, cx: &Cx<'_>, mut io: Io<'_>) -> Status {
@@ -135,7 +135,7 @@ struct Seq {
 
 impl Node for Seq {
     fn shape(&self) -> Shape {
-        Shape::audio(ChannelLayout::EMPTY, ChannelLayout::EMPTY).with_events(0, 1)
+        Shape::EMPTY.with_events(0, 1)
     }
     fn prepare(&mut self, _: &Prepare) {}
     fn process(&mut self, cx: &Cx<'_>, mut io: Io<'_>) -> Status {
@@ -172,9 +172,7 @@ struct Midi {
 
 impl Node for Midi {
     fn shape(&self) -> Shape {
-        Shape::audio(ChannelLayout::EMPTY, ChannelLayout::EMPTY)
-            .with_events(0, 1)
-            .with_event_capacity(1024)
+        Shape::EMPTY.with_events(0, 1).with_event_capacity(1024)
     }
     fn prepare(&mut self, _: &Prepare) {}
     fn process(&mut self, cx: &Cx<'_>, mut io: Io<'_>) -> Status {
@@ -203,7 +201,7 @@ struct Tap {
 
 impl Node for Tap {
     fn shape(&self) -> Shape {
-        Shape::audio(ChannelLayout::EMPTY, ChannelLayout::from_count(4)).with_events(1, 0)
+        Shape::source_discrete(ChannelLayout::from_count(4)).with_events(1, 0)
     }
     fn prepare(&mut self, _: &Prepare) {}
     fn process(&mut self, cx: &Cx<'_>, mut io: Io<'_>) -> Status {
@@ -253,7 +251,7 @@ struct Probe;
 
 impl Node for Probe {
     fn shape(&self) -> Shape {
-        Shape::audio(ChannelLayout::EMPTY, ChannelLayout::MONO).with_params(&[UnitParam::Cutoff])
+        Shape::source_discrete(ChannelLayout::MONO).with_params(&[UnitParam::Cutoff])
     }
     fn prepare(&mut self, _: &Prepare) {}
     fn process(&mut self, _: &Cx<'_>, mut io: Io<'_>) -> Status {
@@ -819,7 +817,7 @@ fn from_decl_builds_its_own_kind() {
     };
     let node = EnvelopeFollowerNode::from_decl(&f, ChannelLayout::STEREO).expect("a follower");
     assert_eq!(node.source(), SourceId(9));
-    assert_eq!(node.shape().audio_in, ChannelLayout::STEREO);
+    assert_eq!(node.shape().audio_in(), ChannelLayout::STEREO);
     assert!(EnvelopeFollowerNode::from_decl(&n, ChannelLayout::MONO).is_none());
     assert_eq!(
         NoteEnvelopeNode::from_decl(&n).map(|n| n.source()),

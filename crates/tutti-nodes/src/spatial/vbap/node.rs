@@ -305,9 +305,8 @@ impl Node for VbapPannerNode {
     fn shape(&self) -> Shape {
         // A stereo pair in and the bed's speakers out, so the graph's mix and
         // bypass fold the dry pair onto the bed by speaker.
-        Shape::audio(ChannelLayout::STEREO, self.layout)
-            .with_buses_in(main_bus(ChannelLayout::STEREO))
-            .with_buses_out(main_bus(self.layout))
+        Shape::buses(main_bus(ChannelLayout::STEREO), main_bus(self.layout))
+            .with_ports(ChannelLayout::STEREO, self.layout)
             .with_tail(Tail::Unknown)
             .with_params(&VBAP_PANNER_PARAMS)
             // A ramped gain pair per output channel and frame, and the

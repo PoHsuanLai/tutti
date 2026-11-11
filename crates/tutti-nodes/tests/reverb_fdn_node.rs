@@ -386,5 +386,5 @@ fn a_kind_spawns_its_node() {
         panic!("an FDN")
     };
     assert_eq!(n.param_set().params().count(), 11);
-    assert_eq!(n.shape().audio_out, ChannelLayout::STEREO);
+    assert_eq!(n.shape().audio_out(), ChannelLayout::STEREO);
 }

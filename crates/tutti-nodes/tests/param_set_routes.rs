@@ -94,7 +94,7 @@ struct Probe;
 
 impl Node for Probe {
     fn shape(&self) -> Shape {
-        Shape::audio(ChannelLayout::EMPTY, ChannelLayout::MONO).with_params(&[UnitParam::Cutoff])
+        Shape::source_discrete(ChannelLayout::MONO).with_params(&[UnitParam::Cutoff])
     }
     fn prepare(&mut self, _: &Prepare) {}
     fn process(&mut self, _: &Cx<'_>, mut io: Io<'_>) -> Status {

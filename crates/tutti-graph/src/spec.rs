@@ -15,7 +15,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::bus_edge::{BusRef, BusSource};
+use crate::bus_edge::{BusFold, BusRef, BusSource};
 use crate::gain::EdgeGain;
 use crate::mode::{NodeMix, NodeMode};
 use crate::{ChannelFeed, LatencyGraph, PortFeed};
@@ -176,7 +176,7 @@ pub struct GraphSpec {
     /// [`validate`](Self::validate) and [`compile`](fn@crate::compile) take.
     /// [`Editor::commit`](crate::Editor::commit) lowers for you. An empty
     /// `Vec` is the same as an absent key.
-    pub bus_edges: BTreeMap<BusRef, Vec<BusSource>>,
+    pub bus_edges: BTreeMap<BusRef, Vec<(BusSource, BusFold)>>,
     /// The declared topology of the root, the graph's outputs, as a bus (doc
     /// 013, "Buses", B4): what a bus edge into the root folds to. `None` is
     /// undeclared. Every root the engine renders
@@ -187,7 +187,7 @@ pub struct GraphSpec {
     /// Bus edges into the root, in source order
     /// ([`connect_bus_to_root`](Self::connect_bus_to_root)): lowered, as
     /// `bus_edges` are, to lanes on the output channels.
-    pub root_sources: Vec<BusSource>,
+    pub root_sources: Vec<(BusSource, BusFold)>,
 }
 
 impl GraphSpec {

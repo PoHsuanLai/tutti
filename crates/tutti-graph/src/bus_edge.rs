@@ -62,6 +62,19 @@ pub enum BusSource {
     Global,
 }
 
+/// How a bus edge maps its source's channels onto its sink's.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum BusFold {
+    /// By speaker: the [`Fold`] between the two declared topologies
+    /// ([`Fold::between`]), which never guesses. A bus that names no speaker
+    /// meets another only at its width.
+    Speakers,
+    /// By index, asked for by name: sink channel `c` is source channel `c`, a
+    /// wider sink is zero-filled and a narrower one refused
+    /// ([`Fold::by_index`]), whatever either side names.
+    ByIndex,
+}
+
 /// Which side of a node a bus was asked for on.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BusSide {
@@ -197,20 +210,24 @@ impl Lowering {
 }
 
 impl GraphSpec {
-    /// Adds `from` to the sources of sink bus `to`, in source order. Returns
-    /// whether it was new. Nothing is checked: the bus edge meets the nodes'
-    /// buses when it is [`lowered`](Self::lowered) (at a commit), and
+    /// Adds `from` to the sources of sink bus `to`, folded by speaker
+    /// ([`BusFold::Speakers`]), in source order. Returns whether it was new.
+    /// Nothing is checked: the bus edge meets the nodes' buses when it is
+    /// [`lowered`](Self::lowered) (at a commit), and
     /// [`Editor::connect_bus`](crate::Editor::connect_bus) checks it at the
     /// call.
     pub fn connect_bus(&mut self, from: BusSource, to: BusRef) -> bool {
-        let sources = self.bus_edges.entry(to).or_default();
-        match sources.binary_search(&from) {
-            Ok(_) => false,
-            Err(i) => {
-                sources.insert(i, from);
-                true
-            }
-        }
+        self.feed_bus(from, to, BusFold::Speakers)
+    }
+
+    /// As [`connect_bus`](Self::connect_bus), channel by index
+    /// ([`BusFold::ByIndex`]).
+    pub fn connect_bus_by_index(&mut self, from: BusSource, to: BusRef) -> bool {
+        self.feed_bus(from, to, BusFold::ByIndex)
+    }
+
+    fn feed_bus(&mut self, from: BusSource, to: BusRef, fold: BusFold) -> bool {
+        insert_feed(self.bus_edges.entry(to).or_default(), from, fold)
     }
 
     /// Removes `from` from the sources of sink bus `to`, and the key with the
@@ -220,7 +237,7 @@ impl GraphSpec {
         let Some(sources) = self.bus_edges.get_mut(&to) else {
             return false;
         };
-        let Some(i) = sources.iter().position(|s| *s == from) else {
+        let Some(i) = sources.iter().position(|(s, _)| *s == from) else {
             return false;
         };
         sources.remove(i);
@@ -230,23 +247,24 @@ impl GraphSpec {
         true
     }
 
-    /// Adds `from` to the bus edges into the root, in source order. Returns
-    /// whether it was new. As [`connect_bus`](Self::connect_bus), nothing is
-    /// checked until the lowering.
+    /// Adds `from` to the bus edges into the root, folded by speaker, in
+    /// source order. Returns whether it was new. As
+    /// [`connect_bus`](Self::connect_bus), nothing is checked until the
+    /// lowering.
     pub fn connect_bus_to_root(&mut self, from: BusSource) -> bool {
-        match self.root_sources.binary_search(&from) {
-            Ok(_) => false,
-            Err(i) => {
-                self.root_sources.insert(i, from);
-                true
-            }
-        }
+        insert_feed(&mut self.root_sources, from, BusFold::Speakers)
+    }
+
+    /// As [`connect_bus_to_root`](Self::connect_bus_to_root), channel by
+    /// index ([`BusFold::ByIndex`]).
+    pub fn connect_bus_to_root_by_index(&mut self, from: BusSource) -> bool {
+        insert_feed(&mut self.root_sources, from, BusFold::ByIndex)
     }
 
     /// Removes `from` from the bus edges into the root. Returns whether it
     /// was there.
     pub fn disconnect_bus_from_root(&mut self, from: BusSource) -> bool {
-        match self.root_sources.iter().position(|s| *s == from) {
+        match self.root_sources.iter().position(|(s, _)| *s == from) {
             Some(i) => {
                 self.root_sources.remove(i);
                 true
@@ -269,6 +287,7 @@ impl GraphSpec {
         shapes: &Shapes,
         from: BusSource,
         to: BusRef,
+        fold: BusFold,
     ) -> Result<Vec<(EdgeId, f32)>, BusError> {
         let sink_shape = shapes
             .get(&to.node)
@@ -278,14 +297,14 @@ impl GraphSpec {
             side: BusSide::Input,
         };
         let sink_bus = sink_shape
-            .buses_in
+            .buses_in()
             .get(usize::from(to.bus))
             .ok_or(no_sink.clone())?;
         let sink_first = sink_shape
-            .buses_in
+            .buses_in()
             .first_port(usize::from(to.bus))
             .ok_or(no_sink)?;
-        self.fold_lanes(shapes, from, sink_bus.topology, |c| {
+        self.fold_lanes(shapes, from, sink_bus.topology, fold, |c| {
             Sink::Port(InPort {
                 node: to.node,
                 port: (sink_first + c) as u16,
@@ -299,11 +318,16 @@ impl GraphSpec {
 
     /// The lanes of the bus edge `from -> root`: the same fold, onto the
     /// output channels.
-    fn root_lanes(&self, shapes: &Shapes, from: BusSource) -> Result<Vec<(EdgeId, f32)>, BusError> {
+    fn root_lanes(
+        &self,
+        shapes: &Shapes,
+        from: BusSource,
+        fold: BusFold,
+    ) -> Result<Vec<(EdgeId, f32)>, BusError> {
         // The engine's roots (`MAX_ROOT_CHANNELS`, 8) all fit a bus (16), so
         // a root with no `BusTopology` is one never declared.
         let root = self.root.ok_or(BusError::RootUndeclared)?;
-        self.fold_lanes(shapes, from, root, |c| Sink::Output(c as u16))
+        self.fold_lanes(shapes, from, root, fold, |c| Sink::Output(c as u16))
             .map_err(|error| match error {
                 LaneError::Bus(e) => e,
                 LaneError::Fold(error) => BusError::RootFold { from, error },
@@ -317,6 +341,7 @@ impl GraphSpec {
         shapes: &Shapes,
         from: BusSource,
         sink: BusTopology,
+        by: BusFold,
         at: impl Fn(usize) -> Sink,
     ) -> Result<Vec<(EdgeId, f32)>, LaneError> {
         let (source_topology, source_first, source_node) = match from {
@@ -329,11 +354,11 @@ impl GraphSpec {
                     side: BusSide::Output,
                 };
                 let found = shape
-                    .buses_out
+                    .buses_out()
                     .get(usize::from(bus.bus))
                     .ok_or(no_bus.clone())?;
                 let first = shape
-                    .buses_out
+                    .buses_out()
                     .first_port(usize::from(bus.bus))
                     .ok_or(no_bus)?;
                 (found.topology, first, Some(bus.node))
@@ -347,10 +372,13 @@ impl GraphSpec {
             }
         };
 
-        let fold = Fold::between(
-            &ChannelTopology::from(source_topology),
-            &ChannelTopology::from(sink),
-        )
+        let fold = match by {
+            BusFold::Speakers => Fold::between(
+                &ChannelTopology::from(source_topology),
+                &ChannelTopology::from(sink),
+            ),
+            BusFold::ByIndex => Fold::by_index(source_topology.layout(), sink.layout()),
+        }
         .map_err(LaneError::Fold)?;
 
         let mut lanes = Vec::new();
@@ -383,8 +411,9 @@ impl GraphSpec {
         shapes: &Shapes,
         from: BusSource,
         to: BusRef,
+        fold: BusFold,
     ) -> Result<(), BusError> {
-        for (id, _) in self.bus_lanes(shapes, from, to)? {
+        for (id, _) in self.bus_lanes(shapes, from, to, fold)? {
             self.check_lane(id)?;
         }
         Ok(())
@@ -395,8 +424,9 @@ impl GraphSpec {
         &self,
         shapes: &Shapes,
         from: BusSource,
+        fold: BusFold,
     ) -> Result<(), BusError> {
-        for (id, _) in self.root_lanes(shapes, from)? {
+        for (id, _) in self.root_lanes(shapes, from, fold)? {
             self.check_lane(id)?;
         }
         Ok(())
@@ -456,17 +486,29 @@ impl GraphSpec {
             Ok(())
         };
         for (&to, sources) in &self.bus_edges {
-            for &from in sources {
-                for (id, weight) in self.bus_lanes(shapes, from, to)? {
+            for &(from, fold) in sources {
+                for (id, weight) in self.bus_lanes(shapes, from, to, fold)? {
                     place(&mut spec, id, weight)?;
                 }
             }
         }
-        for &from in &self.root_sources {
-            for (id, weight) in self.root_lanes(shapes, from)? {
+        for &(from, fold) in &self.root_sources {
+            for (id, weight) in self.root_lanes(shapes, from, fold)? {
                 place(&mut spec, id, weight)?;
             }
         }
         Ok(Lowering { spec, lanes })
+    }
+}
+
+/// Adds `from` with `fold` to a source list kept in source order, once per
+/// source. Returns whether it was new.
+fn insert_feed(sources: &mut Vec<(BusSource, BusFold)>, from: BusSource, fold: BusFold) -> bool {
+    match sources.binary_search_by_key(&from, |&(s, _)| s) {
+        Ok(_) => false,
+        Err(i) => {
+            sources.insert(i, (from, fold));
+            true
+        }
     }
 }

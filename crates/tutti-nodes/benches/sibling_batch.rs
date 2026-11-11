@@ -92,7 +92,7 @@ struct StripNode(Ramp);
 
 impl Node for StripNode {
     fn shape(&self) -> Shape {
-        Shape::audio(ChannelLayout::STEREO, ChannelLayout::STEREO).with_cost(Cost::Light)
+        Shape::through_discrete(ChannelLayout::STEREO).with_cost(Cost::Light)
     }
     fn prepare(&mut self, _: &Prepare) {}
     fn process(&mut self, _: &Cx<'_>, mut io: Io<'_>) -> Status {
@@ -112,7 +112,7 @@ struct StripBatch(Vec<Ramp>);
 impl Node for StripBatch {
     fn shape(&self) -> Shape {
         let w = ChannelLayout::try_from(2 * self.0.len()).expect("a test width is small");
-        Shape::audio(w, w).with_cost(Cost::Light)
+        Shape::through_discrete(w).with_cost(Cost::Light)
     }
     fn prepare(&mut self, _: &Prepare) {}
     fn process(&mut self, _: &Cx<'_>, mut io: Io<'_>) -> Status {
@@ -134,7 +134,7 @@ struct StripSoa(Vec<Ramp>);
 impl Node for StripSoa {
     fn shape(&self) -> Shape {
         let w = ChannelLayout::try_from(2 * self.0.len()).expect("a test width is small");
-        Shape::audio(w, w).with_cost(Cost::Light)
+        Shape::through_discrete(w).with_cost(Cost::Light)
     }
     fn prepare(&mut self, _: &Prepare) {}
     fn process(&mut self, _: &Cx<'_>, mut io: Io<'_>) -> Status {
@@ -210,7 +210,7 @@ struct BiquadNode(Biquad);
 
 impl Node for BiquadNode {
     fn shape(&self) -> Shape {
-        Shape::audio(ChannelLayout::MONO, ChannelLayout::MONO).with_cost(Cost::Moderate)
+        Shape::through_discrete(ChannelLayout::MONO).with_cost(Cost::Moderate)
     }
     fn prepare(&mut self, _: &Prepare) {}
     fn process(&mut self, _: &Cx<'_>, mut io: Io<'_>) -> Status {
@@ -227,7 +227,7 @@ struct BiquadBatch(Vec<Biquad>);
 impl Node for BiquadBatch {
     fn shape(&self) -> Shape {
         let w = ChannelLayout::try_from(self.0.len()).expect("a test width is small");
-        Shape::audio(w, w).with_cost(Cost::Moderate)
+        Shape::through_discrete(w).with_cost(Cost::Moderate)
     }
     fn prepare(&mut self, _: &Prepare) {}
     fn process(&mut self, _: &Cx<'_>, mut io: Io<'_>) -> Status {
@@ -282,7 +282,7 @@ impl BiquadSoa {
 impl Node for BiquadSoa {
     fn shape(&self) -> Shape {
         let w = ChannelLayout::try_from(8 * self.0.len()).expect("a test width is small");
-        Shape::audio(w, w).with_cost(Cost::Moderate)
+        Shape::through_discrete(w).with_cost(Cost::Moderate)
     }
     fn prepare(&mut self, _: &Prepare) {}
     fn process(&mut self, _: &Cx<'_>, mut io: Io<'_>) -> Status {

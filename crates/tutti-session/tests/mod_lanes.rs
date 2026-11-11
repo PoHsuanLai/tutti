@@ -141,7 +141,7 @@ struct Held {
 
 impl Node for Held {
     fn shape(&self) -> Shape {
-        Shape::audio(ChannelLayout::EMPTY, ChannelLayout::EMPTY).with_events(0, 1)
+        Shape::EMPTY.with_events(0, 1)
     }
     fn prepare(&mut self, _: &Prepare) {}
     fn process(&mut self, cx: &Cx<'_>, mut io: Io<'_>) -> Status {
@@ -171,7 +171,7 @@ const LATE: usize = 100;
 
 impl Node for Late {
     fn shape(&self) -> Shape {
-        Shape::audio(ChannelLayout::EMPTY, ChannelLayout::MONO)
+        Shape::source_discrete(ChannelLayout::MONO)
             .with_latency(tutti_types::Latency::new(Samples(LATE)))
     }
     fn prepare(&mut self, _: &Prepare) {}

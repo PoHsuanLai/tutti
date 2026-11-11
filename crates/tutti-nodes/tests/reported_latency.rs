@@ -26,7 +26,7 @@ const BLOCK: usize = 64;
 /// `Vec` per output.
 fn impulse_response<N: Node>(node: N, frames: usize) -> Vec<Vec<f32>> {
     let mut node = prepared(node, SR, BLOCK);
-    let ins = usize::from(node.shape().audio_in.count());
+    let ins = usize::from(node.shape().audio_in().count());
     let mut out: Vec<Vec<f32>> = Vec::new();
     let mut done = 0;
     while done < frames {
@@ -52,12 +52,12 @@ fn impulse_response<N: Node>(node: N, frames: usize) -> Vec<Vec<f32>> {
 fn mixed_impulse_response<N: IntoNode>(node: N, frames: usize, mix: Mix) -> Vec<Vec<f32>> {
     let (node, _) = node.into_node();
     let shape = node.shape();
-    let mut g = GraphBuilder::new(shape.audio_in, shape.audio_out);
+    let mut g = GraphBuilder::new(shape.audio_in(), shape.audio_out());
     let key = g.add(tutti_graph::Unforkable(node));
-    for c in 0..usize::from(shape.audio_in.count()) {
+    for c in 0..usize::from(shape.audio_in().count()) {
         g.connect_input(c, key, c);
     }
-    for c in 0..usize::from(shape.audio_out.count()) {
+    for c in 0..usize::from(shape.audio_out().count()) {
         g.connect_output(key, c, c);
     }
     g.spec_mut().set_mix(key, mix);
@@ -66,7 +66,7 @@ fn mixed_impulse_response<N: IntoNode>(node: N, frames: usize, mix: Mix) -> Vec<
         .expect("a one-node graph builds");
     let mut chunk = vec![0.0f32; frames];
     chunk[0] = 1.0;
-    let ins: Vec<&[f32]> = (0..usize::from(shape.audio_in.count()))
+    let ins: Vec<&[f32]> = (0..usize::from(shape.audio_in().count()))
         .map(|_| &chunk[..])
         .collect();
     r.render_input(&ins)

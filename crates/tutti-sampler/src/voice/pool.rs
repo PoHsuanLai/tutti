@@ -926,7 +926,7 @@ impl Node for VoicePool {
     /// No inputs, [`channels`](Self::channels) outputs; a generator (fed
     /// out of band, through its queue), never skipped.
     fn shape(&self) -> Shape {
-        Shape::audio(ChannelLayout::EMPTY, self.channels)
+        Shape::source_discrete(self.channels)
             .with_tail(Tail::Unbounded)
             // Its voices arrive while it plays, each a `VoiceNode`'s cost:
             // measured 13 ns per frame and channel at one plain voice, 82 at

@@ -52,7 +52,7 @@ struct Sine {
 
 impl Node for Sine {
     fn shape(&self) -> Shape {
-        Shape::audio(ChannelLayout::EMPTY, ChannelLayout::MONO).with_tail(Tail::Unbounded)
+        Shape::source_discrete(ChannelLayout::MONO).with_tail(Tail::Unbounded)
     }
     fn prepare(&mut self, p: &Prepare) {
         self.dt = (1.0 / p.sample_rate().get()) as f32;
@@ -116,7 +116,7 @@ impl Lowpass {
 
 impl Node for Lowpass {
     fn shape(&self) -> Shape {
-        Shape::audio(ChannelLayout::MONO, ChannelLayout::MONO)
+        Shape::through_discrete(ChannelLayout::MONO)
             .with_tail(Tail::Unknown)
             .with_in_place()
     }
@@ -149,9 +149,11 @@ struct Sum(usize);
 
 impl Node for Sum {
     fn shape(&self) -> Shape {
-        Shape::audio(
-            ChannelLayout::try_from(self.0).expect("a test width is small"),
-            ChannelLayout::MONO,
+        Shape::buses(
+            tutti_graph::Buses::discrete(
+                ChannelLayout::try_from(self.0).expect("a test width is small"),
+            ),
+            tutti_graph::Buses::discrete(ChannelLayout::MONO),
         )
     }
     fn prepare(&mut self, _p: &Prepare) {}
@@ -175,7 +177,7 @@ struct Nop;
 
 impl Node for Nop {
     fn shape(&self) -> Shape {
-        Shape::audio(ChannelLayout::MONO, ChannelLayout::MONO).with_in_place()
+        Shape::through_discrete(ChannelLayout::MONO).with_in_place()
     }
     fn prepare(&mut self, _p: &Prepare) {}
     fn process(&mut self, _cx: &Cx<'_>, io: Io<'_>) -> Status {
@@ -355,7 +357,7 @@ struct FormNop {
 impl Node for FormNop {
     fn shape(&self) -> Shape {
         let ch = ChannelLayout::from_count(self.width);
-        let s = Shape::audio(ch, ch).with_events(self.events, 0);
+        let s = Shape::through_discrete(ch).with_events(self.events, 0);
         if self.in_place { s.with_in_place() } else { s }
     }
     fn prepare(&mut self, _p: &Prepare) {}

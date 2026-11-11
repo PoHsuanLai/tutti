@@ -26,7 +26,7 @@
 //!
 //! impl Node for Lowpass {
 //!     fn shape(&self) -> Shape {
-//!         Shape::audio(ChannelLayout::MONO, ChannelLayout::MONO)
+//!         Shape::through_discrete(ChannelLayout::MONO)
 //!     }
 //!     fn prepare(&mut self, _: &Prepare) {}
 //!     fn process(&mut self, _: &Cx<'_>, mut io: Io<'_>) -> Status {
@@ -282,7 +282,7 @@ pub use tutti_curve::Law;
 // The audio graph as a value, and the two passes over it. `plan` is the
 // latency pass and is exported as `latency_plan`.
 pub use bus::{Bus, BusRole, Buses, MAX_BUSES};
-pub use bus_edge::{BusError, BusRef, BusSide, BusSource, Lowering};
+pub use bus_edge::{BusError, BusFold, BusRef, BusSide, BusSource, Lowering};
 pub use gain::EdgeGain;
 pub use graph::{
     Edge, EdgeId, EventTapId, EventTapSpec, FeedbackFrom, InPort, Invalid, MeterId, MeterSpec,
@@ -309,7 +309,7 @@ pub use param::{
     MAX_PARAM_PORTS, PARAM_DECLICK, ParamIn, ParamInput, ParamMod, ParamPorts, ParamPortsError,
     ParamRange, ParamRangeReader,
 };
-pub use pass::PassError;
+pub use pass::{Pass, PassError};
 pub use plan::{
     Csr, DelayKey, DelaySpec, Delta, EMPTY_SLOT, EventSlotCapacity, FeedbackKey, FeedbackSpec,
     GainPortOp, Op, ParamPortOp, Placement, Plan, PlanUnit, Span, UnitIdx, Value, ZERO_SLOT,

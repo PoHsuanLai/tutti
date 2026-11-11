@@ -33,8 +33,9 @@ impl FileChannels<'_> {
     /// The fold from a graph of `outputs` channels. The graph is what it
     /// declared (`root`), or else the engine's order for its width (a bare 4 is
     /// quad); the file the topology it states or else the same assumption for
-    /// its width; where either has no order the channels go by index
-    /// ([`Fold::widths`], [`Fold::declared`]).
+    /// its width; where either has no order, or the file states discrete
+    /// channels, the channels go by index ([`Fold::widths`],
+    /// [`Fold::declared`], [`Fold::by_index`]).
     ///
     /// # Errors
     ///
@@ -76,6 +77,12 @@ impl FileChannels<'_> {
             Some(root) => root.clone(),
             None => ChannelTopology::for_width(graph),
         };
+        // A file that names no speaker takes the graph's channels by index,
+        // as it says; `between` never pads by a guess.
+        if topology.is_discrete() {
+            return Fold::by_index(from.layout(), topology.layout())
+                .map_err(|e| ConfigError::Placement(e).into());
+        }
         Fold::between(&from, topology).map_err(|e| ConfigError::Placement(e).into())
     }
 }

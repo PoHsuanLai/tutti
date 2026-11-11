@@ -7382,7 +7382,7 @@ bit for bit (the M1 tests, unedited, are the proof).
 - **The bypass mapping** is `Pass` (`tutti-graph/src/pass.rs`), built on the
   control side from the shape's `Main` input and `Main` output buses and kept in
   the unit's `ModeState`; the reference builds the same value. Three cases:
-  (1) both are `Discrete` (what `Shape::audio` builds, which names no
+  (1) both are `Discrete` (what `Shape::through_discrete` builds, which names no
   placement) **of one width**, or a side has no `Main` bus and the widths agree:
   output `c` is input `c`, unchanged to the bit; (2) a named pair that folds to
   the identity: the same copy; (3) a named pair, or one named side against an
@@ -7396,9 +7396,7 @@ bit for bit (the M1 tests, unedited, are the proof).
   pass that folds.
 - **A pass the graph would have to guess is refused, wherever it would be
   heard** (the stopgap; amendment T, "Typed ports" below, makes it unwritable) (`PassError`): main buses of different widths of which either names
-  no placement (`Unplaced { inputs, outputs }`; `Fold::between` would take a
-  named source onto an unplaced destination by index, zero-filling, which suits
-  an edge that knows only a width and is the same guess for a dry path; by index, the old width rule, a mono input
+  no placement (`Unplaced { inputs, outputs }`; by index, the old width rule, a mono input
   under a stereo output was heard on the left alone, the bug the reverbs shipped
   with after they went wet only), or named buses that do not fold (`Fold`, six
   `Discrete` channels into a named stereo bus). `Editor::check_pass` is the one
@@ -7532,7 +7530,7 @@ which everything else is derived.** The refusals of #570 stay, for buses that ar
     (zero-fill)" becomes that explicit option.
   - export's driver calls `Fold::between(root or ChannelTopology::for_width(graph), file topology)` today. It changes
     only where the file's topology is `Discrete` at another width than a named root. Today that goes by index; under T1
-    it becomes an explicit `Fold::to_width(root, file width)`, because a file of an unordered width knows only its width.
+    it becomes an explicit `Fold::by_index`, as a file that names no speaker says.
     Named into named, and an equal-width relabelling, do not change.
   - **Measured** (the workspace, and `tutti-session` with
     `clap,export,modulation,device,record,midi,sampler`, with `between` refusing a named source into a `Discrete`
@@ -7540,6 +7538,28 @@ which everything else is derived.** The refusals of #570 stay, for buses that ar
     whose "a named source into a wider discrete bus is an index copy" case becomes a refusal. No bus-edge test flips:
     `bus_edges.rs::widening_zero_fills_the_new_channels` is SMPTE stereo into SMPTE 5.1, named into named, and stays
     zero-filled.
+
+**As built (T1).**
+
+- `Shape`'s widths and buses are private, read with `audio_in()`, `audio_out()`, `buses_in()`, `buses_out()`; a
+  shape is built from its buses: `Shape::buses(inputs, outputs)`, `through(topology)`, `source(topology)`,
+  `sink(topology)`, `EMPTY` for an events-only node, and `through_discrete(n)`, `source_discrete(n)`,
+  `sink_discrete(n)` for a node that knows only a width (one `Discrete` main bus, or past 16 channels ports with no
+  bus). `Buses::of_width` is `Buses::discrete`, which refuses a width past a bus (const panic).
+- `Shape::with_ports(in, out)` keeps ports past the buses: a plugin's bus wider than 16 or past `MAX_BUSES`, the
+  keyed nodes past 8 channels until T3, and test nodes that sum ports which are not a bus. A side with ports and no
+  main bus has a pass only at equal width, as before.
+- `Shape::pass()` returns the public `Pass` (`inputs`, `outputs`, `contributions(c)`) or the `PassError`.
+- `Fold::between` refuses a discrete side at any other width, a discrete destination included (`FoldError::Discrete`);
+  `discrete_channels_map_one_to_one` asserts the refusals. A bus edge is `BusFold::Speakers` or `BusFold::ByIndex`,
+  stored with its source (`GraphSpec::bus_edges`, `root_sources`), and `connect_bus_by_index` /
+  `connect_bus_to_root_by_index` (editor and session) are the by-index edge.
+- Export: a file whose topology is discrete takes the graph's channels with `Fold::by_index`, which is what
+  `between` did for it before; nothing else in the driver changes.
+- Fixed-stereo nodes name their buses: `ClickNode` and `PolySynth` are `source(BusTopology::STEREO)`, the HRTF
+  panner `through(BusTopology::STEREO)` (`BusTopology::STEREO` is new). The per-channel processors built for a
+  width are `through_discrete` until T3 gives their designs a topology. `PluginClient::declared_shape` states its
+  ports only; the bound node states the plugin's buses.
 
 **T2. Bus handles, not indices.**
 
@@ -10129,9 +10149,9 @@ by width alone.
 - **`Speaker::Discrete`** is a channel known to feed no speaker (a numbered
   interface input, a track, B-format), distinct from `Speaker::Unknown` (a
   position a format named and the vocabulary cannot). Discrete channels are
-  never matrixed: a discrete destination takes any source by index and
-  zero-fills; a discrete source against a named destination relabels at equal
-  width only. `Fold::select` takes chosen source channels onto a discrete
+  never matrixed: a discrete side relabels at equal width only, and
+  `Fold::between` refuses any other width (amendment T1); by index is
+  `Fold::by_index`, asked for by name. `Fold::select` takes chosen source channels onto a discrete
   destination (the mic and the meter, in their ports).
 - **`ChannelTopology::smpte`** now has 12 (7.1.4). A width of 4 stays without an
   order (quad or B-format); `Fold::assuming_smpte` is the named assumption and

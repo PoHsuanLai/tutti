@@ -33,7 +33,7 @@ use tutti_graph::{
     Status,
 };
 use tutti_rt::{ArcLend, Reader};
-use tutti_types::{Beat, ChannelLayout};
+use tutti_types::Beat;
 
 use super::walk::{Beated, Visit, Walk, lands_on_first_frame};
 
@@ -341,7 +341,7 @@ impl Node for HarmonyNode {
     /// No audio, one event output of [`HARMONY_EVENT_DENSITY`] per frame of
     /// the block it was prepared for.
     fn shape(&self) -> Shape {
-        Shape::audio(ChannelLayout::EMPTY, ChannelLayout::EMPTY)
+        Shape::EMPTY
             .with_events(0, 1)
             .with_event_capacity(self.capacity)
             // Event-only: the clip node's walk over its changes, nothing per

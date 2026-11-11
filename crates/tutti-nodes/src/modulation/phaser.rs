@@ -365,7 +365,7 @@ pub const PHASER_PARAMS: [UnitParam; 3] = [UnitParam::Rate, UnitParam::Depth, Un
 impl Node for PhaserNode {
     fn shape(&self) -> Shape {
         let width = ChannelLayout::try_from(self.width).expect("the width came from a layout");
-        Shape::audio(width, width)
+        Shape::through_discrete(width)
             .with_cost(tutti_graph::Cost::Moderate)
             .with_tail(Tail::Unknown)
             .with_params(&PHASER_PARAMS)

@@ -339,7 +339,7 @@ impl Node for MultibandCompressorNode {
     /// filters': the crossover rings after the input stops.
     fn shape(&self) -> Shape {
         let (addrs, n) = self.port_addrs();
-        Shape::audio(self.layout, self.layout)
+        Shape::through_discrete(self.layout)
             .with_cost(Cost::Heavy)
             .with_tail(Tail::Unknown)
             .with_param_addrs(&addrs[..n])
@@ -1326,7 +1326,7 @@ mod tests {
     fn the_shape_declares_the_indexed_ports() {
         let n = MultibandCompressorNode::new(ChannelLayout::STEREO, 4).unwrap();
         let s = n.shape();
-        assert_eq!((s.audio_in.count(), s.audio_out.count()), (2, 2));
+        assert_eq!((s.audio_in().count(), s.audio_out().count()), (2, 2));
         assert_eq!(s.latency, tutti_types::Latency::default());
         assert_eq!(s.tail, Tail::Unknown);
         assert_eq!(s.cost, Cost::Heavy);

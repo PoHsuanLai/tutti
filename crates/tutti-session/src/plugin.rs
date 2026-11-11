@@ -1188,8 +1188,8 @@ impl Session {
         if let Some(was) = self.graph.shape(node) {
             let ports = |s: &tutti_graph::Shape| {
                 (
-                    s.audio_in.count(),
-                    s.audio_out.count(),
+                    s.audio_in().count(),
+                    s.audio_out().count(),
                     s.event_in,
                     s.event_out,
                 )
@@ -1198,12 +1198,12 @@ impl Session {
                 let reason = format!(
                     "the replacement's ports differ from the node's: {} audio in, {} out, {} \
                      event in, {} out, where the node has {}, {}, {}, {}",
-                    got.audio_in.count(),
-                    got.audio_out.count(),
+                    got.audio_in().count(),
+                    got.audio_out().count(),
                     got.event_in,
                     got.event_out,
-                    was.audio_in.count(),
-                    was.audio_out.count(),
+                    was.audio_in().count(),
+                    was.audio_out().count(),
                     was.event_in,
                     was.event_out,
                 );

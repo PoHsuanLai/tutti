@@ -1165,14 +1165,14 @@ fn indexed_wave(channels: usize, len: usize) -> Arc<Wave> {
 fn new_stays_stereo_even_for_a_wide_wave() {
     let u = MemorySource::new(indexed_wave(6, 32)).expect("a placeable wave");
     assert_eq!(u.channels(), ChannelLayout::STEREO);
-    assert_eq!(u.shape().audio_out, ChannelLayout::STEREO);
+    assert_eq!(u.shape().audio_out(), ChannelLayout::STEREO);
 }
 
 #[test]
 fn with_channels_declares_the_width() {
     let u = MemorySource::with_channels(indexed_wave(6, 32), 6u16).expect("a placeable wave");
     assert_eq!(u.channels(), ChannelLayout::from(6u16));
-    assert_eq!(u.shape().audio_out.count(), 6);
+    assert_eq!(u.shape().audio_out().count(), 6);
     assert_eq!(
         MemorySource::with_channels(indexed_wave(2, 32), 0u16)
             .expect("a placeable wave")
@@ -1195,8 +1195,8 @@ fn the_shape_is_the_declared_width() {
         )
         .expect("a placeable wave");
         let shape = u.shape();
-        assert_eq!(shape.audio_out.count() as usize, w, "width {w}");
-        assert_eq!(shape.audio_in.count(), 0);
+        assert_eq!(shape.audio_out().count() as usize, w, "width {w}");
+        assert_eq!(shape.audio_in().count(), 0);
         assert_eq!(shape.latency.samples(), Samples(0));
         assert_eq!(shape.tail, Tail::Unbounded);
     }

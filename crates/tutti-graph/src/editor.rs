@@ -61,7 +61,7 @@ use tutti_types::{Latency, Samples};
 
 use tutti_types::At;
 
-use crate::bus_edge::{BusError, BusRef, BusSource, Lowering};
+use crate::bus_edge::{BusError, BusFold, BusRef, BusSource, Lowering};
 use crate::command::{CommandId, CommandTx, ScheduleError, command_channel};
 use crate::compile::{CompileError, Shapes, VerifyError, compile};
 use crate::event::EventKind;
@@ -439,7 +439,7 @@ impl std::error::Error for MissingSource {}
 /// struct Half;
 /// impl Node for Half {
 ///     fn shape(&self) -> Shape {
-///         Shape::audio(ChannelLayout::MONO, ChannelLayout::MONO)
+///         Shape::through_discrete(ChannelLayout::MONO)
 ///     }
 ///     fn prepare(&mut self, _: &Prepare) {}
 ///     fn process(&mut self, _: &Cx<'_>, mut io: Io<'_>) -> Status {
@@ -1148,9 +1148,27 @@ impl Editor {
     /// [`BusError::GainOnLane`] when a lane would land on an edge or a gain
     /// the spec already has.
     pub fn connect_bus(&mut self, from: BusSource, to: BusRef) -> Result<(), BusError> {
-        self.spec.check_bus_edge(&self.shapes, from, to)?;
+        self.spec
+            .check_bus_edge(&self.shapes, from, to, BusFold::Speakers)?;
         self.touch();
         self.spec.connect_bus(from, to);
+        Ok(())
+    }
+
+    /// As [`connect_bus`](Self::connect_bus), channel by index
+    /// ([`BusFold::ByIndex`]): sink channel `c` is source channel `c`, a wider
+    /// sink zero-filled, whatever either bus names. For an edge whose author
+    /// knows the channels line up, never a fallback.
+    ///
+    /// # Errors
+    ///
+    /// As [`connect_bus`](Self::connect_bus); the fold refuses a sink
+    /// narrower than the source.
+    pub fn connect_bus_by_index(&mut self, from: BusSource, to: BusRef) -> Result<(), BusError> {
+        self.spec
+            .check_bus_edge(&self.shapes, from, to, BusFold::ByIndex)?;
+        self.touch();
+        self.spec.connect_bus_by_index(from, to);
         Ok(())
     }
 
@@ -1175,9 +1193,24 @@ impl Editor {
     /// [`BusError::GainOnLane`] when a lane lands on an output source or a
     /// gain the spec already has.
     pub fn connect_bus_to_root(&mut self, from: BusSource) -> Result<(), BusError> {
-        self.spec.check_root_bus_edge(&self.shapes, from)?;
+        self.spec
+            .check_root_bus_edge(&self.shapes, from, BusFold::Speakers)?;
         self.touch();
         self.spec.connect_bus_to_root(from);
+        Ok(())
+    }
+
+    /// As [`connect_bus_to_root`](Self::connect_bus_to_root), channel by
+    /// index ([`BusFold::ByIndex`]).
+    ///
+    /// # Errors
+    ///
+    /// As [`connect_bus_to_root`](Self::connect_bus_to_root).
+    pub fn connect_bus_to_root_by_index(&mut self, from: BusSource) -> Result<(), BusError> {
+        self.spec
+            .check_root_bus_edge(&self.shapes, from, BusFold::ByIndex)?;
+        self.touch();
+        self.spec.connect_bus_to_root_by_index(from);
         Ok(())
     }
 
@@ -1349,13 +1382,13 @@ impl Editor {
         // Everything the running plan was compiled from but the tail: the
         // op, its PDC and its borrows must be right for both units at once.
         let fits = (
-            shape.audio_in,
-            shape.audio_out,
+            shape.audio_in(),
+            shape.audio_out(),
             shape.event_in,
             shape.event_out,
         ) == (
-            running.audio_in,
-            running.audio_out,
+            running.audio_in(),
+            running.audio_out(),
             running.event_in,
             running.event_out,
         ) && shape.latency == running.latency
@@ -1431,11 +1464,11 @@ impl Editor {
         let shape = unit.shape();
         let fits = running.is_some_and(|r| {
             (
-                shape.audio_in,
-                shape.audio_out,
+                shape.audio_in(),
+                shape.audio_out(),
                 shape.event_in,
                 shape.event_out,
-            ) == (r.audio_in, r.audio_out, r.event_in, r.event_out)
+            ) == (r.audio_in(), r.audio_out(), r.event_in, r.event_out)
                 && shape.latency == r.latency
                 && shape.in_place == r.in_place
                 && shape.event_resolution == r.event_resolution
@@ -1477,7 +1510,7 @@ impl Editor {
             .remove(&key)
             .map(|s| s.params)
             .unwrap_or_default();
-        let mut spec = NodeSpec::new(kind, shape.audio_in, shape.audio_out)
+        let mut spec = NodeSpec::new(kind, shape.audio_in(), shape.audio_out())
             .with_latency(shape.latency.samples())
             .with_tail(shape.tail);
         spec.params = params;
@@ -2006,9 +2039,9 @@ impl Editor {
         // A bus edge that touches the node goes with it, as its edges do.
         self.spec
             .root_sources
-            .retain(|s| !matches!(s, BusSource::Node(b) if b.node == key));
+            .retain(|(s, _)| !matches!(s, BusSource::Node(b) if b.node == key));
         self.spec.bus_edges.retain(|to, sources| {
-            sources.retain(|s| !matches!(s, BusSource::Node(b) if b.node == key));
+            sources.retain(|(s, _)| !matches!(s, BusSource::Node(b) if b.node == key));
             to.node != key && !sources.is_empty()
         });
         let t = &mut self.spec.topology;

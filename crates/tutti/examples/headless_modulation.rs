@@ -33,7 +33,7 @@ struct Kick;
 
 impl Node for Kick {
     fn shape(&self) -> Shape {
-        Shape::audio(ChannelLayout::EMPTY, ChannelLayout::MONO)
+        Shape::source_discrete(ChannelLayout::MONO)
     }
     fn prepare(&mut self, _: &Prepare) {}
     fn process(&mut self, cx: &Cx<'_>, mut io: Io<'_>) -> Status {

@@ -15,9 +15,9 @@ use std::collections::BTreeMap;
 use common::{Kind, Pair, TestNode, bits, input_signal, prepare, shapes_of};
 use tutti_graph::Node;
 use tutti_graph::{
-    Bus, BusError, BusRef, BusRole, BusSide, BusSource, Buses, CommitError, CompileError, DelayKey,
-    Edge, EdgeGain, EdgeId, Editor, GraphInvalid, GraphSpec, InPort, Lowering, NodeKey, NodeSpec,
-    Op, OutPort, Plan, Sink, Source, Transport, Unforkable, ValidGraph, compile,
+    Bus, BusError, BusFold, BusRef, BusRole, BusSide, BusSource, Buses, CommitError, CompileError,
+    DelayKey, Edge, EdgeGain, EdgeId, Editor, GraphInvalid, GraphSpec, InPort, Lowering, NodeKey,
+    NodeSpec, Op, OutPort, Plan, Sink, Source, Transport, Unforkable, ValidGraph, compile,
 };
 use tutti_types::{
     Amplitude, BusTopology, ChannelLayout, ChannelTopology, FoldError, M3DB, Samples, Tail,
@@ -103,7 +103,7 @@ fn sink(n: usize, input: Bus) -> Kind {
 
 fn spec_of(kind: &Kind) -> NodeSpec {
     let s = TestNode::new(kind.clone()).shape();
-    NodeSpec::new("test", s.audio_in, s.audio_out)
+    NodeSpec::new("test", s.audio_in(), s.audio_out())
         .with_latency(s.latency.samples())
         .with_tail(s.tail)
 }
@@ -490,12 +490,9 @@ fn editor(kinds: &[(u64, Kind)], inputs: usize) -> (Editor, tutti_graph::Executo
 }
 
 /// A bus edge whose topologies cannot be folded is refused at the call, with
-/// the fold's own reason, and nothing is stored: three discrete channels into
-/// two have no place (`Unplaced`), and discrete channels meet a named bus of
-/// another width only by a relabelling that is not there (`Discrete`).
-///
-/// Mutations (run), each failing this test: `connect_bus` storing the edge
-/// before the check; `connect_bus` not checking at all.
+/// the fold's own reason, and nothing is stored: discrete channels meet
+/// another bus only at its width, as a relabelling (`Discrete`), whether that
+/// bus is discrete or named.
 #[test]
 fn an_unfoldable_bus_edge_is_refused_at_the_call_and_stores_nothing() {
     let (mut ed, _exec) = editor(
@@ -511,7 +508,7 @@ fn an_unfoldable_bus_edge_is_refused_at_the_call_and_stores_nothing() {
         matches!(
             refused,
             BusError::Fold {
-                error: FoldError::Unplaced { .. },
+                error: FoldError::Discrete { .. },
                 ..
             }
         ),
@@ -530,6 +527,47 @@ fn an_unfoldable_bus_edge_is_refused_at_the_call_and_stores_nothing() {
         }
     );
     assert!(ed.spec().bus_edges.is_empty(), "nothing is stored");
+}
+
+/// By index is asked for by name, never a fallback: a stereo pair into a
+/// six-channel discrete bus is refused by speaker and taken channel for channel
+/// by index (the first two ports, the rest silent), and by index never narrows.
+#[test]
+fn by_index_is_its_own_edge() {
+    let (mut ed, _exec) = editor(
+        &[
+            (1, source(2, smpte(2))),
+            (2, sink(6, discrete(6))),
+            (3, source(6, smpte(6))),
+            (4, sink(2, smpte(2))),
+        ],
+        0,
+    );
+    assert!(matches!(
+        ed.connect_bus(from(1, 0), bus_ref(2, 0)),
+        Err(BusError::Fold {
+            error: FoldError::Discrete { .. },
+            ..
+        })
+    ));
+    ed.connect_bus_by_index(from(1, 0), bus_ref(2, 0))
+        .expect("by index widens");
+    assert_eq!(
+        ed.spec().bus_edges[&bus_ref(2, 0)],
+        [(from(1, 0), BusFold::ByIndex)]
+    );
+    let lanes: Vec<_> = ed.lowered().expect("lowers").lanes.into_iter().collect();
+    assert_eq!(
+        lanes,
+        [0u16, 1].map(|c| (lane(2, c, out_port(1, c)), Amplitude::new(1.0)))
+    );
+    assert!(matches!(
+        ed.connect_bus_by_index(from(3, 0), bus_ref(4, 0)),
+        Err(BusError::Fold {
+            error: FoldError::Unplaced { .. },
+            ..
+        })
+    ));
 }
 
 /// The global input is a discrete bus: with no global input at all there is
@@ -874,7 +912,10 @@ fn removing_a_node_removes_its_bus_edges() {
     ed.connect_bus(from(1, 0), bus_ref(2, 0)).unwrap();
     ed.connect_bus(from(3, 0), bus_ref(2, 0)).unwrap();
     ed.remove(key(1));
-    assert_eq!(ed.spec().bus_edges[&bus_ref(2, 0)], [from(3, 0)]);
+    assert_eq!(
+        ed.spec().bus_edges[&bus_ref(2, 0)],
+        [(from(3, 0), BusFold::Speakers)]
+    );
     ed.remove(key(2));
     assert!(ed.spec().bus_edges.is_empty());
     ed.commit().expect("commits");
@@ -968,8 +1009,7 @@ fn a_fork_of_a_bus_edge_renders_the_fold() {
     struct Stereo;
     impl Node for Stereo {
         fn shape(&self) -> Shape {
-            Shape::audio(ChannelLayout::EMPTY, ChannelLayout::STEREO)
-                .with_buses_out(buses(&[smpte(2)]))
+            Shape::buses(tutti_graph::Buses::NONE, buses(&[smpte(2)]))
         }
         fn prepare(&mut self, _: &tutti_graph::Prepare) {}
         fn process(&mut self, _: &Cx<'_>, mut io: Io<'_>) -> Status {
@@ -983,7 +1023,10 @@ fn a_fork_of_a_bus_edge_renders_the_fold() {
     struct Mono;
     impl Node for Mono {
         fn shape(&self) -> Shape {
-            Shape::audio(ChannelLayout::MONO, ChannelLayout::MONO).with_buses_in(buses(&[smpte(1)]))
+            Shape::buses(
+                buses(&[smpte(1)]),
+                tutti_graph::Buses::discrete(ChannelLayout::MONO),
+            )
         }
         fn prepare(&mut self, _: &tutti_graph::Prepare) {}
         fn process(&mut self, _: &Cx<'_>, _: Io<'_>) -> Status {
@@ -1241,14 +1284,17 @@ fn root_edges_connect_disconnect_and_go_with_their_node() {
     ed.connect_bus_to_root(from(1, 0)).unwrap();
     assert_eq!(
         ed.spec().root_sources,
-        [from(1, 0), from(3, 0)],
+        [
+            (from(1, 0), BusFold::Speakers),
+            (from(3, 0), BusFold::Speakers)
+        ],
         "source order, once"
     );
     assert!(ed.disconnect_bus_from_root(from(3, 0)));
     assert!(!ed.disconnect_bus_from_root(from(3, 0)));
     ed.connect_bus_to_root(from(3, 0)).unwrap();
     ed.remove(key(1));
-    assert_eq!(ed.spec().root_sources, [from(3, 0)]);
+    assert_eq!(ed.spec().root_sources, [(from(3, 0), BusFold::Speakers)]);
     ed.commit().expect("commits");
     exec.apply_pending();
 }
@@ -1268,8 +1314,7 @@ fn a_fork_of_a_root_edge_renders_the_fold() {
     struct Stereo;
     impl Node for Stereo {
         fn shape(&self) -> Shape {
-            Shape::audio(ChannelLayout::EMPTY, ChannelLayout::STEREO)
-                .with_buses_out(buses(&[smpte(2)]))
+            Shape::buses(tutti_graph::Buses::NONE, buses(&[smpte(2)]))
         }
         fn prepare(&mut self, _: &tutti_graph::Prepare) {}
         fn process(&mut self, _: &Cx<'_>, mut io: Io<'_>) -> Status {

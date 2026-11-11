@@ -44,8 +44,9 @@ pub enum FoldError {
         /// The repeated speaker.
         speaker: Speaker,
     },
-    /// Discrete channels meet named ones (or a mix) at different widths. The
-    /// only rule is a one to one relabelling of equal widths.
+    /// A discrete side meets another at a different width. The only rule is a
+    /// one to one relabelling of equal widths; by index is
+    /// [`Fold::by_index`], asked for by name.
     Discrete {
         /// The source width.
         src: ChannelLayout,
@@ -307,13 +308,14 @@ impl Row {
 ///   `0.212`), as before.
 /// - **Upmix zero-fills.** A destination speaker nothing feeds is silent;
 ///   nothing is invented.
-/// - **A discrete destination** (a device with more outputs than the graph, a
-///   file of any width) takes the source's channels by index, whatever the
-///   source is, and zero-fills the rest. A source wider than it is
-///   [`FoldError::Unplaced`]; [`Fold::select`] chooses channels instead.
-/// - **Discrete channels** never pass through a surround matrix. A discrete
-///   source against a named destination is a relabelling, allowed only when
-///   the widths are equal; different widths is [`FoldError::Discrete`].
+/// - **Discrete channels** never pass through a surround matrix, and are
+///   never padded or dropped by a guess. A discrete side against any other at
+///   the same width is a relabelling, channel `i` to channel `i`; at another
+///   width it is [`FoldError::Discrete`], since a channel that names no
+///   speaker says nothing about where it goes. An edge that wants channels by
+///   index says so: [`Fold::by_index`] widens and zero-fills, [`Fold::select`]
+///   chooses, and [`Fold::to_width`] and [`Fold::widths`] serve an edge that
+///   knows only a width (a device, a file).
 ///   B-format is not speaker feeds and has no [`Speaker`]: an edge that has it
 ///   declares it discrete, never quad.
 /// - **Not silent.** A source channel the destination has no place for is
@@ -767,31 +769,17 @@ impl Fold {
         })
     }
 
-    /// A discrete destination takes the source by index, zero-filling; a
-    /// discrete source against a named destination only relabels at equal width.
+    /// A discrete side relabels at equal width, channel `i` to channel `i`,
+    /// and is refused at any other.
     fn discrete(src: &ChannelTopology, dst: &ChannelTopology) -> Result<Box<[Row]>, FoldError> {
-        let (s, d) = (src.positions().len(), dst.positions().len());
-        if dst.is_discrete() {
-            if s > d {
-                return Err(FoldError::Unplaced {
-                    channel: d,
-                    speaker: src.positions()[d],
-                });
-            }
-        } else if s != d {
+        if src.layout() != dst.layout() {
             return Err(FoldError::Discrete {
                 src: src.layout(),
                 dst: dst.layout(),
             });
         }
-        Ok((0..d)
-            .map(|i| {
-                Row::One(if i < s {
-                    Expr::Copy(narrow(i))
-                } else {
-                    Expr::Zero
-                })
-            })
+        Ok((0..src.positions().len())
+            .map(|i| Row::One(Expr::Copy(narrow(i))))
             .collect())
     }
 

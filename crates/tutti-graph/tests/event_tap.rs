@@ -26,7 +26,7 @@ use tutti_graph::{
     OutPort, Prepare, Shape, Source, Status, TapAlign, TapEvent, Transport, note_off_room,
 };
 use tutti_graph::{EventTapId, EventTapReader};
-use tutti_types::{ChannelLayout, Frame, Latency, Samples};
+use tutti_types::{Frame, Latency, Samples};
 use tutti_ump::{MidiChannel, NoteNumber, U7, Ump};
 
 #[global_allocator]
@@ -113,7 +113,7 @@ impl Script {
 
 impl Node for Script {
     fn shape(&self) -> Shape {
-        Shape::audio(ChannelLayout::EMPTY, ChannelLayout::EMPTY)
+        Shape::EMPTY
             .with_events(0, self.ports)
             .with_event_capacity(self.cap)
             .with_latency(Latency::new(Samples(self.latency)))

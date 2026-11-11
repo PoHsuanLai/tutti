@@ -206,7 +206,10 @@ mod tests {
     fn the_node_writes_bands_band_major_per_channel() {
         let mut node = prepared(CrossoverNode::new(ChannelLayout::STEREO, &[Hz(1_000.0)]).unwrap());
         let shape = node.shape();
-        assert_eq!((shape.audio_in.count(), shape.audio_out.count()), (2, 4));
+        assert_eq!(
+            (shape.audio_in().count(), shape.audio_out().count()),
+            (2, 4)
+        );
         assert_eq!(shape.latency, tutti_types::Latency::default());
         assert_eq!(shape.tail, Tail::Unknown);
         assert_eq!(shape.cost, Cost::Moderate);

@@ -524,13 +524,8 @@ fn a_lone_centre_feeds_the_centre() {
     );
 }
 
-/// Discrete channels map one to one and never meet a matrix; they zero-fill
-/// when widened, refuse to narrow, and relabel only at equal width.
-///
-/// Mutation (run): the equal-width check (`s != d`) disabled lets 6 discrete
-/// into stereo through; the narrowing check (`s > d`) disabled silently drops
-/// channels; the narrowing check for a discrete destination disabled lets 6
-/// channels into 2 and fails the `Unplaced` assertion. Each fails here.
+/// Discrete channels map one to one and never meet a matrix: they relabel at
+/// equal width, and `between` refuses any other width on either side.
 #[test]
 fn discrete_channels_map_one_to_one() {
     let d = |n: u16| ChannelTopology::discrete(ChannelLayout::from(n));
@@ -540,40 +535,26 @@ fn discrete_channels_map_one_to_one() {
         want[o] = 1.0;
         assert_eq!(response(&f, o), want);
     }
-    let up = fold(&d(2), &d(4));
+    // Any other width is refused: a channel that names no speaker says nothing
+    // about where it goes. By index is `Fold::by_index`, asked for by name.
+    let refused = |s: ChannelTopology, t: ChannelTopology| {
+        assert_eq!(
+            Fold::between(&s, &t),
+            Err(FoldError::Discrete {
+                src: s.layout(),
+                dst: t.layout()
+            })
+        );
+    };
+    refused(d(2), d(4));
+    refused(d(4), d(2));
+    refused(d(6), smpte(2));
+    refused(smpte(2), d(6));
+    refused(smpte(6), d(16));
+    refused(smpte(6), d(2));
+    let up = Fold::by_index(ChannelLayout::STEREO, ChannelLayout::from(6u16)).unwrap();
     assert_eq!(response(&up, 1), [0.0, 1.0]);
-    assert_eq!(response(&up, 3), [0.0, 0.0]);
-    assert_eq!(
-        Fold::between(&d(4), &d(2)),
-        Err(FoldError::Unplaced {
-            channel: 2,
-            speaker: Discrete
-        })
-    );
-    assert_eq!(
-        Fold::between(&d(6), &smpte(2)),
-        Err(FoldError::Discrete {
-            src: ChannelLayout::from(6u16),
-            dst: ChannelLayout::STEREO
-        })
-    );
-    // A named source into a wider discrete bus is an index copy, zero-filled.
-    let wide = fold(&smpte(2), &d(6));
-    assert_eq!(response(&wide, 1), [0.0, 1.0]);
-    assert_eq!(response(&wide, 5), [0.0, 0.0]);
-    let eight = fold(&smpte(6), &d(16));
-    for o in 0..16 {
-        let want: Vec<f32> = (0..6).map(|k| f32::from(u8::from(k == o))).collect();
-        assert_eq!(response(&eight, o), want);
-    }
-    // ... but never narrower.
-    assert_eq!(
-        Fold::between(&smpte(6), &d(2)),
-        Err(FoldError::Unplaced {
-            channel: 2,
-            speaker: FrontCenter
-        })
-    );
+    assert_eq!(response(&up, 5), [0.0, 0.0]);
     // Equal width relabels by index: two inputs are a stereo pair.
     let pair = fold(&d(2), &smpte(2));
     assert_eq!(response(&pair, 0), [1.0, 0.0]);

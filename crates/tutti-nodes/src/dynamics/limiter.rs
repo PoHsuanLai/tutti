@@ -335,7 +335,7 @@ impl Node for LimiterNode {
     /// The release envelope adds nothing after them: it shapes gain, and gain
     /// applied to silence is silence.
     fn shape(&self) -> Shape {
-        Shape::audio(self.layout, self.layout)
+        Shape::through_discrete(self.layout)
             .with_cost(tutti_graph::Cost::Moderate)
             .with_latency(Latency::new(Samples(self.ring.lookahead_samples())))
             .with_tail(Tail::None)
@@ -606,7 +606,7 @@ impl Node for BrickwallLimiterNode {
     /// ([`BRICKWALL_PARAMS`]). The clip is stateless, so it has no latency
     /// and stops with its input.
     fn shape(&self) -> Shape {
-        Shape::audio(self.layout, self.layout)
+        Shape::through_discrete(self.layout)
             .with_cost(tutti_graph::Cost::Light)
             .with_tail(Tail::None)
             .with_params(&BRICKWALL_PARAMS)
@@ -1028,7 +1028,7 @@ mod tests {
             &[UnitParam::Ceiling, UnitParam::Threshold, UnitParam::Release][..]
         );
         assert_eq!(
-            (l.shape().audio_in.count(), l.shape().audio_out.count()),
+            (l.shape().audio_in().count(), l.shape().audio_out().count()),
             (6, 6)
         );
         assert_eq!(l.param_base(0), Some(-0.3), "the ceiling's base");
@@ -1041,7 +1041,7 @@ mod tests {
         let b = BrickwallLimiterNode::new(Db::new(-1.0));
         assert_eq!(b.shape().params.as_slice(), &[UnitParam::Ceiling][..]);
         assert_eq!(
-            (b.shape().audio_in.count(), b.shape().audio_out.count()),
+            (b.shape().audio_in().count(), b.shape().audio_out().count()),
             (2, 2)
         );
         assert_eq!(b.param_base(0), Some(-1.0));
@@ -1186,8 +1186,8 @@ mod tests {
     #[test]
     fn limiter_with_channels_reports_arity() {
         let l = LimiterNode::with_channels(ChannelLayout::from(6u16), Db::new(-6.0), Db::new(-0.3));
-        assert_eq!(l.shape().audio_in.count(), 6);
-        assert_eq!(l.shape().audio_out.count(), 6);
+        assert_eq!(l.shape().audio_in().count(), 6);
+        assert_eq!(l.shape().audio_out().count(), 6);
     }
 
     #[test]
@@ -1287,8 +1287,8 @@ mod tests {
     #[test]
     fn brickwall_with_channels_reports_arity_and_clips_all() {
         let mut bw = BrickwallLimiterNode::with_channels(ChannelLayout::from(6u16), Db::new(0.0));
-        assert_eq!(bw.shape().audio_in.count(), 6);
-        assert_eq!(bw.shape().audio_out.count(), 6);
+        assert_eq!(bw.shape().audio_in().count(), 6);
+        assert_eq!(bw.shape().audio_out().count(), 6);
         let mut out = [0.0f32; 6];
         tick(&mut bw, &[2.0, -2.0, 3.0, -3.0, 0.5, -0.5], &mut out);
         for (c, &y) in out.iter().enumerate() {

@@ -125,7 +125,7 @@ fn a_route_to_index_1_does_not_touch_index_0() {
     let mut m = s.mods();
     m.range(band1, 0.0, 1_000.0);
     let lfo = m.lfo(Lfo::sine().rate(BeatDuration(0.5)));
-    m.route(lfo, band1, Depth(0.3));
+    m.route(lfo, band1, Depth(0.3)).unwrap();
     for _ in 0..4 {
         let _ = s.update();
     }

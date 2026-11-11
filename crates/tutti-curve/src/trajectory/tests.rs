@@ -1,6 +1,7 @@
 //! The trajectory against what a breakpoint curve is: the figures are written
 //! out from each law's closed form.
 
+use crate::Exponent;
 use tutti_types::Beat;
 
 use super::{Breakpoint, Trajectory};
@@ -12,7 +13,11 @@ fn point(beat: f64, value: f32) -> Breakpoint {
 
 fn ramp() -> Trajectory {
     let mut e = Trajectory::new();
-    e.add_breakpoint(Breakpoint::with_law(Beat(1.0), 0.0, Law::PowerIn(2.0)));
+    e.add_breakpoint(Breakpoint::with_law(
+        Beat(1.0),
+        0.0,
+        Law::PowerIn(Exponent::of(2.0)),
+    ));
     e.add_breakpoint(point(3.0, 1.0));
     e
 }
@@ -113,6 +118,6 @@ fn simplify_reads_the_previous_breakpoints_law() {
         e.simplify(0.01);
         e.len()
     };
-    assert_eq!(build(Law::PowerIn(2.0)), 2);
+    assert_eq!(build(Law::PowerIn(Exponent::of(2.0))), 2);
     assert_eq!(build(Law::Linear), 3);
 }

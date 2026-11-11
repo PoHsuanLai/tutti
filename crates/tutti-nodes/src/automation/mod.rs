@@ -33,4 +33,4 @@ pub use lane::{AutomationLaneNode, LiveAutomationLane};
 pub use recording::{RecordMode, Recorder, RecordingConfig};
 pub use tutti_modulation::Curve;
 
-pub use tutti_curve::{Breakpoint, Law, Trajectory};
+pub use tutti_curve::{Breakpoint, Curvature, Exponent, Law, Trajectory};

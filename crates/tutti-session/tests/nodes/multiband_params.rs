@@ -229,7 +229,7 @@ fn a_route_to_band_1_modulates_band_1_only() {
     let mut m = s.mods();
     m.range(band1, -24.0, 24.0);
     let lfo = m.lfo(Lfo::sine().rate(BeatDuration(0.5)));
-    m.route(lfo, band1, Depth(0.25));
+    m.route(lfo, band1, Depth(0.25)).unwrap();
     for _ in 0..4 {
         let _ = s.update();
     }

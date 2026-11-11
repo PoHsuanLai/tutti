@@ -49,7 +49,8 @@ fn engine() -> (
     let (driver, stream) = ManualStreamDriver::new();
     let (mut s, device) = Session::builder()
         .build_device_on(spec_at(OLD), driver)
-        .expect("builds with no device");
+        .expect("builds with no device")
+        .into_parts();
     let (osc, _) = s.graph().add(ForkByClone(Osc::sine(Hz(1_000.0))));
     let (lim, _) = s.graph().add(LimiterNode::with_channels(
         ChannelLayout::MONO,

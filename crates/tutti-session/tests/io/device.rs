@@ -37,7 +37,8 @@ fn the_session_publishes_the_meter_and_taps_its_callback_feeds() {
     let (driver, stream) = ManualStreamDriver::new();
     let (mut session, _device) = Session::builder()
         .build_device_on(spec_at(48_000.0), driver)
-        .expect("builds with no device");
+        .expect("builds with no device")
+        .into_parts();
     let (dc, _) = session
         .graph()
         .insert(tutti_nodes::testing::Const::mono(0.5));
@@ -72,7 +73,8 @@ fn the_session_reads_the_load_its_callback_measures() {
     let (driver, stream) = ManualStreamDriver::new();
     let (session, _device) = Session::builder()
         .build_device_on(spec_at(48_000.0), driver)
-        .expect("builds with no device");
+        .expect("builds with no device")
+        .into_parts();
     let meter = session.load_meter().expect("a device's engine").clone();
     for _ in 0..3 {
         stream.render_block(64).expect("the stream is open");
@@ -92,7 +94,8 @@ fn a_rerate_keeps_the_published_compensation_in_step_with_the_plan() {
     let (driver, old) = ManualStreamDriver::new();
     let (mut s, mut device) = Session::builder()
         .build_device_on(spec_at(48_000.0), driver)
-        .expect("builds with no device");
+        .expect("builds with no device")
+        .into_parts();
     let (osc, _) = s.graph().add(ForkByClone(Osc::sine(Hz(1_000.0))));
     let (lim, _) = s.graph().add(LimiterNode::with_channels(
         ChannelLayout::MONO,
@@ -211,7 +214,8 @@ fn the_watch_reports_what_the_host_lists() {
     let (driver, _stream) = ManualStreamDriver::new();
     let (mut session, _device) = Session::builder()
         .build_device_on(spec_at(48_000.0), driver)
-        .unwrap();
+        .unwrap()
+        .into_parts();
     let fake = Fake::default();
     session.watch_devices(
         fake.clone(),
@@ -270,7 +274,8 @@ fn following_the_default_restarts_and_reports_the_rate() {
     let (driver, _stream) = ManualStreamDriver::new();
     let (mut session, mut device) = Session::builder()
         .build_device_on(spec_at(44_100.0), driver)
-        .unwrap();
+        .unwrap()
+        .into_parts();
     let fake = Fake::default();
     session.watch_devices(
         fake.clone(),
@@ -322,7 +327,8 @@ fn an_explicit_device_is_not_replaced_by_the_default() {
     let (driver, stream) = ManualStreamDriver::new();
     let (mut session, _device) = Session::builder()
         .build_device_on(spec_at(48_000.0), driver)
-        .unwrap();
+        .unwrap()
+        .into_parts();
     let fake = Fake::default();
     session.watch_devices(
         fake.clone(),
@@ -352,7 +358,8 @@ fn a_disconnect_fault_asks_for_a_restart_once() {
     let (driver, stream) = ManualStreamDriver::new();
     let (mut session, _device) = Session::builder()
         .build_device_on(spec_at(48_000.0), driver)
-        .unwrap();
+        .unwrap()
+        .into_parts();
     let fake = Fake::default();
     session.watch_devices(
         fake.clone(),
@@ -383,7 +390,8 @@ fn a_flapping_device_is_not_restarted_on_every_change() {
     let (driver, stream) = ManualStreamDriver::new();
     let (mut session, _device) = Session::builder()
         .build_device_on(spec_at(48_000.0), driver)
-        .unwrap();
+        .unwrap()
+        .into_parts();
     let fake = Fake::default();
     session.watch_devices(
         fake.clone(),
@@ -415,7 +423,8 @@ fn a_refused_restart_keeps_the_old_spec_and_is_retried_later() {
     let (driver, _stream) = ManualStreamDriver::new();
     let (mut session, mut device) = Session::builder()
         .build_device_on(spec_at(48_000.0), driver)
-        .unwrap();
+        .unwrap()
+        .into_parts();
     let fake = Fake::default();
     session.watch_devices(
         fake.clone(),
@@ -465,7 +474,8 @@ fn a_restart_that_stopped_the_stream_is_retried() {
     let (driver, _stream) = ManualStreamDriver::new();
     let (mut session, mut device) = Session::builder()
         .build_device_on(spec_at(48_000.0), driver)
-        .unwrap();
+        .unwrap()
+        .into_parts();
     let fake = Fake::default();
     session.watch_devices(
         fake.clone(),
@@ -511,7 +521,8 @@ fn a_stale_wanted_restart_does_not_replace_a_later_choice() {
     let (driver, _stream) = ManualStreamDriver::new();
     let (mut session, mut device) = Session::builder()
         .build_device_on(spec_at(48_000.0), driver)
-        .unwrap();
+        .unwrap()
+        .into_parts();
     let fake = Fake::default();
     session.watch_devices(
         fake.clone(),
@@ -552,7 +563,8 @@ fn a_fault_after_a_restart_is_reported_again() {
     let (driver, _first) = ManualStreamDriver::new();
     let (mut session, mut device) = Session::builder()
         .build_device_on(spec_at(48_000.0), driver)
-        .unwrap();
+        .unwrap()
+        .into_parts();
     let _ = session.update();
     let base = Instant::now();
     let (driver, second) = ManualStreamDriver::new();
@@ -586,7 +598,8 @@ fn a_host_can_hold_restarts() {
     let (driver, _stream) = ManualStreamDriver::new();
     let (mut session, _device) = Session::builder()
         .build_device_on(spec_at(48_000.0), driver)
-        .unwrap();
+        .unwrap()
+        .into_parts();
     let fake = Fake::default();
     session.watch_devices(
         fake.clone(),
@@ -616,7 +629,8 @@ fn a_stalled_backend_run_becomes_a_lost_stream() {
     let (driver, stream) = ManualStreamDriver::new();
     let (mut session, _device) = Session::builder()
         .build_device_on(spec_at(48_000.0), driver)
-        .unwrap();
+        .unwrap()
+        .into_parts();
     let fake = Fake::default();
     session.watch_devices(
         fake.clone(),
@@ -659,7 +673,8 @@ fn the_render_worker_start_hook_runs_once_per_live_helper() {
         .render_workers(4)
         .render_worker_start(move |i| hook.lock().unwrap().push(i))
         .build_device_on(spec_at(48_000.0), driver)
-        .expect("builds with no device");
+        .expect("builds with no device")
+        .into_parts();
     assert_eq!(indices_after(&seen, 3), [1, 2, 3]);
     std::thread::sleep(Duration::from_millis(50));
     assert_eq!(seen.lock().unwrap().len(), 3, "once per helper");
@@ -684,7 +699,8 @@ fn the_heard_tap_reopens_at_the_width_of_the_device_after_a_restart() {
     let (driver, _old) = ManualStreamDriver::new();
     let (mut s, mut device) = Session::builder()
         .build_device_on(spec_at(48_000.0), driver)
-        .expect("builds with no device");
+        .expect("builds with no device")
+        .into_parts();
     let across = s.open_heard_tap(Samples(1_024)).expect("opens");
     assert_eq!(across.width(), 2);
 
@@ -718,7 +734,8 @@ fn the_session_lists_the_outputs_once_and_retries_a_failed_start() {
     let (driver, _stream) = ManualStreamDriver::new();
     let (mut session, device) = Session::builder()
         .build_device_on(spec_at(48_000.0), driver)
-        .unwrap();
+        .unwrap()
+        .into_parts();
     assert_eq!(device.device_name().unwrap(), None, "supplied, by design");
 
     let calls = std::cell::Cell::new(0);
@@ -755,7 +772,8 @@ fn a_restart_onto_a_device_that_cannot_place_the_declared_root_is_refused() {
             ChannelLayout::QUAD,
         ))
         .build_device_on(wide(48_000.0), driver)
-        .expect("four buses place on six channels");
+        .expect("four buses place on six channels")
+        .into_parts();
     assert_eq!(session.graph_ref().outputs(), 4);
 
     let (driver, _new) = ManualStreamDriver::new();
@@ -786,7 +804,8 @@ fn a_refused_declaration_is_retried_on_a_restart() {
     let (driver, _stream) = ManualStreamDriver::new();
     let (mut session, mut device) = Session::builder()
         .build_device_on(spec_at(48_000.0), driver)
-        .unwrap();
+        .unwrap()
+        .into_parts();
     assert!(session.declare_root_topology(Some(buses.clone())).is_err());
     assert!(matches!(
         session.root_topology_status(),

@@ -39,6 +39,13 @@ pub enum DecodeError {
     /// The container holds no track this build can decode.
     #[error("the file holds no audio track this build can decode")]
     NoAudioTrack,
+
+    /// The audio track states no sample rate. The rate is the file's to
+    /// state: guessing one plays the file at the wrong pitch with no error
+    /// (a valid file that plays at 0.92 of its speed), so a caller that knows
+    /// the rate supplies it where it chooses to read.
+    #[error("the audio track states no sample rate")]
+    NoSampleRate,
 }
 
 impl Clone for DecodeError {
@@ -51,6 +58,7 @@ impl Clone for DecodeError {
             Self::Seek(m) => Self::Seek(m.clone()),
             Self::Limit(m) => Self::Limit(m.clone()),
             Self::NoAudioTrack => Self::NoAudioTrack,
+            Self::NoSampleRate => Self::NoSampleRate,
         }
     }
 }

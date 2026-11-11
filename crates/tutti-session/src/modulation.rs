@@ -179,6 +179,19 @@ impl From<EdgeRef> for ModTarget {
     }
 }
 
+/// Why [`Mods::route`] refused a route.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
+#[non_exhaustive]
+pub enum RouteError {
+    /// `target` has no range: a route's depth is a fraction of one, so
+    /// declare it with [`Mods::range`] before routing into it.
+    #[error("cannot route into {target:?}: it has no range (declare one with `Mods::range` first)")]
+    UndeclaredRange {
+        /// The target the route named.
+        target: ModTarget,
+    },
+}
+
 /// Why the session refused a host's modulation, in the host's keys (design
 /// 015 §4.7): a headless host compares them with the keys
 /// [`Session::mods`](crate::Session::mods) returned; Bevy decodes them to
@@ -902,14 +915,29 @@ impl Mods<'_> {
 
     /// A route from `source` into `target` at `depth` of its range, bipolar
     /// and linear ([`route_mut`](Self::route_mut) changes those).
+    ///
+    /// **`target` needs its [`range`](Self::range) first**: a route is a
+    /// fraction of a range, and the apply refuses a route onto a target with
+    /// none (and holds back every later edit with it), so the call refuses
+    /// here instead.
+    ///
+    /// # Errors
+    ///
+    /// [`RouteError::UndeclaredRange`], naming `target`, when no range was
+    /// declared for it; nothing is added.
     pub fn route(
         &mut self,
         source: SourceKey,
         target: impl Into<ModTarget>,
         depth: Depth,
-    ) -> RouteKey {
+    ) -> Result<RouteKey, RouteError> {
+        let target = target.into();
+        let target_key = self.own.key_of(target);
+        if !self.own.ranges.contains_key(&target_key) {
+            return Err(RouteError::UndeclaredRange { target });
+        }
         let key = RouteKey(self.own.mint());
-        let to = RouteTarget::Param(self.own.key_of(target.into()));
+        let to = RouteTarget::Param(target_key);
         self.own.routes.insert(
             key,
             RouteDecl {
@@ -920,7 +948,7 @@ impl Mods<'_> {
                 curve: tutti_modulation::Law::Linear,
             },
         );
-        key
+        Ok(key)
     }
 
     /// A route, to edit in place: its depth, polarity, curve or target.

@@ -122,7 +122,7 @@ fn a_route_onto_a_mix_modulates_around_the_base_set_mix_writes() {
     let mut m = s.mods();
     m.range(mix, 0.0, 1.0);
     let source = m.macro_(0.5);
-    let route = m.route(source, mix, Depth(0.5));
+    let route = m.route(source, mix, Depth(0.5)).unwrap();
     let target = m.key(mix);
     settle(&mut s);
     figure(&mut s, 0.5, "the base plus the route's offset");
@@ -177,7 +177,7 @@ fn a_removed_node_takes_its_mix_route_with_it() {
     let mut m = s.mods();
     m.range(mix, 0.0, 1.0);
     let source = m.macro_(0.5);
-    m.route(source, mix, Depth(0.5));
+    m.route(source, mix, Depth(0.5)).unwrap();
     settle(&mut s);
     assert!(s.remove(node));
     // Nothing is left declared on the node: no refusal, nothing unresolved.
@@ -229,7 +229,7 @@ fn a_route_onto_the_mix_of_a_node_with_no_pass_is_refused() {
     let mut m = s.mods();
     m.range(mix, 0.0, 1.0);
     let source = m.macro_(0.5);
-    m.route(source, mix, Depth(0.5));
+    m.route(source, mix, Depth(0.5)).unwrap();
     let target = m.key(mix);
     for _ in 0..6 {
         let _ = s.update();

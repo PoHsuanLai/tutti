@@ -53,8 +53,8 @@ on its next block.
 
 To play through a sound card, turn on `device` and let the session (the
 `session` feature, on by default) open it and build the graph at the rate it
-reports: `SessionBuilder::build_device` hands back a `Session` and its
-`Device`, and `examples/headless_engine.rs` plays a tone in under twenty
+reports: `SessionBuilder::build_device` hands back a `LiveSession`, the
+`Session` and its `Device` (dropping it stops the stream), and `examples/headless_engine.rs` plays a tone in under twenty
 lines. To write a file
 instead, turn on `export` (it brings the `codec` module with it) and bounce the
 session: a `Bounce` names a range and a master, and optionally stems, and

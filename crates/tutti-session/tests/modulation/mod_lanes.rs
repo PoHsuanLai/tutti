@@ -187,8 +187,8 @@ fn an_export_is_the_live_render_on_a_native_param() {
     m.range(volume, 0.0, 1.0);
     let sine = m.lfo(Lfo::sine().hz(Hz(3.0)));
     let tri = m.lfo(Lfo::triangle().hz(Hz(5.0)));
-    m.route(sine, cutoff, Depth(0.3));
-    m.route(tri, volume, Depth(0.2));
+    m.route(sine, cutoff, Depth(0.3)).unwrap();
+    m.route(tri, volume, Depth(0.2)).unwrap();
     settle(&mut s);
     // Past the connect's declick, stopped; then the knobs move.
     render_n(&mut side, 2, 1_024, 128);
@@ -279,8 +279,8 @@ fn a_removed_source_leaves_no_node_and_no_layer() {
     m.range(cutoff, 0.0, 1_000.0);
     let lfo = m.lfo(Lfo::sine().hz(Hz(2.0)));
     let follower = m.follower(Follower::default(), kick);
-    m.route(lfo, cutoff, Depth(0.1));
-    m.route(follower, cutoff, Depth(-0.2));
+    m.route(lfo, cutoff, Depth(0.1)).unwrap();
+    m.route(follower, cutoff, Depth(-0.2)).unwrap();
     settle(&mut s);
     render(&mut side, 1_024, 128);
     let node = s
@@ -327,7 +327,7 @@ fn a_knob_written_after_a_route_edit_is_the_knob() {
     let mut m = s.mods();
     m.range(cutoff, 0.0, 1_000.0);
     let lfo = m.lfo(Lfo::sine().hz(Hz(2.0)));
-    let route = m.route(lfo, cutoff, Depth(0.3));
+    let route = m.route(lfo, cutoff, Depth(0.3)).unwrap();
     settle(&mut s);
     render(&mut side, 1_024, 128);
 
@@ -387,8 +387,8 @@ fn a_held_note_envelope_newly_routed_reads_its_level_at_once() {
     m.range(c2, 0.0, 1.0);
     let env = m.note_envelope(NoteEnvelope::new(adsr), clip, 0);
     let zero = m.macro_(0.0);
-    m.route(env, c1, Depth(0.5));
-    m.route(zero, c2, Depth(0.5));
+    m.route(env, c1, Depth(0.5)).unwrap();
+    m.route(zero, c2, Depth(0.5)).unwrap();
     settle(&mut s);
     let got = render_n(&mut side, 2, 4_096, 128);
     assert!(
@@ -398,7 +398,7 @@ fn a_held_note_envelope_newly_routed_reads_its_level_at_once() {
     );
     assert!((got[1][4_095] - 0.1).abs() < 1e-7, "probe 2 at its knob");
 
-    s.mods().route(env, c2, Depth(0.5));
+    s.mods().route(env, c2, Depth(0.5)).unwrap();
     let _ = s.update();
     assert_eq!(
         s.mod_state().resyncs_owed(),
@@ -492,12 +492,12 @@ fn a_follower_downstream_of_its_target_is_refused_by_route() {
     let mut m = s.mods();
     m.range(cutoff, 0.0, 1_000.0);
     let offset = m.macro_(0.5);
-    m.route(offset, cutoff, Depth(0.2));
+    m.route(offset, cutoff, Depth(0.2)).unwrap();
     settle(&mut s);
 
     let mut m = s.mods();
     let follower = m.follower(Follower::default(), probe);
-    let route = m.route(follower, cutoff, Depth(0.5));
+    let route = m.route(follower, cutoff, Depth(0.5)).unwrap();
     let mut refused = refusals(s.update());
     refused.extend(refusals(s.update()));
     assert_eq!(refused.len(), 1, "one message for one refusal: {refused:?}");
@@ -655,7 +655,7 @@ fn a_node_crossfaded_to_another_param_list_keeps_modulating() {
     let mut m = s.mods();
     m.range(cutoff, 0.0, 1_000.0);
     let offset = m.macro_(1.0);
-    m.route(offset, cutoff, Depth(0.25));
+    m.route(offset, cutoff, Depth(0.25)).unwrap();
     settle(&mut s);
     let out = render(&mut side, 1_024, 128);
     assert_eq!(*out[0].last().unwrap(), 750.0, "precondition: modulated");
@@ -706,7 +706,7 @@ fn a_host_edit_committed_for_a_target_publishes_its_latency() {
     let mut m = s.mods();
     m.range(cutoff, 0.0, 1_000.0);
     let offset = m.macro_(1.0);
-    m.route(offset, cutoff, Depth(0.1));
+    m.route(offset, cutoff, Depth(0.1)).unwrap();
 
     let _ = s.update();
     assert_eq!(
@@ -738,8 +738,8 @@ fn two_routes_on_one_param_sum_and_removing_one_takes_its_share() {
     m.range(cutoff, 0.0, 1_000.0);
     let a = m.macro_(1.0);
     let b = m.macro_(1.0);
-    m.route(a, cutoff, Depth(0.1));
-    let second = m.route(b, cutoff, Depth(0.2));
+    m.route(a, cutoff, Depth(0.1)).unwrap();
+    let second = m.route(b, cutoff, Depth(0.2)).unwrap();
     settle(&mut s);
     assert_holds(&render(&mut side, 1_024, 128)[0], 800.0, "both routes");
 
@@ -747,7 +747,7 @@ fn two_routes_on_one_param_sum_and_removing_one_takes_its_share() {
     settle(&mut s);
     assert_holds(&render(&mut side, 1_024, 128)[0], 600.0, "one removed");
 
-    s.mods().route(b, cutoff, Depth(0.2));
+    s.mods().route(b, cutoff, Depth(0.2)).unwrap();
     settle(&mut s);
     assert_holds(&render(&mut side, 1_024, 128)[0], 800.0, "declared again");
 }
@@ -765,7 +765,7 @@ fn removing_the_last_route_returns_the_param_to_its_knob() {
     let mut m = s.mods();
     m.range(cutoff, 0.0, 1_000.0);
     let offset = m.macro_(1.0);
-    let route = m.route(offset, cutoff, Depth(0.1));
+    let route = m.route(offset, cutoff, Depth(0.1)).unwrap();
     settle(&mut s);
     assert_holds(&render(&mut side, 1_024, 128)[0], 600.0, "the route");
     assert!(
@@ -793,7 +793,7 @@ fn a_bus_strips_volume_and_pan_take_lanes() {
     for param in [UnitParam::Volume, UnitParam::Pan] {
         let at = ParamRef::unit(strip, param);
         m.range(at, 0.0, 1.0);
-        m.route(offset, at, Depth(0.5));
+        m.route(offset, at, Depth(0.5)).unwrap();
     }
     settle(&mut s);
     for param in [UnitParam::Volume, UnitParam::Pan] {
@@ -833,7 +833,7 @@ fn a_chorus_rate_and_a_phaser_mix_take_lanes() {
     let keys = targets.map(|at| m.key(at));
     for at in targets {
         m.range(at, 0.0, 1.0);
-        m.route(offset, at, Depth(0.5));
+        m.route(offset, at, Depth(0.5)).unwrap();
     }
     settle(&mut s);
     for (at, key) in targets.into_iter().zip(keys) {
@@ -860,7 +860,7 @@ fn an_added_synth_is_a_modulation_target() {
     let mut m = s.mods();
     m.range(volume, 0.0, 1.0);
     let offset = m.macro_(1.0);
-    m.route(offset, volume, Depth(0.25));
+    m.route(offset, volume, Depth(0.25)).unwrap();
     settle(&mut s);
     let (_, lane) = s
         .mod_state()
@@ -902,7 +902,7 @@ fn lfo_scene(s: &mut Session, side: &mut AudioSide, rate: f32, depth: f32) -> (P
     let mut m = s.mods();
     m.range(cutoff, 0.0, 1_000.0);
     let lfo = m.lfo(Lfo::sine().hz(Hz(rate)));
-    let route = m.route(lfo, cutoff, Depth(depth));
+    let route = m.route(lfo, cutoff, Depth(depth)).unwrap();
     for _ in 0..4 {
         frame(s, side);
     }
@@ -970,7 +970,7 @@ fn range_and_depth_edits_send_no_plan_and_a_follower_route_one_commit() {
     let mut plans = vec![sent(&s)];
     let mut m = s.mods();
     let kick = m.follower(Follower::default(), pulse);
-    m.route(kick, cutoff, Depth(0.15));
+    m.route(kick, cutoff, Depth(0.15)).unwrap();
     for _ in 0..6 {
         frame(&mut s, &mut side);
         let now = sent(&s);
@@ -1058,7 +1058,7 @@ fn a_fork_renders_a_modulated_param_as_live_does() {
     for node in [written, built] {
         let drive = ParamRef::unit(node, UnitParam::Drive);
         m.range(drive, 0.0, 10.0);
-        m.route(offset, drive, Depth(0.2));
+        m.route(offset, drive, Depth(0.2)).unwrap();
     }
     settle(&mut s);
     s.graph().set_param(written, UnitParam::Drive, 6.0);

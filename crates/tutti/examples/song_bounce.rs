@@ -96,7 +96,7 @@ fn song(dir: &std::path::Path) -> Result<Written, tutti::Error> {
     let mut m = s.mods();
     m.range(cutoff, 200.0, 3_000.0);
     let wobble = m.lfo(Lfo::sine().hz(Hz(1.0)));
-    m.route(wobble, cutoff, Depth(0.5));
+    m.route(wobble, cutoff, Depth(0.5))?;
 
     // Commit the graph and the lanes, then roll the transport.
     report(s.update());

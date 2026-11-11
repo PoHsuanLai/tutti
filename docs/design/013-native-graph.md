@@ -1018,10 +1018,10 @@ that the running plan holds the edit.
   at `Frames(8)` on its own chunk grid, and at `Block`) and a native
   lookahead (`tutti-graph`); on the audio-impulse path, `LimiterNode` (mono, and the right
   channel of a linked stereo pair; 240 frames of lookahead),
-  `ConvolverNode` at mix 0, ½ and 1 (the dry alignment: at mix 0 an
-  undelayed dry half fails every path) and `DelayLineNode` (a 500 ms
-  echo declares no latency and its dry half leaves on the excitation's
-  frame) in `tutti-nodes`; `HrtfBinauralNode` on each ear
+  `ConvolverNode` (wet only: its dry alignment is the graph's mix,
+  `tutti-nodes/tests/node_mix.rs`) and `DelayLineNode` (a zero-delay row; a
+  500 ms echo declares no latency, and its dry half through the graph's mix
+  leaves on the excitation's frame, `reported_latency.rs`) in `tutti-nodes`; `HrtfBinauralNode` on each ear
   (one convolution step, 128 frames) in `tutti-spatial`. None of those rows failed
   (they first ran through the deleted `Legacy` adapter): the
   three misreported latencies were already fixed on main, and the rows now
@@ -1625,12 +1625,12 @@ nothing to move):
 | `GateNode` | tutti-nodes | threshold, attack, hold, release, range | detaches all | yes | `gate` |
 | `LimiterNode` | tutti-nodes | threshold, ceiling, release | detaches all | yes | `limiter` |
 | `BrickwallLimiterNode` | tutti-nodes | ceiling | detaches | yes | `brickwall_limiter` |
-| `DelayLineNode` | tutti-nodes | per-channel delay time, feedback, cross-feedback, mix | detaches all | yes | `delay_line` |
+| `DelayLineNode` | tutti-nodes | per-channel delay time, feedback, cross-feedback | detaches all | yes | `delay_line` |
 | `DistortionNode` | tutti-nodes | drive | detaches | yes | `distortion` |
 | `ModulatorNode<M>` (`LfoNode`) | tutti-nodes | frequency, depth, phase offset (`M` is plain data) | detaches all | yes | `lfo` |
-| `ModDelayNode` | tutti-nodes | rate, depth, feedback, mix | detaches all | yes | `chorus` |
-| `PhaserNode` | tutti-nodes | rate, depth, feedback, mix | detaches all | yes | `phaser` |
-| `ConvolverNode` | tutti-nodes | mix, gain (the IR is read-only) | detaches both | yes | `convolver` |
+| `ModDelayNode` | tutti-nodes | rate, depth, feedback | detaches all | yes | `chorus` |
+| `PhaserNode` | tutti-nodes | rate, depth, feedback | detaches all | yes | `phaser` |
+| `ConvolverNode` | tutti-nodes | gain (the IR is read-only) | detaches it | yes | `convolver` |
 | `BusStripNode` | tutti-nodes | volume, pan, mute flag | detaches all, fresh mute | yes | `bus_strip` |
 | `ParamSumNode` (deleted with compiler-owned modulation) | tutti-nodes | clamp bounds | fresh bounds | yes | `param_sum` |
 | `AtomicSourceNode` (deleted with compiler-owned modulation) | tutti-nodes | base cell | fresh cell | yes | `atomic_source` |
@@ -3980,7 +3980,7 @@ Decisions:
    | node | ns / frame / channel | class |
    |---|---|---|
    | `BusStripNode` (tutti-nodes), channel-major kernel, measured on another box (the note below) | 0.06 steady, 0.4 ramping every block, 0.6–1.0 with the volume fed per frame | `Light` (fed: borderline) |
-   | `MidiClipNode`, `ClockNode` (measured); `HarmonyNode`, `MidiQueueNode`, `MidiInputNode`, `MidiOutNode` (the same shape of work) | 0 (event-only: about 0.3 µs a block at any length; a gain's 256 frames take 0.2) | `Light` |
+   | `MidiClipNode`, `ClockNode` (measured); `HarmonyNode`, `EventInletNode` (once `MidiQueueNode`), `MidiInputNode`, `MidiOutNode` (the same shape of work) | 0 (event-only: about 0.3 µs a block at any length; a gain's 256 frames take 0.2) | `Light` |
    | `DistortionNode` (tutti-nodes), stereo, by curve, measured on another box (the note below) | `HardClip` 0.11, `Softsign` 0.22 (fed 0.8 both); `Crush` 2.2 (fed 2.8), `SoftCrush` 2.8 (fed 3.5), `Atan` 7.6 (fed 9.0), `Tanh` 15–16 (fed 18) | `Light` for `HardClip` and `Softsign`, `Moderate` for the other four |
    | `ClickNode` | 3.8 | `Moderate` |
    | `InletNode` (then `MicMonitorNode`), one block copy out of the ring, measured on another box (the note below) | 0.4–0.6 | `Light` |
@@ -6962,14 +6962,15 @@ state beside the mode. The static half is built here; the driven half (a
   in the node op's `params` span, a one-port `ParamState::lane` in
   `ModeState` allocated at apply as a driven edge lane's is, its frames
   replacing the block ramp, and the base (the knob) the cell's value.
-- **Nodes' own dry/wet stay.** `DryWet` (reverbs: `FreeverbNode`, `FdnNode`),
-  the convolution node, `DelayNode`, the chorus/flanger and phaser, and the
-  HRTF node each hold an internal blend; deleting them is the tutti-dsp
-  session's follow-up and is not in M4. Their dry paths are the same
-  aligned-input idea (`DryAlign`: the input delayed by the realization's
-  latency, never the musical pre-delay), except the HRTF node's (its dry is
-  the mono centre fold of the input, not the input through the bypass
-  mapping, so `Mix` cannot replace it).
+- **Nodes' own dry/wet.** The convolution node, `DelayLineNode`, the
+  chorus/flanger and the phaser held an internal blend; it is **deleted**: each
+  outputs its wet signal alone (`UnitParam::Wet` is no longer one of their
+  ports, `ModDelayConfig::mix`, `WetDry`, `set_mix`/`mix()` and the dsp kernels'
+  mix arguments are gone) and the graph's mix blends it with the input
+  delayed by the declared latency. `DryWet` (reverbs: `FreeverbNode`,
+  `FdnNode`) and the HRTF node keep theirs: the reverbs' are another lane's, and
+  the HRTF's dry is the mono centre fold of the input, not the input through the
+  bypass mapping, so `Mix` cannot replace it.
 - **Tests.** `tutti-graph/tests/mix.rs` (WET and DRY bit for bit including
   special values, the formula on a latent node, the first block, the ramp, the
   mode winning, a fade against the mix's weights and a mix moving during one, a
@@ -7066,7 +7067,7 @@ below.
   `tutti-modulation`'s mix key test and `tutti-session`'s
   `tests/mix_modulation.rs` (set mix, route, move the base while routed, move
   the macro, clamp, route removed). Every one has its mutation recorded on it.
-- **Not touched**: nodes' own dry/wet (the tutti-dsp session's follow-up), the
+- **Not touched**: the reverbs' and HRTF's own dry/wet, the
   plugin hosts and `bevy-tutti` (parked; its `match`es on `TargetKey` would
   need the new variant when it is unparked).
 
@@ -7586,7 +7587,8 @@ fourth.
     (`input_ports`); the routing table, `MidiRoute`, `MidiRoutingSnapshot`
     and `MAX_TARGETS_PER_ROUTE` are gone, and so is `MidiRouter`. Its fork
     reads no wire.
-  - **`MidiQueueNode`**: what a control thread sends (a keyboard, a
+  - **`MidiQueueNode`** (deleted, doc 017 stage E4: the event inlet
+    replaced it): what a control thread sends (a keyboard, a
     preview), out of one port, each event on its offset clamped into the
     block. Its controls are the push half of a `MidiMailbox`, which is now
     just the ring MIDI crosses threads on (no unit id). Its fork is silent.

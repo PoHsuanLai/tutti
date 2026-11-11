@@ -104,14 +104,14 @@ fn handle_parameter_roundtrip() {
     let handle = load_handle(&[("TUTTI_VST2_PROBE_PARAMS", "4")]);
 
     let params = handle
-        .params()
+        .any_thread()
         .parameter_descriptors()
         .expect("the in-process VST2 backend enumerates parameters");
     assert_eq!(params.len(), 4, "the probe declared 4 parameters");
 
-    handle.params().set_parameter_value(PARAM_0, n(0.5));
+    handle.any_thread().set_parameter_value(PARAM_0, n(0.5));
     let v = handle
-        .params()
+        .any_thread()
         .parameter_value(PARAM_0)
         .expect("param 0 should exist");
     let v = v.get();
@@ -144,7 +144,7 @@ fn handle_state_roundtrip() {
     let handle = load_handle(&[("TUTTI_VST2_PROBE_PARAMS", "4")]);
 
     let original = handle
-        .state()
+        .any_thread()
         .save_state()
         .expect("the probe declares chunk-based state");
     assert!(!original.is_empty(), "a declared chunk must not be empty");
@@ -157,11 +157,10 @@ fn handle_state_roundtrip() {
     modified.extend_from_slice(b"tutti-roundtrip-marker");
 
     handle
-        .state()
         .load_state(&main_thread(), &modified)
         .expect("the probe accepts a chunk it just produced");
     let after = handle
-        .state()
+        .any_thread()
         .save_state()
         .expect("state must still be readable after a load");
 
@@ -193,7 +192,6 @@ fn a_refused_chunk_reports_the_refusal() {
     let handle = load_handle(&[]);
 
     let err = handle
-        .state()
         .load_state(&main_thread(), &[])
         .expect_err("the probe refuses an empty chunk");
 
@@ -218,9 +216,11 @@ fn an_accepted_chunk_reports_success() {
     let _lock = lock_probe();
     let handle = load_handle(&[]);
 
-    let blob = handle.state().save_state().expect("probe declares state");
+    let blob = handle
+        .any_thread()
+        .save_state()
+        .expect("probe declares state");
     handle
-        .state()
         .load_state(&main_thread(), &blob)
         .expect("a chunk the plugin just produced must be accepted");
 }

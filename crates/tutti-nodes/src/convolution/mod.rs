@@ -12,8 +12,6 @@
 
 mod ir;
 mod node;
-mod params;
 
 pub use ir::{generate_room_ir, generate_room_ir_into, generate_test_ir, generate_test_ir_into};
-pub use node::{CONVOLVER_PARAMS, ConvolverNode, IrChannelConfig};
-pub use params::WetDry;
+pub use node::{ConvolverNode, IrChannelConfig};

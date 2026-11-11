@@ -17,7 +17,7 @@ use tutti_graph::IntoNode;
 use tutti_graph::contract::BlockRig;
 use tutti_nodes::{DelayLineNode, LfoNode, LfoShape, ModDelayNode, PhaserNode};
 use tutti_types::{
-    BeatDuration, ChannelLayout, Depth, Feedback, Hz, Mix, PhaseIncrement, SampleRate, Seconds,
+    BeatDuration, ChannelLayout, Depth, Feedback, Hz, PhaseIncrement, SampleRate, Seconds,
 };
 use tutti_ump::{MidiChannel, NoteNumber, U7};
 
@@ -92,13 +92,13 @@ fn beat_synced_lfo_process_is_allocation_free() {
 
 #[test]
 fn delay_line_node_process_is_allocation_free() {
-    // Half dry, so the warm-up (shorter than the 250 ms tap) is audible.
+    // A tap shorter than the gate's warm-up (32 blocks of 64 frames), so the
+    // wet-only output is audible when the gate checks it.
     let node = DelayLineNode::new(
         Seconds::new(2.0_f64),
-        Seconds::new(0.25_f64),
+        Seconds::new(0.02_f64),
         Feedback::new(0.4_f32),
     );
-    node.set_mix(Mix::new(0.5_f32));
     gate(node, 0.5, 2_000, |_| {});
 }
 
@@ -106,11 +106,10 @@ fn delay_line_node_process_is_allocation_free() {
 fn stereo_delay_line_node_process_is_allocation_free() {
     let node = DelayLineNode::stereo(
         Seconds::new(2.0_f64),
-        Seconds::new(0.30_f64),
-        Seconds::new(0.31_f64),
+        Seconds::new(0.02_f64),
+        Seconds::new(0.021_f64),
         Feedback::new(0.4_f32),
     );
-    node.set_mix(Mix::new(0.5_f32));
     gate(node, 0.5, 2_000, |_| {});
 }
 
@@ -121,10 +120,9 @@ fn stereo_delay_line_node_wide_6ch_process_is_allocation_free() {
     let node = DelayLineNode::with_channels(
         6u16,
         Seconds::new(2.0_f64),
-        Seconds::new(0.30_f64),
+        Seconds::new(0.02_f64),
         Feedback::new(0.4_f32),
     );
-    node.set_mix(Mix::new(0.5_f32));
     gate(node, 0.5, 2_000, |_| {});
 }
 
@@ -155,10 +153,11 @@ fn phaser_node_process_is_allocation_free() {
     gate(PhaserNode::new(4), 0.4, 2_000, |_| {});
 }
 
-/// Every control moved each block: the delay time glides, the mixes fade,
-/// the phaser's coefficient table is re-solved, the cross-fed delay reads
+/// Every control moved each block: the delay time glides, the chorus depth
+/// sweeps, the phaser's coefficient table is re-solved, the cross-fed delay reads
 /// every tap before writing any line. All of it on preallocated scratch.
-/// The moves go through clones of the nodes, which share their cells.
+/// The moves go through clones of the nodes, which share their cells. (A
+/// moving mix is the graph's: `tutti-graph/tests/rt_no_alloc.rs`.)
 ///
 /// Mutation (run): a `Vec::with_capacity(w)` scratch in the phaser's
 /// `render` fails.
@@ -166,23 +165,21 @@ fn phaser_node_process_is_allocation_free() {
 fn delay_and_modulation_with_moving_controls_are_allocation_free() {
     let delay = DelayLineNode::stereo(
         Seconds::new(1.0_f64),
-        Seconds::new(0.2_f64),
-        Seconds::new(0.3_f64),
+        Seconds::new(0.01_f64),
+        Seconds::new(0.02_f64),
         Feedback::new(0.4_f32),
     );
     delay.set_cross_feedback(Feedback::new(0.3));
     let d = delay.clone();
     gate(delay, 0.5, 2_000, |i| {
         let t = (i % 50) as f32 / 50.0;
-        d.set_delay_time(tutti_types::Seconds::from_f32(0.05 + 0.4 * t));
-        d.set_mix(Mix::new(t));
+        d.set_delay_time(tutti_types::Seconds::from_f32(0.005 + 0.03 * t));
     });
     let chorus = ModDelayNode::chorus(6u16);
     let c = chorus.clone();
     gate(chorus, 0.5, 2_000, |i| {
         let t = (i % 50) as f32 / 50.0;
         c.set_depth(tutti_types::Seconds::from_f32(0.002 + 0.01 * t));
-        c.set_mix(Mix::new(1.0 - t));
     });
     let phaser = PhaserNode::with_channels(6u16, 8);
     let p = phaser.clone();

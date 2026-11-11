@@ -97,10 +97,7 @@ fn latency(s: &Session, node: NodeKey) -> Samples {
 /// it, and here this one does.
 fn round_trip(s: &Session, node: NodeKey) {
     let handle = s.plugin(node).expect("hosted").handle();
-    let _ = handle
-        .presets()
-        .expect("the subprocess backend has a preset route")
-        .current_preset(&main_thread());
+    let _ = handle.current_preset(&main_thread());
 }
 
 /// Waits (up to 10 s) for the probe's latency to read `want`: the
@@ -460,7 +457,7 @@ fn param(s: &Session, node: NodeKey, id: tutti_plugin_types::ParamId) -> Option<
     s.plugin(node)
         .expect("hosted")
         .handle()
-        .params()
+        .any_thread()
         .parameter_value(id)
         .map(|v| v.get())
 }
@@ -594,7 +591,7 @@ fn a_crashed_plugin_comes_back_at_its_node_with_its_last_state() {
     s.plugin(node)
         .unwrap()
         .handle()
-        .params()
+        .any_thread()
         .set_parameter_value(id, tutti_plugin_types::Normalized::of(0.25));
     let deadline = Instant::now() + Duration::from_secs(10);
     while !is_quarter(param(&s, node, id)) {
@@ -1083,7 +1080,7 @@ fn a_snapshot_that_kills_the_load_is_withheld_from_the_next_attempt() {
     s.plugin(node)
         .unwrap()
         .handle()
-        .params()
+        .any_thread()
         .set_parameter_value(id, tutti_plugin_types::Normalized::of(0.25));
     let deadline = Instant::now() + Duration::from_secs(10);
     while !is_quarter(param(&s, node, id)) {

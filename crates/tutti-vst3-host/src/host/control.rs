@@ -544,4 +544,31 @@ impl EditorWindow for Vst3Loaded {
     fn editor_idle(&mut self, main: &MainThread) {
         self.plugin.run_editor_loop_iteration(main);
     }
+
+    /// The default capabilities: this surface reports no resize support.
+    fn editor_capabilities(
+        &mut self,
+        _main: &tutti_plugin_types::MainThread,
+    ) -> tutti_plugin_types::EditorCapabilities {
+        tutti_plugin_types::EditorCapabilities::default()
+    }
+
+    /// Not supported here.
+    fn set_editor_size(
+        &mut self,
+        _main: &tutti_plugin_types::MainThread,
+        _requested: tutti_plugin_types::EditorSize,
+    ) -> tutti_plugin_types::PluginResult<tutti_plugin_types::EditorSize> {
+        Err(tutti_plugin_types::PluginError::Editor(
+            tutti_plugin_types::EditorError::PluginError("set_editor_size not supported".into()),
+        ))
+    }
+
+    /// Nothing asked: this surface never queues a resize request.
+    fn poll_editor_resize_request(
+        &mut self,
+        _main: &tutti_plugin_types::MainThread,
+    ) -> Option<tutti_plugin_types::EditorSize> {
+        None
+    }
 }

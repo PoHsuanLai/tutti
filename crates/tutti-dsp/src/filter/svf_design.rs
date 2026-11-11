@@ -11,39 +11,18 @@
 //! sampled, and the render does not depend on how audio is split into blocks.
 
 use core::marker::PhantomData;
-use core::num::NonZeroU32;
 
-use tutti_types::{ChannelLayout, Db, SampleRate};
+use tutti_types::{ChannelLayout, SampleRate};
 
 use super::real::Real;
+use super::sizes::FilterSizes;
 use super::svf::{SvfCoefficients, svf_step};
 use super::{SvfControls, SvfModel};
+use crate::control::COEFF_STREAM;
 use crate::{
-    COEFF_INTERVAL, Cadence, Ceiling, Channels, Design, Effect, Effort, Realization, Ring, Setup,
-    Sizes, lane_group,
+    COEFF_INTERVAL, Cadence, Ceiling, Channels, Design, Effect, Effort, Realization, Setup,
+    lane_group,
 };
-
-/// A filter allocates nothing from its controls: its width is the design's.
-#[derive(Clone, Copy, Debug)]
-pub struct SvfSizes;
-
-impl Sizes for SvfSizes {
-    type Source = SvfModel;
-
-    fn measure(_: &SvfModel, _: Db) -> Self {
-        SvfSizes
-    }
-
-    /// A resonant filter rings for as long as its Q says; the node declares
-    /// [`Tail::Unknown`](tutti_types::Tail::Unknown) and never parks.
-    fn tail(&self) -> Ring {
-        Ring::Unbounded
-    }
-
-    fn dominates(&self, _: &Self) -> bool {
-        true
-    }
-}
 
 /// The [`Design`] of the state-variable filter, `channels` wide, with state
 /// precision `F`.
@@ -71,17 +50,14 @@ impl<F> SvfDesign<F> {
 impl<F: Real> Design for SvfDesign<F> {
     type Controls = SvfControls;
     type Model = SvfModel;
-    type Bounds = SvfSizes;
+    type Bounds = FilterSizes<SvfModel>;
     type Range = ();
     type Realization = SvfRealization<F>;
 
     /// Solved every 16 frames on the stream clock (doc 024 Q27), at the first frame
     /// of each segment, and ramped to over it: the render is a function of the
     /// stream, not of how it is cut into blocks.
-    const CADENCE: Cadence = Cadence::stream(match NonZeroU32::new(COEFF_INTERVAL as u32) {
-        Some(n) => n,
-        None => unreachable!(),
-    });
+    const CADENCE: Cadence = COEFF_STREAM;
 
     fn channels(&self) -> Channels {
         Channels {
@@ -98,8 +74,8 @@ impl<F: Real> Design for SvfDesign<F> {
         *out = SvfModel::new(*controls, rate);
     }
 
-    fn bounds(&self, _: &Ceiling<()>) -> SvfSizes {
-        SvfSizes
+    fn bounds(&self, _: &Ceiling<()>) -> FilterSizes<SvfModel> {
+        FilterSizes::NONE
     }
 
     fn realization(&self) -> SvfRealization<F> {
@@ -176,9 +152,9 @@ impl<F: Real> SvfRealization<F> {
 }
 
 impl<F: Real> Realization<SvfModel> for SvfRealization<F> {
-    type Bounds = SvfSizes;
+    type Bounds = FilterSizes<SvfModel>;
 
-    fn prepare(&mut self, _: &SvfSizes, _: &Setup) {
+    fn prepare(&mut self, _: &FilterSizes<SvfModel>, _: &Setup) {
         self.landed = false;
     }
 
@@ -256,7 +232,7 @@ impl<F: Real> Effect<SvfModel> for SvfRealization<F> {
 mod tests {
     use rand::rngs::StdRng;
     use rand::{Rng, SeedableRng};
-    use tutti_types::{Hz, Q};
+    use tutti_types::{Db, Hz, Q};
 
     use super::*;
     use crate::SvfType;

@@ -76,7 +76,7 @@ fn main() -> BridgeResult<()> {
     // model). A plugin with no parameters gets no automation.
     let first_param = plugin
         .handle()
-        .params()
+        .any_thread()
         .parameter_descriptors()
         .and_then(|list| list.first().map(|p| p.id));
     let _automation = first_param.and_then(|address| {

@@ -1,21 +1,22 @@
-//! The Linkwitz-Riley crossover as a graph node: [`CrossoverNode`] splits its
-//! input into bands with a [`Crossover`] per channel. The filter itself
-//! (`tutti_dsp::Crossover`) is a pure algorithm over slices.
-
-use std::fmt;
+//! The Linkwitz-Riley crossover as a graph node: [`CrossoverNode`] is a
+//! [`DesignNode`] over [`CrossoverDesign`]. The algorithm is `tutti-dsp`'s; this
+//! file holds the cells and how a block reads them.
 
 use std::sync::Arc;
-use tutti_dsp::{Crossover, CrossoverError, MAX_SPLITS, fit_to_rate};
-use tutti_graph::{
-    Cost, Cx, IntoNode, Io, Node, NodeParts, ParamNode, ParamSet, Prepare, Shape, Status,
-};
-use tutti_types::{AtomicF32, Hz, Param, SampleRate};
-use tutti_types::{ChannelLayout, Tail, UnitAddr, UnitParam};
 
-use crate::ramp::{LastGood, block_driven};
+use tutti_dsp::{
+    Cadence, CrossoverControls, CrossoverDesign, CrossoverError, Design, MAX_SPLITS, Ramp,
+    fit_to_rate,
+};
+use tutti_graph::{Io, ParamSetBuilder};
+use tutti_types::{AtomicF32, ChannelLayout, Hz, Param, SampleRate, UnitAddr, UnitParam};
+
+use crate::blend::NoBlend;
+use crate::ramp::LastGood;
+use crate::reverb::{At, ControlParams, DesignNode, NodeDesign};
 
 /// The crossover frequency cells of a node, and the last finite value each
-/// held. Shared by [`CrossoverNode`] and the multiband compressor.
+/// held. Shared by [`CrossoverParams`] and the multiband compressor.
 #[derive(Clone, Debug)]
 pub(crate) struct Splits {
     cells: Vec<Param<Hz>>,
@@ -34,11 +35,16 @@ impl Splits {
     }
 
     /// The address of crossover `i`: a cutoff, indexed.
-    pub(crate) fn addr(i: usize) -> UnitAddr {
+    pub(crate) const fn addr(i: usize) -> UnitAddr {
         UnitAddr::new(UnitParam::Cutoff, i as u8)
     }
 
-    /// Crossover `i`'s cell, for the node's [`ParamSet`].
+    /// How many crossovers there are.
+    pub(crate) fn len(&self) -> usize {
+        self.cells.len()
+    }
+
+    /// Crossover `i`'s cell, for the node's [`ParamSet`](tutti_graph::ParamSet).
     pub(crate) fn cell(&self, i: usize) -> Arc<AtomicF32> {
         self.cells[i].as_atomic()
     }
@@ -73,46 +79,37 @@ impl Splits {
     }
 }
 
-/// A graph node splitting its input into bands with a [`Crossover`] per
-/// channel.
+/// A graph node splitting its input into bands with a Linkwitz-Riley crossover per
+/// channel: a [`DesignNode`] over [`CrossoverDesign`].
 ///
 /// `channels` inputs, `bands * channels` outputs, band-major: output
 /// `band * channels + channel`. That layout is fixed, and `bands * channels`
 /// is at most the graph's 64 ports ([`CrossoverNode::new`] refuses more). The
 /// bands are not delayed and the node adds no
 /// latency; the sum of the bands has flat magnitude and the phase of the
-/// crossovers' all-pass (see [`Crossover`] for why, and for what
-/// "not linear-phase" means for the bands).
+/// crossovers' all-pass (see [`Crossover`](tutti_dsp::Crossover) for why, and for
+/// what "not linear-phase" means for the bands). Its tail is
+/// [`Tail::Unknown`](tutti_types::Tail::Unknown), as the other IIR filters': the
+/// sections ring after the input stops, and it never parks.
 ///
 /// # Params
 ///
 /// Crossover `i` (between band `i` and band `i + 1`) is
 /// `UnitAddr::new(UnitParam::Cutoff, i)` in [`Hz`], on the node's
-/// [`ParamSet`] and a param port the graph can modulate. Each is read once
-/// per block and ramped across it. A frequency at or above what the rate
+/// [`ParamSet`](tutti_graph::ParamSet) and a param port the graph can modulate. The
+/// crossovers are solved on a 16-frame grid counted from the last reset, at each
+/// segment's first frame, and held over it: a control is in the render up to 16
+/// frames after it was sampled, and the render does not depend on how audio is split
+/// into blocks. A cell that moved glides, in hertz, from the last solve to its value
+/// across the block (the one control whose render depends on the block's length); a
+/// port's value is sampled at the solve frame. A frequency at or above what the rate
 /// allows is held just under it (about 0.499 of the rate) without disturbing
 /// the others; a non-finite one reads as unchanged. A set that is not
 /// strictly increasing and above 0 is refused as a whole, so every channel
 /// keeps the last good set until the writes are consistent again. The
 /// frequencies are fitted under the rate first, so `[30000, 25000]` at 48 kHz
 /// is clamped into increasing order and accepted.
-pub struct CrossoverNode {
-    layout: ChannelLayout,
-    bands: usize,
-    splits: Splits,
-    filters: Vec<Crossover>,
-    /// One channel's bands, as [`Crossover::split_block`] writes them.
-    scratch: Vec<f32>,
-}
-
-impl fmt::Debug for CrossoverNode {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("CrossoverNode")
-            .field("layout", &self.layout)
-            .field("bands", &self.bands)
-            .finish_non_exhaustive()
-    }
-}
+pub type CrossoverNode = DesignNode<CrossoverDesign>;
 
 impl CrossoverNode {
     /// A crossover over `layout` with one split at each of `frequencies`.
@@ -120,143 +117,100 @@ impl CrossoverNode {
     /// # Errors
     ///
     /// [`CrossoverError`] if the frequencies are invalid at 48 kHz (see
-    /// [`Crossover::new`]), or `layout` has no channels or `bands * channels`
+    /// [`CrossoverControls::new`]), or `layout` has no channels or `bands * channels`
     /// exceeds the graph's 64 ports.
     pub fn new(layout: ChannelLayout, frequencies: &[Hz]) -> Result<Self, CrossoverError> {
-        let proto = Crossover::new(frequencies, SampleRate::DEFAULT)?;
+        let controls = CrossoverControls::new(frequencies, SampleRate::DEFAULT)?;
+        let design = CrossoverDesign::new(layout, frequencies.len() + 1)?;
         let channels = usize::from(layout.count());
-        if channels == 0 || channels * proto.bands() > tutti_graph::MAX_PORTS {
+        if channels * design.bands() > tutti_graph::MAX_PORTS {
             return Err(CrossoverError::Channels { channels });
         }
-        Ok(Self {
-            layout,
-            bands: proto.bands(),
-            splits: Splits::new(frequencies),
-            filters: vec![proto; channels],
-            scratch: Vec::new(),
+        Ok(Self::live(design, controls))
+    }
+}
+
+/// The cells of a [`CrossoverNode`]: one cutoff per split, and the last valid set
+/// they made.
+#[derive(Clone, Debug)]
+pub struct CrossoverParams {
+    splits: Splits,
+    /// The last set the cells and ports made that [`CrossoverControls::new`]
+    /// accepted: what a refused set reads as.
+    held: CrossoverControls,
+}
+
+impl ControlParams for CrossoverParams {
+    type Controls = CrossoverControls;
+
+    fn addrs(&self) -> &'static [UnitAddr] {
+        static ADDRS: [UnitAddr; MAX_SPLITS] = [
+            Splits::addr(0),
+            Splits::addr(1),
+            Splits::addr(2),
+            Splits::addr(3),
+            Splits::addr(4),
+        ];
+        &ADDRS[..self.splits.len()]
+    }
+
+    fn bind(&self, set: ParamSetBuilder) -> ParamSetBuilder {
+        (0..self.splits.len()).fold(set, |set, i| {
+            set.param(Splits::addr(i), self.splits.cell(i))
         })
     }
 
-    /// How many bands it makes.
-    #[must_use]
-    pub fn bands(&self) -> usize {
-        self.bands
+    fn base(&self, k: usize) -> Option<f32> {
+        self.splits.base(k)
     }
 
-    /// The input width; each band is this wide.
-    #[must_use]
-    pub fn layout(&self) -> ChannelLayout {
-        self.layout
-    }
-}
-
-impl Node for CrossoverNode {
-    /// `channels` in, `bands * channels` out, a param port per crossover.
-    ///
-    /// Zero latency. The tail is [`Tail::Unknown`], as the other IIR filters'
-    /// is: the sections ring after the input stops.
-    fn shape(&self) -> Shape {
-        let ch = self.layout.count();
-        let mut addrs = [Splits::addr(0); MAX_SPLITS];
-        for (i, a) in addrs.iter_mut().enumerate() {
-            *a = Splits::addr(i);
+    /// Every split is its port's value at `at.frame` or its cell, held to the last
+    /// finite value and fitted under the rate, and the set is taken only if it is
+    /// strictly increasing (else the last good set stands, whole). A split with no
+    /// port glides from the controls last designed to that value across the block,
+    /// sampled at `at.frame`.
+    fn read(&mut self, io: &Io<'_>, first: usize, at: At<CrossoverControls>) -> CrossoverControls {
+        let n = self.splits.len();
+        let target = self.splits.read(at.rate, |i| {
+            io.param(first + i).frames().map(|lane| lane[at.frame])
+        });
+        if let Ok(set) = CrossoverControls::new(&target[..n], at.rate) {
+            self.held = set;
         }
-        Shape::audio(
-            self.layout,
-            ChannelLayout::try_from(usize::from(ch) * self.bands)
-                .expect("`new` bounds bands * channels by MAX_PORTS"),
-        )
-        .with_cost(Cost::Moderate)
-        .with_tail(Tail::Unknown)
-        .with_param_addrs(&addrs[..self.bands - 1])
-    }
-
-    fn prepare(&mut self, p: &Prepare) {
-        let targets = self.splits.read(p.sample_rate(), |_| None);
-        for f in &mut self.filters {
-            f.set_sample_rate(p.sample_rate());
-            // Taken whole by the `reset`, so the first block does not ramp
-            // in from the constructor's values.
-            let _ = f.set_frequencies(&targets[..self.bands - 1]);
-            f.reset();
-        }
-        self.scratch = vec![0.0; self.bands * p.max_block().get()];
-    }
-
-    fn process(&mut self, _cx: &Cx<'_>, mut io: Io<'_>) -> Status {
-        let n = io.frames();
-        let ch = usize::from(self.layout.count());
-        let splits = self.bands - 1;
-        let targets = self
-            .splits
-            .read(self.filters[0].sample_rate(), |i| block_driven(&io, i));
-        let (inputs, mut outputs) = io.split();
-        for (c, filter) in self.filters.iter_mut().enumerate() {
-            // `read` fitted every entry to the rate, so only a set that is
-            // out of order or not above 0 is refused, and it keeps the last
-            // good one.
-            let _ = filter.set_frequencies(&targets[..splits]);
-            let out = &mut self.scratch[..self.bands * n];
-            filter.split_block(&inputs.get(c)[..n], out);
-            for b in 0..self.bands {
-                outputs.get(b * ch + c)[..n].copy_from_slice(&out[b * n..(b + 1) * n]);
+        let mut set = self.held;
+        if let Some(from) = at.applied {
+            for (i, hz) in set.frequencies[..n].iter_mut().enumerate() {
+                if io.param(first + i).frames().is_none() {
+                    *hz = Hz(Ramp::new(from.frequencies[i].get(), hz.get(), at.block).at(at.frame));
+                }
             }
         }
-        Status::Modified
+        set
     }
 
-    fn reset(&mut self) {
-        for f in &mut self.filters {
-            f.reset();
+    fn driven(&self, io: &Io<'_>, first: usize) -> bool {
+        (first..first + self.splits.len()).any(|k| io.param(k).frames().is_some())
+    }
+
+    fn detach(&mut self) {
+        self.splits.detach();
+    }
+}
+
+impl NodeDesign for CrossoverDesign {
+    type Params = CrossoverParams;
+    type Blend = NoBlend;
+
+    /// A filter declares an unknown tail and never parks.
+    const PARKS: bool = false;
+    const SAMPLING: Cadence = <Self as Design>::CADENCE;
+
+    fn params(&self, initial: CrossoverControls) -> CrossoverParams {
+        let splits = &initial.frequencies[..self.bands() - 1];
+        CrossoverParams {
+            splits: Splits::new(splits),
+            held: initial,
         }
-    }
-
-    fn param_base(&self, port: usize) -> Option<f32> {
-        self.splits.base(port)
-    }
-}
-
-/// Shares the frequency cells (the template a fork is taken from); the
-/// filter state is copied.
-impl Clone for CrossoverNode {
-    fn clone(&self) -> Self {
-        Self {
-            layout: self.layout,
-            bands: self.bands,
-            splits: self.splits.clone(),
-            filters: self.filters.clone(),
-            scratch: self.scratch.clone(),
-        }
-    }
-}
-
-impl ParamNode for CrossoverNode {
-    /// Crossover `i` as `UnitAddr::new(UnitParam::Cutoff, i)`.
-    fn param_set(&self) -> ParamSet {
-        (0..self.bands - 1)
-            .fold(ParamSet::builder(), |set, i| {
-                set.param(Splits::addr(i), self.splits.cell(i))
-            })
-            .build()
-    }
-
-    /// A clone with its own frequency cells, at the values held now, and its
-    /// filters cleared.
-    fn fork_fresh(&self) -> Self {
-        let mut fork = self.clone();
-        fork.splits.detach();
-        Node::reset(&mut fork);
-        fork
-    }
-}
-
-/// Inserted with its [`ParamSet`] as its controls, and a fork from the
-/// frequencies last set through it.
-impl IntoNode for CrossoverNode {
-    type Controls = ParamSet;
-
-    fn into_parts(self) -> NodeParts<ParamSet> {
-        tutti_graph::param_parts(self)
     }
 }
 
@@ -266,7 +220,7 @@ mod tests {
     use crate::test_support::{amplitude_at, sine};
     use crate::test_support::{prepared, render_chunked};
     use tutti_dsp::SOLVE_CEILING;
-    use tutti_graph::Node;
+    use tutti_graph::{Cost, Node, ParamNode};
     use tutti_types::Tail;
 
     const RATE: f64 = 48_000.0;
@@ -347,8 +301,8 @@ mod tests {
         let silence = vec![0.0f32; 64];
         let held = |node: &mut CrossoverNode| {
             render(node, std::slice::from_ref(&silence));
-            let f = &node.filters[0];
-            (f.frequency(0), f.frequency(1))
+            let f = node.applied().expect("a block was rendered").frequencies;
+            (Some(f[0]), Some(f[1]))
         };
         for bad in [5_000.0, -1.0, 0.0, f32::NAN, f32::INFINITY] {
             set.set(c0, bad);
@@ -376,10 +330,7 @@ mod tests {
         set.set(Splits::addr(0), 30_000.0);
         set.set(Splits::addr(1), 25_000.0);
         render(&mut node, &[vec![0.0f32; 64]]);
-        let (a, b) = (
-            node.filters[0].frequency(0).unwrap(),
-            node.filters[0].frequency(1).unwrap(),
-        );
+        let [a, b, ..] = node.applied().expect("a block was rendered").frequencies;
         assert!(
             a > Hz(20_000.0) && a < b && b.get() <= 0.499 * 48_000.0 + 1e-2,
             "{a:?} {b:?}"
@@ -504,7 +455,7 @@ mod tests {
         // The top crossover is under Nyquist, so the top band exists and is finite.
         assert!(out[2].iter().all(|s| s.is_finite()));
         let cap = SOLVE_CEILING * rate;
-        let target = f64::from(node.filters[0].frequency(1).unwrap().get());
+        let target = f64::from(node.applied().unwrap().frequencies[1].get());
         assert!(target <= cap + 1e-2 && target > 300.0);
     }
 

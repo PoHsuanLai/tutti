@@ -79,14 +79,14 @@ const EXPECTED_LIVE: f32 = INPUT_DC + TAG_P0C0;
 use tutti_fixtures::machine_lock;
 
 /// Clears the probe's environment switches on drop, including on an unwind.
-struct ProbeEnv(Vec<&'static str>);
+pub(super) struct ProbeEnv(Vec<&'static str>);
 
 impl ProbeEnv {
-    fn new() -> Self {
+    pub(super) fn new() -> Self {
         Self(Vec::new())
     }
 
-    fn set(&mut self, key: &'static str, value: String) {
+    pub(super) fn set(&mut self, key: &'static str, value: String) {
         // SAFETY: the lock directory is held for the whole test, and every test
         // that touches these variables takes it first — so no other thread in
         // this process is reading or writing the environment concurrently.
@@ -110,7 +110,7 @@ impl Drop for ProbeEnv {
 ///
 /// If it has not been built; the message names the command that builds it
 /// (`CLAUDE.md`, "Build `plugin-server` first").
-fn plugin_server_path() -> &'static str {
+pub(super) fn plugin_server_path() -> &'static str {
     static RESOLVED: std::sync::OnceLock<String> = std::sync::OnceLock::new();
     RESOLVED
         .get_or_init(|| {
@@ -393,7 +393,7 @@ fn a_plugin_that_never_parks_settles_nothing() {
 /// so `status` reads `Dead` with it.
 ///
 /// Mutations (each run, each failed): `note_abandoned` not counting (the run
-/// never climbs); `SubprocessBackend::terminate` not killing the server (the
+/// never climbs); `IpcController`'s `Health::terminate` not killing the server (the
 /// status stays `Alive`); not latching the cause (the status reads the
 /// bridge's own "crashed" text).
 #[test]

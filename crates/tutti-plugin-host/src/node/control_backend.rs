@@ -1,10 +1,10 @@
-//! Host-side capability backend for an in-process plugin of any [`InProcess`]
-//! format.
+//! An in-process plugin of any [`InProcess`] format, behind a handle: its
+//! [`AnyThread`] (the hop to the main thread), its [`Health`] and the
+//! [`MainThreadControl`] a handle's token-taking calls reach it by.
 //!
-//! Implements [`HostParams`], [`HostState`], [`HostEditor`], [`HostPresets`](crate::HostPresets) and
-//! [`HostRenderMode`] over the plugin's [`Control`](tutti_plugin_types::Control) surface
-//! ([`Lifecycle::control`](tutti_plugin_types::Lifecycle::control), which
-//! reaches it whether the plugin is loaded or active). Holds the plugin's
+//! All three are over the plugin's [`Control`]
+//! surface ([`Lifecycle::control`](tutti_plugin_types::Lifecycle::control),
+//! which reaches it whether the plugin is loaded or active). Holds the plugin's
 //! control side, the `Arc<Mutex<Instance<F>>>` the node's `shape` and
 //! `prepare` also take. Control-thread calls take the lock for the duration of
 //! one plugin operation — short for parameter / state methods, potentially long
@@ -13,13 +13,12 @@
 //!
 //! # Threads
 //!
-//! Every [`Control`](tutti_plugin_types::Control) entry is a main-thread call
-//! that takes a [`MainThread`]. The `Host*` traits take one where the call is
-//! the caller's to place ([`HostState::load_state`], the presets, the editor);
-//! the rest ([`HostParams`], [`HostState::save_state`], [`HostRenderMode`])
-//! take none, because the out-of-process backends answer them from any thread,
-//! and the session calls them from pool jobs. Here they work from any thread
-//! too, through `on_main`: on the main thread the call runs at once; off it the
+//! Every [`Control`] entry is a main-thread call
+//! that takes a [`MainThread`]. [`MainThreadControl`] is lent to a caller that
+//! holds one; [`AnyThread`] takes none, because a served plugin answers those
+//! calls from any thread and the session calls them from pool jobs. Here they
+//! work from any thread too, through `on_main`: on the main thread the call runs
+//! at once; off it the
 //! work is posted with [`defer_to_main`] and the caller waits for the answer,
 //! which costs one main-thread tick (`Session::update` runs
 //! [`run_deferred`](tutti_plugin_types::run_deferred) every tick). The wait has
@@ -29,7 +28,6 @@
 //! `Err`, `false`) when it expires. A timed-out call's work still runs at the
 //! next tick. Fire-and-forget writes post and do not wait.
 
-use std::ffi::c_void;
 use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
 use std::sync::mpsc::sync_channel;
@@ -39,12 +37,12 @@ use tutti_plugin_types::MainThread;
 use parking_lot::Mutex;
 
 use super::instance::Instance;
+use crate::MainThreadControl;
 use crate::ParameterChangeSink;
-use crate::capabilities::{HostEditor, HostParams, HostRenderMode, HostState};
-use tutti_plugin_types::{ContentScale, EditorSize, WindowHandle};
-use tutti_plugin_types::{EditorError, InProcess, PluginError, StateError, defer_to_main};
+use tutti_plugin_types::{
+    AnyThread, AutomationMode, Control, EditorError, Health, InProcess, StateError, defer_to_main,
+};
 use tutti_plugin_types::{Normalized, ParamId, ParameterInfo, RenderMode};
-use tutti_plugin_types::{Preset, PresetId};
 
 /// Bundles the shared Mutex with the parameter-change sink so editor
 /// idle calls can drain plugin-internal automation events and notify
@@ -59,6 +57,9 @@ pub(crate) struct ControlBackend<F: InProcess> {
     /// Where a re-read that found the plugin's latency, tail or pins moved is
     /// reported (`PluginHandle::on_invalidate`).
     pub(crate) invalidate_sink: crate::InvalidateSink,
+    /// The plugin's format name, for the refusal of an advisory no in-process
+    /// format carries.
+    pub(crate) format: &'static str,
 }
 
 /// How long an off-main-thread call waits for the main thread to run its work
@@ -117,15 +118,7 @@ where
     }
 }
 
-/// A plugin's error as the editor's.
-fn editor_error(error: PluginError) -> EditorError {
-    match error {
-        PluginError::Editor(editor) => editor,
-        other => EditorError::PluginError(other.to_string()),
-    }
-}
-
-impl<F> HostParams for ControlBackend<F>
+impl<F> AnyThread for ControlBackend<F>
 where
     F: InProcess + 'static,
     F::Processor: 'static,
@@ -158,14 +151,14 @@ where
     }
 
     /// The plugin's display string for `value`, as
-    /// [`Control::parameter_text`](tutti_plugin_types::Control::parameter_text)
+    /// [`Control::parameter_text`]
     /// answers it (VST2's only for the value it currently holds).
     fn parameter_text(&self, id: ParamId, value: Normalized) -> Option<String> {
         self.on_main(move |main, instance| instance.control()?.parameter_text(main, id, value))?
     }
 
     /// Parse through the plugin's own parser
-    /// ([`Control::parameter_value_from_text`](tutti_plugin_types::Control::parameter_value_from_text)).
+    /// ([`Control::parameter_value_from_text`]).
     /// **On VST2 this writes**, since its opcode parses by applying.
     fn parameter_value_from_text(&self, id: ParamId, text: &str) -> Option<Normalized> {
         let text = text.to_owned();
@@ -176,29 +169,6 @@ where
         })?
     }
 
-    fn is_crashed(&self) -> bool {
-        // In-process: if the plugin crashed it took the host with it,
-        // so a returning caller can never observe a crashed state.
-        false
-    }
-
-    /// The edits the plugin reported that its bounded queue refused
-    /// ([`Control::dropped_reported_edits`](tutti_plugin_types::Control::dropped_reported_edits)).
-    /// A blocking `lock`, like the other reads: a count that read `0` on
-    /// contention would go backwards. Any thread: a count, not a plugin call.
-    fn dropped_parameter_events(&self) -> u64 {
-        self.inner
-            .lock()
-            .control()
-            .map_or(0, |control| control.dropped_reported_edits())
-    }
-}
-
-impl<F> HostState for ControlBackend<F>
-where
-    F: InProcess + 'static,
-    F::Processor: 'static,
-{
     /// The plugin's own failure, forwarded rather than dropped, so the caller
     /// can tell "the plugin has no state" from "asking it failed". The
     /// in-process path cannot hit the transport's size limit, so `Rejected` is
@@ -220,49 +190,6 @@ where
         }
     }
 
-    /// The plugin's own refusal, forwarded rather than dropped.
-    fn load_state(&self, main: &MainThread, data: &[u8]) -> Result<(), StateError> {
-        match self.inner.lock().control() {
-            Some(control) => control
-                .load_state(main, data)
-                .map_err(|e| StateError::Rejected(e.to_string())),
-            None => Err(StateError::Rejected("the plugin is lost".into())),
-        }
-    }
-}
-
-impl<F> crate::HostPresets for ControlBackend<F>
-where
-    F: InProcess + 'static,
-    F::Processor: 'static,
-{
-    /// The plugin's presets, in its own order ([`Control::presets`](tutti_plugin_types::Control::presets)).
-    fn presets(&self, main: &MainThread) -> Vec<Preset> {
-        self.inner
-            .lock()
-            .control()
-            .map(|control| control.presets(main))
-            .unwrap_or_default()
-    }
-
-    /// `false` for an id this format cannot address, and for a lost plugin.
-    fn load_preset(&self, main: &MainThread, id: &PresetId) -> bool {
-        self.inner
-            .lock()
-            .control()
-            .is_some_and(|control| control.load_preset(main, id))
-    }
-
-    fn current_preset(&self, main: &MainThread) -> Option<PresetId> {
-        self.inner.lock().control()?.current_preset(main)
-    }
-}
-
-impl<F> HostRenderMode for ControlBackend<F>
-where
-    F: InProcess + 'static,
-    F::Processor: 'static,
-{
     /// Whether the plugin runs in `mode` now: told live where its format takes
     /// it (VST2 always does: the host answers
     /// `audioMasterGetCurrentProcessLevel` whenever the plugin asks), else
@@ -276,45 +203,47 @@ where
         self.on_main(move |main, instance| instance.set_render_mode(main, mode))
             .unwrap_or(false)
     }
+
+    /// No in-process format carries the VST3-style advisory.
+    fn set_automation_mode(&self, _mode: AutomationMode) -> Result<(), EditorError> {
+        Err(EditorError::GuiNotSupported {
+            format: self.format.to_string(),
+        })
+    }
 }
 
-impl<F> HostEditor for ControlBackend<F>
+/// An in-process plugin cannot be observed to die: a crash takes the host with
+/// it, so a returning caller never sees a crashed state, and the rest is the
+/// trait's defaults.
+impl<F: InProcess> Health for ControlBackend<F> {
+    fn is_crashed(&self) -> bool {
+        false
+    }
+
+    fn crash_cause(&self) -> Option<String> {
+        None
+    }
+
+    fn rate_refusal(&self) -> Option<(tutti_types::SampleRate, String)> {
+        None
+    }
+
+    fn block_counts(&self) -> tutti_plugin_types::BlockCounts {
+        tutti_plugin_types::BlockCounts::default()
+    }
+
+    fn terminate(&self, _cause: &str) {}
+}
+
+impl<F> MainThreadControl for ControlBackend<F>
 where
     F: InProcess + 'static,
     F::Processor: 'static,
 {
-    fn open_editor(
-        &self,
-        main: &MainThread,
-        parent_ptr: *mut c_void,
-        scale: ContentScale,
-    ) -> std::result::Result<EditorSize, EditorError> {
-        // SAFETY: `parent_ptr` is the platform-native window pointer
-        // (NSView*, HWND, X11 window id) extracted from a caller-supplied
-        // `RawWindowHandle`, alive for the call; the plugin's format only
-        // forwards it to the plugin's own embed call.
-        #[allow(unsafe_code, reason = "the one window decode; see the SAFETY above")]
-        let parent = unsafe { WindowHandle::from_ptr(parent_ptr) };
-        let mut instance = self.inner.lock();
-        let control = instance
-            .control()
-            .ok_or_else(|| EditorError::PluginError("the plugin is lost".into()))?;
-        control
-            .open_editor(main, parent, scale)
-            .map_err(editor_error)
-    }
-
-    fn open_floating_editor(&self, main: &MainThread) -> std::result::Result<(), EditorError> {
-        let mut instance = self.inner.lock();
-        let control = instance
-            .control()
-            .ok_or_else(|| EditorError::PluginError("the plugin is lost".into()))?;
-        control.open_floating_editor(main).map_err(editor_error)
-    }
-
-    fn close_editor(&self, main: &MainThread) {
+    /// Under the instance's lock; not called for a lost plugin.
+    fn lend(&self, f: &mut dyn FnMut(&mut dyn Control)) {
         if let Some(control) = self.inner.lock().control() {
-            control.close_editor(main);
+            f(control);
         }
     }
 
@@ -375,7 +304,10 @@ where
 #[cfg(test)]
 mod off_main_tests {
     use tutti_fixtures::main_thread;
-    use tutti_plugin_types::{Load, Normalized, ParamId, StateError, run_deferred};
+    use tutti_plugin_types::{
+        AutomationMode, EditorError, Load, Normalized, ParamId, RenderMode, StateError,
+        run_deferred,
+    };
     use tutti_types::SampleRate;
     use tutti_vst2_host::Vst2Loaded;
 
@@ -391,7 +323,7 @@ mod off_main_tests {
         )
         .unwrap_or_else(|e| panic!("in-process load of the probe: {e:?}"));
         handle
-            .params()
+            .any_thread()
             .set_parameter_value(ParamId::new(1), Normalized::of(0.75));
         (client, handle)
     }
@@ -410,7 +342,7 @@ mod off_main_tests {
         let main = main_thread();
         let (_client, handle) = loaded();
         let expected = handle
-            .state()
+            .any_thread()
             .save_state()
             .expect("saved on the main thread");
         let id = ParamId::new(1);
@@ -418,8 +350,8 @@ mod off_main_tests {
             let handle = handle.clone();
             std::thread::spawn(move || {
                 (
-                    handle.state().save_state(),
-                    handle.params().parameter_value(id),
+                    handle.any_thread().save_state(),
+                    handle.any_thread().parameter_value(id),
                 )
             })
         };
@@ -444,13 +376,167 @@ mod off_main_tests {
         let id = ParamId::new(1);
         let (state, value) = std::thread::spawn(move || {
             (
-                handle.state().save_state(),
-                handle.params().parameter_value(id),
+                handle.any_thread().save_state(),
+                handle.any_thread().parameter_value(id),
             )
         })
         .join()
         .expect("the job returns");
         assert!(matches!(state, Err(StateError::Unavailable)), "{state:?}");
         assert_eq!(value, None);
+    }
+
+    /// **The parameter reads answer on the main thread**: the catalog lists
+    /// the probe's parameters, the value is the one written, and the text
+    /// and parse are the plugin's own (a text it cannot parse is `None`, never a
+    /// default that looks like an answer).
+    ///
+    /// Mutation (run): `parameter_descriptors` returning `None` -> the catalog
+    /// assertion fails. Mutation (run): `parameter_value` ignoring the id
+    /// (reading parameter 0) -> the value assertion fails.
+    #[test]
+    fn the_parameter_reads_answer_on_the_main_thread() {
+        let _main = main_thread();
+        let (_client, handle) = loaded();
+        let any = handle.any_thread();
+        let catalog = any.parameter_descriptors().expect("the probe lists");
+        assert!(catalog.iter().any(|p| p.id == ParamId::new(1)));
+        assert_eq!(
+            any.parameter_value(ParamId::new(1)).map(Normalized::get),
+            Some(0.75)
+        );
+        let text = any.parameter_text(ParamId::new(1), Normalized::of(0.75));
+        assert!(
+            text.as_deref().is_some_and(|t| t.contains("0.75")),
+            "the plugin's own display string: {text:?}"
+        );
+        assert_eq!(
+            any.parameter_value_from_text(ParamId::new(1), "no such value"),
+            None,
+            "a text the plugin cannot parse leaves the field where it was"
+        );
+    }
+
+    /// **A parameter write lands on the plugin** (on the main thread it runs at
+    /// once, under the instance's lock).
+    ///
+    /// Mutation (run): `set_parameter_value` doing nothing -> the read-back
+    /// is still 0.75 -> fails.
+    #[test]
+    fn a_parameter_write_lands_on_the_plugin() {
+        let _main = main_thread();
+        let (_client, handle) = loaded();
+        handle
+            .any_thread()
+            .set_parameter_value(ParamId::new(1), Normalized::of(0.25));
+        assert_eq!(
+            handle
+                .any_thread()
+                .parameter_value(ParamId::new(1))
+                .map(Normalized::get),
+            Some(0.25)
+        );
+    }
+
+    /// **The state saved on the main thread is the plugin's own**: not
+    /// `Unavailable` (nothing waited) and not empty.
+    ///
+    /// Mutation (run): `save_state` answering `Err(Unavailable)` on the main
+    /// thread too -> fails.
+    #[test]
+    fn the_state_saves_on_the_main_thread() {
+        let _main = main_thread();
+        let (_client, handle) = loaded();
+        let state = handle.any_thread().save_state().expect("the probe saves");
+        assert!(!state.is_empty());
+    }
+
+    /// **The render mode is accepted** (VST2 answers the process level from a
+    /// host callback, so there is nothing to decline).
+    ///
+    /// Mutation (run): `set_render_mode` returning `false` -> fails.
+    #[test]
+    fn the_render_mode_is_accepted_on_the_main_thread() {
+        let _main = main_thread();
+        let (_client, handle) = loaded();
+        assert!(handle.set_render_mode(RenderMode::Offline));
+        assert!(handle.set_render_mode(RenderMode::Realtime));
+    }
+
+    /// **No in-process format carries the automation advisory**, and says so
+    /// with the editor's `GuiNotSupported` for its format, as the handle with
+    /// no such route always did.
+    ///
+    /// Mutation (run): `set_automation_mode` answering `Ok(())` -> fails.
+    #[test]
+    fn the_automation_advisory_is_not_supported_in_process() {
+        let _main = main_thread();
+        let (_client, handle) = loaded();
+        let refused = handle
+            .set_automation_mode(AutomationMode::Writing)
+            .expect_err("no in-process format carries it");
+        assert!(
+            matches!(refused, EditorError::GuiNotSupported { ref format } if format == "vst2"),
+            "{refused:?}"
+        );
+    }
+
+    /// **An in-process plugin is never observed dead**: alive, no refusal,
+    /// zero block counts, and a `terminate` that ends nothing.
+    ///
+    /// Mutation (run): `is_crashed` returning `true` -> `status` reads `Dead`
+    /// -> fails.
+    #[test]
+    fn an_in_process_plugin_is_never_observed_dead() {
+        let _main = main_thread();
+        let (_client, handle) = loaded();
+        assert!(!handle.is_crashed());
+        assert_eq!(handle.status(), crate::PluginStatus::Alive);
+        assert_eq!(
+            handle.block_counts(),
+            tutti_plugin_types::BlockCounts::default()
+        );
+        handle.terminate("a test");
+        assert_eq!(
+            handle.status(),
+            crate::PluginStatus::Alive,
+            "there is no process to end"
+        );
+    }
+
+    /// **The rest of the calls have the same unavailable answer when nothing
+    /// pumps the main thread**: the catalog and the text are `None`, a render
+    /// mode is refused (`false`), never a default that looks like an answer.
+    /// (The advisory needs no main thread: it refuses at once.)
+    ///
+    /// Mutation (run): `set_render_mode`'s `unwrap_or(false)` replaced by
+    /// `unwrap_or(true)` -> the refusal reads accepted -> fails.
+    #[test]
+    fn an_unpumped_main_thread_refuses_the_other_calls_too() {
+        let _main = main_thread();
+        let (_client, handle) = loaded();
+        let (catalog, text, from_text, mode, automation) = std::thread::spawn(move || {
+            (
+                handle.any_thread().parameter_descriptors(),
+                handle
+                    .any_thread()
+                    .parameter_text(ParamId::new(1), Normalized::of(0.5)),
+                handle
+                    .any_thread()
+                    .parameter_value_from_text(ParamId::new(1), "0.5"),
+                handle.set_render_mode(RenderMode::Offline),
+                handle.set_automation_mode(AutomationMode::Off),
+            )
+        })
+        .join()
+        .expect("the job returns");
+        assert!(catalog.is_none());
+        assert!(text.is_none());
+        assert!(from_text.is_none());
+        assert!(!mode);
+        assert!(matches!(
+            automation,
+            Err(EditorError::GuiNotSupported { .. })
+        ));
     }
 }

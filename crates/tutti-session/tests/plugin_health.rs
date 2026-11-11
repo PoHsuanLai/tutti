@@ -19,7 +19,7 @@ use tutti_graph::NodeKey;
 use tutti_nodes::testing::Const;
 use tutti_plugin::server::ParameterInfo;
 use tutti_plugin_host::Liveness;
-use tutti_plugin_host::{OptionalCapabilities, PluginHandle};
+use tutti_plugin_host::PluginHandle;
 use tutti_plugin_types::{Normalized, ParamId};
 use tutti_session::{Phase, PhaseCx, PluginLiveness, Session, SessionEvent};
 use tutti_types::SampleRate;
@@ -29,7 +29,7 @@ struct FakeBackend {
     cause: Option<String>,
 }
 
-impl tutti_plugin_host::HostParams for FakeBackend {
+impl tutti_plugin_types::AnyThread for FakeBackend {
     fn parameter_descriptors(&self) -> Option<Vec<ParameterInfo>> {
         None
     }
@@ -37,28 +37,40 @@ impl tutti_plugin_host::HostParams for FakeBackend {
         None
     }
     fn set_parameter_value(&self, _id: ParamId, _value: Normalized) {}
+    fn parameter_text(&self, _id: ParamId, _value: Normalized) -> Option<String> {
+        None
+    }
+    fn parameter_value_from_text(&self, _id: ParamId, _text: &str) -> Option<Normalized> {
+        None
+    }
+    fn save_state(&self) -> Result<Vec<u8>, tutti_plugin::error::StateError> {
+        Err(tutti_plugin::error::StateError::NoStateRoute)
+    }
+    fn set_render_mode(&self, _mode: tutti_plugin_types::RenderMode) -> bool {
+        false
+    }
+    fn set_automation_mode(
+        &self,
+        _mode: tutti_plugin_types::AutomationMode,
+    ) -> Result<(), tutti_plugin_types::EditorError> {
+        Err(tutti_plugin_types::EditorError::PluginCrashed)
+    }
+}
+
+impl tutti_plugin_types::Health for FakeBackend {
     fn is_crashed(&self) -> bool {
         self.cause.is_some()
     }
     fn crash_cause(&self) -> Option<String> {
         self.cause.clone()
     }
-    fn dropped_parameter_events(&self) -> u64 {
-        0
+    fn rate_refusal(&self) -> Option<(tutti_types::SampleRate, String)> {
+        None
     }
-}
-
-impl tutti_plugin_host::HostState for FakeBackend {
-    fn save_state(&self) -> Result<Vec<u8>, tutti_plugin::error::StateError> {
-        Err(tutti_plugin::error::StateError::NoStateRoute)
+    fn block_counts(&self) -> tutti_plugin_types::BlockCounts {
+        tutti_plugin_types::BlockCounts::default()
     }
-    fn load_state(
-        &self,
-        _main: &tutti_plugin::MainThread,
-        _data: &[u8],
-    ) -> Result<(), tutti_plugin::error::StateError> {
-        Ok(())
-    }
+    fn terminate(&self, _cause: &str) {}
 }
 
 fn handle_with(cause: Option<&str>) -> PluginHandle {
@@ -66,7 +78,7 @@ fn handle_with(cause: Option<&str>) -> PluginHandle {
         Arc::new(FakeBackend {
             cause: cause.map(str::to_string),
         }),
-        OptionalCapabilities::default(),
+        None,
         Default::default(),
         Default::default(),
         Default::default(),

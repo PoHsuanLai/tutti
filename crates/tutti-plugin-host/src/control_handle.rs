@@ -4,66 +4,63 @@
 //! capability the backend lacks reads as `None` rather than erroring at the call.
 //! Audio never travels through here; this is the off-RT half.
 
-use crate::capabilities::{
-    HostAutomationState, HostEditor, HostParams, HostPresets, HostRenderMode, HostState,
-};
 use crate::{InvalidateSink, ParameterChangeSink, RefreshSink};
 use raw_window_handle::HasWindowHandle;
 use std::sync::Arc;
-use tutti_plugin_types::AutomationMode;
 use tutti_plugin_types::BlockCounts;
-use tutti_plugin_types::EditorError;
 use tutti_plugin_types::MainThread;
 use tutti_plugin_types::{
-    ChannelTopology, LayoutSupport, LoadedPlugin, Normalized, ParamId, PluginDescriptor,
-    PresetSupport,
+    AnyThread, AutomationMode, Control, EditorCapabilities, EditorError, Health, PluginError,
+    StateError, WindowHandle,
+};
+use tutti_plugin_types::{
+    ChannelTopology, LayoutSupport, LoadedPlugin, Normalized, ParamId, PluginDescriptor, Preset,
+    PresetId, PresetSupport,
 };
 use tutti_plugin_types::{ContentScale, EditorSize};
 use tutti_plugin_types::{PluginInvalidation, PluginRefresh};
 
-/// The capabilities a backend may or may not honour, for
-/// [`PluginHandle::from_backend`].
+/// How a [`PluginHandle`] reaches a plugin's main-thread [`Control`].
 ///
-/// Each field is independent — a backend can carry the render mode without
-/// hosting an editor, or reach presets without either. Default is "honours
-/// none"; name the ones a backend does.
-///
-/// ```no_run
-/// # use std::sync::Arc;
-/// # use tutti_plugin_host::{HostEditor, HostParams, HostState, ParameterChangeSink};
-/// # use tutti_plugin_host::{OptionalCapabilities, PluginHandle};
-/// # use tutti_plugin_types::{LoadedPlugin, PluginDescriptor};
-/// # fn ex<B: HostParams + HostState + 'static>(
-/// #     backend: Arc<B>,
-/// #     editor: Arc<dyn HostEditor>,
-/// #     descriptor: PluginDescriptor,
-/// #     loaded: LoadedPlugin,
-/// #     param_sink: ParameterChangeSink,
-/// # ) -> PluginHandle {
-/// // Hosts an editor; carries neither render mode nor presets.
-/// PluginHandle::from_backend(
-///     backend,
-///     OptionalCapabilities { editor: Some(editor), ..Default::default() },
-///     descriptor, loaded, param_sink,
-/// )
-/// # }
-/// ```
-#[derive(Default, Clone)]
-pub struct OptionalCapabilities {
-    /// The automation-state advisory (VST3 `IAutomationState`).
-    pub automation_state: Option<Arc<dyn HostAutomationState>>,
-    /// Embeddable (and possibly floating) editor hosting.
-    pub editor: Option<Arc<dyn HostEditor>>,
-    /// The offline/realtime render-mode advisory.
-    pub render_mode: Option<Arc<dyn HostRenderMode>>,
-    /// Preset enumeration and loading.
-    pub presets: Option<Arc<dyn HostPresets>>,
+/// A `Control` call takes the token and `&mut self`, and the plugin sits
+/// behind a lock (in-process) or in the bridge (served), so it is lent to a
+/// closure rather than handed out. A served plugin's control is `Clone` and
+/// holds no lock, which is the blanket impl; an in-process plugin's is
+/// `ControlBackend`, which locks the instance and pumps on
+/// [`editor_idle`](Self::editor_idle).
+pub trait MainThreadControl: Send + Sync {
+    /// Runs `f` on the plugin's `Control`, or does not run it when the plugin
+    /// is lost.
+    fn lend(&self, f: &mut dyn FnMut(&mut dyn Control));
+
+    /// The editor's tick, which an in-process plugin pairs with the pump of
+    /// what the plugin changed about itself.
+    fn editor_idle(&self, main: &MainThread);
 }
 
-impl std::fmt::Debug for OptionalCapabilities {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("OptionalCapabilities")
-            .finish_non_exhaustive()
+impl<C: Control + Clone + Send + Sync> MainThreadControl for C {
+    fn lend(&self, f: &mut dyn FnMut(&mut dyn Control)) {
+        f(&mut self.clone());
+    }
+
+    fn editor_idle(&self, main: &MainThread) {
+        self.lend(&mut |control| control.editor_idle(main));
+    }
+}
+
+/// `f` on the lent control, and its answer; `None` when the plugin is lost.
+fn lent<R>(control: &dyn MainThreadControl, f: impl FnOnce(&mut dyn Control) -> R) -> Option<R> {
+    let mut f = Some(f);
+    let mut answer = None;
+    control.lend(&mut |c| answer = f.take().map(|f| f(c)));
+    answer
+}
+
+/// A plugin's error as the editor's.
+fn editor_error(error: PluginError) -> EditorError {
+    match error {
+        PluginError::Editor(editor) => editor,
+        other => EditorError::PluginError(other.to_string()),
     }
 }
 
@@ -121,11 +118,9 @@ impl PluginStatus {
 
 /// Main-thread control handle for a loaded plugin.
 ///
-/// Backend-agnostic: it holds each control capability as a separate trait
-/// object ([`HostParams`] and [`HostState`] always; [`HostEditor`],
-/// [`HostAutomationState`], `HostRenderMode` and [`HostPresets`] when the
-/// backend honors them), so out-of-process VST3/CLAP/AU and in-process VST2
-/// hosting share this surface while advertising only what they support.
+/// Hosting-agnostic: it holds the plugin's [`AnyThread`] and [`Health`], and
+/// its [`MainThreadControl`] when it has one, so out-of-process VST3/CLAP/AU
+/// and in-process VST2 hosting share this surface.
 ///
 /// Clone is cheap (`Arc`-based). Action methods return `&Self` for chaining.
 ///
@@ -143,17 +138,17 @@ impl PluginStatus {
 /// [`status`](Self::status) and [`is_crashed`](Self::is_crashed) read an atomic.
 /// Call these per frame.
 ///
-/// **Fire-and-forget.** [`HostParams::set_parameter_value`],
+/// **Fire-and-forget.** [`AnyThread::set_parameter_value`],
 /// [`set_render_mode`](Self::set_render_mode) and
 /// [`set_automation_mode`](Self::set_automation_mode) push onto a lock-free
 /// queue and return without waiting. A knob turn must never stall a UI, so
 /// these deliberately have no reply to wait for — and therefore no way to
 /// report that the plugin refused.
 ///
-/// **Blocking round-trips.** [`HostState::save_state`],
-/// [`HostState::load_state`], [`HostParams::parameter_descriptors`],
-/// [`HostParams::parameter_value`], [`HostPresets::presets`],
-/// [`HostPresets::load_preset`] and [`HostPresets::current_preset`] each send a
+/// **Blocking round-trips.** [`AnyThread::save_state`],
+/// [`load_state`](Self::load_state), [`AnyThread::parameter_descriptors`],
+/// [`AnyThread::parameter_value`], [`presets`](Self::presets),
+/// [`load_preset`](Self::load_preset) and [`current_preset`](Self::current_preset) each send a
 /// command to the subprocess and **wait for the reply** — five seconds for the
 /// parameter and preset calls, ten for state. A wedged plugin spends the whole
 /// timeout before returning `None`.
@@ -161,7 +156,7 @@ impl PluginStatus {
 /// The last group is why this type is `Send + Sync + Clone`: clone the handle
 /// into whatever the host already uses for off-thread work and call it there.
 /// Under Bevy that is one line —
-/// `AsyncComputeTaskPool::get().spawn(async move { handle.state().save_state() })`
+/// `AsyncComputeTaskPool::get().spawn(async move { handle.any_thread().save_state() })`
 /// — held in a component and polled next frame, the shape `bevy_tutti`'s plugin
 /// load and state snapshot both use.
 ///
@@ -172,12 +167,9 @@ impl PluginStatus {
 /// can run the blocking call directly.
 #[derive(Clone)]
 pub struct PluginHandle {
-    params: Arc<dyn HostParams>,
-    state: Arc<dyn HostState>,
-    editor: Option<Arc<dyn HostEditor>>,
-    automation_state: Option<Arc<dyn HostAutomationState>>,
-    render_mode: Option<Arc<dyn HostRenderMode>>,
-    presets: Option<Arc<dyn HostPresets>>,
+    any_thread: Arc<dyn AnyThread>,
+    health: Arc<dyn Health>,
+    control: Option<Arc<dyn MainThreadControl>>,
     descriptor: PluginDescriptor,
     loaded: LoadedPlugin,
     param_sink: ParameterChangeSink,
@@ -203,32 +195,21 @@ impl PluginHandle {
     /// Creates a handle over a backend: an in-process one, or the client of a
     /// served plugin, which adds its refresh sink and server pid below.
     ///
-    /// `backend` provides the always-present [`HostParams`] and [`HostState`]
-    /// (one shared object serves both). The optional capabilities go in
-    /// `optional`; build it with `..Default::default()` and name only what the
-    /// backend honors. See [`OptionalCapabilities`] for an example.
-    pub fn from_backend<B: HostParams + HostState + 'static>(
+    /// `backend` is the plugin's [`AnyThread`] and [`Health`] (one object
+    /// serves both). `control` is how the main-thread calls reach the plugin;
+    /// `None` is a handle with no such route (no editor, no presets, no state
+    /// restore), as a test double has.
+    pub fn from_backend<B: AnyThread + Health + 'static>(
         backend: Arc<B>,
-        optional: OptionalCapabilities,
+        control: Option<Arc<dyn MainThreadControl>>,
         descriptor: PluginDescriptor,
         loaded: LoadedPlugin,
         param_sink: ParameterChangeSink,
     ) -> Self {
-        let OptionalCapabilities {
-            automation_state,
-            editor,
-            render_mode,
-            presets,
-        } = optional;
         Self {
-            params: backend.clone(),
-            state: backend,
-            editor,
-            // In-process backends don't implement the VST3-style
-            // automation-state advisory, so theirs is `None`.
-            automation_state,
-            render_mode,
-            presets,
+            any_thread: backend.clone(),
+            health: backend,
+            control,
             descriptor,
             loaded,
             param_sink,
@@ -271,55 +252,12 @@ impl PluginHandle {
         self
     }
 
-    // ---- Capability accessors ---------------------------------------------
+    // ---- Accessors ---------------------------------------------------------
 
-    /// Returns the parameter capability (catalog, reads, writes, liveness).
-    pub fn params(&self) -> &dyn HostParams {
-        self.params.as_ref()
-    }
-
-    /// Returns the state save/load capability.
-    pub fn state(&self) -> &dyn HostState {
-        self.state.as_ref()
-    }
-
-    /// Returns the editor capability, or `None` when the backend cannot host
-    /// the plugin's editor.
-    pub fn editor(&self) -> Option<&dyn HostEditor> {
-        self.editor.as_deref()
-    }
-
-    /// Returns the automation-state capability, or `None` when the backend
-    /// does not support it (in-process VST2).
-    ///
-    /// [`set_automation_mode`](Self::set_automation_mode) is the convenience
-    /// form.
-    pub fn automation_state(&self) -> Option<&dyn HostAutomationState> {
-        self.automation_state.as_deref()
-    }
-
-    /// Returns the render-mode capability, or `None` when the backend carries
-    /// no route to it.
-    ///
-    /// Every backend this crate builds provides it (the subprocess backend and
-    /// the in-process VST2 backend); `None` comes only from a handle built with
-    /// [`from_backend`](Self::from_backend) without one.
-    pub fn render_mode(&self) -> Option<&dyn HostRenderMode> {
-        self.render_mode.as_deref()
-    }
-
-    /// Returns the preset capability, or `None` when this handle carries no
-    /// route to presets at all.
-    ///
-    /// Distinct from "the plugin has no presets", which is an *empty list* from
-    /// a present capability, and from "this format cannot enumerate", which is
-    /// `Features::PRESET_LIST` on [`loaded`](Self::loaded). Three different
-    /// answers, and a UI showing an empty browser wants to tell them apart.
-    ///
-    /// Ask [`preset_support`](Self::preset_support) what the surface can *do*
-    /// before rendering one; this is the route to doing it.
-    pub fn presets(&self) -> Option<&dyn HostPresets> {
-        self.presets.as_deref()
+    /// What the plugin answers from any thread: the parameter catalog, reads
+    /// and writes, `save_state`. See [`AnyThread`].
+    pub fn any_thread(&self) -> &dyn AnyThread {
+        self.any_thread.as_ref()
     }
 
     /// Returns what this plugin's preset surface can do, combining the preset
@@ -349,7 +287,7 @@ impl PluginHandle {
     /// and one this host never asked both list nothing, and only the first
     /// should hide the browser.
     pub fn preset_support(&self) -> PresetSupport {
-        if self.presets.is_none() {
+        if self.control.is_none() {
             // No route at all: the plugin was never asked anything, whatever
             // its own features say.
             return PresetSupport::None;
@@ -365,16 +303,14 @@ impl PluginHandle {
     /// block once it knows there is no deadline, and three of the four formats
     /// can only take the change while deactivated.
     ///
-    /// `false` when this handle carries no render-mode route *or* the plugin
-    /// declined. Those collapse deliberately — both mean the render is
-    /// unchanged — and a caller that needs to tell them apart reads
-    /// [`Features::RENDER_MODE`](tutti_plugin_types::Features) on
+    /// `false` when the plugin declined (or, in-process off the main thread,
+    /// the main thread did not answer in time). Those collapse deliberately —
+    /// both mean the render is unchanged — and a caller that needs to tell them
+    /// apart reads [`Features::RENDER_MODE`](tutti_plugin_types::Features) on
     /// [`loaded`](Self::loaded).
     #[must_use = "a false return means the render mode was not applied"]
     pub fn set_render_mode(&self, mode: tutti_plugin_types::RenderMode) -> bool {
-        self.render_mode
-            .as_deref()
-            .is_some_and(|r| r.set_render_mode(mode))
+        self.any_thread.set_render_mode(mode)
     }
 
     // ---- Meta -------------------------------------------------------------
@@ -399,16 +335,16 @@ impl PluginHandle {
     /// [`on_invalidate`](Self::on_invalidate) and match
     /// [`PluginInvalidation::Crashed`].
     pub fn status(&self) -> PluginStatus {
-        match self.params.crash_cause() {
+        match self.health.crash_cause() {
             Some(cause) => PluginStatus::Dead { cause },
             // A backend that reports the flag without a cause still reports
             // death — `crash_cause` is defaulted for backends that cannot say
             // why, and losing the death because the reason is missing would be
             // the worse failure.
-            None if self.params.is_crashed() => PluginStatus::Dead {
+            None if self.health.is_crashed() => PluginStatus::Dead {
                 cause: "the backend reported a crash without a cause".to_string(),
             },
-            None => match self.params.rate_refusal() {
+            None => match self.health.rate_refusal() {
                 Some((rate, reason)) => PluginStatus::RateRefused { rate, reason },
                 None => PluginStatus::Alive,
             },
@@ -421,7 +357,7 @@ impl PluginHandle {
     /// window.
     #[must_use]
     pub fn has_editor(&self) -> bool {
-        self.editor.is_some()
+        self.control.is_some()
     }
 
     /// Returns the plugin's catalog identity (id, name, vendor, version, class,
@@ -503,14 +439,14 @@ impl PluginHandle {
     /// the reason and [`PluginStatus::Dead`] for what is recoverable.
     #[must_use]
     pub fn is_crashed(&self) -> bool {
-        self.params.is_crashed()
+        self.health.is_crashed()
     }
 
     /// Blocks the audio path abandoned and replies it took. See
-    /// [`HostParams::block_counts`]. Atomic reads.
+    /// [`Health::block_counts`]. Atomic reads.
     #[must_use]
     pub fn block_counts(&self) -> BlockCounts {
-        self.params.block_counts()
+        self.health.block_counts()
     }
 
     /// Ends the plugin's server process. The bridge then latches `cause`
@@ -518,17 +454,73 @@ impl PluginHandle {
     /// turns [`Dead`](PluginStatus::Dead) as for any crash. Nothing for an
     /// in-process plugin. Not for the audio thread.
     pub fn terminate(&self, cause: &str) {
-        self.params.terminate(cause);
+        self.health.terminate(cause);
     }
 
     /// How many parameter-change events the plugin sent that the host lost,
-    /// over the plugin's life. Monotonic; see
-    /// [`HostParams::dropped_parameter_events`]. A dropped event costs a
+    /// over the plugin's life. Monotonic; the plugin's
+    /// [`Control::dropped_reported_edits`]. A dropped event costs a
     /// stale readout, not audio, and the subprocess backend follows each drop
     /// with an [`on_refresh`](Self::on_refresh) of
     /// [`PluginRefresh::ParamValues`] so a host that re-reads loses nothing.
     pub fn dropped_parameter_events(&self) -> u64 {
-        self.params.dropped_parameter_events()
+        self.control
+            .as_deref()
+            .and_then(|control| lent(control, |c| c.dropped_reported_edits()))
+            .unwrap_or(0)
+    }
+
+    // ---- State and presets (main thread) ----------------------------------
+
+    /// Restores a blob produced by [`AnyThread::save_state`].
+    ///
+    /// # Errors
+    ///
+    /// A [`StateError`] if the state was not applied. A plugin declining a
+    /// chunk ([`StateError::Rejected`]) is routine: it happens when a state
+    /// saved by an older build is loaded into a newer one, when a file is
+    /// truncated, or when a chunk from a different plugin is fed in. Report it
+    /// to the user rather than leaving the plugin silently at defaults.
+    /// [`StateError::NoStateRoute`] when this handle carries no main-thread
+    /// route.
+    pub fn load_state(&self, main: &MainThread, data: &[u8]) -> Result<(), StateError> {
+        let Some(control) = self.control.as_deref() else {
+            return Err(StateError::NoStateRoute);
+        };
+        match lent(control, |c| c.load_state(main, data)) {
+            Some(Ok(())) => Ok(()),
+            Some(Err(PluginError::StateFailed(error))) => Err(error),
+            Some(Err(other)) => Err(StateError::Rejected(other.to_string())),
+            None => Err(StateError::Rejected("the plugin is lost".into())),
+        }
+    }
+
+    /// Every preset the plugin advertises, in its own order, or `None` when
+    /// this handle carries no route to presets at all.
+    ///
+    /// Empty (`Some`) when the format cannot enumerate (CLAP), which is **not**
+    /// the same as a plugin with no presets; read
+    /// [`Features::PRESET_LIST`](tutti_plugin_types::Features::PRESET_LIST) on
+    /// [`loaded`](Self::loaded) to tell them apart.
+    pub fn presets(&self, main: &MainThread) -> Option<Vec<Preset>> {
+        let control = self.control.as_deref()?;
+        Some(lent(control, |c| c.presets(main)).unwrap_or_default())
+    }
+
+    /// Asks the plugin to load a preset, by an id [`presets`](Self::presets)
+    /// produced (or, for CLAP, a path id). `None` when this handle carries no
+    /// route to presets; `Some(false)` when the plugin refused (or is lost):
+    /// leave the UI selection where it was.
+    pub fn load_preset(&self, main: &MainThread, id: &PresetId) -> Option<bool> {
+        let control = self.control.as_deref()?;
+        Some(lent(control, |c| c.load_preset(main, id)).unwrap_or(false))
+    }
+
+    /// The preset the plugin considers current, when it will say. `None` means
+    /// the format has no query for it, the plugin declined, or this handle has
+    /// no route — never "the first one". See [`PresetId`].
+    pub fn current_preset(&self, main: &MainThread) -> Option<PresetId> {
+        lent(self.control.as_deref()?, |c| c.current_preset(main))?
     }
 
     // ---- Editor convenience (ergonomic wrappers over the editor slot) ------
@@ -545,26 +537,28 @@ impl PluginHandle {
     /// # Errors
     ///
     /// Returns [`EditorError::GuiNotSupported`] when this handle has no editor
-    /// route (`editor()` is `None`), an [`EditorError`] if `parent`'s window
+    /// route, an [`EditorError`] if `parent`'s window
     /// handle is unavailable or of an unsupported platform, and otherwise any
-    /// error of [`HostEditor::open_editor`].
+    /// error of [`EditorWindow::open_editor`](tutti_plugin_types::EditorWindow::open_editor).
     pub fn open_editor(
         &self,
         main: &MainThread,
         parent: impl HasWindowHandle,
         scale: ContentScale,
     ) -> Result<EditorSize, EditorError> {
-        let Some(editor) = self.editor.as_deref() else {
-            return Err(EditorError::GuiNotSupported {
-                format: self.descriptor.class.format_name().to_string(),
-            });
-        };
+        let control = self.editor_route()?;
         let raw = parent
             .window_handle()
             .map_err(|e| EditorError::PluginError(format!("failed to get window handle: {e}")))?
             .as_raw();
         let ptr = crate::window::extract_platform_ptr(raw)?;
-        editor.open_editor(main, ptr, scale)
+        // SAFETY: `ptr` is the platform-native window pointer (NSView*, HWND,
+        // X11 window id) extracted from a caller-supplied `RawWindowHandle`,
+        // alive for the call; the plugin's format only forwards it to the
+        // plugin's own embed call.
+        #[allow(unsafe_code, reason = "the one window decode; see the SAFETY above")]
+        let parent = unsafe { WindowHandle::from_ptr(ptr) };
+        Self::editor_call(control, |c| c.open_editor(main, parent, scale))
     }
 
     /// Opens the editor as a floating window the plugin owns.
@@ -578,15 +572,12 @@ impl PluginHandle {
     /// # Errors
     ///
     /// Returns [`EditorError::GuiNotSupported`] when this handle has no editor
-    /// route, and otherwise any error of [`HostEditor::open_floating_editor`],
+    /// route, and otherwise any error of
+    /// [`EditorWindow::open_floating_editor`](tutti_plugin_types::EditorWindow::open_floating_editor),
     /// such as a format without floating editors.
     pub fn open_floating_editor(&self, main: &MainThread) -> Result<(), EditorError> {
-        let Some(editor) = self.editor.as_deref() else {
-            return Err(EditorError::GuiNotSupported {
-                format: self.descriptor.class.format_name().to_string(),
-            });
-        };
-        editor.open_floating_editor(main)
+        let control = self.editor_route()?;
+        Self::editor_call(control, |c| c.open_floating_editor(main))
     }
 
     /// Closes the editor, if one is open.
@@ -595,8 +586,8 @@ impl PluginHandle {
     /// not first ask whether there was one. Returns `&Self` for chaining with
     /// the other editor calls.
     pub fn close_editor(&self, main: &MainThread) -> &Self {
-        if let Some(editor) = self.editor.as_deref() {
-            editor.close_editor(main);
+        if let Some(control) = self.control.as_deref() {
+            let _ = lent(control, |c| c.close_editor(main));
         }
         self
     }
@@ -607,8 +598,8 @@ impl PluginHandle {
     /// this is driven from a per-frame system that should not branch on a
     /// capability that cannot change after load.
     pub fn editor_idle(&self, main: &MainThread) -> &Self {
-        if let Some(editor) = self.editor.as_deref() {
-            editor.editor_idle(main);
+        if let Some(control) = self.control.as_deref() {
+            control.editor_idle(main);
         }
         self
     }
@@ -619,19 +610,48 @@ impl PluginHandle {
     /// # Errors
     ///
     /// Returns [`EditorError::GuiNotSupported`] when this handle has no editor
-    /// route, and otherwise any error of [`HostEditor::set_editor_size`], such
-    /// as an editor that cannot be resized.
+    /// route, and otherwise any error of
+    /// [`EditorWindow::set_editor_size`](tutti_plugin_types::EditorWindow::set_editor_size),
+    /// such as an editor that cannot be resized.
     pub fn set_editor_size(
         &self,
         main: &MainThread,
         requested: EditorSize,
     ) -> Result<EditorSize, EditorError> {
-        match self.editor.as_deref() {
-            Some(editor) => editor.set_editor_size(main, requested),
-            None => Err(EditorError::GuiNotSupported {
+        let control = self.editor_route()?;
+        Self::editor_call(control, |c| c.set_editor_size(main, requested))
+    }
+
+    /// What this editor supports: resizing, DPI scaling and the rest.
+    /// [`EditorCapabilities::default`] when this handle has no editor route.
+    pub fn editor_capabilities(&self, main: &MainThread) -> EditorCapabilities {
+        self.control
+            .as_deref()
+            .and_then(|control| lent(control, |c| c.editor_capabilities(main)))
+            .unwrap_or_default()
+    }
+
+    /// The editor route, or the refusal of a handle with none.
+    fn editor_route(&self) -> Result<&dyn MainThreadControl, EditorError> {
+        self.control
+            .as_deref()
+            .ok_or_else(|| EditorError::GuiNotSupported {
                 format: self.descriptor.class.format_name().to_string(),
-            }),
-        }
+            })
+    }
+
+    /// An editor call on the lent control, its failure as the editor's.
+    fn editor_call<R>(
+        control: &dyn MainThreadControl,
+        f: impl FnOnce(&mut dyn Control) -> tutti_plugin_types::PluginResult<R>,
+    ) -> Result<R, EditorError> {
+        lent(control, f)
+            .unwrap_or_else(|| {
+                Err(PluginError::Editor(EditorError::PluginError(
+                    "the plugin is lost".into(),
+                )))
+            })
+            .map_err(editor_error)
     }
 
     /// Returns the size the *plugin* has asked its window to become, if it
@@ -652,7 +672,9 @@ impl PluginHandle {
     /// whereas `set_editor_size` is a request that deserves to be told it went
     /// nowhere.
     pub fn poll_editor_resize_request(&self, main: &MainThread) -> Option<EditorSize> {
-        self.editor.as_deref()?.poll_editor_resize_request(main)
+        lent(self.control.as_deref()?, |c| {
+            c.poll_editor_resize_request(main)
+        })?
     }
 
     // ---- Automation-state convenience --------------------------------------
@@ -662,17 +684,11 @@ impl PluginHandle {
     ///
     /// # Errors
     ///
-    /// Returns [`EditorError::GuiNotSupported`] when this backend has no
-    /// automation-state capability (`automation_state()` is `None`), and
-    /// otherwise any error of
-    /// [`HostAutomationState::set_automation_mode`].
+    /// Returns [`EditorError::GuiNotSupported`] when this hosting carries no
+    /// automation-state advisory (in-process), and otherwise any error of
+    /// [`AnyThread::set_automation_mode`].
     pub fn set_automation_mode(&self, mode: AutomationMode) -> Result<(), EditorError> {
-        match self.automation_state.as_deref() {
-            Some(a) => a.set_automation_mode(mode),
-            None => Err(EditorError::GuiNotSupported {
-                format: self.descriptor.class.format_name().to_string(),
-            }),
-        }
+        self.any_thread.set_automation_mode(mode)
     }
 
     // ---- Notify sinks (plugin → host reactions) ----------------------------
@@ -736,39 +752,108 @@ impl PluginHandle {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tutti_plugin_types::{Normalized, ParamId, ParameterInfo, Preset, PresetId};
+    use tutti_plugin_types::{
+        EditorWindow, Normalized, ParamId, ParameterInfo, Preset, PresetId, RenderMode,
+    };
 
-    /// A test backend that reaches presets. Doubles as proof the capability is
-    /// implementable from outside this crate's own backends.
+    /// A test control that reaches presets. Doubles as proof the route is
+    /// implementable from outside this crate's own backends: a `Control` that
+    /// is `Clone` is lent as it is.
+    #[derive(Clone)]
     struct FakePresets {
         listed: Vec<Preset>,
         accepts: bool,
     }
 
-    impl HostPresets for FakePresets {
-        fn presets(&self, _main: &MainThread) -> Vec<Preset> {
-            self.listed.clone()
+    impl EditorWindow for FakePresets {
+        fn has_editor(&self, _main: &MainThread) -> bool {
+            false
         }
-        fn load_preset(&self, _main: &MainThread, _id: &PresetId) -> bool {
-            self.accepts
+        fn open_editor(
+            &mut self,
+            _main: &MainThread,
+            _parent: WindowHandle,
+            _scale: ContentScale,
+        ) -> tutti_plugin_types::PluginResult<EditorSize> {
+            Err(PluginError::Editor(EditorError::PluginError("none".into())))
         }
-        fn current_preset(&self, _main: &MainThread) -> Option<PresetId> {
+        fn close_editor(&mut self, _main: &MainThread) {}
+        fn editor_idle(&mut self, _main: &MainThread) {}
+
+        /// The default capabilities: this surface reports no resize support.
+        fn editor_capabilities(
+            &mut self,
+            _main: &tutti_plugin_types::MainThread,
+        ) -> tutti_plugin_types::EditorCapabilities {
+            tutti_plugin_types::EditorCapabilities::default()
+        }
+
+        /// Not supported here.
+        fn set_editor_size(
+            &mut self,
+            _main: &tutti_plugin_types::MainThread,
+            _requested: tutti_plugin_types::EditorSize,
+        ) -> tutti_plugin_types::PluginResult<tutti_plugin_types::EditorSize> {
+            Err(tutti_plugin_types::PluginError::Editor(
+                tutti_plugin_types::EditorError::PluginError(
+                    "set_editor_size not supported".into(),
+                ),
+            ))
+        }
+
+        /// Nothing asked: this surface never queues a resize request.
+        fn poll_editor_resize_request(
+            &mut self,
+            _main: &tutti_plugin_types::MainThread,
+        ) -> Option<tutti_plugin_types::EditorSize> {
             None
         }
     }
 
-    fn handle_with(presets: Option<Arc<dyn HostPresets>>) -> PluginHandle {
+    impl Control for FakePresets {
+        fn info(&self) -> &PluginDescriptor {
+            unreachable!("the preset tests never ask")
+        }
+        fn wiring(&self, _main: &MainThread) -> LoadedPlugin {
+            LoadedPlugin::default()
+        }
+        fn parameters(&self, _main: &MainThread) -> Vec<ParameterInfo> {
+            Vec::new()
+        }
+        fn parameter(&self, _main: &MainThread, _id: ParamId) -> Option<Normalized> {
+            None
+        }
+        fn set_parameter(&mut self, _main: &MainThread, _id: ParamId, _value: Normalized) {}
+        fn save_state(&mut self, _main: &MainThread) -> tutti_plugin_types::PluginResult<Vec<u8>> {
+            Ok(Vec::new())
+        }
+        fn load_state(
+            &mut self,
+            _main: &MainThread,
+            _bytes: &[u8],
+        ) -> tutti_plugin_types::PluginResult<()> {
+            Ok(())
+        }
+        fn presets(&mut self, _main: &MainThread) -> Vec<Preset> {
+            self.listed.clone()
+        }
+        fn load_preset(&mut self, _main: &MainThread, _id: &PresetId) -> bool {
+            self.accepts
+        }
+        fn dropped_reported_edits(&self) -> u64 {
+            0
+        }
+    }
+
+    fn handle_with(presets: Option<FakePresets>) -> PluginHandle {
         handle_with_loaded(presets, LoadedPlugin::default())
     }
 
-    fn handle_with_loaded(
-        presets: Option<Arc<dyn HostPresets>>,
-        loaded: LoadedPlugin,
-    ) -> PluginHandle {
-        // Only the preset slot is under test; the rest of the handle is built
+    fn handle_with_loaded(presets: Option<FakePresets>, loaded: LoadedPlugin) -> PluginHandle {
+        // Only the preset route is under test; the rest of the handle is built
         // from the same fake so no subprocess is needed.
         struct Inert;
-        impl HostParams for Inert {
+        impl AnyThread for Inert {
             fn parameter_descriptors(&self) -> Option<Vec<ParameterInfo>> {
                 None
             }
@@ -776,37 +861,47 @@ mod tests {
                 None
             }
             fn set_parameter_value(&self, _id: ParamId, _value: Normalized) {}
+            fn parameter_text(&self, _id: ParamId, _value: Normalized) -> Option<String> {
+                None
+            }
+            fn parameter_value_from_text(&self, _id: ParamId, _text: &str) -> Option<Normalized> {
+                None
+            }
+            /// `NoStateRoute`: this backend hosts no plugin, so it has no
+            /// state to give and must not answer with an empty one, which a
+            /// caller would save as the real thing.
+            fn save_state(&self) -> std::result::Result<Vec<u8>, StateError> {
+                Err(StateError::NoStateRoute)
+            }
+            fn set_render_mode(&self, _mode: RenderMode) -> bool {
+                false
+            }
+            fn set_automation_mode(
+                &self,
+                _mode: AutomationMode,
+            ) -> std::result::Result<(), EditorError> {
+                Err(EditorError::PluginCrashed)
+            }
+        }
+        impl Health for Inert {
             fn is_crashed(&self) -> bool {
                 false
             }
-            fn dropped_parameter_events(&self) -> u64 {
-                0
+            fn crash_cause(&self) -> Option<String> {
+                None
             }
-        }
-        impl HostState for Inert {
-            /// `NoStateRoute`, matching `load_state` below: this backend hosts
-            /// no plugin, so it has no state to give and must not answer with
-            /// an empty one, which a caller would save as the real thing.
-            fn save_state(&self) -> std::result::Result<Vec<u8>, tutti_plugin_types::StateError> {
-                Err(tutti_plugin_types::StateError::NoStateRoute)
+            fn rate_refusal(&self) -> Option<(tutti_types::SampleRate, String)> {
+                None
             }
-            /// `NoStateRoute`, not a silent success: this backend carries no
-            /// plugin at all, so a caller must not read "state loaded" from it.
-            fn load_state(
-                &self,
-                _main: &tutti_plugin_types::MainThread,
-                _data: &[u8],
-            ) -> std::result::Result<(), tutti_plugin_types::StateError> {
-                Err(tutti_plugin_types::StateError::NoStateRoute)
+            fn block_counts(&self) -> BlockCounts {
+                BlockCounts::default()
             }
+            fn terminate(&self, _cause: &str) {}
         }
 
         PluginHandle::from_backend(
             Arc::new(Inert),
-            OptionalCapabilities {
-                presets,
-                ..Default::default()
-            },
+            presets.map(|p| Arc::new(p) as Arc<dyn MainThreadControl>),
             PluginDescriptor::default(),
             loaded,
             ParameterChangeSink::default(),
@@ -840,10 +935,10 @@ mod tests {
         // The same plugin *with* a route reports what it claims — otherwise the
         // assertion above would hold for the wrong reason.
         let wired = handle_with_loaded(
-            Some(Arc::new(FakePresets {
+            Some(FakePresets {
                 listed: Vec::new(),
                 accepts: true,
-            })),
+            }),
             loaded,
         );
         assert_eq!(wired.preset_support(), PresetSupport::Full);
@@ -860,18 +955,18 @@ mod tests {
     #[test]
     fn no_preset_route_is_not_an_empty_preset_list() {
         assert!(
-            handle_with(None).presets().is_none(),
+            handle_with(None)
+                .presets(&MainThread::claim().unwrap())
+                .is_none(),
             "a handle with no preset capability must report None, not an empty list"
         );
 
-        let empty = handle_with(Some(Arc::new(FakePresets {
+        let empty = handle_with(Some(FakePresets {
             listed: Vec::new(),
             accepts: false,
-        })));
+        }));
         assert_eq!(
-            empty
-                .presets()
-                .map(|p| p.presets(&MainThread::claim().unwrap())),
+            empty.presets(&MainThread::claim().unwrap()),
             Some(Vec::new()),
             "a capability that listed nothing must report an empty list, not None"
         );
@@ -891,30 +986,28 @@ mod tests {
         let id = PresetId::Number(0);
 
         assert!(
-            handle_with(None).presets().is_none(),
+            handle_with(None)
+                .presets(&MainThread::claim().unwrap())
+                .is_none(),
             "no route must stay distinct from a refusal, not collapse into one"
         );
 
-        let refusing = handle_with(Some(Arc::new(FakePresets {
+        let refusing = handle_with(Some(FakePresets {
             listed: Vec::new(),
             accepts: false,
-        })));
+        }));
         assert_eq!(
-            refusing
-                .presets()
-                .map(|p| p.load_preset(&MainThread::claim().unwrap(), &id)),
+            refusing.load_preset(&MainThread::claim().unwrap(), &id),
             Some(false),
             "a refusal must report a present route that said no"
         );
 
-        let accepting = handle_with(Some(Arc::new(FakePresets {
+        let accepting = handle_with(Some(FakePresets {
             listed: Vec::new(),
             accepts: true,
-        })));
+        }));
         assert_eq!(
-            accepting
-                .presets()
-                .map(|p| p.load_preset(&MainThread::claim().unwrap(), &id)),
+            accepting.load_preset(&MainThread::claim().unwrap(), &id),
             Some(true),
             "an accepted load must report true"
         );
@@ -932,14 +1025,12 @@ mod tests {
             Preset::new(PresetId::Number(9000), "Sparse"),
             Preset::new(PresetId::Number(0), "First"),
         ];
-        let handle = handle_with(Some(Arc::new(FakePresets {
+        let handle = handle_with(Some(FakePresets {
             listed: listed.clone(),
             accepts: true,
-        })));
+        }));
         assert_eq!(
-            handle
-                .presets()
-                .map(|p| p.presets(&MainThread::claim().unwrap())),
+            handle.presets(&MainThread::claim().unwrap()),
             Some(listed),
             "the handle must not reorder or renumber what the plugin listed"
         );

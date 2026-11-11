@@ -1,6 +1,7 @@
 #![doc = include_str!("../README.md")]
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
+mod any_thread;
 mod automation;
 mod automation_mode;
 mod bend_ranges;
@@ -64,6 +65,7 @@ pub use layout_support::LayoutSupport;
 // not need a `tutti-types` dependency of their own to name them.
 pub use tutti_types::{BarNumber, BeatsPerBar, NoteValue, Seconds, TimeSignature};
 
+pub use any_thread::{AnyThread, Health};
 pub use automation::{ParameterChanges, ParameterPoint, ParameterQueue};
 pub use automation_mode::AutomationMode;
 pub use bend_ranges::PerNoteBendRanges;

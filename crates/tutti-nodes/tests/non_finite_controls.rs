@@ -22,8 +22,8 @@ use tutti_nodes::{
     PhaserNode, SvfFilterNode, SvfType,
 };
 use tutti_types::{
-    ChannelLayout, CompressionRatio, Db, Drive, Feedback, Hz, Mix, ParamCell, Q, Resonance,
-    SampleRate, Samples, Seconds, UnitParam,
+    ChannelLayout, CompressionRatio, Db, Drive, Feedback, Hz, ParamCell, Q, Resonance, SampleRate,
+    Samples, Seconds, UnitParam,
 };
 
 const BAD: [f32; 3] = [f32::NAN, f32::INFINITY, f32::NEG_INFINITY];
@@ -99,9 +99,9 @@ fn survives_node<N: Node>(name: &str, make: impl Fn() -> N, cells: impl Fn(&N) -
 /// Mutation (each run, each fails): dropping the `LastGood` read on the SVF's
 /// cutoff (`read_controls`), on the ladder's resonance, on the delay's delay
 /// time, on the LFO rate (`LfoDrive::fill_block`), on the mod-mix depth
-/// (`TimeModMix::load`), on the compressor's attack (`times`, caught only
+/// (`TimeMod::load`), on the compressor's attack (`times`, caught only
 /// through the rate change: the follower's own change guard holds a NaN off
-/// otherwise), on the gate's attack and range, and on the shared mod-mix
+/// otherwise), on the gate's attack and range, and on the shared mod
 /// feedback. The gate's hold is sanitised too but cannot go non-finite in the
 /// output (it becomes an integer frame count, where NaN saturates to 0), so
 /// dropping that read is not caught here — it would only turn an infinite hold
@@ -162,7 +162,6 @@ fn svf_ladder_delay_moddelay_phaser_compressor_gate_hold_off_non_finite_controls
                 Feedback::new(0.5),
             );
             n.set_cross_feedback(Feedback::new(0.2));
-            n.set_mix(Mix::new(0.5));
             n
         },
         |n| {
@@ -170,7 +169,6 @@ fn svf_ladder_delay_moddelay_phaser_compressor_gate_hold_off_non_finite_controls
                 ("delay time", n.delay_time().into(), 0.02),
                 ("feedback", n.feedback().into(), 0.7),
                 ("cross feedback", n.cross_feedback().into(), 0.1),
-                ("mix", n.mix().into(), 0.3),
             ]
         },
     );
@@ -182,7 +180,6 @@ fn svf_ladder_delay_moddelay_phaser_compressor_gate_hold_off_non_finite_controls
                 ("rate", n.rate().into(), 3.0),
                 ("depth", n.depth().into(), 0.008),
                 ("feedback", n.feedback().into(), 0.6),
-                ("mix", n.mix().into(), 0.2),
             ]
         },
     );
@@ -194,7 +191,6 @@ fn svf_ladder_delay_moddelay_phaser_compressor_gate_hold_off_non_finite_controls
                 ("rate", n.rate().into(), 2.0),
                 ("depth", n.depth().into(), 0.9),
                 ("feedback", n.feedback().into(), 0.8),
-                ("mix", n.mix().into(), 0.2),
             ]
         },
     );
@@ -242,8 +238,9 @@ fn svf_ladder_delay_moddelay_phaser_compressor_gate_hold_off_non_finite_controls
     );
 }
 
-/// The convolver's mix and gain are its only cells; neither feeds recursive
-/// state, but the block's end starts the next block's ramp.
+/// The convolver's gain is its only cell (the mix is the graph's, which refuses
+/// a non-finite one: `tutti-session/tests/node_mix.rs`); it does not feed
+/// recursive state, but the block's end starts the next block's ramp.
 ///
 /// Mutation: dropping the `LastGood` read on the gain makes the `inf` case
 /// fail (∞ × a zero wet sample is NaN).
@@ -255,7 +252,7 @@ fn the_convolver_holds_off_non_finite_controls() {
     survives_node(
         "convolver",
         || ConvolverNode::shared_ir(ChannelLayout::STEREO, &ir, 64),
-        |n| vec![("mix", n.mix().into(), 0.8), ("gain", n.gain().into(), 2.0)],
+        |n| vec![("gain", n.gain().into(), 2.0)],
     );
 }
 

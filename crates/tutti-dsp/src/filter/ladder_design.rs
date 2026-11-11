@@ -11,39 +11,18 @@
 //! depend on how audio is split into blocks.
 
 use core::marker::PhantomData;
-use core::num::NonZeroU32;
 
-use tutti_types::{ChannelLayout, Db, SampleRate};
+use tutti_types::{ChannelLayout, SampleRate};
 
 use super::ladder::{LadderCoefficients, ladder_step};
 use super::real::Real;
+use super::sizes::FilterSizes;
 use super::{LadderControls, LadderModel, LadderType};
+use crate::control::COEFF_STREAM;
 use crate::{
-    COEFF_INTERVAL, Cadence, Ceiling, Channels, Design, Effect, Effort, Realization, Ring, Setup,
-    Sizes, lane_group,
+    COEFF_INTERVAL, Cadence, Ceiling, Channels, Design, Effect, Effort, Realization, Setup,
+    lane_group,
 };
-
-/// A ladder allocates nothing from its controls: its width is the design's.
-#[derive(Clone, Copy, Debug)]
-pub struct LadderSizes;
-
-impl Sizes for LadderSizes {
-    type Source = LadderModel;
-
-    fn measure(_: &LadderModel, _: Db) -> Self {
-        LadderSizes
-    }
-
-    /// A resonant ladder rings for as long as its resonance says; the node
-    /// declares [`Tail::Unknown`](tutti_types::Tail::Unknown) and never parks.
-    fn tail(&self) -> Ring {
-        Ring::Unbounded
-    }
-
-    fn dominates(&self, _: &Self) -> bool {
-        true
-    }
-}
 
 /// The [`Design`] of the ladder filter, `channels` wide, with state precision `F`
 /// (`f64` in the nodes, for accuracy at low cutoffs). The coefficients and the
@@ -69,16 +48,13 @@ impl<F> LadderDesign<F> {
 impl<F: Real> Design for LadderDesign<F> {
     type Controls = LadderControls;
     type Model = LadderModel;
-    type Bounds = LadderSizes;
+    type Bounds = FilterSizes<LadderModel>;
     type Range = ();
     type Realization = LadderRealization<F>;
 
     /// Solved every 16 frames on the stream clock (doc 024 Q27), at the first frame
     /// of each segment, and ramped to over it.
-    const CADENCE: Cadence = Cadence::stream(match NonZeroU32::new(COEFF_INTERVAL as u32) {
-        Some(n) => n,
-        None => unreachable!(),
-    });
+    const CADENCE: Cadence = COEFF_STREAM;
 
     fn channels(&self) -> Channels {
         Channels {
@@ -95,8 +71,8 @@ impl<F: Real> Design for LadderDesign<F> {
         *out = LadderModel::new(*controls, rate);
     }
 
-    fn bounds(&self, _: &Ceiling<()>) -> LadderSizes {
-        LadderSizes
+    fn bounds(&self, _: &Ceiling<()>) -> FilterSizes<LadderModel> {
+        FilterSizes::NONE
     }
 
     fn realization(&self) -> LadderRealization<F> {
@@ -200,9 +176,9 @@ impl<F: Real> LadderRealization<F> {
 }
 
 impl<F: Real> Realization<LadderModel> for LadderRealization<F> {
-    type Bounds = LadderSizes;
+    type Bounds = FilterSizes<LadderModel>;
 
-    fn prepare(&mut self, _: &LadderSizes, _: &Setup) {
+    fn prepare(&mut self, _: &FilterSizes<LadderModel>, _: &Setup) {
         self.landed = false;
     }
 

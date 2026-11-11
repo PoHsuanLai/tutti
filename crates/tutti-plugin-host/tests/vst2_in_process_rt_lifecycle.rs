@@ -585,7 +585,7 @@ fn outputs_past_the_tables_are_silent() {
 }
 
 /// A plugin's parameter reports the host lost are counted on its
-/// `PluginHandle`, through `HostParams`. The probe sends a burst of
+/// `PluginHandle`, through `Control::dropped_reported_edits`. The probe sends a burst of
 /// `audioMasterAutomate` reports from inside each `process` call, more than
 /// the instance's bounded queue holds, and nothing drains the queue between
 /// the two blocks: the first block overflows it, and every report of the

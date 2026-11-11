@@ -31,18 +31,17 @@ fn through_server<F: Format>(path: PathBuf) {
     let pid = handle.server_pid().expect("the plugin lives in a server");
     assert_ne!(pid, std::process::id(), "a process other than this one");
 
-    let state = handle.state().save_state().expect("saves");
+    let state = handle.any_thread().save_state().expect("saves");
     let blob = patch_mode(F::extract_blob(&state), Mode::Level);
     handle
-        .state()
         .load_state(&main_thread(), &F::embed_blob(&state, &blob))
         .expect("loads");
 
-    let saved = handle.state().save_state().expect("saves again");
+    let saved = handle.any_thread().save_state().expect("saves again");
     let after = Transcript::parse(&F::extract_blob(&saved));
     assert_eq!(after.mode, Mode::Level.index(), "the mode crossed");
     let level = handle
-        .params()
+        .any_thread()
         .parameter_value(ParamId::new(Param::Level.id().get()))
         .map(|v| v.get());
     assert_eq!(level, Some(0.5), "a parameter read across the boundary");

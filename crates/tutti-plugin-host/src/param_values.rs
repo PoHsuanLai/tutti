@@ -65,12 +65,12 @@ impl ParamRead {
     /// # Errors
     ///
     /// The read itself (boxed: a handle is large), given back to be run again, when the plugin's list is
-    /// unavailable (`HostParams::parameter_descriptors` answered `None`: the
+    /// unavailable (`AnyThread::parameter_descriptors` answered `None`: the
     /// main thread of an in-process plugin did not answer in time, or the
     /// backend cannot list). That is not "lists none": landing an empty map
     /// would make the mirror ready with nothing in it, for good.
     pub fn run(self) -> Result<HashMap<ParamId, Normalized>, Box<ParamRead>> {
-        let params = self.handle.params();
+        let params = self.handle.any_thread();
         let Some(descriptors) = params.parameter_descriptors() else {
             return Err(Box::new(self));
         };
@@ -187,10 +187,10 @@ mod tests {
         Normalized::clamped(v)
     }
 
-    use crate::OptionalCapabilities;
-    use crate::{HostParams, HostState, ParameterChangeSink};
+    use crate::ParameterChangeSink;
     use tutti_plugin_types::ParameterInfo;
     use tutti_plugin_types::StateError;
+    use tutti_plugin_types::{AnyThread, AutomationMode, EditorError, Health, RenderMode};
     use tutti_plugin_types::{Normalized, ParamId};
 
     /// A backend listing `params` (address, value); a value of `None` is a
@@ -199,7 +199,7 @@ mod tests {
         params: Vec<(ParamId, Option<f32>)>,
     }
 
-    impl HostParams for FakeParams {
+    impl AnyThread for FakeParams {
         fn parameter_descriptors(&self) -> Option<Vec<ParameterInfo>> {
             Some(
                 self.params
@@ -216,28 +216,37 @@ mod tests {
                 .map(|v| Normalized::clamped(f64::from(v)))
         }
         fn set_parameter_value(&self, _id: ParamId, _value: Normalized) {}
+        fn parameter_text(&self, _id: ParamId, _value: Normalized) -> Option<String> {
+            None
+        }
+        fn parameter_value_from_text(&self, _id: ParamId, _text: &str) -> Option<Normalized> {
+            None
+        }
+        fn save_state(&self) -> Result<Vec<u8>, StateError> {
+            Err(StateError::NoStateRoute)
+        }
+        fn set_render_mode(&self, _mode: RenderMode) -> bool {
+            false
+        }
+        fn set_automation_mode(&self, _mode: AutomationMode) -> Result<(), EditorError> {
+            Err(EditorError::PluginCrashed)
+        }
+    }
+
+    impl Health for FakeParams {
         fn is_crashed(&self) -> bool {
             false
         }
         fn crash_cause(&self) -> Option<String> {
             None
         }
-        fn dropped_parameter_events(&self) -> u64 {
-            0
+        fn rate_refusal(&self) -> Option<(tutti_types::SampleRate, String)> {
+            None
         }
-    }
-
-    impl HostState for FakeParams {
-        fn save_state(&self) -> Result<Vec<u8>, StateError> {
-            Err(StateError::NoStateRoute)
+        fn block_counts(&self) -> tutti_plugin_types::BlockCounts {
+            tutti_plugin_types::BlockCounts::default()
         }
-        fn load_state(
-            &self,
-            _main: &tutti_plugin_types::MainThread,
-            _data: &[u8],
-        ) -> Result<(), StateError> {
-            Ok(())
-        }
+        fn terminate(&self, _cause: &str) {}
     }
 
     /// A handle over [`FakeParams`], and the sink its reports go through
@@ -246,7 +255,7 @@ mod tests {
         let sink = ParameterChangeSink::default();
         let handle = PluginHandle::from_backend(
             Arc::new(FakeParams { params }),
-            OptionalCapabilities::default(),
+            None,
             Default::default(),
             Default::default(),
             sink.clone(),

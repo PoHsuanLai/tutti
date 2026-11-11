@@ -10,14 +10,14 @@
 //!
 //! - **LimiterNode** — a lookahead: its latency is real, and the
 //!   ring must delay by exactly the figure its shape declares.
-//! - **ConvolverNode** — one FFT block of latency for the *whole* output: at
-//!   mix 0 the output is all dry, so a dry half that is not delayed leaves
-//!   `latency` frames early.
+//! - **ConvolverNode** — one FFT block of latency, declared for the whole
+//!   output (its dry half is the graph's mix, aligned by that figure:
+//!   `node_mix.rs`, `reported_latency.rs`).
 //! - **CrossoverNode** and **MultibandCompressorNode** — IIR splits with no
 //!   latency: an impulse leaves its first band on its own frame, on the right
 //!   channel.
 //! - **DelayLineNode** — a musical delay is not latency: it declares
-//!   none, and the dry half of its blend leaves on the excitation's frame.
+//!   none (its dry half is the graph's mix: `reported_latency.rs`).
 //!
 //! A failing row here is a real latency regression: fix the node, never
 //! the row.
@@ -26,8 +26,8 @@
 //!
 //! - In `LimiterNode::shape`, declare one frame more than the ring's
 //!   `lookahead_samples` → both limiter rows fail every path.
-//! - In `ConvolverNode::blend_channel`, blend the undelayed input
-//!   → `convolver_dry` and `convolver_half` fail every path.
+//! - Declare one frame more or less than the FFT block in
+//!   `ConvolverNode::shape` → `convolver` fails every path.
 //! - Declare the echo time as latency in `DelayLineNode::shape` →
 //!   `delay_line` fails every path.
 //! - Declare one frame of latency in `CrossoverNode::shape` or
@@ -38,7 +38,7 @@
 use tutti_graph::contract::{Detect, Excite, Row};
 use tutti_graph::contract_tests;
 use tutti_nodes::{CrossoverNode, DelayLineNode, LimiterNode, MultibandCompressorNode};
-use tutti_types::{ChannelLayout, Db, Feedback, Hz, Mix, Samples, Seconds};
+use tutti_types::{ChannelLayout, Db, Feedback, Hz, Samples, Seconds};
 
 fn impulse(port: u16) -> Excite {
     Excite::Impulse {
@@ -77,19 +77,19 @@ fn stereo_limiter_row() -> Row {
     .with_expected_latency(Samples(240))
 }
 
-/// A 500 ms echo at mix 0.5: the dry half is the response, on the
-/// excitation's own frame. A `tutti_graph::Node`, so the row runs it as itself.
+/// A delay of zero seconds: the wet path is the response, on the excitation's
+/// own frame. (A 500 ms echo's response is at 24 000, not at its declared
+/// latency of 0, and the dry half it once blended in is the graph's mix, pinned
+/// in `node_mix.rs`.) A `tutti_graph::Node`, so the row runs it as itself.
 fn delay_line_row() -> Row {
     Row::new(
-        "DelayLineNode (500 ms echo, mix 0.5)",
+        "DelayLineNode (zero delay)",
         || {
-            let node = DelayLineNode::new(
+            Box::new(DelayLineNode::new(
                 Seconds::new(1.0_f64),
-                Seconds::new(0.5_f64),
+                Seconds::new(0.0_f64),
                 Feedback::new(0.0_f32),
-            );
-            node.set_mix(Mix::new(0.5_f32));
-            Box::new(node)
+            ))
         },
         impulse(0),
         Detect::Threshold(0.0),
@@ -134,26 +134,20 @@ mod convolution {
     use super::*;
     use tutti_nodes::ConvolverNode;
 
-    /// A unit-impulse IR, so the wet path is a pure delay of the block; at
-    /// `mix` the dry and wet shares leave on one frame. The FFT leaves noise
-    /// far under the threshold; the response is `0.25` (dry + wet shares of
-    /// the impulse). A `tutti_graph::Node`, so the row runs it as itself.
-    fn convolver_row(mix: f32) -> Row {
+    /// A unit-impulse IR, so the wet path is a pure delay of the block: the
+    /// response is the impulse, `256` frames late. The FFT leaves noise far under
+    /// the threshold. A `tutti_graph::Node`, so the row runs it as itself. (The
+    /// dry half the node once blended in is the graph's mix, pinned in
+    /// `node_mix.rs`.)
+    fn convolver_row() -> Row {
         Row::new(
-            &format!("ConvolverNode (256-frame block, mix {mix})"),
-            move || {
-                let node = ConvolverNode::new(&[1.0], 256);
-                node.set_mix(Mix::new(mix));
-                Box::new(node)
-            },
+            "ConvolverNode (256-frame block)",
+            move || Box::new(ConvolverNode::new(&[1.0], 256)),
             impulse(0),
             Detect::Threshold(1e-3),
         )
         .with_expected_latency(Samples(256))
     }
 
-    // Mix 0: all dry — the case where an undelayed dry half would leave first.
-    contract_tests!(audio convolver_dry => convolver_row(0.0));
-    contract_tests!(audio convolver_half => convolver_row(0.5));
-    contract_tests!(audio convolver_wet => convolver_row(1.0));
+    contract_tests!(audio convolver => convolver_row());
 }

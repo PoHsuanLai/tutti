@@ -99,12 +99,15 @@ pub use tutti_dsp::ShapeKind;
 
 mod filter;
 pub use filter::{
-    CrossoverNode, EqBandNode, LadderFilterNode, LadderParams, SvfFilterNode, SvfParams,
+    CrossoverNode, CrossoverParams, EqBandNode, LadderFilterNode, LadderParams, SvfFilterNode,
+    SvfParams,
 };
 // The types in the filter nodes' signatures stay reachable from here; the
 // algorithms behind them (`SvfCoeffs`, `LadderCoeffs`, `Crossover`) are
 // `tutti-dsp`'s only.
-pub use tutti_dsp::{CrossoverError, LadderControls, LadderType, Real, SvfControls, SvfType};
+pub use tutti_dsp::{
+    CrossoverControls, CrossoverError, LadderControls, LadderType, Real, SvfControls, SvfType,
+};
 
 mod dynamics;
 pub use dynamics::{
@@ -168,8 +171,8 @@ pub use reconcile::{Applied, Feed, ModHost, Modulation, ReconcileError, Target};
 mod convolution;
 #[cfg(feature = "convolution")]
 pub use convolution::{
-    CONVOLVER_PARAMS, ConvolverNode, IrChannelConfig, WetDry, generate_room_ir,
-    generate_room_ir_into, generate_test_ir, generate_test_ir_into,
+    ConvolverNode, IrChannelConfig, generate_room_ir, generate_room_ir_into, generate_test_ir,
+    generate_test_ir_into,
 };
 
 // Test and stimulus nodes (`Const`, `Osc`, `Through`, `Split`, `Sink`): what a

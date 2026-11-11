@@ -10,19 +10,20 @@ use tutti_graph::UmpAt;
 use std::time::{Duration, Instant};
 use tutti_fixtures::midi;
 use tutti_graph::NodeKey;
-use tutti_graph::Offset;
 use tutti_graph::{Cx, EventKind, IntoNode, Io, Node, NodeParts, Prepare, Shape, Status};
 #[cfg(feature = "midi-hardware")]
 use tutti_midi_hardware::{Direction, EndpointId};
-use tutti_midi_runtime::{CHANNELLESS_PORT, MIDI_INPUT_PORTS, TimedMidiEvent};
+use tutti_midi_runtime::{CHANNELLESS_PORT, LIVE_INLET_CAPACITY, MIDI_INPUT_PORTS, TimedMidiEvent};
 use tutti_transport::MotionEvent;
-use tutti_types::{Beat, BeatDuration, ChannelLayout, InterleavedMut, SampleRate, Samples};
+use tutti_types::{
+    At, Beat, BeatDuration, ChannelLayout, Frame, InterleavedMut, SampleRate, Samples,
+};
 use tutti_ump::Ump;
-use tutti_ump::{KeyEvent, MidiChannel, MidiGroup};
+use tutti_ump::{KeyEvent, MidiChannel, MidiGroup, NoteNumber};
 
 use tutti_session::{
-    Error, EventSource, Feeder, MIDI_OUT_DROP_REPORT, MidiRouteRule, PHASES, PhaseCx, Session,
-    SessionEvent, SessionNode, UmpOut,
+    Error, EventSource, Feeder, MIDI_OUT_DROP_REPORT, MidiRouteRule, PHASES, PhaseCx, SendError,
+    Session, SessionEvent, SessionNode, UmpOut,
 };
 
 /// Every phase at `now`: one update, at a time the test picks.
@@ -238,10 +239,11 @@ fn a_clip_and_a_live_input_survive_a_re_bind() {
     want.sort_by_key(|e| e.node);
     assert_eq!(fed, want);
 
-    live.queue(&[(
-        Offset::ZERO,
+    live.send(
+        At::NextBlock,
         midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 72, MF),
-    )]);
+    )
+    .unwrap();
     roll(&s, 9_000);
     let heard = note_ons(&new_seen);
     assert!(heard.contains(&(8_000, 60)), "the clip plays it: {heard:?}");
@@ -252,6 +254,61 @@ fn a_clip_and_a_live_input_survive_a_re_bind() {
     assert!(
         note_ons(&old_seen).is_empty(),
         "the removed node hears nothing"
+    );
+}
+
+/// **A live input's clones share one writer and send in order**: the key
+/// helpers build group-1 MIDI 2.0 notes, a frame is held until its block, a
+/// beat is refused and a full ring says so.
+///
+/// Mutations (run), each fails: `live_input` opening a second inlet for the
+/// clone (the clone's note never reaches the target, or arrives on another
+/// node) fails the order; `SharedKeys::note_on` pushing `At::NextBlock`
+/// whatever `at` is lands the frame-stamped note in the first block and
+/// fails the frame; mapping `Refused::Beat` to `Full` fails the error.
+#[test]
+fn a_live_inputs_clones_send_in_order_through_one_writer() {
+    let mut s = offline();
+    let (target, seen) = tap(&mut s);
+    let a = s.midi().live_input(target).unwrap();
+    let b = s.midi().live_input(target).unwrap();
+    assert_eq!(a.node, b.node, "one inlet");
+    s.update();
+
+    a.note_on(At::NextBlock, MidiChannel::FIRST, NoteNumber::of(60), MF)
+        .unwrap();
+    b.note_on(At::NextBlock, MidiChannel::FIRST, NoteNumber::of(62), MF)
+        .unwrap();
+    b.note_on(
+        At::Frame(Frame(3_000)),
+        MidiChannel::FIRST,
+        NoteNumber::of(64),
+        MF,
+    )
+    .unwrap();
+    assert_eq!(
+        a.send(
+            At::Beat(Beat(1.0)),
+            midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 66, MF)
+        ),
+        Err(SendError::Beat)
+    );
+    roll(&s, 4_000);
+    let heard = note_ons(&seen);
+    assert_eq!(
+        heard.iter().map(|&(_, n)| n).collect::<Vec<_>>(),
+        [60, 62, 64]
+    );
+    assert!(heard[0].0 < 512 && heard[1].0 < 512, "{heard:?}");
+    assert_eq!(heard[2].0, 3_000);
+
+    for _ in 0..LIVE_INLET_CAPACITY {
+        a.note_off(At::NextBlock, MidiChannel::FIRST, NoteNumber::of(60))
+            .unwrap();
+    }
+    assert_eq!(
+        b.note_off(At::NextBlock, MidiChannel::FIRST, NoteNumber::of(60)),
+        Err(SendError::Full)
     );
 }
 

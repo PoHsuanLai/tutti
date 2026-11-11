@@ -318,22 +318,14 @@ impl AuLoaded {
         // already hold a `hostUserData` pointing at it, and swapping in a fresh
         // allocation would leave that pointer dangling until the property write
         // landed: a window on the render thread, not merely a leak.
-        let unit = self.handle.unit();
-        let installed = self
+        let callbacks = self
             .transport
-            .get_or_insert_with(|| HostCallbacks::new(unit))
-            .install();
-        if let Err(e) = installed {
-            // Nothing was installed, so nothing is kept: a re-install after a
-            // refusal starts from a fresh state.
-            self.transport = None;
-            return Err(e.into());
-        }
-        Ok(self
-            .transport
-            .as_ref()
-            .map(HostCallbacks::state)
-            .expect("just installed"))
+            .take()
+            .unwrap_or_else(|| HostCallbacks::new(self.handle.unit()));
+        // A refusal drops what was made, so nothing is kept for a unit that did
+        // not take the callbacks, and a re-install after one starts afresh.
+        callbacks.install()?;
+        Ok(self.transport.insert(callbacks).state())
     }
 
     /// The state the host transport callbacks read, shared with the render

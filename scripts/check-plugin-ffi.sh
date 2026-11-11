@@ -70,7 +70,6 @@ FORMATS = [
         "crates/tutti-au-ffi",
         [
             "crates/tutti-plugin-server/src/loaders/au.rs",
-            "crates/tutti-plugin/src/format/gui/au.rs",
         ],
     ),
     ("VST2", "crates/tutti-vst2-host", "crates/tutti-vst2-ffi", []),

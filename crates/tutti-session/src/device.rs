@@ -573,12 +573,16 @@ impl Session {
         debug_assert!(running, "the re-prepare resumed inside the hook");
         // The figures the first block runs at, published before it.
         self.publish_sent();
-        // The port manager turns an event's wall-clock arrival into a frame
-        // offset at this rate; its contract is to be told before the stream
-        // starts, which is where the hook runs.
+        // The hardware inlets place an arrival a block after it came, a
+        // block of this device's callback; the clock map follows the rate
+        // from the engine's own readings.
         #[cfg(feature = "midi-hardware")]
         if let Some(io) = &self.midi_io {
-            io.ports().set_sample_rate(rate);
+            io.ports().inlets().set_lead(crate::midi::input_lead(
+                spec.quantum
+                    .unwrap_or(self.graph.prepared().max_block().into()),
+                rate,
+            ));
         }
         // Every open stream's ratio (file rate / session rate) is
         // re-derived, so it plays on at its pitch.

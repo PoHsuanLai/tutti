@@ -711,7 +711,7 @@ a `Loaded`.
 | 4c (built) | **The probe binary.** Build `tutti-plugin-probe` (CLAP, VST3, VST2; AU's probe row joins when AU's `Loaded` lands), the file wire, `ProbeLocator` and `tutti-fixtures::plugin_probe`; switch `probe_plugin` (`db_probe.rs`) to it; then delete probe mode (`TUTTI_PROBE_MODE`, `ProbePlugin`, `Plugin::probe`) from the server. `check-layout.sh` row, CLAUDE.md "build first" note. Independent of 4a and 4b | No (AU row later) | -300 in server, +~300 new |
 | 5 | Generic server: `Served<F: OutOfProcess>` and `served!`; delete `loaders/clap.rs`, `vst3.rs`, `vst2.rs` (the whole VST2 loader), `plugin.rs`, `format_host.rs`'s capability traits. Supersedes 016 step 4's `AnyPlugin` | AU row waits; the macro takes it later | -5.5k |
 | 6 | The facade: `hosts!`, `AnyHost`, `Hosting`, `open`; replace `Backend`; CLAP and VST3 hostable in-process; contract grows `hostings` and per-hosting gaps; delete `tests/server.rs` | No | `Backend` gone |
-| 7 | **AU:** `impl InProcess` (confirm `LoadInProcess`, §3.2) and `impl OutOfProcess` for `AuLoaded`, `OutOfProcess::Editor` from `gui/au.rs`, the AU row in both tables, `loaders/au.rs` (2,121) deleted | **Yes** (AU `Loaded`, 016 step 3) | -2.1k |
+| 7 | **AU:** `impl InProcess` (confirm `LoadInProcess`, §3.2) and `impl OutOfProcess` for `AuLoaded`, `OutOfProcess::Editor` from `gui/au.rs`, the AU row in both tables, `loaders/au.rs` (2,121) deleted | **Yes** (AU `Loaded`, 016 step 3) | -2.1k. The impls, the editor and the contract's AU format (AUDelay, 23 gaps) are in; `loaders/au.rs` waits for step 5 |
 | 8 | Cleanup: stale Cargo comments (the unused `OpenEditor` message and handler went early, protocol 25) and features, 016 and CLAUDE.md and engineering-notes updates | After 7 | docs |
 
 ### 10.1 Steps 1 and 2 as built
@@ -722,7 +722,7 @@ a `Loaded`.
   `Vst3Editor` in their host crates implement `Editor` (today's
   `PluginEditor`, moved to `tutti-plugin-types`; `poll_gui_param_changes` is
   `poll_edits`). `tutti-plugin`'s `load_gui_instance` dispatches to
-  `F::load_editor`; AU's instance implements `Editor` in place until step 7.
+  `F::load_editor`; AU's instance, `AuEditorInstance` in `tutti-au-host`, joined them with step 7.
   `check-plugin-ffi.sh` no longer scans `format/gui/{clap,vst3}.rs`: the
   host crates' rule covers the editors. No behaviour change, but two details:
   a bundle directory now resolves through `bundle::native_module_path` with the

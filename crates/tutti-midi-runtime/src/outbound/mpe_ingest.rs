@@ -6,7 +6,7 @@
 //! MIDI-2-native receiver only handles per-note messages; it "does not need to
 //! know that a rotation scheme is used."
 //!
-//! So [`MpeIngest`] sits at the input edge (in [`MidiInputNode`](crate::MidiInputNode))
+//! So [`MpeIngest`] sits at the input edge (in [`MidiIngestNode`](crate::MidiIngestNode))
 //! and rewrites the classic-MPE channel-spread into **native MIDI-2 per-note
 //! messages**. A channel pitch bend on a member channel becomes a Per-Note Pitch
 //! Bend addressed to the note that channel holds; channel pressure becomes a
@@ -185,8 +185,8 @@ impl MpeIngest {
     /// forgotten: its note-off arrives on a channel with no mapping and is
     /// passed through rather than folded, so silence the sounding voices
     /// separately. Off-RT — call at wiring time, or via
-    /// [`MidiInputControls::set_mpe_mode`](crate::MidiInputControls::set_mpe_mode),
-    /// which defers adoption to the input node's next block.
+    /// [`MidiIngestControls::set_mpe_mode`](crate::MidiIngestControls::set_mpe_mode),
+    /// which defers adoption to the ingest node's next block.
     pub fn set_mode(&mut self, mode: MpeMode) {
         *self = Self::new(mode);
     }

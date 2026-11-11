@@ -43,6 +43,10 @@ mod control;
 #[cfg(target_os = "macos")]
 mod controller;
 #[cfg(target_os = "macos")]
+mod editor_instance;
+#[cfg(target_os = "macos")]
+mod hosting;
+#[cfg(target_os = "macos")]
 mod lifecycle;
 #[cfg(target_os = "macos")]
 mod load;
@@ -112,6 +116,8 @@ pub use channel_layout::AuLayoutTag;
 // exist and fails to compile on Linux.
 #[cfg(target_os = "macos")]
 pub use controller::AuController;
+#[cfg(target_os = "macos")]
+pub use editor_instance::AuEditorInstance;
 #[cfg(target_os = "macos")]
 pub use handle::AuHandle;
 #[cfg(target_os = "macos")]

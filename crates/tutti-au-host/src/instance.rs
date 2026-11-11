@@ -90,8 +90,11 @@ pub struct AuLoaded {
     /// unit that stops answering keeps what it last reported rather than being
     /// silently recompensated to zero, which would move audio.
     last_latency: Cell<Samples>,
-    /// Where the unit came from, when [`load`](Self::load) found it.
-    pub(crate) origin: Option<tutti_plugin_types::Origin>,
+    /// Where the unit came from: the bundle and choice [`load`](Self::load)
+    /// resolved. A unit made straight from a component
+    /// ([`new`](Self::new)) has no bundle, so its origin is an empty path, and
+    /// reopening it fails at the `Scanning` stage rather than finding another unit.
+    pub(crate) origin: tutti_plugin_types::Origin,
 }
 
 impl std::fmt::Debug for AuLoaded {
@@ -186,7 +189,7 @@ impl AuLoaded {
             offline: false,
             mode_accepted: false,
             last_latency: Cell::new(Samples::ZERO),
-            origin: None,
+            origin: tutti_plugin_types::Origin::new("", tutti_plugin_types::Load::new()),
         })
     }
 

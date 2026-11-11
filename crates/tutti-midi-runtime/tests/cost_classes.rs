@@ -15,7 +15,7 @@ use tutti_graph::{
     ForkByClone, Io, Node, Prepare, Schedule, Shape, Status, Transport, Unforkable,
 };
 use tutti_graph::{OutPort, Source};
-use tutti_midi_runtime::{ClockNode, HarmonyNode, MidiClipNode, MidiInputNode, TimedMidiEvent};
+use tutti_midi_runtime::{ClockNode, HarmonyNode, MidiClipNode, MidiIngestNode, TimedMidiEvent};
 use tutti_types::{Beat, Bpm, ChannelLayout, SampleRate, Samples};
 use tutti_ump::{MidiChannel, MidiGroup, Ump};
 
@@ -183,7 +183,7 @@ fn every_midi_node_is_light() {
     assert_eq!(HarmonyNode::new([]).shape().cost, Cost::Light);
     assert_eq!(ClockNode::new().shape().cost, Cost::Light);
     assert_eq!(EventInletNode::pair(8).0.shape().cost, Cost::Light);
-    assert_eq!(MidiInputNode::new(None).shape().cost, Cost::Light);
+    assert_eq!(MidiIngestNode::new(1).shape().cost, Cost::Light);
 }
 
 /// Sixteen light clip → out lanes beside two heavy ones: the light lanes

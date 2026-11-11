@@ -1,13 +1,12 @@
-//! The audio-thread MIDI plumbing traits, one per direction: [`MidiOut`]
-//! pushes events at a sink, [`MidiIn`] drains what arrived at an input edge.
-//! Both are lock-free and alloc-free, called once per block or per event.
+//! [`MidiOut`]: the terminal sink MIDI events are pushed at. The input
+//! direction has no trait: a device's events reach the graph through an event
+//! inlet ([`DeviceInlets`](crate::DeviceInlets)).
 //!
-//! Neither carries an address: an endpoint *is* its stream. Which node hears
-//! what is the graph's wiring (a `MidiInputNode` in `tutti-midi-runtime`
+//! The sink carries no address: an endpoint *is* its stream. Which node hears
+//! what is the graph's wiring (a `MidiIngestNode` in `tutti-midi-runtime`
 //! sends each channel out of its own event port).
 
 use tutti_graph::UmpAt;
-use tutti_types::Samples;
 
 // -----------------------------------------------------------------------------
 // Delivery: write side (out) and read side (in)
@@ -15,9 +14,9 @@ use tutti_types::Samples;
 
 /// A single **terminal sink** that MIDI events are pushed to.
 ///
-/// The write-side complement to [`MidiIn`]. A sink is already addressed: it *is* the destination (a
+/// A sink is already addressed: it *is* the destination (a
 /// mailbox, a hardware wire), so `queue` carries no id. What was delivered
-/// is drained with [`MidiIn::poll_block`] or the sink's own reader.
+/// is read from the sink's own reader.
 ///
 /// Implementations must be **lock-free** and **alloc-free** — `queue` runs on
 /// the audio thread, once per event.
@@ -33,44 +32,4 @@ pub trait MidiOut: Send + Sync {
     /// hits a failure stops there rather than skipping and continuing, so the
     /// count always names an unbroken run and the stream stays in order.
     fn queue(&self, events: &[UmpAt]) -> usize;
-}
-
-/// One input edge's per-node read state, which the audio thread polls once per block.
-///
-/// The events are not yet addressed: nothing here knows
-/// which unit any of them belongs to — deciding that is what the consumer does
-/// with what it gets back. Exactly one owner drains an edge per block; a second
-/// drainer takes events the first will never see.
-///
-/// This is the read-side complement to [`MidiOut`]: one undifferentiated stream,
-/// no id.
-///
-/// **The node owns it** (`Box<dyn MidiIn>`), and polls it through `&mut self`:
-/// whatever state a poll keeps between blocks (a drain's scratch, its read of
-/// a published port set) belongs to the one node that polls, built with it
-/// on the control thread. A shared edge (a hardware port manager) hands out
-/// one such poller per node rather than being polled through a shared
-/// reference.
-///
-/// `block_size` is the frame count of the upcoming audio block. An edge that
-/// converts arrival timestamps into offsets uses it, and every returned event's
-/// `Offset` lies in `[0, block_size)`.
-///
-/// Implementations must be **lock-free** and **alloc-free** — this runs on the
-/// audio thread, once per block.
-pub trait MidiIn: Send {
-    /// Writes this block's pending events into `buffer` and returns how many.
-    ///
-    /// Returns at most `buffer.len()` events. An implementation that drains a
-    /// ring takes no more than `buffer` holds and leaves the rest for the
-    /// next block, so it defers rather than drops; one that cannot (it has
-    /// consumed the events already) drops the overflow and counts it. Size
-    /// `buffer` for the largest burst worth taking in one block.
-    fn poll_block(&mut self, block_size: Samples, buffer: &mut [UmpAt]) -> usize;
-
-    /// Sizes the source for blocks of up to `events` events. Called on the
-    /// control thread before the first [`poll_block`](Self::poll_block), and
-    /// again when the block size changes; may allocate. A source with no
-    /// per-block storage ignores it.
-    fn reserve(&mut self, _events: usize) {}
 }

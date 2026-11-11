@@ -694,12 +694,42 @@ scheduling (`OutputPlan`) is the next part and is not.
     the same. **Not verified with real MIDI traffic**: it compiles and its unit
     tests pass on a Mac (clippy `-D warnings` clean on macOS), and the timestamp
     arithmetic is tested, but no device sent it a packet.
-  - **Where the frame is made.** Not yet by the producer. The ring still holds an
-    arrival `Instant` and the drain converts it to an `Offset` on the audio thread
-    (`read_inputs`), now from the better stamp. `ClockMap` exists, but the drain
-    does not use it: the producer cannot place an event until the session feeds a
-    map readings (the engine's block start and its frame, `observe`), and then
-    pushes `Moment`s into an event inlet. That is E5's remaining work (below).
+  - **Where the frame is made. Done (E5).** By the producer, on the device's own
+    thread. The engine writes one reading per render call (`BlockClock`, in
+    `tutti-engine`: a `tutti-rt` sequence cell of the OS time the call began and
+    the graph frame it began at; `Engine::block_clock` hands out its
+    `BlockClockReader`) and each device's thread holds a `ClockMap` fed those
+    readings (`DeviceInput`, in `tutti-midi-runtime`). It
+    places each arrival `Instant` on a frame, adds the **lead** (below) and
+    pushes the event into that device's event inlet with `push_at`. The audio
+    thread converts no time: the inlet holds each event until its block, and
+    the ring's `Instant`s and `read_inputs` are gone. A reading the map rejects
+    (the engine restarted and its frames began at 0 again) re-anchors it; before
+    the first reading, or for an arrival the map puts before frame 0, the event
+    is pushed for the next block.
+  - **One timebase.** The engine stamps with `tutti_rt::monotonic_ns` (the OS's
+    monotonic clock, on the OS's epoch, so a plugin server shares it) and
+    `tutti-graph` holds no wall-clock type: it sees only `Env`. `ClockMap` stays
+    pure over `Instant`, the type every backend stamps arrivals with (ALSA
+    converts the queue's time to an `Instant`, CoreMIDI the mach host time, both
+    through `stamp::arrival`); `Instant` is the same OS monotonic clock
+    (`CLOCK_MONOTONIC`, `mach_absolute_time`, `QueryPerformanceCounter`) but
+    opaque, so no backend can produce nanoseconds without a pairing. The map
+    therefore keeps `Instant`, and the session, which owns both ends, converts
+    the engine's nanoseconds with one pairing of the two read once per process
+    (`arrival_clock`): an offset, never a second clock. `tutti-engine` and
+    `tutti-midi-runtime` share no edge (both layer 4); the runtime takes the
+    clock as a function (`ArrivalClock`).
+  - **The lead.** An event that arrived between two blocks maps to a frame
+    before the next block's start, so it would reach the graph already late and
+    a run of events would collapse onto offset 0. Each arrival is therefore
+    placed a fixed **lead** after its mapped frame, one block of the device's
+    callback (`quantum`, else the largest block; the session sets it,
+    `DeviceInlets::set_lead`). An event sounds exactly the lead after it
+    arrived, whatever the block boundaries, and the spacing of events is the
+    map's: the bound stated above, within the OS stamp's own accuracy. It is
+    late (and counted, `InletCounts::late`, `PortInfo::late`) only when the
+    thread pushes it more than the lead after it arrived.
 - **Output.** Schedule from the event's frame, on the OS's timestamp or queue.
   Today output is flushed once per Bevy frame with no timestamp, so MIDI clock
   leaves in bursts, and a headless `Session` does no better. This is the largest
@@ -1244,7 +1274,7 @@ into the `UmpOut` and adds `take_lost` to the drop count that
 | `MidiQueueNode` | **Deleted (E4).** `EventInletNode` with `At::NextBlock` | `MidiKeys` (`tutti-midi-runtime`) is the key helpers (`note_on`, `note_off`, which build a `Voice2` into a `Ump`) over an `EventInletWriter`, which it derefs to; the graph builds no message. The session's live input (`LiveInput`) holds it behind the session's lock |
 | `TimedQueueNode`, `TimedSender`, `TimedSendError`, `Moment` | **Deleted (E4).** The node and its waiting list are `EventInletNode`, the sender is `EventInletWriter`, the error is `Refused`, `Moment` is in `tutti-types` | What remains in `tutti-midi-runtime` is nothing of it. `InstrumentHandle` (`instrument.rs`) holds the writer behind the session's lock (below) |
 | `MidiMailbox`, `MidiReceiver`, the `MidiOut` trait | **Audited in E4; E3 has landed: no graph crossing remains, the mailbox stays for the host's own outbound path, the trait stays.** `MidiMailbox`, `MidiSender` (its queue half) and `MidiReceiver` are used by the host's own outbound path, read in `drain_receiver_through`, and the clock master's tests; they go when that path is its own. `MidiOut` is not a graph crossing at all: it is the hardware's terminal sink (`tutti-midi-hardware`'s `MidiSession`, every backend's output, `UmpOut`), and it stays | See "Stage E4, as built" |
-| `MidiInputNode` | **Splits.** The wire side (the `MidiIn` poll, the arrival-time offset) becomes an inlet fed from the OS callback; `MidiIngestNode`, the translator, MPE and per-channel split, stays a node in `tutti-midi-runtime` with one event input and 17 outputs | **`ClockMap` is built** (§5, "Timing at the edge"), so the first blocker is gone; what remains is wiring it. Today the `Instant` to `Offset` conversion runs on the audio thread in the drain, from the OS's own timestamp, and an inlet's producer must give a `Moment`. The producer thread needs a `ClockMap` that something feeds with readings (the engine's block start `Instant` and frame, each block, through a `tutti-rt` cell), the ring then carries `Moment`s, and the OS thread pushes through `EventInletWriter::push_at`. Until then `MidiInputNode` is unchanged. It also needs one inlet per open device, since an inlet has one producer; the merge across devices is the graph's fan-in. That leaves the translator's per-channel state per device, where today it is shared across the merged ports |
+| `MidiInputNode` | **Split (E5, built).** The wire side (the `MidiIn` poll, `HardwareMidiDrain`, the arrival-time offset) is gone: a device's thread stamps each arrival and pushes it into its own `EventInletNode` (`DeviceInlets`, `DeviceInput`). The node is `MidiIngestNode` (`tutti-midi-runtime`): the translator, MPE and per-channel split, with one event input for each device slot and 17 outputs for each Group | The merge across devices is the graph's fan-in at the listener; the translator and MPE state are per slot (see item 8 of the open questions, decided in E5). `MidiIn` is deleted |
 
 `ClockNode`, `MidiClipNode`, the harmony node, `compile_routes` and
 `MpeIngest` compute events and stay. `bevy-tutti` is parked and is not
@@ -1346,9 +1376,20 @@ Each with the recommendation to take unless the owner says otherwise.
    silent, as above. The owner should confirm the two differ on purpose.
 7. **Where the panic-controller predicate lives.** Recommended: `tutti-ump`, beside
    `is_note_off`, because it reads bit positions; the name is the PR's.
-8. **One inlet and one ingest node per hardware device.** Recommended, in stage E5,
-   which also changes where the translator's state lives (per device, not shared
-   across merged ports). Whether that is wanted is decided with `ClockMap`.
+8. **One inlet and one ingest node per hardware device. Decided in E5: one inlet
+   per device, one ingest node with a slot per device.** The recommendation was a
+   node per device, which changes where the translator's state lives (per
+   device, not shared across merged ports). The state is per device as asked,
+   but a device connects from any thread and the routes a host declares are
+   compiled from closures the session does not keep, so a node per device would
+   leave the routes to be rebuilt at every hot-plug. The ingest node therefore
+   has a fixed number of event inputs, one per slot
+   (`SessionBuilder::midi_devices`, 8 by default), holds a `Translator` and a
+   `MpeIngest` for each, and a hot-plug wires the new device's inlet to a free
+   slot's input (`Graph::set_event_sources`) and restarts that slot
+   (`MidiIngestControls::restart_slot`): the routes, which name the ingest
+   node's outputs, never change. A device past the slots is refused
+   (`Error::NoFreeSlot`).
 9. **The default alignment of the hardware out's tap.** Recommended: `ToOutput`,
    so MIDI leaves with the audio. The pump still owes the device's own output
    latency, which only `ClockMap`'s output side can know.
@@ -1370,7 +1411,7 @@ describes changes: each graph PR edits that document's primitive table.
 | **E2** (done) | The event inlet: `EventInletNode`, `EventInletWriter`, `Refused`, `Moment` to `tutti-types`, the panic predicate in `tutti-ump`, the waiting list moved from `TimedQueueNode`. Then `tutti-session`: `Graph::open_event_inlet` and `add_event_inlet` | Yes, and `tutti-types` and `tutti-ump` |
 | **E3** (done) | The hardware out: the session reads a tap on the clock; `MidiOutNode`, `MidiOutControls`, `MIDI_OUT_CAPACITY` and `MidiNodes::hardware_out` deleted; `drain_receiver_through` and `MidiOutRouter` take frames | No. After E1 |
 | **E4** (done) | The queues: `MidiQueueNode` and `TimedQueueNode` deleted, `MidiSender` slimmed to the key helpers over `EventInletWriter`, `InstrumentHandle` and the session's live inputs moved, `MidiMailbox` audited | No. After E2 |
-| **E5** | `MidiInputNode` split into the OS-side inlet and `MidiIngestNode` | No. After E2 and `ClockMap` (built, stage 4c part 1); what is left is the readings' path from the engine to the producer threads, the per-device inlets and the per-device translator state |
+| **E5** (done) | `MidiInputNode` split into the OS-side inlet and `MidiIngestNode`; the engine's block clock to the device threads; one inlet per device; the translator per device | No. After E2 and `ClockMap` |
 
 **Stage E4, as built.** Deleted: `MidiQueueNode` and `MIDI_QUEUE_CAPACITY`,
 `TimedQueueNode`, `TimedSender`, `TimedSendError` and `TIMED_QUEUE_CAPACITY`,
@@ -1390,6 +1431,35 @@ the plan above: the key-helper wrapper is not named `MidiSender` (that is the
 mailbox's push half, which `MidiOutNode` still uses, so it cannot change
 shape before E3), and the mailbox is not deleted (above).
 
+**Stage E5, as built.** Added: `BlockClockReader` and `BlockReading` (`tutti-engine`: the
+engine's block start as `monotonic_ns` and frame, over `tutti-rt`'s sequence cell, which
+already has a loom model; `Engine::block_clock`), `ArrivalClock` (`tutti-midi-runtime`), `InletCounts`
+(`EventInletWriter::counts`: the inlet's four counts as a view readable off the
+writer's thread), and in `tutti-midi-runtime` `DeviceInlets` (the slots, the
+changes the graph's owner applies, the clock lent to each thread through an
+`ArcLend`, and the lead), `DeviceInput` (one device's end: it holds a `ClockMap`,
+stamps and pushes; `Send`, not `Clone`, no allocation, no lock) and
+`MidiIngestNode`, `MidiIngestControls`. In `tutti-midi-hardware`,
+`InputProducerHandle` wraps a `DeviceInput` and `HardwareMidiInputs` is now a
+control-side list of ports over the `DeviceInlets` (`open_input_port` can refuse
+with `NoFreeSlot`; a port can be inactive, which discards its events at the
+thread instead of queueing them). The session builds the `DeviceInlets`, hands
+the devices the engine's clock (`SessionBuilder::build_offline` and the device
+build), and in `Phase::Poll` adds each connected device's inlet to the graph,
+wires it to its slot, commits, and takes the inlet out when the device closes
+(`midi_input_phase`); a device that connects and closes before the poll never
+reaches the graph. Deleted: `MidiIn` and `MidiInputNode`, `HardwareMidiDrain`
+and `cycle_start_read_all_inputs` (with its `Instant` to `Offset` conversion,
+`CYCLE_SCRATCH_CAP`, the port set's `ArcLend` and its `collect` and
+`retired_sets`), `HardwareMidiInputs::set_sample_rate` (the map follows the
+rate from the readings) and `DEFAULT_FIFO`. Behaviour that differs: an event
+reaches the graph in time order, not arrival order across ports; a block no
+longer defers events it had no room to take (the inlet's list holds a ring's
+worth, and what does not fit is counted, `lost` and `evicted`); `MidiInputDropped`
+counts the inlets' lost events. The hardware crate still names `tutti_graph::UmpAt`
+on its output side (`MidiOut::queue`), which the output scheduling lane
+retires; its input side names no graph type.
+
 E3 and E4 are independent of each other. The loom, miri and doc gates need
 nothing new: nothing here adds `unsafe` or a lock-free structure.
 
@@ -1400,7 +1470,7 @@ nothing new: nothing here adds `unsafe` or a lock-free structure.
 | `tutti-ump` | Packet | `Ump`, `Message`, codec, `MidiGroup`, `MidiChannel`, `CCNumber`, field types, MIDI 1.0 bytes and `Midi1Parser`, `Rpn` (an RPN address), `SYSEX7_MAX_PAYLOAD` and `split_stream` (a buffer of concatenated packets) | No tutti crate |
 | `tutti-midi-protocol` | Translation | `Translator`, App. D, M2-115 scaling, MPE zone values (`MpeZoneConfig`, `MpeZones`, `MpeMode`), `PitchBendSensitivity` | `tutti-ump` |
 | `tutti-midi-device` | Endpoint, Function Block | `Endpoint`, `Connection`, CI codec, JR | `tutti-ump` |
-| `tutti-midi-hardware` | Transport | OS backends, no graph (the target: today `port/manager.rs` imports `tutti_graph::{Offset, UmpAt}` and turns an arrival `Instant` into an `Offset` on the audio thread; stage E5 moves that behind the event inlet); `#![forbid(unsafe_code)]` (stage 4d: the `-ffi` crates hold the `unsafe`) | `tutti-midi-device`, the two `-ffi` crates |
+| `tutti-midi-hardware` | Transport | OS backends, no graph on the input side (a device's thread pushes into a `tutti-midi-runtime` `DeviceInput`; the output side still takes `tutti_graph::UmpAt`, until output scheduling); `#![forbid(unsafe_code)]` (stage 4d: the `-ffi` crates hold the `unsafe`) | `tutti-midi-device`, `tutti-midi-runtime`, the two `-ffi` crates |
 | `tutti-alsa-ffi` | FFI | All ALSA `unsafe`, safe wrappers (`tutti-alsa-ump-sys` folded in as a private module) | Linux only |
 | `tutti-coremidi-ffi` | FFI | The raw CoreMIDI calls the `coremidi` crate lacks, and the Mach host clock | macOS only |
 | `tutti-midi-runtime` | Engine | Graph nodes, `ClockMaster`, and the inbound sync decoders (`MidiClockDecoder`, `MtcDecoder`, `SmpteTimecode`, `SmpteFrameRate`, `ClockTransportState`) | `tutti-graph`, `tutti-midi-protocol` |
@@ -2291,8 +2361,8 @@ at any point; its CI codec move and `ci`/`negotiate` deletion (4a, done) shrink
      `JrClockEmitter::due`, `JrStream::origin`, `JrStamper::stamp_block`), and the
      counts are `Samples` (`JrClockEmitter::interval`, `JrStamper::block_span`,
      `JrStream::stamp_span`); the session's `send_stamped_span` and `origin` follow.
-     `HardwareMidiDrain::cycle_start_read_all_inputs` still takes `nframes: usize`,
-     and goes with the drain's rebuild (E5).
+     `HardwareMidiDrain::cycle_start_read_all_inputs` took `nframes: usize`; it went
+     with the drain (E5: the drain is deleted, not changed to take `Samples`).
    **Stage 4d, the `-ffi` crates. Done.** `unsafe` left `tutti-midi-hardware`, which is
    `#![forbid(unsafe_code)]` and has no `libc`, `coremidi-sys`, `mach2` or raw ALSA
    dependency. `tutti-alsa-ffi` (Linux; `tutti-alsa-ump-sys` was folded into it as a

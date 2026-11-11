@@ -49,9 +49,14 @@ pub struct FakeBackend {
     sent: Arc<AtomicUsize>,
     opens: Arc<AtomicUsize>,
     watchers: Arc<AtomicUsize>,
+    /// The producer of each open input: the fake device's side of the wire.
+    producers: Producers,
     /// How many events per batch the sink it hands out will accept.
     accepts: usize,
 }
+
+/// The producer handle of each input connection that is open, by device.
+type Producers = Arc<Mutex<Vec<(EndpointId, InputProducerHandle)>>>;
 
 /// The fake OS's device lists, and the channel into each running watch.
 #[derive(Debug, Default)]
@@ -119,6 +124,7 @@ pub struct FakeCounters {
     /// dropped: the leak check.
     pub watchers: Arc<AtomicUsize>,
     devices: Arc<Mutex<FakeDevices>>,
+    producers: Producers,
 }
 
 impl FakeCounters {
@@ -126,6 +132,26 @@ impl FakeCounters {
     #[must_use]
     pub fn sent(&self) -> usize {
         self.sent.load(Ordering::SeqCst)
+    }
+
+    /// The fake device `id` sends `ump`, which the OS delivered at `arrival`:
+    /// pushed through the producer of its open input connection, as a driver's
+    /// thread would. `false` when no connection to `id` is open, or the
+    /// port's inlet is full.
+    pub fn send_input(
+        &self,
+        id: EndpointId,
+        ump: tutti_ump::Ump,
+        arrival: std::time::Instant,
+    ) -> bool {
+        let mut producers = self
+            .producers
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        producers
+            .iter_mut()
+            .find(|(device, _)| *device == id)
+            .is_some_and(|(_, producer)| producer.push(ump, arrival))
     }
 
     /// Input ports opened so far.
@@ -212,8 +238,22 @@ impl Drop for Running {
     }
 }
 
-struct FakeConn;
+/// An open input: its producer is the fake device's, and goes with it.
+struct FakeConn {
+    producers: Producers,
+    id: EndpointId,
+}
+
 impl InputConnection for FakeConn {}
+
+impl Drop for FakeConn {
+    fn drop(&mut self) {
+        self.producers
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .retain(|(device, _)| *device != self.id);
+    }
+}
 
 /// A sink that counts what it was handed and accepts `accepts` of each batch.
 ///
@@ -284,7 +324,9 @@ impl FakeBackend {
         outputs: Vec<EndpointInfo>,
         accepts: usize,
     ) -> (Box<dyn MidiEndpoints>, FakeCounters) {
+        let producers = Producers::default();
         let counters = FakeCounters {
+            producers: Arc::clone(&producers),
             sent: Arc::new(AtomicUsize::new(0)),
             opens: Arc::new(AtomicUsize::new(0)),
             watchers: Arc::new(AtomicUsize::new(0)),
@@ -299,6 +341,7 @@ impl FakeBackend {
             sent: Arc::clone(&counters.sent),
             opens: Arc::clone(&counters.opens),
             watchers: Arc::clone(&counters.watchers),
+            producers,
             accepts,
         };
         (Box::new(backend), counters)
@@ -357,13 +400,20 @@ impl MidiEndpoints for FakeBackend {
     fn open_input(
         &self,
         id: EndpointId,
-        _producer: InputProducerHandle,
+        producer: InputProducerHandle,
     ) -> Result<Box<dyn InputConnection>> {
         if !self.devices().inputs.iter().any(|e| e.id == id) {
             return Err(Error::MidiDevice("no such input".into()));
         }
         self.opens.fetch_add(1, Ordering::SeqCst);
-        Ok(Box::new(FakeConn))
+        self.producers
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push((id, producer));
+        Ok(Box::new(FakeConn {
+            producers: Arc::clone(&self.producers),
+            id,
+        }))
     }
 
     fn open_output(&self, id: EndpointId) -> Result<Box<dyn MidiOut>> {

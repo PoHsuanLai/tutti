@@ -165,3 +165,15 @@ pub const VST3_CPP: Surface = Surface {
     request: None,
     edit: None,
 };
+
+/// AU, from an Apple built-in unit (AUDelay): it has a Cocoa view; no plugin of
+/// ours to select an editor or raise a notice, and no live render mode (the
+/// property is read at initialization, so an active unit refuses it).
+pub const AU: Surface = Surface {
+    selects_editor: false,
+    has_editor: true,
+    render_mode_live: false,
+    notices: false,
+    request: None,
+    edit: None,
+};

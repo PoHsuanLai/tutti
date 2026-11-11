@@ -1,45 +1,61 @@
-//! In-process Audio Unit GUI instance (editor only, no audio processing).
-//! macOS only.
+//! The editor-only AU instance an out-of-process host loads in its own process
+//! ([`OutOfProcess::Editor`](tutti_plugin_types::OutOfProcess)).
 //!
-//! Implements the shared [`Editor`](tutti_plugin_types::Editor) trait. Even
-//! though the server's AU loader (`loaders/au.rs`) owns the *subprocess-side* editor
-//! open/close/state paths, this host-process object is a separate dlopen: the
-//! two editor surfaces stay distinct by design, one per world.
+//! It is a second load of the same unit, separate from the audio instance in
+//! the plugin server: the host mirrors parameters and state into it. It is an
+//! [`AuLoaded`] that is never initialized (the GUI works without audio setup).
 
 use std::path::Path;
 
-use tutti_plugin_types::{BridgeError, BridgeResult, Control, Load, MainThread};
-use tutti_plugin_types::{ContentScale, EditorSize, WindowHandle};
-use tutti_plugin_types::{Editor, EditorError, EditorWindow, PluginError, PluginResult};
-use tutti_plugin_types::{Normalized, ParamId};
+use tutti_plugin_types::{
+    ContentScale, Control, Editor, EditorCapabilities, EditorError, EditorSize, EditorWindow,
+    InProcess, Load, MainThread, Normalized, ParamId, PluginError, PluginResult, WindowHandle,
+};
 
-/// The editor-only unit: an [`AuLoaded`](tutti_au_host::AuLoaded) that is never
-/// initialized (the GUI works without audio setup), loaded and resolved by the
-/// host's own [`AuLoaded::load`](tutti_au_host::AuLoaded::load), so this mirror
-/// finds the same component the audio path does.
-pub(crate) struct AuGuiInstance {
-    inner: tutti_au_host::AuLoaded,
+use crate::instance::AuLoaded;
+
+fn editor_error(reason: String) -> PluginError {
+    PluginError::Editor(EditorError::PluginError(reason))
 }
 
-impl AuGuiInstance {
-    pub fn load(main: &MainThread, path: &Path, load: &Load) -> BridgeResult<Self> {
-        let inner = tutti_au_host::AuLoaded::load(main, path, load).map_err(|e| match e {
-            PluginError::Load { stage, reason } => BridgeError::LoadFailed {
-                path: path.to_path_buf(),
-                stage,
-                reason,
-            },
-            other => BridgeError::LoadFailed {
-                path: path.to_path_buf(),
-                stage: tutti_plugin_types::LoadStage::Instantiation,
-                reason: other.to_string(),
-            },
-        })?;
-        Ok(Self { inner })
+/// An Audio Unit loaded for its editor alone: never initialized, it shows the
+/// Cocoa view and holds the state mirrored into it.
+///
+/// It is what [`OutOfProcess::load_editor`](tutti_plugin_types::OutOfProcess)
+/// builds: `AuLoaded` is hostable in this process and over IPC:
+///
+/// ```
+/// use tutti_plugin_types::{InProcess, OutOfProcess};
+/// fn hostable<F: InProcess + OutOfProcess>() {}
+/// hostable::<tutti_au_host::AuLoaded>();
+/// ```
+#[derive(Debug)]
+pub struct AuEditorInstance {
+    inner: AuLoaded,
+}
+
+impl AuEditorInstance {
+    /// Loads the editor-only instance, resolved by [`AuLoaded::load`] so it
+    /// finds the same component the audio path does.
+    pub(crate) fn load(main: &MainThread, path: &Path, load: &Load) -> PluginResult<Self> {
+        Ok(Self {
+            inner: AuLoaded::load_in_process(main, path, load)?,
+        })
+    }
+
+    /// The loaded unit behind the editor.
+    #[must_use]
+    pub fn loaded(&self) -> &AuLoaded {
+        &self.inner
+    }
+
+    /// [`loaded`](Self::loaded), mutably.
+    pub fn loaded_mut(&mut self) -> &mut AuLoaded {
+        &mut self.inner
     }
 }
 
-impl Editor for AuGuiInstance {
+impl Editor for AuEditorInstance {
     /// The unit's own [`Control::set_parameter`]: `AudioUnitSetParameter` takes
     /// **plain** units, and the host denormalizes against the one range table
     /// the audio path reads too, so the editor's knob and what is heard agree.
@@ -48,36 +64,32 @@ impl Editor for AuGuiInstance {
     }
 
     fn set_state(&mut self, _main: &MainThread, data: &[u8]) -> PluginResult<()> {
-        self.inner.set_class_info(data).map_err(|e| {
-            PluginError::Editor(EditorError::PluginError(format!(
-                "AU set_state failed: {e}"
-            )))
-        })
+        self.inner
+            .set_class_info(data)
+            .map_err(|e| editor_error(format!("AU set_state failed: {e}")))
     }
 
     fn save_state(&mut self, _main: &MainThread) -> PluginResult<Vec<u8>> {
-        self.inner.class_info().map_err(|e| {
-            PluginError::Editor(EditorError::PluginError(format!(
-                "AU get_state failed: {e}"
-            )))
-        })
+        self.inner
+            .class_info()
+            .map_err(|e| editor_error(format!("AU get_state failed: {e}")))
     }
 
     fn poll_edits(&mut self, _main: &MainThread) -> Vec<(ParamId, f32)> {
-        // AUv2 doesn't have a built-in parameter change notification from GUI.
-        // Parameter changes from Cocoa views go through AudioUnitSetParameter directly.
+        // AUv2 has no parameter-change notification from the GUI: a Cocoa view
+        // calls `AudioUnitSetParameter` directly.
         Vec::new()
     }
 }
 
-impl EditorWindow for AuGuiInstance {
+impl EditorWindow for AuEditorInstance {
     fn has_editor(&self, main: &MainThread) -> bool {
         // Asks the live (uninitialized) unit for its Cocoa view property.
         EditorWindow::has_editor(&self.inner, main)
     }
 
-    /// The unit's own `EditorWindow`: an AU view is an `NSView`, which lays out
-    /// in logical pixels and reads its backing scale itself.
+    /// An AU view is an `NSView`, which lays out in logical pixels and reads its
+    /// backing scale itself.
     fn open_editor(
         &mut self,
         main: &MainThread,
@@ -96,29 +108,20 @@ impl EditorWindow for AuGuiInstance {
     }
 
     /// The default capabilities: this surface reports no resize support.
-    fn editor_capabilities(
-        &mut self,
-        _main: &tutti_plugin_types::MainThread,
-    ) -> tutti_plugin_types::EditorCapabilities {
-        tutti_plugin_types::EditorCapabilities::default()
+    fn editor_capabilities(&mut self, _main: &MainThread) -> EditorCapabilities {
+        EditorCapabilities::default()
     }
 
-    /// Not supported here.
     fn set_editor_size(
         &mut self,
-        _main: &tutti_plugin_types::MainThread,
-        _requested: tutti_plugin_types::EditorSize,
-    ) -> tutti_plugin_types::PluginResult<tutti_plugin_types::EditorSize> {
-        Err(tutti_plugin_types::PluginError::Editor(
-            tutti_plugin_types::EditorError::PluginError("set_editor_size not supported".into()),
-        ))
+        _main: &MainThread,
+        _requested: EditorSize,
+    ) -> PluginResult<EditorSize> {
+        Err(editor_error("set_editor_size not supported".into()))
     }
 
     /// Nothing asked: this surface never queues a resize request.
-    fn poll_editor_resize_request(
-        &mut self,
-        _main: &tutti_plugin_types::MainThread,
-    ) -> Option<tutti_plugin_types::EditorSize> {
+    fn poll_editor_resize_request(&mut self, _main: &MainThread) -> Option<EditorSize> {
         None
     }
 }
@@ -136,7 +139,7 @@ mod tests {
     #[test]
     fn the_gui_mirror_denormalizes_against_the_declared_range() {
         let main = tutti_fixtures::main_thread();
-        let Ok(mut gui) = AuGuiInstance::load(
+        let Ok(mut gui) = AuEditorInstance::load(
             &main,
             Path::new("/System/Library/Components/CoreAudio.component"),
             &Load::new().plugin("au.aufx.dely.appl"),

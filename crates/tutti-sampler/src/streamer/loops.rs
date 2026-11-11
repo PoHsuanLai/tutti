@@ -31,7 +31,7 @@
 use std::sync::Arc;
 
 use super::prefetch::RegionOut;
-use tutti_types::{ChannelLayout, SampleRate};
+use tutti_types::{ChannelLayout, SampleRate, Samples};
 
 use crate::nonempty;
 use crate::voice::Direction;
@@ -65,8 +65,9 @@ thread_local! {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct Arrangement {
     reverse: bool,
-    /// The file's length in frames.
-    len: usize,
+    /// The file's length; `None` where it is not known (a test's bare ring),
+    /// which never falls silent going forward.
+    len: Option<Samples>,
     /// The loop, going forward; `None` unlooped (and always in reverse).
     span: Option<LoopSpan>,
 }
@@ -77,12 +78,20 @@ impl Arrangement {
         self.reverse
     }
 
-    /// An unlooped forward stream of a file `len` frames long. `usize::MAX`
-    /// for a length not known (a test's bare ring), which never falls silent.
-    pub(crate) fn plain(len: usize) -> Self {
+    /// An unlooped forward stream of a file `len` long.
+    pub(crate) fn plain(len: Samples) -> Self {
         Self {
             reverse: false,
-            len,
+            len: Some(len),
+            span: None,
+        }
+    }
+
+    /// An unlooped forward stream of a file whose length is not known.
+    pub(crate) fn unbounded() -> Self {
+        Self {
+            reverse: false,
+            len: None,
             span: None,
         }
     }
@@ -104,11 +113,12 @@ impl Arrangement {
     /// `resume + r` is again such a multiple, no larger than `end ≤ pos`.
     #[inline]
     pub(crate) fn taps(&self, pos: f64) -> Option<([u64; 4], f32)> {
-        let len = self.len;
-        if len == 0 {
+        if self.len == Some(Samples::new(0)) {
             return None;
         }
         if self.reverse {
+            // A direction needs the length to mirror by.
+            let len = self.len?.get();
             if pos >= len as f64 {
                 return None;
             }
@@ -117,6 +127,8 @@ impl Arrangement {
         }
         match self.span {
             None => {
+                // Unknown length: every position reads, nothing falls silent.
+                let len = self.len.map_or(usize::MAX, Samples::get);
                 if pos >= len as f64 {
                     return None;
                 }
@@ -152,7 +164,7 @@ pub(crate) struct FadeRecord {
     /// at the ring's width.
     pub(crate) data: Box<[f32]>,
     /// Output frames the fade lasts; 0 cuts (after any gap the record covers).
-    pub(crate) fade_frames: usize,
+    pub(crate) fade_frames: Samples,
 }
 
 /// How to read the ring: the arrangement before and from a switch point, and
@@ -352,7 +364,7 @@ impl RingLoop {
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct Mapping {
     pub(crate) reverse: bool,
-    pub(crate) len: usize,
+    pub(crate) len: Option<Samples>,
     pub(crate) ring_loop: Option<RingLoop>,
 }
 
@@ -368,10 +380,19 @@ enum Key {
 
 impl Mapping {
     /// The file straight on, forward, unlooped.
-    pub(crate) fn plain(len: usize) -> Self {
+    pub(crate) fn plain(len: Samples) -> Self {
         Self {
             reverse: false,
-            len,
+            len: Some(len),
+            ring_loop: None,
+        }
+    }
+
+    /// The same, of a file whose length is not known.
+    pub(crate) fn unbounded() -> Self {
+        Self {
+            reverse: false,
+            len: None,
             ring_loop: None,
         }
     }
@@ -391,11 +412,14 @@ impl Mapping {
     }
 
     /// One past the last straight position worth writing: the file's length,
-    /// or `None` for a forward loop, which never ends.
+    /// or `None` for a forward loop, which never ends (and for a forward
+    /// stream of an unknown length). A reversed stream of an unknown length
+    /// has nothing to mirror: it writes nothing.
     pub(crate) fn end(&self) -> Option<u64> {
-        match self.active_loop() {
-            Some(_) => None,
-            None => Some(self.len as u64),
+        match (self.active_loop(), self.len) {
+            (Some(_), _) => None,
+            (None, Some(len)) => Some(len.get() as u64),
+            (None, None) => self.reverse.then_some(0),
         }
     }
 
@@ -404,11 +428,20 @@ impl Mapping {
             let f = ring_loop.span.place_frame(s as usize);
             return Key::Frame(f, ring_loop.span.fade_at(f).map(|(l, w)| (l, w.to_bits())));
         }
-        if s >= self.len as u64 {
+        let Some(len) = self.len.map(Samples::get) else {
+            // Unknown length: forward reads the frame itself, a reversal has
+            // nothing to mirror by.
+            return if self.reverse {
+                Key::Unread
+            } else {
+                Key::Frame(s as usize, None)
+            };
+        };
+        if s >= len as u64 {
             return Key::Unread;
         }
         let s = s as usize;
-        Key::Frame(if self.reverse { self.len - 1 - s } else { s }, None)
+        Key::Frame(if self.reverse { len - 1 - s } else { s }, None)
     }
 
     /// How many positions from `s` on hold consecutive file frames outside
@@ -421,10 +454,14 @@ impl Mapping {
             let fade_start = ring_loop.span.end() - ring_loop.span.fade();
             return ((fade_start.saturating_sub(f) as u64).max(1), 1);
         }
-        if s >= self.len as u64 {
+        let Some(len) = self.len.map(|len| len.get() as u64) else {
+            // Unknown length: forward runs on for ever, a reversal reads nothing.
+            return (u64::MAX, if self.reverse { 0 } else { 1 });
+        };
+        if s >= len {
             return (u64::MAX, 0);
         }
-        (self.len as u64 - s, if self.reverse { -1 } else { 1 })
+        (len - s, if self.reverse { -1 } else { 1 })
     }
 
     /// The first straight position in `[from, to)` whose slot this mapping
@@ -465,7 +502,10 @@ impl Mapping {
         let out = &mut out[..writable * ch];
         if self.reverse {
             // Positions `pos..pos + n` hold file frames `len - 1 - pos` down.
-            let first = self.len - pos as usize - writable;
+            let Some(len) = self.len.map(Samples::get).filter(|_| writable > 0) else {
+                return;
+            };
+            let first = len - pos as usize - writable;
             read(first, out);
             for i in 0..writable / 2 {
                 let (a, b) = (i * ch, (writable - 1 - i) * ch);
@@ -495,12 +535,13 @@ impl Mapping {
 }
 
 /// A writer's content: `before` for positions below `switch_at`, `current`
-/// from it on (and for every later write).
+/// from it on (and for every later write). `None`: no switch, `current`
+/// everywhere.
 #[derive(Clone, Debug)]
 pub(crate) struct Content {
     pub(crate) before: Mapping,
     pub(crate) current: Mapping,
-    pub(crate) switch_at: u64,
+    pub(crate) switch_at: Option<u64>,
     /// The epoch of the last [`RingMap`] published.
     pub(crate) epoch: u64,
 }
@@ -511,14 +552,14 @@ impl Content {
         Self {
             before: mapping.clone(),
             current: mapping,
-            switch_at: 0,
+            switch_at: None,
             epoch: 0,
         }
     }
 
     /// The mapping position `s` holds.
     fn at(&self, s: u64) -> &Mapping {
-        if s < self.switch_at {
+        if self.switch_at.is_some_and(|at| s < at) {
             &self.before
         } else {
             &self.current
@@ -527,7 +568,7 @@ impl Content {
 
     /// The first position in `[from, to)` whose slot differs from `new`'s.
     fn parts_from(&self, new: &Mapping, from: u64, to: u64) -> Option<u64> {
-        let split = self.switch_at.clamp(from, to);
+        let split = self.switch_at.unwrap_or(0).clamp(from, to);
         self.before
             .parts_from(new, from, split)
             .or_else(|| self.current.parts_from(new, split, to))
@@ -552,11 +593,11 @@ pub(crate) enum Edit {
 pub(crate) fn apply_mapping(
     writer: &mut RegionOut,
     new: Mapping,
-    fade_frames: usize,
+    fade_frames: Samples,
     rate: f64,
 ) -> Edit {
     let content = writer.content().clone();
-    if content.switch_at == 0 && content.current == new {
+    if content.switch_at.is_none() && content.current == new {
         return Edit::Same;
     }
     let ring = std::sync::Arc::clone(writer.ring());
@@ -593,8 +634,8 @@ pub(crate) fn apply_mapping(
     let (at, fade, record) = loop {
         tries += 1;
         let mut at = parts.max(busy + GUARD_FRAMES);
-        if content.switch_at > busy {
-            at = at.min(content.switch_at);
+        if let Some(switch) = content.switch_at.filter(|&switch| switch > busy) {
+            at = at.min(switch);
         }
         let at = at.min(to).max(busy.min(to)).max(lo);
         let fade = at > parts;
@@ -602,10 +643,14 @@ pub(crate) fn apply_mapping(
             let ch = writer.channels().count() as usize;
             let start = at.saturating_sub(3);
             let frames =
-                (fade_frames as f64 * rate.max(1.0)).ceil() as usize + GAP_COVER_FRAMES + 8;
+                (fade_frames.get() as f64 * rate.max(1.0)).ceil() as usize + GAP_COVER_FRAMES + 8;
             let mut data = vec![0.0f32; frames * ch];
             // The old content piecewise, as the reader would have heard it.
-            let split = (content.switch_at.clamp(start, start + frames as u64) - start) as usize;
+            let split = (content
+                .switch_at
+                .unwrap_or(0)
+                .clamp(start, start + frames as u64)
+                - start) as usize;
             let (a, b) = data.split_at_mut(split * ch);
             writer.fill_with(&content.before, start, a);
             writer.fill_with(&content.current, start + split as u64, b);
@@ -642,7 +687,7 @@ pub(crate) fn apply_mapping(
     writer.set_content(Content {
         before: old,
         current: new,
-        switch_at: at,
+        switch_at: Some(at),
         epoch,
     });
     Edit::Switch { at, fade }
@@ -703,7 +748,7 @@ mod tests {
     fn a_looped_position_past_usize_saturates_to_taps_no_window_holds() {
         let arrangement = Arrangement {
             reverse: false,
-            len: 1000,
+            len: Some(Samples::new(1000)),
             span: Some(LoopSpan::new(10, 20, 4, 1000).expect("a loop")),
         };
         let window = tutti_rt::RingWindow {
@@ -775,7 +820,7 @@ mod tests {
     fn looped(wave: &Wave, range: (u64, u64), fade: usize) -> Mapping {
         Mapping {
             reverse: false,
-            len: wave.len(),
+            len: Some(Samples::new(wave.len())),
             ring_loop: Some(ring_loop(wave, range, fade)),
         }
     }
@@ -894,7 +939,7 @@ mod tests {
         );
         let mapping = Mapping {
             reverse: false,
-            len: 100,
+            len: Some(Samples::new(100)),
             ring_loop: Some(captured.expect("a loop").0),
         };
         let out = fill(&mapping, &wave, 0, 151, CH);
@@ -921,7 +966,7 @@ mod tests {
         let wave = make_test_wave(&[(1.0, -1.0), (2.0, -2.0), (3.0, -3.0), (4.0, -4.0)]);
         let mapping = Mapping {
             reverse: true,
-            ..Mapping::plain(4)
+            ..Mapping::plain(Samples::new(4))
         };
         assert_eq!(
             fill(&mapping, &wave, 1, 5, 2),
@@ -956,10 +1001,10 @@ mod tests {
             looped(&wave, (1_000, 2_001), 300),
             looped(&wave, (0, 1_201), 300),
             looped(&wave, (500, 900), 0),
-            Mapping::plain(len),
+            Mapping::plain(Samples::new(len)),
             Mapping {
                 reverse: true,
-                ..Mapping::plain(len)
+                ..Mapping::plain(Samples::new(len))
             },
         ];
         let span_of = |m: &Mapping| m.ring_loop.as_ref().map(|l| *l.span());
@@ -1022,13 +1067,16 @@ mod tests {
         );
         let reversed = Mapping {
             reverse: true,
-            ..Mapping::plain(100)
+            ..Mapping::plain(Samples::new(100))
         };
-        assert_eq!(Mapping::plain(100).parts_from(&reversed, 10, 90), Some(10));
+        assert_eq!(
+            Mapping::plain(Samples::new(100)).parts_from(&reversed, 10, 90),
+            Some(10)
+        );
         let content = Content {
-            before: Mapping::plain(100),
+            before: Mapping::plain(Samples::new(100)),
             current: a.clone(),
-            switch_at: 70,
+            switch_at: Some(70),
             epoch: 0,
         };
         // Below 70 it is the file; from 70 the loop, which `a` matches.
@@ -1052,12 +1100,12 @@ mod tests {
             std::path::PathBuf::new(),
             LEN,
             tutti_types::ChannelTopology::new([tutti_types::Speaker::FrontCenter]),
-            LEN,
-            0,
+            Some(Samples::new(LEN)),
+            Samples::new(0),
         );
         writer.set_resident(Arc::clone(&wave));
         let mut held = vec![0.0f32; 10_000];
-        writer.fill_with(&Mapping::plain(LEN), 0, &mut held);
+        writer.fill_with(&Mapping::plain(Samples::new(LEN)), 0, &mut held);
         assert_eq!(writer.push_interleaved(&held), tutti_types::Samples(10_000));
         let _ = reader.claim(0, [(0, 64), (0, 0)]);
         assert_eq!(writer.in_flight_end(), 64);
@@ -1103,7 +1151,12 @@ mod tests {
                 let _ = reader.claim(2_999, [(2_999, 3_100), (0, 0)]);
             }
         });
-        let edit = apply_mapping(&mut writer, looped(&wave, (1_000, 3_000), 0), 64, 1.0);
+        let edit = apply_mapping(
+            &mut writer,
+            looped(&wave, (1_000, 3_000), 0),
+            Samples::new(64),
+            1.0,
+        );
         assert_eq!(
             edit,
             Edit::Switch {
@@ -1112,7 +1165,7 @@ mod tests {
             }
         );
         assert_eq!(calls.load(std::sync::atomic::Ordering::Relaxed), 2);
-        assert_eq!(writer.content().switch_at, 3_100 + GUARD_FRAMES);
+        assert_eq!(writer.content().switch_at, Some(3_100 + GUARD_FRAMES));
     }
 
     /// A reader that keeps pace with every read is given up on after four:
@@ -1132,7 +1185,12 @@ mod tests {
             let end = 3_000 + u64::from(tries) * 1_000;
             let _ = reader.claim(end - 100, [(end - 100, end), (0, 0)]);
         });
-        let edit = apply_mapping(&mut writer, looped(&wave, (1_000, 3_000), 0), 64, 1.0);
+        let edit = apply_mapping(
+            &mut writer,
+            looped(&wave, (1_000, 3_000), 0),
+            Samples::new(64),
+            1.0,
+        );
         // Chosen at 3 000, then a guard past 4 000, 5 000 and 6 000.
         assert_eq!(
             edit,

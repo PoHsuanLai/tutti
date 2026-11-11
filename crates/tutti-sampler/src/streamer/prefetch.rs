@@ -80,7 +80,7 @@ pub(crate) struct Ring {
     core: Arc<PosRing>,
     /// Output frames a reader's crossfade lasts: the config's seek crossfade,
     /// fixed when the ring is placed.
-    fade_frames: usize,
+    fade_frames: Samples,
     /// Streamer → reader: how to read the slots, the direction and the
     /// applied loop, in one value, lent through the reader the voice registers
     /// ([`control_reader`](Self::control_reader)). The streamer is its only
@@ -149,7 +149,7 @@ impl Ring {
 
     /// Output frames a reader's crossfade lasts.
     #[inline]
-    pub(crate) fn fade_frames(&self) -> usize {
+    pub(crate) fn fade_frames(&self) -> Samples {
         self.fade_frames
     }
 
@@ -405,8 +405,7 @@ impl RegionBuffer {
     /// Build a region's ring of `capacity` frames of `channels` each
     /// (floored at 4096 frames and one channel, capped at
     /// [`MAX_POS_RING_FRAMES`]), holding nothing, read as an unlooped forward
-    /// stream of a file `len` frames long (`usize::MAX` for a length not
-    /// known). Returns the writer, the ring and the ring's one position reader.
+    /// stream of a file of unknown length. Returns the writer, the ring and the ring's one position reader.
     #[cfg(test)]
     pub(crate) fn with_capacity(
         region_id: StreamId,
@@ -414,7 +413,7 @@ impl RegionBuffer {
         capacity: usize,
         channels: impl Into<ChannelLayout>,
     ) -> (RegionOut, SharedReader, PosReader) {
-        Self::with_fade(region_id, file_path, capacity, channels, 0)
+        Self::with_fade(region_id, file_path, capacity, channels, Samples::new(0))
     }
 
     /// [`with_capacity`](Self::with_capacity), whose readers crossfade over
@@ -425,34 +424,30 @@ impl RegionBuffer {
         file_path: PathBuf,
         capacity: usize,
         channels: impl Into<ChannelLayout>,
-        fade_frames: usize,
+        fade_frames: Samples,
     ) -> (RegionOut, SharedReader, PosReader) {
         let layout = nonempty(channels.into());
         let topology = ChannelTopology::for_width(layout);
-        Self::for_file(
-            region_id,
-            file_path,
-            capacity,
-            topology,
-            usize::MAX,
-            fade_frames,
-        )
+        Self::for_file(region_id, file_path, capacity, topology, None, fade_frames)
     }
 
-    /// `RegionBuffer::with_capacity` for a file `len` frames long, whose
+    /// `RegionBuffer::with_capacity` for a file `len` long (`None`: not known), whose
     /// readers crossfade over `fade_frames` output frames at a jump.
     pub(crate) fn for_file(
         region_id: StreamId,
         file_path: PathBuf,
         capacity: usize,
         topology: ChannelTopology,
-        len: usize,
-        fade_frames: usize,
+        len: Option<Samples>,
+        fade_frames: Samples,
     ) -> (RegionOut, SharedReader, PosReader) {
         let channels = nonempty(topology.layout());
         let stride = channels.count() as usize;
         let frames = capacity.clamp(4096, MAX_POS_RING_FRAMES);
-        let mapping = Mapping::plain(len);
+        let (mapping, arrangement) = match len {
+            Some(len) => (Mapping::plain(len), Arrangement::plain(len)),
+            None => (Mapping::unbounded(), Arrangement::unbounded()),
+        };
         let (writer, reader) = PosRing::new(frames, stride, HISTORY_FRAMES);
         let ring = Arc::new(Ring {
             region_id,
@@ -463,7 +458,7 @@ impl RegionBuffer {
             core: writer.watch(),
             fade_frames,
             control: Arc::new(ArcLend::new(RingControl::new(
-                RingMap::plain(Arrangement::plain(len), 0),
+                RingMap::plain(arrangement, 0),
                 LoopSetting::Off,
             ))),
         });

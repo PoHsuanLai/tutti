@@ -11,7 +11,7 @@ use std::sync::Arc;
 
 use atomic_float::AtomicF64;
 use std::sync::atomic::Ordering;
-use tutti_types::{SampleRate, SrcRatio};
+use tutti_types::{SampleRate, Samples, SrcRatio};
 
 use super::StreamerSender;
 use super::cache::LruCache;
@@ -398,7 +398,7 @@ fn build_stream(
         file_path.clone(),
         buffer_capacity,
         file_topology,
-        file_length as usize,
+        Some(Samples::new(file_length as usize)),
         config.seek_crossfade_frames,
     );
 
@@ -448,7 +448,7 @@ fn build_stream(
         producer,
         Arc::clone(&cells),
         file_sr,
-        file_length,
+        Samples::new(file_length as usize),
         pin,
         Arc::clone(&status),
     );
@@ -498,7 +498,7 @@ fn handle_loop(stream: StreamId, ask: Option<LoopAsk>, config: &BufferConfig, lo
 /// Captures `ask` into `record`'s ring and records it as applied: the file
 /// work of [`handle_loop`].
 fn capture_loop(record: &mut Record, ask: Option<LoopAsk>, config: &BufferConfig) {
-    let len = record.file_frames as usize;
+    let len = record.file_frames.get();
     let rate = record.cells.read_rate().get();
     let writer = &mut record.out;
 

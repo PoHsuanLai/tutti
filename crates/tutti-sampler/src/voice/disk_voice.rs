@@ -97,7 +97,7 @@ impl DiskSource {
         let control = consumer.control_reader();
         Self::with_reader(
             consumer,
-            Some((reader, control)),
+            Some(crate::streamer::RingReader::new(reader, control)),
             shared_state,
             width,
             place,
@@ -112,10 +112,7 @@ impl DiskSource {
     /// opened). The file's own width and order give the identity.
     pub(crate) fn with_reader(
         consumer: SharedReader,
-        feed: Option<(
-            tutti_rt::PosReader,
-            tutti_rt::Reader<crate::streamer::RingControl>,
-        )>,
+        reader: Option<crate::streamer::RingReader>,
         shared_state: Arc<Cells>,
         width: ChannelLayout,
         place: Place,
@@ -123,7 +120,7 @@ impl DiskSource {
         let channels = crate::voice_width(width);
         let stride = channels.count() as usize;
         Self {
-            read: Box::new(LiveRead::new(consumer, feed, stride, place)),
+            read: Box::new(LiveRead::new(consumer, reader, stride, place)),
             shared_state: Some(shared_state),
             channels,
             stride,
@@ -431,8 +428,7 @@ impl DiskVoice {
     ) -> Self {
         let StreamReader {
             ring,
-            pos,
-            control,
+            reader,
             cells,
             file,
             status,
@@ -441,8 +437,7 @@ impl DiskVoice {
             ..
         } = reader;
         let file_rate = file.file_rate();
-        let inner =
-            DiskSource::with_reader(ring, Some((pos, control)), Arc::clone(&cells), width, place);
+        let inner = DiskSource::with_reader(ring, Some(reader), Arc::clone(&cells), width, place);
         let mut voice = Self::new(
             inner,
             cells,

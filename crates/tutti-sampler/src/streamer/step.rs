@@ -232,7 +232,10 @@ mod tests {
         {
             // A block in progress across the publish.
             let _held = control.lend();
-            ring.publish_map(RingMap::plain(Arrangement::plain(64), 1));
+            ring.publish_map(RingMap::plain(
+                Arrangement::plain(tutti_types::Samples::new(64)),
+                1,
+            ));
         }
         assert_eq!(ring.retired_controls(), 1, "pinned until a scan");
         // The stream is still `Opening` (its reader never delivered), so the

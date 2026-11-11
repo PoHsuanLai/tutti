@@ -35,7 +35,7 @@ use tutti_session::{MidiRouteRule, Session};
 use tutti_sf2::SoundFont;
 use tutti_soundfont::{Settings, SoundFontUnit};
 use tutti_transport::MotionEvent;
-use tutti_types::{Beat, BeatDuration, ChannelLayout, InterleavedMut, SampleRate, Samples};
+use tutti_types::{At, Beat, BeatDuration, ChannelLayout, InterleavedMut, SampleRate, Samples};
 use tutti_ump::{MidiChannel, MidiGroup};
 
 const RATE: SampleRate = SampleRate(48_000.0);
@@ -195,10 +195,11 @@ fn preview_still_sounds_under_an_installed_clip() {
         .live_input(synth)
         .expect("a synth takes a live input");
     s.update();
-    live.queue(&[(
-        Offset::ZERO,
+    live.send(
+        At::NextBlock,
         note_on(MidiGroup::FIRST, MidiChannel::FIRST, 67, 0xFFFF),
-    )]);
+    )
+    .unwrap();
 
     let previewed = rms(&render(&s, 12_000));
     assert!(

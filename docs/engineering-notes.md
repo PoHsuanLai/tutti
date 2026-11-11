@@ -744,7 +744,7 @@ comments and docs, and treat it as a bug when you find it:
 
 ## Playing an instrument live: a frame is on the engine's clock
 
-`Session::add_instrument` puts a `TimedQueueNode` before the instrument's event
+`Session::add_instrument` puts an event inlet (`EventInletNode`) before the instrument's event
 input and a strip after its main pair (`Instrument::main_outputs`). A send
 takes an `At`: `NextBlock` and `Frame` work, `Beat` is refused with a typed
 error because a beat is resolved against the transport and a control thread's

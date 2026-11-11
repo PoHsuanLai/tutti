@@ -1132,7 +1132,7 @@ read the `Cargo.toml`, grep for the type, run the probe.
   `bevy-tutti/Cargo.toml` is the one exception. The `docs/` audits are dated
   records: fix only what claims to be current, and never "update" a reference
   to a new app-side path.
-- **Dead crate names:** `ChannelSumNode` → deleted (a port or an output
+- **Dead crate names:** `MidiQueueNode`, `TimedQueueNode`, `TimedSender`, `TimedSendError` → deleted (doc 017 E4: a control thread sends through `tutti_graph::EventInletNode`'s `EventInletWriter`, with `tutti_midi_runtime::MidiKeys` for the key helpers; `Graph::open_event_inlet` in the session); `ChannelSumNode` → deleted (a port or an output
   channel sums its sources: `Op::Sum`, doc 013 "Audio fan-in sums"); `tutti-spatial` → `tutti-nodes` (the panner nodes, `VbapPannerNode`
   and `HrtfBinauralNode`; the algorithms are `tutti-dsp::spatial`); `build_vbap_mix` and
   `VbapMixParts` → deleted (a VBAP mix is a panner per source wired to the output

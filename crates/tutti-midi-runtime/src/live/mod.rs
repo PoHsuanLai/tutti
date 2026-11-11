@@ -5,30 +5,27 @@
 //! - [`MidiInputNode`] polls a [`MidiIn`](crate::MidiIn) (the
 //!   hardware ports), translates, and sends each event out of its channel's
 //!   port: routing by channel is which ports a listener is wired to.
-//! - [`MidiQueueNode`] sends what a control thread pushes (a keyboard).
-//! - [`TimedQueueNode`] is the queue for a frame: each event leaves on the
-//!   frame its [`At`](tutti_types::At) names (a thin user of `tutti-graph`'s
-//!   `EventInletNode`).
+//! - [`MidiKeys`] is the key helpers over `tutti-graph`'s event inlet, which
+//!   is how a control thread sends into the graph (a keyboard, a preview).
 //! - [`MidiOutNode`] hands what reaches it to a control thread (a hardware
 //!   pump).
-//! - [`MidiMailbox`] is the ring the last two cross the thread boundary on.
+//! - [`MidiMailbox`] is the ring that node hands it over on, and the one a
+//!   host's own outbound path pushes into.
 //! - [`compile_routes`] turns inbound routing rules into which of the input
 //!   node's ports each listener takes.
 
 pub mod input_node;
+pub mod keys;
 pub mod mailbox;
 pub(crate) mod order;
 pub mod out_node;
-pub mod queue_node;
 mod route;
-pub mod timed_queue;
 
 pub use input_node::{
     CHANNELLESS_PORT, MIDI_INPUT_DENSITY, MIDI_INPUT_EVENT_CAPACITY, MIDI_INPUT_PORTS,
     MidiInputControls, MidiInputNode, input_port_of, input_ports,
 };
+pub use keys::{LIVE_INLET_CAPACITY, MidiKeys};
 pub use mailbox::{MAILBOX_CAPACITY, MidiMailbox, MidiReceiver, MidiSender};
 pub use out_node::{MIDI_OUT_CAPACITY, MidiOutControls, MidiOutNode};
-pub use queue_node::{MIDI_QUEUE_CAPACITY, MidiQueueNode};
 pub use route::{RouteRule, compile_routes};
-pub use timed_queue::{TIMED_QUEUE_CAPACITY, TimedQueueNode, TimedSendError, TimedSender};

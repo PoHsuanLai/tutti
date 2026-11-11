@@ -20,7 +20,7 @@
 //! frames and a frozen one loses nothing to interpolation; a modulated line
 //! reads between frames, and freezing turns the modulation off.
 
-use tutti_types::{Amplitude, ChannelLayout, Db, Depth, Hz, Mix, SampleRate, Seconds, StereoWidth};
+use tutti_types::{Amplitude, BusTopology, Db, Depth, Hz, Mix, SampleRate, Seconds, StereoWidth};
 
 use core::num::NonZeroU32;
 
@@ -241,7 +241,7 @@ impl Design for FdnDesign {
     });
 
     fn channels(&self) -> Channels {
-        Channels::speakers(ChannelLayout::MONO, ChannelLayout::STEREO)
+        Channels::new(BusTopology::MONO, BusTopology::STEREO)
     }
 
     fn blank(&self, rate: SampleRate) -> Network {

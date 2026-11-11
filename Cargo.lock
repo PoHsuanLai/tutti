@@ -3538,6 +3538,7 @@ dependencies = [
  "tutti-rt",
  "tutti-types",
  "tutti-ump",
+ "tutti-voicing",
 ]
 
 [[package]]
@@ -3622,6 +3623,7 @@ name = "tutti-engine"
 version = "0.0.1"
 dependencies = [
  "assert_no_alloc",
+ "bytemuck",
  "ringbuf",
  "thiserror 2.0.21",
  "tutti-fixtures",
@@ -3785,7 +3787,6 @@ dependencies = [
  "tutti-fixtures",
  "tutti-graph",
  "tutti-midi-protocol",
- "tutti-plugin-types",
  "tutti-rt",
  "tutti-tempo",
  "tutti-transport",
@@ -4346,6 +4347,7 @@ dependencies = [
  "tutti-shared-plugin",
  "tutti-types",
  "tutti-ump",
+ "tutti-voicing",
  "tutti-vst3-ffi",
  "tutti-vst3-host",
  "vst3",

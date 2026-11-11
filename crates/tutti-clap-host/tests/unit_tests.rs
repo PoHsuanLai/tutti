@@ -16,7 +16,6 @@ use tutti_clap_host::{
 use tutti_fixtures::midi as fx;
 use tutti_graph::Offset;
 use tutti_midi_protocol::{channel_voice, midi1};
-use tutti_plugin_types::PerNoteBendRanges;
 use tutti_types::Samples;
 use tutti_ump::{CCNumber, KeyEvent, Message, MidiChannel, MidiGroup, NoteNumber, Voice2, decode};
 
@@ -26,6 +25,13 @@ const BLOCK: usize = 1_000;
 /// The offset `k` frames into the block.
 fn at(k: u32) -> Offset {
     Offset::new(k as usize, Samples(BLOCK)).expect("inside the block")
+}
+
+/// The first event `event` adds to a fresh list.
+fn first(event: &(Offset, tutti_ump::Ump)) -> Option<ClapEvent> {
+    let mut list = InputEventList::new();
+    list.add_midi(event);
+    list.take_events().into_iter().next()
 }
 
 mod support;
@@ -47,8 +53,7 @@ fn test_note_on_roundtrip() {
         at(10),
         fx::note_on(MidiGroup::FIRST, MidiChannel::of(3), 60, fx::MID_VELOCITY),
     );
-    let clap =
-        ClapEvent::from_midi(&event, &PerNoteBendRanges::default()).expect("NoteOn should convert");
+    let clap = first(&event).expect("NoteOn should convert");
     assert!(matches!(clap, ClapEvent::NoteOn(_)));
     let back = clap.to_midi().expect("round-trip should succeed");
     assert_eq!(back.offset, 10);
@@ -65,8 +70,7 @@ fn test_note_off_roundtrip() {
         at(20),
         fx::note_off(MidiGroup::FIRST, MidiChannel::of(5), 72, 0x4000),
     );
-    let clap = ClapEvent::from_midi(&event, &PerNoteBendRanges::default())
-        .expect("NoteOff should convert");
+    let clap = first(&event).expect("NoteOff should convert");
     assert!(matches!(clap, ClapEvent::NoteOff(_)));
     let back = clap.to_midi().expect("round-trip should succeed");
     assert_eq!(back.offset, 20);
@@ -88,8 +92,7 @@ fn test_control_change_roundtrip() {
             tutti_fixtures::midi::wide_value(100),
         ),
     );
-    let clap =
-        ClapEvent::from_midi(&event, &PerNoteBendRanges::default()).expect("CC should convert");
+    let clap = first(&event).expect("CC should convert");
     // CC goes through the generic Midi event
     match clap {
         ClapEvent::Midi(e) => {
@@ -114,8 +117,7 @@ fn test_pitch_bend_roundtrip() {
             tutti_fixtures::midi::wide_bend(8192),
         ),
     );
-    let clap = ClapEvent::from_midi(&event, &PerNoteBendRanges::default())
-        .expect("PitchBend should convert");
+    let clap = first(&event).expect("PitchBend should convert");
     match clap {
         ClapEvent::Midi(e) => {
             assert_eq!(e.data[0] & 0xF0, 0xE0, "PitchBend status nibble");
@@ -134,8 +136,7 @@ fn test_program_change_roundtrip() {
         at(100),
         fx::program_change(MidiGroup::FIRST, MidiChannel::of(9), 42, None),
     );
-    let clap = ClapEvent::from_midi(&event, &PerNoteBendRanges::default())
-        .expect("ProgramChange should convert");
+    let clap = first(&event).expect("ProgramChange should convert");
     match clap {
         ClapEvent::Midi(e) => {
             assert_eq!(e.data[0], 0xC0 | 9, "ProgramChange status byte");

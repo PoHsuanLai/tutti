@@ -1,4 +1,3 @@
-use super::midi::bank_program;
 use super::*;
 use tutti_fixtures::midi;
 use tutti_graph::Offset;
@@ -40,7 +39,37 @@ fn at(k: u32) -> Offset {
 /// Encodes one event on a fresh stream (every per-note bend range at the
 /// MPE default).
 fn encode(event: &UmpAt) -> Option<Event> {
-    MidiEncoder::default().encode(event)
+    MidiEncoder::default().encode(event).first().copied()
+}
+
+/// Encodes the per-note `event` on a stream whose note on the event's own
+/// Group, channel and key is already sounding (a per-note controller of a number
+/// with no note is held and sends nothing: M2-104 Appendix C.3). Returns the
+/// `noteId` that note was started with and the event made.
+fn encode_live(event: &UmpAt) -> (i32, Option<Event>) {
+    let mut encoder = MidiEncoder::default();
+    let (address, note) = match decode_ump(event.1) {
+        Ok(Message::Midi2(
+            address,
+            Voice2::PolyPressure { note, .. }
+            | Voice2::PerNotePitchBend { note, .. }
+            | Voice2::RegisteredPerNote { note, .. }
+            | Voice2::AssignablePerNote { note, .. },
+        ))
+        | Ok(Message::Midi1(address, tutti_ump::Voice1::PolyPressure { note, .. })) => {
+            (address, note)
+        }
+        _ => return (-1, encoder.encode(event).first().copied()),
+    };
+    let on = Message::Midi2(address, Voice2::note_on(note, midi::MID_VELOCITY));
+    let started = match encoder.encode(&(event.0, Ump::from(on))).first() {
+        Some(Event {
+            payload: Payload::NoteOn(on),
+            ..
+        }) => on.noteId,
+        other => panic!("the note did not start: {other:?}"),
+    };
+    (started, encoder.encode(event).first().copied())
 }
 
 #[test]
@@ -181,8 +210,15 @@ fn poly_pressure_lands_in_poly_pressure_variant() {
             tutti_fixtures::midi::wide_value(100),
         ),
     );
-    let vst3 = encode(&event).expect("PolyPressure should convert");
-    assert!(matches!(vst3.payload, Payload::PolyPressure(_)));
+    let (id, vst3) = encode_live(&event);
+    let vst3 = vst3.expect("PolyPressure should convert");
+    let Payload::PolyPressure(p) = vst3.payload else {
+        panic!("expected poly pressure");
+    };
+    assert_eq!(
+        p.noteId, id,
+        "the pressure is for the note that is sounding"
+    );
     let back = vst3.to_midi().expect("round-trip");
     assert!(matches!(
         channel_voice(back.ump),
@@ -494,31 +530,15 @@ fn data_event_with_truncated_size_fails_gracefully() {
     assert!(Event::at(0, Payload::Data(data)).to_midi().is_none());
 }
 
+/// A Note On has a `noteId` of its own, minted above every `(channel, key)`
+/// pair's (`NoteId::MAX_CHANNEL_NOTE`); two notes on one key have two (M2-104
+/// section 7.4.5: a Detach ends one and the next is another); and a Note Off
+/// names no note (`-1`), which the plugin matches by channel and pitch.
 #[test]
-fn note_on_and_off_share_a_derived_note_id() {
-    // A note-on and its note-off for the same (channel, note) must carry the
-    // same VST3 noteId so per-note events bind to the same voice.
-    let on = encode(&(
-        Offset::ZERO,
-        midi::note_on(MidiGroup::FIRST, MidiChannel::of(5), 67, midi::MID_VELOCITY),
-    ))
-    .unwrap();
-    let off = encode(&(
-        Offset::ZERO,
-        midi::note_off(MidiGroup::FIRST, MidiChannel::of(5), 67, 0),
-    ))
-    .unwrap();
-    let expected = spec_note_id(5, 67);
-    match (on.payload, off.payload) {
-        (Payload::NoteOn(a), Payload::NoteOff(b)) => {
-            assert_eq!(a.noteId, expected);
-            assert_eq!(b.noteId, expected);
-        }
-        _ => panic!("expected NoteOn + NoteOff"),
-    }
-    // Different (channel, note) → different id.
-    let id_of = |channel: u8, note: u8| {
-        let event = encode(&(
+fn a_note_on_has_an_id_of_its_own_and_its_note_off_names_none() {
+    let mut encoder = MidiEncoder::default();
+    let mut note_on = |channel: u8, note: u8| match encoder
+        .encode(&(
             Offset::ZERO,
             midi::note_on(
                 MidiGroup::FIRST,
@@ -527,20 +547,43 @@ fn note_on_and_off_share_a_derived_note_id() {
                 midi::MID_VELOCITY,
             ),
         ))
-        .unwrap();
-        match event.payload {
-            Payload::NoteOn(on) => on.noteId,
-            other => panic!("expected a Note On, got {other:?}"),
-        }
+        .first()
+        .map(|e| e.payload)
+    {
+        Some(Payload::NoteOn(on)) => on.noteId,
+        other => panic!("expected a Note On, got {other:?}"),
     };
-    assert_ne!(id_of(5, 67), id_of(5, 68));
-    assert_ne!(id_of(5, 67), id_of(6, 67));
+    let first = note_on(5, 67);
+    let again = note_on(5, 67);
+    let other_key = note_on(5, 68);
+    for id in [first, again, other_key] {
+        assert!(
+            u32::try_from(id).unwrap() > tutti_ump::NoteId::MAX_CHANNEL_NOTE,
+            "id {id} names a (channel, key) pair or a wildcard"
+        );
+    }
+    assert_ne!(first, again, "two notes of one key");
+    assert_ne!(first, other_key);
+
+    let off = encoder
+        .encode(&(
+            Offset::ZERO,
+            midi::note_off(MidiGroup::FIRST, MidiChannel::of(5), 67, 0),
+        ))
+        .first()
+        .map(|e| e.payload);
+    match off {
+        Some(Payload::NoteOff(off)) => {
+            assert_eq!((off.channel, off.pitch, off.noteId), (5, 67, -1));
+        }
+        other => panic!("expected a Note Off, got {other:?}"),
+    }
 }
 
 #[test]
 fn per_note_pitch_bend_becomes_tuning_expression() {
     // Center bend on note 67, channel 5 → Tuning expression at value 0.5,
-    // bound to the same noteId the note-on for (5, 67) would carry.
+    // bound to the noteId of the note sounding on (5, 67).
     let event = (
         at(12),
         midi::per_note_pitch_bend(
@@ -550,10 +593,11 @@ fn per_note_pitch_bend_becomes_tuning_expression() {
             tutti_fixtures::midi::wide_bend(8192),
         ),
     );
-    let vst3 = encode(&event).expect("per-note bend should map");
+    let (id, vst3) = encode_live(&event);
+    let vst3 = vst3.expect("per-note bend should map");
     let expr = vst3.to_note_expression().expect("is a note expression");
     assert_eq!(expr.expression_type, NoteExpressionType::Tuning);
-    assert_eq!(expr.note_id, spec_note_id(5, 67));
+    assert_eq!(expr.note_id, id, "the tuning is the sounding note's");
     assert_eq!(expr.sample_offset, 12);
     assert!((expr.value - 0.5).abs() < 0.01, "center bend → 0.5");
     // It is NOT a MIDI channel-voice event.
@@ -586,7 +630,7 @@ fn a_per_note_bend_is_tuned_over_its_channels_range() {
             ),
         )
     };
-    let tuning = |encoder: &mut MidiEncoder, e: &UmpAt| match encoder.encode(e) {
+    let tuning = |encoder: &mut MidiEncoder, e: &UmpAt| match encoder.encode(e).first().copied() {
         Some(Event {
             payload: Payload::ExpressionValue(x),
             ..
@@ -599,6 +643,18 @@ fn a_per_note_bend_is_tuned_over_its_channels_range() {
     let close = |got: f64, want: f64| (got - want).abs() < 1e-6;
 
     let mut encoder = MidiEncoder::default();
+    // A note sounds on each channel: a bend with no note is held, not sent.
+    for channel in [3, 4] {
+        let _ = encoder.encode(&(
+            Offset::ZERO,
+            midi::note_on(
+                MidiGroup::FIRST,
+                MidiChannel::of(channel),
+                60,
+                midi::MID_VELOCITY,
+            ),
+        ));
+    }
     assert!(close(
         tuning(&mut encoder, &bend(3, 0.25)),
         0.5 + 12.0 / 240.0
@@ -617,10 +673,24 @@ fn a_per_note_bend_is_tuned_over_its_channels_range() {
             PitchBendSensitivity::of(24).to_rpn_bits(),
         ),
     );
+    // The sensitivity is consumed (no RPN reaches the plugin), and the bend the
+    // sounding note holds is told again at its new size (M2-104 section
+    // 7.4.13): 6 semitones of the last one, -1.0 over 24.
+    let after = encoder.encode(&sensitivity);
     assert!(
-        encoder.encode(&sensitivity).is_none(),
-        "the sensitivity is consumed"
+        matches!(
+            after,
+            [Event {
+                payload: Payload::ExpressionValue(_),
+                ..
+            }]
+        ),
+        "{after:?}"
     );
+    let Payload::ExpressionValue(resent) = after[0].payload else {
+        unreachable!()
+    };
+    assert!(close(resent.value, 0.5 - 24.0 / 240.0), "{}", resent.value);
     assert!(close(
         tuning(&mut encoder, &bend(3, 0.25)),
         0.5 + 6.0 / 240.0
@@ -645,7 +715,8 @@ fn per_note_controller_maps_known_indices_only() {
             false,
         ),
     );
-    match encode(&known) {
+    let (id, known) = encode_live(&known);
+    match known {
         Some(Event {
             payload: Payload::ExpressionValue(e),
             ..
@@ -654,7 +725,7 @@ fn per_note_controller_maps_known_indices_only() {
             // not against `expression_type_id` — comparing the table
             // to itself is what let the off-by-one at index 4 ship.
             assert_eq!(e.typeId, 5, "CC74 → kBrightnessTypeID");
-            assert_eq!(e.noteId, spec_note_id(0, 60));
+            assert_eq!(e.noteId, id);
         }
         other => panic!("expected Brightness note expression, got {other:?}"),
     }
@@ -670,7 +741,7 @@ fn per_note_controller_maps_known_indices_only() {
             false,
         ),
     );
-    assert!(encode(&unknown).is_none());
+    assert!(encode_live(&unknown).1.is_none());
 }
 
 #[test]
@@ -1087,14 +1158,6 @@ mod message {
             packet(Message::Flex(MidiGroup::FIRST, Flex::SetTempo(50_000_000))),
             packet(Message::Midi2(
                 address(0),
-                Voice2::Registered {
-                    bank: u7(1),
-                    index: u7(2),
-                    value: 5,
-                },
-            )),
-            packet(Message::Midi2(
-                address(0),
                 Voice2::PerNoteManagement {
                     note: note(60),
                     detach: true,
@@ -1268,39 +1331,25 @@ mod message {
     /// value sent as 0.
     #[test]
     fn spec_words_give_the_exact_note_events() {
-        let event = |words: &[u32]| encode(&raw(words)).expect("an event");
-        let expression_type = |words: &[u32]| match event(words).payload {
-            Payload::ExpressionValue(e) => (e.typeId, e.noteId),
-            other => panic!("expected an expression, got {other:?}"),
+        // Every packet is for channel 3, key 60, which is sounding.
+        let event = |words: &[u32]| encode_live(&raw(words)).1.expect("an event");
+        let expression_type = |words: &[u32]| {
+            let (id, made) = encode_live(&raw(words));
+            match made.expect("an event").payload {
+                Payload::ExpressionValue(e) => (e.typeId, e.noteId == id),
+                other => panic!("expected an expression, got {other:?}"),
+            }
         };
         // Registered Per-Note Controller (status 0): note 60, controller in
         // bits 7-0 of word 0.
-        assert_eq!(
-            expression_type(&[0x4003_3C07, 0x8000_0000]),
-            (0, spec_note_id(3, 60))
-        );
-        assert_eq!(
-            expression_type(&[0x4003_3C0A, 0x8000_0000]),
-            (1, spec_note_id(3, 60))
-        );
-        assert_eq!(
-            expression_type(&[0x4003_3C4A, 0x8000_0000]),
-            (5, spec_note_id(3, 60))
-        );
-        assert!(encode(&raw(&[0x4003_3C01, 0x8000_0000])).is_none());
+        assert_eq!(expression_type(&[0x4003_3C07, 0x8000_0000]), (0, true));
+        assert_eq!(expression_type(&[0x4003_3C0A, 0x8000_0000]), (1, true));
+        assert_eq!(expression_type(&[0x4003_3C4A, 0x8000_0000]), (5, true));
+        assert!(encode_live(&raw(&[0x4003_3C01, 0x8000_0000])).1.is_none());
         // Assignable Per-Note Controller (status 1).
-        assert_eq!(
-            expression_type(&[0x4013_3C07, 0x8000_0000]),
-            (0, spec_note_id(3, 60))
-        );
-        assert_eq!(
-            expression_type(&[0x4013_3C0A, 0x8000_0000]),
-            (1, spec_note_id(3, 60))
-        );
-        assert_eq!(
-            expression_type(&[0x4013_3C4A, 0x8000_0000]),
-            (5, spec_note_id(3, 60))
-        );
+        assert_eq!(expression_type(&[0x4013_3C07, 0x8000_0000]), (0, true));
+        assert_eq!(expression_type(&[0x4013_3C0A, 0x8000_0000]), (1, true));
+        assert_eq!(expression_type(&[0x4013_3C4A, 0x8000_0000]), (5, true));
         // Poly Pressure (status A): MIDI 2.0 carries 32 bits; MIDI 1.0 0x21
         // widens to 0x4200_0000.
         let Payload::PolyPressure(p) = event(&[0x40A3_3C00, 0x4000_0000]).payload else {
@@ -1327,23 +1376,30 @@ mod message {
             Offset::ZERO,
             midi::program_change(MidiGroup::FIRST, MidiChannel::of(1), 9, Some(0x0085)),
         );
-        let padded =
-            |event: &UmpAt| bank_program(&event.1).map(|messages| messages.map(|m| m.padded()));
-        assert_eq!(
-            padded(&banked),
-            Some([[0xB1, 0, 1], [0xB1, 32, 5], [0xC1, 9, 0]])
-        );
+        // The bytes of the Data events one packet makes, on a fresh stream.
+        let padded = |event: &UmpAt| -> Vec<[u8; 3]> {
+            MidiEncoder::default()
+                .encode(event)
+                .iter()
+                .map(|e| match e.payload {
+                    Payload::Data(d) => d.payload().try_into().expect("three bytes"),
+                    other => panic!("not Data: {other:?}"),
+                })
+                .collect()
+        };
+        assert_eq!(padded(&banked), [[0xB1, 0, 1], [0xB1, 32, 5], [0xC1, 9, 0]]);
         // Spec words: MSB 2 at bits 15-8, LSB 5 at bits 7-0.
-        let spec_words = raw(&[0x41C1_0001, 0x0900_0205]);
+        let spec_words = raw(&[0x40C1_0001, 0x0900_0205]);
         assert_eq!(
             padded(&spec_words),
-            Some([[0xB1, 0, 2], [0xB1, 32, 5], [0xC1, 9, 0]])
+            [[0xB1, 0, 2], [0xB1, 32, 5], [0xC1, 9, 0]]
         );
+        // A Program Change with no bank is the program alone.
         let plain = (
             Offset::ZERO,
             midi::program_change(MidiGroup::FIRST, MidiChannel::of(1), 9, None),
         );
-        assert_eq!(padded(&plain), None);
+        assert_eq!(padded(&plain), [[0xC1, 9, 0]]);
     }
 
     /// A MIDI 1.0 message a plugin sends as raw bytes is widened on the way
@@ -1499,7 +1555,6 @@ mod message {
         assert_no_alloc::assert_no_alloc(|| {
             for event in &events {
                 let _ = encoder.encode(event);
-                let _ = bank_program(&event.1);
             }
             for event in &raw {
                 let _ = event.to_midi();

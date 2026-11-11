@@ -12,11 +12,13 @@
 use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
-use tutti_types::SampleRate;
+
+mod common;
+use common::Listener;
 
 use tutti_fixtures::midi::note_on;
 use tutti_graph::Offset;
-use tutti_midi_hardware::{HardwareMidiDrain, HardwareMidiInputs, MidiSession};
+use tutti_midi_hardware::{DeviceInlets, HardwareMidiInputs, MidiSession};
 use tutti_midi_protocol::channel_voice;
 use tutti_ump::{
     Address, Attribute, CCNumber, KeyEvent, Message, MidiChannel, MidiGroup, NoteNumber, Ump,
@@ -40,9 +42,11 @@ fn voice(voice: Voice2) -> Message {
 }
 
 fn main() {
-    let pm = Arc::new(HardwareMidiInputs::new(256, SampleRate::new(44_100.0)));
-    // The audio side's drain: what a `MidiInputNode` would own.
-    let mut drain = HardwareMidiDrain::new(Arc::clone(&pm));
+    // One inlet slot, 256 events, each event placed 20 ms after it arrived.
+    let inlets = Arc::new(DeviceInlets::new(1, 256, Duration::from_millis(20)));
+    let pm = Arc::new(HardwareMidiInputs::new(Arc::clone(&inlets)));
+    // The graph's side: the engine's part, played on the wall clock.
+    let mut graph = Listener::over(&inlets);
     let io = MidiSession::open(pm.clone()).expect("open MIDI");
 
     let inputs = io.inputs();
@@ -53,6 +57,7 @@ fn main() {
     println!("Found IAC input: [{}] {}", iac_input.id, iac_input.name);
 
     io.connect_input(&iac_input.id).unwrap();
+    graph.apply();
     thread::sleep(Duration::from_millis(200));
     assert!(
         io.is_any_input_connected(),
@@ -63,8 +68,8 @@ fn main() {
     io.connect_output_by_name("IAC").unwrap();
     thread::sleep(Duration::from_millis(200));
 
-    // Drain anything buffered from before the test started.
-    drain.cycle_start_read_all_inputs(512, |_, _| {});
+    // Whatever was buffered before the test.
+    graph.listen(Duration::from_millis(50));
 
     // --- Send a message, read back exactly one, hand it to `check`. ---
     //
@@ -74,13 +79,7 @@ fn main() {
     // MIDI-1-vs-2 distinction never surfaces.
     let mut roundtrip = |label: &str, msg: Message, check: &dyn Fn(Voice2) -> bool| {
         io.send(&[(Offset::ZERO, Ump::from(msg))]);
-        thread::sleep(Duration::from_millis(100));
-        let mut first: Option<Ump> = None;
-        drain.cycle_start_read_all_inputs(512, |_, (_, ev)| {
-            if first.is_none() {
-                first = Some(ev);
-            }
-        });
+        let first: Option<Ump> = graph.listen(Duration::from_millis(100)).first().copied();
         match first {
             None => println!("  FAIL [{label}]: no events received"),
             Some(ev) => {
@@ -144,13 +143,9 @@ fn main() {
             note_on(MidiGroup::FIRST, MidiChannel::FIRST, n, 0xA000),
         )]);
     }
-    thread::sleep(Duration::from_millis(200));
-    let mut count = 0usize;
-    let mut all_note_on = true;
-    drain.cycle_start_read_all_inputs(512, |_, (_, ev)| {
-        count += 1;
-        all_note_on &= is_note_on(ev);
-    });
+    let heard = graph.listen(Duration::from_millis(200));
+    let count = heard.len();
+    let all_note_on = heard.iter().all(|&ev| is_note_on(ev));
     println!(
         "  {}: received {count}/10 events, all note_on={all_note_on}",
         if count == 10 && all_note_on {

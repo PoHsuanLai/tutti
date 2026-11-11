@@ -11,7 +11,7 @@
 
 use core::marker::PhantomData;
 
-use tutti_types::{ChannelLayout, SampleRate};
+use tutti_types::{BusTopology, SampleRate};
 
 use super::ladder::{LadderCoefficients, ladder_step};
 use super::real::Real;
@@ -30,10 +30,10 @@ pub type LadderDesign<F> = Filter<Ladder<F>>;
 pub struct Ladder<F>(PhantomData<fn() -> F>);
 
 impl<F> LadderDesign<F> {
-    /// A design `channels` wide.
+    /// A design on the bus `input`, one output bus where it is.
     #[must_use]
-    pub fn new(channels: ChannelLayout) -> Self {
-        Self::over(Ladder(PhantomData), channels)
+    pub fn new(input: BusTopology) -> Self {
+        Self::over(Ladder(PhantomData), input)
     }
 }
 
@@ -124,7 +124,7 @@ mod tests {
     }
 
     fn design() -> LadderDesign<f64> {
-        LadderDesign::new(ChannelLayout::MONO)
+        LadderDesign::new(BusTopology::MONO)
     }
 
     // The reachable controls stay where the small-signal model is stable: the

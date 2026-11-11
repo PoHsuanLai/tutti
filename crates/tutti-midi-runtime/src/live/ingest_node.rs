@@ -1,34 +1,45 @@
-//! [`MidiInputNode`]: a MIDI input edge (the hardware ports, typically) as a
-//! graph node, its events out of one event port per Group and channel.
+//! [`MidiIngestNode`]: the graph side of the MIDI input edge, its events out of
+//! one event port per Group and channel.
 //!
-//! Each block it polls its [`MidiIn`], translates MIDI 1.0 to MIDI 2.0
-//! ([`Translator`]: RPN and NRPN runs, Bank Select, widening) and rewrites
-//! classic MPE into native per-note messages ([`MpeIngest`]), then sends every
-//! event out of the port for its address ([`MidiInputPorts`]). A Group is a
-//! channel space of its own (M2-104 section 2.1.2, Appendix B.1: a message in
-//! one Group does not apply to Channels in another), so a Group has its own
-//! sixteen channel ports and its own channelless port, which carries that
-//! Group's System, SysEx and Flex messages. The node hears the first Group
-//! unless built to hear more ([`MidiInputNode::hearing`]), so a one-Group
-//! device is the seventeen ports it always was. A message with no Group
-//! (Utility, UMP Stream: they address the Endpoint, not a Group) leaves the
-//! first Group's channelless port. **Routing is wiring**: a synth listening
-//! to channel 3 of a Group takes event edges from that Group's port 3 and its
-//! channelless port, one listening to a whole Group from its seventeen
-//! ([`MidiInputPorts::listening`]).
+//! A hardware device reaches the graph through an event inlet of its own
+//! ([`DeviceInlets`](crate::DeviceInlets)), each event already on its frame
+//! (the device's thread stamps it, `tutti-graph`'s event inlet holds it until
+//! its block); the node has one event input per device slot, so what it reads
+//! is what the inlets emitted. Each block it translates every slot's events,
+//! MIDI 1.0 to MIDI 2.0 ([`Translator`]: RPN and NRPN runs, Bank Select,
+//! widening), and rewrites classic MPE into native per-note messages
+//! ([`MpeIngest`]), then sends every event out of the port for its address
+//! ([`MidiInputPorts`]). **The translators and the MPE state are per slot**:
+//! the runs a device's controller sends are its own, and one device's Data
+//! Entry never completes another's RPN. A Group is a channel space of its own
+//! (M2-104 section 2.1.2, Appendix B.1: a message in one Group does not apply
+//! to Channels in another), so a Group has its own sixteen channel ports and
+//! its own channelless port, which carries that Group's System, SysEx and Flex
+//! messages. The node hears the first Group unless built to hear more
+//! ([`MidiIngestNode::hearing`]), so a one-Group device is the seventeen ports
+//! it always was. A message with no Group (Utility, UMP Stream: they address
+//! the Endpoint, not a Group) leaves the first Group's channelless port.
+//! **Routing is wiring**: a synth listening to channel 3 of a Group takes event
+//! edges from that Group's port 3 and its channelless port, one listening to a
+//! whole Group from its seventeen ([`MidiInputPorts::listening`]); the devices
+//! merge in the listener's event fan-in.
 //!
 //! Translation runs on every event, wired or not: both stages are stateful
 //! assemblers, and skipping an event corrupts the ones after it.
 //!
+//! A slot whose device changed is restarted
+//! ([`MidiIngestControls::restart_slot`]): its translator and its MPE state
+//! start empty, so one device's half-sent run is not completed by the next.
+//!
 //! Its fork is silent: an offline render reads no wire.
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use tutti_graph::UmpAt;
 
 use tutti_graph::{
-    Cx, Event, EventDensity, ForkCause, ForkMode, ForkSource, Forked, IntoNode, Io, Node,
-    NodeParts, Offset, Prepare, Shape, Status,
+    Cx, Event, EventDensity, EventKind, ForkCause, ForkMode, ForkSource, Forked, IntoNode, Io,
+    Node, NodeParts, Offset, Prepare, Shape, Status,
 };
 use tutti_midi_protocol::MpeMode;
 use tutti_midi_protocol::Translator;
@@ -37,23 +48,22 @@ use tutti_ump::{MidiChannel, MidiGroup, Ump};
 
 use super::order::{BLANK, in_offset_order, offset_of};
 use crate::outbound::mpe_ingest::MpeIngest;
-use crate::traits::MidiIn;
 
 /// The port that carries a Group's events with no channel: after its sixteen
 /// channel ports. For the first Group (and a node that hears only it); Group
 /// `g`'s is [`MidiInputPorts::channelless`].
 pub const CHANNELLESS_PORT: usize = MidiChannel::COUNT as usize;
 
-/// How many event outputs a [`MidiInputNode`] that hears one Group has: one
+/// How many event outputs a [`MidiIngestNode`] that hears one Group has: one
 /// per channel and [`CHANNELLESS_PORT`]. Each further Group adds as many
 /// ([`MidiInputPorts::count`]).
 pub const MIDI_INPUT_PORTS: usize = CHANNELLESS_PORT + 1;
 
-/// The fewest events a [`MidiInputNode`] polls in one block, and each port's
+/// The fewest events a [`MidiIngestNode`] translates in one block, and each port's
 /// declared event capacity at the shortest blocks.
 pub const MIDI_INPUT_EVENT_CAPACITY: usize = 512;
 
-/// The events per frame a [`MidiInputNode`] is sized for: one in eight
+/// The events per frame a [`MidiIngestNode`] is sized for: one in eight
 /// (6,000 a second at 48 kHz, where a 16-channel MPE controller sending a
 /// bend, a pressure and a slide every 8 ms on each channel is 6,000), which
 /// with its block is the node's poll and port capacity when that is more than
@@ -65,7 +75,7 @@ pub const MIDI_INPUT_EVENT_CAPACITY: usize = 512;
 /// that (0.16 MB at 512, 0.62 MB at 2,048).
 pub const MIDI_INPUT_DENSITY: EventDensity = EventDensity::per_kiloframe(128);
 
-/// Which output port of a [`MidiInputNode`] carries what: the layout of the
+/// Which output port of a [`MidiIngestNode`] carries what: the layout of the
 /// Groups it hears.
 ///
 /// Group `g` owns the ports `g * 17 ..= g * 17 + 16`: channel `c`'s is
@@ -174,75 +184,108 @@ impl Default for MidiInputPorts {
 /// A Group's ports: its sixteen channels and its channelless port.
 const PORTS_PER_GROUP: usize = MIDI_INPUT_PORTS;
 
-/// A MIDI input edge as a graph node with [`MidiInputPorts::count`] event
-/// outputs ([`MIDI_INPUT_PORTS`] for the first Group alone).
-/// See the module docs.
+/// The MIDI input edge as a graph node: one event input per device slot and
+/// [`MidiInputPorts::count`] event outputs ([`MIDI_INPUT_PORTS`] for the first
+/// Group alone). See the module docs.
 ///
 /// ```
 /// use tutti_types::{SampleRate, Samples};
 /// use tutti_graph::NodeKey;
 /// use tutti_graph::{Editor, Prepare};
-/// use tutti_midi_runtime::MidiInputNode;
+/// use tutti_midi_runtime::MidiIngestNode;
 ///
 /// let (mut editor, _exec) = Editor::new(Prepare::new(SampleRate(48_000.0), Samples(512)));
-/// // No wire: a node the host fills later, or a test's.
-/// let controls = editor.insert(NodeKey(1), "midi in", MidiInputNode::new(None));
+/// // Four device slots, none wired yet.
+/// let controls = editor.insert(NodeKey(1), "midi in", MidiIngestNode::new(4));
 /// assert_eq!(controls.pending_mpe_mode(), None);
 /// ```
-pub struct MidiInputNode {
-    /// The edge this node polls, owned: whatever state a poll keeps (a
-    /// hardware drain's scratch, its read of the port set) is the node's.
-    input: Option<Box<dyn MidiIn>>,
-    /// What the wire's poll fills.
-    scratch: Box<[UmpAt]>,
+pub struct MidiIngestNode {
+    /// One translation state per device slot.
+    devices: Box<[Device]>,
+    /// How many times each slot was restarted
+    /// ([`MidiIngestControls::restart_slot`]), as the node last saw it.
+    restarts: Arc<[AtomicU32]>,
     /// What the block sends: the translated events, which may outnumber the
-    /// polled ones (a member channel's bend range fans out over its zone).
+    /// ones read (a member channel's bend range fans out over its zone).
     out: Box<[UmpAt]>,
     /// The Groups it hears, and so its ports.
     ports: MidiInputPorts,
-    translator: Translator,
-    mpe: MpeIngest,
+    /// The MPE mode in force on every slot.
+    mpe_mode: MpeMode,
     /// The MPE mode a host asked for, read once per block. The reader owns
     /// its cell (`Reader::cell`), which the controls publish to.
     mpe_request: Reader<Option<MpeMode>>,
     /// Translated events a block had no room for in `out`
-    /// ([`MidiInputControls::dropped_events`]).
+    /// ([`MidiIngestControls::dropped_events`]).
     dropped: Arc<AtomicU64>,
-    /// The events a block polls and each port holds, from the block the node
-    /// was prepared for.
+    /// The events a block translates and each port holds, from the block the
+    /// node was prepared for.
     capacity: usize,
 }
 
-impl std::fmt::Debug for MidiInputNode {
+/// What one device slot keeps between blocks: its MIDI 1.0 assembler and its
+/// classic-MPE state.
+struct Device {
+    translator: Translator,
+    mpe: MpeIngest,
+    /// The slot's restart count this state was last reset at.
+    restarted: u32,
+}
+
+impl Device {
+    fn new(mode: MpeMode) -> Self {
+        Self {
+            translator: Translator::new(),
+            mpe: MpeIngest::new(mode),
+            restarted: 0,
+        }
+    }
+
+    /// Empty, as for a device that has not sent anything.
+    fn restart(&mut self, mode: MpeMode, restarted: u32) {
+        self.translator.reset();
+        self.mpe = MpeIngest::new(mode);
+        self.restarted = restarted;
+    }
+}
+
+impl std::fmt::Debug for MidiIngestNode {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("MidiInputNode")
-            .field("mpe", &self.mpe)
+        f.debug_struct("MidiIngestNode")
+            .field("devices", &self.devices.len())
+            .field("mpe_mode", &self.mpe_mode)
             .field("mpe_request", &self.mpe_request)
             .field("dropped", &self.dropped)
             .finish_non_exhaustive()
     }
 }
 
-impl MidiInputNode {
-    /// A node polling `input` each block (`None`: a node that sends nothing),
-    /// with MPE ingestion off. The node owns `input`: build one per node (for
-    /// the hardware ports, `tutti_midi_hardware::HardwareMidiDrain::new`
-    /// over the shared `Arc<HardwareMidiInputs>`).
+impl MidiIngestNode {
+    /// A node with `devices` event inputs, one per device slot (at least one),
+    /// with MPE ingestion off.
     #[must_use]
-    pub fn new(input: Option<Box<dyn MidiIn>>) -> Self {
+    pub fn new(devices: usize) -> Self {
+        let devices = devices.max(1);
         let cell = Arc::new(ArcLend::new(None));
         Self {
             mpe_request: cell.reader(),
-            input,
-            scratch: vec![BLANK; MIDI_INPUT_EVENT_CAPACITY].into_boxed_slice(),
+            devices: (0..devices)
+                .map(|_| Device::new(MpeMode::Disabled))
+                .collect(),
+            restarts: (0..devices).map(|_| AtomicU32::new(0)).collect(),
             out: vec![BLANK; tutti_graph::note_off_room(MIDI_INPUT_EVENT_CAPACITY)]
                 .into_boxed_slice(),
             ports: MidiInputPorts::FIRST_GROUP,
-            translator: Translator::new(),
-            mpe: MpeIngest::new(MpeMode::Disabled),
+            mpe_mode: MpeMode::Disabled,
             dropped: Arc::new(AtomicU64::new(0)),
             capacity: MIDI_INPUT_EVENT_CAPACITY,
         }
+    }
+
+    /// How many device slots, which is how many event inputs.
+    #[must_use]
+    pub fn devices(&self) -> usize {
+        self.devices.len()
     }
 
     /// Hear the Groups of `ports` (the first Group alone by default): each
@@ -258,7 +301,10 @@ impl MidiInputNode {
     /// Ingest classic MPE in `mode` from the first block, on every Group.
     #[must_use]
     pub fn with_mpe(mut self, mode: MpeMode) -> Self {
-        self.mpe = MpeIngest::new(mode);
+        self.mpe_mode = mode;
+        for device in &mut self.devices {
+            device.mpe = MpeIngest::new(mode);
+        }
         self
     }
 
@@ -275,24 +321,29 @@ impl MidiInputNode {
         let Some(mode) = *self.mpe_request.lend() else {
             return false;
         };
-        if *self.mpe.mode() == mode {
+        if self.mpe_mode == mode {
             return false;
         }
-        self.mpe.set_mode(mode);
+        self.mpe_mode = mode;
+        for device in &mut self.devices {
+            device.mpe.set_mode(mode);
+        }
         true
     }
 }
 
-/// The host's handle on a [`MidiInputNode`]: its MPE mode. Cheap to clone.
+/// The host's handle on a [`MidiIngestNode`]: its MPE mode, and which device
+/// slots start over. Cheap to clone.
 #[derive(Clone, Debug)]
-pub struct MidiInputControls {
+pub struct MidiIngestControls {
     /// What the node reads; the controls publish to it and read it back with
     /// `ArcLend::current`.
     request: Arc<ArcLend<Option<MpeMode>>>,
     dropped: Arc<AtomicU64>,
+    restarts: Arc<[AtomicU32]>,
 }
 
-impl MidiInputControls {
+impl MidiIngestControls {
     /// Ingest classic MPE in `mode` from the next block. Control thread.
     ///
     /// A new mode resets MPE voice allocation: a note sounding through a
@@ -300,6 +351,21 @@ impl MidiInputControls {
     /// nothing.
     pub fn set_mpe_mode(&self, mode: MpeMode) {
         self.request.publish(Some(mode));
+    }
+
+    /// Starts device slot `slot` over from the next block: its translator and
+    /// its MPE state are emptied, as for a device that has sent nothing. What
+    /// a new device taking the slot needs, so the previous one's half-sent
+    /// RPN or held MPE notes are not carried into it. `false` for a slot the
+    /// node has no input for. Control thread; lock-free.
+    pub fn restart_slot(&self, slot: usize) -> bool {
+        match self.restarts.get(slot) {
+            Some(count) => {
+                count.fetch_add(1, Ordering::Relaxed);
+                true
+            }
+            None => false,
+        }
     }
 
     /// Frees the requests the node has let go of since the last
@@ -314,9 +380,9 @@ impl MidiInputControls {
     /// How many translated events the node has dropped since it was built:
     /// past the node's capacity in one block, an event's
     /// translation (a bend range or an MPE reset fans out over a zone) is
-    /// dropped whole rather than cut partway. A poll takes no more than the
-    /// capacity: a hardware wire leaves the rest in its rings for the next
-    /// block, and counts what its rings had no room for.
+    /// dropped whole rather than cut partway. What a device's inlet could not
+    /// hold is counted at the inlet, not here
+    /// ([`DeviceInlets`](crate::DeviceInlets)).
     pub fn dropped_events(&self) -> u64 {
         self.dropped.load(Ordering::Relaxed)
     }
@@ -330,37 +396,37 @@ impl MidiInputControls {
     }
 }
 
-impl Node for MidiInputNode {
-    /// No audio; [`MidiInputPorts::count`] event outputs ([`MIDI_INPUT_PORTS`]
-    /// for the first Group alone) of the prepared capacity ([`MIDI_INPUT_EVENT_CAPACITY`] at least, and
+impl Node for MidiIngestNode {
+    /// No audio; one event input per device slot, [`MidiInputPorts::count`]
+    /// event outputs ([`MIDI_INPUT_PORTS`] for the first Group alone) of the
+    /// prepared capacity ([`MIDI_INPUT_EVENT_CAPACITY`] at least, and
     /// [`MIDI_INPUT_DENSITY`] per frame of a long block).
     fn shape(&self) -> Shape {
         Shape::EMPTY
-            .with_events(0, self.ports.count() as u16)
+            .with_events(self.devices.len() as u16, self.ports.count() as u16)
             .with_event_capacity(self.capacity as u32)
-            // Event-only: a poll and a translation per event, nothing per
-            // frame.
+            // Event-only: a translation per event, nothing per frame.
             .with_cost(tutti_graph::Cost::Light)
     }
 
     fn prepare(&mut self, p: &Prepare) {
         let capacity = (MIDI_INPUT_DENSITY.capacity(p) as usize).max(MIDI_INPUT_EVENT_CAPACITY);
-        if capacity != self.capacity || self.scratch.len() != capacity {
+        if capacity != self.capacity {
             self.capacity = capacity;
-            self.scratch = vec![BLANK; capacity].into_boxed_slice();
             self.out = vec![BLANK; tutti_graph::note_off_room(capacity)].into_boxed_slice();
-        }
-        if let Some(input) = self.input.as_mut() {
-            input.reserve(capacity);
         }
     }
 
     fn process(&mut self, cx: &Cx<'_>, mut io: Io<'_>) -> Status {
         // Before any event is translated, stated or not.
         let reset = self.adopt_mpe_request();
-        let Some(input) = self.input.as_mut() else {
-            return Status::Modified;
-        };
+        let mode = self.mpe_mode;
+        for (device, restarts) in self.devices.iter_mut().zip(self.restarts.iter()) {
+            let restarts = restarts.load(Ordering::Relaxed);
+            if restarts != device.restarted {
+                device.restart(mode, restarts);
+            }
+        }
         let block_len = cx.env.block_len;
         // An event's translation goes in whole or not at all: a fan-out cut
         // partway would leave some of a zone's channels at another range.
@@ -374,21 +440,28 @@ impl Node for MidiInputNode {
             dropped: 0,
         };
         // A host-set mode's ranges, at frame 0, ahead of the block's events
-        // (the sort below is stable).
+        // (the sort below is stable). Once, whatever the devices: they are
+        // the receiver's, not a device's.
         if reset {
             for group in 0..self.ports.last_group().get() + 1 {
                 staging.whole(false, |send| {
-                    self.mpe
+                    self.devices[0]
+                        .mpe
                         .zone_defaults(MidiGroup::masked(group), Offset::ZERO, send);
                 });
             }
         }
-        let n = input.poll_block(block_len, &mut self.scratch);
-        for &(at, raw) in &self.scratch[..n.min(self.scratch.len())] {
-            let (translator, mpe) = (&mut self.translator, &mut self.mpe);
-            translator.feed(raw, |ev| {
-                staging.whole(ev.is_note_off(), |send| mpe.translate(&(at, ev), send));
-            });
+        for (slot, device) in self.devices.iter_mut().enumerate() {
+            let (translator, mpe) = (&mut device.translator, &mut device.mpe);
+            for event in io.events(slot) {
+                let EventKind::Midi(raw) = event.kind else {
+                    continue;
+                };
+                let at = event.offset;
+                translator.feed(raw, |ev| {
+                    staging.whole(ev.is_note_off(), |send| mpe.translate(&(at, ev), send));
+                });
+            }
         }
         let Staging { kept, dropped, .. } = staging;
         if dropped > 0 {
@@ -451,30 +524,37 @@ impl Staging<'_> {
     }
 }
 
-/// A [`MidiInputNode`]'s fork: the same ports, no wire.
-struct SilentInput(MidiInputPorts);
+/// A [`MidiIngestNode`]'s fork: the same slots and ports, nothing to read.
+struct SilentInput {
+    ports: MidiInputPorts,
+    devices: usize,
+}
 
 impl ForkSource for SilentInput {
     fn fork(&self, _mode: ForkMode) -> Result<Forked, ForkCause> {
         Ok(Forked::new(Box::new(
-            MidiInputNode::new(None).hearing(self.0),
+            MidiIngestNode::new(self.devices).hearing(self.ports),
         )))
     }
 }
 
-impl IntoNode for MidiInputNode {
-    type Controls = MidiInputControls;
+impl IntoNode for MidiIngestNode {
+    type Controls = MidiIngestControls;
 
-    fn into_parts(self) -> NodeParts<MidiInputControls> {
-        let ports = self.ports;
-        let controls = MidiInputControls {
+    fn into_parts(self) -> NodeParts<MidiIngestControls> {
+        let fork = SilentInput {
+            ports: self.ports,
+            devices: self.devices.len(),
+        };
+        let controls = MidiIngestControls {
             request: Arc::clone(self.mpe_request.cell()),
             dropped: Arc::clone(&self.dropped),
+            restarts: Arc::clone(&self.restarts),
         };
         NodeParts {
             node: Box::new(self),
             controls,
-            fork: Some(Box::new(SilentInput(ports))),
+            fork: Some(Box::new(fork)),
         }
     }
 }

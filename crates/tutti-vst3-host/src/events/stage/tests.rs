@@ -38,15 +38,22 @@ fn a_per_note_bend_range_outlives_its_block() {
 
     let list = EventList::input();
     let mut stager = Stager::default();
-    let sensitivity = [(
-        Offset::ZERO,
-        midi::registered_rpn(
-            MidiGroup::FIRST,
-            MidiChannel::FIRST,
-            tutti_ump::Rpn::PER_NOTE_PITCH_BEND_SENSITIVITY,
-            PitchBendSensitivity::of(24).to_rpn_bits(),
+    // A note sounds on the channel: a bend with no note is held, not sent.
+    let sensitivity = [
+        (
+            Offset::ZERO,
+            midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, midi::MID_VELOCITY),
         ),
-    )];
+        (
+            Offset::ZERO,
+            midi::registered_rpn(
+                MidiGroup::FIRST,
+                MidiChannel::FIRST,
+                tutti_ump::Rpn::PER_NOTE_PITCH_BEND_SENSITIVITY,
+                PitchBendSensitivity::of(24).to_rpn_bits(),
+            ),
+        ),
+    ];
     assert!(stager.stage(
         &list,
         &InputEvents {
@@ -54,7 +61,7 @@ fn a_per_note_bend_range_outlives_its_block() {
             ..Default::default()
         },
     ));
-    assert_eq!(len(&list), 0, "the sensitivity stages nothing");
+    assert_eq!(len(&list), 1, "the Note On stages, the sensitivity nothing");
 
     let bend = [(
         Offset::ZERO,
@@ -132,6 +139,22 @@ fn vst3_and_clap_bend_one_stream_by_the_same_semitones() {
     let vst3 = EventList::input();
     let mut stager = Stager::default();
     let mut clap = InputEventList::new();
+    // A note sounds on each channel: a bend with no note is held, not sent.
+    let notes: Vec<UmpAt> = (0..2)
+        .map(|channel| {
+            (
+                Offset::ZERO,
+                midi::note_on(
+                    MidiGroup::FIRST,
+                    MidiChannel::of(channel),
+                    60,
+                    midi::MID_VELOCITY,
+                ),
+            )
+        })
+        .collect();
+    assert!(stager.stage(&vst3, &midi_only(&notes)));
+    clap.add_midi_events(&notes);
     for (block, want) in [(&first[..], &[6.0, 12.0][..]), (&second[..], &[6.0][..])] {
         assert!(stager.stage(&vst3, &midi_only(block)));
         clap.clear();

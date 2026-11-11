@@ -4,8 +4,7 @@
 ///
 /// A **closed set**, so a segment stays a `Copy` value a few words long on the
 /// audio thread rather than an `Arc<dyn Curve>`. Every law is monotone between
-/// its endpoints, so a piece never leaves `[from, to]` (but for
-/// [`Smootherstep`](Self::Smootherstep)'s few ulps of `f32` rounding).
+/// its endpoints, so a piece never leaves `[from, to]`.
 ///
 /// A parameter that is not finite, or out of the range a variant states,
 /// evaluates as [`Linear`](Self::Linear): the audio thread never computes a
@@ -55,10 +54,8 @@ pub enum Law {
     /// is the third-order `3t² - 2t³`, and this is its successor.) It is
     /// the amplitude law of the graph's equal-amplitude crossfade.
     ///
-    /// Evaluated in `f32` in this Horner form, which the crossfade's gains
-    /// pin bit for bit, it loses a few ulps to cancellation near 1: it is
-    /// monotone and inside `[0, 1]` only to about `2.3e-6` (it reaches
-    /// `1.000_001_1` just below `t = 1`; `g(1)` is exactly 1).
+    /// Evaluated in `f32` in a Horner form and clamped to `[0, 1]`; the form
+    /// is monotone to within about 19 ulp (`2.3e-6`) near 1.
     Smootherstep,
 }
 
@@ -93,7 +90,9 @@ impl Law {
                     1.0 - pow(2.0 - 2.0 * t, p) / 2.0
                 }
             }
-            Self::Smootherstep => t * t * t * (t * (t * 6.0 - 15.0) + 10.0),
+            // `t` is in `[0, 1]` here (the prelude clamps it, a NaN is 0). The
+            // clamp trims the Horner form's rounding overshoot of 1.
+            Self::Smootherstep => (t * t * t * (t * (t * 6.0 - 15.0) + 10.0)).clamp(0.0, 1.0),
             Self::Exp(k) if k.is_finite() => {
                 let k = k.clamp(-EXP_CURVATURE_MAX, EXP_CURVATURE_MAX);
                 if k.abs() < 1e-4 {

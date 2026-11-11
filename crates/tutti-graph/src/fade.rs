@@ -140,14 +140,23 @@ mod tests {
     /// gains' bits at every frame of fades of many lengths. Plain `f32`
     /// arithmetic, no libm, so it holds on every target.
     ///
+    /// Both gains also stay in `[0, 1]` at every frame (the law's clamp; the
+    /// digest was `8576483186461023489` before it, a deliberate change: the
+    /// unclamped form overshot 1 by up to 7.2e-7 here).
+    ///
     /// Mutation (run): the polynomial's `10.0` written `10.000001` → the
-    /// digest moves → fails.
+    /// digest moves → fails. Mutation (run): `Law::Smootherstep`'s clamp
+    /// removed → the range assert fails.
     #[test]
     fn equal_amplitude_gains_are_bit_stable() {
         let mut h = 0xcbf2_9ce4_8422_2325u64;
         for len in [1usize, 2, 3, 7, 64, 240, 1000, 4800] {
             for k in 0..len {
                 let (a, b) = CrossfadeCurve::EqualAmplitude.gains(k, len);
+                assert!(
+                    (0.0..=1.0).contains(&a) && (0.0..=1.0).contains(&b),
+                    "{k}/{len}: ({a}, {b})"
+                );
                 for bits in [a.to_bits(), b.to_bits()] {
                     for byte in bits.to_le_bytes() {
                         h = (h ^ u64::from(byte)).wrapping_mul(0x0100_0000_01b3);
@@ -155,7 +164,7 @@ mod tests {
                 }
             }
         }
-        assert_eq!(h, 8_576_483_186_461_023_489, "digest");
+        assert_eq!(h, 10_403_808_708_279_920_321, "digest");
     }
 
     /// Each curve keeps the law its name promises at every frame: the halves

@@ -229,9 +229,8 @@ fn every_law_meets_its_closed_form() {
                 (f64::from(g) - want).abs() < 2e-6,
                 "{s:?} at {t}: {g} vs {want}"
             );
-            // `Smootherstep` is the crossfade's bit-exact `f32` polynomial,
-            // whose cancellation near 1 costs up to 2.3e-6 of monotonicity
-            // (and the same overshoot of 1): see its docs.
+            // `Smootherstep`'s `f32` Horner form loses up to 2.3e-6 of
+            // monotonicity to cancellation near 1 (see its docs).
             let slack = if s == S::Smootherstep { 3e-6 } else { 0.0 };
             assert!(g + slack >= prev, "{s:?} is monotone at {t}");
             prev = g;

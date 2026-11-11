@@ -62,7 +62,7 @@ fn a_clip_is_translated_in_beat_order_and_keeps_its_list_order() {
     let out = translated(events);
     let decoded: Vec<(f64, tutti_ump::Message)> = out
         .iter()
-        .map(|e| (e.beat.get(), tutti_ump::decode(e.event).unwrap()))
+        .map(|e| (e.beat.get(), e.event.decode().unwrap()))
         .collect();
     let address = tutti_ump::Address {
         group: MidiGroup::FIRST,

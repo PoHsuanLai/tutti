@@ -8,7 +8,7 @@
 use std::hint::black_box;
 
 use criterion::{Criterion, Throughput, criterion_group, criterion_main};
-use tutti_ump::{Message, Ump, decode};
+use tutti_ump::{Message, Ump};
 
 /// A deterministic block of 64 packets.
 pub fn corpus() -> Vec<Ump> {
@@ -88,14 +88,14 @@ fn codec(c: &mut Criterion) {
     let packets = corpus();
     let messages: Vec<Message> = packets
         .iter()
-        .map(|&p| decode(p).expect("corpus decodes"))
+        .map(|&p| p.decode().expect("corpus decodes"))
         .collect();
     let mut g = c.benchmark_group("ump");
     g.throughput(Throughput::Elements(packets.len() as u64));
     g.bench_function("decode_block_of_64", |b| {
         b.iter(|| {
             for &p in black_box(&packets) {
-                black_box(decode(p).ok());
+                black_box(p.decode().ok());
             }
         });
     });
@@ -107,11 +107,12 @@ fn codec(c: &mut Criterion) {
         });
     });
     let shuffled = corpus_shuffled();
-    let shuffled_messages: Vec<Message> = shuffled.iter().filter_map(|&p| decode(p).ok()).collect();
+    let shuffled_messages: Vec<Message> =
+        shuffled.iter().filter_map(|&p| p.decode().ok()).collect();
     g.bench_function("decode_shuffled_block_of_64", |b| {
         b.iter(|| {
             for &p in black_box(&shuffled) {
-                black_box(decode(p).ok());
+                black_box(p.decode().ok());
             }
         });
     });

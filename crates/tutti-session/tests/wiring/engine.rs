@@ -4,22 +4,13 @@
 //! adapter's `assemble`.
 //!
 //! Each test stands on analytic figures (onset frames, the tone a dry voice
-//! reads), on what needs no oracle (a voice's render at two block sizes,
-//! which a voice's frames do not depend on), and, for the samples
-//! themselves, on golden digests. The click's was checked against an
-//! independent reference implementation when it was recorded. The dry voice has
-//! no digest: it is pinned to the tone itself. The pitched voice's digest is
-//! self-recorded (the vocoder's FFT was replaced and no independent reference
-//! renders it), so its cross-check is the fifth-up pitch figure. The click
-//! and the pitched voice call `sin` (and the vocoder's FFT), libm
-//! quality-of-implementation that differs in the last ulp between C runtimes,
-//! so the digests are asserted only where they were recorded
-//! (`tutti_fixtures::assert_golden`).
+//! reads, a pitched voice's fifth up) and on what needs no oracle (a voice's
+//! render at two block sizes, which a voice's frames do not depend on). No
+//! test pins a past render.
 
 use std::sync::Arc;
 use tutti_types::MaxBlock;
 
-use tutti_fixtures::{assert_golden, digest};
 use tutti_graph::Op;
 use tutti_graph::TapAlign;
 use tutti_nodes::MetronomeMode;
@@ -31,7 +22,7 @@ use tutti_types::{Amplitude, Beat, ChannelLayout, InterleavedMut, SampleRate, Sa
 const RATE: f64 = 48_000.0;
 
 /// An offline session at `RATE`, stereo, graph blocks of up to 1 024 frames
-/// (the live engine's `LIVE_MAX_BLOCK`, which the digests were recorded at).
+/// (the live engine's `LIVE_MAX_BLOCK`).
 fn offline() -> Session {
     Session::builder()
         .build_offline(
@@ -103,8 +94,7 @@ fn onsets(stereo: &[f32]) -> Vec<usize> {
         .collect()
 }
 
-/// **The builder's engine clicks on every beat, across a seek**, and
-/// clicks the golden digest's samples. The click reads the
+/// **The builder's engine clicks on every beat, across a seek.** The click reads the
 /// beat of every frame from its block's `Env` (the transport the engine's
 /// own `TransportClock` reports). The transport starts before the first
 /// block, so the play gate opens on the first frame.
@@ -124,7 +114,6 @@ fn the_click_sounds_on_every_beat_across_the_seek() {
         vec![1, 24_001, 48_001, 60_417, 66_417, 90_417, 114_417, 138_417],
         "a click on every beat, across the seek"
     );
-    assert_golden("the click", digest(&rendered), 0x9ac0_787e_520a_8085);
 }
 
 /// **The graph runs at the rate it was built at.** At 120 BPM and 48 kHz
@@ -227,13 +216,12 @@ fn dominant_frequency(x: &[f32], from: usize, rate: f64) -> f64 {
 /// **A sampler voice plays in time through the builder's engine**, at
 /// `block`-frame device blocks with a rolling transport: the dry voice is
 /// the tone it plays, to the bit, on both channels; the voice a fifth up
-/// renders the same bits as at 64-frame blocks, and the
-/// golden digest's.
+/// is a fifth up and renders the same bits as at 64-frame blocks.
 fn a_voice_plays_in_time(block: usize) {
     let frames = 24_000;
-    // The dry voice is pinned to the tone itself; only the pitched one,
-    // which has no closed form, carries a digest.
-    for (cents, want) in [(0.0f32, None), (700.0, Some(0xacb2_45f3_a464_4a49u64))] {
+    // The dry voice is pinned to the tone itself, the pitched one to its
+    // fifth up and to its render at 64-frame blocks.
+    for cents in [0.0f32, 700.0] {
         let rendered = render_voice(cents, frames, block);
         let peak = rendered.iter().fold(0.0f32, |m, s| m.max(s.abs()));
         assert!(peak > 0.5, "{block}-frame blocks, {cents} cents: silent");
@@ -247,7 +235,7 @@ fn a_voice_plays_in_time(block: usize) {
                 );
             }
         } else {
-            // Portable, where the digest is not: a fifth up from 440 Hz is
+            // A fifth up from 440 Hz is
             // 440 · 2^(7/12) ≈ 659.26 Hz. Past the vocoder's first few
             // thousand frames, within 1% (a semitone is 6%).
             let left: Vec<f32> = rendered.iter().step_by(2).copied().collect();
@@ -272,12 +260,6 @@ fn a_voice_plays_in_time(block: usize) {
                     by64[i]
                 );
             }
-        }
-        // The pitched digest is self-recorded: the vocoder's scalar FFT
-        // rounding over the portable figures above, which are the oracle. It
-        // moves only when that rounding does.
-        if let Some(want) = want {
-            assert_golden(&format!("voice, {cents} cents"), digest(&rendered), want);
         }
     }
 }

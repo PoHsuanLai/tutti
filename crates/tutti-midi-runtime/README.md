@@ -143,7 +143,7 @@ has to know what MPE is.
 use tutti_midi_runtime::MpeIngest;
 use tutti_fixtures::midi::{lower_zone, note_on, pitch_bend, wide_velocity};
 use tutti_graph::Offset;
-use tutti_ump::{Message, MidiChannel, MidiGroup, Voice2, decode};
+use tutti_ump::{Message, MidiChannel, MidiGroup, Voice2};
 
 let mut ingest = MpeIngest::new(lower_zone(7));
 
@@ -161,7 +161,7 @@ let bend = pitch_bend(MidiGroup::FIRST, member, 0xC000_0000);
 sent.clear();
 ingest.translate(&(Offset::ZERO, bend), |e| sent.push(e));
 let [(_, folded)] = sent[..] else { panic!("the channel holds a note") };
-let Ok(Message::Midi2(_, Voice2::PerNotePitchBend { note, .. })) = decode(folded) else {
+let Ok(Message::Midi2(_, Voice2::PerNotePitchBend { note, .. })) = folded.decode() else {
     panic!("a per-note bend")
 };
 assert_eq!(note.get(), 60);

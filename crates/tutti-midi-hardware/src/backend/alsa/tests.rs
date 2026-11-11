@@ -921,7 +921,7 @@ fn a_device_on_the_sequencer_is_negotiated_through_the_pump_and_the_output() {
                         let Some(ump) = tutti_ump::split_stream(&received.ump).next() else {
                             continue;
                         };
-                        let Ok(message @ Message::Stream(_)) = tutti_ump::decode(ump) else {
+                        let Ok(message @ Message::Stream(_)) = ump.decode() else {
                             continue;
                         };
                         let mut answers: Vec<tutti_ump::Ump> = Vec::new();

@@ -57,7 +57,7 @@ fn controls(packets: &[Ump]) -> Vec<(u8, u8)> {
         .iter()
         .map(|&ump| {
             assert_eq!(ump.message_type(), 2, "{ump:?}");
-            let Ok(Message::Midi1(_, Voice1::ControlChange { controller, value })) = decode(ump)
+            let Ok(Message::Midi1(_, Voice1::ControlChange { controller, value })) = ump.decode()
             else {
                 panic!("not a Control Change: {ump:?}")
             };
@@ -87,7 +87,7 @@ fn a_midi1_endpoint_is_never_sent_type_4() {
         ],
     );
     assert!(out.iter().all(|u| u.message_type() != 4), "{out:?}");
-    let decoded: Vec<_> = out.iter().map(|&u| decode(u).unwrap()).collect();
+    let decoded: Vec<_> = out.iter().map(|&u| u.decode().unwrap()).collect();
     // The first three keep their Group and Channel, and the per-note bend,
     // which MIDI 1.0 cannot carry (D.2.8), is gone.
     assert_eq!(

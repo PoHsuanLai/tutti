@@ -143,50 +143,54 @@ fn advance_is_that_many_ticks() {
     }
 }
 
-/// FNV-1a over the bits of every pitch a glide renders, per shape: two glides
-/// (up, then a retarget half-way down) stepped by `tick` and by `advance`.
-/// The pitch goes through `ln` and `exp`, which reach libm, so the digests are
-/// goldens (`assert_golden`), recorded on the target named there.
+/// **A glide follows its law in cents**: `begin(from, to, time)` over
+/// `time · rate` frames puts the pitch, `k` frames in, at `law(k / frames)` of
+/// the interval in cents (pitch is exponential in time for `Law::Linear`), and
+/// it arrives exactly on the frame the glide's length rounds up to, where the
+/// pitch the voice plays (`ratio`) is the target's, for each law and an interval up, down and across several octaves. The
+/// tolerance (0.05 cents, inaudible) covers the `f32` progress sum and the
+/// `ln`/`exp` of the pitch.
 #[test]
-fn glide_render_digests() {
-    fn digest(curve: Law) -> u64 {
-        let config = PortamentoConfig {
-            mode: PortamentoMode::Always,
-            curve,
-            time: Seconds(0.01),
-            ..Default::default()
-        };
-        let mut porta = Portamento::new(config, SampleRate::new(48000.0));
-        let mut hash = tutti_fixtures::Fnv::new();
-        let mut eat = |hz: Hz| hash.f32(hz.get());
-        porta.reset(Hz::new(220.0));
-        porta.set_target(Hz::new(1760.0), false);
-        for _ in 0..240 {
-            eat(porta.tick());
-        }
-        porta.set_target(Hz::new(311.0), false);
-        for _ in 0..300 {
-            eat(porta.tick());
-        }
-        porta.set_target(Hz::new(95.0), false);
-        for steps in [1usize, 7, 64, 3, 128, 500] {
-            eat(porta.advance(steps));
-        }
-        hash.finish()
-    }
-    for (name, curve, recorded) in [
-        ("linear", Law::Linear, 0xdf0c_b95a_5395_87d9),
-        (
-            "quadratic",
-            Law::PowerIn(Exponent::of(2.0)),
-            0xb127_e94e_c43e_399e,
-        ),
-        (
-            "square-root",
-            Law::PowerIn(Exponent::of(0.5)),
-            0x4a68_7e6b_1b1a_9839,
-        ),
+fn a_glide_follows_its_law_in_cents() {
+    let rate = SampleRate::new(48_000.0);
+    for law in [
+        Law::Linear,
+        Law::PowerIn(Exponent::of(2.0)),
+        Law::PowerIn(Exponent::of(0.5)),
     ] {
-        tutti_fixtures::assert_golden(name, digest(curve), recorded);
+        for (from, to, time) in [
+            (220.0f32, 1760.0f32, 0.01),
+            (1760.0, 311.0, 0.0073),
+            (95.0, 97.0, 0.05),
+        ] {
+            let mut porta = Portamento::new(
+                PortamentoConfig {
+                    mode: PortamentoMode::Always,
+                    curve: law,
+                    ..Default::default()
+                },
+                rate,
+            );
+            porta.begin(Hz::new(from), Hz::new(to), Seconds(time));
+            let frames = time * rate.get();
+            let interval = 1200.0 * f64::from(to / from).log2();
+            let mut k = 0usize;
+            while porta.is_gliding() {
+                k += 1;
+                let got = 1200.0 * f64::from(porta.tick().get() / from).log2();
+                let p = ((k as f64) / frames).min(1.0) as f32;
+                let want = interval * f64::from(law.eval(p));
+                assert!(
+                    (got - want).abs() < 0.05,
+                    "{law:?} {from} -> {to} Hz, frame {k}: {got} cents, the law gives {want}"
+                );
+            }
+            assert_eq!(
+                k,
+                frames.ceil() as usize,
+                "{law:?} {from} -> {to} Hz: arrival frame"
+            );
+            assert_eq!(porta.ratio(), 1.0, "{law:?}: the voice plays the target");
+        }
     }
 }

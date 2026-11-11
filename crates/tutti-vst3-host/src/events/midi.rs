@@ -9,7 +9,7 @@ use tutti_plugin_types::{NoteExpressionType, NoteExpressionValue, WireMidi};
 use tutti_types::Semitones;
 use tutti_ump::{
     Address, CCNumber, Message, Midi1Bytes, MidiChannel, MidiGroup, NoteId, NoteNumber, Rpn,
-    SysexMessage, Ump, Voice1, Voice2, decode as decode_ump,
+    SysexMessage, Ump, Voice1, Voice2,
 };
 use tutti_voicing::{LIVE_NOTES, NOTE_CONTROLS, NoteControl, NoteEvent, PerNoteState};
 
@@ -112,7 +112,7 @@ impl MidiEncoder {
     /// The VST3 events `event` stands for, valid until the next call, at the
     /// stream state the encoder holds.
     ///
-    /// The packet is read through `tutti_ump::decode`. A MIDI 1.0 note or key
+    /// The packet is read through `Ump::decode`. A MIDI 1.0 note or key
     /// pressure is widened ([`widen`]) and a MIDI 2.0 one is read as is, so
     /// velocity and pressure reach the plugin at their full bit width as `f32`
     /// rather than through 7-bit MIDI 1.
@@ -153,7 +153,7 @@ impl MidiEncoder {
         let offset = sample_offset(at.get());
         // A reserved or undefined packet has no VST3 event that carries raw
         // words, so there is no way to forward it: this host is a sink for it.
-        if let Ok(message) = decode_ump(*ump) {
+        if let Ok(message) = (*ump).decode() {
             self.message(offset, message);
         }
         &self.out

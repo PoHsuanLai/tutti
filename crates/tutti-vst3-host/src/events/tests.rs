@@ -9,7 +9,7 @@ use tutti_plugin_types::{NoteExpressionType, NoteExpressionValue};
 use tutti_types::Samples;
 use tutti_ump::{
     Address, CCNumber, Message, MidiChannel, MidiGroup, NoteId, NoteNumber, Sysex7Packets,
-    SysexStatus, System, Ump, Voice2, decode as decode_ump,
+    SysexStatus, System, Ump, Voice2,
 };
 use tutti_vst3_ffi::EventList;
 
@@ -48,7 +48,7 @@ fn encode(event: &UmpAt) -> Option<Event> {
 /// `noteId` that note was started with and the event made.
 fn encode_live(event: &UmpAt) -> (i32, Option<Event>) {
     let mut encoder = MidiEncoder::default();
-    let (address, note) = match decode_ump(event.1) {
+    let (address, note) = match event.1.decode() {
         Ok(Message::Midi2(
             address,
             Voice2::PolyPressure { note, .. }
@@ -94,7 +94,7 @@ fn inbound_generic_data_cc_promotes_to_cv2() {
         "CC should be a Data event"
     );
     let back = vst3.to_midi().expect("cc decodes");
-    match decode_ump(back.ump).expect("valid UMP") {
+    match back.ump.decode().expect("valid UMP") {
         Message::Midi2(address, Voice2::ControlChange { controller, .. }) => {
             assert_eq!(address.channel.get(), 1);
             assert_eq!(controller.get(), 74);
@@ -112,7 +112,7 @@ fn inbound_system_message_passes_through() {
     let back = vst3.to_midi().expect("clock decodes");
     assert!(
         matches!(
-            decode_ump(back.ump),
+            back.ump.decode(),
             Ok(Message::System(_, System::TimingClock))
         ),
         "timing clock should stay a System Real-Time message"
@@ -763,7 +763,7 @@ fn single_packet_sysex_round_trips_through_data_event() {
     }
 
     let back = vst3.to_midi().expect("SysEx Data round-trips");
-    let Ok(Message::Sysex7(_, packet)) = decode_ump(back.ump) else {
+    let Ok(Message::Sysex7(_, packet)) = back.ump.decode() else {
         panic!("decodes as SysEx7");
     };
     assert_eq!(packet.status(), SysexStatus::Complete);
@@ -802,7 +802,7 @@ fn note_on_velocity_round_trips_at_full_width() {
     );
     let vst3 = encode(&event).expect("converts");
     let back = vst3.to_midi().expect("round-trips");
-    match decode_ump(back.ump).expect("decodes") {
+    match back.ump.decode().expect("decodes") {
         Message::Midi2(_, Voice2::NoteOn { velocity: raw, .. }) => {
             let velocity = u16_to_unit_f32(raw);
             let expected = velocity_u16 as f32 / u16::MAX as f32;
@@ -928,7 +928,7 @@ fn legacy_cc_out_decodes_to_midi() {
     let cc = Event::at(5, Payload::LegacyCcOut(legacy_cc(74, 3, 100, 0)));
     let m = cc.to_midi().expect("CC decodes");
     assert_eq!(m.offset, 5);
-    match decode_ump(m.ump).expect("UMP") {
+    match m.ump.decode().expect("UMP") {
         Message::Midi2(address, Voice2::ControlChange { controller, value }) => {
             assert_eq!((address.channel.get(), controller.get()), (3, 74));
             let value = u32_to_unit_f32(value);
@@ -943,7 +943,7 @@ fn legacy_cc_out_decodes_to_midi() {
         Payload::LegacyCcOut(legacy_cc(kPitchBend as u8, 0, 0, 0x40)),
     );
     let pb_m = pb.to_midi().unwrap();
-    match decode_ump(pb_m.ump).expect("UMP") {
+    match pb_m.ump.decode().expect("UMP") {
         Message::Midi2(_, Voice2::PitchBend(bend)) => {
             assert!(bend_u32_to_signed_f32(bend).abs() < 0.01)
         }
@@ -957,7 +957,7 @@ fn legacy_cc_out_decodes_to_midi() {
     );
     let pp_m = pp.to_midi().unwrap();
     assert_eq!(
-        decode_ump(pp_m.ump),
+        pp_m.ump.decode(),
         Ok(Message::Midi2(
             Address {
                 group: MidiGroup::FIRST,
@@ -976,7 +976,7 @@ fn legacy_cc_out_decodes_to_midi() {
         Payload::LegacyCcOut(legacy_cc(kAfterTouch as u8, 1, 127, 0)),
     );
     let at_m = at.to_midi().unwrap();
-    match decode_ump(at_m.ump).expect("UMP") {
+    match at_m.ump.decode().expect("UMP") {
         Message::Midi2(address, Voice2::ChannelPressure(_)) => {
             assert_eq!(address.channel.get(), 1)
         }
@@ -1152,7 +1152,7 @@ mod message {
         // defined messages.
         for (i, event) in sinks.iter().enumerate() {
             assert_eq!(
-                decode_ump(event.1).is_err(),
+                event.1.decode().is_err(),
                 i < 2,
                 "{event:?} decodes as the wrong kind"
             );
@@ -1372,7 +1372,7 @@ mod message {
         let back = on.to_midi().expect("decodes");
         assert_eq!(back.offset, 4);
         assert_eq!(
-            decode_ump(back.ump),
+            back.ump.decode(),
             Ok(Message::Midi2(
                 address(2),
                 Voice2::NoteOff {
@@ -1384,7 +1384,7 @@ mod message {
         );
         let clock = Event::at(0, Payload::Data(Data::inline(0, [0xF8, 0, 0]))).to_midi();
         assert_eq!(
-            clock.map(|m| decode_ump(m.ump)),
+            clock.map(|m| m.ump.decode()),
             Some(Ok(Message::System(MidiGroup::FIRST, System::TimingClock)))
         );
     }
@@ -1477,16 +1477,16 @@ mod message {
         let mut events = Vec::new();
         for message in messages {
             let event = packet(message);
-            assert_eq!(decode_ump(event.1), Ok(message), "{message:?}");
+            assert_eq!(event.1.decode(), Ok(message), "{message:?}");
             events.push(event);
         }
         // A Stream message, spelled out: an Endpoint Discovery.
         let discovery = raw(&[0xF000_0101, 0x1F, 0, 0]);
-        assert!(matches!(decode_ump(discovery.1), Ok(Message::Stream(_))));
+        assert!(matches!(discovery.1.decode(), Ok(Message::Stream(_))));
         events.push(discovery);
         // A packet `decode` cannot frame.
         let unknown = raw(&[0x6000_0000]);
-        assert!(decode_ump(unknown.1).is_err());
+        assert!(unknown.1.decode().is_err());
         events.push(unknown);
 
         // The plugin-output side: raw MIDI 1.0 bytes in a Data event.

@@ -686,7 +686,7 @@ fn a_loop_shorter_than_a_frame_costs_one_pass_a_frame() {
 #[test]
 fn a_clip_ending_on_a_lone_cc_6_flushes_its_rpn_at_the_cc_6() {
     use tutti_fixtures::midi::m1_cc;
-    use tutti_ump::{CCNumber, Message, U7, Voice2, decode};
+    use tutti_ump::{CCNumber, Message, U7, Voice2};
     let ch = MidiChannel::FIRST;
     let cc = |n: CCNumber, v: u8| m1_cc(ch, n, U7::of(v));
     let clip = MidiClipNode::new([
@@ -700,8 +700,9 @@ fn a_clip_ending_on_a_lone_cc_6_flushes_its_rpn_at_the_cc_6() {
     let seen = seen.lock().unwrap();
     let frames: Vec<u64> = seen.iter().map(|&(f, _)| f).collect();
     assert_eq!(frames, [300, 5_000]);
-    let Ok(Message::Midi2(_, Voice2::Registered { bank, index, value })) = decode(seen[0].1) else {
-        panic!("a Registered Controller, got {:?}", decode(seen[0].1));
+    let Ok(Message::Midi2(_, Voice2::Registered { bank, index, value })) = seen[0].1.decode()
+    else {
+        panic!("a Registered Controller, got {:?}", seen[0].1.decode());
     };
     assert_eq!((bank.get(), index.get(), value), (0, 0, 12 << 25));
 }

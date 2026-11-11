@@ -2,11 +2,11 @@ use super::*;
 use tutti_fixtures::midi::{jr_timestamp, note_off, note_on};
 use tutti_graph::UmpAt;
 use tutti_types::{Frame, Samples};
-use tutti_ump::{KeyEvent, Message, MidiChannel, MidiGroup, Utility, decode};
+use tutti_ump::{KeyEvent, Message, MidiChannel, MidiGroup, Utility};
 
 /// The sender-clock value if `ump` is a JR Clock (M2-104 section 7.2.2.1).
 fn jr_clock_value(ump: &Ump) -> Option<u16> {
-    match decode(*ump) {
+    match (*ump).decode() {
         Ok(Message::Utility(Utility::JrClock(t))) => Some(t),
         _ => None,
     }
@@ -14,7 +14,7 @@ fn jr_clock_value(ump: &Ump) -> Option<u16> {
 
 /// The timestamp value if `ump` is a JR Timestamp (section 7.2.2.2).
 fn jr_timestamp_value(ump: &Ump) -> Option<u16> {
-    match decode(*ump) {
+    match (*ump).decode() {
         Ok(Message::Utility(Utility::JrTimestamp(t))) => Some(t),
         _ => None,
     }

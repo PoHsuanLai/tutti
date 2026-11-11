@@ -8,7 +8,7 @@
 
 use tutti_ump::{
     Flex, FlexAddress, FlexTextKind, KeySignature, Letter, Message, Metronome, MidiGroup,
-    SharpsFlats, SysexMessage, TimeSignature, Ump, decode, flex_text_packets,
+    SharpsFlats, SysexMessage, TimeSignature, Ump, flex_text_packets,
 };
 
 use unicode_normalization::UnicodeNormalization;
@@ -104,6 +104,7 @@ pub struct Dropped {
 /// own order), so a caller can show it, or refuse a file that loses
 /// something it cares about.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[must_use = "`dropped` lists the events the clip lacks"]
 pub struct Converted {
     /// The Clip File.
     pub clip: MidiFile,
@@ -125,7 +126,7 @@ enum Rank {
 }
 
 fn event(ump: Ump) -> FileEvent {
-    match decode(ump) {
+    match ump.decode() {
         Ok(message) => FileEvent::Message(message),
         Err(unknown) => FileEvent::Unknown(unknown),
     }
@@ -343,8 +344,9 @@ impl MidiFile {
     /// # Errors
     ///
     /// [`Error::ToClip`](crate::Error::ToClip): [`ToClipError::Sequential`] for a format 2 file,
-    /// [`ToClipError::AlreadyClip`] for a Clip File. [`Error::InvalidConfig`](crate::Error::InvalidConfig)
+    /// [`ToClipError::AlreadyClip`] for a Clip File. [`Error::Config`](crate::Error::Config)
     /// or [`Error::Tempo`](crate::Error::Tempo) cannot happen for a valid SMF.
+    #[must_use = "the Converted's `dropped` lists the events the clip lacks"]
     pub fn to_clip(&self) -> Result<Converted> {
         let format = match self.smf_format() {
             Some(SmfFormat::Sequential) => return Err(ToClipError::Sequential.into()),

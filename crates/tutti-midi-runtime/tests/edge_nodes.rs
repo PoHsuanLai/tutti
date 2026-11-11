@@ -26,9 +26,7 @@ use tutti_midi_runtime::{
     MidiInputPorts,
 };
 use tutti_types::{At, Beat, Bpm, Frame, SampleRate, Samples};
-use tutti_ump::{
-    CCNumber, KeyEvent, Message, MidiChannel, MidiGroup, NoteNumber, U7, Ump, Voice2, decode,
-};
+use tutti_ump::{CCNumber, KeyEvent, Message, MidiChannel, MidiGroup, NoteNumber, U7, Ump, Voice2};
 
 /// The note a channel voice message addresses, either protocol.
 fn note_of(ump: Ump) -> Option<u8> {
@@ -320,14 +318,20 @@ fn an_rpn_run_split_across_blocks_is_assembled() {
     assert_eq!((port, frame), (3, 512));
     // MIDI 2.0 channel voice (type 4), Registered Controller (status 0x2).
     assert!(
-        matches!(decode(ev), Ok(Message::Midi2(_, Voice2::Registered { .. }))),
+        matches!(
+            ev.decode(),
+            Ok(Message::Midi2(_, Voice2::Registered { .. }))
+        ),
         "{ev:?}"
     );
 }
 
 /// A Registered Controller on channel 3, as a received `Voice2` says.
 fn is_registered(ev: Ump) -> bool {
-    matches!(decode(ev), Ok(Message::Midi2(_, Voice2::Registered { .. })))
+    matches!(
+        ev.decode(),
+        Ok(Message::Midi2(_, Voice2::Registered { .. }))
+    )
 }
 
 /// **Two devices' (N)RPN runs do not meet** (M2-104 D.3.3 gives a run to the
@@ -477,13 +481,13 @@ fn a_requested_mpe_mode_is_adopted_once() {
     // MIDI 2.0 channel voice (type 4), Registered Controller (status 0x2).
     let is_rpn = |ev: &Ump| {
         matches!(
-            decode(*ev),
+            (*ev).decode(),
             Ok(Message::Midi2(_, Voice2::Registered { .. }))
         )
     };
     let is_stop = |ev: &Ump| {
         matches!(
-            decode(*ev),
+            (*ev).decode(),
             Ok(Message::Midi2(_, Voice2::ControlChange { controller, .. }))
                 if controller == CCNumber::ALL_SOUND_OFF || controller == CCNumber::RESET_ALL
         )

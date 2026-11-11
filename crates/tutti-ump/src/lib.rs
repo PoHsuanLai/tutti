@@ -4,10 +4,10 @@
 //! [`Ump`] is one packet as four `u32` words. [`MidiGroup`], [`MidiChannel`]
 //! and [`CCNumber`] are the addresses a packet carries, as newtypes so that a
 //! transposed `(group, channel)` pair does not compile. [`Message`] is one
-//! defined message as a `Copy` value with no lifetime. [`decode()`](fn@decode)
-//! and `From<Message> for Ump` hold the bit positions of every message; the one
+//! defined message as a `Copy` value with no lifetime. [`Ump::decode`]
+//! (and `TryFrom<Ump> for Message`) and `From<Message> for Ump` hold the bit positions of every message; the one
 //! other reader is `Ump::is_note_off` (and `Ump::words`, which reads the type
-//! nibble), which a test ties to `decode`. MIDI 1.0 on the wire is the other
+//! nibble), which a test ties to `Ump::decode`. MIDI 1.0 on the wire is the other
 //! place that knows bit positions: [`Voice1::bytes`] and [`System::bytes`] write
 //! a message's bytes, [`frame`] adds a SysEx's delimiters, and [`Midi1Parser`]
 //! reads a byte stream into [`Message`]s. [`NoteId`] is a note's identity
@@ -19,11 +19,11 @@
 //! of concatenated packets (a native-UMP transport's) into [`Ump`]s.
 //!
 //! ```
-//! use tutti_ump::{Message, Ump, Voice2, decode};
+//! use tutti_ump::{Message, Ump, Voice2};
 //!
 //! // MIDI 2.0 Note On: group 0, channel 0, note 60, 16-bit velocity 0x8000.
 //! let packet = Ump([0x4090_3C00, 0x8000_0000, 0, 0]);
-//! let Ok(Message::Midi2(address, Voice2::NoteOn { note, velocity, .. })) = decode(packet) else {
+//! let Ok(Message::Midi2(address, Voice2::NoteOn { note, velocity, .. })) = packet.decode() else {
 //!     unreachable!()
 //! };
 //! assert_eq!((address.channel.get(), note.get(), velocity), (0, 60, 0x8000));
@@ -60,7 +60,6 @@ mod sysex;
 mod ump;
 
 pub use cc_number::CCNumber;
-pub use decode::decode;
 pub use field::{
     DeltaTicks, FirstGroup, FunctionBlockId, GroupSpan, NoteNumber, OutOfRange, Pitch, SharpsFlats,
     U4, U7, U14,

@@ -43,7 +43,7 @@ use std::time::Instant;
 use tutti_graph::Offset;
 use tutti_midi_device::{Action, Connection, Ending, Endpoint};
 use tutti_midi_runtime::MidiOut;
-use tutti_ump::{Protocol, StreamConfig, Ump, decode};
+use tutti_ump::{Protocol, StreamConfig, Ump};
 
 use crate::capability::UmpCapability;
 use crate::devices::OpenOutput;
@@ -176,7 +176,7 @@ impl Negotiation {
             }
             Run::Asking(connection) => {
                 for ump in incoming {
-                    if let Ok(message) = decode(ump) {
+                    if let Ok(message) = ump.decode() {
                         actions.push(connection.on_message(message, now));
                     }
                 }
@@ -188,7 +188,7 @@ impl Negotiation {
                 let connection = listening.as_mut()?;
                 let mut changed = false;
                 for ump in incoming {
-                    if let Ok(message) = decode(ump) {
+                    if let Ok(message) = ump.decode() {
                         changed |= connection.on_message(message, now) == Action::Changed;
                     }
                 }

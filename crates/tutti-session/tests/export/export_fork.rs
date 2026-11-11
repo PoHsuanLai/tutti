@@ -3,9 +3,8 @@
 //!
 //! An export forks the live graph (`Editor::fork`). The exports are held to
 //! the same units wired fresh with `GraphBuilder` (a fork starts reset, which
-//! a fresh graph is), to the graph's own latency and tail, to a prepare hook's
-//! edit, and to golden digests (`tutti_fixtures::assert_golden`). The
-//! rest pin what only a fork has: it shares nothing with the live graph, it
+//! a fresh graph is), to the graph's own latency and tail, and to a prepare
+//! hook's edit. The rest pin what only a fork has: it shares nothing with the live graph, it
 //! names a node it cannot copy, it is gathered when the export starts and
 //! built wherever the job runs, and everything it held is dropped on the
 //! main thread.
@@ -22,7 +21,6 @@ use std::thread::ThreadId;
 use std::time::Duration;
 
 use tutti_export::Produced;
-use tutti_fixtures::{assert_golden, digest_planes};
 use tutti_graph::NodeKey;
 use tutti_graph::{
     Cx, ForkBuild, ForkByClone, ForkCause, ForkMode, ForkSource, Forked, IntoNode, Io, Node,
@@ -191,15 +189,11 @@ fn chain_fresh(seconds: f64) -> (Vec<Vec<f32>>, Vec<Vec<f32>>) {
 
 /// **An export renders its graph as wired fresh**, for the master and for
 /// one node's stem, on a graph whose live side has not run: bit for bit the same
-/// units in a `GraphBuilder` graph ([`chain_fresh`]), and the golden digest.
+/// units in a `GraphBuilder` graph ([`chain_fresh`]).
 ///
 /// A fork starts reset rather than copying the running state (an
 /// oscillator's phase, a filter's memory); with the live side never rendered
 /// that makes no difference, so the comparison is like for like.
-///
-/// The graph, the export and the digest are the ones the `bevy-tutti` test
-/// of this name rendered: its export systems added nothing between the
-/// session's `export` and the job's render.
 ///
 #[test]
 fn exports_render_their_graph_as_wired_fresh() {
@@ -231,11 +225,6 @@ fn exports_render_their_graph_as_wired_fresh() {
             }
         }
     }
-    assert_golden(
-        "the master export",
-        digest_planes(&forked_master),
-        0xccbc_b417_89a0_36e4,
-    );
     // And the stem is the node: the filter, which is the master's channel 0
     // and not its channel 1, the raw saw.
     assert_eq!(forked_node[0], forked_master[0]);

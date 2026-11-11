@@ -7,8 +7,7 @@
 //! - FFT: [`RealFft`], a real-input FFT on rustfft's scalar planner whose
 //!   arithmetic does not depend on the CPU; [`StagedRealFft`], the same
 //!   transform in steps; [`FftScratch`], reusable plans and buffers.
-//! - Filters: [`SvfCoeffs`] and [`SvfCoefficients`] with [`svf_step`]
-//!   ([`SvfType`]); [`LadderCoeffs`] and [`LadderCoefficients`] with
+//! - Filters: [`SvfCoeffs`] and the SVF as a design ([`SvfDesign`], [`SvfType`]); [`LadderCoeffs`] and [`LadderCoefficients`] with
 //!   [`ladder_step`] ([`LadderType`]); the Linkwitz-Riley [`Crossover`]; and
 //!   [`Real`], the `f32` or `f64` their state runs in; their models ([`SvfModel`],
 //!   [`LadderModel`], [`CrossoverModel`]) and the [`Biquad`] section they share.
@@ -107,7 +106,7 @@ mod test_support;
 pub use allpass::{allpass_chain, allpass_coeff, sweep_hz};
 pub use balance::balance_gains;
 pub use buffer::{CircularBuffer, MonotonicMinDeque};
-pub use control::{COEFF_INTERVAL, LANES, Ramp, lane_group, segments};
+pub use control::{COEFF_CADENCE, COEFF_INTERVAL, LANES, Ramp, lane_group};
 pub use convolver::{Convolver, IrSpectra};
 pub use delay::{DelayLine, InterpolationMode, delay_step, fractional_samples};
 pub use dither::{DitherNoise, DitherShape};
@@ -123,15 +122,15 @@ pub use fdn_design::{FdnControls, FdnDesign, MAX_PRE_DELAY, MIN_DECAY};
 pub use fft::{Complex32, FftScratch, RealFft, StagedRealFft};
 pub use filter::{
     Biquad, Crossover, CrossoverError, CrossoverModel, DirectForm1, LadderCoefficients,
-    LadderCoeffs, LadderModel, LadderType, MAX_SPLITS, Real, SOLVE_CEILING, SvfCoefficients,
-    SvfCoeffs, SvfControls, SvfModel, SvfType, fit_to_rate, ladder_step, svf_step,
+    LadderCoeffs, LadderModel, LadderType, MAX_SPLITS, Real, SOLVE_CEILING, SvfCoeffs, SvfControls,
+    SvfDesign, SvfModel, SvfRealization, SvfSizes, SvfType, fit_to_rate, ladder_step,
 };
 pub use geometry::StftGeometry;
 pub use grid::{BinCount, BinIndex, FrameCount, FrameIndex, Grid};
 pub use interp::cubic_hermite;
 pub use model::{
     Anchor, Cadence, Ceiling, Channels, Design, Effect, Effort, Lti, MaxDecay, MaxDecayError,
-    Period, Range, Realization, Ring, Setup, Sizes, System,
+    Period, Range, Realization, Ring, Setup, Sizes, Step, System,
 };
 pub use network::{
     Absorption, AllPass, AllPassForm, Band, Bounds, Fdn, FirSummary, Full, Gains, Inline, Line,

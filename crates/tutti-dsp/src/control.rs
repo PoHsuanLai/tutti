@@ -1,5 +1,9 @@
 //! Control-rate helpers shared by the filters, delay lines and the phaser: the
-//! solve interval, block ramps, segment tiling and channel grouping.
+//! solve interval, block ramps and channel grouping.
+
+use core::num::NonZeroU32;
+
+use crate::Cadence;
 
 /// Samples between coefficient solves on a parameter that moves inside a block.
 ///
@@ -13,6 +17,11 @@
 /// 200 Hz → 8 kHz cutoff sweep in 85 ms (4.6e-4 at 64 samples; exactly 0 at
 /// 1), 3.5e-6 on a 2 Hz phaser.
 pub const COEFF_INTERVAL: usize = 16;
+
+/// [`COEFF_INTERVAL`] as a [`Cadence`]: solved every 16 frames from the start of
+/// each block.
+pub const COEFF_CADENCE: Cadence =
+    Cadence::every(NonZeroU32::new(COEFF_INTERVAL as u32).expect("the interval is positive"));
 
 /// Channels a recursive node renders together, sample-inner.
 ///
@@ -79,26 +88,6 @@ impl Ramp {
     }
 }
 
-/// Split `0..size` into control segments of at most [`COEFF_INTERVAL`] samples.
-///
-/// Yields `(start, end)` half-open ranges. The coefficient solve for a segment
-/// happens at its last sample, `end - 1`, and the samples before it interpolate
-/// from the previous segment's solve.
-///
-/// `solve_first` makes sample 0 a segment of its own. A node with nothing to
-/// interpolate *from* — its first block, or the first after a rate change —
-/// solves there exactly instead of ramping in from a stand-in, which would
-/// otherwise lag the whole first segment by a sample.
-#[inline]
-pub fn segments(size: usize, solve_first: bool) -> impl Iterator<Item = (usize, usize)> {
-    let first = usize::from(solve_first && size > 0);
-    core::iter::once((0, 1)).take(first).chain(
-        (first..size)
-            .step_by(COEFF_INTERVAL)
-            .map(move |start| (start, (start + COEFF_INTERVAL).min(size))),
-    )
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -137,26 +126,5 @@ mod tests {
         let r = Ramp::new(0.0, 1.0, 4);
         assert_eq!(r.at(0), 0.25);
         assert_eq!(r.at(1), 0.5);
-    }
-
-    /// Segments tile the block with no gap and no overlap.
-    #[test]
-    fn segments_tile_the_block() {
-        let s: Vec<_> = segments(40, false).collect();
-        assert_eq!(s, vec![(0, 16), (16, 32), (32, 40)]);
-        assert_eq!(segments(1, false).collect::<Vec<_>>(), vec![(0, 1)]);
-        assert_eq!(segments(0, false).count(), 0);
-    }
-
-    /// An unprimed block solves its first sample alone, then tiles the rest.
-    ///
-    /// Mutation: dropping the `take(first)` stage (never isolating sample 0)
-    /// fails the first assertion.
-    #[test]
-    fn solve_first_isolates_sample_zero() {
-        let s: Vec<_> = segments(40, true).collect();
-        assert_eq!(s, vec![(0, 1), (1, 17), (17, 33), (33, 40)]);
-        assert_eq!(segments(1, true).collect::<Vec<_>>(), vec![(0, 1)]);
-        assert_eq!(segments(0, true).count(), 0);
     }
 }

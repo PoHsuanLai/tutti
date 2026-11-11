@@ -20,7 +20,6 @@ pub(crate) mod control_handle;
 pub use crate::host::node::{
     Bound, NodeControls, ParamDeliveryStats, PluginClient, PluginControls, PluginMeter, Unbound,
 };
-pub use tutti_plugin_ipc::{PluginInvalidation, PluginRefresh, ResyncKind};
 // The per-block installer, reachable only when the plugin can receive that
 // input. Named here because a caller matching on the `Option` a
 // `PluginClient` accessor returns has to be able to name what is inside it.
@@ -35,6 +34,5 @@ pub use crate::host::node::TransportView;
 // cannot call the method, and an out-of-crate backend cannot implement the
 // trait at all.
 pub use crate::util::window::{ContentScale, EditorCapabilities, EditorSize};
-pub use capabilities::BlockCounts;
 pub use control_handle::{OptionalCapabilities, PluginHandle, PluginStatus};
 pub use tutti_plugin_types::{ChordValue, Normalized, ParamId, Preset, PresetId, ScaleValue};

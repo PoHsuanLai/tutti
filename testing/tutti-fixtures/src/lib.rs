@@ -1,7 +1,8 @@
 //! Where the test suites find things: the repo's `assets/`, the reference plugin
 //! cdylibs and the `plugin-server` and `plugin-probe` binaries;
 //! [`check_range_contract`], the one check a range-checked type keeps its
-//! contract; and [`sf2`], a SoundFont built in memory.
+//! contract; [`Fnv`] and [`noise`], what a digest test is made of; and
+//! [`sf2`], a SoundFont built in memory.
 //!
 //! A test finds a repo file through [`repo_root`] and [`asset`], never through
 //! a relative `..` path, so moving a crate never changes what a test reads.
@@ -34,6 +35,7 @@
 
 #![forbid(unsafe_code)]
 
+mod digest;
 mod machine_lock;
 pub mod midi;
 #[cfg(feature = "plugin")]
@@ -41,6 +43,7 @@ mod plugin;
 mod range_contract;
 pub mod sf2;
 
+pub use digest::{Fnv, Noise, noise};
 pub use machine_lock::{MachineLock, machine_lock};
 #[cfg(feature = "plugin")]
 pub use plugin::{Activation, Active, Whole, main_thread};

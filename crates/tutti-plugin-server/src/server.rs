@@ -7,8 +7,8 @@
 use crate::session::{Reaction, Session};
 use crate::transport::{Transport, TransportListener};
 use tutti_plugin::server::{BridgeConfig, BridgeMessage, PROTOCOL_VERSION};
-use tutti_plugin::{BridgeError, Result};
 use tutti_plugin_types::MainThread;
+use tutti_plugin_types::{BridgeError, BridgeResult};
 
 /// Ask the OS for the highest priority it grants this thread, now that it is
 /// about to do nothing but per-block audio work, and log what it got once.
@@ -69,9 +69,9 @@ impl PluginServer {
     ///
     /// # Errors
     ///
-    /// Currently infallible; the `Result` is part of the constructor's contract
+    /// Currently infallible; the `BridgeResult` is part of the constructor's contract
     /// so setup that can fail may be added without a breaking change.
-    pub fn new(config: BridgeConfig) -> Result<Self> {
+    pub fn new(config: BridgeConfig) -> BridgeResult<Self> {
         // Before anything can block: the orphan check compares against the PID
         // recorded here, and recording it later would sample a reaper instead
         // of the real spawner. See `transport::record_parent_pid`.
@@ -108,7 +108,7 @@ impl PluginServer {
     /// transport fails. A transport failure during the *handshake* is treated as
     /// the host having gone away and returns `Ok(())` — there is no session to
     /// report an error to.
-    pub fn run(mut self) -> Result<()> {
+    pub fn run(mut self) -> BridgeResult<()> {
         let listener = TransportListener::bind(&self.config.socket_path)?;
 
         // First connection: handshake.
@@ -130,7 +130,7 @@ impl PluginServer {
         self.audio_phase(&mut audio)
     }
 
-    fn handshake_phase(&mut self, transport: &mut dyn Transport) -> Result<bool> {
+    fn handshake_phase(&mut self, transport: &mut dyn Transport) -> BridgeResult<bool> {
         loop {
             let msg = match transport.recv() {
                 Ok(m) => m,
@@ -160,7 +160,7 @@ impl PluginServer {
         }
     }
 
-    fn audio_phase(&mut self, transport: &mut dyn Transport) -> Result<()> {
+    fn audio_phase(&mut self, transport: &mut dyn Transport) -> BridgeResult<()> {
         let main = self.main;
         loop {
             let msg = transport.recv()?;

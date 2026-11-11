@@ -107,7 +107,7 @@ use super::client::{PluginNode, RateDelivery, TransportFeed};
 use super::instance::Instance;
 use super::loader::load_client_restoring;
 use crate::host::node::DeliveryCounters;
-use tutti_plugin_ipc::PluginForkError;
+use tutti_plugin_types::PluginForkError;
 use tutti_plugin_types::StateError;
 
 /// An in-process node's [`ForkSource`]: everything a fork needs from the

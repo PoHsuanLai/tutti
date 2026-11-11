@@ -19,8 +19,8 @@
 use parking_lot::Mutex;
 use std::sync::Arc;
 
-use tutti_plugin_ipc::{PluginInvalidation, PluginRefresh};
 use tutti_plugin_types::{Normalized, ParamId};
+use tutti_plugin_types::{PluginInvalidation, PluginRefresh};
 
 /// A one-slot callback for one kind of plugin notification, `A`.
 ///

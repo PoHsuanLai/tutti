@@ -71,12 +71,9 @@ const FRAMES: usize = 14_462;
 
 /// FNV-1a over the little-endian bytes of `bytes`.
 fn fnv(bytes: impl IntoIterator<Item = u8>) -> u64 {
-    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
-    for byte in bytes {
-        h ^= u64::from(byte);
-        h = h.wrapping_mul(0x0000_0100_0000_01b3);
-    }
-    h
+    let mut h = tutti_fixtures::Fnv::new();
+    h.bytes(bytes);
+    h.finish()
 }
 
 /// [`fnv`] over every plane's `f32` bits, plane after plane.

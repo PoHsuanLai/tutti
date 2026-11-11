@@ -8,14 +8,15 @@
 
 use std::path::Path;
 use tutti_clap_host::{ClapLoaded, ClapProcessor, LoadOptions};
+use tutti_plugin::LoadStage;
 use tutti_plugin::server::{
     ContentScale, EditorSize, LoadedPlugin, Normalized, ParamId, ParameterInfo, PluginAudio,
     PluginDescriptor, PluginEditorHost, PluginError, PluginMeta, PluginParams, PluginPresets,
     PluginResult, PluginState, PresetId, WindowHandle,
 };
 use tutti_plugin::server::{ProcessContext, ProcessOutput, RenderMode};
-use tutti_plugin::{BridgeError, LoadStage, Result};
 use tutti_plugin_types::MainThread;
+use tutti_plugin_types::{BridgeError, BridgeResult};
 use tutti_plugin_types::{
     Control, EditorWindow, Event, Hand, HostOp, Lifecycle, MaxBlock, Notice, Prepare, Request,
     SampleFormat, SampleRate, Samples, Seat, Stage, State,
@@ -116,7 +117,7 @@ fn flush_out_of_band(requires_process: bool, processing: bool) -> bool {
     !(requires_process && processing)
 }
 
-fn resolve(path: &Path) -> Result<(std::path::PathBuf, bool)> {
+fn resolve(path: &Path) -> BridgeResult<(std::path::PathBuf, bool)> {
     let resolved = tutti_plugin::server::resolve_bundle(path)?;
     let differs = resolved != path;
     Ok((resolved, differs))
@@ -142,7 +143,7 @@ impl ClapInstance {
         sample_rate: f64,
         block_size: usize,
         prefer_f64: bool,
-    ) -> Result<Self> {
+    ) -> BridgeResult<Self> {
         Self::load_with_state(
             main,
             path,
@@ -170,7 +171,7 @@ impl ClapInstance {
         prefer_f64: bool,
         state: Option<&[u8]>,
         before_restore: &mut dyn FnMut(),
-    ) -> Result<(Self, Option<String>)> {
+    ) -> BridgeResult<(Self, Option<String>)> {
         Self::activate(
             main,
             Self::open(main, path, sample_rate, block_size)?,
@@ -182,7 +183,12 @@ impl ClapInstance {
     }
 
     /// Opens the plugin, without activating it.
-    fn open(main: &MainThread, path: &Path, sample_rate: f64, block_size: usize) -> Result<Opened> {
+    fn open(
+        main: &MainThread,
+        path: &Path,
+        sample_rate: f64,
+        block_size: usize,
+    ) -> BridgeResult<Opened> {
         let (resolved, differs) = resolve(path)?;
         let mut options = LoadOptions::new();
         if differs {
@@ -215,7 +221,7 @@ impl ClapInstance {
         prefer_f64: bool,
         state: Option<&[u8]>,
         before_restore: &mut dyn FnMut(),
-    ) -> Result<(Self, Option<String>)> {
+    ) -> BridgeResult<(Self, Option<String>)> {
         let Opened {
             mut loaded,
             sample_rate,

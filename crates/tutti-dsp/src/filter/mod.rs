@@ -8,6 +8,7 @@ mod ladder;
 mod ladder_model;
 mod real;
 mod svf;
+mod svf_design;
 mod svf_model;
 
 pub use biquad::{Biquad, DirectForm1};
@@ -16,5 +17,6 @@ pub use crossover_model::CrossoverModel;
 pub use ladder::{LadderCoefficients, LadderCoeffs, LadderType, ladder_step};
 pub use ladder_model::LadderModel;
 pub use real::Real;
-pub use svf::{SvfCoefficients, SvfCoeffs, SvfType, svf_step};
+pub use svf::{SvfCoeffs, SvfType};
+pub use svf_design::{SvfDesign, SvfRealization, SvfSizes};
 pub use svf_model::{SvfControls, SvfModel};

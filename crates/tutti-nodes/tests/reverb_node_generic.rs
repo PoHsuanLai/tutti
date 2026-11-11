@@ -133,7 +133,7 @@ impl ControlParams for NoParams {
     fn base(&self, _: usize) -> Option<f32> {
         None
     }
-    fn read(&mut self, _: &tutti_graph::Io<'_>, _: usize) {}
+    fn read(&mut self, _: &tutti_graph::Io<'_>, _: usize, _: tutti_nodes::At<()>) {}
     fn detach(&mut self) {}
 }
 
@@ -147,7 +147,7 @@ impl NodeDesign for Echo {
 }
 
 fn node(echo: Echo) -> DesignNode<Echo> {
-    prepared(DesignNode::new(echo, ()), SR, BLOCK)
+    prepared(DesignNode::live(echo, ()), SR, BLOCK)
 }
 
 struct Rig {

@@ -3,9 +3,8 @@
 //! a [`LaunchedServer`] ready for the RT bridge thread to connect.
 
 use super::Reaped;
-use crate::MAX_CHUNK;
 use crate::config::BridgeConfig;
-use crate::error::{BridgeError, Result};
+use crate::error::unexpected_message;
 use crate::protocol::{
     BridgeMessage, BusChannels, ChannelLayout, HostMessage, LoadedPlugin, PluginDescriptor,
     SampleFormat, StagedState,
@@ -16,6 +15,8 @@ use std::path::Path;
 use std::process::{Child, Command};
 use std::thread;
 use std::time::{Duration, Instant};
+use tutti_plugin_types::MAX_CHUNK;
+use tutti_plugin_types::{BridgeError, BridgeResult};
 use tutti_plugin_types::{Helper, Locator};
 use tutti_types::SampleRate;
 
@@ -105,7 +106,7 @@ pub fn launch(
     plugin_path: &Path,
     sample_rate: SampleRate,
     state: Option<&[u8]>,
-) -> Result<LaunchedServer> {
+) -> BridgeResult<LaunchedServer> {
     launch_with_state(
         &Locator::Search,
         config,
@@ -131,7 +132,7 @@ pub(super) fn launch_with(
     config: &BridgeConfig,
     plugin_path: &Path,
     sample_rate: SampleRate,
-) -> Result<LaunchedServer> {
+) -> BridgeResult<LaunchedServer> {
     launch_with_state(
         locator,
         config,
@@ -153,7 +154,7 @@ pub(super) fn launch_with_state(
     sample_rate: SampleRate,
     state: Option<&[u8]>,
     restore_timeout: Duration,
-) -> Result<LaunchedServer> {
+) -> BridgeResult<LaunchedServer> {
     let mut process = Reaped::new(spawn_process(locator, config)?);
 
     // `&mut process` rather than a move: the connect retry polls the child so a
@@ -230,7 +231,7 @@ pub(super) fn launch_with_state(
 /// as the socket-path argument beside it.
 const HOST_PID_ENV: &str = "TUTTI_PLUGIN_HOST_PID";
 
-fn spawn_process(locator: &Locator, config: &BridgeConfig) -> Result<Child> {
+fn spawn_process(locator: &Locator, config: &BridgeConfig) -> BridgeResult<Child> {
     let server_path = locator
         .resolve(Helper::Server)
         .ok_or(BridgeError::ServerNotFound)?;
@@ -254,7 +255,7 @@ fn spawn_process(locator: &Locator, config: &BridgeConfig) -> Result<Child> {
 /// missing dynamic library, an immediate panic — never binds, and without this
 /// the host would retry for the full timeout before reporting a failure whose
 /// cause was known within milliseconds.
-fn connect_when_listening(socket: &Path, process: &mut Child) -> Result<ControlStream> {
+fn connect_when_listening(socket: &Path, process: &mut Child) -> BridgeResult<ControlStream> {
     let deadline = Instant::now() + CONNECT_TIMEOUT;
     loop {
         match ipc::connect(socket) {
@@ -274,7 +275,7 @@ fn connect_when_listening(socket: &Path, process: &mut Child) -> Result<ControlS
     }
 }
 
-fn handshake(config: &BridgeConfig, process: &mut Child) -> Result<ControlStream> {
+fn handshake(config: &BridgeConfig, process: &mut Child) -> BridgeResult<ControlStream> {
     let mut stream = connect_when_listening(&config.socket_path, process)?;
     let timeout = Duration::from_millis(config.timeout_ms);
     match ipc::recv_within(&mut stream, timeout)? {
@@ -282,7 +283,7 @@ fn handshake(config: &BridgeConfig, process: &mut Child) -> Result<ControlStream
             crate::protocol::check_protocol_version(protocol_version)?;
             Ok(stream)
         }
-        ref other => Err(BridgeError::unexpected_message("Ready", other)),
+        ref other => Err(unexpected_message("Ready", other)),
     }
 }
 
@@ -294,7 +295,7 @@ fn load_plugin(
     shm_name: &str,
     state: Option<StagedState>,
     restore_timeout: Duration,
-) -> Result<(
+) -> BridgeResult<(
     Box<PluginDescriptor>,
     LoadedPlugin,
     SampleFormat,
@@ -345,7 +346,7 @@ fn load_plugin(
             BridgeMessage::Error { message } => {
                 return Err(BridgeError::load_from_server(plugin_path, message));
             }
-            ref other => return Err(BridgeError::unexpected_message("PluginLoaded", other)),
+            ref other => return Err(unexpected_message("PluginLoaded", other)),
         }
     }
 }
@@ -357,7 +358,7 @@ fn stage_state(
     stream: &mut ControlStream,
     config: &BridgeConfig,
     state: &[u8],
-) -> Result<std::result::Result<(), String>> {
+) -> BridgeResult<std::result::Result<(), String>> {
     if state.len() > crate::protocol::MAX_STATE_BYTES {
         return Ok(Err(format!(
             "state is {} bytes, over the {}-byte limit",
@@ -379,7 +380,7 @@ fn stage_state(
     match ipc::recv_within(stream, timeout)? {
         BridgeMessage::StateLoaded { error: None } => Ok(Ok(())),
         BridgeMessage::StateLoaded { error: Some(e) } => Ok(Err(e)),
-        other => Err(BridgeError::unexpected_message("StateLoaded", &other)),
+        other => Err(unexpected_message("StateLoaded", &other)),
     }
 }
 
@@ -441,7 +442,7 @@ fn setup_shm(
     loaded: &LoadedPlugin,
     format: SampleFormat,
     shm_name: String,
-) -> Result<SlabWriter> {
+) -> BridgeResult<SlabWriter> {
     let layout = slab_layout_for(loaded, format, config.max_buffer_size);
     let slab = AudioSlab::create(shm_name.clone(), layout.clone())?;
 
@@ -450,7 +451,7 @@ fn setup_shm(
     let timeout = Duration::from_millis(config.timeout_ms);
     match ipc::recv_within(stream, timeout)? {
         BridgeMessage::SharedMemoryReady => Ok(slab),
-        ref other => Err(BridgeError::unexpected_message("SharedMemoryReady", other)),
+        ref other => Err(unexpected_message("SharedMemoryReady", other)),
     }
 }
 
@@ -595,7 +596,7 @@ mod tests {
         env: &[(&str, &str)],
         timeout_ms: u64,
         restore_timeout: Duration,
-    ) -> (Result<LaunchedServer>, Duration) {
+    ) -> (BridgeResult<LaunchedServer>, Duration) {
         for (k, v) in env {
             // SAFETY: each test runs in a process of its own, before any thread
             // of it reads the environment.
@@ -620,7 +621,7 @@ mod tests {
     }
 
     #[cfg(unix)]
-    fn reap(server: Result<LaunchedServer>) {
+    fn reap(server: BridgeResult<LaunchedServer>) {
         if let Ok(mut server) = server {
             let _ = server.process.kill();
             let _ = server.process.wait();

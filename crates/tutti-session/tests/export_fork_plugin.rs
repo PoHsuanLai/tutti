@@ -21,8 +21,8 @@ use tutti_graph::NodeKey;
 use tutti_graph::{Cx, ForkByClone, Io, Node, Prepare, Shape, Status};
 use tutti_midi_runtime::TimedMidiEvent;
 use tutti_nodes::testing::Const;
-use tutti_plugin::PluginForkError;
 use tutti_plugin::catalog::PluginId;
+use tutti_plugin_types::PluginForkError;
 use tutti_session::{
     Error, ExportClock, ExportOutput, ExportRequest, ExportSource, ExportTarget, GraphSource,
     PluginLoadRequest, Session,

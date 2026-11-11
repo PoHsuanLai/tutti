@@ -148,10 +148,10 @@ pub enum Error {
     Spatial(#[from] tutti_nodes::VbapError),
 
     /// Plugin-host bridge failure (VST2/VST3/CLAP). Wraps
-    /// `tutti_plugin::BridgeError`.
+    /// `tutti_plugin_types::BridgeError`.
     #[cfg(feature = "plugin")]
     #[error("Plugin: {0}")]
-    Plugin(#[from] tutti_plugin::BridgeError),
+    Plugin(#[from] tutti_plugin_types::BridgeError),
 
     /// Offline rendering / export subsystem failure. Wraps
     /// `tutti_export::Error`.

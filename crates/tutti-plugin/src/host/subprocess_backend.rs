@@ -6,7 +6,8 @@ use std::sync::Arc;
 
 use tutti_types::SampleRate;
 
-use tutti_plugin_ipc::{BlockCounts, PluginBridge};
+use tutti_plugin_ipc::PluginBridge;
+use tutti_plugin_types::BlockCounts;
 use tutti_plugin_types::{
     AutomationMode, ContentScale, Delivered, EditorCapabilities, EditorError, EditorSize,
     MainThread, Normalized, ParamId, ParameterInfo, Preset, PresetId, RenderMode, StateError,

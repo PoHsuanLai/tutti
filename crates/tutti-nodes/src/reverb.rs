@@ -13,9 +13,11 @@
 //! to its pre-delay) against the wet one, for use as an insert.
 //! [`FreeverbNode`] is the General MIDI send of the SoundFont player.
 
+use core::ops::Range as Frames;
+
 use tutti_dsp::{
-    Ceiling, Channels, Design, Effect, Effort, FreeverbControls, FreeverbDesign, MAX_CHANNELS,
-    Range, Realization, Ring, Setup, Sizes, System,
+    Cadence, Ceiling, Channels, Design, Effect, Effort, FreeverbControls, FreeverbDesign,
+    MAX_CHANNELS, Range, Realization, Ring, Setup, Sizes, System,
 };
 use tutti_graph::{
     Cost, Cx, IntoNode, Io, Node, NodeParts, ParamNode, ParamSet, ParamSetBuilder, Prepare, Shape,
@@ -38,6 +40,19 @@ const TAIL_FLOOR: Db = Db(-60.0);
 
 /// A tail of this many frames never ends.
 const UNBOUNDED: u64 = u64::MAX;
+
+/// Where in a block a node reads its controls, and what it last designed from.
+#[derive(Clone, Copy, Debug)]
+pub struct At<C> {
+    /// The frame of the block to read a driven port at.
+    pub frame: usize,
+    /// The block's length: what a cell's glide ramps over.
+    pub block: usize,
+    /// The controls the model was designed from at the start of the block, where
+    /// a cell's glide starts; `None` before the first design (after a prepare),
+    /// when there is nothing to glide from.
+    pub applied: Option<C>,
+}
 
 /// The algorithm's [`Param`] cells and how a block reads them.
 ///
@@ -63,11 +78,20 @@ pub trait ControlParams: Clone + Send + 'static {
     /// The base of the `k`th address ([`Node::param_base`]): its cell's value.
     fn base(&self, k: usize) -> Option<f32>;
 
-    /// The controls for this block: each cell, or the value its port carries
-    /// when the graph modulates it (the block's last frame), read through
-    /// `LastGood` so a non-finite write reads as unchanged. `first` is the
-    /// port of the first address: the number of the blend's.
-    fn read(&mut self, io: &Io<'_>, first: usize) -> Self::Controls;
+    /// The controls at `at.frame`: each cell, or the value its port carries
+    /// when the graph modulates it, read through `LastGood` so a non-finite
+    /// write reads as unchanged. `first` is the port of the first address: the
+    /// number of the blend's. A design sampled once per block is read at the
+    /// block's last frame and ignores the rest of `at`.
+    fn read(&mut self, io: &Io<'_>, first: usize, at: At<Self::Controls>) -> Self::Controls;
+
+    /// Whether a port drives a control that [`read`](Self::read) samples
+    /// per frame, so the controls can differ between frames of the block. `false`
+    /// (the default) for a design read once per block.
+    fn driven(&self, io: &Io<'_>, first: usize) -> bool {
+        let _ = (io, first);
+        false
+    }
 
     /// The controls that ring longest among the values a modulated port takes
     /// anywhere in the block, which can differ from the last frame's: the node
@@ -93,8 +117,30 @@ pub trait NodeDesign: Design<Realization: Effect<<Self as Design>::Model>> + 'st
     /// wet signal.
     type Blend: Blend;
 
+    /// Whether the node parks: it tracks how long the model still rings
+    /// ([`Io::report_tail`]), cuts the realization off past it and goes idle. A
+    /// design that does not declares [`Tail::Unknown`] and never narrows or parks
+    /// (a filter: its ring-out is a numeric search, too dear to repeat per block).
+    /// Only a design sampled once per block ([`SAMPLING`](Self::SAMPLING) is
+    /// [`Cadence::BLOCK`]) parks.
+    const PARKS: bool = true;
+
+    /// The grid on which the node reads its controls and designs: one design per
+    /// block (the default), or every `n` frames when a control moves inside the
+    /// block. Separate from [`Design::CADENCE`], the grid the render is a function
+    /// of: a reverb whose render is a function of the stream is still designed
+    /// once per block.
+    const SAMPLING: Cadence = Cadence::BLOCK;
+
     /// Cells that hold `initial`. Control side; allocates.
     fn params(&self, initial: Self::Controls) -> Self::Params;
+
+    /// Whether `target` is far enough from `applied`, the controls the model
+    /// was last designed from, to design again: the dead-band. Exact inequality by
+    /// default.
+    fn moved(applied: &Self::Controls, target: &Self::Controls) -> bool {
+        applied != target
+    }
 }
 
 /// Freeverb's cells: the room size and the damping, as positions on `0..1`.
@@ -130,7 +176,7 @@ impl ControlParams for FreeverbParams {
         }
     }
 
-    fn read(&mut self, io: &Io<'_>, first: usize) -> FreeverbControls {
+    fn read(&mut self, io: &Io<'_>, first: usize, _: At<FreeverbControls>) -> FreeverbControls {
         let room = block_driven(io, first).unwrap_or_else(|| self.room.load().get());
         let damp = block_driven(io, first + 1).unwrap_or_else(|| self.damp.load().get());
         FreeverbControls {
@@ -272,7 +318,7 @@ impl<D: NodeDesign> DesignNode<D> {
     /// its tail ceiling is the design's worst case. Allocates: build it before
     /// the node goes live.
     #[must_use]
-    pub fn new(design: D, controls: D::Controls) -> Self {
+    pub fn live(design: D, controls: D::Controls) -> Self {
         Self::build(design, controls, Mode::Live)
     }
 
@@ -354,8 +400,122 @@ impl<D: NodeDesign> DesignNode<D> {
         self.design
             .design_into(&controls, self.rate, &mut self.network);
         self.realization.retarget(&self.network);
-        self.current = frames(self.network.tail(TAIL_FLOOR), self.rate);
+        if D::PARKS {
+            self.current = frames(self.network.tail(TAIL_FLOOR), self.rate);
+        }
         self.applied = Some(controls);
+    }
+
+    /// The controls the model was last designed from, for a node's own tests.
+    #[cfg(test)]
+    pub(crate) fn applied(&self) -> Option<D::Controls> {
+        self.applied
+    }
+
+    /// How many frames of the block may still sound, and the tail it reports:
+    /// the tail owed is measured from the last non-silent input frame, the longer
+    /// figure held until a shorter decay has been heard out.
+    fn cut(&mut self, io: &mut Io<'_>, first: usize) -> usize {
+        let size = io.frames();
+        let inputs = usize::from(self.channels.input.count());
+        let mut current = self.current;
+        if matches!(self.mode, Mode::Live)
+            && let Some(longest) = self.params.longest(io, first)
+            && Some(longest) != self.applied
+        {
+            self.design
+                .design_into(&longest, self.rate, &mut self.longest);
+            current = current.max(frames(self.longest.tail(TAIL_FLOOR), self.rate));
+        }
+
+        // A tail that was unbounded (a freeze) and is not now rings out from
+        // here: the energy it held is in the loop, owed to the settings in force.
+        if self.ring == UNBOUNDED && current != UNBOUNDED {
+            self.ring = current;
+            self.since = 0;
+        }
+        let last_input = (0..inputs)
+            .filter_map(|c| io.input(c)[..size].iter().rposition(|&s| s != 0.0))
+            .max();
+        let since = self.since;
+        match last_input {
+            Some(i) => {
+                self.ring = self.ring.saturating_sub(since.saturating_add(1 + i as u64));
+                self.since = (size - 1 - i) as u64;
+                self.silent = false;
+            }
+            None => self.since = since.saturating_add(size as u64),
+        }
+        self.ring = self.ring.max(current).min(self.ceiling);
+        io.report_tail(tail_of(self.ring));
+
+        // The realization's latency before the tail starts (a tail excludes
+        // latency).
+        let owed = if self.ring == UNBOUNDED {
+            UNBOUNDED
+        } else {
+            self.ring
+                .saturating_add(self.realization.latency().get() as u64)
+        };
+        let live = if owed == UNBOUNDED {
+            size as u64
+        } else {
+            match last_input {
+                Some(i) => (i as u64).saturating_add(owed).saturating_add(1),
+                None => owed.saturating_sub(since),
+            }
+        };
+        live.min(size as u64) as usize
+    }
+
+    /// Renders `frames` of the block through the realization.
+    fn render(&mut self, io: &mut Io<'_>, frames: Frames<usize>) {
+        if frames.is_empty() {
+            return;
+        }
+        let inputs = usize::from(self.channels.input.count());
+        let (ins, mut outs) = io.split();
+        let mut input: [&[f32]; MAX_CHANNELS] = [&[]; MAX_CHANNELS];
+        for (c, slot) in input.iter_mut().enumerate().take(inputs) {
+            *slot = &ins.get(c)[frames.clone()];
+        }
+        let mut output: [&mut [f32]; MAX_CHANNELS] = std::array::from_fn(|_| Default::default());
+        for (slot, ch) in output.iter_mut().zip(outs.iter_mut()) {
+            *slot = &mut ch[frames.clone()];
+        }
+        let width = usize::from(self.channels.output.count());
+        self.realization
+            .process(&input[..inputs], &mut output[..width]);
+    }
+
+    /// Renders the block one step of the sampling grid at a time: each step reads
+    /// the controls at its solve frame, and one that moved past the dead-band of
+    /// the last design designs and retargets before it renders. The steps that did not move
+    /// render together, in one call, with the model held.
+    fn render_steps(&mut self, io: &mut Io<'_>, first: usize) {
+        let size = io.frames();
+        // A cell glides from where the block began, whatever the steps designed.
+        let applied = self.applied;
+        let mut held = 0;
+        for step in D::SAMPLING.steps(size, applied.is_none()) {
+            let at = At {
+                frame: step.solve_at,
+                block: size,
+                applied,
+            };
+            let target = self.params.read(io, first, at);
+            if self
+                .applied
+                .as_ref()
+                .is_none_or(|applied| D::moved(applied, &target))
+            {
+                self.render(io, held..step.frames.start);
+                self.apply(target);
+                self.render(io, step.frames.clone());
+                held = step.frames.end;
+            }
+        }
+        self.render(io, held..size);
     }
 }
 
@@ -417,7 +577,11 @@ impl<D: NodeDesign> Node for DesignNode<D> {
         Shape::audio(self.channels.input, self.channels.output)
             .with_cost(cost(self.realization.effort()))
             .with_latency(Latency::new(self.realization.latency()))
-            .with_tail(tail_of(self.ceiling))
+            .with_tail(if D::PARKS {
+                tail_of(self.ceiling)
+            } else {
+                Tail::Unknown
+            })
             .with_param_addrs(&addrs)
     }
 
@@ -430,68 +594,36 @@ impl<D: NodeDesign> Node for DesignNode<D> {
         if size == 0 {
             return Status::Modified;
         }
-        let inputs = usize::from(self.channels.input.count());
         let first = D::Blend::ADDRS.len();
 
-        // The controls, and the model when they changed.
+        // The controls at the block's last frame, and whether the design moves
+        // inside the block: a driven port, or a cell that moved past the dead-band
+        // (it glides across the block, one design per step of the grid).
         let target = match self.mode {
             Mode::Fixed(c) => c,
-            Mode::Live => self.params.read(&io, first),
+            Mode::Live => self.params.read(
+                &io,
+                first,
+                At {
+                    frame: size - 1,
+                    block: size,
+                    applied: self.applied,
+                },
+            ),
         };
-        if self.applied != Some(target) {
+        let moved = |applied: &D::Controls| D::moved(applied, &target);
+        let stepped = D::SAMPLING != Cadence::BLOCK
+            && matches!(self.mode, Mode::Live)
+            && (self.params.driven(&io, first) || self.applied.as_ref().is_some_and(moved));
+        if !stepped && self.applied.as_ref().is_none_or(moved) {
             self.apply(target);
         }
-        let mut current = self.current;
-        if matches!(self.mode, Mode::Live)
-            && let Some(longest) = self.params.longest(&io, first)
-            && Some(longest) != self.applied
-        {
-            self.design
-                .design_into(&longest, self.rate, &mut self.longest);
-            current = current.max(frames(self.longest.tail(TAIL_FLOOR), self.rate));
-        }
 
-        // The tail owed: measured from the last non-silent input frame, the
-        // longer figure held until a shorter decay has been heard out.
-        // A tail that was unbounded (a freeze) and is not now rings out from
-        // here: the energy it held is in the loop, owed to the settings in force.
-        if self.ring == UNBOUNDED && current != UNBOUNDED {
-            self.ring = current;
-            self.since = 0;
-        }
-        let last_input = (0..inputs)
-            .filter_map(|c| io.input(c)[..size].iter().rposition(|&s| s != 0.0))
-            .max();
-        let since = self.since;
-        match last_input {
-            Some(i) => {
-                self.ring = self.ring.saturating_sub(since.saturating_add(1 + i as u64));
-                self.since = (size - 1 - i) as u64;
-                self.silent = false;
-            }
-            None => self.since = since.saturating_add(size as u64),
-        }
-        self.ring = self.ring.max(current).min(self.ceiling);
-        io.report_tail(tail_of(self.ring));
-
-        // How many frames of the block may still sound: the tail after the last
-        // input frame, and the realization's latency before it starts (a tail
-        // excludes latency).
-        let owed = if self.ring == UNBOUNDED {
-            UNBOUNDED
+        let cut = if D::PARKS {
+            self.cut(&mut io, first)
         } else {
-            self.ring
-                .saturating_add(self.realization.latency().get() as u64)
+            size
         };
-        let live = if owed == UNBOUNDED {
-            size as u64
-        } else {
-            match last_input {
-                Some(i) => (i as u64).saturating_add(owed).saturating_add(1),
-                None => owed.saturating_sub(since),
-            }
-        };
-        let cut = live.min(size as u64) as usize;
 
         // Past its tail the room is cut off and parked: its state is below the
         // floor, and the input has been silent for longer than the realization's
@@ -508,22 +640,13 @@ impl<D: NodeDesign> Node for DesignNode<D> {
         // The blend reads its controls only now: an idle block above read none.
         self.blend.begin(&io);
 
-        let (ins, mut outs) = io.split();
-        if cut > 0 {
-            let mut input: [&[f32]; MAX_CHANNELS] = [&[]; MAX_CHANNELS];
-            for (c, slot) in input.iter_mut().enumerate().take(inputs) {
-                *slot = &ins.get(c)[..cut];
-            }
-            let mut output: [&mut [f32]; MAX_CHANNELS] =
-                std::array::from_fn(|_| Default::default());
-            for (slot, ch) in output.iter_mut().zip(outs.iter_mut()) {
-                *slot = &mut ch[..cut];
-            }
-            let width = usize::from(self.channels.output.count());
-            self.realization
-                .process(&input[..inputs], &mut output[..width]);
+        if stepped {
+            self.render_steps(&mut io, first);
+        } else {
+            self.render(&mut io, 0..cut);
         }
         if cut < size {
+            let (_, mut outs) = io.split();
             for ch in outs.iter_mut() {
                 ch[cut..size].fill(0.0);
             }
@@ -533,6 +656,7 @@ impl<D: NodeDesign> Node for DesignNode<D> {
             }
         }
 
+        let (ins, mut outs) = io.split();
         self.blend.finish(&ins, &mut outs, size);
         Status::Modified
     }

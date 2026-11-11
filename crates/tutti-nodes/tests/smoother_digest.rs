@@ -10,6 +10,7 @@
 //! Mutation (run): `Smoother`'s step as `current * (1 - coeff) + target * coeff`
 //! changes the envelope's last bits and fails every case.
 
+use tutti_fixtures::{Fnv, Noise};
 use tutti_graph::contract::{drive, prepared};
 use tutti_nodes::testing::assert_golden;
 use tutti_nodes::{CompressorNode, GateNode, LimiterNode};
@@ -19,31 +20,13 @@ const SR: SampleRate = SampleRate(48_000.0);
 const BLOCK: usize = 64;
 const BLOCKS: usize = 40;
 
+/// Seeded noise under a slow swell.
 fn noise(seed: u32, frames: usize) -> Vec<f32> {
-    let mut state = seed.wrapping_mul(747_796_405).wrapping_add(2_891_336_453);
-    (0..frames)
-        .map(|i| {
-            state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
-            let swell = 0.55 + 0.45 * (i as f32 * 0.0007).sin();
-            swell * ((state >> 8) as f32 / (1u32 << 24) as f32 * 2.0 - 1.0)
-        })
+    Noise::seeded(seed)
+        .take(frames)
+        .enumerate()
+        .map(|(i, x)| (0.55 + 0.45 * (i as f32 * 0.0007).sin()) * x)
         .collect()
-}
-
-struct Fnv(u64);
-
-impl Fnv {
-    fn new() -> Self {
-        Self(0xcbf2_9ce4_8422_2325)
-    }
-    fn eat(&mut self, samples: &[f32]) {
-        for s in samples {
-            for byte in s.to_bits().to_le_bytes() {
-                self.0 ^= u64::from(byte);
-                self.0 = self.0.wrapping_mul(0x0100_0000_01b3);
-            }
-        }
-    }
 }
 
 /// Renders `BLOCKS` blocks of `inputs` seeded noise channels through `node`,
@@ -62,10 +45,10 @@ fn render(node: &mut dyn tutti_graph::Node, inputs: usize, change: impl Fn()) ->
             .map(|p| &p[b * BLOCK..(b + 1) * BLOCK])
             .collect();
         for out in drive(node, SR, &block, &[]) {
-            digest.eat(&out);
+            digest.f32s(&out);
         }
     }
-    digest.0
+    digest.finish()
 }
 
 #[test]

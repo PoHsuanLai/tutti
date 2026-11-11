@@ -13,7 +13,7 @@ use super::control_backend::ControlBackend;
 use super::instance::Instance;
 use crate::host::handles::PluginHandle;
 use crate::host::node::ParameterChangeSink;
-use tutti_plugin_ipc::{BridgeError, Result};
+use tutti_plugin_types::{BridgeError, BridgeResult};
 use tutti_plugin_types::{Features, InProcess, Load};
 use tutti_types::ChannelLayout;
 
@@ -48,7 +48,7 @@ pub fn load_client<F>(
     path: &Path,
     load: &Load,
     sample_rate: impl Into<tutti_types::SampleRate>,
-) -> Result<(InProcClient<F>, PluginHandle)>
+) -> BridgeResult<(InProcClient<F>, PluginHandle)>
 where
     F: InProcess + 'static,
     F::Processor: 'static,
@@ -69,7 +69,7 @@ pub fn load_client_restoring<F>(
     load: &Load,
     sample_rate: impl Into<tutti_types::SampleRate>,
     restore: Option<&mut dyn FnMut(&mut F) -> std::result::Result<(), String>>,
-) -> Result<(
+) -> BridgeResult<(
     InProcClient<F>,
     PluginHandle,
     Option<std::result::Result<(), String>>,

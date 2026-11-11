@@ -3,20 +3,17 @@
 //! One coefficient computation serves eight responses ([`SvfType`]), so
 //! switching type is as cheap as any parameter change. One width-generic node,
 //! [`SvfFilterNode`]: the coefficients are shared across channels and only the
-//! integrator state is per channel.
+//! integrator state is per channel. The algorithm is `tutti-dsp`'s
+//! ([`SvfDesign`]); the node is a [`DesignNode`] over it, and this file holds the
+//! cells and how a block reads them.
 
-use tutti_dsp::Real;
+use tutti_dsp::{COEFF_CADENCE, Cadence, Ramp, Real, SvfControls, SvfDesign, SvfType};
+use tutti_graph::{Io, ParamSetBuilder};
+use tutti_types::{ChannelLayout, Db, Hz, Param, Q, UnitAddr, UnitParam};
 
-use tutti_graph::{
-    Cx, Inputs, IntoNode, Io, Node, NodeParts, Outputs, ParamNode, ParamSet, Prepare, Shape, Status,
-};
-use tutti_types::UnitParam;
-use tutti_types::{ChannelLayout, Db, Hz, Param, Q, SampleRate, Tail};
-
-use crate::ramp::LastGood;
-use tutti_dsp::{Ramp, lane_group, segments};
-
-use tutti_dsp::{SvfCoefficients, SvfControls, SvfType, svf_step};
+use crate::blend::NoBlend;
+use crate::ramp::{LastGood, block_driven};
+use crate::reverb::{At, ControlParams, DesignNode, NodeDesign};
 
 /// A state-variable filter of any width: `N` audio inputs, `N` outputs, one
 /// coefficient set shared across the channels and one integrator pair per
@@ -24,7 +21,8 @@ use tutti_dsp::{SvfCoefficients, SvfControls, SvfType, svf_step};
 ///
 /// Eight responses ([`SvfType`]) share one coefficient solve (Cytomic /
 /// Zavalishin TPT form), so switching type is as cheap as any parameter
-/// change.
+/// change. The response is fixed at construction: a node with another one is
+/// another node.
 ///
 /// # Examples
 ///
@@ -44,11 +42,12 @@ use tutti_dsp::{SvfCoefficients, SvfControls, SvfType, svf_step};
 /// ```
 ///
 /// Cutoff ([`Hz`]), [`Q`] and gain ([`Db`]) are live [`Param`]s shared across
-/// clones, read **once per block**. A held value costs nothing — the
-/// coefficients are solved only when one moves past a small epsilon. A value
-/// that *did* move is ramped across the block: the coefficients are re-solved
-/// every 16 samples along a linear parameter ramp and interpolated between
-/// solves, so an automated cutoff glides rather than stepping at block edges.
+/// clones, read **once per block**. A held value costs nothing: the model is
+/// designed again only when one moves past a small dead-band
+/// ([`SvfControls::moved_from`]). A value that *did* move is ramped across the
+/// block: it is designed every 16 samples along a linear parameter ramp and the
+/// coefficients are interpolated between solves, so an automated cutoff glides
+/// rather than stepping at block edges.
 ///
 /// Gain applies only to [`Bell`](SvfType::Bell),
 /// [`LowShelf`](SvfType::LowShelf) and [`HighShelf`](SvfType::HighShelf); the
@@ -60,57 +59,25 @@ use tutti_dsp::{SvfCoefficients, SvfControls, SvfType, svf_step};
 ///
 /// # Modulated params
 ///
-/// `N` audio inputs, `N` outputs. Cutoff (in [`Hz`]), [`Q`] and the gain
-/// (in [`Db`]) are modulatable by the graph, in that port order
-/// ([`SVF_PARAMS`]). The gain is read once per block, as its cell is. For
+/// Cutoff (in [`Hz`]), [`Q`] and the gain (in [`Db`]) are modulatable by the
+/// graph, in that port order. The gain is read once per block, as its cell is. For
 /// cutoff and Q, a per-frame value on the param port
 /// ([`Io::param`](tutti_graph::Io::param)) **overrides** the corresponding
-/// cell. It is sampled at the solve points — every 16 samples and at the
-/// block's last sample — with the coefficients interpolated between them,
-/// instead of a `tan` per sample. Unmodulated, the filter reads its cells
-/// once per block at the cost of one branch, which is the common case.
+/// cell. It is sampled at the solve points (every 16 samples and at the block's
+/// last sample) with the coefficients interpolated between them, instead of a
+/// `tan` per sample. Unmodulated, the filter reads its cells once per block at
+/// the cost of one branch, which is the common case.
 ///
 /// # In a graph
 ///
-/// A graph node ([`IntoNode`]): inserted, its controls are a [`ParamSet`]
-/// over cutoff, Q and gain by [`UnitParam`], and a fork of it starts from
-/// the values last set through that set. The graph prepares it at the
-/// device rate before its first block, so it is never run at the placeholder
-/// rate it is built at. Rendering allocates nothing.
-pub struct SvfFilterNode<F: Real = f64> {
-    filter_type: SvfType,
-    frequency: Param<Hz>,
-    q: Param<Q>,
-    gain_db: Param<Db>,
-    sample_rate: SampleRate,
-    /// The coefficients the last rendered sample ran at.
-    coeffs: SvfCoefficients<F>,
-    /// Integrator state `[ic1eq, ic2eq]`, one pair per channel; `len()` is the
-    /// audio width. Built at construction — never resized in `process`
-    /// (RT no-alloc).
-    state: Vec<[F; 2]>,
-    /// The last finite cutoff / Q / gain the cells held: a non-finite write
-    /// reads as unchanged, so it never reaches the solve (see [`LastGood`]).
-    good: [LastGood; 3],
-}
-
-impl<F: Real> std::fmt::Debug for SvfFilterNode<F> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("SvfFilterNode")
-            .field("filter_type", &self.filter_type)
-            .field("frequency", &self.frequency)
-            .field("q", &self.q)
-            .field("gain_db", &self.gain_db)
-            .field("sample_rate", &self.sample_rate)
-            .finish_non_exhaustive()
-    }
-}
-
-/// The params an [`SvfFilterNode`] lets the graph modulate, in port order.
-/// Cutoff and Q are read per sample; the gain (a shelf's or a bell's) is
-/// block-rate in the node (ramped across the block), so a driven port is
-/// read once per block (`block_driven`).
-pub const SVF_PARAMS: [UnitParam; 3] = [UnitParam::Cutoff, UnitParam::Q, UnitParam::GainDb];
+/// A graph node ([`IntoNode`](tutti_graph::IntoNode)): inserted, its controls are
+/// a [`ParamSet`](tutti_graph::ParamSet) over cutoff, Q and gain by [`UnitParam`],
+/// and a fork of it starts from the values last set through that set. Its tail is
+/// [`Tail::Unknown`](tutti_types::Tail::Unknown): a resonant filter rings on after
+/// its input stops, for as long as its Q says, so the graph's tail fold must not
+/// read it as `None`; it never parks. The graph prepares it at the device rate
+/// before its first block. Rendering allocates nothing.
+pub type SvfFilterNode<F = f64> = DesignNode<SvfDesign<F>>;
 
 impl<F: Real> SvfFilterNode<F> {
     /// A mono filter (1 in, 1 out) of `filter_type` at `frequency` cutoff and
@@ -119,7 +86,8 @@ impl<F: Real> SvfFilterNode<F> {
     /// `q` around `0.707` is the flattest (Butterworth) response; higher values
     /// resonate at the cutoff, and a band-pass or notch narrows as it rises.
     ///
-    /// The coefficients are solved at the rate [`Node::prepare`] hands it.
+    /// The coefficients are solved at the rate [`prepare`](tutti_graph::Node::prepare)
+    /// hands it.
     pub fn new(filter_type: SvfType, frequency: impl Into<Hz>, q: impl Into<Q>) -> Self {
         Self::with_channels(ChannelLayout::MONO, filter_type, frequency, q)
     }
@@ -132,37 +100,21 @@ impl<F: Real> SvfFilterNode<F> {
     ///
     /// Speaker placement is the upstream panner's job: this is a per-channel
     /// filter, not a spatial process.
-    ///
     pub fn with_channels(
         channels: impl Into<ChannelLayout>,
         filter_type: SvfType,
         frequency: impl Into<Hz>,
         q: impl Into<Q>,
     ) -> Self {
-        let frequency = frequency.into();
-        let q = q.into();
-        let n = usize::from(channels.into().count()).max(1);
-        let zero = F::from_f64(0.0);
-        Self {
-            filter_type,
-            frequency: Param::new(frequency),
-            q: Param::new(q),
-            gain_db: Param::new(Db(0.0)),
-            sample_rate: SampleRate::DEFAULT,
-            coeffs: SvfCoefficients::solve(filter_type, frequency, q, Db(0.0), SampleRate::DEFAULT),
-            state: vec![[zero; 2]; n],
-            good: [
-                LastGood::new(frequency.get(), 0.0),
-                LastGood::new(q.get(), Q::BUTTERWORTH.get()),
-                LastGood::fixed(0.0),
-            ],
-        }
-    }
-
-    /// Audio channel width (`inputs()` audio ports == `outputs()`).
-    #[inline]
-    fn width(&self) -> usize {
-        self.state.len()
+        Self::with_controls(
+            channels,
+            SvfControls {
+                ty: filter_type,
+                freq: frequency.into(),
+                q: q.into(),
+                gain: Db(0.0),
+            },
+        )
     }
 
     /// A filter `channels` wide with every control of `controls` (the response,
@@ -173,262 +125,123 @@ impl<F: Real> SvfFilterNode<F> {
     /// fixed here: a node with another one is another node.
     #[must_use]
     pub fn with_controls(channels: impl Into<ChannelLayout>, controls: SvfControls) -> Self {
-        let mut node = Self::with_channels(channels, controls.ty, controls.freq, controls.q);
-        node.gain_db = Param::new(controls.gain);
-        node.good[2] = LastGood::new(controls.gain.get(), 0.0);
-        node.coeffs = SvfCoefficients::solve(
-            controls.ty,
-            controls.freq,
-            controls.q,
-            controls.gain,
-            node.sample_rate,
-        );
-        node
-    }
-
-    /// Read the three control cells, once, with non-finite values held off.
-    /// `gain_driven` is the block's gain from the node's param port when a
-    /// lane drives it; `None` reads the cell.
-    #[inline]
-    fn read_controls(&mut self, gain_driven: Option<f32>) -> (Hz, Q, Db) {
-        (
-            Hz(self.good[0].read(self.frequency.load().get())),
-            Q(self.good[1].read(self.q.load().get())),
-            Db(self.good[2].read(gain_driven.unwrap_or_else(|| self.gain_db.load().get()))),
-        )
-    }
-
-    /// Solve at `(freq, q, gain_db)` unless the current set is already there.
-    #[inline]
-    fn solve_toward(
-        &self,
-        from: &SvfCoefficients<F>,
-        freq: Hz,
-        q: Q,
-        gain_db: Db,
-    ) -> SvfCoefficients<F> {
-        if from.is_invalid() || from.moved(freq, q, gain_db) {
-            SvfCoefficients::solve(self.filter_type, freq, q, gain_db, self.sample_rate)
-        } else {
-            *from
-        }
-    }
-
-    /// Render with the current coefficients held for the whole block.
-    ///
-    /// The channels go through in groups of up to `tutti_dsp::LANES`, sample-inner, with
-    /// the group's integrators in registers. A recursive filter is
-    /// latency-bound on one channel — each sample waits for the last — so
-    /// running one channel at a time (measured: 2.7× slower at width 6) wastes
-    /// the independent chains the other channels offer; a group interleaves
-    /// them while still reading and writing planar slices.
-    fn run_held(&mut self, size: usize, input: &Inputs<'_>, output: &mut Outputs<'_, '_>) {
-        let w = self.width();
-        let mut first = 0;
-        while first < w {
-            let n = lane_group(w - first);
-            match n {
-                8 => self.held_group::<8>(first, size, input, output),
-                7 => self.held_group::<7>(first, size, input, output),
-                6 => self.held_group::<6>(first, size, input, output),
-                5 => self.held_group::<5>(first, size, input, output),
-                4 => self.held_group::<4>(first, size, input, output),
-                3 => self.held_group::<3>(first, size, input, output),
-                2 => self.held_group::<2>(first, size, input, output),
-                _ => self.held_group::<1>(first, size, input, output),
-            }
-            first += n;
-        }
-    }
-
-    #[inline]
-    fn held_group<const N: usize>(
-        &mut self,
-        first: usize,
-        size: usize,
-        input: &Inputs<'_>,
-        output: &mut Outputs<'_, '_>,
-    ) {
-        let c = self.coeffs;
-        let xs: [&[f32]; N] = core::array::from_fn(|k| &input.get(first + k)[..size]);
-        let mut group = output.iter_mut().skip(first);
-        let ys: [&mut [f32]; N] = core::array::from_fn(|_| {
-            &mut group.next().expect("the group is inside the width")[..size]
-        });
-        let mut st: [[F; 2]; N] = core::array::from_fn(|k| self.state[first + k]);
-        for i in 0..size {
-            for k in 0..N {
-                ys[k][i] = svf_step(&c, &mut st[k], F::from_f32(xs[k][i])).to_f32();
-            }
-        }
-        self.state[first..first + N].copy_from_slice(&st);
-    }
-
-    /// Render with the parameters moving inside the block. `param_at(i)` is the
-    /// `(cutoff, Q, gain)` at sample `i`; it is only asked at the solve points —
-    /// each segment's last sample — and the coefficients are interpolated
-    /// linearly between consecutive solves. The last sample of each segment runs
-    /// at its solved set exactly, so a segment of one sample (a block of one) is the
-    /// per-sample solve it replaces.
-    fn run_swept(
-        &mut self,
-        size: usize,
-        input: &Inputs<'_>,
-        output: &mut Outputs<'_, '_>,
-        param_at: impl Fn(usize) -> (Hz, Q, Db),
-    ) {
-        let width = self.width();
-        let mut prev = self.coeffs;
-        let unprimed = prev.is_invalid();
-        if unprimed {
-            // Nothing meaningful to ramp from — solve at the first sample.
-            let (f, q, g) = param_at(0);
-            prev = SvfCoefficients::solve(self.filter_type, f, q, g, self.sample_rate);
-        }
-        for (start, end) in segments(size, unprimed) {
-            let (f, q, g) = param_at(end - 1);
-            let next = self.solve_toward(&prev, f, q, g);
-            let n = F::from_f64((end - start) as f64);
-            for i in start..end {
-                let k = if next == prev || i + 1 == end {
-                    next
-                } else {
-                    prev.lerp(&next, F::from_f64((i - start + 1) as f64) / n)
-                };
-                for ch in 0..width {
-                    let x = F::from_f32(input.get(ch)[i]);
-                    let y = svf_step(&k, &mut self.state[ch], x);
-                    output.get(ch)[i] = y.to_f32();
-                }
-            }
-            prev = next;
-        }
-        self.coeffs = prev;
+        Self::live(SvfDesign::new(channels.into()), controls)
     }
 }
 
-impl<F: Real + 'static> Node for SvfFilterNode<F> {
-    /// Its tail is [`Tail::Unknown`]: a resonant filter rings on after its
-    /// input stops, for as long as its Q says, so the graph's tail fold (what
-    /// an export renders past the end) must not read it as `None`.
-    fn shape(&self) -> Shape {
-        let width = ChannelLayout::try_from(self.width()).expect("the width came from a layout");
-        Shape::audio(width, width)
-            .with_cost(tutti_graph::Cost::Moderate)
-            .with_params(&SVF_PARAMS)
-            .with_tail(Tail::Unknown)
+/// The cells of an [`SvfFilterNode`]: cutoff, Q and gain, with the response they
+/// are for.
+#[derive(Clone, Debug)]
+pub struct SvfParams {
+    ty: SvfType,
+    freq: Param<Hz>,
+    q: Param<Q>,
+    gain: Param<Db>,
+    /// The last finite cutoff / Q / gain the cells held: a non-finite write
+    /// reads as unchanged, so it never reaches the design (see [`LastGood`]).
+    good: [LastGood; 3],
+}
+
+impl ControlParams for SvfParams {
+    type Controls = SvfControls;
+
+    fn addrs(&self) -> &'static [UnitAddr] {
+        const ADDRS: [UnitAddr; 3] = [
+            UnitAddr::first(UnitParam::Cutoff),
+            UnitAddr::first(UnitParam::Q),
+            UnitAddr::first(UnitParam::GainDb),
+        ];
+        &ADDRS
     }
 
-    fn prepare(&mut self, p: &Prepare) {
-        self.sample_rate = p.sample_rate();
-        self.coeffs.invalidate();
+    fn bind(&self, set: ParamSetBuilder) -> ParamSetBuilder {
+        let addrs = self.addrs();
+        set.param(addrs[0], self.freq.as_atomic())
+            .param(addrs[1], self.q.as_atomic())
+            .param(addrs[2], self.gain.as_atomic())
     }
 
-    fn process(&mut self, _cx: &Cx<'_>, mut io: Io<'_>) -> Status {
-        let size = io.frames();
-        if size == 0 {
-            return Status::Modified;
-        }
-        // Every control is read here, once, for the whole block. A modulated
-        // value's `max` floor maps a NaN sample to the floor, and ±∞ is
-        // clamped by the solve, so only the cells need holding off.
-        let (base_freq, base_q, gain_db) = self.read_controls(crate::ramp::block_driven(&io, 2));
-        let (cutoff, res) = (io.param(0).frames(), io.param(1).frames());
-        let (inputs, mut outputs) = io.split();
-        if cutoff.is_none() && res.is_none() {
-            if self.coeffs.is_invalid() {
-                // A new rate or response type: solve at the target outright.
-                self.coeffs = SvfCoefficients::solve(
-                    self.filter_type,
-                    base_freq,
-                    base_q,
-                    gain_db,
-                    self.sample_rate,
-                );
-            }
-            if !self.coeffs.moved(base_freq, base_q, gain_db) {
-                self.run_held(size, &inputs, &mut outputs);
-                return Status::Modified;
-            }
-            // Moved since the last block: glide there across this one.
-            let fr = Ramp::new(self.coeffs.last_freq.get(), base_freq.get(), size);
-            let qr = Ramp::new(self.coeffs.last_q.get(), base_q.get(), size);
-            let gr = Ramp::new(self.coeffs.last_gain_db.get(), gain_db.get(), size);
-            self.run_swept(size, &inputs, &mut outputs, |i| {
-                (Hz(fr.at(i)), Q(qr.at(i)), Db(gr.at(i)))
-            });
-        } else {
-            self.run_swept(size, &inputs, &mut outputs, |i| {
-                (
-                    cutoff.map_or(base_freq, |s| Hz(s[i].max(1.0))),
-                    res.map_or(base_q, |s| Q(s[i].max(0.01))),
-                    gain_db,
-                )
-            });
-        }
-        Status::Modified
-    }
-
-    fn reset(&mut self) {
-        let zero = F::from_f64(0.0);
-        self.state.fill([zero; 2]);
-    }
-
-    fn param_base(&self, k: usize) -> Option<f32> {
+    fn base(&self, k: usize) -> Option<f32> {
         match k {
-            0 => Some(self.frequency.load().get()),
+            0 => Some(self.freq.load().get()),
             1 => Some(self.q.load().get()),
-            2 => Some(self.gain_db.load().get()),
+            2 => Some(self.gain.load().get()),
             _ => None,
         }
     }
-}
 
-impl<F: Real + 'static> ParamNode for SvfFilterNode<F> {
-    fn param_set(&self) -> ParamSet {
-        ParamSet::builder()
-            .param(UnitParam::Cutoff, self.frequency.as_atomic())
-            .param(UnitParam::Q, self.q.as_atomic())
-            .param(UnitParam::GainDb, self.gain_db.as_atomic())
-            .build()
-    }
-
-    /// A clone with its cutoff, Q and gain cells detached (at their values
-    /// now), so a write to either never reaches the other, and its
-    /// integrators cleared.
-    fn fork_fresh(&self) -> Self {
-        let mut fork = self.clone();
-        fork.frequency.detach();
-        fork.q.detach();
-        fork.gain_db.detach();
-        Node::reset(&mut fork);
-        fork
-    }
-}
-
-/// Inserted with its [`ParamSet`] as its controls (cutoff, Q and gain by
-/// [`UnitParam`]) and a fork that starts from the values last set through
-/// it ([`tutti_graph::param_parts`]).
-impl<F: Real + 'static> IntoNode for SvfFilterNode<F> {
-    type Controls = ParamSet;
-
-    fn into_parts(self) -> NodeParts<ParamSet> {
-        tutti_graph::param_parts(self)
-    }
-}
-
-impl<F: Real> Clone for SvfFilterNode<F> {
-    fn clone(&self) -> Self {
-        Self {
-            filter_type: self.filter_type,
-            frequency: self.frequency.handle(),
-            q: self.q.handle(),
-            gain_db: self.gain_db.handle(),
-            sample_rate: self.sample_rate,
-            coeffs: self.coeffs,
-            state: self.state.clone(),
-            good: self.good,
+    /// With a lane on the cutoff or the Q, each driven control is its lane at
+    /// `at.frame` (a cutoff floored at 1 Hz and a Q at 0.01, which also maps a NaN
+    /// to the floor) and the cells are taken as they are. With none, the cells
+    /// glide from the controls last designed to their values across the block,
+    /// sampled at `at.frame`. The gain is read once per block, at the block's
+    /// last frame, whichever of the two.
+    fn read(&mut self, io: &Io<'_>, first: usize, at: At<SvfControls>) -> SvfControls {
+        let (cutoff, res) = (io.param(first).frames(), io.param(first + 1).frames());
+        let freq = Hz(self.good[0].read(self.freq.load().get()));
+        let q = Q(self.good[1].read(self.q.load().get()));
+        let gain = Db(self.good[2]
+            .read(block_driven(io, first + 2).unwrap_or_else(|| self.gain.load().get())));
+        match (cutoff, res, at.applied) {
+            (None, None, Some(from)) => {
+                let glide = |from: f32, to: f32| Ramp::new(from, to, at.block).at(at.frame);
+                SvfControls {
+                    ty: self.ty,
+                    freq: Hz(glide(from.freq.get(), freq.get())),
+                    q: Q(glide(from.q.get(), q.get())),
+                    gain: Db(glide(from.gain.get(), gain.get())),
+                }
+            }
+            (None, None, None) => SvfControls {
+                ty: self.ty,
+                freq,
+                q,
+                gain,
+            },
+            _ => SvfControls {
+                ty: self.ty,
+                freq: cutoff.map_or(freq, |s| Hz(s[at.frame].max(1.0))),
+                q: res.map_or(q, |s| Q(s[at.frame].max(0.01))),
+                gain,
+            },
         }
+    }
+
+    fn driven(&self, io: &Io<'_>, first: usize) -> bool {
+        io.param(first).frames().is_some() || io.param(first + 1).frames().is_some()
+    }
+
+    fn detach(&mut self) {
+        self.freq.detach();
+        self.q.detach();
+        self.gain.detach();
+    }
+}
+
+impl<F: Real> NodeDesign for SvfDesign<F> {
+    type Params = SvfParams;
+    type Blend = NoBlend;
+
+    /// A filter declares an unknown tail and never parks.
+    const PARKS: bool = false;
+    const SAMPLING: Cadence = COEFF_CADENCE;
+
+    fn params(&self, initial: SvfControls) -> SvfParams {
+        SvfParams {
+            ty: initial.ty,
+            freq: Param::new(initial.freq),
+            q: Param::new(initial.q),
+            gain: Param::new(initial.gain),
+            good: [
+                LastGood::new(initial.freq.get(), 0.0),
+                LastGood::new(initial.q.get(), Q::BUTTERWORTH.get()),
+                LastGood::new(initial.gain.get(), 0.0),
+            ],
+        }
+    }
+
+    fn moved(applied: &SvfControls, target: &SvfControls) -> bool {
+        target.moved_from(applied)
     }
 }
 
@@ -438,6 +251,8 @@ mod tests {
     use crate::filter::test_utils::{generate_sine, impulse, rms};
     use crate::test_support::{RATE, drive_block, prepared};
     use tutti_graph::contract::{assert_param_fork, drive};
+    use tutti_graph::{Node, ParamNode};
+    use tutti_types::{SampleRate, Tail};
 
     /// `node`, prepared at 44.1 kHz, over a mono `input` in one block.
     fn render(node: SvfFilterNode, input: &[f32]) -> Vec<f32> {
@@ -601,8 +416,8 @@ mod tests {
         let params = node.param_set();
         assert!(params.set(UnitParam::Cutoff, 5000.0));
         assert!(params.set(UnitParam::Q, 2.5));
-        assert_eq!(node.frequency.load(), Hz(5000.0));
-        assert_eq!(node.q.load(), Q(2.5));
+        assert_eq!(node.param_base(0), Some(5000.0));
+        assert_eq!(node.param_base(1), Some(2.5));
         assert!(!params.set(UnitParam::Wet, 0.5));
     }
 
@@ -850,8 +665,8 @@ mod tests {
     /// observable form of "not before the next block".)
     ///
     /// Mutation: solving straight at the target and rendering the block held
-    /// (a jump) fails `assert_ramps_in`; dropping the `self.coeffs = prev`
-    /// that stores the block's final solve fails the coefficient check.
+    /// (a jump) fails `assert_ramps_in`; dropping the `self.applied = Some(controls)`
+    /// in `DesignNode::apply` (the block's final solve) fails the controls check.
     #[test]
     fn a_cutoff_change_is_read_next_block_and_ramped_across_it() {
         use crate::test_support::{change_between_node_blocks, noise};
@@ -873,7 +688,7 @@ mod tests {
         );
         run.assert_ramps_in("svf cutoff");
         assert!(
-            run.ramped.coeffs == run.jumped.coeffs,
+            run.ramped.applied() == run.jumped.applied(),
             "the block must end solved at the new cutoff"
         );
     }
@@ -917,7 +732,7 @@ mod tests {
     /// case a threshold comparison alone lets through. The filter keeps
     /// running at the last good cutoff, and picks up the next finite write.
     ///
-    /// Mutation: reading the cutoff cell raw in `read_controls` (no
+    /// Mutation: reading the cutoff cell raw in `SvfParams::read` (no
     /// `LastGood`) fails the second assertion — the NaN reaches the solve and
     /// the output goes NaN for good.
     #[test]
@@ -943,14 +758,14 @@ mod tests {
             "a NaN with another control moving in the same block"
         );
         assert_eq!(
-            f.coeffs.last_freq,
+            f.applied().unwrap().freq,
             Hz(800.0),
             "held at the last good cutoff"
         );
         assert!(f.param_set().set(UnitParam::Cutoff, 2_000.0));
         drive_block(&mut f, &[&x]);
         assert_eq!(
-            f.coeffs.last_freq,
+            f.applied().unwrap().freq,
             Hz(2_000.0),
             "and back on a finite write"
         );

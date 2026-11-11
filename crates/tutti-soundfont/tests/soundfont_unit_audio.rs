@@ -584,16 +584,12 @@ fn test_clone_creates_independent_instance() {
 
 /// FNV-1a over the frames' little-endian `f32` bits, left then right.
 fn digest(samples: &[(f32, f32)]) -> u64 {
-    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
-    for byte in samples
-        .iter()
-        .flat_map(|&(l, r)| [l, r])
-        .flat_map(f32::to_le_bytes)
-    {
-        h ^= u64::from(byte);
-        h = h.wrapping_mul(0x0000_0100_0000_01b3);
+    let mut h = tutti_fixtures::Fnv::new();
+    for &(l, r) in samples {
+        h.f32(l);
+        h.f32(r);
     }
-    h
+    h.finish()
 }
 
 /// A `with_preset` unit's first note-on renders that preset: preset 40

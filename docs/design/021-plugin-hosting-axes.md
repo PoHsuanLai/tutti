@@ -578,14 +578,14 @@ separates it from the IPC code).
 |---|---|---|---|---|
 | `tutti-plugin-types` (exists) | adds `InProcess`, `OutOfProcess`, `Editor`, `Load`, `Reopen` (~300 new) | none | 3 | yes (today) |
 | **`tutti-plugin-ipc`** (new) | `protocol/` (2,125), `util/transport/` (3,260), `host/ipc_client/` (6,332), `host/subprocess/` (1,655), `host/node/batcher.rs` (761), `error.rs` (476), `util/config/` (317); `Ipc`, `IpcProcessor`, `IpcController`, the server-side halves of the slab and framing | `tutti-plugin-types`, `tutti-types`, `tutti-rt`, `tutti-ump`, `tutti-midi-types` (+ serde, bincode, memmap2, interprocess) | 4 | **no**: shm, mmap and process launch (`slab.rs`, `header.rs`, `launch.rs`, `control.rs`). The only crate with such `unsafe`, each block with a `// SAFETY:` |
-| **`tutti-plugin-host`** (new) | `host/node/` less the batcher (about 7,500 + tests), `host/handles/` (1,416) reworked over `Control`, the reusable parts of `vst2_in_process` (node, client, fork, about 1,450 merged into the above), `host/param_values.rs`, `liveness.rs`, `render_mode.rs`, `util/node`, `util/window`; `PluginNode<H>`, `InProc<F>` (~300) | `tutti-plugin-types`, `tutti-graph`, `tutti-transport`, `tutti-midi-runtime`, `tutti-midi-types`, `tutti-types`, `tutti-rt`, `tutti-ump` | 5 | yes, once `os_monotonic_ns` (`transport_source.rs:430-465`, a `clock_gettime` / `QueryPerformanceCounter` call, 35 lines) moves to `tutti-rt` |
+| **`tutti-plugin-host`** (new) | `host/node/` less the batcher (about 7,500 + tests), `host/handles/` (1,416) reworked over `Control`, the reusable parts of `vst2_in_process` (node, client, fork, about 1,450 merged into the above), `host/param_values.rs`, `liveness.rs`, `render_mode.rs`, `util/node`, `util/window`; `PluginNode<H>`, `InProc<F>` (~300) | `tutti-plugin-types`, `tutti-graph`, `tutti-transport`, `tutti-tempo`, `tutti-types`, `tutti-rt`, `tutti-ump` (no `tutti-plugin-ipc`: what the node code shares with it, `MidiIntake`, the invalidation vocabulary, `BlockCounts`, `MAX_CHUNK`, `BridgeError` and `PluginForkError`, lives in `tutti-plugin-types`, as built in 4a-4a) | 5 | yes, once `os_monotonic_ns` (`transport_source.rs:430-465`, a `clock_gettime` / `QueryPerformanceCounter` call, 35 lines) moves to `tutti-rt` |
 | **`tutti-plugin`** (shrinks) | the facade: `plugin.rs` (472, becomes the `hosts!` table), `plugins.rs` (1,026), `db_probe.rs` (279), `lib.rs`; `AnyHost`, `Hosting`, `open` | `-host`, `-ipc`, `tutti-plugin-db`, and the four format hosts behind features | 6 | yes |
 | **`tutti-plugin-probe`** (new, bin) | `main.rs` (~150) and the descriptor read per format, which `Vst2Instance::probe`, `ClapInstance::probe`, `Vst3Instance::probe` and `AuInstance::probe` (inside `loaders/`) do today | `tutti-plugin-types`, the four format hosts behind features (not `-ipc`, not `-host`, not `tutti-plugin`) | 6 (above the layer-5 format hosts; nothing depends on it) | yes: every host it calls forbids `unsafe` and the binary adds none |
 | `tutti-plugin-server` (shrinks) | `session.rs` (2,111), `audio_pipeline.rs` (1,406), `transport.rs` (649), `server.rs`, `lib.rs`; the `served!` table; probe mode removed; `loaders/` (7,689) gone | `-ipc`, `tutti-plugin-types`, the CLAP, VST3 and AU hosts behind features (not VST2, not `-host`, not `tutti-plugin`) | 7 (could be 6; leave) | yes, once the loaders' `unsafe impl Send` and `WindowHandle::from_u64` go and the `libloading` tests move to the contract |
 | `tutti-{clap,vst3,vst2,au}-host` | gain `impl InProcess`, `impl OutOfProcess` (not VST2), and `OutOfProcess::Editor` | `tutti-plugin-types` only (unchanged) | 5, 5, 4, 5 (`tutti-au-host` moves from 4 to 5 over the new `tutti-au-ffi`, layer 4; PRs #350 and #353) | yes (unchanged); the `-ffi` crates keep the `unsafe` |
 
 The ordering is lower-to-higher with no new upward edge: `-ipc` (4) is above
-`tutti-plugin-types` (3); `-host` (5) is above `tutti-midi-runtime` (4);
+`tutti-plugin-types` (3); `-host` (5) is above `tutti-transport` (3);
 `tutti-plugin` (6) is above both; `tutti-plugin-server` and `tutti-session` stay
 at 7; `tutti` and `bevy-tutti` at 8. **`tutti-plugin` stays at layer 6, so
 `tutti-session` and the umbrellas need no change**, and no new crate depends on
@@ -749,8 +749,11 @@ a `Loaded`.
 
 `tutti-plugin-ipc` (layer 4) holds `protocol/`, `transport/` (was
 `util/transport/`), `config/` (was `util/config/`), `subprocess/`, `client/`
-(was `host/ipc_client/`; `subprocess/` is the server's launch alone), `error.rs`, the `MidiIntake`, the slab's chunk ceiling `MAX_CHUNK` and the
-client's `BlockCounts`. Its modules are private but
+(was `host/ipc_client/`; `subprocess/` is the server's launch alone), `error.rs` (`PluginRenderFault`; `BridgeError` and `PluginForkError` moved to
+`tutti-plugin-types` in 4a-4a, with `MidiIntake`, the slab's chunk ceiling `MAX_CHUNK`, the
+client's `BlockCounts` and the `PluginInvalidation`, `PluginRefresh`, `ResyncKind` and
+`ResyncClass` vocabulary, so the node code that moves to `tutti-plugin-host` does not
+need `-ipc`). Its modules are private but
 `state_chunk`; `tutti-plugin` re-exports what its public API named
 (`tutti_plugin::error`, `server`, `catalog`) from it, so no consumer moved. Six
 departures from the plan, each because a piece named something above layer 4

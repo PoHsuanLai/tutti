@@ -17,8 +17,8 @@ use tutti_types::UnitParam;
 use tutti_types::{ChannelLayout, Drive, Hz, Param, Resonance, SampleRate, Tail};
 
 use crate::ramp::{LastGood, finite_or};
+use tutti_dsp::{COEFF_CADENCE, Ramp, lane_group};
 use tutti_dsp::{LadderCoefficients, LadderType, ladder_step};
-use tutti_dsp::{Ramp, lane_group, segments};
 
 /// A Moog-style four-stage ladder filter with resonance and drive, of any
 /// width: `N` audio inputs, `N` outputs.
@@ -256,7 +256,8 @@ impl<F: Real> LadderFilterNode<F> {
             let (f, r) = param_at(0);
             prev = LadderCoefficients::solve(f, r, self.sample_rate);
         }
-        for (start, end) in segments(size, unprimed) {
+        for step in COEFF_CADENCE.steps(size, unprimed) {
+            let (start, end) = (step.frames.start, step.frames.end);
             let (f, r) = param_at(end - 1);
             let next = self.solve_toward(&prev, f, r);
             let n = F::from_f64((end - start) as f64);

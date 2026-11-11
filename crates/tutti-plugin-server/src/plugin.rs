@@ -11,12 +11,13 @@
 //! each audio block.
 
 use std::path::Path;
+use tutti_plugin::LoadStage;
 use tutti_plugin::server::{
     Features, LoadedPlugin, Normalized, ParamId, PluginDescriptor, PluginInstance, PluginTail,
     SampleFormat, Samples,
 };
-use tutti_plugin::{BridgeError, LoadStage, Result};
 use tutti_plugin_types::MainThread;
+use tutti_plugin_types::{BridgeError, BridgeResult};
 
 #[cfg(feature = "vst2")]
 use crate::loaders::vst2::Vst2Instance;
@@ -126,7 +127,7 @@ impl Plugin {
         sample_rate: f64,
         block_size: usize,
         preferred_format: SampleFormat,
-    ) -> Result<(Self, PluginDescriptor, LoadedPlugin, SampleFormat)> {
+    ) -> BridgeResult<(Self, PluginDescriptor, LoadedPlugin, SampleFormat)> {
         Self::load_with_state(
             main,
             path,
@@ -153,7 +154,7 @@ impl Plugin {
         preferred_format: SampleFormat,
         state: Option<&[u8]>,
         before_restore: &mut dyn FnMut(),
-    ) -> Result<(
+    ) -> BridgeResult<(
         Self,
         PluginDescriptor,
         LoadedPlugin,

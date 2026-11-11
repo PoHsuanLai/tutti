@@ -398,7 +398,7 @@ fn reverb(c: &mut Criterion) {
         c,
         "reverb",
         "fdn",
-        || DesignNode::new(tutti_nodes::FdnDesign::default(), FdnControls::DEFAULT),
+        || DesignNode::live(tutti_nodes::FdnDesign::default(), FdnControls::DEFAULT),
         None,
     );
 }

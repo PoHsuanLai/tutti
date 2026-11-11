@@ -1,13 +1,13 @@
 #![doc = include_str!("../README.md")]
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
-/// The errors a plugin host returns: the process edge's own ([`BridgeError`]
-/// and the fork's) and the format-agnostic ones every host shares.
+/// The errors a plugin host returns that `tutti-plugin-types` does not hold:
+/// the fork's render fault, beside the format-agnostic ones every host shares.
 pub mod error {
-    pub use tutti_plugin_ipc::{BridgeError, PluginForkError, PluginRenderFault, Result};
+    pub use tutti_plugin_ipc::PluginRenderFault;
     pub use tutti_plugin_types::{Delivered, EditorError, LoadStage, PluginError, StateError};
 }
-pub use error::{BridgeError, EditorError, LoadStage, PluginForkError, PluginRenderFault, Result};
+pub use error::{EditorError, LoadStage, PluginRenderFault};
 
 mod format;
 mod host;

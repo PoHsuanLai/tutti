@@ -9,6 +9,7 @@ use std::sync::Arc;
 use tutti_dsp::{
     Design, FdnControls, FdnDesign, Freeverb, FreeverbControls, FreeverbDesign, Realization, System,
 };
+use tutti_fixtures::{Fnv, Noise};
 use tutti_graph::contract::{assert_honest_tail, assert_param_fork, drive_input, prepared};
 use tutti_graph::{
     Env, GraphBuilder, IntoNode, Node, ParamFork, ParamIn, ParamNode, Prepare, Status, Transport,
@@ -37,7 +38,7 @@ fn controls(room: f32, damp: f32) -> FreeverbControls {
 
 /// A live (modulatable) Freeverb node at `c`, prepared at 48 kHz.
 fn live(c: FreeverbControls) -> FreeverbNode {
-    prepared(DesignNode::new(FreeverbDesign, c), SR, BLOCK)
+    prepared(DesignNode::live(FreeverbDesign, c), SR, BLOCK)
 }
 
 /// A node driven block by block, at its own running frame.
@@ -70,13 +71,7 @@ impl<N: Node> Rig<N> {
 }
 
 fn noise(seed: u32, frames: usize) -> Vec<f32> {
-    let mut state = seed.wrapping_mul(747_796_405).wrapping_add(2_891_336_453);
-    (0..frames)
-        .map(|_| {
-            state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
-            0.5 * ((state >> 8) as f32 / (1u32 << 24) as f32 * 2.0 - 1.0)
-        })
-        .collect()
+    Noise::seeded(seed).take(frames).map(|x| 0.5 * x).collect()
 }
 
 fn impulse() -> Vec<f32> {
@@ -115,21 +110,13 @@ fn tail_of(c: FreeverbControls) -> usize {
 #[test]
 fn the_general_midi_send_renders_what_it_always_did() {
     let mut rig = Rig::new(prepared(FreeverbNode::general_midi(), SR, BLOCK));
-    let mut digest: u64 = 0xcbf2_9ce4_8422_2325;
-    let mut eat = |samples: &[f32]| {
-        for s in samples {
-            for byte in s.to_bits().to_le_bytes() {
-                digest ^= u64::from(byte);
-                digest = digest.wrapping_mul(0x0100_0000_01b3);
-            }
-        }
-    };
+    let mut digest = Fnv::new();
     for chunk in noise(21, 24_000).chunks(BLOCK) {
         let out = rig.block(chunk, &[]).audio;
-        eat(&out[0]);
-        eat(&out[1]);
+        digest.f32s(&out[0]);
+        digest.f32s(&out[1]);
     }
-    assert_eq!(digest, 0x1140_a790_410d_b275);
+    assert_eq!(digest.finish(), 0x1140_a790_410d_b275);
 }
 
 /// The General MIDI send takes a mono input and gives a stereo one, with no
@@ -192,7 +179,7 @@ fn the_port_order_is_the_mix_then_the_cells() {
         ]
     );
     let fdn: FdnNode = prepared(
-        DesignNode::new(FdnDesign::default(), FdnControls::DEFAULT),
+        DesignNode::live(FdnDesign::default(), FdnControls::DEFAULT),
         SR,
         BLOCK,
     );
@@ -482,7 +469,7 @@ fn the_mix_blends_the_dry_input() {
 /// not detaching the mix fails `assert_param_fork`.
 #[test]
 fn a_fork_starts_silent_with_the_values_set() {
-    assert_param_fork(DesignNode::new(FreeverbDesign, gm()));
+    assert_param_fork(DesignNode::live(FreeverbDesign, gm()));
 
     let mut rig = Rig::new(live(controls(0.9, 0.5)));
     rig.block(&noise(5, BLOCK), &[]);
@@ -518,7 +505,7 @@ fn a_fork_starts_silent_with_the_values_set() {
 #[test]
 fn a_lane_driving_the_room_changes_how_long_it_rings() {
     let ring = |room: f32| -> f64 {
-        let node = DesignNode::new(FreeverbDesign, gm());
+        let node = DesignNode::live(FreeverbDesign, gm());
         let mut g = GraphBuilder::new(ChannelLayout::MONO, ChannelLayout::STEREO);
         let (n, _) = g.add_with_controls(node);
         g.connect_input(0, n, 0).connect_output(n, 0, 0);
@@ -567,7 +554,7 @@ fn a_lane_driving_the_room_changes_how_long_it_rings() {
 /// `ParamSet`, so the session can address the mix and the room by `UnitParam`.
 #[test]
 fn it_is_inserted_with_a_param_set() {
-    let (_, set) = DesignNode::new(FreeverbDesign, gm()).into_node();
+    let (_, set) = DesignNode::live(FreeverbDesign, gm()).into_node();
     assert!(set.set(UnitParam::RoomSize, 0.7));
     assert_eq!(set.get(UnitParam::RoomSize), Some(0.7));
     assert!(set.set(UnitParam::Wet, 0.25));

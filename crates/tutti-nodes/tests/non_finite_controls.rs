@@ -14,6 +14,7 @@
 
 use std::sync::atomic::Ordering;
 
+use tutti_fixtures::Noise;
 use tutti_graph::contract::drive;
 use tutti_graph::{Node, ParamNode, Prepare};
 use tutti_nodes::{
@@ -29,15 +30,10 @@ const BAD: [f32; 3] = [f32::NAN, f32::INFINITY, f32::NEG_INFINITY];
 
 /// 64 frames of noise per channel, planar.
 fn noise_block(channels: usize, seed: u32) -> Vec<Vec<f32>> {
-    let mut buf = vec![vec![0.0f32; 64]; channels];
-    let mut state = seed.wrapping_mul(747_796_405).wrapping_add(2_891_336_453);
-    for ch in &mut buf {
-        for s in ch.iter_mut() {
-            state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
-            *s = (state >> 8) as f32 / (1u32 << 24) as f32 * 2.0 - 1.0;
-        }
-    }
-    buf
+    let mut stream = Noise::seeded(seed);
+    (0..channels)
+        .map(|_| stream.by_ref().take(64).collect())
+        .collect()
 }
 
 /// A control cell, and a finite value it can be moved to.

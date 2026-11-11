@@ -12,7 +12,8 @@ use std::path::Path;
 use std::process::{Child, Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
-use tutti_plugin_ipc::{BridgeError, Reaped, Result};
+use tutti_plugin_ipc::Reaped;
+use tutti_plugin_types::{BridgeError, BridgeResult};
 use tutti_plugin_types::{Helper, Locator, PluginDescriptor, ProbeOutcome, read_result};
 
 /// How long a probe may take, spawn and the plugin's load included, unless the
@@ -36,7 +37,7 @@ pub fn probe_metadata_with(
     locator: &Locator,
     plugin_path: &Path,
     timeout: Duration,
-) -> Result<PluginDescriptor> {
+) -> BridgeResult<PluginDescriptor> {
     let probe = locator
         .resolve(Helper::Probe)
         .ok_or(BridgeError::ProbeNotFound)?;
@@ -127,7 +128,7 @@ mod tests {
         Locator::at(path)
     }
 
-    fn probe(locator: &Locator, timeout: Duration) -> Result<PluginDescriptor> {
+    fn probe(locator: &Locator, timeout: Duration) -> BridgeResult<PluginDescriptor> {
         probe_metadata_with(locator, Path::new("/plugins/Some.clap"), timeout)
     }
 

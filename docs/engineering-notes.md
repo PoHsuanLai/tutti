@@ -656,9 +656,9 @@ deleted (`tutti-midi`, `tutti-units`) and tested a property that was dropped
 (`no_std`), so it did not fail, it just stopped testing anything. Expect drift in
 comments and docs, and treat it as a bug when you find it:
 
-- **The engine must not reference `dawai` at all.** All of `crates/` is now
-  clear of it — the one remaining mention is the provenance note at the top of
-  `crates/bevy-tutti/Cargo.toml`, which is deliberate. What is left sits in
+- **The engine must not reference `dawai` at all.** Every workspace crate
+  is clear of it; the parked `bevy-tutti` keeps one mention, in
+  `src/plugin_host/live_resize.rs`. What is left sits in
   `docs/`: historical audit records (`archive/fundsp-fork-audit.md`,
   `archive/fundsp-comparison.md`, `archive/unit-adoption-backlog.md`) that surveyed what the app
   workspace reached for, plus a few plugin-hosting plans (all under `docs/archive/`). Those are *dated

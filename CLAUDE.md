@@ -102,9 +102,10 @@ that pays, and the compiler packs tasks too cheap to dispatch alone.
   per process; `MainThread::current()` for a `Drop`). Holding one is the proof:
   no `debug_assert` and no marked thread (doc 016 §2.9a). Bevy holds it as the
   `NonSend` resource `PluginEditorMainThread`. AU also asks the OS.
-- Plugin hosts (VST2, VST3, CLAP, AU) move to a pure `step` core, the
-  `Loaded` typestate trait whose `activate` splits a plugin into a realtime
-  `Processor` and a main-thread `Controller`, and `Lifecycle<L>` per
+- Plugin hosts are a pure `step` core, the `Loaded` typestate trait whose
+  `activate` splits a plugin into a realtime `Processor` and a main-thread
+  `Controller`, and `Lifecycle<L>` (VST2, VST3, CLAP and the served `Ipc` are;
+  AU is doc 021 step 7) per
   [`docs/design/016-plugin-hosts.md`](docs/design/016-plugin-hosts.md).
 
 ## The parallel executor (doc 013)
@@ -184,9 +185,9 @@ and the docs.rs build on a dated nightly); `cargo xtask check-loom` runs clippy 
 - **`unsafe`:** a library with none carries `#![forbid(unsafe_code)]`. Plugin FFI
   `unsafe` lives only in the per-format `-ffi` crates (`tutti-clap-ffi`,
   `tutti-vst3-ffi`, `tutti-au-ffi` and `tutti-vst2-ffi`); host crates forbid
-  `unsafe` (`scripts/check-plugin-ffi.sh`, design 016 §2.9). The in-process VST2
-  backend's `WindowHandle` decode (the raw pointer of `PluginHandle::open_editor`) is the
-  one caller still pinned.
+  `unsafe` (`scripts/check-plugin-ffi.sh`, design 016 §2.9). The one `unsafe` outside
+  them is the in-process editor's `WindowHandle` decode (the raw pointer of
+  `PluginHandle::open_editor`), why `tutti-plugin-host` is `deny`, not `forbid`.
 - **Toolchain:** `rust-toolchain.toml` pins the stable every gate runs on,
   and `Cargo.lock` is committed (`--locked` everywhere). To bump, edit
   `rust-toolchain.toml`, run `cargo xtask ci`, and fix the new lints in the same PR.
@@ -200,7 +201,7 @@ and global state; nextest isolates each test in its own process.
 cargo nextest run --workspace
 cargo nextest run -p tutti-engine -E 'test(my_test_name)'
 cargo test --doc --workspace       # nextest does NOT run doctests, silently
-cargo xtask test-all              # both
+cargo xtask test-all              # test, test-features, test-editor, test-au-installed, test-doc, test-release
 ```
 
 - **A test finds a repo file through `tutti_fixtures`, never a relative `..`
@@ -398,8 +399,7 @@ crates/          everything shipped; directory name = package name; no nesting
   tutti-types    vocabulary only: units, channel layouts, io edge traits;
                  no FFT and no new algorithms but `Fold` (topology to
                  topology, built on the control side). `#![forbid(unsafe_code)]`.
-                 The width folds are gone (every caller builds a `Fold`); sample
-                 conversion stays until the edges move off it
+                 The width folds are gone (every caller builds a `Fold`)
   tutti-codec    the audio file codecs. Out: `Format` (`Wav(Pcm)`, `Aiff(Pcm)`,
                  `Flac { depth, level }`, `Vorbis { quality }`), `Spec`, and `Encoder`
                  over a `Write + Seek` sink, and `FileOut` (the file sink: the
@@ -478,7 +478,7 @@ testing/         never shipped
   tutti-vst2-author (the plugin-authoring half of the vst fork: `plugin_main!`, the
   `AEffect` builder, the plugin-side dispatcher; only the VST2 test plugins use it),
   tutti-shared-plugin (the test plugin: a format-free core, a shell per
-  format), tutti-plugin-contract (the cases every format's host runs against
+  format), tutti-shared-plugin-vst3-cpp (the same spec on the Steinberg SDK), tutti-plugin-contract (the cases every format's host runs against
   it), tutti-shm-model (loom), arc-lend-compare
 vendor/          third-party code we never edit
   vst3-sdk/      the three Steinberg submodules
@@ -578,8 +578,8 @@ list (normal and build edges; dev-dependencies may go anywhere).
   threads and the OS. It also holds the MIDI-CI codec (`CiMessage::encode` and
   `decode` over the bytes between `F0` and `F7`, which the caller frames with
   `tutti_ump::frame` and reassembles with `tutti_ump::SysexAssembler`; `Muid::new`
-  refuses the reserved range and broadcast, which is a `Destination`). It has no
-  state machine and no inbound path; design 017 §5, "MIDI-CI", is the rebuild.
+  refuses the reserved range and broadcast, which is a `Destination`). The CI codec has
+  no state machine and no inbound path; design 017 §5, "MIDI-CI", is the rebuild.
   Its `tutti-ump` edge is for the UMP Endpoint and Connection (doc 017 stage 4b):
   `Endpoint::reply` answers a received Stream message into a caller's
   `Extend<Ump>` and allocates nothing, `Connection` is Table 4 steps 2 to 4 as a
@@ -746,11 +746,12 @@ list (normal and build edges; dev-dependencies may go anywhere).
   the graph's param segments and ramps, modulation's `Amount.curve` and `shape()`, and
   the automation lanes and recorder all use `Law`. A law nothing in tutti uses is not
   added (`audio-automation`'s `Back`, `Elastic`, `Bounce`, `Circular` and cubic `Bezier`
-  were dropped). `tutti-polysynth`'s portamento takes a `Law` (`PortamentoCurve` is gone);
-  `CrossfadeCurve`'s smootherstep is the follow-up (doc 024 consolidation 6).
+  were dropped). `tutti-polysynth`'s portamento takes a `Law` (`PortamentoCurve` is gone),
+  and the graph's crossfade is `Law::Smootherstep`.
 - `tutti-graph` depends on no tutti crate but `tutti-types`, `tutti-rt`, `tutti-ump` and `tutti-curve` (its outside
   deps are `bytemuck` and `ringbuf`, the editor→executor queue), keeps every
-  module private (`tutti_graph::Plan`, never `tutti_graph::plan::Plan`; CI runs
+  module private but `contract`, the sample-accuracy suite's harness behind the
+  off-by-default `contract` feature (`tutti_graph::Plan`, never `tutti_graph::plan::Plan`; CI runs
   the per-module path gate on it) and is `#![forbid(unsafe_code)]`.
 - `tutti-session` keeps every module private too (`tutti_session::Graph`;
   CI runs the per-module path gate on it), has no `bevy` feature and
@@ -979,7 +980,7 @@ Scalars use `Param<U>`.
   call) and `Engine::support_output` adds a wider one; a buffer of an unsupported
   width is a silent counted block, and `OutputBlock::new` makes the call. Export folds the graph onto the file in `GraphSource::new`.
   The sampler builds a `Place` from `Wave::topology()` when it builds a source
-  (`MemorySource::try_with_channels`, `memory_voice`), and a wave with a channel
+  (`MemorySource::with_channels`, `memory_voice`), and a wave with a channel
   no speaker names (`FoldError::Unnamed`) is refused there as a `PlaceError`;
   the streaming tier reads a file at its own width and order. The input edges
   report a topology: a decoded file (`Wave::topology`, `FileIn::topology`,
@@ -1129,9 +1130,9 @@ read the `Cargo.toml`, grep for the type, run the probe.
   hardcoded `[u8; 16]`.
 - **Neither umbrella holds engine logic.** A piece with one owner goes to
   that crate; a piece composing several goes to `tutti-session`.
-- **The engine must not reference `dawai`.** The provenance note in
-  `bevy-tutti/Cargo.toml` is the one exception. The `docs/` audits are dated
-  records: fix only what claims to be current, and never "update" a reference
+- **The engine must not reference `dawai`.** Every workspace crate is clear of
+  it; the parked `bevy-tutti` keeps one mention (`plugin_host/live_resize.rs`), and
+  the dated records in `docs/` keep theirs: fix only what claims to be current, and never "update" a reference
   to a new app-side path.
 - **Dead crate names:** `MidiQueueNode`, `TimedQueueNode`, `TimedSender`, `TimedSendError` → deleted (doc 017 E4: a control thread sends through `tutti_graph::EventInletNode`'s `EventInletWriter`, with `tutti_midi_runtime::MidiKeys` for the key helpers; `Graph::open_event_inlet` in the session); `ChannelSumNode` → deleted (a port or an output
   channel sums its sources: `Op::Sum`, doc 013 "Audio fan-in sums"); `tutti-spatial` → `tutti-nodes` (the panner nodes, `VbapPannerNode`
@@ -1146,11 +1147,11 @@ read the `Cargo.toml`, grep for the type, run the probe.
   `Graph::open_inlet`), `Recorder` and `PumpLoop` → `tutti-session` (feature
   `record`, implied by `audio-io`), `AudioIn` → `Source`, `AudioOut` → `Sink`, `OnEmpty`/`ON_EMPTY` → the `Pull` a
   `Source::pull` answers (`Starved`, `Ended`, `Failed`), `tutti_types::pump` → a private
-  step of `PumpLoop`, `vst-tutti` → `vst-tutti` → `tutti-vst2-ffi` (the host half: ABI types, loader,
+  step of `PumpLoop`, `vst-tutti` → `tutti-vst2-ffi` (the host half: ABI types, loader,
   host callback, buffers) and `testing/tutti-vst2-author` (the plugin side, test-only), `tutti-rustysynth` → `tutti-soundfont` (the voice
   render; the note logic went to `tutti-voicing`), `butler` → disk streamer (`tutti-sampler`'s `streamer/`: `ButlerCommand` → `StreamerCommand`, `ButlerThread` → `StreamerThread`, `ButlerSender` → `StreamerSender`, `ButlerGone` → `StreamerGone`, `ButlerCycle` → `StreamerCycle`; the thread is `tutti-streamer`), `tutti-units` → `tutti-nodes`, `tutti-synth` →
-  `tutti-polysynth` + `tutti-soundfont`, `tutti-midi` → the four `midi/`
-  crates, `tutti-analysis` → `tutti-dsp`, whose analyzers are now `tutti-measure`, `tutti-core` → `tutti-transport`
+  `tutti-polysynth` + `tutti-soundfont`, `tutti-midi` → `tutti-midi-{runtime,hardware,file}`
+  (and `tutti-midi-types`, since gone), `tutti-analysis` → `tutti-dsp`, whose analyzers are now `tutti-measure`, `tutti-core` → `tutti-transport`
   (`Transport`, `ProjectMeter`, the clocks), `tutti-metering` (`LoadMeter`;
   the master meter is now a plan op, `Editor::open_meter`) and `tutti-engine` (`Engine`; `MAX_ROOT_CHANNELS`
   is `tutti-graph`'s), `tutti-node` and `fundsp-tutti` →

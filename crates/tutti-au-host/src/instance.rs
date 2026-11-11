@@ -26,15 +26,14 @@ use std::sync::Arc;
 
 use tutti_au_ffi::property::{BypassEffect, ClassInfo, ClassInfoFromDocument, Latency};
 use tutti_au_ffi::{AuEditor, Element, HostCallbacks, Scope, TransportState, Unit};
-use tutti_plugin_types::{
-    ChannelLayout, MainThread, PluginDescriptor, RequestWord, TransportInfo,
-};
+use tutti_plugin_types::{ChannelLayout, MainThread, PluginDescriptor, RequestWord, TransportInfo};
 use tutti_types::Samples;
 use tutti_types::value::units::Seconds;
 
 use crate::bus::{self, AuChannelConfig, BusDirection};
 use crate::channel_layout::{self, AuLayoutTag};
 use crate::component::{AuComponentRef, AuType};
+use crate::control::describe;
 use crate::error::Result;
 use crate::handle::AuHandle;
 use crate::identity;
@@ -47,7 +46,6 @@ use crate::stream::{AuBusLayout, StreamConfig};
 use crate::transport;
 #[cfg(feature = "test-support")]
 use crate::types::AudioUnit;
-use crate::control::describe;
 use crate::watch::PropertyWatch;
 
 /// An AU that has been instantiated but not yet initialized.
@@ -386,12 +384,10 @@ impl AuLoaded {
         &self.last_latency
     }
 
-
     /// High-level [`AuType`] this component was classified as.
     pub fn au_type(&self) -> AuType {
         self.handle.au_type()
     }
-
 
     /// Configured input channel count (`0` for generators / instruments, which
     /// have no input bus).
@@ -404,18 +400,15 @@ impl AuLoaded {
         }
     }
 
-
     /// Configured output channel count.
     pub fn num_outputs(&self) -> u32 {
         self.config.channels.outputs.count() as u32
     }
 
-
     /// Configured sample rate in Hz.
     pub fn sample_rate(&self) -> f64 {
         self.config.sample_rate
     }
-
 
     /// Copies the AU's display name.
     ///
@@ -426,7 +419,6 @@ impl AuLoaded {
     pub fn get_name(&self) -> Result<String> {
         Ok(self.handle.get_name())
     }
-
 
     /// Writes a parameter value **and** notify listeners — including the AU's own
     /// open editor.
@@ -459,7 +451,6 @@ impl AuLoaded {
         )?)
     }
 
-
     /// Reads a parameter's current value, in the parameter's own units, from
     /// the global scope, element 0.
     ///
@@ -470,7 +461,6 @@ impl AuLoaded {
     pub fn get_parameter(&self, id: u32) -> Result<f32> {
         parameters::get(self.unit(), id)
     }
-
 
     /// Installs a render notification, called twice per render (pre and post).
     ///
@@ -524,7 +514,6 @@ impl AuLoaded {
         )?)
     }
 
-
     /// This instance's unit, wrapped so a render-notify callback can capture it.
     ///
     /// A pre-render callback's whole job is usually to schedule automation on the
@@ -540,7 +529,6 @@ impl AuLoaded {
     pub fn render_unit(&self) -> crate::render_notify::RenderUnit {
         self.unit().render_unit()
     }
-
 
     /// Schedules parameter events into the render call currently in flight.
     ///
@@ -578,12 +566,10 @@ impl AuLoaded {
         )?)
     }
 
-
     /// Enumerates all parameters exposed by the AU.
     pub fn get_parameter_list(&self) -> Vec<AuParameter> {
         parameters::list(self.unit())
     }
-
 
     /// How many buses the AU has on `direction`.
     ///
@@ -598,7 +584,6 @@ impl AuLoaded {
     pub fn bus_count(&self, direction: BusDirection) -> u32 {
         bus::bus_count(self.unit(), direction)
     }
-
 
     /// The channel layout of bus `bus` on `direction`.
     ///
@@ -616,7 +601,6 @@ impl AuLoaded {
         bus::bus_layout(self.unit(), direction, bus)
     }
 
-
     /// Every channel configuration the AU declares it can run.
     ///
     /// An empty vec means the AU publishes no constraint — which is what all 22
@@ -626,7 +610,6 @@ impl AuLoaded {
     pub fn supported_channel_configs(&self) -> Vec<AuChannelConfig> {
         bus::supported_channel_configs(self.unit())
     }
-
 
     /// Every channel *order* the AU says it can run bus `bus` of `direction` in.
     ///
@@ -643,7 +626,6 @@ impl AuLoaded {
         channel_layout::supported_layout_tags(self.unit(), direction, bus)
     }
 
-
     /// The channel order bus `bus` of `direction` is running right now.
     ///
     /// # Errors
@@ -658,7 +640,6 @@ impl AuLoaded {
     pub fn layout_tag(&self, direction: BusDirection, bus: u32) -> Result<AuLayoutTag> {
         channel_layout::layout_tag(self.unit(), direction, bus)
     }
-
 
     /// Asks the AU to run bus `bus` of `direction` in the `tag` channel order.
     ///
@@ -686,7 +667,6 @@ impl AuLoaded {
         channel_layout::set_layout_tag(self.unit(), direction, bus, tag)
     }
 
-
     /// The AU's own name for bus `bus` of `direction` — "Sidechain", "stereo mix".
     ///
     /// Without this a multi-input plugin's buses render as "Bus 1..N" in the host
@@ -710,7 +690,6 @@ impl AuLoaded {
         channel_layout::element_name(self.unit(), direction, bus)
     }
 
-
     /// What the AU publishes about its MIDI **output** streams, or `None` if it
     /// publishes nothing.
     ///
@@ -727,7 +706,6 @@ impl AuLoaded {
     pub fn midi_output_info(&self) -> Option<MidiOutputInfo> {
         midi_out::midi_output_info(self.unit())
     }
-
 
     /// Installs `sink` as the destination for MIDI this AU generates during render.
     ///
@@ -758,7 +736,6 @@ impl AuLoaded {
         Ok(midi_out::install(self.unit(), sink)?)
     }
 
-
     /// Tells the AU where it sits in the host's project — `"track 3"`.
     ///
     /// Purely presentational: the AU shows it in its own window so a user with
@@ -776,7 +753,6 @@ impl AuLoaded {
         identity::set_context_name(self.unit(), name)
     }
 
-
     /// Reads back the name set by [`set_context_name`](Self::set_context_name).
     ///
     /// All 57 instantiable units measured return the exact string written, so
@@ -788,7 +764,6 @@ impl AuLoaded {
     pub fn context_name(&self) -> Result<Option<String>> {
         identity::context_name(self.unit())
     }
-
 
     /// Give this instance its own name, distinct from another load of the same
     /// AU.
@@ -803,7 +778,6 @@ impl AuLoaded {
         identity::set_nick_name(self.unit(), name)
     }
 
-
     /// Reads back the name set by [`set_nick_name`](Self::set_nick_name).
     ///
     /// `Ok(None)` means the AU implements the property but has no name set —
@@ -814,7 +788,6 @@ impl AuLoaded {
     pub fn nick_name(&self) -> Result<Option<String>> {
         identity::nick_name(self.unit())
     }
-
 
     /// The AU's own shortlist of its most important parameters, in its own
     /// priority order.
@@ -833,7 +806,6 @@ impl AuLoaded {
         identity::parameters_for_overview(self.unit())
     }
 
-
     /// Filesystem path of the AU's icon, for a plugin browser row.
     ///
     /// `Ok(None)` means the AU implements the property but supplied no URL, or
@@ -846,7 +818,6 @@ impl AuLoaded {
         identity::icon_location(self.unit())
     }
 
-
     /// Whether this AU implements the parameter↔MIDI mapping family at all.
     ///
     /// The capability gate to branch on before offering a MIDI-learn UI, and the
@@ -858,7 +829,6 @@ impl AuLoaded {
     pub fn supports_parameter_midi_mapping(&self) -> bool {
         midi_map::supports_parameter_midi_mapping(self.unit())
     }
-
 
     /// The AU's current parameter↔MIDI mapping table.
     ///
@@ -880,7 +850,6 @@ impl AuLoaded {
     pub fn parameter_midi_mappings(&self) -> Result<Vec<AuMidiMapping>> {
         midi_map::all(self.unit())
     }
-
 
     /// Adds `mappings`, replacing any that already target the same parameter.
     ///
@@ -907,7 +876,6 @@ impl AuLoaded {
         midi_map::add(self.unit(), mappings)
     }
 
-
     /// Removes the mappings targeting each argument's
     /// `(scope, element, parameter_id)`.
     ///
@@ -926,7 +894,6 @@ impl AuLoaded {
         midi_map::remove(self.unit(), mappings)
     }
 
-
     /// Replaces the AU's entire mapping table with `mappings`.
     ///
     /// The obvious way to *clear* the table — writing an empty one — does not
@@ -942,7 +909,6 @@ impl AuLoaded {
     pub fn set_parameter_midi_mappings(&mut self, mappings: &[AuMidiMapping]) -> Result<()> {
         midi_map::set_all(self.unit(), mappings)
     }
-
 
     /// Arms "learn" mode: the AU maps the **next MIDI message it sees** to the
     /// parameter `mapping` names.
@@ -963,7 +929,6 @@ impl AuLoaded {
         midi_map::arm_hot_map(self.unit(), mapping)
     }
 
-
     /// The mapping a hot map just completed, or `None` if none has.
     ///
     /// `None` rather than an error, because the AU's status cannot be trusted
@@ -977,7 +942,6 @@ impl AuLoaded {
         midi_map::hot_map(self.unit())
     }
 
-
     /// Whether a completed hot map is waiting to be read.
     ///
     /// Named form of [`hot_mapped_parameter`](Self::hot_mapped_parameter)
@@ -987,12 +951,10 @@ impl AuLoaded {
         midi_map::hot_map_pending(self.unit())
     }
 
-
     /// Borrows a [`ParamView`] for scoped parameter access.
     pub fn parameters(&self) -> ParamView<'_> {
         ParamView::new(self.unit())
     }
-
 
     /// Returns the plugin-reported processing latency in samples at the current
     /// sample rate.
@@ -1023,7 +985,6 @@ impl AuLoaded {
         Ok(Seconds(seconds).to_samples(tutti_types::SampleRate::new(self.sample_rate())))
     }
 
-
     /// Seconds of audio this AU keeps producing after its input goes silent.
     ///
     /// Distinct from [`get_latency`](Self::get_latency), which reports how far
@@ -1041,7 +1002,6 @@ impl AuLoaded {
     pub fn get_tail_time(&self) -> Result<Seconds> {
         transport::tail_time(self.unit())
     }
-
 
     /// Tells this AU how far downstream of it the listener is, on one bus.
     ///
@@ -1072,7 +1032,6 @@ impl AuLoaded {
         transport::set_presentation_latency(self.unit(), direction, bus, latency)
     }
 
-
     /// Which parameters writing the meta-parameter `id` may silently move.
     ///
     /// `None` means the AU did not answer — **not** that nothing moves. See
@@ -1088,7 +1047,6 @@ impl AuLoaded {
         parameters::dependents_of(self.unit(), id)
     }
 
-
     /// Borrows the installed transport, or `None` if
     /// [`install_host_callbacks`](Self::install_host_callbacks) was never called.
     ///
@@ -1098,7 +1056,6 @@ impl AuLoaded {
     pub fn transport(&self) -> Option<&TransportState> {
         self.transport.as_ref().map(HostCallbacks::state)
     }
-
 
     /// Publishes a transport snapshot for the AU to pull during the next render.
     ///
@@ -1119,7 +1076,6 @@ impl AuLoaded {
             None => false,
         }
     }
-
 
     /// Enumerates the AU's factory presets.
     ///
@@ -1151,7 +1107,6 @@ impl AuLoaded {
             .collect()
     }
 
-
     /// Selects factory preset `number`, restoring the parameter values the AU
     /// stores under it.
     ///
@@ -1163,7 +1118,6 @@ impl AuLoaded {
     pub fn load_factory_preset(&mut self, number: i32) -> Result<()> {
         Ok(self.unit().set_present_preset(number)?)
     }
-
 
     /// Reads back the preset the AU currently considers active.
     ///
@@ -1178,7 +1132,6 @@ impl AuLoaded {
         let (number, name) = self.unit().present_preset()?;
         Ok(AuPreset { number, name })
     }
-
 
     /// Bypass the effect: when set, the AU passes its input through to its
     /// output without processing it.
@@ -1203,7 +1156,6 @@ impl AuLoaded {
             .set::<BypassEffect>(Scope::GLOBAL, Element::ZERO, &value)?)
     }
 
-
     /// Whether the AU is currently bypassed.
     ///
     /// # Errors
@@ -1215,7 +1167,6 @@ impl AuLoaded {
             .get::<BypassEffect>(Scope::GLOBAL, Element::ZERO)?;
         Ok(value != 0)
     }
-
 
     /// Whether the AU has been told it is rendering offline.
     ///
@@ -1233,7 +1184,6 @@ impl AuLoaded {
         crate::offline::is_offline_render(self.unit())
     }
 
-
     /// Tells the AU whether this render is a faster-than-real-time bounce.
     ///
     /// A host doing an offline export sets this on every AU in the graph before
@@ -1247,7 +1197,6 @@ impl AuLoaded {
     pub fn set_offline_render(&mut self, offline: bool) -> Result<()> {
         crate::offline::set_offline_render(self.unit(), offline)
     }
-
 
     /// Whether the AU is willing to render with its input and output buffers
     /// aliasing the same memory.
@@ -1268,7 +1217,6 @@ impl AuLoaded {
         crate::offline::supports_in_place(self.unit())
     }
 
-
     /// The AU's current render-quality setting, `0..=`[`RENDER_QUALITY_MAX`](crate::offline::RENDER_QUALITY_MAX).
     ///
     /// # Errors
@@ -1277,7 +1225,6 @@ impl AuLoaded {
     pub fn render_quality(&self) -> Result<u32> {
         crate::offline::render_quality(self.unit())
     }
-
 
     /// Sets the AU's render quality, `0` (cheapest) to
     /// [`RENDER_QUALITY_MAX`](crate::offline::RENDER_QUALITY_MAX) (best).
@@ -1292,7 +1239,6 @@ impl AuLoaded {
     pub fn set_render_quality(&mut self, quality: u32) -> Result<()> {
         crate::offline::set_render_quality(self.unit(), quality)
     }
-
 
     /// Restores state that came from a **document** (a saved project), preferring
     /// `kAudioUnitProperty_ClassInfoFromDocument` and falling back to `ClassInfo`.
@@ -1336,7 +1282,6 @@ impl AuLoaded {
         Ok(())
     }
 
-
     /// Writes the AU's current state to `path` as a `.aupreset` file — the format
     /// Logic, Live and Reaper read.
     ///
@@ -1357,7 +1302,6 @@ impl AuLoaded {
     ) -> Result<()> {
         crate::aupreset::save_preset_file(self.unit(), self.handle.component(), path, name)
     }
-
 
     /// Loads a `.aupreset` file, **validating that it belongs to this AU** before
     /// applying it. Returns the identity that was accepted.
@@ -1394,7 +1338,6 @@ impl AuLoaded {
         Ok(identity)
     }
 
-
     /// Configured maximum block size in frames.
     ///
     /// This is the bound the render enforces: a `num_frames`
@@ -1404,7 +1347,4 @@ impl AuLoaded {
     pub fn block_size(&self) -> u32 {
         self.config.block_size
     }
-
-
-
 }

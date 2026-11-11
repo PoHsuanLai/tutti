@@ -111,9 +111,9 @@ pub use channel_layout::AuLayoutTag;
 // but is *empty* off macOS, so an ungated re-export names items that do not
 // exist and fails to compile on Linux.
 #[cfg(target_os = "macos")]
-pub use handle::AuHandle;
-#[cfg(target_os = "macos")]
 pub use controller::AuController;
+#[cfg(target_os = "macos")]
+pub use handle::AuHandle;
 #[cfg(target_os = "macos")]
 pub use instance::AuLoaded;
 #[cfg(target_os = "macos")]

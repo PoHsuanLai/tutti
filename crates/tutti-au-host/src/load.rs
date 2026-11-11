@@ -10,10 +10,10 @@ use std::path::Path;
 
 use tutti_plugin_types::{Load, LoadStage, MainThread, Origin, PluginError, PluginResult};
 
+use crate::bus::BusDirection;
 use crate::component::{AuComponentInfo, enumerate_components};
 use crate::control::plugin_error;
 use crate::instance::AuLoaded;
-use crate::bus::BusDirection;
 
 /// The stream configuration a unit is created at: the activation applies its
 /// own rate and block ceiling, so these only have to be a configuration the

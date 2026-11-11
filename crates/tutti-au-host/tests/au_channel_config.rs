@@ -41,10 +41,10 @@ use support::corpus::{
     peak, render, silence,
 };
 
+use crate::support::au::Au;
+use tutti_au_host::AuError;
 use tutti_au_host::BusDirection;
 use tutti_au_host::{AuBusLayout, StreamConfig};
-use tutti_au_host::AuError;
-use crate::support::au::Au;
 use tutti_plugin_types::ChannelLayout;
 
 /// As in `au_conformance.rs`: AudioToolbox tolerates concurrent use of distinct
@@ -93,9 +93,8 @@ fn an_au_opened_in_mono_reports_one_output_channel() {
     for unit in ACCEPTS_MONO {
         let info = unit.require();
         let has_input = unit.au_type == tutti_au_host::AuType::Effect;
-        let mut au =
-            Au::new_with_config(info.component, config_at(ChannelLayout::MONO, has_input))
-                .unwrap_or_else(|e| panic!("{}: instantiate in mono failed: {e:?}", unit.label));
+        let mut au = Au::new_with_config(info.component, config_at(ChannelLayout::MONO, has_input))
+            .unwrap_or_else(|e| panic!("{}: instantiate in mono failed: {e:?}", unit.label));
 
         assert_eq!(
             au.num_outputs(),
@@ -147,9 +146,8 @@ fn a_refused_layout_reports_the_width_the_au_kept() {
     for unit in REFUSES_MONO {
         let info = unit.require();
         let has_input = unit.au_type == tutti_au_host::AuType::Effect;
-        let mut au =
-            Au::new_with_config(info.component, config_at(ChannelLayout::MONO, has_input))
-                .unwrap_or_else(|e| panic!("{}: instantiate failed: {e:?}", unit.label));
+        let mut au = Au::new_with_config(info.component, config_at(ChannelLayout::MONO, has_input))
+            .unwrap_or_else(|e| panic!("{}: instantiate failed: {e:?}", unit.label));
 
         assert_eq!(
             au.num_outputs(),
@@ -194,9 +192,8 @@ fn a_quad_request_is_honoured_where_the_au_takes_it() {
     for unit in ACCEPTS_MONO {
         let info = unit.require();
         let has_input = unit.au_type == tutti_au_host::AuType::Effect;
-        let mut au =
-            Au::new_with_config(info.component, config_at(ChannelLayout::QUAD, has_input))
-                .unwrap_or_else(|e| panic!("{}: instantiate in quad failed: {e:?}", unit.label));
+        let mut au = Au::new_with_config(info.component, config_at(ChannelLayout::QUAD, has_input))
+            .unwrap_or_else(|e| panic!("{}: instantiate in quad failed: {e:?}", unit.label));
         assert_eq!(
             au.num_outputs(),
             4,

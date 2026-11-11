@@ -17,11 +17,11 @@ mod tests {
     use crate::component::find_component;
     use crate::controller::AuController;
     use crate::instance::AuLoaded;
-    use crate::processor::AuProcessor;
-    use tutti_plugin_types::{Loaded, MainThread, MaxBlock, Prepare, SampleRate};
     use crate::listener::EventAddress;
     use crate::parameters::ParamAddress;
+    use crate::processor::AuProcessor;
     use crate::types::{AudioComponentDescription, K_AUDIO_UNIT_TYPE_EFFECT};
+    use tutti_plugin_types::{Loaded, MainThread, MaxBlock, Prepare, SampleRate};
 
     /// `ScheduleAddress::GLOBAL` must name the same place the other two address
     /// types do. They are deliberately separate types, so nothing but a test
@@ -56,8 +56,11 @@ mod tests {
         };
         let comp = find_component(&desc).expect("AUDelay ships with macOS");
         let au = AuLoaded::new(comp, 48_000.0, 512).unwrap();
-        let prepare = Prepare::new(SampleRate(48_000.0), MaxBlock::of(tutti_types::Samples(512)))
-            .unwrap();
+        let prepare = Prepare::new(
+            SampleRate(48_000.0),
+            MaxBlock::of(tutti_types::Samples(512)),
+        )
+        .unwrap();
         au.activate(&MainThread::claim().unwrap(), prepare)
             .unwrap_or_else(|e| panic!("AUDelay activates: {}", e.reason))
     }

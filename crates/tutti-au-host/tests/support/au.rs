@@ -20,13 +20,9 @@ use std::ops::{Deref, DerefMut};
 use tutti_au_ffi::{Element, Scope};
 use tutti_au_host::offline::PushScratch;
 use tutti_au_host::types::{AudioUnitRenderActionFlags, K_AUDIO_UNIT_ERR_UNINITIALIZED};
-use tutti_au_host::{
-    AuComponentInfo, AuController, AuError, AuLoaded, AuProcessor, StreamConfig,
-};
+use tutti_au_host::{AuComponentInfo, AuController, AuError, AuLoaded, AuProcessor, StreamConfig};
 use tutti_fixtures::main_thread;
-use tutti_plugin_types::{
-    Control, Loaded, MaxBlock, PluginError, Prepare, RenderMode, SampleRate,
-};
+use tutti_plugin_types::{Control, Loaded, MaxBlock, PluginError, Prepare, RenderMode, SampleRate};
 use tutti_types::Samples;
 
 enum State {
@@ -52,11 +48,7 @@ fn refusal(error: PluginError) -> AuError {
 }
 
 fn prepare_of(rate: f64, block: u32) -> Prepare {
-    Prepare::new(
-        SampleRate(rate),
-        MaxBlock::of(Samples(block as usize)),
-    )
-    .expect("a usable rate")
+    Prepare::new(SampleRate(rate), MaxBlock::of(Samples(block as usize))).expect("a usable rate")
 }
 
 impl Au {
@@ -296,7 +288,10 @@ impl Au {
     }
 
     /// The state as bytes ([`AuLoaded::class_info`]).
-    pub fn get_state(&self, _main: &tutti_plugin_types::MainThread) -> tutti_au_host::Result<Vec<u8>> {
+    pub fn get_state(
+        &self,
+        _main: &tutti_plugin_types::MainThread,
+    ) -> tutti_au_host::Result<Vec<u8>> {
         self.class_info()
     }
 

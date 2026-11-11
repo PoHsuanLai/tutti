@@ -15,11 +15,11 @@ use std::collections::HashMap;
 use tutti_au_ffi::AuEditor;
 use tutti_plugin_types::features::probed;
 use tutti_plugin_types::{
-    AuComponentType, AutomationMode, Control, EditorCapabilities, EditorError, EditorPresence,
-    EditorSize, EditorWindow, Features, LoadedPlugin, MainThread, Normalized, ParamFlags, ParamId,
-    ParamRange, ParamSteps, ParameterInfo, PluginBus, PluginBuses, PluginClass, PluginDescriptor,
-    PluginError, PluginResult, PluginTail, Preset, PresetId, RenderMode, Request, RescanScope,
-    SampleRate, WindowHandle, taken, ContentScale,
+    AuComponentType, AutomationMode, ContentScale, Control, EditorCapabilities, EditorError,
+    EditorPresence, EditorSize, EditorWindow, Features, LoadedPlugin, MainThread, Normalized,
+    ParamFlags, ParamId, ParamRange, ParamSteps, ParameterInfo, PluginBus, PluginBuses,
+    PluginClass, PluginDescriptor, PluginError, PluginResult, PluginTail, Preset, PresetId,
+    RenderMode, Request, RescanScope, SampleRate, WindowHandle, taken,
 };
 use tutti_types::Samples;
 

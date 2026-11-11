@@ -50,8 +50,8 @@
 use std::sync::Mutex;
 use tutti_graph::UmpAt;
 
-use assert_no_alloc::AllocDisabler;
 use crate::support::au::Au;
+use assert_no_alloc::AllocDisabler;
 use tutti_au_host::BusDirection;
 use tutti_au_host::parameters::{self, ParamAddress};
 use tutti_fixtures::midi;

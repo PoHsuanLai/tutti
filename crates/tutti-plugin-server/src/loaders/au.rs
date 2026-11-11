@@ -267,11 +267,7 @@ impl AuInstance {
     /// The word the unit's property listener raises, for a test that needs to
     /// say a change no installed unit will make on request.
     pub(crate) fn requests_for_test(&self) -> std::sync::Arc<tutti_plugin_types::RequestWord> {
-        std::sync::Arc::clone(
-            self.loaded_ref()
-                .expect("the unit is loaded")
-                .requests(),
-        )
+        std::sync::Arc::clone(self.loaded_ref().expect("the unit is loaded").requests())
     }
 
     /// Overwrite the cached latency, so a test can prove a poll replaces it
@@ -344,7 +340,10 @@ impl PluginAudio for AuInstance {
             let Some(prepare) = self.state.prepare() else {
                 return false;
             };
-            self.drive(main, Event::Op(HostOp::Reconfigure(prepare.with_mode(mode))));
+            self.drive(
+                main,
+                Event::Op(HostOp::Reconfigure(prepare.with_mode(mode))),
+            );
             self.refresh_meta(main);
             self.finish_refusals();
             return self.is_active() && self.loaded_ref().is_some_and(|l| l.render_mode_accepted());
@@ -563,8 +562,15 @@ mod tests {
             loaded.features.contains(Features::TRANSPORT),
             "the loader must offer transport to every unit that accepts it"
         );
-        assert!(!loaded.features.contains(Features::MIDI_IN), "an effect takes no MIDI");
-        assert!(au.descriptor().id.starts_with("au."), "{}", au.descriptor().id);
+        assert!(
+            !loaded.features.contains(Features::MIDI_IN),
+            "an effect takes no MIDI"
+        );
+        assert!(
+            au.descriptor().id.starts_with("au."),
+            "{}",
+            au.descriptor().id
+        );
     }
 
     #[test]
@@ -716,7 +722,10 @@ mod tests {
             refused: false,
         };
         let prepare = Prepare::new(SampleRate(RATE), MaxBlock::of(Samples(512))).unwrap();
-        assert!(au.drive(&main_thread(), Event::Op(HostOp::Activate(prepare))).is_none());
+        assert!(
+            au.drive(&main_thread(), Event::Op(HostOp::Activate(prepare)))
+                .is_none()
+        );
         let transport = TransportInfo::new().with_tempo(150.0).with_playing(true);
         run(&mut au, 512, Some(&transport), None).expect("a block with a transport renders");
         assert!(au.loaded_ref().and_then(|l| l.transport()).is_none());
@@ -870,8 +879,9 @@ mod tests {
 
         // The write path lands full scale on `max`, not on the raw `1.0`.
         au.set_parameter(&main, target.id, Normalized::of(1.0));
-        let after = tutti_au_host::parameters::get(au.loaded_ref().unwrap().unit(), target.id.get())
-            .expect("param is readable");
+        let after =
+            tutti_au_host::parameters::get(au.loaded_ref().unwrap().unit(), target.id.get())
+                .expect("param is readable");
         let tolerance = (max - min).abs() * 1e-4;
         assert!(
             (f64::from(after) - max).abs() <= tolerance,

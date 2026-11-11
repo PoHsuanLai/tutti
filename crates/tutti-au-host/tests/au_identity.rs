@@ -56,12 +56,12 @@ use std::sync::Mutex;
 use tutti_au_ffi::property::ParametersForOverview;
 use tutti_au_ffi::{Property, Scope};
 
+use crate::support::au::Au;
 use support::corpus::{
     DELAY, DLS_SYNTH, DYNAMICS, INVALID_PROPERTY, MATRIX_REVERB, every_component,
 };
 use support::probe_au::{Misbehaviour, PROBE_MANUFACTURER};
 use tutti_au_host::AuError;
-use crate::support::au::Au;
 
 /// AudioToolbox tolerates concurrent use of *distinct* units, but component
 /// discovery walks a process-global registry, and the two sweeps here

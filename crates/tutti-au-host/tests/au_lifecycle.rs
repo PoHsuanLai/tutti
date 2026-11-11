@@ -16,7 +16,6 @@ use tutti_au_host::component::{AuComponentRef, find_component};
 use tutti_au_host::types::{AudioComponentDescription, K_AUDIO_UNIT_TYPE_EFFECT};
 use tutti_fixtures::main_thread;
 
-
 fn find_apple_delay() -> Option<AuComponentRef> {
     let desc = AudioComponentDescription {
         componentType: K_AUDIO_UNIT_TYPE_EFFECT,
@@ -154,8 +153,7 @@ fn test_save_load_state() {
 
     let state = inst.get_state(&main_thread()).unwrap();
     assert!(!state.is_empty());
-    inst.set_state(&main_thread(), &state)
-        .unwrap();
+    inst.set_state(&main_thread(), &state).unwrap();
 }
 
 /// Presets and bypass must work in the `Loaded` state, before
@@ -226,8 +224,7 @@ fn test_render_callback_installed_once() {
     let in_slices: Vec<&[f32]> = input.iter().map(|v| v.as_slice()).collect();
 
     for _ in 0..16 {
-        let mut out_slices: Vec<&mut [f32]> =
-            output.iter_mut().map(|v| v.as_mut_slice()).collect();
+        let mut out_slices: Vec<&mut [f32]> = output.iter_mut().map(|v| v.as_mut_slice()).collect();
         inst.process(&in_slices, &mut out_slices, 512).unwrap();
     }
 
@@ -383,7 +380,6 @@ fn an_unusual_rate_cannot_be_reported_as_accepted_unless_it_was() {
     }
 }
 
-
 // ------------------------------------------------------------------ the traits
 
 mod halves {
@@ -417,7 +413,10 @@ mod halves {
         let unit = controller.unit().clone();
         let loaded = AuLoaded::deactivate(&main_thread(), processor, controller)
             .unwrap_or_else(|s| panic!("AUDelay deactivates: {}", s.reason));
-        assert!(loaded.unit().same_unit(&unit), "the rejoined unit is the one split");
+        assert!(
+            loaded.unit().same_unit(&unit),
+            "the rejoined unit is the one split"
+        );
         let (p, c) = loaded
             .activate(&main_thread(), prepare(48_000.0, 256))
             .unwrap_or_else(|e| panic!("reactivates at another rate: {}", e.reason));
@@ -436,7 +435,11 @@ mod halves {
             Ok(_) => panic!("a pair from two activations was rejoined"),
             Err(stuck) => stuck,
         };
-        assert!(stuck.reason.to_string().contains("two activations"), "{}", stuck.reason);
+        assert!(
+            stuck.reason.to_string().contains("two activations"),
+            "{}",
+            stuck.reason
+        );
         // Both halves came back, and each still renders with its own partner.
         drop(stuck);
         drop((p2, c1));
@@ -556,7 +559,10 @@ mod halves {
             .unwrap()
             .activate(&main_thread(), offline)
             .unwrap_or_else(|e| panic!("AUSampler activates: {}", e.reason));
-        assert!(c.render_mode_accepted(), "AUSampler takes the offline-render property");
+        assert!(
+            c.render_mode_accepted(),
+            "AUSampler takes the offline-render property"
+        );
         assert!(c.is_offline_render().unwrap(), "and holds it");
         drop((p, c));
 

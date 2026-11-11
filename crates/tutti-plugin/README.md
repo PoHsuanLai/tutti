@@ -50,7 +50,7 @@ println!("reported latency: {:?}", handle.loaded().latency());
 let tempo = TempoReader::constant(Bpm::of(120.0)).expect("a tempo");
 let (mut editor, _executor) = Editor::new(Prepare::new(SampleRate::new(48_000.0), Samples(512)));
 let _controls = editor.insert(NodeKey(1), "plugin", plugin.bind(tempo));
-# Ok::<(), tutti_plugin::BridgeError>(())
+# Ok::<(), tutti_plugin_types::BridgeError>(())
 ```
 
 A host that does not already know the path discovers one first — see
@@ -108,7 +108,7 @@ plugin's format.
   debounce: 3 unhealthy observations spanning 50 ms) and
   [`needs_announcement`] (when a plugin must be told the render mode).
 - [`BridgeConfig`] — low-level bridge tuning (buffer size, timeouts).
-- [`BridgeError`] — the error most calls return.
+- [`BridgeError`](tutti_plugin_types::BridgeError) — the error most calls return.
 - [`backend`] — traits for plugging an out-of-crate loader into
   [`PluginHandle`](handles::PluginHandle).
 - [`server`] — the wire contract shared with `tutti-plugin-server`; not for

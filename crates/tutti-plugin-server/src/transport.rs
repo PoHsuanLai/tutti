@@ -10,8 +10,8 @@
 //! anyone to serve.
 
 use interprocess::local_socket::{ListenerOptions, traits::Listener as _};
-use tutti_plugin::Result;
 use tutti_plugin::server::{BridgeMessage, HostMessage, read_frame, write_frame};
+use tutti_plugin_types::BridgeResult;
 
 /// The platform's concrete listener/stream pair, not the crate's dispatch enum.
 ///
@@ -40,7 +40,7 @@ pub(crate) trait Transport: Send {
     /// prefix over `MAX_FRAME_BYTES` (a peer that cannot frame), or a payload
     /// bincode cannot decode — the last meaning a protocol-version mismatch the
     /// `Ready` handshake failed to catch.
-    fn recv(&mut self) -> Result<HostMessage>;
+    fn recv(&mut self) -> BridgeResult<HostMessage>;
 
     /// Write one length-prefixed message. Returns once it is handed to the OS,
     /// which is not a guarantee the host has read it.
@@ -49,7 +49,7 @@ pub(crate) trait Transport: Send {
     ///
     /// Returns an error if the payload cannot be serialized, or if the write
     /// fails — a broken pipe here means the host went away.
-    fn send(&mut self, msg: &BridgeMessage) -> Result<()>;
+    fn send(&mut self, msg: &BridgeMessage) -> BridgeResult<()>;
 }
 
 /// [`Transport`] over the platform's local socket (Unix domain socket, or a
@@ -67,7 +67,7 @@ impl SocketTransport {
 }
 
 impl Transport for SocketTransport {
-    fn recv(&mut self) -> Result<HostMessage> {
+    fn recv(&mut self) -> BridgeResult<HostMessage> {
         // The frame is bounded before it is allocated (see
         // [`MAX_FRAME_BYTES`]). The server is the more exposed end: it loads
         // untrusted plugin binaries, and one that corrupts its memory could
@@ -80,7 +80,7 @@ impl Transport for SocketTransport {
         read_frame(&mut self.stream)
     }
 
-    fn send(&mut self, msg: &BridgeMessage) -> Result<()> {
+    fn send(&mut self, msg: &BridgeMessage) -> BridgeResult<()> {
         // Reachable with an oversize body through `StateData`, whose chunk is
         // whatever the plugin hands back from `get_state`.
         write_frame(&mut self.stream, msg)
@@ -101,7 +101,7 @@ impl TransportListener {
     /// Returns an error if the path is not a valid socket name, or if the
     /// socket cannot be created — a directory that does not exist, or one this
     /// process may not write to.
-    pub(crate) fn bind(socket_path: &std::path::Path) -> Result<Self> {
+    pub(crate) fn bind(socket_path: &std::path::Path) -> BridgeResult<Self> {
         // A no-op on Windows, where the endpoint is a pipe rather than a file.
         let _ = std::fs::remove_file(socket_path);
         // Must agree with the host's `connect`, which is why both go through the
@@ -125,7 +125,7 @@ impl TransportListener {
     /// audio loop exits cleanly on EOF, but it is never reached: the server is
     /// parked in the second accept with nothing to interrupt it. One orphaned
     /// process per loaded plugin, every time a DAW crashes or is force-quit.
-    pub(crate) fn accept(&self) -> Result<SocketTransport> {
+    pub(crate) fn accept(&self) -> BridgeResult<SocketTransport> {
         wait_for_connection(&self.listener)?;
         let stream = self.listener.accept()?;
         Ok(SocketTransport::new(stream))
@@ -146,7 +146,7 @@ impl TransportListener {
 /// A liveness check rather than a deadline: a host under load can legitimately be
 /// slow to connect, so the wait is bounded by whether the parent still exists.
 #[cfg(unix)]
-fn wait_for_connection(listener: &PlatformListener) -> Result<()> {
+fn wait_for_connection(listener: &PlatformListener) -> BridgeResult<()> {
     use std::os::fd::AsFd;
 
     /// How long each `poll` waits before host liveness is re-checked. Also the
@@ -202,7 +202,7 @@ fn wait_for_connection(listener: &PlatformListener) -> Result<()> {
 /// noticed until it connects or the process is killed. It still covers the case
 /// that actually strands servers — the host dying between spawn and connect.
 #[cfg(windows)]
-fn wait_for_connection(_listener: &PlatformListener) -> Result<()> {
+fn wait_for_connection(_listener: &PlatformListener) -> BridgeResult<()> {
     if !parent_is_alive() {
         tracing::info!("host process is gone before it connected; exiting rather than waiting");
         return Err(std::io::Error::new(
@@ -216,7 +216,7 @@ fn wait_for_connection(_listener: &PlatformListener) -> Result<()> {
 
 /// Neither Unix nor Windows: nothing to key on, so wait in `accept` as before.
 #[cfg(not(any(unix, windows)))]
-fn wait_for_connection(_listener: &PlatformListener) -> Result<()> {
+fn wait_for_connection(_listener: &PlatformListener) -> BridgeResult<()> {
     Ok(())
 }
 
@@ -471,8 +471,8 @@ mod recv_tests {
     use std::io::Write;
     use std::os::fd::OwnedFd;
     use std::os::unix::net::UnixStream;
-    use tutti_plugin::BridgeError;
     use tutti_plugin::server::MAX_FRAME_BYTES;
+    use tutti_plugin_types::BridgeError;
 
     /// A length prefix over the cap is a framing violation by the host, not
     /// this process crashing: the error names the frame and the limit, and is

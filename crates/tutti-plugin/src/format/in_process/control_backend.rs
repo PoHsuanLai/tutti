@@ -334,7 +334,7 @@ where
             let changes = instance.pump(main);
             // Before the lost check: a refusal that lost the plugin is the one to report.
             if let Some(report) = instance.take_rate_report() {
-                use crate::handles::PluginInvalidation;
+                use tutti_plugin_types::PluginInvalidation;
                 self.invalidate_sink.fire(match report {
                     Some((rate, reason)) => PluginInvalidation::RateRefused { rate, reason },
                     None => PluginInvalidation::RateRestored,
@@ -354,7 +354,7 @@ where
         for edit in param_changes {
             self.param_sink.fire(edit);
         }
-        use crate::handles::PluginInvalidation;
+        use tutti_plugin_types::PluginInvalidation;
         if let Some(samples) = changes.latency {
             self.invalidate_sink
                 .fire(PluginInvalidation::Latency { samples });

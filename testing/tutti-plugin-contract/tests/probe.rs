@@ -13,12 +13,12 @@
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use tutti_plugin::BridgeError;
 use tutti_plugin::catalog::{
     DEFAULT_PROBE_TIMEOUT, Locator, PluginDescriptor, probe_failure, probe_record_with,
 };
 use tutti_plugin_contract::{bundle_of, clap_path, library, vst3_cpp_module, vst3_module};
 use tutti_plugin_db::PluginDb;
+use tutti_plugin_types::BridgeError;
 
 /// The one descriptor `probe_record` found at `path`.
 fn probe(path: &Path) -> Result<PluginDescriptor, BridgeError> {

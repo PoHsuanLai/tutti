@@ -298,7 +298,7 @@ mod owed_tests {
         main: &MainThread,
         path: &std::path::Path,
         rate: SampleRate,
-    ) -> tutti_plugin_ipc::Result<(InProcClient<Vst2Loaded>, PluginHandle)> {
+    ) -> tutti_plugin_types::BridgeResult<(InProcClient<Vst2Loaded>, PluginHandle)> {
         super::super::load_client::<Vst2Loaded>(main, path, &Load::new(), rate)
     }
 

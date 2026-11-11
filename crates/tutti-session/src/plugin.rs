@@ -97,7 +97,8 @@ use tutti_plugin::MainThread;
 use tutti_graph::NodeKey;
 use tutti_plugin::catalog::{AudioConfig, Plugin, PluginId};
 use tutti_plugin::handles::{PluginControls, PluginHandle, PluginMeter, PluginStatus};
-use tutti_plugin::{BridgeError, Liveness, Verdict};
+use tutti_plugin::{Liveness, Verdict};
+use tutti_plugin_types::BridgeError;
 use tutti_types::{SampleRate, Samples, Seconds};
 
 use crate::{
@@ -215,7 +216,9 @@ impl PluginLoad {
             // restores the state it was staged (`StateRestoreError`; a failure
             // before that step is a load failure and blames nothing): the state
             // is what the load is held against (`land_reload` withholds it).
-            Err(e @ tutti_plugin::BridgeError::StateRestoreError(_)) if self.state.is_some() => {
+            Err(e @ tutti_plugin_types::BridgeError::StateRestoreError(_))
+                if self.state.is_some() =>
+            {
                 let reason = e.to_string();
                 (Err(e), Some(Err(reason)))
             }

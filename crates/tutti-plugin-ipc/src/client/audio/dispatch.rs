@@ -2,11 +2,9 @@
 
 use super::channels::Channels;
 use super::lifecycle::Lifecycle;
-use super::messages::{AudioResponse, Command, ResyncKind, Unsolicited};
+use super::messages::{AudioResponse, Command, Unsolicited};
 use super::payload_pool::PayloadPool;
 use super::progress::StateProgress;
-use crate::error::{BridgeError, Result, StateError};
-use crate::midi_intake::MidiIntake;
 use crate::protocol::{
     BridgeMessage, HostMessage, ParamId, ParameterChanges, ParameterPoint, ParameterQueue,
     ProcessAudioData,
@@ -16,6 +14,8 @@ use crate::transport::shm::RING_SLOTS;
 use crate::transport::state_chunk::{self, ChunkError, Reassembler};
 use std::collections::VecDeque;
 use std::time::{Duration, Instant};
+use tutti_plugin_types::MidiIntake;
+use tutti_plugin_types::{BridgeError, BridgeResult, ResyncKind, StateError};
 use tutti_types::SampleRate;
 
 /// How many block periods the bridge thread will wait for a `ProcessAudio`
@@ -337,7 +337,7 @@ fn next_reply(
     owed: &mut Owed,
     channels: &Channels,
     budget: Duration,
-) -> Result<Option<BridgeMessage>> {
+) -> BridgeResult<Option<BridgeMessage>> {
     let deadline = Instant::now() + budget;
     loop {
         let left = deadline.saturating_duration_since(Instant::now());
@@ -367,7 +367,7 @@ fn answer(
     channels: &Channels,
     budget: Duration,
     late: Late,
-) -> Result<Option<BridgeMessage>> {
+) -> BridgeResult<Option<BridgeMessage>> {
     let reply = next_reply(stream, inbox, owed, channels, budget)?;
     if reply.is_none() {
         owed.owe(late);
@@ -383,7 +383,7 @@ pub(super) fn handle(
     owed: &mut Owed,
     inbox: &mut Unsolicited,
     lifecycle: &Lifecycle,
-) -> Result<()> {
+) -> BridgeResult<()> {
     match cmd {
         Command::Process(mut payload) => {
             let seq = payload.seq;
@@ -735,7 +735,7 @@ fn ask(
     owed: &mut Owed,
     channels: &Channels,
     answers: fn(&BridgeMessage) -> bool,
-) -> Result<Option<BridgeMessage>> {
+) -> BridgeResult<Option<BridgeMessage>> {
     answer(
         stream,
         inbox,
@@ -748,7 +748,7 @@ fn ask(
 
 /// Collect a chunked `StateChunk` sequence into one state.
 ///
-/// Returns the caller's `Result` rather than propagating, because none of the
+/// Returns the caller's `BridgeResult` rather than propagating, because none of the
 /// ways this fails is a connection failure: an over-limit state, a misordered
 /// sequence and a stalled one are all *this plugin's* problem, and crashing the
 /// bridge for any of them would take down a session whose socket is fine
@@ -774,7 +774,7 @@ fn recv_state(
     owed: &mut Owed,
     channels: &Channels,
     progress: &StateProgress,
-) -> Result<std::result::Result<Vec<u8>, StateError>> {
+) -> BridgeResult<std::result::Result<Vec<u8>, StateError>> {
     let mut acc = Reassembler::default();
     loop {
         let Some(msg) = next_reply(stream, inbox, owed, channels, progress.deadline())? else {
@@ -840,7 +840,7 @@ fn recv_reply(
     inbox: &mut Unsolicited,
     timeout: Duration,
     partial: &mut PartialFrame,
-) -> Result<BridgeMessage> {
+) -> BridgeResult<BridgeMessage> {
     let deadline = Instant::now() + timeout;
     loop {
         let left = deadline.saturating_duration_since(Instant::now());

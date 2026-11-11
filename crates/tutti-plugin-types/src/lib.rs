@@ -4,6 +4,7 @@
 mod automation;
 mod automation_mode;
 mod bend_ranges;
+mod bridge_error;
 pub mod bundle;
 mod channels;
 mod classification;
@@ -18,17 +19,20 @@ mod format_host;
 mod harmony;
 mod host;
 mod hosting;
+mod invalidation;
 mod lifecycle;
 mod load_stage;
 mod locate;
 mod main_thread;
 mod metadata;
 mod midi;
+mod midi_intake;
 mod note_expression;
 mod note_id;
 mod order;
 mod param_unit;
 mod parameters;
+mod pipeline;
 mod points;
 mod presets;
 #[cfg(feature = "probe-wire")]
@@ -63,6 +67,7 @@ pub use tutti_types::{BarNumber, BeatsPerBar, NoteValue, Seconds, TimeSignature}
 pub use automation::{ParameterChanges, ParameterPoint, ParameterQueue};
 pub use automation_mode::AutomationMode;
 pub use bend_ranges::PerNoteBendRanges;
+pub use bridge_error::{BridgeError, BridgeResult, PluginForkError};
 pub use channels::{
     AudioBuffer, AudioBuffer32, AudioBuffer64, AudioBufferMut, BufferPtrs, MAX_BLOCK_CHANNELS,
     Sample,
@@ -78,6 +83,7 @@ pub use editor::{
 };
 pub use host::{Control, Controller, Loaded, PluginIo, Processor, Refused, Stuck};
 pub use hosting::{Editor, EditorWindow, InProcess, Load, Origin, OutOfProcess, Reopen};
+pub use invalidation::{PluginInvalidation, PluginRefresh, ResyncClass, ResyncKind};
 pub use order::{StableOrder, insertion_sort_by_key};
 pub use points::{PointBuf, PointPool};
 pub use requests::{Edit, EditDrain, EditSink, edits, taken};
@@ -102,6 +108,7 @@ pub use load_stage::LoadStage;
 pub use main_thread::{MainThread, NotMainThread, defer_to_main, run_deferred};
 pub use metadata::{BusChannels, BusTopologies, Layout, LoadedPlugin, PluginTail};
 pub use midi::{MIDI_STACK_CAPACITY, MidiEventVec, RT_MIDI_CAPACITY, RtMidiEvents, WireMidi};
+pub use midi_intake::MidiIntake;
 // `NoteExpressionVec` is the alias the change list is built from, so a caller
 // assembling one has to name it.
 pub use locate::{Helper, Locator};
@@ -113,6 +120,7 @@ pub use param_unit::{FromPlain, ParamUnit};
 pub use parameters::{
     InvalidNormalized, Normalized, ParamFlags, ParamId, ParamRange, ParamSteps, ParameterInfo,
 };
+pub use pipeline::{BlockCounts, MAX_CHUNK};
 pub use presets::{Preset, PresetId, PresetSupport};
 #[cfg(feature = "probe-wire")]
 pub use probe_wire::{

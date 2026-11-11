@@ -35,7 +35,8 @@ use tutti_graph::{
 };
 use tutti_graph::{OutPort, Source};
 use tutti_plugin::handles::{PluginClient, PluginHandle};
-use tutti_plugin::{BridgeConfig, PluginForkError, PluginRenderFault};
+use tutti_plugin::{BridgeConfig, PluginRenderFault};
+use tutti_plugin_types::PluginForkError;
 use tutti_plugin_types::{Normalized, ParamId};
 use tutti_transport::{OfflineTimeline, OfflineTimelineConfig};
 use tutti_types::{SampleRate, Samples};

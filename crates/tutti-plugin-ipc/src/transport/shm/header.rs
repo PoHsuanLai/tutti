@@ -48,8 +48,7 @@
 use crossbeam::utils::CachePadded;
 use std::mem::{align_of, offset_of, size_of};
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
-
-use crate::error::BridgeError;
+use tutti_plugin_types::BridgeError;
 
 /// Identifies a tutti audio slab. Checked by the opening side before it trusts
 /// a single byte of the mapping.

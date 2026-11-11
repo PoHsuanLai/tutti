@@ -23,7 +23,6 @@
 
 use super::PluginBridge;
 use crate::client::audio::BridgeThread;
-use crate::error::StateError;
 use crate::protocol::{
     BridgeMessage, ChannelLayout, HostMessage, Normalized, PROTOCOL_VERSION, ParamId, SampleFormat,
     SlabLayout,
@@ -35,6 +34,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 use tutti_fixtures::main_thread;
+use tutti_plugin_types::StateError;
 use tutti_types::SampleRate;
 
 use interprocess::local_socket::{ListenerOptions, Stream, traits::Listener as _};
@@ -71,10 +71,10 @@ const STATE_PROGRESS_TIMEOUT: Duration = Duration::from_millis(400);
 fn no_editor(
     _: &tutti_plugin_types::MainThread,
     path: &std::path::Path,
-) -> crate::error::Result<Box<dyn tutti_plugin_types::Editor>> {
-    Err(crate::error::BridgeError::LoadFailed {
+) -> tutti_plugin_types::BridgeResult<Box<dyn tutti_plugin_types::Editor>> {
+    Err(tutti_plugin_types::BridgeError::LoadFailed {
         path: path.to_path_buf(),
-        stage: crate::error::LoadStage::Opening,
+        stage: tutti_plugin_types::LoadStage::Opening,
         reason: "no editor in these tests".into(),
     })
 }

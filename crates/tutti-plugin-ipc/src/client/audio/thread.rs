@@ -238,9 +238,10 @@ fn drain_with_errors(channels: &Channels) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::client::audio::messages::{ProcessPayload, ResyncKind, UNSOLICITED_PARAMS};
+    use crate::client::audio::messages::{ProcessPayload, UNSOLICITED_PARAMS};
     use crate::protocol::{Normalized, ParamId};
     use std::sync::Arc;
+    use tutti_plugin_types::ResyncKind;
     use tutti_types::SampleRate;
 
     /// **A crash's drain counts the queued chunks' MIDI.**
@@ -249,7 +250,7 @@ mod tests {
     /// `drain_with_errors` → 0 counted → fails.
     #[test]
     fn a_crash_drain_counts_the_queued_midi() {
-        use crate::protocol::WireMidi;
+        use tutti_plugin_types::WireMidi;
         use tutti_ump::{MidiChannel, MidiGroup};
 
         let channels = Channels::new(SampleRate(48_000.0));
@@ -281,7 +282,7 @@ mod tests {
     /// removed → the chunk stays queued, 0 counted → fails.
     #[test]
     fn a_failed_connect_counts_the_queued_midi() {
-        use crate::protocol::WireMidi;
+        use tutti_plugin_types::WireMidi;
         use tutti_ump::{MidiChannel, MidiGroup};
 
         let channels = Channels::new(SampleRate(48_000.0));

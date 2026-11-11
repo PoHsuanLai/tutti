@@ -8,7 +8,7 @@ use tracing::debug;
 use tutti_plugin_db::{
     Delta, FileFacts, FileRow, PluginFormat, ProbeFailure, probe_plugin_fallback,
 };
-use tutti_plugin_ipc::BridgeError;
+use tutti_plugin_types::BridgeError;
 use tutti_plugin_types::LoadStage;
 use tutti_plugin_types::Locator;
 use tutti_plugin_types::PluginDescriptor;
@@ -154,7 +154,7 @@ mod tests {
     /// as a crash, while a missing `plugin-probe` is not informative at all.
     #[test]
     fn plugin_failures_are_blacklistable_environmental_ones_are_not() {
-        use tutti_plugin_ipc::BridgeError;
+        use tutti_plugin_types::BridgeError;
 
         // Exercises the *production* classifier, not a copy of it.
         let crashed = probe_failure(BridgeError::ProcessCrashed);
@@ -223,7 +223,7 @@ mod tests {
     /// a nonexistent path there warns and falls through to the same search.
     #[test]
     fn probe_without_a_probe_binary_falls_back_to_filename_metadata() {
-        use tutti_plugin_ipc::BridgeError;
+        use tutti_plugin_types::BridgeError;
 
         let path = Path::new("/plugins/TAL-NoiseMaker.vst3");
         let descriptor = interpret_probe(Err(BridgeError::ProbeNotFound), path, PluginFormat::Vst3)
@@ -243,7 +243,7 @@ mod tests {
     /// would be silently catalogued under its filename as though it had been probed.
     #[test]
     fn a_failed_load_is_an_error_not_a_filename_fallback() {
-        use tutti_plugin_ipc::BridgeError;
+        use tutti_plugin_types::BridgeError;
 
         let path = Path::new("/plugins/Broken.vst3");
         let failure = interpret_probe(

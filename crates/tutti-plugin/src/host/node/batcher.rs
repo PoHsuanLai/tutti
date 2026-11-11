@@ -39,7 +39,7 @@
 //!
 //! The chunk is settled by [`prepare`](Batcher::prepare): the host's device
 //! quantum (`Prepare::quantum`) when it knows one, else the graph's
-//! `MaxBlock`, never past the slab's [`MAX_CHUNK`]. Live, that makes a chunk
+//! `MaxBlock`, never past the slab's [`MAX_CHUNK`](tutti_plugin_types::MAX_CHUNK). Live, that makes a chunk
 //! complete on a callback's last frame and its output first needed on the
 //! next callback's first — so the server has a whole device period to answer,
 //! and the plugin's latency is one device block, as a DAW hosting plugins out
@@ -67,18 +67,16 @@
 //! else: the `f64` stays inside the node.
 
 use super::fork::ForkWatch;
-use crate::host::node::BlockPayload;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, OnceLock};
+use crate::host::node::{BlockPayload, ChunkCounters};
+use std::sync::Arc;
+use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 use tutti_graph::Prepare;
 use tutti_plugin_ipc::PluginBridge;
-use tutti_plugin_ipc::Result;
-use tutti_plugin_ipc::{AudioSlab, SlabWriter};
+use tutti_plugin_ipc::SlabWriter;
+use tutti_plugin_types::BridgeResult;
 use tutti_plugin_types::{MidiEventVec, ParameterChanges, SampleFormat, WireMidi};
 use tutti_types::Samples;
-
-pub(crate) use tutti_plugin_ipc::MAX_CHUNK;
 
 /// Single-chunk wire scratch in the plugin-negotiated format. Allocated at
 /// [`Batcher::new`] for the chunk ceiling, because the wire format is known
@@ -105,7 +103,13 @@ impl WireStorage {
     /// Stage `samples` as channel `ch` of chunk `seq`, converting to the
     /// wire's format. Staging only — the caller publishes once, after the
     /// last channel.
-    fn stage(&mut self, slab: &mut SlabWriter, seq: u64, ch: usize, samples: &[f32]) -> Result<()> {
+    fn stage(
+        &mut self,
+        slab: &mut SlabWriter,
+        seq: u64,
+        ch: usize,
+        samples: &[f32],
+    ) -> BridgeResult<()> {
         let n = samples.len();
         match self {
             Self::F32 { input, .. } => {
@@ -242,40 +246,6 @@ pub(crate) struct Batcher {
     reply: MidiEventVec,
     /// What the pipeline reports to its controls.
     counters: Arc<ChunkCounters>,
-}
-
-/// What the pipeline reports to its controls
-/// ([`PluginControls::missed_chunks`](super::PluginControls::missed_chunks),
-/// [`chunk_in_flight_answered`](super::PluginControls::chunk_in_flight_answered)):
-/// written on the audio thread with relaxed atomics, read anywhere.
-#[derive(Default)]
-pub(crate) struct ChunkCounters {
-    /// The chunk submitted and not collected yet; 0 for none (sequences
-    /// start at 1).
-    in_flight: AtomicU64,
-    /// Chunks the server had not answered when the node collected them
-    /// (played as silence), the bridge alive.
-    missed: AtomicU64,
-    /// The slab the answers land in, set when the node is bound.
-    slab: OnceLock<Arc<AudioSlab>>,
-}
-
-impl ChunkCounters {
-    /// Records the slab the chunks are answered in (the node's bind).
-    pub(crate) fn attach(&self, slab: &Arc<AudioSlab>) {
-        let _ = self.slab.set(Arc::clone(slab));
-    }
-
-    /// See `PluginControls::missed_chunks`.
-    pub(crate) fn missed(&self) -> u64 {
-        self.missed.load(Ordering::Relaxed)
-    }
-
-    /// See `PluginControls::chunk_in_flight_answered`.
-    pub(crate) fn in_flight_answered(&self) -> bool {
-        let seq = self.in_flight.load(Ordering::Acquire);
-        seq == 0 || self.slab.get().is_none_or(|slab| slab.has_output(seq))
-    }
 }
 
 /// An offline fork's wait: its [`ForkWatch`] holds the per-block budget and
@@ -634,6 +604,8 @@ impl Batcher {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tutti_plugin_ipc::AudioSlab;
+    use tutti_plugin_types::MAX_CHUNK;
     use tutti_types::SampleRate;
 
     /// A real slab's input writer, `samples` frames per channel, stereo both

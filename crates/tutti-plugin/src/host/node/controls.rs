@@ -27,8 +27,8 @@
 //! shared cell like the others, and the node's `prepare` updates it for every
 //! holder.
 
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 
 use atomic_float::AtomicF64;
 use tutti_plugin_types::PluginTail;
@@ -36,7 +36,43 @@ use tutti_transport::ProjectMeter;
 use tutti_types::Latency;
 use tutti_types::{SampleRate, Samples};
 
-use super::batcher::MAX_CHUNK;
+use tutti_plugin_types::MAX_CHUNK;
+
+/// What the pipeline reports to its controls
+/// ([`PluginControls::missed_chunks`](super::PluginControls::missed_chunks),
+/// [`chunk_in_flight_answered`](super::PluginControls::chunk_in_flight_answered)):
+/// written on the audio thread with relaxed atomics, read anywhere.
+#[derive(Default)]
+pub(crate) struct ChunkCounters {
+    /// The chunk submitted and not collected yet; 0 for none (sequences
+    /// start at 1).
+    pub(super) in_flight: AtomicU64,
+    /// Chunks the server had not answered when the node collected them
+    /// (played as silence), the bridge alive.
+    pub(super) missed: AtomicU64,
+    /// Whether the chunk of a sequence has been answered, set when the node is
+    /// bound (the shared-memory slab's reply flag, which this file does not
+    /// name).
+    answered: OnceLock<Box<dyn Fn(u64) -> bool + Send + Sync>>,
+}
+
+impl ChunkCounters {
+    /// Records how to tell that a chunk is answered (the node's bind).
+    pub(crate) fn attach(&self, answered: impl Fn(u64) -> bool + Send + Sync + 'static) {
+        let _ = self.answered.set(Box::new(answered));
+    }
+
+    /// See `PluginControls::missed_chunks`.
+    pub(crate) fn missed(&self) -> u64 {
+        self.missed.load(Ordering::Relaxed)
+    }
+
+    /// See `PluginControls::chunk_in_flight_answered`.
+    pub(crate) fn in_flight_answered(&self) -> bool {
+        let seq = self.in_flight.load(Ordering::Acquire);
+        seq == 0 || self.answered.get().is_none_or(|answered| answered(seq))
+    }
+}
 
 /// A plugin node's host-side controls: its input slots, its meter, latency
 /// and tail cells, and its sample rate — every one shared with the node it
@@ -79,7 +115,7 @@ pub struct PluginControls {
     /// What the node's IPC pipeline reports
     /// ([`missed_chunks`](Self::missed_chunks),
     /// [`chunk_in_flight_answered`](Self::chunk_in_flight_answered)).
-    chunks: Arc<super::batcher::ChunkCounters>,
+    chunks: Arc<ChunkCounters>,
 }
 
 /// What every plugin node's controls hold, whichever hosting runs it: the
@@ -208,7 +244,7 @@ impl PluginControls {
     }
 
     /// The cells the node's IPC pipeline reports to, for the node.
-    pub(super) fn chunk_counters(&self) -> Arc<super::batcher::ChunkCounters> {
+    pub(super) fn chunk_counters(&self) -> Arc<ChunkCounters> {
         Arc::clone(&self.chunks)
     }
 

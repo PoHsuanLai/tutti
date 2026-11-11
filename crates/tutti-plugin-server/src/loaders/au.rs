@@ -24,7 +24,8 @@ use tutti_plugin_types::MainThread;
 use tutti_plugin_types::SampleRate;
 
 use crate::loaders::common::{Meta, single_bus};
-use tutti_plugin::{BridgeError, LoadStage, Result};
+use tutti_plugin::LoadStage;
+use tutti_plugin_types::{BridgeError, BridgeResult};
 
 #[cfg(all(target_os = "macos", feature = "au"))]
 use tutti_au_host::{AuInstance as AuHostInstance, Samples, component, parameters};
@@ -336,7 +337,7 @@ impl AuInstance {
         path: &Path,
         sample_rate: f64,
         block_size: usize,
-    ) -> Result<Self> {
+    ) -> BridgeResult<Self> {
         Self::load_with_state(main, path, sample_rate, block_size, None, &mut || {})
             .map(|(instance, _)| instance)
     }
@@ -355,7 +356,7 @@ impl AuInstance {
         block_size: usize,
         state: Option<&[u8]>,
         before_restore: &mut dyn FnMut(),
-    ) -> Result<(Self, Option<String>)> {
+    ) -> BridgeResult<(Self, Option<String>)> {
         #[cfg(all(target_os = "macos", feature = "au"))]
         {
             // Strategy: enumerate all components, find one whose name matches

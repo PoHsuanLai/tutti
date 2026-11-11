@@ -14,11 +14,11 @@
 //! sees that `END`, and drops the open message whole, counted, at the next
 //! `START`.
 //!
-//! [`MIDI_STACK_CAPACITY`]: tutti_plugin_types::MIDI_STACK_CAPACITY
+//! [`MIDI_STACK_CAPACITY`]: crate::MIDI_STACK_CAPACITY
 
 use tutti_ump::{Key, KeyEvent, Message, SysexStatus, Ump, decode};
 
-use crate::protocol::{MidiEventVec, WireMidi};
+use crate::{MidiEventVec, WireMidi};
 
 /// The intake's state, one bit per UMP group, carried across chunks and
 /// blocks, and across a reset (the reassembler past it keeps its open run
@@ -204,8 +204,8 @@ fn group_bit(event: &Ump) -> u16 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{MIDI_STACK_CAPACITY, sysex_assembler};
     use tutti_fixtures::midi;
-    use tutti_plugin_types::{MIDI_STACK_CAPACITY, sysex_assembler};
     use tutti_ump::{MidiChannel, MidiGroup, SysexAssembler, SysexStep};
 
     fn wire(ump: Ump) -> WireMidi {

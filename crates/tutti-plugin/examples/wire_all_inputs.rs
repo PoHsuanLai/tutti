@@ -23,15 +23,15 @@ use tutti_modulation::{
     Amount, Clock, ControlProgram, Law, Layer, LayerId, LfoShape, Polarity, Wave,
 };
 use tutti_nodes::automation::ControlLaneNode;
-use tutti_plugin::Result;
 use tutti_plugin::catalog::{Plugin, PluginRole};
+use tutti_plugin_types::BridgeResult;
 
 use tutti_transport::ProjectMeter;
 use tutti_types::{Beat, BeatDuration, Depth, MeterMap, PhaseIncrement, SampleRate};
 
 const SAMPLE_RATE: SampleRate = SampleRate::SR_48K;
 
-fn main() -> Result<()> {
+fn main() -> BridgeResult<()> {
     let Some(path) = std::env::args().nth(1) else {
         eprintln!("usage: wire_all_inputs <plugin-path>");
         eprintln!("  e.g. /Library/Audio/Plug-Ins/VST3/Foo.vst3");

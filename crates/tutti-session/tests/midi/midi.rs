@@ -161,7 +161,7 @@ fn a_clip_plays_beat_and_packet_pairs() {
     s.midi()
         .play_clip(synth, [(Beat(1.0 / 3.0), on), (Beat(4.0 / 3.0), off)])
         .expect("the tap takes MIDI");
-    s.update();
+    let _ = s.update();
     roll(&s, 9_000);
     assert_eq!(note_ons(&seen), vec![(8_000, 60)]);
 }

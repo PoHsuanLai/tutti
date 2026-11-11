@@ -44,3 +44,13 @@ pub(crate) const fn value(v: u8) -> u32 {
 pub(crate) const fn bend(v: u16) -> u32 {
     upscale(v as u32, 14, 32)
 }
+
+/// Whether the Registered Controller `bank`/`index` is zero-extended (M2-115
+/// section 4.1) rather than scaled Min-Center-Max: the existing RPNs, bank 0
+/// and index 0 to 31, whose data is a fixed-point number or a pair of fields.
+/// The translator widens by it and the narrower narrows by it, so the two
+/// cannot disagree.
+#[inline]
+pub(crate) const fn zero_extended(bank: tutti_ump::U7, index: tutti_ump::U7) -> bool {
+    bank.get() == 0 && index.get() < 32
+}

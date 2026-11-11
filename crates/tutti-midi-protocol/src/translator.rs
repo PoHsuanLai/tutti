@@ -3,14 +3,12 @@
 
 use crate::scale;
 use crate::voice::widen;
-use tutti_ump::{Bank, CCNumber, Message, MidiChannel, MidiGroup, U7, Ump, Voice1, Voice2};
+use tutti_ump::{
+    Address, Bank, CCNumber, Message, MidiChannel, MidiGroup, U7, Ump, Voice1, Voice2,
+};
 
 /// The byte that, in both halves of a parameter number, is the Null Function.
 const NULL: u8 = 0x7F;
-/// The registered controllers in bank 0 whose data is a pair of 7-bit fields,
-/// not one 14-bit number: their data is zero-extended, not scaled (M2-115
-/// section 4.1).
-const ZERO_EXTENDED_INDICES: u8 = 32;
 
 /// Every channel of every group.
 const SLOTS: usize = MidiGroup::COUNT as usize * MidiChannel::COUNT as usize;
@@ -91,7 +89,21 @@ struct Channel {
 /// - **Every other packet** passes through unchanged: a MIDI 2.0 message (a
 ///   Note On at velocity 0 stays a Note On), system, SysEx, Flex Data, UMP
 ///   Stream, utility, and a packet no definition covers. Data Increment and
-///   Decrement (CC 96 and 97) stay Control Changes.
+///   Decrement (CC 96 and 97) stay Control Changes: M2-104 D.3.3 says they
+///   "are translated to Control Change messages in the MIDI 2.0 Protocol. They
+///   have no RPN/NRPN related function in the MIDI 2.0 Protocol. They should
+///   not be translated to MIDI 2.0 Relative Registered Controller and
+///   Relative Assignable Controller Messages." (RP-018's rule, that a MIDI 1.0
+///   receiver applies them to the selected parameter, has no receiver in
+///   tutti: every one takes MIDI 2.0.)
+///
+/// A CC 6 with no CC 38 after it waits for a trigger, which a stream that ends
+/// never sends: [`flush`](Self::flush) sends what is still waiting. A clip's
+/// loader calls it once the clip is read, so a file that sets a range with a CC
+/// 6 alone and nothing after keeps it. A live input has no end, and the
+/// "short timeout after receiving a CC 6" D.3.3 allows ("some translators may
+/// wish to") is not built: it would need a clock here, and a caller that has
+/// one can call `flush` itself.
 ///
 /// It allocates nothing and holds no clock. One translator serves one input
 /// stream for its life: two streams through one would interleave their runs.
@@ -162,6 +174,25 @@ impl Translator {
     /// [`new`](Self::new). Nothing pending is sent.
     pub fn reset(&mut self) {
         *self = Self::new();
+    }
+
+    /// Sends every run still waiting for a trigger, as its select, CC 6 or CC
+    /// 38 would have, calling `out` with the channel's address and the packet
+    /// (a CC 6 with no CC 38 is sent at LSB 0, a CC 38 with no CC 6 at MSB 0).
+    /// Nothing else changes: the selections stay.
+    pub fn flush(&mut self, mut out: impl FnMut(Address, Ump)) {
+        let addresses = (0..MidiGroup::COUNT)
+            .filter_map(MidiGroup::new)
+            .flat_map(|group| {
+                (0..MidiChannel::COUNT)
+                    .filter_map(MidiChannel::new)
+                    .map(move |channel| Address { group, channel })
+            });
+        for (address, channel) in addresses.zip(self.channels.iter_mut()) {
+            flush(channel, &mut |voice| {
+                out(address, Message::Midi2(address, voice).into());
+            });
+        }
     }
 
     /// Translates one packet, calling `out` for the packet it becomes: not at
@@ -291,7 +322,7 @@ fn emit(channel: &mut Channel, lsb: Option<U7>, send: &mut impl FnMut(Voice2)) {
         Kind::None => return,
         Kind::Registered => {
             let Number { bank, index } = channel.rpn;
-            let value = if bank.get() == 0 && index.get() < ZERO_EXTENDED_INDICES {
+            let value = if scale::zero_extended(bank, index) {
                 data << 18
             } else {
                 scale::upscale(data, 14, 32)

@@ -13,6 +13,11 @@
 //! is loaded), so what follows carries MIDI 2.0 channel voice messages. It
 //! calls `widen` for every message that needs no state.
 //!
+//! [`Narrower`] is its inverse (M2-104 Appendix D.2), per group and channel:
+//! a Registered or Assignable Controller as its four Control Changes with the
+//! select skipped while it stays selected, and a Program Change's bank sent
+//! only when it changes. An output edge that speaks MIDI 1.0 holds one.
+//!
 //! [`channel_voice`] is what an instrument reads a packet with: the channel
 //! voice message it carries as a [`Voice2`](tutti_ump::Voice2), a MIDI 1.0 one
 //! widened, or `None`. [`widen_message`] widens a whole
@@ -77,7 +82,7 @@
 //! [`PitchBendSensitivity`] is the 7.25 fixed-point range of RPN #00/07 (M2-104
 //! section 7.4.13), the one value type here that is not a function.
 //!
-//! The crate depends on `tutti-ump` alone and has no allocation. Its `serde`
+//! The crate depends on `tutti-ump` alone and allocates nothing. Its `serde`
 //! feature (off by default) derives serde on [`PitchBendSensitivity`], which
 //! carries the 32 RPN bits.
 
@@ -86,6 +91,7 @@
 mod midi1;
 mod mpe;
 mod narrow;
+mod narrower;
 mod scale;
 mod sensitivity;
 mod translator;
@@ -95,6 +101,7 @@ mod voice;
 pub use midi1::{midi1, narrow};
 pub use mpe::{MpeMode, MpeZone, MpeZoneConfig, MpeZones};
 pub use narrow::{narrow_bend, narrow_value, narrow_velocity};
+pub use narrower::Narrower;
 pub use sensitivity::PitchBendSensitivity;
 pub use translator::Translator;
 pub use unit::{

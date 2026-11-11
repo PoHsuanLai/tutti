@@ -357,9 +357,25 @@ impl Translator {
   On at velocity 0 becomes a Note Off with velocity `0x8000` (D.3.1 in v1.1.2); a
   MIDI 2.0 Note On at velocity 0 stays a Note On; RPN data is zero-extended for
   index 0 to 31 (M2-115 §4.1), which `rpn.rs` scales with Min-Center-Max.
-- Translating back is D.2: an RPN or NRPN becomes its four Control Changes
-  (D.2.3). Today it has no MIDI 1.0 form, so a keyboard's pitch bend range never
-  reaches a CLAP, VST2, AU or SoundFont consumer.
+- Translating back is D.2, `Narrower` (`tutti-midi-protocol`, built; no host
+  calls it yet): an RPN or NRPN becomes its four Control Changes (D.2.3), the
+  select skipped while the same parameter stays selected on that group and
+  channel (MIDI 1.0 rule 6), and no Null Function after the run (D.2.3 gives
+  four messages, D.3.3 says Null "is not translated"). Data narrows with
+  rounding for RPN bank 0, index 0 to 31 (M2-115 §4.1, §4.4, the rule the
+  `Translator` zero-extends by) and by the plain shift for every other
+  controller. A Program Change's bank is sent only when it differs from the one
+  last sent (D.2.4), and a Note On that narrows to velocity 0 is 1 (D.2.1). One
+  `Narrower` serves one output, so each plugin host and the hardware out holds
+  its own. Until a host calls it, a keyboard's pitch bend range does not reach
+  a CLAP, VST2, AU or SoundFont consumer as MIDI 1.0.
+- **The clip's end flushes a CC 6-only run** (`Translator::flush`, called by
+  `MidiClipNode`'s loader after the last event): a file that sets a range with
+  `B0 65 00, B0 64 00, B0 06 0C` and nothing after keeps it, on the CC 6's own
+  beat. The live "short timeout after receiving a CC 6" of D.3.3 ("some
+  translators may wish to") is not built: the `Translator` holds no clock, and an
+  input that has one can call `flush` itself. CC 96 and 97 stay Control Changes
+  (D.3.3, quoted in `Translator`'s docs).
 - MPE is a dialect on MIDI 1.0, handled here. Channels outside a zone pass through
   ("remain available for conventional use", RP-053), and bend, pressure and CC74
   sent before a note-on bind to it instead of being dropped. The group is kept.
@@ -2097,8 +2113,9 @@ at any point; its CI codec move and `ci`/`negotiate` deletion (4a, done) shrink
    - D.3.3's triggers, exactly: a CC 6 waits for a CC 38, a later CC 6 or a new
      select (LSB 0 when none came); a CC 38 before any CC 6 waits for it and goes
      with it; a new CC 6 never reuses an earlier run's LSB. A sender that ends an
-     RPN with a lone CC 6 and nothing after it is never heard: that is the spec's
-     rule, and the reason senders close a run with the Null Function.
+     RPN with a lone CC 6 and nothing after it is never heard live: that is the
+     spec's rule, and the reason senders close a run with the Null Function. A
+     clip's loader flushes it (`Translator::flush`, §4).
    - Each half of a parameter number is kept per kind (RPN and NRPN apart) until
      selected again; Reset All Controllers (CC 121, RP-015) sets both to null,
      drops what the run had not sent and passes on.

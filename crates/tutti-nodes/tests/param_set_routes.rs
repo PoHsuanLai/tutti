@@ -59,12 +59,11 @@ fn svf() -> SvfFilterNode<f32> {
 #[test]
 fn filter_cutoff_write_moves_the_nodes_own_cell() {
     let node = svf();
-    let atomic = node.frequency(); // the node reads this per block
-    assert!(set(&node, UnitParam::Cutoff, 1500.0), "cutoff is addressed");
-    assert_eq!(atomic.load(Ordering::Acquire), 1500.0);
-    // The cell a lane takes as its knob is that same cell.
+    // The cell a lane takes as its knob is the one the node reads per block.
     let cell = node.param_set().cell(UnitParam::Cutoff).expect("addressed");
-    assert!(cell.ptr_eq(&atomic.into()));
+    assert!(set(&node, UnitParam::Cutoff, 1500.0), "cutoff is addressed");
+    assert_eq!(cell.load(Ordering::Acquire), 1500.0);
+    assert_eq!(node.param_set().get(UnitParam::Cutoff), Some(1500.0));
 }
 
 #[test]

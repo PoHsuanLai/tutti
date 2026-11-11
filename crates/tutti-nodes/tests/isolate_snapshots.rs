@@ -24,15 +24,16 @@
 //! default differs fail. Make a control's write a no-op → that control
 //! fails with "moving it did not change a fresh fork's output".
 
+use tutti_graph::ParamNode;
 use tutti_graph::contract::IsolateRow;
 use tutti_nodes::{
     BrickwallLimiterNode, BusStripNode, CompressorNode, DelayLineNode, DistortionNode, EqBandNode,
     GateNode, LadderFilterNode, LadderType, LfoNode, LfoShape, LimiterNode, ModDelayNode,
-    PhaserNode, ShapeKind, SvfFilterNode, SvfType,
+    PhaserNode, ShapeKind, SvfControls, SvfFilterNode, SvfType,
 };
 use tutti_types::{
     Amplitude, ChannelLayout, CompressionRatio, Db, Depth, Drive, Feedback, Hz, Mix, Pan,
-    PhaseIncrement, Q, Resonance, Seconds,
+    PhaseIncrement, Q, Resonance, Seconds, UnitParam,
 };
 
 #[test]
@@ -181,11 +182,15 @@ fn ladder() {
     IsolateRow::new("LadderFilterNode (LP12)", || {
         LadderFilterNode::<f64>::new(LadderType::LP12, Hz(1_000.0), Resonance::new_clamped(0.3))
     })
-    .control("cutoff", |l| l.set_frequency(Hz(3_000.0)))
-    .control("resonance", |l| {
-        l.set_resonance(Resonance::new_clamped(0.8))
+    .control("cutoff", |l| {
+        assert!(l.param_set().set(UnitParam::Cutoff, 3_000.0));
     })
-    .control("drive", |l| l.set_drive(Drive(4.0)))
+    .control("resonance", |l| {
+        assert!(l.param_set().set(UnitParam::Q, 0.8));
+    })
+    .control("drive", |l| {
+        assert!(l.param_set().set(UnitParam::Drive, 4.0));
+    })
     .check();
 }
 
@@ -195,9 +200,15 @@ fn ladder() {
 /// unit tests run it, with its mutations).
 #[test]
 fn svf() {
-    tutti_graph::contract::assert_param_fork(
-        SvfFilterNode::<f64>::new(SvfType::Bell, Hz(1_000.0), Q(0.7)).with_gain_db(Db(6.0)),
-    );
+    tutti_graph::contract::assert_param_fork(SvfFilterNode::<f64>::with_controls(
+        ChannelLayout::MONO,
+        SvfControls {
+            ty: SvfType::Bell,
+            freq: Hz(1_000.0),
+            q: Q(0.7),
+            gain: Db(6.0),
+        },
+    ));
 }
 
 #[test]

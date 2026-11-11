@@ -145,9 +145,15 @@ fn sweep() {
             ))
         }));
         add(probe("svf gain", b, || {
-            Box::new(
-                SvfFilterNode::<f64>::new(SvfType::Bell, Hz(1000.0), Q(1.0)).with_gain_db(d(b)),
-            )
+            Box::new(SvfFilterNode::<f64>::with_controls(
+                ChannelLayout::MONO,
+                SvfControls {
+                    ty: SvfType::Bell,
+                    freq: Hz(1000.0),
+                    q: Q(1.0),
+                    gain: d(b),
+                },
+            ))
         }));
         add(probe("ladder freq", b, || {
             Box::new(LadderFilterNode::<f64>::new(

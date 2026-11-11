@@ -41,10 +41,11 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use common::{Kind, Pair, bits, input_signal};
 use proptest::prelude::*;
+use tutti_graph::Topology;
+use tutti_graph::{Bus, BusRef, BusRole, BusSource, Buses, NodeKey, TapAlign, TapId, TapSpec};
 use tutti_graph::{Edge, EdgeGain, EdgeId, FeedbackFrom, InPort, NodeSpec, OutPort, Sink, Source};
 use tutti_graph::{EventEdge, EventIn, EventOut, GraphSpec, Unforkable};
-use tutti_graph::{NodeKey, TapAlign, TapId, TapSpec, Topology};
-use tutti_types::{Amplitude, ChannelLayout, Samples};
+use tutti_types::{Amplitude, BusTopology, ChannelLayout, ChannelTopology, Samples};
 
 use tutti_graph::Node;
 
@@ -3075,4 +3076,174 @@ fn the_generator_draws_modes_on_every_kind_of_node() {
         "{source_bypass} {wide_mute}"
     );
     assert!(round_trips > 300, "{round_trips}");
+}
+
+// ---------------------------------------------------------------------------
+// Bus edges (doc 013, "Buses and coercion between declared layouts", B2).
+// ---------------------------------------------------------------------------
+
+/// A graph of nodes declaring buses, wired by bus edges (and some plain
+/// ones), drawn from its **own** stream (`seed ^ 0x0B05_ED6E`) so no other
+/// generator's seed moves. Every bus edge kept lowers, so the value the
+/// interpreters take is the lowered spec's.
+struct BusGraph {
+    spec: GraphSpec,
+    kinds: BTreeMap<NodeKey, Kind>,
+}
+
+fn bus_of(width: usize, named: bool) -> Bus {
+    let layout = ChannelLayout::from_count(width as u16);
+    let topology = match ChannelTopology::smpte(layout).filter(|_| named) {
+        Some(t) => BusTopology::try_from(&t).expect("fits a bus"),
+        None => BusTopology::discrete(layout).expect("fits a bus"),
+    };
+    Bus {
+        topology,
+        role: BusRole::Main,
+    }
+}
+
+fn bus_graph(seed: u64) -> BusGraph {
+    let mut rng = Rng::new(seed ^ 0x0B05_ED6E);
+    let globals = 1 + rng.below(6) as usize;
+    let mut spec = GraphSpec::default();
+    spec.topology.inputs = ChannelLayout::from_count(globals as u16);
+    let mut kinds: BTreeMap<NodeKey, Kind> = BTreeMap::new();
+    let mut widths: Vec<(NodeKey, usize)> = Vec::new();
+    let nodes = 3 + rng.below(6) as usize;
+    for j in 1..=nodes as u64 {
+        let node = NodeKey(j);
+        let width = rng.pick(&[1usize, 1, 2, 2, 6]).expect("a width");
+        let named = rng.chance(75);
+        let source = j == 1 || rng.chance(15);
+        let inner = if width == 1 && !source && rng.chance(30) {
+            Kind::Lag {
+                latency: 1 + rng.below(20) as usize,
+            }
+        } else {
+            Kind::Gain {
+                gain: rng.pick(&[0.5f32, 0.75, 1.0, 0.3]).expect("a gain"),
+                width,
+            }
+        };
+        let kind = Kind::Bused {
+            inner: Box::new(inner),
+            buses_in: Box::new(Buses::main(bus_of(width, named).topology)),
+            buses_out: Box::new(Buses::main(bus_of(width, named).topology)),
+        };
+        spec.topology.nodes.insert(node, spec_for(&kind));
+        kinds.insert(node, kind);
+        if source {
+            for c in 0..width as u16 {
+                spec.topology.connect(
+                    InPort { node, port: c },
+                    Edge::Direct(Source::Global(c % globals as u16)),
+                );
+            }
+        } else {
+            // One or two bus edges from earlier nodes, kept when they lower.
+            for _ in 0..1 + rng.below(2) {
+                let Some((from, _)) = rng.pick(&widths) else {
+                    continue;
+                };
+                let mut trial = spec.clone();
+                trial.connect_bus(
+                    BusSource::Node(BusRef { node: from, bus: 0 }),
+                    BusRef { node, bus: 0 },
+                );
+                if trial.lowered(&common::shapes_of(&kinds)).is_ok() {
+                    spec = trial;
+                }
+            }
+            // And now and then an ordinary edge into the same sink.
+            if rng.chance(30)
+                && let Some((from, w)) = rng.pick(&widths)
+            {
+                let mut trial = spec.clone();
+                trial.topology.connect(
+                    InPort {
+                        node,
+                        port: rng.below(width as u64) as u16,
+                    },
+                    Edge::Direct(Source::Node(OutPort {
+                        node: from,
+                        port: rng.below(w as u64) as u16,
+                    })),
+                );
+                if trial.lowered(&common::shapes_of(&kinds)).is_ok() {
+                    spec = trial;
+                }
+            }
+        }
+        widths.push((node, width));
+    }
+    let &(last, width) = widths.last().expect("a node");
+    spec.topology.set_outputs(
+        (0..width as u16)
+            .map(|port| Source::Node(OutPort { node: last, port }))
+            .collect::<Vec<_>>(),
+    );
+    BusGraph { spec, kinds }
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig { cases: 256, ..ProptestConfig::default() })]
+
+    /// A bus edge is nothing the interpreters know: the lowered spec renders
+    /// the same on the executor, serial and parallel, as on the reference,
+    /// bit for bit, at every block schedule, over random graphs of folds
+    /// (weighted lanes of every width and unity copies) beside ordinary
+    /// edges, with PDC rings where a latent node sits on a lane.
+    ///
+    /// Mutation (run, recorded here): fuse the weighted lane's multiply and
+    /// add in the executor's kernel (`acc.mul_add`) -> the executor's figure
+    /// for a fold with a `-3 dB` lane differs from the reference's in the
+    /// last bit and this fails.
+    #[test]
+    fn bus_edges_are_bit_identical_to_the_reference(seed in any::<u64>(), which in 0usize..5) {
+        for workers in modes(seed) {
+            let graph = bus_graph(seed);
+            let lowered = graph
+                .spec
+                .lowered(&common::shapes_of(&graph.kinds))
+                .expect("every kept bus edge lowers");
+            let valid = lowered.spec.validate().expect("generated graphs are valid");
+            let mut pair = Pair::with_workers(MAX_BLOCK, workers);
+            pair.switch(&valid, &graph.kinds);
+            let mut frame = 0;
+            run(&mut pair, &schedule(which, seed, 500), &mut frame);
+        }
+    }
+}
+
+/// The bus generator is not vacuous: over a fixed range of seeds it makes
+/// graphs with bus edges, weighted lanes (a fold with `-3 dB` or `1/2`
+/// coefficients), unity copies, and a bus edge beside an ordinary edge on one
+/// sink port.
+#[test]
+fn the_bus_generator_reaches_folds_copies_and_mixes() {
+    let (mut with_edges, mut weighted, mut unity, mut mixed) = (0, 0, 0, 0);
+    for seed in 0..400u64 {
+        let graph = bus_graph(seed);
+        let lowering = graph
+            .spec
+            .lowered(&common::shapes_of(&graph.kinds))
+            .expect("lowers");
+        with_edges += usize::from(!graph.spec.bus_edges.is_empty());
+        weighted += usize::from(!lowering.weights().is_empty());
+        unity += usize::from(lowering.lanes.values().any(|w| w.get() == 1.0));
+        mixed += usize::from(lowering.lanes.keys().any(|id| {
+            match id.sink {
+                Sink::Port(at) => graph
+                    .spec
+                    .topology
+                    .edges
+                    .get(&at)
+                    .is_some_and(|edges| !edges.is_empty()),
+                Sink::Output(_) => false,
+            }
+        }));
+    }
+    eprintln!("bus edges {with_edges}, weighted {weighted}, unity {unity}, mixed {mixed}");
+    assert!(with_edges > 300 && weighted > 100 && unity > 100 && mixed > 20);
 }

@@ -217,11 +217,17 @@ pub enum CompileError {
         /// The edges.
         edges: Vec<CycleEdge>,
     },
+    /// A bus edge could not be lowered against the shapes: a node's bus is
+    /// gone or its topology no longer folds into the other's (a node replaced
+    /// by one with another layout), or a lane overlaps an edge. Never a
+    /// silent drop (doc 013, "Buses and coercion between declared layouts").
+    Bus(crate::BusError),
 }
 
 impl std::fmt::Display for CompileError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::Bus(e) => write!(f, "{e}"),
             Self::FeedbackTooShort {
                 edge,
                 delay,

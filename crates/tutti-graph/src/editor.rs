@@ -61,6 +61,7 @@ use tutti_types::{Latency, Samples};
 
 use tutti_types::At;
 
+use crate::bus_edge::{BusError, BusRef, BusSource, Lowering};
 use crate::command::{CommandId, CommandTx, ScheduleError, command_channel};
 use crate::compile::{CompileError, Shapes, VerifyError, compile};
 use crate::event::EventKind;
@@ -77,7 +78,7 @@ use crate::mode::{MixError, ModeCell, ModeError, ModeState, NodeMix, NodeMode};
 use crate::node::{IntoNode, Node, NodeParts, Prepare, Resolution, Shape};
 use crate::param::{ParamIn, ParamRange, ParamRangeReader, ParamRanges, ParamState};
 use crate::plan::{Delta, Placement, Plan};
-use crate::spec::{EventEdge, EventIn, EventOut, GraphInvalid, GraphSpec};
+use crate::spec::{EventEdge, EventIn, EventOut, GraphInvalid, GraphSpec, ValidGraph};
 use crate::tap::{TapReader, TapWriter};
 use tutti_types::{Amplitude, Mix, ParamCell};
 
@@ -191,6 +192,15 @@ pub enum CommitError {
         limit: Latency,
     },
 }
+
+/// What a re-prepare's second half builds: the plan, the resume delta, every
+/// unit, and the weights of the bus lanes the plan has.
+type Resumed = (
+    Plan,
+    Delta,
+    BTreeMap<NodeKey, Box<dyn Node>>,
+    BTreeMap<EdgeId, Amplitude>,
+);
 
 /// The widest graph root a host folds to its device: mono through 7.1. The
 /// engine's fold scratch holds this many channels, so it bounds its editor's
@@ -1098,6 +1108,66 @@ impl Editor {
         &self.shapes
     }
 
+    /// Declares the bus edge `from -> to` (doc 013, "Buses and coercion
+    /// between declared layouts"): the output bus `from` feeds the input bus
+    /// `to`, folded between the two declared topologies. The fold is checked
+    /// **here**, against the shapes the units declared, so a failure is the
+    /// author's call and nothing is stored. The commit lowers it to weighted
+    /// lanes ([`GraphSpec::lowered`]); a source already declared is kept once.
+    ///
+    /// # Errors
+    ///
+    /// [`BusError::NoSuchNode`], [`BusError::NoSuchBus`] (a bus index the
+    /// node does not declare on that side),
+    /// [`BusError::Fold`] (the topologies cannot be folded: a channel with no
+    /// place, a width that disagrees),
+    /// [`BusError::GlobalTooWide`], and [`BusError::Overlaps`] /
+    /// [`BusError::GainOnLane`] when a lane would land on an edge or a gain
+    /// the spec already has.
+    pub fn connect_bus(&mut self, from: BusSource, to: BusRef) -> Result<(), BusError> {
+        self.spec.check_bus_edge(&self.shapes, from, to)?;
+        self.touch();
+        self.spec.connect_bus(from, to);
+        Ok(())
+    }
+
+    /// Removes the bus edge `from -> to`: its lanes and their weights go with
+    /// it at the next commit, and the author's own edges and gains stay.
+    /// Returns whether it was declared.
+    pub fn disconnect_bus(&mut self, from: BusSource, to: BusRef) -> bool {
+        self.touch();
+        self.spec.disconnect_bus(from, to)
+    }
+
+    /// The spec with its bus edges lowered against the shapes as they stand:
+    /// what the next commit compiles ([`GraphSpec::lowered`]).
+    ///
+    /// # Errors
+    ///
+    /// As [`GraphSpec::lowered`].
+    pub fn lowered(&self) -> Result<Lowering, BusError> {
+        self.spec.lowered(&self.shapes)
+    }
+
+    /// Lowers `spec` against `shapes` and validates the result, with the
+    /// weights of the lanes the lowering made. The one door a commit, a
+    /// re-prepare and its resume go through: a spec with no bus edge is
+    /// validated as it stands.
+    fn lower_and_validate(
+        spec: &GraphSpec,
+        shapes: &Shapes,
+    ) -> Result<(ValidGraph, BTreeMap<EdgeId, Amplitude>), CommitError> {
+        if spec.bus_edges.is_empty() {
+            let valid = spec.validate().map_err(CommitError::Invalid)?;
+            return Ok((valid, BTreeMap::new()));
+        }
+        let lowering = spec
+            .lowered(shapes)
+            .map_err(|e| CommitError::Compile(CompileError::Bus(e)))?;
+        let valid = lowering.spec.validate().map_err(CommitError::Invalid)?;
+        Ok((valid, lowering.weights()))
+    }
+
     /// Crossfades sent and not yet drained back: running, waiting, or
     /// ended and waiting for [`collect`](Self::collect). At most
     /// [`FADE_CAPACITY`].
@@ -1567,9 +1637,7 @@ impl Editor {
         if !gain.is_sound() {
             return Err(GraphInvalid::BadEdgeGain { id, gain });
         }
-        if !self.spec.has_edge(id) {
-            return Err(GraphInvalid::GainWithoutEdge { id });
-        }
+        self.check_gain_edge(id)?;
         self.touch();
         self.spec.set_edge_gain(id, gain);
         if let Some(cell) = self.edge_gains.get(&id) {
@@ -1585,6 +1653,20 @@ impl Editor {
             g.base = base;
         }
         Ok(())
+    }
+
+    /// Whether edge `id` is one the author may weight: an edge of the spec,
+    /// and not a lane a bus edge produces (its weight is the fold's).
+    fn check_gain_edge(&self, id: EdgeId) -> Result<(), GraphInvalid> {
+        if self.spec.has_edge(id) {
+            return Ok(());
+        }
+        if !self.spec.bus_edges.is_empty()
+            && self.lowered().is_ok_and(|l| l.lanes.contains_key(&id))
+        {
+            return Err(GraphInvalid::GainOnBusLane { id });
+        }
+        Err(GraphInvalid::GainWithoutEdge { id })
     }
 
     /// Clamps edge `id`'s driven value to `range` from the next block on,
@@ -1611,9 +1693,7 @@ impl Editor {
         if !gain.is_sound() {
             return Err(GraphInvalid::BadEdgeGain { id, gain });
         }
-        if !self.spec.has_edge(id) {
-            return Err(GraphInvalid::GainWithoutEdge { id });
-        }
+        self.check_gain_edge(id)?;
         self.touch();
         self.spec.set_edge_gain(id, gain);
         if let Some(cell) = self.edge_gains.get(&id) {
@@ -1819,6 +1899,11 @@ impl Editor {
     /// are left empty (silence).
     pub fn remove(&mut self, key: NodeKey) {
         self.touch();
+        // A bus edge that touches the node goes with it, as its edges do.
+        self.spec.bus_edges.retain(|to, sources| {
+            sources.retain(|s| !matches!(s, BusSource::Node(b) if b.node == key));
+            to.node != key && !sources.is_empty()
+        });
         let t = &mut self.spec.topology;
         t.nodes.remove(&key);
         t.edges.retain(|at, edges| {
@@ -2062,7 +2147,7 @@ impl Editor {
         self.limits.outputs(self.spec.topology.outputs.len())?;
         self.check_tap_widths()?;
         self.check_meter_widths()?;
-        let valid = self.spec.validate().map_err(CommitError::Invalid)?;
+        let (valid, _) = Self::lower_and_validate(&self.spec, &self.shapes)?;
         let (_, delta) = compile(&valid, &self.shapes, &prepare, self.base().map(|p| &**p))
             .map_err(CommitError::Compile)?;
         let needed = delta
@@ -2132,9 +2217,9 @@ impl Editor {
             self.finish_reprepare(returned, rep)
         }));
         match outcome {
-            Ok(Ok((plan, resume, units))) => {
+            Ok(Ok((plan, resume, units, weights))) => {
                 self.committed = None;
-                self.send(plan, resume, units)
+                self.send(plan, resume, units, &weights)
             }
             Ok(Err(e)) => {
                 self.poisoned = Some(format!(
@@ -2157,7 +2242,7 @@ impl Editor {
         &mut self,
         returned: Vec<(NodeKey, Box<dyn Node>)>,
         rep: Reprepare,
-    ) -> Result<(Plan, Delta, BTreeMap<NodeKey, Box<dyn Node>>), CompileError> {
+    ) -> Result<Resumed, CompileError> {
         let Reprepare {
             mut spec,
             mut shapes,
@@ -2189,7 +2274,11 @@ impl Editor {
             units.insert(key, unit);
         }
         units.extend(pending);
-        let valid = spec.validate().expect("reprepare validated this spec");
+        // The units' shapes may have moved with the re-prepare: lower again.
+        let (valid, weights) = Self::lower_and_validate(&spec, &shapes).map_err(|e| match e {
+            CommitError::Compile(e) => e,
+            other => unreachable!("reprepare validated this spec: {other}"),
+        })?;
         let (plan, delta) = compile(&valid, &shapes, &prepare, base.as_deref())?;
         // The executor's store is empty: every unit goes back in, at the
         // index the plan gives it.
@@ -2209,7 +2298,7 @@ impl Editor {
             cuts: Vec::new(),
             store_len: delta.store_len,
         };
-        Ok((plan, resume, units))
+        Ok((plan, resume, units, weights))
     }
 
     /// Validates, compiles against the plan sent last, and sends the result
@@ -2277,13 +2366,13 @@ impl Editor {
                 .as_ref()
                 .is_some_and(|(spec, _)| *spec != self.spec)
             {
-                self.spec.validate().map_err(CommitError::Invalid)?;
+                Self::lower_and_validate(&self.spec, &self.shapes)?;
                 self.sync_ranges();
                 self.committed = Some((self.spec.clone(), self.shapes.clone()));
             }
             return Ok(());
         }
-        let valid = self.spec.validate().map_err(CommitError::Invalid)?;
+        let (valid, weights) = Self::lower_and_validate(&self.spec, &self.shapes)?;
         let (plan, mut delta) = compile(
             &valid,
             &self.shapes,
@@ -2337,7 +2426,7 @@ impl Editor {
             .map(|k| (k, self.pending.remove(&k).expect("checked above")))
             .collect();
         self.fades.clear();
-        self.send(plan, delta, units);
+        self.send(plan, delta, units, &weights);
         self.sync_ranges();
         self.committed = Some((self.spec.clone(), self.shapes.clone()));
         Ok(())
@@ -2373,7 +2462,10 @@ impl Editor {
         plan.verify_fades(self.base().map(|p| &**p), &delta)
             .map_err(CommitError::Fade)?;
         self.committed = None;
-        self.send(plan, delta, units);
+        // The plan was compiled elsewhere, from the spec as it stands (as a
+        // caller that lowers it must have).
+        let weights = self.lowered().map(|l| l.weights()).unwrap_or_default();
+        self.send(plan, delta, units, &weights);
         Ok(())
     }
 
@@ -2482,7 +2574,13 @@ impl Editor {
     /// a queue of `QUEUE_CAPACITY`, and `out < QUEUE_CAPACITY` was checked.
     /// Its crossfades take their slots on the fade-return ring here
     /// (checked by `fade_room`).
-    fn send(&mut self, plan: Plan, delta: Delta, units: BTreeMap<NodeKey, Box<dyn Node>>) {
+    fn send(
+        &mut self,
+        plan: Plan,
+        delta: Delta,
+        units: BTreeMap<NodeKey, Box<dyn Node>>,
+        bus_weights: &BTreeMap<EdgeId, Amplitude>,
+    ) {
         self.touch();
         self.fades_out += starting(&delta);
         debug_assert!(self.fades_out <= FADE_CAPACITY);
@@ -2519,6 +2617,11 @@ impl Editor {
         let gains: BTreeMap<EdgeId, GainCell> = lanes
             .into_iter()
             .map(|id| {
+                // A lane a bus edge made: the fold's static weight, in a cell
+                // of its own that nothing writes and no one is handed.
+                if let Some(&w) = bus_weights.get(&id) {
+                    return (id, GainCell::new(w, EdgeGain::DEFAULT_RANGE));
+                }
                 let gain = self.spec.gains.get(&id).copied().unwrap_or_default();
                 let cell = self
                     .edge_gains

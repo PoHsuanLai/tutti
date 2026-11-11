@@ -13,6 +13,7 @@ use std::sync::Arc;
 use crate::NodeKey;
 use crate::{Edge, FeedbackFrom, InPort, OutPort, Sink, Source, Topology};
 
+use crate::CompileError;
 use crate::editor::{CommitError, Editor};
 use crate::exec::Executor;
 use crate::gain::EdgeGain;
@@ -894,7 +895,18 @@ impl Editor {
         mode: ForkMode,
         prepare: Prepare,
     ) -> Result<PendingFork, ForkError> {
-        let live = self.spec();
+        // A bus edge is its lanes in the fork: it forks the lowered spec, so
+        // the lanes are edges (and its weights are gains) like any other.
+        let lowered = if self.spec().bus_edges.is_empty() {
+            None
+        } else {
+            Some(
+                self.spec()
+                    .lowered(self.shapes())
+                    .map_err(|e| ForkError::Commit(CommitError::Compile(CompileError::Bus(e))))?,
+            )
+        };
+        let live = lowered.as_ref().map_or_else(|| self.spec(), |l| &l.spec);
         let (keys, outputs) = match target {
             // What the global outputs hear, and nothing else: a node no
             // output reaches renders nothing into the fork, so it is neither
@@ -905,7 +917,8 @@ impl Editor {
                 (
                     // The lanes that drive the gain of an output edge are
                     // heard through it: roots too.
-                    self.upstream(
+                    Self::upstream(
+                        live,
                         live.topology
                             .outputs
                             .iter()
@@ -941,7 +954,7 @@ impl Editor {
                         })]
                     })
                     .collect();
-                (self.upstream([key]), outputs)
+                (Self::upstream(live, [key]), outputs)
             }
         };
         // Every source first, so a refusal forks nothing (a fork may clone a
@@ -1021,6 +1034,9 @@ impl Editor {
             gains: BTreeMap::new(),
             modes: BTreeMap::new(),
             mixes: BTreeMap::new(),
+            // The fork is of the lowered spec: a bus edge is already its
+            // lanes.
+            bus_edges: BTreeMap::new(),
         };
         // The edge gains whose edge the fork kept (an output channel the
         // fork rewired to one node has none): the fork sums as the live graph
@@ -1107,8 +1123,7 @@ impl Editor {
 
     /// `roots` and every node that feeds them, walking back along audio,
     /// feedback, event and param edges.
-    fn upstream(&self, roots: impl IntoIterator<Item = NodeKey>) -> BTreeSet<NodeKey> {
-        let spec = self.spec();
+    fn upstream(spec: &GraphSpec, roots: impl IntoIterator<Item = NodeKey>) -> BTreeSet<NodeKey> {
         let mut seen: BTreeSet<NodeKey> = roots.into_iter().collect();
         let mut stack: Vec<NodeKey> = seen.iter().copied().collect();
         while let Some(node) = stack.pop() {

@@ -123,6 +123,14 @@ pub enum Kind {
         latency: usize,
         tail: Tail,
     },
+    /// `inner`, declaring these buses on its shape (doc 013, "Buses and
+    /// coercion between declared layouts"): the node behaves as `inner` and
+    /// only its `Shape::buses_in` / `buses_out` differ.
+    Bused {
+        inner: Box<Kind>,
+        buses_in: Box<tutti_graph::Buses>,
+        buses_out: Box<tutti_graph::Buses>,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -146,6 +154,8 @@ pub struct TestNode {
     /// What its shape declares to the cost model (`Cost::Heavy`, the
     /// default, unless set with `with_cost`).
     cost: tutti_graph::Cost,
+    /// The buses a `Kind::Bused` declares.
+    buses: Option<(tutti_graph::Buses, tutti_graph::Buses)>,
 }
 
 impl TestNode {
@@ -155,6 +165,14 @@ impl TestNode {
 
     /// A node that counts its `process` calls into `calls`.
     pub fn counted(kind: Kind, calls: Arc<AtomicUsize>) -> Self {
+        let (kind, buses) = match kind {
+            Kind::Bused {
+                inner,
+                buses_in,
+                buses_out,
+            } => (*inner, Some((*buses_in, *buses_out))),
+            kind => (kind, None),
+        };
         let ring = match kind {
             Kind::Lag { latency } => VecDeque::from(vec![0.0; latency]),
             _ => VecDeque::new(),
@@ -169,6 +187,7 @@ impl TestNode {
             rate: None,
             calls,
             cost: tutti_graph::Cost::default(),
+            buses,
         }
     }
 
@@ -182,6 +201,7 @@ impl TestNode {
 impl TestNode {
     fn kind_shape(&self) -> Shape {
         match self.kind {
+            Kind::Bused { .. } => unreachable!("`counted` unwraps the buses"),
             Kind::Const { width, .. } => Shape::audio(ch(0), ch(width)),
             Kind::Gain { width, .. } => Shape::audio(ch(width), ch(width)).with_in_place(),
             Kind::Sum { inputs } => Shape::audio(ch(inputs), ch(1)),
@@ -236,7 +256,11 @@ impl TestNode {
 
 impl Node for TestNode {
     fn shape(&self) -> Shape {
-        self.kind_shape().with_cost(self.cost)
+        let shape = self.kind_shape().with_cost(self.cost);
+        match self.buses {
+            Some((buses_in, buses_out)) => shape.with_buses_in(buses_in).with_buses_out(buses_out),
+            None => shape,
+        }
     }
 
     fn prepare(&mut self, p: &Prepare) {
@@ -256,6 +280,7 @@ impl Node for TestNode {
         self.calls.fetch_add(1, Ordering::Relaxed);
         let n = io.frames();
         match self.kind {
+            Kind::Bused { .. } => unreachable!("`counted` unwraps the buses"),
             Kind::Const { value, .. } => {
                 for c in 0..io.output_count() {
                     io.output(c)[0] = value;

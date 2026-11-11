@@ -15,6 +15,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use crate::bus_edge::{BusRef, BusSource};
 use crate::gain::EdgeGain;
 use crate::mode::{NodeMix, NodeMode};
 use crate::{ChannelFeed, LatencyGraph, PortFeed};
@@ -166,6 +167,16 @@ pub struct GraphSpec {
     /// entry for a node that is not in the topology, or one outside `0..=1`,
     /// is refused by [`validate`](Self::validate).
     pub mixes: BTreeMap<NodeKey, NodeMix>,
+    /// Bus edges (doc 013, "Buses and coercion between declared layouts"):
+    /// the sources of each sink bus, as a set kept in source order
+    /// ([`connect_bus`](Self::connect_bus)). A bus edge is a fold between two
+    /// declared layouts, and it needs the nodes' shapes to mean anything:
+    /// [`lowered`](Self::lowered) replaces each with per-port edges and static
+    /// weights, and that value, not this one, is what
+    /// [`validate`](Self::validate) and [`compile`](fn@crate::compile) take.
+    /// [`Editor::commit`](crate::Editor::commit) lowers for you. An empty
+    /// `Vec` is the same as an absent key.
+    pub bus_edges: BTreeMap<BusRef, Vec<BusSource>>,
 }
 
 impl GraphSpec {
@@ -497,6 +508,7 @@ impl GraphSpec {
             required_resolution,
             params,
             gains,
+            bus_edges,
             // A control: the plan does not read it.
             modes: _,
             mixes: _,
@@ -506,6 +518,7 @@ impl GraphSpec {
         }
         *topology == other.topology
             && *events == other.events
+            && *bus_edges == other.bus_edges
             && *generations == other.generations
             && *required_resolution == other.required_resolution
             && wired(params).eq(wired(&other.params))
@@ -595,6 +608,9 @@ impl GraphSpec {
                     missing: from.node,
                 });
             }
+        }
+        if !self.bus_edges.is_empty() {
+            errs.push(GraphInvalid::BusEdgesUnlowered);
         }
         for &node in self.modes.keys() {
             if !nodes.contains_key(&node) {
@@ -717,6 +733,17 @@ pub enum GraphInvalid {
         id: EdgeId,
         /// The key that is not there.
         missing: NodeKey,
+    },
+    /// The spec holds bus edges. A bus edge means a fold between the nodes'
+    /// declared buses, which `validate` (it sees no shapes) cannot read:
+    /// [`GraphSpec::lowered`] first, and validate its `spec`.
+    BusEdgesUnlowered,
+    /// A gain is set on a lane a bus edge produced: its weight is the
+    /// fold's, not the author's
+    /// ([`Editor::set_edge_gain`](crate::Editor::set_edge_gain)).
+    GainOnBusLane {
+        /// The lane.
+        id: EdgeId,
     },
     /// A mode is set for a node that is not in the topology.
     ModeWithoutNode {

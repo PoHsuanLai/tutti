@@ -20,28 +20,8 @@ use tutti_types::{ChannelTopology, Speaker};
 /// rather than guess where it goes. (The sampler builds that fold when it
 /// builds a voice over the wave, so a file with one is refused there.)
 fn speaker(flag: Channels) -> Speaker {
-    use Speaker::*;
-    match flag {
-        Channels::FRONT_LEFT => FrontLeft,
-        Channels::FRONT_RIGHT => FrontRight,
-        Channels::FRONT_CENTRE => FrontCenter,
-        Channels::LFE1 => LowFrequency,
-        Channels::REAR_LEFT => BackLeft,
-        Channels::REAR_RIGHT => BackRight,
-        Channels::FRONT_LEFT_CENTRE => FrontLeftOfCenter,
-        Channels::FRONT_RIGHT_CENTRE => FrontRightOfCenter,
-        Channels::REAR_CENTRE => BackCenter,
-        Channels::SIDE_LEFT => SideLeft,
-        Channels::SIDE_RIGHT => SideRight,
-        Channels::TOP_CENTRE => TopCenter,
-        Channels::TOP_FRONT_LEFT => TopFrontLeft,
-        Channels::TOP_FRONT_CENTRE => TopFrontCenter,
-        Channels::TOP_FRONT_RIGHT => TopFrontRight,
-        Channels::TOP_REAR_LEFT => TopBackLeft,
-        Channels::TOP_REAR_CENTRE => TopBackCenter,
-        Channels::TOP_REAR_RIGHT => TopBackRight,
-        other => Unknown(other.bits().trailing_zeros() as u16),
-    }
+    crate::wave_mask::speaker_of(flag.bits())
+        .unwrap_or_else(|| Speaker::Unknown(flag.bits().trailing_zeros() as u16))
 }
 
 /// The topology of a track's channels, in the order its decoder writes them.

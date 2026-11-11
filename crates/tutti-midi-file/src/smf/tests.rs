@@ -393,7 +393,7 @@ fn every_voice_message_round_trips_through_the_file() {
             pressure: U7::of(33),
         },
         Voice1::ControlChange {
-            controller: CCNumber::of(74),
+            controller: CCNumber::BRIGHTNESS,
             value: U7::of(99),
         },
         Voice1::ProgramChange(U7::of(17)),

@@ -31,9 +31,11 @@
 use std::path::PathBuf;
 use std::sync::{Mutex, MutexGuard};
 use tutti_fixtures::main_thread;
+use tutti_plugin_types::Load;
+use tutti_vst2_host::Vst2Loaded;
 
 use tutti_plugin::handles::PluginHandle;
-use tutti_plugin::{BoundInProcessVst2Client, RenderMode, in_process_vst2_client};
+use tutti_plugin::{PluginNode, RenderMode, load_client};
 use tutti_types::SampleRate;
 use tutti_vst2_test_plugin::ProcessCapture;
 
@@ -109,7 +111,7 @@ fn read_capture(path: &PathBuf) -> ProcessCapture {
 }
 
 struct Loaded {
-    unit: BoundInProcessVst2Client,
+    unit: PluginNode<Vst2Loaded>,
     handle: PluginHandle,
     path: PathBuf,
 }
@@ -117,9 +119,13 @@ struct Loaded {
 fn load() -> Loaded {
     let path = tutti_fixtures::vst2_probe().to_path_buf();
     reset_probe(&path);
-    let (unit, handle) =
-        in_process_vst2_client(&main_thread(), &path, SampleRate::new(SAMPLE_RATE))
-            .unwrap_or_else(|e| panic!("in-process load of reference plugin at {path:?}: {e:?}"));
+    let (unit, handle) = load_client::<Vst2Loaded>(
+        &main_thread(),
+        &path,
+        &Load::new(),
+        SampleRate::new(SAMPLE_RATE),
+    )
+    .unwrap_or_else(|e| panic!("in-process load of reference plugin at {path:?}: {e:?}"));
     Loaded {
         unit: unit.bind(tempo()),
         handle,
@@ -130,17 +136,17 @@ fn load() -> Loaded {
 /// Render one block through the node, prepared as a graph prepares it
 /// (`Node::prepare`, which sizes its scratch and parks its rate), then
 /// `Node::process` by hand (`tutti_graph::contract::drive_input`).
-fn drive_block(unit: &mut BoundInProcessVst2Client) {
+fn drive_block(unit: &mut PluginNode<Vst2Loaded>) {
     drive_blocks(unit, BLOCK, BLOCK);
 }
 
 /// One block of `frames` through `unit` prepared for blocks of up to `max`.
-fn drive_blocks(unit: &mut BoundInProcessVst2Client, max: usize, frames: usize) {
+fn drive_blocks(unit: &mut PluginNode<Vst2Loaded>, max: usize, frames: usize) {
     drive_blocks_at(unit, SAMPLE_RATE, max, frames);
 }
 
 /// [`drive_blocks`] at `hz`: the node is prepared at that rate.
-fn drive_blocks_at(unit: &mut BoundInProcessVst2Client, hz: f64, max: usize, frames: usize) {
+fn drive_blocks_at(unit: &mut PluginNode<Vst2Loaded>, hz: f64, max: usize, frames: usize) {
     use tutti_graph::{Env, Node, Prepare, Transport, TransportChanges};
     let rate = SampleRate(hz);
     Node::prepare(unit, &Prepare::new(rate, tutti_types::Samples(max)));

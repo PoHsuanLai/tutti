@@ -428,8 +428,7 @@ impl RegionBuffer {
         fade_frames: usize,
     ) -> (RegionOut, SharedReader, PosReader) {
         let layout = nonempty(channels.into());
-        let topology =
-            ChannelTopology::assumed(layout).unwrap_or_else(|| ChannelTopology::discrete(layout));
+        let topology = ChannelTopology::for_width(layout);
         Self::for_file(
             region_id,
             file_path,

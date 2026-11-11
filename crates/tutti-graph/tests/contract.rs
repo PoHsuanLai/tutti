@@ -19,6 +19,7 @@ mod common;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::{Arc, Mutex};
 
+use tutti_fixtures::midi::cc;
 use tutti_graph::contract::{
     Detect, Emitter, Excite, Lookahead, MAX_BLOCK, OFFSETS, ParamEcho, Path, Pulse, Row,
     SAMPLE_RATE,
@@ -28,7 +29,7 @@ use tutti_graph::{
     contract_tests,
 };
 use tutti_types::{ChannelLayout, Frame, Latency, Samples, Tail, UnitParam};
-use tutti_ump::Ump;
+use tutti_ump::{CCNumber, MidiChannel, MidiGroup, Ump};
 
 /// A MIDI 2.0 volume controller (CC 7): the event every event row is excited
 /// by. It is not a held key, so a recompile that replaces the feeder closes
@@ -36,12 +37,19 @@ use tutti_ump::Ump;
 ///
 /// Mutation (run): a note-on here -> the four `recompile_upstream_generation`
 /// rows fail, the sink hearing the close the replaced feeder owes.
-const PULSE: EventKind = EventKind::Midi(Ump([0x40b0_0700, 0xC800_0000, 0, 0]));
+fn pulse_kind() -> EventKind {
+    EventKind::Midi(cc(
+        MidiGroup::FIRST,
+        MidiChannel::FIRST,
+        CCNumber::VOLUME,
+        0xC800_0000,
+    ))
+}
 
 fn pulse() -> Excite {
     Excite::Event {
         port: 0,
-        kind: PULSE,
+        kind: pulse_kind(),
     }
 }
 

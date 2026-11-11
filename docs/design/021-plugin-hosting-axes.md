@@ -227,6 +227,44 @@ of `fork.rs` and `vst2_in_process/fork.rs` become one.
 `ProcessContext` (automation, MIDI, transport) and calls `Processor::process`;
 `IpcProcessor` serialises that context into the slab, `F::Processor` consumes it.
 
+As built (step 4a-3c-2): `format/in_process/` is generic over `F: InProcess`
+and names no format: `Instance<F>` (a `Lifecycle<F>` and a threaded `Hand`),
+`InProcClient<F>` (the unbound node), `PluginNode<F>` (the bound graph node: a
+`tutti_graph::Node`, an `IntoNode` with a fork source), `load_client::<F>(main,
+path, &Load, rate)` and a `ControlBackend<F>` behind `HostParams`, `HostState`,
+`HostEditor`, `HostPresets` and `HostRenderMode` that goes through
+`Lifecycle::control()`. The controls inserting it hands back are
+`NodeControls`. A block is one `Processor::process` (an `AudioBufferMut::F32`
+over the graph's slices, a `ProcessContext` of MIDI, the parameter chunk and
+the transport, and a `ProcessOutput` the client owns and clears each block);
+a block the Processor fails renders silence and is counted
+(`failed_blocks`, beside `unlent_blocks`) and its parameter values are owed to
+the next block. The fork loads the second instance from the live instance's
+`Origin` (`InProcess::load_in_process`: what `Reopen::reopen` does, which an
+active `Lifecycle` cannot call as it holds a Controller, not the loaded
+plugin), and carries the current preset and `save_state`. VST2 runs through it
+(`Plugin::open` names `Vst2Loaded`); CLAP and VST3 implement `InProcess` but
+are **not routed in-process yet**: they still load in a `plugin-server`.
+
+What VST2 changed by going through `Control`: every `Control` entry is a
+main-thread call, but the handle's methods still work from any thread. The ones
+that take no token (`parameter_descriptors`, `parameter_value`, `parameter_text`,
+`parameter_value_from_text`, `save_state`, `set_render_mode`) run at once on the
+main thread; off it they are posted with `defer_to_main` and the caller waits
+for the answer, which costs one main-thread tick (`Session::update` runs
+`run_deferred`) and is bounded by a 2 s deadline. A host that blocks its main
+thread on such a call (joining a snapshot or parameter-read job from the main
+thread) gets the "unavailable" answer (`None`, `Err(Rejected)`, `false`) when it
+expires. `set_parameter_value` off the main thread is posted and not waited
+for. So the session's snapshot job (`PluginSnapshot::run`) and the parameter
+mirror's read (`ParamRead::run`) work for an in-process plugin as before. The
+off-main chunk read (`chunk_off_main_thread`) is deleted. `Control` gained a
+required `dropped_reported_edits` (VST2: the `audioMasterAutomate` queue's
+drops; CLAP and VST3: `0`, they report edits in `ProcessOutput`), which
+`HostParams::dropped_parameter_events` forwards, and `ProcessOutput` gained
+`params_refused` (VST2's `render` sets it from `write_automation`), which the
+node adds to `ParamDelivery::refused`.
+
 ### 2.3 The server
 
 `Session<P: Hosted>` (016 §2.7) is instantiated at `Served<F: OutOfProcess>` for each

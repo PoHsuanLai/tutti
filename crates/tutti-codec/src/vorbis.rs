@@ -222,18 +222,6 @@ fn vorbis_speakers(width: u16) -> Option<&'static [Speaker]> {
     })
 }
 
-/// A rear speaker for the side one and the reverse: the pair a bed may use
-/// either of.
-fn counterpart(speaker: Speaker) -> Option<Speaker> {
-    match speaker {
-        Speaker::SideLeft => Some(Speaker::BackLeft),
-        Speaker::SideRight => Some(Speaker::BackRight),
-        Speaker::BackLeft => Some(Speaker::SideLeft),
-        Speaker::BackRight => Some(Speaker::SideRight),
-        _ => None,
-    }
-}
-
 /// Which file channel feeds each Vorbis stream channel: stream channel `i` is
 /// file channel `order[i]`. `None` when the stream is the file's own order
 /// (mono, stereo, a width past 8, or a file already in Vorbis's order).
@@ -275,7 +263,7 @@ fn vorbis_order(spec: &Spec) -> Result<Option<Box<[usize]>>> {
                 continue;
             }
             let want = if stand_in {
-                counterpart(want)
+                want.counterpart()
             } else {
                 Some(want)
             };

@@ -44,7 +44,7 @@ fn gate<N: IntoNode>(node: N, warm: usize) {
 
 #[test]
 fn vbap_panner_stereo_process_is_allocation_free() {
-    let node = VbapPannerNode::stereo().expect("stereo preset");
+    let node = VbapPannerNode::stereo();
     node.controls()
         .set_position(Azimuth::new(30.0), Elevation::new(0.0));
     // One warm-up block.
@@ -66,7 +66,7 @@ fn vbap_panner_stereo_process_is_allocation_free() {
 /// writing into the caller's scratch -> fails here and in both siblings.
 #[test]
 fn vbap_folded_rear_arc_is_allocation_free() {
-    let mut node = VbapPannerNode::stereo().expect("stereo preset");
+    let mut node = VbapPannerNode::stereo();
     // 200 degrees wraps to -160, well past the lateral axis: the fold fires and
     // mirrors it to -20. Plain VBAP would leave this bearing silent.
     node.controls()
@@ -96,7 +96,7 @@ fn vbap_folded_rear_arc_is_allocation_free() {
 /// body twice.
 #[test]
 fn vbap_elevation_retreat_is_allocation_free() {
-    let mut node = VbapPannerNode::quad().expect("quad preset");
+    let mut node = VbapPannerNode::quad();
     // Straight up: a 2D ring cannot solve this, so the retreat runs.
     node.controls()
         .set_position(Azimuth::new(0.0), Elevation::new(90.0));

@@ -1,25 +1,25 @@
-//! The in-process VST2 plugin as a graph node: MIDI
+//! The in-process plugin as a graph node, over any [`InProcess`] format: MIDI
 //! arrives on an event input, on its frame, and the plugin's MIDI-out leaves
 //! on an event output (a plugin that declared `Features::MIDI_OUT`), each
 //! event on the frame the plugin gave it.
 //!
 //! **Parameters** arrive on the same event input: a ramp or a curve segment
 //! (a foreign control lane's, `ControlLaneNode::for_foreign`), addressed by
-//! VST2 index.
+//! the plugin's own parameter id.
 //! They go through the out-of-process node's delivery (`host::node`'s
 //! `param_delivery` and `param_input`): a slot per parameter declared at
 //! load, **changes only** against the value last delivered to the instance,
 //! and the same segment points. The block is the chunk: before the plugin
 //! processes it, each parameter that moved is set to its latest value in the
-//! block with `setParameter`, under the instance lock, as the out-of-process
-//! VST2 loader sets a chunk's. VST 2.4 has no sample-accurate parameter
-//! event, so a point inside the block lands on its first frame; the two
-//! hosts differ only in that the out-of-process one's chunk is the
-//! pipeline's, this one's the graph's block. A block with no Processor in hand
-//! (silence, counted in
-//! [`unlent_blocks`](InProcessVst2Client::unlent_blocks)) delivers nothing,
+//! block is handed to the Processor as [`ProcessContext::params`](tutti_plugin_types::ProcessContext::params), which
+//! consumes it as its format does (VST2 sets each queue's last point, as the
+//! out-of-process VST2 loader sets a chunk's). The two hosts differ only in
+//! that the out-of-process one's chunk is the pipeline's, this one's the
+//! graph's block. A block with no Processor in hand (silence, counted in
+//! [`unlent_blocks`](InProcClient::unlent_blocks)) or one the Processor
+//! failed ([`failed_blocks`](InProcClient::failed_blocks)) delivers nothing,
 //! and its values are owed to the next block. Counted in
-//! [`InProcessVst2Controls::param_delivery`].
+//! [`NodeControls::param_delivery`].
 //!
 //! Forkable by state transfer (see its `IntoNode` below, and `fork.rs`). The
 //! live node and its fork read the transport the same way: from the block's
@@ -33,16 +33,14 @@ use tutti_graph::{
 use tutti_types::Latency;
 use tutti_types::{ChannelLayout, Samples};
 
-use super::client::{BoundInProcessVst2Client, InProcessVst2Client, drive_f32};
+use super::client::{InProcClient, MAX_CHANNELS, PluginNode, Rendered, render};
 use crate::host::node::{NodeControls, param_input};
-use tutti_plugin_types::{Features, WireMidi};
+use tutti_plugin_types::{Features, InProcess, WireMidi};
 
-/// The most channels a block hands the plugin (the stack tables `process`
-/// builds from its `Io`). A wider plugin's channels past it read silence and
-/// its graph outputs past it are silent.
-const MAX_CHANNELS: usize = 16;
-
-impl Node for BoundInProcessVst2Client {
+impl<F: InProcess + 'static> Node for PluginNode<F>
+where
+    F::Processor: 'static,
+{
     /// The plugin's channels, one event input (MIDI and parameter events),
     /// and a MIDI event output for a plugin that declared MIDI out; its
     /// latency and tail as the control side last read them. The plugin reports its tail apart from
@@ -147,13 +145,11 @@ impl Node for BoundInProcessVst2Client {
             this.transport.block(cx, size, this.features, &map, cursor)
         };
         let sends = this.features.contains(Features::MIDI_OUT) && io.event_output_count() > 0;
-        let mut out_events = tutti_plugin_types::MidiEventVec::new();
-        // The graph's buffers go to the plugin as they are: `vst2-host`
-        // copies them into its render scratch and the plugin's output back
-        // out, the one copy each way its pointer tables need. Scoped so the
-        // tables release `io` before the event output is taken.
+        // The graph's buffers go to the plugin as they are: the Processor
+        // reads them through the channel tables below. Scoped so the tables
+        // release `io` before the event output is taken.
         let block_midi = this.midi.len();
-        let processed = {
+        let rendered = {
             let (inputs, mut outputs) = io.split();
             // A plugin wider than the tables is handed their first
             // `MAX_CHANNELS` channels; the graph's outputs past them would
@@ -168,48 +164,45 @@ impl Node for BoundInProcessVst2Client {
                 .take(n_out)
                 .map(|out| &mut out[..size])
                 .collect();
-            let processed = drive_f32(
+            let rendered = render(
                 &mut this.rt,
-                &this.unlent,
+                (&this.unlent, &this.failed),
                 &this.params,
                 &mut this.midi,
-                &mut |events| {
-                    if sends {
-                        // Past the cap the rest are dropped.
-                        for e in events {
-                            if out_events.try_push(*e).is_err() {
-                                break;
-                            }
-                        }
-                    }
-                },
+                &mut this.out,
                 &transport,
                 &ins,
                 &mut outs,
                 size,
                 this.sample_rate,
             );
-            if !processed {
+            if rendered != Rendered::Ran {
                 for out in &mut outs {
                     out.fill(0.0);
                 }
             }
-            processed
+            rendered
         };
+        let processed = rendered == Rendered::Ran;
+        if processed {
+            // The writes the plugin refused, counted dropped.
+            this.params.refused(this.out.params_refused() as u64);
+        }
         // Set on the plugin with the block, or owed to the next one.
         this.params.handed_off(processed);
         if !processed {
-            // The block's MIDI was dropped with it (`drive_f32`): counted,
+            // The block's MIDI was dropped with it (`render`): counted,
             // and the rest of every SysEx open in it is skipped.
             this.params.count_midi_dropped(block_midi as u64);
             io.count_lost(block_midi as u64);
             this.intake.lost();
         }
-        if sends {
-            tutti_plugin_types::insertion_sort_by_key(&mut out_events, |e| e.offset);
+        if sends && processed {
+            let out_events = &mut this.out.midi_events;
+            tutti_plugin_types::insertion_sort_by_key(out_events, |e| e.offset);
             let writer = io.event_out(0);
             let block = Samples(size);
-            for e in &out_events {
+            for e in out_events.iter() {
                 let at = (e.offset as usize).min(size - 1);
                 if let Some(at) = Offset::new(at, block) {
                     let _ = writer.push(Event::midi(at, e.ump));
@@ -241,22 +234,24 @@ impl Node for BoundInProcessVst2Client {
     }
 }
 
-/// The plugin, inserted as a graph node. Its controls
-/// ([`InProcessVst2Controls`]) are its meter cell (the same cell as
-/// [`NodeControls::set_meter`]), so a host can give it the project
-/// meter after it has moved into the graph, and its parameter delivery's
-/// counters, as an out-of-process plugin's `PluginControls` are. Its
-/// [`ForkSource`] forks it **by state transfer**: a second instance of the
-/// plugin from the same library, restored from this one's saved state
-/// ([`BoundInProcessVst2Client::fork_instance`]). So `Editor::fork` (an offline
-/// export) renders a graph holding it.
+/// The plugin, inserted as a graph node. Its controls ([`NodeControls`]) are
+/// its meter cell (the same cell as [`NodeControls::set_meter`]), so a host can
+/// give it the project meter after it has moved into the graph, and its
+/// parameter delivery's counters, as an out-of-process plugin's
+/// `PluginControls` are. Its [`ForkSource`] forks it **by state transfer**: a
+/// second instance of the plugin from the same library, restored from this
+/// one's saved state ([`PluginNode::fork_instance`]). So `Editor::fork` (an
+/// offline export) renders a graph holding it.
 ///
 /// [`ForkSource`]: tutti_graph::ForkSource
-impl IntoNode for BoundInProcessVst2Client {
-    type Controls = InProcessVst2Controls;
+impl<F: InProcess + 'static> IntoNode for PluginNode<F>
+where
+    F::Processor: 'static,
+{
+    type Controls = NodeControls;
 
-    fn into_parts(self) -> NodeParts<InProcessVst2Controls> {
-        let fork = super::fork::Vst2Fork::of(&self);
+    fn into_parts(self) -> NodeParts<NodeControls> {
+        let fork = super::fork::Fork::of(&self);
         let controls = self.client.controls();
         NodeParts {
             node: Box::new(self),
@@ -266,32 +261,28 @@ impl IntoNode for BoundInProcessVst2Client {
     }
 }
 
-/// An in-process VST2 node's controls: what inserting it hands back, and what
-/// [`InProcessVst2Client::controls`] returns before then: the meter cell and
-/// the delivery counters every plugin node's controls hold. Cheap to clone;
-/// every clone is a handle on the same node (the node itself is not
-/// `Clone`). Its block is the out-of-process node's chunk: a block's points
-/// all count as sent, though VST2 is told only each parameter's last one, and
-/// a block the plugin did not run (no Processor in hand; see
-/// `unlent_blocks`) loses its MIDI, counted.
-pub type InProcessVst2Controls = NodeControls;
-
-impl InProcessVst2Client {
+impl<F: InProcess> InProcClient<F> {
     /// The node's controls: its meter cell and its parameter delivery's
-    /// counters, the same [`InProcessVst2Controls`] inserting it hands back.
-    pub fn controls(&self) -> InProcessVst2Controls {
+    /// counters, the same [`NodeControls`] inserting it hands back. Its block
+    /// is the out-of-process node's chunk: a block's points all count as sent,
+    /// though a format may take only each parameter's last one, and a block
+    /// the plugin did not run (no Processor in hand, or one that failed it;
+    /// see `unlent_blocks` and `failed_blocks`) loses its MIDI, counted.
+    pub fn controls(&self) -> NodeControls {
         NodeControls::new(self.transport.meter(), self.params.counters())
     }
 }
 
 /// The owed path needs a block with no Processor in hand, which only code
 /// inside the crate can bring about on cue (a rate change that recalls the
-/// Processor, through `InProcessVst2Client::inner`); the rest of the
+/// Processor, through `InProcClient::inner`); the rest of the
 /// node's parameter delivery is pinned against the public API in
 /// `tests/vst2_in_process_params.rs`.
-#[cfg(test)]
+#[cfg(all(test, feature = "vst2"))]
 mod owed_tests {
     use tutti_fixtures::main_thread;
+    use tutti_plugin_types::{Load, MainThread};
+    use tutti_vst2_host::Vst2Loaded;
 
     use std::sync::atomic::Ordering;
 
@@ -299,7 +290,17 @@ mod owed_tests {
     use tutti_graph::{Event, Offset, ParamRamp};
     use tutti_types::SampleRate;
 
+    use crate::format::in_process::InProcClient;
     use crate::handles::{ParamId, PluginHandle};
+
+    /// The reference VST2 plugin through the generic loader.
+    fn load_client(
+        main: &MainThread,
+        path: &std::path::Path,
+        rate: SampleRate,
+    ) -> tutti_plugin_ipc::Result<(InProcClient<Vst2Loaded>, PluginHandle)> {
+        super::super::load_client::<Vst2Loaded>(main, path, &Load::new(), rate)
+    }
 
     /// A reader of a constant 120 BPM map, for nodes these tests drive.
     fn tempo() -> tutti_transport::TempoReader {
@@ -327,7 +328,7 @@ mod owed_tests {
     fn a_fork_prepared_off_the_main_thread_is_refused() {
         let main = main_thread();
         let (client, _handle) =
-            super::super::load_client(&main, tutti_fixtures::vst2_probe(), SampleRate(48_000.0))
+            load_client(&main, tutti_fixtures::vst2_probe(), SampleRate(48_000.0))
                 .unwrap_or_else(|e| panic!("in-process load of the probe: {e:?}"));
         let fork = client
             .bind(tempo())
@@ -350,7 +351,7 @@ mod owed_tests {
     /// Starts a rate change the way one parked for the main thread's pump
     /// does: the Processor is recalled, so the node's next block hands it
     /// back and renders without it.
-    fn recall(inner: &parking_lot::Mutex<super::super::instance::Instance>) {
+    fn recall(inner: &parking_lot::Mutex<super::super::instance::Instance<Vst2Loaded>>) {
         inner
             .lock()
             .set_sample_rate(&main_thread(), 44_100.0, None)
@@ -358,7 +359,7 @@ mod owed_tests {
     }
 
     /// Finishes it: the pump collects the Processor and lends the new one.
-    fn pump(inner: &parking_lot::Mutex<super::super::instance::Instance>) {
+    fn pump(inner: &parking_lot::Mutex<super::super::instance::Instance<Vst2Loaded>>) {
         let _ = inner.lock().pump(&main_thread());
     }
 
@@ -376,7 +377,7 @@ mod owed_tests {
     /// plugin keeps `1 / 16` → fails.
     #[test]
     fn an_unlent_block_owes_its_values_to_the_next() {
-        let (client, handle) = super::super::load_client(
+        let (client, handle) = load_client(
             &main_thread(),
             tutti_fixtures::vst2_probe(),
             SampleRate(48_000.0),
@@ -453,7 +454,7 @@ mod owed_tests {
     /// the count is short by three → fails.
     #[test]
     fn an_unlent_block_cuts_the_sysex_open_in_it() {
-        let (client, _handle) = super::super::load_client(
+        let (client, _handle) = load_client(
             &main_thread(),
             tutti_fixtures::vst2_probe(),
             SampleRate(48_000.0),
@@ -500,7 +501,7 @@ mod owed_tests {
     #[test]
     fn a_sysex_open_across_a_reset_is_not_completed() {
         use tutti_graph::Node as _;
-        let (client, _handle) = super::super::load_client(
+        let (client, _handle) = load_client(
             &main_thread(),
             tutti_fixtures::vst2_probe(),
             SampleRate(48_000.0),

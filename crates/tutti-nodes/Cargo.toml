@@ -68,6 +68,7 @@ libm = "0.2.15"
 # self dev-dependency rather than `required-features`, which would *skip*
 # those targets when the feature is off — see `tutti-sampler`'s manifest.
 tutti-nodes = { path = ".", features = ["testing"] }
+tutti-fixtures = { path = "../../testing/tutti-fixtures" }
 approx = "0.5"
 # An independent RBJ-cookbook biquad, as a second opinion on the SVF's magnitude
 # response in `tests/oracle_biquad.rs`. Adds no transitive crates — `num-traits`

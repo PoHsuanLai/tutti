@@ -9,14 +9,15 @@
 //!   subprocess (via the `tutti-*-host` crates), but the editor must open in
 //!   the host process because platform GUI toolkits are process-local, so each
 //!   format dlopens the plugin a second time purely for its window.
-//! - `vst2_in_process` — VST2's **in-process audio + editor** path. Unlike
-//!   VST3/CLAP/AU, VST2 fuses the editor and audio processor into one
-//!   `AEffect`, so the editor can't live in a different process from audio
+//! - `in_process` — the **in-process audio + editor** node, generic over any
+//!   `tutti_plugin_types::InProcess` format and naming none. VST2 runs through
+//!   it: unlike VST3/CLAP/AU, VST2 fuses the editor and audio processor into
+//!   one `AEffect`, so the editor can't live in a different process from audio
 //!   without remote-rendering pixels. Hosting in-process is the standard
 //!   tradeoff (Ableton/Logic/Reaper all do it for VST2): no subprocess crash
-//!   isolation, but a native editor.
+//!   isolation, but a native editor. CLAP and VST3 implement `InProcess` too
+//!   but are not routed here yet: they still run in a `plugin-server`.
 
 pub mod gui;
 
-#[cfg(feature = "vst2")]
-pub mod vst2_in_process;
+pub mod in_process;

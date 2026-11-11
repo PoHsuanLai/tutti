@@ -1,7 +1,7 @@
 use super::*;
-use tutti_fixtures::midi::note_on;
+use tutti_fixtures::midi::{m1_cc, m1_note_on, note_on};
 use tutti_types::Beat;
-use tutti_ump::{MidiChannel, MidiGroup};
+use tutti_ump::{CCNumber, MidiChannel, MidiGroup, NoteNumber, U7};
 
 /// **A clip a block still held when `set_events` replaced it is freed by
 /// the next `reclaim`**, with no further publish.
@@ -35,25 +35,6 @@ fn a_clip_nodes_table_is_24_kib() {
     assert_eq!(node.play.held.heap_bytes(), 2_048 * 12);
 }
 
-/// A MIDI 1.0 packet on group 1, channel 1.
-fn midi1(voice: tutti_ump::Voice1) -> Ump {
-    tutti_ump::Message::Midi1(
-        tutti_ump::Address {
-            group: MidiGroup::FIRST,
-            channel: MidiChannel::FIRST,
-        },
-        voice,
-    )
-    .into()
-}
-
-fn cc1(controller: u8, value: u8) -> Ump {
-    midi1(tutti_ump::Voice1::ControlChange {
-        controller: tutti_ump::CCNumber::of(controller),
-        value: tutti_ump::U7::of(value),
-    })
-}
-
 /// **A clip is translated as it is loaded, in beat order, and keeps its list
 /// order** (design 017 §4). An RPN 0 run listed backwards (its CC 38 first,
 /// its selects last) is assembled in beat order into one Registered
@@ -66,17 +47,26 @@ fn cc1(controller: u8, value: u8) -> Ump {
 /// beat order → the order assertion fails.
 #[test]
 fn a_clip_is_translated_in_beat_order_and_keeps_its_list_order() {
-    let note = tutti_ump::NoteNumber::of(60);
-    let on0 = midi1(tutti_ump::Voice1::NoteOn {
-        note,
-        velocity: tutti_ump::U7::of(0),
-    });
+    let note = NoteNumber::of(60);
+    let on0 = m1_note_on(MidiChannel::FIRST, note, U7::of(0));
     let events = [
         TimedMidiEvent::new(Beat(3.0), on0),
-        TimedMidiEvent::new(Beat(2.0), cc1(38, 50)),
-        TimedMidiEvent::new(Beat(1.0), cc1(6, 12)),
-        TimedMidiEvent::new(Beat(0.0), cc1(101, 0)),
-        TimedMidiEvent::new(Beat(0.0), cc1(100, 0)),
+        TimedMidiEvent::new(
+            Beat(2.0),
+            m1_cc(MidiChannel::FIRST, CCNumber::DATA_ENTRY_LSB, U7::of(50)),
+        ),
+        TimedMidiEvent::new(
+            Beat(1.0),
+            m1_cc(MidiChannel::FIRST, CCNumber::DATA_ENTRY, U7::of(12)),
+        ),
+        TimedMidiEvent::new(
+            Beat(0.0),
+            m1_cc(MidiChannel::FIRST, CCNumber::RPN_MSB, U7::of(0)),
+        ),
+        TimedMidiEvent::new(
+            Beat(0.0),
+            m1_cc(MidiChannel::FIRST, CCNumber::RPN_LSB, U7::of(0)),
+        ),
     ];
     let out = translated(events);
     let decoded: Vec<(f64, tutti_ump::Message)> = out

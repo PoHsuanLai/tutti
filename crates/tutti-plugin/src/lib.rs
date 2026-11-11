@@ -49,13 +49,9 @@ pub mod backend {
     pub use crate::host::node::{Listener, ParameterChangeSink};
 }
 
-// Loads a VST2 plugin in the host process; most callers use `Plugin::open`,
-// which dispatches here for `.vst` files.
-#[cfg(feature = "vst2")]
-pub use format::vst2_in_process::{
-    BoundInProcessVst2Client, InProcessVst2Client, InProcessVst2Controls,
-    load_client as in_process_vst2_client,
-};
+// Loads a plugin of any `InProcess` format in the host process; most callers
+// use `Plugin::open`, which dispatches here for `.vst` files.
+pub use format::in_process::{InProcClient, PluginNode, load_client, load_client_restoring};
 
 /// Discovering, persisting, and loading plugins.
 ///

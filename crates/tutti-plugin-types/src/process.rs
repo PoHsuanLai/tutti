@@ -148,6 +148,8 @@ pub struct ProcessOutput {
     pub note_expression: NoteExpressionChanges,
     // MIDI events `emit_midi` dropped this block for want of room.
     midi_dropped: usize,
+    // Parameter writes the plugin refused this block.
+    params_refused: usize,
 }
 
 impl ProcessOutput {
@@ -160,6 +162,7 @@ impl ProcessOutput {
     pub fn clear(&mut self) {
         self.midi_events.clear();
         self.midi_dropped = 0;
+        self.params_refused = 0;
         self.param_changes.clear();
         self.note_expression.changes.clear();
     }
@@ -192,6 +195,21 @@ impl ProcessOutput {
     /// [`MIDI_STACK_CAPACITY`](crate::MIDI_STACK_CAPACITY) in one block.
     pub fn midi_dropped(&self) -> usize {
         self.midi_dropped
+    }
+
+    /// Adds `n` to the parameter writes the plugin refused in this block: a
+    /// format that applies the block's [`ProcessContext::param_changes`]
+    /// itself and can be refused (VST2's `setParameter` on an index the
+    /// plugin lacks) says how many. Reset by [`clear`](Self::clear).
+    pub fn count_params_refused(&mut self, n: usize) {
+        self.params_refused += n;
+    }
+
+    /// The parameter writes the plugin refused since the last
+    /// [`clear`](Self::clear), as [`count_params_refused`](Self::count_params_refused)
+    /// counted them.
+    pub fn params_refused(&self) -> usize {
+        self.params_refused
     }
 
     /// Appends one automation point within the room

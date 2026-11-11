@@ -14,6 +14,7 @@ mod common;
 
 use assert_no_alloc::AllocDisabler;
 use common::{Kind, TestNode};
+use tutti_fixtures::midi::{m1_cc, m1_note_off, m1_note_on};
 use tutti_graph::contract::{Direct, HAND_EVENT_CAPACITY};
 use tutti_graph::{
     Edge, Editor, Env, EventEdge, EventIn, EventInletNode, EventInletWriter, EventKind, EventOut,
@@ -22,7 +23,7 @@ use tutti_graph::{
     TapAlign, TapEvent, Transport, TransportChanges,
 };
 use tutti_types::{At, Frame, Moment, SampleRate, Samples};
-use tutti_ump::Ump;
+use tutti_ump::{CCNumber, MidiChannel, NoteNumber, U7, Ump};
 
 #[global_allocator]
 static A: AllocDisabler = AllocDisabler;
@@ -30,16 +31,22 @@ static A: AllocDisabler = AllocDisabler;
 const R48: SampleRate = SampleRate(48_000.0);
 const R441: SampleRate = SampleRate(44_100.0);
 
+/// MIDI 1.0, channel 0, note-on, velocity 100.
 fn note(n: u32) -> Ump {
-    Ump([0x2090_0000 | n << 8 | 100, 0, 0, 0])
+    m1_note_on(MidiChannel::FIRST, NoteNumber::of(n as u8), U7::of(100))
 }
 
 fn off(n: u32) -> Ump {
-    Ump([0x2080_0000 | n << 8, 0, 0, 0])
+    m1_note_off(MidiChannel::FIRST, NoteNumber::of(n as u8), U7::of(0))
 }
 
+/// A MIDI 1.0 Control Change of `controller`, value 0.
 fn cc(controller: u32) -> Ump {
-    Ump([0x20B0_0000 | controller << 8, 0, 0, 0])
+    m1_cc(
+        MidiChannel::FIRST,
+        CCNumber::of(controller as u8),
+        U7::of(0),
+    )
 }
 
 type Rig = (Direct<EventInletNode>, EventInletWriter);

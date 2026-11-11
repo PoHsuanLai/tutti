@@ -435,6 +435,12 @@ impl Control for Vst3Loaded {
     /// Nothing: VST3 reports the edits a plugin's own editor makes in the
     /// block's `ProcessOutput`.
     fn take_reported_edits(&mut self, _main: &MainThread, _out: &mut Vec<(ParamId, Normalized)>) {}
+
+    /// `0`: VST3 reports the edits a plugin's own editor makes in the block's
+    /// `ProcessOutput`, not through a queue that can drop them.
+    fn dropped_reported_edits(&self) -> u64 {
+        0
+    }
 }
 
 impl EditorWindow for Vst3Loaded {

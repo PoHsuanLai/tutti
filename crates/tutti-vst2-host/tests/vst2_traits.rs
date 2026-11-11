@@ -370,6 +370,47 @@ fn automation_is_a_host_write_and_its_echo_is_not_reported() {
     drop(rejoin(processor, controller));
 }
 
+/// **A block that writes a parameter the plugin lacks reports the refusal in
+/// `out`**, once per refused queue, and a block that writes only declared ones
+/// reports none (`clear` resets the count). The node reads it to count the
+/// writes the plugin refused.
+///
+/// Mutation (run): `render` not calling `out.count_params_refused` -> the
+/// first count stays 0 -> fails. Mutation (run): `ProcessOutput::clear` not
+/// resetting `params_refused` -> the second block still reads 1 -> fails.
+#[test]
+fn a_write_to_a_parameter_the_plugin_lacks_is_reported_in_the_output() {
+    let probe = Probe::acquire();
+    let (mut processor, _controller) = probe.activate();
+    let input = [0.0f32; BLOCK];
+    let mut left = [0.0f32; BLOCK];
+    let mut right = [0.0f32; BLOCK];
+    let mut out = ProcessOutput::default();
+    let mut block = |changes: &ParameterChanges, out: &mut ProcessOutput| {
+        let ctx = ProcessContext::new().params(changes);
+        let inputs = [input.as_slice(), input.as_slice()];
+        let mut outputs = [left.as_mut_slice(), right.as_mut_slice()];
+        let mut io = PluginIo {
+            buffer: AudioBufferMut::F32(AudioBuffer::new(&inputs, &mut outputs, SAMPLE_RATE)),
+            ctx: &ctx,
+            out,
+        };
+        processor.process(&mut io).expect("renders");
+    };
+
+    let mut lacking = ParameterChanges::reserved(2, 4);
+    lacking.add_change(ParamId::new(0), 0, 0.25);
+    lacking.add_change(ParamId::new(9_999), 0, 0.5);
+    block(&lacking, &mut out);
+    assert_eq!(out.params_refused(), 1, "the undeclared one only");
+
+    out.clear();
+    let mut declared = ParameterChanges::reserved(1, 4);
+    declared.add_change(ParamId::new(0), 0, 0.75);
+    block(&declared, &mut out);
+    assert_eq!(out.params_refused(), 0);
+}
+
 /// **A block with automation, MIDI and a transport allocates nothing**, and a
 /// block the plugin cannot take (a channel shorter than the block) is an error,
 /// not a panic, builds its error without allocating, and does not enter the

@@ -104,30 +104,8 @@ impl Vst2Loaded {
     /// Returns [`Vst2Error::StateError`] if the plugin's chunk save fails, or if
     /// it declares parameters but exposes no `getParameter` to read them.
     ///
-    /// `effGetChunk` is a main-thread opcode, so this takes the proof; the one caller that
-    /// has none is [`read_state_off_main_thread`](Self::read_state_off_main_thread).
+    /// `effGetChunk` is a main-thread opcode, so this takes the proof.
     pub fn read_state(&self, main: &MainThread) -> Result<Vec<u8>> {
-        self.read_state_with(|| self.instance.try_get_preset_data(main))
-    }
-
-    /// [`read_state`](Self::read_state) from whichever thread asks: the named exception to
-    /// the main-thread rule of `effGetChunk`, for the in-process backend's
-    /// `HostState::save_state`, which the session calls off the main thread on purpose (the
-    /// health snapshot is a job on the task pool) behind the backend's lock. Closing it is a
-    /// main-thread route for the snapshot, a change to `tutti-session` and `bevy-tutti`; see
-    /// `PluginInstance::chunk_off_main_thread`.
-    ///
-    /// # Errors
-    ///
-    /// As [`read_state`](Self::read_state).
-    pub fn read_state_off_main_thread(&self) -> Result<Vec<u8>> {
-        self.read_state_with(|| self.instance.chunk_off_main_thread())
-    }
-
-    fn read_state_with(
-        &self,
-        chunk: impl FnOnce() -> std::result::Result<Vec<u8>, vst::api::ChunkError>,
-    ) -> Result<Vec<u8>> {
         let info = self.instance.get_info();
 
         if info.preset_chunks {
@@ -137,7 +115,7 @@ impl Vst2Loaded {
             // parameter snapshot, losing the non-parameter state chunks exist
             // to carry. A failure is an error; an *empty* chunk still falls through
             // to the parameter snapshot, keeping a fresh plugin saveable.
-            let chunk = chunk().map_err(|e| {
+            let chunk = self.instance.try_get_preset_data(main).map_err(|e| {
                 Vst2Error::StateError(format!(
                     "plugin advertises effFlagsProgramChunks but its preset \
                      chunk save failed: {e}"

@@ -2,7 +2,7 @@
 //!
 //! Loading returns one owned type rather than a `(node, PluginHandle)` pair
 //! because the two backends are different concrete node types
-//! (`PluginClient<Bound>` and `InProcessVst2Client`), and because a plugin is
+//! (`PluginClient<Bound>` and `InProcClient`), and because a plugin is
 //! more than its node: it also takes per-block MIDI, chord/scale context and
 //! note expression, reached here through capability accessors.
 
@@ -29,7 +29,7 @@ enum Backend {
     /// `Result` carrying one — pay the larger figure.
     Subprocess(Box<PluginClient>),
     #[cfg(feature = "vst2")]
-    InProcessVst2(Box<crate::format::vst2_in_process::InProcessVst2Client>),
+    InProcess(Box<crate::format::in_process::InProcClient<tutti_vst2_host::Vst2Loaded>>),
 }
 
 /// A loaded plugin: its audio node, its control surface, and the per-block
@@ -76,7 +76,7 @@ impl std::fmt::Debug for Plugin {
                 &match &self.backend {
                     Backend::Subprocess(_) => "subprocess",
                     #[cfg(feature = "vst2")]
-                    Backend::InProcessVst2(_) => "in-process",
+                    Backend::InProcess(_) => "in-process",
                 },
             )
             .finish_non_exhaustive()
@@ -190,13 +190,14 @@ impl Plugin {
                         .map_err(|e| e.to_string())
                 }
             });
-            let (client, handle, restored) = crate::format::vst2_in_process::load_client_restoring(
+            let (client, handle, restored) = crate::format::in_process::load_client_restoring(
                 main,
                 path,
+                &tutti_plugin_types::Load::new(),
                 sample_rate,
                 restore.as_mut().map(|r| r as _),
             )?;
-            return Ok((Self::from_in_process_vst2(client, handle), restored));
+            return Ok((Self::from_in_process(client, handle), restored));
         }
 
         let ((client, restored), handle) = PluginClient::new_with_state(
@@ -231,12 +232,12 @@ impl Plugin {
 
     /// Wrap an in-process VST2 client.
     #[cfg(feature = "vst2")]
-    fn from_in_process_vst2(
-        client: crate::format::vst2_in_process::InProcessVst2Client,
+    fn from_in_process(
+        client: crate::format::in_process::InProcClient<tutti_vst2_host::Vst2Loaded>,
         handle: PluginHandle,
     ) -> Self {
         Self {
-            backend: Backend::InProcessVst2(Box::new(client)),
+            backend: Backend::InProcess(Box::new(client)),
             handle,
         }
     }
@@ -314,7 +315,7 @@ impl Plugin {
         match &self.backend {
             Backend::Subprocess(c) => c.set_render_mode(mode),
             #[cfg(feature = "vst2")]
-            Backend::InProcessVst2(c) => c.set_render_mode(mode),
+            Backend::InProcess(c) => c.set_render_mode(mode),
         }
     }
 
@@ -350,7 +351,7 @@ impl Plugin {
         match &self.backend {
             Backend::Subprocess(c) => c.controls().meter(),
             #[cfg(feature = "vst2")]
-            Backend::InProcessVst2(c) => c.controls().meter(),
+            Backend::InProcess(c) => c.controls().meter(),
         }
     }
 
@@ -364,7 +365,7 @@ impl Plugin {
         match &self.backend {
             Backend::Subprocess(c) => c.takes_harmony(),
             #[cfg(feature = "vst2")]
-            Backend::InProcessVst2(_) => false,
+            Backend::InProcess(_) => false,
         }
     }
 
@@ -373,7 +374,7 @@ impl Plugin {
     /// Binds the plugin to the reader of the project's tempo map it tells the
     /// plugin the tempo from (and CLAP its slope), whichever backend it
     /// landed in: [`PluginClient::bind`] for a subprocess plugin,
-    /// `InProcessVst2Client::bind` for a VST2 one. The result is the graph
+    /// `InProcClient::bind` for a VST2 one. The result is the graph
     /// node ([`BoundPlugin`]); `Session::add_plugin` binds every plugin with
     /// the session's reader, and a host with no session passes a
     /// [`TempoReader::fixed`](tutti_transport::TempoReader::fixed) one.
@@ -382,7 +383,7 @@ impl Plugin {
         let backend = match self.backend {
             Backend::Subprocess(c) => BoundBackend::Subprocess(Box::new(c.bind(tempo))),
             #[cfg(feature = "vst2")]
-            Backend::InProcessVst2(c) => BoundBackend::InProcessVst2(Box::new(c.bind(tempo))),
+            Backend::InProcess(c) => BoundBackend::InProcess(Box::new(c.bind(tempo))),
         };
         BoundPlugin { backend }
     }
@@ -410,7 +411,7 @@ impl Plugin {
         match self.backend {
             Backend::Subprocess(c) => Ok(c),
             #[cfg(feature = "vst2")]
-            Backend::InProcessVst2(_) => Err(Box::new(self)),
+            Backend::InProcess(_) => Err(Box::new(self)),
         }
     }
 }
@@ -427,7 +428,7 @@ impl Plugin {
 /// The controls are the subprocess node's [`PluginControls`]; `None` for an
 /// in-process VST2 plugin, whose meter is reached through [`Plugin::meter`]
 /// (take it before binding; its own `IntoNode` hands back its
-/// `InProcessVst2Controls`, which carry its parameter counters too). Either
+/// `NodeControls`, which carry its parameter counters too). Either
 /// hands the editor its fork source: a fork by state transfer, into a new
 /// `plugin-server` for a subprocess plugin, and a second instance in this
 /// process for an in-process VST2 one.
@@ -440,7 +441,7 @@ pub struct BoundPlugin {
 enum BoundBackend {
     Subprocess(Box<PluginClient<crate::host::node::Bound>>),
     #[cfg(feature = "vst2")]
-    InProcessVst2(Box<crate::format::vst2_in_process::BoundInProcessVst2Client>),
+    InProcess(Box<crate::format::in_process::PluginNode<tutti_vst2_host::Vst2Loaded>>),
 }
 
 impl std::fmt::Debug for BoundPlugin {
@@ -468,7 +469,7 @@ impl tutti_graph::IntoNode for BoundPlugin {
                 }
             }
             #[cfg(feature = "vst2")]
-            BoundBackend::InProcessVst2(c) => {
+            BoundBackend::InProcess(c) => {
                 let parts = tutti_graph::IntoNode::into_parts(*c);
                 tutti_graph::NodeParts {
                     node: parts.node,

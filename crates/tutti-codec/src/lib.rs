@@ -26,6 +26,8 @@ mod vorbis;
 #[cfg(feature = "encode-wav")]
 mod wav;
 mod wave;
+#[cfg(any(feature = "encode-wav", decode))]
+mod wave_mask;
 mod writer;
 
 #[cfg(feature = "encode-aiff")]

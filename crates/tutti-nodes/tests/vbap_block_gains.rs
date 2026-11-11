@@ -12,7 +12,7 @@
 use tutti_graph::Node;
 use tutti_graph::contract::{drive, prepared};
 use tutti_nodes::VbapPannerNode;
-use tutti_types::{Azimuth, ChannelLayout, Elevation, SampleRate, StereoWidth};
+use tutti_types::{Azimuth, ChannelLayout, ChannelTopology, Elevation, SampleRate, StereoWidth};
 
 const BLOCK: usize = 64;
 const EDGE_TOL: f32 = 1e-5;
@@ -95,7 +95,12 @@ fn assert_boundaries_are_on_the_ramp(stream: &[Vec<f32>], what: &str) {
 fn the_gain_ramp_is_continuous_across_block_boundaries() {
     for speakers in [2u16, 6] {
         for width in [0.0f32, 1.0] {
-            let mut node = prep(VbapPannerNode::for_layout(ChannelLayout::from(speakers)).unwrap());
+            let mut node = prep(
+                VbapPannerNode::for_topology(&ChannelTopology::for_width(ChannelLayout::from(
+                    speakers,
+                )))
+                .unwrap(),
+            );
             node.controls().set_width(StereoWidth(width));
             node.controls()
                 .set_position(Azimuth(-20.0), Elevation::LEVEL);
@@ -129,7 +134,7 @@ fn the_gain_ramp_is_continuous_across_block_boundaries() {
 /// `process` rendering `&to, &to` (no ramp) fails this test.
 #[test]
 fn a_width_crossing_the_fold_threshold_crossfades() {
-    let mut node = prep(VbapPannerNode::stereo().unwrap());
+    let mut node = prep(VbapPannerNode::stereo());
     node.controls()
         .set_position(Azimuth(-15.0), Elevation::LEVEL);
     Node::reset(&mut node);
@@ -171,7 +176,7 @@ fn a_width_crossing_the_fold_threshold_crossfades() {
 #[test]
 fn a_position_change_lands_in_the_next_block_as_a_ramp() {
     let setup = || {
-        let mut n = prep(VbapPannerNode::surround_5_1().unwrap());
+        let mut n = prep(VbapPannerNode::surround_5_1());
         n.controls().set_position(Azimuth(0.0), Elevation::LEVEL);
         Node::reset(&mut n);
         n

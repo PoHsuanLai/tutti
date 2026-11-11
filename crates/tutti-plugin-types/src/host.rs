@@ -166,6 +166,13 @@ pub trait Control: EditorWindow {
     fn take_reported_edits(&mut self, main: &MainThread, out: &mut Vec<(ParamId, Normalized)>) {
         let _ = (main, out);
     }
+
+    /// How many of the edits [`take_reported_edits`](Self::take_reported_edits)
+    /// delivers the host lost, over the plugin's life: the reports a bounded
+    /// queue refused because nobody drained it. Monotonic. Required, because
+    /// zero is a claim: a format that reports edits in the block's
+    /// [`ProcessOutput`] says `0` in its own impl.
+    fn dropped_reported_edits(&self) -> u64;
 }
 
 /// A plugin that is configured but not rendering.

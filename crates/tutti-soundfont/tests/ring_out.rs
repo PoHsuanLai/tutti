@@ -18,6 +18,7 @@ use tutti_fixtures::sf2::generator;
 use tutti_graph::Node;
 use tutti_soundfont::Settings;
 use tutti_types::Tail;
+use tutti_ump::CCNumber;
 
 /// The level below which the render counts as silent: -80 dBFS.
 const THRESHOLD: f32 = 1e-4;
@@ -83,7 +84,7 @@ fn rang(font: &std::sync::Arc<tutti_sf2::SoundFont>, longest: &Longest) -> (usiz
     let patch = p.patch().map_or(0, |p| p.get());
     let channel = if bank == 128 { 9 } else { 0 };
     if bank != 128 && bank != 0 {
-        rig.cc(channel, 0, bank as u8);
+        rig.cc(channel, CCNumber::BANK_SELECT, bank as u8);
     }
     rig.program(channel, patch);
     rig.note_on(channel, longest.key, longest.velocity);

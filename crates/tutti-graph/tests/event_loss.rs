@@ -10,23 +10,24 @@ mod common;
 use std::sync::{Arc, Mutex};
 
 use common::test_pool;
+use tutti_fixtures::midi::{m1_note_off, m1_note_on};
 use tutti_graph::NodeKey;
 use tutti_graph::{
     Cx, Editor, Event, EventEdge, EventIn, EventKind, EventLoss, EventOut, Executor, Io, Node,
     Prepare, Shape, Status, Transport, note_off_room,
 };
 use tutti_types::{ChannelLayout, SampleRate, Samples};
-use tutti_ump::Ump;
+use tutti_ump::{MidiChannel, NoteNumber, U7, Ump};
 
 const BLOCK: usize = 64;
 
+/// MIDI 1.0, group 0, channel 0, note-on, velocity 100.
 fn note_on(key: u32) -> [u32; 4] {
-    // MIDI 1.0 channel voice, group 0, channel 0, note-on, velocity 100.
-    [0x2090_0000 | (key << 8) | 100, 0, 0, 0]
+    m1_note_on(MidiChannel::FIRST, NoteNumber::of(key as u8), U7::of(100)).0
 }
 
 fn note_off(key: u32) -> [u32; 4] {
-    [0x2080_0000 | (key << 8), 0, 0, 0]
+    m1_note_off(MidiChannel::FIRST, NoteNumber::of(key as u8), U7::of(0)).0
 }
 
 /// One port's script for a block: `ons` note-ons then `offs` note-offs, each

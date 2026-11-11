@@ -8,7 +8,10 @@
 use std::sync::{Arc, Mutex};
 use tutti_graph::UmpAt;
 
-use tutti_fixtures::midi::{note_off, note_on, pitch_bend, registered_rpn, timing_clock};
+use tutti_fixtures::midi::{
+    continue_msg, m1_cc, note_off, note_on, pitch_bend, registered_rpn, song_position, start,
+    timing_clock,
+};
 use tutti_graph::NodeKey;
 use tutti_graph::{
     Cx, Editor, EventEdge, EventIn, EventKind, EventOut, Executor, ForkMode, ForkTarget, Io, Node,
@@ -21,8 +24,7 @@ use tutti_midi_runtime::{
 };
 use tutti_types::{Beat, Bpm, SampleRate, Samples};
 use tutti_ump::{
-    CCNumber, KeyEvent, Message, Midi1Parser, MidiChannel, MidiGroup, NoteNumber, Ump, Voice2,
-    decode,
+    CCNumber, KeyEvent, Message, MidiChannel, MidiGroup, NoteNumber, U7, Ump, Voice2, decode,
 };
 
 /// The note a channel voice message addresses, either protocol.
@@ -30,10 +32,7 @@ fn note_of(ump: Ump) -> Option<u8> {
     channel_voice(ump)?.1.note().map(NoteNumber::get)
 }
 
-/// One MIDI 1.0 message's bytes as the packet of the first group.
-fn from_midi1_bytes(bytes: &[u8]) -> Option<Ump> {
-    Midi1Parser::message(MidiGroup::FIRST, bytes).map(Ump::from)
-}
+const G: MidiGroup = MidiGroup::FIRST;
 
 const RATE: f64 = 48_000.0;
 
@@ -154,12 +153,9 @@ fn note(channel: u8, note: u8, offset: u32) -> UmpAt {
     )
 }
 
-/// A MIDI 1.0 wire CC (status 0xB0 | channel).
+/// A MIDI 1.0 CC.
 fn cc_ev(channel: u8, control: CCNumber, value: u8) -> UmpAt {
-    at(
-        0,
-        from_midi1_bytes(&[0xB0 | channel, control.get(), value]).unwrap(),
-    )
+    at(0, m1_cc(MidiChannel::of(channel), control, U7::of(value)))
 }
 
 /// **Each event leaves on its channel's port, in offset order.** A note on
@@ -520,14 +516,15 @@ fn a_start_inside_a_block_clocks_from_its_frame() {
         .unwrap();
     let mut out = vec![0.0f32; 2048];
     exec.process_with_changes(2048, &stopped, &changes, &[], &mut [&mut out[..]]);
-    let status = |e: &Ump| ((e.0[0] >> 16) & 0xFF) as u8;
-    let got: Vec<(u64, u8)> = seen
-        .lock()
-        .unwrap()
-        .iter()
-        .map(|s| (s.1, status(&s.2)))
-        .collect();
-    assert_eq!(got, vec![(100, 0xFA), (100, 0xF8), (1_100, 0xF8)]);
+    let got: Vec<(u64, Ump)> = seen.lock().unwrap().iter().map(|s| (s.1, s.2)).collect();
+    assert_eq!(
+        got,
+        vec![
+            (100, start(G)),
+            (100, timing_clock(G)),
+            (1_100, timing_clock(G))
+        ]
+    );
 }
 
 /// **A clock's fork sends nothing.**
@@ -616,6 +613,8 @@ fn a_clock_flood_past_the_port_capacity_is_counted() {
 #[test]
 fn a_segment_boundary_on_a_wrap_sends_the_song_position_once() {
     use tutti_graph::LoopRange;
+    // The loop starts at beat 1, a quarter note: 4 MIDI beats (sixteenths).
+    const LOOP_START: u16 = 4;
     let (_ed, mut exec, clock, seen) = rig(ClockNode::new(), 1, 4096);
     clock.set_enabled(true);
     let looping = Some(LoopRange {
@@ -629,24 +628,18 @@ fn a_segment_boundary_on_a_wrap_sends_the_song_position_once() {
         .unwrap();
     let mut out = vec![0.0f32; 4_000];
     exec.process_with_changes(4_000, &rolling, &changes, &[], &mut [&mut out[..]]);
-    let status = |e: &Ump| ((e.0[0] >> 16) & 0xFF) as u8;
-    let got: Vec<(u64, u8)> = seen
-        .lock()
-        .unwrap()
-        .iter()
-        .map(|s| (s.1, status(&s.2)))
-        .collect();
+    let got: Vec<(u64, Ump)> = seen.lock().unwrap().iter().map(|s| (s.1, s.2)).collect();
     assert_eq!(
         got,
         vec![
-            (0, 0xF2),
-            (0, 0xFB),
-            (0, 0xF8),
-            (1_000, 0xF8),
-            (2_000, 0xF8),
-            (2_400, 0xF2),
-            (2_400, 0xF8),
-            (3_400, 0xF8),
+            (0, song_position(G, LOOP_START)),
+            (0, continue_msg(G)),
+            (0, timing_clock(G)),
+            (1_000, timing_clock(G)),
+            (2_000, timing_clock(G)),
+            (2_400, song_position(G, LOOP_START)),
+            (2_400, timing_clock(G)),
+            (3_400, timing_clock(G)),
         ]
     );
 }

@@ -273,7 +273,6 @@ impl PluginHandle {
     /// This handle with `sink` as the one `on_invalidate` registers into: how
     /// an in-process backend that re-reads its plugin raises
     /// [`PluginInvalidation`]s.
-    #[cfg(feature = "vst2")]
     pub(crate) fn with_invalidate_sink(mut self, sink: InvalidateSink) -> Self {
         self.invalidate_sink = sink;
         self

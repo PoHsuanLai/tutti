@@ -1,11 +1,6 @@
 use super::*;
-use tutti_fixtures::midi;
-use tutti_ump::{CCNumber, Midi1Parser, MidiChannel, Ump};
-
-/// One MIDI 1.0 message's bytes as the packet of the first group.
-fn from_midi1_bytes(bytes: &[u8]) -> Option<Ump> {
-    Midi1Parser::message(MidiGroup::FIRST, bytes).map(Ump::from)
-}
+use tutti_fixtures::midi::{self, from_midi1_bytes};
+use tutti_ump::{CCNumber, MidiChannel, Ump};
 
 #[test]
 fn empty_clip_round_trips_dctpq() {

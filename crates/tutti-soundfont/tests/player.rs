@@ -11,7 +11,7 @@ mod support;
 use std::num::NonZeroUsize;
 use std::sync::Arc;
 use support::rig::{RATE, Rig, timgm6mb};
-use tutti_ump::{Bank, U7, Voice2};
+use tutti_ump::{Bank, CCNumber, U7, Voice2};
 
 use tutti_sf2::SoundFont;
 use tutti_soundfont::{Error, Settings, SoundFontUnit};
@@ -117,7 +117,7 @@ fn cut_silences_at_once_and_release_rings_out() {
     release.note_on(0, 60, 100);
     energy(&mut release, 512);
     for ch in 0..16 {
-        release.cc(ch, 123, 0);
+        release.cc(ch, CCNumber::ALL_NOTES_OFF, 0);
     }
     assert!(energy(&mut release, 512) > 0.0, "the release tail sounds");
 }
@@ -130,12 +130,12 @@ fn a_channel_cut_leaves_the_other_channels_sounding() {
     synthesizer.note_on(0, 60, 100);
     synthesizer.note_on(1, 64, 100);
     energy(&mut synthesizer, 512);
-    synthesizer.cc(0, 120, 0);
+    synthesizer.cc(0, CCNumber::ALL_SOUND_OFF, 0);
     assert!(
         energy(&mut synthesizer, 512) > 1.0,
         "channel 1 still sounds"
     );
-    synthesizer.cc(1, 120, 0);
+    synthesizer.cc(1, CCNumber::ALL_SOUND_OFF, 0);
     assert_eq!(energy(&mut synthesizer, 512), 0.0);
 }
 
@@ -166,7 +166,7 @@ fn a_note_on_at_velocity_zero_is_a_note_off() {
 // Control Change dispatch, one test per arm of the unit's controller match,
 // through the unit's message face. The sends are `sends.rs`'s.
 
-fn cc(rig: &mut Rig, controller: u8, value: u8) {
+fn cc(rig: &mut Rig, controller: CCNumber, value: u8) {
     rig.cc(0, controller, value);
 }
 
@@ -221,14 +221,14 @@ fn cc_7_and_39_set_the_channel_volume() {
         "control: default volume sounds"
     );
 
-    let mut silent = violin(|s| cc(s, 7, 0));
+    let mut silent = violin(|s| cc(s, CCNumber::VOLUME, 0));
     assert_eq!(energy(&mut silent, 2048), 0.0, "coarse 0 is volume 0");
 
     // Half volume, then the fine byte adds 127/16383 of full scale on top.
     let level = |fine: u8| {
         let mut synthesizer = dry();
-        cc(&mut synthesizer, 7, 64);
-        cc(&mut synthesizer, 39, fine);
+        cc(&mut synthesizer, CCNumber::VOLUME, 64);
+        cc(&mut synthesizer, CCNumber::of(39), fine);
         synthesizer.note_on(0, 69, 100);
         energy(&mut synthesizer, 2048)
     };
@@ -238,13 +238,13 @@ fn cc_7_and_39_set_the_channel_volume() {
 // Arm 0x0B (expression coarse) and 0x2B (fine).
 #[test]
 fn cc_11_and_43_set_the_expression() {
-    let mut silent = violin(|s| cc(s, 11, 0));
+    let mut silent = violin(|s| cc(s, CCNumber::EXPRESSION, 0));
     assert_eq!(energy(&mut silent, 2048), 0.0);
 
     let level = |fine: u8| {
         let mut synthesizer = dry();
-        cc(&mut synthesizer, 11, 64);
-        cc(&mut synthesizer, 43, fine);
+        cc(&mut synthesizer, CCNumber::EXPRESSION, 64);
+        cc(&mut synthesizer, CCNumber::of(43), fine);
         synthesizer.note_on(0, 69, 100);
         energy(&mut synthesizer, 2048)
     };
@@ -254,20 +254,20 @@ fn cc_11_and_43_set_the_expression() {
 // Arm 0x0A (pan coarse) and 0x2A (fine).
 #[test]
 fn cc_10_and_42_pan_the_channel() {
-    let mut left = violin(|s| cc(s, 10, 0));
+    let mut left = violin(|s| cc(s, CCNumber::PAN, 0));
     let (l, r) = energy_lr(&mut left, 2048);
     assert!(
         l > 1.0 && r == 0.0,
         "hard left leaves the right silent: {l} {r}"
     );
 
-    let mut right = violin(|s| cc(s, 10, 127));
+    let mut right = violin(|s| cc(s, CCNumber::PAN, 127));
     let (l, r) = energy_lr(&mut right, 2048);
     assert!(r > 1.0 && l < r * 0.05, "hard right: {l} {r}");
 
     let mut fine = violin(|s| {
-        cc(s, 10, 0);
-        cc(s, 42, 127);
+        cc(s, CCNumber::PAN, 0);
+        cc(s, CCNumber::of(42), 127);
     });
     let (_, r) = energy_lr(&mut fine, 2048);
     assert!(r > 0.0, "the fine byte moves the pan off the wall");
@@ -277,7 +277,7 @@ fn cc_10_and_42_pan_the_channel() {
 #[test]
 fn cc_64_holds_released_notes_until_the_pedal_lifts() {
     let ring = |pedal: u8| {
-        let mut synthesizer = violin(|s| cc(s, 64, pedal));
+        let mut synthesizer = violin(|s| cc(s, CCNumber::SUSTAIN, pedal));
         energy(&mut synthesizer, 44_100);
         synthesizer.note_off(0, 69);
         energy(&mut synthesizer, 44_100 * 20);
@@ -285,7 +285,7 @@ fn cc_64_holds_released_notes_until_the_pedal_lifts() {
     };
     let (held, mut synthesizer) = ring(64);
     assert!(held > 1.0, "a pedal at 64 keeps the released note sounding");
-    cc(&mut synthesizer, 64, 63);
+    cc(&mut synthesizer, CCNumber::SUSTAIN, 63);
     energy(&mut synthesizer, 44_100 * 20);
     assert_eq!(
         energy(&mut synthesizer, 512),
@@ -344,6 +344,7 @@ fn other_controllers_leave_the_pitch_bend_range() {
         Voice2::Assignable {
             bank: U7::of(0),
             index: U7::of(0),
+            // M2-115 §3: 12 as a 7-bit value, left-justified (shift 25).
             value: 12 << 25,
         },
         Voice2::Registered {
@@ -403,7 +404,7 @@ fn cc_0_selects_the_bank() {
     let level = |bank: Option<u8>| {
         let mut synthesizer = Rig::dry(&font);
         if let Some(bank) = bank {
-            cc(&mut synthesizer, 0, bank);
+            cc(&mut synthesizer, CCNumber::BANK_SELECT, bank);
         }
         synthesizer.note_on(0, 69, 40);
         energy(&mut synthesizer, 4096)
@@ -466,11 +467,11 @@ fn cc_1_and_33_change_the_vibrato() {
         synthesizer.render(8192).0
     };
     let none = render(|_| {});
-    let coarse = render(|s| cc(s, 1, 127));
-    let half = render(|s| cc(s, 1, 64));
+    let coarse = render(|s| cc(s, CCNumber::MOD_WHEEL, 127));
+    let half = render(|s| cc(s, CCNumber::MOD_WHEEL, 64));
     let fine = render(|s| {
-        cc(s, 1, 64);
-        cc(s, 33, 127);
+        cc(s, CCNumber::MOD_WHEEL, 64);
+        cc(s, CCNumber::of(33), 127);
     });
     assert_ne!(coarse, none, "coarse");
     assert_ne!(half, coarse, "the depth follows the value");
@@ -483,7 +484,7 @@ fn cc_1_and_33_change_the_vibrato() {
 fn cc_120_cuts_and_cc_123_releases() {
     let mut cut = violin(|_| {});
     energy(&mut cut, 4096);
-    cc(&mut cut, 120, 0);
+    cc(&mut cut, CCNumber::ALL_SOUND_OFF, 0);
     assert_eq!(
         energy(&mut cut, 512),
         0.0,
@@ -492,7 +493,7 @@ fn cc_120_cuts_and_cc_123_releases() {
 
     let mut released = violin(|_| {});
     energy(&mut released, 4096);
-    cc(&mut released, 123, 0);
+    cc(&mut released, CCNumber::ALL_NOTES_OFF, 0);
     assert!(energy(&mut released, 64) > 0.0, "all notes off rings on");
     energy(&mut released, 44_100 * 20);
     assert_eq!(energy(&mut released, 512), 0.0, "and then ends");
@@ -503,8 +504,8 @@ fn cc_120_cuts_and_cc_123_releases() {
 #[test]
 fn cc_121_resets_the_expression() {
     let mut synthesizer = dry();
-    cc(&mut synthesizer, 11, 0);
-    cc(&mut synthesizer, 121, 0);
+    cc(&mut synthesizer, CCNumber::EXPRESSION, 0);
+    cc(&mut synthesizer, CCNumber::RESET_ALL, 0);
     synthesizer.note_on(0, 69, 100);
     assert!(energy(&mut synthesizer, 2048) > 1.0);
 }
@@ -514,8 +515,8 @@ fn cc_121_resets_the_expression() {
 fn an_unfollowed_controller_leaves_the_note_sounding() {
     let mut synthesizer = violin(|_| {});
     energy(&mut synthesizer, 4096);
-    cc(&mut synthesizer, 20, 127);
-    cc(&mut synthesizer, 119, 127);
+    cc(&mut synthesizer, CCNumber::of(20), 127);
+    cc(&mut synthesizer, CCNumber::of(119), 127);
     assert!(energy(&mut synthesizer, 2048) > 1.0);
 }
 

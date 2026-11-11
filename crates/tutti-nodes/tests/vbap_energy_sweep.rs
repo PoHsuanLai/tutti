@@ -37,7 +37,7 @@ fn tick(node: &mut VbapPannerNode, input: [f32; 2], out: &mut [f32]) {
 /// width branch included) → fails, because both readings light the same speakers.
 #[test]
 fn spread_reaches_the_stereo_width_path() {
-    let mut node = VbapPannerNode::surround_5_1().unwrap();
+    let mut node = VbapPannerNode::surround_5_1();
     node.controls().set_width(StereoWidth::new(1.0f32)); // the width>0 branch
     node.controls()
         .set_position(Azimuth::new(0.0f32), Elevation::new(0.0f32));

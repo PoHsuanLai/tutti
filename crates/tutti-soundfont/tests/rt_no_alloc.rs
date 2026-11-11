@@ -226,8 +226,8 @@ fn soundfont_every_decoded_message_is_allocation_free() {
     };
     let note = NoteNumber::of(60);
     let ev = |m: Message| Ump::from(m);
-    let m1 = |v| ev(Message::Midi1(address, v));
-    let m2 = |v| ev(Message::Midi2(address, v));
+    let m1 = |v| midi::m1(address.channel, v);
+    let m2 = |v| midi::m2(address.channel, v);
     let events = [
         m1(Voice1::NoteOn {
             note,
@@ -238,7 +238,7 @@ fn soundfont_every_decoded_message_is_allocation_free() {
             pressure: U7::of(50),
         }),
         m1(Voice1::ControlChange {
-            controller: CCNumber::of(7),
+            controller: CCNumber::VOLUME,
             value: U7::of(90),
         }),
         m1(Voice1::PitchBend(U14::of(9000))),
@@ -312,7 +312,7 @@ fn soundfont_every_decoded_message_is_allocation_free() {
             delta: 1,
         }),
         m2(Voice2::ControlChange {
-            controller: CCNumber::of(7),
+            controller: CCNumber::VOLUME,
             value: 1 << 31,
         }),
         m2(Voice2::PitchBend(0x9000_0000)),
@@ -386,17 +386,8 @@ fn two_drums_of_a_class(font: &SoundFont) -> (u8, u8) {
         .expect("two drums share a class in this font")
 }
 
-fn cc(channel: u8, controller: u8, value: u8) -> Ump {
-    Ump::from(Message::Midi1(
-        Address {
-            group: MidiGroup::FIRST,
-            channel: MidiChannel::of(channel),
-        },
-        Voice1::ControlChange {
-            controller: CCNumber::of(controller),
-            value: U7::of(value),
-        },
-    ))
+fn cc(channel: u8, controller: CCNumber, value: u8) -> Ump {
+    midi::m1_cc(MidiChannel::of(channel), controller, U7::of(value))
 }
 
 fn drum(key: u8, offset: u32) -> UmpAt {
@@ -434,21 +425,27 @@ fn soundfont_note_logic_is_allocation_free() {
         unit.queue_midi_at(&[note_on(40, 60)]);
         unit.block(64);
         // The pedals down with notes under them, then the notes off.
-        unit.queue_midi(&[cc(0, 64, 127), cc(0, 66, 127)]);
+        unit.queue_midi(&[
+            cc(0, CCNumber::SUSTAIN, 127),
+            cc(0, CCNumber::SOSTENUTO, 127),
+        ]);
         unit.block(64);
         unit.queue_midi_at(&offs);
         unit.block(64);
-        unit.queue_midi(&[cc(0, 64, 0), cc(0, 66, 0)]);
+        unit.queue_midi(&[cc(0, CCNumber::SUSTAIN, 0), cc(0, CCNumber::SOSTENUTO, 0)]);
         unit.block(64);
         // An exclusive class: the second drum ends the first.
         unit.queue_midi_at(&[drum(open, 0), drum(closed, 8)]);
         unit.block(64);
         // The panics and the reset.
         unit.queue_midi_at(&ons);
-        unit.queue_midi(&[cc(0, 123, 0)]);
+        unit.queue_midi(&[cc(0, CCNumber::ALL_NOTES_OFF, 0)]);
         unit.block(64);
         unit.queue_midi_at(&ons);
-        unit.queue_midi(&[cc(0, 120, 0), cc(0, 121, 0)]);
+        unit.queue_midi(&[
+            cc(0, CCNumber::ALL_SOUND_OFF, 0),
+            cc(0, CCNumber::RESET_ALL, 0),
+        ]);
         unit.block(64);
         for _ in 0..8 {
             unit.block(64);

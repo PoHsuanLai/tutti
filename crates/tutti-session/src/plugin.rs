@@ -17,6 +17,19 @@
 //! snapshot job, its mirror); replacing it with a native node
 //! (`Graph::replace`, `crossfade`) or removing the node drops it.
 //!
+//! # The main thread
+//!
+//! An in-process plugin's handle (`PluginHandle`, VST2 today) works from any
+//! thread, which is what the snapshot and parameter-read jobs below need: a
+//! call off the main thread is posted to it (`tutti_plugin_types::defer_to_main`)
+//! and the caller waits, for at most two seconds, for the main thread's next
+//! tick to run it (`Phase::Collect` calls `run_deferred`). [`Session::update`]
+//! is a main-thread call, so the tick is the host's update. A host that does
+//! not call it on its main thread must call `tutti_plugin_types::run_deferred`
+//! from its main-thread loop, or those calls answer "unavailable" at the
+//! deadline (`StateError::Unavailable`, `None`, `false`). A host blocking its
+//! main thread on such a job (joining it there) gets the same.
+//!
 //! # `Phase::Plugins`
 //!
 //! Per plugin, in node order:
@@ -217,9 +230,18 @@ impl PluginLoad {
         }
         #[cfg(feature = "modulation")]
         let mirror = plugin.as_ref().ok().map(|plugin| {
-            let (mut mirror, read) = tutti_plugin::PluginParamValues::start(plugin.handle());
-            mirror.land(read.run());
-            mirror
+            let (mut values, read) = tutti_plugin::PluginParamValues::start(plugin.handle());
+            // A read the plugin did not answer (its list unavailable) leaves
+            // the mirror not ready and goes to the hosted record, to be handed
+            // out as a job.
+            let unread = match read.run() {
+                Ok(read) => {
+                    values.land(read);
+                    None
+                }
+                Err(read) => Some(*read),
+            };
+            Mirror { values, unread }
         });
         Open {
             plugin,
@@ -230,6 +252,15 @@ impl PluginLoad {
     }
 }
 
+/// A new plugin's parameter mirror, and the read that still has to fill it
+/// when the load-time read was not answered.
+#[cfg(feature = "modulation")]
+struct Mirror {
+    values: tutti_plugin::PluginParamValues,
+    /// Becomes the hosted record's `param_read`, to be run as a job.
+    unread: Option<tutti_plugin::ParamRead>,
+}
+
 /// An opened plugin (or why it did not open) and (`modulation`) its
 /// parameter values.
 struct Open {
@@ -237,7 +268,7 @@ struct Open {
     /// The state restore, if one was asked for: the plugin's refusal, as text.
     restore: Option<Result<(), String>>,
     #[cfg(feature = "modulation")]
-    mirror: Option<tutti_plugin::PluginParamValues>,
+    mirror: Option<Mirror>,
 }
 
 /// What a [`PluginLoad`]'s run did.
@@ -411,7 +442,7 @@ struct Ready {
     client: Box<tutti_plugin::handles::PluginClient>,
     restore: StateRestore,
     #[cfg(feature = "modulation")]
-    mirror: Option<tutti_plugin::PluginParamValues>,
+    mirror: Option<Mirror>,
 }
 
 impl std::fmt::Debug for HostedPlugin {
@@ -740,11 +771,12 @@ impl PluginReloaded {
     }
 }
 
-/// The read of a parameter mirror a crossfade rebuilt, as a job
-/// (`modulation`): `Send`, and [`run`](Self::run) makes one round trip per
-/// parameter, so the host runs it off its control thread and lands the
-/// result with [`Session::land_params`]. Dropped unrun, the mirror stays
-/// not ready (a lane on the plugin keeps waiting) until the next crossfade.
+/// The read of a parameter mirror a crossfade rebuilt, or a load's read that
+/// was not answered, as a job (`modulation`): `Send`, and [`run`](Self::run)
+/// makes one round trip per parameter, so the host runs it off its control
+/// thread and lands the result with [`Session::land_params`]. Dropped unrun,
+/// the mirror stays not ready (a lane on the plugin keeps waiting) until the
+/// next crossfade.
 #[cfg(feature = "modulation")]
 #[must_use = "a parameter read does nothing until it is run and landed"]
 pub struct PluginParamRead {
@@ -761,7 +793,11 @@ impl PluginParamRead {
         self.node
     }
 
-    /// Reads every parameter the plugin lists. Any thread; it blocks.
+    /// Reads every parameter the plugin lists. Any thread; it blocks. If the
+    /// plugin's list is unavailable (an in-process plugin's main thread did not
+    /// answer in time) the finished job carries the read back:
+    /// [`Session::land_params`] does not land it, and the next
+    /// [`Phase::Plugins`](crate::Phase::Plugins) hands it out again.
     pub fn run(self) -> PluginParamsRead {
         PluginParamsRead {
             node: self.node,
@@ -786,9 +822,13 @@ impl std::fmt::Debug for PluginParamRead {
 #[derive(Debug)]
 pub struct PluginParamsRead {
     node: NodeKey,
-    values: std::collections::HashMap<
-        tutti_plugin::handles::ParamId,
-        tutti_plugin::handles::Normalized,
+    /// The values read, or the read itself given back to be run again.
+    values: Result<
+        std::collections::HashMap<
+            tutti_plugin::handles::ParamId,
+            tutti_plugin::handles::Normalized,
+        >,
+        Box<tutti_plugin::ParamRead>,
     >,
     /// The record's mirror token when the job was asked for.
     token: Arc<()>,
@@ -905,8 +945,11 @@ impl Session {
             }
         };
         #[cfg(feature = "modulation")]
-        if let Some(hosted) = self.graph.plugins.get_mut(&node) {
-            hosted.mirror = mirror;
+        if let Some(hosted) = self.graph.plugins.get_mut(&node)
+            && let Some(Mirror { values, unread }) = mirror
+        {
+            hosted.mirror = Some(values);
+            hosted.param_read = unread;
         }
         tracing::info!("plugin '{}' added as {node:?}", path.display());
         Ok(node)
@@ -960,7 +1003,10 @@ impl Session {
     /// Lands a finished parameter read: the plugin's mirror holds its
     /// values and is ready. Returns whether it landed. A read of a plugin no
     /// longer at its node (removed, or crossfaded again since) lands
-    /// nowhere.
+    /// nowhere. A read the plugin did not answer (its list unavailable) does
+    /// not land either: the mirror stays not ready, the read goes back to the
+    /// plugin's record, and the next `Phase::Plugins` hands it out again as
+    /// [`SessionEvent::PluginParamsDue`](crate::SessionEvent::PluginParamsDue).
     #[cfg(feature = "modulation")]
     pub fn land_params(&mut self, read: PluginParamsRead) -> bool {
         let PluginParamsRead {
@@ -980,8 +1026,19 @@ impl Session {
         let Some(mirror) = hosted.mirror.as_mut() else {
             return false;
         };
-        mirror.land(values);
-        true
+        match values {
+            Ok(values) => {
+                mirror.land(values);
+                true
+            }
+            Err(read) => {
+                tracing::debug!(
+                    "plugin {node:?}: its parameter list was unavailable; the read is kept to run again"
+                );
+                hosted.param_read = Some(*read);
+                false
+            }
+        }
     }
 
     /// What a hosted plugin's death or hang does from now on
@@ -1229,8 +1286,12 @@ impl Session {
         }
         #[cfg(feature = "modulation")]
         {
-            hosted.param_read = None;
-            hosted.mirror = mirror;
+            let (values, unread) = match mirror {
+                Some(Mirror { values, unread }) => (Some(values), unread),
+                None => (None, None),
+            };
+            hosted.param_read = unread;
+            hosted.mirror = values;
             // The old mirror is dropped, and its values with it: it holds
             // the values read at load, which the restored state has
             // replaced, and (except for in-process VST2) only the edits the
@@ -1615,10 +1676,17 @@ mod tests {
         dead: Arc<AtomicBool>,
         /// The parameters it lists, and their values.
         params: Vec<(ParamId, f32)>,
+        /// While set, its list is unavailable (`parameter_descriptors` is
+        /// `None`), as an in-process plugin's is when its main thread does
+        /// not answer.
+        unlisted: Arc<AtomicBool>,
     }
 
     impl tutti_plugin::backend::HostParams for Fake {
         fn parameter_descriptors(&self) -> Option<Vec<ParameterInfo>> {
+            if self.unlisted.load(Ordering::SeqCst) {
+                return None;
+            }
             Some(
                 self.params
                     .iter()
@@ -1683,6 +1751,7 @@ mod tests {
                 saves: Arc::clone(&saves),
                 dead: Arc::clone(&dead),
                 params: Vec::new(),
+                unlisted: Arc::default(),
             }),
             OptionalCapabilities::default(),
             Default::default(),
@@ -1715,6 +1784,7 @@ mod tests {
                 saves: Arc::default(),
                 dead: Arc::default(),
                 params,
+                unlisted: Arc::default(),
             }),
             OptionalCapabilities::default(),
             Default::default(),
@@ -1955,7 +2025,7 @@ mod tests {
         let mut rig = rig(None);
         let (outgoing, _) = fake_handle(None, vec![(param, 0.25)]);
         let (mut mirror, read) = tutti_plugin::PluginParamValues::start(&outgoing);
-        mirror.land(read.run());
+        mirror.land(read.run().expect("the read lands"));
         let hosted = rig.session.graph.plugins.get_mut(&rig.node).unwrap();
         hosted.mirror = Some(mirror);
         assert_eq!(hosted.param_value(3), Some(Some(0.25)), "precondition");
@@ -2009,5 +2079,76 @@ mod tests {
             rig.session.plugin(rig.node).unwrap().param_value(3),
             Some(Some(0.125))
         );
+    }
+
+    /// **A read whose parameter list is unavailable does not make the mirror
+    /// ready, and is handed out again.** The job lands as not landed (the
+    /// mirror stays not ready), the next phase emits `PluginParamsDue` for the
+    /// same plugin once more, and once the list answers the re-run read lands
+    /// the values.
+    ///
+    /// Mutations (each run, each failed): `ParamRead::run` mapping an
+    /// unavailable list to `Ok(empty)` (`unwrap_or_default`: the first land
+    /// succeeds with nothing and the mirror is ready and empty); `land_params`
+    /// dropping the read it is given back on `Err` (no second job comes).
+    #[cfg(feature = "modulation")]
+    #[test]
+    fn a_read_whose_parameter_list_is_unavailable_is_handed_out_again() {
+        let param = ParamId::new(3);
+        let mut rig = rig(None);
+        let (outgoing, _) = fake_handle(None, vec![(param, 0.25)]);
+        let (mut mirror, read) = tutti_plugin::PluginParamValues::start(&outgoing);
+        mirror.land(read.run().expect("the read lands"));
+        let hosted = rig.session.graph.plugins.get_mut(&rig.node).unwrap();
+        hosted.mirror = Some(mirror);
+
+        let unlisted = Arc::new(AtomicBool::new(true));
+        let incoming = PluginHandle::from_backend(
+            Arc::new(Fake {
+                state: None,
+                saves: Arc::default(),
+                dead: Arc::default(),
+                params: vec![(param, 0.75)],
+                unlisted: Arc::clone(&unlisted),
+            }),
+            OptionalCapabilities::default(),
+            Default::default(),
+            Default::default(),
+            Default::default(),
+        );
+        hosted.adopt(incoming);
+
+        let reads = |events: Vec<SessionEvent>| -> Vec<PluginParamRead> {
+            events
+                .into_iter()
+                .filter_map(|e| match e {
+                    SessionEvent::PluginParamsDue(job) => Some(job),
+                    _ => None,
+                })
+                .collect()
+        };
+        let job = reads(rig.events_at(0))
+            .pop()
+            .expect("the read is handed out");
+        let done = std::thread::spawn(move || job.run()).join().unwrap();
+        assert!(!rig.session.land_params(done), "nothing was read");
+        assert_eq!(
+            rig.session.plugin(rig.node).unwrap().param_value(3),
+            None,
+            "the mirror is not ready"
+        );
+
+        let job = reads(rig.events_at(10))
+            .pop()
+            .expect("the read comes round again");
+        unlisted.store(false, Ordering::SeqCst);
+        let done = std::thread::spawn(move || job.run()).join().unwrap();
+        assert!(rig.session.land_params(done));
+        assert_eq!(
+            rig.session.plugin(rig.node).unwrap().param_value(3),
+            Some(Some(0.75)),
+            "the re-run read filled the mirror"
+        );
+        assert!(reads(rig.events_at(20)).is_empty(), "and it is done");
     }
 }

@@ -5,7 +5,7 @@
 //! shm/IPC bridge. Loaded in-process the plugin is an ordinary graph node
 //! and behaves like any other steady-state, fixed-working-set DSP — which is
 //! what criterion measures honestly. This benches that path directly, via
-//! `in_process_vst2_client` and `Node::process` by hand
+//! `load_client` and `Node::process` by hand
 //! (`tutti_graph::contract::Direct`), so the measurement is of the plugin
 //! rather than of the dispatch.
 //!
@@ -28,10 +28,12 @@
 
 use std::hint::black_box;
 use tutti_fixtures::main_thread;
+use tutti_plugin_types::Load;
+use tutti_vst2_host::Vst2Loaded;
 
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use tutti_graph::contract::Direct;
-use tutti_plugin::{BoundInProcessVst2Client, in_process_vst2_client};
+use tutti_plugin::{PluginNode, load_client};
 use tutti_types::SampleRate;
 
 const SR: f64 = 48_000.0;
@@ -39,10 +41,11 @@ const SR: f64 = 48_000.0;
 /// reads against are per 64-frame block).
 const BLOCK: usize = 64;
 
-fn unit() -> Direct<BoundInProcessVst2Client> {
-    let (unit, _handle) = in_process_vst2_client(
+fn unit() -> Direct<PluginNode<Vst2Loaded>> {
+    let (unit, _handle) = load_client::<Vst2Loaded>(
         &main_thread(),
         tutti_fixtures::vst2_probe(),
+        &Load::new(),
         SampleRate::new(SR),
     )
     .expect("the reference VST2 plugin must be built — see tutti-fixtures");
@@ -51,7 +54,7 @@ fn unit() -> Direct<BoundInProcessVst2Client> {
     Direct::new(unit.bind(tempo), SampleRate(SR), BLOCK)
 }
 
-fn drive(unit: &mut Direct<BoundInProcessVst2Client>) {
+fn drive(unit: &mut Direct<PluginNode<Vst2Loaded>>) {
     unit.block();
     black_box(unit.output(0).first().copied());
 }
@@ -74,7 +77,7 @@ fn bench_many(c: &mut Criterion) {
     let mut group = c.benchmark_group("vst2/instances");
     group.throughput(Throughput::Elements(BLOCK as u64));
     for n in [1usize, 4, 16] {
-        let mut units: Vec<Direct<BoundInProcessVst2Client>> = (0..n).map(|_| unit()).collect();
+        let mut units: Vec<Direct<PluginNode<Vst2Loaded>>> = (0..n).map(|_| unit()).collect();
         group.bench_with_input(BenchmarkId::from_parameter(n), &n, |b, _| {
             b.iter(|| {
                 for u in &mut units {

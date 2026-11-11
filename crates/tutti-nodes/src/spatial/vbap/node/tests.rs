@@ -1,6 +1,7 @@
 use super::*;
 use core::sync::atomic::Ordering;
 use tutti_graph::contract::{drive, prepared};
+use tutti_types::ChannelTopology;
 
 const RATE: SampleRate = SampleRate(48_000.0);
 
@@ -23,7 +24,7 @@ fn tick_at(node: &mut VbapPannerNode, rate: SampleRate, input: &[f32; 2], out: &
 
 #[test]
 fn vbap_panner_tick() {
-    let mut panner = prep(VbapPannerNode::stereo().unwrap());
+    let mut panner = prep(VbapPannerNode::stereo());
     panner
         .controls()
         .set_position(Azimuth::new(0.0), Elevation::new(0.0));
@@ -46,7 +47,7 @@ fn vbap_panner_tick() {
 /// error raised.
 #[test]
 fn reset_keeps_the_authored_placement() {
-    let mut panner = prep(VbapPannerNode::surround_5_1().unwrap());
+    let mut panner = prep(VbapPannerNode::surround_5_1());
     panner
         .controls()
         .set_position(Azimuth(45.0), Elevation(15.0));
@@ -111,7 +112,7 @@ fn reset_seats_the_smoother_on_the_commanded_position() {
     for (bearing, lead, silent) in [(90.0f32, 0usize, 1usize), (-90.0, 1, 0)] {
         // Where the panner ends up once the 50 ms ramp has run out: a hard
         // pan, so the opposite channel is silent.
-        let mut settled = prep(VbapPannerNode::stereo().unwrap());
+        let mut settled = prep(VbapPannerNode::stereo());
         settled
             .controls()
             .set_position(Azimuth(bearing), Elevation::LEVEL);
@@ -126,7 +127,7 @@ fn reset_seats_the_smoother_on_the_commanded_position() {
 
         // No tick between `set_position` and `reset`: the reset must find
         // the commanded bearing on its own.
-        let mut panner = prep(VbapPannerNode::stereo().unwrap());
+        let mut panner = prep(VbapPannerNode::stereo());
         panner
             .controls()
             .set_position(Azimuth(bearing), Elevation::LEVEL);
@@ -152,7 +153,7 @@ fn reset_seats_the_smoother_on_the_commanded_position() {
 fn the_de_zipper_ramp_is_in_flight_without_a_reset() {
     let input = [1.0f32, 1.0f32];
 
-    let mut settled = prep(VbapPannerNode::stereo().unwrap());
+    let mut settled = prep(VbapPannerNode::stereo());
     settled
         .controls()
         .set_position(Azimuth(90.0), Elevation::LEVEL);
@@ -161,7 +162,7 @@ fn the_de_zipper_ramp_is_in_flight_without_a_reset() {
         tick(&mut settled, &input, &mut reference);
     }
 
-    let mut panner = prep(VbapPannerNode::stereo().unwrap());
+    let mut panner = prep(VbapPannerNode::stereo());
     panner
         .controls()
         .set_position(Azimuth(90.0), Elevation::LEVEL);
@@ -179,7 +180,7 @@ fn the_de_zipper_ramp_is_in_flight_without_a_reset() {
 /// render was cloned from.
 #[test]
 fn reset_on_a_clone_does_not_move_the_original() {
-    let panner = VbapPannerNode::stereo().unwrap();
+    let panner = VbapPannerNode::stereo();
     panner
         .controls()
         .set_position(Azimuth(-60.0), Elevation(20.0));
@@ -224,7 +225,7 @@ fn reset_on_a_clone_does_not_move_the_original() {
 /// other.
 #[test]
 fn vbap_clone_shares_atomics() {
-    let panner = VbapPannerNode::stereo().unwrap();
+    let panner = VbapPannerNode::stereo();
     let cloned = panner.clone();
 
     // -- target: azimuth + elevation, set on the original.
@@ -298,7 +299,7 @@ fn vbap_clone_shares_atomics() {
 #[test]
 fn a_clone_ramps_at_the_originals_sample_rate() {
     let rate = SampleRate(96_000.0);
-    let mut original = prepared(VbapPannerNode::stereo().unwrap(), rate, 64);
+    let mut original = prepared(VbapPannerNode::stereo(), rate, 64);
     let mut clone = original.clone();
     original
         .controls()
@@ -323,7 +324,7 @@ fn a_non_finite_control_never_reaches_the_smoother() {
     let bad = [f32::NAN, f32::INFINITY, f32::NEG_INFINITY];
     for value in bad {
         for which in 0..4 {
-            let mut node = prep(VbapPannerNode::surround_5_1().unwrap());
+            let mut node = prep(VbapPannerNode::surround_5_1());
             node.controls()
                 .set_position(Azimuth(30.0), Elevation::LEVEL);
             let (mut out, input) = ([0.0f32; 6], [0.5f32, -0.25]);
@@ -394,10 +395,7 @@ fn the_inserted_controls_move_the_running_node() {
     use tutti_graph::Solo;
     use tutti_types::Samples;
 
-    let mut solo = Solo::new(
-        VbapPannerNode::stereo().unwrap(),
-        Prepare::new(RATE, Samples(64)),
-    );
+    let mut solo = Solo::new(VbapPannerNode::stereo(), Prepare::new(RATE, Samples(64)));
     solo.controls()
         .set_position(Azimuth(90.0), Elevation::LEVEL);
     // 100 ms: past the 50 ms de-zipper.
@@ -407,5 +405,77 @@ fn the_inserted_controls_move_the_running_node() {
     assert!(
         l > 0.9 && r < 0.1,
         "a hard-left move through the controls should have landed: [{l}, {r}]"
+    );
+}
+
+/// A channel's speaker is its place among the non-LFE channels of the bed's
+/// topology: the LFE (index 3 of 5.1, 7.1 and 7.1.4) feeds from no speaker and
+/// the channels after it take the next one, so the surrounds are not one slot
+/// early. The literals are the file orders worked by hand, the bed's speakers
+/// being L R C (Ls Rs) (Lrs Rrs) (TFL TFR TBL TBR) in the preset's order.
+///
+/// Mutation (run): `speaker_of_channel` not skipping the LFE (every channel a
+/// speaker) -> the 5.1, 7.1 and 7.1.4 rows fail.
+#[test]
+fn a_channels_speaker_skips_the_lfe() {
+    let rows: [(u16, &[Option<usize>]); 5] = [
+        (2, &[Some(0), Some(1)]),
+        (4, &[Some(0), Some(1), Some(2), Some(3)]),
+        (6, &[Some(0), Some(1), Some(2), None, Some(3), Some(4)]),
+        (
+            8,
+            &[
+                Some(0),
+                Some(1),
+                Some(2),
+                None,
+                Some(3),
+                Some(4),
+                Some(5),
+                Some(6),
+            ],
+        ),
+        (
+            12,
+            &[
+                Some(0),
+                Some(1),
+                Some(2),
+                None,
+                Some(3),
+                Some(4),
+                Some(5),
+                Some(6),
+                Some(7),
+                Some(8),
+                Some(9),
+                Some(10),
+            ],
+        ),
+    ];
+    for (count, want) in rows {
+        let topology = ChannelTopology::for_width(ChannelLayout::from(count));
+        assert_eq!(speaker_of_channel(&topology), want, "{count} channels");
+    }
+}
+
+/// A topology is a bed only in the engine's order: the right width in another
+/// order (discrete channels) has no angles to pan to, and the error names it.
+///
+/// Mutation (run): `for_topology` dropping the `assumed` comparison -> the
+/// discrete cases build a panner and fail.
+#[test]
+fn a_topology_that_is_not_a_bed_is_refused_by_name() {
+    for width in [4u16, 6, 12] {
+        let discrete = ChannelTopology::discrete(ChannelLayout::from(width));
+        assert!(
+            matches!(VbapPannerNode::for_topology(&discrete), Err(VbapError::NoBed(t)) if t == discrete),
+            "{width} discrete channels"
+        );
+    }
+    let quad = ChannelTopology::quad();
+    assert_eq!(
+        VbapPannerNode::for_topology(&quad).unwrap().num_channels(),
+        4
     );
 }

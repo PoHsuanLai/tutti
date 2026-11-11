@@ -64,7 +64,7 @@ use tutti_graph::{
 use tutti_graph::{Edge, InPort, OutPort, Source};
 use tutti_midi_runtime::{MidiClipControls, MidiClipNode, NoteLedger, TimedMidiEvent};
 use tutti_types::{Beat, Bpm, ChannelLayout, Latency, SampleRate, Samples};
-use tutti_ump::{CCNumber, MidiChannel, MidiGroup, Ump};
+use tutti_ump::{CCNumber, MidiChannel, MidiGroup, NoteId, NoteNumber, Ump};
 
 const FPB: f64 = 24_000.0;
 
@@ -348,18 +348,26 @@ impl Node for Relay {
     }
 }
 
+/// The channel and note of the key a test numbers `n`: `channel * 128 +
+/// note`, `tutti_ump::NoteId`'s own (a number past channel 15 wraps).
+fn key(n: u32) -> (MidiChannel, NoteNumber) {
+    NoteId::from_raw(n % (16 * 128))
+        .channel_note()
+        .expect("inside 16 channels")
+}
+
 fn ump_on(n: u32) -> Ump {
-    let (c, n) = (((n / 128) % 16) as u8, (n % 128) as u8);
-    note_on(MidiGroup::FIRST, MidiChannel::of(c), n, 0xFFFF)
+    let (c, n) = key(n);
+    note_on(MidiGroup::FIRST, c, n.get(), 0xFFFF)
 }
 
 fn ump_off(n: u32) -> Ump {
-    let (c, n) = (((n / 128) % 16) as u8, (n % 128) as u8);
-    note_off(MidiGroup::FIRST, MidiChannel::of(c), n, 0)
+    let (c, n) = key(n);
+    note_off(MidiGroup::FIRST, c, n.get(), 0)
 }
 
 fn ump_cc(v: u32) -> Ump {
-    cc(MidiGroup::FIRST, MidiChannel::FIRST, CCNumber::of(7), v)
+    cc(MidiGroup::FIRST, MidiChannel::FIRST, CCNumber::VOLUME, v)
 }
 
 /// `script` through `relay` into a sink, in 64-frame blocks; `blocks` of
@@ -1040,7 +1048,7 @@ fn spread_clip(r: &mut Rng, overlap: bool) -> (Vec<TimedMidiEvent>, usize, usize
         let cc = cc(
             MidiGroup::FIRST,
             MidiChannel::FIRST,
-            CCNumber::of(7),
+            CCNumber::VOLUME,
             v as u32,
         );
         events.push(at(f, cc));

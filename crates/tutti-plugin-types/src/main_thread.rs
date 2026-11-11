@@ -144,6 +144,14 @@ static DEFERRED: std::sync::Mutex<Vec<Deferred>> = std::sync::Mutex::new(Vec::ne
 
 /// Hands `work` to the main thread, to run at its next [`run_deferred`].
 ///
+/// **Someone must call [`run_deferred`] on the main thread.** `Session::update`
+/// does, in `Phase::Collect`, but it is a main-thread call itself (it
+/// debug-asserts that it is not off a claimed main thread), so a host that
+/// drives the session from another thread must call [`run_deferred`] from its
+/// main-thread loop. Without a pump, work posted here never runs; a caller that
+/// waits for it (the in-process plugin handle's off-main calls) gets its
+/// "unavailable" answer when its deadline expires.
+///
 /// For a `Drop` that finds itself off the claimed thread and owns something that must be
 /// released there: it cannot be handed a token, so it hands over the release.
 ///
@@ -171,7 +179,9 @@ pub fn defer_to_main(work: impl FnOnce(&MainThread) + Send + 'static) {
 
 /// Runs the work other threads handed over by [`defer_to_main`], on the calling (main) thread,
 /// and says how many ran. A main-thread tick the host already has calls this: the session's
-/// `Phase::Collect`. Work that defers more work leaves it for the next call.
+/// `Phase::Collect` (which runs on the claiming thread, as `Session::update` must). A host that
+/// does not call `Session::update` on its main thread calls this from its main-thread loop.
+/// Work that defers more work leaves it for the next call.
 pub fn run_deferred(main: &MainThread) -> usize {
     let work = std::mem::take(
         &mut *DEFERRED

@@ -16,6 +16,8 @@
 
 use std::sync::{Mutex, MutexGuard};
 use tutti_fixtures::main_thread;
+use tutti_plugin_types::Load;
+use tutti_vst2_host::Vst2Loaded;
 
 use tutti_graph::contract::Latent;
 use tutti_graph::{
@@ -23,7 +25,7 @@ use tutti_graph::{
     Unforkable,
 };
 use tutti_plugin::handles::PluginHandle;
-use tutti_plugin::{BoundInProcessVst2Client, in_process_vst2_client};
+use tutti_plugin::{PluginNode, load_client};
 use tutti_transport::ProjectMeter;
 use tutti_types::Latency;
 use tutti_types::{
@@ -95,11 +97,15 @@ fn read_capture() -> ProcessCapture {
     cap
 }
 
-fn load() -> (BoundInProcessVst2Client, PluginHandle) {
+fn load() -> (PluginNode<Vst2Loaded>, PluginHandle) {
     let path = tutti_fixtures::vst2_probe();
-    let (client, handle) =
-        in_process_vst2_client(&main_thread(), path, SampleRate::new(SAMPLE_RATE))
-            .unwrap_or_else(|e| panic!("in-process load of the probe at {path:?}: {e:?}"));
+    let (client, handle) = load_client::<Vst2Loaded>(
+        &main_thread(),
+        path,
+        &Load::new(),
+        SampleRate::new(SAMPLE_RATE),
+    )
+    .unwrap_or_else(|e| panic!("in-process load of the probe at {path:?}: {e:?}"));
     (client.bind(scene_tempo()), handle)
 }
 
@@ -338,7 +344,7 @@ fn seven_eight() -> ProjectMeter {
 /// Mutation (run): drop the meter source (`TransportFeed::block` reading
 /// `self.default_meter` always) → 4 → fails. Mutation (run): hand back a
 /// fresh `PluginMeter::default()` as the controls' meter in the node's
-/// `IntoNode` (`InProcessVst2Client::controls`) → the handle is not the
+/// `IntoNode` (`InProcClient::controls`) → the handle is not the
 /// node's cell → fails.
 #[test]
 fn the_live_node_tells_the_plugin_its_meter() {

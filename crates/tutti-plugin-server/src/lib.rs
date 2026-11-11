@@ -1,8 +1,8 @@
+#![forbid(unsafe_code)]
 #![doc = include_str!("../README.md")]
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
 mod audio_pipeline;
-mod editor;
 mod loaders;
 mod plugin;
 mod server;
@@ -59,6 +59,30 @@ pub(crate) mod test_utils {
         feature = "vst2"
     ))]
     use std::sync::{Mutex, MutexGuard};
+    #[cfg(feature = "clap")]
+    use tutti_clap_test_plugin::{ClapProbe, ClapSwitch};
+
+    /// The reference CLAP plugin's probe, opened once on its two images and
+    /// kept for the process: a switch set before a load must stay resident
+    /// for the instance loaded after it.
+    #[cfg(feature = "clap")]
+    pub fn clap() -> &'static ClapProbe {
+        static PROBE: OnceLock<ClapProbe> = OnceLock::new();
+        PROBE.get_or_init(|| {
+            ClapProbe::open(
+                &tutti_fixtures::cdylib("tutti_clap_test_plugin", "tutti-clap-test-plugin"),
+                tutti_fixtures::clap_probe(),
+            )
+        })
+    }
+
+    /// The reference VST2 plugin's probe, opened once and kept, as
+    /// [`clap`]'s.
+    #[cfg(feature = "vst2")]
+    pub fn vst2() -> &'static tutti_vst2_test_plugin::Vst2Probe {
+        static PROBE: OnceLock<tutti_vst2_test_plugin::Vst2Probe> = OnceLock::new();
+        PROBE.get_or_init(|| tutti_vst2_test_plugin::Vst2Probe::open(tutti_fixtures::vst2_probe()))
+    }
 
     /// Taken by every loader test that loads a real plugin — CLAP, VST3, VST2
     /// and, on macOS, AU. A plugin's entry point may touch process globals, so
@@ -230,31 +254,7 @@ pub(crate) mod test_utils {
     /// would be a different static that `process` never reads.
     #[cfg(feature = "clap")]
     pub fn set_clap_probe_render_mode(mode: u32) {
-        set_clap_probe_switch(b"tutti_test_plugin_set_render_mode\0", mode);
-    }
-
-    /// Call the reference plugin's `#[no_mangle] extern "C" fn(u32)` switch
-    /// `symbol` in every image of it a test loads: the cargo artifact and its
-    /// `.clap` alias. On unix the alias is a symlink, so both opens reach one
-    /// image; on Windows it is a copy, which the loader maps as a second
-    /// module with its own statics.
-    #[cfg(feature = "clap")]
-    fn set_clap_probe_switch(symbol: &[u8], value: u32) {
-        for path in [clap_probe_path(), clap_probe_path_dot_clap()] {
-            // SAFETY: every switch is `#[no_mangle] extern "C" fn(u32)` in
-            // `tutti-clap-test-plugin`. The handle is leaked: dropping it
-            // would decrement the refcount on a library a live instance may
-            // be using, and a switch set before a load must stay resident
-            // for the instance loaded after it.
-            unsafe {
-                let lib = libloading::Library::new(path).expect("reference plugin opens");
-                let set: libloading::Symbol<unsafe extern "C" fn(u32)> = lib
-                    .get(symbol)
-                    .expect("switch exported by the reference plugin");
-                set(value);
-                std::mem::forget(lib);
-            }
-        }
+        clap().set(ClapSwitch::RenderMode, mode);
     }
 
     /// [`set_clap_probe_render_mode`] until the returned guard drops, which
@@ -273,7 +273,7 @@ pub(crate) mod test_utils {
     #[cfg(feature = "clap")]
     #[must_use = "the plugin goes back to `Continue` when the guard drops"]
     pub fn clap_probe_status_mode(mode: tutti_clap_test_plugin::StatusMode) -> ClapProbeStatusMode {
-        set_clap_probe_switch(b"tutti_test_plugin_set_status_mode\0", mode as u32);
+        clap().set(ClapSwitch::StatusMode, mode as u32);
         ClapProbeStatusMode
     }
 
@@ -285,8 +285,8 @@ pub(crate) mod test_utils {
     #[cfg(feature = "clap")]
     impl Drop for ClapProbeStatusMode {
         fn drop(&mut self) {
-            set_clap_probe_switch(
-                b"tutti_test_plugin_set_status_mode\0",
+            clap().set(
+                ClapSwitch::StatusMode,
                 tutti_clap_test_plugin::StatusMode::Continue as u32,
             );
         }
@@ -334,7 +334,7 @@ pub(crate) mod test_utils {
 
     #[cfg(feature = "clap")]
     fn set_clap_probe_port_layout(mode: u32) {
-        set_clap_probe_switch(b"tutti_test_plugin_set_port_layout\0", mode);
+        clap().set(ClapSwitch::PortLayout, mode);
     }
 
     /// Make the reference plugin's ports on the sides in `mask` advertise
@@ -365,7 +365,7 @@ pub(crate) mod test_utils {
 
     #[cfg(feature = "clap")]
     fn set_clap_probe_ports_64bit(mask: u32) {
-        set_clap_probe_switch(b"tutti_test_plugin_set_ports_64bit\0", mask);
+        clap().set(ClapSwitch::Ports64Bit, mask);
     }
 
     /// Make the reference plugin call `audio-ports.rescan(flags)` at its next
@@ -374,7 +374,7 @@ pub(crate) mod test_utils {
     #[cfg(feature = "clap")]
     #[must_use = "a call not yet made is cleared when the guard drops"]
     pub fn clap_probe_request_ports_rescan(flags: u32) -> ClapProbePortsRescan {
-        set_clap_probe_switch(b"tutti_test_plugin_request_ports_rescan\0", flags);
+        clap().set(ClapSwitch::RequestPortsRescan, flags);
         ClapProbePortsRescan
     }
 
@@ -386,7 +386,7 @@ pub(crate) mod test_utils {
     #[cfg(feature = "clap")]
     impl Drop for ClapProbePortsRescan {
         fn drop(&mut self) {
-            set_clap_probe_switch(b"tutti_test_plugin_request_ports_rescan\0", 0);
+            clap().set(ClapSwitch::RequestPortsRescan, 0);
         }
     }
 
@@ -396,10 +396,7 @@ pub(crate) mod test_utils {
     #[cfg(feature = "clap")]
     #[must_use = "a call not yet made is cleared when the guard drops"]
     pub fn clap_probe_request_restart() -> ClapProbeRestart {
-        set_clap_probe_switch(
-            b"tutti_test_plugin_thread_command\0",
-            tutti_clap_test_plugin::CMD_REQUEST_RESTART,
-        );
+        clap().thread_command(tutti_clap_test_plugin::CMD_REQUEST_RESTART);
         ClapProbeRestart
     }
 
@@ -411,10 +408,7 @@ pub(crate) mod test_utils {
     #[cfg(feature = "clap")]
     impl Drop for ClapProbeRestart {
         fn drop(&mut self) {
-            set_clap_probe_switch(
-                b"tutti_test_plugin_thread_command\0",
-                tutti_clap_test_plugin::CMD_NONE,
-            );
+            clap().thread_command(tutti_clap_test_plugin::CMD_NONE);
         }
     }
 
@@ -425,7 +419,7 @@ pub(crate) mod test_utils {
     #[cfg(feature = "clap")]
     #[must_use = "a command not yet run is cleared when the guard drops"]
     pub fn clap_probe_thread_command(cmd: u32) -> ClapProbeRestart {
-        set_clap_probe_switch(b"tutti_test_plugin_thread_command\0", cmd);
+        clap().thread_command(cmd);
         ClapProbeRestart
     }
 
@@ -435,7 +429,7 @@ pub(crate) mod test_utils {
     #[cfg(feature = "clap")]
     #[must_use = "a call not yet made is cleared when the guard drops"]
     pub fn clap_probe_param_command(cmd: u32) -> ClapProbeParamCommand {
-        set_clap_probe_switch(b"tutti_test_plugin_param_command\0", cmd);
+        clap().param_command(cmd);
         ClapProbeParamCommand
     }
 
@@ -446,10 +440,7 @@ pub(crate) mod test_utils {
     #[cfg(feature = "clap")]
     impl Drop for ClapProbeParamCommand {
         fn drop(&mut self) {
-            set_clap_probe_switch(
-                b"tutti_test_plugin_param_command\0",
-                tutti_clap_test_plugin::PARAM_CMD_NONE,
-            );
+            clap().param_command(tutti_clap_test_plugin::PARAM_CMD_NONE);
         }
     }
 
@@ -459,7 +450,7 @@ pub(crate) mod test_utils {
     #[cfg(feature = "clap")]
     #[must_use = "the latency goes back when the guard drops"]
     pub fn clap_probe_latency_at_activation(extra: u32) -> ClapProbeLatency {
-        set_clap_probe_switch(b"tutti_test_plugin_set_latency_at_activation\0", extra);
+        clap().set(ClapSwitch::LatencyAtActivation, extra);
         ClapProbeLatency
     }
 
@@ -471,7 +462,7 @@ pub(crate) mod test_utils {
     #[cfg(feature = "clap")]
     impl Drop for ClapProbeLatency {
         fn drop(&mut self) {
-            set_clap_probe_switch(b"tutti_test_plugin_set_latency_at_activation\0", 0);
+            clap().set(ClapSwitch::LatencyAtActivation, 0);
         }
     }
 
@@ -480,7 +471,7 @@ pub(crate) mod test_utils {
     #[cfg(feature = "clap")]
     #[must_use = "the plugin goes back to silence when the guard drops"]
     pub fn clap_probe_latency_changed_in_activate() -> ClapProbeChangedInActivate {
-        set_clap_probe_switch(b"tutti_test_plugin_set_latency_changed_in_activate\0", 1);
+        clap().set(ClapSwitch::LatencyChangedInActivate, 1);
         ClapProbeChangedInActivate
     }
 
@@ -491,7 +482,7 @@ pub(crate) mod test_utils {
     #[cfg(feature = "clap")]
     impl Drop for ClapProbeChangedInActivate {
         fn drop(&mut self) {
-            set_clap_probe_switch(b"tutti_test_plugin_set_latency_changed_in_activate\0", 0);
+            clap().set(ClapSwitch::LatencyChangedInActivate, 0);
         }
     }
 
@@ -499,33 +490,13 @@ pub(crate) mod test_utils {
     /// since the last reset.
     #[cfg(feature = "clap")]
     pub fn clap_probe_thread_capture() -> tutti_clap_test_plugin::ThreadCapture {
-        type F = unsafe extern "C" fn(*mut tutti_clap_test_plugin::ThreadCapture) -> bool;
-        let mut cap = tutti_clap_test_plugin::ThreadCapture::default();
-        // SAFETY: `#[no_mangle] extern "C"` in `tutti-clap-test-plugin`; the
-        // handle is leaked as in `set_clap_probe_switch`.
-        unsafe {
-            let lib = libloading::Library::new(clap_probe_path()).expect("reference plugin opens");
-            let capture: libloading::Symbol<F> = lib
-                .get(b"tutti_test_plugin_thread_capture\0")
-                .expect("capture exported by the reference plugin");
-            assert!(capture(&mut cap));
-            std::mem::forget(lib);
-        }
-        cap
+        clap().thread_capture()
     }
 
     /// Zeroes [`clap_probe_thread_capture`].
     #[cfg(feature = "clap")]
     pub fn clap_probe_thread_reset() {
-        // SAFETY: as above.
-        unsafe {
-            let lib = libloading::Library::new(clap_probe_path()).expect("reference plugin opens");
-            let reset: libloading::Symbol<unsafe extern "C" fn()> = lib
-                .get(b"tutti_test_plugin_thread_reset\0")
-                .expect("reset exported by the reference plugin");
-            reset();
-            std::mem::forget(lib);
-        }
+        clap().thread_reset();
     }
 
     /// How many times the reference plugin accepted `activate` since
@@ -533,32 +504,13 @@ pub(crate) mod test_utils {
     /// re-activation shows as one more.
     #[cfg(feature = "clap")]
     pub fn clap_probe_activation_count() -> u32 {
-        // SAFETY: `#[no_mangle] extern "C" fn() -> u32` in
-        // `tutti-clap-test-plugin`; the handle is leaked as in
-        // `set_clap_probe_switch`.
-        unsafe {
-            let lib = libloading::Library::new(clap_probe_path()).expect("reference plugin opens");
-            let count: libloading::Symbol<unsafe extern "C" fn() -> u32> = lib
-                .get(b"tutti_test_plugin_activate_accepts\0")
-                .expect("counter exported by the reference plugin");
-            let n = count();
-            std::mem::forget(lib);
-            n
-        }
+        clap().activation_count()
     }
 
     /// Zeroes [`clap_probe_activation_count`].
     #[cfg(feature = "clap")]
     pub fn clap_probe_reset_activation_count() {
-        // SAFETY: `#[no_mangle] extern "C" fn()`; see above.
-        unsafe {
-            let lib = libloading::Library::new(clap_probe_path()).expect("reference plugin opens");
-            let reset: libloading::Symbol<unsafe extern "C" fn()> = lib
-                .get(b"tutti_test_plugin_reset_activation\0")
-                .expect("reset exported by the reference plugin");
-            reset();
-            std::mem::forget(lib);
-        }
+        clap().reset_activation();
     }
 
     /// Make the reference plugin's `activate` refuse `rate` until the returned
@@ -583,33 +535,14 @@ pub(crate) mod test_utils {
 
     #[cfg(feature = "clap")]
     fn set_clap_probe_activate_refusal(rate_bits: u64) {
-        // SAFETY: `#[no_mangle] extern "C" fn(u64, u32)` in
-        // `tutti-clap-test-plugin`; the handle is leaked as above.
-        unsafe {
-            let lib = libloading::Library::new(clap_probe_path()).expect("reference plugin opens");
-            let set: libloading::Symbol<unsafe extern "C" fn(u64, u32)> = lib
-                .get(b"tutti_test_plugin_set_activate_refusal\0")
-                .expect("refusal exported by the reference plugin");
-            set(rate_bits, 0);
-            std::mem::forget(lib);
-        }
+        clap().set_activate_refusal(rate_bits);
     }
 
     /// The rate of the reference plugin's most recent accepted `activate`
     /// since [`clap_probe_reset_activation_count`], if any.
     #[cfg(feature = "clap")]
     pub fn clap_probe_last_accepted_rate() -> Option<f64> {
-        // SAFETY: as above.
-        unsafe {
-            let lib = libloading::Library::new(clap_probe_path()).expect("reference plugin opens");
-            let last: libloading::Symbol<unsafe extern "C" fn(*mut u64, *mut u32) -> bool> = lib
-                .get(b"tutti_test_plugin_last_accepted_activation\0")
-                .expect("accessor exported by the reference plugin");
-            let (mut bits, mut frames) = (0u64, 0u32);
-            let seen = last(&mut bits, &mut frames);
-            std::mem::forget(lib);
-            seen.then(|| f64::from_bits(bits))
-        }
+        clap().last_accepted_rate()
     }
 
     /// Make the reference plugin withhold `clap.tail` until the returned guard
@@ -618,7 +551,7 @@ pub(crate) mod test_utils {
     #[cfg(feature = "clap")]
     #[must_use = "the plugin offers clap.tail again when the guard drops"]
     pub fn clap_probe_without_tail() -> ClapProbeWithoutTail {
-        set_clap_probe_switch(b"tutti_test_plugin_set_tail_extension\0", 0);
+        clap().set(ClapSwitch::TailExtension, 0);
         ClapProbeWithoutTail
     }
 
@@ -630,7 +563,7 @@ pub(crate) mod test_utils {
     #[cfg(feature = "clap")]
     impl Drop for ClapProbeWithoutTail {
         fn drop(&mut self) {
-            set_clap_probe_switch(b"tutti_test_plugin_set_tail_extension\0", 1);
+            clap().set(ClapSwitch::TailExtension, 1);
         }
     }
 

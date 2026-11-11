@@ -7,7 +7,7 @@
 //!
 //! Contains the fine-grained plugin-instance capability traits
 //! ([`PluginMeta`], [`PluginAudio`], [`PluginParams`], [`PluginState`],
-//! [`PluginEditorHost`]) and the [`PluginInstance`] bundle a loader satisfies,
+//! [`PluginPresets`]) and the [`PluginInstance`] bundle a loader satisfies,
 //! plus re-exports of every wire-frame type the IPC carries.
 //!
 //! The traits and their per-block process types are defined in
@@ -60,8 +60,7 @@ pub use tutti_plugin_types::{ExpressiveContext, ProcessContext, ProcessOutput};
 // `PluginInstance` bundle. A loader implements the small traits and gets
 // `PluginInstance` via its blanket impl.
 pub use tutti_plugin_types::{
-    PluginAudio, PluginEditorHost, PluginInstance, PluginMeta, PluginParams, PluginPresets,
-    PluginState,
+    PluginAudio, PluginInstance, PluginMeta, PluginParams, PluginPresets, PluginState,
 };
 // The lean, format-agnostic error the traits return, plus its `Result` alias.
 pub use tutti_plugin_types::{PluginError, PluginResult};

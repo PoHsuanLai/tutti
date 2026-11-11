@@ -24,6 +24,11 @@
 
 extern crate tutti_vst2_author as vst;
 
+#[cfg(feature = "probe")]
+mod probe;
+#[cfg(feature = "probe")]
+pub use probe::Vst2Probe;
+
 pub mod capture;
 pub mod config;
 pub mod switches;

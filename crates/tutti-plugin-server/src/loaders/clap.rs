@@ -10,16 +10,15 @@ use std::path::Path;
 use tutti_clap_host::{ClapLoaded, ClapProcessor, LoadOptions};
 use tutti_plugin::LoadStage;
 use tutti_plugin::server::{
-    ContentScale, EditorSize, LoadedPlugin, Normalized, ParamId, ParameterInfo, PluginAudio,
-    PluginDescriptor, PluginEditorHost, PluginError, PluginMeta, PluginParams, PluginPresets,
-    PluginResult, PluginState, PresetId, WindowHandle,
+    LoadedPlugin, Normalized, ParamId, ParameterInfo, PluginAudio, PluginDescriptor, PluginError,
+    PluginMeta, PluginParams, PluginPresets, PluginResult, PluginState, PresetId,
 };
 use tutti_plugin::server::{ProcessContext, ProcessOutput, RenderMode};
 use tutti_plugin_types::MainThread;
 use tutti_plugin_types::{BridgeError, BridgeResult};
 use tutti_plugin_types::{
-    Control, EditorWindow, Event, Hand, HostOp, Lifecycle, MaxBlock, Notice, Prepare, Request,
-    SampleFormat, SampleRate, Samples, Seat, Stage, State,
+    Control, Event, Hand, HostOp, Lifecycle, MaxBlock, Notice, Prepare, Request, SampleFormat,
+    SampleRate, Samples, Seat, Stage, State,
 };
 
 use crate::loaders::common::Meta;
@@ -645,32 +644,6 @@ impl PluginParams for ClapInstance {
     fn parameter_count(&self, main: &MainThread) -> usize {
         self.loaded_ref()
             .map_or(0, |loaded| loaded.parameter_count(main))
-    }
-}
-
-impl PluginEditorHost for ClapInstance {
-    fn open_editor(
-        &mut self,
-        main: &MainThread,
-        parent: WindowHandle,
-        scale: ContentScale,
-    ) -> PluginResult<EditorSize> {
-        let loaded = self
-            .loaded_mut()
-            .ok_or_else(|| PluginError::Other("the plugin is lost".to_string()))?;
-        loaded
-            .open_editor(main, parent, scale)
-            .map(|s| EditorSize {
-                width: s.width,
-                height: s.height,
-            })
-            .map_err(|e| PluginError::Editor(tutti_plugin::EditorError::PluginError(e.to_string())))
-    }
-
-    fn close_editor(&mut self, main: &MainThread) {
-        if let Some(loaded) = self.loaded_mut() {
-            loaded.close_editor(main);
-        }
     }
 }
 
@@ -1612,51 +1585,18 @@ mod tests {
 
     /// What the reference plugin recorded of its last `process` call.
     fn read_process_capture() -> tutti_clap_test_plugin::ProcessCapture {
-        type F = unsafe extern "C" fn(*mut tutti_clap_test_plugin::ProcessCapture) -> bool;
-        let mut cap = tutti_clap_test_plugin::ProcessCapture::default();
-        // SAFETY: `#[no_mangle] extern "C"` in `tutti-clap-test-plugin`; the
-        // handle is leaked as in `set_clap_probe_switch`.
-        unsafe {
-            let lib = libloading::Library::new(clap_plugin()).expect("reference plugin opens");
-            let capture: libloading::Symbol<F> = lib
-                .get(b"tutti_test_plugin_capture\0")
-                .expect("capture exported by the reference plugin");
-            assert!(capture(&mut cap), "the plugin recorded a process() call");
-            std::mem::forget(lib);
-        }
-        cap
+        crate::test_utils::clap().process_capture()
     }
 
     /// Arm (or, with 0, disarm) the reference plugin's thread-pool probe on
     /// the image the loader opens; see `set_clap_probe_render_mode` for why
     /// through `dlopen`.
     fn set_thread_pool_tasks(tasks: u32) {
-        // SAFETY: `#[no_mangle] extern "C" fn(u32)` in the reference plugin.
-        unsafe {
-            let lib = libloading::Library::new(clap_plugin()).expect("reference plugin opens");
-            let set: libloading::Symbol<unsafe extern "C" fn(u32)> = lib
-                .get(b"tutti_test_plugin_set_thread_pool_tasks\0")
-                .expect("thread-pool switch exported");
-            set(tasks);
-            // Leaked: closing it before the load would unmap the switch.
-            std::mem::forget(lib);
-        }
+        crate::test_utils::clap().set_thread_pool_tasks(tasks);
     }
 
     fn thread_pool_capture() -> tutti_clap_test_plugin::ThreadPoolCapture {
-        // SAFETY: `#[no_mangle] extern "C" fn() -> ThreadPoolCapture`, the
-        // same `#[repr(C)]` type as the rlib's.
-        unsafe {
-            let lib = libloading::Library::new(clap_plugin()).expect("reference plugin opens");
-            let get: libloading::Symbol<
-                unsafe extern "C" fn() -> tutti_clap_test_plugin::ThreadPoolCapture,
-            > = lib
-                .get(b"tutti_test_plugin_thread_pool_capture\0")
-                .expect("thread-pool capture exported");
-            let cap = get();
-            std::mem::forget(lib);
-            cap
-        }
+        crate::test_utils::clap().thread_pool_capture()
     }
 
     fn process_blocks(instance: &mut ClapInstance, blocks: usize) {
@@ -2848,85 +2788,6 @@ mod tests {
         );
     }
 
-    #[cfg(target_os = "macos")]
-    #[test]
-    #[ignore] // Requires main-thread Cocoa environment; run with: cargo test -- --ignored test_clap_gui
-    fn test_clap_gui_open_close() {
-        let _lock = crate::test_utils::plugin_load_lock();
-        let mut instance = ClapInstance::load(
-            &main_thread(),
-            Path::new(clap_plugin()),
-            44100.0,
-            512,
-            false,
-        )
-        .expect("Failed to load");
-
-        let parent = create_nsview();
-        assert!(!parent.is_null(), "Failed to create NSView");
-
-        let handle = unsafe { tutti_plugin::server::WindowHandle::from_u64(parent as u64) };
-        let result = instance.open_editor(&main_thread(), handle, ContentScale::IDENTITY);
-        assert!(
-            result.is_ok(),
-            "open_editor should succeed: {:?}",
-            result.err()
-        );
-
-        let size = result.unwrap();
-        assert!(
-            size.width > 0 && size.height > 0,
-            "GUI size should be non-zero: {}x{}",
-            size.width,
-            size.height
-        );
-
-        instance.close_editor(&main_thread());
-        release_nsview(parent);
-    }
-
-    #[cfg(target_os = "macos")]
-    #[test]
-    #[ignore] // Requires main-thread Cocoa environment; run with: cargo test -- --ignored test_surge_gui
-    fn test_surge_gui_open_close() {
-        let _lock = crate::test_utils::plugin_load_lock();
-        let mut instance = ClapInstance::load(
-            &main_thread(),
-            Path::new(clap_plugin()),
-            44100.0,
-            512,
-            false,
-        )
-        .expect("Failed to load Surge XT");
-
-        assert!(
-            instance.descriptor().editor.is_present(),
-            "Surge XT should have a GUI"
-        );
-
-        let parent = create_nsview();
-        assert!(!parent.is_null());
-
-        let handle = unsafe { tutti_plugin::server::WindowHandle::from_u64(parent as u64) };
-        let result = instance.open_editor(&main_thread(), handle, ContentScale::IDENTITY);
-        assert!(
-            result.is_ok(),
-            "Surge XT open_editor should succeed: {:?}",
-            result.err()
-        );
-
-        let size = result.unwrap();
-        assert!(
-            size.width > 0 && size.height > 0,
-            "Surge XT GUI size should be non-zero: {}x{}",
-            size.width,
-            size.height
-        );
-
-        instance.close_editor(&main_thread());
-        release_nsview(parent);
-    }
-
     // ── Group K: Render Mode ──
 
     #[test]
@@ -3200,60 +3061,5 @@ mod tests {
                 tutti_clap_host::StateContext::ForDuplicate,
             )
             .expect("load should succeed");
-    }
-
-    // Objective-C runtime FFI for NSView creation (macOS only).
-    // On Apple Silicon, objc_msgSend must be cast to the correct function
-    // pointer type — the variadic extern "C" declaration doesn't work.
-    #[cfg(target_os = "macos")]
-    unsafe extern "C" {
-        fn objc_getClass(name: *const std::ffi::c_char) -> *mut std::ffi::c_void;
-        fn sel_registerName(name: *const std::ffi::c_char) -> *mut std::ffi::c_void;
-        fn objc_msgSend();
-    }
-
-    #[cfg(target_os = "macos")]
-    type ObjcMsgSendFn =
-        unsafe extern "C" fn(*mut std::ffi::c_void, *mut std::ffi::c_void) -> *mut std::ffi::c_void;
-
-    #[cfg(target_os = "macos")]
-    fn objc_send() -> ObjcMsgSendFn {
-        unsafe { std::mem::transmute(objc_msgSend as *const ()) }
-    }
-
-    /// Ensure NSApplication is initialized (required for plugin GUIs).
-    #[cfg(target_os = "macos")]
-    fn ensure_nsapp() {
-        use std::sync::Once;
-        static INIT: Once = Once::new();
-        INIT.call_once(|| unsafe {
-            let send = objc_send();
-            let cls = objc_getClass(c"NSApplication".as_ptr());
-            let shared_sel = sel_registerName(c"sharedApplication".as_ptr());
-            send(cls, shared_sel);
-        });
-    }
-
-    #[cfg(target_os = "macos")]
-    fn create_nsview() -> *mut std::ffi::c_void {
-        ensure_nsapp();
-        unsafe {
-            let send = objc_send();
-            let cls = objc_getClass(c"NSView".as_ptr());
-            let alloc_sel = sel_registerName(c"alloc".as_ptr());
-            let init_sel = sel_registerName(c"init".as_ptr());
-
-            let obj = send(cls, alloc_sel);
-            send(obj, init_sel)
-        }
-    }
-
-    #[cfg(target_os = "macos")]
-    fn release_nsview(view: *mut std::ffi::c_void) {
-        unsafe {
-            let send = objc_send();
-            let release_sel = sel_registerName(c"release".as_ptr());
-            send(view, release_sel);
-        }
     }
 }

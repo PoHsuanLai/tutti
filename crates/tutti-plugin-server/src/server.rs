@@ -184,7 +184,6 @@ impl PluginServer {
 
 impl Drop for PluginServer {
     fn drop(&mut self) {
-        self.session.close_editor_on_drop(&self.main);
         let _ = std::fs::remove_file(&self.config.socket_path);
     }
 }

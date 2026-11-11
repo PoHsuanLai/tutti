@@ -35,8 +35,11 @@
 //! mutation-verification result.
 
 // Test-only `unsafe` the suites need lives here, each behind a safe call with
-// its argument at the site (`ScopedEnv`, `StandInWindow`, the glibc read); `deny` so every site is
-// a named `allow`.
+// its argument at the site (`ScopedEnv`, `StandInWindow`, the glibc read);
+// `deny` so every site is a named `allow`. A reference plugin's probe symbols
+// are its own crate's (`tutti_clap_test_plugin::ClapProbe`,
+// `tutti_vst2_test_plugin::Vst2Probe`): depending on a plugin here would link
+// its entry point into every suite.
 #![deny(unsafe_code)]
 
 mod digest;

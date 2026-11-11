@@ -61,6 +61,11 @@ use clap_sys::version::CLAP_VERSION;
 /// fixture. Kept in its own module because it needs its own lock-free capture
 /// channel (its call sites run on the audio thread) and its own command channel
 /// the test drives from outside. `lib.rs` holds only the call-site hooks.
+#[cfg(feature = "probe")]
+mod probe;
+#[cfg(feature = "probe")]
+pub use probe::{ClapProbe, ClapSwitch};
+
 pub mod threading;
 
 pub use threading::{

@@ -195,8 +195,14 @@ and the docs.rs build on a dated nightly); `cargo xtask check-loom` runs clippy 
   safe wrapper and forbids `unsafe`: a parent window is
   `WindowHandle::from_window(&impl HasWindowHandle)` (winit, Bevy, any
   `raw-window-handle` 0.6 window), and the one `unsafe` constructor,
-  `WindowHandle::from_u64`, is for a number that crossed a process edge. Test-only
-  `unsafe` is `tutti-fixtures`' (`ScopedEnv`, `StandInWindow`).
+  `WindowHandle::from_u64`, is for a host holding only a bare platform handle. Test-only
+  `unsafe` is `tutti-fixtures`' (`ScopedEnv`, `StandInWindow`), and a reference
+  plugin's probe exports are reached through its own crate's typed door
+  (`tutti_clap_test_plugin::ClapProbe`, `tutti_vst2_test_plugin::Vst2Probe`, feature
+  `probe`): `tutti-fixtures` depends on no plugin, since a plugin's rlib carries its
+  entry point and two in one test binary do not link.
+  `tutti-plugin-ipc` and `tutti-plugin-server` forbid `unsafe` too: the process
+  edge's is `tutti-plugin-ipc-ffi`'s.
   MIDI's OS `unsafe` lives only in `tutti-alsa-ffi` (Linux) and `tutti-coremidi-ffi`
   (macOS), which `deny` `undocumented_unsafe_blocks` and `missing_safety_doc`;
   `tutti-midi-hardware` forbids `unsafe` and names no raw-binding crate
@@ -360,7 +366,8 @@ crates/          everything shipped; directory name = package name; no nesting
   bevy-tutti     PARKED (out of the workspace, see above): Bevy umbrella + adapter; the only Bevy-mandatory crate.
   tutti-session  Bevy-free API layer: the cross-crate composition both umbrellas use
                  (design 015: `Session`, `Graph`, `SessionBuilder`, `Device`), and
-                 `Recorder` / `PumpLoop`, a source pumped into a sink (feature `record`).
+                 `Recorder` / `PumpLoop`, a source pumped into a sink (feature `record`; a
+                 recording dithers only by wrapping its sink in `tutti_dsp::DitherSink`).
   arc-lend       The publish cell (`ArcLend`/`Loan`): a general-purpose crate with
                  no dependencies, `publish = false`, re-exported by tutti-rt.
   tutti-rt       Real-time-safe shared-memory primitives for the audio thread:
@@ -712,7 +719,8 @@ list (normal and build edges; dev-dependencies may go anywhere).
   convolver, the delay line and swept-delay kernel, the cubic Hermite kernel, the phaser's all-pass chain, the
   block ramps, the export resampler and its streaming
   bookkeeping (`StreamingResampler`, `ChunkSize`), the dither noise
-  (`DitherNoise`), the Freeverb reverb (`Freeverb`, the state of
+  (`DitherNoise`, and `DitherSink`, the `tutti_types::Sink` adapter that applies it:
+  the one dither path export and a recording opting in share, doc 025 stage 7), the Freeverb reverb (`Freeverb`, the state of
   `FreeverbKernel`, the `Kernel` of `FreeverbDesign`), the feedback delay network
   (`FdnDesign`, `FdnKernel`: both run by `Realized`, whose glides step between
   `retarget`s in 32-frame chunks counted from the last reset, so the output does

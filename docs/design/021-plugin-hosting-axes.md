@@ -96,7 +96,7 @@ workaround for the split 016 now provides in the type system.
 | IPC, CLAP / VST3 / AU | A **second `dlopen`** of the plugin in the host process, editor only. Parameters from the editor are polled and forwarded to the audio instance; the host mirrors `set_state` into it | `format/gui/mod.rs`, `composite.rs:241-340`, `close_editor_inner`, `editor_idle` |
 | In-process VST2 | The audio instance itself, under the instance lock | `control_backend.rs` (`HostEditor`) |
 | IPC VST2 | **None.** `load_gui_instance` returns `Err("VST2 plugins use the in-process backend")` | `format/gui/mod.rs` |
-| Server window | `HostMessage::OpenEditor { parent_handle }` and `Session::handle_open_editor` embed in a host-supplied native handle. **Nothing in the host sends it**: the only references are the enum, the handler and a unit test | `grep OpenEditor` over `crates/` |
+| Server window | `HostMessage::OpenEditor { parent_handle }` and `Session::handle_open_editor` embed in a host-supplied native handle. **Nothing in the host sends it**: the only references are the enum, the handler and a unit test. Deleted (protocol 25), with `PluginEditorHost` | `grep OpenEditor` over `crates/` |
 
 Two further facts. The second-dlopen editors are `cfg(unix)` for CLAP and VST3
 (`gui/mod.rs`), so on Windows an out-of-process CLAP or VST3 plugin has no
@@ -545,8 +545,8 @@ what IPC was for. It would satisfy the *isolation* aim; it does not satisfy the
 owner's rule, because the editor is not a separate instance but the audio
 instance. It is a different capability, `ServerEditor`, which every format has
 and only VST2 would use. Recommendation (Q2, Q4): the rule stands as stated;
-`ServerEditor` is not added now; the unused `OpenEditor` path is deleted in the
-cleanup step (git has it). If a user needs isolated VST2, it returns as a marker
+`ServerEditor` is not added now; the unused `OpenEditor` path is deleted (protocol
+25, with the server's `forbid(unsafe_code)`; git has it). If a user needs isolated VST2, it returns as a marker
 of its own, floating window only, with the macOS and Wayland rows documented.
 
 ## 5. Editor placement
@@ -712,7 +712,7 @@ a `Loaded`.
 | 5 | Generic server: `Served<F: OutOfProcess>` and `served!`; delete `loaders/clap.rs`, `vst3.rs`, `vst2.rs` (the whole VST2 loader), `plugin.rs`, `format_host.rs`'s capability traits. Supersedes 016 step 4's `AnyPlugin` | AU row waits; the macro takes it later | -5.5k |
 | 6 | The facade: `hosts!`, `AnyHost`, `Hosting`, `open`; replace `Backend`; CLAP and VST3 hostable in-process; contract grows `hostings` and per-hosting gaps; delete `tests/server.rs` | No | `Backend` gone |
 | 7 | **AU:** `impl InProcess` (confirm `LoadInProcess`, §3.2) and `impl OutOfProcess` for `AuLoaded`, `OutOfProcess::Editor` from `gui/au.rs`, the AU row in both tables, `loaders/au.rs` (2,121) deleted | **Yes** (AU `Loaded`, 016 step 3) | -2.1k |
-| 8 | Cleanup: the unused `OpenEditor` message and handler, stale Cargo comments and features, 016 and CLAUDE.md and engineering-notes updates | After 7 | docs |
+| 8 | Cleanup: stale Cargo comments (the unused `OpenEditor` message and handler went early, protocol 25) and features, 016 and CLAUDE.md and engineering-notes updates | After 7 | docs |
 
 ### 10.1 Steps 1 and 2 as built
 

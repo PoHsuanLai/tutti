@@ -24,7 +24,14 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 clap-sys = "0.5"
+# `probe`: the typed doors into this plugin's exported probe symbols
+# (`probe.rs`), opened on its cdylib through `libloading`, for the suites that
+# load it. Off in the plugin itself.
+libloading = { version = "0.8", optional = true }
 
 # `kill(getpid(), SIGKILL)`: how the probe dies on unix (`die`).
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
+
+[features]
+probe = ["dep:libloading"]

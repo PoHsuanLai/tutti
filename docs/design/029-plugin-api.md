@@ -113,7 +113,7 @@ of this design's crates; §5 Q3 asks whether it is a crate of its own.
 
 | Today | Problem | Becomes |
 |---|---|---|
-| `server_pid()`, `block_counts()`, `dropped_parameter_events()` on the handle | Useful, crowding the main surface | `plugin.diagnostics()` |
+| `server_pid()`, `block_counts()`, `dropped_parameter_events()` on the handle | Useful, crowding the main surface | `plugin.diagnostics()`, its counts named as the MIDI inlets name theirs (`lost`, `evicted`, `refused`, `late`) where the meaning is the same: a Group with no port is `refused` |
 | `controls()` `None` in process; `meter()` `None` for a hand-inserted plugin | The hosting shows through | one accessor for latency, tail and meter, either hosting |
 | bypass and mute: `Graph::set_mode(node, NodeMode)` | **Good**: one path, as for a native node. Kept | unchanged |
 | `handle.set_render_mode(mode) -> bool` beside the session's `render_mode()` | A second path that can disagree with the session (a bounce drives the session's) | the session's only |
@@ -203,7 +203,7 @@ what it replaces; no deprecated twin is kept.
 
 | # | Step | Deletes | Test |
 |---|---|---|---|
-| 1 | **Identity and state.** `PluginRef` from `&PluginEntry`; the load passes the plugin id; `PluginState` and `StateError::OtherPlugin`; `last_good_state()`, `withheld_state()`, `state().save()` | `PluginId` as a path; `snapshot()`; `Load::new()` in the open | the second plugin of the CLAP test bundle loads by its entry; a state restored into another plugin is refused |
+| 1 | **Identity and state.** `PluginRef` from `&PluginEntry`; the load passes the plugin id; `PluginState` and `StateError::OtherPlugin`; `last_good_state()`, `withheld_state()`, `state().save()`; the acceptance example `crates/tutti/examples/plugin_host.rs` (scan, load, wire, MIDI, parameters, editor, save, bounce), which each later step rewrites to its shape | `PluginId` as a path; `snapshot()`; `Load::new()` in the open | the second plugin of the CLAP test bundle loads by its entry; a state restored into another plugin is refused |
 | 2 | **The view, the main-thread view and events.** `Plugin<'_>`, `MainSession<'_>`, `MainThread` by value, `PluginEvent`; `update()` services editors; the editor's `Opened`, `resize`, `rescale` | `on_*` and `clear_*`, `editor_idle` calls, `poll_editor_resize_request`, `open_floating_editor`, the freeing paths' `debug_assert!` | a plugin's own edit arrives as `ParamChanged`; an editor that requests a size raises `EditorWantsSize`; a freeing path is unreachable without the view (compile-fail doctest) |
 | 3 | **Parameters.** `Params`, `Param`, `TypedParam<U>`, `ParamEdit`; `ParameterInfo`'s fields private; automation mode moved | `any_thread()` in user code, `parameter_*` free calls in the prelude | a gesture guard dropped mid-drag ends the gesture; a `typed::<Db>` on a Hz parameter is refused; a set through a stale handle after a rescan is refused |
 | 4 | **Presets, health, diagnostics, modes.** `Presets`, `PresetError`, `Health`, `Diagnostics`; the per-plugin render mode goes; buses as graph handles | `presets() -> Option`, `load_preset -> Option<bool>`, the six liveness readers, `set_render_mode` on the handle | per format: a preset list loads by id, an unsupported format answers `Unsupported`; a killed server reads `Died` then `Reloading` |

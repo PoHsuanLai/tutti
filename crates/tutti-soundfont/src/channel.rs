@@ -10,8 +10,10 @@ use tutti_ump::{U7, U14};
 const SEND_AMOUNT: f32 = 0.2;
 
 /// A 14-bit controller with its most significant 7 bits replaced (CC 0 to 31).
-fn with_msb(current: U14, msb: U7) -> U14 {
-    U14::masked((current.get() & 0x7F) | (u16::from(msb.get()) << 7))
+/// The least significant 7 bits go to zero: M1 p.12, "When an MSB is received,
+/// the receiver should set its concept of the LSB to zero."
+fn with_msb(_current: U14, msb: U7) -> U14 {
+    U14::masked(u16::from(msb.get()) << 7)
 }
 
 /// A 14-bit controller with its least significant 7 bits replaced (CC 32 to 63).
@@ -25,6 +27,11 @@ pub(crate) struct Channel {
     pub(crate) is_percussion_channel: bool,
 
     bank_number: i32,
+    /// The Bank Select (CC 0 and 32) received and not yet applied: M1 p.13,
+    /// "the receiving device must remember that bank number in readiness for
+    /// the following Program Change". The next Program Change makes it the
+    /// `bank_number`.
+    pending_bank: U14,
     patch_number: i32,
 
     modulation: U14,
@@ -44,6 +51,7 @@ impl Channel {
         let mut channel = Self {
             is_percussion_channel,
             bank_number: 0,
+            pending_bank: U14::of(0),
             patch_number: 0,
             modulation: U14::of(0),
             volume: U14::of(0),
@@ -62,6 +70,7 @@ impl Channel {
 
     pub(crate) fn reset(&mut self) {
         self.bank_number = if self.is_percussion_channel { 128 } else { 0 };
+        self.pending_bank = U14::of(0);
         self.patch_number = 0;
 
         self.modulation = U14::of(0);
@@ -81,16 +90,27 @@ impl Channel {
         self.expression = with_msb(U14::of(0), U7::of(127));
     }
 
-    pub(crate) fn set_bank(&mut self, value: i32) {
-        self.bank_number = value;
+    /// Bank Select, coarse (CC 0): held for the next Program Change, and the
+    /// pending LSB goes to zero (M1 p.12).
+    pub(crate) fn select_bank_coarse(&mut self, value: U7) {
+        self.pending_bank = with_msb(self.pending_bank, value);
+    }
+
+    /// Bank Select, fine (CC 32): held for the next Program Change.
+    pub(crate) fn select_bank_fine(&mut self, value: U7) {
+        self.pending_bank = with_lsb(self.pending_bank, value);
+    }
+
+    /// A Program Change: the held bank takes effect (M1 p.13), by its MSB (a
+    /// SoundFont's bank is one number, which MIDI sends as the MSB), and the
+    /// program is selected.
+    pub(crate) fn program_change(&mut self, program: U7) {
+        self.bank_number = i32::from(self.pending_bank.get() >> 7);
 
         if self.is_percussion_channel {
             self.bank_number += 128;
         }
-    }
-
-    pub(crate) fn set_patch(&mut self, value: i32) {
-        self.patch_number = value;
+        self.patch_number = i32::from(program.get());
     }
 
     pub(crate) fn set_modulation_coarse(&mut self, value: U7) {
@@ -186,5 +206,22 @@ impl Channel {
 
     pub(crate) fn tune(&self) -> f32 {
         self.coarse_tune as f32 + (1_f32 / 8192_f32) * (self.fine_tune - 8192) as f32
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// M1 p.12: "When an MSB is received, the receiver should set its concept
+    /// of the LSB to zero." After MSB 100, LSB 64, MSB 100 the 14-bit value is
+    /// 100 * 128, not 100 * 128 + 64.
+    #[test]
+    fn an_msb_sets_the_lsb_to_zero() {
+        let mut channel = Channel::new(false);
+        channel.set_volume_coarse(U7::of(100));
+        channel.set_volume_fine(U7::of(64));
+        channel.set_volume_coarse(U7::of(100));
+        assert_eq!(channel.volume(), (1_f32 / 16383_f32) * (100 * 128) as f32);
     }
 }

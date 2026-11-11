@@ -8,9 +8,9 @@
 //! 1. The first [`poll`](Negotiation::poll) starts it: the Endpoint Discovery
 //!    goes out on the device's output.
 //! 2. Each poll hands the connection the Stream messages the device sent since
-//!    (the port's stream ring, [`HardwareMidiInputs::drain_stream`]) and the
+//!    (the port's stream ring, [`HardwareMidiInputs::drain_stream`](crate::HardwareMidiInputs::drain_stream)) and the
 //!    time; what it answers goes out, and a step with no answer is sent again
-//!    after [`STEP_TIMEOUT`] and given up after [`MAX_ATTEMPTS`].
+//!    after [`STEP_TIMEOUT`](tutti_midi_device::STEP_TIMEOUT) and given up after [`MAX_ATTEMPTS`](tutti_midi_device::MAX_ATTEMPTS).
 //! 3. It ends as a [`DeviceStream`].
 //!
 //! Time is an argument. Nothing here reads a clock, waits or blocks: a device

@@ -7,6 +7,7 @@
 //! `rt_no_alloc_modulation.rs`, beside the gated pool they share.
 
 use std::sync::Arc;
+use tutti_curve::Exponent;
 use tutti_types::MaxBlock;
 
 use tutti_curve::{Breakpoint, Trajectory};
@@ -442,11 +443,15 @@ fn an_export_is_the_live_render_bit_for_bit() {
             // A range cutting into the 1500 breakpoint bends its two pieces, which
             // go as grid pieces beside the exact ones.
             let mut e = Trajectory::new().with_range(0.0, 1200.0);
-            e.add_breakpoint(Breakpoint::with_law(Beat(0.0), 300.0, Law::PowerIn(2.0)));
+            e.add_breakpoint(Breakpoint::with_law(
+                Beat(0.0),
+                300.0,
+                Law::PowerIn(Exponent::of(2.0)),
+            ));
             e.add_breakpoint(Breakpoint::with_law(
                 Beat(0.37),
                 1500.0,
-                Law::PowerInOut(2.0),
+                Law::PowerInOut(Exponent::of(2.0)),
             ));
             e.add_breakpoint(Breakpoint::with_law(Beat(1.1), 900.0, Law::Hold));
             e.add_breakpoint(Breakpoint::new(Beat(1.9), 600.0));
@@ -461,16 +466,16 @@ fn an_export_is_the_live_render_bit_for_bit() {
             PeriodPoint {
                 at: Phase(0.3),
                 value: 0.8,
-                curve: Law::PowerIn(2.0),
+                curve: Law::PowerIn(Exponent::of(2.0)),
             },
             PeriodPoint {
                 at: Phase(0.7),
                 value: 0.2,
-                curve: Law::PowerInOut(2.0),
+                curve: Law::PowerInOut(Exponent::of(2.0)),
             },
         ]));
         let curved = Amount {
-            curve: Law::PowerIn(2.0),
+            curve: Law::PowerIn(Exponent::of(2.0)),
             ..amount(0.2)
         };
         vec![
@@ -773,8 +778,16 @@ fn a_range_edit_rescales_on_the_next_block() {
 #[test]
 fn a_plugin_lane_sends_linear_grid_pieces() {
     let mut e = Trajectory::new();
-    e.add_breakpoint(Breakpoint::with_law(Beat(0.0), 0.1, Law::PowerIn(2.0)));
-    e.add_breakpoint(Breakpoint::with_law(Beat(0.3), 0.9, Law::PowerInOut(2.0)));
+    e.add_breakpoint(Breakpoint::with_law(
+        Beat(0.0),
+        0.1,
+        Law::PowerIn(Exponent::of(2.0)),
+    ));
+    e.add_breakpoint(Breakpoint::with_law(
+        Beat(0.3),
+        0.9,
+        Law::PowerInOut(Exponent::of(2.0)),
+    ));
     e.add_breakpoint(Breakpoint::new(Beat(0.6), 0.4));
     let curve: Arc<dyn Curve> = Arc::new(e);
     let (mut ed, mut exec) =
@@ -905,7 +918,7 @@ fn a_triangle_is_exact_and_a_sine_within_the_bound() {
 #[test]
 fn the_curves_with_no_bound_err_as_measured() {
     let cases: [(LfoShape, Law, f64, f64); 3] = [
-        (LfoShape::Sine, Law::PowerIn(0.5), 0.0512, 0.1),
+        (LfoShape::Sine, Law::PowerIn(Exponent::of(0.5)), 0.0512, 0.1),
         (LfoShape::Sine, Law::Hold, 1.0, 1e-3),
         (LfoShape::Triangle, Law::Hold, 0.9375, 1e-3),
     ];

@@ -217,7 +217,8 @@ fn a_restart_to_another_callback_size_re_declares_a_plugins_latency() {
     let (driver, stream) = ManualStreamDriver::new();
     let (mut s, mut device) = Session::builder()
         .build_device_on(spec(512), driver)
-        .expect("builds with no device");
+        .expect("builds with no device")
+        .into_parts();
 
     let client = PluginClient::new(tutti_plugin::BridgeConfig::default(), clap_probe(), RATE)
         .expect("the reference plugin loads");

@@ -46,6 +46,91 @@ use tutti_types::{MaxBlock, SampleRate};
 use crate::graph::Graph;
 use crate::{DevicePolicy, DeviceWatch, FollowEvent, Result, Session, SessionEvent};
 
+/// A session and the [`Device`] that drives it, as
+/// [`build_device`](crate::SessionBuilder::build_device) returns them.
+///
+/// **The device is the stream.** Dropping a [`Device`] stops the callback, so
+/// a build that returned `(Session, Device)` was silenced by
+/// `let (session, _) = ..`: a `_` pattern drops its value at once, and
+/// `#[must_use]` does not fire on a destructure. Here the fields are private,
+/// the session and the device are read through accessors that borrow, and the
+/// only way to take them apart is [`into_parts`](Self::into_parts), which is
+/// `#[must_use]` too and names what it hands back. Keep the `LiveSession`
+/// itself for as long as the sound should play.
+///
+/// It dereferences to the [`Session`], so `live.update()` and
+/// `live.graph()` need no accessor.
+///
+/// A discarded build, or a discarded `into_parts`, is a warning (an error
+/// under `deny(unused_must_use)`):
+///
+/// ```compile_fail
+/// #![deny(unused_must_use)]
+/// fn build() -> tutti_session::LiveSession { unimplemented!() }
+/// fn f() {
+///     build();
+/// }
+/// ```
+///
+/// ```compile_fail
+/// #![deny(unused_must_use)]
+/// fn f(live: tutti_session::LiveSession) {
+///     live.into_parts();
+/// }
+/// ```
+#[derive(Debug)]
+#[must_use = "dropping a LiveSession stops the stream; keep it while the sound should play"]
+pub struct LiveSession {
+    session: Session,
+    device: Device,
+}
+
+impl LiveSession {
+    pub(crate) fn new(session: Session, device: Device) -> Self {
+        Self { session, device }
+    }
+
+    /// The session.
+    pub fn session(&self) -> &Session {
+        &self.session
+    }
+
+    /// The session, mutably.
+    pub fn session_mut(&mut self) -> &mut Session {
+        &mut self.session
+    }
+
+    /// The device that drives the session.
+    pub fn device(&self) -> &Device {
+        &self.device
+    }
+
+    /// The device, mutably (to restart it on another output, for example).
+    pub fn device_mut(&mut self) -> &mut Device {
+        &mut self.device
+    }
+
+    /// The session and the device, taken apart. The caller keeps both
+    /// halves alive: the device stops the stream when it drops.
+    #[must_use = "the Device is the stream; dropping it stops the sound"]
+    pub fn into_parts(self) -> (Session, Device) {
+        (self.session, self.device)
+    }
+}
+
+impl std::ops::Deref for LiveSession {
+    type Target = Session;
+    fn deref(&self) -> &Session {
+        &self.session
+    }
+}
+
+impl std::ops::DerefMut for LiveSession {
+    fn deref_mut(&mut self) -> &mut Session {
+        &mut self.session
+    }
+}
+
 /// The sound card: owns the `TuttiDriver`. `!Send`, so it stays on the
 /// thread that opened it.
 ///

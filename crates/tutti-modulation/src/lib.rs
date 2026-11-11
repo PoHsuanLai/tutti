@@ -19,5 +19,5 @@ pub use program::{
 };
 pub use shape::{LfoShape, Polarity, shape};
 pub use sources::{Follower, Lfo, LfoRate, Macro, NoteEnvelope};
-pub use tutti_curve::Law;
+pub use tutti_curve::{Curvature, Exponent, Law};
 pub use tutti_types::Adsr;

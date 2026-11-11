@@ -528,17 +528,16 @@ impl SessionBuilder {
 
     /// A session on the output device `device` selects: the device opened
     /// first, the graph built at its rate and callback size, the callback
-    /// live on return. The [`Device`](crate::Device) stays on this thread.
+    /// live on return. The [`LiveSession`](crate::LiveSession) holds the session and
+    /// its [`Device`](crate::Device), which stays on this thread: keep it for
+    /// as long as the sound should play.
     ///
     /// # Errors
     ///
     /// When the device cannot be opened or started, or the graph cannot be
     /// built over it.
     #[cfg(feature = "device")]
-    pub fn build_device(
-        self,
-        device: tutti_cpal::DeviceSelector,
-    ) -> Result<(Session, crate::Device)> {
+    pub fn build_device(self, device: tutti_cpal::DeviceSelector) -> Result<crate::LiveSession> {
         let host = tutti_cpal::DeviceHost::open(tutti_cpal::AudioHost::Default)?;
         let engine = tutti_cpal::AudioEngine::open(host, device)?;
         self.build_on(engine, |engine, state| engine.start(state))
@@ -557,7 +556,7 @@ impl SessionBuilder {
         self,
         spec: tutti_cpal::OutputSpec,
         driver: D,
-    ) -> Result<(Session, crate::Device)>
+    ) -> Result<crate::LiveSession>
     where
         D: tutti_cpal::StreamDriver,
         D::Running: 'static,
@@ -580,7 +579,7 @@ impl SessionBuilder {
             &mut tutti_cpal::AudioEngine,
             Arc<tutti_cpal::AudioCallbackState>,
         ) -> tutti_cpal::Result<()>,
-    ) -> Result<(Session, crate::Device)> {
+    ) -> Result<crate::LiveSession> {
         let spec = audio_engine.spec().clone();
         let root = self.root_width(spec.channels);
         self.check_placement(root, spec.channels)?;
@@ -595,7 +594,7 @@ impl SessionBuilder {
         start(&mut audio_engine, Arc::clone(&state))?;
         let device = crate::Device::new(tutti_cpal::TuttiDriver::new(audio_engine, state));
         session.faults = Some((device.faults(), device.faults().count()));
-        Ok((session, device))
+        Ok(crate::LiveSession::new(session, device))
     }
 }
 

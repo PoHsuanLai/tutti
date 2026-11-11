@@ -174,7 +174,8 @@ mod tests {
     use crate::DeliveryCounters;
     use std::sync::Arc;
     use tutti_graph::{
-        Env, Law, ParamRamp, PlayClock, PlayReading, Transport, TransportChanges, TransportHistory,
+        Env, Exponent, Law, ParamRamp, PlayClock, PlayReading, Transport, TransportChanges,
+        TransportHistory,
     };
     use tutti_plugin_types::ParamId;
     use tutti_types::{Beat, Bpm, Frame, Latency, SampleRate, Samples};
@@ -232,7 +233,7 @@ mod tests {
             at(0, ParamRamp::foreign(7, 0.0, Samples(8))),
             at(
                 11,
-                ParamRamp::foreign(7, 1.0, Samples(40)).with_shape(Law::PowerIn(2.0)),
+                ParamRamp::foreign(7, 1.0, Samples(40)).with_shape(Law::PowerIn(Exponent::of(2.0))),
             ),
             at(40, ParamRamp::foreign(7, 0.0, Samples(4))),
         ];

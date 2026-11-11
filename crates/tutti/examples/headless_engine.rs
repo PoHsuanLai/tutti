@@ -7,13 +7,13 @@ use tutti::nodes::testing::Osc;
 use tutti::prelude::*;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let (mut session, device) = SessionBuilder::default().build_device(Default::default())?;
+    let mut live = SessionBuilder::default().build_device(Default::default())?;
     let tone = Osc::sine(Hz(440.0)).with_amplitude(Amplitude(0.2));
-    let (tone, _) = session.graph().add(ForkByClone(tone));
-    session.graph().set_outputs_from(tone);
-    session.update();
-    session.transport().motion().try_send(MotionEvent::Play)?;
+    let (tone, _) = live.graph().add(ForkByClone(tone));
+    live.graph().set_outputs_from(tone);
+    live.update();
+    live.transport().motion().try_send(MotionEvent::Play)?;
     std::thread::sleep(std::time::Duration::from_secs(2));
-    println!("running: {}", device.is_running()); // dropping `device` stops it
+    println!("running: {}", live.device().is_running()); // dropping `live` stops it
     Ok(())
 }

@@ -103,6 +103,12 @@ pub enum Error {
     #[error("graph re-prepare: {0}")]
     Reprepare(#[from] tutti_graph::CommitError),
 
+    /// A modulation route refused when it was made: wraps
+    /// [`RouteError`](crate::RouteError).
+    #[cfg(feature = "modulation")]
+    #[error(transparent)]
+    Route(#[from] crate::RouteError),
+
     /// Audio device failure: enumeration, stream construction, or playback.
     /// Wraps `tutti_cpal::Error`, which owns every CPAL concern.
     #[cfg(feature = "device")]

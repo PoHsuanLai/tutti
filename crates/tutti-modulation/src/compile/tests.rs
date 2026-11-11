@@ -3,6 +3,7 @@
 use super::*;
 use crate::LfoShape;
 use crate::shape::shape;
+use tutti_curve::Exponent;
 use tutti_curve::{Breakpoint, Trajectory};
 use tutti_types::{Amplitude, Frame, Hz, UnitParam};
 
@@ -259,9 +260,9 @@ fn equal_declarations_in_any_order_compile_equal() {
 fn the_offset_at_raw_unit_is_shape_times_span_for_every_source_kind() {
     let curves = [
         Law::Linear,
-        Law::PowerIn(2.0),
-        Law::PowerIn(0.5),
-        Law::PowerInOut(2.0),
+        Law::PowerIn(Exponent::of(2.0)),
+        Law::PowerIn(Exponent::of(0.5)),
+        Law::PowerInOut(Exponent::of(2.0)),
     ];
     let span = 800.0f64;
     for polarity in [Polarity::Bipolar, Polarity::Unipolar] {
@@ -807,7 +808,7 @@ fn what_bevy_tutti_expresses_compiles_without_a_runtime() {
         ));
         for (j, (polarity, curve)) in [
             (Polarity::Bipolar, Law::Linear),
-            (Polarity::Unipolar, Law::PowerIn(2.0)),
+            (Polarity::Unipolar, Law::PowerIn(Exponent::of(2.0))),
         ]
         .into_iter()
         .enumerate()

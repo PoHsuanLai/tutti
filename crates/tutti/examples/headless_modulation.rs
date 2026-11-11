@@ -68,7 +68,7 @@ fn play(s: &mut Session, windows: usize) {
     println!("{line}");
 }
 
-fn main() {
+fn main() -> Result<(), tutti::Error> {
     let mut s = Session::builder()
         .build_offline(
             SampleRate(RATE),
@@ -92,9 +92,9 @@ fn main() {
     m.range(cutoff, 100.0, 4_000.0);
     m.range(resonance, 0.5, 8.0);
     let wobble = m.lfo(Lfo::sine().hz(Hz(2.0)));
-    let sweep = m.route(wobble, cutoff, Depth(0.2));
+    let sweep = m.route(wobble, cutoff, Depth(0.2))?;
     let hits = m.follower(Follower::default(), kick);
-    m.route(hits, resonance, Depth(0.5));
+    m.route(hits, resonance, Depth(0.5))?;
 
     // The nodes commit on the first update, the lanes on the re-apply after
     // it (their targets resolve once the filter is in a plan).
@@ -116,4 +116,5 @@ fn main() {
     );
     println!("LFO depth 0.45:");
     play(&mut s, 20);
+    Ok(())
 }

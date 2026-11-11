@@ -230,6 +230,7 @@ mod tests {
     use super::*;
     use crate::DeliveryCounters;
     use std::sync::Arc;
+    use tutti_graph::Exponent;
     use tutti_graph::Law;
     use tutti_plugin_types::{ParamId, ParameterChanges};
 
@@ -309,7 +310,7 @@ mod tests {
     /// now the play clock's 32-frame grid (doc 014 §5.3).
     #[test]
     fn a_segment_sends_points_until_it_lands() {
-        let seg = ParamSegment::foreign(7, 0.0, 1.0, Samples(150), Law::PowerIn(2.0));
+        let seg = ParamSegment::foreign(7, 0.0, 1.0, Samples(150), Law::PowerIn(Exponent::of(2.0)));
         let grid = |f: u64| f.is_multiple_of(32);
         let mut sp = SegmentPoints::default();
         let mut d = delivery([7]);
@@ -387,7 +388,7 @@ mod tests {
                 0.0,
                 1.0,
                 Samples(401 - k as usize),
-                Law::PowerIn(2.0),
+                Law::PowerIn(Exponent::of(2.0)),
             )
         };
         let mut sp = SegmentPoints::default();

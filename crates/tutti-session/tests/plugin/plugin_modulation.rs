@@ -208,7 +208,7 @@ fn a_modulation_lane_on_the_plugin_survives_its_replacement() {
         let mut m = s.mods();
         m.range(gain, 0.0, 1.0);
         let source = m.macro_(1.0);
-        m.route(source, gain, Depth(-0.25));
+        m.route(source, gain, Depth(-0.25)).unwrap();
     }
     lane_of(&mut drive, &mut s, gain);
     // The default is 60/72 of the range; the lane moves it down a quarter.
@@ -273,7 +273,7 @@ fn a_crossfaded_plugin_keeps_its_lane_and_a_removed_one_drops_it() {
         let mut m = s.mods();
         m.range(gain, 0.0, 1.0);
         let offset = m.macro_(0.0);
-        m.route(offset, gain, Depth(1.0));
+        m.route(offset, gain, Depth(1.0)).unwrap();
     }
     let outgoing_lane = lane_of(&mut drive, &mut s, gain);
     assert_eq!(
@@ -355,7 +355,7 @@ fn an_export_is_the_live_render_on_a_clap_gain() {
         let mut m = s.mods();
         m.range(gain, 0.0, 1.0);
         let lfo = m.lfo(Lfo::sine().hz(Hz(3.0)));
-        m.route(lfo, gain, Depth(0.1));
+        m.route(lfo, gain, Depth(0.1)).unwrap();
     }
     lane_of(&mut drive, &mut s, gain);
     let knob = s

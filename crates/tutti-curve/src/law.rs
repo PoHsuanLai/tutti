@@ -1,3 +1,5 @@
+use crate::{Curvature, Exponent};
+
 /// How a piece moves from its start value to its end value: a function `g` of
 /// its progress `t` in `[0, 1]`, with `g(0) = 0` and `g(1) = 1`; the value is
 /// `from + (to - from) · g(t)`.
@@ -6,9 +8,9 @@
 /// audio thread rather than an `Arc<dyn Curve>`. Every law is monotone between
 /// its endpoints, so a piece never leaves `[from, to]`.
 ///
-/// A parameter that is not finite, or out of the range a variant states,
-/// evaluates as [`Linear`](Self::Linear): the audio thread never computes a
-/// NaN from a law.
+/// A variant's parameter is a checked type ([`Exponent`], [`Curvature`]) that
+/// refuses what the law cannot evaluate, so every `Law` is evaluable and the
+/// audio thread never computes a NaN from one.
 ///
 /// **Platform figures.** `Linear`, `Hold`, `Smootherstep` and the power laws at exponents 0.5
 /// and 1–5 evaluate with IEEE-exact operations (multiplication, `sqrt`), so
@@ -20,10 +22,10 @@
 /// ```
 /// use tutti_curve::Law;
 /// assert_eq!(Law::Linear.eval(0.25), 0.25);
-/// assert_eq!(Law::PowerIn(2.0).eval(0.5), 0.25);
-/// assert_eq!(Law::PowerOut(2.0).eval(0.5), 0.75);
+/// use tutti_curve::Exponent;
+/// assert_eq!(Law::PowerIn(Exponent::of(2.0)).eval(0.5), 0.25);
+/// assert_eq!(Law::PowerOut(Exponent::of(2.0)).eval(0.5), 0.75);
 /// assert_eq!(Law::Hold.eval(0.99), 0.0);
-/// assert_eq!(Law::PowerIn(f32::NAN).eval(0.5), 0.5); // as linear
 /// ```
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub enum Law {
@@ -33,21 +35,21 @@ pub enum Law {
     /// `0` until the end, then `1`: the start value held, and a step onto the
     /// end value on the piece's last frame.
     Hold,
-    /// `t^p`, `p > 0`: an ease-in. `p > 1` starts slow (`2` is a quadratic),
+    /// `t^p`: an ease-in. `p > 1` starts slow (`2` is a quadratic),
     /// `p < 1` starts fast (`0.5` is a square root).
-    PowerIn(f32),
-    /// `1 - (1 - t)^p`, `p > 0`: the ease-out mirror of
+    PowerIn(Exponent),
+    /// `1 - (1 - t)^p`: the ease-out mirror of
     /// [`PowerIn`](Self::PowerIn).
-    PowerOut(f32),
+    PowerOut(Exponent),
     /// [`PowerIn`](Self::PowerIn) over the first half and
     /// [`PowerOut`](Self::PowerOut) over the second, `p > 0`: an S-curve (`2`
     /// is the quadratic S-curve).
-    PowerInOut(f32),
+    PowerInOut(Exponent),
     /// `(e^(k·t) - 1) / (e^k - 1)`: a true exponential with curvature `k`
-    /// (`|k|` past 64 is clamped). `k > 0` starts slow, `k < 0` starts fast;
+    /// (`|k| <= 64`, see [`Curvature`]). `k > 0` starts slow, `k < 0` starts fast;
     /// `k` near 0 is linear. `k = ln(to / from)` makes the value geometric (a
     /// frequency sweep linear in pitch).
-    Exp(f32),
+    Exp(Curvature),
     /// `t³(6t² - 15t + 10)`: Perlin's smootherstep, the fifth-order polynomial
     /// with zero first and second derivatives at both ends, an S-curve that
     /// meets its neighbours smoothly. (Named for the theory: "smoothstep"
@@ -58,10 +60,6 @@ pub enum Law {
     /// is monotone to within about 19 ulp (`2.3e-6`) near 1.
     Smootherstep,
 }
-
-/// The largest `|k|` [`Law::Exp`] evaluates: `e^64` is far inside `f32`, so the
-/// ratio never overflows to `inf / inf`.
-const EXP_CURVATURE_MAX: f32 = 64.0;
 
 impl Law {
     /// `g(t)`, `t` clamped to `[0, 1]` (a NaN `t` is 0). Allocation-free: what
@@ -79,9 +77,10 @@ impl Law {
                     1.0
                 }
             }
-            Self::PowerIn(p) if valid_exponent(p) => pow(t, p),
-            Self::PowerOut(p) if valid_exponent(p) => 1.0 - pow(1.0 - t, p),
-            Self::PowerInOut(p) if valid_exponent(p) => {
+            Self::PowerIn(p) => pow(t, p.get()),
+            Self::PowerOut(p) => 1.0 - pow(1.0 - t, p.get()),
+            Self::PowerInOut(p) => {
+                let p = p.get();
                 // `2^(p-1) · t^p` is `(2t)^p / 2`, which keeps the integer
                 // exponents on multiplications.
                 if t < 0.5 {
@@ -93,22 +92,16 @@ impl Law {
             // `t` is in `[0, 1]` here (the prelude clamps it, a NaN is 0). The
             // clamp trims the Horner form's rounding overshoot of 1.
             Self::Smootherstep => (t * t * t * (t * (t * 6.0 - 15.0) + 10.0)).clamp(0.0, 1.0),
-            Self::Exp(k) if k.is_finite() => {
-                let k = k.clamp(-EXP_CURVATURE_MAX, EXP_CURVATURE_MAX);
+            Self::Exp(k) => {
+                let k = k.get();
                 if k.abs() < 1e-4 {
                     t
                 } else {
                     (k * t).exp_m1() / k.exp_m1()
                 }
             }
-            // An invalid parameter: linear (see the type docs).
-            Self::PowerIn(_) | Self::PowerOut(_) | Self::PowerInOut(_) | Self::Exp(_) => t,
         }
     }
-}
-
-fn valid_exponent(p: f32) -> bool {
-    p.is_finite() && p > 0.0
 }
 
 /// `x^p` for `x` in `[0, 1]`: the integer exponents up to 5 and the square

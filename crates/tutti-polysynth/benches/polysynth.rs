@@ -31,6 +31,7 @@
 //! the same reason `examples/render_synth_cases.rs` uses one.
 
 use std::hint::black_box;
+use tutti_curve::Exponent;
 
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use tutti_curve::Law;
@@ -205,7 +206,10 @@ fn bench_unison(c: &mut Criterion) {
 fn bench_portamento(c: &mut Criterion) {
     let mut group = c.benchmark_group("voices/portamento");
     group.throughput(Throughput::Elements(BLOCK as u64));
-    for (name, curve) in [("linear", Law::Linear), ("square-root", Law::PowerIn(0.5))] {
+    for (name, curve) in [
+        ("linear", Law::Linear),
+        ("square-root", Law::PowerIn(Exponent::of(0.5))),
+    ] {
         let mut synth = held(
             SynthConfig {
                 portamento: Some(PortamentoConfig {

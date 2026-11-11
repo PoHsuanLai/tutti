@@ -42,6 +42,7 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
+use tutti_graph::{Curvature, Exponent};
 use tutti_types::MaxBlock;
 
 use proptest::prelude::*;
@@ -1227,12 +1228,12 @@ fn analytic(from: f64, to: f64, shape: Law, position: f64, length: f64, j: u64) 
     let g = match shape {
         Law::Linear => t,
         Law::Hold => 0.0,
-        Law::PowerIn(p) => t.powf(f64::from(p)),
-        Law::PowerOut(p) => 1.0 - (1.0 - t).powf(f64::from(p)),
-        Law::PowerInOut(p) if t < 0.5 => (2.0 * t).powf(f64::from(p)) / 2.0,
-        Law::PowerInOut(p) => 1.0 - (2.0 - 2.0 * t).powf(f64::from(p)) / 2.0,
+        Law::PowerIn(p) => t.powf(f64::from(p.get())),
+        Law::PowerOut(p) => 1.0 - (1.0 - t).powf(f64::from(p.get())),
+        Law::PowerInOut(p) if t < 0.5 => (2.0 * t).powf(f64::from(p.get())) / 2.0,
+        Law::PowerInOut(p) => 1.0 - (2.0 - 2.0 * t).powf(f64::from(p.get())) / 2.0,
         Law::Exp(k) => {
-            let k = f64::from(k);
+            let k = f64::from(k.get());
             ((k * t).exp() - 1.0) / (k.exp() - 1.0)
         }
         Law::Smootherstep => t * t * t * (t * (t * 6.0 - 15.0) + 10.0),
@@ -1251,9 +1252,9 @@ fn analytic(from: f64, to: f64, shape: Law, position: f64, length: f64, j: u64) 
 fn a_segment_hits_its_analytic_values_per_frame() {
     const TOL: f64 = 1e-5;
     let key = ParamKey::<Hz>::CUTOFF;
-    let a = (Law::PowerIn(2.0), 0.0, 1.0, 1000usize);
-    let b = (Law::Exp(4.0), 2.0, -1.0, 300usize);
-    let c = (Law::PowerOut(3.0), 1.0, 5.0, 2.5f64, 40.5f64);
+    let a = (Law::PowerIn(Exponent::of(2.0)), 0.0, 1.0, 1000usize);
+    let b = (Law::Exp(Curvature::of(4.0)), 2.0, -1.0, 300usize);
+    let c = (Law::PowerOut(Exponent::of(3.0)), 1.0, 5.0, 2.5f64, 40.5f64);
     let segs = vec![
         (
             100,
@@ -1307,11 +1308,23 @@ fn an_interrupted_segment_hands_over_on_the_frame() {
     let segs = vec![
         (
             100,
-            ParamSegment::new(key, Hz(0.0), Hz(1.0), Samples(1000), Law::PowerIn(2.0)),
+            ParamSegment::new(
+                key,
+                Hz(0.0),
+                Hz(1.0),
+                Samples(1000),
+                Law::PowerIn(Exponent::of(2.0)),
+            ),
         ),
         (
             437,
-            ParamSegment::new(key, Hz(2.0), Hz(3.0), Samples(50), Law::PowerOut(3.0)),
+            ParamSegment::new(
+                key,
+                Hz(2.0),
+                Hz(3.0),
+                Samples(50),
+                Law::PowerOut(Exponent::of(3.0)),
+            ),
         ),
     ];
     let plan = vec![(611, UnitParam::Cutoff, 0.0, 10)];
@@ -1325,8 +1338,26 @@ fn an_interrupted_segment_hands_over_on_the_frame() {
                 out[f]
             );
         };
-        let a = |f: u64| analytic(0.0, 1.0, Law::PowerIn(2.0), 1.0, 1000.0, f - 100);
-        let b = |f: u64| analytic(2.0, 3.0, Law::PowerOut(3.0), 1.0, 50.0, f - 437);
+        let a = |f: u64| {
+            analytic(
+                0.0,
+                1.0,
+                Law::PowerIn(Exponent::of(2.0)),
+                1.0,
+                1000.0,
+                f - 100,
+            )
+        };
+        let b = |f: u64| {
+            analytic(
+                2.0,
+                3.0,
+                Law::PowerOut(Exponent::of(3.0)),
+                1.0,
+                50.0,
+                f - 437,
+            )
+        };
         near(436, a(436));
         near(437, b(437));
         near(460, b(460));
@@ -1354,17 +1385,24 @@ fn a_shaped_ramp_hits_its_analytic_values_per_frame() {
         ParamRamp::new(key, Hz(target), Samples(len)).with_shape(shape)
     };
     let shaped = vec![
-        (100, ramp(1.0, 4, Law::PowerIn(2.0))),
-        (200, ramp(3.0, 300, Law::Exp(3.0))),
-        (600, ramp(-1.0, 150, Law::PowerOut(3.0))),
+        (100, ramp(1.0, 4, Law::PowerIn(Exponent::of(2.0)))),
+        (200, ramp(3.0, 300, Law::Exp(Curvature::of(3.0)))),
+        (600, ramp(-1.0, 150, Law::PowerOut(Exponent::of(3.0)))),
         (900, ramp(5.0, 10, Law::Hold)),
     ];
     let want = |f: u64| -> f64 {
         match f {
             0..100 => 0.0,
-            100..200 => analytic(0.0, 1.0, Law::PowerIn(2.0), 1.0, 4.0, f - 100),
-            200..600 => analytic(1.0, 3.0, Law::Exp(3.0), 1.0, 300.0, f - 200),
-            600..900 => analytic(3.0, -1.0, Law::PowerOut(3.0), 1.0, 150.0, f - 600),
+            100..200 => analytic(0.0, 1.0, Law::PowerIn(Exponent::of(2.0)), 1.0, 4.0, f - 100),
+            200..600 => analytic(1.0, 3.0, Law::Exp(Curvature::of(3.0)), 1.0, 300.0, f - 200),
+            600..900 => analytic(
+                3.0,
+                -1.0,
+                Law::PowerOut(Exponent::of(3.0)),
+                1.0,
+                150.0,
+                f - 600,
+            ),
             _ => analytic(-1.0, 5.0, Law::Hold, 1.0, 10.0, f - 900),
         }
     };
@@ -1397,16 +1435,17 @@ fn an_interrupted_shaped_ramp_hands_over_on_the_frame() {
     let shaped = vec![
         (
             100,
-            ParamRamp::new(key, Hz(1.0), Samples(100)).with_shape(Law::PowerIn(2.0)),
+            ParamRamp::new(key, Hz(1.0), Samples(100)).with_shape(Law::PowerIn(Exponent::of(2.0))),
         ),
         (150, ParamRamp::new(key, Hz(0.0), Samples(10))),
         (
             300,
-            ParamRamp::new(key, Hz(2.0), Samples(100)).with_shape(Law::PowerOut(2.0)),
+            ParamRamp::new(key, Hz(2.0), Samples(100)).with_shape(Law::PowerOut(Exponent::of(2.0))),
         ),
         (
             500,
-            ParamRamp::new(key, Hz(0.0), Samples(20)).with_shape(Law::PowerInOut(2.0)),
+            ParamRamp::new(key, Hz(0.0), Samples(20))
+                .with_shape(Law::PowerInOut(Exponent::of(2.0))),
         ),
     ];
     let segs = vec![(
@@ -1452,7 +1491,7 @@ fn a_range_clamps_a_segment_without_rewriting_it() {
     const TOL: f64 = 1e-5;
     let (cutoff, q) = (Cell::new(0.0), Cell::new(0.0));
     let (mut ed, mut exec) = probe_graph(64, &cutoff, &q);
-    let shape = Law::PowerOut(2.0);
+    let shape = Law::PowerOut(Exponent::of(2.0));
     let seg = ParamSegment::new(
         ParamKey::<Hz>::CUTOFF,
         Hz(0.0),
@@ -1687,7 +1726,7 @@ fn a_segment_replaces_the_base() {
     const TOL: f64 = 1e-5;
     let (cutoff, q) = (Cell::new(0.5), Cell::new(0.0));
     let (mut ed, mut exec) = probe_graph(64, &cutoff, &q);
-    let shape = Law::PowerInOut(2.0);
+    let shape = Law::PowerInOut(Exponent::of(2.0));
     let seg = ParamSegment::new(
         ParamKey::<Hz>::CUTOFF,
         Hz(0.0),
@@ -2084,12 +2123,12 @@ fn gen_shape(k: u8) -> Law {
     match k % 8 {
         0 => Law::Linear,
         1 => Law::Hold,
-        2 => Law::PowerIn(2.0),
-        3 => Law::PowerOut(3.0),
-        4 => Law::PowerInOut(2.0),
-        5 => Law::PowerIn(1.7),
-        6 => Law::Exp(3.0),
-        _ => Law::Exp(-2.5),
+        2 => Law::PowerIn(Exponent::of(2.0)),
+        3 => Law::PowerOut(Exponent::of(3.0)),
+        4 => Law::PowerInOut(Exponent::of(2.0)),
+        5 => Law::PowerIn(Exponent::of(1.7)),
+        6 => Law::Exp(Curvature::of(3.0)),
+        _ => Law::Exp(Curvature::of(-2.5)),
     }
 }
 

@@ -17,7 +17,7 @@
 
 use std::cell::Cell;
 
-use tutti_curve::{Law, Piece};
+use tutti_curve::{Curvature, Exponent, Law, Piece};
 use tutti_types::{ParamAddr, ParamKey, SamplePosition, Samples, Unit, UnitAddr};
 use tutti_ump::Ump;
 
@@ -54,15 +54,15 @@ use crate::time::Offset;
 ///   boundary the units rule stops at: tutti does not know the unit.
 ///
 /// ```
-/// use tutti_graph::{ParamRamp, Law};
+/// use tutti_graph::{Exponent, Law, ParamRamp};
 /// use tutti_types::{Db, Hz, ParamKey, Samples};
 /// let r = ParamRamp::new(ParamKey::<Hz>::CUTOFF, Hz(800.0), Samples(64));
 /// assert_eq!(r.target(ParamKey::<Hz>::CUTOFF), Some(Hz(800.0)));
 /// assert_eq!(r.target(ParamKey::<Db>::THRESHOLD), None); // another param
 /// assert_eq!(r.foreign_target(7), None); // not a foreign param at all
 /// assert_eq!(r.shape(), Law::Linear);
-/// let eased = r.with_shape(Law::PowerIn(2.0));
-/// assert_eq!(eased.shape(), Law::PowerIn(2.0));
+/// let eased = r.with_shape(Law::PowerIn(Exponent::of(2.0)));
+/// assert_eq!(eased.shape(), Law::PowerIn(Exponent::of(2.0)));
 /// ```
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ParamRamp {
@@ -178,23 +178,28 @@ impl ShapeTag {
         match law {
             Law::Linear => (Self::Linear, 0.0),
             Law::Hold => (Self::Hold, 0.0),
-            Law::PowerIn(p) => (Self::PowerIn, p),
-            Law::PowerOut(p) => (Self::PowerOut, p),
-            Law::PowerInOut(p) => (Self::PowerInOut, p),
-            Law::Exp(k) => (Self::Exp, k),
+            Law::PowerIn(p) => (Self::PowerIn, p.get()),
+            Law::PowerOut(p) => (Self::PowerOut, p.get()),
+            Law::PowerInOut(p) => (Self::PowerInOut, p.get()),
+            Law::Exp(k) => (Self::Exp, k.get()),
             Law::Smootherstep => (Self::Smootherstep, 0.0),
         }
     }
 
-    /// The inverse of [`pack`](Self::pack).
+    /// The inverse of [`pack`](Self::pack). The parameter is only ever written
+    /// by `pack`, from a checked [`Exponent`] or [`Curvature`], so the
+    /// fallbacks below are never taken: they are the neutral parameter, not a
+    /// repair of a caller's value.
     fn unpack(self, param: f32) -> Law {
+        let exponent = Exponent::new(param).unwrap_or(Exponent::ONE);
+        let curvature = Curvature::new(param).unwrap_or(Curvature::ZERO);
         match self {
             Self::Linear => Law::Linear,
             Self::Hold => Law::Hold,
-            Self::PowerIn => Law::PowerIn(param),
-            Self::PowerOut => Law::PowerOut(param),
-            Self::PowerInOut => Law::PowerInOut(param),
-            Self::Exp => Law::Exp(param),
+            Self::PowerIn => Law::PowerIn(exponent),
+            Self::PowerOut => Law::PowerOut(exponent),
+            Self::PowerInOut => Law::PowerInOut(exponent),
+            Self::Exp => Law::Exp(curvature),
             Self::Smootherstep => Law::Smootherstep,
         }
     }
@@ -238,18 +243,18 @@ impl ShapeTag {
 /// is applied when the port reads the value, never to the endpoints.
 ///
 /// ```
-/// use tutti_graph::{ParamSegment, Law};
+/// use tutti_graph::{Exponent, Law, ParamSegment};
 /// use tutti_types::{Hz, ParamKey, Samples};
 /// let s = ParamSegment::new(
 ///     ParamKey::<Hz>::CUTOFF,
 ///     Hz(200.0),
 ///     Hz(800.0),
 ///     Samples(480),
-///     Law::PowerIn(2.0),
+///     Law::PowerIn(Exponent::of(2.0)),
 /// );
 /// assert_eq!(s.target(ParamKey::<Hz>::CUTOFF), Some(Hz(800.0)));
 /// assert_eq!(s.start(ParamKey::<Hz>::CUTOFF), Some(Hz(200.0)));
-/// assert_eq!(s.shape(), Law::PowerIn(2.0));
+/// assert_eq!(s.shape(), Law::PowerIn(Exponent::of(2.0)));
 /// // Frame 239 is 240/480 of the way: a quadratic ease-in is a quarter up.
 /// assert_eq!(s.raw_value_after(Samples(239)), 200.0 + 600.0 * 0.25);
 /// assert_eq!(s.raw_value_after(Samples(479)), 800.0);
@@ -1368,17 +1373,24 @@ mod tests {
         use tutti_types::{Hz, ParamKey};
         let key = ParamKey::<Hz>::CUTOFF;
         let id = u32::from(key.addr().to_u16());
-        let foreign = ParamSegment::foreign(id, 0.25, 0.75, Samples(8), Law::Exp(2.0));
+        let foreign =
+            ParamSegment::foreign(id, 0.25, 0.75, Samples(8), Law::Exp(Curvature::of(2.0)));
         assert_eq!(foreign.target(key), None);
         assert_eq!(foreign.foreign_target(id), Some(0.75));
         assert_eq!(foreign.foreign_start(id), Some(0.25));
         assert_eq!(foreign.addr(), ParamAddr::Id(id));
-        let s = ParamSegment::new(key, Hz(1.0), Hz(2.0), Samples(8), Law::PowerOut(3.0))
-            .resumed(SamplePosition(2.5), SamplePosition(10.0));
+        let s = ParamSegment::new(
+            key,
+            Hz(1.0),
+            Hz(2.0),
+            Samples(8),
+            Law::PowerOut(Exponent::of(3.0)),
+        )
+        .resumed(SamplePosition(2.5), SamplePosition(10.0));
         assert_eq!(s.addr(), ParamAddr::unit(key.addr()));
         assert_eq!(s.foreign_target(id), None);
         assert_eq!(s.start(key), Some(Hz(1.0)));
-        assert_eq!(s.shape(), Law::PowerOut(3.0));
+        assert_eq!(s.shape(), Law::PowerOut(Exponent::of(3.0)));
         assert_eq!(s.position(), SamplePosition(2.5));
         assert_eq!(s.length(), SamplePosition(10.0));
         // 2.5 frames along at its event, 7.5 more to go: the end value
@@ -1402,7 +1414,10 @@ mod tests {
         // (a law with no parameter, `Smootherstep`, among them).
         let smooth = ParamSegment::new(key, Hz(1.0), Hz(2.0), Samples(8), Law::Smootherstep);
         assert_eq!(smooth.piece(), Piece::new(1.0, 2.0, Law::Smootherstep));
-        assert_eq!(s.piece(), Piece::new(1.0, 2.0, Law::PowerOut(3.0)));
+        assert_eq!(
+            s.piece(),
+            Piece::new(1.0, 2.0, Law::PowerOut(Exponent::of(3.0)))
+        );
         // A negative position holds `from` until it reaches 0, then moves.
         let late = ParamSegment::new(key, Hz(1.0), Hz(2.0), Samples(0), Law::Linear)
             .resumed(SamplePosition(-3.0), SamplePosition(4.0));

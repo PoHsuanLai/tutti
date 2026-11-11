@@ -71,7 +71,7 @@ pub use fold::{Fold, FoldEnd, FoldError, M3DB};
 pub use interleaved::{Interleaved, InterleavedMut, StereoPlanes};
 
 // I/O edge.
-pub use io::{Pull, Sink, SinkFailed, Source, Stop};
+pub use io::{FiniteSource, Pull, Sink, SinkFailed, Source, Stop};
 
 // Musical meter.
 pub use meter::{
@@ -95,7 +95,7 @@ pub mod prelude {
     pub use crate::interleaved::{Interleaved, InterleavedMut, StereoPlanes};
     pub use crate::topology::{ChannelTopology, Speaker};
 
-    pub use crate::io::{Pull, Sink, SinkFailed, Source, Stop};
+    pub use crate::io::{FiniteSource, Pull, Sink, SinkFailed, Source, Stop};
 
     pub use crate::meter::{MeterMap, NoteValue, TimeSignature};
 }

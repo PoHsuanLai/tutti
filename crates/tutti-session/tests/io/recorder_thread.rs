@@ -29,7 +29,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use tutti_codec::{FileOut, Format, Pcm, Spec};
 use tutti_session::{Recorder, RecorderError};
-use tutti_types::{ChannelLayout, Pull, SampleRate, Samples, Source};
+use tutti_types::{ChannelLayout, FiniteSource, Pull, SampleRate, Samples, Source};
 
 fn wav(path: &std::path::Path) -> FileOut {
     FileOut::create(
@@ -99,6 +99,8 @@ struct Ramp {
     /// coin flip.
     delay: std::time::Duration,
 }
+
+impl FiniteSource for Ramp {}
 
 impl Source for Ramp {
     fn layout(&self) -> ChannelLayout {
@@ -370,7 +372,7 @@ fn wait_returns_a_complete_finite_take_without_sequencing_on_the_pump() {
     // 20 full scratch buffers, paced so a truncating `wait` cannot finish the
     // take by accident.
     const FRAMES: usize = 1024 * 20;
-    let rec = Recorder::start(
+    let rec = Recorder::start_finite(
         Ramp {
             frames: FRAMES,
             pos: 0,
@@ -510,6 +512,8 @@ struct Dead {
     left: usize,
 }
 
+impl FiniteSource for Dead {}
+
 impl Source for Dead {
     fn layout(&self) -> ChannelLayout {
         ChannelLayout::STEREO
@@ -547,7 +551,7 @@ fn wait_and_finish_report_a_failed_source() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("dead.wav");
         let wav = sink(&path);
-        let rec = Recorder::start(Dead { left: 7 }, wav).unwrap();
+        let rec = Recorder::start_finite(Dead { left: 7 }, wav).unwrap();
         wait_until("the pump to stop on its own", || rec.is_finished());
         let result = if use_wait { rec.wait() } else { rec.finish() };
         assert!(

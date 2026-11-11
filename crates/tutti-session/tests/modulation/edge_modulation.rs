@@ -96,7 +96,7 @@ fn a_route_onto_an_edge_modulates_the_sum_by_the_analytic_amount() {
     let mut m = s.mods();
     m.range(edge, -2.0, 2.0);
     let source = m.macro_(0.5);
-    let route = m.route(source, edge, Depth(0.25));
+    let route = m.route(source, edge, Depth(0.25)).unwrap();
     let target = m.key(edge);
     settle(&mut s);
 
@@ -163,7 +163,7 @@ fn the_base_is_the_lanes_knob_and_a_route_returns_to_it() {
     let mut m = s.mods();
     m.range(edge, -2.0, 2.0);
     let source = m.macro_(0.5);
-    let route = m.route(source, edge, Depth(0.5));
+    let route = m.route(source, edge, Depth(0.5)).unwrap();
     settle(&mut s);
     figure(&mut s, 1.5, "the base plus the route's offset");
 

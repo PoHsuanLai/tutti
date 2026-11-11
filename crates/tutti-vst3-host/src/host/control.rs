@@ -240,6 +240,10 @@ impl Control for Vst3Loaded {
         self.parameter_list(main)
     }
 
+    fn parameter_count(&self, main: &MainThread) -> usize {
+        Vst3Loaded::parameter_count(self, main) as usize
+    }
+
     /// Normalized `0..=1`, VST3's own domain. `None` for an id the plugin does
     /// not list (`getParamNormalized` would answer 0 for it) and for a plugin
     /// with no edit controller.

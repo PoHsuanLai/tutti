@@ -78,6 +78,3 @@ pub mod catalog {
 // The graph node of a served plugin and its two states. The control handle,
 // the node's controls and the host policy over a handle are `tutti-plugin-host`'s.
 pub use host::handles;
-
-// Wire-contract types shared with `tutti-plugin-server`.
-pub mod server;

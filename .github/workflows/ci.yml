@@ -209,8 +209,10 @@ jobs:
       # format on) cannot see it.
       - name: clippy (plugin server, one format)
         run: |
-          for f in vst2 vst3 clap; do
+          for f in vst3 clap; do
             cargo clippy --locked -p tutti-plugin-server --no-default-features --features "$f" --all-targets -- -D warnings
+          done
+          for f in vst2 vst3 clap; do
             cargo clippy --locked -p tutti-plugin-probe --no-default-features --features "$f" --all-targets -- -D warnings
           done
 
@@ -283,8 +285,8 @@ jobs:
       # the macOS `test` job.
       - run: cargo clippy --locked -p tutti-plugin --features au --lib -- -D warnings
       # The server with AU alone: the one-format loop in `clippy` runs on Linux,
-      # where the AU loader compiles to nothing, so a helper only the other
-      # formats use (`loaders/common`'s `standing`) is dead only here. `--lib`,
+      # where the AU row compiles to nothing, so a helper only the other
+      # formats use is dead only here. `--lib`,
       # not `--all-targets`: the server's dev-dependency `tutti-vst3-host`
       # builds the VST3 SDK, which this job does not check out.
       - run: cargo clippy --locked -p tutti-plugin-server --no-default-features --features au --lib -- -D warnings
@@ -460,7 +462,7 @@ jobs:
       # job does. Without `au`, which is macOS-only.
       - name: Build plugin-server (tutti-session/clap, tutti/clap and the plugin contract spawn it)
         run: |
-          cargo build --locked -p tutti-plugin-server --no-default-features --features clap,vst2,vst3
+          cargo build --locked -p tutti-plugin-server --no-default-features --features clap,vst3
           cargo build --locked -p tutti-plugin-probe
 
       - name: Test

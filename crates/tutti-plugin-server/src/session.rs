@@ -6,14 +6,14 @@
 //! dependency, it's unit-testable without tokio or sockets.
 
 use crate::audio_pipeline::{AudioBlock, AudioPipeline, Clock, ProcessExtras};
-use crate::plugin::{AsyncEvent, Plugin};
-use tutti_plugin::server::state_chunk::{self, ChunkError, Reassembler};
-use tutti_plugin::server::{
-    AudioSlab, BridgeMessage, HostMessage, MAX_STATE_BYTES, MidiEventVec, Normalized,
-    ParameterQueue, SampleFormat, SlabWriter, StagedState,
+use crate::served::AnyServed;
+use tutti_plugin_ipc::state_chunk::{self, ChunkError, Reassembler};
+use tutti_plugin_ipc::{
+    AudioSlab, BridgeMessage, HostMessage, MAX_STATE_BYTES, SlabWriter, StagedState,
 };
-use tutti_plugin_types::MainThread;
-use tutti_plugin_types::{BridgeError, BridgeResult};
+use tutti_plugin_types::{
+    BridgeResult, Load, MainThread, MidiEventVec, ParameterQueue, PluginError, SampleFormat,
+};
 
 /// A block's plugin MIDI-out for the wire. Already capped at
 /// `MIDI_STACK_CAPACITY` (the pipeline's list cannot hold more), so the reply
@@ -89,7 +89,7 @@ impl Reaction {
 pub(crate) struct Session {
     /// The hosted plugin, or `None` before a load and after an unload. Every
     /// handler that needs one refuses explicitly rather than going silent.
-    pub(crate) plugin: Option<Plugin>,
+    pub(crate) plugin: Option<AnyServed>,
     /// The shared-memory audio slab, established during the handshake phase.
     /// `None` until then, and cleared on unload alongside `plugin`.
     pub(crate) shm: Option<SlabWriter>,
@@ -177,6 +177,7 @@ impl Session {
         match msg {
             M::LoadPlugin {
                 path,
+                load,
                 sample_rate,
                 block_size,
                 preferred_format,
@@ -185,6 +186,7 @@ impl Session {
             } => self.handle_load(
                 main,
                 path,
+                &load,
                 sample_rate.get(),
                 block_size,
                 preferred_format,
@@ -224,28 +226,28 @@ impl Session {
                     // The wire's decode refuses an out-of-range or NaN value
                     // (`Normalized::new`), so one from the peer fails the frame
                     // and never reaches a live plugin.
-                    plugin.instance_mut().set_parameter(main, param_id, value);
+                    plugin.plugin_mut().set_parameter(main, param_id, value);
                 }
                 Ok(Reaction::None)
             }
             M::SetAutomationState { mode } => {
                 if let Some(plugin) = self.plugin.as_mut() {
-                    plugin.instance_mut().set_automation_state(main, mode);
+                    plugin.plugin_mut().set_automation_state(main, mode);
                 }
                 Ok(Reaction::None)
             }
             M::GetParameter { param_id } => {
                 let value = self
                     .plugin
-                    .as_mut()
-                    .map(|p| Normalized::clamped(p.instance_mut().get_parameter(main, param_id)));
+                    .as_ref()
+                    .and_then(|p| p.plugin().parameter(main, param_id));
                 Ok(BridgeMessage::ParameterValue { value }.into())
             }
             M::GetParameterList => {
                 let parameters = self
                     .plugin
                     .as_ref()
-                    .map(|p| p.instance().get_parameter_list(main))
+                    .map(|p| p.plugin().parameters(main))
                     .unwrap_or_default();
                 Ok(BridgeMessage::ParameterList { parameters }.into())
             }
@@ -258,7 +260,7 @@ impl Session {
                 let presets = self
                     .plugin
                     .as_mut()
-                    .map(|p| p.instance_mut().get_presets(main))
+                    .map(|p| p.plugin_mut().presets(main))
                     .unwrap_or_default();
                 Ok(BridgeMessage::PresetList { presets }.into())
             }
@@ -266,21 +268,21 @@ impl Session {
                 let ok = self
                     .plugin
                     .as_mut()
-                    .is_some_and(|p| p.instance_mut().load_preset(main, &id));
+                    .is_some_and(|p| p.plugin_mut().load_preset(main, &id));
                 Ok(BridgeMessage::PresetLoaded { ok }.into())
             }
             M::GetCurrentPreset => {
                 let id = self
                     .plugin
                     .as_mut()
-                    .and_then(|p| p.instance_mut().get_current_preset(main));
+                    .and_then(|p| p.plugin_mut().current_preset(main));
                 Ok(BridgeMessage::CurrentPreset { id }.into())
             }
             M::GetParameterText { param_id, value } => {
                 let text = self
                     .plugin
                     .as_ref()
-                    .and_then(|p| p.instance().parameter_text(main, param_id, value));
+                    .and_then(|p| p.plugin().parameter_text(main, param_id, value));
                 Ok(BridgeMessage::ParameterText { text }.into())
             }
             M::GetParameterValueFromText { param_id, text } => {
@@ -289,16 +291,16 @@ impl Session {
                 // as it reads it. The trait takes `&self` because the plugin
                 // handle is interior-mutable at the FFI edge, so this stays on
                 // the `as_ref` path with the other queries.
-                let value = self.plugin.as_ref().and_then(|p| {
-                    p.instance()
-                        .parameter_value_from_text(main, param_id, &text)
-                });
+                let value = self
+                    .plugin
+                    .as_ref()
+                    .and_then(|p| p.plugin().parameter_value_from_text(main, param_id, &text));
                 Ok(BridgeMessage::ParameterValueFromText { value }.into())
             }
             M::GetParameterInfo { param_id } => {
                 let info = self.plugin.as_ref().and_then(|p| {
-                    p.instance()
-                        .get_parameter_list(main)
+                    p.plugin()
+                        .parameters(main)
                         .into_iter()
                         .find(|info| info.id == param_id)
                 });
@@ -323,7 +325,7 @@ impl Session {
                 // otherwise render at its old rate against the host's blocks.
                 self.clock.sample_rate = rate.get();
                 let error = match self.plugin.as_mut() {
-                    Some(plugin) => match plugin.instance_mut().set_sample_rate(main, rate.get()) {
+                    Some(plugin) => match plugin.plugin_mut().set_sample_rate(main, rate.get()) {
                         Ok(()) => None,
                         Err(e) => {
                             tracing::warn!(requested = %rate, "sample rate not applied: {e}");
@@ -342,7 +344,7 @@ impl Session {
                 // host already has it. Logged rather than dropped so a refusal
                 // is greppable when a bounce sounds like the live path.
                 if let Some(plugin) = self.plugin.as_mut()
-                    && !plugin.instance_mut().set_render_mode(main, mode)
+                    && !plugin.plugin_mut().set_render_mode(main, mode)
                 {
                     tracing::debug!(?mode, "plugin did not accept the render mode");
                 }
@@ -357,10 +359,8 @@ impl Session {
             // unmatchable), and anything done to it here would be a second
             // mechanism that could disagree with the first.
             M::Reset => {
-                if let Some(plugin) = self.plugin.as_mut()
-                    && let Err(e) = plugin.instance_mut().reset()
-                {
-                    tracing::warn!("the plugin did not reset: {e}");
+                if let Some(plugin) = self.plugin.as_mut() {
+                    plugin.plugin_mut().reset();
                 }
                 Ok(Reaction::None)
             }
@@ -396,38 +396,28 @@ impl Session {
         let Some(plugin) = self.plugin.as_mut() else {
             return Vec::new();
         };
-        let events = plugin.poll_async_events(main);
+        let events = plugin.plugin_mut().poll(main);
         // A parameter list that changed may have grown past the output
         // reserved at load. This runs on the audio-phase thread between
-        // blocks, so the count is a count query, not the descriptor list.
-        // What it helps: a VST3 `Reloaded` (the reload builds a new instance,
-        // whose output lists are sized at its activation) and an AU list
-        // change. A VST3 `kParamTitlesChanged` without a reload keeps the
+        // blocks, so only a pass that told of a changed list pays for the
+        // count. What it helps: a VST3 `Reloaded` (the reload builds a new
+        // instance, whose output lists are sized at its activation) and an AU
+        // list change. A VST3 `kParamTitlesChanged` without a reload keeps the
         // instance's activation-time output and emitted queue counts, so the
         // instance drops (and counts) points past them before they reach
         // this output. A CLAP plugin's `params.rescan` that changes the
-        // list reaches this as `ParamTitlesChanged` (the instance re-read it).
-        if events
-            .iter()
-            .any(|e| matches!(e, AsyncEvent::ParamTitlesChanged | AsyncEvent::Reloaded))
-        {
-            let params = plugin.instance().parameter_count(main);
+        // list reaches this as `PluginParamTitlesChanged` (the instance re-read
+        // it).
+        if events.iter().any(|e| {
+            matches!(
+                e,
+                BridgeMessage::PluginParamTitlesChanged | BridgeMessage::PluginReloaded
+            )
+        }) {
+            let params = plugin.plugin().parameter_count(main);
             self.pipeline.fit_params(params);
         }
         events
-            .into_iter()
-            .map(|e| match e {
-                AsyncEvent::ParameterChanged { index, value } => {
-                    BridgeMessage::ParameterChanged { index, value }
-                }
-                AsyncEvent::LatencyChanged { samples } => BridgeMessage::LatencyChanged { samples },
-                AsyncEvent::TailChanged { tail } => BridgeMessage::TailChanged { tail },
-                AsyncEvent::ParamValuesChanged => BridgeMessage::PluginParamValuesChanged,
-                AsyncEvent::ParamTitlesChanged => BridgeMessage::PluginParamTitlesChanged,
-                AsyncEvent::IoChanged => BridgeMessage::PluginIoChanged,
-                AsyncEvent::Reloaded => BridgeMessage::PluginReloaded,
-            })
-            .collect()
     }
 
     /// Forgets a state staged for a load that has not come: the stage belongs to
@@ -441,6 +431,7 @@ impl Session {
         &mut self,
         main: &MainThread,
         path: std::path::PathBuf,
+        load: &Load,
         sample_rate: f64,
         block_size: usize,
         preferred_format: SampleFormat,
@@ -475,18 +466,23 @@ impl Session {
             }
         }
         let mut restoring = || interim(BridgeMessage::RestoringState);
-        let (plugin, descriptor, loaded, negotiated, state_error) = match Plugin::load_with_state(
+        let prefer_f64 = preferred_format == SampleFormat::Float64;
+        let (plugin, state_error) = match AnyServed::load(
             main,
             &path,
+            load,
             sample_rate,
             block_size,
-            preferred_format,
+            prefer_f64,
             staged.as_deref(),
             &mut restoring,
         ) {
             Ok(loaded) => loaded,
             Err(e) => return Ok(load_failure(&e).into()),
         };
+        let descriptor = plugin.plugin().descriptor().clone();
+        let loaded = plugin.plugin().loaded().clone();
+        let negotiated = plugin.plugin().negotiated(prefer_f64);
         self.clock = Clock {
             sample_rate,
             format: negotiated,
@@ -497,7 +493,7 @@ impl Session {
         // reserved here, off the audio thread: a queue per parameter, each
         // within a block's chunk room (`ParameterChanges::reserved`).
         self.pipeline.reserve_params(
-            plugin.instance().parameter_count(main),
+            plugin.plugin().parameter_count(main),
             ParameterQueue::chunk_room(block_size),
         );
         self.plugin = Some(plugin);
@@ -591,7 +587,7 @@ impl Session {
 
         let output = self
             .pipeline
-            .process(plugin.instance_mut(), shm, &self.clock, block)?;
+            .process(plugin.plugin_mut(), shm, &self.clock, block)?;
         Ok(BridgeMessage::AudioProcessed {
             latency_us: output.latency_us,
             seq,
@@ -613,7 +609,7 @@ impl Session {
     /// there is no state.
     fn handle_save_state(&mut self, main: &MainThread) -> Reaction {
         let data = match self.plugin.as_mut() {
-            Some(p) => match p.instance_mut().get_state(main) {
+            Some(p) => match p.plugin_mut().save_state(main) {
                 Ok(data) => data,
                 // A plugin that fails to serialise is not a transport problem:
                 // one `Error` frame, and the host reports it as a rejection.
@@ -734,7 +730,7 @@ impl Session {
             }
             .into();
         };
-        let error = match plugin.instance_mut().set_state(main, &data) {
+        let error = match plugin.plugin_mut().load_state(main, &data) {
             Ok(()) => None,
             Err(e) => Some(format!("Failed to load state: {e}")),
         };
@@ -757,9 +753,9 @@ fn chunk_refusal(e: ChunkError) -> String {
 
 /// The reply to a load that failed. The wire carries a message and no stage, so
 /// a loader failure keeps its stage in the text.
-fn load_failure(e: &BridgeError) -> BridgeMessage {
+fn load_failure(e: &PluginError) -> BridgeMessage {
     let message = match e {
-        BridgeError::LoadFailed { stage, reason, .. } => format!("{stage}: {reason}"),
+        PluginError::Load { stage, reason } => format!("{stage}: {reason}"),
         other => other.to_string(),
     };
     BridgeMessage::Error { message }
@@ -774,11 +770,11 @@ mod tests {
 
     // `Features` is named only by `load_clap_plugin_f64`, which carries the
     // same gate.
-    use tutti_plugin::LoadStage;
     #[cfg(feature = "clap")]
-    use tutti_plugin::server::Features;
-    use tutti_plugin::server::{
-        MidiEventVec, NoteExpressionChanges, ParamId, ParameterChanges, TransportInfo,
+    use tutti_plugin_types::Features;
+    use tutti_plugin_types::LoadStage;
+    use tutti_plugin_types::{
+        MidiEventVec, Normalized, NoteExpressionChanges, ParamId, ParameterChanges, TransportInfo,
     };
 
     fn assert_none(r: Reaction) {
@@ -846,7 +842,7 @@ mod tests {
             ("SaveState", HostMessage::SaveState, EmptyPayload),
             (
                 "ProcessAudio",
-                HostMessage::ProcessAudio(tutti_plugin::server::ProcessAudioData {
+                HostMessage::ProcessAudio(tutti_plugin_ipc::ProcessAudioData {
                     seq: 0,
                     num_samples: 256,
                     midi_events: MidiEventVec::new(),
@@ -1004,6 +1000,7 @@ mod tests {
                 &main_thread(),
                 HostMessage::LoadPlugin {
                     path: std::path::PathBuf::from("/nonexistent/path/plugin.vst3"),
+                    load: tutti_plugin_types::Load::new(),
                     sample_rate: tutti_plugin_types::SampleRate(44100.0),
                     block_size: 512,
                     preferred_format: SampleFormat::Float32,
@@ -1050,6 +1047,7 @@ mod tests {
             &main_thread(),
             HostMessage::LoadPlugin {
                 path: std::path::PathBuf::from(clap_plugin()),
+                load: tutti_plugin_types::Load::new(),
                 sample_rate: tutti_plugin_types::SampleRate(44100.0),
                 block_size: 512,
                 preferred_format,
@@ -1062,16 +1060,69 @@ mod tests {
         let buffer_name = format!("tutti_vst_buffer_{}_{}", name, std::process::id());
         // The negotiated format, not the requested one, as the host's
         // `setup_shm` sizes the slab.
-        let layout = tutti_plugin::server::SlabLayout {
+        let layout = tutti_plugin_ipc::SlabLayout {
             samples_per_channel: 8192,
             format: s.clock.format,
-            slots: tutti_plugin::server::RING_SLOTS as u32,
-            inputs: vec![tutti_plugin::server::ChannelLayout::STEREO],
-            outputs: vec![tutti_plugin::server::ChannelLayout::STEREO],
+            slots: tutti_plugin_ipc::RING_SLOTS as u32,
+            inputs: vec![tutti_plugin_types::ChannelLayout::STEREO],
+            outputs: vec![tutti_plugin_types::ChannelLayout::STEREO],
         };
         let shm_guard = AudioSlab::create(buffer_name.clone(), layout.clone()).unwrap();
         s.shm = Some(AudioSlab::open(buffer_name, layout).unwrap());
         (s, shm_guard)
+    }
+
+    /// The reply to loading the reference CLAP plugin's file with `load`.
+    #[cfg(feature = "clap")]
+    fn load_clap_choosing(load: Load) -> BridgeMessage {
+        Session::new()
+            .handle(
+                &main_thread(),
+                HostMessage::LoadPlugin {
+                    path: std::path::PathBuf::from(clap_plugin()),
+                    load,
+                    sample_rate: tutti_plugin_types::SampleRate(44100.0),
+                    block_size: 512,
+                    preferred_format: SampleFormat::Float32,
+                    shm_name: "choosing".to_string(),
+                    state: None,
+                },
+            )
+            .expect("a load is a reply, not a server error")
+            .into_reply()
+    }
+
+    /// **A load that chooses a plugin of a file that exports several loads that
+    /// one** (task #43): before `LoadPlugin` carried the choice a bundle with
+    /// several plugins always loaded its first. The reference CLAP file is a
+    /// factory of two; a load that names neither loads the first, one that names
+    /// the second loads the second, and one that names a plugin the file does
+    /// not hold is refused, not answered with the first.
+    #[test]
+    #[cfg(feature = "clap")]
+    fn a_load_that_chooses_a_plugin_loads_that_one() {
+        let _lock = crate::test_utils::plugin_load_lock();
+        let id_of = |reply: BridgeMessage| match reply {
+            BridgeMessage::PluginLoaded { descriptor, .. } => descriptor.id,
+            other => panic!("expected PluginLoaded, got {other:?}"),
+        };
+        let first = tutti_clap_test_plugin::PLUGIN_ID.to_str().expect("utf-8");
+        let second = tutti_clap_test_plugin::SECOND_PLUGIN_ID
+            .to_str()
+            .expect("utf-8");
+
+        assert_eq!(id_of(load_clap_choosing(Load::new())), first, "no choice");
+        assert_eq!(
+            id_of(load_clap_choosing(Load::new().plugin(second))),
+            second,
+            "the second plugin of the factory"
+        );
+        match load_clap_choosing(Load::new().plugin("tutti.no-such-plugin")) {
+            BridgeMessage::Error { message } => {
+                assert!(message.contains("tutti.no-such-plugin"), "{message}");
+            }
+            other => panic!("a plugin the file does not hold must be refused, got {other:?}"),
+        }
     }
 
     /// Run one block of `input` on both channels through `s`'s slab.
@@ -1084,7 +1135,7 @@ mod tests {
         let reply = s
             .handle(
                 &main_thread(),
-                HostMessage::ProcessAudio(tutti_plugin::server::ProcessAudioData {
+                HostMessage::ProcessAudio(tutti_plugin_ipc::ProcessAudioData {
                     seq,
                     num_samples: F64_FRAMES,
                     ..Default::default()
@@ -1196,7 +1247,7 @@ mod tests {
     fn load_clap_plugin_f64() {
         let _lock = crate::test_utils::plugin_load_lock();
         let (s, _shm) = load_clap("load_clap_f64", SampleFormat::Float64);
-        let loaded = s.plugin.as_ref().unwrap().instance().loaded();
+        let loaded = s.plugin.as_ref().unwrap().plugin().loaded();
         assert!(!loaded.features.contains(Features::F64_AUDIO));
         assert_eq!(s.clock.format, SampleFormat::Float32);
     }
@@ -1214,7 +1265,7 @@ mod tests {
     #[cfg(feature = "clap")]
     fn clap_round_trip<T>(name: &str, mask: u32, format: SampleFormat, input: T) -> RoundTrip<T>
     where
-        T: tutti_plugin::server::Sample + bytemuck::Pod,
+        T: tutti_plugin_types::Sample + bytemuck::Pod,
     {
         const SEQ: u64 = 1;
         let _ports = crate::test_utils::clap_probe_ports_64bit(mask);
@@ -1229,7 +1280,7 @@ mod tests {
         let reply = s
             .handle(
                 &main_thread(),
-                HostMessage::ProcessAudio(tutti_plugin::server::ProcessAudioData {
+                HostMessage::ProcessAudio(tutti_plugin_ipc::ProcessAudioData {
                     seq: SEQ,
                     num_samples: F64_FRAMES,
                     ..Default::default()
@@ -1250,7 +1301,7 @@ mod tests {
             shm.read_output_into::<T>(SEQ, ch, &mut v).unwrap();
             v
         });
-        let loaded = s.plugin.as_ref().unwrap().instance().loaded();
+        let loaded = s.plugin.as_ref().unwrap().plugin().loaded();
         RoundTrip {
             format: s.clock.format,
             f64_audio: loaded.features.contains(Features::F64_AUDIO),
@@ -1293,7 +1344,7 @@ mod tests {
             let reply = s
                 .handle(
                     &main_thread(),
-                    HostMessage::ProcessAudio(tutti_plugin::server::ProcessAudioData {
+                    HostMessage::ProcessAudio(tutti_plugin_ipc::ProcessAudioData {
                         seq,
                         num_samples: F64_FRAMES,
                         ..Default::default()
@@ -1356,7 +1407,7 @@ mod tests {
             let reply = s
                 .handle(
                     &main_thread(),
-                    HostMessage::ProcessAudio(tutti_plugin::server::ProcessAudioData {
+                    HostMessage::ProcessAudio(tutti_plugin_ipc::ProcessAudioData {
                         seq,
                         num_samples: frames,
                         ..Default::default()
@@ -1425,9 +1476,9 @@ mod tests {
         /// The plugin's `F64_AUDIO` bit.
         f64_audio: bool,
         /// The node's graph-facing input bus widths, as the server reports them.
-        inputs: tutti_plugin::server::BusChannels,
+        inputs: tutti_plugin_types::BusChannels,
         /// The node's graph-facing output buses.
-        outputs: tutti_plugin::server::BusChannels,
+        outputs: tutti_plugin_types::BusChannels,
         /// The two output channels.
         out: [Vec<T>; 2],
     }
@@ -1561,7 +1612,7 @@ mod tests {
         );
         assert_eq!(
             outputs.as_slice(),
-            &[tutti_plugin::server::ChannelLayout::STEREO]
+            &[tutti_plugin_types::ChannelLayout::STEREO]
         );
         for (ch, samples) in out.iter().enumerate() {
             let want = f64::from(tutti_clap_test_plugin::probe_tag(0, ch as u32));
@@ -1751,6 +1802,7 @@ mod tests {
                 &main_thread(),
                 HostMessage::LoadPlugin {
                     path: std::path::PathBuf::from(clap_plugin()),
+                    load: tutti_plugin_types::Load::new(),
                     sample_rate: tutti_plugin_types::SampleRate(44100.0),
                     block_size: 512,
                     preferred_format: SampleFormat::Float32,
@@ -1771,6 +1823,7 @@ mod tests {
             &main_thread(),
             HostMessage::LoadPlugin {
                 path: std::path::PathBuf::from("/nonexistent/plugin.clap"),
+                load: tutti_plugin_types::Load::new(),
                 sample_rate: tutti_plugin_types::SampleRate(44100.0),
                 block_size: 512,
                 preferred_format: SampleFormat::Float32,
@@ -1928,6 +1981,7 @@ mod tests {
                     &main_thread(),
                     HostMessage::LoadPlugin {
                         path: std::path::PathBuf::from(clap_plugin()),
+                        load: tutti_plugin_types::Load::new(),
                         sample_rate: tutti_plugin_types::SampleRate(44100.0),
                         block_size: 512,
                         preferred_format: SampleFormat::Float32,
@@ -2059,7 +2113,7 @@ mod tests {
         let reply = s
             .handle(
                 &main_thread(),
-                HostMessage::ProcessAudio(tutti_plugin::server::ProcessAudioData {
+                HostMessage::ProcessAudio(tutti_plugin_ipc::ProcessAudioData {
                     seq: 0,
                     num_samples: 512,
                     midi_events: MidiEventVec::new(),
@@ -2077,7 +2131,7 @@ mod tests {
         );
     }
 
-    /// The probe bundle `Plugin::load` picks the format from, as a session
+    /// The probe bundle `AnyServed::load` picks the format from, as a session
     /// loads it, with a slab sized to what the plugin declared.
     #[cfg(feature = "vst3")]
     fn load_vst3_probe(name: &str) -> (Session, SlabWriter) {
@@ -2091,6 +2145,7 @@ mod tests {
             &main_thread(),
             HostMessage::LoadPlugin {
                 path: bundle,
+                load: tutti_plugin_types::Load::new(),
                 sample_rate: tutti_plugin_types::SampleRate(48_000.0),
                 block_size: 512,
                 preferred_format: SampleFormat::Float32,
@@ -2099,11 +2154,11 @@ mod tests {
             },
         )
         .unwrap();
-        let loaded = s.plugin.as_ref().unwrap().instance().loaded().clone();
-        let layout = tutti_plugin::server::SlabLayout {
+        let loaded = s.plugin.as_ref().unwrap().plugin().loaded().clone();
+        let layout = tutti_plugin_ipc::SlabLayout {
             samples_per_channel: 8192,
             format: s.clock.format,
-            slots: tutti_plugin::server::RING_SLOTS as u32,
+            slots: tutti_plugin_ipc::RING_SLOTS as u32,
             inputs: loaded.input_widths(),
             outputs: loaded.output_widths(),
         };
@@ -2125,7 +2180,7 @@ mod tests {
         let reply = s
             .handle(
                 &main_thread(),
-                HostMessage::ProcessAudio(tutti_plugin::server::ProcessAudioData {
+                HostMessage::ProcessAudio(tutti_plugin_ipc::ProcessAudioData {
                     seq,
                     num_samples: frames,
                     ..Default::default()
@@ -2230,34 +2285,6 @@ mod tests {
         });
     }
 
-    /// As above, for VST2: the plugin asked for nothing and moved no parameter,
-    /// so the drain (its request pass and the editor-knob queue) allocates
-    /// nothing.
-    #[test]
-    #[cfg(feature = "vst2")]
-    fn an_idle_drain_does_not_allocate_vst2() {
-        let _lock = crate::test_utils::plugin_load_lock();
-        let mut s = Session::new();
-        s.handle(
-            &main_thread(),
-            HostMessage::LoadPlugin {
-                path: crate::test_utils::vst2_probe_staged_path().to_path_buf(),
-                sample_rate: tutti_plugin_types::SampleRate(48_000.0),
-                block_size: 512,
-                preferred_format: SampleFormat::Float32,
-                shm_name: "idle_vst2".to_string(),
-                state: None,
-            },
-        )
-        .unwrap();
-        assert!(s.drain_async_events(&main_thread()).is_empty());
-        assert_no_alloc::assert_no_alloc(|| {
-            for _ in 0..64 {
-                assert!(s.drain_async_events(&main_thread()).is_empty());
-            }
-        });
-    }
-
     /// A plugin that says its parameter list changed gets its parameter
     /// output re-reserved by `drain_async_events`, at the plugin's count.
     ///
@@ -2272,7 +2299,7 @@ mod tests {
         // `PluginParamTitlesChanged` assertion below pins that this is the bit.
         const K_PARAM_TITLES_CHANGED: i32 = 1 << 4;
         let _lock = crate::test_utils::plugin_load_lock();
-        // `Plugin::load` picks the format by the `.vst3` bundle, not the
+        // `AnyServed::load` picks the format by the `.vst3` bundle, not the
         // module inside it that `vst3_probe_path` names.
         let bundle = std::path::Path::new(crate::test_utils::vst3_probe_path())
             .ancestors()
@@ -2284,6 +2311,7 @@ mod tests {
             &main_thread(),
             HostMessage::LoadPlugin {
                 path: bundle,
+                load: tutti_plugin_types::Load::new(),
                 sample_rate: tutti_plugin_types::SampleRate(48_000.0),
                 block_size: 512,
                 preferred_format: SampleFormat::Float32,
@@ -2296,7 +2324,7 @@ mod tests {
             .plugin
             .as_ref()
             .unwrap()
-            .instance()
+            .plugin()
             .parameter_count(&main_thread());
         assert!(params > 1, "the probe has parameters to refit to");
         assert_eq!(s.pipeline.param_queues(), params, "reserved at load");
@@ -2310,7 +2338,7 @@ mod tests {
         assert_eq!(s.pipeline.param_queues(), 1);
 
         match s.plugin.as_ref().unwrap() {
-            Plugin::Vst3(p) => p.plugin_restart_component(K_PARAM_TITLES_CHANGED),
+            AnyServed::Vst3(p) => p.plugin_restart_component(K_PARAM_TITLES_CHANGED),
             #[allow(unreachable_patterns)]
             _ => unreachable!("the probe is a VST3"),
         }
@@ -2332,26 +2360,29 @@ mod tests {
     fn the_parameter_count_agrees_with_the_list() {
         let _lock = crate::test_utils::plugin_load_lock();
         let (s, _shm) = load_clap("count_clap", SampleFormat::Float32);
-        let clap = s.plugin.as_ref().unwrap().instance();
+        let clap = s.plugin.as_ref().unwrap().plugin();
         assert!(clap.parameter_count(&main_thread()) > 0);
         assert_eq!(
             clap.parameter_count(&main_thread()),
-            clap.get_parameter_list(&main_thread()).len()
+            clap.parameters(&main_thread()).len()
         );
 
-        let vst3 = crate::loaders::vst3::Vst3Instance::load(
+        let (vst3, _) = crate::served::Served::<tutti_vst3_host::Vst3Loaded>::load(
             &main_thread(),
             std::path::Path::new(crate::test_utils::vst3_probe_path()),
+            &Load::new(),
             48_000.0,
             128,
             false,
+            None,
+            &mut || {},
         )
         .expect("the vendored VST3 probe loads");
-        let vst3: &dyn tutti_plugin::server::PluginInstance = &vst3;
+        let vst3: &dyn crate::served::ServedPlugin = &vst3;
         assert!(vst3.parameter_count(&main_thread()) > 0);
         assert_eq!(
             vst3.parameter_count(&main_thread()),
-            vst3.get_parameter_list(&main_thread()).len()
+            vst3.parameters(&main_thread()).len()
         );
     }
 }

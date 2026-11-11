@@ -3,14 +3,23 @@
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
 mod audio_pipeline;
-mod loaders;
-mod plugin;
+// With no format served the table is an uninhabited enum and nothing above it
+// runs.
+#[cfg_attr(
+    not(any(
+        feature = "clap",
+        feature = "vst3",
+        all(feature = "au", target_os = "macos")
+    )),
+    allow(dead_code)
+)]
+mod served;
 mod server;
 mod session;
 mod transport;
 
 pub use server::PluginServer;
-pub use tutti_plugin::server::BridgeConfig;
+pub use tutti_plugin_ipc::BridgeConfig;
 
 // Test-only global allocator for the audio-pipeline RT-safety regression
 // test (`audio_pipeline::tests::process_is_alloc_free`). Active only in the
@@ -22,41 +31,37 @@ static RT_NO_ALLOC_HARNESS: assert_no_alloc::AllocDisabler = assert_no_alloc::Al
 /// Plugin-loading tests across the crate serialize on this lock: format
 /// modules keep process globals of their own, and plugins' `main` may too.
 ///
-/// Gated on a loader feature as well as `test`, for the same reason
-/// `loaders::common` is: every consumer lives in `loaders::{clap,vst3}` or
-/// `plugin`, all of which are feature-gated, so a test build with no loader on
-/// compiles this module with nothing to serialize.
+/// Gated on a format feature as well as `test`: every consumer is a format's
+/// test, so a test build with no format on compiles this module with nothing
+/// to serialize.
 ///
-/// The lock is the only member shared by every loader. Everything else is
-/// gated to the *specific* loader it serves — a `vst2`-only build has no CLAP
-/// probe and no VST3 bundle — and the `env!` constants especially, since those
-/// read build-script variables that only exist once that loader has built its
-/// reference plugin.
+/// The lock is the only member shared by every format. Everything else is
+/// gated to the *specific* format it serves — a `clap`-only build has no VST3
+/// bundle — and the `env!` constants especially, since those read build-script
+/// variables that only exist once that format has built its reference plugin.
 #[cfg(all(
     test,
     any(
         all(feature = "au", target_os = "macos"),
         feature = "clap",
-        feature = "vst2",
         feature = "vst3"
     )
 ))]
 pub(crate) mod test_utils {
     // Every import here belongs to the probe-path helpers, which are gated to
-    // the loader whose reference plugin they find.
-    // `Path`/`PathBuf` belong to the VST3 bundle walk; VST2 and CLAP only
-    // resolve a path string.
+    // the format whose reference plugin they find.
+    // `Path`/`PathBuf` belong to the VST3 bundle walk; CLAP only resolves a
+    // path string.
     #[cfg(any(feature = "clap", feature = "vst3"))]
     use std::path::Path;
     #[cfg(feature = "vst3")]
     use std::path::PathBuf;
-    #[cfg(any(feature = "clap", feature = "vst3", feature = "vst2"))]
+    #[cfg(any(feature = "clap", feature = "vst3"))]
     use std::sync::OnceLock;
     #[cfg(any(
         all(feature = "au", target_os = "macos"),
         feature = "clap",
-        feature = "vst3",
-        feature = "vst2"
+        feature = "vst3"
     ))]
     use std::sync::{Mutex, MutexGuard};
     #[cfg(feature = "clap")]
@@ -76,17 +81,9 @@ pub(crate) mod test_utils {
         })
     }
 
-    /// The reference VST2 plugin's probe, opened once and kept, as
-    /// [`clap`]'s.
-    #[cfg(feature = "vst2")]
-    pub fn vst2() -> &'static tutti_vst2_test_plugin::Vst2Probe {
-        static PROBE: OnceLock<tutti_vst2_test_plugin::Vst2Probe> = OnceLock::new();
-        PROBE.get_or_init(|| tutti_vst2_test_plugin::Vst2Probe::open(tutti_fixtures::vst2_probe()))
-    }
-
-    /// Taken by every loader test that loads a real plugin — CLAP, VST3, VST2
-    /// and, on macOS, AU. A plugin's entry point may touch process globals, so
-    /// loads are kept one at a time in tests.
+    /// Taken by every test that loads a real plugin — CLAP, VST3 and, on macOS,
+    /// AU. A plugin's entry point may touch process globals, so loads are kept
+    /// one at a time in tests.
     ///
     /// AU is gated on the target as well as the feature, matching the module's
     /// own `cfg`: the AU tests are `all(feature = "au", target_os = "macos")`,
@@ -94,8 +91,7 @@ pub(crate) mod test_utils {
     #[cfg(any(
         all(feature = "au", target_os = "macos"),
         feature = "clap",
-        feature = "vst3",
-        feature = "vst2"
+        feature = "vst3"
     ))]
     pub static PLUGIN_LOAD_LOCK: Mutex<()> = Mutex::new(());
 
@@ -210,12 +206,11 @@ pub(crate) mod test_utils {
 
     /// The reference plugin under a `.clap` extension.
     ///
-    /// `Plugin::load` (the `crate::plugin` enum) dispatches on the file extension,
-    /// and the cdylib cargo builds is `libtutti_clap_test_plugin.so` — which
-    /// that table maps to **VST2**, so loading it through the format-detecting
-    /// path fails with `NotAPlugin`. Tests that go through `HostMessage::
-    /// LoadPlugin` (rather than calling `ClapInstance::load` directly) need a
-    /// path that ends in `.clap`.
+    /// `AnyServed::load` dispatches on the file extension, and the cdylib cargo
+    /// builds is `libtutti_clap_test_plugin.so`, which no row of the `served!`
+    /// table names. Tests that go through `HostMessage::LoadPlugin` (rather
+    /// than loading a `Served<ClapLoaded>` directly) need a path that ends in
+    /// `.clap`.
     ///
     /// A symlink beside the artifact rather than a copy, so it cannot go
     /// stale against a rebuilt plugin. The link path is shared by every test
@@ -577,53 +572,6 @@ pub(crate) mod test_utils {
     ///
     /// Resolution (newest candidate wins) and the panic-on-absence rule are
     /// `tutti_fixtures`'s; see that crate for why each matters.
-    /// Absolute path to the reference VST2 cdylib the loader tests drive.
-    ///
-    /// The VST2 counterpart to [`clap_probe_path`], resolved the same way:
-    /// `tutti-vst2-test-plugin` is a dev-dependency, so cargo builds the
-    /// cdylib during this same `cargo test`, and the resolver finds it beside the
-    /// test binary. Its behaviour is steered per-test with the
-    /// `TUTTI_VST2_PROBE_*` env vars rather than by building variants.
-    ///
-    /// # Panics
-    ///
-    /// If no candidate exists — that is a build failure, not a property of the
-    /// machine, since the cdylib is a dev-dependency of this crate.
-    #[cfg(feature = "vst2")]
-    pub fn vst2_probe_path() -> &'static str {
-        static RESOLVED: OnceLock<String> = OnceLock::new();
-        RESOLVED
-            .get_or_init(|| {
-                tutti_fixtures::cdylib("tutti_vst2_test_plugin", "tutti-vst2-test-plugin")
-                    .to_string_lossy()
-                    .into_owned()
-            })
-            .as_str()
-    }
-
-    /// The reference VST2 plugin under a `.vst` name, for a test that goes
-    /// through [`crate::plugin::Plugin::open`], which routes on the extension.
-    ///
-    /// The cdylib is a `.so`, `.dll` or `.dylib` by platform, and `.dylib` is no
-    /// VST2 extension, so the image is copied once per process.
-    ///
-    /// # Panics
-    ///
-    /// If the copy fails.
-    #[cfg(feature = "vst2")]
-    pub fn vst2_probe_staged_path() -> &'static std::path::Path {
-        static STAGED: OnceLock<std::path::PathBuf> = OnceLock::new();
-        STAGED.get_or_init(|| {
-            let staged = std::env::temp_dir().join(format!(
-                "tutti-server-vst2-probe-{}.vst",
-                std::process::id()
-            ));
-            std::fs::copy(vst2_probe_path(), &staged)
-                .unwrap_or_else(|e| panic!("staging the VST2 probe at {staged:?} failed: {e}"));
-            staged
-        })
-    }
-
     #[cfg(feature = "clap")]
     pub fn clap_probe_path() -> &'static str {
         static RESOLVED: OnceLock<String> = OnceLock::new();
@@ -648,8 +596,7 @@ pub(crate) mod test_utils {
     #[cfg(any(
         all(feature = "au", target_os = "macos"),
         feature = "clap",
-        feature = "vst3",
-        feature = "vst2"
+        feature = "vst3"
     ))]
     pub fn plugin_load_lock() -> MutexGuard<'static, ()> {
         PLUGIN_LOAD_LOCK

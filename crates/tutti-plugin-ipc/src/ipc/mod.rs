@@ -49,7 +49,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
 use tutti_plugin_types::{
-    BridgeError, BridgeResult, ChunkCounters, Controller, LoadStage, Loaded, LoadedPlugin,
+    BridgeError, BridgeResult, ChunkCounters, Controller, Load, LoadStage, Loaded, LoadedPlugin,
     MainThread, ParameterChanges, ParameterQueue, PluginDescriptor, PluginError, PluginResult,
     PluginTail, Prepare, Refused, Reopen, Request, RestartRules, SampleFormat, SampleRate, Samples,
     Stuck,
@@ -68,6 +68,8 @@ pub struct IpcOrigin {
     pub config: BridgeConfig,
     /// The plugin file.
     pub path: PathBuf,
+    /// Which plugin of the file, as the first launch chose it.
+    pub load: Load,
     /// Loads the editor-only instance, as the first launch's did.
     pub load_editor: EditorLoader,
 }
@@ -87,7 +89,14 @@ impl IpcOrigin {
             socket_path: unique_socket_path(),
             ..self.config.clone()
         };
-        Ipc::launch(config, self.path.clone(), rate, state, self.load_editor)
+        Ipc::launch(
+            config,
+            self.path.clone(),
+            self.load.clone(),
+            rate,
+            state,
+            self.load_editor,
+        )
     }
 }
 
@@ -330,8 +339,8 @@ impl Ipc {
         }
     }
 
-    /// Launches a `plugin-server` for `path` at `rate` and returns the plugin
-    /// loaded in it, with what became of `state` if one was given: it is
+    /// Launches a `plugin-server` for the plugin `load` chooses in `path` at
+    /// `rate` and returns the plugin loaded in it, with what became of `state` if one was given: it is
     /// restored **before the plugin is activated**, the order every format
     /// allows and a plugin that takes its mode from the state at activation
     /// needs.
@@ -345,11 +354,12 @@ impl Ipc {
     pub fn launch(
         config: BridgeConfig,
         path: PathBuf,
+        load: Load,
         rate: SampleRate,
         state: Option<&[u8]>,
         load_editor: EditorLoader,
     ) -> BridgeResult<Launched> {
-        let server = launch(&config, &path, rate, state)?;
+        let server = launch(&config, &path, &load, rate, state)?;
         let restored = server.state_restore.clone();
         // Guarded before the first fallible step below: an `Err` from
         // `PluginBridge::new` would otherwise drop a bare child process.
@@ -381,6 +391,7 @@ impl Ipc {
             origin: Some(IpcOrigin {
                 config,
                 path,
+                load,
                 load_editor,
             }),
         });

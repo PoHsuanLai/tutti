@@ -17,9 +17,9 @@ use std::time::{Duration, Instant};
 
 use tutti_graph::NodeKey;
 use tutti_nodes::testing::Const;
-use tutti_plugin::server::ParameterInfo;
 use tutti_plugin_host::Liveness;
 use tutti_plugin_host::PluginHandle;
+use tutti_plugin_types::ParameterInfo;
 use tutti_plugin_types::{Normalized, ParamId};
 use tutti_session::{Phase, PhaseCx, PluginLiveness, Session, SessionEvent};
 use tutti_types::SampleRate;

@@ -1,5 +1,5 @@
 //! The refusal of a gain written to an edge (doc 013, "Edge gain"). The edge
-//! itself, [`Edge`](crate::Edge), is in `key.rs` beside the ports it joins.
+//! itself, [`Edge`], is in `key.rs` beside the ports it joins.
 
 use thiserror::Error;
 

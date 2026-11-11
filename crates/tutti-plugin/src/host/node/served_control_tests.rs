@@ -36,6 +36,7 @@ fn the_served_control_and_any_thread_answer_alike() {
     let Launched { ipc, .. } = Ipc::launch(
         BridgeConfig::default(),
         tutti_fixtures::clap_probe().to_path_buf(),
+        tutti_plugin_types::Load::new(),
         SampleRate(48_000.0),
         None,
         crate::format::gui::load_gui_instance,

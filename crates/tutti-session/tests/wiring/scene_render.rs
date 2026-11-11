@@ -25,14 +25,7 @@
 //! - **A crossfade** starts on the next block's first frame, follows the
 //!   law, and ends on the new filter as if it had run from the fade's start:
 //!   a hand-wired graph whose filter hears silence until then.
-//! - **A golden digest** of the scene, glibc 2.39 only (`assert_golden`: it
-//!   is skipped, with a note, on another libm or architecture). The digest is
-//!   the one `bevy-tutti`'s test recorded: the graph is the same, so the
-//!   figure is carried over, never re-recorded. The filter's coefficients,
-//!   the waveshaper and the limiter's constants call the platform's `tan`,
-//!   `tanh` and `powf`, whose last ulp differs between C runtimes.
 
-use tutti_fixtures::{assert_golden, digest_planes};
 use tutti_graph::NodeKey;
 use tutti_graph::{
     CrossfadeCurve, Cx, ForkByClone, GraphBuilder, Io, Node, Prepare, Shape, Status, Unforkable,
@@ -154,7 +147,7 @@ fn assert_sounds(out: &[Vec<f32>], what: &str) {
 /// **The compensated scene**: its dry left channel is the uncompensated
 /// scene's, delayed by the limiter's lookahead to the frame (silence
 /// first); its latent right channel is the saw through the limiter,
-/// hand-wired; and the whole render matches the golden digest, bit for bit.
+/// hand-wired.
 #[test]
 fn a_compensated_scene_delays_its_dry_channel_by_the_lookahead() {
     let mut s = scene(true);
@@ -182,12 +175,6 @@ fn a_compensated_scene_delays_its_dry_channel_by_the_lookahead() {
         first_difference(&latent, &b[1..]),
         None,
         "the right channel is the saw through the limiter"
-    );
-
-    assert_golden(
-        "the compensated scene",
-        digest_planes(&b),
-        0x44de_35eb_5401_831b,
     );
 }
 

@@ -95,7 +95,10 @@ that pays, and the compiler packs tasks too cheap to dispatch alone.
   `add_event_inlet` (`tutti-session`). No rate to refuse: a `Moment` carries
   its own. A note-off or panic controller (`Ump::is_panic_controller`) is kept
   over any other event; four counts (`lost`, `evicted`, `refused`, `late`);
-  its fork is silent, unlike the audio inlet's.
+  its fork is silent, unlike the audio inlet's. A producer holding an OS time gets
+  its `Moment` from `tutti_midi_runtime::ClockMap` (pure: readings of the OS
+  `Instant` and the graph's `Frame` in, `frame_at`/`moment_at`/`os_at` out; doc 017
+  §5, "Timing at the edge", has the rule and its bound).
 - Doc 013 records the defects found and the types that address them. Update
   it when the code it describes or a decision changes.
 - **Main-thread entries take a token.** An editor, timer, run-loop, state or

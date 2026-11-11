@@ -276,7 +276,7 @@ impl Drop for LoggingBackend {
 
 impl MidiEndpoints for LoggingBackend {
     fn watch(&self, sink: ChangeSink) -> Result<Box<dyn Watch>> {
-        sink.seed(os_devices(&self.inputs(), &[]));
+        sink.seed(os_devices(&self.inputs(), &[]))?;
         Ok(Box::new(NoWatch))
     }
     fn inputs(&self) -> Vec<EndpointInfo> {

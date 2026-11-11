@@ -14,6 +14,8 @@ Pure MIDI values live in `tutti-ump` and `tutti-midi-protocol`; OS ports live in
   [`MidiInputNode`] (a wire, one port per channel), [`MidiClipNode`] and
   [`HarmonyNode`] (a timeline), [`ClockNode`] (Beat Clock and MTC). MIDI leaves the graph
   through an event tap (`tutti-graph`'s `EventTapReader`).
+- [`ClockMap`]: the pure OS-time to graph-frame map (and back), built from
+  readings of the OS `Instant` and the graph's `Frame`; it holds no clock.
 - [`NoteLedger`]: the notes a node has started and not ended, and the only way
   it writes to its port; [`MidiClipNode`] uses it.
 - [`MidiKeys`]: the key helpers (`note_on`, `note_off`) over `tutti-graph`'s

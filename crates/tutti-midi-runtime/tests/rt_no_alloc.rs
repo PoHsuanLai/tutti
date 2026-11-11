@@ -37,7 +37,7 @@ fn note_on(ch: u8, note: u8) -> Ump {
 struct Busy;
 
 impl MidiIn for Busy {
-    fn poll_block(&mut self, _block_size: usize, buffer: &mut [UmpAt]) -> usize {
+    fn poll_block(&mut self, _block_size: Samples, buffer: &mut [UmpAt]) -> usize {
         for (i, slot) in buffer.iter_mut().take(4).enumerate() {
             *slot = (
                 Offset::new(40 - 10 * i, Samples(512)).unwrap(),
@@ -95,7 +95,7 @@ fn the_border_nodes_process_without_allocating() {
 struct BendRange;
 
 impl MidiIn for BendRange {
-    fn poll_block(&mut self, _block_size: usize, buffer: &mut [UmpAt]) -> usize {
+    fn poll_block(&mut self, _block_size: Samples, buffer: &mut [UmpAt]) -> usize {
         buffer[0] = (
             Offset::ZERO,
             registered_rpn(
@@ -145,7 +145,7 @@ fn the_mpe_bend_range_fan_out_processes_without_allocating() {
 struct Mcms(bool);
 
 impl MidiIn for Mcms {
-    fn poll_block(&mut self, _block_size: usize, buffer: &mut [UmpAt]) -> usize {
+    fn poll_block(&mut self, _block_size: Samples, buffer: &mut [UmpAt]) -> usize {
         use tutti_midi_protocol::MpeZoneConfig;
         self.0 = !self.0;
         buffer[0] = (

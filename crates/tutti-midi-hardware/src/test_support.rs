@@ -316,7 +316,7 @@ impl MidiEndpoints for FakeBackend {
         let (changes, incoming) = mpsc::channel();
         let mut devices = self.devices();
         // What is plugged in now is reported before this returns.
-        sink.seed(os_devices(&devices.inputs, &devices.outputs));
+        sink.seed(os_devices(&devices.inputs, &devices.outputs))?;
         let key = devices.next_watch;
         devices.next_watch += 1;
         devices.watches.push((key, changes));

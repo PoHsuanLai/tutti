@@ -27,7 +27,7 @@ use std::time::Duration;
 use tutti_graph::UmpAt;
 
 use tutti_graph::Offset;
-use tutti_types::SampleRate;
+use tutti_types::{Frame, SampleRate, Samples};
 use tutti_ump::{Message, Ump, Utility, decode};
 
 /// The JR timestamp reference clock: **31 250 ticks per second** (one tick every
@@ -53,12 +53,12 @@ impl JrClock {
         }
     }
 
-    /// The 16-bit JR tick a sample offset maps to (wrapping at 0x1_0000). A whole
-    /// stream is stamped relative to some origin, so pass offsets from that origin.
+    /// The 16-bit JR tick a frame maps to (wrapping at 0x1_0000). A whole
+    /// stream is stamped from one origin, so pass frames counted from it.
     #[inline]
-    pub fn ticks_at(&self, sample_offset: u64) -> u16 {
-        // ticks = samples * (JR_ticks/sec) / (samples/sec)
-        let ticks = (sample_offset as f64) * JR_TICKS_PER_SECOND as f64 / self.sample_rate.get();
+    pub fn ticks_at(&self, frame: Frame) -> u16 {
+        // ticks = frames * (JR_ticks/sec) / (frames/sec)
+        let ticks = (frame.get() as f64) * JR_TICKS_PER_SECOND as f64 / self.sample_rate.get();
         (ticks as u64 & 0xFFFF) as u16
     }
 }
@@ -86,8 +86,8 @@ impl JrStamper {
     }
 
     /// Writes each input event into `out`, preceded by a JR Timestamp for its
-    /// [`Offset`]. `origin_samples` is the absolute sample position of this
-    /// block's frame-offset zero, so stamps stay monotonic across blocks.
+    /// [`Offset`]. `origin` is the absolute frame of this
+    /// block's offset zero, so stamps stay monotonic across blocks.
     ///
     /// Prefer [`JrStream`] over calling this directly: the origin has to advance
     /// by exactly the right amount between blocks, and that is the part a caller
@@ -101,10 +101,10 @@ impl JrStamper {
     /// per-block operation whose consumers hand the result straight to
     /// `MidiOut::queue` as a slice. Returning one allocated on every block for a
     /// value nobody keeps.
-    pub fn stamp_block(&self, events: &[UmpAt], origin_samples: u64, out: &mut Vec<UmpAt>) {
+    pub fn stamp_block(&self, events: &[UmpAt], origin: Frame, out: &mut Vec<UmpAt>) {
         out.reserve(events.len() * 2);
         for ev in events {
-            let ticks = self.clock.ticks_at(origin_samples + u64::from(ev.0.get()));
+            let ticks = self.clock.ticks_at(origin + Samples(ev.0.get() as usize));
             out.push((ev.0, Message::Utility(Utility::JrTimestamp(ticks)).into()));
             out.push(*ev);
         }
@@ -116,12 +116,12 @@ impl JrStamper {
     /// Split out from [`JrStream::stamp`] so the arithmetic that keeps stamps
     /// monotonic is stated once and testable on its own.
     #[inline]
-    pub fn block_span(events: &[UmpAt]) -> u64 {
+    pub fn block_span(events: &[UmpAt]) -> Samples {
         events
             .iter()
-            .map(|e| u64::from(e.0.get()))
+            .map(|e| e.0.get() as usize)
             .max()
-            .map_or(0, |m| m + 1)
+            .map_or(Samples::ZERO, |m| Samples(m + 1))
     }
 }
 
@@ -154,11 +154,11 @@ pub const JR_CLOCK_INTERVAL: Duration = Duration::from_millis(100);
 pub struct JrClockEmitter {
     clock: JrClock,
     sample_rate: SampleRate,
-    interval_samples: u64,
-    /// Absolute sample position of the last emitted clock. `None` until the
+    interval: Samples,
+    /// Absolute frame of the last emitted clock. `None` until the
     /// first, which is due immediately — a receiver needs a reference before it
     /// can use any stamp.
-    last_emit: Option<u64>,
+    last_emit: Option<Frame>,
 }
 
 impl JrClockEmitter {
@@ -183,30 +183,31 @@ impl JrClockEmitter {
         Self {
             clock: JrClock::new(sample_rate),
             sample_rate,
-            interval_samples: (interval.as_secs_f64() * sample_rate.get()).round() as u64,
+            interval: Samples((interval.as_secs_f64() * sample_rate.get()).round() as usize),
             last_emit: None,
         }
     }
 
-    /// The JR Clock owed at `origin_samples`, or `None` if one is not yet due.
+    /// The JR Clock owed at `origin`, or `None` if one is not yet due.
     ///
-    /// Call once per block with the block's starting sample position. The first
-    /// call always yields a clock.
-    pub fn due(&mut self, origin_samples: u64) -> Option<Ump> {
+    /// Call once per block with the block's starting frame. The first call
+    /// always yields a clock, and so does one whose `origin` is before the last
+    /// (the stream restarted).
+    pub fn due(&mut self, origin: Frame) -> Option<Ump> {
         let owed = match self.last_emit {
             None => true,
-            Some(last) => origin_samples.wrapping_sub(last) >= self.interval_samples,
+            Some(last) => origin.since(last).is_none_or(|gap| gap >= self.interval),
         };
         if !owed {
             return None;
         }
-        self.last_emit = Some(origin_samples);
-        Some(Message::Utility(Utility::JrClock(self.clock.ticks_at(origin_samples))).into())
+        self.last_emit = Some(origin);
+        Some(Message::Utility(Utility::JrClock(self.clock.ticks_at(origin))).into())
     }
 
-    /// The configured interval, in samples.
-    pub fn interval_samples(&self) -> u64 {
-        self.interval_samples
+    /// The configured interval, in frames.
+    pub fn interval(&self) -> Samples {
+        self.interval
     }
 
     /// The sample rate this emitter clocks at.
@@ -227,8 +228,8 @@ impl JrClockEmitter {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct JrStream {
     stamper: JrStamper,
-    /// Absolute sample position of the next block's frame-offset zero.
-    origin_samples: u64,
+    /// Absolute frame of the next block's offset zero.
+    origin: Frame,
     /// The JR Clock cadence, when this stream clocks as well as stamps.
     emitter: Option<JrClockEmitter>,
 }
@@ -247,7 +248,7 @@ impl JrStream {
     pub fn with_stamper(stamper: JrStamper) -> Self {
         Self {
             stamper,
-            origin_samples: 0,
+            origin: Frame::ZERO,
             emitter: None,
         }
     }
@@ -290,7 +291,7 @@ impl JrStream {
         self.stamp_span(events, JrStamper::block_span(events), out);
     }
 
-    /// Stamps one block of a known `block_samples` length, emitting a JR Clock
+    /// Stamps one block of a known `block` length, emitting a JR Clock
     /// first if the cadence owes one, and advances the origin by the *block*
     /// rather than by the events within it.
     ///
@@ -302,21 +303,21 @@ impl JrStream {
     /// Reusing one buffer across blocks is the point: this path runs once per
     /// block, and its callers only borrow the result to hand it to
     /// `MidiOut::queue`.
-    pub fn stamp_span(&mut self, events: &[UmpAt], block_samples: u64, out: &mut Vec<UmpAt>) {
+    pub fn stamp_span(&mut self, events: &[UmpAt], block: Samples, out: &mut Vec<UmpAt>) {
         out.clear();
         if let Some(emitter) = self.emitter.as_mut()
-            && let Some(clock) = emitter.due(self.origin_samples)
+            && let Some(clock) = emitter.due(self.origin)
         {
             out.push((Offset::ZERO, clock));
         }
-        self.stamper.stamp_block(events, self.origin_samples, out);
-        self.origin_samples = self.origin_samples.wrapping_add(block_samples);
+        self.stamper.stamp_block(events, self.origin, out);
+        self.origin += block;
     }
 
-    /// The absolute sample position the next [`stamp`](Self::stamp) will start
-    /// from. Exposed for tests and diagnostics.
-    pub fn origin_samples(&self) -> u64 {
-        self.origin_samples
+    /// The absolute frame the next [`stamp`](Self::stamp) will start from.
+    /// Exposed for tests and diagnostics.
+    pub fn origin(&self) -> Frame {
+        self.origin
     }
 
     /// The underlying stamper.

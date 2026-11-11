@@ -211,7 +211,7 @@ pub(super) fn start(sink: ChangeSink, snapshot: fn() -> Vec<OsDevice>) -> Result
     };
     let failures = sink.clone();
     let mut reporter = Reporter::new(sink);
-    reporter.seed(snapshot());
+    reporter.seed(snapshot())?;
     let watcher: Shared = Arc::new(Mutex::new(Watcher {
         reporter,
         snapshot,

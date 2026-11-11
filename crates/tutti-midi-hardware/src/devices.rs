@@ -62,7 +62,17 @@ struct State {
     subscribers: Vec<Weak<Queue>>,
     /// Why the watch ended, if it did. The table is then the last it saw.
     failure: Option<WatchFailure>,
+    /// Set by the first [`ChangeSink::seed`] and by any [`ChangeSink::send_all`]:
+    /// the table has begun, and a seed after that would rewrite what a
+    /// subscriber may already have read.
+    begun: bool,
 }
+
+/// [`ChangeSink::seed`] refused: the list was already seeded, or a change had
+/// already been reported. A backend seeds once, first.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
+#[error("the device list was already seeded, or a change was already reported")]
+pub struct SeedError;
 
 #[derive(Default)]
 struct Shared {
@@ -124,6 +134,7 @@ impl ChangeSink {
     /// reported gone and present again is never missing from the list.
     pub fn send_all(&self, changes: impl IntoIterator<Item = OsChange>) {
         let mut state = self.shared.state();
+        state.begun = true;
         for change in changes {
             if let Some(event) = state.table.apply(change) {
                 // A subscriber that has dropped leaves the list.
@@ -158,11 +169,21 @@ impl ChangeSink {
     /// Lists `devices` as already present: they enter the table and queue no
     /// event, so a `Devices` that has just opened has nothing to poll. A backend
     /// seeds once, before any [`send`](Self::send).
-    pub fn seed(&self, devices: Vec<OsDevice>) {
+    ///
+    /// # Errors
+    ///
+    /// [`SeedError`] if the sink was already seeded or has had a change
+    /// reported; the list is left as it was.
+    pub fn seed(&self, devices: Vec<OsDevice>) -> std::result::Result<(), SeedError> {
         let mut state = self.shared.state();
+        if state.begun {
+            return Err(SeedError);
+        }
+        state.begun = true;
         for device in devices {
             state.table.apply(OsChange::Present(device));
         }
+        Ok(())
     }
 }
 
@@ -212,12 +233,14 @@ impl Reporter {
     }
 
     /// Lists `present` as the devices there already were.
-    pub(crate) fn seed(&mut self, present: Vec<OsDevice>) {
-        self.known = present
+    pub(crate) fn seed(&mut self, present: Vec<OsDevice>) -> std::result::Result<(), SeedError> {
+        let known = present
             .iter()
             .map(|d| (d.handle, d.identity.clone()))
             .collect();
-        self.sink.seed(present);
+        self.sink.seed(present)?;
+        self.known = known;
+        Ok(())
     }
 
     /// The handles of `present` that are known under another identity. Only the

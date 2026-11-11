@@ -12,6 +12,7 @@ mod endpoints;
 mod error;
 mod port;
 mod session;
+mod stamp;
 
 // A backend with no OS behind it, for testing the session layer. See the
 // module's own docs for why it is exported rather than `#[cfg(test)]`.
@@ -20,7 +21,8 @@ pub mod test_support;
 
 pub use capability::{EndpointInfo, UmpCapability};
 pub use devices::{
-    ChangeSink, DeviceEvents, Devices, OpenInput, OpenOutput, RecvTimeoutError, WatchFailure,
+    ChangeSink, DeviceEvents, Devices, OpenInput, OpenOutput, RecvTimeoutError, SeedError,
+    WatchFailure,
 };
 pub use endpoints::{InputConnection, MidiEndpoints, Watch};
 pub use error::{Error, Result};

@@ -1,6 +1,6 @@
 //! Sending UMP to a sequencer port.
 
-use std::sync::Mutex;
+use std::sync::{Mutex, PoisonError};
 use tutti_graph::UmpAt;
 
 use super::client::{SeqClient, check};
@@ -43,15 +43,15 @@ impl AlsaOutput {
     ///
     /// [`Error::Alsa`] with the code
     /// `snd_seq_ump_event_output_direct` returned.
-    ///
-    /// # Panics
-    ///
-    /// If the output mutex was poisoned by a previous panic while sending.
     pub fn send_ump(&self, words: &[u32]) -> Result<()> {
         if words.is_empty() {
             return Ok(());
         }
-        let inner = self.inner.lock().expect("output mutex poisoned");
+        // A poisoned lock guards nothing broken: `Sender` is a client handle and
+        // two ids, never left half-written, and a send that panicked inside
+        // alsa-lib leaves the client usable. A panic here would take down the
+        // output drain over a fault that is already past.
+        let inner = self.inner.lock().unwrap_or_else(PoisonError::into_inner);
 
         let mut ev = sys::snd_seq_ump_event_t {
             // `SND_SEQ_EVENT_NONE`. For a UMP event the type field is unused —
@@ -94,6 +94,21 @@ impl AlsaOutput {
     }
 }
 
+#[cfg(all(test, feature = "sequencer-tests"))]
+impl AlsaOutput {
+    /// Poisons the send lock, as a panic inside a send would.
+    pub(super) fn poison(&self) {
+        std::thread::scope(|scope| {
+            let panicked = scope.spawn(|| {
+                let _held = self.inner.lock().unwrap();
+                panic!("poisoning the output lock on purpose");
+            });
+            assert!(panicked.join().is_err());
+        });
+        assert!(self.inner.is_poisoned());
+    }
+}
+
 impl MidiOut for AlsaOutput {
     /// Returns how many events reached the sequencer.
     ///
@@ -121,7 +136,12 @@ impl MidiOut for AlsaOutput {
 /// [`Error::Alsa`] if the sequencer cannot be opened, the
 /// port created, or the subscription to `id` made.
 pub fn open(id: EndpointId) -> Result<Box<dyn MidiOut>> {
-    let (dest_client, dest_port) = unpack_id(id);
+    Ok(Box::new(connect(id)?))
+}
+
+/// [`open`], as the concrete type.
+pub(super) fn connect(id: EndpointId) -> Result<AlsaOutput> {
+    let (dest_client, dest_port) = unpack_id(id).ok_or_else(|| super::input::not_minted(id))?;
 
     // Blocking: a send should apply back-pressure rather than silently drop when
     // the destination's queue is full. Only the *input* pump needs to poll.
@@ -147,13 +167,13 @@ pub fn open(id: EndpointId) -> Result<Box<dyn MidiOut>> {
     // send addresses `SUBSCRIBERS` rather than the endpoint by name. Keeping the
     // address around would invite exactly the explicit-`dest` send that ALSA
     // rejects.
-    Ok(Box::new(AlsaOutput {
+    Ok(AlsaOutput {
         inner: Mutex::new(Sender {
             seq,
             own_client,
             port: own_port,
         }),
-    }))
+    })
 }
 
 /// A client or port id as the sequencer's address byte; ids come from the

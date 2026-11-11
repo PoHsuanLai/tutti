@@ -2,11 +2,11 @@
 
 use std::os::fd::AsRawFd;
 use std::os::unix::net::UnixStream;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Instant;
+use std::sync::{Arc, mpsc};
+use std::time::{Duration, Instant};
 
-use super::client::{SeqClient, check};
+use super::client::{QueueClock, SeqClient, check};
 use super::enumerate::unpack_id;
 use super::poll::{ErrorRun, PollSet, Wait};
 use crate::InputProducerHandle;
@@ -36,6 +36,24 @@ pub(super) static INJECT_READ_ERROR: AtomicBool = AtomicBool::new(false);
 #[cfg(test)]
 const EIO: i32 = -5;
 
+/// How long dropping an input waits for its pump to end before it lets the
+/// thread go. A pump ends within a poll wake of the stop; only a read that never
+/// returns outlasts this, and a drop that waited for it would hang the caller
+/// (the session's control thread) with it.
+const JOIN_BOUND: Duration = Duration::from_secs(1);
+
+/// How long a pairing of the queue's clock with the OS's is trusted: the two
+/// run apart by parts per million, and a pair this old has drifted by
+/// microseconds at most.
+const PAIRING_AGE: Duration = Duration::from_secs(1);
+
+/// While non-zero, the pump sleeps this many milliseconds after each wake, before
+/// it reads: a pump that is late, which is what a timestamp from the sequencer
+/// exists to correct. Per process, like [`PUMP_WAKES`].
+#[cfg(test)]
+pub(super) static PUMP_STALL_MS: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+
 /// An open ALSA input. Dropping it stops the pump and closes the port.
 pub struct AlsaInput {
     /// One end of a socket pair whose other end is in the pump's `poll` set:
@@ -43,6 +61,8 @@ pub struct AlsaInput {
     stop: Option<UnixStream>,
     /// Set by the pump when it ends on an error, never on a stop.
     died: Arc<AtomicBool>,
+    /// Disconnects when the pump ends, however it ends: the drop's bounded wait.
+    ended: mpsc::Receiver<()>,
     thread: Option<std::thread::JoinHandle<()>>,
 }
 
@@ -58,10 +78,25 @@ impl Drop for AlsaInput {
         if let Some(t) = self.thread.take() {
             // Joining matters: the thread owns the `SeqClient`, and letting it
             // outlive this would leave the port subscribed to a device the
-            // caller believes it disconnected.
-            let _ = t.join();
+            // caller believes it disconnected. But not for ever: a pump stuck in
+            // alsa-lib is detached, and says so.
+            match self.ended.recv_timeout(JOIN_BOUND) {
+                Err(mpsc::RecvTimeoutError::Timeout) => tracing::warn!(
+                    "ALSA MIDI pump did not stop within {JOIN_BOUND:?}; left running, still subscribed"
+                ),
+                // Disconnected: the pump has ended (or is ending), so the join
+                // is brief.
+                _ => {
+                    let _ = t.join();
+                }
+            }
         }
     }
+}
+
+/// The error for an id [`unpack_id`] refuses.
+pub(super) fn not_minted(id: EndpointId) -> crate::error::Error {
+    crate::error::Error::MidiPort(format!("{id:?} is not an ALSA endpoint id"))
 }
 
 /// Opens `id` for input and starts pumping its events into `producer`.
@@ -76,7 +111,7 @@ impl Drop for AlsaInput {
 /// [`Error::MidiDevice`](crate::Error::MidiDevice) if the pump thread cannot be
 /// spawned.
 pub fn open(id: EndpointId, producer: InputProducerHandle) -> Result<Box<dyn InputConnection>> {
-    let (src_client, src_port) = unpack_id(id);
+    let (src_client, src_port) = unpack_id(id).ok_or_else(|| not_minted(id))?;
 
     // Non-blocking, so the pump reads until the queue is empty and then waits in
     // `poll`, which the stop descriptor can interrupt. One client per connection
@@ -91,6 +126,10 @@ pub fn open(id: EndpointId, producer: InputProducerHandle) -> Result<Box<dyn Inp
         sys::SND_SEQ_PORT_TYPE_MIDI_GENERIC | sys::SND_SEQ_PORT_TYPE_APPLICATION,
     )?;
 
+    // The kernel stamps each event as it delivers it, so the time an event
+    // is given is when it arrived, not when this pump got round to reading it.
+    let clock = seq.stamp_port(port)?;
+
     // SAFETY: `seq` is open; the address came from enumeration.
     check(
         unsafe { sys::snd_seq_connect_from(seq.raw(), port, src_client, src_port) },
@@ -102,14 +141,20 @@ pub fn open(id: EndpointId, producer: InputProducerHandle) -> Result<Box<dyn Inp
     let polls = PollSet::new(&seq, stop_rx.as_raw_fd())?;
     let died = Arc::new(AtomicBool::new(false));
     let flag = Arc::clone(&died);
+    let (ending, ended) = mpsc::channel();
     let thread = std::thread::Builder::new()
         .name("tutti-midi-in".to_string())
-        .spawn(move || pump(seq, polls, stop_rx, flag, producer))
+        .spawn(move || {
+            // Dropped when the pump returns or unwinds, which disconnects `ended`.
+            let _ending: mpsc::Sender<()> = ending;
+            pump(seq, polls, clock, stop_rx, flag, producer);
+        })
         .map_err(|e| crate::error::Error::MidiDevice(format!("spawn MIDI pump: {e}")))?;
 
     Ok(Box::new(AlsaInput {
         stop: Some(stop_tx),
         died,
+        ended,
         thread: Some(thread),
     }))
 }
@@ -127,6 +172,7 @@ pub fn open(id: EndpointId, producer: InputProducerHandle) -> Result<Box<dyn Inp
 fn pump(
     seq: SeqClient,
     mut polls: PollSet,
+    clock: QueueClock,
     // Held so its descriptor stays open while the pump polls it.
     _stop: UnixStream,
     died: Arc<AtomicBool>,
@@ -137,6 +183,10 @@ fn pump(
         died.store(true, Ordering::Release);
     };
     let mut errors = ErrorRun::default();
+    let mut arrivals = Arrivals {
+        clock,
+        pairing: None,
+    };
     loop {
         let mut ev: *mut sys::snd_seq_ump_event_t = std::ptr::null_mut();
         // SAFETY: `seq` is open for the life of this function; `ev` is a valid
@@ -165,6 +215,11 @@ fn pump(
             let waited = polls.wait(None);
             #[cfg(test)]
             PUMP_WAKES.fetch_add(1, Ordering::SeqCst);
+            #[cfg(test)]
+            if let Ok(Wait::Ready) = waited {
+                let ms = PUMP_STALL_MS.load(Ordering::SeqCst);
+                std::thread::sleep(Duration::from_millis(ms));
+            }
             match waited {
                 Ok(Wait::Ready) => continue,
                 Ok(Wait::Stopped) => return,
@@ -180,8 +235,12 @@ fn pump(
 
         // SAFETY: `rc >= 0` and `ev` non-NULL means alsa-lib wrote a complete
         // event; copying by value ends this function's use of its buffer.
-        let words = unsafe { (*ev).ump };
-        let now = Instant::now();
+        let (words, stamped) = unsafe { ((*ev).ump, (*ev).real_time()) };
+        let now = match stamped {
+            Some(t) => arrivals.at(&seq, Duration::new(u64::from(t.tv_sec), t.tv_nsec)),
+            // A port that is not stamping: the read is the best there is.
+            None => Instant::now(),
+        };
 
         // A `snd_seq_ump_event_t` carries one UMP message in a fixed 4-word
         // field, so the trailing words are padding whenever the message is
@@ -194,6 +253,33 @@ fn pump(
             && !producer.push(event, now)
         {
             tracing::debug!("MIDI input ring full, dropping event");
+        }
+    }
+}
+
+/// A queue time as an OS instant: the queue's clock and the OS's read together
+/// once (`pairing`), then each event's age is the queue's time then, subtracted
+/// from the pairing's ([`crate::stamp::arrival`]).
+struct Arrivals {
+    clock: QueueClock,
+    /// `(OS instant, queue time)` read at the same moment.
+    pairing: Option<(Instant, Duration)>,
+}
+
+impl Arrivals {
+    /// The OS instant an event stamped `stamped` on the queue arrived at. Reads
+    /// a fresh pairing when the held one is older than the event (the event
+    /// came after it) or than [`PAIRING_AGE`]; one syscall, not one per event.
+    fn at(&mut self, seq: &SeqClient, stamped: Duration) -> Instant {
+        let stale = self
+            .pairing
+            .is_none_or(|(os, queue)| stamped > queue || os.elapsed() > PAIRING_AGE);
+        if stale {
+            self.pairing = self.clock.now(seq).map(|queue| (Instant::now(), queue));
+        }
+        match self.pairing {
+            Some((os, queue)) => crate::stamp::arrival(os, queue, stamped),
+            None => Instant::now(),
         }
     }
 }

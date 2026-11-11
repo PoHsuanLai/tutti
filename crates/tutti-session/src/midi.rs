@@ -72,7 +72,7 @@ pub struct UmpOut {
 impl core::fmt::Debug for UmpOut {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("UmpOut")
-            .field("origin_samples", &self.stream.origin_samples())
+            .field("origin", &self.stream.origin())
             .field("stamping", &self.stamping)
             .finish_non_exhaustive()
     }
@@ -140,13 +140,13 @@ impl UmpOut {
     /// long the block was so the JR Clock cadence keeps running through
     /// silence (§7.2.2.1: the cadence is a property of elapsed time, not of
     /// traffic).
-    pub fn send_stamped_span(&mut self, events: &[UmpAt], block_samples: u64) {
+    pub fn send_stamped_span(&mut self, events: &[UmpAt], block: Samples) {
         if !self.stamping {
             self.send_all(events);
             return;
         }
         let mut buf = core::mem::take(&mut self.stamped);
-        self.stream.stamp_span(events, block_samples, &mut buf);
+        self.stream.stamp_span(events, block, &mut buf);
         self.send_all(&buf);
         self.stamped = buf;
     }
@@ -181,10 +181,10 @@ impl UmpOut {
         self.sink.queue(events);
     }
 
-    /// The absolute sample position the next stamp starts from. For tests
-    /// and diagnostics.
-    pub fn origin_samples(&self) -> u64 {
-        self.stream.origin_samples()
+    /// The absolute frame the next stamp starts from. For tests and
+    /// diagnostics.
+    pub fn origin(&self) -> Frame {
+        self.stream.origin()
     }
 }
 
@@ -1056,12 +1056,12 @@ mod tests {
         let (mut out, _) = out_with_counter(true);
 
         out.send_stamped(&[note(511)]);
-        assert_eq!(out.origin_samples(), 512, "one 512-frame block");
+        assert_eq!(out.origin(), Frame(512), "one 512-frame block");
 
         out.send_stamped(&[note(511)]);
         assert_eq!(
-            out.origin_samples(),
-            1024,
+            out.origin(),
+            Frame(1024),
             "the second producer continues from the first, it does not restart"
         );
     }
@@ -1079,8 +1079,8 @@ mod tests {
             "events must reach the sink with stamping off"
         );
         assert_eq!(
-            out.origin_samples(),
-            0,
+            out.origin(),
+            Frame(0),
             "and the stream must not advance when it did not stamp"
         );
     }
@@ -1166,13 +1166,13 @@ mod tests {
             "each event's spacing from the earliest"
         );
         out.set_stamping(true);
-        let before = out.origin_samples();
+        let before = out.origin();
         MidiOutRouter {
             out: Some(&mut out),
             drops: None,
         }
         .route(&[at(1_250), at(1_000), at(1_999)]);
-        assert_eq!(out.origin_samples() - before, 1_000, "the span");
+        assert_eq!(out.origin().since(before), Some(Samples(1_000)), "the span");
     }
 
     /// **A host's mailbox is drained with its stamps' spacing kept, across

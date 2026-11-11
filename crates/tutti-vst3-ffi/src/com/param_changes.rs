@@ -157,13 +157,14 @@ impl ParameterChangesImpl {
         Some(ParamStaging { list: self, inner })
     }
 
-    /// [`try_begin`](Self::try_begin) for a caller that owns the list's every
-    /// reader (a test, or a plugin that is not running).
+    /// [`try_begin`](Self::try_begin) for a test, which owns the list's every
+    /// reader.
     ///
     /// # Panics
     ///
     /// If a plugin thread is inside a call on the list or holds a queue.
-    pub fn begin(&self) -> ParamStaging<'_> {
+    #[cfg(test)]
+    pub(crate) fn begin(&self) -> ParamStaging<'_> {
         self.try_begin().expect("the list is not in use")
     }
 

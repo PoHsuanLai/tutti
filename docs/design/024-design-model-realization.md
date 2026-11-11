@@ -870,8 +870,9 @@ pub struct PerChannel<C>(C);                          // impl Kernel: Coeffs = G
   width checks stay in its constructor); the reverbs keep theirs.
 - **Where it stops.** A source with no input run through a model (an LFO, a lane, the click) and an
   instrument (a voice pool) are not kernels: section 4.5a and the instruments' own structure.
-  A node with no control and no state (the downmix) is a fixed `Fold` and stays a plain node, or is the
-  `Matrix` kernel's fixed case once that kernel exists (section 4.10).
+  A fixed channel map with no control and no state is not a node at all: it is a bus edge
+  (`connect_bus`, doc 013's buses) or a `Fold` (doc 013 B3 deletes `DownmixNode`). A map whose
+  controls move is the `Matrix` kernel (section 4.10).
 - **What goes.** Five `Realization` impls become one; `tutti_dsp::Ramp`, the FDN's `Slew` and the
   filters' glide become `Glide`. Every effect moved onto it renders independently of the block length
   (the compressor, gate, delay, strip and VBAP ramp across the block today).
@@ -1008,14 +1009,43 @@ position and a length), and a step piece's value is meant on its frame. The grid
 to a period late, which is wrong for a step automation and for a format whose parameter frames are
 normative (IAMF's demixing, section 4.10). So a `DesignNode` also cuts the block at every corner a
 driving lane delivers inside it, and solves there; on a lane with no corner in the block nothing
-changes. Corners are data on the stream, so the render stays a function of the stream: block
-independence holds.
+changes.
+
+- **A corner is a frame where the delivered trajectory changes piece**, not every segment event. It
+  is one of: a new segment whose `(from, to, law)` differs from the piece in flight; a step (a length
+  that is not finite or not above 0, or a `Law::Hold` landing); or the arrival frame of the piece in
+  flight (the first `j` with `(position + j) / length >= 1`, where `segment_progress` turns `None`).
+  **A re-send is not a corner:** a lane re-sends its piece at each block start as a `resumed` segment,
+  and a `Resync` re-sends where it stands at a control-side commit's frame; cutting at those would cut
+  at block and commit frames and bring back the block dependence B4 keeps out.
+- **The arrival corner is computed once,** from the event that started the piece, and carried, never
+  recomputed from a re-send. `position` and `length` are `f32` (Q28): past 2^24 frames (about 5.8 min
+  at 48 kHz) two re-sends at different positions can round the arrival to different frames, which
+  would make the corner depend on where blocks fell.
+- **Corners are read after the port's delay:** they shift with the event ring under PDC
+  (`DelayKey::ParamEvent`), as the values do.
+- **Tests (the control-sources lane):** a step automation solved on its frame, with block lengths 1,
+  64 and 100 rendering identically (an invariant, not a compare against a recorded render), and a
+  `Resync` mid-block that changes nothing.
+
+With corners so defined they are data on the stream, so the render stays a function of the stream:
+block independence holds.
 
 **Two clocks, one rule.** An effect solves on the **stream** clock (frames since its reset), because
 audio runs through it while the transport is stopped. A control source produces on the clock it
 follows: the **play** clock (transport frames: automation, a beat-synced LFO, the note envelope) or the
 stream (a free-running follower). A lane sampled by an effect is exact at any frame, so the two clocks
-meet without loss; only the glide between solves approximates, by at most one period.
+meet without loss; only the glide between solves approximates, by at most one period. Three things
+follow from the play clock:
+
+- **It is not monotone.** A seek or a loop wrap inside a block is in `Env::segments()`, never a split
+  block, so `SourceNode`'s walk iterates `Env::segments()`; a wrap is a corner and sends a fresh, not a
+  resumed, segment.
+- **Behind a latent path** a source reads `Cx::transport_at` (the transport its input was rendered
+  at), not `Env::transport_at`.
+- **While stopped** a play source emits nothing and its lane holds, while effects keep solving on the
+  stream. A play-anchored grid lands at transport multiples of its period, so it is deterministic
+  under preroll.
 
 **Where cadence stops.** The compressor, gate and limiter nodes take a threshold
 (and the limiter a ceiling) as a **per-frame lane** (`io.param(0).frames()`,
@@ -1346,10 +1376,10 @@ source; nothing is IAMF-specific, and no trait is added.
 | Stage | Runs as | Exact? |
 |---|---|---|
 | Parameter blocks (mix gain, demixing, recon gain; subblocks at `parameter_rate`) | `SourceNode<ParamBlocks<T>>`: a corner at each subblock's start (the anchor is data), step, linear and Bezier pieces | step and linear exact; the quadratic Bezier needs `Law::Bezier` (Q28) |
-| Mix gain (in dB, interpolated per sample) | an **edge gain** driven by its lane (doc 013 "Edge gain"; the graph evaluates `Piece::value` per frame): no node | linear in dB is exactly `Law::Exp(k = ln(a1 / a0))` in amplitude (its doc states the geometric case); Bezier in dB needs a piece whose law is in dB (A2's parameter-space law) |
+| Mix gain (in dB, interpolated per sample) | an **edge gain** driven by its lane (doc 013 "Edge gain"; the graph evaluates `Piece::value` per frame): no node. A driven edge gain is absolute (it replaces the base) and clamped to `EdgeGain::range`, ±8.0 linear (about +18 dB) by default, so the lane **sets a range wide enough for the stream's gains** or the top is clipped. Its segments are `ParamSegment` (absolute, they name `from`), never `ParamRamp` | linear in dB is `Law::Exp(k = ln(a1 / a0))` in amplitude: **exact in law, geometric to `f32` rounding** (it evaluates through libm's `exp_m1`, `abs(k)` clamped to 64; `a0 = a1` falls back to linear), not bit-exact against a reference decoder; Bezier in dB needs a piece whose law is in dB (A2's parameter-space law) |
 | Demixing (an index per frame, a saturating counter, no interpolation) | a `Matrix` kernel (model a `Fold`), `Steps::Fixed(0)`; the counter is the source's state | exact, by solving at corners (B4) |
 | Recon gain (per-channel gains, a crossfade window at the frame head) | the same `Matrix` kernel, diagonal, `Steps::Fixed(window)` from the corner | exact |
-| Channel render, scene decode (AllRAD), object pan | the `Matrix` kernel: static `Fold`s (the downmix node is its fixed case); AllRAD the product of the SH decode and the VBAP columns, built once; object pan the VBAP kernel | exact (order 0) |
+| Channel render, scene decode (AllRAD), object pan | static `Fold`s (a fixed one is a bus edge or a `Fold`, no node) and the `Matrix` kernel where a control moves the map; AllRAD the product of the SH decode and the VBAP columns, built once; object pan the VBAP kernel | exact (order 0) |
 | Head rotation | the `Matrix` kernel over a quaternion control (slerp pieces), the SH rotation designed per solve | within the 16-frame chord of a small rotation |
 | Binaural (SH to ears) | the convolver's kernel generalized to an **FIR bank** (a matrix of IRs, inputs by outputs, summed per output): mono, stereo, true stereo and SH-to-binaural are its cases | exact (LTI) |
 | Loudness normalization | a fixed edge gain from the presentation's measured loudness | exact |
@@ -1406,7 +1436,10 @@ pub struct DesignNode<D: NodeDesign> { /* design, realization, params: Params<D:
 ```
 
 `Blend` leaves (B2): a node's dry/wet is the graph's mix (`Graph::set_mix`, doc 013 M4; the convolver,
-delay, chorus/flanger and phaser went wet-only in #542, the reverbs follow). The `SAMPLING` default stays
+delay, chorus/flanger and phaser went wet-only in #542, the reverbs follow). A modulated dry/wet is a route
+onto `ModTarget::Mix(MixRef::of(node))` (#537), and DRY is bit-identical to `Bypassed`. The bar per node: at
+WET the graph renders the node alone bit for bit, and at DRY the aligned input bit for bit. HRTF keeps its
+own centre-fold blend (its dry is not the input). The `SAMPLING` default stays
 `BLOCK`, not `CADENCE`: the reverbs' `CADENCE` is stream-anchored (the FDN's 32, Freeverb's 1) while they
 read their controls per block, and a `CADENCE` default would redesign Freeverb every frame. The filters set
 it once, on `Filter<K>`'s one `NodeDesign` impl. A `ControlSet` impl is plain data (about 25 lines); a
@@ -2133,7 +2166,10 @@ listed in the PR.
 becomes block independent; each builds the addition it is the first user of):
 
 1. **Dynamics** (step 4's content, re-cut): compressor and gate as frame kernels with a side-chain **bus**
-   (`Design::channels` declares buses; doc 013 B1, #541), the limiter (its lookahead ring sized from
+   (`Design::channels` declares buses: doc 013 B1, #541, `BusRole::Sidechain`, at most `MAX_BUSES` = 4 of at
+   most 16 channels; buses cover a prefix of the ports, so the side chain comes after Main; it is wired with
+   `connect_bus`, #547). A side chain plays no part in bypass or the dry: bypass folds Main to Main only, and
+   the mix's aligned dry reads the Main fold (doc 013 B3), the limiter (its lookahead ring sized from
    `Bounds`), the multiband (a kernel of kernels: the crossover and a compressor per band; solo and bypass
    glide). Per-frame lanes as `run` inputs (Q3, section 4.5).
 2. **Delay and modulation** (step 5's): the delay (lines from `Bounds`, its time a rate-limited `Glide`),
@@ -2141,7 +2177,7 @@ becomes block independent; each builds the addition it is the first user of):
    `ChannelKernel`.
 3. **Spatial and strip** (step 7's panners, after 7a): VBAP (its gains glide on the grid; the angle
    one-pole becomes a direction glide, a change of sound), HRTF (`STEP = 128`, **`Crossfade`**), the strip's
-   gains; the `Matrix` kernel (the downmix is its fixed case).
+   gains; the `Matrix` kernel, for a channel map a control moves (a fixed one is a bus edge or a `Fold`).
 4. **Convolver** (step 6's): a gain glide, the IR swapped by `Crossfade` (a live IR swap, which needs a new
    node today), and the **FIR bank** generalization.
 5. **Control sources** (B3, independent of 1 to 4): `ControlSource`, `SourceNode`, `Anchor::Play`; the

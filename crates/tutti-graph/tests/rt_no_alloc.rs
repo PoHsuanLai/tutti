@@ -1042,10 +1042,17 @@ fn parallel_fan_in_is_allocation_free() {
 /// with weights), on the parallel executor's helpers too. The moves are the
 /// control thread's; every block renders inside the gate.
 ///
+/// With `driven`, every lane is also driven by one of four lane nodes (two of
+/// them declaring latency, so the lanes behind them get event rings): each
+/// lane runs the param port's step, with its clamp and its values, per block.
+///
 /// Mutation (each run, each failed): build the per-lane ramp in a `Vec` in
 /// `gain::add` -> aborts on the first ramping block; collect the lanes' weights
-/// into a `Vec` in `sum_op` -> aborts; allocate in `SumLane::snapshot` -> aborts.
-fn weighted_fan_in_is_allocation_free_on(workers: usize) {
+/// into a `Vec` in `sum_op` -> aborts; allocate in `SumLane::snapshot` -> aborts;
+/// (driven) size a lane's `ParamState` on first use (`ParamState::lane`
+/// called from `SumLane::weight`) -> aborts; collect a lane's events in a
+/// `Vec` in `sum_op` -> aborts.
+fn weighted_fan_in_is_allocation_free_on(workers: usize, driven: bool) {
     use common::Pulse;
     use tutti_graph::{EdgeGain, EdgeId, Sink};
     use tutti_types::Amplitude;
@@ -1111,6 +1118,27 @@ fn weighted_fan_in_is_allocation_free_on(workers: usize) {
                 ed.spec_mut()
                     .set_edge_gain(edge_of(k), EdgeGain::new(Amplitude::new(0.5)));
             }
+            if driven {
+                for (i, latency) in [0usize, 0, 40, 150].into_iter().enumerate() {
+                    ed.insert(
+                        NodeKey(5000 + i as u64),
+                        "lane",
+                        Unforkable(TestNode::new(Kind::GainDriver {
+                            period: 8 + 9 * i as u64,
+                            latency,
+                        })),
+                    );
+                }
+                for k in 1..=n {
+                    ed.spec_mut().connect_edge_gain(
+                        edge_of(k),
+                        EventOut {
+                            node: NodeKey(5000 + k % 4),
+                            port: 0,
+                        },
+                    );
+                }
+            }
             ed.commit().expect("commits");
             exec.apply_pending();
             ed.collect();
@@ -1135,10 +1163,20 @@ fn weighted_fan_in_is_allocation_free_on(workers: usize) {
 
 #[test]
 fn weighted_fan_in_is_allocation_free() {
-    weighted_fan_in_is_allocation_free_on(1);
+    weighted_fan_in_is_allocation_free_on(1, false);
 }
 
 #[test]
 fn parallel_weighted_fan_in_is_allocation_free() {
-    weighted_fan_in_is_allocation_free_on(4);
+    weighted_fan_in_is_allocation_free_on(4, false);
+}
+
+#[test]
+fn driven_fan_in_is_allocation_free() {
+    weighted_fan_in_is_allocation_free_on(1, true);
+}
+
+#[test]
+fn parallel_driven_fan_in_is_allocation_free() {
+    weighted_fan_in_is_allocation_free_on(4, true);
 }

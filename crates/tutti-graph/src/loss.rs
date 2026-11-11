@@ -145,6 +145,7 @@ impl Dropped {
             Some(
                 DelayKey::Event { from, .. }
                 | DelayKey::ParamEvent { from, .. }
+                | DelayKey::EdgeGain { from, .. }
                 | DelayKey::EventTap { from, .. },
             ) => Some(from),
             _ => None,

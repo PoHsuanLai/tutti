@@ -102,7 +102,8 @@ pub use midi::{
 };
 #[cfg(feature = "modulation")]
 pub use modulation::{
-    ModRefusal, ModState, Mods, ParamRef, Take, UNRESOLVED_WARNING, declare_targets,
+    EdgeRef, EdgeSink, ModRefusal, ModState, ModTarget, Mods, ParamRef, Take, UNRESOLVED_WARNING,
+    declare_targets,
 };
 pub use node::{Reclaimer, SessionNode};
 #[cfg(feature = "plugin")]

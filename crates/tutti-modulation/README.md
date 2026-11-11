@@ -52,7 +52,7 @@ use tutti_types::{
     SampleRate, UnitParam,
 };
 
-let cutoff = TargetKey { node: 7, param: ParamAddr::Unit(UnitParam::Cutoff) };
+let cutoff = TargetKey::param(7, ParamAddr::Unit(UnitParam::Cutoff));
 let sources = [(
     SourceKey(1),
     Source::Lfo {

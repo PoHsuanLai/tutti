@@ -32,6 +32,12 @@ pub const MAX_HOPS: u32 = 2;
 /// divergence.
 pub const EVENT_CAPACITY: usize = 16_384;
 
+/// What a [`Kind::GainDriver`] steps its gain to at frame `f`: a figure
+/// that changes at every step and is exact in `f32`.
+pub fn driver_value(f: u64, period: u64) -> f32 {
+    ((f / period) % 7) as f32 * 0.25 - 0.5
+}
+
 pub fn prepare(max_block: usize) -> Prepare {
     Prepare::new(RATE, Samples(max_block))
 }
@@ -76,6 +82,12 @@ pub enum Kind {
         burst: u32,
         cap: u32,
     },
+    /// A lane for an edge gain (doc 013, "Edge gain"): on every frame that is
+    /// a multiple of `period` it steps the gain it drives to
+    /// [`driver_value`] (a zero-length ramp addressed to `EdgeGain::ADDR`).
+    /// It declares `latency` frames of processing latency it does not
+    /// realise, so its events leave late for the PDC tests.
+    GainDriver { period: u64, latency: usize },
     /// Folds incoming events into a running value: `s = 0.5 s + (w0 % 97)`.
     /// Order-sensitive, so a merge that reorders ties is caught.
     Consumer { inputs: u16 },
@@ -178,6 +190,10 @@ impl TestNode {
                 .with_latency(lat(latency))
                 .with_tail(Tail::None),
             Kind::Emitter { .. } => Shape::audio(ch(0), ch(1)).with_events(0, 1),
+            Kind::GainDriver { latency, .. } => Shape::audio(ch(0), ch(0))
+                .with_events(0, 1)
+                .with_latency(lat(latency))
+                .with_tail(Tail::None),
             Kind::Burst { cap, .. } => Shape::audio(ch(0), ch(1))
                 .with_events(0, 1)
                 .with_event_capacity(cap),
@@ -292,6 +308,20 @@ impl Node for TestNode {
                     }
                 }
                 io.output(0).fill(self.count);
+                Status::Modified
+            }
+            Kind::GainDriver { period, .. } => {
+                for at in cx.env.offsets() {
+                    let f = cx.env.frame_at(at).get();
+                    if f.is_multiple_of(period) {
+                        let ramp = tutti_graph::ParamRamp::new(
+                            tutti_types::ParamKey::<tutti_types::Amplitude>::VOLUME,
+                            tutti_types::Amplitude::new(driver_value(f, period)),
+                            Samples(0),
+                        );
+                        let _ = io.event_out(0).push(Event::ramp(at, ramp));
+                    }
+                }
                 Status::Modified
             }
             Kind::Burst {
@@ -638,6 +668,15 @@ impl Pair {
             .set_edge_gain(id, base)
             .expect("the edge has a gain entry");
         self.reference.set_edge_gain(id, base);
+    }
+
+    /// Move edge `id`'s range in both: the editor's `set_edge_gain_range` (a
+    /// store, no commit) and the reference's.
+    pub fn set_edge_gain_range(&mut self, id: tutti_graph::EdgeId, range: tutti_graph::ParamRange) {
+        self.editor
+            .set_edge_gain_range(id, range)
+            .expect("the edge has a gain entry");
+        self.reference.set_edge_gain_range(id, range);
     }
 
     /// Render one block through both; return (executor, reference) outputs.

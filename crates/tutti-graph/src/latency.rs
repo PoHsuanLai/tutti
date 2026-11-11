@@ -190,6 +190,15 @@ pub trait LatencyGraph {
         std::iter::empty()
     }
 
+    /// Returns the nodes that drive something at the **output** rather than
+    /// at a node: the lane behind the gain of an edge into a global output
+    /// channel. They count toward the graph's total latency (a later one
+    /// raises the output time) but feed no audio, so no channel's
+    /// compensation or delay lists them. None by default.
+    fn output_sources(&self) -> impl Iterator<Item = Self::Node> {
+        std::iter::empty()
+    }
+
     /// Returns what feeds the graph's output channels, tagged by channel, in
     /// channel order: one pair per source, as [`inputs`](Self::inputs). A
     /// channel fed from outside the graph is `Feed::Outside`; a channel fed by
@@ -394,7 +403,15 @@ pub fn delays<G: LatencyGraph>(g: &G) -> Delays<G::Node> {
         channel_arrivals[channel] = channel_arrivals[channel].max(feed_departure(feed));
     }
 
-    let total = channel_arrivals.iter().copied().max().unwrap_or_default();
+    let total = channel_arrivals
+        .iter()
+        .copied()
+        .chain(
+            g.output_sources()
+                .map(|src| departure(src, &arrival, &latency)),
+        )
+        .max()
+        .unwrap_or_default();
 
     // Aligning output channels with each other and telling external sources how
     // far to pre-roll are the same "close the gap to the worst case" figure —

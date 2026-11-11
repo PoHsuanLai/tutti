@@ -37,26 +37,23 @@
 
 use std::collections::BTreeSet;
 use std::os::fd::AsRawFd;
-use std::os::raw::c_int;
 use std::os::unix::net::UnixStream;
 use std::thread::JoinHandle;
 
-use super::client::{SeqClient, check};
 use super::enumerate::{pack_id, unpack_id};
+use super::poll::ErrorRun;
 #[cfg(test)]
 use super::poll::MAX_DRAIN_ERRORS;
-use super::poll::{ErrorRun, PollSet, Wait};
 use crate::devices::{ChangeSink, Reporter};
 use crate::endpoints::Watch;
 use crate::error::{Error, Result};
-use tutti_alsa_ump_sys as sys;
+use tutti_alsa_ffi::{Announced as Event, CAP_WRITE, Client, Poller, Read, TYPE_APPLICATION, Wait};
 use tutti_midi_device::{EndpointId, OsDevice};
 
 /// Announcements the watch thread has acted on, for the idle test.
 #[cfg(test)]
 pub(super) static WAKES: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
-const EAGAIN: i32 = -11;
 /// Looks a settle takes before it reports the last one.
 const MAX_SETTLE: usize = 8;
 /// Linux truncates a thread name to 15 bytes.
@@ -64,22 +61,11 @@ const THREAD_NAME: &str = "tutti-devwatch";
 
 /// A subscription to the announce port, and the descriptors to wait on.
 struct Announce {
-    seq: SeqClient,
+    seq: Client,
     /// The sequencer's descriptors, then the stop descriptor.
-    polls: PollSet,
+    polls: Poller,
     /// The read end of the stop pair; the owner drops the write end to wake us.
     _stop: UnixStream,
-}
-
-/// An announcement the watch reads, with the client (and port) it names.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Event {
-    ClientStart(c_int),
-    ClientExit(c_int),
-    ClientChange(c_int),
-    PortStart(c_int, c_int),
-    PortExit(c_int, c_int),
-    PortChange(c_int, c_int),
 }
 
 /// What one read of the announce queue found.
@@ -413,27 +399,12 @@ enum Woken {
 
 impl Announce {
     fn open(stop: UnixStream) -> Result<Self> {
-        let seq = SeqClient::open("tutti-watch", true)?;
+        let seq = super::client::open("tutti-watch", true)?;
         // Write-only and not subscribable: nobody lists this port as a device.
-        let port = seq.open_port(
-            "tutti-watch",
-            sys::SND_SEQ_PORT_CAP_WRITE,
-            sys::SND_SEQ_PORT_TYPE_APPLICATION,
-        )?;
-        // SAFETY: `seq` is open; the arguments are plain integers.
-        check(
-            unsafe {
-                sys::snd_seq_connect_from(
-                    seq.raw(),
-                    port,
-                    sys::SND_SEQ_CLIENT_SYSTEM,
-                    sys::SND_SEQ_PORT_SYSTEM_ANNOUNCE,
-                )
-            },
-            "snd_seq_connect_from",
-        )?;
+        let port = seq.open_port("tutti-watch", CAP_WRITE, TYPE_APPLICATION)?;
+        seq.connect_from_announce(port)?;
 
-        let polls = PollSet::new(&seq, stop.as_raw_fd())?;
+        let polls = Poller::new(&seq, stop.as_raw_fd())?;
         Ok(Self {
             seq,
             polls,
@@ -457,41 +428,28 @@ impl Announce {
         let mut found = Drained::default();
         let mut errors = ErrorRun::default();
         loop {
-            let mut event: *mut sys::snd_seq_ump_event_t = std::ptr::null_mut();
-            // SAFETY: `seq` is open; the event is alsa-lib's, read before the
-            // next call.
-            let rc = unsafe { sys::snd_seq_ump_event_input(self.seq.raw(), &mut event) };
-            if rc < 0 {
-                if rc == EAGAIN {
-                    return found;
+            let received = match self.seq.read_event() {
+                Ok(Read::Event(received)) => received,
+                Ok(Read::Empty) => return found,
+                Ok(Read::Skipped) => {
+                    errors.read();
+                    continue;
                 }
-                // An overrun drops announcements and is not a quiet read: it
-                // makes the settle look again. A descriptor that keeps failing
-                // ends the drain.
-                tracing::debug!("ALSA announce: {}", super::client::strerror(rc));
-                found.failed();
-                if errors.failed() {
-                    return found;
+                Err(e) => {
+                    // An overrun drops announcements and is not a quiet read: it
+                    // makes the settle look again. A descriptor that keeps
+                    // failing ends the drain.
+                    tracing::debug!("ALSA announce: {}", e.message());
+                    found.failed();
+                    if errors.failed() {
+                        return found;
+                    }
+                    continue;
                 }
-                continue;
-            }
-            errors.read();
-            if event.is_null() {
-                continue;
-            }
-            found.any = true;
-            // SAFETY: non-null, and valid until the next `input`; copied out.
-            let (kind, data) = unsafe { ((*event).type_, (*event).ump[0].to_ne_bytes()) };
-            let (client, port) = (c_int::from(data[0]), c_int::from(data[1]));
-            let event = match kind {
-                sys::SND_SEQ_EVENT_CLIENT_START => Some(Event::ClientStart(client)),
-                sys::SND_SEQ_EVENT_CLIENT_EXIT => Some(Event::ClientExit(client)),
-                sys::SND_SEQ_EVENT_CLIENT_CHANGE => Some(Event::ClientChange(client)),
-                sys::SND_SEQ_EVENT_PORT_START => Some(Event::PortStart(client, port)),
-                sys::SND_SEQ_EVENT_PORT_EXIT => Some(Event::PortExit(client, port)),
-                sys::SND_SEQ_EVENT_PORT_CHANGE => Some(Event::PortChange(client, port)),
-                _ => None,
             };
+            errors.read();
+            found.any = true;
+            let event = received.announced();
             found.events.extend(event);
             if found.full() {
                 return found;
@@ -530,7 +488,7 @@ impl Drop for AlsaWatch {
 /// later fails, by an error or a panic, tells `sink` ([`ChangeSink::fail`]).
 pub(super) fn start(
     sink: ChangeSink,
-    snapshot: impl Fn(&SeqClient) -> Option<Vec<OsDevice>> + Send + 'static,
+    snapshot: impl Fn(&Client) -> Option<Vec<OsDevice>> + Send + 'static,
 ) -> Result<Box<dyn Watch>> {
     let (stop_tx, stop_rx) = UnixStream::pair()?;
     let mut announce = match Announce::open(stop_rx) {

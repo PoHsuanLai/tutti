@@ -1,0 +1,33 @@
+[package]
+name = "tutti-alsa-ffi"
+version = "0.0.1"
+edition.workspace = true
+rust-version.workspace = true
+description = "The unsafe half of the Linux MIDI backend: safe handles over the ALSA sequencer and its UMP API"
+license.workspace = true
+repository.workspace = true
+documentation = "https://docs.rs/tutti-alsa-ffi"
+readme = "README.md"
+keywords = ["alsa", "ump", "midi", "ffi"]
+categories = ["external-ffi-bindings", "multimedia::audio", "os::linux-apis"]
+# `alsa-sys` (via cpal) has `links = "alsa"`, so "asound" does not collide with
+# it. The key is what carries this crate's probe result (`DEP_ASOUND_*`) to the
+# crates that depend on it.
+links = "asound"
+publish = false
+
+[lints]
+workspace = true
+
+[features]
+# The hooks a test uses to reach what the backend does not: renaming a client
+# and changing a port's capabilities, which stand in for a device that comes,
+# goes and changes. Off in a production build; the backend's tests turn it on.
+test-support = []
+
+[target.'cfg(target_os = "linux")'.dependencies]
+# `poll(2)` on the sequencer's descriptors and a caller's stop descriptor.
+libc = "0.2"
+
+[package.metadata.docs.rs]
+targets = ["x86_64-unknown-linux-gnu"]

@@ -154,10 +154,7 @@ impl Design for GainDesign {
     const CADENCE: Cadence = Cadence::stream(NonZeroU32::MIN);
 
     fn channels(&self) -> Channels {
-        Channels {
-            input: ChannelLayout::MONO,
-            output: ChannelLayout::MONO,
-        }
+        Channels::speakers(ChannelLayout::MONO, ChannelLayout::MONO)
     }
 
     fn blank(&self, _: SampleRate) -> GainModel {

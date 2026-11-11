@@ -19,7 +19,7 @@ and predate the `-ffi` crates' extraction.
 | `tutti-*-host`, `tutti-*-ffi` (VST2's is `tutti-vst2-ffi`; `vst-tutti` is its old name) | 1,985 | VST2/VST3/CLAP/AU C ABIs |
 | `crates/tutti-plugin-server/` | 83 | the subprocess side: shm, signals |
 | `crates/tutti-plugin/` | 90 | shm slab, IPC transport |
-| `crates/tutti-midi-hardware/`, `tutti-alsa-ump-sys` | 28 | CoreMIDI / ALSA seq-UMP |
+| `crates/tutti-midi-hardware/`, `tutti-alsa-ffi`, `tutti-coremidi-ffi` | 28 | CoreMIDI / ALSA seq-UMP (as audited, before design 017 stage 4d moved them out of the backend) |
 | `crates/bevy-tutti/` | 27 | native windows for plugin editors; `set_var` in one test |
 | `crates/tutti-plugin-types/` | 10 | bundle/ABI value types |
 | `tutti-rt` | 60 | the non-FFI sites below |

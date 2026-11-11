@@ -1810,12 +1810,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "midly"
-version = "0.5.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "207d755f4cb882d20c4da58d707ca9130a0c9bc5061f657a4f299b8e36362b7a"
-
-[[package]]
 name = "minimal-lexical"
 version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3439,8 +3433,11 @@ dependencies = [
 ]
 
 [[package]]
-name = "tutti-alsa-ump-sys"
+name = "tutti-alsa-ffi"
 version = "0.0.1"
+dependencies = [
+ "libc",
+]
 
 [[package]]
 name = "tutti-au-ffi"
@@ -3544,6 +3541,15 @@ dependencies = [
  "tutti-fixtures",
  "tutti-types",
  "vorbis_rs",
+]
+
+[[package]]
+name = "tutti-coremidi-ffi"
+version = "0.0.1"
+dependencies = [
+ "core-foundation 0.10.1",
+ "coremidi-sys",
+ "mach2",
 ]
 
 [[package]]
@@ -3694,7 +3700,6 @@ dependencies = [
 name = "tutti-midi-file"
 version = "0.0.1"
 dependencies = [
- "midly",
  "tempfile",
  "thiserror 2.0.21",
  "tutti-fixtures",
@@ -3702,6 +3707,7 @@ dependencies = [
  "tutti-tempo",
  "tutti-types",
  "tutti-ump",
+ "winnow 1.0.4",
 ]
 
 [[package]]
@@ -3711,13 +3717,11 @@ dependencies = [
  "assert_no_alloc",
  "core-foundation 0.10.1",
  "coremidi",
- "coremidi-sys",
- "libc",
- "mach2",
  "ringbuf",
  "thiserror 2.0.21",
  "tracing",
- "tutti-alsa-ump-sys",
+ "tutti-alsa-ffi",
+ "tutti-coremidi-ffi",
  "tutti-fixtures",
  "tutti-graph",
  "tutti-midi-device",

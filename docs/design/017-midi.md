@@ -1383,9 +1383,9 @@ nothing new: nothing here adds `unsafe` or a lock-free structure.
 | `tutti-ump` | Packet | `Ump`, `Message`, codec, `MidiGroup`, `MidiChannel`, `CCNumber`, field types, MIDI 1.0 bytes and `Midi1Parser`, `Rpn` (an RPN address), `SYSEX7_MAX_PAYLOAD` and `split_stream` (a buffer of concatenated packets) | No tutti crate |
 | `tutti-midi-protocol` | Translation | `Translator`, App. D, M2-115 scaling, MPE zone values (`MpeZoneConfig`, `MpeZones`, `MpeMode`), `PitchBendSensitivity` | `tutti-ump` |
 | `tutti-midi-device` | Endpoint, Function Block | `Endpoint`, `Connection`, CI codec, JR | `tutti-ump` |
-| `tutti-midi-hardware` | Transport | OS backends, no graph (the target: today `port/manager.rs` imports `tutti_graph::{Offset, UmpAt}` and turns an arrival `Instant` into an `Offset` on the audio thread; stage E5 moves that behind the event inlet); `#![forbid(unsafe_code)]` once the `-ffi` crates exist (today the ALSA wrappers hold the `unsafe`) | `tutti-midi-device`, the two `-ffi` crates |
-| `tutti-alsa-ffi` | FFI | All ALSA `unsafe`, safe wrappers (from `tutti-alsa-ump-sys`) | Linux only |
-| `tutti-coremidi-ffi` | FFI | The raw CoreMIDI calls the `coremidi` crate lacks | macOS only |
+| `tutti-midi-hardware` | Transport | OS backends, no graph (the target: today `port/manager.rs` imports `tutti_graph::{Offset, UmpAt}` and turns an arrival `Instant` into an `Offset` on the audio thread; stage E5 moves that behind the event inlet); `#![forbid(unsafe_code)]` (stage 4d: the `-ffi` crates hold the `unsafe`) | `tutti-midi-device`, the two `-ffi` crates |
+| `tutti-alsa-ffi` | FFI | All ALSA `unsafe`, safe wrappers (`tutti-alsa-ump-sys` folded in as a private module) | Linux only |
+| `tutti-coremidi-ffi` | FFI | The raw CoreMIDI calls the `coremidi` crate lacks, and the Mach host clock | macOS only |
 | `tutti-midi-runtime` | Engine | Graph nodes, `ClockMaster`, and the inbound sync decoders (`MidiClockDecoder`, `MtcDecoder`, `SmpteTimecode`, `SmpteFrameRate`, `ClockTransportState`) | `tutti-graph`, `tutti-midi-protocol` |
 | `tutti-graph` | Graph | Event ports hold `Ump`; the event tap and the event inlet | `tutti-types`, `tutti-ump` |
 | `tutti-midi-file` | Files | SMF, Clip File (the byte codec and the path-level reader and writer) | `tutti-ump`, `tutti-tempo` |
@@ -1544,7 +1544,7 @@ is named for what it is. A byte-stream source is read by `tutti_ump::Midi1Parser
 `Sysex7ByteAssembler` had no product caller and is deleted.
 
 MIDI follows the plugin hosts' FFI rule (design 016 §2.9): `unsafe` lives only in the
-`-ffi` crates, and `scripts/check-plugin-ffi.sh` or a sibling gate enforces it.
+`-ffi` crates, and `scripts/check-midi-ffi.sh` (a sibling of `check-plugin-ffi.sh`) enforces it.
 
 `sync`'s clock and MTC decoders have no consumer today beyond `ClockMaster`'s loopback
 tests. They are in the runtime (stage 5b), and are deleted if a clock slave (§9) does
@@ -1582,10 +1582,10 @@ design's model, and it does not enforce the name limits in M2-104 §7.1.
   pins, and the name-only comparison of the Flex and Stream families. The fuzz target
   is not run in CI yet; nothing here leans on it.
 
-`midly` stays in `tutti-midi-file`, which uses it for the SMF container only, and
-no public signature names it (a `midly` message becomes a `tutti_ump::Voice1` at
-the edge). The `midly` parse error allocates, so a plugin's
-stray status byte (`[0xF7, 1, 2]`) aborted a debug build under `assert_no_alloc`.
+`midly` stayed in `tutti-midi-file` for the SMF container until stage 6b, which wrote
+the reader and writer itself (below); the dependency is gone. Its parse error allocated,
+so a plugin's stray status byte (`[0xF7, 1, 2]`) aborted a debug build under
+`assert_no_alloc`.
 
 ## 8. Not losing events
 
@@ -1800,10 +1800,9 @@ impl Track { pub fn notes(&self) -> impl Iterator<Item = PairedNote>; }
   bits are written as zero. Message, Note On at velocity 0 and all, the file layer does
   not translate: `Translator` runs when a clip is loaded for playback.
 
-- **Our types in the API, `midly` private.** Its events borrow the input bytes, and
-  exposing them would make it a public dependency. It stays as the SMF byte parser,
-  and swapping it would touch one file (`smf.rs`); not even a `From<midly::Error>` is
-  public.
+- **Our types in the API, the byte parser private.** `midly`'s events borrowed the input
+  bytes, and exposing them would have made it a public dependency; it was the SMF byte
+  parser until stage 6b replaced it with our own (below), behind `smf.rs`.
 - **`TempoMap` is not a MIDI type.** It maps beats to samples and lives in
   `tutti-tempo`, a small pure crate above `tutti-types` with
   `#![forbid(unsafe_code)]`, because the transport, the export plan, plugin
@@ -1848,7 +1847,7 @@ impl Track { pub fn notes(&self) -> impl Iterator<Item = PairedNote>; }
 - **A lossless round trip** is the test (`tests/smf_model.rs`, `tests/clip_model.rs`):
   a file read and written holds the same events, including SysEx and meta, over hand-built
   files with every event kind in formats 0, 1 and 2, checked also by a decoder written
-  from the specification that shares no code with `midly`, and every strict prefix of a
+  from the specification that shares no code with the crate, and every strict prefix of a
   file is refused.
 - **Clip File moves here** from `tutti-midi-types`, its only production consumer.
 
@@ -1867,6 +1866,33 @@ passes with `smf::scan` removed), but as a string, so a cut file is told apart b
 crate's own `scan` (a chunk header short of 8 bytes, a chunk running past the end, fewer
 `MTrk` chunks than the header's count: `Error::Truncated`); `strict` is what catches
 the one `scan` cannot, a chunk whose length is right and whose last event is not.
+
+**Stage 6b, done: our own SMF reader and writer; `midly` goes.** `midly` was the one
+third-party codec under the file model, and the costs measured above (a feature that
+pulls `rayon`, a `strict` flag backed by a pre-scan of our own for `Truncated`, a
+conversion layer from its types to ours) were the price of not owning a few hundred
+lines. The reader (`tutti-midi-file/src/smf/read.rs`) is `winnow` combinators over the
+framing: `MThd` and `MTrk` chunks with `length_take`, the variable-length quantity (at
+most four bytes: a fifth is refused), meta (`FF type len`) and the `F0` and `F7`
+length-prefixed events. Running status is a value: `event(running)` returns the next
+status beside the event and `successors` threads it (SMF 1.0 section 3: a channel event
+may omit its status when it repeats the last; sysex and meta cancel it; `F1` to `F6` and
+`F8` to `FE` are not in a file). What decodes a message is `tutti-ump`'s, never
+re-derived: `Voice1::data_len` (new) says how many data bytes a channel status takes and
+`Midi1Parser::message` turns status and data into a message. The streaming
+`Midi1Parser::feed` is not used: in a file the delta bytes would read as running-status
+data and `FF` as a real-time Reset. The writer (`smf/write.rs`) is a fold of pure
+functions: an event to its bytes, a track body as a fold over the running status
+(eliding a repeated channel status), a chunk's length computed from the body it frames.
+A meta event that is not exactly a typed shape (a Set Tempo whose data is not three
+bytes) is kept as `Meta::Other`, so no byte is lost. A cut file is `Truncated` as in
+stage 6 (a framing fault, or fewer tracks than the header declares); a track with no End
+of Track still ends at its last event. `winnow` is named only in `read.rs` and no type
+of it is public (`scripts/check-layout.sh`). Measured against the figures above
+(release, best of runs, 16 tracks of channel messages at about 4 bytes an event with
+running status): 16 MB, 4 million events, read 222 ms (55 ns an event, against 62 ns
+for `midly` without `parallel`), write 33 ms (8 ns an event, against 29 ns); 16 KB,
+4000 events, read 174 us, write 31 us. A third of the read is `Midi1Parser::message`.
 
 ## 10. Stages
 
@@ -2134,6 +2160,29 @@ at any point; its CI codec move and `ci`/`negotiate` deletion (4a, done) shrink
      `JrStream::stamp_span`); the session's `send_stamped_span` and `origin` follow.
      `HardwareMidiDrain::cycle_start_read_all_inputs` still takes `nframes: usize`,
      and goes with the drain's rebuild (E5).
+   **Stage 4d, the `-ffi` crates. Done.** `unsafe` left `tutti-midi-hardware`, which is
+   `#![forbid(unsafe_code)]` and has no `libc`, `coremidi-sys`, `mach2` or raw ALSA
+   dependency. `tutti-alsa-ffi` (Linux; `tutti-alsa-ump-sys` was folded into it as a
+   private `sys` module, nothing else used it, and its `build.rs` probe and
+   `links = "asound"` are unchanged, so `cfg(alsa_ump)` and `DEP_ASOUND_*` still
+   reach the backend) holds every ALSA call behind `Client` (open in UMP mode, ports,
+   the subscriptions, `read_event`, `send_to_subscribers`, `stamp_port` and its
+   `QueueClock`, `list_ports`), `Poller` (the sequencer's descriptors and a stop
+   descriptor, over `poll(2)`) and `Received` (an event copied out of alsa-lib's
+   buffer, with `announced()` for the announce port). `tutti-coremidi-ffi` (macOS)
+   holds `UmpSource` (`MIDISourceCreateWithProtocol`, the one call the safe
+   `coremidi` crate lacks; the endpoint disposes on drop) and the Mach host clock
+   (`Timebase`, `host_ticks`). What the safe `coremidi` crate wraps stays in the
+   backend. Both crates are layer 0 (no workspace dependency) and `deny` the
+   `undocumented_unsafe_blocks` and `missing_safety_doc` lints.
+   `scripts/check-midi-ffi.sh` is the gate (no `unsafe` token in the backend, its
+   forbid, no raw-binding dependency, the `-ffi` lints). Behaviour is unchanged
+   except that the unneeded `unsafe impl Send`/`Sync` on `UmpVirtualSource`,
+   `CoreMidiInput` and `CoreMidiOutput` are gone (their fields are plain `u32`
+   handles and the compiler proves it), and `port/manager.rs`'s one match was a
+   comment. `unsafe` tokens in code: 46 in `tutti-midi-hardware` and 2 in
+   `tutti-alsa-ump-sys` before; 0, 49 (`tutti-alsa-ffi`, the extern declarations
+   among them) and 6 (`tutti-coremidi-ffi`) after.
 - **Stage 3d. The helpers the plugin crates drop their own for. Done.** The float
    converters (`u7_to_unit_f32`, `u16_to_unit_f32`, `u32_to_unit_f32`,
    `bend_u14_to_signed_f32`, `bend_u32_to_signed_f32`, `unit_f32_to_u16`,

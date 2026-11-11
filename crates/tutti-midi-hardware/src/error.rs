@@ -86,3 +86,23 @@ pub enum Error {
 
 /// The crate's result type: [`Error`](enum@Error) on the failure side.
 pub type Result<T> = std::result::Result<T, Error>;
+
+#[cfg(all(target_os = "linux", alsa_ump))]
+impl From<tutti_alsa_ffi::Error> for Error {
+    fn from(e: tutti_alsa_ffi::Error) -> Self {
+        Self::Alsa {
+            operation: e.operation,
+            code: e.code,
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+impl From<tutti_coremidi_ffi::Error> for Error {
+    fn from(e: tutti_coremidi_ffi::Error) -> Self {
+        Self::CoreMidi {
+            operation: e.operation,
+            status: e.status,
+        }
+    }
+}

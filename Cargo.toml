@@ -66,7 +66,8 @@ members = [
     "crates/tutti-graph",
     "crates/tutti-modulation",
     "crates/tutti-export",
-    "crates/tutti-alsa-ump-sys",
+    "crates/tutti-alsa-ffi",
+    "crates/tutti-coremidi-ffi",
     "crates/tutti-midi-hardware",
     "crates/tutti-midi-file",
     "crates/tutti-midi-runtime",
@@ -187,7 +188,10 @@ thiserror = "2"
 # `plotters` dev-dependency, and went with the fork.
 criterion = "0.8"
 
-midly = { version = "0.5", default-features = false }
+# `tutti-midi-file`'s SMF reader alone (a parser combinator library, named in
+# `src/smf/read.rs` only: `scripts/check-layout.sh`): `binary` is `be_u16` and
+# kin, `alloc` the `Vec` a `repeat` collects.
+winnow = { version = "1", default-features = false, features = ["alloc", "binary"] }
 coremidi = "0.9"
 # Raw CoreMIDI FFI + Core Foundation strings — needed only for the native-UMP
 # virtual source (MIDISourceCreateWithProtocol / MIDIReceivedEventList), which

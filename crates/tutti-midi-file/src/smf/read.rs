@@ -119,17 +119,14 @@ struct Header {
 /// The division word: ticks per quarter note, or (top bit set) an SMPTE
 /// frame rate and ticks per frame (SMF 1.0 section 2.1), which is refused.
 fn division(input: &mut &[u8]) -> Res<u16> {
-    match be_u16.parse_next(input)? {
-        0 => refuse("zero ticks-per-beat").parse_next(input),
-        // The frame rate is stored negated: -24, -25, -29, -30.
-        raw if raw & 0x8000 != 0 => match -i16::from(i8::from_be_bytes([{
-            let [hi, _] = raw.to_be_bytes();
-            hi
-        }])) {
-            24 | 25 | 29 | 30 => fail.context(Fault::Timecode).parse_next(input),
-            _ => refuse("invalid SMPTE frame rate").parse_next(input),
-        },
-        raw => Ok(raw),
+    let raw = be_u16.parse_next(input)?;
+    let [high, _] = raw.to_be_bytes();
+    // With the top bit set, the high byte is the negated frame rate as an i8.
+    match (raw, i8::from_be_bytes([high])) {
+        (0, _) => refuse("zero ticks-per-beat").parse_next(input),
+        (_, -24 | -25 | -29 | -30) => fail.context(Fault::Timecode).parse_next(input),
+        (_, ..0) => refuse("invalid SMPTE frame rate").parse_next(input),
+        (raw, _) => Ok(raw),
     }
 }
 
@@ -303,13 +300,10 @@ struct Step<'a> {
 }
 
 fn step(input: &[u8], running: Status) -> Res<Option<Step<'_>>> {
-    if input.is_empty() {
-        return Ok(None);
-    }
-    event(running)
+    alt((eof.value(None), event(running).map(Some)))
         .parse_peek(input)
-        .map(|(rest, (delta, event, status))| {
-            Some(Step {
+        .map(|(rest, parsed)| {
+            parsed.map(|(delta, event, status)| Step {
                 delta,
                 event,
                 rest,

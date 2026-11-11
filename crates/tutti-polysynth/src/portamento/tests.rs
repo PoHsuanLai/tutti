@@ -157,12 +157,8 @@ fn glide_render_digests() {
             ..Default::default()
         };
         let mut porta = Portamento::new(config, SampleRate::new(48000.0));
-        let mut hash = 0xcbf2_9ce4_8422_2325u64;
-        let mut eat = |hz: Hz| {
-            for byte in hz.get().to_bits().to_le_bytes() {
-                hash = (hash ^ u64::from(byte)).wrapping_mul(0x0100_0000_01b3);
-            }
-        };
+        let mut hash = tutti_fixtures::Fnv::new();
+        let mut eat = |hz: Hz| hash.f32(hz.get());
         porta.reset(Hz::new(220.0));
         porta.set_target(Hz::new(1760.0), false);
         for _ in 0..240 {
@@ -176,7 +172,7 @@ fn glide_render_digests() {
         for steps in [1usize, 7, 64, 3, 128, 500] {
             eat(porta.advance(steps));
         }
-        hash
+        hash.finish()
     }
     for (name, curve, recorded) in [
         ("linear", Law::Linear, 0xdf0c_b95a_5395_87d9),

@@ -15,6 +15,7 @@
 //!   rate it is prepared at is held to a ceiling.
 
 use tutti_dsp::{HrtfBinauralError, MAX_PREPARED_RATE, MAX_SPHERE_RATE, MIN_SPHERE_RATE};
+use tutti_fixtures::{Fnv, Noise};
 use tutti_graph::ParamNode;
 use tutti_graph::contract::{drive, prepared};
 use tutti_graph::{Node, Prepare};
@@ -120,13 +121,10 @@ fn mirror(verts: &[[f32; 3]], v: usize) -> usize {
 
 /// Deterministic decaying noise, distinct per `seed`.
 fn shape(seed: usize, len: usize) -> Vec<f32> {
-    let mut state = 0x9e37_79b9_u32.wrapping_mul(seed as u32 + 1);
-    (0..len)
-        .map(|i| {
-            state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
-            let noise = (state >> 8) as f32 / (1u32 << 24) as f32 * 2.0 - 1.0;
-            noise * (-(i as f32) / 40.0).exp()
-        })
+    Noise::from_state(0x9e37_79b9_u32.wrapping_mul(seed as u32 + 1))
+        .take(len)
+        .enumerate()
+        .map(|(i, x)| x * (-(i as f32) / 40.0).exp())
         .collect()
 }
 
@@ -839,13 +837,7 @@ fn a_vertexs_hrir_energy_reaches_the_output_ear_by_ear() {
 
 /// Deterministic noise in `[-1, 1)`.
 fn noise(len: usize) -> Vec<f32> {
-    let mut state = 0x1234_5678u32;
-    (0..len)
-        .map(|_| {
-            state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
-            (state >> 8) as f32 / (1u32 << 24) as f32 * 2.0 - 1.0
-        })
-        .collect()
+    Noise::from_state(0x1234_5678).take(len).collect()
 }
 
 /// `input` rendered in blocks of `block` frames from `start`, the source
@@ -959,27 +951,18 @@ fn the_position_dezipper_renders_what_it_always_did() {
     let controls = n.param_set();
     aim(&controls, Azimuth(170.0), Elevation(10.0));
     Node::reset(&mut n);
-    let mut state = 0x1234_5678_u32;
-    let mut digest: u64 = 0xcbf2_9ce4_8422_2325;
+    let mut input = Noise::from_state(0x1234_5678);
+    let mut digest = Fnv::new();
     for b in 0..60 {
         if b == 30 {
             aim(&controls, Azimuth(-110.0), Elevation(-20.0));
         }
-        let block: Vec<f32> = (0..64)
-            .map(|_| {
-                state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
-                (state >> 8) as f32 / (1u32 << 24) as f32 * 2.0 - 1.0
-            })
-            .collect();
+        let block: Vec<f32> = input.by_ref().take(64).collect();
         for plane in drive(&mut n, SampleRate(f64::from(RATE)), &[&block, &block], &[]) {
-            for s in plane {
-                for byte in s.to_bits().to_le_bytes() {
-                    digest ^= u64::from(byte);
-                    digest = digest.wrapping_mul(0x0100_0000_01b3);
-                }
-            }
+            digest.f32s(&plane);
         }
     }
+    let digest = digest.finish();
     eprintln!("DIGEST hrtf {digest:#018x}");
     tutti_nodes::testing::assert_golden("hrtf position de-zipper", digest, 0x6ae5_3847_7723_708d);
 }
@@ -1007,7 +990,7 @@ fn the_panners_fold_renders_what_it_always_did() {
         noise(1536),
         noise(1536).into_iter().rev().collect::<Vec<_>>(),
     );
-    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    let mut h = Fnv::new();
     for (i, (cl, cr)) in l.chunks(64).zip(r.chunks(64)).enumerate() {
         if i == 5 {
             aim(&node.param_set(), Azimuth(-120.0), Elevation(-30.0));
@@ -1016,14 +999,10 @@ fn the_panners_fold_renders_what_it_always_did() {
             node.param_set().set(UnitParam::Wet, 0.6);
         }
         for out in drive(&mut node, rate, &[cl, cr], &[]) {
-            for s in out {
-                for byte in s.to_bits().to_le_bytes() {
-                    h ^= u64::from(byte);
-                    h = h.wrapping_mul(0x0100_0000_01b3);
-                }
-            }
+            h.f32s(&out);
         }
     }
+    let h = h.finish();
     println!("DIGEST hrtf {h:#018x}");
     tutti_nodes::testing::assert_golden(
         "the HRTF panner's folded render",

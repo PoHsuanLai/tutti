@@ -528,6 +528,15 @@ states only mathematics; `blank` is what the old `Network::new` did, now on the 
 by value on an audio thread (doc 022 "Step 1a as built"); a biquad is a few dozen
 bytes and in place is merely harmless.
 
+`Channels` carries the widths and a `Placement` (built after PR9): `Speakers` for
+channels in the engine's order for their width (a reverb's mono centre and stereo
+pair), `Discrete` for channels that are not speaker feeds (a crossover's bands).
+`DesignNode` declares it as its main buses, so the graph's dry path (mix, bypass)
+folds a mono input onto both sides of a stereo output by speaker (doc 013,
+"Channel placement"); by index it landed on the left alone. A node outside
+`DesignNode` that changes width declares its buses too (`VbapPannerNode`), and
+`tutti-nodes`' `tests/node_buses.rs` holds every node type in the crate to it.
+
 ### 4.2 The model: one trait per class
 
 A class trait states the invariants of its mathematical kind. Each is a trait over

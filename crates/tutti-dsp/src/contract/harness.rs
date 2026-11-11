@@ -42,7 +42,7 @@ pub fn built<D: DesignCase>(
 /// The input and output widths of `d`.
 #[must_use]
 pub fn widths<D: Design>(d: &D) -> (usize, usize) {
-    let Channels { input, output } = d.channels();
+    let Channels { input, output, .. } = d.channels();
     (usize::from(input.count()), usize::from(output.count()))
 }
 

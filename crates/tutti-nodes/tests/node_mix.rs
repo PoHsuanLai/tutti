@@ -81,8 +81,10 @@ fn check<N: IntoNode>(name: &str, make: &dyn Fn() -> N, width: usize, latency: u
     check_io(name, make, width, width, latency);
 }
 
-/// [`check`] for a node of `inputs` channels in and `outputs` out: a channel with
-/// no input has no `x̂`, so its DRY is silence and its mix is `y * m`.
+/// [`check`] for a node of `inputs` channels in and `outputs` out, whose main
+/// buses are placed (a design's `Placement::Speakers`): a mono input is a centre,
+/// which the graph's fold sends to every side of the output at gain 1.0, so each
+/// output's `x̂` is that input; otherwise output `c`'s `x̂` is input `c`.
 fn check_io<N: IntoNode>(
     name: &str,
     make: &dyn Fn() -> N,
@@ -91,7 +93,7 @@ fn check_io<N: IntoNode>(
     latency: usize,
 ) {
     let x: Vec<Vec<f32>> = (0..inputs).map(|c| noise(40 + c as u32, FRAMES)).collect();
-    let aligned = |c: usize| match x.get(c) {
+    let aligned = |c: usize| match x.get(if inputs == 1 { 0 } else { c }) {
         Some(x) => delayed(x, latency),
         None => vec![0.0; FRAMES],
     };
@@ -136,7 +138,7 @@ fn check_io<N: IntoNode>(
     let m = 0.3_f32;
     let mixed = rendered(make, &x, Mix::new(m));
     for c in 0..outputs {
-        let want: Vec<f32> = if c < inputs {
+        let want: Vec<f32> = if c < inputs || inputs == 1 {
             wet[c]
                 .iter()
                 .zip(aligned(c))
@@ -234,13 +236,14 @@ fn the_chorus_flanger_and_phaser_are_blended_by_the_graph() {
 
 /// The Freeverb and the feedback delay network, mono in and stereo out, are
 /// blended by the graph like the rest: WET is the node alone, DRY the aligned
-/// input (on the left; the right has no input and is silent), and between them
-/// `y * m + x̂ * (1 - m)`, bit for bit. They held a dry/wet of their own
-/// (`DryWet`, since deleted) that added the dry input to both channels.
+/// input on **both** sides (a mono source is a centre, which the fold sends to
+/// left and right at gain 1.0: the design places its channels,
+/// `Placement::Speakers`), and between them `y * m + x̂ * (1 - m)`, bit for bit.
 ///
-/// Mutation (run): every reverb's shape declaring one frame of latency it does
+/// Mutations (run): every reverb's shape declaring one frame of latency it does
 /// not have (the graph's aligned input one frame late) fails the DRY comparison
-/// and the formula. (A residual dry or a scaled wet in the node cannot show here,
+/// and the formula; the reverbs' channels `Placement::Discrete` (the dry on the
+/// left only, paired by index) fails DRY on the right. (A residual dry or a scaled wet in the node cannot show here,
 /// where WET is the node compared with itself: `reverb_node.rs`'s
 /// `the_node_is_the_room_alone` pins the analytic wet.)
 #[test]

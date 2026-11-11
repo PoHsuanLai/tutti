@@ -88,10 +88,7 @@ impl Design for Echo {
     type Realization = EchoKernel;
 
     fn channels(&self) -> Channels {
-        Channels {
-            input: ChannelLayout::MONO,
-            output: ChannelLayout::MONO,
-        }
+        Channels::speakers(ChannelLayout::MONO, ChannelLayout::MONO)
     }
 
     fn design_into(&self, _: &(), rate: SampleRate, out: &mut Network) {

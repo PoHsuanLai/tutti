@@ -37,7 +37,7 @@ use serde::{Deserialize, Serialize};
 ///
 /// The four hosted formats disagree about which domain a parameter value is
 /// in — VST3 and VST2 speak normalized natively, AU and CLAP speak the
-/// plugin's own units — and the shared seam ([`PluginParams`](crate::PluginParams))
+/// plugin's own units — and the shared seam ([`Control`](crate::Control))
 /// picks normalized, leaving each plain-native loader to adapt at its own edge.
 /// Carried only in prose over a bare `f64`, that rule is unenforceable: writing
 /// `set_parameter(id, 20_000.0)` against a filter cutoff compiles and sets the

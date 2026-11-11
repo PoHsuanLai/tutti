@@ -16,9 +16,8 @@ use std::marker::PhantomData;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
 use crate::{
-    Control, Controller, Effect, Event, HostOp, Layout, Loaded, LoadedPlugin, MainThread,
-    Normalized, Notice, ParamId, ParameterInfo, PluginDescriptor, PluginError, PluginResult,
-    Prepare, Processor, Refused, Reply, SampleRate, State, Stuck, step,
+    Control, Controller, Effect, Event, HostOp, Layout, Loaded, LoadedPlugin, MainThread, Notice,
+    PluginError, Prepare, Refused, Reply, SampleRate, State, Stuck, step,
 };
 
 /// The main thread's end of the Processor's trip to the realtime thread.
@@ -587,107 +586,6 @@ impl From<&LoadedPlugin> for Layout {
             inputs: wiring.inputs.clone(),
             outputs: wiring.outputs.clone(),
         }
-    }
-}
-
-/// A plugin in some state, driven by effects: the main-thread side of a hosted
-/// plugin. The realtime side is [`Processor`].
-///
-/// [`Lifecycle<L>`] implements it for every format; a server generic over
-/// `Hosted` runs a fake and a real plugin through one code path.
-pub trait Hosted {
-    /// The realtime half.
-    type Processor: Processor;
-
-    /// The core's state for a freshly loaded plugin.
-    fn initial_state(&self) -> State;
-
-    /// [`Lifecycle::drive`].
-    fn drive(
-        &mut self,
-        state: State,
-        event: Event,
-        hand: &mut Hand<Self::Processor>,
-        main: &MainThread,
-        notify: impl FnMut(Notice),
-    ) -> State;
-
-    /// The plugin's identity, while there is a plugin.
-    fn info(&self) -> Option<&PluginDescriptor>;
-    /// The plugin's wiring, read now.
-    fn wiring(&self, main: &MainThread) -> Option<LoadedPlugin>;
-    /// Every parameter. Empty when there is no plugin.
-    fn parameters(&self, main: &MainThread) -> Vec<ParameterInfo>;
-    /// A parameter's value.
-    fn parameter(&self, main: &MainThread, id: ParamId) -> Option<Normalized>;
-    /// Sets a parameter; nothing when there is no plugin.
-    fn set_parameter(&mut self, main: &MainThread, id: ParamId, value: Normalized);
-    /// The plugin's state.
-    ///
-    /// # Errors
-    ///
-    /// [`PluginError::Other`] when there is no plugin; otherwise the plugin's.
-    fn save_state(&mut self, main: &MainThread) -> PluginResult<Vec<u8>>;
-    /// Restores state.
-    ///
-    /// # Errors
-    ///
-    /// [`PluginError::Other`] when there is no plugin; otherwise the plugin's.
-    fn load_state(&mut self, main: &MainThread, bytes: &[u8]) -> PluginResult<()>;
-}
-
-fn lost() -> PluginError {
-    PluginError::Other("the plugin is lost".into())
-}
-
-impl<L: Loaded> Hosted for Lifecycle<L> {
-    type Processor = L::Processor;
-
-    fn initial_state(&self) -> State {
-        Self::initial_state()
-    }
-
-    fn drive(
-        &mut self,
-        state: State,
-        event: Event,
-        hand: &mut Hand<L::Processor>,
-        main: &MainThread,
-        notify: impl FnMut(Notice),
-    ) -> State {
-        Lifecycle::drive(self, state, event, hand, main, notify)
-    }
-
-    fn info(&self) -> Option<&PluginDescriptor> {
-        self.control_ref().map(Control::info)
-    }
-
-    fn wiring(&self, main: &MainThread) -> Option<LoadedPlugin> {
-        self.control_ref().map(|c| c.wiring(main))
-    }
-
-    fn parameters(&self, main: &MainThread) -> Vec<ParameterInfo> {
-        self.control_ref()
-            .map(|c| c.parameters(main))
-            .unwrap_or_default()
-    }
-
-    fn parameter(&self, main: &MainThread, id: ParamId) -> Option<Normalized> {
-        self.control_ref().and_then(|c| c.parameter(main, id))
-    }
-
-    fn set_parameter(&mut self, main: &MainThread, id: ParamId, value: Normalized) {
-        if let Some(control) = self.control() {
-            control.set_parameter(main, id, value);
-        }
-    }
-
-    fn save_state(&mut self, main: &MainThread) -> PluginResult<Vec<u8>> {
-        self.control().ok_or_else(lost)?.save_state(main)
-    }
-
-    fn load_state(&mut self, main: &MainThread, bytes: &[u8]) -> PluginResult<()> {
-        self.control().ok_or_else(lost)?.load_state(main, bytes)
     }
 }
 

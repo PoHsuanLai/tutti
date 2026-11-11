@@ -83,12 +83,13 @@ impl tutti_graph::Node for TransportTone {
 /// a snapshot) → fails.
 #[test]
 fn graph_engine_with_timed_transport_is_allocation_free() {
+    use tutti_fixtures::midi::m1_note_on;
     use tutti_graph::NodeKey;
     use tutti_graph::{Editor, EventIn, EventKind, Prepare, Unforkable};
     use tutti_graph::{OutPort, Source};
     use tutti_transport::{MotionEvent, TransportCommand};
     use tutti_types::{At, Beat, Bpm, Frame};
-    use tutti_ump::Ump;
+    use tutti_ump::{MidiChannel, NoteNumber, U7};
 
     let sample_rate = 48_000.0;
     let transport = Transport::new(SampleRate::new(sample_rate));
@@ -119,7 +120,11 @@ fn graph_engine_with_timed_transport_is_allocation_free() {
         ed.schedule(
             At::Beat(Beat(0.25 * b as f64)),
             to,
-            EventKind::Midi(Ump([0x2090_3c64, 0, 0, 0])),
+            EventKind::Midi(m1_note_on(
+                MidiChannel::FIRST,
+                NoteNumber::of(60),
+                U7::of(100),
+            )),
         )
         .expect("room");
     }

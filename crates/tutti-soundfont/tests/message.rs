@@ -33,8 +33,8 @@ use tutti_sf2::SoundFont;
 use tutti_soundfont::{Settings, SoundFontUnit};
 use tutti_types::SampleRate;
 use tutti_ump::{
-    Address, Attribute, CCNumber, Message, MidiChannel, MidiGroup, NoteNumber,
-    RegisteredPerNoteController, U7, U14, Ump, Voice1, Voice2,
+    Attribute, CCNumber, Message, MidiChannel, MidiGroup, NoteNumber, RegisteredPerNoteController,
+    U7, U14, Ump, Voice1, Voice2,
 };
 
 const RATE: SampleRate = SampleRate::SR_44K1;
@@ -73,20 +73,11 @@ fn organ() -> Hand {
     unit
 }
 
-fn event(message: Message) -> Ump {
-    Ump::from(message)
-}
-fn address() -> Address {
-    Address {
-        group: MidiGroup::FIRST,
-        channel: MidiChannel::FIRST,
-    }
-}
 fn m1(voice: Voice1) -> Ump {
-    event(Message::Midi1(address(), voice))
+    support::rig::m1(MidiChannel::FIRST, voice)
 }
 fn m2(voice: Voice2) -> Ump {
-    event(Message::Midi2(address(), voice))
+    support::rig::m2(MidiChannel::FIRST, voice)
 }
 fn note_on_2(n: u8, velocity: u16) -> Ump {
     m2(Voice2::NoteOn {
@@ -97,7 +88,7 @@ fn note_on_2(n: u8, velocity: u16) -> Ump {
 }
 fn cc7_2(value: u32) -> Ump {
     m2(Voice2::ControlChange {
-        controller: CCNumber::of(7),
+        controller: CCNumber::VOLUME,
         value,
     })
 }
@@ -136,7 +127,7 @@ fn a_midi_1_note_on_at_velocity_0_is_a_note_off() {
     });
     let pedal = |value| {
         m2(Voice2::ControlChange {
-            controller: CCNumber::of(64),
+            controller: CCNumber::SUSTAIN,
             value,
         })
     };
@@ -172,7 +163,7 @@ fn a_midi_2_note_on_at_a_velocity_that_narrows_to_zero_is_a_note_on() {
     for velocity in [0, 1, 0x01FF] {
         let mut unit = organ();
         let pedal = m2(Voice2::ControlChange {
-            controller: CCNumber::of(64),
+            controller: CCNumber::SUSTAIN,
             value: u32::MAX,
         });
         let out = render(&mut unit, &[pedal, note_on_2(60, 0xFFFF)], 22_050);
@@ -196,7 +187,7 @@ fn control_change_7_reaches_the_synth_at_its_value() {
     let note = note_on_2(60, 0xFFFF);
     let full = held_rms(&[
         m1(Voice1::ControlChange {
-            controller: CCNumber::of(7),
+            controller: CCNumber::VOLUME,
             value: U7::of(127),
         }),
         note,
@@ -204,12 +195,13 @@ fn control_change_7_reaches_the_synth_at_its_value() {
     assert!(full > 0.001);
     for v in [32u8, 64, 96, 120] {
         let want = (f32::from(v) / 127.0).powi(2);
+        // M2-115 §3: a 7-bit value is left-justified in 32 bits (shift 25).
         let wide = u32::from(v) << 25;
         let cases = [
             (
                 "7-bit",
                 m1(Voice1::ControlChange {
-                    controller: CCNumber::of(7),
+                    controller: CCNumber::VOLUME,
                     value: U7::of(v),
                 }),
             ),
@@ -283,6 +275,7 @@ fn a_bend_reaches_the_synth_at_its_value() {
             ("7-bit", m1(Voice1::PitchBend(U14::of(b)))),
             (
                 "32-bit",
+                // M2-115 §3: a 14-bit bend left-justified (shift 18), the low 18 bits set.
                 m2(Voice2::PitchBend(u32::from(b) << 18 | 0x3_FFFF)),
             ),
         ];
@@ -323,6 +316,7 @@ fn a_full_bend_spans_the_registered_sensitivity() {
         m2(Voice2::Registered {
             bank: U7::of(0),
             index: U7::of(0),
+            // M2-115 §3: the 14-bit (msb << 7 | lsb) value, left-justified (shift 18).
             value: (semitones << 7 | cents) << 18,
         })
     };
@@ -361,6 +355,7 @@ fn a_re_rated_unit_keeps_the_bend_and_its_range() {
     let sensitivity = m2(Voice2::Registered {
         bank: U7::of(0),
         index: U7::of(0),
+        // M2-115 §3: the 14-bit (msb << 7 | lsb) value, left-justified (shift 18).
         value: (7 << 7) << 18,
     });
     let full = m2(Voice2::PitchBend(u32::MAX));
@@ -440,7 +435,7 @@ fn messages_with_no_synthesizer_setter_change_nothing() {
             index: U7::of(7),
             delta: -1000,
         }),
-        event(Message::System(MidiGroup::FIRST, tutti_ump::System::Reset)),
+        Ump::from(Message::System(MidiGroup::FIRST, tutti_ump::System::Reset)),
     ];
     let reference = render(&mut unit(), &[key], 8_192);
     assert!(rms(&reference) > 0.001);
@@ -493,7 +488,7 @@ fn a_reserved_attribute_type_is_ignored_not_a_reason_to_drop_the_note() {
 fn a_block_with_more_events_than_any_scratch_reads_them_all() {
     let mut events = vec![
         m2(Voice2::ControlChange {
-            controller: CCNumber::of(1),
+            controller: CCNumber::MOD_WHEEL,
             value: 0,
         });
         600

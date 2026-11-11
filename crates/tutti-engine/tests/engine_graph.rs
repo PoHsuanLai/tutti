@@ -27,6 +27,7 @@ mod support;
 
 use support::{Change, Segment, model_beats};
 use tutti_engine::Engine;
+use tutti_fixtures::midi::m1_note_on;
 use tutti_graph::NodeKey;
 use tutti_graph::{
     Cx, Editor, EventIn, EventKind, Executor, IntoNode, Io, Node, Prepare, Shape, Status,
@@ -37,7 +38,7 @@ use tutti_transport::{FadeOut, LoopEdit, MotionEvent, Then, Transport, Transport
 use tutti_types::{
     At, Beat, Bpm, ChannelLayout, Frame, InterleavedMut, LoopRange, SampleRate, Samples, Tail,
 };
-use tutti_ump::Ump;
+use tutti_ump::{MidiChannel, NoteNumber, U7};
 
 const SR: f64 = 48_000.0;
 /// Frames per beat at 120 BPM and `SR`.
@@ -750,7 +751,11 @@ fn a_graph_beat_note_after_a_timed_start_lands_on_its_frame() {
         node: NodeKey(1),
         port: 0,
     };
-    let note = EventKind::Midi(Ump([0x2090_3c64, 0, 0, 0]));
+    let note = EventKind::Midi(m1_note_on(
+        MidiChannel::FIRST,
+        NoteNumber::of(60),
+        U7::of(100),
+    ));
     ed.schedule(At::Beat(Beat(0.0)), to, note).expect("room");
     ed.schedule(At::Beat(Beat(0.5)), to, note).expect("room");
     transport
@@ -988,7 +993,11 @@ fn a_declick_stop_stops_the_transport_on_its_frame() {
             node: NodeKey(1),
             port: 0,
         },
-        EventKind::Midi(Ump([0x2090_3c64, 0, 0, 0])),
+        EventKind::Midi(m1_note_on(
+            MidiChannel::FIRST,
+            NoteNumber::of(60),
+            U7::of(100),
+        )),
     )
     .expect("room");
     t2.motion

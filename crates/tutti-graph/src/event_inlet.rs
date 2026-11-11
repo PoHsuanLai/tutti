@@ -294,10 +294,11 @@ impl EventInletWriter {
 /// ```
 /// use tutti_graph::EventInletNode;
 /// use tutti_types::At;
-/// use tutti_ump::Ump;
+/// use tutti_fixtures::midi::m1_note_on;
+/// use tutti_ump::{MidiChannel, NoteNumber, U7};
 ///
 /// let (node, mut writer) = EventInletNode::pair(256);
-/// let note_on = Ump([0x2090_3c64, 0, 0, 0]);
+/// let note_on = m1_note_on(MidiChannel::FIRST, NoteNumber::of(60), U7::of(100));
 /// writer.push(At::NextBlock, note_on).unwrap(); // from any one thread
 /// assert_eq!(node.capacity(), 256);
 /// ```

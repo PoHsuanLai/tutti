@@ -8,7 +8,8 @@
 
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
-use tutti_ump::Ump;
+use tutti_fixtures::midi::m1_note_on;
+use tutti_ump::{MidiChannel, NoteNumber, U7};
 
 use tutti_graph::NodeKey;
 use tutti_graph::{
@@ -175,7 +176,10 @@ impl Node for Held {
             .and_then(|o| Offset::new(o as usize, n))
         {
             io.event_out(0)
-                .push(Event::midi(o, Ump([0x2090_3C64, 0, 0, 0])))
+                .push(Event::midi(
+                    o,
+                    m1_note_on(MidiChannel::FIRST, NoteNumber::of(60), U7::of(100)),
+                ))
                 .expect("room");
         }
         Status::Modified

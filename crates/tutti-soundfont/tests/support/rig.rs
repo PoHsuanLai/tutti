@@ -7,12 +7,11 @@
 use std::sync::Arc;
 
 use super::{BLOCK, Hand};
+use tutti_fixtures::midi::m1_cc;
 use tutti_sf2::SoundFont;
 use tutti_soundfont::{Settings, SoundFontUnit};
 use tutti_types::SampleRate;
-use tutti_ump::{
-    Address, CCNumber, Message, MidiChannel, MidiGroup, NoteNumber, U7, U14, Ump, Voice1, Voice2,
-};
+use tutti_ump::{CCNumber, MidiChannel, NoteNumber, U7, U14, Voice1, Voice2};
 
 pub const RATE: SampleRate = SampleRate::SR_44K1;
 
@@ -21,27 +20,7 @@ pub fn timgm6mb() -> Arc<SoundFont> {
     Arc::new(SoundFont::new(&mut file).unwrap())
 }
 
-/// A MIDI 1.0 channel voice message on group 0.
-pub fn m1(channel: MidiChannel, voice: Voice1) -> Ump {
-    Ump::from(Message::Midi1(
-        Address {
-            group: MidiGroup::FIRST,
-            channel,
-        },
-        voice,
-    ))
-}
-
-/// A MIDI 2.0 channel voice message on group 0.
-pub fn m2(channel: MidiChannel, voice: Voice2) -> Ump {
-    Ump::from(Message::Midi2(
-        Address {
-            group: MidiGroup::FIRST,
-            channel,
-        },
-        voice,
-    ))
-}
+pub use tutti_fixtures::midi::{m1, m2};
 
 /// A unit over a font, with the messages of the old synthesizer's surface.
 pub struct Rig {
@@ -83,14 +62,8 @@ impl Rig {
         self.hand.queue_midi(&[e]);
     }
 
-    pub fn cc(&mut self, ch: u8, controller: u8, value: u8) {
-        let e = m1(
-            MidiChannel::of(ch),
-            Voice1::ControlChange {
-                controller: CCNumber::of(controller),
-                value: U7::of(value),
-            },
-        );
+    pub fn cc(&mut self, ch: u8, controller: CCNumber, value: u8) {
+        let e = m1_cc(MidiChannel::of(ch), controller, U7::of(value));
         self.hand.queue_midi(&[e]);
     }
 
@@ -113,7 +86,7 @@ impl Rig {
     /// All Sound Off on every channel.
     pub fn cut_all(&mut self) {
         for ch in 0..16 {
-            self.cc(ch, 120, 0);
+            self.cc(ch, CCNumber::ALL_SOUND_OFF, 0);
         }
     }
 

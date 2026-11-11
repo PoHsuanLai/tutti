@@ -36,6 +36,7 @@ assert_no_alloc = { version = "1", default-features = false }
 # `TempoMap`, for the step-map tests.
 tutti-tempo = { path = "../tutti-tempo" }
 tutti-ump = { path = "../tutti-ump", default-features = false }
+tutti-fixtures = { path = "../../testing/tutti-fixtures" }
 # The metronome node (`ClickNode`) the engine-level tests render.
 tutti-nodes = { path = "../tutti-nodes", default-features = false }
 

@@ -11,21 +11,29 @@
 //! where the transport, the command queue and PDC all meet.
 
 use tutti_engine::Engine;
+use tutti_fixtures::midi;
 use tutti_graph::NodeKey;
 use tutti_graph::contract::{Latent, Pulse};
 use tutti_graph::{EventIn, EventKind, GraphBuilder, Prepare, Unforkable};
 use tutti_transport::{MotionEvent, Transport};
 use tutti_types::Latency;
 use tutti_types::{At, Beat, ChannelLayout, Frame, InterleavedMut, SampleRate, Samples};
-use tutti_ump::Ump;
+use tutti_ump::{MidiChannel, MidiGroup};
 
 const SR: f64 = 48_000.0;
 /// Frames per beat at the transport's default 120 BPM.
 const FPB: u64 = 24_000;
 /// The latent sibling's declared latency: longer than a device block.
 const D: usize = 300;
-/// A MIDI 2.0 Note On, key 60, velocity 0xC800, group 1, channel 1.
-const NOTE_ON: EventKind = EventKind::Midi(Ump([0x4090_3c00, 0xC800_0000, 0, 0]));
+/// A MIDI 2.0 Note On, key 60, velocity 0xC800, group 0, channel 0.
+fn note_on() -> EventKind {
+    EventKind::Midi(midi::note_on(
+        MidiGroup::FIRST,
+        MidiChannel::FIRST,
+        60,
+        0xC800,
+    ))
+}
 
 /// An engine over a graph of two `Pulse`s — `(direct, pdc)` — whose global
 /// outputs are `[pdc, direct]`, the second pulse's event input merged with a
@@ -96,7 +104,7 @@ fn beat_notes_after_a_timed_start_leave_both_paths_on_one_frame() {
         let beats = [0.0, 0.001, 0.5];
         for node in [direct, pdc] {
             for b in beats {
-                ed.schedule(At::Beat(Beat(b)), EventIn { node, port: 0 }, NOTE_ON)
+                ed.schedule(At::Beat(Beat(b)), EventIn { node, port: 0 }, note_on())
                     .expect("room");
             }
         }

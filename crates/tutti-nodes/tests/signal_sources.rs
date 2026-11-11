@@ -8,7 +8,8 @@
 //! beside the gated pool they share.
 
 use std::sync::Arc;
-use tutti_ump::Ump;
+use tutti_fixtures::midi;
+use tutti_ump::{MidiChannel, MidiGroup, NoteNumber, U7, Ump};
 
 use tutti_graph::NodeKey;
 use tutti_graph::{
@@ -105,22 +106,23 @@ impl Node for Kick {
     fn reset(&mut self) {}
 }
 
+/// A MIDI 1.0 note-on (group 0, channel 0), velocity 100.
 fn note_on(note: u32) -> [u32; 4] {
-    [0x2090_0000 | (note << 8) | 100, 0, 0, 0]
+    midi::m1_note_on(MidiChannel::FIRST, NoteNumber::of(note as u8), U7::of(100)).0
 }
 
 fn note_off(note: u32) -> [u32; 4] {
-    [0x2080_0000 | (note << 8), 0, 0, 0]
+    midi::m1_note_off(MidiChannel::FIRST, NoteNumber::of(note as u8), U7::of(0)).0
 }
 
 /// A MIDI 2.0 note-on (group 0, channel 0) at 16-bit `velocity`.
-fn note_on_2(note: u32, velocity: u32) -> [u32; 4] {
-    [0x4090_0000 | (note << 8), velocity << 16, 0, 0]
+fn note_on_2(note: u32, velocity: u16) -> [u32; 4] {
+    midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, note as u8, velocity).0
 }
 
 /// A MIDI 2.0 note-off (group 0, channel 0).
 fn note_off_2(note: u32) -> [u32; 4] {
-    [0x4080_0000 | (note << 8), 0, 0, 0]
+    midi::note_off(MidiGroup::FIRST, MidiChannel::FIRST, note as u8, 0).0
 }
 
 /// A MIDI clip: while rolling, note 60 on at every beat and off half a
@@ -1060,10 +1062,13 @@ fn a_fresh_note_envelope_resets_at_a_start_in_its_first_block() {
 #[test]
 fn a_note_envelope_reads_midi_2_and_velocity_0() {
     let plan = vec![
-        (100, note_on_2(60, 0x8000)),
+        (100, note_on_2(60, midi::MID_VELOCITY)),
         (1_000, note_off_2(60)),
         (3_000, note_on_2(60, 0)),
-        (4_000, [0x2090_3c00, 0, 0, 0]),
+        (
+            4_000,
+            midi::m1_note_on(MidiChannel::FIRST, NoteNumber::of(60), U7::of(0)).0,
+        ),
     ];
     let (mut ed, mut exec) = envelope_rig(128, plan, adsr(0.005, 0.005, 0.5, 0.01));
     let all = render_stopped(&mut ed, &mut exec, &[128], 6_000);

@@ -32,23 +32,47 @@ use tutti_midi_runtime::{ClockNode, MidiOutControls, MidiOutNode};
 use tutti_tempo::{Shape, TempoMap, TempoPoint};
 use tutti_transport::{FadeOut, MotionEvent, Then, Transport};
 use tutti_types::{Beat, Bpm, ChannelLayout, InterleavedMut, SampleRate, Samples};
+use tutti_ump::{Message, System, U14, decode};
 
 const SR: f64 = 48_000.0;
 const TICKS_PER_BEAT: f64 = 24.0;
 /// The most a tick may sit from `ceil(x)` on a ramp (see the module docs).
 const E: f64 = 0.04;
 const MAX_BLOCK: usize = 4_096;
-const CLOCK: u32 = 0xF8;
-const START: u32 = 0xFA;
-const CONTINUE: u32 = 0xFB;
-const SONG_POSITION: u32 = 0xF2;
 
-/// One event out of the ring: its status byte, the 14-bit Song Position
-/// payload when it is one, and its frame on the graph's clock.
+/// A System message by its kind, whatever its data.
+#[derive(Clone, Copy, Debug)]
+enum Kind {
+    Clock,
+    Start,
+    Continue,
+    SongPosition,
+    TimeCode,
+}
+
+impl Kind {
+    fn is(self, s: System) -> bool {
+        matches!(
+            (self, s),
+            (Kind::Clock, System::TimingClock)
+                | (Kind::Start, System::Start)
+                | (Kind::Continue, System::Continue)
+                | (Kind::SongPosition, System::SongPosition(_))
+                | (Kind::TimeCode, System::TimeCode(_))
+        )
+    }
+}
+
+const CLOCK: Kind = Kind::Clock;
+const START: Kind = Kind::Start;
+const CONTINUE: Kind = Kind::Continue;
+const SONG_POSITION: Kind = Kind::SongPosition;
+
+/// One event out of the ring: the System message (a Song Position carries
+/// its 14-bit payload) and its frame on the graph's clock.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Sent {
-    status: u32,
-    data: u32,
+    system: System,
     frame: u64,
 }
 
@@ -159,11 +183,14 @@ impl Rig {
             done += n;
             loop {
                 let got = self.out.poll_into(&mut ring);
-                sent.extend(ring[..got].iter().map(|&(frame, ump)| Sent {
-                    status: (ump.0[0] >> 16) & 0xFF,
-                    // Song Position: the LSB in the byte after the status, the MSB in the last.
-                    data: ((ump.0[0] & 0x7F) << 7) | ((ump.0[0] >> 8) & 0x7F),
-                    frame: u64::from(frame),
+                sent.extend(ring[..got].iter().map(|&(frame, ump)| {
+                    let Ok(Message::System(_, system)) = decode(ump) else {
+                        panic!("the clock sends System messages: {ump:?}")
+                    };
+                    Sent {
+                        system,
+                        frame: u64::from(frame),
+                    }
                 }));
                 if got < ring.len() {
                     break;
@@ -183,9 +210,9 @@ fn play(map: &Arc<TempoMap>, start: f64, frames: usize, block: usize) -> Vec<Sen
     sent
 }
 
-fn frames_of(sent: &[Sent], status: u32) -> Vec<u64> {
+fn frames_of(sent: &[Sent], kind: Kind) -> Vec<u64> {
     sent.iter()
-        .filter(|e| e.status == status)
+        .filter(|e| kind.is(e.system))
         .map(|e| e.frame)
         .collect()
 }
@@ -308,9 +335,13 @@ fn a_ramp_or_step_boundary_is_not_a_locate() {
             );
 
             let sent = play(&m, 2.0, frames, block);
-            let sp: Vec<_> = sent.iter().filter(|e| e.status == SONG_POSITION).collect();
+            let sp: Vec<_> = sent.iter().filter(|e| SONG_POSITION.is(e.system)).collect();
             assert_eq!(sp.len(), 1, "{name} {block}: {sent:?}");
-            assert_eq!((sp[0].frame, sp[0].data), (0, 8), "{name} {block}");
+            assert_eq!(
+                (sp[0].frame, sp[0].system),
+                (0, System::SongPosition(U14::of(8))),
+                "{name} {block}"
+            );
             assert_eq!(frames_of(&sent, CONTINUE), [0], "{name} {block}");
         }
     }
@@ -364,9 +395,9 @@ fn a_locate_inside_a_ramp_sends_one_song_position_then_the_maps_ticks() {
     });
     rig.render(96_000, 512, &mut sent);
 
-    let sp: Vec<_> = sent.iter().filter(|e| e.status == SONG_POSITION).collect();
+    let sp: Vec<_> = sent.iter().filter(|e| SONG_POSITION.is(e.system)).collect();
     assert_eq!(sp.len(), 1, "only the locate: {sent:?}");
-    assert_eq!(sp[0].data, 12);
+    assert_eq!(sp[0].system, System::SongPosition(U14::of(12)));
     assert_eq!(sp[0].frame, 96_000, "on the first frame of the block");
     let f = sp[0].frame;
     let after: Vec<u64> = frames_of(&sent, CLOCK)
@@ -405,7 +436,7 @@ fn mtc_keeps_wall_clock_time_across_a_ramp() {
         sent
     };
     let reference = run(512);
-    let qf = frames_of(&reference, 0xF1);
+    let qf = frames_of(&reference, Kind::TimeCode);
     assert_eq!(qf.len(), frames / 480);
     for (k, &f) in qf.iter().enumerate() {
         assert_eq!(f, 480 * k as u64, "quarter-frame {k}");

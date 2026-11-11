@@ -156,14 +156,16 @@ mod tests {
     //! `tutti-graph`'s (`tests/event_inlet.rs`); what is here is what the
     //! wrapper adds: its error type, its lock and its `dropped`.
     use super::*;
+    use tutti_fixtures::midi::{key_of, m1_note_on};
     use tutti_graph::EventKind;
     use tutti_graph::contract::Direct;
     use tutti_types::{Beat, Frame, SampleRate};
+    use tutti_ump::{MidiChannel, NoteNumber, U7};
 
     const R48: SampleRate = SampleRate(48_000.0);
 
     fn note(n: u8) -> Ump {
-        Ump([0x2090_0000 | u32::from(n) << 8 | 100, 0, 0, 0])
+        m1_note_on(MidiChannel::FIRST, NoteNumber::of(n), U7::of(100))
     }
 
     fn rig() -> (Direct<TimedQueueNode>, TimedSender) {
@@ -171,11 +173,11 @@ mod tests {
         (Direct::new(node, R48, 64), tx)
     }
 
-    fn sent(d: &Direct<TimedQueueNode>) -> Vec<(u32, u32)> {
+    fn sent(d: &Direct<TimedQueueNode>) -> Vec<(u32, u8)> {
         d.events_out(0)
             .iter()
             .map(|e| match e.kind {
-                EventKind::Midi(Ump(w)) => (e.offset.get(), (w[0] >> 8) & 0x7F),
+                EventKind::Midi(ump) => (e.offset.get(), key_of(&ump).expect("a note").1.get()),
                 _ => unreachable!(),
             })
             .collect()

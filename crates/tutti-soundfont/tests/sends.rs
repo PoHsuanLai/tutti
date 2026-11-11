@@ -11,6 +11,7 @@ use support::font::{Inst, Preset, font};
 use support::rig::Rig;
 use tutti_graph::{Instrument, Node, SilenceMask, Status};
 use tutti_soundfont::SoundFontUnit;
+use tutti_ump::CCNumber;
 
 /// Generators 15 and 16 (section 8.1.2), 17 and the instrument zone's other
 /// figures are the specification's numbers.
@@ -39,8 +40,8 @@ fn rig(generators: Vec<(u16, i16)>) -> Rig {
 /// Sounds a note, sets the sends, lets the attack settle, and returns 512 steady
 /// frames of the five outputs.
 fn steady(rig: &mut Rig, cc91: u8, cc93: u8) -> [Vec<f32>; 5] {
-    rig.cc(0, 91, cc91);
-    rig.cc(0, 93, cc93);
+    rig.cc(0, CCNumber::REVERB_SEND, cc91);
+    rig.cc(0, CCNumber::CHORUS_SEND, cc93);
     rig.note_on(0, 69, 100);
     rig.render_all(8192);
     rig.render_all(512)
@@ -162,8 +163,8 @@ fn a_negative_send_sends_nothing() {
     // takes it to -0.4.
     let mut live = rig(vec![(CHORUS_SEND, -100), (REVERB_SEND, -100)]);
     steady(&mut live, 127, 127);
-    live.cc(0, 91, 0);
-    live.cc(0, 93, 0);
+    live.cc(0, CCNumber::REVERB_SEND, 0);
+    live.cc(0, CCNumber::CHORUS_SEND, 0);
     let [dry_l, dry_r, chorus_l, chorus_r, reverb] = live.render_all(512);
     let inverted = |send: &[f32], dry: &[f32]| send.iter().zip(dry).any(|(s, d)| s * d < -1e-9);
     assert!(!inverted(&chorus_l, &dry_l), "chorus left");

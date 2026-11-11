@@ -4,9 +4,11 @@
 //! the adapter was parked).
 
 use tutti_cpal::{ManualStream, ManualStreamDriver, OutputSpec};
+use tutti_fixtures::midi;
 use tutti_session::Session;
 use tutti_transport::MotionEvent;
 use tutti_types::{ChannelLayout, SampleRate};
+use tutti_ump::{Message, MidiGroup, System, Ump, decode};
 
 const OLD: f64 = 44_100.0;
 const NEW: f64 = 48_000.0;
@@ -21,15 +23,15 @@ fn spec_at(rate: f64) -> OutputSpec {
 
 /// Render `blocks` blocks of `frames` on `stream` and drain the hardware out
 /// the clock is wired to after each, an update of the session between: every
-/// event's status byte and its frame on the graph's clock (which the out node
+/// event and its frame on the graph's clock (which the out node
 /// stamps it with).
 fn clock(
     s: &mut Session,
     stream: &ManualStream,
     (frames, blocks): (usize, usize),
-) -> Vec<(u32, u64)> {
+) -> Vec<(Ump, u64)> {
     let mut out = Vec::new();
-    let mut buf = [(0_u32, tutti_ump::Ump([0; 4])); 64];
+    let mut buf = [(0_u32, Ump([0; 4])); 64];
     for _ in 0..blocks {
         stream.render_block(frames).expect("the stream is open");
         let n = s
@@ -40,7 +42,7 @@ fn clock(
         out.extend(
             buf[..n]
                 .iter()
-                .map(|(stamp, ump)| ((ump.0[0] >> 16) & 0xFF, u64::from(*stamp))),
+                .map(|(stamp, ump)| (*ump, u64::from(*stamp))),
         );
         s.update();
     }
@@ -75,10 +77,10 @@ fn a_restart_re_rates_the_midi_clock() {
         .motion
         .try_send(MotionEvent::Play)
         .expect("room");
-    let ticks = |events: &[(u32, u64)]| -> f64 {
+    let ticks = |events: &[(Ump, u64)]| -> f64 {
         let at: Vec<u64> = events
             .iter()
-            .filter(|(status, _)| *status == 0xF8)
+            .filter(|(ump, _)| *ump == midi::timing_clock(MidiGroup::FIRST))
             .map(|&(_, at)| at)
             .collect();
         assert!(at.len() > 20, "ticks to measure");
@@ -94,7 +96,10 @@ fn a_restart_re_rates_the_midi_clock() {
     let after = clock(&mut s, &new, (512, 100));
     assert!((ticks(&after) - 1_000.0).abs() < 0.05, "{}", ticks(&after));
     assert!(
-        !after.iter().any(|(status, _)| *status == 0xF2),
+        !after.iter().any(|(ump, _)| matches!(
+            decode(*ump),
+            Ok(Message::System(_, System::SongPosition(_)))
+        )),
         "the restart is not a locate"
     );
 }

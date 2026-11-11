@@ -15,6 +15,7 @@ use support::rig::{Rig, timgm6mb};
 use tutti_fixtures::sf2::{generator, range};
 use tutti_graph::Node;
 use tutti_types::Tail;
+use tutti_ump::CCNumber;
 
 /// A violin: a held key sustains, a released one rings out in about a second.
 fn violin() -> Rig {
@@ -38,7 +39,7 @@ const RING_OUT: usize = 44_100 * 20;
 fn sustain_stores_key_offs_until_it_goes_inactive() {
     for (pedal, held) in [(63, false), (64, true)] {
         let mut rig = violin();
-        rig.cc(0, 64, pedal);
+        rig.cc(0, CCNumber::SUSTAIN, pedal);
         rig.note_on(0, 69, 100);
         rig.energy(4096);
         rig.note_off(0, 69);
@@ -46,7 +47,7 @@ fn sustain_stores_key_offs_until_it_goes_inactive() {
         let after = rig.energy(512);
         assert_eq!(after > 1.0, held, "pedal {pedal}: {after}");
         if held {
-            rig.cc(0, 64, 0);
+            rig.cc(0, CCNumber::SUSTAIN, 0);
             rig.energy(RING_OUT);
             assert_eq!(rig.energy(512), 0.0, "and the stored key-off runs at 0");
         }
@@ -67,7 +68,7 @@ fn sustain_down_after_the_key_off_holds_nothing() {
     rig.energy(4096);
     rig.note_off(0, 69);
     rig.energy(64);
-    rig.cc(0, 64, 127);
+    rig.cc(0, CCNumber::SUSTAIN, 127);
     rig.energy(RING_OUT);
     assert_eq!(rig.energy(512), 0.0);
 }
@@ -89,7 +90,7 @@ fn sustain_down_after_the_key_off_holds_nothing() {
 fn sostenuto_holds_what_sounded_when_it_went_active() {
     // A note struck after the pedal went down behaves normally.
     let mut after = violin();
-    after.cc(0, 66, 127);
+    after.cc(0, CCNumber::SOSTENUTO, 127);
     after.note_on(0, 69, 100);
     after.energy(4096);
     after.note_off(0, 69);
@@ -100,18 +101,18 @@ fn sostenuto_holds_what_sounded_when_it_went_active() {
     let mut held = violin();
     held.note_on(0, 69, 100);
     held.energy(4096);
-    held.cc(0, 66, 127);
-    held.cc(0, 64, 127);
+    held.cc(0, CCNumber::SOSTENUTO, 127);
+    held.cc(0, CCNumber::SUSTAIN, 127);
     held.note_off(0, 69);
     held.energy(RING_OUT);
     assert!(held.energy(512) > 1.0, "the sostenuto holds the note");
-    held.cc(0, 64, 0);
+    held.cc(0, CCNumber::SUSTAIN, 0);
     held.energy(RING_OUT);
     assert!(
         held.energy(512) > 1.0,
         "and the sustain pedal going on and off does not let it go"
     );
-    held.cc(0, 66, 0);
+    held.cc(0, CCNumber::SOSTENUTO, 0);
     held.energy(RING_OUT);
     assert_eq!(held.energy(512), 0.0, "until the sostenuto goes inactive");
 
@@ -119,7 +120,7 @@ fn sostenuto_holds_what_sounded_when_it_went_active() {
     let mut soft = violin();
     soft.note_on(0, 69, 100);
     soft.energy(4096);
-    soft.cc(0, 67, 127);
+    soft.cc(0, CCNumber::SOFT_PEDAL, 127);
     soft.note_off(0, 69);
     soft.energy(RING_OUT);
     assert_eq!(soft.energy(512), 0.0, "CC 67 is not the sostenuto");
@@ -134,15 +135,15 @@ fn sostenuto_holds_what_sounded_when_it_went_active() {
 #[test]
 fn all_sound_off_shuts_off_even_pedal_held_notes() {
     let mut rig = violin();
-    rig.cc(0, 64, 127);
+    rig.cc(0, CCNumber::SUSTAIN, 127);
     rig.note_on(0, 69, 100);
     rig.note_on(0, 72, 100);
     rig.energy(4096);
     rig.note_off(0, 72);
-    rig.cc(0, 66, 127);
+    rig.cc(0, CCNumber::SOSTENUTO, 127);
     rig.energy(4096);
     assert!(rig.energy(512) > 1.0, "both held notes sound");
-    rig.cc(0, 120, 0);
+    rig.cc(0, CCNumber::ALL_SOUND_OFF, 0);
     assert_eq!(rig.energy(512), 0.0, "shut off at once, not released");
 }
 
@@ -157,27 +158,27 @@ fn all_notes_off_releases_unless_a_pedal_holds() {
     let mut rig = violin();
     rig.note_on(0, 69, 100);
     rig.energy(4096);
-    rig.cc(0, 123, 0);
+    rig.cc(0, CCNumber::ALL_NOTES_OFF, 0);
     assert!(rig.energy(64) > 0.0, "it enters its release, it is not cut");
     rig.energy(RING_OUT);
     assert_eq!(rig.energy(512), 0.0, "and the release ends");
 
     let mut pedal = violin();
-    pedal.cc(0, 64, 127);
+    pedal.cc(0, CCNumber::SUSTAIN, 127);
     pedal.note_on(0, 69, 100);
     pedal.energy(4096);
-    pedal.cc(0, 123, 0);
+    pedal.cc(0, CCNumber::ALL_NOTES_OFF, 0);
     pedal.energy(RING_OUT);
     assert!(pedal.energy(512) > 1.0, "the sustain pedal holds it");
-    pedal.cc(0, 64, 0);
+    pedal.cc(0, CCNumber::SUSTAIN, 0);
     pedal.energy(RING_OUT);
     assert_eq!(pedal.energy(512), 0.0, "until it lifts");
 
     let mut sostenuto = violin();
     sostenuto.note_on(0, 69, 100);
     sostenuto.energy(4096);
-    sostenuto.cc(0, 66, 127);
-    sostenuto.cc(0, 123, 0);
+    sostenuto.cc(0, CCNumber::SOSTENUTO, 127);
+    sostenuto.cc(0, CCNumber::ALL_NOTES_OFF, 0);
     sostenuto.energy(RING_OUT);
     assert!(sostenuto.energy(512) > 1.0, "the sostenuto holds it");
 }
@@ -193,10 +194,10 @@ fn reset_all_controllers_restores_the_defaults_and_stops_nothing() {
     rig.note_on(0, 69, 100);
     rig.energy(4096);
     let level = rig.energy(2048);
-    rig.cc(0, 11, 0);
+    rig.cc(0, CCNumber::EXPRESSION, 0);
     rig.energy(64);
     assert_eq!(rig.energy(2048), 0.0, "expression 0 silences it");
-    rig.cc(0, 121, 0);
+    rig.cc(0, CCNumber::RESET_ALL, 0);
     let back = rig.energy(2048);
     assert!(
         (back / level - 1.0).abs() < 0.2,
@@ -568,7 +569,7 @@ fn the_tail_covers_every_preset() {
 #[test]
 fn reset_cuts_the_voices_forgets_the_pedals_and_keeps_the_program() {
     let mut rig = violin();
-    rig.cc(0, 64, 127);
+    rig.cc(0, CCNumber::SUSTAIN, 127);
     rig.note_on(0, 69, 100);
     rig.energy(4096);
     rig.note_off(0, 69);

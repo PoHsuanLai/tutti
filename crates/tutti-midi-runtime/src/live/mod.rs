@@ -18,7 +18,9 @@ pub mod mailbox;
 pub(crate) mod order;
 mod route;
 
-pub use device_inlets::{DeviceInlets, DeviceInput, DeviceSlot, InletChange, NoFreeSlot};
+pub use device_inlets::{
+    ArrivalClock, DeviceInlets, DeviceInput, DeviceSlot, InletChange, NoFreeSlot,
+};
 pub use ingest_node::{
     CHANNELLESS_PORT, MIDI_INPUT_DENSITY, MIDI_INPUT_EVENT_CAPACITY, MIDI_INPUT_PORTS,
     MidiIngestControls, MidiIngestNode, MidiInputPorts,

@@ -605,7 +605,9 @@ impl SessionBuilder {
     fn clock_midi(parts: &Parts, engine: &tutti_engine::Engine) {
         #[cfg(feature = "midi-hardware")]
         if let Some(io) = &parts.midi_io {
-            io.ports().inlets().set_clock(Some(engine.block_clock()));
+            io.ports()
+                .inlets()
+                .set_clock(Some(crate::midi::arrival_clock(engine.block_clock())));
         }
         #[cfg(not(feature = "midi-hardware"))]
         let _ = (parts, engine);

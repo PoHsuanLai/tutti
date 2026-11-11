@@ -5,8 +5,8 @@
 //! A device's thread learns when an event arrived from the OS, as an
 //! [`Instant`]. The graph wants a frame. The thread places each arrival itself,
 //! so the audio thread converts nothing: it holds a [`ClockMap`] fed the
-//! engine's block-start readings ([`BlockClockReader`], one per render call:
-//! the OS time the block began and the graph frame it began at) and pushes the
+//! engine's block-start readings (an [`ArrivalClock`]: one per render call, the
+//! OS time the block began and the graph frame it began at) and pushes the
 //! event for the [`Moment`] the map names, through the device's own
 //! [`EventInletWriter`]. The inlet holds the
 //! event until its block and emits it on its frame, and a
@@ -40,12 +40,21 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
-use tutti_graph::{BlockClockReader, EventInletNode, EventInletWriter, InletCounts};
+use tutti_graph::{EventInletNode, EventInletWriter, InletCounts};
 use tutti_rt::{ArcLend, Reader};
 use tutti_types::{At, Moment};
 use tutti_ump::Ump;
 
 use crate::clock_map::{ClockMap, ClockReading, Observed};
+
+/// The engine's block clock as a device's thread reads it: the latest render
+/// call's start as an [`Instant`] and the graph [`Moment`] it began at, `None`
+/// before the first call. A function, not an engine type: this crate depends on
+/// no engine, and whoever owns both ends (the session) builds it, converting
+/// the engine's OS nanoseconds onto the `Instant`s the backends stamp with.
+/// Called from each device's thread on every push: lock-free and
+/// allocation-free.
+pub type ArrivalClock = Arc<dyn Fn() -> Option<(Instant, Moment)> + Send + Sync>;
 
 /// Which of a [`DeviceInlets`]' slots a device holds: its index, and which
 /// device to take the slot it is, so a stale slot (its device closed, the slot
@@ -115,7 +124,7 @@ pub struct DeviceInlets {
     lead: Arc<AtomicU64>,
     /// The engine's block clock, lent to each device's thread. `None` until
     /// the owner has an engine ([`set_clock`](Self::set_clock)).
-    clock: Arc<ArcLend<Option<BlockClockReader>>>,
+    clock: Arc<ArcLend<Option<ArrivalClock>>>,
 }
 
 impl std::fmt::Debug for DeviceInlets {
@@ -163,7 +172,7 @@ impl DeviceInlets {
     /// Sets the engine's block clock the devices' threads place arrivals
     /// with (`None`: there is none, and events are pushed for the next
     /// block). Takes effect on each thread's next event. Control side.
-    pub fn set_clock(&self, clock: Option<BlockClockReader>) {
+    pub fn set_clock(&self, clock: Option<ArrivalClock>) {
         self.clock.publish(clock);
     }
 
@@ -262,7 +271,7 @@ pub struct DeviceInput {
     slot: DeviceSlot,
     writer: EventInletWriter,
     counts: InletCounts,
-    clock: Reader<Option<BlockClockReader>>,
+    clock: Reader<Option<ArrivalClock>>,
     lead: Arc<AtomicU64>,
     /// The latest reading the map was fed.
     seen: Option<(Instant, Moment)>,
@@ -311,7 +320,7 @@ impl DeviceInput {
     fn moment_of(&mut self, arrival: Instant) -> Option<Moment> {
         let reading = {
             let clock = self.clock.lend();
-            clock.as_ref()?.read()?
+            (clock.as_ref()?)()?
         };
         if self.seen != Some(reading) {
             self.seen = Some(reading);

@@ -24,13 +24,38 @@ use assert_no_alloc::AllocDisabler;
 use tutti_fixtures::midi::{noop, note_on};
 use tutti_graph::NodeKey;
 use tutti_graph::{
-    BlockClock, Editor, EventEdge, EventIn, EventOut, EventTapId, EventTapReader, Executor,
-    Prepare, TapAlign, TapEvent, Transport,
+    Editor, EventEdge, EventIn, EventOut, EventTapId, EventTapReader, Executor, Prepare, TapAlign,
+    TapEvent, Transport,
 };
 use tutti_midi_hardware::{HardwareMidiInputs, InputProducerHandle};
 use tutti_midi_runtime::{DeviceInlets, InletChange, MidiIngestNode};
 use tutti_types::{Frame, SampleRate, Samples};
 use tutti_ump::{MidiChannel, MidiGroup, Ump};
+
+/// A block clock a test writes by hand, as the engine does each render call.
+struct BlockClock(
+    std::sync::Arc<std::sync::Mutex<Option<(std::time::Instant, tutti_types::Moment)>>>,
+);
+
+impl BlockClock {
+    fn new() -> Self {
+        Self(Default::default())
+    }
+
+    fn reader(&self) -> tutti_midi_runtime::ArrivalClock {
+        let cell = std::sync::Arc::clone(&self.0);
+        std::sync::Arc::new(move || *cell.lock().unwrap())
+    }
+
+    fn write(
+        &mut self,
+        os: std::time::Instant,
+        frame: tutti_types::Frame,
+        rate: tutti_types::SampleRate,
+    ) {
+        *self.0.lock().unwrap() = Some((os, tutti_types::Moment::new(frame, rate)));
+    }
+}
 
 #[global_allocator]
 static A: AllocDisabler = AllocDisabler;

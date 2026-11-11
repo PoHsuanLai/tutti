@@ -11,13 +11,38 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use tutti_graph::{
-    BlockClock, Cx, Editor, EventEdge, EventIn, EventKind, EventOut, Executor, Io, Node, NodeKey,
-    OutPort, Prepare, Shape, Source, Status, Transport, Unforkable,
+    Cx, Editor, EventEdge, EventIn, EventKind, EventOut, Executor, Io, Node, NodeKey, OutPort,
+    Prepare, Shape, Source, Status, Transport, Unforkable,
 };
 use tutti_midi_hardware::DeviceInlets;
 use tutti_midi_runtime::InletChange;
 use tutti_types::{ChannelLayout, Frame, SampleRate, Samples};
 use tutti_ump::Ump;
+
+/// A block clock a test writes by hand, as the engine does each render call.
+struct BlockClock(
+    std::sync::Arc<std::sync::Mutex<Option<(std::time::Instant, tutti_types::Moment)>>>,
+);
+
+impl BlockClock {
+    fn new() -> Self {
+        Self(Default::default())
+    }
+
+    fn reader(&self) -> tutti_midi_runtime::ArrivalClock {
+        let cell = std::sync::Arc::clone(&self.0);
+        std::sync::Arc::new(move || *cell.lock().unwrap())
+    }
+
+    fn write(
+        &mut self,
+        os: std::time::Instant,
+        frame: tutti_types::Frame,
+        rate: tutti_types::SampleRate,
+    ) {
+        *self.0.lock().unwrap() = Some((os, tutti_types::Moment::new(frame, rate)));
+    }
+}
 
 const RATE: f64 = 44_100.0;
 const BLOCK: usize = 64;

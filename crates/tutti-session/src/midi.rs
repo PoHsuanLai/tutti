@@ -54,6 +54,33 @@ pub(crate) fn input_lead(block: Samples, rate: tutti_types::SampleRate) -> Durat
     Duration::from_secs_f64(block.to_seconds(rate).get())
 }
 
+/// The engine's block clock as the device threads read it
+/// ([`tutti_midi_runtime::ArrivalClock`]). The engine stamps with
+/// [`tutti_rt::monotonic_ns`], the OS's monotonic clock; the backends stamp
+/// arrivals with `Instant`, the same clock (`CLOCK_MONOTONIC` on Linux,
+/// `mach_absolute_time` on macOS, `QueryPerformanceCounter` on Windows). One
+/// pairing of the two, read once per process, relates them, so there is one
+/// timebase end to end and the conversion is an offset, never a second clock.
+#[cfg(feature = "midi-hardware")]
+pub(crate) fn arrival_clock(
+    clock: tutti_engine::BlockClockReader,
+) -> tutti_midi_runtime::ArrivalClock {
+    use std::sync::OnceLock;
+    static PAIRING: OnceLock<(Instant, i64)> = OnceLock::new();
+    let (instant, ns) = *PAIRING.get_or_init(|| (Instant::now(), tutti_rt::monotonic_ns()));
+    Arc::new(move || {
+        let reading = clock.read()?;
+        let delta = reading.os_ns.saturating_sub(ns);
+        let span = Duration::from_nanos(delta.unsigned_abs());
+        let os = if delta >= 0 {
+            instant.checked_add(span)?
+        } else {
+            instant.checked_sub(span)?
+        };
+        Some((os, Moment::new(reading.frame, reading.rate)))
+    })
+}
+
 /// The hardware out's tap, in events: the ring the clock's output is copied
 /// into between two updates (a note-off is kept up to
 /// [`note_off_room`](tutti_graph::note_off_room) of it).

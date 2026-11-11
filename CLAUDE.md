@@ -101,8 +101,9 @@ that pays, and the compiler packs tasks too cheap to dispatch alone.
   §5, "Timing at the edge", has the rule and its bound).
   The hardware MIDI input is such a producer, one inlet per device
   (`tutti_midi_runtime::DeviceInlets`, `DeviceInput`): the engine writes each
-  render call's OS time and frame (`Engine::block_clock`, `tutti_graph::BlockClock`,
-  a `tutti-rt` sequence cell), the device's thread holds a `ClockMap` fed those
+  render call's `monotonic_ns` and frame (`Engine::block_clock`,
+  `tutti_engine::BlockClockReader`, a `tutti-rt` sequence cell; the session
+  turns it into the runtime's `ArrivalClock`), the device's thread holds a `ClockMap` fed those
   readings, places each arrival on a frame plus a fixed lead (one block) and
   pushes it with `push_at`; the audio thread converts no time. The graph side
   is `MidiIngestNode`, one event input per device slot with a translator and
@@ -1231,7 +1232,7 @@ read the `Cargo.toml`, grep for the type, run the probe.
   it; the parked `bevy-tutti` keeps one mention (`plugin_host/live_resize.rs`), and
   the dated records in `docs/` keep theirs: fix only what claims to be current, and never "update" a reference
   to a new app-side path.
-- **Dead crate names:** `MidiQueueNode`, `TimedQueueNode`, `TimedSender`, `TimedSendError` → deleted (doc 017 E4: a control thread sends through `tutti_graph::EventInletNode`'s `EventInletWriter`, with `tutti_midi_runtime::MidiKeys` for the key helpers; `Graph::open_event_inlet` in the session); `ChannelSumNode` → deleted (a port or an output
+- **Dead crate names:** `MidiInputNode` → `MidiIngestNode` (one event input per device slot; a device's thread pushes through `DeviceInput` into an event inlet from `DeviceInlets`, doc 017 E5), `MidiIn`, `HardwareMidiDrain` and `cycle_start_read_all_inputs` → deleted (the same), `MidiQueueNode`, `TimedQueueNode`, `TimedSender`, `TimedSendError` → deleted (doc 017 E4: a control thread sends through `tutti_graph::EventInletNode`'s `EventInletWriter`, with `tutti_midi_runtime::MidiKeys` for the key helpers; `Graph::open_event_inlet` in the session); `ChannelSumNode` → deleted (a port or an output
   channel sums its sources: `Op::Sum`, doc 013 "Audio fan-in sums"); `DownmixNode` → deleted (a bus edge between declared buses folds, `Editor::connect_bus` and the session's `Graph::connect_bus`, doc 013 "Buses and coercion"; a fold that is not a graph's uses `tutti_types::Fold`); `tutti-spatial` → `tutti-nodes` (the panner nodes, `VbapPannerNode`
   and `HrtfBinauralNode`; the algorithms are `tutti-dsp::spatial`); `build_vbap_mix` and
   `VbapMixParts` → deleted (a VBAP mix is a panner per source wired to the output

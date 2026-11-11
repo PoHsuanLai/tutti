@@ -81,10 +81,11 @@
 //! callback never meets a graph it cannot render.
 
 use tutti_graph::{
-    BlockClock, BlockClockReader, CommitError, Due, Editor, Env, Executor, Limits,
-    MAX_ROOT_CHANNELS, Offset, Playhead, TransportChanges,
+    CommitError, Due, Editor, Env, Executor, Limits, MAX_ROOT_CHANNELS, Offset, Playhead,
+    TransportChanges,
 };
 
+use crate::block_clock::{BlockClock, BlockClockReader};
 use crate::output::{DEFAULT_DEVICE_WIDTHS, OutputControl, OutputFolds};
 use std::time::Instant;
 use tutti_metering::{LoadMeter, LoadRecorder};
@@ -514,7 +515,8 @@ impl Engine {
                 // The call's start and the frame it renders first: one
                 // reading per call, for producer threads that hold an OS
                 // time (doc 017 section 5, "Timing at the edge").
-                g.clock.write(start, g.exec.frame(), rate);
+                g.clock
+                    .write(tutti_rt::monotonic_ns(), g.exec.frame(), rate);
             }
             let len = (frames - done).min(bound);
             let t = g.transport.begin_block();
@@ -602,7 +604,8 @@ impl Engine {
                 // The call's start and the frame it renders first: one
                 // reading per call, for producer threads that hold an OS
                 // time (doc 017 section 5, "Timing at the edge").
-                g.clock.write(start, g.exec.frame(), rate);
+                g.clock
+                    .write(tutti_rt::monotonic_ns(), g.exec.frame(), rate);
             }
             let len = (frames - done).min(bound);
             let frame0 = g.exec.frame();

@@ -219,7 +219,6 @@
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
 mod arena;
-mod block_clock;
 mod builder;
 mod bus;
 mod bus_edge;
@@ -264,7 +263,6 @@ mod tail;
 mod tap;
 mod time;
 
-pub use block_clock::{BlockClock, BlockClockReader};
 pub use builder::{GraphBuilder, Renderer, Solo};
 pub use command::{CANCEL_CAPACITY, COMMAND_CAPACITY, CommandId, ScheduleError};
 pub use compile::{CompileError, CycleEdge, Shapes, VerifyError, compile};

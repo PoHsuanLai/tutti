@@ -19,10 +19,10 @@ mod traits;
 pub use clock_map::{ClockMap, ClockReading, GAIN, Observed, RESYNC};
 pub use ledger::{NoteLedger, Sending};
 pub use live::{
-    CHANNELLESS_PORT, DeviceInlets, DeviceInput, DeviceSlot, InletChange, LIVE_INLET_CAPACITY,
-    MAILBOX_CAPACITY, MIDI_INPUT_DENSITY, MIDI_INPUT_EVENT_CAPACITY, MIDI_INPUT_PORTS,
-    MidiIngestControls, MidiIngestNode, MidiInputPorts, MidiKeys, MidiMailbox, MidiReceiver,
-    MidiSender, NoFreeSlot, RouteRule, compile_routes,
+    ArrivalClock, CHANNELLESS_PORT, DeviceInlets, DeviceInput, DeviceSlot, InletChange,
+    LIVE_INLET_CAPACITY, MAILBOX_CAPACITY, MIDI_INPUT_DENSITY, MIDI_INPUT_EVENT_CAPACITY,
+    MIDI_INPUT_PORTS, MidiIngestControls, MidiIngestNode, MidiInputPorts, MidiKeys, MidiMailbox,
+    MidiReceiver, MidiSender, NoFreeSlot, RouteRule, compile_routes,
 };
 pub use outbound::{
     CLOCK_EVENT_CAPACITY, ClockMaster, ClockNode, JR_CLOCK_INTERVAL, JR_CLOCK_MAX_INTERVAL,

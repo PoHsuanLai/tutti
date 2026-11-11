@@ -32,6 +32,9 @@ tutti-transport = { path = "../tutti-transport" }
 tutti-tempo = { path = "../tutti-tempo" }
 tutti-metering = { path = "../tutti-metering" }
 tutti-engine = { path = "../tutti-engine" }
+# `monotonic_ns`, the OS clock the engine's block clock is on (the MIDI inputs'
+# arrival stamps are related to it); `ArcLend` for the tests that publish.
+tutti-rt = { path = "../tutti-rt" }
 tutti-nodes = { path = "../tutti-nodes", default-features = false }
 # Logging: what the `bevy_log` calls of `bevy-tutti`'s old `GraphRuntime`
 # became. `bevy_log` is a `tracing` subscriber, so a Bevy app sees these
@@ -105,8 +108,6 @@ tutti-sf2 = { path = "../tutti-sf2" }
 # The `FakeBackend` the hot-plug tests drive (`plug`, `unplug`). Dev-only:
 # `midi-hardware` must not link a fake backend.
 tutti-midi-hardware = { path = "../tutti-midi-hardware", features = ["test-support"] }
-# `ArcLend` for the tests that publish into a graph.
-tutti-rt = { path = "../tutti-rt" }
 # Stimulus nodes (`Const`, `Osc`, `Through`) for the tests and doctests.
 tutti-nodes = { path = "../tutti-nodes", default-features = false, features = ["testing"] }
 # The in-memory tone a sampler voice test plays (`Wave`).

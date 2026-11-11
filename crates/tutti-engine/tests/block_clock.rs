@@ -3,8 +3,6 @@
 //! it on a frame (doc 017 section 5, "Timing at the edge"). Figures are
 //! analytic: the frame of call `k` is the frames rendered before it.
 
-use std::time::Instant;
-
 use tutti_engine::Engine;
 use tutti_graph::{Editor, Prepare};
 use tutti_transport::Transport;
@@ -41,20 +39,20 @@ fn each_call_publishes_where_it_began() {
         let reader = engine.block_clock();
         assert_eq!(reader.read(), None, "nothing before the first call");
 
-        let before = Instant::now();
+        let before = tutti_rt::monotonic_ns();
         render(&engine, 256, segment);
-        let (os, at) = reader.read().expect("published by the first call");
-        assert_eq!(at.frame(), Frame(0));
-        assert_eq!(at.rate(), SampleRate(RATE));
-        assert!(os >= before && os <= Instant::now());
+        let first = reader.read().expect("published by the first call");
+        assert_eq!(first.frame, Frame(0));
+        assert_eq!(first.rate, SampleRate(RATE));
+        assert!(first.os_ns >= before && first.os_ns <= tutti_rt::monotonic_ns());
 
         render(&engine, 512, segment);
-        let (second, at) = reader.read().expect("published by the second call");
+        let second = reader.read().expect("published by the second call");
         assert_eq!(
-            at.frame(),
+            second.frame,
             Frame(256),
             "the second call begins where the first ended"
         );
-        assert!(second >= os);
+        assert!(second.os_ns >= first.os_ns);
     }
 }

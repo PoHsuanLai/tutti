@@ -679,10 +679,11 @@ scheduling (`OutputPlan`) is the next part and is not.
     tests pass on a Mac (clippy `-D warnings` clean on macOS), and the timestamp
     arithmetic is tested, but no device sent it a packet.
   - **Where the frame is made. Done (E5).** By the producer, on the device's own
-    thread. The engine writes one reading per render call (`BlockClock`, a
-    `tutti-rt` sequence cell of the OS time the call began and the graph frame
-    it began at; `Engine::block_clock` reads it) and each device's thread holds
-    a `ClockMap` fed those readings (`DeviceInput`, in `tutti-midi-runtime`). It
+    thread. The engine writes one reading per render call (`BlockClock`, in
+    `tutti-engine`: a `tutti-rt` sequence cell of the OS time the call began and
+    the graph frame it began at; `Engine::block_clock` hands out its
+    `BlockClockReader`) and each device's thread holds a `ClockMap` fed those
+    readings (`DeviceInput`, in `tutti-midi-runtime`). It
     places each arrival `Instant` on a frame, adds the **lead** (below) and
     pushes the event into that device's event inlet with `push_at`. The audio
     thread converts no time: the inlet holds each event until its block, and
@@ -690,6 +691,19 @@ scheduling (`OutputPlan`) is the next part and is not.
     (the engine restarted and its frames began at 0 again) re-anchors it; before
     the first reading, or for an arrival the map puts before frame 0, the event
     is pushed for the next block.
+  - **One timebase.** The engine stamps with `tutti_rt::monotonic_ns` (the OS's
+    monotonic clock, on the OS's epoch, so a plugin server shares it) and
+    `tutti-graph` holds no wall-clock type: it sees only `Env`. `ClockMap` stays
+    pure over `Instant`, the type every backend stamps arrivals with (ALSA
+    converts the queue's time to an `Instant`, CoreMIDI the mach host time, both
+    through `stamp::arrival`); `Instant` is the same OS monotonic clock
+    (`CLOCK_MONOTONIC`, `mach_absolute_time`, `QueryPerformanceCounter`) but
+    opaque, so no backend can produce nanoseconds without a pairing. The map
+    therefore keeps `Instant`, and the session, which owns both ends, converts
+    the engine's nanoseconds with one pairing of the two read once per process
+    (`arrival_clock`): an offset, never a second clock. `tutti-engine` and
+    `tutti-midi-runtime` share no edge (both layer 4); the runtime takes the
+    clock as a function (`ArrivalClock`).
   - **The lead.** An event that arrived between two blocks maps to a frame
     before the next block's start, so it would reach the graph already late and
     a run of events would collapse onto offset 0. Each arrival is therefore
@@ -1401,9 +1415,9 @@ the plan above: the key-helper wrapper is not named `MidiSender` (that is the
 mailbox's push half, which `MidiOutNode` still uses, so it cannot change
 shape before E3), and the mailbox is not deleted (above).
 
-**Stage E5, as built.** Added: `BlockClock` and `BlockClockReader` (`tutti-graph`: the
-engine's block start as OS time and frame, over `tutti-rt`'s sequence cell, which
-already has a loom model; `Engine::block_clock`), `InletCounts`
+**Stage E5, as built.** Added: `BlockClockReader` and `BlockReading` (`tutti-engine`: the
+engine's block start as `monotonic_ns` and frame, over `tutti-rt`'s sequence cell, which
+already has a loom model; `Engine::block_clock`), `ArrivalClock` (`tutti-midi-runtime`), `InletCounts`
 (`EventInletWriter::counts`: the inlet's four counts as a view readable off the
 writer's thread), and in `tutti-midi-runtime` `DeviceInlets` (the slots, the
 changes the graph's owner applies, the clock lent to each thread through an

@@ -494,10 +494,23 @@ Bevy's partial declarations when both hosts share one session, and no direct
   tests.
 - **Fix bugs, don't work around them** — tests reveal broken functionality; fix
   the functionality.
-- **Mutation-test new tests.** Break the thing the test covers and watch it fail.
-  A test that cannot fail is worse than no test: it claims coverage it does not
-  have. When a property genuinely cannot be covered here, say so in a comment
-  rather than writing an assertion that always passes.
+- **A test must be able to fail.** Break the thing the test covers once, locally,
+  and watch it fail. A test that cannot fail is worse than no test: it claims
+  coverage it does not have. When a property genuinely cannot be covered here,
+  say so in a comment rather than writing an assertion that always passes.
+
+### Why mutations are no longer recorded in the source (2026-11-11)
+
+Until 2026-11 every new test carried a `Mutation (run): ...` comment, and some
+crates grew seams (`tutti-dsp`'s `Flaw`, counters, panic hooks) that existed only
+to make a mutation visible. The test audit of 2026-11-11 counted 4,898 such
+records (16,081 lines, over half of all tests) and about 35 digests pinning a
+render from before a migration. The records went stale as code moved (one named a
+function since deleted) and never ran again after the PR that wrote them; the
+migration pins held new code to old output, which the spec, not history, should
+decide. The owner called both baggage. The rule keeps the useful half: a test
+must be able to fail, checked once and said in the PR. A test's history lives in
+its PR; its name and doc state the property it guards.
 
 ### What guards `plugin-server`'s realtime raise
 

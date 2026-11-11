@@ -25,17 +25,22 @@
 //! live node and its fork read the transport the same way: from the block's
 //! `Cx`, the transport its input was rendered at (`TransportFeed`).
 
+use std::num::NonZeroUsize;
+
 use arrayvec::ArrayVec;
 use tutti_graph::{
-    Cx, Event, EventKind, IntoNode, Io, Node, NodeParts, Offset, Prepare, Shape, SortedEvents,
-    Status,
+    Cx, Event, EventKind, Harmony, HarmonyKind, IntoNode, Io, Node, NodeParts, Offset, Prepare,
+    Shape, SortedEvents, Status,
 };
 use tutti_types::Latency;
 use tutti_types::{ChannelLayout, Samples};
 
-use super::client::{InProcClient, PluginNode, Rendered, render};
-use crate::{NodeControls, param_input};
-use tutti_plugin_types::{Features, InProcess, MAX_BLOCK_CHANNELS, WireMidi};
+use super::client::{InProcClient, Inputs, PluginNode, Rendered, render_with};
+use crate::{Call, NodeControls, Snapshot, param_input, transport_info};
+use tutti_plugin_types::{
+    ChordChanges, ChordValue, ExpressiveContext, Features, InProcess, MAX_BLOCK_CHANNELS,
+    Processor, ScaleChanges, ScaleValue, TransportInfo, WireMidi,
+};
 
 impl<F: InProcess + 'static> Node for PluginNode<F>
 where
@@ -77,7 +82,15 @@ where
     fn prepare(&mut self, p: &Prepare) {
         let this = &mut self.client;
         this.set_rate(p.sample_rate());
-        this.params.prepare(p.max_block().get());
+        // A chunked Processor's delivery chunk is its own (`Processor::chunk`),
+        // and it starts counting from here.
+        this.phase = Samples(0);
+        let chunk = this
+            .rt
+            .held()
+            .and_then(|processor| processor.chunk())
+            .map_or(0, NonZeroUsize::get);
+        this.params.prepare(p.max_block().get().max(chunk));
         this.segments.prepare(this.params.room());
     }
 
@@ -95,8 +108,209 @@ where
         }
         let n_in = (this.declared.inputs.count() as usize).min(MAX_BLOCK_CHANNELS);
         let n_out = (this.declared.outputs.count() as usize).min(MAX_BLOCK_CHANNELS);
+        let features = this.features;
+        // Between blocks: take a Processor on offer, or hand this one back
+        // (stopped) when the control side recalled it. Taken once, here, so
+        // its chunk (`Processor::chunk`) is read from the one the block runs.
+        let mut processor = this.rt.poll(Processor::stop);
+        let chunk = processor
+            .as_deref()
+            .and_then(Processor::chunk)
+            .map(NonZeroUsize::get);
         // No clamp and no size check: the Processor splits a block longer than
         // the one the plugin was told.
+        let events = if io.event_input_count() > 0 {
+            io.events(0)
+        } else {
+            SortedEvents::EMPTY
+        };
+        let sends = features.contains(Features::MIDI_OUT) && io.event_output_count() > 0;
+        // One lend of the project's tempo map for the block, ended with it.
+        let map = tempo.lend();
+        let mut lost = 0u64;
+
+        if let Some(chunk) = chunk {
+            // **A chunked Processor** (`Processor::chunk`): the block is cut at
+            // the chunk edges, counted from `prepare` and every `reset`, and
+            // each piece is one `process`, with the transport at its first
+            // frame and the changes inside it. A piece of a chunk begins the
+            // delivery's chunk at the chunk's first frame and ends it at its
+            // last: the parameter changes in the context are the chunk's so
+            // far, on chunk frames.
+            let mut phase = this.phase.0;
+            if phase >= chunk {
+                // A Processor with another chunk took over.
+                phase = 0;
+            }
+            this.out_events.clear();
+            let mut block = this.transport.lend(features);
+            let (inputs, mut outputs) = io.split();
+            for out in outputs.iter_mut().skip(n_out) {
+                out[..size].fill(0.0);
+            }
+            let mut at = 0;
+            while at < size {
+                let n = (chunk - phase).min(size - at);
+                if phase == 0 {
+                    this.params.begin();
+                    this.intake.new_chunk();
+                    this.segments.begin(chunk);
+                }
+                this.midi.clear();
+                this.chords.changes.clear();
+                this.scales.changes.clear();
+                let midi = &mut this.midi;
+                let intake = &mut this.intake;
+                let (chords, scales) = (&mut this.chords, &mut this.scales);
+                let mut midi_dropped = 0u64;
+                param_input::take(
+                    events.as_slice(),
+                    at,
+                    n,
+                    phase,
+                    cx,
+                    &mut this.segments,
+                    &mut this.params,
+                    |e, frame| match e.kind {
+                        EventKind::Midi(ump) => {
+                            // On the piece's frames; `frame` is the chunk's.
+                            let event = WireMidi {
+                                offset: (frame - phase) as u32,
+                                ump,
+                            };
+                            midi_dropped += intake.push_displacing(midi, event);
+                        }
+                        EventKind::Harmony(h) => {
+                            push_harmony(chords, scales, features, h, frame - phase);
+                        }
+                        EventKind::Ramp(_) | EventKind::Segment(_) | EventKind::Resync => {}
+                    },
+                );
+                this.params.count_midi_dropped(midi_dropped);
+                lost += midi_dropped;
+
+                // The transport at the piece's first frame, and the changes
+                // inside it, as the served node walks a chunk.
+                let mut info = TransportInfo::default();
+                this.changes.clear();
+                if let Some(offset) = Offset::new(at, Samples(size))
+                    && features.contains(Features::TRANSPORT)
+                {
+                    let (meter, steady, project, block_ns) = block.parts();
+                    let mut s = Snapshot::at(cx, offset, steady.at(at), project, block_ns);
+                    let settled = s.settle(&map, cursor);
+                    this.walk.begin(&s, settled);
+                    info = transport_info(&s, meter);
+                    let call = Call {
+                        cx,
+                        frames: size,
+                        steady,
+                        block_ns,
+                        meter,
+                        tempo: &map,
+                    };
+                    let over = this.walk.scan(
+                        &call,
+                        cursor,
+                        project,
+                        &mut info,
+                        &mut this.changes,
+                        at,
+                        n,
+                        0,
+                    );
+                    this.walk.finish(
+                        &map,
+                        cursor,
+                        cx.env.sample_rate,
+                        n,
+                        &mut info,
+                        &mut this.changes,
+                    );
+                    this.params.count_transport_dropped(over);
+                }
+
+                let piece_midi = this.midi.len();
+                let ins: ArrayVec<&[f32], MAX_BLOCK_CHANNELS> =
+                    (0..n_in).map(|ch| &inputs.get(ch)[at..at + n]).collect();
+                let mut outs: ArrayVec<&mut [f32], MAX_BLOCK_CHANNELS> = outputs
+                    .iter_mut()
+                    .take(n_out)
+                    .map(|out| &mut out[at..at + n])
+                    .collect();
+                let rendered = render_with(
+                    processor.as_deref_mut(),
+                    (&this.unlent, &this.failed),
+                    &this.params,
+                    &mut this.midi,
+                    &mut this.out,
+                    Inputs {
+                        transport: &info,
+                        changes: this.changes.as_slice(),
+                        expressive: expressive(features, &this.chords, &this.scales),
+                    },
+                    &ins,
+                    &mut outs,
+                    n,
+                    this.sample_rate,
+                );
+                if rendered != Rendered::Ran {
+                    for out in &mut outs {
+                        out.fill(0.0);
+                    }
+                }
+                let completes = phase + n == chunk;
+                if rendered == Rendered::Ran {
+                    this.params.refused(this.out.params_refused() as u64);
+                    // What the Processor shipped in this call, and lost.
+                    let reported = this.out.midi_lost() as u64;
+                    if reported > 0 {
+                        this.params.count_midi_dropped(reported);
+                        this.intake.lost();
+                        lost += reported;
+                    }
+                    if completes {
+                        this.params.handed_off(!this.out.params_unsent());
+                    }
+                    if sends {
+                        let out_events = &mut this.out.midi_events;
+                        tutti_plugin_types::insertion_sort_by_key(out_events, |e| e.offset);
+                        for e in out_events.iter() {
+                            let frame = (at + e.offset as usize).min(size - 1);
+                            let _ = this.out_events.try_push(WireMidi {
+                                offset: frame as u32,
+                                ump: e.ump,
+                            });
+                        }
+                    }
+                } else {
+                    // The chunk cannot be handed over whole: its values are
+                    // owed to the next, its MIDI is lost with the piece, and
+                    // the SysEx open in it is not completed.
+                    this.params.handed_off(false);
+                    this.params.count_midi_dropped(piece_midi as u64);
+                    lost += piece_midi as u64;
+                    this.intake.lost();
+                }
+                phase = if completes { 0 } else { phase + n };
+                at += n;
+            }
+            this.phase = Samples(phase);
+            drop(block);
+            this.transport.advance(size);
+            io.count_lost(lost);
+            if sends {
+                let writer = io.event_out(0);
+                let block = Samples(size);
+                for e in this.out_events.iter() {
+                    if let Some(at) = Offset::new(e.offset as usize, block) {
+                        let _ = writer.push(Event::midi(at, e.ump));
+                    }
+                }
+            }
+            return Status::Modified;
+        }
+
         // The event input: its MIDI, in its (sorted) order, past the cap
         // dropped and counted (the list is inline and cannot grow; a SysEx
         // that lost a packet loses the rest of it, `MidiIntake`); its
@@ -104,14 +318,12 @@ where
         // into the block's changes (`param_input`, the out-of-process node's
         // walk, with the block as the chunk).
         this.midi.clear();
+        this.chords.changes.clear();
+        this.scales.changes.clear();
         this.params.begin();
-        let events = if io.event_input_count() > 0 {
-            io.events(0)
-        } else {
-            SortedEvents::EMPTY
-        };
         let midi = &mut this.midi;
         let intake = &mut this.intake;
+        let (chords, scales) = (&mut this.chords, &mut this.scales);
         intake.new_chunk();
         let mut midi_dropped = 0u64;
         param_input::take(
@@ -122,29 +334,24 @@ where
             cx,
             &mut this.segments,
             &mut this.params,
-            |e, _| match e.kind {
+            |e, frame| match e.kind {
                 EventKind::Midi(ump) => {
                     let event = WireMidi::at(e.offset, ump);
                     midi_dropped += intake.push_displacing(midi, event);
                 }
-                // VST 2.4 has no chord or scale event; the walk keeps the
-                // parameter events for itself; a plugin re-sends nothing.
-                EventKind::Harmony(_)
-                | EventKind::Ramp(_)
-                | EventKind::Segment(_)
-                | EventKind::Resync => {}
+                // A chord or scale, for a plugin that takes sequencer context
+                // (VST 2.4 has no such event, and declares none).
+                EventKind::Harmony(h) => push_harmony(chords, scales, features, h, frame),
+                // The walk keeps parameter events for itself; a plugin
+                // re-sends nothing.
+                EventKind::Ramp(_) | EventKind::Segment(_) | EventKind::Resync => {}
             },
         );
         this.params.count_midi_dropped(midi_dropped);
         io.count_lost(midi_dropped);
         // Built before the plugin is entered: `drive_f32` publishes it to the
         // cell `audioMasterGetTime` reads, then calls `process`.
-        let transport = {
-            // One lend of the project's tempo map for the block, ended with it.
-            let map = tempo.lend();
-            this.transport.block(cx, size, this.features, &map, cursor)
-        };
-        let sends = this.features.contains(Features::MIDI_OUT) && io.event_output_count() > 0;
+        let transport = this.transport.block(cx, size, features, &map, cursor);
         // The graph's buffers go to the plugin as they are: the Processor
         // reads them through the channel tables below. Scoped so the tables
         // release `io` before the event output is taken.
@@ -164,13 +371,17 @@ where
                 .take(n_out)
                 .map(|out| &mut out[..size])
                 .collect();
-            let rendered = render(
-                &mut this.rt,
+            let rendered = render_with(
+                processor,
                 (&this.unlent, &this.failed),
                 &this.params,
                 &mut this.midi,
                 &mut this.out,
-                &transport,
+                Inputs {
+                    transport: &transport,
+                    changes: &[],
+                    expressive: expressive(features, &this.chords, &this.scales),
+                },
                 &ins,
                 &mut outs,
                 size,
@@ -187,11 +398,19 @@ where
         if processed {
             // The writes the plugin refused, counted dropped.
             this.params.refused(this.out.params_refused() as u64);
+            // What a Processor says it lost (none that is not chunked does).
+            let reported = this.out.midi_lost() as u64;
+            if reported > 0 {
+                this.params.count_midi_dropped(reported);
+                this.intake.lost();
+                io.count_lost(reported);
+            }
         }
         // Set on the plugin with the block, or owed to the next one.
-        this.params.handed_off(processed);
+        this.params
+            .handed_off(processed && !this.out.params_unsent());
         if !processed {
-            // The block's MIDI was dropped with it (`render`): counted,
+            // The block's MIDI was dropped with it (`render_with`): counted,
             // and the rest of every SysEx open in it is skipped.
             this.params.count_midi_dropped(block_midi as u64);
             io.count_lost(block_midi as u64);
@@ -219,18 +438,75 @@ where
         // parameters), and no block's changes are in flight between blocks.
         this.segments.clear();
         this.params.abandon();
+        // The Processor's chunk starts over, so a block is cut from here.
+        this.phase = Samples(0);
         // A SysEx open across the reset is not completed past it: its rest
-        // is skipped (the instance's reassembler keeps its open message, so
-        // it is dropped there, counted, at the next `START`).
+        // is skipped (the Processor drops its own open message, counted).
         this.intake.lost();
-        // Nothing reaches the plugin from here, and nothing can. VST 2.4 has no
-        // opcode that clears DSP state on its own: the only two that touch it
-        // are `effMainsChanged`, where plugins allocate and free their
-        // rate-dependent buffers, and the `effStartProcess`/`effStopProcess`
-        // pair, which announces an interruption rather than a clear and is only
-        // legal while resumed. Neither may race the audio thread's `process`.
-        // A rejoin and an activation is that cycle, on the main thread, for a
-        // host that wants it on a locate or a loop wrap.
+        // The Processor clears its own signal state (`Processor::reset`:
+        // per format, what the plugin can be asked, and the host's SysEx
+        // reassembly). Between blocks on the audio thread, and only if it
+        // holds the Processor: the control side holds it while it is recalled,
+        // and a rate change that brings the new one starts it clear.
+        if let Some(processor) = this.rt.held() {
+            processor.reset();
+        }
+    }
+}
+
+/// The sequencer context a block carries, for a plugin that declared it.
+fn expressive<'a>(
+    features: Features,
+    chords: &'a ChordChanges,
+    scales: &'a ScaleChanges,
+) -> Option<ExpressiveContext<'a>> {
+    features
+        .contains(Features::SEQUENCER_CONTEXT)
+        .then_some(ExpressiveContext {
+            chords: Some(chords),
+            scales: Some(scales),
+            ..ExpressiveContext::default()
+        })
+}
+
+/// A chord or scale into the piece's harmony at its frame `frame`, for a plugin
+/// that takes sequencer context; nothing for one that does not. Past the cap
+/// ([`HARMONY_CAPACITY`](tutti_plugin_types::HARMONY_CAPACITY)) it is dropped.
+/// No display text: the degrees are what a plugin acts on.
+fn push_harmony(
+    chords: &mut ChordChanges,
+    scales: &mut ScaleChanges,
+    features: Features,
+    h: Harmony,
+    frame: usize,
+) {
+    if !features.contains(Features::SEQUENCER_CONTEXT) {
+        return;
+    }
+    let sample_offset = i32::try_from(frame).unwrap_or(i32::MAX);
+    let (root, bass, mask) = (
+        i16::from(h.root()),
+        i16::from(h.bass()),
+        i16::try_from(h.degrees()).unwrap_or(0),
+    );
+    match h.kind() {
+        HarmonyKind::Chord => {
+            let _ = chords.add_change(ChordValue {
+                sample_offset,
+                root,
+                bass_note: bass,
+                mask,
+                text: String::new(),
+            });
+        }
+        HarmonyKind::Scale => {
+            let _ = scales.add_change(ScaleValue {
+                sample_offset,
+                root,
+                mask,
+                text: String::new(),
+            });
+        }
     }
 }
 

@@ -122,6 +122,18 @@ pub enum DelayKey {
         /// The event output that drives it.
         from: EventOut,
     },
+    /// The event source of a driven edge gain, delayed to the edge's sink
+    /// like a param's source ([`ParamEvent`](Self::ParamEvent), whose rules
+    /// it has): to the sink node's arrival, or, for a global output channel,
+    /// to the output time (see
+    /// [`GraphSpec::connect_edge_gain`](crate::GraphSpec::connect_edge_gain)).
+    /// Its pending events are not flushed when the key disappears.
+    EdgeGain {
+        /// The edge whose gain it drives.
+        id: crate::EdgeId,
+        /// The event output that drives it.
+        from: EventOut,
+    },
     /// A global output channel, delayed to align with the slowest channel.
     Output {
         /// The graph output channel.
@@ -393,6 +405,10 @@ pub enum Op {
         /// for a plain addend (an edge with no entry, or the previous result
         /// of a chain).
         lanes: Span,
+        /// The driven lanes among them, in lane order (into
+        /// [`Plan::gain_ports`]): the sum reads each one's event source.
+        /// Empty when no entry of this op has a source.
+        gains: Span,
     },
     /// Delay one event stream.
     EventDelay {
@@ -496,6 +512,25 @@ pub struct ParamPortOp {
     /// The event output that drives it: what its running state (the
     /// source's ramp) is kept by, so the executor crossfades a port whose
     /// source changed and leaves one that only moved slots alone.
+    pub from: EventOut,
+    /// The event slot it reads its source's events from.
+    pub slot: u32,
+}
+
+/// One driven lane of an [`Op::WeightedSum`]: the fused step that gives an
+/// edge's gain its value at each frame (see
+/// [`GraphSpec::connect_edge_gain`](crate::GraphSpec::connect_edge_gain)),
+/// run by the sum before it adds, the sibling of [`ParamPortOp`].
+///
+/// It carries no range, as a param port does not: the value is clamped to the
+/// lane's live range, a control the executor reads per block.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct GainPortOp {
+    /// The lane's index among the op's addends (its entry of the op's
+    /// `lanes`).
+    pub lane: u16,
+    /// The event output that drives it: what its running state (the
+    /// source's ramp) is kept by.
     pub from: EventOut,
     /// The event slot it reads its source's events from.
     pub slot: u32,
@@ -946,6 +981,9 @@ pub struct Plan {
     pub(crate) event_values: Vec<Value>,
     pub(crate) value_readers: Vec<u32>,
     pub(crate) param_ports: Vec<ParamPortOp>,
+    /// The driven lanes of every [`Op::WeightedSum`], flattened (its `gains`
+    /// span indexes this).
+    pub(crate) gain_ports: Vec<GainPortOp>,
     /// The lanes of every [`Op::WeightedSum`], flattened (its `lanes` span
     /// indexes this): the edge of each weighted addend, `None` for a plain
     /// one. The executor keeps one lane state per entry, and carries a
@@ -1185,6 +1223,12 @@ impl Plan {
     /// [`Op::Node`] indexes this).
     pub fn param_ports(&self) -> &[ParamPortOp] {
         &self.param_ports
+    }
+
+    /// The flattened driven lanes of every [`Op::WeightedSum`]: its `gains`
+    /// span indexes this.
+    pub fn gain_ports(&self) -> &[GainPortOp] {
+        &self.gain_ports
     }
 
     /// The unit compiled for `key`.

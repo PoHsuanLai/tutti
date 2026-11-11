@@ -661,6 +661,32 @@ impl ParamState {
         self.busy
     }
 
+    /// State for **one** port at blocks of up to `max` frames, clamping to
+    /// `ranges`: an edge gain's lane (doc 013, "Edge gain"), which runs the
+    /// param port's step on its own. `resumed` is for a lane that has
+    /// already run a block undriven: it is not on its first block, so a
+    /// source connected now fades in as a connection to a running port does,
+    /// rather than starting at its value.
+    pub(crate) fn lane(max: usize, ranges: Arc<ParamRanges>, resumed: bool) -> Self {
+        let mut state = Self::new(1, max, Some(ranges));
+        if resumed {
+            state.ports[0].fresh = false;
+        }
+        state
+    }
+
+    /// Whether the state can serve blocks of up to `max` frames.
+    pub(crate) fn fits(&self, max: usize) -> bool {
+        self.max >= max
+    }
+
+    /// Port `k`'s values this block, after [`port`](Self::port): `None` when
+    /// it reads its base.
+    #[inline]
+    pub(crate) fn frames(&self, k: usize, frames: usize) -> Option<&[f32]> {
+        self.framed[k].then(|| &self.scratch[k * self.max..k * self.max + frames])
+    }
+
     /// What each port reads this block, after [`port`](Self::port).
     pub(crate) fn inputs(&self, frames: usize) -> [ParamInput<'_>; MAX_PARAM_PORTS] {
         let mut out = [ParamInput::Base; MAX_PARAM_PORTS];

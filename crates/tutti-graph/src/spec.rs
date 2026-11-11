@@ -212,9 +212,51 @@ impl GraphSpec {
         self.gains.remove(&id)
     }
 
+    /// Drives edge `id`'s gain from event output `from`, as
+    /// [`connect_param`](Self::connect_param) drives a param port: the
+    /// source **replaces** the base from its first event on (ramps and
+    /// segments addressed to [`EdgeGain::ADDR`]), the value is clamped to
+    /// the entry's `range`, a source that changes (or goes) crossfades over
+    /// [`PARAM_DECLICK`](crate::PARAM_DECLICK), an undriven lane reads its
+    /// base, and a lane's first block starts at its value. The rules are the
+    /// param port's, stated once in [`param`](crate::ParamMod)'s docs and on
+    /// [`connect_param`](Self::connect_param). The step is the sum's own, so
+    /// the lane's values have no slot of their own.
+    ///
+    /// **PDC.** The source is aligned to the edge's sink: to the sink node's
+    /// arrival (a later source raises it, as a param source does), or, for a
+    /// global output channel, to the output time (a later source raises
+    /// that). The delay is keyed [`DelayKey::EdgeGain`](crate::DelayKey::EdgeGain).
+    ///
+    /// An edge without an entry gets one (base unity, the default range): the
+    /// edge becomes a weighted lane, which is structural. Returns the source
+    /// it replaced. The edge must exist ([`validate`](Self::validate) refuses
+    /// [`GraphInvalid::GainWithoutEdge`]), `from`'s node must be in the graph
+    /// ([`GraphInvalid::UnknownGainNode`]), and `from`'s port must be an
+    /// event output of it (`compile`'s `CompileError::GainSourceOutOfRange`).
+    pub fn connect_edge_gain(&mut self, id: EdgeId, from: EventOut) -> Option<EventOut> {
+        self.gains.entry(id).or_default().source.replace(from)
+    }
+
+    /// Stops driving edge `id`'s gain from `from`. Returns whether `from`
+    /// was its source. The edge keeps its entry (its base and range, and so
+    /// its place in the sum); with no source it reads its base.
+    pub fn disconnect_edge_gain(&mut self, id: EdgeId, from: EventOut) -> bool {
+        let Some(g) = self.gains.get_mut(&id) else {
+            return false;
+        };
+        if g.source == Some(from) {
+            g.source = None;
+            true
+        } else {
+            false
+        }
+    }
+
     /// Whether edge `id` is in the topology: a direct or feedback edge of an
     /// input port, or a source of a global output channel.
-    pub(crate) fn has_edge(&self, id: EdgeId) -> bool {
+    #[must_use]
+    pub fn has_edge(&self, id: EdgeId) -> bool {
         match id.sink {
             Sink::Port(at) => self
                 .topology
@@ -410,8 +452,12 @@ impl GraphSpec {
             && *generations == other.generations
             && *required_resolution == other.required_resolution
             && wired(params).eq(wired(&other.params))
-            // An entry is structural, its base and range are not.
-            && gains.keys().eq(other.gains.keys())
+            // An entry and its source are structural, its base and range
+            // are not.
+            && gains
+                .iter()
+                .map(|(id, g)| (id, g.source))
+                .eq(other.gains.iter().map(|(id, g)| (id, g.source)))
     }
 
     /// Checks everything that does not need the nodes' [`Shape`](crate::Shape)s.
@@ -483,6 +529,14 @@ impl GraphSpec {
             }
             if !gain.is_sound() {
                 errs.push(GraphInvalid::BadEdgeGain { id, gain: *gain });
+            }
+            if let Some(from) = gain.source
+                && !nodes.contains_key(&from.node)
+            {
+                errs.push(GraphInvalid::UnknownGainNode {
+                    id,
+                    missing: from.node,
+                });
             }
         }
         for &(at, from) in self.required_resolution.keys() {
@@ -585,6 +639,14 @@ pub enum GraphInvalid {
         /// The entry.
         gain: EdgeGain,
     },
+    /// An edge gain is driven from an event output of a node that is not in
+    /// the topology.
+    UnknownGainNode {
+        /// The edge whose entry names it.
+        id: EdgeId,
+        /// The key that is not there.
+        missing: NodeKey,
+    },
 }
 
 /// A [`GraphSpec`] that passed [`validate`](GraphSpec::validate).
@@ -654,7 +716,11 @@ impl LatencyGraph for GraphSpec {
     /// Direct event sources (a feedback edge carries last block's events, so
     /// nothing along this block's path) and param sources.
     fn other_sources(&self, node: NodeKey) -> impl Iterator<Item = NodeKey> {
-        driving_nodes(&self.events, &self.params, node)
+        driving_nodes(&self.events, &self.params, &self.gains, node)
+    }
+
+    fn output_sources(&self) -> impl Iterator<Item = NodeKey> {
+        output_gain_sources(&self.gains)
     }
 
     fn outputs(&self) -> impl Iterator<Item = ChannelFeed<NodeKey>> {
@@ -679,7 +745,11 @@ impl LatencyGraph for ValidGraph {
     }
 
     fn other_sources(&self, node: NodeKey) -> impl Iterator<Item = NodeKey> {
-        driving_nodes(&self.events, &self.params, node)
+        driving_nodes(&self.events, &self.params, &self.gains, node)
+    }
+
+    fn output_sources(&self) -> impl Iterator<Item = NodeKey> {
+        output_gain_sources(&self.gains)
     }
 
     fn outputs(&self) -> impl Iterator<Item = ChannelFeed<NodeKey>> {
@@ -692,6 +762,7 @@ impl LatencyGraph for ValidGraph {
 fn driving_nodes<'a>(
     events: &'a BTreeMap<EventIn, Vec<EventEdge>>,
     params: &'a BTreeMap<ParamIn, ParamMod>,
+    gains: &'a BTreeMap<EdgeId, EdgeGain>,
     node: NodeKey,
 ) -> impl Iterator<Item = NodeKey> + 'a {
     let ports = EventIn { node, port: 0 }..=EventIn {
@@ -709,5 +780,20 @@ fn driving_nodes<'a>(
         .iter()
         .filter(move |(at, _)| at.node == node)
         .filter_map(|(_, m)| m.source.map(|s| s.node));
-    event_sources.chain(param_sources)
+    // The lane that drives the gain of an edge into one of the node's ports
+    // is aligned to the node's arrival, as a param's source is.
+    let gain_sources = gains
+        .iter()
+        .filter(move |(id, _)| matches!(id.sink, Sink::Port(at) if at.node == node))
+        .filter_map(|(_, g)| g.source.map(|s| s.node));
+    event_sources.chain(param_sources).chain(gain_sources)
+}
+
+/// The nodes that drive the gain of an edge into a global output channel:
+/// [`LatencyGraph::output_sources`].
+fn output_gain_sources(gains: &BTreeMap<EdgeId, EdgeGain>) -> impl Iterator<Item = NodeKey> + '_ {
+    gains
+        .iter()
+        .filter(|(id, _)| matches!(id.sink, Sink::Output(_)))
+        .filter_map(|(_, g)| g.source.map(|s| s.node))
 }

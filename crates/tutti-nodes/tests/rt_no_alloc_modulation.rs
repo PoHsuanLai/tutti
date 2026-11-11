@@ -1158,7 +1158,10 @@ fn an_apply_that_republishes_is_allocation_free_on_the_audio_thread() {
     }
     impl ModHost for Host {
         fn target(&self, t: TargetKey) -> Option<Target> {
-            let knob = match t.param.as_unit() {
+            let TargetKey::Param { param, .. } = t else {
+                return None;
+            };
+            let knob = match param.as_unit() {
                 Some(a) if a == UnitParam::Cutoff => self.knobs[0].clone(),
                 Some(a) if a == UnitParam::Q => self.knobs[1].clone(),
                 _ => return None,
@@ -1172,10 +1175,7 @@ fn an_apply_that_republishes_is_allocation_free_on_the_audio_thread() {
             Some(Feed::Audio(self.saw))
         }
     }
-    let at = |p| TargetKey {
-        node: 1,
-        param: ParamAddr::Unit(p),
-    };
+    let at = |p| TargetKey::param(1, ParamAddr::Unit(p));
     let route = |s: u64, p, depth: f32| RouteDecl {
         source: SourceKey(s),
         to: RouteTarget::Param(at(p)),

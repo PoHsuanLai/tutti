@@ -29,9 +29,23 @@
 //!   Detach runs first.
 //! - **Attribute Pitch 7.9** on a Note On is that note's own Pitch, and is not
 //!   held (section 7.4.15.3).
-//! - **The per-note bend sensitivity** (RPN 0/7, section 7.4.13) is one value
-//!   for each channel, and a bend is handed out already scaled by it; a new
-//!   sensitivity hands each live note of a number that holds a bend its new size.
+//! - **A note has one sounding pitch, and it is handed out whole**
+//!   ([`NoteControl::Pitch`]). Section 7.4.15 lists what sets a note's pitch:
+//!   the Note Number is the default; Registered Per-Note Controller #3 and the
+//!   Attribute Pitch override it, the attribute for its one note ("Pitch Bend
+//!   and Per-Note Pitch Bend act as offsets from the Attribute #3: Pitch 7.9",
+//!   and likewise "act as offsets from the pitch set by Registered Per-Note
+//!   Controller #3: Pitch 7.25"). So the sounding pitch is the told pitch (the
+//!   attribute, else the number's Pitch 7.25, else the key) plus the Per-Note
+//!   Pitch Bend, the wheel's position over the channel's RPN 0/7 sensitivity
+//!   (section 7.4.13: the range "from the current sounding pitch of a Note").
+//!   It is sent when a note starts (after the values the number holds, and
+//!   only if it is not the key's: a note told nothing has the instrument's
+//!   default) and whenever the told pitch, the bend or the
+//!   sensitivity changes, whichever order they arrive in, and saturates at the
+//!   ends of Q7.25's range. The channel's own Pitch Bend and Channel Tuning
+//!   are not in it: they are the channel's, and the instrument applies them.
+//!   A consumer with one tuning per note takes it as it is.
 //! - Reset All Controllers does not reach it (Appendix B.2): nothing here reads
 //!   a Control Change.
 //!
@@ -59,21 +73,20 @@ pub const NOTE_CONTROLS: usize = 8;
 pub const LIVE_NOTES: usize = 4;
 
 /// The most events one `step` returns: a Note On's (the start, every held
-/// value and the attribute), or a new sensitivity's (one bend for each of a
-/// channel's notes).
+/// value and the sounding pitch), or a new sensitivity's (one pitch for each
+/// of a channel's notes).
 pub(crate) const MAX_EVENTS: usize = KEYS * LIVE_NOTES + NOTE_CONTROLS + 2;
 
 /// A per-note controller and its value, as a note reads it (M2-104 section
 /// 7.4). A controller never sent has no value: the note's own default stands.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum NoteControl {
-    /// Registered Per-Note Controller #3 (section 7.4.15.2) or a Note On's
-    /// Attribute Pitch 7.9 (section 7.4.15.3): the pitch the note sounds at,
-    /// the Note Number being an index only. Pitch bend offsets from it.
+    /// The pitch the note sounds at (see the module docs): its told pitch
+    /// (Registered Per-Note Controller #3, a Note On's Attribute Pitch 7.9, else
+    /// its key's own) offset by the Per-Note Pitch Bend. Absolute, and without
+    /// the channel's Pitch Bend. After a [`Reset`](NoteEvent::Reset) it is the
+    /// key's again.
     Pitch(Pitch),
-    /// Per-Note Pitch Bend, in semitones: the wheel's position over the
-    /// channel's sensitivity (section 7.4.13).
-    Bend(Semitones),
     /// Polyphonic Pressure, 32 bits.
     Pressure(u32),
     /// Any other Registered Per-Note Controller (Appendix A), 32 bits.
@@ -87,7 +100,8 @@ pub enum NoteControl {
 pub enum NoteEvent {
     /// A note started on `address` and `note`, with the id it was minted. The
     /// values the number held follow as [`Control`](Self::Control)s, in the
-    /// order they were told, then the Note On's own Attribute Pitch.
+    /// order they were told, then the note's sounding pitch if it is not its
+    /// key's (the attribute's, the number's Pitch 7.25, and the held bend).
     Started {
         /// The new note.
         id: NoteId,
@@ -105,7 +119,9 @@ pub enum NoteEvent {
         control: NoteControl,
     },
     /// A note's controllers return to their defaults (Per-Note Management
-    /// Reset); the note keeps sounding.
+    /// Reset); the note keeps sounding. Its sounding pitch is its key's again
+    /// and no [`NoteControl::Pitch`] follows: the consumer that took a pitch
+    /// returns to the key with the rest.
     Reset {
         /// The note.
         id: NoteId,
@@ -125,6 +141,8 @@ impl Held {
         set: [(0, 0); NOTE_CONTROLS],
     };
 
+    /// Registered Per-Note Controller #3's code, its number.
+    const PITCH: u16 = RegisteredPerNoteController::Pitch.number() as u16;
     const BEND: u16 = 0x200;
     const PRESSURE: u16 = 0x201;
     const ASSIGNABLE: u16 = 0x100;
@@ -151,38 +169,55 @@ impl Held {
     }
 }
 
-/// The notes of a number that still respond, oldest first.
+/// The notes of a number that still respond, oldest first, each with the
+/// pitch it was told (`None`: its key's).
 #[derive(Debug, Clone, Copy)]
 struct Live {
     len: usize,
     ids: [NoteId; LIVE_NOTES],
+    told: [Option<Pitch>; LIVE_NOTES],
 }
 
 impl Live {
     const NONE: Live = Live {
         len: 0,
         ids: [NoteId::from_raw(0); LIVE_NOTES],
+        told: [None; LIVE_NOTES],
     };
+
+    /// The live notes with the pitch each was told, oldest first.
+    fn notes(&self) -> impl Iterator<Item = (NoteId, Option<Pitch>)> + use<> {
+        let live = *self;
+        (0..live.len).map(move |i| (live.ids[i], live.told[i]))
+    }
 
     fn ids(&self) -> &[NoteId] {
         &self.ids[..self.len]
     }
 
     /// `id` is the newest. The oldest goes if the list is full.
-    fn push(&mut self, id: NoteId) {
+    fn push(&mut self, id: NoteId, told: Option<Pitch>) {
         if self.len == LIVE_NOTES {
             self.ids.copy_within(1.., 0);
+            self.told.copy_within(1.., 0);
             self.len -= 1;
         }
         self.ids[self.len] = id;
+        self.told[self.len] = told;
         self.len += 1;
     }
 
     fn remove(&mut self, id: NoteId) {
         if let Some(at) = self.ids().iter().position(|&i| i == id) {
             self.ids.copy_within(at + 1..self.len, at);
+            self.told.copy_within(at + 1..self.len, at);
             self.len -= 1;
         }
+    }
+
+    /// Every live note is told `pitch`.
+    fn tell_all(&mut self, pitch: Option<Pitch>) {
+        self.told[..self.len].fill(pitch);
     }
 }
 
@@ -323,37 +358,51 @@ impl PerNoteState {
             .next
             .checked_add(1)
             .unwrap_or(NoteId::MAX_CHANNEL_NOTE + 1);
-        self.live[at].push(id);
-        self.out.push(NoteEvent::Started { id, address, note });
         let held = self.held[at];
+        // The attribute overrides what the number holds, for this note alone.
+        let told = attribute
+            .pitch()
+            .or_else(|| held.get(Held::PITCH).map(Pitch::from_q7_25));
+        self.live[at].push(id, told);
+        self.out.push(NoteEvent::Started { id, address, note });
         for &(code, value) in &held.set[..held.len] {
-            let control = self.resolve(address, code, value);
-            self.out.push(NoteEvent::Control { id, control });
+            if code != Held::PITCH && code != Held::BEND {
+                let control = self.resolve(code, value);
+                self.out.push(NoteEvent::Control { id, control });
+            }
         }
-        if let Some(pitch) = attribute.pitch() {
-            self.out.push(NoteEvent::Control {
-                id,
-                control: NoteControl::Pitch(pitch),
-            });
+        // A note told nothing sounds at its key, which is the instrument's
+        // default: no event.
+        let sounding = self.sounding(at, address, told);
+        if sounding.q7_25() != ((at % KEYS) as u32) << 25 {
+            let control = NoteControl::Pitch(sounding);
+            self.out.push(NoteEvent::Control { id, control });
         }
         &self.out
     }
 
-    /// The controller a held code and word mean on `address`'s channel.
-    fn resolve(&self, address: Address, code: u16, value: u32) -> NoteControl {
+    /// The sounding pitch of a note of slot `at` that was told `told`: that
+    /// pitch (the key's if none) offset by the number's held bend, scaled by
+    /// the channel's sensitivity.
+    fn sounding(&self, at: usize, address: Address, told: Option<Pitch>) -> Pitch {
+        let told = told.unwrap_or_else(|| Pitch::from_q7_25(((at % KEYS) as u32) << 25));
+        let range = self
+            .channel_index(address)
+            .map_or(self.default_range, |c| self.ranges[c]);
+        let bend = self.held[at]
+            .get(Held::BEND)
+            .map_or(0.0, |v| f64::from(bend_u32_to_signed_f32(v) * range.get()));
+        let q = f64::from(told.q7_25()) + bend * f64::from(1u32 << 25);
+        Pitch::from_q7_25(q.round().clamp(0.0, f64::from(u32::MAX)) as u32)
+    }
+
+    /// The controller a held code and word, other than the pitch and its bend,
+    /// mean.
+    fn resolve(&self, code: u16, value: u32) -> NoteControl {
         match code {
-            Held::BEND => {
-                let range = self
-                    .channel_index(address)
-                    .map_or(self.default_range, |c| self.ranges[c]);
-                NoteControl::Bend(Semitones(bend_u32_to_signed_f32(value) * range.get()))
-            }
             Held::PRESSURE => NoteControl::Pressure(value),
             c if c >= Held::ASSIGNABLE => NoteControl::Assignable(c as u8, value),
-            c => match RegisteredPerNoteController::from(c as u8) {
-                RegisteredPerNoteController::Pitch => NoteControl::Pitch(Pitch::from_q7_25(value)),
-                r => NoteControl::Registered(r, value),
-            },
+            c => NoteControl::Registered(RegisteredPerNoteController::from(c as u8), value),
         }
     }
 
@@ -364,8 +413,23 @@ impl PerNoteState {
             return;
         };
         self.held[at].set(code, value);
-        let control = self.resolve(address, code, value);
+        if code == Held::PITCH {
+            self.live[at].tell_all(Some(Pitch::from_q7_25(value)));
+        }
+        if code == Held::PITCH || code == Held::BEND {
+            self.sound_all(at, address);
+            return;
+        }
+        let control = self.resolve(code, value);
         for &id in self.live[at].ids() {
+            self.out.push(NoteEvent::Control { id, control });
+        }
+    }
+
+    /// Each live note of slot `at` is told its sounding pitch.
+    fn sound_all(&mut self, at: usize, address: Address) {
+        for (id, told) in self.live[at].notes() {
+            let control = NoteControl::Pitch(self.sounding(at, address, told));
             self.out.push(NoteEvent::Control { id, control });
         }
     }
@@ -379,6 +443,7 @@ impl PerNoteState {
         }
         if reset {
             self.held[at] = Held::NONE;
+            self.live[at].tell_all(None);
             for &id in self.live[at].ids() {
                 self.out.push(NoteEvent::Reset { id });
             }
@@ -391,11 +456,8 @@ impl PerNoteState {
         };
         self.ranges[c] = Semitones(PitchBendSensitivity::from_rpn_bits(value).as_semitones_f32());
         for at in c * KEYS..(c + 1) * KEYS {
-            if let Some(bend) = self.held[at].get(Held::BEND) {
-                let control = self.resolve(address, Held::BEND, bend);
-                for &id in self.live[at].ids() {
-                    self.out.push(NoteEvent::Control { id, control });
-                }
+            if self.held[at].get(Held::BEND).is_some() {
+                self.sound_all(at, address);
             }
         }
     }
@@ -505,13 +567,14 @@ mod tests {
         }
     }
 
-    fn semitones(e: &NoteEvent) -> f32 {
+    /// The sounding pitch of a `Pitch` event, as a fractional note number.
+    fn sounding(e: &NoteEvent) -> f32 {
         match e {
             NoteEvent::Control {
-                control: NoteControl::Bend(b),
+                control: NoteControl::Pitch(p),
                 ..
-            } => b.get(),
-            other => panic!("not a bend: {other:?}"),
+            } => p.note_number(),
+            other => panic!("not a pitch: {other:?}"),
         }
     }
 
@@ -636,7 +699,7 @@ mod tests {
         start(&mut s, a, 5);
         bend(&mut s, a, 5, 0xC000_0000);
         assert_eq!(management(&mut s, a, 5, true, true), vec![]);
-        assert_eq!(start(&mut s, a, 5).len(), 1, "no value follows the start");
+        assert_eq!(start(&mut s, a, 5).len(), 1, "the next note is at its key");
     }
 
     /// M2-104 section 7.4.5, Reset alone: the current note is reset, and the
@@ -662,10 +725,10 @@ mod tests {
         sensitivity(&mut s, at(0, 0), 12);
         start(&mut s, at(0, 0), 5);
         start(&mut s, at(0, 1), 5);
-        let on_0 = semitones(&bend(&mut s, at(0, 0), 5, 0xC000_0000)[0]);
-        let on_1 = semitones(&bend(&mut s, at(0, 1), 5, 0xC000_0000)[0]);
-        assert!((on_0 - 6.0).abs() < 1e-3, "{on_0}");
-        assert!((on_1 - 24.0).abs() < 1e-3, "{on_1}");
+        let on_0 = sounding(&bend(&mut s, at(0, 0), 5, 0xC000_0000)[0]);
+        let on_1 = sounding(&bend(&mut s, at(0, 1), 5, 0xC000_0000)[0]);
+        assert!((on_0 - 11.0).abs() < 1e-3, "{on_0}");
+        assert!((on_1 - 29.0).abs() < 1e-3, "{on_1}");
     }
 
     /// M2-104 section 7.4.13: a bend is a position over the sensitivity, so a
@@ -681,7 +744,7 @@ mod tests {
             matches!(e[..], [NoteEvent::Control { id: i, .. }] if i == id),
             "{e:?}"
         );
-        assert!((semitones(&e[0]) - 1.0).abs() < 1e-3);
+        assert!((sounding(&e[0]) - 6.0).abs() < 1e-3, "key 5 plus 1");
     }
 
     /// M2-104 section 7.4.15.3: Attribute Pitch 7.9 is that note's pitch, and
@@ -693,7 +756,7 @@ mod tests {
         let e = s.start(a, key(0), Attribute::Pitch(60 << 9)).to_vec();
         let id = started(&e);
         assert_eq!(e.last(), Some(&pitch_event(id, 60)));
-        assert_eq!(start(&mut s, a, 0).len(), 1);
+        assert_eq!(start(&mut s, a, 0).len(), 1, "the key's");
     }
 
     /// M2-104 section 7.4.5: a controller addresses the Note Number "on the
@@ -720,13 +783,13 @@ mod tests {
         // The value is held in Group 1 only.
         pitch_of(&mut s, at(1, 0), 5, PITCH_60);
         assert_eq!(start(&mut s, at(0, 0), 5).len(), 1);
-        assert_eq!(start(&mut s, at(1, 0), 5).len(), 2);
+        assert_eq!(sounding(&start(&mut s, at(1, 0), 5)[1]), 60.0);
         // A sensitivity of one Group leaves the other's.
         sensitivity(&mut s, at(1, 0), 12);
-        let on_0 = semitones(&bend(&mut s, at(0, 0), 5, 0xC000_0000)[0]);
-        let on_1 = semitones(&bend(&mut s, at(1, 0), 5, 0xC000_0000)[0]);
+        let on_0 = sounding(&bend(&mut s, at(0, 0), 5, 0xC000_0000)[0]);
+        let on_1 = sounding(&bend(&mut s, at(1, 0), 5, 0xC000_0000)[0]);
         assert!(
-            (on_0 - 24.0).abs() < 1e-3 && (on_1 - 6.0).abs() < 1e-3,
+            (on_0 - 29.0).abs() < 1e-3 && (on_1 - 66.0).abs() < 1e-3,
             "{on_0} {on_1}"
         );
         // A Detach in Group 1 leaves Group 0's note answering.
@@ -780,7 +843,7 @@ mod tests {
         ] {
             assert_eq!(s.step(a, &m), &[], "{m:?}");
         }
-        assert_eq!(start(&mut s, a, 5).len(), 2);
+        assert_eq!(sounding(&start(&mut s, a, 5)[1]), 60.0);
     }
 
     /// `clear` drops the held values, the current notes (they stop being
@@ -797,9 +860,118 @@ mod tests {
         assert_eq!(start(&mut s, a, 5).len(), 1, "the value is gone");
         let e = bend(&mut s, a, 5, 0xC000_0000);
         assert!(
-            (semitones(&e[0]) - 24.0).abs() < 1e-3,
+            (sounding(&e[0]) - 29.0).abs() < 1e-3,
             "the default sensitivity"
         );
+    }
+
+    /// M2-104 section 7.4.15.2: Per-Note Pitch Bend "acts as an offset from the
+    /// pitch set by Registered Per-Note Controller #3". A pitch told to a live
+    /// note and then a bend sounds as their sum.
+    #[test]
+    fn a_pitch_then_a_bend_sounds_as_the_sum() {
+        let mut s = state();
+        let a = at(0, 0);
+        let id = started(&start(&mut s, a, 5));
+        let e = pitch_of(&mut s, a, 5, PITCH_60 + (1 << 24));
+        assert_eq!(e.len(), 1);
+        assert!((sounding(&e[0]) - 60.5).abs() < 1e-4);
+        // Half the wheel up over 48 semitones: +24.
+        let e = bend(&mut s, a, 5, 0xC000_0000);
+        assert!(matches!(e[..], [NoteEvent::Control { id: i, .. }] if i == id));
+        assert!((sounding(&e[0]) - 84.5).abs() < 1e-4, "{e:?}");
+    }
+
+    /// The same two messages in the other order sound the same: the sum does
+    /// not depend on which arrived last.
+    #[test]
+    fn a_bend_then_a_pitch_sounds_as_the_sum_too() {
+        let mut s = state();
+        let a = at(0, 0);
+        start(&mut s, a, 5);
+        let e = bend(&mut s, a, 5, 0xC000_0000);
+        assert!((sounding(&e[0]) - 29.0).abs() < 1e-4, "key 5 plus 24");
+        let e = pitch_of(&mut s, a, 5, PITCH_60 + (1 << 24));
+        assert!((sounding(&e[0]) - 84.5).abs() < 1e-4, "{e:?}");
+        // And a note that starts after both is handed the sum at once.
+        let e = start(&mut s, a, 5);
+        assert!((sounding(&e[1]) - 84.5).abs() < 1e-4, "{e:?}");
+    }
+
+    /// M2-104 section 7.4.15.3: Per-Note Pitch Bend offsets from the Attribute
+    /// Pitch, and the attribute wins over the number's held Pitch 7.25.
+    #[test]
+    fn an_attribute_pitch_plus_a_later_bend() {
+        let mut s = state();
+        let a = at(0, 0);
+        pitch_of(&mut s, a, 5, PITCH_60);
+        let e = s.start(a, key(5), Attribute::Pitch(70 << 9)).to_vec();
+        assert!((sounding(e.last().unwrap()) - 70.0).abs() < 1e-4, "{e:?}");
+        let e = bend(&mut s, a, 5, 0xC000_0000);
+        assert!((sounding(&e[0]) - 94.0).abs() < 1e-4, "{e:?}");
+    }
+
+    /// M2-104 section 7.4.13: the bend is a position over the sensitivity, so a
+    /// new sensitivity re-sends the rescaled sum of the told pitch and the bend.
+    #[test]
+    fn a_new_sensitivity_resends_the_rescaled_sum() {
+        let mut s = state();
+        let a = at(0, 0);
+        start(&mut s, a, 5);
+        pitch_of(&mut s, a, 5, PITCH_60);
+        bend(&mut s, a, 5, 0xC000_0000);
+        let e = sensitivity(&mut s, a, 4);
+        assert_eq!(e.len(), 1);
+        assert!(
+            (sounding(&e[0]) - 62.0).abs() < 1e-4,
+            "60 plus half of 4: {e:?}"
+        );
+    }
+
+    /// M2-104 section 7.4.5, Reset: the note's controllers return to their
+    /// defaults, so its pitch is its key's: the next note and the one reset
+    /// (by the consumer, on the `Reset` event) are at the key; a bend told after
+    /// the Reset is an offset from the key.
+    #[test]
+    fn a_reset_returns_the_sounding_pitch_to_the_key() {
+        let mut s = state();
+        let a = at(0, 0);
+        let id = started(&start(&mut s, a, 5));
+        pitch_of(&mut s, a, 5, PITCH_60);
+        bend(&mut s, a, 5, 0xC000_0000);
+        assert_eq!(
+            management(&mut s, a, 5, false, true),
+            vec![NoteEvent::Reset { id }]
+        );
+        let e = bend(&mut s, a, 5, 0xC000_0000);
+        assert!(
+            (sounding(&e[0]) - 29.0).abs() < 1e-4,
+            "key 5 plus 24: {e:?}"
+        );
+    }
+
+    /// M2-104 section 7.4.5, Detach: the note keeps what it has, so a pitch, a
+    /// bend and a sensitivity after it send that note nothing.
+    #[test]
+    fn a_detached_note_hears_no_pitch_bend_or_sensitivity() {
+        let mut s = state();
+        let a = at(0, 0);
+        start(&mut s, a, 5);
+        management(&mut s, a, 5, true, false);
+        assert_eq!(pitch_of(&mut s, a, 5, PITCH_60), vec![]);
+        assert_eq!(bend(&mut s, a, 5, 0xC000_0000), vec![]);
+        assert_eq!(sensitivity(&mut s, a, 12), vec![]);
+    }
+
+    /// The sum saturates at the ends of the pitch range (Q7.25 holds 0 to
+    /// just under 128): a full bend down from key 5 over 48 semitones is 0.
+    #[test]
+    fn a_sum_past_the_range_saturates() {
+        let mut s = state();
+        let a = at(0, 0);
+        start(&mut s, a, 5);
+        let e = bend(&mut s, a, 5, 0);
+        assert_eq!(sounding(&e[0]), 0.0);
     }
 
     /// The state allocates nothing after `new`: its event buffer never outgrows

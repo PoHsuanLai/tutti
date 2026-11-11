@@ -62,10 +62,9 @@ enum VoiceState {
 /// What the note's per-note controllers have set.
 #[derive(Debug, Clone, Copy)]
 struct NoteControls {
-    /// The absolute pitch in semitones, if one was set; else the key's.
+    /// The sounding pitch in semitones (the told pitch with the per-note bend
+    /// in it, `tutti-voicing`'s), if one was set; else the key's.
     pitch: Option<f32>,
-    /// The per-note bend, in semitones.
-    bend: f32,
     /// Per-note volume, `0..=1`.
     volume: f32,
     /// Per-note pan in the channel's `-50..=50`, if one was set.
@@ -75,7 +74,6 @@ struct NoteControls {
 impl NoteControls {
     const DEFAULT: Self = Self {
         pitch: None,
-        bend: 0_f32,
         volume: 1_f32,
         pan: None,
     };
@@ -263,10 +261,11 @@ impl Voice {
     }
 
     /// Takes a per-note controller's value (M2-104 section 7.4). What a
-    /// SoundFont voice can carry: Pitch 7.25 and Attribute Pitch 7.9 (the
-    /// pitch the note sounds at, which replaces its key's; the key still
+    /// SoundFont voice can carry: the note's sounding pitch (its told Pitch
+    /// 7.25 or Attribute Pitch 7.9 and its per-note bend, summed by
+    /// `tutti-voicing`; it replaces its key's, and the key still
     /// chooses the sample, envelope scaling and zone, as the voice was
-    /// started), the per-note bend, Registered Volume (the GM law, as CC 7)
+    /// started), Registered Volume (the GM law, as CC 7)
     /// and Registered Pan (as CC 10, replacing the channel's pan for this
     /// note). Everything else (pressure, modulation, breath, balance, the
     /// sound controllers, the effects depths, the assignable controllers) has
@@ -274,7 +273,6 @@ impl Voice {
     pub(crate) fn control(&mut self, control: NoteControl) {
         match control {
             NoteControl::Pitch(pitch) => self.note.pitch = Some(pitch.note_number()),
-            NoteControl::Bend(bend) => self.note.bend = bend.get(),
             NoteControl::Registered(RegisteredPerNoteController::Volume, value) => {
                 self.note.volume = u32_to_unit_f32(value);
             }
@@ -347,7 +345,6 @@ impl Voice {
             + self.mod_env_to_pitch * self.mod_env.value();
         let channel_pitch_change = channel_info.tune() + bends[self.channel as usize].0;
         let pitch = self.note.pitch.unwrap_or(self.key as f32)
-            + self.note.bend
             + vib_pitch_change
             + mod_pitch_change
             + channel_pitch_change;

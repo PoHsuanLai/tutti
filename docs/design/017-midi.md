@@ -2550,8 +2550,8 @@ ignored all of it. Now:
   freed; a host on the plugin's note-end); a Note Off is not an end.
 - **What it says** is a `NoteEvent`: `Started { id, address, note }`, then `Control { id,
   control: NoteControl }` for each value the number holds in the order told (`NoteControl`:
-  `Pitch`, `Bend` already in semitones over the channel's sensitivity, `Pressure`, `Registered`,
-  `Assignable`), also sent when a message arrives for the current note, and `Reset { id }`.
+  `Pitch`, `Pressure`, `Registered`, `Assignable`), also sent when a message arrives for the
+  current note, and `Reset { id }`.
   `Voicing` turns them into its own `Command`s: `Control { id, control }` for each voice of the
   noted id (the voices of one strike share it) and `ResetControls(id)`. An instrument applies
   what its voice has a place for and drops the rest; it holds no per-note state of its own and
@@ -2560,15 +2560,26 @@ ignored all of it. Now:
   their values and answer nothing more (no event is sent; the next Note On has a new id). Reset
   clears the number's held values and resets the live notes. With D=1 and S=1 the Detach runs first, so the playing note is told nothing and the
   next one starts at the defaults.
-- **Attribute Pitch 7.9** on a Note On is the note's own `Control(Pitch)` after the stored ones,
-  and is not stored (section 7.4.15.3: not valid for later notes).
+- **A note has one sounding pitch** (`NoteControl::Pitch`, absolute), because the plugin hosts
+  have one tuning per note and a consumer without a per-note table cannot add two controls.
+  Section 7.4.15: the Note Number is the default pitch, Pitch 7.25 and the Attribute Pitch
+  override it (the attribute for its one note, "not valid for any subsequent Notes", and over
+  the number's), and "Pitch Bend and Per-Note Pitch Bend act as offsets from" either. So the
+  sounding pitch is the told pitch (attribute, else the number's Pitch 7.25, else the key) plus
+  the Per-Note Pitch Bend, the wheel over the channel's sensitivity (section 7.4.13: the range
+  "from the current sounding pitch"). `PerNoteState` keeps the told pitch for each live note, the
+  number's bend and the channel's sensitivity, and sends the sum when a note starts (after the
+  held values; not for a note whose sounding pitch is its key's) and whenever the told pitch, the
+  bend or the sensitivity changes, in any order; it saturates at Q7.25's ends. The channel's Pitch
+  Bend is not in it: the instrument applies it. A Reset returns a live note's sounding pitch to its
+  key and sends only `Reset` (the consumer returns to the key with its other controls).
 - **The per-note bend sensitivity** (RPN 0/7) is one value for each channel
-  (`Rules::per_note_bend_range` until it is set). A new one sends each voice that holds a bend its
-  new size, since a held bend is a position over the sensitivity.
-- **The polysynth** carries `Control` out on its voices (Pitch, bend, pressure, Volume and
+  (`Rules::per_note_bend_range` until it is set). A new one re-sends the sounding pitch of each
+  live note whose number holds a bend, since a held bend is a position over the sensitivity.
+- **The polysynth** carries `Control` out on its voices (the sounding pitch, pressure, Volume and
   Brightness; the assignable indexes 7 and 74 by its convention) and has no global per-note range
-  and no detach of its own. **The SoundFont** carries Pitch (the key still chooses the sample and
-  the envelope scaling), bend, Volume (the GM law) and Pan (replacing the channel's for that note);
+  and no detach of its own. **The SoundFont** carries the sounding pitch (the key still chooses the sample and
+  the envelope scaling), Volume (the GM law) and Pan (replacing the channel's for that note);
   pressure, modulation, breath, balance, the sound controllers, effects depths and the assignable
   controllers have no generator in a SoundFont voice and are dropped.
 - **Not done, in the plugin hosts.** CLAP and VST3 address a note by an id minted per (channel,

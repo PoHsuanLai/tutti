@@ -80,6 +80,10 @@ pub(crate) struct SynthVoice {
     active: bool,
     mpe: MpeVoiceState,
     base_note_freq: Hz,
+    /// The sounding pitch a per-note controller gave the note (the told pitch
+    /// with its per-note bend, before the channel's bend), if any: else the
+    /// key's.
+    tuned: Option<Hz>,
     sub_voices: usize,
 }
 
@@ -103,6 +107,13 @@ impl SynthVoice {
     #[cfg(test)]
     pub(crate) fn gate_value(&self) -> f32 {
         if self.gate { 1.0 } else { 0.0 }
+    }
+    /// The offset of the per-note sounding pitch from the key's, in
+    /// semitones (zero for a note told nothing). Observability for tests.
+    #[cfg(test)]
+    pub(crate) fn per_note_bend(&self) -> tutti_types::Semitones {
+        let key = 440.0_f32 * 2.0_f32.powf((f32::from(self.note.get()) - 69.0) / 12.0);
+        tutti_types::Semitones(self.tuned.map_or(0.0, |t| 12.0 * (t.get() / key).log2()))
     }
     #[cfg(test)]
     pub fn mpe_state(&self) -> &MpeVoiceState {
@@ -174,6 +185,7 @@ impl SynthVoice {
             active: false,
             mpe: MpeVoiceState::new(config.mpe_enabled),
             base_note_freq: Hz(440.0),
+            tuned: None,
             sub_voices: unison_count.max(1),
         }
     }
@@ -198,6 +210,7 @@ impl SynthVoice {
         self.lfo_phase = Phase::START;
         self.base_note_freq = base_freq;
         self.pitch = base_freq;
+        self.tuned = None;
         self.mpe.reset();
     }
 
@@ -231,6 +244,7 @@ impl SynthVoice {
         self.lfo_phase = Phase::START;
         self.mpe.reset();
         self.base_note_freq = Hz(440.0);
+        self.tuned = None;
         self.pitch = Hz(440.0);
     }
 
@@ -239,14 +253,22 @@ impl SynthVoice {
         self.sub_voices
     }
 
-    /// The frequency the voice sounds at before unison detune — *post*-bend,
-    /// unlike [`base_note_freq`](Self::base_note_freq). The first sub-voice
+    /// The frequency the voice sounds at before unison detune: the per-note
+    /// sounding pitch with the channel's bend on it. The first sub-voice
     /// sounds exactly this without unison.
     pub(crate) fn sounding_freq(&self) -> Hz {
-        match self.mpe.effective_bend() {
-            Some(bend) => Hz(self.pitch.get() * bend.to_pitch_ratio()),
-            None => self.pitch,
-        }
+        self.pitch
+    }
+
+    /// The sounding pitch a per-note controller gave the note, if any.
+    pub(crate) fn tuned(&self) -> Option<Hz> {
+        self.tuned
+    }
+
+    /// The note returns to its key's pitch (Per-Note Management Reset); the
+    /// caller sets the pitch.
+    pub(crate) fn clear_tuning(&mut self) {
+        self.tuned = None;
     }
 
     /// Write this voice's targets into its lanes for the next `frames` frames,
@@ -435,15 +457,15 @@ impl SynthVoice {
         self.mpe.set_enabled(enabled);
     }
 
-    /// Override this voice's pitch to an absolute frequency (M2-104 §7.4.15.2/3:
-    /// Registered Per-Note Controller #3 Pitch 7.25 and Note-On Attribute #3
-    /// Pitch 7.9). The note number loses its pitch meaning and becomes an index;
-    /// `freq` is the sounding pitch. This updates `base_note_freq` so per-note /
-    /// channel pitch bend correctly acts as an offset from the overridden
-    /// pitch (per the spec), and drives the oscillators to it immediately.
+    /// Override this voice's pitch to an absolute frequency: the note's
+    /// sounding pitch (M2-104 §7.4.15: Pitch 7.25 or Attribute Pitch 7.9 with
+    /// the per-note bend, summed by `tutti-voicing`). The note number loses its
+    /// pitch meaning and becomes an index. The channel's bend acts as an
+    /// offset from it, so the caller sets the pitch after.
     pub(crate) fn set_tuning_freq(&mut self, freq: impl Into<Hz>) {
         let freq = freq.into();
         self.base_note_freq = freq;
+        self.tuned = Some(freq);
         self.set_pitch(freq);
     }
 

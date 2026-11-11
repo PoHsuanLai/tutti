@@ -164,7 +164,8 @@ fn every_event_kind_survives_a_read_and_a_write() {
         assert_eq!(
             at(12).1,
             FileEvent::Meta(Meta::Tempo {
-                micros_per_quarter: 500_000
+                micros_per_quarter: 500_000,
+                extra: Box::default(),
             })
         );
         assert_eq!(
@@ -180,14 +181,16 @@ fn every_event_kind_survives_a_read_and_a_write() {
                 numerator: 6,
                 denominator_power: 3,
                 clocks_per_click: 24,
-                thirty_seconds_per_quarter: 8
+                thirty_seconds_per_quarter: 8,
+                extra: Box::default(),
             })
         );
         assert_eq!(
             at(15).1,
             FileEvent::Meta(Meta::KeySignature {
                 sharps: -3,
-                minor: true
+                minor: true,
+                extra: Box::default(),
             })
         );
         assert_eq!(at(18).1, on(0, 60, 100));
@@ -465,7 +468,8 @@ fn a_zero_tempo_is_not_a_tempo_and_an_absurd_one_is_read_as_written() {
     assert_eq!(
         file.tracks()[0].events[0].1,
         FileEvent::Meta(Meta::Tempo {
-            micros_per_quarter: 0
+            micros_per_quarter: 0,
+            extra: Box::default(),
         })
     );
     let points = file.tempo_map().points();
@@ -484,17 +488,22 @@ fn a_tempo_above_the_wire_range_writes_the_fastest_quarter() {
     assert_eq!(
         Meta::tempo(Bpm::of(1.0e9)),
         Meta::Tempo {
-            micros_per_quarter: 1
+            micros_per_quarter: 1,
+            extra: Box::default(),
         }
     );
     assert_eq!(
         Meta::tempo(Bpm::of(0.001)),
         Meta::Tempo {
-            micros_per_quarter: 0xFF_FFFF
+            micros_per_quarter: 0xFF_FFFF,
+            extra: Box::default(),
         }
     );
     // 174 BPM is not a whole microsecond: the wire quantises it.
-    let Meta::Tempo { micros_per_quarter } = Meta::tempo(Bpm::of(174.0)) else {
+    let Meta::Tempo {
+        micros_per_quarter, ..
+    } = Meta::tempo(Bpm::of(174.0))
+    else {
         panic!("a tempo");
     };
     assert_eq!(micros_per_quarter, 344_828);
@@ -781,6 +790,7 @@ fn what_an_smf_cannot_hold_is_refused() {
     assert!(matches!(one(midi2), Err(Error::InvalidConfig(_))));
     let slow = FileEvent::Meta(Meta::Tempo {
         micros_per_quarter: 0x100_0000,
+        extra: Box::default(),
     });
     assert!(matches!(one(slow), Err(Error::InvalidConfig(_))));
     let gap = MidiFile::smf(

@@ -842,6 +842,31 @@ jobs:
         env:
           RUSTDOCFLAGS: -D warnings --cfg docsrs
 
+  # The same rustdoc gate on macOS. The `rustdoc` job above runs on Linux, where
+  # `tutti-au-host`, the AU half of `tutti-au-ffi`, `tutti-coremidi-ffi`, the
+  # CoreMIDI backend of `tutti-midi-hardware` and the macOS paths of
+  # `tutti-vst3-ffi` and `tutti-plugin-server` compile to nothing, so a broken
+  # or private intra-doc link in them (denied by the workspace) is invisible
+  # there. Submodules: the workspace build runs `tutti-vst3-host`'s build script,
+  # which wants the VST3 SDK.
+  doc-macos:
+    name: rustdoc (macos)
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      # The toolchain `rust-toolchain.toml` pins, with its components.
+      - run: rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - run: cargo doc --locked --workspace --no-deps
+        env:
+          RUSTDOCFLAGS: -D warnings --document-private-items
+
   # Miri over the non-FFI `unsafe`. See docs/design/012-unsafe-policy.md for
   # why this crate and not the rest: ~95% of this repo's `unsafe` is a C
   # ABI, which miri does not execute at all, and out-of-process hosting is the

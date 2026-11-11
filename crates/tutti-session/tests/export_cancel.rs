@@ -41,6 +41,7 @@ impl Node for CancelAt {
 
 struct Rig {
     session: Session,
+    node: tutti_graph::NodeKey,
     blocks: Arc<AtomicUsize>,
     handle: Arc<OnceLock<BounceHandle>>,
 }
@@ -58,6 +59,7 @@ fn rig(at: usize) -> Rig {
     session.graph().set_outputs_from(node);
     Rig {
         session,
+        node,
         blocks,
         handle,
     }
@@ -197,4 +199,68 @@ fn progress_ends_at_one_in_the_finalizing_stage() {
             "{name}"
         );
     }
+}
+
+/// A bounce of the master and a stem of the node into `dir`, normalized when
+/// `normalize` is set (the stem then takes the master's gain, so the pass
+/// keeps both for its measurement).
+fn with_stem(r: &Rig, dir: &Path, normalize: bool) -> Bounce {
+    let bounce = bounce()
+        .master(dir.join("master.wav"))
+        .stem(r.node, dir.join("stem.wav"));
+    if normalize {
+        bounce
+            .normalize(Normalize::peak(Db(-6.0)))
+            .normalize_stems(tutti_session::StemGain::Shared)
+    } else {
+        bounce
+    }
+}
+
+/// **A cancel stops a bounce with stems like one without, and leaves no file
+/// of any target**: neither the master nor the stem, and no temporary or
+/// spill beside them, for a cancel inside the render (streamed and
+/// normalized: the pass keeps the audio in the second) and for one before the
+/// job runs. The token is released, and a bounce after it is not refused.
+#[test]
+fn a_cancel_leaves_no_file_of_any_target() {
+    for normalize in [false, true] {
+        let dir = tempfile::tempdir().unwrap();
+        let mut r = rig(3);
+        let job = r
+            .session
+            .bounce_start(with_stem(&r, dir.path(), normalize))
+            .unwrap();
+        r.handle.set(job.handle()).ok();
+        let outcome = r.session.finish_bounce(job.run()).unwrap();
+        assert!(
+            matches!(outcome, Outcome::Cancelled),
+            "normalize {normalize}"
+        );
+        assert_eq!(r.blocks.load(Ordering::SeqCst), 3, "stopped at block 3");
+        assert_eq!(
+            std::fs::read_dir(dir.path()).unwrap().count(),
+            0,
+            "normalize {normalize}: nothing is left beside the targets"
+        );
+        assert!(!r.session.bounce_in_flight());
+    }
+
+    let dir = tempfile::tempdir().unwrap();
+    let mut r = rig(usize::MAX);
+    let job = r
+        .session
+        .bounce_start(with_stem(&r, dir.path(), false))
+        .unwrap();
+    job.handle().cancel();
+    let outcome = r.session.finish_bounce(job.run()).unwrap();
+    assert!(matches!(outcome, Outcome::Cancelled));
+    assert_eq!(r.blocks.load(Ordering::SeqCst), 0, "nothing rendered");
+    assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
+
+    // And one nobody cancels lands both files.
+    let done = r.session.bounce(with_stem(&r, dir.path(), false)).unwrap();
+    assert!(matches!(done, Outcome::Finished(_)));
+    assert!(dir.path().join("master.wav").exists());
+    assert!(dir.path().join("stem.wav").exists());
 }

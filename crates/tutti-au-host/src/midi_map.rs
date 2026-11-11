@@ -95,7 +95,7 @@ use tutti_au_ffi::Unit;
 /// Hand-declared for the same reason `midi_out.rs`'s callback struct is:
 /// `coreaudio-sys` does not export it (nor any of the four property ids, nor the
 /// six flag bits — all of them are spelled out in [`crate::types`]). The layout
-/// is pinned by [`tests::the_mapping_struct_matches_the_c_abi`] against values
+/// is pinned by `tests::the_mapping_struct_matches_the_c_abi` against values
 /// read out of a C program compiled against the real header: **32 bytes, align
 /// 4**, with `mStatus` at offset 24 and `reserved3` at 28. A wrong guess here
 /// would not fail loudly — the AU would read the host's `mStatus` out of the
@@ -221,7 +221,7 @@ pub enum MidiTrigger {
     /// Present because this is decoded from a value an **AU** supplied, not one
     /// the host built: a unit that stores garbage in `mStatus` (and one of them
     /// stores an out-of-range `mScope` verbatim, so this is not paranoia) must
-    /// not make [`AuMidiMapping::from_raw`] panic or silently claim "CC 0".
+    /// not make `AuMidiMapping::from_raw` panic or silently claim "CC 0".
     Other {
         /// The raw status byte, high nibble and channel both.
         status: u8,

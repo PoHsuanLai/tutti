@@ -15,9 +15,11 @@
 //! path fails (declared 0, output 128 late). Set `LATENCY` to `STEP - 1` →
 //! every path fails (declared one frame early).
 
+use tutti_graph::ParamNode;
 use tutti_graph::contract::{Detect, Excite, Row, SAMPLE_RATE};
 use tutti_graph::contract_tests;
 use tutti_nodes::HrtfBinauralNode;
+use tutti_nodes::testing::aim;
 use tutti_types::Azimuth;
 use tutti_types::Elevation;
 use tutti_types::Samples;
@@ -73,8 +75,7 @@ fn node() -> HrtfBinauralNode {
     let bytes = synthetic_hrir_sphere(rate, 64);
     // Born at the contract's rate; the graph prepares it at that rate too.
     let node = HrtfBinauralNode::new(&bytes, SAMPLE_RATE).expect("the sphere parses");
-    node.controls()
-        .set_position(Azimuth::new(90.0), Elevation::new(0.0));
+    aim(&node.param_set(), Azimuth::new(90.0), Elevation::new(0.0));
     node
 }
 

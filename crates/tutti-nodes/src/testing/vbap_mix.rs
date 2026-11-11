@@ -3,12 +3,12 @@
 //! send, because a panner never feeds the LFE.
 
 use tutti_graph::{GraphBuilder, NodeKey};
-use tutti_types::{Azimuth, ChannelLayout, ChannelTopology, Elevation, Hz, Q};
+use tutti_types::{Azimuth, ChannelLayout, ChannelTopology, Hz, Q, UnitParam};
 
 use crate::{SvfFilterNode, SvfType, VbapError, VbapPannerNode};
 
 /// Wire a panner for `layout` per `(source, bearing)` into `g`'s outputs: the
-/// source's ports 0 and 1 feed the panner (at `Elevation::LEVEL`), and each
+/// source's ports 0 and 1 feed the panner (at ear level), and each
 /// panner channel `c` feeds output `c`, so the graph sums the panners by
 /// fan-in.
 ///
@@ -22,8 +22,8 @@ pub fn vbap_mix(
 ) -> Result<(), VbapError> {
     for &(source, azimuth) in sources {
         let panner = VbapPannerNode::for_topology(&ChannelTopology::for_width(layout))?;
-        panner.controls().set_position(azimuth, Elevation::LEVEL);
-        let (pan, _) = g.add_with_controls(panner);
+        let (pan, params) = g.add_with_controls(panner);
+        params.set(UnitParam::Azimuth, azimuth.get());
         g.connect(source, 0, pan, 0).connect(source, 1, pan, 1);
         for c in 0..layout.count() as usize {
             g.connect_output(pan, c, c);

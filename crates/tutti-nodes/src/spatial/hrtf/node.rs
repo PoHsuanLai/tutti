@@ -4,24 +4,30 @@
 //! takes the dataset bytes.
 
 use tutti_dsp::{HRTF_LATENCY, HRTF_STEP, HrtfBinaural, HrtfBinauralError};
-use tutti_graph::{Cx, IntoNode, Io, Node, NodeParts, Prepare, Shape, Status};
-use tutti_types::ChannelLayout;
+use tutti_graph::{Cx, IntoNode, Io, Node, NodeParts, ParamNode, ParamSet, Prepare, Shape, Status};
 use tutti_types::Latency;
 use tutti_types::{Azimuth, Direction, Elevation, Mix, Param, SampleRate, Samples, Tail};
+use tutti_types::{ChannelLayout, UnitParam};
 
-use crate::ramp::LastGood;
-use crate::spatial::SpatialTarget;
-use crate::spatial::fork::{FreshFork, fresh_fork_parts};
+use crate::ramp::{LastGood, block_driven};
 use crate::spatial::target::AngleSmoother;
+
+/// The params an [`HrtfBinauralNode`] lets the graph modulate, in port order.
+pub const HRTF_BINAURAL_PARAMS: [UnitParam; 3] =
+    [UnitParam::Azimuth, UnitParam::Elevation, UnitParam::Wet];
 
 /// A binaural panner for headphones: FFT convolution against a measured HRIR
 /// sphere, stereo in, stereo out.
 ///
 /// Build it with [`new`](Self::new) from the dataset bytes. The input pair is
 /// folded to mono, placed at the commanded bearing and height, and blended
-/// against the (equally delayed) dry mono by [`HrtfBinauralControls::set_blend`].
-/// It is a graph node (`tutti_graph::Node`); inserting it hands back its
-/// [`HrtfBinauralControls`], which move the source lock-free while it renders.
+/// against the (equally delayed) dry mono by the blend ([`UnitParam::Wet`]:
+/// 1.0, the default, is full HRTF, 0.0 the dry mono).
+/// It is a graph node (`tutti_graph::Node` and [`ParamNode`]); inserting it
+/// hands back its [`ParamSet`] ([`UnitParam::Azimuth`],
+/// [`Elevation`](UnitParam::Elevation) and [`Wet`](UnitParam::Wet)), which
+/// move the source lock-free while it renders, and a graph's control lanes
+/// may drive all three ([`HRTF_BINAURAL_PARAMS`]).
 /// Position changes are de-zippered over 50 ms, and each step of the glide
 /// crossfades between the filters on either side of it. The filter for a
 /// direction is blended across the sphere face that direction crosses. A
@@ -39,9 +45,14 @@ pub struct HrtfBinauralNode {
     /// The de-zipper, stepped once per convolution step: the node's, the
     /// convolver renders the direction it returns.
     aim: AngleSmoother,
-    /// The position and blend cells — the same ones the
-    /// [`HrtfBinauralControls`] an insert hands back write.
-    controls: HrtfBinauralControls,
+    /// Bearing, wrapped onto the circle when read.
+    azimuth: Param<Azimuth>,
+    /// Height, clamped to the poles when read.
+    elevation: Param<Elevation>,
+    /// The blend between the HRTF-rendered signal and the dry mono centre,
+    /// `0..1`. Not the VBAP panner's width, a mid/side
+    /// [`StereoWidth`](tutti_types::StereoWidth).
+    blend: Param<Mix>,
     sample_rate: SampleRate,
     /// The last finite azimuth and elevation the cells held. The de-zipper
     /// smoother is recursive, so one NaN or ±∞ coordinate would leave it NaN
@@ -57,65 +68,6 @@ struct Held {
     blend: LastGood,
 }
 
-/// The live controls of an [`HrtfBinauralNode`]: its position and its
-/// HRTF/dry blend, shared with the node (and every clone of these controls).
-///
-/// Inserting the node hands these back ([`IntoNode::Controls`]);
-/// [`HrtfBinauralNode::controls`] returns them too. Every method is lock-free
-/// and may be called from any thread while the node renders; a write lands
-/// on the node's next block.
-///
-/// Its own type rather than a [`tutti_graph::ParamSet`]: `UnitParam` has no
-/// bearing or height, and a position is a pair (a bearing wraps, a height
-/// saturates) that one `f32` address would split.
-#[derive(Clone, Debug)]
-pub struct HrtfBinauralControls {
-    target: SpatialTarget,
-    blend: Param<Mix>,
-}
-
-impl HrtfBinauralControls {
-    /// Sets the source's position in degrees: bearing (wraps; 0 = front,
-    /// 90 = left) and height (clamped to -90..90; 0 = ear level). Lock-free.
-    pub fn set_position(&self, azimuth: impl Into<Azimuth>, elevation: impl Into<Elevation>) {
-        self.target.store(azimuth, elevation);
-    }
-
-    /// Returns the commanded bearing in [`Azimuth`] degrees: the target, not
-    /// the smoothed direction the convolver is currently rendering.
-    pub fn azimuth(&self) -> Azimuth {
-        self.target.azimuth.load()
-    }
-
-    /// Returns the commanded height in [`Elevation`] degrees: the target, not
-    /// the smoothed direction the convolver is currently rendering.
-    pub fn elevation(&self) -> Elevation {
-        self.target.elevation.load()
-    }
-
-    /// Sets the blend between the HRTF-rendered signal and the dry mono
-    /// center, clamped to `0..1`: 1.0 (the default) is full HRTF, 0.0 the
-    /// dry mono. Lock-free.
-    ///
-    /// Not to be confused with the VBAP panner's `set_width`, a mid/side
-    /// [`StereoWidth`](tutti_types::StereoWidth).
-    pub fn set_blend(&self, blend: impl Into<Mix>) {
-        self.blend.store(Mix::new_clamped(blend.into().get()));
-    }
-
-    /// Returns the current HRTF/dry [`Mix`], `0..1`.
-    pub fn blend(&self) -> Mix {
-        self.blend.load()
-    }
-
-    /// Stop sharing every cell, keeping the values (see `Param::detach`):
-    /// what a fork's copy does, so it renders the placement it was taken at.
-    fn detach(&mut self) {
-        self.target.detach();
-        self.blend.detach();
-    }
-}
-
 impl Clone for HrtfBinauralNode {
     /// Shares the controls (a clone is the fork's template, which must read
     /// the cells as they are when the fork is taken) and the parsed sphere;
@@ -124,7 +76,9 @@ impl Clone for HrtfBinauralNode {
         Self {
             panner: self.panner.fresh(self.aim.current()),
             aim: self.aim.clone(),
-            controls: self.controls.clone(),
+            azimuth: self.azimuth.clone(),
+            elevation: self.elevation.clone(),
+            blend: self.blend.clone(),
             sample_rate: self.sample_rate,
             good: self.good,
         }
@@ -157,10 +111,9 @@ impl HrtfBinauralNode {
         Ok(Self {
             panner: HrtfBinaural::new(hrir_bytes, sample_rate, aim.current())?,
             aim,
-            controls: HrtfBinauralControls {
-                target: SpatialTarget::new(),
-                blend: Param::new(Mix::WET),
-            },
+            azimuth: Param::new(Azimuth::FRONT),
+            elevation: Param::new(Elevation::LEVEL),
+            blend: Param::new(Mix::WET),
             sample_rate,
             good: Held {
                 azimuth: LastGood::fixed(Azimuth::FRONT.get()),
@@ -170,21 +123,20 @@ impl HrtfBinauralNode {
         })
     }
 
-    /// Returns the node's controls: a handle sharing its cells, the same one
-    /// inserting the node hands back.
-    pub fn controls(&self) -> HrtfBinauralControls {
-        self.controls.clone()
-    }
-
-    /// The position cells, read once: a non-finite coordinate held at the
-    /// last finite one.
+    /// The position cells, read once (`driven` is the block's azimuth and
+    /// elevation where a lane drives them): a non-finite coordinate held at
+    /// the last finite one, the bearing wrapped and the height clamped.
     #[inline]
-    fn placement(&mut self) -> Direction {
-        let aim = self.controls.target.load();
-        Direction::new(
-            Azimuth(self.good.azimuth.read(aim.azimuth.get())),
-            Elevation(self.good.elevation.read(aim.elevation.get())),
-        )
+    fn placement(&mut self, [azimuth, elevation]: [Option<f32>; 2]) -> Direction {
+        let azimuth = self
+            .good
+            .azimuth
+            .read(azimuth.unwrap_or_else(|| self.azimuth.load().get()));
+        let elevation = self
+            .good
+            .elevation
+            .read(elevation.unwrap_or_else(|| self.elevation.load().get()));
+        Direction::new(Azimuth(azimuth).wrap(), Elevation::new_clamped(elevation))
     }
 }
 
@@ -207,6 +159,7 @@ impl HrtfBinauralNode {
 impl Node for HrtfBinauralNode {
     fn shape(&self) -> Shape {
         Shape::audio(ChannelLayout::STEREO, ChannelLayout::STEREO)
+            .with_params(&HRTF_BINAURAL_PARAMS)
             .with_latency(Latency::new(Samples(HRTF_LATENCY)))
             .with_tail(match self.panner.ring_out() {
                 0 => Tail::None,
@@ -224,7 +177,7 @@ impl Node for HrtfBinauralNode {
     /// Resamples the sphere to the graph's rate (allocates; control thread).
     fn prepare(&mut self, p: &Prepare) {
         self.sample_rate = p.sample_rate();
-        let target = self.placement();
+        let target = self.placement([None; 2]);
         self.aim.set_sample_rate(self.sample_rate);
         let aim = &mut self.aim;
         self.panner.set_sample_rate(self.sample_rate, || {
@@ -234,11 +187,15 @@ impl Node for HrtfBinauralNode {
     }
 
     fn process(&mut self, _cx: &Cx<'_>, mut io: Io<'_>) -> Status {
-        // The controls' cells are the one copy of the commanded position and
-        // blend; the renderer reads them here, once per block.
-        let target = self.placement();
+        // The cells are the one copy of the commanded position and blend; the
+        // renderer reads them here, once per block, a lane that drives one
+        // overriding it at the block's last frame (`block_driven`).
+        let target = self.placement([block_driven(&io, 0), block_driven(&io, 1)]);
         // `Mix::new_clamped` passes a NaN through, so the blend is held too.
-        let blend = Mix(self.good.blend.read(self.controls.blend.load().get()));
+        let blend = Mix(self
+            .good
+            .blend
+            .read(block_driven(&io, 2).unwrap_or_else(|| self.blend.load().get())));
         let size = io.frames();
         let (inputs, mut outputs) = io.split();
         let (left, right) = (&inputs.get(0)[..size], &inputs.get(1)[..size]);
@@ -257,31 +214,50 @@ impl Node for HrtfBinauralNode {
     }
 
     fn reset(&mut self) {
-        let target = self.placement();
+        let target = self.placement([None; 2]);
         self.aim.reset_to_target(target);
         self.panner.reset_state(self.aim.current());
     }
+
+    fn param_base(&self, k: usize) -> Option<f32> {
+        match k {
+            0 => Some(self.azimuth.load().get()),
+            1 => Some(self.elevation.load().get()),
+            2 => Some(self.blend.load().get()),
+            _ => None,
+        }
+    }
 }
 
-impl FreshFork for HrtfBinauralNode {
-    /// A clone (a rebuilt renderer) with its position and blend cells
-    /// detached at their values now, and reset.
+impl ParamNode for HrtfBinauralNode {
+    /// The bearing, height and blend.
+    fn param_set(&self) -> ParamSet {
+        ParamSet::builder()
+            .param(UnitParam::Azimuth, self.azimuth.cell())
+            .param(UnitParam::Elevation, self.elevation.cell())
+            .param(UnitParam::Wet, self.blend.cell())
+            .build()
+    }
+
+    /// A clone (a rebuilt renderer) with its three cells detached at their
+    /// values now, and reset.
     fn fork_fresh(&self) -> Self {
         let mut fork = self.clone();
-        fork.controls.detach();
+        fork.azimuth.detach();
+        fork.elevation.detach();
+        fork.blend.detach();
         Node::reset(&mut fork);
         fork
     }
 }
 
-/// Inserted with its [`HrtfBinauralControls`], and a fork that shares
-/// nothing with it and starts from the placement last set through them.
+/// Inserted with its [`ParamSet`] as its controls and a fork from the values
+/// last set through it ([`tutti_graph::param_parts`]).
 impl IntoNode for HrtfBinauralNode {
-    type Controls = HrtfBinauralControls;
+    type Controls = ParamSet;
 
-    fn into_parts(self) -> NodeParts<HrtfBinauralControls> {
-        let controls = self.controls();
-        fresh_fork_parts(self, controls)
+    fn into_parts(self) -> NodeParts<ParamSet> {
+        tutti_graph::param_parts(self)
     }
 }
 

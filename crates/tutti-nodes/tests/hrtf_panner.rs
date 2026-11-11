@@ -33,8 +33,10 @@
 
 use approx::assert_abs_diff_eq;
 use tutti_graph::Node;
+use tutti_graph::ParamNode;
 use tutti_graph::contract::{drive, prepared};
 use tutti_nodes::HrtfBinauralNode;
+use tutti_nodes::testing::aim;
 use tutti_types::{Azimuth, Elevation, Radians, SampleRate, Samples};
 
 const SAMPLE_RATE: u32 = 44_100;
@@ -169,7 +171,7 @@ fn ir_of(
     elevation: Elevation,
     len: usize,
 ) -> (Vec<f32>, Vec<f32>) {
-    node.controls().set_position(azimuth, elevation);
+    aim(&node.param_set(), azimuth, elevation);
     Node::reset(node);
     let latency = node.shape().latency.samples().get();
     let lead = STEP + 17;
@@ -498,8 +500,7 @@ fn azimuth_sweep_is_continuous_and_energy_bounded() {
 #[test]
 fn a_direction_change_crossfades_without_a_jump() {
     let mut node = make_node();
-    node.controls()
-        .set_position(Azimuth::FRONT, Elevation::LEVEL);
+    aim(&node.param_set(), Azimuth::FRONT, Elevation::LEVEL);
     Node::reset(&mut node);
     let ones = vec![1.0f32; 64];
     // Fill the history with the constant.
@@ -527,7 +528,7 @@ fn a_direction_change_crossfades_without_a_jump() {
     let bound = [range(|s| s.0), range(|s| s.1)].map(|r| r / STEP as f32 + 1e-5);
 
     let target = Azimuth(170.0);
-    node.controls().set_position(target, Elevation::LEVEL);
+    aim(&node.param_set(), target, Elevation::LEVEL);
     let (mut l, mut r) = (Vec::new(), Vec::new());
     // Half a second: ten time constants of the 50 ms glide.
     for _ in 0..(SAMPLE_RATE as usize / 2 / 64) {

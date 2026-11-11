@@ -116,6 +116,20 @@ pub enum UnitParam {
     /// as [`Mute`](Self::Mute) is. A frozen reverb loses nothing round its loop
     /// and takes no input, so its tail never ends.
     Freeze = 27,
+    /// A source's bearing (`Azimuth`, degrees): 0 front, 90 left, -90 right.
+    /// A bearing wraps onto the circle, so a driven value past 180 is the
+    /// same bearing as its wrap, and a panner takes the short arc to it.
+    Azimuth = 28,
+    /// A source's height (`Elevation`, degrees): 0 ear level, positive up,
+    /// saturating at the poles (a height does not wrap).
+    Elevation = 29,
+    /// Panner diffusion (`Spread`, `0..1`): how many speakers a point source
+    /// is smeared across. Not [`Wet`](Self::Wet): it blends nothing.
+    Spread = 30,
+    /// Mid/side stereo width (`StereoWidth`, `0..`): 1 is the source as it
+    /// is, 0 mono, above 1 wider. Not [`StereoSpread`](Self::StereoSpread),
+    /// which spreads a synth's unison voices.
+    StereoWidth = 31,
 }
 
 /// The error converting a `u16` that is not a known [`UnitParam`]
@@ -175,6 +189,10 @@ impl TryFrom<u16> for UnitParam {
             25 => Decay,
             26 => Diffusion,
             27 => Freeze,
+            28 => Azimuth,
+            29 => Elevation,
+            30 => Spread,
+            31 => StereoWidth,
             other => return Err(UnitParamOutOfRange(other)),
         })
     }
@@ -384,8 +402,8 @@ impl From<UnitAddr> for ParamAddr {
 /// associated constants on the unit: `ParamKey::<Hz>::CUTOFF`,
 /// `ParamKey::<Db>::THRESHOLD`. There is deliberately **no key** yet for
 /// `DelayTime` ("beats or seconds — unit-defined"), `RoomSize` and `Damping`
-/// (bare `0..1` with no unit type of their own), `StereoSpread` (whether it is
-/// `Spread` or `StereoWidth` is the node's call today), `Pan` (the `Pan` type
+/// (bare `0..1` with no unit type of their own), `StereoSpread` (a synth's
+/// unison spread, which no unit type claims), `Pan` (the `Pan` type
 /// is a *measurement*, and a pan control needs its own), and `Mute` (a switch,
 /// not a scalar). Each needs its unit decided first; until then they stay
 /// reachable through [`UnitParam`] and cannot be ramped by key.
@@ -465,7 +483,8 @@ impl<U> From<ParamKey<U>> for UnitAddr {
 }
 
 use super::units::{
-    Amplitude, Cents, CompressionRatio, Db, Depth, Drive, Feedback, Hz, Mix, Q, Seconds,
+    Amplitude, Azimuth, Cents, CompressionRatio, Db, Depth, Drive, Elevation, Feedback, Hz, Mix, Q,
+    Seconds, Spread, StereoWidth,
 };
 
 /// Defines the typed keys, and — from the same lines — the registry
@@ -540,6 +559,22 @@ param_keys! {
         /// Unison detune spread.
         DETUNE = Detune;
     }
+    Azimuth {
+        /// A source's bearing.
+        AZIMUTH = Azimuth;
+    }
+    Elevation {
+        /// A source's height.
+        ELEVATION = Elevation;
+    }
+    Spread {
+        /// Panner diffusion.
+        SPREAD = Spread;
+    }
+    StereoWidth {
+        /// Mid/side stereo width.
+        WIDTH = StereoWidth;
+    }
 }
 
 impl ParamKey<()> {
@@ -612,7 +647,7 @@ mod tests {
 
     #[test]
     fn u16_round_trips() {
-        for id in 0..=27u16 {
+        for id in 0..=31u16 {
             let p = UnitParam::try_from(id).expect("known id");
             assert_eq!(u16::from(p), id);
         }
@@ -646,7 +681,8 @@ mod tests {
         assert_eq!(UnitParam::try_from(25), Ok(UnitParam::Decay));
         assert_eq!(UnitParam::try_from(26), Ok(UnitParam::Diffusion));
         assert_eq!(UnitParam::try_from(27), Ok(UnitParam::Freeze));
-        assert_eq!(UnitParam::try_from(28), Err(UnitParamOutOfRange(28)));
+        assert_eq!(UnitParam::try_from(28), Ok(UnitParam::Azimuth));
+        assert_eq!(UnitParam::try_from(32), Err(UnitParamOutOfRange(32)));
         // Decay's three bands are indices of one kind.
         for (index, packed) in [(0u8, 0x0019u16), (1, 0x0119), (2, 0x0219)] {
             assert_eq!(UnitAddr::new(UnitParam::Decay, index).to_u16(), packed);
@@ -657,7 +693,7 @@ mod tests {
     /// (and is `AudioParam`'s `P`), so this table is the compatibility
     /// record: a renumbered or re-ordered variant fails here by name, which
     /// `u16_round_trips` (any id maps to *some* variant) cannot say.
-    const PINNED: [(UnitParam, u16); 28] = [
+    const PINNED: [(UnitParam, u16); 32] = [
         (UnitParam::Cutoff, 0),
         (UnitParam::Q, 1),
         (UnitParam::GainDb, 2),
@@ -686,6 +722,10 @@ mod tests {
         (UnitParam::Decay, 25),
         (UnitParam::Diffusion, 26),
         (UnitParam::Freeze, 27),
+        (UnitParam::Azimuth, 28),
+        (UnitParam::Elevation, 29),
+        (UnitParam::Spread, 30),
+        (UnitParam::StereoWidth, 31),
     ];
 
     /// **Index 0 is bit-identical to the id before indices existed**, for
@@ -732,7 +772,7 @@ mod tests {
     /// in `TryFrom<u16> for UnitAddr` → `0x010A` decodes the wrong param → fails.
     #[test]
     fn unknown_kinds_and_indexed_ids_are_refused_by_the_right_decoder() {
-        assert_eq!(UnitAddr::try_from(0x011C), Err(UnitParamOutOfRange(0x011C)));
+        assert_eq!(UnitAddr::try_from(0x0120), Err(UnitParamOutOfRange(0x0120)));
         assert_eq!(UnitAddr::try_from(0x00FF), Err(UnitParamOutOfRange(0x00FF)));
         // 9_999 is 0x270F: kind 15 at index 39, which is a known kind.
         assert_eq!(
@@ -751,8 +791,8 @@ mod tests {
     /// Mutation (run): drop the low byte from the `Display` text → fails.
     #[test]
     fn the_out_of_range_error_names_the_low_byte() {
-        let e = UnitAddr::try_from(0x011C).unwrap_err();
-        assert_eq!(e.to_string(), "unknown UnitParam id: 284 (low byte 28)");
+        let e = UnitAddr::try_from(0x0120).unwrap_err();
+        assert_eq!(e.to_string(), "unknown UnitParam id: 288 (low byte 32)");
     }
 
     /// An address is equal to a bare param only at index 0, in both

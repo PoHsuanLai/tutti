@@ -15,10 +15,12 @@
 //!   rate it is prepared at is held to a ceiling.
 
 use tutti_dsp::{HrtfBinauralError, MAX_PREPARED_RATE, MAX_SPHERE_RATE, MIN_SPHERE_RATE};
+use tutti_graph::ParamNode;
 use tutti_graph::contract::{drive, prepared};
 use tutti_graph::{Node, Prepare};
 use tutti_nodes::HrtfBinauralNode;
-use tutti_types::{Azimuth, Direction, Elevation, SampleRate, Samples, Tail};
+use tutti_nodes::testing::aim;
+use tutti_types::{Azimuth, Direction, Elevation, SampleRate, Samples, Tail, UnitParam};
 
 const RATE: u32 = 48_000;
 /// The convolution step (`tutti_dsp::HRTF_STEP`).
@@ -179,7 +181,7 @@ fn ir_of(
     rate: u32,
     len: usize,
 ) -> (Vec<f32>, Vec<f32>) {
-    node.controls().set_position(aim.azimuth, aim.elevation);
+    tutti_nodes::testing::aim(&node.param_set(), aim.azimuth, aim.elevation);
     Node::reset(node);
     let latency = node.shape().latency.samples().get();
     let lead = STEP + 100;
@@ -376,8 +378,11 @@ fn resampling_the_sphere_keeps_its_dc_gain() {
     let mut node = node(&bytes, TO);
     // A vertex's own direction, so the blend is that vertex alone.
     let v = 8;
-    node.controls()
-        .set_position(bearing_of(verts[v]).azimuth, bearing_of(verts[v]).elevation);
+    aim(
+        &node.param_set(),
+        bearing_of(verts[v]).azimuth,
+        bearing_of(verts[v]).elevation,
+    );
     Node::reset(&mut node);
     let ones = vec![1.0f32; 64];
     let mut last = [0.0f32; 2];
@@ -435,8 +440,11 @@ fn downsampling_low_passes_below_the_new_nyquist() {
     });
     let mut node = node(&bytes, TO);
     let v = 8;
-    node.controls()
-        .set_position(bearing_of(verts[v]).azimuth, bearing_of(verts[v]).elevation);
+    aim(
+        &node.param_set(),
+        bearing_of(verts[v]).azimuth,
+        bearing_of(verts[v]).elevation,
+    );
     Node::reset(&mut node);
     let ones = vec![1.0f32; 64];
     let mut last = [0.0f32; 2];
@@ -504,7 +512,7 @@ fn the_tail_is_the_ring_out_after_the_latency() {
     for offset in [0, 1, 100, STEP - 1] {
         let mut node = node(&bytes, RATE);
         let Direction { azimuth, elevation } = bearing_of(verts[0]);
-        node.controls().set_position(azimuth, elevation);
+        aim(&node.param_set(), azimuth, elevation);
         Node::reset(&mut node);
         let shape = node.shape();
         let latency = shape.latency.samples().get();
@@ -850,13 +858,13 @@ fn render_in_blocks(
     moves: &[(usize, Direction)],
 ) -> (Vec<f32>, Vec<f32>) {
     let mut node = node(bytes, RATE);
-    node.controls().set_position(start.azimuth, start.elevation);
+    aim(&node.param_set(), start.azimuth, start.elevation);
     Node::reset(&mut node);
     let (mut left, mut right) = (Vec::new(), Vec::new());
     for (i, chunk) in input.chunks(block).enumerate() {
         for &(at, to) in moves {
             if at == i * block {
-                node.controls().set_position(to.azimuth, to.elevation);
+                aim(&node.param_set(), to.azimuth, to.elevation);
             }
         }
         let out = drive(&mut node, SampleRate(f64::from(RATE)), &[chunk, chunk], &[]);
@@ -948,14 +956,14 @@ fn the_position_dezipper_renders_what_it_always_did() {
     let len = 32;
     let bytes = sphere_bytes(RATE, len, &verts, &faces, mirrored_response(&verts, len));
     let mut n = node(&bytes, RATE);
-    let controls = n.controls();
-    controls.set_position(Azimuth(170.0), Elevation(10.0));
+    let controls = n.param_set();
+    aim(&controls, Azimuth(170.0), Elevation(10.0));
     Node::reset(&mut n);
     let mut state = 0x1234_5678_u32;
     let mut digest: u64 = 0xcbf2_9ce4_8422_2325;
     for b in 0..60 {
         if b == 30 {
-            controls.set_position(Azimuth(-110.0), Elevation(-20.0));
+            aim(&controls, Azimuth(-110.0), Elevation(-20.0));
         }
         let block: Vec<f32> = (0..64)
             .map(|_| {
@@ -993,7 +1001,7 @@ fn the_panners_fold_renders_what_it_always_did() {
     let bytes = sphere_bytes(RATE, LEN, &verts, &faces, mirrored_response(&verts, LEN));
     let rate = SampleRate(f64::from(RATE));
     let mut node = node(&bytes, RATE);
-    node.controls().set_position(Azimuth(37.0), Elevation(12.0));
+    aim(&node.param_set(), Azimuth(37.0), Elevation(12.0));
     Node::reset(&mut node);
     let (l, r) = (
         noise(1536),
@@ -1002,11 +1010,10 @@ fn the_panners_fold_renders_what_it_always_did() {
     let mut h: u64 = 0xcbf2_9ce4_8422_2325;
     for (i, (cl, cr)) in l.chunks(64).zip(r.chunks(64)).enumerate() {
         if i == 5 {
-            node.controls()
-                .set_position(Azimuth(-120.0), Elevation(-30.0));
+            aim(&node.param_set(), Azimuth(-120.0), Elevation(-30.0));
         }
         if i == 12 {
-            node.controls().set_blend(tutti_types::Mix(0.6));
+            node.param_set().set(UnitParam::Wet, 0.6);
         }
         for out in drive(&mut node, rate, &[cl, cr], &[]) {
             for s in out {

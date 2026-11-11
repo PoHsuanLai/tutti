@@ -9,12 +9,12 @@
 //!
 //! Expected values are stated from **each format's own arithmetic**, never by
 //! calling `T::from_sample`. That is the argument `tutti-export`'s
-//! `tests/roundtrip.rs:46` makes for recomputing a quantization independently:
+//! `tests/formats/roundtrip.rs:46` makes for recomputing a quantization independently:
 //! asking the function under test what it should have produced is not a
 //! second opinion.
 //!
 //! The master meter's tests (the centre of a wide device, the analytic
-//! level, enabled against disabled) are `tutti-engine`'s `tests/master_meter.rs`:
+//! level, enabled against disabled) are `tutti-engine`'s `tests/outputs/master_meter.rs`:
 //! the meter is an op in the graph's plan, not this callback's.
 
 mod support;

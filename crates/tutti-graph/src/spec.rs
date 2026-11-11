@@ -837,7 +837,7 @@ impl ValidGraph {
 /// The latency folds over the whole spec: the topology's audio ports, plus
 /// each node's event and param sources, which the compiler counts
 /// toward a node's arrival. So `crate::latency_plan(&spec)` is the
-/// compensation `compile` gives the spec's plan (`tests/compile_passes.rs`
+/// compensation `compile` gives the spec's plan (`tests/topology/compile_passes.rs`
 /// pins it); over `spec.topology` alone, a node fed events by a latent node
 /// would arrive early.
 impl LatencyGraph for GraphSpec {

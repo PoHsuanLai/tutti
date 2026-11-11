@@ -524,7 +524,7 @@ declares a tolerance per query (FDN 5%, Freeverb 10%).
 | Latency | `latency()` equals the measured shift of the first output sample with pre-delay 0 | return 0 |
 | No allocation | `retarget` and `process` under `assert_no_alloc`, networks changing every block | n/a |
 
-Serial versus pooled is node-level (`tests/parallel.rs` style: bit-identical to
+Serial versus pooled is node-level (`tests/executor/parallel.rs` style: bit-identical to
 serial). Signal helpers (Schroeder integration, band energy) go in
 `tutti-dsp`'s `test_support`. Measuring RT60 on the GM Freeverb pins the analytic
 figure the GM render keeps, with a tolerance; the render is not compared with the
@@ -785,7 +785,7 @@ the network's -60 dB figure, the old one).
   needed no change, and 0b's `assert_honest_tail` is what checks it.
 - **Park and wake are testable without a graph** once `drive_input` returns the
   `Status` (a small addition to the contract harness), and a lying design
-  (`tests/reverb_node_generic.rs`: an echo that rings past its claim, with a
+  (`tests/reverb/reverb_node_generic.rs`: an echo that rings past its claim, with a
   latency) is the way to test the cut and the dry alignment that Freeverb, with
   no latency and a tail longer than a block, cannot show.
 - **Open for 1c.** `Network::tail` costs more than the rest of the redesign; the
@@ -1110,7 +1110,7 @@ names the low-band RT60; `Mods`, `ModRoute` and `ModRange` take any `ParamRef`;
 the node declares only the params it has (`ParamSet` builder), and
 `Shape::with_param_addrs` lists the modulatable ones as it does for the
 multiband compressor's per-band thresholds and the crossover's splits (the
-tests `tutti-graph/tests/indexed_params.rs`, `bevy-tutti/tests/indexed_param.rs`
+tests `tutti-graph/tests/mixing/indexed_params.rs`, `bevy-tutti/tests/indexed_param.rs`
 and `tutti-session/tests/common/bands.rs` show the indexed path end to end). The
 number of modulatable ports is capped at `MAX_PARAM_PORTS` (32), well above the
 FDN's dozen params, so the cap does not bind.
@@ -1255,10 +1255,10 @@ step, not before.
 ### 12.6 Tests for step 0b
 
 A node that reports a shorter then a longer tail than its ceiling; the skip
-waits the reported figure (`tests/executor.rs`, beside
+waits the reported figure (`tests/executor/executor.rs`, beside
 `the_skip_waits_for_latency_plus_tail`); an excess report is clamped; `Unbounded`
 is never skipped; serial and pooled renders are bit-identical with reporting
-nodes (`tests/parallel.rs`); export of a reverb-like node renders the tail at
+nodes (`tests/executor/parallel.rs`); export of a reverb-like node renders the tail at
 the end, not the ceiling. Mutations: ignore the report (fails the shorter
 case); skip the clamp (fails the excess case).
 

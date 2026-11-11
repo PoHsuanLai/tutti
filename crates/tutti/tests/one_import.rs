@@ -2,7 +2,7 @@
 //! a graph that renders.**
 //!
 //! Device-free, so it runs on every platform in CI. The smallest harness in
-//! the repo (`tutti-engine/tests/root_channel_layouts.rs`) is the shape this
+//! the repo (`tutti-engine/tests/render/root_channel_layouts.rs`) is the shape this
 //! borrows — a graph, its editor and executor, an engine, one block, and an
 //! assertion that the block is not silence.
 //!

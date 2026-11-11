@@ -336,7 +336,7 @@ fn a_mid_stream_decode_error_keeps_the_frames_before_it() {
 /// Through the trait alone, a cut FLAC yields its frames and then answers
 /// `Failed`, and a whole file ends with `Ended`. (The pump over the cut file
 /// finishes as `Failed` rather than `Ended`: `tutti-session`'s
-/// `tests/file_in_pump.rs`.)
+/// `tests/io/file_in_pump.rs`.)
 #[test]
 fn a_decode_fault_reads_as_failed_through_the_trait() {
     fn frames_then_stop<I: Source>(src: &mut I) -> (usize, Stop) {

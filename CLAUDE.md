@@ -158,7 +158,7 @@ serial one.
 - **Nodes run inside `with_no_denormals`**: never make memory safety depend
   on an exact float result (its `# Soundness` docs say why).
 - A parallel test compares against the **serial render, bit for bit**
-  (`tests/parallel.rs`, the differential suite's `modes`), and a gate on the
+  (`tests/executor/parallel.rs`, the differential suite's `modes`), and a gate on the
   parallel path runs every participant inside `assert_no_alloc`, helpers
   included (`TestPool::no_alloc`, the `GatedPool` in `tutti-engine`'s `rt_no_alloc_engine`, `tutti-nodes`'s
   `rt_no_alloc_modulation` and `tutti-clap-host`'s `clap_thread_pool`).
@@ -247,12 +247,13 @@ cargo xtask test-all              # test, test-features, test-editor, test-au-in
   (`tutti-sf2`'s `samples/`) is `CARGO_MANIFEST_DIR.join(..)` without
   `..`.
 - **Build `plugin-server` first:** `cargo build -p tutti-plugin-server`.
-  Without it, `tutti-plugin`'s `clap_pdc_alignment`, `clap_crash_recovery` and
-  `real_stall_tests`, `tutti-plugin-ipc`'s `subprocess::launch` tests,
-  `tutti-session`'s `plugin` suite, `tutti`'s §5.2
+  Without it, `tutti-plugin`'s `clap_nodes` binary (`clap_pdc_alignment`,
+  `clap_crash_recovery`) and `real_stall_tests`, `tutti-plugin-ipc`'s `subprocess::launch` tests,
+  `tutti`'s §5.2
   example (`plugin_midi_export`, `--features clap,export`), and `tutti-session`'s
-  `export_fork_plugin`, `plugin_latency` and `plugin_modulation` suites (ported
-  from `bevy-tutti`; `--features clap,export,modulation,device`) fail with that
+  `plugin` binary (the `plugin`, `export_fork_plugin`, `plugin_latency` and
+  `plugin_modulation` modules, ported from `bevy-tutti`;
+  `--features clap,export,modulation,device`) fail with that
   exact command, and
   `tutti-plugin-contract`'s `server` suite (`--features server`) needs
   `--no-default-features --features clap,vst2,vst3`. They must fail
@@ -1177,6 +1178,14 @@ Scalars use `Param<U>`.
 
 ## Testing policy
 
+- **One integration binary per area.** Each `tests/*.rs` is its own binary and
+  link step, so a crate's public-API tests are `tests/<area>/main.rs` with one
+  `mod` per file; a file stays its own binary only when it must (a
+  `#[global_allocator]`, `harness = false`, `cfg(loom)`, the graph's differential
+  suite). A feature-gated file is a `#[cfg(feature = ..)] mod` line, not a
+  `required-features` entry. A `support` module that another binary or an
+  example includes by path stays in `tests/support` and the area reaches it
+  with `#[path]`.
 - **Never simplify, skip or modify tests to make them pass.** Fix the bug.
 - **Report failing tests and their root causes.** Never silently remove one.
 - **A test must be able to fail.** It asserts a property from the spec, an

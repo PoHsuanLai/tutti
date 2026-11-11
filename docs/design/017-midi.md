@@ -1339,7 +1339,7 @@ Built as specified, except where the code decided otherwise:
   list moved to `tutti-graph/tests/event_inlet.rs`.
 - **The panic predicate is `Ump::is_panic_controller`** (CC 120 and 123 of a
   MIDI 1.0 or 2.0 Control Change), beside `is_note_off`.
-- **The parallel test is in the inlet's own file**, not in `tests/parallel.rs`'s
+- **The parallel test is in the inlet's own file**, not in `tests/executor/parallel.rs`'s
   `build`: that graph has no handle to pre-fill a ring before each run. The
   test compares the serial and pooled audio bit for bit and inlet 1's tap
   against its script, with the ring pre-filled and every participant under
@@ -1382,7 +1382,7 @@ into the `UmpOut` and adds `take_lost` to the drop count that
 - **Tests:** the nodes' tests that used `MidiOutNode` as a sink
   (`rt_no_alloc`, `cost_classes`, `clock_tempo_map`, `edge_nodes`, the hardware
   poll gate) read a tap through a small test sink (`tests/common`) with the same
-  properties; the session's own are `tests/midi_out_tap.rs`, the device restart
+  properties; the session's own are `tests/midi/midi_out_tap.rs`, the device restart
   test and `midi.rs`'s router tests. A note-off's room past the ring is the
   tap's, pinned in `tutti-graph/tests/event_tap.rs`; the hardware out's clock
   sends none.
@@ -1797,9 +1797,9 @@ design's model, and it does not enforce the name limits in M2-104 §7.1.
   only oracle, so `tests/midi2_oracle.rs` and the dev-dependency are deleted. What
   survives is what those tests named: a swap of two neighbouring numbers in a
   number-to-name table, or of two fields or flags, fails a spec-literal test in
-  `tests/spec_words.rs` or `tests/spec_tables.rs`. Its SysEx7 comparison (the
+  `tests/messages/spec_words.rs` or `tests/messages/spec_tables.rs`. Its SysEx7 comparison (the
   fragmenter's packets for every length around the 6-byte boundary) is
-  `tests/sysex_packets.rs`'s literal cases (one, seven, twelve and thirteen bytes, and
+  `tests/streams/sysex_packets.rs`'s literal cases (one, seven, twelve and thirteen bytes, and
   a long run). The round-trip properties and the fuzz target check the codec only
   against itself (decode, encode, decode), so a mistake made the same way in both
   directions passes them; the spec-literal tests are what catch it. What the removal

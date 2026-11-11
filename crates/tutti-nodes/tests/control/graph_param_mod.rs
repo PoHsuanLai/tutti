@@ -1,0 +1,1077 @@
+//! This crate's modulatable nodes under the graph's compiler-owned param
+//! ports, run as they run in an engine: a control lane (`ControlLaneNode`)
+//! sending into a node's param port, the node reading it through
+//! `Io::param`.
+//!
+//! What is pinned:
+//!
+//! - an unconnected param reads its base (`tutti-graph`'s
+//!   `an_unconnected_param_reads_its_base_never_zero`), and an unmodulated
+//!   param adds nothing to the plan
+//!   (`an_unmodulated_param_adds_nothing_to_the_plan`, below);
+//! - the port a node advertises is the one its DSP reads, at every width:
+//!   `each_fed_param_is_the_one_the_dsp_reads`, below;
+//! - the edge changes what the node produces, and a crossed range is
+//!   survivable: below;
+//! - the lane's knob is the node's own control, so a write to it moves the
+//!   driven param, the lane's offset riding on it
+//!   (`an_authored_write_moves_the_base_under_modulation`).
+
+use std::sync::Arc;
+use std::sync::atomic::Ordering;
+use tutti_fixtures::Noise;
+use tutti_types::MaxBlock;
+
+use tutti_curve::Law;
+use tutti_graph::NodeKey;
+use tutti_graph::{
+    Editor, EventOut, GraphBuilder, IntoNode, NodeMix, NodeParts, PARAM_DECLICK, ParamIn,
+    ParamNode, ParamRange, Prepare, Renderer,
+};
+use tutti_modulation::{Amount, Clock, ControlProgram, Layer, LayerId, Polarity, Wave};
+use tutti_nodes::automation::ControlLaneNode;
+use tutti_nodes::{
+    BrickwallLimiterNode, BusStripNode, CompressorNode, DelayLineNode, DistortionNode, GateNode,
+    LadderFilterNode, LadderType, LimiterNode, ModDelayNode, PhaserNode, ShapeKind, SvfFilterNode,
+    SvfType,
+};
+use tutti_types::{
+    Amplitude, AtomicF32, BeatDuration, ChannelLayout, CompressionRatio, Db, Depth, Drive,
+    Feedback, Hz, Mix, PhaseIncrement, Q, Resonance, SampleRate, Samples, Seconds, UnitParam,
+};
+
+const FRAMES: usize = 24_000;
+/// Where [`each_fed_param_is_the_one_the_dsp_reads`] starts comparing: far
+/// past the connection's declick, and past the slowest node's memory of it
+/// (a compressor's 50 ms release, a filter's integrators).
+const SETTLED: usize = 20_000;
+
+fn noise(seed: u32) -> Vec<f32> {
+    Noise::seeded(seed).take(FRAMES).map(|x| 0.8 * x).collect()
+}
+
+/// The key a test's lane goes in at: no builder key reaches it.
+const LANE: NodeKey = NodeKey(9_000);
+
+/// A constant offset of `depth` × the port's span (doc 014 §4.1).
+fn konst(depth: f32) -> Layer {
+    Layer {
+        id: LayerId(1),
+        clock: Clock::Beats {
+            per_cycle: BeatDuration(1.0),
+            phase: PhaseIncrement(0.0),
+        },
+        wave: Wave::Const(1.0),
+        amount: Amount {
+            depth: Depth(depth),
+            polarity: Polarity::Bipolar,
+            curve: Law::Linear,
+        },
+        depth_by: None,
+    }
+}
+
+/// A control lane at [`LANE`] driving `at`, with `knob` as its knob (the
+/// node's own cell, in an engine) and `layers` on top, then a commit: how
+/// an engine drives a param port. Layers scale by the port's range, so a
+/// lane with any is built on the port's range cell (the port's node must
+/// have been committed); one without sends its knob, unranged.
+fn drive(ed: &mut Editor, at: ParamIn, knob: Arc<AtomicF32>, layers: Vec<Layer>) {
+    let range = (!layers.is_empty()).then(|| ed.param_range_cell(at).expect("committed"));
+    let program = ControlProgram::new(None, layers, vec![]).expect("a valid program");
+    let lane = ControlLaneNode::for_unit(at.param, program, Some(knob.into()), range);
+    ed.insert(LANE, "lane", lane);
+    ed.spec_mut().connect_param(
+        at,
+        EventOut {
+            node: LANE,
+            port: 0,
+        },
+    );
+    ed.commit().expect("the lane commits");
+}
+
+/// `node` with every input on a global input carrying noise, its outputs
+/// the graph's, and — when `fed` — `param` driven to exactly `v` by a
+/// control lane whose knob is at `v`, whatever the node's own control.
+/// Renders `FRAMES` in 100-frame blocks (not a multiple of 64).
+fn render(node: NodeParts<()>, fed: Option<(UnitParam, f32)>) -> Vec<Vec<f32>> {
+    let shape = node.node.shape();
+    let (ins, outs) = (
+        usize::from(shape.audio_in().count()),
+        usize::from(shape.audio_out().count()),
+    );
+    let mut g = GraphBuilder::new(
+        ChannelLayout::try_from(ins).expect("a test width is small"),
+        ChannelLayout::try_from(outs).expect("a test width is small"),
+    );
+    let n = g.add(node);
+    for c in 0..ins {
+        g.connect_input(c, n, c);
+    }
+    for c in 0..outs {
+        g.connect_output(n, c, c);
+    }
+    let mut r = g
+        .renderer(Prepare::new(
+            SampleRate(48_000.0),
+            MaxBlock::of(Samples(100)),
+        ))
+        .expect("builds");
+    if let Some((param, v)) = fed {
+        let at = ParamIn {
+            node: n,
+            param: param.into(),
+        };
+        drive(r.editor_mut(), at, Arc::new(AtomicF32::new(v)), vec![]);
+    }
+    let input: Vec<Vec<f32>> = (0..ins).map(|c| noise(c as u32 + 7)).collect();
+    let refs: Vec<&[f32]> = input.iter().map(Vec::as_slice).collect();
+    r.render_input(&refs)
+}
+
+/// How the graph's mix of the node under test is given.
+#[derive(Clone, Copy)]
+enum MixIs {
+    /// Set to `v` before the unit is placed (steady from the first block).
+    Set(f32),
+    /// Driven to `v` by a control lane on the mix's port.
+    Fed(f32),
+}
+
+/// [`render`] with the node's mix, the graph's: a mix is not a node's param,
+/// but a port at a reserved address (`NodeMix::ADDR`) a lane drives like any.
+fn render_mix(node: NodeParts<()>, mix: MixIs) -> Vec<Vec<f32>> {
+    let shape = node.node.shape();
+    let (ins, outs) = (
+        usize::from(shape.audio_in().count()),
+        usize::from(shape.audio_out().count()),
+    );
+    let mut g = GraphBuilder::new(
+        ChannelLayout::try_from(ins).expect("a test width is small"),
+        ChannelLayout::try_from(outs).expect("a test width is small"),
+    );
+    let n = g.add(node);
+    for c in 0..ins {
+        g.connect_input(c, n, c);
+    }
+    for c in 0..outs {
+        g.connect_output(n, c, c);
+    }
+    if let MixIs::Set(v) = mix {
+        g.spec_mut().set_mix(n, Mix::new(v));
+    }
+    let mut r = g
+        .renderer(Prepare::new(
+            SampleRate(48_000.0),
+            MaxBlock::of(Samples(100)),
+        ))
+        .expect("builds");
+    if let MixIs::Fed(v) = mix {
+        let at = ParamIn {
+            node: n,
+            param: NodeMix::ADDR,
+        };
+        drive(r.editor_mut(), at, Arc::new(AtomicF32::new(v)), vec![]);
+    }
+    let input: Vec<Vec<f32>> = (0..ins).map(|c| noise(c as u32 + 7)).collect();
+    let refs: Vec<&[f32]> = input.iter().map(Vec::as_slice).collect();
+    r.render_input(&refs)
+}
+
+/// A node's parts, its controls dropped.
+fn parts_of<N: IntoNode>(node: N) -> NodeParts<()> {
+    let NodeParts { node, fork, .. } = node.into_parts();
+    NodeParts {
+        node,
+        controls: (),
+        fork,
+    }
+}
+
+/// One modulatable param of one node type: how to build the node at a
+/// width with the param's control at `v` (or its default), and two values
+/// far enough apart to be heard.
+struct Case {
+    name: &'static str,
+    param: UnitParam,
+    make: fn(usize, Option<f32>) -> NodeParts<()>,
+    lo: f32,
+    hi: f32,
+}
+
+fn cases() -> Vec<Case> {
+    fn svf(w: usize) -> SvfFilterNode<f64> {
+        SvfFilterNode::with_channels(
+            ChannelLayout::try_from(w).expect("a test width is small"),
+            SvfType::LowPass,
+            Hz::new(1_000.0),
+            Q::new(0.707),
+        )
+    }
+    fn ladder(w: usize) -> LadderFilterNode<f64> {
+        LadderFilterNode::with_channels(
+            ChannelLayout::try_from(w).expect("a test width is small"),
+            LadderType::LP24,
+            Hz::new(1_000.0),
+            Resonance::new(0.3),
+        )
+    }
+    fn delay(w: usize) -> DelayLineNode {
+        DelayLineNode::with_channels(
+            ChannelLayout::try_from(w).expect("a test width is small"),
+            Seconds::new(0.01),
+            Seconds::new(0.0003),
+            Feedback::new(0.5),
+        )
+    }
+    fn comp(w: usize) -> CompressorNode {
+        CompressorNode::with_channels(
+            Db::new(-20.0),
+            CompressionRatio::new(8.0),
+            Seconds::new(0.001),
+            Seconds::new(0.05),
+            w as u8,
+        )
+    }
+    fn gate(w: usize) -> GateNode {
+        GateNode::with_channels(
+            Db::new(-30.0),
+            Seconds::new(0.001),
+            Seconds::new(0.004),
+            Seconds::new(0.02),
+            w as u8,
+        )
+    }
+    fn lim(w: usize) -> LimiterNode {
+        LimiterNode::with_channels(
+            ChannelLayout::try_from(w).expect("a test width is small"),
+            Db::new(-6.0),
+            Db::new(-0.3),
+        )
+    }
+    let mut cases = vec![
+        Case {
+            name: "svf cutoff",
+            param: UnitParam::Cutoff,
+            make: |w, v| {
+                let n = svf(w);
+                if let Some(v) = v {
+                    assert!(n.param_set().set(UnitParam::Cutoff, v));
+                }
+                parts_of(n)
+            },
+            lo: 200.0,
+            hi: 8_000.0,
+        },
+        Case {
+            name: "svf q",
+            param: UnitParam::Q,
+            make: |w, v| {
+                let n = svf(w);
+                if let Some(v) = v {
+                    assert!(n.param_set().set(UnitParam::Q, v));
+                }
+                parts_of(n)
+            },
+            lo: 0.5,
+            hi: 8.0,
+        },
+        Case {
+            name: "ladder cutoff",
+            param: UnitParam::Cutoff,
+            make: |w, v| {
+                let n = ladder(w);
+                if let Some(v) = v {
+                    assert!(n.param_set().set(UnitParam::Cutoff, v));
+                }
+                parts_of(n)
+            },
+            lo: 200.0,
+            hi: 8_000.0,
+        },
+        Case {
+            name: "ladder resonance",
+            param: UnitParam::Q,
+            make: |w, v| {
+                let n = ladder(w);
+                if let Some(v) = v {
+                    assert!(n.param_set().set(UnitParam::Q, v));
+                }
+                parts_of(n)
+            },
+            lo: 0.0,
+            hi: 0.9,
+        },
+        Case {
+            name: "ladder drive",
+            param: UnitParam::Drive,
+            make: |w, v| {
+                let n = ladder(w);
+                if let Some(v) = v {
+                    assert!(n.param_set().set(UnitParam::Drive, v));
+                }
+                parts_of(n)
+            },
+            lo: 1.0,
+            hi: 8.0,
+        },
+        Case {
+            name: "delay feedback",
+            param: UnitParam::Feedback,
+            make: |w, v| {
+                let n = delay(w);
+                if let Some(v) = v {
+                    n.set_feedback(Feedback::new(v));
+                }
+                parts_of(n)
+            },
+            lo: 0.0,
+            hi: 0.9,
+        },
+        Case {
+            name: "delay time",
+            param: UnitParam::DelayTime,
+            make: |w, v| {
+                let n = delay(w);
+                if let Some(v) = v {
+                    n.set_delay_time(tutti_types::Seconds::from_f32(v));
+                }
+                parts_of(n)
+            },
+            lo: 0.0002,
+            hi: 0.0008,
+        },
+        Case {
+            name: "distortion drive",
+            param: UnitParam::Drive,
+            make: |w, v| {
+                let n = DistortionNode::with_channels(
+                    ChannelLayout::try_from(w).expect("a test width is small"),
+                    ShapeKind::Tanh,
+                    Drive::new(1.0),
+                );
+                if let Some(v) = v {
+                    n.set_drive(Drive::new(v));
+                }
+                parts_of(n)
+            },
+            lo: 0.5,
+            hi: 5.0,
+        },
+        Case {
+            name: "compressor threshold",
+            param: UnitParam::Threshold,
+            make: |w, v| {
+                let n = comp(w);
+                if let Some(v) = v {
+                    n.set_threshold(Db::new(v));
+                }
+                parts_of(n)
+            },
+            lo: -40.0,
+            hi: 0.0,
+        },
+        Case {
+            name: "gate threshold",
+            param: UnitParam::Threshold,
+            make: |w, v| {
+                let n = gate(w);
+                if let Some(v) = v {
+                    n.set_threshold(Db::new(v));
+                }
+                parts_of(n)
+            },
+            lo: -60.0,
+            // Above the noise's peak: the gate stays shut.
+            hi: 6.0,
+        },
+        Case {
+            name: "limiter ceiling",
+            param: UnitParam::Ceiling,
+            make: |w, v| {
+                let n = lim(w);
+                if let Some(v) = v {
+                    n.set_ceiling(Db::new(v));
+                }
+                parts_of(n)
+            },
+            lo: -12.0,
+            hi: -0.3,
+        },
+        Case {
+            name: "limiter threshold",
+            param: UnitParam::Threshold,
+            make: |w, v| {
+                let n = lim(w);
+                if let Some(v) = v {
+                    n.set_threshold(Db::new(v));
+                }
+                parts_of(n)
+            },
+            lo: -20.0,
+            hi: -1.0,
+        },
+        Case {
+            name: "brickwall ceiling",
+            param: UnitParam::Ceiling,
+            make: |w, v| {
+                let mut n = BrickwallLimiterNode::with_channels(
+                    ChannelLayout::try_from(w).expect("a test width is small"),
+                    Db::new(0.0),
+                );
+                if let Some(v) = v {
+                    n.set_ceiling(Db::new(v));
+                }
+                parts_of(n)
+            },
+            lo: -12.0,
+            hi: 0.0,
+        },
+        Case {
+            name: "strip volume",
+            param: UnitParam::Volume,
+            make: |w, v| {
+                let n = BusStripNode::with_channels(
+                    ChannelLayout::try_from(w).expect("a test width is small"),
+                );
+                if let Some(v) = v {
+                    n.set_volume(Amplitude(v));
+                }
+                parts_of(n)
+            },
+            lo: 0.2,
+            hi: 0.9,
+        },
+        Case {
+            name: "strip pan",
+            param: UnitParam::Pan,
+            make: |w, v| {
+                let n = BusStripNode::with_channels(
+                    ChannelLayout::try_from(w).expect("a test width is small"),
+                );
+                if let Some(v) = v {
+                    n.set_pan(tutti_types::Pan(v));
+                }
+                parts_of(n)
+            },
+            lo: -1.0,
+            hi: 1.0,
+        },
+    ];
+    // The block-rate params doc 014 §12.6 made ports: a route onto any of
+    // these was refused (`NoSuchParam`) once the frame-rate driver went.
+    cases.extend(block_rate_cases());
+    cases
+}
+
+/// Every param a node reads once per block, now a port read the same way
+/// (its last frame per block).
+fn block_rate_cases() -> Vec<Case> {
+    fn comp(w: usize) -> CompressorNode {
+        CompressorNode::with_channels(
+            Db::new(-20.0),
+            CompressionRatio::new(8.0),
+            Seconds::new(0.001),
+            Seconds::new(0.05),
+            w as u8,
+        )
+    }
+    // Near the noise's peak, no hold: the gate opens and shuts all the
+    // time, so its times are heard.
+    fn gate(w: usize) -> GateNode {
+        GateNode::with_channels(
+            Db::new(-3.0),
+            Seconds::new(0.001),
+            Seconds::new(0.0),
+            Seconds::new(0.02),
+            w as u8,
+        )
+    }
+    fn chorus(w: usize) -> ModDelayNode {
+        ModDelayNode::chorus(ChannelLayout::try_from(w).expect("a test width is small"))
+    }
+    fn phaser(w: usize) -> PhaserNode {
+        PhaserNode::with_channels(
+            ChannelLayout::try_from(w).expect("a test width is small"),
+            4,
+        )
+    }
+    #[allow(unused_mut)]
+    let mut cases = vec![
+        Case {
+            name: "svf gain",
+            param: UnitParam::GainDb,
+            make: |w, v| {
+                let n = SvfFilterNode::<f64>::with_channels(
+                    ChannelLayout::try_from(w).expect("a test width is small"),
+                    SvfType::Bell,
+                    Hz::new(1_000.0),
+                    Q::new(0.707),
+                );
+                if let Some(v) = v {
+                    assert!(n.param_set().set(UnitParam::GainDb, v));
+                }
+                parts_of(n)
+            },
+            lo: -12.0,
+            hi: 12.0,
+        },
+        Case {
+            name: "compressor ratio",
+            param: UnitParam::Ratio,
+            make: |w, v| {
+                let n = comp(w);
+                if let Some(v) = v {
+                    n.set_ratio(CompressionRatio::new(v));
+                }
+                parts_of(n)
+            },
+            lo: 1.5,
+            hi: 20.0,
+        },
+        Case {
+            name: "compressor attack",
+            param: UnitParam::Attack,
+            make: |w, v| {
+                let n = comp(w);
+                if let Some(v) = v {
+                    n.set_attack(tutti_types::Seconds::from_f32(v));
+                }
+                parts_of(n)
+            },
+            lo: 0.0005,
+            hi: 0.05,
+        },
+        Case {
+            name: "compressor release",
+            param: UnitParam::Release,
+            make: |w, v| {
+                let n = comp(w);
+                if let Some(v) = v {
+                    n.set_release(tutti_types::Seconds::from_f32(v));
+                }
+                parts_of(n)
+            },
+            lo: 0.005,
+            hi: 0.5,
+        },
+        Case {
+            name: "compressor makeup",
+            param: UnitParam::GainDb,
+            make: |w, v| {
+                let n = comp(w);
+                if let Some(v) = v {
+                    n.set_makeup(Db::new(v));
+                }
+                parts_of(n)
+            },
+            lo: -6.0,
+            hi: 6.0,
+        },
+        Case {
+            name: "gate attack",
+            param: UnitParam::Attack,
+            make: |w, v| {
+                let n = gate(w);
+                if let Some(v) = v {
+                    n.set_attack(tutti_types::Seconds::from_f32(v));
+                }
+                parts_of(n)
+            },
+            lo: 0.0005,
+            hi: 0.05,
+        },
+        Case {
+            name: "gate release",
+            param: UnitParam::Release,
+            make: |w, v| {
+                let n = gate(w);
+                if let Some(v) = v {
+                    n.set_release(tutti_types::Seconds::from_f32(v));
+                }
+                parts_of(n)
+            },
+            lo: 0.002,
+            hi: 0.2,
+        },
+        Case {
+            name: "limiter release",
+            param: UnitParam::Release,
+            make: |w, v| {
+                // Threshold and ceiling near the noise's peak: the limiter
+                // lets go between peaks, so its release is heard.
+                let n = LimiterNode::with_channels(
+                    ChannelLayout::try_from(w).expect("a test width is small"),
+                    Db::new(-3.0),
+                    Db::new(-2.5),
+                );
+                if let Some(v) = v {
+                    n.set_release(tutti_types::Seconds::from_f32(v));
+                }
+                parts_of(n)
+            },
+            lo: 0.005,
+            hi: 0.5,
+        },
+        Case {
+            name: "chorus rate",
+            param: UnitParam::Rate,
+            make: |w, v| {
+                let n = chorus(w);
+                if let Some(v) = v {
+                    n.set_rate(Hz::new(v));
+                }
+                parts_of(n)
+            },
+            lo: 0.5,
+            hi: 5.0,
+        },
+        Case {
+            name: "chorus depth",
+            param: UnitParam::Depth,
+            make: |w, v| {
+                let n = chorus(w);
+                if let Some(v) = v {
+                    n.set_depth(tutti_types::Seconds::from_f32(v));
+                }
+                parts_of(n)
+            },
+            lo: 0.001,
+            hi: 0.02,
+        },
+        Case {
+            name: "chorus feedback",
+            param: UnitParam::Feedback,
+            make: |w, v| {
+                let n = chorus(w);
+                if let Some(v) = v {
+                    n.set_feedback(Feedback::new(v));
+                }
+                parts_of(n)
+            },
+            lo: 0.0,
+            hi: 0.8,
+        },
+        Case {
+            name: "flanger depth",
+            param: UnitParam::Depth,
+            make: |w, v| {
+                let n = ModDelayNode::flanger(
+                    ChannelLayout::try_from(w).expect("a test width is small"),
+                );
+                if let Some(v) = v {
+                    n.set_depth(tutti_types::Seconds::from_f32(v));
+                }
+                parts_of(n)
+            },
+            lo: 0.0005,
+            hi: 0.008,
+        },
+        Case {
+            name: "phaser rate",
+            param: UnitParam::Rate,
+            make: |w, v| {
+                let n = phaser(w);
+                if let Some(v) = v {
+                    n.set_rate(Hz::new(v));
+                }
+                parts_of(n)
+            },
+            lo: 0.5,
+            hi: 5.0,
+        },
+        Case {
+            name: "phaser depth",
+            param: UnitParam::Depth,
+            make: |w, v| {
+                let n = phaser(w);
+                if let Some(v) = v {
+                    n.set_depth(Depth::new(v));
+                }
+                parts_of(n)
+            },
+            lo: 0.2,
+            hi: 1.0,
+        },
+        Case {
+            name: "phaser feedback",
+            param: UnitParam::Feedback,
+            make: |w, v| {
+                let n = phaser(w);
+                if let Some(v) = v {
+                    n.set_feedback(Feedback::new(v));
+                }
+                parts_of(n)
+            },
+            lo: 0.0,
+            hi: 0.8,
+        },
+    ];
+    cases
+}
+
+/// Frames past the connection's declick.
+fn settled(out: &[Vec<f32>]) -> impl Iterator<Item = (usize, usize, f32)> + '_ {
+    out.iter().enumerate().flat_map(|(c, o)| {
+        o.iter()
+            .enumerate()
+            .skip(SETTLED)
+            .map(move |(i, &x)| (c, i, x))
+    })
+}
+
+/// **Each param a node's feed declares is the one its DSP reads**, at every
+/// width, through the graph: driving the param to `v` sounds like the node
+/// with its own control at `v` (within the few ulps a per-frame path and a
+/// held one differ by), for two values that sound different from each other.
+/// The port of `param_ports.rs`' "the advertised port is the one the DSP
+/// reads at every width".
+///
+/// The block-rate cases (`block_rate_cases`, the params doc 014 §12.6 made
+/// ports) each read the driven port, never the node's own cell:
+/// the LFO rate (chorus and phaser), the
+/// chorus depth and feedback, the phaser depth, the compressor's
+/// ratio and makeup, its attack and release swapped, the gate's attack and
+/// release, the limiter's release and the SVF's gain. (The mixes of the delay,
+/// the chorus and flanger, the phaser and the convolver are the graph's:
+/// `each_fed_mix_is_the_one_the_graph_blends`.)
+#[test]
+fn each_fed_param_is_the_one_the_dsp_reads() {
+    for w in [1usize, 2, 6] {
+        for case in cases() {
+            let at = |v: f32| {
+                (
+                    render((case.make)(w, None), Some((case.param, v))),
+                    render((case.make)(w, Some(v)), None),
+                )
+            };
+            let (fed_lo, ctl_lo) = at(case.lo);
+            let (fed_hi, ctl_hi) = at(case.hi);
+            for (fed, ctl, v) in [(&fed_lo, &ctl_lo, case.lo), (&fed_hi, &ctl_hi, case.hi)] {
+                for (c, i, x) in settled(fed) {
+                    let want = ctl[c][i];
+                    assert!(
+                        (x - want).abs() <= 2e-3,
+                        "{} (width {w}) fed {v}: channel {c} frame {i} is {x}, the control \
+                         at {v} gives {want}",
+                        case.name
+                    );
+                }
+            }
+            let moved = settled(&fed_lo).any(|(c, i, x)| (x - fed_hi[c][i]).abs() > 1e-2);
+            assert!(
+                moved,
+                "{} (width {w}): {} and {} sound the same",
+                case.name, case.lo, case.hi
+            );
+        }
+    }
+}
+
+/// One node type whose mix is driven: how to build it at a width.
+struct MixCase {
+    name: &'static str,
+    make: fn(usize) -> NodeParts<()>,
+}
+
+fn mix_cases() -> Vec<MixCase> {
+    let cases = vec![
+        MixCase {
+            name: "delay mix",
+            make: |w| {
+                parts_of(DelayLineNode::with_channels(
+                    ChannelLayout::try_from(w).expect("a test width is small"),
+                    Seconds::new(0.01),
+                    Seconds::new(0.0003),
+                    Feedback::new(0.5),
+                ))
+            },
+        },
+        MixCase {
+            name: "chorus mix",
+            make: |w| {
+                parts_of(ModDelayNode::chorus(
+                    ChannelLayout::try_from(w).expect("a test width is small"),
+                ))
+            },
+        },
+        MixCase {
+            name: "flanger mix",
+            make: |w| {
+                parts_of(ModDelayNode::flanger(
+                    ChannelLayout::try_from(w).expect("a test width is small"),
+                ))
+            },
+        },
+        MixCase {
+            name: "phaser mix",
+            make: |w| {
+                parts_of(PhaserNode::with_channels(
+                    ChannelLayout::try_from(w).expect("a test width is small"),
+                    4,
+                ))
+            },
+        },
+    ];
+    // The convolver joins only with its feature: the cases are rebound, not
+    // pushed to, so the list needs no `mut` the featureless build leaves unused.
+    #[cfg(feature = "convolution")]
+    let cases: Vec<MixCase> = cases
+        .into_iter()
+        .chain([MixCase {
+            name: "convolver mix",
+            make: |w| {
+                parts_of(tutti_nodes::ConvolverNode::shared_ir(
+                    ChannelLayout::try_from(w).expect("a test width is small"),
+                    &[0.0, 0.0, 1.0, -0.5],
+                    64,
+                ))
+            },
+        }])
+        .collect();
+    cases
+}
+
+/// **A node's mix is the graph's, and a route onto it is the one a node's own
+/// mix param was**: driving the mix port (`ModTarget::Mix`'s lane) to `v`
+/// sounds like the graph's mix set to `v` (within the few ulps a per-frame
+/// path and a held one differ by), for two values that sound different from
+/// each other. These nodes had a `Wet` param of their own, whose port this
+/// replaces; the blend itself is `tutti-graph/tests/mixing/mix.rs`'s.
+#[test]
+fn each_fed_mix_is_the_one_the_graph_blends() {
+    for w in [1usize, 2, 6] {
+        for case in mix_cases() {
+            let at = |v: f32| {
+                (
+                    render_mix((case.make)(w), MixIs::Fed(v)),
+                    render_mix((case.make)(w), MixIs::Set(v)),
+                )
+            };
+            let (lo, hi) = (0.1, 0.9);
+            let (fed_lo, set_lo) = at(lo);
+            let (fed_hi, set_hi) = at(hi);
+            for (fed, set, v) in [(&fed_lo, &set_lo, lo), (&fed_hi, &set_hi, hi)] {
+                for (c, i, x) in settled(fed) {
+                    let want = set[c][i];
+                    assert!(
+                        (x - want).abs() <= 2e-3,
+                        "{} (width {w}) fed {v}: channel {c} frame {i} is {x}, the mix \
+                         set to {v} gives {want}",
+                        case.name
+                    );
+                }
+            }
+            let moved = settled(&fed_lo).any(|(c, i, x)| (x - fed_hi[c][i]).abs() > 1e-2);
+            assert!(
+                moved,
+                "{} (width {w}): {lo} and {hi} sound the same",
+                case.name
+            );
+        }
+    }
+}
+
+/// A distortion at drive `d` over `x`, as the node renders it: the expected
+/// output of a modulated drive, from the unmodulated node.
+fn plain_distortion(d: f32) -> Vec<f32> {
+    render(
+        parts_of(DistortionNode::with_channels(
+            1u16,
+            ShapeKind::Tanh,
+            Drive::new(d),
+        )),
+        None,
+    )
+    .remove(0)
+}
+
+/// The lane's knob is the node's own control: a write to that cell (through
+/// the node's own handle, or `ParamSet::set`) moves the driven param, and
+/// the lane's offset keeps riding on it. There is no second base cell to
+/// lose (doc 014 §4.2: one writer per knob).
+///
+/// Changed in doc 014 §12.6: the offset was an audio source added to the
+/// node's base by the port; it is now the lane's constant layer (`Wave::Const`,
+/// a twentieth of the port's 0..10 span), added to the knob by the lane.
+#[test]
+fn an_authored_write_moves_the_base_under_modulation() {
+    let node = DistortionNode::with_channels(1u16, ShapeKind::Tanh, Drive::new(1.0));
+    let cell = node.drive();
+    let mut g = GraphBuilder::new(ChannelLayout::MONO, ChannelLayout::MONO);
+    let (n, _) = g.add_with_controls(node);
+    g.connect_input(0, n, 0).connect_output(n, 0, 0);
+    let at = ParamIn {
+        node: n,
+        param: UnitParam::Drive.into(),
+    };
+    g.spec_mut().set_param_range(at, ParamRange::new(0.0, 10.0));
+    let mut r = g
+        .renderer(Prepare::new(
+            SampleRate(48_000.0),
+            MaxBlock::of(Samples(100)),
+        ))
+        .expect("builds");
+    drive(r.editor_mut(), at, Arc::clone(&cell), vec![konst(0.05)]);
+    let x = noise(7);
+    let before = r.render_input(&[&x[..1_000]]).remove(0);
+    let at_1_5 = plain_distortion(1.5);
+    for i in PARAM_DECLICK.get()..1_000 {
+        assert!(
+            (before[i] - at_1_5[i]).abs() < 1e-6,
+            "frame {i}: knob 1.0 + 0.5 is drive 1.5"
+        );
+    }
+    cell.store(3.0, Ordering::Release);
+    // One block for the lane to hear it, then the new knob under the same
+    // offset.
+    let after = r.render_input(&[&x[1_000..]]).remove(0);
+    let at_3_5 = plain_distortion(3.5);
+    for i in 200..after.len() {
+        assert!(
+            (after[i] - at_3_5[1_000 + i]).abs() < 1e-6,
+            "frame {}: the written 3.0 + 0.5 is drive 3.5",
+            1_000 + i
+        );
+    }
+}
+
+/// A crossed range (its min above its max) is ordered, never a panic: a
+/// value past it clamps to the higher bound.
+#[test]
+fn a_crossed_range_is_survivable() {
+    let node = DistortionNode::with_channels(1u16, ShapeKind::Tanh, Drive::new(1.0));
+    let mut g = GraphBuilder::new(ChannelLayout::MONO, ChannelLayout::MONO);
+    let (n, _) = g.add_with_controls(node);
+    g.connect_input(0, n, 0).connect_output(n, 0, 0);
+    let at = ParamIn {
+        node: n,
+        param: UnitParam::Drive.into(),
+    };
+    g.spec_mut().set_param_range(at, ParamRange::new(4.0, 2.0));
+    let mut r = g
+        .renderer(Prepare::new(
+            SampleRate(48_000.0),
+            MaxBlock::of(Samples(100)),
+        ))
+        .expect("builds");
+    drive(r.editor_mut(), at, Arc::new(AtomicF32::new(100.0)), vec![]);
+    let out = r.render_input(&[&noise(7)]).remove(0);
+    let at_4 = plain_distortion(4.0);
+    for i in PARAM_DECLICK.get()..FRAMES {
+        assert!((out[i] - at_4[i]).abs() < 1e-6, "frame {i}: clamped at 4");
+    }
+}
+
+/// An undriven param adds nothing to the plan — no op, no slot, no param
+/// port — and connecting and disconnecting a lane is a commit that keeps
+/// the unit (the same generation throughout: nothing is rebuilt, so a
+/// stateful node's state would survive), with no step reaching the output.
+#[test]
+fn an_unmodulated_param_adds_nothing_to_the_plan() {
+    let node = DistortionNode::with_channels(1u16, ShapeKind::Tanh, Drive::new(1.0));
+    let mut g = GraphBuilder::new(ChannelLayout::MONO, ChannelLayout::MONO);
+    let (n, _) = g.add_with_controls(node);
+    g.connect_input(0, n, 0).connect_output(n, 0, 0);
+    let mut r: Renderer = g
+        .renderer(Prepare::new(
+            SampleRate(48_000.0),
+            MaxBlock::of(Samples(100)),
+        ))
+        .expect("builds");
+    // The lane is in the graph, unconnected, from the start.
+    let lane = ControlLaneNode::for_unit(
+        UnitParam::Drive,
+        ControlProgram::default(),
+        Some(Arc::new(AtomicF32::new(5.0)).into()),
+        None,
+    );
+    let controls = r.editor_mut().insert(LANE, "lane", lane);
+    r.editor_mut().commit().expect("commits");
+    // A steady tone, so a jump in drive is a jump in level.
+    let tone = vec![0.25f32; 600];
+    let mut out = r.render_input(&[&tone]).remove(0);
+    let plan = r.executor().plan().expect("a plan");
+    assert!(plan.param_ports().is_empty(), "no param step at all");
+    let generation = plan.unit(n).expect("the distortion").generation;
+
+    let at = ParamIn {
+        node: n,
+        param: UnitParam::Drive.into(),
+    };
+    let from = EventOut {
+        node: LANE,
+        port: 0,
+    };
+    r.editor_mut().spec_mut().connect_param(at, from);
+    r.editor_mut().commit().expect("connects");
+    // The lane has sent its knob already, into nothing: a re-wired lane
+    // re-sends on request (doc 014 §5.2).
+    controls.resync();
+    out.extend(r.render_input(&[&tone]).remove(0));
+    assert!(r.editor_mut().spec_mut().disconnect_param(at, from));
+    r.editor_mut().commit().expect("disconnects");
+    out.extend(r.render_input(&[&tone]).remove(0));
+
+    let plan = r.executor().plan().expect("a plan");
+    assert_eq!(
+        plan.unit(n).expect("the distortion").generation,
+        generation,
+        "never rebuilt"
+    );
+    assert!(plan.param_ports().is_empty(), "and nothing left behind");
+    // Every frame-to-frame step is bounded by the declick's slope: the drive
+    // moves 4 over `PARAM_DECLICK` frames, and `tanh(0.25 d)` moves at most
+    // 0.25 per unit of drive.
+    let slope = 0.25 * 4.0 / PARAM_DECLICK.get() as f32 + 1e-6;
+    for (i, w) in out.windows(2).enumerate() {
+        assert!(
+            (w[1] - w[0]).abs() <= slope,
+            "frame {i}: a step of {}",
+            w[1] - w[0]
+        );
+    }
+    // The connection was heard, and undone.
+    let (base, fed, back) = (out[599], out[1_199], out[1_799]);
+    assert!(fed > base + 0.5, "{base} → {fed}");
+    assert_eq!(back, base, "back on the base");
+}
+
+/// A fork (an export) drives as the live graph does: the port's source is
+/// part of the graph value it copies, the lane is upstream of the node it
+/// drives (so it is forked too, even when no output reaches it), and the
+/// fork's lane is fresh, so it sends its value on its first block (doc 014
+/// §10's fork requirement). From the fork's first frame: a forked unit's
+/// first block is not a change of sources, so nothing fades in.
+#[test]
+fn a_fork_modulates_as_the_live_graph_does() {
+    let node = DistortionNode::with_channels(1u16, ShapeKind::Tanh, Drive::new(1.0));
+    let mut g = GraphBuilder::new(ChannelLayout::MONO, ChannelLayout::MONO);
+    let (n, _) = g.add_with_controls(node);
+    g.connect_input(0, n, 0).connect_output(n, 0, 0);
+    let prepare = Prepare::new(SampleRate(48_000.0), MaxBlock::of(Samples(100)));
+    let (mut editor, _exec) = g.build(prepare).expect("builds");
+    let at = ParamIn {
+        node: n,
+        param: UnitParam::Drive.into(),
+    };
+    drive(&mut editor, at, Arc::new(AtomicF32::new(3.0)), vec![]);
+    let (fed, fexec) = editor
+        .fork(
+            tutti_graph::ForkTarget::Master,
+            tutti_graph::ForkMode::Live,
+            prepare,
+        )
+        .expect("forks");
+    let mut fork = Renderer::new(fed, fexec);
+    let x = noise(7);
+    let out = fork.render_input(&[&x[..2_000]]).remove(0);
+    let at_3 = plain_distortion(3.0);
+    for i in 0..2_000 {
+        assert!(
+            (out[i] - at_3[i]).abs() < 1e-6,
+            "frame {i}: the fork plays the lane's drive 3"
+        );
+    }
+}

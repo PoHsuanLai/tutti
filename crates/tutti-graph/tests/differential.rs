@@ -986,7 +986,7 @@ proptest! {
 /// plans with a sum on an input port, a sum on an output channel and a sum
 /// with a feedback addend, and a sum op in a plan exactly where a sink has
 /// several sources. (A chain past `MAX_PORTS` needs more nodes than a generated
-/// graph has; `tests/fan_in.rs` renders it against the reference and the
+/// graph has; `tests/mixing/fan_in.rs` renders it against the reference and the
 /// parallel executor.)
 #[test]
 fn the_fan_in_generator_covers_the_sum_op() {

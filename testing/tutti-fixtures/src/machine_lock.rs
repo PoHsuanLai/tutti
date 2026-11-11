@@ -7,7 +7,7 @@
 //! `cargo nextest` runs every test in its own **process**, so a process-local
 //! `Mutex` is uncontended in each one and serializes nothing. That is how
 //! `process_pipeline_tests` came to run beside the plugin-fork suites
-//! (`tests/clap_fork.rs`), whose hung-server cases keep a `plugin-server`
+//! (`tests/clap_nodes/clap_fork.rs`), whose hung-server cases keep a `plugin-server`
 //! spinning a core for a second at a time. The pipeline tests' bridge answers
 //! each block within a few milliseconds (`dispatch::process_timeout`), so a
 //! core taken away mid-run turns an on-time reply into an abandoned one — and

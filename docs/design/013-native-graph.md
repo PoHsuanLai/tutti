@@ -296,7 +296,7 @@ the interpreter.
   (`NodeRec::park_after`), because a node whose output reads silent can still
   hold its last latency's worth of input. CLAP, VST3 and AU all report a
   tail apart from latency, so a plugin's figure is taken as reported. Pinned
-  by `tests/executor.rs` `the_skip_waits_for_latency_plus_tail`, the
+  by `tests/executor/executor.rs` `the_skip_waits_for_latency_plus_tail`, the
   limiter's `the_limiter_stops_at_its_latency_and_declares_no_tail`,
   `hrtf_render.rs` `the_tail_is_the_ring_out_after_the_latency`, and
   `tutti-export`'s `a_limiter_adds_no_tail_to_the_render` and
@@ -322,11 +322,11 @@ the interpreter.
   the settings in force since, erring long. The figure is measured from the last non-quiet input
   frame, not from the call, and it matters only for a node **without event
   inputs** (one with event inputs parks on its own `Status::Idle`).
-  `contract::assert_honest_tail` checks the duty for an impulse in. Pinned by `tests/executor.rs`
+  `contract::assert_honest_tail` checks the duty for an impulse in. Pinned by `tests/executor/executor.rs`
   (`a_reported_tail_shorter_than_the_ceiling_is_what_the_skip_waits`,
   `a_reported_tail_above_the_ceiling_is_clamped`,
   `a_call_that_reports_nothing_restores_the_ceiling`,
-  `a_new_unit_starts_at_its_ceiling`), `tests/parallel.rs`
+  `a_new_unit_starts_at_its_ceiling`), `tests/executor/parallel.rs`
   (`reporting_nodes_render_bit_identically_on_a_pool`) and
   `tests/rt_no_alloc.rs` (`reporting_nodes_are_allocation_free`, serial and
   pooled). **Export still spends the ceiling**: `RenderConfig::tail` is a
@@ -434,7 +434,7 @@ it replaced `AudioTap`, a stereo ring the device callback pushed into under a
   fold to the device width: it is the graph's output. At a transport stop a
   transport-gated source ends on the stop's frame, so the tap steps by the
   source's whole level in one frame where the output fades (measured in
-  `tutti-session/tests/engine.rs`); the post-fade write is the fix. A latency
+  `tutti-session/tests/wiring/engine.rs`); the post-fade write is the fix. A latency
   change that resizes an aligned tap's delay shifts the stream with no marker,
   as it does an output, and a lane naming a source that does not exist fails
   every commit until the tap is closed. The reference
@@ -1020,14 +1020,14 @@ that the running plan holds the edit.
   lookahead (`tutti-graph`); on the audio-impulse path, `LimiterNode` (mono, and the right
   channel of a linked stereo pair; 240 frames of lookahead),
   `ConvolverNode` (wet only: its dry alignment is the graph's mix,
-  `tutti-nodes/tests/node_mix.rs`) and `DelayLineNode` (a zero-delay row; a
+  `tutti-nodes/tests/node_contract/node_mix.rs`) and `DelayLineNode` (a zero-delay row; a
   500 ms echo declares no latency, and its dry half through the graph's mix
   leaves on the excitation's frame, `reported_latency.rs`) in `tutti-nodes`; `HrtfBinauralNode` on each ear
   (one convolution step, 128 frames) in `tutti-spatial`. None of those rows failed
   (they first ran through the deleted `Legacy` adapter): the
   three misreported latencies were already fixed on main, and the rows now
   hold them.
-- **Engine level** (`tutti-engine`, `tests/graph_contract.rs`): through
+- **Engine level** (`tutti-engine`, `tests/render/graph_contract.rs`): through
   `Engine::with_graph`, a transport started by `MotionFsm::schedule(At::Frame)`
   mid-block and notes at `At::Beat` 0, 0.001 and ½ into a direct and a
   PDC'd `Pulse` land on their frames and leave the engine together, under a
@@ -1159,7 +1159,7 @@ or example.
 | `delay` | `DelayLineNode` / `StereoDelayLineNode` | none (unused) | drop |
 | `pan` | `BusStripNode::pan` | `engine_render` bench, `rt_no_alloc_engine` | switch; drop |
 | `sum` | `ChannelSumNode` | tests (PDC fan-in) | switch; drop |
-| `reverb_stereo` | `ConvolverNode` + `generate_room_ir` | `tutti-export/tests/render.rs:326` | switch; drop |
+| `reverb_stereo` | `ConvolverNode` + `generate_room_ir` | `tutti-export/tests/render/render.rs:326` | switch; drop |
 | `Atan` `Clip` `Crush` `Shape` `SoftCrush` `Softsign` `Tanh` | `ShapeKind` already enumerates them (`distortion.rs`) | distortion only | implement `ShapeKind::apply` inline (7 pure fns); drop all 7 re-exports |
 
 **Value types that duplicate tutti's, and are weaker.**
@@ -1230,7 +1230,7 @@ executor's clock (device time). The transport snapshot comes from a
 `TransportClock` the engine drives itself through two hooks,
 `begin`/`advance`, which run the clock node's own per-frame arithmetic, so
 the beat in `Env` and the beat a `Net`'s clock emits are the same numbers
-(`tests/engine_graph.rs` renders both and compares them). Transport
+(`tests/render/engine_graph.rs` renders both and compares them). Transport
 commands take `At` (§6, point 3). Nothing else moved: `bevy-tutti` and
 `tutti-export` still build `Net`s, and `Engine::new` behaves as before.
 
@@ -1611,7 +1611,7 @@ Seven gaps had to close before the flip:
    (`render::with_source`) and turns a fault into
    `Error::ForkFailed { key, kind, cause }`: an export through a crashed or
    hung plugin fork fails by name, promptly, instead of returning silence as
-   a success (pinned by `tutti-plugin/tests/clap_fork.rs`).
+   a success (pinned by `tutti-plugin/tests/clap_nodes/clap_fork.rs`).
 
 **Fork audit, per unit** (every in-tree `impl AudioUnit`; "row" is its
 `IsolateRow` test, "—" where the unit reads no live cell, so there is
@@ -1646,7 +1646,7 @@ nothing to move):
 | `VoiceNode` | tutti-sampler | command channel, cursor, its voice and stretch | severs all | as its voice | — (controls arrive as commands; `a_render_clone_steals_no_commands`) |
 | `VoicePool` | tutti-sampler | command channel, voices, butler, cursor | severs all, voices cleared | yes | — |
 | `DiskSource` | tutti-sampler | ring consumer, `RtState` | stops, drops `RtState`: renders silence | yes | — |
-| `DiskVoice` | tutti-sampler | its own `Arc<RtState>` (seeks the live butler; speed, direction, gain, stretch) | a private snapshot (`RtState::detached`), off the ring; `rebind_offline` hands it the stream's file | yes | `a_severed_copy_never_touches_the_live_stream`, `tests/offline_disk_voice.rs` |
+| `DiskVoice` | tutti-sampler | its own `Arc<RtState>` (seeks the live butler; speed, direction, gain, stretch) | a private snapshot (`RtState::detached`), off the ring; `rebind_offline` hands it the stream's file | yes | `a_severed_copy_never_touches_the_live_stream`, `tests/offline/offline_disk_voice.rs` |
 | `PolySynth` | tutti-polysynth | MIDI inbox and source; master volume, unison detune and spread | fresh port, voices cleared, cells detached | yes | `isolate_snapshots_volume_and_unison` |
 | `SoundFontUnit` | tutti-soundfont | MIDI inbox and source (the `SoundFont` is read-only) | fresh port | yes | — |
 | `InletNode` (was `MicMonitorNode`) | tutti-graph | the ring consumer | — | **no** | `inlet::tests::the_inlet_refuses_to_fork` |
@@ -1658,7 +1658,7 @@ Width changes mid-run, the master meter and tap, and pruning need nothing.
 **Export's tests build graphs.** Every tutti-export suite, both examples, the README and
 the `offline_render` bench build with `GraphBuilder` and render through
 `RenderGraph::Graph`, with every assertion as it was. `Net` stays only where
-the `Net` arm is the subject: `tests/graph_source.rs` (the equivalence
+the `Net` arm is the subject: `tests/graph_export/graph_source.rs` (the equivalence
 suite, now the one thing carrying the oracle suites' checks over to the `Net`
 arm), `NetSource`'s unit tests in `render/driver.rs`, and the doc examples of
 the `Net`-taking `reported_latency` / `reported_tail`. `tutti-spatial` gained
@@ -1805,7 +1805,7 @@ Pinned by:
   backwards; the native node beside them is handed 64-frame blocks; a graph
   without a `Legacy` unit renders whole blocks, and goes back to them when
   the last one is removed.
-- `tutti-sampler/tests/graph_engine_clock.rs`: a placed voice, dry and a
+- `tutti-sampler/tests/graph_clock/graph_engine_clock.rs`: a placed voice, dry and a
   fifth up, through `Engine::with_graph` at device blocks of 256, 480, 512,
   1024 and 2048 frames, bit-identical to `Engine::new` (whose clock is
   pushed first, as bevy-tutti's engine build pushes it; pushed after the
@@ -1816,7 +1816,7 @@ Pinned by:
 - `tutti-polysynth/tests/clip_source_shared.rs`: one clip source feeding
   two synths plays its notes once (the two render, in sum, what one synth
   alone renders, bit for bit, and the `Net`'s two).
-- `tutti-export/tests/graph_source.rs`: a placed voice and a forked
+- `tutti-export/tests/graph_export/graph_source.rs`: a placed voice and a forked
   `MemorySource` bit-identical to the `Net` render at `GRAPH_MAX_BLOCK`;
   `sampler_to_export.rs`'s five pitch and stretch cases, which had been
   prepared at a 64-frame `MaxBlock`, back at `GRAPH_MAX_BLOCK`.
@@ -1849,7 +1849,7 @@ one code path. Glue in tutti-transport: `RenderClock` gained a **required**
 `graph_block` (a moving clock that defaulted to "stopped at 0" would desync
 the graph's `Env` from its clip readers silently) and a provided
 `render_graph` — snapshot, `process_with_changes`, advance — which
-`OfflineTimeline::render_graph` now calls. `tests/graph_source.rs` pins the
+`OfflineTimeline::render_graph` now calls. `tests/graph_export/graph_source.rs` pins the
 two backends bit-identical (byte-identical files) for sine, resample, peak
 normalization, dither, quad VBAP at three widths and a convolver, plus
 latency trim, tail length, the fork error and the clock's transport.
@@ -1882,7 +1882,7 @@ returns planar or interleaved output. `tests/legacy.rs` builds through it.
 Two notes for porting onto it:
 
 - The fan-out rules are `Net`'s, checked against `Net` itself over a grid
-  of widths (`tests/builder.rs`): port `c` reads `c % width`, so stereo into
+  of widths (`tests/topology/builder.rs`): port `c` reads `c % width`, so stereo into
   six **wraps** (L R L R L R) rather than clamping, and a node with no
   outputs feeds silence.
 - `tutti_spatial::build_vbap_mix` takes `&mut Net`, so the
@@ -1891,7 +1891,7 @@ Two notes for porting onto it:
 
 **`Editor::replace(key, node, Fade { duration, curve })`.**
 The rules (`tutti-graph/src/fade.rs`), each pinned by a test in
-`tests/replace.rs` and driven against the reference by the differential
+`tests/topology/replace.rs` and driven against the reference by the differential
 suite's `crossfades_are_bit_identical`:
 
 - For `duration` frames the executor runs **both** units on the op's
@@ -1974,7 +1974,7 @@ fade. The next commit carries the key in `Delta::cuts`; the executor retires
 every unit there but the newest through the fade-return ring, and `collect`
 reports them. A `replace` not yet committed at that key lands as a plain
 swap. The reference derives the same cut from a spec latency change with no
-new generation (`tests/replace.rs`, `set_latency_cuts_a_fade` and
+new generation (`tests/topology/replace.rs`, `set_latency_cuts_a_fade` and
 `the_reference_cuts_a_fade_on_a_latency_change`).
 
 **A native backend in `bevy-tutti`.** `AudioGraphRes` has two runtimes behind its method
@@ -2577,7 +2577,7 @@ Tests (each mutation run; the mutation is on the test):
   page per page of frames (counted, not timed); a read past the end closes
   the file. `control::tests`: a fork is handed the butler's cached wave.
   `interp::tests`: a position a hair under a frame reads that frame.
-- tutti-sampler `tests/offline_disk_voice.rs`: the file's frames from the
+- tutti-sampler `tests/offline/offline_disk_voice.rs`: the file's frames from the
   frame its beat falls on, bare and in a `VoiceNode`; a 24 kHz file at
   48 kHz; a 44.1 kHz file three pages long at 48 kHz, through every page
   boundary; reversed, across pages; stretched (read rate 0.5); on a looping
@@ -2674,9 +2674,9 @@ silences a fork);
 `process`, forward and reversed); `offline_read::tests` (a loop's taps,
 paged); `loops::tests` (the butler's fadein is the lead-in, clamped);
 `refill::tests` (a reverse refill is silent past frame 0);
-`tests/reverse_and_loop.rs` (reverse past the first frame is silent; a
+`tests/voice/reverse_and_loop.rs` (reverse past the first frame is silent; a
 crossfaded loop on a sine whose loop points click cut hard is continuous at
-its wrap, free-running and placed, identically); `tests/offline_disk_voice.rs`
+its wrap, free-running and placed, identically); `tests/offline/offline_disk_voice.rs`
 (the fork's crossfaded loop, now to the corrected sequence; its continuity
 on the same sine, both modes; a reversed fork past the first frame is
 silent; a varispeed change mid-chunk continues it; the bit-identity table
@@ -3210,7 +3210,7 @@ arm:
   `GraphSource`, assertions unchanged; the clock test's `TransportClock`
   node is the graph's `EnvClock`. Each was re-mutated against the graph
   path.
-- `tests/graph_source.rs` (the `Net`-vs-graph equivalence suite) keeps every
+- `tests/graph_export/graph_source.rs` (the `Net`-vs-graph equivalence suite) keeps every
   bit-identity assertion against `net_render`, a test-only oracle that
   renders a `Net` as `NetSource` and `drive` did (64-frame blocks, advance
   after, `fold_frame`, trim and cap); the file cases write the oracle's
@@ -3233,7 +3233,7 @@ tutti-core's `Net`, not tutti-export's): bevy-tutti's `tests/net_parity.rs`
 `render_net_era`, and what they render), the `tutti` umbrella's
 `one_import_renders_a_block`, `headless_engine` example and README snippet
 (`Engine::new(net.backend())`). Two comments in tutti-sampler still name
-`NetSource` / `fold_net_frame` (`tests/frame_exact_entry.rs`,
+`NetSource` / `fold_net_frame` (`tests/voice/frame_exact_entry.rs`,
 `voice/memory_source.rs`); they were left to avoid colliding with #46.
 
 **tutti-core's `Engine` renders only the native graph.** The
@@ -3776,7 +3776,7 @@ Decisions:
 
 Evidence:
 
-- **Bit-identical renders.** `tests/parallel.rs` renders one graph with
+- **Bit-identical renders.** `tests/executor/parallel.rs` renders one graph with
   fan-out, fan-in, PDC rings, event fan-in and an event delay,
   compiler-owned param modulation (an audio source behind a latent sibling,
   and ramp events), a feedback loop and scheduled commands, at 2, 3, 4 and 8
@@ -4133,7 +4133,7 @@ Decisions:
 
 Evidence:
 
-- **The decision.** `tests/cost_model.rs`: `tiny/16` (sixteen light gains
+- **The decision.** `tests/topology/cost_model.rs`: `tiny/16` (sixteen light gains
   and a light sum) packs into four tasks and `Plan::schedule` is `Serial`
   at every pool size, while the same graph undeclared keeps eighteen tasks
   and spreads; two such fans side by side keep several tasks and still
@@ -4154,7 +4154,7 @@ Evidence:
   path is at most what chain fusion alone gives, and its tasks partition
   the ops in ascending order. Swapping `pack` back for the per-level
   version fails both; dropping the critical-path check fails the proptest.
-- **Packed plans are bit-identical.** `tests/cost_model.rs` renders light
+- **Packed plans are bit-identical.** `tests/topology/cost_model.rs` renders light
   gains packed beside heavy ones at 2, 3, 4 and 8 participants and ragged
   blocks, bit for bit the serial render, and checks each heavy gain kept a
   task of its own. The differential suite's
@@ -4171,7 +4171,7 @@ Evidence:
   by the DAG (packed siblings are not): it requires them ascending, which,
   with every op edge running forward (checked), keeps every dependency
   inside a task, and every cross-task op edge in `task_succ` as before.
-- The parallel executor's tests stay green: `tests/parallel.rs`, the differential
+- The parallel executor's tests stay green: `tests/executor/parallel.rs`, the differential
   modes, the `rt_no_alloc` gates and `alloc_budget`. Their test nodes
   declare nothing, so their plans still spread. One changed:
   `the_graph_spreads` asserted `task_width >= 5`, and now asserts the
@@ -4418,7 +4418,7 @@ harmony containers) it is an `arrayvec::ArrayVec`, whose push past the cap
 is refused rather than spilling to the heap. `tutti-types` takes `arrayvec`
 for `Capped` (since folded into `RtVec`). The `Retire<T>` box in §5 is
 deleted (no production user; the `Drop` check on the audio-thread marker
-does its job), and the graph's probe of it in `tests/executor.rs` uses that
+does its job), and the graph's probe of it in `tests/executor/executor.rs` uses that
 check directly.
 
 Two audio-thread paths depended on the inline room and are reserved now:
@@ -4898,7 +4898,7 @@ all three into fresh `Vec`s to keep only the restart flags.
   `the_close_yields_after_the_gates_budget` give an hour's budget and step
   the clock by the default per read, so a wait that used the default
   instead of its pool's gives way early; `tutti-graph`'s
-  `the_in_job_waits_are_the_builders`; and `tests/parallel.rs`'s
+  `the_in_job_waits_are_the_builders`; and `tests/executor/parallel.rs`'s
   `the_executor_waits_by_its_pools_budget`, where a helper on a pool with
   an hour's budget enters while the caller runs a 50 ms task and must stay
   until it finishes, so an executor that handed the task graph the
@@ -5405,7 +5405,7 @@ latent sibling was off by the upstream latency.
     block).
 
   `history.rs` pins the continuous bound frame-exactly (just inside reads
-  its block, the next frame clamps), and `tests/arrival_transport.rs`
+  its block, the next frame clamps), and `tests/events/arrival_transport.rs`
   models the rules from the public walk and asserts the boundary is reached
   and honoured before the first block, for a burst past the capacity, and
   after a rate change.
@@ -5414,7 +5414,7 @@ latent sibling was off by the upstream latency.
   and each worker's `Head` carry the same `&TransportHistory`, and
   `observe` runs on the audio thread before `pool.run`, so nothing reads it
   while it is written. `the_parallel_render_reads_the_same_history_as_the_serial_one`
-  (`tests/arrival_transport.rs`) renders four latent probes on 1 to 4
+  (`tests/events/arrival_transport.rs`) renders four latent probes on 1 to 4
   participants and asserts every output bit-identical to the serial render.
 - **The plugin node** reads `Cx::transport_at` for each chunk
   (`transport_source::from_cx`), so the plugin is told the playhead of the
@@ -5601,7 +5601,7 @@ the one place that says what a ported node can rely on:
   (asserted at compile time). Four UMP words carry every MIDI 2.0 message
   (an edge's `(Offset, Ump)` is the same pair, so nothing converts);
   `ParamRamp` carries typed or foreign automation.
-- **Tests.** `tests/event_ports.rs` (same-block delivery, fan-in ties by
+- **Tests.** `tests/events/event_ports.rs` (same-block delivery, fan-in ties by
   source key, PDC across blocks under ragged blocks, feedback latency,
   overflow, declarations sizing merges and delays with a default of 1),
   each on the executor and the reference; the differential suite adds an
@@ -5998,12 +5998,12 @@ the source count changes".
 
 | Site | Change |
 |---|---|
-| `tutti-session/src/general_midi.rs` (`add_general_midi`) | No `sum` node. The strip's port `c` gets sources `[dry c, chorus c, reverb c]` through `set_sources`. `GeneralMidi` loses its `sum` field. The order is by `NodeKey`: the unit's dry strip (inserted first), the chorus, the reverb, the order the node summed in, so the render keeps its bits provided the keys are in creation order; the build checks this against `tests/general_midi.rs` rather than assuming it. |
-| `tutti-spatial/src/vbap/mix.rs` (`VbapMixParts`, `VbapLfeSend`, `build_vbap_mix`) | **Deleted, not rewritten** (`dsp/nospatial`): the mix had no production user, and with fan-in a VBAP mix is a panner per source wired to the output channels, the LFE send a low-pass every source's channel 0 joins. The tests that wire it do so directly (`tutti-export/tests/surround_export.rs`, `graph_source.rs`). |
+| `tutti-session/src/general_midi.rs` (`add_general_midi`) | No `sum` node. The strip's port `c` gets sources `[dry c, chorus c, reverb c]` through `set_sources`. `GeneralMidi` loses its `sum` field. The order is by `NodeKey`: the unit's dry strip (inserted first), the chorus, the reverb, the order the node summed in, so the render keeps its bits provided the keys are in creation order; the build checks this against `tests/midi/general_midi.rs` rather than assuming it. |
+| `tutti-spatial/src/vbap/mix.rs` (`VbapMixParts`, `VbapLfeSend`, `build_vbap_mix`) | **Deleted, not rewritten** (`dsp/nospatial`): the mix had no production user, and with fan-in a VBAP mix is a panner per source wired to the output channels, the LFE send a low-pass every source's channel 0 joins. The tests that wire it do so directly (`tutti-export/tests/graph_export/surround_export.rs`, `graph_source.rs`). |
 | `tutti-session/src/node.rs` | `impl SessionNode for ChannelSumNode` goes. |
 | `tutti-nodes/src/lib.rs`, `README.md` (lines 39, 66), and the READMEs of `tutti-spatial` and `tutti-soundfont` | Drop the export and the sentences naming it the mixing node. |
 | `tutti-nodes/src/strip.rs` | Comment mentions only; no code change. |
-| Tests: `tutti-session/tests/general_midi.rs`, `tutti-export/tests/graph_source.rs`, `tutti-export/tests/surround_export.rs`, `tutti-plugin/tests/clap_pdc_alignment.rs`, `tutti-nodes/tests/reported_latency.rs` (the PDC fan-in case), `tutti-nodes/tests/rt_no_alloc.rs`, `tutti-nodes/tests/isolate_snapshots.rs`, `tutti-spatial/src/vbap/mix/tests.rs`, and the `cost_classes.rs` files of `tutti-polysynth`, `tutti-sampler`, `tutti-spatial` | Each wires the sources straight into the sink. `reported_latency.rs` and `clap_pdc_alignment.rs` are the PDC tests and become tests of the sum's per-source alignment. `isolate_snapshots.rs` and the `cost_classes.rs` files list node kinds and drop the entry. |
+| Tests: `tutti-session/tests/midi/general_midi.rs`, `tutti-export/tests/graph_export/graph_source.rs`, `tutti-export/tests/graph_export/surround_export.rs`, `tutti-plugin/tests/clap_nodes/clap_pdc_alignment.rs`, `tutti-nodes/tests/node_contract/reported_latency.rs` (the PDC fan-in case), `tutti-nodes/tests/rt_no_alloc.rs`, `tutti-nodes/tests/node_contract/isolate_snapshots.rs`, `tutti-spatial/src/vbap/mix/tests.rs`, and the `cost_classes.rs` files of `tutti-polysynth`, `tutti-sampler`, `tutti-spatial` | Each wires the sources straight into the sink. `reported_latency.rs` and `clap_pdc_alignment.rs` are the PDC tests and become tests of the sum's per-source alignment. `isolate_snapshots.rs` and the `cost_classes.rs` files list node kinds and drop the entry. |
 | Benches: `tutti-nodes/benches/node_kernels.rs`, `parallel_render.rs`, `tutti-session/benches/render_load.rs` | The `ChannelSumNode` rows become a graph with a fan-in (the bench measures the op through the graph), which is also the measurement `op_work` needs. |
 | `tutti-soundfont/src/lib.rs`, `tutti-spatial/src/hrtf/mod.rs` | Doc comments that name the node. |
 | `bevy-tutti/tests/graph_value.rs` | Parked; not updated. |
@@ -6029,7 +6029,7 @@ mutation in a comment.
   for the node and is rewritten to a fan-in): a wide fan-in, a fan-in with a
   silent source, a fan-in behind PDC, a fan-in whose sources fan out
   elsewhere (so the in-place alias is refused), and a fan-in at a global
-  output. `tests/parallel.rs` compares each against the serial render. The
+  output. `tests/executor/parallel.rs` compares each against the serial render. The
   reference does not read the flags, so a skipped silent addend is compared
   against one that was added. Mutation: make the kernel skip on a non-silent
   flag; make the parallel arm use a different order.
@@ -6086,7 +6086,7 @@ Each PR passes CI by itself. The doc is its own PR, this one.
    `graph_tail` needed only the signature change: the max over sources is what
    it already took. The reference sorts each sink's sources by `Edge` order
    itself and folds them from `+0.0`; one source is an alias (its `-0.0`
-   stays). The tests are `tests/fan_in_views.rs`.
+   stays). The tests are `tests/mixing/fan_in_views.rs`.
 3. **The op.** `Op::Sum`, `sum_chain`, colouring, `sum_op`, `par.rs`, `cost.rs`,
    `verify.rs`; the refusal goes. The analytic, order, differential, flag,
    PDC, add/remove, plan and no-alloc tests of point 9, written against a
@@ -6181,7 +6181,7 @@ Each PR passes CI by itself. The doc is its own PR, this one.
    stays one more PR so each of those compiles and passes beside it.
    *As built (PR 5).* `add_general_midi` has no `sum`: the fader's ports 0 and
    1 each take `[dry, chorus, reverb]` through `add_source`, `GeneralMidi`
-   loses `sum()`, and `tests/general_midi.rs` pins the fader's source sets
+   loses `sum()`, and `tests/midi/general_midi.rs` pins the fader's source sets
    (the sum node's width row is now the fader's). The two PDC tests
    (`reported_latency.rs`, `clap_pdc_alignment.rs`) wire both paths into output
    channel 0 and are tests of the sum's per-source alignment, with the same
@@ -6500,7 +6500,7 @@ and `edge_gain_range_cell`, the session's `EdgeRef` / `ModTarget`, and
   in G3 (below):** with the session's weight methods absent, a base written
   through the editor and the lane's own-cell knob were two writers (set a base
   of 0.5, route a modulator, and the gain snapped to unity).
-- **Tests.** `tests/edge_gain_driven.rs` (the analytic weight at a port and an
+- **Tests.** `tests/mixing/edge_gain_driven.rs` (the analytic weight at a port and an
   output, the clamp, the declick of a source that goes, the carry, the PDC of
   a late and an early lane and of a late lane at the output, the refusals,
   structural source against control range, the fork), the differential
@@ -6553,7 +6553,7 @@ Where the build chose:
   from the spec when it is made.
 - **Tests.** `tutti-session`'s `tests/edge_gain.rs` (set, read, clear; the
   refusals; the weighted adds and their output twin; a removed source's weight;
-  a control marks nothing edited) and `tests/edge_modulation.rs`'s
+  a control marks nothing edited) and `tests/modulation/edge_modulation.rs`'s
   `the_base_is_the_lanes_knob_and_a_route_returns_to_it` (base 0.5, route,
   analytic figure around it, base moved while routed, route gone, base).
   `bevy-tutti` (parked) would carry the weight in `PortSources` entries.
@@ -6839,7 +6839,7 @@ above); the host half is the plugin test, a hosted plugin bypassed through
 not against a second render), and dropping the AU host's `BypassEffect` use
 where it reaches the graph.
 
-**As built (M2, host half).** `tutti-session/tests/plugin_bypass.rs`, over
+**As built (M2, host half).** `tutti-session/tests/plugin/plugin_bypass.rs`, over
 the reference CLAP plugin in a real `plugin-server` (`clap` feature):
 
 - **The click.** A plugin node put in `Bypassed` passes a click
@@ -6978,14 +6978,14 @@ state beside the mode. The static half is built here; the driven half (a
   `Placement::Bands`: band 0 is its main output, at the input's speakers. The HRTF node keeps its own: the
   HRTF's dry is the mono centre fold of the input, not the input through the
   bypass mapping, so `Mix` cannot replace it.
-- **Tests.** `tutti-graph/tests/mix.rs` (WET and DRY bit for bit including
+- **Tests.** `tutti-graph/tests/mixing/mix.rs` (WET and DRY bit for bit including
   special values, the formula on a latent node, the first block, the ramp, the
   mode winning, a fade against the mix's weights and a mix moving during one, a
   store mid-block, the plan untouched, refusals, the fork), the unit tests in
   `mode.rs` (the plain op and `needs_input` at WET, the advance), the
   differential suite's `mixes_are_bit_identical_to_the_reference` (own RNG;
   mixes and modes together), `rt_no_alloc.rs`'s moving-mix gate on both
-  executors and `tutti-session/tests/node_mix.rs`.
+  executors and `tutti-session/tests/nodes/node_mix.rs`.
 
 **As built (M4b).** A control lane drives a node's mix, with one writer. The
 design of "As built (M4)" held on contact with the code, with the choices
@@ -7042,7 +7042,7 @@ below.
   (flags clear) and `is_static` is false **whatever the block's ends are**: the
   differential suite found the case (a block whose previous and last values
   agree took the static path, and the frames between were lost);
-  `tests/mix_driven.rs` pins it with a block of seven driver periods. The
+  `tests/mixing/mix_driven.rs` pins it with a block of seven driver periods. The
   next block ramps from the lane's last frame (`mix_to` becomes it), to the
   cell as ever. A lane that does not deliver (never driven, or its declick
   done) leaves the base ramp of M4. Mode wins as before, the lane steps while
@@ -7064,7 +7064,7 @@ below.
   `ref_port`, the rule it already shares with a node's ports and an edge's
   lane; its state is the node's `ParamIn` entry at the mix's address, and
   `RefMode::ran` stands for `ran`).
-- **Tests.** `tutti-graph/tests/mix_driven.rs` (the analytic blend at a plain
+- **Tests.** `tutti-graph/tests/mixing/mix_driven.rs` (the analytic blend at a plain
   and a latent node, the clamp, a range moved between blocks, a source that
   goes declicked to the base, state across a commit, the mode winning, a late
   and an early lane, the refusals, the one writer), the unit test in `mode.rs`
@@ -7072,7 +7072,7 @@ below.
   `driven_mixes_are_bit_identical_to_the_reference` (own RNGs, so no seed
   moved), `rt_no_alloc.rs`'s driven-mix gate on both executors,
   `tutti-modulation`'s mix key test and `tutti-session`'s
-  `tests/mix_modulation.rs` (set mix, route, move the base while routed, move
+  `tests/modulation/mix_modulation.rs` (set mix, route, move the base while routed, move
   the macro, clamp, route removed). Every one has its mutation recorded on it.
 - **Not touched**: the reverbs' and HRTF's own dry/wet, the
   plugin hosts and `bevy-tutti` (parked; its `match`es on `TargetKey` would
@@ -7352,9 +7352,9 @@ bypass rule are untouched (B3).
 - **Not in B2:** the no-alloc gate over a folded graph (the lowered lanes are
   the weighted sums `rt_no_alloc` already runs) and the plugin-host contract
   cases for a sidechain bus (the hosts do not report a role yet, B1's note).
-- **Tests** (`tutti-graph/tests/bus_edges.rs`, `tests/differential.rs`'s
+- **Tests** (`tutti-graph/tests/topology/bus_edges.rs`, `tests/differential.rs`'s
   `bus_edges_are_bit_identical_to_the_reference` with its own generator,
-  `tutti-session/tests/bus_edges.rs`): the analytic folds (stereo to mono,
+  `tutti-session/tests/wiring/bus_edges.rs`): the analytic folds (stereo to mono,
   5.1 to stereo, mono to stereo), the identity equal to the hand-wired plan,
   a bus edge beside a plain source, every refusal, the lowering's determinism,
   PDC per lane, a fork, the editor and session round trips, and executor,
@@ -8378,7 +8378,7 @@ fourth.
   rendered graph, clamped at both ends) while the old nodes existed, and
   pins what they produced as digests (no libm involved, so portable).
 
-**Tests.** tutti-graph: `tests/param_mod.rs` (base-only equals the plain
+**Tests.** tutti-graph: `tests/mixing/param_mod.rs` (base-only equals the plain
 param; one and several sources sum and clamp; base ramps; declicked
 connect and disconnect; sample-exact audio steps and ramps under block
 sizes 1–128; a node without a base; `Editor::remove` of a source and of a
@@ -8478,7 +8478,7 @@ the audio thread reads once per block, never a plan.
   the graph holds, moves only the range through `Editor::set_param_range`
   (a store, no commit).
 
-**Tests.** tutti-graph `tests/param_mod.rs`:
+**Tests.** tutti-graph `tests/mixing/param_mod.rs`:
 `a_range_move_lands_on_the_next_block_without_a_commit` (no plan sent, the
 next block clamped frame for frame against the step's own arithmetic, a
 spec edit landing with a commit that sends nothing, a placed unit starting
@@ -8488,7 +8488,7 @@ across a shrink below the base, pinned, then released onto the ramp), and
 `a_range_move_reaches_a_unit_that_faded_in` (the crossfade keeps the
 key's cells), `a_reordered_param_list_clamps_each_port_to_its_own_range`
 (a unit declaring another list gets its own), and the differential
-proptest moving ranges without a commit against the reference. `tests/parallel.rs`'s `ranges_moved_mid_render_stay_bit_identical`
+proptest moving ranges without a commit against the reference. `tests/executor/parallel.rs`'s `ranges_moved_mid_render_stay_bit_identical`
 (serial against every pool, every block schedule), and `tests/rt_no_alloc.rs`'s
 modulated-params gate moving ranges between gated blocks, serial and on a
 pool. bevy-tutti: `a_range_move_sends_no_plan`; the existing
@@ -8750,7 +8750,7 @@ the source stands ("Shaped ramps" below).
 
 **Tests.** tutti-graph `src/event.rs`: `every_shape_meets_its_closed_form`
 (every shape against closed forms in `f64`, monotone, unusable parameters
-linear, no NaN), `a_segment_reads_back_as_built`. `tests/param_mod.rs`:
+linear, no NaN), `a_segment_reads_back_as_built`. `tests/mixing/param_mod.rs`:
 `a_segment_hits_its_analytic_values_per_frame` (a segment spanning eight
 blocks, an `Exp`, a resumed one at a fractional position, under one-frame,
 odd, even and ragged blocks, within 1e-5 of the closed form),
@@ -8759,12 +8759,12 @@ then a ramp), `a_range_clamps_a_segment_without_rewriting_it`,
 `a_segment_sums_with_other_modulators_through_its_shaping`,
 `a_fork_carries_an_in_flight_segment`, and the differential proptest's
 generator sending segments of every shape (some resumed) interleaved with
-ramps, executor against reference bit for bit. `tests/parallel.rs` and
+ramps, executor against reference bit for bit. `tests/executor/parallel.rs` and
 `tests/rt_no_alloc.rs`: the ramp source there now alternates ramps with
 segments of each shape class, so the parallel renders and the no-alloc
 gate (serial and on a pool) cover them. tutti-modulation: the envelope's pieces
 (`trajectory_pieces_are_its_breakpoints`, `a_bent_piece_is_no_segment`).
-tutti-nodes `tests/automation_segments.rs`: an exponential, cubic-out,
+tutti-nodes `tests/control/automation_segments.rs`: an exponential, cubic-out,
 S-curve and linear trajectory at a tempo whose beats fall between frames,
 against the trajectory's own value at every frame under ragged blocks
 (and at mid-piece, a quarter for a half: the curve, not a line); loop wraps
@@ -8774,7 +8774,7 @@ for a range-clamped piece and for a curve with no pieces, exact at block edges.
 both fallbacks) driving param ports under `assert_no_alloc`, serial and on
 a gated `WorkerPool`, and bit for bit serial against pools of 2, 3, 4 and
 8. tutti-plugin: `segment_points`' unit tests (points in every chunk, the
-end value on its frame, an interruption), and `tests/clap_automation.rs`
+end value on its frame, an interruption), and `tests/clap_nodes/clap_automation.rs`
 against the reference CLAP plugin's gain: a scheduled segment drives it
 through the curve to exactly its end value on its frame across four
 chunks, an interrupting ramp wins, and a `for_foreign` lane does the
@@ -9302,7 +9302,7 @@ unit that never saw `Prepare::max_block`; every voice is a
   (64) of scratch and renders past it in pieces that long; a
   `MemorySource` or `DiskVoice` without positions renders through a
   64-frame stack array, which the prepared render never initialises.
-  `tests/block_length_invariance.rs` drives both paths.
+  `tests/voice/block_length_invariance.rs` drives both paths.
 - **Same frames.** The placed read re-seats once per block instead of per
   64 frames, and steps from that one seat across the whole block. A seat
   lands where the step would have put it to rounding; at the clocks the
@@ -9310,7 +9310,7 @@ unit that never saw `Prepare::max_block`; every voice is a
   existing test, the golden digests in `tutti-export` (`GRAPH_MAX_BLOCK` =
   1024) and `bevy-tutti` (recorded with 64-frame pieces) included, passes
   unchanged; elsewhere a frame past the 64th of a block may differ in the
-  last ulp. `tests/block_length_invariance.rs` pins it: each voice node
+  last ulp. `tests/voice/block_length_invariance.rs` pins it: each voice node
   (pool, `VoiceNode`, `MemorySource` placed and free-running, `DiskVoice`
   live and in a pool; plain, varispeed, reverse, crossfaded loop, stretch,
   pitch) renders the same frames, bit for bit, at 64-frame blocks, at 512,
@@ -9498,7 +9498,7 @@ the seqlock the callback reads before entering the plugin.
   graph's transport (4/4), where it was told a stopped default until a
   reader was installed.
 
-Pinned by `tests/vst2_in_process_transport.rs` against the reference probe's
+Pinned by `tests/vst2_nodes/vst2_in_process_transport.rs` against the reference probe's
 `audioMasterGetTime` capture: behind a 40-frame latent sibling, each block
 is told the transport 40 frames before its first frame (the previous
 block's, across a seek at the boundary, a tempo change, a loop that wrapped,
@@ -9788,8 +9788,8 @@ held at once (`2 * MAX_PORTS + MAX_PARAM_PORTS + 1`, `par.rs`). The per-port
 scratch buffer is `declared ports * max block`, allocated on the control side.
 Pinned by `a_node_declares_up_to_the_cap_and_no_more`.
 
-Test nodes with two `Threshold`s are in `tutti-graph/tests/indexed_params.rs`,
-`tutti-session/tests/indexed_params.rs` and `bevy-tutti/tests/indexed_param.rs`.
+Test nodes with two `Threshold`s are in `tutti-graph/tests/mixing/indexed_params.rs`,
+`tutti-session/tests/modulation/indexed_params.rs` and `bevy-tutti/tests/indexed_param.rs`.
 
 ## A 64-bit audio path
 
@@ -10513,7 +10513,7 @@ now (**reversed**, see 8). Decision 5 was taken when the surface shrank:
      callback the host renders its 64-frame chunks back to back: every chunk
      but the first in a callback is collected microseconds after it was
      submitted, and the server has not answered it. Measured through the
-     real `plugin-server` at real-time pacing (`tests/clap_live.rs`, 200
+     real `plugin-server` at real-time pacing (`tests/clap_nodes/clap_live.rs`, 200
      blocks after warm-up): with 64-frame chunks, **186 of 200** blocks
      silent at 480-frame callbacks, **198 of 200** at 441, **187 of 200** at
      1024; with the callback as the chunk, **0 of 200** at each, and every

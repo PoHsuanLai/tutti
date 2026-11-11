@@ -10,7 +10,7 @@
 //! across and [`commit`](Editor::commit)s it — the public path any host
 //! takes. There is no second validation, no second compile and no state the
 //! editor does not also hold, so a graph that builds here is exactly a graph
-//! a host could have written by hand (`tests/builder.rs` pins that: the two
+//! a host could have written by hand (`tests/topology/builder.rs` pins that: the two
 //! produce equal specs, equal plans and bit-identical renders).
 //!
 //! # Why it exists

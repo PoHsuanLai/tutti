@@ -1250,3 +1250,144 @@ fn full_scale_five_one_folds_above_full_scale() {
     assert!((out[0] - 2.414_213_6).abs() < 1e-6, "{}", out[0]);
     assert_eq!(out[0], out[1]);
 }
+
+/// `contributions(o)` of every destination channel as a dense row over the
+/// source width.
+fn dense(f: &Fold, o: usize) -> Vec<f32> {
+    let mut row = vec![0.0; usize::from(f.src)];
+    let mut last = None;
+    for (src, gain) in f.contributions(o) {
+        assert!(last < Some(src), "ascending, one pair per source channel");
+        last = Some(src);
+        row[src] = gain;
+    }
+    row
+}
+
+/// The pairs, as the hand-written ITU table gives them (sparse: a source the
+/// destination does not hear is absent, not a zero pair).
+///
+/// Mutations (run), each failing this test: `M3DB` -> 0.5 in the table's fold
+/// (the 5.1 and quad rows); the LFE given a pair (the 5.1 row has a fourth
+/// entry); the `Mix` scale not applied in `contribute` (the 2 -> 1 and 6 -> 1
+/// rows); the lone-centre fan-out dropping the right side.
+#[test]
+fn contributions_are_the_itu_table() {
+    let pairs = |f: &Fold, o| f.contributions(o).collect::<Vec<_>>();
+    let stereo = smpte(2);
+
+    let five_one = fold(&smpte(6), &stereo);
+    assert_eq!(pairs(&five_one, 0), [(0, 1.0), (2, M), (4, M)]);
+    assert_eq!(pairs(&five_one, 1), [(1, 1.0), (2, M), (5, M)]);
+
+    let quad = fold(&ChannelTopology::quad(), &stereo);
+    assert_eq!(pairs(&quad, 0), [(0, 1.0), (2, M)]);
+    assert_eq!(pairs(&quad, 1), [(1, 1.0), (3, M)]);
+
+    // Stereo into mono: the pair average, each at one half.
+    assert_eq!(pairs(&fold(&stereo, &smpte(1)), 0), [(0, 0.5), (1, 0.5)]);
+    // Wider into mono: the stereo fold times -3 dB, so the centre is `M·M`
+    // (the figure `the_mono_fold_is_the_itu_table` pins as `2·M3DB² = 1`).
+    assert_eq!(
+        pairs(&fold(&smpte(6), &smpte(1)), 0),
+        [
+            (0, M * 1.0),
+            (1, M * 1.0),
+            (2, M * M + M * M),
+            (4, M * M),
+            (5, M * M)
+        ]
+    );
+    // Mono into stereo: the lone centre at unity into each side.
+    let up = fold(&smpte(1), &stereo);
+    assert_eq!(pairs(&up, 0), [(0, 1.0)]);
+    assert_eq!(pairs(&up, 1), [(0, 1.0)]);
+
+    // 7.1 into 5.1: the side pair joins the surrounds, as the table says.
+    let seven_one = fold(&smpte(8), &smpte(6));
+    for o in 0..6 {
+        let row = dense(&seven_one, o);
+        assert_eq!(row, response(&seven_one, o), "7.1 -> 5.1 channel {o}");
+    }
+}
+
+/// A permutation and a `select` have one pair of gain exactly 1.0 per
+/// destination channel (the lowering's plain-edge case), an upmix's silent
+/// channel has none, and the identity fold is `(i, 1.0)`.
+///
+/// Mutation (run): `Expr::Copy` contributing `scale * 0.5` fails every line.
+#[test]
+fn copies_contribute_at_exactly_unity() {
+    let id = fold(&smpte(6), &smpte(6));
+    assert!(id.is_identity());
+    for o in 0..6 {
+        assert_eq!(id.contributions(o).collect::<Vec<_>>(), [(o, 1.0)]);
+    }
+    let swapped = fold(&ChannelTopology::new([FrontRight, FrontLeft]), &smpte(2));
+    assert_eq!(swapped.contributions(0).collect::<Vec<_>>(), [(1, 1.0)]);
+    assert_eq!(swapped.contributions(1).collect::<Vec<_>>(), [(0, 1.0)]);
+
+    let pick = Fold::select(ChannelLayout::from(16u16), &[3, 4, 3]).unwrap();
+    let got: Vec<_> = (0..3).flat_map(|o| pick.contributions(o)).collect();
+    assert_eq!(got, [(3, 1.0), (4, 1.0), (3, 1.0)]);
+
+    // Mono into 5.1 feeds the centre alone; the rest are silent, no pairs.
+    let up = fold(&smpte(1), &smpte(6));
+    for o in 0..6 {
+        let want: &[(usize, f32)] = if o == 2 { &[(0, 1.0)] } else { &[] };
+        assert_eq!(up.contributions(o).collect::<Vec<_>>(), want, "channel {o}");
+    }
+}
+
+/// Invariant, for every pair of topologies the fold accepts: the dense row of
+/// `contributions` is the fold's response to a unit impulse on each source
+/// channel, bit for bit (one product per path, so no rounding differs), and
+/// applying the rows as a matrix to a frame of noise gives the fold's output
+/// to within a few ulps (the sum order is the one thing that differs, see
+/// `contributions`). The pairs run over all the engine's ordered widths, the
+/// quad and side-surround spellings, a permutation, a 12-wide overhead source
+/// and a discrete relabel.
+///
+/// Mutations (run), each failing this test: the pairs' gain scaled by a
+/// constant; two source channels' pairs swapped; the `Mix` half `b`
+/// not added; the sort removed (the 12 -> 2 row is out of order).
+#[test]
+fn contributions_are_the_fold_as_a_matrix() {
+    let mut tops: Vec<ChannelTopology> = ORDERED
+        .iter()
+        .filter_map(|&n| ChannelTopology::smpte(ChannelLayout::from(n)))
+        .collect();
+    tops.push(ChannelTopology::quad());
+    tops.push(ChannelTopology::new([FrontRight, FrontLeft, FrontCenter]));
+    tops.push(ChannelTopology::discrete(ChannelLayout::from(3u16)));
+    tops.push(ChannelTopology::discrete(ChannelLayout::from(6u16)));
+    let mut checked = 0;
+    for src in &tops {
+        for dst in &tops {
+            let Ok(f) = Fold::between(src, dst) else {
+                continue;
+            };
+            checked += 1;
+            let frame = noise(usize::from(f.src), 0x9e37 + checked);
+            let mut want = vec![0.0; f.rows.len()];
+            f.frame(&frame, &mut want);
+            for (o, want) in want.iter().enumerate() {
+                assert_eq!(dense(&f, o), response(&f, o), "{src:?} -> {dst:?} row {o}");
+                let got: f32 = f.contributions(o).map(|(k, g)| g * frame[k]).sum();
+                let scale = want.abs().max(1.0);
+                assert!(
+                    (got - want).abs() <= 8.0 * f32::EPSILON * scale * 12.0,
+                    "{src:?} -> {dst:?} row {o}: {got} vs {want}"
+                );
+            }
+        }
+    }
+    assert!(checked > 40, "only {checked} folds were built");
+}
+
+/// A destination channel out of range panics, as `planar_channel` does.
+#[test]
+#[should_panic]
+fn contributions_past_the_destination_width_panic() {
+    let _ = fold(&smpte(2), &smpte(2)).contributions(2);
+}

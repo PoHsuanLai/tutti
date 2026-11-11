@@ -6,10 +6,10 @@ pub mod eq_band;
 pub mod ladder;
 pub mod svf;
 
-pub use crossover::CrossoverNode;
 pub(crate) use crossover::Splits;
+pub use crossover::{CrossoverNode, CrossoverParams};
 pub use eq_band::EqBandNode;
-pub use ladder::{LADDER_PARAMS, LadderFilterNode};
+pub use ladder::{LadderFilterNode, LadderParams};
 pub use svf::{SvfFilterNode, SvfParams};
 
 #[cfg(test)]

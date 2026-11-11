@@ -355,6 +355,27 @@ pub struct Fold {
     rows: Box<[Row]>,
 }
 
+impl Expr {
+    /// Adds every source of this expression, each at `scale · gain`, to `acc`.
+    fn contribute(&self, scale: f32, acc: &mut Vec<(usize, f32)>) {
+        let mut add = |src: usize, gain: f32| match acc.iter_mut().find(|(s, _)| *s == src) {
+            Some((_, g)) => *g += gain,
+            None => acc.push((src, gain)),
+        };
+        match self {
+            Self::Zero => {}
+            Self::Copy(c) => add(usize::from(*c), scale),
+            Self::Sum(terms) => {
+                for t in terms {
+                    for &c in &*t.srcs {
+                        add(usize::from(c), scale * t.gain);
+                    }
+                }
+            }
+        }
+    }
+}
+
 /// One source channel's contribution to one destination channel.
 struct Hit {
     src: usize,
@@ -877,6 +898,49 @@ impl Fold {
                     .for_each(|(o, &x)| *o = x);
             }
         }
+    }
+
+    /// The `(source channel, gain)` pairs destination channel `dst_c` is the
+    /// weighted sum of: `out[dst_c] = Σ gain · src[channel]`, in ascending
+    /// source channel, one pair per source channel (a channel the fold reaches
+    /// by two paths has them added). A source channel that does not feed
+    /// `dst_c` (the LFE a stereo destination drops, a channel a select left
+    /// out) is absent, and a silent destination channel has no pairs.
+    ///
+    /// The fold as a matrix, for a caller that wants each coefficient (the
+    /// graph lowers a bus edge to one weighted lane per pair). It is the same
+    /// fold to rounding only: [`frame`](Self::frame) and
+    /// [`planar_channel`](Self::planar_channel) sum in the fixed order and
+    /// grouping documented on [`Fold`] (`(L + R) · ½`, a side's −3 dB channels
+    /// summed and then scaled), and a caller summing `gain · x` term by term
+    /// rounds differently, by a few ulps. Control side: it allocates.
+    ///
+    /// ```
+    /// use tutti_types::{ChannelLayout, ChannelTopology, Fold, M3DB};
+    ///
+    /// let five_one = ChannelTopology::smpte(ChannelLayout::from(6u16)).unwrap();
+    /// let stereo = ChannelTopology::smpte(ChannelLayout::STEREO).unwrap();
+    /// let fold = Fold::between(&five_one, &stereo).unwrap();
+    /// // Left: the front left, the centre at -3 dB, the left surround at -3 dB;
+    /// // the LFE (channel 3) is dropped.
+    /// let left: Vec<_> = fold.contributions(0).collect();
+    /// assert_eq!(left, [(0, 1.0), (2, M3DB), (4, M3DB)]);
+    /// ```
+    ///
+    /// # Panics
+    ///
+    /// If `dst_c` is not below the destination width.
+    pub fn contributions(&self, dst_c: usize) -> impl Iterator<Item = (usize, f32)> + use<> {
+        let mut acc = Vec::new();
+        match &self.rows[dst_c] {
+            Row::One(e) => e.contribute(1.0, &mut acc),
+            Row::Mix { a, b, scale } => {
+                a.contribute(*scale, &mut acc);
+                b.contribute(*scale, &mut acc);
+            }
+        }
+        acc.sort_unstable_by_key(|&(src, _)| src);
+        acc.into_iter()
     }
 
     /// Folds planar channels into destination channel `dst_c`, `out.len()`

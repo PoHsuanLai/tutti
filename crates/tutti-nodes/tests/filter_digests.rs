@@ -4,12 +4,12 @@
 //! a block (the 16-frame solve schedule).
 //!
 //! Each digest is FNV-1a over the bits of every output sample, channel by channel
-//! of each 64-frame block. The ladder and crossover were recorded **before** the
-//! filters became models and realizations and have not moved (they are on the
-//! block-anchored `every(16)` grid until doc 024 step 2b's PR4 and PR5). The SVF,
-//! the bell and the EQ band **moved once**, in step 2b's PR3, when the SVF went
-//! to the stream grid (Q27: a solve at the first frame of each 16-frame segment
-//! counted from the last reset, the coefficients ramping to it over the segment);
+//! of each 64-frame block. The SVF, the bell and the EQ band **moved
+//! once**, in step 2b's PR3, the ladder once, in PR4, and the crossover once, in PR5,
+//! when they went to the stream grid (Q27: a solve at the first frame of each
+//! 16-frame segment counted from the last reset, the coefficients ramping to it
+//! over the segment, or for the crossover held over it; the ladder's drive joins
+//! the grid, a lane sampled per segment and a cell glided like the others);
 //! the `held` digests below, which no grid touches, did not. The coefficient
 //! solves reach `libm` (`tan`, `powf`), so every assert goes through
 //! `assert_golden`: asserted on the recorded target only.
@@ -221,11 +221,11 @@ fn the_ladder_renders_what_it_always_did() {
         },
     );
     println!("DIGEST ladder {digest:#018x}");
-    assert_golden("ladder_render", digest, 0xfacb_ee3a_dce1_3507);
+    assert_golden("ladder_render", digest, 0xc146_444c_b50a_5bee);
 }
 
 /// A stereo three-band crossover: the first split moves by its cell at block 40
-/// (ramped across the block), the second is driven by a lane at blocks 100 to
+/// (glided across the block), the second is driven by a lane at blocks 100 to
 /// 139.
 #[test]
 fn the_crossover_renders_what_it_always_did() {
@@ -243,7 +243,8 @@ fn the_crossover_renders_what_it_always_did() {
         },
     );
     println!("DIGEST crossover {digest:#018x}");
-    assert_golden("crossover_render", digest, 0xe487_a6a1_7b13_6f8d);
+    // Moved in step 2b PR5 (the stream grid); was 0xe487_a6a1_7b13_6f8d. Recorded on glibc 2.39.
+    assert_golden("crossover_render", digest, 0x333a_7595_b2e8_7939);
 }
 
 // Held controls (doc 024 step 2b, PR1): no cell moves and no lane drives, so the
@@ -253,7 +254,7 @@ fn the_crossover_renders_what_it_always_did() {
 // reach `libm`, so each goes through `assert_golden`, recorded on glibc 2.39.
 //
 // Mutations (run): `SvfCoefficients::solve`'s `a1` times 1.001 changes the SVF and
-// EQ digests, `LadderCoefficients::solve`'s `g1` times 1.001 the ladder's, and the
+// EQ digests, `LadderCoefficients::from`'s `g1` times 1.001 the ladder's, and the
 // crossover's `solve` scaling the first low-pass `b0` by 1.001 the crossover's; each
 // changes every digest of its node, held ones included.
 

@@ -698,6 +698,39 @@ fn an_io_change_reaches_on_invalidate_and_the_shape() {
     assert_eq!(loaded.unit.shape().latency.samples().get(), 300);
 }
 
+/// The node's shape declares the plugin's buses: VST2 reports a width and no
+/// placement, so each bus is `Discrete`, the first is `Main`, and together the
+/// buses cover every port the shape has.
+///
+/// Mutation (run): the bus role of the first bus `Aux` fails it. Whether
+/// `shape` fills the buses at all is `chunked_node`'s test (this plugin states
+/// no placement, so the default buses are what it declares as well).
+#[test]
+fn the_shape_declares_the_plugins_buses() {
+    use tutti_graph::{BusRole, Node as _};
+    use tutti_types::Speaker;
+
+    let _guard = lock_probe();
+    let loaded = load();
+    let shape = loaded.unit.shape();
+    for (buses, ports) in [
+        (shape.buses_in, shape.audio_in),
+        (shape.buses_out, shape.audio_out),
+    ] {
+        assert_eq!(buses.width(), usize::from(ports.count()), "cover the ports");
+        assert!(!buses.is_empty(), "the test plugin has audio on both sides");
+        assert_eq!(buses.get(0).map(|b| b.role), Some(BusRole::Main));
+        assert!(
+            buses.iter().all(|b| b
+                .topology
+                .positions()
+                .iter()
+                .all(|&s| s == Speaker::Discrete)),
+            "VST2 states no placement"
+        );
+    }
+}
+
 /// The project's tempo map the node under test is bound to.
 fn tempo() -> tutti_transport::TempoReader {
     tutti_transport::TempoReader::constant(tutti_types::Bpm::of(120.0)).expect("a tempo")

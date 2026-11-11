@@ -17,7 +17,7 @@ node without a lock.
 - **Filters** — `SvfFilterNode`, `LadderFilterNode` (both any width, one
   coefficient solve shared across the channels) and `EqBandNode`.
 - **Crossover** — `CrossoverNode`, which makes `bands × channels` outputs from
-  `tutti_dsp::Crossover`, a 2 to 6 band Linkwitz-Riley 4th-order split (the
+  `tutti_dsp::CrossoverDesign`, a 2 to 6 band Linkwitz-Riley 4th-order split (the
   bands sum to flat magnitude; IIR, so not linear-phase and no latency). Each
   crossover is an indexed `Cutoff` param (`UnitAddr::new(UnitParam::Cutoff, i)`).
 - **Delay** — `DelayLineNode` (any width, with a cross-feedback routing
@@ -44,7 +44,7 @@ node without a lock.
   params (bearing, height, spread and width, or the blend), de-zippered. A mix of several panned sources
   is plain fan-in: wire each panner's outputs to the same graph ports.
 - **Param ports** — each modulatable node declares its params (its
-  `*_PARAMS` list: `LADDER_PARAMS`, `DELAY_PARAMS`, …) as param ports, filled per
+  `*_PARAMS` list: `DELAY_PARAMS`, …) as param ports, filled per
   frame from one event source each (read through `Io::param`).
 - **Modulation** — the `automation` module's `ControlLaneNode`, which
   evaluates a `tutti_modulation::ControlProgram` into a param port (design doc 014),

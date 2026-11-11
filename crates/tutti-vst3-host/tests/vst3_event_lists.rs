@@ -429,7 +429,8 @@ fn a_multi_packet_sysex_reaches_the_plugin_whole() {
         ),
     );
     let list = EventList::input();
-    let mut stager = Stager::default();
+    // A plugin with two event input buses: Group 1 is bus 1.
+    let mut stager = Stager::new(2);
     assert_no_alloc::assert_no_alloc(|| {
         stager.stage(
             &list,

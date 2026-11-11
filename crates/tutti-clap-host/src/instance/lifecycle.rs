@@ -218,9 +218,10 @@ impl ClapLoaded {
         // (`ClapProcessor::output_param_points_dropped`).
         reserve_input_events(&mut scratch, &table, max_frames);
         reserve_output_params(&mut scratch, &table, max_frames);
+        // A UMP Group is an input note port: each port's own dialect.
         scratch
             .input_events
-            .set_midi_notes(self.sends_midi_notes(main));
+            .set_note_ports(&self.midi_note_ports(main));
         scratch
             .in_note_expressions
             .reserve_exact(super::config::INPUT_NOTE_EXPRESSIONS);

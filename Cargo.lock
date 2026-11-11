@@ -3538,6 +3538,7 @@ dependencies = [
  "tutti-rt",
  "tutti-types",
  "tutti-ump",
+ "tutti-voicing",
 ]
 
 [[package]]
@@ -3785,7 +3786,6 @@ dependencies = [
  "tutti-fixtures",
  "tutti-graph",
  "tutti-midi-protocol",
- "tutti-plugin-types",
  "tutti-rt",
  "tutti-tempo",
  "tutti-transport",
@@ -4345,6 +4345,7 @@ dependencies = [
  "tutti-shared-plugin",
  "tutti-types",
  "tutti-ump",
+ "tutti-voicing",
  "tutti-vst3-ffi",
  "tutti-vst3-host",
  "vst3",

@@ -10,7 +10,8 @@
 //! compiled executor against the reference interpreter (`Pair`), and the
 //! parallel executor against the serial one.
 
-mod common;
+use common::spec_of;
+use tutti_graph::testing as common;
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -18,8 +19,8 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use common::{Kind, Pair, TestNode, bits, input_signal, prepare};
 use tutti_graph::{
-    Cx, Edge, Editor, Executor, FeedbackFrom, GraphSpec, InPort, Io, Node, NodeKey, NodeSpec, Op,
-    OutPort, Plan, Prepare, Shape, Source, Status, Topology, Transport, Unforkable, compile,
+    Cx, Edge, Editor, Executor, FeedbackFrom, GraphSpec, InPort, Io, Node, NodeKey, Op, OutPort,
+    Plan, Prepare, Shape, Source, Status, Topology, Transport, Unforkable, compile,
 };
 use tutti_types::{ChannelLayout, Samples};
 
@@ -49,13 +50,6 @@ fn direct(node: u64) -> Edge {
 
 fn dc(value: f32) -> Kind {
     Kind::Const { value, width: 1 }
-}
-
-fn spec_of(kind: &Kind) -> NodeSpec {
-    let s = TestNode::new(kind.clone()).shape();
-    NodeSpec::new("test", s.audio_in(), s.audio_out())
-        .with_latency(s.latency.samples())
-        .with_tail(s.tail)
 }
 
 /// A topology of `kinds` keyed `1..` in the order given.

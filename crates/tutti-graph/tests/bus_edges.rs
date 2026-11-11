@@ -7,7 +7,9 @@
 //! doc prescribes: the executor against the reference interpreter, and the
 //! parallel executor against the serial one (`Pair`).
 
-mod common;
+use common::spec_of;
+use tutti_fixtures::signal::bits as bits_of;
+use tutti_graph::testing as common;
 
 use std::collections::BTreeMap;
 
@@ -16,8 +18,7 @@ use tutti_graph::Node;
 use tutti_graph::{
     Bus, BusError, BusFeed, BusFold, BusRef, BusRole, BusSide, BusSource, Buses, CommitError,
     CompileError, DelayKey, Edge, EdgeGain, EdgeId, Editor, GraphInvalid, GraphSpec, InPort,
-    Lowering, NodeKey, NodeSpec, Op, OutPort, Plan, Sink, Source, Transport, Unforkable,
-    ValidGraph, compile,
+    Lowering, NodeKey, Op, OutPort, Plan, Sink, Source, Transport, Unforkable, ValidGraph, compile,
 };
 use tutti_types::{
     Amplitude, BusTopology, ChannelLayout, ChannelTopology, FoldError, M3DB, Samples, Tail,
@@ -96,13 +97,6 @@ fn source(n: usize, out: Bus) -> Kind {
 /// A pass-through of `n` channels declaring `input` as its input bus.
 fn sink(n: usize, input: Bus) -> Kind {
     bused(Kind::Thru { width: n }, &[input], &[unassigned(n)])
-}
-
-fn spec_of(kind: &Kind) -> NodeSpec {
-    let s = TestNode::new(kind.clone()).shape();
-    NodeSpec::new("test", s.audio_in(), s.audio_out())
-        .with_latency(s.latency.samples())
-        .with_tail(s.tail)
 }
 
 fn bus_ref(node: u64, bus: u8) -> BusRef {
@@ -377,10 +371,6 @@ fn widening_zero_fills_the_new_channels() {
     for (c, channel) in got.iter().enumerate().skip(2) {
         assert!(channel.iter().all(|&x| x.to_bits() == 0), "channel {c}");
     }
-}
-
-fn bits_of(x: &[f32]) -> Vec<u32> {
-    x.iter().map(|v| v.to_bits()).collect()
 }
 
 // ---------------------------------------------------------------------------

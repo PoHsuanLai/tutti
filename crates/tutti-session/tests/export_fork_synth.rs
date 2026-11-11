@@ -10,8 +10,8 @@
 use std::sync::Arc;
 
 use tutti_export::Produced;
-use tutti_fixtures::assert_golden;
 use tutti_fixtures::midi::{note_off, note_on};
+use tutti_fixtures::{assert_golden, digest_planes};
 use tutti_graph::NodeKey;
 use tutti_graph::contract::Direct;
 use tutti_graph::{Event, Node, Offset};
@@ -72,15 +72,6 @@ fn render_stem(session: &mut Session, bounce: Bounce) -> Vec<Vec<f32>> {
         Some(Produced::Buffers(rendered)) if targets.len() == 1 => rendered.into_planes(),
         other => panic!("expected one stem held in memory, got {other:?}"),
     }
-}
-
-/// FNV-1a over the planes' little-endian `f32` bits, plane after plane.
-fn digest(planes: &[Vec<f32>]) -> u64 {
-    let mut h = tutti_fixtures::Fnv::new();
-    for plane in planes {
-        h.f32s(plane);
-    }
-    h.finish()
 }
 
 /// A saw with an instant attack, built at the live graph's rate.
@@ -322,7 +313,7 @@ fn a_synth_node_export_plays_its_clip() {
     assert_note_at_beat_1("PolySynth node export", RATE, &exported, &reference);
     assert_golden(
         "the synth's node export",
-        digest(&exported),
+        digest_planes(&exported),
         0x2f47_791e_730f_81b5,
     );
 }

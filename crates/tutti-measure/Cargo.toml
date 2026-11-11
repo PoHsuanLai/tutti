@@ -47,6 +47,8 @@ tutti-graph = { path = "../tutti-graph" }
 # No `assert_no_alloc` here, unlike most sibling crates: everything this crate
 # does is cold-path batch analysis that legitimately allocates its output.
 rand = "0.8"
+# The shared sine, impulse and level readings (`signal`).
+tutti-fixtures = { path = "../../testing/tutti-fixtures" }
 # `benches/fft_analyses`.
 criterion.workspace = true
 # An independent YIN, as a second opinion on ours, for `tests/oracle_pitch.rs`.

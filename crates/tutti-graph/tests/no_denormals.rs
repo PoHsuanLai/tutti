@@ -18,7 +18,7 @@
 
 #![cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 
-mod common;
+use tutti_graph::testing as common;
 
 use std::hint::black_box;
 use std::time::{Duration, Instant};

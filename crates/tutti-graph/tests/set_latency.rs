@@ -1,7 +1,7 @@
 //! `Editor::set_latency`: a runtime latency change — a plugin whose latency
 //! atomic moved — recompiles and moves PDC, without touching the unit.
 
-mod common;
+use tutti_graph::testing as common;
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -135,9 +135,7 @@ fn block(exec: &mut Executor, reference: &mut Reference, input: &[f32]) -> [Vec<
 
 /// A one at `at`, zeros elsewhere.
 fn impulse(n: usize, at: usize) -> Vec<f32> {
-    let mut v = vec![0.0; n];
-    v[at] = 1.0;
-    v
+    tutti_fixtures::signal::impulse_at(Samples(n), Samples(at))
 }
 
 fn peak_at(v: &[f32]) -> Option<usize> {

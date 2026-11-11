@@ -19,7 +19,7 @@
 use std::sync::Arc;
 use tutti_types::MaxBlock;
 
-use tutti_fixtures::assert_golden;
+use tutti_fixtures::{assert_golden, digest};
 use tutti_graph::Op;
 use tutti_graph::TapAlign;
 use tutti_nodes::MetronomeMode;
@@ -29,13 +29,6 @@ use tutti_transport::MotionEvent;
 use tutti_types::{Amplitude, Beat, ChannelLayout, InterleavedMut, SampleRate, Samples};
 
 const RATE: f64 = 48_000.0;
-
-/// FNV-1a over the samples' little-endian `f32` bits.
-fn digest(samples: &[f32]) -> u64 {
-    let mut h = tutti_fixtures::Fnv::new();
-    h.f32s(samples);
-    h.finish()
-}
 
 /// An offline session at `RATE`, stereo, graph blocks of up to 1 024 frames
 /// (the live engine's `LIVE_MAX_BLOCK`, which the digests were recorded at).

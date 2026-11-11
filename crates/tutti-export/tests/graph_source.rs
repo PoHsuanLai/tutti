@@ -56,7 +56,7 @@ use crate::support::{render_normalized_to_file, render_to_buffers, render_to_fil
 use tutti_codec::{Format, Pcm};
 use tutti_dsp::DitherShape;
 use tutti_export::{Error, GRAPH_MAX_BLOCK, Normalize, RenderGraph, Rendered, Resample, Setup};
-use tutti_fixtures::assert_golden;
+use tutti_fixtures::{assert_golden, digest_planes};
 use tutti_graph::{Cx, GraphBuilder, Io, Node, Prepare, Shape, Status, Unforkable};
 use tutti_nodes::testing::{Const, Osc, vbap_mix};
 use tutti_tempo::TempoMap;
@@ -78,11 +78,6 @@ fn fnv(bytes: impl IntoIterator<Item = u8>) -> u64 {
     let mut h = tutti_fixtures::Fnv::new();
     h.bytes(bytes);
     h.finish()
-}
-
-/// [`fnv`] over every plane's `f32` bits, plane after plane.
-fn digest(planes: &[Vec<f32>]) -> u64 {
-    fnv(planes.iter().flatten().flat_map(|s| s.to_le_bytes()))
 }
 
 fn config(bit_depth: Pcm, channels: ChannelLayout) -> ExportConfig {
@@ -297,7 +292,7 @@ fn a_sine_renders_its_closed_form() {
             );
         }
     }
-    assert_golden("sine", digest(&planes), 0x4b59_8dd3_79f5_90cd);
+    assert_golden("sine", digest_planes(&planes), 0x4b59_8dd3_79f5_90cd);
     let forked = buffers(forked(sine(1000.0)), &cfg).into_planes();
     assert_same("forked against built", &planes, &forked);
 }
@@ -437,7 +432,7 @@ fn a_surround_mix_folds_to_every_width() {
     // front-left one in channel 0.
     assert!(quad[2].iter().any(|s| s.abs() > 0.05), "no rear energy");
     assert!(quad[0].iter().any(|s| s.abs() > 0.05), "no front energy");
-    assert_golden("quad", digest(&quad), 0xe087_842d_4937_bca6);
+    assert_golden("quad", digest_planes(&quad), 0xe087_842d_4937_bca6);
     // No digest for these: each is the quad render (whose digest is pinned)
     // folded, to the bit.
     for width in [ChannelLayout::STEREO, ChannelLayout::MONO] {
@@ -466,7 +461,7 @@ fn a_surround_mix_folds_to_every_width() {
     )
     .into_planes();
     assert!(fork[2].iter().any(|s| s.abs() > 0.05), "no rear energy");
-    assert_golden("quad, forked", digest(&fork), 0x800b_0ec2_8842_1715);
+    assert_golden("quad, forked", digest_planes(&fork), 0x800b_0ec2_8842_1715);
 }
 
 /// A convolver — FFT-partitioned, latency- and tail-bearing — renders the
@@ -508,7 +503,7 @@ fn a_convolver_renders_the_direct_convolution_at_the_graph_block() {
             "frame {n}: {s}, the convolution is {want} (latency {latency})"
         );
     }
-    assert_golden("convolver", digest(&planes), 0x72ca_224c_c4cd_9a4e);
+    assert_golden("convolver", digest_planes(&planes), 0x72ca_224c_c4cd_9a4e);
 }
 
 /// The graph reports a lookahead limiter's latency analytically (5 ms at
@@ -865,7 +860,7 @@ fn a_sampler_voice_renders_in_time_at_the_graph_block() {
                 "{cents} cents: {got} Hz, a fifth up is {want} Hz"
             );
         }
-        assert_golden(&format!("voice, {cents} cents"), digest(&b), want);
+        assert_golden(&format!("voice, {cents} cents"), digest_planes(&b), want);
     }
 }
 

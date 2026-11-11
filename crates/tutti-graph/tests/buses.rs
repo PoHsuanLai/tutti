@@ -5,7 +5,7 @@
 //! cover the ports, and that declaring them changes nothing the compiler
 //! produces.
 
-mod common;
+use tutti_graph::testing as common;
 
 use std::collections::BTreeMap;
 

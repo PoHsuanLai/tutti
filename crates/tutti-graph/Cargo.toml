@@ -25,7 +25,7 @@ contract = []
 # `Reference`, the naive interpreter the differential suites compare the
 # executor with: test support (about 2,700 lines), so off by default. This
 # crate's own tests turn it on through the self dev-dependency below.
-testing = []
+testing = ["dep:assert_no_alloc"]
 
 [dependencies]
 # The value (`Topology`, `NodeKey`, ports), the unit newtypes and the latency /
@@ -47,6 +47,8 @@ bytemuck = { version = "1.16", features = ["derive"] }
 # tutti-sampler use it); lock-free and allocation-free once built, which is
 # what the audio-thread side of the queue needs.
 ringbuf = { version = "0.6", default-features = false, features = ["alloc"] }
+# `testing` only: `TestPool::no_alloc` runs each participant under the gate.
+assert_no_alloc = { version = "1", default-features = false, optional = true }
 
 [dev-dependencies]
 # Turns `contract` and `testing` on for this crate's own tests (the pattern

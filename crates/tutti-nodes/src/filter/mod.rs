@@ -53,12 +53,15 @@ fn filter_bus(width: ChannelLayout) -> BusTopology {
 
 #[cfg(test)]
 pub(super) mod test_utils {
+    use tutti_fixtures::signal;
     use tutti_graph::Node;
+    use tutti_types::{Amplitude, Hz, SampleRate, Samples};
 
+    pub use signal::rms;
+
+    /// `signal::impulse` of `len` frames.
     pub fn impulse(len: usize) -> Vec<f32> {
-        let mut buf = vec![0.0f32; len];
-        buf[0] = 1.0;
-        buf
+        signal::impulse(Samples(len))
     }
 
     /// A mono node over `input`, one frame per call (a block of one). The
@@ -71,17 +74,13 @@ pub(super) mod test_utils {
         output
     }
 
-    pub fn rms(signal: &[f32]) -> f32 {
-        if signal.is_empty() {
-            return 0.0;
-        }
-        let sum: f32 = signal.iter().map(|s| s * s).sum();
-        (sum / signal.len() as f32).sqrt()
-    }
-
+    /// `signal::sine` at unit amplitude, for a test that holds bare numbers.
     pub fn generate_sine(freq: f32, sample_rate: f32, num_samples: usize) -> Vec<f32> {
-        (0..num_samples)
-            .map(|i| (2.0 * core::f32::consts::PI * freq * i as f32 / sample_rate).sin())
-            .collect()
+        signal::sine(
+            Hz(freq),
+            Amplitude(1.0),
+            SampleRate(f64::from(sample_rate)),
+            Samples(num_samples),
+        )
     }
 }

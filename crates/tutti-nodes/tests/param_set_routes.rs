@@ -12,6 +12,7 @@
 //! drives a control lane whose knob is the filter's cell.
 
 use std::sync::atomic::Ordering;
+use tutti_fixtures::signal::peak;
 use tutti_types::MaxBlock;
 
 use tutti_curve::Law;
@@ -503,11 +504,6 @@ where
     );
     ed.commit().expect("the lane commits");
     r.render_input(&[input]).swap_remove(0)
-}
-
-/// Peak magnitude of `x`.
-fn peak(x: &[f32]) -> f32 {
-    x.iter().fold(0.0f32, |m, v| m.max(v.abs()))
 }
 
 /// **A limiter driven to a release below its floor still releases.** A lane

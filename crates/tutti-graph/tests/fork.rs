@@ -1,7 +1,7 @@
 //! `Editor::fork`: a copy of the graph (or of what feeds one node) that
 //! shares no state with the live one.
 
-mod common;
+use tutti_graph::testing as common;
 
 use std::collections::BTreeSet;
 use std::sync::Arc;

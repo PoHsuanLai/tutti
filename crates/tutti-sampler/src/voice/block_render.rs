@@ -57,18 +57,10 @@ fn wave(channels: usize, rate: f64) -> Arc<Wave> {
 }
 
 fn write_wav(path: &Path) {
-    let spec = hound::WavSpec {
-        channels: 2,
-        sample_rate: SR as u32,
-        bits_per_sample: 32,
-        sample_format: hound::SampleFormat::Float,
-    };
-    let mut w = hound::WavWriter::create(path, spec).expect("writes");
-    for i in 0..LEN {
-        w.write_sample(sample(0, i)).expect("writes");
-        w.write_sample(sample(1, i + 7)).expect("writes");
-    }
-    w.finalize().expect("writes");
+    let interleaved: Vec<f32> = (0..LEN)
+        .flat_map(|i| [sample(0, i), sample(1, i + 7)])
+        .collect();
+    tutti_fixtures::signal::write_wav_f32(path, SampleRate(SR), 2, &interleaved);
 }
 
 fn memory(w: &Arc<Wave>, start: f64) -> VoiceSource {

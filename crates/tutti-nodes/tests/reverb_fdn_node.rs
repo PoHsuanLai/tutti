@@ -65,19 +65,14 @@ impl Rig {
 }
 
 fn noise(seed: u32, frames: usize) -> Vec<f32> {
-    let mut state = seed.wrapping_mul(747_796_405).wrapping_add(2_891_336_453);
-    (0..frames)
-        .map(|_| {
-            state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
-            0.5 * ((state >> 8) as f32 / (1u32 << 24) as f32 * 2.0 - 1.0)
-        })
+    tutti_fixtures::noise(seed, frames)
+        .into_iter()
+        .map(|x| 0.5 * x)
         .collect()
 }
 
 fn impulse() -> Vec<f32> {
-    let mut x = vec![0.0; BLOCK];
-    x[0] = 1.0;
-    x
+    tutti_fixtures::signal::impulse(tutti_types::Samples(BLOCK))
 }
 
 fn finite(d: &Driven) -> usize {

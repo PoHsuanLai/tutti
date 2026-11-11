@@ -15,7 +15,7 @@
 //! behind a block start), at most `JUMPS` are kept, the newest, and a rate
 //! change clears them. The roll is the public `Env::transport_at`'s.
 
-mod common;
+use tutti_graph::testing as common;
 
 use std::collections::{BTreeMap, VecDeque};
 use tutti_types::MaxBlock;

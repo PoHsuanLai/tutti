@@ -19,6 +19,7 @@
 
 use tutti_dsp::{FdnControls, FdnDesign, FreeverbControls, FreeverbDesign};
 use tutti_fixtures::noise;
+use tutti_fixtures::signal::bits;
 use tutti_graph::contract::drive;
 use tutti_graph::{IntoNode, Prepare, Solo};
 use tutti_nodes::{
@@ -67,10 +68,6 @@ fn rendered<N: IntoNode>(make: &dyn Fn() -> N, x: &[Vec<f32>], mix: Mix) -> Vec<
         .into_iter()
         .map(|c| c[BLOCK..].to_vec())
         .collect()
-}
-
-fn bits(x: &[f32]) -> Vec<u32> {
-    x.iter().map(|v| v.to_bits()).collect()
 }
 
 /// The input delayed by `latency` frames: what the graph's `x̂` is.

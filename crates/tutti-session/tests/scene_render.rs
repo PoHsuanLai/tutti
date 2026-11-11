@@ -32,7 +32,7 @@
 //!   the waveshaper and the limiter's constants call the platform's `tan`,
 //!   `tanh` and `powf`, whose last ulp differs between C runtimes.
 
-use tutti_fixtures::assert_golden;
+use tutti_fixtures::{assert_golden, digest_planes};
 use tutti_graph::NodeKey;
 use tutti_graph::{
     CrossfadeCurve, Cx, ForkByClone, GraphBuilder, Io, Node, Prepare, Shape, Status, Unforkable,
@@ -146,15 +146,6 @@ fn assert_sounds(out: &[Vec<f32>], what: &str) {
     }
 }
 
-/// FNV-1a over the planes' little-endian `f32` bits, plane after plane.
-fn digest(planes: &[Vec<f32>]) -> u64 {
-    let mut h = tutti_fixtures::Fnv::new();
-    for plane in planes {
-        h.f32s(plane);
-    }
-    h.finish()
-}
-
 /// **The compensated scene**: its dry left channel is the uncompensated
 /// scene's, delayed by the limiter's lookahead to the frame (silence
 /// first); its latent right channel is the saw through the limiter,
@@ -188,7 +179,11 @@ fn a_compensated_scene_delays_its_dry_channel_by_the_lookahead() {
         "the right channel is the saw through the limiter"
     );
 
-    assert_golden("the compensated scene", digest(&b), 0x44de_35eb_5401_831b);
+    assert_golden(
+        "the compensated scene",
+        digest_planes(&b),
+        0x44de_35eb_5401_831b,
+    );
 }
 
 /// **A block length that is not a multiple of 64 changes nothing for

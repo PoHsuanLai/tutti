@@ -1193,7 +1193,7 @@ fn cached_stride_reads_every_channel_at_width_six() {
         "the ring's declared width must reach the unit as a layout"
     );
     assert_eq!(
-        voice.shape().audio_out.count() as usize,
+        voice.shape().audio_out().count() as usize,
         width,
         "the cached stride must agree with the declared layout"
     );

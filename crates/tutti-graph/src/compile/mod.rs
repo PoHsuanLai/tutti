@@ -524,11 +524,11 @@ pub fn compile(
         let shape = *shapes
             .get(&key)
             .ok_or(CompileError::MissingShape { node: key })?;
-        if (spec.inputs, spec.outputs) != (shape.audio_in, shape.audio_out) {
+        if (spec.inputs, spec.outputs) != (shape.audio_in(), shape.audio_out()) {
             return Err(CompileError::WidthMismatch {
                 node: key,
                 declared: (spec.inputs, spec.outputs),
-                shape: (shape.audio_in, shape.audio_out),
+                shape: (shape.audio_in(), shape.audio_out()),
             });
         }
         if spec.latency != shape.latency.samples() {
@@ -546,8 +546,8 @@ pub fn compile(
             });
         }
         for count in [
-            shape.audio_in.count() as usize,
-            shape.audio_out.count() as usize,
+            shape.audio_in().count() as usize,
+            shape.audio_out().count() as usize,
             shape.event_in as usize,
             shape.event_out as usize,
         ] {
@@ -818,8 +818,8 @@ pub fn compile(
         // not the order the spec listed them in), so two specs that list the
         // same sources differently render alike (doc 013, "Audio fan-in
         // sums", point 2). One source is the value itself, none is silence.
-        let mut ain = Vec::with_capacity(shape.audio_in.count() as usize);
-        for port in 0..shape.audio_in.count() {
+        let mut ain = Vec::with_capacity(shape.audio_in().count() as usize);
+        for port in 0..shape.audio_in().count() {
             let at = InPort { node: key, port };
             let mut sources: Vec<Edge> = topology.edges.get(&at).cloned().unwrap_or_default();
             sources.sort();
@@ -991,7 +991,7 @@ pub fn compile(
         for v in reads {
             em.read_event(v, op);
         }
-        let aout: Vec<u32> = (0..shape.audio_out.count())
+        let aout: Vec<u32> = (0..shape.audio_out().count())
             .map(|port| {
                 let v = em.audio_value(op);
                 audio_out_val.insert(OutPort { node: key, port }, v);

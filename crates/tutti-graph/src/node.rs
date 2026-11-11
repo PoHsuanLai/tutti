@@ -20,8 +20,8 @@
 use std::num::NonZeroU32;
 
 use tutti_types::{
-    Beat, Bpm, ChannelLayout, Frame, FrameClock, Latency, MaxBlock, SampleRate, Samples,
-    SegmentOrigin, Tail, UnitAddr, UnitParam,
+    Beat, Bpm, BusTopology, ChannelLayout, Frame, FrameClock, Latency, MaxBlock, SampleRate,
+    Samples, SegmentOrigin, Tail, UnitAddr, UnitParam,
 };
 
 use crate::bus::Buses;
@@ -48,20 +48,17 @@ pub const MAX_PORTS: usize = 64;
 /// Returned by [`Node::shape`], which takes `&self`, so asking costs nothing.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Shape {
-    /// Audio input channels. In a [`Topology`](crate::Topology) each
-    /// channel is one port.
-    pub audio_in: ChannelLayout,
-    /// Audio output channels.
-    pub audio_out: ChannelLayout,
-    /// How the input ports group into buses: one [`Main`](crate::BusRole::Main)
-    /// bus of [`Discrete`](tutti_types::Speaker::Discrete) channels for a
-    /// node that states only a width (what [`Shape::audio`] builds), or what
-    /// [`with_buses_in`](Self::with_buses_in) declared. A grouping over the
-    /// ports `audio_in` counts: nothing the compiler or the executor reads
-    /// changes with it.
-    pub buses_in: Buses,
-    /// How the output ports group into buses. See [`buses_in`](Self::buses_in).
-    pub buses_out: Buses,
+    /// Audio input channels: the input buses' width, or more where
+    /// [`with_ports`](Self::with_ports) said so. Read with
+    /// [`audio_in`](Self::audio_in).
+    audio_in: ChannelLayout,
+    /// Audio output channels. Read with [`audio_out`](Self::audio_out).
+    audio_out: ChannelLayout,
+    /// The input buses the shape was built from. Read with
+    /// [`buses_in`](Self::buses_in).
+    buses_in: Buses,
+    /// The output buses. Read with [`buses_out`](Self::buses_out).
+    buses_out: Buses,
     /// Event input ports.
     pub event_in: u16,
     /// Event output ports.
@@ -205,15 +202,27 @@ impl Resolution {
 }
 
 impl Shape {
-    /// A shape with these audio widths, no event ports, no latency, no tail,
-    /// no in-place support, and [`Resolution::Sample`] — a new node is
-    /// written to honour its event offsets, and says otherwise explicitly.
-    pub const fn audio(audio_in: ChannelLayout, audio_out: ChannelLayout) -> Self {
+    /// No audio and no event ports: the start of a node that only has events
+    /// (`Shape::EMPTY.with_events(1, 0)`).
+    pub const EMPTY: Self = Self::buses(Buses::NONE, Buses::NONE);
+
+    /// A shape of these buses: its audio widths are theirs, and its dry path
+    /// ([`pass`](Self::pass)) is the fold between the two
+    /// [`Main`](crate::BusRole::Main) buses. No event ports, no latency, no tail,
+    /// no in-place support, and [`Resolution::Sample`]: a new node is written to
+    /// honour its event offsets, and says otherwise explicitly.
+    ///
+    /// A bus names its speakers or says it names none
+    /// ([`Buses::discrete`]): unplaced is a statement, never a default, so a
+    /// node whose main buses differ in width and name no speakers has no pass,
+    /// visibly in its own constructor.
+    #[must_use]
+    pub const fn buses(inputs: Buses, outputs: Buses) -> Self {
         Self {
-            audio_in,
-            audio_out,
-            buses_in: Buses::of_width(audio_in),
-            buses_out: Buses::of_width(audio_out),
+            audio_in: ChannelLayout::from_count(inputs.width() as u16),
+            audio_out: ChannelLayout::from_count(outputs.width() as u16),
+            buses_in: inputs,
+            buses_out: outputs,
             event_in: 0,
             event_out: 0,
             event_capacity: None,
@@ -227,42 +236,111 @@ impl Shape {
         }
     }
 
-    /// This shape, with its input ports grouped into `buses`: a node that
-    /// knows where its channels sit says so (a plugin's buses, a decoded
-    /// file's topology), instead of the one `Discrete` main bus
-    /// [`audio`](Self::audio) builds.
-    ///
-    /// The buses cover a prefix of the `audio_in` ports, and `audio_in` is
-    /// unchanged: a node with more channels than its buses hold keeps them
-    /// all.
+    /// One bus of `topology` in and the same out: output `c` is input `c` on
+    /// the dry path. A stereo processor says [`BusTopology::STEREO`]; one that
+    /// knows only a width says so with [`through_discrete`](Self::through_discrete).
+    #[must_use]
+    pub const fn through(topology: BusTopology) -> Self {
+        Self::buses(Buses::main(topology), Buses::main(topology))
+    }
+
+    /// `width` channels in and out that name no speaker: a per-channel
+    /// processor built for a width. Its dry path is output `c` = input `c`, and
+    /// a bus edge folds it only to a bus of the same width (a width is not a
+    /// placement). Past a bus's width
+    /// ([`MAX_BUS_CHANNELS`](tutti_types::MAX_BUS_CHANNELS)) the channels are
+    /// ports with no bus, passed by index all the same.
+    #[must_use]
+    pub const fn through_discrete(width: ChannelLayout) -> Self {
+        Self::buses(Buses::unplaced(width), Buses::unplaced(width)).with_ports(width, width)
+    }
+
+    /// No audio input, one bus of `topology` out: nothing passes.
+    #[must_use]
+    pub const fn source(topology: BusTopology) -> Self {
+        Self::buses(Buses::NONE, Buses::main(topology))
+    }
+
+    /// No audio input, `width` channels out that name no speaker (ports with
+    /// no bus past a bus's width).
+    #[must_use]
+    pub const fn source_discrete(width: ChannelLayout) -> Self {
+        Self::buses(Buses::NONE, Buses::unplaced(width)).with_ports(ChannelLayout::EMPTY, width)
+    }
+
+    /// One bus of `topology` in, no audio output: nothing passes.
+    #[must_use]
+    pub const fn sink(topology: BusTopology) -> Self {
+        Self::buses(Buses::main(topology), Buses::NONE)
+    }
+
+    /// `width` channels in that name no speaker, no audio output.
+    #[must_use]
+    pub const fn sink_discrete(width: ChannelLayout) -> Self {
+        Self::buses(Buses::unplaced(width), Buses::NONE).with_ports(width, ChannelLayout::EMPTY)
+    }
+
+    /// This shape with `audio_in` and `audio_out` ports, of which its buses
+    /// cover a prefix: the channels past them are ports with no bus (a
+    /// plugin's bus wider than [`MAX_BUS_CHANNELS`](tutti_types::MAX_BUS_CHANNELS),
+    /// or past [`MAX_BUSES`](crate::MAX_BUSES)), reached by port. A side whose
+    /// ports outnumber its buses has no main bus to fold, so a dry path across
+    /// unequal widths is refused ([`PassError::Unplaced`](crate::PassError::Unplaced)).
     ///
     /// # Panics
     ///
-    /// If the buses are wider than `audio_in` (in a `const` context, at
-    /// compile time): a bus over ports the node does not have.
+    /// If a side is narrower than its buses (in a `const` context, at compile
+    /// time): a bus over ports the node does not have.
     #[must_use]
-    pub const fn with_buses_in(mut self, buses: Buses) -> Self {
+    pub const fn with_ports(mut self, audio_in: ChannelLayout, audio_out: ChannelLayout) -> Self {
         assert!(
-            buses.width() <= self.audio_in.count() as usize,
-            "input buses wider than the input ports"
+            self.buses_in.width() <= audio_in.count() as usize
+                && self.buses_out.width() <= audio_out.count() as usize,
+            "ports narrower than the buses over them"
         );
-        self.buses_in = buses;
+        self.audio_in = audio_in;
+        self.audio_out = audio_out;
         self
     }
 
-    /// [`with_buses_in`](Self::with_buses_in) for the output ports.
-    ///
-    /// # Panics
-    ///
-    /// If the buses are wider than `audio_out`.
+    /// Audio input channels. In a [`Topology`](crate::Topology) each channel
+    /// is one port.
     #[must_use]
-    pub const fn with_buses_out(mut self, buses: Buses) -> Self {
-        assert!(
-            buses.width() <= self.audio_out.count() as usize,
-            "output buses wider than the output ports"
-        );
-        self.buses_out = buses;
-        self
+    pub const fn audio_in(&self) -> ChannelLayout {
+        self.audio_in
+    }
+
+    /// Audio output channels.
+    #[must_use]
+    pub const fn audio_out(&self) -> ChannelLayout {
+        self.audio_out
+    }
+
+    /// How the input ports group into buses, in port order: the buses the
+    /// shape was built from.
+    #[must_use]
+    pub const fn buses_in(&self) -> &Buses {
+        &self.buses_in
+    }
+
+    /// How the output ports group into buses.
+    #[must_use]
+    pub const fn buses_out(&self) -> &Buses {
+        &self.buses_out
+    }
+
+    /// The dry path: where each input channel goes when the node does not run
+    /// (a bypass, and the dry side of a mix), or why it has none. Built from
+    /// the main buses, so it is known as soon as the shape is: a node's own
+    /// test asserts it, and the graph refuses a bypass or a mix of a node
+    /// without one. Control side: a fold allocates.
+    ///
+    /// # Errors
+    ///
+    /// [`PassError`](crate::PassError) when the main buses differ in width and
+    /// one names no speaker, or name speakers that do not fold.
+    pub fn pass(&self) -> Result<crate::Pass, crate::PassError> {
+        crate::Pass::of(self)
     }
 
     /// This shape with `event_in` / `event_out` event ports.
@@ -280,7 +358,7 @@ impl Shape {
     /// ```
     /// use tutti_graph::Shape;
     /// use tutti_types::ChannelLayout;
-    /// let arp = Shape::audio(ChannelLayout::EMPTY, ChannelLayout::EMPTY)
+    /// let arp = Shape::EMPTY
     ///     .with_events(1, 1)
     ///     .with_event_capacity(16);
     /// assert_eq!(arp.event_capacity.map(|n| n.get()), Some(16));
@@ -308,7 +386,7 @@ impl Shape {
     /// use tutti_graph::Shape;
     /// use tutti_types::{ChannelLayout, Samples};
     /// let echo_time = Samples(24_000);
-    /// let _ = Shape::audio(ChannelLayout::MONO, ChannelLayout::MONO).with_latency(echo_time);
+    /// let _ = Shape::through_discrete(ChannelLayout::MONO).with_latency(echo_time);
     /// ```
     ///
     /// — and there is no conversion that would make it one silently:
@@ -324,7 +402,7 @@ impl Shape {
     /// use tutti_graph::Shape;
     /// use tutti_types::{ChannelLayout, Latency, Samples};
     /// let lookahead = Latency::new(Samples(512));
-    /// let s = Shape::audio(ChannelLayout::MONO, ChannelLayout::MONO).with_latency(lookahead);
+    /// let s = Shape::through_discrete(ChannelLayout::MONO).with_latency(lookahead);
     /// assert_eq!(s.latency.samples(), Samples(512));
     /// ```
     #[must_use]
@@ -368,7 +446,7 @@ impl Shape {
     /// ```
     /// use tutti_graph::{Cost, Shape};
     /// use tutti_types::ChannelLayout;
-    /// let gain = Shape::audio(ChannelLayout::STEREO, ChannelLayout::STEREO).with_cost(Cost::Light);
+    /// let gain = Shape::through_discrete(ChannelLayout::STEREO).with_cost(Cost::Light);
     /// assert_eq!(gain.cost, Cost::Light);
     /// ```
     #[must_use]
@@ -386,7 +464,7 @@ impl Shape {
     /// ```
     /// use tutti_graph::Shape;
     /// use tutti_types::ChannelLayout;
-    /// let lane = Shape::audio(ChannelLayout::EMPTY, ChannelLayout::EMPTY)
+    /// let lane = Shape::EMPTY
     ///     .with_events(0, 1)
     ///     .with_no_note_events();
     /// assert!(!lane.note_events);
@@ -1100,7 +1178,7 @@ pub(crate) fn narrow_tail(ceiling: Tail, reported: Tail) -> Option<Tail> {
 ///
 /// impl Node for Gain {
 ///     fn shape(&self) -> Shape {
-///         Shape::audio(ChannelLayout::MONO, ChannelLayout::MONO)
+///         Shape::through_discrete(ChannelLayout::MONO)
 ///     }
 ///     fn prepare(&mut self, _: &Prepare) {}
 ///     fn process(&mut self, _: &Cx<'_>, mut io: Io<'_>) -> Status {
@@ -1184,7 +1262,7 @@ pub trait Node: Send + 'static {
 /// # use tutti_graph::NodeKey;
 /// struct Silence;
 /// impl Node for Silence {
-///     fn shape(&self) -> Shape { Shape::audio(ChannelLayout::EMPTY, ChannelLayout::MONO) }
+///     fn shape(&self) -> Shape { Shape::source_discrete(ChannelLayout::MONO) }
 ///     fn prepare(&mut self, _: &Prepare) {}
 ///     fn process(&mut self, _: &Cx<'_>, _: Io<'_>) -> Status { Status::Modified }
 ///     fn reset(&mut self) {}

@@ -54,10 +54,11 @@ struct Downmixer {
 
 impl Node for Downmixer {
     fn shape(&self) -> Shape {
-        Shape::audio(ChannelLayout::from_count(6), ChannelLayout::STEREO)
-            .with_latency(Latency::new(Samples(self.latency)))
-            .with_buses_in(Buses::new(&[smpte(6)]).expect("one bus"))
-            .with_buses_out(Buses::new(&[smpte(2)]).expect("one bus"))
+        Shape::buses(
+            Buses::new(&[smpte(6)]).expect("one bus"),
+            Buses::new(&[smpte(2)]).expect("one bus"),
+        )
+        .with_latency(Latency::new(Samples(self.latency)))
     }
 
     fn prepare(&mut self, _: &Prepare) {}

@@ -128,7 +128,7 @@ struct Gain {
 
 impl tutti_graph::Node for Gain {
     fn shape(&self) -> tutti_graph::Shape {
-        let s = tutti_graph::Shape::audio(ChannelLayout::MONO, ChannelLayout::MONO);
+        let s = tutti_graph::Shape::through_discrete(ChannelLayout::MONO);
         if self.light {
             s.with_cost(tutti_graph::Cost::Light)
         } else {

@@ -47,7 +47,7 @@ struct Src {
 
 impl Node for Src {
     fn shape(&self) -> Shape {
-        Shape::audio(ChannelLayout::EMPTY, ChannelLayout::EMPTY).with_events(0, 1)
+        Shape::EMPTY.with_events(0, 1)
     }
     fn prepare(&mut self, _: &Prepare) {}
     fn process(&mut self, _: &Cx<'_>, mut io: Io<'_>) -> Status {
@@ -74,7 +74,7 @@ struct Lag;
 
 impl Node for Lag {
     fn shape(&self) -> Shape {
-        Shape::audio(ChannelLayout::EMPTY, ChannelLayout::MONO)
+        Shape::source_discrete(ChannelLayout::MONO)
             .with_latency(tutti_types::Latency::new(Samples(LAG_FRAMES)))
             .with_tail(tutti_types::Tail::Unknown)
     }
@@ -93,7 +93,7 @@ impl Node for Sink {
         } else {
             ChannelLayout::EMPTY
         };
-        Shape::audio(a, ChannelLayout::EMPTY).with_events(1, 0)
+        Shape::sink_discrete(a).with_events(1, 0)
     }
     fn prepare(&mut self, _: &Prepare) {}
     fn process(&mut self, cx: &Cx<'_>, io: Io<'_>) -> Status {
@@ -326,7 +326,7 @@ impl Rig {
                     };
                     t.nodes.insert(
                         NodeKey(k),
-                        NodeSpec::new("n", sh.audio_in, sh.audio_out)
+                        NodeSpec::new("n", sh.audio_in(), sh.audio_out())
                             .with_latency(sh.latency.samples())
                             .with_tail(sh.tail),
                     );
@@ -1494,9 +1494,7 @@ fn a_source_without_note_events_closes_nothing() {
     struct Clock;
     impl Node for Clock {
         fn shape(&self) -> Shape {
-            Shape::audio(ChannelLayout::EMPTY, ChannelLayout::EMPTY)
-                .with_events(0, 1)
-                .with_no_note_events()
+            Shape::EMPTY.with_events(0, 1).with_no_note_events()
         }
         fn prepare(&mut self, _: &Prepare) {}
         fn process(&mut self, _: &Cx<'_>, mut io: Io<'_>) -> Status {
@@ -1541,9 +1539,7 @@ fn a_note_from_a_source_that_declared_none_is_caught() {
     struct Liar;
     impl Node for Liar {
         fn shape(&self) -> Shape {
-            Shape::audio(ChannelLayout::EMPTY, ChannelLayout::EMPTY)
-                .with_events(0, 1)
-                .with_no_note_events()
+            Shape::EMPTY.with_events(0, 1).with_no_note_events()
         }
         fn prepare(&mut self, _: &Prepare) {}
         fn process(&mut self, _: &Cx<'_>, mut io: Io<'_>) -> Status {
@@ -1565,7 +1561,7 @@ fn a_note_from_a_source_that_declared_none_is_caught() {
 /// Mutation (run): `note_events: false` in `Shape::audio` -> fails.
 #[test]
 fn a_shape_carries_note_events_by_default() {
-    let shape = Shape::audio(ChannelLayout::EMPTY, ChannelLayout::EMPTY).with_events(0, 1);
+    let shape = Shape::EMPTY.with_events(0, 1);
     assert!(shape.note_events);
     assert!(!shape.with_no_note_events().note_events);
 }
@@ -1581,7 +1577,7 @@ impl Clone for Once {
 }
 impl Node for Once {
     fn shape(&self) -> Shape {
-        Shape::audio(ChannelLayout::EMPTY, ChannelLayout::EMPTY).with_events(0, 1)
+        Shape::EMPTY.with_events(0, 1)
     }
     fn prepare(&mut self, _: &Prepare) {}
     fn process(&mut self, _: &Cx<'_>, mut io: Io<'_>) -> Status {
@@ -1596,7 +1592,7 @@ impl Node for Once {
 struct Hear(Log, u64);
 impl Node for Hear {
     fn shape(&self) -> Shape {
-        Shape::audio(ChannelLayout::EMPTY, ChannelLayout::MONO).with_events(1, 0)
+        Shape::source_discrete(ChannelLayout::MONO).with_events(1, 0)
     }
     fn prepare(&mut self, _: &Prepare) {}
     fn process(&mut self, cx: &Cx<'_>, mut io: Io<'_>) -> Status {
@@ -1888,7 +1884,7 @@ mod no_alloc {
     struct Count(Arc<AtomicU64>);
     impl Node for Count {
         fn shape(&self) -> Shape {
-            Shape::audio(ChannelLayout::EMPTY, ChannelLayout::EMPTY).with_events(1, 0)
+            Shape::EMPTY.with_events(1, 0)
         }
         fn prepare(&mut self, _: &Prepare) {}
         fn process(&mut self, _: &Cx<'_>, io: Io<'_>) -> Status {

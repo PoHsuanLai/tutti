@@ -106,8 +106,8 @@ fn tail_of(c: FreeverbControls) -> usize {
 fn the_ports_and_the_ceiling() {
     let fixed = prepared(FreeverbNode::general_midi(), SR, BLOCK);
     let shape = fixed.shape();
-    assert_eq!(shape.audio_in, ChannelLayout::MONO);
-    assert_eq!(shape.audio_out, ChannelLayout::STEREO);
+    assert_eq!(shape.audio_in(), ChannelLayout::MONO);
+    assert_eq!(shape.audio_out(), ChannelLayout::STEREO);
     assert_eq!(shape.latency.samples(), Samples::ZERO);
     assert_eq!(shape.params.len(), 0, "no cells");
     assert_eq!(shape.tail, Tail::Finite(Samples(tail_of(gm()))));

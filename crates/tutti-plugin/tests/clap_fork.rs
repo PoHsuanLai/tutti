@@ -1073,11 +1073,7 @@ struct MidiSink(Arc<std::sync::Mutex<Vec<(u64, u32)>>>);
 
 impl tutti_graph::Node for MidiSink {
     fn shape(&self) -> tutti_graph::Shape {
-        tutti_graph::Shape::audio(
-            tutti_types::ChannelLayout::EMPTY,
-            tutti_types::ChannelLayout::MONO,
-        )
-        .with_events(1, 0)
+        tutti_graph::Shape::source_discrete(tutti_types::ChannelLayout::MONO).with_events(1, 0)
     }
     fn prepare(&mut self, _: &Prepare) {}
     fn process(
@@ -1219,11 +1215,8 @@ fn ramp(t: u64) -> f32 {
 
 impl tutti_graph::Node for RampSource {
     fn shape(&self) -> tutti_graph::Shape {
-        tutti_graph::Shape::audio(
-            tutti_types::ChannelLayout::EMPTY,
-            tutti_types::ChannelLayout::MONO,
-        )
-        .with_tail(tutti_types::Tail::Unbounded)
+        tutti_graph::Shape::source_discrete(tutti_types::ChannelLayout::MONO)
+            .with_tail(tutti_types::Tail::Unbounded)
     }
     fn prepare(&mut self, _: &Prepare) {}
     fn process(

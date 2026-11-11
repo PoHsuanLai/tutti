@@ -1373,7 +1373,7 @@ impl Modulation {
         let width = match (decl.kind, feed) {
             (SignalKind::Follower { .. }, None) => return Ok(None),
             (SignalKind::Follower { .. }, Some(Feed::Audio(node))) => {
-                editor.shapes()[&node].audio_out
+                editor.shapes()[&node].audio_out()
             }
             (SignalKind::NoteEnvelope { .. }, None) => ChannelLayout::EMPTY,
             (SignalKind::NoteEnvelope { .. }, Some(Feed::Events(from))) => {
@@ -1561,7 +1561,7 @@ fn wire_feed(editor: &mut Editor, key: NodeKey, feed: Option<Feed>) {
             let width = editor
                 .shapes()
                 .get(&from)
-                .map_or(0, |s| s.audio_out.count());
+                .map_or(0, |s| s.audio_out().count());
             let t = &mut editor.spec_mut().topology;
             for port in 0..width {
                 t.edges.insert(

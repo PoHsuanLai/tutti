@@ -132,7 +132,11 @@ impl Node for Sink {
                 ChannelLayout::EMPTY
             }
         };
-        Shape::audio(layout(self.audio_in), layout(self.audio_out)).with_events(1, 0)
+        Shape::buses(
+            tutti_graph::Buses::discrete(layout(self.audio_in)),
+            tutti_graph::Buses::discrete(layout(self.audio_out)),
+        )
+        .with_events(1, 0)
     }
     fn prepare(&mut self, _: &Prepare) {}
     fn process(&mut self, cx: &Cx<'_>, mut io: Io<'_>) -> Status {
@@ -202,8 +206,7 @@ struct Latent(usize);
 
 impl Node for Latent {
     fn shape(&self) -> Shape {
-        Shape::audio(ChannelLayout::EMPTY, ChannelLayout::MONO)
-            .with_latency(Latency::new(Samples(self.0)))
+        Shape::source_discrete(ChannelLayout::MONO).with_latency(Latency::new(Samples(self.0)))
     }
     fn prepare(&mut self, _: &Prepare) {}
     fn process(&mut self, _: &Cx<'_>, mut io: Io<'_>) -> Status {
@@ -287,9 +290,7 @@ struct Script {
 
 impl Node for Script {
     fn shape(&self) -> Shape {
-        Shape::audio(ChannelLayout::EMPTY, ChannelLayout::EMPTY)
-            .with_events(0, 1)
-            .with_event_capacity(2048)
+        Shape::EMPTY.with_events(0, 1).with_event_capacity(2048)
     }
     fn prepare(&mut self, _: &Prepare) {}
     fn process(&mut self, _: &Cx<'_>, mut io: Io<'_>) -> Status {
@@ -313,7 +314,7 @@ struct Relay {
 
 impl Node for Relay {
     fn shape(&self) -> Shape {
-        Shape::audio(ChannelLayout::EMPTY, ChannelLayout::EMPTY)
+        Shape::EMPTY
             .with_events(1, 1)
             .with_event_capacity(self.capacity)
     }
@@ -812,9 +813,7 @@ struct Probe {
 
 impl Node for Probe {
     fn shape(&self) -> Shape {
-        Shape::audio(ChannelLayout::EMPTY, ChannelLayout::EMPTY)
-            .with_events(0, 1)
-            .with_event_capacity(8)
+        Shape::EMPTY.with_events(0, 1).with_event_capacity(8)
     }
     fn prepare(&mut self, _: &Prepare) {}
     fn process(&mut self, cx: &Cx<'_>, mut io: Io<'_>) -> Status {

@@ -20,7 +20,7 @@ use tutti_graph::{
     Cx, Event, Io, MissingSource, Node, Op, Prepare, Shape, Status, TapAlign, TapEvent, Unforkable,
 };
 use tutti_session::{EventSource, Session};
-use tutti_types::{ChannelLayout, Frame, SampleRate};
+use tutti_types::{Frame, SampleRate};
 use tutti_ump::Ump;
 
 /// A note-on on every frame that is a multiple of 4, its own frame in word 0.
@@ -28,7 +28,7 @@ struct Every4;
 
 impl Node for Every4 {
     fn shape(&self) -> Shape {
-        Shape::audio(ChannelLayout::EMPTY, ChannelLayout::EMPTY).with_events(0, 1)
+        Shape::EMPTY.with_events(0, 1)
     }
     fn prepare(&mut self, _: &Prepare) {}
     fn process(&mut self, cx: &Cx<'_>, mut io: Io<'_>) -> Status {

@@ -48,11 +48,13 @@ struct Sum(usize);
 
 impl Node for Sum {
     fn shape(&self) -> Shape {
-        Shape::audio(
-            ChannelLayout::try_from(2 * self.0).expect("a test width is small"),
-            ChannelLayout::STEREO,
-        )
-        .with_cost(Cost::Light)
+        // Ports with no bus: its inputs are the clicks it sums, not a bus.
+        Shape::EMPTY
+            .with_ports(
+                ChannelLayout::try_from(2 * self.0).expect("a test width is small"),
+                ChannelLayout::STEREO,
+            )
+            .with_cost(Cost::Light)
     }
     fn prepare(&mut self, _: &Prepare) {}
     fn process(&mut self, _: &Cx<'_>, mut io: Io<'_>) -> Status {

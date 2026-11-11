@@ -254,10 +254,7 @@ struct Vacant;
 
 impl Node for Vacant {
     fn shape(&self) -> crate::node::Shape {
-        crate::node::Shape::audio(
-            tutti_types::ChannelLayout::EMPTY,
-            tutti_types::ChannelLayout::EMPTY,
-        )
+        crate::node::Shape::EMPTY
     }
     fn prepare(&mut self, _: &Prepare) {}
     fn process(&mut self, _: &Cx<'_>, _: Io<'_>) -> Status {
@@ -428,7 +425,7 @@ impl Commit {
                     .iter()
                     .find(|(k, f)| *k == p.key && !f.is_cut())
                     .map(|&(key, f)| {
-                        let width = plan.unit(key).map_or(0, |u| u.shape.audio_out.count());
+                        let width = plan.unit(key).map_or(0, |u| u.shape.audio_out().count());
                         Box::new(Crossfade {
                             key,
                             out: None,
@@ -3301,7 +3298,7 @@ fn finish<A: AudioSlots, F: SlotFlags + ?Sized>(
 mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
-    use tutti_types::{At, ChannelLayout, SampleRate};
+    use tutti_types::{At, SampleRate};
 
     use super::*;
     use crate::event::EventKind;
@@ -3312,7 +3309,7 @@ mod tests {
 
     impl Node for Count {
         fn shape(&self) -> crate::node::Shape {
-            crate::node::Shape::audio(ChannelLayout::EMPTY, ChannelLayout::EMPTY).with_events(1, 0)
+            crate::node::Shape::EMPTY.with_events(1, 0)
         }
         fn prepare(&mut self, _: &Prepare) {}
         fn process(&mut self, _: &Cx<'_>, io: Io<'_>) -> Status {

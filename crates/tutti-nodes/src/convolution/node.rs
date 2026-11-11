@@ -396,7 +396,7 @@ impl Node for ConvolverNode {
     /// latency, which is declared on its own and compensated.
     fn shape(&self) -> Shape {
         let width = self.shape_width();
-        Shape::audio(width, width)
+        Shape::through_discrete(width)
             .with_latency(Latency::new(Samples(self.latency_samples)))
             .with_tail(ring_out(
                 self.convolvers
@@ -899,7 +899,10 @@ mod golden {
         let refs: Vec<&[f32]> = irs.iter().map(Vec::as_slice).collect();
         let wide = ConvolverNode::per_channel(&refs, 64);
         let shape = wide.shape();
-        assert_eq!((shape.audio_in.count(), shape.audio_out.count()), (6, 6));
+        assert_eq!(
+            (shape.audio_in().count(), shape.audio_out().count()),
+            (6, 6)
+        );
         assert_eq!(wide.layout(), ChannelLayout::from(6u16));
         let x = signal(6, 900);
         let got = render(wide, &x);

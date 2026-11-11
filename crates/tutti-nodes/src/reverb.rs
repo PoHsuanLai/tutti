@@ -459,17 +459,19 @@ impl<D: NodeDesign> Node for DesignNode<D> {
             Mode::Live => self.params.addrs(),
             Mode::Fixed(_) => &[],
         };
-        Shape::audio(self.channels.input, self.channels.output)
-            .with_buses_in(main_bus(self.channels.input))
-            .with_buses_out(main_bus(self.channels.main_output()))
-            .with_cost(cost(self.realization.effort()))
-            .with_latency(Latency::new(self.realization.latency()))
-            .with_tail(if D::PARKS {
-                tail_of(self.ceiling)
-            } else {
-                Tail::Unknown
-            })
-            .with_param_addrs(addrs)
+        Shape::buses(
+            main_bus(self.channels.input),
+            main_bus(self.channels.main_output()),
+        )
+        .with_ports(self.channels.input, self.channels.output)
+        .with_cost(cost(self.realization.effort()))
+        .with_latency(Latency::new(self.realization.latency()))
+        .with_tail(if D::PARKS {
+            tail_of(self.ceiling)
+        } else {
+            Tail::Unknown
+        })
+        .with_param_addrs(addrs)
     }
 
     fn prepare(&mut self, p: &Prepare) {

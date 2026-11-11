@@ -32,7 +32,7 @@ struct Tap(Seen);
 
 impl Node for Tap {
     fn shape(&self) -> Shape {
-        Shape::audio(ChannelLayout::EMPTY, ChannelLayout::EMPTY).with_events(1, 0)
+        Shape::EMPTY.with_events(1, 0)
     }
     fn prepare(&mut self, _: &Prepare) {}
     fn process(&mut self, _: &Cx<'_>, io: Io<'_>) -> Status {

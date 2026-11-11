@@ -482,7 +482,10 @@ mod tests {
             Q::new(0.7),
         );
         let shape = f.shape();
-        assert_eq!((shape.audio_in.count(), shape.audio_out.count()), (6, 6));
+        assert_eq!(
+            (shape.audio_in().count(), shape.audio_out().count()),
+            (6, 6)
+        );
         assert_eq!(
             shape.params.as_slice(),
             &[UnitParam::Cutoff, UnitParam::Q, UnitParam::GainDb][..]

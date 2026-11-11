@@ -31,11 +31,7 @@ struct Sink(Arc<Mutex<Tally>>);
 
 impl Node for Sink {
     fn shape(&self) -> Shape {
-        Shape::audio(
-            tutti_types::ChannelLayout::EMPTY,
-            tutti_types::ChannelLayout::EMPTY,
-        )
-        .with_events(1, 0)
+        Shape::EMPTY.with_events(1, 0)
     }
     fn prepare(&mut self, _: &Prepare) {}
     fn process(&mut self, _cx: &Cx<'_>, io: Io<'_>) -> Status {

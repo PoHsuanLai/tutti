@@ -674,7 +674,7 @@ fn surround_wave(duration_secs: f64, sample_rate: f64) -> Arc<Wave> {
 fn memory_source_process_is_allocation_free_at_six_channels() {
     let node =
         MemorySource::with_channels(surround_wave(2.0, 48_000.0), 6u16).expect("a placeable wave");
-    assert_eq!(node.shape().audio_out.count(), 6);
+    assert_eq!(node.shape().audio_out().count(), 6);
     let mut rig = Rig::new(node, 64);
 
     for _ in 0..16 {
@@ -712,7 +712,7 @@ fn memory_source_one_frame_blocks_are_allocation_free_at_six_channels() {
 fn memory_source_process_is_allocation_free_when_folding_six_to_two() {
     // 6-channel wave, 2-channel node.
     let node = MemorySource::new(surround_wave(2.0, 48_000.0)).expect("a placeable wave");
-    assert_eq!(node.shape().audio_out.count(), 2);
+    assert_eq!(node.shape().audio_out().count(), 2);
     let mut rig = Rig::new(node, 64);
 
     for _ in 0..16 {
@@ -765,7 +765,7 @@ fn six_channel_clip_reaches_six_reader_outputs_without_allocating() {
             source: VoiceSource::Memory(sampler),
         },
     );
-    assert_eq!(reader.shape().audio_out.count(), 6);
+    assert_eq!(reader.shape().audio_out().count(), 6);
     let mut rig = Rig::new(reader, 64);
 
     for _ in 0..16 {

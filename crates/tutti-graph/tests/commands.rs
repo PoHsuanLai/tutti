@@ -33,7 +33,7 @@ struct Probe {
 
 impl Node for Probe {
     fn shape(&self) -> Shape {
-        Shape::audio(ChannelLayout::EMPTY, ChannelLayout::MONO)
+        Shape::source_discrete(ChannelLayout::MONO)
             .with_events(1, 0)
             .with_tail(Tail::Unknown)
     }
@@ -413,7 +413,7 @@ struct Impulse(Arc<Mutex<Vec<(u64, u32)>>>);
 
 impl Node for Impulse {
     fn shape(&self) -> Shape {
-        Shape::audio(ChannelLayout::MONO, ChannelLayout::MONO)
+        Shape::through_discrete(ChannelLayout::MONO)
             .with_events(1, 0)
             .with_tail(Tail::Unknown)
     }
@@ -694,7 +694,7 @@ fn a_ramp_into_a_coarse_node_is_refused() {
     struct Coarse;
     impl Node for Coarse {
         fn shape(&self) -> Shape {
-            Shape::audio(ChannelLayout::EMPTY, ChannelLayout::EMPTY)
+            Shape::EMPTY
                 .with_events(1, 0)
                 .with_event_resolution(tutti_graph::Resolution::Frames(8))
         }

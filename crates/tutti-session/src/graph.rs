@@ -1672,7 +1672,7 @@ impl Graph {
     /// (`Shape::buses_in`, `buses_out`). `None` when `node` is not in the
     /// graph.
     pub fn buses(&self, node: NodeKey) -> Option<(Buses, Buses)> {
-        self.shape(node).map(|s| (s.buses_in, s.buses_out))
+        self.shape(node).map(|s| (*s.buses_in(), *s.buses_out()))
     }
 
     /// Feeds input bus `to` from `from`: a fold between the two declared
@@ -1693,6 +1693,21 @@ impl Graph {
     /// an edge the graph already has.
     pub fn connect_bus(&mut self, from: BusSource, to: BusRef) -> Result<(), BusError> {
         self.editor.connect_bus(from, to)?;
+        self.edited = true;
+        Ok(())
+    }
+
+    /// As [`connect_bus`](Self::connect_bus), channel by index: sink channel
+    /// `c` is source channel `c` and a wider sink is zero-filled, whatever
+    /// either bus names. For an edge whose author knows the channels line up;
+    /// `connect_bus` never falls back to it.
+    ///
+    /// # Errors
+    ///
+    /// As [`connect_bus`](Self::connect_bus); a sink narrower than the source
+    /// is refused.
+    pub fn connect_bus_by_index(&mut self, from: BusSource, to: BusRef) -> Result<(), BusError> {
+        self.editor.connect_bus_by_index(from, to)?;
         self.edited = true;
         Ok(())
     }
@@ -1726,6 +1741,18 @@ impl Graph {
         Ok(())
     }
 
+    /// As [`connect_bus_to_root`](Self::connect_bus_to_root), channel by
+    /// index onto the declared root.
+    ///
+    /// # Errors
+    ///
+    /// As [`connect_bus_to_root`](Self::connect_bus_to_root).
+    pub fn connect_bus_to_root_by_index(&mut self, from: BusSource) -> Result<(), BusError> {
+        self.editor.connect_bus_to_root_by_index(from)?;
+        self.edited = true;
+        Ok(())
+    }
+
     /// Removes the bus edge `from -> root`, its lanes with it. Returns
     /// whether it was connected, and marks the graph edited when it was.
     pub fn disconnect_bus_from_root(&mut self, from: BusSource) -> bool {
@@ -1736,7 +1763,12 @@ impl Graph {
 
     /// What feeds the root by a bus edge, in source order.
     pub fn root_bus_sources(&self) -> Vec<BusSource> {
-        self.editor.spec().root_sources.clone()
+        self.editor
+            .spec()
+            .root_sources
+            .iter()
+            .map(|f| f.source)
+            .collect()
     }
 
     /// What feeds input bus `bus` of `node` by a bus edge, in source order.
@@ -1745,7 +1777,7 @@ impl Graph {
             .spec()
             .bus_edges
             .get(&BusRef { node, bus })
-            .cloned()
+            .map(|feeds| feeds.iter().map(|f| f.source).collect())
             .unwrap_or_default()
     }
 
@@ -2533,12 +2565,14 @@ impl Graph {
 
     /// `node`'s input port count.
     pub fn node_inputs(&self, node: NodeKey) -> usize {
-        self.shape(node).map_or(0, |s| s.audio_in.count() as usize)
+        self.shape(node)
+            .map_or(0, |s| s.audio_in().count() as usize)
     }
 
     /// `node`'s output port count.
     pub fn node_outputs(&self, node: NodeKey) -> usize {
-        self.shape(node).map_or(0, |s| s.audio_out.count() as usize)
+        self.shape(node)
+            .map_or(0, |s| s.audio_out().count() as usize)
     }
 
     /// The latency `node` reports: the shape the editor holds, read when the

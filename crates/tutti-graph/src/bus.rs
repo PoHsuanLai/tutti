@@ -97,14 +97,28 @@ impl Buses {
         buses
     }
 
-    /// The buses of a side that states only a width: one
-    /// [`Main`](BusRole::Main) bus of that many
-    /// [`Discrete`](tutti_types::Speaker::Discrete) channels, claiming no
-    /// placement (a width is not a placement). [`NONE`](Self::NONE) for a
-    /// width of 0, and for one wider than a bus holds: its channels are
-    /// reached by port.
+    /// One [`Main`](BusRole::Main) bus of `width` channels that name no
+    /// speaker ([`Discrete`](tutti_types::Speaker::Discrete)): unplaced, said
+    /// so. [`NONE`](Self::NONE) for a width of 0.
+    ///
+    /// # Panics
+    ///
+    /// Past [`MAX_BUS_CHANNELS`](tutti_types::MAX_BUS_CHANNELS) (in a `const`
+    /// context, at compile time): a wider side is
+    /// [`Shape::through_discrete`](crate::Shape::through_discrete) and its
+    /// kin, or several buses.
     #[must_use]
-    pub const fn of_width(width: ChannelLayout) -> Self {
+    pub const fn discrete(width: ChannelLayout) -> Self {
+        assert!(
+            width.count() as usize <= tutti_types::MAX_BUS_CHANNELS,
+            "a discrete bus wider than a bus holds"
+        );
+        Self::unplaced(width)
+    }
+
+    /// [`discrete`](Self::discrete), or [`NONE`](Self::NONE) past a bus's
+    /// width, whose channels are then ports with no bus.
+    pub(crate) const fn unplaced(width: ChannelLayout) -> Self {
         match BusTopology::discrete(width) {
             Some(topology) if width.count() > 0 => Self::main(topology),
             _ => Self::NONE,

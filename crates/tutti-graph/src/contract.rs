@@ -1005,7 +1005,7 @@ impl Row {
         };
         if audio {
             assert!(
-                port < shape.audio_in.count(),
+                port < shape.audio_in().count(),
                 "{}: audio input {port} out of range",
                 self.name
             );
@@ -1106,7 +1106,7 @@ impl Row {
         let src = g.add(Unforkable(pulse));
         if topo == Topo::Pdc {
             assert!(
-                shape.audio_in.count() > 0,
+                shape.audio_in().count() > 0,
                 "{}: behind PDC the latent sibling feeds audio input 0",
                 self.name
             );
@@ -1332,7 +1332,7 @@ impl ParamEcho {
 
 impl Node for ParamEcho {
     fn shape(&self) -> Shape {
-        Shape::audio(ChannelLayout::MONO, ChannelLayout::MONO).with_param_addrs(&[self.param])
+        Shape::through_discrete(ChannelLayout::MONO).with_param_addrs(&[self.param])
     }
 
     fn prepare(&mut self, _: &Prepare) {}
@@ -1408,7 +1408,7 @@ impl Pulse {
 
 impl Node for Pulse {
     fn shape(&self) -> Shape {
-        Shape::audio(ChannelLayout::EMPTY, ChannelLayout::MONO)
+        Shape::source_discrete(ChannelLayout::MONO)
             .with_events(1, 0)
             .with_latency(self.latency)
             .with_tail(tutti_types::Tail::Unknown)
@@ -1485,7 +1485,7 @@ impl Lookahead {
 
 impl Node for Lookahead {
     fn shape(&self) -> Shape {
-        Shape::audio(ChannelLayout::MONO, ChannelLayout::MONO)
+        Shape::through_discrete(ChannelLayout::MONO)
             .with_latency(self.latency)
             // Pure delay: nothing rings once the latency is compensated.
             .with_tail(tutti_types::Tail::None)
@@ -1530,7 +1530,7 @@ impl Latent {
 
 impl Node for Latent {
     fn shape(&self) -> Shape {
-        Shape::audio(ChannelLayout::EMPTY, ChannelLayout::MONO)
+        Shape::source_discrete(ChannelLayout::MONO)
             .with_events(0, 1)
             .with_latency(self.latency)
     }
@@ -1616,7 +1616,7 @@ impl Emitter {
 
 impl Node for Emitter {
     fn shape(&self) -> Shape {
-        Shape::audio(ChannelLayout::EMPTY, ChannelLayout::EMPTY).with_events(0, 1)
+        Shape::EMPTY.with_events(0, 1)
     }
 
     fn prepare(&mut self, _: &Prepare) {}
@@ -1662,7 +1662,7 @@ impl ParamPulse {
 
 impl Node for ParamPulse {
     fn shape(&self) -> Shape {
-        Shape::audio(ChannelLayout::EMPTY, ChannelLayout::EMPTY).with_events(0, 1)
+        Shape::EMPTY.with_events(0, 1)
     }
 
     fn prepare(&mut self, _: &Prepare) {}
@@ -1688,7 +1688,10 @@ pub struct Sum;
 
 impl Node for Sum {
     fn shape(&self) -> Shape {
-        Shape::audio(ChannelLayout::STEREO, ChannelLayout::MONO)
+        Shape::buses(
+            crate::Buses::discrete(ChannelLayout::STEREO),
+            crate::Buses::discrete(ChannelLayout::MONO),
+        )
     }
 
     fn prepare(&mut self, _: &Prepare) {}
@@ -1865,7 +1868,7 @@ pub fn drive_input(
     assert!(frames > 0, "a node is never called with zero frames");
     assert_eq!(
         inputs.len(),
-        usize::from(shape.audio_in.count()),
+        usize::from(shape.audio_in().count()),
         "one slice per audio input"
     );
     assert!(
@@ -1873,7 +1876,7 @@ pub fn drive_input(
             && params.iter().flatten().all(|p| p.len() == frames),
         "every input and param slice is the block long"
     );
-    let mut out = vec![vec![0.0f32; frames]; usize::from(shape.audio_out.count())];
+    let mut out = vec![vec![0.0f32; frames]; usize::from(shape.audio_out().count())];
     let mut refs: Vec<&mut [f32]> = out.iter_mut().map(|c| &mut c[..]).collect();
     let params: Vec<ParamInput<'_>> = params
         .iter()
@@ -1949,7 +1952,7 @@ pub fn drive_input(
 pub fn assert_honest_tail(node: &mut dyn Node, rate: SampleRate) {
     const BLOCK: usize = 64;
     let shape = node.shape();
-    let width = usize::from(shape.audio_in.count());
+    let width = usize::from(shape.audio_in().count());
     let latency = shape.latency.samples().get();
     let env = |frame: u64| Env {
         frame: Frame(frame),
@@ -2237,8 +2240,8 @@ impl<N: Node + ?Sized> Direct<N> {
         node.prepare(&Prepare::new(rate, Samples(frames)));
         let shape = node.shape();
         let (ins, outs) = (
-            usize::from(shape.audio_in.count()),
-            usize::from(shape.audio_out.count()),
+            usize::from(shape.audio_in().count()),
+            usize::from(shape.audio_out().count()),
         );
         assert!(
             ins <= RIG_MAX_CHANNELS && outs <= RIG_MAX_CHANNELS,

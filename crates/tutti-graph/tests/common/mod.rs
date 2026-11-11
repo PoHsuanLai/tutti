@@ -202,42 +202,41 @@ impl TestNode {
     fn kind_shape(&self) -> Shape {
         match self.kind {
             Kind::Bused { .. } => unreachable!("`counted` unwraps the buses"),
-            Kind::Const { width, .. } => Shape::audio(ch(0), ch(width)),
-            Kind::Gain { width, .. } => Shape::audio(ch(width), ch(width)).with_in_place(),
-            Kind::Sum { inputs } => Shape::audio(ch(inputs), ch(1)),
-            Kind::Smooth => Shape::audio(ch(1), ch(1))
+            Kind::Const { width, .. } => Shape::source_discrete(ch(width)),
+            Kind::Gain { width, .. } => Shape::through_discrete(ch(width)).with_in_place(),
+            // Any number of inputs, which are not a bus: ports.
+            Kind::Sum { inputs } => Shape::EMPTY.with_ports(ch(inputs), ch(1)),
+            Kind::Smooth => Shape::through_discrete(ch(1))
                 .with_tail(Tail::Finite(Samples(1)))
                 .with_in_place(),
             // A pure delay declared as latency: its tail, which excludes
             // latency, is none.
-            Kind::Lag { latency } => Shape::audio(ch(1), ch(1))
+            Kind::Lag { latency } => Shape::through_discrete(ch(1))
                 .with_latency(lat(latency))
                 .with_tail(Tail::None),
-            Kind::Emitter { .. } => Shape::audio(ch(0), ch(1)).with_events(0, 1),
-            Kind::GainDriver { latency, .. } | Kind::MixDriver { latency, .. } => {
-                Shape::audio(ch(0), ch(0))
-                    .with_events(0, 1)
-                    .with_latency(lat(latency))
-                    .with_tail(Tail::None)
-            }
-            Kind::Burst { cap, .. } => Shape::audio(ch(0), ch(1))
+            Kind::Emitter { .. } => Shape::source_discrete(ch(1)).with_events(0, 1),
+            Kind::GainDriver { latency, .. } | Kind::MixDriver { latency, .. } => Shape::EMPTY
+                .with_events(0, 1)
+                .with_latency(lat(latency))
+                .with_tail(Tail::None),
+            Kind::Burst { cap, .. } => Shape::source_discrete(ch(1))
                 .with_events(0, 1)
                 .with_event_capacity(cap),
-            Kind::Consumer { inputs } => Shape::audio(ch(0), ch(1))
+            Kind::Consumer { inputs } => Shape::source_discrete(ch(1))
                 .with_events(inputs, 0)
                 .with_tail(Tail::Unbounded),
-            Kind::EventLag { latency } => Shape::audio(ch(0), ch(0))
+            Kind::EventLag { latency } => Shape::EMPTY
                 .with_events(1, 1)
                 .with_latency(lat(latency))
                 .with_tail(Tail::None),
-            Kind::EnvProbe => Shape::audio(ch(0), ch(1)),
-            Kind::Thru { width } => Shape::audio(ch(width), ch(width)),
-            Kind::ThruInPlace { width } => Shape::audio(ch(width), ch(width)).with_in_place(),
+            Kind::EnvProbe => Shape::source_discrete(ch(1)),
+            Kind::Thru { width } => Shape::through_discrete(ch(width)),
+            Kind::ThruInPlace { width } => Shape::through_discrete(ch(width)).with_in_place(),
             Kind::Mixed {
                 width,
                 events_in,
                 events_out,
-            } => Shape::audio(ch(width), ch(width))
+            } => Shape::through_discrete(ch(width))
                 .with_events(events_in, events_out)
                 .with_tail(Tail::Unbounded)
                 .with_in_place(),
@@ -247,18 +246,40 @@ impl TestNode {
                 latency,
                 tail,
                 ..
-            } => Shape::audio(ch(ins), ch(outs))
-                .with_latency(lat(latency))
-                .with_tail(tail),
+            } => Shape::buses(
+                tutti_graph::Buses::discrete(ch(ins)),
+                tutti_graph::Buses::discrete(ch(outs)),
+            )
+            .with_latency(lat(latency))
+            .with_tail(tail),
         }
     }
+}
+
+/// `shape`'s figures over these buses, its ports kept.
+#[allow(dead_code)]
+pub fn rebused(shape: Shape, buses_in: tutti_graph::Buses, buses_out: tutti_graph::Buses) -> Shape {
+    let mut bused =
+        Shape::buses(buses_in, buses_out).with_ports(shape.audio_in(), shape.audio_out());
+    bused.event_in = shape.event_in;
+    bused.event_out = shape.event_out;
+    bused.event_capacity = shape.event_capacity;
+    bused.latency = shape.latency;
+    bused.tail = shape.tail;
+    bused.in_place = shape.in_place;
+    bused.event_resolution = shape.event_resolution;
+    bused.params = shape.params;
+    bused.cost = shape.cost;
+    bused.note_events = shape.note_events;
+    bused
 }
 
 impl Node for TestNode {
     fn shape(&self) -> Shape {
         let shape = self.kind_shape().with_cost(self.cost);
         match self.buses {
-            Some((buses_in, buses_out)) => shape.with_buses_in(buses_in).with_buses_out(buses_out),
+            // The kind's figures over the buses the test declared.
+            Some((buses_in, buses_out)) => rebused(shape, buses_in, buses_out),
             None => shape,
         }
     }
@@ -1012,7 +1033,7 @@ impl Pulse {
 
 impl Node for Pulse {
     fn shape(&self) -> Shape {
-        Shape::audio(ChannelLayout::EMPTY, ChannelLayout::MONO)
+        Shape::source_discrete(ChannelLayout::MONO)
     }
     fn prepare(&mut self, _: &Prepare) {}
     fn process(&mut self, _: &Cx<'_>, mut io: Io<'_>) -> Status {
@@ -1101,7 +1122,7 @@ impl Ringer {
 impl Node for Ringer {
     fn shape(&self) -> Shape {
         let ch = ChannelLayout::try_from(self.width).expect("a width");
-        let shape = Shape::audio(ch, ch)
+        let shape = Shape::through_discrete(ch)
             .with_latency(Latency::new(self.latency))
             .with_tail(self.ceiling);
         if self.event_out {

@@ -600,7 +600,7 @@ impl Error for ForkError {
 /// # #[derive(Clone)]
 /// # struct Silence;
 /// # impl Node for Silence {
-/// #     fn shape(&self) -> Shape { Shape::audio(ChannelLayout::EMPTY, ChannelLayout::MONO) }
+/// #     fn shape(&self) -> Shape { Shape::source_discrete(ChannelLayout::MONO) }
 /// #     fn prepare(&mut self, _: &Prepare) {}
 /// #     fn process(&mut self, _: &Cx<'_>, _: Io<'_>) -> Status { Status::Modified }
 /// #     fn reset(&mut self) {}
@@ -678,7 +678,7 @@ impl<N: Node + Clone + Send + 'static> IntoNode for ForkByClone<N> {
 /// # use tutti_graph::NodeKey;
 /// # struct Silence;
 /// # impl Node for Silence {
-/// #     fn shape(&self) -> Shape { Shape::audio(ChannelLayout::EMPTY, ChannelLayout::MONO) }
+/// #     fn shape(&self) -> Shape { Shape::source_discrete(ChannelLayout::MONO) }
 /// #     fn prepare(&mut self, _: &Prepare) {}
 /// #     fn process(&mut self, _: &Cx<'_>, _: Io<'_>) -> Status { Status::Modified }
 /// #     fn reset(&mut self) {}
@@ -941,7 +941,7 @@ impl Editor {
                 let Some(shape) = self.shapes().get(&key) else {
                     return Err(ForkError::NoSuchNode { key });
                 };
-                let outs = shape.audio_out.count();
+                let outs = shape.audio_out().count();
                 if outs == 0 || live.topology.outputs.is_empty() {
                     return Err(ForkError::NoOutputs { key });
                 }

@@ -63,8 +63,8 @@ fn the_dsp_library_and_the_node_contract_are_reachable() {
     // `tutti::` too.
     let node = tutti::nodes::testing::Const::frame(&[0.5, 0.5]);
     let shape = tutti::graph::Node::shape(&node);
-    assert_eq!(shape.audio_out, ChannelLayout::STEREO);
-    assert_eq!(shape.audio_in, ChannelLayout::EMPTY);
+    assert_eq!(shape.audio_out(), ChannelLayout::STEREO);
+    assert_eq!(shape.audio_in(), ChannelLayout::EMPTY);
 }
 
 /// Offline export, end to end, through the façade only.

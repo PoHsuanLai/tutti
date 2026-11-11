@@ -5,7 +5,7 @@ use tutti_graph::{
     Cost, Cx, Event, EventKind, Io, Law, Node, Offset, ParamSegment, Prepare, Shape, Status,
 };
 use tutti_modulation::{Adsr, SignalKind, SourceId, SourceNode};
-use tutti_types::{ChannelLayout, SampleRate};
+use tutti_types::SampleRate;
 use tutti_types::{Frame, SamplePosition, Samples};
 use tutti_ump::KeyEvent;
 
@@ -304,7 +304,7 @@ impl Node for NoteEnvelopeNode {
     /// `Light`: it does work only on a note, a stage boundary or a play
     /// start, a few comparisons and one segment each.
     fn shape(&self) -> Shape {
-        Shape::audio(ChannelLayout::EMPTY, ChannelLayout::EMPTY)
+        Shape::EMPTY
             .with_events(1, 1)
             .with_event_capacity(NOTE_ENVELOPE_EVENT_CAPACITY)
             .with_cost(Cost::Light)

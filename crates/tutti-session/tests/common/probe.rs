@@ -61,7 +61,7 @@ impl ProbeUnit {
 
 impl Node for ProbeUnit {
     fn shape(&self) -> Shape {
-        let shape = Shape::audio(ChannelLayout::EMPTY, ChannelLayout::MONO);
+        let shape = Shape::source_discrete(ChannelLayout::MONO);
         match self.extra {
             None => shape.with_params(&[self.param]),
             Some(extra) => shape.with_params(&[self.param, extra]),
@@ -138,7 +138,7 @@ pub struct Pulse {
 
 impl Node for Pulse {
     fn shape(&self) -> Shape {
-        Shape::audio(ChannelLayout::EMPTY, ChannelLayout::STEREO)
+        Shape::source_discrete(ChannelLayout::STEREO)
     }
 
     fn prepare(&mut self, _: &Prepare) {}

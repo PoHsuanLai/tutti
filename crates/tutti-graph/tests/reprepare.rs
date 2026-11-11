@@ -37,9 +37,7 @@ struct Recorder(Inbox);
 
 impl Node for Recorder {
     fn shape(&self) -> Shape {
-        Shape::audio(ChannelLayout::EMPTY, ChannelLayout::EMPTY)
-            .with_events(1, 0)
-            .with_tail(Tail::Unknown)
+        Shape::EMPTY.with_events(1, 0).with_tail(Tail::Unknown)
     }
     fn prepare(&mut self, _: &Prepare) {}
     fn process(&mut self, cx: &Cx<'_>, io: Io<'_>) -> Status {
@@ -364,7 +362,7 @@ struct RateLatency {
 
 impl Node for RateLatency {
     fn shape(&self) -> Shape {
-        Shape::audio(ChannelLayout::MONO, ChannelLayout::MONO)
+        Shape::through_discrete(ChannelLayout::MONO)
             .with_latency(Latency::new(Samples(self.latency)))
     }
     fn prepare(&mut self, p: &Prepare) {
@@ -517,7 +515,7 @@ struct FragileAt96k;
 
 impl Node for FragileAt96k {
     fn shape(&self) -> Shape {
-        Shape::audio(ChannelLayout::EMPTY, ChannelLayout::MONO)
+        Shape::source_discrete(ChannelLayout::MONO)
     }
     fn prepare(&mut self, p: &Prepare) {
         assert!(p.sample_rate().get() < 90_000.0, "cannot run this fast");
@@ -534,9 +532,7 @@ struct CoarseAt96k(tutti_graph::Resolution);
 
 impl Node for CoarseAt96k {
     fn shape(&self) -> Shape {
-        Shape::audio(ChannelLayout::EMPTY, ChannelLayout::EMPTY)
-            .with_events(1, 0)
-            .with_event_resolution(self.0)
+        Shape::EMPTY.with_events(1, 0).with_event_resolution(self.0)
     }
     fn prepare(&mut self, p: &Prepare) {
         self.0 = if p.sample_rate().get() < 90_000.0 {

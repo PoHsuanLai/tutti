@@ -169,7 +169,7 @@ realization keeps it.
 
 ### 2.4 Channel shape
 
-`Shape::audio(in, out)` is fixed at node construction; width is runtime
+The node's shape (`Shape::buses`, doc 013 amendment T) is fixed at node construction; width is runtime
 (`ChannelLayout`), never a const generic. A `Design` reports its shape.
 mono -> stereo is the send case (two decorrelated outputs, `width` toward mono);
 stereo -> stereo feeds each input through `B`; N -> N is native to an FDN

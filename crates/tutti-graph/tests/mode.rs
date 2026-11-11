@@ -64,7 +64,7 @@ fn direct(node: u64) -> Edge {
 
 fn spec_of(kind: &Kind) -> NodeSpec {
     let s = TestNode::new(kind.clone()).shape();
-    NodeSpec::new("test", s.audio_in, s.audio_out)
+    NodeSpec::new("test", s.audio_in(), s.audio_out())
         .with_latency(s.latency.samples())
         .with_tail(s.tail)
 }
@@ -914,10 +914,13 @@ impl Probe {
 impl Node for Probe {
     fn shape(&self) -> Shape {
         let ch = |n| ChannelLayout::try_from(n).expect("a width");
-        Shape::audio(ch(self.ins), ch(self.outs))
-            .with_latency(Latency::new(Samples(self.latency)))
-            .with_events(self.events_in, 0)
-            .with_tail(Tail::Unbounded)
+        Shape::buses(
+            tutti_graph::Buses::discrete(ch(self.ins)),
+            tutti_graph::Buses::discrete(ch(self.outs)),
+        )
+        .with_latency(Latency::new(Samples(self.latency)))
+        .with_events(self.events_in, 0)
+        .with_tail(Tail::Unbounded)
     }
     fn prepare(&mut self, _: &Prepare) {}
     fn process(&mut self, cx: &Cx<'_>, mut io: Io<'_>) -> Status {
@@ -1187,7 +1190,7 @@ struct Src {
 
 impl Node for Src {
     fn shape(&self) -> Shape {
-        Shape::audio(ChannelLayout::EMPTY, ChannelLayout::EMPTY).with_events(0, 1)
+        Shape::EMPTY.with_events(0, 1)
     }
     fn prepare(&mut self, _: &Prepare) {}
     fn process(&mut self, _: &Cx<'_>, mut io: Io<'_>) -> Status {
@@ -1371,7 +1374,7 @@ struct Hook {
 
 impl Node for Hook {
     fn shape(&self) -> Shape {
-        Shape::audio(ChannelLayout::EMPTY, ChannelLayout::MONO)
+        Shape::source_discrete(ChannelLayout::MONO)
     }
     fn prepare(&mut self, _: &Prepare) {}
     fn process(&mut self, _: &Cx<'_>, mut io: Io<'_>) -> Status {

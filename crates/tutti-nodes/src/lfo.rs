@@ -382,7 +382,7 @@ impl<M: Modulator + Send + 'static> Node for ModulatorNode<M> {
             LfoMode::FreeRunning => 2,
             LfoMode::BeatSynced => 1,
         };
-        Shape::audio(ChannelLayout::EMPTY, ChannelLayout::MONO)
+        Shape::source_discrete(ChannelLayout::MONO)
             .with_cost(tutti_graph::Cost::Moderate)
             .with_tail(Tail::Unbounded)
             .with_params(&LFO_PARAMS[..ports])
@@ -591,7 +591,7 @@ mod tests {
             .with_frequency(Hz(2.0));
         assert_eq!(lfo.mode, LfoMode::FreeRunning);
         assert_eq!(
-            lfo.shape().audio_in.count(),
+            lfo.shape().audio_in().count(),
             0,
             "a free-running LFO has no inputs"
         );
@@ -657,9 +657,6 @@ mod tests {
     /// No inputs, one output, never skipped: a generator's tail is
     /// unbounded, or the executor would stop calling it once its (absent)
     /// inputs were silent.
-    ///
-    /// Mutation (run): `Shape::audio(..)` without `with_tail(Unbounded)`
-    /// (the default `Tail::None`) → fails.
     #[test]
     fn a_generator_with_no_inputs_is_never_skipped() {
         for lfo in [
@@ -667,8 +664,8 @@ mod tests {
             LfoNode::new(LfoShape::Sine).with_beat_sync(BeatDuration::new(1.0)),
         ] {
             let shape = lfo.shape();
-            assert_eq!(shape.audio_in.count(), 0);
-            assert_eq!(shape.audio_out.count(), 1);
+            assert_eq!(shape.audio_in().count(), 0);
+            assert_eq!(shape.audio_out().count(), 1);
             assert_eq!(shape.tail, Tail::Unbounded);
         }
     }

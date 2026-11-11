@@ -27,7 +27,7 @@ fn block(width: usize, seed: usize) -> Vec<Vec<f32>> {
 }
 
 fn renders_finite(node: &mut dyn Node, blocks: usize) -> bool {
-    let width = usize::from(node.shape().audio_in.count());
+    let width = usize::from(node.shape().audio_in().count());
     let mut ok = true;
     for k in 0..blocks {
         let chans = block(width, k);

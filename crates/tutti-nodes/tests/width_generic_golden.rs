@@ -425,12 +425,12 @@ fn render(case: &mut Case) -> Vec<Vec<f32>> {
 fn render_mixed(case: &mut Case, mix: Mix) -> Vec<Vec<f32>> {
     let node = std::mem::replace(&mut case.node, Box::new(Silent));
     let shape = node.shape();
-    let mut g = GraphBuilder::new(shape.audio_in, shape.audio_out);
+    let mut g = GraphBuilder::new(shape.audio_in(), shape.audio_out());
     let key = g.add(Unforkable(node));
-    for c in 0..usize::from(shape.audio_in.count()) {
+    for c in 0..usize::from(shape.audio_in().count()) {
         g.connect_input(c, key, c);
     }
-    for c in 0..usize::from(shape.audio_out.count()) {
+    for c in 0..usize::from(shape.audio_out().count()) {
         g.connect_output(key, c, c);
     }
     g.spec_mut().set_mix(key, mix);
@@ -466,7 +466,7 @@ struct Silent;
 
 impl Node for Silent {
     fn shape(&self) -> tutti_graph::Shape {
-        tutti_graph::Shape::audio(ChannelLayout::EMPTY, ChannelLayout::EMPTY)
+        tutti_graph::Shape::EMPTY
     }
     fn prepare(&mut self, _: &Prepare) {}
     fn process(&mut self, _: &tutti_graph::Cx<'_>, _: tutti_graph::Io<'_>) -> tutti_graph::Status {

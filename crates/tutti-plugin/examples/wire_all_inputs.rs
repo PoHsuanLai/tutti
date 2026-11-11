@@ -136,8 +136,8 @@ fn main() -> BridgeResult<()> {
     let shape = node.shape();
     println!(
         "\nnode ready: {} audio in, {} audio out",
-        shape.audio_in.count(),
-        shape.audio_out.count()
+        shape.audio_in().count(),
+        shape.audio_out().count()
     );
 
     Ok(())

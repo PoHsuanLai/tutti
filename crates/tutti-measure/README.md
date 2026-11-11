@@ -136,7 +136,7 @@ use tutti_graph::{TapAlign, TapId};
 struct Tone;
 impl Node for Tone {
     fn shape(&self) -> Shape {
-        Shape::audio(ChannelLayout::EMPTY, ChannelLayout::STEREO)
+        Shape::source_discrete(ChannelLayout::STEREO)
     }
     fn prepare(&mut self, _: &Prepare) {}
     fn process(&mut self, _: &Cx<'_>, mut io: Io<'_>) -> Status {

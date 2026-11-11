@@ -42,7 +42,7 @@
 //! - Mixing: [`DownmixNode`], [`BusStripNode`]. Summing is the graph's
 //!   (a port or an output channel sums its sources), not a node's.
 //! - Param ports: each node's `*_PARAMS` port list (for example
-//!   [`LADDER_PARAMS`]), which a control lane drives
+//!   [`DELAY_PARAMS`]), which a control lane drives
 //!   ([`ControlLaneNode`](automation::ControlLaneNode)).
 //! - Modules: [`automation`] (lanes and recording).
 //!
@@ -99,12 +99,12 @@ pub use tutti_dsp::ShapeKind;
 
 mod filter;
 pub use filter::{
-    CrossoverNode, EqBandNode, LADDER_PARAMS, LadderFilterNode, SvfFilterNode, SvfParams,
+    CrossoverNode, EqBandNode, LadderFilterNode, LadderParams, SvfFilterNode, SvfParams,
 };
 // The types in the filter nodes' signatures stay reachable from here; the
 // algorithms behind them (`SvfCoeffs`, `LadderCoeffs`, `Crossover`) are
 // `tutti-dsp`'s only.
-pub use tutti_dsp::{CrossoverError, LadderType, Real, SvfControls, SvfType};
+pub use tutti_dsp::{CrossoverError, LadderControls, LadderType, Real, SvfControls, SvfType};
 
 mod dynamics;
 pub use dynamics::{

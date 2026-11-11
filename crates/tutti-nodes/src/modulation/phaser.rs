@@ -321,7 +321,7 @@ impl PhaserNode {
             } else {
                 coeff_at(0, offset)
             };
-            for step in COEFF_CADENCE.steps(size, !primed) {
+            for step in COEFF_CADENCE.steps(0, size, !primed) {
                 let (start, end) = (step.frames.start, step.frames.end);
                 let next = coeff_at(end - 1, offset);
                 let seg = Ramp::new(prev, next, end - start);

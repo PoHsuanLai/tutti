@@ -1,126 +1,93 @@
 # tutti-midi-file
 
-MIDI **file** codecs for the Tutti audio engine: Standard MIDI File (SMF,
-`.mid`) and MIDI 2.0 Clip File (M2-116, `.midi2`). Re-exported by
-`tutti` as `tutti::midi_file` (feature `midi`).
+MIDI **file** codec for the Tutti audio engine: Standard MIDI File (SMF,
+`.mid`) and MIDI 2.0 Clip File (M2-116, `.midi2`) read into one model and
+written back from it, losslessly. Re-exported by `tutti` as
+`tutti::midi_file` (feature `midi`).
 
-## What the two codecs cover
+## The model
 
-- SMF 1.0: Read to beat-positioned events ([`ParsedMidiFile`]) or
-  per-track paired notes ([`SmfFile`]), with `read(path)` and
-  `from_bytes(&[u8])` on each, and write ([`smf_to_bytes`] / [`write_smf`]).
-  Metrical timing only; the tempo map is reported, not applied.
-- Clip File: the *file-level* (path) half of the MIDI 2.0 Clip File codec
-  ([`write_clip`], [`read_clip`]; [`MidiFile::read`] reads one back). The byte-level codec is
-  this crate's too, at the root ([`ParsedClipFile::from_bytes`],
-  [`write_clip_file`]).
+A [`MidiFile`] is its container (an SMF's format 0, 1 or 2, or a Clip File),
+its division, its [`Track`]s and the `TempoMap` its tempo events declare. A
+track is `(Tick, FileEvent)` in order and where it ends. Ticks are integers,
+so a write is exact; [`MidiFile::events`] gives the merged timeline as
+[`Beat`](tutti_types::Beat)s, and [`Track::notes`] pairs Note Ons with Note
+Offs.
 
-[`MidiFileKind::detect`] tells the two formats apart by magic bytes, not by
-extension. [`MidiFile`] reads either one, detected, and its `iter()` yields
-the file as `(Beat, Ump)` in the engine's MIDI 2.0 vocabulary (an SMF's
-7-bit velocities widened), with `tempo()` (at beat 0), `tempo_map()` and
-`end_beat()` beside it. Errors are
-[`Error`](enum@Error).
+- **A [`FileEvent`]** is a `Message` (an SMF's channel message is MIDI 1.0 on
+  group 0; a Clip File's packet is as stored), a `SysEx` or `Escape` of any
+  length, or a `Meta` (text, tempo, time and key signature, the rest as bytes).
+  The file layer does not translate: a MIDI 1.0 Note On at velocity 0 stays one.
+- **Lossless.** A read, a write and a read give the same file: SysEx and meta
+  included. Running status and a Delta Clockstamp's spelling may differ.
+- **Truncation is an error** ([`Error::Truncated`]), not a shorter file.
+- **Format 2** keeps its sequences apart: no merged `events()`, a tempo map
+  per track ([`MidiFile::tempo_map_of`]).
+- **Tempo** is `MidiFile::tempo_map()`, steps at the tick each Set Tempo (an
+  SMF's meta event, a Clip File's Flex Data message) lands on; 120 BPM until
+  the first if none is at the start. `seconds_at` integrates it.
+- **Metrical timing only.** An SMPTE division is refused with
+  [`Error::MidiUnsupportedTiming`]: it has no beat grid to put a tempo map on.
 
-Nothing here touches an OS MIDI API, and nothing is `cfg`-gated, so a consumer
-that only reads files never links CoreMIDI or the ALSA sequencer. Ports are in
-`tutti-midi-hardware`, which does not re-export these codecs.
+[`MidiFileKind::detect`] tells the two containers apart by magic, not by
+extension. Nothing here touches an OS MIDI API; ports are in
+`tutti-midi-hardware`.
 
 ## Quick start
 
-The codec works on **byte slices**, so a round trip needs no file at all. Write
-a note, read it back as a paired note positioned in `Beat` and measured in
-`BeatDuration` — the same `tutti-types` vocabulary the transport uses, which is
-what lets an imported clip be placed without a conversion step:
+Build a file, write it, read it back; the tempo map answers in seconds:
 
 ```rust
-use tutti_types::{Beat, BeatDuration, Bpm};
-use tutti_ump::{MidiChannel, NoteNumber, U7, Voice1};
-use tutti_midi_file::{
-    smf_to_bytes, MidiFileKind, MidiWriteConfig, SmfFile, SmfTimedEvent,
+use tutti_midi_file::{FileEvent, Meta, MidiFile, SmfFormat, Tick, Track};
+use tutti_types::{Beat, Bpm, Seconds};
+use tutti_ump::{Address, Message, MidiChannel, NoteNumber, U7, Voice1};
+
+let note = |tick, on| {
+    let (note, velocity) = (NoteNumber::of(60), U7::of(100));
+    let voice = if on {
+        Voice1::NoteOn { note, velocity }
+    } else {
+        Voice1::NoteOff { note, velocity }
+    };
+    (Tick(tick), FileEvent::Message(Message::Midi1(Address::first(MidiChannel::FIRST), voice)))
 };
+// 120 BPM, then 60 from beat 4, at 480 ticks per quarter.
+let track = Track::new(vec![
+    (Tick(0), FileEvent::Meta(Meta::tempo(Bpm::of(120.0)))),
+    note(0, true),
+    note(1_440, false),
+    (Tick(4 * 480), FileEvent::Meta(Meta::tempo(Bpm::of(60.0)))),
+]);
+let file = MidiFile::smf(SmfFormat::SingleTrack, 480, vec![track])?;
 
-let note = |beat, msg| SmfTimedEvent { time_beats: Beat(beat), channel: MidiChannel::FIRST, msg };
-let track = vec![
-    note(0.0, Voice1::NoteOn { note: NoteNumber::of(60), velocity: U7::of(100) }),
-    note(1.5, Voice1::NoteOff { note: NoteNumber::of(60), velocity: U7::of(0) }),
-];
-
-let bytes = smf_to_bytes(
-    &[track],
-    &MidiWriteConfig { ticks_per_beat: 480, tempo_bpm: Some(Bpm::of(174.0)), ..Default::default() },
-)?;
-
-// Recognised by magic bytes rather than by extension.
-assert_eq!(MidiFileKind::detect(&bytes), Some(MidiFileKind::StandardMidiFile));
-
-// Note-on/off paired into whole notes, one per track.
-let tracks = SmfFile::from_bytes(&bytes)?.into_tracks();
-assert_eq!(tracks[0].notes.len(), 1);
-assert_eq!(tracks[0].notes[0].start_beats, Beat(0.0));
-assert_eq!(tracks[0].notes[0].duration_beats, BeatDuration(1.5));
+let read = MidiFile::from_bytes(&file.to_bytes()?)?;
+assert_eq!(read, file);
+assert_eq!(read.seconds_at(Beat(8.0)), Seconds(6.0));
+let notes: Vec<_> = read.tracks()[0].notes().collect();
+assert_eq!((notes[0].start, notes[0].end), (Tick(0), Tick(1_440)));
 # Ok::<(), Box<dyn std::error::Error>>(())
 ```
 
-### Tempo does not survive the round trip exactly, and that is the format
+### Tempo is the wire's
 
-SMF stores tempo as **microseconds per quarter note**, an integer. `174.0` BPM
-is not representable, so it comes back as `174.0002958…`: a wire quantisation,
-not a precision bug. Tempo is read back as `Bpm` (f64-backed, so nothing more is
-lost after the wire).
-
-```rust
-# use tutti_midi_file::{smf_to_bytes, MidiWriteConfig, ParsedMidiFile, SmfTimedEvent};
-# use tutti_types::{Beat, Bpm};
-# use tutti_ump::{MidiChannel, NoteNumber, U7, Voice1};
-# let track = vec![SmfTimedEvent {
-#     time_beats: Beat(0.0),
-#     channel: MidiChannel::FIRST,
-#     msg: Voice1::NoteOn { note: NoteNumber::of(60), velocity: U7::of(100) },
-# }];
-let bytes = smf_to_bytes(
-    &[track],
-    &MidiWriteConfig { tempo_bpm: Some(Bpm::of(174.0)), ..Default::default() },
-)?;
-// A file with no tempo event reads back as the SMF default, `Bpm::of(120.0)`.
-let parsed = ParsedMidiFile::from_bytes(&bytes)?;
-assert_ne!(parsed.tempo_bpm, Bpm::of(174.0));
-assert!(!parsed.tempo_bpm.differs_from(Bpm::of(174.0), 0.001));
-# Ok::<(), Box<dyn std::error::Error>>(())
-```
+SMF stores tempo as microseconds per quarter note, an integer: `174.0` BPM is
+not representable and reads back as `174.0002958...`. That is the format.
 
 ### Reading from a path
 
-Detecting a real file needs one to exist, so this half is `no_run`:
-
 ```rust,no_run
-use tutti_midi_file::{MidiFile, MidiFileKind, SmfFile};
+use tutti_midi_file::{MidiFile, MidiFileKind};
 
-// Which format is this? By magic bytes, not by extension — a `.mid` extension
-// on a Clip File is a real thing that happens.
-match MidiFileKind::detect_path("song.mid")? {
-    Some(MidiFileKind::StandardMidiFile) => {
-        // Per-track paired notes, positioned in beats.
-        for track in SmfFile::read("song.mid")?.tracks() {
-            println!("{:?}: {} notes", track.name, track.notes.len());
-        }
+// Which container? By magic bytes, not by extension: a `.mid` extension on a
+// Clip File is a real thing that happens.
+if MidiFileKind::detect_path("song.mid")?.is_some() {
+    let file = MidiFile::read("song.mid")?;
+    for track in file.tracks() {
+        println!("{:?}: {} notes", track.name(), track.notes().count());
     }
-    Some(MidiFileKind::ClipFile) => {
-        if let MidiFile::Clip(clip) = MidiFile::read("song.mid")? {
-            println!("{} events", clip.events.len());
-        }
-    }
-    Some(_) | None => println!("not a MIDI file we read"),
 }
 # Ok::<(), Box<dyn std::error::Error>>(())
 ```
-
-## Constraints worth knowing
-
-- **Metrical timing only.** An SMF using SMPTE/timecode division returns
-  [`Error::MidiUnsupportedTiming`] — beats come from the file's division, and a
-  timecode file has no beat grid to read them from.
-- **The tempo map is not applied.** Beat positions are as the file states them.
 
 ## License
 

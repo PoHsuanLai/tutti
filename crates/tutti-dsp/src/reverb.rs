@@ -8,21 +8,27 @@
 //!
 //! [`Freeverb`] starts with the figures of the General MIDI reverb the SoundFont
 //! unit used to carry inside itself (room size 0.5, damping 0.5, width 1, wet 1).
-//! It is also the [`Realization`] of [`FreeverbDesign`](crate::FreeverbDesign): the
-//! two coefficients a network carries (the comb feedback and damping) are the
-//! only figures [`retarget`](Realization::retarget) moves, and the lines and the
-//! processing loops are untouched by it. It allocates in [`new`](Freeverb::new)
-//! and in [`prepare`](Realization::prepare) at another rate, and nowhere after.
+//! It is the state of [`FreeverbKernel`], the [`Kernel`] of
+//! [`FreeverbDesign`](crate::FreeverbDesign): the two coefficients a network
+//! carries (the comb feedback and damping) are the only figures its
+//! [`retarget`](crate::Realization::retarget) moves, and they glide, 20 ms in
+//! whole `CHUNK`s (a size or a damping that jumped would click), while the lines
+//! and the processing loops are untouched by it. It allocates in
+//! [`new`](Freeverb::new) and in [`prepare`](Kernel::prepare) at another rate,
+//! and nowhere after.
 
 use std::cmp;
 
 use tutti_types::{Db, SampleRate, Seconds};
 
+use core::ops::Range;
+
+use crate::fdn::{CHUNK, ramp};
 use crate::network::{Absorption, Bounds, Network, Stage};
-use crate::{Effect, Effort, Realization, Setup};
+use crate::{Approach, Effort, Glide, Kernel, Setup, Steps};
 
 /// A Freeverb at one sample rate: mono in, stereo out, with the comb feedback and
-/// damping the only figures that move ([`Realization::retarget`]).
+/// damping the only figures that move (`set_combs`).
 ///
 /// Its comb and all-pass lengths are Freeverb's, tuned at 44.1 kHz and scaled
 /// to the rate. The input is scaled by a fixed gain inside
@@ -256,38 +262,76 @@ impl Freeverb {
     }
 }
 
-/// The realization of [`FreeverbDesign`](crate::FreeverbDesign): `process` is the
-/// comb and all-pass loops of [`Freeverb::process`], untouched.
+/// The kernel of [`FreeverbDesign`](crate::FreeverbDesign): [`Freeverb`] is its
+/// state and `run` is its comb and all-pass loops, untouched.
 ///
-/// [`retarget`](Realization::retarget) copies the comb loop gain and the damping off
-/// the network's first recirculating stage (a one-pole absorption on its first
-/// line) into every comb, whole and at once: a step in the loop gain is a step
-/// in what the next trip carries, not in the output, which is read from the
-/// past, so it needs no ramp to be free of a click (the realization contract holds
-/// it to that). A network without a one-pole absorption, or with figures that
-/// are not finite or not a stable loop, is ignored. The network's pre-delay,
-/// width and wet gain are not read: [`FreeverbDesign`](crate::FreeverbDesign)
-/// never sets them.
-impl Realization<Network> for Freeverb {
+/// `aim` takes the comb loop gain and the damping off the network's first
+/// recirculating stage (a one-pole absorption on its first line); they glide, in
+/// steps of a `CHUNK` (the FDN's, and 30 or so for the 20 ms: a step per frame
+/// would run the lines in one-frame slices for it). A network without a one-pole
+/// absorption, or with figures that are not finite or not a stable loop, is
+/// ignored. The network's pre-delay, width and wet gain are not read:
+/// [`FreeverbDesign`](crate::FreeverbDesign) never sets them.
+#[derive(Clone, Debug)]
+pub struct FreeverbKernel {
+    ramp: Steps,
+}
+
+/// The comb feedback and damping [`FreeverbKernel`] approaches.
+#[derive(Clone, Debug)]
+pub struct FreeverbCoeffs {
+    feedback: Glide<f32>,
+    damp: Glide<f32>,
+}
+
+impl Approach for FreeverbCoeffs {
+    fn step(&mut self) -> bool {
+        self.feedback.step() | self.damp.step()
+    }
+
+    fn settle(&mut self) {
+        self.feedback.settle();
+        self.damp.settle();
+    }
+}
+
+impl FreeverbKernel {
+    pub(crate) fn new() -> Self {
+        Self {
+            ramp: ramp(SampleRate::DEFAULT.get()),
+        }
+    }
+}
+
+impl Kernel for FreeverbKernel {
+    type Model = Network;
     type Bounds = Bounds;
+    type Coeffs = FreeverbCoeffs;
+    type State = Freeverb;
+
+    const STEP: usize = CHUNK;
+
+    fn start(&self, _: &Network) -> (FreeverbCoeffs, Freeverb) {
+        (
+            FreeverbCoeffs {
+                feedback: Glide::landed(Freeverb::ROOM_FEEDBACK),
+                damp: Glide::landed(Freeverb::DAMPING),
+            },
+            Freeverb::new(SampleRate::DEFAULT),
+        )
+    }
 
     /// Re-tunes the lines when the graph runs at another rate than they were
     /// built for, to the rounded hertz [`Freeverb::new`] uses. The coefficients
     /// are kept.
-    fn prepare(&mut self, _bounds: &Bounds, setup: &Setup) {
-        if setup.rate.get().round() != self.rate.get() {
-            let (feedback, damp) = self
-                .cfs_l
-                .first()
-                .map_or((Self::ROOM_FEEDBACK, Self::DAMPING), |c| {
-                    (c.feedback, c.damp1)
-                });
-            *self = Freeverb::new(setup.rate);
-            self.set_combs(feedback, damp);
+    fn prepare(&mut self, _: &Bounds, setup: &Setup, _: &mut FreeverbCoeffs, state: &mut Freeverb) {
+        self.ramp = ramp(setup.rate.get());
+        if setup.rate.get().round() != state.rate.get() {
+            *state = Freeverb::new(setup.rate);
         }
     }
 
-    fn retarget(&mut self, network: &Network) {
+    fn aim(&self, c: &mut FreeverbCoeffs, network: &Network) {
         let one_pole = network.stages.iter().find_map(|stage| match stage {
             Stage::Fdn(f) => match f.lines.first().map(|l| l.absorption) {
                 Some(Absorption::OnePole { gain, damp }) => Some((gain.get(), damp)),
@@ -301,12 +345,32 @@ impl Realization<Network> for Freeverb {
             && damp.is_finite()
             && damp.abs() < 1.0
         {
-            self.set_combs(feedback, damp);
+            c.feedback.aim_by(feedback, self.ramp);
+            c.damp.aim_by(damp, self.ramp);
         }
     }
 
-    fn reset(&mut self) {
-        self.mute();
+    fn clear(&self, state: &mut Freeverb) {
+        state.mute();
+    }
+
+    fn run(
+        &self,
+        c: &FreeverbCoeffs,
+        state: &mut Freeverb,
+        input: &[&[f32]],
+        output: &mut [&mut [f32]],
+        frames: Range<usize>,
+        _: usize,
+    ) {
+        if let ([mono], [left, right, ..]) = (input, output) {
+            state.set_combs(c.feedback.now(), c.damp.now());
+            state.process(
+                &mono[frames.clone()],
+                &mut left[frames.clone()],
+                &mut right[frames],
+            );
+        }
     }
 
     fn effort(&self) -> Effort {
@@ -315,19 +379,17 @@ impl Realization<Network> for Freeverb {
         // model and coarsening").
         Effort::Moderate
     }
-
-    fn fresh(&self) -> Self {
-        let mut fresh = self.clone();
-        fresh.mute();
-        fresh
-    }
 }
 
-impl Effect<Network> for Freeverb {
-    fn process(&mut self, input: &[&[f32]], output: &mut [&mut [f32]]) {
-        if let ([mono], [left, right, ..]) = (input, output) {
-            Freeverb::process(self, mono, left, right);
-        }
+/// The realization's figures: the lengths of its lines and the comb coefficients it
+/// is aiming at (the combs themselves are set when a block runs). For the design's
+/// tests.
+#[cfg(test)]
+impl crate::Realized<FreeverbKernel> {
+    pub(crate) fn figures(&mut self) -> Figures {
+        let (_, c, state) = self.parts_mut();
+        state.set_combs(c.feedback.target(), c.damp.target());
+        state.figures()
     }
 }
 
@@ -531,5 +593,77 @@ mod tests {
             (peak - (2.0 + 0.5) / (1.0 + 0.5)).abs() < 1e-3,
             "peak {peak}"
         );
+    }
+
+    /// A room size and a damping that move mid-stream move the combs' feedback and
+    /// damping over the 20 ms glide, a chunk at a time, and land on the new figures
+    /// exactly: each chunk's change is the distance over the 30 steps (to within
+    /// rounding), the first is far from the target, and the coefficient is the
+    /// target at the last step and not before. (What jumped before: a size step was
+    /// a step in the comb's loop gain, a click.)
+    ///
+    /// Mutation (run): `Steps::Fixed(0)` in place of `self.ramp` in `aim` lands the
+    /// first chunk on the target and fails the "far from the target" assertion.
+    #[test]
+    fn a_moving_room_glides_its_combs() {
+        use crate::{Ceiling, Design, Effect, FreeverbControls, FreeverbDesign, Realization};
+        use tutti_types::{MaxBlock, Mix};
+        let rate = SampleRate(48_000.0);
+        let d = FreeverbDesign;
+        let mut r = d.realization();
+        r.prepare(
+            &d.bounds(&Ceiling::at(rate).unwrap()),
+            &Setup {
+                rate,
+                max_block: MaxBlock::of(tutti_types::Samples(CHUNK)),
+            },
+        );
+        let at = |room: f32, damp: f32| {
+            d.design(
+                &FreeverbControls {
+                    room: Mix(room),
+                    damp: Mix(damp),
+                },
+                rate,
+            )
+        };
+        let (x, mut l, mut rr) = (
+            vec![0.25f32; CHUNK],
+            vec![0.0f32; CHUNK],
+            vec![0.0f32; CHUNK],
+        );
+        let mut chunk = |r: &mut crate::Realized<FreeverbKernel>| {
+            r.process(&[&x], &mut [&mut l, &mut rr]);
+            let (_, c, _) = r.parts_mut();
+            (c.feedback.now(), c.damp.now())
+        };
+        r.retarget(&at(0.2, 0.1));
+        let (from, from_damp) = chunk(&mut r);
+        r.retarget(&at(0.9, 0.9));
+        let (to, to_damp) = {
+            let (_, c, _) = r.parts_mut();
+            (c.feedback.target(), c.damp.target())
+        };
+        let steps = 30; // 20 ms at 48 kHz in chunks of 32 frames.
+        let mut last = from;
+        for k in 1..=steps {
+            let (f, dmp) = chunk(&mut r);
+            assert!(
+                ((f - last) - (to - from) / steps as f32).abs() < 1e-5,
+                "step {k}: {last} -> {f}"
+            );
+            if k == 1 {
+                assert!(
+                    (to - f).abs() > 0.9 * (to - from).abs(),
+                    "the first chunk is far from the target: {f} of {from} -> {to}"
+                );
+            }
+            if k < steps {
+                assert!(f != to && dmp != to_damp, "landed early at {k}");
+            }
+            last = f;
+        }
+        assert_eq!(chunk(&mut r), (to, to_damp));
+        assert!(from != to && from_damp != to_damp);
     }
 }

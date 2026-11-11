@@ -1,0 +1,32 @@
+[package]
+name = "tutti-plugin-ipc-ffi"
+version = "0.0.1"
+edition.workspace = true
+rust-version.workspace = true
+description = "The unsafe of Tutti's plugin process edge, behind safe calls: the audio slab's shared mapping and header, and the OS calls the host and plugin-server make"
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+# The mapping.
+memmap2 = "0.9"
+# The header's per-architecture cache-line padding.
+crossbeam-utils = "0.8"
+thiserror = "2"
+
+[target.'cfg(unix)'.dependencies]
+# `poll`, `kill(pid, 0)` and `O_NOFOLLOW`.
+libc = "0.2"
+
+[target.'cfg(windows)'.dependencies]
+# The process table walk and liveness probe, and the named-pipe peek.
+windows-sys = { version = "0.59", features = [
+  "Win32_Foundation",
+  "Win32_System_Diagnostics_ToolHelp",
+  "Win32_System_Pipes",
+  "Win32_System_Threading",
+] }

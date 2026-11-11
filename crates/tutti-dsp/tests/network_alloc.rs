@@ -94,7 +94,7 @@ fn freeverb_design_allocates_nothing() {
 /// `Inline::push` of the design would too.
 #[test]
 fn freeverb_retargets_and_renders_without_allocating() {
-    use tutti_dsp::{Ceiling, Freeverb, Network, Realization, Setup};
+    use tutti_dsp::{Ceiling, FreeverbKernel, Network, Realization, Realized, Setup};
     use tutti_types::{MaxBlock, Samples};
 
     let rate = SampleRate(48_000.0);
@@ -122,7 +122,7 @@ fn freeverb_retargets_and_renders_without_allocating() {
         });
         assert_eq!(n, 0, "the block allocated");
     }
-    let _: Freeverb = realization;
+    let _: Realized<FreeverbKernel> = realization;
 }
 
 /// `design_into` builds no value of the network's size (about 56 KB): it runs

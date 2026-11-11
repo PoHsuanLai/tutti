@@ -37,8 +37,11 @@
 # - `tutti-tempo` depends on `tutti-types` alone;
 # - `tutti-voicing` depends on `tutti-ump`, `tutti-midi-protocol` and `tutti-types` only;
 # - `tutti-plugin-db` depends on `tutti-plugin-types` alone;
-# - `tutti-plugin-ipc` depends on `tutti-types`, `tutti-rt`, `tutti-ump`
-#   and `tutti-plugin-types` only, and no `tutti-*-host` depends on it;
+# - `tutti-plugin-ipc` depends on `tutti-types`, `tutti-rt`, `tutti-ump`,
+#   `tutti-plugin-types` and `tutti-plugin-ipc-ffi` only, and no `tutti-*-host`
+#   depends on it;
+# - `tutti-plugin-ipc-ffi` (the process edge's `unsafe`) depends on no workspace
+#   crate;
 # - `tutti-plugin-host` (the format-generic half of hosting) depends on
 #   `tutti-plugin-types`, `tutti-graph`, `tutti-transport`, `tutti-tempo`,
 #   `tutti-types`, `tutti-rt` and `tutti-ump` only: no `tutti-plugin-ipc`, no
@@ -182,7 +185,7 @@ LAYERS = [
     # no workspace dependency at all
     # (`tutti-types` is here: it depends on no workspace crate, and
     # `tutti-curve`, the layer above, depends on it.)
-    ["arc-lend", "tutti-alsa-ump-sys", "tutti-ump", "tutti-types"],
+    ["arc-lend", "tutti-alsa-ump-sys", "tutti-ump", "tutti-types", "tutti-plugin-ipc-ffi"],
     ["tutti-rt", "tutti-midi-protocol", "tutti-midi-device", "tutti-curve"],
     ["tutti-graph", "tutti-dsp", "tutti-modulation", "tutti-metering",
      "tutti-codec", "tutti-tempo", "tutti-voicing", "tutti-sf2"],
@@ -433,7 +436,12 @@ if "tutti-plugin-db" in pkgs:
 # plugin format, and no format host knows it: a format is served through it,
 # never built on it.
 if "tutti-plugin-ipc" in pkgs:
-    only("tutti-plugin-ipc", ["tutti-types", "tutti-rt", "tutti-ump", "tutti-plugin-types"])
+    only("tutti-plugin-ipc", ["tutti-types", "tutti-rt", "tutti-ump", "tutti-plugin-types",
+                              "tutti-plugin-ipc-ffi"])
+# The process edge's `unsafe` names nothing of tutti's: a mapping, a header and
+# OS calls behind safe ones.
+if "tutti-plugin-ipc-ffi" in pkgs:
+    only("tutti-plugin-ipc-ffi", [])
     for name in pkgs:
         if name.endswith("-host") and name.startswith("tutti-") \
                 and "tutti-plugin-ipc" in deps_of(name):

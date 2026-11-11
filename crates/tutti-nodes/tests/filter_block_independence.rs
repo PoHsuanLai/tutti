@@ -1,4 +1,4 @@
-//! The SVF and the EQ band on the stream grid (doc 024 Q27): the render is a
+//! The SVF, the EQ band and the ladder on the stream grid (doc 024 Q27): the render is a
 //! function of the stream, not of how it is cut into blocks, and a control reaches
 //! the render within one 16-frame segment of the grid point that sampled it.
 //!
@@ -9,8 +9,8 @@
 
 use tutti_graph::contract::{drive_input, prepared};
 use tutti_graph::{Env, Node, ParamNode, PlayClock, Transport, TransportChanges};
-use tutti_nodes::{EqBandNode, SvfControls, SvfFilterNode, SvfType};
-use tutti_types::{ChannelLayout, Db, Frame, Hz, Q, SampleRate, Samples, UnitParam};
+use tutti_nodes::{EqBandNode, LadderFilterNode, LadderType, SvfControls, SvfFilterNode, SvfType};
+use tutti_types::{ChannelLayout, Db, Frame, Hz, Q, Resonance, SampleRate, Samples, UnitParam};
 
 const RATE: SampleRate = SampleRate(48_000.0);
 const FRAMES: usize = 2_048;
@@ -140,6 +140,101 @@ fn blocks_of_any_length_render_alike_with_lanes_and_moved_cells() {
             )
         })
     });
+}
+
+/// A stereo ladder with a lane on its cutoff, its resonance and its drive, and one
+/// with the drive cell moved before the first block under a cutoff lane, render the
+/// same bits at blocks of 1, 17, 64 or 512 frames: the drive is on the grid like the
+/// coefficients (a lane sampled per segment, a cell held).
+///
+/// Mutations (run): counting the grid from each block's start (the stream phase in
+/// `Cadence::steps` forced to 0) fails both (blocks of 1, 17, 64 and 512 differ); reading the
+/// drive lane 15 frames late (`s[at.frame + 15]` in `LadderParams::read`'s drive arm)
+/// fails the first.
+#[test]
+fn the_ladder_renders_alike_at_every_block_length_with_lanes() {
+    let inputs = [noise(4), noise(5)];
+    same_at_every_block("ladder, cutoff, resonance and drive lanes", || {
+        let inputs = inputs.clone();
+        Box::new(move |block| {
+            let lanes = [
+                Some(sweep(200.0, 8_000.0)),
+                Some(
+                    (0..FRAMES)
+                        .map(|i| 0.5 + 0.4 * (i as f32 * 0.013).sin())
+                        .collect::<Vec<_>>(),
+                ),
+                Some(
+                    (0..FRAMES)
+                        .map(|i| 3.0 + 2.5 * (i as f32 * 0.007).sin())
+                        .collect::<Vec<_>>(),
+                ),
+            ];
+            render(
+                LadderFilterNode::<f64>::with_channels(
+                    ChannelLayout::STEREO,
+                    LadderType::LP24,
+                    Hz(1_000.0),
+                    Resonance::new(0.3),
+                ),
+                block,
+                &inputs,
+                &lanes,
+                |_| {},
+            )
+        })
+    });
+    same_at_every_block("ladder, a cutoff lane and the drive cell moved", || {
+        let inputs = inputs.clone();
+        Box::new(move |block| {
+            render(
+                LadderFilterNode::<f32>::new(LadderType::HP12, Hz(2_000.0), Resonance::new(0.4)),
+                block,
+                &inputs[..1],
+                &[Some(sweep(500.0, 6_000.0)), None, None],
+                |set| {
+                    assert!(set.set(UnitParam::Drive, 4.0));
+                },
+            )
+        })
+    });
+}
+
+/// A step in a drive lane at frame 40 reaches the render within one segment of the
+/// grid point that samples it, as a cutoff's does: the drive is on the grid.
+///
+/// The point at 32 reads the old drive and its segment ends on it at frame 47; the
+/// point at 48 reads the new one and its segment ends on it at frame 63. An impulse
+/// into a ladder with no state answers with the drive in force at that frame, so the
+/// output there is the held filter's with that drive, bit for bit. (Drive was once
+/// read per sample, outside the solve: a step at 40 would be in the render at 40.)
+///
+/// Mutations (run): sampling the drive lane 15 frames late (`s[at.frame + 15]`, the
+/// segment's end) reads the new drive at 47 and fails the first assertion; solving each
+/// step at its last frame (`solve_at` on the stream arm of `Cadence::steps`) fails it
+/// too.
+#[test]
+fn a_drive_lane_step_is_in_the_render_within_one_segment() {
+    const STEP: usize = 40;
+    let (old, new) = (1.0f32, 6.0f32);
+    let step: Vec<f32> = (0..64).map(|i| if i < STEP { old } else { new }).collect();
+    let response = |drive: Option<f32>, at: usize| -> f64 {
+        let mut x = vec![0.0f32; 64];
+        x[at] = 0.5;
+        let lane = drive.map_or_else(|| step.clone(), |d| vec![d; 64]);
+        let node = LadderFilterNode::<f64>::new(LadderType::HP24, Hz(1_500.0), Resonance::new(0.2));
+        let out = render(node, 64, &[x], &[None, None, Some(lane)], |_| {});
+        f64::from(out[0][at])
+    };
+    let at_old = response(Some(old), 47);
+    let at_new = response(Some(new), 63);
+    assert_ne!(at_old, at_new, "the two drives must be told apart");
+    assert_eq!(
+        response(None, 47),
+        at_old,
+        "frame 47 is still on the old drive"
+    );
+    assert_eq!(response(None, 63), at_new, "frame 63 is on the new drive");
 }
 
 /// A cell moved before the first block (no lane) is held: every block length

@@ -15,15 +15,15 @@ use crate::Cadence;
 /// sweep moves at, so the interpolation error is a small fraction of the change
 /// between two solves. Measured against the per-sample solve: 3e-5 worst on a
 /// 200 Hz → 8 kHz cutoff sweep in 85 ms (4.6e-4 at 64 samples; exactly 0 at
-/// 1), 3.5e-6 on a 2 Hz phaser. (The SVF no longer solves from the block start:
-/// its grid is the stream's, and a control is in its render up to 16 frames after
-/// it was sampled.)
+/// 1), 3.5e-6 on a 2 Hz phaser. (The SVF and the ladder no longer solve from the
+/// block start: their grid is the stream's, and a control is in their render up to
+/// 16 frames after it was sampled.)
 pub const COEFF_INTERVAL: usize = 16;
 
 /// [`COEFF_INTERVAL`] as a block-anchored [`Cadence`]: solved every 16 frames from
-/// the start of each block, last frame of each step. The ladder and the phaser
-/// still run on it (their move to the stream grid is doc 024 step 2b's PR4); the
-/// SVF's grid is [`SvfDesign::CADENCE`](crate::SvfDesign).
+/// the start of each block, last frame of each step. Only the phaser still runs on
+/// it; the SVF and the ladder are on the stream grid
+/// ([`SvfDesign::CADENCE`](crate::SvfDesign), [`LadderDesign::CADENCE`](crate::LadderDesign)).
 pub const COEFF_CADENCE: Cadence =
     Cadence::every(NonZeroU32::new(COEFF_INTERVAL as u32).expect("the interval is positive"));
 

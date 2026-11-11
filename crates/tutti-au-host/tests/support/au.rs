@@ -122,23 +122,21 @@ impl Au {
             State::Active {
                 processor,
                 controller,
-            } => match AuLoaded::deactivate(
-                &main_thread(),
-                processor.into_inner().into_inner(),
-                controller,
-            ) {
-                Ok(loaded) => {
-                    self.state = State::Loaded(loaded);
-                    Ok(())
+            } => {
+                match AuLoaded::deactivate(&main_thread(), (*processor).into_inner(), controller) {
+                    Ok(loaded) => {
+                        self.state = State::Loaded(loaded);
+                        Ok(())
+                    }
+                    Err(stuck) => {
+                        self.state = State::Active {
+                            processor: Box::new(RefCell::new(stuck.processor)),
+                            controller: stuck.controller,
+                        };
+                        Err(refusal(stuck.reason))
+                    }
                 }
-                Err(stuck) => {
-                    self.state = State::Active {
-                        processor: Box::new(RefCell::new(stuck.processor)),
-                        controller: stuck.controller,
-                    };
-                    Err(refusal(stuck.reason))
-                }
-            },
+            }
             loaded @ State::Loaded(_) => {
                 self.state = loaded;
                 Ok(())

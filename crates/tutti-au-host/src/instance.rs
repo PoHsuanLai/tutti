@@ -349,7 +349,10 @@ impl AuLoaded {
     }
 
     /// The state as the unit's `ClassInfo` plist, empty when the AU answers null.
-    pub(crate) fn capture_state(&self) -> Result<Vec<u8>> {
+    ///
+    /// # Errors
+    /// The `OSStatus` of the property read.
+    pub fn class_info(&self) -> Result<Vec<u8>> {
         Ok(self
             .unit()
             .copy_plist::<ClassInfo>(Scope::GLOBAL, Element::ZERO)?)
@@ -357,7 +360,10 @@ impl AuLoaded {
 
     /// Restores a `ClassInfo` plist and tells every open editor the values moved
     /// (a failure to notify is not a failure to restore). Empty data is a no-op.
-    pub(crate) fn restore_state(&mut self, data: &[u8]) -> Result<()> {
+    ///
+    /// # Errors
+    /// The `OSStatus` of the property write, the AU's own for a blob it rejects.
+    pub fn set_class_info(&mut self, data: &[u8]) -> Result<()> {
         if data.is_empty() {
             return Ok(());
         }
@@ -1324,7 +1330,7 @@ impl AuLoaded {
             self.unit()
                 .set_plist::<ClassInfoFromDocument>(Scope::GLOBAL, Element::ZERO, data);
         if from_document.is_err() {
-            return self.restore_state(data);
+            return self.set_class_info(data);
         }
         let _ = crate::listener::notify_all_parameters(self.unit());
         Ok(())

@@ -336,12 +336,12 @@ impl Control for AuLoaded {
     }
 
     fn save_state(&mut self, _main: &MainThread) -> PluginResult<Vec<u8>> {
-        self.capture_state()
+        self.class_info()
             .map_err(|e| PluginError::State(e.to_string()))
     }
 
     fn load_state(&mut self, _main: &MainThread, bytes: &[u8]) -> PluginResult<()> {
-        self.restore_state(bytes)
+        self.set_class_info(bytes)
             .map_err(|e| PluginError::State(e.to_string()))
     }
 

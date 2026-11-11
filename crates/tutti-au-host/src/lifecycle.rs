@@ -49,96 +49,14 @@ impl Loaded for AuLoaded {
     /// stream configuration or `AudioUnitInitialize` the unit refuses.
     #[allow(clippy::result_large_err)]
     fn activate(
-        mut self,
+        self,
         _main: &MainThread,
         prepare: Prepare,
     ) -> Result<(AuProcessor, AuController), Refused<Self>> {
-        fn refuse(plugin: AuLoaded, error: AuError) -> Refused<AuLoaded> {
-            Refused {
-                plugin: Some(plugin),
-                reason: plugin_error(error),
-            }
-        }
-
-        let Ok(block_size) = u32::try_from(prepare.max_block().get()) else {
-            let error = AuError::InvalidBuffer(format!(
-                "a block of {} frames exceeds the unit's 32-bit frame count",
-                prepare.max_block().get()
-            ));
-            return Err(refuse(self, error));
-        };
-        // Zero would fail every render's `num_frames > block_size` check and size
-        // the scratch to empty buffers.
-        if block_size == 0 {
-            let error = AuError::InvalidBuffer("block_size must be non-zero".to_string());
-            return Err(refuse(self, error));
-        }
-        if let Err(e) = self.apply_stream(prepare.rate().0, block_size) {
-            return Err(refuse(self, e));
-        }
-
-        // Written only when it changes, and before `initialize`: a unit that
-        // sizes an oversampling or look-ahead buffer from the flag does so there.
-        let offline = prepare.mode().is_offline();
-        if offline != self.wrote_offline() {
-            self.write_render_mode(offline);
-        }
-
-        if let Err(e) = self.unit().initialize() {
-            return Err(refuse(self, e.into()));
-        }
-
-        let unit = self.unit().clone();
-        // The renderer owns the heap-pinned scratch the input callback reads,
-        // and withdraws that callback before freeing it.
-        let renderer = Renderer::new(&unit, self.config().channels, self.config().block_size);
-        let mut rendering = Box::new(Rendering {
-            guard: UninitializeOnDrop {
-                unit: unit.clone(),
-                armed: true,
-            },
-            renderer,
-        });
-
-        if self.config().channels.has_input
-            && let Err(e) = rendering.renderer.install_input_callback()
-        {
-            // The AU *is* initialized at this point, so backing out has to undo
-            // that too. The reported error is always `e`, the install failure: a
-            // follow-on `AudioUnitUninitialize` complaint would only describe the
-            // cleanup. If that cleanup also failed there is no `Loaded` unit to
-            // hand back: dropping the armed guard retries it and disposes.
-            let error: AuError = e.into();
-            return Err(match unit.uninitialize() {
-                Ok(()) => {
-                    rendering.guard.armed = false;
-                    drop(rendering);
-                    refuse(self, error)
-                }
-                Err(_) => {
-                    drop(rendering);
-                    drop(self);
-                    Refused {
-                        plugin: None,
-                        reason: plugin_error(error),
-                    }
-                }
-            });
-        }
-
-        let ranges = Arc::new(ArcLend::new(self.range_snapshot()));
-        let processor = AuProcessor::new(ProcessorParts {
-            rendering,
-            unit,
-            // Off the audio thread: reserve the SysEx buffer now, so
-            // `send_midi` never grows one.
-            sysex: sysex_assembler(),
-            ranges: ranges.reader(),
-            transport: self.share_transport(),
-            receives_midi: self.au_type().receives_midi(),
-            block_size: self.config().block_size,
-        });
-        Ok((processor, AuController::new(self, ranges)))
+        self.initialize(prepare).map_err(|(plugin, error)| Refused {
+            plugin,
+            reason: plugin_error(error),
+        })
     }
 
     /// Tears down the render session: `AudioUnitUninitialize`, then the renderer
@@ -177,3 +95,99 @@ impl Loaded for AuLoaded {
         Ok(controller.loaded)
     }
 }
+
+impl AuLoaded {
+    /// [`activate`](Loaded::activate) with the host's own error: the same
+    /// transition, for a caller that wants the typed [`AuError`] (a test that
+    /// tells `kAudioUnitErr_InvalidElement` from another refusal) rather than
+    /// the shared vocabulary's.
+    ///
+    /// # Errors
+    /// The unit back, as it was before the call, beside the error, for a stream
+    /// configuration or `AudioUnitInitialize` the unit refuses. The unit is
+    /// `None` only when the render callback was refused *and* the compensating
+    /// uninitialize failed too.
+    #[allow(clippy::type_complexity, clippy::result_large_err)]
+    pub fn initialize(
+        mut self,
+        prepare: Prepare,
+    ) -> Result<(AuProcessor, AuController), (Option<Self>, AuError)> {
+        let Ok(block_size) = u32::try_from(prepare.max_block().get()) else {
+            let error = AuError::InvalidBuffer(format!(
+                "a block of {} frames exceeds the unit's 32-bit frame count",
+                prepare.max_block().get()
+            ));
+            return Err((Some(self), error));
+        };
+        // Zero would fail every render's `num_frames > block_size` check and size
+        // the scratch to empty buffers.
+        if block_size == 0 {
+            let error = AuError::InvalidBuffer("block_size must be non-zero".to_string());
+            return Err((Some(self), error));
+        }
+        if let Err(e) = self.apply_stream(prepare.rate().0, block_size) {
+            return Err((Some(self), e));
+        }
+
+        // Written only when it changes, and before `initialize`: a unit that
+        // sizes an oversampling or look-ahead buffer from the flag does so there.
+        let offline = prepare.mode().is_offline();
+        if offline != self.wrote_offline() {
+            self.write_render_mode(offline);
+        }
+
+        if let Err(e) = self.unit().initialize() {
+            return Err((Some(self), e.into()));
+        }
+
+        let unit = self.unit().clone();
+        // The renderer owns the heap-pinned scratch the input callback reads,
+        // and withdraws that callback before freeing it.
+        let renderer = Renderer::new(&unit, self.config().channels, self.config().block_size);
+        let mut rendering = Box::new(Rendering {
+            guard: UninitializeOnDrop {
+                unit: unit.clone(),
+                armed: true,
+            },
+            renderer,
+        });
+
+        if self.config().channels.has_input
+            && let Err(e) = rendering.renderer.install_input_callback()
+        {
+            // The AU *is* initialized at this point, so backing out has to undo
+            // that too. The reported error is always `e`, the install failure: a
+            // follow-on `AudioUnitUninitialize` complaint would only describe the
+            // cleanup. If that cleanup also failed there is no `Loaded` unit to
+            // hand back: dropping the armed guard retries it and disposes.
+            let error: AuError = e.into();
+            return Err(match unit.uninitialize() {
+                Ok(()) => {
+                    rendering.guard.armed = false;
+                    drop(rendering);
+                    (Some(self), error)
+                }
+                Err(_) => {
+                    drop(rendering);
+                    drop(self);
+                    (None, error)
+                }
+            });
+        }
+
+        let ranges = Arc::new(ArcLend::new(self.range_snapshot()));
+        let processor = AuProcessor::new(ProcessorParts {
+            rendering,
+            unit,
+            // Off the audio thread: reserve the SysEx buffer now, so
+            // `send_midi` never grows one.
+            sysex: sysex_assembler(),
+            ranges: ranges.reader(),
+            transport: self.share_transport(),
+            receives_midi: self.au_type().receives_midi(),
+            block_size: self.config().block_size,
+        });
+        Ok((processor, AuController::new(self, ranges)))
+    }
+}
+

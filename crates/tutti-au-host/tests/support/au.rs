@@ -25,7 +25,7 @@ use tutti_au_host::{
 };
 use tutti_fixtures::main_thread;
 use tutti_plugin_types::{
-    Control, Loaded, MaxBlock, PluginError, PluginResult, Prepare, RenderMode, SampleRate,
+    Control, Loaded, MaxBlock, PluginError, Prepare, RenderMode, SampleRate,
 };
 use tutti_types::Samples;
 
@@ -98,9 +98,9 @@ impl Au {
     /// Activates at the current [`Prepare`]. No-op if already active. On a
     /// refusal the unit is as it was (loaded), unless it could not be handed
     /// back, which leaves it gone.
-    pub fn initialize(&mut self) -> PluginResult<()> {
+    pub fn initialize(&mut self) -> tutti_au_host::Result<()> {
         match std::mem::replace(&mut self.state, State::Gone) {
-            State::Loaded(loaded) => match loaded.activate(&main_thread(), self.prepare) {
+            State::Loaded(loaded) => match loaded.initialize(self.prepare) {
                 Ok((processor, controller)) => {
                     self.state = State::Active {
                         processor: RefCell::new(processor),
@@ -108,11 +108,11 @@ impl Au {
                     };
                     Ok(())
                 }
-                Err(refused) => {
-                    if let Some(loaded) = refused.plugin {
+                Err((loaded, error)) => {
+                    if let Some(loaded) = loaded {
                         self.state = State::Loaded(loaded);
                     }
-                    Err(refused.reason)
+                    Err(error)
                 }
             },
             active @ State::Active { .. } => {
@@ -125,7 +125,7 @@ impl Au {
 
     /// Rejoins the halves. No-op if not initialized. A unit that will not
     /// uninitialize stays active.
-    pub fn uninitialize(&mut self) -> PluginResult<()> {
+    pub fn uninitialize(&mut self) -> tutti_au_host::Result<()> {
         match std::mem::replace(&mut self.state, State::Gone) {
             State::Active {
                 processor,
@@ -140,7 +140,7 @@ impl Au {
                         processor: RefCell::new(stuck.processor),
                         controller: stuck.controller,
                     };
-                    Err(stuck.reason)
+                    Err(refusal(stuck.reason))
                 }
             },
             loaded @ State::Loaded(_) => {
@@ -157,7 +157,7 @@ impl Au {
     fn restream(&mut self, rate: f64, block: u32) -> tutti_au_host::Result<()> {
         let was_active = self.is_initialized();
         if was_active {
-            self.uninitialize().map_err(refusal)?;
+            self.uninitialize()?;
         }
         let result = self.reconfigure_stream(rate, block);
         if result.is_ok() {
@@ -166,7 +166,7 @@ impl Au {
                 .with_mode(self.prepare.mode());
         }
         if was_active {
-            self.initialize().map_err(refusal)?;
+            self.initialize()?;
         }
         result
     }
@@ -197,8 +197,8 @@ impl Au {
             RenderMode::Realtime
         });
         if self.is_initialized() {
-            self.uninitialize().map_err(refusal)?;
-            self.initialize().map_err(refusal)?;
+            self.uninitialize()?;
+            self.initialize()?;
         } else {
             // Not active: the unit takes the mode now, as the host's
             // `Control::set_render_mode` does on a loaded one.
@@ -295,18 +295,18 @@ impl Au {
         }
     }
 
-    /// The state as bytes ([`Control::save_state`]).
-    pub fn get_state(&mut self, main: &tutti_plugin_types::MainThread) -> PluginResult<Vec<u8>> {
-        Control::save_state(&mut **self, main)
+    /// The state as bytes ([`AuLoaded::class_info`]).
+    pub fn get_state(&self, _main: &tutti_plugin_types::MainThread) -> tutti_au_host::Result<Vec<u8>> {
+        self.class_info()
     }
 
-    /// Restores state ([`Control::load_state`]).
+    /// Restores state ([`AuLoaded::set_class_info`]).
     pub fn set_state(
         &mut self,
-        main: &tutti_plugin_types::MainThread,
+        _main: &tutti_plugin_types::MainThread,
         data: &[u8],
-    ) -> PluginResult<()> {
-        Control::load_state(&mut **self, main, data)
+    ) -> tutti_au_host::Result<()> {
+        self.set_class_info(data)
     }
 
     /// How many times the input render callback was installed on the current

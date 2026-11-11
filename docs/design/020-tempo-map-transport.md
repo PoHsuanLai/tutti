@@ -322,7 +322,7 @@ render bit-identical (stage 0 adds the guards first).
 | 3 | Steps | Non-constant maps in the walker; step cells push `TransportChanges`; the block split at the 8th entry. `OfflineTimelineConfig` takes a map. | New step tests of §8. |
 | 4 | Ramps | Ramp cells, the grid bound, `tempo_at` slope on `TempoMap` if missing. | Ramp tests; block-size independence. |
 | 5 | Readers | Sampler, plugin transport source, MIDI clock; CLAP `tempo_inc`, VST3/VST2/AU tempo from the map (5a: the plugin hosts, below; 5b: a transport event at each change inside a chunk, below). | Per-host contract cases (`tutti-plugin-contract`), with a `gaps` ratchet untouched. |
-| 6 | Retire | `TransportCommand::Tempo`, `Timeline::tempo()`, `OfflineTimelineConfig::tempo`, `beats_to_seconds` and `duration_to_frames` (the last two retired by doc 019 step 5); `MidiFile::seconds_at` over `TempoMap` (done, 017 stage 6); `plugin_midi_export` pins the note frames, not only the length (its bounce already adopts the file's map). | Lane E4's bounce API is built (019 step 5: the session derives range and clock from the map); docs 013 updated. |
+| 6 | Retire | `TransportCommand::Tempo`, `Timeline::tempo()`, `OfflineTimelineConfig::tempo`, `beats_to_seconds` and `duration_to_frames` (the last two retired by doc 019 step 5); `MidiFile::seconds_at` over `TempoMap` (done, 017 stage 6); `plugin_midi_export` pins the note frames, not only the length (its bounce already adopts the file's map). | Lane E4's bounce API is built (019 step 5: the session derives range and clock from the map); docs 013 updated. **Done** (below). |
 
 **As built, stages 0 to 2 (publish a constant map).** Stage 0's guards already
 exist (the closed-form `FrameClock` property, `offline_timeline_agrees_with_transport_clock_sample_for_sample`,
@@ -635,9 +635,43 @@ and `transport_change_is_told_at_its_frame`, which CLAP passes and VST3, the
 C++ VST3 plugin and VST2 fail as a `Gap` (one transport per block), raising
 their ratchets to 1, 1 and 2.
 
-Doc 013 gets an update at stage 2 and 6 (its "tempo steps here" note, the
-`OfflineTimeline` row, the dead-crate and timeline sections). CLAUDE.md's
-tutti-tempo paragraph got its sentence at stage 3.
+**As built, stage 6 (retire).** The project's tempo is one `TempoMap`, and no
+constant-tempo path is left beside it. What went, and what stands in for it:
+
+| Retired | Now |
+|---|---|
+| `TransportCommand::Tempo` | A point in the map (`TransportSettings::set_tempo_map`, or `set_tempo` for a constant one), taken at the next block start. |
+| `TransportSettings::tempo()` and its `AtomicBpm` mirror, and `ClockLinks::tempo` | Nothing: the audio side reads the map it lends (`TransportAudio` seeds the clock from its first point and keeps the block's constant tempo of a constant map). `tempo_in_force` stays: it is what the clock ran at, not an input. |
+| `Transport::samples_per_beat` | `TempoMap::frame_at_or_after(beat, rate)` (no caller outside tests; a beat is not a constant number of frames under a map). |
+| `Timeline::tempo() -> Bpm` | `Timeline::tempo_map() -> Arc<TempoMap>`; a tempo is `tempo_map().tempo_at(beat)`. The live transport answers the published map, an `OfflineTimeline` the one it was built on. |
+| `OfflineTimelineConfig::tempo`, `OfflineTimeline::with_tempo_map`, `::tempo()`, `::beats_per_sample()` | `OfflineTimelineConfig::tempo_map: Arc<TempoMap>` (default: 120 BPM constant), one constructor, `new`. |
+
+- **Reading of §6's "a `Bpm` shorthand".** The config takes only the map: a
+  shorthand constructor beside it would be a second spelling of the constant
+  tempo, so the places that wanted one build `TempoMap::constant`, and the
+  project's shorthand stays `TransportSettings::set_tempo`. A constant map is
+  still the closed form, bit for bit: the golden digests and the differential
+  suites did not move.
+- **A denormal `set_tempo`** is no map (`TempoMap::constant` refuses it): it
+  publishes nothing, where it used to reach the scalar mirror alone.
+- **A timed tempo is gone, and so is its test coverage by command.** Tests that
+  drove a tempo change at a frame now put a step in a map where no loop wraps
+  after it (`beat_of_frame`: the step lands on the frame whose beat it names,
+  to the frame), or swap the map between blocks (`set_tempo`), whose change
+  lands on the next block's first frame; tempo changes inside a block are
+  `tempo_steps.rs` and `tempo_ramps.rs`. A loop wrap under a map with steps is
+  a seek to the loop's start (section 4), which is not the sub-frame carry of
+  the constant closed form, so the model tests that wrap use the untimed swap.
+- **`plugin_midi_export`** plays the shared plugin in `Notes` mode (the
+  rendering of the key it holds, which the plugin's WAV would clip, so the
+  test bounces to buffers) and pins each note's frame under the file's map
+  (beats 0 to 4 at 24 000 frames, then every 48 000), with the length test as
+  it was. Its reference plugin is the shared one, not `tutti-clap-test-plugin`:
+  the test plugins' rlibs cannot share a binary.
+
+Doc 013 got its update (the timed-command sentences and the `TransportClock`
+fork row). CLAUDE.md's tutti-tempo paragraph got its sentence at stage 3, and
+its dead-names list the retired items.
 
 ## 10. Decisions
 

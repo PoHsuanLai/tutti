@@ -50,6 +50,7 @@ use tutti_graph::NodeKey;
 use tutti_graph::{Cx, Editor, Env, Io, Node, Prepare, Shape, Status, TransportChanges, contract};
 use tutti_graph::{OutPort, Source};
 use tutti_sampler::{MemorySource, SlotId, Voice, VoicePool, VoiceSource};
+use tutti_tempo::TempoMap;
 use tutti_transport::{MotionEvent, OfflineTimeline, OfflineTimelineConfig, Transport};
 use tutti_types::{
     Beat, Bpm, ChannelLayout, Frame, FrameClock, InterleavedMut, SampleRate, Samples,
@@ -160,7 +161,7 @@ fn live_graph(start: Beat) -> Run {
 fn offline_graph(start: Beat) -> Run {
     let timeline = OfflineTimeline::new(&OfflineTimelineConfig {
         start_beat: Beat(0.0),
-        tempo: TEMPO,
+        tempo_map: Arc::new(TempoMap::constant(TEMPO).expect("a tempo")),
         sample_rate: SampleRate(SR),
         loop_range: None,
     });

@@ -79,7 +79,7 @@ fn session() -> Session {
 fn timeline(tempo: f64) -> Arc<OfflineTimeline> {
     Arc::new(OfflineTimeline::new(&OfflineTimelineConfig {
         start_beat: Beat(0.0),
-        tempo: Bpm::of(tempo),
+        tempo_map: Arc::new(tutti_tempo::TempoMap::constant(Bpm::of(tempo)).expect("a tempo")),
         sample_rate: SampleRate(RATE),
         loop_range: None,
     }))

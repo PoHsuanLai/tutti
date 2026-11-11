@@ -495,7 +495,9 @@ fn the_prepare_hook_sees_the_callers_timeline() {
     // A deliberately un-default transport: neither 120 BPM nor beat 0.
     let timeline = Arc::new(OfflineTimeline::new(&OfflineTimelineConfig {
         start_beat: tutti_types::Beat(16.0),
-        tempo: tutti_types::Bpm::of(90.0),
+        tempo_map: Arc::new(
+            tutti_tempo::TempoMap::constant(tutti_types::Bpm::of(90.0)).expect("a tempo"),
+        ),
         sample_rate: SampleRate(44_100.0),
         loop_range: None,
     }));
@@ -506,7 +508,11 @@ fn the_prepare_hook_sees_the_callers_timeline() {
         .edit(Box::new(move |prepared: PreparedGraph<'_>| {
             let transport = prepared.ctx;
             *into.lock().unwrap() = Some((
-                transport.tempo().get().round() as usize,
+                transport
+                    .tempo_map()
+                    .tempo_at(transport.beat())
+                    .get()
+                    .round() as usize,
                 transport.beat().get().round() as usize,
             ));
         }));
@@ -530,7 +536,9 @@ fn a_master_exports_prepare_hook_sees_the_callers_timeline() {
     let (mut session, _node) = graph_with_one_node_on();
     let timeline = Arc::new(OfflineTimeline::new(&OfflineTimelineConfig {
         start_beat: tutti_types::Beat(4.0),
-        tempo: tutti_types::Bpm::of(90.0),
+        tempo_map: Arc::new(
+            tutti_tempo::TempoMap::constant(tutti_types::Bpm::of(90.0)).expect("a tempo"),
+        ),
         sample_rate: SampleRate(44_100.0),
         loop_range: None,
     }));
@@ -539,7 +547,14 @@ fn a_master_exports_prepare_hook_sees_the_callers_timeline() {
     let request = short()
         .clock(ExportClock::timeline(timeline))
         .edit(Box::new(move |prepared: PreparedGraph<'_>| {
-            *into.lock().unwrap() = Some(prepared.ctx.tempo().get().round() as usize);
+            *into.lock().unwrap() = Some(
+                prepared
+                    .ctx
+                    .tempo_map()
+                    .tempo_at(prepared.ctx.beat())
+                    .get()
+                    .round() as usize,
+            );
         }));
     render(&mut session, request);
     assert_eq!(*seen.lock().unwrap(), Some(90), "the caller's 90 BPM");

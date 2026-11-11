@@ -398,7 +398,7 @@ fn an_export_is_the_live_render_on_a_clap_gain() {
     let total = BLOCK * BLOCKS;
     let timeline = Arc::new(OfflineTimeline::new(&OfflineTimelineConfig {
         start_beat: Beat(0.0),
-        tempo: Bpm::of(120.0),
+        tempo_map: Arc::new(tutti_tempo::TempoMap::constant(Bpm::of(120.0)).expect("a tempo")),
         sample_rate: RATE,
         loop_range: None,
     }));

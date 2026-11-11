@@ -780,9 +780,8 @@ itself. Every caller is migrated (the session suites, `clap_fork.rs`, the
   inverted or sub-frame span is `EmptyRange`. A tail-only render (the old
   hack of `RenderConfig::job`) is therefore not a bounce.
 - **The clock** defaults to an `OfflineTimeline` over that same map, seated
-  at the range's first beat with the loop off. It still takes a `Bpm` in its
-  config (the map's first point's, which `with_tempo_map` replaces): doc 020
-  stage 6 swaps the field.
+  at the range's first beat with the loop off. Its config takes the map
+  (`OfflineTimelineConfig::tempo_map`, doc 020 stage 6).
 - **Latency and tail.** `Latency` has the default as a variant (`Graph`,
   `Keep`, `Frames`); `Tail::Graph { cap }` takes the cap in `Seconds` (10 s,
   `Tail::CAP`), converted at the render's rate. The latency the bounce does not

@@ -7,7 +7,8 @@ use super::motion::MotionFsm;
 use super::settings::TransportSettings;
 use atomic_float::AtomicF64;
 use std::sync::atomic::Ordering;
-use tutti_types::{Beat, BeatDuration, Bpm, SampleRate, Samples};
+use tutti_tempo::TempoMap;
+use tutti_types::{Beat, SampleRate};
 
 /// The two halves of a transport, held together.
 ///
@@ -80,7 +81,6 @@ impl Transport {
     /// calls with the motion machine in hand.
     pub(crate) fn links(&self) -> super::state::ClockLinks {
         super::state::ClockLinks {
-            tempo: Arc::clone(&self.settings.tempo),
             paused: Arc::clone(&self.settings.paused),
             seek: self.motion.seek.clone(),
             position_writeback: Some(Arc::clone(&self.settings.beat)),
@@ -116,25 +116,6 @@ impl Transport {
             self.motion.timed().mark_rate_change();
         }
     }
-
-    /// Frames one beat spans at the current tempo, rounded to the nearest
-    /// frame.
-    ///
-    /// Derived from [`beats_per_sample`](tutti_types::beats_per_sample) rather than
-    /// from a second `/ 60.0`: the grouping of that division is load-bearing,
-    /// and a second spelling of it would round differently.
-    ///
-    /// A tempo so small that no beat spans a whole frame step (its per-sample
-    /// beat increment underflows to zero) gives [`Samples::ZERO`] rather than
-    /// an infinity, which is an unbounded allocation waiting for its first
-    /// caller.
-    pub fn samples_per_beat(&self) -> Samples {
-        let bps = tutti_types::beats_per_sample(self.settings.tempo(), self.sample_rate());
-        if bps <= BeatDuration(0.0) {
-            return Samples::ZERO;
-        }
-        Samples((1.0 / bps.get()).round() as usize)
-    }
 }
 
 impl super::Timeline for Transport {
@@ -142,8 +123,8 @@ impl super::Timeline for Transport {
         self.settings.beat()
     }
 
-    fn tempo(&self) -> Bpm {
-        self.settings.tempo()
+    fn tempo_map(&self) -> Arc<TempoMap> {
+        self.settings.tempo_map()
     }
 
     fn is_rolling(&self) -> bool {
@@ -161,6 +142,7 @@ mod tests {
     use super::super::motion::MotionEvent;
     use super::super::motion::harness::Audio;
     use super::*;
+    use tutti_types::Bpm;
 
     #[test]
     fn clone_shares_both_halves() {
@@ -168,7 +150,10 @@ mod tests {
         let b = a.clone();
 
         a.settings.set_tempo(Bpm::of(140.0));
-        assert_eq!(b.settings.tempo().get(), 140.0);
+        assert_eq!(
+            b.settings.tempo_map().constant_tempo(),
+            Some(Bpm::of(140.0))
+        );
 
         let _ = a.motion.try_send(MotionEvent::Play);
         Audio::of(&b.motion).drain();
@@ -181,14 +166,18 @@ mod tests {
     ///
     /// Mutation (run): `sample_rate` a plain `SampleRate` field again (and
     /// `set_sample_rate` taking `&mut self`, storing into it) → the clone
-    /// keeps 44.1 kHz and its `samples_per_beat` stays 22 050 → fails.
+    /// keeps 44.1 kHz and its beat is 22 050 frames → fails.
     #[test]
     fn a_rate_change_reaches_every_clone() {
         let a = Transport::new(SampleRate::new(44_100.0));
         let b = a.clone();
         a.set_sample_rate(SampleRate::new(48_000.0));
         assert_eq!(b.sample_rate(), SampleRate(48_000.0));
-        assert_eq!(b.samples_per_beat(), Samples(24_000), "120 BPM at 48 kHz");
+        let beat = b
+            .settings
+            .tempo_map()
+            .frame_at_or_after(Beat(1.0), b.sample_rate());
+        assert_eq!(beat.get(), 24_000, "one beat at 120 BPM and 48 kHz");
     }
 
     #[test]
@@ -202,7 +191,7 @@ mod tests {
         // beat/tempo come from settings, is_playing from the FSM — the reason
         // this type exists.
         assert_eq!(t.beat(), Beat(8.0));
-        assert_eq!(t.tempo().get(), 90.0);
+        assert_eq!(t.tempo_map().constant_tempo(), Some(Bpm::of(90.0)));
         assert!(t.is_rolling());
     }
 
@@ -211,37 +200,14 @@ mod tests {
         let t = Transport::new(SampleRate::new(48000.0));
         let inputs = t.links();
 
-        t.settings.set_tempo(Bpm::of(160.0));
-        assert_eq!(
-            inputs.tempo.load(std::sync::atomic::Ordering::Acquire),
-            Bpm::of(160.0),
-            "the clock must see later tempo changes"
-        );
-
         let _ = t.motion.try_send(MotionEvent::locate(Beat(4.0)));
         Audio::of(&t.motion).drain();
         assert_eq!(inputs.seek.take(), Some(Beat(4.0)));
     }
 
-    #[test]
-    fn samples_per_beat_follows_tempo() {
-        let t = Transport::new(SampleRate::new(44100.0));
-        assert_eq!(t.samples_per_beat(), Samples(22050), "120 BPM");
-
-        t.settings.set_tempo(Bpm::of(60.0));
-        assert_eq!(t.samples_per_beat(), Samples(44100), "60 BPM");
-
-        // A zero or negative tempo is not a `Bpm`, so `set_tempo` cannot be
-        // handed one (see `a_refused_tempo_never_reaches_the_clock`). The
-        // smallest positive tempo is: its per-sample beat increment underflows
-        // to zero, and an `inf` frame count here is an unbounded allocation.
-        t.settings.set_tempo(Bpm::of(f64::from_bits(1)));
-        assert_eq!(t.samples_per_beat(), Samples::ZERO, "smallest tempo");
-    }
-
     /// **A tempo a caller got wrong stops at the type**: a zero, negative or
-    /// non-finite number is refused before `set_tempo`, so the tempo the clock
-    /// reads, and the frames a beat spans, stay where they were.
+    /// non-finite number is refused before `set_tempo`, so the map the clock
+    /// follows stays where it was.
     ///
     /// Mutation (run): `Bpm::new` tests `raw >= 0.0` instead of `raw > 0.0`;
     /// the zero is let through to `set_tempo` and the tempo assertion fails.
@@ -255,12 +221,11 @@ mod tests {
             if let Ok(bpm) = asked {
                 t.settings.set_tempo(bpm);
             }
-            assert_eq!(t.settings.tempo(), Bpm::of(90.0), "after {raw}");
             assert_eq!(
-                t.links().tempo.load(std::sync::atomic::Ordering::Acquire),
-                Bpm::of(90.0)
+                t.settings.tempo_map().constant_tempo(),
+                Some(Bpm::of(90.0)),
+                "after {raw}"
             );
         }
-        assert_eq!(t.samples_per_beat(), Samples(29400));
     }
 }

@@ -60,6 +60,8 @@ approx = "0.5"
 tutti-ump = { path = "../tutti-ump", default-features = false }
 # `Fnv`, the digest of the golden tests.
 tutti-fixtures = { path = "../../testing/tutti-fixtures" }
+# The tempo map an offline timeline runs on.
+tutti-tempo = { path = "../tutti-tempo" }
 # Convolution nodes and the `testing` stimulus nodes for the end-to-end export
 # tests, examples and bench. Acyclic: tutti-nodes does NOT depend on
 # tutti-export.

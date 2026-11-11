@@ -60,6 +60,7 @@ use tutti_export::{
 use tutti_fixtures::assert_golden;
 use tutti_graph::{Cx, GraphBuilder, Io, Node, Prepare, Shape, Status, Unforkable};
 use tutti_nodes::testing::{Const, Osc, vbap_mix};
+use tutti_tempo::TempoMap;
 use tutti_transport::{OfflineTimeline, OfflineTimelineConfig};
 use tutti_types::{Amplitude, Azimuth, Beat, Bpm, Hz, SampleRate};
 use tutti_types::{Db, Samples};
@@ -699,11 +700,11 @@ fn the_graph_reads_the_render_clocks_transport() {
     let start = 4.0;
     let timeline = OfflineTimeline::new(&OfflineTimelineConfig {
         start_beat: Beat(start),
-        tempo: Bpm::of(120.0),
+        tempo_map: Arc::new(TempoMap::constant(Bpm::of(120.0)).expect("a tempo")),
         sample_rate: RATE,
         loop_range: None,
     });
-    let bps = timeline.beats_per_sample().get();
+    let bps = tutti_types::beats_per_sample(Bpm::of(120.0), RATE).get();
 
     let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::STEREO);
     let clock = g.add(Unforkable(BeatPorts));
@@ -770,7 +771,7 @@ fn tone_at(i: usize) -> f32 {
 fn timeline() -> Arc<OfflineTimeline> {
     Arc::new(OfflineTimeline::new(&OfflineTimelineConfig {
         start_beat: Beat(0.0),
-        tempo: Bpm::of(120.0),
+        tempo_map: Arc::new(TempoMap::constant(Bpm::of(120.0)).expect("a tempo")),
         sample_rate: RATE,
         loop_range: None,
     }))

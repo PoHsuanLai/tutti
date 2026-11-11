@@ -287,7 +287,7 @@ fn instrument_at(rate: f64) {
 
     let timeline = Arc::new(OfflineTimeline::new(&OfflineTimelineConfig {
         start_beat: Beat(0.0),
-        tempo: Bpm::of(90.0),
+        tempo_map: Arc::new(tutti_tempo::TempoMap::constant(Bpm::of(90.0)).expect("a tempo")),
         sample_rate: SampleRate(rate),
         loop_range: None,
     }));

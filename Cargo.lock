@@ -3427,7 +3427,6 @@ name = "tutti"
 version = "0.0.1"
 dependencies = [
  "tempfile",
- "tutti-clap-test-plugin",
  "tutti-codec",
  "tutti-cpal",
  "tutti-dsp",
@@ -3450,6 +3449,7 @@ dependencies = [
  "tutti-sampler",
  "tutti-session",
  "tutti-sf2",
+ "tutti-shared-plugin",
  "tutti-soundfont",
  "tutti-transport",
  "tutti-types",
@@ -3654,6 +3654,7 @@ dependencies = [
  "tutti-measure",
  "tutti-nodes",
  "tutti-sampler",
+ "tutti-tempo",
  "tutti-transport",
  "tutti-types",
  "tutti-ump",

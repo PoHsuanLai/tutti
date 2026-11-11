@@ -49,7 +49,7 @@ pub use walk::TempoAhead;
 
 /// A clock an offline render drives, one block at a time.
 ///
-/// [`Timeline`] is read-only — `beat`/`tempo`/`is_rolling` are what a reader
+/// [`Timeline`] is read-only — `beat`/`tempo_map`/`is_rolling` are what a reader
 /// consults. Something has to move that position forward, and in a live session
 /// it is the audio callback. Offline there is no callback, so the renderer does
 /// it: after each block it reports how many frames it produced, and the clock

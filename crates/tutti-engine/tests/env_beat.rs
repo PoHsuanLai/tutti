@@ -24,7 +24,7 @@ use std::sync::{Arc, Mutex};
 
 mod support;
 
-use support::{Change, model_beats};
+use support::{Change, beat_of_frame, model_beats, step_map};
 use tutti_engine::Engine;
 use tutti_graph::NodeKey;
 use tutti_graph::{
@@ -177,7 +177,7 @@ fn beat(p: (f32, f32)) -> f64 {
 ///
 /// Mutations (each failed; the walk is `Env::for_each_beat` in tutti-graph):
 /// - use the block's `env.transport` for every piece (ignore the cuts) →
-///   wrong from the first mid-block command (frame 700);
+///   wrong from the first mid-block command (frame 1 000);
 /// - hand the walk no loop region → it never wraps → wrong from the first
 ///   wrap (~1 600);
 /// - step the beat while stopped → the stop at 8 000 keeps moving.
@@ -197,8 +197,6 @@ fn the_env_walk_is_the_env_beat() {
     let m = &transport.motion;
     m.try_send(MotionEvent::Play).expect("room");
     let at = |f: u64| At::Frame(Frame(f));
-    m.schedule(at(700), TransportCommand::Tempo(Bpm::of(97.0)))
-        .expect("room");
     // Armed with the playhead inside it (~0.03): wraps from ~1 600.
     m.schedule(
         at(1_000),
@@ -223,17 +221,18 @@ fn the_env_walk_is_the_env_beat() {
     m.schedule(at(8_000), MotionEvent::stop_unfaded())
         .expect("room");
     m.schedule(at(9_500), MotionEvent::Play).expect("room");
-    // A beat-timed tempo step, mid-block.
-    m.schedule(At::Beat(Beat(1.5)), TransportCommand::Tempo(Bpm::of(140.0)))
-        .expect("room");
     m.schedule(at(30_000), TransportCommand::Loop(LoopEdit::armed(false)))
         .expect("room");
     let blocks = blocks(40_000);
     let mut starts = Vec::new();
     let mut f = 0;
     for (i, &n) in blocks.iter().enumerate() {
+        // Untimed edits between blocks, as a UI makes them: 97 BPM from
+        // block 2 (frame 812), 133 from block 20.
+        if i == 2 {
+            transport.settings.set_tempo(Bpm::of(97.0));
+        }
         if i == 20 {
-            // An untimed edit between blocks, as a UI makes one.
             transport.settings.set_tempo(Bpm::of(133.0));
         }
         render(&graph, ChannelLayout::MONO, n);
@@ -274,20 +273,24 @@ fn the_env_walk_is_the_env_beat() {
     assert!(b(6_400) < 1.01, "and it wraps once inside it");
     assert_eq!(graph_log[8_000], graph_log[9_499], "stopped from 8 000");
     assert_ne!(graph_log[9_500], graph_log[9_501], "rolling from 9 500");
-    // Steps read back through the `f32` split resolve ~1e-7 beat, far finer
-    // than the 133 → 140 BPM difference (~2.4e-6 beat a frame).
+    // The untimed edit between blocks replaced the map with 133 BPM, taken at
+    // the next block start (frame 8 691, stopped until 9 500): every
+    // unwrapped step after 10 000 is 133 BPM's, read back through the `f32`
+    // split (~1e-7 beat) against a step of ~4.6e-5.
     let step = |f: usize| b(f + 1) - b(f);
-    let fast = (9_500..30_000)
-        .find(|&f| step(f) > 136.5 / 60.0 / SR)
-        .expect("the tempo step landed");
-    assert!(b(fast) >= 1.5 - 1e-6 && b(fast - 1) < 1.5, "on its beat");
+    let want = 133.0 / 60.0 / SR;
+    let steps: Vec<f64> = (10_000..12_000).map(step).filter(|&s| s > 0.0).collect();
+    assert!(steps.len() > 1_500, "it rolled: {}", steps.len());
+    for s in steps {
+        assert!((s - want).abs() < 4e-7, "{s} vs {want}");
+    }
     // The first stretch, before any wrap, is the closed form: 120 BPM to
-    // 700, then 97.
+    // 812 (block 2), then 97.
     let model = model_beats(
         SR,
         120.0,
         &[
-            (700, Change::Tempo(97.0)),
+            (812, Change::Tempo(97.0)),
             (1_000, Change::Loop(Some((0.02, 0.06)))),
         ],
         2_900,
@@ -343,11 +346,11 @@ fn click_clicks_on_the_model_beats() {
     let graph = Engine::new(&transport, &mut ed, exec).expect("within the limits");
     let m = &transport.motion;
     m.try_send(MotionEvent::Play).expect("room");
-    m.schedule(
-        At::Frame(Frame(20_111)),
-        TransportCommand::Tempo(Bpm::of(151.0)),
-    )
-    .expect("room");
+    // 151 BPM from the beat frame 20 111 reaches at 120: a step inside a block.
+    transport.settings.set_tempo_map(step_map(&[
+        (0.0, 120.0),
+        (beat_of_frame(20_111, 120.0, SR), 151.0),
+    ]));
     m.schedule(
         At::Frame(Frame(30_000)),
         MotionEvent::Locate {
@@ -473,7 +476,7 @@ fn an_offline_render_sees_the_live_engine_transport() {
     // past its maximum is two).
     let timeline = Arc::new(OfflineTimeline::new(&OfflineTimelineConfig {
         start_beat: Beat(BAR_2),
-        tempo: Bpm::of(100.0),
+        tempo_map: step_map(&[(0.0, 100.0)]),
         sample_rate: SampleRate(SR),
         loop_range: LoopRange::new(Beat::new(6.0), Beat::new(7.0)),
     }));
@@ -528,7 +531,7 @@ fn an_offline_render_sees_the_live_engine_transport() {
 fn the_offline_env_walk_starts_each_block_on_the_timeline() {
     let timeline = OfflineTimeline::new(&OfflineTimelineConfig {
         start_beat: Beat(4.0),
-        tempo: Bpm::of(128.0),
+        tempo_map: step_map(&[(0.0, 128.0)]),
         sample_rate: SampleRate(SR),
         loop_range: None,
     });
@@ -544,7 +547,8 @@ fn the_offline_env_walk_starts_each_block_on_the_timeline() {
         let split = (start.floor().get() as f32, start.fract().get() as f32);
         assert_eq!(log[at], split, "block starting at frame {at}");
         let last = beat(log[at + n - 1]);
-        let expect = start.get() + (n - 1) as f64 * timeline.beats_per_sample().get();
+        let expect = start.get()
+            + (n - 1) as f64 * tutti_types::beats_per_sample(Bpm::of(128.0), SampleRate(SR)).get();
         assert!((last - expect).abs() < 1e-6, "frame {}", at + n - 1);
         at += n;
     }

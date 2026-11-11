@@ -44,9 +44,6 @@ fn renders_finite(node: &mut dyn Node, blocks: usize) -> bool {
 /// line (`Seconds::to_samples_ceil` reads a non-finite span as zero frames):
 /// the node still builds, passes audio through its zero-length line and stays
 /// finite. It panicked in `f32::clamp(0.0, max)` before.
-///
-/// Mutation (run): `max_delay = max_delay_secs.into()` with no saturation
-/// makes the NaN, -inf and negative cases panic.
 #[test]
 fn a_delay_with_an_unusable_maximum_saturates_to_an_empty_line() {
     for max in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, -1.0, -1e30] {
@@ -62,9 +59,6 @@ fn a_delay_with_an_unusable_maximum_saturates_to_an_empty_line() {
 }
 
 /// A NaN initial delay time is read as zero, whatever the maximum.
-///
-/// Mutation (run): in `with_channels`, `delay_secs.clamp(..)` without the
-/// `is_finite` test leaves NaN in the cell and the case fails.
 #[test]
 fn a_delay_with_a_nan_initial_time_starts_at_zero() {
     let node = DelayLineNode::new(Seconds(0.1), Seconds(f64::NAN), Feedback(0.3));
@@ -74,9 +68,7 @@ fn a_delay_with_a_nan_initial_time_starts_at_zero() {
 /// The strip's volume and balance cells hold a bad write off: the output stays
 /// finite while it is there and after a finite write.
 ///
-/// Mutation: dropping the `LastGood` read of the volume in `control_gains`
-/// fails the volume cases (run). The pan cases pin that a NaN or infinite
-/// balance is already finite without a guard.
+/// The pan cases pin that a NaN or infinite balance is already finite without a guard.
 #[test]
 fn the_strip_holds_off_non_finite_volume_and_pan() {
     type Cell = fn(&BusStripNode) -> std::sync::Arc<AtomicF32>;
@@ -106,7 +98,7 @@ fn the_strip_holds_off_non_finite_volume_and_pan() {
 /// written beside a moving control and again after a finite value, and the
 /// output stayed finite. Kept as a regression guard; it found nothing to fix.
 ///
-/// No mutation of this test is claimed: dropping the limiter release's
+/// Dropping the limiter release's
 /// `LastGood` read is not caught here (the follower guards a NaN behind it, as
 /// `non_finite_controls.rs` notes for the compressor's attack), so it pins the
 /// behaviour and not each guard.

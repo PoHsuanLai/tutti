@@ -1160,9 +1160,6 @@ mod tests {
     /// ([`AudioPipeline::reserve`]), and a block uses its first frames. The
     /// reshape reallocated whenever the length changed, so a host's ragged
     /// final chunk freed and rebuilt every channel on the audio thread.
-    ///
-    /// Mutation (run): the old exact-size check in `reshape` (`len() ==
-    /// samples`) → the 64-frame block reallocates → fails.
     #[test]
     fn a_shorter_block_after_a_longer_one_does_not_allocate() {
         const N: usize = 128;
@@ -1356,7 +1353,7 @@ mod tests {
     /// (`probeprocessor.cpp` calls `addEventInput` and never touches
     /// `outputEvents` or `outputParameterChanges`). So the plugin's output lists
     /// arrive empty every block, and an owning conversion over an empty
-    /// list allocates nothing — mutation-testing confirms that restoring
+    /// list allocates nothing, so restoring
     /// `ProcessOutputRef::to_owned()` in `loaders::vst3::process_block` leaves
     /// this test green. Saying so is the point: a gate that names a property it
     /// cannot observe is the failure this whole class of test exists to avoid.
@@ -1366,9 +1363,6 @@ mod tests {
     /// feeds it non-empty lists. Closing the gap *here* needs an emitting
     /// reference plugin — a `outputEvents`-writing variant of `audio-probe`,
     /// which is a shared C++ fixture and a change of its own.
-    ///
-    /// Mutation check: any unconditional allocation inside `process_block`
-    /// aborts this (verified with a `Vec::with_capacity(32)`).
     #[cfg(feature = "vst3")]
     #[test]
     fn process_through_the_real_vst3_loader_is_alloc_free() {
@@ -1445,16 +1439,10 @@ mod tests {
     ///
     /// [`MIDI_STACK_CAPACITY`]: tutti_plugin::server::MIDI_STACK_CAPACITY
     ///
-    /// Three mutation checks, all verified:
-    /// - build a fresh `ProcessOutput` inside the loop instead of reusing one
-    ///   (what `ProcessOutputRef::to_owned` did) and this aborts;
-    /// - `ProcessOutput::reserve_params` building `ParameterChanges::new()`
-    ///   (room for nothing) and the copy stores no queue → fails. (Reworded
-    ///   with `PointBuf`: the points storage is fixed, so dropping the inner
-    ///   `queue.points.clear()` from `ProcessOutput::clear`, which made each
-    ///   block reallocate every points buffer, can no longer allocate.)
-    /// - copy the MIDI with `midi_events.extend` rather than `emit_midi` and
-    ///   this panics at the cap.
+    /// Copying emitted events into a warm output allocates nothing: the `ProcessOutput` is
+    /// reused rather than built per block, `ProcessOutput::reserve_params` leaves room for
+    /// every queue, the points storage is fixed, and the MIDI goes through `emit_midi` (which
+    /// drops at the cap) rather than `midi_events.extend`.
     #[test]
     fn copying_emitted_events_into_a_warm_output_does_not_allocate() {
         // Points well past any small reservation, so the buffers are genuinely
@@ -1523,11 +1511,6 @@ mod tests {
     /// again, at the load's room; one that shrinks keeps it.** A pipeline
     /// reserved for 4 parameters at a room of 10, fitted to 8: it holds 8
     /// queues and the budget for them at that room. Fitted to 2: unchanged.
-    ///
-    /// Mutations (run), each fails: `fit_params` doing nothing → 4 queues;
-    /// re-reserving at no room (`0` for `param_room`) → the storage is the
-    /// budget at a room of 0; re-reserving whatever the count (no
-    /// `capacity` check) → fitted to 2, it holds 2.
     #[test]
     fn a_grown_parameter_list_is_reserved_again_at_the_loads_room() {
         let mut pipeline = AudioPipeline::new(SampleFormat::Float32);

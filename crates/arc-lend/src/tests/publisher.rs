@@ -9,10 +9,6 @@ use super::*;
 /// (The other panic site the lock guards against, a failed `reserve`, cannot
 /// be provoked here without an allocator that fails on demand; it happens
 /// before the swap, which is what makes it harmless.)
-///
-/// Mutation: move `self.free(freeable)` inside the locked block in `publish`
-/// (drop the values while the guard is alive). The panic then unwinds
-/// through the guard and the lock is poisoned.
 #[test]
 fn a_panicking_destructor_does_not_poison_the_cell() {
     struct Bomb(bool);
@@ -41,9 +37,6 @@ fn a_panicking_destructor_does_not_poison_the_cell() {
 /// The publisher's buffers are reused: a publish that frees a value leaves
 /// the emptied buffer for the next, so a steady stream of publishes stops
 /// allocating one per publish.
-///
-/// Mutation: make `free` drop the buffer instead of returning it. `spare`
-/// then has no capacity after a publish and the assertion fails.
 #[test]
 fn a_publish_hands_its_buffer_to_the_next() {
     let cell = Arc::new(ArcLend::new(0u32));
@@ -54,10 +47,6 @@ fn a_publish_hands_its_buffer_to_the_next() {
 /// `Debug` formats the value with the cell's lock released, so a payload
 /// whose `fmt` publishes to the same cell (a value that logs a correction
 /// of itself) does not deadlock.
-///
-/// Mutation (run): format under the lock (`let _control = self.lock();`
-/// held across `f.debug_tuple(..)`). `fmt`'s publish blocks on the lock the
-/// formatting thread holds, and the `recv_timeout` fails.
 #[test]
 #[cfg_attr(miri, ignore = "waits on a wall-clock deadline")]
 fn debug_formats_outside_the_lock() {
@@ -100,9 +89,6 @@ fn debug_formats_outside_the_lock() {
 
 /// `current` is the value published last, as the same allocation the
 /// publisher handed in, whether it published a `T` or an `Arc<T>`.
-///
-/// Mutation: make `publish` return before the swap (`return;` after the
-/// reservations), keeping the old value. The second assertion fails.
 #[test]
 fn current_is_the_value_published_last() {
     let first = Arc::new(1u32);
@@ -123,10 +109,6 @@ fn current_is_the_value_published_last() {
 /// A snapshot from `current` owns its value: a publish retires the cell's
 /// own count as usual and pins nothing for it, and the value is freed where
 /// the snapshot's last `Arc` drops, here on another thread.
-///
-/// Mutation: in `Current::to_arc`, drop `Arc::increment_strong_count(ptr)`.
-/// The snapshot then shares the cell's count, the publish frees value 0
-/// under it, and the first assertion fails.
 #[test]
 fn a_snapshot_owns_its_value_and_frees_where_it_drops() {
     let (sites, make) = sites();

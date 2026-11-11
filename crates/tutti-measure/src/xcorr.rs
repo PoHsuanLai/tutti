@@ -158,10 +158,6 @@ mod tests {
 
     /// A hand-worked case: `a = [1, 2, 3]`, `b = [0, 1, 0.5]`, with
     /// `r[lag] = sum a[n + lag] b[n]` summed out lag by lag below.
-    ///
-    /// Mutation checked: correlating `b` against `a` (swapping the operands, so
-    /// the conjugate lands on the other spectrum) fails every non-symmetric
-    /// lag.
     #[test]
     fn a_small_case_matches_the_hand_worked_sums() {
         let mut fft = FftScratch::new();
@@ -183,10 +179,6 @@ mod tests {
 
     /// A delayed copy peaks at exactly its delay, positive when `a` lags `b`
     /// and negative the other way, and unequal lengths work.
-    ///
-    /// Mutation checked: flipping the sign of the lag mapping (`i - zero` to
-    /// `zero - i`) fails both directions; halving the padded size
-    /// (`next_power_of_two() / 2`) makes the extreme lags wrap and fails.
     #[test]
     fn a_delayed_copy_peaks_at_its_delay_in_either_direction() {
         let mut fft = FftScratch::new();
@@ -209,10 +201,6 @@ mod tests {
 
     /// A buffer against itself peaks at lag zero with its energy, and the
     /// result is symmetric about it.
-    ///
-    /// Mutation checked: scaling `circular` by 2 after the inverse fails the
-    /// energy; conjugating neither spectrum (`*x *= *y`) fails the lag-zero
-    /// peak.
     #[test]
     fn autocorrelation_peaks_at_zero_with_the_energy_and_is_symmetric() {
         let mut fft = FftScratch::new();
@@ -230,9 +218,6 @@ mod tests {
 
     /// `peak_within` ignores a stronger peak beyond the bound, clamps an
     /// oversized bound, and returns `None` for empty input.
-    ///
-    /// Mutation checked: ignoring the bound (always searching every lag) fails
-    /// the first assertion; using `lo..hi` (exclusive) fails the edge lag.
     #[test]
     fn peak_within_respects_the_bound() {
         let mut fft = FftScratch::new();
@@ -249,9 +234,6 @@ mod tests {
 
     /// The shaping hook sees the cross-spectrum before the inverse: zeroing it
     /// zeroes the result.
-    ///
-    /// Mutation checked: calling `shape` after the inverse transform (or not at
-    /// all) leaves the values non-zero and fails.
     #[test]
     fn the_shape_hook_reaches_the_cross_spectrum() {
         let mut fft = FftScratch::new();

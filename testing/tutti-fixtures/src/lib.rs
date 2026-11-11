@@ -32,7 +32,7 @@
 //! always refreshing the uplifted copy, so the more obvious path can hold an
 //! *older build of the same plugin*. A stale probe makes a suite run green
 //! against behaviour the tests no longer set, and can silently reverse a
-//! mutation-verification result.
+//! test result.
 
 // Test-only `unsafe` the suites need lives here, each behind a safe call with
 // its argument at the site (`ScopedEnv`, `StandInWindow`, the glibc read);
@@ -337,9 +337,6 @@ mod tests {
 
     /// The rule the module docs call load-bearing: newest wins, so a stale
     /// uplifted copy cannot shadow a fresh one in `deps/`.
-    ///
-    /// Mutation: return the first existing candidate instead of the newest ->
-    /// the older, first-listed file wins -> fails.
     #[test]
     fn newest_wins_over_first() {
         let dir = std::env::temp_dir().join(format!("tfr-newest-{}", std::process::id()));
@@ -373,9 +370,6 @@ mod tests {
 
     /// A directory at a candidate path is not a plugin: `metadata` succeeds on
     /// a directory, `dlopen` does not.
-    ///
-    /// Mutation: filter on `exists()` instead of `is_file()` -> the directory
-    /// is returned -> fails.
     #[test]
     fn a_directory_is_not_a_candidate() {
         let dir = std::env::temp_dir().join(format!("tfr-dir-{}", std::process::id()));
@@ -386,10 +380,6 @@ mod tests {
 
     /// A test or bench binary is in `deps/`, an example in `examples/`, and a
     /// plain binary beside its profile; a target triple only adds a level above.
-    ///
-    /// Mutation: drop the `examples` arm of `in_artifact_dir` -> the example
-    /// case returns `.../debug/examples` -> fails; drop the `deps` arm -> the
-    /// test case fails.
     #[test]
     fn the_profile_dir_is_derived_from_the_executable_path() {
         let p = |s: &str| profile_dir_of(Path::new(s));
@@ -408,10 +398,6 @@ mod tests {
 
     /// The root is the nearest ancestor with a `Cargo.lock`, not the farthest,
     /// and the start itself counts.
-    ///
-    /// Mutation: walk `ancestors().skip(1)` -> the start-is-root case fails;
-    /// pick the last match instead of the first -> the nested case returns the
-    /// outer lock -> fails.
     #[test]
     fn the_root_is_the_nearest_ancestor_with_a_lockfile() {
         let base = std::env::temp_dir().join(format!("tfx-root-{}", std::process::id()));
@@ -432,10 +418,6 @@ mod tests {
     }
 
     /// The root found is the real repo root, with the assets under it.
-    ///
-    /// Mutation: look for `Cargo.toml` instead of `Cargo.lock` in `find_root`
-    /// -> the root is this crate's own directory, which has no `assets/` ->
-    /// fails.
     #[test]
     fn the_repo_root_holds_the_assets() {
         assert!(repo_root().join("Cargo.lock").is_file());
@@ -444,10 +426,6 @@ mod tests {
 
     /// A missing asset fails, naming the full path in the platform's own
     /// separators (the path is built component by component).
-    ///
-    /// Mutation: return the path without the `is_file` assert -> no panic ->
-    /// fails; join `rel` as one component -> on Windows the message has mixed
-    /// separators and no longer equals the native path -> fails there.
     #[test]
     fn a_missing_asset_panics_with_its_path() {
         let native = repo_root()
@@ -468,15 +446,12 @@ mod tests {
         );
     }
 
-    /// Mutation: test `rel.starts_with("sound/")` in `asset` -> the hint is
-    /// dropped -> fails.
     #[test]
     #[should_panic(expected = "download-timgm6mb.sh")]
     fn a_missing_soundfont_names_how_to_fetch_it() {
         asset("soundfonts/no_such_font.sf2");
     }
 
-    /// Mutation: swap the two entries of `candidates_in` -> fails.
     #[test]
     fn candidates_are_deps_then_the_uplifted_copy() {
         assert_eq!(
@@ -488,7 +463,6 @@ mod tests {
         );
     }
 
-    /// Mutation: spell the Linux name `lib{lib_stem}.bin` -> fails.
     #[test]
     fn lib_filename_follows_the_target_os() {
         // Assert the shape rather than one platform's answer, so this holds on
@@ -505,14 +479,8 @@ mod tests {
     /// link's own inode is the witness: a republish renames a fresh symlink
     /// over it, which a second call must not do.
     ///
-    /// Mutation: drop the `read_link` early return -> the second call renames
-    /// a new link in -> the inode changes -> fails.
-    /// A file that already has the extension is its own published path, and
-    /// stays a file (D18: the Linux `.so` cdylib published as `.so` became a
-    /// link to itself).
-    ///
-    /// Mutation (run): drop the `link == real` return -> the file is replaced
-    /// by a self-link -> fails.
+    /// A file that already has the extension is its own published path, and stays a file
+    /// (D18: the Linux `.so` cdylib published as `.so` became a link to itself).
     #[test]
     fn a_file_with_the_extension_is_left_as_it_is() {
         let dir = std::env::temp_dir().join(format!("tfr-self-{}", std::process::id()));

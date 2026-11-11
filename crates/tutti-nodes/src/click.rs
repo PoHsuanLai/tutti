@@ -901,11 +901,6 @@ mod tests {
     /// with the change mid-block, because the span is dropped at every block
     /// boundary: a frame-by-frame version of this test passes with or without
     /// the cap.
-    ///
-    /// Mutation: ending the latched span at `onset + beat_length` alone, without
-    /// the cap at the next change, keeps beat 2.5 inside `[2.0, 3.0)` for the
-    /// rest of the block, so the downbeat does not click and every assertion
-    /// fails.
     #[test]
     fn a_mid_beat_meter_change_clicks_its_downbeat() {
         let (_, settings, mut node) = make_click();
@@ -940,10 +935,6 @@ mod tests {
 
     /// A meter published while a beat is latched is in force from the next
     /// block, not from whenever the playhead leaves the span the old meter drew.
-    ///
-    /// Mutation: removing `forget_latch` from `render` keeps the 4/4 span
-    /// `[2.0, 3.0)` across the publish, so the node still holds onset 2.0 after
-    /// the second block and fails.
     #[test]
     fn a_republished_meter_is_seen_within_one_block() {
         let (_, settings, mut node) = make_click();
@@ -1042,12 +1033,6 @@ mod tests {
     /// `ceil((onset − start) / bps)`. `±1` absorbs rounding across that
     /// boundary. Each block's transport is the host clock's, counted, as the
     /// engine hands it.
-    ///
-    /// Mutation: reading the beat of frame 0 of the block for the whole block
-    /// (a once-per-block read) moves the onset to the next block
-    /// boundary and fails at both block sizes: frame 2112 at 64 and 2120 at
-    /// 40, against 2103. (A second size that shared a boundary with the first
-    /// would prove nothing more, so 40 is chosen to land elsewhere.)
     #[test]
     fn click_onset_is_sample_accurate_within_the_block() {
         const RATE: f64 = 48_000.0;

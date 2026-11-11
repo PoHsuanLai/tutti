@@ -315,9 +315,6 @@ mod tests {
 
     /// The cell `assert_param_fork` cannot see — one the `ParamSet` does
     /// not address — is caught here.
-    ///
-    /// Mutation (run): drop the "a live move reached the fork" check in
-    /// `check` → this passes → fails.
     #[test]
     #[should_panic(expected = "trim: a live move reached the fork")]
     fn an_unaddressed_cell_left_shared_fails() {
@@ -326,9 +323,6 @@ mod tests {
 
     /// A control the render cannot hear fails loudly, rather than passing
     /// the snapshot step for nothing.
-    ///
-    /// Mutation (run): drop the fresh-fork `assert!` in `check` → this
-    /// passes → fails.
     #[test]
     #[should_panic(expected = "moving it did not change a fresh fork's output")]
     fn an_inaudible_control_fails() {

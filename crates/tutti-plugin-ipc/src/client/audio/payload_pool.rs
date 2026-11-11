@@ -272,9 +272,6 @@ mod tests {
     /// **Every payload that can be out at once comes from the pool**: a full
     /// queue, the one the bridge thread holds, and the one the audio thread
     /// holds before its refused push, all without allocating (doc 027 D10).
-    ///
-    /// Mutation (run): `POOL_CAPACITY` as `COMMAND_QUEUE_SIZE` (as it was)
-    /// or `+ 1` → the last acquire allocates and the gate aborts.
     #[test]
     fn a_full_queue_and_both_threads_take_payloads_without_allocating() {
         let pool = PayloadPool::new();
@@ -298,12 +295,6 @@ mod tests {
     /// queue. (Reworded with `PointBuf`: the buffers were `point_budget`,
     /// under a quarter of `room`, and the carried value's point grew a queue
     /// on the bridge thread; it is reserved now.)
-    ///
-    /// Mutation (run): `reserve_params` building each buffer with every
-    /// queue at full room (`ParameterChanges::point_layout` always
-    /// `(full, 0)`) → `queues × (room + 1)` a buffer → fails. (Reworded with
-    /// the one layout: a second mutation, the plain layout, no longer
-    /// exists.)
     #[test]
     fn the_buffers_hold_the_pool_budget_not_params_times_room() {
         let queues = 2_000 + 64;
@@ -331,12 +322,6 @@ mod tests {
     /// never freed on the audio thread. (A drop is observed as the free
     /// list's length: an assert-no-alloc gate needs the test binary's global
     /// allocator, which this unit-test binary does not install.)
-    ///
-    /// Mutations (run), each fails: the bridge return without the
-    /// `len() >= PARAM_BUFFERS` check → the surplus is kept, the list holds
-    /// one more; `return_params_rt` applying the bridge's rule (its body
-    /// `self.return_params(changes)`) → the taken buffer is dropped, the
-    /// list one short.
     #[test]
     fn the_bridge_drops_surplus_buffers_and_the_audio_thread_none() {
         let pool = PayloadPool::new();

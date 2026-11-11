@@ -29,10 +29,6 @@ fn sine(a: f32, frames: usize) -> Vec<f32> {
 }
 
 /// A constant block reads its analytic peak and RMS, exactly.
-///
-/// Mutation (run, recorded here): `block_stats` summing `s` instead of
-/// `s * s` -> the RMS reads 0.5 where 0.5 * 0.5 = 0.25 is summed, and this
-/// fails.
 #[test]
 fn a_constant_reads_exactly() {
     let (w, mut r) = level_cell();
@@ -45,11 +41,6 @@ fn a_constant_reads_exactly() {
 
 /// The statistics of a block of any length agree with a plain loop: the
 /// vector shape handles every tail.
-///
-/// Mutation (run, recorded here): drop the tail loop (`let _ = tail`) ->
-/// lengths off a multiple of 8 read short and this fails; the peak without
-/// `abs()` in the tail loop alone fails it too (the lengths include
-/// negatives).
 #[test]
 fn every_length_is_measured_whole() {
     for len in 0..40usize {
@@ -64,9 +55,6 @@ fn every_length_is_measured_whole() {
 
 /// A read takes what was held and leaves nothing: the reads after it, with no
 /// block between, are empty, whichever slot the cell reads (it alternates).
-///
-/// Mutation (run, recorded here): `LevelReader::take` loading instead of
-/// swapping the peak -> the third read shows the spike again and this fails.
 #[test]
 fn a_read_takes_what_was_held() {
     let (w, mut r) = level_cell();
@@ -79,10 +67,6 @@ fn a_read_takes_what_was_held() {
 
 /// Blocks between reads fold: the peak is the largest, the RMS covers all
 /// the frames, whatever the block size.
-///
-/// Mutation (run, recorded here): `LevelWriter::fold` storing the block's
-/// frames instead of adding them -> only the last block's count shows and
-/// this fails.
 #[test]
 fn blocks_between_reads_fold() {
     let (w, mut r) = level_cell();
@@ -97,11 +81,6 @@ fn blocks_between_reads_fold() {
 
 /// A read with no frames has no peak and no energy: a block lands whole or
 /// not at all. (The cell guarantees it; this pins the `Level` built on it.)
-///
-/// Mutation (run, recorded here): `From<LevelSpan>` giving the peak of a
-/// zero-frame span -> not reachable through the cell; the mutation is
-/// `LevelWriter::fold` raising the peak before the frames are visible, which
-/// the loom model (`tests/level_cell_loom.rs` in `tutti-rt`) catches.
 #[test]
 fn an_empty_read_is_silence() {
     let (_w, mut r) = level_cell();
@@ -114,13 +93,6 @@ fn an_empty_read_is_silence() {
 
 /// A NaN sample does not set the peak, whether it falls in a vector pass
 /// or the tail.
-///
-/// Mutation (run, recorded here): the tail loop's `max` as
-/// `if x >= peak || x.is_nan() { x } else { peak }` -> the 3-sample block
-/// fails. The same in the chunk loop and the final fold together -> the
-/// 16-sample block fails (one of the two alone is masked by the other
-/// `f32::max`, and a tail would mask it too, which is why the block has
-/// none).
 #[test]
 fn nan_does_not_set_the_peak() {
     assert_eq!(block_stats(&[0.5, f32::NAN, 0.25]).peak, 0.5);
@@ -133,10 +105,6 @@ fn nan_does_not_set_the_peak() {
 /// A block measured in pieces reads as the block measured whole, whatever
 /// the cut: the peak exactly, the frames exactly, the RMS to rounding (the
 /// cut changes which partial sums are added first).
-///
-/// Mutation (run, recorded here): `LevelWriter::fold` storing the piece's
-/// frames instead of adding them -> the frame count and RMS are the last
-/// piece's and this fails.
 #[test]
 fn a_block_in_pieces_reads_as_the_whole_block() {
     let block = sine(0.8, 300);
@@ -157,9 +125,6 @@ fn a_block_in_pieces_reads_as_the_whole_block() {
 }
 
 /// Whole periods of a sine: peak `a`, RMS `a / sqrt(2)`.
-///
-/// Mutation (run, recorded here): the RMS divisor `frames - 1` in
-/// `From<LevelSpan>` -> this fails.
 #[test]
 fn a_known_sine_reads_its_peak_and_rms() {
     let l = read(&sine(0.5, 256));
@@ -173,9 +138,6 @@ fn a_known_sine_reads_its_peak_and_rms() {
 
 /// The loud part sits past frame 8192, which the old stereo scratch dropped
 /// in a release build, so a meter of the head read silence.
-///
-/// Mutation (run, recorded here): `block_stats` over `block[..8192]` -> the
-/// peak reads 0 and this fails.
 #[test]
 fn a_block_past_8192_frames_is_metered_whole() {
     let frames = 8192 + 1024;
@@ -188,9 +150,6 @@ fn a_block_past_8192_frames_is_metered_whole() {
 }
 
 /// Silence reads zero (over the frames measured).
-///
-/// Mutation (run, recorded here): a floor of 0.1 on the peak (`block_stats`
-/// starting its peaks at 0.1) -> this fails.
 #[test]
 fn silence_reads_zero() {
     let l = read(&[0.0; 512]);
@@ -200,10 +159,6 @@ fn silence_reads_zero() {
 
 /// Lanes are channels: a signal on one reads on its own lane and nothing
 /// leaks into its neighbour.
-///
-/// Mutation (run, recorded here): the peak without `abs()` in
-/// `block_stats`' vector pass -> the negative signal reads 0 and this
-/// fails; the same in its tail loop fails `every_length_is_measured_whole`.
 #[test]
 fn a_one_sided_signal_reads_on_its_own_lane() {
     let ((quiet, mut quiet_r), (loud, mut loud_r)) = (level_cell(), level_cell());
@@ -215,9 +170,6 @@ fn a_one_sided_signal_reads_on_its_own_lane() {
 }
 
 /// An empty block adds nothing: what was held reads as it was.
-///
-/// Mutation (run, recorded here): `block_stats` of an empty block with a
-/// peak of 1.0 -> the peak changes and this fails.
 #[test]
 fn an_empty_block_changes_nothing() {
     let (w, mut r) = level_cell();
@@ -228,10 +180,6 @@ fn an_empty_block_changes_nothing() {
 
 /// A long unread span reads exactly: an hour of 48 kHz in 512-frame blocks,
 /// taken once, has the analytic RMS (an `f32` energy sum stalls past 2^24).
-///
-/// Mutation (run, recorded here): the cell's sum stored as `f32`
-/// (`tutti-rt`'s `a_long_unread_span_stays_exact` fails the same way) -> the
-/// RMS reads off the analytic figure and this fails.
 #[test]
 fn an_hour_unread_reads_the_analytic_rms() {
     let (w, mut r) = level_cell();
@@ -250,8 +198,6 @@ fn an_hour_unread_reads_the_analytic_rms() {
 }
 
 /// The switch starts off and both ends see it.
-///
-/// Mutation (run, recorded here): `disable` storing `true` -> this fails.
 #[test]
 fn the_switch_starts_off_and_both_ends_see_it() {
     let (reader, writer) = MeterReader::pair(MeterId(0), 1, 1);

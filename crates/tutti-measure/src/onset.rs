@@ -458,9 +458,6 @@ mod tests {
 
     /// The curve has one entry per frame, at the frame's start sample, scaled by
     /// the config's sensitivity, and a click raises the frame that holds it.
-    ///
-    /// Mutation checked: pushing `value` without the sensitivity gain fails the
-    /// ratio; pushing `Samples(frame.get())` as the position fails the grid.
     #[test]
     fn the_novelty_curve_is_readable_per_frame_and_scaled_by_sensitivity() {
         let samples = signal(0.5, &[0.2]);
@@ -784,10 +781,6 @@ mod tests {
     /// Each onset is compared with the last one *kept*, not with its
     /// neighbour in the input: a falling run 600 apart under a 1000 gap keeps
     /// 0 (600 is too close to it), then 1200 (1200 from 0), then drops 1800.
-    ///
-    /// Mutation (run): compare against `onsets[i - 1]` of the input instead
-    /// of the last kept → 1200 is dropped as too close to the discarded 600,
-    /// fails.
     #[test]
     fn suppression_measures_from_the_last_kept_onset() {
         let at = |p: usize, s: f32| Onset {
@@ -802,10 +795,6 @@ mod tests {
 
     /// The analysis window is the config's: a state that switches to a
     /// geometry with another window function analyses with the new one.
-    ///
-    /// Mutation (run): rebuild the window only when its length differs from
-    /// the geometry's (as `previous` is resized), not on every config change
-    /// → the same-length Blackman config keeps the Hann window, fails.
     #[test]
     fn a_config_switch_rebuilds_the_window() {
         let hann = OnsetConfig::new(geometry(), DetectionFunction::SpectralFlux);

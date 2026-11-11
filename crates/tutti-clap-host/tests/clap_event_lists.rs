@@ -4,7 +4,7 @@
 //!
 //! These are the unit tests that used raw pointers; the host crate forbids
 //! `unsafe`, so they sit here, where a test may use it. Each test's property
-//! and its recorded mutation are as they were.
+//! is as it was.
 
 use std::ptr;
 use tutti_graph::UmpAt;
@@ -215,10 +215,6 @@ fn test_output_events_push_null_list() {
 /// An event of another space reuses core type numbers for other structs,
 /// so it is refused, whatever its type says. Both the plain path and the
 /// full-parameter-room path (`coalesce_param`) read the struct.
-///
-/// Mutation (run): delete the `space_id` test in `output_events_try_push` →
-/// both pushes are accepted and the assertions fail; drop the
-/// `refused += 1` there → the count assertion fails.
 #[test]
 fn output_events_refuse_a_foreign_space() {
     let mut output = OutputEventList::new();
@@ -250,9 +246,6 @@ fn output_events_refuse_a_foreign_space() {
 }
 
 /// A `size` under the type's struct would read past the plugin's event.
-///
-/// Mutation (run): delete the `header.size < min` test → the push is
-/// accepted and the assertion fails.
 #[test]
 fn output_events_refuse_an_undersized_event() {
     let mut output = OutputEventList::new();
@@ -274,10 +267,6 @@ fn output_events_refuse_an_undersized_event() {
 
 /// Every core type a plugin may push is refused one byte short of its
 /// struct and taken at its exact size: this pins `core_event_size`.
-///
-/// Mutations (run): return a size one larger for a type → its exact-size
-/// push is refused; one smaller → its short push is taken; drop a type
-/// from the table → both its pushes are refused.
 #[test]
 fn output_events_take_every_core_type_only_at_its_struct_size() {
     let note = *match ClapEvent::note_on(0, 0, 60, 0.5) {
@@ -512,9 +501,6 @@ fn test_output_events_push_sysex_with_data() {
 /// **A long SysEx a plugin emits reaches the host whole.** It used to be
 /// dropped: `ClapEvent::to_midi` is one event, and a SysEx is many
 /// packets.
-///
-/// Mutation (run): make `fill_midi_events` skip `sysex_bytes` (the old
-/// `to_midi` only path) → nothing is drained → fails.
 #[test]
 fn a_long_sysex_from_the_plugin_drains_whole() {
     let body: Vec<u8> = (0..40).map(|i| i as u8).collect();
@@ -597,12 +583,6 @@ fn test_output_events_push_sysex_null_buffer() {
 /// one more parameter pushes a point past its floor: past the list's parameter
 /// room it is kept as that parameter's latest, and with the queues' pool
 /// spent it replaces the queue's last point, counted once.
-///
-/// Mutations (run), each fails: `fill_param_changes` without
-/// `make_room` (the queue's own floor only) → the moving parameters
-/// lose points past their floor, counted; the over-budget point dropped
-/// instead of replacing the last → the parameter ends on its earlier
-/// value.
 #[test]
 fn plugin_output_at_the_pool_budget_groups_without_allocating() {
     const PARAMS: u32 = 2_000;
@@ -675,9 +655,6 @@ fn plugin_output_at_the_pool_budget_groups_without_allocating() {
 
 /// An event a plugin builds at a 4-aligned address (the header's own
 /// alignment) is read intact by `try_push`.
-///
-/// Mutation: dereference instead (`*header.cast::<T>()`) in `read_event`:
-/// the debug build's misaligned-deref check aborts the test process.
 #[test]
 fn try_push_reads_an_event_the_plugin_left_4_aligned() {
     let ClapEvent::NoteOn(note) = ClapEvent::note_on(9, 2, 60, 0.75) else {
@@ -709,9 +686,6 @@ fn try_push_reads_an_event_the_plugin_left_4_aligned() {
 /// its payload struct needs (8 for note and param, 4 for `clap_event_midi`),
 /// across pushes of mixed sizes. The needs are read off the C structs, so
 /// the test does not depend on how rustc lays out `ClapEvent`.
-///
-/// Mutation: offset every odd index's pointer by 4 bytes in
-/// `input_events_get`: the note-off at index 3 fails.
 #[test]
 fn input_event_pointers_have_the_alignment_their_payload_needs() {
     let mut events = Vec::new();
@@ -754,9 +728,6 @@ fn input_event_pointers_have_the_alignment_their_payload_needs() {
 /// The plugin reads it through the raw `clap_input_events` vtable, so the
 /// figure is the one in the `clap_event_note` it is handed. A Note On at
 /// MIDI 1.0 velocity 100 is a `NOTE_ON` near 100/127.
-///
-/// Mutation (run): `from_voice1` folding a Note On at velocity 0 into a Note
-/// Off at velocity 0 → the first assertion fails.
 #[test]
 fn a_midi1_note_on_at_velocity_zero_reaches_the_plugin_as_a_release_at_half() {
     let mut list = InputEventList::new();

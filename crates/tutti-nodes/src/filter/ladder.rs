@@ -13,6 +13,7 @@ use tutti_dsp::{Ladder, LadderControls, LadderDesign, LadderType, Real};
 use tutti_types::{ChannelLayout, Drive, Hz, Resonance, UnitAddr, UnitParam};
 
 use super::NodeKernel;
+use super::filter_bus;
 use crate::params::ControlSet;
 use crate::reverb::DesignNode;
 
@@ -99,7 +100,7 @@ impl<F: Real> LadderFilterNode<F> {
         resonance: impl Into<Resonance>,
     ) -> Self {
         Self::live(
-            LadderDesign::new(channels.into()),
+            LadderDesign::new(filter_bus(channels.into())),
             LadderControls {
                 ty: ladder_type,
                 freq: frequency.into(),
@@ -168,9 +169,6 @@ mod tests {
 
     /// A fork starts from the values last set through the node's
     /// `ParamSet` and shares no cell with it.
-    ///
-    /// Mutation (run): drop `fork.drive.detach()` in `fork_fresh` → "a live
-    /// write reached the fork" for `Drive` → fails.
     #[test]
     fn a_fork_shares_no_cell() {
         assert_param_fork(LadderFilterNode::<f64>::with_channels(
@@ -229,8 +227,6 @@ mod tests {
     /// Well below the cutoff the high-passes fall 12 and 24 dB per octave
     /// (`(s/(1+s))^2` and `^4`), and resonance still lifts the cutoff above
     /// the same filter without it.
-    ///
-    /// Mutation (run): `u - lp2` / `u - lp4` (6 dB/octave) fails the slopes.
     #[test]
     fn the_high_passes_have_their_documented_slopes() {
         for (ty, want) in [(LadderType::HP12, 12.0), (LadderType::HP24, 24.0)] {
@@ -456,10 +452,6 @@ mod tests {
 
     /// The shape declares cutoff, Q then drive, never changes the arity, and
     /// reports `Tail::Unknown`.
-    ///
-    /// Mutation (run): swap `ADDRS`' Q and drive → the first
-    /// assertion fails. Mutation (run): drop `.with_tail(Tail::Unknown)` →
-    /// the shape's default `Tail::None` → the tail assertion fails.
     #[test]
     fn the_shape_declares_cutoff_q_then_drive() {
         let f = LadderFilterNode::<f64>::with_channels(
@@ -562,10 +554,6 @@ mod tests {
 
     /// A cutoff change made between blocks is read by the next block, ramped
     /// across it, and the block ends solved at the new cutoff.
-    ///
-    /// Mutation: solving straight at the target and rendering the block held
-    /// (a jump) fails `assert_ramps_in`; dropping the `self.applied = Some(controls)`
-    /// in `DesignNode::apply` (the block's final solve) fails the controls check.
     #[test]
     fn a_cutoff_change_is_read_next_block_and_ramped_across_it() {
         use crate::test_support::{change_between_node_blocks, noise};
@@ -587,9 +575,6 @@ mod tests {
 
     /// Drive multiplies straight into the saturator, so a step would click; it
     /// ramps across the next block and ends on the new value.
-    ///
-    /// Mutation: gliding the drive from its own target (`glide(cell, cell)`, a jump)
-    /// fails `assert_ramps_in`.
     #[test]
     fn a_drive_change_is_read_next_block_and_ramped_across_it() {
         use crate::test_support::{change_between_node_blocks, noise};
@@ -617,8 +602,6 @@ mod tests {
 
     /// Six channels share one coefficient solve and keep six independent
     /// stage lanes: each channel is the mono ladder on its own input.
-    ///
-    /// Mutation: indexing lane 0 for every channel in `held_group` fails.
     #[test]
     fn six_channels_are_six_mono_ladders() {
         use crate::test_support::{drive_block, noise, prepared};

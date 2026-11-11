@@ -20,10 +20,6 @@ fn at(note: u8, offset: u32) -> UmpAt {
 
 /// Sorted by offset, arrival order kept at one offset; a late offset
 /// placed on the block's last frame.
-///
-/// Mutation (run): `>=` for `>` in the sort (unstable at ties) → 2
-/// before 1 → fails. Mutation (run): no clamp in `offset_of` → `None`,
-/// placed on frame 0 → fails.
 #[test]
 fn sorts_stably_and_places_late_offsets_last() {
     let mut v = [at(1, 10), at(0, 5), at(2, 10), at(4, 900), at(3, 0)];

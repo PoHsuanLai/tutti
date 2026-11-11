@@ -21,7 +21,7 @@ fn width(n: u16) -> ChannelLayout {
 }
 
 fn bus(topology: BusTopology, role: BusRole) -> Bus {
-    Bus { topology, role }
+    Bus::new(topology, role)
 }
 
 /// An unassigned shape gives each non-empty side one `Main` bus of `Unassigned`

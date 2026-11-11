@@ -130,9 +130,6 @@ fn ladder_with_moving_cutoff_and_drive_is_allocation_free() {
     // path: a coefficient solve every 16 samples and a per-sample drive ramp.
     // Both must stay on the stack. Moved through the node's `ParamSet`, as a
     // host sets them.
-    //
-    // Mutation (run): a `Vec::with_capacity(size)` scratch in `run_swept`
-    // fails.
     let mut hz = 500.0f32;
     gate(
         LadderFilterNode::<f64>::with_channels(

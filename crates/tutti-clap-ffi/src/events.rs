@@ -490,9 +490,6 @@ mod tests {
     }
 
     /// A well-formed event reaches the plugin as itself.
-    ///
-    /// Mutation: have `header_ptr` return `None` always: the event is
-    /// replaced by the inert header and the assertion fails.
     #[test]
     fn a_valid_event_is_lent_as_itself() {
         let n = note(
@@ -508,10 +505,6 @@ mod tests {
 
     /// A transport event reaches the plugin as itself (doc 020 stage 5b), and
     /// one with another type in its header does not.
-    ///
-    /// Mutation: drop the `EventRef::Transport` arm's type list
-    /// (`&[CLAP_EVENT_NOTE_ON]`) -> the event is replaced by the inert header
-    /// -> fails.
     #[test]
     fn a_transport_event_is_lent_as_itself() {
         let t = |type_: u16| clap_event_transport {
@@ -549,10 +542,6 @@ mod tests {
     /// A header the struct does not carry is replaced by the inert one, never
     /// lent: a type of another struct (the plugin would cast to it and read
     /// past this one), a size larger than the struct, a foreign space.
-    ///
-    /// Mutations: drop the `types.contains` test, the `size <= size_of::<T>()`
-    /// test or the space test in `checked`: the matching case below is lent as
-    /// itself and fails.
     #[test]
     fn a_header_the_struct_does_not_carry_is_never_lent() {
         let inert = (u16::MAX, u16::MAX);
@@ -575,9 +564,6 @@ mod tests {
 
     /// A SysEx whose bytes are not inside the storage it was handed is never
     /// lent, and one that is reads back through `sysex_payload`.
-    ///
-    /// Mutation: drop the `inside` test (always lend): the dangling case is
-    /// lent as itself and fails.
     #[test]
     fn a_sysex_is_lent_only_over_its_own_storage() {
         let storage = [0xF0u8, 1, 2, 3, 0xF7];
@@ -660,11 +646,6 @@ mod tests {
 
     /// A plugin's event is decoded only when its header names a core type of
     /// that size; the rest is refused as malformed and reaches no `push`.
-    ///
-    /// Mutations: drop the space test in `decode`: the foreign-space case is
-    /// pushed. Drop the size test in `decode` *and* the length check in `read`
-    /// (each backs the other): the undersized case is pushed. Either way the
-    /// assertion fails.
     #[test]
     fn a_plugins_event_is_decoded_only_at_its_type_and_size() {
         let body = note(
@@ -691,10 +672,6 @@ mod tests {
     /// An event whose `cookie` is not null is never lent: the cookie is a
     /// pointer the plugin gave `params.get_info` and dereferences when it
     /// returns, and this crate hands none out, so a non-null one is made up.
-    ///
-    /// Mutation: drop the `is_null` guards in `header_ptr` (use
-    /// `checked(..)` unconditionally): the cookie-carrying events are lent and
-    /// the assertions fail.
     #[test]
     fn a_param_event_with_a_cookie_is_never_lent() {
         let header = |type_, size| clap_event_header {
@@ -744,9 +721,6 @@ mod tests {
     /// the first is inside the sink, is refused (`false`) instead of making a
     /// second live `&mut` to it. (`events.h` has the plugin push from the audio
     /// thread; this is what a plugin that pushes from a pool helper gets.)
-    ///
-    /// Mutation: drop the `busy` swap in `output_events_try_push`: the second
-    /// push enters the sink too and the `false` assertion fails.
     #[test]
     fn a_push_made_while_another_is_in_the_sink_is_refused() {
         use std::sync::mpsc;

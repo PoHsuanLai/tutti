@@ -5,10 +5,6 @@ use tutti_fixtures::{RangeContract, check_range_contract};
 use tutti_types::{Bpm, BpmOutOfRange};
 
 /// A tempo is finite and above zero, with no musical floor or ceiling.
-///
-/// Mutation (run): `Bpm::new` tests `raw >= 0.0` instead of `raw > 0.0`; the
-/// contract check fails on `new(0.0)`. Mutation (run): `Bpm::new` drops the
-/// `is_finite` test; it fails on infinity (and on NaN through serde).
 #[test]
 fn a_tempo_is_finite_and_above_zero() {
     check_range_contract(&RangeContract {

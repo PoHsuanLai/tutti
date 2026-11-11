@@ -53,9 +53,6 @@ mod tests {
     use super::*;
 
     /// A panic in the body is contained and answers the panic value.
-    ///
-    /// Mutation (run): call `f` outside `guard` in `with_state` -> this test
-    /// panics instead of returning 7.
     #[test]
     fn a_panic_in_the_body_is_contained() {
         let mut state = 1u32;

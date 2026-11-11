@@ -3,7 +3,7 @@
 use super::ClapProcessor;
 use super::config::AudioScratch;
 use crate::error::{ClapError, Result};
-use crate::events::EventList;
+use crate::events::{ClapEvent, EventList};
 use crate::types::{ClapNoteExpression, ParameterChanges, TransportInfo};
 use clap_sys::events::{
     CLAP_CORE_EVENT_SPACE_ID, CLAP_EVENT_TRANSPORT, CLAP_TRANSPORT_HAS_BEATS_TIMELINE,
@@ -207,6 +207,15 @@ impl ClapProcessor {
     /// [`param_points_dropped`](Self::param_points_dropped).
     pub fn sysex_dropped(&self) -> u64 {
         self.scratch.input_events.sysex_dropped()
+    }
+
+    /// MIDI messages not handed to the plugin since this instance was
+    /// activated because they were of a Group it has no input note port for
+    /// (Group `n` is note port `n`): each is dropped whole and counted, never
+    /// heard on another Group's channels. Read on this instance only, like
+    /// [`sysex_dropped`](Self::sysex_dropped).
+    pub fn groups_dropped(&self) -> u64 {
+        self.scratch.input_events.groups_dropped()
     }
 
     /// MIDI events not handed to the plugin since this instance was activated,
@@ -424,6 +433,7 @@ impl ClapProcessor {
             .store(status.raw(), Ordering::Relaxed);
 
         let AudioScratch {
+            input_events,
             output_events,
             out_midi,
             out_param_changes,
@@ -431,6 +441,13 @@ impl ClapProcessor {
             out_note_expressions,
             ..
         } = &mut self.scratch;
+        // A note the plugin says has ended no longer answers per-note
+        // controllers (its id is free for the plugin to reuse).
+        for event in output_events.events() {
+            if let ClapEvent::NoteEnd(end) = event {
+                input_events.note_ended(end.note_id);
+            }
+        }
         output_events.fill_midi_events(out_midi);
         *out_param_points_dropped += output_events.fill_param_changes(out_param_changes);
         output_events.fill_note_expressions(out_note_expressions);
@@ -563,10 +580,6 @@ mod tests {
 
     /// The slope rides beside a tempo the flag vouches for and is finite; a
     /// slope with no usable tempo, or a NaN one, is `0.0`.
-    ///
-    /// Mutation (run): drop the `is_usable(tempo_inc)` gate -> the NaN slope
-    /// is sent -> fails. Mutation (run): drop the `HAS_TEMPO` gate -> the
-    /// slope beside a zero tempo is sent -> fails.
     #[test]
     fn the_slope_is_sent_only_beside_a_usable_tempo() {
         let mut t = TransportInfo::new().with_tempo(120.0).with_tempo_inc(0.002);

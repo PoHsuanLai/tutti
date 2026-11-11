@@ -61,6 +61,13 @@ impl BusTopology {
         speakers: [Speaker::Unassigned; MAX_BUS_CHANNELS],
     };
 
+    /// One channel at the front centre: a mono source.
+    pub const MONO: Self = {
+        let mut speakers = Self::EMPTY.speakers;
+        speakers[0] = Speaker::FrontCenter;
+        Self { len: 1, speakers }
+    };
+
     /// A stereo pair: front left, front right.
     pub const STEREO: Self = {
         let mut speakers = Self::EMPTY.speakers;
@@ -92,6 +99,20 @@ impl BusTopology {
             len: width.count() as u8,
             speakers: Self::EMPTY.speakers,
         })
+    }
+
+    /// What a bare `width` is taken to mean, as a bus: the engine's order for
+    /// it where [`ChannelTopology::assumed`] has one, `width` unassigned
+    /// channels elsewhere. `None` past [`MAX_BUS_CHANNELS`].
+    ///
+    /// For a node or a design built for a width and nothing more (a filter of
+    /// `n` channels): what its bus states is the engine's assumption, said
+    /// once here.
+    #[must_use]
+    pub fn assumed(width: ChannelLayout) -> Option<Self> {
+        ChannelTopology::assumed(width)
+            .and_then(|t| Self::try_from(&t).ok())
+            .or_else(|| Self::unassigned(width))
     }
 
     /// The speaker each channel feeds, in channel order.
@@ -130,9 +151,26 @@ mod tests {
     /// `new` and `TryFrom` agree on the edge of the range, a width of 16 is a
     /// bus and 17 is refused with its width, and the round trip through
     /// `ChannelTopology` is the identity.
-    ///
-    /// Mutations (run): `>=` for `>` in `unassigned` fails the width-16 line;
-    /// `Self::new` truncating instead of `?` fails the 17 refusal.
+    #[test]
+    fn an_assumed_bus_is_the_engine_order_or_unassigned() {
+        assert_eq!(
+            BusTopology::assumed(ChannelLayout::MONO),
+            Some(BusTopology::MONO)
+        );
+        assert_eq!(
+            BusTopology::assumed(ChannelLayout::STEREO),
+            Some(BusTopology::STEREO)
+        );
+        let nine = ChannelLayout::from_count(9);
+        assert_eq!(
+            ChannelTopology::assumed(nine),
+            None,
+            "the case needs a width with no order"
+        );
+        assert_eq!(BusTopology::assumed(nine), BusTopology::unassigned(nine));
+        assert_eq!(BusTopology::assumed(ChannelLayout::from_count(17)), None);
+    }
+
     #[test]
     fn a_bus_holds_sixteen_channels_and_refuses_more() {
         let sixteen = ChannelTopology::unassigned(ChannelLayout::from(16u16));
@@ -154,9 +192,6 @@ mod tests {
 
     /// Placement survives, and the slots past the length do not leak into
     /// equality: a 2-wide bus built two ways is equal.
-    ///
-    /// Mutation (run): filling the spare slots with `FrontLeft` in `EMPTY`
-    /// fails the equality line.
     #[test]
     fn speakers_keep_their_slots_and_spare_slots_are_canonical() {
         use Speaker::*;

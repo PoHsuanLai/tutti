@@ -7,22 +7,15 @@
 //! last reset, so it is the same on every block cut (the stream clock) and
 //! lands at once on its first retarget (the `landed` case), as a realization's
 //! ramp must.
-//!
-//! Mutations (run): a first `retarget` that slews from 0 instead of landing
-//! (`from` 0 and `done` 0 for the first call) fails `realization_contract_landed`,
-//! `reset`, `fresh`, `response` and `linear`;
-//! a `process` that restarts the slew at every block (`done` clamped to 1 on
-//! entry) fails `realization_contract_stream_clock` and `click_free`; a
-//! `hinf_norm` of half the l1 norm is under the response's peak and fails
-//! `contract_norms`; a response of `2 g` fails `contract_anchors` (and norms).
 
 use std::num::NonZeroU32;
 
 use tutti_dsp::contract::{Anchor, DesignCase, Hook, LtiCase, RealizationCase};
 use tutti_dsp::{
-    Cadence, Ceiling, ChannelLayout, Channels, Complex64, Design, Effect, Lti, Realization, Ring,
-    Setup, Sizes, System, design_contract, realization_contract,
+    Cadence, Ceiling, Channels, Complex64, Design, Effect, Lti, Realization, Ring, Setup, Sizes,
+    System, design_contract, realization_contract,
 };
+use tutti_types::BusTopology;
 use tutti_types::{Db, Hz, SampleRate, Samples};
 
 /// The system: `y = g x`.
@@ -154,7 +147,7 @@ impl Design for GainDesign {
     const CADENCE: Cadence = Cadence::stream(NonZeroU32::MIN);
 
     fn channels(&self) -> Channels {
-        Channels::speakers(ChannelLayout::MONO, ChannelLayout::MONO)
+        Channels::same(BusTopology::MONO)
     }
 
     fn blank(&self, _: SampleRate) -> GainModel {

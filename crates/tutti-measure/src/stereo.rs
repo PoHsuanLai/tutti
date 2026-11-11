@@ -416,9 +416,6 @@ mod tests {
 
     /// **A zero attack or release is instant**: one step of any length
     /// reaches the new value, rising and falling.
-    ///
-    /// Mutation (run): `coefficient` returning 0 for a non-positive time
-    /// (the freeze) → fails.
     #[test]
     fn a_zero_time_is_instant() {
         let cfg = Ballistics::new(Seconds(0.0), Seconds(0.0));

@@ -83,12 +83,6 @@ fn block_env(frame: u64, len: usize) -> Env {
 /// at stream frame 50 is a 2.0 at frame `50 + CHUNK` and every other frame of
 /// the render is silence, whatever the blocks' lengths (100, 37, 128, 90, 128,
 /// 128 and 128 against a chunk of 128).
-///
-/// Mutation (run): `IpcProcessor::latency` answering 0 (the trait default) ->
-/// the declared latency is 0, not the chunk -> the first assertion fails.
-/// Mutation (run): `IpcProcessor::process` handing the batcher no input
-/// (`&[]`) -> the click never reaches the plugin -> the render is all
-/// silence -> fails.
 #[test]
 fn a_click_comes_out_one_declared_latency_later() {
     let _machine = machine_lock();
@@ -173,19 +167,6 @@ fn chord(o: Offset) -> Event {
 /// And the plugin's MIDI-out (the server echoes each chunk's MIDI) plays one
 /// chunk later on the frame it was emitted at: the notes of the second chunk
 /// at 258 (the reset drops the one at 378), the note of the third at 488.
-///
-/// Mutation (run): `Piece::payload` sending the default transport -> the
-/// playheads are all 0 -> fails. Mutation (run): the node taking its
-/// transport snapshot per piece (see `chunked_node`) -> the second chunk, begun
-/// in the block before the one that completes it, carries a later playhead ->
-/// fails. Mutation (run): `IpcProcessor::reset` not resetting the
-/// batcher -> the chunk phase carries over the reset, so the third chunk
-/// starts at 384 and every figure after it moves -> fails. Mutation (run):
-/// `Piece::take` dropping the `at` shift of the MIDI offsets -> the note at 250,
-/// in the chunk's second piece, arrives at 113, not 122 -> fails. Mutation
-/// (run): the same shift dropped from the chord -> the chord at 150 arrives at
-/// 13, not 22 -> fails. Mutation (run): `Piece::params` not copying the node's
-/// changes (`open_queue` skipped) -> no parameter points -> fails.
 #[test]
 fn the_server_is_sent_the_schedule_on_the_chunks_frames() {
     let _machine = machine_lock();
@@ -353,12 +334,6 @@ fn the_server_is_sent_the_schedule_on_the_chunks_frames() {
 /// later, as the plugin's tag-added signal (`TUTTI_CLAP_PROBE_RENDER_MODE=1`
 /// is the passthrough that adds its tag to channel 0; the figure is the
 /// plugin's own, 1.0, over a click of 1.0).
-///
-/// Mutation (run): `reopen_restoring` passing `None` for the state -> the
-/// outcome is `None`, not `Some(Ok(()))` -> fails. Mutation (run): the
-/// reopened launch keeping the first's socket path (the `unique_socket_path`
-/// line dropped) -> the second server and bridge never meet -> the reopen
-/// times out -> fails.
 #[cfg(feature = "clap")]
 #[test]
 fn a_served_plugin_reopens_and_restores_off_the_main_thread() {
@@ -441,9 +416,6 @@ fn chunk_across_the_third_block(
 /// at beat 10. The chunk's own transport is its first frame's, playing, at
 /// the playhead of frame 128. `-ipc` walks nothing: it ships what the node
 /// walked.
-///
-/// Mutation (run): `Piece::payload` not copying the context's transport
-/// changes -> the server is sent none -> fails.
 #[test]
 fn a_stop_and_a_seek_inside_a_chunk_reach_the_server_on_the_chunk_frame() {
     let _machine = machine_lock();
@@ -495,9 +467,6 @@ fn a_stop_and_a_seek_inside_a_chunk_reach_the_server_on_the_chunk_frame() {
 /// 120 BPM at beat 0 to 90 at beat 100 is `120 * 100 / 210` seconds, so
 /// `-30 / D / 48000` BPM a frame. The chunk 128..256 spans the third block's
 /// start (frame 160), and the figure is in the transport the server is sent.
-///
-/// Mutation (run): `Piece::payload` sending the default transport (no slope)
-/// -> `tempo_inc` is 0 -> fails.
 #[test]
 fn a_tempo_ramp_across_a_block_boundary_reaches_the_server_as_its_slope() {
     use tutti_tempo::{Shape, TempoMap, TempoPoint};

@@ -293,8 +293,6 @@ mod tests {
     /// 9.4: a value generator at the preset level adds to the instrument's. The
     /// initial attenuation is in centibels (9.3), the pair reports decibels:
     /// 100 + 50 centibels is 15 dB.
-    ///
-    /// Mutation (run): `+` -> `-` in `RegionPair::gs` fails it.
     #[test]
     fn a_preset_generator_adds_to_the_instruments_in_its_own_unit() {
         let font = pair(
@@ -309,8 +307,6 @@ mod tests {
     /// 1200 at the instrument and -1200 at the preset is zero timecents: one
     /// second, not the product of 2 s and 0.5 s computed any other way, and a
     /// zone with neither is the default (-12000, about a millisecond).
-    ///
-    /// Mutation (run): `+` -> `-` in `RegionPair::gs` fails the first assertion.
     #[test]
     fn times_add_in_timecents() {
         const DELAY_VOL_ENV: u16 = 33;
@@ -328,8 +324,6 @@ mod tests {
     /// range's top) at both levels is 8000, not 16000; an attenuation of 1000
     /// and 1000 centibels is the 1440 of the range (144 dB); a pan of -400 and
     /// -400 is hard left, -500. A sum inside the range is not touched.
-    ///
-    /// Mutation (run): `gs` returning the bare sum fails all three rows.
     #[test]
     fn an_out_of_range_sum_is_replaced_by_the_nearest_value() {
         let both = |generator, amount| pair(vec![(generator, amount)], vec![(generator, amount)]);

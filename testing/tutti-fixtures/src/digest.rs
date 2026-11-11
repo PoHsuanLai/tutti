@@ -122,9 +122,6 @@ mod tests {
     use super::*;
 
     /// FNV-1a's published vectors (the empty string, "a", "foobar").
-    ///
-    /// Mutation (run): the prime's last digit changed, or the xor and the
-    /// multiply swapped (FNV-1), fails "a" and "foobar".
     #[test]
     fn fnv_matches_the_published_vectors() {
         let hash = |s: &str| {
@@ -138,8 +135,6 @@ mod tests {
     }
 
     /// A float is fed as its little-endian bits.
-    ///
-    /// Mutation (run): `to_be_bytes` in `f32` fails.
     #[test]
     fn a_float_is_fed_as_its_little_endian_bits() {
         let mut h = Fnv::new();
@@ -155,9 +150,6 @@ mod tests {
     }
 
     /// The generator is pinned by a digest of 4096 draws and stays in `[-1, 1)`.
-    ///
-    /// Mutation (run): the increment `1_013_904_223` changed by one, or the
-    /// seed scramble dropped, moves the digest.
     #[test]
     fn noise_is_the_recorded_stream() {
         let x = noise(5, 4096);

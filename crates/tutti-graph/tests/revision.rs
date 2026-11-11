@@ -47,14 +47,6 @@ fn stays(ed: &mut Editor, what: &str, f: impl FnOnce(&mut Editor)) {
 
 /// Every editing call moves the revision; reads and no-op housekeeping do
 /// not.
-///
-/// Mutations (run), each fails here: drop the `touch` from `place` (the
-/// insert and the replace), `set_latency`, `set_param_range`, `remove`,
-/// `reprepare`, `send` (the commit, and the resume's send in `collect`) or
-/// `spec_mut`; add one to `collect` (fails "collect with nothing to
-/// resume"). Dropping `resume`'s own `touch` alone passes: the resume
-/// sends, and `send` moves it; that `touch` covers a resume that poisons
-/// the editor instead, which this test does not reach.
 #[test]
 fn every_edit_moves_the_revision_and_nothing_else_does() {
     let (mut ed, mut exec) = Editor::new(prep(512));

@@ -651,10 +651,6 @@ mod tests {
     /// of a frame of period (0.2 to 1.5 BPM across the range; the measured
     /// worst is 0.2 frames). A confidence is a coefficient: at most one, and
     /// high for a steady train.
-    ///
-    /// Mutation checked: skipping the parabolic refinement (`refined` returning
-    /// `lag as f64`) moves several tempi out of tolerance; reading the frame
-    /// rate off a fixed 1024 window instead of the hop fails every one.
     #[test]
     fn click_trains_read_at_their_tempo() {
         let mut tempi: Vec<f64> = (60..=200).step_by(7).map(f64::from).collect();
@@ -677,9 +673,6 @@ mod tests {
 
     /// The confidence is normalised by the whole curve, so a clip short against
     /// the period reads lower than a long one of the same train.
-    ///
-    /// Mutation checked: dividing each lag by its overlap again (the old
-    /// estimator) reads both near one and fails.
     #[test]
     fn a_short_clip_reads_less_confident() {
         let short = tempo_of(&clicks(60.0, 0.3, 4.0)).confidence.get();
@@ -690,9 +683,6 @@ mod tests {
     /// Every beat lands within one hop of a click, and no click is missed by
     /// more than the two the tracker may trim at the ends. The test grids
     /// start at 0.3 s, so the first beat is a real one.
-    ///
-    /// Mutation checked: dropping the frame-centre shift (`onset_lag` returning
-    /// 0) puts every beat about 512 samples early and fails the hop bound.
     #[test]
     fn beats_land_within_a_hop_of_the_clicks() {
         let hop = geometry().hop().get() as f64;
@@ -722,11 +712,6 @@ mod tests {
     /// 90 BPM clicks searched in 40..80 BPM read as 45: the period doubled, the
     /// nearest multiple the range holds. The estimate and every alternative stay
     /// inside the range.
-    ///
-    /// Mutation checked: taking the lag range from the defaults (60 to 200)
-    /// instead of the config returns 90 and fails; removing the final clamp
-    /// leaves this test passing (the refinement never leaves the range here),
-    /// which is why the clamp has a test of its own below.
     #[test]
     fn the_estimate_stays_inside_the_range() {
         let cfg = TempoConfig::new()
@@ -743,9 +728,6 @@ mod tests {
     /// A tempo the parabola pushes past the edge of the range is held at it:
     /// impulses 24.8 frames apart at 100 frames per second are 120.97 BPM, and
     /// the search stops at 120.
-    ///
-    /// Mutation checked: removing the `clamp` in `candidate` returns 120.63 and
-    /// fails.
     #[test]
     fn a_refined_tempo_is_clamped_to_the_range() {
         let mut curve = vec![0.0f32; 1500];
@@ -773,11 +755,6 @@ mod tests {
     /// 0.1-strength click is too weak to make the 120 BPM period worth its
     /// extra weight, so the read stays at 60. Centring the prior on 60, or
     /// narrowing it, settles the first case either way.
-    ///
-    /// Mutation checked: giving the prior a weight of one makes the first case
-    /// 60 and fails; ignoring `spread` (a fixed one octave) fails the narrow
-    /// case; ignoring `centre` (fixing it at 120) fails the centred case;
-    /// removing `take(cfg.alternatives)` fails the zero-alternatives case.
     #[test]
     fn the_prior_settles_the_octave() {
         let train = |soft: f32| {
@@ -821,10 +798,6 @@ mod tests {
 
     /// Extra loud clicks 0.2 s after every third beat pull an untethered
     /// tracker off the grid and leave a tight one on it.
-    ///
-    /// Mutation checked: removing the gap penalty (`penalty` all zero) puts a
-    /// beat on a distractor and fails the tight case; the loose case, tightness
-    /// zero, then has to be off the grid, which pins the knob's direction.
     #[test]
     fn tightness_holds_the_grid_against_distractors() {
         let mut times: Vec<(f64, f32)> = (0..38).map(|k| (0.3 + 0.5 * k as f64, 1.0)).collect();
@@ -844,10 +817,6 @@ mod tests {
 
     /// Silence has no tempo, nor does a level that never changes, nor does a
     /// curve with no spread.
-    ///
-    /// Mutation checked: removing the `FLAT` test lets the constant curve
-    /// through on rounding residue; not zeroing the first frame lets the
-    /// constant input through on its onset spike.
     #[test]
     fn a_signal_without_change_has_no_tempo() {
         let cfg = TempoConfig::new();
@@ -883,10 +852,6 @@ mod tests {
     }
 
     /// A NaN or infinity in the input is refused, in samples or in a curve.
-    ///
-    /// Mutation checked: removing the sample check lets the NaN through
-    /// (spectral flux's `max(0)` drops it); removing the curve check fails the
-    /// curve cases.
     #[test]
     fn non_finite_input_is_refused() {
         let cfg = TempoConfig::new();
@@ -932,9 +897,6 @@ mod tests {
     /// The tracker follows a tempo that rises from 120 to 122 BPM over the clip,
     /// where a fixed grid at the mean tempo would end 1800 samples out; the
     /// estimate is the mean.
-    ///
-    /// Mutation checked: scaling the penalty by 1000 (a rigid grid) fails the
-    /// hop bound.
     #[test]
     fn a_slow_drift_is_followed() {
         let mut t = 0.3;
@@ -955,11 +917,6 @@ mod tests {
     }
 
     /// The tempo, confidence and beats do not depend on the signal's level.
-    ///
-    /// Mutation checked: dropping the division by the standard deviation in
-    /// `local_score` changes the beats at 0.01 (the penalty outweighs a
-    /// quiet curve) and fails; dropping the division by `power` changes the
-    /// confidence.
     #[test]
     fn the_result_does_not_depend_on_gain() {
         let x = clicks(128.0, 0.3, 20.0);
@@ -979,10 +936,6 @@ mod tests {
 
     /// An impulse every 40 frames at 100 frames per second is 0.4 s: exactly
     /// 150 BPM. The beats sit on the impulses, `frame * hop` samples in.
-    ///
-    /// Mutation checked: positioning a beat at `frame` rather than
-    /// `frame * hop` fails the spacing; computing the frame rate as
-    /// `sample_rate * hop` fails the tempo.
     #[test]
     fn a_caller_curve_is_read_in_its_own_frames() {
         let mut curve = vec![0.0f32; 1000];
@@ -1044,9 +997,6 @@ mod tests {
     /// window's overlap; the strongest of the 60 searched lags is under
     /// four deviations (0.14), so a bound of 0.3 is eight deviations out and
     /// does not rest on the seed.
-    ///
-    /// Mutation checked: reporting the weighted score's maximum scaled to one
-    /// (or a constant) as the confidence fails the bound.
     #[test]
     fn noise_has_a_low_confidence() {
         use rand::{Rng, SeedableRng, rngs::StdRng};
@@ -1057,10 +1007,6 @@ mod tests {
     }
 
     /// Settings and inputs that cannot work say so.
-    ///
-    /// Mutation checked: loosening each comparison in `with_range`,
-    /// `with_prior`, `with_tightness`, `frame_rate`, `Periodicity::new` fails
-    /// its case here.
     #[test]
     fn unusable_settings_are_refused() {
         let cfg = TempoConfig::new();
@@ -1132,9 +1078,6 @@ mod tests {
     /// the click's own width (its energy is within the first 300 samples, and
     /// an onset's rise can peak a few hundred samples late at a window this
     /// wide).
-    ///
-    /// Mutation checked: `onset_lag` returning `window / 2` puts every beat
-    /// 768 samples early and fails.
     #[test]
     fn a_wide_window_still_places_beats_within_a_hop() {
         let wide = StftGeometry::new(SampleRate::new(RATE), Samples(4096), Samples(512)).unwrap();
@@ -1153,9 +1096,6 @@ mod tests {
 
     /// Near-silence has no tempo even though flux is relative: a click train
     /// at -100 dBFS is refused, at -80 dBFS it reads.
-    ///
-    /// Mutation checked: removing the floor reads the -100 dBFS train;
-    /// raising it to -60 dBFS refuses the -80 dBFS one.
     #[test]
     fn near_silence_has_no_tempo() {
         let quiet = |db: f32| -> Vec<f32> {
@@ -1179,10 +1119,6 @@ mod tests {
     /// A supplied tempo whose period no curve can hold is an
     /// `InvalidTempoParameter`, not an allocation of the period's size and not
     /// an empty grid; a usable one tracks.
-    ///
-    /// Mutation checked: removing the period check lets `1e-6` BPM reach the
-    /// tracker (the kernel table is sized by the period) and `1e12` return an
-    /// empty grid; each case here fails.
     #[test]
     fn a_supplied_tempo_must_fit_the_curve() {
         let mut curve = vec![0.0f32; 1000];
@@ -1228,9 +1164,6 @@ mod tests {
     /// A range too slow or too fast to be a tempo is refused when it is set,
     /// and one the curve cannot hold is refused when it is read, not
     /// overflowed.
-    ///
-    /// Mutation checked: lowering `MIN_BPM` to `1e-300` lets the first case
-    /// through; raising `MAX_BPM` to infinity lets the second through.
     #[test]
     fn an_absurd_range_is_refused() {
         let cfg = TempoConfig::new();
@@ -1259,9 +1192,6 @@ mod tests {
     }
 
     /// The alternatives are capped.
-    ///
-    /// Mutation checked: removing the `min` in `with_alternatives` lets
-    /// the count through unclipped and fails.
     #[test]
     fn the_alternative_count_is_capped() {
         let cfg = TempoConfig::new().with_alternatives(usize::MAX);

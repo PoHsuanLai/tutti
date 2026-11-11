@@ -553,10 +553,6 @@ mod tests {
     /// A fork starts from the values last set through the node's
     /// `ParamSet` and shares no cell with it (see
     /// `tutti_graph::contract::assert_param_fork`).
-    ///
-    /// Mutation (run): drop `fork.lfo.detach()` in `fork_fresh` → "a live
-    /// write reached the fork" for `Rate`. Leave `Depth` out of `param_set`
-    /// → the address list below fails.
     #[test]
     fn a_fork_starts_from_the_authored_values_and_shares_nothing() {
         let node = ModDelayNode::flanger(ChannelLayout::STEREO);
@@ -570,9 +566,6 @@ mod tests {
     /// A block longer than the prepared maximum (only a node driven by hand
     /// gets one) renders as that block cut at the maximum: the phase scratch
     /// is never overrun.
-    ///
-    /// Mutation (run): render the whole block in one `render` call → the
-    /// scratch slice `phases[..size]` panics out of range.
     #[test]
     fn a_block_past_the_prepared_maximum_renders_in_pieces() {
         let x = noise(3, 300);
@@ -698,10 +691,6 @@ mod tests {
 
     /// The delay time never leaves the declared depth around the centre, and
     /// reaches it.
-    ///
-    /// Mutation (run): interpolate to `next * 1.1` (an overshooting slope) →
-    /// the excursion bound fails; scale the sine by 0.5 → the peak assertion
-    /// fails.
     #[test]
     fn the_delay_stays_within_the_declared_depth() {
         let depth = 0.01f32;
@@ -720,10 +709,6 @@ mod tests {
 
     /// At a control point (every 16th frame, counted from the start) the
     /// delay is the exact sine's.
-    ///
-    /// Mutation (run): look the segment's end point up one sample early
-    /// (`i + COEFF_INTERVAL - 1`), or scale the sine by 0.5 → the points
-    /// sit samples off.
     #[test]
     fn the_delay_equals_the_exact_sine_at_control_points() {
         let depth = 0.01f32;
@@ -738,9 +723,6 @@ mod tests {
 
     /// Between control points the linear chord misses the sine by at most
     /// `h^2 / 8` of the depth, `h` the radians one control interval spans.
-    ///
-    /// Mutation (run): space the points 64 apart (`COEFF_INTERVAL = 64`) →
-    /// the bound, 1.7 samples, fails the spacing assertion.
     #[test]
     fn the_error_between_control_points_is_within_the_chord_bound() {
         let depth = 0.01f32;
@@ -775,10 +757,6 @@ mod tests {
     /// Frame 2500 is 4 samples into a segment and the sweep is near a zero
     /// crossing there (the delay moves fastest), so a point stepped at the
     /// old rate (20 Hz, not 30) is several samples off.
-    ///
-    /// Mutation (run): make `restep` always false → the delay is several
-    /// samples off the new-rate sine over the segment and the assertion
-    /// fails; drop only the `prev` line → 1.8 samples off.
     #[test]
     fn a_rate_change_at_a_block_boundary_reaches_the_delay_at_once() {
         let depth = 0.01f32;
@@ -802,10 +780,6 @@ mod tests {
     /// prepared again for a different maximum block), renders ragged blocks
     /// exactly as a fresh node does. The comparison is an invariant of the
     /// node against itself, not a reference render.
-    ///
-    /// Mutation (run): delete `self.seg_pos = 0` and `self.points_valid =
-    /// false` from `reset` (or from `prepare`) → the first segment starts
-    /// mid-count on stale points and the renders differ.
     #[test]
     fn reset_and_prepare_reprime_the_control_points() {
         let x = noise(9, 700);
@@ -860,9 +834,6 @@ mod tests {
 
     /// The sweep keeps its period: successive upward crossings of the centre
     /// are `sr / rate` apart.
-    ///
-    /// Mutation (run): step the phase by `inc` twice per sample in
-    /// `LfoDrive::fill_block` → the sweep runs twice as fast.
     #[test]
     fn the_modulation_period_is_preserved() {
         let depth = 0.01f32;
@@ -884,10 +855,6 @@ mod tests {
     /// The result does not depend on how the stream is cut into blocks: the
     /// control points sit on a grid counted across blocks, and a segment's end
     /// point past a block's edge is stepped on from the block's own phase.
-    ///
-    /// Mutation (run): restart the segment count each block (`self.seg_pos =
-    /// 0` at the end of `render`) → blocks that are not a multiple of 16
-    /// frames move the points and the outputs differ.
     #[test]
     fn ragged_blocks_render_what_one_block_does() {
         let x = noise(5, 2_000);
@@ -977,9 +944,6 @@ mod tests {
     /// Six channels: the first two are exactly the stereo chorus, channel 4's
     /// stagger (4 × a quarter cycle) wraps back onto channel 0's, and a silent
     /// channel stays silent — no channel reads another's line.
-    ///
-    /// Mutation: dropping the `c ×` from the per-channel offset (every channel
-    /// on channel 0's phase) fails the channel-1 check.
     #[test]
     fn six_channels_extend_the_stereo_chorus() {
         // Longer than the 10 ms base delay, so the wet half is sounding.
@@ -1005,9 +969,6 @@ mod tests {
 
     /// Explicit offsets replace the preset's stagger: all-zero puts every
     /// channel on one phase, so identical inputs render identically.
-    ///
-    /// Mutation: ignoring `with_phase_offsets` (keeping the preset stagger)
-    /// fails.
     #[test]
     fn explicit_phase_offsets_replace_the_stagger() {
         // Longer than the 10 ms base delay, so the wet half is sounding.

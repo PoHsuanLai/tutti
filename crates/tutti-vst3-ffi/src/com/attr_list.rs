@@ -406,10 +406,6 @@ mod tests {
 
     /// A string longer than the 65536-unit cap is cut at the cap and still
     /// terminated, and a short one is stored whole.
-    ///
-    /// Mutation: drop the `buf.len() < MAX_STRING_LEN` bound and the long
-    /// case stores all 70000 units (and a plugin without a terminator would
-    /// be read until it faults).
     #[test]
     fn test_attr_set_string_max_length_cap() {
         let attrs = AttributeList::new();
@@ -441,10 +437,6 @@ mod tests {
     /// The lifetime is observed through a `Weak` of the stored buffer, not by
     /// reading freed memory: the buffer must still be alive after the key is
     /// replaced.
-    ///
-    /// Mutations (run, each fails): have `getBinary` skip the `lent` insert ->
-    /// the `weak.upgrade()` assertion; make `lent` a list that only grows ->
-    /// the bounded assertion.
     #[test]
     fn a_binary_pointer_outlives_its_replacement() {
         let attrs = AttributeList::new();

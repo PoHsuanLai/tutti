@@ -204,9 +204,6 @@ mod tests {
     /// **The frame is a big-endian `u32` length and the postcard body.** Bytes
     /// written out by hand for a `u16` message, so a change of prefix width or
     /// endianness fails here rather than as a desync between two binaries.
-    ///
-    /// Mutation (run): `to_be_bytes` → `to_le_bytes` in `encode_prefix` →
-    /// the written bytes differ → fails.
     #[test]
     fn a_frame_is_a_big_endian_length_then_the_body() {
         let mut out = Vec::new();
@@ -232,9 +229,6 @@ mod tests {
 
     /// **The cap is inclusive on both halves, and a length over it names the
     /// length.** The decode side refuses before any body is read.
-    ///
-    /// Mutation (run): `>` → `>=` in `decode_prefix` → the at-cap prefix is
-    /// refused → fails.
     #[test]
     fn the_cap_is_inclusive_and_over_it_is_typed() {
         let at = u32::try_from(MAX_FRAME_BYTES).unwrap();

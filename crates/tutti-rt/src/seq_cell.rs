@@ -44,7 +44,7 @@
 //! Plain `Release`/`Acquire` fences, not `SeqCst`: the protocol has no
 //! store-then-load pair on either side (the writer stores then stores, the
 //! reader loads then loads), which is the pattern CLAUDE.md's `SeqCst`-fence
-//! rule covers. The model's mutation record shows each fence is needed.
+//! rule covers. The loom model shows each fence is needed.
 
 use std::sync::Arc;
 
@@ -122,10 +122,6 @@ fn word_of(chunk: &[u8]) -> u64 {
 ///     writer.write(1);
 /// }
 /// ```
-// Mutations (run) for the `compile_fail` doctests: `SeqWriter` deriving
-// `Clone` → the first compiles → fails; `write(&self)` keeping the sequence in
-// the cell (load, then store) → the second compiles
-// → fails.
 pub struct SeqWriter<T: NoUninit + AnyBitPattern> {
     cell: Cell,
     /// The sequence of the last completed write: the writer's own copy, so a

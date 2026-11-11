@@ -2,8 +2,6 @@ extern crate std;
 use super::*;
 use std::vec::Vec;
 
-/// Mutation (run): `push` through `ArrayVec::push` instead of `try_push`
-/// → the fourth push panics ("ArrayVec: capacity exceeded") → fails.
 #[test]
 fn push_fills_then_refuses_at_the_cap() {
     let mut v: RtVec<u32, 3> = RtVec::new();

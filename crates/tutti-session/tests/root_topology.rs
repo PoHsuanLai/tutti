@@ -45,9 +45,6 @@ fn buses(n: u16) -> ChannelTopology {
 
 /// Four declared buses on a six-wide device stay at 0..4. The root is the
 /// declaration's width, not the device's.
-///
-/// Mutation (run): `SessionBuilder::declare` not called → the engine reads the
-/// root as quad and the frame is `[.1, .2, 0, 0, .3, .4]`.
 #[test]
 fn a_declared_unassigned_root_keeps_its_buses_by_index() {
     let mut s = offline(Session::builder().root_topology(buses(4)), 6).unwrap();
@@ -61,9 +58,6 @@ fn a_declared_unassigned_root_keeps_its_buses_by_index() {
 /// declared: the same six channels with the front pair declared the other way
 /// round fold with left and right exchanged. (The plain 5.1 is the figure a bare
 /// six gives, so only the swapped declaration shows the engine read it.)
-///
-/// Mutation (run): `Graph::declare_root` not publishing the declaration to the
-/// engine → the swapped frame is the plain 5.1 figure and fails.
 #[test]
 fn a_declared_surround_root_folds_by_the_surround_rules() {
     let five_one = ChannelTopology::smpte(ChannelLayout::from(6u16)).unwrap();
@@ -91,12 +85,6 @@ fn a_declared_surround_root_folds_by_the_surround_rules() {
 
 /// With nothing declared, the root is the device's floor and a bare four is
 /// quad: as before this existed.
-///
-/// Mutation (run): `declare_root_topology(None)` keeping the declaration is
-/// caught by the width test below; here the engine reading `Fold::declared`
-/// for every root would put the quad's rears at 2 and 3 into stereo, as
-/// `[.1 + .2, ..]` is not the figure asserted. (Not run separately: the
-/// undeclared path is the one the whole existing suite covers.)
 #[test]
 fn an_undeclared_root_is_as_it_was() {
     let mut s = offline(Session::builder().outputs_floor(4), 6).unwrap();
@@ -114,11 +102,6 @@ fn an_undeclared_root_is_as_it_was() {
 
 /// A declaration the device cannot place is refused, at build and after, and
 /// leaves the session as it was.
-///
-/// Mutation (run): `Fold::declared` reading an unassigned source as `to_width`
-/// does (quad) → the refusals succeed and the cases here fail.
-/// (`check_placement` skipping a declared root alone survives: the build's
-/// `declare` refuses the same pair a step later, so the refusal is doubly held.)
 #[test]
 fn an_unplaceable_declaration_is_refused() {
     let refused = |r: Result<Session, Error>| match r {
@@ -163,11 +146,6 @@ fn an_unplaceable_declaration_is_refused() {
 /// Declared after the build, on a device-wide root: the declaration sets the
 /// root's width (narrowing six to four), the root cannot then be widened under
 /// it, and taking it back leaves the root at four, quad again.
-///
-/// Mutation (run): `declare_root` not resizing the outputs → `outputs()` stays
-/// six; `widen_outputs` not checking the declaration → the widening to five is
-/// accepted; `declare_root(None)` keeping the declaration → the last frame
-/// stays by index.
 #[test]
 fn a_declaration_sets_the_roots_width_and_the_width_cannot_leave_it() {
     let mut s = offline(Session::builder(), 6).unwrap();
@@ -202,10 +180,6 @@ fn a_declaration_sets_the_roots_width_and_the_width_cannot_leave_it() {
 /// A refusal is a value: the declaration's, kept with the request; a widening
 /// the declared root cannot take; channels past the engine's width. The
 /// request is the same again once it is in force.
-///
-/// Mutation (run): `declare_root_topology` not recording the refusal → the
-/// status stays `Applied`; `widen_outputs` not recording → the second status
-/// stays `Applied`; the over-wide request not clamped → `outputs()` is 40.
 #[test]
 fn a_refusal_is_a_status_not_a_log_line() {
     let mut s = offline(Session::builder(), 2).unwrap();
@@ -236,7 +210,7 @@ fn a_refusal_is_a_status_not_a_log_line() {
 /// A builder's declaration is in force after updates, and declaring the same
 /// topology again changes nothing (no edit, so no commit).
 ///
-/// No mutation: the equal-request early return in `declare_root_topology` is
+/// The equal-request early return in `declare_root_topology` is
 /// not observable here (the graph and engine ignore an equal declaration
 /// themselves); the host-level first-frame case it protects is pinned in
 /// `bevy-tutti`'s `a_builders_declaration_survives_the_first_frame`.
@@ -255,9 +229,6 @@ fn declaring_the_same_topology_again_changes_nothing() {
 
 /// An export of the master places the file from the declaration, as the device
 /// is: four buses into a six-channel file stay at 0..4.
-///
-/// Mutation (run): `PendingExport::build` not setting the root topology → the
-/// file is `[.1, .2, 0, 0, .3, .4]`.
 #[cfg(feature = "export")]
 #[test]
 fn an_export_is_placed_from_the_declaration() {

@@ -59,9 +59,6 @@ fn topology_of_mask(channels: u16, mask: u32) -> ChannelTopology {
 /// The mask a WAVE header states is the topology, speaker for speaker: quad
 /// `0x33` is back, `0x603` side, 5.1 `0x3F` back and `0x60F` side (the engine's
 /// own), and the channels stay in file order.
-///
-/// Mutation (run): mapping `REAR_LEFT` to `SideLeft` in `placement.rs` fails
-/// the `0x33` and `0x3F` rows; `SIDE_LEFT` to `BackLeft` fails `0x603`.
 #[test]
 fn a_wave_mask_names_each_channels_speaker() {
     assert_eq!(
@@ -96,9 +93,6 @@ fn a_wave_mask_names_each_channels_speaker() {
 /// A speaker the vocabulary cannot name keeps its channel, as
 /// `Unknown(bit index)`: bit 25 is symphonia's second LFE, and the file's
 /// channels are not renumbered around it.
-///
-/// Mutation (run): dropping unnamed flags from `topology_of` makes the
-/// topology one wide and fails the first assertion.
 #[test]
 fn a_speaker_with_no_name_keeps_its_channel() {
     let wave = Wave::from_bytes(extensible(2, 0x0200_0001)).expect("decodes");
@@ -109,8 +103,6 @@ fn a_speaker_with_no_name_keeps_its_channel() {
 
 /// Sample channel `n` is topology entry `n`: the LFE of a 5.1 file is the
 /// fourth plane, whatever order the speakers were declared in.
-///
-/// Mutation (run): returning the topology reversed fails both asserts.
 #[test]
 fn channel_n_of_the_samples_is_entry_n_of_the_topology() {
     let wave = Wave::from_bytes(extensible(6, 0x3F)).expect("decodes");
@@ -124,9 +116,6 @@ fn channel_n_of_the_samples_is_entry_n_of_the_topology() {
 /// The fixtures: a lone channel is the centre (symphonia calls it
 /// `FRONT_LEFT`), two are left and right in every container, and the 5.1 file
 /// states the back pair. A stream reports what a load does.
-///
-/// Mutation (run): removing the lone-channel arm gives `[FrontLeft]` for the
-/// mono file.
 #[test]
 fn the_fixtures_state_their_speakers() {
     for (name, expected) in [
@@ -161,10 +150,6 @@ fn the_fixtures_state_their_speakers() {
 /// topology's order, so the plane of each speaker is where the topology says.
 /// Encoded here straight through `vorbis_rs`, one tone per Vorbis-order
 /// plane, so the figures are the spec's table and not our writer's.
-///
-/// Mutation (run): comparing against the Vorbis order (`FL FC FR ...`) instead
-/// of the topology's fails the planes after the first; the same decode through
-/// ffmpeg (FL FR FC LFE BL BR) gave identical plane levels.
 #[cfg(all(feature = "encode-vorbis", feature = "decode-ogg"))]
 #[test]
 fn a_vorbis_six_decodes_in_the_topologys_order() {

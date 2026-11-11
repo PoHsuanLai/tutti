@@ -245,10 +245,6 @@ mod tests {
 
     /// tone(100) silence(300) tone(100) silence(50), with nothing padded: two
     /// regions with exact boundaries, the trailing silence dropped.
-    ///
-    /// Mutation checked: ending a region at the last loud sample (`last`, not
-    /// `last + 1`) fails the ends; starting a region after the gap's first
-    /// loud sample fails the second start.
     #[test]
     fn tone_gap_tone_gives_two_exact_regions() {
         let mut x = vec![0.0f32; 550];
@@ -261,10 +257,6 @@ mod tests {
     }
 
     /// Gaps shorter than the minimum do not split; one at the minimum does.
-    ///
-    /// Mutation checked: a strict gap comparison (`at - last > min + 1`) fails the
-    /// 50-sample gap; the off-by-one `at - last >= min` splits the 49-sample gap
-    /// and fails.
     #[test]
     fn a_gap_splits_only_at_the_minimum_length() {
         let build = |gap: usize| {
@@ -279,9 +271,6 @@ mod tests {
     }
 
     /// A sample exactly at the threshold is loud; the next float below is not.
-    ///
-    /// Mutation checked: `<=` for `<` in the silence test (so the exact sample
-    /// is silent) fails the first assertion.
     #[test]
     fn the_threshold_edge_is_inclusive() {
         let c = cfg(Db(-20.0), 10.0);
@@ -298,11 +287,6 @@ mod tests {
 
     /// Padding widens each side, clamps at the buffer and joins regions that
     /// meet.
-    ///
-    /// Mutation checked: dropping the `.min(state.seen)` clamp fails the tail;
-    /// the `saturating_sub` replaced by a plain subtraction panics on the head;
-    /// dropping the join fails the gap-50 pair, and `<` for `<=` in it (so
-    /// exactly-touching regions stay apart) fails the same pair.
     #[test]
     fn padding_widens_clamps_and_joins() {
         let mut x = vec![0.0f32; 1000];
@@ -330,9 +314,6 @@ mod tests {
     }
 
     /// Silence only, empty input and NaN give no regions.
-    ///
-    /// Mutation checked: treating NaN as loud (testing `!(abs < floor)` without
-    /// the NaN clause) fails the last assertion.
     #[test]
     fn nothing_loud_gives_no_regions() {
         let c = cfg(Db(-20.0), 10.0);
@@ -343,10 +324,6 @@ mod tests {
 
     /// Feeding in chunks of any size gives the batch result, including a chunk
     /// edge inside a gap and inside a region, and a region open at the end.
-    ///
-    /// Mutation checked: resetting `open` at the start of each `step_silence`
-    /// fails the chunked runs; indexing positions from the chunk (without
-    /// `state.seen`) fails them too.
     #[test]
     fn chunked_feeding_matches_the_batch() {
         let mut x = vec![0.0f32; 700];
@@ -368,9 +345,6 @@ mod tests {
     }
 
     /// A different config restarts the carry.
-    ///
-    /// Mutation checked: removing the config comparison in `step_silence`
-    /// carries the 100-sample burst across and fails.
     #[test]
     fn a_changed_config_restarts_the_scan() {
         let mut state = SilenceState::new();
@@ -382,11 +356,6 @@ mod tests {
 
     /// A state that was never stepped has no regions, and the padding comes
     /// from the config the scan used: `finish` takes nothing else.
-    ///
-    /// Mutation checked: `finish` returning the unpadded regions (ignoring
-    /// `cfg.pre_pad`/`post_pad`) fails the second assertion. (The unstepped
-    /// case is also empty under a default config, so the first assertion pins
-    /// the defined behaviour rather than catching a mutation.)
     #[test]
     fn finish_reads_the_scanned_config_and_an_unstepped_state_is_empty() {
         assert!(finish(&SilenceState::new()).is_empty());
@@ -401,8 +370,6 @@ mod tests {
     }
 
     /// A threshold that is not finite is refused: NaN would never equal itself.
-    ///
-    /// Mutation checked: removing the `is_finite` check fails all three.
     #[test]
     fn a_non_finite_threshold_is_refused() {
         for t in [f32::NAN, f32::NEG_INFINITY, f32::INFINITY] {

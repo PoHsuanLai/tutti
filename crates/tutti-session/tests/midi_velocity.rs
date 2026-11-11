@@ -6,10 +6,6 @@
 //! `Midi::play_clip` → clip node → event edge path narrows the field (it
 //! caught exactly that once: a `note_on_7bit` that crushed the value and
 //! widened it back).
-//!
-//! Mutation (run): `MidiClipNode` sending a 7-bit note on (`note_on_7bit`, since deleted) of the
-//! event's note and velocity >> 9 → the two velocities come out equal and
-//! the assertion fails.
 
 use std::sync::{Arc, Mutex};
 

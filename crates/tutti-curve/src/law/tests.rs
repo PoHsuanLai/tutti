@@ -17,8 +17,6 @@ const LAWS: [Law; 9] = [
 ];
 
 /// The unit steps: `Linear` is `t`, `Hold` is 0 until the end.
-///
-/// Mutation (run): `Hold` as `t < 0.5` fails at 0.75 and 0.99.
 #[test]
 fn linear_is_t_and_hold_steps_at_the_end() {
     for t in [0.0, 0.125, 0.5, 0.75, 1.0] {
@@ -33,10 +31,6 @@ fn linear_is_t_and_hold_steps_at_the_end() {
 /// The integer exponents are multiplications: exact in binary fractions.
 /// `t^p` at 1/2 is `2^-p`; `1 - (1 - t)^p` at 1/2 is `1 - 2^-p`; the
 /// in-out law is `2^(p-1) t^p` below 1/2, so at 1/4 it is `2^(p-1) 4^-p`.
-///
-/// Mutation (run): `pow` taking the `p == 3.0` arm as `x * x` fails
-/// `PowerIn(3)`; `PowerInOut`'s `/ 2.0` dropped fails every in-out row;
-/// `PowerOut` as `pow(1.0 - t, p)` (no outer `1 -`) fails every out row.
 #[test]
 fn integer_powers_are_exact() {
     for (p, p_in) in [
@@ -75,9 +69,6 @@ fn integer_powers_are_exact() {
 
 /// An exponent of one half is the square root (exact: `sqrt(1/4) = 1/2`), and
 /// any other exponent is `t^p` to `f32` accuracy.
-///
-/// Mutations (run), each fails: the `p == 0.5` arm returning `x` fails the
-/// exact figure; the `powf` arm as `x * p` fails the loose one.
 #[test]
 fn other_exponents_follow_the_power() {
     assert_eq!(Law::PowerIn(0.5).eval(0.25), 0.5);
@@ -97,9 +88,6 @@ fn other_exponents_follow_the_power() {
 
 /// `Exp(k)` is `(e^(kt) - 1) / (e^k - 1)`, so with `k = ln(to / from)` the
 /// value is geometric: `from · (to / from)^t`.
-///
-/// Mutation (run): `k.exp_m1()` in the denominator replaced by `k.exp()` fails
-/// both checks; the `k` clamp removed fails `a_huge_curvature_is_clamped`.
 #[test]
 fn exp_is_the_exponential_and_geometric_at_log_ratio() {
     for k in [3.0f32, -2.5, 0.5, 20.0] {
@@ -125,8 +113,6 @@ fn exp_is_the_exponential_and_geometric_at_log_ratio() {
 }
 
 /// `Exp` near zero curvature is linear, not `0 / 0`.
-///
-/// Mutation (run): the `k.abs() < 1e-4` branch removed gives NaN at `k = 0`.
 #[test]
 fn exp_at_zero_curvature_is_linear() {
     for k in [0.0, 1e-6, -1e-6] {
@@ -135,8 +121,6 @@ fn exp_at_zero_curvature_is_linear() {
 }
 
 /// `|k|` past 64 is clamped to 64, so the ratio never reaches `inf / inf`.
-///
-/// Mutation (run): the clamp removed gives NaN for `Exp(1000.0)`.
 #[test]
 fn a_huge_curvature_is_clamped() {
     assert_eq!(Law::Exp(1000.0).eval(0.5), Law::Exp(64.0).eval(0.5));
@@ -145,10 +129,6 @@ fn a_huge_curvature_is_clamped() {
 }
 
 /// A parameter out of range or not finite is a linear law, never a NaN.
-///
-/// Mutation (run): `valid_exponent` returning `true` fails every power row
-/// (`powf` of a NaN, of a negative exponent's reciprocal); the `is_finite`
-/// guard on `Exp` removed fails the NaN and infinity rows.
 #[test]
 fn an_invalid_parameter_is_linear() {
     let bad = [f32::NAN, f32::INFINITY, f32::NEG_INFINITY];
@@ -163,9 +143,6 @@ fn an_invalid_parameter_is_linear() {
 }
 
 /// Progress is clamped to `[0, 1]` and a NaN progress is 0.
-///
-/// Mutation (run): the clamp's `.min(1.0)` removed gives `Linear.eval(2.0)` 2;
-/// `t >= 0.0` written `t > -1.0` gives `Linear.eval(-0.5)` -0.5.
 #[test]
 fn progress_is_clamped() {
     for law in LAWS {
@@ -180,11 +157,6 @@ fn progress_is_clamped() {
 /// (closed forms in `f64`, within a tolerance: `Exp` and a non-integer
 /// power go through libm), and a law with an unusable parameter is
 /// linear.
-///
-/// Mutations (run), each fails: `PowerOut` as `pow(t, p)` (the ease-in);
-/// `PowerInOut`'s first half as `pow(t, p)` (no `2t`); `Exp` with
-/// `exp_m1(k)` and `exp_m1(k t)` swapped; dropping the `valid_exponent`
-/// guard (`PowerIn(-1)` gives `inf` at 0); `Smootherstep`'s `10.0` as `9.0`.
 #[test]
 fn every_law_meets_its_closed_form() {
     use Law as S;
@@ -254,8 +226,6 @@ fn every_law_meets_its_closed_form() {
 /// `Linear` returns `t` bit for bit on `[0, 1]` (the clamp is the identity
 /// there), so a linear [`Piece`] is `from + (to - from) * t` to the bit: what
 /// the graph's edge-gain ramp and param ramps write.
-///
-/// Mutation (run): `Linear` as `t * 0.999_999_9` → fails.
 #[test]
 fn linear_is_the_identity_on_the_unit_interval() {
     for n in [1u32, 3, 7, 64, 97, 128, 1000] {

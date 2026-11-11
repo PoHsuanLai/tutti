@@ -83,12 +83,8 @@ fn export(path: &std::path::Path, dither: Option<DitherShape>) {
 /// The 16-bit samples of a dithered take and of an export are the same, for
 /// both shapes; and the dither is really there (an undithered take differs).
 ///
-/// Mutations (each run, each fails this test): skip the `noise.apply` in
-/// `DitherSink::write` (the take loses its dither); restart the noise at the
-/// top of `write` (the take's 100-frame pulls each draw the sequence's head,
-/// the export's one block does not). The seed is shared by both sides, so a
-/// reseed cannot show here: `the_seeded_sequence_is_pinned` in `tutti-dsp`
-/// holds it.
+/// The seed is shared by both sides, so a reseed cannot show here:
+/// `the_seeded_sequence_is_pinned` in `tutti-dsp` holds it.
 #[test]
 fn a_live_take_and_an_export_agree_when_dithered_alike() {
     let dir = tempfile::tempdir().expect("dir");
@@ -111,9 +107,6 @@ fn a_live_take_and_an_export_agree_when_dithered_alike() {
 
 /// With no dither the take is what it always was: the plain quantization of
 /// the frames, and the export with no dither writes the same.
-///
-/// Mutation (run): make `DitherSink::new` default a `None` spec to a
-/// triangular one and the first assertion fails.
 #[test]
 fn without_dither_a_take_is_the_plain_quantization() {
     let dir = tempfile::tempdir().expect("dir");

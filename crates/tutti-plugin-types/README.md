@@ -125,8 +125,7 @@ assert!(ranks[0] < ranks[1] && ranks[1] < ranks[2]);
 Depends on `tutti-types` ([`Samples`], [`ChannelLayout`], [`ChannelTopology`], the
 meter vocabulary), `tutti-graph` (`Offset`), `tutti-rt`, `tutti-ump` and
 `tutti-midi-protocol`, re-exporting the parts format crates need so none of them takes its
-own dependency for the type names. It holds `PerNoteBendRanges`, the per-note pitch-bend
-ranges the CLAP and VST3 hosts track.
+own dependency for the type names.
 All four format hosts and `tutti-plugin` depend on it.
 
 ## Features

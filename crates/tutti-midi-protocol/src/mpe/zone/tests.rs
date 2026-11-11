@@ -1,18 +1,3 @@
-//! Mutation record (each planted, seen to fail, restored):
-//! - `new` accepting `0` members -> `a_zone_has_one_to_fifteen_members`;
-//! - `new` accepting 16 members -> `a_zone_has_one_to_fifteen_members`;
-//! - `members` of the lower zone starting at `0` ->
-//!   `zone_layout_places_master_and_members_per_rp053`;
-//! - `MpeZones::new` letting the spans touch (`<` for `<=` in `overlaps`) ->
-//!   `two_zones_may_not_share_a_member_channel`;
-//! - `MpeZones::new` accepting two lower zones ->
-//!   `a_zone_must_be_in_its_own_role`;
-//! - `MpeZones::new` accepting `(None, None)` -> `a_zone_must_be_in_its_own_role`;
-//! - `from_mcm` accepting any master channel -> `from_mcm_rejects_out_of_range_configurations`;
-//! - the two default ranges swapped -> `zones_default_to_rp053_ranges_per_role`;
-//! - the `TryFrom` of either persisted type returning `Ok` unchecked ->
-//!   `persisted_values_are_read_back_through_the_check` (serde).
-
 use super::*;
 use tutti_ump::{NoteNumber, U7, Voice2};
 

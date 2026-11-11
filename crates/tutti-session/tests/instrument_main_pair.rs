@@ -43,8 +43,6 @@ impl Instrument for Dressed {
 }
 impl SessionNode for Dressed {}
 
-/// Mutations (run): the strip's ports read `[0, 1]` regardless (left 1, right
-/// 2); the two swapped (left 4, right 3).
 #[test]
 fn the_pair_a_node_names_is_the_one_played() {
     let mut session = instrument_support::rig::offline_session();
@@ -87,8 +85,6 @@ fn a_pair_past_the_outputs_is_refused() {
 /// The handle counts what its queue dropped: with a ring's worth of messages
 /// waiting for frames far ahead, three more for frames still further are lost,
 /// and the handle says so.
-///
-/// Mutation (run): `InstrumentHandle::dropped` returning 0 fails it.
 #[test]
 fn the_handle_counts_what_its_queue_dropped() {
     use tutti_types::{At, Frame};
@@ -115,10 +111,6 @@ fn the_handle_counts_what_its_queue_dropped() {
 /// output (a five-output node on a five-wide root feeds the speakers its
 /// sends), `set_outputs_from_ports` with the handle's pair does not. Read from
 /// the graph's own topology.
-///
-/// Mutations (run): `set_outputs_from_ports` ignoring `ports` and wrapping over
-/// the node's outputs fails it; the handle's `main_outputs` returning `[0, 1]`
-/// fails the port check (the pair here is `[2, 3]`).
 #[test]
 fn a_wide_root_is_fed_from_the_main_pair_not_the_sends() {
     use tutti_session::GraphSource;

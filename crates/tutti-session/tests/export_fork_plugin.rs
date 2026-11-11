@@ -183,12 +183,6 @@ impl Node for Ramp {
 /// sample for sample: a trim one frame off in either direction reads the
 /// neighbouring frame's value everywhere. (A constant input could not
 /// tell a trim of 64 from one of 201.)
-///
-/// Mutation: hand the editor no fork source from `IntoNode for
-/// PluginClient<Bound>` (`fork: None`) → the export is refused as not
-/// forkable, naming the plugin's key. Mutation (run, failed): trimming one
-/// frame less than the plan's latency (`reported_latency() - 1` in the
-/// session's `BounceJob::run`) → every frame reads its predecessor.
 #[test]
 fn a_plugin_effect_exports_through_its_fork() {
     let (mut session, probe) = session_with_probe(LATENCY);
@@ -206,10 +200,6 @@ fn a_plugin_effect_exports_through_its_fork() {
 /// key**, before anything renders (`Error::Fork(ForkError::Source)`), with
 /// the plugin's own reason: the plugin's file is gone since it loaded, so no
 /// fresh instance loads (`PluginForkError::Load`).
-///
-/// Mutation (run, failed): `tutti_export`'s `fork_error` turning
-/// `ForkError::Source` into an error with no key (`Error::EventsDropped`
-/// instead of `Error::Fork`) → the match below fails.
 #[test]
 fn a_plugin_fork_that_cannot_be_built_is_a_named_failure() {
     // A link of our own to the plugin, so removing it touches no other
@@ -261,10 +251,6 @@ fn a_plugin_fork_that_cannot_be_built_is_a_named_failure() {
 /// the live rate and prepared at the render's, and the clip places its
 /// notes at the rate the fork polls it at (a beat is 64 000 frames
 /// there).
-///
-/// Mutation (run, failed): `Midi::play_clip` not feeding the clip into the
-/// plugin's event input (`set_feed` left off) → the fork renders silence, at
-/// both rates.
 #[test]
 fn an_exported_plugin_instrument_plays_its_clip() {
     for rate in [RATE, 2.0 * RATE] {
@@ -327,10 +313,6 @@ fn instrument_at(rate: f64) {
 /// key**, promptly, instead of writing the silence it rendered after the
 /// crash. The crash switch is set after the live instance loaded, so only
 /// the fork's server reads it; it aborts on its 8th block.
-///
-/// Mutation (run, failed): `tutti_export`'s `ForkFailed` check after the
-/// render left out (`fork_health` not asked) → the export reports success
-/// with the silence it rendered.
 #[test]
 fn a_plugin_fork_that_crashes_mid_export_is_a_named_failure() {
     let (mut session, probe) = session_with_probe(TAG_PASSTHROUGH);

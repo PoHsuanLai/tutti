@@ -748,11 +748,6 @@ mod tests {
     /// callback, so a live plugin keeps in step with the device rather than a
     /// 64-frame grid), else the graph's
     /// `MaxBlock`, capped by the slab's ceiling either way.
-    ///
-    /// Mutation: `self.chunk = self.ceiling.min(64)` in `prepare` (the
-    /// reversed 64-frame pipeline) → the 480-frame quantum ships 64 → fails.
-    /// Mutation: ignore `quantum` → 1024 instead of 480 → fails. Mutation:
-    /// drop the `ceiling.min` → the small slab's chunk is 1024 → fails.
     #[test]
     fn the_pipeline_chunk_is_the_device_quantum_else_the_max_block() {
         let mut b = Batcher::new(2, 2, SampleFormat::Float32, MAX_CHUNK, slab(MAX_CHUNK));
@@ -777,9 +772,6 @@ mod tests {
     /// A re-prepare starts the pipeline over: the chunk in flight was
     /// submitted under the old chunk size and must not be collected into the
     /// new one — without advancing the sequence, as for a seek.
-    ///
-    /// Mutation: drop the `reset()` from `prepare` → `expect_seq` survives →
-    /// fails.
     #[test]
     fn prepare_drops_the_chunk_in_flight() {
         let mut b = Batcher::new(2, 2, SampleFormat::Float32, MAX_CHUNK, slab(MAX_CHUNK));

@@ -2,8 +2,7 @@
 //! transitions between them, driven on the real reference plugin.
 //!
 //! The plugin's switches, capture and trace are process-global, so every test
-//! holds [`PROBE_LOCK`]. Each test's comment names the mutation that makes it
-//! fail; every one was applied, the test watched to fail, and the code restored.
+//! holds [`PROBE_LOCK`].
 
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Mutex, MutexGuard};
@@ -205,9 +204,6 @@ fn rejoin(processor: Vst2Processor, controller: Vst2Controller) -> Vst2Loaded {
 /// **Activation splits the plugin and renders what the oracle says**: the probe
 /// adds a tag per channel (1.0, 101.0, pinned in the probe's own tests) to its
 /// input, so a swapped, duplicated or unwritten channel is arithmetically wrong.
-///
-/// Mutation (run): `RenderScratch::copy_out_f32_range` copying nothing -> the
-/// outputs keep the 9.0 the test filled them with -> fails.
 #[test]
 fn activation_splits_the_plugin_and_renders_through_the_trait() {
     let probe = Probe::acquire();
@@ -222,11 +218,6 @@ fn activation_splits_the_plugin_and_renders_through_the_trait() {
 /// **A 64-bit activation tells the plugin so and enters `processReplacingF64`;
 /// a 32-bit block for it is refused without entering the plugin.** The width the
 /// plugin was told is the width it is called at.
-///
-/// Mutation (run): the `double_precision` check in `render` removed -> the f32
-/// block reaches a plugin told 64 and renders -> the `Err` assertion fails.
-/// Mutation (run): `activate` ignoring `Prepare::format` -> the plugin is told
-/// 32 and `set_precision_value` stays 0 -> fails.
 #[test]
 fn a_64_bit_activation_is_entered_at_64_and_refuses_a_32_bit_block() {
     let probe = Probe::acquire();
@@ -276,9 +267,6 @@ fn a_64_bit_activation_is_entered_at_64_and_refuses_a_32_bit_block() {
 /// is built, so the host is never asked to activate at one. A real one then
 /// activates and is the first resume. (The server loaders' tests drive the
 /// refusal through the load and `set_sample_rate` entry points.)
-///
-/// Mutation (run): the finite and positive check removed from `Prepare::new`
-/// and `with_rate` -> a rate of zero builds a `Prepare` -> the `is_none` fails.
 #[test]
 fn no_prepare_holds_a_rate_or_block_that_is_none() {
     let probe = Probe::acquire();
@@ -299,9 +287,6 @@ fn no_prepare_holds_a_rate_or_block_that_is_none() {
 }
 
 /// **Halves of two activations are stuck and returned whole.**
-///
-/// Mutation (run): the `RenderHandle::is_of` check removed from `deactivate` -> the
-/// halves of two activations rejoin and the `Stuck` the test expects never comes.
 #[test]
 fn halves_of_two_activations_are_stuck_and_returned() {
     let probe = Probe::acquire();
@@ -320,11 +305,6 @@ fn halves_of_two_activations_are_stuck_and_returned() {
 /// **A Controller write reaches the plugin at once**, beside a Processor that
 /// has not rendered, and a block's own automation lands at its head: the last
 /// point of each queue, an id the plugin does not have skipped.
-///
-/// Mutation (run): `Control::set_parameter` for the Controller doing nothing ->
-/// the read-back stays at the plugin's default -> fails. Mutation (run):
-/// `apply_automation` writing `points.first()` -> 0.25 lands, not 0.75 ->
-/// fails.
 #[test]
 fn a_controller_write_is_direct_and_automation_lands_at_the_block_head() {
     let probe = Probe::acquire();
@@ -351,9 +331,6 @@ fn a_controller_write_is_direct_and_automation_lands_at_the_block_head() {
 /// **The block's automation is the host's write, not the plugin's edit**: a
 /// plugin echoing `setParameter` through `audioMasterAutomate` from inside the
 /// call reports nothing to the host.
-///
-/// Mutation (run): `apply_automation` writing without `host_write` -> the echo
-/// is queued -> `take_reported_edits` returns it -> fails.
 #[test]
 fn automation_is_a_host_write_and_its_echo_is_not_reported() {
     let probe = Probe::acquire();
@@ -374,10 +351,6 @@ fn automation_is_a_host_write_and_its_echo_is_not_reported() {
 /// `out`**, once per refused queue, and a block that writes only declared ones
 /// reports none (`clear` resets the count). The node reads it to count the
 /// writes the plugin refused.
-///
-/// Mutation (run): `render` not calling `out.count_params_refused` -> the
-/// first count stays 0 -> fails. Mutation (run): `ProcessOutput::clear` not
-/// resetting `params_refused` -> the second block still reads 1 -> fails.
 #[test]
 fn a_write_to_a_parameter_the_plugin_lacks_is_reported_in_the_output() {
     let probe = Probe::acquire();
@@ -415,12 +388,6 @@ fn a_write_to_a_parameter_the_plugin_lacks_is_reported_in_the_output() {
 /// block the plugin cannot take (a channel shorter than the block) is an error,
 /// not a panic, builds its error without allocating, and does not enter the
 /// plugin.
-///
-/// Mutation (run): the input half of the short-channel check removed from
-/// `render` -> the scratch copy indexes past the channel and panics -> fails;
-/// likewise the output half (`short_slice_mut`) -> the copy-out panics -> fails.
-/// Mutation (run): a `Vec::with_capacity(1)` in `write_automation` -> the gate
-/// trips -> fails.
 #[test]
 fn a_block_does_not_allocate_and_a_short_channel_is_an_error() {
     let probe = Probe::acquire();
@@ -487,10 +454,6 @@ fn a_block_does_not_allocate_and_a_short_channel_is_an_error() {
 /// no gate: every block is exact, and no `effStopProcess`, `effStartProcess` or
 /// `effMainsChanged` crosses the seam while the Controller saves and loads
 /// state, switches programs, writes and reads parameters and reads the wiring.
-///
-/// Mutation (run): `Vst2Controller::load_state` clearing the core's
-/// processing flag (a gate) -> the Processor sends `effStartProcess` again ->
-/// the trace gains a start -> fails.
 #[test]
 fn the_controller_serves_the_surface_while_the_processor_renders() {
     let probe = Probe::acquire();
@@ -553,11 +516,6 @@ fn the_controller_serves_the_surface_while_the_processor_renders() {
 /// the audio thread, calls nothing and closes nothing. (The retirement queue this replaces
 /// existed because the Processor could be the last holder; it holds only an audio handle
 /// now, which shares the plugin's core and never owns it.)
-///
-/// Mutation (run): `RenderHandle::gated` ignoring the closed flag -> the render after the
-/// close calls the freed plugin and the silence assertion fails (the probe's `process`
-/// writes its tags). Mutation (run): `Drop for PluginInstance` not closing -> `close_count`
-/// stays 0 after the Controller's drop -> fails.
 #[test]
 fn a_processor_that_outlives_its_controller_renders_silence_and_destroys_nothing() {
     let probe = Probe::acquire();
@@ -589,10 +547,6 @@ fn a_processor_that_outlives_its_controller_renders_silence_and_destroys_nothing
 /// **No duplicate stop or suspend**, whichever way the plugin goes: a stop is
 /// idempotent, a rejoin after one adds no second, and a Controller dropped last
 /// stops and suspends once.
-///
-/// Mutation (run): `Vst2Processor::stop` sending `effStopProcess` without
-/// consulting the core's processing flag (the swap in `RenderHandle::stop_process`) -> two
-/// stops -> fails.
 #[test]
 fn stopping_twice_and_rejoining_sends_one_stop_and_one_suspend() {
     let probe = Probe::acquire();
@@ -619,9 +573,6 @@ fn stopping_twice_and_rejoining_sends_one_stop_and_one_suspend() {
 /// **The render mode needs no restart**: an offline activation answers
 /// `audioMasterGetCurrentProcessLevel` 4, a live change to realtime answers 2
 /// from the next block, and no suspend or resume crosses the seam for it.
-///
-/// Mutation (run): `Vst2Loaded::set_offline_render` not storing -> the level
-/// stays 4 -> fails.
 #[test]
 fn the_render_mode_changes_live_without_a_restart() {
     let probe = Probe::acquire();
@@ -646,10 +597,6 @@ fn the_render_mode_changes_live_without_a_restart() {
 /// last read stays the predecessor of the next block's, so a start after a
 /// reconfigure is still an edge (`kVstTransportChanged`) against the stop
 /// before it.
-///
-/// Mutation (run): `into_audio` building a fresh `TransportWriter` -> the
-/// block after the rejoin has no predecessor (and the plugin's reader is cut
-/// off from the new writer) -> no edge is reported -> fails.
 #[test]
 fn a_rejoin_keeps_the_transport_the_plugin_reads() {
     const TRANSPORT_CHANGED: i32 = 1;
@@ -734,10 +681,6 @@ impl Driven {
 /// **A plugin's `audioMasterIOChanged` is read again, not restarted**: the core
 /// asks for the new latency and layout and tells the host, and no
 /// `effMainsChanged` crosses the seam.
-///
-/// Mutation (run): `Loaded::RESTARTS` of `RestartRules::VST3` (a restart for I/O
-/// and latency) -> the plugin is deactivated and activated again -> the trace
-/// gains a suspend -> fails.
 #[test]
 fn an_io_changed_callback_is_read_again_without_a_restart() {
     let probe = Probe::acquire();
@@ -778,9 +721,6 @@ fn an_io_changed_callback_is_read_again_without_a_restart() {
 
 /// **A plugin's `audioMasterUpdateDisplay` raised during the activation is told
 /// to the host**: the parameter values and titles are read again.
-///
-/// Mutation (run): `Loaded::activate` dropping every request the activation
-/// raised -> nothing is told -> fails.
 #[test]
 fn a_display_update_raised_during_activation_reaches_the_host() {
     let probe = Probe::acquire();
@@ -808,9 +748,6 @@ fn a_display_update_raised_during_activation_reaches_the_host() {
 /// **A rate change is a rejoin and an activation, and the figure the plugin
 /// recomputes is read live afterwards**: the Controller's latency follows the
 /// plugin's, and the host is told.
-///
-/// Mutation (run): `Controller::latency` returning a constant instead of
-/// reading the plugin -> the recomputed figure is not seen -> fails.
 #[test]
 fn a_rate_change_that_moves_the_latency_is_told() {
     let probe = Probe::acquire();

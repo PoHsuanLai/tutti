@@ -20,12 +20,6 @@ use crate::{ProcessCapture, ThreadCapture, ThreadPoolCapture};
 
 /// The plugin's `#[no_mangle] unsafe extern "C" fn(u32)` switches: one
 /// signature, one name each.
-///
-/// Mutation (run): pointing `RenderMode` at `tutti_test_plugin_set_status_mode`
-/// in [`ClapSwitch::symbol`] sends the render mode into the status switch, so
-/// the plugin stays `Inert` and `tutti-plugin-server`'s
-/// `loaders::clap::tests::test_clap_process_f32_with_note` fails (restored
-/// after the run).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ClapSwitch {
     /// [`RenderMode`](crate::RenderMode).

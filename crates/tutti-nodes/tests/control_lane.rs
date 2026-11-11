@@ -2,7 +2,7 @@
 //! the play-clock grid and sent as segments, against analytic figures and
 //! invariants of the render (never another reference render).
 //!
-//! Each test names the mutations it was seen to fail under. The 200-lane
+//! The 200-lane
 //! serial == parallel and no-allocation gates are in
 //! `rt_no_alloc_modulation.rs`, beside the gated pool they share.
 
@@ -1043,12 +1043,9 @@ fn feed_into(ed: &mut Editor, feed: u64, lane: u64) {
 /// review: the eight stale slots were never freed, so source 9's
 /// events were dropped, uncounted, and the lane held 10.)
 ///
-/// Changed in doc 014 §12.4 (the mutation record only): a lane now frees
+/// Changed in doc 014 §12.4: a lane now frees
 /// every slot its new program does not read when it takes the program, so
-/// a free slot is the only fallback. Mutation (run): that freeing dropped
-/// (the `generation != self.seen.generation` sweep in `process`) → the
-/// eight stale slots stay, source 9 finds none, 10.0 from frame 640 →
-/// fails.
+/// a free slot is the only fallback.
 #[test]
 fn a_republished_program_reads_a_new_source() {
     let (mut ed, mut exec) = probes(128, &[2], (0.0, 96.0));

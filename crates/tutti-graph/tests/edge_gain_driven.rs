@@ -7,8 +7,6 @@
 //! the driver's steps give at each frame, written out in the test. Executor
 //! and reference are compared at every block (`Pair`), and the parallel
 //! executor against the serial one, bit for bit.
-//!
-//! Mutations are recorded on each test (each run, each failed, then restored).
 
 mod common;
 
@@ -227,11 +225,6 @@ fn plan_of(rig: &Rig) -> tutti_graph::Plan {
 /// A lane driving an edge's gain renders the weight the driver steps give at
 /// every frame: `((+0.0 + w[n] * 1.0) + 0.5)`, at a port and at an output
 /// channel, serial, parallel and reference. The other edge stays plain.
-///
-/// Mutations (each run, each failed): `SumLane::weight` returning
-/// `Weight::Static(to)` where it has frames -> the weight never moves; read
-/// the lane's events from slot 0 (`events.ev(0)`) in `sum_op` -> the lane
-/// never hears its source (every driven test fails).
 #[test]
 fn a_driven_lane_renders_the_analytic_weight() {
     for at in [Where::Port, Where::Output] {
@@ -248,9 +241,6 @@ fn a_driven_lane_renders_the_analytic_weight() {
 
 /// The driven value is clamped to the entry's range, frame by frame (the
 /// base is not: it reads before the first event).
-///
-/// Mutation (run, failed): `GainCell::store_range` and `GainCell::new` storing
-/// `ParamRange::UNBOUNDED` -> the steps pass through unclamped.
 #[test]
 fn a_driven_lane_is_clamped_to_its_range() {
     let mut rig = Rig::new(&[dc(1.0), driver(0)], &[1], Where::Output);
@@ -268,10 +258,6 @@ fn a_driven_lane_is_clamped_to_its_range() {
 /// (the param port's rule, one copy). One constant step, then a commit that
 /// disconnects the source: frame `j` after it is
 /// `base + (held - base) * (1 - (j + 1) / PARAM_DECLICK)`.
-///
-/// Mutations (each run, each failed): `(driven || state.busy())` -> `driven` in
-/// `SumLane::weighted` -> the weight jumps to the base; carry no drive state
-/// (`c.drive = None` after `SumLane::carry` in `rebuild`) -> likewise.
 #[test]
 fn a_source_that_goes_is_declicked_to_the_base() {
     let base = 0.75f32;
@@ -308,9 +294,6 @@ fn a_source_that_goes_is_declicked_to_the_base() {
 
 /// A driven lane's state survives a commit that keeps its edge: the held
 /// value does not fall back to the base.
-///
-/// Mutation (run, failed): `c.drive = None` after `SumLane::carry` in
-/// `rebuild` -> after the first switch the lane reads its base.
 #[test]
 fn a_driven_lane_survives_a_commit_that_keeps_its_edge() {
     let mut rig = Rig::new(&[dc(1.0), driver(0)], &[1], Where::Output);
@@ -343,10 +326,6 @@ fn a_driven_lane_survives_a_commit_that_keeps_its_edge() {
 /// arrives at 32; the audio gets a 32-frame ring (silent for the first 32
 /// frames), the lane none, and frame `n >= 32` is `w[n] * 1.0` with the step
 /// of its own frame.
-///
-/// Mutation (run, failed): drop `.chain(gain_sources)` from `driving_nodes` -> the
-/// sink does not wait for the lane: no audio ring, and the render starts at
-/// frame 0.
 #[test]
 fn a_late_lane_delays_the_audio_to_the_edge() {
     let mut rig = Rig::new(&[dc(1.0), driver(32)], &[1], Where::Port);
@@ -388,10 +367,6 @@ fn a_late_lane_delays_the_audio_to_the_edge() {
 /// a 48-frame event ring (`DelayKey::EdgeGain`) and its event stamped `f`
 /// lands on frame `f + 48`; until then the lane reads its base. At a port and
 /// at an output channel (where the output time is the sink's arrival).
-///
-/// Mutation (run, failed): `let by = Samples::ZERO` for the port-sink lane in
-/// `compile` (the lane's event is not delayed) -> the steps land 48 frames
-/// early and the ring is missing.
 #[test]
 fn an_early_lane_is_delayed_to_the_edge() {
     for at in [Where::Port, Where::Output] {
@@ -420,9 +395,6 @@ fn an_early_lane_is_delayed_to_the_edge() {
 /// A lane that arrives late at a **global output** raises the output time:
 /// the source's audio is delayed to it (an `Output` ring of 32), as the lane
 /// for a port raises a node's arrival.
-///
-/// Mutation (run, failed): `delays` chaining `std::iter::empty()` in place of
-/// `g.output_sources()` -> the output time is 0 and the audio is not delayed.
 #[test]
 fn a_late_lane_raises_the_output_time() {
     let mut rig = Rig::new(&[dc(1.0), driver(32)], &[1], Where::Output);
@@ -457,11 +429,6 @@ fn a_late_lane_raises_the_output_time() {
 /// `connect_edge_gain` on an edge that is not there, from a node that is not
 /// there, from an output port the node does not have, or from a node
 /// downstream of the sink, is refused by `validate` or `compile`.
-///
-/// Mutations (each run, each failed): skip the `GainWithoutEdge` push in `validate`
-/// -> case 1 validates; skip the `UnknownGainNode` push -> case 2
-/// validates; skip the port check in `compile` -> case 3 compiles; leave the
-/// `preds` push out of the gain edge in `compile` -> case 4 compiles.
 #[test]
 fn connect_edge_gain_refusals() {
     // 1. No such edge.
@@ -545,10 +512,6 @@ fn connect_edge_gain_refusals() {
 /// source was the one given and keeps the entry; a source is structural
 /// (a commit recompiles), a range is a control (`set_edge_gain_range`: no
 /// plan, and the cell a control lane reads moves with it).
-///
-/// Mutations (each run, each failed): `same_but_ranges` comparing no sources ->
-/// connecting a source sends no plan; mark a commit in
-/// `set_edge_gain_range` (`self.committed = None`) -> the plan `Arc` differs.
 #[test]
 fn a_source_is_structural_and_a_range_is_a_control() {
     let (mut ed, mut exec) = Editor::new(prepare(BLOCK));
@@ -612,10 +575,6 @@ fn a_source_is_structural_and_a_range_is_a_control() {
 /// A fork of the master carries a driven lane and its driver (the lane's
 /// node is a root of the fork), and its first block starts at the driven
 /// value.
-///
-/// Mutation (run, failed): `false &&` in front of the output-sink filter of
-/// the Master roots in `fork_gather` -> the fork does not build
-/// (`UnknownGainNode`).
 #[test]
 fn a_fork_carries_the_driven_lane() {
     use tutti_graph::ForkTarget;

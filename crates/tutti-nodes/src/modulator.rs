@@ -85,10 +85,6 @@ mod tests {
     /// A negative `dphase` runs the modulator backwards: each sample reads
     /// the shape at its wrapped phase, the end of the cycle once the position
     /// passes zero (a `fract` wrap keeps the sign and reads off the front).
-    ///
-    /// Mutation (run): `Wave::raw_at`'s phase taken as `cycles.fract()`
-    /// instead of `cycles - cycles.floor()` → the second sample reads phase
-    /// -0.15 → fails.
     #[test]
     fn fill_runs_backwards_through_the_cycles_end() {
         let saw = shape(LfoShape::Sawtooth);

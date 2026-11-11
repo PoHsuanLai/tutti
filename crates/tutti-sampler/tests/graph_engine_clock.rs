@@ -14,15 +14,6 @@
 //! itself at 64-frame device blocks: a voice reads its block in 64-frame
 //! pieces from the block's start, so a device block that is a multiple of 64
 //! frames is the same pieces, and must render the same bits.
-//!
-//! Mutations (run):
-//! - `place` gating only a range's first frame (the per-call gate) → the
-//!   locate and the loop wrap land on their piece, not their frame → both
-//!   fail;
-//! - the engine publishing its playhead in the walk, before the render
-//!   (`TransportClock::advance` writing back) → every block reads its own
-//!   end: the voice runs a block ahead of the tone from frame 0 → every test
-//!   here fails.
 
 use std::sync::Arc;
 
@@ -300,11 +291,6 @@ fn a_crossfaded_voice_plays_on_through_the_fade() {
 /// loop's end, from its first frame's beat.) Over the 240 frames after the
 /// wrap the loop's start fades in under the tone that played on past the
 /// loop's end, at equal power; from then on it is the loop alone.
-///
-/// Mutation (run): `Runs` not cutting a run at a wrap (`wrap_offset`
-/// answering `None`) → the block plays on past the loop's end → fails.
-/// Mutation (run): no crossfade at the wrap (`Wrap::new` answering `None`)
-/// → the frames after the wrap are the loop's start alone → fails.
 #[test]
 fn a_loop_wrap_plays_the_tone_a_loop_back_from_its_frame() {
     let blocks = 60_000 / 512;
@@ -349,9 +335,6 @@ fn a_loop_wrap_plays_the_tone_a_loop_back_from_its_frame() {
 /// its frame from it. The engine cuts the transport on the locate's frame
 /// (a change in the block's `Env`), and the voice reads it there, not at the
 /// first frame of its 64-frame piece (53 frames early).
-///
-/// Mutation (run): `Runs` ignoring `Env::changes` → the voice plays the tone
-/// on past the locate → fails.
 #[test]
 fn a_scheduled_locate_lands_on_its_frame() {
     let at = 10_037;

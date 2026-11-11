@@ -742,11 +742,6 @@ fn table(alloc: &VoiceAllocator) -> Vec<(VoiceId, u8, bool)> {
 ///   the most recent held key;
 /// - (g) `NoSteal` at a full allocator drops the note and changes nothing;
 /// - (b) after every key and pedal is let go, nothing is gated.
-///
-/// Mutations (run), each seen to fail: `<` to `<=` in the core's `start_poly`
-/// (a); `Steal::Never` read as `By(Oldest)` (g); `total_cmp(..).is_lt()` to
-/// `is_gt()` for the quietest (e); the core's mono return skipped (f); the
-/// pedal-up not releasing (b); `unmap` removed from the `Release` arm (d).
 #[test]
 fn random_streams_keep_their_invariants() {
     use AllocationStrategy as S;
@@ -1007,9 +1002,6 @@ fn expected_victim(
 
 /// A voice that ended on its own (its envelope or sample ran out) is not
 /// returned to: the key left held starts a fresh voice (a `Gate::Start`).
-///
-/// Mutation (run): the core not reading the voices on a note-off leaves the
-/// slot idle, the gate retargeting a voice that is gone.
 #[test]
 fn a_return_after_the_voice_ended_starts_a_fresh_one() {
     for mode in [VoiceMode::Mono, VoiceMode::Legato] {
@@ -1050,9 +1042,6 @@ fn a_return_after_the_voice_ended_starts_a_fresh_one() {
 /// A velocity reaches the note logic as the nearest 16-bit word, not the one
 /// below: 0.5 is 32767.5 words, which rounds to 32768 (M2-104's centre word).
 /// A mono return to a held key plays that word back, so it is observable.
-///
-/// Mutation (run, seen to fail): `allocate` truncating (`(v * 65535.0) as u16`)
-/// gives 32767 and the returned velocity is 32767 / 65535.
 #[test]
 fn a_velocity_is_quantised_to_the_nearest_word() {
     let mut alloc = VoiceAllocator::new(VoiceAllocatorConfig {

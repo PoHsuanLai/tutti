@@ -774,8 +774,7 @@ mod tests {
     }
 
     /// The real edge: `prune_missing` stats each row's path and removes only
-    /// the absent one. Mutation: drop the `.filter(|(path, _)| FileFacts::read(..).exists)`
-    /// so every row counts as present (nothing is pruned).
+    /// the absent one.
     #[test]
     fn prune_missing_removes_only_rows_whose_file_is_gone() {
         let dir = tempfile::TempDir::new().unwrap();
@@ -805,7 +804,6 @@ mod tests {
 
     /// A crash recovered through the catalog is on disk before the pedal is
     /// gone, and a fresh `load` sees it. The pedal sits beside the database.
-    /// Mutation: have `recover_crash` pass a `save` that does nothing.
     #[cfg(feature = "json")]
     #[test]
     fn a_recovered_crash_is_saved_and_survives_a_restart() {
@@ -824,8 +822,7 @@ mod tests {
     }
 
     /// A catalog with a saver of its own gets the blacklist before the pedal
-    /// goes, and the pedal goes after. Mutation: remove the pedal without
-    /// calling the saver (the `write_through` closure in `recover_crash`).
+    /// goes, and the pedal goes after.
     #[test]
     fn a_saver_receives_the_recovered_blacklist_before_the_pedal_goes() {
         let dir = tempfile::TempDir::new().unwrap();
@@ -851,8 +848,7 @@ mod tests {
     }
 
     /// A catalog with no store cannot have saved the blacklist, so the pedal
-    /// stays armed and the blacklist is in memory only. Mutation: make
-    /// `write_through` return `Ok(())` for no saver.
+    /// stays armed and the blacklist is in memory only.
     #[cfg(not(feature = "json"))]
     #[test]
     fn a_catalog_with_no_store_keeps_the_pedal_armed() {
@@ -876,7 +872,7 @@ mod tests {
     }
 
     /// An alias of a blacklisted plugin is refused like the plugin itself: the
-    /// catalog keys by canonical path. Mutation: drop `key` from `blacklist`.
+    /// catalog keys by canonical path.
     #[cfg(unix)]
     #[test]
     fn a_blacklist_set_through_an_alias_holds_for_the_real_path() {
@@ -900,7 +896,6 @@ mod tests {
     /// The save after a rescan is off the owner's thread: `poll_rescan` reports
     /// `Done` while the saver is still running, and the next `save` waits for
     /// it, and dropping the catalog waits for it.
-    /// Mutation: call the saver inline in `save_in_background`.
     #[test]
     fn the_save_after_a_rescan_does_not_block_the_owner() {
         let dir = tempfile::TempDir::new().unwrap();
@@ -939,7 +934,6 @@ mod tests {
 
     /// `remove` and `unblacklist` through an alias reach the row of a file that
     /// is gone: the key resolves the parent and keeps the name.
-    /// Mutation: make `key` return the path as given.
     #[cfg(unix)]
     #[test]
     fn remove_through_an_alias_reaches_a_deleted_file() {
@@ -966,8 +960,6 @@ mod tests {
 
     /// A plugin the user unblacklists, or removes, is not put back by the next
     /// recovery from an entry a failed save kept in the sentinel.
-    /// Mutation: skip `forget_in_pedal` in `unblacklist` (the first assert), or
-    /// in `remove` (the second).
     #[test]
     fn unblacklist_and_remove_drop_the_retained_sentinel_entry() {
         let dir = tempfile::TempDir::new().unwrap();
@@ -997,8 +989,6 @@ mod tests {
     /// dir is: a sentinel entry, a blacklist, a lookup and an unblacklist all
     /// name the file by the link path and meet at the canonical key. Linux has
     /// no such temp dir, so the link is made here.
-    /// Mutation: key `Plugins::blacklist` by the raw path; or drop the
-    /// `canonical_path` map in `Pedal::recover`.
     #[cfg(unix)]
     #[test]
     fn a_catalog_under_a_symlinked_root_agrees_with_itself() {

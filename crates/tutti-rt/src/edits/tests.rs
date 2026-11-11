@@ -2,10 +2,6 @@ use super::*;
 
 /// **The ring holds exactly `capacity` values**: the next push is refused and
 /// counted, and nothing already queued is overwritten.
-///
-/// Mutation (run): the full check `head - tail >= capacity` as `>` -> the
-/// third push of a two-slot ring is accepted over the first value, and the
-/// test fails at the `Err(RingFull)` assertion.
 #[test]
 fn a_full_ring_refuses_and_keeps_what_it_holds() {
     let (mut writer, mut reader) = edit_ring::<[u32; 2]>(2);
@@ -23,10 +19,6 @@ fn a_full_ring_refuses_and_keeps_what_it_holds() {
 /// **Values come out in order and whole across many laps**, for a value of
 /// two and a half words (the partial last word is padded on the way in and
 /// trimmed on the way out) and for one smaller than a word.
-///
-/// Mutation (run): the slot index `count % capacity` as
-/// `count % (capacity + 1)` -> a lap reads a slot the writer has not filled
-/// for that count, and the test fails on an out-of-order value.
 #[test]
 fn values_wrap_around_in_order_and_whole() {
     let (mut writer, mut reader) = edit_ring::<[u32; 5]>(3);
@@ -52,10 +44,6 @@ fn values_wrap_around_in_order_and_whole() {
 }
 
 /// **A ring needs room for one value.**
-///
-/// Mutation (run): the `capacity > 0` assert removed -> the constructor
-/// returns a ring that refuses everything, nothing panics, and the test
-/// fails.
 #[test]
 #[should_panic(expected = "an edit ring holds at least one value")]
 fn a_ring_of_no_room_is_refused() {
@@ -65,11 +53,6 @@ fn a_ring_of_no_room_is_refused() {
 /// **A producer thread and a consumer thread hand every value over once, in
 /// order**, through the slot accesses that miri checks for aliasing and
 /// data races.
-///
-/// Mutation: the writer's `Release` store of `head` as `Relaxed` should make
-/// miri report a data race on a slot word; not run here (no nightly), CI's
-/// miri job is the first run. The loom model in `tests/edit_ring_loom.rs`
-/// holds the same mutation.
 #[test]
 fn two_threads_hand_over_every_value_in_order() {
     let count: u64 = if cfg!(miri) { 64 } else { 20_000 };

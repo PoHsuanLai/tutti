@@ -309,10 +309,6 @@ mod tests {
     /// is what makes the rule tight rather than merely safe: a `cola_overlap`
     /// that returned 16 for everything would pass the first assertion and
     /// needlessly refuse grids that reconstruct perfectly well.
-    ///
-    /// Mutation check: drop the `next_power_of_two` and Blackman reports 5,
-    /// which is not a ratio a grid can express; return `4` for everything and
-    /// Blackman fails the flatness half at 2.1% ripple.
     #[test]
     fn the_cola_rule_is_tight() {
         for w in ALL {
@@ -342,10 +338,6 @@ mod tests {
     /// Two sizes, because the claim is also that it does not depend on `n` —
     /// which is the entire justification for it being a closed form that takes
     /// no length.
-    ///
-    /// Mutation check: return `terms[terms.len() - 1]` and every multi-term
-    /// window fails; return a constant `0.5` and Hamming, Blackman and
-    /// rectangular all fail.
     #[test]
     fn coherent_gain_is_the_measured_mean_at_any_size() {
         for w in ALL {
@@ -415,9 +407,6 @@ mod tests {
 
     /// `centred` is `at` shifted half a period, in `f64`: the same window,
     /// peak at 0, zero at `±0.5` for the zero-ended ones.
-    ///
-    /// Mutation (run): dropping the `k as f64 *` from the phase (every term
-    /// at the fundamental) fails the agreement for Blackman.
     #[test]
     fn centred_is_the_periodic_window_shifted_half_a_period() {
         for w in [

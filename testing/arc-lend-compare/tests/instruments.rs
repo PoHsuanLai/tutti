@@ -23,8 +23,6 @@ use common::Step;
 #[global_allocator]
 static ALLOC: CountingAlloc = CountingAlloc;
 
-/// Mutation: delete the `COUNTING.with(|c| c.set(true))` in `begin_counting`.
-/// No thread is then ever counted, and both counts here read 0.
 #[test]
 #[cfg_attr(miri, ignore = "threads; the instrument is not unsafe-heavy")]
 fn a_free_on_a_counting_thread_is_counted() {
@@ -41,10 +39,6 @@ fn a_free_on_a_counting_thread_is_counted() {
 
 /// Another thread's allocations are not this thread's: the counters are per
 /// thread.
-///
-/// Mutation: make the counters process-wide (`static ALLOCS: AtomicU64` and
-/// `static FREES: AtomicU64`, bumped whenever any thread is counting). The
-/// quiet thread then reports the busy thread's thousand allocations.
 #[test]
 #[cfg_attr(miri, ignore = "threads; the instrument is not unsafe-heavy")]
 fn another_threads_allocations_are_not_counted() {
@@ -71,8 +65,6 @@ fn another_threads_allocations_are_not_counted() {
     assert_eq!(counts.frees, 0, "{counts:?}");
 }
 
-/// Mutation: drop the `bump(&PAYLOAD_DROPS)` from `Payload::drop`.
-/// `payload_drops` then reads 0.
 #[test]
 #[cfg_attr(miri, ignore = "threads; the instrument is not unsafe-heavy")]
 fn a_payload_counts_itself_and_its_drop() {
@@ -97,10 +89,6 @@ fn a_payload_counts_itself_and_its_drop() {
 /// `load()` guard; the writer `store`s, which pays the guard's debt with an
 /// owned count, and drops its own `Arc`; the reader's guard drop is then the
 /// last and frees the payload on the reader.
-///
-/// Mutation: delete the flag in `begin_counting` (as above): `frees` and
-/// `payload_drops` read 0 and this fails, which is the failure the
-/// benchmark's tables would otherwise hide.
 #[test]
 #[cfg_attr(miri, ignore = "threads; the instrument is not unsafe-heavy")]
 fn a_promoted_arc_swap_guard_frees_on_the_reader() {
@@ -134,11 +122,6 @@ fn a_promoted_arc_swap_guard_frees_on_the_reader() {
 
 /// The same handshake against arc-lend: the reader's loan drop frees nothing,
 /// and the old value waits for the publisher's next publish.
-///
-/// Mutation: make `Reader::drop` reclaim (`self.cell.reclaim()` after
-/// releasing the slot), as `arc-lend/tests/no_alloc.rs` records. The
-/// reader's drop then frees the retired payload on the reader, and `counts`
-/// reads a payload drop and its frees where it should read zeros.
 #[test]
 #[cfg_attr(miri, ignore = "threads; the instrument is not unsafe-heavy")]
 fn an_arc_lend_loan_frees_nothing_on_the_reader() {

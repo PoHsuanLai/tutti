@@ -1,6 +1,5 @@
 use super::*;
 
-/// *Mutation:* dropping the `x^9` term of the polynomial fails this.
 #[test]
 fn sine_matches_libm_over_a_cycle() {
     for i in 0..4096 {
@@ -14,8 +13,6 @@ fn sine_matches_libm_over_a_cycle() {
     }
 }
 
-/// *Mutation:* removing the argument clamp lets the approximant pass
-/// unity past `|x| = 4.97` and fails the overshoot check.
 #[test]
 fn tanh_is_close_to_libm_and_never_overshoots() {
     let mut worst = 0.0f32;
@@ -32,8 +29,6 @@ fn tanh_is_close_to_libm_and_never_overshoots() {
     assert!(worst < 3e-4, "worst tanh error {worst}");
 }
 
-/// *Mutation:* offsetting the float mapping by 0.1 (`- 2.9`) fails both
-/// the range and the mean check.
 #[test]
 fn white_noise_is_in_range_and_centred() {
     let mut state = u32x8::new(core::array::from_fn(|k| 0x9E37_79B9 ^ (k as u32 + 1)));
@@ -120,12 +115,6 @@ fn square(p: V, dt: V, inv: V) -> V {
 /// power back as inharmonic partials — an audible rasp. Measured margins:
 /// saw 15.8 dB, pulse 18.3 dB, triangle 15.1 dB (its naive aliasing is
 /// already low, since its harmonics fall at 12 dB/octave).
-///
-/// *Mutations, each run:* dropping the `poly_blep` term from `saw` fails
-/// the saw case (0 dB); dropping the falling-edge correction from `pulse`
-/// fails the pulse case; scaling the triangle's BLAMP by `8·dt` — the full
-/// slope change, the natural misreading of the residual's normalization —
-/// fails the triangle case at 2.3 dB.
 #[test]
 fn band_limited_oscillators_alias_far_less_than_naive() {
     type Osc = fn(V, V, V) -> V;
@@ -148,9 +137,6 @@ fn band_limited_oscillators_alias_far_less_than_naive() {
 
 /// The band-limited waveforms keep the level of the naive ones: the
 /// correction only touches the samples next to a corner or edge.
-///
-/// *Mutation:* flipping the sign of the residual in `saw` (`+ poly_blep`)
-/// doubles the edge instead of rounding it and fails here.
 #[test]
 fn band_limited_oscillators_keep_the_naive_level() {
     type Osc = fn(V, V, V) -> V;

@@ -7,11 +7,6 @@ fn diamond() -> TaskGraph {
 
 /// One participant runs every task once, in a topological order, block
 /// after block (`begin` re-arms the counters).
-///
-/// Mutation: drop the counter store in `begin` → the second block's
-/// counters start at 0 and wrap on the first decrement → nothing past
-/// task 0 is ever ready → the watchdog aborts the second block → fails
-/// (run: fails after 10 s).
 #[test]
 fn one_participant_runs_every_task_in_order() {
     let mut g = diamond();
@@ -44,13 +39,6 @@ fn one_participant_runs_every_task_in_order() {
 
 /// Several threads run every task exactly once, each after its
 /// predecessors, over many blocks of a wide graph.
-///
-/// Mutation: in `pop`, skip the `EMPTY` check → a reserved slot is taken
-/// before its store and `EMPTY` is run as a task → index out of bounds →
-/// fails (under contention; the loom model catches it deterministically).
-/// Mutation (run): drop the counter store in `begin` → the second block never
-/// readies a successor, the watchdog aborts it after 10 s, and the run
-/// assertion fails (it hung without the watchdog).
 #[test]
 fn threads_run_every_task_once() {
     use std::sync::atomic::AtomicU64;
@@ -129,11 +117,6 @@ fn threads_run_every_task_once() {
 /// while the caller is still inside a task: the caller never waits for a
 /// helper that has nothing to do (so never for one the OS descheduled
 /// while it yielded).
-///
-/// Mutation: make `SpinThenLeave::wait` return `true` past its budget
-/// (the helper never leaves) → the helper stays until the block is done, which
-/// waits on the caller's task, which waits on the helper → the
-/// `recv_timeout` fails (run: fails after 10 s).
 #[test]
 fn an_idle_helper_leaves_the_block() {
     use std::sync::mpsc;
@@ -179,11 +162,6 @@ fn an_idle_helper_leaves_the_block() {
 /// task 0 until it sees the caller's yield counted, so no timing is
 /// involved; the 10 s bound is only how a missing yield fails rather
 /// than hangs. Linux only, as the yield is.
-///
-/// Mutation: make `SpinThenYield::wait` spin on every wait (drop its
-/// yield branch) → no yield is counted → the helper gives up after 10 s
-/// and finishes the block → `saw_yield` is false → fails (run: fails
-/// after 10 s).
 #[test]
 #[cfg(any(target_os = "linux", target_os = "android"))]
 fn the_caller_yields_while_a_helper_holds_a_task() {
@@ -235,10 +213,6 @@ fn the_caller_yields_while_a_helper_holds_a_task() {
 /// it stays in the block while the caller holds task 0 for 50 ms, and
 /// leaves only once the block is done. (A helper descheduled for those
 /// 50 ms would pass this either way; it cannot fail spuriously.)
-///
-/// Mutation (run): build the helper's `SpinThenLeave` from
-/// `BlockWaits::DEFAULT` instead of `waits` → it leaves on its second
-/// clock read, with the block not done → fails.
 #[test]
 fn a_helper_spins_for_the_pools_budget() {
     use std::sync::mpsc;
@@ -277,10 +251,6 @@ fn a_helper_spins_for_the_pools_budget() {
 /// a budget of an hour and its clock stepping the default budget per
 /// read, it waits 50 ms on a helper holding task 0 without yielding.
 /// Linux only, as the yield is.
-///
-/// Mutation (run): build the caller's `SpinThenYield` from
-/// `BlockWaits::DEFAULT` instead of `waits` → it yields on its second
-/// clock read → fails.
 #[test]
 #[cfg(any(target_os = "linux", target_os = "android"))]
 fn the_caller_yields_after_the_pools_budget() {
@@ -320,9 +290,6 @@ fn the_caller_yields_after_the_pools_budget() {
 /// counter (slot `i % PROGRESS_SLOTS` for helper `i`), and the caller's
 /// own tasks touch no counter: what the waiting caller reads as
 /// progress, since `remaining` moves only for sinks.
-///
-/// Mutations (run): the helper's store dropped → fails (0, not 5); the
-/// slot taken as `0` whatever the helper → fails (slot 1 unmoved).
 #[test]
 fn a_helpers_every_task_moves_its_completion_counter() {
     let slot = |g: &TaskGraph, i: usize| g.progress[i].0.load(Ordering::Relaxed);
@@ -341,9 +308,6 @@ fn a_helpers_every_task_moves_its_completion_counter() {
 }
 
 /// An abort makes every participant leave with work pending.
-///
-/// Mutation: drop the `aborted` check in `work` → the participant keeps
-/// running the chain after the abort → fails.
 #[test]
 fn an_abort_ends_the_block() {
     let mut g = diamond();
@@ -363,9 +327,6 @@ fn an_abort_ends_the_block() {
 }
 
 /// A cyclic graph is refused: its tasks would wait on each other forever.
-///
-/// Mutation: drop the Kahn pass in `new` → built → the `should_panic`
-/// fails.
 #[test]
 #[should_panic(expected = "cycle")]
 fn a_cycle_is_refused() {
@@ -374,9 +335,6 @@ fn a_cycle_is_refused() {
 }
 
 /// A graph whose counts disagree with its rows is refused.
-///
-/// Mutation: drop the predecessor-count `assert_eq!` in `new` → built,
-/// and task 1 would never run → the `should_panic` fails.
 #[test]
 #[should_panic(expected = "disagree")]
 fn inconsistent_counts_are_refused() {
@@ -388,9 +346,6 @@ fn inconsistent_counts_are_refused() {
 /// successor, the helper finds nothing to take and leaves, and the block is
 /// short of tasks. A helper never leaves a healthy block here (the next task
 /// is always ready), so this takes milliseconds either way.
-///
-/// Mutation (run): drop the counter store in `begin` → the second block runs
-/// task 0 and the helper leaves with the other four undone → fails at once.
 #[test]
 fn begin_re_arms_the_counters_for_the_next_block() {
     let waits = BlockWaits {

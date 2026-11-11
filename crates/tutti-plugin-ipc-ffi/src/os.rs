@@ -166,9 +166,6 @@ mod tests {
     use super::*;
 
     /// This process exists; a PID far past `pid_max` does not.
-    ///
-    /// Mutation (run): return `true` unconditionally → the dead PID reads alive
-    /// → fails.
     #[test]
     fn process_exists_tells_a_live_pid_from_a_dead_one() {
         assert!(process_exists(std::process::id() as i32));
@@ -176,8 +173,6 @@ mod tests {
     }
 
     /// A pipe's read end is not readable until something is written to it.
-    ///
-    /// Mutation (run): return `n >= 0` → the empty pipe reads ready → fails.
     #[test]
     fn wait_readable_waits_for_data() {
         use std::io::Write;

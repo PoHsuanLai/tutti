@@ -118,8 +118,7 @@ fn rang(font: &std::sync::Arc<tutti_sf2::SoundFont>, longest: &Longest) -> (usiz
 /// Figures are printed with `--no-capture`: on TimGM6mb the notes ring 0.8 to
 /// 2.6 s against a declared 103.1 s (the font's longest zone, a non-looped
 /// sample, is silent long before its release). The tail is a loose bound here;
-/// the next test is the one that pins it near the longest release. Mutation
-/// (run): the tail left at 0 (no `with_tail`) fails every row.
+/// the next test is the one that pins it near the longest release.
 #[test]
 fn a_note_rings_out_within_the_declared_tail() {
     let font = timgm6mb();
@@ -170,10 +169,6 @@ fn a_note_rings_out_within_the_declared_tail() {
 /// part of it (the voice is dropped when its envelope is 60 dB down, at 0.6 of
 /// the release time), and never past the declared tail. Without the clamp the
 /// sum would be 1024 s and the note would outlast the render's cap.
-///
-/// Mutation (run): the clamp removed from `RegionPair::gs` leaves the note
-/// ringing past the cap and fails the upper assertion; the tail at a tenth of
-/// the longest release fails the tail one.
 #[test]
 fn the_longest_release_a_font_can_have_rings_out_within_the_tail() {
     let font = font(

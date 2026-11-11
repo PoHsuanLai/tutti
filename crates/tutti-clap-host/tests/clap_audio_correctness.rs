@@ -544,10 +544,6 @@ fn host_routing_is_stable_across_blocks() {
 /// so a host that stops processing after block 1 cannot pass by silence alone.
 /// A host that never calls `reset` then fails on the impulse arriving, not on a
 /// proxy for it.
-///
-/// Mutation (run): `do_process` skipping the plugin after block 0 -> the control
-/// fails. `ClapProcessor::reset` not calling `audio_side.reset()` -> the reset
-/// half fails.
 #[test]
 fn reset_clears_state_still_in_flight() {
     let session = ProbeSession::begin(LAYOUT_SYMMETRIC_STEREO, RENDER_LATENCY);
@@ -770,11 +766,6 @@ fn host_does_not_invent_a_preferred_note_dialect() {
 /// Notes go to the input note port in a dialect it takes: CLAP note events
 /// for a port that supports them, `clap_event_midi` for one that prefers MIDI,
 /// read at activation and again at every re-activation.
-///
-/// Mutations (run): `sends_midi_notes` returning `false` → the MIDI-preferring
-/// assertion fails; dropping `set_midi_notes` from `ClapLoaded::activate` → the
-/// first activation assertion fails; dropping it from `resize_scratch` → the
-/// re-activation assertions fail.
 #[test]
 fn notes_follow_the_input_note_ports_dialect() {
     use clap_sys::ext::note_ports::CLAP_NOTE_DIALECT_MIDI;
@@ -959,11 +950,6 @@ fn drive_midi_block(inst: &mut Active<f32>, midi: &[UmpAt]) {
 /// CLAP plugin as one `CLAP_EVENT_MIDI_SYSEX`**, `0xF0 … 0xF7`, read by the
 /// plugin through the pointer it was handed, in the block of its `END`; and a
 /// message left open by a later `START` never reaches it, counted.
-///
-/// Mutation (run): `InputEventList::add_midi` without the reassembler (every
-/// event through `ClapEvent::from_midi`) → the plugin receives no SysEx →
-/// fails; the assembler's `START` not dropping the open message → the two
-/// are spliced and delivered → fails.
 #[test]
 fn a_multi_packet_sysex_reaches_the_plugin_whole() {
     let session = ProbeSession::begin(LAYOUT_SYMMETRIC_STEREO, RENDER_INERT);
@@ -1003,12 +989,9 @@ fn a_multi_packet_sysex_reaches_the_plugin_whole() {
 /// whole. A re-activation builds a new Processor whose assembler starts empty,
 /// so the open message goes with the old one, and the count restarts.
 ///
-/// Mutation (run): `InputEventList::reset_sysex` a no-op → the packets after
-/// the reset complete the message → fails at the reset. The re-activation half
-/// has no mutation that can fail it: the new Processor's `AudioScratch` is
-/// always fresh and one list cannot be shared between Processors, so the
-/// open message cannot survive. That half pins the outcome (nothing completes,
-/// nothing is counted) and cannot catch a regression that is not expressible.
+/// The re-activation half pins the outcome (nothing completes, nothing is counted): the
+/// new Processor's `AudioScratch` is always fresh and one list cannot be shared between
+/// Processors, so the open message cannot survive.
 #[test]
 fn a_sysex_open_across_a_reset_is_dropped() {
     let session = ProbeSession::begin(LAYOUT_SYMMETRIC_STEREO, RENDER_INERT);

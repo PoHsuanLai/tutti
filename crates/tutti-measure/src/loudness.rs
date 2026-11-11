@@ -570,12 +570,6 @@ mod tests {
     /// completes exactly (the spliced carry ends empty), and 775 leaves
     /// tails cycling through 1..=5, so a carry that spans a chunk and keeps a
     /// remainder of its own is exercised too.
-    ///
-    /// Mutations (run):
-    /// - drop the carried tail (`partial_frame` never filled) → the streamed
-    ///   reading is about -12 LUFS instead of the -70 floor.
-    /// - `carry.drain(..consumed)` → `carry.clear()` (drop the spliced
-    ///   carry's own remainder) → fails at 775; 777 alone let it survive.
     #[test]
     fn a_ragged_chunk_carries_its_part_frame() {
         let layout = ChannelLayout::from(6u16);
@@ -818,12 +812,6 @@ mod tests {
 
     /// A -20 dBFS stereo 997 Hz sine reads -20.0 LUFS in both windows, and
     /// each reads the floor until exactly its own window of frames is in.
-    ///
-    /// Mutations (run):
-    /// - read momentary from `loudness_shortterm` -> fails at 0.4 s (the 3 s
-    ///   window holds 0.4 s of tone, 8.75 dB down).
-    /// - drop the `frames >= needed` gate -> fails the floor assertions.
-    /// - `window_frames(4)` -> `window_frames(3)` -> fails the 0.39 s floor.
     #[test]
     fn a_sine_reads_its_loudness_once_each_window_fills() {
         let want = stereo_lufs(0.1);
@@ -863,13 +851,6 @@ mod tests {
     /// `10 log10(1 + 9 min(t/0.4, 1))` and short-term along the same with
     /// `t/3`: the windows are linear in power, so the share of the window past
     /// the step is `t / window`. Each is settled at its window and not before.
-    ///
-    /// Mutations (run):
-    /// - momentary read as `loudness_window(500)` -> fails the momentary ramp.
-    /// - short-term read as `loudness_window(2000)` -> fails the short-term
-    ///   ramp.
-    /// - short-term read from `loudness_momentary()` -> fails the short-term
-    ///   ramp.
     #[test]
     fn a_ten_db_step_settles_after_each_window() {
         let rate = 48_000.0;
@@ -914,12 +895,6 @@ mod tests {
     /// Silence reads the floor in both windows and a floor peak; so does a
     /// window that signal has left, once the K-weighting's ring-out is under
     /// the floor.
-    ///
-    /// Mutations (run):
-    /// - `.max(WindowedReading::LOUDNESS_FLOOR.get())` -> `.max(-200.0)` -> fails
-    ///   the left-behind case.
-    /// - the fallback arm `Db(f32::NEG_INFINITY)` instead of the floor -> fails
-    ///   the silence case.
     #[test]
     fn silence_reads_the_floor() {
         let cfg = windowed_cfg(48_000.0);
@@ -941,12 +916,6 @@ mod tests {
     /// The readings do not depend on how the stream is cut: 64-frame,
     /// 4096-frame and ragged (777-sample, so mid-frame) chunks agree bit for
     /// bit wherever they have fed the same frames.
-    ///
-    /// Mutations (run):
-    /// - drop the carried tail (`partial_frame.extend_from_slice(&rest[whole..])`)
-    ///   -> fails the 777-sample case.
-    /// - feed `&rest[..whole - whole.min(stride)]` -> fails the 64-frame
-    ///   comparison.
     #[test]
     fn readings_do_not_depend_on_the_chunking() {
         let cfg = windowed_cfg(48_000.0);
@@ -988,9 +957,6 @@ mod tests {
 
     /// A part frame is carried onto the right channel: a 5.1 signal on the LFE
     /// alone, which R128 does not weight, reads the floor however it is cut.
-    ///
-    /// Mutations (run):
-    /// - drop the carried tail -> reads about -12 LUFS at 775 and 777.
     #[test]
     fn a_ragged_chunk_keeps_channels_in_place() {
         let layout = ChannelLayout::from(6u16);
@@ -1017,11 +983,6 @@ mod tests {
     }
 
     /// `reset` returns the meter to its first state.
-    ///
-    /// Mutations (run):
-    /// - `reset` without `self.meter.reset()` -> fails only the true-peak
-    ///   assertion (the silence fed after the reset clears the windows).
-    /// - without `self.frames = 0` -> fails only the `frames_seen` assertion.
     #[test]
     fn reset_reads_like_a_fresh_meter() {
         let cfg = windowed_cfg(48_000.0);
@@ -1051,9 +1012,6 @@ mod tests {
     /// `reset` also drops a part frame carried from an odd-length chunk, so the
     /// next chunk starts on channel 0: a 5.1 signal on the LFE alone, which R128
     /// does not weight, would otherwise land on a weighted channel.
-    ///
-    /// Mutation (run): drop `self.partial_frame.clear()` from `reset` -> reads
-    /// about -12 LUFS instead of the floor.
     #[test]
     fn reset_drops_a_carried_part_frame() {
         let layout = ChannelLayout::from(6u16);
@@ -1079,9 +1037,6 @@ mod tests {
     /// The true peak is the loudest channel's, wherever it is: a tone of
     /// amplitude 0.5 on the right alone peaks at `20 log10(0.5)` dBTP (4x
     /// oversampling adds under 0.3 dB), and on the left alone just the same.
-    ///
-    /// Mutation (run): read `true_peak(0)` only in `step_windowed_loudness` ->
-    /// the right-only case reads the floor.
     #[test]
     fn the_true_peak_is_the_loudest_channels() {
         let cfg = windowed_cfg(48_000.0);
@@ -1110,15 +1065,6 @@ mod tests {
 
     /// Every setting is checked, NaN and infinity included, and a bad chunk is
     /// refused without touching the meter.
-    ///
-    /// Mutations (run):
-    /// - rate range `8_000.0..=192_000.0` -> `0.0..=f64::INFINITY` -> fails
-    ///   the rate cases.
-    /// - drop the `is_finite` scan in `step_windowed_loudness` -> fails the
-    ///   NaN/infinity cases.
-    /// - the width check as `if false` -> fails the width case.
-    /// - the config check as `if false` -> fails the other-config case.
-    /// - the channel-count check as `if false` -> fails the channel cases.
     #[test]
     fn bad_settings_and_input_are_errors() {
         for rate in [

@@ -6,33 +6,6 @@
 //! same events, including SysEx and meta; running status and event spelling may
 //! differ, so equality is on the model and on the independent decoder's
 //! reading of the bytes, never on the bytes.
-//!
-//! Mutations run (each planted, seen to fail, restored), against `smf/read.rs`,
-//! `smf/write.rs` and `file.rs` unless a file is named (the wire's own are in
-//! `smf_wire.rs`):
-//!
-//! | mutation | fails |
-//! |---|---|
-//! | `read.rs` `event` reads an `F7` escape as a `SysEx` | `every_event_kind_survives_a_read_and_a_write` |
-//! | `read.rs` `track` ignores the final End of Track (`if is_end(e)` made false) | `the_end_of_a_track_is_kept`, `every_event_kind_survives_a_read_and_a_write` |
-//! | `write.rs` `append` writes each delta from tick 0 instead of the previous event | `every_event_kind_survives_a_read_and_a_write`, `a_zero_tempo_is_not_a_tempo_and_an_absurd_one_is_read_as_written` |
-//! | `read.rs` `read` without the fewer-tracks-than-declared check | `a_file_missing_a_track_is_truncated`, `no_prefix_of_a_valid_file_is_accepted` |
-//! | `read.rs` `steps` swallows an event error (`map_while` keeps only the `Ok`s) | `a_track_that_ends_mid_event_is_a_parse_error` |
-//! | `read.rs` `division` accepts an SMPTE division as ticks | `smpte_division_is_refused` |
-//! | `read.rs` `division` accepts zero | `a_zero_division_is_refused` |
-//! | `tempo_map` drops the `default` point at tick 0 | `a_file_with_no_tempo_plays_at_120` (and every file with no tempo at tick 0: `TempoError::FirstNotAtZero`) |
-//! | `tempo_map` keeps the first of two tempos on one tick | `the_later_of_two_tempos_on_one_tick_governs` |
-//! | `tempo_map` without the sort by tick | `the_tempo_map_pools_every_track` |
-//! | `Meta::bpm` reads a zero tempo as 1 BPM | `a_zero_tempo_is_not_a_tempo_and_an_absurd_one_is_read_as_written` |
-//! | `events` skips the stable sort | `merged_events_are_in_time_order_ties_in_track_order` |
-//! | `events` merges a format 2 file | `format_2_keeps_its_sequences_apart` |
-//! | `tempo_maps` of a format 2 file built from all tracks | `format_2_keeps_its_sequences_apart` |
-//! | `Track::notes` pops from the front (FIFO) | `overlapping_same_key_notes_pair_last_on_first_off` |
-//! | `Track::notes` drops the channel from the key | `a_note_off_does_not_close_another_channels_note` |
-//! | (the velocity-0 Note On is `Ump::key_event`'s rule, in `tutti-ump`: no mutation here reaches it) | `a_velocity_zero_note_on_closes_the_note` |
-//! | `build` skips the order check | `events_out_of_order_are_refused` |
-//! | `build` skips the format 0 track count | `a_format_0_file_has_one_track` |
-//! | `Meta::tempo` without the clamp to 1 | `a_tempo_above_the_wire_range_writes_the_fastest_quarter` |
 
 mod support;
 
@@ -247,8 +220,6 @@ fn every_event_kind_survives_a_read_and_a_write() {
 }
 
 /// The track's length is its End of Track, which may sit after the last event.
-///
-/// Mutation: see the table (`end` = last event tick).
 #[test]
 fn the_end_of_a_track_is_kept() {
     // `build_smf` appends an End of Track at delta 0; this one is a bar late.

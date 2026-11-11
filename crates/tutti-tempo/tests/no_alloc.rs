@@ -1,8 +1,5 @@
 //! The audio thread's calls do not allocate: every lookup, the hinted ones and
 //! the cell queries, on a map with step and both ramp shapes.
-//!
-//! Mutation (run): `seconds_at_with` boxes a value (`black_box(Box::new(b))`); the gate aborts
-//! with "memory allocation of 8 bytes failed".
 
 mod common;
 

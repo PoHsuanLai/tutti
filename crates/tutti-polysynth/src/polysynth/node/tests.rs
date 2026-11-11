@@ -3,10 +3,6 @@ use crate::{PolySynth, SynthConfig};
 /// **The ports and their bases.** A synth declares its volume, and with
 /// a unison engine its detune and spread too ([`SYNTH_PARAMS`](super::SYNTH_PARAMS)),
 /// each port's base its cell.
-///
-/// Mutation (run): `param_base(2)` answering the detune cell →
-/// fails. Mutation (run): the shape declaring all three without
-/// unison → fails.
 #[test]
 fn the_shape_declares_volume_and_the_unison_params() {
     use tutti_graph::Node;

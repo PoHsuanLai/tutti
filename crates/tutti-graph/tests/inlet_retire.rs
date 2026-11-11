@@ -32,11 +32,6 @@ fn outputs(ed: &mut Editor) {
 /// Replacing an inlet through a cut and through a crossfade, then removing
 /// it, drops each ring on the control side: no block drops a tap reader, which
 /// would panic in a debug build.
-///
-/// Mutation (run, recorded here): the control below, `a_reader_dropped_in_a_block_panics`,
-/// is the same rig with a node that drops its reader in `process`; it panics,
-/// so this rig's scope is armed, and a retirement path that dropped the old unit
-/// in `apply_pending` or a block would fail this test the same way.
 #[test]
 fn replacing_and_removing_an_inlet_drops_it_on_the_control_side() {
     let (mut ed, mut exec) = Editor::new(Prepare::new(SampleRate(48_000.0), Samples(64)));

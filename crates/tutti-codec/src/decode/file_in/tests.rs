@@ -183,9 +183,6 @@ fn drain(dec: &mut FileIn) -> usize {
 /// the evidence is the STREAMINFO frame count. The frames before the cut
 /// are kept, the cause is readable, the fallible read reports it after
 /// them and keeps reporting it, and a seek clears it.
-///
-/// Mutation (run): `exact_length` always `false` fails the `error()`
-/// assertion.
 #[test]
 fn a_truncated_flac_is_a_fault_not_a_clean_end() {
     let path = truncated_asset("stereo.flac", 0.9);
@@ -217,8 +214,6 @@ fn a_truncated_flac_is_a_fault_not_a_clean_end() {
 /// claims the full data length) and a whole Ogg (Vorbis priming) all read
 /// to their end clean. Ogg cannot be trimmed: the demuxer needs its last
 /// page to open.
-///
-/// Mutation (run): `exact_length` always `true` fails the WAV case.
 #[test]
 fn a_file_without_an_exact_count_reads_clean() {
     let mut padded = std::fs::read(asset("stereo.mp3")).expect("fixture");
@@ -285,10 +280,6 @@ impl symphonia::core::formats::FormatReader for FailAfter {
 /// A decode error in mid-stream keeps the frames before it: the first
 /// read returns them as `Ok`, the next returns the cause, `pull`
 /// returns the same frames then `Failed`, and `error()` holds the cause.
-///
-/// Mutation (run): returning `Err` at once when the fill is cut short
-/// (dropping `filled`, as `unwrap_or(0)` did) fails the frame-count
-/// assertion.
 #[test]
 fn a_mid_stream_decode_error_keeps_the_frames_before_it() {
     let path = write_test_wav(20_000, "inject");
@@ -346,9 +337,6 @@ fn a_mid_stream_decode_error_keeps_the_frames_before_it() {
 /// `Failed`, and a whole file ends with `Ended`. (The pump over the cut file
 /// finishes as `Failed` rather than `Ended`: `tutti-session`'s
 /// `tests/file_in_pump.rs`.)
-///
-/// Mutation (run): answering `Ended` where `FileIn::pull` answers `Failed` for
-/// a fault fails the first verdict assertion.
 #[test]
 fn a_decode_fault_reads_as_failed_through_the_trait() {
     fn frames_then_stop<I: Source>(src: &mut I) -> (usize, Stop) {
@@ -383,8 +371,6 @@ fn a_decode_fault_reads_as_failed_through_the_trait() {
 }
 
 /// A finished file has no error to report.
-///
-/// Mutation (run): `truncation` returning `true` fails this.
 #[test]
 fn a_clean_end_of_file_has_no_error() {
     let path = write_test_wav(3_000, "clean_end");

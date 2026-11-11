@@ -436,11 +436,6 @@ mod tests {
     /// and HB2 waited for HA, and the critical path doubled. Siblings only:
     /// {a1, a2} and {b1, b2} are separate classes, and HB1/HB2 never wait
     /// on HA.
-    ///
-    /// Mutation: swap `pack` for the first version's packing by level →
-    /// {a1, a2, b1, b2} become one task, HB1 depends on HA's task → fails.
-    /// (Dropping the `c <= best` check alone does not fail here — the
-    /// sibling classes are already right — but fails the proptest below.)
     #[test]
     fn packing_never_serialises_independent_heavy_work() {
         // 0 the input; 1 HA; 2 X; 3 a1; 4 a2; 5 b1; 6 b2; 7 HB1; 8 HB2;
@@ -478,8 +473,6 @@ mod tests {
 
     /// A fan-out of cheap siblings packs, and that shortens the critical
     /// path (the hand-over queue).
-    ///
-    /// Mutation: skip pass 2 → sixteen tasks stay → fails.
     #[test]
     fn a_cheap_fan_out_packs() {
         let mut edges: Vec<(u32, u32)> = (1..=16).map(|g| (0, g)).collect();
@@ -497,9 +490,6 @@ mod tests {
     /// siblings priced heavy: after a pack, its members' outputs are
     /// siblings of one another, and the next round packs them and fuses
     /// them into the pack.
-    ///
-    /// Mutation (run): one round of passes 2 and 3 instead of the loop in
-    /// `coarsen` → 15 tasks, as many as heavy (6 with the loop) → fails.
     #[test]
     fn packed_siblings_fuse_with_their_private_outputs() {
         // 0 the input; 1..=14 the nodes; 15 + 2k and 16 + 2k node k's
@@ -526,8 +516,6 @@ mod tests {
         /// On random DAGs of mixed costs the coarsened plan's critical path
         /// is never longer than chain fusion alone gives, and every task
         /// is a partition piece whose ops are ascending.
-        ///
-        /// Mutation: drop the `c <= best` check in `pack` → fails.
         #[test]
         fn coarsening_never_lengthens_the_critical_path(
             n in 2usize..40,

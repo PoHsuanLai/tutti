@@ -682,12 +682,6 @@ mod tests {
     /// The bridge's own pass allocates when it has something to do (the core
     /// copies its state and queues the effects), as a CLAP pass does; what is
     /// gated is the part that runs when the plugin asked for nothing.
-    ///
-    /// Mutations (run): `take_requests` collecting the requests into a fresh
-    /// `Vec` aborts inside the first gate; dropping the `discard_notifications`
-    /// call from the gated closure fails the "queue is empty" assertion; making
-    /// `RestartFlags::raise_into` raise nothing for `kParamValuesChanged` fails
-    /// the `RescanParams(Values)` assertion.
     #[test]
     fn the_request_reads_do_not_allocate_with_edits_pending() {
         use tutti_vst3_host::host::conformance::{plugin_perform_edit, plugin_restart_component};
@@ -760,9 +754,6 @@ mod tests {
     /// change** and reaches the next poll, with no `restartComponent` from the
     /// plugin. The figure was read inside the host crate and dropped, so PDC
     /// kept the old rate's.
-    ///
-    /// Mutation (run): delete the `self.events.push(AsyncEvent::LatencyChanged
-    /// { samples })` from `absorb` → the poll carries no latency → fails.
     #[test]
     fn a_latency_that_follows_the_rate_is_reread_after_a_rate_change() {
         let _lock = crate::test_utils::plugin_load_lock();
@@ -797,10 +788,6 @@ mod tests {
     /// **`kPrefetchableSupportChanged` runs the deactivate and activate the
     /// header asks for.** The flag was decoded and dropped. The probe counts its
     /// own activations, which is what the host cannot see.
-    ///
-    /// Mutation (run): `RestartFlags::raise_into` raising nothing for
-    /// `prefetchable_support_changed` → the plugin is not activated again →
-    /// fails.
     #[test]
     fn a_prefetchable_support_change_restarts_the_plugin() {
         // `RestartFlags_::kPrefetchableSupportChanged`.
@@ -838,9 +825,6 @@ mod tests {
     /// **`kParamIDMappingChanged` reaches the client as a parameter-list
     /// change**, so it re-pulls the ids; it was decoded and dropped, and every
     /// lane that named a remapped id detached.
-    ///
-    /// Mutation (run): `RestartFlags::raise_into` not raising the rescan for
-    /// `param_id_mapping_changed` → fails.
     #[test]
     fn a_param_id_remap_is_reported_as_a_changed_list() {
         // `RestartFlags_::kParamIDMappingChanged`.
@@ -869,10 +853,6 @@ mod tests {
     /// accepted**, and the session keeps running: the error says it is running
     /// there, the plugin is active and has the layout it had, and the next rate
     /// it takes is taken.
-    ///
-    /// Mutation (run): `reconfigure` not activating again at the previous
-    /// `Prepare` (the `Activate(previous)` drive removed) → the plugin is left
-    /// loaded and silent → the `is_active` assertion fails.
     #[test]
     fn a_refused_rate_is_rolled_back_to_the_previous_one() {
         let _lock = crate::test_utils::plugin_load_lock();
@@ -918,10 +898,6 @@ mod tests {
     /// instance runs on at the configuration it has, the plugin sees no second
     /// activation, the host is told nothing, and the error says where the plugin
     /// runs.
-    ///
-    /// Mutation (run): `valid_rate` in `tutti-plugin-types` accepting every rate
-    /// -> the zero rate reaches the reconfigure -> the `expect_err` fails (or the
-    /// activation count moves).
     #[test]
     fn a_rate_that_is_no_rate_is_refused_before_the_plugin_is_touched() {
         let _lock = crate::test_utils::plugin_load_lock();
@@ -963,9 +939,6 @@ mod tests {
     /// **A load at no rate or no block is refused** at the activation stage:
     /// zero, negative and non-finite rates, and a block of no frames. A real load
     /// afterwards activates once.
-    ///
-    /// Mutation (run): `valid_rate` accepting every rate, and `MaxBlock::new`
-    /// accepting zero, each -> the matching case loads -> fails.
     #[test]
     fn a_load_at_no_rate_or_no_block_is_refused() {
         let _lock = crate::test_utils::plugin_load_lock();
@@ -1004,11 +977,6 @@ mod tests {
     /// `setupProcessing` and nowhere else, so (unlike a format that applies it
     /// live) the change is a restart, and the core's `Prepare` carries the mode
     /// the restart uses.
-    ///
-    /// Mutation (run): `set_render_mode` recording the mode without reconfiguring
-    /// (answering `true` at once) → the plugin is never activated again → the
-    /// activation count stays 1 → fails; not rolling a refusal back → the
-    /// `is_active` assertion fails.
     #[test]
     fn a_render_mode_change_activates_the_plugin_again_in_the_new_mode() {
         let _lock = crate::test_utils::plugin_load_lock();

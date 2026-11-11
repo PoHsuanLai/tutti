@@ -253,9 +253,6 @@ mod tests {
     /// reclaimer**: the clip, the harmony track, the live input and the
     /// voice. What each one frees is pinned with a held loan in its own
     /// crate; the graph's sweep of them in `tests/graph.rs`.
-    ///
-    /// Mutation (run): each impl's `reclaimer` returning `None` (the
-    /// default) → fails, one at a time.
     #[test]
     fn every_publishing_node_keeps_a_reclaimer() {
         #[cfg(feature = "midi")]

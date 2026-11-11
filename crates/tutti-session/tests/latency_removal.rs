@@ -10,10 +10,6 @@
 //! dry channel pre-rolls to match, which is the whole figure. Removing the
 //! limiter takes the channel it fed to silence, and with nothing
 //! latency-bearing left the published latency is nothing at all.
-//!
-//! Mutation (run): `Session::publish_sent` keeping the larger of the old and
-//! the new total (`self.latency = self.latency.max(sent.total())`) → the
-//! figure never shrinks and the last assertions fail.
 
 use tutti_graph::ForkByClone;
 use tutti_nodes::LimiterNode;

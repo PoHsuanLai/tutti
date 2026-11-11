@@ -1,18 +1,6 @@
 //! `narrow_*` against figures that do not come from their own code: Table 8 of
 //! M2-115 section 3.4, the bit-level statement of the rule at the other widths,
 //! and the round trip through `widen` for every 7-bit and 14-bit value.
-//!
-//! Mutation record (each planted in `src/narrow.rs`, seen to fail at the named
-//! tests, restored):
-//! - `narrow_velocity` shifting by 8 (masked to 7 bits) -> `m2_115_table_8_velocity`,
-//!   `the_extremes_and_the_centre_keep_their_places`, `the_top_bits_are_kept` and
-//!   `widen_then_narrow_returns_every_seven_bit_value`;
-//! - `narrow_velocity` rounding (adding `0x100` before the shift) -> the same four;
-//! - `narrow_value` shifting by 24 -> `the_extremes_and_the_centre_keep_their_places`,
-//!   `the_top_bits_are_kept` and `widen_then_narrow_returns_every_seven_bit_value`;
-//! - `narrow_bend` shifting by 17 -> `the_extremes_and_the_centre_keep_their_places`,
-//!   `the_top_bits_are_kept` and `widen_then_narrow_returns_every_fourteen_bit_bend`;
-//! - `narrow_bend` shifting by 25 (the 7-bit shift) -> the same three.
 
 use tutti_midi_protocol::{narrow_bend, narrow_value, narrow_velocity, widen};
 use tutti_ump::{CCNumber, NoteNumber, U7, U14, Voice1, Voice2};

@@ -525,8 +525,8 @@ pub struct ParameterInfo {
     /// [`with_measures`](Self::with_measures), which applies the range check.
     ///
     /// Data saved before this field reads as `None` with no attribute: serde's
-    /// derive already reads a missing `Option` field as `None` (a mutation that
-    /// removed an explicit `serde(default)` here survived), unlike
+    /// derive already reads a missing `Option` field as `None`,
+    /// unlike
     /// [`role`](Self::role), whose custom serde needs its own `default`.
     pub measures: Option<ParamUnit>,
     /// The tutti role this parameter plays, only where the format declared the
@@ -848,12 +848,6 @@ mod tests {
 
     /// The range contract (`new`, `of`, `TryFrom`, `Into`, serde), checked by
     /// the shared helper.
-    ///
-    /// Mutation (run): the upper bound loosened to `1.0000000000000002` ->
-    /// "new accepted"; the `v >= 0.0` clause dropped -> "new accepted"; `new`
-    /// accepting NaN (`!(v < 0.0 || v > 1.0)`) -> "new accepted NaN"; the
-    /// `serde(try_from)` attribute removed -> "deserialize accepted". `of` is
-    /// const and panics through `new`, so it cannot be mutated apart from it.
     #[cfg(feature = "serde")]
     #[test]
     fn a_normalized_keeps_the_range_contract() {
@@ -876,8 +870,6 @@ mod tests {
     }
 
     /// `clamped` pins to the nearest bound and maps NaN to zero.
-    ///
-    /// Mutation (run): `clamp_unit` without the NaN arm -> NaN comes back.
     #[test]
     fn clamped_saturates_and_maps_nan_to_zero() {
         assert_eq!(Normalized::clamped(-3.0).get(), 0.0);
@@ -1151,11 +1143,6 @@ mod measures_serde_tests {
 
     /// An old `ParameterInfo` without the fields still deserializes, with both
     /// `None`.
-    ///
-    /// Mutation (run, 2026-11-11): `default` removed from `role`'s attribute
-    /// (`serde(with = ..)` alone) → the old JSON fails with a missing-field
-    /// error, and this test fails. `measures` has no attribute: serde's derive
-    /// already reads a missing `Option` as `None`.
     #[test]
     fn an_old_parameter_without_the_fields_still_deserializes() {
         let p: ParameterInfo = serde_json::from_str(OLD_JSON).expect("old data reads");
@@ -1165,8 +1152,6 @@ mod measures_serde_tests {
     }
 
     /// The same, for `role` alone: `measures` present, `role` absent.
-    ///
-    /// Mutation (run): as above, `default` removed from `role` → fails.
     #[test]
     fn an_old_parameter_without_a_role_deserializes() {
         let json = OLD_JSON.replace(
@@ -1179,9 +1164,6 @@ mod measures_serde_tests {
     }
 
     /// A typed unit and a role survive JSON and the IPC's postcard.
-    ///
-    /// Mutation (run): the role serialized as `Some(0)` whatever it is
-    /// (`role.map(|_| 0u16)`) → it reads back as `Cutoff`, and this test fails.
     #[test]
     fn measures_and_role_round_trip() {
         let p = ParameterInfo::new(ParamId::new(3), "Pan")
@@ -1204,10 +1186,6 @@ mod measures_serde_tests {
     }
 
     /// A role number that is no `UnitParam` is refused, not mapped to another.
-    ///
-    /// Mutation (run, 2026-11-11): `role_serde::deserialize` falling back to
-    /// `UnitParam::Cutoff` for an unknown number (`unwrap_or`) → 9999 reads as
-    /// `Cutoff`, and this test fails.
     #[test]
     fn a_role_that_names_no_unit_param_is_refused() {
         let json = OLD_JSON.replace(r#""group": "Filter""#, r#""group": "Filter", "role": 9999"#);

@@ -419,9 +419,6 @@ mod tests {
     /// the cache the whole-file read filled: a hard loop, a crossfaded one and
     /// a cleared one leave it empty, and the loop still plays (the ring holds
     /// the loop's frames past its end).
-    ///
-    /// Mutation (run): the handler reading the file whole for the lead-in
-    /// (`load_wave`) → the cache holds the file → fails.
     #[test]
     fn a_loop_change_reads_only_the_frames_it_needs() {
         use crate::voice::LoopSetting;
@@ -483,19 +480,6 @@ mod tests {
     /// - a disk voice taken after it still converts beats to file frames at
     ///   the file's 48 kHz (its seek targets stay where they were);
     /// - a 44.1 kHz file streamed after it gets 44.1/48, not unity.
-    ///
-    /// Mutations (run):
-    /// - the `SessionRate` command not re-deriving the open streams (the
-    ///   `Streams::rerate` call removed) → the first ratio stays 48/44.1 →
-    ///   fails;
-    /// - `DiskStreamer::set_sample_rate` not sending the command → the same;
-    /// - `SessionRate::set` not storing the rate → the early `Status` reports
-    ///   44.1 kHz → fails;
-    /// - `open_stream_region` deriving against the build's 44.1 kHz (what the
-    ///   old `StreamerCycle::sample_rate` copy did) → the later stream gets
-    ///   unity → fails;
-    /// - `status()` copying the rate into a fresh cell → the early `Status`
-    ///   reports 44.1 kHz → fails.
     #[test]
     fn a_rate_change_re_derives_every_streams_ratio() {
         use tutti_types::{Beat, SrcRatio};
@@ -559,11 +543,6 @@ mod tests {
     ///
     /// This is B1 restated for the handle: the region goes with the stream,
     /// and nothing but the `Drop` sends the close.
-    ///
-    /// Mutation (run): `Drop for Stream` without its `Close` send → the ring
-    /// is still held by its writer after the step → fails. Mutation (run):
-    /// `Close` handled by `step` without removing the record → the ring is
-    /// still alive → fails.
     #[test]
     fn a_dropped_stream_is_freed() {
         let dir = tempfile::tempdir().unwrap();

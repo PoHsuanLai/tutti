@@ -205,12 +205,6 @@ fn chunk_state(payload: &[u8]) -> Vec<u8> {
 ///
 /// The probe's default chunk starts `t` (116); the live one is handed one that
 /// starts 7, so only a restored chunk renders `tag + 7`.
-///
-/// Mutation (run): drop `set_state` from the fork → the fork renders its
-/// default chunk, `tag + 116` → fails. Mutation (run): drop
-/// `set_offline_render` → the process level reads realtime → fails.
-/// Mutation (run): hand no fork source from `IntoNode for
-/// PluginNode` → `ForkError::NotForkable` → fails.
 #[test]
 fn a_chunk_plugin_forks_with_the_live_chunk_and_renders_offline() {
     let _lock = lock_probe();
@@ -248,12 +242,6 @@ fn a_chunk_plugin_forks_with_the_live_chunk_and_renders_offline() {
 /// The live instance is moved to program 1 and `param0 = 0.75`: the DC is
 /// `1000 · 0.75 + 10 000 · 1 = 10 750`. The probe's program change moves no
 /// parameter, so each term is restored or not on its own.
-///
-/// Mutation (run): skip the program restore in the fork → `750` → fails.
-/// Mutation (run): skip `set_state` → param0 stays at its default 0 →
-/// `10 000` → fails. Mutation (run): give the fork the live instance
-/// (`fork.inner` set to the live `Arc`: one shared `AEffect`) → the live write
-/// of 0.25 reaches it → the second render reads `10 250` → fails.
 #[test]
 fn a_plugin_without_chunks_forks_with_its_program_and_parameters() {
     let _lock = lock_probe();
@@ -306,9 +294,6 @@ fn a_plugin_without_chunks_forks_with_its_program_and_parameters() {
 /// **A fork prepared at another rate tells the plugin that rate**, from its
 /// own `prepare` — nothing pumps a fork's editor, so a rate parked for the
 /// main thread (the live node's route) would never reach it.
-///
-/// Mutation (run): give the fork `RateDelivery::Parked` → the probe's last
-/// `effSetSampleRate` stays at the live 48 kHz → fails.
 #[test]
 fn a_fork_at_another_rate_tells_the_plugin_its_rate() {
     let _lock = lock_probe();
@@ -346,9 +331,6 @@ fn a_fork_at_another_rate_tells_the_plugin_its_rate() {
 ///
 /// The refusal is armed after the live instance stored its chunk, so only the
 /// fork's instance refuses.
-///
-/// Mutation (run): ignore `set_state`'s result in the fork → both forks
-/// succeed (at the default chunk) → fails.
 #[test]
 fn a_state_the_second_instance_refuses_is_a_named_fork_error() {
     let _lock = lock_probe();
@@ -394,10 +376,6 @@ fn a_state_the_second_instance_refuses_is_a_named_fork_error() {
 /// **A fork source whose live instance is gone says so**, without loading a
 /// second instance: `PluginForkError::LiveGone`. The source holds the live
 /// instance weakly, so it cannot keep a dropped plugin alive either.
-///
-/// Mutation (run): keep the live instance alive from the source (a leaked
-/// strong reference beside the `Weak`) → the fork succeeds from a plugin
-/// nothing else holds → fails.
 #[test]
 fn a_fork_of_a_dropped_plugin_is_live_gone() {
     let _lock = lock_probe();
@@ -427,10 +405,6 @@ fn a_fork_of_a_dropped_plugin_is_live_gone() {
 ///
 /// Not on macOS: there the probe builds as a `.dylib`, which `Plugin::open`
 /// does not read as VST2 (a macOS VST2 is a `.vst` bundle).
-///
-/// Mutation (run): hand no fork source from `IntoNode for
-/// PluginNode`, which `Plugin`'s VST2 arm passes on →
-/// `ForkError::NotForkable` → fails.
 #[cfg(not(target_os = "macos"))]
 #[test]
 fn a_plugin_handed_back_by_into_client_forks() {
@@ -476,14 +450,6 @@ fn a_plugin_handed_back_by_into_client_forks() {
 /// fork's graph 93 BPM at beat 5. The probe records what
 /// `audioMasterGetTime` answered on its last block — the fork's — so it must
 /// read 93 BPM at quarter 5, in 7/8 (whose bar 2 starts at quarter 3.5).
-///
-/// Mutation (run): hand the fork a default snapshot (`TransportInfo::default()`
-/// in `TransportFeed::block`) → the probe reads 120 BPM at 0 → fails.
-/// Mutation (run): give the fork an empty meter cell in
-/// `TransportFeed::forked` → the probe reads 4/4 → fails. Mutation (run):
-/// `forked` ignoring `offline` → `kVstNanosValid` set → fails. Mutation
-/// (run): the fork bound to a fresh 120 BPM reader in place of a clone of the
-/// live node's (`Vst2Fork::instance`) → the probe reads 120, not 93 → fails.
 #[test]
 fn a_fork_reads_its_transport_from_the_render() {
     let _lock = lock_probe();
@@ -546,10 +512,6 @@ fn a_fork_reads_its_transport_from_the_render() {
 /// **A live fork keeps the live instance's render mode**: a host that set the
 /// live plugin offline gets an offline fork from `ForkMode::Live` too (and a
 /// realtime one otherwise).
-///
-/// Mutation (run): answer realtime for every `ForkMode::Live` fork → the
-/// offline live instance's fork reads realtime → fails. Mutation (run):
-/// answer offline for every fork → the realtime one's reads offline → fails.
 #[test]
 fn a_live_fork_keeps_the_live_render_mode() {
     let _lock = lock_probe();
@@ -583,8 +545,6 @@ fn a_live_fork_keeps_the_live_render_mode() {
 /// instance's id is not the live one's, so the live state is not loaded into
 /// it. The probe's `uniqueId` is changed between the two loads (as a plugin
 /// replaced on disk would be).
-///
-/// Mutation (run): drop the id check → the fork succeeds → fails.
 #[test]
 fn a_second_instance_of_another_plugin_is_a_mismatch() {
     let _lock = lock_probe();
@@ -612,9 +572,6 @@ fn a_second_instance_of_another_plugin_is_a_mismatch() {
 /// `LoadState`**, not a fork at program 0: the live instance is at program 1
 /// of 2, and the second instance (constructed with one program) has no
 /// program 1.
-///
-/// Mutation (run): ignore `set_program`'s answer → the fork succeeds →
-/// fails.
 #[test]
 fn a_live_program_out_of_the_second_instances_range_is_a_named_error() {
     let _lock = lock_probe();

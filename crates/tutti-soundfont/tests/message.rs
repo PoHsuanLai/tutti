@@ -3,26 +3,6 @@
 //! `(cc7 * 128 / 16383)^2`, a pitch bend is `2 * (bend - 8192) / 8192`
 //! semitones) and by invariants of the render, never by another render of the
 //! code.
-//!
-//! Mutation record (each planted in `src/`, seen to fail at the named tests,
-//! restored):
-//! - not seen here: the `.max(1)` on the Note On velocity (`voices.rs`, and the
-//!   region choice in `patch.rs`) removed. A voice struck at MIDI 1.0 velocity
-//!   0 or 1 is far below what these renders resolve, so no test in this file
-//!   tells them apart; the pedal tests pin Note On against Note Off instead;
-//! - `widen`'s velocity-0 Note On guard removed (in `tutti-midi-protocol`) ->
-//!   `a_midi_1_note_on_at_velocity_0_is_a_note_off`;
-//! - `Player::apply` reading a MIDI 2.0 Note On at velocity 0 as a Note Off ->
-//!   `a_midi_2_note_on_at_a_velocity_that_narrows_to_zero_is_a_note_on`;
-//! - `narrow_value` (in `tutti-midi-protocol`) shifting by 24 ->
-//!   `control_change_7_reaches_the_synth_at_its_value`;
-//! - the bend's LSB and MSB swapped -> `a_bend_reaches_the_synth_at_its_value`;
-//! - the bend's LSB argument replaced by 0 -> the same test (b = 127, 8319,
-//!   16383 and the rest differ from the centre by under 3.1 cents of LSB);
-//! - a Note On or a Note Off with a reserved attribute type dropped ->
-//!   `a_reserved_attribute_type_is_ignored_not_a_reason_to_drop_the_note`;
-//! - `Voice2::PolyPressure` made to release the note ->
-//!   `messages_with_no_synthesizer_setter_change_nothing`.
 
 use std::sync::Arc;
 
@@ -155,9 +135,6 @@ fn a_midi_1_note_on_at_velocity_0_is_a_note_off() {
 /// new note at that velocity is below what is rendered, so the note ends.
 /// (The test used to hold the note without a pedal: a key struck again layered
 /// then, and no longer does.)
-///
-/// Mutation (run): `Player::apply` reading a velocity below 0x200 as a Note Off leaves
-/// the pedal-held note sounding, and the test fails.
 #[test]
 fn a_midi_2_note_on_at_a_velocity_that_narrows_to_zero_is_a_note_on() {
     for velocity in [0, 1, 0x01FF] {
@@ -295,10 +272,6 @@ fn a_bend_reaches_the_synth_at_its_value() {
 /// cents field is hundredths of a semitone (7 semitones 50 cents is +750,
 /// 0 and 64 cents is +64, not the 50 a binary fraction would give). The bend is
 /// the note logic's alone (`Voicing::step`).
-///
-/// Mutations (run, each seen to fail): the sensitivity read as Q7.25 (cents
-/// 64 gives +50); the sensitivity ignored (every row is +200); the bend
-/// applied twice (every row doubles).
 #[test]
 fn a_full_bend_spans_the_registered_sensitivity() {
     let sustained = |events: &[Ump]| {
@@ -340,10 +313,6 @@ fn a_full_bend_spans_the_registered_sensitivity() {
 /// calls) keeps the channel's bend wheel and its RPN 0 sensitivity: the unit
 /// is set to a 7-semitone range and a full bend, re-rated to 48 kHz, and a note
 /// there sounds 7 semitones above the same note unbent at 48 kHz.
-///
-/// Mutation (run, seen to fail): `Player::with_sample_rate` not carrying the
-/// `Voicing` gives the default 2-semitone range (and no wheel: the bend was
-/// sent before the re-rate, so the new player's wheel is centred).
 #[test]
 fn a_re_rated_unit_keeps_the_bend_and_its_range() {
     let rate = SampleRate(48_000.0);
@@ -473,10 +442,6 @@ fn a_reserved_attribute_type_is_ignored_not_a_reason_to_drop_the_note() {
 /// Every event of a block is read, however many it carries: a note after 600
 /// controllers in one block sounds. The unit read a block through a fixed
 /// scratch of 256 events before stage 3b and dropped the rest.
-///
-/// Mutation (run): `render_events` reading at most 256 events a block (a
-/// `.take(256)` over the chunks' events) → the note is dropped → silence →
-/// fails.
 #[test]
 fn a_block_with_more_events_than_any_scratch_reads_them_all() {
     let mut events = vec![
@@ -495,9 +460,6 @@ fn a_block_with_more_events_than_any_scratch_reads_them_all() {
 /// Group is a channel space of its own): a Note On in Group 2 is silence to a
 /// unit of Group 1, whichever channel it names, and a unit built for Group 2
 /// plays it and not Group 1's.
-///
-/// Mutation: `apply_event` ignoring the Group (the check dropped) -> the
-/// first unit sounds Group 2's note and the first assertion fails.
 #[test]
 fn a_unit_plays_its_own_groups_channels_only() {
     let note = |group: MidiGroup| {

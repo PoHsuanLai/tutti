@@ -112,12 +112,6 @@ fn live_shaped(quantum: usize, n: usize) -> Vec<usize> {
 /// whole 441-frame blocks: the output is the input delayed by the declared
 /// 137 + 512 (the fork's `MaxBlock`) = 649, sample for sample, and the graph
 /// declares exactly that.
-///
-/// Mutation: ship a partial chunk at the end of every call (in
-/// `Batcher::process`, `if self.pos == chunk || i == frames`) → the chunks
-/// no longer line up with the ring → fails for every ragged cut. Mutation:
-/// collect into the ring before submitting (`collect` after `submit` in the
-/// same step) → the output is a chunk early → fails.
 #[test]
 fn ragged_blocks_are_delayed_by_exactly_the_declared_latency() {
     let _lock = machine_lock();
@@ -143,9 +137,6 @@ fn ragged_blocks_are_delayed_by_exactly_the_declared_latency() {
 /// a 32-frame chunk:
 /// the node declares 137 + 32 = 169 and delays by exactly that, in 32-frame
 /// blocks and in ragged 20- and 12-frame ones.
-///
-/// Mutation: drop `controls.set_pipeline(..)` from the node's `prepare` →
-/// the node declares the slab's 4096 + 137 while delaying 169 → fails.
 #[test]
 fn a_max_block_below_the_chunk_is_the_pipeline() {
     let _lock = machine_lock();

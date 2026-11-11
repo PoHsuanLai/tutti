@@ -488,9 +488,6 @@ mod tests {
     }
 
     /// A block that fits is delivered exactly once.
-    ///
-    /// Mutation: have `process` return `Ok(())` before the call and the count
-    /// stays 0.
     #[test]
     fn a_block_that_fits_reaches_the_plugin() {
         let mut rig = rig(SampleWidth::F32, BLOCK);
@@ -500,10 +497,6 @@ mod tests {
 
     /// A block longer than the setup's `maxSamplesPerBlock` is refused without
     /// reaching the plugin.
-    ///
-    /// Mutation: delete the `io.num_samples > setup.max_block` clause in
-    /// `process` and this fails (the 32-frame setup would pass a 33-frame
-    /// block, which the 64-frame scratch and channels do not catch).
     #[test]
     fn a_block_longer_than_the_setup_is_refused() {
         let mut rig = rig(SampleWidth::F32, 32);
@@ -514,9 +507,6 @@ mod tests {
 
     /// A block longer than a bound channel is refused (the channels here are
     /// `BLOCK` long, the setup allows more).
-    ///
-    /// Mutation: delete the `io.inputs.capacity()` / `io.outputs.capacity()`
-    /// clauses and the 100-frame block reaches the plugin.
     #[test]
     fn a_block_longer_than_a_channel_is_refused() {
         let mut rig = rig(SampleWidth::F32, 1000);
@@ -526,9 +516,6 @@ mod tests {
 
     /// Buses bound at 32 bits on a plugin set up for `kSample64` are refused:
     /// the plugin would read 8-byte samples from 4-byte data.
-    ///
-    /// Mutation: delete the `symbolic_size != setup.symbolic_size` clause and
-    /// the block reaches the plugin.
     #[test]
     fn a_width_other_than_the_setups_is_refused() {
         let mut rig = rig(SampleWidth::F64, BLOCK);
@@ -545,10 +532,6 @@ mod tests {
     }
 
     /// Input and output buses of different widths are refused.
-    ///
-    /// Mutation: delete the `io.inputs.width() != io.outputs.width()` clause
-    /// and a 32-bit input with a 64-bit output (on a 32-bit setup) reaches the
-    /// plugin.
     #[test]
     fn unequal_input_and_output_widths_are_refused() {
         let mut rig = rig(SampleWidth::F32, BLOCK);
@@ -583,9 +566,6 @@ mod tests {
 
     /// Once retired, the half answers `NotInitialized` and nothing reaches the
     /// plugin; a deactivated plugin answers the same.
-    ///
-    /// Mutation: drop the `retired` check in `try_enter` and the retired block
-    /// reaches the plugin.
     #[test]
     fn a_retired_or_deactivated_plugin_is_not_called() {
         let mut rig = rig(SampleWidth::F32, BLOCK);
@@ -605,9 +585,6 @@ mod tests {
 
     /// The audio half is handed out once, only for a set-up, active plugin; the
     /// control side is refused while it lives and free again after.
-    ///
-    /// Mutation: delete the `audio_out` swap in `take_audio_side` and the
-    /// second take succeeds.
     #[test]
     fn the_audio_half_is_taken_once_and_blocks_control_changes() {
         let rig = rig(SampleWidth::F32, BLOCK);
@@ -634,9 +611,6 @@ mod tests {
 
     /// While a control thread holds the claim, the audio half does not wait: it
     /// answers `NotInitialized`.
-    ///
-    /// Mutation: use `lock()` instead of `try_lock()` in `try_enter` and this
-    /// test deadlocks (the audio call waits on the guard held below).
     #[test]
     fn the_audio_half_never_waits_on_a_control_thread() {
         let mut rig = rig(SampleWidth::F32, BLOCK);
@@ -650,9 +624,6 @@ mod tests {
     /// An audio thread preempted between the `retired` check and the lock, while
     /// the plugin is retired and torn down, gets no guard: the flag is checked
     /// again under the lock.
-    ///
-    /// Mutation: delete the second `retired` check in `try_enter_after` and the
-    /// entry succeeds on a plugin whose processor is about to be freed.
     #[test]
     fn an_entry_that_loses_the_race_with_teardown_is_refused() {
         let rig = rig(SampleWidth::F32, BLOCK);
@@ -664,9 +635,6 @@ mod tests {
     /// Teardown clears the state under the lock, so whoever takes the lock
     /// afterwards finds the plugin neither active nor set up, and says whether
     /// it was active.
-    ///
-    /// Mutation: have `teardown` leave the state as it was and the second
-    /// assertion fails.
     #[test]
     fn teardown_clears_the_state_it_found() {
         let rig = rig(SampleWidth::F32, BLOCK);
@@ -680,9 +648,6 @@ mod tests {
     /// A binding whose buses are not the plugin's arrangement is refused: a
     /// scratch with fewer channels than the plugin has would let it read past
     /// the pointer table.
-    ///
-    /// Mutation: delete the `arrangement_fits` check in `process` and the
-    /// two-channel binding reaches a plugin with three-channel buses.
     #[test]
     fn buses_that_are_not_the_plugins_arrangement_are_refused() {
         let mut rig = rig(SampleWidth::F32, BLOCK);

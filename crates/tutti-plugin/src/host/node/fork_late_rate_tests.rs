@@ -36,11 +36,6 @@ const LIVE: f32 = INPUT_DC + 1.0;
 /// waits 400 ms and reports the rate refused; the render starts after that,
 /// with the refusal standing and the answer unread. Every block must be live
 /// and the fork must report no fault.
-///
-/// Mutation (run): drop the `bridge.settle()` in a watched fork's retune
-/// (`IpcProcessor::retune`) → the refusal still stands when the render starts,
-/// `await_output` latches it and the fork reports `Failed` (`RateRefused`,
-/// "did not answer") with silent blocks → fails.
 #[test]
 fn a_late_rate_answer_does_not_silence_an_offline_fork() {
     let _lock = machine_lock();

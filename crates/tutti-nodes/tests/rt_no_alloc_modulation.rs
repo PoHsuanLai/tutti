@@ -75,9 +75,6 @@ fn lfo_random_shape_process_is_allocation_free() {
 /// The beat-synced path walks the block's `Env` frame by frame
 /// (`Env::for_each_beat`); a quarter-cycle offset puts the stopped
 /// transport's beat 0 on the sine's peak, so the node is audible.
-///
-/// Mutation (run): a `Vec::with_capacity(size)` scratch in the
-/// `BeatSynced` branch of `ModulatorNode::process` fails the gate.
 #[test]
 fn beat_synced_lfo_process_is_allocation_free() {
     gate(
@@ -158,9 +155,6 @@ fn phaser_node_process_is_allocation_free() {
 /// every tap before writing any line. All of it on preallocated scratch.
 /// The moves go through clones of the nodes, which share their cells. (A
 /// moving mix is the graph's: `tutti-graph/tests/rt_no_alloc.rs`.)
-///
-/// Mutation (run): a `Vec::with_capacity(w)` scratch in the phaser's
-/// `render` fails.
 #[test]
 fn delay_and_modulation_with_moving_controls_are_allocation_free() {
     let delay = DelayLineNode::stereo(
@@ -342,9 +336,6 @@ impl tutti_graph::Pool for GatedPool {
 /// Changed in doc 014 §12.2: the lanes are `ControlLaneNode`s, and the
 /// clamped and sine lanes send grid points of the play clock; the
 /// no-allocation property stands.
-///
-/// Mutation (run): a `Vec::with_capacity(8)` per block in
-/// `ControlLaneNode::process` → both gates abort (and the 200-lane gate's).
 #[test]
 fn event_lanes_are_allocation_free_serial_and_on_a_pool() {
     use std::sync::Arc;
@@ -387,7 +378,7 @@ fn event_lanes_are_allocation_free_serial_and_on_a_pool() {
 /// The lanes render bit for bit the same serial and on pools of 2, 3, 4
 /// and 8 participants, under ragged blocks with loop wraps inside them.
 ///
-/// Not mutation-tested against a property of the lane: a lane's state is
+/// It does not test a property of the lane: a lane's state is
 /// its own (one node, one op), so nothing it does can differ between the
 /// two; this pins that the event path keeps it that way (a lane sharing
 /// state with another, which `CLAUDE.md` forbids, would diverge here).
@@ -661,14 +652,11 @@ fn lanes_loop() -> Option<tutti_types::LoopRange> {
 /// wraps inside them, republishes of every program, knob writes and range
 /// edits between blocks.
 ///
-/// Not mutation-tested against a property of the lane: each lane's state
+/// It does not test a property of the lane: each lane's state
 /// is its own (one node, one op, its cells read once per block), so nothing
 /// it does can differ between schedules. This pins that it stays so: two
 /// lanes sharing mutable state outside the graph (`CLAUDE.md` forbids it)
-/// would diverge here. Mutation (run): state shared across lanes (each
-/// lane's knob offset by 0.5 on the parity of one `static` counter every
-/// lane's `process` bumps) → the pools run the lanes in another order and
-/// render other bits than serial → fails.
+/// would diverge here.
 #[test]
 fn two_hundred_lanes_render_the_same_serial_and_parallel() {
     use std::sync::Arc;
@@ -722,9 +710,6 @@ fn two_hundred_lanes_render_the_same_serial_and_parallel() {
 /// pool whose helpers run under the gate too, with a republish of every
 /// program, knob writes and range edits between gated blocks (on the
 /// control thread, outside the gate).
-///
-/// Mutation (run): a `Vec::with_capacity(8)` per block in
-/// `ControlLaneNode::process` → aborts.
 #[test]
 fn two_hundred_lanes_are_allocation_free_serial_and_on_a_pool() {
     use std::sync::Arc;
@@ -1000,12 +985,9 @@ fn signal_block(
 /// serial and on pools of 2, 3, 4 and 8, under ragged blocks with a play
 /// start inside one.
 ///
-/// Not mutation-tested against a property of the sources: each node's
+/// It does not test a property of the sources: each node's
 /// state is its own (one node, one op), so nothing it does can differ
-/// between schedules. This pins that it stays so. Mutation (run): state
-/// shared across followers (each one's envelope nudged by the parity of a
-/// `static` counter every follower's `process` bumps) → the pools render
-/// other bits → fails.
+/// between schedules. This pins that it stays so.
 #[test]
 #[cfg_attr(miri, ignore = "threaded worker pools")]
 fn signal_sources_render_the_same_serial_and_parallel() {
@@ -1056,10 +1038,6 @@ fn signal_sources_render_the_same_serial_and_parallel() {
 /// Followers and note envelopes (and the lanes they feed) never allocate
 /// on the audio thread, serial and on a pool whose helpers run under the
 /// gate too, through a play start inside a block.
-///
-/// Mutation (run): a `Vec::with_capacity(8)` per block in
-/// `EnvelopeFollowerNode::process` → aborts; the same in
-/// `NoteEnvelopeNode::process` → aborts.
 #[test]
 #[cfg_attr(miri, ignore = "threaded worker pools")]
 fn signal_sources_are_allocation_free_serial_and_on_a_pool() {
@@ -1128,10 +1106,6 @@ fn signal_sources_are_allocation_free_serial_and_on_a_pool() {
 /// one read the new program inside the gate. (That the lane adopts it, the
 /// render moving with the depth, is `modulation_reconcile.rs`' depth test;
 /// a single-threaded gate pins only the reader's path, per CLAUDE.md.)
-///
-/// Mutation (run): `std::hint::black_box(vec![0u8; 1]);` in
-/// `ControlLaneNode::process`'s new-program branch (taken only on a
-/// republish) → aborts.
 #[test]
 fn an_apply_that_republishes_is_allocation_free_on_the_audio_thread() {
     use tutti_graph::NodeKey;

@@ -143,10 +143,6 @@ mod tests {
     /// Both gains also stay in `[0, 1]` at every frame (the law's clamp; the
     /// digest was `8576483186461023489` before it, a deliberate change: the
     /// unclamped form overshot 1 by up to 7.2e-7 here).
-    ///
-    /// Mutation (run): the polynomial's `10.0` written `10.000001` → the
-    /// digest moves → fails. Mutation (run): `Law::Smootherstep`'s clamp
-    /// removed → the range assert fails.
     #[test]
     fn equal_amplitude_gains_are_bit_stable() {
         let mut h = tutti_fixtures::Fnv::new();
@@ -169,11 +165,6 @@ mod tests {
     /// `EqualPower`; both rise monotonically from near 0 to near 1, and are
     /// strictly inside (0, 1) at both ends — so the fade is exactly `len`
     /// frames with no jump at either end.
-    ///
-    /// Mutation: `g_out = g_in` for equal amplitude → its sum fails. Mutation:
-    /// `x = k / len` → frame 0 has `g_in = 0` → fails the strictly-inside
-    /// check. Mutation: `x = (k + 1) / len` → frame `len - 1` is at `g_in = 1`
-    /// → fails.
     #[test]
     fn each_curve_keeps_its_law_at_every_frame() {
         for len in [1usize, 2, 7, 240, 4800] {
@@ -213,10 +204,6 @@ mod tests {
     /// `x³(6x² − 15x + 10) = 0.103515625`. At every other position both
     /// curves are compared with the closed form computed in `f64` —
     /// `EqualPower` only this way, since `sin`/`cos` are libm's.
-    ///
-    /// Mutation (run): `g = x` for `EqualAmplitude` → fails the exact table.
-    /// Mutation (run): `(a.cos(), a.sin())` for `EqualPower` → fails its
-    /// closed form.
     #[test]
     fn each_curve_is_its_closed_form() {
         // (k, len, g_in): x = (k + 1) / (len + 1), dyadic.
@@ -253,7 +240,6 @@ mod tests {
         }
     }
 
-    /// Mutation: `to_samples_floor` → 1.5 frames becomes 1 → fails.
     #[test]
     fn seconds_round_to_the_nearest_frame() {
         let f = Fade::seconds(

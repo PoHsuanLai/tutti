@@ -315,9 +315,6 @@ fn process_with_midi_does_not_allocate() {
 /// gate. MIDI 1.0 and 2.0 channel voice, a banked Program Change, the per-note
 /// bend sensitivity, System, Utility, SysEx7, SysEx8, Flex, Stream, and a
 /// packet `decode` cannot frame.
-///
-/// Mutation (run): a `Box::new(0u8)` planted in the host's `from_voice2` →
-/// the gate aborts.
 #[test]
 fn process_with_every_message_kind_does_not_allocate() {
     let _lock = PROBE_LOCK.lock().unwrap_or_else(|p| p.into_inner());
@@ -781,13 +778,6 @@ const OUTPUT_QUEUES: u32 = 16;
 /// (16, each with `ParameterQueue::chunk_room(512)` + 1 = 274 points), takes each
 /// back with `open_queue` and returns it with `clear`. The gate covers many
 /// blocks, so the second and later reuse the queues the first returned.
-///
-/// Mutation (run): `fill_param_changes` emptying the set with
-/// `out.queues.clear()` again (dropping every queue) → aborts on the second
-/// gated block, freeing the queues the first took. Mutation (run): the
-/// activation not reserving the output queues (`reserve_output_params`
-/// removed) → no queue to open, so every point is dropped and the
-/// assertions after the gate fail.
 #[test]
 fn param_output_burst_does_not_allocate() {
     let _lock = PROBE_LOCK.lock().unwrap_or_else(|p| p.into_inner());
@@ -850,13 +840,6 @@ fn param_output_burst_does_not_allocate() {
 /// Changed in doc 014 §12.2: the room per queue is `ceil(512 / 32) + 1 +
 /// 256` = 273 (it was 20; with the carried slot 274, it was 21), so the second burst is 283 points a parameter
 /// (it was 30); the property is the same.
-///
-/// Mutation (run): `fill_param_changes` pushing without the `has_room`
-/// check → aborts in the second burst (a queue's points grow). Mutation
-/// (run): the overflow dropping the point instead of replacing the last one
-/// → each queue ends on point 273's value, not point 282's, and the value
-/// assertion fails. Mutation (run): `open_queue`'s refusal not counted → the
-/// first burst's count is 0, not 12 a block.
 #[test]
 fn param_output_past_the_room_is_counted_not_grown() {
     let _lock = PROBE_LOCK.lock().unwrap_or_else(|p| p.into_inner());
@@ -926,10 +909,6 @@ fn param_output_past_the_room_is_counted_not_grown() {
 /// Changed in doc 014 §12.2: the parameter room is 4384 (it was 336), so
 /// the plugin pushes 120 points a parameter (it was 20); the property is
 /// the same.
-///
-/// Mutation (run): `output_events_try_push` without the parameter room check
-/// → aborts (the list grows past its reservation inside the gate). Mutation (run):
-/// the refusal not counted → the count assertion fails.
 #[test]
 fn output_events_past_the_room_are_refused_not_grown() {
     let _lock = PROBE_LOCK.lock().unwrap_or_else(|p| p.into_inner());
@@ -992,17 +971,6 @@ fn set_param_output_own(points: u32) {
 /// (they were 336 and 21), so the flood is 2200 points a parameter (it was
 /// 200) and the count 8250 a block (it was 756): as before, two parameters
 /// are table-only.
-///
-/// Mutation (run): one shared room for every event (`try_push` refusing any
-/// push once the list holds `room + param_room`) → the note-off is refused
-/// and the note-off assertion fails. Mutation (run): no latest-value table
-/// (`coalesce_param` refusing every push) → the 4416 values past the room
-/// are refused (parameters 2 and 3 would end with no queue) and the refusal
-/// assertion fails. Mutation (run): the parameter room check removed → the
-/// flood grows the list inside the gate and aborts. Mutation (run, from
-/// review): the table never opening a queue (`None if ix < nl &&
-/// out.open_queue(addr)` in `fill_param_changes`) → parameters 2 and 3
-/// have no queue → fails.
 #[test]
 fn a_param_flood_keeps_note_offs_and_final_values() {
     let _lock = PROBE_LOCK.lock().unwrap_or_else(|p| p.into_inner());

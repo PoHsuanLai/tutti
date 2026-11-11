@@ -548,19 +548,12 @@ mod tests {
     }
 
     /// The two branches sum to unity magnitude across the audio band.
-    ///
-    /// Mutation (run): one Butterworth section per branch instead of two (the
-    /// second `tick` dropped for `low` and `high`) → the sum dips to 0 at the
-    /// crossover → fails.
     #[test]
     fn two_bands_sum_to_flat_magnitude() {
         assert_flat(&[1_000.0]);
     }
 
     /// With the all-pass compensation, three and four bands sum flat too.
-    ///
-    /// Mutation (run): drop the `all_pass` loop in `tick` → the sum is no
-    /// longer flat at the upper crossovers → fails both.
     #[test]
     fn three_and_four_bands_sum_to_flat_magnitude() {
         assert_flat(&[120.0, 2_500.0]);
@@ -568,10 +561,6 @@ mod tests {
     }
 
     /// Six bands, the most, sum flat.
-    ///
-    /// Mutation (run): drop the `all_pass` loop in `tick` → the upper
-    /// crossovers' sums dip → fails; one Butterworth section per branch →
-    /// fails.
     #[test]
     fn six_bands_sum_to_flat_magnitude() {
         assert_flat(&[100.0, 300.0, 1_000.0, 3_000.0, 9_000.0]);
@@ -579,10 +568,6 @@ mod tests {
 
     /// Each branch is 6.02 dB down at the crossover (half amplitude) and the
     /// two are in phase there.
-    ///
-    /// Mutation (run): Q of 0.5 instead of `FRAC_1_SQRT_2` in `Split::solve`
-    /// → fails (with the flat and curve tests); one section per branch →
-    /// 3.01 dB down and 90 degrees apart → fails.
     #[test]
     fn each_branch_is_6_02_db_down_and_in_phase_at_the_crossover() {
         let (bands, _) = bands_at(&[1_000.0], 1_000.0);
@@ -600,9 +585,6 @@ mod tests {
     /// Each branch's magnitude is the analytic 4th-order one: low
     /// `1 / (1 + x^4)`, high `x^4 / (1 + x^4)`, with `x` the frequency ratio
     /// as the bilinear transform warps it, `tan(pi f / fs) / tan(pi fc / fs)`.
-    ///
-    /// Mutation (run): Q of 0.5 in `Split::solve` → the magnitudes leave the
-    /// curve → fails.
     #[test]
     fn branch_magnitudes_are_the_butterworth_squared_curve() {
         for hz in [100.0, 500.0, 800.0, 1_000.0, 1_250.0, 2_000.0, 8_000.0] {
@@ -635,10 +617,6 @@ mod tests {
     /// appear is a discontinuity beyond that: the largest sample step through
     /// the move stays within the steady figure of the louder setting
     /// (`2 pi f / fs` of its amplitude) plus 10 %.
-    ///
-    /// Mutation (run): `split_block` solving at `self.target[j]` instead of
-    /// the interpolated frequency (the coefficients jump at the block's
-    /// first chunk) → a band steps past the bound → fails.
     #[test]
     fn a_frequency_step_is_ramped_not_jumped() {
         let hz = 1_000.0;
@@ -677,9 +655,6 @@ mod tests {
     }
 
     /// The band count is 2 to 6.
-    ///
-    /// Mutation (run): `MAX_SPLITS` of 6 → the 7-band case builds (and
-    /// indexing past the arrays would panic elsewhere) → fails.
     #[test]
     fn the_band_count_is_two_to_six() {
         assert!(matches!(
@@ -699,9 +674,6 @@ mod tests {
     }
 
     /// Frequencies must be finite, above 0, strictly increasing, below Nyquist.
-    ///
-    /// Mutation (run): `hz <= frequencies[index - 1]` to `<` → the equal pair
-    /// builds → fails; `hz >= nyquist` to `>` → 24 kHz builds → fails.
     #[test]
     fn frequencies_are_validated() {
         for bad in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY, 0.0, -5.0] {
@@ -743,9 +715,6 @@ mod tests {
     }
 
     /// A refused `set_frequency` changes nothing; an accepted one is read back.
-    ///
-    /// Mutation (run): store before validating in `set_frequency` → the
-    /// refused writes land → fails.
     #[test]
     fn set_frequency_validates_against_the_neighbours() {
         let mut c = xo(&[100.0, 1_000.0, 5_000.0]).unwrap();
@@ -791,9 +760,6 @@ mod tests {
     /// most 1 in steady state; the cascaded 2nd-order Butterworth step
     /// response overshoots by under 25 %, so 1.5 leaves margin for the
     /// transient and still fails a filter that has gone unstable.
-    ///
-    /// Mutation (run): accept any rate in `set_sample_rate` (`if true`) → the
-    /// NaN rate sticks → fails.
     #[test]
     fn a_rate_change_keeps_the_filter_finite() {
         let mut c = xo(&[100.0, 20_000.0]).unwrap();
@@ -811,8 +777,6 @@ mod tests {
     }
 
     /// `reset` clears the state: after it, silence in is silence out.
-    ///
-    /// Mutation (run): drop the `all_pass` clear in `reset` → fails.
     #[test]
     fn reset_clears_every_section() {
         let mut c = xo(&[100.0, 1_000.0, 5_000.0]).unwrap();
@@ -824,10 +788,6 @@ mod tests {
     }
 
     /// The messages say what is wrong, including a whole set of the wrong length.
-    ///
-    /// Mutation (run): change "increase" in the `Order` message → fails; return
-    /// `Bands` for a wrong length in `set_frequencies` → the message reads
-    /// "4 to 4" → fails.
     #[test]
     fn errors_name_what_is_wrong() {
         let e = xo(&[500.0, 100.0]).unwrap_err().to_string();
@@ -848,10 +808,6 @@ mod tests {
     /// frequency it carries: `LP^2`, `HP^2` and the all-pass all have phase
     /// `-2 arg D`. Compared where a band has at least 0.1 of the tone (a
     /// weaker band's phase is below the lock-in's resolution of `TOL / 0.1`).
-    ///
-    /// Mutation (run): drop the `all_pass` loop in `tick` → band 0 lacks the
-    /// later crossovers' phase → the phases differ at the lower crossover →
-    /// fails.
     #[test]
     fn every_band_has_the_same_phase() {
         for freqs in [vec![120.0, 2_500.0], vec![120.0, 1_000.0, 6_000.0]] {
@@ -886,9 +842,6 @@ mod tests {
     /// 48-samples-per-period sine is at least `cos(pi / 48)`, 2.1e-3 under 1,
     /// so the bound is 3e-3 (measured: 2e-4 under 1 on the sampled peak, so
     /// the ramp's own deviation is under that).
-    ///
-    /// Mutation (run): drop the `all_pass` loop in `tick` → the sum is no
-    /// longer unit → fails.
     #[test]
     fn the_sum_stays_flat_while_frequencies_ramp() {
         let mut c = xo(&[120.0, 1_000.0, 6_000.0]).unwrap();

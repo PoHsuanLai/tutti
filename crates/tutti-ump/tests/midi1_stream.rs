@@ -4,20 +4,6 @@
 //!
 //! The expected messages of the generated streams come from how the stream was
 //! built, not from a second parser.
-//!
-//! Mutation record (each planted in `src/midi1.rs`, seen to fail, restored):
-//! - a `black_box(vec![0u8; 1])` at the top of `Midi1Parser::feed` -> the four
-//!   `assert_no_alloc` tests abort;
-//! - a real-time byte setting the state to `Idle` ->
-//!   `generated_streams_read_back_to_their_messages`;
-//! - the `Run` pushing a packet at five bytes instead of six ->
-//!   `generated_streams_read_back_to_their_messages` and
-//!   `a_sysex_that_never_ends_costs_no_memory_and_the_next_message_is_clean`;
-//! - a SysEx cut by a status byte ignoring it ->
-//!   `a_sysex_that_never_ends_costs_no_memory_and_the_next_message_is_clean`;
-//! - `have` not reset after a complete message ->
-//!   `generated_streams_read_back_to_their_messages` and
-//!   `seeded_random_bytes_are_survived`.
 
 use assert_no_alloc::{AllocDisabler, assert_no_alloc};
 use tutti_ump::{
@@ -329,9 +315,6 @@ fn generated_streams_read_back_to_their_messages() {
 /// `Voice1::data_len` is the MIDI 1.0 table: Program Change and Channel
 /// Pressure take one data byte, the other channel voice statuses two, and
 /// nothing else has a count.
-///
-/// Mutation (run, seen to fail, restored): the `0x80..=0xEF` arm of
-/// `Voice1::data_len` widened to `0x80..=0xFF` fails the system statuses.
 #[test]
 fn a_channel_status_says_how_many_data_bytes_follow() {
     use tutti_ump::Voice1;

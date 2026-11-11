@@ -159,12 +159,6 @@ fn check_io<N: IntoNode>(
     }
 }
 
-/// Mutations (run, each failed): `DelayLineNode::shape` declaring a latency of
-/// one frame it does not have (the graph's aligned input one frame late) fails
-/// the delay's DRY comparison, its formula and its ramp test; the chorus
-/// declaring 480 frames fails the chorus and flanger check; the phaser declaring
-/// one frame fails the phaser check; the convolver declaring its block plus one
-/// or none fails its checks.
 #[cfg(feature = "convolution")]
 #[test]
 fn the_convolver_is_blended_by_the_graph() {
@@ -243,14 +237,6 @@ fn the_chorus_flanger_and_phaser_are_blended_by_the_graph() {
 /// input on **both** sides (a mono source is a centre, which the fold sends to
 /// left and right at gain 1.0: the design places its channels,
 /// `Placement::Speakers`), and between them `y * m + x̂ * (1 - m)`, bit for bit.
-///
-/// Mutations (run): every reverb's shape declaring one frame of latency it does
-/// not have (the graph's aligned input one frame late) fails the DRY comparison
-/// and the formula; the reverbs' main buses left as `Shape::audio` builds them (mono
-/// into stereo naming no placement) → the graph refuses their mix
-/// (`MixError::Unplaced`) and the test fails at its first `set_mix`. (A residual dry or a scaled wet in the node cannot show here,
-/// where WET is the node compared with itself: `reverb_node.rs`'s
-/// `the_node_is_the_room_alone` pins the analytic wet.)
 #[test]
 fn the_reverbs_are_blended_by_the_graph() {
     check_io(
@@ -281,9 +267,6 @@ fn the_reverbs_are_blended_by_the_graph() {
 /// `y * m_i + x * (1 - m_i)` with `m_i = 1 - (i + 1) / 64`, ending on the dry
 /// input exactly. (The delay node's own mix once did this: its
 /// `a_mix_change_fades_across_the_next_block`.)
-///
-/// Mutation (run): the delay declaring one frame of latency fails it, like the
-/// other delay tests here.
 #[test]
 fn a_mix_move_on_a_delay_ramps_across_the_block() {
     let make =

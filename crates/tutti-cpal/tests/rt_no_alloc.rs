@@ -145,9 +145,6 @@ fn renders_something_to_gate() {
 
 /// **The gate the crate docs promise.** `process_audio` must not allocate in
 /// steady state.
-///
-/// Mutation check: add a `Vec::with_capacity(1)` anywhere inside
-/// `process_audio` or the `Engine::process` beneath it and this aborts.
 #[test]
 fn process_audio_is_allocation_free() {
     let (_transport, state) = rolling_state();
@@ -222,8 +219,6 @@ fn process_audio_across_block_sizes_is_allocation_free() {
 /// (never drained, so the ring fills and the op counts its drops), must not
 /// allocate at the `MAX_FRAMES` ceiling, and the meter must have read the
 /// block (so the gate ran the metering pass) and the tap must hold frames.
-///
-/// Mutation (run): a `Vec::with_capacity(1)` in `meter_op` aborts it.
 #[test]
 fn a_metered_and_tapped_callback_is_allocation_free() {
     let (_transport, state, mut meter, tap) = rolling_state_with(true);

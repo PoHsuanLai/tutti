@@ -345,9 +345,6 @@ mod tests {
 
     /// One step is [`RealFft`], bit for bit, both ways: a layout that does
     /// not split keeps its transform.
-    ///
-    /// Mutation (run): `StagedRealFft::new` building the unsplit `fft` with
-    /// `size + 2` points fails the length asserts.
     #[test]
     fn one_way_is_the_unsplit_transform() {
         // Under miri the sizes stop at 1024: the property is size-independent
@@ -389,11 +386,6 @@ mod tests {
     /// unsplit transform meets too (a bin of a float FFT is off by about
     /// `eps * log2(n)` of the signal's norm), and the split inverse of the
     /// split forward is `n` times the signal within the same bound.
-    ///
-    /// Mutations (run): the combine's `e - t` written `e + t` fails every
-    /// split size; combine twiddles of `k + 1` instead of `k` fail them; the
-    /// gather taking `ways * j + r` as `r * sub + j` (no decimation) fails
-    /// them; the inverse's twiddles not conjugated fail the round trip.
     #[test]
     fn a_split_transform_is_the_dft() {
         // The DFT reference is O(n^2) in f64 sin/cos. Under miri the 2048
@@ -443,9 +435,6 @@ mod tests {
 
     /// An empty frame is refused at construction, split or not, with a clear
     /// message and not a later index error.
-    ///
-    /// Mutation (run): removing the `size > 0` assert lets `new(0, 4)` reach
-    /// the sub-FFT plans, which panic with another message → fails.
     #[test]
     #[should_panic(expected = "a transform has at least one sample")]
     fn a_zero_size_is_refused() {
@@ -455,9 +444,6 @@ mod tests {
     /// All the transform's state is in its scratch: two transforms stepped
     /// alternately, on a scratch each, give the bits of each run alone, so a
     /// caller may run one step per host block with anything between.
-    ///
-    /// Mutation (run): handing the second transform the first one's scratch
-    /// (`&mut sx` for both) makes the interleaved run differ.
     #[test]
     fn the_steps_keep_their_state_in_the_scratch() {
         let f = StagedRealFft::new(512, 4);

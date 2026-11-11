@@ -87,12 +87,6 @@ fn assert_boundaries_are_on_the_ramp(stream: &[Vec<f32>], what: &str) {
 
 /// With DC in, the output is the gain vector itself; across a jump and a
 /// per-block sweep it must be continuous over block boundaries.
-///
-/// Mutation: holding the end gains across the block (no ramp) makes each
-/// boundary the whole block's step while the in-block step is 0 — fails on
-/// the first moving block.
-/// Also carries the deleted goldens' ramp mutation (run): the node's
-/// `process` rendering `&to, &to` (no ramp) fails this test.
 #[test]
 fn the_gain_ramp_is_continuous_across_block_boundaries() {
     for speakers in [2u16, 6] {
@@ -128,11 +122,6 @@ fn the_gain_ramp_is_continuous_across_block_boundaries() {
 ///
 /// A per-frame solve steps by 0.64 of full scale at every crossing of
 /// `stereo_width_switch`.
-///
-/// Mutation: rendering a mixed mono/stereo ramp at its end point only (no
-/// crossfade when the branches differ) fails at the first crossing.
-/// Also carries the deleted goldens' ramp mutation (run): the node's
-/// `process` rendering `&to, &to` (no ramp) fails this test.
 #[test]
 fn a_width_crossing_the_fold_threshold_crossfades() {
     let mut node = prep(VbapPannerNode::stereo());
@@ -167,12 +156,6 @@ fn a_width_crossing_the_fold_threshold_crossfades() {
 /// and the smoother's timing and coefficient. The analytic panner test
 /// `solve_block_follows_the_exact_one_pole_response` pins those (position
 /// closed form, and the gains solved at the advanced position).
-///
-/// Mutation: solving at the block's *first* frame (stepping the smoother after
-/// the solve) fails the last-frame equality; holding the end gains across the
-/// block (no ramp) fails the first-frame proximity.
-/// Also carries the deleted goldens' ramp mutation (run): the node's
-/// `process` rendering `&to, &to` (no ramp) fails this test.
 #[test]
 fn a_position_change_lands_in_the_next_block_as_a_ramp() {
     let setup = || {

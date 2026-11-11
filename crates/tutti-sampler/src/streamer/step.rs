@@ -208,10 +208,6 @@ mod tests {
     /// the loop sleeps (it used to report `Healthy` once any record existed, and
     /// before the first stream polled at 1 kHz). Once the stream is answered
     /// (`Cmd::Opened`) it is live and the cycle refills it.
-    ///
-    /// Mutation (run): `step` testing `streams.is_empty()` instead of "no
-    /// record is live" -> the opening record is not idle -> fails on the first
-    /// assertion.
     #[test]
     fn a_cycle_is_idle_until_a_stream_is_live() {
         let config = BufferConfig::default();
@@ -250,9 +246,6 @@ mod tests {
     /// A `RingControl` the reader held across the streamer's last publish is
     /// freed by the streamer's next cycle, with no further publish, whether or
     /// not a stream is live (this one's reader was never delivered).
-    ///
-    /// Mutation (run): the cycle's per-ring `reclaim_control` loop removed → the
-    /// control is still retired after the step, fails.
     #[test]
     fn a_cycle_frees_a_control_the_reader_held_across_its_replacement() {
         let config = BufferConfig::default();
@@ -294,11 +287,6 @@ mod tests {
     /// (the applied loop replaces the control without a new map): the value
     /// the reader held is retired by the replacement and freed by the next
     /// cycle, with nothing published since.
-    ///
-    /// Mutation (run): the cycle's per-ring `reclaim_control` loop removed →
-    /// the control is still retired after the step → fails. Mutation (run):
-    /// `Ring::publish_loop` publishing nothing (the new loop dropped) → the
-    /// first assertion fails.
     #[test]
     fn a_cycle_frees_a_control_the_reader_held_across_a_loop_publish() {
         let config = BufferConfig::default();

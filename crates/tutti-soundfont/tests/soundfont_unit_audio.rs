@@ -90,16 +90,6 @@ fn render_process_blocks(
 ///
 /// On this fixture the four renders first sound at frames 41, 57, 73 and 89:
 /// each exactly `offset + 41`, the 41 being the fixture's own attack ramp.
-///
-/// # Mutation
-///
-/// Each of these fails the test:
-///
-/// - Render the whole block ignoring offsets (apply every event, then one
-///   `render_range(0..size)`).
-/// - Keep the split but render in chunks of 64 (`Render::BLOCK`). The
-///   split alone is not enough, because the internal chunk is still filled
-///   whole.
 #[test]
 fn process_honors_frame_offset_within_block() {
     let sf = load_test_soundfont();
@@ -176,15 +166,12 @@ fn process_honors_frame_offset_within_block() {
 /// That version passes even when `process` ignores offsets entirely, because
 /// the solo reference then suffers exactly the same collapse as the combined
 /// render and the two errors cancel. It was written that way first and survived
-/// the mutation below, which is what forced this shape: the reference must not
+/// a collapse of the offset below, which is what forced this shape: the reference must not
 /// depend on the behaviour under test. Shifting a known-good offset-0 render in
 /// the test harness is that independent reference.
 ///
 /// This is also strictly stronger than "louder than one note" — a unit that
 /// collapsed both events to offset 0 would still be louder.
-///
-/// Mutation: render whole block ignoring offsets → fails (the second note lands
-/// at frame 0 instead of 32, so it diverges from the shifted reference).
 #[test]
 fn two_events_in_one_block_apply_at_their_own_offsets() {
     let sf = load_test_soundfont();
@@ -277,9 +264,6 @@ fn two_events_in_one_block_apply_at_their_own_offsets() {
 /// that clamped the offset to `size` rather than `size - 1`, would either
 /// panic on an inverted range or silently lose the event.
 ///
-/// Mutation: render the whole block ignoring offsets → fails (the note lands at
-/// frame 0, so the "silent before frame 63" assertion trips).
-///
 /// Note what this one does **not** catch: rendering in chunks of 64 while
 /// keeping the split leaves it green, because at that
 /// resolution offset 63 and offset 0 both round into the same chunk and the
@@ -348,10 +332,6 @@ fn event_at_last_frame_of_block_still_applies() {
 /// synthesizer, see `the_node_follows_its_graphs_rate`), so the property at
 /// the same rate is *continuity*: rendering, re-preparing, then rendering on
 /// must equal rendering straight through, with no stale chunk cursor.
-///
-/// Mutation (run): `prepare` rebuilding the synthesizer whatever the rate
-/// (drop the rate comparison) → the second half starts from fresh channel
-/// state, the note released → fails.
 #[test]
 fn a_same_rate_reprepare_mid_stream_does_not_disturb_rendering() {
     let sf = load_test_soundfont();
@@ -598,13 +578,6 @@ fn digest(samples: &[(f32, f32)]) -> u64 {
 /// from this unit's render; elsewhere only the rate and the sound are
 /// asserted, so the preset itself is pinned only by the glibc golden digest.
 /// A non-integral rate rounds to the nearest hertz (44 100.6 → 44 101).
-///
-/// Mutations (each run on the golden target, each failed): dropping the
-/// `program_change` from `with_preset` (the unit plays preset 0, the digest
-/// assert); building at `sample_rate` truncated to 44_000 Hz (the rate
-/// assert); the note on channel 0 instead of 3 (preset 0 again, the digest
-/// assert); `round` replaced by `trunc` (44 100.6 builds at 44 100, the
-/// rounding assert).
 #[test]
 fn a_preset_units_first_note_on_renders_that_preset() {
     const PRESET: U7 = U7::of(40);

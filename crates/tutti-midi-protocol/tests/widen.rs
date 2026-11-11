@@ -2,21 +2,6 @@
 //! M2-115 section 3.3.3, a bit-by-bit statement of the repeat rule, and the
 //! core rules of section 3.2, each over every value (128 seven-bit values and
 //! 16,384 fourteen-bit values).
-//!
-//! Mutation record (each planted in `src/`, seen to fail at the named tests,
-//! restored):
-//! - the repeat dropped (`upscale` returns `shifted`) -> `m2_115_table_5_velocity`,
-//!   `m2_115_table_6_controller_value`, `seven_bit_values_match_the_repeat_rule`
-//!   and `the_core_rules_hold` (maximum);
-//! - `value <= centre` made `value < centre` in `upscale` changes nothing: at the
-//!   centre the low bits are zero, so the repeat adds nothing. Not a mutation
-//!   any test can see;
-//! - the velocity-0 Note On arm removed -> `a_note_on_at_velocity_0_is_a_note_off_at_the_centre`;
-//! - its release velocity set to 0 -> the same test;
-//! - the Note Off arm using `NOTE_ON_ZERO_RELEASE` -> `a_note_off_keeps_its_velocity`;
-//! - Pitch Bend widened as 7 to 32 bits -> `fourteen_bit_bends_match_the_repeat_rule`;
-//! - a Program Change given a bank -> `every_variant_widens_and_keeps_its_fields`;
-//! - Poly Pressure widened through the 16-bit velocity scaler -> `every_variant_widens_and_keeps_its_fields`.
 
 use tutti_midi_protocol::widen;
 use tutti_ump::{

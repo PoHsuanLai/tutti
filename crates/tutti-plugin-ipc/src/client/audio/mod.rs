@@ -700,9 +700,6 @@ mod tests {
     /// whose queue nothing drains (no thread) refuses a state request once
     /// the queue is full; the plugin is not dead and a retry is reasonable.
     /// Once the bridge is crashed, the same refusal is `PluginCrashed`.
-    ///
-    /// Mutation (run): `refused` answering `PluginCrashed` always (as before)
-    /// → fails.
     #[test]
     fn a_full_queue_is_busy_not_a_crash() {
         let name = format!("tutti-busy-{}", std::process::id());

@@ -11,9 +11,6 @@ fn job(length: usize, latency: usize, tail: usize) -> Result<Job, JobError> {
 }
 
 /// A rate that is NaN or infinite is refused, and the error carries it.
-///
-/// Mutation (run): `is_rate` without the `is_finite` check (`rate > 0.0`
-/// only) -> infinity is accepted -> fails.
 #[test]
 fn a_non_finite_rate_is_refused() {
     for rate in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
@@ -26,9 +23,6 @@ fn a_non_finite_rate_is_refused() {
 }
 
 /// A rate of zero or below is refused.
-///
-/// Mutation (run): `is_rate` with `>= 0.0` -> zero is accepted -> fails;
-/// without the sign check at all -> the negative rows fail.
 #[test]
 fn a_non_positive_rate_is_refused() {
     for rate in [0.0, -0.0, -1.0, -48_000.0] {
@@ -41,8 +35,6 @@ fn a_non_positive_rate_is_refused() {
 }
 
 /// A job with no audible frame is refused, whatever it trims or keeps.
-///
-/// Mutation (run): drop the `length == 0` check -> `Ok` -> fails.
 #[test]
 fn a_zero_length_is_refused() {
     for (latency, tail) in [(0, 0), (512, 0), (0, 10), (512, 10)] {
@@ -51,9 +43,6 @@ fn a_zero_length_is_refused() {
 }
 
 /// A total that overflows a frame count is refused, not wrapped.
-///
-/// Mutation (run): `checked_add` replaced by a wrapping add in `new` -> the
-/// sum wraps to a small figure and the job is accepted -> fails.
 #[test]
 fn a_total_that_overflows_is_refused() {
     let err = job(usize::MAX, 1, 0).unwrap_err();
@@ -66,9 +55,6 @@ fn a_total_that_overflows_is_refused() {
 
 /// A total past `MAX_FRAMES` is refused with the figure it came to, and
 /// exactly `MAX_FRAMES` is a job: latency, length and tail all count.
-///
-/// Mutation (run): `n <= MAX_FRAMES` -> `n < MAX_FRAMES` makes the boundary
-/// row fail; leaving `latency` out of the sum makes the latency row fail.
 #[test]
 fn a_total_past_the_most_frames_is_refused() {
     assert!(
@@ -94,9 +80,6 @@ fn a_total_past_the_most_frames_is_refused() {
 
 /// The getters read back what was given, the derived counts add as documented
 /// and the event-loss policy defaults to failing.
-///
-/// Mutation (run): `output_length` leaving out the tail, or `total` leaving
-/// out the latency -> the figures below fail.
 #[test]
 fn a_job_reads_back_what_it_was_given() {
     let job = job(1_000, 64, 200).unwrap();

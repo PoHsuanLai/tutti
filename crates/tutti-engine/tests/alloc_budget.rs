@@ -146,10 +146,6 @@ fn graph(nodes: usize) -> (Editor, Executor) {
 ///
 /// Catches an allocation moving inside a per-node loop it does not belong in
 /// — the shape the 180× stretch-clone regression had.
-///
-/// Mutation (run): in `graph`, `ed.commit()` after every insert (a commit
-/// per node, each compiling the whole graph so far) → quadratic → the
-/// 4×-nodes ratio passes 8 → fails.
 #[test]
 fn building_a_graph_allocates_in_proportion_to_its_size() {
     // Warm: the first graph built in a process pays one-off costs (lazy
@@ -186,14 +182,6 @@ fn building_a_graph_allocates_in_proportion_to_its_size() {
 /// A no-op commit sends nothing and compiles nothing, so the tenth allocates
 /// **nothing at all** — the strongest form of "bounded", and the one that
 /// bites: any per-commit clone or compile shows up as a nonzero count.
-///
-/// Mutation (run): drop the unchanged check in `Editor::commit` → each no-op
-/// commit compiles and sends a plan, ~100 KiB for this chain → the byte
-/// ceiling and the zero count both fail. Mutation (run): push a clone of the
-/// spec onto a `Vec` the editor keeps, at the top of `commit` → passed the
-/// growth and byte checks alone (both commits clone alike, the clone is under
-/// 64 KiB, the `Vec` need not reallocate between them), which is why the
-/// zero count is asserted; with it → fails.
 #[test]
 fn a_no_op_commit_allocates_a_bounded_amount() {
     let (mut ed, mut exec) = graph(32);
@@ -242,10 +230,6 @@ fn a_no_op_commit_allocates_a_bounded_amount() {
 /// ever deleted or made inert, this still fails.
 ///
 /// The chain is the graph's (a sine and 16 gains), as the budgets above.
-///
-/// Mutation (run): allocate a `Vec` at the top of `Engine::walk` → 100
-/// blocks allocate → fails. (Counted because the engine renders on the
-/// calling thread; see [`measure`] for why only that thread counts.)
 #[test]
 fn rendering_blocks_allocates_nothing() {
     let transport = Transport::new(SampleRate::new(48_000.0));
@@ -321,10 +305,6 @@ fn fan(nodes: usize, pooled: bool) -> (Editor, Executor) {
 /// the pool. (Applying runs on the thread that calls `apply_pending`, so the
 /// count sees all of it; the pool's own threads are spawned before the
 /// measurement.)
-///
-/// Mutation (run): size each worker's claim lists by the plan's op count
-/// squared (in `Par::new`) → the pool's extra bytes grow about 4× with 4×
-/// the nodes → fails.
 #[test]
 fn the_parallel_state_allocates_in_proportion_to_the_plan() {
     let apply = |nodes: usize, pooled: bool| {

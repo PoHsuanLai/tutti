@@ -354,9 +354,6 @@ mod tests {
     /// The mapping's copies refuse the header's bytes: the header is only ever
     /// stored through its atomics, while `header()` hands out a shared
     /// reference to them.
-    ///
-    /// Mutation (run): drop the `offset >= SLAB_HEADER_BYTES` term in
-    /// `check_range` → the write lands → no panic → fails.
     #[test]
     #[should_panic(expected = "outside the data region")]
     fn a_copy_into_the_header_panics() {
@@ -369,9 +366,6 @@ mod tests {
     /// The magic is the first thing in the mapping: the opening side keys on it
     /// before trusting a single byte, so `repr(C)` and its field order are
     /// load-bearing. Read from the file, not through the header type.
-    ///
-    /// Mutation (run): move `magic` after `header_version` in `Control` → the
-    /// first eight bytes are no longer the magic → fails.
     #[test]
     fn the_magic_sits_at_offset_zero() {
         let n = name("magic");
@@ -386,9 +380,6 @@ mod tests {
 
     /// An opener reads back what the creator wrote, and refuses a file shorter
     /// than the size it asked for.
-    ///
-    /// Mutation (run): drop the length check in `open` → the short open maps
-    /// and passes → fails.
     #[test]
     fn open_sees_the_creators_bytes_and_refuses_a_short_file() {
         let n = name("open");
@@ -407,10 +398,6 @@ mod tests {
     /// A symlink planted at the name is refused by both ends: `create` does
     /// not follow it into the file it names, and `open` (`O_NOFOLLOW`) does not
     /// map whatever it points at.
-    ///
-    /// Mutation (run): drop `custom_flags(O_NOFOLLOW)` → the open through the
-    /// link succeeds → fails. (`create` is covered by `create_new`: `O_EXCL`
-    /// refuses an existing link, dangling or not.)
     #[cfg(unix)]
     #[test]
     fn a_symlink_at_the_name_is_refused() {
@@ -429,9 +416,6 @@ mod tests {
 
     /// Opening a file that is not a slab must fail on the magic, not produce a
     /// mapping full of someone else's bytes read as audio.
-    ///
-    /// Mutation (run): drop the `validate` in `open` → the foreign file opens
-    /// → fails.
     #[test]
     fn opening_a_foreign_file_is_refused() {
         let size = SLAB_HEADER_BYTES + 64;

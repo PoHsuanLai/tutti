@@ -941,9 +941,6 @@ fn system_common_clears_running_status() {
 /// The decoder hands the sink UMP SysEx7 packets in the list's order, as
 /// `tutti_ump::Midi1Parser` completes them (the parser is tested in
 /// `tutti-ump`); this pins the wiring from the packet walk.
-///
-/// Mutation (not run here, macOS only): in `Decoder::decode`, skip a
-/// `Message::Sysex7` → the SysEx7 packet is missing → fails.
 #[test]
 fn sysex_is_delivered_whole_between_its_neighbours() {
     use tutti_plugin_types::sysex_assembler;
@@ -964,11 +961,6 @@ fn sysex_is_delivered_whole_between_its_neighbours() {
 
 /// A SysEx split across packets, with a long body, arrives as one message at
 /// the offset of the packet that held its `0xF0`.
-///
-/// Mutation (not run here, macOS only): construct the decoder per packet in
-/// `decode_packet_list_for_test` → the tail packets are stray data → fails;
-/// stamp a SysEx7 packet with the offset of the packet that completed it → the
-/// offsets are 8 and 9 → fails.
 #[test]
 fn a_sysex_spanning_packets_is_delivered_once() {
     use tutti_plugin_types::sysex_assembler;

@@ -33,9 +33,6 @@ mod tests {
     /// The curve passes through its inner taps at `t = 0` and `t = 1`. For
     /// the taps -1, 0, 1, 8 the coefficients are `c1 = 1`, `c2 = -3`,
     /// `c3 = 3`, so the curve is `3t^3 - 3t^2 + t` and its midpoint is 0.125.
-    ///
-    /// Mutations (each fails): `c1` without the `0.5`; `c0 = y2`; `y0` and
-    /// `y3` swapped in `c3`.
     #[test]
     fn passes_through_its_inner_taps_and_follows_the_cubic() {
         let (y0, y1, y2, y3) = (-1.0, 0.0, 1.0, 8.0);

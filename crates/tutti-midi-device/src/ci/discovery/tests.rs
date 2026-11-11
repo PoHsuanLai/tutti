@@ -215,13 +215,3 @@ fn the_receivable_size_is_a_range_checked_value() {
         invalid: &[0, 127, 0x1000_0000, u32::MAX],
     });
 }
-
-// Mutations (run), each failing the named test:
-// - `encode_body` pushing the Function Block for a Discovery too:
-//   `discovery_and_reply_have_the_version_2_trailers`.
-// - `decode_body` defaulting an absent Function Block to 0:
-//   `a_version_1_body_still_decodes`.
-// - `Nak::encode_body` writing the text length as one byte:
-//   `nak_carries_its_version_2_details_and_text` (300 characters).
-// - `CiMessage::encode` stamping `SUB_ID2_DISCOVERY` on a reply:
-//   `discovery_reply_keeps_is_reply_flag`.

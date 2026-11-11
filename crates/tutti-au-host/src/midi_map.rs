@@ -695,9 +695,6 @@ mod tests {
     /// The byte codec writes every field where the `#[repr(C)]` struct holds it,
     /// so what the AU reads is the header's `AUParameterMIDIMapping`, and it
     /// reads back what it wrote.
-    ///
-    /// Mutation (run): swap the `element` and `parameter_id` slots in
-    /// `to_bytes` -> the offset assertions below fail.
     #[test]
     fn the_byte_codec_places_every_field_at_its_c_offset() {
         use std::mem::offset_of;

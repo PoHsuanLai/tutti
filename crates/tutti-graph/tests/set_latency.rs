@@ -152,13 +152,6 @@ fn peak_at(v: &[f32]) -> Option<usize> {
 /// latest path — is bit-identical to a run that never changed anything (no
 /// click), and the unit is the same one (never retired, called every block).
 /// A [`Reference`] handed the same spec renders the same numbers.
-///
-/// Mutation: make `set_latency` return `Ok(())` without writing anything →
-/// the dry path stays early → the alignment assertion fails. Mutation: write
-/// only the spec's latency, not the shape → the commit is a
-/// `LatencyMismatch` → fails. Mutation: read the reference's latency from
-/// `unit.shape()` again (`reference.rs`) → the reference never delays the
-/// dry path → the executor/reference comparison fails.
 #[test]
 fn a_latency_change_moves_the_other_paths_compensation() {
     let plugin = Plugin::new();
@@ -234,9 +227,6 @@ fn a_latency_change_moves_the_other_paths_compensation() {
 
 /// Refusals: a key with no node, a latency past what PDC compensates, and
 /// between a re-prepare's two commits.
-///
-/// Mutation: drop the `repreparing` check in `set_latency` → `Ok` → fails.
-/// Mutation: drop the `MAX_NODE_LATENCY` check → `Ok` → fails.
 #[test]
 fn set_latency_refuses_what_it_cannot_honour() {
     let (mut ed, _exec) = graph(Plugin::new());

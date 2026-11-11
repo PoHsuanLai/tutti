@@ -137,10 +137,6 @@ fn observe(s: &mut Session, frames: usize) -> Vec<(NodeKey, String)> {
 /// made would stay on the session's flag). Every node is a graph node, so a
 /// phase that treated each as a plugin would mark the graph edited every
 /// update and re-plan compensation forever.
-///
-/// Mutation (run, failed): `Phase::Plugins` marking the graph edited on each
-/// run (`plugins_phase` handing every node's latency to the graph as moved)
-/// -> `is_edited`.
 #[test]
 fn a_non_plugin_node_never_marks_the_graph_edited() {
     let _ = main_thread();
@@ -165,9 +161,6 @@ fn a_non_plugin_node_never_marks_the_graph_edited() {
 /// Asserting on the content is what distinguishes reading the engine's cause
 /// from inventing one: a fixed placeholder would pass a check for a death
 /// alone.
-///
-/// Mutation (run, failed): the `PluginDied` report carrying
-/// `String::new()` for the cause.
 #[test]
 fn a_dead_plugin_reports_the_engines_cause_not_a_placeholder() {
     let (mut s, node) = session_with(Some(
@@ -188,9 +181,6 @@ fn a_dead_plugin_reports_the_engines_cause_not_a_placeholder() {
 /// every count below the threshold, because an off-by-one here would unwire a
 /// live plugin: it is Failing with that many consecutive observations, and
 /// its node stays.
-///
-/// Mutation (run, failed): the `Failing` verdict not recorded on the hosted
-/// record (the status stays `Healthy`).
 #[test]
 fn a_crash_is_not_declared_until_the_debounce_elapses() {
     for frames in 1..Liveness::DEATHS as usize {
@@ -212,9 +202,6 @@ fn a_crash_is_not_declared_until_the_debounce_elapses() {
 }
 
 /// **Declaring a plugin dead removes its node and its record.**
-///
-/// Mutation (run, failed): the phase not removing a dead plugin's node (the
-/// node is still in the graph).
 #[test]
 fn declaring_death_removes_the_node_and_the_record() {
     let (mut s, node) = session_with(Some("stream closed"));
@@ -230,9 +217,6 @@ fn declaring_death_removes_the_node_and_the_record() {
 /// **A plugin the engine reports as alive is never written off**, however
 /// long it runs: the negative case, which none of the above would notice a
 /// phase declaring death unconditionally fail.
-///
-/// Mutation (run, failed): the phase observing every plugin as unhealthy
-/// (`observe(false, ..)`).
 #[test]
 fn a_live_plugin_is_never_declared_dead() {
     let (mut s, node) = session_with(None);

@@ -231,8 +231,6 @@ mod tests {
     }
 
     /// **Past the cap, events are dropped and reported, without allocating.**
-    ///
-    /// Mutation (run): a refused push returning `true` → fails.
     #[test]
     fn past_the_cap_events_are_dropped() {
         let mut intake = MidiIntake::default();
@@ -251,9 +249,6 @@ mod tests {
     /// next chunk too**, so its later packets never reach the plugin's
     /// reassembler to complete it with a gap. Another group's message, and
     /// this group's next one, pass.
-    ///
-    /// Mutation (run): the skip never set (a refused packet only counted) →
-    /// the cut message's tail is taken into the next chunk → fails.
     #[test]
     fn a_cut_sysex_is_skipped_to_its_end() {
         let mut intake = MidiIntake::default();
@@ -306,9 +301,6 @@ mod tests {
     /// first five packets of a 120-byte dump (three taken, two refused);
     /// the node resets; the dump's tail arrives: no message, and the next
     /// message arrives whole with the cut one counted dropped.
-    ///
-    /// Mutation (run): `lost` clearing `skipping` (what the reset used to
-    /// do) → the tail completes a 110-byte message → fails.
     #[test]
     fn a_message_cut_before_a_reset_stays_cut_after_it() {
         let dump = packets(MidiGroup::FIRST, 120);
@@ -345,9 +337,6 @@ mod tests {
     /// its tail leaves the tail skipped, not spliced onto the start; a
     /// message that ended before the lost chunk, and the next one, are not
     /// touched.
-    ///
-    /// Mutation (run): `lost` not marking the open groups skipped → the tail
-    /// completes the message with the lost chunk's packets missing → fails.
     #[test]
     fn a_lost_chunk_cuts_the_message_open_in_it() {
         let whole = packets(MidiGroup::FIRST, 20);
@@ -383,10 +372,6 @@ mod tests {
     /// too.** The plugin's host still has an earlier message open (its source
     /// never ended it), so the lost message's `END` would complete the
     /// earlier one with the lost `START`'s bytes missing.
-    ///
-    /// Mutation (run): `admit` not recording a taken `START` as open → the
-    /// lost `START` closes the group, nothing is cut, and the `END` completes
-    /// the earlier message → fails.
     #[test]
     fn a_lost_chunk_holding_only_a_start_cuts_its_message() {
         let unended = packets(MidiGroup::FIRST, 30);
@@ -418,9 +403,6 @@ mod tests {
     /// **A cut is per group.** A message on another group does not end the
     /// skip of one cut on group 1: group 1's tail stays skipped after a
     /// `SINGLE` on group 2 passes.
-    ///
-    /// Mutation (run): one bit for every group (`let bit = 1u16;`) → the
-    /// group-2 `SINGLE` clears group 1's skip and its tail is taken → fails.
     #[test]
     fn a_cut_on_one_group_survives_a_message_on_another() {
         let cut = packets(MidiGroup::FIRST, 30);
@@ -460,11 +442,6 @@ mod tests {
     /// key, and a note-on is refused. 256 note-ons keys 0..=127 twice over:
     /// a note-off of key 5 displaces the later note-on of 5, one is lost; a
     /// further note-on is refused, one lost.
-    ///
-    /// Mutation: drop the `is_note_off` test in `push_displacing` → the
-    /// note-on displaces too, and the list loses a note-on it kept → fails.
-    /// Mutation: take the first note-on rather than the key's → the wrong
-    /// note-on goes → fails.
     #[test]
     fn a_note_off_displaces_a_note_on_of_its_key_in_a_full_list() {
         let mut intake = MidiIntake::default();
@@ -497,9 +474,6 @@ mod tests {
 
     /// A MIDI 1.0 note-off ends a MIDI 2.0 note-on of the same group, channel
     /// and number: it displaces that note's on, not the latest one.
-    ///
-    /// Mutation (run): `same_note` comparing whole `Key`s (the protocol bit
-    /// too) → the latest note-on goes instead → fails.
     #[test]
     fn a_midi1_note_off_displaces_its_midi2_note_on() {
         let mut intake = MidiIntake::default();
@@ -523,9 +497,6 @@ mod tests {
     /// refuses the rest, 7,936, in constant time after one empty pass.
     /// Counted: every off beyond the list's 256 is one lost event or one
     /// refused, 8,192 in all.
-    ///
-    /// Mutation: leave `exhausted` unset → 8,192 passes instead of 257 → fails. Mutation: displace without removing the
-    /// victim → the list overflows `try_push` and the count changes → fails.
     #[test]
     fn a_flood_of_note_offs_is_bounded_and_counted() {
         let mut intake = MidiIntake::default();

@@ -116,12 +116,6 @@ fn ramp(at: usize, id: u32, value: f32) -> Event {
 /// after the block the plugin holds each one's last value in it. Every point
 /// is counted as sent, none dropped or merged; a block with no event leaves
 /// the plugin's values where they are.
-///
-/// Mutations (run), each fails: no `apply_params` in `drive_f32` → the probe
-/// keeps its defaults (`i / 16`); the first point of a queue applied instead
-/// of the last (`points.first()`) → each block's frame-0 value; the walk
-/// handing ramps to `other` (`EventKind::Ramp(ramp) if false` in
-/// `param_input::take`) → defaults, and nothing counted.
 #[test]
 fn a_moving_parameter_reaches_the_plugin() {
     let _lock = lock_probe();
@@ -168,12 +162,6 @@ fn a_moving_parameter_reaches_the_plugin() {
 /// (through the plugin handle, as an edit in its editor would be); the host
 /// keeps sending 0.25 and the plugin keeps 0.75, with nothing more sent;
 /// then the host moves to 0.5 and the plugin takes it.
-///
-/// Mutations (run), each fails: the node forgetting what it delivered
-/// (`slot.sent = None` for `Some(slot.staged)` in `ParamDelivery::settle`)
-/// → every block resends 0.25 over the edit; the node never sending a
-/// parameter again once it has sent one (`place` returning when
-/// `slot.sent.is_some()`) → 0.5 never arrives.
 #[test]
 fn a_held_value_is_sent_once_and_an_edit_on_the_plugin_survives_it() {
     let _lock = lock_probe();
@@ -226,11 +214,6 @@ fn a_held_value_is_sent_once_and_an_edit_on_the_plugin_survives_it() {
 /// the live node delivered (0.25), so the fork's fresh lane, which sends its
 /// 0.25 on its first block (doc 014 §10's fork requirement), is not passed
 /// on, and the export renders 501 too.
-///
-/// Mutation (run): the fork's delivery not seeded (no
-/// `fork.params.seed(&delivered)` in `node/fork.rs`) → the fork
-/// sends the lane's 0.25 over the loaded 0.5 → the export renders 251 →
-/// fails.
 #[test]
 fn an_export_renders_an_edit_made_in_the_plugin_as_live_does() {
     let _lock = lock_probe();

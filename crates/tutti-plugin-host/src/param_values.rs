@@ -269,10 +269,6 @@ mod tests {
     /// The fake lists two parameters and one it does not answer: the first two
     /// come back by their `u32`, the third is left out (`Some(None)` once
     /// landed: listed nowhere the mirror knows).
-    ///
-    /// Mutations (each run, each failed): `run` returning an empty map (the
-    /// values assert fails); `land` dropping its values (`is_ready` fails);
-    /// `run` leaving out the second parameter (its value is missing).
     #[test]
     fn a_read_returns_the_descriptors_values_and_landing_it_makes_the_mirror_ready() {
         use tutti_plugin_types::ParamId;
@@ -314,12 +310,6 @@ mod tests {
     /// A value the plugin reports reaches the mirror through the callback
     /// `start` installs, and waits for the read: drained before it lands it
     /// is held, not lost and not applied.
-    ///
-    /// Mutations (each run, each failed): `start` not installing the callback
-    /// (nothing is drained); `drain_edits` applying before the read lands (the
-    /// first drain sees the edit); `drain_edits` clearing the queue before the
-    /// read lands (the second drain sees nothing); `drain_edits` cloning the
-    /// queue instead of taking it (the third drain applies the edit again).
     #[test]
     fn a_reported_edit_waits_for_the_read_then_reaches_the_mirror() {
         use tutti_plugin_types::ParamId;

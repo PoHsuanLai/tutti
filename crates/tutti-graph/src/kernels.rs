@@ -355,9 +355,6 @@ mod tests {
     use tutti_ump::{MidiChannel, NoteNumber, U7, Ump};
 
     /// A ring of `n` outputs its input `n` samples later, across blocks.
-    ///
-    /// Mutation: write the input before reading the output in `run` → the
-    /// ring passes its input straight through → fails.
     #[test]
     fn ring_delays_by_its_length() {
         let mut r = AudioRing::new(Samples(3));
@@ -369,9 +366,6 @@ mod tests {
     }
 
     /// Retuning keeps the newest inputs and zero-pads the oldest end.
-    ///
-    /// Mutation: keep the *oldest* `keep` inputs instead (`.take(keep)`) →
-    /// shrinking to 2 outputs [1, 2] instead of [3, 4] → fails.
     #[test]
     fn retune_keeps_recent_history() {
         let mut r = AudioRing::new(Samples(4));
@@ -388,9 +382,6 @@ mod tests {
     }
 
     /// An event is delivered `len` frames later, in whichever block that is.
-    ///
-    /// Mutation: `due >= end` → `due > end` → the event at the block boundary
-    /// is emitted one block early with offset == frames → fails.
     #[test]
     fn fifo_delays_events_across_blocks() {
         let mut f = EventFifo::sized(Samples(6), 8, 8);
@@ -409,12 +400,6 @@ mod tests {
     /// queued: a FIFO holding its limit's worth of overdue events (a retune
     /// made them due at once) takes a full block of new events without
     /// refusing one, and delivers all of them in order.
-    ///
-    /// Mutation (run): queue the input before emitting the backlog in `run`
-    /// → the input past the limit is refused → fails. Found
-    /// as `recompiles_preserve_state_identically`'s seed
-    /// 3280887136571273968 (the executor dropped an event the reference
-    /// delivered).
     #[test]
     fn a_due_backlog_makes_room_for_the_blocks_input() {
         let mut f = EventFifo::sized(Samples(64), 2, 64);
@@ -444,9 +429,6 @@ mod tests {
 
     /// A feedback ring read before it is written delays by exactly its
     /// length, whatever the block sizes.
-    ///
-    /// Mutation: in `peek_oldest`, read from `pos + n - dst.len()` (the
-    /// newest samples) → the ragged schedule reads the wrong samples → fails.
     #[test]
     fn a_feedback_ring_delays_by_its_length_across_ragged_blocks() {
         let mut r = AudioRing::new(Samples(8));
@@ -485,9 +467,6 @@ mod tests {
 
     /// A note-off survives an overflow: past the limit it takes the reserve,
     /// and when even that is full it evicts the oldest non-note-off.
-    ///
-    /// Mutation: drop the note-off branches in `push` (treat every event
-    /// alike) → the note-off is refused like the note-ons → fails.
     #[test]
     fn a_note_off_survives_overflow() {
         let mut f = EventFifo::sized(Samples(4), 1, 4);
@@ -511,9 +490,6 @@ mod tests {
     /// has: a FIFO resized from a longer delay keeps its larger allocation,
     /// but its note-off reserve is counted against the new bound, which is
     /// what its output slot is priced at.
-    ///
-    /// Mutation: check the reserve against `q.capacity()` in `push` → the
-    /// shrunk FIFO takes note-offs up to its old allocation → fails.
     #[test]
     fn a_fifo_never_holds_more_than_its_bound() {
         let mut f = EventFifo::sized(Samples(64), 4, 8);
@@ -526,9 +502,6 @@ mod tests {
 
     /// Delivery never drops: when the output slot is full, due events stay
     /// queued and go out at offset 0 of the next block — late, not lost.
-    ///
-    /// Mutation: in `pop_due`, pop and discard when `out` is full instead of
-    /// stopping → three of the five events vanish → fails.
     #[test]
     fn a_full_output_slot_delays_events_rather_than_dropping_them() {
         let mut f = EventFifo::sized(Samples(1), 16, 8);

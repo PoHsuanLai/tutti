@@ -50,12 +50,6 @@ fn allocations(f: impl FnOnce()) -> usize {
 /// Construction allocates (so the counter is live); then many frames across
 /// block sizes that split frames, a reset, and more frames allocate nothing,
 /// for bins and for bands, with smoothing, peaks and a wrapping spectrogram.
-///
-/// Mutations (run):
-/// - `reset` as `*self = Self::new(..)`-style reallocation (`self.power =
-///   vec![..]`) -> the reset case counts allocations.
-/// - an `FftScratch` not planned in `SpectrumState::new` (drop the warming
-///   `fft.forward`) -> the first step counts allocations.
 #[test]
 fn a_spectrum_step_does_not_allocate() {
     let geometry =

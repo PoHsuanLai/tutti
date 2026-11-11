@@ -11,9 +11,6 @@ use tutti_plugin_types::{Editor, EditorWindow, Load, OutOfProcess};
 /// main-thread tick the editor instance has. The host answered
 /// `register_timer` with `true` and never called `on_timer`, so a plugin that
 /// animates its editor from a timer froze.
-///
-/// Mutation (run): delete the `Request::Timer(id)` arm from `editor_idle` →
-/// the timer never ticks → fails.
 #[test]
 fn a_timer_the_editor_registers_ticks_on_idle() {
     let path = tutti_fixtures::clap_probe();
@@ -59,9 +56,6 @@ fn a_timer_the_editor_registers_ticks_on_idle() {
 /// here cannot tell a carried state from a shared one; the bytes are compared
 /// with what the loaded plugin saves instead. That the audio instance takes
 /// them is the bridge's (`state_back_tests` in `tutti-plugin`).
-///
-/// Mutation (run): make `ClapEditor::save_state` return `Ok(Vec::new())` →
-/// fails.
 #[test]
 fn an_editors_state_is_the_plugins_state() {
     use tutti_plugin_types::Control;

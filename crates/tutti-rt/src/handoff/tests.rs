@@ -26,10 +26,6 @@ fn pair<T>() -> (Hand<T>, Rt<T>) {
 
 /// A lend reaches the audio end at its poll, and a recall brings it back
 /// through `take` after the next poll, with `last` run on it once.
-///
-/// Mutation (run): `poll` returning without `last` -> the stop count stays 0
-/// -> fails. Mutation (run): `take` ignoring the returned state -> `None` ->
-/// fails.
 #[test]
 fn a_lent_value_comes_back_after_a_recall() {
     let (mut hand, mut rt) = handoff::<u32>();
@@ -53,8 +49,6 @@ fn a_lent_value_comes_back_after_a_recall() {
 
 /// A recall before the audio end polled withdraws the offer at once, and the
 /// audio end then finds nothing.
-///
-/// Mutation (run): `recall` only raising the bit -> `None` -> fails.
 #[test]
 fn a_recall_withdraws_an_offer_not_yet_taken() {
     let (mut hand, mut rt) = handoff::<u32>();
@@ -66,9 +60,6 @@ fn a_recall_withdraws_an_offer_not_yet_taken() {
 
 /// A second lend while the first is still on offer is refused with its value;
 /// so is one while a returned value waits to be taken.
-///
-/// Mutation (run): `claim` ignoring the slot field -> the second lend
-/// overwrites the first -> fails.
 #[test]
 fn a_lend_into_a_full_slot_is_refused() {
     let (mut hand, mut rt) = handoff::<u32>();
@@ -87,9 +78,6 @@ fn a_lend_into_a_full_slot_is_refused() {
 /// the value the recall is for (Core's review of #494: lend A, the audio end
 /// takes it, recall, lend B; clearing the bit there left A running with
 /// nothing asking for it). That value then comes back at the next poll.
-///
-/// Mutation (run): `lend` claiming without `not_while_recalled` -> B is lent,
-/// the poll keeps A -> fails.
 #[test]
 fn a_lend_is_refused_while_a_recall_is_raised() {
     let (mut hand, mut rt) = handoff::<u32>();
@@ -105,9 +93,6 @@ fn a_lend_is_refused_while_a_recall_is_raised() {
 
 /// A recall with nothing lent is stale: the audio end clears it at its next
 /// poll, and a lend after that is taken and kept, not sent straight back.
-///
-/// Mutation (run): `poll` not clearing a stale recall -> the lend stays
-/// refused -> fails.
 #[test]
 fn the_audio_end_clears_a_stale_recall() {
     let (mut hand, mut rt) = handoff::<u32>();
@@ -121,10 +106,6 @@ fn the_audio_end_clears_a_stale_recall() {
 
 /// A value left in the slot drops with the last end, once; one the audio end
 /// holds drops with that end.
-///
-/// Mutation (run): `Shared::drop` dropping nothing -> the count stays 0 ->
-/// fails (and leaks); dropping an empty slot -> reads uninitialized memory
-/// (miri), so not run.
 #[test]
 fn a_value_in_the_slot_drops_with_the_last_end() {
     let drops = std::rc::Rc::new(std::cell::Cell::new(0));

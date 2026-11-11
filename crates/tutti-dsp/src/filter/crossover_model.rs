@@ -234,9 +234,6 @@ mod tests {
     /// -6.02 dB (one half) at its crossover, and the bands sum to a unit-magnitude
     /// all-pass at every frequency (the sum is the product of the splits'
     /// all-passes), for two to six bands.
-    ///
-    /// Mutations (run): a band missing one all-pass of a later split fails the
-    /// sum; `lp * lp` taken as `lp` fails the half at the crossover.
     #[test]
     fn the_bands_are_6_db_down_at_the_crossover_and_sum_to_an_all_pass() {
         for freqs in [
@@ -277,9 +274,6 @@ mod tests {
 
     /// Two bands, exactly: both bands are 1/2 at the crossover, the low band is 1 at
     /// DC and the high band 1 at Nyquist (the closed form of `LP^2` and `HP^2`).
-    ///
-    /// Mutation (run): `Split::solve`'s Q of 0.5 instead of `FRAC_1_SQRT_2` changes
-    /// the half at the crossover and fails.
     #[test]
     fn two_bands_have_the_closed_form_anchors() {
         let m = model(&[1_000.0]);
@@ -292,8 +286,6 @@ mod tests {
     /// The model's response is the running crossover's: the `RealFft` of each
     /// band's impulse response through `Crossover::split` against
     /// `frequency_response`, to 1e-5 of its norm, for three bands.
-    ///
-    /// Mutation (run): a band's all-pass applied twice in the model fails it.
     #[test]
     fn the_response_is_what_the_crossover_runs() {
         const N: usize = 1 << 15;
@@ -330,8 +322,6 @@ mod tests {
     /// The radius is the Butterworth section's pole modulus, from its own closed
     /// form `|p|^2 = a2 = (1 - sqrt2 k + k^2) / (1 + sqrt2 k + k^2)` with
     /// `k = tan(pi fc / rate)`, of the lowest split (the slowest).
-    ///
-    /// Mutation (run): taking the highest split's fails.
     #[test]
     fn the_radius_is_the_lowest_splits_butterworth_pole() {
         let m = model(&[60.0, 800.0, 5_000.0]);
@@ -343,9 +333,6 @@ mod tests {
     /// The ring: the lowest band's measured time to -60 dB of its peak is covered
     /// by the model's tail and within three times it, and 60 s of noise through
     /// every band stays under `l1_norm` and the response under `hinf_norm`.
-    ///
-    /// Mutations (run): the tail halved fails the cover, quadrupled the slack;
-    /// `l1_norm` scaled by 0.1 fails the noise.
     #[test]
     fn the_tail_covers_the_measured_ring_and_the_norms_bound_the_output() {
         const N: usize = 1 << 17;
@@ -394,9 +381,6 @@ mod tests {
 
     /// The design is separate from the state: the model of a crossover is the
     /// model built from its frequencies, before and after it has run.
-    ///
-    /// Mutation (run): `Crossover::model` returning a model solved at the wrong
-    /// frequencies (the unsolved one) fails.
     #[test]
     fn a_crossover_holds_its_model_apart_from_its_state() {
         let freqs = [Hz(250.0), Hz(4_000.0)];

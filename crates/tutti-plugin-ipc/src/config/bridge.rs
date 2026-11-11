@@ -168,9 +168,6 @@ mod tests {
     /// cannot predict it and bind it first (doc 027 D3). The pid and the
     /// counter alone keep names unique, which is why
     /// `each_default_config_gets_its_own_socket_path` cannot see this.
-    ///
-    /// Mutation (run): drop `unguessable()` from the name → the last field is
-    /// the counter, not sixteen hex digits → fails.
     #[test]
     fn the_socket_name_has_an_unguessable_part() {
         let path = unique_socket_path();
@@ -189,10 +186,6 @@ mod tests {
     /// that fits keeps it. A deep `TMPDIR` (a worktree's scratch directory,
     /// macOS's `/var/folders/…/T/`) failed the plugin server's launch with
     /// "local socket name length exceeds capacity of sun_path".
-    ///
-    /// Mutation (run): `socket_path_in` returning `temp.join(name)` always →
-    /// the path stays under the deep directory, over [`SOCKET_PATH_MAX`] →
-    /// fails (and without the asserts, the bind fails as the launch did).
     #[cfg(unix)]
     #[test]
     fn a_deep_temporary_directory_moves_the_socket() {

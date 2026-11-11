@@ -423,9 +423,6 @@ pub struct MidiChannelCounts {
 /// fn needs_sync<T: Sync>() {}
 /// needs_sync::<PluginInstance>();
 /// ```
-///
-/// Mutation (run): give `resume` back its token-free signature, or drop the `PhantomData`
-/// marker that makes the instance `!Sync`: the matching doctest compiles and fails.
 #[allow(dead_code)] // To keep `lib` around.
 #[derive(Debug)]
 pub struct PluginInstance {
@@ -1833,8 +1830,6 @@ impl RenderEntry {
 /// // A main-thread opcode is not an audio-thread entry.
 /// fn go(render: &mut RenderHandle) { render.resume(); }
 /// ```
-///
-/// Mutation (run): add a `resume` method to the handle: the doctest compiles and fails.
 pub struct RenderHandle {
     entry: RenderEntry,
     name: Arc<str>,
@@ -2959,11 +2954,6 @@ mod tests {
     /// only then.
     ///
     /// An idle that dispatched nothing would freeze editors that animate in `effEditIdle`.
-    ///
-    /// Mutation (run): make `idle_editor` an empty body -> the open
-    /// editor's idle dispatches nothing -> fails. Mutation (run): drop the
-    /// `is_open` guard -> an idle before open or after close reaches the
-    /// plugin -> fails.
     #[test]
     fn idle_dispatches_effeditidle_only_while_the_editor_is_open() {
         use crate::api::DispatcherProc;
@@ -3014,10 +3004,6 @@ mod tests {
     /// Before the arm existed the opcode logged the query and fell through to
     /// `0`, so a plugin gating a feature on `canDo("sendVstEvents")` was told
     /// "don't know" for everything.
-    ///
-    /// Mutation (run): the arm back to a log and fall-through -> all three
-    /// answers read `0` -> fails. Mutation (run): `Supported::No => 0` ->
-    /// the refusal reads as "don't know" -> fails.
     #[test]
     fn host_can_do_reaches_the_host_and_maps_to_the_three_answers() {
         struct Answers;
@@ -3381,10 +3367,6 @@ mod tests {
     ///
     /// Answers are collected and asserted after both joins, so a failure cannot strand the
     /// other thread at the barrier.
-    ///
-    /// Mutation: replace `LOAD_HOST` with a `static AtomicPtr` (store in `call_main`, load in
-    /// `callback_wrapper`). Both threads store before the barrier opens, so in every iteration
-    /// the thread that stored first reads the other's pointer, and the assertion fails.
     #[cfg(unix)]
     #[test]
     fn concurrent_loads_reach_their_own_host() {
@@ -3414,9 +3396,6 @@ mod tests {
 
     /// A load started inside `main` on the same thread leaves the outer load's pointer in
     /// place when it returns.
-    ///
-    /// Mutation: make `Restore::drop` always `set(null)`; the outer pointer is lost and the
-    /// assertion fails.
     #[cfg(unix)]
     #[test]
     fn nested_load_restores_the_outer_pointer() {
@@ -3455,9 +3434,6 @@ mod tests {
 
     /// `main` leaves nothing behind on the loading thread: a callback after it returns, with
     /// no `reserved1` to go on, is answered `0`.
-    ///
-    /// Mutation: skip the `Restore` guard in `call_main`; `LOAD_HOST` keeps pointing at the
-    /// dead loader and the null assertion fails.
     #[cfg(unix)]
     #[test]
     fn load_host_is_null_after_main() {
@@ -3525,12 +3501,6 @@ mod tests {
     /// once closed (every entry takes the gate and finds it closed). The fake plugin poisons
     /// its slots on close, as freeing the `AEffect` does, so a call after the close is
     /// visible.
-    ///
-    /// Mutation (run): make `RenderHandle::gated` skip the `*gate` check: the render after
-    /// the close calls the poisoned plugin (`RENDERS` moves) and its outputs are no longer
-    /// silent. Mutation (run): send `Shutdown` from `Core`'s drop again instead of the
-    /// instance's: dropping the instance while the handle lives no longer closes
-    /// (`CLOSES == 0` after it).
     #[cfg(unix)]
     #[test]
     fn effclose_is_the_instances_and_no_handle_outlives_it() {
@@ -3645,11 +3615,6 @@ mod tests {
     /// (`run_deferred`), once, and a live handle keeps working until then. A close on the
     /// wrong thread is what a plugin may not survive; a skipped one leaks the plugin and its
     /// licence seat. A drop has no token, so the thread is recorded and compared.
-    ///
-    /// Mutation (run): drop the thread comparison in `Drop for PluginInstance`: the drop on
-    /// the spawned thread closes there (`CLOSES == 1` before the tick). Mutation (run): drop
-    /// the `defer_to_main` call: the tick closes nothing (`CLOSES == 0`) and the last
-    /// assertion fails. Mutation (run): drop the counter increment: `off_thread_drops` stays 0.
     #[cfg(unix)]
     #[test]
     fn a_drop_off_the_main_thread_is_closed_on_the_main_threads_next_tick() {
@@ -3723,9 +3688,6 @@ mod tests {
     /// the thread it is dropped on (the audio thread, for a Processor): the core keeps the
     /// host box alive, and with it the host state. The instance closes first, on its thread;
     /// the handle then drops elsewhere.
-    ///
-    /// Mutation (run): drop the `defer_to_main` in `Drop for RenderHandle`: the host `Arc` is
-    /// released on the spawned thread and the first count assertion fails.
     #[cfg(unix)]
     #[test]
     fn the_last_render_handle_dropped_off_the_main_thread_frees_nothing_there() {
@@ -3772,10 +3734,6 @@ mod tests {
     /// **A panic under the gate kills the handle**: the plugin may be in any state, so every
     /// later entry is refused (silence) and the plugin is never called again; the instance
     /// still closes it.
-    ///
-    /// Mutation (run): in `gated`, take the poisoned guard and carry on (the old
-    /// `into_inner`): the next block reaches the plugin (`RENDERS` moves) and the silence
-    /// assertion fails.
     #[cfg(unix)]
     #[test]
     fn a_panic_under_the_gate_kills_the_core() {
@@ -3852,10 +3810,6 @@ mod tests {
     /// **Dropping the instance on its own thread sends the close sequence in order**: the
     /// editor, `effStopProcess` if processing, `effMainsChanged(0)` if resumed, then
     /// `effClose`; a plugin that was not resumed or not processing sees neither.
-    ///
-    /// Mutation (run): swap the stop and suspend blocks in `PluginInstance::close`: the
-    /// recorded order changes and the assertion fails. Mutation (run): drop the `resumed`
-    /// guard: the second instance sees a suspend it never resumed from.
     #[cfg(unix)]
     #[test]
     fn the_close_sequence_is_in_order_and_guarded() {
@@ -3906,10 +3860,6 @@ mod tests {
     /// `effSetSampleRate` waits for a render in flight, and a render that starts during one is
     /// refused (silence) without reaching the plugin. A plugin that cannot take the opcode
     /// beside `process` (doc 016 §2.10) therefore never sees them together, whoever calls.
-    ///
-    /// Mutation (run): drop the `lock()` in `PluginInstance::exclusive` (run the call
-    /// unguarded): the rate is dispatched while the render is in flight (first part), and the
-    /// render during the rate call reaches the plugin (second part); both assertions fail.
     #[cfg(unix)]
     #[test]
     fn the_exclusive_calls_are_serialised_with_the_audio_entries() {
@@ -4039,10 +3989,6 @@ mod tests {
     /// lets only `getParameter` and `setParameter` run beside a render; these are dispatcher
     /// calls, so each waits for a render in flight and a render that starts meanwhile is
     /// refused.
-    ///
-    /// Mutation (run): drop the `exclusive` wrapper in `get_parameter_name`: the name opcode
-    /// is dispatched while the render is in flight (first part; the plugin's own assertion
-    /// aborts), and a render reaches the plugin during it (second part).
     #[cfg(unix)]
     #[test]
     fn a_parameter_name_and_process_are_serialised() {
@@ -4170,13 +4116,6 @@ mod tests {
     /// channel tables by its live `numOutputs`; one more than the host sized is a
     /// read past the table. The handle renders silence instead, and renders again
     /// when the counts fit.
-    ///
-    /// Mutation (run): put `std::hint::black_box(Box::new(1u8));` in the refusing branch: the
-    /// allocation aborts under `assert_no_alloc`. Mutation (run): drop the
-    /// `fetch_add` in `RenderHandle::process`: the count assertion fails.
-    /// Mutation (run): remove the `pins_fit` checks in `RenderEntry::process` and
-    /// `process_f64`: the plugin is called with the larger count (`RENDERS` moves)
-    /// and the silence assertions fail.
     #[cfg(unix)]
     #[test]
     fn a_plugin_that_raises_its_pins_is_not_rendered() {
@@ -4288,11 +4227,6 @@ mod tests {
     /// null `dispatcher` is `InvalidEffect`: nothing is called on it (not even
     /// `effClose`) and `reserved1` is left alone. A valid one loads, and closes
     /// once.
-    ///
-    /// Mutation (run): drop the `magic`/`dispatcher` check in `instance`: the bad
-    /// magic effect is dispatched to (`CALLS` moves) and loads or fails with
-    /// another error, and the null dispatcher path reaches the unanswered-opcode
-    /// branch; both assertions fail.
     #[cfg(unix)]
     #[test]
     fn an_invalid_aeffect_is_refused_untouched() {
@@ -4357,9 +4291,6 @@ mod tests {
     /// left in `AEffect::reserved1`.** The field is "reserved for host", and a
     /// plugin that does not zero its `AEffect` before calling back from `main`
     /// leaves garbage in it, which was dereferenced as the host box.
-    ///
-    /// Mutation (run): check `reserved1` before `LOAD_HOST` again: the garbage
-    /// pointer is dereferenced and the test aborts on a signal.
     #[cfg(unix)]
     #[test]
     fn a_callback_in_main_ignores_a_garbage_reserved1() {
@@ -4386,11 +4317,6 @@ mod tests {
     /// with a load in progress it gets the load-time default (`0`) unless the effect it
     /// passes is one the host adopted, in which case it reaches that effect's own host
     /// (an adopted plugin's audio thread keeps working through someone else's load).
-    ///
-    /// Mutation (run): drop the registry check in `callback_wrapper` (trust `reserved1`
-    /// whenever it is non-zero): the garbage pointer is dereferenced and the test aborts.
-    /// Mutation (run): drop the `adopt` call in `instance`: the adopted effect's call is
-    /// answered `0` instead of its host's, and the second assertion fails.
     #[cfg(unix)]
     #[test]
     fn a_spawned_thread_during_main_cannot_reach_a_garbage_reserved1() {
@@ -4459,10 +4385,6 @@ mod tests {
     /// **A callback from inside a render takes no lock and allocates nothing, even
     /// while another plugin loads.** The render entry marks the effect it is calling
     /// (`RENDERING`), so `callback_wrapper` does not consult the registry mutex for it.
-    ///
-    /// Mutation (run): drop the `effect != RENDERING.get()` term in `callback_wrapper`:
-    /// the callback takes the registry lock and `REGISTRY_LOCKS` moves, so the second
-    /// assertion fails.
     #[cfg(unix)]
     #[test]
     fn a_callback_from_a_render_takes_no_lock_during_a_load() {
@@ -4533,11 +4455,6 @@ mod tests {
     /// A program name longer than `kVstMaxProgNameLen` (24 with the NUL) is cut to
     /// 23 bytes at a char boundary, and an interior NUL cuts it (and no longer
     /// panics through `expect`). The fake records the C string it is handed.
-    ///
-    /// Mutation (run): pass `usize::MAX` as the program name's `max_len`: the
-    /// 100-byte name reaches the plugin whole and the first assertion fails.
-    /// Mutation (run): `CString::new(string).expect(..)` on the raw string again:
-    /// the `"a\0b"` call panics.
     #[test]
     fn strings_to_the_plugin_are_short_and_c_strings() {
         use std::sync::Mutex;
@@ -4578,9 +4495,6 @@ mod tests {
     }
 
     /// `truncated_c_str`, directly: the NUL cut, the cap, and a char boundary.
-    ///
-    /// Mutation (run): drop the `is_char_boundary` loop: the `"é"` case slices
-    /// inside the char and panics.
     #[test]
     fn truncated_c_str_cuts_at_a_nul_a_cap_and_a_char_boundary() {
         assert_eq!(truncated_c_str("abc", 10), "abc");
@@ -4594,9 +4508,6 @@ mod tests {
 
     /// **A plugin that writes through `effSetChunk`'s pointer writes into a copy.**
     /// The opcode's pointer is `void*`; the caller's slice must not be handed over.
-    ///
-    /// Mutation (run): pass `data.as_ptr() as *mut c_void` in `set_chunk` again:
-    /// the plugin's write lands in the caller's bytes and the assertion fails.
     #[test]
     fn a_chunk_a_plugin_writes_into_is_a_copy() {
         extern "C" fn dispatch(
@@ -4629,11 +4540,6 @@ mod tests {
 
     /// A name a plugin writes past the spec's length (real plugins do) lands in a
     /// buffer that holds it, and comes back whole.
-    ///
-    /// Mutation (run): size the buffer by `max` alone in `read_string_param`: the
-    /// plugin overruns the heap block (undefined behaviour; under the allocator in
-    /// use the read of the first 32 bytes returns a 32-byte name) and the length
-    /// assertion fails.
     #[test]
     fn a_name_longer_than_the_spec_fits_the_buffer() {
         extern "C" fn dispatch(

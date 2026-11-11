@@ -276,12 +276,6 @@ fn plugin_without_f64_support_falls_back_to_the_f32_slot() {
 /// `effSetProcessPrecision` is dispatched once at load, carrying the width the
 /// host will call the plugin at: 64 only for a plugin that declared
 /// `effFlagsCanDoubleReplacing` and a caller that asked for `Double`.
-///
-/// Mutation (run): `double_precision` taken from `info.f64_precision` alone
-/// (the previous behaviour) -> the f64-capable plugin loaded at `Single` is
-/// told 64 and then called through `processReplacing` -> the second case
-/// fails. Mutation (run): `Double` ignored (always 32) -> the first case
-/// fails.
 #[test]
 fn set_process_precision_announces_the_width_the_host_will_use() {
     let _guard = lock_probe();
@@ -322,10 +316,6 @@ fn set_process_precision_announces_the_width_the_host_will_use() {
 
 /// A plugin told 32 is not entered at 64: `process_f64` narrows through the
 /// f32 slot even for a plugin that declared the f64 flag.
-///
-/// Mutation (run): `process_f64` choosing the native path on
-/// `metadata().supports_f64` (the previous behaviour) -> the entry is
-/// `ReplacingF64` for a plugin told 32 -> fails.
 #[test]
 fn a_plugin_told_32_bit_is_entered_through_the_f32_slot() {
     let _guard = lock_probe();

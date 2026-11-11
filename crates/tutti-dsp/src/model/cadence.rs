@@ -72,42 +72,65 @@ impl Cadence {
         self.anchor
     }
 
-    /// The steps of a block of `size` frames on a block-anchored grid: the
-    /// pieces a node designs and renders one at a time. A [`Period::Block`] grid
-    /// is one step; [`every(n)`](Self::every) tiles the block in steps of at most
-    /// `n` frames. Each step is solved at its **last** frame
-    /// ([`Step::solve_at`]), and the steps before it interpolate from the
-    /// previous solve.
+    /// The steps of a block of `size` frames that begins at stream frame
+    /// `position` (frames since the last reset): the pieces a node renders one at
+    /// a time.
     ///
-    /// `unprimed` makes frame 0 a step of its own: a node with nothing to
-    /// interpolate *from* (its first block after `prepare`) solves there
-    /// exactly instead of ramping in from a stand-in.
-    ///
-    /// # Panics
-    ///
-    /// On a stream grid: its steps depend on the stream's position, which no
-    /// node passes yet (doc 024 Q27).
-    pub fn steps(self, size: usize, unprimed: bool) -> impl Iterator<Item = Step> {
-        assert!(
-            matches!(self.anchor, Anchor::Block),
-            "a stream grid's steps need the stream position"
-        );
-        let first = usize::from(unprimed && size > 0);
+    /// - **Block anchor** (`position` is not read): a [`Period::Block`] grid is one
+    ///   step and [`every(n)`](Self::every) tiles the block in steps of at most `n`
+    ///   frames, each solved at its **last** frame ([`Step::solve_at`]).
+    ///   `unprimed` makes frame 0 a step of its own: a node with nothing to
+    ///   interpolate *from* (its first block after `prepare`) solves there exactly.
+    /// - **Stream anchor**: the block is cut at the grid points of the stream
+    ///   clock, `offset + k * period`, wherever the block falls. A step that
+    ///   begins on a grid point ([`Step::grid_point`]) is solved at its **first**
+    ///   frame and renders toward that solve; the first step of a block that
+    ///   begins inside a segment is the rest of a segment whose solve an earlier
+    ///   block made, and is not a grid point. `unprimed` is not read: a stream
+    ///   starts on a grid point.
+    pub fn steps(self, position: u64, size: usize, unprimed: bool) -> impl Iterator<Item = Step> {
         let period = match self.period {
             Period::Block => size.max(1),
             Period::Frames(n) => n.get() as usize,
         };
-        core::iter::once(0..1)
-            .take(first)
-            .chain(
-                (first..size)
-                    .step_by(period)
-                    .map(move |start| start..(start + period).min(size)),
-            )
-            .map(|frames| Step {
-                solve_at: frames.end - 1,
-                frames,
-            })
+        let anchor = self.anchor;
+        let phase = match anchor {
+            Anchor::Block => 0,
+            Anchor::Stream { offset } => {
+                let n = period as u64;
+                (position + n - offset.0 as u64 % n) % n
+            }
+        };
+        let mut start = 0;
+        core::iter::from_fn(move || {
+            if start >= size {
+                return None;
+            }
+            let step = match anchor {
+                Anchor::Block => {
+                    let end = if unprimed && start == 0 {
+                        1
+                    } else {
+                        (start + period).min(size)
+                    };
+                    Step {
+                        frames: start..end,
+                        solve_at: end - 1,
+                        grid_point: true,
+                    }
+                }
+                Anchor::Stream { .. } => {
+                    let into = ((phase + start as u64) % period as u64) as usize;
+                    Step {
+                        frames: start..(start + period - into).min(size),
+                        solve_at: start,
+                        grid_point: into == 0,
+                    }
+                }
+            };
+            start = step.frames.end;
+            Some(step)
+        })
     }
 
     /// Whether the render is the same whatever the block lengths: a fixed
@@ -127,6 +150,10 @@ pub struct Step {
     pub frames: Range<usize>,
     /// The frame at which `theta` is sampled for the step.
     pub solve_at: usize,
+    /// Whether the step begins a segment of the grid, so `theta` is sampled for it
+    /// here. Always true on a block grid; false on a stream grid for the rest of
+    /// a segment that an earlier block began.
+    pub grid_point: bool,
 }
 
 #[cfg(test)]
@@ -134,7 +161,7 @@ mod tests {
     use super::*;
 
     fn ranges(grid: Cadence, size: usize, unprimed: bool) -> Vec<Range<usize>> {
-        grid.steps(size, unprimed).map(|s| s.frames).collect()
+        grid.steps(0, size, unprimed).map(|s| s.frames).collect()
     }
 
     /// The steps tile the block with no gap and no overlap, each solved at its
@@ -151,15 +178,15 @@ mod tests {
         assert_eq!(ranges(Cadence::BLOCK, 40, false), vec![0..40]);
         assert_eq!(ranges(Cadence::BLOCK, 0, false), Vec::<Range<usize>>::new());
         assert!(
-            grid.steps(40, false)
-                .all(|s| s.solve_at == s.frames.end - 1)
+            grid.steps(0, 40, false)
+                .all(|s| s.solve_at == s.frames.end - 1 && s.grid_point)
         );
     }
 
     /// An unprimed block solves its first frame alone, then tiles the rest.
     ///
-    /// Mutation: dropping the `take(first)` stage (never isolating frame 0)
-    /// fails the first assertion.
+    /// Mutation: dropping the `unprimed && start == 0` arm (never isolating
+    /// frame 0) fails the first assertion.
     #[test]
     fn an_unprimed_block_isolates_frame_zero() {
         let grid = Cadence::every(N16);
@@ -167,6 +194,46 @@ mod tests {
         assert_eq!(ranges(grid, 1, true), vec![0..1]);
         assert_eq!(ranges(grid, 0, true), Vec::<Range<usize>>::new());
         assert_eq!(ranges(Cadence::BLOCK, 40, true), vec![0..1, 1..40]);
+    }
+
+    /// A stream grid cuts the block at the stream's grid points, whatever the
+    /// block's own start, and only a step that begins on one is solved.
+    ///
+    /// Mutation: counting the phase from the block start (`phase = 0`) fails the
+    /// block that begins at 5; `solve_at` at the end instead of `start` fails the
+    /// `solve_at` check.
+    #[test]
+    fn a_stream_grid_is_cut_at_the_streams_grid_points() {
+        let grid = Cadence::stream(N16);
+        let cut = |position, size| {
+            grid.steps(position, size, false)
+                .map(|s| (s.frames, s.solve_at, s.grid_point))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            cut(0, 40),
+            [(0..16, 0, true), (16..32, 16, true), (32..40, 32, true)]
+        );
+        assert_eq!(
+            cut(5, 40),
+            [(0..11, 0, false), (11..27, 11, true), (27..40, 27, true)]
+        );
+        assert_eq!(cut(32, 8), [(0..8, 0, true)]);
+        assert_eq!(cut(40, 8), [(0..8, 0, false)]);
+        assert_eq!(cut(47, 2), [(0..1, 0, false), (1..2, 1, true)]);
+        assert!(cut(7, 0).is_empty());
+        // Blocks of any length find the same grid points of the stream.
+        for block in [1, 5, 17, 64] {
+            let points: Vec<usize> = (0..96)
+                .step_by(block)
+                .flat_map(|p| {
+                    grid.steps(p as u64, block.min(96 - p), false)
+                        .filter(|s| s.grid_point)
+                        .map(move |s| p + s.frames.start)
+                })
+                .collect();
+            assert_eq!(points, [0, 16, 32, 48, 64, 80], "blocks of {block}");
+        }
     }
 
     const N16: NonZeroU32 = NonZeroU32::new(16).unwrap();

@@ -282,6 +282,12 @@ required-features = ["clap", "export"]
 name = "plugin_latency"
 required-features = ["clap", "device"]
 
+# A hosted plugin's bypass is the graph's `NodeMode` (doc 013 M2's host half):
+# the reference CLAP plugin in a real `plugin-server`.
+[[test]]
+name = "plugin_bypass"
+required-features = ["clap"]
+
 # What `Phase::Plugins` does with a hosted plugin's health, over a fake
 # backend (no `plugin-server`): the session half of `bevy-tutti`'s
 # `plugin_host::health` tests.

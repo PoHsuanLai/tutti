@@ -409,7 +409,7 @@ impl SessionBuilder {
             #[cfg(feature = "plugin")]
             render_mode: Default::default(),
             #[cfg(feature = "export")]
-            export: Default::default(),
+            bounce: Default::default(),
         })
     }
 

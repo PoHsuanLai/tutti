@@ -778,7 +778,8 @@ that sends SysEx7 bytes through the whole route.
    inquiry that prompted it, and Discovery goes to each group of the endpoint
    (`CI_GROUP` is `MidiGroup::FIRST` in `bevy-tutti`'s `negotiation.rs` for every
    outbound message, so a Function Block on another group never sees it). The
-   inbound path reassembles SysEx7 per group. Tests: an inquiry on group 5 is
+   inbound path reassembles SysEx7 per group (**the assembler is done in L2**: one
+   stream per Group; feeding it from the hardware input is L6(b)). Tests: an inquiry on group 5 is
    answered on group 5; Discovery on an endpoint with blocks on groups 0 and 3
    is sent to both; two interleaved reassemblies on different groups both
    complete.
@@ -2404,6 +2405,37 @@ when there is none. `MidiFile::clip` checks the header through the same `config`
 (`check_header`), and the writer's count of leading Set Profile On packets is the same
 `set_profile_on` rule. `scripts/check-layout.sh` holds winnow per crate: a dependency of
 `tutti-midi-file` only, named only in `smf/read.rs` and `clip_file/read.rs`.
+
+### L2: SysEx is per Group (done)
+
+`tutti_ump::SysexAssembler` keeps one stream per Group and ends it by the Group's next
+message, as M2-104 §7.7.1 has it: "If any Message or UMP on the same Group, other than a
+System Exclusive Continue UMP or a System Real Time Message, is sent after a System
+Exclusive Start UMP and before the associated System Exclusive End UMP, then that UMP shall
+terminate the System Exclusive Message", and "Messages which are Groupless (MT = 0x0 and
+0xF) and those which are sent to a different Group may be interspersed". It replaces the
+earlier policy (one open run across all Groups, ended by another SysEx7 packet only), which
+the spec does not say. A Group's message is dropped and counted when a channel voice,
+System Common, Flex Data, Complete, Start, SysEx8 or Mixed Data Set UMP of its Group
+arrives; a Utility or UMP Stream message, a System Real Time message (type 1, `0xF8` to
+`0xFF`) and anything on another Group end nothing. `push` therefore takes every UMP of the
+stream, not only SysEx7 packets.
+
+The assembler is built with `lanes` (at most sixteen): that many Groups can hold an open
+message at once, each in a `max_message` slot at the end of the caller's buffer, and a
+`Start` that finds every slot held is dropped and counted. A completed message is copied
+out of its slot into the block's completed area, so `room_for(max, packets, lanes)` is
+`2 * lanes * max + 8 * packets`. A plugin host takes a format's one stream of whole
+messages (VST2 bytes, a CLAP MIDI 1.0 SysEx, all on the first Group) with one lane.
+
+SysEx8 and Mixed Data Set get **no assembler**. Nothing consumes them (the audit's
+`Sysex8PacketReassembler` was deleted in 3c for having no caller), and the plan's "by the same
+rule" does not hold: M2-104 §7.8.1 and §7.9.1 say "there are no prohibitions against
+interspersing other message UMPs, as there are with the 7-bit System Exclusive Messages". A
+SysEx8 message ends on its own End (or the abort of `# of bytes` `0xF`) and is keyed by
+(Group, Stream ID); a Mixed Data Set ends when its chunk number reaches the declared count or
+its Number of this Chunk is zero, and is keyed by (Group, MDS ID). Whoever first needs one
+writes it to that, in `tutti-ump`, with the same caller-sized storage.
 
 ## 11. Testing
 

@@ -17,7 +17,16 @@ const LONGEST: usize = MAX_PAYLOAD + 2;
 const BLOCK: usize = 256;
 
 fn assembler() -> SysexAssembler<Vec<u8>> {
-    SysexAssembler::new(vec![0; SysexAssembler::room_for(LONGEST, BLOCK)], LONGEST)
+    assembler_with(1)
+}
+
+/// The plugin layer's sizes with `lanes` open messages at once.
+fn assembler_with(lanes: usize) -> SysexAssembler<Vec<u8>> {
+    SysexAssembler::new(
+        vec![0; SysexAssembler::room_for(LONGEST, BLOCK, lanes)],
+        LONGEST,
+        lanes,
+    )
 }
 
 /// The packet of `status` carrying `chunk` (at most six bytes).
@@ -108,7 +117,7 @@ fn an_open_run_carries_across_blocks() {
 /// next message is delivered intact.
 #[test]
 fn a_message_past_capacity_is_dropped_whole_and_counted() {
-    let mut asm = SysexAssembler::new(vec![0; SysexAssembler::room_for(20, BLOCK)], 20);
+    let mut asm = SysexAssembler::new(vec![0; SysexAssembler::room_for(20, BLOCK, 1)], 20, 1);
     let long = payload(19); // 21 framed bytes: one past capacity
     assert!(feed(&mut asm, &packets(MidiGroup::FIRST, &long)).is_empty());
     assert_eq!(asm.dropped(), 1);
@@ -164,17 +173,136 @@ fn a_single_beside_an_open_run() {
     assert_eq!(asm.dropped(), 1);
 }
 
-/// **Other messages pass through an open run** (`NotSysex`) and do not
-/// end it.
+/// **A UMP of the open message's Group ends it (M2-104 §7.7.1)**, dropped and
+/// counted once, whatever kind it is that is not a Continue or a System Real
+/// Time message: the packets left over are an orphan and are skipped.
 #[test]
-fn other_messages_do_not_end_a_run() {
+fn another_message_on_the_group_ends_the_run() {
     let body = payload(20);
     let pkts = packets(MidiGroup::FIRST, &body);
-    let note = Ump([0x4090_3C00, 0x8000_0000, 0, 0]);
+    let on_the_group = [
+        ("MIDI 1.0 note", Ump([0x2090_3C40, 0, 0, 0])),
+        ("MIDI 2.0 note", Ump([0x4090_3C00, 0x8000_0000, 0, 0])),
+        ("System Common", Ump([0x10F1_0000, 0, 0, 0])),
+        (
+            "System Real Time status below 0xF8",
+            Ump([0x10F6_0000, 0, 0, 0]),
+        ),
+        ("Flex Data", Ump([0xD010_0000, 0, 0, 0])),
+        ("SysEx8", Ump([0x5001_0000, 0, 0, 0])),
+        ("Mixed Data Set", Ump([0x5008_0000, 0, 0, 0])),
+    ];
+    for (what, other) in on_the_group {
+        let mut asm = assembler();
+        assert!(feed(&mut asm, &pkts[..2]).is_empty());
+        assert_eq!(asm.push(other), SysexStep::NotSysex, "{what}");
+        assert_eq!(asm.dropped(), 1, "{what} ends the message, counted");
+        assert!(
+            feed(&mut asm, &pkts[2..]).is_empty(),
+            "{what}: the tail is an orphan"
+        );
+        assert_eq!(asm.dropped(), 1, "{what}: the orphan is not counted again");
+        // The Group is free for the next message.
+        assert_eq!(feed(&mut asm, &pkts), vec![framed(&body)], "{what}");
+    }
+}
+
+/// **What the spec lets sit inside a message does not end it**: a System Real
+/// Time message on its Group, a Groupless Utility or UMP Stream message, and
+/// any message on another Group.
+#[test]
+fn what_may_be_interspersed_does_not_end_the_run() {
+    let body = payload(20);
+    let pkts = packets(MidiGroup::FIRST, &body);
+    let interspersed = [
+        ("clock", Ump([0x10F8_0000, 0, 0, 0])),
+        ("active sensing", Ump([0x10FE_0000, 0, 0, 0])),
+        ("reset", Ump([0x10FF_0000, 0, 0, 0])),
+        ("JR Clock", Ump([0x0010_0000, 0, 0, 0])),
+        ("NOOP", Ump([0x0000_0000, 0, 0, 0])),
+        ("Endpoint Discovery", Ump([0xF000_0101, 0, 0, 0])),
+        ("note on Group 2", Ump([0x4290_3C00, 0x8000_0000, 0, 0])),
+        ("System Common on Group 2", Ump([0x11F1_0000, 0, 0, 0])),
+        ("Flex Data on Group 2", Ump([0xD210_0000, 0, 0, 0])),
+    ];
     let mut asm = assembler();
     assert!(feed(&mut asm, &pkts[..2]).is_empty());
-    assert_eq!(asm.push(note), SysexStep::NotSysex);
+    for (what, other) in interspersed {
+        assert_eq!(asm.push(other), SysexStep::NotSysex, "{what}");
+    }
     assert_eq!(feed(&mut asm, &pkts[2..]), vec![framed(&body)]);
+    assert_eq!(asm.dropped(), 0);
+}
+
+/// **Two Groups' messages interleave** (M2-104 §2.1.2, §7.7.1), each
+/// assembled apart, even across a block boundary.
+#[test]
+fn groups_interleave_their_messages() {
+    let a = payload(40);
+    let b: Vec<u8> = payload(33).iter().rev().copied().collect();
+    let (ga, gb) = (MidiGroup::of(2), MidiGroup::of(9));
+    let (pa, pb) = (packets(ga, &a), packets(gb, &b));
+    let mut asm = assembler_with(2);
+    let mut done = Vec::new();
+    for (i, (x, y)) in pa.iter().zip(&pb).enumerate() {
+        if i == 2 {
+            asm.begin_block();
+        }
+        done.extend(feed(&mut asm, &[*x, *y]));
+    }
+    let longer = if pa.len() > pb.len() { &pa } else { &pb };
+    let common = pa.len().min(pb.len());
+    done.extend(feed(&mut asm, &longer[common..]));
+    // B is the shorter, so it completes first.
+    assert_eq!(done, vec![framed(&b), framed(&a)]);
+    assert_eq!(asm.dropped(), 0);
+}
+
+/// **A `Start` with every lane held by another Group is dropped whole and
+/// counted once**; the held message completes, and the Group can send again.
+#[test]
+fn a_start_with_no_free_lane_is_dropped() {
+    let a = payload(20);
+    let b = payload(20);
+    let (pa, pb) = (packets(MidiGroup::of(1), &a), packets(MidiGroup::of(2), &b));
+    let mut asm = assembler_with(1);
+    assert!(feed(&mut asm, &pa[..2]).is_empty());
+    assert!(feed(&mut asm, &pb).is_empty(), "no lane for Group 3");
+    assert_eq!(asm.dropped(), 1);
+    assert_eq!(feed(&mut asm, &pa[2..]), vec![framed(&a)]);
+    // The lane is free again.
+    assert_eq!(feed(&mut asm, &pb), vec![framed(&b)]);
+    assert_eq!(asm.dropped(), 1);
+}
+
+/// **Every Group can hold a message at once** with sixteen lanes, without
+/// allocating.
+#[test]
+fn sixteen_groups_assemble_at_once() {
+    let bodies: Vec<Vec<u8>> = (0..16).map(|g| payload(20 + g)).collect();
+    let per_group: Vec<Vec<Ump>> = bodies
+        .iter()
+        .enumerate()
+        .map(|(g, body)| packets(MidiGroup::of(g as u8), body))
+        .collect();
+    let mut asm = SysexAssembler::new(vec![0; SysexAssembler::room_for(64, BLOCK, 16)], 64, 16);
+    let mut done = 0usize;
+    assert_no_alloc(|| {
+        let longest = per_group.iter().map(Vec::len).max().unwrap();
+        for i in 0..longest {
+            for packets in &per_group {
+                if let Some(p) = packets.get(i)
+                    && let SysexStep::Complete(r) = asm.push(*p)
+                {
+                    let g = packets[0].group().unwrap().get() as usize;
+                    assert_eq!(asm.message(r).payload(), bodies[g].as_slice());
+                    done += 1;
+                }
+            }
+        }
+    });
+    assert_eq!(done, 16);
+    assert_eq!(asm.dropped(), 0);
 }
 
 /// **An assembler with no room drops (and counts) every message**, rather
@@ -183,7 +311,7 @@ fn other_messages_do_not_end_a_run() {
 #[test]
 fn an_assembler_with_no_room_drops_everything() {
     for max_message in [0, 100] {
-        let mut asm = SysexAssembler::new(Vec::<u8>::new(), max_message);
+        let mut asm = SysexAssembler::new(Vec::<u8>::new(), max_message, 1);
         assert!(feed(&mut asm, &packets(MidiGroup::FIRST, &[1])).is_empty());
         assert!(feed(&mut asm, &packets(MidiGroup::FIRST, &payload(20))).is_empty());
         assert_eq!(asm.dropped(), 2, "max_message {max_message}");
@@ -265,6 +393,27 @@ fn a_lost_tail_drops_the_open_message() {
     // The next message is whole.
     assert_eq!(feed(&mut asm, &pkts), vec![framed(&body)]);
     assert_eq!(asm.dropped(), 1);
+}
+
+/// **A lost tail and a reset drop every Group's open message**, each counted.
+#[test]
+fn a_lost_tail_and_a_reset_drop_every_groups_message() {
+    let a = packets(MidiGroup::of(0), &payload(20));
+    let b = packets(MidiGroup::of(5), &payload(20));
+    for lost in [true, false] {
+        let mut asm = assembler_with(2);
+        assert!(feed(&mut asm, &a[..2]).is_empty());
+        assert!(feed(&mut asm, &b[..2]).is_empty());
+        if lost {
+            asm.lost_tail();
+        } else {
+            asm.reset();
+        }
+        assert_eq!(asm.dropped(), 2);
+        assert!(feed(&mut asm, &a[2..]).is_empty());
+        assert!(feed(&mut asm, &b[2..]).is_empty());
+        assert_eq!(asm.dropped(), 2);
+    }
 }
 
 /// **A reset drops the open message, counted**, so its remaining packets

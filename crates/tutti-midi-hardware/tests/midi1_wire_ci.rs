@@ -59,7 +59,7 @@ fn midi1_wire_sysex_promotes_to_a_typed_ci_message() {
         })
         .collect();
 
-    let mut assembler = SysexAssembler::new(vec![0; SysexAssembler::room_for(256, 16)], 256);
+    let mut assembler = SysexAssembler::new(vec![0; SysexAssembler::room_for(256, 16, 1)], 256, 1);
     let decoded = fragments
         .iter()
         .find_map(|event| match assembler.push(*event) {

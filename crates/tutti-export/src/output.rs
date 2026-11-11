@@ -13,7 +13,7 @@ use tutti_dsp::DitherShape;
 use tutti_graph::TapReader;
 use tutti_types::{ChannelLayout, ChannelTopology, FoldError};
 
-use crate::config::Resample;
+use crate::Resample;
 use crate::normalize::Normalize;
 use crate::{Rendered, Written};
 
@@ -392,6 +392,11 @@ pub enum TargetError {
         /// The index it names.
         index: usize,
     },
+    /// [`write_buffers`](crate::write_buffers) was given a target that asks to
+    /// normalize: planes are written as they are, so the gain is applied first
+    /// ([`Rendered::apply_gain`](crate::Rendered::apply_gain)).
+    #[error("planes are written as they are: apply the gain first, and ask no normalize")]
+    NormalizeOfPlanes,
     /// Another output writes the same path.
     #[error("output {other} writes the same path")]
     SamePath {

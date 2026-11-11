@@ -156,7 +156,7 @@ fn the_assembler_gives_back_the_message() {
         let message = SysexMessage::new(&framed).unwrap();
         let group = MidiGroup::of(3);
 
-        let mut asm = SysexAssembler::new(vec![0u8; 128], 64);
+        let mut asm = SysexAssembler::new(vec![0u8; 128], 64, 1);
         asm.begin_block();
         let mut out = None;
         for ump in message.packets(group) {

@@ -11,16 +11,14 @@
 //! Run: `cargo run --example export -- <outdir>`
 
 use tutti_export::{
-    ChannelLayout, Control, EncodeConfig, ExportConfig, FileTarget, FlacLevel, Format, IntDepth,
-    Normalize, NormalizeSpec, Output, Pcm, Produced, Quality, RenderConfig, RenderGraph, Setup,
-    render, render_one,
+    BufferTarget, ChannelLayout, Control, FileTarget, FlacLevel, Format, IntDepth, Job, Normalize,
+    NormalizeSpec, Output, Pcm, Produced, Quality, RenderGraph, Setup, render, render_one,
 };
 use tutti_graph::GraphBuilder;
 use tutti_measure::{LoudnessConfig, measure_loudness};
 use tutti_nodes::testing::{Const, Osc};
 use tutti_transport::FrozenClock;
-use tutti_types::Seconds;
-use tutti_types::{Amplitude, Hz, SampleRate};
+use tutti_types::{Amplitude, Hz, SampleRate, Samples, Seconds};
 use tutti_types::{Db, Interleaved};
 
 /// The rate every render below runs at.
@@ -63,32 +61,23 @@ fn main() -> tutti_export::Result<()> {
 
     // ---- 1. a graph to a file -------------------------------------------
     //
-    // Configuration is a struct literal: fill in what you mean, let `Default`
-    // cover the rest. `ExportConfig` is the bundle for one render and one file:
-    // its `job()` is what is rendered and its `file_target(path, None)` is where
-    // it goes.
-    let config = ExportConfig {
-        render: RenderConfig {
-            sample_rate: RATE,
-            duration_seconds: Seconds(2.0),
-            ..Default::default()
-        },
-        encode: EncodeConfig {
-            format: Format::Flac {
-                depth: IntDepth::Int24,
-                level: FlacLevel::default(),
-            },
-            ..Default::default()
-        },
-        ..Default::default()
+    // What is rendered is a `Job`: a rate and frame counts (the audible
+    // length, the latency trimmed from the head, the tail kept past the end),
+    // and nothing else. Where it goes is a target: `FileTarget` names the
+    // path, the format and the width, and its setters add a resample, a dither
+    // or a normalize.
+    let job = Job::new(RATE, Seconds(2.0).to_samples(RATE), Samples(0), Samples(0))
+        .expect("a two-second render");
+    let flac = Format::Flac {
+        depth: IntDepth::Int24,
+        level: FlacLevel::default(),
     };
-    let job = config.job().expect("a two-second render");
 
     // `FrozenClock` says "this graph has no transport" out loud. A graph WITH
     // placed voices takes the `OfflineTimeline` those voices read — the clock is
     // a required argument precisely so a silent render is not something you can
     // get by forgetting one.
-    let target = config.file_target(dir.join("tone.flac"), None);
+    let target = FileTarget::new(dir.join("tone.flac"), flac, ChannelLayout::STEREO);
     let written = render_one(
         &mut tone(),
         &job,
@@ -145,18 +134,11 @@ fn main() -> tutti_export::Result<()> {
     // mono graph asked for as quad is placed by the engine's order: the front
     // pair carries the signal and the rears are silent — not four copies of the
     // same thing.
-    let quad_config = ExportConfig {
-        encode: EncodeConfig {
-            channels: ChannelLayout::QUAD,
-            ..Default::default()
-        },
-        ..config.clone()
-    };
     let quad = render_one(
         &mut mono_tone(),
         &job,
         &FrozenClock,
-        Output::master(quad_config.buffer_target()),
+        Output::master(BufferTarget::new(ChannelLayout::QUAD)),
         &mut Control::none(),
     )?
     .finished()
@@ -180,9 +162,12 @@ fn main() -> tutti_export::Result<()> {
     // gain. The graph is not rendered twice; `Written::gain` is what was applied.
     //
     // −14 LUFS with a −1 dBTP ceiling — the usual streaming target.
-    let normalized = config
-        .file_target(dir.join("tone-normalized.flac"), None)
-        .with_normalize(Some(NormalizeSpec::own(Normalize::lufs(Db(-14.0)))));
+    let normalized = FileTarget::new(
+        dir.join("tone-normalized.flac"),
+        flac,
+        ChannelLayout::STEREO,
+    )
+    .with_normalize(Some(NormalizeSpec::own(Normalize::lufs(Db(-14.0)))));
     let written = render_one(
         &mut tone(),
         &job,
@@ -208,7 +193,7 @@ fn main() -> tutti_export::Result<()> {
         &mut tone(),
         &job,
         &FrozenClock,
-        Output::master(config.buffer_target()),
+        Output::master(BufferTarget::new(ChannelLayout::STEREO)),
         &mut Control::none(),
     )?
     .finished()

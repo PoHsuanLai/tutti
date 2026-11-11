@@ -4,7 +4,7 @@
 //! render, resample, dither, encode) reports through it, so a caller matches one
 //! type whichever entry point it used.
 
-use crate::{JobError, TargetError};
+use crate::TargetError;
 use std::io;
 use thiserror::Error;
 use tutti_types::ChannelLayout;
@@ -230,20 +230,6 @@ pub enum ConfigError {
     /// The graph's editor does not feed its executor.
     #[error("the graph's editor does not feed its executor; pass the pair built together")]
     UnpairedGraph,
-    /// `duration_seconds` is NaN, infinite or negative: not a length a
-    /// render can have.
-    #[error("the render's duration_seconds must be a finite, non-negative number")]
-    InvalidDuration,
-    /// The render is zero frames long: no duration (or one shorter than a
-    /// frame) and no tail. [`RenderConfig::default`](crate::RenderConfig)
-    /// has no duration, so a render that means to produce audio names one.
-    #[error("the render is zero frames long; set RenderConfig::duration_seconds")]
-    EmptyRender,
-    /// [`Job::new`](crate::Job::new) refused the render's rate or span: a rate
-    /// that is not finite and positive, or more frames than
-    /// [`MAX_FRAMES`](crate::MAX_FRAMES).
-    #[error("the render cannot be a job: {0}")]
-    Job(JobError),
     /// The graph was prepared at a rate that is not finite and positive
     /// ([`RenderGraph::assemble`](crate::RenderGraph::assemble)).
     #[error("the graph is prepared at {prepared} Hz, which is not a sample rate")]

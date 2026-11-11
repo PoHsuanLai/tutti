@@ -43,12 +43,10 @@
 #![cfg(feature = "wav")]
 
 mod support;
+use crate::support::{EncodeConfig, ExportConfig, RenderConfig};
 
 use crate::support::render_to_file;
-use tutti_export::{
-    ChannelLayout, EncodeConfig, ExportConfig, Format, FrozenClock, Pcm, RenderConfig, RenderGraph,
-    Resample, Setup,
-};
+use tutti_export::{ChannelLayout, Format, FrozenClock, Pcm, RenderGraph, Resample, Setup};
 use tutti_graph::GraphBuilder;
 use tutti_nodes::testing::Osc;
 use tutti_types::Amplitude;

@@ -1,122 +1,87 @@
-//! Render a graph to a file and measure it — through **one dependency**.
+//! Bounce a project to a file and measure it: a session and `Bounce`, through
+//! **one dependency**.
 //!
-//! This is the same program as `tutti-export`'s own `examples/export.rs`,
-//! whose header reads "What using this crate looks like, end to end". That
-//! version names five crates:
+//! This is the program `tutti-export`'s own `examples/export.rs` is, one layer
+//! up (its header reads "What using this crate looks like, end to end"). That
+//! one renders a graph it built and sealed itself, with the pipeline's `Job`
+//! and targets: it proves `tutti-export` is usable standalone, which is the
+//! layering claim this crate must not obscure. This one has a `Session`, which
+//! knows the project: the rate, the clock, the graph's latency and tail and the
+//! root's width are derived from it (doc 019 section 3), and a request names
+//! only what it wants.
 //!
-//! ```text
-//! use tutti_measure::{measure_loudness, LoudnessConfig};
-//! use tutti_types::{Amplitude, Hz, SampleRate};
-//! use tutti_transport::FrozenClock;
-//! use tutti_export::{Output, RenderGraph, render_one, ...};
-//! use tutti_graph::GraphBuilder;
-//! use tutti_types::{Db, Interleaved};
-//! ```
-//!
-//! Here the imports group by *subsystem* rather than by crate boundary, which
-//! is the actual readability win — a reader does not have to know which of
-//! five packages a given name lives in.
-//!
-//! Note that `tutti-dsp` and `tutti-measure` are reachable here and **are not reachable
-//! through `bevy-tutti` at all** — that umbrella does not depend on them. So
-//! this program could not have been written through the Bevy adapter either.
-//!
-//! The original stays where it is: it proves `tutti-export` is usable
-//! standalone, which is the layering claim this crate must not obscure.
+//! The imports group by *subsystem* rather than by crate boundary, which is
+//! the actual readability win. `tutti-dsp` and `tutti-measure` are reachable
+//! here and **are not reachable through `bevy-tutti` at all**, which does not
+//! depend on them.
 //!
 //! Run: `cargo run -p tutti --features "export,dsp,wav" \
 //!        --example headless_export -- <outdir>`
 
-use tutti::export::{
-    Control, EncodeConfig, ExportConfig, Format, Output, Pcm, Produced, RenderConfig, RenderGraph,
-    Setup, render_one,
-};
-use tutti::graph::GraphBuilder;
+use tutti::export::{Format, Pcm, Produced};
 use tutti::measure::{LoudnessConfig, measure_loudness};
 use tutti::prelude::*;
-use tutti::transport::FrozenClock;
 use tutti_nodes::testing::{Const, Osc};
 use tutti_types::Hz;
 
 /// The rate every render below runs at.
 const RATE: SampleRate = SampleRate(48_000.0);
 
-/// `g`, ready to export: built (every unit prepared) at the render's rate. A
-/// graph prepared at another rate is refused rather than re-rated.
-fn built(g: GraphBuilder) -> RenderGraph {
-    let (editor, executor) = g.build(RenderGraph::prepare(RATE)).expect("builds");
-    RenderGraph::assemble(editor, executor, Setup::new()).expect("built together")
+/// A detached session whose outputs hear `node`, one second of a project.
+fn session_with(node: impl tutti::graph::IntoNode) -> Session {
+    let mut session = Session::builder()
+        .build_detached(RATE)
+        .expect("a detached session builds");
+    let (node, _) = session.graph().insert(node);
+    session.graph().set_outputs_from(node);
+    session
 }
 
-/// A 440 Hz tone at −12 dBFS, in stereo.
-fn tone() -> RenderGraph {
-    let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::STEREO);
-    let id = g.add(
+/// A 440 Hz tone at -12 dBFS, in stereo.
+fn tone() -> Session {
+    session_with(
         Osc::sine(Hz(440.0))
             .with_amplitude(Amplitude(0.25))
             .with_layout(ChannelLayout::STEREO),
-    );
-    g.pipe_output(id);
-    built(g)
+    )
 }
 
-/// A mono graph, to show the channel fold.
-fn mono_tone() -> RenderGraph {
-    let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::MONO);
-    let id = g.add(Const::mono(0.5));
-    g.pipe_output(id);
-    built(g)
+/// A mono project, to show the channel fold.
+fn mono_tone() -> Session {
+    session_with(Const::mono(0.5))
 }
 
-fn config(seconds: f64, channels: ChannelLayout) -> ExportConfig {
-    ExportConfig {
-        render: RenderConfig {
-            sample_rate: RATE,
-            duration_seconds: tutti_types::Seconds(seconds),
-            ..Default::default()
-        },
-        encode: EncodeConfig {
-            format: Format::Wav(Pcm::Float32),
-            channels,
-            topology: None,
-        },
-        ..Default::default()
-    }
+/// The first `seconds` of the project, 24-bit.
+fn first(seconds: f64) -> Bounce {
+    Bounce::project()
+        .format(Format::Wav(Pcm::Int24))
+        .range(Range::Seconds(Seconds(0.0), Seconds(seconds)))
 }
 
-fn main() -> tutti::export::Result<()> {
+fn main() -> Result<(), Box<dyn std::error::Error>> {
     let dir = std::env::args()
         .nth(1)
         .unwrap_or_else(|| std::env::temp_dir().to_string_lossy().into_owned());
     let dir = std::path::Path::new(&dir);
     std::fs::create_dir_all(dir)?;
 
-    // 1. A graph to a file.
+    // 1. A project to a file.
     let path = dir.join("tone.wav");
-    let cfg = config(1.0, ChannelLayout::STEREO);
-    let written = render_one(
-        &mut tone(),
-        &cfg.job().expect("a one-second render"),
-        &FrozenClock,
-        Output::master(cfg.file_target(&path, None)),
-        &mut Control::none(),
-    )?
-    .finished()
-    .and_then(Produced::file)
-    .expect("nothing cancels a control with no token");
+    let written = tone()
+        .bounce(first(1.0).master(&path))?
+        .finished()
+        .and_then(|b| b.into_master().file())
+        .expect("nothing cancels it");
     println!("wrote {} ({written:?})", path.display());
 
-    // 2. The same graph into memory, and a measurement of it.
-    let rendered = render_one(
-        &mut tone(),
-        &cfg.job().expect("a one-second render"),
-        &FrozenClock,
-        Output::master(cfg.buffer_target()),
-        &mut Control::none(),
-    )?
-    .finished()
-    .and_then(Produced::buffers)
-    .expect("nothing cancels a control with no token");
+    // 2. The same project into memory, and a measurement of it.
+    let Some(Produced::Buffers(rendered)) = tone()
+        .bounce(first(1.0).master_buffers())?
+        .finished()
+        .map(|b| b.into_master())
+    else {
+        unreachable!("nothing cancels it");
+    };
     let flat = rendered.interleaved();
     let cfg = LoudnessConfig::new(rendered.sample_rate(), ChannelLayout::STEREO);
     let loudness = measure_loudness(&cfg, Interleaved::new(&flat, ChannelLayout::STEREO))
@@ -127,19 +92,17 @@ fn main() -> tutti::export::Result<()> {
         loudness.true_peak.get()
     );
 
-    // 3. A mono graph into a stereo file — the fold, which the export layer
+    // 3. A mono project into a stereo file: the fold, which the export layer
     //    does for you and the graph does not.
     let mono_path = dir.join("mono-to-stereo.wav");
-    let mono_cfg = config(0.5, ChannelLayout::STEREO);
-    render_one(
-        &mut mono_tone(),
-        &mono_cfg.job().expect("a half-second render"),
-        &FrozenClock,
-        Output::master(mono_cfg.file_target(&mono_path, None)),
-        &mut Control::none(),
-    )?
-    .finished()
-    .expect("nothing cancels a control with no token");
+    mono_tone()
+        .bounce(
+            first(0.5)
+                .channels(ChannelLayout::STEREO)
+                .master(&mono_path),
+        )?
+        .finished()
+        .expect("nothing cancels it");
     println!("wrote {}", mono_path.display());
 
     Ok(())

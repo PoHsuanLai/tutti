@@ -256,108 +256,135 @@ pub enum SysexStep {
     Complete(SysexRef),
 }
 
-/// The multi-packet message being assembled, if any.
+/// The most Groups a UMP stream has (M2-104 §2.1.2).
+const GROUPS: usize = 16;
+
+/// What one Group's SysEx7 stream is doing.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Run {
     Idle,
-    /// Its bytes so far, `0xF0` first, are `buf[start..len]`.
+    /// A multi-packet message in lane `lane`: its bytes so far, `0xF0` first,
+    /// are the first `len` bytes of the lane.
     Assembling {
-        start: usize,
-        group: MidiGroup,
+        lane: usize,
+        len: usize,
     },
-    /// Over capacity and already counted: its remaining packets are skipped
-    /// up to its `END`.
-    Discarding {
-        group: MidiGroup,
-    },
+    /// Dropped and already counted: its remaining packets are skipped up to
+    /// its `End`.
+    Discarding,
 }
 
-/// Reassembles SysEx7 packets (M2-104 §7.7.1) into complete `0xF0 .. 0xF7`
-/// messages, inside a buffer the caller provides and that is never grown.
+/// Reassembles SysEx7 packets (M2-104 §7.7) into complete `0xF0 .. 0xF7`
+/// messages, one stream per Group, inside a buffer the caller provides and
+/// that is never grown.
 ///
 /// A consumer that wants whole bytes (a plugin format, which reads one pointer
 /// for the whole `process` call; MIDI-CI, which parses a message) feeds each
-/// packet to [`push`](Self::push) and reads a completed message back as a
-/// [`SysexMessage`]. The assembler allocates nothing: it owns the buffer `B`
-/// (a `Vec<u8>` or boxed slice sized off the audio thread, an array) and
-/// uses its length as its room, so a message is never moved by a later
-/// allocation and a pointer into [`bytes`](Self::bytes) is stable until the
-/// next [`begin_block`](Self::begin_block). Size it with `SysexAssembler::room_for`.
+/// UMP of its stream to [`push`](Self::push), **not only the SysEx7 packets**,
+/// and reads a completed message back as a [`SysexMessage`]. The assembler
+/// allocates nothing: it owns the buffer `B` (a `Vec<u8>` or boxed slice sized
+/// off the audio thread, an array) and uses its length as its room, so a
+/// pointer into [`bytes`](Self::bytes) is stable until the next
+/// [`begin_block`](Self::begin_block). Size it with
+/// `SysexAssembler::room_for`.
+///
+/// # The rule (M2-104 §7.7.1)
+///
+/// A System Exclusive stream belongs to its Group, so two Groups' messages
+/// interleave freely. On a Group, "if any Message or UMP on the same Group,
+/// other than a System Exclusive Continue UMP or a System Real Time Message,
+/// is sent after a System Exclusive Start UMP and before the associated System
+/// Exclusive End UMP, then that UMP shall terminate the System Exclusive
+/// Message", and "Messages which are Groupless (MT = 0x0 and 0xF) and those
+/// which are sent to a different Group may be interspersed". So a message is
+/// ended, dropped and counted, by the next UMP of its Group that is not a
+/// Continue or a System Real Time message (status `0xF8` to `0xFF` of type
+/// `0x1`): a channel voice message, a System Common message, a Flex Data
+/// message, a Complete, a Start (which then opens a new message), a SysEx8 or
+/// Mixed Data Set UMP. A Utility or UMP Stream message has no Group and ends
+/// nothing; neither does a reserved type, which names no Group here.
 ///
 /// # Policy
 ///
+/// - **At most `lanes` messages are open at once**, one per Group. Each owns a
+///   slot of `max_message` bytes in the buffer; a `Start` on a Group while
+///   every slot is held by other Groups is dropped whole and counted, and its
+///   remaining packets are skipped. A host with one stream (a plugin format
+///   with no Group, a MIDI 1.0 byte stream on its one Group) asks for one
+///   lane; sixteen holds every Group's message at once, at sixteen messages of
+///   room.
 /// - **A message spans blocks.** A run left open at the end of a block (of
 ///   packets: a device callback, an audio block) continues in the next, so a
 ///   dump longer than one block's packets arrives whole.
-/// - **One multi-packet message at a time, across all groups.** A `START`
-///   while another is still open, on any group, drops the open one, whole,
-///   and counts it: it never got its `END`. This deviates on purpose from
-///   M2-104's independent streams per group: a consumer of whole messages (a
-///   plugin format has no SysEx group to deliver one on; a MIDI-CI endpoint
-///   answers on one) could only receive two interleaved dumps as two
-///   messages anyway, and one open run keeps the buffer one message long.
-///   A `Complete` packet on another group completes beside an open run; on the
-///   run's own group it ends the run (dropped and counted), as M2-104 §7.7.1
-///   has it.
-/// - **A gap upstream drops the open message, counted.** A queue between the
+/// - **A gap upstream drops every open message, counted.** A queue between the
 ///   source and this assembler that overflows truncates its block's tail; its
 ///   owner calls [`lost_tail`](Self::lost_tail) after pushing the kept
 ///   packets, so the packets of the next block are never spliced onto a run
 ///   that lost some in between.
-/// - **Other messages do not end a run.** A merged event list carries a note
-///   played during a dump between its packets; ending the dump there would
-///   cost the dump for no gain.
 /// - **Over capacity, the whole message is dropped and counted**, never
-///   truncated: its remaining packets are skipped up to its `END`. The
+///   truncated: its remaining packets are skipped up to its `End`. The
 ///   capacity is the `max_message` given to [`new`](Self::new) and the
 ///   buffer's room.
-/// - A `CONTINUE` or `END` with no open run on its group (its `START` was
+/// - A `Continue` or `End` with no open message on its Group (its `Start` was
 ///   dropped, or arrived before this assembler existed) is skipped.
 ///
 /// Each dropped message is counted once in [`dropped`](Self::dropped).
-/// [`reset`](Self::reset) drops the open message too.
+/// [`reset`](Self::reset) drops the open messages too.
 ///
 /// # Memory
 ///
-/// The buffer holds the block's completed messages and, after them, the open
-/// run. The open run carried into a block is shorter than one message and each
-/// packet adds at most eight bytes, so a buffer of
-/// `SysexAssembler::room_for(max_message, packets_per_block)` never runs
-/// out of room for a block of up to that many packets.
+/// The buffer is the block's completed messages followed by `lanes` slots of
+/// `max_message` bytes. A completed message is copied out of its slot, so a
+/// pointer handed on is stable for the block while the slot is free for the
+/// Group's next message. The messages completed in a block are those open when
+/// it began (at most `max_message` bytes each, and each lane's message ends
+/// at most once) plus those its packets make (at most eight bytes a packet),
+/// so a buffer of `SysexAssembler::room_for(max_message, packets_per_block,
+/// lanes)` never runs out for a block of up to that many packets.
 #[derive(Debug)]
 pub struct SysexAssembler<B> {
-    /// Completed messages of this block, then the open run: `buf[..len]`.
     buf: B,
+    /// Completed messages of this block: `buf[..len]`, within `buf[..done_room]`.
     len: usize,
+    done_room: usize,
+    lanes: usize,
     max_message: usize,
-    run: Run,
+    runs: [Run; GROUPS],
     dropped: u64,
 }
 
 impl SysexAssembler<()> {
-    /// The buffer length that holds a message of `max_message` bytes
-    /// (delimiters included) and a block of `packets_per_block` packets after
-    /// the open run it carries in: `max_message` plus eight bytes a packet.
+    /// The buffer length that holds `lanes` open messages of `max_message`
+    /// bytes (delimiters included) and, besides them, the completed messages of
+    /// a block of `packets_per_block` packets: `max_message` for each message
+    /// open when the block began, and eight bytes a packet.
     ///
     /// It is on `SysexAssembler<()>` so that a caller sizing a buffer names no
-    /// buffer type: `SysexAssembler::room_for(max, packets)`.
+    /// buffer type: `SysexAssembler::room_for(max, packets, lanes)`.
     #[must_use]
-    pub const fn room_for(max_message: usize, packets_per_block: usize) -> usize {
-        max_message + packets_per_block * BYTES_PER_PACKET
+    pub const fn room_for(max_message: usize, packets_per_block: usize, lanes: usize) -> usize {
+        (2 * lanes) * max_message + packets_per_block * BYTES_PER_PACKET
     }
 }
 
 impl<B: AsRef<[u8]> + AsMut<[u8]>> SysexAssembler<B> {
     /// An assembler over `buf` for messages of up to `max_message` bytes,
-    /// delimiters included. Its room is `buf`'s length; an empty buffer drops
-    /// (and counts) every message.
+    /// delimiters included, with up to `lanes` of them open at once (at most
+    /// sixteen, one per Group). Its room is `buf`'s length: `lanes` slots of
+    /// `max_message` bytes come off its end, as many as fit, and the rest holds
+    /// completed messages. An empty buffer drops (and counts) every message.
     #[must_use]
-    pub fn new(buf: B, max_message: usize) -> Self {
+    pub fn new(buf: B, max_message: usize, lanes: usize) -> Self {
+        let room = buf.as_ref().len();
+        let fit = room.checked_div(max_message).unwrap_or(0);
+        let lanes = lanes.min(GROUPS).min(fit);
         Self {
             buf,
             len: 0,
+            done_room: room - lanes * max_message,
+            lanes,
             max_message,
-            run: Run::Idle,
+            runs: [Run::Idle; GROUPS],
             dropped: 0,
         }
     }
@@ -368,89 +395,71 @@ impl<B: AsRef<[u8]> + AsMut<[u8]>> SysexAssembler<B> {
         self.max_message
     }
 
-    /// Start a block: forget the last block's completed messages, keeping an
-    /// open run. Call it before pushing a block's packets, after the consumer
+    /// Start a block: forget the last block's completed messages, keeping the
+    /// open ones. Call it before pushing a block's packets, after the consumer
     /// has stopped reading the last block's. Never allocates.
     pub fn begin_block(&mut self) {
-        match self.run {
-            Run::Assembling { start, group } => {
-                self.buf.as_mut().copy_within(start..self.len, 0);
-                self.len -= start;
-                self.run = Run::Assembling { start: 0, group };
-            }
-            Run::Idle | Run::Discarding { .. } => self.len = 0,
-        }
+        self.len = 0;
     }
 
-    /// Take in one packet. Never allocates.
+    /// Take in one UMP of the stream, whatever it is. Never allocates.
     ///
-    /// A malformed SysEx7 packet (a length past six, a data byte of 128 or
-    /// more) is [`SysexStep::Held`] and has no effect.
-    pub fn push(&mut self, packet: Ump) -> SysexStep {
-        let (group, packet) = match decode(packet) {
+    /// A SysEx7 packet extends or completes its Group's message. Any other UMP
+    /// is [`SysexStep::NotSysex`], for the caller to convert as usual, and ends
+    /// its Group's open message unless it is a System Real Time message (see
+    /// the type's rule). A malformed SysEx7 packet (a length past six, a data
+    /// byte of 128 or more) is [`SysexStep::Held`] and has no effect.
+    pub fn push(&mut self, ump: Ump) -> SysexStep {
+        let (group, packet) = match decode(ump) {
             Ok(Message::Sysex7(group, packet)) => (group, packet),
-            Ok(_) => return SysexStep::NotSysex,
-            Err(_) if packet.message_type() == 0x3 => return SysexStep::Held,
-            Err(_) => return SysexStep::NotSysex,
+            Ok(_) => return self.other(ump),
+            Err(_) if ump.message_type() == 0x3 => return SysexStep::Held,
+            Err(_) => return self.other(ump),
         };
         let payload = packet.data();
+        let g = usize::from(group.get());
         match packet.status() {
             SysexStatus::Complete => {
-                if self.run_group() == Some(group) {
-                    self.abandon();
-                }
+                self.end_run(g);
                 self.single(payload)
             }
             SysexStatus::Start => {
-                if matches!(self.run, Run::Assembling { .. }) {
-                    self.abandon();
-                }
-                self.run = Run::Assembling {
-                    start: self.len,
-                    group,
-                };
-                self.append(&[0xF0], payload, &[]);
+                self.end_run(g);
+                self.start(g, payload);
                 SysexStep::Held
             }
             SysexStatus::Continue => {
-                if self.assembling(group) {
-                    self.append(&[], payload, &[]);
+                if let Run::Assembling { lane, len } = self.runs[g] {
+                    self.extend(g, lane, len, payload);
                 }
                 SysexStep::Held
             }
-            SysexStatus::End => match self.run {
-                Run::Assembling { start, group: g } if g == group => {
-                    if !self.append(&[], payload, &[0xF7]) {
-                        return SysexStep::Held;
-                    }
-                    self.run = Run::Idle;
-                    SysexStep::Complete(SysexRef {
-                        start,
-                        len: self.len - start,
-                    })
-                }
-                Run::Discarding { group: g } if g == group => {
-                    self.run = Run::Idle;
+            SysexStatus::End => match self.runs[g] {
+                Run::Assembling { lane, len } => self.finish(g, lane, len, payload),
+                Run::Discarding => {
+                    self.runs[g] = Run::Idle;
                     SysexStep::Held
                 }
-                _ => SysexStep::Held,
+                Run::Idle => SysexStep::Held,
             },
         }
     }
 
     /// An upstream queue dropped packets after the ones just pushed (it
-    /// overflowed): drop the open message, counted, so packets of a later
-    /// block are not spliced onto it. Call it after pushing a block's kept
+    /// overflowed): drop every open message, counted, so packets of a later
+    /// block are not spliced onto one. Call it after pushing a block's kept
     /// packets. Never allocates.
     pub fn lost_tail(&mut self) {
-        self.abandon();
+        for g in 0..GROUPS {
+            self.end_run(g);
+        }
     }
 
-    /// The consumer was reset: drop the open message (counted, like any
+    /// The consumer was reset: drop the open messages (counted, like any
     /// message that never reaches it) and the block's completed ones. Never
     /// allocates.
     pub fn reset(&mut self) {
-        self.abandon();
+        self.lost_tail();
         self.len = 0;
     }
 
@@ -474,95 +483,116 @@ impl<B: AsRef<[u8]> + AsMut<[u8]>> SysexAssembler<B> {
 
     /// Messages dropped whole since this assembler was made (a
     /// [`reset`](Self::reset) does not zero it): longer than
-    /// [`max_message`](Self::max_message), left without their `END` by a
-    /// later `START` (or a `Complete` on their group), cut by an upstream
-    /// overflow ([`lost_tail`](Self::lost_tail)), open at a reset, or one
-    /// whose packet found the buffer's room full (more packets in one block
+    /// [`max_message`](Self::max_message), ended before their `End` by a later
+    /// UMP of their Group, found no free lane, cut by an upstream overflow
+    /// ([`lost_tail`](Self::lost_tail)), open at a reset, or one that found the
+    /// buffer's room for completed messages full (more packets in one block
     /// than it was sized for).
     #[must_use]
     pub fn dropped(&self) -> u64 {
         self.dropped
     }
 
-    fn room(&self) -> usize {
-        self.buf.as_ref().len()
-    }
-
-    fn run_group(&self) -> Option<MidiGroup> {
-        match self.run {
-            Run::Assembling { group, .. } | Run::Discarding { group } => Some(group),
-            Run::Idle => None,
+    /// A UMP that is not a well-formed SysEx7 packet.
+    fn other(&mut self, ump: Ump) -> SysexStep {
+        if let Some(group) = ump.group() {
+            // System Real Time (type 1, status 0xF8..=0xFF) may be inserted
+            // between the UMPs of a message; anything else on the Group ends it.
+            let real_time = ump.message_type() == 0x1 && (ump.0[0] >> 16) & 0xFF >= 0xF8;
+            if !real_time {
+                self.end_run(usize::from(group.get()));
+            }
         }
+        SysexStep::NotSysex
     }
 
-    fn assembling(&self, group: MidiGroup) -> bool {
-        matches!(self.run, Run::Assembling { group: g, .. } if g == group)
-    }
-
-    /// Drop the open run, counted.
-    fn abandon(&mut self) {
-        if let Run::Assembling { start, .. } = self.run {
-            self.len = start;
+    /// The Group's open message ends without its `End`: counted if it was
+    /// being assembled (a discarded one was counted when it was dropped).
+    fn end_run(&mut self, g: usize) {
+        if matches!(self.runs[g], Run::Assembling { .. }) {
             self.dropped += 1;
         }
-        self.run = Run::Idle;
+        self.runs[g] = Run::Idle;
     }
 
-    /// Copy `bytes` after the bytes in use. The caller has checked the room.
-    fn put(&mut self, bytes: &[u8]) {
-        let end = self.len + bytes.len();
-        self.buf.as_mut()[self.len..end].copy_from_slice(bytes);
-        self.len = end;
+    /// Where lane `lane` starts in the buffer.
+    fn lane_base(&self, lane: usize) -> usize {
+        self.done_room + lane * self.max_message
     }
 
-    /// Append `head`, `payload` and `tail` to the open run, or, past the
-    /// message's capacity or the buffer's room, drop the run whole (counted)
-    /// and skip the rest of it. Returns whether they were appended.
-    fn append(&mut self, head: &[u8], payload: &[u8], tail: &[u8]) -> bool {
-        let Run::Assembling { start, group } = self.run else {
-            return false;
+    fn free_lane(&self) -> Option<usize> {
+        (0..self.lanes).find(|&lane| {
+            !self
+                .runs
+                .iter()
+                .any(|run| matches!(run, Run::Assembling { lane: l, .. } if *l == lane))
+        })
+    }
+
+    /// Open a message on Group `g`: `0xF0`, then `payload`, in a free lane.
+    fn start(&mut self, g: usize, payload: &[u8]) {
+        let Some(lane) = self.free_lane() else {
+            self.runs[g] = Run::Discarding;
+            self.dropped += 1;
+            return;
         };
-        let added = head.len() + payload.len() + tail.len();
-        // An unterminated run still needs its `0xF7`.
-        let closing = usize::from(tail.is_empty());
-        let message = self.len - start + added + closing;
-        if message > self.max_message || self.len + added > self.room() {
-            self.len = start;
-            self.dropped += 1;
-            self.run = Run::Discarding { group };
-            return false;
-        }
-        self.put(head);
-        self.put(payload);
-        self.put(tail);
-        true
+        let base = self.lane_base(lane);
+        self.buf.as_mut()[base] = 0xF0;
+        self.extend(g, lane, 1, payload);
     }
 
-    /// Complete a one-packet message, placed before the open run (if any) so
-    /// the run stays last and can keep growing.
-    fn single(&mut self, payload: &[u8]) -> SysexStep {
-        let len = payload.len() + 2;
-        if len > self.max_message || self.len + len > self.room() {
+    /// Append `payload` to Group `g`'s message of `len` bytes in `lane`, or,
+    /// past the message's capacity (with its `0xF7`), drop it whole and skip
+    /// the rest of it.
+    fn extend(&mut self, g: usize, lane: usize, len: usize, payload: &[u8]) {
+        let new_len = len + payload.len();
+        if new_len + 1 > self.max_message {
+            self.runs[g] = Run::Discarding;
+            self.dropped += 1;
+            return;
+        }
+        let at = self.lane_base(lane) + len;
+        self.buf.as_mut()[at..at + payload.len()].copy_from_slice(payload);
+        self.runs[g] = Run::Assembling { lane, len: new_len };
+    }
+
+    /// Close Group `g`'s message with `payload` and `0xF7`, and move it into
+    /// the completed messages.
+    fn finish(&mut self, g: usize, lane: usize, len: usize, payload: &[u8]) -> SysexStep {
+        self.extend(g, lane, len, payload);
+        let Run::Assembling { len, .. } = self.runs[g] else {
+            // Over capacity: `extend` dropped it and counted.
+            self.runs[g] = Run::Idle;
+            return SysexStep::Held;
+        };
+        self.runs[g] = Run::Idle;
+        let size = len + 1;
+        if self.len + size > self.done_room {
             self.dropped += 1;
             return SysexStep::Held;
         }
-        let at = match self.run {
-            Run::Assembling { start, .. } => start,
-            Run::Idle | Run::Discarding { .. } => self.len,
-        };
-        self.put(&[0xF0]);
-        self.put(payload);
-        self.put(&[0xF7]);
-        // Rotate the message in front of the open run. The run has no
-        // pointer handed out yet, so moving it is free of hazard.
-        let len_now = self.len;
-        self.buf.as_mut()[at..len_now].rotate_right(len);
-        if let Run::Assembling { start, group } = self.run {
-            self.run = Run::Assembling {
-                start: start + len,
-                group,
-            };
+        let base = self.lane_base(lane);
+        let buf = self.buf.as_mut();
+        buf[base + len] = 0xF7;
+        buf.copy_within(base..base + size, self.len);
+        let start = self.len;
+        self.len += size;
+        SysexStep::Complete(SysexRef { start, len: size })
+    }
+
+    /// Complete a one-packet message.
+    fn single(&mut self, payload: &[u8]) -> SysexStep {
+        let size = payload.len() + 2;
+        if size > self.max_message || self.len + size > self.done_room {
+            self.dropped += 1;
+            return SysexStep::Held;
         }
-        SysexStep::Complete(SysexRef { start: at, len })
+        let start = self.len;
+        let buf = self.buf.as_mut();
+        buf[start] = 0xF0;
+        buf[start + 1..start + 1 + payload.len()].copy_from_slice(payload);
+        buf[start + size - 1] = 0xF7;
+        self.len += size;
+        SysexStep::Complete(SysexRef { start, len: size })
     }
 }

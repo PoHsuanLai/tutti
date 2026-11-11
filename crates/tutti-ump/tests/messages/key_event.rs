@@ -7,7 +7,7 @@
 use crate::common;
 
 use proptest::prelude::*;
-use tutti_ump::{Address, Key, KeyEvent, Message, Ump, Voice1, Voice2, decode};
+use tutti_ump::{Address, Key, KeyEvent, Message, Ump, Voice1, Voice2};
 
 const SUSTAIN: u8 = 64;
 
@@ -95,7 +95,7 @@ proptest! {
     #[test]
     fn key_event_agrees_with_decode(w in words()) {
         let ump = Ump(w);
-        let want = decode(ump).ok().and_then(expected);
+        let want = ump.decode().ok().and_then(expected);
         prop_assert_eq!(ump.key_event(), want);
     }
 
@@ -107,10 +107,10 @@ proptest! {
         let off = Ump::note_off(key);
         prop_assert_eq!(off.key_event(), Some(KeyEvent::Off(key)));
         prop_assert!(off.is_note_off());
-        prop_assert!(decode(off).is_ok());
+        prop_assert!(off.decode().is_ok());
         let up = Ump::sustain_up(m2, lane_);
         prop_assert_eq!(up.key_event(), Some(KeyEvent::Sustain { m2, lane: lane_, down: false }));
-        prop_assert!(decode(up).is_ok());
+        prop_assert!(up.decode().is_ok());
     }
 }
 
@@ -141,7 +141,7 @@ fn the_midi2_pedal_reads_index_and_value_as_decode_does() {
     // The eighth index bit is ignored, as in `decode`.
     let w = [0x43b3_c000, 0xffff_ffff, 0, 0];
     assert_eq!(
-        decode(Ump(w)).ok().and_then(expected),
+        Ump(w).decode().ok().and_then(expected),
         Ump(w).key_event(),
         "agrees with decode on an index with bit 7 set"
     );

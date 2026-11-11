@@ -34,6 +34,26 @@ impl Ump {
         self.0.split_at(n).0
     }
 
+    /// The packet at the front of `words`: as many words as its message type
+    /// takes ([`words`](Self::words)), the rest zero. Words past the packet are
+    /// not read. `None` when `words` is empty or ends inside the packet.
+    ///
+    /// ```
+    /// use tutti_ump::Ump;
+    ///
+    /// assert_eq!(Ump::from_words(&[0x4090_3C00, 0x8000_0000, 7]), Some(Ump([0x4090_3C00, 0x8000_0000, 0, 0])));
+    /// assert_eq!(Ump::from_words(&[0x4090_3C00]), None);
+    /// ```
+    #[must_use]
+    pub fn from_words(words: &[u32]) -> Option<Self> {
+        let first = *words.first()?;
+        let n = Ump([first, 0, 0, 0]).words().len();
+        let packet = words.get(..n)?;
+        let mut out = [0u32; 4];
+        out[..n].copy_from_slice(packet);
+        Some(Ump(out))
+    }
+
     /// The message type: the top nibble of the first word (M2-104 Table 4),
     /// `0x0` to `0xF`.
     #[inline]
@@ -218,17 +238,57 @@ impl Ump {
 pub fn split_stream(words: &[u32]) -> impl Iterator<Item = Ump> + '_ {
     let mut rest = words;
     core::iter::from_fn(move || {
-        let first = *rest.first()?;
-        let n = Ump([first, 0, 0, 0]).words().len();
-        let Some((packet, tail)) = rest.split_at_checked(n) else {
+        let Some(ump) = Ump::from_words(rest) else {
             rest = &[];
             return None;
         };
-        rest = tail;
-        let mut out = [0u32; 4];
-        out[..n].copy_from_slice(packet);
-        Some(Ump(out))
+        rest = &rest[ump.words().len()..];
+        Some(ump)
     })
+}
+
+/// The meaningful words, in hexadecimal and separated by a space, as the
+/// specification writes a packet: `40903C00 80000000`.
+impl core::fmt::Display for Ump {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        core::fmt::UpperHex::fmt(self, f)
+    }
+}
+
+/// [`Display`](core::fmt::Display) in lower case; the `#` flag puts `0x` on
+/// each word.
+impl core::fmt::LowerHex for Ump {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        for (i, word) in self.words().iter().enumerate() {
+            if i > 0 {
+                f.write_str(" ")?;
+            }
+            if f.alternate() {
+                write!(f, "{word:#010x}")?;
+            } else {
+                write!(f, "{word:08x}")?;
+            }
+        }
+        Ok(())
+    }
+}
+
+/// [`Display`](core::fmt::Display) itself; the `#` flag puts `0x` on each
+/// word.
+impl core::fmt::UpperHex for Ump {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        for (i, word) in self.words().iter().enumerate() {
+            if i > 0 {
+                f.write_str(" ")?;
+            }
+            if f.alternate() {
+                write!(f, "{word:#010X}")?;
+            } else {
+                write!(f, "{word:08X}")?;
+            }
+        }
+        Ok(())
+    }
 }
 
 /// A held-note key: protocol, group, channel and note (M2-104 identifies a

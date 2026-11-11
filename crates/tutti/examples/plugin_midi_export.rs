@@ -70,23 +70,16 @@ fn play<M: Master>(
 
     let file = MidiFile::read(midi)?; // an SMF or a Clip File
     // A file's tempo track is the file's data, not the project's: the project
-    // adopts it on import, here, by an explicit call.
+    // adopts it on import, here, by an explicit call (a shared map, no copy).
     s.transport()
         .settings()
         .set_tempo_map(file.tempo_map().clone());
     // Its messages on the file's timeline (a format 2 file has none), as the
     // packets they are: the clip translates them when it is loaded.
-    let timeline = file.events().ok_or("a format 2 file has no one timeline")?;
-    s.midi().play_clip(
-        synth,
-        timeline.filter_map(|(beat, event)| {
-            let message = event.message()?;
-            Some(TimedMidiEvent::from((
-                beat,
-                tutti::ump::Ump::from(*message),
-            )))
-        }),
-    )?;
+    let timeline = file
+        .timeline()
+        .ok_or("a format 2 file has no one timeline")?;
+    s.midi().play_clip(synth, timeline)?;
     s.update();
 
     // Everything else is derived: the clock is the project's tempo map from
@@ -114,31 +107,24 @@ fn play_to_file(
 /// Two bars: a note on each beat, 120 BPM for the first four beats and 60
 /// for the last four, as a file with a tempo map.
 fn phrase(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
-    use tutti::midi_file::{FileEvent, Meta, SmfFormat, Tick, Track};
-    use tutti::ump::{Address, Message, NoteNumber, U7, Voice1};
+    use tutti::midi_file::SmfFormat;
+    use tutti::ump::U7;
     const TPQ: u16 = 480;
-    let message = |tick: u64, key: u8, on: bool| {
-        let (note, velocity) = (NoteNumber::of(key), U7::of(100));
-        let voice = if on {
-            Voice1::NoteOn { note, velocity }
-        } else {
-            Voice1::NoteOff { note, velocity }
-        };
-        let message = Message::Midi1(Address::first(MidiChannel::FIRST), voice);
-        (Tick(tick), FileEvent::Message(message))
-    };
-    let tempo = |tick: u64, bpm: f64| (Tick(tick), FileEvent::Meta(Meta::tempo(Bpm::of(bpm))));
-    let beat = |n: u64| n * u64::from(TPQ);
-    let mut events = vec![tempo(0, 120.0)];
-    for n in 0..8u64 {
-        if n == 4 {
-            events.push(tempo(beat(4), 60.0)); // 60 BPM from beat 4
-        }
-        let key = 60 + n as u8;
-        events.push(message(beat(n), key, true));
-        events.push(message(beat(n + 1), key, false));
+    let beat = |n| Tick::quarters(n, TPQ);
+    let mut track = Track::new()
+        .tempo(Tick(0), Bpm::of(120.0))
+        .tempo(beat(4), Bpm::of(60.0)); // 60 BPM from beat 4
+    for n in 0..8u8 {
+        let key = NoteNumber::of(60 + n);
+        track = track.note(
+            beat(n.into()),
+            u64::from(TPQ),
+            MidiChannel::FIRST,
+            key,
+            U7::of(100),
+        );
     }
-    MidiFile::smf(SmfFormat::SingleTrack, TPQ, vec![Track::new(events)])?.write(path)?;
+    MidiFile::smf(SmfFormat::SingleTrack, TPQ, vec![track])?.write(path)?;
     Ok(())
 }
 

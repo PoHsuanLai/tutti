@@ -12,7 +12,7 @@ use tutti_midi_runtime::MidiOut;
 use tutti_session::{Session, UmpOut};
 use tutti_transport::MotionEvent;
 use tutti_types::{ChannelLayout, SampleRate};
-use tutti_ump::{Message, MidiGroup, System, Ump, decode};
+use tutti_ump::{Message, MidiGroup, System, Ump};
 
 const OLD: f64 = 44_100.0;
 const NEW: f64 = 48_000.0;
@@ -113,7 +113,7 @@ fn a_restart_re_rates_the_midi_clock() {
     assert!((ticks(&after) - 1_000.0).abs() < 0.05, "{}", ticks(&after));
     assert!(
         !after.iter().any(|(ump, _)| matches!(
-            decode(*ump),
+            (*ump).decode(),
             Ok(Message::System(_, System::SongPosition(_)))
         )),
         "the restart is not a locate"

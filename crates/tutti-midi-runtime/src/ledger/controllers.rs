@@ -57,7 +57,7 @@ impl Controllers {
     /// Folds in a message the port took. A controller back at its normal
     /// position is forgotten, and a new value supersedes a reset still owed.
     pub(super) fn observe(&mut self, ump: Ump) {
-        let (m2, address, bit, off_normal) = match tutti_ump::decode(ump) {
+        let (m2, address, bit, off_normal) = match ump.decode() {
             Ok(Message::Midi1(a, Voice1::ControlChange { controller, value })) => {
                 let Some(bit) = pedal_bit(controller) else {
                     return;

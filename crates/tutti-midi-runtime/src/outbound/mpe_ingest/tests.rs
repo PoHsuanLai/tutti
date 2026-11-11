@@ -72,7 +72,7 @@ fn cc(channel: u8, cc_num: CCNumber, value_u7: u8) -> UmpAt {
 /// `$addr` binds its `Address`, `$pat` matches the `Voice2`.
 macro_rules! assert_cv2 {
     ($ev:expr, $addr:pat, $pat:pat $(if $guard:expr)?) => {
-        match tutti_ump::decode($ev.1) {
+        match $ev.1.decode() {
             Ok(Message::Midi2($addr, $pat)) $(if $guard)? => {}
             other => panic!("unexpected message: {other:?}"),
         }
@@ -273,7 +273,7 @@ fn ranges_after(events: impl IntoIterator<Item = UmpAt>) -> Vec<(u8, u8, f32)> {
         .into_iter()
         .map(|ev| {
             let Ok(Message::Midi2(address, Voice2::Registered { bank, index, value })) =
-                tutti_ump::decode(ev.1)
+                ev.1.decode()
             else {
                 panic!("{ev:?} is not a registered controller");
             };
@@ -293,7 +293,7 @@ fn ranges_only(events: impl IntoIterator<Item = UmpAt>) -> Vec<UmpAt> {
 /// Whether `ev` is an All Sound Off or a Reset All Controllers.
 fn is_stop(ev: &UmpAt) -> bool {
     matches!(
-        tutti_ump::decode(ev.1),
+        ev.1.decode(),
         Ok(Message::Midi2(_, Voice2::ControlChange { controller, .. }))
             if controller == CCNumber::ALL_SOUND_OFF || controller == CCNumber::RESET_ALL
     )
@@ -307,7 +307,7 @@ fn stopped(events: impl IntoIterator<Item = UmpAt>) -> Vec<u8> {
     stops
         .chunks(2)
         .map(|pair| {
-            let kind = |ev: &UmpAt| match tutti_ump::decode(ev.1) {
+            let kind = |ev: &UmpAt| match ev.1.decode() {
                 Ok(Message::Midi2(_, Voice2::ControlChange { controller, .. })) => controller,
                 other => panic!("{other:?}"),
             };
@@ -561,7 +561,7 @@ fn pressure(channel: u8, value: u32) -> UmpAt {
 fn decoded(ingest: &mut MpeIngest, event: &UmpAt) -> Vec<(u8, Voice2)> {
     ingest
         .translated(event)
-        .map(|ev| match tutti_ump::decode(ev.1) {
+        .map(|ev| match ev.1.decode() {
             Ok(Message::Midi2(address, voice)) => (address.channel.get(), voice),
             other => panic!("unexpected message: {other:?}"),
         })

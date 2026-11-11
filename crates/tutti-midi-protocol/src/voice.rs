@@ -2,7 +2,7 @@
 //! message through it.
 
 use crate::scale;
-use tutti_ump::{Address, Attribute, Message, Midi1Parser, MidiGroup, Ump, Voice1, Voice2, decode};
+use tutti_ump::{Address, Attribute, Message, Midi1Parser, MidiGroup, Ump, Voice1, Voice2};
 
 /// The release velocity a MIDI 1.0 Note On at velocity 0 becomes (M2-104
 /// Appendix D.3.1).
@@ -82,14 +82,14 @@ pub fn widen_bytes(group: MidiGroup, bytes: &[u8]) -> Option<Ump> {
 /// The channel voice message `ump` carries, as the MIDI 2.0 message it means
 /// (M2-104 Appendix D.3: a MIDI 1.0 one is widened, so its Note On at velocity
 /// 0 is a Note Off, while a MIDI 2.0 Note On at velocity 0 stays a Note On), or
-/// `None` for any other packet, one [`decode`] cannot frame included.
+/// `None` for any other packet, one [`Ump::decode`] cannot frame included.
 ///
 /// What an instrument reads: one match on [`Voice2`], whichever protocol the
 /// packet was sent in.
 #[inline]
 #[must_use]
 pub fn channel_voice(ump: Ump) -> Option<(Address, Voice2)> {
-    match decode(ump).ok().map(widen_message)? {
+    match ump.decode().ok().map(widen_message)? {
         Message::Midi2(address, voice) => Some((address, voice)),
         _ => None,
     }

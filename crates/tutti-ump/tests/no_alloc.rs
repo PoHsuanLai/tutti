@@ -2,7 +2,7 @@
 //! family and on a packet that is `Unknown`.
 
 use assert_no_alloc::{AllocDisabler, assert_no_alloc};
-use tutti_ump::{Message, Ump, decode};
+use tutti_ump::{Message, Ump};
 
 #[global_allocator]
 static A: AllocDisabler = AllocDisabler;
@@ -44,7 +44,7 @@ fn decoding_allocates_nothing() {
     let mut decoded = 0;
     assert_no_alloc(|| {
         for &p in &packets {
-            if decode(p).is_ok() {
+            if p.decode().is_ok() {
                 decoded += 1;
             }
         }
@@ -59,7 +59,7 @@ fn decoding_allocates_nothing() {
 fn encoding_allocates_nothing() {
     let messages: Vec<Message> = corpus()
         .into_iter()
-        .filter_map(|p| decode(p).ok())
+        .filter_map(|p| p.decode().ok())
         .collect();
     assert_eq!(messages.len(), 21);
     let mut words = 0u32;

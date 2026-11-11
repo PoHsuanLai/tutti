@@ -19,12 +19,12 @@ use tutti_ump::{
     Accidental, Alteration, AlterationKind, ChordBass, ChordName, ChordPitch, ChordType, Direction,
     DiscoveryFilter, EndpointInfo, FirstGroup, Flex, FlexAddress, FlexTextKind, Form,
     FunctionBlockId, FunctionBlockInfo, GroupSpan, Letter, Message, Metronome, Midi1Port,
-    MidiGroup, Protocol, Stream, StreamConfig, U4, U7, UiHint, Ump, UmpVersion, decode,
+    MidiGroup, Protocol, Stream, StreamConfig, U4, U7, UiHint, Ump, UmpVersion,
 };
 
 /// Decode gives the message, and encode gives the words back.
 fn pin(words: [u32; 4], message: Message) {
-    assert_eq!(decode(Ump(words)), Ok(message), "decode {words:08x?}");
+    assert_eq!(Ump(words).decode(), Ok(message), "decode {words:08x?}");
     assert_eq!(Ump::from(message), Ump(words), "encode {message:?}");
 }
 
@@ -69,12 +69,12 @@ fn flex_text_statuses_are_table_16() {
     }
     // Banks 0x03 to 0xFF are reserved.
     for reserved in [0xD010_0301, 0xD010_FF01] {
-        assert!(decode(Ump([reserved, 0, 0, 0])).is_err(), "{reserved:08x}");
+        assert!(Ump([reserved, 0, 0, 0]).decode().is_err(), "{reserved:08x}");
     }
     // Statuses past the last defined one in each text bank are reserved.
     for undefined in [0xD010_010D, 0xD010_0205, 0xD010_01FF, 0xD010_02FF] {
         assert!(
-            decode(Ump([undefined, 0, 0, 0])).is_err(),
+            Ump([undefined, 0, 0, 0]).decode().is_err(),
             "{undefined:08x}"
         );
     }

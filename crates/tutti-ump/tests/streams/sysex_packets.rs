@@ -3,7 +3,7 @@
 
 use tutti_ump::{
     Message, MidiGroup, Sysex7Packet, SysexAssembler, SysexMessage, SysexStatus, SysexStep, U7,
-    Ump, decode, sysex7_packets,
+    Ump, sysex7_packets,
 };
 
 fn payload(len: usize) -> Vec<U7> {
@@ -18,7 +18,7 @@ fn raw(payload: &[U7]) -> Vec<u8> {
 fn decoded(group: MidiGroup, p: &[U7]) -> Vec<(SysexStatus, Vec<u8>)> {
     sysex7_packets(group, p)
         .map(|ump| {
-            let Ok(Message::Sysex7(g, packet)) = decode(ump) else {
+            let Ok(Message::Sysex7(g, packet)) = ump.decode() else {
                 panic!("not a SysEx7 packet");
             };
             assert_eq!(g, group);
@@ -114,7 +114,7 @@ fn the_group_is_on_every_packet() {
         assert_eq!(umps.len(), 4);
         for ump in umps {
             assert_eq!((ump.words()[0] >> 24) & 0xF, u32::from(g));
-            let Ok(Message::Sysex7(got, _)) = decode(ump) else {
+            let Ok(Message::Sysex7(got, _)) = ump.decode() else {
                 panic!()
             };
             assert_eq!(got, group);

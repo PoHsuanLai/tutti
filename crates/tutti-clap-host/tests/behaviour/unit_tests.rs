@@ -17,7 +17,7 @@ use tutti_fixtures::midi as fx;
 use tutti_graph::Offset;
 use tutti_midi_protocol::{channel_voice, midi1};
 use tutti_types::Samples;
-use tutti_ump::{CCNumber, KeyEvent, Message, MidiChannel, MidiGroup, NoteNumber, Voice2, decode};
+use tutti_ump::{CCNumber, KeyEvent, Message, MidiChannel, MidiGroup, NoteNumber, Voice2};
 
 /// A block long enough for every offset these tests use.
 const BLOCK: usize = 1_000;
@@ -275,7 +275,7 @@ fn a_wildcard_note_off_resolves_by_note_id_not_by_masking() {
          masking leaves every real voice ringing"
     );
     assert_eq!(
-        match decode(event.ump) {
+        match event.ump.decode() {
             Ok(Message::Midi1(a, _) | Message::Midi2(a, _)) => Some(a.channel),
             _ => None,
         },
@@ -350,7 +350,7 @@ fn test_output_event_list_push_midi_cc() {
     let event = &midi_out[0];
     assert_eq!(event.offset, 33);
     // Back to wire bytes, the CC is the original payload.
-    let bytes: Vec<_> = midi1(decode(event.ump).expect("a CC"))
+    let bytes: Vec<_> = midi1(event.ump.decode().expect("a CC"))
         .map(|bytes| bytes.as_slice().to_vec())
         .collect();
     assert_eq!(bytes, [[0xB2, 74, 100]]);

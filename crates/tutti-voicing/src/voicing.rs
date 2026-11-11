@@ -330,6 +330,15 @@ impl Held {
     }
 }
 
+/// Whether `channel` is `master` itself or a member of the zone `master`
+/// manages (with no zones, only itself).
+fn in_zone(zones: Option<MpeZones>, master: MidiChannel, channel: MidiChannel) -> bool {
+    channel == master
+        || zones
+            .and_then(|z| z.zone_of(channel).copied())
+            .is_some_and(|zone| zone.is_member_channel(channel) && zone.master_channel() == master)
+}
+
 /// The note logic. See the module docs.
 #[derive(Debug)]
 pub struct Voicing {
@@ -871,12 +880,19 @@ impl Voicing {
         );
     }
 
+    /// A pedal or a panic on `channel`. On a zone's master it is the whole
+    /// zone's: M1-100 section 2.3.1, "certain MIDI messages (for example,
+    /// Damper Pedal) can be expected to affect all Sounding Notes across the
+    /// Manager Channel and all Member Channels", and they "should be sent only
+    /// on a Zone's Manager Channel". On a member, or on a channel outside any
+    /// zone, it is that channel's alone.
     fn effect(&mut self, channel: MidiChannel, effect: Effect) {
-        let ch = usize::from(channel.get());
-        let on_channel = move |n: &Note| n.channel == channel;
+        let zones = self.zones;
+        let covers = move |c: MidiChannel| in_zone(zones, channel, c);
+        let on_channel = move |n: &Note| covers(n.channel);
         match effect {
             Effect::Sustain(down) => {
-                self.sustain[ch] = down;
+                self.each_channel(covers, |s, ch| s.sustain[ch] = down);
                 if !down {
                     self.each_note(on_channel, |n| n.holds.sustain_up());
                 }
@@ -894,15 +910,17 @@ impl Voicing {
             Effect::Sostenuto(_) => {}
             // All Notes Off releases, and a pedal still holds what it holds.
             Effect::Stop(Stop::Release) => {
-                self.held[ch] = Held::NONE;
-                let pedal = self.sustain[ch];
-                self.each_note(on_channel, |n| n.holds.key_up(pedal));
+                self.each_channel(covers, |s, ch| s.held[ch] = Held::NONE);
+                let pedals = self.sustain;
+                self.each_note(on_channel, |n| {
+                    n.holds.key_up(pedals[usize::from(n.channel.get())])
+                });
             }
             Effect::Stop(Stop::Cut) => {
-                self.held[ch] = Held::NONE;
+                self.each_channel(covers, |s, ch| s.held[ch] = Held::NONE);
                 let mut i = 0;
                 while i < self.notes.len() {
-                    if self.notes[i].channel == channel {
+                    if covers(self.notes[i].channel) {
                         let id = self.notes[i].id;
                         self.push(Command::Cut(id));
                         let gone = self.notes.remove(i).note;
@@ -915,14 +933,29 @@ impl Voicing {
             // Reset All Controllers puts the pedals up and centres the wheel;
             // the sensitivity stays (RP-015).
             Effect::ResetControllers => {
-                self.sustain[ch] = false;
-                self.held[ch] = Held::NONE;
+                self.each_channel(covers, |s, ch| {
+                    s.sustain[ch] = false;
+                    s.held[ch] = Held::NONE;
+                });
                 self.each_note(on_channel, |n| {
                     let a = n.holds.sustain_up();
                     let b = n.holds.sostenuto_up();
                     a || b
                 });
                 self.bend(channel, |b| b.position = 0.0);
+            }
+        }
+    }
+
+    /// Runs `f` for the index of each channel `covers` names.
+    fn each_channel(
+        &mut self,
+        covers: impl Fn(MidiChannel) -> bool,
+        mut f: impl FnMut(&mut Self, usize),
+    ) {
+        for ch in 0..CHANNELS {
+            if MidiChannel::new(ch as u8).is_some_and(&covers) {
+                f(self, ch);
             }
         }
     }
@@ -2077,6 +2110,75 @@ mod tests {
         s.core.reset();
         let c = s.send(0, bend(u32::MAX), &One);
         assert!((retunes(&c)[0].1 - 2.0).abs() < 1e-4);
+    }
+
+    // ---- zone-wide messages (M1-100 section 2.3.1) ---------------------------
+
+    /// M1-100 section 2.3.1: "certain MIDI messages (for example, Damper
+    /// Pedal) can be expected to affect all Sounding Notes across the Manager
+    /// Channel and all Member Channels", sent "only on a Zone's Manager
+    /// Channel". The pedal on the master holds the notes of every member, the
+    /// ones sounding and the ones that start after it, and its release lets
+    /// them go.
+    #[test]
+    fn a_zone_masters_pedal_holds_every_members_notes() {
+        let mut s = Sim::new(POLY);
+        s.core.set_zones(zones(3, 0));
+        s.on(1, 60);
+        s.on(2, 64);
+        s.cc(0, 64, 127);
+        s.on(3, 67);
+        assert!(s.off(1, 60).is_empty());
+        assert!(s.off(2, 64).is_empty());
+        assert!(s.off(3, 67).is_empty());
+        assert_eq!(s.cc(0, 64, 0), [release(1), release(2), release(3)]);
+    }
+
+    /// The master's pedal is the zone's and no wider: a channel outside the
+    /// zone is not held, and a member's own pedal is its own.
+    #[test]
+    fn a_zone_masters_pedal_stops_at_the_zone() {
+        let mut s = Sim::new(POLY);
+        s.core.set_zones(zones(2, 0));
+        s.on(5, 60);
+        s.cc(0, 64, 127);
+        assert_eq!(s.off(5, 60), [release(1)]);
+        s.cc(0, 64, 0);
+        s.on(1, 62);
+        s.cc(2, 64, 127);
+        assert_eq!(s.off(1, 62), [release(2)], "a member's pedal is its own");
+    }
+
+    /// M1-100 section 2.3.1 as above, for All Notes Off (Table 5, CC 123:
+    /// Optional on the Manager Channel): on the master it releases every
+    /// member's notes; on a member, that member's alone.
+    #[test]
+    fn all_notes_off_on_a_zone_master_releases_every_member() {
+        let mut s = Sim::new(POLY);
+        s.core.set_zones(zones(3, 0));
+        s.on(1, 60);
+        s.on(2, 64);
+        s.on(3, 67);
+        assert_eq!(s.cc(2, 123, 0), [release(2)]);
+        assert_eq!(s.cc(0, 123, 0), [release(1), release(3)]);
+    }
+
+    /// Reset All Controllers (Table 5, CC 121: Optional on both) on the master
+    /// puts the zone's pedal up, members' held notes included.
+    #[test]
+    fn reset_all_controllers_on_a_zone_master_lifts_the_zones_pedal() {
+        let mut s = Sim::new(POLY);
+        s.core.set_zones(zones(2, 0));
+        s.on(1, 60);
+        s.cc(0, 64, 127);
+        s.off(1, 60);
+        assert_eq!(
+            s.cc(0, 121, 0)
+                .iter()
+                .filter(|c| matches!(c, Command::Release { .. }))
+                .count(),
+            1
+        );
     }
 
     // ---- liveness and cost -----------------------------------------------

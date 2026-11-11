@@ -194,7 +194,11 @@ fn mcm_from_the_wire_configures_the_lower_zone() {
     // what goes on is the zone's reset ranges, all registered controllers
     // (`an_mcm_resets_its_zones_bend_ranges`).
     let reset: Vec<UmpAt> = ingest.translated(&mcm).collect();
-    assert_eq!(reset.len(), 8, "master and seven members");
+    assert_eq!(
+        ranges_only(reset.iter().copied()).len(),
+        8,
+        "master and seven members"
+    );
     assert!(!reset.contains(&mcm));
     assert!(
         matches!(ingest.mode_of(MidiGroup::FIRST), MpeMode::Zones(z) if z.lower().is_some() && z.upper().is_none())
@@ -250,7 +254,11 @@ fn mcm_with_zero_members_disables_the_zone() {
             0, // 0 members → disable
         ),
     );
-    assert!(ingest.translated(&disable).next().is_none());
+    assert_eq!(
+        ranges_only(ingest.translated(&disable)).len(),
+        0,
+        "the message is absorbed and a disabled zone has no ranges to reset"
+    );
     assert!(matches!(
         ingest.mode_of(MidiGroup::FIRST),
         MpeMode::Disabled
@@ -272,6 +280,41 @@ fn ranges_after(events: impl IntoIterator<Item = UmpAt>) -> Vec<(u8, u8, f32)> {
             assert_eq!(bank.get(), Rpn::PITCH_BEND_SENSITIVITY.bank().get());
             let range = PitchBendSensitivity::from_rpn_bits(value);
             (address.channel.get(), index.get(), range.as_semitones_f32())
+        })
+        .collect()
+}
+
+/// The Registered Controllers among `events`, the zone's ranges, without the
+/// stops (All Sound Off, Reset All Controllers) that go with a layout change.
+fn ranges_only(events: impl IntoIterator<Item = UmpAt>) -> Vec<UmpAt> {
+    events.into_iter().filter(|ev| !is_stop(ev)).collect()
+}
+
+/// Whether `ev` is an All Sound Off or a Reset All Controllers.
+fn is_stop(ev: &UmpAt) -> bool {
+    matches!(
+        tutti_ump::decode(ev.1),
+        Ok(Message::Midi2(_, Voice2::ControlChange { controller, .. }))
+            if controller == CCNumber::ALL_SOUND_OFF || controller == CCNumber::RESET_ALL
+    )
+}
+
+/// The channels `events` stop, in order: each as `(channel, All Sound Off
+/// then Reset All Controllers)`, asserted to come in that pair.
+fn stopped(events: impl IntoIterator<Item = UmpAt>) -> Vec<u8> {
+    let stops: Vec<UmpAt> = events.into_iter().filter(is_stop).collect();
+    assert_eq!(stops.len() % 2, 0, "stops come in pairs");
+    stops
+        .chunks(2)
+        .map(|pair| {
+            let kind = |ev: &UmpAt| match tutti_ump::decode(ev.1) {
+                Ok(Message::Midi2(_, Voice2::ControlChange { controller, .. })) => controller,
+                other => panic!("{other:?}"),
+            };
+            assert_eq!(kind(&pair[0]), CCNumber::ALL_SOUND_OFF);
+            assert_eq!(kind(&pair[1]), CCNumber::RESET_ALL);
+            assert_eq!(channel_of(&pair[0].1), channel_of(&pair[1].1));
+            channel_of(&pair[0].1)
         })
         .collect()
 }
@@ -300,7 +343,7 @@ fn an_mcm_resets_its_zones_bend_ranges() {
     ));
     assert!(reset.iter().all(|ev| ev.0.get() == 9));
     assert_eq!(
-        ranges_after(reset.iter().copied()),
+        ranges_after(ranges_only(reset.iter().copied())),
         vec![(15, 0, 2.0), (12, 7, 48.0), (13, 7, 48.0), (14, 7, 48.0)]
     );
     // An upper member set to ±12, then the upper MCM again: the upper
@@ -335,11 +378,15 @@ fn an_mcm_resets_its_zones_bend_ranges() {
             0,
         ),
     );
-    assert_eq!(ingest.translated(&disable).len(), 0);
+    assert_eq!(
+        ranges_only(ingest.translated(&disable)).len(),
+        0,
+        "a disabling MCM resets no range"
+    );
 
     // A host-set dual-zone mode: each zone's ranges, lower first.
     ingest.set_mode(tutti_fixtures::midi::dual_zones(2, 1));
-    let defaults = ingest.defaults(MidiGroup::FIRST, Offset::ZERO);
+    let defaults = ranges_only(ingest.defaults(MidiGroup::FIRST, Offset::ZERO));
     assert_eq!(defaults.len(), 5);
     assert_eq!(
         ranges_after(defaults),
@@ -352,7 +399,10 @@ fn an_mcm_resets_its_zones_bend_ranges() {
         ]
     );
     ingest.set_mode(MpeMode::Disabled);
-    assert_eq!(ingest.defaults(MidiGroup::FIRST, Offset::ZERO).len(), 0);
+    assert_eq!(
+        ranges_only(ingest.defaults(MidiGroup::FIRST, Offset::ZERO)).len(),
+        0
+    );
 }
 
 fn bend_sensitivity(channel: u8, semitones: u8) -> UmpAt {
@@ -480,9 +530,407 @@ fn an_mcm_configures_its_own_group_only() {
         ingest.mode_of(MidiGroup::FIRST),
         MpeMode::Disabled
     ));
-    assert_eq!(reset.len(), 8, "master and seven members");
+    assert_eq!(
+        ranges_only(reset.iter().copied()).len(),
+        8,
+        "master and seven members"
+    );
     assert!(
         reset.iter().all(|ev| ev.1.group() == Some(group2)),
         "the reset goes out on the Group that asked"
+    );
+}
+
+// ---- the state a note starts with (M1-100 sections 2.2.6 to 2.2.8) ----------
+
+fn note_off(channel: u8, note: u8) -> UmpAt {
+    at(
+        0,
+        midi::note_off(MidiGroup::FIRST, MidiChannel::of(channel), note, 0),
+    )
+}
+
+fn pressure(channel: u8, value: u32) -> UmpAt {
+    at(
+        0,
+        midi::channel_pressure(MidiGroup::FIRST, MidiChannel::of(channel), value),
+    )
+}
+
+/// What `ingest` sends for `event`, as decoded `(channel, message)` pairs.
+fn decoded(ingest: &mut MpeIngest, event: &UmpAt) -> Vec<(u8, Voice2)> {
+    ingest
+        .translated(event)
+        .map(|ev| match tutti_ump::decode(ev.1) {
+            Ok(Message::Midi2(address, voice)) => (address.channel.get(), voice),
+            other => panic!("unexpected message: {other:?}"),
+        })
+        .collect()
+}
+
+/// **A bend received before the Note On is the new note's** (M1-100 section
+/// 2.2.6: "The pitch of a new note is affected by the Pitch Bend message most
+/// recently received on both the Manager Channel and that note's Member
+/// Channel before Note On. A receiver shall continue to track Pitch Bend
+/// messages from both the Manager Channel and the Member Channels even when no
+/// note is playing"; section 2.4, Table 4: the sender's Pitch Bend comes
+/// first). The ingest remembers the bend of the member channel with no note,
+/// and the note that starts there is told it ahead of its Note On; the last of
+/// two bends is the one.
+#[test]
+fn a_member_bend_before_the_note_on_is_the_notes_start() {
+    let mut ingest = MpeIngest::new(tutti_fixtures::midi::lower_zone(15));
+    assert!(decoded(&mut ingest, &pitch_bend14(2, 9000)).is_empty());
+    assert!(decoded(&mut ingest, &pitch_bend14(2, 16383)).is_empty());
+    let out = decoded(&mut ingest, &note_on(2, 60, 100));
+    assert_eq!(out.len(), 2, "the bend, then the note: {out:?}");
+    assert!(matches!(
+        out[0],
+        (2, Voice2::PerNotePitchBend { note, value })
+            if note.get() == 60 && value == tutti_fixtures::midi::wide_bend(16383)
+    ));
+    assert!(matches!(out[1], (2, Voice2::NoteOn { .. })));
+}
+
+/// **Channel Pressure and Control Change #74 received before the Note On are
+/// the new note's** (M1-100 section 2.2.7: "The control of a new note is
+/// affected by the Channel Pressure message most recently received on its
+/// Channel before Note On. A receiver shall continue to track Channel Pressure
+/// messages even when no note is playing"; section 2.2.8 the same of Control
+/// Change #74).
+#[test]
+fn member_pressure_and_cc74_before_the_note_on_are_the_notes_start() {
+    let mut ingest = MpeIngest::new(tutti_fixtures::midi::lower_zone(15));
+    assert!(decoded(&mut ingest, &cc(3, CCNumber::BRIGHTNESS, 64)).is_empty());
+    assert!(decoded(&mut ingest, &pressure(3, 0x4000_0000)).is_empty());
+    let out = decoded(&mut ingest, &note_on(3, 64, 100));
+    assert_eq!(out.len(), 3, "{out:?}");
+    assert!(matches!(
+        out[0],
+        (3, Voice2::PolyPressure { note, value }) if note.get() == 64 && value == 0x4000_0000
+    ));
+    assert!(matches!(
+        out[1],
+        (3, Voice2::AssignablePerNote { note, controller: 74, value })
+            if note.get() == 64 && value == tutti_fixtures::midi::wide_value(64)
+    ));
+    assert!(matches!(out[2], (3, Voice2::NoteOn { .. })));
+}
+
+/// What a member channel was told stays its own: another member's note does
+/// not start with it, and a channel never told sends no per-note message
+/// ahead of its Note On.
+#[test]
+fn what_a_member_was_told_is_its_own() {
+    let mut ingest = MpeIngest::new(tutti_fixtures::midi::lower_zone(15));
+    ingest.translated(&pitch_bend14(2, 16383));
+    let out = decoded(&mut ingest, &note_on(3, 60, 100));
+    assert!(
+        matches!(out.as_slice(), [(3, Voice2::NoteOn { .. })]),
+        "{out:?}"
+    );
+}
+
+/// **A released note stops taking the member's messages** (M1-100 section
+/// 2.2.6: "A Released Note shall cease to be affected by Pitch Bend messages
+/// from the Member Channels after the Note Off message occurs"; section 2.4:
+/// "the MPE control messages shall not affect a note after the Note Off
+/// message has been received"), while the channel goes on tracking them for
+/// the next note.
+#[test]
+fn a_released_note_ignores_the_members_bend_and_the_next_note_starts_with_it() {
+    let mut ingest = MpeIngest::new(tutti_fixtures::midi::lower_zone(15));
+    ingest.translated(&note_on(2, 60, 100));
+    ingest.translated(&note_off(2, 60));
+    assert!(decoded(&mut ingest, &pitch_bend14(2, 12000)).is_empty());
+    let out = decoded(&mut ingest, &note_on(2, 62, 100));
+    assert!(matches!(
+        out[0],
+        (2, Voice2::PerNotePitchBend { note, .. }) if note.get() == 62
+    ));
+}
+
+/// **A zone-wide pressure or CC 74 reaches the notes of its members**
+/// (M1-100 section 2.2.7: "All MPE receivers shall respond to Channel Pressure
+/// both on the Manager Channel and on each Member Channel. If a Device
+/// receives Channel Pressure on both ... it shall combine such data
+/// meaningfully and separately for each Sounding Note"; section 2.2.8 the same
+/// of Control Change #74; Appendix D: Max is one way). The manager's value,
+/// told with no note sounding, is every new note's floor; told while notes
+/// sound, it reaches each of them, as the greater of it and the member's own.
+#[test]
+fn a_managers_pressure_and_cc74_reach_every_members_note() {
+    let mut ingest = MpeIngest::new(tutti_fixtures::midi::lower_zone(3));
+    // Told with no note sounding: the first note starts with it.
+    assert_eq!(decoded(&mut ingest, &pressure(0, 0x2000_0000)).len(), 1);
+    let out = decoded(&mut ingest, &note_on(1, 60, 100));
+    assert!(matches!(
+        out[0],
+        (1, Voice2::PolyPressure { note, value }) if note.get() == 60 && value == 0x2000_0000
+    ));
+    ingest.translated(&note_on(2, 64, 100));
+    // A member above the floor keeps its own; one below takes the floor.
+    ingest.translated(&pressure(2, 0x7000_0000));
+    ingest.translated(&pressure(1, 0x1000_0000));
+    // The manager's pressure now moves: each held note hears the greater.
+    let out = decoded(&mut ingest, &pressure(0, 0x4000_0000));
+    let heard: Vec<(u8, u8, u32)> = out
+        .iter()
+        .filter_map(|(c, v)| match v {
+            Voice2::PolyPressure { note, value } => Some((*c, note.get(), *value)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(heard, [(1, 60, 0x4000_0000), (2, 64, 0x7000_0000)]);
+    assert!(
+        matches!(out.last(), Some((0, Voice2::ChannelPressure(0x4000_0000)))),
+        "the manager's own message still passes"
+    );
+    // CC 74 is the same.
+    let out = decoded(&mut ingest, &cc(0, CCNumber::BRIGHTNESS, 100));
+    let slides = out
+        .iter()
+        .filter(|(_, v)| matches!(v, Voice2::AssignablePerNote { controller: 74, .. }))
+        .count();
+    assert_eq!(slides, 2);
+}
+
+// ---- Table 5: what a receiver takes where (M1-100 Appendix E) -------------
+
+/// **A Prohibited message is ignored by a receiver** (M1-100 section 2.3.1,
+/// on a message that is not for the channel it came on: "it should ignore
+/// them"; Table 5, "P: Prohibited"). On the Manager Channel, All Sound Off
+/// (120), Mono Mode On (126) and Poly Mode On (127); on every channel, Omni On
+/// (125). Reset All Controllers (121), Local Control (122), All Notes Off
+/// (123) and Omni Off (124) are Optional and pass, on the master and on a
+/// member alike, as do 120, 126 and 127 on a member.
+#[test]
+fn the_receive_table_ignores_what_it_prohibits() {
+    let mut ingest = MpeIngest::new(tutti_fixtures::midi::lower_zone(5));
+    let number = CCNumber::of;
+    for (channel, controller, passes) in [
+        (0, 120, false),
+        (0, 126, false),
+        (0, 127, false),
+        (0, 125, false),
+        (2, 125, false),
+        (0, 121, true),
+        (0, 122, true),
+        (0, 123, true),
+        (0, 124, true),
+        (2, 120, true),
+        (2, 121, true),
+        (2, 123, true),
+        (2, 124, true),
+        (2, 127, true),
+        // Channel 9 is in no zone: conventional use.
+        (9, 120, true),
+        (9, 125, true),
+    ] {
+        let out = ingest
+            .translated(&cc(channel, number(controller), 0))
+            .count();
+        assert_eq!(out == 1, passes, "CC {controller} on channel {channel}");
+    }
+}
+
+/// **The MPE Configuration Message is not for a Member Channel** (Table 5:
+/// RPN #6 on Member Channels, "P"): on a member that is not a master's channel
+/// it is ignored, and the zones stand. On a channel outside every zone, RPN 6
+/// is ordinary traffic.
+#[test]
+fn an_mcm_on_a_member_channel_is_ignored() {
+    let mut ingest = MpeIngest::new(tutti_fixtures::midi::lower_zone(5));
+    let mcm_on = |channel: u8| {
+        at(
+            0,
+            midi::registered_rpn(
+                MidiGroup::FIRST,
+                MidiChannel::of(channel),
+                Rpn::MPE_CONFIGURATION,
+                3 << 25,
+            ),
+        )
+    };
+    assert_eq!(ingest.translated(&mcm_on(3)).count(), 0);
+    assert_eq!(ingest.translated(&mcm_on(9)).count(), 1);
+    assert_eq!(
+        *ingest.mode_of(MidiGroup::FIRST),
+        tutti_fixtures::midi::lower_zone(5)
+    );
+}
+
+/// **MIDI Mode 3 is the default and Program Change on a Member Channel is
+/// ignored in it; Mode 4 is switched on the lowest Member Channel**
+/// (M1-100 section 2.3.3: "A receiver operating in MIDI Mode 3 shall ignore
+/// Program Change messages received on Member Channels"; Table 5, Bank Select
+/// on Member Channels "Prohibited in MIDI Mode 3. Optional in MIDI Mode 4";
+/// section 2.2.4.3: "send the appropriate Mode Message to the lowest numbered
+/// Member Channel of a zone (not to the Manager Channel)"). Mono Mode On on
+/// the manager, or on another member, switches nothing; on the lowest member
+/// (channel 1 of a lower zone) it lets members' Program Changes through, and
+/// Poly Mode On there takes them away again. The manager's Program Change
+/// always passes.
+#[test]
+fn program_change_on_a_member_follows_the_zones_midi_mode() {
+    let mut ingest = MpeIngest::new(tutti_fixtures::midi::lower_zone(5));
+    let program = |channel: u8| {
+        at(
+            0,
+            midi::program_change(MidiGroup::FIRST, MidiChannel::of(channel), 5, None),
+        )
+    };
+    assert_eq!(ingest.translated(&program(3)).count(), 0, "Mode 3");
+    assert_eq!(ingest.translated(&program(0)).count(), 1, "the manager's");
+    ingest.translated(&cc(0, CCNumber::of(126), 0));
+    ingest.translated(&cc(3, CCNumber::of(126), 0));
+    assert_eq!(
+        ingest.translated(&program(3)).count(),
+        0,
+        "neither the manager nor another member switches the mode"
+    );
+    ingest.translated(&cc(1, CCNumber::of(126), 0));
+    assert_eq!(ingest.translated(&program(3)).count(), 1, "Mode 4");
+    ingest.translated(&cc(1, CCNumber::of(127), 0));
+    assert_eq!(ingest.translated(&program(3)).count(), 0, "Mode 3 again");
+}
+
+/// **A channel in no zone is for conventional use** (M1-100 section 2.2.1:
+/// "Any MIDI Channels not assigned to any Zone remain available for
+/// conventional use."): notes, bends, pressure and CC 74 there pass as they
+/// came, whatever the zones are.
+#[test]
+fn a_channel_outside_the_zones_passes_everything() {
+    let mut ingest = MpeIngest::new(tutti_fixtures::midi::lower_zone(5));
+    for event in [
+        note_on(9, 60, 100),
+        pitch_bend14(9, 12000),
+        pressure(9, 7),
+        cc(9, CCNumber::BRIGHTNESS, 7),
+        note_off(9, 60),
+    ] {
+        assert_eq!(ingest.translated(&event).collect::<Vec<_>>(), vec![event]);
+    }
+}
+
+// ---- changing the zones (M1-100 section 2.2.3) ------------------------------
+
+/// **A zone change stops and resets the channels it moves** (M1-100 section
+/// 2.2.3: "when a receiver changes its Zone configurations, the receiver shall
+/// stop all Sounding Notes and reset all controls to reasonable default values
+/// on each Channel entering or leaving MPE control"). Growing a lower zone from
+/// 3 to 5 members takes channels 4 and 5 into it: an MCM from the wire stops
+/// those two (All Sound Off, then Reset All Controllers) and no other; the
+/// notes the other channels hold, and what they were told, stand; the same MCM
+/// again changes nothing and stops nothing.
+#[test]
+fn an_mcm_stops_only_the_channels_it_moves() {
+    let mut ingest = MpeIngest::new(tutti_fixtures::midi::lower_zone(3));
+    ingest.translated(&note_on(2, 60, 100));
+    ingest.translated(&pitch_bend14(2, 9000));
+    // Channel 4 is conventional: its note and its bend are the instrument's.
+    ingest.translated(&note_on(4, 62, 100));
+    ingest.translated(&pitch_bend14(4, 9000));
+
+    let grow = at(0, MpeZoneConfig::lower(5).unwrap().to_mcm());
+    let out: Vec<UmpAt> = ingest.translated(&grow).collect();
+    assert_eq!(stopped(out.iter().copied()), [4, 5]);
+    assert_eq!(ranges_only(out).len(), 6, "and the zone's ranges");
+
+    // Channel 2 kept its note: a bend still folds onto it.
+    let bent = decoded(&mut ingest, &pitch_bend14(2, 16383));
+    assert!(matches!(
+        bent.as_slice(),
+        [(2, Voice2::PerNotePitchBend { note, .. })] if note.get() == 60
+    ));
+    // Channel 4 holds nothing, and was told nothing: its note starts alone.
+    let on = decoded(&mut ingest, &note_on(4, 64, 100));
+    assert!(
+        matches!(on.as_slice(), [(4, Voice2::NoteOn { .. })]),
+        "{on:?}"
+    );
+
+    assert_eq!(
+        stopped(ingest.translated(&grow)),
+        Vec::<u8>::new(),
+        "the same MCM again moves nothing"
+    );
+}
+
+/// **A channel that left MPE control forgets its note and what it was told**
+/// (section 2.2.3, "reset all controls ... on each Channel entering or leaving
+/// MPE control"): shrink a zone past a channel that held a note and had been
+/// bent, grow it back, and the channel starts clean.
+#[test]
+fn a_channel_that_left_the_zone_forgets_its_note_and_its_bend() {
+    let regrown = || {
+        let mut ingest = MpeIngest::new(tutti_fixtures::midi::lower_zone(5));
+        ingest.translated(&note_on(4, 62, 100));
+        ingest.translated(&pitch_bend14(4, 9000));
+        ingest.translated(&at(0, MpeZoneConfig::lower(3).unwrap().to_mcm()));
+        ingest.translated(&at(0, MpeZoneConfig::lower(5).unwrap().to_mcm()));
+        ingest
+    };
+    // No stale note to fold a bend onto.
+    assert!(decoded(&mut regrown(), &pitch_bend14(4, 12000)).is_empty());
+    // No stale bend to start the next note with.
+    let on = decoded(&mut regrown(), &note_on(4, 64, 100));
+    assert!(
+        matches!(on.as_slice(), [(4, Voice2::NoteOn { .. })]),
+        "{on:?}"
+    );
+}
+
+/// A disabling MCM stops the zone's channels, the master's too, and its
+/// notes are forgotten (section 2.2.3, "entering or leaving MPE control").
+#[test]
+fn a_disabling_mcm_stops_every_channel_of_the_zone() {
+    let mut ingest = MpeIngest::new(tutti_fixtures::midi::lower_zone(2));
+    ingest.translated(&note_on(1, 60, 100));
+    let disable = at(
+        0,
+        midi::registered_rpn(
+            MidiGroup::FIRST,
+            MidiChannel::FIRST,
+            Rpn::MPE_CONFIGURATION,
+            0,
+        ),
+    );
+    assert_eq!(stopped(ingest.translated(&disable)), [0, 1, 2]);
+    // Channel 1 is conventional again: nothing of the zone is left to fold.
+    let bend = pitch_bend14(1, 9000);
+    assert_eq!(ingest.translated(&bend).collect::<Vec<_>>(), vec![bend]);
+}
+
+/// A host-set zone change (`set_mode`) stops the channels that enter or leave
+/// MPE control, in what `zone_defaults` sends, and keeps the notes of those
+/// that did not: lower zone of 3 members to one of 2 stops channel 3 alone;
+/// to Disabled stops channels 0 to 2; the notes of the unchanged channels were
+/// kept until then (section 2.2.3).
+#[test]
+fn a_host_set_mode_stops_the_channels_that_enter_or_leave() {
+    let mut ingest = MpeIngest::new(tutti_fixtures::midi::lower_zone(3));
+    ingest.translated(&note_on(1, 60, 100));
+    ingest.set_mode(tutti_fixtures::midi::lower_zone(2));
+    let sent = ingest.defaults(MidiGroup::FIRST, Offset::ZERO);
+    assert_eq!(stopped(sent), [3]);
+    let bent = decoded(&mut ingest, &pitch_bend14(1, 16383));
+    assert!(
+        matches!(bent.as_slice(), [(1, Voice2::PerNotePitchBend { .. })]),
+        "channel 1 kept its note: {bent:?}"
+    );
+    ingest.set_mode(MpeMode::Disabled);
+    let sent = ingest.defaults(MidiGroup::FIRST, Offset::ZERO);
+    assert_eq!(stopped(sent), [0, 1, 2]);
+}
+
+/// A host-set mode in force changes nothing and stops nothing.
+#[test]
+fn the_mode_in_force_stops_nothing() {
+    let mut ingest = MpeIngest::new(tutti_fixtures::midi::lower_zone(3));
+    ingest.set_mode(tutti_fixtures::midi::lower_zone(3));
+    assert_eq!(
+        stopped(ingest.defaults(MidiGroup::FIRST, Offset::ZERO)),
+        Vec::<u8>::new()
     );
 }

@@ -6838,6 +6838,24 @@ above); the host half is the plugin test, a hosted plugin bypassed through
 not against a second render), and dropping the AU host's `BypassEffect` use
 where it reaches the graph.
 
+**As built (M2, host half).** `tutti-session/tests/plugin_bypass.rs`, over
+the reference CLAP plugin in a real `plugin-server` (`clap` feature):
+
+- **The click.** A plugin node put in `Bypassed` passes a click
+  `L` frames late, bit for bit, `+0.0` everywhere else. `L` is the
+  node's declared latency, which for a served plugin is the plugin's own (137
+  frames for the probe) plus the pipeline's chunk (1024), so 1161.
+- **Parking.** While bypassed, the plugin's server answers no block:
+  `block_counts().replies` does not move. Made active again, it is called and
+  heard.
+- **Not a second render.** The doc above asked for a comparison with a plain
+  node of the same latency. A plain node bypasses through the same bypass line,
+  so the analytic figure is the stronger pin.
+- **AU's `BypassEffect`** does not reach the graph. `AuInstance::set_bypass`
+  and `is_bypassed` are called only by `tutti-au-host`'s own tests; no
+  plugin-server loader or graph path uses them. So there is nothing to drop,
+  and they stay a property of the AU instance like any other.
+
 #### Buses and coercion between declared layouts
 
 Decided by the owner. When two ports' declared channel layouts disagree, the

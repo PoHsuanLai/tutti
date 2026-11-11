@@ -46,6 +46,7 @@
 #![cfg(feature = "wav")]
 
 mod support;
+use crate::support::{EncodeConfig, ExportConfig, RenderConfig, write_buffers};
 
 use std::sync::Arc;
 use tutti_types::Seconds;
@@ -53,8 +54,8 @@ use tutti_types::Seconds;
 use crate::support::{render_normalized_to_file, render_to_buffers, render_to_file};
 use tutti_dsp::DitherShape;
 use tutti_export::{
-    ChannelLayout, EncodeConfig, Error, ExportConfig, Format, FrozenClock, GRAPH_MAX_BLOCK,
-    Normalize, Pcm, RenderConfig, RenderGraph, Rendered, Resample, Setup, write_buffers,
+    ChannelLayout, Error, Format, FrozenClock, GRAPH_MAX_BLOCK, Normalize, Pcm, RenderGraph,
+    Rendered, Resample, Setup,
 };
 use tutti_fixtures::assert_golden;
 use tutti_graph::{Cx, GraphBuilder, Io, Node, Prepare, Shape, Status, Unforkable};

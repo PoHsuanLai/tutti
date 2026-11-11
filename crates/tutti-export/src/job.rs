@@ -7,8 +7,25 @@
 //! constructor then refuses what no render can be, so the code after it never
 //! re-checks. Doc 019 section 4.
 
-use crate::EventLossPolicy;
 use tutti_types::{SampleRate, Samples};
+
+/// What a render does when the graph it renders dropped events
+/// ([`Job::on_event_loss`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
+pub enum EventLossPolicy {
+    /// The render stops at the first block that dropped an event with
+    /// [`Error::EventsDropped`](crate::Error::EventsDropped), and a file it
+    /// wrote is removed. [`write_buffers`](crate::write_buffers) applies it to
+    /// the planes' own count.
+    #[default]
+    Fail,
+    /// The render succeeds and says how many events were dropped
+    /// ([`Rendered::dropped_events`](crate::Rendered::dropped_events),
+    /// [`Written::dropped_events`](crate::Written::dropped_events)): for a caller that
+    /// checks the figure itself.
+    Allow,
+}
 
 /// The most frames one render may span, latency and tail included:
 /// `u32::MAX`, which is 6.2 hours at 192 kHz.

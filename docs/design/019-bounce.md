@@ -220,10 +220,10 @@ one-target helper `render_one`) replaces the `render_*` functions, which are
 deleted; `Flow`, `Pass` and the `_with` twins went in step 2. `Error::Target`,
 `NoOutputs`, `TapOverrun`, `TapStarved` and `NotCommitted` exist (the
 pipeline-side variants of section 8, except `Error::Job` and `Error::Rendered`:
-see the step 3 note in section 11). `ExportConfig`, `RenderConfig`,
-`EncodeConfig` and `write_buffers` are still here as the one-render bundle the
-session's request carries, and go with it in step 5; `RenderGraph`'s sealing
-is step 4 (built: see its note in section 11).
+see the step 3 note in section 11). `ExportConfig`, `RenderConfig` and
+`EncodeConfig` went in step 5 (`write_buffers` stayed, with a new signature:
+see its note); `RenderGraph`'s sealing is step 4 (built: see its note in
+section 11).
 
 What leaves `tutti-export`'s public surface: `ExportConfig`, `RenderConfig`,
 `EncodeConfig`, the five `render_*` functions and `write_buffers`,
@@ -731,12 +731,110 @@ the text above:
 - **The session-only `ConfigError` variants moved**, to
   `tutti_session::ExportConfigError` (`TargetHasNoOutputs`, `GraphHasNoOutputs`,
   `PrepareHookUncommittable`, and the new `PrepareHookUnpaired`), carried by
-  `Error::ExportConfig`; step 5 renames it `BounceConfigError`.
+  `Error::ExportConfig`; step 5 renamed it `BounceConfigError` (see its note).
   `ExportRendered`'s result is now the session's `Result`.
   `tutti_export::Error::{NotForkable, Fork}` stay: the session raises them.
 - **`clap_fork.rs`, `tutti-export`'s tests and the examples** build a pair
   themselves (`Editor::fork` or `GraphBuilder::build`) and assemble it. A test
   that edited a built graph (opening a tap) edits the pair before assembling.
+
+**As built (step 5).** `Bounce`, `Range`, `Latency`, `Tail`, `Bounced`,
+`BounceJob`, `BounceHandle`, `BounceRendered`, `BounceError` and
+`BounceConfigError` (`tutti-session/src/bounce.rs`, the old `export.rs`);
+`Session::{bounce, bounce_start, finish_bounce, finish_bounce_unannounced,
+drop_bounce_leftovers, bounce_in_flight}` and `BOUNCE_STALL_WARNING` replace
+`export`, `export_blocking`, `finish_export{,_unannounced}`,
+`drop_export_leftovers`, `export_in_flight` and `EXPORT_STALL_WARNING`.
+`ExportRequest`, `ExportSource`, `ExportTarget`, `ExportOutput`, `ExportJob`,
+`ExportRendered`, `ExportHandle`, `ExportConfigError` and `ExportClock`'s
+`Default` are gone (a frozen clock is a thing to say, not what a bounce gets
+by forgetting). `tutti-export` lost `ExportConfig`, `RenderConfig`,
+`EncodeConfig`, `ConfigError::{InvalidDuration, EmptyRender, Job}`,
+`beats_to_seconds` and `duration_to_frames`; `Resample` and `EventLossPolicy`
+stay (own files); the session maps every figure to a `Job` and a target
+itself. Every caller is migrated (the session suites, `clap_fork.rs`, the
+`tutti` example and test, the `tutti-export` tests, examples, bench and README;
+`bevy-tutti` is parked and untouched). Where this differs from the text above:
+
+- **No `Stem` is declared yet.** Section 11 says "declared, rejected as
+  unsupported until step 6". A method that compiles and always fails is a
+  wrong use the type allows, so `Bounce` has no `stem`, no `Stem`, and (with
+  nothing to name a node) no `N` parameter: step 6 adds them together.
+- **`Bounce::node(NodeKey)` is the transitional one-node render.** The old
+  `ExportSource::Node` tests (a sampler voice, a synth, a plugin and the
+  filter of `exports_render_their_graph_as_wired_fresh`) pin properties that
+  only a node render has (a fork of one sub-graph, isolation from
+  downstream), and a stem is the same render (section 7.1). They are kept as
+  they were, on `Bounce::node`; step 6 turns them into stems on the master's
+  fork and deletes the constructor. A graph with no outputs is
+  `GraphHasNoOutputs` for both; a node with none, or not in the graph, is
+  `NodeHasNoOutputs` (was `TargetHasNoOutputs`).
+- **The range.** `Range` is `Loop`, `Beats`, `Seconds` or `Frames(Frame,
+  Frame)`; there is no `Range::Project`. Without `.range` the span is the
+  transport's armed loop, else `.until(Beat)` (beat 0 to it), else `NoRange`
+  (the order is `chosen`, tested). Beats go through the project's tempo map
+  (`TransportSettings::tempo_map`, doc 020) as the difference of
+  `frame_at_or_after` of the two beats, at the render's rate; seconds and
+  frames name the same span (`span`, tested against the step map written out
+  by hand). A NaN, an infinity or a negative position is `InvalidRange`; an
+  inverted or sub-frame span is `EmptyRange`. A tail-only render (the old
+  hack of `RenderConfig::job`) is therefore not a bounce.
+- **The clock** defaults to an `OfflineTimeline` over that same map, seated
+  at the range's first beat with the loop off. It still takes a `Bpm` in its
+  config (the map's first point's, which `with_tempo_map` replaces): doc 020
+  stage 6 swaps the field.
+- **Latency and tail.** `Latency` has the default as a variant (`Graph`,
+  `Keep`, `Frames`); `Tail::Graph { cap }` takes the cap in `Seconds` (10 s,
+  `Tail::CAP`), converted at the render's rate. The latency the bounce does not
+  trim is added to the tail in **every** tail mode, not only the graph's, since
+  a tail excludes latency and `Tail::None` with `Latency::Keep` would otherwise
+  cut the programme's end.
+- **The master's width** is the root's (`ChannelLayout::clamped(outputs)`)
+  unless `.channels(..)`; a node's is the node's. `.normalize` on
+  `master_buffers` is `BounceConfigError::NormalizeBuffers` (planes are not
+  measured); `.format`, `.resample` and `.dither` are ignored by a buffers
+  master, as the old config's fields were. `Bounced` is `targets()`, `master()`
+  and `into_master()`; the master is always the first target.
+- **Errors.** `BounceError` is its own enum, not a variant of the session's
+  `Error` (`Error::{Export, ExportConfig, ExportInFlight}` are gone):
+  `InFlight`, `Config`, `NotForkable { node }`, `Fork`, `Export`; the two fork
+  variants are mapped from the pipeline's, which still raises them.
+  `BounceConfigError` has `Missing(Field)`, `GraphHasNoOutputs`,
+  `NodeHasNoOutputs`, `NoRange`, `EmptyRange`, `InvalidRange`, `Job`,
+  `NormalizeBuffers` and the two prepare-hook variants; the stem variants come
+  with stems. A span past `MAX_FRAMES` is `Config(Job)` before anything is
+  forked, and for planes the pipeline's `RenderTooLarge`, as an allocation
+  failure was.
+- **`Preparing` is reported by the session** (step 2's deferral), through
+  `Control::preparing(&outputs, done, of)`, which picks the band by the same
+  rule the render uses (`Weights::of`): four steps, the gather (counted when
+  the job is made), the fork's build, the edit and the commit with the
+  assembly, so the render starts at the end of the band. A cancel is checked
+  after the build and after the assembly as well as before it.
+- **`write_buffers` stays**, as `write_buffers(&Rendered, &FileTarget,
+  EventLossPolicy)`: it is the only way to put planes with their own loss count
+  and rate through the write pass, and nothing in `render` replaces that. It
+  takes what it reads and nothing else: a target that asks to normalize is
+  `TargetError::NormalizeOfPlanes` (apply the gain first), where the old config
+  ignored half its fields.
+- **Test scaffolding.** `tutti-export`'s integration tests keep a bundle of their
+  own in `tests/support` (`ExportConfig` and its two halves, test-only, building
+  the `Job` and targets a test renders); its examples and bench carry a local
+  `Case`. The crate's public surface has none. The tests of the retired
+  conversions moved to the session's `span` and `chosen` (the rounding of a
+  derived duration at `f64`, the non-finite refusals) and to `plan` and
+  `outputs` (the arithmetic of a plan, `planes_no_allocator_can_give_are_render_too_large`).
+- **The preludes.** `tutti::prelude` has `Bounce`, `BounceError`, `Bounced`,
+  `Latency` and `Range` with `export`, and no `Tail` (it would shadow
+  `tutti_types::Tail`); step 8 settles the rest. `tutti-session` now depends on
+  `tutti-tempo`, its `export` feature implies `tutti-dsp`, and `DitherShape`
+  is exported with `export` as with `record`.
+- **Still step 6's:** stems, `Placement` on the session side, `StemGain`, the
+  serial-versus-parallel test with stems and the cancel test for each point of
+  section 6.2 on a bounce (`tests/cancel.rs` holds the pipeline's). Tempo stage 6
+  (doc 020) needs only what is here: the session derives range and clock from
+  the map, and `beats_to_seconds` and `duration_to_frames` are retired.
+
 
 Test policy applies throughout: every new case must be able to fail (checked once, said in the PR); no existing
 test is relaxed; the parallel path is compared to the serial render bit for bit;

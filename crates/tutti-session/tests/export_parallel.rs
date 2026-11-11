@@ -20,14 +20,10 @@ use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
 use std::thread::ThreadId;
 
-use tutti_export::{
-    ChannelLayout, EncodeConfig, ExportConfig, Format, Outcome, Pcm, RenderConfig, Rendered,
-};
+use tutti_export::{ChannelLayout, Outcome, Produced, Rendered};
 use tutti_graph::{Cx, ForkByClone, Io, Node, Prepare, Shape, Status};
-use tutti_session::{
-    ExportClock, ExportOutput, ExportRequest, ExportSource, ExportTarget, GraphSource, Session,
-};
-use tutti_types::SampleRate;
+use tutti_session::{Bounce, ExportClock, GraphSource, Range, Session, Tail};
+use tutti_types::{SampleRate, Seconds};
 
 const RATE: SampleRate = SampleRate(48_000.0);
 const BRANCHES: usize = 8;
@@ -121,29 +117,18 @@ fn export(workers: usize) -> (Rendered, usize) {
     }
     session.graph().set_outputs_from(sum);
 
-    let config = ExportConfig {
-        render: RenderConfig {
-            sample_rate: RATE,
-            duration_seconds: tutti_types::Seconds(0.5),
-            ..Default::default()
-        },
-        encode: EncodeConfig {
-            format: Format::Wav(Pcm::Float32),
-            channels: ChannelLayout::STEREO,
-            topology: None,
-        },
-        ..Default::default()
+    let bounce = Bounce::project()
+        .master_buffers()
+        .channels(ChannelLayout::STEREO)
+        .range(Range::Seconds(Seconds(0.0), Seconds(0.5)))
+        .sample_rate(RATE)
+        .clock(ExportClock::frozen())
+        .tail(Tail::None);
+    let Outcome::Finished(bounced) = session.bounce(bounce).unwrap() else {
+        panic!("the bounce finishes into memory")
     };
-    let request = ExportRequest::new(
-        ExportSource::Mix,
-        ExportTarget::Buffers,
-        config,
-        ExportClock::frozen(),
-    );
-    let Outcome::Finished(ExportOutput::Buffers(rendered)) =
-        session.export_blocking(request).unwrap()
-    else {
-        panic!("the export finishes into memory")
+    let Produced::Buffers(rendered) = bounced.into_master() else {
+        panic!("the bounce finishes into memory")
     };
     let ran_on = threads.lock().unwrap().len();
     (rendered, ran_on)

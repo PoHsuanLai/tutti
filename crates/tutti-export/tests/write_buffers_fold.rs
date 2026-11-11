@@ -6,10 +6,9 @@
 //! Every expected figure is the analytic ITU/Dolby coefficient (`M3DB` on the
 //! centre and the surrounds, the LFE left out), not another render.
 
-use tutti_export::{
-    ChannelLayout, ConfigError, EncodeConfig, Error, ExportConfig, Format, Pcm, Rendered,
-    write_buffers,
-};
+mod support;
+use crate::support::{EncodeConfig, ExportConfig, write_buffers};
+use tutti_export::{ChannelLayout, ConfigError, Error, Format, Pcm, Rendered};
 use tutti_types::{ChannelTopology, M3DB, SampleRate, Speaker};
 
 const RATE: SampleRate = SampleRate(48_000.0);

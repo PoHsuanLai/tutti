@@ -49,13 +49,13 @@ pub(crate) fn main_thread() {
     );
 }
 
+#[cfg(feature = "export")]
+mod bounce;
 mod builder;
 #[cfg(feature = "device")]
 mod device;
 mod edge;
 mod error;
-#[cfg(feature = "export")]
-mod export;
 #[cfg(feature = "export")]
 mod fork;
 #[cfg(feature = "soundfont")]
@@ -78,16 +78,16 @@ mod session;
 #[cfg(feature = "device")]
 mod watch;
 
+#[cfg(feature = "export")]
+pub use bounce::{
+    BOUNCE_STALL_WARNING, Bounce, BounceConfigError, BounceError, BounceHandle, BounceJob,
+    BounceRendered, Bounced, ExportClock, Field, Latency, PrepareEdit, PreparedGraph, Range, Tail,
+};
 pub use builder::{SessionBuilder, root_width};
 #[cfg(feature = "device")]
 pub use device::{Device, DeviceRestart, DeviceRestarted};
 pub use edge::{EdgeGainError, EdgeRef, EdgeSink};
 pub use error::{Error, HeardTapError, InletError, Result};
-#[cfg(feature = "export")]
-pub use export::{
-    EXPORT_STALL_WARNING, ExportClock, ExportConfigError, ExportHandle, ExportJob, ExportOutput,
-    ExportRendered, ExportRequest, ExportSource, ExportTarget, PrepareEdit, PreparedGraph,
-};
 #[cfg(feature = "soundfont")]
 pub use general_midi::GeneralMidi;
 #[cfg(feature = "modulation")]
@@ -126,8 +126,14 @@ pub use session::MidiNodes;
 #[cfg(feature = "modulation")]
 pub use session::ModInput;
 pub use session::{PHASES, Phase, PhaseCx, RootTopologyStatus, Session, SessionEvent};
+#[cfg(any(feature = "record", feature = "export"))]
+pub use tutti_dsp::DitherShape;
 #[cfg(feature = "record")]
-pub use tutti_dsp::{DitherShape, DitherSink, DitherSpec};
+pub use tutti_dsp::{DitherSink, DitherSpec};
+#[cfg(feature = "export")]
+pub use tutti_export::{
+    EventLossPolicy, Normalize, Outcome, Produced, Progress, Rendered, Resample, Stage, Written,
+};
 pub use tutti_graph::{BusError, BusRef, BusSource, Buses, MissingSource};
 pub use tutti_graph::{MixError, ModeError, NodeMode, PassError};
 #[cfg(feature = "midi")]

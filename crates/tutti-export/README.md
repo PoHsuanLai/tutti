@@ -28,8 +28,8 @@ and every `Output` of the render is fed from that one pass. `render` takes the
   have been checked. A render that fails or is cancelled leaves every path as it
   was. The renames are the one step that is not undone: if one fails after others
   landed the error is `Error::NotCommitted`, which names the files that did.
-- `write_buffers` encodes planes a caller already holds (with the
-  `ExportConfig` that describes the file).
+- `write_buffers` encodes planes a caller already holds into the `FileTarget`
+  that describes the file.
 
 `Control` is how a host watches and stops the render: a `CancelToken` that is
 checked (before every block, between stages, during the measurement and the
@@ -44,9 +44,9 @@ umbrellas (`tutti`, `bevy-tutti`, `tutti-session`) forward them as `export-wav`,
 `export-flac`, `export-aiff` and `export-ogg`; their `export` feature implies
 `export-wav` only, so `export-ogg` is the one path to C.
 
-`ExportConfig` is the bundle for one render of one file or one set of planes
-(`job()`, `file_target(path, normalize)`, `buffer_target()` build what `render`
-takes); it goes with the session's request when the session's bounce lands.
+What a render is and where it goes are values of this crate (`Job`, the
+targets); a project's bounce, whose figures are derived from a session, is
+`tutti-session`'s `Bounce`, and this crate is the pipeline it drives.
 
 ## What this crate does not own
 
@@ -70,8 +70,8 @@ takes); it goes with the session's request when the session's bounce lands.
 
 ## Example — bounce a graph
 
-A config is a struct literal, so a caller states what it means and lets
-`..Default::default()` cover the rest. The clock is not optional:
+A `Job` is a rate and three frame counts, and a target names a file or planes.
+The clock is not optional:
 `FrozenClock` is how a caller *says* "this graph has no time-dependent nodes",
 so forgetting a transport is a compile error rather than a silently silent
 render.
@@ -84,10 +84,10 @@ forks it and assembles the fork (`tutti-session` does both).
 
 ```rust
 use tutti_transport::FrozenClock;
-use tutti_types::{Hz, SampleRate, Seconds};
+use tutti_types::{Hz, SampleRate, Samples, Seconds};
 use tutti_export::{
-    render, render_one, ChannelLayout, Control, EncodeConfig, ExportConfig, FileTarget, FlacLevel,
-    Format, IntDepth, Output, Pcm, Produced, RenderConfig, RenderGraph, Setup,
+    render, render_one, BufferTarget, ChannelLayout, Control, FileTarget, FlacLevel, Format,
+    IntDepth, Job, Output, Pcm, Produced, RenderGraph, Setup,
 };
 use tutti_graph::GraphBuilder;
 use tutti_nodes::testing::Osc;
@@ -102,19 +102,8 @@ let tone = || {
     RenderGraph::assemble(editor, executor, Setup::new()).expect("built together")
 };
 
-let config = ExportConfig {
-    render: RenderConfig {
-        sample_rate: rate,
-        duration_seconds: Seconds(0.5),
-        ..Default::default()
-    },
-    encode: EncodeConfig {
-        format: Format::Flac { depth: IntDepth::Int24, level: FlacLevel::Standard },
-        ..Default::default()
-    },
-    ..Default::default()
-};
-let job = config.job().expect("a half second");
+let job = Job::new(rate, Seconds(0.5).to_samples(rate), Samples(0), Samples(0))
+    .expect("a half second");
 
 // To buffers: planar, one `Vec` per channel, and `frames()` is FRAMES per
 // plane rather than the total sample count.
@@ -122,7 +111,7 @@ let rendered = render_one(
     &mut tone(),
     &job,
     &FrozenClock,
-    Output::master(config.buffer_target()),
+    Output::master(BufferTarget::new(ChannelLayout::STEREO)),
     &mut Control::none(),
 )
 .expect("a 0.5 s stereo render")
@@ -140,7 +129,11 @@ let produced = render(
     &job,
     &FrozenClock,
     vec![
-        Output::master(config.file_target(dir.path().join("master.flac"), None)),
+        Output::master(FileTarget::new(
+            dir.path().join("master.flac"),
+            Format::Flac { depth: IntDepth::Int24, level: FlacLevel::Standard },
+            ChannelLayout::STEREO,
+        )),
         Output::master(FileTarget::new(
             dir.path().join("master.wav"),
             Format::Wav(Pcm::Int16),

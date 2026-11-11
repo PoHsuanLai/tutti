@@ -20,7 +20,7 @@ fn offline() -> Session {
 
 /// The first frame of a committed 64-frame block, per channel.
 fn first_frame(s: &mut Session) -> [f32; 2] {
-    s.update();
+    let _ = s.update();
     let mut block = vec![f32::NAN; 64 * 2];
     s.render(&mut InterleavedMut::new(&mut block, ChannelLayout::STEREO));
     [block[0], block[1]]
@@ -81,7 +81,7 @@ fn a_width_mismatch_is_refused_and_stores_nothing() {
     let (stereo, _) = s.graph().insert(Through::new(ChannelLayout::STEREO));
     let (more, _) = s.graph().insert(Through::new(ChannelLayout::STEREO));
     let (narrow, _) = s.graph().insert(Through::mono());
-    s.update();
+    let _ = s.update();
     let err = s.graph().connect(mono, stereo).unwrap_err();
     assert_eq!(
         err,

@@ -49,7 +49,7 @@ fn clock(
     for _ in 0..blocks {
         stream.render_block(frames).expect("the stream is open");
     }
-    s.update();
+    let _ = s.update();
     let batches = std::mem::take(&mut *wire.0.lock().unwrap());
     assert_eq!(batches.len(), 1, "one drain, one batch");
     batches[0]
@@ -75,7 +75,7 @@ fn a_restart_re_rates_the_midi_clock() {
         .build_device_on(spec_at(OLD), driver)
         .expect("builds with no device")
         .into_parts();
-    s.update();
+    let _ = s.update();
     let wire = Wire::default();
     s.midi()
         .set_hardware_out(Some(UmpOut::new(Box::new(wire.clone()), SampleRate(OLD))));
@@ -109,7 +109,7 @@ fn a_restart_re_rates_the_midi_clock() {
         Some(SampleRate(NEW)),
         "the hardware out's frames follow the graph to its new rate"
     );
-    s.update(); // what the old rate left in the tap
+    let _ = s.update(); // what the old rate left in the tap
     let after = clock(&mut s, &wire, &new, (512, 100));
     assert!((ticks(&after) - 1_000.0).abs() < 0.05, "{}", ticks(&after));
     assert!(

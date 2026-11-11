@@ -35,7 +35,7 @@ fn amp(x: f32) -> Amplitude {
 /// Commits and renders two blocks, so a weight that moved has finished its
 /// one-block ramp; returns the last block's channel `ch`.
 fn settled(s: &mut Session, ch: usize) -> Vec<f32> {
-    s.update();
+    let _ = s.update();
     let mut block = vec![f32::NAN; BLOCK * 2];
     for _ in 0..2 {
         s.render(&mut InterleavedMut::new(&mut block, ChannelLayout::STEREO));
@@ -63,7 +63,7 @@ fn rig() -> Rig {
     let (b, _) = g.insert(Const::mono(B));
     let (sink, _) = g.insert(Through::mono());
     g.set_output_source(0, GraphSource::Node(sink, 0));
-    s.update();
+    let _ = s.update();
     assert!(!s.graph_ref().is_edited());
     Rig { s, a, b, sink }
 }
@@ -115,7 +115,7 @@ fn an_edge_gain_sets_reads_and_clears() {
 fn a_gain_on_a_missing_edge_or_a_bad_number_is_refused() {
     let mut r = rig();
     r.s.graph().add_source(r.sink, 0, node(r.a));
-    r.s.update();
+    let _ = r.s.update();
     let missing = r.edge_from(r.b);
     assert_eq!(
         r.s.graph().set_edge_gain(missing, amp(0.5)),

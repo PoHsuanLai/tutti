@@ -4,7 +4,7 @@ use tutti_types::{Db, Seconds};
 
 use super::*;
 use crate::contract::cases::design as cases;
-use crate::contract::{Anchor, DesignCase, Hook, LtiCase, ReverbCase};
+use crate::contract::{DesignCase, Figure, Hook, LtiCase, ReverbCase};
 use crate::reverb::network::Band;
 use crate::testing::flaws::{Mutant, map_absorption, map_fdn};
 use crate::{Lti as _, System as _};
@@ -108,14 +108,14 @@ impl LtiCase for FreeverbDesign {
     /// loop gain `g_loop = room * 0.28 + 0.7`), the eight left combs add, and
     /// the four all-passes have unit gain at DC for a feedback of 0.5. The right
     /// channel is the same sum over its eight combs.
-    fn anchors(&self) -> Vec<Anchor<FreeverbControls>> {
+    fn figures(&self) -> Vec<Figure<FreeverbControls>> {
         let rate = SampleRate(48_000.0);
         [(0.5, 0.5), (0.0, 0.5), (1.0, 0.2), (0.9, 1.0)]
             .into_iter()
             .flat_map(|(room, damp)| {
                 let loop_gain = f64::from(room * 0.28 + 0.7);
                 let dc = 8.0 * f64::from(Freeverb::FIXED_GAIN) / (1.0 - loop_gain);
-                (0..2).map(move |output| Anchor {
+                (0..2).map(move |output| Figure {
                     controls: controls(room, damp),
                     rate,
                     output,
@@ -197,7 +197,7 @@ fn a_defective_freeverb_fails_its_case() {
 
     // bounds: one line short.
     let mut m = mutant(|_| {});
-    m.bounds = |b| Bounds {
+    m.bounds = |b| NetworkSizes {
         lines: b.lines - 1,
         ..b
     };
@@ -241,13 +241,13 @@ fn a_defective_freeverb_fails_the_lti_design_cases() {
     // over 1, and its absorption peak with it.
     fails(cases::radius(&mutant(louder)), "spectral radius");
     fails(cases::no_rescale(&mutant(louder)), "rescale");
-    // anchors: the input gain (Freeverb's FIXED_GAIN) 10% high moves the DC gain.
+    // figures: the input gain (Freeverb's FIXED_GAIN) 10% high moves the DC gain.
     let m = mutant(|n| {
         map_fdn(n, |f| {
             f.input.as_mut_slice().iter_mut().for_each(|g| *g *= 1.1)
         })
     });
-    fails(cases::anchors(&m), "|H| is");
+    fails(cases::figures(&m), "|H| is");
     // ports: a third output channel the design does not declare.
     let m = mutant(|n| {
         let mut taps = Taps::default();
@@ -453,7 +453,7 @@ fn the_bounds_are_the_largest_design() {
     let ceiling = Ceiling::at(SampleRate(48_000.0)).unwrap();
     let b = FreeverbDesign.bounds(&ceiling);
     let room_one = FreeverbDesign.design(&controls(1.0, 0.0), SampleRate(48_000.0));
-    assert_eq!(b, Bounds::measure(&room_one, ceiling.floor()));
+    assert_eq!(b, NetworkSizes::measure(&room_one, ceiling.floor()));
     assert_eq!((b.lines, b.stages, b.outputs), (16, 5, 2));
     let short = Ceiling::new(
         SampleRate(48_000.0),

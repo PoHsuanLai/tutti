@@ -6,13 +6,13 @@ use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
 use tutti_types::{Amplitude, BusTopology, Db, Hz, Mix, SampleRate, Samples, Seconds, StereoWidth};
 
-use crate::contract::{Anchor, DesignCase, Hook, LtiCase, RealizationCase, ReverbCase};
+use crate::contract::{DesignCase, Figure, Hook, LtiCase, RealizationCase, ReverbCase};
 use crate::reverb::network::{
     AllPass, AllPassForm, Fdn, Gains, Inline, Line, MAX_LINES, Matrix, Modulation, OutputMap,
     pre_delay_frames,
 };
 use crate::{
-    Absorption, Band, Bounds, Ceiling, Channels, Design, Effect, Lti, MaxDecay, Network,
+    Absorption, Band, Ceiling, Channels, Design, Effect, Lti, MaxDecay, Network, NetworkSizes,
     Realization, Ring, Setup, Sizes, Stage, System, loop_gain,
 };
 
@@ -21,9 +21,9 @@ use crate::{
 pub(crate) trait NetDesign:
     Design<
         Model = Network,
-        Bounds = Bounds,
+        Bounds = NetworkSizes,
         Range = MaxDecay,
-        Realization: Effect<Network, Bounds = Bounds> + Clone,
+        Realization: Effect<Network, Bounds = NetworkSizes> + Clone,
     >
 {
 }
@@ -31,9 +31,9 @@ pub(crate) trait NetDesign:
 impl<D> NetDesign for D where
     D: Design<
             Model = Network,
-            Bounds = Bounds,
+            Bounds = NetworkSizes,
             Range = MaxDecay,
-            Realization: Effect<Network, Bounds = Bounds> + Clone,
+            Realization: Effect<Network, Bounds = NetworkSizes> + Clone,
         >
 {
 }
@@ -43,7 +43,7 @@ impl<D> NetDesign for D where
 pub(crate) struct Mutant<D> {
     pub(crate) inner: D,
     pub(crate) network: fn(&mut Network),
-    pub(crate) bounds: fn(Bounds) -> Bounds,
+    pub(crate) bounds: fn(NetworkSizes) -> NetworkSizes,
     /// The hooks it says are vacant, when not the inner design's.
     pub(crate) vacant: Option<&'static [(Hook, &'static str)]>,
 }
@@ -62,7 +62,7 @@ impl<D> Mutant<D> {
 impl<D: NetDesign> Design for Mutant<D> {
     type Controls = D::Controls;
     type Model = Network;
-    type Bounds = Bounds;
+    type Bounds = NetworkSizes;
     type Range = MaxDecay;
     type Realization = D::Realization;
 
@@ -83,7 +83,7 @@ impl<D: NetDesign> Design for Mutant<D> {
         self.inner.realization()
     }
 
-    fn bounds(&self, ceiling: &Ceiling<MaxDecay>) -> Bounds {
+    fn bounds(&self, ceiling: &Ceiling<MaxDecay>) -> NetworkSizes {
         (self.bounds)(self.inner.bounds(ceiling))
     }
 }
@@ -125,8 +125,8 @@ impl<D: NetDesign + RealizationCase> RealizationCase for Mutant<D> {
 }
 
 impl<D: NetDesign + LtiCase> LtiCase for Mutant<D> {
-    fn anchors(&self) -> Vec<Anchor<D::Controls>> {
-        self.inner.anchors()
+    fn figures(&self) -> Vec<Figure<D::Controls>> {
+        self.inner.figures()
     }
     fn marginal(&self, c: &D::Controls) -> bool {
         self.inner.marginal(c)
@@ -268,8 +268,8 @@ impl ToyFdn {
 pub(crate) struct Unrun;
 
 impl Realization<Network> for Unrun {
-    type Bounds = Bounds;
-    fn prepare(&mut self, _: &Bounds, _: &Setup) {}
+    type Bounds = NetworkSizes;
+    fn prepare(&mut self, _: &NetworkSizes, _: &Setup) {}
     fn retarget(&mut self, _: &Network) {}
     fn reset(&mut self) {}
     fn fresh(&self) -> Self {
@@ -286,7 +286,7 @@ impl Effect<Network> for Unrun {
 impl Design for ToyFdn {
     type Controls = ToyControls;
     type Model = Network;
-    type Bounds = Bounds;
+    type Bounds = NetworkSizes;
     type Range = MaxDecay;
     type Realization = Unrun;
 
@@ -401,7 +401,7 @@ impl Design for ToyFdn {
 
     /// The largest design (size 1, the longest decay, the longest pre-delay);
     /// the tail is unbounded because freeze is reachable.
-    fn bounds(&self, ceiling: &Ceiling<MaxDecay>) -> Bounds {
+    fn bounds(&self, ceiling: &Ceiling<MaxDecay>) -> NetworkSizes {
         let worst = ToyControls {
             decay: [ceiling.max_decay(); 3],
             size: Mix(1.0),
@@ -409,7 +409,7 @@ impl Design for ToyFdn {
             pre_delay: TOY_MAX_PRE_DELAY,
             freeze: false,
         };
-        let mut b = Bounds::measure(&self.design(&worst, ceiling.rate()), ceiling.floor());
+        let mut b = NetworkSizes::measure(&self.design(&worst, ceiling.rate()), ceiling.floor());
         b.tail = Ring::Unbounded;
         b
     }
@@ -471,7 +471,7 @@ impl DesignCase for ToyFdn {
     }
 
     fn vacant(&self) -> &'static [(Hook, &'static str)] {
-        &[(Hook::Anchors, "the toy has no closed-form anchor")]
+        &[(Hook::Figures, "the toy has no closed-form figure")]
     }
 }
 
@@ -673,7 +673,7 @@ pub(crate) struct Flawed<K> {
     runaway: f32,
 }
 
-impl<K: Effect<Network, Bounds = Bounds> + Clone> Flawed<K> {
+impl<K: Effect<Network, Bounds = NetworkSizes> + Clone> Flawed<K> {
     /// Retargets the inner realization to `network` as `edit` leaves it.
     fn edited(&mut self, network: &Network, edit: impl FnOnce(&mut Network)) {
         let mut n = Box::new(network.clone());
@@ -682,10 +682,10 @@ impl<K: Effect<Network, Bounds = Bounds> + Clone> Flawed<K> {
     }
 }
 
-impl<K: Effect<Network, Bounds = Bounds> + Clone> Realization<Network> for Flawed<K> {
-    type Bounds = Bounds;
+impl<K: Effect<Network, Bounds = NetworkSizes> + Clone> Realization<Network> for Flawed<K> {
+    type Bounds = NetworkSizes;
 
-    fn prepare(&mut self, bounds: &Bounds, setup: &Setup) {
+    fn prepare(&mut self, bounds: &NetworkSizes, setup: &Setup) {
         self.inner.prepare(bounds, setup);
     }
 
@@ -828,7 +828,7 @@ impl<K: Effect<Network, Bounds = Bounds> + Clone> Realization<Network> for Flawe
     }
 }
 
-impl<K: Effect<Network, Bounds = Bounds> + Clone> Effect<Network> for Flawed<K> {
+impl<K: Effect<Network, Bounds = NetworkSizes> + Clone> Effect<Network> for Flawed<K> {
     fn process(&mut self, input: &[&[f32]], output: &mut [&mut [f32]]) {
         self.inner.process(input, output);
         match self.defect {
@@ -900,7 +900,7 @@ pub(crate) struct Defective<D: NetDesign> {
 impl<D: NetDesign> Design for Defective<D> {
     type Controls = D::Controls;
     type Model = Network;
-    type Bounds = Bounds;
+    type Bounds = NetworkSizes;
     type Range = MaxDecay;
     type Realization = Flawed<D::Realization>;
 
@@ -916,7 +916,7 @@ impl<D: NetDesign> Design for Defective<D> {
         self.inner.design_into(c, rate, out);
     }
 
-    fn bounds(&self, ceiling: &Ceiling<MaxDecay>) -> Bounds {
+    fn bounds(&self, ceiling: &Ceiling<MaxDecay>) -> NetworkSizes {
         self.inner.bounds(ceiling)
     }
 
@@ -1017,8 +1017,8 @@ impl<D: NetDesign + RealizationCase> RealizationCase for Defective<D> {
 }
 
 impl<D: NetDesign + LtiCase> LtiCase for Defective<D> {
-    fn anchors(&self) -> Vec<Anchor<D::Controls>> {
-        self.inner.anchors()
+    fn figures(&self) -> Vec<Figure<D::Controls>> {
+        self.inner.figures()
     }
     fn marginal(&self, c: &D::Controls) -> bool {
         self.inner.marginal(c)
@@ -1145,7 +1145,7 @@ pub(crate) struct Lying<D> {
 impl<D: NetDesign> Design for Lying<D> {
     type Controls = D::Controls;
     type Model = Scaled<Network>;
-    type Bounds = Bounds;
+    type Bounds = NetworkSizes;
     type Range = MaxDecay;
     type Realization = Lie<D::Realization>;
 
@@ -1164,7 +1164,7 @@ impl<D: NetDesign> Design for Lying<D> {
         self.inner.design_into(c, rate, &mut out.inner);
         (out.tail, out.hinf, out.l1) = (self.tail, self.hinf, self.l1);
     }
-    fn bounds(&self, ceiling: &Ceiling<MaxDecay>) -> Bounds {
+    fn bounds(&self, ceiling: &Ceiling<MaxDecay>) -> NetworkSizes {
         self.inner.bounds(ceiling)
     }
     fn realization(&self) -> Lie<D::Realization> {
@@ -1206,8 +1206,8 @@ impl<D: NetDesign + RealizationCase> RealizationCase for Lying<D> {
 }
 
 impl<D: NetDesign + LtiCase> LtiCase for Lying<D> {
-    fn anchors(&self) -> Vec<Anchor<D::Controls>> {
-        self.inner.anchors()
+    fn figures(&self) -> Vec<Figure<D::Controls>> {
+        self.inner.figures()
     }
     fn marginal(&self, c: &D::Controls) -> bool {
         self.inner.marginal(c)

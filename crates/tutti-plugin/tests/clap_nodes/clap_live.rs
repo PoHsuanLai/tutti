@@ -352,34 +352,20 @@ fn assert_live(rate: f64, quantum: usize) {
     );
 }
 
-/// 480-frame callbacks at 48 kHz: not a multiple of 64, so a 64-frame
-/// pipeline would collect most chunks mid-callback.
-///
-/// Ignoring `Prepare::quantum` is invisible here (the graph's `MaxBlock` is the same
-/// 480); the batcher's unit test pins it.
+/// A device hears its plugin at each callback size: 480 frames at 48 kHz (not
+/// a multiple of 64, so a 64-frame pipeline would collect most chunks
+/// mid-callback; ignoring `Prepare::quantum` is invisible here, since the
+/// graph's `MaxBlock` is the same 480, and the batcher's unit test pins it),
+/// 1024 at 48 kHz (sixteen 64-frame passes per callback, of which the reversed
+/// pipeline could fill only the first) and 441 at 44.1 kHz (10 ms: odd, so no
+/// power-of-two chunk could line up with it).
 #[test]
-fn a_480_frame_device_hears_its_plugin() {
-    let _lock = machine_lock();
-    let _env = ProbeEnv::new().render_mode(render::LATENCY);
-    assert_live(48_000.0, 480);
-}
-
-/// 1024-frame callbacks at 48 kHz: sixteen 64-frame passes per callback, of
-/// which the reversed pipeline could fill only the first.
-#[test]
-fn a_1024_frame_device_hears_its_plugin() {
-    let _lock = machine_lock();
-    let _env = ProbeEnv::new().render_mode(render::LATENCY);
-    assert_live(48_000.0, 1024);
-}
-
-/// 441-frame callbacks at 44.1 kHz (10 ms): odd, so no power-of-two chunk
-/// could line up with it.
-#[test]
-fn a_441_frame_device_hears_its_plugin() {
-    let _lock = machine_lock();
-    let _env = ProbeEnv::new().render_mode(render::LATENCY);
-    assert_live(44_100.0, 441);
+fn a_device_hears_its_plugin_at_every_callback_size() {
+    for (rate, quantum) in [(48_000.0, 480), (48_000.0, 1024), (44_100.0, 441)] {
+        let _lock = machine_lock();
+        let _env = ProbeEnv::new().render_mode(render::LATENCY);
+        assert_live(rate, quantum);
+    }
 }
 
 /// **A burst of catch-up callbacks costs blocks, never correctness.** The

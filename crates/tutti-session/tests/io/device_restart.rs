@@ -60,7 +60,7 @@ fn engine() -> (
     s.graph().set_source(lim, 0, GraphSource::Node(osc, 0));
     s.graph().set_output_source(0, GraphSource::Node(osc, 0));
     s.graph().set_output_source(1, GraphSource::Node(lim, 0));
-    s.update();
+    let _ = s.update();
     (s, device, stream, osc, lim)
 }
 
@@ -72,7 +72,7 @@ fn play(s: &mut Session, stream: &ManualStream, frames: usize, blocks: usize) ->
     for _ in 0..blocks {
         let block = stream.render_block(frames).expect("the stream is open");
         left.extend(block.iter().step_by(2));
-        s.update();
+        let _ = s.update();
     }
     left
 }
@@ -274,7 +274,7 @@ fn a_restart_onto_a_wider_device_widens_the_root() {
     for _ in 0..4 {
         let block = surround.render_block(480).expect("the stream is open");
         assert_eq!(block.len(), 480 * 6);
-        s.update();
+        let _ = s.update();
     }
     assert_eq!(
         s.compensation().to_vec().len(),
@@ -318,7 +318,7 @@ fn a_restart_after_a_failed_hook_recovers_on_the_old_device() {
     // The declared wiring writes the limiter's input back.
     s.graph().set_source(lim, 0, GraphSource::Node(osc, 0));
     s.graph().remove(loop_back);
-    s.update();
+    let _ = s.update();
     let (driver, back) = ManualStreamDriver::new();
     s.restart_on(&mut device, spec_at(OLD), driver, None, |_| {})
         .expect("recovers");

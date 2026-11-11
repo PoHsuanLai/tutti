@@ -63,7 +63,7 @@ fn update_at(s: &mut Session, now: Instant, mods: Option<ModInput<'_>>) -> Vec<S
 /// Updates until nothing is left to resolve: nodes committed, then lanes.
 fn settle(s: &mut Session) {
     for _ in 0..4 {
-        s.update();
+        let _ = s.update();
     }
     assert_eq!(s.mod_state().refusal(), None, "the declarations apply");
     assert_eq!(
@@ -360,7 +360,7 @@ fn a_refusal_names_the_route_key_the_session_minted() {
     );
 
     s.mods().range(cutoff, 0.0, 1_000.0);
-    s.update();
+    let _ = s.update();
     assert_eq!(s.mod_state().refusal(), None, "cleared once it applies");
 }
 
@@ -393,7 +393,7 @@ fn a_route_onto_an_unranged_target_is_refused_at_the_call() {
     let mut m = s.mods();
     m.range(cutoff, 0.0, 1_000.0);
     assert!(m.route(lfo, cutoff, Depth(0.5)).is_ok());
-    s.update();
+    let _ = s.update();
     assert_eq!(s.mod_state().refusal(), None, "applies clean");
 }
 
@@ -491,7 +491,7 @@ impl tutti_graph::Node for Late {
 fn a_re_apply_that_moves_the_latency_publishes_it() {
     let mut s = offline();
     let (late, _) = s.graph().insert(ForkByClone(Late));
-    s.update();
+    let _ = s.update();
     assert_eq!(s.latency(), Samples(0), "precondition: nothing latent out");
 
     let (probe, _) = s.graph().add(ProbeUnit::new(500.0));
@@ -551,10 +551,10 @@ fn an_update_frees_a_program_a_block_held_across_a_route_edit() {
     {
         let _held = block.lend();
         s.mods().route_mut(route).expect("the route").depth = Depth(0.25);
-        s.update();
+        let _ = s.update();
         assert_eq!(lane.retired_programs(), 1, "republished, the old held");
     }
-    s.update();
+    let _ = s.update();
     assert_eq!(lane.retired_programs(), 0, "the update freed it");
 }
 
@@ -573,7 +573,7 @@ fn an_own_edit_after_a_steady_state_applies() {
     let route = m.route(lfo, cutoff, Depth(0.5)).unwrap();
     settle(&mut s);
     for _ in 0..4 {
-        s.update();
+        let _ = s.update();
     }
     let program = |s: &Session| {
         s.mod_state()
@@ -585,14 +585,14 @@ fn an_own_edit_after_a_steady_state_applies() {
     let before = program(&s);
 
     s.mods().route_mut(route).expect("the route").depth = Depth(0.25);
-    s.update();
+    let _ = s.update();
     assert!(
         !std::sync::Arc::ptr_eq(&before, &program(&s)),
         "the depth edit is republished"
     );
 
     s.mods().range(cutoff, 0.0, 2_000.0);
-    s.update();
+    let _ = s.update();
     let range = s
         .graph()
         .param_mod(probe, UnitParam::Cutoff)

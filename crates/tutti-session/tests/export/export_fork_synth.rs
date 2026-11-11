@@ -18,7 +18,7 @@ use tutti_graph::{Event, Node, Offset};
 use tutti_midi_runtime::TimedMidiEvent;
 use tutti_polysynth::{Adsr, OscillatorType, PolySynth, SynthConfig};
 use tutti_session::BufferMaster;
-use tutti_session::{Bounce, ExportClock, Latency, Range, Session, Stem, Tail};
+use tutti_session::{Bounce, BounceLatency, BounceTail, ExportClock, Range, Session, Stem};
 use tutti_sf2::SoundFont;
 use tutti_soundfont::{Settings, SoundFontUnit};
 use tutti_transport::{OfflineTimeline, OfflineTimelineConfig};
@@ -44,8 +44,8 @@ fn bounce_of(seconds: f64, rate: f64, clock: ExportClock) -> Bounce<NodeKey, Buf
         .range(Range::Seconds(Seconds(0.0), Seconds(seconds)))
         .sample_rate(SampleRate(rate))
         .clock(clock)
-        .latency(Latency::Keep)
-        .tail(Tail::None)
+        .latency(BounceLatency::Keep)
+        .tail(BounceTail::None)
 }
 
 fn render(session: &mut Session, bounce: Bounce<NodeKey, BufferMaster>) -> Vec<Vec<f32>> {
@@ -116,7 +116,7 @@ fn session_with<N: tutti_graph::IntoNode>(unit: N) -> (Session, NodeKey) {
     session.graph().set_sample_rate(SampleRate(RATE));
     let (synth, _) = session.graph().insert(unit);
     session.graph().set_outputs_from(synth);
-    session.update();
+    let _ = session.update();
     (session, synth)
 }
 
@@ -140,7 +140,7 @@ fn install_clip(session: &mut Session, synth: NodeKey) {
         .midi()
         .play_clip(synth, clip())
         .expect("the synth takes a clip");
-    session.update();
+    let _ = session.update();
 }
 
 /// A 90 BPM timeline from beat 0 at `rate`.
@@ -250,10 +250,10 @@ fn a_param_on_a_synth_reaches_it_and_its_fork() {
         session.graph().set_sample_rate(SampleRate(RATE));
         let (synth, controls) = session.graph().add(poly());
         session.graph().set_outputs_from(synth);
-        session.update();
+        let _ = session.update();
         if let Some(v) = volume {
             session.graph().set_param(synth, UnitParam::Volume, v);
-            session.update();
+            let _ = session.update();
             assert_eq!(
                 controls.get(UnitParam::Volume),
                 Some(v),

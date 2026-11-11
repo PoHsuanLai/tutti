@@ -115,7 +115,7 @@ fn render(tier: Tier) -> (Vec<f32>, Vec<f32>, Samples) {
     };
     s.graph().set_output_source(0, GraphSource::Node(voice, 0));
     s.graph().set_output_source(1, GraphSource::Node(voice, 1));
-    s.update();
+    let _ = s.update();
 
     let declared = s.compensation().preroll(0).expect("a plan was sent");
     assert_eq!(

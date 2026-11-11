@@ -2429,7 +2429,7 @@ fn run_differential(g: &Gen) {
 }
 
 proptest! {
-    #![proptest_config(ProptestConfig { cases: 256, ..ProptestConfig::default() })]
+    #![proptest_config(ProptestConfig { cases: tutti_fixtures::cases(256), ..ProptestConfig::default() })]
 
     /// The executor's fused param step and the reference's own derivation
     /// agree bit for bit on random driven graphs — per-frame step sources,

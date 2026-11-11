@@ -837,6 +837,7 @@ impl Session {
     /// session's own declarations, and returns what it found.
     ///
     /// A main-thread call (see the type docs).
+    #[must_use = "the events carry faults and dropouts (a refused commit, a plugin that died, a lost block): handle them, or bind `let _events` with a reason"]
     pub fn update(&mut self) -> Vec<SessionEvent> {
         crate::main_thread();
         let mut out = Vec::new();
@@ -1180,7 +1181,7 @@ impl Session {
     }
 
     /// Sends a motion `event` to take effect at `at`: a frame, a beat, or the
-    /// next block. The one timed verb: `schedule(At::Beat(b), MotionEvent::Play)`
+    /// next block (`At`, or a `Beat` or `Frame` as it stands). The one timed verb: `schedule(b, MotionEvent::Play)`
     /// is play at beat `b`, so the session needs one method for the timed
     /// form where it would need three (`play_at`, `stop_at`, `locate_at`), and
     /// every [`MotionEvent`] (a locate that then rolls, a stop that returns
@@ -1189,8 +1190,8 @@ impl Session {
     /// # Errors
     ///
     /// [`ScheduleFull`] when the timed-command list is full.
-    pub fn schedule(&self, at: At, event: MotionEvent) -> Result<(), ScheduleFull> {
-        self.transport.motion().schedule(at, event)
+    pub fn schedule(&self, at: impl Into<At>, event: MotionEvent) -> Result<(), ScheduleFull> {
+        self.transport.motion().schedule(at.into(), event)
     }
 
     /// Sets a constant project tempo (the project's [`TempoMap`], one step).

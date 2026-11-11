@@ -1,9 +1,7 @@
 //! The gate's per-sample gain: the open/closed decision, the
 //! attack/hold/release follower, and the range ramp.
 
-use super::curves::{
-    amplitude_to_db, compute_gate_gain, db_to_amplitude, gate_gain_at, ramp_db, ramp_is_at_end,
-};
+use super::curves::{amplitude_to_db, compute_gate_gain, gate_gain_at, ramp_db, ramp_is_at_end};
 use super::envelope::GateEnvelopeFollower;
 use tutti_types::{Amplitude, Db, SampleRate, Seconds};
 
@@ -35,11 +33,11 @@ impl GateBlock {
     #[must_use]
     pub fn new(threshold: Db, range_from: Db, range_to: Db) -> Self {
         Self {
-            threshold_linear: db_to_amplitude(threshold).get(),
+            threshold_linear: threshold.to_amplitude().get(),
             silence_opens: Db::FLOOR >= threshold,
             range_from,
             range_to,
-            range_to_linear: db_to_amplitude(range_to).get(),
+            range_to_linear: range_to.to_amplitude().get(),
         }
     }
 }

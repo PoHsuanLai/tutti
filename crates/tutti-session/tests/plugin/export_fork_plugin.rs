@@ -25,8 +25,8 @@ use tutti_plugin::catalog::PluginId;
 use tutti_plugin_types::PluginForkError;
 use tutti_session::BufferMaster;
 use tutti_session::{
-    Bounce, BounceError, ExportClock, GraphSource, Latency, PluginLoadRequest, Range, Session,
-    Stem, Tail,
+    Bounce, BounceError, BounceLatency, BounceTail, ExportClock, GraphSource, PluginLoadRequest,
+    Range, Session, Stem,
 };
 use tutti_transport::{OfflineTimeline, OfflineTimelineConfig};
 use tutti_types::ChannelLayout;
@@ -51,8 +51,8 @@ fn bounce_of(seconds: f64, rate: f64, clock: ExportClock) -> Bounce<NodeKey, Buf
         .range(Range::Seconds(Seconds(0.0), Seconds(seconds)))
         .sample_rate(SampleRate(rate))
         .clock(clock)
-        .latency(Latency::Keep)
-        .tail(Tail::None)
+        .latency(BounceLatency::Keep)
+        .tail(BounceTail::None)
 }
 
 fn buffers(seconds: f64) -> Bounce<NodeKey, BufferMaster> {
@@ -124,7 +124,7 @@ fn session_with_probe_at(mode: u32, path: std::path::PathBuf) -> (Session, NodeK
         )
         .expect("the reference CLAP plugin loads");
     session.graph().set_outputs_from(probe);
-    session.update();
+    let _ = session.update();
     (session, probe)
 }
 
@@ -146,7 +146,7 @@ fn feed_with(
     session
         .graph()
         .set_source(probe, 1, GraphSource::Node(source, 0));
-    session.update();
+    let _ = session.update();
 }
 
 /// A ramp: frame `n` is `n / 1024`, exact in `f32` over a render, so
@@ -185,7 +185,7 @@ impl Node for Ramp {
 fn a_plugin_effect_exports_through_its_fork() {
     let (mut session, probe) = session_with_probe(LATENCY);
     feed_with(&mut session, probe, ForkByClone(Ramp { n: 0 }));
-    let planes = planes(&mut session, buffers(0.1).latency(Latency::Graph));
+    let planes = planes(&mut session, buffers(0.1).latency(BounceLatency::Graph));
     for (c, plane) in planes.iter().enumerate().take(2) {
         for (i, &got) in plane.iter().enumerate() {
             let want = i as f32 / 1024.0;
@@ -270,7 +270,7 @@ fn instrument_at(rate: f64) {
         .midi()
         .play_clip(probe, vec![note(1.0, true), note(2.0, false)])
         .expect("the plugin takes a clip");
-    session.update();
+    let _ = session.update();
 
     let timeline = Arc::new(OfflineTimeline::new(&OfflineTimelineConfig {
         start_beat: Beat(0.0),

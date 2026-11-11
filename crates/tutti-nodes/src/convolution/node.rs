@@ -631,14 +631,11 @@ mod tests {
 mod golden {
     use super::super::ir::generate_test_ir;
     use super::*;
-    use tutti_graph::Solo;
     use tutti_graph::contract::{drive, prepared};
-    use tutti_types::MaxBlock;
-    use tutti_types::{Mix, Seconds};
+    use tutti_types::Seconds;
 
     const BLOCK: usize = 64;
     const FRAMES: usize = 1500;
-    const STRIDE: usize = 131;
 
     fn signal(channels: usize, frames: usize) -> Vec<Vec<f32>> {
         let mut state = 0x1234_5678_u32;
@@ -673,187 +670,74 @@ mod golden {
         out
     }
 
-    /// `render`, in a graph whose mix of `node` is `mix`.
-    fn render_mixed(node: ConvolverNode, x: &[Vec<f32>], mix: Mix) -> Vec<Vec<f32>> {
-        let mut solo = Solo::new(
-            node,
-            Prepare::new(SampleRate(48_000.0), MaxBlock::of(Samples(BLOCK))),
-        );
-        let key = solo.key();
-        solo.renderer_mut()
-            .editor_mut()
-            .set_mix(key, mix)
-            .expect("the node is in the graph");
-        let ins: Vec<&[f32]> = x.iter().map(Vec::as_slice).collect();
-        solo.render_input(&ins)
-    }
-
-    fn cases() -> Vec<(&'static str, ConvolverNode)> {
+    /// Every configuration is the direct-form sum of its definition: output
+    /// channel `o` is `gain * sum_k ir_o[k] * x_c[n - k]`, `latency_samples`
+    /// late, with `c` the input channel that output reads (width 1, a shared
+    /// IR per channel, one IR per channel, and the mono fold of a stereo input
+    /// feeding two IRs; the fold is `tutti_types::Fold`'s, checked on its own). The sum is computed here in `f64` from the definition.
+    ///
+    /// The tolerance is `1e-4`: the FFT's twiddle factors come from the
+    /// platform's `sin`/`cos`, and the sum has hundreds of products of
+    /// `|x| <= 1`, `|h| <= 1`, whose round-off is well under it; a real
+    /// fault (a wrong tap, channel or delay) moves samples by orders of
+    /// magnitude more.
+    #[test]
+    fn every_configuration_is_the_direct_sum_of_its_definition() {
         let ir_a = generate_test_ir(700, Seconds::new(0.3), SampleRate::new(48_000.0));
         let ir_b = generate_test_ir(300, Seconds::new(0.5), SampleRate::new(48_000.0));
-        vec![
-            ("width1", ConvolverNode::new(&ir_a, 64)),
-            ("mono", ConvolverNode::shared_ir(2u16, &ir_a, 32)),
-            ("stereo", ConvolverNode::stereo(&ir_a, &ir_b, 128)),
+        /// The input channel of an output that reads the mono fold of every input.
+        const FOLDED: usize = usize::MAX;
+        let gain = 0.7_f64;
+        // (name, node, per output channel: (the IR, the input channel it reads))
+        let cases: Vec<(&str, ConvolverNode, Vec<(&[f32], usize)>)> = vec![
+            (
+                "width1",
+                ConvolverNode::new(&ir_a, 64),
+                vec![(&ir_a[..], 0)],
+            ),
+            (
+                "shared_ir",
+                ConvolverNode::shared_ir(2u16, &ir_a, 32),
+                vec![(&ir_a[..], 0), (&ir_a[..], 1)],
+            ),
+            (
+                "stereo",
+                ConvolverNode::stereo(&ir_a, &ir_b, 128),
+                vec![(&ir_a[..], 0), (&ir_b[..], 1)],
+            ),
             (
                 "mono_to_stereo",
                 ConvolverNode::mono_to_stereo(&ir_a, &ir_b, 16),
+                vec![(&ir_a[..], FOLDED), (&ir_b[..], FOLDED)],
             ),
-        ]
-    }
-
-    /// Every 131st output sample of each case, captured from a reference
-    /// render of the same mono and stereo convolutions and kept as numbers.
-    const GOLDEN: [(&str, &[&[f32]]); 4] = [
-        (
-            "width1",
-            &[&[
-                0e0,
-                -4.6238965e-1,
-                3.242588e-1,
-                -3.8649054e0,
-                -5.7200737e0,
-                -4.854725e0,
-                -2.3011494e0,
-                -1.6904869e0,
-                4.523817e-1,
-                7.797972e0,
-                3.062982e0,
-                1.6569192e0,
-            ]],
-        ),
-        (
-            "mono",
-            &[
-                &[
-                    0e0,
-                    -1.3010089e-1,
-                    1.5013993e-2,
-                    -3.71195e0,
-                    -6.8336673e0,
-                    -4.933599e0,
-                    -2.8803647e0,
-                    -2.3532262e0,
-                    2.5494246e0,
-                    6.5531964e0,
-                    3.8352256e0,
-                    8.0454767e-1,
-                ],
-                &[
-                    0e0,
-                    -1.3993324e0,
-                    -2.1900237e0,
-                    -4.236314e0,
-                    -5.1030354e0,
-                    -5.424291e0,
-                    -5.6778274e0,
-                    -1.3237945e0,
-                    2.1840265e0,
-                    3.3884676e0,
-                    3.9472766e0,
-                    6.0074105e0,
-                ],
-            ],
-        ),
-        (
-            "stereo",
-            &[
-                &[
-                    0e0,
-                    -4.1371405e-1,
-                    -4.7441882e-1,
-                    -8.431916e-2,
-                    -4.752711e0,
-                    -5.539441e0,
-                    -4.1922398e0,
-                    -3.5576627e0,
-                    -1.9319957e0,
-                    5.6217127e0,
-                    6.4064994e0,
-                    3.5402339e0,
-                ],
-                &[
-                    0e0,
-                    -3.7926427e-1,
-                    -2.362441e0,
-                    -2.0382354e0,
-                    -3.772161e0,
-                    -4.292098e0,
-                    -6.989455e-1,
-                    9.266571e-1,
-                    1.429973e0,
-                    6.654087e-1,
-                    1.5628669e0,
-                    3.0640595e0,
-                ],
-            ],
-        ),
-        (
-            "mono_to_stereo",
-            &[
-                &[
-                    0e0,
-                    -1.02339e0,
-                    -1.7648482e0,
-                    -4.0002947e0,
-                    -6.1680894e0,
-                    -4.7346864e0,
-                    -3.2233002e0,
-                    -1.5443184e0,
-                    2.4112165e0,
-                    4.835819e0,
-                    4.30898e0,
-                    3.0811038e0,
-                ],
-                &[
-                    0e0,
-                    -4.0649652e-1,
-                    -1.80603e0,
-                    -4.211236e0,
-                    -4.4937367e0,
-                    -1.5020998e0,
-                    2.0637734e0,
-                    1.6323472e0,
-                    2.229262e0,
-                    1.9734172e0,
-                    1.4570696e0,
-                    8.7183356e-1,
-                ],
-            ],
-        ),
-    ];
-
-    /// The node renders the pinned reference output at
-    /// width 1 and in all three stereo configurations, in a graph, at a mix of
-    /// 0.4 (the graph's blend of the node's output with its input delayed by the
-    /// declared latency) and a wet gain of 0.7. The pinned figures were
-    /// rendered when the node blended internally; the graph's blend is the same
-    /// two products and sum, and the one block that ramps in from the unit's
-    /// full-wet start holds frame 0 only, where the output is 0.
-    ///
-    /// The tolerance is relative (`1e-5` of the value, floored at `1e-5`) and
-    /// not bit-exact on purpose: the FFT's twiddle factors come from the
-    /// platform's `sin`/`cos`, which differ in the last ulp between C runtimes,
-    /// and a convolution sums
-    /// hundreds of products. A real fault moves samples by orders of
-    /// magnitude more.
-    #[test]
-    fn output_matches_the_pinned_pre_merge_render() {
-        for ((name, node), (gname, want)) in cases().into_iter().zip(GOLDEN) {
-            assert_eq!(name, gname);
-            node.set_gain(Amplitude::new(0.7));
+        ];
+        for (name, node, outputs) in cases {
+            node.set_gain(Amplitude::new(gain as f32));
+            let lat = node.latency_samples().0;
             let x = signal(node.width(), FRAMES);
-            let out = render_mixed(node, &x, Mix::new(0.4));
-            assert_eq!(out.len(), want.len(), "{name}: width");
-            for (c, (oc, wc)) in out.iter().zip(want).enumerate() {
-                let got: Vec<f32> = oc.iter().step_by(STRIDE).copied().collect();
-                assert_eq!(got.len(), wc.len(), "{name} ch{c}: sample count");
-                for (k, (&g, &w)) in got.iter().zip(wc.iter()).enumerate() {
-                    let tol = 1e-5 * w.abs().max(1.0);
+            let mut mono = vec![0.0f32; FRAMES];
+            if x.len() == 2 {
+                Fold::widths(ChannelLayout::STEREO, ChannelLayout::MONO)
+                    .expect("stereo folds to mono")
+                    .planar_channel(|c| &x[c][..], 0, &mut mono);
+            }
+            let out = render(node, &x);
+            assert_eq!(out.len(), outputs.len(), "{name}: width");
+            for (o, (oc, (ir, input))) in out.iter().zip(&outputs).enumerate() {
+                let feed = if *input == FOLDED { &mono } else { &x[*input] };
+                for (n, &g) in oc.iter().enumerate() {
+                    let want: f64 = n
+                        .checked_sub(lat)
+                        .map(|m| {
+                            (0..=m.min(ir.len() - 1))
+                                .map(|k| f64::from(ir[k]) * f64::from(feed[m - k]))
+                                .sum::<f64>()
+                        })
+                        .unwrap_or(0.0)
+                        * gain;
                     assert!(
-                        (g - w).abs() <= tol,
-                        "{name} ch{c} frame {}: {g} vs pinned {w}",
-                        k * STRIDE
+                        (f64::from(g) - want).abs() < 1e-4,
+                        "{name} out {o} frame {n}: {g} vs direct sum {want}"
                     );
                 }
             }

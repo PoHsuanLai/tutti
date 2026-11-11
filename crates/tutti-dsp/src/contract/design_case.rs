@@ -3,7 +3,7 @@
 
 use tutti_types::{Hz, SampleRate, Seconds};
 
-use crate::{Band, Bounds, Ceiling, Design, Effect, Lti, MaxDecay, Network};
+use crate::{Band, Ceiling, Design, Effect, Lti, MaxDecay, Network, NetworkSizes};
 
 /// A hook of the contract that returns a list: a case that has nothing to run
 /// when the list is empty passes for no reason, so a design says which hooks it
@@ -21,8 +21,8 @@ pub enum Hook {
     Steps,
     /// [`RealizationCase::static_probes`].
     StaticProbes,
-    /// [`LtiCase::anchors`].
-    Anchors,
+    /// [`LtiCase::figures`].
+    Figures,
     /// [`ReverbCase::decay_pairs`].
     DecayPairs,
     /// [`ReverbCase::size_pairs`].
@@ -106,7 +106,7 @@ pub trait RealizationCase:
 
 /// A frequency at which a family's response is known in closed form.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Anchor<C> {
+pub struct Figure<C> {
     /// The controls the model is designed for.
     pub controls: C,
     /// The rate.
@@ -121,13 +121,13 @@ pub struct Anchor<C> {
     pub tolerance: f64,
 }
 
-/// The class group of a family whose model is [`Lti`]: its anchors and how
+/// The class group of a family whose model is [`Lti`]: its figures and how
 /// close its realization must come to the model's response.
 pub trait LtiCase: DesignCase + Design<Model: Lti> {
     /// Closed-form points of the response (a low-pass at its cutoff, a shelf's
     /// half gain, a reverb's gain at DC), from the family's figures and never from a
     /// render.
-    fn anchors(&self) -> Vec<Anchor<Self::Controls>> {
+    fn figures(&self) -> Vec<Figure<Self::Controls>> {
         Vec::new()
     }
 
@@ -181,7 +181,7 @@ pub trait LtiCase: DesignCase + Design<Model: Lti> {
 /// The class group of a reverb [`Network`]: the controls a reverb has and a
 /// filter does not, and the figures they ask for.
 pub trait ReverbCase:
-    DesignCase + Design<Model = Network, Bounds = Bounds, Range = MaxDecay>
+    DesignCase + Design<Model = Network, Bounds = NetworkSizes, Range = MaxDecay>
 {
     /// The RT60 the controls ask for in `band`, from the formula and the controls
     /// alone (`None`: the controls do not ask).

@@ -54,7 +54,7 @@ fn offline() -> Session {
 
 fn settle(s: &mut Session) {
     for _ in 0..6 {
-        s.update();
+        let _ = s.update();
     }
     assert_eq!(s.mod_state().refusal(), None, "the declarations apply");
     assert_eq!(
@@ -232,7 +232,7 @@ fn a_route_onto_the_mix_of_a_node_with_no_pass_is_refused() {
     m.route(source, mix, Depth(0.5)).unwrap();
     let target = m.key(mix);
     for _ in 0..6 {
-        s.update();
+        let _ = s.update();
     }
     assert_eq!(
         s.mod_state().refusal(),

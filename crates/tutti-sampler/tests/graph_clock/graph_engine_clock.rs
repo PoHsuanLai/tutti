@@ -189,35 +189,17 @@ fn plays_in_time(n: usize) {
     }
 }
 
+/// A voice plays in time at every device block size: 256, 512, the export's
+/// block (`GRAPH_MAX_BLOCK`, 1024, live), 480 (not a multiple of 64: the
+/// voice reads each device block in pieces from its own start, 7 x 64 + 32;
+/// the dry voice is still the tone, the pitched one's pieces differ from the
+/// 64-frame grid's so it is only heard) and 2048 (past the graph's prepared
+/// `MaxBlock`: the engine splits the device block into graph blocks).
 #[test]
-fn a_voice_plays_in_time_at_256_frame_blocks() {
-    plays_in_time(256);
-}
-
-/// Not a multiple of 64: the voice reads each device block in pieces from
-/// its own start, 7 × 64 + 32. The dry voice is still the tone (the pitched
-/// one's pieces differ from the 64-frame grid's, so it is only heard).
-#[test]
-fn a_voice_plays_in_time_at_480_frame_blocks() {
-    plays_in_time(480);
-}
-
-#[test]
-fn a_voice_plays_in_time_at_512_frame_blocks() {
-    plays_in_time(512);
-}
-
-/// The export's block (`GRAPH_MAX_BLOCK`), live.
-#[test]
-fn a_voice_plays_in_time_at_1024_frame_blocks() {
-    plays_in_time(1024);
-}
-
-/// Past the graph's prepared `MaxBlock` (1024): the engine splits the
-/// device block into graph blocks.
-#[test]
-fn a_voice_plays_in_time_at_2048_frame_blocks() {
-    plays_in_time(2048);
+fn a_voice_plays_in_time_at_every_device_block_size() {
+    for block in [256, 480, 512, 1024, 2048] {
+        plays_in_time(block);
+    }
 }
 
 /// Two nodes over one transport (two clones of one pool) both render the

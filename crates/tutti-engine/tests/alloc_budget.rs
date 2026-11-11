@@ -40,14 +40,11 @@ use tutti_types::MaxBlock;
 mod support;
 
 use support::{Gain, Sine};
-use tutti_engine::Engine;
 use tutti_graph::NodeKey;
 use tutti_graph::{Edge, InPort, OutPort, Source};
 use tutti_graph::{Editor, Executor, ForkByClone, Prepare};
-use tutti_transport::Transport;
 use tutti_types::Hz;
-use tutti_types::InterleavedMut;
-use tutti_types::{ChannelLayout, SampleRate, Samples};
+use tutti_types::{SampleRate, Samples};
 
 static ALLOCS: AtomicUsize = AtomicUsize::new(0);
 static BYTES: AtomicUsize = AtomicUsize::new(0);
@@ -94,7 +91,7 @@ static A: Counting = Counting;
 /// Only this thread's, because the process is not single-threaded even under
 /// nextest: libtest runs the test on a thread of its own, and its main thread
 /// allocates around that on its own schedule. Counting every thread let those
-/// land in the window now and then — `rendering_blocks_allocates_nothing`
+/// land in the window now and then — a render count
 /// failed about 1 run in 4 under CPU load with exactly "4 times (900 bytes)",
 /// all of them from another thread (instrumented: none on the rendering
 /// thread). Everything measured here runs on the calling thread (the engine
@@ -223,42 +220,6 @@ fn a_no_op_commit_allocates_a_bounded_amount() {
         (0, 0),
         "a no-op commit sends nothing, so it has nothing to allocate"
     );
-}
-
-/// **The render path allocates nothing at all**, restated as a budget.
-///
-/// `rt_no_alloc*.rs` already gates this with `AllocDisabler`, which is the
-/// stronger instrument and the one that fails loudly. This restates it here
-/// so the budget file is not silent about the most important budget in the
-/// engine, and so the two cannot drift apart unnoticed: if `rt_no_alloc` were
-/// ever deleted or made inert, this still fails.
-///
-/// The chain is the graph's (a sine and 16 gains), as the budgets above.
-#[test]
-fn rendering_blocks_allocates_nothing() {
-    let transport = Transport::new(SampleRate::new(48_000.0));
-    let (mut ed, exec) = graph(16);
-    let engine = Engine::new(&transport, &mut ed, exec).expect("within the limits");
-
-    let mut buf = vec![0.0f32; 256 * 2];
-    // Warm up: the first block may size something lazily.
-    for _ in 0..16 {
-        engine.process(&mut InterleavedMut::new(&mut buf, ChannelLayout::STEREO));
-    }
-
-    let (allocs, bytes, ()) = measure(|| {
-        for _ in 0..100 {
-            engine.process(&mut InterleavedMut::new(&mut buf, ChannelLayout::STEREO));
-        }
-    });
-
-    assert_eq!(
-        allocs, 0,
-        "100 render blocks allocated {allocs} times ({bytes} bytes). The audio \
-         callback must not allocate — see the RT rules in CLAUDE.md."
-    );
-    // Not vacuous: the chain rendered sound.
-    assert!(buf.iter().any(|&s| s != 0.0), "the chain is silent");
 }
 
 /// A sine fanned out to `nodes` gains, committed, with blocks run on a

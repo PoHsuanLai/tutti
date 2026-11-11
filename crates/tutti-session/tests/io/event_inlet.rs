@@ -54,7 +54,7 @@ fn drain(tap: &mut EventTapReader) -> Vec<(u64, u8)> {
 #[test]
 fn pushed_events_come_out_at_their_frames() {
     let mut s = session();
-    s.update();
+    let _ = s.update();
     assert!(!s.graph().is_edited());
     let (key, mut writer) = s.graph().open_event_inlet(64);
     assert!(s.graph().is_edited(), "the open inserted a node");
@@ -69,7 +69,7 @@ fn pushed_events_come_out_at_their_frames() {
         .graph()
         .open_event_tap(EventSource::new(key2, 0), TapAlign::Raw, 64)
         .expect("the port exists");
-    s.update();
+    let _ = s.update();
 
     writer.push(At::Frame(Frame(10)), note(1)).unwrap();
     writer.push(At::Frame(Frame(300)), note(2)).unwrap();
@@ -116,7 +116,7 @@ fn an_export_fork_is_accepted_and_silent() {
     s.graph()
         .set_event_sources(hear, 0, &[EventSource::new(key, 0)]);
     s.graph().set_output_source(0, GraphSource::Node(hear, 0));
-    s.update();
+    let _ = s.update();
     writer.push(At::NextBlock, note(1)).unwrap();
     let mut fork = s.graph_ref().fork_live().expect("an inlet forks");
     let mut out = [0.0f32];

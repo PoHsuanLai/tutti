@@ -57,7 +57,7 @@ fn a_pool_thread_is_answered_while_the_main_thread_updates_the_session() {
         )
     });
     while !pool.is_finished() {
-        session.update();
+        let _ = session.update();
         std::thread::sleep(Duration::from_millis(1));
     }
     let (state, value) = pool.join().expect("the pool thread returns");

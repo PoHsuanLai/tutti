@@ -6,13 +6,21 @@ use tutti::graph::ForkByClone;
 use tutti::nodes::testing::Osc;
 use tutti::prelude::*;
 
+/// What `Session::update` found: faults and dropouts (a refused commit, a
+/// plugin that died, a lost block). A host logs them; here they are printed.
+fn report(events: Vec<SessionEvent>) {
+    for event in events {
+        eprintln!("session event: {event:?}");
+    }
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut live = SessionBuilder::default().build_device(Default::default())?;
     let tone = Osc::sine(Hz(440.0)).with_amplitude(Amplitude(0.2));
     let (tone, _) = live.graph().add(ForkByClone(tone));
     live.graph().set_outputs_from(tone);
-    live.update();
-    live.transport().motion().try_send(MotionEvent::Play)?;
+    report(live.update());
+    live.play()?;
     std::thread::sleep(std::time::Duration::from_secs(2));
     println!("running: {}", live.device().is_running()); // dropping `live` stops it
     Ok(())

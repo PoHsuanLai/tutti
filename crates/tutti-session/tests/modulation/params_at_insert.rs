@@ -51,7 +51,7 @@ fn modulate_drive(s: &mut Session, node: NodeKey) {
 
 fn settle(s: &mut Session) {
     for _ in 0..4 {
-        s.update();
+        let _ = s.update();
     }
     assert_eq!(s.mod_state().refusal(), None, "the declarations apply");
 }

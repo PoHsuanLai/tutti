@@ -11,4 +11,4 @@ mod staged;
 
 pub use real::{Complex32, RealFft};
 pub use scratch::FftScratch;
-pub use staged::StagedRealFft;
+pub(crate) use staged::StagedRealFft;

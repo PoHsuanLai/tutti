@@ -85,7 +85,7 @@ fn a_sampler_node_added_to_the_graph_follows_the_sessions_tempo_map() {
         s.graph()
             .set_output_source(port, GraphSource::Node(voice, port));
     }
-    s.update();
+    let _ = s.update();
     let out = run(&s, 60_000, 512);
     for f in 0..60_000 {
         let want = f as f32 / 131_072.0;

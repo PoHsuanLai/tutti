@@ -385,7 +385,7 @@ crates/          everything shipped; directory name = package name; no nesting
                  `Recorder` / `PumpLoop`, a source pumped into a sink (feature `record`; a
                  recording dithers only by wrapping its sink in `tutti_dsp::DitherSink`), and
                  the bounce (feature `export`, doc 019): `Bounce` (the master's fork, a
-                 `Range`, `Latency`, `Tail`, `stem`s, each a plan tap) through
+                 `Range`, `BounceLatency`, `BounceTail`, `stem`s, each a plan tap) through
                  `Session::{bounce, bounce_start, finish_bounce}`, `BounceJob`,
                  `BounceHandle` and `BounceError`; it derives the figures and
                  `tutti-export` renders them.
@@ -806,7 +806,7 @@ list (normal and build edges; dev-dependencies may go anywhere).
   `tutti-dsp` it has no graph, runtime or `Arc`-published state: every control
   arrives per call as a plain config value, and a measurement that runs a
   stream is a `Config`/`State`/`step` triple. It reuses `tutti-dsp`'s
-  `RealFft`/`FftScratch`, `Complex`, `StftGeometry`, `Grid`, `Error` and
+  `RealFft`/`FftScratch`, `Complex32`, `StftGeometry`, `Grid`, `Error` and
   `CosineWindow` and does not copy them: those serve the processors too (the
   sampler's vocoder builds on `StftGeometry`). `tutti_dsp::Error` is only what
   the geometry and the grid refuse; the analysers' own `tutti_measure::Error`
@@ -1344,7 +1344,7 @@ read the `Cargo.toml`, grep for the type, run the probe.
   `Bounce::node` → a `stem` of the master's fork; `Field::Master`, `Bounced::{targets, into_targets}`
   and the session's `Outcome<Bounced>` → `Bounce<N, M>` over a `Master` kind (`FileMaster`,
   `BufferMaster`), `Bounced<M>::{master, stems, into_master, into_parts}` and
-  `BounceError::Cancelled`; `Transport`'s public `settings` and `motion` fields → `Transport::settings()` and
+  `BounceError::Cancelled`; the bounce's `Latency` and `Tail` → `BounceLatency` and `BounceTail` (the graph's `tutti_types::{Latency, Tail}` keep their names); `Transport`'s public `settings` and `motion` fields → `Transport::settings()` and
   `Transport::motion()` (and the session's `play`, `stop`, `locate`, `schedule`, `set_tempo`). `bevy-tutti`'s `ExportRequest`,
   `ExportPlugin`, `ExportDone` and `ExportInFlight` stay until step 7 un-parks it.
 

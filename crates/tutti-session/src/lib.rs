@@ -81,8 +81,8 @@ mod watch;
 #[cfg(feature = "export")]
 pub use bounce::{
     BOUNCE_STALL_WARNING, Bounce, BounceConfigError, BounceError, BounceHandle, BounceJob,
-    BounceRendered, Bounced, BufferMaster, ExportClock, Field, FileMaster, Latency, Master,
-    NoMaster, PrepareEdit, PreparedGraph, Range, Stem, StemGain, Tail,
+    BounceLatency, BounceRendered, BounceTail, Bounced, BufferMaster, ExportClock, Field,
+    FileMaster, Master, NoMaster, PrepareEdit, PreparedGraph, Range, Stem, StemGain,
 };
 pub use builder::{SessionBuilder, root_width};
 #[cfg(feature = "device")]

@@ -49,7 +49,7 @@ fn the_session_publishes_the_meter_and_taps_its_callback_feeds() {
         .graph()
         .open_output_tap(Samples(1_024))
         .expect("the sources exist");
-    session.update();
+    let _ = session.update();
     let mut meter = session.take_master_meter().expect("declared at the build");
     stream.render_block(64).expect("the stream is open");
     let mut frames = 0;
@@ -105,9 +105,9 @@ fn a_rerate_keeps_the_published_compensation_in_step_with_the_plan() {
     s.graph().set_source(lim, 0, GraphSource::Node(osc, 0));
     s.graph().set_output_source(0, GraphSource::Node(osc, 0));
     s.graph().set_output_source(1, GraphSource::Node(lim, 0));
-    s.update();
+    let _ = s.update();
     old.render_block(480).expect("open");
-    s.update();
+    let _ = s.update();
 
     let in_step = |s: &Session, what: &str| -> Samples {
         let sent = s.graph_ref().sent_compensation().expect("a plan");
@@ -141,7 +141,7 @@ fn a_rerate_keeps_the_published_compensation_in_step_with_the_plan() {
 
     for _ in 0..4 {
         new.render_block(960).expect("open");
-        s.update();
+        let _ = s.update();
     }
     in_step(&s, "96 kHz, after");
 }
@@ -565,7 +565,7 @@ fn a_fault_after_a_restart_is_reported_again() {
         .build_device_on(spec_at(48_000.0), driver)
         .unwrap()
         .into_parts();
-    session.update();
+    let _ = session.update();
     let base = Instant::now();
     let (driver, second) = ManualStreamDriver::new();
     session

@@ -2,7 +2,7 @@ use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
 
 use super::*;
-use crate::contract::{Anchor, DesignCase, LtiCase, RealizationCase};
+use crate::contract::{DesignCase, Figure, LtiCase, RealizationCase};
 use crate::{Design, Effect, Realization};
 
 /// Mono, three bands: output `b` is band `b`, the model's own outputs.
@@ -61,10 +61,10 @@ impl DesignCase for CrossoverDesign {
 /// (each branch of a split is -6.02 dB there); the top band is `HP^2` of both
 /// and is 1 at Nyquist.
 impl LtiCase for CrossoverDesign {
-    fn anchors(&self) -> Vec<Anchor<CrossoverControls>> {
+    fn figures(&self) -> Vec<Figure<CrossoverControls>> {
         let rate = SampleRate(48_000.0);
         let c = controls(500.0, 4_000.0);
-        let at = |output, freq, gain| Anchor {
+        let at = |output, freq, gain| Figure {
             controls: c,
             rate,
             output,

@@ -32,7 +32,7 @@ use tutti_nodes::testing::{Const, Osc, Sink};
 use tutti_nodes::{SvfFilterNode, SvfType};
 use tutti_session::BufferMaster;
 use tutti_session::{
-    Bounce, BounceConfigError, BounceError, ExportClock, GraphSource, Latency, PreparedGraph,
+    Bounce, BounceConfigError, BounceError, BounceLatency, ExportClock, GraphSource, PreparedGraph,
     Range, Session, Stem,
 };
 use tutti_types::ChannelLayout;
@@ -65,8 +65,8 @@ fn bounce_at(seconds: f64, rate: f64) -> Bounce<NodeKey, BufferMaster> {
         .sample_rate(SampleRate(rate))
         .channels(ChannelLayout::STEREO)
         .clock(ExportClock::frozen())
-        .latency(Latency::Keep)
-        .tail(tutti_session::Tail::None)
+        .latency(BounceLatency::Keep)
+        .tail(tutti_session::BounceTail::None)
 }
 
 fn buffers(seconds: f64) -> Bounce<NodeKey, BufferMaster> {
@@ -291,8 +291,8 @@ fn latency_and_tail_come_from_the_graph() {
     let planes = render(
         &mut session,
         buffers(seconds)
-            .latency(Latency::Graph)
-            .tail(tutti_session::Tail::Graph {
+            .latency(BounceLatency::Graph)
+            .tail(tutti_session::BounceTail::Graph {
                 cap: Samples(48_000).to_seconds(SampleRate(RATE)),
             }),
     );
@@ -307,7 +307,7 @@ fn latency_and_tail_come_from_the_graph() {
     session.graph().set_outputs_from(unknown);
     let planes = render(
         &mut session,
-        buffers(seconds).tail(tutti_session::Tail::Graph {
+        buffers(seconds).tail(tutti_session::BounceTail::Graph {
             cap: Samples(4_800).to_seconds(SampleRate(RATE)),
         }),
     );
@@ -328,20 +328,19 @@ fn the_trim_is_read_after_the_prepare_hook() {
     let mut session = session();
     let (dc, _) = session.graph().insert(Const::mono(0.5));
     session.graph().set_outputs_from(dc);
-    let request =
-        buffers(0.01)
-            .latency(Latency::Graph)
-            .edit(Box::new(|prepared: PreparedGraph<'_>| {
-                let key = prepared.fresh_key();
-                let editor = prepared.editor;
-                editor.insert(key, "test:late", ForkByClone(Late { pos: 0 }));
-                for out in editor.spec_mut().topology.outputs.iter_mut() {
-                    *out = vec![tutti_graph::Source::Node(tutti_graph::OutPort {
-                        node: key,
-                        port: 0,
-                    })];
-                }
-            }));
+    let request = buffers(0.01).latency(BounceLatency::Graph).edit(Box::new(
+        |prepared: PreparedGraph<'_>| {
+            let key = prepared.fresh_key();
+            let editor = prepared.editor;
+            editor.insert(key, "test:late", ForkByClone(Late { pos: 0 }));
+            for out in editor.spec_mut().topology.outputs.iter_mut() {
+                *out = vec![tutti_graph::Source::Node(tutti_graph::OutPort {
+                    node: key,
+                    port: 0,
+                })];
+            }
+        },
+    ));
     let planes = render(&mut session, request);
     assert_eq!(
         planes[0][0], 1.0,

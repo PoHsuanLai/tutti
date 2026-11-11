@@ -47,7 +47,7 @@ pub const LANES: usize = 8;
 /// spread evenly rather than filled greedily, so twelve channels run as 6 + 6
 /// rather than 8 + 4 (a small trailing group leaves latency unfilled).
 #[inline]
-pub fn lane_group(remaining: usize) -> usize {
+pub(crate) fn lane_group(remaining: usize) -> usize {
     let groups = remaining.div_ceil(LANES);
     remaining.div_ceil(groups)
 }

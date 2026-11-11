@@ -60,7 +60,7 @@ fn a_clip_starts_on_its_beat_at_its_gain() {
             .gain(Amplitude::new(0.5)),
     );
     wire(&mut s, clip);
-    s.update();
+    let _ = s.update();
     let out = run(&s, 40_000);
     assert!(out[..2 * 24_000].iter().all(|&x| x == 0.0), "silent before");
     let after = out[2 * 24_000 + 2];
@@ -76,7 +76,7 @@ fn a_clip_starts_on_its_beat_at_its_gain() {
             .at(Beat(1.0)),
     );
     wire(&mut full, whole);
-    full.update();
+    let _ = full.update();
     let unscaled = run(&full, 40_000)[2 * 24_000 + 2];
     assert!(
         (after - unscaled * 0.5).abs() < 1e-6,

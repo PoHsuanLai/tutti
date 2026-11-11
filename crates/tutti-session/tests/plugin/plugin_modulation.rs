@@ -335,7 +335,7 @@ fn a_crossfaded_plugin_keeps_its_lane_and_a_removed_one_drops_it() {
 fn an_export_is_the_live_render_on_a_clap_gain() {
     use std::sync::Arc;
 
-    use tutti_session::{Bounce, ExportClock, Latency, Range, Tail};
+    use tutti_session::{Bounce, BounceLatency, BounceTail, ExportClock, Range};
     use tutti_transport::{OfflineTimeline, OfflineTimelineConfig};
     use tutti_types::{Beat, Bpm, ChannelLayout};
 
@@ -386,8 +386,8 @@ fn an_export_is_the_live_render_on_a_clap_gain() {
             Seconds(total as f64 / RATE.get()),
         ))
         .sample_rate(RATE)
-        .latency(Latency::Keep)
-        .tail(Tail::None);
+        .latency(BounceLatency::Keep)
+        .tail(BounceTail::None);
 
     // Live: rolling from beat 0 in device-sized blocks, a frame between each
     // as a device's callbacks would leave. The plugin's pipeline plays each

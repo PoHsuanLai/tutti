@@ -48,7 +48,7 @@ fn session_with_probe() -> (Session, NodeKey) {
         )
         .expect("the in-process VST2 loads");
     s.graph().set_outputs_from(node);
-    s.update();
+    let _ = s.update();
     assert!(
         s.plugin(node)
             .and_then(|p| p.param_values())
@@ -190,7 +190,7 @@ fn a_plugins_midi_rewiring_keeps_its_lanes() {
     knob_of(&mut s, p0);
     let lane = s.mod_state().lane(p0.key()).expect("a lane").0;
     let (clip, _) = s.graph().add(tutti_graph::ForkByClone(EventSource1));
-    s.update();
+    let _ = s.update();
     let mut side = s.graph().take_audio_side();
     let value = |s: &Session| {
         s.plugin(node)

@@ -1,8 +1,8 @@
 use tutti_types::{Amplitude, SampleRate};
 
 use super::super::{
-    Absorption, AllPass, AllPassForm, Band, Bounds, Fdn, FirSummary, Gains, Inline, Line, Matrix,
-    Modulation, Network, OutputMap, Stage, Tap, Taps, loop_gain,
+    Absorption, AllPass, AllPassForm, Band, Fdn, FirSummary, Gains, Inline, Line, Matrix,
+    Modulation, Network, NetworkSizes, OutputMap, Stage, Tap, Taps, loop_gain,
 };
 use super::*;
 use crate::{Lti as _, Sizes as _};
@@ -394,7 +394,7 @@ fn the_shortest_path_decides_the_direct_path() {
     );
 }
 
-/// `Bounds::dominates` needs every figure, and `of` measures them.
+/// `NetworkSizes::dominates` needs every figure, and `of` measures them.
 #[test]
 fn a_bound_dominates_only_when_every_figure_does() {
     let g = Absorption::Gain(Amplitude(0.5));
@@ -414,11 +414,11 @@ fn a_bound_dominates_only_when_every_figure_does() {
     f.output.rows.push(Gains::filled(1.0, 2).unwrap()).unwrap();
     let mut n = network(&[Stage::Fdn(f)]);
     n.pre_delay = Samples(10);
-    let b = Bounds::measure(&n, Db(-60.0));
+    let b = NetworkSizes::measure(&n, Db(-60.0));
     assert_eq!((b.lines, b.stages, b.taps, b.outputs), (2, 1, 0, 1));
     assert_eq!((b.line, b.delay, b.pre_delay), (202.0, 302.0, Samples(10)));
     assert!(b.dominates(&b));
-    let smaller: [fn(&mut Bounds); 8] = [
+    let smaller: [fn(&mut NetworkSizes); 8] = [
         |b| b.lines -= 1,
         |b| b.stages -= 1,
         |b| b.outputs -= 1,

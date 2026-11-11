@@ -28,7 +28,7 @@ fn pushed_frames_reach_the_outputs_in_order() {
         .graph()
         .open_output_tap(Samples(1_024))
         .expect("the sources exist");
-    s.update();
+    let _ = s.update();
 
     producer.push_interleaved(&[1.0, -1.0, 2.0, -2.0, 3.0, -3.0]);
     let mut block = vec![0.0f32; 8 * 2];
@@ -51,7 +51,7 @@ fn pushed_frames_reach_the_outputs_in_order() {
 #[test]
 fn a_producer_at_another_rate_is_refused() {
     let mut s = offline();
-    s.update();
+    let _ = s.update();
     let err = s
         .graph()
         .open_inlet(ChannelLayout::STEREO, Samples(256), SampleRate(44_100.0))

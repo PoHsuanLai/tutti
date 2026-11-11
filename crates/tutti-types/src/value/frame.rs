@@ -238,9 +238,32 @@ pub enum At {
     NextBlock,
 }
 
+impl From<Frame> for At {
+    /// [`At::Frame`].
+    fn from(frame: Frame) -> Self {
+        Self::Frame(frame)
+    }
+}
+
+impl From<Beat> for At {
+    /// [`At::Beat`].
+    fn from(beat: Beat) -> Self {
+        Self::Beat(beat)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// **A frame or a beat is the time it names**: `Frame(n)` is `At::Frame`
+    /// and `Beat(b)` is `At::Beat`. (`At` has no `Moment` variant: a moment
+    /// carries its own rate and is pushed with `push_at`.)
+    #[test]
+    fn a_frame_or_a_beat_is_an_at() {
+        assert_eq!(At::from(Frame(48_000)), At::Frame(Frame(48_000)));
+        assert_eq!(At::from(Beat(2.5)), At::Beat(Beat(2.5)));
+    }
 
     /// Advancing adds the count, and saturates instead of wrapping.
     #[test]

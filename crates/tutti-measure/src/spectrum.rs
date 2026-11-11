@@ -65,7 +65,7 @@ use tutti_types::{Db, Hz, Samples, Seconds};
 
 use crate::stereo::Ballistics;
 use crate::{Error, Result};
-use tutti_dsp::Complex;
+use tutti_dsp::Complex32;
 use tutti_dsp::FftScratch;
 use tutti_dsp::StftGeometry;
 use tutti_dsp::{BinCount, FrameCount};
@@ -517,7 +517,7 @@ pub struct SpectrumState {
     write: usize,
     /// The ring unrolled oldest first, for the transform.
     frame: Vec<f32>,
-    spectrum: Vec<Complex>,
+    spectrum: Vec<Complex32>,
     fed: u64,
     next_due: u64,
     frames: u64,
@@ -552,7 +552,7 @@ impl SpectrumState {
                 .map(|k| Hz((k as f64 * width) as f32))
                 .collect(),
         };
-        let mut spectrum = vec![Complex::default(); cfg.bins()];
+        let mut spectrum = vec![Complex32::default(); cfg.bins()];
         // Plans the transform and sizes its scratch.
         fft.forward(&vec![0.0; size], &vec![0.0; size], &mut spectrum);
         let mut state = Self {
@@ -656,7 +656,7 @@ impl SpectrumState {
         let gain = f64::from(cfg.geometry.magnitude_gain());
         let scale = (4.0 / (gain * gain)) as f32;
         let size = self.ring.len();
-        let power = |k: usize, bin: &Complex| {
+        let power = |k: usize, bin: &Complex32| {
             let lone = k == 0 || (size.is_multiple_of(2) && k == size / 2);
             clamp_power(bin.norm_sqr() * if lone { scale / 4.0 } else { scale })
         };

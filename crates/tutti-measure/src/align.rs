@@ -17,7 +17,7 @@ use tutti_types::{Confidence, Hz, SampleRate, Samples, Seconds};
 
 use crate::xcorr::{CrossCorrelation, cross_correlate_shaped};
 use crate::{Error, Result};
-use tutti_dsp::Complex;
+use tutti_dsp::Complex32;
 use tutti_dsp::FftScratch;
 
 /// A bin whose cross-spectrum magnitude is below this fraction of the
@@ -233,7 +233,7 @@ fn window(correlation: &CrossCorrelation, max_lag: Samples) -> (isize, isize) {
 /// below the band) does not set the level. Bins more than `PHAT_FLOOR` below
 /// the strongest are damped rather than boosted, so the whitening spans the
 /// source's dynamic range down to that level.
-fn phase_transform(bins: &mut [Complex], band: Option<Band>) -> bool {
+fn phase_transform(bins: &mut [Complex32], band: Option<Band>) -> bool {
     // `bins` holds `size / 2 + 1` bins of a `size`-point transform.
     let size = (bins.len().saturating_sub(1) * 2).max(1);
     let in_band = |k: usize| {
@@ -249,7 +249,7 @@ fn phase_transform(bins: &mut [Complex], band: Option<Band>) -> bool {
         .map(|(_, b)| b.norm())
         .fold(0.0f32, f32::max);
     if strongest <= 0.0 {
-        bins.fill(Complex::default());
+        bins.fill(Complex32::default());
         return false;
     }
     let floor = strongest * PHAT_FLOOR;
@@ -257,7 +257,7 @@ fn phase_transform(bins: &mut [Complex], band: Option<Band>) -> bool {
         *bin = if in_band(k) {
             *bin / (bin.norm() + floor)
         } else {
-            Complex::default()
+            Complex32::default()
         };
     }
     true
@@ -390,12 +390,12 @@ mod tests {
     /// removed in the frequency domain.
     fn band_noise(len: usize, seed: u64, low: f32, high: f32) -> Vec<f32> {
         let mut fft = FftScratch::new();
-        let mut bins = vec![Complex::default(); len / 2 + 1];
+        let mut bins = vec![Complex32::default(); len / 2 + 1];
         fft.forward(&noise(len, seed), &vec![1.0; len], &mut bins);
         for (k, b) in bins.iter_mut().enumerate() {
             let f = k as f32 / len as f32;
             if f < low || f > high {
-                *b = Complex::default();
+                *b = Complex32::default();
             }
         }
         let mut out = vec![0.0; len];
@@ -555,8 +555,8 @@ mod tests {
     #[test]
     fn out_of_band_energy_does_not_set_the_level() {
         // 9 bins of a 16-point transform; at rate 16, bin `k` is `k` Hz.
-        let mut bins = vec![Complex::new(3.0, -4.0); 9];
-        bins[1] = Complex::new(5.0e6, 0.0);
+        let mut bins = vec![Complex32::new(3.0, -4.0); 9];
+        bins[1] = Complex32::new(5.0e6, 0.0);
         let band = AlignConfig::new(Samples(1))
             .with_band(SampleRate::new(16.0), Hz::new(4.0), Hz::new(6.0))
             .unwrap()
@@ -567,7 +567,7 @@ mod tests {
                 assert!((bin.norm() - 1.0).abs() < 1e-3, "bin {k}: {bin}");
                 assert!((bin.re - 0.6).abs() < 1e-3 && (bin.im + 0.8).abs() < 1e-3);
             } else {
-                assert_eq!(*bin, Complex::default(), "bin {k}");
+                assert_eq!(*bin, Complex32::default(), "bin {k}");
             }
         }
     }
@@ -690,14 +690,14 @@ mod tests {
             let size = ((bins.len() - 1) * 2) as f32;
             for (k, bin) in bins.iter_mut().enumerate() {
                 let w = -core::f32::consts::TAU * k as f32 / size;
-                *bin = Complex::new(w.cos(), w.sin());
+                *bin = Complex32::new(w.cos(), w.sin());
             }
         });
         assert_eq!(delta_at_one.peak().unwrap().lag, 1);
         assert_eq!(parabolic_offset(&delta_at_one, 0), 0.0);
 
         let nan = cross_correlate_shaped(&x, &x, &mut fft, |bins| {
-            bins.fill(Complex::new(f32::NAN, 0.0));
+            bins.fill(Complex32::new(f32::NAN, 0.0));
         });
         assert_eq!(parabolic_offset(&nan, 0), 0.0);
     }

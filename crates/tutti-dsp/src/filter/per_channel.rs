@@ -13,10 +13,9 @@ use core::ops::Range;
 use tutti_types::{BusTopology, ChannelLayout, SampleRate};
 
 use super::sizes::FilterSizes;
-use crate::control::COEFF_STREAM;
+use crate::control::{COEFF_STREAM, lane_group};
 use crate::{
     Cadence, Ceiling, Channels, Design, Effort, Glide, Kernel, LANES, Lerp, Realized, System,
-    lane_group,
 };
 
 /// The most outputs one input channel makes: a crossover's bands.

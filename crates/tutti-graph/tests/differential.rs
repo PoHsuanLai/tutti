@@ -2926,10 +2926,7 @@ fn bus_of(width: usize, named: bool) -> Bus {
         Some(t) => BusTopology::try_from(&t).expect("fits a bus"),
         None => BusTopology::unassigned(layout).expect("fits a bus"),
     };
-    Bus {
-        topology,
-        role: BusRole::Main,
-    }
+    Bus::new(topology, BusRole::Main)
 }
 
 fn bus_graph(seed: u64) -> BusGraph {
@@ -2976,10 +2973,7 @@ fn bus_graph(seed: u64) -> BusGraph {
                     continue;
                 };
                 let mut trial = spec.clone();
-                trial.connect_bus(
-                    BusSource::Node(BusRef { node: from, bus: 0 }),
-                    BusRef { node, bus: 0 },
-                );
+                trial.connect_bus(BusSource::Node(BusRef::new(from, 0)), BusRef::new(node, 0));
                 if trial.lowered(&common::shapes_of(&kinds)).is_ok() {
                     spec = trial;
                 }
@@ -3095,7 +3089,7 @@ fn root_bus_graph(seed: u64) -> BusGraph {
             continue;
         };
         let mut trial = graph.spec.clone();
-        trial.connect_bus_to_root(BusSource::Node(BusRef { node, bus: 0 }));
+        trial.connect_bus_to_root(BusSource::Node(BusRef::new(node, 0)));
         if trial.lowered(&common::shapes_of(&graph.kinds)).is_ok() {
             graph.spec = trial;
         }

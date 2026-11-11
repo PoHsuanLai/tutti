@@ -20,7 +20,7 @@
 //! ramped them) before the model is solved from it; in theta (`tan(pi f / rate)`)
 //! the same glide would be a different curve, and nothing asks for it.
 
-use tutti_types::{ChannelLayout, Hz, SampleRate};
+use tutti_types::{BusTopology, Hz, SampleRate};
 
 use super::crossover::check_bands;
 use super::crossover::{CrossoverError, CrossoverState, MAX_SPLITS, SOLVE_CEILING, validate};
@@ -66,17 +66,17 @@ pub struct CrossoverTree {
 }
 
 impl CrossoverDesign {
-    /// A crossover of `bands` bands over `channels`.
+    /// A crossover of `bands` bands on the bus `input`, each band where it is.
     ///
     /// # Errors
     ///
     /// [`CrossoverError::Bands`] outside 2 to 6, and [`CrossoverError::Channels`]
     /// for no channels.
-    pub fn new(channels: ChannelLayout, bands: usize) -> Result<Self, CrossoverError> {
+    pub fn new(input: BusTopology, bands: usize) -> Result<Self, CrossoverError> {
         check_bands(bands)?;
-        match channels.count() {
+        match input.layout().count() {
             0 => Err(CrossoverError::Channels { channels: 0 }),
-            _ => Ok(Self::over(CrossoverTree { bands }, channels)),
+            _ => Ok(Self::over(CrossoverTree { bands }, input)),
         }
     }
 
@@ -169,7 +169,7 @@ mod tests {
 
     /// Mono, three bands: output `b` is band `b`, the model's own outputs.
     fn design() -> CrossoverDesign {
-        CrossoverDesign::new(ChannelLayout::MONO, 3).unwrap()
+        CrossoverDesign::new(BusTopology::MONO, 3).unwrap()
     }
 
     /// A set is solved with every split inside `1 Hz..=SOLVE_CEILING * rate` and none
@@ -334,10 +334,10 @@ mod tests {
     /// The design refuses a band count the tree does not have and an empty layout.
     #[test]
     fn the_design_refuses_what_it_cannot_make() {
-        assert!(CrossoverDesign::new(ChannelLayout::MONO, 1).is_err());
-        assert!(CrossoverDesign::new(ChannelLayout::MONO, 7).is_err());
-        assert!(CrossoverDesign::new(ChannelLayout::from_count(0), 2).is_err());
-        let wide = CrossoverDesign::new(ChannelLayout::STEREO, 4).unwrap();
-        assert_eq!(wide.channels().output, ChannelLayout::from_count(8));
+        assert!(CrossoverDesign::new(BusTopology::MONO, 1).is_err());
+        assert!(CrossoverDesign::new(BusTopology::MONO, 7).is_err());
+        assert!(CrossoverDesign::new(BusTopology::EMPTY, 2).is_err());
+        let wide = CrossoverDesign::new(BusTopology::STEREO, 4).unwrap();
+        assert_eq!(wide.channels().output_width(), 8);
     }
 }

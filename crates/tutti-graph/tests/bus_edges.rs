@@ -55,10 +55,7 @@ fn lane(sink: u64, port: u16, from: Source) -> EdgeId {
 }
 
 fn main_bus(topology: BusTopology) -> Bus {
-    Bus {
-        topology,
-        role: BusRole::Main,
-    }
+    Bus::new(topology, BusRole::Main)
 }
 
 /// The SMPTE order of `n` channels (1, 2 or 6 here), as a main bus.
@@ -109,10 +106,7 @@ fn spec_of(kind: &Kind) -> NodeSpec {
 }
 
 fn bus_ref(node: u64, bus: u8) -> BusRef {
-    BusRef {
-        node: key(node),
-        bus,
-    }
+    BusRef::new(key(node), bus)
 }
 
 fn feed(source: BusSource, fold: BusFold) -> BusFeed {
@@ -1252,4 +1246,34 @@ fn a_fork_of_a_root_edge_renders_the_fold() {
     let want = (0.0f32 + 0.5 * 0.25) + 0.5 * 0.75;
     assert!(got[0].iter().all(|&x| x == want), "{:?}", &got[0][..4]);
     drop((ed, exec));
+}
+
+/// A repeated bus is its bands in order: a bus edge from band 1 of a stereo
+/// split reads the split's ports 2 and 3, and a band past the last is no bus.
+#[test]
+fn a_bus_edge_reads_the_band_it_names() {
+    let stereo = smpte(2);
+    let bands = Bus::banded(stereo.topology, BusRole::Main, 2).expect("two bands");
+    let mut rig = Rig::new(4);
+    rig.add(1, source(4, bands));
+    rig.feed_globals(1, 4);
+    rig.add(2, sink(2, stereo));
+    let band_1 = BusSource::Node(BusRef::band(key(1), 0, 1));
+    assert!(rig.spec.connect_bus(band_1, bus_ref(2, 0)));
+    rig.output_all(2, 2);
+    let lowering = rig.lowering().unwrap();
+    assert_eq!(
+        lowering.lanes.keys().copied().collect::<Vec<_>>(),
+        [lane(2, 0, out_port(1, 2)), lane(2, 1, out_port(1, 3))]
+    );
+
+    let (mut ed, _exec) = editor(&[(1, source(4, bands)), (2, sink(2, stereo))], 4);
+    let past = BusRef::band(key(1), 0, 2);
+    assert_eq!(
+        ed.connect_bus(BusSource::Node(past), bus_ref(2, 0)),
+        Err(BusError::NoSuchBus {
+            bus: past,
+            side: BusSide::Output
+        })
+    );
 }

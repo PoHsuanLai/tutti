@@ -387,10 +387,10 @@ fn bused(ins: usize, outs: usize, latency: usize, input: Bus, output: Bus) -> Ki
 }
 
 fn main_bus(topology: ChannelTopology) -> Bus {
-    Bus {
-        topology: BusTopology::try_from(&topology).expect("fits a bus"),
-        role: BusRole::Main,
-    }
+    Bus::new(
+        BusTopology::try_from(&topology).expect("fits a bus"),
+        BusRole::Main,
+    )
 }
 
 fn smpte(n: u16) -> Bus {
@@ -478,9 +478,11 @@ fn a_bypass_with_no_pass_is_refused() {
             tail: Tail::None,
         }))
     };
-    let named = |s: &[Speaker]| Bus {
-        topology: BusTopology::new(s.iter().copied()).expect("a bus"),
-        role: BusRole::Main,
+    let named = |s: &[Speaker]| {
+        Bus::new(
+            BusTopology::new(s.iter().copied()).expect("a bus"),
+            BusRole::Main,
+        )
     };
     let stereo = [Speaker::FrontLeft, Speaker::FrontRight];
     let centre_lfe = [Speaker::FrontCenter, Speaker::LowFrequency];

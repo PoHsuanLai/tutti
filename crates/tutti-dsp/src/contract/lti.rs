@@ -150,10 +150,7 @@ pub(super) mod design {
     /// The model's `inputs` and `outputs` are the widths the design declares.
     pub fn ports<D: LtiCase>(d: &D) -> Result<(), String> {
         let channels = d.channels();
-        let (i, o) = (
-            usize::from(channels.input.count()),
-            usize::from(channels.output.count()),
-        );
+        let (i, o) = (channels.input_width(), channels.output_width());
         for c in d.reachable().into_iter().take(8) {
             let m = d.design(&c, d.rates()[0]);
             if (m.inputs(), m.outputs()) != (i, o) {

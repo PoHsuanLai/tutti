@@ -13,6 +13,7 @@ use tutti_dsp::{Ladder, LadderControls, LadderDesign, LadderType, Real};
 use tutti_types::{ChannelLayout, Drive, Hz, Resonance, UnitAddr, UnitParam};
 
 use super::NodeKernel;
+use super::filter_bus;
 use crate::params::ControlSet;
 use crate::reverb::DesignNode;
 
@@ -99,7 +100,7 @@ impl<F: Real> LadderFilterNode<F> {
         resonance: impl Into<Resonance>,
     ) -> Self {
         Self::live(
-            LadderDesign::new(channels.into()),
+            LadderDesign::new(filter_bus(channels.into())),
             LadderControls {
                 ty: ladder_type,
                 freq: frequency.into(),

@@ -85,7 +85,7 @@ fn all_are(block: &[f32], want: f32) -> bool {
 }
 
 fn bus(node: NodeKey) -> BusRef {
-    BusRef { node, bus: 0 }
+    BusRef::new(node, 0)
 }
 
 struct Rig {
@@ -191,13 +191,7 @@ fn a_refused_bus_edge_changes_nothing() {
         }
     );
     assert!(matches!(
-        g.connect_bus(
-            BusSource::Node(BusRef {
-                node: r.stereo,
-                bus: 4
-            }),
-            bus(r.sink)
-        ),
+        g.connect_bus(BusSource::Node(BusRef::new(r.stereo, 4)), bus(r.sink)),
         Err(BusError::NoSuchBus { .. })
     ));
     assert!(matches!(

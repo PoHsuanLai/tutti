@@ -395,11 +395,16 @@ impl Shape {
 
     /// The ports [`Io::input`](crate::Io::input) and
     /// [`Io::output`](crate::Io::output) cover: each side's
-    /// [`Main`](crate::BusRole::Main) bus, every port of a side that declares
-    /// no bus, and none of a side whose buses name no main one.
+    /// [`Main`](crate::BusRole::Main) bus (its first band, for a split's),
+    /// every port of a side that declares no bus, and none of a side whose
+    /// buses name no main one.
     pub(crate) fn main_ports(&self) -> MainPorts {
         let side = |buses: &Buses, width: ChannelLayout| match buses.main_bus() {
-            Some((index, _)) => span_of(buses, index).unwrap_or_default(),
+            Some((index, bus)) => buses
+                .first_port(index)
+                .map_or_else(PortSpan::default, |first| {
+                    PortSpan::new(first, bus.band_width())
+                }),
             None if buses.is_empty() => PortSpan::new(0, usize::from(width.count())),
             None => PortSpan::default(),
         };

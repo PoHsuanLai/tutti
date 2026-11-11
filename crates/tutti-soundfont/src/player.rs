@@ -145,6 +145,7 @@ fn rules(polyphony: usize) -> Rules {
         // What a full bend spans until RPN 0 says otherwise: General MIDI's
         // default of 2 semitones.
         bend_range: Semitones(2.0),
+        per_note_bend_range: Semitones(48.0),
     }
 }
 
@@ -307,9 +308,17 @@ impl Player {
                 // Pitch bend sensitivity (RPN 0) is the core's.
                 self.dispatch(channel, message);
             }
-            // No setter for pressure; no per-note control (a SoundFont voice
-            // is a channel's); an Assignable Controller (NRPN) names nothing
-            // here.
+            // Per-note controllers and Per-Note Management are the core's: it
+            // keeps what each Note Number was told (so a Pitch sent before its
+            // Note On reaches the note) and which voices were detached; the
+            // voice carries the ones it has a generator for (`Voice::control`).
+            Voice2::RegisteredPerNote { .. }
+            | Voice2::AssignablePerNote { .. }
+            | Voice2::PerNotePitchBend { .. }
+            | Voice2::PolyPressure { .. }
+            | Voice2::PerNoteManagement { .. } => self.dispatch(channel, message),
+            // No setter for channel pressure; an Assignable Controller (NRPN)
+            // names nothing here.
             _ => {}
         }
     }

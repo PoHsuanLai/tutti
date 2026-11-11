@@ -264,6 +264,16 @@ fn polysynth_every_decoded_message_is_allocation_free() {
             detach: false,
             reset: true,
         }),
+        m2(Voice2::PerNoteManagement {
+            note,
+            detach: true,
+            reset: true,
+        }),
+        m2(Voice2::RegisteredPerNote {
+            note,
+            controller: RegisteredPerNoteController::Pitch,
+            value: 60 << 25,
+        }),
         m2(Voice2::Registered {
             bank: U7::of(0),
             index: U7::of(7),

@@ -5,9 +5,11 @@
 use std::f32::consts;
 
 use tutti_dsp::{Biquad, DirectForm1, SOLVE_CEILING, SvfControls, SvfModel, SvfType};
+use tutti_midi_protocol::u32_to_unit_f32;
 use tutti_sf2::Side;
 use tutti_types::{Db, Hz, Q, SampleRate, Semitones};
-use tutti_ump::MidiChannel;
+use tutti_ump::{MidiChannel, RegisteredPerNoteController};
+use tutti_voicing::NoteControl;
 
 /// The longest an exclusive class's quick release takes, in seconds, to fall
 /// 100 dB as every release time does (section 8.1.2, generator 38): the floor
@@ -57,6 +59,28 @@ enum VoiceState {
     Released,
 }
 
+/// What the note's per-note controllers have set.
+#[derive(Debug, Clone, Copy)]
+struct NoteControls {
+    /// The absolute pitch in semitones, if one was set; else the key's.
+    pitch: Option<f32>,
+    /// The per-note bend, in semitones.
+    bend: f32,
+    /// Per-note volume, `0..=1`.
+    volume: f32,
+    /// Per-note pan in the channel's `-50..=50`, if one was set.
+    pan: Option<f32>,
+}
+
+impl NoteControls {
+    const DEFAULT: Self = Self {
+        pitch: None,
+        bend: 0_f32,
+        volume: 1_f32,
+        pan: None,
+    };
+}
+
 #[derive(Debug, Clone)]
 #[non_exhaustive]
 pub(crate) struct Voice {
@@ -91,6 +115,10 @@ pub(crate) struct Voice {
     channel: i32,
     key: i32,
     velocity: i32,
+
+    // The note's per-note controllers (M2-104 section 7.4); the defaults of
+    // `NoteControls::DEFAULT` until a message sets one.
+    note: NoteControls,
 
     note_gain: f32,
 
@@ -144,6 +172,7 @@ impl Voice {
             channel: 0,
             key: 0,
             velocity: 0,
+            note: NoteControls::DEFAULT,
             note_gain: 0_f32,
             cutoff: 0_f32,
             resonance: 0_f32,
@@ -178,6 +207,7 @@ impl Voice {
         self.channel = channel;
         self.key = key;
         self.velocity = velocity;
+        self.note = NoteControls::DEFAULT;
 
         if velocity > 0 {
             // According to the Polyphone's implementation, the initial attenuation should be reduced to 40%.
@@ -230,6 +260,37 @@ impl Voice {
 
         self.voice_state = VoiceState::Playing;
         self.voice_length = 0;
+    }
+
+    /// Takes a per-note controller's value (M2-104 section 7.4). What a
+    /// SoundFont voice can carry: Pitch 7.25 and Attribute Pitch 7.9 (the
+    /// pitch the note sounds at, which replaces its key's; the key still
+    /// chooses the sample, envelope scaling and zone, as the voice was
+    /// started), the per-note bend, Registered Volume (the GM law, as CC 7)
+    /// and Registered Pan (as CC 10, replacing the channel's pan for this
+    /// note). Everything else (pressure, modulation, breath, balance, the
+    /// sound controllers, the effects depths, the assignable controllers) has
+    /// no generator in a SoundFont voice to drive and is dropped.
+    pub(crate) fn control(&mut self, control: NoteControl) {
+        match control {
+            NoteControl::Pitch(pitch) => self.note.pitch = Some(pitch.note_number()),
+            NoteControl::Bend(bend) => self.note.bend = bend.get(),
+            NoteControl::Registered(RegisteredPerNoteController::Volume, value) => {
+                self.note.volume = u32_to_unit_f32(value);
+            }
+            NoteControl::Registered(RegisteredPerNoteController::Pan, value) => {
+                self.note.pan = Some(100_f32 * u32_to_unit_f32(value) - 50_f32);
+            }
+            NoteControl::Pressure(_)
+            | NoteControl::Registered(..)
+            | NoteControl::Assignable(..) => {}
+        }
+    }
+
+    /// Per-Note Management Reset (M2-104 section 7.4.5): the note's per-note
+    /// controllers return to their defaults.
+    pub(crate) fn reset_controls(&mut self) {
+        self.note = NoteControls::DEFAULT;
     }
 
     /// Lets the voice go into its release at once (SF2 2.04 section 9.1.7: the
@@ -285,7 +346,11 @@ impl Voice {
         let mod_pitch_change = self.mod_lfo_to_pitch * self.mod_lfo.value()
             + self.mod_env_to_pitch * self.mod_env.value();
         let channel_pitch_change = channel_info.tune() + bends[self.channel as usize].0;
-        let pitch = self.key as f32 + vib_pitch_change + mod_pitch_change + channel_pitch_change;
+        let pitch = self.note.pitch.unwrap_or(self.key as f32)
+            + self.note.bend
+            + vib_pitch_change
+            + mod_pitch_change
+            + channel_pitch_change;
         if !self.oscillator.process(data, &mut self.block[..], pitch) {
             return false;
         }
@@ -317,13 +382,20 @@ impl Voice {
         let ve = channel_info.volume() * channel_info.expression();
         let channel_gain = ve * ve;
 
-        let mut mix_gain = self.note_gain * channel_gain * self.vol_env.value();
+        // A per-note Volume is the channel's law (the GM square) applied to
+        // the one note.
+        let mut mix_gain = self.note_gain
+            * channel_gain
+            * self.note.volume
+            * self.note.volume
+            * self.vol_env.value();
         if self.dynamic_volume {
             let decibels = self.mod_lfo_to_volume * self.mod_lfo.value();
             mix_gain *= SoundFontMath::decibels_to_linear(decibels);
         }
 
-        let angle = (consts::PI / 200_f32) * (channel_info.pan() + self.instrument_pan + 50_f32);
+        let pan = self.note.pan.unwrap_or_else(|| channel_info.pan());
+        let angle = (consts::PI / 200_f32) * (pan + self.instrument_pan + 50_f32);
         if angle <= 0_f32 {
             self.current_mix_gain_left = mix_gain;
             self.current_mix_gain_right = 0_f32;

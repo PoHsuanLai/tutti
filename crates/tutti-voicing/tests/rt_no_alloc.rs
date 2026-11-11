@@ -1,11 +1,13 @@
 //! `Voicing::step` allocates nothing, on every path: poly stealing, the
 //! exclusive cut, mono and legato takeover, the return to a held key, the
-//! pedals, the panics and the bends.
+//! pedals, the panics, the bends and the per-note controllers.
 
 use assert_no_alloc::{AllocDisabler, assert_no_alloc};
 use tutti_midi_protocol::{MpeZoneConfig, MpeZones};
 use tutti_types::{Amplitude, Semitones};
-use tutti_ump::{Attribute, CCNumber, MidiChannel, NoteNumber, Voice2};
+use tutti_ump::{
+    Attribute, CCNumber, MidiChannel, NoteNumber, RegisteredPerNoteController, U7, Voice2,
+};
 use tutti_voicing::{
     Command, Mode, Order, Patch, Retrigger, Rules, Steal, VoiceSpec, VoiceView, Voicing,
 };
@@ -36,6 +38,7 @@ fn rules(mode: Mode) -> Rules {
         exclusive_groups: true,
         sostenuto: true,
         bend_range: Semitones(2.0),
+        per_note_bend_range: Semitones(48.0),
     }
 }
 
@@ -69,6 +72,42 @@ fn step_is_allocation_free_in_every_mode() {
                         note: NoteNumber::of(k + 3),
                         velocity: 0x8000,
                         attribute: Attribute::None,
+                    },
+                    // Per-note state: stored before and during a note, set
+                    // by every message kind, detached, reset, and a
+                    // sensitivity that moves the bends held.
+                    Voice2::RegisteredPerNote {
+                        note: NoteNumber::of(k),
+                        controller: RegisteredPerNoteController::Pitch,
+                        value: 60 << 25,
+                    },
+                    Voice2::PerNotePitchBend {
+                        note: NoteNumber::of(k),
+                        value: round.wrapping_mul(0x0101_0101),
+                    },
+                    Voice2::PolyPressure {
+                        note: NoteNumber::of(k),
+                        value: 1 << 30,
+                    },
+                    Voice2::AssignablePerNote {
+                        note: NoteNumber::of(k),
+                        controller: 74,
+                        value: 1 << 30,
+                    },
+                    Voice2::Registered {
+                        bank: U7::of(0),
+                        index: U7::of(7),
+                        value: (round % 48) << 25,
+                    },
+                    Voice2::PerNoteManagement {
+                        note: NoteNumber::of(k),
+                        detach: round % 2 == 0,
+                        reset: round % 3 == 0,
+                    },
+                    Voice2::NoteOn {
+                        note: NoteNumber::of(k),
+                        velocity: 0x8000,
+                        attribute: Attribute::Pitch(60 << 9),
                     },
                     cc(64, round % 2 * 127),
                     cc(66, round % 3 / 2 * 127),

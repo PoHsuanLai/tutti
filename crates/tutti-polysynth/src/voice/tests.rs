@@ -16,6 +16,7 @@ fn test_basic_allocation() {
         NoteNumber::of(60),
         MidiChannel::of(0),
         0.8,
+        tutti_ump::Attribute::None,
     );
     assert!(matches!(
         result,
@@ -29,6 +30,7 @@ fn test_basic_allocation() {
         NoteNumber::of(64),
         MidiChannel::of(0),
         0.7,
+        tutti_ump::Attribute::None,
     );
     assert!(matches!(
         result,
@@ -52,12 +54,14 @@ fn test_voice_stealing_oldest() {
         NoteNumber::of(60),
         MidiChannel::of(0),
         0.8,
+        tutti_ump::Attribute::None,
     );
     alloc.allocate(
         NoteId::from_channel_note(MidiChannel::of(0), NoteNumber::of(64)),
         NoteNumber::of(64),
         MidiChannel::of(0),
         0.7,
+        tutti_ump::Attribute::None,
     );
 
     // Third note should steal the oldest (note 60)
@@ -66,6 +70,7 @@ fn test_voice_stealing_oldest() {
         NoteNumber::of(67),
         MidiChannel::of(0),
         0.9,
+        tutti_ump::Attribute::None,
     );
     assert!(matches!(result, AllocationResult::Stolen { slot_index: 0 }));
 }
@@ -80,6 +85,7 @@ fn test_release() {
         NoteNumber::of(60),
         MidiChannel::of(0),
         0.8,
+        tutti_ump::Attribute::None,
     );
     assert_eq!(alloc.active_count(), 1);
 
@@ -106,6 +112,7 @@ fn test_sustain_pedal() {
         NoteNumber::of(60),
         MidiChannel::of(0),
         0.8,
+        tutti_ump::Attribute::None,
     );
     alloc.sustain_pedal(MidiChannel::of(0), true);
     alloc.release(
@@ -137,6 +144,7 @@ fn test_mono_mode() {
         NoteNumber::of(60),
         MidiChannel::of(0),
         0.8,
+        tutti_ump::Attribute::None,
     );
     assert!(matches!(
         result1,
@@ -151,6 +159,7 @@ fn test_mono_mode() {
         NoteNumber::of(64),
         MidiChannel::of(0),
         0.7,
+        tutti_ump::Attribute::None,
     );
     assert!(matches!(
         result2,
@@ -196,6 +205,7 @@ fn test_legato_mode() {
         NoteNumber::of(60),
         MidiChannel::of(0),
         0.8,
+        tutti_ump::Attribute::None,
     );
     assert!(matches!(result1, AllocationResult::Allocated { .. }));
 
@@ -205,6 +215,7 @@ fn test_legato_mode() {
         NoteNumber::of(64),
         MidiChannel::of(0),
         0.7,
+        tutti_ump::Attribute::None,
     );
     assert!(matches!(result2, AllocationResult::LegatoRetrigger { .. }));
 
@@ -227,12 +238,14 @@ fn test_no_steal() {
         NoteNumber::of(60),
         MidiChannel::of(0),
         0.8,
+        tutti_ump::Attribute::None,
     );
     alloc.allocate(
         NoteId::from_channel_note(MidiChannel::of(0), NoteNumber::of(64)),
         NoteNumber::of(64),
         MidiChannel::of(0),
         0.7,
+        tutti_ump::Attribute::None,
     );
 
     // Third note should fail
@@ -241,6 +254,7 @@ fn test_no_steal() {
         NoteNumber::of(67),
         MidiChannel::of(0),
         0.9,
+        tutti_ump::Attribute::None,
     );
     assert!(matches!(result, AllocationResult::Unavailable));
 }
@@ -260,6 +274,7 @@ fn test_voice_stealing_quietest() {
         NoteNumber::of(60),
         MidiChannel::of(0),
         0.8,
+        tutti_ump::Attribute::None,
     );
     let slot_1 = match result1 {
         AllocationResult::Allocated { slot_index } => slot_index,
@@ -271,6 +286,7 @@ fn test_voice_stealing_quietest() {
         NoteNumber::of(64),
         MidiChannel::of(0),
         0.7,
+        tutti_ump::Attribute::None,
     );
     let slot_2 = match result2 {
         AllocationResult::Allocated { slot_index } => slot_index,
@@ -287,6 +303,7 @@ fn test_voice_stealing_quietest() {
         NoteNumber::of(67),
         MidiChannel::of(0),
         0.9,
+        tutti_ump::Attribute::None,
     );
     match result {
         AllocationResult::Stolen { slot_index } => {
@@ -311,12 +328,14 @@ fn test_voice_stealing_highest_note() {
         NoteNumber::of(60),
         MidiChannel::of(0),
         0.8,
+        tutti_ump::Attribute::None,
     ); // slot 0
     alloc.allocate(
         NoteId::from_channel_note(MidiChannel::of(0), NoteNumber::of(67)),
         NoteNumber::of(67),
         MidiChannel::of(0),
         0.8,
+        tutti_ump::Attribute::None,
     ); // slot 1 - higher note
 
     // Third note should steal the highest (G4 = 67)
@@ -325,6 +344,7 @@ fn test_voice_stealing_highest_note() {
         NoteNumber::of(72),
         MidiChannel::of(0),
         0.9,
+        tutti_ump::Attribute::None,
     );
     match result {
         AllocationResult::Stolen { slot_index } => {
@@ -349,12 +369,14 @@ fn test_voice_stealing_lowest_note() {
         NoteNumber::of(60),
         MidiChannel::of(0),
         0.8,
+        tutti_ump::Attribute::None,
     ); // slot 0 - lower note
     alloc.allocate(
         NoteId::from_channel_note(MidiChannel::of(0), NoteNumber::of(67)),
         NoteNumber::of(67),
         MidiChannel::of(0),
         0.8,
+        tutti_ump::Attribute::None,
     ); // slot 1
 
     // Third note should steal the lowest (C4 = 60)
@@ -363,6 +385,7 @@ fn test_voice_stealing_lowest_note() {
         NoteNumber::of(72),
         MidiChannel::of(0),
         0.9,
+        tutti_ump::Attribute::None,
     );
     match result {
         AllocationResult::Stolen { slot_index } => {
@@ -386,12 +409,14 @@ fn test_voice_stealing_newest() {
         NoteNumber::of(60),
         MidiChannel::of(0),
         0.8,
+        tutti_ump::Attribute::None,
     ); // slot 0 - older
     alloc.allocate(
         NoteId::from_channel_note(MidiChannel::of(0), NoteNumber::of(64)),
         NoteNumber::of(64),
         MidiChannel::of(0),
         0.7,
+        tutti_ump::Attribute::None,
     ); // slot 1 - newer
 
     // Third note should steal the newest (note 64 in slot 1)
@@ -400,6 +425,7 @@ fn test_voice_stealing_newest() {
         NoteNumber::of(67),
         MidiChannel::of(0),
         0.9,
+        tutti_ump::Attribute::None,
     );
     match result {
         AllocationResult::Stolen { slot_index } => {
@@ -420,6 +446,7 @@ fn test_sostenuto_pedal() {
         NoteNumber::of(60),
         MidiChannel::of(0),
         0.8,
+        tutti_ump::Attribute::None,
     );
     alloc.sostenuto_pedal(MidiChannel::of(0), true);
 
@@ -437,6 +464,7 @@ fn test_sostenuto_pedal() {
         NoteNumber::of(64),
         MidiChannel::of(0),
         0.7,
+        tutti_ump::Attribute::None,
     );
     assert!(
         !alloc.holds_of(1).is_some_and(|h| h.sostenuto()),
@@ -471,6 +499,7 @@ fn test_sostenuto_key_still_held() {
         NoteNumber::of(60),
         MidiChannel::of(0),
         0.8,
+        tutti_ump::Attribute::None,
     );
     alloc.sostenuto_pedal(MidiChannel::of(0), true);
 
@@ -492,18 +521,21 @@ fn test_all_notes_off() {
         NoteNumber::of(60),
         MidiChannel::of(0),
         0.8,
+        tutti_ump::Attribute::None,
     );
     alloc.allocate(
         NoteId::from_channel_note(MidiChannel::of(0), NoteNumber::of(64)),
         NoteNumber::of(64),
         MidiChannel::of(0),
         0.7,
+        tutti_ump::Attribute::None,
     );
     alloc.allocate(
         NoteId::from_channel_note(MidiChannel::of(1), NoteNumber::of(67)),
         NoteNumber::of(67),
         MidiChannel::of(1),
         0.9,
+        tutti_ump::Attribute::None,
     );
 
     assert_eq!(alloc.active_count(), 3);
@@ -529,12 +561,14 @@ fn test_all_sound_off() {
         NoteNumber::of(60),
         MidiChannel::of(0),
         0.8,
+        tutti_ump::Attribute::None,
     );
     alloc.allocate(
         NoteId::from_channel_note(MidiChannel::of(0), NoteNumber::of(64)),
         NoteNumber::of(64),
         MidiChannel::of(0),
         0.7,
+        tutti_ump::Attribute::None,
     );
 
     // All sound off - immediate silence
@@ -557,12 +591,14 @@ fn test_reset() {
         NoteNumber::of(60),
         MidiChannel::of(0),
         0.8,
+        tutti_ump::Attribute::None,
     );
     alloc.allocate(
         NoteId::from_channel_note(MidiChannel::of(0), NoteNumber::of(64)),
         NoteNumber::of(64),
         MidiChannel::of(0),
         0.7,
+        tutti_ump::Attribute::None,
     );
     alloc.sustain_pedal(MidiChannel::of(0), true);
     alloc.sostenuto_pedal(MidiChannel::of(0), true);
@@ -579,6 +615,7 @@ fn test_reset() {
         NoteNumber::of(60),
         MidiChannel::of(0),
         0.8,
+        tutti_ump::Attribute::None,
     );
     alloc.release(
         NoteId::from_channel_note(MidiChannel::of(0), NoteNumber::of(60)),
@@ -599,6 +636,7 @@ fn test_retrigger_same_note() {
         NoteNumber::of(60),
         MidiChannel::of(0),
         0.8,
+        tutti_ump::Attribute::None,
     );
     assert!(alloc.slots()[0].is_active());
 
@@ -608,6 +646,7 @@ fn test_retrigger_same_note() {
         NoteNumber::of(60),
         MidiChannel::of(0),
         0.9,
+        tutti_ump::Attribute::None,
     );
     match result {
         AllocationResult::Allocated { slot_index } => {
@@ -633,12 +672,14 @@ fn test_prefer_stealing_releasing_voices() {
         NoteNumber::of(60),
         MidiChannel::of(0),
         0.8,
+        tutti_ump::Attribute::None,
     );
     alloc.allocate(
         NoteId::from_channel_note(MidiChannel::of(0), NoteNumber::of(64)),
         NoteNumber::of(64),
         MidiChannel::of(0),
         0.7,
+        tutti_ump::Attribute::None,
     );
     alloc.release(
         NoteId::from_channel_note(MidiChannel::of(0), NoteNumber::of(60)),
@@ -651,6 +692,7 @@ fn test_prefer_stealing_releasing_voices() {
         NoteNumber::of(67),
         MidiChannel::of(0),
         0.9,
+        tutti_ump::Attribute::None,
     );
     match result {
         AllocationResult::Stolen { slot_index } => {
@@ -762,7 +804,8 @@ fn random_streams_keep_their_invariants() {
                     let before = table(&alloc);
                     let expect = (mode == VoiceMode::Poly && full)
                         .then(|| expected_victim(&alloc, strategy, id, k, c));
-                    let r = alloc.allocate(id, NoteNumber::of(k), ch, 0.5);
+                    let r =
+                        alloc.allocate(id, NoteNumber::of(k), ch, 0.5, tutti_ump::Attribute::None);
                     held[usize::from(c)].retain(|&x| x != k);
                     if !matches!(r, AllocationResult::Unavailable) || mode != VoiceMode::Poly {
                         held[usize::from(c)].push(k);
@@ -964,6 +1007,7 @@ fn a_return_after_the_voice_ended_starts_a_fresh_one() {
                 NoteNumber::of(k),
                 ch,
                 0.5,
+                tutti_ump::Attribute::None,
             );
         }
         let _ = alloc.take_gates();
@@ -1000,8 +1044,20 @@ fn a_velocity_is_quantised_to_the_nearest_word() {
     });
     let ch = MidiChannel::of(0);
     let id = |n| NoteId::from_channel_note(ch, NoteNumber::of(n));
-    alloc.allocate(id(60), NoteNumber::of(60), ch, 0.5);
-    alloc.allocate(id(64), NoteNumber::of(64), ch, 0.9);
+    alloc.allocate(
+        id(60),
+        NoteNumber::of(60),
+        ch,
+        0.5,
+        tutti_ump::Attribute::None,
+    );
+    alloc.allocate(
+        id(64),
+        NoteNumber::of(64),
+        ch,
+        0.9,
+        tutti_ump::Attribute::None,
+    );
     alloc.take_gates();
     alloc.release(id(64), ch);
     let gates = alloc.take_gates();

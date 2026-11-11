@@ -29,5 +29,6 @@ pub use controller::{Controller, Effect, Stop};
 pub use holds::Holds;
 pub use phase::Phase;
 pub use voicing::{
-    Command, Mode, Order, Patch, Retrigger, Rules, Steal, VoiceId, VoiceSpec, VoiceView, Voicing,
+    Command, Mode, NoteControl, Order, Patch, Retrigger, Rules, Steal, VoiceId, VoiceSpec,
+    VoiceView, Voicing,
 };

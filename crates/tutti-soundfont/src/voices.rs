@@ -128,6 +128,16 @@ impl Voices {
                 // `process` reads back from the core each chunk
                 // (`Voicing::channel_pitch`): it is the one place the bend
                 // lives, so there is nothing to mirror here.
+                Command::Control { id, control } => {
+                    if let Some(slot) = self.slot(id) {
+                        slot.voice.control(control);
+                    }
+                }
+                Command::ResetControls(id) => {
+                    if let Some(slot) = self.slot(id) {
+                        slot.voice.reset_controls();
+                    }
+                }
                 Command::Retarget { .. } | Command::Retune { .. } => {}
             }
         }

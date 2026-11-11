@@ -186,7 +186,9 @@ pub use tutti_plugin_host as plugin_host;
 /// unit is `tutti::types::Phase`.
 pub mod prelude {
     pub use tutti_engine::prelude::*;
-    pub use tutti_graph::{CrossfadeCurve, Level, MAX_ROOT_CHANNELS, MeterReader, TapReader};
+    pub use tutti_graph::{
+        CrossfadeCurve, Level, MAX_ROOT_CHANNELS, MeterReader, NodeMode, TapReader,
+    };
     pub use tutti_graph::{EventInletNode, EventInletWriter, Refused};
     pub use tutti_graph::{EventTapId, EventTapReader, TapAlign, TapEvent, TapId};
     pub use tutti_metering::{LoadMeter, LoadReading};

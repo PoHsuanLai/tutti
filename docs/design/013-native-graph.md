@@ -6827,6 +6827,17 @@ left open.
 - **Not in M1:** the plugin test (a hosted plugin node's bypass against a
   plain node of the same latency) is M2's, with the hosts.
 
+**As built (M2, session half).** `tutti-session`'s `Graph::set_mode(node,
+NodeMode) -> Result<(), ModeError>` and `Graph::mode(node)` are the editor's,
+and the session exports `NodeMode` and `ModeError` (the `tutti` prelude has
+`NodeMode`). A mode is a control: it marks nothing edited and sends no commit
+(`tests/node_mode.rs`). The hosts do not map a plugin's own bypass (CLAP's
+or VST3's bypass param, AU's `BypassEffect`) onto `NodeMode` (see Plugins
+above); the host half is the plugin test, a hosted plugin bypassed through
+`Graph::set_mode` pinned analytically (an impulse at `n` comes out at `n + L`,
+not against a second render), and dropping the AU host's `BypassEffect` use
+where it reaches the graph.
+
 #### Buses and coercion between declared layouts
 
 Decided by the owner. When two ports' declared channel layouts disagree, the

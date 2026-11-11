@@ -43,8 +43,8 @@ use tutti_graph::Compensation;
 use tutti_graph::CrossfadeCurve;
 use tutti_graph::{
     CommitError, Editor, EventEdge, EventIn, EventOut, EventTapReader, Executor, Fade,
-    GraphInvalid, InletNode, IntoNode, MeterReader, MissingSource, ParamIn, ParamMod, ParamRange,
-    ParamSet, Prepare, TapReader, TapWriter, Transport,
+    GraphInvalid, InletNode, IntoNode, MeterReader, MissingSource, ModeError, NodeMode, ParamIn,
+    ParamMod, ParamRange, ParamSet, Prepare, TapReader, TapWriter, Transport,
 };
 use tutti_graph::{Edge, InPort, NodeKey, OutPort, Source};
 use tutti_graph::{
@@ -1674,6 +1674,30 @@ impl Graph {
     }
 
     // --- Edge gains (doc 013, "Edge gain") ---
+
+    /// Sets `node`'s mode: [`NodeMode::Active`] renders it,
+    /// [`NodeMode::Bypassed`] passes its input through, delayed by its declared
+    /// latency so it stays in time with the rest of the graph, and
+    /// [`NodeMode::Muted`] silences its outputs while it keeps running. A change
+    /// fades over 256 frames, and a node coming back from a bypass is reset
+    /// first (doc 013, "Bypass and mute are graph state").
+    ///
+    /// A control, not an edit: the graph is not recompiled, the mode lands at
+    /// the next block, and the graph is not marked edited.
+    ///
+    /// # Errors
+    ///
+    /// [`ModeError::NoSuchNode`] when `node` is not in the graph; nothing
+    /// changes.
+    pub fn set_mode(&mut self, node: NodeKey, mode: NodeMode) -> Result<(), ModeError> {
+        self.editor.set_mode(node, mode)
+    }
+
+    /// `node`'s mode, [`NodeMode::Active`] for a node never given one (and for
+    /// a key not in the graph).
+    pub fn mode(&self, node: NodeKey) -> NodeMode {
+        self.editor.mode(node)
+    }
 
     /// Edge `edge`'s gain, if it has one: `Some` for a weighted edge, `None`
     /// for a plain one (a unity weight is an entry, so it is `Some(1.0)`; an

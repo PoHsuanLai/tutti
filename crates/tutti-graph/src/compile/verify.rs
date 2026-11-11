@@ -90,10 +90,25 @@ fn accesses(plan: &Plan, op: &Op) -> Vec<Access> {
     match *op {
         Op::GlobalIn { dst, .. } => vec![a(dst, true)],
         Op::Delay { src, dst, .. } => vec![a(src, false), a(dst, true)],
-        Op::Sum { srcs, dst } | Op::WeightedSum { srcs, dst, .. } => plan.audio_list[srcs.range()]
+        Op::Sum { srcs, dst } => plan.audio_list[srcs.range()]
             .iter()
             .map(|&s| a(s, false))
             .chain([a(dst, true)])
+            .collect(),
+        Op::WeightedSum {
+            srcs, dst, gains, ..
+        } => plan.audio_list[srcs.range()]
+            .iter()
+            .map(|&s| a(s, false))
+            .chain([a(dst, true)])
+            // The driven lanes' event sources: reads of the op.
+            .chain(
+                plan.gain_ports
+                    .get(gains.range())
+                    .unwrap_or(&[])
+                    .iter()
+                    .map(|g| e(g.slot, false)),
+            )
             .collect(),
         Op::EventDelay { src, dst, .. } => vec![e(src, false), e(dst, true)],
         Op::EventMerge { srcs, dst } => plan.event_list[srcs.range()]
@@ -163,6 +178,8 @@ fn param_reads(plan: &Plan, params: crate::plan::Span) -> impl Iterator<Item = u
 /// only the first read is rule 4's; that each read is of a written value,
 /// rule 3's.
 fn verify_sums(plan: &Plan) -> Result<(), VerifyError> {
+    // Driven lanes the ops name; every entry of `gain_ports` must be one.
+    let mut covered = 0usize;
     for (i, op) in plan.ops.iter().enumerate() {
         match *op {
             Op::Sum { srcs, .. } if !(2..=MAX_PORTS).contains(&(srcs.len as usize)) => {
@@ -171,7 +188,9 @@ fn verify_sums(plan: &Plan) -> Result<(), VerifyError> {
                     srcs.len
                 )));
             }
-            Op::WeightedSum { srcs, lanes, .. } => {
+            Op::WeightedSum {
+                srcs, lanes, gains, ..
+            } => {
                 if !(1..=MAX_PORTS).contains(&(srcs.len as usize)) {
                     return Err(VerifyError(format!(
                         "weighted sum op {i} adds {} addends, not 1 to {MAX_PORTS}",
@@ -195,9 +214,32 @@ fn verify_sums(plan: &Plan) -> Result<(), VerifyError> {
                         "weighted sum op {i} has no weighted lane (a plain sum is `Op::Sum`)"
                     )));
                 }
+                let Some(driven) = plan.gain_ports.get(gains.range()) else {
+                    return Err(VerifyError(format!(
+                        "weighted sum op {i} names driven lanes past the {} the plan lists",
+                        plan.gain_ports.len()
+                    )));
+                };
+                for (n, g) in driven.iter().enumerate() {
+                    if n > 0 && driven[n - 1].lane >= g.lane {
+                        return Err(VerifyError(format!(
+                            "weighted sum op {i}'s driven lanes are not in strict lane order"
+                        )));
+                    }
+                    if list.get(usize::from(g.lane)).is_none_or(Option::is_none) {
+                        return Err(VerifyError(format!(
+                            "weighted sum op {i} drives lane {}, which is not a weighted lane",
+                            g.lane
+                        )));
+                    }
+                }
+                covered += driven.len();
             }
             _ => {}
         }
+    }
+    if covered != plan.gain_ports.len() {
+        return Err(VerifyError("gain ports no weighted sum names".into()));
     }
     Ok(())
 }
@@ -852,6 +894,7 @@ fn verify_tables(plan: &Plan) -> Result<(), VerifyError> {
                     .ok_or_else(|| VerifyError(format!("op {m} names delay {delay}")))?;
                 let (crate::plan::DelayKey::Event { from, .. }
                 | crate::plan::DelayKey::ParamEvent { from, .. }
+                | crate::plan::DelayKey::EdgeGain { from, .. }
                 | crate::plan::DelayKey::EventTap { from, .. }) = d.key
                 else {
                     return Err(VerifyError(format!(

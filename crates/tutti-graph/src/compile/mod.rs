@@ -67,7 +67,8 @@ use crate::node::{InPlaceMask, MAX_PORTS, Prepare, Resolution, Shape};
 use crate::param::ParamIn;
 use crate::plan::{
     Csr, DelayKey, DelaySpec, Delta, EMPTY_SLOT, EventSlotCapacity, FeedbackKey, FeedbackSpec,
-    NodeTables, Op, ParamPortOp, Placement, Plan, PlanUnit, Span, UnitIdx, Value, ZERO_SLOT,
+    GainPortOp, NodeTables, Op, ParamPortOp, Placement, Plan, PlanUnit, Span, UnitIdx, Value,
+    ZERO_SLOT,
 };
 use crate::spec::{EventEdge, EventIn, EventOut, ValidGraph};
 
@@ -95,6 +96,16 @@ pub enum CycleEdge {
         /// The param port.
         at: ParamIn,
         /// The event output that drives it.
+        from: EventOut,
+    },
+    /// A lane driving the gain of an edge into input port `at`, from `from`:
+    /// it runs before the sum at the port, so before its node. Like a param
+    /// edge, always direct. (The port and the source, not the whole edge's
+    /// name, which would make every `CompileError` larger.)
+    Gain {
+        /// The port the weighted edge goes into.
+        at: InPort,
+        /// The event output that drives the gain.
         from: EventOut,
     },
 }
@@ -192,6 +203,13 @@ pub enum CompileError {
         /// The source.
         from: EventOut,
     },
+    /// An edge gain's source names an event output its node does not have.
+    GainSourceOutOfRange {
+        /// The sink of the edge whose gain it drives.
+        sink: Sink,
+        /// The source.
+        from: EventOut,
+    },
     /// A cycle that no feedback edge breaks. Every direct edge inside the
     /// cycle's strongly connected component is listed, in key order.
     Cycle {
@@ -277,6 +295,10 @@ impl std::fmt::Display for CompileError {
                 "param {:?} of node {}: source {from:?} is not an output of its node",
                 at.param, at.node.0
             ),
+            Self::GainSourceOutOfRange { sink, from } => write!(
+                f,
+                "gain of an edge into {sink:?}: source {from:?} is not an output of its node"
+            ),
             Self::Cycle { edges } => write!(f, "unbroken cycle through {} edges", edges.len()),
         }
     }
@@ -320,6 +342,8 @@ enum Pre {
     WeightedSum {
         srcs: Vec<ARef>,
         lanes: Vec<Option<EdgeId>>,
+        /// The driven lanes among them.
+        gains: Vec<GPort>,
         dst: u32,
     },
     EventDelay {
@@ -371,6 +395,15 @@ enum Pre {
 struct PPort {
     port: u16,
     param: tutti_types::UnitAddr,
+    from: EventOut,
+    value: u32,
+}
+
+/// A driven lane of a weighted sum before colouring: which addend it is, its
+/// event source, and the event value it reads (the sibling of [`PPort`]).
+#[derive(Clone, Copy)]
+struct GPort {
+    lane: u16,
     from: EventOut,
     value: u32,
 }
@@ -548,6 +581,17 @@ pub fn compile(
             return Err(CompileError::ParamSourceOutOfRange { at, from });
         }
     }
+    // Edge gains: each driving source is an output of its node.
+    for (&id, gain) in graph.gains() {
+        if let Some(from) = gain.source
+            && from.port >= node_shapes[dense[&from.node]].event_out
+        {
+            return Err(CompileError::GainSourceOutOfRange {
+                sink: id.sink,
+                from,
+            });
+        }
+    }
 
     // Resolution: a marked edge's sink must honour what it requires (see
     // `GraphSpec::require_resolution` for the rule, and why only marked edges).
@@ -624,6 +668,16 @@ pub fn compile(
             let (src, d) = (dense[&from.node], dense[&at.node]);
             preds[d].push(src);
             labelled.push((src, d, CycleEdge::Param { at, from }));
+        }
+    }
+    // A lane that drives the gain of an edge into a node's port runs before
+    // the sum at that port, so before the node. (One into an output channel
+    // feeds nothing a node reads.)
+    for (&id, gain) in graph.gains() {
+        if let (Sink::Port(at), Some(from)) = (id.sink, gain.source) {
+            let (src, d) = (dense[&from.node], dense[&at.node]);
+            preds[d].push(src);
+            labelled.push((src, d, CycleEdge::Gain { at, from }));
         }
     }
     let mut succ: Vec<Vec<usize>> = vec![Vec::new(); keys.len()];
@@ -791,9 +845,28 @@ pub fn compile(
                     sink: Sink::Port(at),
                     from: edge,
                 };
+                let gain = graph.gains().get(&id);
+                // Its driving lane, aligned to this node's arrival like a
+                // param's source (a silent addend has none: nothing is added).
+                let drive = gain
+                    .and_then(|g| g.source)
+                    .filter(|_| r != ARef::Zero)
+                    .map(|from| {
+                        let by = departure(dense[&from.node]).gap_to(arrival[n]);
+                        GainDrive {
+                            from,
+                            value: align_event(
+                                &mut em,
+                                event_out_val[&from],
+                                by,
+                                DelayKey::EdgeGain { id, from },
+                            ),
+                        }
+                    });
                 refs.push(Addend {
                     r,
-                    lane: graph.gains().contains_key(&id).then_some(id),
+                    lane: gain.map(|_| id),
+                    drive,
                 });
             }
             ain.push(sum_chain(&mut em, refs));
@@ -857,28 +930,12 @@ pub fn compile(
             let Some(e) = graph.params().get(&at).and_then(|m| m.source) else {
                 continue;
             };
-            let d = departure(dense[&e.node]).gap_to(arrival[n]);
-            let v = event_out_val[&e];
-            let value = if d.is_zero() {
-                v
-            } else {
-                let delay = em.delays.len() as u32;
-                em.delays.push(DelaySpec {
-                    key: DelayKey::ParamEvent { at, from: e },
-                    len: d,
-                });
-                let op = em.push(Pre::EventDelay {
-                    delay,
-                    src: v,
-                    dst: 0,
-                });
-                em.read_event(v, op);
-                let dv = em.event_value(op);
-                if let Pre::EventDelay { dst, .. } = &mut em.pre[op as usize] {
-                    *dst = dv;
-                }
-                dv
-            };
+            let value = align_event(
+                &mut em,
+                event_out_val[&e],
+                departure(dense[&e.node]).gap_to(arrival[n]),
+                DelayKey::ParamEvent { at, from: e },
+            );
             params.push(PPort {
                 port: k as u16,
                 param,
@@ -969,18 +1026,29 @@ pub fn compile(
                         Source::Global(ch) => (global_val[&ch], Latency::ZERO),
                         Source::Zero => unreachable!("filtered above"),
                     };
-                    Addend {
-                        r: align_audio(
-                            &mut em,
-                            v,
-                            dep.gap_to(total),
-                            DelayKey::Output {
-                                channel,
-                                from: source,
-                            },
-                        ),
-                        lane: lane_of(source),
-                    }
+                    let r = align_audio(
+                        &mut em,
+                        v,
+                        dep.gap_to(total),
+                        DelayKey::Output {
+                            channel,
+                            from: source,
+                        },
+                    );
+                    let lane = lane_of(source);
+                    // Its driving lane, aligned to the output time.
+                    let drive = lane
+                        .and_then(|id| Some((id, graph.gains().get(&id)?.source?)))
+                        .map(|(id, from)| GainDrive {
+                            from,
+                            value: align_event(
+                                &mut em,
+                                event_out_val[&from],
+                                departure(dense[&from.node]).gap_to(total),
+                                DelayKey::EdgeGain { id, from },
+                            ),
+                        });
+                    Addend { r, lane, drive }
                 })
                 .collect();
             let src = sum_chain(&mut em, refs);
@@ -1331,6 +1399,7 @@ pub fn compile(
                 let d = &em.delays[*delay as usize];
                 let (DelayKey::Event { from, .. }
                 | DelayKey::ParamEvent { from, .. }
+                | DelayKey::EdgeGain { from, .. }
                 | DelayKey::EventTap { from, .. }) = d.key
                 else {
                     unreachable!("an event delay is keyed as events")
@@ -1378,6 +1447,7 @@ pub fn compile(
     let mut event_list: Vec<u32> = Vec::new();
     let mut param_ports: Vec<ParamPortOp> = Vec::new();
     let mut sum_lanes: Vec<Option<EdgeId>> = Vec::new();
+    let mut gain_ports: Vec<GainPortOp> = Vec::new();
     let span_of = |list: &mut Vec<u32>, items: &mut dyn Iterator<Item = u32>| {
         let start = list.len() as u32;
         list.extend(items);
@@ -1402,15 +1472,30 @@ pub fn compile(
                 srcs: span_of(&mut audio_list, &mut srcs.iter().map(|&r| aref_slot(r))),
                 dst: aslot(*dst),
             },
-            Pre::WeightedSum { srcs, lanes, dst } => {
+            Pre::WeightedSum {
+                srcs,
+                lanes,
+                gains,
+                dst,
+            } => {
                 let lane_start = sum_lanes.len() as u32;
                 sum_lanes.extend(lanes.iter().copied());
+                let gain_start = gain_ports.len() as u32;
+                gain_ports.extend(gains.iter().map(|g| GainPortOp {
+                    lane: g.lane,
+                    from: g.from,
+                    slot: eslot(g.value),
+                }));
                 Op::WeightedSum {
                     srcs: span_of(&mut audio_list, &mut srcs.iter().map(|&r| aref_slot(r))),
                     dst: aslot(*dst),
                     lanes: Span {
                         start: lane_start,
                         len: lanes.len() as u32,
+                    },
+                    gains: Span {
+                        start: gain_start,
+                        len: gains.len() as u32,
                     },
                 }
             }
@@ -1652,6 +1737,7 @@ pub fn compile(
         event_values,
         value_readers,
         param_ports,
+        gain_ports,
         sum_lanes,
         nodes,
     };
@@ -1686,12 +1772,44 @@ fn align_audio(em: &mut Emitted, v: u32, by: Samples, key: DelayKey) -> ARef {
     ARef::Val(dv)
 }
 
+/// Event value `v`, delayed by `by` through a ring keyed `key` when `by` is
+/// not zero (the value itself otherwise).
+fn align_event(em: &mut Emitted, v: u32, by: Samples, key: DelayKey) -> u32 {
+    if by.is_zero() {
+        return v;
+    }
+    let delay = em.delays.len() as u32;
+    em.delays.push(DelaySpec { key, len: by });
+    let op = em.push(Pre::EventDelay {
+        delay,
+        src: v,
+        dst: 0,
+    });
+    em.read_event(v, op);
+    let dv = em.event_value(op);
+    if let Pre::EventDelay { dst, .. } = &mut em.pre[op as usize] {
+        *dst = dv;
+    }
+    dv
+}
+
 /// One addend of a sum: the value, and the edge whose gain weights it when
 /// the edge has an entry (doc 013, "Edge gain").
 #[derive(Clone, Copy)]
 struct Addend {
     r: ARef,
     lane: Option<EdgeId>,
+    /// The event source that drives the lane's gain, and the event value
+    /// that carries it to the sum (through its PDC delay when it needs one).
+    drive: Option<GainDrive>,
+}
+
+/// The event source that drives an addend's lane, and the event value that
+/// carries it to the sum.
+#[derive(Clone, Copy)]
+struct GainDrive {
+    from: EventOut,
+    value: u32,
 }
 
 /// Sum `refs` (already in source order) into one audio value: the left fold
@@ -1713,10 +1831,22 @@ fn sum_chain(em: &mut Emitted, refs: Vec<Addend>) -> ARef {
     let emit = |em: &mut Emitted, addends: Vec<Addend>| -> ARef {
         let srcs: Vec<ARef> = addends.iter().map(|a| a.r).collect();
         let lanes: Vec<Option<EdgeId>> = addends.iter().map(|a| a.lane).collect();
+        let gains: Vec<GPort> = addends
+            .iter()
+            .enumerate()
+            .filter_map(|(lane, a)| {
+                a.drive.map(|d| GPort {
+                    lane: lane as u16,
+                    from: d.from,
+                    value: d.value,
+                })
+            })
+            .collect();
         let op = em.push(if lanes.iter().any(Option::is_some) {
             Pre::WeightedSum {
                 srcs: srcs.clone(),
                 lanes,
+                gains: gains.clone(),
                 dst: 0,
             }
         } else {
@@ -1727,6 +1857,11 @@ fn sum_chain(em: &mut Emitted, refs: Vec<Addend>) -> ARef {
         });
         for &r in &srcs {
             em.read_aref(r, op);
+        }
+        // The sum reads each driving lane's events: a read of the op, so the
+        // colouring and the verifier cover it.
+        for g in &gains {
+            em.read_event(g.value, op);
         }
         let v = em.audio_value(op);
         if let Pre::Sum { dst, .. } | Pre::WeightedSum { dst, .. } = &mut em.pre[op as usize] {
@@ -1742,7 +1877,11 @@ fn sum_chain(em: &mut Emitted, refs: Vec<Addend>) -> ARef {
             let mut acc = emit(em, refs[..first].to_vec());
             for run in refs[first..].chunks(MAX_PORTS - 1) {
                 let mut addends = Vec::with_capacity(run.len() + 1);
-                addends.push(Addend { r: acc, lane: None });
+                addends.push(Addend {
+                    r: acc,
+                    lane: None,
+                    drive: None,
+                });
                 addends.extend_from_slice(run);
                 acc = emit(em, addends);
             }

@@ -657,7 +657,7 @@ fn two_ranges_or_automations_on_one_param_are_refused() {
     master(&mut s, &[probe]);
     let cutoff = ParamRef::unit(probe, UnitParam::Cutoff).key();
     let keys = HostKeys {
-        bits: cutoff.node,
+        bits: cutoff.node().expect("a param target"),
         node: Cell::new(Some(probe)),
     };
     let one = declare_targets([(cutoff, 0.0, 1_000.0)], []);

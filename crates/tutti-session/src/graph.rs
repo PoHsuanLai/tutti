@@ -1545,7 +1545,7 @@ impl Graph {
 
     // --- Edges ---
 
-    fn lower(source: GraphSource) -> Source {
+    pub(crate) fn lower(source: GraphSource) -> Source {
         match source {
             GraphSource::Node(node, port) => Source::Node(OutPort {
                 node,
@@ -2588,6 +2588,13 @@ pub(crate) enum AudioNodeTarget {
 pub trait ModKeys {
     /// The node a target's key names.
     fn node(&self, target: u64) -> Option<NodeKey>;
+    /// The edge a target's key names (`TargetKey::Edge`), whose gain the
+    /// target modulates. A host with no edge targets leaves the default,
+    /// which names none.
+    fn edge(&self, target: u64) -> Option<crate::EdgeRef> {
+        let _ = target;
+        None
+    }
     /// What feeds source `source`'s node.
     fn feed(&self, source: tutti_modulation::SourceKey) -> Option<tutti_nodes::Feed>;
 }
@@ -2615,8 +2622,24 @@ pub(crate) type PluginTargets = BTreeMap<(NodeKey, u32), tutti_modulation::Targe
 #[cfg(feature = "modulation")]
 impl tutti_nodes::ModHost for ModHostOver<'_> {
     fn target(&self, target: tutti_modulation::TargetKey) -> Option<tutti_nodes::Target> {
-        let node = self.keys.node(target.node)?;
-        Some(match target.param.as_unit() {
+        let tutti_modulation::TargetKey::Param {
+            node: bits,
+            param: addr,
+        } = target
+        else {
+            // An edge's gain: the edge the host's key names, if it names one.
+            let tutti_modulation::TargetKey::Edge(key) = target else {
+                return None;
+            };
+            // The gain's knob starts at unity, the base of a new entry; the
+            // lane's own cell holds it from then on (`ModState::set_knob`).
+            return Some(tutti_nodes::Target::Edge {
+                id: self.keys.edge(key)?.id(),
+                knob: Some(1.0),
+            });
+        };
+        let node = self.keys.node(bits)?;
+        Some(match addr.as_unit() {
             // A native param, at any index: the node's own cell for that
             // address is the lane's knob.
             Some(addr) => tutti_nodes::Target::Native {
@@ -2630,7 +2653,7 @@ impl tutti_nodes::ModHost for ModHostOver<'_> {
             // A plugin target waits for its mirror: a lane built without
             // a knob could not take one later.
             None => {
-                let tutti_types::ParamAddr::Id(id) = target.param else {
+                let tutti_types::ParamAddr::Id(id) = addr else {
                     return None;
                 };
                 // A node the session hosts no plugin at has no mirror: its

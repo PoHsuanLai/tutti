@@ -32,8 +32,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use tutti_graph::EventOut;
-use tutti_graph::NodeKey;
+use tutti_graph::{Edge, EdgeId, EventOut, NodeKey, Sink};
 use tutti_modulation::{
     Curve, Declarations, Follower, Lfo, Macro, NoteEnvelope, RouteDecl, RouteKey, RouteTarget,
     Source, SourceKey, TargetDecl, TargetKey,
@@ -43,7 +42,7 @@ use tutti_nodes::{Feed, ReconcileError};
 use tutti_types::{Depth, ParamAddr, UnitAddr, UnitParam};
 
 use crate::ModKeys;
-use crate::graph::Graph;
+use crate::graph::{Graph, GraphSource};
 
 /// How long a modulation target may stay unresolved before it is logged:
 /// today's 240 frames at 60 Hz (design 015 §4.4). A target waits an update
@@ -101,19 +100,116 @@ impl ParamRef {
     /// refusal of the session's own declarations names.
     #[must_use]
     pub fn key(self) -> TargetKey {
-        TargetKey {
-            node: self.node.0,
-            param: self.param,
+        TargetKey::param(self.node.0, self.param)
+    }
+
+    /// The `ParamRef` a key of the session's own names; `None` for the key
+    /// of an edge ([`EdgeRef`]).
+    #[must_use]
+    pub fn from_key(target: TargetKey) -> Option<Self> {
+        match target {
+            TargetKey::Param { node, param } => Some(Self {
+                node: NodeKey(node),
+                param,
+            }),
+            TargetKey::Edge(_) => None,
+        }
+    }
+}
+
+/// Where an edge goes: input `port` of `node`, or global output `channel`.
+/// The session's key form of [`Sink`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum EdgeSink {
+    /// Audio input `port` of `node`.
+    Port {
+        /// The node.
+        node: NodeKey,
+        /// Its input port.
+        port: usize,
+    },
+    /// Global output `channel`.
+    Output(usize),
+}
+
+/// One edge of the session's graph, named as the session's fan-in methods
+/// name it ([`Graph::add_source`](crate::Graph::add_source),
+/// [`Graph::add_output_source`](crate::Graph::add_output_source)): what feeds
+/// which sink. The session's key form of `tutti_graph::EdgeId`, as
+/// [`ParamRef`] is of a param port. A modulation route onto it
+/// ([`ModTarget`]) drives the **gain** of that edge, a weight of the sum
+/// its sink holds (doc 013, "Edge gain"); the edge must exist, and a target
+/// whose edge is not in the graph yet is unresolved until it is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct EdgeRef {
+    /// Where the edge goes.
+    pub sink: EdgeSink,
+    /// What feeds it.
+    pub from: GraphSource,
+}
+
+impl EdgeRef {
+    /// The edge from `from` into input `port` of `node`.
+    #[must_use]
+    pub const fn port(node: NodeKey, port: usize, from: GraphSource) -> Self {
+        Self {
+            sink: EdgeSink::Port { node, port },
+            from,
         }
     }
 
-    /// The `ParamRef` a key of the session's own names.
+    /// The edge from `from` into global output `channel`.
     #[must_use]
-    pub fn from_key(target: TargetKey) -> Self {
+    pub const fn output(channel: usize, from: GraphSource) -> Self {
         Self {
-            node: NodeKey(target.node),
-            param: target.param,
+            sink: EdgeSink::Output(channel),
+            from,
         }
+    }
+
+    /// The graph's name for the edge (a direct one: a feedback edge has no
+    /// session name yet).
+    pub(crate) fn id(self) -> EdgeId {
+        EdgeId {
+            sink: match self.sink {
+                EdgeSink::Port { node, port } => Sink::Port(tutti_graph::InPort {
+                    node,
+                    port: port as u16,
+                }),
+                EdgeSink::Output(channel) => Sink::Output(channel as u16),
+            },
+            from: Edge::Direct(Graph::lower(self.from)),
+        }
+    }
+
+    /// Whether the edge touches `node` (as its sink or its source).
+    fn touches(self, node: NodeKey) -> bool {
+        matches!(self.sink, EdgeSink::Port { node: n, .. } if n == node)
+            || matches!(self.from, GraphSource::Node(n, _) if n == node)
+    }
+}
+
+/// What a modulation route, range or automation names: a param of a node
+/// ([`ParamRef`]) or the gain of an edge ([`EdgeRef`]). Both convert:
+/// `mods.route(source, param_ref, depth)` and
+/// `mods.route(source, edge_ref, depth)`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum ModTarget {
+    /// A param of a node.
+    Param(ParamRef),
+    /// The gain of an edge.
+    Edge(EdgeRef),
+}
+
+impl From<ParamRef> for ModTarget {
+    fn from(p: ParamRef) -> Self {
+        Self::Param(p)
+    }
+}
+
+impl From<EdgeRef> for ModTarget {
+    fn from(e: EdgeRef) -> Self {
+        Self::Edge(e)
     }
 }
 
@@ -508,6 +604,12 @@ pub(crate) struct OwnMods {
     routes: BTreeMap<RouteKey, RouteDecl>,
     ranges: BTreeMap<TargetKey, (f32, f32)>,
     automation: BTreeMap<TargetKey, OwnAutomation>,
+    /// The key the reconciler is given for each edge a target names (an
+    /// edge has no node bits to be its key): minted on first use, kept for
+    /// the edge's life as a target.
+    edge_keys: BTreeMap<EdgeId, u64>,
+    /// The inverse, for [`OwnKeys`].
+    edge_refs: BTreeMap<u64, EdgeRef>,
     /// The declarations as the reconciler takes them, built from the maps
     /// above on the first apply after they may have changed: cleared when
     /// [`Mods`] is handed out (whatever it then edits), when a take closes
@@ -545,6 +647,27 @@ impl OwnMods {
     fn mint(&mut self) -> u64 {
         self.minted += 1;
         self.minted
+    }
+
+    /// `target`'s key for the reconciler: a param's is its node's bits and
+    /// address, an edge's a key minted for it.
+    fn key_of(&mut self, target: ModTarget) -> TargetKey {
+        match target {
+            ModTarget::Param(p) => p.key(),
+            ModTarget::Edge(e) => {
+                let id = e.id();
+                let key = match self.edge_keys.get(&id) {
+                    Some(&key) => key,
+                    None => {
+                        let key = self.mint();
+                        self.edge_keys.insert(id, key);
+                        self.edge_refs.insert(key, e);
+                        key
+                    }
+                };
+                TargetKey::edge(key)
+            }
+        }
     }
 
     /// Closes the takes that are done: each one's trajectory becomes its
@@ -599,10 +722,23 @@ impl OwnMods {
     pub(crate) fn forget_node(&mut self, node: NodeKey) {
         self.built = None;
         let bits = node.0;
-        self.ranges.retain(|t, _| t.node != bits);
-        self.automation.retain(|t, _| t.node != bits);
+        // The edges that touched the node go with it, and their keys.
+        let dead: BTreeSet<u64> = self
+            .edge_refs
+            .iter()
+            .filter(|(_, e)| e.touches(node))
+            .map(|(&k, _)| k)
+            .collect();
+        self.edge_refs.retain(|k, _| !dead.contains(k));
+        self.edge_keys.retain(|_, k| !dead.contains(k));
+        let gone = |t: &TargetKey| match t {
+            TargetKey::Param { node, .. } => *node == bits,
+            TargetKey::Edge(k) => dead.contains(k),
+        };
+        self.ranges.retain(|t, _| !gone(t));
+        self.automation.retain(|t, _| !gone(t));
         self.routes
-            .retain(|_, r| !matches!(r.to, RouteTarget::Param(t) if t.node == bits));
+            .retain(|_, r| !matches!(r.to, RouteTarget::Param(t) if gone(&t)));
     }
 }
 
@@ -615,6 +751,10 @@ impl ModKeys for OwnKeys<'_> {
         // A key no node has any more names one the editor does not hold:
         // the reconciler leaves its target unresolved.
         Some(NodeKey(target))
+    }
+
+    fn edge(&self, target: u64) -> Option<EdgeRef> {
+        self.0.edge_refs.get(&target).copied()
     }
 
     fn feed(&self, source: SourceKey) -> Option<Feed> {
@@ -795,13 +935,19 @@ impl Mods<'_> {
 
     /// A route from `source` into `target` at `depth` of its range, bipolar
     /// and linear ([`route_mut`](Self::route_mut) changes those).
-    pub fn route(&mut self, source: SourceKey, target: ParamRef, depth: Depth) -> RouteKey {
+    pub fn route(
+        &mut self,
+        source: SourceKey,
+        target: impl Into<ModTarget>,
+        depth: Depth,
+    ) -> RouteKey {
         let key = RouteKey(self.own.mint());
+        let to = RouteTarget::Param(self.own.key_of(target.into()));
         self.own.routes.insert(
             key,
             RouteDecl {
                 source,
-                to: RouteTarget::Param(target.key()),
+                to,
                 depth,
                 polarity: tutti_modulation::Polarity::Bipolar,
                 curve: tutti_modulation::Law::Linear,
@@ -823,33 +969,38 @@ impl Mods<'_> {
     /// `target`'s range, `min..=max`: what a route's depth is a fraction
     /// of, and what the value is clamped to. Replaces the one it had; an
     /// edit is a store into the lane, never a plan.
-    pub fn range(&mut self, target: ParamRef, min: f32, max: f32) {
-        self.own.ranges.insert(target.key(), (min, max));
+    pub fn range(&mut self, target: impl Into<ModTarget>, min: f32, max: f32) {
+        let key = self.own.key_of(target.into());
+        self.own.ranges.insert(key, (min, max));
     }
 
     /// Takes `target`'s range away.
-    pub fn clear_range(&mut self, target: ParamRef) -> bool {
-        self.own.ranges.remove(&target.key()).is_some()
+    pub fn clear_range(&mut self, target: impl Into<ModTarget>) -> bool {
+        let key = self.own.key_of(target.into());
+        self.own.ranges.remove(&key).is_some()
     }
 
     /// `target` follows `curve` (frozen: a trajectory) where it has a value,
     /// in place of its knob. Replaces the automation it had.
-    pub fn automate(&mut self, target: ParamRef, curve: Arc<dyn Curve>) {
+    pub fn automate(&mut self, target: impl Into<ModTarget>, curve: Arc<dyn Curve>) {
+        let key = self.own.key_of(target.into());
         self.own
             .automation
-            .insert(target.key(), OwnAutomation { curve, take: None });
+            .insert(key, OwnAutomation { curve, take: None });
     }
 
     /// Takes `target`'s automation away (and any take on it).
-    pub fn clear_automation(&mut self, target: ParamRef) -> bool {
-        self.own.automation.remove(&target.key()).is_some()
+    pub fn clear_automation(&mut self, target: impl Into<ModTarget>) -> bool {
+        let key = self.own.key_of(target.into());
+        self.own.automation.remove(&key).is_some()
     }
 
     /// Opens a recording take on `target`'s automation: until it is done
     /// the knob plays, then its trajectory replaces the automation. `false`
     /// (and the take dropped) when `target` has no automation.
-    pub fn record(&mut self, target: ParamRef, take: Take) -> bool {
-        match self.own.automation.get_mut(&target.key()) {
+    pub fn record(&mut self, target: impl Into<ModTarget>, take: Take) -> bool {
+        let key = self.own.key_of(target.into());
+        match self.own.automation.get_mut(&key) {
             Some(automation) => {
                 automation.take = Some(take);
                 true
@@ -859,11 +1010,19 @@ impl Mods<'_> {
     }
 
     /// The open take on `target`, to feed its recorder.
-    pub fn take_mut(&mut self, target: ParamRef) -> Option<&mut Take> {
+    pub fn take_mut(&mut self, target: impl Into<ModTarget>) -> Option<&mut Take> {
+        let key = self.own.key_of(target.into());
         self.own
             .automation
-            .get_mut(&target.key())
+            .get_mut(&key)
             .and_then(|a| a.take.as_mut())
+    }
+
+    /// The key the reconciler holds `target` under: what
+    /// [`ModState::lane`] and [`ModRefusal::target`] speak. A param's is
+    /// [`ParamRef::key`]; an edge's is minted on first use and kept.
+    pub fn key(&mut self, target: impl Into<ModTarget>) -> TargetKey {
+        self.own.key_of(target.into())
     }
 
     /// Whether nothing is declared.

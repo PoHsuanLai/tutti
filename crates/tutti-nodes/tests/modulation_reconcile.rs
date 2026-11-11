@@ -241,17 +241,20 @@ struct Host {
 
 impl ModHost for Host {
     fn target(&self, t: TargetKey) -> Option<Target> {
-        if let Some(&node) = self.foreign.get(&t.node) {
+        let TargetKey::Param { node: bits, .. } = t else {
+            return None;
+        };
+        if let Some(&node) = self.foreign.get(&bits) {
             return Some(Target::Foreign {
                 node,
-                port: self.foreign_port.get(&t.node).copied().unwrap_or(0),
+                port: self.foreign_port.get(&bits).copied().unwrap_or(0),
                 knob: Some(0.5),
             });
         }
-        if let Some(&node) = self.bare.get(&t.node) {
+        if let Some(&node) = self.bare.get(&bits) {
             return Some(Target::Native { node, knob: None });
         }
-        let (node, knob) = self.targets.get(&t.node)?;
+        let (node, knob) = self.targets.get(&bits)?;
         Some(Target::Native {
             node: *node,
             knob: Some(Arc::clone(knob).into()),
@@ -327,10 +330,7 @@ impl Decl {
 }
 
 fn cutoff_of(node: u64) -> TargetKey {
-    TargetKey {
-        node,
-        param: ParamAddr::Unit(UnitParam::Cutoff),
-    }
+    TargetKey::param(node, ParamAddr::Unit(UnitParam::Cutoff))
 }
 
 fn sine(rate: f32) -> ModSource {
@@ -987,10 +987,7 @@ fn a_foreign_target_takes_a_lane_on_its_event_input() {
     ed.insert(key(50), "plugin", ForkByClone(Capture(Arc::clone(&log))));
     ed.commit().expect("commits");
     host.foreign.insert(50, key(50));
-    let param = TargetKey {
-        node: 50,
-        param: ParamAddr::Id(7),
-    };
+    let param = TargetKey::param(50, ParamAddr::Id(7));
     let mut decl = Decl::default();
     decl.target(param, 0.0, 1.0);
     let one = decl.source(1, ModSource::Macro { value: 1.0 });
@@ -1340,10 +1337,7 @@ fn a_taken_lanes_unwiring_keeps_the_hosts_edges() {
     ed.insert(key(50), "plugin", ForkByClone(Capture(Arc::clone(&log))));
     ed.commit().expect("commits");
     host.foreign.insert(50, key(50));
-    let param = TargetKey {
-        node: 50,
-        param: ParamAddr::Id(7),
-    };
+    let param = TargetKey::param(50, ParamAddr::Id(7));
     let mut decl = Decl::default();
     decl.target(param, 0.0, 1.0);
     let one = decl.source(1, ModSource::Macro { value: 1.0 });
@@ -1611,10 +1605,7 @@ fn for_param_and_for_unit_send_the_same_segments() {
         },
     );
     let mut decl = Decl::default();
-    let pan = TargetKey {
-        node: 5,
-        param: ParamAddr::Unit(UnitParam::Pan),
-    };
+    let pan = TargetKey::param(5, ParamAddr::Unit(UnitParam::Pan));
     decl.target(pan, -1.0, 1.0);
     let s = decl.source(1, ModSource::Macro { value: 1.0 });
     decl.route(1, s, pan, 0.25);
@@ -1892,10 +1883,7 @@ fn foreign_rig() -> (Editor, Host, Decl, Modulation, TargetKey) {
     ed.insert(key(51), "plugin", ForkByClone(Capture2));
     ed.commit().expect("commits");
     host.foreign.insert(50, key(50));
-    let param = TargetKey {
-        node: 50,
-        param: ParamAddr::Id(7),
-    };
+    let param = TargetKey::param(50, ParamAddr::Id(7));
     let mut decl = Decl::default();
     decl.target(param, 0.0, 1.0);
     let one = decl.source(1, ModSource::Macro { value: 1.0 });

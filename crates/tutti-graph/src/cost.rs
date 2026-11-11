@@ -227,9 +227,13 @@ pub(crate) fn op_work(op: &Op, shapes: &[Shape], sum_lanes: &[Option<crate::Edge
         | Op::Tap { .. } => COPY,
         Op::Meter { srcs, .. } => meter_work(u64::from(srcs.len)),
         Op::Sum { srcs, .. } => sum_work(u64::from(srcs.len), 0),
-        Op::WeightedSum { srcs, lanes, .. } => sum_work(
+        // A driven lane also runs the param step per frame (one more unit
+        // each for its values and its clamp), over the weight of a plain one.
+        Op::WeightedSum {
+            srcs, lanes, gains, ..
+        } => sum_work(
             u64::from(srcs.len),
-            sum_lanes[lanes.range()].iter().flatten().count() as u64,
+            sum_lanes[lanes.range()].iter().flatten().count() as u64 + u64::from(gains.len),
         ),
         Op::EventDelay { .. }
         | Op::EventMerge { .. }

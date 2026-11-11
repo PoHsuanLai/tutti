@@ -61,14 +61,47 @@ pub struct SourceKey(pub u64);
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub struct RouteKey(pub u64);
 
-/// A target: one param of one node (a Bevy host: the node entity's bits).
-/// A plugin parameter is `ParamAddr::Id`.
+/// A target: one param of one node (a Bevy host: the node entity's bits), or
+/// one edge's gain. A plugin parameter is `ParamAddr::Id`.
+///
+/// An edge is named by the host's own key for it (`Edge`): what it stands for
+/// (the sink and the source of a graph edge) is the host's to resolve, as a
+/// node's key is (`ModHost::target` of `tutti-nodes`), and the compile never
+/// looks inside it.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
-pub struct TargetKey {
-    /// The node, in the host's identity.
-    pub node: u64,
-    /// The param on it.
-    pub param: ParamAddr,
+pub enum TargetKey {
+    /// A param of a node.
+    Param {
+        /// The node, in the host's identity.
+        node: u64,
+        /// The param on it.
+        param: ParamAddr,
+    },
+    /// The gain of an edge, by the host's key for the edge.
+    Edge(u64),
+}
+
+impl TargetKey {
+    /// `param` of the node whose key is `node`.
+    #[must_use]
+    pub const fn param(node: u64, param: ParamAddr) -> Self {
+        Self::Param { node, param }
+    }
+
+    /// The gain of the edge the host keys `edge`.
+    #[must_use]
+    pub const fn edge(edge: u64) -> Self {
+        Self::Edge(edge)
+    }
+
+    /// The node a param target is on; `None` for an edge.
+    #[must_use]
+    pub const fn node(self) -> Option<u64> {
+        match self {
+            Self::Param { node, .. } => Some(node),
+            Self::Edge(_) => None,
+        }
+    }
 }
 
 /// Whether a note envelope's stages are usable: the times finite and

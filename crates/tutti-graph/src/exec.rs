@@ -168,7 +168,7 @@ use crate::NodeKey;
 use ringbuf::traits::{Consumer, Producer, Split};
 use ringbuf::{HeapCons, HeapProd, HeapRb};
 use tutti_rt::{RtScope, with_no_denormals};
-use tutti_types::{Amplitude, Frame, MaxBlock, Samples, Tail};
+use tutti_types::{Frame, MaxBlock, Samples, Tail};
 
 use crate::arena::{Arena, Role};
 use crate::command::{CommandRx, Deliveries, overlay_capacity};
@@ -190,6 +190,7 @@ use crate::node::{
 };
 use crate::par::{Block, Par, Pool};
 use crate::param::{ParamInput, ParamState};
+use crate::plan::GainPortOp;
 use crate::plan::{DelayKey, Delta, Direct, FeedbackKey, Form, NodeRec, Op, Plan, UnitIdx};
 use crate::play::{PlayClock, PlayReader, PlayState};
 use crate::slots::{AudioSlots, EventSlots, SlotFlags, borrow_events, event_pair};
@@ -1256,6 +1257,7 @@ impl Executor {
                     (
                         DelayKey::Event { from, .. }
                         | DelayKey::ParamEvent { from, .. }
+                        | DelayKey::EdgeGain { from, .. }
                         | DelayKey::EventTap { from, .. },
                         Some(Ring::Event(mut f)),
                     ) => {
@@ -1266,6 +1268,7 @@ impl Executor {
                     (
                         DelayKey::Event { from, .. }
                         | DelayKey::ParamEvent { from, .. }
+                        | DelayKey::EdgeGain { from, .. }
                         | DelayKey::EventTap { from, .. },
                         _,
                     ) => Ring::Event(EventFifo::sized(d.len, rate(from), max_block)),
@@ -1389,22 +1392,34 @@ impl Executor {
                     .collect()
             })
             .unwrap_or_default();
-        // Weighted lanes, by edge: the weight a lane was last given carries
-        // across a commit that keeps the edge (not a sample-rate change's
-        // reset: a weight is not time), and a new edge starts at its value.
-        let old_weights: BTreeMap<EdgeId, Amplitude> = old_plan
+        // Weighted lanes, by edge: what a lane holds (the weight it was last
+        // given, and a driven lane's param state) carries across a commit
+        // that keeps the edge (not a sample-rate change's reset: a weight is
+        // not time), and a new edge starts at its value.
+        let mut old_lanes: BTreeMap<EdgeId, usize> = old_plan
             .map(|p| {
                 p.sum_lanes
                     .iter()
-                    .zip(&old.lanes)
-                    .filter_map(|(id, lane)| Some((((*id)?), lane.carried()?)))
+                    .enumerate()
+                    .filter_map(|(i, id)| Some(((*id)?, i)))
                     .collect()
             })
             .unwrap_or_default();
+        // The lanes a source drives in this plan: each driven lane's state
+        // is sized here, with the plan, so the audio thread allocates none.
+        let mut driven = vec![false; plan.sum_lanes.len()];
+        for op in &plan.ops {
+            if let Op::WeightedSum { lanes, gains, .. } = *op {
+                for g in &plan.gain_ports[gains.range()] {
+                    driven[lanes.start as usize + usize::from(g.lane)] = true;
+                }
+            }
+        }
         let lanes: Vec<SumLane> = plan
             .sum_lanes
             .iter()
-            .map(|id| match id {
+            .zip(&driven)
+            .map(|(id, &driven)| match id {
                 None => SumLane::plain(),
                 Some(id) => SumLane::weighted(
                     opened
@@ -1412,7 +1427,13 @@ impl Executor {
                         .get(id)
                         .cloned()
                         .expect("the editor sends a cell for every weighted lane"),
-                    old_weights.get(id).copied(),
+                    old_lanes
+                        .remove(id)
+                        .and_then(|i| old.lanes.get_mut(i))
+                        .map(SumLane::carry)
+                        .unwrap_or_default(),
+                    driven,
+                    max_block,
                 ),
             })
             .collect();
@@ -1987,8 +2008,10 @@ impl Executor {
                             sum_op(
                                 &mut *st.arena,
                                 &mut *st.flags,
+                                &*st.events,
                                 &plan.audio_list[srcs.range()],
                                 &mut [],
+                                &[],
                                 dst,
                                 frames,
                             );
@@ -1997,12 +2020,15 @@ impl Executor {
                             srcs,
                             dst,
                             lanes: span,
+                            gains,
                         } => {
                             sum_op(
                                 &mut *st.arena,
                                 &mut *st.flags,
+                                &*st.events,
                                 &plan.audio_list[srcs.range()],
                                 &mut lanes[span.range()],
+                                &plan.gain_ports[gains.range()],
                                 dst,
                                 frames,
                             );
@@ -2220,20 +2246,27 @@ pub(crate) fn delay_op<A: AudioSlots, F: SlotFlags + ?Sized>(
 /// dst`, which turns a `-0.0` into `+0.0`, as `+0.0 + w * a_0` does) and the
 /// rest are added into it.
 #[inline]
-pub(crate) fn sum_op<A: AudioSlots, F: SlotFlags + ?Sized>(
+pub(crate) fn sum_op<A: AudioSlots, F: SlotFlags + ?Sized, E: EventSlots + ?Sized>(
     arena: &mut A,
     flags: &mut F,
+    events: &E,
     list: &[u32],
     lanes: &mut [SumLane],
+    gains: &[GainPortOp],
     dst: u32,
     frames: usize,
 ) {
     debug_assert!(!list.is_empty() && list.len() <= MAX_PORTS);
     debug_assert!(lanes.is_empty() || lanes.len() == list.len());
-    // Moved on first, for every lane: a silent addend's weight moves too.
+    // Moved on first, for every lane: a silent addend's weight moves too. A
+    // driven lane runs the param port's step on its source's events here.
     let mut weights = [Weight::Unit; MAX_PORTS];
-    for (w, lane) in weights.iter_mut().zip(lanes.iter_mut()) {
-        *w = lane.weight();
+    for (k, (w, lane)) in weights.iter_mut().zip(lanes.iter_mut()).enumerate() {
+        let source = gains
+            .iter()
+            .find(|g| usize::from(g.lane) == k)
+            .map(|g| (g.from, &events.ev(g.slot)[..]));
+        *w = SumLane::weight(lane, frames, source);
     }
     // Requests, then sorted by slot; the order of addition is the `Read`
     // index, among the live addends.
@@ -2246,7 +2279,8 @@ pub(crate) fn sum_op<A: AudioSlots, F: SlotFlags + ?Sized>(
         if f & SILENT != 0 {
             continue;
         }
-        constant &= f & CONSTANT != 0 && !matches!(weights[k], Weight::Ramp { .. });
+        constant &=
+            f & CONSTANT != 0 && !matches!(weights[k], Weight::Ramp { .. } | Weight::Frames(_));
         if live == 0 && s == dst {
             in_place = true;
         } else {

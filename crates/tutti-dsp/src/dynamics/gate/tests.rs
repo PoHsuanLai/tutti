@@ -1,5 +1,4 @@
 use super::*;
-use crate::dynamics::db_to_amplitude;
 
 const RATE: f64 = 48_000.0;
 
@@ -13,7 +12,7 @@ fn instant() -> GateKernel {
 }
 
 fn range(db: f32) -> f32 {
-    db_to_amplitude(Db(db)).get()
+    Db(db).to_amplitude().get()
 }
 
 /// A level on either side of the threshold's linear value opens or closes

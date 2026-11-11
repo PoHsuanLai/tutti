@@ -162,7 +162,7 @@ fn either() -> impl Strategy<Value = [u32; 4]> {
 }
 
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(20_000))]
+    #![proptest_config(ProptestConfig::with_cases(common::cases(20_000)))]
 
     #[test]
     fn decode_never_panics_and_an_encode_never_panics(w in either()) {
@@ -214,7 +214,7 @@ proptest! {
 }
 
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(20_000))]
+    #![proptest_config(ProptestConfig::with_cases(common::cases(20_000)))]
 
     /// What canonical form clears is exactly what the figures leave undefined:
     /// a packet and its canonical form differ only outside `defined`. Where
@@ -249,7 +249,7 @@ proptest! {
 }
 
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(100_000))]
+    #![proptest_config(ProptestConfig::with_cases(common::cases(100_000)))]
 
     /// `Ump::is_note_off` and `decode` agree on every packet: a note-off for
     /// the graph's queues is exactly a MIDI 1.0 Note Off, a MIDI 1.0 Note On at

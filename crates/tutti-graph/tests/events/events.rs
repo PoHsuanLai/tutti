@@ -406,7 +406,7 @@ fn arb_phase(emitters: usize) -> impl Strategy<Value = Phase> {
 }
 
 proptest! {
-    #![proptest_config(ProptestConfig { cases: 128, ..ProptestConfig::default() })]
+    #![proptest_config(ProptestConfig { cases: tutti_fixtures::cases(128), ..ProptestConfig::default() })]
 
     /// Conservation: every event emitted while an edge exists is delivered exactly
     /// once to that edge's sink — no loss, no duplicate — through PDC delays

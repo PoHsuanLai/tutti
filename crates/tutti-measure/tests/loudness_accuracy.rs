@@ -15,7 +15,7 @@
 
 use tutti_measure::{LoudnessConfig, measure_loudness};
 use tutti_types::ChannelLayout;
-use tutti_types::{Db, Interleaved, SampleRate};
+use tutti_types::{Amplitude, Db, Interleaved, SampleRate};
 
 /// Interleaved stereo sine, both channels identical.
 fn stereo_sine(rate: f64, freq: f64, secs: f64, amp: f64) -> Vec<f32> {
@@ -43,7 +43,7 @@ fn measure(rate: f64, amp: f64) -> tutti_measure::Loudness {
 fn true_peak_is_the_signals_amplitude() {
     for &amp in &[1.0f64, 0.5, 0.25, 0.1, 0.01] {
         let got = measure(48_000.0, amp).true_peak.get();
-        let want = 20.0 * amp.log10();
+        let want = f64::from(Db::from_amplitude(Amplitude::new(amp as f32)).get());
         assert!(
             (got as f64 - want).abs() < 0.3,
             "amplitude {amp} should peak at {want:.3} dBTP, got {got:.3} — \
@@ -89,7 +89,7 @@ fn a_known_signal_reads_the_loudness_the_spec_says() {
 fn loudness_tracks_amplitude_in_db() {
     for &(hi, lo) in &[(1.0f64, 0.5f64), (0.5, 0.25), (0.1, 0.01)] {
         let delta = measure(48_000.0, hi).lufs.get() - measure(48_000.0, lo).lufs.get();
-        let want = 20.0 * (hi / lo).log10();
+        let want = f64::from(Db::from_amplitude(Amplitude::new((hi / lo) as f32)).get());
         assert!(
             (delta as f64 - want).abs() < 0.15,
             "going from amplitude {hi} to {lo} should drop {want:.3} dB, \

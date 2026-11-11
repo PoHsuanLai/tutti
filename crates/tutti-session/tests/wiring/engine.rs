@@ -283,13 +283,10 @@ fn a_voice_plays_in_time(block: usize) {
 }
 
 #[test]
-fn a_voice_plays_in_time_at_256_frame_blocks() {
-    a_voice_plays_in_time(256);
-}
-
-#[test]
-fn a_voice_plays_in_time_at_512_frame_blocks() {
-    a_voice_plays_in_time(512);
+fn a_voice_plays_in_time_at_every_device_block_size() {
+    for block in [256, 512] {
+        a_voice_plays_in_time(block);
+    }
 }
 
 /// An offline session's [`Session::render`] feeds its load meter, one block

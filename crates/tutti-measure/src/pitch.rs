@@ -47,7 +47,7 @@ use tutti_types::{Confidence, Hz};
 use tutti_dsp::RealFft;
 
 use crate::yin::YinConfig;
-use tutti_dsp::Complex;
+use tutti_dsp::Complex32;
 
 /// YIN pitch detector (de Cheveigné & Kawahara, 2002).
 ///
@@ -66,10 +66,10 @@ pub(crate) struct PitchDetector {
     /// inverse transform, the cross-correlation.
     time_b: Vec<f32>,
     /// The `fft_size / 2 + 1` bins of `time_a`.
-    fft_a: Vec<Complex>,
+    fft_a: Vec<Complex32>,
     /// The bins of `time_b`; then the cross-power spectrum.
-    fft_buffer: Vec<Complex>,
-    fft_scratch: Vec<Complex>,
+    fft_buffer: Vec<Complex32>,
+    fft_scratch: Vec<Complex32>,
     /// Prefix sums of the squared input, for the windowed energies.
     cum_sq: Vec<f64>,
 }
@@ -89,8 +89,8 @@ impl PitchDetector {
             fft,
             time_a: vec![0.0; fft_size],
             time_b: vec![0.0; fft_size],
-            fft_a: vec![Complex::new(0.0, 0.0); bins],
-            fft_buffer: vec![Complex::new(0.0, 0.0); bins],
+            fft_a: vec![Complex32::new(0.0, 0.0); bins],
+            fft_buffer: vec![Complex32::new(0.0, 0.0); bins],
             fft_scratch,
             // `usable` is at most `2 * max_period` (see `compute_difference`).
             cum_sq: vec![0.0; 2 * max_period + 1],

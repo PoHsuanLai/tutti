@@ -20,7 +20,7 @@ fn a_steady_level_settles_to_the_static_curve() {
     for (threshold, level_db, ratio) in [(-20.0f32, -10.0f32, 4.0f32), (-30.0, -6.0, 2.0)] {
         let mut k = CompressorKernel::new(Seconds(0.001), Seconds(0.05), SampleRate::new(RATE));
         let b = block(threshold, ratio);
-        let level = db_to_amplitude(Db(level_db)).get();
+        let level = Db(level_db).to_amplitude().get();
         let mut gain = 1.0;
         for i in 0..20_000 {
             gain = k.gain(&b, i % 64, 64, level, None);
@@ -31,7 +31,7 @@ fn a_steady_level_settles_to_the_static_curve() {
             "{} vs {want}",
             k.gain_reduction_db().get()
         );
-        let want_gain = db_to_amplitude(Db(-want)).get();
+        let want_gain = Db(-want).to_amplitude().get();
         assert!((gain - want_gain).abs() < 1e-3, "{gain} vs {want_gain}");
         assert_eq!(k.envelope_level().get(), level);
     }
@@ -41,7 +41,7 @@ fn a_steady_level_settles_to_the_static_curve() {
 #[test]
 fn a_level_under_the_threshold_is_left_alone() {
     let mut k = CompressorKernel::new(Seconds(0.0), Seconds(0.0), SampleRate::new(RATE));
-    let level = db_to_amplitude(Db(-40.0)).get();
+    let level = Db(-40.0).to_amplitude().get();
     let g = k.gain(&block(-20.0, 4.0), 0, 1, level, None);
     assert_eq!(g, 1.0);
 }
@@ -51,7 +51,7 @@ fn a_level_under_the_threshold_is_left_alone() {
 #[test]
 fn a_non_finite_threshold_override_falls_back_to_the_block() {
     let b = block(-20.0, 4.0);
-    let level = db_to_amplitude(Db(-10.0)).get();
+    let level = Db(-10.0).to_amplitude().get();
     for bad in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
         let mut held = CompressorKernel::new(Seconds(0.0), Seconds(0.0), SampleRate::new(RATE));
         let mut fed = held.clone();

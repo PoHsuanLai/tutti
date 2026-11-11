@@ -68,11 +68,11 @@ pub(super) mod design {
         Ok(())
     }
 
-    /// The response at each of the family's [`anchors`](LtiCase::anchors) is the
-    /// figure the family's own formula gives, within the anchor's tolerance. A
+    /// The response at each of the family's [`figures`](LtiCase::figures) is the
+    /// figure the family's own formula gives, within the figure's tolerance. A
     /// design with none says so (`vacuity`).
-    pub fn anchors<D: LtiCase>(d: &D) -> Result<(), String> {
-        for a in d.anchors() {
+    pub fn figures<D: LtiCase>(d: &D) -> Result<(), String> {
+        for a in d.figures() {
             let model = d.design(&a.controls, a.rate);
             let mut g = [Complex64::new(0.0, 0.0)];
             model.frequency_response(a.output, &[a.freq], &mut g);
@@ -164,9 +164,9 @@ pub(super) mod design {
         Ok(())
     }
 
-    /// The anchors hook returns something, or the design says why it cannot.
+    /// The figures hook returns something, or the design says why it cannot.
     pub fn lti_vacuity<D: LtiCase>(d: &D) -> Result<(), String> {
-        check_vacuity(d.vacant(), &[(Hook::Anchors, d.anchors().len())])
+        check_vacuity(d.vacant(), &[(Hook::Figures, d.figures().len())])
     }
 }
 

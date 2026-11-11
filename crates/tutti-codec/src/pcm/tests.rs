@@ -1,21 +1,21 @@
 use super::*;
 
+/// Each integer converter maps 0 to 0, the unit endpoints to the depth's
+/// full-scale code (`2^(bits-1) - 1`, symmetric: -full scale is not used), and
+/// clamps anything beyond them to the rail.
 #[test]
-fn f32_to_i16_clamps() {
-    assert_eq!(f32_to_i16(0.0), 0);
-    assert_eq!(f32_to_i16(1.0), 32767);
-    assert_eq!(f32_to_i16(-1.0), -32767);
-    assert_eq!(f32_to_i16(1.5), 32767);
-    assert_eq!(f32_to_i16(-1.5), -32767);
-}
-
-#[test]
-fn f32_to_i24_clamps() {
-    assert_eq!(f32_to_i24(0.0), 0);
-    assert_eq!(f32_to_i24(1.0), 8388607);
-    assert_eq!(f32_to_i24(-1.0), -8388607);
-    assert_eq!(f32_to_i24(1.5), 8388607);
-    assert_eq!(f32_to_i24(-1.5), -8388607);
+fn integer_converters_clamp_to_the_rail_at_every_depth() {
+    let depths: [(&str, fn(f32) -> i32, i32); 2] = [
+        ("i16", |s| i32::from(f32_to_i16(s)), 32_767),
+        ("i24", f32_to_i24, 8_388_607),
+    ];
+    for (depth, convert, full) in depths {
+        assert_eq!(convert(0.0), 0, "{depth}");
+        assert_eq!(convert(1.0), full, "{depth}");
+        assert_eq!(convert(-1.0), -full, "{depth}");
+        assert_eq!(convert(1.5), full, "{depth}: above the rail");
+        assert_eq!(convert(-1.5), -full, "{depth}: below the rail");
+    }
 }
 
 /// Rounding, not truncation: 0.7 x 32767 = 22936.9 is 22937. The endpoints

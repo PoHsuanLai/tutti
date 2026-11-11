@@ -806,7 +806,7 @@ list (normal and build edges; dev-dependencies may go anywhere).
   `tutti-dsp` it has no graph, runtime or `Arc`-published state: every control
   arrives per call as a plain config value, and a measurement that runs a
   stream is a `Config`/`State`/`step` triple. It reuses `tutti-dsp`'s
-  `RealFft`/`FftScratch`, `Complex`, `StftGeometry`, `Grid`, `Error` and
+  `RealFft`/`FftScratch`, `Complex32`, `StftGeometry`, `Grid`, `Error` and
   `CosineWindow` and does not copy them: those serve the processors too (the
   sampler's vocoder builds on `StftGeometry`). `tutti_dsp::Error` is only what
   the geometry and the grid refuse; the analysers' own `tutti_measure::Error`

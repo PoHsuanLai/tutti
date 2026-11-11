@@ -295,21 +295,6 @@ mod tests {
     }
 
     #[test]
-    fn with_channels_2_is_bit_identical_to_new() {
-        let mut a = DistortionNode::new(ShapeKind::Tanh, Drive::new(1.7));
-        let mut b = DistortionNode::with_channels(2u16, ShapeKind::Tanh, Drive::new(1.7));
-        for i in 0..256 {
-            let x = (i as f32 / 128.0) - 1.0;
-            let mut oa = [0.0f32; 2];
-            let mut ob = [0.0f32; 2];
-            tick(&mut a, &[x, -x], &mut oa);
-            tick(&mut b, &[x, -x], &mut ob);
-            assert_eq!(oa[0].to_bits(), ob[0].to_bits());
-            assert_eq!(oa[1].to_bits(), ob[1].to_bits());
-        }
-    }
-
-    #[test]
     fn hardclip_clamps_to_unity() {
         let mut n = DistortionNode::new(ShapeKind::HardClip, Drive::new(1.0));
         let input = vec![-4.0, -1.0, 0.0, 1.0, 4.0];

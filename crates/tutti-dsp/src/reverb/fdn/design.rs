@@ -26,7 +26,7 @@ use core::num::NonZeroU32;
 
 use crate::reverb::fdn::kernel::{CHUNK, FdnKernel};
 use crate::reverb::network::{
-    Absorption, Bounds, Fdn, Gains, Inline, Line, MAX_LINES, Matrix, Modulation, Network,
+    Absorption, Fdn, Gains, Inline, Line, MAX_LINES, Matrix, Modulation, Network, NetworkSizes,
     OutputMap, Stage, pre_delay_frames,
 };
 use crate::{Cadence, Ceiling, Channels, Design, MaxDecay, Realized, Ring, Sizes};
@@ -163,7 +163,7 @@ impl FdnDesign {
 }
 
 impl FdnDesign {
-    /// What `Bounds::tail` is multiplied by for the rounding of the reflection
+    /// What `NetworkSizes::tail` is multiplied by for the rounding of the reflection
     /// vector. Each entry of a unit `v` is rounded twice (stored as `f32`, then
     /// divided by the norm and rounded again), 2^-23 relative in all, so `|v|^2`
     /// is 1 to within `e = 2^-22` and `|A| = 1 + 2e` at most. `rt60_bound`
@@ -227,7 +227,7 @@ fn finite_secs(v: Seconds, default: Seconds) -> Seconds {
 impl Design for FdnDesign {
     type Controls = FdnControls;
     type Model = Network;
-    type Bounds = Bounds;
+    type Bounds = NetworkSizes;
     type Range = MaxDecay;
     type Realization = Realized<FdnKernel>;
 
@@ -370,7 +370,7 @@ impl Design for FdnDesign {
     /// The largest design: size 1, the longest decay in every band, the longest
     /// pre-delay, the deepest modulation. The tail is unbounded if the design
     /// can freeze, and the network's own at the longest decay if not.
-    fn bounds(&self, ceiling: &Ceiling<MaxDecay>) -> Bounds {
+    fn bounds(&self, ceiling: &Ceiling<MaxDecay>) -> NetworkSizes {
         let worst = FdnControls {
             decay: [self.max_decay; 3],
             size: Mix(1.0),
@@ -382,7 +382,7 @@ impl Design for FdnDesign {
         };
         let mut network = Box::new(Network::new(ceiling.rate()));
         self.design_into(&worst, ceiling.rate(), &mut network);
-        let mut b = Bounds::measure(&network, ceiling.floor());
+        let mut b = NetworkSizes::measure(&network, ceiling.floor());
         b.tail = match b.tail {
             _ if self.freezable => Ring::Unbounded,
             Ring::Finite(t) => {

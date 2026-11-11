@@ -5972,7 +5972,9 @@ commit, like any wiring change:
   and **survive the commit with their history**, and the ring of a removed
   source goes with its key, so the old source's past audio is never played
   out of the new wiring (the rule `DelayKey` already states).
-- **No automatic declick of audio wiring**, as today: a source connected at
+- **No automatic declick of audio wiring** in `Editor` (**superseded for the
+  session graph** by [doc 030](030-core-api.md) §4, 2026-11-12: the session's
+  `connect`/`disconnect` fade over `EDGE_DECLICK` unless `.hard()`): a source connected at
   full level steps in. A host that wants a declick wires the edge with a
   weight of `0.0` and ramps it to `1.0` (Edge gain), and ramps down before
   it removes the edge. That is the same advice the engine's own editors give

@@ -4,8 +4,8 @@ use super::*;
 fn test_amplitude_db_conversion() {
     assert!((amplitude_to_db(Amplitude::new(1.0)).get() - 0.0).abs() < 0.001);
     assert!((amplitude_to_db(Amplitude::new(0.5)).get() - (-6.02)).abs() < 0.1);
-    assert!((db_to_amplitude(Db::new(0.0)).get() - 1.0).abs() < 0.001);
-    assert!((db_to_amplitude(Db::new(-6.0)).get() - 0.501).abs() < 0.01);
+    assert!((Db::new(0.0).to_amplitude().get() - 1.0).abs() < 0.001);
+    assert!((Db::new(-6.0).to_amplitude().get() - 0.501).abs() < 0.01);
 }
 
 /// The floor lives here, not in `Db::from_amplitude`. The shared converter
@@ -119,14 +119,14 @@ fn test_compute_gate_gain() {
     assert!(closed < 0.001); // -80dB is very quiet
     // -12dB range, closed gate
     let closed_12 = compute_gate_gain(0.0, Db::new(-12.0)).get();
-    assert!((closed_12 - db_to_amplitude(Db::new(-12.0)).get()).abs() < 0.001);
+    assert!((closed_12 - Db::new(-12.0).to_amplitude().get()).abs() < 0.001);
 }
 
 #[test]
 fn test_compute_limiter_gain() {
     // Below threshold: gain = ceiling - threshold offset
     let gain = compute_limiter_gain(Db::new(-20.0), Db::new(-6.0), Db::new(-0.3)).get();
-    assert!((gain - db_to_amplitude(Db(-0.3 - (-6.0))).get()).abs() < 0.001);
+    assert!((gain - Db(-0.3 - (-6.0)).to_amplitude().get()).abs() < 0.001);
     // Above threshold: reduces gain
     let gain = compute_limiter_gain(Db::new(0.0), Db::new(-6.0), Db::new(-0.3)).get();
     assert!(gain < 1.0);
@@ -149,7 +149,7 @@ fn the_curve_is_the_input_plus_the_drive_up_to_the_ceiling() {
         (0.0, -0.3),
         (12.0, -0.3),
     ] {
-        let peak = db_to_amplitude(Db(input)).get();
+        let peak = Db(input).to_amplitude().get();
         let block = amplitude_to_db(Amplitude::new(peak) * curve.gain(peak)).get();
         let fed = amplitude_to_db(
             Amplitude::new(peak)
@@ -176,7 +176,7 @@ fn the_block_and_fed_forms_are_one_curve() {
         let curve = LimiterCurve::new(Db(t), Db(c));
         let mut peak_db = -80.0f32;
         while peak_db <= 12.0 {
-            let peak = db_to_amplitude(Db(peak_db)).get();
+            let peak = Db(peak_db).to_amplitude().get();
             let block = curve.gain(peak);
             let fed =
                 compute_limiter_gain(amplitude_to_db(Amplitude::new(peak)), Db(t), Db(c)).get();

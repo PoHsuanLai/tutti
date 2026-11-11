@@ -627,7 +627,7 @@ mod owed_tests {
 
     fn read(handle: &PluginHandle, i: i32) -> Option<f32> {
         handle
-            .params()
+            .any_thread()
             .parameter_value(ParamId::new(i as u32))
             .map(|v| v.get() as f32)
     }

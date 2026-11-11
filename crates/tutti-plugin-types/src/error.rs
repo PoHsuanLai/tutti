@@ -33,6 +33,11 @@ pub enum PluginError {
     },
     /// Saving or restoring plugin state failed.
     State(String),
+    /// Saving or restoring state failed for a reason the host side knows
+    /// exactly (the plugin crashed, the bridge was busy, the transfer stalled):
+    /// the [`StateError`] a served plugin's bridge answered, kept whole so a
+    /// caller reaching it through [`Control`](crate::Control) loses nothing.
+    StateFailed(StateError),
     /// Processing an audio block failed.
     Process(String),
     /// A block failed for a reason that is a constant. Unlike
@@ -52,6 +57,7 @@ impl core::fmt::Display for PluginError {
                 write!(f, "plugin load failed at {stage} stage: {reason}")
             }
             Self::State(msg) => write!(f, "plugin state error: {msg}"),
+            Self::StateFailed(e) => write!(f, "plugin state error: {e}"),
             Self::Process(msg) => write!(f, "plugin process error: {msg}"),
             Self::Block(why) => write!(f, "plugin process error: {why}"),
             Self::Editor(e) => write!(f, "plugin editor error: {e}"),
@@ -64,6 +70,7 @@ impl std::error::Error for PluginError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::Editor(e) => Some(e),
+            Self::StateFailed(e) => Some(e),
             _ => None,
         }
     }

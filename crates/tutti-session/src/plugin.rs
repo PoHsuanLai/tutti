@@ -116,7 +116,7 @@ pub const SNAPSHOT_INTERVAL: Duration = Duration::from_secs(8);
 pub struct PluginLoadRequest {
     /// The plugin's file.
     pub id: PluginId,
-    /// A saved state (`HostState::save_state`, a [`HostedPlugin::snapshot`])
+    /// A saved state (`AnyThread::save_state`, a [`HostedPlugin::snapshot`])
     /// restored once it loads. A refusal is logged, and the plugin loads at
     /// its defaults.
     pub state: Option<Vec<u8>>,
@@ -667,7 +667,7 @@ impl PluginSnapshot {
     pub fn run(self) -> PluginSnapshotTaken {
         PluginSnapshotTaken {
             node: self.node,
-            state: self.handle.state().save_state(),
+            state: self.handle.any_thread().save_state(),
             token: self.token,
             asked: self.asked,
         }
@@ -1663,7 +1663,6 @@ mod tests {
     use super::*;
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use tutti_plugin::server::ParameterInfo;
-    use tutti_plugin_host::OptionalCapabilities;
     use tutti_plugin_types::{Normalized, ParamId};
 
     /// A backend that answers `state` (or declines), counts its saves, and
@@ -1680,7 +1679,7 @@ mod tests {
         unlisted: Arc<AtomicBool>,
     }
 
-    impl tutti_plugin_host::HostParams for Fake {
+    impl tutti_plugin_types::AnyThread for Fake {
         fn parameter_descriptors(&self) -> Option<Vec<ParameterInfo>> {
             if self.unlisted.load(Ordering::SeqCst) {
                 return None;
@@ -1699,31 +1698,43 @@ mod tests {
                 .map(|&(_, v)| Normalized::clamped(f64::from(v)))
         }
         fn set_parameter_value(&self, _id: ParamId, _value: Normalized) {}
-        fn is_crashed(&self) -> bool {
-            self.dead.load(Ordering::SeqCst)
+        fn parameter_text(&self, _id: ParamId, _value: Normalized) -> Option<String> {
+            None
         }
-        fn crash_cause(&self) -> Option<String> {
-            self.is_crashed().then(|| "stream closed".to_string())
+        fn parameter_value_from_text(&self, _id: ParamId, _text: &str) -> Option<Normalized> {
+            None
         }
-        fn dropped_parameter_events(&self) -> u64 {
-            0
-        }
-    }
-
-    impl tutti_plugin_host::HostState for Fake {
         fn save_state(&self) -> Result<Vec<u8>, tutti_plugin::error::StateError> {
             self.saves.fetch_add(1, Ordering::SeqCst);
             self.state
                 .clone()
                 .ok_or(tutti_plugin::error::StateError::NoStateRoute)
         }
-        fn load_state(
-            &self,
-            _main: &tutti_plugin::MainThread,
-            _data: &[u8],
-        ) -> Result<(), tutti_plugin::error::StateError> {
-            Ok(())
+        fn set_render_mode(&self, _mode: tutti_plugin_types::RenderMode) -> bool {
+            false
         }
+        fn set_automation_mode(
+            &self,
+            _mode: tutti_plugin_types::AutomationMode,
+        ) -> Result<(), tutti_plugin_types::EditorError> {
+            Err(tutti_plugin_types::EditorError::PluginCrashed)
+        }
+    }
+
+    impl tutti_plugin_types::Health for Fake {
+        fn is_crashed(&self) -> bool {
+            self.dead.load(Ordering::SeqCst)
+        }
+        fn crash_cause(&self) -> Option<String> {
+            self.is_crashed().then(|| "stream closed".to_string())
+        }
+        fn rate_refusal(&self) -> Option<(tutti_types::SampleRate, String)> {
+            None
+        }
+        fn block_counts(&self) -> tutti_plugin_types::BlockCounts {
+            tutti_plugin_types::BlockCounts::default()
+        }
+        fn terminate(&self, _cause: &str) {}
     }
 
     struct Rig {
@@ -1751,7 +1762,7 @@ mod tests {
                 params: Vec::new(),
                 unlisted: Arc::default(),
             }),
-            OptionalCapabilities::default(),
+            None,
             Default::default(),
             Default::default(),
             Default::default(),
@@ -1784,7 +1795,7 @@ mod tests {
                 params,
                 unlisted: Arc::default(),
             }),
-            OptionalCapabilities::default(),
+            None,
             Default::default(),
             Default::default(),
             sink.clone(),
@@ -2109,7 +2120,7 @@ mod tests {
                 params: vec![(param, 0.75)],
                 unlisted: Arc::clone(&unlisted),
             }),
-            OptionalCapabilities::default(),
+            None,
             Default::default(),
             Default::default(),
             Default::default(),

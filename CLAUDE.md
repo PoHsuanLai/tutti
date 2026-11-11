@@ -185,7 +185,7 @@ and the docs.rs build on a dated nightly); `cargo xtask check-loom` runs clippy 
   `unsafe` lives only in the per-format `-ffi` crates (`tutti-clap-ffi`,
   `tutti-vst3-ffi`, `tutti-au-ffi` and `tutti-vst2-ffi`); host crates forbid
   `unsafe` (`scripts/check-plugin-ffi.sh`, design 016 §2.9). The in-process VST2
-  backend's `WindowHandle` decode (the raw pointer of `HostEditor::open_editor`) is the
+  backend's `WindowHandle` decode (the raw pointer of `PluginHandle::open_editor`) is the
   one caller still pinned.
 - **Toolchain:** `rust-toolchain.toml` pins the stable every gate runs on,
   and `Cargo.lock` is committed (`--locked` everywhere). To bump, edit
@@ -458,7 +458,8 @@ crates/          everything shipped; directory name = package name; no nesting
                  (`Ipc`, `IpcProcessor`, `IpcController`); no plugin format,
                  design 021 §6.1),
   tutti-plugin-host (the format-generic half of hosting, not a format host: the
-                 `PluginHandle` control surface and its `Host*` capability traits,
+                 `PluginHandle` control surface over a hosting's `AnyThread`,
+                 `Health` and `MainThreadControl`,
                  the node's controls, meter, transport and parameter delivery, the
                  host policy (`Liveness`, `PluginParamValues`) and the plugin node
                  over any `Loaded` hosting (`PluginNode`: in-process through
@@ -791,7 +792,7 @@ list (normal and build edges; dev-dependencies may go anywhere).
   no format host as a normal dependency, and not `tutti-plugin`. It keeps every
   module private (`tutti_plugin_host::PluginHandle`; CI runs the per-module path
   gate on it), is `publish = false` and has no `bevy` feature. It is
-  `#![deny(unsafe_code)]` rather than forbid: the in-process `HostEditor`'s one
+  `#![deny(unsafe_code)]` rather than forbid: `PluginHandle::open_editor`'s one
   `WindowHandle` decode is its only `unsafe` (see design 021 §10.3). What it
   exports for the served node in `tutti-plugin` (`ParamDelivery`,
   `TransportSource`, `TransportWalk`, ...) says who it is for. Its in-process
@@ -1160,7 +1161,14 @@ read the `Cargo.toml`, grep for the type, run the probe.
   format-generic items (`PluginHandle`, `NodeControls`, `PluginMeter`, `TransportSource`,
   `ParamDelivery`, `Liveness`, `PluginParamValues`, `PluginNode`, `InProcClient`, `load_client`)
   → `tutti_plugin_host::` (doc 021 step 4a-4b; `PluginHandle::from_client` →
-  `tutti_plugin::PluginClient::handle`), `tutti-plugin`'s served node (`PluginClient<Bound>`'s own
+  `tutti_plugin::PluginClient::handle`), `tutti-plugin-host`'s `Host*` capability traits
+  (`HostParams`, `HostState`, `HostEditor`, `HostPresets`, `HostRenderMode`, `HostAutomationState`),
+  `OptionalCapabilities` and `tutti-plugin`'s `SubprocessBackend` → deleted (doc 021 step 4b, PR 4: a
+  hosting's token-free calls are `tutti_plugin_types::AnyThread` (in-process `ControlBackend` hops to
+  the main thread; served `IpcController` answers from the bridge), its liveness is `Health`, and
+  the token-taking calls (state restore, presets, the editor) are the format's `Control` /
+  `EditorWindow`, lent by `MainThreadControl`; the handle's `params()`, `state()`, `editor()`,
+  `presets()` accessors are `any_thread()` and methods on the handle), `tutti-plugin`'s served node (`PluginClient<Bound>`'s own
   `tutti_graph::Node`, `host::node::graph_node`, its `PluginChunks`, the served `fork.rs`'s
   `PluginFork` and `Origin`, the `Bound` typestate's `Batcher`, `BlockPayload`, `TransportWalk`
   and `ParamDelivery` fields, and `migration_old_and_new_served_nodes_agree`) → deleted (doc 021

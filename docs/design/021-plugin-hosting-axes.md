@@ -858,7 +858,7 @@ serving AU until AU has its own `Loaded` (step 7).
 | 1 | **Move only.** The IPC-only pieces go down into `tutti-plugin-ipc`: `Batcher` (with `BlockPayload`, `Chunks` and its tests), `process_pipeline_tests`, `ProcessGuard`, a new `OfflineWait` (the offline fork's latches, split out of `ForkWatch`), and `ChunkCounters` goes to `tutti-plugin-types`. | none |
 | 2 | **Lift the served behaviours into the generic `PluginNode`.** `Processor::chunk() -> Option<NonZeroUsize>`, defaulted `None`, so the node cuts sub-blocks at chunk edges and keeps frame-exact transport; `Processor::reset` called from the node's `reset`; harmony and note expression; `TransportWalk`; the loss-accounting fields in `ProcessOutput`; a token-free fork path for the served hosting. | in-process render unchanged (`chunk() == None`) |
 | 3 | **`Ipc: Loaded`** with `IpcProcessor` (today's `Batcher`) and `IpcController`; `ControlBackend<H: Loaded>`; `PluginNode<Ipc>` replaces `PluginClient`. **Delete** `graph_node.rs`, the served `fork.rs`, `node/mod.rs` and `subprocess_backend.rs`. A differential test, old against new, on a mock server. | none, pinned by the differential test |
-| 4 | **Delete the `Host*` traits.** `PluginHandle` over `Control` plus a small `Health` trait (crash, cause, terminate, rate refusal, block counts); the served control answers from any thread, as today. | none |
+| 4 (built) | **Delete the `Host*` traits.** `PluginHandle` over `AnyThread`, `Health` and `Control` ("PR 4 as built" below); the served control answers from any thread, as today. | none |
 
 Decisions, with their reasons:
 
@@ -1136,11 +1136,83 @@ served node is gone.
    controls' counts; the SysEx cut is observed as the two refused tail packets,
    counted, instead of `intake.push` returning `false`).
 
-**PR 4 must now:** delete the `Host*` capability traits and `SubprocessBackend`
-(`PluginHandle` over `Control` plus a small `Health` trait: crash, cause,
-terminate, rate refusal, block counts, dropped parameter events), give the
-served handle `IpcController`'s control, and decide whether `PluginClient`'s
-accessors move onto the handle or the controls.
+**PR 4 as built.** The `Host*` traits and `SubprocessBackend` are gone;
+`PluginHandle` is over `AnyThread`, `Health` and `Control`. Step 4b is closed.
+
+1. **Three layers, one body per call per hosting.** `Control` (and
+   `EditorWindow`) is a *format's* main-thread surface: every call takes the
+   `&MainThread` token. `AnyThread` (`tutti-plugin-types`, boundary: *what a
+   loaded plugin answers from any thread, without a main-thread token*) is a
+   *hosting's* any-thread surface: the parameter catalog, value, text and
+   from-text reads, `set_parameter_value`, `save_state`, `set_render_mode`
+   and `set_automation_mode` (which keeps the served `Result`; `Control`'s
+   `set_automation_state` is unchanged). In-process it is built over
+   `Control`: `ControlBackend` hops to the main thread with `defer_to_main`
+   and answers "unavailable" after the 2 s deadline (`None`, `false`,
+   `StateError::Unavailable`), as before. Served, it is the bridge, which
+   answers from any thread concurrently with the main thread's own calls.
+2. **Why `AnyThread` overlaps `Control` instead of replacing it.** The served
+   handle's concurrency (decision (d)) is a property of the hosting: a pool
+   job's snapshot or parameter read must not wait for a main-thread tick, and
+   a host that blocks its main thread on one must not be told "unavailable".
+   A token-free `Control` (option C) was rejected: it would make the token
+   meaningless for every in-process format, where it is the proof that the
+   call is on the main thread. Making the served calls take a token was
+   impossible: an off-main caller has none. So the calls a handle makes with
+   no token live on `AnyThread`, and `IpcController`'s `Control` forwards to
+   its `AnyThread` body for each call both carry (parameters, parameter,
+   `set_parameter`, `parameter_text`, `parameter_value_from_text`,
+   `save_state`, `set_render_mode`, `set_automation_state`): one body per
+   hosting. In-process, `AnyThread` is the one with no body of its own for
+   the plugin: it calls `Control`. `the_served_control_and_any_thread_answer_alike`
+   holds the served forwards against the real CLAP probe.
+3. **`Health`** (`tutti-plugin-types`, boundary: *the plugin's liveness as
+   its host observes it*): `is_crashed`, `crash_cause`, `rate_refusal`,
+   `block_counts`, `terminate`; defaults for all but `is_crashed`, which is
+   what an in-process plugin (never observed dead) answers. `IpcController`
+   implements it over the bridge and the server's guard.
+4. **The token-taking calls** (`load_state`, presets, the editor) go
+   through `Control` and `EditorWindow`, lent by `MainThreadControl` (`tutti-plugin-host`:
+   `lend(&self, &mut dyn FnMut(&mut dyn Control))`, plus an `editor_idle` the
+   in-process hosting overrides to keep its pump and sink firing). A `Clone`
+   `Control` is lent as it is (a blanket impl: `IpcController`, which holds no
+   lock); `ControlBackend` locks the instance. `PluginHandle::{params, state,
+   editor, presets, render_mode, automation_state}` (which returned the
+   deleted traits) are `any_thread()` and the handle's own `load_state`,
+   `presets`, `load_preset`, `current_preset` (a handle with no route answers
+   `None` / `NoStateRoute`, as before), `editor_capabilities`, and the
+   existing editor methods. `dropped_parameter_events` is
+   `Control::dropped_reported_edits`.
+5. **Moved onto the trait that is the format's.** `editor_capabilities`,
+   `set_editor_size` and `poll_editor_resize_request` were on `Editor` (the
+   editor-only instance) and on the handle's `HostEditor`; they are now on
+   `EditorWindow`, required: every impl writes its answer out (a refusal,
+   `None` and the default capabilities where it has no resizable editor,
+   what `ControlBackend` answered; the CLAP and VST3 editor instances' real
+   answers moved to their `EditorWindow` impls), so a format cannot inherit
+   a refusal by forgetting. The served `Control` and `Editor` instances answer
+   from the bridge. `Health`, `AnyThread` and `MainThreadControl` have no
+   defaulted methods either. `PluginError::StateFailed(StateError)` keeps a served
+   `load_state` failure whole through `Control` (it was a string).
+6. **Unchanged:** the served handle never hops; the 2 s deadline; every
+   handle method's behaviour. Handle methods that changed *shape*: the
+   accessors in 4 and `presets`/`load_preset`, which return `Option` for "no
+   route" and take the token directly.
+7. **Deleted:** `capabilities.rs` (402), `subprocess_backend.rs` (292),
+   `OptionalCapabilities`. `PluginClient` holds an `IpcController`
+   (`Ipc::controller`) instead of the guard; `handle()` builds from it.
+
+**What is left of the plan (steps 5 and 6).** The `Ipc` hosting is complete:
+node, fork, handle and health all go through `Loaded`, `Control` and the two
+small traits. Step 5 (the generic server) is untouched by 4b: `Served<F>`
+still has to replace the four loaders, and AU stays on `Ipc` until step 7.
+Step 6's facade (`hosts!`, `AnyHost`, `Hosting`, `open`) has what it needs
+at the handle: one `PluginHandle::from_backend(backend, control, ..)` for
+any hosting, with `AnyThread` and `Health` as the only per-hosting part and
+`MainThreadControl` the editor and state route. CLAP and VST3 in-process
+would implement `AnyThread` through `ControlBackend` as VST2 does.
+`PluginClient` is still the served client's name; renaming it and
+`InProcClient` belongs to 6.
 
 ## 11. Open questions
 

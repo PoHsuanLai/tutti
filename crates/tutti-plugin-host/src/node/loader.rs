@@ -114,26 +114,14 @@ where
         param_sink: param_sink.clone(),
         pending_sample_rate: Arc::clone(&pending_sample_rate),
         invalidate_sink: invalidate_sink.clone(),
+        format: descriptor.class.format_name(),
     });
 
-    // The same backend Arc serves every optional slot, so a mode set through
-    // the handle reaches the very instance the node renders.
-    let editor: Arc<dyn crate::HostEditor> = backend.clone();
-    let render_mode: Arc<dyn crate::HostRenderMode> = backend.clone();
-    let presets: Arc<dyn crate::HostPresets> = backend.clone();
-    let handle = PluginHandle::from_backend(
-        backend,
-        crate::OptionalCapabilities {
-            automation_state: None,
-            editor: Some(editor),
-            render_mode: Some(render_mode),
-            presets: Some(presets),
-        },
-        descriptor,
-        loaded,
-        param_sink,
-    )
-    .with_invalidate_sink(invalidate_sink);
+    // The one backend serves all three slots, so a mode set through the handle
+    // reaches the very instance the node renders.
+    let control: Arc<dyn crate::MainThreadControl> = backend.clone();
+    let handle = PluginHandle::from_backend(backend, Some(control), descriptor, loaded, param_sink)
+        .with_invalidate_sink(invalidate_sink);
 
     Ok((client, handle, restored))
 }

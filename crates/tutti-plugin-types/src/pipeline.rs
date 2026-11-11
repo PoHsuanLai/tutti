@@ -18,7 +18,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 pub const MAX_CHUNK: usize = 4096;
 
 /// What the audio path has made of the blocks it sent a plugin, ever
-/// (`HostParams::block_counts` in `tutti-plugin`).
+/// (`Health::block_counts`).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct BlockCounts {
     /// Blocks it gave up waiting for.

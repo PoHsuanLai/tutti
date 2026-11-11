@@ -290,7 +290,7 @@ impl AudioBridge {
     /// Queue an automation-state push, saying **why** if it did not go.
     ///
     /// The one member of this family whose answer a caller reads and turns into
-    /// a user-visible message (`SubprocessBackend::set_automation_mode`). The
+    /// a user-visible message (`AnyThread::set_automation_mode`). The
     /// other nine are `let _ =`'d or forwarded, so they keep the bool: an enum
     /// nobody matches on is ceremony, and this family is RT-adjacent.
     ///

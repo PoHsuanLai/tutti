@@ -54,6 +54,7 @@ use std::sync::Arc;
 /// # Examples
 ///
 /// ```
+/// use tutti_types::MaxBlock;
 /// use tutti_types::{Hz, Resonance, SampleRate, Samples};
 /// use tutti_graph::{Prepare, Solo};
 /// use tutti_polysynth::{FilterType, OscillatorType, PolySynth, SynthConfig};
@@ -67,7 +68,7 @@ use std::sync::Arc;
 /// assert_eq!(synth.active_voice_count(), 0);
 ///
 /// // Alone in a graph; a host wires a clip or keyboard to its event input.
-/// let mut solo = Solo::new(synth, Prepare::new(SampleRate(48_000.0), Samples(64)));
+/// let mut solo = Solo::new(synth, Prepare::new(SampleRate(48_000.0), MaxBlock::of(Samples(64))));
 /// let out = solo.render(64);
 /// assert_eq!(out.len(), 2); // stereo
 /// # Ok::<(), tutti_polysynth::Error>(())
@@ -187,13 +188,21 @@ impl PolySynth {
     }
 
     /// Turns per-note (MPE) expression on or off, for sounding notes as well
-    /// as future ones. Disabling resets each voice's per-note state, so nothing
+    /// as future ones. Disabling resets each voice's per-note state (its
+    /// sounding pitch returns to the key's), so nothing
     /// received while off snaps into effect when it is re-enabled.
     pub fn set_mpe_enabled(&mut self, enabled: bool) {
         self.config.mpe_enabled = enabled;
         self.allocator.set_zones(mpe_zones(enabled));
         for voice in &mut self.voices {
             voice.set_mpe_enabled(enabled);
+            if !enabled {
+                // The note's sounding pitch (its per-note bend in it) goes too.
+                voice.clear_tuning();
+            }
+        }
+        if !enabled {
+            self.apply_pitch_bend();
         }
     }
 
@@ -451,8 +460,9 @@ impl PolySynth {
     }
 
     /// Applies a per-note controller to the voice in `slot`, as far as a voice
-    /// has the means to: Pitch 7.25 and Attribute Pitch 7.9 (an absolute
-    /// frequency, which the bend then offsets), the per-note bend, pressure,
+    /// has the means to: the note's sounding pitch (an absolute pitch: its told
+    /// Pitch 7.25 or Attribute Pitch 7.9 with the per-note bend, summed by
+    /// `tutti-voicing`; the channel's bend goes on it), pressure,
     /// Volume and Brightness (as slide). The other Registered Per-Note
     /// Controllers (pan, modulation, the rest of Appendix A) have no per-note
     /// DSP here. Assignable index 7 and 74 mean volume and slide by this
@@ -464,10 +474,11 @@ impl PolySynth {
                     .config
                     .tuning
                     .fractional_note_to_freq(pitch.note_number());
+                let ratio = self.bend_ratio(self.voices[slot].channel());
                 self.voices[slot].set_tuning_freq(freq);
+                self.voices[slot].set_pitch(freq * ratio);
                 return;
             }
-            NoteControl::Bend(semitones) => MpeControl::PitchBend(semitones),
             NoteControl::Pressure(value) => MpeControl::Pressure(u32_to_unit_f32(value)),
             NoteControl::Registered(RegisteredPerNoteController::Volume, value) => {
                 MpeControl::Gain(u32_to_unit_f32(value))
@@ -565,7 +576,9 @@ impl PolySynth {
             .iter_mut()
             .filter(|v| v.is_active())
             .for_each(|voice| {
-                let base_freq = tuning.fractional_note_to_freq(f32::from(voice.note().get()));
+                let base_freq = voice.tuned().unwrap_or_else(|| {
+                    tuning.fractional_note_to_freq(f32::from(voice.note().get()))
+                });
                 voice.set_pitch(
                     base_freq * bends[usize::from(voice.channel().get())].to_pitch_ratio(),
                 );
@@ -588,7 +601,11 @@ impl PolySynth {
                     retuned = true;
                 }
                 Gate::Control(i, control) => self.apply_note_control(i, control),
-                Gate::ResetControls(i) => self.voices[i].reset_mpe(),
+                Gate::ResetControls(i) => {
+                    self.voices[i].reset_mpe();
+                    self.voices[i].clear_tuning();
+                    retuned = true;
+                }
                 Gate::Start {
                     slot,
                     key,

@@ -21,6 +21,7 @@ use tutti_graph::contract::{drive, prepared};
 use tutti_graph::{Node, Prepare};
 use tutti_nodes::HrtfBinauralNode;
 use tutti_nodes::testing::aim;
+use tutti_types::MaxBlock;
 use tutti_types::{Azimuth, Direction, Elevation, SampleRate, Samples, Tail};
 
 const RATE: u32 = 48_000;
@@ -556,7 +557,10 @@ fn the_spheres_rate_and_response_length_are_bounded() {
     let mut node = HrtfBinauralNode::new(&longest, SampleRate(f64::from(MIN_SPHERE_RATE)))
         .expect("the longest response allowed builds");
     let to = 2 * MIN_SPHERE_RATE;
-    node.prepare(&Prepare::new(SampleRate(f64::from(to)), Samples(64)));
+    node.prepare(&Prepare::new(
+        SampleRate(f64::from(to)),
+        MaxBlock::of(Samples(64)),
+    ));
     let fifty_ms = to as usize / 20;
     assert_eq!(
         node.shape().tail,
@@ -589,13 +593,16 @@ fn the_prepared_rate_is_held_to_its_ceiling() {
     let mut node2 = HrtfBinauralNode::new(&bytes, SampleRate(1e10)).expect("builds");
     assert_eq!(node2.shape().tail, at_ceiling, "built at 1e10 Hz");
 
-    node.prepare(&Prepare::new(SampleRate(f64::from(RATE)), Samples(64)));
+    node.prepare(&Prepare::new(
+        SampleRate(f64::from(RATE)),
+        MaxBlock::of(Samples(64)),
+    ));
     assert_eq!(node.shape().tail, Tail::Finite(Samples(32 - 1)));
-    node.prepare(&Prepare::new(SampleRate(1e10), Samples(64)));
+    node.prepare(&Prepare::new(SampleRate(1e10), MaxBlock::of(Samples(64))));
     assert_eq!(node.shape().tail, at_ceiling, "prepared at 1e10 Hz");
 
     // The set prepared at the ceiling renders: an impulse comes out.
-    node2.prepare(&Prepare::new(SampleRate(1e10), Samples(1024)));
+    node2.prepare(&Prepare::new(SampleRate(1e10), MaxBlock::of(Samples(1024))));
     let mut impulse = vec![0.0f32; 1024];
     impulse[0] = 1.0;
     let out = drive(&mut node2, SampleRate(1e10), &[&impulse, &impulse], &[]);

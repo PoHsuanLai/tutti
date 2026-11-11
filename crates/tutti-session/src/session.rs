@@ -318,6 +318,19 @@ pub enum SessionEvent {
     /// it held are not released (design 017 §8.3 is not built).
     #[cfg(feature = "midi-hardware")]
     MidiInputLost(tutti_midi_hardware::DeviceInfo),
+    /// A device the session holds open as an input has settled its UMP Stream
+    /// negotiation (design 017 §5, M2-104 §7.1.6.1): the Endpoint it declared,
+    /// or the OS's description of it where it did not answer, and the Protocol
+    /// in use. Reported once per connection, from `Phase::Poll`; the state
+    /// stays readable as
+    /// [`MidiSession::stream`](tutti_midi_hardware::MidiSession::stream).
+    #[cfg(feature = "midi-hardware")]
+    MidiStream {
+        /// The device.
+        device: tutti_midi_hardware::DeviceId,
+        /// What is known of it (boxed: an Endpoint is large).
+        stream: Box<tutti_midi_hardware::DeviceStream>,
+    },
     /// The device the session held open as its output vanished: the output is
     /// closed, and what the hardware out sends is counted as dropped until a
     /// host connects another.
@@ -469,6 +482,12 @@ impl std::fmt::Debug for SessionEvent {
             #[cfg(feature = "midi-hardware")]
             Self::MidiInputLost(device) => f.debug_tuple("MidiInputLost").field(device).finish(),
             #[cfg(feature = "midi-hardware")]
+            Self::MidiStream { device, stream } => f
+                .debug_struct("MidiStream")
+                .field("device", device)
+                .field("stream", stream)
+                .finish(),
+            #[cfg(feature = "midi-hardware")]
             Self::MidiWatchFailed(why) => f.debug_tuple("MidiWatchFailed").field(why).finish(),
             #[cfg(feature = "midi-hardware")]
             Self::MidiOutputLost(device) => f.debug_tuple("MidiOutputLost").field(device).finish(),
@@ -615,6 +634,7 @@ pub enum RootTopologyStatus {
 /// wire) frees nothing and may run on any thread that owns the session.
 ///
 /// ```
+/// use tutti_types::MaxBlock;
 /// use tutti_types::{ChannelLayout, InterleavedMut, SampleRate, Samples};
 /// use tutti_session::{GraphSource, Session};
 /// use tutti_nodes::testing::Const;
@@ -622,7 +642,7 @@ pub enum RootTopologyStatus {
 /// // One global output: the mono device takes it as it is, unfolded.
 /// let mut session = Session::builder()
 ///     .outputs_floor(1)
-///     .build_offline(SampleRate(48_000.0), ChannelLayout::MONO, Samples(64))
+///     .build_offline(SampleRate(48_000.0), ChannelLayout::MONO, MaxBlock::of(Samples(64)))
 ///     .unwrap();
 /// let (dc, _) = session.graph().insert(Const::mono(0.5));
 /// session.graph().set_output_source(0, GraphSource::Node(dc, 0));

@@ -4,8 +4,9 @@ use std::ffi::CStr;
 use std::os::raw::c_char;
 
 use crate::client::Client;
-use crate::records::{BlockRecord, ClientRecord, PortRecord};
+use crate::records::{ClientRecord, PortRecord};
 use crate::sys;
+use crate::ump::UmpEndpoint;
 
 /// `-ENOENT`: no client or port after this one, the end of a query.
 const ENOENT: i32 = -2;
@@ -23,9 +24,10 @@ pub struct PortEntry {
     pub name: String,
     /// The port's `CAP_*` bits.
     pub caps: u32,
-    /// Whether the client declares UMP function blocks: a genuine UMP endpoint
-    /// rather than a legacy client reached through the kernel's converter.
-    pub ump: bool,
+    /// The client's UMP Endpoint, when the sequencer has one: a genuine UMP
+    /// endpoint rather than a legacy client reached through the kernel's
+    /// converter. The same for every port of a client.
+    pub ump: Option<UmpEndpoint>,
 }
 
 /// What [`Client::list_ports`] found.
@@ -98,7 +100,7 @@ impl Client {
                 sys::snd_seq_port_info_set_client(pinfo.as_ptr(), client);
                 sys::snd_seq_port_info_set_port(pinfo.as_ptr(), -1);
             }
-            let mut ump = None;
+            let mut ump: Option<Option<UmpEndpoint>> = None;
             loop {
                 // SAFETY: `seq` is open and `pinfo` is a live record.
                 let rc = unsafe { sys::snd_seq_query_next_port(seq, pinfo.as_ptr()) };
@@ -122,24 +124,10 @@ impl Client {
                     port,
                     name,
                     caps,
-                    ump: *ump.get_or_insert_with(|| self.has_ump_blocks(client)),
+                    ump: ump.get_or_insert_with(|| self.ump_endpoint(client)).clone(),
                 });
             }
         }
         out
-    }
-
-    /// Whether `client` declares UMP function blocks. Block 0 is enough to
-    /// answer "is this a UMP endpoint at all": a negative return means the
-    /// client has none, i.e. it is legacy.
-    fn has_ump_blocks(&self, client: i32) -> bool {
-        let Ok(info) = BlockRecord::new() else {
-            return false;
-        };
-        // SAFETY: `self.raw()` is open and `info` is a live record; the call's
-        // `info` is typed `void *` in alsa-lib's header.
-        let rc =
-            unsafe { sys::snd_seq_get_ump_block_info(self.raw(), client, 0, info.as_ptr().cast()) };
-        rc >= 0
     }
 }

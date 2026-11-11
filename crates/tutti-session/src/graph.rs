@@ -56,6 +56,7 @@ use tutti_graph::{
 };
 #[cfg(feature = "plugin")]
 use tutti_types::Latency;
+use tutti_types::MaxBlock;
 use tutti_types::{Amplitude, ChannelLayout, Mix, SampleRate, Seconds, UnitAddr};
 use tutti_types::{Samples, Tail};
 
@@ -67,7 +68,7 @@ use crate::{EdgeGainError, EdgeRef, InletError, SessionNode};
 /// consecutive graph blocks of at most this many frames, so it bounds the
 /// arena, not the device. 1024 frames covers every buffer size a DAW offers
 /// by default.
-pub const LIVE_MAX_BLOCK: Samples = Samples(1024);
+pub const LIVE_MAX_BLOCK: MaxBlock = MaxBlock::of(Samples(1024));
 
 /// The spec `kind` of a hosted plugin.
 #[cfg(feature = "plugin")]
@@ -452,7 +453,7 @@ fn compensation_of(plan: &tutti_graph::Plan) -> Compensation {
 /// so the quantum is what keeps its pipeline in step with the device.
 pub(crate) fn prepare_for(
     rate: SampleRate,
-    max_block: Samples,
+    max_block: MaxBlock,
     quantum: Option<Samples>,
 ) -> Prepare {
     let p = Prepare::new(rate, max_block);
@@ -477,7 +478,7 @@ impl Graph {
         inputs: ChannelLayout,
         outputs: usize,
         rate: SampleRate,
-        max_block: Samples,
+        max_block: MaxBlock,
         quantum: Option<Samples>,
         tempo: tutti_transport::TempoReader,
     ) -> Self {
@@ -609,11 +610,10 @@ impl Graph {
     /// device's session re-rates with [`Session::restart`](crate::Session).
     pub fn set_sample_rate(&mut self, rate: SampleRate) {
         let current = *self.editor.prepare();
-        if let Err(e) = self.editor.reprepare(prepare_for(
-            rate,
-            current.max_block().samples(),
-            current.quantum(),
-        )) {
+        if let Err(e) =
+            self.editor
+                .reprepare(prepare_for(rate, current.max_block(), current.quantum()))
+        {
             tracing::error!("graph: re-prepare at {} Hz refused: {e}", rate.get());
             return;
         }
@@ -630,7 +630,7 @@ impl Graph {
     /// capacity (the editor's limits, set by `Engine::new`), with one
     /// already between its halves, or on a poisoned editor.
     #[cfg(feature = "device")]
-    pub(crate) fn check_reprepare(&self, max_block: Option<Samples>) -> Result<(), CommitError> {
+    pub(crate) fn check_reprepare(&self, max_block: Option<MaxBlock>) -> Result<(), CommitError> {
         if let Some(cause) = self.editor.poison_cause() {
             return Err(CommitError::Poisoned {
                 cause: cause.to_owned(),
@@ -656,15 +656,11 @@ impl Graph {
     pub(crate) fn reprepare(
         &mut self,
         rate: SampleRate,
-        max_block: Option<Samples>,
+        max_block: Option<MaxBlock>,
         quantum: Option<Samples>,
     ) -> Result<(), CommitError> {
         let current = *self.editor.prepare();
-        let prepare = prepare_for(
-            rate,
-            max_block.unwrap_or(current.max_block().samples()),
-            quantum,
-        );
+        let prepare = prepare_for(rate, max_block.unwrap_or(current.max_block()), quantum);
         if prepare == current {
             return Ok(());
         }

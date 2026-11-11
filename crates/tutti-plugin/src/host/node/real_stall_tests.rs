@@ -33,6 +33,7 @@
 //! which is the whole `Owed` mechanism in one number.
 
 use std::time::{Duration, Instant};
+use tutti_types::MaxBlock;
 
 use tutti_graph::{GraphBuilder, Prepare, Renderer};
 use tutti_types::{ChannelLayout, SampleRate, Samples};
@@ -143,8 +144,11 @@ fn graph_of(client: PluginClient) -> Renderer {
         tutti_transport::TempoReader::constant(tutti_types::Bpm::of(120.0)).expect("a tempo"),
     ));
     g.pipe_input(key).pipe_output(key);
-    g.renderer(Prepare::new(SampleRate(SAMPLE_RATE), Samples(BLOCK)))
-        .expect("a one-plugin graph compiles")
+    g.renderer(Prepare::new(
+        SampleRate(SAMPLE_RATE),
+        MaxBlock::of(Samples(BLOCK)),
+    ))
+    .expect("a one-plugin graph compiles")
 }
 
 /// Drive one block of DC and return output channel 0.
@@ -549,8 +553,10 @@ fn a_reprepare_drops_the_pending_midi_and_keeps_its_sysex_cut() {
     feed(&mut unit, &[dump[0], dump[1], dump[2], note]);
 
     // The same rate, another callback size.
-    unit.node
-        .prepare(&Prepare::new(SampleRate(SAMPLE_RATE), Samples(BLOCK * 2)));
+    unit.node.prepare(&Prepare::new(
+        SampleRate(SAMPLE_RATE),
+        MaxBlock::of(Samples(BLOCK * 2)),
+    ));
 
     assert_eq!(controls.dropped_midi_in(), 4);
     feed(&mut unit, &[dump[3], dump[4], note]);

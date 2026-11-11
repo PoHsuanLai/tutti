@@ -17,6 +17,7 @@ use tutti_graph::contract::{Latent, Pulse};
 use tutti_graph::{EventIn, EventKind, GraphBuilder, Prepare, Unforkable};
 use tutti_transport::{MotionEvent, Transport};
 use tutti_types::Latency;
+use tutti_types::MaxBlock;
 use tutti_types::{At, Beat, ChannelLayout, Frame, InterleavedMut, SampleRate, Samples};
 use tutti_ump::{MidiChannel, MidiGroup};
 
@@ -49,7 +50,10 @@ fn engine(
     g.connect_events(sibling, 0, pdc, 0);
     g.connect_output(pdc, 0, 0).connect_output(direct, 0, 1);
     let (mut ed, exec) = g
-        .build(Prepare::new(SampleRate(SR), Samples(max_block)))
+        .build(Prepare::new(
+            SampleRate(SR),
+            MaxBlock::of(Samples(max_block)),
+        ))
         .expect("builds");
     let plan = exec.plan().expect("installed");
     assert_eq!(plan.unit(pdc).unwrap().arrival, Latency::new(Samples(D)));

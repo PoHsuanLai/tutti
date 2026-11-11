@@ -14,6 +14,7 @@ use tutti_graph::{GraphBuilder, IntoNode, Node, Prepare};
 use tutti_nodes::testing::Through;
 use tutti_nodes::{CrossoverNode, DelayLineNode, ModDelayNode, MultibandCompressorNode};
 use tutti_types::Latency;
+use tutti_types::MaxBlock;
 use tutti_types::{ChannelLayout, Feedback, Hz, Mix, Seconds};
 use tutti_types::{SampleRate, Samples};
 
@@ -62,7 +63,7 @@ fn mixed_impulse_response<N: IntoNode>(node: N, frames: usize, mix: Mix) -> Vec<
     }
     g.spec_mut().set_mix(key, mix);
     let mut r = g
-        .renderer(Prepare::new(SR, Samples(BLOCK)))
+        .renderer(Prepare::new(SR, MaxBlock::of(Samples(BLOCK))))
         .expect("a one-node graph builds");
     let mut chunk = vec![0.0f32; frames];
     chunk[0] = 1.0;
@@ -224,7 +225,7 @@ fn a_delay_insert_adds_no_compensation_to_the_other_paths() {
         .connect_output(chorus, 0, 1)
         .connect_output(dry, 0, 2);
     let (_editor, exec) = g
-        .build(Prepare::new(SR, Samples(BLOCK)))
+        .build(Prepare::new(SR, MaxBlock::of(Samples(BLOCK))))
         .expect("the graph builds");
     let plan = exec.plan().expect("committed");
     assert_eq!(plan.compensation(), &[Samples(0); 3], "no output pre-rolls");
@@ -258,7 +259,7 @@ fn a_limiter_summed_with_a_dry_path_reports_the_limiter_latency() {
     g.connect_output(lim, 0, 0);
     g.add_output(0, Source::Global(0));
     let mut r = g
-        .renderer(Prepare::new(SR, Samples(BLOCK)))
+        .renderer(Prepare::new(SR, MaxBlock::of(Samples(BLOCK))))
         .expect("builds");
 
     let lookahead = Seconds(0.005).to_samples_ceil(SR);
@@ -409,7 +410,7 @@ mod convolver {
             .connect_output(echo_b, 0, 1)
             .connect_output(dry, 0, 2);
         let (_editor, exec) = g
-            .build(Prepare::new(SR, Samples(BLOCK)))
+            .build(Prepare::new(SR, MaxBlock::of(Samples(BLOCK))))
             .expect("the graph builds");
         let plan = exec.plan().expect("committed");
         assert_eq!(plan.total_latency(), Latency::new(latency));

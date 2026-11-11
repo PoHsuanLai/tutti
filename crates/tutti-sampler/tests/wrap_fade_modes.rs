@@ -13,6 +13,7 @@
 //! gives analytically.
 
 use std::sync::Arc;
+use tutti_types::MaxBlock;
 
 use tutti_graph::NodeKey;
 use tutti_graph::{Editor, Executor, LoopRange, Prepare, Transport, WorkerPool};
@@ -43,7 +44,10 @@ enum Host {
 }
 
 fn graph(wave: &Arc<Wave>, workers: usize, host: Host) -> Executor {
-    let (mut ed, mut exec) = Editor::new(Prepare::new(SampleRate(SR), Samples(MAX_BLOCK)));
+    let (mut ed, mut exec) = Editor::new(Prepare::new(
+        SampleRate(SR),
+        MaxBlock::of(Samples(MAX_BLOCK)),
+    ));
     if workers > 1 {
         let pool = WorkerPool::builder()
             .num_threads(workers)

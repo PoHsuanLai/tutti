@@ -12,6 +12,7 @@
 mod clap_probe;
 use clap_probe::{ProbeEnv, load_probe, render};
 use tutti_fixtures::machine_lock;
+use tutti_types::MaxBlock;
 
 use std::sync::Arc;
 
@@ -69,7 +70,7 @@ fn automation_reaches_the_plugin_through_its_event_input() {
         None,
         (0.0, 1.0),
     );
-    let prepare = Prepare::new(SampleRate(SAMPLE_RATE), Samples(BLOCK));
+    let prepare = Prepare::new(SampleRate(SAMPLE_RATE), MaxBlock::of(Samples(BLOCK)));
     let (mut live, _exec) = Editor::new(prepare);
     let (auto_key, key) = (NodeKey(1), NodeKey(9));
     let _automation = live.insert(auto_key, "automation", automation);
@@ -131,7 +132,7 @@ fn render_gain(
         .render_mode(render::TAG_ONLY)
         .gain_enabled(true);
     let probe = load_probe(SAMPLE_RATE);
-    let prepare = Prepare::new(SampleRate(SAMPLE_RATE), Samples(BLOCK));
+    let prepare = Prepare::new(SampleRate(SAMPLE_RATE), MaxBlock::of(Samples(BLOCK)));
     let (mut live, _exec) = Editor::new(prepare);
     let _controls = live.insert(
         PLUGIN,

@@ -1051,7 +1051,10 @@ mod tests {
         compile(
             &valid,
             &shapes,
-            &crate::node::Prepare::new(tutti_types::SampleRate(48_000.0), tutti_types::Samples(64)),
+            &crate::node::Prepare::new(
+                tutti_types::SampleRate(48_000.0),
+                tutti_types::MaxBlock::of(tutti_types::Samples(64)),
+            ),
             None,
         )
         .expect("compiles")
@@ -1114,7 +1117,10 @@ mod tests {
         let plan = compile(
             &valid,
             &shapes,
-            &crate::node::Prepare::new(tutti_types::SampleRate(48_000.0), tutti_types::Samples(64)),
+            &crate::node::Prepare::new(
+                tutti_types::SampleRate(48_000.0),
+                tutti_types::MaxBlock::of(tutti_types::Samples(64)),
+            ),
             None,
         )
         .expect("compiles")
@@ -1255,7 +1261,10 @@ mod tests {
         let good = compile(
             &valid,
             &shapes,
-            &crate::node::Prepare::new(tutti_types::SampleRate(48_000.0), tutti_types::Samples(64)),
+            &crate::node::Prepare::new(
+                tutti_types::SampleRate(48_000.0),
+                tutti_types::MaxBlock::of(tutti_types::Samples(64)),
+            ),
             None,
         )
         .expect("compiles")
@@ -1320,7 +1329,10 @@ mod tests {
         compile(
             &valid,
             &shapes,
-            &crate::node::Prepare::new(tutti_types::SampleRate(48_000.0), tutti_types::Samples(64)),
+            &crate::node::Prepare::new(
+                tutti_types::SampleRate(48_000.0),
+                tutti_types::MaxBlock::of(tutti_types::Samples(64)),
+            ),
             None,
         )
         .expect("compiles")
@@ -1592,8 +1604,10 @@ mod tests {
         })]);
         let shapes: Shapes = [(generator, sg), (thru, st)].into_iter().collect();
         let valid = GraphSpec::new(t).validate().expect("valid");
-        let prep =
-            crate::node::Prepare::new(tutti_types::SampleRate(48_000.0), tutti_types::Samples(64));
+        let prep = crate::node::Prepare::new(
+            tutti_types::SampleRate(48_000.0),
+            tutti_types::MaxBlock::of(tutti_types::Samples(64)),
+        );
         let split = compile(&valid, &shapes, &prep, None).expect("compiles").0;
         let u = split.units.iter().position(|p| p.key == thru).unwrap();
         let Form::Split { input, out } = split.nodes.recs[u].form else {
@@ -1650,8 +1664,10 @@ mod tests {
         ]);
         let shapes: Shapes = [(generator, sg), (thru, st)].into_iter().collect();
         let valid = GraphSpec::new(t).validate().expect("valid");
-        let prep =
-            crate::node::Prepare::new(tutti_types::SampleRate(48_000.0), tutti_types::Samples(64));
+        let prep = crate::node::Prepare::new(
+            tutti_types::SampleRate(48_000.0),
+            tutti_types::MaxBlock::of(tutti_types::Samples(64)),
+        );
         let plan = compile(&valid, &shapes, &prep, None).expect("compiles").0;
         let u = plan.units.iter().position(|p| p.key == thru).unwrap();
         let Form::Direct(d) = plan.nodes.recs[u].form else {
@@ -1736,8 +1752,10 @@ mod tests {
                 }),
             );
         }
-        let prep =
-            crate::node::Prepare::new(tutti_types::SampleRate(48_000.0), tutti_types::Samples(64));
+        let prep = crate::node::Prepare::new(
+            tutti_types::SampleRate(48_000.0),
+            tutti_types::MaxBlock::of(tutti_types::Samples(64)),
+        );
         let good = compile(&g.validate().unwrap(), &shapes, &prep, None)
             .unwrap()
             .0;
@@ -1802,7 +1820,7 @@ mod tests {
             spec.generations.insert(a, gen_a);
             let prepare = crate::node::Prepare::new(
                 tutti_types::SampleRate(48_000.0),
-                tutti_types::Samples(64),
+                tutti_types::MaxBlock::of(tutti_types::Samples(64)),
             );
             compile(&spec.validate().expect("valid"), &shapes, &prepare, prev).expect("compiles")
         };

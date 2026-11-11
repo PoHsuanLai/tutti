@@ -38,7 +38,7 @@ MIDI-CI codec.
   Discovery, a Stream Configuration Request for the wanted protocol and JR, Function
   Block Discovery. Time is an `Instant` the caller passes to `on_message` and
   `on_timeout`; a step is sent three times, a second apart, and a peer that never
-  answers is settled as a MIDI 1.0 device. No backend feeds it yet.
+  answers is settled as a MIDI 1.0 device. `tutti-midi-hardware` runs one per open UMP input.
 
 No OS, no thread, no clock, and no dependency but `tutti-ump`, `bitflags` and optional `serde`. `tutti-midi-hardware` feeds the
 table from ALSA and CoreMIDI. Licensed under MIT or Apache-2.0.

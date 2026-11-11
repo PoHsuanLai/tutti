@@ -3,6 +3,7 @@
 //! panics and never produces a non-finite sample.
 
 use std::panic::{AssertUnwindSafe, catch_unwind};
+use tutti_types::MaxBlock;
 
 use tutti_graph::contract::drive;
 use tutti_graph::{Node, Prepare};
@@ -37,7 +38,7 @@ fn finite(node: &mut dyn Node) -> bool {
 fn probe(name: &str, bad: f32, make: impl FnOnce() -> Box<dyn Node>) -> Option<String> {
     let r = catch_unwind(AssertUnwindSafe(|| {
         let mut n = make();
-        n.prepare(&Prepare::new(RATE, Samples(64)));
+        n.prepare(&Prepare::new(RATE, MaxBlock::of(Samples(64))));
         finite(&mut *n)
     }));
     match r {

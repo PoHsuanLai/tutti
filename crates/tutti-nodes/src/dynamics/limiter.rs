@@ -720,6 +720,7 @@ mod tests {
     use crate::test_support::{RATE_44K, prepared_at, tick, tick_fed};
     use tutti_dsp::compute_limiter_gain;
     use tutti_graph::contract::{assert_param_fork, drive};
+    use tutti_types::MaxBlock;
 
     /// A fork starts from the values last set through the node's
     /// `ParamSet` and shares no cell with it.
@@ -769,7 +770,7 @@ mod tests {
         // f32 nearest 0.1 times 48000 is 4800.00007, which ceils to 4801.
         let device = tutti_types::SampleRate(48_000.0);
         let mut lim = LimiterNode::new(Db::new(-6.0), Db::new(-0.3)).with_lookahead(Seconds(0.1));
-        lim.prepare(&Prepare::new(device, Samples(64)));
+        lim.prepare(&Prepare::new(device, MaxBlock::of(Samples(64))));
         assert_eq!(
             lim.ring.lookahead_samples(),
             (0.1_f64 * 48_000.0).ceil() as usize
@@ -802,7 +803,7 @@ mod tests {
         );
 
         // The correction: same wall-clock window, more frames.
-        lim.prepare(&Prepare::new(device, Samples(64)));
+        lim.prepare(&Prepare::new(device, MaxBlock::of(Samples(64))));
         let fixed = lim.ring.lookahead_samples();
         assert_eq!(
             fixed,
@@ -833,13 +834,16 @@ mod tests {
         // accumulates instead of cancelling. Going back and forth pins that the
         // derivation is a pure function of (request, rate).
         for _ in 0..4 {
-            lim.prepare(&Prepare::new(SampleRate::DEFAULT, Samples(64)));
+            lim.prepare(&Prepare::new(
+                SampleRate::DEFAULT,
+                MaxBlock::of(Samples(64)),
+            ));
             assert_eq!(
                 lim.ring.lookahead_samples(),
                 born,
                 "returning to the original rate must return the original count"
             );
-            lim.prepare(&Prepare::new(device, Samples(64)));
+            lim.prepare(&Prepare::new(device, MaxBlock::of(Samples(64))));
             assert_eq!(
                 lim.ring.lookahead_samples(),
                 fixed,

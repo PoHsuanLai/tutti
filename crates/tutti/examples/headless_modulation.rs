@@ -16,6 +16,7 @@
 //! modulation sources) is named through `tutti::`.
 
 use std::sync::Arc;
+use tutti_types::MaxBlock;
 
 use tutti::graph::{Cx, ForkByClone, Io, Node, Prepare, Shape, Status};
 use tutti::modulation::{Follower, Lfo};
@@ -71,7 +72,11 @@ fn play(s: &mut Session, windows: usize) {
 
 fn main() {
     let mut s = Session::builder()
-        .build_offline(SampleRate(RATE), ChannelLayout::MONO, Samples(BLOCK))
+        .build_offline(
+            SampleRate(RATE),
+            ChannelLayout::MONO,
+            MaxBlock::of(Samples(BLOCK)),
+        )
         .expect("builds");
     let (saw, _) = s.graph().insert(ForkByClone(Osc::saw(Hz(110.0))));
     let (filter, _) = s.graph().add(SvfFilterNode::<f64>::new(

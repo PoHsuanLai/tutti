@@ -4,11 +4,16 @@
 
 use tutti_nodes::{DesignNode, FdnControls, FdnDesign, FdnNode};
 use tutti_session::Session;
+use tutti_types::MaxBlock;
 use tutti_types::{ChannelLayout, SampleRate, Samples, Seconds, Tail, UnitAddr, UnitParam};
 
 fn session() -> Session {
     Session::builder()
-        .build_offline(SampleRate(48_000.0), ChannelLayout::STEREO, Samples(256))
+        .build_offline(
+            SampleRate(48_000.0),
+            ChannelLayout::STEREO,
+            MaxBlock::of(Samples(256)),
+        )
         .expect("builds")
 }
 

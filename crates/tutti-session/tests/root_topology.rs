@@ -7,6 +7,7 @@
 
 use tutti_nodes::testing::Const;
 use tutti_session::{Error, GraphSource, RootTopologyStatus, Session, SessionBuilder};
+use tutti_types::MaxBlock;
 use tutti_types::{
     ChannelLayout, ChannelTopology, FoldError, InterleavedMut, M3DB, SampleRate, Samples, Speaker,
 };
@@ -36,7 +37,7 @@ fn heard(session: &mut Session, device: u16) -> Vec<f32> {
 }
 
 fn offline(builder: SessionBuilder, device: u16) -> Result<Session, Error> {
-    builder.build_offline(RATE, ChannelLayout::from(device), Samples(64))
+    builder.build_offline(RATE, ChannelLayout::from(device), MaxBlock::of(Samples(64)))
 }
 
 fn buses(n: u16) -> ChannelTopology {

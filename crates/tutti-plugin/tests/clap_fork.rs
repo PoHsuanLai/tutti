@@ -24,6 +24,7 @@ mod clap_probe;
 // block, which is the property under test.
 use clap_probe::{BLOCK, PACE, ProbeEnv, Rig, SAMPLE_RATE, load_probe, load_probe_with, render};
 use tutti_fixtures::machine_lock;
+use tutti_types::MaxBlock;
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Barrier};
@@ -276,7 +277,7 @@ fn a_state_the_fresh_instance_refuses_is_a_named_fork_error() {
         "expected LoadState, got {err:?}"
     );
 
-    let prepare = Prepare::new(SampleRate(SAMPLE_RATE), Samples(BLOCK));
+    let prepare = Prepare::new(SampleRate(SAMPLE_RATE), MaxBlock::of(Samples(BLOCK)));
     let (mut editor, _exec) = Editor::new(prepare);
     let key = NodeKey(7);
     let _controls = editor.insert(
@@ -336,7 +337,7 @@ fn a_graph_holding_a_plugin_forks_and_renders_offline() {
     let probe = load_probe(SAMPLE_RATE);
     probe.client.set_parameter(GAIN, gain_at(-6.0));
 
-    let prepare = Prepare::new(SampleRate(SAMPLE_RATE), Samples(BLOCK));
+    let prepare = Prepare::new(SampleRate(SAMPLE_RATE), MaxBlock::of(Samples(BLOCK)));
     let (mut editor, _exec) = Editor::new(prepare);
     let key = NodeKey(1);
     let _controls = editor.insert(
@@ -371,7 +372,7 @@ fn a_graph_holding_a_plugin_forks_and_renders_offline() {
 /// Render `blocks` blocks of the offline fork of the plugin through the
 /// graph; return the forked editor (to ask its health) and how long it took.
 fn render_fork_of(client: PluginClient, blocks: usize) -> (Editor, Duration) {
-    let prepare = Prepare::new(SampleRate(SAMPLE_RATE), Samples(BLOCK));
+    let prepare = Prepare::new(SampleRate(SAMPLE_RATE), MaxBlock::of(Samples(BLOCK)));
     let (mut editor, _exec) = Editor::new(prepare);
     let key = NodeKey(3);
     let _controls = editor.insert(
@@ -565,7 +566,10 @@ fn a_failed_forks_server_is_reaped() {
 
 /// A live graph holding the plugin at key 9 on the master, to export from.
 fn live_graph(client: PluginClient) -> (Editor, tutti_graph::Executor) {
-    let (mut live, exec) = Editor::new(Prepare::new(SampleRate(SAMPLE_RATE), Samples(BLOCK)));
+    let (mut live, exec) = Editor::new(Prepare::new(
+        SampleRate(SAMPLE_RATE),
+        MaxBlock::of(Samples(BLOCK)),
+    ));
     let key = NodeKey(9);
     let _controls = live.insert(
         key,
@@ -874,7 +878,7 @@ fn a_clip_note_in_a_chunk_that_begins_mid_block_lands_on_its_frame() {
         const BLOCK: usize = 400;
         const NOTE_FRAME: usize = 6_300;
 
-        let prepare = Prepare::new(SampleRate(SAMPLE_RATE), Samples(CHUNK));
+        let prepare = Prepare::new(SampleRate(SAMPLE_RATE), MaxBlock::of(Samples(CHUNK)));
         let (mut live, _exec) = Editor::new(prepare);
         let key = NodeKey(9);
         let _controls = live.insert(
@@ -939,7 +943,7 @@ fn a_clip_nodes_note_reaches_the_plugins_event_input_on_its_frame() {
     const BLOCK: usize = 400;
     const NOTE_FRAME: usize = 6_300;
 
-    let prepare = Prepare::new(SampleRate(SAMPLE_RATE), Samples(CHUNK));
+    let prepare = Prepare::new(SampleRate(SAMPLE_RATE), MaxBlock::of(Samples(CHUNK)));
     let (mut live, _exec) = Editor::new(prepare);
     let (clip, key) = (NodeKey(1), NodeKey(9));
     live.insert(
@@ -1039,7 +1043,7 @@ fn a_plugins_midi_out_keeps_its_place_against_its_audio() {
     const NOTE_FRAME: usize = 6_300;
     for _ in 0..3 {
         let probe = load_probe(SAMPLE_RATE);
-        let prepare = Prepare::new(SampleRate(SAMPLE_RATE), Samples(CHUNK));
+        let prepare = Prepare::new(SampleRate(SAMPLE_RATE), MaxBlock::of(Samples(CHUNK)));
         let (mut live, _exec) = Editor::new(prepare);
         let (clip, key, sink) = (NodeKey(1), NodeKey(9), NodeKey(3));
         let on = midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0xFFFF);
@@ -1166,7 +1170,7 @@ fn an_export_is_aligned_when_the_plugin_latency_moves_offline() {
     let inputs = probe.client.inputs();
 
     let rate = SampleRate(SAMPLE_RATE);
-    let (mut live, _exec) = Editor::new(Prepare::new(rate, Samples(BLOCK)));
+    let (mut live, _exec) = Editor::new(Prepare::new(rate, MaxBlock::of(Samples(BLOCK))));
     let (src, key) = (NodeKey(1), NodeKey(2));
     live.insert(src, "ramp", tutti_graph::ForkByClone(RampSource));
     let _controls = live.insert(
@@ -1242,7 +1246,10 @@ fn an_export_of_plugins_is_bit_identical_on_a_pool() {
     let b = load_probe(SAMPLE_RATE);
     a.client.set_parameter(GAIN, gain_at(-6.0));
     b.client.set_parameter(GAIN, gain_at(-12.0));
-    let (mut live, _exec) = Editor::new(Prepare::new(SampleRate(SAMPLE_RATE), Samples(BLOCK)));
+    let (mut live, _exec) = Editor::new(Prepare::new(
+        SampleRate(SAMPLE_RATE),
+        MaxBlock::of(Samples(BLOCK)),
+    ));
     let _ = live.insert(
         NodeKey(9),
         "a",
@@ -1378,8 +1385,11 @@ fn a_fork_of_a_refused_rate_is_silent_at_once_and_a_failed_fault() {
     let probe = load_probe(SAMPLE_RATE);
     let _refuse = ProbeEnv::new().refuse_rate(96_000.0);
 
-    let prepare = Prepare::new(SampleRate(96_000.0), Samples(BLOCK));
-    let (mut editor, _exec) = Editor::new(Prepare::new(SampleRate(SAMPLE_RATE), Samples(BLOCK)));
+    let prepare = Prepare::new(SampleRate(96_000.0), MaxBlock::of(Samples(BLOCK)));
+    let (mut editor, _exec) = Editor::new(Prepare::new(
+        SampleRate(SAMPLE_RATE),
+        MaxBlock::of(Samples(BLOCK)),
+    ));
     let key = NodeKey(3);
     let _controls = editor.insert(
         key,

@@ -13,6 +13,7 @@ use tutti_graph::{
 use tutti_graph::{OutPort, Source};
 use tutti_midi_runtime::{MidiClipNode, TimedMidiEvent};
 use tutti_polysynth::{Adsr, OscillatorType, PolySynth, SynthConfig};
+use tutti_types::MaxBlock;
 use tutti_types::{Beat, Bpm, SampleRate, Samples, Seconds};
 use tutti_ump::{MidiChannel, MidiGroup};
 
@@ -42,7 +43,7 @@ fn note_on_at(frame: u64) -> TimedMidiEvent {
 /// A clip (key 1) playing a note at `frame` into a synth (key 2) on
 /// the global outputs, committed.
 fn graph(frame: u64) -> (Editor, Executor) {
-    let (mut ed, exec) = Editor::new(Prepare::new(SampleRate(RATE), Samples(BLOCK)));
+    let (mut ed, exec) = Editor::new(Prepare::new(SampleRate(RATE), MaxBlock::of(Samples(BLOCK))));
     ed.insert(NodeKey(1), "clip", MidiClipNode::new([note_on_at(frame)]));
     ed.insert(NodeKey(2), "synth", saw());
     ed.spec_mut().connect_events(

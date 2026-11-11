@@ -5,6 +5,7 @@
 use tutti_graph::{GraphBuilder, Prepare};
 use tutti_nodes::testing::{Const, vbap_mix};
 use tutti_nodes::{VbapError, VbapPannerNode};
+use tutti_types::MaxBlock;
 use tutti_types::{Azimuth, ChannelLayout, ChannelTopology, SampleRate, Samples};
 
 /// A panner per bearing (a DC `[1.0, 1.0]` source each), wired by
@@ -19,7 +20,10 @@ fn settled_energy(layout: ChannelLayout, bearings: &[f32]) -> Vec<f32> {
         .collect();
     vbap_mix(&mut g, layout, &sources).expect("a preset");
     let mut r = g
-        .renderer(Prepare::new(SampleRate(48_000.0), Samples(256)))
+        .renderer(Prepare::new(
+            SampleRate(48_000.0),
+            MaxBlock::of(Samples(256)),
+        ))
         .expect("builds");
     let mut last = Vec::new();
     for _ in 0..49 {

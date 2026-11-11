@@ -31,6 +31,7 @@
 
 use std::sync::OnceLock;
 use std::time::Duration;
+use tutti_types::MaxBlock;
 
 use tutti_graph::NodeKey;
 use tutti_graph::contract::Latent;
@@ -55,7 +56,10 @@ pub struct Rig {
 impl Rig {
     /// `client` in a graph prepared for `rate` and blocks of `block` frames.
     pub fn new(client: PluginClient<Bound>, rate: f64, block: usize) -> Self {
-        Self::prepared(client, Prepare::new(SampleRate(rate), Samples(block)))
+        Self::prepared(
+            client,
+            Prepare::new(SampleRate(rate), MaxBlock::of(Samples(block))),
+        )
     }
 
     /// `client` in a graph prepared with `prepare` (a device quantum, say).

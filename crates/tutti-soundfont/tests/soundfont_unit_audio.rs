@@ -356,7 +356,10 @@ fn a_same_rate_reprepare_mid_stream_does_not_disturb_rendering() {
     // A re-prepare at the unit's own rate, between blocks.
     tutti_graph::Node::prepare(
         &mut *interrupted,
-        &tutti_graph::Prepare::new(tutti_types::SampleRate(44_100.0), tutti_types::Samples(128)),
+        &tutti_graph::Prepare::new(
+            tutti_types::SampleRate(44_100.0),
+            tutti_types::MaxBlock::of(tutti_types::Samples(128)),
+        ),
     );
     got.extend(render_process_blocks(
         &mut interrupted,

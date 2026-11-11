@@ -26,6 +26,7 @@
 
 use tutti_graph::{CrossfadeCurve, Fade, IntoNode, NodeMode, Prepare, Solo};
 use tutti_nodes::{EqBandNode, SvfType};
+use tutti_types::MaxBlock;
 use tutti_types::UnitParam;
 use tutti_types::{Db, Hz, Q, SampleRate, Samples};
 
@@ -49,7 +50,7 @@ fn energy<C>(solo: &mut Solo<C>) -> f32 {
 }
 
 fn solo<N: IntoNode>(node: N) -> Solo<N::Controls> {
-    Solo::new(node, Prepare::new(RATE, Samples(64)))
+    Solo::new(node, Prepare::new(RATE, MaxBlock::of(Samples(64))))
 }
 
 /// **The instrument works**: an active +24 dB bell and a bypassed one render

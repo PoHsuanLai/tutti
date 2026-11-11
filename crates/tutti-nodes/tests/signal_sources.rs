@@ -9,6 +9,7 @@
 
 use std::sync::Arc;
 use tutti_fixtures::midi;
+use tutti_types::MaxBlock;
 use tutti_ump::{MidiChannel, MidiGroup, NoteNumber, U7, Ump};
 
 use tutti_graph::NodeKey;
@@ -280,7 +281,7 @@ fn out(node: u64, port: u16) -> Source {
 }
 
 fn editor(max: usize) -> (Editor, Executor) {
-    Editor::new(Prepare::new(SampleRate(RATE), Samples(max)))
+    Editor::new(Prepare::new(SampleRate(RATE), MaxBlock::of(Samples(max))))
 }
 
 /// Audio output `port` of `from` into input `port` of `to`, for each port.
@@ -936,7 +937,7 @@ fn an_export_is_the_live_render_for_signal_sources() {
         .fork(
             ForkTarget::Master,
             ForkMode::Offline,
-            Prepare::new(SampleRate(RATE), Samples(1024)),
+            Prepare::new(SampleRate(RATE), MaxBlock::of(Samples(1024))),
         )
         .expect("forks");
     let total = 60_000;

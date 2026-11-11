@@ -6,6 +6,7 @@
 //! included.
 
 use std::sync::{Arc, Mutex};
+use tutti_types::MaxBlock;
 
 mod common;
 use tutti_graph::UmpAt;
@@ -86,7 +87,7 @@ fn rig_with<N: tutti_graph::IntoNode>(
     max: usize,
     extra: impl FnOnce(&mut Editor),
 ) -> (Editor, Executor, N::Controls, Seen) {
-    let (mut ed, exec) = Editor::new(Prepare::new(SampleRate(RATE), Samples(max)));
+    let (mut ed, exec) = Editor::new(Prepare::new(SampleRate(RATE), MaxBlock::of(Samples(max))));
     let controls = ed.insert(NodeKey(1), "source", source);
     extra(&mut ed);
     let seen = Seen::default();
@@ -445,7 +446,9 @@ fn two_devices_notes_merge_on_the_channels_port() {
 /// each of the next two blocks folds into a per-note bend on the note. The
 /// request latches, so it is read every block. Adopting it sends the zone's
 /// default bend ranges once, in the first block (master and six members:
-/// seven registered controllers).
+/// seven registered controllers), after the All Sound Off and Reset All
+/// Controllers of the seven channels that entered MPE control (M1-100
+/// section 2.2.3).
 #[test]
 fn a_requested_mpe_mode_is_adopted_once() {
     let member = MidiChannel::of(1);
@@ -478,9 +481,21 @@ fn a_requested_mpe_mode_is_adopted_once() {
             Ok(Message::Midi2(_, Voice2::Registered { .. }))
         )
     };
+    let is_stop = |ev: &Ump| {
+        matches!(
+            decode(*ev),
+            Ok(Message::Midi2(_, Voice2::ControlChange { controller, .. }))
+                if controller == CCNumber::ALL_SOUND_OFF || controller == CCNumber::RESET_ALL
+        )
+    };
     let resets: Vec<u64> = seen.iter().filter(|s| is_rpn(&s.2)).map(|s| s.1).collect();
     assert_eq!(resets, vec![0; 7], "the ranges, once, at frame 0: {seen:?}");
-    let music: Vec<_> = seen.iter().filter(|s| !is_rpn(&s.2)).collect();
+    let stops: Vec<u64> = seen.iter().filter(|s| is_stop(&s.2)).map(|s| s.1).collect();
+    assert_eq!(stops, vec![0; 14], "the stops, once, at frame 0: {seen:?}");
+    let music: Vec<_> = seen
+        .iter()
+        .filter(|s| !is_rpn(&s.2) && !is_stop(&s.2))
+        .collect();
     let folded: Vec<Option<u8>> = music[1..].iter().map(|s| note_of(s.2)).collect();
     assert_eq!(folded, vec![Some(60), Some(60)], "{seen:?}");
 }
@@ -660,7 +675,8 @@ fn an_input_nodes_fork_is_silent() {
 /// (frame 1 536 plus offset 8).
 #[test]
 fn an_event_tap_hands_midi_back_and_counts_drops() {
-    let (mut ed, mut exec) = Editor::new(Prepare::new(SampleRate(RATE), Samples(512)));
+    let (mut ed, mut exec) =
+        Editor::new(Prepare::new(SampleRate(RATE), MaxBlock::of(Samples(512))));
     let (inlet, mut keys) = EventInletNode::pair(256);
     ed.insert(NodeKey(1), "keys", inlet);
     let mut out = common::sink(&mut ed, 0, &[(1, 0)]);

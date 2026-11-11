@@ -189,12 +189,13 @@ const PORTS_PER_GROUP: usize = MIDI_INPUT_PORTS;
 /// Group alone). See the module docs.
 ///
 /// ```
+/// use tutti_types::MaxBlock;
 /// use tutti_types::{SampleRate, Samples};
 /// use tutti_graph::NodeKey;
 /// use tutti_graph::{Editor, Prepare};
 /// use tutti_midi_runtime::MidiIngestNode;
 ///
-/// let (mut editor, _exec) = Editor::new(Prepare::new(SampleRate(48_000.0), Samples(512)));
+/// let (mut editor, _exec) = Editor::new(Prepare::new(SampleRate(48_000.0), MaxBlock::of(Samples(512))));
 /// // Four device slots, none wired yet.
 /// let controls = editor.insert(NodeKey(1), "midi in", MidiIngestNode::new(4));
 /// assert_eq!(controls.pending_mpe_mode(), None);
@@ -346,9 +347,10 @@ pub struct MidiIngestControls {
 impl MidiIngestControls {
     /// Ingest classic MPE in `mode` from the next block. Control thread.
     ///
-    /// A new mode resets MPE voice allocation: a note sounding through a
-    /// member channel loses its mapping. Setting the mode in force changes
-    /// nothing.
+    /// A new mode stops and resets the channels that enter or leave MPE
+    /// control (M1-100 §2.2.3: All Sound Off and Reset All Controllers, sent
+    /// ahead of the new zones' default bend ranges); the others keep their
+    /// notes. Setting the mode in force changes nothing.
     pub fn set_mpe_mode(&self, mode: MpeMode) {
         self.request.publish(Some(mode));
     }

@@ -283,6 +283,7 @@ impl CpalDriver {
 /// # Examples
 ///
 /// ```
+/// use tutti_types::MaxBlock;
 /// use std::sync::Arc;
 /// use tutti_engine::Engine;
 /// use tutti_transport::Transport;
@@ -293,7 +294,7 @@ impl CpalDriver {
 /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
 /// let rate = SampleRate(48_000.0);
 /// let transport = Transport::new(rate);
-/// let (mut editor, executor) = Editor::new(Prepare::new(rate, Samples(512)));
+/// let (mut editor, executor) = Editor::new(Prepare::new(rate, MaxBlock::of(Samples(512))));
 /// let engine = Engine::new(&transport, &mut editor, executor)?;
 /// let state = Arc::new(AudioCallbackState::new(engine));
 ///

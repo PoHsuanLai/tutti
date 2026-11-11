@@ -125,6 +125,7 @@ the sources into a ring a lane and a control thread drains them through the
 whole reason these algorithms need no engine vocabulary.
 
 ```rust
+use tutti_types::MaxBlock;
 use tutti_measure::correlate;
 use tutti_graph::{Cx, Editor, Io, Node, Prepare, Shape, Status, Transport, Unforkable};
 use tutti_graph::{OutPort, Source};
@@ -148,7 +149,7 @@ impl Node for Tone {
 }
 
 // A tap on the graph's two outputs.
-let (mut editor, mut executor) = Editor::new(Prepare::new(SampleRate(48_000.0), Samples(64)));
+let (mut editor, mut executor) = Editor::new(Prepare::new(SampleRate(48_000.0), MaxBlock::of(Samples(64))));
 editor.insert(NodeKey(1), "tone", Unforkable(Tone));
 let out = |port| Source::Node(OutPort { node: NodeKey(1), port });
 editor.spec_mut().topology.set_outputs([out(0), out(1)]);

@@ -12,6 +12,7 @@ use tutti_graph::{
     Unforkable,
 };
 use tutti_graph::{OutPort, Source};
+use tutti_types::MaxBlock;
 use tutti_types::{ChannelLayout, Latency, SampleRate, Samples, UnitParam};
 
 struct Out;
@@ -28,7 +29,7 @@ impl Node for Out {
 }
 
 fn prep(max: usize) -> Prepare {
-    Prepare::new(SampleRate(48_000.0), Samples(max))
+    Prepare::new(SampleRate(48_000.0), MaxBlock::of(Samples(max)))
 }
 
 /// Runs `f` and asserts it moved the revision.

@@ -2,13 +2,14 @@
 //! mirror of the tap.
 
 use tutti_session::{GraphSource, InletError, Session};
+use tutti_types::MaxBlock;
 use tutti_types::{ChannelLayout, InterleavedMut, SampleRate, Samples};
 
 const RATE: SampleRate = SampleRate(48_000.0);
 
 fn offline() -> Session {
     Session::builder()
-        .build_offline(RATE, ChannelLayout::STEREO, Samples(1_024))
+        .build_offline(RATE, ChannelLayout::STEREO, MaxBlock::of(Samples(1_024)))
         .expect("builds")
 }
 

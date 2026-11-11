@@ -15,6 +15,7 @@
 
 use std::hint::black_box;
 use std::sync::Arc;
+use tutti_types::MaxBlock;
 
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use tutti_cpal::{AudioCallbackState, OutputBlock, process_audio};
@@ -30,7 +31,7 @@ use tutti_types::{ChannelLayout, Hz, InterleavedMut, Samples};
 const SR: f64 = 48_000.0;
 
 fn state(outputs: usize, tap_open: bool) -> (Arc<AudioCallbackState>, Option<TapReader>) {
-    let (mut ed, exec) = Editor::new(Prepare::new(SampleRate(SR), Samples(512)));
+    let (mut ed, exec) = Editor::new(Prepare::new(SampleRate(SR), MaxBlock::of(Samples(512))));
     ed.insert(NodeKey(1), "sine", Osc::sine(Hz(440.0)));
     ed.spec_mut().topology.set_outputs(vec![
         Source::Node(OutPort {

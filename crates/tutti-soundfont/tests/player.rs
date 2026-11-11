@@ -375,22 +375,37 @@ fn two_bank_soundfont() -> Arc<SoundFont> {
     )
 }
 
-// Arm 0x00 (bank select). Mutation (run): the arm's `set_bank` -> `()` leaves
-// bank 0 selected and fails the second assertion.
+// Bank Select is held until the next Program Change (M1 p.13: "the receiving
+// device must remember that bank number in readiness for the following Program
+// Change"). Mutation (run): CC 0 applying the bank at once fails the first
+// assertion; the program change not applying the held bank fails the last.
 #[test]
-fn cc_0_selects_the_bank() {
+fn bank_select_is_held_until_the_program_change() {
     let font = two_bank_soundfont();
-    let level = |bank: Option<u8>| {
+    let level = |select: bool, program: bool| {
         let mut synthesizer = Rig::dry(&font);
-        if let Some(bank) = bank {
-            cc(&mut synthesizer, CCNumber::BANK_SELECT, bank);
+        if select {
+            cc(&mut synthesizer, CCNumber::BANK_SELECT, 1);
+        }
+        if program {
+            synthesizer.voice2(
+                0,
+                Voice2::ProgramChange {
+                    program: U7::of(0),
+                    bank: None,
+                },
+            );
         }
         synthesizer.note_on(0, 69, 40);
         energy(&mut synthesizer, 4096)
     };
-    let loud = level(None);
+    let loud = level(false, false);
     assert!(loud > 20.0, "bank 0 plays the sine: {loud}");
-    assert!(level(Some(1)) < loud * 0.01, "bank 1 is 144 dB down");
+    assert!(level(true, false) > 20.0, "Bank Select alone keeps bank 0");
+    assert!(
+        level(true, true) < loud * 0.01,
+        "the Program Change applies bank 1, 144 dB down"
+    );
 }
 
 // A Program Change's bank (the translator puts a MIDI 1.0 Bank Select there)

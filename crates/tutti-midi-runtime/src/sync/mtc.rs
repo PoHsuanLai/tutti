@@ -176,6 +176,11 @@ impl SmpteTimecode {
     }
 }
 
+/// Frames the eight pieces of a cycle take to send, and so how old the
+/// assembled position is when it completes (MTC, Quarter Frame Message
+/// Implementation).
+const CYCLE_FRAMES: u64 = 2;
+
 /// Assembles 8 MTC quarter-frame messages into full SMPTE timecode.
 ///
 /// MTC sends timecode as 8 sequential quarter-frame messages (0xF1 data),
@@ -245,9 +250,14 @@ impl MtcDecoder {
     fn assemble(&mut self) {
         let n = &self.nibbles;
 
-        let frames = n[0] | (n[1] << 4);
-        let seconds = n[2] | (n[3] << 4);
-        let minutes = n[4] | (n[5] << 4);
+        // The bits the spec reserves are not read: "Undefined and reserved for
+        // future use. Transmitter must set these bits to 0 and receiver should
+        // ignore!" (MTC, Quarter Frame Messages): the top three bits of the
+        // frame field, the top two of seconds and of minutes, and the top bit
+        // of the hours nibble pair (bit 3 of piece 7, above the rate code).
+        let frames = n[0] | ((n[1] & 0x01) << 4);
+        let seconds = n[2] | ((n[3] & 0x03) << 4);
+        let minutes = n[4] | ((n[5] & 0x03) << 4);
         let hours_low = n[6];
         let hours_high_and_rate = n[7];
 
@@ -264,15 +274,31 @@ impl MtcDecoder {
         // A position the wire framed but no clock reads (hour 28, frame 31) is
         // a corrupt frame: it is dropped, and `timecode` keeps its last value.
         if let Some(timecode) = SmpteTimecode::new(hours, minutes, seconds, frames, frame_rate) {
-            self.timecode = Some(timecode);
+            // The eight pieces took two frames to send, so the position they
+            // describe is two frames old when the last arrives: "A receiver of
+            // this time must keep an internal offset of +2 frames for
+            // displaying." The decoder keeps it, so `timecode` is the time of
+            // the last piece.
+            self.timecode = Some(SmpteTimecode::from_frame_count(
+                timecode.frame_count() + CYCLE_FRAMES,
+                frame_rate,
+            ));
         }
     }
 
     /// The most recently completed timecode, or `None` before the first full
     /// frame has been assembled.
     ///
-    /// MTC transmits one full position per *two* frames, so this lags the sender
-    /// by up to two frames even when every byte arrives.
+    /// It is the time of the last quarter-frame that completed it: the eight
+    /// pieces name the frame piece 0 fell on, and the spec says "When the last
+    /// quarter frame message (F1 7X) arrives and the time can be fully
+    /// assembled, the information is now actually 2 frames old. A receiver of
+    /// this time must keep an internal offset of +2 frames for displaying."
+    /// The decoder applies it (hours wrap at 24), so what the sender's label
+    /// said plus two frames is reported here. It is for forward running time
+    /// code, the only direction `feed` assembles. MTC transmits one full
+    /// position per *two* frames, so this is current only at the instant the
+    /// cycle completes.
     pub fn timecode(&self) -> Option<SmpteTimecode> {
         self.timecode
     }

@@ -6,8 +6,11 @@
 
 /// SMPTE frame rate for MTC/LTC.
 ///
-/// The discriminants are the two-bit rate field MTC carries in its final
-/// quarter-frame, so they are wire values and must not be renumbered.
+/// The discriminants are not MTC's wire values: they are the encoding the
+/// clock master keeps in an atomic (`from_u8` reads it back). MTC's two-bit
+/// rate field in the last quarter-frame is 0 for 24, 1 for 25, 2 for 30
+/// drop-frame and 3 for 30 non-drop, and has no 29.97 non-drop; the one
+/// mapping of it is in the MTC decoder and the clock master's encoder.
 ///
 /// # Two rates are 29.97, and the difference is counting, not speed
 ///

@@ -49,14 +49,18 @@ fn lookup_resolves_mapped_slots() {
 }
 
 /// Run a `(Offset, Ump)` through `midi_to_mapped_controller`.
-fn mapped(event: &UmpAt) -> Option<(MidiChannel, usize, f64)> {
+fn mapped(event: &UmpAt) -> Option<MappedController> {
     midi_to_mapped_controller(&event.1)
 }
 
 #[test]
 fn cc_decodes_to_controller_and_normalized_value() {
     // CC 74 (brightness) = 64 on channel 2.
-    let (ch, ctrl, value) = mapped(&(
+    let MappedController {
+        channel: ch,
+        controller: ctrl,
+        value,
+    } = mapped(&(
         Offset::ZERO,
         midi::cc(
             MidiGroup::FIRST,
@@ -68,12 +72,16 @@ fn cc_decodes_to_controller_and_normalized_value() {
     .unwrap();
     assert_eq!(ch, MidiChannel::of(2));
     assert_eq!(ctrl, 74);
-    assert!((value - 64.0 / 127.0).abs() < 0.01);
+    assert!((value.get() - 64.0 / 127.0).abs() < 0.01);
 }
 
 #[test]
 fn channel_pressure_decodes_to_aftertouch() {
-    let (ch, ctrl, value) = mapped(&(
+    let MappedController {
+        channel: ch,
+        controller: ctrl,
+        value,
+    } = mapped(&(
         Offset::ZERO,
         midi::channel_pressure(
             MidiGroup::FIRST,
@@ -84,12 +92,16 @@ fn channel_pressure_decodes_to_aftertouch() {
     .unwrap();
     assert_eq!(ch, MidiChannel::of(0));
     assert_eq!(ctrl, CTRL_AFTERTOUCH);
-    assert!((value - 1.0).abs() < 0.01);
+    assert!((value.get() - 1.0).abs() < 0.01);
 }
 
 #[test]
 fn pitch_bend_center_is_half() {
-    let (ch, ctrl, value) = mapped(&(
+    let MappedController {
+        channel: ch,
+        controller: ctrl,
+        value,
+    } = mapped(&(
         Offset::ZERO,
         midi::pitch_bend(
             MidiGroup::FIRST,
@@ -101,7 +113,7 @@ fn pitch_bend_center_is_half() {
     assert_eq!(ch, MidiChannel::of(4));
     assert_eq!(ctrl, CTRL_PITCH_BEND);
     // Center bend maps to the middle of the unit range.
-    assert!((value - 0.5).abs() < 0.01);
+    assert!((value.get() - 0.5).abs() < 0.01);
 }
 
 #[test]
@@ -874,7 +886,14 @@ fn a_packet_is_mapped_by_what_it_decodes_to() {
         },
     ));
     // Full scale widens to 0xFFFF_FFFF, which is exactly 1.0.
-    assert_eq!(mapped(&one_cc), Some((MidiChannel::of(2), 1, 1.0)));
+    assert_eq!(
+        mapped(&one_cc),
+        Some(MappedController {
+            channel: MidiChannel::of(2),
+            controller: 1,
+            value: Normalized::of(1.0),
+        })
+    );
     assert_eq!(
         mapped(&(Offset::ZERO, midi::timing_clock(MidiGroup::FIRST))),
         None

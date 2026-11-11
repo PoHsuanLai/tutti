@@ -94,14 +94,14 @@ fn read_frame(stream: &interprocess::local_socket::Stream) -> Option<(Vec<u8>, H
     stream.read_exact(&mut len).ok()?;
     let mut bytes = vec![0u8; u32::from_be_bytes(len) as usize];
     stream.read_exact(&mut bytes).ok()?;
-    let message = bincode::deserialize(&bytes).ok()?;
+    let message = postcard::from_bytes(&bytes).ok()?;
     Some((bytes, message))
 }
 
 fn send(stream: &interprocess::local_socket::Stream, message: &BridgeMessage) -> bool {
     use std::io::Write;
     let mut stream = stream;
-    let data = bincode::serialize(message).expect("a reply serializes");
+    let data = postcard::to_allocvec(message).expect("a reply serializes");
     stream.write_all(&(data.len() as u32).to_be_bytes()).is_ok() && stream.write_all(&data).is_ok()
 }
 

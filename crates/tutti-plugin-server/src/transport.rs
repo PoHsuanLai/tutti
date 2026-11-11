@@ -1,6 +1,6 @@
 //! IPC transport — sync wire framing for host↔server message pairs.
 //!
-//! Framing: u32 big-endian length prefix + bincode payload. The payload's
+//! Framing: u32 big-endian length prefix + postcard payload. The payload's
 //! schema and its version constant are `tutti_plugin::server`'s; this module
 //! only moves bytes.
 //!
@@ -38,7 +38,7 @@ pub(crate) trait Transport: Send {
     ///
     /// Returns an error on EOF (the host disconnected), a short read, a length
     /// prefix over `MAX_FRAME_BYTES` (a peer that cannot frame), or a payload
-    /// bincode cannot decode — the last meaning a protocol-version mismatch the
+    /// postcard cannot decode — the last meaning a protocol-version mismatch the
     /// `Ready` handshake failed to catch.
     fn recv(&mut self) -> BridgeResult<HostMessage>;
 

@@ -75,14 +75,14 @@ fn recv_host_msg(stream: &interprocess::local_socket::Stream) -> HostMessage {
     let len = u32::from_be_bytes(len_buf) as usize;
     let mut buf = vec![0u8; len];
     stream.read_exact(&mut buf).unwrap();
-    bincode::deserialize(&buf).unwrap()
+    postcard::from_bytes(&buf).unwrap()
 }
 
 /// Send a `BridgeMessage` to an interprocess socket (blocking).
 fn send_bridge_msg(stream: &interprocess::local_socket::Stream, msg: &BridgeMessage) {
     use std::io::Write;
     let mut stream = stream;
-    let data = bincode::serialize(msg).unwrap();
+    let data = postcard::to_allocvec(msg).unwrap();
     let len = (data.len() as u32).to_be_bytes();
     stream.write_all(&len).unwrap();
     stream.write_all(&data).unwrap();

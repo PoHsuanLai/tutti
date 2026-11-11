@@ -332,7 +332,7 @@ and to the set of served formats (which excludes VST2).
   the file could not be written.
 - **The wire** is `tutti_plugin_types::{ProbeOutcome, write_result, read_result}`
   (feature `probe-wire`, which `tutti-plugin` and the probe both turn on): a
-  framed bincode payload (magic and version, length, bytes) staged at
+  framed postcard payload (magic and version, length, bytes) staged at
   `<result>.tmp` and renamed. The frame makes a file cut short some other way a
   refused read (`ResultError::Truncated`), not a prefix decoded as far as it
   goes. The failure carries the loader's message only; the stage a host crate

@@ -201,13 +201,13 @@ mod tests {
 
     /// The wire carries the reshaped struct intact, bus lists included.
     #[test]
-    fn round_trips_through_bincode() {
+    fn round_trips_through_postcard() {
         let l = layout(
             &[ChannelLayout::STEREO, ChannelLayout::MONO],
             &[ChannelLayout::STEREO],
         );
-        let bytes = bincode::serialize(&l).unwrap();
-        let back: SlabLayout = bincode::deserialize(&bytes).unwrap();
+        let bytes = postcard::to_allocvec(&l).unwrap();
+        let back: SlabLayout = postcard::from_bytes(&bytes).unwrap();
         assert_eq!(back, l);
     }
 }

@@ -18,13 +18,13 @@ workspace = true
 default = []
 # Enables Serialize/Deserialize on the wire-eligible types (TransportInfo,
 # ParameterChanges, EditorSize, EditorCapabilities, WindowHandle). Required
-# by tutti-plugin's bincode IPC protocol; host crates that don't need IPC
+# by the plugin IPC protocol (postcard); host crates that don't need IPC
 # don't pay for the serde dep.
 serde = ["dep:serde", "arrayvec/serde", "bitflags/serde", "tutti-types/serde"]
 
 # The probe's result file (`ProbeOutcome`, `write_result`, `read_result`): the
 # wire between `tutti-plugin-probe` and the host that spawned it.
-probe-wire = ["serde", "dep:bincode"]
+probe-wire = ["serde", "dep:postcard"]
 
 # `FakePlugin`: a plugin that records every call, for testing what drives one. A
 # consumer's dev-dependency; nothing ships it.
@@ -46,7 +46,7 @@ tutti-ump = { path = "../tutti-ump", default-features = false }
 serde = { version = "1", features = ["derive"], optional = true }
 raw-window-handle = "0.6"
 # The result file's payload encoding, with `probe-wire`.
-bincode = { version = "1", optional = true }
+postcard = { version = "1.1.3", default-features = false, features = ["use-std"], optional = true }
 # Structured editor-open errors (`EditorError`).
 thiserror.workspace = true
 
@@ -54,7 +54,7 @@ thiserror.workspace = true
 # The no-alloc gates on the point storage (`PointBuf`, `ParameterChanges`).
 assert_no_alloc = { version = "1", default-features = false }
 # Wire-format round-trip tests for the serde-gated metadata types.
-bincode = "1"
+postcard = { version = "1.1.3", default-features = false, features = ["use-std"] }
 # The plugin catalog is JSON, so its backward-compat test needs it too.
 serde_json = "1"
 # `bundle`'s tests assemble real bundle directories on disk — the layout is the

@@ -37,7 +37,7 @@ impl Mock {
     /// The server says something unprompted, as a plugin does.
     fn say(&self, message: &BridgeMessage) {
         use std::io::Write;
-        let data = bincode::serialize(message).unwrap();
+        let data = postcard::to_allocvec(message).unwrap();
         let mut stream = &*self.stream;
         stream
             .write_all(&(data.len() as u32).to_be_bytes())
@@ -103,7 +103,7 @@ fn mock() -> (Ipc, Mock) {
     .unwrap();
     let stream = Arc::new(listener.accept().unwrap());
     let reply = |stream: &interprocess::local_socket::Stream, message: &BridgeMessage| {
-        let data = bincode::serialize(message).unwrap();
+        let data = postcard::to_allocvec(message).unwrap();
         let mut stream = stream;
         stream
             .write_all(&(data.len() as u32).to_be_bytes())
@@ -129,7 +129,7 @@ fn mock() -> (Ipc, Mock) {
             if stream.read_exact(&mut bytes).is_err() {
                 break;
             }
-            let Ok(message) = bincode::deserialize::<HostMessage>(&bytes) else {
+            let Ok(message) = postcard::from_bytes::<HostMessage>(&bytes) else {
                 break;
             };
             match &message {

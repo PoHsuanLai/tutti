@@ -277,7 +277,17 @@ fn connect_when_listening(socket: &Path, process: &mut Child) -> BridgeResult<Co
 fn handshake(config: &BridgeConfig, process: &mut Child) -> BridgeResult<ControlStream> {
     let mut stream = connect_when_listening(&config.socket_path, process)?;
     let timeout = Duration::from_millis(config.timeout_ms);
-    match ipc::recv_within(&mut stream, timeout)? {
+    // A server from before version 27 frames its `Ready` in bincode, which does
+    // not decode as one message of ours: say which binary is stale rather than
+    // report a bare codec error.
+    let ready = ipc::recv_within(&mut stream, timeout).map_err(|e| match e {
+        BridgeError::Serialization(why) => BridgeError::Serialization(format!(
+            "the plugin-server's handshake does not decode ({why}): a server from \
+             another build (protocol 26 or older?), rebuild the plugin-server"
+        )),
+        other => other,
+    })?;
+    match ready {
         BridgeMessage::Ready { protocol_version } => {
             crate::protocol::check_protocol_version(protocol_version)?;
             Ok(stream)
@@ -912,30 +922,10 @@ mod tests {
         );
     }
 
-    /// A leftover v3 `plugin-server` on `PATH` must be refused at the handshake
-    /// with a named error, not crash and not proceed.
-    ///
-    /// This matters because bincode is not self-describing. A v3 server that got
-    /// as far as `SetupSharedMemory` would read our `slots` field out of the
-    /// bytes where its own build expects `channels`, get a plausible small
-    /// integer, and map a wrong-sized region — in silence. The version gate is
-    /// what stops that, so it has to fire before any payload is sent, and the
-    /// failure has to name both versions or the operator has no idea which
-    /// binary is stale.
-    ///
-    /// Drives the real [`handshake`] against a socket that speaks v3, rather
-    /// than unit-testing `check_protocol_version` in isolation — the risk being
-    /// covered is a handshake path that forgets to call the gate at all.
-    #[test]
-    fn a_stale_v3_server_is_refused_with_a_named_version_error() {
-        use crate::protocol::PROTOCOL_VERSION;
+    /// Drives the real [`handshake`] against a stand-in server whose first frame
+    /// is `body`, and returns the error it must end in.
+    fn handshake_against(body: Vec<u8>) -> BridgeError {
         use interprocess::local_socket::{ListenerOptions, traits::Listener as _};
-
-        const STALE_VERSION: u32 = 3;
-        assert_ne!(
-            STALE_VERSION, PROTOCOL_VERSION,
-            "this test is meaningless once the current version reaches 3"
-        );
 
         // Unique per run. A fixed name collides with a leftover socket from an
         // earlier run, and `connect` then fails with EINVAL *before* the version
@@ -950,13 +940,9 @@ mod tests {
             let Ok(stream) = listener.accept() else {
                 return;
             };
-            let msg = BridgeMessage::Ready {
-                protocol_version: STALE_VERSION,
-            };
-            let data = bincode::serialize(&msg).unwrap();
             let mut stream = &stream;
-            let _ = stream.write_all(&(data.len() as u32).to_be_bytes());
-            let _ = stream.write_all(&data);
+            let _ = stream.write_all(&(body.len() as u32).to_be_bytes());
+            let _ = stream.write_all(&body);
         });
 
         let config = BridgeConfig {
@@ -969,16 +955,50 @@ mod tests {
         // lingering stand-in stays alive for the whole test; it is killed below.
         let mut stand_in = spawn_stand_in(StandIn::Lingers);
         let err = handshake(&config, &mut stand_in)
-            .expect_err("a v3 server must not complete the v4 handshake");
+            .expect_err("a stale server must not complete the handshake");
         let _ = stand_in.kill();
         let _ = stand_in.wait();
+        let _ = server.join();
+        let _ = std::fs::remove_file(&path);
+        err
+    }
 
+    /// A leftover v3 `plugin-server` on `PATH` must be refused at the handshake
+    /// with a named error, not crash and not proceed.
+    ///
+    /// This matters because the wire is not self-describing. A v3 server that got
+    /// as far as `SetupSharedMemory` would read our `slots` field out of the
+    /// bytes where its own build expects `channels`, get a plausible small
+    /// integer, and map a wrong-sized region — in silence. The version gate is
+    /// what stops that, so it has to fire before any payload is sent, and the
+    /// failure has to name both versions or the operator has no idea which
+    /// binary is stale.
+    ///
+    /// Drives the real [`handshake`] against a socket that speaks v3, rather
+    /// than unit-testing `check_protocol_version` in isolation — the risk being
+    /// covered is a handshake path that forgets to call the gate at all.
+    #[test]
+    fn a_stale_v3_server_is_refused_with_a_named_version_error() {
+        use crate::protocol::PROTOCOL_VERSION;
+
+        const STALE_VERSION: u32 = 3;
+        assert_ne!(
+            STALE_VERSION, PROTOCOL_VERSION,
+            "this test is meaningless once the current version reaches 3"
+        );
+
+        let err = handshake_against(
+            postcard::to_allocvec(&BridgeMessage::Ready {
+                protocol_version: STALE_VERSION,
+            })
+            .unwrap(),
+        );
         match err {
             BridgeError::ProtocolMismatch { expected, got } => {
                 assert_eq!(expected, PROTOCOL_VERSION);
                 assert_eq!(got, STALE_VERSION);
             }
-            other => panic!("expected a ProtocolMismatch naming both versions, got: {other}"),
+            ref other => panic!("expected a ProtocolMismatch naming both versions, got: {other}"),
         }
 
         // The operator reads this line, so it must carry both numbers.
@@ -988,9 +1008,29 @@ mod tests {
                 && text.contains(&PROTOCOL_VERSION.to_string()),
             "the message must name both versions, got: {text}"
         );
+    }
 
-        let _ = server.join();
-        let _ = std::fs::remove_file(&path);
+    /// **A server from the bincode wire (protocol 26 and older) is refused at
+    /// the handshake, and the error says to rebuild it.** Its `Ready` is a
+    /// four-byte little-endian variant tag then the version as a four-byte
+    /// little-endian `u32`, written out here from bincode 1's layout; under
+    /// postcard those bytes do not decode as one message, so the version is
+    /// never read and the codec error is what the operator would otherwise see.
+    #[test]
+    fn a_bincode_era_server_is_refused_with_a_rebuild_hint() {
+        let ready = postcard::to_allocvec(&BridgeMessage::Ready {
+            protocol_version: 0,
+        })
+        .unwrap()[0];
+        let mut bincode_ready = vec![ready, 0, 0, 0];
+        bincode_ready.extend_from_slice(&26u32.to_le_bytes());
+
+        match handshake_against(bincode_ready) {
+            BridgeError::Serialization(m) => {
+                assert!(m.contains("rebuild the plugin-server"), "{m}");
+            }
+            other => panic!("expected a Serialization error naming a rebuild, got: {other}"),
+        }
     }
 
     /// The connect waits for a socket that is not bound yet, instead of failing.

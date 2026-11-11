@@ -141,11 +141,10 @@ pub mod normalized_f64_opt {
 
 /// A byte field (a state chunk) as one byte string on the wire.
 ///
-/// Serde writes a plain `Vec<u8>` as a sequence, which bincode encodes one
+/// Serde writes a plain `Vec<u8>` as a sequence, which the codec encodes one
 /// `u8` call at a time; a state chunk is megabytes. As bytes it is one copy
-/// each way (doc 027 P2b). The encoding is the same: bincode writes a byte
-/// string and a byte sequence alike, as a `u64` length and the bytes, so this
-/// is not a protocol change.
+/// each way (doc 027 P2b). The encoding is the same: postcard writes a byte
+/// string and a byte sequence alike, as a varint length and the bytes.
 pub mod bytes {
     use std::fmt;
 
@@ -222,23 +221,26 @@ mod tests {
     #[test]
     fn a_list_past_the_cap_is_rejected() {
         let n = MIDI_STACK_CAPACITY as u64 + 1;
-        let mut bytes = n.to_le_bytes().to_vec();
+        // The length is a varint, as postcard writes a sequence's.
+        let mut bytes = postcard::to_allocvec(&n).unwrap();
         for i in 0..n as u32 {
-            bytes.extend(bincode::serialize(&(i, [0x2090_3C40u32, 0, 0, 0])).unwrap());
+            bytes.extend(postcard::to_allocvec(&(i, [0x2090_3C40u32, 0, 0, 0])).unwrap());
         }
-        assert!(bincode::deserialize::<Holder>(&bytes).is_err());
+        assert!(postcard::from_bytes::<Holder>(&bytes).is_err());
 
         let full: MidiEventVec = (0..MIDI_STACK_CAPACITY as u32).map(ev).collect();
         let at_cap = Holder { events: full };
-        let back: Holder = bincode::deserialize(&bincode::serialize(&at_cap).unwrap()).unwrap();
+        let back: Holder = postcard::from_bytes(&postcard::to_allocvec(&at_cap).unwrap()).unwrap();
         assert_eq!(back, at_cap);
     }
 
     /// **The typed parameter and rate fields encode as bare numbers**: a `u32`
     /// id, an `f32` value (not the `f64` a `Normalized` holds), an `f64` rate,
     /// an `Option<f32>` as a tag byte and the value. The expected bytes are
-    /// written out from those widths, so a layout change fails here instead of
-    /// as a desync between two binaries built apart.
+    /// written out from postcard's rules (an integer or a variant tag is a
+    /// varint, seven bits a byte with the low group first; a float is its
+    /// little-endian bytes), so a layout change fails here instead of as a
+    /// desync between two binaries built apart.
     ///
     /// Mutation (run): `normalized::serialize` writing the `f64` →
     /// `SetParameter`, `ParameterValue` and `ParameterChanged` differ → fails.
@@ -251,10 +253,10 @@ mod tests {
             param_id: ParamId::new(0x0102_0304),
             value: Normalized::of(0.25),
         };
-        // variant 3, id, 0.25f32
+        // variant 3, id 0x0102_0304 as a varint, 0.25f32
         assert_eq!(
-            bincode::serialize(&set).unwrap(),
-            [3, 0, 0, 0, 4, 3, 2, 1, 0, 0, 128, 62]
+            postcard::to_allocvec(&set).unwrap(),
+            [3, 0x84, 0x86, 0x88, 0x08, 0, 0, 128, 62]
         );
 
         let rate = HostMessage::SetSampleRate {
@@ -262,8 +264,8 @@ mod tests {
         };
         // variant 8, 48000.0f64
         assert_eq!(
-            bincode::serialize(&rate).unwrap(),
-            [8, 0, 0, 0, 0, 0, 0, 0, 0, 112, 231, 64]
+            postcard::to_allocvec(&rate).unwrap(),
+            [8, 0, 0, 0, 0, 0, 112, 231, 64]
         );
 
         let set_reply = BridgeMessage::SampleRateSet {
@@ -273,20 +275,17 @@ mod tests {
         // variant 24 (26 until v25 removed `EditorOpened` and `EditorClosed`
         // ahead of it), 48000.0f64, no error
         assert_eq!(
-            bincode::serialize(&set_reply).unwrap(),
-            [24, 0, 0, 0, 0, 0, 0, 0, 0, 112, 231, 64, 0]
+            postcard::to_allocvec(&set_reply).unwrap(),
+            [24, 0, 0, 0, 0, 0, 112, 231, 64, 0]
         );
 
         let some = BridgeMessage::ParameterValue {
             value: Some(Normalized::of(0.25)),
         };
         // variant 3, Some, 0.25f32
-        assert_eq!(
-            bincode::serialize(&some).unwrap(),
-            [3, 0, 0, 0, 1, 0, 0, 128, 62]
-        );
+        assert_eq!(postcard::to_allocvec(&some).unwrap(), [3, 1, 0, 0, 128, 62]);
         let none = BridgeMessage::ParameterValue { value: None };
-        assert_eq!(bincode::serialize(&none).unwrap(), [3, 0, 0, 0, 0]);
+        assert_eq!(postcard::to_allocvec(&none).unwrap(), [3, 0]);
 
         let changed = BridgeMessage::ParameterChanged {
             index: ParamId::new(7),
@@ -295,12 +294,11 @@ mod tests {
         // variant 7 (9 until v25 removed `EditorOpened` and `EditorClosed` ahead
         // of it), index 7, 0.5f32
         assert_eq!(
-            bincode::serialize(&changed).unwrap(),
-            [7, 0, 0, 0, 7, 0, 0, 0, 0, 0, 0, 63]
+            postcard::to_allocvec(&changed).unwrap(),
+            [7, 7, 0, 0, 0, 63]
         );
 
-        let back: BridgeMessage =
-            bincode::deserialize(&[7, 0, 0, 0, 7, 0, 0, 0, 0, 0, 0, 63]).unwrap();
+        let back: BridgeMessage = postcard::from_bytes(&[7, 7, 0, 0, 0, 63]).unwrap();
         assert!(matches!(
             back,
             BridgeMessage::ParameterChanged { index, value }
@@ -318,7 +316,7 @@ mod tests {
         for (wire, want) in [(7.5f32, 1.0), (-3.0, 0.0), (f32::NAN, 0.0)] {
             let mut bytes = vec![3, 0, 0, 0, 1, 0, 0, 0];
             bytes.extend(wire.to_le_bytes());
-            match bincode::deserialize::<HostMessage>(&bytes).unwrap() {
+            match postcard::from_bytes::<HostMessage>(&bytes).unwrap() {
                 HostMessage::SetParameter { param_id, value } => {
                     assert_eq!(param_id, ParamId::new(1));
                     assert_eq!(value, Normalized::clamped(want));
@@ -339,27 +337,27 @@ mod tests {
     fn a_decoded_f64_normalized_is_clamped() {
         use crate::protocol::{BridgeMessage, HostMessage, Normalized, ParamId};
         for (raw, want) in [(7.5f64, 1.0), (-3.0, 0.0), (f64::NAN, 0.0), (0.25, 0.25)] {
-            let mut bytes = bincode::serialize(&HostMessage::GetParameterText {
+            let mut bytes = postcard::to_allocvec(&HostMessage::GetParameterText {
                 param_id: ParamId::new(1),
                 value: Normalized::of(0.5),
             })
             .unwrap();
             let end = bytes.len();
             bytes[end - 8..].copy_from_slice(&raw.to_le_bytes());
-            match bincode::deserialize::<HostMessage>(&bytes).unwrap() {
+            match postcard::from_bytes::<HostMessage>(&bytes).unwrap() {
                 HostMessage::GetParameterText { value, .. } => {
                     assert_eq!(value, Normalized::clamped(want), "{raw}");
                 }
                 other => panic!("{other:?}"),
             }
 
-            let mut bytes = bincode::serialize(&BridgeMessage::ParameterValueFromText {
+            let mut bytes = postcard::to_allocvec(&BridgeMessage::ParameterValueFromText {
                 value: Some(Normalized::of(0.5)),
             })
             .unwrap();
             let end = bytes.len();
             bytes[end - 8..].copy_from_slice(&raw.to_le_bytes());
-            match bincode::deserialize::<BridgeMessage>(&bytes).unwrap() {
+            match postcard::from_bytes::<BridgeMessage>(&bytes).unwrap() {
                 BridgeMessage::ParameterValueFromText { value } => {
                     assert_eq!(value, Some(Normalized::clamped(want)), "{raw}");
                 }
@@ -386,16 +384,16 @@ mod tests {
             bytes: Vec<u8>,
         }
         let data: Vec<u8> = (0..=255).collect();
-        let plain = bincode::serialize(&Plain {
+        let plain = postcard::to_allocvec(&Plain {
             bytes: data.clone(),
         })
         .unwrap();
-        let coded = bincode::serialize(&Coded {
+        let coded = postcard::to_allocvec(&Coded {
             bytes: data.clone(),
         })
         .unwrap();
         assert_eq!(coded, plain);
-        let back: Coded = bincode::deserialize(&plain).unwrap();
+        let back: Coded = postcard::from_bytes(&plain).unwrap();
         assert_eq!(back.bytes, data);
     }
 }

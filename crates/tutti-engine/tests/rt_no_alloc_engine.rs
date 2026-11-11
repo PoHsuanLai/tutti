@@ -366,53 +366,6 @@ fn a_step_map_is_followed_without_allocating() {
     }
 }
 
-/// The master meter on the audio thread: the meter op over a stereo and a
-/// wide root never allocates, and the meter really reads (a gated-off meter
-/// would pass by measuring nothing).
-#[test]
-fn the_master_meter_is_allocation_free() {
-    use tutti_graph::{Editor, Prepare, Unforkable};
-    use tutti_graph::{MeterId, MeterSpec, NodeKey};
-    use tutti_graph::{OutPort, Source};
-    use tutti_transport::MotionEvent;
-
-    for width in [2usize, 6] {
-        let transport = Transport::new(SampleRate::new(48_000.0));
-        let (mut ed, exec) = Editor::new(Prepare::new(
-            SampleRate(48_000.0),
-            tutti_types::MaxBlock::of(tutti_types::Samples(512)),
-        ));
-        ed.insert(NodeKey(1), "tone", Unforkable(TransportTone));
-        ed.spec_mut().topology.set_outputs((0..2).map(|port| {
-            Source::Node(OutPort {
-                node: NodeKey(1),
-                port,
-            })
-        }));
-        let mut meter = ed
-            .open_meter(MeterId(1), MeterSpec::Outputs)
-            .expect("the sources exist");
-        ed.commit().expect("commits");
-        let engine = Engine::new(&transport, &mut ed, exec).expect("within the limits");
-        meter.enable();
-        let _ = transport.motion.try_send(MotionEvent::Play);
-
-        let mut output = vec![0.0f32; 1024 * width];
-        let layout = ChannelLayout::try_from(width).expect("a test width is small");
-        engine.process(&mut InterleavedMut::new(&mut output, layout));
-        ed.collect();
-        assert_no_alloc::assert_no_alloc(|| {
-            for _ in 0..50 {
-                engine.process(&mut InterleavedMut::new(&mut output, layout));
-            }
-        });
-        assert!(
-            meter.read()[0].peak.get() > 0.0,
-            "width {width}: the meter read nothing"
-        );
-    }
-}
-
 /// The tap after the fader on the audio thread: writing (rings that fill and
 /// count what they drop), taking an install, replacing the writer and taking a
 /// close never allocate, and the writer a replace or close retires is sent

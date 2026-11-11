@@ -412,6 +412,12 @@ impl GraphSpec {
     ///   its inputs: a source that arrives earlier is delayed
     ///   ([`DelayKey::ParamEvent`](crate::DelayKey::ParamEvent)), and a later
     ///   one raises the node's arrival.
+    /// - **A node's mix is a port too.** [`ParamIn`] at
+    ///   [`NodeMix::ADDR`](crate::NodeMix::ADDR) drives the node's
+    ///   [`Mix`], which no node declares: the same rules
+    ///   (one source, replaces the base, the declick, PDC), with the mix cell
+    ///   (`Editor::set_mix`) as the base and the value clamped to `0..=1`
+    ///   whatever range [`set_param_range`](Self::set_param_range) is given.
     pub fn connect_param(&mut self, at: ParamIn, from: EventOut) -> Option<EventOut> {
         self.params.entry(at).or_default().source.replace(from)
     }

@@ -1185,3 +1185,27 @@ fn an_edge_is_a_target_apart_from_a_param_of_the_same_bits() {
     assert!(c.programs.contains_key(&target(1)));
     assert_eq!(c.programs.len(), 2);
 }
+
+/// A node's mix is a target like a param: keyed apart from an edge's gain and
+/// from a param of the node whose bits are the same, on the node it names, and
+/// a route to it compiles to its own program over its own range.
+///
+/// Mutation (run, failed): make `TargetKey::mix` build `Edge(node)` -> the
+/// mix and the edge share a key and the first assertion fails.
+#[test]
+fn a_mix_is_a_target_apart_from_an_edge_and_a_param_of_the_same_bits() {
+    let mix = TargetKey::mix(1);
+    assert_ne!(mix, TargetKey::edge(1));
+    assert_ne!(mix, target(1));
+    assert_eq!(mix.node(), Some(1));
+    let sources = [(SourceKey(1), lfo(LfoShape::Sine, seconds(1.0)))];
+    let routes = [
+        (RouteKey(1), route(1, RouteTarget::Param(mix), 0.5)),
+        (RouteKey(2), route(1, to(1), 0.25)),
+    ];
+    let targets = [(mix, ranged(0.0, 1.0)), (target(1), ranged(20.0, 200.0))];
+    let c = run(&sources, &routes, &targets).expect("compiles");
+    assert!(c.programs.contains_key(&mix));
+    assert!(c.programs.contains_key(&target(1)));
+    assert_eq!(c.programs.len(), 2);
+}

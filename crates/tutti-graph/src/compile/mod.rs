@@ -60,6 +60,7 @@ pub(crate) mod verify;
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::NodeKey;
+use crate::NodeMix;
 use crate::{Edge, EdgeId, FeedbackFrom, InPort, OutPort, Sink, Source};
 use tutti_types::{ChannelLayout, Latency, Samples, Tail};
 
@@ -568,10 +569,11 @@ pub fn compile(
     // Params: each is declared by its node, and each source is an output of
     // its own.
     for (&at, m) in graph.params() {
-        if node_shapes[dense[&at.node]]
-            .params
-            .index_of(at.param)
-            .is_none()
+        if at.param != NodeMix::ADDR
+            && node_shapes[dense[&at.node]]
+                .params
+                .index_of(at.param)
+                .is_none()
         {
             return Err(CompileError::UnknownParam { at });
         }
@@ -939,6 +941,27 @@ pub fn compile(
             params.push(PPort {
                 port: k as u16,
                 param,
+                from: e,
+                value,
+            });
+        }
+        // The node's mix, last: its port is past every declared index. Its
+        // source is aligned like any param's (the same key kind: the mix is a
+        // `ParamIn` of the node).
+        let at = ParamIn {
+            node: key,
+            param: NodeMix::ADDR,
+        };
+        if let Some(e) = graph.params().get(&at).and_then(|m| m.source) {
+            let value = align_event(
+                &mut em,
+                event_out_val[&e],
+                departure(dense[&e.node]).gap_to(arrival[n]),
+                DelayKey::ParamEvent { at, from: e },
+            );
+            params.push(PPort {
+                port: ParamPortOp::MIX_PORT,
+                param: NodeMix::ADDR,
                 from: e,
                 value,
             });

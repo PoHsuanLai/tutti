@@ -104,7 +104,7 @@ use tutti_types::{Amplitude, At, Frame, Latency, Mix, Samples};
 use crate::event::{Event, EventKind, EventWriter, SortedEvents};
 use crate::history::TransportHistory;
 use crate::io::Io;
-use crate::mode::{MODE_DECLICK, NodeMode};
+use crate::mode::{MODE_DECLICK, NodeMix, NodeMode};
 use crate::node::{
     ConstantMask, Cx, Env, InPlaceMask, Node, Prepare, SilenceMask, Status, Transport,
     TransportChanges,
@@ -1417,6 +1417,12 @@ impl Reference {
             let want = self.wanted.get(&key).copied().unwrap_or_default();
             // The mix as the block starts: the previous block's is its start.
             m.take_mix(self.wanted_mix.get(&key).map_or(1.0, |m| m.get()));
+            // Its lane, when a source drives it: the param port's rule over
+            // the source's events, the base being the mix just taken. A unit
+            // that has run is on a running port (a source connected now
+            // declicks), as the executor's lane built for it is.
+            let lane = self.run_mix(key, graph, frames, events, m.mix_to, !m.ran);
+            m.drive(lane);
             if want != m.heading && m.toggle(want) {
                 self.units.get_mut(&key).expect("unit present").1.reset();
             }
@@ -1674,6 +1680,59 @@ impl Reference {
 }
 
 impl Reference {
+    /// `key`'s mix lane for this block (`None`: it reads its base), through
+    /// the param port's rule (`ref_port`) at [`NodeMix::ADDR`], over the
+    /// source's events through its PDC delay. Its state is the node's
+    /// `ParamIn` entry at that address.
+    fn run_mix(
+        &mut self,
+        key: NodeKey,
+        graph: &ValidGraph,
+        frames: usize,
+        events: &BTreeMap<EventOut, Vec<Event>>,
+        base: f32,
+        fresh: bool,
+    ) -> Option<Vec<f32>> {
+        let at = ParamIn {
+            node: key,
+            param: NodeMix::ADDR,
+        };
+        let entry = graph.params().get(&at);
+        let source = entry.and_then(|m| m.source);
+        if source.is_none() && !self.params.contains_key(&at) {
+            return None;
+        }
+        let range = self
+            .ranges
+            .get(&at)
+            .copied()
+            .or(entry.map(|m| m.range))
+            .unwrap_or(NodeMix::DEFAULT_RANGE);
+        let evs: Vec<Event> = match source {
+            Some(from) => {
+                let src = events[&from].clone();
+                match self.event_lines.get_mut(&DelayKey::ParamEvent { at, from }) {
+                    Some(f) => fifo_run(f, &src, frames),
+                    None => src,
+                }
+            }
+            None => Vec::new(),
+        };
+        let st = self.params.entry(at).or_default();
+        ref_port(
+            st,
+            fresh,
+            RefPortIn {
+                param: NodeMix::ADDR,
+                b1: base,
+                range: NodeMix::lane_range(range),
+                source,
+                events: &evs,
+                frames,
+            },
+        )
+    }
+
     /// Each declared param of `key` for this block: `Some` of its values
     /// when modulated or declicking, `None` when it reads its base. Written
     /// from the spec and the port outputs alone (see the module docs).
@@ -1910,6 +1969,11 @@ struct RefMode {
     held_in: Vec<RefHeld>,
     /// What the node's event outputs held when it was parked.
     owed: BTreeMap<u16, RefHeld>,
+    /// The mix lane's value at each frame of this block, when a source drives
+    /// it and delivers.
+    lane: Option<Vec<f32>>,
+    /// Whether the node has run a block.
+    ran: bool,
 }
 
 /// What one frame of a node op does.
@@ -1953,6 +2017,8 @@ impl RefMode {
             lines: Vec::new(),
             held_in: (0..shape.event_in).map(|_| RefHeld::default()).collect(),
             owed: BTreeMap::new(),
+            lane: None,
+            ran: false,
         };
         m.relined(latency);
         m
@@ -1986,6 +2052,16 @@ impl RefMode {
         self.mix_to = to;
     }
 
+    /// This block's lane: its values replace the ramp, and the next block
+    /// ramps from the last of them.
+    fn drive(&mut self, lane: Option<Vec<f32>>) {
+        self.ran = true;
+        if let Some(v) = &lane {
+            self.mix_to = v[v.len() - 1];
+        }
+        self.lane = lane;
+    }
+
     /// Take the mode `want`; whether the node is to be reset first.
     fn toggle(&mut self, want: NodeMode) -> bool {
         self.warm = 0;
@@ -2008,8 +2084,11 @@ impl RefMode {
     /// does not move.
     fn frames(&mut self, frames: usize) -> Vec<RefFrame> {
         let (from, to) = (self.mix_from, self.mix_to);
+        let lane = self.lane.take();
         let mix_at = |i: usize| {
-            if from == to {
+            if let Some(lane) = &lane {
+                lane[i]
+            } else if from == to {
                 to
             } else {
                 from + (to - from) * ((i + 1) as f32 / frames as f32)
@@ -2027,7 +2106,7 @@ impl RefMode {
                     (self.y, self.x) = target;
                     return RefFrame::Steady {
                         mix,
-                        moving: from != to,
+                        moving: lane.is_some() || from != to,
                     };
                 };
                 let g = CrossfadeCurve::EqualAmplitude

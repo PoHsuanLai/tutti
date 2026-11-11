@@ -8,12 +8,10 @@
 # - any `unsafe` token appears in `tutti-<fmt>-host` (the whole of `src/`,
 #   tests inside it included: the crate is `#![forbid(unsafe_code)]`);
 # - `tutti-<fmt>-host`'s `lib.rs` lacks `#![forbid(unsafe_code)]`;
-# - any `unsafe` token appears in `tutti-plugin-server/src/loaders/<fmt>.rs`
-#   before its `#[cfg(test)]` module. (The CLAP and VST3 editor instances are
-#   `OutOfProcess::Editor` in the host crates, under the rule above; design 021
-#   step 2.) Its test module may call into the reference plugin's cdylib through
-#   `libloading`, which is `unsafe` and cannot go through the FFI crate, so the
-#   scan stops where the test module (`#[cfg(test)]` then `mod`) starts.
+# - any `unsafe` token appears in `tutti-plugin-server/src/` or its `lib.rs`
+#   lacks `#![forbid(unsafe_code)]`: the server is one generic shell over the
+#   formats' `Loaded` (design 021 step 5) and has no `unsafe` of its own, test
+#   modules included.
 # - `tutti-<fmt>-ffi`'s `lib.rs` lacks the lints that make every `unsafe` block
 #   carry a `// SAFETY:` comment (`undocumented_unsafe_blocks`) and every
 #   `unsafe fn` a `# Safety` section (`missing_safety_doc`).
@@ -35,8 +33,7 @@
 # from `tutti-vst2-ffi`'s or `tutti-vst2-host`'s `lib.rs` -> this script exits 1
 # naming the file. Also: add `unsafe { }` to any fn of `tutti-clap-host/src/lib.rs`'s
 # or `tutti-vst3-host/src/lib.rs`'s crate, or delete its forbid attribute, or add an `unsafe` block above the
-# test module of `loaders/clap.rs`, even after an earlier `#[cfg(test)] use`
-# -> this script exits 1 naming the file.
+# file of `tutti-plugin-server/src/` -> this script exits 1 naming the file.
 #
 # No build needed (python3 only), so CI runs it in the static `paths` job.
 set -euo pipefail
@@ -45,34 +42,12 @@ cd "$(dirname "$0")/.."
 python3 - <<'PY'
 import glob, re, sys
 
-# (format name, host crate, FFI crate, files the host's code drives the FFI from:
-# no `unsafe` before their first `#[cfg(test)]` item).
+# (format name, host crate, FFI crate).
 FORMATS = [
-    (
-        "CLAP",
-        "crates/tutti-clap-host",
-        "crates/tutti-clap-ffi",
-        [
-            "crates/tutti-plugin-server/src/loaders/clap.rs",
-        ],
-    ),
-    (
-        "VST3",
-        "crates/tutti-vst3-host",
-        "crates/tutti-vst3-ffi",
-        [
-            "crates/tutti-plugin-server/src/loaders/vst3.rs",
-        ],
-    ),
-    (
-        "AU",
-        "crates/tutti-au-host",
-        "crates/tutti-au-ffi",
-        [
-            "crates/tutti-plugin-server/src/loaders/au.rs",
-        ],
-    ),
-    ("VST2", "crates/tutti-vst2-host", "crates/tutti-vst2-ffi", []),
+    ("CLAP", "crates/tutti-clap-host", "crates/tutti-clap-ffi"),
+    ("VST3", "crates/tutti-vst3-host", "crates/tutti-vst3-ffi"),
+    ("AU", "crates/tutti-au-host", "crates/tutti-au-ffi"),
+    ("VST2", "crates/tutti-vst2-host", "crates/tutti-vst2-ffi"),
 ]
 
 
@@ -166,7 +141,7 @@ for path in VST2_CALLERS:
     if not glob.glob(path):
         bad.append(f"{path}: pinned VST2 caller does not exist; was it moved?")
 
-for name, HOST, FFI, OUTSIDE in FORMATS:
+for name, HOST, FFI in FORMATS:
     host_files = sorted(glob.glob(f"{HOST}/src/**/*.rs", recursive=True))
     if not host_files:
         sys.exit(f"check-plugin-ffi: {HOST}/src matches no file; was the crate moved?")
@@ -175,19 +150,25 @@ for name, HOST, FFI, OUTSIDE in FORMATS:
         line = first_unsafe(path, False)
         if line:
             bad.append(f"{path}:{line}: `unsafe` in {HOST} (it forbids unsafe_code)")
-    for path in OUTSIDE:
-        scanned += 1
-        line = first_unsafe(path, True)
-        if line:
-            bad.append(
-                f"{path}:{line}: `unsafe` outside the test module ({name} unsafe lives in {FFI})"
-            )
     if not re.search(r"#!\[forbid\(unsafe_code\)\]", attrs(f"{HOST}/src/lib.rs")):
         bad.append(f"{HOST}/src/lib.rs: missing #![forbid(unsafe_code)]")
     ffi_lib = attrs(f"{FFI}/src/lib.rs")
     for lint in ("undocumented_unsafe_blocks", "missing_safety_doc"):
         if not re.search(r"#!\[deny\([^\]]*" + lint, ffi_lib):
             bad.append(f"{FFI}/src/lib.rs: missing #![deny(clippy::{lint})]")
+
+# The server drives every served format through `Loaded` and owns no `unsafe`.
+SERVER = "crates/tutti-plugin-server"
+server_files = sorted(glob.glob(f"{SERVER}/src/**/*.rs", recursive=True))
+if not server_files:
+    sys.exit(f"check-plugin-ffi: {SERVER}/src matches no file; was the crate moved?")
+for path in server_files:
+    scanned += 1
+    line = first_unsafe(path, False)
+    if line:
+        bad.append(f"{path}:{line}: `unsafe` in {SERVER} (it forbids unsafe_code)")
+if not re.search(r"#!\[forbid\(unsafe_code\)\]", attrs(f"{SERVER}/src/lib.rs")):
+    bad.append(f"{SERVER}/src/lib.rs: missing #![forbid(unsafe_code)]")
 
 if scanned < 40:
     sys.exit(f"check-plugin-ffi: only {scanned} files scanned; the scan is broken")

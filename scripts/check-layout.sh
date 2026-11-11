@@ -480,6 +480,18 @@ if "tutti-plugin-host" in pkgs:
     for banned in ("tutti-plugin", "tutti-plugin-ipc"):
         if banned in deps_of("tutti-plugin-host"):
             fail(f"tutti-plugin-host depends on {banned}, even as a dev-dependency")
+# The plugin-server (design 021 sections 2.3 and 6.1) is `Ipc` hosting over the
+# served formats: the wire, the vocabulary and the CLAP, VST3 and AU hosts, and
+# neither the facade it serves nor `-host` (the graph node) nor VST2, which is not
+# served (its editor and audio instance are one object). Not even as a
+# dev-dependency: a test of it drives the real binary, or the probes.
+if "tutti-plugin-server" in pkgs:
+    only("tutti-plugin-server", ["tutti-plugin-ipc", "tutti-plugin-ipc-ffi", "tutti-plugin-types",
+                                 "tutti-rt", "tutti-ump", "tutti-graph", "tutti-clap-host",
+                                 "tutti-vst3-host", "tutti-au-host"])
+    for banned in ("tutti-plugin", "tutti-plugin-host", "tutti-vst2-host"):
+        if banned in deps_of("tutti-plugin-server"):
+            fail(f"tutti-plugin-server depends on {banned}, even as a dev-dependency")
 # The probe binary (design 021 section 2.5) links the format hosts and the
 # descriptor types, and no hosting: not the facade, not the server, and the
 # `-ipc` and `-host` crates it will never gain. Nothing depends on it (a binary).

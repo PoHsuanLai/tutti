@@ -119,9 +119,16 @@ that pays, and the compiler packs tasks too cheap to dispatch alone.
   `NonSend` resource `PluginEditorMainThread`. AU also asks the OS.
 - Plugin hosts are a pure `step` core, the `Loaded` typestate trait whose
   `activate` splits a plugin into a realtime `Processor` and a main-thread
-  `Controller`, and `Lifecycle<L>` (VST2, VST3, CLAP, AU and the served `Ipc` are;
-  the served AU is still `loaders/au.rs`, doc 021 step 7) per
+  `Controller`, and `Lifecycle<L>` (VST2, VST3, CLAP, AU and the served `Ipc` are) per
   [`docs/design/016-plugin-hosts.md`](docs/design/016-plugin-hosts.md).
+- **The plugin-server is one `Served<F: OutOfProcess>`** (doc 021 step 5): it loads
+  through `F::load_served(main, path, &Load)`, activates through `Loaded::activate`, and
+  a format is a row of its `served!` table (CLAP, VST3, AU on macOS), so a row for a
+  format that is not `OutOfProcess` does not compile. What the server still does around a
+  format is `ServerSide`'s, defaulted (`served/format.rs`). **VST2 is not served**: its
+  `AEffect` fuses editor and audio, so it runs in the host's process and a VST2 path
+  refuses out-of-process hosting (`BridgeError::NotOutOfProcess`). `LoadPlugin` carries
+  the `Load` that chooses the plugin of a file that exports several.
 
 ## The parallel executor (doc 013)
 
@@ -251,7 +258,7 @@ cargo xtask test-all              # test, test-features, test-editor, test-au-in
   from `bevy-tutti`; `--features clap,export,modulation,device`) fail with that
   exact command, and
   `tutti-plugin-contract`'s `server` suite (`--features server`) needs
-  `--no-default-features --features clap,vst2,vst3`. They must fail
+  `--no-default-features --features clap,vst3`. They must fail
   rather than skip, and they cannot use a dev-dependency because that would
   be a cycle.
 - **Build `plugin-probe` first** for a suite that scans: `cargo build -p

@@ -1165,7 +1165,7 @@ read the `Cargo.toml`, grep for the type, run the probe.
   `PluginFork` and `Origin`, the `Bound` typestate's `Batcher`, `BlockPayload`, `TransportWalk`
   and `ParamDelivery` fields, and `migration_old_and_new_served_nodes_agree`) → deleted (doc 021
   step 4b, PR 3b: the node is `tutti_plugin_host::PluginNode<tutti_plugin_ipc::Ipc>`, which
-  `PluginClient<Bound>` holds and boxes (`into_plugin_node` gives it concretely); the chunk walk
+  `PluginClient<Bound>` holds and boxes (a test drives it with `contract::Direct::boxed`); the chunk walk
   is the generic node's, the fork is `ServedFork` over `Ipc`'s reopen). A comment or doc that
   disagrees with the code is the bug.
 - **MSVC render gate:** `render_is_bit_identical_to_the_audionode_era` is

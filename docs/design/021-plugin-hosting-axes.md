@@ -1073,7 +1073,8 @@ served node is gone.
    fields the node does not have (the `PluginControls`, the handle's three
    sinks, the bridge and the process guard, an `IpcOrigin`, a fork's watch).
    `IntoNode for PluginClient<Bound>` boxes the generic node (`PluginClient<Bound>`
-   is no `Node`; `into_plugin_node` gives the concrete one to a host that drives it by hand).
+   is no `Node`; a test drives the boxed node with `tutti_graph::contract::Direct::boxed`,
+   which holds any node in a `Box`, so no accessor exists for tests alone).
    The wrapper exists because the orphan rule bars `tutti-plugin` from
    implementing `IntoNode` for `PluginNode<Ipc>` (both foreign), and
    `tutti-plugin-host` may not name `Ipc` (decision (a)).

@@ -243,6 +243,11 @@ required-features = ["midi"]
 name = "export_cancel"
 required-features = ["export"]
 
+# Stems: a node's own output beside the master, aligned to it, in one pass.
+[[test]]
+name = "bounce_stems"
+required-features = ["export"]
+
 # A parallel export is bit-identical to the serial one.
 [[test]]
 name = "export_parallel"

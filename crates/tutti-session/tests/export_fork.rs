@@ -32,7 +32,7 @@ use tutti_nodes::testing::{Const, Osc, Sink};
 use tutti_nodes::{SvfFilterNode, SvfType};
 use tutti_session::{
     Bounce, BounceConfigError, BounceError, ExportClock, GraphSource, Latency, PreparedGraph,
-    Range, Session,
+    Range, Session, Stem,
 };
 use tutti_types::{Amplitude, Hz, Param, Q, SampleRate, Samples, Seconds, Tail, UnitParam};
 
@@ -53,22 +53,11 @@ fn session_with_outputs(outputs: usize) -> Session {
     session
 }
 
-/// Which audio a bounce renders: the mix, or one node alone.
-#[derive(Debug, Clone, Copy)]
-enum ExportSource {
-    Mix,
-    Node(NodeKey),
-}
-
-/// A bounce of `source` into memory for `seconds`: stereo at `rate`, on a frozen
-/// clock, trimming nothing and keeping no tail (what the figures it does not
-/// name come to is each test's to ask for).
-fn bounce_at(source: ExportSource, seconds: f64, rate: f64) -> Bounce {
-    let bounce = match source {
-        ExportSource::Mix => Bounce::project(),
-        ExportSource::Node(node) => Bounce::node(node),
-    };
-    bounce
+/// A bounce of the mix into memory for `seconds`: stereo at `rate`, on a
+/// frozen clock, trimming nothing and keeping no tail (what the figures it
+/// does not name come to is each test's to ask for).
+fn bounce_at(seconds: f64, rate: f64) -> Bounce {
+    Bounce::project()
         .master_buffers()
         .range(Range::Seconds(Seconds(0.0), Seconds(seconds)))
         .sample_rate(SampleRate(rate))
@@ -78,8 +67,8 @@ fn bounce_at(source: ExportSource, seconds: f64, rate: f64) -> Bounce {
         .tail(tutti_session::Tail::None)
 }
 
-fn buffers(source: ExportSource, seconds: f64) -> Bounce {
-    bounce_at(source, seconds, RATE)
+fn buffers(seconds: f64) -> Bounce {
+    bounce_at(seconds, RATE)
 }
 
 /// The planes `bounce` renders, run on this thread.
@@ -93,6 +82,32 @@ fn render(session: &mut Session, bounce: Bounce) -> Vec<Vec<f32>> {
         Some(Produced::Buffers(rendered)) => rendered.into_planes(),
         other => panic!("expected rendered buffers, got {other:?}"),
     }
+}
+
+/// The planes `bounce` renders for each of its stems, in memory, run on this
+/// thread: the master is rendered with them and not returned.
+fn render_stems(session: &mut Session, bounce: Bounce) -> Vec<Vec<Vec<f32>>> {
+    let produced = session
+        .bounce(bounce)
+        .expect("the bounce renders")
+        .finished()
+        .expect("nothing cancels it")
+        .into_targets();
+    produced
+        .into_iter()
+        .skip(1)
+        .map(|p| match p {
+            Produced::Buffers(rendered) => rendered.into_planes(),
+            other => panic!("expected rendered buffers, got {other:?}"),
+        })
+        .collect()
+}
+
+/// The one stem `node` of a bounce of `seconds`: its planes.
+fn stem_of(session: &mut Session, node: NodeKey, seconds: f64) -> Vec<Vec<f32>> {
+    render_stems(session, buffers(seconds).stem_with(Stem::buffers(node)))
+        .pop()
+        .expect("one stem")
 }
 
 /// What the session refuses `bounce` with, started and run on this thread.
@@ -138,9 +153,9 @@ fn digest(planes: &[Vec<f32>]) -> u64 {
 
 /// [`chain`]'s units wired fresh, with `GraphBuilder`, and rendered in the
 /// export's own blocks for `seconds`: the master (the filter on channel 0,
-/// the saw on channel 1) and the filter alone on both channels (a mono
-/// node clamped across a stereo root). A fork starts reset, which is what a
-/// fresh graph is.
+/// the saw on channel 1) and the filter alone (the graph's own two channels
+/// both the filter, of which a mono stem is the first). A fork starts reset,
+/// which is what a fresh graph is.
 fn chain_fresh(seconds: f64) -> (Vec<Vec<f32>>, Vec<Vec<f32>>) {
     use tutti_export::{
         BufferTarget, Control, FrozenClock, Job, Output, Produced, RenderGraph, Setup, render_one,
@@ -185,7 +200,7 @@ fn chain_fresh(seconds: f64) -> (Vec<Vec<f32>>, Vec<Vec<f32>>) {
 }
 
 /// **An export renders its graph as wired fresh**, for the master and for
-/// one node, on a graph whose live side has not run: bit for bit the same
+/// one node's stem, on a graph whose live side has not run: bit for bit the same
 /// units in a `GraphBuilder` graph ([`chain_fresh`]), and the golden digest.
 ///
 /// A fork starts reset rather than copying the running state (an
@@ -196,19 +211,18 @@ fn chain_fresh(seconds: f64) -> (Vec<Vec<f32>>, Vec<Vec<f32>>) {
 /// of this name rendered: its export systems added nothing between the
 /// session's `export` and the job's render.
 ///
-/// Mutation (run, failed): the session's `Graph::gather_for_export` forking
-/// `ForkTarget::Master` for a node export → the node's render is the master's,
-/// and the node comparison fails on channel 1 (the saw, not the filter).
 #[test]
 fn exports_render_their_graph_as_wired_fresh() {
     let mut session = session();
     let filter = chain(&mut session);
-    let forked_master = render(&mut session, buffers(ExportSource::Mix, 0.25));
-    let forked_node = render(&mut session, buffers(ExportSource::Node(filter), 0.25));
+    let forked_master = render(&mut session, buffers(0.25));
+    let forked_node = stem_of(&mut session, filter, 0.25);
     let (fresh_master, fresh_node) = chain_fresh(0.25);
+    // The stem is the node's own width: one channel, not the root's two.
+    assert_eq!(forked_node.len(), 1, "the stem is the mono node's width");
     for (what, fresh, forked) in [
-        ("master", &fresh_master, &forked_master),
-        ("node", &fresh_node, &forked_node),
+        ("master", &fresh_master[..], &forked_master[..]),
+        ("node", &fresh_node[..1], &forked_node[..]),
     ] {
         assert_eq!(fresh.len(), forked.len(), "{what}: width");
         let peak = forked[0].iter().fold(0.0f32, |m, s| m.max(s.abs()));
@@ -232,10 +246,9 @@ fn exports_render_their_graph_as_wired_fresh() {
         digest(&forked_master),
         0xccbc_b417_89a0_36e4,
     );
-    // And the node export is the node: both channels are the filter (a mono
-    // node clamps across a stereo root), which is the master's channel 0.
+    // And the stem is the node: the filter, which is the master's channel 0
+    // and not its channel 1, the raw saw.
     assert_eq!(forked_node[0], forked_master[0]);
-    assert_eq!(forked_node[1], forked_master[0]);
     assert_ne!(forked_master[1], forked_master[0]);
 }
 
@@ -292,7 +305,7 @@ fn latency_and_tail_come_from_the_graph() {
     let frames = (seconds * RATE) as usize;
     let planes = render(
         &mut session,
-        buffers(ExportSource::Mix, seconds)
+        buffers(seconds)
             .latency(Latency::Graph)
             .tail(tutti_session::Tail::Graph {
                 cap: Samples(48_000).to_seconds(SampleRate(RATE)),
@@ -309,7 +322,7 @@ fn latency_and_tail_come_from_the_graph() {
     session.graph().set_outputs_from(unknown);
     let planes = render(
         &mut session,
-        buffers(ExportSource::Mix, seconds).tail(tutti_session::Tail::Graph {
+        buffers(seconds).tail(tutti_session::Tail::Graph {
             cap: Samples(4_800).to_seconds(SampleRate(RATE)),
         }),
     );
@@ -335,19 +348,20 @@ fn the_trim_is_read_after_the_prepare_hook() {
     let mut session = session();
     let (dc, _) = session.graph().insert(Const::mono(0.5));
     session.graph().set_outputs_from(dc);
-    let request = buffers(ExportSource::Mix, 0.01)
-        .latency(Latency::Graph)
-        .edit(Box::new(|prepared: PreparedGraph<'_>| {
-            let key = prepared.fresh_key();
-            let editor = prepared.editor;
-            editor.insert(key, "test:late", ForkByClone(Late { pos: 0 }));
-            for out in editor.spec_mut().topology.outputs.iter_mut() {
-                *out = vec![tutti_graph::Source::Node(tutti_graph::OutPort {
-                    node: key,
-                    port: 0,
-                })];
-            }
-        }));
+    let request =
+        buffers(0.01)
+            .latency(Latency::Graph)
+            .edit(Box::new(|prepared: PreparedGraph<'_>| {
+                let key = prepared.fresh_key();
+                let editor = prepared.editor;
+                editor.insert(key, "test:late", ForkByClone(Late { pos: 0 }));
+                for out in editor.spec_mut().topology.outputs.iter_mut() {
+                    *out = vec![tutti_graph::Source::Node(tutti_graph::OutPort {
+                        node: key,
+                        port: 0,
+                    })];
+                }
+            }));
     let planes = render(&mut session, request);
     assert_eq!(
         planes[0][0], 1.0,
@@ -364,7 +378,7 @@ fn a_prepare_hook_that_swaps_the_editor_fails_the_export() {
     let mut session = session();
     let (dc, _) = session.graph().insert(Const::mono(0.5));
     session.graph().set_outputs_from(dc);
-    let request = buffers(ExportSource::Mix, 0.01).edit(Box::new(|prepared: PreparedGraph<'_>| {
+    let request = buffers(0.01).edit(Box::new(|prepared: PreparedGraph<'_>| {
         let (other, _executor) = tutti_graph::Editor::new(Prepare::new(
             SampleRate(RATE),
             tutti_export::GRAPH_MAX_BLOCK,
@@ -379,7 +393,7 @@ fn a_prepare_hook_that_swaps_the_editor_fails_the_export() {
 }
 
 /// **An export of a graph with no outputs says so**, for the master and for
-/// a node — not that the node has none.
+/// a bounce that also names a stem — not that the stem's node is unheard.
 ///
 /// Mutation (run, failed): the `outputs() == 0` check in `Session::export`
 /// disabled → neither export is refused as having no outputs.
@@ -387,40 +401,67 @@ fn a_prepare_hook_that_swaps_the_editor_fails_the_export() {
 fn a_graph_with_no_outputs_says_so() {
     let mut session = session_with_outputs(0);
     let (node, _) = session.graph().insert(Osc::sine(Hz(220.0)));
-    for source in [ExportSource::Mix, ExportSource::Node(node)] {
-        match refused(&mut session, buffers(source, 0.01)) {
+    for with_stem in [false, true] {
+        let bounce = if with_stem {
+            buffers(0.01).stem_with(Stem::buffers(node))
+        } else {
+            buffers(0.01)
+        };
+        match refused(&mut session, bounce) {
             BounceError::Config(BounceConfigError::GraphHasNoOutputs) => {}
-            other => panic!("{source:?}: expected a refusal naming the outputs, got {other:?}"),
+            other => {
+                panic!("stem {with_stem}: expected a refusal naming the outputs, got {other:?}")
+            }
         }
     }
 }
 
-/// **A node with no outputs of its own cannot be exported**: a refusal, not
-/// a silent drop or a panic on the render thread. "No outputs" means the
-/// *node* produces none (a genuine sink); one that is merely unwired still
-/// has an output and renders.
-///
-/// Mutation (run, failed): the `NoOutputs` arm of `Session::export` (which
-/// maps the fork's `NoOutputs` to `NodeHasNoOutputs`) removed → the refusal
-/// is `Error::Fork(..)`, not `NodeHasNoOutputs`.
+/// **A stem that cannot be rendered is refused by name, before anything is
+/// forked**: a node that is not in the graph, one no output hears (a sink with
+/// no outputs of its own, and a source that is merely unwired: the fork holds
+/// what the outputs reach, so it renders nothing there), and a channel the
+/// node has not (or none at all). A node the outputs do hear is rendered.
 #[test]
-fn an_unrenderable_node_is_refused() {
+fn an_unrenderable_stem_is_refused_by_name() {
     let mut session = session();
     let (wired, _) = session.graph().insert(Const::mono(0.5));
     session.graph().set_outputs_from(wired);
     // `Sink::mono()` consumes one channel and produces nothing.
     let (orphan, _) = session.graph().insert(Sink::mono());
-    match refused(&mut session, buffers(ExportSource::Node(orphan), 0.01)) {
-        BounceError::Config(BounceConfigError::NodeHasNoOutputs) => {}
-        other => panic!("expected NodeHasNoOutputs, got {other:?}"),
-    }
-    // An unwired source still renders: it has an output.
     let (loose, _) = session.graph().insert(Const::mono(0.25));
-    let planes = render(&mut session, buffers(ExportSource::Node(loose), 0.01));
-    assert!(
-        planes[0].iter().all(|&s| s == 0.25),
-        "an unwired node renders"
+    let gone = NodeKey::fresh();
+    let refusal =
+        |session: &mut Session, stem: Stem| match refused(session, buffers(0.01).stem_with(stem)) {
+            BounceError::Config(why) => why,
+            other => panic!("expected a refusal by name, got {other:?}"),
+        };
+    assert_eq!(
+        refusal(&mut session, Stem::buffers(gone)),
+        BounceConfigError::StemNotInGraph { node: gone }
     );
+    for node in [orphan, loose] {
+        assert_eq!(
+            refusal(&mut session, Stem::buffers(node)),
+            BounceConfigError::StemNotAudible { node }
+        );
+    }
+    assert_eq!(
+        refusal(&mut session, Stem::buffers(wired).channels([0, 1])),
+        BounceConfigError::StemChannelMissing {
+            node: wired,
+            channel: 1
+        }
+    );
+    assert_eq!(
+        refusal(&mut session, Stem::buffers(wired).channels([])),
+        BounceConfigError::StemChannelMissing {
+            node: wired,
+            channel: 0
+        }
+    );
+    // Nothing was left in flight by a refusal, and the heard node renders.
+    let planes = stem_of(&mut session, wired, 0.01);
+    assert!(planes[0].iter().all(|&s| s == 0.5), "a heard node renders");
 }
 
 // ---------------------------------------------------------------------------
@@ -437,7 +478,7 @@ fn graph_with_one_node_on() -> (Session, NodeKey) {
 }
 
 fn short() -> Bounce {
-    bounce_at(ExportSource::Mix, 0.05, 44_100.0)
+    bounce_at(0.05, 44_100.0)
 }
 
 /// The `prepare` hook runs on the graph that is actually rendered, before
@@ -476,7 +517,7 @@ fn a_prepare_hook_reaches_the_graph_that_gets_rendered() {
     );
 }
 
-/// **The `prepare` hook is handed the caller's timeline**, for a node export.
+/// **The `prepare` hook is handed the caller's timeline**, for a bounce with a stem.
 ///
 /// `RenderClock` is advance-only, so the session cannot read a timeline back
 /// out of the `clock` a caller supplies. Handing the hook a timeline of its
@@ -503,7 +544,8 @@ fn the_prepare_hook_sees_the_callers_timeline() {
     }));
     let seen: Arc<Mutex<Option<(usize, usize)>>> = Arc::default();
     let into = Arc::clone(&seen);
-    let request = bounce_at(ExportSource::Node(node), 0.05, 44_100.0)
+    let request = bounce_at(0.05, 44_100.0)
+        .stem_with(Stem::buffers(node))
         .clock(ExportClock::timeline(timeline))
         .edit(Box::new(move |prepared: PreparedGraph<'_>| {
             let transport = prepared.ctx;
@@ -653,7 +695,7 @@ fn live_playback_continues_unaffected_while_an_export_renders() {
             }
             heard
         });
-        let rendered = render(&mut session, buffers(ExportSource::Mix, 1.0));
+        let rendered = render(&mut session, buffers(1.0));
         done.store(true, Ordering::Release);
         (device.join().expect("the live side"), rendered)
     });
@@ -700,14 +742,14 @@ fn an_unrouted_unforkable_node_does_not_refuse_a_master_export() {
     let (_mic, _) = session.graph().insert(tutti_graph::Unforkable(Mic));
     let (dc, _) = session.graph().insert(Const::mono(0.25));
     session.graph().set_outputs_from(dc);
-    let planes = render(&mut session, buffers(ExportSource::Mix, 0.01));
+    let planes = render(&mut session, buffers(0.01));
     assert!(planes[0].iter().all(|&s| s == 0.25));
 }
 
 /// **A node that cannot be forked refuses the export by its key**, which a
-/// host maps back to whatever it bound to the node; and a node export of a
-/// branch it does not feed is not refused (a fork copies only the sub-graph
-/// feeding the node).
+/// host maps back to whatever it bound to the node; and so does a bounce
+/// whose stem names its sibling, since a stem renders in the master's fork,
+/// which holds every node an output hears.
 ///
 /// Mutation (run, failed): `tutti_export`'s `fork_error` wrapping
 /// `NotForkable` in `Error::Fork` → the refusal is not `NotForkable { key }`.
@@ -723,7 +765,7 @@ fn an_unforkable_node_refuses_the_export_by_key() {
         .graph()
         .set_output_source(1, GraphSource::Node(osc, 0));
 
-    match refused(&mut session, buffers(ExportSource::Mix, 0.05)) {
+    match refused(&mut session, buffers(0.05)) {
         BounceError::NotForkable { node: key } => {
             assert_eq!(key, mic);
             assert!(
@@ -735,8 +777,10 @@ fn an_unforkable_node_refuses_the_export_by_key() {
         }
         other => panic!("expected a named refusal, got {other:?}"),
     }
-    let planes = render(&mut session, buffers(ExportSource::Node(osc), 0.05));
-    assert!(planes[0].iter().any(|&s| s != 0.0), "the sibling renders");
+    match refused(&mut session, buffers(0.05).stem_with(Stem::buffers(osc))) {
+        BounceError::NotForkable { node: key } => assert_eq!(key, mic),
+        other => panic!("expected the same named refusal, got {other:?}"),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -910,7 +954,7 @@ fn an_export_does_not_wait_for_a_slow_fork_and_takes_no_later_edit() {
         .set_output_source(1, GraphSource::Node(level, 0));
 
     let job = session
-        .bounce_start(buffers(ExportSource::Mix, 0.05))
+        .bounce_start(buffers(0.05))
         .expect("the export starts");
     assert!(
         !built.load(Ordering::SeqCst),
@@ -1059,7 +1103,7 @@ fn a_main_thread_only_fork_builds_and_drops_on_the_main_thread() {
     drop(release); // the slow build goes straight through
 
     let job = session
-        .bounce_start(buffers(ExportSource::Mix, 0.05))
+        .bounce_start(buffers(0.05))
         .expect("the export starts");
     let rendered = std::thread::spawn(move || job.run())
         .join()
@@ -1105,7 +1149,7 @@ fn a_dropped_export_job_drops_its_fork_on_the_main_thread() {
         .set_output_source(1, GraphSource::Node(pinned, 0));
 
     let job = session
-        .bounce_start(buffers(ExportSource::Mix, 0.05))
+        .bounce_start(buffers(0.05))
         .expect("the export starts");
     // Dropped on another thread, never run.
     std::thread::spawn(move || drop(job))
@@ -1194,7 +1238,7 @@ fn a_fork_build_that_fails_names_its_node_and_drops_on_the_main_thread() {
         .set_output_source(1, GraphSource::Node(broken, 0));
 
     let job = session
-        .bounce_start(buffers(ExportSource::Mix, 0.05))
+        .bounce_start(buffers(0.05))
         .expect("the export starts: the build fails in the job");
     let rendered = std::thread::spawn(move || job.run())
         .join()
@@ -1221,11 +1265,11 @@ impl Drop for EditWitness {
     }
 }
 
-/// A request for `source` whose `prepare` edit captures an
+/// A request for the mix whose `prepare` edit captures an
 /// [`EditWitness`] recording into `drops`.
-fn witnessed(source: ExportSource, drops: &Arc<Mutex<Vec<ThreadId>>>) -> Bounce {
+fn witnessed(drops: &Arc<Mutex<Vec<ThreadId>>>) -> Bounce {
     let witness = EditWitness(Arc::clone(drops));
-    buffers(source, 0.05).edit(Box::new(move |_prepared: PreparedGraph<'_>| {
+    buffers(0.05).edit(Box::new(move |_prepared: PreparedGraph<'_>| {
         let _ = &witness;
     }))
 }
@@ -1249,7 +1293,7 @@ fn a_prepare_edit_that_never_runs_drops_on_the_main_thread() {
     session.graph().set_outputs_from(broken);
     let drops: Arc<Mutex<Vec<ThreadId>>> = Arc::default();
     let job = session
-        .bounce_start(witnessed(ExportSource::Mix, &drops))
+        .bounce_start(witnessed(&drops))
         .expect("the export starts");
     let rendered = std::thread::spawn(move || job.run())
         .join()
@@ -1266,7 +1310,7 @@ fn a_prepare_edit_that_never_runs_drops_on_the_main_thread() {
     session.graph().set_outputs_from(dc);
     let drops: Arc<Mutex<Vec<ThreadId>>> = Arc::default();
     let job = session
-        .bounce_start(witnessed(ExportSource::Mix, &drops))
+        .bounce_start(witnessed(&drops))
         .expect("the export starts");
     std::thread::spawn(move || drop(job))
         .join()

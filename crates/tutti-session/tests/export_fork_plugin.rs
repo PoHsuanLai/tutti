@@ -24,7 +24,8 @@ use tutti_nodes::testing::Const;
 use tutti_plugin::catalog::PluginId;
 use tutti_plugin_types::PluginForkError;
 use tutti_session::{
-    Bounce, BounceError, ExportClock, GraphSource, Latency, PluginLoadRequest, Range, Session, Tail,
+    Bounce, BounceError, ExportClock, GraphSource, Latency, PluginLoadRequest, Range, Session,
+    Stem, Tail,
 };
 use tutti_transport::{OfflineTimeline, OfflineTimelineConfig};
 use tutti_types::{Beat, Bpm, SampleRate, Seconds};
@@ -39,21 +40,10 @@ const TAG_PASSTHROUGH: u32 = 1;
 const LATENCY: u32 = 3;
 const NOTES: u32 = 4;
 
-/// Which audio a bounce renders: the mix, or one node alone.
-#[derive(Debug, Clone, Copy)]
-enum ExportSource {
-    Mix,
-    Node(NodeKey),
-}
-
-/// A bounce of `source` into memory for `seconds` at `rate`: stereo, trimming
+/// A bounce of the mix into memory for `seconds` at `rate`: stereo, trimming
 /// nothing and keeping no tail, on `clock`.
-fn bounce_of(source: ExportSource, seconds: f64, rate: f64, clock: ExportClock) -> Bounce {
-    let bounce = match source {
-        ExportSource::Mix => Bounce::project(),
-        ExportSource::Node(node) => Bounce::node(node),
-    };
-    bounce
+fn bounce_of(seconds: f64, rate: f64, clock: ExportClock) -> Bounce {
+    Bounce::project()
         .master_buffers()
         .channels(ChannelLayout::STEREO)
         .range(Range::Seconds(Seconds(0.0), Seconds(seconds)))
@@ -63,8 +53,8 @@ fn bounce_of(source: ExportSource, seconds: f64, rate: f64, clock: ExportClock) 
         .tail(Tail::None)
 }
 
-fn buffers(source: ExportSource, seconds: f64) -> Bounce {
-    bounce_of(source, seconds, RATE, ExportClock::frozen())
+fn buffers(seconds: f64) -> Bounce {
+    bounce_of(seconds, RATE, ExportClock::frozen())
 }
 
 /// The planes `bounce` renders; panics with the refusal otherwise.
@@ -74,6 +64,21 @@ fn planes(session: &mut Session, bounce: Bounce) -> Vec<Vec<f32>> {
             Some(Produced::Buffers(rendered)) => rendered.into_planes(),
             other => panic!("expected rendered buffers, got {other:?}"),
         },
+        Err(e) => panic!("the bounce failed: {e:?}"),
+    }
+}
+
+/// The planes of the one stem `bounce` names, in memory, rendered beside the
+/// master; panics with the refusal otherwise.
+fn stem_planes(session: &mut Session, bounce: Bounce) -> Vec<Vec<f32>> {
+    match session.bounce(bounce) {
+        Ok(out) => {
+            let mut targets = out.finished().expect("nothing cancels it").into_targets();
+            match targets.pop() {
+                Some(Produced::Buffers(rendered)) if targets.len() == 1 => rendered.into_planes(),
+                other => panic!("expected one stem held in memory, got {other:?}"),
+            }
+        }
         Err(e) => panic!("the bounce failed: {e:?}"),
     }
 }
@@ -187,10 +192,7 @@ impl Node for Ramp {
 fn a_plugin_effect_exports_through_its_fork() {
     let (mut session, probe) = session_with_probe(LATENCY);
     feed_with(&mut session, probe, ForkByClone(Ramp { n: 0 }));
-    let planes = planes(
-        &mut session,
-        buffers(ExportSource::Mix, 0.1).latency(Latency::Graph),
-    );
+    let planes = planes(&mut session, buffers(0.1).latency(Latency::Graph));
     for (c, plane) in planes.iter().enumerate().take(2) {
         for (i, &got) in plane.iter().enumerate() {
             let want = i as f32 / 1024.0;
@@ -221,7 +223,7 @@ fn a_plugin_fork_that_cannot_be_built_is_a_named_failure() {
     std::fs::copy(&real, &own).expect("copy the plugin");
     let (mut session, probe) = session_with_probe_at(TAG_PASSTHROUGH, own.clone());
     std::fs::remove_file(&own).expect("remove the plugin's file");
-    match session.bounce(buffers(ExportSource::Mix, 0.05)) {
+    match session.bounce(buffers(0.05)) {
         Err(BounceError::Fork(tutti_graph::ForkError::Source { key, cause })) => {
             assert_eq!(key, probe, "a plugin file gone since it loaded");
             assert!(
@@ -291,14 +293,9 @@ fn instrument_at(rate: f64) {
         sample_rate: SampleRate(rate),
         loop_range: None,
     }));
-    let planes = planes(
+    let planes = stem_planes(
         &mut session,
-        bounce_of(
-            ExportSource::Node(probe),
-            1.5,
-            rate,
-            ExportClock::timeline(timeline),
-        ),
+        bounce_of(1.5, rate, ExportClock::timeline(timeline)).stem_with(Stem::buffers(probe)),
     );
     let open: Vec<usize> = planes[0]
         .iter()
@@ -339,7 +336,7 @@ fn a_plugin_fork_that_crashes_mid_export_is_a_named_failure() {
     feed_with(&mut session, probe, Const::mono(0.25));
     probe_env("TUTTI_CLAP_PROBE_CRASH_ON_BLOCK", 8);
     let started = Instant::now();
-    match session.bounce(buffers(ExportSource::Mix, 2.0)) {
+    match session.bounce(buffers(2.0)) {
         Err(BounceError::Export(tutti_export::Error::ForkFailed { key, kind, .. })) => {
             assert_eq!(key, probe);
             assert_eq!(kind, tutti_graph::ForkFaultKind::Crashed);

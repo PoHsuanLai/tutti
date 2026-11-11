@@ -22,8 +22,8 @@ use std::thread::ThreadId;
 
 use tutti_export::{ChannelLayout, Outcome, Produced, Rendered};
 use tutti_graph::{Cx, ForkByClone, Io, Node, Prepare, Shape, Status};
-use tutti_session::{Bounce, ExportClock, GraphSource, Range, Session, Tail};
-use tutti_types::{SampleRate, Seconds};
+use tutti_session::{Bounce, ExportClock, GraphSource, Range, Session, Stem, Tail};
+use tutti_types::{SampleRate, Samples, Seconds};
 
 const RATE: SampleRate = SampleRate(48_000.0);
 const BRANCHES: usize = 8;
@@ -98,12 +98,21 @@ impl Node for Sum {
 /// The fan-out exported to memory on a session with `workers`, and the number
 /// of distinct threads that ran a branch.
 fn export(workers: usize) -> (Rendered, usize) {
+    let (mut targets, ran_on) = export_with(workers, &[]);
+    (targets.swap_remove(0), ran_on)
+}
+
+/// [`export`] with a stem for each of `stems` (indices into the branches, and
+/// `BRANCHES` for the sum): the master's planes first and then each stem's,
+/// and the number of distinct threads that ran a branch.
+fn export_with(workers: usize, stems: &[usize]) -> (Vec<Rendered>, usize) {
     let mut session = Session::builder()
         .render_workers(workers)
         .build_detached(RATE)
         .unwrap();
     let threads = Threads::default();
     let (sum, _) = session.graph().add(ForkByClone(Sum));
+    let mut named = Vec::new();
     for i in 0..BRANCHES {
         let (branch, _) = session.graph().add(ForkByClone(Branch {
             hz: 110.0 * (i + 1) as f32 + 0.37 * i as f32,
@@ -114,24 +123,34 @@ fn export(workers: usize) -> (Rendered, usize) {
         session
             .graph()
             .set_source(sum, i, GraphSource::Node(branch, 0));
+        named.push(branch);
     }
+    named.push(sum);
     session.graph().set_outputs_from(sum);
 
-    let bounce = Bounce::project()
+    let mut bounce = Bounce::project()
         .master_buffers()
         .channels(ChannelLayout::STEREO)
         .range(Range::Seconds(Seconds(0.0), Seconds(0.5)))
         .sample_rate(RATE)
         .clock(ExportClock::frozen())
         .tail(Tail::None);
+    for &stem in stems {
+        bounce = bounce.stem_with(Stem::buffers(named[stem]));
+    }
     let Outcome::Finished(bounced) = session.bounce(bounce).unwrap() else {
         panic!("the bounce finishes into memory")
     };
-    let Produced::Buffers(rendered) = bounced.into_master() else {
-        panic!("the bounce finishes into memory")
-    };
+    let targets = bounced
+        .into_targets()
+        .into_iter()
+        .map(|p| match p {
+            Produced::Buffers(rendered) => rendered,
+            other => panic!("the bounce finishes into memory, got {other:?}"),
+        })
+        .collect();
     let ran_on = threads.lock().unwrap().len();
-    (rendered, ran_on)
+    (targets, ran_on)
 }
 
 /// The export on four workers is the export on one, to the bit, and it did
@@ -168,4 +187,43 @@ fn a_parallel_export_is_bit_identical_to_the_serial_one() {
             "channel {c} differs between the serial and parallel render"
         );
     }
+}
+
+/// **The stems of an export on four workers are the serial export's, to the
+/// bit**, with the master: a stem is a tap on the pool's fork, read after each
+/// block, so what a helper thread rendered must be what the caller alone does.
+/// Three stems (two branches and the sum) and the master, compared plane for
+/// plane against the one-worker render, and the render did run on several
+/// threads.
+#[test]
+fn the_stems_of_a_parallel_export_are_bit_identical_to_the_serial_ones() {
+    let stems = [1, 6, BRANCHES];
+    let (serial, serial_threads) = export_with(1, &stems);
+    let (parallel, parallel_threads) = export_with(4, &stems);
+    assert_eq!(serial_threads, 1, "one worker renders on the caller alone");
+    assert!(
+        parallel_threads > 1,
+        "the branches must spread over threads, ran on {parallel_threads}"
+    );
+    assert_eq!(serial.len(), 1 + stems.len());
+    assert_eq!(parallel.len(), serial.len());
+    for (i, (a, b)) in serial.iter().zip(&parallel).enumerate() {
+        assert_eq!(a.frames(), Samples(24_000), "target {i}");
+        assert_eq!(a.frames(), b.frames(), "target {i}");
+        assert!(
+            a.planes()[0].iter().any(|s| *s != 0.0),
+            "target {i} is audible"
+        );
+        for (c, (x, y)) in a.planes().iter().zip(b.planes()).enumerate() {
+            let same = x.iter().zip(y).all(|(x, y)| x.to_bits() == y.to_bits());
+            assert!(
+                same,
+                "target {i} channel {c} differs from the serial render"
+            );
+        }
+    }
+    // The sum's stem is the master's first channel, and a branch's stem is
+    // one channel the width of the branch.
+    assert_eq!(serial[3].planes()[0], serial[0].planes()[0]);
+    assert_eq!(serial[1].channels(), 1);
 }

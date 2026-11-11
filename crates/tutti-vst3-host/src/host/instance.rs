@@ -199,7 +199,15 @@ impl<T: Vst3Sample> Staged<T> {
             input: InputStaging {
                 buses: in_scratch,
                 events: EventList::input(),
-                stager: Stager::default(),
+                // A UMP Group is an event input bus: its number.
+                stager: Stager::new(
+                    usize::try_from(loaded.plugin.bus_count(
+                        main,
+                        MediaType::Event,
+                        BusDirection::Input,
+                    ))
+                    .unwrap_or(0),
+                ),
                 param_changes: ParameterChangesImpl::with_queues(chunk_queues, floor, input_pool),
             },
             output: OutputStaging {

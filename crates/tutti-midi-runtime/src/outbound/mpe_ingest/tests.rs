@@ -286,9 +286,9 @@ fn ranges_after(events: impl IntoIterator<Item = UmpAt>) -> Vec<(u8, u8, f32)> {
 /// A host-set mode sends the same through `zone_defaults`, for each zone.
 #[test]
 fn an_mcm_resets_its_zones_bend_ranges() {
-    use tutti_plugin_types::PerNoteBendRanges;
+    use tutti_fixtures::midi::BendRanges;
     let mut ingest = MpeIngest::new(tutti_fixtures::midi::lower_zone(3));
-    let mut receiver = PerNoteBendRanges::default();
+    let mut receiver = BendRanges::default();
     for ev in ingest.translated(&bend_sensitivity(1, 12)) {
         receiver.observe(&ev.1);
     }
@@ -375,9 +375,9 @@ fn bend_sensitivity(channel: u8, semitones: u8) -> UmpAt {
 /// bends those channels' notes by the new range and the rest by ±48.
 #[test]
 fn a_member_channels_bend_range_becomes_every_members_per_note_range() {
-    use tutti_plugin_types::PerNoteBendRanges;
+    use tutti_fixtures::midi::BendRanges;
     let mut ingest = MpeIngest::new(tutti_fixtures::midi::dual_zones(3, 3));
-    let mut receiver = PerNoteBendRanges::default();
+    let mut receiver = BendRanges::default();
 
     let master = bend_sensitivity(0, 2);
     let out: Vec<UmpAt> = ingest.translated(&master).collect();

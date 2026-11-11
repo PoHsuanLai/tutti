@@ -493,8 +493,8 @@ fn a_requested_mpe_mode_is_adopted_once() {
 /// wire's ±12, which came after the mode it was sent in.
 #[test]
 fn a_host_set_modes_reset_goes_ahead_of_the_blocks_events() {
+    use tutti_fixtures::midi::BendRanges;
     use tutti_midi_protocol::PitchBendSensitivity;
-    use tutti_plugin_types::PerNoteBendRanges;
     use tutti_ump::Rpn;
     let range = at(
         0,
@@ -510,7 +510,7 @@ fn a_host_set_modes_reset_goes_ahead_of_the_blocks_events() {
     controls.set_mpe_mode(tutti_fixtures::midi::lower_zone(6));
     block(&mut exec, 512);
     let seen = seen.lock().unwrap();
-    let mut ranges = PerNoteBendRanges::default();
+    let mut ranges = BendRanges::default();
     let mut per_member = 0;
     for (_, frame, ev) in seen.iter() {
         if ranges.observe(ev) {
@@ -538,7 +538,7 @@ fn a_host_set_modes_reset_goes_ahead_of_the_blocks_events() {
 /// and port 1 the note too.
 #[test]
 fn a_member_bend_range_fans_out_over_the_zones_ports() {
-    use tutti_plugin_types::PerNoteBendRanges;
+    use tutti_fixtures::midi::BendRanges;
     let wire = Script::new(vec![vec![
         cc_ev(2, CCNumber::RPN_MSB, 0),
         cc_ev(2, CCNumber::RPN_LSB, 0),
@@ -550,7 +550,7 @@ fn a_member_bend_range_fans_out_over_the_zones_ports() {
     let (_ed, mut exec, _c, seen) = ingest(node, MIDI_INPUT_PORTS as u16, 512);
     block(&mut exec, 512);
     let seen = seen.lock().unwrap();
-    let mut ranges = PerNoteBendRanges::default();
+    let mut ranges = BendRanges::default();
     let mut range_ports = Vec::new();
     for (port, _, ev) in seen.iter() {
         if ranges.observe(ev) {
@@ -583,7 +583,7 @@ fn a_member_bend_range_fans_out_over_the_zones_ports() {
 /// range.
 #[test]
 fn a_fan_out_with_no_room_is_dropped_whole_and_counted() {
-    use tutti_plugin_types::PerNoteBendRanges;
+    use tutti_fixtures::midi::BendRanges;
     // The run is sent after the notes: an inlet delivers in time order.
     let mut batch: Vec<UmpAt> = (0..507).map(|i| note(0, 60, i)).collect();
     batch.extend([
@@ -598,7 +598,7 @@ fn a_fan_out_with_no_room_is_dropped_whole_and_counted() {
     let (_ed, mut exec, controls, seen) = ingest(node, MIDI_INPUT_PORTS as u16, 512);
     block(&mut exec, 512);
     let seen = seen.lock().unwrap();
-    let mut ranges = PerNoteBendRanges::default();
+    let mut ranges = BendRanges::default();
     assert!(
         !seen.iter().any(|s| ranges.observe(&s.2)),
         "no range went out"

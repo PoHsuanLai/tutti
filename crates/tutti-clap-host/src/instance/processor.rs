@@ -122,7 +122,7 @@ impl ClapProcessor {
         self.scratch.steady_time = 0;
         // The plugin forgot its input: a SysEx open across the reset must not
         // complete on the far side of it.
-        self.scratch.input_events.reset_sysex();
+        self.scratch.input_events.reset_midi();
     }
 
     /// Takes the parameter edits the Controller queued that no block has

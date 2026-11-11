@@ -43,6 +43,23 @@ runs:
       run: |
         # An empty archive dir, so every dependency the image lacks is captured.
         rm -rf "$DIR"; mkdir -p "$DIR/partial"
+        # The runner's own resolver has failed for every non-Microsoft host while
+        # the mirrors were up (2026-11-11). Probe it first, and if it cannot
+        # resolve the mirror, use public resolvers before any apt retry spends
+        # minutes on a name that will not resolve.
+        if ! getent hosts azure.archive.ubuntu.com >/dev/null; then
+          echo "::warning::apt: the runner's DNS cannot resolve the mirror; using public resolvers"
+          sudo mkdir -p /etc/systemd/resolved.conf.d
+          printf '[Resolve]\nDNS=1.1.1.1 8.8.8.8 2606:4700:4700::1111 2001:4860:4860::8888\nDomains=~.\n' |
+            sudo tee /etc/systemd/resolved.conf.d/public-dns.conf >/dev/null
+          sudo systemctl restart systemd-resolved
+          sleep 2
+          if getent hosts azure.archive.ubuntu.com >/dev/null; then
+            echo "apt: public resolvers resolve the mirror"
+          else
+            echo "::warning::apt: public resolvers cannot resolve the mirror either"
+          fi
+        fi
         fetch() {
           sudo apt-get -o Acquire::Retries=5 update &&
           sudo apt-get -o Acquire::Retries=5 -o Dir::Cache::archives="$DIR" \

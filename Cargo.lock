@@ -3430,6 +3430,7 @@ dependencies = [
  "tutti-modulation",
  "tutti-nodes",
  "tutti-plugin",
+ "tutti-plugin-host",
  "tutti-polysynth",
  "tutti-rt",
  "tutti-sampler",
@@ -3797,11 +3798,8 @@ dependencies = [
 name = "tutti-plugin"
 version = "0.0.1"
 dependencies = [
- "arrayvec",
  "assert_no_alloc",
- "atomic_float",
  "bincode",
- "criterion",
  "crossbeam-channel",
  "interprocess",
  "libc",
@@ -3821,6 +3819,7 @@ dependencies = [
  "tutti-modulation",
  "tutti-nodes",
  "tutti-plugin-db",
+ "tutti-plugin-host",
  "tutti-plugin-ipc",
  "tutti-plugin-types",
  "tutti-rt",
@@ -3863,6 +3862,32 @@ dependencies = [
  "tempfile",
  "tracing",
  "tutti-plugin-types",
+]
+
+[[package]]
+name = "tutti-plugin-host"
+version = "0.0.1"
+dependencies = [
+ "arrayvec",
+ "assert_no_alloc",
+ "atomic_float",
+ "criterion",
+ "libloading 0.8.9",
+ "parking_lot",
+ "raw-window-handle",
+ "tracing",
+ "tutti-fixtures",
+ "tutti-graph",
+ "tutti-modulation",
+ "tutti-nodes",
+ "tutti-plugin-types",
+ "tutti-rt",
+ "tutti-tempo",
+ "tutti-transport",
+ "tutti-types",
+ "tutti-ump",
+ "tutti-vst2-host",
+ "tutti-vst2-test-plugin",
 ]
 
 [[package]]
@@ -4053,6 +4078,7 @@ dependencies = [
  "tutti-modulation",
  "tutti-nodes",
  "tutti-plugin",
+ "tutti-plugin-host",
  "tutti-plugin-types",
  "tutti-polysynth",
  "tutti-rt",

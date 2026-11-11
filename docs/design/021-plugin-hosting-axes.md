@@ -795,6 +795,51 @@ or did not belong to the process edge:
   launch tests lost their `clap` feature gate (this crate has no format
   features) and need the plugin-server like the other suites that spawn it.
 
+### 10.3 Step 4a-4b (the extraction) as built
+
+`tutti-plugin-host` (layer 5, `publish = false`) holds the format-generic code
+that did not need the wire: `PluginHandle` and the `Host*` capability traits
+(`capabilities.rs`, `control_handle.rs`), the node's pieces (`controls`,
+`meter`, `param_delivery`, `param_input`, `segment_points`, `transport_source`,
+`transport_walk`), the sinks (`listeners.rs`), the host policy (`liveness`,
+`param_values`, `render_mode`) and `in_process/` (`PluginNode`, `InProcClient`,
+`load_client`). Its modules are private and the root names every item; its
+normal dependencies are those of §6.1 and no more. Departures from the plan:
+
+- **`capability_view.rs` stays.** It is the `impl PluginClient` of the
+  `sends_midi`, `takes_midi`, `takes_harmony` and `transport` accessors, and
+  `is_declined`, which only it and `Plugin` call.
+- **`transport_walk` moved with its `BlockPayload` cut.** `scan` and `finish`
+  take the chunk's `TransportInfo` and `TransportChanges` rather than the
+  batcher's payload, which stays with `-ipc`'s consumers. The pieces the node
+  drives (`TransportSource`, `TransportWalk`, `ParamDelivery`, `SegmentPoints`,
+  `ChunkCounters`, `ForkedSources`, `take_param_input`) are `pub` for the
+  served node in `tutti-plugin` and marked so; they go private again if
+  step 4b moves that node here.
+- **`PluginHandle::from_client` is `PluginClient::handle`.** The handle
+  gained the parts the served client sets (`OptionalCapabilities::automation_state`,
+  `with_refresh_sink`, `with_invalidate_sink`, `with_server_pid`);
+  `SubprocessBackend::into_handle` builds it, and the mock-server tests build
+  theirs through the same function.
+- **The crate is `deny(unsafe_code)`, not `forbid`.** `HostEditor::open_editor`
+  takes the raw window pointer, and the in-process backend decodes it with one
+  `WindowHandle::from_ptr` (the same decode `SubprocessBackend` makes). The
+  crate can forbid `unsafe_code` once the trait takes a `WindowHandle` and the
+  decode is `PluginHandle`'s alone.
+- **`window.rs` is `extract_platform_ptr` alone.** Its re-exports of
+  `ContentScale`, `EditorSize` and `WindowHandle` were facades over
+  `tutti-plugin-types`; `tutti_plugin::server` re-exports them from there.
+- **No facade in `tutti-plugin`.** `tutti_plugin::handles` keeps `PluginClient`,
+  `Bound`, `Unbound` and `TransportView`; `backend`, `Liveness`, `PluginNode`
+  and the rest are named from `tutti_plugin_host`. The umbrella adds
+  `tutti::plugin_host`.
+- **The in-process suites run in the workspace.** `tutti-plugin-host`
+  dev-depends on `tutti-vst2-host` and the VST2 test plugin, so its in-module
+  and integration tests need no feature. The suites that go through
+  `catalog::Plugin` (`vst2_in_process`, `_fork`, `_transport`) stay in
+  `tutti-plugin` under `vst2`, and so do the two delivery tests that name
+  `PayloadPool` and a CLAP input list (`param_delivery_tests.rs`).
+
 Steps 1, 2, 4a, 4b, 4c, 5 and 6 (without the AU rows) can start before AU is ready;
 3 should wait only for the AU lane's merge to avoid conflicts; 7 is the only
 step blocked on AU's `Loaded`.

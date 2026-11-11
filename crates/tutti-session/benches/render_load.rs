@@ -7,7 +7,7 @@
 //! than the rest, not because the average is too high. This harness reports
 //! both, per block: mean, p99 and max load, blocks over budget, and max/mean
 //! (the spike indicator). It is a percentile harness, not a criterion
-//! benchmark, for the reason `tutti-plugin`'s `vst2_in_process` bench gives:
+//! benchmark, for the reason `tutti-plugin-host`'s `vst2_in_process` bench gives:
 //! criterion's outlier rejection discards the tail, which is the point here.
 //!
 //! # The scene

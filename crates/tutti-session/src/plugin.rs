@@ -34,7 +34,7 @@
 //!
 //! Per plugin, in node order:
 //!
-//! - **Health.** `tutti_plugin::Liveness` observes the handle's status at
+//! - **Health.** `tutti_plugin_host::Liveness` observes the handle's status at
 //!   `PhaseCx::now`: dead after at least `Liveness::DEATHS` consecutive
 //!   unhealthy observations spanning at least the window. A dead plugin's
 //!   node is removed ([`Session::remove`]) and reported once,
@@ -86,7 +86,7 @@
 //! # `Phase::RenderMode` (with `export`)
 //!
 //! Offline while an export token lives (§4.3), Realtime otherwise; each
-//! plugin is told per `tutti_plugin::needs_announcement`: on a change of
+//! plugin is told per `tutti_plugin_host::needs_announcement`: on a change of
 //! mode, or if it was never told.
 
 use std::path::{Path, PathBuf};
@@ -96,8 +96,8 @@ use tutti_plugin::MainThread;
 
 use tutti_graph::NodeKey;
 use tutti_plugin::catalog::{AudioConfig, Plugin, PluginId};
-use tutti_plugin::handles::{PluginControls, PluginHandle, PluginMeter, PluginStatus};
-use tutti_plugin::{Liveness, Verdict};
+use tutti_plugin_host::{Liveness, Verdict};
+use tutti_plugin_host::{PluginControls, PluginHandle, PluginMeter, PluginStatus};
 use tutti_plugin_types::BridgeError;
 use tutti_types::{SampleRate, Samples, Seconds};
 
@@ -233,7 +233,7 @@ impl PluginLoad {
         }
         #[cfg(feature = "modulation")]
         let mirror = plugin.as_ref().ok().map(|plugin| {
-            let (mut values, read) = tutti_plugin::PluginParamValues::start(plugin.handle());
+            let (mut values, read) = tutti_plugin_host::PluginParamValues::start(plugin.handle());
             // A read the plugin did not answer (its list unavailable) leaves
             // the mirror not ready and goes to the hosted record, to be handed
             // out as a job.
@@ -259,9 +259,9 @@ impl PluginLoad {
 /// when the load-time read was not answered.
 #[cfg(feature = "modulation")]
 struct Mirror {
-    values: tutti_plugin::PluginParamValues,
+    values: tutti_plugin_host::PluginParamValues,
     /// Becomes the hosted record's `param_read`, to be run as a job.
-    unread: Option<tutti_plugin::ParamRead>,
+    unread: Option<tutti_plugin_host::ParamRead>,
 }
 
 /// An opened plugin (or why it did not open) and (`modulation`) its
@@ -353,7 +353,7 @@ pub enum PluginLiveness {
     /// Answering normally.
     #[default]
     Healthy,
-    /// Recently unhealthy, not yet written off (`tutti_plugin::Liveness`).
+    /// Recently unhealthy, not yet written off (`tutti_plugin_host::Liveness`).
     Failing {
         /// How many observations in a row found it unhealthy.
         consecutive: u8,
@@ -403,11 +403,11 @@ pub struct HostedPlugin {
     /// plugin was first observed.
     snapshot_at: Option<Instant>,
     #[cfg(feature = "modulation")]
-    mirror: Option<tutti_plugin::PluginParamValues>,
+    mirror: Option<tutti_plugin_host::PluginParamValues>,
     /// The read that fills a mirror a crossfade rebuilt, until
     /// `Phase::Plugins` hands it to the host as a job.
     #[cfg(feature = "modulation")]
-    param_read: Option<tutti_plugin::ParamRead>,
+    param_read: Option<tutti_plugin_host::ParamRead>,
     /// Held by that job: a later crossfade mints a new one, and the
     /// earlier read lands nowhere.
     #[cfg(feature = "modulation")]
@@ -528,7 +528,7 @@ impl HostedPlugin {
     fn adopt(&mut self, handle: PluginHandle) {
         #[cfg(feature = "modulation")]
         if self.mirror.is_some() {
-            let (mirror, read) = tutti_plugin::PluginParamValues::start(&handle);
+            let (mirror, read) = tutti_plugin_host::PluginParamValues::start(&handle);
             self.mirror = Some(mirror);
             self.param_read = Some(read);
             self.mirror_token = Arc::new(());
@@ -627,7 +627,7 @@ impl HostedPlugin {
     /// Its parameter values (`modulation`): read at load, kept current from
     /// what it reports; `None` for a plugin added without the read.
     #[cfg(feature = "modulation")]
-    pub fn param_values(&self) -> Option<&tutti_plugin::PluginParamValues> {
+    pub fn param_values(&self) -> Option<&tutti_plugin_host::PluginParamValues> {
         self.mirror.as_ref()
     }
 
@@ -637,7 +637,7 @@ impl HostedPlugin {
     #[cfg(feature = "modulation")]
     pub(crate) fn param_value(&self, id: u32) -> Option<Option<f32>> {
         self.mirror.as_ref().map_or(Some(None), |m| {
-            m.get(tutti_plugin::handles::ParamId::new(id))
+            m.get(tutti_plugin_types::ParamId::new(id))
                 .map(|v| v.map(|v| v.get() as f32))
         })
     }
@@ -785,7 +785,7 @@ impl PluginReloaded {
 pub struct PluginParamRead {
     node: NodeKey,
     /// Boxed: a `SessionEvent` carries the job, and a handle is large.
-    read: Box<tutti_plugin::ParamRead>,
+    read: Box<tutti_plugin_host::ParamRead>,
     token: Arc<()>,
 }
 
@@ -827,11 +827,8 @@ pub struct PluginParamsRead {
     node: NodeKey,
     /// The values read, or the read itself given back to be run again.
     values: Result<
-        std::collections::HashMap<
-            tutti_plugin::handles::ParamId,
-            tutti_plugin::handles::Normalized,
-        >,
-        Box<tutti_plugin::ParamRead>,
+        std::collections::HashMap<tutti_plugin_types::ParamId, tutti_plugin_types::Normalized>,
+        Box<tutti_plugin_host::ParamRead>,
     >,
     /// The record's mirror token when the job was asked for.
     token: Arc<()>,
@@ -1172,13 +1169,10 @@ impl Session {
             {
                 hosted.withhold_snapshot(now);
             }
-            let reason = PluginHandle::from_client(&client)
-                .status()
-                .cause()
-                .map_or_else(
-                    || "the replacement died before it was installed".to_string(),
-                    str::to_string,
-                );
+            let reason = client.handle().status().cause().map_or_else(
+                || "the replacement died before it was installed".to_string(),
+                str::to_string,
+            );
             let mut gave_up = Vec::new();
             self.fail_reload(node, reason, now, out, &mut gave_up);
             self.finish_gave_up(gave_up, out);
@@ -1644,7 +1638,7 @@ impl Session {
             };
             let changed = self.render_mode.announced != wanted;
             for hosted in self.graph.plugins.values_mut() {
-                if !tutti_plugin::needs_announcement(changed, hosted.told) {
+                if !tutti_plugin_host::needs_announcement(changed, hosted.told) {
                     continue;
                 }
                 // `false` means the plugin declined (a CLAP plugin without
@@ -1668,8 +1662,9 @@ mod tests {
 
     use super::*;
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-    use tutti_plugin::handles::{Normalized, OptionalCapabilities, ParamId};
     use tutti_plugin::server::ParameterInfo;
+    use tutti_plugin_host::OptionalCapabilities;
+    use tutti_plugin_types::{Normalized, ParamId};
 
     /// A backend that answers `state` (or declines), counts its saves, and
     /// is dead while `dead` is set.
@@ -1685,7 +1680,7 @@ mod tests {
         unlisted: Arc<AtomicBool>,
     }
 
-    impl tutti_plugin::backend::HostParams for Fake {
+    impl tutti_plugin_host::HostParams for Fake {
         fn parameter_descriptors(&self) -> Option<Vec<ParameterInfo>> {
             if self.unlisted.load(Ordering::SeqCst) {
                 return None;
@@ -1715,7 +1710,7 @@ mod tests {
         }
     }
 
-    impl tutti_plugin::backend::HostState for Fake {
+    impl tutti_plugin_host::HostState for Fake {
         fn save_state(&self) -> Result<Vec<u8>, tutti_plugin::error::StateError> {
             self.saves.fetch_add(1, Ordering::SeqCst);
             self.state
@@ -1779,8 +1774,8 @@ mod tests {
     fn fake_handle(
         state: Option<Vec<u8>>,
         params: Vec<(ParamId, f32)>,
-    ) -> (PluginHandle, tutti_plugin::backend::ParameterChangeSink) {
-        let sink = tutti_plugin::backend::ParameterChangeSink::default();
+    ) -> (PluginHandle, tutti_plugin_host::ParameterChangeSink) {
+        let sink = tutti_plugin_host::ParameterChangeSink::default();
         let handle = PluginHandle::from_backend(
             Arc::new(Fake {
                 state,
@@ -2027,7 +2022,7 @@ mod tests {
         let param = ParamId::new(3);
         let mut rig = rig(None);
         let (outgoing, _) = fake_handle(None, vec![(param, 0.25)]);
-        let (mut mirror, read) = tutti_plugin::PluginParamValues::start(&outgoing);
+        let (mut mirror, read) = tutti_plugin_host::PluginParamValues::start(&outgoing);
         mirror.land(read.run().expect("the read lands"));
         let hosted = rig.session.graph.plugins.get_mut(&rig.node).unwrap();
         hosted.mirror = Some(mirror);
@@ -2100,7 +2095,7 @@ mod tests {
         let param = ParamId::new(3);
         let mut rig = rig(None);
         let (outgoing, _) = fake_handle(None, vec![(param, 0.25)]);
-        let (mut mirror, read) = tutti_plugin::PluginParamValues::start(&outgoing);
+        let (mut mirror, read) = tutti_plugin_host::PluginParamValues::start(&outgoing);
         mirror.land(read.run().expect("the read lands"));
         let hosted = rig.session.graph.plugins.get_mut(&rig.node).unwrap();
         hosted.mirror = Some(mirror);

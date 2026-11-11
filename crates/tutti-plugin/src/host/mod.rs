@@ -10,21 +10,17 @@
 //!   capability traits.
 //! - [`node`] — the [`PluginClient`](node::PluginClient) graph node that the
 //!   out-of-process plugin presents to the audio graph.
-//! - [`handles`] — the public [`PluginHandle`](handles::PluginHandle) control
-//!   surface and the granular capability traits (`HostParams`/`HostState`/
-//!   `HostEditor`) each backend implements the subset of.
+//! - [`handles`] — the client's typestates ([`PluginClient`](node::PluginClient)
+//!   is born `Unbound` and binds into a graph node).
 //! - [`plugin`] / [`plugins`] — the public load API.
-//! - [`param_values`], [`liveness`], [`render_mode`] — host policy written
-//!   once: the parameter mirror and its read job, the death debounce, and
-//!   when to announce a render mode.
+//!
+//! The control handle, the node's controls and the host policy written once
+//! over a handle live in `tutti-plugin-host`.
 
 pub mod db_probe;
 pub mod handles;
-pub mod liveness;
 pub mod node;
-pub mod param_values;
 pub mod plugin;
 pub mod plugins;
 pub(crate) mod probe;
-pub mod render_mode;
 pub(crate) mod subprocess_backend;

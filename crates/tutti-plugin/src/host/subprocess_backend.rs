@@ -14,10 +14,12 @@ use tutti_plugin_types::{
     WindowHandle,
 };
 
-use crate::host::handles::capabilities::{
-    HostAutomationState, HostEditor, HostParams, HostPresets, HostRenderMode, HostState,
-};
 use crate::host::node::ProcessGuard;
+use tutti_plugin_host::{
+    HostAutomationState, HostEditor, HostParams, HostPresets, HostRenderMode, HostState,
+    InvalidateSink, OptionalCapabilities, ParameterChangeSink, PluginHandle, RefreshSink,
+};
+use tutti_plugin_types::{LoadedPlugin, PluginDescriptor};
 
 /// Host-side capability backend for the out-of-process VST3 / CLAP / AU path —
 /// implements [`HostParams`],
@@ -35,6 +37,40 @@ pub(crate) struct SubprocessBackend {
 }
 
 impl SubprocessBackend {
+    /// The control handle over this backend and the plugin it serves.
+    ///
+    /// The subprocess backend honors every capability, including the editor:
+    /// it carries the automation-state advisory (VST3 `IAutomationState`; a
+    /// no-op for CLAP and AU behind the wire), a render mode (every
+    /// subprocess format can carry one; whether the loaded plugin honours it
+    /// is `Features::RENDER_MODE`, not this) and presets (which half it can do
+    /// is `Features::PRESET_LIST` / `PRESET_LOAD`).
+    pub(crate) fn into_handle(
+        self,
+        descriptor: PluginDescriptor,
+        loaded: LoadedPlugin,
+        sinks: (ParameterChangeSink, RefreshSink, InvalidateSink),
+        server_pid: Option<u32>,
+    ) -> PluginHandle {
+        let backend = Arc::new(self);
+        let (param_sink, refresh_sink, invalidate_sink) = sinks;
+        PluginHandle::from_backend(
+            Arc::clone(&backend),
+            OptionalCapabilities {
+                automation_state: Some(backend.clone()),
+                editor: Some(backend.clone()),
+                render_mode: Some(backend.clone()),
+                presets: Some(backend),
+            },
+            descriptor,
+            loaded,
+            param_sink,
+        )
+        .with_refresh_sink(refresh_sink)
+        .with_invalidate_sink(invalidate_sink)
+        .with_server_pid(server_pid)
+    }
+
     pub(crate) fn new(bridge: Arc<PluginBridge>, guard: Arc<ProcessGuard>) -> Self {
         Self {
             bridge,

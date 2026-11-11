@@ -119,7 +119,7 @@ crates/             everything shipped, directory name = package name
   tutti-soundfont   # SoundFont (.sf2) playback: the voice render (derived from rustysynth) under tutti-voicing
   tutti-sf2         # A SoundFont 2 file as data (no synth).
   tutti-midi-runtime / -hardware / -file, tutti-alsa-ump-sys
-  tutti-plugin / -types / -server
+  tutti-plugin / -types / -server / -ipc / -host / -db / -probe
   tutti-{vst2,vst3,clap,au}-host, tutti-clap-ffi, tutti-vst3-ffi
   tutti-vst2-ffi    # Host half of our fork of the vst crate (all VST2 unsafe)
 testing/            never shipped
@@ -737,8 +737,10 @@ comments and docs, and treat it as a bug when you find it:
   `Device` made `!Send` by a `PhantomData<*const ()>`, which turns that
   safety argument into a type error (a `compile_fail` doctest pins it).
 
-  There is no `tutti-plugin-host` package either — `bevy_tutti::plugin_host`
-  is a *module*.
+  `bevy_tutti::plugin_host` is a *module* of the adapter, not a package; the
+  `tutti-plugin-host` package (doc 021) is the format-generic half of plugin
+  hosting (the control handle, the node's controls and the in-process node),
+  unrelated to it.
 
 ## Playing an instrument live: a frame is on the engine's clock
 

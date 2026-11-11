@@ -23,14 +23,15 @@
 #
 # - outside `tutti-vst2-ffi` and `tutti-vst2-host`, `unsafe` before the test module of a file
 #   whose path has `vst2` in it or that names `tutti_vst2_host` or `tutti_vst2_ffi` is pinned
-#   to the known caller site (`VST2_CALLERS`: the in-process backend's `WindowHandle`
-#   decode, which `HostEditor::open_editor`'s raw pointer needs). A new one fails here, and
-#   so does a removed one until its pin is lowered.
+#   to the known caller sites (`VST2_CALLERS`, none now: the in-process node is generic over
+#   the format and names no VST2 type; its `WindowHandle` decode for
+#   `HostEditor::open_editor`'s raw pointer is the same one `subprocess_backend.rs` makes). A
+#   new one fails here, and so does a removed one until its pin is lowered.
 #
 # Comments and string literals are not code: prose that says "unsafe" is fine.
 #
 # Mutation (run): add an `unsafe { }` block to
-# `tutti-plugin/src/format/vst2_in_process/client.rs`, or delete a `deny` lint
+# `tutti-plugin/src/host/plugin.rs` (it names `Vst2Loaded`), or delete a `deny` lint
 # from `tutti-vst2-ffi`'s or `tutti-vst2-host`'s `lib.rs` -> this script exits 1
 # naming the file. Also: add `unsafe { }` to any fn of `tutti-clap-host/src/lib.rs`'s
 # or `tutti-vst3-host/src/lib.rs`'s crate, or delete its forbid attribute, or add an `unsafe` block above the
@@ -134,9 +135,7 @@ def attrs(path):
 # VST2: the crates that hold its FFI and its host, and the callers outside them that may hold
 # `unsafe` (file -> the number of `unsafe` tokens in code before the file's test module).
 VST2_CRATES = ["crates/tutti-vst2-ffi", "crates/tutti-vst2-host"]
-VST2_CALLERS = {
-    "crates/tutti-plugin/src/format/vst2_in_process/control_backend.rs": 1,
-}
+VST2_CALLERS = {}
 
 
 def code_before_tests(path):

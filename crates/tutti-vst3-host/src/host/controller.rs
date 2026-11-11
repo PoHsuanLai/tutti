@@ -318,6 +318,10 @@ impl Control for Vst3Controller {
         Control::take_reported_edits(self.loaded_mut(), main, out);
     }
 
+    fn dropped_reported_edits(&self) -> u64 {
+        Control::dropped_reported_edits(self.loaded())
+    }
+
     fn rebuild_midi_mapping(&mut self, main: &MainThread) {
         Control::rebuild_midi_mapping(self.loaded_mut(), main);
     }

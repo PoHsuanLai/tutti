@@ -20,12 +20,14 @@
 #![cfg(feature = "vst2")]
 
 use std::path::PathBuf;
+use tutti_plugin_types::Load;
+use tutti_vst2_host::Vst2Loaded;
 
 use assert_no_alloc::AllocDisabler;
 use tutti_graph::NodeKey;
 use tutti_graph::{Editor, Prepare, Transport, Unforkable};
 use tutti_graph::{OutPort, Source};
-use tutti_plugin::in_process_vst2_client;
+use tutti_plugin::load_client;
 use tutti_types::{SampleRate, Samples};
 
 #[global_allocator]
@@ -57,8 +59,9 @@ fn block(exec: &mut tutti_graph::Executor, left: &mut [f32], right: &mut [f32]) 
 fn a_removed_vst2_node_is_dropped_on_the_control_side() {
     let main = tutti_plugin_types::MainThread::claim().expect("one test, one process");
     let path = tutti_fixtures::vst2_probe().to_path_buf();
-    let (unit, handle) = in_process_vst2_client(&main, &path, SampleRate::new(RATE))
-        .expect("the probe loads in process");
+    let (unit, handle) =
+        load_client::<Vst2Loaded>(&main, &path, &Load::new(), SampleRate::new(RATE))
+            .expect("the probe loads in process");
 
     let key = NodeKey(1);
     let (mut editor, mut exec) = Editor::new(Prepare::new(SampleRate(RATE), Samples(BLOCK)));

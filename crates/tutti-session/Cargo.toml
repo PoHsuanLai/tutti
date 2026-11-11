@@ -297,6 +297,10 @@ required-features = ["clap", "modulation", "export"]
 # modulation lanes on its parameters (the session halves of `bevy-tutti`'s
 # `plugin_vst2_meter` and `mod_plugin` VST2 tests).
 [[test]]
+name = "vst2_off_main_handle"
+required-features = ["vst2"]
+
+[[test]]
 name = "vst2_meter"
 required-features = ["vst2"]
 

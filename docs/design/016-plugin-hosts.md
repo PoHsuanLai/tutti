@@ -149,7 +149,7 @@ and the dead-man's pedal `recover` mixed read, parse, decide, rename and log.
 - `HostEditor::open_editor(&self, parent: *mut c_void, ..)` is a safe trait
   method taking a raw pointer (`host/handles/capabilities.rs:187`); impls turn it
   into a `WindowHandle` with `unsafe` on the caller's word
-  (`format/vst2_in_process/control_backend.rs:207`,
+  (`format/in_process/control_backend.rs`,
   `host/ipc_client/composite.rs:275`).
 - `WindowHandle::{from_raw, from_ptr, from_u64}` are `pub unsafe fn`
   (`tutti-plugin-types/src/editor.rs:20,30,42`): three constructors for one
@@ -2631,25 +2631,22 @@ mechanical split of `vst-tutti` with no behaviour change; the typed handles (§2
 - **Only `getParameter` and `setParameter` are any-thread in VST2.** They take no token and
   no gate. The dispatcher-based parameter calls (a parameter's name, label and display,
   `effGetParameterProperties`, `effCanBeAutomated`, `effString2Parameter`) must never run
-  beside `process`; the in-process backend of `tutti-plugin` calls them off the main thread
-  behind its own lock, so they stay token-free as **named exceptions** (with
-  `chunk_off_main_thread`) and each holds the audio gate for the call, as the exclusive calls
-  do. Narrowing them to the main thread waits for the session to give the backend a route.
+  beside `process`; `Vst2Loaded`'s parameter reads call them with no token, so they stay
+  token-free as **named exceptions** and each holds the audio gate for the call, as the
+  exclusive calls do. Narrowing them to the main thread waits for the session to give the backend a route.
 - **Poison and the last holder.** A panic under the gate poisons it and marks the core dead:
   later audio entries render silence and never call the plugin again (the instance still
   closes it). A `RenderHandle` that is the last holder of the core (the instance closed first)
   hands the core to the main thread to be freed when dropped off it, so the host box and host
   state never free on an audio thread, whether or not the graph's retire path already keeps a
   unit off it.
-- **`HostState::save_state` stays deferred, again with the reason.** `effGetChunk` is a
-  main-thread opcode (`PluginInstance::try_get_preset_data` takes the token), but the
-  session calls `save_state` from a task-pool job on purpose (a subprocess save is a blocking
-  round trip with a ten-second timeout), so the in-process backend has no token. Its one entry,
-  `chunk_off_main_thread` / `Vst2Loaded::read_state_off_main_thread`, is the named exception.
-  A main-thread route means the session asking the main thread for an in-process plugin's
-  state and the pool waiting for the answer: a change to `tutti-session`, `bevy-tutti` and
-  the snapshot job's shape, not reasonable inside this change, and a cached snapshot would be
-  a behaviour change, not a route.
+- **`HostState::save_state` on an in-process plugin runs on the main thread (doc 021 step
+  4a-3c-2).** `effGetChunk` is a main-thread opcode (`PluginInstance::try_get_preset_data`
+  takes the token), but the session calls `save_state` from a task-pool job on purpose (a
+  subprocess save is a blocking round trip with a ten-second timeout). The off-main exception
+  (`chunk_off_main_thread`, `Vst2Loaded::read_state_off_main_thread`) is gone: the generic
+  backend posts the read to the main thread with `defer_to_main` and waits up to 2 s for
+  the tick that runs it (`Rejected` on expiry).
 - The editor is the instance's: `open_editor(&MainThread, WindowHandle)`, `close_editor`,
   `idle_editor`, `editor_size`. `SendEditor` and the `Editor` object it boxed are gone, so
   the editor cannot outlive the plugin or move off it. The server loader's

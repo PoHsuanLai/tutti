@@ -7,7 +7,7 @@ use tutti_transport::{MeterSlot, MeterSlotReader, ProjectMeter};
 ///
 /// Every plugin node has one, shared with the node: the out-of-process node's
 /// [`NodeControls::meter`](super::NodeControls::meter), and the in-process
-/// VST2 node's controls (what inserting it hands back). A clone is another
+/// node's controls (what inserting it hands back). A clone is another
 /// handle on the same slot, so an install through any handle reaches the node
 /// the audio thread runs, lock-free and with no graph commit. Empty until a
 /// host installs a meter; the node then tells the plugin 4/4 from bar 0.
@@ -97,8 +97,7 @@ impl PluginMeter {
     }
 
     /// A handle on a new slot following `meter`, or nothing: an in-process
-    /// VST2 fork's.
-    #[cfg(feature = "vst2")]
+    /// fork's.
     pub(crate) fn holding(meter: Option<ProjectMeter>) -> Self {
         Self(MeterSlot::following_meter(meter))
     }

@@ -173,7 +173,6 @@ impl Node for Late {
 #[cfg(feature = "export")]
 #[test]
 fn an_export_is_the_live_render_on_a_native_param() {
-    use tutti_export::{Outcome, Produced};
     use tutti_session::{Bounce, ExportClock, Latency, Range, Tail};
     use tutti_transport::{OfflineTimeline, OfflineTimelineConfig};
 
@@ -216,13 +215,11 @@ fn an_export_is_the_live_render_on_a_native_param() {
         .clock(ExportClock::timeline(timeline))
         .latency(Latency::Keep)
         .tail(Tail::None);
-    let Outcome::Finished(bounced) = s.bounce(request).expect("the export runs") else {
-        panic!("the export finishes into memory")
-    };
-    let Produced::Buffers(rendered) = bounced.into_master() else {
-        panic!("the export finishes into memory")
-    };
-    let export = rendered.into_planes();
+    let export = s
+        .bounce(request)
+        .expect("the export runs")
+        .into_master()
+        .into_planes();
 
     // Live: rolling from beat 0 (the play clock restarts there), in
     // ragged blocks.

@@ -224,10 +224,10 @@ fn the_env_walk_is_the_env_beat() {
         // Untimed edits between blocks, as a UI makes them: 97 BPM from
         // block 2 (frame 812), 133 from block 20.
         if i == 2 {
-            transport.settings.set_tempo(Bpm::of(97.0));
+            transport.settings().set_tempo(Bpm::of(97.0));
         }
         if i == 20 {
-            transport.settings.set_tempo(Bpm::of(133.0));
+            transport.settings().set_tempo(Bpm::of(133.0));
         }
         render(&graph, ChannelLayout::MONO, n);
         starts.push(f);
@@ -337,7 +337,7 @@ fn click_clicks_on_the_model_beats() {
     let m = &transport.motion;
     m.try_send(MotionEvent::Play).expect("room");
     // 151 BPM from the beat frame 20 111 reaches at 120: a step inside a block.
-    transport.settings.set_tempo_map(step_map(&[
+    transport.settings().set_tempo_map(step_map(&[
         (0.0, 120.0),
         (beat_of_frame(20_111, 120.0, SR), 151.0),
     ]));
@@ -443,7 +443,7 @@ fn an_offline_render_sees_the_live_engine_transport() {
     let live_log = Arc::new(Mutex::new(Vec::new()));
     let (mut ed, exec) = env_graph(512, &live_log);
     let live = Engine::new(&live_t, &mut ed, exec).expect("within the limits");
-    live_t.settings.set_tempo(Bpm::of(100.0));
+    live_t.settings().set_tempo(Bpm::of(100.0));
     live_t
         .motion
         .schedule(
@@ -503,7 +503,7 @@ fn an_offline_render_sees_the_live_engine_transport() {
     assert!(off_log[0].transport.playing);
     assert!(wrapped, "the loop wrapped");
     // The timeline stands after the last block, where the live clock does.
-    assert!((timeline.beat().get() - live_t.settings.beat().get()).abs() < 1e-9);
+    assert!((timeline.beat().get() - live_t.settings().beat().get()).abs() < 1e-9);
 }
 
 /// The beat walked from each block's `Env` in an offline render starts every block on

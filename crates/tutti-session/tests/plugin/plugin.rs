@@ -20,15 +20,15 @@ use std::time::{Duration, Instant};
 use tutti_types::MaxBlock;
 
 use support::{clap_probe, plugin_server};
-use tutti_export::Produced;
 use tutti_graph::ForkByClone;
 use tutti_graph::NodeKey;
 use tutti_plugin::RenderMode;
 use tutti_plugin::catalog::PluginId;
 use tutti_plugin_host::PluginStatus;
+use tutti_session::BufferMaster;
 use tutti_session::{
-    Bounce, ExportClock, Latency, Phase, PhaseCx, PluginLiveness, PluginLoadRequest, Range,
-    Session, SessionEvent, Tail,
+    Bounce, BounceError, ExportClock, Latency, Phase, PhaseCx, PluginLiveness, PluginLoadRequest,
+    Range, Session, SessionEvent, Tail,
 };
 use tutti_types::{ChannelLayout, InterleavedMut, SampleRate, Samples};
 
@@ -131,7 +131,7 @@ fn stays_latency(s: &Session, node: NodeKey, want: Samples, why: &str) {
 
 /// A render of `seconds` into memory: stereo at `RATE`, trimming nothing and
 /// keeping no tail, on a frozen clock.
-fn request_for(seconds: f64) -> Bounce {
+fn request_for(seconds: f64) -> Bounce<NodeKey, BufferMaster> {
     Bounce::project()
         .master_buffers()
         .channels(ChannelLayout::STEREO)
@@ -146,7 +146,7 @@ fn request_for(seconds: f64) -> Bounce {
 }
 
 /// A short render into memory.
-fn request() -> Bounce {
+fn request() -> Bounce<NodeKey, BufferMaster> {
     request_for(0.05)
 }
 
@@ -180,14 +180,8 @@ fn an_export_announces_offline_before_its_first_block_and_realtime_after() {
     assert!(s.bounce_in_flight());
 
     let done = job.run();
-    let output = s
-        .finish_bounce(done)
-        .expect("the export renders")
-        .finished();
-    assert!(matches!(
-        output.as_ref().map(|b| b.master()),
-        Some(Produced::Buffers(_))
-    ));
+    let output = s.finish_bounce(done).expect("the export renders");
+    assert!(!output.master().planes().is_empty(), "the master is planes");
     assert!(!s.bounce_in_flight());
     assert_eq!(s.render_mode(), RenderMode::Realtime);
     await_latency(&s, node, base, "told Realtime by finish_bounce");
@@ -253,8 +247,7 @@ fn a_plugin_added_mid_export_is_told_offline() {
         "a plugin added mid-export, after its first update",
     );
 
-    let out = s.finish_bounce(job.run()).expect("renders");
-    assert!(out.finished().is_some(), "not cancelled");
+    s.finish_bounce(job.run()).expect("renders, not cancelled");
     await_latency(&s, late, base, "told Realtime once the export ends");
 }
 
@@ -383,8 +376,7 @@ fn export_leftovers_drop_on_the_main_thread() {
 
     let job = s.bounce_start(request()).expect("starts");
     let done = std::thread::spawn(move || job.run()).join().unwrap();
-    let out = s.finish_bounce(done).expect("renders");
-    assert!(out.finished().is_some(), "not cancelled");
+    s.finish_bounce(done).expect("renders, not cancelled");
 
     let main = std::thread::current().id();
     let drops = drops.lock().unwrap().clone();
@@ -1246,8 +1238,10 @@ fn a_cancelled_export_frees_the_token_and_the_forked_server() {
     if let Some(live) = live {
         assert_eq!(servers(), Some(live + 1), "the export's fork has a server");
     }
-    let out = s.finish_bounce(rendered).expect("a cancel is not an error");
-    assert!(out.finished().is_none(), "cancelled");
+    assert!(
+        matches!(s.finish_bounce(rendered), Err(BounceError::Cancelled)),
+        "cancelled"
+    );
     assert!(!s.bounce_in_flight(), "the token is released");
     if let Some(live) = live {
         let deadline = Instant::now() + Duration::from_secs(10);
@@ -1257,8 +1251,8 @@ fn a_cancelled_export_frees_the_token_and_the_forked_server() {
         }
     }
 
-    let next = s.bounce(request()).expect("the next export is not refused");
-    assert!(next.finished().is_some(), "and renders to its end");
+    s.bounce(request())
+        .expect("the next export is not refused, and renders to its end");
 }
 
 /// **A replacement that refused the snapshot is not blamed for its death.**

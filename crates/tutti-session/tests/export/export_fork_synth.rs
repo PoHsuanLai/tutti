@@ -17,6 +17,7 @@ use tutti_graph::contract::Direct;
 use tutti_graph::{Event, Node, Offset};
 use tutti_midi_runtime::TimedMidiEvent;
 use tutti_polysynth::{Adsr, OscillatorType, PolySynth, SynthConfig};
+use tutti_session::BufferMaster;
 use tutti_session::{Bounce, ExportClock, Latency, Range, Session, Stem, Tail};
 use tutti_sf2::SoundFont;
 use tutti_soundfont::{Settings, SoundFontUnit};
@@ -36,7 +37,7 @@ const PRESET: U7 = U7::of(24);
 
 /// A bounce of the mix into memory for `seconds` at `rate`: stereo, trimming
 /// nothing and keeping no tail, on `clock`.
-fn bounce_of(seconds: f64, rate: f64, clock: ExportClock) -> Bounce {
+fn bounce_of(seconds: f64, rate: f64, clock: ExportClock) -> Bounce<NodeKey, BufferMaster> {
     Bounce::project()
         .master_buffers()
         .channels(ChannelLayout::STEREO)
@@ -47,29 +48,23 @@ fn bounce_of(seconds: f64, rate: f64, clock: ExportClock) -> Bounce {
         .tail(Tail::None)
 }
 
-fn render(session: &mut Session, bounce: Bounce) -> Vec<Vec<f32>> {
-    match session
+fn render(session: &mut Session, bounce: Bounce<NodeKey, BufferMaster>) -> Vec<Vec<f32>> {
+    session
         .bounce(bounce)
         .expect("the bounce renders")
-        .finished()
-        .map(|b| b.into_master())
-    {
-        Some(Produced::Buffers(rendered)) => rendered.into_planes(),
-        other => panic!("expected rendered buffers, got {other:?}"),
-    }
+        .into_master()
+        .into_planes()
 }
 
 /// The planes of the one stem `bounce` names, in memory: the master is
 /// rendered beside it and dropped.
-fn render_stem(session: &mut Session, bounce: Bounce) -> Vec<Vec<f32>> {
-    let mut targets = session
+fn render_stem(session: &mut Session, bounce: Bounce<NodeKey, BufferMaster>) -> Vec<Vec<f32>> {
+    let (_, mut stems) = session
         .bounce(bounce)
         .expect("the bounce renders")
-        .finished()
-        .expect("nothing cancels it")
-        .into_targets();
-    match targets.pop() {
-        Some(Produced::Buffers(rendered)) if targets.len() == 1 => rendered.into_planes(),
+        .into_parts();
+    match stems.pop() {
+        Some(Produced::Buffers(rendered)) if stems.is_empty() => rendered.into_planes(),
         other => panic!("expected one stem held in memory, got {other:?}"),
     }
 }
@@ -159,7 +154,7 @@ fn timeline(rate: f64) -> Arc<OfflineTimeline> {
 }
 
 /// Export the mix for 0.8 s at `rate` against [`timeline`].
-fn request(rate: f64) -> Bounce {
+fn request(rate: f64) -> Bounce<NodeKey, BufferMaster> {
     bounce_of(0.8, rate, ExportClock::timeline(timeline(rate)))
 }
 

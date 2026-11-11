@@ -19,11 +19,9 @@
 //!        --example headless_export -- <outdir>`
 
 use tutti::codec::{Format, Pcm};
-use tutti::export::Produced;
 use tutti::measure::{LoudnessConfig, measure_loudness};
+use tutti::nodes::testing::{Const, Osc};
 use tutti::prelude::*;
-use tutti_nodes::testing::{Const, Osc};
-use tutti_types::Hz;
 
 /// The rate every render below runs at.
 const RATE: SampleRate = SampleRate(48_000.0);
@@ -68,21 +66,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // 1. A project to a file.
     let path = dir.join("tone.wav");
-    let written = tone()
-        .bounce(first(1.0).master(&path))?
-        .finished()
-        .and_then(|b| b.into_master().file())
-        .expect("nothing cancels it");
+    let written = tone().bounce(first(1.0).master(&path))?.into_master();
     println!("wrote {} ({written:?})", path.display());
 
     // 2. The same project into memory, and a measurement of it.
-    let Some(Produced::Buffers(rendered)) = tone()
-        .bounce(first(1.0).master_buffers())?
-        .finished()
-        .map(|b| b.into_master())
-    else {
-        unreachable!("nothing cancels it");
-    };
+    let rendered = tone().bounce(first(1.0).master_buffers())?.into_master();
     let flat = rendered.interleaved();
     let cfg = LoudnessConfig::new(rendered.sample_rate(), ChannelLayout::STEREO);
     let loudness = measure_loudness(&cfg, Interleaved::new(&flat, ChannelLayout::STEREO))
@@ -96,14 +84,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 3. A mono project into a stereo file: the fold, which the export layer
     //    does for you and the graph does not.
     let mono_path = dir.join("mono-to-stereo.wav");
-    mono_tone()
-        .bounce(
-            first(0.5)
-                .channels(ChannelLayout::STEREO)
-                .master(&mono_path),
-        )?
-        .finished()
-        .expect("nothing cancels it");
+    mono_tone().bounce(
+        first(0.5)
+            .channels(ChannelLayout::STEREO)
+            .master(&mono_path),
+    )?;
     println!("wrote {}", mono_path.display());
 
     Ok(())

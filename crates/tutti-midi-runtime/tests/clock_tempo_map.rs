@@ -151,7 +151,7 @@ fn rig(map: &Arc<TempoMap>, mtc: bool) -> Rig {
     ed.commit().expect("commits");
     let transport = Transport::new(SampleRate::new(SR));
     let engine = Engine::new(&transport, &mut ed, exec).expect("within the limits");
-    transport.settings.set_tempo_map(Arc::clone(map));
+    transport.settings().set_tempo_map(Arc::clone(map));
     Rig {
         engine,
         transport,

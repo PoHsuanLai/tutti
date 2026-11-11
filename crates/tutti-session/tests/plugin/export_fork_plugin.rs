@@ -23,6 +23,7 @@ use tutti_midi_runtime::TimedMidiEvent;
 use tutti_nodes::testing::Const;
 use tutti_plugin::catalog::PluginId;
 use tutti_plugin_types::PluginForkError;
+use tutti_session::BufferMaster;
 use tutti_session::{
     Bounce, BounceError, ExportClock, GraphSource, Latency, PluginLoadRequest, Range, Session,
     Stem, Tail,
@@ -43,7 +44,7 @@ const NOTES: u32 = 4;
 
 /// A bounce of the mix into memory for `seconds` at `rate`: stereo, trimming
 /// nothing and keeping no tail, on `clock`.
-fn bounce_of(seconds: f64, rate: f64, clock: ExportClock) -> Bounce {
+fn bounce_of(seconds: f64, rate: f64, clock: ExportClock) -> Bounce<NodeKey, BufferMaster> {
     Bounce::project()
         .master_buffers()
         .channels(ChannelLayout::STEREO)
@@ -54,29 +55,26 @@ fn bounce_of(seconds: f64, rate: f64, clock: ExportClock) -> Bounce {
         .tail(Tail::None)
 }
 
-fn buffers(seconds: f64) -> Bounce {
+fn buffers(seconds: f64) -> Bounce<NodeKey, BufferMaster> {
     bounce_of(seconds, RATE, ExportClock::frozen())
 }
 
 /// The planes `bounce` renders; panics with the refusal otherwise.
-fn planes(session: &mut Session, bounce: Bounce) -> Vec<Vec<f32>> {
+fn planes(session: &mut Session, bounce: Bounce<NodeKey, BufferMaster>) -> Vec<Vec<f32>> {
     match session.bounce(bounce) {
-        Ok(out) => match out.finished().map(|b| b.into_master()) {
-            Some(Produced::Buffers(rendered)) => rendered.into_planes(),
-            other => panic!("expected rendered buffers, got {other:?}"),
-        },
+        Ok(out) => out.into_master().into_planes(),
         Err(e) => panic!("the bounce failed: {e:?}"),
     }
 }
 
 /// The planes of the one stem `bounce` names, in memory, rendered beside the
 /// master; panics with the refusal otherwise.
-fn stem_planes(session: &mut Session, bounce: Bounce) -> Vec<Vec<f32>> {
+fn stem_planes(session: &mut Session, bounce: Bounce<NodeKey, BufferMaster>) -> Vec<Vec<f32>> {
     match session.bounce(bounce) {
         Ok(out) => {
-            let mut targets = out.finished().expect("nothing cancels it").into_targets();
-            match targets.pop() {
-                Some(Produced::Buffers(rendered)) if targets.len() == 1 => rendered.into_planes(),
+            let (_, mut stems) = out.into_parts();
+            match stems.pop() {
+                Some(Produced::Buffers(rendered)) if stems.is_empty() => rendered.into_planes(),
                 other => panic!("expected one stem held in memory, got {other:?}"),
             }
         }

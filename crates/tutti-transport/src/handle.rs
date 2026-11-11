@@ -19,7 +19,7 @@ use tutti_types::{Beat, SampleRate};
 /// # use tutti_transport::{LoopEdit, MotionEvent, Transport};
 /// # let transport = Transport::new(tutti_types::SampleRate(48_000.0));
 /// transport.motion.try_send(MotionEvent::Play)?; // a request; may be refused
-/// transport.settings.set_tempo(Bpm::of(140.0));      // a value; cannot fail
+/// transport.settings().set_tempo(Bpm::of(140.0));      // a value; cannot fail
 /// // Loop beats 0 to 4 from the next block; the engine owns the region.
 /// let range = tutti_types::LoopRange::new(tutti_types::Beat(0.0), tutti_types::Beat(4.0)).expect("ordered");
 /// transport.motion.schedule(At::NextBlock, LoopEdit::over(range))?;
@@ -42,7 +42,7 @@ pub struct Transport {
     /// The state machine: play, stop, locate, scrub. Requests may be refused.
     pub motion: MotionFsm,
     /// The plain shared values: tempo, playhead, record arm.
-    pub settings: TransportSettings,
+    pub(crate) settings: TransportSettings,
     /// Shared by every clone, so a device restart at a new rate
     /// ([`set_sample_rate`](Self::set_sample_rate)) reaches each holder —
     /// a clip reader's `Arc<dyn Timeline>`, the MIDI clock master — rather
@@ -59,6 +59,12 @@ impl Transport {
             settings,
             sample_rate: Arc::new(AtomicF64::new(sample_rate.into().get())),
         }
+    }
+
+    /// The plain shared values: tempo, playhead, record arm. A setting is a
+    /// store: it needs no `&mut` and cannot be refused.
+    pub fn settings(&self) -> &TransportSettings {
+        &self.settings
     }
 
     /// The audio-thread side of this transport, for the **one** holder that

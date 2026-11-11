@@ -9,6 +9,13 @@
 // No `///` on these: a doc comment on a `pub mod` shadows the module's own
 // `//!` and re-resolves its intra-doc links in this scope.
 mod backend;
+// Compiled everywhere so its tests run on every platform; only the native
+// backends (ALSA, CoreMIDI) convert an OS block, so it is dead where the stub
+// is the backend.
+#[cfg_attr(
+    not(any(target_os = "macos", all(target_os = "linux", alsa_ump))),
+    allow(dead_code, reason = "only a native backend converts OS blocks")
+)]
 mod block;
 mod capability;
 mod devices;

@@ -1141,7 +1141,11 @@ read the `Cargo.toml`, grep for the type, run the probe.
   deleted (the node contract is `tutti_graph::Node`; the filters' `Real` is
   `tutti-nodes`'), `tutti-mod` → `tutti-modulation` (renamed: "mod" is unclear), `audio-automation` (an external git dependency until Q25 of doc 024) → `tutti-curve` (`CurveType` → `tutti_curve::Law`, `Trajectory` and `Breakpoint` copied in minimal; `AutomationClip`, `AutomationState` and `ParameterRange` were not), and tutti-modulation's runtime (`ModMatrix`, `ModParams`, `ParamFrom`,
   `modulation::legacy`) → deleted (doc 014 §10: `tutti_modulation::compile` and
-  a `ControlLaneNode` per param). A comment or doc that disagrees with the
+  a `ControlLaneNode` per param), `tutti_plugin::{handles, host::node, format::in_process}`'s
+  format-generic items (`PluginHandle`, `NodeControls`, `PluginMeter`, `TransportSource`,
+  `ParamDelivery`, `Liveness`, `PluginParamValues`, `PluginNode`, `InProcClient`, `load_client`)
+  → `tutti_plugin_host::` (doc 021 step 4a-4b; `PluginHandle::from_client` →
+  `tutti_plugin::PluginClient::handle`). A comment or doc that disagrees with the
   code is the bug.
 - **MSVC render gate:** `render_is_bit_identical_to_the_audionode_era` is
   gated off MSVC, because `sin` differs in the last ulp between CRTs.

@@ -29,7 +29,7 @@ use crate::network::{
     Absorption, Bounds, Fdn, Gains, Inline, Line, MAX_LINES, Matrix, Modulation, Network,
     OutputMap, Stage, pre_delay_frames,
 };
-use crate::{Cadence, Ceiling, Channels, Design, MaxDecay, Ring, Sizes};
+use crate::{Cadence, Ceiling, Channels, Design, MaxDecay, Realized, Ring, Sizes};
 
 /// The line lengths at 44.1 kHz for a room size of 0.5 (the scale is
 /// `0.5 + size`), values near primes, so the delays share few factors.
@@ -228,7 +228,7 @@ impl Design for FdnDesign {
     type Model = Network;
     type Bounds = Bounds;
     type Range = MaxDecay;
-    type Realization = FdnKernel;
+    type Realization = Realized<FdnKernel>;
 
     // The grid the render is a function of: the kernel ramps in whole chunks
     // counted from the last reset (doc 024 section 4.4). The *design* is still
@@ -251,8 +251,8 @@ impl Design for FdnDesign {
         Network::new(rate)
     }
 
-    fn realization(&self) -> FdnKernel {
-        FdnKernel::new()
+    fn realization(&self) -> Realized<FdnKernel> {
+        Realized::new(FdnKernel::new(), &self.blank(SampleRate::DEFAULT))
     }
 
     fn design_into(&self, c: &FdnControls, rate: SampleRate, out: &mut Network) {
@@ -815,14 +815,14 @@ mod tests {
     /// does not ramp cannot fail, and the response cases on the mixing network.
     #[test]
     fn the_new_cases_fail_on_their_defects() {
-        use crate::fdn::Flaw;
+        use crate::model::Flaw;
         // landed: the first retarget goes to another model and ramps to the target.
         fails(cases::landed(&defective(Defect::RampFirst)), "did not land");
         // landed: a reset that empties the lines and keeps the ramps mid-way.
         let keeps = Defective {
             inner: freezable(),
             defect: Defect::None,
-            tweak: |k| k.flawed(Flaw::ResetKeepsRamps),
+            tweak: |k| k.flawed(Flaw::ResetKeepsGlides),
         };
         fails(cases::landed(&keeps), "reset() mid-ramp");
         // stream clock: a ramp that restarts at every call of `process`.
@@ -1078,7 +1078,7 @@ mod tests {
                 rate,
             )
         };
-        let run = |k: &mut FdnKernel, frames: usize, noise: bool| {
+        let run = |k: &mut Realized<FdnKernel>, frames: usize, noise: bool| {
             let mut rng = StdRng::seed_from_u64(5);
             let x: Vec<f32> = (0..frames)
                 .map(|_| if noise { rng.gen_range(-0.5..0.5) } else { 0.0 })

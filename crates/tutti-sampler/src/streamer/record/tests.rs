@@ -38,7 +38,7 @@ fn record_with_status(
         out,
         Arc::new(Cells::new()),
         SampleRate(48_000.0),
-        1_000,
+        Samples::new(1_000),
         pin,
         Arc::clone(&status),
     );
@@ -277,7 +277,7 @@ fn a_rate_event_re_derives_each_streams_own_ratio() {
                 out,
                 Arc::clone(&cells),
                 SampleRate(file_rate),
-                1_000,
+                Samples::new(1_000),
                 cache.pin(&PathBuf::new()),
                 Arc::new(StatusCell::new()),
             );

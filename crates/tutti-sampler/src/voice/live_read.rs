@@ -53,11 +53,10 @@
 //! instead. A block that reads nothing tells the ring so (`PosReader::idle`), so a
 //! paused voice holds no refill back.
 
-use tutti_rt::{PosClaim, PosReader, Reader};
-use tutti_types::SamplePosition;
+use tutti_types::{SamplePosition, Samples};
 
 use crate::MAX_SAMPLER_CHANNELS;
-use crate::streamer::{Arrangement, Cells, RingControl, RingMap, SharedReader};
+use crate::streamer::{Arrangement, Block, Cells, RingMap, RingReader, SharedReader};
 
 use super::interp::{Place, hermite_lanes, interpolate_taps};
 use super::loop_span::blend;
@@ -137,11 +136,11 @@ pub(crate) struct LiveRead {
     ring: SharedReader,
     /// The ring's one reader, this voice's alone (see the module docs);
     /// `None` once severed, in a clone, or for a ring whose reader was taken.
-    reader: Option<PosReader>,
-    /// A reader of the ring's published control (the map, and the direction and
-    /// applied loop beside it), registered beside `reader` when the voice is
-    /// built and dropped with it (`None` exactly when `reader` is).
-    control: Option<Reader<RingControl>>,
+    ///
+    /// It holds the reader of the ring's published control (the map, and the
+    /// direction and applied loop beside it) too, registered beside the
+    /// position reader when the voice is built: a block lends it.
+    reader: Option<RingReader>,
     /// Where the ring's channels go in the voice's frame: built once, on the
     /// control side, from the file's topology (`Place::for_topology`).
     place: Place,
@@ -155,7 +154,6 @@ impl Clone for LiveRead {
         Self {
             ring: self.ring.clone(),
             reader: None,
-            control: None,
             place: self.place.clone(),
             st: self.st.clone(),
         }
@@ -170,14 +168,12 @@ impl LiveRead {
     /// pair is what may allocate, and this does not.
     pub(crate) fn new(
         ring: SharedReader,
-        feed: Option<(PosReader, Reader<RingControl>)>,
+        reader: Option<RingReader>,
         width: usize,
         place: Place,
     ) -> Self {
         let src = ring.channels().count().max(1) as usize;
-        let (reader, control) = feed.unzip();
         Self {
-            control,
             ring,
             reader,
             place,
@@ -215,10 +211,19 @@ impl LiveRead {
     /// The control as the voice's reader lends it (tests): the value one
     /// block's lend would hold now. `None` severed.
     #[cfg(test)]
-    pub(crate) fn lent_control(&mut self) -> Option<RingControl> {
-        self.control
-            .as_mut()
-            .map(|control| (*control.lend()).clone())
+    pub(crate) fn lent_control(&mut self) -> Option<crate::streamer::RingControl> {
+        self.reader.as_mut().map(|reader| {
+            reader
+                .block(
+                    Samples::new(0),
+                    [
+                        Samples::new(0)..Samples::new(0),
+                        Samples::new(0)..Samples::new(0),
+                    ],
+                )
+                .control()
+                .clone()
+        })
     }
 
     /// The highest straight position read (tests).
@@ -257,7 +262,7 @@ impl LiveRead {
     /// reader claims no range. A severed reader or a clone changes nothing,
     /// as there.
     pub(crate) fn silence(&mut self) {
-        if let (Some(reader), Some(_)) = (self.reader.as_mut(), self.control.as_ref()) {
+        if let Some(reader) = self.reader.as_mut() {
             self.st.last = None;
             self.st.fade = None;
             reader.idle();
@@ -268,7 +273,6 @@ impl LiveRead {
     /// ring again, and renders silence through it.
     pub(crate) fn sever(&mut self) {
         self.reader = None;
-        self.control = None;
     }
 
     /// Render a block: frame `i` plays straight position `positions[i]`
@@ -301,7 +305,7 @@ impl LiveRead {
         let st = &mut self.st;
         let w = st.width;
         let silent = [0.0f32; MAX_SAMPLER_CHANNELS];
-        let (Some(reader), Some(control)) = (self.reader.as_mut(), self.control.as_mut()) else {
+        let Some(reader) = self.reader.as_mut() else {
             // Severed, or a clone: nothing to read (not an underrun).
             for i in 0..positions.len() {
                 out.put(at + i, &silent[..w]);
@@ -336,19 +340,24 @@ impl LiveRead {
                 ((expected + rate * OLD_FRAMES as f64).max(0.0).floor() as u64).saturating_add(5);
             (a, e)
         });
-        let claim = reader.claim(first.max(0.0).floor() as u64, [(lo, hi), old_range]);
-        // Lent once per block: the map this block reads by (the direction and the
-        // applied loop ride in the same value; a fork reads those, on the control
-        // side).
-        let control = control.lend();
-        let map = &control.map;
+        // One block: the claim, and the control lent once, for the map this
+        // block reads by (the direction and the applied loop ride in the same
+        // value; a fork reads those, on the control side).
+        let block = reader.block(
+            Samples::new(first.max(0.0).floor() as usize),
+            [
+                Samples::new(lo as usize)..Samples::new(hi as usize),
+                Samples::new(old_range.0 as usize)..Samples::new(old_range.1 as usize),
+            ],
+        );
+        let map = &block.control().map;
         let src = st.src;
         if let Some(expected) = jump {
             // The old position's continuation, read from the ring while the
             // window still holds it.
-            st.continue_from(ring.fade_frames(), |j, out| {
+            st.continue_from(ring.fade_frames().get(), |j, out| {
                 let pos = expected + rate * j as f64;
-                read_ring(&claim, src, place, map.arrangement(pos), pos, out)
+                read_ring(&block, src, place, map.arrangement(pos), pos, out)
             });
         }
 
@@ -356,7 +365,7 @@ impl LiveRead {
             && jump.is_none()
             && st.fade.is_none()
             && st.recover.is_none()
-            && steady_lanes(&claim, map, place, st, positions, gain, lanes, at, gather)
+            && steady_lanes(&block, map, place, st, positions, gain, lanes, at, gather)
         {
             st.last = positions.last().copied().flatten().map(SamplePosition::get);
             #[cfg(test)]
@@ -379,7 +388,7 @@ impl LiveRead {
             };
             st.cross_switch(place, map, pos, rate);
             let new = read_ring(
-                &claim,
+                &block,
                 src,
                 place,
                 map.arrangement(pos),
@@ -441,7 +450,7 @@ impl<F: FnMut(usize, &[f32])> Out<'_, F> {
 
 /// A steady block's read along time (see [`LiveRead::render`]): frame `i`
 /// into frame `at + i` of `lanes`, gained, when every frame has a position
-/// whose four taps are consecutive positions `claim` holds, no switch is
+/// whose four taps are consecutive positions `block` holds, no switch is
 /// crossed, and the ring is as wide as the reader and read channel for
 /// channel (`Place::is_direct`: no fold, so a whole channel can be read at a
 /// time). `false`, with nothing written, otherwise: a mono ring into a wider
@@ -453,7 +462,7 @@ impl<F: FnMut(usize, &[f32])> Out<'_, F> {
 /// wider than the caller drops its last channels.
 #[allow(clippy::too_many_arguments)] // one block's read, and where it goes
 fn steady_lanes(
-    claim: &PosClaim<'_>,
+    block: &Block<'_>,
     map: &RingMap,
     place: &Place,
     st: &State,
@@ -496,7 +505,7 @@ fn steady_lanes(
         let off = taps[0].wrapping_sub(base);
         // The claim's window is one contiguous range, so holding the first
         // and last of four consecutive taps holds all four.
-        if !consecutive || off > u32::MAX as u64 || !claim.holds(taps[0]) || !claim.holds(taps[3]) {
+        if !consecutive || off > u32::MAX as u64 || !block.holds(taps[0]) || !block.holds(taps[3]) {
             return false;
         }
         index[i] = off as u32;
@@ -506,7 +515,7 @@ fn steady_lanes(
     for (c, lane_out) in lanes.iter_mut().enumerate() {
         for (t, lane) in y.iter_mut().enumerate() {
             for (s, &k) in lane.iter_mut().zip(index) {
-                *s = claim.frame(base + k as u64 + t as u64).get(c);
+                *s = block.frame(base + k as u64 + t as u64).get(c);
             }
         }
         let [y0, y1, y2, y3] = &*y;
@@ -571,7 +580,7 @@ impl State {
             return;
         }
         let (src, before) = (self.src, map.before);
-        self.continue_from(record.fade_frames, |j, out| {
+        self.continue_from(record.fade_frames.get(), |j, out| {
             read_frames(
                 &record.data,
                 record.start,
@@ -636,7 +645,7 @@ impl State {
 /// when the window lacks a tap.
 #[inline]
 fn read_ring(
-    claim: &PosClaim<'_>,
+    block: &Block<'_>,
     src: usize,
     place: &Place,
     arrangement: Arrangement,
@@ -647,17 +656,17 @@ fn read_ring(
         out.fill(0.0);
         return true;
     };
-    if !taps.iter().all(|&t| claim.holds(t)) {
+    if !taps.iter().all(|&t| block.holds(t)) {
         return false;
     }
     // Written out rather than `taps.map(..)`: the array map compiled to an
     // outlined `try_map` here (callgrind: ~4.5% of a 16-voice disk pool's
     // instructions per frame), where the four calls inline.
     let frames = [
-        claim.frame(taps[0]),
-        claim.frame(taps[1]),
-        claim.frame(taps[2]),
-        claim.frame(taps[3]),
+        block.frame(taps[0]),
+        block.frame(taps[1]),
+        block.frame(taps[2]),
+        block.frame(taps[3]),
     ];
     // The placement is the memory tier's: the ring's channels in the file's
     // order, into the voice's frame.

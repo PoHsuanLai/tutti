@@ -892,6 +892,27 @@ blend keeps the target's. `Realization` is `Clone` with a default `fresh`; the S
 `Glide`'s midpoint between two reachable coefficient sets is held stable by
 `filter::channel::tests::assert_midpoints_decay`, run on the SVF and the ladder.
 
+**Built (7b).** `Steps` (`Fixed(n)`, `Rate(r)`) is built, with `Glide<f32>::aim_by` (`ceil(|to - now| / rate)`
+steps; an aim at the target already aimed at leaves the glide as it is, as `Slew::aim` did, so a model sent every
+block does not stretch it) and `Lerp for f32`. `Kernel` gains `prepare(&mut self, bounds, setup, coeffs, state)` (a
+default no-op: the first kernel that sizes from `Bounds` is the FDN) and `run` takes `into`, the frames of the current
+step that came before the range, so a kernel that works once a step (the FDN's chunk constants and LFO phase) knows
+where steps begin on the stream; `Realized` keeps that count (`into_step` in the sketch), advances it by every run and
+zeroes it at `reset` and at the first retarget. `FdnKernel` (`STEP = 32`; `FdnCoeffs`, a struct of `Glide`s: gains,
+`v`, `v_len`, `mix`, input and output gains, `depth`, `wet`, `width` over `Steps::Fixed(ramp)`, lengths and pre-delay
+over `Steps::Rate`; `FdnState`) and `FreeverbKernel` (`STEP = 32`, state `Freeverb`, coefficients the comb feedback and
+damping over the same 20 ms) are the two kernels; `FdnDesign::Realization` and `FreeverbDesign::Realization` are
+`Realized<..>`, and the two hand-written `Realization`/`Effect` impls, `Slew` and the two private chunk clocks are
+gone. **Freeverb's glide is audible nowhere a control holds still:** with fixed controls the first retarget lands whole
+and the General MIDI send renders what it did (`the_general_midi_send_renders_what_it_always_did`, unchanged); a room or
+damping that moves now glides, in chunks of 32 frames (a step per frame would run its 24 filters in one-frame slices
+while it moves), so `FreeverbDesign::CADENCE` is `Cadence::stream(32)`, no longer `stream(1)`. The FDN's render may move
+in the last bits (`Glide` computes `from + (to - from) * k / n` where `Slew` accumulated `cur + step`); no golden holds
+it. The two test-only flaws that were in `FdnKernel` (`ResetKeepsRamps`, `RestartClock`) are `Realized`'s
+(`ResetKeepsGlides`, `RestartClock`), which is where those defects now live. One edge differs: a first retarget with
+no FDN stage (a network the kernel ignores) now counts as the landing retarget, where the FDN's `initialised` waited
+for a valid one.
+
 **Built (7a, B2).** `ControlParams` is deleted: `Params<S>`'s methods are inherent, `At` lives with it, `NodeDesign` has
 `type Set: ControlSet` and `fn set(&self, &Controls)` where it had `Params` and `params`, `moved` is `ControlSet::moved`
 (the SVF's and the ladder's override it), and `DesignNode` holds `Params<D::Set>`. The three filters are one
@@ -2171,7 +2192,7 @@ Step 2b ran as one lane of PRs; amendments B (Summary) re-cut what follows it.
 | 5 | the crossover on the stream grid; one `FilterSizes` | #539 |
 | 6 | one control reader, `Params<S: ControlSet>`; the readers' floors and clamps go to the models | #544 |
 | 8a | the convolver, delay, chorus/flanger and phaser wet only; their blend is the graph's mix | #542 |
-| 7 | **B1 and B2:** `Glide`, `Approach`, `Kernel`, `Realized<K>`, `ChannelKernel`/`PerChannel`, `Filter<K>`; the SVF, ladder, crossover, Freeverb and FDN onto them (Freeverb gains a glide); `ControlParams` deleted, `NodeDesign` as in section 5; `Realization: Clone` with a default `fresh`; `tutti_dsp::Ramp` and `Slew` replaced by `Glide` | 7a built; 7b (Freeverb, FDN, `Slew`) and 7c (`Ramp`) next |
+| 7 | **B1 and B2:** `Glide`, `Approach`, `Kernel`, `Realized<K>`, `ChannelKernel`/`PerChannel`, `Filter<K>`; the SVF, ladder, crossover, Freeverb and FDN onto them (Freeverb gains a glide); `ControlParams` deleted, `NodeDesign` as in section 5; `Realization: Clone` with a default `fresh`; `tutti_dsp::Ramp` and `Slew` replaced by `Glide` | 7a and 7b built (Freeverb, FDN, `Slew` gone); 7c (`Ramp`) next |
 | 8 | the second paths go: the multiband onto `Realized<PerChannel<CrossoverTree>>` (`Crossover::split_block` and its helpers deleted), the phaser onto the stream grid (`Cadence::every`, `Anchor::Block` and `COEFF_CADENCE` deleted) | |
 | 9 | the reverbs' own dry/wet goes; `Blend`, `DryWet`, `NoBlend` leave `NodeDesign`. HRTF keeps its centre-fold blend (its dry is not the input) | |
 | 10 | tests from the spec replace the past-render digests; at most five tripwires stay (the SVF lane, the limiter, VBAP stereo, the reverb GM render, the SoundFont voice); the scipy validation report | |

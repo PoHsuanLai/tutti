@@ -700,10 +700,11 @@ list (normal and build edges; dev-dependencies may go anywhere).
   convolver, the delay line and swept-delay kernel, the cubic Hermite kernel, the phaser's all-pass chain, the
   block ramps, the export resampler and its streaming
   bookkeeping (`StreamingResampler`, `ChunkSize`), the dither noise
-  (`DitherNoise`), the Freeverb reverb (`Freeverb`, which is also the
-  `Realization` of `FreeverbDesign`), the feedback delay network (`FdnDesign`,
-  `FdnKernel`: its kernel ramps between `retarget`s, in 32-frame chunks counted
-  from the last reset, so the output does not depend on the block length), the
+  (`DitherNoise`), the Freeverb reverb (`Freeverb`, the state of
+  `FreeverbKernel`, the `Kernel` of `FreeverbDesign`), the feedback delay network
+  (`FdnDesign`, `FdnKernel`: both run by `Realized`, whose glides step between
+  `retarget`s in 32-frame chunks counted from the last reset, so the output does
+  not depend on the block length), the
   model of doc 024 (the `model` module, exported at the root: a `Design` maps controls
   to its `Model`, a `System` (`latency`, `tail`) and, for a linear time-invariant
   one, an `Lti` (`frequency_response`, `spectral_radius`, `l1_norm`, `hinf_norm`
@@ -813,11 +814,22 @@ list (normal and build edges; dev-dependencies may go anywhere).
   `tutti-vst2-host`, so they run in the workspace with no feature. Consumers
   name its items from it, not through `tutti-plugin`.
 - `tutti-midi-file` is OS-free and keeps every module private
-  (`tutti_midi_file::smf_to_bytes`; the per-module path gate is not in CI because the
-  parked `bevy-tutti` still names `tutti_midi_file::smf::`). It holds
-  the MIDI 2.0 Clip File codec (`ParsedClipFile`, `write_clip_file*`, `ClipFileError`)
-  beside SMF. An SMF event is a `tutti_ump::Voice1` (`SmfTimedEvent::msg`), a note's
-  key and velocity are `NoteNumber` and `U7`, and no public signature names `midly`.
+  (`tutti_midi_file::MidiFile`; the per-module path gate is not in CI because the
+  parked `bevy-tutti` still names `tutti_midi_file::smf::`). It is **one file model for
+  both containers** (doc 017, "Files"): a `MidiFile` of `Track`s of `(Tick, FileEvent)`
+  with integer ticks, read losslessly (SysEx, `Escape` and meta kept, a Clip File's
+  unknown packet as its words) and written back from the model. Its `TempoMap`
+  (`tutti-tempo`) is derived from the tracks' Set Tempo events, never set apart from
+  them, and `seconds_at` is its. Format 2 keeps its sequences apart (`events()` is
+  `None`, `tempo_map_of(track)`); SMPTE division is refused
+  (`Error::MidiUnsupportedTiming`); a cut-off file is `Error::Truncated`. The file layer
+  does not translate (an SMF message is `Midi1` on group 0, a velocity-0 Note On stays
+  one). The Clip File codec under it (`clip_file.rs`) is private; its structure rules
+  (M2-116 sections 6 to 7.3: Set Profile On then the DCTPQ once, a configuration header
+  kept as `Track::header` with at most one Set Tempo and one Set Time Signature placed as
+  the spec says, Start of Clip, End of Clip last) are one `ClipFileError` variant each. No public signature names `midly`; its `strict`
+  feature is on and `parallel` is off (measured, doc 017). A test builds files from
+  `tests/support`'s encoder written from the spec, not from the crate's own writer.
 - `tutti-midi-hardware` keeps every module private but `test_support` (CI runs the
   per-module path gate on it) and re-exports none of `tutti-midi-runtime`'s sync
   types: `MidiClockDecoder`, `MtcDecoder` and `SmpteTimecode` are the runtime's.

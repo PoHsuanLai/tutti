@@ -170,7 +170,7 @@ fn one_midi_event_stages_one_event() {
     let mut stager = Stager::default();
     let midi_events = [(
         at(0),
-        midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000),
+        midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, midi::MID_VELOCITY),
     )];
     assert!(stager.stage(&list, &midi_only(&midi_events)));
     assert_eq!(len(&list), 1);
@@ -183,7 +183,7 @@ fn clear_empties_a_staged_block() {
     let midi_events = [
         (
             at(0),
-            midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000),
+            midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, midi::MID_VELOCITY),
         ),
         (
             at(10),
@@ -204,7 +204,7 @@ fn midi_staging_is_allocation_free_after_warmup() {
     let events = [
         (
             at(0),
-            midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000),
+            midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, midi::MID_VELOCITY),
         ),
         (
             at(32),
@@ -243,7 +243,7 @@ fn staging_every_source_is_allocation_free_after_warmup() {
     let midi = [
         (
             at(0),
-            midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000),
+            midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, midi::MID_VELOCITY),
         ),
         (
             at(64),
@@ -374,7 +374,7 @@ fn a_full_block_from_every_source_stages_without_allocating() {
                     MidiGroup::FIRST,
                     MidiChannel::FIRST,
                     (i % 128) as u8,
-                    0x8000,
+                    midi::MID_VELOCITY,
                 ),
             )
         })
@@ -464,7 +464,7 @@ fn events_on_one_frame_keep_their_source_order() {
             } else {
                 (
                     Offset::ZERO,
-                    midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, i, 0x8000),
+                    midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, i, midi::MID_VELOCITY),
                 )
             };
             (at(u32::from(i / 12)), e.1)
@@ -537,7 +537,7 @@ fn past_the_room_note_offs_are_kept_and_the_rest_counted() {
                     MidiGroup::FIRST,
                     MidiChannel::FIRST,
                     (i % 100) as u8,
-                    0x8000,
+                    midi::MID_VELOCITY,
                 ),
             )
         })
@@ -607,7 +607,7 @@ fn note_expressions_past_their_budget_leave_the_harmony_room() {
                     MidiGroup::FIRST,
                     MidiChannel::FIRST,
                     (i % 128) as u8,
-                    0x8000,
+                    midi::MID_VELOCITY,
                 ),
             )
         })
@@ -667,7 +667,7 @@ fn note_expressions_past_their_budget_leave_the_harmony_room() {
 fn a_negative_offset_sorts_before_zero() {
     let midi = [(
         at(0),
-        midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000),
+        midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, midi::MID_VELOCITY),
     )];
     let note_expressions = [expr(3, 1), expr(-1, 2)];
     let list = EventList::input();

@@ -456,7 +456,7 @@ pub fn a_fork_starts_silent_and_plays<S: Subject>() {
             rig.node,
             [TimedMidiEvent::new(
                 tutti_types::Beat(0.01),
-                midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 64, 0x8000),
+                midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 64, midi::MID_VELOCITY),
             )],
         )
         .expect("an instrument takes a clip");

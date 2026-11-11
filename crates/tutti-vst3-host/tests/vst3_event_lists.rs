@@ -224,7 +224,7 @@ fn a_sysex_past_the_midi_pool_is_counted_in_dropped() {
 fn the_plugin_sysex_path_is_allocation_free() {
     let list = EventList::output();
     let ptr = list.to_com_ptr::<IEventList>().unwrap();
-    let message = framed(&sysex_payload(200));
+    let message = framed(&midi::sysex_payload(200));
     let mut e = data_sysex(1, &message);
     let mut pool = RtMidiEvents::new();
     let mut refused = false;
@@ -385,7 +385,7 @@ fn a_banked_program_change_reaches_the_plugin_as_three_messages() {
     // Room for two: nothing of the bank is staged, and all three are counted.
     let note = (
         Offset::ZERO,
-        midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000),
+        midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, midi::MID_VELOCITY),
     );
     let mut midi = vec![note; EVENT_CAPACITY - 2];
     midi.push(pc);
@@ -397,22 +397,14 @@ fn a_banked_program_change_reaches_the_plugin_as_three_messages() {
 }
 
 fn sysex_packets(payload: &[u8], frame: u32) -> Vec<UmpAt> {
-    let mut out = Vec::new();
-    out.extend(
-        tutti_ump::Sysex7Packets::checked(MidiGroup::FIRST, payload).expect("a 7-bit payload"),
-    );
-    out.into_iter().map(|ump| (at(frame), ump)).collect()
+    midi::sysex7_packets(payload)
+        .into_iter()
+        .map(|ump| (at(frame), ump))
+        .collect()
 }
 
 fn framed(payload: &[u8]) -> Vec<u8> {
-    let mut v = vec![0xF0];
-    v.extend_from_slice(payload);
-    v.push(0xF7);
-    v
-}
-
-fn sysex_payload(len: usize) -> Vec<u8> {
-    (0..len).map(|i| (i * 7 % 0x7F) as u8).collect()
+    tutti_ump::frame(payload).collect()
 }
 
 /// **A multi-packet SysEx reaches the plugin as one complete message**,
@@ -423,7 +415,7 @@ fn sysex_payload(len: usize) -> Vec<u8> {
 /// `MidiEncoder::encode` (no reassembly) → no SysEx event → fails.
 #[test]
 fn a_multi_packet_sysex_reaches_the_plugin_whole() {
-    let body = sysex_payload(100);
+    let body = midi::sysex_payload(100);
     let mut midi = sysex_packets(&body, 5);
     let last = midi.len() - 1;
     midi[last].0 = at(9);
@@ -431,7 +423,7 @@ fn a_multi_packet_sysex_reaches_the_plugin_whole() {
         3,
         (
             at(7),
-            midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000),
+            midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, midi::MID_VELOCITY),
         ),
     );
     let list = EventList::input();
@@ -458,7 +450,7 @@ fn a_multi_packet_sysex_reaches_the_plugin_whole() {
 /// message never arrives → fails.
 #[test]
 fn a_sysex_spanning_blocks_completes_in_the_block_of_its_end() {
-    let body = sysex_payload(MIDI_STACK_CAPACITY * 6 + 100);
+    let body = midi::sysex_payload(MIDI_STACK_CAPACITY * 6 + 100);
     let midi = sysex_packets(&body, 0);
     assert!(midi.len() > MIDI_STACK_CAPACITY);
     let list = EventList::input();
@@ -481,7 +473,7 @@ fn a_sysex_spanning_blocks_completes_in_the_block_of_its_end() {
 #[test]
 fn a_sysex_past_capacity_is_dropped_whole_and_counted() {
     use tutti_plugin_types::SYSEX_MESSAGE_CAPACITY;
-    let long = sysex_payload(SYSEX_MESSAGE_CAPACITY - 1); // framed: one past
+    let long = midi::sysex_payload(SYSEX_MESSAGE_CAPACITY - 1); // framed: one past
     let list = EventList::input();
     let mut stager = Stager::default();
     for block in sysex_packets(&long, 0).chunks(MIDI_STACK_CAPACITY) {
@@ -489,7 +481,7 @@ fn a_sysex_past_capacity_is_dropped_whole_and_counted() {
         assert!(sysex_read_by_plugin(&list).is_empty());
     }
     assert_eq!(list.sysex_dropped(), 1);
-    let next = sysex_payload(20);
+    let next = midi::sysex_payload(20);
     assert!(stager.stage(&list, &midi_only(&sysex_packets(&next, 2))));
     assert_eq!(sysex_read_by_plugin(&list), vec![(2, framed(&next))]);
     assert_eq!(list.sysex_dropped(), 1);
@@ -502,8 +494,8 @@ fn a_sysex_past_capacity_is_dropped_whole_and_counted() {
 /// the two messages are spliced together and delivered → fails.
 #[test]
 fn a_start_without_its_end_before_the_next_start_is_dropped() {
-    let a = sysex_payload(30);
-    let b = sysex_payload(20);
+    let a = midi::sysex_payload(30);
+    let b = midi::sysex_payload(20);
     let mut midi = sysex_packets(&a, 0);
     midi.truncate(2); // START and one CONTINUE
     midi.extend(sysex_packets(&b, 4));

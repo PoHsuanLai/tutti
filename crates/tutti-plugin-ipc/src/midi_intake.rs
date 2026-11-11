@@ -226,7 +226,7 @@ mod tests {
             MidiGroup::FIRST,
             MidiChannel::FIRST,
             60,
-            0x8000,
+            midi::MID_VELOCITY,
         ))
     }
 

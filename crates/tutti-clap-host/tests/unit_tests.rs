@@ -45,7 +45,7 @@ fn test_note_on_roundtrip() {
     // Build with MIDI-2 velocity (half of u16 max ≈ 0x8000).
     let event = (
         at(10),
-        fx::note_on(MidiGroup::FIRST, MidiChannel::of(3), 60, 0x8000),
+        fx::note_on(MidiGroup::FIRST, MidiChannel::of(3), 60, fx::MID_VELOCITY),
     );
     let clap =
         ClapEvent::from_midi(&event, &PerNoteBendRanges::default()).expect("NoteOn should convert");
@@ -152,7 +152,7 @@ fn test_input_event_list_add_midi_counts_correctly() {
     let mut list = InputEventList::new();
     list.add_midi(&(
         at(0),
-        fx::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000),
+        fx::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, fx::MID_VELOCITY),
     ));
     list.add_midi(&(
         at(100),
@@ -228,8 +228,6 @@ fn test_output_event_list_push_note_on() {
 /// must resolve to *that* voice rather than to (15, 127).
 #[test]
 fn a_wildcard_note_off_resolves_by_note_id_not_by_masking() {
-    use tutti_plugin_types::note_id_for;
-
     const CHANNEL: u8 = 2;
     const NOTE: u8 = 60;
 
@@ -244,7 +242,12 @@ fn a_wildcard_note_off_resolves_by_note_id_not_by_masking() {
             type_: CLAP_EVENT_NOTE_OFF,
             flags: 0,
         },
-        note_id: note_id_for(MidiChannel::of(CHANNEL), NoteNumber::of(NOTE)),
+        // The spec's id: `channel * 128 + note` (`tutti_ump::NoteId`).
+        note_id: tutti_ump::NoteId::from_channel_note(
+            MidiChannel::of(CHANNEL),
+            NoteNumber::of(NOTE),
+        )
+        .raw() as i32,
         port_index: 0,
         // The wildcard under test.
         channel: -1,
@@ -359,7 +362,7 @@ fn test_input_event_list_sort_by_time() {
     let mut list = InputEventList::new();
     list.add_midi(&(
         at(200),
-        fx::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000),
+        fx::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, fx::MID_VELOCITY),
     ));
     list.add_midi(&(
         at(50),

@@ -403,7 +403,7 @@ fn a_clip_with_a_full_table_sends_and_pays_without_allocating() {
         [
             TimedMidiEvent::new(
                 beat(u64::from(i)),
-                tutti_fixtures::midi::note_on(g, c, n, 0x8000),
+                tutti_fixtures::midi::note_on(g, c, n, tutti_fixtures::midi::MID_VELOCITY),
             ),
             TimedMidiEvent::new(beat(4_000), note_off(g, c, n, 0)),
         ]

@@ -1,9 +1,7 @@
 //! The legacy MIDI CC a plugin sends to the host, as a [`WireMidi`].
 
 use tutti_midi_protocol::widen;
-use tutti_ump::{
-    Address, CCNumber, Message, MidiChannel, MidiGroup, NoteNumber, U7, U14, Ump, Voice1,
-};
+use tutti_ump::{Address, CCNumber, Message, MidiChannel, NoteNumber, U7, U14, Ump, Voice1};
 use tutti_vst3_ffi::sdk_enum_i32;
 use vst3::Steinberg::Vst::ControllerNumbers_::{kAfterTouch, kCtrlPolyPressure, kPitchBend};
 
@@ -23,10 +21,7 @@ fn data_byte(raw: i8) -> U7 {
 /// channel pressure and poly-pressure, with `value2` supplying the second data
 /// byte for the first and last.
 pub(super) fn decode(e: &LegacyCcOut, frame: u32) -> Option<WireMidi> {
-    let address = Address {
-        group: MidiGroup::FIRST,
-        channel: MidiChannel::masked(e.channel as u8),
-    };
+    let address = Address::first(MidiChannel::masked(e.channel as u8));
     let v1 = data_byte(e.value);
     let v2 = data_byte(e.value2);
     let control = i32::from(e.controlNumber);

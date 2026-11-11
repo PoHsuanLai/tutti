@@ -26,6 +26,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use crossbeam_channel::{Receiver, Sender, TrySendError};
+use tutti_ump::MidiChannel;
 use tutti_vst3_ffi::MidiLearn;
 
 /// Bound on the in-flight CC capture channel. Learning only needs a recent CC,
@@ -64,11 +65,14 @@ impl MidiLearnProducer {
     /// synthetic aftertouch/pitch-bend slots) — passed through verbatim; the
     /// plugin decides what it accepts.
     #[inline]
-    pub(super) fn capture(&self, channel: u8, controller: usize) {
+    pub(super) fn capture(&self, channel: MidiChannel, controller: usize) {
         if !self.is_armed() {
             return;
         }
-        match self.tx.try_send((channel as i16, controller as i16)) {
+        match self
+            .tx
+            .try_send((i16::from(channel.get()), controller as i16))
+        {
             Ok(()) | Err(TrySendError::Full(_)) | Err(TrySendError::Disconnected(_)) => {}
         }
     }
@@ -152,8 +156,8 @@ mod tests {
     fn unarmed_capture_is_dropped() {
         let consumer = MidiLearnConsumer::new(None);
         let producer = consumer.producer();
-        producer.capture(3, 7);
-        producer.capture(0, 1);
+        producer.capture(MidiChannel::of(3), 7);
+        producer.capture(MidiChannel::of(0), 1);
         // Nothing was armed → channel is empty → no forwards.
         assert_eq!(consumer.forward_pending(), 0);
     }
@@ -166,8 +170,8 @@ mod tests {
         let producer = consumer.producer();
         consumer.arm(true);
         assert!(consumer.is_armed());
-        producer.capture(2, 74);
-        producer.capture(5, 11);
+        producer.capture(MidiChannel::of(2), 74);
+        producer.capture(MidiChannel::of(5), 11);
         // Drained (2 CCs) even though there's no plugin to forward to.
         assert_eq!(consumer.forward_pending(), 2);
         // Second poll has nothing left.
@@ -180,9 +184,9 @@ mod tests {
         let consumer = MidiLearnConsumer::new(None);
         let producer = consumer.producer();
         consumer.arm(true);
-        producer.capture(0, 1);
+        producer.capture(MidiChannel::of(0), 1);
         consumer.arm(false);
-        producer.capture(0, 2); // dropped — disarmed
+        producer.capture(MidiChannel::of(0), 2); // dropped — disarmed
         assert_eq!(consumer.forward_pending(), 1);
     }
 
@@ -194,7 +198,7 @@ mod tests {
         let producer = consumer.producer();
         consumer.arm(true);
         for i in 0..(CC_CHANNEL_CAPACITY * 4) {
-            producer.capture(0, i % 128);
+            producer.capture(MidiChannel::of(0), i % 128);
         }
         // At most the channel capacity survived; the rest were dropped.
         let forwarded = consumer.forward_pending();
@@ -214,13 +218,13 @@ mod tests {
         let consumer = MidiLearnConsumer::new(None);
         let producer = consumer.producer();
         consumer.arm(true);
-        producer.capture(0, 1); // warm
+        producer.capture(MidiChannel::of(0), 1); // warm
 
         assert_no_alloc::assert_no_alloc(|| {
             // Far more pushes than capacity — exercises both the accepted and
             // the dropped-on-full branches with zero allocation.
             for i in 0..10_000 {
-                producer.capture((i % 16) as u8, i % 128);
+                producer.capture(MidiChannel::of((i % 16) as u8), i % 128);
             }
         });
         // Drain whatever's left (off-RT, allocation allowed).

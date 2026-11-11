@@ -53,6 +53,8 @@ pub struct At<C> {
     /// a cell's glide starts; `None` before the first design (after a prepare),
     /// when there is nothing to glide from.
     pub applied: Option<C>,
+    /// The rate the node runs at, for a control that is only valid against it.
+    pub rate: SampleRate,
 }
 
 /// The algorithm's [`Param`] cells and how a block reads them.
@@ -521,6 +523,7 @@ impl<D: NodeDesign> DesignNode<D> {
                 frame: step.solve_at,
                 block: span,
                 applied,
+                rate: self.rate,
             };
             let target = self.params.read(io, first, at);
             if self
@@ -629,6 +632,7 @@ impl<D: NodeDesign> Node for DesignNode<D> {
                     frame: size - 1,
                     block: size,
                     applied: self.applied,
+                    rate: self.rate,
                 },
             ),
         };

@@ -99,12 +99,15 @@ pub use tutti_dsp::ShapeKind;
 
 mod filter;
 pub use filter::{
-    CrossoverNode, EqBandNode, LadderFilterNode, LadderParams, SvfFilterNode, SvfParams,
+    CrossoverNode, CrossoverParams, EqBandNode, LadderFilterNode, LadderParams, SvfFilterNode,
+    SvfParams,
 };
 // The types in the filter nodes' signatures stay reachable from here; the
 // algorithms behind them (`SvfCoeffs`, `LadderCoeffs`, `Crossover`) are
 // `tutti-dsp`'s only.
-pub use tutti_dsp::{CrossoverError, LadderControls, LadderType, Real, SvfControls, SvfType};
+pub use tutti_dsp::{
+    CrossoverControls, CrossoverError, LadderControls, LadderType, Real, SvfControls, SvfType,
+};
 
 mod dynamics;
 pub use dynamics::{

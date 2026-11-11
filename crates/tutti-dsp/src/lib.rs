@@ -8,7 +8,8 @@
 //!   arithmetic does not depend on the CPU; [`StagedRealFft`], the same
 //!   transform in steps; [`FftScratch`], reusable plans and buffers.
 //! - Filters: [`SvfCoeffs`] and the SVF as a design ([`SvfDesign`], [`SvfType`]); [`LadderCoeffs`] and the ladder as a design
-//!   ([`LadderDesign`], [`LadderType`]); the Linkwitz-Riley [`Crossover`]; and
+//!   ([`LadderDesign`], [`LadderType`]); the Linkwitz-Riley crossover as a design ([`CrossoverDesign`]) and as a state over
+//!   one channel ([`Crossover`]); and
 //!   [`Real`], the `f32` or `f64` their state runs in; their models ([`SvfModel`],
 //!   [`LadderModel`], [`CrossoverModel`]) and the [`Biquad`] section they share.
 //! - Dynamics: [`EnvelopeFollower`] and [`GateEnvelopeFollower`]; the gain
@@ -121,10 +122,10 @@ pub use fdn::FdnKernel;
 pub use fdn_design::{FdnControls, FdnDesign, MAX_PRE_DELAY, MIN_DECAY};
 pub use fft::{Complex32, FftScratch, RealFft, StagedRealFft};
 pub use filter::{
-    Biquad, Crossover, CrossoverError, CrossoverModel, DirectForm1, LadderCoeffs, LadderControls,
-    LadderDesign, LadderModel, LadderRealization, LadderSizes, LadderType, MAX_SPLITS, Real,
-    SOLVE_CEILING, SvfCoeffs, SvfControls, SvfDesign, SvfModel, SvfRealization, SvfSizes, SvfType,
-    fit_to_rate,
+    Biquad, Crossover, CrossoverControls, CrossoverDesign, CrossoverError, CrossoverModel,
+    CrossoverRealization, DirectForm1, FilterSizes, LadderCoeffs, LadderControls, LadderDesign,
+    LadderModel, LadderRealization, LadderType, MAX_SPLITS, Real, SOLVE_CEILING, SvfCoeffs,
+    SvfControls, SvfDesign, SvfModel, SvfRealization, SvfType, fit_to_rate,
 };
 pub use geometry::StftGeometry;
 pub use grid::{BinCount, BinIndex, FrameCount, FrameIndex, Grid};

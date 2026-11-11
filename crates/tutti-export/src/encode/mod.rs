@@ -3,9 +3,8 @@
 //! # Why the pipeline pulls
 //!
 //! The pipeline drives the render rather than being fed by it: it takes the
-//! [`FrameSource`] (a live [`GraphSource`](crate::render::driver::GraphSource) or
-//! a rendered [`PlaneSource`]) and pulls it block by block through
-//! [`drive`] (the gate) and [`Chain`] (the resample and the dither, the one
+//! graph's blocks (a live `GraphSource`) or a replay (a rendered [`PlaneSource`], or a spill) and pulls it block by block through
+//! `drive` (the gate) and [`Chain`] (the resample and the dither, the one
 //! place they live), and hands each block to a `tutti_codec::Encoder`. An encoder only writes
 //! what it is given; this module is the one path through those stages that
 //! export has (the encoder types are public, and a caller using them directly
@@ -18,23 +17,22 @@
 //! Nothing here is generic over the width — [`Interleaved`] carries it — so
 //! *any* width encodes.
 
-use crate::config::ExportConfig;
 use crate::control::{Control, Outcome, Stage};
 use crate::error::Result;
-use crate::render::drive;
-use crate::render::{FrameSource, PlaneSource, RenderPlan};
+use crate::output::FileTarget;
+use crate::render::{PlaneSource, REPLAY_BLOCK, RenderPlan, Replay};
 use crate::{Error, Written};
 use std::path::Path;
-use tutti_codec::{Encoder, Spec};
+use tutti_codec::{Encoder, Finalized, Spec};
 use tutti_dsp::DitherSink;
-use tutti_types::{ChannelLayout, Interleaved, InterleavedMut, Samples, Sink, SinkFailed};
+use tutti_types::{
+    Amplitude, ChannelLayout, Interleaved, InterleavedMut, SampleRate, Samples, Sink, SinkFailed,
+};
 
-/// The rate the file is written at: the resample target, else the render rate.
-pub(crate) fn output_rate(config: &ExportConfig) -> tutti_types::SampleRate {
-    config
-        .resample
-        .map(|r| r.target_rate)
-        .unwrap_or(config.render.sample_rate)
+/// The rate the file is written at: the resample target, else the rate it is
+/// rendered at.
+pub(crate) fn output_rate(target: &FileTarget, render_rate: SampleRate) -> SampleRate {
+    target.resample().map_or(render_rate, |r| r.target_rate)
 }
 
 /// A rate as the whole Hz the codec headers speak.
@@ -42,35 +40,31 @@ pub(crate) fn output_rate(config: &ExportConfig) -> tutti_types::SampleRate {
 /// The resampler compares rates for *equality* to decide whether to convert at
 /// all, which a float would turn into an ULP coin-flip: two rates that write
 /// the same header are the same rate.
-fn whole_hz(rate: tutti_types::SampleRate) -> u32 {
+fn whole_hz(rate: SampleRate) -> u32 {
     rate.get().round() as u32
 }
 
-/// What the file is written as: the config's format, width and speaker order at
+/// What the file is written as: the target's format, width and speaker order at
 /// the output rate.
-fn spec(config: &ExportConfig) -> Spec {
+fn spec(target: &FileTarget, source_rate: SampleRate) -> Spec {
     Spec {
-        format: config.encode.format,
-        layout: config.encode.channels,
-        rate: output_rate(config),
-        topology: config.encode.topology.clone(),
+        format: target.format(),
+        layout: target.channels(),
+        rate: output_rate(target, source_rate),
+        topology: target.topology().cloned(),
     }
 }
 
 /// Frames the file will hold for `plan` at the output rate, rounded up: the
 /// plan's kept frames, scaled only when the pipeline resamples (the condition
 /// [`Chain`] uses).
-fn planned_frames(
-    plan: &RenderPlan,
-    source_rate: tutti_types::SampleRate,
-    config: &ExportConfig,
-) -> u64 {
+fn planned_frames(plan: &RenderPlan, source_rate: SampleRate, target: &FileTarget) -> u64 {
     let kept = plan.output_length.get() as u64;
-    if config.resample.is_none() {
+    if target.resample().is_none() {
         return kept;
     }
     let (out, src) = (
-        f64::from(whole_hz(output_rate(config))),
+        f64::from(whole_hz(output_rate(target, source_rate))),
         source_rate.get().round(),
     );
     if src <= 0.0 || out == src {
@@ -83,98 +77,85 @@ fn planned_frames(
 /// rendered and before the path is touched.
 fn check_fits(
     plan: &RenderPlan,
-    source_rate: tutti_types::SampleRate,
-    config: &ExportConfig,
+    source_rate: SampleRate,
+    target: &FileTarget,
     max_frames: Option<u64>,
 ) -> Result<()> {
     match max_frames {
-        Some(limit_frames) if planned_frames(plan, source_rate, config) > limit_frames => {
+        Some(limit_frames) if planned_frames(plan, source_rate, target) > limit_frames => {
             Err(tutti_codec::Error::WavTooLarge { limit_frames }.into())
         }
         _ => Ok(()),
     }
 }
 
-/// Render `src` to `path` in the format `config` names.
+/// The file of `target`, begun: written to a temporary beside its path (which
+/// the encoder removes unless it is finished and committed), through the
+/// converter and the dither of the target.
 ///
-/// The render is written to a temporary file beside `path` and renamed over
-/// it when it finishes, so `path` holds either the previous file or a
-/// complete new one, never a partial render. A render that errors or that
-/// `control` stops leaves `path` untouched and removes the temporary: the
-/// encoder owns that cleanup.
-///
-/// `stage` is the stage the blocks count in (`Rendering` for a graph,
-/// `Writing` for planes replayed), and the stages after it are this
-/// function's: `Finalizing` flushes the converter, checks the fork and the
-/// event loss, and puts the file in place. The token is checked as each of
-/// those begins, and once more before the file is finished and renamed (the
-/// codec's `finish` is both the finalize and the commit of an output, so
-/// the checks doc 019 section 6.2 names before each output's finalize and
-/// before the commit are one here).
-///
-/// The rename replaces an existing file (on Windows too: `std::fs::rename`
-/// is `MoveFileExW` with `MOVEFILE_REPLACE_EXISTING`), and replaces a symlink
-/// at `path` rather than writing through it. The new file has the default
-/// permissions, not the old file's.
-pub(crate) fn encode_to_file(
-    src: &mut dyn FrameSource,
-    source_rate: tutti_types::SampleRate,
+/// Refuses a render the format cannot hold before the temporary exists. The
+/// frames are at `source_rate`.
+pub(crate) fn open_file(
+    target: &FileTarget,
     plan: &RenderPlan,
-    config: &ExportConfig,
-    path: &Path,
-    stage: Stage,
-    control: &mut Control<'_>,
-) -> Result<Outcome<Written>> {
-    let spec = spec(config);
+    source_rate: SampleRate,
+) -> Result<Chain> {
+    let spec = spec(target, source_rate);
     check_fits(
         plan,
         source_rate,
-        config,
+        target,
         spec.format.max_frames(spec.layout),
     )?;
-    let encoder = Encoder::create_file(&spec, path)?;
-    let mut chain = Chain::new(config, source_rate, encoder, &spec)?;
-    let driven = drive(
-        src,
-        config.encode.channels,
-        plan,
-        stage,
-        control,
-        config.render.on_event_loss,
-        |block| chain.block(block),
-    )?;
-    if driven == Outcome::Cancelled {
-        return Ok(Outcome::Cancelled);
-    }
+    let encoder = Encoder::create_file(&spec, target.path())?;
+    Chain::new(target, source_rate, encoder, &spec)
+}
 
-    control.begin(Stage::Finalizing, None);
-    if control.is_cancelled() {
-        return Ok(Outcome::Cancelled);
+/// What a [`Chain`] finalized into: the file closed beside its path and not
+/// yet put in place, and what the pass counted of it.
+pub(crate) struct Closed {
+    file: Finalized<std::io::BufWriter<std::fs::File>>,
+    clipped: u64,
+}
+
+impl Closed {
+    /// Puts the file in place.
+    pub(crate) fn commit(self) -> tutti_codec::Result<ClippedFile> {
+        self.file.commit().map(|_| ClippedFile {
+            clipped: self.clipped,
+        })
     }
-    chain.flush()?;
-    // Before the file is put in place: a render that lost events, or that a
-    // forked unit failed in (silence from then on), is never written, and
-    // `path` keeps what it held (the encoder removes its file when it drops).
-    src.check_health()?;
-    let lost = src.lost_events();
-    crate::render::check_loss(config.render.on_event_loss, lost)?;
-    control.at(Stage::Finalizing, 0.5);
-    if control.is_cancelled() {
-        return Ok(Outcome::Cancelled);
+}
+
+/// A file that was put in place, and the samples that clipped on the way.
+pub(crate) struct ClippedFile {
+    pub(crate) clipped: u64,
+}
+
+impl Chain {
+    /// Flushes the converter and closes the encoder's file beside its path:
+    /// everything that can fail for the file's own sake, short of moving it.
+    pub(crate) fn finalize(mut self) -> Result<Closed> {
+        self.flush()?;
+        let (encoder, clipped) = self.into_encoder();
+        Ok(Closed {
+            file: encoder.finalize()?,
+            clipped,
+        })
     }
-    let (encoder, clipped) = chain.into_encoder();
-    encoder.finish()?;
-    let bytes = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
-    // After the rename: the only reading that is exactly 1.0.
-    control.at(Stage::Finalizing, 1.0);
-    Ok(Outcome::Finished(Written {
+}
+
+/// What a landed file is, for the caller: its size on disk, `0` if it cannot
+/// be stat'd.
+pub(crate) fn written(path: &Path, closed: ClippedFile, dropped_events: u64) -> Written {
+    Written {
         path: path.to_path_buf(),
-        bytes,
-        dropped_events: lost,
-        clipped_samples: clipped,
+        bytes: std::fs::metadata(path).map(|m| m.len()).unwrap_or(0),
+        dropped_events,
+        clipped_samples: closed.clipped,
         gain: None,
         measured: None,
-    }))
+    }
 }
 
 /// Samples of an integer-bound block the quantizer will not write as they are:
@@ -235,11 +216,44 @@ impl Sink for EncoderSink {
     }
 }
 
+/// A converter and the planes it takes from and gives to.
+pub(crate) type Resampler = (tutti_dsp::StreamingResampler, Vec<Vec<f32>>, Vec<Vec<f32>>);
+
+/// The converter `target` calls for from frames at `source_rate` of `ch`
+/// channels, or `None` when the file is at the rate the frames are.
+pub(crate) fn resampler_for(
+    target: &FileTarget,
+    source_rate: SampleRate,
+    ch: usize,
+) -> Result<Option<Resampler>> {
+    // Compare as the integer rate the codecs speak, via `whole_hz`. The
+    // comparison must not be a float one: these rates decide *whether to
+    // resample at all*, and an ULP apart would flip that coin. Two rates
+    // that write the same header are the same rate.
+    //
+    // `source_rate` is the PARAMETER, not a rate of the target's.
+    // Frames handed to `write_buffers` already exist and carry their own
+    // rate, which may not be the one a config was rendered at; reading
+    // it from a config resamples from a rate the samples were never at.
+    Ok(match target.resample() {
+        Some(r) if whole_hz(output_rate(target, source_rate)) != whole_hz(source_rate) => Some((
+            // The rates themselves stay `SampleRate`: only the *comparison*
+            // narrows, and `StreamingResampler::new` derives its ratio from
+            // values that never did.
+            tutti_dsp::StreamingResampler::new(ch, source_rate, r.target_rate, r.chunk)?,
+            vec![Vec::<f32>::new(); ch],
+            vec![Vec::<f32>::new(); ch],
+        )),
+        // A resample to the rate the frames are already at is not a resample.
+        _ => None,
+    })
+}
+
 /// The resample and dither between the gate and the encoder, one block at a
 /// time.
 ///
 /// Every export goes through this. That is the point: this is where the
-/// resample and the dither live (the gate is [`drive`]'s), so a file is never
+/// resample and the dither live (the gate is `drive`'s), so a file is never
 /// written un-resampled under a resampled header.
 ///
 /// Order matters: resample first, dither second. Dither's noise is scaled to one
@@ -247,51 +261,34 @@ impl Sink for EncoderSink {
 /// that noise along with the signal and land it somewhere other than one LSB.
 /// The dither is `tutti_dsp`'s [`DitherSink`] over the encoder, the same adapter
 /// a recording opts into.
-struct Chain {
+pub(crate) struct Chain {
     layout: ChannelLayout,
     sink: DitherSink<EncoderSink>,
     /// Interleaved, so it is a flat sample buffer with `ch` samples per frame.
     staging: Vec<f32>,
+    /// A gain applied after the converter and before the dither: the
+    /// normalize of a file, which was measured at the file's rate.
+    gain: Option<Amplitude>,
     /// The converter, and the planes it takes from and gives to.
-    resampler: Option<(tutti_dsp::StreamingResampler, Vec<Vec<f32>>, Vec<Vec<f32>>)>,
+    resampler: Option<Resampler>,
 }
 
 impl Chain {
-    /// The chain for `config`, from frames at `source_rate`, ending in
+    /// The chain for `target`, from frames at `source_rate`, ending in
     /// `encoder` (made from `spec`).
     fn new(
-        config: &ExportConfig,
-        source_rate: tutti_types::SampleRate,
+        target: &FileTarget,
+        source_rate: SampleRate,
         encoder: Encoder<std::io::BufWriter<std::fs::File>>,
         spec: &Spec,
     ) -> Result<Self> {
         // Once, at entry — never inside a per-block or per-frame loop.
-        let layout = config.encode.channels;
+        let layout = target.channels();
         let ch = usize::from(layout.count());
         if ch == 0 {
             return Err(crate::Error::UnsupportedChannels);
         }
-        // Compare as the integer rate the codecs speak, via `whole_hz`. The
-        // comparison must not be a float one: these rates decide *whether to
-        // resample at all*, and an ULP apart would flip that coin. Two rates
-        // that write the same header are the same rate.
-        //
-        // `source_rate` is the PARAMETER, not `config.render.sample_rate`.
-        // Frames handed to `write_buffers` already exist and carry their own
-        // rate, which may not be the one the config was rendered at; reading
-        // it from the config resamples from a rate the samples were never at.
-        let resampler = match config.resample {
-            Some(r) if whole_hz(output_rate(config)) != whole_hz(source_rate) => Some((
-                // The rates themselves stay `SampleRate`: only the *comparison*
-                // narrows, and `StreamingResampler::new` derives its ratio from
-                // values that never did.
-                tutti_dsp::StreamingResampler::new(ch, source_rate, r.target_rate, r.chunk)?,
-                vec![Vec::<f32>::new(); ch],
-                vec![Vec::<f32>::new(); ch],
-            )),
-            // A resample to the rate the frames are already at is not a resample.
-            _ => None,
-        };
+        let resampler = resampler_for(target, source_rate, ch)?;
         let encoder = EncoderSink {
             encoder,
             layout,
@@ -301,18 +298,33 @@ impl Chain {
         };
         Ok(Self {
             layout,
-            sink: DitherSink::new(encoder, crate::process::dither_spec(config)),
+            sink: DitherSink::new(encoder, crate::process::dither_spec(target)),
             staging: Vec::new(),
+            gain: None,
             resampler,
         })
     }
 
-    /// One gated block through the converter and the dither into the encoder.
-    fn block(&mut self, block: Interleaved<'_>) -> Result<()> {
+    /// Scales everything from here on by `gain` after the converter and
+    /// before the dither (the gain of a normalize, measured at the file's
+    /// rate).
+    pub(crate) fn set_gain(&mut self, gain: tutti_types::Db) {
+        self.gain = Some(gain.to_amplitude());
+    }
+
+    /// One gated block through the converter, the gain and the dither into the
+    /// encoder.
+    pub(crate) fn block(&mut self, block: Interleaved<'_>) -> Result<()> {
+        let gain = self.gain;
         if let Some((rs, planes, out)) = self.resampler.as_mut() {
             block.deinterleave_into(planes);
             rs.push(planes, out)?;
-            emit_planes(out, &mut self.staging, &mut self.sink, self.layout)
+            emit_planes(out, &mut self.staging, &mut self.sink, self.layout, gain)
+        } else if let Some(gain) = gain {
+            self.staging.clear();
+            self.staging
+                .extend(block.samples().iter().map(|s| s * gain.get()));
+            self.sink.write(&self.staging).map_err(|_| self.failure())
         } else {
             // With no dither the adapter hands the gated block straight on,
             // uncopied.
@@ -322,12 +334,13 @@ impl Chain {
 
     /// What the converter still holds, through the dither into the encoder; a
     /// chain with no converter holds nothing.
-    fn flush(&mut self) -> Result<()> {
+    pub(crate) fn flush(&mut self) -> Result<()> {
+        let gain = self.gain;
         let Some((rs, _, out)) = self.resampler.as_mut() else {
             return Ok(());
         };
         rs.finish(out)?;
-        emit_planes(out, &mut self.staging, &mut self.sink, self.layout)
+        emit_planes(out, &mut self.staging, &mut self.sink, self.layout, gain)
     }
 
     /// The error the encoder stashed when it refused a write.
@@ -356,11 +369,17 @@ fn emit_planes(
     staging: &mut Vec<f32>,
     sink: &mut DitherSink<EncoderSink>,
     layout: ChannelLayout,
+    gain: Option<Amplitude>,
 ) -> Result<()> {
     let frames = Samples(out.first().map_or(0, Vec::len));
     staging.clear();
     staging.resize(frames.interleaved_len(layout), 0.0);
     InterleavedMut::new(staging, layout).interleave_from(out, 0);
+    if let Some(gain) = gain {
+        for s in staging.iter_mut() {
+            *s *= gain.get();
+        }
+    }
     let r = sink.write(staging).map_err(|_| failure_of(sink));
     for p in out.iter_mut() {
         p.clear();
@@ -368,51 +387,89 @@ fn emit_planes(
     r
 }
 
-/// Write already-rendered planes to `path`.
+/// Reads `replay` back through `chain`: the write pass of a normalized output
+/// and of already-rendered planes, which share every codec path with a streamed
+/// render (a second writer per format is how a crate ends up with a
+/// whole-signal encoder that works and a streaming one that does not).
 ///
-/// Feeds the same encoders from a [`PlaneSource`] instead of a graph, so a
-/// normalized export (render → measure → apply → write) shares every codec path
-/// with a streamed one. A second writer per format is how a crate ends up with a
-/// whole-signal encoder that works and a streaming one that does not.
-pub(crate) fn encode_planes(
-    rendered: &crate::Rendered,
-    config: &ExportConfig,
-    path: &Path,
+/// `block_frames` is how many frames one read takes, and `done` of `total`
+/// frames of `stage` were already spent in the pass (by the outputs before
+/// this one). The token is checked before every block. A cancelled pass is
+/// [`Outcome::Cancelled`].
+pub(crate) fn replay_through(
+    replay: &mut dyn Replay,
+    chain: &mut Chain,
+    block_frames: usize,
+    stage: Stage,
+    done: Samples,
+    total: Samples,
     control: &mut Control<'_>,
-) -> Result<Outcome<Written>> {
-    // The planes carry the events their render lost: judged by this config's
-    // policy, before anything is written.
-    crate::render::check_loss(config.render.on_event_loss, rendered.dropped_events())?;
+) -> Result<Outcome<Samples>> {
+    let layout = chain.layout;
+    let mut block = vec![0.0f32; block_frames.max(1) * usize::from(layout.count())];
+    let mut at = done.get();
+    loop {
+        if control.is_cancelled() {
+            return Ok(Outcome::Cancelled);
+        }
+        let n = replay.fill(InterleavedMut::new(&mut block, layout))?;
+        if n == 0 {
+            break;
+        }
+        chain.block(Interleaved::new(
+            &block[..Samples(n).interleaved_len(layout)],
+            layout,
+        ))?;
+        at += n;
+        control.advance(stage, Samples(at), total);
+    }
+    Ok(Outcome::Finished(Samples(at)))
+}
+
+/// Replays `rendered` into a chain for `target` (the converter at the planes'
+/// own rate, then the dither and the encoder): the planes are folded onto the
+/// target's width the way a graph's outputs are, by the same rule (the
+/// target's `topology` included), and a width it cannot place is an error,
+/// never a dropped channel.
+///
+/// Returns the chain with every frame written, for the finalize.
+pub(crate) fn write_planes(
+    rendered: &crate::Rendered,
+    target: &FileTarget,
+    control: &mut Control<'_>,
+) -> Result<Outcome<Chain>> {
     let frames = rendered.frames();
-    // Planes of another width than the file's are folded onto it, by the
-    // same rule the graph's outputs are (the file's `topology` included); a
-    // width it cannot place is an error, never a dropped channel.
-    let fold = if rendered.planes().is_empty() || rendered.layout() == config.encode.channels {
+    let fold = if rendered.planes().is_empty() || rendered.layout() == target.channels() {
         None
     } else {
-        Some(crate::file_channels(config).fold_from(rendered.channels(), None)?)
+        Some(
+            crate::render::FileChannels {
+                layout: target.channels(),
+                topology: target.topology(),
+            }
+            .fold_from(rendered.channels(), None)?,
+        )
     };
-    let mut src = PlaneSource::new(rendered.planes(), fold);
     let plan = RenderPlan {
         total: frames,
         output_length: frames,
-        latency: tutti_types::Samples(0),
+        latency: Samples(0),
     };
-    // The frames' OWN rate, never `config.render.sample_rate`: these planes may
-    // have been rendered under a different config entirely.
-    let written = encode_to_file(
+    // The frames' OWN rate: these planes may have been rendered under a
+    // different config entirely.
+    let mut chain = open_file(target, &plan, rendered.sample_rate())?;
+    let mut src = PlaneSource::new(rendered.planes(), fold);
+    control.begin(Stage::Writing, Some(frames));
+    let written = replay_through(
         &mut src,
-        rendered.sample_rate(),
-        &plan,
-        config,
-        path,
+        &mut chain,
+        REPLAY_BLOCK,
         Stage::Writing,
+        Samples(0),
+        frames,
         control,
     )?;
-    Ok(written.map(|mut w| {
-        w.dropped_events = rendered.dropped_events();
-        w
-    }))
+    Ok(written.map(|_| chain))
 }
 
 #[cfg(test)]

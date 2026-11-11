@@ -56,8 +56,9 @@ use tutti_types::Seconds;
 
 use crate::support::render_to_file;
 use tutti_codec::Wave;
+use tutti_dsp::DitherShape;
 use tutti_export::{
-    ChannelLayout, Dither, EncodeConfig, ExportConfig, Format, Pcm, RenderConfig, RenderGraph,
+    ChannelLayout, EncodeConfig, ExportConfig, Format, Pcm, RenderConfig, RenderGraph,
 };
 use tutti_graph::GraphBuilder;
 use tutti_sampler::{MemorySource, Playback, SlotId, Voice, VoicePool, VoiceSource};
@@ -152,7 +153,7 @@ fn config(format: Format) -> ExportConfig {
             topology: None,
         },
         // Float32 never dithers anyway; stated so the intent is on the page.
-        dither: Dither::Off,
+        dither: None,
         ..Default::default()
     }
 }
@@ -388,7 +389,7 @@ fn a_sampler_render_survives_integer_quantization() {
     let path = d.path().join("int16.wav");
 
     let mut cfg = config(Format::Wav(Pcm::Int16));
-    cfg.dither = Dither::Triangular; // the default a real export uses
+    cfg.dither = Some(DitherShape::Triangular); // the default a real export uses
 
     render_to_file(graph, &cfg, clock.as_ref(), &path).unwrap();
 

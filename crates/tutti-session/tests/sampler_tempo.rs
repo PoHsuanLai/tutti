@@ -3,6 +3,7 @@
 //! feature (`SessionNode` for the sampler's nodes).
 
 use std::sync::Arc;
+use tutti_types::MaxBlock;
 
 use tutti_session::{GraphSource, Session};
 use tutti_transport::MotionEvent;
@@ -13,7 +14,11 @@ const RATE: f64 = 48_000.0;
 /// An offline session at `RATE`, stereo, graph blocks of up to 1 024 frames.
 fn offline() -> Session {
     Session::builder()
-        .build_offline(SampleRate(RATE), ChannelLayout::STEREO, Samples(1_024))
+        .build_offline(
+            SampleRate(RATE),
+            ChannelLayout::STEREO,
+            MaxBlock::of(Samples(1_024)),
+        )
         .expect("builds")
 }
 

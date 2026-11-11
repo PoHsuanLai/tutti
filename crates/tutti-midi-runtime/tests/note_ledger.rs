@@ -9,6 +9,7 @@
 
 use std::collections::BTreeSet;
 use std::sync::{Arc, Mutex};
+use tutti_types::MaxBlock;
 
 use tutti_fixtures::midi::{cc, note_off, note_on};
 use tutti_graph::NodeKey;
@@ -331,7 +332,10 @@ fn ump_cc(v: u32) -> Ump {
 /// `script` through `relay` into a sink, in 64-frame blocks; `blocks` of
 /// them.
 fn through(script: Vec<Vec<Ump>>, relay: Relay, blocks: u64) -> (Shared, Executor) {
-    let (mut ed, mut exec) = Editor::new(Prepare::new(SampleRate(48_000.0), Samples(64)));
+    let (mut ed, mut exec) = Editor::new(Prepare::new(
+        SampleRate(48_000.0),
+        MaxBlock::of(Samples(64)),
+    ));
     ed.insert(
         NodeKey(1),
         "script",
@@ -459,7 +463,10 @@ fn a_ledger_relay_strands_no_note_under_random_refusal() {
 
 /// A clip into a sink in 64-frame blocks (a port of 256 events).
 fn clip_rig(events: Vec<TimedMidiEvent>) -> (Editor, Executor, Shared) {
-    let (mut ed, exec) = Editor::new(Prepare::new(SampleRate(48_000.0), Samples(64)));
+    let (mut ed, exec) = Editor::new(Prepare::new(
+        SampleRate(48_000.0),
+        MaxBlock::of(Samples(64)),
+    ));
     ed.insert(NodeKey(1), "clip", MidiClipNode::new(events));
     let tally = sink(&mut ed, 2);
     connect(&mut ed, 1, 2);
@@ -577,7 +584,10 @@ fn holding_clip() -> (
     Shared,
     Shared,
 ) {
-    let (mut ed, exec) = Editor::new(Prepare::new(SampleRate(48_000.0), Samples(256)));
+    let (mut ed, exec) = Editor::new(Prepare::new(
+        SampleRate(48_000.0),
+        MaxBlock::of(Samples(256)),
+    ));
     let controls = ed.insert(
         NodeKey(1),
         "clip",
@@ -616,7 +626,10 @@ fn a_rewire_ends_the_held_note_at_the_old_sink() {
 /// the cut, frame 2,304 here.
 #[test]
 fn the_close_reaches_a_sink_behind_a_delayed_edge() {
-    let (mut ed, mut exec) = Editor::new(Prepare::new(SampleRate(48_000.0), Samples(256)));
+    let (mut ed, mut exec) = Editor::new(Prepare::new(
+        SampleRate(48_000.0),
+        MaxBlock::of(Samples(256)),
+    ));
     ed.insert(
         NodeKey(1),
         "clip",
@@ -668,7 +681,10 @@ fn forkable_rig() -> (
     Shared,
     Arc<Mutex<Vec<Shared>>>,
 ) {
-    let (mut ed, exec) = Editor::new(Prepare::new(SampleRate(48_000.0), Samples(256)));
+    let (mut ed, exec) = Editor::new(Prepare::new(
+        SampleRate(48_000.0),
+        MaxBlock::of(Samples(256)),
+    ));
     let controls = ed.insert(
         NodeKey(1),
         "clip",
@@ -699,7 +715,7 @@ fn forkable_rig() -> (
 }
 
 fn fork_of(ed: &Editor) -> (Editor, Executor) {
-    let prepare = Prepare::new(SampleRate(48_000.0), Samples(256));
+    let prepare = Prepare::new(SampleRate(48_000.0), MaxBlock::of(Samples(256)));
     ed.fork(ForkTarget::Node(NodeKey(2)), ForkMode::Offline, prepare)
         .expect("the clip and the sink fork")
 }
@@ -801,7 +817,10 @@ fn filled(then: Vec<Act>) -> Vec<Act> {
 /// What a probe's sink heard, and the executor's counts.
 fn probe(capacity: usize, blocks: Vec<Vec<Act>>) -> (Shared, u64, u64) {
     let n = blocks.len() as u64 + 1;
-    let (mut ed, mut exec) = Editor::new(Prepare::new(SampleRate(48_000.0), Samples(64)));
+    let (mut ed, mut exec) = Editor::new(Prepare::new(
+        SampleRate(48_000.0),
+        MaxBlock::of(Samples(64)),
+    ));
     ed.insert(
         NodeKey(1),
         "probe",
@@ -1033,7 +1052,10 @@ fn the_loss_count_is_exact_through_loops_and_replacements() {
         let passes = 1 + r.below(2);
         let (second, ons2, ccs2) = spread_clip(&mut r, overlap);
         let replace = r.below(2) == 0;
-        let (mut ed, mut exec) = Editor::new(Prepare::new(SampleRate(48_000.0), Samples(64)));
+        let (mut ed, mut exec) = Editor::new(Prepare::new(
+            SampleRate(48_000.0),
+            MaxBlock::of(Samples(64)),
+        ));
         let controls: MidiClipControls =
             ed.insert(NodeKey(1), "clip", MidiClipNode::new(first.clone()));
         let tally = sink(&mut ed, 2);

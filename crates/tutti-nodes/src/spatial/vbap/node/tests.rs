@@ -1,5 +1,6 @@
 use super::*;
 use tutti_graph::contract::{drive, prepared};
+use tutti_types::MaxBlock;
 use tutti_types::{ChannelTopology, UnitParam};
 
 use crate::testing::aim;
@@ -339,7 +340,10 @@ fn the_inserted_params_move_the_running_node() {
     use tutti_graph::Solo;
     use tutti_types::Samples;
 
-    let mut solo = Solo::new(VbapPannerNode::stereo(), Prepare::new(RATE, Samples(64)));
+    let mut solo = Solo::new(
+        VbapPannerNode::stereo(),
+        Prepare::new(RATE, MaxBlock::of(Samples(64))),
+    );
     aim(solo.controls(), Azimuth(90.0), Elevation::LEVEL);
     // 100 ms: past the 50 ms de-zipper.
     let ones = vec![1.0f32; 4_800];

@@ -24,6 +24,7 @@ Load a plugin and put its node into a tutti graph. `no_run`: the load spawns a
 subprocess against a real `.vst3` / `.clap` on disk.
 
 ```rust,no_run
+use tutti_types::MaxBlock;
 use tutti_types::SampleRate;
 use tutti_graph::{Editor, Prepare};
 use tutti_plugin::catalog::Plugin;
@@ -48,7 +49,7 @@ println!("reported latency: {:?}", handle.loaded().latency());
 // A session hands every plugin it adds a reader of its own; with none, a fixed
 // map does.
 let tempo = TempoReader::constant(Bpm::of(120.0)).expect("a tempo");
-let (mut editor, _executor) = Editor::new(Prepare::new(SampleRate::new(48_000.0), Samples(512)));
+let (mut editor, _executor) = Editor::new(Prepare::new(SampleRate::new(48_000.0), MaxBlock::of(Samples(512))));
 let _controls = editor.insert(NodeKey(1), "plugin", plugin.bind(tempo));
 # Ok::<(), tutti_plugin_types::BridgeError>(())
 ```

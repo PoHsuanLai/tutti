@@ -17,6 +17,7 @@
 //! (`tutti_fixtures::assert_golden`).
 
 use std::sync::Arc;
+use tutti_types::MaxBlock;
 
 use tutti_fixtures::assert_golden;
 use tutti_graph::Op;
@@ -40,7 +41,11 @@ fn digest(samples: &[f32]) -> u64 {
 /// (the live engine's `LIVE_MAX_BLOCK`, which the digests were recorded at).
 fn offline() -> Session {
     Session::builder()
-        .build_offline(SampleRate(RATE), ChannelLayout::STEREO, Samples(1_024))
+        .build_offline(
+            SampleRate(RATE),
+            ChannelLayout::STEREO,
+            MaxBlock::of(Samples(1_024)),
+        )
         .expect("builds")
 }
 
@@ -781,7 +786,7 @@ fn a_project_the_device_cannot_take_is_refused_at_build() {
         Session::builder().outputs_floor(floor).build_offline(
             SampleRate(RATE),
             ChannelLayout::from(device),
-            Samples(256),
+            MaxBlock::of(Samples(256)),
         )
     };
     assert!(matches!(

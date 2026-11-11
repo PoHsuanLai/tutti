@@ -45,8 +45,8 @@ pub use event_list::{
     EVENT_CAPACITY, EventList, NOTE_EXPRESSION_ROOM, SYSEX_OUT_ROOM, Staged, Staging,
 };
 pub(crate) use host_application::HostApplication;
-pub use param_changes::ParameterChangesImpl;
 pub(crate) use param_changes::param_changes_ptr;
+pub use param_changes::{Busy, ParamStaging, ParameterChangesImpl};
 pub use param_queue::MIN_POINT_ROOM;
 pub(crate) use plug_frame::HostPlugFrame;
 #[cfg(target_os = "linux")]

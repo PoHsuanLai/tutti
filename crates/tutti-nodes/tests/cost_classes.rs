@@ -4,6 +4,7 @@
 //! for bit the serial one.
 
 use std::sync::Arc;
+use tutti_types::MaxBlock;
 
 use tutti_graph::NodeKey;
 use tutti_graph::{
@@ -86,7 +87,10 @@ fn click(transport: &Transport) -> ClickNode {
 /// nothing.
 fn graph(workers: usize, declared: bool) -> Executor {
     let transport = Transport::new(SampleRate::new(SR));
-    let (mut ed, mut exec) = Editor::new(Prepare::new(SampleRate(SR), Samples(MAX_BLOCK)));
+    let (mut ed, mut exec) = Editor::new(Prepare::new(
+        SampleRate(SR),
+        MaxBlock::of(Samples(MAX_BLOCK)),
+    ));
     if workers > 1 {
         exec.set_pool(Some(Arc::new(
             WorkerPool::builder()

@@ -45,6 +45,7 @@ struct Held {
 /// # Examples
 ///
 /// ```
+/// use tutti_types::MaxBlock;
 /// use tutti_types::{SampleRate, Samples, UnitParam};
 /// use tutti_graph::{ParamNode, Prepare, Solo};
 /// use tutti_nodes::VbapPannerNode;
@@ -52,7 +53,7 @@ struct Held {
 /// let panner = VbapPannerNode::quad();
 /// panner.param_set().set(UnitParam::Azimuth, 45.0); // front-left
 ///
-/// let mut solo = Solo::new(panner, Prepare::new(SampleRate(48_000.0), Samples(64)));
+/// let mut solo = Solo::new(panner, Prepare::new(SampleRate(48_000.0), MaxBlock::of(Samples(64))));
 /// let out = solo.render_input(&[&[1.0; 64], &[1.0; 64]]);
 /// assert_eq!(out.len(), 4); // one channel per speaker
 /// ```

@@ -29,6 +29,7 @@ use tutti_graph::{
 use tutti_graph::{NodeKey, TapAlign, TapId};
 use tutti_graph::{OutPort, Source as Origin};
 use tutti_session::{PumpLoop, PumpPass};
+use tutti_types::MaxBlock;
 use tutti_types::{Beat, Bpm, ChannelLayout, SampleRate, Samples, Sink, Source};
 
 /// Frames rendered into the tap, as the audio callback would.
@@ -104,7 +105,10 @@ fn pump_until_dry<I: Source, O: Sink>(pump: &mut PumpLoop<I, O>, budget: usize) 
 
 /// A stereo tap on a [`Ramp`], its ring `capacity` frames.
 fn graph_tap(capacity: usize) -> (Graph, TapReader) {
-    let (mut ed, mut exec) = Editor::new(Prepare::new(SampleRate(48_000.0), Samples(BLOCK)));
+    let (mut ed, mut exec) = Editor::new(Prepare::new(
+        SampleRate(48_000.0),
+        MaxBlock::of(Samples(BLOCK)),
+    ));
     ed.insert(NodeKey(1), "ramp", Unforkable(Ramp { at: 0 }));
     let port = |port| {
         Origin::Node(OutPort {

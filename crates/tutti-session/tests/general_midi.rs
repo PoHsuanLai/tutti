@@ -2,6 +2,7 @@
 //! own topology (which port feeds which), not from a render.
 
 use std::sync::Arc;
+use tutti_types::MaxBlock;
 
 use tutti_graph::NodeKey;
 use tutti_session::{GeneralMidi, GraphSource, NodeMode, Session};
@@ -13,7 +14,7 @@ const RATE: SampleRate = SampleRate(48_000.0);
 
 fn offline_session() -> Session {
     Session::builder()
-        .build_offline(RATE, ChannelLayout::STEREO, Samples(128))
+        .build_offline(RATE, ChannelLayout::STEREO, MaxBlock::of(Samples(128)))
         .expect("an offline session builds")
 }
 

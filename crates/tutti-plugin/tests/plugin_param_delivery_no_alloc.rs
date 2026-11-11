@@ -13,6 +13,7 @@
 #![cfg(feature = "clap")]
 
 use assert_no_alloc::AllocDisabler;
+use tutti_types::MaxBlock;
 
 #[global_allocator]
 static A: AllocDisabler = AllocDisabler;
@@ -51,8 +52,8 @@ fn two_hundred_moving_parameters_do_not_allocate_on_the_audio_thread() {
     let _lock = machine_lock();
     let (client, handle) = load_vst2_probe(PARAMS, SAMPLE_RATE);
     let (knobs, lanes) = knobs(PARAMS, |_| 0.5);
-    let prepare =
-        Prepare::new(SampleRate(SAMPLE_RATE), Samples(BLOCK)).with_quantum(Samples(QUANTUM));
+    let prepare = Prepare::new(SampleRate(SAMPLE_RATE), MaxBlock::of(Samples(BLOCK)))
+        .with_quantum(Samples(QUANTUM));
     let mut rig = Rig::prepared_with(
         client.bind(
             tutti_transport::TempoReader::constant(tutti_types::Bpm::of(120.0)).expect("a tempo"),

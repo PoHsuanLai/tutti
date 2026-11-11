@@ -19,7 +19,7 @@ use crate::types::{
     AudioBuffer, ParameterChanges, ProcessContextRequirements, ProcessMode, ProcessOutputRef,
     TransportInfo, Vst3Sample, to_process_context,
 };
-use tutti_vst3_ffi::{AudioSide, BusBuffers, EventList, ParameterChangesImpl, ProcessIo};
+use tutti_vst3_ffi::{AudioSide, BusBuffers, Busy, EventList, ParameterChangesImpl, ProcessIo};
 
 use super::midi_learn::MidiLearnProducer;
 use super::midi_mapping::{CcRoute, midi_to_mapped_controller, stage_input_events};
@@ -122,8 +122,13 @@ impl OutputStaging {
     /// heap capacity, so this is allocation-free after warmup.
     pub(super) fn drain_emitted(&mut self) {
         drain_midi(&self.events, &mut self.emitted_midi);
-        self.param_changes
-            .fill_changes(&mut self.emitted_param_changes);
+        // A refusal is counted in `lists_busy` and leaves the pool empty.
+        if !self
+            .param_changes
+            .try_fill_changes(&mut self.emitted_param_changes)
+        {
+            self.emitted_param_changes.clear();
+        }
     }
 }
 
@@ -189,7 +194,7 @@ pub struct Vst3Processor<T: Vst3Sample> {
     /// The writes taken for the block in hand, latest per parameter, and what
     /// a rejoin carried over from the last activation before the first block.
     /// Reserved for the ring's room, so no block grows it.
-    pending: Vec<(u32, Normalized)>,
+    pending: Vec<(ParamId, Normalized)>,
     /// Edits the block could not hold, since activation.
     edits_dropped: u64,
     /// Whether `setProcessing(1)` is the plugin's last word.
@@ -216,7 +221,7 @@ pub(super) struct ProcessorParts {
     pub context_requirements: Option<ProcessContextRequirements>,
     pub drain: EditDrain,
     pub beat: DrainBeat,
-    pub carried: Vec<(u32, Normalized)>,
+    pub carried: Vec<(ParamId, Normalized)>,
 }
 
 impl<T: Vst3Sample> Vst3Processor<T> {
@@ -277,7 +282,7 @@ impl<T: Vst3Sample> Vst3Processor<T> {
     /// that must not lose them, as a rejoin must not.
     pub fn take_edits(&mut self, out: &mut Vec<(ParamId, Normalized)>) {
         self.drain_ring();
-        out.extend(self.pending.drain(..).map(|(id, v)| (ParamId::new(id), v)));
+        out.append(&mut self.pending);
     }
 
     /// Writes the ring held that no block took, since activation, for want of
@@ -298,7 +303,7 @@ impl<T: Vst3Sample> Vst3Processor<T> {
         } = self;
         drain.drain(|edit| {
             let (id, value) = match edit {
-                Edit::Param { id, value } => (id.get(), value),
+                Edit::Param { id, value } => (id, value),
                 // What came before is stale; what came after is not.
                 Edit::Reset => {
                     pending.clear();
@@ -389,7 +394,7 @@ impl<T: Vst3Sample> Vst3Processor<T> {
             // A plugin thread is inside the input list, which therefore still
             // holds the last block's events: processing now would replay them.
             // The block is silence, nothing is emitted, and the skip is counted
-            // (`event_lists_busy`). The controller's writes wait in `pending`.
+            // (`lists_busy`). The controller's writes wait in `pending`.
             buffer.clear_outputs();
             return Ok(self.audio.output.emitted_ref());
         };
@@ -401,20 +406,30 @@ impl<T: Vst3Sample> Vst3Processor<T> {
         }
 
         // Refill the pooled input/output ParameterChanges wrappers in
-        // place instead of building fresh ComWrappers every block.
+        // place instead of building fresh ComWrappers every block. A list a
+        // plugin thread still holds is skipped like a busy event list: the
+        // block is silence, nothing is emitted, and the skip is counted
+        // (`lists_busy`). The controller's writes wait in `pending`.
         let input_params = effective_params.filter(|pc| !pc.is_empty());
-        let mut have_input_params = input_params.is_some();
-        if let Some(changes) = input_params {
-            self.audio.input.param_changes.refill_from_changes(changes);
-        } else {
-            self.audio.input.param_changes.clear_in_place();
-        }
-        for &(id, value) in &self.pending {
-            self.audio.input.param_changes.prepend_point(id, value);
-            have_input_params = true;
+        let have_input_params = input_params.is_some() || !self.pending.is_empty();
+        let staged = (|| {
+            let mut staging = self.audio.input.param_changes.try_begin().ok_or(Busy)?;
+            if let Some(changes) = input_params {
+                staging.refill(changes)?;
+            }
+            for &(id, value) in &self.pending {
+                staging.prepend(id, value)?;
+            }
+            // The output list must be empty before the plugin appends to it.
+            drop(staging);
+            let _ = self.audio.output.param_changes.try_begin().ok_or(Busy)?;
+            Ok::<(), Busy>(())
+        })();
+        if staged.is_err() {
+            buffer.clear_outputs();
+            return Ok(self.audio.output.emitted_ref());
         }
         self.pending.clear();
-        self.audio.output.param_changes.clear_in_place();
 
         let mut process_context = to_process_context(
             transport,
@@ -484,12 +499,27 @@ impl<T: Vst3Sample> Vst3Processor<T> {
     }
 
     /// Blocks skipped (rendered as silence, nothing emitted) or lists left
-    /// uncleared since activation because a plugin thread was inside a call on
-    /// the input or output event list (`getEventCount`, `getEvent`, `addEvent`)
-    /// when the audio thread needed it. Zero for a plugin that keeps to the
-    /// threading rules; the host never waits on the plugin.
-    pub fn event_lists_busy(&self) -> u64 {
-        self.audio.input.events.busy() + self.audio.output.events.busy()
+    /// unread since activation because a plugin thread was inside a call on
+    /// the input or output event list (`getEventCount`, `getEvent`,
+    /// `addEvent`) or parameter list or one of its queues (`getParameterData`,
+    /// `getPoint`, `addPoint`, ...) when the audio thread needed it. Zero for
+    /// a plugin that keeps to the threading rules; the host never waits on
+    /// the plugin.
+    pub fn lists_busy(&self) -> u64 {
+        self.audio.input.events.busy()
+            + self.audio.output.events.busy()
+            + self.audio.input.param_changes.busy()
+            + self.audio.output.param_changes.busy()
+    }
+
+    /// The input parameter list, shared: a conformance test holds one of its
+    /// queues
+    /// ([`ParameterChangesImpl::hold_queue_as_plugin`](tutti_vst3_ffi::ParameterChangesImpl::hold_queue_as_plugin))
+    /// as a plugin worker thread inside `getPoint` does, while the processor
+    /// renders.
+    #[cfg(feature = "conformance")]
+    pub fn input_param_list(&self) -> vst3::ComWrapper<tutti_vst3_ffi::ParameterChangesImpl> {
+        self.audio.input.param_changes.clone()
     }
 
     /// The input event list, shared: a conformance test holds it

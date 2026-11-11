@@ -19,6 +19,7 @@
 //! # Examples
 //!
 //! ```
+//! use tutti_types::MaxBlock;
 //! use tutti_types::{ChannelLayout, Hz, SampleRate, Samples};
 //! use tutti_graph::{GraphBuilder, Prepare};
 //! use tutti_nodes::testing::Osc;
@@ -27,7 +28,7 @@
 //! let tone = g.add(Osc::sine(Hz(440.0)).with_layout(ChannelLayout::STEREO));
 //! g.pipe_output(tone);
 //! let mut r = g
-//!     .renderer(Prepare::new(SampleRate(48_000.0), Samples(64)))
+//!     .renderer(Prepare::new(SampleRate(48_000.0), MaxBlock::of(Samples(64))))
 //!     .expect("builds");
 //! let out = r.render(64);
 //! assert_eq!(out.len(), 2);
@@ -408,11 +409,12 @@ impl Node for Sink {
 mod tests {
     use super::*;
     use tutti_graph::Solo;
+    use tutti_types::MaxBlock;
     use tutti_types::Samples;
 
     /// `node` alone in a graph at `rate`, in blocks of `block` frames.
     fn solo<N: IntoNode<Controls = ()>>(node: N, rate: SampleRate, block: usize) -> Solo<()> {
-        let mut solo = Solo::new(node, Prepare::new(rate, Samples(64)));
+        let mut solo = Solo::new(node, Prepare::new(rate, MaxBlock::of(Samples(64))));
         solo.renderer_mut().set_block(Samples(block));
         solo
     }
@@ -474,7 +476,10 @@ mod tests {
     #[test]
     fn amplitude_rate_and_reset_are_honoured() {
         let mut osc = Osc::sine(Hz(1_000.0)).with_amplitude(Amplitude(0.25));
-        osc.prepare(&Prepare::new(SampleRate(4_000.0), Samples(64)));
+        osc.prepare(&Prepare::new(
+            SampleRate(4_000.0),
+            MaxBlock::of(Samples(64)),
+        ));
         let first: Vec<f32> = (0..4).map(|_| osc.next()).collect();
         // Quarter-cycle steps: 0, +peak, 0, −peak.
         let expect = [0.0, 0.25, 0.0, -0.25];
@@ -532,7 +537,10 @@ mod tests {
         let quarter = 2.0 * 0.25 - 1.0; // the saw's value at 0.25 turns
         for start in [0.25f32, 1.25, -0.75, 3.25] {
             let mut osc = Osc::saw(Hz(1_000.0)).with_phase(Phase(start));
-            osc.prepare(&Prepare::new(SampleRate(8_000.0), Samples(64)));
+            osc.prepare(&Prepare::new(
+                SampleRate(8_000.0),
+                MaxBlock::of(Samples(64)),
+            ));
             let first = osc.next();
             assert!((first - quarter).abs() < 1e-6, "start {start}: {first}");
             let _ = osc.next();

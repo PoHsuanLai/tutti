@@ -1216,7 +1216,10 @@ mod tests {
         b0.set_makeup(20.0);
         b0.set_solo(false);
         let mut fork = forked.node;
-        fork.prepare(&Prepare::new(RATE, tutti_types::Samples(1024)));
+        fork.prepare(&Prepare::new(
+            RATE,
+            tutti_types::MaxBlock::of(tutti_types::Samples(1024)),
+        ));
         let out = render_chunked(fork.as_mut(), &[vec![0.5f32; SETTLE]], 512);
         let reduction = (20.0 * libm::log10(0.5) + 20.0) * 0.75;
         let want = 0.5 * libm::pow(10.0, -reduction / 20.0);
@@ -1240,9 +1243,10 @@ mod tests {
         c.band(0).set_attack(0.001);
         c.band(0).set_release(0.001);
         let mut parts = n.into_parts();
-        parts
-            .node
-            .prepare(&Prepare::new(RATE, tutti_types::Samples(1024)));
+        parts.node.prepare(&Prepare::new(
+            RATE,
+            tutti_types::MaxBlock::of(tutti_types::Samples(1024)),
+        ));
         render_chunked(parts.node.as_mut(), &[vec![0.5f32; SETTLE]], 512);
         let reduction = (20.0 * libm::log10(0.5) + 20.0) * 0.75;
         let m = f64::from(parts.controls.gain_reduction_db(0).get());

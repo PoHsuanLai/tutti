@@ -430,6 +430,7 @@ impl std::error::Error for MissingSource {}
 /// # Examples
 ///
 /// ```
+/// use tutti_types::MaxBlock;
 /// use tutti_graph::{Cx, Editor, ForkByClone, Io, Node, Prepare, Shape, Status, Transport};
 /// use tutti_graph::{Edge, InPort, OutPort, Source};
 /// use tutti_types::{Beat, Bpm, ChannelLayout, SampleRate, Samples};
@@ -452,7 +453,7 @@ impl std::error::Error for MissingSource {}
 ///     fn reset(&mut self) {}
 /// }
 ///
-/// let (mut editor, mut executor) = Editor::new(Prepare::new(SampleRate(48_000.0), Samples(64)));
+/// let (mut editor, mut executor) = Editor::new(Prepare::new(SampleRate(48_000.0), MaxBlock::of(Samples(64))));
 /// let half = NodeKey(1);
 /// editor.insert(half, "half", ForkByClone(Half));
 /// let topology = &mut editor.spec_mut().topology;

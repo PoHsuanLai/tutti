@@ -54,6 +54,7 @@ use std::sync::Arc;
 /// # Examples
 ///
 /// ```
+/// use tutti_types::MaxBlock;
 /// use tutti_types::{Hz, Resonance, SampleRate, Samples};
 /// use tutti_graph::{Prepare, Solo};
 /// use tutti_polysynth::{FilterType, OscillatorType, PolySynth, SynthConfig};
@@ -67,7 +68,7 @@ use std::sync::Arc;
 /// assert_eq!(synth.active_voice_count(), 0);
 ///
 /// // Alone in a graph; a host wires a clip or keyboard to its event input.
-/// let mut solo = Solo::new(synth, Prepare::new(SampleRate(48_000.0), Samples(64)));
+/// let mut solo = Solo::new(synth, Prepare::new(SampleRate(48_000.0), MaxBlock::of(Samples(64))));
 /// let out = solo.render(64);
 /// assert_eq!(out.len(), 2); // stereo
 /// # Ok::<(), tutti_polysynth::Error>(())

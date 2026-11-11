@@ -8,6 +8,7 @@ mod common;
 
 use std::collections::BTreeSet;
 use std::sync::{Arc, Mutex};
+use tutti_types::MaxBlock;
 
 use common::{Kind, TestNode};
 use tutti_graph::NodeKey;
@@ -20,7 +21,7 @@ use tutti_types::{ChannelLayout, Latency, SampleRate, Samples, Tail};
 use tutti_ump::Ump;
 
 fn prep(rate: f64, max: usize) -> Prepare {
-    Prepare::new(SampleRate(rate), Samples(max))
+    Prepare::new(SampleRate(rate), MaxBlock::of(Samples(max)))
 }
 
 const LAG: NodeKey = NodeKey(1);

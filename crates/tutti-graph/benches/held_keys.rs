@@ -2,6 +2,7 @@
 //! `k` note events a block into a sink, `k = 0` being the no-notes block.
 
 use std::hint::black_box;
+use tutti_types::MaxBlock;
 use tutti_ump::Ump;
 
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
@@ -58,8 +59,10 @@ impl Node for Sink {
 }
 
 fn rig(k: u32, sinks: u64) -> Executor {
-    let (mut ed, mut exec) =
-        Editor::with_event_capacity(Prepare::new(SampleRate(48_000.0), Samples(BLOCK)), 1024);
+    let (mut ed, mut exec) = Editor::with_event_capacity(
+        Prepare::new(SampleRate(48_000.0), MaxBlock::of(Samples(BLOCK))),
+        1024,
+    );
     ed.insert(NodeKey(1), "source", Unforkable(Source { k, flip: false }));
     for s in 0..sinks {
         let n = NodeKey(2 + s);

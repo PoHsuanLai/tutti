@@ -440,7 +440,7 @@ fn a_lane_driving_the_room_changes_how_long_it_rings() {
         g.connect_input(0, n, 0).connect_output(n, 0, 0);
         g.connect_output(n, 1, 1);
         let mut r = g
-            .renderer(Prepare::new(SR, Samples(100)))
+            .renderer(Prepare::new(SR, MaxBlock::of(Samples(100))))
             .expect("the graph builds");
         let at = ParamIn {
             node: n,

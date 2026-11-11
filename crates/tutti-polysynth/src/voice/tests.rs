@@ -776,6 +776,10 @@ fn random_streams_keep_their_invariants() {
                 MpeZoneConfig::upper(2),
             ));
         }
+        // A zone master's pedal, panic and reset are its zone's (M1-100
+        // section 2.3.1), and in a zoned stream channel 0 is the master of
+        // channel 1: the model follows it there.
+        let zoned = stream % 5 == 0;
         // The test's own model of the held keys of each channel.
         let mut held: [Vec<u8>; 2] = [vec![], vec![]];
         let mut pedal = [false; 2];
@@ -840,14 +844,23 @@ fn random_streams_keep_their_invariants() {
                 }
                 9 => {
                     pedal[usize::from(c)] = !pedal[usize::from(c)];
+                    if zoned && c == 0 {
+                        pedal[1] = pedal[0];
+                    }
                     alloc.sustain_pedal(ch, pedal[usize::from(c)]);
                 }
                 10 => {
                     sostenuto[usize::from(c)] = !sostenuto[usize::from(c)];
+                    if zoned && c == 0 {
+                        sostenuto[1] = sostenuto[0];
+                    }
                     alloc.sostenuto_pedal(ch, sostenuto[usize::from(c)]);
                 }
                 11 => {
                     held[usize::from(c)].clear();
+                    if zoned && c == 0 {
+                        held[1].clear();
+                    }
                     if rng.below(2) == 0 {
                         alloc.all_notes_off(ch);
                     } else {
@@ -858,6 +871,11 @@ fn random_streams_keep_their_invariants() {
                     held[usize::from(c)].clear();
                     pedal[usize::from(c)] = false;
                     sostenuto[usize::from(c)] = false;
+                    if zoned && c == 0 {
+                        held[1].clear();
+                        pedal[1] = false;
+                        sostenuto[1] = false;
+                    }
                     alloc.reset_controllers(ch);
                 }
                 _ => {

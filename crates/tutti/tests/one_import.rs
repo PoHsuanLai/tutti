@@ -11,6 +11,7 @@
 //! the note in `src/lib.rs`). It proves the vocabulary arrives.
 
 use tutti::prelude::*;
+use tutti_types::MaxBlock;
 
 /// Everything below is reached through `tutti::` and nothing else. If the
 /// façade stopped re-exporting something, this stops compiling.
@@ -22,7 +23,7 @@ fn one_import_renders_a_block() {
     let (mut editor, executor) = g
         .build(tutti::graph::Prepare::new(
             SampleRate(48_000.0),
-            Samples(256),
+            MaxBlock::of(Samples(256)),
         ))
         .expect("builds");
 

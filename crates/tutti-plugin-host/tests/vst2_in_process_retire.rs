@@ -15,6 +15,7 @@
 
 use std::path::PathBuf;
 use tutti_plugin_types::Load;
+use tutti_types::MaxBlock;
 use tutti_vst2_host::Vst2Loaded;
 
 use assert_no_alloc::AllocDisabler;
@@ -58,7 +59,8 @@ fn a_removed_vst2_node_is_dropped_on_the_control_side() {
             .expect("the probe loads in process");
 
     let key = NodeKey(1);
-    let (mut editor, mut exec) = Editor::new(Prepare::new(SampleRate(RATE), Samples(BLOCK)));
+    let (mut editor, mut exec) =
+        Editor::new(Prepare::new(SampleRate(RATE), MaxBlock::of(Samples(BLOCK))));
     editor.insert(key, "vst2", Unforkable(unit.bind(tempo())));
     editor
         .spec_mut()

@@ -507,7 +507,7 @@ thread and hands `Done` back to the session on the control thread.
 let mut s = Session::builder()
     .outputs_floor(2)                                  // TuttiPlugin::outputs today
     .render_workers(0)                                 // one per core
-    .build_offline(SampleRate(48_000.0), ChannelLayout::STEREO, Samples(512))?;
+    .build_offline(SampleRate(48_000.0), ChannelLayout::STEREO, MaxBlock::of(Samples(512)))?;
 
 // With the sound card (`device`): two halves.
 let (mut s, mut device) = Session::builder()
@@ -922,7 +922,7 @@ loop { for e in s.update() { log(e) } sleep(frame) }
 use tutti::prelude::*;
 
 let mut s = Session::builder()
-    .build_offline(SampleRate(48_000.0), ChannelLayout::STEREO, Samples(512))?;
+    .build_offline(SampleRate(48_000.0), ChannelLayout::STEREO, MaxBlock::of(Samples(512)))?;
 
 let job = s.plugin_load(PluginLoadRequest { id: PluginId::from_path("Synth.clap"), state: None });
 let synth = s.add_plugin(job.run())?;

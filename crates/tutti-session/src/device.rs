@@ -41,10 +41,10 @@ use tutti_cpal::{
     DeviceInfo, DeviceSelector, OutputSpec, SnapshotSource, StreamDriver, StreamFault,
     StreamFaults, TuttiDriver,
 };
-use tutti_types::{SampleRate, Samples};
+use tutti_types::{MaxBlock, SampleRate};
 
 use crate::graph::Graph;
-use crate::{DevicePolicy, DeviceWatch, Error, FollowEvent, Result, Session, SessionEvent};
+use crate::{DevicePolicy, DeviceWatch, FollowEvent, Result, Session, SessionEvent};
 
 /// The sound card: owns the `TuttiDriver`. `!Send`, so it stays on the
 /// thread that opened it.
@@ -211,7 +211,7 @@ pub struct DeviceRestart {
     /// A host's choice, not the device's: the device hands over whatever
     /// callback it likes, and the engine renders one longer than this as
     /// consecutive graph blocks.
-    pub max_block: Option<Samples>,
+    pub max_block: Option<MaxBlock>,
 }
 
 impl Session {
@@ -221,14 +221,13 @@ impl Session {
     ///
     /// # Errors
     ///
-    /// - [`Error::Reprepare`] **before the stream stops**, changing
+    /// - [`crate::Error::Reprepare`] **before the stream stops**, changing
     ///   nothing, when the graph cannot take the request: `max_block` past
     ///   the engine's block capacity (`CommitError::BlockTooLong`), a
     ///   re-prepare already between its halves (`Repreparing`; retry on a
-    ///   later update), or a poisoned graph. A zero `max_block` is
-    ///   [`Error::Device`] (`InvalidConfig`), also before the stop.
-    /// - What resolving or opening the device reports ([`Error::Device`]).
-    /// - [`Error::Reprepare`] from the re-prepare itself (a graph that no
+    ///   later update), or a poisoned graph.
+    /// - What resolving or opening the device reports ([`crate::Error::Device`]).
+    /// - [`crate::Error::Reprepare`] from the re-prepare itself (a graph that no
     ///   longer compiles): the stream is then left **stopped**. Restart
     ///   again with another `max_block`, or onto the old device and rate,
     ///   which moves nothing and plays again.
@@ -337,7 +336,7 @@ impl Session {
         device: &mut Device,
         spec: OutputSpec,
         driver: D,
-        max_block: Option<Samples>,
+        max_block: Option<MaxBlock>,
         follow: impl FnOnce(&OutputSpec),
     ) -> Result<()>
     where
@@ -492,12 +491,7 @@ impl Session {
     }
 
     /// The checks that must pass before the stream stops.
-    fn check_restart(&self, max_block: Option<Samples>) -> Result<()> {
-        if max_block.is_some_and(|b| b.is_zero()) {
-            return Err(Error::Device(tutti_cpal::Error::InvalidConfig(
-                "a zero-frame max block".into(),
-            )));
-        }
+    fn check_restart(&self, max_block: Option<MaxBlock>) -> Result<()> {
         self.graph.check_reprepare(max_block)?;
         Ok(())
     }
@@ -508,7 +502,7 @@ impl Session {
         &mut self,
         spec: &OutputSpec,
         stopped: &tutti_cpal::Stopped<'_>,
-        max_block: Option<Samples>,
+        max_block: Option<MaxBlock>,
         follow: impl FnOnce(&OutputSpec),
     ) -> Result<()> {
         let rate = spec.sample_rate;
@@ -577,7 +571,7 @@ impl Session {
         if let Some(io) = &self.midi_io {
             io.ports().inlets().set_lead(crate::midi::input_lead(
                 spec.quantum
-                    .unwrap_or(self.graph.prepared().max_block().into()),
+                    .unwrap_or(self.graph.prepared().max_block().samples()),
                 rate,
             ));
         }

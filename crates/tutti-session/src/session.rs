@@ -615,6 +615,7 @@ pub enum RootTopologyStatus {
 /// wire) frees nothing and may run on any thread that owns the session.
 ///
 /// ```
+/// use tutti_types::MaxBlock;
 /// use tutti_types::{ChannelLayout, InterleavedMut, SampleRate, Samples};
 /// use tutti_session::{GraphSource, Session};
 /// use tutti_nodes::testing::Const;
@@ -622,7 +623,7 @@ pub enum RootTopologyStatus {
 /// // One global output: the mono device takes it as it is, unfolded.
 /// let mut session = Session::builder()
 ///     .outputs_floor(1)
-///     .build_offline(SampleRate(48_000.0), ChannelLayout::MONO, Samples(64))
+///     .build_offline(SampleRate(48_000.0), ChannelLayout::MONO, MaxBlock::of(Samples(64)))
 ///     .unwrap();
 /// let (dc, _) = session.graph().insert(Const::mono(0.5));
 /// session.graph().set_output_source(0, GraphSource::Node(dc, 0));

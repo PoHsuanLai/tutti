@@ -4,6 +4,7 @@
 //! gains it hears the later off of a note it never started, which ends nothing.
 
 use std::sync::{Arc, Mutex};
+use tutti_types::MaxBlock;
 
 use tutti_fixtures::midi;
 use tutti_graph::NodeKey;
@@ -72,7 +73,11 @@ impl SessionNode for Src {}
 
 fn offline() -> Session {
     Session::builder()
-        .build_offline(SampleRate(48_000.0), ChannelLayout::STEREO, Samples(1_024))
+        .build_offline(
+            SampleRate(48_000.0),
+            ChannelLayout::STEREO,
+            MaxBlock::of(Samples(1_024)),
+        )
         .expect("builds")
 }
 

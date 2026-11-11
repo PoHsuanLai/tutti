@@ -6,6 +6,7 @@
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use tutti_graph::UmpAt;
+use tutti_types::MaxBlock;
 
 use std::time::{Duration, Instant};
 use tutti_fixtures::midi;
@@ -75,7 +76,11 @@ impl SessionNode for Tap {}
 /// An offline session at 48 kHz, stereo: the builder's MIDI nodes in.
 fn offline() -> Session {
     Session::builder()
-        .build_offline(SampleRate(RATE), ChannelLayout::STEREO, Samples(1_024))
+        .build_offline(
+            SampleRate(RATE),
+            ChannelLayout::STEREO,
+            MaxBlock::of(Samples(1_024)),
+        )
         .expect("builds")
 }
 
@@ -345,7 +350,11 @@ fn route_rules_wire_the_hardware_input() {
 fn a_route_rule_names_a_group() {
     let mut s = Session::builder()
         .midi_groups(MidiGroup::of(1))
-        .build_offline(SampleRate(RATE), ChannelLayout::STEREO, Samples(1_024))
+        .build_offline(
+            SampleRate(RATE),
+            ChannelLayout::STEREO,
+            MaxBlock::of(Samples(1_024)),
+        )
         .expect("builds");
     let input = s.midi_nodes().expect("the builder's MIDI nodes").input;
     let (a, _) = tap(&mut s);
@@ -572,7 +581,11 @@ fn hot_plug_session() -> (Session, tutti_midi_hardware::test_support::FakeCounte
         tutti_midi_hardware::test_support::FakeBackend::build_with(vec![], vec![], usize::MAX);
     let s = Session::builder()
         .midi_hardware_over(backend)
-        .build_offline(SampleRate(RATE), ChannelLayout::STEREO, Samples(1_024))
+        .build_offline(
+            SampleRate(RATE),
+            ChannelLayout::STEREO,
+            MaxBlock::of(Samples(1_024)),
+        )
         .expect("builds");
     (s, fake)
 }
@@ -677,7 +690,11 @@ fn keyboards(
     let mut s = Session::builder()
         .midi_hardware_over(backend)
         .midi_devices(devices)
-        .build_offline(SampleRate(RATE), ChannelLayout::STEREO, Samples(1_024))
+        .build_offline(
+            SampleRate(RATE),
+            ChannelLayout::STEREO,
+            MaxBlock::of(Samples(1_024)),
+        )
         .expect("builds");
     let (synth, seen) = tap(&mut s);
     s.midi()

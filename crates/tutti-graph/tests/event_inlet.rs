@@ -21,6 +21,7 @@ use tutti_graph::{
     InPort, IntoNode, Node, NodeKey, NodeParts, OutPort, PlayClock, Prepare, Refused, Source,
     TapAlign, TapEvent, Transport, TransportChanges,
 };
+use tutti_types::MaxBlock;
 use tutti_types::{At, Frame, Moment, SampleRate, Samples};
 use tutti_ump::{CCNumber, MidiChannel, NoteNumber, U7, Ump};
 
@@ -86,7 +87,8 @@ fn block_at(d: &mut Direct<EventInletNode>, frame: u64, rate: SampleRate, len: u
 }
 
 fn reprepare(d: &mut Direct<EventInletNode>, rate: SampleRate) {
-    d.node.prepare(&Prepare::new(rate, Samples(64)));
+    d.node
+        .prepare(&Prepare::new(rate, MaxBlock::of(Samples(64))));
 }
 
 /// An event pushed for frame F is emitted in the block that holds F, on offset

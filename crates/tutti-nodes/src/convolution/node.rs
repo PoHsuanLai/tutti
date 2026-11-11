@@ -633,6 +633,7 @@ mod golden {
     use super::*;
     use tutti_graph::Solo;
     use tutti_graph::contract::{drive, prepared};
+    use tutti_types::MaxBlock;
     use tutti_types::{Mix, Seconds};
 
     const BLOCK: usize = 64;
@@ -674,7 +675,10 @@ mod golden {
 
     /// `render`, in a graph whose mix of `node` is `mix`.
     fn render_mixed(node: ConvolverNode, x: &[Vec<f32>], mix: Mix) -> Vec<Vec<f32>> {
-        let mut solo = Solo::new(node, Prepare::new(SampleRate(48_000.0), Samples(BLOCK)));
+        let mut solo = Solo::new(
+            node,
+            Prepare::new(SampleRate(48_000.0), MaxBlock::of(Samples(BLOCK))),
+        );
         let key = solo.key();
         solo.renderer_mut()
             .editor_mut()

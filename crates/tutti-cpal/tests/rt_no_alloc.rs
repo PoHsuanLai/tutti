@@ -31,6 +31,7 @@ use tutti_graph::{MeterId, MeterSpec, NodeKey, TapAlign, TapId};
 use tutti_nodes::testing::Osc;
 use tutti_nodes::{SvfFilterNode, SvfType};
 use tutti_transport::{MotionEvent, Transport};
+use tutti_types::MaxBlock;
 use tutti_types::{Bpm, Hz, Q, SampleRate, Samples};
 use tutti_types::{ChannelLayout, InterleavedMut};
 
@@ -64,7 +65,10 @@ fn rolling_state_with(
 ) {
     let transport = Transport::new(SampleRate::new(SAMPLE_RATE));
 
-    let (mut ed, exec) = Editor::new(Prepare::new(SampleRate(SAMPLE_RATE), Samples(512)));
+    let (mut ed, exec) = Editor::new(Prepare::new(
+        SampleRate(SAMPLE_RATE),
+        MaxBlock::of(Samples(512)),
+    ));
     let (source, filter) = (NodeKey(1), NodeKey(2));
     ed.insert(source, "sine", Osc::sine(Hz(220.0)));
     ed.insert(

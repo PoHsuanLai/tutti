@@ -1137,7 +1137,6 @@ mod tests {
 
     // ---- allocation ---------------------------------------------------
 
-    /// Mutation (run): `<` to `<=` in `start_poly` starts a fifth voice.
     #[test]
     fn the_oldest_gives_way_when_full() {
         let mut s = Sim::new(POLY);
@@ -1168,9 +1167,6 @@ mod tests {
     /// (the SoundFont 2.04 specification sets no limit on the layers of a note;
     /// the largest note of the TimGM6mb font is 6, measured). A patch of 32
     /// layers is whole.
-    ///
-    /// Mutation (run): `MAX_SPECS` at 64 starts 40 and fails the first
-    /// assertion; at 16 fails the second.
     #[test]
     fn a_strike_starts_at_most_the_cap_and_a_patch_within_it_is_whole() {
         let rules = Rules {
@@ -1193,8 +1189,6 @@ mod tests {
         assert_eq!(started.len(), 32);
     }
 
-    /// Mutation (run): dropping the released-first class makes the 62 (held)
-    /// go instead of the released 63.
     #[test]
     fn a_released_voice_gives_way_before_a_held_one() {
         let mut s = Sim::new(POLY);
@@ -1209,7 +1203,6 @@ mod tests {
         );
     }
 
-    /// Mutation (run): `Steal::Never` read as `By(Oldest)` starts the note.
     #[test]
     fn never_drops_the_note_and_disturbs_nothing() {
         let mut s = Sim::new(Rules {
@@ -1223,9 +1216,6 @@ mod tests {
         assert_eq!(s.voices.len(), 4);
     }
 
-    /// Mutation (run): each order inverted fails its row; `Quietest` ranked by
-    /// `to_bits` instead of `total_cmp` is the same for these positive levels
-    /// and is not claimed here.
     #[test]
     fn each_order_picks_its_voice() {
         for (order, want) in [
@@ -1302,7 +1292,6 @@ mod tests {
 
     // ---- repeated keys and layers --------------------------------------
 
-    /// Mutation (run): Replace not releasing makes the first assertion fail.
     #[test]
     fn replace_releases_the_earlier_strike_and_layer_keeps_it() {
         let mut s = Sim::new(POLY);
@@ -1342,9 +1331,6 @@ mod tests {
     /// 57, Read): a note of the class ends the sounding notes of that class
     /// in the same preset, whichever channel plays them. Two channels playing
     /// one preset share it.
-    ///
-    /// Mutation (run): matching on the channel as well makes the other
-    /// channel's voice survive.
     #[test]
     fn an_exclusive_group_ends_its_scopes_others_on_any_channel() {
         let mut s = Sim::new(EXCLUSIVE);
@@ -1354,8 +1340,6 @@ mod tests {
     }
 
     /// The same group number in another preset is another group.
-    ///
-    /// Mutation (run): ignoring the scope cuts it.
     #[test]
     fn a_group_number_means_nothing_across_scopes() {
         let mut s = Sim::new(EXCLUSIVE);
@@ -1366,9 +1350,6 @@ mod tests {
 
     /// The voices one strike starts (a stereo pair, both of one class) do not
     /// end each other; the next strike ends both.
-    ///
-    /// Mutation (run): dropping the strike test cuts the pair's first voice
-    /// when its second starts.
     #[test]
     fn the_voices_of_one_strike_do_not_end_each_other() {
         let mut s = Sim::new(EXCLUSIVE);
@@ -1424,8 +1405,6 @@ mod tests {
     /// The mode messages, CC 124 to 127, also do All Notes Off (MIDI 1.0
     /// Detailed Specification, Channel Mode Messages; Est, the text is not in
     /// the repo); the mode they name is `Rules`'.
-    ///
-    /// Mutation (run): the `124..=127` arm removed fails every row.
     #[test]
     fn the_mode_messages_also_release_what_is_held() {
         for n in 124..=127 {
@@ -1524,9 +1503,6 @@ mod tests {
     /// A MIDI 1.0 Note On at velocity 0 is a Note Off (MIDI 1.0 Detailed
     /// Specification; `widen` makes it one); a MIDI 2.0 Note On at velocity 0
     /// is a Note On (M2-104 section 7.4.2), played as quietly as there is.
-    ///
-    /// Mutation (run): the core reading a velocity 0 `NoteOn` as an off fails
-    /// the second half.
     #[test]
     fn velocity_zero_is_an_off_in_midi1_and_an_on_in_midi2() {
         let mut s = Sim::new(POLY);
@@ -1552,9 +1528,6 @@ mod tests {
     // ---- mono and legato ---------------------------------------------------
 
     /// One voice a channel: a second channel's note does not take the first's.
-    ///
-    /// Mutation (run): choosing the prior voice without regard to channel
-    /// makes the channel-1 note take the channel-0 voice.
     #[test]
     fn mono_is_one_voice_for_each_channel() {
         let mut s = Sim::new(MONO);
@@ -1600,11 +1573,6 @@ mod tests {
 
     /// A two-layer mono note: the first key starts both layers; the second
     /// takes each over by its tag, in place, with no stray release.
-    ///
-    /// Mutation (run): finding the prior voice without the layer's tag makes
-    /// the second layer take the first layer's fresh voice. (Dropping only
-    /// the `n.strike != strike` test there is an equivalent mutant while a
-    /// patch's tags are unique, which `Patch` requires.)
     #[test]
     fn two_layer_mono_takes_over_layer_by_layer() {
         let p = Pair { group: 0, scope: 0 };
@@ -1628,9 +1596,6 @@ mod tests {
 
     /// A two-layer legato note: the first key starts both layers; the second
     /// moves each by its tag, once.
-    ///
-    /// Mutation (run): as for mono; and a Retarget that leaves the voice's
-    /// strike alone lets the strike's own end-of-note sweep release it.
     #[test]
     fn two_layer_legato_moves_each_layer_once() {
         let p = Pair { group: 0, scope: 0 };
@@ -1701,9 +1666,6 @@ mod tests {
 
     /// The layer a key keeps is taken over by tag, not by position: a patch
     /// whose upper key lacks layer 0 leaves layer 1's voice to layer 1.
-    ///
-    /// Mutation (run): matching the prior voice without `n.tag == spec.tag`
-    /// takes layer 0's voice for layer 1.
     #[test]
     fn a_layer_is_taken_over_by_its_tag() {
         struct Upper;
@@ -1739,9 +1701,6 @@ mod tests {
     /// Last-note priority with a stack of held keys (tutti's rule; MIDI 1.0
     /// does not say): letting go the sounding key returns to the most recent
     /// held one, a mono instrument restarting there.
-    ///
-    /// Mutation (run): a release that never looks at the stack releases the
-    /// voice while 60 is still held.
     #[test]
     fn mono_returns_to_the_most_recent_held_key() {
         let mut s = Sim::new(MONO);
@@ -1804,9 +1763,6 @@ mod tests {
     }
 
     /// CC 120, 121 and 123 to 127 forget the held keys, as does `reset`.
-    ///
-    /// Mutation (run): not clearing in one of the arms leaves a held key that
-    /// the next release returns to.
     #[test]
     fn the_panics_and_reset_forget_the_held_keys() {
         for n in [120, 121, 123, 124, 125, 126, 127] {
@@ -1829,8 +1785,6 @@ mod tests {
     }
 
     /// The stack holds `HELD_KEYS`; past that the oldest is forgotten.
-    ///
-    /// Mutation (run): dropping the newest instead returns to a wrong key.
     #[test]
     fn the_held_stack_forgets_its_oldest() {
         let mut s = Sim::new(MONO);
@@ -1852,9 +1806,6 @@ mod tests {
 
     /// A note the core released (Replace) is held by nothing: `holds` agrees
     /// with `phase`.
-    ///
-    /// Mutation (run): `holds` without the released filter gives the first
-    /// voice `key: true` while it is releasing.
     #[test]
     fn a_replaced_note_is_held_by_nothing() {
         let mut s = Sim::new(POLY);
@@ -1867,9 +1818,6 @@ mod tests {
 
     /// A voice the instrument ended (a sampler's, at its sample's end) is not
     /// returned to: the return starts a fresh voice, in both mono modes.
-    ///
-    /// Mutation (run): no `reconcile` in `note_off` gives a Retarget (legato) or
-    /// a Start stealing (mono) of the ended voice.
     #[test]
     fn a_return_never_names_a_voice_the_instrument_ended() {
         // The sounding voice: legato moved voice 1, mono started voice 2.
@@ -1892,10 +1840,6 @@ mod tests {
     /// once: a damped voice counts as released, so a later note-off, pedal or
     /// All Notes Off has nothing to release in it, a panic still cuts it, and
     /// it is the first to give way when the pool is full.
-    ///
-    /// Mutation (run): not setting `released` in `damp_exclusive` makes the
-    /// note-off release it again and fails the first assertion; not setting
-    /// `damped` damps it again on the third strike and fails the second.
     #[test]
     fn a_damped_voice_counts_as_released_and_is_told_once() {
         let mut s = Sim::new(Rules {
@@ -1934,9 +1878,6 @@ mod tests {
 
     /// A mono note of an exclusive class ends the others of its class even when
     /// it takes its own channel's voice over in place.
-    ///
-    /// Mutation (run): no `damp_exclusive` in `play_mono` leaves channel 1's
-    /// grouped voice sounding.
     #[test]
     fn a_mono_takeover_still_ends_its_exclusive_class() {
         let mut s = Sim::new(Rules {
@@ -1983,9 +1924,6 @@ mod tests {
 
     /// `forget_notes` ends the notes, pedals and held keys and leaves the bends
     /// where the channels put them; `reset` returns those too.
-    ///
-    /// Mutation (run, seen to fail): `forget_notes` also resetting `bends`
-    /// loses the 2-semitone bend at the first assert.
     #[test]
     fn forgetting_the_notes_keeps_the_bends() {
         let mut s = Sim::new(POLY);
@@ -2002,9 +1940,6 @@ mod tests {
     /// 12 semitones 50 cents is a range of 12.5, a full bend up retunes by it,
     /// and the 18 low bits are unused. The fraction is decimal, not Q7.25's
     /// binary one: cents 64 is 0.64, not 0.5.
-    ///
-    /// Mutation (run, seen to fail): reading the data as Q7.25 (`from_q7_25`)
-    /// gives 12.25 for cents 50 and 12.5 for cents 64.
     #[test]
     fn rpn0_cents_are_hundredths_of_a_semitone() {
         let rpn = |semitones: u32, cents: u32, low: u32| Voice2::Registered {
@@ -2071,9 +2006,6 @@ mod tests {
     /// Under MPE (RP-053, Est: the text is not in the repo; the repo's
     /// `MpeZoneConfig` documents the same) a zone master's bend adds to each
     /// member's own, within the zone, and does not replace it.
-    ///
-    /// Mutation (run): the master's bend written over the member's own makes
-    /// the sum 2 where it is 3.
     #[test]
     fn a_zone_masters_bend_adds_to_each_members_own() {
         let mut s = Sim::new(POLY);
@@ -2431,13 +2363,6 @@ mod tests {
     ///   layer, all on the key at the top of its held stack when it has one;
     /// - after every key and pedal is let go, no note is unreleased;
     /// - every command names a voice the instrument has.
-    ///
-    /// Mutations (run), each seen to fail: `<` to `<=` in `start_poly` (the
-    /// polyphony bound); the held-stack return skipped (the top-of-stack
-    /// check); `Steal::Never` taken as `By(Oldest)` (the disturbance check);
-    /// the pedal not lifting in `Effect::Sustain` (the final check); the
-    /// `n.strike != strike` leftover test dropped in `play_mono` (the
-    /// one-voice-per-layer check).
     #[test]
     fn random_streams_keep_their_invariants() {
         for stream in 0..400u64 {
@@ -2635,10 +2560,6 @@ mod tests {
     /// zones, against a model that keeps the wheel and the sensitivity of each
     /// channel and sums a member's with its master's: every `Retune` says the
     /// model's figure, and a bend always retunes its own channel.
-    ///
-    /// Mutations (run), each seen to fail: the master's term dropped in
-    /// `pitch`; `Bend` taking the sensitivity from the wrong channel; a reset
-    /// that also zeroes the sensitivity.
     #[test]
     fn random_bend_streams_match_the_model() {
         for stream in 0..200u64 {

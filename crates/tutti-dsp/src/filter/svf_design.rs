@@ -240,9 +240,6 @@ mod tests {
 
     /// The dead-band: a control moves the design when it passes its epsilon or the
     /// response changes, and not below it.
-    ///
-    /// Mutation (run): an epsilon of zero fails the sub-band rows; dropping the `ty`
-    /// comparison fails the last row.
     #[test]
     fn a_control_moves_the_design_only_past_its_dead_band() {
         let base = controls(SvfType::Bell, 1_000.0, 1.0, 3.0);
@@ -258,9 +255,6 @@ mod tests {
     /// A blended call lands exactly on the new set at its last frame: an impulse on
     /// that frame, through a filter with no state, comes out as the held render of
     /// the new set gives it, bit for bit (a low-pass's first output is `a3`).
-    ///
-    /// Mutation (run): the blend at `i / n` for every frame, the last included, fails
-    /// (`i + 1 == len` alone is not caught: `lerp` at 1 is the set to the bit).
     #[test]
     fn a_blend_arrives_on_the_new_set_at_its_last_frame() {
         let d = design();

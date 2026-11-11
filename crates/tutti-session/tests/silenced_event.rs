@@ -64,14 +64,6 @@ impl Node for Slow {
     fn reset(&mut self) {}
 }
 
-/// Mutations (each run, then restored):
-/// - emit an event on every update, count or not: the quiet updates assert
-///   no event and fail;
-/// - drop the count (`BlocksSilenced(1)` always): the update after three
-///   refused blocks fails on 3;
-/// - report the cumulative total, not the rise: the second burst reads 5,
-///   not 2, and fails;
-/// - emit one event per block: the burst of three reads `[1, 1, 1]`.
 #[test]
 fn one_event_per_update_with_the_blocks_silenced_since_the_last() {
     let mut s = offline();
@@ -95,10 +87,6 @@ fn one_event_per_update_with_the_blocks_silenced_since_the_last() {
 
 /// A meter reset between updates restarts the count: no event for the
 /// reset, and the next burst is counted from zero.
-///
-/// Mutation (run): keep `seen` at its maximum across the reset
-/// (`seen = seen.max(now)`) and the burst after the reset reads short, so
-/// this fails.
 #[test]
 fn a_meter_reset_is_no_event_and_restarts_the_count() {
     let mut s = offline();
@@ -115,9 +103,6 @@ fn a_meter_reset_is_no_event_and_restarts_the_count() {
 
 /// Blocks over their budget and none silenced: the reading rises, the
 /// session says nothing.
-///
-/// Mutation: emit `BlocksSilenced(over_budget)` on a rise of `over_budget`
-/// and this fails on the event list.
 #[test]
 fn over_budget_alone_is_no_event() {
     let mut s = offline();

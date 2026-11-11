@@ -11,12 +11,6 @@
 //! `tutti_midi_device::CiMessage`, framed with `tutti_ump::frame` into the MIDI
 //! 1.0 byte stream, `Midi1Parser`, UMP SysEx7 packets, `SysexAssembler`, a typed
 //! `CiMessage` equal to the one sent.
-//!
-//! Mutation (run): `Midi1Parser` pushing a packet at five bytes instead of six,
-//! and its last packet always `Complete` instead of `End` -> fails each time.
-//! `frame` omitting the closing `0xF7` -> fails (the message never completes).
-//! `CiMessage::encode` dropping the Output Path ID byte -> fails (the decoded
-//! message differs).
 
 use tutti_midi_device::{
     CiCategories, CiHeader, CiMessage, Decoded, DiscoveryData, MaxSysexSize, Muid,

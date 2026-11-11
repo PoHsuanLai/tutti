@@ -132,11 +132,6 @@ mod tests {
     /// A steady sidechain `over` dB above a hard-knee threshold settles to a
     /// reduction of `over * (1 - 1/ratio)` dB, and the gain applied is that
     /// reduction as an amplitude.
-    ///
-    /// Mutation (run): `1.0 / ratio` replaced by `ratio` in the static curve
-    /// (`compute_compressor_gain_reduction`) → the 4:1 row settles at 60 dB
-    /// not 7.5 and fails; the follower fed `0.0` instead of the target → the
-    /// reduction stays 0 and fails.
     #[test]
     fn a_steady_level_settles_to_the_static_curve() {
         for (threshold, level_db, ratio) in [(-20.0f32, -10.0f32, 4.0f32), (-30.0, -6.0, 2.0)] {
@@ -170,10 +165,6 @@ mod tests {
 
     /// A non-finite per-sample threshold override falls back to the block's
     /// threshold, bit for bit; a finite one is honoured.
-    ///
-    /// Mutation (run): drop the `.filter(|t| t.get().is_finite())` in `gain`
-    /// → a NaN threshold reaches the curve and the gain is NaN, so the
-    /// equality fails.
     #[test]
     fn a_non_finite_threshold_override_falls_back_to_the_block() {
         let b = block(-20.0, 4.0);

@@ -22,8 +22,6 @@ fn feed_timecode(decoder: &mut MtcDecoder, h: u8, m: u8, s: u8, f: u8, rate: u8)
 }
 
 // Joining mid-cycle: the first byte seen is piece 3, with no piece before it.
-// Mutation: restore `last_piece: u8 = 0xFF` with `last_piece + 1` and the
-// first feed panics on overflow.
 #[test]
 fn joining_mid_cycle_waits_for_the_next_piece_zero() {
     let mut decoder = MtcDecoder::new();
@@ -135,9 +133,6 @@ fn test_to_seconds() {
     assert!((tc.to_seconds().get() - 3600.0).abs() < 0.001);
 }
 
-// Mutation: drop the `2 * (minutes - minutes / 10)` term (or the `/ 10`)
-// in `frame_count`, or the `18 * tens` term in `from_frame_count`: the
-// labels at the minute marks fail.
 #[test]
 fn drop_frame_labels_skip_00_and_01_except_every_tenth_minute() {
     let df = SmpteFrameRate::Fps2997Df;
@@ -159,7 +154,6 @@ fn drop_frame_labels_skip_00_and_01_except_every_tenth_minute() {
     );
 }
 
-// Mutation: drop the `frames.max(2)` and `00:01:00:00` counts as frame 1798.
 #[test]
 fn invalid_drop_frame_labels_count_as_the_next_valid_one() {
     let at = |m, s, f| SmpteTimecode::new(0, m, s, f, SmpteFrameRate::Fps2997Df).unwrap();
@@ -238,9 +232,6 @@ fn test_hours_above_15() {
 
 /// `new` refuses each field one past its range, per rate, and accepts the
 /// last in-range value.
-///
-/// Mutation (run): `hours < 24` to `<= 24`, or `frames < labels_per_second()`
-/// to `<= 30`: the matching refusal below fails.
 #[test]
 fn new_refuses_a_field_out_of_range() {
     use SmpteFrameRate::*;
@@ -259,9 +250,6 @@ fn new_refuses_a_field_out_of_range() {
 
 /// A frame the wire framed into a position no clock reads (hour 28) is
 /// dropped; the decoder keeps the last good timecode.
-///
-/// Mutation (run): clear `timecode` when `new` refuses the assembled frame,
-/// instead of keeping the last good one: the last assertion fails.
 #[test]
 fn a_corrupt_position_is_dropped_and_the_last_good_one_kept() {
     let mut decoder = MtcDecoder::new();
@@ -277,7 +265,6 @@ fn a_corrupt_position_is_dropped_and_the_last_good_one_kept() {
 /// keep an internal offset of +2 frames for displaying." The reported time
 /// carries across the second, the minute (drop-frame labels `;00` and `;01`
 /// are skipped: 00:00:59:29 plus two frames is 00:01:00:03) and the day.
-/// Mutation (run): the offset made 0 fails every case.
 #[test]
 fn the_reported_time_is_two_frames_on_across_every_carry() {
     for (fed, rate_bits, expected) in [
@@ -302,9 +289,6 @@ fn the_reported_time_is_two_frames_on_across_every_carry() {
 /// should ignore!" A cycle with every reserved bit set (frame bits 5-7,
 /// seconds and minutes bits 6-7, hours bit 7, which is bit 3 of piece 7) reads
 /// as the cycle with them clear, not as a corrupt frame.
-/// Mutation (run): the frame field's mask dropped (`n[1] & 0x01` to `n[1]`)
-/// makes the frame 4 + 14 * 16 and the cycle is refused, so no
-/// timecode is reported.
 #[test]
 fn reserved_bits_of_the_quarter_frames_are_ignored() {
     let mut decoder = MtcDecoder::new();

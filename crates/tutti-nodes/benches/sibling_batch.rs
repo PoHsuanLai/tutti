@@ -446,10 +446,6 @@ impl Bufs {
 
 /// `batched` and `soa` render `nodes` bit for bit over a few blocks (the
 /// recursive state included).
-///
-/// Mutations (run, `-- --test`): the SoA biquad's state update reassociated
-/// (`b1·x + s2 − a1·y`) → "Biquad/Soa differs"; the SoA strip's ramp as
-/// `from + (to − from)·t` → "Strip/Soa differs".
 fn check(kind: Kind, variant: Variant, members: usize, frames: usize) {
     let mut want = graph(kind, Variant::Nodes, members, frames);
     let mut got = graph(kind, variant, members, frames);

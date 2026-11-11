@@ -622,9 +622,6 @@ mod transport_queue_tests {
     /// Nothing obliges a host to drain — the drain is behind `clap-extras`
     /// while the push path is always compiled — so an unbounded `Vec` here
     /// would grow for the lifetime of the session.
-    ///
-    /// Mutation check: drop the `len() == TRANSPORT_REQUEST_CAPACITY` arm and
-    /// the length assertion fails.
     #[test]
     fn the_queue_stops_growing_at_capacity() {
         let state = TransportState::new();
@@ -690,10 +687,6 @@ mod transport_queue_tests {
     /// This is the priority-inversion half. `push` is reachable from a
     /// plugin's `process`; the guard it would have blocked on is held by the
     /// host's main thread across a whole drain.
-    ///
-    /// Mutation check: change `try_lock` back to `lock` and this deadlocks
-    /// rather than failing — which is itself the failure, so nextest's timeout
-    /// is the signal.
     #[test]
     fn a_contended_push_drops_instead_of_blocking() {
         let state = TransportState::new();

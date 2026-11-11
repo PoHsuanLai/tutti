@@ -55,10 +55,6 @@ fn reset(path: &PathBuf) {
     });
 }
 
-// Mutation (run): `vst2` in the probe activating the plugin after the load
-// (`Loaded::activate`) makes the plugin resume, `resume_count` is 1, and the
-// last assertion fails. The control above it fails if the capture cannot see an
-// activation at all, so a passing probe is not a blind one.
 #[test]
 fn a_probe_does_not_activate() {
     let main = MainThread::claim().expect("one test, one process");

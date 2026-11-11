@@ -186,10 +186,6 @@ mod mapping_tests {
 
     /// The mapping, without privilege: what each request converts to for the
     /// time-sharing policy. Linux: nice -10 and -20.
-    ///
-    /// Mutations (run): `Raised` mapped to `ThreadPriority::Max` -> -20,
-    /// fails; `RAISED` at 75 -> nice -11, fails; `Highest` mapped to
-    /// `raised()` -> -10, fails.
     #[cfg(target_os = "linux")]
     #[test]
     #[cfg_attr(
@@ -206,8 +202,6 @@ mod mapping_tests {
 
     /// Windows: `Raised` is `ABOVE_NORMAL`, `Highest` is `HIGHEST`. Compiled
     /// by `cargo xtask check-windows`, run only on Windows.
-    ///
-    /// Mutation (not run here): `Raised` mapped to `Max` -> `Highest`, fails.
     #[cfg(windows)]
     #[test]
     fn the_requests_map_to_above_normal_and_highest() {
@@ -263,13 +257,6 @@ mod tests {
     /// The outcome agrees with the OS: a grant of `Raised` leaves the thread
     /// at nice -10 and time-sharing; a refusal leaves its nice untouched.
     /// Unprivileged runs see the refusal arm, privileged ones the grant.
-    ///
-    /// Mutation (run, unprivileged: `RLIMIT_NICE` 0, so the OS refuses):
-    /// the `Err` arm reported as `Granted` -> the grant arm sees nice
-    /// unchanged at 0, not -10, and fails. Not run, because they need
-    /// `CAP_SYS_NICE` to reach the grant arm (the test passes by the refusal
-    /// arm without it): `Raised` mapped to `ThreadPriority::Max` -> nice -20,
-    /// fails; the `Ok` arm reported as `Refused` -> fails.
     #[test]
     #[cfg_attr(
         miri,
@@ -300,9 +287,7 @@ mod tests {
     /// `Highest` on a time-sharing thread is nice -20 when granted, and is
     /// never reported as real time.
     ///
-    /// Mutation (not run here, needs `CAP_SYS_NICE`): `Highest` mapped to
-    /// `Crossplatform(75)` -> nice -10, fails the -20 check. The unprivileged
-    /// refusal arm checks only that the nice value did not move.
+    /// The unprivileged refusal arm checks only that the nice value did not move.
     #[test]
     #[cfg_attr(
         miri,

@@ -53,8 +53,6 @@ const WORD: usize = std::mem::size_of::<u64>();
 /// ```compile_fail
 /// let wide = tutti_rt::PackedAtomic::new([0u32; 3]);
 /// ```
-// Mutation (run) for the `compile_fail` doctest: `FITS` asserting
-// `size_of::<T>() <= 2 * WORD` → the 12-byte cell compiles → fails.
 pub struct PackedAtomic<T> {
     word: AtomicU64,
     /// The cell holds a `T`'s bytes and hands out `T`s: it is `Send`/`Sync`

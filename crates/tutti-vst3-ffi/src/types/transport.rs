@@ -623,11 +623,6 @@ mod tests {
     /// or no usable tempo claims neither field. 128 BPM at 48 kHz: a quarter
     /// is 22 500 frames, a clock 937.5; a playhead 0.2 clock past one is
     /// 187.5 frames after it, sent as -188 (rounded half away from zero).
-    ///
-    /// Mutation: `kClockValid` set from the requirement alone → the
-    /// zero-tempo case claims a clock → fails. Mutation:
-    /// `kSystemTimeValid` set from the requirement alone → the clockless
-    /// snapshot claims a host time → fails.
     #[test]
     fn the_midi_clock_and_host_time_are_flagged_only_when_known() {
         let wants = need::NEED_SAMPLES_TO_NEXT_CLOCK | need::NEED_SYSTEM_TIME;

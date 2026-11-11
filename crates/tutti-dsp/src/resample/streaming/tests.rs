@@ -32,11 +32,6 @@ const BLOCKINGS: [Option<usize>; 3] = [None, Some(64), Some(333)];
 /// The output length is `round(input * ratio)` however the input is
 /// blocked, at every preset chunk size, in both directions, for lengths
 /// that end mid-chunk or before the first one.
-///
-/// Mutation (run): round the budget down (`.floor()` in `budget`) →
-/// 44.1->48 k, n = 4410 yields 4799 frames, not 4800. (Reading chunks from
-/// the wrong place keeps the length; `the_signal_survives_every_blocking`
-/// catches that.)
 #[test]
 fn the_length_is_the_rounded_ratio_however_the_input_is_blocked() {
     for (from, to) in RATE_PAIRS {
@@ -73,12 +68,6 @@ fn the_length_is_the_rounded_ratio_however_the_input_is_blocked() {
 /// half, so a chunk read from the wrong place, a phase error or a seam
 /// shows. The bounds sit above the worst error measured at every preset
 /// (under 1e-5).
-///
-/// Mutation (run): read each chunk from the start of the carry instead of
-/// the head (`let chunk = 0..need;`) → the second chunk repeats the first
-/// and the waveform is off at the seam; delaying the head by one frame
-/// (`output_delay() + 1` for `skip` in `StreamingResampler::new`) → the level holds but the waveform
-/// is off by about 0.07.
 #[test]
 fn the_signal_survives_every_blocking() {
     for (from, to) in RATE_PAIRS {
@@ -126,11 +115,6 @@ fn the_signal_survives_every_blocking() {
 /// encode keeps O(chunk) of input, not the whole render: every `push`
 /// leaves the consumed prefix dropped (`head == 0`) and fewer frames
 /// than the next chunk needs.
-///
-/// Mutation (run, M4): never drop the consumed prefix and never reset
-/// `head` in `drain` → `head` is non-zero after the first chunk and the
-/// assertion fails (the bit-identity test still passes, since the head
-/// offset alone reads the right frames).
 #[test]
 fn the_carry_stays_under_one_chunk_between_pushes() {
     for chunk in ChunkSize::PRESETS {
@@ -284,11 +268,6 @@ fn tone(hz: f64, rate: f64, n: usize, amp: f64) -> Vec<f32> {
 /// at 44.1 kHz read at 48 kHz has level 0.5 within 0.001 dB at 1 kHz
 /// (so the output's frequency is 1 kHz) and the strongest of a +-10 Hz scan
 /// is the 1 kHz bin. Measured in the middle half, clear of the edges.
-///
-/// Mutations (run): drop the overlap-add in `resample_unit` (`*out =
-/// fresh + 0.0 * carried`) → the level collapses at every block seam and
-/// this fails; scale the filter by 1.01 in `Unit::new` → the level reads
-/// 0.5 x 1.01 = 0.505, +0.086 dB, over the bound.
 #[test]
 fn a_sine_keeps_its_frequency_and_amplitude() {
     for (from, to) in [
@@ -323,9 +302,6 @@ fn a_sine_keeps_its_frequency_and_amplitude() {
 
 /// DC gain is 1: a constant comes out as that constant (within 1e-5 once
 /// the filter has settled), and the output never sits at the start-up value.
-///
-/// Mutation (run): drop the `/= sum` in `sinc_filter` → the DC error is
-/// 0.0119 on the 0.5 input (a gain of about 1.024), far over the bound.
 #[test]
 fn dc_passes_with_unit_gain() {
     for (from, to) in [(44_100u32, 48_000u32), (48_000, 44_100)] {
@@ -348,11 +324,6 @@ fn dc_passes_with_unit_gain() {
 /// input (`AMOUNT` below) at that frequency for every `f` from 22.3 kHz to
 /// 23.9 kHz, at every preset chunk size. A 15 kHz tone, well inside the
 /// band, passes within 0.01 dB.
-///
-/// Mutation (run): drop the anti-alias cut when downsampling, so the
-/// filter is cut at the output's Nyquist without the fit
-/// (`cutoff(fft_size_out)` -> `1.0` in `Unit::new`) → the 22.3 kHz tone
-/// leaves an alias at 21.8 kHz of -57.5 dB and this fails.
 #[test]
 fn content_above_the_new_nyquist_is_rejected_not_folded() {
     const AMOUNT: f64 = -120.0;
@@ -388,10 +359,6 @@ fn content_above_the_new_nyquist_is_rejected_not_folded() {
 /// lands on output frame 1088 (1000 x 48/44.1 = 1088.4) at every chunk
 /// size, and the filter's `output_delay` (320 frames at the default chunk,
 /// 44.1 -> 48 kHz) is what is dropped from the head.
-///
-/// Mutation (run): do not drop the warm-up (`skip: 0`) → the impulse lands
-/// at 1408 and the first assertion that reads it fails; round the budget
-/// down (`.floor()`) → n = 4410 gives 4799 frames, not 4800.
 #[test]
 fn length_and_latency_match_the_documented_values() {
     for n in [1usize, 441, 1000, 4410, 10_007, 44_100] {
@@ -427,13 +394,6 @@ fn length_and_latency_match_the_documented_values() {
 /// it, is at least 60 dB down, so nothing near the input's Nyquist reaches
 /// the output to image against it (the output spectrum above the input
 /// Nyquist is zero by construction).
-///
-/// Mutations (run): `cutoff(fft_size_in)` -> `cutoff(fft_size_out)` in
-/// `Unit::new` moves the 44.1 -> 48 kHz edge to 0.97867 of Nyquist, so its
-/// edge tone reads -3.87 dB instead of -6.02 and this fails (the 48 -> 96
-/// kHz edge moves further, to 0.98664, but the loop stops at the first
-/// failure); multiplying each bin by `1 / (2 * fft_size_in)` alone, with
-/// no `filter_f`, reads -0.03 dB at that edge and fails too.
 #[test]
 fn upsampling_cuts_at_the_input_band_edge() {
     for (from, to, edge) in [
@@ -469,12 +429,6 @@ fn upsampling_cuts_at_the_input_band_edge() {
 /// anything under 0.5 Hz (which rounds to 0) or at 2^32 Hz and over. A
 /// pair whose blocks would be enormous (1 Hz -> 192 kHz plans a ~98 M-point
 /// FFT) is refused too.
-///
-/// Mutations (run): `whole_hz` returning `Ok(hz.round() as usize)` makes
-/// NaN, negatives and sub-0.5 Hz rates reach the converter as 0 and
-/// infinity as `usize::MAX`; the converter still refuses them, but with its
-/// own message, so the message assertions fail. Removing the block cap
-/// (see `FftResampler`) makes the last case allocate gigabytes.
 #[test]
 fn an_unusable_rate_is_an_error() {
     let new = |from: f64, to: f64| {
@@ -521,12 +475,6 @@ fn channels_stay_aligned() {
 /// input frames), every preset chunk size and the shortest, and input lengths
 /// that are short, odd, and straddle chunk edges. Whole-signal and blocked
 /// pushes agree.
-///
-/// Mutation (run): `finish` padding once with `output_delay() +
-/// input_frames_next()` frames (output frames added to input frames, the
-/// previous version) → 44.1->48 k at the 64-frame chunk, n = 999, yields 1040
-/// frames, not 1087, and the steep downsamples fall further short; the loop
-/// stopped after one chunk of silence → the same.
 #[test]
 fn the_length_is_exact_over_rate_pairs_chunks_and_odd_lengths() {
     const PAIRS: [(u32, u32); 12] = [
@@ -582,10 +530,6 @@ fn the_length_is_exact_over_rate_pairs_chunks_and_odd_lengths() {
 /// -0.0007, 48 -> 44.1 -0.0018, 96 -> 44.1 -0.0875; at 0.97 Nyquist
 /// (21.4 kHz) 44.1 -> 48 and 48 -> 44.1 read -0.88 dB, and the edge (-6 dB) is
 /// at 0.977 Nyquist (`upsampling_cuts_at_the_input_band_edge`).
-///
-/// Mutation (run): `f_cutoff * 0.95` in `tutti_dsp`'s `Unit::new` (the knee 5%
-/// low) → the 0.93 Nyquist tone reads -9.2 dB → fails; the filter scaled
-/// by 1.001 (+0.0087 dB) → fails the 0.005 dB bound at every frequency.
 #[test]
 fn the_passband_is_flat_to_the_band_edge() {
     for (from, to, at_edge_db) in [

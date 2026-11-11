@@ -1,13 +1,6 @@
 //! `flex_text_packets`: a text as Flex Data packets (M2-104 section 7.5.9:
 //! Complete for up to 12 bytes, else Start, Continue, End, the last padded
 //! with zeros).
-//!
-//! Mutation record, each planted in `FlexTextPackets::next`, seen to fail,
-//! restored:
-//! - the `> BYTES_PER_PACKET` test as `>=` -> `twelve_bytes_are_one_complete_packet`;
-//! - `Continue` yielded as `Start` -> `a_long_text_is_start_continue_end`;
-//! - the last chunk's padding made `0xFF` -> `the_last_packet_is_padded_with_zeros`;
-//! - `size_hint` counting `len / 12` -> `the_length_is_exact`.
 
 use tutti_ump::{
     Flex, FlexAddress, FlexTextKind, Form, Message, MidiGroup, decode, flex_text_packets,

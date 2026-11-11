@@ -106,9 +106,6 @@ fn energy(blocks: &[Driven]) -> f64 {
 /// ceiling; one that can offers an eleventh, the freeze, and an unbounded
 /// ceiling (so an export spends its cap: freeze is opt-in for that reason). The
 /// addresses are the doc's: three decays at indices 0 (mid), 1 (low), 2 (high).
-///
-/// Mutation (run): offering the freeze from a design that cannot freeze fails
-/// the first count; a finite ceiling for a freezable one fails the tail row.
 #[test]
 fn the_freeze_is_a_port_only_where_the_design_can_freeze() {
     let (p, f) = (
@@ -145,9 +142,6 @@ fn the_freeze_is_a_port_only_where_the_design_can_freeze() {
 /// The reported tail is the network's own `tail(-60 dB)` at the controls in
 /// force, and past it the output is exactly silent, at a short and a long decay
 /// (the harness's check, which also looks past the ceiling).
-///
-/// Mutation (run): not calling `report_tail` leaves `reported_tail` empty and
-/// fails; a node that reports half the tail fails `assert_honest_tail`.
 #[test]
 fn the_reported_tail_is_the_networks_and_honest() {
     for decay in [0.3, 1.0, 2.5] {
@@ -165,9 +159,6 @@ fn the_reported_tail_is_the_networks_and_honest() {
 /// a second after the freeze and four seconds later differ by under half a dB,
 /// and the node is never parked. Thawed, it reports a finite tail again, decays
 /// and is eventually idle.
-///
-/// Mutation (run): not handling the thaw in `process` (the unbounded ring kept
-/// for good) fails the last loop with a node that never parks.
 #[test]
 fn a_freeze_holds_and_a_thaw_lets_go() {
     let mut rig = Rig::new(node(freezable(), FdnControls::DEFAULT));
@@ -214,10 +205,6 @@ fn a_freeze_holds_and_a_thaw_lets_go() {
 /// A modulated decay port is read at the block's last frame, as the cell is, and
 /// the tail is reported from the longest decay the port takes in the block, so a
 /// decay that falls through the block is not reported short.
-///
-/// Mutation (run): dropping `longest` for the FDN reports the last frame's short
-/// decay and fails the second assertion; reading the port's first frame fails
-/// the first.
 #[test]
 fn a_modulated_decay_is_read_at_the_end_and_its_peak_sets_the_tail() {
     let x = noise(3, 4_096);
@@ -285,9 +272,6 @@ fn a_modulated_decay_is_read_at_the_end_and_its_peak_sets_the_tail() {
 /// A real control lane in a real graph reaches the decay: with the cell at its
 /// default, a lane holding the mid decay at 6 s makes a noise burst ring far
 /// longer than one holding it at 0.3 s.
-///
-/// Mutation (run): the node reading its cell instead of the port makes the two
-/// renders identical and fails.
 #[test]
 fn a_lane_driving_the_decay_changes_how_long_it_rings() {
     let ring = |decay: f32| -> f64 {
@@ -338,9 +322,6 @@ fn a_lane_driving_the_decay_changes_how_long_it_rings() {
 
 /// A fork starts from the values set, shares no cell and rings nothing: the
 /// harness's fork checks over every cell of both designs.
-///
-/// Mutation (run): not detaching the freeze or the width in
-/// `Params::detach` fails `assert_param_fork`.
 #[test]
 fn a_fork_shares_no_cell() {
     assert_param_fork(DesignNode::live(plain(), FdnControls::DEFAULT));
@@ -349,9 +330,6 @@ fn a_fork_shares_no_cell() {
 
 /// A non-finite write to any cell reads as unchanged: the render equals one that
 /// never saw it.
-///
-/// Mutation (run): reading a cell without `LastGood` designs a default room for
-/// the NaN and differs from 0.9 s.
 #[test]
 fn a_non_finite_write_is_ignored() {
     let c = FdnControls {
@@ -374,8 +352,6 @@ fn a_non_finite_write_is_ignored() {
 }
 
 /// `ReverbKind` spawns the matching node and nothing else.
-///
-/// Mutation (run): swapping the two arms fails both.
 #[test]
 fn a_kind_spawns_its_node() {
     let SpawnedReverb::Freeverb(f) = ReverbKind::Freeverb.spawn() else {

@@ -10,9 +10,6 @@ fn pair(channel: u8, note: u8) -> (MidiChannel, NoteNumber) {
 }
 
 /// Every one of the 16 x 128 pairs reads back as itself.
-///
-/// Mutation: pack the channel with `* 127`, or read it back with `% 127`:
-/// the first pair that collides or reads back changed fails this.
 #[test]
 fn every_pair_round_trips() {
     for channel in 0..16 {
@@ -26,8 +23,6 @@ fn every_pair_round_trips() {
 
 /// The id is `channel * 128 + note`, the value a CLAP or VST3 `note_id` carries,
 /// and the pairs fill `0 ..= MAX_CHANNEL_NOTE` with no gap and no repeat.
-///
-/// Mutation: `<< 8` in place of `* 128` (the old encoding): the raw check fails.
 #[test]
 fn the_id_is_the_plugin_wire_value() {
     assert_eq!(NoteId::MAX_CHANNEL_NOTE, 2047);
@@ -46,9 +41,6 @@ fn the_id_is_the_plugin_wire_value() {
 
 /// An id above the largest pair names no pair, so a minted id is never read as
 /// one.
-///
-/// Mutation: test `>=` against `MAX_CHANNEL_NOTE`, or drop the check in
-/// `channel_note`: the first assertion (2047 is still a pair) or the rest fail.
 #[test]
 fn a_raw_above_the_max_names_no_pair() {
     assert_eq!(
@@ -61,9 +53,6 @@ fn a_raw_above_the_max_names_no_pair() {
 }
 
 /// `Ord` makes an id a `BTreeMap` key, in raw order.
-///
-/// Mutation: derive no `Ord` and the file fails to compile; compare by note
-/// descending by hand and the order assertion fails.
 #[test]
 fn ord_makes_it_a_btree_key() {
     let (c, a) = pair(0, 60);

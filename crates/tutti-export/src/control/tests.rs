@@ -14,11 +14,6 @@ fn delivered(weights: Weights, run: impl FnOnce(&mut Control<'_>)) -> Vec<Progre
 /// Doc 019 section 6.1's tables tile `[0, 1]`: each band starts where the
 /// last ended, the first at 0 and the last at exactly 1, so the fraction is
 /// monotonic across stages and reaches 1.0 only in the last.
-///
-/// Mutations (each run, each failed): `Rendering` of `STREAMING` ending at
-/// 0.90 -> the bands no longer meet; `Finalizing` of `STREAMING` ending at
-/// 0.99 -> the last band no longer reaches 1; `Measuring` of `NORMALIZED`
-/// ending at 0.70 -> the bands overlap.
 #[test]
 fn the_bands_tile_the_unit_interval() {
     for table in [&STREAMING[..], &NORMALIZED[..]] {
@@ -41,8 +36,6 @@ fn the_bands_tile_the_unit_interval() {
 
 /// The figures of the doc's tables, as written: a change to a weight is a
 /// change to this test, in review.
-///
-/// Mutation (run): `Measuring` of `NORMALIZED` ending at 0.70 -> fails.
 #[test]
 fn the_bands_are_the_documented_ones() {
     let streaming = [
@@ -67,11 +60,6 @@ fn the_bands_are_the_documented_ones() {
 /// A stage is delivered when it is entered and when it completes, and while
 /// it counts frames no later than every `DELIVERY_FRAMES`, however finely it
 /// is advanced, and not every frame.
-///
-/// Mutations (each run, each failed): `advance` delivering only on
-/// completion -> the gap check fails; `advance` delivering on every call ->
-/// the "not one per frame" check fails. (`DELIVERY_FRAMES` itself is pinned
-/// as the literal 4096 by `tests/cancel.rs`.)
 #[test]
 fn frames_are_delivered_on_the_cadence_and_at_every_stage_change() {
     let total = Samples(3 * DELIVERY_FRAMES + 100);
@@ -110,9 +98,6 @@ fn frames_are_delivered_on_the_cadence_and_at_every_stage_change() {
 
 /// The fraction never falls, even when a stage is reported out of order or
 /// behind, and a stage's end is its band's end exactly.
-///
-/// Mutation (run): `deliver` without `.max(floor)` -> the late reading
-/// drops back; fails.
 #[test]
 fn the_fraction_never_falls() {
     let total = Samples(1000);
@@ -138,8 +123,6 @@ fn the_fraction_never_falls() {
 
 /// A reading's output is the one being measured, written or finalized, and
 /// none while rendering.
-///
-/// Mutation (run): `deliver` giving `Some(0)` for `Rendering` -> fails.
 #[test]
 fn the_output_is_none_only_while_rendering() {
     let seen = delivered(Weights::Normalized, |c| {
@@ -158,9 +141,6 @@ fn the_output_is_none_only_while_rendering() {
 
 /// A token and its clones are one request; a control with no token is never
 /// cancelled.
-///
-/// Mutation (run): `CancelToken::cancel` storing into a fresh flag -> the
-/// clone does not see it; fails.
 #[test]
 fn a_token_is_shared_and_none_never_cancels() {
     let token = CancelToken::new();

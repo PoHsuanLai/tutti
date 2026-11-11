@@ -207,13 +207,6 @@ mod tests {
     /// frame 40 interrupts it from where it stood on frame 39 (`(29/40)²`),
     /// a quarter of the way to 0 on its frame, 0 on its last. The shaped
     /// ramp's own arrival (frame 50) is never sent.
-    ///
-    /// Mutations (run), each fails: the ramp sent `Linear` (`ramp.shape()`
-    /// ignored) → frame 11 reads 1/40. The start read from the delivery only
-    /// (`segments.value_at` skipped) → frame 40 starts from the grid point,
-    /// `(21/40)²`. A ramp's duration ignored (every ramp a step) → frame 11
-    /// reads 1. `ParamDelivery::current` reading only what was handed over
-    /// → the shaped ramp finds no start and is a step.
     #[test]
     fn a_ramp_reaches_a_plugin_along_its_shape() {
         const TOL: f64 = 1e-6;
@@ -280,10 +273,6 @@ mod tests {
     /// changes only) and 13 reads 1. At frame 20 a segment, then a ramp to 0
     /// over 2 frames: the ramp starts from the 1 held before the frame, half
     /// way on frame 20.
-    ///
-    /// Mutation (run): `ParamDelivery::frame_start` reading `stood` at every
-    /// call (no per-frame value) → the ramp at 10 starts from 0.4 and sends
-    /// 0.55 → fails.
     #[test]
     fn a_ramp_starts_from_the_value_before_its_frame() {
         const TOL: f64 = 1e-6;
@@ -381,10 +370,6 @@ mod tests {
     /// step to 0.4 and then a ramp to 1 over 4 frames, both on frame 10.
     /// The step learns a spare slot; the ramp still finds no start before
     /// its frame, so it is a jump to 1, as on a listed parameter.
-    ///
-    /// Mutation (run): `frame_start` not learning the slot (an address
-    /// with none read straight from `stood`, uncached) → the ramp starts
-    /// from the step's 0.4 and sends 0.55 and 1 on frame 13 → fails.
     #[test]
     fn an_unlisted_parameter_keeps_its_start_on_the_frame() {
         let address = ParamId::new(9);
@@ -411,10 +396,6 @@ mod tests {
     /// one block, whose chunk does not go (the value is owed); a ramp to 1
     /// over 4 frames on frame 10 of the next block starts from that 0.2:
     /// the owed value on frame 0, 0.4 on frame 10, 1 on frame 13.
-    ///
-    /// Mutation (run): `begin_walk` a no-op → the second block's frame 10
-    /// reads the first block's start (none: nothing was given yet) and the
-    /// ramp jumps to 1 on frame 10 → fails.
     #[test]
     fn a_frame_start_is_not_kept_from_an_earlier_block() {
         let address = ParamId::new(7);
@@ -452,11 +433,6 @@ mod tests {
     /// repeats the queue's last value (skipped, changes only). The last
     /// segment's arrival repeats its value too. None is left on a grid
     /// frame.
-    ///
-    /// Mutation (run): `take`'s grid test always false (`let grid = |_: u64|
-    /// false`) → no grid drops, 42 merges → fails. Mutation (run): the
-    /// block's frame for the play clock (`f.is_multiple_of(32)`) → the drops
-    /// land on 0, 32, .. → fails.
     #[test]
     fn a_full_queue_drops_the_play_grid_first() {
         let address = ParamId::new(7);

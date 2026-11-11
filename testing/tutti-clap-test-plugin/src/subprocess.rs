@@ -316,10 +316,6 @@ pub(crate) fn die_if_state_load_crashes() {
 /// `core`; the loop that waits for the death gives up at 60 blocks (1.6 s).
 /// `SIGKILL` is never a core-dumping signal, so the descriptors close with the
 /// process.
-///
-/// Mutation: `std::process::abort()` in place of the `kill` → the runner's
-/// death is noticed late again, and now and then past `clap_crash_recovery`'s
-/// `DRIVE_TO_DEATH_MAX`.
 fn die() -> ! {
     #[cfg(unix)]
     // SAFETY: `kill` and `getpid` take no pointers.

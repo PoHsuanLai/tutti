@@ -15,11 +15,6 @@ use tutti_vst3_host::{AudioBuffer, InputEvents, TransportInfo};
 /// **A block skipped for a busy input list is silence, and counted.** The
 /// shared plugin's default mode renders `input + tag`, so a processed block is
 /// never zero and a skipped one is.
-///
-/// Mutation (run, fails): have `process` ignore the `None` from
-/// `stage_input_events` (stage nothing, run the plugin anyway) -> the held
-/// block comes out `input + tag`, not silence, and `event_lists_busy` is still
-/// counted, so the silence assertion is the one that fails.
 #[test]
 fn a_block_is_skipped_while_the_plugin_holds_the_input_list() {
     let library = tutti_fixtures::cdylib("tutti_shared_plugin", "tutti-shared-plugin");
@@ -70,10 +65,6 @@ fn a_block_is_skipped_while_the_plugin_holds_the_input_list() {
 /// Processing resumes lazily after a stop, and the refusal used to be dropped
 /// (`let _ =`), so the plugin rendered while the host believed it was
 /// processing.
-///
-/// Mutation (run, fails): discard the result of `set_processing(true)` in
-/// `Vst3Processor::process` again -> the block succeeds and the assertion on
-/// the error fails.
 #[test]
 fn a_refused_set_processing_fails_the_block() {
     let library = tutti_fixtures::cdylib("tutti_shared_plugin", "tutti-shared-plugin");

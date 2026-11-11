@@ -5,9 +5,6 @@ use tutti_types::ChannelLayout;
 /// A gain moving from `+0.0` to `-0.0` has a delta of `-0.0`, which
 /// compares equal to zero, but the ramp computes `-0.0 - (-0.0 * t)`,
 /// which is `+0.0` on every frame; the shortcut would write `-0.0`.
-///
-/// Mutation (run): test `delta == 0.0` instead of `delta.to_bits() == 0`
-/// → the output reads `-0.0`, fails.
 #[test]
 fn a_signed_zero_gain_change_takes_the_ramp() {
     let mut from = VbapGains {

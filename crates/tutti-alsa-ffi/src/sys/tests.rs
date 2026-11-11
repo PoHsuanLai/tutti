@@ -13,8 +13,7 @@ fn a_default_event_is_entirely_zero() {
 }
 
 /// A real-time stamp reads as its two words; a tick stamp, or none, reads as
-/// `None`. Mutation: drop the flag check in `real_time`: the last assertion
-/// reads `Some`.
+/// `None`.
 #[test]
 fn a_real_time_stamp_reads_from_the_time_blob() {
     let mut ev = snd_seq_ump_event_t::default();

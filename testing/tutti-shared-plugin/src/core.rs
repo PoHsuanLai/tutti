@@ -687,9 +687,6 @@ mod tests {
         (core, dsp)
     }
 
-    // Mutation (run): `save` not writing the editor byte, or `load` not
-    // reading it, fails the round trip; `load` masking nothing refuses a blob
-    // with an editor byte as a bad mode.
     #[test]
     fn the_editor_byte_round_trips_beside_the_mode() {
         let core = Core::new();
@@ -703,9 +700,6 @@ mod tests {
         assert!(core.load(&blob).is_err());
     }
 
-    // Mutation (run): `save` not writing the notice byte, or `load` not
-    // reading it, fails the round trip; `load` not bounding it accepts the bad
-    // blob.
     #[test]
     fn the_notice_byte_round_trips_beside_the_editor() {
         let core = Core::new();
@@ -722,10 +716,6 @@ mod tests {
         assert!(core.load(&blob).is_err());
     }
 
-    // Mutation (run): not setting the flag when the log is full fails
-    // `a_full_event_log_sets_overflow`; not setting it past the block ring
-    // fails `more_blocks_than_the_ring_keeps_sets_overflow`; `prepare` not
-    // clearing it fails `preparing_clears_overflow`.
     #[test]
     fn a_log_within_its_caps_does_not_overflow() {
         let (core, mut dsp) = ready();
@@ -761,8 +751,6 @@ mod tests {
         (t.transports_sent, t.transports.len())
     }
 
-    // Mutation (run): `log_transport` counting only what it keeps fails the
-    // first assertion; `prepare` not clearing the count fails the last.
     #[test]
     fn the_transport_log_keeps_the_first_and_counts_the_rest() {
         let (core, mut dsp) = ready();

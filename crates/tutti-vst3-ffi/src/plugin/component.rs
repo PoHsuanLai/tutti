@@ -406,9 +406,6 @@ mod width_tests {
 
     /// A bus given a width past `u16::MAX`, or a negative one, is found with
     /// its index; the widest a layout holds is not.
-    ///
-    /// Mutation (run): `first_unrepresentable` returning `None` always fails
-    /// the refusals; testing only `count > 65_535` fails the negative one.
     #[test]
     fn the_first_bus_no_layout_holds_is_found_with_its_index() {
         assert_eq!(first_unrepresentable([2, 65_535, 0]), None);

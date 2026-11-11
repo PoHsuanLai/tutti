@@ -10,16 +10,6 @@
 //! An undefined status, a reserved message type, a count that cannot be framed
 //! and a `0ddddddd` data byte with its top bit set are `Unknown`, which keeps
 //! the words.
-//!
-//! Mutation record (each planted, seen to fail at the named test, restored):
-//! - drop the `& 0x7f` in `decode::u7` -> `reserved_bits_are_ignored`;
-//! - make `data7` mask instead of refuse -> `what_cannot_be_framed_is_unknown`;
-//! - let `data128` accept a `# of bytes` of 0 -> `what_cannot_be_framed_is_unknown`;
-//! - make `direction` return `None` for 0 in `decode` (the old rule) ->
-//!   `an_inactive_function_block_with_zeroed_fields_is_still_read`;
-//! - decode a reserved attribute type as `Attribute::None` -> `reserved_values_are_kept`;
-//! - let `utility` return `Noop` for status 5 -> `undefined_statuses_are_unknown`;
-//! - make `Unknown` drop word 4 -> `unknown_keeps_every_word`.
 
 use tutti_ump::{
     Accidental, Address, Alteration, AlterationKind, Attribute, BlockSelect, ChordBass, ChordName,
@@ -553,10 +543,6 @@ fn a_defined_message_has_no_unknown_form() {
 /// Every one of the 256 numbers round-trips through the controller type, and a
 /// number Appendix A defines is never held as `Reserved`, so equal numbers are
 /// equal values.
-///
-/// Mutation record: `From<u8>` mapping 74 to `Reserved(74)` -> this test;
-/// `number` returning the discriminant instead of the wire number for
-/// `Reserved` -> this test.
 #[test]
 fn a_registered_per_note_controller_number_round_trips() {
     for n in 0..=255u8 {

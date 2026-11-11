@@ -115,15 +115,6 @@ unsafe extern "C" {
 ///
 /// Hold it across `hc_configure` and `hc_validate` together, and around each
 /// `hc_add_parameter`; it covers no plugin work.
-///
-/// Mutation record: with `hostcheck_lock` returning a fresh mutex's guard,
-/// 100-run loops of `vst3_conformance_blocks` (32 test threads, 16 processes
-/// at once) failed 58 of 400 (`unaligned tcache chunk`, SIGSEGV, and the
-/// "sample size" and "process mode" mismatches); with the lock, 0 of 800.
-/// `vst3_conformance_modes` keeps its `PLUGIN_LOCK`, so the mutation shows
-/// there only with that guard removed too (67 of 400; with the lock, 1 of 2400
-/// and 0 of 3000 more, one SIGSEGV never explained). Controller and
-/// interfaces never failed either way, so they pin nothing about this lock.
 static HOSTCHECK: Mutex<()> = Mutex::new(());
 
 /// Acquire the `HostCheck` lock, ignoring poisoning.

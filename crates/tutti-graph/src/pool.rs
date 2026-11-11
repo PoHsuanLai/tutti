@@ -355,10 +355,6 @@ mod tests {
 
     /// Helpers take part in jobs — also after they have parked — with
     /// distinct indices, and a job never outlives `run`.
-    ///
-    /// Mutation: make `wake` a no-op → after the helpers park, no job gets a
-    /// helper again (participant 0 never waits for one) → the second phase's
-    /// mask stays 0b001 until its deadline → fails (run: after 10 s).
     #[test]
     fn helpers_join_jobs_before_and_after_parking() {
         let pool = WorkerPool::builder()
@@ -405,8 +401,6 @@ mod tests {
     }
 
     /// The start hook runs once on each helper, on its own thread.
-    ///
-    /// Mutation: skip the hook in `build` → the count stays 0 → fails.
     #[test]
     fn the_start_hook_runs_on_each_helper() {
         let started = Arc::new(AtomicUsize::new(0));
@@ -433,9 +427,6 @@ mod tests {
 
     /// `try_run` from inside a job of the pool runs nothing and says so; on
     /// an idle pool it runs the job.
-    ///
-    /// Mutation: have `WorkerPool::try_run` call `run` and return `true` →
-    /// the nested call runs and returns `true` → fails.
     #[test]
     fn try_run_inside_a_job_refuses() {
         let pool = WorkerPool::builder()
@@ -459,9 +450,6 @@ mod tests {
     /// The builder's in-job waits are what the pool reports to the executor
     /// and what its gate's close waits by; a pool built without them reports
     /// the defaults.
-    ///
-    /// Mutations (run): drop `caller_yield_after`'s store → fails; build the
-    /// gate with `JobGate::new` (the defaults) → fails.
     #[test]
     fn the_in_job_waits_are_the_builders() {
         let waits = BlockWaits {
@@ -484,9 +472,6 @@ mod tests {
     }
 
     /// A one-participant pool runs every job on the caller.
-    ///
-    /// Mutation: have `run` skip the job when there are no helpers → the
-    /// count stays 0 → fails.
     #[test]
     fn a_pool_of_one_runs_on_the_caller() {
         let pool = WorkerPool::builder()
@@ -502,9 +487,6 @@ mod tests {
     }
 
     /// Helpers carry the builder's names.
-    ///
-    /// Mutation: ignore `thread_name` in `build` (always the default) -> the
-    /// custom names are not seen -> fails.
     #[test]
     fn helpers_are_named_by_the_builder() {
         let names = Arc::new(std::sync::Mutex::new(Vec::new()));
@@ -531,11 +513,6 @@ mod tests {
     /// A helper whose start handler panics ends alone: the pool is built, a
     /// job closes without waiting for it, and the other helper still joins
     /// (as participant 1: the gate numbers participants by arrival).
-    ///
-    /// Mutation: run the hook in `build` on the caller instead of on the
-    /// helper -> the panic escapes `build` -> fails. Mutation: `Pool::run`
-    /// waiting for every helper to arrive -> the first job never closes ->
-    /// times out (not run: it needs a change to `tutti-rt`'s gate).
     #[test]
     fn a_panicking_start_handler_leaves_a_working_pool() {
         let pool = WorkerPool::builder()
@@ -569,9 +546,6 @@ mod tests {
     }
 
     /// Zero threads, the default, is one per available core.
-    ///
-    /// Mutation: a fixed `2` for the zero arm in `build` -> fails on any
-    /// machine without exactly two cores.
     #[test]
     fn the_default_is_one_thread_per_core() {
         let cores = std::thread::available_parallelism().map_or(1, |n| n.get());

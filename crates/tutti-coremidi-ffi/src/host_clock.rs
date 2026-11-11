@@ -64,7 +64,6 @@ mod tests {
 
     // Apple Silicon's base is 125/3: 3 ticks are 125 ns, so 24 000 000 ticks (one
     // of its seconds is 24 MHz) are 1 s.
-    // Mutation: `numer` and `denom` swapped in `duration`: reads 0.576 ms.
     #[test]
     fn a_tick_is_the_timebases_ratio_of_a_nanosecond() {
         let base = Timebase::new(125, 3).unwrap();
@@ -75,7 +74,7 @@ mod tests {
     }
 
     // A base with no denominator cannot be built, so `duration` never divides by
-    // zero. Mutation: `denom != 0` -> `true` fails this.
+    // zero.
     #[test]
     fn a_timebase_needs_a_denominator() {
         assert_eq!(Timebase::new(1, 0), None);

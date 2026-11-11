@@ -49,11 +49,6 @@ mod tests {
     /// topology; a bare width of 4, 7.1 and unnamed widths are unassigned, and
     /// so are a topology out of ascending order or with a speaker WAVE has no
     /// bit for.
-    ///
-    /// Mutation: giving `default_channel_mask` a `4 => 0x33` arm (the count
-    /// guess) fails the bare-4 assertion; making `channel_mask` skip the
-    /// ascending check gives the swapped pair `0x3`, failing that assertion;
-    /// SideLeft mapped to BackLeft's bit gives `0x3F` for 5.1.
     #[test]
     fn masks_match_ksmedia_and_are_zero_where_they_cannot_be_stated() {
         let m = |n: u16| default_channel_mask(ChannelLayout::from(n));

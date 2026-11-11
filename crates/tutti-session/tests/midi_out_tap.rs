@@ -71,11 +71,6 @@ fn ticks(batch: &[UmpAt]) -> Vec<u32> {
 /// second at 120 BPM, then one update: the drain hands the output one batch
 /// whose offsets, in order, are the frames' spacing: Start first, then every
 /// 24-PPQN tick exactly one tick (1/48 s, 1 000 frames) after the last.
-///
-/// Mutations (run), each fails:
-/// - `drain_tap` reversing the batch before it routes it: the offsets are
-///   not increasing;
-/// - `Session::midi_out_phase` not draining the tap: no batch.
 #[test]
 fn the_clock_reaches_the_output_in_order_on_its_frames() {
     let wire = Wire::default();
@@ -103,10 +98,6 @@ fn the_clock_reaches_the_output_in_order_on_its_frames() {
 /// capacity, a non-note-off being refused past it) and the drop count is the
 /// remainder, so what was sent is what arrived plus what was counted: the
 /// total is read from a second tap with room.
-///
-/// Mutations (run), each fails:
-/// - `drain_tap` not adding `take_lost` to the drops: the count is 0;
-/// - the tap opened with capacity 2 048: more than 1 024 arrive.
 #[test]
 fn a_full_tap_counts_what_it_drops() {
     let wire = Wire::default();
@@ -153,9 +144,6 @@ fn a_full_tap_counts_what_it_drops() {
 /// update.** `Graph::set_sample_rate` moves the graph's clock to another scale;
 /// the hardware out's reader, on the rate it was opened at, is reopened by the
 /// `MidiOut` phase, so its frames are on one scale again.
-///
-/// Mutation (run): `follow_rate` never reopening → the rate stays 48 kHz
-/// (the device restart's test fails the same way).
 #[test]
 fn a_re_rated_graph_reopens_the_hardware_tap_at_the_next_update() {
     let wire = Wire::default();
@@ -170,9 +158,6 @@ fn a_re_rated_graph_reopens_the_hardware_tap_at_the_next_update() {
 /// of a caller's on the clock; after the graph is re-rated, `reopen_event_tap`
 /// of the first gives a reader on the new rate, and the second's reader is
 /// still fed (`reopen_event_taps` would have replaced it).
-///
-/// Mutation (run): `reopen_event_tap` also reopening every other tap, its
-/// readers dropped → the second reads nothing.
 #[test]
 fn reopening_one_tap_leaves_the_others_fed() {
     let wire = Wire::default();

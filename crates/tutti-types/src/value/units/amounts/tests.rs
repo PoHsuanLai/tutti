@@ -87,10 +87,6 @@ fn drive_is_not_a_gain() {
 
 /// `stable_pair` scales a too-large pair down together, keeping its ratio:
 /// `0.99 · x / (d + c)` per coefficient, so the sum is the bound.
-///
-/// Mutation (run): the scale `MAX_STABLE / total` → `MAX_STABLE / (total +
-/// 1.0)` → `(1.5, 0.5)` gives `(0.495, 0.165)` → fails. Mutation (run):
-/// drop the `is_infinite` arm → `(INFINITY, 0.0)` gives NaN → fails.
 #[test]
 fn stable_pair_keeps_the_ratio_and_survives_infinity() {
     // 1e-6 absolute: a few f32 ulps at these magnitudes (the sums land

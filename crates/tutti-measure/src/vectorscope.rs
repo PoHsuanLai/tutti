@@ -103,9 +103,6 @@ mod tests {
 
     /// Mono lies on the mid axis, with the mono level times sqrt 2 as its
     /// height.
-    ///
-    /// Mutation checked: `l + r` for `l - r` in `side` puts the points on the
-    /// diagonal and fails; dropping the `1/sqrt 2` scale fails the height.
     #[test]
     fn mono_lies_on_the_mid_axis() {
         let x = sine(480);
@@ -117,9 +114,6 @@ mod tests {
 
     /// An inverted right channel lies on the side axis, and a signal in one
     /// channel on a diagonal of slope +-1.
-    ///
-    /// Mutation checked: `l - r` for `r - l` in `side` flips the sign and fails
-    /// the left-only diagonal.
     #[test]
     fn inverted_pairs_lie_on_the_side_axis_and_one_channel_on_a_diagonal() {
         let x = sine(480);
@@ -140,10 +134,6 @@ mod tests {
     /// A panned sine sits at the angle its gains fix: `side / mid` is
     /// `(gl - gr) / (gl + gr)` on every frame, and the radius is the frame's
     /// level, which the rotation preserves.
-    ///
-    /// Mutation checked: swapping the two channels in `from_lr` negates the
-    /// ratio and fails; using a `0.5` scale in place of `1/sqrt 2` fails the
-    /// radius.
     #[test]
     fn a_panned_sine_sits_at_its_gain_angle_with_its_level_as_radius() {
         let x = sine(480);
@@ -163,9 +153,6 @@ mod tests {
 
     /// Decimation keeps frames `0, n, 2n, ...` and an empty pair gives no
     /// points.
-    ///
-    /// Mutation checked: starting at frame 1 (`skip(1)`), or `step_by(n + 1)`,
-    /// fails the indices.
     #[test]
     fn decimation_keeps_every_nth_frame_from_the_first() {
         let l: Vec<f32> = (0..10).map(|i| i as f32).collect();
@@ -182,11 +169,6 @@ mod tests {
 
     /// Feeding blocks of any size, through one reused buffer, gives the batch
     /// points: the stride phase carries over block edges.
-    ///
-    /// Mutation checked: resetting `state.skip` to 0 at the start of each step
-    /// (restarting the phase per block) fails every block size that is not a
-    /// multiple of the stride; `state.skip = at` (without `- frames`) fails
-    /// too.
     #[test]
     fn blocks_of_any_size_keep_one_stride_phase() {
         let l: Vec<f32> = (0..103).map(|i| i as f32).collect();

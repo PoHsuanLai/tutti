@@ -9,12 +9,6 @@
 //! `tutti-midi-runtime`'s `compile_routes` tests; what neither had is the
 //! union of two rules on one target and a rule that is disabled, which are
 //! here.
-//!
-//! Mutations (run): `Midi::compile_routes` not filtering on `enabled`
-//! (`a_disabled_rule_routes_nothing_until_it_is_armed`); the compile giving a
-//! target only the last rule's ports (`.extend` replaced by an assignment
-//! in `tutti_midi_runtime::compile_routes`)
-//! (`two_rules_on_one_target_take_the_union`).
 
 use std::collections::BTreeSet;
 

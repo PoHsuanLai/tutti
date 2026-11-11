@@ -278,10 +278,6 @@ mod tests {
     /// frame. Its start takes the latest point's place (merged); as a grid
     /// point it would be dropped, and the chunk would end on the value
     /// before it.
-    ///
-    /// Mutation (run): `start` classifying by `grid` alone (`&& at !=
-    /// self.chunk - 1` removed) → the start is dropped and the queue ends on
-    /// frame 62's value → fails.
     #[test]
     fn a_start_on_the_chunk_s_last_frame_is_a_corner() {
         let seg = ParamSegment::foreign(7, 0.5, 1.0, Samples(100), Law::Linear);
@@ -311,13 +307,6 @@ mod tests {
     /// Changed in doc 014 §12.2: the points between were every 8th chunk
     /// frame (the automation node's stride), a grid that moved with the chunk; they are
     /// now the play clock's 32-frame grid (doc 014 §5.3).
-    ///
-    /// Mutations (run), each fails: no point on the arrival frame (only the
-    /// grid and the last frame) → the end value lands late; dropping a
-    /// track after each run of points (`false` for the `true` after
-    /// `t.next = to`) → the next chunk gets no points; the old stride kept
-    /// (`c.is_multiple_of(8)` for `grid(f)`) → chunk 0 has 9 points; the
-    /// grid ignored (`on_grid` false) → chunk 0 is `[10, 63]`.
     #[test]
     fn a_segment_sends_points_until_it_lands() {
         let seg = ParamSegment::foreign(7, 0.0, 1.0, Samples(150), Law::PowerIn(2.0));
@@ -364,9 +353,6 @@ mod tests {
 
     /// A later event for the same parameter stops the segment on its frame;
     /// another parameter's segment carries on.
-    ///
-    /// Mutation (run): `interrupt` doing nothing → the stopped segment keeps
-    /// sending points → fails.
     #[test]
     fn an_interrupting_event_stops_the_segment() {
         let b = ParamId::new(8);
@@ -390,12 +376,6 @@ mod tests {
     /// has a queue for every parameter, so none is starved. (This replaces
     /// the 16-queue chunk, past which a starved segment's end value landed
     /// a chunk or more late.)
-    ///
-    /// Mutations (run), each fails: the delivery's chunk sized at 16 queues
-    /// (`ParameterChanges::reserved_bridged(16, UNPREPARED_POINTS)` in `ParamDelivery::new`) →
-    /// 184 parameters get no points in the first chunk; a track dropped before its arrival
-    /// point is placed (`return false` ahead of the `point` call) → the end
-    /// values never land.
     #[test]
     fn two_hundred_segments_each_land_on_their_frame() {
         let n = 200u32;
@@ -464,9 +444,6 @@ mod tests {
 
     /// A segment that finds every slot taken is sent as a ramp: its end
     /// value at once, on its event frame, never its start value held.
-    ///
-    /// Mutation (run): the fallback sending the start value
-    /// (`raw_value_after(Samples(0))`) → fails.
     #[test]
     fn a_segment_past_the_slots_is_sent_as_a_ramp() {
         let mut sp = SegmentPoints::default();

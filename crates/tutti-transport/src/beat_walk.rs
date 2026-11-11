@@ -29,12 +29,6 @@ mod tests {
     /// The walk continues the host's clock in `f64`, bit for bit, far into
     /// a segment at a tempo whose frame step is not representable, through
     /// loop wraps shorter than the block.
-    ///
-    /// Mutation (run): rebuild the clock from the transport's beat alone
-    /// (`Transport::new(t.playing, t.tempo, t.beat(), t.looping).clock(..)`,
-    /// dropping the origin) → the beats part from the host's in the last
-    /// bits → fails. (An `f32` split rounds that away, which is why this
-    /// compares the `f64` beats.)
     #[test]
     fn the_env_walk_is_the_host_clock_in_f64() {
         for (tempo, looping) in [

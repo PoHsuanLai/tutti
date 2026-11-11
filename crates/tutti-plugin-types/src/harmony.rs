@@ -215,10 +215,9 @@ mod tests {
     /// list it replaced encoded as, so a peer built before the change reads
     /// it.
     ///
-    /// No mutation of the container type changes these bytes while keeping a
+    /// No change of the container type changes these bytes while keeping a
     /// list (every serde sequence encodes so); the comparison is pinned
-    /// against the explicit layout instead. Mutation (run): the expected
-    /// bytes without the length prefix → fails.
+    /// against the explicit layout instead.
     #[test]
     fn a_container_encodes_as_a_sequence() {
         let mut c = ChordChanges::new();
@@ -234,11 +233,6 @@ mod tests {
 
     /// **A container past the cap from the wire keeps its first four, and
     /// the stream stays in step**: the field after it decodes whole.
-    ///
-    /// Mutations (run): `deserialize_with` removed (the `ArrayVec` default,
-    /// which rejects) → the decode fails → fails; the visitor stops reading at
-    /// the cap (`if out.is_full() { break }`) → the trailing field reads the
-    /// leftover events' bytes → fails.
     #[test]
     fn decoding_past_the_cap_keeps_the_first_and_stays_in_step() {
         #[derive(serde::Serialize)]
@@ -264,9 +258,6 @@ mod tests {
     }
 
     /// **`add_change` refuses past the cap**, never panics.
-    ///
-    /// Mutation (run): `add_change` through `push` → the fifth panics →
-    /// fails.
     #[test]
     fn add_change_refuses_past_the_cap() {
         let mut c = ScaleChanges::new();

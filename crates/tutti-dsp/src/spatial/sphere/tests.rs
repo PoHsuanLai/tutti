@@ -9,14 +9,6 @@ use super::*;
 /// there, so it is `step · cutoff = 0.5 · 0.95 = 0.475`, the delta's DC
 /// sum of 1 at the kernel's peak. No libm call is involved but `cos(0)`,
 /// which is exact; the tolerance covers only the `f32` rounding.
-///
-/// Mutations (run):
-/// - `.min(len)` → `.min(len - 1)` on the window's `end` (drops every
-///   response's last sample) → the right ear's tap is 0, not 0.475.
-/// - `.max(0.0)` → `.max(1.0)` on its `lo` (drops every response's first
-///   sample) → the left ear's tap is 0.
-/// - emitting the right response as index 0 (swap the two) → the left
-///   ear's tap is 0.
 #[test]
 fn resampling_reads_a_responses_edge_taps() {
     const LEN: usize = 8;
@@ -49,13 +41,6 @@ fn resampling_reads_a_responses_edge_taps() {
 /// `0.475 (r + 1)` (see `resampling_reads_a_responses_edge_taps`), which
 /// pins each emitted index to its own response, and the whole output is
 /// bit-identical to the single-batch run.
-///
-/// Mutations (run):
-/// - `emit(first + r, ..)` -> `emit(r, ..)` -> the order assertion fails
-///   at the first response of the second batch.
-/// - `first = batch * per_batch` -> `batch * per_batch + 1` -> same.
-/// - dropping the `r` offset in the tap-major copy (`taps[m * count]`)
-///   -> the analytic tap of response 1 is wrong.
 #[test]
 fn resampling_in_batches_matches_one_batch() {
     const LEN: usize = 8;
@@ -108,9 +93,6 @@ fn resample_one(response: &[f32], from: u32, to: u32, out_len: usize) -> Vec<f32
 /// then takes the `from / to` weight: interior taps (the kernel fully inside
 /// the response) of a response of 1.0 are `from / to`, 0.5 doubling the rate
 /// and 2.0 halving it. Within 1e-3: the kernel's truncation to 32 crossings.
-///
-/// Mutations (run): dropping the `* step` on the emitted sum gives 1.0 and
-/// 1.0 (fails both); scaling the kernel by 1.01 gives 0.505 and 2.02.
 #[test]
 fn a_constant_response_keeps_its_level_scaled_by_the_rate_ratio() {
     for (from, to, len, out_len, interior, want) in [
@@ -133,11 +115,6 @@ fn a_constant_response_keeps_its_level_scaled_by_the_rate_ratio() {
 /// blackman`, written out here from the formulas (cutoff `0.95` of Nyquist,
 /// 32 crossings, so the half-width is `32 / 0.95`), 8 to 16 kHz. The
 /// Blackman is `0.42 + 0.5 cos u + 0.08 cos 2u`, `u = pi t / half`.
-///
-/// Mutations (run): cutoff `0.95` -> `0.9` in `resample_batched` moves every
-/// tap off its analytic value; swapping the window for Hann (`0.5 + 0.5 cos u`)
-/// in the formula's counterpart, `CosineWindow::BLACKMAN` -> `HANN` in
-/// `resample_batched`, fails the taps away from the centre.
 #[test]
 fn an_impulse_resamples_to_the_analytic_kernel() {
     const LEN: usize = 200;

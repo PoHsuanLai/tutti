@@ -4,10 +4,6 @@ use tutti_fixtures::{RangeContract, check_range_contract};
 /// `Quality` keeps the range-checked contract: `new`, `TryFrom`, `of` and
 /// serde agree, and every raw outside `0.0..=1.0`, NaN and infinity included,
 /// is refused.
-///
-/// Mutation (each run): widening the range test in `new` to `0.0..=1.5` fails
-/// the `1.25` row; replacing the serde `try_from`/`into` with `transparent`
-/// lets `1.25` deserialize and fails the "deserialize accepted" check.
 #[test]
 fn quality_keeps_the_range_contract() {
     check_range_contract(&RangeContract {
@@ -28,9 +24,6 @@ fn quality_defaults_to_the_middle() {
 
 /// An extension names its format with the defaults, case and `aif` aside; an
 /// unknown one is named lowercased, and a missing one is `(none)`.
-///
-/// Mutation (run): skipping `to_lowercase`, or putting "" in `extension` for a
-/// path with none, fails the first and second assertions.
 #[test]
 fn extensions_name_formats_and_refuse_the_rest() {
     let name = |r: Result<Format>| match r {
@@ -68,8 +61,6 @@ fn extensions_name_formats_and_refuse_the_rest() {
 
 /// Only a format that quantizes names an integer width, and only WAV bounds
 /// its length.
-///
-/// Mutation (run): `Aiff(_) => Some(IntDepth::default())` fails the float row.
 #[test]
 fn the_integer_width_and_the_length_bound_follow_the_format() {
     #[cfg(feature = "encode-wav")]

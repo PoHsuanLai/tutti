@@ -59,7 +59,7 @@ use loom::thread;
 const RING_SLOTS: usize = 2;
 
 /// Mirrors `header::PUBLISH_ORDERING`. Kept as a named constant for the same
-/// reason it is one in `header.rs`: the mutation this file exists to catch is
+/// reason it is one in `header.rs`: the regression this file exists to catch is
 /// someone weakening it, and a literal buried in a method is invisible.
 const PUBLISH_ORDERING: Ordering = Ordering::Release;
 
@@ -118,14 +118,6 @@ impl Slot {
 /// exactly what a model checker is for. loom explores every interleaving *and*
 /// every reordering the memory model permits, so a `Relaxed` store here is not
 /// a probabilistic failure but a certain one.
-///
-/// # Mutation
-///
-/// Change `PUBLISH_ORDERING` to `Ordering::Relaxed` and loom reports the
-/// violation with the interleaving that produced it: the reader observes
-/// `seq == 1` alongside `data == 0`, the freshly-mapped zero. Weakening
-/// `SEQUENCE_ORDERING` to `Relaxed` does the same. Both were run; see the PR
-/// body.
 #[test]
 fn a_matched_sequence_implies_its_data_is_visible() {
     loom::model(|| {

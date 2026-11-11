@@ -178,9 +178,6 @@ fn voice_gain_scales_the_output_by_exactly_its_value() {
 /// applied (correct), 0.125 if the source's won instead, and 0.0625 if both
 /// did. Only the first is right, and the number reported on failure says which
 /// of the other two happened.
-///
-/// Verified by sabotage: routing the slot through `sample_into` makes this
-/// fail with 0.125.
 #[test]
 fn a_pooled_voice_applies_playback_gain_and_not_the_sources_own() {
     let clock = Clock::new();
@@ -216,7 +213,7 @@ fn a_pooled_voice_applies_playback_gain_and_not_the_sources_own() {
     let both = (LEVEL * 0.5 * 0.25) as f64; // 0.0625
 
     // The three outcomes are distinct by construction, so the number reported on
-    // failure names the defect. Verified: routing the slot through
+    // failure names the defect: routing the slot through
     // `sample_into` (the gained read) yields `source_only`, and a slot that
     // gained on top of it would yield `both`.
     assert!(

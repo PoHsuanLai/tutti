@@ -3,9 +3,6 @@ use super::*;
 /// A temporary that cannot be removed is logged, not an error and not a
 /// panic: the render's outcome (a cancel, say) is already decided. A
 /// directory in the temporary's place stands for any removal that fails.
-///
-/// Mutation (run): `Staged::drop` unwrapping the removal -> the drop panics
-/// on the directory; fails.
 #[test]
 fn a_temporary_that_cannot_be_removed_does_not_fail_the_drop() {
     let dir = tempfile::tempdir().unwrap();

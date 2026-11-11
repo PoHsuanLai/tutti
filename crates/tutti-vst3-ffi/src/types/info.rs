@@ -964,10 +964,6 @@ mod bus_type_tests {
 
     /// **Each `BusTypes` value names its own variant, and anything else names
     /// none**; `BusInfo` decodes through it, and a zeroed record is a main bus.
-    ///
-    /// Mutation (run, fails): swap `Main` and `Aux` in `BusType::raw` -> the
-    /// round trip and the zeroed-record assertion fail; make `from_raw` return
-    /// `Some(Main)` for an unknown value -> the `99` assertion fails.
     #[test]
     fn a_bus_type_round_trips_and_an_undefined_one_is_none() {
         for kind in [BusType::Main, BusType::Aux] {
@@ -979,9 +975,6 @@ mod bus_type_tests {
     }
 
     /// The root unit is id 0 and an id round-trips its raw.
-    ///
-    /// Mutation (run, fails): `get` returning `0` always -> the second
-    /// assertion fails.
     #[test]
     fn a_unit_id_keeps_its_raw_and_the_root_is_zero() {
         assert_eq!(UnitId::ROOT.get(), 0);
@@ -998,13 +991,6 @@ mod unknown_bits_tests {
     /// **A flag bit the plugin sets that this host does not name survives the
     /// decode** of a parameter and of a note expression, so a caller sees what
     /// the plugin said.
-    ///
-    /// Mutation (run, each fails): `from_bits_truncate` in
-    /// `Vst3ParameterInfo::from_c` together with removing `ParameterFlags`'s
-    /// `const _ = !0` -> the first assertion; the same pair for
-    /// `Vst3NoteExpressionInfo::from_c` and `NoteExpressionFlags` -> the second.
-    /// (`from_bits_truncate` alone passes: that const makes every bit "named",
-    /// which is what keeps unknown bits.)
     #[test]
     fn an_unnamed_flag_bit_survives_the_decode() {
         let unnamed = 1 << 20;

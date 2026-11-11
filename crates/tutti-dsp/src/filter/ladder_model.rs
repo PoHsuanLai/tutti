@@ -306,10 +306,6 @@ mod tests {
     /// resonance a 12 dB type is 1/2 there and a 24 dB type 1/4 (the stage is a
     /// trapezoidal one-pole, prewarped to put its corner exactly on the cutoff), and
     /// Nyquist is 0 for a low-pass and 1 for a high-pass.
-    ///
-    /// Mutations (run): the feedback `k` doubled in `at` fails the DC rows; `g1`
-    /// computed as `g` fails the cutoff rows; `HP24` taking `(1 - L)^2` fails its
-    /// rows.
     #[test]
     fn the_response_has_the_closed_forms() {
         for res in [0.0f32, 0.5, 0.9] {
@@ -338,10 +334,6 @@ mod tests {
     /// The ladder's response, **at small signal**, is the model's: an impulse of
     /// 1e-7 through `ladder_step` (where `tanh x = x` to 1e-14) has the model's
     /// spectrum to 1e-6 of its norm, for each type and three resonances.
-    ///
-    /// Mutations (run): the feedback tapping `lp4` instead of the stage's state
-    /// `s[3]` in `ladder_step`, and the model's `F` without its `z^-1`, each fail
-    /// it.
     #[test]
     fn the_small_signal_response_is_the_models() {
         const N: usize = 1 << 15;
@@ -384,9 +376,6 @@ mod tests {
     /// limits the loop), which is what keeps the class honest. An impulse of 3
     /// through a resonance of 0.9 differs from the small-signal one by more than
     /// 10% of the response's norm.
-    ///
-    /// Mutation (run): replacing the `tanh` by the identity in `ladder_step`
-    /// makes the two agree and fails this.
     #[test]
     fn the_model_is_the_small_signal_system_and_loud_signals_leave_it() {
         const N: usize = 1 << 14;
@@ -414,9 +403,6 @@ mod tests {
     /// The ring: the slowest pole of the linearisation against the measured decay
     /// of the small-signal impulse response, and the tail against the measured time
     /// to -60 dB (covers it, within 3 times).
-    ///
-    /// Mutations (run): the radius scaled by 0.9 fails the decay rate; the tail
-    /// halved fails `covers`, doubled twice fails `within 3 times`.
     #[test]
     fn the_radius_and_the_tail_are_what_the_linearised_filter_rings() {
         const N: usize = 1 << 17;
@@ -488,9 +474,6 @@ mod tests {
     /// A resonance near 1 has a pole outside the unit circle in the linearisation
     /// (the loop gain `4 res` passes what the unassigned loop supports): the model says
     /// so, and `is_stable` is false: the real filter is held by the saturator.
-    ///
-    /// Mutation (run): the feedback `k` halved in `poles` gives a radius under 1 at
-    /// resonance 1 and fails.
     #[test]
     fn a_full_resonance_is_unstable_at_small_signal() {
         assert!(model(LadderType::LP24, 1_000.0, 1.0).spectral_radius() >= 1.0);

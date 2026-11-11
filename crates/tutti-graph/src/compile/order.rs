@@ -127,9 +127,6 @@ mod tests {
     use super::*;
 
     /// A two-cycle and a self-loop are components; a chain is not.
-    ///
-    /// Mutation: in `scc`, replace `low[v].min(index[w])` with `low[v]` →
-    /// the back edge is ignored, 0 and 1 land in different components → fails.
     #[test]
     fn scc_finds_cycles() {
         // 0 <-> 1, 2 -> 2, 3 -> 0

@@ -27,8 +27,6 @@
 //! 0.04 frames. The voice's position is a time difference, so it is within
 //! that of the map's, plus the ramp wave's `f32` rounding (0.02 frames at the
 //! largest source frame read here).
-//!
-//! Each test names the mutation that fails it.
 
 use std::sync::Arc;
 
@@ -171,14 +169,6 @@ fn played(sample: f32) -> f64 {
 /// is exact: the engine seats the segment on the map's beat), leaves on the
 /// first frame at or after `seconds(S + d) x rate`, and is silent outside.
 /// At every block size.
-///
-/// Mutation (run): `Gate::origin` taking `None` for the clock (the beat
-/// offset over the run's own tempo, the voice as it was before the map was
-/// read) -> a clip is re-seated at the tempo of each segment: at the step to
-/// 60 the source frame jumps from 55 199 to 110 400 (a 4 s clip played
-/// at the tempo of the moment, not from its start) -> fails. `BlockClock::
-/// seconds` measuring from the block's first beat instead of the window's
-/// start -> every block restarts the clip -> fails.
 #[test]
 fn a_step_map_puts_a_clips_frames_where_the_map_says() {
     let m = steps();
@@ -214,12 +204,6 @@ fn a_step_map_puts_a_clips_frames_where_the_map_says() {
 /// is a jump of frames; a wrap fade or a declick is a level step). The
 /// bound is reached somewhere (some frame is more than 0.001 from the exact
 /// position) or the test would pass on a clock that is not the curve.
-///
-/// Mutation (run): `Gate::origin` taking `None` for the clock -> the position
-/// is re-seated at each cell's tempo, jumping by frames at each of the ramp's
-/// cell edges (the first one, 128 frames in, by 0.5 s of source at 1.00 vs
-/// 1.003 beats/s: a few hundredths of a frame at the first edge, growing to
-/// thousands by beat 2) -> fails.
 #[test]
 fn a_ramp_puts_a_clips_frames_within_the_grid_bound_of_the_maps() {
     let m = ramp();
@@ -260,12 +244,6 @@ fn a_ramp_puts_a_clips_frames_within_the_grid_bound_of_the_maps() {
 /// the bits are the old render's is held by the golden digests and
 /// `block_length_invariance`, which this change leaves untouched; this case
 /// pins the figure through a bound reader.
-///
-/// Mutation (run): `BlockClock::seconds` returning 0 for a constant map (the
-/// `_` arm) -> the clip is at source frame 0 for ever -> fails (this case
-/// alone). Taking the map's seconds for a constant map too (the
-/// `constant_tempo().is_none()` guard removed) is not caught: the figures
-/// agree exactly here, so only the digests hold that the bits do.
 #[test]
 fn a_constant_map_keeps_the_clip_where_it_was() {
     let m = map(&[(0.0, 120.0, Shape::Step)]);
@@ -283,12 +261,9 @@ fn a_constant_map_keeps_the_clip_where_it_was() {
 /// window, from its first frame at its own speed) is at source frame `f` at
 /// every frame across the steps and the ramp's cells, whatever the tempo.
 ///
-/// Mutation: none a render can show. A free-running source reads no transport
-/// and no map, so the property holds by construction and this case pins it
-/// against a change that gives an unplaced source a window on the map. (A
-/// free-running source given a window at beat 0 plays the same figures as
-/// the clip of the first case, which is the same answer on this map: the
-/// two differ only in where they start, and both start at frame 0 here.)
+/// A free-running source reads no transport and no map, so the property holds by
+/// construction and this case pins it against a change that gives an unplaced source a
+/// window on the map.
 #[test]
 fn a_time_locked_voice_ignores_the_tempo_map() {
     for m in [steps(), ramp()] {

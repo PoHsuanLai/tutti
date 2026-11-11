@@ -11,10 +11,6 @@ static A: AllocDisabler = AllocDisabler;
 
 /// `RtVec` reached through `&self`, as `tutti-midi-hardware`'s drain holds it:
 /// behind an `AudioThreadCell`.
-///
-/// Mutation (run): an uncapped `Vec` in place of the `ArrayVec` -> the first
-/// block pushes past the warm-up's capacity, grows the `Vec` inside the gate,
-/// and aborts.
 #[test]
 fn rt_vec_steady_state_is_allocation_free() {
     let buf: AudioThreadCell<RtVec<(u32, u32), 64>> = AudioThreadCell::new(RtVec::new());
@@ -44,12 +40,6 @@ fn rt_vec_steady_state_is_allocation_free() {
 ///
 /// The panic path is left out: it formats a message, and it is a contract
 /// violation, not a path the audio thread runs.
-///
-/// Mutations (run): box the result in `try_acquire_writer` (a
-/// `Box::new(self.state.compare_exchange(..))`, unboxed for the test) → the
-/// first borrow allocates inside the gate, and `assert_no_alloc` aborts; the
-/// same in `try_acquire_reader` (`Ok(_) => return *Box::new(true)`) →
-/// aborts at the first `try_borrow`.
 #[test]
 fn audio_thread_cell_borrows_neither_allocate_nor_free() {
     let cell = AudioThreadCell::new(0u64);
@@ -72,10 +62,6 @@ fn audio_thread_cell_borrows_neither_allocate_nor_free() {
 /// `RequestWord::raise` and `take`, and an `edit_ring` push and pop (full and
 /// empty answers included), neither allocate nor free: the whole of what a
 /// host callback and the block-head drain do.
-///
-/// Mutations (run): box the value in `EditWriter::push` (a `Box::new(value)`
-/// kept alive across the store) → the gate aborts on the first push; a
-/// `vec!` in `RequestBits::iter` → it aborts.
 #[test]
 fn request_word_and_edit_ring_are_allocation_free() {
     use tutti_rt::{RequestBit, RequestWord, edit_ring};
@@ -102,9 +88,6 @@ fn request_word_and_edit_ring_are_allocation_free() {
 /// A reader's whole block on a `PosRing`: `claim`, the window, `holds`,
 /// `frame`, `sample`, `get` and `idle`, neither allocating nor freeing. The
 /// writer's `push` is the disk thread's and stays outside the claim.
-///
-/// Mutations (run): a `Box::new` at the top of `PosReader::claim` -> the first
-/// claim aborts; the same in `PosReader::idle` -> aborts at the first idle.
 #[test]
 fn pos_ring_reader_is_allocation_free() {
     use tutti_rt::PosRing;
@@ -133,9 +116,6 @@ fn pos_ring_reader_is_allocation_free() {
 
 /// `SeqWriter::write` and `last`, and `SeqReader::read` (a value and the
 /// never-written answer), neither allocate nor free.
-///
-/// Mutation (run): a `Box::new` at the top of `SeqWriter::write` -> aborts at
-/// the first write.
 #[test]
 fn seq_cell_write_and_read_are_allocation_free() {
     use tutti_rt::{SeqReader, SeqWriter};
@@ -153,8 +133,6 @@ fn seq_cell_write_and_read_are_allocation_free() {
 }
 
 /// `PackedAtomic::store` and `load` neither allocate nor free.
-///
-/// Mutation (run): a `Box::new` at the top of `PackedAtomic::store` -> aborts.
 #[test]
 fn packed_atomic_store_and_load_are_allocation_free() {
     use tutti_rt::PackedAtomic;
@@ -173,10 +151,6 @@ fn packed_atomic_store_and_load_are_allocation_free() {
 /// one, a run, a view's reads, writes and `split`, and their releases,
 /// neither allocate nor free. The table and the held list are sized outside;
 /// each block builds its split inside, as the executor does.
-///
-/// Mutations (run): a `Box::new` at the top of `SplitMut::try_claim` -> aborts
-/// at the first claim; the same at the top of `RwView::split` -> aborts at the
-/// first split.
 #[test]
 fn split_claims_and_views_are_allocation_free() {
     use tutti_rt::{ClaimTable, Held, SplitMut, SplitRw};
@@ -222,11 +196,6 @@ fn split_claims_and_views_are_allocation_free() {
 /// helpers' leave budget is an hour so none gives up first, and the wait is
 /// bounded so a participant that never arrives fails the final assertion
 /// instead of hanging.
-///
-/// Mutations (run): a `Box::new` at the top of `TaskGraph::push` -> the first
-/// participant that readies a second task aborts; the helper threads not
-/// spawned -> the middle tasks time out and `every participant took part`
-/// fails (after the 10 s bound).
 #[test]
 fn task_graph_blocks_are_allocation_free() {
     use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
@@ -295,9 +264,6 @@ fn task_graph_blocks_are_allocation_free() {
 /// `JobGate::run` and two helpers' `help` neither allocate nor free, every
 /// thread inside the gate. The job holds participant 0 until both helpers
 /// have taken a share of the round, so the helper path is what runs.
-///
-/// Mutation (run): a `Box::new` in `JobGate::help` before the job runs -> the
-/// first helper that joins aborts.
 #[test]
 fn job_gate_run_and_help_are_allocation_free() {
     use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
@@ -342,8 +308,6 @@ fn job_gate_run_and_help_are_allocation_free() {
 
 /// `RtScope::enter`, `is_inside`, `check_outside` and the guard's drop
 /// neither allocate nor free.
-///
-/// Mutation (run): a `Box::new` in `RtScope::enter` -> aborts.
 #[test]
 fn rt_scope_is_allocation_free() {
     use tutti_rt::RtScope;
@@ -361,8 +325,6 @@ fn rt_scope_is_allocation_free() {
 
 /// `with_no_denormals` neither allocates nor frees, and returns its
 /// closure's value.
-///
-/// Mutation (run): a `Box::new` in `with_no_denormals` -> aborts.
 #[test]
 fn with_no_denormals_is_allocation_free() {
     use tutti_rt::with_no_denormals;
@@ -376,9 +338,6 @@ fn with_no_denormals_is_allocation_free() {
 
 /// `DrainBeat::begin`, and `DrainWatch::mark` and `two_since`, neither allocate
 /// nor free: the audio thread's per-block count and the control thread's reads.
-///
-/// Mutation (run): a `Box::new` kept across the add in `DrainBeat::begin` makes
-/// the gate abort on the first call.
 #[test]
 fn drain_clock_is_allocation_free() {
     let (mut beat, watch) = tutti_rt::drain_clock();
@@ -396,9 +355,6 @@ fn drain_clock_is_allocation_free() {
 
 /// The OS clock, from its first read: on Windows that first read also queries
 /// and caches the counter's frequency, so it runs inside the gate too.
-///
-/// Mutation (run): `monotonic_ns` boxing its reading before it returns ->
-/// aborts.
 #[test]
 fn the_clock_is_allocation_free_from_its_first_read() {
     assert_no_alloc::assert_no_alloc(|| {
@@ -411,8 +367,6 @@ fn the_clock_is_allocation_free_from_its_first_read() {
 /// The audio end of a `handoff` trades without allocating or freeing: taking
 /// a lent value, holding it, and returning it on a recall, with the control
 /// end's lend and recall inside the gate too.
-///
-/// Mutation (run): `poll` boxing the value it takes -> aborts.
 #[test]
 fn a_handoff_trades_without_allocating() {
     let (mut hand, mut rt) = tutti_rt::handoff::<[u64; 8]>();

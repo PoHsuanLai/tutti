@@ -41,8 +41,6 @@ mod tests {
         assert_eq!(parse_version("garbage"), None);
     }
 
-    /// Mutation (run): making `glibc_version` return `None` on glibc fails
-    /// it.
     #[cfg(all(target_os = "linux", target_env = "gnu"))]
     #[test]
     fn the_running_glibc_is_found() {

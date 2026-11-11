@@ -1,9 +1,6 @@
 use super::*;
 
 /// Nothing before the first write; afterwards, the last write's value.
-///
-/// Mutation (run): `read` without the `before == 0` check → the first
-/// read returns `Ok(Some([0, 0, 0]))` → fails.
 #[test]
 fn a_read_returns_the_last_write() {
     let mut writer = SeqWriter::<[u64; 3]>::new();
@@ -21,10 +18,6 @@ fn a_read_returns_the_last_write() {
 /// A `T` whose size is not a whole number of words round-trips every
 /// byte, through a last word it fills only partly, and a one-byte and a
 /// zero-sized `T` work too.
-///
-/// Mutation (run): `new` sizing the words with `size_of / WORD`
-/// (rounding down) → the 13-byte value gets one word and reads back with
-/// its last five bytes zero → fails.
 #[test]
 fn a_value_short_of_a_whole_word_round_trips() {
     let value: [u8; 13] = std::array::from_fn(|i| 0xA0 | i as u8);
@@ -52,11 +45,6 @@ fn a_value_short_of_a_whole_word_round_trips() {
 /// A cell whose write never completes (a writer preempted mid-write)
 /// is `Contended` after the retries, never "never written"; one never
 /// written is `Ok(None)` however few retries the caller allows.
-///
-/// Mutation (run): `read` returning `Ok(None)` after the last retry →
-/// the mid-write read is `Ok(None)` → fails. Mutation (run): `read`
-/// checking for an odd sequence before the `before == 0` check, and
-/// returning `Err(Contended)` for zero → fails.
 #[test]
 fn a_read_tells_never_written_from_contended() {
     let mut writer = SeqWriter::<u64>::new();
@@ -75,9 +63,6 @@ fn a_read_tells_never_written_from_contended() {
 /// A concurrent reader never accepts a copy mixing two writes. Every
 /// write stores one value in all elements, so a mix shows as unequal
 /// elements. A stress run, not a proof: the proof is the loom model.
-///
-/// Mutation (run): `read` returning `copy` without the sequence
-/// re-check → mixed copies are accepted → fails.
 #[test]
 #[cfg_attr(miri, ignore = "a threaded stress run; the loom model covers it")]
 fn a_concurrent_reader_never_sees_a_mixed_copy() {

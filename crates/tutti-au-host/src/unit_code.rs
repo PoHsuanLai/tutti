@@ -109,10 +109,6 @@ mod tests {
 
     /// Every one of the 27 codes, by its value in Apple's header. `None` rows
     /// are the nine whose algebra is not ours.
-    ///
-    /// Mutation (run, 2026-11-11): the `code::OCTAVES` arm's `ParamUnit::Octaves`
-    /// changed to `ParamUnit::Cents` → the 21 row fails; the `code::BEATS` arm
-    /// removed (falling to `_ => None`) → the 23 row fails.
     #[test]
     fn every_code_maps_per_the_table() {
         let table: [(u32, Option<ParamUnit>); 27] = [
@@ -151,10 +147,6 @@ mod tests {
     }
 
     /// A code outside the enumeration is not a unit.
-    ///
-    /// Mutation (run, 2026-11-11): the match's catch-all `_ => return None`
-    /// changed to `_ => ParamUnit::Hertz` → code 27 and up map, and this test
-    /// fails (the table test covers 0..=26 only).
     #[test]
     fn an_unknown_code_is_none() {
         for raw in [27, 28, 100, 0x6d73_7264, u32::MAX] {
@@ -163,9 +155,6 @@ mod tests {
     }
 
     /// Only the pan code declares a role.
-    ///
-    /// Mutation (run): `raw == code::PAN` changed to `raw == code::PHASE` →
-    /// both rows fail.
     #[test]
     fn only_the_pan_code_is_a_role() {
         assert_eq!(unit_role(18), Some(UnitParam::Pan));

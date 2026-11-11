@@ -87,12 +87,6 @@ fn test_curve_shapes() {
 /// `current()` and the same progress after, bit for bit (one machine, one
 /// libm), for every curve and several intervals, at step lengths that end inside the glide, on
 /// its last frame and past it, and for zero frames.
-///
-/// Mutation (run): `advance` returning `current_freq` where the glide had
-/// finished at a tick's entry (`tick` returns the target there) → the
-/// steps past the glide's end fail. Mutation (run): the pitch not
-/// recomputed before that return (`current_freq` left at the previous
-/// step's) → fails on `current()`.
 #[test]
 fn advance_is_that_many_ticks() {
     for curve in [Law::Linear, Law::PowerIn(2.0), Law::PowerIn(0.5)] {
@@ -144,9 +138,6 @@ fn advance_is_that_many_ticks() {
 /// (up, then a retarget half-way down) stepped by `tick` and by `advance`.
 /// The pitch goes through `ln` and `exp`, which reach libm, so the digests are
 /// goldens (`assert_golden`), recorded on the target named there.
-///
-/// Mutation (run): the square-root shape taken as `PowerIn(0.25)` (or
-/// the quadratic as `PowerIn(3.0)`) moves that shape's digest only.
 #[test]
 fn glide_render_digests() {
     fn digest(curve: Law) -> u64 {

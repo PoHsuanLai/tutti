@@ -102,10 +102,6 @@ fn discovery_words() -> [u32; 4] {
 // Configuration Request for MIDI 2.0 with JR both ways (§7.1.6.2: word 0
 // `0x02 << 8 | RXJR << 1 | TXJR`), then a Function Block Discovery for all
 // blocks, Info and Name (§7.1.7: block 0xFF, bits `n` and `i`).
-//
-// Mutation record: not requesting (skipping `Step::Request`) fails the second
-// packet; dropping the Name bit fails the third; never folding an Endpoint Name
-// or Function Block Name into the Endpoint fails the final equality.
 #[test]
 fn the_happy_path_reaches_midi2_with_jr() {
     let t0 = Instant::now();
@@ -158,9 +154,6 @@ fn the_happy_path_reaches_midi2_with_jr() {
 // A peer that supports only MIDI 1.0 gets no Stream Configuration Request: what
 // it reports already is what is wanted. Its one block has no name, so the
 // connection settles when the NAME_GRACE after its Info has passed.
-//
-// Mutation record: requesting regardless fails the no-request assertion; settling
-// without the grace fails `Wait`; a grace of `STEP_TIMEOUT` fails the 100 ms call.
 #[test]
 fn a_midi1_peer_is_not_asked_to_change() {
     let t0 = Instant::now();
@@ -186,8 +179,6 @@ fn a_midi1_peer_is_not_asked_to_change() {
 
 // Each part the peer lacks is dropped from the request (§7.1.6.1 step 2 asks
 // for the desired configuration; §7.1.2 says what is supported).
-//
-// Mutation record: not narrowing JR makes the request `0x0203`.
 #[test]
 fn the_request_asks_only_for_what_the_peer_supports() {
     let t0 = Instant::now();
@@ -245,9 +236,6 @@ fn a_wanted_midi1_is_requested_of_a_midi2_peer() {
 
 // A peer already in the wanted configuration is not asked again: what the
 // Notification of Discovery reports is kept.
-//
-// Mutation record: not storing the Discovery's Notification leaves the active
-// configuration MIDI 1.0 and sends a Request.
 #[test]
 fn a_peer_already_configured_is_not_asked() {
     let t0 = Instant::now();
@@ -306,9 +294,6 @@ fn requested(t0: Instant) -> Connection {
 // §7.1.6.1 step 3: "If the Receiver is unable to change some or all parts of the
 // configuration, the Receiver replies with its current configuration." The
 // connection reports what the Notification says, not what it asked for.
-//
-// Mutation record: storing the requested configuration instead of the
-// notified one fails this.
 #[test]
 fn a_notification_of_another_protocol_is_reported_as_it_is() {
     let t0 = Instant::now();
@@ -325,7 +310,6 @@ fn a_notification_of_another_protocol_is_reported_as_it_is() {
     );
 }
 
-// Mutation record: keeping a `Reserved` protocol as it is fails this.
 #[test]
 fn a_reserved_protocol_in_a_notification_is_midi1() {
     let t0 = Instant::now();
@@ -335,7 +319,6 @@ fn a_reserved_protocol_in_a_notification_is_midi1() {
 }
 
 // Only a Notification answers the Request (§7.1.6.2: not before it arrives).
-// Mutation record: settling on any message fails this.
 #[test]
 fn another_message_does_not_answer_the_request() {
     let t0 = Instant::now();
@@ -350,9 +333,6 @@ fn another_message_does_not_answer_the_request() {
 
 // No reply at all: sent again at each STEP_TIMEOUT, three attempts in all, then a
 // MIDI 1.0 device with its one inferred block. Time is passed as values.
-//
-// Mutation record: `attempts < MAX_ATTEMPTS` as `<=` sends a fourth Discovery;
-// not comparing against `STEP_TIMEOUT` makes the 999 ms call send.
 #[test]
 fn a_silent_peer_settles_as_midi1_after_the_retries() {
     let t0 = Instant::now();
@@ -503,9 +483,6 @@ fn block_name_packet(n: u8, form: Form, text: &[u8]) -> Message {
 
 // Function Blocks that do not all arrive: the protocol is settled, so the
 // connection ends with the blocks it has after the retries, not as MIDI 1.0.
-//
-// Mutation record: falling back to MIDI 1.0 for this step too fails the
-// `Negotiated`; settling on the first Info fails the `Wait`.
 #[test]
 fn missing_function_blocks_end_the_connection_with_what_came() {
     let t0 = Instant::now();
@@ -529,8 +506,6 @@ fn missing_function_blocks_end_the_connection_with_what_came() {
 
 // A Name that follows its block's Info within the grace is kept, and when every
 // block has both the connection settles without waiting.
-//
-// Mutation record: not applying `block_names` in `settle` fails the name.
 #[test]
 fn a_name_within_the_grace_is_kept() {
     let t0 = Instant::now();
@@ -565,9 +540,6 @@ fn a_name_within_the_grace_is_kept() {
 }
 
 // A reply after the connection settled changes nothing.
-//
-// Mutation record: dropping the `Step::Done` arm of `on_message` lets the late
-// Endpoint Info overwrite the version and capabilities.
 #[test]
 fn a_reply_after_settling_is_ignored() {
     let t0 = Instant::now();
@@ -615,9 +587,6 @@ fn name_packet(form: Form, text: &[u8]) -> Message {
 // §7.1.4: a name arrives as a Start, Continues and an End. A Continue or End with
 // no Start before it, and a Start that is interrupted by another, do not make a
 // name.
-//
-// Mutation record: appending without clearing on `Start` joins the abandoned
-// text to the next name.
 #[test]
 fn names_are_reassembled_from_several_packets() {
     let t0 = Instant::now();
@@ -636,9 +605,6 @@ fn names_are_reassembled_from_several_packets() {
 }
 // A Function Block Name of one block is not finished by the packets of another:
 // one name is open at a time.
-//
-// Mutation record: not tracking `block_name_of` lets block 0's End complete
-// block 1's text: block 1 becomes "ABCDEFGHIJKLMdef" and block 0 is named.
 #[test]
 fn block_names_of_two_blocks_do_not_mix() {
     let t0 = Instant::now();

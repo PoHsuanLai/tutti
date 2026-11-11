@@ -2,9 +2,6 @@
 //! Any 16 bytes are four words. `decode` must not panic on them, a refusal must
 //! hand the words back, and what decodes must survive an encode and a second
 //! decode unchanged.
-//!
-//! Mutation (planted in `decode`, found within seconds, restored): the SysEx 8
-//! data slice taken as `..low` instead of `..low - 1`.
 
 use libfuzzer_sys::fuzz_target;
 use tutti_ump::{Ump, Unknown, decode};

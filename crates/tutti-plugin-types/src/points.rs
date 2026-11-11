@@ -321,9 +321,6 @@ mod tests {
 
     /// **`try_push` on a full buffer hands the point back without
     /// allocating**, and the buffer keeps its points and its storage.
-    ///
-    /// Mutation (run): `try_push` growing past the capacity (rebuilding the
-    /// storage one larger and pushing, as a `Vec` would) → the gate aborts.
     #[test]
     fn try_push_on_a_full_buffer_returns_the_point_without_allocating() {
         let mut buf = PointBuf::with_capacity(3);
@@ -347,11 +344,6 @@ mod tests {
     /// a later point takes the latest point's place, wherever that is in the
     /// buffer (points from two sources need not be in time order), and an
     /// earlier one is dropped; either way `false`, and nothing grows.
-    ///
-    /// Mutations (run), each fails: replacing the last point *added* rather
-    /// than the latest in time (`len - 1`) → the out-of-order buffer loses
-    /// its frame-30 point; replacing the latest even with an earlier point
-    /// (no `>=` check) → the buffer ends on frame 5.
     #[test]
     fn push_or_replace_last_keeps_the_latest_value() {
         let mut buf = PointBuf::with_capacity(3);
@@ -378,9 +370,6 @@ mod tests {
 
     /// **`clear` keeps the capacity**, and the storage: a buffer cleared and
     /// refilled block after block is the same allocation.
-    ///
-    /// Mutation (run): `clear` rebuilding the storage (`*self =
-    /// Self::default()`) → the capacity is 0 → fails.
     #[test]
     fn clear_keeps_the_capacity() {
         let mut buf = PointBuf::with_capacity(4);
@@ -400,9 +389,6 @@ mod tests {
 
     /// **`remove` takes one point out and moves the later ones down**,
     /// within the buffer, and refuses an index past the points.
-    ///
-    /// Mutation (run): `remove` without the `copy_within` (only the length
-    /// shortened) → the buffer keeps frame 10 and loses frame 20 → fails.
     #[test]
     fn remove_moves_the_later_points_down() {
         let mut buf = PointBuf::with_capacity(4);
@@ -423,13 +409,6 @@ mod tests {
     /// result is exactly std's stable sort of the same points (computed
     /// outside the gate), so a point that shares a frame with an earlier
     /// one stays after it (VST3's two-point jump encoding).
-    ///
-    /// Mutations (run), each fails: `sort_by_offset` as
-    /// `self.sort_by_key(|p| p.sample_offset)` → the gate aborts (std's
-    /// stable sort allocates its scratch past 256 points); the insertion
-    /// point before equal offsets (`<` for `<=` in
-    /// `insertion_sort_by_key`'s `partition_point`) →
-    /// a shared frame's points swap, unlike std's.
     #[test]
     fn sort_by_offset_is_stable_and_allocation_free_at_full_room() {
         let room = crate::ParameterQueue::chunk_room(4096) + 1;
@@ -462,9 +441,6 @@ mod tests {
 
     /// **`try_push_front` puts the point ahead of every point**, shifting
     /// them, within the capacity.
-    ///
-    /// Mutation (run): `try_push_front` writing slot 0 without shifting
-    /// (no `copy_within`) → the frame-10 point is overwritten → fails.
     #[test]
     fn try_push_front_shifts_the_points_after_it() {
         let mut buf = PointBuf::with_capacity(3);

@@ -32,10 +32,6 @@ fn spec_at(rate: f64) -> OutputSpec {
 /// it pinned `AudioTapRes`; its adapter half there now checks the resource is
 /// the session's meter. The tap half was `Session::tap().open()`; the frame
 /// count is the same figure.)
-///
-/// Mutation (run, recorded here): `Graph::new` not declaring the master
-/// meter -> `expect` fails; the tap not marking the graph edited -> no plan is
-/// sent and the tap sees nothing.
 #[test]
 fn the_session_publishes_the_meter_and_taps_its_callback_feeds() {
     let (driver, stream) = ManualStreamDriver::new();
@@ -71,10 +67,6 @@ fn the_session_publishes_the_meter_and_taps_its_callback_feeds() {
 
 /// **The session's load meter is the one its callback's engine feeds**:
 /// each block the device renders is one block measured.
-///
-/// Mutation (run): `build_on` leaving `Session::load` at the engine-less
-/// `None` → `load_meter()` is `None` → fails; giving the session a fresh
-/// `LoadMeter` instead of the engine's → no block measured → fails.
 #[test]
 fn the_session_reads_the_load_its_callback_measures() {
     let (driver, stream) = ManualStreamDriver::new();
@@ -95,13 +87,6 @@ fn the_session_reads_the_load_its_callback_measures() {
 /// the restart, before any block at the new rate, the published table and
 /// total are the figures of the plan the audio side holds (the re-prepare's
 /// resumed plan), and they are the limiter's new latency.
-///
-/// Mutations (run):
-/// - the restart hook not calling `publish_sent` → the 48 kHz figures stay
-///   published → fails;
-/// - the hook not settling the engine and collecting (leaving the second
-///   half to the next update's collect) → the hook's own check finds the
-///   re-prepare still pending and the restart is refused → fails.
 #[test]
 fn a_rerate_keeps_the_published_compensation_in_step_with_the_plan() {
     let (driver, old) = ManualStreamDriver::new();
@@ -221,8 +206,6 @@ fn policy() -> DevicePolicy {
 
 /// **Appearing, vanishing and a moved default are session events**, the same
 /// headless and in an app, with no policy on: nothing restarts.
-///
-/// Mutation (run): `watch.poll` not called from `device_poll` → no event.
 #[test]
 fn the_watch_reports_what_the_host_lists() {
     let (driver, _stream) = ManualStreamDriver::new();
@@ -282,9 +265,6 @@ fn the_watch_reports_what_the_host_lists() {
 
 /// **The default moving restarts a stream that follows it, and the restart's
 /// outcome says the rate moved** (the host reopens its mic on it).
-///
-/// Mutation (run): `note_restart` pushing no `DeviceRestarted` → fails;
-/// `rate_changed` always true → the second half fails.
 #[test]
 fn following_the_default_restarts_and_reports_the_rate() {
     let (driver, _stream) = ManualStreamDriver::new();
@@ -337,9 +317,6 @@ fn following_the_default_restarts_and_reports_the_rate() {
 /// **The session never overrides an explicit choice.** A stream the host
 /// put on "A" stays silent while "A" is gone, whatever else is the default,
 /// and is asked back onto "A" only when it returns.
-///
-/// Mutation (run): the policy's `Id` goal made `Default` → the second poll
-/// wants a restart onto the default, and this fails.
 #[test]
 fn an_explicit_device_is_not_replaced_by_the_default() {
     let (driver, stream) = ManualStreamDriver::new();
@@ -433,9 +410,6 @@ fn a_flapping_device_is_not_restarted_on_every_change() {
 
 /// **A restart that fails leaves the old spec and graph rate**, is reported,
 /// and the policy asks again only after its backoff.
-///
-/// Mutation (run): `note_restart` not reporting `RestartFailed` → the event
-/// assertion fails; the policy half of a failure is the next test's.
 #[test]
 fn a_refused_restart_keeps_the_old_spec_and_is_retried_later() {
     let (driver, _stream) = ManualStreamDriver::new();
@@ -486,9 +460,6 @@ fn a_refused_restart_keeps_the_old_spec_and_is_retried_later() {
 /// **A restart that fails after the stream stopped is not forgotten**: the
 /// stream is dead, so when the default is back on the device it was on, the
 /// policy asks again (the device it "runs on" is not playing).
-///
-/// Mutation (run): `note_restart` not telling the policy of the failure →
-/// the policy still believes the stream plays on A, and nothing is asked.
 #[test]
 fn a_restart_that_stopped_the_stream_is_retried() {
     let (driver, _stream) = ManualStreamDriver::new();
@@ -535,9 +506,6 @@ fn a_restart_that_stopped_the_stream_is_retried() {
 /// **A stale `RestartWanted` cannot override an explicit choice.** The
 /// policy asks for `Default`; before it runs, the host restarts onto
 /// another device. The wanted restart is dropped and the choice stays.
-///
-/// Mutation (run): `restart_wanted` without the `want` check, or running
-/// through `restart_following` (which records a choice) → fails.
 #[test]
 fn a_stale_wanted_restart_does_not_replace_a_later_choice() {
     let (driver, _stream) = ManualStreamDriver::new();
@@ -579,9 +547,6 @@ fn a_stale_wanted_restart_does_not_replace_a_later_choice() {
 
 /// **A fault after a restart is reported** even when the count equals the
 /// one the last poll saw (a restart clears the record).
-///
-/// Mutation (run): `note_restart` not resetting the seen count → the second
-/// fault is missed.
 #[test]
 fn a_fault_after_a_restart_is_reported_again() {
     let (driver, _first) = ManualStreamDriver::new();
@@ -646,9 +611,6 @@ fn a_host_can_hold_restarts() {
 /// This is how ALSA, which says `DeviceNotAvailable` rarely, loses a stream.
 /// The one real wait is the grace itself, which the faults record reads from
 /// the clock.
-///
-/// Mutation (run): `device_poll` treating a `Backend` fault as lost → the
-/// first assertion fails; `lost = false` → the last fails.
 #[test]
 fn a_stalled_backend_run_becomes_a_lost_stream() {
     let (driver, stream) = ManualStreamDriver::new();
@@ -688,10 +650,6 @@ fn a_stalled_backend_run_becomes_a_lost_stream() {
 
 /// **`render_worker_start` reaches the live pool**: with four participants
 /// the hook runs once for each of the three helpers, with indices 1..=3.
-///
-/// Mutation (run): `Graph::engine` passing `None` to `render_pool` instead of
-/// its `render_worker_start`, or `parts` not handing the builder's hook to
-/// the graph: no index is seen, so it fails.
 #[test]
 fn the_render_worker_start_hook_runs_once_per_live_helper() {
     let seen = Arc::new(Mutex::new(Vec::new()));
@@ -721,10 +679,6 @@ fn indices_after(seen: &Mutex<Vec<usize>>, n: usize) -> Vec<usize> {
 /// **The heard tap follows a restart onto a device of another width.** A tap
 /// open across the change keeps counting its blocks lost (its width is the old
 /// one's); one opened after it takes the new width and is fed.
-///
-/// Mutation (run, recorded here): delete the width update in `rerate`
-/// (`*layout = spec.channels`) -> the reopen is two lanes wide, every block
-/// counts lost and the width assertion fails.
 #[test]
 fn the_heard_tap_reopens_at_the_width_of_the_device_after_a_restart() {
     let (driver, _old) = ManualStreamDriver::new();
@@ -759,10 +713,6 @@ fn the_heard_tap_reopens_at_the_width_of_the_device_after_a_restart() {
 /// is the only one `make` is asked for, and a `make` that fails is asked
 /// again by the next call. The device is one the host supplied, so
 /// `device_name` is `Ok(None)`, not an error.
-///
-/// Mutations (run): `outputs_listed` never set makes `make` run twice and
-/// fails the call count; set before `make` succeeds, the retry after the
-/// failure is skipped and the count is short.
 #[test]
 fn the_session_lists_the_outputs_once_and_retries_a_failed_start() {
     let (driver, _stream) = ManualStreamDriver::new();
@@ -790,9 +740,6 @@ fn the_session_lists_the_outputs_once_and_retries_a_failed_start() {
 /// a device that cannot place it is refused rather than rendering silence: four
 /// buses on a six-wide device restart onto another six-wide one, and not onto
 /// a stereo one.
-///
-/// Mutation (run): `rerate` not checking a declared root against the new
-/// device → the restart onto stereo succeeds.
 #[test]
 fn a_restart_onto_a_device_that_cannot_place_the_declared_root_is_refused() {
     let wide = |rate| {
@@ -832,9 +779,6 @@ fn a_restart_onto_a_device_that_cannot_place_the_declared_root_is_refused() {
 
 /// A declaration the device refused is asked again of the next device: it is a
 /// `Refused` status on stereo and `Applied` after a restart onto six channels.
-///
-/// Mutation (run): the retry in `rerate` removed → the status stays `Refused`
-/// and the root keeps its two channels.
 #[test]
 fn a_refused_declaration_is_retried_on_a_restart() {
     use tutti_session::RootTopologyStatus;

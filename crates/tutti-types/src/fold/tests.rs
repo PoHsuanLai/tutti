@@ -63,10 +63,6 @@ const M: f32 = M3DB;
 /// The hand-written coefficient table of the ITU-R BS.775 / Dolby stereo
 /// downmix, per source width (LFE column always 0), for the left output; the
 /// right is the mirror. `quad` is `FL FR BL BR`.
-///
-/// Mutation (run): the fold gain `M3DB` -> 0.5 fails every row; the LFE no
-/// longer omitted (it falls through to `Unplaced`) fails with a refusal; a
-/// missing centre dropped silently fails the centre entry.
 #[test]
 fn the_stereo_fold_is_the_itu_table() {
     let cases: [(ChannelTopology, [f32; 12], [f32; 12]); 4] = [
@@ -101,10 +97,6 @@ fn the_stereo_fold_is_the_itu_table() {
 
 /// Mono: one channel copies, a stereo pair averages, anything wider is the
 /// stereo fold times −3 dB (the centre then lands at `2·M3DB² = 1`).
-///
-/// Mutation (run): the pair average's scale 0.5 -> 1.0 fails the 2 -> 1 row;
-/// the wide mix's scale `M3DB` -> 0.5 fails 6 -> 1 and quad -> 1; the mix
-/// reordered to `a + b * scale` fails the 0.212 figure.
 #[test]
 fn the_mono_fold_is_the_itu_table() {
     let mono = smpte(1);
@@ -203,13 +195,6 @@ fn refused(sw: u16, dw: u16) -> bool {
 /// values, per frame and planar. Widths with no order (3, 5, 7, 9 to 11, 13, 14)
 /// are placed by index and only widen (copy, zero-fill); a narrowing with one is
 /// refused with `Unplaced` (its channels would be dropped).
-///
-/// Mutation (run), each failing this test: overhead grouping off (the 12 -> 2
-/// and 12 -> 1 pairs differ in the last bit); the mono mix reordered to
-/// `a + b * scale`; the direct term moved after the folded ones; the lone-mono
-/// branch off (1 -> 2 at -3 dB); the interleaved and planar lone-term `+=`
-/// written `=`; the pair scale and the wide-mix scale changed; `by_index`
-/// accepting a narrowing (the refusal arm removed) fails the 5 -> 3 row.
 #[test]
 fn widths_write_the_itu_formulas_to_the_bit() {
     let mut pairs = 0;
@@ -271,9 +256,6 @@ fn widths_write_the_itu_formulas_to_the_bit() {
 /// Every pair in [`PLACED_BY_POSITION`] really differs from the closed form
 /// (the list is the set that changed, no more and no fewer), and a pair outside
 /// it with a matrix does not: a stale entry would otherwise hide a regression.
-///
-/// Mutation (run): `Fold::widths` placing a mono at channel 0 (the old copy)
-/// fails the (1, 6) row.
 #[test]
 fn the_placed_by_position_pairs_are_the_ones_that_differ() {
     let probe = |s: usize| -> Vec<f32> { (0..s).map(|c| 0.25 + c as f32 * 0.5).collect() };
@@ -298,9 +280,6 @@ fn the_placed_by_position_pairs_are_the_ones_that_differ() {
 
 /// A width with no order is placed by index, widening only: a narrowing is
 /// refused, not truncated.
-///
-/// Mutation (run): the `s > d` refusal removed → 5 -> 3 and 7 -> 2 truncate and
-/// fail; the zero-fill arm replaced by `Copy(0)` fails the widening rows.
 #[test]
 fn by_index_only_widens() {
     let w = ChannelLayout::from;
@@ -335,10 +314,6 @@ fn by_index_only_widens() {
 /// `to_width` refuses a channel no speaker names whatever the destination, reads
 /// a bare count in the engine's order (a quad at four) and places by index where
 /// there is no order.
-///
-/// Mutation (run): the `Unknown` check removed lets the LFE2 file through to a
-/// 5-wide destination; reading an unassigned 4 as unassigned (not quad) makes the
-/// stereo row the first two channels.
 #[test]
 fn to_width_refuses_the_unnamed_and_reads_a_count_in_the_engines_order() {
     use Speaker::*;
@@ -393,8 +368,6 @@ fn to_width_refuses_the_unnamed_and_reads_a_count_in_the_engines_order() {
 /// The same speakers in another order is a permutation: every output is a
 /// plain copy (gain exactly 1.0), bit for bit, including negative zero, NaN
 /// payloads, infinities and subnormals.
-///
-/// Mutation (run): the direct hit's gain 1.0 -> `M3DB` fails the bit check.
 #[test]
 fn the_same_speakers_in_another_order_is_a_bit_exact_permutation() {
     let film = smpte(6);
@@ -437,10 +410,6 @@ fn the_same_speakers_in_another_order_is_a_bit_exact_permutation() {
 
 /// A pair with no matrix before: 5.1 to quad keeps the centre out of the
 /// rears and moves the surrounds across at full level.
-///
-/// Mutation (run): the reposition gain forced to `M3DB` fails the `1.0`
-/// entries; the direct gain changed or the centre dropped when missing fails
-/// the FL and FR entries.
 #[test]
 fn five_one_to_quad_places_by_position() {
     let f = fold(&smpte(6), &ChannelTopology::quad());
@@ -453,10 +422,6 @@ fn five_one_to_quad_places_by_position() {
 
 /// 7.1 to 5.1 sums the rears into the sides at −3 dB; 5.1 to 7.1 zero-fills the
 /// rears; 7.1.4 to 7.1 folds the heights into the front pair at −3 dB.
-///
-/// Mutation (run): the `BackLeft` fallback reduced to the front pair fails the
-/// SL entry of 7.1 -> 5.1; a destination speaker nothing feeds given channel 0
-/// instead of silence (`Expr::Zero` -> `Copy(0)`) fails the zero-fill rows.
 #[test]
 fn narrowing_below_surround_is_by_position() {
     let f = fold(&smpte(8), &smpte(6));
@@ -484,9 +449,6 @@ fn narrowing_below_surround_is_by_position() {
 /// The formats disagree on side versus back for four speakers (the engine's
 /// quad is `FL FR BL BR`, VST3's `k40Music` and AU's quadraphonic decode to
 /// `FL FR SL SR`): a fold between them is a pure reposition at gain 1.
-///
-/// Mutation (run): the reposition gain forced to `M3DB`, and the `BackLeft`
-/// fallback reduced to the front pair, each fail this.
 #[test]
 fn quad_and_side_surround_quad_are_the_same_four_feeds() {
     let side_quad = ChannelTopology::new([FrontLeft, FrontRight, SideLeft, SideRight]);
@@ -501,10 +463,6 @@ fn quad_and_side_surround_quad_are_the_same_four_feeds() {
 
 /// A mono source feeds the centre of a destination that has one, else the
 /// front pair at gain 1 (never at −3 dB, never in an LFE or a surround).
-///
-/// Mutation (run): the lone-mono branch off makes mono -> stereo -3 dB per
-/// side and fails the 1.0 entries; a silent zero row replaced by `Copy(0)`
-/// fails the 5.1 channels.
 #[test]
 fn a_lone_centre_feeds_the_centre() {
     let mono = smpte(1);
@@ -562,9 +520,6 @@ fn unassigned_channels_map_one_to_one() {
 }
 
 /// Every refusal names what failed.
-///
-/// Mutation (run): the empty, unnamed and duplicate checks each disabled fail
-/// their own assertion.
 #[test]
 fn what_cannot_be_placed_is_an_error() {
     let empty = ChannelTopology::new([]);
@@ -620,9 +575,6 @@ fn what_cannot_be_placed_is_an_error() {
 
 /// `assuming_smpte` is the width convenience; 4 has no order, and its error
 /// says which width.
-///
-/// Mutation (run): a `4 => FL FR BL BR` arm in `smpte` fails the refusal here
-/// and `a_width_of_four_is_ambiguous_and_declines`.
 #[test]
 fn assuming_smpte_declines_what_a_width_cannot_say() {
     let four = ChannelLayout::QUAD;
@@ -642,10 +594,6 @@ fn assuming_smpte_declines_what_a_width_cannot_say() {
 
 /// Every pair of common topologies either refuses or places every non-LFE
 /// source channel: an impulse on it reaches some output, and nothing is NaN.
-///
-/// Mutation (run): a missing centre omitted like the LFE leaves the 5.1 centre
-/// unreached and fails; the LFE no longer omitted turns narrowing pairs into
-/// refusals and fails `built`.
 #[test]
 fn no_source_channel_is_silently_dropped() {
     let named = [
@@ -702,12 +650,6 @@ fn no_source_channel_is_silently_dropped() {
 
 /// Planar and planar-to-interleaved output are the frame output, bit for bit, for
 /// every built pair, so a node and an edge cannot disagree.
-///
-/// Mutation (run): `planar_to_interleaved` writing every chunk at frame 0, or
-/// adding 1.0 to each sample, fails; the planar lone-term and group-term `+=` written `=`,
-/// the mono mix reordered, the planar mix `(a + b) * scale` written
-/// `a + b * scale` (multi-pass and fused kernels), the fused kernel's second
-/// sum dropped, and its gain ignored each fail.
 #[test]
 fn planar_is_the_frame_fold() {
     let all = [
@@ -767,9 +709,6 @@ fn the_device_fold_checks_widths() {
 }
 
 /// A frame of the wrong width panics instead of writing fewer samples.
-///
-/// Mutation (run): the source `assert_eq!` in `frame` removed fails the
-/// source case.
 #[test]
 #[should_panic(expected = "destination width")]
 fn a_short_destination_frame_panics() {
@@ -789,12 +728,6 @@ fn a_short_source_frame_panics() {
 /// other entry is zero. Fold gains are `M` (−3 dB) except a reposition (1.0).
 /// The stereo rows are the ITU/Dolby figures; every non-stereo row is this
 /// crate's own rule, pinned here so a change to it is a reviewed edit.
-///
-/// Mutation (run): the `BackCenter` fallback reduced to the front pair fails
-/// the 6.1 -> 5.1 and 6.1 -> quad rows; also run, each failing its rows:
-/// `TopBackLeft` sent to the front only; `FrontLeftOfCenter` sent to the front
-/// only; `TopFrontCenter` to the front pair only; `TopSideLeft` to the front
-/// only; the reposition forced to `M`.
 #[test]
 fn every_fallback_rule_is_pinned() {
     type Entry = (usize, usize, f32);
@@ -1114,10 +1047,6 @@ fn every_fallback_rule_is_pinned() {
 
 /// `select` maps chosen source channels one to one onto an unassigned
 /// destination, bit-exact, and names what is out of range.
-///
-/// Mutation (run): the `c < src.count()` filter removed lets channel 16 of 16
-/// through and fails the refusal; row `Copy(c)` written `Copy(0)` fails the
-/// order check.
 #[test]
 fn select_picks_channels_one_to_one() {
     let sixteen = ChannelLayout::from(16u16);
@@ -1146,9 +1075,6 @@ fn select_picks_channels_one_to_one() {
 
 /// A list longer than a width can count is refused, so `narrow` cannot panic
 /// on a destination width. The longest list that still counts is built.
-///
-/// Mutation (run): removing the `try_from` guard in `select` panics in
-/// `dst_layout` (`narrow`) on the 65536-long list, failing this test.
 #[test]
 fn select_refuses_a_list_past_u16() {
     let wide = ChannelLayout::from(2u16);
@@ -1165,10 +1091,6 @@ fn select_refuses_a_list_past_u16() {
 /// `declared` places a declared all-`Unassigned` source by index (where
 /// `to_width` would read a four as quad) and a named one as `to_width` does;
 /// an unassigned source wider than the destination is refused.
-///
-/// Mutation (run): `declared` delegating to `to_width` for an unassigned source
-/// puts the quad's rears in the 5.1 destination's side slots (positions 4 and
-/// 5) and zero at 2 and 3, failing the first assertion.
 #[test]
 fn declared_keeps_a_unassigned_source_by_index() {
     let four = ChannelTopology::unassigned(ChannelLayout::QUAD);
@@ -1200,8 +1122,6 @@ fn declared_keeps_a_unassigned_source_by_index() {
 /// The −3 dB coefficient is `1/√2`, 0.7071, and its square is a half
 /// (−3.0103 dB); and a fold applies it as written, not through the constant
 /// alone (a centre-only 5.1 lands at 0.7071 on both sides).
-///
-/// Mutation (run): `M3DB` -> `0.9 · FRAC_1_SQRT_2`, then -> `0.5` fails.
 #[test]
 #[allow(
     clippy::approx_constant,
@@ -1221,9 +1141,6 @@ fn the_minus_3_db_coefficient_is_the_itu_figure() {
 
 /// The matrix is not normalised: full scale on every 5.1 channel folds to
 /// `1 + 2 · 0.7071 = 2.4142` per side (the LFE is dropped).
-///
-/// Mutation (run): normalise by dividing the 5.1 sum by `1 + 2·M3DB` -> `1.0`
-/// fails.
 #[test]
 fn full_scale_five_one_folds_above_full_scale() {
     let mut out = [0.0f32; 2];
@@ -1247,11 +1164,6 @@ fn dense(f: &Fold, o: usize) -> Vec<f32> {
 
 /// The pairs, as the hand-written ITU table gives them (sparse: a source the
 /// destination does not hear is absent, not a zero pair).
-///
-/// Mutations (run), each failing this test: `M3DB` -> 0.5 in the table's fold
-/// (the 5.1 and quad rows); the LFE given a pair (the 5.1 row has a fourth
-/// entry); the `Mix` scale not applied in `contribute` (the 2 -> 1 and 6 -> 1
-/// rows); the lone-centre fan-out dropping the right side.
 #[test]
 fn contributions_are_the_itu_table() {
     let pairs = |f: &Fold, o| f.contributions(o).collect::<Vec<_>>();
@@ -1295,8 +1207,6 @@ fn contributions_are_the_itu_table() {
 /// A permutation and a `select` have one pair of gain exactly 1.0 per
 /// destination channel (the lowering's plain-edge case), an upmix's silent
 /// channel has none, and the identity fold is `(i, 1.0)`.
-///
-/// Mutation (run): `Expr::Copy` contributing `scale * 0.5` fails every line.
 #[test]
 fn copies_contribute_at_exactly_unity() {
     let id = fold(&smpte(6), &smpte(6));
@@ -1328,10 +1238,6 @@ fn copies_contribute_at_exactly_unity() {
 /// `contributions`). The pairs run over all the engine's ordered widths, the
 /// quad and side-surround spellings, a permutation, a 12-wide overhead source
 /// and an unassigned relabel.
-///
-/// Mutations (run), each failing this test: the pairs' gain scaled by a
-/// constant; two source channels' pairs swapped; the `Mix` half `b`
-/// not added; the sort removed (the 12 -> 2 row is out of order).
 #[test]
 fn contributions_are_the_fold_as_a_matrix() {
     let mut tops: Vec<ChannelTopology> = ORDERED

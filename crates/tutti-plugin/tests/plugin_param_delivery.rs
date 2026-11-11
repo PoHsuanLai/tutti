@@ -274,8 +274,7 @@ fn an_export_renders_an_edit_made_in_the_plugin_as_live_does() {
     );
     // Every block is checked, not only the last: the live path never waits,
     // so a block whose chunk is not yet back reads as silence (a late block,
-    // not a value). Mutation (run): `!near(&out, -15.0)` in the per-block
-    // check → the first block fails it, so a block at the held -6 dB would.
+    // not a value).
     let mut heard = None;
     for _ in 0..20 {
         let out = live.run(FORK_BLOCK, |_, _| 0.0);

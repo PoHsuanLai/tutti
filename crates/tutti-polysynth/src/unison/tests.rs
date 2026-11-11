@@ -3,9 +3,6 @@ use super::*;
 /// **A driven detune gets `set_detune`'s floor**: driven to −10 cents
 /// the engine detunes by 0, as `set_detune(-10)` leaves it, and does not
 /// recompute again for the same drive.
-///
-/// Mutation (run): `sync_from_atomics` without
-/// `clamp_detune` (the driven value as is) → the config holds −10 → fails.
 #[test]
 fn a_driven_detune_is_floored_as_the_setter_floors_it() {
     let mut engine = UnisonEngine::new(UnisonConfig {
@@ -179,9 +176,6 @@ fn test_clamp_voice_count() {
 /// `sync_from_atomics` recomputes whenever a modulated detune or spread
 /// moves, and in `tick` that runs after MIDI is polled — so a recompute
 /// that reset the phases wiped the note-on's draw before anything used it.
-///
-/// *Mutation:* `phase_offset: Phase::START` in `recompute_params` fails
-/// this.
 #[test]
 fn recompute_keeps_the_drawn_phases() {
     let mut unison = UnisonEngine::new(UnisonConfig {

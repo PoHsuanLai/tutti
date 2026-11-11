@@ -193,11 +193,6 @@ mod tests {
     /// **`copy_string` writes the string, a NUL, and nothing past it.** It used to
     /// clear `max` bytes first (a destination that holds the string but not `max`
     /// bytes was overrun) and to leave a string of `max` bytes or more with no NUL.
-    ///
-    /// Mutation (run): clear `max` bytes before the copy again (`memset`): the
-    /// sentinel past the NUL is cleared and the first assertion fails. Mutation
-    /// (run): copy `min(max, len)` bytes instead of `max - 1`: the long string has
-    /// no NUL and the third assertion fails.
     #[test]
     fn copy_string_stops_at_its_nul_and_always_has_one() {
         let mut dst = [0xAAu8; 16];
@@ -224,9 +219,6 @@ mod tests {
     }
 
     /// A null destination is not handled (`0`), not written to.
-    ///
-    /// Mutation (run): remove the null check: `copy_string` writes to address 0
-    /// and the test aborts on a signal.
     #[test]
     fn copy_string_to_null_is_not_handled() {
         assert_eq!(copy_string(std::ptr::null_mut(), "x", 8), 0);
@@ -246,11 +238,6 @@ mod tests {
 
     /// **A plugin's malformed host calls are answered `0`, not dereferenced.** A
     /// null `VstEvents`, a misaligned one, and a null string buffer.
-    ///
-    /// Mutation (run): drop the null check on `audioMasterProcessEvents`: the null
-    /// call dereferences address 0 and the test aborts on a signal. Mutation (run):
-    /// drop the alignment check: the misaligned call reaches the host and the
-    /// count assertion fails.
     #[test]
     fn malformed_host_calls_are_not_followed() {
         let host = Counting(AtomicUsize::new(0));

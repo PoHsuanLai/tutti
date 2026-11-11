@@ -392,8 +392,6 @@ mod enumeration_hole_tests {
     /// Every port on both sides flagged: the plugin can run at 64-bit.
     /// Baseline for the vetoes below; without it a constant `false` passes
     /// them all.
-    ///
-    /// Mutation (run): `presented > 0` → `false` fails here.
     #[test]
     fn f64_support_when_every_port_is_flagged() {
         assert!(f64_support(Stub {
@@ -408,9 +406,6 @@ mod enumeration_hole_tests {
     /// The outputs all claim 64-bit, one input does not. The host hands
     /// `data64` to every buffer, so that input would get a table it never
     /// agreed to read.
-    ///
-    /// Mutation (run): scanning only the outputs (`for is_input in [false]`,
-    /// the old check) → `true`, fails.
     #[test]
     fn an_unflagged_input_port_vetoes_f64() {
         assert!(!f64_support(Stub {
@@ -423,9 +418,6 @@ mod enumeration_hole_tests {
     }
 
     /// One flagged output is not enough when another output is not.
-    ///
-    /// Mutation (run): `continue` instead of `return false` at an unflagged
-    /// port (any flagged port then suffices) → `true`, fails.
     #[test]
     fn an_unflagged_output_port_vetoes_f64() {
         assert!(!f64_support(Stub {
@@ -439,8 +431,6 @@ mod enumeration_hole_tests {
 
     /// No ports at all: f32, the width every CLAP plugin must accept (see
     /// `check_f64_support` for why it is not the vacuous `true`).
-    ///
-    /// Mutation (run): returning `true` instead of `presented > 0` fails.
     #[test]
     fn a_plugin_with_no_ports_is_f32() {
         assert!(!f64_support(Stub {
@@ -454,8 +444,6 @@ mod enumeration_hole_tests {
 
     /// An instrument (no inputs) whose outputs are all flagged runs at 64-bit:
     /// the empty side does not veto.
-    ///
-    /// Mutation (run): requiring a port on each side → `false`, fails.
     #[test]
     fn an_empty_side_does_not_veto_f64() {
         assert!(f64_support(Stub {
@@ -469,9 +457,6 @@ mod enumeration_hole_tests {
 
     /// The only unflagged port lies past the hole, so it is absent from the
     /// presented layout and must not veto.
-    ///
-    /// Mutation (run): `continue` instead of `break` at the failed `get` →
-    /// port 3 vetoes, fails.
     #[test]
     fn f64_support_ignores_ports_past_a_hole() {
         assert!(
@@ -490,10 +475,6 @@ mod enumeration_hole_tests {
 
     /// The complement: an unflagged port before the hole still vetoes, on the
     /// side scanned after a side that hit its hole.
-    ///
-    /// Mutation (run): `return true` instead of `break` at the failed `get`
-    /// (a hole ends the whole scan as a success) passes the test above and
-    /// fails here.
     #[test]
     fn f64_support_still_sees_ports_before_a_hole() {
         assert!(
@@ -541,10 +522,6 @@ mod enumeration_hole_tests {
 
     /// A count a layout holds is read as it is, to the last one; one past it is
     /// refused with the count, not wrapped into a narrower bus.
-    ///
-    /// Mutation (run): `_ => ChannelLayout::try_from(port.channel_count)`
-    /// written `Ok(ChannelLayout::from_count(port.channel_count as u16))` makes
-    /// 65 538 a stereo bus, 65 536 an empty one, and fails every refusal here.
     #[test]
     fn a_port_count_past_a_layout_is_refused_not_wrapped() {
         assert_eq!(
@@ -565,9 +542,6 @@ mod enumeration_hole_tests {
 
     /// The load fails, naming the port and its side, instead of building a
     /// bus of the wrapped width.
-    ///
-    /// Mutation (run): as above, the cast makes `port_channels` return
-    /// `Ok([Stereo])` for 65 538 and this fails.
     #[test]
     fn a_plugin_reporting_a_huge_port_fails_the_load_naming_the_port() {
         let err = port_channels(&claim(), &Wide(65_538), true).expect_err("refused");

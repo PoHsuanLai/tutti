@@ -116,9 +116,6 @@ mod tests {
 
     /// Cascade adds, merge takes the max, and the gap between two is a frame
     /// count that saturates.
-    ///
-    /// Mutation: make `gap_to` return `later.0.align_to(self.0)` (arguments
-    /// swapped) → the early path gets zero compensation → fails.
     #[test]
     fn latencies_cascade_merge_and_compensate() {
         let a = Latency::new(Samples(128));

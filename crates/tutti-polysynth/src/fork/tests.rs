@@ -44,12 +44,6 @@ fn peak(synth: PolySynth, frames: usize) -> f32 {
 /// The synth's params by address fork as a `ParamNode`'s must: every one
 /// in its `ParamSet` (volume, and with unison the detune and spread), a
 /// fork starting from the authored value, and no cell shared either way.
-///
-/// Mutations (run): drop `unison.detach()` from `fork_instance` →
-/// "Detune: a live write reached the fork" → fails; `param_set` leaving
-/// out `StereoSpread` → the list above is short (and
-/// `a_fork_renders_the_volume_and_unison_it_was_taken_with`, which sets
-/// it by address, is refused) → fails.
 #[test]
 fn the_synth_forks_as_a_param_node() {
     let synth = saw();
@@ -68,11 +62,6 @@ fn the_synth_forks_as_a_param_node() {
 /// **A fork renders the volume last set through the synth's params**: a
 /// volume set before the fork is the fork's, one set after is not, and
 /// what a modulation driver left in the live cell is not either.
-///
-/// Mutation (run): `fork_instance` not detaching `master_volume` → the
-/// move after the fork reaches it → fails. Mutation (run): the template
-/// taken detached (`ParamFork::new(&synth.fork_instance())`) → the fork
-/// renders the volume the synth was built with → fails.
 #[test]
 fn a_fork_takes_the_authored_volume_at_the_fork() {
     let at = |before: f32, after: f32| {

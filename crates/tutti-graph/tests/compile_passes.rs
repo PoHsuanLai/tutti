@@ -233,10 +233,6 @@ fn compiled(t: &Topology) -> tutti_graph::Plan {
 /// One source stays an alias (no `Op::Sum`), none is silence, two or more at
 /// an input port or a global output channel are one sum op; 65 are a chain
 /// of two.
-///
-/// Mutation (run, recorded here): make `sum_chain` emit an op for one addend
-/// -> the one-source plan holds a sum and the first assert fails; cut the
-/// first run at `MAX_PORTS - 1` -> the 65-source chain has the wrong shape.
 #[test]
 fn one_source_is_an_alias_and_a_fan_in_is_a_sum_op() {
     let sums = |t: &Topology| {
@@ -281,10 +277,6 @@ fn one_source_is_an_alias_and_a_fan_in_is_a_sum_op() {
 // ---------------------------------------------------------------------------
 
 /// With no event edges, the compiler's one order *is* `Topology::topo_order`.
-///
-/// Mutation: in `order::kahn`, seed the ready stack without the `.rev()` →
-/// the largest ready key pops first → `mix_fan_in`'s two roots run in the
-/// wrong order → fails.
 #[test]
 fn the_order_is_topology_topo_order() {
     assert_eq!(shapes().len(), 13, "the shape list is the coverage");
@@ -300,10 +292,6 @@ fn the_order_is_topology_topo_order() {
 /// Ties break toward the smaller key even when the dependents arrive through
 /// different edge kinds. `X` feeds `B` by audio and `A` by events; both
 /// become ready together, and `A < B` must run first.
-///
-/// Mutation: in `order::kahn`, build `dependents` by visiting sinks in
-/// reverse (`preds.iter().enumerate().rev()`) → `B` pops before `A` → fails
-/// (in debug via the sortedness assert, in release on the order).
 #[test]
 fn ties_break_by_key_across_edge_kinds() {
     let x = NodeKey(1);
@@ -344,13 +332,6 @@ fn ties_break_by_key_across_edge_kinds() {
 
 /// Every per-port delay, every output alignment, the per-channel pre-roll and
 /// the total agree with `tutti_graph::delays` on all thirteen shapes.
-///
-/// Mutation: in `compile`, use `arrival[n]` (not `arrival + latency`) as a
-/// source's departure → `pdc_diamond` loses its 512-frame delay → fails.
-/// Mutation: emit output rings for `Source::Zero` channels and compare the
-/// ring list → `silent_output_channel` still passes (`delays` lists the
-/// zero channel too), which is why zero channels are compared through
-/// `compensation()` and excluded from the ring comparison explicitly.
 #[test]
 fn pdc_delays_equal_latency_delays() {
     let mut nonzero = 0;
@@ -420,11 +401,6 @@ fn pdc_delays_equal_latency_delays() {
 /// The solve against an analytic figure: a diamond whose branches carry 3 and
 /// 7 frames merges at 7, so the short branch is delayed by exactly 4 into the
 /// merge, nothing else is delayed, and the plan's total latency is 7.
-///
-/// Mutation (run): in `latency::delays`, take the *minimum* departure as a
-/// node's arrival (`.min()` for `.max()`) → no delay into the merge → fails.
-/// Mutation (run): in `latency::departure`, return `at` (ignore the node's
-/// own latency) → no delay, total 0 → fails.
 #[test]
 fn a_diamond_of_3_and_7_delays_the_short_branch_by_4() {
     let mut t = Topology::default();
@@ -458,9 +434,6 @@ fn a_diamond_of_3_and_7_delays_the_short_branch_by_4() {
 /// The rings the plan inserts actually align the paths: rendered through the
 /// executor, the thirteen shapes match the reference interpreter sample for
 /// sample, at a block size that makes the 512-frame ring span blocks.
-///
-/// Mutation: in `Executor::process`, skip `Op::Delay` (leave `dst` as it was)
-/// → `pdc_diamond` diverges → fails.
 #[test]
 fn the_ported_shapes_render_like_the_reference() {
     for (name, t) in shapes() {
@@ -508,9 +481,6 @@ fn two_node_spec() -> GraphSpec {
 
 /// A purely audio cycle is the value's own error, reported by
 /// `Topology::validate` exactly as before.
-///
-/// Mutation: in `GraphSpec::validate`, ignore the topology's errors → the
-/// spec validates → fails.
 #[test]
 fn an_audio_cycle_is_invalid() {
     let mut g = two_node_spec();
@@ -525,9 +495,6 @@ fn an_audio_cycle_is_invalid() {
 
 /// A cycle that runs through an event edge is only visible to the compiler,
 /// and its error names every edge in the cycle — by port.
-///
-/// Mutation: in `compile`, filter the SCC edges with `s == d` only (self-loops)
-/// → the two-node cycle is missed → compiles → fails.
 #[test]
 fn a_cycle_through_an_event_edge_is_an_error_naming_its_edges() {
     let mut g = two_node_spec();
@@ -554,9 +521,6 @@ fn a_cycle_through_an_event_edge_is_an_error_naming_its_edges() {
 }
 
 /// An event edge from a node to itself is a cycle too.
-///
-/// Mutation: drop the `s == d` arm of the SCC filter → a one-node component
-/// is never "cyclic" → compiles → fails.
 #[test]
 fn an_event_self_loop_is_a_cycle() {
     let mut g = two_node_spec();
@@ -573,9 +537,6 @@ fn an_event_self_loop_is_a_cycle() {
 
 /// Feedback edges — audio and event — break those same cycles, and become
 /// captures read next block.
-///
-/// Mutation: treat `EventEdge::Feedback` as a direct dependency in the SCC
-/// pass → the event cycle is reported → fails.
 #[test]
 fn feedback_edges_break_cycles() {
     let mut g = two_node_spec();
@@ -612,9 +573,6 @@ fn feedback_edges_break_cycles() {
 /// A unit whose shape disagrees with its spec, a node with no shape, an event
 /// port past a node's declared ports, and an over-wide node are all compile
 /// errors naming the node.
-///
-/// Mutation: delete the width comparison in `compile` → the first case
-/// compiles → fails.
 #[test]
 fn shape_disagreements_are_errors() {
     let g = two_node_spec();
@@ -667,8 +625,6 @@ fn shape_disagreements_are_errors() {
 // ---------------------------------------------------------------------------
 
 /// A long serial chain reuses slots — it does not need one per edge.
-///
-/// Mutation: make `colour` always open a new slot → 40 slots → fails.
 #[test]
 fn a_chain_reuses_slots() {
     let mut t = Topology::default();
@@ -694,9 +650,6 @@ fn a_chain_reuses_slots() {
 /// `C` does not depend on `A` or `B` — a parallel executor may run `C`
 /// alongside `B`, and `C` would overwrite what `B` is reading. The partial
 /// order forbids the share.
-///
-/// Mutation: in `colour::finished_before`, compare serial op positions
-/// (`r < w`) instead of reachability → `A` and `C` share → fails.
 #[test]
 fn colouring_respects_the_partial_order_not_the_serial_one() {
     let mut t = Topology::default();
@@ -749,10 +702,6 @@ fn in_place_spec(ports_read_twice: bool) -> (GraphSpec, Shapes) {
 
 /// In-place aliasing happens when it is legal: the node opted in, the input's
 /// last reader is this node, and it reads the value on one port only.
-///
-/// Mutation: drop the "read on exactly one port" check in `compile` → the
-/// second case aliases port 0, and port 1 would read the node's own output →
-/// the verifier panics inside `compile` (debug) → fails.
 #[test]
 fn in_place_aliasing_happens_exactly_when_legal() {
     let (g, shapes) = in_place_spec(false);
@@ -813,8 +762,6 @@ fn in_place_aliasing_happens_exactly_when_legal() {
 // ---------------------------------------------------------------------------
 
 /// A pure chain coarsens to one task; a diamond does not.
-///
-/// Mutation: in `coarsen`, never fuse → the chain has 40+ tasks → fails.
 #[test]
 fn chains_coarsen_into_one_task() {
     let mut t = Topology::default();
@@ -845,9 +792,6 @@ fn chains_coarsen_into_one_task() {
 /// Placement diffs keys, not shapes: a surviving key keeps its index, a
 /// removed one retires, a regenerated one is replaced in place, and a new one
 /// takes the lowest free index.
-///
-/// Mutation: in `compile`'s placement, ignore `prev` → every key is an
-/// insert → fails.
 #[test]
 fn the_delta_moves_only_what_changed() {
     let mut t = Topology::default();
@@ -895,11 +839,6 @@ fn the_delta_moves_only_what_changed() {
 /// A `Source::Global` input that merges with a latent path **is** delayed
 /// to align, like any other merge-point source, and the compiler and
 /// `latency::delays` agree on it.
-///
-/// Mutation: in `compile`, give `Source::Global` ports no delay → the plan has no `DelayKey::Audio { from: Global(0) }` → fails.
-/// Mutation (run): in `latency::delays`, `Feed::Outside => continue` → the
-/// pass lists no delay → fails. The reference interpreter computes the same
-/// delay independently.
 #[test]
 fn a_global_input_merging_with_a_latent_path_is_delayed() {
     let mut t = Topology {
@@ -954,9 +893,6 @@ fn a_global_input_merging_with_a_latent_path_is_delayed() {
 /// `latency::plan` over the whole spec (`GraphSpec`'s `LatencyGraph`, which
 /// lists event and param sources) reports the same compensation, where over
 /// the topology alone it would miss the event path.
-///
-/// Mutation (run): drop the events from `GraphSpec::other_sources` → the
-/// spec's plan totals 0 against the compiler's 64 → fails.
 #[test]
 fn an_event_source_counts_toward_arrival_in_both_solves() {
     // A (64 frames latent, emits events) ─events─▶ C;  B (dry) ─audio─▶ C.
@@ -1025,9 +961,6 @@ fn an_event_source_counts_toward_arrival_in_both_solves() {
 /// N3: a shape whose latency or tail disagrees with its spec is refused, as
 /// a width mismatch is — one of them is stale, and compiling either would
 /// make `latency::plan` over the value disagree with the plan.
-///
-/// Mutation: delete the latency comparison in `compile` → compiles → fails;
-/// likewise the tail comparison.
 #[test]
 fn a_shape_disagreeing_on_latency_or_tail_is_refused() {
     let mut t = Topology::default();
@@ -1085,11 +1018,6 @@ fn automation_into(
 /// The rule: a marked edge is refused, by name, when its sink declares a
 /// coarser resolution; an unmarked edge never is; a fine enough sink always
 /// compiles.
-///
-/// Mutation: drop the resolution check in `compile` → the block-rate sink
-/// compiles → fails. Mutation: make `Resolution::honours` compare
-/// `Frames(n)` against `Frames(m)` the wrong way (`n >= m`) → the
-/// 8-frame sink refuses the 16-frame requirement → fails.
 #[test]
 fn a_sample_accurate_edge_into_a_block_node_is_refused() {
     use tutti_graph::Resolution::{Block, Frames, Sample};
@@ -1112,9 +1040,6 @@ fn a_sample_accurate_edge_into_a_block_node_is_refused() {
 
 /// A mark with no edge under it is a stale mark, and invalid: it would
 /// otherwise pass unchecked forever.
-///
-/// Mutation: skip the `RequirementWithoutEdge` check in `validate` → the
-/// spec validates → fails.
 #[test]
 fn a_resolution_mark_without_its_edge_is_invalid() {
     let mut g = two_node_spec();
@@ -1127,9 +1052,6 @@ fn a_resolution_mark_without_its_edge_is_invalid() {
 }
 
 /// A node promises sample accuracy unless it declares otherwise.
-///
-/// Mutation: `event_resolution: Resolution::Block` in `Shape::audio` →
-/// fails.
 #[test]
 fn nodes_default_to_sample_resolution() {
     use tutti_graph::Resolution;
@@ -1139,10 +1061,6 @@ fn nodes_default_to_sample_resolution() {
 
 /// Removing a node removes the resolution marks on its edges with it, so a
 /// removal never leaves a stale mark that fails the next commit.
-///
-/// Mutation: drop the `required_resolution.retain` in `Editor::remove` →
-/// the commit after the removal is `Invalid(RequirementWithoutEdge)` →
-/// fails.
 #[test]
 fn removing_a_node_removes_its_resolution_marks() {
     let (mut ed, _exec) = tutti_graph::Editor::new(common::prepare(PREP));
@@ -1172,11 +1090,6 @@ fn removing_a_node_removes_its_resolution_marks() {
 /// Disconnecting a marked edge drops its mark with it, so the disconnect
 /// cannot wedge every later commit with `RequirementWithoutEdge`; a mark can
 /// also be dropped alone.
-///
-/// Mutation: in `GraphSpec::disconnect_events`, keep the mark → the next
-/// commit is `Invalid(RequirementWithoutEdge)` → fails. Mutation: make
-/// `clear_resolution` a no-op → the block-rate sink still refuses the
-/// edge → fails.
 #[test]
 fn disconnecting_an_edge_drops_its_resolution_mark() {
     let (mut ed, _exec) = tutti_graph::Editor::new(common::prepare(PREP));

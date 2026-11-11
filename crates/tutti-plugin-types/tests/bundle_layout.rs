@@ -15,9 +15,6 @@
 //! | a directory input — not a bundle, or a bundle with nothing in it | `a_directory_that_holds_no_module_is_none_rather_than_a_panic` |
 //! | a *subdirectory* is not a loadable module, however it is named | `a_directory_inside_an_arch_dir_is_never_offered_as_the_module` |
 //! | when both extensions are present, the format decides which is the module | `the_format_not_the_directory_listing_picks_between_vst3_and_dll` |
-//!
-//! Each test's doc comment records a mutation to `src/bundle.rs` that makes it
-//! fail.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -123,10 +120,6 @@ fn dirs_this_target_can_load() -> Vec<String> {
 /// directory. Without it the enumeration fallback would return the module
 /// anyway — it is the only other file there — and the test would pass for a
 /// reason that has nothing to do with the named lookup it means to check.
-///
-/// Mutation run: in `exts_for`, `if arch_dir.ends_with("-linux") { return
-/// &["so"] }` changed to `return &["dll"]`. The six `-linux` cases then resolved
-/// `0-decoy` instead of the module and the test failed; reverted.
 #[test]
 fn every_arch_directory_in_the_list_resolves_its_own_module() {
     let tmp = TempDir::new().expect("tmp");
@@ -160,12 +153,6 @@ fn every_arch_directory_in_the_list_resolves_its_own_module() {
 /// from the other side — "native" has to mean *only* native, or the loader is
 /// handed a binary it cannot map and the honest "no module for this
 /// architecture" answer turns into a load error.
-///
-/// Mutations run, one at a time, both in `native_arch_subdirs`'s
-/// `linux`/`x86_64` arm. `&["x86_64-linux"]` changed to `&["aarch64-linux"]`:
-/// the positive half failed, with no module found for this target. Changed to
-/// `&["x86_64-linux", "MacOS"]`: the negative half failed, with a `MacOS`
-/// binary offered to a Linux loader. Both reverted.
 #[test]
 fn the_native_walk_finds_this_target_and_refuses_every_other_architecture() {
     let tmp = TempDir::new().expect("tmp");
@@ -213,14 +200,6 @@ fn the_native_walk_finds_this_target_and_refuses_every_other_architecture() {
 /// come back as `None` rather than as an unwrap on a missing directory — a
 /// panic inside a corpus scan takes the whole scan down instead of skipping one
 /// entry.
-///
-/// Mutations run, one at a time, both in `probe_dirs`'s enumeration. `let
-/// Ok(entries) = std::fs::read_dir(&dir) else { continue };` changed to `let
-/// entries = std::fs::read_dir(&dir).unwrap();`: the walk panicked on the
-/// absent arch directory instead of answering `None`. `let dir =
-/// bundle.join("Contents").join(sub);` changed to `let dir =
-/// bundle.to_path_buf();`: the plain folder resolved its `readme.txt` as a
-/// module, which is the wrong-`Some` half of the same property. Both reverted.
 #[test]
 fn a_directory_that_holds_no_module_is_none_rather_than_a_panic() {
     let tmp = TempDir::new().expect("tmp");
@@ -263,13 +242,6 @@ fn a_directory_that_holds_no_module_is_none_rather_than_a_panic() {
 ///
 /// The second half then puts a real module in that same directory, so the test
 /// distinguishes "skipped the directories" from "found nothing at all".
-///
-/// Mutations run, one at a time, each failing at the first assertion. In
-/// `probe_named`, `if bare.is_file()` changed to `if bare.exists()`: the
-/// walk returned the nested `nested/` directory. In `probe_dirs`, the
-/// enumeration filter `p.is_file() && !is_link_byproduct(p)` changed to
-/// `!is_link_byproduct(p)`: it returned `0-helpers/`, the directory sorting
-/// first. Both reverted.
 #[test]
 fn a_directory_inside_an_arch_dir_is_never_offered_as_the_module() {
     let tmp = TempDir::new().expect("tmp");
@@ -307,11 +279,6 @@ fn a_directory_inside_an_arch_dir_is_never_offered_as_the_module() {
 /// they were `.vst3`, and a bundle built for both eras holds the two side by
 /// side — and picking the wrong one loads a module whose entry point the host
 /// is not looking for.
-///
-/// Mutation run: in `exts_for`, the `ModuleKind::Vst3` arm reordered from
-/// `&["vst3", "dll"]` to `&["dll", "vst3"]`. The VST3 half resolved `p.dll` and
-/// failed; reverted. The VST2 arm was separately changed from `&["dll"]` to
-/// `&["vst3", "dll"]`, which failed the VST2 half; reverted.
 #[test]
 fn the_format_not_the_directory_listing_picks_between_vst3_and_dll() {
     let tmp = TempDir::new().expect("tmp");

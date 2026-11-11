@@ -68,11 +68,6 @@ fn ask(start: u64, end: u64) -> Option<LoopAsk> {
 
 /// An open is a record in `Opening`, which a refill leaves alone and a loop
 /// does not reach; its reader's delivery makes it `Live`, once.
-///
-/// Mutation (run): `Opened` not setting the phase → the stream stays
-/// `Opening` and the loop below asks for nothing → fails. Mutation (run):
-/// `Cmd::Loop` not checking the phase → the `Opening` stream is asked to loop
-/// → fails.
 #[test]
 fn an_open_is_opening_until_its_reader_is_delivered() {
     let mut streams = Streams::new();
@@ -102,10 +97,6 @@ fn an_open_is_opening_until_its_reader_is_delivered() {
 /// (its writer, decoder and resident wave with it) is dead when the step
 /// returns, the stream's status says it is closed (what a fork of its voice
 /// asks), and the table no longer holds it. B1 restated: the region goes with the record, in one place.
-///
-/// Mutation (run): `Cmd::Close` finding the record without removing it → the
-/// ring is alive after the step → fails. Mutation (run): `Drop for Record`
-/// without `close()` → the status still says the stream is served → fails.
 #[test]
 fn a_close_frees_the_region_in_that_step() {
     let mut streams = Streams::new();
@@ -132,9 +123,6 @@ fn a_close_frees_the_region_in_that_step() {
 /// nothing, and never reaches another stream: B4. Ids are minted once, so the
 /// stream that took a closed one's place has a new id, and what was sent to
 /// the old one finds nobody.
-///
-/// Mutation (run): `Cmd::Loop` asking for the first live stream whatever id
-/// it names → the stale loop reaches stream 2 → fails.
 #[test]
 fn a_command_for_an_unknown_stream_reaches_no_other() {
     let mut streams = Streams::new();
@@ -168,9 +156,6 @@ fn a_command_for_an_unknown_stream_reaches_no_other() {
 /// Streams are independent: a loop for one asks for that one only, and
 /// closing one leaves the other held, found by its own id after the
 /// `swap_remove` has moved it.
-///
-/// Mutation (run): `Cmd::Close` removing the record at `(at + 1) % len` →
-/// another stream is freed → fails.
 #[test]
 fn streams_are_independent() {
     let mut streams = Streams::new();
@@ -192,9 +177,6 @@ fn streams_are_independent() {
 /// An open whose id the table already holds is dropped, and freed, rather than
 /// shadowing the stream held. Ids are minted once, so this cannot happen
 /// through the control side; the step still refuses it.
-///
-/// Mutation (run): `Cmd::Open` pushing without the position check → two
-/// records answer to one id → fails.
 #[test]
 fn a_duplicate_open_does_not_shadow() {
     let mut streams = Streams::new();
@@ -207,11 +189,6 @@ fn a_duplicate_open_does_not_shadow() {
 
 /// A direction reaches a live stream only, by its id, and no other: the step
 /// asks the driver to turn that stream's ring and nothing else.
-///
-/// Mutation (run): `Cmd::Direction` asking for a stream still `Opening` (the
-/// `is_live` check removed) → the first assertion fails. Mutation (run):
-/// `Cmd::Direction` asking for the first live stream whatever id it names →
-/// the stale direction reaches stream 2 → fails.
 #[test]
 fn a_direction_asks_for_a_live_stream_only() {
     let mut streams = Streams::new();
@@ -256,11 +233,6 @@ fn a_direction_asks_for_a_live_stream_only() {
 /// A rate event re-derives each stream's own ratio from its own file's rate:
 /// two streams at different file rates, one session rate, two ratios; and the
 /// ratio is the cell the stream's voice reads.
-///
-/// Mutation (run): `Streams::rerate` deriving every ratio from the first
-/// stream's file rate → the second's ratio is wrong → fails. Mutation (run):
-/// `Streams::rerate` not touching `Opening` records → the first assertion
-/// fails.
 #[test]
 fn a_rate_event_re_derives_each_streams_own_ratio() {
     use tutti_types::SrcRatio;

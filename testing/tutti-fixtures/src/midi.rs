@@ -459,9 +459,7 @@ mod tests {
     use super::*;
 
     // Pins the MIDI 1.0 builders to M1-4.2 / M2-104 figures: type 2, group 0,
-    // status nibble, channel, then the two data bytes. Mutations (each run,
-    // each fails this test): `m1_note_on` building a Note Off; `sysex_payload`
-    // counting from 0 instead of 1; `key_of` reporting a Note Off as `on`.
+    // status nibble, channel, then the two data bytes.
     #[test]
     fn the_midi1_builders_have_the_spec_layout() {
         let (c, n) = (MidiChannel::of(0), NoteNumber::of(60));
@@ -498,8 +496,7 @@ mod tests {
 
     // Pins the encoder against M2-104's figures for the two messages most
     // tests send, so a helper that built the wrong message would fail here
-    // rather than make every caller agree with it. Mutation: swap NoteOn's
-    // status nibble for NoteOff's in `note_on` and the first assert fails.
+    // rather than make every caller agree with it.
     #[test]
     fn note_on_and_off_have_the_spec_layout() {
         let g = MidiGroup::of(2);

@@ -403,11 +403,6 @@ mod tests {
     /// stops being invisible on the only hardware in CI. Reviewing prose
     /// against code is what this replaces, and it is the whole reason the
     /// orderings are named constants rather than inline literals.
-    ///
-    /// Mutation: change `PUBLISH_ORDERING` to `Ordering::Relaxed` and this
-    /// fails. Change it to `SeqCst` and it also fails, deliberately: a
-    /// strengthening is still a divergence from the documented protocol and
-    /// should be a decision, not a drift.
     #[test]
     fn the_block_protocol_uses_the_documented_orderings() {
         assert_eq!(
@@ -432,8 +427,7 @@ mod tests {
     /// a peer that acquires the magic must see the version and slot count
     /// written before it.
     ///
-    /// Mutation: weaken `INITIALIZE_ORDERING` to `Relaxed` and this fails.
-    /// Note that no behavioural test can: `initialize_then_validate_round_trips`
+    /// No behavioural test can witness the ordering: `initialize_then_validate_round_trips`
     /// passes either way, on any hardware, because it is single-threaded.
     #[test]
     fn the_setup_protocol_uses_the_documented_orderings() {

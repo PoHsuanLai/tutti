@@ -2,9 +2,6 @@ extern crate std;
 use super::*;
 
 /// Sequential borrows on one thread: each guard's drop frees the cell.
-///
-/// Mutation (run): `release_writer` a no-op (the bit never clears) → the
-/// `borrow` after the first guard drops panics → fails.
 #[test]
 fn borrow_mut_from_same_thread() {
     let cell = AudioThreadCell::new(42u32);
@@ -16,9 +13,6 @@ fn borrow_mut_from_same_thread() {
 
 /// After one thread's borrow drops, another thread may borrow. This is
 /// the CoreAudio callback-migration case an owner-pinning check rejects.
-///
-/// Mutation (run): `release_writer` a no-op → the spawned thread's borrow
-/// panics → fails.
 #[test]
 fn sequential_borrows_across_threads_are_ok() {
     use std::sync::Arc;
@@ -52,12 +46,6 @@ fn sequential_borrows_across_threads_are_ok() {
 /// borrow too early; `attempted` is released after the attempt has returned,
 /// so the holder cannot drop the guard too early. Between them the ordering
 /// is enforced rather than hoped for, and the test has no timing to tune.
-///
-/// Mutation (run): gate `try_acquire_writer`'s compare-exchange behind
-/// `cfg(debug_assertions)` (always succeeding without it), the shape the
-/// cell had → `cargo nextest run --release -p tutti-rt -E
-/// 'test(concurrent_borrows_panic)'` fails (no panic: two `&mut u32`
-/// alias), while the debug run still passes.
 #[test]
 fn concurrent_borrows_panic() {
     use std::sync::{Arc, Barrier};
@@ -107,10 +95,6 @@ fn concurrent_borrows_panic() {
 ///
 /// The same two-barrier shape as `concurrent_borrows_panic`: the main
 /// thread's borrow falls strictly inside the other thread's.
-///
-/// Mutation (run): `try_acquire_reader` as a compare-exchange from 0 to
-/// 1 (shared borrows exclusive, as before this cell counted readers) →
-/// the main thread's `try_borrow` is refused → fails.
 #[test]
 fn concurrent_shared_borrows_are_both_granted() {
     use std::sync::{Arc, Barrier};
@@ -144,11 +128,6 @@ fn concurrent_shared_borrows_are_both_granted() {
 
 /// A reader is refused while a writer is live, writes nothing when
 /// refused, and the last reader's drop frees the cell for a writer.
-///
-/// Mutations (run): `release_reader` a no-op → the `borrow_mut` after
-/// the readers drop panics → fails; the reader check against
-/// `WRITER - 1` dropped (a reader admitted beside the writer) →
-/// `try_borrow` returns `Some` while `w` is live → fails.
 #[test]
 fn readers_and_a_writer_exclude_each_other() {
     let cell = AudioThreadCell::new(1u32);
@@ -173,9 +152,6 @@ fn readers_and_a_writer_exclude_each_other() {
 
 /// The panic names the call site that broke the contract, through
 /// `#[track_caller]` on `borrow_mut`.
-///
-/// Mutation (run): drop `#[track_caller]` from `borrow_mut` → the message
-/// names `borrow_mut`'s own line in this file → fails.
 #[test]
 fn the_panic_names_the_second_borrow() {
     let cell = AudioThreadCell::new(0u32);
@@ -195,10 +171,6 @@ fn the_panic_names_the_second_borrow() {
 
 /// A refused `try_borrow_mut` leaves the live borrow's flag alone, and a
 /// borrow after the guard drops succeeds.
-///
-/// Mutation (run): build the guard with `bool::then_some` (eagerly, so
-/// the refused attempt's unused guard drops and clears the writer bit) →
-/// the second attempt gets `Some` while `held` is live → fails.
 #[test]
 fn a_refused_try_borrow_keeps_the_live_borrow() {
     let cell = AudioThreadCell::new(1u32);

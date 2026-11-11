@@ -47,9 +47,6 @@ fn render(s: &mut Session, frames: usize) -> [Vec<f32>; 2] {
 
 /// `Graph::set_param` writes the cell of the index it names and no other,
 /// and the node reads it: the render shows each band's own value.
-///
-/// Mutation (run): `ParamSet::slot` matching the kind alone → the write to
-/// band 1 lands on band 0 → fails.
 #[test]
 fn set_param_writes_the_index_it_names() {
     let mut s = offline();
@@ -80,9 +77,6 @@ fn set_param_writes_the_index_it_names() {
 }
 
 /// The graph declares each index modulatable on its own.
-///
-/// Mutation (run): `ParamPorts::index_of` comparing the kind alone → index 2
-/// is declared → fails.
 #[test]
 fn the_graph_declares_each_index() {
     let mut s = offline();
@@ -104,15 +98,6 @@ fn the_graph_declares_each_index() {
 /// connect's declick, while output 0 reads its own base throughout. The
 /// route's target is `ParamAddr::Indexed`, resolved through the session's
 /// reconciler to the lane's knob and port.
-///
-/// Mutations (run), each fails:
-/// - `ModHostOver::target` taking the knob from `p.cell(addr.param)` (the
-///   index dropped: index 0's cell, 100) → output 1 swings about 100;
-/// - `Bind::Native` building `ControlLaneNode::for_unit(at.param.param, ..)`
-///   (index dropped) → the lane's events are for index 0: output 1 stays at
-///   its base, output 0 swings;
-/// - `ParamRef::unit_at` ignoring the index → the route targets index 0 →
-///   output 0 swings.
 #[test]
 fn a_route_to_index_1_does_not_touch_index_0() {
     let mut s = offline();

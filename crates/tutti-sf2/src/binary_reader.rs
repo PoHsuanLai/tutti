@@ -94,16 +94,12 @@ mod tests {
 
     use super::*;
 
-    // Mutation (run): `i16::from_le_bytes` -> `from_be_bytes` in
-    // `read_wave_data` fails this test at the first sample.
     #[test]
     fn wave_data_is_little_endian_pairs() {
         let mut bytes = Cursor::new([0x01, 0x02, 0xFF, 0xFF]);
         assert_eq!(bytes.read_wave_data(4).unwrap(), [0x0201, -1]);
     }
 
-    // Mutation (run): reading `size - size % 2` bytes instead of `size` leaves
-    // the cursor at 4 and fails the position assertion.
     #[test]
     fn an_odd_trailing_byte_is_read_and_dropped() {
         let mut bytes = Cursor::new([1, 0, 2, 0, 9, 0xAA]);
@@ -111,9 +107,6 @@ mod tests {
         assert_eq!(bytes.position(), 5, "the odd byte is consumed");
     }
 
-    // Mutation (run): slicing `buffer[..CHUNK]` instead of
-    // `buffer[..remaining.min(CHUNK)]` reads past the end of the stream, and
-    // fails here.
     #[test]
     fn wave_data_longer_than_one_read_chunk_keeps_every_sample() {
         let count = 8192 + 100;
@@ -134,8 +127,6 @@ mod tests {
         assert_eq!(error.kind(), ErrorKind::UnexpectedEof);
     }
 
-    // Mutation (run): `take_while(|&&byte| byte != 0)` -> `!= 7` does not stop
-    // at the NUL, returns "a?b?x" and fails.
     #[test]
     fn a_fixed_length_string_stops_at_the_nul_and_masks_control_bytes() {
         let mut bytes = Cursor::new([b'a', 0x01, b'b', 0, b'x']);

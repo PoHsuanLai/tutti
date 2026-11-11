@@ -97,11 +97,6 @@ const TOTAL: Samples = Samples(BLOCKS * 1024);
 /// (a following export starts and completes), and the reading froze where
 /// the render stopped (the render's entry: a reading comes every 4096 frames,
 /// and three blocks are fewer).
-///
-/// Mutation (run): `BounceHandle::cancel` not setting its token -> all 20
-/// blocks render and the outcome is `Finished`; fails.
-/// Mutation (run): `BounceRendered` kept in `finish_bounce` (token not
-/// dropped) -> the following export is refused; fails.
 #[test]
 fn a_cancel_stops_the_render_and_frees_the_session() {
     let dir = tempfile::tempdir().unwrap();
@@ -146,9 +141,6 @@ fn a_cancel_stops_the_render_and_frees_the_session() {
 }
 
 /// A job cancelled before it runs renders nothing and builds nothing.
-///
-/// Mutation (run): `run` checking the stop request neither before the build
-/// nor after it -> the node processes a block; fails.
 #[test]
 fn a_job_cancelled_before_it_runs_renders_nothing() {
     let dir = tempfile::tempdir().unwrap();
@@ -178,9 +170,6 @@ fn a_buffer_export_cancels() {
 /// finalizing stage, with and without normalize; the handle holds what the
 /// pipeline last delivered, the one reading the session does not weight
 /// itself.
-///
-/// Mutation (run): `BounceHandle::record` storing only the first reading ->
-/// the stage and fraction assertions fail.
 #[test]
 fn progress_ends_at_one_in_the_finalizing_stage() {
     let dir = tempfile::tempdir().unwrap();

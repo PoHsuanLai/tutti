@@ -1,9 +1,5 @@
 //! Every message fits by value: `Message` is `Copy`, owns no heap and holds no
 //! reference, and its size is a small multiple of the packet it decodes from.
-//!
-//! Mutation: add a `String` or a `&'static str` field to any message type ->
-//! `Message` stops being `Copy` and this file stops compiling; add a
-//! `[u8; 64]` to a variant -> `a_message_is_at_most_three_packets` fails.
 
 use tutti_ump::{Message, Ump, Unknown};
 

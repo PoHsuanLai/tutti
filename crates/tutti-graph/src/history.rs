@@ -439,9 +439,6 @@ mod tests {
     /// frames) reaches the same beat as a clock from it, but has no origin,
     /// so a reader that tells the host's segments apart by origin does not
     /// take each hand-built block for a new one.
-    ///
-    /// Mutation (run): `Transport::walked_to` keeps `Position::Counted` for
-    /// every position → the bare beat's walk has an origin → fails.
     #[test]
     fn a_bare_beats_walk_has_no_origin() {
         let bare = env(0, 64, rolling(2.0), TransportChanges::NONE);
@@ -458,9 +455,6 @@ mod tests {
 
     /// Inside the block, `transport_before` is `transport_at` of the earlier
     /// offset, whatever the history holds.
-    ///
-    /// Mutation: answer `self.transport_at(offset)` (ignore `back`) → the
-    /// beat at offset 40 is 40 frames late → fails.
     #[test]
     fn inside_the_block_it_is_the_earlier_offset() {
         let e = env(1_000, 64, rolling(2.0), TransportChanges::NONE);
@@ -482,12 +476,6 @@ mod tests {
     /// Across block boundaries, through a seek at a block start, a seek
     /// inside a block, a loop that wraps, a tempo change and a stop: every
     /// frame back to 200 reads what the block that held it said.
-    ///
-    /// Mutation: `before` answers `None` (every frame before the block reads
-    /// the oldest piece, unmoved) → fails. Mutation: in `before`, take the
-    /// piece *after* the newest one at or before the frame
-    /// (`self.get(lo.min(self.len - 1))`) → fails. Mutation: take the one
-    /// before it (`lo.checked_sub(2)`) → fails.
     #[test]
     fn every_frame_in_reach_reads_what_its_block_said() {
         const REACH: usize = 200;
@@ -551,9 +539,6 @@ mod tests {
 
     /// A loop wrap behind the block: the closed form from the block's start
     /// (inside the loop) cannot tell a wrap from a start, the history can.
-    ///
-    /// Mutation: `before` answers `None` → reads the oldest piece, the
-    /// loop's start, instead of 24 frames into its second pass → fails.
     #[test]
     fn a_loop_wrap_before_the_block_is_unwound() {
         let looping = Some(LoopRange {
@@ -579,9 +564,6 @@ mod tests {
 
     /// Before the first block: the oldest transport kept, unmoved. With no
     /// history at all: the block's own.
-    ///
-    /// Mutation: roll the oldest piece forward a frame instead of answering
-    /// it unmoved → fails.
     #[test]
     fn older_than_the_history_is_the_oldest_transport_unmoved() {
         let e = env(0, 64, rolling(2.0), TransportChanges::NONE);
@@ -599,13 +581,6 @@ mod tests {
     /// fixed size, keeps only the jumps and the checkpoints, and every frame
     /// 480 000 back (a 10-second lookahead at 48 kHz) reads what its block
     /// said, to the bit.
-    ///
-    /// Mutation: never keep a block start after the first (drop the
-    /// `roll(..) != t` term) → the seeks are lost → fails. Mutation: keep
-    /// every block start (`keep = true`) → 256 pieces cover 65 536 frames,
-    /// and frames 480 000 back read the clamp → fails. Mutation: drop the
-    /// checkpoint term → the pieces kept are the 12 jumps and nothing else
-    /// (the count check fails).
     #[test]
     fn a_counting_host_keeps_only_the_jumps_whatever_the_reach() {
         const REACH: usize = 480_000;
@@ -662,10 +637,6 @@ mod tests {
     /// keeps the newest 256, a frame the newest 256 still cover reads its
     /// block, and an older one reads the oldest kept, unmoved: exactly at
     /// the boundary.
-    ///
-    /// Mutation: when full, overwrite the newest piece instead of dropping
-    /// the oldest (skip the `head` advance, write at `len - 1`) → the
-    /// boundary moves → fails.
     #[test]
     fn a_burst_past_the_capacity_clamps_where_the_oldest_kept_starts() {
         const SEEKS: u64 = 400;
@@ -700,11 +671,6 @@ mod tests {
     /// last block's start (at least four `MAX_NODE_LATENCY`s). That frame
     /// reads its block; the one before it reads the clamp (the oldest piece,
     /// unmoved).
-    ///
-    /// Mutation: checkpoint on `gap > CHECKPOINT` (not `>=`) → a checkpoint
-    /// every other block, twice the reach, and the frame past the bound is
-    /// exact → fails. Mutation: `JUMPS` 255 → the bound moves a checkpoint
-    /// closer (the compile-time bound still holds) → fails.
     #[test]
     fn continuous_playback_is_exact_back_to_the_documented_bound() {
         let block = TransportHistory::CHECKPOINT.get();
@@ -732,11 +698,6 @@ mod tests {
     /// on its own rolling host, at a block start and inside a block (at
     /// offset 20); each is a piece (the roll is not the block's transport),
     /// so every frame back reads its block.
-    ///
-    /// Mutations (each fails here, and nowhere else): in `observe`, compare
-    /// the roll `r` with `t` ignoring one field, through a copy `u` of `t`:
-    /// `u.playing = r.playing`, `u.looping = r.looping`,
-    /// `u.tempo = r.tempo`, and `r != t.with_recording(r.recording())`.
     #[test]
     fn a_change_of_one_field_is_a_jump() {
         let one_field = |t: Transport, k: usize| -> Transport {

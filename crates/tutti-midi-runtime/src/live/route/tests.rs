@@ -9,9 +9,6 @@ fn ch(c: u8) -> Option<MidiChannel> {
 
 /// **A channel rule gives its channel's port and the channelless one; an
 /// any-channel rule all seventeen; two rules on one target the union.**
-///
-/// Mutation (run): a rule giving its targets its channel's port alone
-/// (`input_ports` without the channelless port) → fails.
 #[test]
 fn a_rule_gives_its_targets_its_channels_ports() {
     let ports = compile_routes(
@@ -49,10 +46,6 @@ fn a_rule_gives_its_targets_its_channels_ports() {
 /// - each rule's targets hold every port of its channel;
 /// - the fallback holds exactly the ports no rule's channel names;
 /// - no listener appears that is neither a target nor the fallback.
-///
-/// Mutation (run): the fallback taking every port, covered or not → the
-/// third assertion fails. Mutation (run): the fallback dropped → the
-/// first fails.
 #[test]
 fn the_compile_is_total_and_the_fallback_holds_only_unrouted_ports() {
     let candidates = [
@@ -110,10 +103,6 @@ fn the_compile_is_total_and_the_fallback_holds_only_unrouted_ports() {
 
 /// **A rule with no target covers nothing**: its channel still falls
 /// through to the fallback, and it names no listener.
-///
-/// Mutation (run): rules without targets counted as covering their ports
-/// (the `filter` on `targets` dropped) → the fallback loses channel 0 and
-/// the channelless port → fails.
 #[test]
 fn a_rule_without_targets_leaves_its_channel_to_the_fallback() {
     let ports = compile_routes(
@@ -131,11 +120,6 @@ fn a_rule_without_targets_leaves_its_channel_to_the_fallback() {
 
 /// Without a fallback an uncovered port reaches nobody, and with
 /// nothing declared the result is empty.
-///
-/// Mutation (run): every rule compiled as an any-channel rule
-/// (`input_ports(None)` for `input_ports(rule.channel)`) → the drums take
-/// all seventeen ports → fails. Mutation (run): a channel rule giving its
-/// channel's port alone → fails.
 #[test]
 fn without_a_fallback_an_unrouted_port_reaches_nobody() {
     assert!(compile_routes::<&str>(FIRST, [], None).is_empty());
@@ -156,9 +140,6 @@ fn without_a_fallback_an_unrouted_port_reaches_nobody() {
 /// channel 1 of Group 2 reach different listeners, an any-Group rule reaches
 /// the channel in every Group, and a rule for a Group the node does not hear
 /// reaches nobody (M2-104 Appendix B.1).
-///
-/// Mutation: `compile_routes` reading the rule's channel alone (the group
-/// dropped from the `listening` call) → the first two assertions fail.
 #[test]
 fn a_rule_names_a_group_as_well_as_a_channel() {
     let two = MidiInputPorts::through(MidiGroup::of(1));

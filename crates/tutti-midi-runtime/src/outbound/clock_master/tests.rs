@@ -262,10 +262,6 @@ fn first_clock(events: &[UmpAt]) -> (usize, u32) {
 /// its Start / Continue / Song Position. MIDI 1.0 (MMA, "System Real
 /// Time Messages", Start, Continue): a receiver begins on the first
 /// Timing Clock after Start / Continue.
-///
-/// Mutation (run): skip a tick on frame 0 of a block that does not
-/// continue the last (`k == 0 && (is_edge || jumped)` → `continue`, the
-/// old rule) → no F8 at offset 0 → fails.
 #[test]
 fn an_on_tick_start_continue_or_locate_clocks_its_first_frame() {
     let sr = 48_000.0;
@@ -318,10 +314,6 @@ fn an_on_tick_start_continue_or_locate_clocks_its_first_frame() {
 
 /// Off a tick boundary, the first F8 after a locate or a Continue is the
 /// next boundary's, on its frame; nothing goes out on frame 0.
-///
-/// Mutation (run): send a tick behind the block's start on frame 0
-/// (`k < 0` → `k = 0` instead of skipping it) → an F8 at offset 0 →
-/// fails.
 #[test]
 fn an_off_tick_locate_clocks_the_next_boundary() {
     let sr = 48_000.0;
@@ -397,9 +389,6 @@ fn spacing(at: &[u64]) -> f64 {
 /// or the receiving gear runs ~8.8% fast. (Offsets are whole frames, so
 /// each tick sits up to one frame early; the mean over ~48 ticks is within
 /// 0.05 of the exact spacing.)
-///
-/// Mutation (run): `set_sample_rate` not storing the rate → the ticks
-/// after it stay 918.75 frames apart → fails.
 #[test]
 fn a_rate_change_moves_the_tick_spacing() {
     let (cm, transport, cons) = master(Bpm::of(120.0), SampleRate::new(44_100.0));
@@ -437,14 +426,6 @@ fn a_rate_change_moves_the_tick_spacing() {
 /// frames later, 344 old frames after the restart: 374.4 new frames, and
 /// 480 apart from there. And the restart is not a locate: no Song
 /// Position goes out, and the phase is not reset.
-///
-/// Mutations (run):
-/// - `set_sample_rate` not rescaling the carried phase → the first one
-///   lands 344 frames after the restart, ~30 early → fails;
-/// - the seek check comparing the beat's move with *this* block's
-///   advance → the old-rate block's 0.0232 beats against the
-///   new rate's 0.0213 is past the 0.001 epsilon → a Song Position, and
-///   the phase reset to the restart's frame → fails.
 #[test]
 fn a_rate_change_keeps_the_mtc_quarter_frame_on_time() {
     let (cm, transport, cons) = master(Bpm::of(120.0), SampleRate::new(44_100.0));
@@ -485,11 +466,6 @@ fn a_rate_change_keeps_the_mtc_quarter_frame_on_time() {
 /// there: at 29.97 fps and 44.1 kHz a quarter-frame is 367.867… frames,
 /// which binary cannot represent, and a carried phase that adds it
 /// block after block drifts off the grid.
-///
-/// Mutation (run): carry the phase (quarter-frame `k + 1` due at `k`'s
-/// position plus one quarter-frame's length, accumulated) → some
-/// quarter-frame whose exact position is a hair past a whole frame lands
-/// a frame early → fails.
 #[test]
 fn the_mtc_grid_is_closed_form() {
     let rate = 44_100.0;
@@ -653,13 +629,6 @@ fn mtc_loopback(rate: f64, fps: SmpteFrameRate, offset: f64) {
 /// **One cycle carries one position.** Each assembled timecode is valid
 /// (frames below the rate), monotonic, and equal to the even frame piece 0
 /// went out on, across the minute rollover, at every rate and start offset.
-///
-/// Mutations (run): compute the timecode at every piece (`piece == 0`
-/// made `true`, without the even-frame floor) → pieces 4-7 carry the next
-/// frame, and a rollover between the halves assembles a torn value →
-/// fails. Skip the alignment in `tick_mtc` (no `mtc.lead` store) → a start
-/// off an even frame sends piece 0 up to two frames from its label →
-/// fails.
 #[test]
 fn outbound_mtc_assembles_whole_valid_timecodes_across_a_minute() {
     for (rate, fps) in [
@@ -679,8 +648,6 @@ fn outbound_mtc_assembles_whole_valid_timecodes_across_a_minute() {
 
 // A position on a frame boundary, or a float's width short of it, reads as
 // that frame, floored to an even one.
-// Mutations: `frames & !1` → `frames` fails the 1920 case; `.round()` →
-// `.floor()` fails every "- 1e-7" case.
 #[test]
 fn timecode_rounds_to_the_nearest_even_frame() {
     let at = |pos: f64, fps| timecode_at(pos, 48_000.0, fps).to_string();
@@ -700,7 +667,6 @@ fn timecode_rounds_to_the_nearest_even_frame() {
 }
 
 // MTC has no non-drop 29.97 code: Ndf is sent with the drop-frame one.
-// Mutation: give Ndf its own code (3) and the equality fails.
 #[test]
 fn non_drop_2997_goes_out_with_the_29_97_rate_code() {
     let tc = SmpteTimecode::from_frame_count(5, SmpteFrameRate::Fps2997Ndf);
@@ -738,12 +704,6 @@ fn offsets(events: &[UmpAt], status: u8) -> Vec<u32> {
 /// on linearly past the loop's end would be on 0, 1 000, 2 000 and 3 000.
 /// The next block starts where this one ended (1 600 frames into the loop),
 /// which is no locate: no Song Position, and its tick on frame 400.
-///
-/// Mutation (run): place the ticks from the block's first beat, one pass for
-/// the whole block (the unmodified `tick`) → ticks on 0, 1 000, 2 000, 3 000
-/// → fails. Mutation (run): store the beat the block would reach without
-/// the wrap as `prev.end` (the old `beat + advance`) → a Song Position on
-/// the second block's frame 0 → fails.
 #[test]
 fn a_loop_wrap_inside_a_block_moves_the_ticks_onto_the_next_pass() {
     let (cm, transport, cons) = looping_rig();
@@ -768,12 +728,6 @@ fn a_loop_wrap_inside_a_block_moves_the_ticks_onto_the_next_pass() {
 /// start (beat 1.0 is MIDI beat 4; the end, 1.5, is 6) and before the tick
 /// on that frame. A loop of 1.0..1.5 wraps on frame 12 000; the play edge's
 /// own Song Position is on frame 0.
-///
-/// Mutation (run): send the wrap's Song Position at offset 0 → none on
-/// 12 000 → fails. Mutation (run): send the beat the pass would have
-/// reached (the loop's end) → position 6 → fails. Mutation (run): emit the
-/// pass's ticks before its Song Position → the F8 precedes the F2 on frame
-/// 12 000 → fails.
 #[test]
 fn the_song_position_lands_on_the_wraps_frame() {
     let (cm, transport, cons) = looping_rig();
@@ -801,9 +755,6 @@ fn the_song_position_lands_on_the_wraps_frame() {
 /// pass sends pieces 0..4 on 0, 480, ..., 1 920 and the second pieces 0..3
 /// on 2 400, 2 880, 3 360, 3 840. Unrestarted, the grid runs on and piece 5
 /// is on 2 400.
-///
-/// Mutation (run): drop `restart_mtc` on the wrap → pieces 5, 6, 7, 0 on
-/// the second pass → fails.
 #[test]
 fn the_mtc_grid_restarts_on_the_wrap() {
     // The loop starts on beat 0, which is on an even frame, so a restarted
@@ -897,10 +848,6 @@ fn cut_at(total: usize, cuts: &[usize]) -> Vec<usize> {
 /// Song Positions and MTC pieces on the same absolute frames; a Song Position
 /// is on every wrap frame and none other, and so is a tick on the loop's
 /// start.
-///
-/// Mutation (run): drop the carried-wrap Song Position (`|| wrapped` in
-/// `tick`) → the layout cut on the wraps has no Song Position, nor a
-/// restarted MTC grid, on them → fails.
 #[test]
 fn the_stream_does_not_depend_on_the_block_boundaries() {
     const TOTAL: usize = 60_000;
@@ -945,9 +892,6 @@ fn the_stream_does_not_depend_on_the_block_boundaries() {
 /// of 512, so every wrap is on a block's first frame. Three cycles send a
 /// Song Position (to beat 0) on each of the first two wraps, frames 192 000
 /// and 384 000, and Start on frame 0 for the play edge.
-///
-/// Mutation (run): as above, drop the carried-wrap Song Position → none →
-/// fails.
 #[test]
 fn a_loop_wrapping_on_every_block_edge_sends_a_song_position_each_time() {
     let events = play_layout(0.0, (0.0, 8.0), false, &fixed(3 * 192_000, 512));
@@ -964,11 +908,6 @@ fn a_loop_wrapping_on_every_block_edge_sends_a_song_position_each_time() {
 /// **A real locate on the frame of a wrap sends one Song Position**, to
 /// where it locates; and a re-prepare between the blocks (`prepare` re-rates
 /// the master) keeps the wrap that ended the first.
-///
-/// Mutation (run): send the carried wrap's Song Position as well as the
-/// locate's (`located || wrapped` split into two sends) → two on frame 0 →
-/// fails. Mutation (run): clear the carried wrap in `set_sample_rate` → none
-/// after the re-prepare → fails (the second half).
 #[test]
 fn a_wrap_on_the_block_edge_and_a_locate_are_one_song_position() {
     let (cm, transport, cons) = looping_rig();
@@ -998,8 +937,6 @@ fn a_wrap_on_the_block_edge_and_a_locate_are_one_song_position() {
 
 /// A song position is the beat in sixteenths, floored at 0 (NaN and negatives
 /// included) and stuck at the largest 14-bit value past the range.
-/// Mutation: drop the `unwrap_or(U14::MAX)` for `U14::of(0)` and the huge
-/// inputs fail.
 #[test]
 fn a_song_position_is_in_sixteenths_and_saturates() {
     let at = |beat: f64| beats_to_midi_beats(Beat(beat)).get();

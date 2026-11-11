@@ -830,9 +830,6 @@ mod transport_tests {
     /// The context the node hands the plugin carries the block's transport
     /// from its `Cx`: the only thing that gives `audioMasterGetTime`
     /// something to read. With no meter installed it is 4/4.
-    ///
-    /// Mutation (run): return `TransportInfo::default()` from
-    /// `TransportFeed::block` for every plugin → 120 BPM, stopped → fails.
     #[test]
     fn the_block_context_carries_the_transport_from_cx() {
         let e = env();
@@ -859,9 +856,6 @@ mod transport_tests {
 
     /// The declared bit gates delivery: a plugin without `TRANSPORT` is
     /// handed the default (stopped, 120 BPM) snapshot, whatever the `Cx`.
-    ///
-    /// Mutation (run): drop the `features.contains(Features::TRANSPORT)`
-    /// guard → the undeclared plugin reads 132 → fails.
     #[test]
     fn a_plugin_not_declaring_transport_is_handed_the_default() {
         let e = env();
@@ -882,10 +876,6 @@ mod transport_tests {
     /// A meter installed through one handle on the feed's cell reaches the
     /// feed the node runs (a host installs through the node's controls), and
     /// the snapshot carries its signature.
-    ///
-    /// Mutation (run): read `self.default_meter` always in
-    /// `TransportFeed::block` (drop the meter source) → 4/4 → fails. A
-    /// `Clone` minting a fresh meter cell fails it the same way.
     #[test]
     fn a_meter_installed_on_one_clone_reaches_another() {
         let e = env();
@@ -904,11 +894,6 @@ mod transport_tests {
 
     /// A fork's feed holds the meter installed when it forked, and nothing
     /// installed on the live node afterwards; its counter starts at zero.
-    ///
-    /// Mutation (run, together with the counter's below): `forked` sharing
-    /// the live cell (`self.meter.clone()`) and keeping `self.steady` →
-    /// the later clear reaches the fork (4/4), its counter starts at 64 →
-    /// fails.
     #[test]
     fn a_fork_has_the_meter_installed_when_it_forked() {
         let e = env();
@@ -936,9 +921,6 @@ mod transport_tests {
 
     /// The free-running counter is the frames the node rendered, block after
     /// block.
-    ///
-    /// Mutation (run): drop `self.steady.advance(frames)` → the second block
-    /// reads 0 → fails.
     #[test]
     fn the_counter_counts_the_frames_rendered() {
         let e = env();
@@ -962,9 +944,6 @@ mod transport_tests {
 
     /// An empty block has no frame to read the transport at: the plugin is
     /// handed the last snapshot again, not the stopped default.
-    ///
-    /// Mutation (run): return `TransportInfo::default()` for an empty block
-    /// → 120 BPM, stopped → fails.
     #[test]
     fn an_empty_block_repeats_the_last_snapshot() {
         let e = env();
@@ -991,10 +970,6 @@ mod transport_tests {
     /// **A live feed tells the plugin the host clock; an offline fork's
     /// does not.** No clock relates to a render that runs at its own speed,
     /// so `nanoSeconds` must not be claimed there. A live fork keeps it.
-    ///
-    /// Mutation (run): `forked` ignoring `offline` → the offline fork reports
-    /// a host time → fails. Mutation (run): `over` with `host_clock: None` →
-    /// the live feed reports none → fails.
     #[test]
     fn only_a_live_feed_carries_the_host_clock() {
         let e = env();
@@ -1040,9 +1015,6 @@ mod transport_tests {
 
     /// The tempo a block reports is the project map's at the playhead, not
     /// the transport's own (`Env`'s 132).
-    ///
-    /// Mutation (run): drop `Snapshot::follow` from `from_cx` -> the block
-    /// reads 132 -> fails.
     #[test]
     fn a_block_reports_the_maps_tempo() {
         let e = env();
@@ -1120,10 +1092,6 @@ mod render_tests {
     /// Processor as unlent, each apart from the other**; the caller renders
     /// silence for both. A failure does not take the Processor away: the next
     /// block runs.
-    ///
-    /// Mutation (run): the `failed.fetch_add` in `render_with` removed -> the
-    /// failed count stays 0 -> fails. Mutation (run): `Err(_)` answering
-    /// `Rendered::Unlent` -> the first assertion fails.
     #[test]
     fn a_failed_block_is_counted_apart_from_an_unlent_one() {
         let counters = (AtomicU64::new(0), AtomicU64::new(0));
@@ -1152,9 +1120,6 @@ mod render_tests {
     /// **The plugin's MIDI out is what it emitted in this block**: the block
     /// after an emitting one reads none of it, because `out` is cleared at the
     /// head of every block.
-    ///
-    /// Mutation (run): the `out.clear()` in `render` removed -> the second
-    /// block still holds the first's event -> fails.
     #[test]
     fn a_blocks_midi_out_is_what_the_plugin_emitted_in_it() {
         let counters = (AtomicU64::new(0), AtomicU64::new(0));
@@ -1196,11 +1161,6 @@ mod declared_buses {
     /// and placement: a stereo main, a mono sidechain and an aux. A bus
     /// without a placement (or with one that disagrees with its width) is
     /// `Unassigned`, and the shape's ports are every channel.
-    ///
-    /// Mutations (run), each failing this test: `PluginBus::placement`'s
-    /// width filter removed (the disagreeing bus keeps its two speakers); the
-    /// role taken as `Main` for the first bus and `Aux` for the rest (the
-    /// sidechain is lost); `buses_of` reading `outputs` for the input side.
     #[test]
     fn a_plugins_buses_are_the_nodes_in_order_placed_and_with_their_roles() {
         let loaded = LoadedPlugin {
@@ -1238,10 +1198,6 @@ mod declared_buses {
     /// A plugin with no bus list has no buses; one with more than the node
     /// holds, or a bus wider than a bus holds, keeps the first ones and every
     /// channel as a port.
-    ///
-    /// Mutation (run): the wide bus's `else` arm returning `Buses::NONE` for
-    /// the whole side fails this test. (The `break` on a refused `with` is
-    /// equivalent to `continue`: a full list refuses every later bus.)
     #[test]
     fn what_does_not_fit_stays_a_port() {
         let none = Declared::of(&LoadedPlugin::default()).ports;

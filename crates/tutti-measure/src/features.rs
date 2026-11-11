@@ -160,9 +160,6 @@ mod tests {
     }
 
     /// A pure sine's centroid is its frequency, to within a bin.
-    ///
-    /// Mutation checked: weighting by `k + 1` puts the centroid one bin high
-    /// and fails the one-bin tolerance.
     #[test]
     fn a_sine_centroid_is_its_frequency_within_a_bin() {
         for hz in [1000.0f32, 3517.0, 9000.0] {
@@ -180,9 +177,6 @@ mod tests {
     }
 
     /// Two equal bins at 10 and 30 put the centroid midway, exactly.
-    ///
-    /// Mutation checked: dividing by the bin count instead of the magnitude
-    /// total fails.
     #[test]
     fn the_centroid_of_two_equal_bins_is_their_midpoint() {
         let mut row = vec![0.0f32; 65];
@@ -193,10 +187,6 @@ mod tests {
     }
 
     /// White noise is flat, a sine is not, and a perfectly flat row is 1.
-    ///
-    /// Mutation checked: taking the square root of the ratio (a magnitude
-    /// rather than a power flatness) moves noise to about 0.75 and fails the
-    /// bracket.
     #[test]
     fn noise_is_flat_a_sine_is_not() {
         assert_eq!(spectral_flatness(&[3.0; 100]), 1.0);
@@ -218,10 +208,6 @@ mod tests {
     ///
     /// 100 equal bins: half the energy is reached at bin 49 (exactly 50 of 100,
     /// so the comparison is `>=`), 85 % needs 86 bins, so bin 85.
-    ///
-    /// Mutation checked: `>` for `>=` at the target gives bin 50 and fails;
-    /// reporting the bin's upper edge (`k + 1`) fails; returning the length of
-    /// the row instead of the last active bin fails the full share.
     #[test]
     fn rolloff_sits_at_the_energy_share_and_the_band_edge() {
         let mut row = vec![0.0f32; 513];
@@ -235,9 +221,6 @@ mod tests {
 
     /// Band-limited noise (unit magnitude below an edge, random phase) rolls
     /// off at its band edge at 99 %.
-    ///
-    /// Mutation checked: replacing `fraction.get()` by `0.5` in the target
-    /// puts the rolloff at half the band and fails the lower bound.
     #[test]
     fn band_limited_noise_rolls_off_at_the_edge() {
         let mut rng = StdRng::seed_from_u64(9);
@@ -263,10 +246,6 @@ mod tests {
 
     /// Flatness depends on the spectrum's shape, not its level, and zero bins in
     /// a tonal frame do not make it depend on the bin count.
-    ///
-    /// Mutation checked: an absolute floor (`let floor = 1e-20`) fails the
-    /// scaled case (the 1e-12 row falls under it and reads 1); a floor of
-    /// `mean * 1e-2` fails the tonal bound.
     #[test]
     fn flatness_is_level_independent_and_a_zero_bin_tonal_frame_is_near_zero() {
         let mut rng = StdRng::seed_from_u64(1);
@@ -285,11 +264,6 @@ mod tests {
 
     /// A NaN or infinite magnitude gives no result rather than a NaN, and a
     /// rolloff share outside `0..=1` acts as its nearer end.
-    ///
-    /// Mutation checked: removing the `is_finite` guards fails the NaN and
-    /// infinity rows (NaN centroid, a rolloff scan to the last bin); removing
-    /// the NaN case fails the last line. (A clamp is not needed: a share above 1
-    /// is never reached and one below 0 is met at once.)
     #[test]
     fn non_finite_magnitudes_give_no_result_and_an_out_of_range_share_acts_as_its_nearer_end() {
         for bad in [f32::NAN, f32::INFINITY] {
@@ -308,9 +282,6 @@ mod tests {
 
     /// A silent spectrum reads zero on all three, and an empty one does not
     /// panic.
-    ///
-    /// Mutation checked: removing the `total > 0.0` guard in the centroid gives
-    /// `NaN` and fails.
     #[test]
     fn silence_has_no_shape() {
         let zeros = [0.0f32; 33];
@@ -323,9 +294,6 @@ mod tests {
 
     /// The grid helper takes its bin width from the transform: its output is
     /// the per-row kernels' on the transform's own rows.
-    ///
-    /// Mutation checked: using `sample_rate / hop` for the width scales the
-    /// centroid by 2 and fails.
     #[test]
     fn the_grid_helper_applies_the_kernels_row_by_row() {
         let stft = magnitudes_of(&sine(2000.0, 8192));

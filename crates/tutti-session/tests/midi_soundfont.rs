@@ -15,15 +15,6 @@
 //! beat), where the `bevy-tutti`
 //! ones moved a hand-kept playhead; the property is the same (a note sounds
 //! on its beat and not before).
-//!
-//! Mutations (run here; each fails the tests named): `Midi::play_clip` not
-//! feeding the target (`a_declared_note_produces_audio` and
-//! `the_note_waits_for_its_beat`); the clip's note moved to beat 0, as a clip
-//! ignoring its beat would play it (`the_note_waits_for_its_beat`);
-//! `Graph::fed` keeping one source per sink, so the keyboard's queue and the
-//! clip no longer merge (`preview_still_sounds_under_an_installed_clip`); a
-//! route wired to port 0 rather than its channel's
-//! (`a_routed_hardware_note_sounds`).
 
 use std::sync::Arc;
 
@@ -166,11 +157,8 @@ fn the_note_waits_for_its_beat() {
 /// live input's queue node and the clip node both feed its event input,
 /// merged by frame.
 ///
-/// Mutation (run in `bevy-tutti`): the event wiring keeping one source per
-/// sink, the first by key (`sources.truncate(1)` after the sort), drops the
-/// keyboard's queue and fails. Dropping the clip instead is not caught
-/// here: the clip is silent in this window by construction, and
-/// `the_note_waits_for_its_beat` covers it.
+/// The clip is silent in this window by construction; `the_note_waits_for_its_beat`
+/// covers it.
 #[test]
 fn preview_still_sounds_under_an_installed_clip() {
     let (mut s, synth) = rig();
@@ -235,11 +223,6 @@ fn routed_level(channel: MidiChannel) -> f32 {
 
 /// **A note from the hardware MIDI input, routed by a rule, sounds**, and one
 /// on a channel no rule routes does not.
-///
-/// Mutations (run in `bevy-tutti`): a channel rule wired to port 0 rather
-/// than its channel's (`input_ports`) sends a note on channel 2 nowhere, so
-/// it is silent and the first check fails; a rule for another channel is the
-/// second check.
 #[test]
 fn a_routed_hardware_note_sounds() {
     let level = routed_level(MidiChannel::of(1));

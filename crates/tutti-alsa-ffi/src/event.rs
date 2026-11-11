@@ -79,8 +79,6 @@ mod tests {
     }
 
     /// Each announcement kind names its client, and a port kind its port too.
-    /// Mutations: swapping `client` and `port` in `PortStart` fails the port
-    /// assertions; mapping `PORT_EXIT` to `PortChange` fails the exit one.
     #[test]
     fn an_announcement_names_its_client_and_port() {
         assert_eq!(
@@ -110,7 +108,7 @@ mod tests {
     }
 
     /// Any other event (a note, say) is no announcement, whatever its first
-    /// word holds. Mutation: a catch-all arm mapping to `ClientStart` fails.
+    /// word holds.
     #[test]
     fn another_event_announces_nothing() {
         assert_eq!(event(0, 130, 9).announced(), None);
@@ -118,8 +116,7 @@ mod tests {
     }
 
     /// The stamp is the event's real time as a duration, and none when the
-    /// flags say the stamp is a tick. Mutation: dropping `.map` for a fixed
-    /// zero fails the first assertion.
+    /// flags say the stamp is a tick.
     #[test]
     fn a_real_time_stamp_becomes_a_duration() {
         let mut ev = sys::snd_seq_ump_event_t::default();

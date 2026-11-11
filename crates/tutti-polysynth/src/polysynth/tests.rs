@@ -215,9 +215,6 @@ fn ev_aftertouch(channel: u8, pressure: u8) -> Ump {
 
 /// **A fork carries no sounding note**: a note playing on the live synth
 /// is not in its fork, which plays only what its own event input brings.
-///
-/// Mutation (run): `fork_instance` not resetting the voices → the fork
-/// sounds the live note → fails.
 #[test]
 fn a_fork_carries_no_sounding_note() {
     let mut live = synth(SynthConfig {
@@ -314,8 +311,6 @@ fn set(synth: &PolySynth, p: tutti_types::UnitParam, value: f32) -> bool {
     tutti_graph::ParamNode::param_set(synth).set(p, value)
 }
 
-/// Mutation (run): `param_set` hands `Volume` a fresh cell instead of
-/// the master atomic → the atomic stays 1.0 → fails.
 #[test]
 fn a_volume_write_moves_the_master_atomic() {
     use tutti_types::UnitParam;
@@ -335,8 +330,6 @@ fn a_volume_write_moves_the_master_atomic() {
     // addressed by `UnitParam`.)
 }
 
-/// Mutation (run): `param_set` adds `Detune` with unison absent → the
-/// last assertion fails.
 #[test]
 fn detune_is_addressable_with_unison_absent_without() {
     use tutti_types::UnitParam;
@@ -357,8 +350,6 @@ fn detune_is_addressable_with_unison_absent_without() {
     assert!(!set(&no_unison, UnitParam::Detune, 0.0));
 }
 
-/// Mutation (run): `sync_from_atomics` skips the unison recompute →
-/// the ratio stays 1.0 → fails.
 #[test]
 fn a_detune_write_recomputes_unison_on_process() {
     use tutti_types::UnitParam;
@@ -475,9 +466,6 @@ fn test_no_unison_single_subvoice() {
 
 /// One sub-voice's chain — oscillator, envelope, gains — is silent while
 /// its gate is closed and sounds once it opens.
-///
-/// *Mutation:* dropping `gate_on`'s `enter(Attack)` (so the gate never
-/// opens the envelope) fails the second half.
 #[test]
 fn test_basic_dsp_chain() {
     use crate::bank::VoiceBank;
@@ -2204,10 +2192,6 @@ fn disabling_mpe_clears_latent_per_note_state() {
 /// blocks is what shows the long block is not merely non-silent but
 /// *right* — control steps, glides and event offsets all land where they
 /// would have.
-///
-/// *Mutation:* clamping `size` to 64 at the top
-/// of `render_events` fails this (frame 64 onward goes silent and the event
-/// at 200 is never reached in the long block).
 #[test]
 fn a_long_block_renders_every_frame_like_short_blocks() {
     let config = || SynthConfig {
@@ -2281,9 +2265,6 @@ fn a_long_block_renders_every_frame_like_short_blocks() {
 /// hard left and adds two more, centre and hard right. If the added lanes
 /// started idle the right channel would go silent until the key was struck
 /// again.
-///
-/// *Mutation:* leaving the added lanes as allocated (idle) in
-/// `VoiceBank::resize_stride` fails this.
 #[test]
 fn unison_grown_under_a_held_note_sounds_immediately() {
     let mut synth = synth(SynthConfig {
@@ -2333,11 +2314,6 @@ fn unison_grown_under_a_held_note_sounds_immediately() {
 /// Not asserted bit-identical: `tick` takes a control step every sample and
 /// `process` every 16, and between them the pitch ramps linearly rather
 /// than along the glide's exponential curve.
-///
-/// *Mutation:* rendering each control step at its target pitch (zeroing
-/// `inc_step` and loading `inc_target` at the top of `render_group`) fails
-/// this at 0.33 against a 0.0056 tolerance; the correct renderer measures
-/// 0.0018.
 #[test]
 fn process_and_tick_agree_through_a_glide() {
     let config = || SynthConfig {
@@ -2404,9 +2380,6 @@ fn process_and_tick_agree_through_a_glide() {
 /// Both notes are the same pitch (on two channels) with no detune, so all
 /// six lanes run at one increment and their phases after the first block
 /// differ exactly as their start phases did.
-///
-/// *Mutation:* starting lanes from the shared table again
-/// (`unison.voice_params(sub).phase_offset` in `drive`) fails this.
 #[test]
 fn a_chord_gets_a_distinct_phase_stack_per_voice() {
     let mut synth = synth(SynthConfig {
@@ -2461,11 +2434,6 @@ fn a_chord_gets_a_distinct_phase_stack_per_voice() {
 /// The steal is timed to land near a peak of a 110 Hz sine, where that step
 /// is largest: the steady sine moves at most `2π·110/48000 ≈ 0.014` of its
 /// peak per sample, and the step would be about 0.7 of it.
-///
-/// *Mutations, each run:* snapping gains on every note-on (`snap_gain =
-/// true` rather than `fresh` in `note_on`) fails this; so does replacing the
-/// gain glide with a jump to the target, which is what a ramp across the
-/// control step amounts to in `tick` (one frame per step).
 #[test]
 fn a_steal_at_a_different_velocity_does_not_click() {
     let mut synth = synth(SynthConfig {
@@ -2511,8 +2479,6 @@ fn a_steal_at_a_different_velocity_does_not_click() {
 ///
 /// Setting the CC74 position to 0.0 instead would read, through the
 /// `4^(v - 0.5)` map, as half the cutoff.
-///
-/// *Mutation:* `set_cc_cutoff(0.0)` in the `RESET_ALL` arm fails this.
 #[test]
 fn reset_all_controllers_leaves_the_cutoff_alone() {
     let config = || SynthConfig {
@@ -2552,9 +2518,6 @@ fn reset_all_controllers_leaves_the_cutoff_alone() {
 
 /// The voices and the bank use the engine's clamped unison count, not the
 /// config's raw one.
-///
-/// *Mutation:* sizing from `u.voice_count` (the raw config value) in
-/// `PolySynth::new` fails this.
 #[test]
 fn an_oversized_unison_count_is_clamped_everywhere() {
     let synth = synth(SynthConfig {
@@ -2579,10 +2542,6 @@ fn an_oversized_unison_count_is_clamped_everywhere() {
 /// `ParamSet` after a fork is not in that fork's render, and one before a
 /// fork is (the `ParamNode` fork `param_parts` inserts). Each rendered fork is handed its own
 /// chord, as its clip would.
-///
-/// Mutations (run): `fork_instance` not detaching `master_volume` →
-/// "Volume: a live move reached the fork" → fails; not detaching the
-/// unison → "Detune" and "StereoSpread" fail the same way.
 #[test]
 fn a_fork_renders_the_volume_and_unison_it_was_taken_with() {
     use tutti_graph::ParamFork;
@@ -2669,8 +2628,7 @@ fn poly_synth() -> PolySynth {
 
 /// A MIDI 1.0 Note On and the MIDI 2.0 Note On that widens it claim the same
 /// voice: same note, channel and velocity, which is the figure translation
-/// scales to. Mutations, each failing this test: reading the MIDI 1.0
-/// velocity as `velocity / 127.0`; ignoring `Midi1` messages.
+/// scales to.
 #[test]
 fn a_midi1_and_a_midi2_note_on_claim_the_same_voice() {
     let wide = tutti_fixtures::midi::wide_velocity(100);
@@ -2705,9 +2663,7 @@ fn a_midi1_and_a_midi2_note_on_claim_the_same_voice() {
 }
 
 /// Every way to end a note ends it: a Note Off on either wire, and a MIDI 1.0
-/// Note On at velocity 0 (M2-104 App. D.3.1). Mutations, each failing this
-/// test: the MIDI 1.0 velocity-0 guard removed (in `widen`); the MIDI 1.0 Note
-/// Off ignored.
+/// Note On at velocity 0 (M2-104 App. D.3.1).
 #[test]
 fn every_note_off_form_releases_the_note() {
     let note = NoteNumber::of(60);
@@ -2753,9 +2709,6 @@ fn every_note_off_form_releases_the_note() {
 
 /// A MIDI 2.0 Note On at velocity 0 is a Note On (M2-104 §7.4.2): it holds a
 /// key until its Note Off, unlike the MIDI 1.0 one, which is a Note Off.
-///
-/// Mutation (run): `voice2` reading a velocity-0 `NoteOn` as a Note Off (the
-/// arm this stage removed) -> no key held -> fails.
 #[test]
 fn a_midi_2_note_on_at_velocity_0_holds_its_key() {
     let note = NoteNumber::of(60);
@@ -2780,9 +2733,7 @@ fn a_midi_2_note_on_at_velocity_0_holds_its_key() {
     assert_eq!(sounding(&synth), 0, "its Note Off releases it");
 }
 
-/// Pitch bend and the sustain pedal act alike from either wire. Mutations,
-/// each failing this test: a MIDI 1.0 bend divided by 16383 instead of widened
-/// by translation's scaler; MIDI 1.0 messages ignored.
+/// Pitch bend and the sustain pedal act alike from either wire.
 #[test]
 fn midi1_and_midi2_controllers_reach_the_same_state() {
     let bend14 = 12_288u16;
@@ -2925,8 +2876,6 @@ fn per_note_management_flags_are_read_from_the_spec_bits() {
 /// A note with a reserved attribute type (4 and up) sounds and ends: Table 8
 /// (M2-104 §7.4.14) reserves the types for senders and gives a receiver no rule
 /// for them, so the attribute is not read. `midi2` refused the packet, so the note was dropped and an off for it left the voice stuck.
-/// Mutation: ignoring `Attribute::Reserved` on the Note On, then on the Note
-/// Off, each failed here.
 #[test]
 fn a_reserved_attribute_type_does_not_stop_a_note() {
     let reserved = Attribute::Reserved {
@@ -2955,8 +2904,7 @@ fn a_reserved_attribute_type_does_not_stop_a_note() {
 }
 
 /// An Assignable Per-Note Controller whose index byte has the high bit set is
-/// not CC74 or CC7: `CCNumber::new` used to mask 0xCA to 74. Mutation:
-/// restoring the mask made the 0xCA case move the slide.
+/// not CC74 or CC7: `CCNumber::new` used to mask 0xCA to 74.
 #[test]
 fn an_assignable_per_note_index_is_a_whole_byte() {
     let drive = |controller: u8| {
@@ -2987,9 +2935,7 @@ fn an_assignable_per_note_index_is_a_whole_byte() {
 }
 
 /// MIDI 1.0 controller and pressure values are widened by translation's
-/// scaler, to exact figures: 64 is the centre, 127 is full. Mutations, each
-/// failing here: `value / 127.0` for the CC (64 gives 0.504); the poly
-/// pressure forced to `0.0 *`.
+/// scaler, to exact figures: 64 is the centre, 127 is full.
 #[test]
 fn midi1_values_scale_to_exact_figures() {
     let mut synth = mpe_synth();
@@ -3028,10 +2974,6 @@ fn midi1_values_scale_to_exact_figures() {
 /// Reset All Controllers (RP-015) returns the modulation wheel to 0 and does
 /// not reset the sound controllers (CC 70-79), so CC 71 and CC 74 keep their
 /// positions. The wheel is the synth's global one, so every voice's resets.
-///
-/// *Mutation (run):* `set_cc_cutoff(0.5)` and `set_filter_resonance(0.0)` back
-/// in the `RESET_ALL` arm fail the sound-controller assertions;
-/// dropping `set_mod_wheel(0.0)` fails the wheel one.
 #[test]
 fn reset_all_controllers_keeps_the_sound_controllers() {
     let mut s = synth(SynthConfig {
@@ -3061,9 +3003,6 @@ fn reset_all_controllers_keeps_the_sound_controllers() {
 
 /// The MPE switch is live: turning it on after construction makes the master
 /// channel's bend reach every channel, and turning it off takes that back.
-///
-/// Mutation (run): `set_mpe_enabled` not telling the note logic
-/// (`allocator.set_zone_masters`) leaves channel 5 centred.
 #[test]
 fn the_mpe_switch_reaches_the_note_logic_while_the_synth_runs() {
     let bend = |synth: &mut PolySynth, channel: u8| {
@@ -3090,9 +3029,6 @@ fn the_mpe_switch_reaches_the_note_logic_while_the_synth_runs() {
 /// Letting go of the sounding key in a mono synth returns to the most recent
 /// key still held (tutti's rule), and the voice then plays that key: the
 /// return starts from the note-off, so the synth must carry it out.
-///
-/// Mutation (run): `carry_out_gates` ignoring `Gate::Start` leaves the voice
-/// on 64, or silent, and fails the pitch assertions.
 #[test]
 fn a_mono_synth_returns_to_the_held_key_and_sounds_it() {
     let on = |k, v| {
@@ -3142,9 +3078,6 @@ fn a_mono_synth_returns_to_the_held_key_and_sounds_it() {
 /// B.1: a Group is a channel space of its own): a note in Group 2 is not
 /// played by a synth of Group 1, whichever channel it names, and a synth built
 /// for Group 2 plays it and not Group 1's.
-///
-/// Mutation: `process_midi_event` ignoring the Group (the check dropped) ->
-/// the first synth sounds Group 2's note and the first assertion fails.
 #[test]
 fn a_synth_plays_its_own_groups_channels_only() {
     let group2 = MidiGroup::of(1);

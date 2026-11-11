@@ -27,20 +27,6 @@ fn fake() -> (Devices, DeviceEvents, FakeCounters) {
     (devices, events, counters)
 }
 
-// Mutation record, each seen to fail, then restored:
-// - `ChangeSink::send` without `notify_all`: every test that waits fails with
-//   "wait slept to its timeout" (nine of them);
-// - `wait_timeout_while` in `recv_timeout` with a predicate that is never
-//   true (it returns at once): the tests that expect an event fail;
-// - `FakeWatch::drop` without the join: `dropping_devices_stops_the_watch_thread`
-//   fails;
-// - `Reporter::report` ignoring `departed`:
-//   `a_handle_the_os_says_departed_is_a_new_device` fails;
-// - `Reporter::report` ignoring the identity:
-//   `a_handle_under_another_identity_is_a_different_device` fails;
-// - `Reporter::report` sending `Gone` when only the name changed:
-//   `a_handle_with_the_same_identity_and_a_new_name_is_changed` fails.
-
 fn id_of(devices: &Devices, name: &str) -> DeviceId {
     devices
         .list()
@@ -128,8 +114,6 @@ fn a_wake_takes_the_change_off_the_queue() {
     assert!(events.try_iter().next().is_none(), "wake consumed it");
 }
 
-/// Mutation: `ChangeSink::fail` not recording the reason leaves
-/// `failure()` `None` and the second assertion fails.
 #[test]
 fn a_watch_that_fails_says_so_and_the_list_freezes() {
     let (devices, events, fake) = fake();
@@ -164,8 +148,7 @@ fn recv_wakes_for_a_change_made_on_another_thread() {
 }
 
 /// Two subscribers each see every change; one reading takes nothing from the
-/// other. Mutation: one shared queue (a shared queue) leaves the second
-/// subscriber empty and the second assertion fails.
+/// other.
 #[test]
 fn each_subscriber_sees_every_change() {
     let (devices, first, fake) = fake();
@@ -176,10 +159,7 @@ fn each_subscriber_sees_every_change() {
 }
 
 /// The list at subscription and the stream after it neither overlap nor leave
-/// a gap. Mutation: taking the snapshot before the subscriber is registered
-/// loses a plug that lands between (not reachable single-threaded; the lock
-/// order in `subscribe` is the whole guard), so this pins the single-threaded
-/// halves: `initial` holds the earlier device, the stream only the later.
+/// a gap.
 #[test]
 fn initial_and_stream_split_at_the_subscription() {
     let (devices, _first, fake) = fake();
@@ -193,8 +173,7 @@ fn initial_and_stream_split_at_the_subscription() {
 }
 
 /// A dropped subscriber leaves the list at once, with no later change to prune
-/// it, so an app that wants no events keeps none. Mutation: `DeviceEvents`
-/// without its `Drop` leaves 1.
+/// it, so an app that wants no events keeps none.
 #[test]
 fn a_dropped_subscriber_is_forgotten() {
     let (devices, events, _fake) = fake();
@@ -207,8 +186,7 @@ fn a_dropped_subscriber_is_forgotten() {
 }
 
 /// The events a failed watch reported are delivered before `Ended`, and a
-/// subscriber that arrives later is told at once. Mutation: `recv_timeout`
-/// checking `ended` before the queue loses the `Added`.
+/// subscriber that arrives later is told at once.
 #[test]
 fn a_failed_watch_ends_the_stream_after_what_it_reported() {
     let (devices, events, fake) = fake();
@@ -228,8 +206,7 @@ fn a_failed_watch_ends_the_stream_after_what_it_reported() {
     ));
 }
 
-/// A dropped `OpenInput` retires its port. Mutation: `OpenInput::drop`
-/// without `remove_input_port` leaves 1 in the last assertion.
+/// A dropped `OpenInput` retires its port.
 #[test]
 fn a_dropped_input_retires_its_port() {
     let (devices, events, fake) = fake();
@@ -272,9 +249,7 @@ impl MidiEndpoints for Refuses {
 }
 
 /// An open the backend refuses leaves no port behind, however many times it
-/// is tried. Mutation: `Devices::open_input` opening the backend connection
-/// before it builds the `OpenInput` that owns the port (`?` on the backend
-/// call ahead of the struct) leaves 3 ports listed.
+/// is tried.
 #[test]
 fn a_backend_failure_leaves_no_port() {
     let devices = Devices::open_over(Box::new(Refuses)).unwrap();
@@ -293,10 +268,6 @@ fn a_backend_failure_leaves_no_port() {
 /// stream, never both and never neither. A sender reports 2000 distinct
 /// devices on one thread while another subscribes; every device must be
 /// accounted for once.
-///
-/// Mutation: `subscribe` taking the list under one lock and registering the
-/// queue under a second, with a 200 us sleep between, loses the devices that
-/// arrive in the gap (the sum falls short of 2000).
 #[test]
 fn a_change_during_subscribe_is_in_initial_or_in_the_stream_once() {
     const DEVICES: i32 = 2000;
@@ -341,8 +312,7 @@ fn a_change_during_subscribe_is_in_initial_or_in_the_stream_once() {
 }
 
 /// A saved device resolves through the real `Devices`: a unit's ports by name
-/// and direction, and a lone same-named device only by name. Mutation:
-/// `Devices::resolve` returning `Resolved::Missing` fails the first assertion.
+/// and direction, and a lone same-named device only by name.
 #[test]
 fn a_saved_device_resolves_through_devices() {
     let (devices, events, fake) = fake();
@@ -378,9 +348,6 @@ fn a_saved_device_resolves_through_devices() {
     );
 }
 
-/// Mutation: `FakeWatch::drop` without the join, or a sender kept in
-/// `FakeDevices::watches` past the drop, leaves the thread running and the
-/// count at 1.
 #[test]
 fn dropping_devices_stops_the_watch_thread() {
     let (backend, fake) = FakeBackend::build();
@@ -488,8 +455,7 @@ fn reporter() -> (Arc<Queue>, Reporter) {
 }
 
 /// A handle the OS says departed is a new device when it is present again, even
-/// under the same name. Mutation: `report` ignoring `departed` leaves only the
-/// first `added` here.
+/// under the same name.
 #[test]
 fn a_handle_the_os_says_departed_is_a_new_device() {
     let (queue, mut reporter) = reporter();
@@ -507,8 +473,7 @@ fn a_handle_the_os_says_departed_is_a_new_device() {
 }
 
 /// Where the identity is the name, a handle that stays under a new name is a
-/// different device: removed, then added. Mutation: `report` ignoring identity
-/// makes it `changed`.
+/// different device: removed, then added.
 #[test]
 fn a_handle_under_another_identity_is_a_different_device() {
     let (queue, mut reporter) = reporter();
@@ -524,9 +489,7 @@ fn a_handle_under_another_identity_is_a_different_device() {
     );
 }
 
-/// Where the identity survives a rename, the device is `Changed`. Mutation:
-/// `report` sending `Gone` when only the name changed makes it `removed`,
-/// `added`.
+/// Where the identity survives a rename, the device is `Changed`.
 #[test]
 fn a_handle_with_the_same_identity_and_a_new_name_is_changed() {
     let (queue, mut reporter) = reporter();
@@ -558,8 +521,7 @@ fn the_reporter_reports_a_departure_a_re_enumeration_omits() {
 /// A device reported gone and present again is never missing from the list
 /// between the two: they are applied under one hold of the state. A reader
 /// polls `list` while the reporter replaces the device; a miss only passes, so
-/// the loop is long. Mutation: `Reporter::report` sending each change with its
-/// own `ChangeSink::send` makes the reader see the list without "Twin" (seen to fail).
+/// the loop is long.
 #[test]
 fn a_replaced_device_is_never_missing_from_the_list() {
     use std::sync::atomic::{AtomicBool, Ordering};
@@ -606,8 +568,6 @@ fn sink_over_empty() -> (ChangeSink, Devices) {
 }
 
 // The list is seeded once: a second seed is refused and changes nothing.
-// Mutation: drop the `begun` check in `seed`: the second call is `Ok` and the
-// list gains "Second".
 #[test]
 fn a_second_seed_is_refused_and_leaves_the_list() {
     let (sink, devices) = sink_over_empty();
@@ -623,7 +583,6 @@ fn a_second_seed_is_refused_and_leaves_the_list() {
 
 // A seed after a change was reported is late: it would rewrite what a
 // subscriber may already have read.
-// Mutation: `send_all` without `begun = true`: the late seed is `Ok`.
 #[test]
 fn a_seed_after_a_change_is_refused() {
     let (sink, devices) = sink_over_empty();

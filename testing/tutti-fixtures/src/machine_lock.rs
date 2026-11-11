@@ -86,10 +86,6 @@ mod tests {
     /// path: the machine-wide one is contended by every other test process
     /// (and other worktrees), so a raw `create_dir` or `remove_dir` on it
     /// would race them and could delete a lock another process holds.
-    ///
-    /// Mutation: make `acquire_at` a process-local `static Mutex` (the bug this
-    /// module replaced) → nothing is created on disk → the first
-    /// `create_dir` succeeds → fails.
     #[test]
     fn a_held_lock_refuses_another_process() {
         let dir = tempfile::tempdir().expect("a private directory");

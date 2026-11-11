@@ -272,9 +272,6 @@ mod tests {
     /// panics**; `clear` resets the count with the list. What lets a loader
     /// copy a plugin's MIDI-out whatever its size without growing (or, with
     /// `extend`, panicking on) the inline list.
-    ///
-    /// Mutation (run): `emit_midi` through `extend` → panics past 256 →
-    /// fails; the count not added to `midi_dropped` → fails.
     #[test]
     fn emit_midi_caps_and_counts() {
         let mut out = ProcessOutput::default();
@@ -305,9 +302,6 @@ mod tests {
     /// **The loss reports of a chunked Processor accumulate within a block and
     /// `clear` resets them**: the node reads them after each call, and a flag
     /// left from the last block would fold a loss twice.
-    ///
-    /// Mutation (run): `clear` not resetting `midi_lost` → the second read is
-    /// 5 → fails; not resetting `params_unsent` → fails.
     #[test]
     fn loss_reports_accumulate_and_clear() {
         let mut out = ProcessOutput::default();

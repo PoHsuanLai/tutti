@@ -77,10 +77,6 @@ mod tests {
 
     /// The sweep at the LFO's trough, centre and peak, for depth 0, half and 1,
     /// from the definition `min + (max - min) * (lfo + 1) / 2 * depth`.
-    ///
-    /// Mutation (run): `lfo * 0.5 + 0.5` -> `lfo * 0.5` fails the trough and
-    /// centre rows; `* depth` dropped fails the depth-0 row; `min` and `max`
-    /// swapped fails every row with `max != min`.
     #[test]
     fn the_sweep_runs_from_min_to_max_by_lfo_and_depth() {
         let (lo, hi) = (Hz(200.0), Hz(4_000.0));
@@ -99,8 +95,6 @@ mod tests {
     }
 
     /// A zero-width range does not move whatever the LFO and depth.
-    ///
-    /// Mutation (run): `min +` dropped fails it.
     #[test]
     fn an_empty_range_is_a_fixed_frequency() {
         let f = Hz(440.0);

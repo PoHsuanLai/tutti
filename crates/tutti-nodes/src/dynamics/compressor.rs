@@ -565,9 +565,6 @@ mod tests {
 
     /// A fork starts from the values last set through the node's
     /// `ParamSet` and shares no cell with it.
-    ///
-    /// Mutation (run): drop `fork.core.ratio.detach()` in `fork_fresh` → "a
-    /// live write reached the fork" for `Ratio` → fails.
     #[test]
     fn a_fork_shares_no_cell() {
         assert_param_fork(
@@ -583,10 +580,6 @@ mod tests {
 
     /// The block reads a raw ratio cell below 1 as 1 and a knee below 0 as 0,
     /// as the setters clamp.
-    ///
-    /// Mutation (run): drop the `CompressionRatio::new_clamped` in
-    /// `begin_block` → the ratio reads 0.25 → fails; drop the `k.max(0.0)` →
-    /// the knee reads -6 → fails.
     #[test]
     fn begin_block_clamps_a_raw_ratio_and_knee() {
         let mut core = CompressorCore::new(
@@ -604,9 +597,6 @@ mod tests {
 
     /// A block longer than 64 frames renders whole: the
     /// gain lane is sized from the prepared `MaxBlock`, not a constant.
-    ///
-    /// Mutation (run): size the lane `vec![0.0; 64]` in `prepare` → the
-    /// 1024-frame block panics indexing past it → fails.
     #[test]
     fn a_block_up_to_the_prepared_maximum_renders() {
         let mut comp = prepared_at(
@@ -627,10 +617,6 @@ mod tests {
     /// A NaN ratio at construction is read as no compression, not as 0, which
     /// is below the type's floor: the output stays finite, `reset` is not
     /// needed to recover, and a later finite ratio takes effect.
-    ///
-    /// Mutation (run): the ratio's `LastGood` fallback `CompressionRatio::UNITY`
-    /// → `0.0` → the output is NaN from the first block and stays NaN after
-    /// `set_ratio(4.0)` → fails.
     #[test]
     fn a_nan_ratio_at_construction_is_finite_and_recovers() {
         let mut comp = prepared_at(
@@ -874,10 +860,6 @@ mod tests {
     /// makeup), and it never changes the arity: audio plus sidechain, at
     /// every width. (Doc 014 §12.6 widened the list: a route onto any of
     /// these was refused once the frame-rate driver went.)
-    ///
-    /// Mutation (run): declare no params in `shape` → the first assertion
-    /// fails. Mutation (run): `param_base(4)` answering the ratio
-    /// cell → fails.
     #[test]
     fn compressor_declares_its_params() {
         let m = CompressorNode::mono(

@@ -326,9 +326,6 @@ mod measures_tests {
     }
 
     /// Every accepted label maps over a plain range that fits.
-    ///
-    /// Mutation (run, 2026-11-11): `from_label`'s `"ms"` arm changed to
-    /// `Some(Self::Seconds)` → the `ms` row fails.
     #[test]
     fn every_accepted_label_maps_over_a_plain_range() {
         for (label, unit) in [
@@ -351,9 +348,6 @@ mod measures_tests {
 
     /// A normalized range (the plugin declined `effGetParameterProperties`) is
     /// never typed, however exact the label.
-    ///
-    /// Mutation (run): `.filter(|unit| unit.fits(range))` removed → `Hz` over
-    /// a normalized range maps, and this test fails.
     #[test]
     fn a_label_without_a_plain_range_is_none() {
         let normalized = ParamRange::Normalized { default: 0.5 };
@@ -365,10 +359,6 @@ mod measures_tests {
     }
 
     /// Near-misses and the non-ASCII space are `None` over a fitting range.
-    ///
-    /// Mutation (run, 2026-11-11): `from_label`'s `trim_matches(' ')` changed to
-    /// `trim()` → the `Hz` + em-space and no-break-space rows map, and this test
-    /// fails.
     #[test]
     fn near_misses_are_none() {
         for label in [

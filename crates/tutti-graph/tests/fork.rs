@@ -233,11 +233,6 @@ fn chain() -> GraphBuilder {
 /// running state — oscillator phase, filter memory, the feedback edge's
 /// captured block — reaches the fork, and all of its wiring does. The fork is
 /// prepared for its own `Prepare` (a larger block here), not the live one's.
-///
-/// Mutation: drop the `edges` copy in `Editor::fork` → the fork's filter
-/// reads silence → fails. Mutation: drop `topology.outputs = outputs` →
-/// every fork output is `Zero` → fails. Mutation: prepare the fork with the
-/// live editor's `Prepare` → the `prepare()` assertion fails.
 #[test]
 fn a_forked_chain_renders_like_a_fresh_build() {
     let mut live = chain().renderer(prepare(64)).expect("builds");
@@ -294,10 +289,6 @@ impl IntoNode for ReadsMode {
 /// **Each fork source is handed the mode the fork was asked for**: offline
 /// for an offline fork, live for a live one. The live node keeps its own
 /// value throughout.
-///
-/// Mutation (run): `Editor::fork` handing every source `ForkMode::Live` →
-/// the offline fork renders 0 → fails. `ForkMode::Offline` to every source
-/// → the live duplicate renders 0.75 → fails.
 #[test]
 fn a_fork_hands_its_sources_its_mode() {
     let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::MONO);
@@ -334,11 +325,6 @@ fn a_fork_hands_its_sources_its_mode() {
 /// reads its [`ParamSet`] when the fork is taken, so a `set` made after
 /// insert — before any block has run — is what the fork renders. A value set
 /// after the fork does not reach it: the fork has no link back.
-///
-/// Mutation (run): `ParamFork::new` keeping a template detached at insert
-/// (`node.fork_fresh()`) → the fork renders the constructed 0.5 → fails.
-/// (Re-run with the authored copy gone: the fork reads
-/// the shared cells, so a detached template is all that can lose the set.)
 #[test]
 fn a_value_set_after_insert_reaches_the_fork() {
     let (mut ed, mut exec) = Editor::new(prepare(64));
@@ -367,10 +353,6 @@ fn a_value_set_after_insert_reaches_the_fork() {
 /// boxed and inserted as an `Unforkable` `Box<dyn Node>`, and a forkable key
 /// replaced by an unforkable unit are all unforkable; a target that does not exist or has
 /// no outputs is refused too.
-///
-/// Mutation: skip keys without a source in `Editor::fork` → `Ok` → fails.
-/// Mutation: keep the old fork source when `insert` replaces a unit with
-/// one that has none → key 3 forks → fails.
 #[test]
 fn a_node_without_a_fork_source_is_not_forkable() {
     let (mut ed, _exec) = Editor::new(prepare(64));
@@ -491,9 +473,6 @@ impl ForkSource for WatchedFork {
 /// **A forked unit that fails while rendering is reported by the forked
 /// editor**, with its key and how (crashed vs timed out); healthy is `Ok`,
 /// and the live editor, which holds no forked units, is always `Ok`.
-///
-/// Mutation: drop `watch_fork` in `Editor::fork` → the fault is never seen →
-/// fails. Mutation: `fork_health` returns `Ok(())` → fails.
 #[test]
 fn a_forked_unit_that_fails_while_rendering_is_a_fork_fault() {
     let pre = prepare(64);
@@ -573,11 +552,6 @@ impl IntoNode for Failing {
 /// cause**: `ForkError::Source`, with the source's own error downcastable —
 /// never a fork that quietly leaves the node out, or renders it as silence.
 /// It is `Error::source` too, so a host printing the chain sees why.
-///
-/// Mutation: in `Editor::fork`, skip a node whose source fails (`continue`
-/// instead of `?`) → the fork commits with the node missing → `.err()` is
-/// `None` → fails. Mutation: return `NotForkable` instead → the cause is
-/// lost → fails.
 #[test]
 fn a_failing_fork_source_is_a_named_error_with_its_cause() {
     let pre = prepare(64);
@@ -616,9 +590,6 @@ fn a_failing_fork_source_is_a_named_error_with_its_cause() {
 /// wraps. Walked over a grid of node and graph widths; since port `p` of
 /// [`Consts`] carries `base + p`, channel `c` must carry
 /// `base + min(c, outs - 1)` on every frame.
-///
-/// Mutation: `c % outs` instead of the clamp → 2-into-3 reads port 0 on
-/// channel 2 → fails.
 #[test]
 fn a_node_fork_fans_out_as_clone_isolated_does() {
     for node_outs in 1..=3 {
@@ -651,11 +622,6 @@ fn a_node_fork_fans_out_as_clone_isolated_does() {
 /// (`fb` → `a`, delayed) and an event edge (`emit` → `target`) — and not the
 /// node it feeds (`after`) or a sibling branch (`side`, which is not even
 /// forkable, and so must not be asked). The wiring inside comes along.
-///
-/// Mutation: drop the feedback arm from `Editor::upstream` → `fb` is
-/// missing and `a`'s edge dangles → the fork fails to commit → fails.
-/// Mutation: drop the event walk → `emit` is missing → fails. Mutation:
-/// fork every node for `Node` too → `side` is `NotForkable` → fails.
 #[test]
 fn a_node_fork_holds_exactly_what_feeds_the_node() {
     let (osc, a, fb, emit, target, after, side) = (
@@ -760,12 +726,6 @@ fn a_node_fork_holds_exactly_what_feeds_the_node() {
 /// Changed in doc 014 §12.6: a live-only write to the level's cell (a
 /// modulation driver's) is gone with the authored copy (§10); a fork reads
 /// the cells, and the test now moves the live level after the fork.
-///
-/// Mutation (run): `Level::fork_fresh` not detaching its cell (the fork
-/// shares the live cell, as a `fork_node` handing out the template would)
-/// → the fork follows the live move to 0.9 → fails. Mutation (run): `SharedFork` handing the fork
-/// the live node's cell → the fork's rendering advances the live ramp →
-/// fails.
 #[test]
 fn the_live_graph_is_unaffected_while_a_fork_renders() {
     fn build() -> (Editor, tutti_graph::Executor, ParamSet) {
@@ -825,11 +785,6 @@ fn the_live_graph_is_unaffected_while_a_fork_renders() {
 /// `Editor::replace` forks the incoming unit, a replace with a unit that
 /// hands over no fork source makes the key unforkable, and a *refused*
 /// replace (a different width) changes nothing.
-///
-/// Mutation: pass no fork source to `place` from `Editor::replace` → the
-/// fork after a forkable replace is `NotForkable` → fails. (Writing the
-/// source before the shape check, which the refused replace would expose,
-/// is no longer expressible: `place` writes it, past the checks.)
 #[test]
 fn a_replace_moves_forking_to_the_new_unit() {
     let fade = Fade::new(Samples(64), CrossfadeCurve::EqualPower);
@@ -866,9 +821,6 @@ fn a_replace_moves_forking_to_the_new_unit() {
 /// through `spec_mut`, or by a `package` placing units the editor never
 /// saw), forking would copy a unit that is no longer there. Debug builds
 /// assert; release builds return `NotForkable`.
-///
-/// Mutation: drop the generation comparison in `Editor::fork` → the fork
-/// succeeds → fails (both builds).
 #[test]
 #[cfg_attr(debug_assertions, should_panic(expected = "is from generation 0"))]
 fn a_fork_source_from_an_older_generation_is_refused() {
@@ -890,12 +842,6 @@ fn a_fork_source_from_an_older_generation_is_refused() {
 /// 8 per block, so the fork drops some, as the live graph would; the mark
 /// on the sibling edge (outside a `Node` fork) is left behind, or the fork
 /// could not commit.
-///
-/// Mutation: drop the params copy in `Editor::fork` → fails. Mutation: fork
-/// with `DEFAULT_EVENT_CAPACITY` → nothing dropped → fails. Mutation: copy
-/// `required_resolution` unfiltered → the fork's commit fails
-/// (`RequirementWithoutEdge`) → fails. Mutation: drop the copy → the kept
-/// mark is missing → fails.
 #[test]
 fn a_fork_carries_params_event_capacity_and_its_own_marks() {
     use tutti_graph::ParamValue;
@@ -968,8 +914,6 @@ fn a_fork_carries_params_event_capacity_and_its_own_marks() {
 
 /// **A node fork of a graph with no global outputs is `NoOutputs`**, not an
 /// empty fork that renders nothing.
-///
-/// Mutation: drop the `outputs.is_empty()` check → `Ok` → fails.
 #[test]
 fn a_node_fork_with_no_global_outputs_is_no_outputs() {
     let (mut ed, _exec) = Editor::new(prepare(64));
@@ -1014,10 +958,6 @@ impl Node for Ramp {
 /// **A node inserted as `ForkByClone` forks, from reset; the same
 /// node inserted plainly does not.** The ramp is built at 7 and the live one
 /// runs 300 frames first, so a fork that kept either would not start at 0.
-///
-/// Mutation (run): `ForkByClone::into_parts` handing no fork source → the
-/// fork is `NotForkable`. Mutation (run): `CloneFork::fork` not calling
-/// `reset` → the fork starts at 7.
 #[test]
 fn a_fork_by_clone_node_forks_from_reset() {
     let (mut ed, exec) = Editor::new(prepare(256));
@@ -1059,9 +999,6 @@ fn a_fork_by_clone_node_forks_from_reset() {
 /// unforkable node no output reaches (an unrouted mic monitor, say) does not
 /// refuse the fork and is not in it; a forkable one no output reaches is
 /// not copied either. Once routed, the unforkable node refuses the fork.
-///
-/// Mutation (run): `ForkTarget::Master` forking every key in the spec (the
-/// rule before) → `NotForkable { key: 2 }`.
 #[test]
 fn a_master_fork_holds_only_what_the_outputs_reach() {
     let (mut ed, _exec) = Editor::new(prepare(256));
@@ -1248,14 +1185,6 @@ fn witness(ed: &mut Editor, key: NodeKey, how: How, value: u32) -> (Arc<AtomicU3
 /// outputs, a param set through its `ParamSet`, and a node's live cell
 /// moved after `fork_gather` returns all miss the fork built afterwards
 /// (on another thread), which renders the graph as it was.
-///
-/// Mutation (run): `ParamFork::gather` deferring `fork_node` to the build
-/// (`ForkBuild::deferred` over a clone of the source) → the 0.9 set after
-/// the gather reaches the fork → fails. Mutation (run): `fork_gather`
-/// running a deferred build at once → `deferred()` is 0 → fails. The spec
-/// half has no mutation here: a `PendingFork` holds no reference to the live
-/// editor (`Send + 'static`, `a_pending_fork_is_send_and_static`), so
-/// nothing the build does can read the live spec.
 #[test]
 fn a_gathered_fork_is_the_live_graph_at_the_gather() {
     let pre = prepare(64);
@@ -1304,14 +1233,6 @@ fn a_gathered_fork_is_the_live_graph_at_the_gather() {
 /// default) is built and prepared at the gather; a ready unit is built at
 /// the gather and prepared in the build; a deferred unit is built and
 /// prepared in the build. The fork renders all four.
-///
-/// Mutation (run): `fork_gather` leaving a pinned unit unprepared and the
-/// build preparing it as a ready one → the pinned and default units are
-/// prepared on the build thread → fails. Mutation (run): `fork_gather`
-/// running a deferred build at once (`Unit::Built(build()?)`) → the deferred
-/// unit is built on the gathering thread → fails. Mutation (run): the
-/// trait's default `gather` returning `ForkBuild::ready` → the default unit
-/// is prepared on the build thread → fails.
 #[test]
 fn each_source_builds_and_prepares_where_its_gather_says() {
     let pre = prepare(64);
@@ -1364,11 +1285,6 @@ fn each_source_builds_and_prepares_where_its_gather_says() {
 /// with its cause; the pinned unit is not dropped there but comes back in
 /// the `ForkRemains`, and drops here, on the gathering thread, with them;
 /// and no deferred build after the failing one runs.
-///
-/// Mutation (run): the build dropping what it built instead of handing it
-/// back (`ForkRemains { units: Vec::new(), .. }`) → the pinned unit drops on
-/// the build thread → fails. Mutation (run): the build running every
-/// deferred build after a failure → key 3's build runs → fails.
 #[test]
 fn a_failing_build_names_its_key_and_hands_back_what_it_built() {
     let pre = prepare(64);
@@ -1414,9 +1330,6 @@ fn a_failing_build_names_its_key_and_hands_back_what_it_built() {
 
 /// **A `PendingFork` and a `ForkRemains` cross threads**, and hold nothing
 /// borrowed: the property the build-anywhere promise rests on.
-///
-/// Mutation (run, at compile time): `Unit::Deferred`'s closure without
-/// `+ Send` → this does not compile.
 #[test]
 fn a_pending_fork_is_send_and_static() {
     fn send_static<T: Send + 'static>() {}
@@ -1429,11 +1342,6 @@ fn a_pending_fork_is_send_and_static() {
 /// pinned unit gathered beside it (an in-process VST2 plugin's, whose close
 /// is the main thread's and asserts so) is leaked there rather than torn
 /// down; the panic reaches the caller as a panic.
-///
-/// Mutation (run): `PinnedUnit`'s drop dropping its unit whatever the
-/// thread → the witness is dropped on the build thread → fails. Mutation
-/// (run): `fork_gather` not wrapping a pinned unit in `PinnedUnit` → the
-/// same.
 #[test]
 #[cfg_attr(miri, ignore = "spawns a thread that panics; leaks by design")]
 fn a_pinned_unit_is_not_dropped_on_a_worker_that_panics() {
@@ -1465,9 +1373,6 @@ fn a_pinned_unit_is_not_dropped_on_a_worker_that_panics() {
 /// so the fork's error names key 2, through `fork` and `fork_gather` alike,
 /// and key 1's build never runs. (Before the split, the first failing
 /// source in key order was named.)
-///
-/// Mutation (run): `fork_gather` running each deferred build at once → key
-/// 1's build fails first and is named → fails.
 #[test]
 fn a_gather_failure_is_named_before_a_build_failure() {
     let pre = prepare(64);
@@ -1501,9 +1406,6 @@ fn a_gather_failure_is_named_before_a_build_failure() {
 /// `ForkError::Commit`; the pinned unit already placed in the fork's editor
 /// comes back inside the `ForkRemains` and drops with them, here, not on
 /// the build thread.
-///
-/// Mutation (run): `build` dropping the half-built pair on a commit failure
-/// (`graph: None`) → the pinned unit drops on the build thread → fails.
 #[test]
 fn a_build_whose_commit_fails_hands_back_the_graph() {
     let pre = prepare(64);

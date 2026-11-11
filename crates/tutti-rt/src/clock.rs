@@ -79,11 +79,6 @@ mod tests {
 
     /// **The clock is the OS's**, not one this process started: on Unix a
     /// reading sits between two direct reads of the clock it names.
-    ///
-    /// Mutation (run in `tutti-plugin`, where this lived): count from a
-    /// process-local `Instant` origin → the reading is milliseconds, the OS's
-    /// is the uptime → fails. Mutation: `CLOCK_REALTIME` → decades past the
-    /// uptime → fails.
     #[cfg(unix)]
     #[test]
     fn the_clock_is_the_os_monotonic_clock() {
@@ -109,9 +104,6 @@ mod tests {
     }
 
     /// Two readings never go back.
-    ///
-    /// Mutation (run): returning `-now` → the second is below the first →
-    /// fails.
     #[test]
     fn it_never_goes_back() {
         let a = monotonic_ns();

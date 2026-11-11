@@ -1,10 +1,3 @@
-//! Mutation record (each planted, seen to fail, restored):
-//! - `TEN_NS_UNITS_PER_MINUTE` off by a factor of 10 ->
-//!   `a_tempo_is_ten_ns_units_per_quarter`;
-//! - (the `field != 0` guard of `bpm_of` is not covered: `Bpm::new` refuses the
-//!   infinity it would divide into, so the guard states the rule and removing it
-//!   changes nothing.)
-
 use super::*;
 use tutti_ump::MidiGroup;
 

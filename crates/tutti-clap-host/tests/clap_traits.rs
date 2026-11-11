@@ -3,8 +3,6 @@
 //! plugin.
 //!
 //! The plugin's state is process-global, so every test holds [`PROBE_LOCK`].
-//! Each test's comment names the mutation that makes it fail; every one was
-//! applied, the test watched to fail, and the code restored.
 
 use std::path::Path;
 use std::sync::{Mutex, MutexGuard};
@@ -161,12 +159,6 @@ fn render(processor: &mut ClapProcessor, format: SampleFormat) -> Result<(), Plu
 /// **`Loaded::activate` splits the plugin, and the Controller serves the
 /// reads.** The Processor renders at the width the `Prepare` named, and a block
 /// of the other width is an error rather than a mis-cast.
-///
-/// Mutation (run): `Loaded::activate` always taking the `f32` arm → the
-/// `is_f64` assertion in the second half fails; the FFI `process` mismatch arm
-/// answering `Ok` → the mismatch is not an error. The mismatch is the
-/// allocation-free `PluginError::Block` the FFI error maps to (mutation run:
-/// `PluginError::Process(String)` in its place → the `Block` match fails).
 #[test]
 fn activation_splits_the_plugin_and_renders_at_the_prepared_width() {
     let probe = Probe::acquire();
@@ -222,11 +214,6 @@ fn activation_splits_the_plugin_and_renders_at_the_prepared_width() {
 /// saturated to `u32::MAX`** (which would size the scratch for four billion
 /// frames in every channel). The plugin comes back inactive and activates at a
 /// block it can take.
-///
-/// Mutation (run): saturating to a small figure instead
-/// (`unwrap_or(1024)`) activates the plugin and the `expect_err` fails. The
-/// original `unwrap_or(u32::MAX)` is not run: it sizes about 17 GB of scratch
-/// per channel.
 #[cfg(target_pointer_width = "64")]
 #[test]
 fn a_block_past_u32_is_refused_not_saturated() {
@@ -252,10 +239,6 @@ fn a_block_past_u32_is_refused_not_saturated() {
 /// `tutti_plugin_types::negotiate` fed this plugin's capability; the
 /// negotiated format activates and renders, where the raw 64-bit request is
 /// refused.
-///
-/// Mutation (run): `negotiate_format` passing `true` for the capability →
-/// the first assertion reports `Float64`, and the activation it would build
-/// is refused.
 #[test]
 fn a_64bit_request_negotiates_to_32bit_without_64bit_ports() {
     let probe = Probe::acquire();
@@ -304,11 +287,6 @@ fn a_64bit_request_negotiates_to_32bit_without_64bit_ports() {
 /// buffer, so one port short of 64-bit is enough. A plugin that drops its
 /// flags after load is negotiated at its current capability, which is the
 /// path the server's loader takes.
-///
-/// Mutation (run): `negotiate_format` skipping `rescan_audio_ports` -> the
-/// loaded-as-capable plugin still answers `Float64` after its flags are gone,
-/// and the last assertion fails. Mutation (run): `read_audio_ports` treating
-/// "any port 64-bit" as capable -> the inputs-only case answers `Float64`.
 #[test]
 fn partly_64bit_ports_negotiate_to_32bit_and_the_ports_are_read_again() {
     let probe = Probe::acquire();
@@ -345,9 +323,6 @@ fn partly_64bit_ports_negotiate_to_32bit_and_the_ports_are_read_again() {
 
 /// **A refused activation hands the plugin back whole.** The plugin is
 /// inactive, usable, and activates again once the refusal is lifted.
-///
-/// Mutation (run): `activate_now` dropping the plugin on a refusal (returning
-/// `plugin: None`) → the `expect` on the returned plugin fails.
 #[test]
 fn a_refused_activation_hands_the_plugin_back() {
     let probe = Probe::acquire();
@@ -370,9 +345,6 @@ fn a_refused_activation_hands_the_plugin_back() {
 }
 
 /// **The halves of two activations are refused, and both come back.**
-///
-/// Mutation (run): `rejoin` skipping the `Arc::ptr_eq` check → the mismatched
-/// pair is joined and the `expect_err` fails.
 #[test]
 fn halves_of_two_activations_are_stuck_and_returned() {
     let probe = Probe::acquire();
@@ -398,11 +370,6 @@ fn halves_of_two_activations_are_stuck_and_returned() {
 
 /// **A parameter written to the Controller reaches the plugin at the head of
 /// the next block**, denormalized against the declared range, and not before.
-///
-/// Mutation (run): `ClapController::set_parameter` flushing straight to the
-/// plugin → the capture of the *previous* block already holds the write, and
-/// the "not before" assertion fails; `queue_edit` sending a raw normalized
-/// value → the plain-value assertion fails.
 #[test]
 fn a_controller_write_is_a_param_value_event_at_the_head_of_the_next_block() {
     let probe = Probe::acquire();
@@ -436,10 +403,6 @@ fn a_controller_write_is_a_param_value_event_at_the_head_of_the_next_block() {
 /// **A state load makes the writes queued before it stale**: they were written
 /// against values the load replaced, and the next block must not put them
 /// back over it.
-///
-/// Mutation (run): `ClapController::load_state` not calling `reset_edits` → the
-/// block carries the stale write → fails; `ClapProcessor` ignoring
-/// `Edit::Reset` (the `truncate` removed) → the same.
 #[test]
 fn a_state_load_makes_queued_writes_stale() {
     let probe = Probe::acquire();
@@ -473,12 +436,6 @@ fn a_state_load_makes_queued_writes_stale() {
 /// tick.** Far more writes than the ring holds arrive before a block; the first
 /// block drains the ring, `flush_edits` sends what was kept, and the next block
 /// ends on the last value written.
-///
-/// Mutation (run): `queue_edit` dropping a refused edit instead of keeping it →
-/// the final value is the last one the ring took, and the last assertion
-/// fails; `retry_edits` never sending → the same; `queue_edit` pushing a second
-/// entry per id → the retry sends stale values after the latest and the last
-/// assertion fails.
 #[test]
 fn a_full_ring_keeps_the_latest_value_and_retries_on_flush() {
     let probe = Probe::acquire();
@@ -515,9 +472,6 @@ fn a_full_ring_keeps_the_latest_value_and_retries_on_flush() {
 }
 
 /// **Processing the edits allocates nothing**, however many are queued.
-///
-/// Mutation (run): collecting the drained edits into a fresh `Vec` in
-/// `process_impl` → `assert_no_alloc` aborts the test.
 #[test]
 fn draining_edits_does_not_allocate() {
     let probe = Probe::acquire();
@@ -541,10 +495,6 @@ fn draining_edits_does_not_allocate() {
 
 /// **Dropping the Controller ends the activation, and a Processor that
 /// outlives it renders nothing and calls nothing in the plugin.**
-///
-/// Mutation (run): drop the `retired` check in `process_impl` → the block
-/// reaches a destroyed plugin (the capture counts a second `process` visit, or
-/// the process aborts).
 #[test]
 fn a_processor_that_outlives_its_controller_renders_nothing() {
     let probe = Probe::acquire();
@@ -574,12 +524,6 @@ fn a_processor_that_outlives_its_controller_renders_nothing() {
 /// The Controller is built on the test thread (the plugin's main thread); the
 /// Processor moves to a second thread for a burst of blocks while the first
 /// reads parameters, saves state and queues edits.
-///
-/// Mutation (run): making `Processor` share the `ClapLoaded` through the cell
-/// (a `&mut ClapLoaded` in `process_impl`) → miri/TSan would flag it; here the
-/// observable mutation is deleting the claim in `do_process`, which lets a
-/// control-thread `flush_params` overlap `process`: the plugin's audio-thread
-/// roles read wrong and the Process-site role assertion fails.
 #[test]
 fn the_controller_serves_reads_while_the_processor_renders() {
     let probe = Probe::acquire();
@@ -635,11 +579,6 @@ fn peek_param(id: u32) -> Option<f64> {
 /// **Edits no block has drained survive a rejoin.** A restart before any block
 /// deactivates the plugin; the writes queued in the ring, and those a full ring
 /// had refused, are flushed into the inactive plugin and not lost with the ring.
-///
-/// Mutation (run): drop the `pending` loop in `ClapLoaded::rejoin` → the plugin
-/// still holds its default and the first assertion fails; drop only the
-/// `controller.unsent` append → the ring's contents arrive but not the last
-/// refused value, and the second assertion fails.
 #[test]
 fn queued_edits_survive_a_rejoin() {
     let probe = Probe::acquire();
@@ -674,9 +613,6 @@ fn queued_edits_survive_a_rejoin() {
 
 /// **An errored block allocates nothing**, whatever the reason: a block longer
 /// than the activation, and a block after the Controller went.
-///
-/// Mutation (run): build the error with `PluginError::Process(e.to_string())`
-/// in `process_shared` → `assert_no_alloc` aborts the test.
 #[test]
 fn an_errored_block_does_not_allocate() {
     let probe = Probe::acquire();

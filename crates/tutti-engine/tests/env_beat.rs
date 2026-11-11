@@ -174,13 +174,6 @@ fn beat(p: (f32, f32)) -> f64 {
 /// same clock and agrees with it to the bit (tutti-graph's
 /// `transport_at_is_for_each_beat_to_the_bit`), and the frame checks below
 /// pin each event.
-///
-/// Mutations (each failed; the walk is `Env::for_each_beat` in tutti-graph):
-/// - use the block's `env.transport` for every piece (ignore the cuts) →
-///   wrong from the first mid-block command (frame 1 000);
-/// - hand the walk no loop region → it never wraps → wrong from the first
-///   wrap (~1 600);
-/// - step the beat while stopped → the stop at 8 000 keeps moving.
 #[test]
 fn the_env_walk_is_the_env_beat() {
     let transport = Transport::new(SampleRate::new(SR));
@@ -325,10 +318,6 @@ fn onsets(stereo: &[f32]) -> Vec<usize> {
 /// exact zero on every target, so each is seen one frame after its beat.
 /// The samples themselves are `ClickNode`'s (its own tests pin them, and
 /// they are `sin` of a phase, which is libm), so they are not pinned here.
-///
-/// Mutation (run): hold each piece's first beat for the whole piece in
-/// `piece_beats` (ignore the frame walk) → the clicks land on piece starts
-/// → fails.
 #[test]
 fn click_clicks_on_the_model_beats() {
     let transport = Transport::new(SampleRate::new(SR));
@@ -437,12 +426,6 @@ fn env_graph(max_block: usize, log: &Arc<Mutex<Vec<Env>>>) -> (Editor, Executor)
 /// the offline timeline a block at a time, the same split as
 /// `OfflineTimeline` vs `TransportClock`.
 ///
-/// Mutations (run):
-/// - `advance(frames)` before `graph_block` in `render_graph` → every
-///   offline beat is one block ahead → fails on block 0;
-/// - drop the loop from `graph_block` → the offline beats run past 7 →
-///   fails once the live one wraps.
-///
 /// (While a clip reader polled a timeline per 64-frame call, this test also
 /// held both sides chunk-major and checked each poll; no node polls one
 /// now, and the chunk-major mode is gone.)
@@ -523,10 +506,6 @@ fn an_offline_render_sees_the_live_engine_transport() {
 /// the timeline's own playhead, the figure clip readers and samplers holding
 /// the timeline read: the two clocks of an offline render agree at every
 /// block start, bit for bit, and within a block to rounding.
-///
-/// Mutation (run): `advance(frames)` before `graph_block` in
-/// `render_graph` → the first emitted beat is one block on → fails on
-/// block 0.
 #[test]
 fn the_offline_env_walk_starts_each_block_on_the_timeline() {
     let timeline = OfflineTimeline::new(&OfflineTimelineConfig {

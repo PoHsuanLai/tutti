@@ -14,28 +14,6 @@
 //! Tables pinned elsewhere: Registered Per-Note Controllers (Table 22,
 //! `spec_words.rs`), the MIDI 1.0 controller roster (`cc_number.rs`).
 //! Every other number-to-name table is held by `spec_words.rs`.
-//!
-//! Mutation record. Each swap of two neighbouring numbers was applied to
-//! `decode.rs` and `encode.rs` together (a symmetric mistake), and to each
-//! alone, in a copy with `tests/midi2_oracle.rs` and the `midi2` dev-dependency
-//! deleted; each failed a test, and was restored:
-//! - Flex text statuses 0x05/0x06 (Composer, Lyricist), 0x06/0x07, 0x07/0x08,
-//!   0x08/0x09, 0x09/0x0A, 0x0A/0x0B -> `flex_text_statuses_are_table_16` when
-//!   symmetric; alone, that test and the round-trip properties
-//!   (`properties`, which reach every kind through the widened generator);
-//! - `Accidental` 0x1/0x2 (Sharp, DoubleSharp) and 0x2/0xE (DoubleSharp,
-//!   DoubleFlat) -> `accidentals_are_tables_13_and_15`;
-//! - `UiHint` 1/2 (Receiver, Sender) -> `function_block_fields`;
-//! - the `UmpVersion` major and minor swapped in `decode` and both writers
-//!   (symmetric) -> `the_version_is_major_then_minor`; Endpoint Info `rx_jr`
-//!   and `tx_jr` swapped symmetrically -> `endpoint_info_flags_each_alone`;
-//!   Discovery filter bits 0 and 1 swapped symmetrically ->
-//!   `discovery_filter_bits_each_alone`; Metronome `accent_2` and
-//!   `subdivision_1` swapped symmetrically -> `metronome_fields_in_order`.
-//!   Each of these four passed every other test with the oracle excluded.
-//! - `Direction` 0b01/0b10 and 0b10/0b11, `Midi1Port` 1/2 and 0/1 ->
-//!   `function_block_fields`; `Protocol` 0x01/0x02 ->
-//!   `protocols_are_figures_18_and_19`.
 
 use tutti_ump::{
     Accidental, Alteration, AlterationKind, ChordBass, ChordName, ChordPitch, ChordType, Direction,

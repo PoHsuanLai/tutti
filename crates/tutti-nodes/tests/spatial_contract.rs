@@ -10,10 +10,6 @@
 //! the declared figure (128, the panner's convolution step) *and* that the
 //! output leaves on it, wherever in the step and in the graph's block the
 //! impulse falls.
-//!
-//! Mutations (run): declare `Latency::ZERO` in `shape` → every
-//! path fails (declared 0, output 128 late). Set `LATENCY` to `STEP - 1` →
-//! every path fails (declared one frame early).
 
 use tutti_graph::ParamNode;
 use tutti_graph::contract::{Detect, Excite, Row, SAMPLE_RATE};

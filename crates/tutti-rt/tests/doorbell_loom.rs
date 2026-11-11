@@ -37,31 +37,6 @@
 //! read-modify-write they are totally ordered, and loom has no such
 //! execution to report. Because the artefact needs 4 preemptions, CI and
 //! `cargo xtask loom` run this model unbounded.
-//!
-//! # Mutation record
-//!
-//! Each was applied to `src/doorbell.rs` (`LOOM_MAX_PREEMPTIONS=3`, CI's
-//! bound); all three tests failed with a deadlock unless noted.
-//!
-//! - `ring` without its `SeqCst` fence -> deadlock;
-//! - `park` without its `SeqCst` fence -> deadlock;
-//! - `park` not arming `asleep` -> deadlock (a ring finds nobody asleep);
-//! - `ring` reading `asleep` before its fence instead of after -> deadlock;
-//! - `ring` without the `unpark` -> deadlock;
-//! - `park` ignoring `pending` (always parking) -> only
-//!   `several_rings_wake_one_sleeper_for_each_round` fails, as a deadlock
-//!   (the other two are saved by the unpark token the ring left);
-//! - the arm and disarm back to plain stores -> deadlock from 4 preemptions
-//!   in `several_rings_*` only (the artefact above)
-//!   (above);
-//! - `ring_first` without its fence, or with it after the loop ->
-//!   deadlock in `ring_first_wakes_every_sleeper_it_is_asked_to`;
-//! - `ring_first` stopping after one bell woken (not `n`) -> the same;
-//! - not caught: the arm's `Release` and the swap's `Acquire` weakened to
-//!   `Relaxed`. The thread handle sits in a `std::sync::OnceLock` that loom
-//!   does not track, so that pair (the handle is set before `asleep`, and a
-//!   ringer that sees `asleep` sees the handle) is argued in the source, not
-//!   checked here.
 
 #![cfg(loom)]
 

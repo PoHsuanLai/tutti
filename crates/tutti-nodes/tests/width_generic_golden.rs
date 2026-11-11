@@ -495,15 +495,6 @@ fn print_goldens() {
 }
 
 /// Every case, against its pinned frames.
-///
-/// Mutation (run): the graph mix of `delay_mono_cubic` set to 0.41 instead of
-/// 0.4 fails its first pin.
-///
-/// Mutation (each run, each fails): updating the SVF's second integrator from
-/// `v1`; taking the ladder's LP12 output from the fourth stage; reading the
-/// delay's feedback tap at `d` instead of `d - 1`; dropping the chorus's
-/// per-channel stagger; `COEFF_INTERVAL = 64`; a ramp that jumps straight to
-/// its target.
 #[test]
 fn width_generic_nodes_match_their_goldens() {
     let goldens: std::collections::HashMap<&str, &[f32]> = GOLDENS.iter().copied().collect();

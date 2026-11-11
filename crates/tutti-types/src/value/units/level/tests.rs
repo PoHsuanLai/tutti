@@ -75,9 +75,6 @@ fn db_adds_because_gain_stages_cascade() {
 
 /// Silence is `-inf`, as `Db::from_amplitude` says, and the figures are the
 /// decibel definition: `20 · log10(2) = 6.0206`.
-///
-/// Mutation (run): make `to_db` pin silence to `Db::FLOOR` → `-inf` becomes
-/// `-144` → fails.
 #[test]
 fn amplitude_to_db_leaves_silence_at_minus_infinity() {
     assert_eq!(Amplitude::SILENT.to_db().get(), f32::NEG_INFINITY);
@@ -91,8 +88,6 @@ fn amplitude_to_db_leaves_silence_at_minus_infinity() {
 
 /// The metering floor is 144 dB below full scale, about one 24-bit step
 /// (`6.02 dB` a bit, 24 bits).
-///
-/// Mutation (run): `Db::FLOOR` `-144.0` → `-120.0` → fails both.
 #[test]
 fn the_metering_floor_is_144_db_down() {
     assert_eq!(Db::FLOOR.get(), -144.0);

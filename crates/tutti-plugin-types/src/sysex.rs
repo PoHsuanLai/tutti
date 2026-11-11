@@ -140,10 +140,6 @@ mod tests {
     /// address never moves. (The assembler's own policy is
     /// `tutti-ump`'s `sysex_assembler` suite; this pins the size this crate
     /// gives it.)
-    ///
-    /// Mutation (run): the room computed as `SYSEX_MESSAGE_CAPACITY` alone (no
-    /// block of packets on top) → a single beside the carried run does not
-    /// fit → counted → fails.
     #[test]
     fn the_longest_message_fits_without_allocating() {
         let body = tutti_fixtures::midi::sysex_payload(SYSEX7_MAX_PAYLOAD);
@@ -180,10 +176,6 @@ mod tests {
 
     /// **A plugin's SysEx of any length reaches the pool intact**, framed or
     /// bare, and reassembles to the message it was.
-    ///
-    /// Mutation (run): in `push_sysex`, keep only the first packet (or cap
-    /// the payload at 6 bytes) → the 40-byte message comes back short →
-    /// fails.
     #[test]
     fn a_plugins_sysex_of_any_length_arrives_whole() {
         let mut asm = sysex_assembler();
@@ -205,11 +197,6 @@ mod tests {
 
     /// **`sysex_packets` takes a message with or without its delimiters and
     /// refuses a payload byte of 128 or more**, whichever way it is framed.
-    ///
-    /// Mutation (run): `Sysex7Packets::checked` replaced by an unchecked
-    /// `over` (masking) → the 8-bit payloads are accepted → fails; `unframed`
-    /// a no-op → the delimiters are packed as payload → the 0xF7 is refused
-    /// as 8-bit → fails.
     #[test]
     fn sysex_packets_takes_either_framing_and_refuses_8_bit_bytes() {
         let body = [1, 2, 3];
@@ -224,10 +211,6 @@ mod tests {
     /// **A message that does not fit the pool is dropped whole and
     /// reported**, never cut: a `START` with no `END` would swallow the
     /// stream after it.
-    ///
-    /// Mutation (run): drop the `packets > out.remaining()` check so the
-    /// packets are pushed until the pool is full → the pool holds a `START`
-    /// with no `END` → fails.
     #[test]
     fn a_message_past_the_pool_is_dropped_whole() {
         let mut out = RtMidiEvents::new();

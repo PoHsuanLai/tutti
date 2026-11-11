@@ -2254,9 +2254,6 @@ mod tests {
     /// **Every parameter is found in a sorted range list**, not only the
     /// first: the ranges are binary-searched by id, so each queue
     /// denormalizes against its own parameter's range.
-    ///
-    /// Mutation (run): the search keyed on the wrong field (`|&(_, min, _)|
-    /// min as u32`) → ids 5 and 9 find no range and are dropped → fails.
     #[test]
     fn add_param_changes_finds_each_range_in_a_sorted_list() {
         let ranges = [(1, 0.0, 1.0), (5, 0.0, 10.0), (9, 100.0, 1100.0)];
@@ -2278,10 +2275,6 @@ mod tests {
 
     /// A banked Program Change reaches the plugin as CC 0, CC 32 and PC, at one
     /// time, in that order.
-    ///
-    /// Mutation (run): `add_midi` converting the event with `from_midi` alone
-    /// → only the PC → fails; `has_midi_room` always true → the all-or-none
-    /// and the plain-event bound fail.
     #[test]
     fn a_banked_program_change_is_three_midi_events() {
         let pc = (
@@ -2338,9 +2331,6 @@ mod tests {
     /// 1 at bits 14-8, LSB 5 at bits 6-0) reaches the plugin as CC 0 = 1,
     /// CC 32 = 5, then the program. Unlike the builder test above, no builder
     /// is in the path.
-    ///
-    /// Mutation (run): `add_midi` sending the bank LSB as CC 0 and the MSB as
-    /// CC 32 -> fails.
     #[test]
     fn a_spec_word_banked_program_change_is_three_midi_events() {
         let pc = packet(5, &[0x40C1_0001, (9 << 24) | (1 << 8) | 5]);
@@ -2362,9 +2352,6 @@ mod tests {
     /// 0x8000** (M2-104 Appendix D.3.1), so the plugin hears a release at
     /// `0x8000 / 0xFFFF`, not 0. A native MIDI 2.0 Note On at velocity 0 is a
     /// note-on at 0.0 (M2-104 §7.4.2: it "does not function as a Note Off").
-    ///
-    /// Mutation (run): a MIDI 1.0 Note On at velocity 0 folded to a Note Off
-    /// at 0 instead of widened → the first assertion fails.
     #[test]
     fn a_midi1_note_on_at_velocity_zero_releases_at_half() {
         let midi1 = packet(0, &[0x2091_3C00]);
@@ -2388,9 +2375,6 @@ mod tests {
     /// **A reserved attribute type does not stop the note** (M2-104 Table 8,
     /// section 7.4.14: reserved for senders, no receiver rule), which plays at
     /// its velocity.
-    ///
-    /// Mutation (run): the `Voice2::NoteOn` arms returning `None` when the
-    /// attribute is `Attribute::Reserved` → the note is lost → fails.
     #[test]
     fn a_note_with_a_reserved_attribute_type_still_plays() {
         for attribute_type in [0x00, 0x01, 0x02, 0x03, 0x04, 0x81, 0xFF] {
@@ -2415,9 +2399,6 @@ mod tests {
     /// `CLAP_EVENT_MIDI2`: a reserved message type, and a defined type with an
     /// undefined status, yield nothing, in either note dialect, and are not
     /// counted as dropped for want of room.
-    ///
-    /// Mutation (run): the `Err(Unknown(_))` arm returning a `Midi` event of the
-    /// packet's first bytes → fails.
     #[test]
     fn an_unknown_packet_yields_no_clap_event() {
         for midi_notes in [false, true] {
@@ -2440,9 +2421,6 @@ mod tests {
 
     /// **A plugin's MIDI 1.0 Note On at velocity 0 reaches the engine as a Note
     /// Off at 0x8000**, the same widening as on the way in.
-    ///
-    /// Mutation (run): `widened` returning its input → the event stays MIDI 1.0
-    /// → fails.
     #[test]
     fn a_plugin_midi1_note_on_at_velocity_zero_is_a_note_off_at_half() {
         let midi = ClapEvent::midi(4, 0, [0x93, 61, 0])
@@ -2462,9 +2440,6 @@ mod tests {
     /// both note dialects: each channel voice message of MIDI 1.0 and 2.0, a
     /// banked Program Change, the per-note bend sensitivity, System, Utility,
     /// SysEx7, SysEx8, Flex, Stream, and a packet `decode` cannot frame.
-    ///
-    /// Mutation (run): a `Box::new(0u8)` planted in `from_voice2`'s `NoteOn`
-    /// arm → the gate aborts.
     #[test]
     fn every_message_kind_converts_without_allocating() {
         let sysex8 = Ump::from(Message::Data128(
@@ -2552,8 +2527,6 @@ mod tests {
     /// **The plugin-output path converts without allocating**: every MIDI 1.0
     /// channel voice and System status a plugin can emit as `clap_event_midi`,
     /// plus typed notes and expressions, drained into the RT pool.
-    ///
-    /// Mutation (run): a `Box::new(0u8)` planted in `widened` → the gate aborts.
     #[test]
     fn the_plugin_output_path_converts_without_allocating() {
         let mut output = OutputEventList::new();
@@ -2593,14 +2566,6 @@ mod tests {
     /// **The bytes a plugin is sent, from spec-literal packets** (M2-104
     /// Figures 8 to 10 for System and MIDI 1.0 channel voice, and Figures 54 to
     /// 66 for MIDI 2.0), with unequal LSB and MSB.
-    ///
-    /// Mutations (each run, each fails here): in `System::bytes`, Song Position
-    /// `[F2, lsb, msb]` swapped and Song Select data zeroed; in `Voice1::bytes`,
-    /// Pitch Bend LSB and MSB swapped, the Program Change byte `^ 1`, Channel
-    /// Pressure zeroed and the Control Change value zeroed; in
-    /// `tutti_midi_protocol::narrow`, the Pitch Bend narrowing replaced by a
-    /// constant, the Channel Pressure narrowing zeroed and the Control Change
-    /// narrowing zeroed.
     #[test]
     fn spec_packets_stage_exact_midi_bytes() {
         let at = |bytes| vec![(11, bytes)];
@@ -2637,9 +2602,6 @@ mod tests {
 
     /// **Poly pressure on a MIDI-dialect note port** reaches the plugin as
     /// `0xAn key pressure` at the packet's time, narrowed to 7 bits for MIDI 2.0.
-    ///
-    /// Mutations (each run, each fails here): the MIDI 2.0 narrowing zeroed in
-    /// `key_pressure_bytes`; the event's time set to 0 in `into_midi_dialect`.
     #[test]
     fn poly_pressure_on_a_midi_dialect_port_stages_exact_bytes() {
         assert_eq!(
@@ -2657,11 +2619,6 @@ mod tests {
     /// and the velocity at 7 bits by rounding (not the truncation of
     /// `narrow`), a Note On never below 1 (0 is a Note Off in MIDI 1.0), a
     /// Note Off's own velocity kept.
-    ///
-    /// Mutations (each run, each fails here): the Note On floor of 1.0 set to
-    /// 0.0 (the tiny velocity stages 0); the Note Off built as a `Voice1::NoteOn`
-    /// (status `0x9n`); the channel replaced by `MidiChannel::FIRST` (the
-    /// channel-3 case); `round` replaced by `floor` (the first case stages 63).
     #[test]
     fn notes_on_a_midi_dialect_port_stage_exact_bytes() {
         let staged = |words: &[u32]| staged_midi(words, true);
@@ -2694,9 +2651,6 @@ mod tests {
     /// **A CLAP note event's `channel` and `key` are masked to 4 and 7 bits**
     /// on the way to a packet, and a negative wildcard is not masked but
     /// resolved through the `note_id`.
-    ///
-    /// Mutations (each run, each fails here): the channel replaced by
-    /// `MidiChannel::FIRST` (channel 0); the key replaced by `NoteNumber::of(0)`.
     #[test]
     fn a_note_events_channel_and_key_are_masked_to_the_wire_widths() {
         // Channel 19 is 3 in 4 bits, key 130 is 2 in 7 bits.
@@ -2715,9 +2669,6 @@ mod tests {
     /// **A registered per-note controller maps to its own CLAP expression**:
     /// Volume (7) to volume at its gain, Pan (10) to pan, Brightness (74) to
     /// brightness, each at its own value.
-    ///
-    /// Mutation (run): the `PER_NOTE_EXPRESSIONS` Brightness row mapped to
-    /// `NoteExpressionType::Pan` → the brightness case fails.
     #[test]
     fn registered_per_note_controllers_map_to_their_own_expressions() {
         let expression = |index: u32, value: u32| {
@@ -2750,10 +2701,6 @@ mod tests {
     /// the no-alloc gate, the result is exactly std's stable sort of the
     /// same list (computed outside the gate), so a note-off stays before the
     /// note-on that reuses its key and a parameter's points keep their order.
-    ///
-    /// Mutation (run): `sort_by_time` back to `self.events.sort_by_key(..)`
-    /// (std's stable sort) → it allocates its scratch inside the gate →
-    /// aborts.
     #[test]
     fn a_dense_block_sorts_stably_without_allocating() {
         use tutti_plugin_types::ParameterQueue;
@@ -2823,10 +2770,6 @@ mod tests {
     /// parameter's 4 points and the second's first fit; the second's next 2
     /// each replace its previous point (it still ends on 0.3); the third
     /// parameter has no room at all. Three points are counted.
-    ///
-    /// Mutations (run), each fails: no room check (every point pushed) →
-    /// 8 events, nothing counted; the overflow not replacing the previous
-    /// point (dropped only) → the second parameter ends on 0.1.
     #[test]
     fn add_param_changes_stays_within_its_room() {
         let mut changes = ParameterChanges::reserved(3, 4);
@@ -2990,10 +2933,6 @@ mod tests {
     /// then the changes), come out transport at 5, note at 10, transport at 20,
     /// each carrying its own tempo and slope, and the plugin is lent each as a
     /// transport event.
-    ///
-    /// Mutation: skip `sort_by_time` for the block -> the changes follow the
-    /// note -> fails. Mutation: `add_transport` not setting the header's `time`
-    /// (every change at frame 0) -> the times are 0 -> fails.
     #[test]
     fn transport_changes_are_events_at_their_frames_in_order_with_midi() {
         use tutti_clap_ffi::EventSource;
@@ -3144,9 +3083,6 @@ mod tests {
     /// **A plugin's Volume, Pan and Brightness expressions go back as the
     /// assignable per-note controllers 7, 10 and 74** (the spec's numbers, not
     /// read from the host's table), and the dimensions with none are dropped.
-    ///
-    /// Mutation (run): the reverse lookup `find` matching `Volume` whatever
-    /// the expression → Pan and Brightness come back as 7 → fails.
     #[test]
     fn expressions_return_as_their_per_note_controller_numbers() {
         let controller = |ty| {
@@ -3224,10 +3160,6 @@ mod tests {
     /// #00/07) per channel, across blocks, and consumes it (CLAP has no event
     /// for it): ±12 on channel 3 makes a half-scale bend there 6 semitones,
     /// in this block and after a `clear`, while channel 4 stays at ±48 (24).
-    ///
-    /// Mutation (run): skip `observe` in `add_midi` (convert every event at
-    /// the list's ranges as they stand) → the bend on channel 3 reads 24 →
-    /// fails.
     #[test]
     fn the_input_list_follows_the_per_note_bend_range() {
         let half = signed_f32_to_bend_u32(0.5);
@@ -3658,13 +3590,6 @@ mod tests {
 
     /// A note goes out as `clap_event_midi` when the port takes the MIDI
     /// dialect only; per-note expression adds nothing.
-    ///
-    /// Mutations (run): ignore `midi_notes` in `add_midi` → the first
-    /// assertions fail; ignore it in `add_note_expressions` → the last fails;
-    /// drop the velocity floor of 1 → the zero-velocity case fails; clamp
-    /// `velocity * 127` without `round` or scale by 128 → the 64 → 64 case
-    /// fails; drop `channel & 0x0F` for a fixed channel 0 → channel 9 fails;
-    /// send port 1 instead of 0 → the port assertion fails.
     #[test]
     fn midi_dialect_sends_notes_as_midi_events() {
         let ch = MidiChannel::of(9);
@@ -3728,11 +3653,6 @@ mod tests {
 
     /// Poly pressure (`0xAn`) is a per-note expression to a CLAP-dialect port
     /// and raw MIDI to a MIDI-dialect one.
-    ///
-    /// Mutation (run): return `None` for `NoteExpression` in
-    /// `into_midi_dialect` (the old behaviour) → the MIDI-dialect assertion
-    /// fails; take the fallback regardless of `midi_notes` → the CLAP-dialect
-    /// assertion fails.
     #[test]
     fn midi_dialect_keeps_poly_pressure_as_midi_bytes() {
         let event = midi1_event(&[0xA3, 60, 90]);
@@ -3810,12 +3730,7 @@ mod tests {
     /// that parameter's previous one (it still ends on its latest value),
     /// counted.
     ///
-    /// Mutations (run), each fails: `add_param_changes` without its room
-    /// check (`pushed < self.param_room` always true) → the over-budget
-    /// points are pushed past the list's reserve, which allocates inside
-    /// the gate (abort); `sort_by_time` a no-op (its already-sorted early
-    /// return taken always) → the events are in queue order, not time
-    /// order. The reservation activation makes is pinned by
+    /// The reservation activation makes is pinned by
     /// `activation_reserves_the_pool_budget_not_params_times_room`.
     #[test]
     fn a_chunk_at_the_pool_budget_is_handed_on_sorted_without_allocating() {
@@ -3911,9 +3826,6 @@ mod tests {
     /// **A multi-packet SysEx reaches the plugin as one `MIDI_SYSEX` event**,
     /// `0xF0 … 0xF7`, and a SysEx spanning two blocks completes in the
     /// second; staging allocates nothing once reserved.
-    ///
-    /// Mutation (run): `add_midi` converting through `ClapEvent::from_midi`
-    /// alone (no reassembly) → SysEx dropped → fails.
     #[test]
     fn a_multi_packet_sysex_reaches_the_plugin_whole() {
         let body = fx::sysex_payload(50);
@@ -3946,9 +3858,6 @@ mod tests {
 
     /// **Past capacity, or left open by a later `START`, a SysEx is dropped
     /// whole and counted; before `reserve_sysex` every one is.**
-    ///
-    /// Mutation (run): `reserve_sysex` a no-op → the reserved list drops
-    /// the message that fits → fails.
     #[test]
     fn sysex_drops_are_whole_and_counted() {
         let mut unreserved = InputEventList::new();

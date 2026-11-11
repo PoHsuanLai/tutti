@@ -12,9 +12,6 @@ fn trajectory() -> Trajectory {
 /// A trajectory's pieces are its breakpoints: a hold before the first
 /// and from the last, a move between, each agreeing with `value_at`
 /// over its span; a breakpoint starts the piece after it.
-///
-/// Mutation (run): `partition_point(|p| p.time < b)` (a breakpoint ends
-/// the piece before it) → beat 2.0 reads the exponential piece → fails.
 #[test]
 fn trajectory_pieces_are_its_breakpoints() {
     let e = trajectory();
@@ -52,9 +49,6 @@ fn trajectory_pieces_are_its_breakpoints() {
 
 /// A piece the trajectory's range would bend is no segment: a clamp cutting
 /// into its endpoints. A clamp both endpoints stay inside leaves it one.
-///
-/// Mutation (run): drop the endpoint check (`inside`) → the clamped
-/// piece is a segment → fails.
 #[test]
 fn a_bent_piece_is_no_segment() {
     assert!(

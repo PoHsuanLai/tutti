@@ -81,9 +81,6 @@ mod tests {
 
     /// **A `set` replaces the whole table**: a shorter table leaves no
     /// entry of the longer one behind, and every reader sees the last `set`.
-    ///
-    /// Mutation (run): `set` not clearing first (appending) → channel 0
-    /// still reads 200 and the table keeps four entries, fails.
     #[test]
     fn a_set_replaces_the_whole_table() {
         let table = PrerollTable::new(vec![Samples(200), Samples(0), Samples(100)]);

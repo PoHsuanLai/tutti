@@ -92,10 +92,6 @@ struct Run {
 /// `cpus / 2` bounds the rest. Every caller holds [`exclusive`], so one
 /// process spins at a time. A spinner whose `setpriority` fails exits rather
 /// than spin at normal priority; other platforms spawn none.
-///
-/// Mutation: spawn no spinners (`spinner_count` returns 0) and the stalls
-/// return (measured with 3 spinners: 17 of 120 paced runs had a silent block
-/// instead of 8 of 135).
 struct KeepAwake {
     stop: Arc<AtomicBool>,
     spinners: Vec<JoinHandle<()>>,
@@ -209,10 +205,6 @@ fn run_live(rate: f64, quantum: usize, blocks: usize, burst_at: Option<usize>) -
         // A device's callbacks stay a period apart: one that oversleeps (a
         // loaded machine) is not followed by a burst of catch-up calls, which
         // would hand the server no period to answer and so read as silence.
-        // Mutation: pace by `next += period` alone, sleeping only while
-        // ahead, so an oversleep is followed by back-to-back calls → runs of
-        // ~3 silent blocks at the oversleep, failing about a third of runs
-        // on a 4-core machine busy with builds (measured).
         let now = Instant::now();
         next += period;
         if next <= now {
@@ -249,12 +241,6 @@ fn max_stall_blocks(period: Duration) -> usize {
 /// `neutral` is a range whose blocks are not judged (the burst window): they
 /// count as silent when runs are formed, so a stall straddling its edge is one
 /// run, and not towards a run's length.
-///
-/// Mutation (`tolerates_one_bounded_stall`): `runs.len() > 1` to `> 2` → the
-/// two-stall case passes → fails. `len > max_run` to `len > max_run + 1` →
-/// the bound-plus-one case passes → fails. `len >= max_run` → the case at the
-/// bound fails → fails. Not adding `neutral` to `all` → the straddle case
-/// reads as two runs → fails.
 fn judge_stall(silent: &[usize], max_run: usize, neutral: Range<usize>) -> Result<(), String> {
     let mut all: Vec<usize> = silent.iter().copied().chain(neutral.clone()).collect();
     all.sort_unstable();
@@ -368,10 +354,8 @@ fn assert_live(rate: f64, quantum: usize) {
 /// 480-frame callbacks at 48 kHz: not a multiple of 64, so a 64-frame
 /// pipeline would collect most chunks mid-callback.
 ///
-/// Mutation: cap the chunk at 64 in `Batcher::prepare` → most blocks are
-/// silent → fails.
-/// Ignoring `Prepare::quantum` is invisible here (the graph's `MaxBlock` is
-/// the same 480); the batcher's unit test pins it.
+/// Ignoring `Prepare::quantum` is invisible here (the graph's `MaxBlock` is the same
+/// 480); the batcher's unit test pins it.
 #[test]
 fn a_480_frame_device_hears_its_plugin() {
     let _lock = machine_lock();
@@ -412,16 +396,8 @@ fn a_441_frame_device_hears_its_plugin() {
 /// How many blocks the burst itself drops depends on how fast the server
 /// answers, so that number is not asserted.
 ///
-/// Mutation (run): in `run_live`, make the burst condition
-/// `burst_at.is_some_and(|at| b >= warm_up + at)` (the burst never ends: free
-/// running) → every block after it is silent → the second assertion fails.
-/// Make `SETTLE` 0 → the start-up silence of a loaded machine (blocks 0 to 2,
-/// seen once in 45 runs) counts as a stall of its own next to the burst's and
-/// fails the run.
-/// Not caught: `is_stale` always false in `dispatch.rs`, and a burst that
-/// drops nothing (silence inside the window is not asserted, and silence
-/// next to it joins its run). The mechanism of the drop is pinned by
-/// `dispatch`'s unit tests; this pins the outcome a device sees.
+/// The mechanism of the drop is pinned by `dispatch`'s unit tests; this pins the
+/// outcome a device sees.
 #[test]
 fn a_burst_of_callbacks_loses_blocks_but_never_corrupts_them() {
     const QUANTUM: usize = 480;

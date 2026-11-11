@@ -15,18 +15,6 @@
 //!   happens once and a take clears;
 //! - **raise orders what came before it**: a taker that sees a bit also sees
 //!   the datum its raiser wrote before raising.
-//!
-//! # Mutation record
-//!
-//! Each was applied to `src/request_word.rs`; the model failed as noted.
-//!
-//! - `take` as `load` then `store(0)` (not one swap) → "a bit lost, or taken
-//!   twice": a raise between the two is cleared unseen;
-//! - `raise` as `load` then `store(old | mask)` (not one `fetch_or`) → the
-//!   same: two raisers overwrite each other;
-//! - `raise` with `Relaxed` instead of `Release` → "saw the bit without the
-//!   datum";
-//! - `take` with `Relaxed` instead of `Acquire` → the same.
 
 #![cfg(loom)]
 

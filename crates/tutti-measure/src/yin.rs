@@ -450,9 +450,6 @@ mod tests {
     }
 
     /// A non-finite sample in the window is an unvoiced frame, never a panic.
-    ///
-    /// Mutation: restore `.expect(..)` on the inverse transform's result →
-    /// both fail with a panic on `InputValues`.
     #[test]
     fn a_non_finite_sample_is_unvoiced_not_a_panic() {
         let cfg = YinConfig::standard(SampleRate::new(44100.0)).unwrap();

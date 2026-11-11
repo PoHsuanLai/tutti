@@ -105,10 +105,6 @@ pub struct LoadRecorder {
 /// let (rec, _meter) = tutti_metering::LoadMeter::pair();
 /// let _second = rec.clone();
 /// ```
-///
-/// Mutation (run): a `record_silenced(&self)` on `LoadMeter`, and
-/// `#[derive(Clone)]` on `LoadRecorder` → each snippet compiles → the
-/// doctest fails.
 #[derive(Clone, Debug)]
 pub struct LoadMeter {
     cells: Arc<Cells>,
@@ -231,9 +227,6 @@ mod tests {
 
     /// A block over budget counts, one at it does not, and `last` is the
     /// block's own load.
-    ///
-    /// Mutation (run): `load >= 1.0` for the miss test → the block exactly
-    /// at budget counts → fails.
     #[test]
     fn only_a_block_past_its_budget_counts_as_over() {
         let (mut rec, m) = LoadMeter::pair();
@@ -248,11 +241,6 @@ mod tests {
 
     /// The peak is the largest load since the last take, and a take resets
     /// it: a spike between two polls shows exactly once.
-    ///
-    /// Mutations (run): `take` loads the peak instead of swapping it → the
-    /// second take still reports 3.0 → fails; `record` stores the load as
-    /// the peak instead of `fetch_max` → the first take reports 0.2 →
-    /// fails.
     #[test]
     fn a_take_reports_the_peak_since_the_last_and_resets_it() {
         let (mut rec, m) = LoadMeter::pair();
@@ -268,10 +256,6 @@ mod tests {
     /// Under a constant load the mean converges to it at the time constant:
     /// after five time constants of audio, within `e^-5` of the step, for
     /// either block size.
-    ///
-    /// Mutations (run): drop the first-block seed (start the mean at 0) →
-    /// the seeded mean is 0, not 0.2 → fails; smoothing by a fixed per-block
-    /// factor `a = 0.001` → the 64-frame mean lags far behind → fails.
     #[test]
     fn the_mean_converges_to_a_constant_load_at_its_time_constant() {
         for frames in [64.0f64, 1024.0] {
@@ -300,9 +284,6 @@ mod tests {
 
     /// A reset zeroes the counts and the peak, and the next block seeds the
     /// mean. A block with no budget records nothing.
-    ///
-    /// Mutation (run): `reset` leaves `blocks` → the next block is not a
-    /// seed, the mean stays near 0.1 → fails.
     #[test]
     fn a_reset_restarts_the_counts_and_the_mean() {
         let (mut rec, m) = LoadMeter::pair();
@@ -323,9 +304,6 @@ mod tests {
 
     /// A peek reads the peak and leaves it for the next take, so a second
     /// reader steals no spike.
-    ///
-    /// Mutation (run): `peek` swapping the peak to 0 → the take after it
-    /// reports 0 → fails.
     #[test]
     fn a_peek_leaves_the_peak_for_the_take() {
         let (mut rec, m) = LoadMeter::pair();
@@ -338,9 +316,6 @@ mod tests {
     /// An infinite load (a budget so small the division overflows) is held
     /// at `f32::MAX`: it counts over budget, and the mean stays finite after
     /// it, and after the next block.
-    ///
-    /// Mutation (run): clamping to `f32::INFINITY` instead of `f32::MAX` →
-    /// the mean goes `inf`, then NaN → fails.
     #[test]
     fn an_infinite_load_leaves_the_mean_finite() {
         let (mut rec, m) = LoadMeter::pair();

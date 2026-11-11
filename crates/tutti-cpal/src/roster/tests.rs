@@ -137,7 +137,3 @@ fn the_changes_replay_to_the_new_snapshot() {
         );
     }
 }
-
-// Mutation (run): `Vanished` filtered against `before_set` instead of
-// `after_set` fails `transitions` and the replay property; dropping the
-// `DefaultChanged` push fails `transitions` and the first-snapshot test.

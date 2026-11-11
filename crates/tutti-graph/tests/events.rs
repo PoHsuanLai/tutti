@@ -414,23 +414,8 @@ proptest! {
     /// regenerated emitters and ragged block sizes. Checked on both
     /// interpreters, against the emitters' own ledger.
     ///
-    /// Mutation: in `Executor::rebuild`, skip the flush of disappeared event
-    /// delays (`gone` loop) → events pending in a vanished delay are lost →
-    /// fails. The same in `Reference::set_graph` → fails on the reference.
-    /// Mutation: drop the `inject` prepend in the reference's event gather →
-    /// fails. Mutation: in `EventFifo::pop_due`, drop events when `out` is
-    /// full instead of leaving them queued (with a small CAP) → fails.
-    ///
     /// And for scheduled commands — each lands exactly once, on its port, on
-    /// its frame or (already past) at the next block's start. Mutation: in
-    /// `CommandRx::gather`, keep a delivered command pending → it lands
-    /// again every block → fails. Mutation: in `CommandRx::overlay`, merge
-    /// only the scheduled events, dropping the port's own → the emitters'
-    /// events vanish → fails. Mutation: drop the reference's scheduled
-    /// events from its gather → fails on the reference. Mutation: land a
-    /// late command at offset 1 instead of 0 in the reference → fails.
-    /// Mutation: drop the arrival from `CommandRx::gather`'s landing (no
-    /// PDC) → a command lands `lag` frames early → fails.
+    /// its frame or (already past) at the next block's start.
     #[test]
     fn every_event_is_delivered_exactly_once(
         phases in proptest::collection::vec(arb_phase(4), 1..4),
@@ -475,9 +460,6 @@ proptest! {
 /// A delay whose key vanishes flushes its pending events rather than losing
 /// them: an emitter behind a 20-frame event
 /// delay; regenerate the lag at latency 0, and nothing is lost.
-///
-/// Mutation: skip the `gone` flush loop in `Executor::rebuild` → 5 of the
-/// emitter's events vanish → fails.
 #[test]
 fn a_vanishing_event_delay_flushes_instead_of_dropping() {
     let emitters = vec![(1u32, 4u64)];
@@ -510,12 +492,6 @@ fn a_vanishing_event_delay_flushes_instead_of_dropping() {
 /// the source's `NodeKey`, not the order the spec lists its edges in. The
 /// sources are listed in reverse so that a merge falling back to list order
 /// is caught.
-///
-/// Mutation: in `merge_tree`, merge the runs in reverse order → the first
-/// tie goes to source 64 → fails. Mutation: remove the `n <= MAX_PORTS` arm
-/// (always one flat merge) → the executor panics on the audio thread → fails.
-/// Mutation: drop the `sort_by_key(|e| e.from())` in `compile` → list order
-/// (reversed) → fails.
 #[test]
 fn wide_event_fan_in_is_a_merge_tree_in_source_order() {
     for width in [65usize, 200] {
@@ -665,11 +641,6 @@ impl Node for Tap {
 /// interpreter was prepared with**: a bounce prepared at a larger block loops
 /// exactly like live playback. Nothing is lost or repeated when the block
 /// size changes or is ragged.
-///
-/// Mutation: in `AudioRing::peek_oldest`, read the newest samples → wrong
-/// delay → fails. Mutation: size the executor's feedback ring from
-/// `MaxBlock` instead of the key's delay (the previous rule) → the two
-/// preparations disagree → fails.
 #[test]
 fn feedback_delays_by_its_declared_delay_at_any_max_block() {
     const DELAY: usize = 96;
@@ -766,9 +737,6 @@ fn feedback_delays_by_its_declared_delay_at_any_max_block() {
 /// A feedback delay shorter than the maximum block is refused, by name: a
 /// block cannot read samples it has not produced, and shortening the loop to
 /// fit would make the bounce sound unlike playback.
-///
-/// Mutation: delete the `f.delay < max_block` check in `compile` → compiles
-/// (and the ring is too short to read a whole block from) → fails.
 #[test]
 fn a_feedback_delay_shorter_than_max_block_is_refused() {
     let (clock, tap) = (NodeKey(1), NodeKey(2));
@@ -807,8 +775,6 @@ fn a_feedback_delay_shorter_than_max_block_is_refused() {
 /// Wide fan-in against the reference: a 150-wide fan-in, sources firing on shared and
 /// distinct frames, delivers exactly what the reference's
 /// concatenate-and-stable-sort delivers.
-///
-/// Mutation: in `merge_tree`, merge the runs in reverse order → fails.
 #[test]
 fn wide_fan_in_matches_the_reference() {
     let width = 150usize;
@@ -890,9 +856,6 @@ fn wide_fan_in_matches_the_reference() {
 /// events 4 frames apart delivers them 4 frames apart in the next block —
 /// a note-on/note-off pair keeps its length instead of collapsing to zero —
 /// and only what falls past the block end is clamped to its last frame.
-///
-/// Mutation: make `EventFifo::flushed` put every event at offset 0 (the old
-/// rule) → the spacing collapses → fails.
 #[test]
 fn a_flush_keeps_the_events_spacing() {
     let emitters = vec![(1u32, 4u64)];
@@ -938,10 +901,6 @@ fn a_flush_keeps_the_events_spacing() {
 /// both interpreters — including when one-frame blocks clamp them all to
 /// offset 0, where only the order is left to disagree about. (The
 /// conservation property compares sets; this compares order.)
-///
-/// Mutation: in `Reference::set_graph`, drop the sort after appending a
-/// flush → the reference delivers one FIFO's events, then the other's →
-/// fails.
 #[test]
 fn two_flushes_into_one_sink_interleave_identically() {
     let emitters = vec![(1u32, 10u64), (2u32, 10u64)];

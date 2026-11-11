@@ -182,15 +182,6 @@ fn crossings(setup: impl FnOnce(&mut Rig), bend: u16) -> usize {
 
 const BEND_MAX: u16 = 16_383;
 
-// Mutations (all run, each fails the test named for the arm): the arm's call
-// replaced by `()` in `Player::control` for 0x00, 0x01, 0x21, 0x07, 0x27,
-// 0x0A, 0x2A, 0x0B, 0x2B, 0x5B, 0x5D and 0x79 (the Data Entry and RPN/NRPN
-// select arms are gone: an RPN arrives assembled, tested below);
-// CC 64 and CC 120 swapped with CC 123 in `Controller::effect`; the `_` arm
-// changed to cut the channel. (These ran on the old `Synthesizer`'s match; on
-// this one, the mutations that port are the arms of `Player::control` and of
-// `Controller::effect`, rerun below in the PR.)
-
 // Arm 0x07 (volume coarse) and 0x27 (fine).
 #[test]
 fn cc_7_and_39_set_the_channel_volume() {
@@ -285,8 +276,7 @@ fn registered(index: u8, msb: u8, lsb: u8) -> Voice2 {
 }
 
 // The arm for Registered Controller 0 (RPN 0, pitch bend sensitivity:
-// semitones, then cents). Mutation (run): `set_registered`'s index 0 arm made
-// `()` fails both ratios.
+// semitones, then cents).
 #[test]
 fn registered_controller_0_sets_the_pitch_bend_range() {
     let default = crossings(|_| {}, BEND_MAX) as f64;
@@ -303,8 +293,7 @@ fn registered_controller_0_sets_the_pitch_bend_range() {
 }
 
 // Registered Controller 2 (coarse tuning, 64 is none): 76 is +12 semitones,
-// so the note sounds an octave up. Mutation (run): the index 2 arm made `()`
-// fails it; reading the whole 14 bits (no `>> 7`) fails it.
+// so the note sounds an octave up.
 #[test]
 fn registered_controller_2_sets_the_coarse_tuning() {
     let base = crossings(|_| {}, 8192) as f64;
@@ -314,8 +303,7 @@ fn registered_controller_2_sets_the_coarse_tuning() {
 }
 
 // An Assignable Controller (NRPN), or a Registered Controller outside bank 0,
-// names nothing the channel follows: the range stays. Mutation (run): the
-// `bank == 0` guard dropped fails the second case.
+// names nothing the channel follows: the range stays.
 #[test]
 fn other_controllers_leave_the_pitch_bend_range() {
     let default = crossings(|_| {}, BEND_MAX) as f64;
@@ -377,8 +365,7 @@ fn two_bank_soundfont() -> Arc<SoundFont> {
 
 // Bank Select is held until the next Program Change (M1 p.13: "the receiving
 // device must remember that bank number in readiness for the following Program
-// Change"). Mutation (run): CC 0 applying the bank at once fails the first
-// assertion; the program change not applying the held bank fails the last.
+// Change").
 #[test]
 fn bank_select_is_held_until_the_program_change() {
     let font = two_bank_soundfont();
@@ -409,8 +396,7 @@ fn bank_select_is_held_until_the_program_change() {
 }
 
 // A Program Change's bank (the translator puts a MIDI 1.0 Bank Select there)
-// selects the bank, by its MSB. Mutation (run): the bank ignored, as before
-// this arm, fails the second assertion.
+// selects the bank, by its MSB.
 #[test]
 fn a_program_changes_bank_selects_the_bank() {
     let font = two_bank_soundfont();
@@ -435,9 +421,7 @@ fn a_program_changes_bank_selects_the_bank() {
 }
 
 // The region's velocity range, through the public synthesizer: the loud zone
-// answers 0 to 63. Mutation (run): `InstrumentRegion::contains` ignoring the
-// velocity (the fixture has no velocity ranges, so only this catches it) makes
-// velocity 100 sound and fails the assertion.
+// answers 0 to 63.
 #[test]
 fn a_region_answers_only_the_velocities_of_its_range() {
     let font = two_bank_soundfont();

@@ -26,21 +26,6 @@
 //! (a voice renders each block in one piece, seated at its first frame),
 //! nor of a 64-frame piece of one, which voices rendered before their
 //! scratch was sized from `Prepare::max_block`.
-//!
-//! Mutations (run):
-//! - accumulate in `FrameClock::advance` (restart the segment on every call
-//!   at `beat + frames × beats_per_sample`) → no path's `Env` reads beat 3 on
-//!   frame 96 000 → the three path tests fail on the probe. (The entry frame
-//!   itself survives that mutation: the gate's tolerance absorbs an error of
-//!   3.5e-9 frames. The drift grows with the session; the exact read is the
-//!   property.)
-//! - compare beats in the gate (`Gate::reached` as `now >= target`) → the
-//!   start an ulp late enters a frame late → `a_start_an_ulp_after_the_frame_
-//!   enters_on_it` fails.
-//! - `place` gating only a range's first frame (a per-call gate) → every
-//!   path enters at the next block → all fail. (The block lengths are
-//!   chosen so 96 000 is never a block's first frame; where it is, this
-//!   mutation passes.)
 
 use std::sync::{Arc, Mutex};
 

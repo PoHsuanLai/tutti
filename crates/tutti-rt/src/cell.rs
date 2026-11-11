@@ -383,11 +383,6 @@ impl<T: core::fmt::Debug> core::fmt::Debug for BorrowRef<'_, T> {
 ///
 /// (`BorrowRef<'_, T>` is `Send`/`Sync` only for `T: Sync`, `&T`'s traits;
 /// it exists only for such a `T`, so there is no `!Sync` case to pin.)
-///
-/// Mutations (run): both shared borrows without their `T: Sync` bound → the
-/// first two examples compile (`borrow` alone cannot lose it: it calls
-/// `try_borrow`); `try_borrow` alone without it → the second; `BorrowGuard`
-/// with `PhantomData<()>` → the third. Each fails the doctests.
 const _AUTO_TRAITS: () = ();
 
 // SAFETY: sharing the cell hands each thread only the borrow methods, and the

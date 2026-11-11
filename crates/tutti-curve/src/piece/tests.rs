@@ -2,10 +2,6 @@ use super::*;
 
 /// `value` is `from + (to - from) * g(t)`, in either direction, and a hold
 /// keeps `from` until the end.
-///
-/// Mutation (run): `self.to - self.from` swapped for `self.from - self.to`
-/// fails the rising and falling cases; `law.eval(t)` replaced by `t` fails
-/// the power and hold cases.
 #[test]
 fn value_scales_the_law_onto_the_endpoints() {
     assert_eq!(Piece::new(2.0, 6.0, Law::Linear).value(0.25), 3.0);

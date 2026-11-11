@@ -74,9 +74,6 @@ fn fixtures() -> (PathBuf, PathBuf) {
 }
 
 /// A load that fails gets the loader's reason and leaves the server serving.
-///
-/// Mutation: restore the `?` on `Plugin::load` in `Session::handle_load` and
-/// the first read fails with the server gone (end of file).
 #[test]
 fn a_failed_load_is_answered_and_the_server_still_loads_a_good_plugin() {
     let (not_a_plugin, good) = fixtures();

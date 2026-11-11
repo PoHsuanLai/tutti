@@ -35,12 +35,6 @@ fn system(s: System) -> Message {
 /// messages) gives it, written out by hand: the status nibble, the channel in
 /// the low nibble, and the 14-bit values least significant byte first. The
 /// encoder and the parser are both held to this one table.
-///
-/// Mutation record (each run, each fails here): bend bytes swapped (`msb`
-/// first) in `Voice1::bytes` and the song position bytes swapped in
-/// `System::bytes`; `Voice1::bytes` using `0x90` for Note Off; the channel
-/// dropped from the Note On status; the parser reading a Program Change as two
-/// data bytes.
 #[test]
 fn the_wire_bytes_are_the_spec_tables() {
     let cc = |c, v| Voice1::ControlChange {
@@ -127,8 +121,6 @@ fn padded_bytes_are_zero_after_the_message() {
 }
 
 /// M2-104 Appendix D: Bank Select MSB is CC 0 and LSB is CC 32.
-///
-/// Mutation (run): CC 33 for the LSB -> fails.
 #[test]
 fn a_bank_is_cc0_msb_then_cc32_lsb() {
     let bank = Bank {
@@ -140,7 +132,6 @@ fn a_bank_is_cc0_msb_then_cc32_lsb() {
     assert_eq!(lsb.padded(), [0xB2, 32, 4]);
 }
 
-/// Mutation (run): `msb` shifting by 8 -> fails.
 #[test]
 fn u14_halves() {
     let v = U14::new(0x2A55).unwrap();
@@ -149,8 +140,6 @@ fn u14_halves() {
 }
 
 /// `from_halves` is the inverse of `msb` and `lsb` for every 14-bit value.
-///
-/// Mutation (run): the halves swapped in `from_halves` -> fails.
 #[test]
 fn u14_from_halves_inverts_msb_and_lsb() {
     for raw in 0..=U14::MAX.get() {
@@ -162,8 +151,6 @@ fn u14_from_halves_inverts_msb_and_lsb() {
 
 // ---- running status and real-time bytes ----------------------------------------
 
-/// Mutation (run): a channel message closing the state once complete -> the
-/// second and third notes are lost.
 #[test]
 fn running_status_repeats_the_status() {
     assert_eq!(
@@ -172,8 +159,6 @@ fn running_status_repeats_the_status() {
     );
 }
 
-/// Mutation (run): a real-time byte setting the state to `Idle` -> the notes
-/// are lost.
 #[test]
 fn real_time_bytes_sit_inside_a_message_and_leave_running_status() {
     let clock = system(System::TimingClock);
@@ -183,8 +168,6 @@ fn real_time_bytes_sit_inside_a_message_and_leave_running_status() {
     );
 }
 
-/// Mutation (run): a system common message staying open after its data (the
-/// `Idle` after it removed) -> fails.
 #[test]
 fn system_common_cancels_running_status() {
     assert_eq!(
@@ -203,8 +186,6 @@ fn a_system_common_message_is_not_running_status() {
     assert_eq!(parse(&[0xF3, 1, 2, 3]), [system(System::SongSelect(u7(1)))]);
 }
 
-/// Mutation (run): `0xF7` leaving a channel message open -> the stray `61, 90`
-/// become a note.
 #[test]
 fn a_lone_eox_produces_nothing_and_cancels_running_status() {
     assert_eq!(parse(&[0x90, 60, 100, 0xF7, 61, 90]), [on(0, 60, 100)]);
@@ -235,9 +216,6 @@ fn note_on_with_velocity_zero_stays_a_note_on() {
 /// Every kind of message the parser makes carries the parser's group, not the
 /// first group: a channel message, each system common and real-time message,
 /// and each SysEx packet status; so does `message`.
-///
-/// Mutation (run): the group of a Tune Request, of a SysEx packet, of a real-time
-/// message and of a short message each replaced by `MidiGroup::FIRST` -> fails.
 #[test]
 fn the_group_is_the_parsers() {
     let g = MidiGroup::of(5);
@@ -269,9 +247,6 @@ fn the_group_is_the_parsers() {
 // ---- SysEx -----------------------------------------------------------------------
 
 /// The split points are M2-104 Table 18's: six bytes to a packet.
-///
-/// Mutation (run): a packet pushed at five bytes instead of six -> the 7-, 12-
-/// and 13-byte rows.
 #[test]
 fn sysex_comes_out_in_packets_of_six() {
     use SysexStatus::*;
@@ -306,9 +281,6 @@ fn sysex_comes_out_in_packets_of_six() {
 
 /// Real-time bytes in a SysEx come out and the message goes on; an undefined
 /// one is dropped and is not payload.
-///
-/// Mutation (run): a real-time byte inside a SysEx taken as payload (`& 0x7F`)
-/// -> the payload gains `0x78`.
 #[test]
 fn real_time_inside_sysex_does_not_cut_it() {
     assert_eq!(
@@ -363,8 +335,6 @@ fn a_sysex_carries_across_calls_and_two_share_a_call() {
 }
 
 /// `end_of_message` ends a short message and running status, not a SysEx.
-///
-/// Mutation (run): `end_of_message` also closing a SysEx -> the packet is lost.
 #[test]
 fn end_of_message_keeps_a_sysex_open() {
     let mut p = Midi1Parser::new(MidiGroup::FIRST);
@@ -406,9 +376,6 @@ fn a_second_f0_drops_the_open_message() {
 /// A channel or common status inside a SysEx ends it with no `End` packet
 /// (M2-104 section 7.7.1), the late `0xF7` is a lone one, and the next run is
 /// clean.
-///
-/// Mutation (run): a status byte inside a SysEx ignored -> the note is lost
-/// and the packets are wrong.
 #[test]
 fn a_status_byte_ends_a_sysex_without_an_end_packet() {
     assert_eq!(
@@ -431,9 +398,6 @@ fn a_status_byte_ends_a_sysex_without_an_end_packet() {
 // ---- one message at the start of a fixed field ------------------------------------
 
 /// A padded field is one message: the status says how many bytes count.
-///
-/// Mutation (run): `message` feeding the whole slice -> `[0xC0, 5, 0]` reads
-/// as two Program Changes and `last` returns the second.
 #[test]
 fn message_reads_one_message_and_ignores_the_padding() {
     let program = |p| {
@@ -456,8 +420,6 @@ fn message_reads_one_message_and_ignores_the_padding() {
 
 /// A system common message is as long as its status says: `0xF1` and `0xF3`
 /// take one data byte, `0xF2` two.
-///
-/// Mutation (run): `0xF3` counted as three bytes in `message` -> fails.
 #[test]
 fn message_takes_the_length_the_status_gives() {
     let read = |bytes: &[u8]| Midi1Parser::message(MidiGroup::FIRST, bytes);
@@ -498,8 +460,6 @@ fn message_refuses_what_is_not_one() {
 /// `bytes` and `feed` are inverses on every message `bytes` makes: every
 /// channel, every data value of every status (1,560,576 channel messages) and
 /// every system message.
-///
-/// Mutation (run): the encoder writing a pitch bend's halves swapped -> fails.
 #[test]
 fn bytes_round_trip_through_the_parser_for_every_value() {
     fn check(parser: &mut Midi1Parser, message: Message, bytes: Midi1Bytes) {
@@ -565,8 +525,6 @@ fn bytes_round_trip_through_the_parser_for_every_value() {
 
 // ---- framing ----------------------------------------------------------------------
 
-/// Mutation (run): the closing byte changed from `0xF7` -> fails; the length
-/// off by one at `Start` -> fails.
 #[test]
 fn framing_adds_the_delimiters_and_knows_its_length() {
     let f = frame(&[1u8, 2, 3]);

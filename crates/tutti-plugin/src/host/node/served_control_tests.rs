@@ -28,10 +28,6 @@ const GAIN: ParamId = ParamId::new(77);
 ///
 /// `Control::set_automation_state` returns nothing, so the advisory is pinned
 /// on the `AnyThread` side alone (it is delivered).
-///
-/// Mutation (run): `Control::parameter_text`'s forward returning `None` ->
-/// the text assertion fails. Mutation (run): `Control::parameters` returning
-/// `Vec::new()` -> the catalog assertion fails.
 #[test]
 fn the_served_control_and_any_thread_answer_alike() {
     let _lock = machine_lock();

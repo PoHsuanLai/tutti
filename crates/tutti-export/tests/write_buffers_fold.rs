@@ -44,10 +44,6 @@ fn first_frame(path: &std::path::Path, width: u16) -> Vec<f32> {
 
 /// 5.1 planes written as stereo carry the centre and the surrounds at -3 dB
 /// into the front pair, and drop only the LFE: `L + C*M3DB + Ls*M3DB`.
-///
-/// Mutation (run): `encode_planes` building no fold (the old path, whose
-/// `interleave_from` keeps channels 0 and 1) → the file holds 0.1 and 0.2 →
-/// fails.
 #[test]
 fn surround_planes_written_as_stereo_are_folded_not_truncated() {
     let dir = tempfile::tempdir().unwrap();
@@ -65,9 +61,6 @@ fn surround_planes_written_as_stereo_are_folded_not_truncated() {
 /// The file's stated topology decides the placement: 5.1 into a file whose
 /// four channels are L R C LFE puts the centre in its own channel at full
 /// level, where the default quad order would fold it into the fronts.
-///
-/// Mutation (run): the fold built with `Fold::widths` instead of
-/// `fold_from` (the topology ignored) → the centre channel is silent → fails.
 #[test]
 fn the_files_topology_places_the_channels() {
     let dir = tempfile::tempdir().unwrap();
@@ -90,9 +83,6 @@ fn the_files_topology_places_the_channels() {
 
 /// A width with no order that would have to drop a channel is refused, not
 /// truncated: 5 planes into a stereo file.
-///
-/// Mutation (run): build no fold when the widths differ (the old path) → the
-/// file is written with two of five channels and `Ok` is returned → fails.
 #[test]
 fn a_width_it_cannot_place_is_an_error_not_a_drop() {
     let dir = tempfile::tempdir().unwrap();

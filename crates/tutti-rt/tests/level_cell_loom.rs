@@ -15,21 +15,6 @@
 //! - **none lost, none twice**: the takes' frames sum to 7 and their blocks
 //!   are disjoint (each take's frames is a sum of distinct blocks, and the
 //!   union is all three).
-//!
-//! # Mutation record
-//!
-//! Each was applied to `src/level_cell.rs`; the model failed as noted.
-//!
-//! - the writer without its `SeqCst` fence -> a take reads a slot the writer
-//!   is still folding into: a take with a peak and no frames, or a block
-//!   split across two takes;
-//! - the taker without its `SeqCst` fence -> the same;
-//! - the taker not waiting on `busy` -> the same;
-//! - the writer not re-checking `active` after announcing -> the same;
-//! - `take` loading the frames without clearing them -> the energy and the
-//!   frames of a take disagree (a block counted in two takes);
-//! - `fold` storing the block's frames instead of adding -> blocks in one
-//!   take do not accumulate, the frames and energy disagree.
 
 #![cfg(loom)]
 

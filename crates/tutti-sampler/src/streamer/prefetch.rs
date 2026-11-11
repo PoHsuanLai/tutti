@@ -506,8 +506,6 @@ mod tests {
     /// Frames pushed land by position, every channel in its place at six
     /// channels, a trailing partial frame dropped. (The ring's own protocol is
     /// `PosRing`'s tests and loom model.)
-    ///
-    /// Mutation (run): `push_interleaved` discarding its push → fails.
     #[test]
     fn pushed_frames_land_by_position() {
         let (mut writer, ring, mut reader) = ring(64, 6);
@@ -539,9 +537,6 @@ mod tests {
     /// sets the `fault_logged` flag (the log line itself is not captured). A
     /// read at frame 0 afterwards clears the flag. Called directly, not
     /// through a streamer step or a voice.
-    ///
-    /// Mutation (run): discarding `got` on a fault (zero-filling all of
-    /// `out`, as the old `Err` arm did) fails the kept-frames assertion.
     #[test]
     fn a_damaged_file_keeps_its_frames_and_reports_the_fault() {
         let source = tutti_fixtures::asset("audio/stereo.flac");

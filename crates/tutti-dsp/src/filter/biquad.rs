@@ -146,9 +146,6 @@ mod tests {
     use super::*;
 
     /// The response is the rational function and the poles are its roots.
-    ///
-    /// Mutations (run): `a1` and `a2` swapped in `response` fails the first
-    /// assertion; `+ disc` on both poles fails the second.
     #[test]
     fn the_response_is_the_rational_function_and_the_poles_its_roots() {
         let c = Biquad {
@@ -170,10 +167,6 @@ mod tests {
 
     /// `process` runs the difference equation, `hold` leaves the history of a
     /// pass-through, and `reset` clears it.
-    ///
-    /// Mutations (run, each failed): the two `y` taps swapped in `process`
-    /// (the impulse); `hold` taking the first two samples instead of the last
-    /// two, and `hold` leaving `y` alone (the hand-over).
     #[test]
     fn direct_form_i_runs_the_difference_equation_and_holds_a_pass_through() {
         let c = Biquad {

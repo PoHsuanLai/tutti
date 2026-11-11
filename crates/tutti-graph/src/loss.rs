@@ -251,9 +251,6 @@ mod tests {
     /// A loss no node owns (a merge's) is unreported, and so is one the full
     /// log has no entry for; the totals have both. 64 places fill the log; a
     /// 65th, and 5 events from a merge, are unreported: 7.
-    ///
-    /// Mutation: leave the merge's `count` out of `unreported` → 2 → fails.
-    /// Mutation: drop the `else` branch in `note` → 5 → fails.
     #[test]
     fn what_no_entry_names_is_unreported() {
         let mut d = Dropped::new();
@@ -291,9 +288,6 @@ mod tests {
     /// refusal taken back is not a loss to report. A full log, then an entry
     /// of 3 refused and 3 recovered, adds nothing; 3 refused and 1 recovered
     /// adds 2; the same through `absorb`.
-    ///
-    /// Mutation: add `count`, not `count - recovered`, in `note` → 3 → fails;
-    /// the same in `absorb` → fails.
     #[test]
     fn unreported_is_net_of_recoveries() {
         let mut d = Dropped::new();

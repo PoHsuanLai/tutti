@@ -1078,9 +1078,9 @@ no benefit until `DesignNode` exists); step 3 below then dissolved the crate int
 
 | Moves to `tutti-dsp/src/spatial/` (private module; types exported at the root) | Stays in `tutti-spatial` |
 |---|---|
-| The pure VBAP solve of `vbap/panner.rs`: direction (and spread, width) to gains, over a speaker layout | `AngleSmoother` and `SpatialTarget`: doc 024 row 46 and consolidation 2 (#451) keep the angle variant in spatial over `tutti_dsp::Smoother`, and this document does not reverse that |
-| `hrtf/panner.rs`'s `HrtfBinaural` convolution core and `ring_out`; the public `HrtfBinauralError`, `MIN_SPHERE_RATE`, `MAX_SPHERE_RATE`, `MAX_PREPARED_RATE` | `VbapPannerNode`, `HrtfBinauralNode` and their controls, `speaker_of_channel` |
-| `hrtf/sphere.rs`: `HrirSphere::parse(&[u8])`, `HrtfSet::build`, `resample_into`/`resample_batched` (on `WindowedSinc`), `Face`, the barycentric lookup | `layout.rs`, `fork.rs`, `mix.rs` (graph assembly; its `tutti-nodes` edge keeps the crate at layer 5), `VbapError` |
+| The pure VBAP solve of `vbap/panner.rs`: direction (and spread, width) to gains, over a speaker layout | `AngleSmoother`: doc 024 row 46 and consolidation 2 (#451) keep the angle variant in spatial over `tutti_dsp::Smoother`, and this document does not reverse that |
+| `hrtf/panner.rs`'s `HrtfBinaural` convolution core and `ring_out`; the public `HrtfBinauralError`, `MIN_SPHERE_RATE`, `MAX_SPHERE_RATE`, `MAX_PREPARED_RATE` | `VbapPannerNode`, `HrtfBinauralNode` and their params, `speaker_of_channel` |
+| `hrtf/sphere.rs`: `HrirSphere::parse(&[u8])`, `HrtfSet::build`, `resample_into`/`resample_batched` (on `WindowedSinc`), `Face`, the barycentric lookup | `layout.rs`, `mix.rs` (graph assembly; its `tutti-nodes` edge keeps the crate at layer 5), `VbapError` |
 
 **The smoothing seam.** `VbapPanner` and `HrtfBinaural` today own an
 `AngleSmoother` as a field. Because the smoother stays, it moves up into the
@@ -1208,9 +1208,9 @@ re-derive it.
    its own PR.)
 3. **Cleanup.** (**Landed**, `dsp/nospatial`: the crate is removed, which is the
    dissolve-into-`tutti-nodes` alternative of §4's introduction, taken now: the panner
-   nodes, `SpatialTarget`, the smoothers, the layout and fork helpers and `VbapError` are
+   nodes, the smoothers, the layout helpers and `VbapError` are
    `tutti-nodes`' private `spatial` module, exported at its root (`tutti_nodes::VbapPannerNode`,
-   `HrtfBinauralNode`, their controls), their tests, benches and the `assert_no_alloc` gate
+   `HrtfBinauralNode`), their tests, benches and the `assert_no_alloc` gate
    beside them, every digest identical; the `hrtf` feature, the self dev-dependency and
    `tutti-session`'s and `tutti`'s `spatial` and `hrtf` features are gone (the
    `SessionNode` impls and `Error::Spatial` are ungated); `tutti-nodes` gains one outside
@@ -1220,7 +1220,13 @@ re-derive it.
    The remaining spatial clean-ups, 3a to 3c and 3e (the node shape, the controls, the
    errors and names), now happen inside `tutti-nodes`. (3c and 3e landed: the panner's
    channel map is derived from the bed's `ChannelTopology` and the presets of `SpeakerLayout`
-   are infallible, so `VbapError` is `NoBed(ChannelTopology)` alone.) CLAUDE.md's `tutti-dsp` paragraph,
+   are infallible, so `VbapError` is `NoBed(ChannelTopology)` alone. 3b landed too: the
+   panners' controls are `UnitParam::{Azimuth, Elevation, Spread, StereoWidth}` (the HRTF
+   blend is `Wet`), each a `Param<U>` cell in the node's `ParamSet` and a param port a
+   control lane can drive, so both are `Node` + `ParamNode` inserted through `param_parts`;
+   `SpatialTarget`, `VbapPannerControls`, `HrtfBinauralControls` and `fork.rs` are deleted
+   and a fork is `ParamFork` like every param node's; `num_channels()` is `channels()`
+   and `PanningMode::Surround` is `Spherical`. Every digest is identical.) CLAUDE.md's `tutti-dsp` paragraph,
    doc 024 rows 44 to 46 and the "already a crate" sentence are updated.
 
 Effort: M in all, as #448 and #451 were. After step 3 the HRIR file format

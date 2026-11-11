@@ -1,4 +1,5 @@
 use super::*;
+use crate::testing::aim;
 use tutti_dsp::HRTF_STEP;
 use tutti_graph::contract::{drive, prepared};
 
@@ -75,7 +76,7 @@ fn make_node() -> HrtfBinauralNode {
 /// NaN on the first step and stays NaN through every later target.
 ///
 /// Mutation (run): `placement` returning the raw cells
-/// (`self.controls.target.load()`) → the aim is NaN while the position
+/// (`self.azimuth.load()`, unguarded) → the aim is NaN while the position
 /// is NaN and never returns to 90° → fails.
 #[test]
 fn a_non_finite_position_is_ignored_and_does_not_stick() {
@@ -95,8 +96,7 @@ fn a_non_finite_position_is_ignored_and_does_not_stick() {
     let near = |aim: Direction, want: (f32, f32)| {
         (aim.azimuth.get() - want.0).abs() < 0.01 && (aim.elevation.get() - want.1).abs() < 0.01
     };
-    node.controls()
-        .set_position(Azimuth::new(-45.0), Elevation::new(30.0));
+    aim(&node.param_set(), Azimuth::new(-45.0), Elevation::new(30.0));
     settle(&mut node);
     assert!(
         near(node.aim.current(), (-45.0, 30.0)),
@@ -111,16 +111,14 @@ fn a_non_finite_position_is_ignored_and_does_not_stick() {
             if az.is_finite() { az } else { -45.0 },
             if el.is_finite() { el } else { 30.0 },
         );
-        node.controls()
-            .set_position(Azimuth::new(az), Elevation::new(el));
+        aim(&node.param_set(), Azimuth::new(az), Elevation::new(el));
         settle(&mut node);
         assert!(
             near(node.aim.current(), want),
             "({az}, {el}): aimed at {:?}, want {want:?}",
             node.aim.current()
         );
-        node.controls()
-            .set_position(Azimuth::new(-45.0), Elevation::new(30.0));
+        aim(&node.param_set(), Azimuth::new(-45.0), Elevation::new(30.0));
         settle(&mut node);
         assert!(
             near(node.aim.current(), (-45.0, 30.0)),
@@ -128,8 +126,8 @@ fn a_non_finite_position_is_ignored_and_does_not_stick() {
             node.aim.current()
         );
     }
-    // `set_position` normalizes, so ±∞ reaches the cell only by a raw
-    // store; `LastGood` must still refuse it there.
+    // The cells hold any `f32` raw (a param write is not normalized), so ±∞
+    // reaches the node as it wrote it; `LastGood` must refuse it there.
     //
     // Mutation (run): `LastGood`'s `is_finite` → `!is_nan` → the aim
     // goes to ∞ and does not recover → fails.
@@ -139,17 +137,15 @@ fn a_non_finite_position_is_ignored_and_does_not_stick() {
         (-45.0, f32::INFINITY),
         (-45.0, f32::NEG_INFINITY),
     ] {
-        let target = &node.controls.target;
-        target.azimuth.store(Azimuth(az));
-        target.elevation.store(Elevation(el));
+        node.azimuth.store(Azimuth(az));
+        node.elevation.store(Elevation(el));
         settle(&mut node);
         assert!(
             near(node.aim.current(), (-45.0, 30.0)),
             "raw ({az}, {el}): aimed at {:?}",
             node.aim.current()
         );
-        node.controls()
-            .set_position(Azimuth::new(-45.0), Elevation::new(30.0));
+        aim(&node.param_set(), Azimuth::new(-45.0), Elevation::new(30.0));
         settle(&mut node);
         assert!(
             near(node.aim.current(), (-45.0, 30.0)),
@@ -158,8 +154,11 @@ fn a_non_finite_position_is_ignored_and_does_not_stick() {
         );
     }
     // A reset (and a fork's) seats on the held position, not on a NaN.
-    node.controls()
-        .set_position(Azimuth::new(f32::NAN), Elevation::new(f32::NAN));
+    aim(
+        &node.param_set(),
+        Azimuth::new(f32::NAN),
+        Elevation::new(f32::NAN),
+    );
     Node::reset(&mut node);
     assert!(
         near(node.aim.current(), (-45.0, 30.0)),
@@ -177,8 +176,7 @@ fn rejects_garbage_bytes() {
 #[test]
 fn produces_output_after_one_frame_of_latency() {
     let mut node = make_node();
-    node.controls()
-        .set_position(Azimuth::new(90.0), Elevation::new(0.0));
+    aim(&node.param_set(), Azimuth::new(90.0), Elevation::new(0.0));
 
     // Drive a steady tone through more than one step and confirm the
     // renderer eventually emits non-silence (output lags by one step).
@@ -245,8 +243,7 @@ fn reported_latency_is_the_measured_impulse_delay() {
 
     for at in [0, 1, STEP - 1, STEP, 2 * STEP + 37] {
         let mut node = make_node();
-        node.controls()
-            .set_position(Azimuth(90.0), Elevation::LEVEL);
+        aim(&node.param_set(), Azimuth(90.0), Elevation::LEVEL);
         Node::reset(&mut node);
         let (l, r) = impulse_response(&mut node, at, at + 3 * STEP);
         assert_eq!(onsets(&l), vec![at + LATENCY], "left, impulse at {at}");
@@ -267,8 +264,7 @@ fn pdc_compensates_the_other_path_by_the_binaural_latency() {
     use tutti_nodes::testing::Through;
 
     let mut node = make_node();
-    node.controls()
-        .set_position(Azimuth(90.0), Elevation::LEVEL);
+    aim(&node.param_set(), Azimuth(90.0), Elevation::LEVEL);
     Node::reset(&mut node);
     let mut g = GraphBuilder::new(ChannelLayout::MONO, ChannelLayout::from_count(3));
     let (hrtf, _) = g.add_with_controls(node);
@@ -304,9 +300,8 @@ fn dry_and_wet_leave_together_at_every_blend() {
     use tutti_dsp::{HRTF_LATENCY as LATENCY, HRTF_STEP as STEP};
     for blend in [0.0_f32, 0.5, 1.0] {
         let mut node = make_node();
-        node.controls()
-            .set_position(Azimuth(90.0), Elevation::LEVEL);
-        node.controls().set_blend(Mix(blend));
+        aim(&node.param_set(), Azimuth(90.0), Elevation::LEVEL);
+        node.blend.store(Mix(blend));
         Node::reset(&mut node);
         let at = 100;
         let (l, r) = impulse_response(&mut node, at, at + 2 * STEP);
@@ -323,16 +318,15 @@ fn dry_and_wet_leave_together_at_every_blend() {
 /// A blend that is NaN (`Mix::new_clamped` passes a NaN through) renders as
 /// the blend it replaced, never as NaN output.
 ///
-/// Mutation (run): reading `self.controls.blend.load()` in `process` without
+/// Mutation (run): reading `self.blend.load()` in `process` without
 /// the `LastGood` makes the NaN case render NaN (it failed that way before the fix).
 #[test]
 fn a_nan_blend_holds_the_last_one() {
     let mut node = make_node();
-    node.controls()
-        .set_position(Azimuth(90.0), Elevation::LEVEL);
-    node.controls().set_blend(Mix(0.5));
+    aim(&node.param_set(), Azimuth(90.0), Elevation::LEVEL);
+    node.blend.store(Mix(0.5));
     let (l0, _) = impulse_response(&mut node, 0, 4 * tutti_dsp::HRTF_STEP);
-    node.controls().set_blend(Mix(f32::NAN));
+    node.blend.store(Mix(f32::NAN));
     let (l, r) = impulse_response(&mut node, 0, 4 * tutti_dsp::HRTF_STEP);
     assert!(
         l.iter().chain(&r).all(|s| s.is_finite()),
@@ -348,17 +342,17 @@ fn a_nan_blend_holds_the_last_one() {
 #[test]
 fn reset_keeps_the_authored_placement() {
     let mut node = make_node();
-    node.controls().set_position(Azimuth(45.0), Elevation(10.0));
-    node.controls().set_blend(Mix(0.4));
+    aim(&node.param_set(), Azimuth(45.0), Elevation(10.0));
+    node.blend.store(Mix(0.4));
 
     Node::reset(&mut node);
 
-    assert_eq!(node.controls().azimuth(), Azimuth(45.0));
-    assert_eq!(node.controls().elevation(), Elevation(10.0));
+    assert_eq!(node.azimuth.load(), Azimuth(45.0));
+    assert_eq!(node.elevation.load(), Elevation(10.0));
     assert!(
-        (node.controls().blend().get() - 0.4).abs() < 0.001,
+        (node.blend.load().get() - 0.4).abs() < 0.001,
         "reset changed the blend to {}",
-        node.controls().blend().get()
+        node.blend.load().get()
     );
 }
 
@@ -368,8 +362,7 @@ fn reset_keeps_the_authored_placement() {
 #[test]
 fn reset_drops_the_convolution_tail() {
     let mut node = make_node();
-    node.controls()
-        .set_position(Azimuth(90.0), Elevation::LEVEL);
+    aim(&node.param_set(), Azimuth(90.0), Elevation::LEVEL);
 
     // Fill the step and the input history with a loud take.
     for n in 0..(tutti_dsp::HRTF_STEP * 3) {
@@ -398,23 +391,21 @@ fn reset_drops_the_convolution_tail() {
 /// A clone is the fork source's template, taken at insert, so a
 /// snapshotting clone would silently freeze every later export at the
 /// bearing set at insert. (The fork itself detaches; see
-/// `tests/isolate_snapshots.rs`.)
+/// `tests/spatial_param_fork.rs`.)
 #[test]
 fn clone_shares_the_position_atomics() {
     let node = make_node();
     let c = node.clone();
 
     // Set through the original, observe through the clone.
-    node.controls()
-        .set_position(Azimuth::new(45.0), Elevation::new(10.0));
-    assert_eq!(c.controls().azimuth(), Azimuth(45.0));
-    assert_eq!(c.controls().elevation(), Elevation(10.0));
+    aim(&node.param_set(), Azimuth::new(45.0), Elevation::new(10.0));
+    assert_eq!(c.azimuth.load(), Azimuth(45.0));
+    assert_eq!(c.elevation.load(), Elevation(10.0));
 
     // And back the other way.
-    c.controls()
-        .set_position(Azimuth::new(-60.0), Elevation::new(-20.0));
-    assert_eq!(node.controls().azimuth(), Azimuth(-60.0));
-    assert_eq!(node.controls().elevation(), Elevation(-20.0));
+    aim(&c.param_set(), Azimuth::new(-60.0), Elevation::new(-20.0));
+    assert_eq!(node.azimuth.load(), Azimuth(-60.0));
+    assert_eq!(node.elevation.load(), Elevation(-20.0));
 }
 
 /// Two graph rates above [`MAX_PREPARED_RATE`] share one prepared set, but
@@ -480,4 +471,79 @@ fn the_glide_has_a_50_ms_time_constant_in_audio_time() {
         (left - e_inv).abs() < 1e-4,
         "after 50 ms at 102.4 kHz {left} of the move is left, expected e^-1 = {e_inv}"
     );
+}
+
+/// The ports a lane can drive are the params the node declares, each with
+/// its cell as the base the graph's modulation rides on.
+///
+/// Mutation (run): `param_base(2)` answering the elevation cell -> fails.
+#[test]
+fn the_renderer_declares_its_params() {
+    let node = make_node();
+    node.azimuth.store(Azimuth(10.0));
+    node.elevation.store(Elevation(20.0));
+    node.blend.store(Mix(0.3));
+    assert_eq!(node.shape().params.as_slice(), &HRTF_BINAURAL_PARAMS[..]);
+    let bases: Vec<_> = (0..4).map(|k| node.param_base(k)).collect();
+    assert_eq!(
+        bases,
+        [Some(10.0), Some(20.0), Some(0.3), None],
+        "each port's base is its cell"
+    );
+}
+
+/// A lane that drives a param is heard as the cell would be: a node whose
+/// lane holds the value, over a cell at another, settles on the render of a
+/// node whose cell holds it, for each of the three ports.
+///
+/// The value must change the render from the default's, else the row would
+/// pass on a node that ignored both the lane and the cell.
+///
+/// Mutation (run): `process` reading the blend from its cell instead of
+/// `block_driven(&io, 2)` -> the `Wet` row fails; likewise the other two.
+#[test]
+fn a_lane_drives_each_param_as_its_cell_would() {
+    let input = [0.5f32; BLOCK];
+    let settle = |node: &mut HrtfBinauralNode, lane: Option<(usize, f32)>| {
+        let held = lane.map(|(_, v)| [v; BLOCK]);
+        let mut params: [Option<&[f32]>; 3] = [None; 3];
+        if let Some((k, _)) = lane {
+            params[k] = held.as_ref().map(|v| &v[..]);
+        }
+        // Ten 50 ms time constants of blocks.
+        let mut last = Vec::new();
+        for _ in 0..(RATE.get() as usize / 2).div_ceil(BLOCK) {
+            last = drive(node, RATE, &[&input, &input], &params);
+        }
+        last.iter().map(|c| c[BLOCK - 1]).collect::<Vec<f32>>()
+    };
+    for (k, param, value) in [
+        (0, UnitParam::Azimuth, 90.0f32),
+        (1, UnitParam::Elevation, 45.0),
+        (2, UnitParam::Wet, 0.0),
+    ] {
+        let mut default = make_node();
+        let at_default = settle(&mut default, None);
+
+        let mut cell = make_node();
+        assert!(cell.param_set().set(param, value));
+        Node::reset(&mut cell);
+        let at_cell = settle(&mut cell, None);
+        assert!(
+            at_cell
+                .iter()
+                .zip(&at_default)
+                .any(|(a, b)| (a - b).abs() > 1e-3),
+            "{param:?}: the value does not change the render, so the row proves nothing"
+        );
+
+        let mut lane = make_node();
+        let at_lane = settle(&mut lane, Some((k, value)));
+        for (ch, (a, b)) in at_lane.iter().zip(&at_cell).enumerate() {
+            assert!(
+                (a - b).abs() < 1e-3,
+                "{param:?}, channel {ch}: the lane settled at {a}, the cell at {b}"
+            );
+        }
+    }
 }

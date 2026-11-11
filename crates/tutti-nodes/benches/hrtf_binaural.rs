@@ -19,8 +19,10 @@ use std::hint::black_box;
 
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use tutti_graph::Node;
+use tutti_graph::ParamNode;
 use tutti_graph::contract::Direct;
 use tutti_nodes::HrtfBinauralNode;
+use tutti_nodes::testing::aim;
 use tutti_types::{Azimuth, Elevation, SampleRate};
 
 const BLOCK: usize = 64;
@@ -141,7 +143,8 @@ fn bench(c: &mut Criterion) {
             let bytes = sphere_bytes(ir_len);
             let node = HrtfBinauralNode::new(&bytes, SampleRate(f64::from(RATE)))
                 .expect("the sphere parses");
-            node.controls().set_position(Azimuth(20.0), Elevation(10.0));
+            let params = node.param_set();
+            aim(&params, Azimuth(20.0), Elevation(10.0));
             let mut d = Direct::new(node, SampleRate(f64::from(RATE)), BLOCK);
             // Seat the de-zipper on the position, so the static case renders
             // one filter from its first block.
@@ -164,9 +167,7 @@ fn bench(c: &mut Criterion) {
                         } else {
                             bearing + 7.0
                         };
-                        d.node
-                            .controls()
-                            .set_position(Azimuth(bearing), Elevation(10.0));
+                        aim(&params, Azimuth(bearing), Elevation(10.0));
                     }
                     d.block();
                     black_box(d.output(0)[BLOCK - 1]);

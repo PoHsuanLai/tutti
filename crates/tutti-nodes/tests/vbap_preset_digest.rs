@@ -31,10 +31,12 @@
 //! as `mono(l, r) * (g_to + 1e-4)` moves the stereo digest; `pair()`'s `half`
 //! as `* 0.6` (the crossfade out of and into the mono branch) moves all five.
 
+use tutti_graph::ParamNode;
 use tutti_graph::contract::{drive, prepared};
 use tutti_nodes::VbapPannerNode;
+use tutti_nodes::testing::aim;
 use tutti_nodes::testing::assert_golden;
-use tutti_types::{Azimuth, Elevation, SampleRate, Spread, StereoWidth};
+use tutti_types::{Azimuth, Elevation, SampleRate, StereoWidth, UnitParam};
 
 const RATE: SampleRate = SampleRate(48_000.0);
 const BLOCK: usize = 64;
@@ -51,8 +53,8 @@ fn noise(seed: u32) -> Vec<f32> {
 }
 
 fn digest_of(node: VbapPannerNode) -> u64 {
-    let controls = node.controls();
-    controls.set_position(Azimuth(170.0), Elevation(10.0));
+    let controls = node.param_set();
+    aim(&controls, Azimuth(170.0), Elevation(10.0));
     let mut node = prepared(node, RATE, BLOCK);
     let planes = [noise(3), noise(4)];
     let mut digest: u64 = 0xcbf2_9ce4_8422_2325;
@@ -69,12 +71,12 @@ fn digest_of(node: VbapPannerNode) -> u64 {
     for b in 0..BLOCKS {
         if b % 12 == 6 {
             let (az, el) = moves[(b / 12) % moves.len()];
-            controls.set_position(Azimuth(az), Elevation(el));
+            aim(&controls, Azimuth(az), Elevation(el));
         }
         match b {
-            30 => controls.set_width(StereoWidth::NATURAL),
-            60 => controls.set_spread(Spread::new_clamped(0.4)),
-            90 => controls.set_width(StereoWidth::MONO),
+            30 => drop(controls.set(UnitParam::StereoWidth, StereoWidth::NATURAL.get())),
+            60 => drop(controls.set(UnitParam::Spread, 0.4)),
+            90 => drop(controls.set(UnitParam::StereoWidth, StereoWidth::MONO.get())),
             _ => {}
         }
         let at = b * BLOCK..(b + 1) * BLOCK;

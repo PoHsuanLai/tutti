@@ -1636,8 +1636,8 @@ nothing to move):
 | `AtomicSourceNode` (deleted with compiler-owned modulation) | tutti-nodes | base cell | fresh cell | yes | `atomic_source` |
 | `ParamShaperNode` (deleted with compiler-owned modulation), `AutomationLaneNode` | tutti-nodes | none: an immutable LUT / `Arc<dyn Curve>` (`set_curve` is `&mut`) | — | yes | — |
 | `ChannelSumNode`, `DownmixNode`, `testing::*` | tutti-nodes | none | — | yes | — |
-| `VbapPannerNode` | tutti-nodes | azimuth, elevation, spread, width (the inner panner holds none; the node passes them in per block) | detaches all | yes | `vbap` |
-| `HrtfBinauralNode` | tutti-nodes | azimuth, elevation, blend | detaches all | yes | `hrtf` |
+| `VbapPannerNode` | tutti-nodes | azimuth, elevation, spread, width (the inner panner holds none; the node passes them in per block) | detaches all | yes | `spatial_param_fork::vbap_forks_from_its_params` |
+| `HrtfBinauralNode` | tutti-nodes | azimuth, elevation, blend | detaches all | yes | `spatial_param_fork::hrtf_forks_from_its_params` |
 | `ClickNode` | tutti-nodes | `Arc<ClickSettings>` (volume, mode, meter); the live transport's play, count-in and record flags | fresh settings at the current values; flags frozen | yes | `click::…::isolate_snapshots_settings_and_session_flags` |
 | `TransportClock` | tutti-transport | tempo, pause, seek, loop, writeback, steady time | `ClockLinks::severed`: tempo snapshotted, a fork always rolls | yes | `clock::…::isolate_snapshots_the_tempo` |
 | `MemorySource` | tutti-sampler | gain; the live timeline (re-pointed by `rebind_offline`) | detaches gain | yes | `isolate_snapshots_gain` |
@@ -8219,10 +8219,11 @@ reference):
   it was bit-identical to `fft-convolver`'s while both ran `realfft`, and is
   CPU-independent now). The LFO and the lane read the beat
   from `Env` (`Env::for_each_beat`), no longer from `EnvClock`'s ports.
-- **tutti-spatial** — the VBAP and binaural panners, with typed controls:
-  no `UnitParam` addresses a position (a bearing wraps, a height
-  saturates), so they take the recipe's "own `Controls` + `ForkSource`"
-  branch (`tutti-spatial/src/fork.rs`).
+- **tutti-spatial** — the VBAP and binaural panners. No `UnitParam`
+  addressed a position then, so they took the recipe's "own `Controls` +
+  `ForkSource`" branch (`tutti-spatial/src/fork.rs`); they are `Node` +
+  `ParamNode` now (`UnitParam::{Azimuth, Elevation, Spread, StereoWidth}`,
+  doc 028 §4.3, 3b) and `fork.rs` is gone.
 - **tutti-sampler** — `DiskSource`, `DiskVoice`, `VoicePool`, `VoiceNode`
   (the sampler block render's leftover: typed controls, placement on the node's own queue,
   gain a `Param`; the placement is now a published cell, "Sampler

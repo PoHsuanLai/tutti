@@ -5,9 +5,11 @@
 mod error;
 pub use error::{Error, Result};
 
+mod block_clock;
 mod engine;
 mod hearing;
 mod output;
+pub use block_clock::{BlockClockReader, BlockReading};
 pub use engine::{DEFAULT_BLOCK_CAPACITY, Engine, GraphEngineError};
 pub use hearing::{HeardTapError, HeardTaps};
 pub use output::OutputControl;

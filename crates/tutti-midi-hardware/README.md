@@ -66,24 +66,26 @@ backend reads one yet: alsa-lib exposes none, and CoreMIDI's unique id stands in
 ## Quick start
 
 [`MidiSession`] is the whole OS edge. Inbound events never pass *through* it:
-each opened input gets its own lock-free ring in [`HardwareMidiInputs`], which
-the audio thread drains through a [`HardwareMidiDrain`]: the read state of the
-one node that drains them (usually a [`MidiInputNode`] in the graph), built on
-the control thread and polled through [`MidiIn::poll_block`]. The session only
-owns the connection.
-Disconnecting closes the port and retires its ring, so hot-plug cycles do not
-accumulate rings.
+each opened input is a port of [`HardwareMidiInputs`], a slot of the shared
+[`DeviceInlets`], and the device's own thread stamps each arrival with the frame
+the engine's block clock puts it on and pushes it into that device's event
+inlet. The graph reads the inlets on their frames (a [`MidiIngestNode`] has one
+event input per slot), so the audio thread converts no time. The session only
+owns the connection. Disconnecting closes the port and gives its slot back, so
+hot-plug cycles do not accumulate inlets.
 
 ```rust,no_run
 use std::sync::Arc;
 use tutti_midi_hardware::prelude::*;
-use tutti_midi_hardware::HardwareMidiInputs;
+use tutti_midi_hardware::{DeviceInlets, HardwareMidiInputs};
 use tutti_fixtures::midi::note_on;
 use tutti_graph::Offset;
 use tutti_ump::{MidiChannel, MidiGroup};
 
-// The rings inbound events land in, then a session over this platform's backend.
-let ports = Arc::new(HardwareMidiInputs::new(1024, tutti_types::SampleRate::new(44_100.0)));
+// The inlets inbound events land in (four devices, 1024 events each, placed
+// 10 ms after they arrive), then a session over this platform's backend.
+let inlets = Arc::new(DeviceInlets::new(4, 1024, std::time::Duration::from_millis(10)));
+let ports = Arc::new(HardwareMidiInputs::new(inlets));
 let session = MidiSession::open(Arc::clone(&ports))?;
 
 // The devices present now; capability (protocol, function blocks) is read from
@@ -109,9 +111,8 @@ assert_eq!(session.send(&[(Offset::ZERO, note)]), 1);
 
 - [`Devices`]: the devices present, and the changes to them.
 - [`MidiSession`]: connect, disconnect and send; owns a [`Devices`].
-- [`HardwareMidiInputs`]: the per-input lock-free rings the audio thread polls.
-- [`HardwareMidiDrain`]: one reader's state on those rings, owned by the node
-  that drains them; it implements [`MidiIn`].
+- [`HardwareMidiInputs`]: the open input ports, each a slot of the
+  [`DeviceInlets`] and the [`InputProducerHandle`] its driver thread pushes through.
 - [`DeviceInfo`], [`DeviceId`], [`DeviceEvent`]: what the list holds and reports;
   they live in `tutti-midi-device`, with the pure `DeviceTable` behind them.
 - [`EndpointInfo`], [`EndpointId`], [`UmpCapability`]: what a backend enumerates.

@@ -1,4 +1,4 @@
-//! Inbound MIDI routing compiled to wiring: which of a [`MidiInputNode`]'s
+//! Inbound MIDI routing compiled to wiring: which of a [`MidiIngestNode`]'s
 //! ports each listener takes.
 //!
 //! **Routing is wiring.** The input node sends each event out of its
@@ -9,13 +9,13 @@
 //! as a pure function: the host owns the rules (as entities, or a list) and
 //! wires the result.
 //!
-//! [`MidiInputNode`]: super::MidiInputNode
+//! [`MidiIngestNode`]: super::MidiIngestNode
 
 use std::collections::{BTreeMap, BTreeSet};
 
 use tutti_ump::{MidiChannel, MidiGroup};
 
-use super::input_node::MidiInputPorts;
+use super::ingest_node::MidiInputPorts;
 
 /// One inbound routing rule, as [`compile_routes`] reads it: a Group and
 /// channel filter and the listeners it reaches.

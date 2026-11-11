@@ -168,6 +168,39 @@ struct Counts {
     refused: AtomicU64,
 }
 
+/// A cloneable view of an inlet's four counts, for a thread that does not hold
+/// the writer (the control side, while a driver thread pushes): the same
+/// cumulative figures as [`EventInletWriter::lost`], [`evicted`](Self::evicted),
+/// [`refused`](Self::refused) and [`late`](Self::late).
+#[derive(Clone, Debug)]
+pub struct InletCounts(Arc<Counts>);
+
+impl InletCounts {
+    /// As [`EventInletWriter::lost`].
+    #[must_use]
+    pub fn lost(&self) -> u64 {
+        self.0.lost.load(Ordering::Relaxed)
+    }
+
+    /// As [`EventInletWriter::evicted`].
+    #[must_use]
+    pub fn evicted(&self) -> u64 {
+        self.0.evicted.load(Ordering::Relaxed)
+    }
+
+    /// As [`EventInletWriter::refused`].
+    #[must_use]
+    pub fn refused(&self) -> u64 {
+        self.0.refused.load(Ordering::Relaxed)
+    }
+
+    /// As [`EventInletWriter::late`].
+    #[must_use]
+    pub fn late(&self) -> u64 {
+        self.0.late.load(Ordering::Relaxed)
+    }
+}
+
 /// The producer's end of an event inlet: push events for a time, from one
 /// thread.
 ///
@@ -249,6 +282,13 @@ impl EventInletWriter {
             self.counts.lost.fetch_add(1, Ordering::Relaxed);
             Refused::Full
         })
+    }
+
+    /// The counts as a view that outlives the writer's thread: read them from
+    /// the control side while another thread pushes.
+    #[must_use]
+    pub fn counts(&self) -> InletCounts {
+        InletCounts(Arc::clone(&self.counts))
     }
 
     /// How many events the ring refused because it was full: each

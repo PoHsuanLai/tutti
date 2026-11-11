@@ -26,7 +26,7 @@ use tutti_modulation::{
     compile,
 };
 use tutti_types::ChannelLayout;
-use tutti_types::{At, AtomicF32, ParamAddr, ParamCell};
+use tutti_types::{At, ParamAddr, ParamCell};
 
 use crate::automation::{ControlLaneNode, LaneControls};
 use crate::signal::{EnvelopeFollowerNode, NoteEnvelopeNode};
@@ -81,18 +81,18 @@ pub enum Target {
     /// The gain of a graph edge (`TargetKey::Edge`): the edge the host's key
     /// names. The lane drives it through
     /// [`GraphSpec::connect_edge_gain`](tutti_graph::GraphSpec::connect_edge_gain)
-    /// and clamps to the entry's range. Its knob is the lane's own cell
-    /// (as a plugin parameter's is), starting at `knob`, and written later
-    /// through [`LaneControls::set_knob`] ([`Modulation::lane`]): the base
-    /// the lane's offsets add to, in the gain's own units (`1.0` is unity),
-    /// which `None` leaves to automation alone. The edge's entry is made when
-    /// the target first resolves (an edge with none is a plain addend), and
-    /// the lane is built once the commit that sends it has landed.
+    /// and clamps to the entry's range. Its knob is the edge's own gain cell
+    /// ([`Editor::edge_gain_cell`]), as a native target's is the node's
+    /// `Param`: the base the lane's offsets add to, in the gain's own units
+    /// (`1.0` is unity), written by whoever sets the edge's gain
+    /// (`Editor::set_edge_gain`, [`LaneControls::set_knob`]: one cell, so one
+    /// writer). A route modulates around the base and its removal returns to
+    /// it. The edge's entry is made when the target first resolves (an edge
+    /// with none is a plain addend), and the lane is built once the commit
+    /// that sends it has landed.
     Edge {
         /// The edge.
         id: EdgeId,
-        /// The knob's first value.
-        knob: Option<f32>,
     },
 }
 
@@ -222,7 +222,8 @@ enum Bind {
     },
     Edge {
         id: EdgeId,
-        knob: Option<f32>,
+        /// The edge's live gain cell.
+        knob: ParamCell,
         /// The edge's live range cell: a new entry has a new one.
         range: ParamRangeReader,
     },
@@ -1019,7 +1020,7 @@ impl Modulation {
                     let node = ControlLaneNode::for_unit(
                         EdgeGain::ADDR,
                         program.clone(),
-                        knob.map(|k| Arc::new(AtomicF32::new(k)).into()),
+                        Some(knob.clone()),
                         Some(range.clone()),
                     );
                     let controls = editor.insert(key, "control-lane", node);
@@ -1162,7 +1163,7 @@ impl Modulation {
             TargetKey::Edge(_) => None,
         };
         match (resolved, param) {
-            (Target::Edge { id, knob }, None) => {
+            (Target::Edge { id }, None) => {
                 // An edge that is not in the graph (yet): no lane.
                 if !editor.spec().has_edge(id) {
                     return Ok(None);
@@ -1182,6 +1183,9 @@ impl Modulation {
                 // entry: no entry or no commit yet, no lane (the entry is
                 // made by this apply, and a host re-applies after the commit).
                 let Some(range) = editor.edge_gain_range_cell(id) else {
+                    return Ok(None);
+                };
+                let Some(knob) = editor.edge_gain_cell(id) else {
                     return Ok(None);
                 };
                 if !editor.spec().gains.contains_key(&id) {

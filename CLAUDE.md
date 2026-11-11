@@ -1000,7 +1000,10 @@ Scalars use `Param<U>`.
   `set_output_sources`) replace the set, and `remove_source` /
   `disconnect_from` take one out. Silence is the empty set, never a stored
   `Source::Zero`. A source's weight is an edge's, not a node's (doc 013,
-  "Edge gain").
+  "Edge gain"): `Graph::add_source_weighted` / `add_output_source_weighted`
+  add a source with its weight, `set_edge_gain` / `edge_gain` /
+  `clear_edge_gain` take an `EdgeRef`, and a routed modulation moves around
+  that same gain (its cell is the lane's knob: one writer).
 - `GraphReconcileSystems`: `Spawn → Params → Despawn → Compensate → Commit`.
   The session's phases run in `SessionPhaseSystems(Phase)`, chained from
   `PHASES` (`Collect` before `Spawn`, `Commit` in `Commit`); schedule a

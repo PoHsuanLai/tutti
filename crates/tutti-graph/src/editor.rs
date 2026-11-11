@@ -78,7 +78,7 @@ use crate::param::{ParamIn, ParamRange, ParamRangeReader, ParamRanges, ParamStat
 use crate::plan::{Delta, Placement, Plan};
 use crate::spec::{EventEdge, EventIn, EventOut, GraphInvalid, GraphSpec};
 use crate::tap::{TapReader, TapWriter};
-use tutti_types::Amplitude;
+use tutti_types::{Amplitude, ParamCell};
 
 /// Why [`Editor::commit`] failed.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1624,16 +1624,51 @@ impl Editor {
         self.edge_gains.get(&id).map(GainCell::range_reader)
     }
 
-    /// Edge `id`'s weight as the spec holds it, if the edge has an entry.
-    pub fn edge_gain(&self, id: EdgeId) -> Option<Amplitude> {
-        self.spec.gains.get(&id).map(|g| g.base)
+    /// Edge `id`'s live base: the very cell [`set_edge_gain`](Self::set_edge_gain)
+    /// stores into, which a control lane reads as its knob (a native param's
+    /// knob is the node's own cell; an edge's is its gain). `None` until a
+    /// commit has sent a plan with the edge's entry. Writing it moves the
+    /// base without touching the spec: [`edge_gain`](Self::edge_gain) reads
+    /// the cell, never the spec's copy, once there is one.
+    pub fn edge_gain_cell(&self, id: EdgeId) -> Option<ParamCell> {
+        self.edge_gains.get(&id).map(GainCell::knob)
     }
 
-    /// Write every live range cell, and every edge gain's, from the spec.
+    /// Edge `id`'s base, if the edge has an entry: the live cell's once a
+    /// commit has sent one (the one writer's, whether it is
+    /// [`set_edge_gain`](Self::set_edge_gain) or a lane's knob), the spec's
+    /// before.
+    pub fn edge_gain(&self, id: EdgeId) -> Option<Amplitude> {
+        let gain = self.spec.gains.get(&id)?;
+        Some(self.edge_gains.get(&id).map_or(gain.base, GainCell::load))
+    }
+
+    /// Writes `base`, the spec's, into `cell` when the spec's base moved
+    /// since the last commit (a spec edit that bypassed
+    /// [`set_edge_gain`](Self::set_edge_gain)). Otherwise the cell is left as
+    /// it is: it is the lane's knob and its one writer's, and the spec's copy
+    /// may be behind it.
+    fn carry_base(
+        committed: &Option<(GraphSpec, Shapes)>,
+        id: EdgeId,
+        cell: &GainCell,
+        base: Amplitude,
+    ) {
+        let seen = committed
+            .as_ref()
+            .and_then(|(spec, _)| spec.gains.get(&id))
+            .map(|g| g.base);
+        if seen.is_none_or(|s| s.get().to_bits() != base.get().to_bits()) {
+            cell.store(base);
+        }
+    }
+
+    /// Write every live range cell, and every edge gain's range, from the spec,
+    /// and a base the spec moved.
     fn sync_ranges(&self) {
         for (id, cell) in &self.edge_gains {
             if let Some(g) = self.spec.gains.get(id) {
-                cell.store(g.base);
+                Self::carry_base(&self.committed, *id, cell, g.base);
                 cell.store_range(g.range);
             }
         }
@@ -2340,6 +2375,7 @@ impl Editor {
         };
         // One cell per weighted lane of the plan, kept across commits for an
         // edge that stays, and written from the spec.
+        let committed = &self.committed;
         let lanes: BTreeSet<EdgeId> = plan.sum_lanes.iter().flatten().copied().collect();
         self.edge_gains.retain(|id, _| lanes.contains(id));
         let gains: BTreeMap<EdgeId, GainCell> = lanes
@@ -2350,7 +2386,7 @@ impl Editor {
                     .edge_gains
                     .entry(id)
                     .or_insert_with(|| GainCell::new(gain.base, gain.range));
-                cell.store(gain.base);
+                Self::carry_base(committed, id, cell, gain.base);
                 cell.store_range(gain.range);
                 (id, cell.clone())
             })

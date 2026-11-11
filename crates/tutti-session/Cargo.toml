@@ -49,6 +49,8 @@ tutti-sampler = { path = "../tutti-sampler", default-features = false, optional 
 tutti-soundfont = { path = "../tutti-soundfont", optional = true }
 tutti-polysynth = { path = "../tutti-polysynth", optional = true }
 tutti-export = { path = "../tutti-export", default-features = false, optional = true }
+# `DitherSink`, the dither a recording opts into (the one an export uses).
+tutti-dsp = { path = "../tutti-dsp", default-features = false, optional = true }
 tutti-plugin = { path = "../tutti-plugin", optional = true }
 # The control handle, the node's controls and the host policy over a handle
 # (`Liveness`, `PluginParamValues`): what a hosted plugin is, whatever serves it.
@@ -64,7 +66,7 @@ default = []
 device = ["dep:tutti-cpal"]
 # `Recorder` and its pump loop: device-free, so a host that records files or
 # taps without a microphone (`bevy-tutti`'s `AudioPump`) takes it alone.
-record = []
+record = ["dep:tutti-dsp"]
 # The live I/O edge: `record`, and with `device`, the mic capture too.
 audio-io = ["record", "tutti-cpal?/capture"]
 modulation = ["dep:tutti-modulation"]

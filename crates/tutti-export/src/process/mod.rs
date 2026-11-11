@@ -2,7 +2,7 @@
 //!
 //! Two stages, and both stream:
 //!
-//! - dither ([`DitherState`]) — per block, carrying only its RNG.
+//! - dither (`tutti_dsp::DitherSink`, over the encoder) — per block, carrying only its RNG.
 //! - resample (`tutti_dsp::StreamingResampler`) — an FFT block resampler
 //!   on the scalar `RealFft`; it never needs the whole signal.
 //!
@@ -16,6 +16,6 @@
 pub(crate) mod dither;
 pub(crate) mod resample;
 
-pub(crate) use dither::DitherState;
+pub(crate) use dither::dither_spec;
 pub(crate) use resample::resample_rendered;
 pub use tutti_dsp::ChunkSize;

@@ -58,7 +58,9 @@
 //!   [`StreamingResampler`], which feeds it a block of any size at a time and
 //!   compensates its delay and tail, sized by a [`ChunkSize`].
 //! - Dither: [`DitherNoise`], the seeded rectangular or triangular ([`DitherShape`])
-//!   noise that decorrelates quantization, continuous across blocks.
+//!   noise that decorrelates quantization, continuous across blocks; and
+//!   [`DitherSink`], the adapter that applies it to any `tutti_types::Sink`
+//!   (an export's and a live recording's shared path).
 //!
 //! ## Feature flags
 //!
@@ -81,6 +83,7 @@ mod control;
 mod convolver;
 mod delay;
 mod dither;
+mod dither_sink;
 mod dynamics;
 mod error;
 mod fft;
@@ -111,6 +114,7 @@ pub use control::{COEFF_CADENCE, COEFF_INTERVAL, LANES, Ramp, lane_group};
 pub use convolver::{Convolver, IrSpectra};
 pub use delay::{DelayLine, InterpolationMode, delay_step, fractional_samples};
 pub use dither::{DitherNoise, DitherShape};
+pub use dither_sink::{DitherSink, DitherSpec};
 pub use dynamics::{
     CompressorBlock, CompressorKernel, EnvelopeFollower, GateBlock, GateEnvelopeFollower,
     GateKernel, LimiterBlock, LimiterCurve, LimiterKernel, LookaheadRing, amplitude_to_db,

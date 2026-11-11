@@ -37,6 +37,14 @@ impl IntDepth {
         }
     }
 
+    /// One least significant bit in the `[-1, 1]` float domain: the reciprocal
+    /// of a full-scale integer sample, `2^-(bits - 1)`. The size dither noise
+    /// is scaled to before this depth quantizes.
+    #[must_use]
+    pub fn lsb(self) -> tutti_types::Amplitude {
+        tutti_types::Amplitude(1.0 / (1u32 << (self.bits() - 1)) as f32)
+    }
+
     /// Quantizes one normalized `f32` to this depth, clamping out-of-range
     /// input.
     #[inline]

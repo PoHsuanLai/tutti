@@ -9,7 +9,7 @@
 //!
 //! # Why this is deterministic
 //!
-//! The RNG is a fixed-seed xorshift32 (`0x12345678`, `dither.rs:41`) advanced
+//! The RNG is a fixed-seed xorshift32 (`0x12345678`, `tutti-dsp`'s `DitherNoise::new`) advanced
 //! continuously across blocks and channels. Same config in, same file out — so
 //! these assertions are exact and reproducible, not sampled with a flaky margin.
 //! That also means the seed is load-bearing: reseeding per block would correlate

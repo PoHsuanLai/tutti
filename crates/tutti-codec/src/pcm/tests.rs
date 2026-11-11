@@ -68,3 +68,14 @@ fn each_width_is_distinguishable_at_the_call_site() {
     assert_eq!(Pcm::from(IntDepth::Int16), Pcm::Int16);
     assert_eq!(Pcm::from(IntDepth::Int24).bits(), IntDepth::Int24.bits());
 }
+
+/// One LSB is `2^-(bits - 1)`, derived from the width and not read back from
+/// the formula: 16 bit is 2^-15, 24 bit is 2^-23.
+///
+/// Mutation (run): use `bits()` instead of `bits() - 1` in `IntDepth::lsb` and
+/// both assertions fail.
+#[test]
+fn the_lsb_is_the_reciprocal_of_full_scale() {
+    assert_eq!(IntDepth::Int16.lsb().0, 1.0 / 32768.0);
+    assert_eq!(IntDepth::Int24.lsb().0, 1.0 / 8_388_608.0);
+}

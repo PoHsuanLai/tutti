@@ -20,13 +20,11 @@ thiserror = "2"
 # `channel_voice`, the note-on width read by `Track::notes`.
 tutti-midi-protocol = { path = "../tutti-midi-protocol" }
 
-# midly's workspace base is no_std; re-add `std`, and turn on `strict`, which
-# makes a cut-off or malformed file an error rather than a silently shorter
-# one. Not `parallel`: it pulls rayon for files this small (doc 017, "Files").
-midly = { workspace = true, features = ["std", "strict"] }
 tutti-tempo = { path = "../tutti-tempo" }
 tutti-types = { path = "../tutti-types", default-features = false }
 tutti-ump = { path = "../tutti-ump", default-features = false }
+# The SMF reader (`src/smf/read.rs`) alone names it; no signature does.
+winnow = { workspace = true }
 
 [dev-dependencies]
 # The path-based clip tests need a private directory. nextest runs each test in

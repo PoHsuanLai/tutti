@@ -5,7 +5,7 @@
 //! comments in ```text / ```ignore blocks are never compiled, so this scan is
 //! the only enforcement. It searches `*.md` as well as `*.rs` for that reason.
 //!
-//! It matches tutti-to-tutti chains only; `midly` is a deliberate third-party
+//! It matches tutti-to-tutti chains only; a third-party
 //! re-export and is left alone.
 //!
 //! Usage (`cargo xtask check-paths [<crate> <module>...]`): with no arguments

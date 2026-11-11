@@ -833,8 +833,12 @@ list (normal and build edges; dev-dependencies may go anywhere).
   one). The Clip File codec under it (`clip_file.rs`) is private; its structure rules
   (M2-116 sections 6 to 7.3: Set Profile On then the DCTPQ once, a configuration header
   kept as `Track::header` with at most one Set Tempo and one Set Time Signature placed as
-  the spec says, Start of Clip, End of Clip last) are one `ClipFileError` variant each. No public signature names `midly`; its `strict`
-  feature is on and `parallel` is off (measured, doc 017). A test builds files from
+  the spec says, Start of Clip, End of Clip last) are one `ClipFileError` variant each. The SMF reader is our own (doc 017 stage 6b): `winnow` combinators for the
+  framing (chunks, variable-length quantities, meta and sysex lengths) with running status threaded as a
+  value, in `src/smf/read.rs`; `tutti-ump` decodes a channel message (`Voice1::data_len`,
+  `Midi1Parser::message`); the writer (`src/smf/write.rs`) is a fold of pure functions. No winnow type is in a
+  public signature, field or error, and no file but `read.rs` names `winnow`
+  (`scripts/check-layout.sh`, like symphonia in `tutti-codec`). A test builds files from
   `tests/support`'s encoder written from the spec, not from the crate's own writer.
 - `tutti-midi-hardware` keeps every module private but `test_support` (CI runs the
   per-module path gate on it) and re-exports none of `tutti-midi-runtime`'s sync

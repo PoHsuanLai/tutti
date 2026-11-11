@@ -1,4 +1,3 @@
-use super::error::Result;
 use tutti_dsp::{SpeakerLayout, VbapGains, VbapKernel};
 use tutti_types::{Direction, SampleRate, Samples, Spread, StereoWidth};
 
@@ -22,7 +21,7 @@ pub(crate) struct VbapPanner {
 }
 
 impl VbapPanner {
-    fn new_with_layout(layout: SpeakerLayout) -> Self {
+    pub(crate) fn new(layout: SpeakerLayout) -> Self {
         let sample_rate = SampleRate(48000.0);
         Self {
             kernel: VbapKernel::new(layout),
@@ -31,28 +30,8 @@ impl VbapPanner {
         }
     }
 
-    pub(crate) fn stereo() -> Result<Self> {
-        Ok(Self::new_with_layout(SpeakerLayout::stereo()?))
-    }
-
-    pub(crate) fn quad() -> Result<Self> {
-        Ok(Self::new_with_layout(SpeakerLayout::quad()?))
-    }
-
-    pub(crate) fn surround_5_1() -> Result<Self> {
-        Ok(Self::new_with_layout(SpeakerLayout::surround_5_1()?))
-    }
-
-    pub(crate) fn surround_7_1() -> Result<Self> {
-        Ok(Self::new_with_layout(SpeakerLayout::surround_7_1()?))
-    }
-
-    pub(crate) fn atmos_7_1_4() -> Result<Self> {
-        Ok(Self::new_with_layout(SpeakerLayout::atmos_7_1_4()?))
-    }
-
     /// Retune the position smoothers so the 50ms de-zipper ramp holds at any
-    /// sample rate (the smoothers are built at 48kHz in `new_with_layout`).
+    /// sample rate (the smoothers are built at 48kHz in `new`).
     pub(crate) fn set_sample_rate(&mut self, sample_rate: SampleRate) {
         self.smoother.set_sample_rate(sample_rate);
         // A new coefficient can move a state the old one held still.

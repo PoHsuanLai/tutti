@@ -5,7 +5,7 @@
 use tutti_graph::{GraphBuilder, Prepare};
 use tutti_nodes::testing::{Const, vbap_mix};
 use tutti_nodes::{VbapError, VbapPannerNode};
-use tutti_types::{Azimuth, ChannelLayout, SampleRate, Samples};
+use tutti_types::{Azimuth, ChannelLayout, ChannelTopology, SampleRate, Samples};
 
 /// A panner per bearing (a DC `[1.0, 1.0]` source each), wired by
 /// [`vbap_mix`]. Renders 49 blocks of 256 frames, past the panners' ~0.05 s
@@ -53,7 +53,7 @@ fn fanned_in_panners_place_front_and_rear_sources() {
 /// the surrounds, and a left-surround source lands in channel 4 with the LFE
 /// channel (3) exactly silent: the panner never writes it.
 ///
-/// Mutation (run): the 5.1 `speaker_channel_map` as `[0, 1, 2, 3, 4]` (the
+/// Mutation (run): the 5.1 `speaker_of_channel` as `[0, 1, 2, 3, 4]` (the
 /// surrounds one slot early) -> the surround case fails on the LFE assertion.
 #[test]
 fn a_centre_source_lands_in_the_centre_and_never_in_the_lfe() {
@@ -74,25 +74,22 @@ fn a_centre_source_lands_in_the_centre_and_never_in_the_lfe() {
     assert_eq!(surround[3], 0.0, "the LFE stays silent ({surround:?})");
 }
 
-/// Each supported width builds a panner of that width; one with no preset is
+/// Each supported width builds a panner of that width; one with no bed is
 /// refused rather than falling back.
 #[test]
-fn for_layout_dispatches_and_rejects_unsupported() {
-    for (width, want) in [(2u16, 2usize), (4, 4), (6, 6)] {
-        let layout = if width == 2 {
-            ChannelLayout::STEREO
-        } else if width == 4 {
-            ChannelLayout::QUAD
-        } else {
-            ChannelLayout::from(width)
-        };
+fn for_topology_dispatches_and_rejects_unsupported() {
+    for width in [2u16, 4, 6] {
+        let topology = ChannelTopology::for_width(ChannelLayout::from(width));
         assert_eq!(
-            VbapPannerNode::for_layout(layout).unwrap().num_channels(),
-            want
+            VbapPannerNode::for_topology(&topology)
+                .unwrap()
+                .num_channels(),
+            usize::from(width)
         );
     }
+    let three = ChannelTopology::for_width(ChannelLayout::from(3u16));
     assert!(matches!(
-        VbapPannerNode::for_layout(ChannelLayout::from(3u16)),
-        Err(VbapError::UnsupportedSpeakerLayout(3))
+        VbapPannerNode::for_topology(&three),
+        Err(VbapError::NoBed(_))
     ));
 }

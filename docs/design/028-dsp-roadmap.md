@@ -1218,7 +1218,9 @@ re-derive it.
    moved:** `build_vbap_mix`, `VbapMixParts` and their types had no production user, and
    with fan-in (doc 013) a mix is a panner per source wired to the output channels.
    The remaining spatial clean-ups, 3a to 3c and 3e (the node shape, the controls, the
-   errors and names), now happen inside `tutti-nodes`. CLAUDE.md's `tutti-dsp` paragraph,
+   errors and names), now happen inside `tutti-nodes`. (3c and 3e landed: the panner's
+   channel map is derived from the bed's `ChannelTopology` and the presets of `SpeakerLayout`
+   are infallible, so `VbapError` is `NoBed(ChannelTopology)` alone.) CLAUDE.md's `tutti-dsp` paragraph,
    doc 024 rows 44 to 46 and the "already a crate" sentence are updated.
 
 Effort: M in all, as #448 and #451 were. After step 3 the HRIR file format

@@ -105,7 +105,7 @@ fn check(name: &str, node: VbapPannerNode, want: u64) {
 fn stereo_renders_what_it_did_under_the_crate() {
     check(
         "vbap stereo preset",
-        VbapPannerNode::stereo().unwrap(),
+        VbapPannerNode::stereo(),
         0xd842_5cdf_ac1f_cf37,
     );
 }
@@ -114,7 +114,7 @@ fn stereo_renders_what_it_did_under_the_crate() {
 fn quad_renders_what_it_did_under_the_crate() {
     check(
         "vbap quad preset",
-        VbapPannerNode::quad().unwrap(),
+        VbapPannerNode::quad(),
         0x2990_c3b4_832c_b888,
     );
 }
@@ -123,7 +123,7 @@ fn quad_renders_what_it_did_under_the_crate() {
 fn surround_5_1_renders_what_it_did_under_the_crate() {
     check(
         "vbap 5.1 preset",
-        VbapPannerNode::surround_5_1().unwrap(),
+        VbapPannerNode::surround_5_1(),
         0xa795_3955_3bc4_b754,
     );
 }
@@ -132,7 +132,7 @@ fn surround_5_1_renders_what_it_did_under_the_crate() {
 fn surround_7_1_renders_what_it_did_under_the_crate() {
     check(
         "vbap 7.1 preset",
-        VbapPannerNode::surround_7_1().unwrap(),
+        VbapPannerNode::surround_7_1(),
         0x974e_2551_e709_30e3,
     );
 }
@@ -143,7 +143,7 @@ fn surround_7_1_renders_what_it_did_under_the_crate() {
 fn atmos_7_1_4_renders_under_the_tiled_triangles() {
     check(
         "vbap 7.1.4 preset",
-        VbapPannerNode::atmos_7_1_4().unwrap(),
+        VbapPannerNode::atmos_7_1_4(),
         0x13f2_9ba0_6e7b_db98,
     );
 }

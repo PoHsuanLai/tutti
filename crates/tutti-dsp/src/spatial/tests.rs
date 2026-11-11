@@ -50,11 +50,11 @@ fn layout(positions: &[Position]) -> SpeakerLayout {
 
 fn presets() -> Vec<(&'static str, SpeakerLayout, &'static [Position])> {
     vec![
-        ("stereo", SpeakerLayout::stereo().unwrap(), &STEREO),
-        ("quad", SpeakerLayout::quad().unwrap(), &QUAD),
-        ("5.1", SpeakerLayout::surround_5_1().unwrap(), &FIVE),
-        ("7.1", SpeakerLayout::surround_7_1().unwrap(), &SEVEN),
-        ("7.1.4", SpeakerLayout::atmos_7_1_4().unwrap(), &ATMOS),
+        ("stereo", SpeakerLayout::stereo(), &STEREO),
+        ("quad", SpeakerLayout::quad(), &QUAD),
+        ("5.1", SpeakerLayout::surround_5_1(), &FIVE),
+        ("7.1", SpeakerLayout::surround_7_1(), &SEVEN),
+        ("7.1.4", SpeakerLayout::atmos_7_1_4(), &ATMOS),
     ]
 }
 
@@ -235,7 +235,7 @@ fn the_corrected_gains_are_unit_power_everywhere() {
 /// figure at 90); the renormalisation without the fold (180 degrees silent).
 #[test]
 fn a_front_only_pair_mirrors_the_rear_and_hard_pans_outside_it() {
-    let layout = SpeakerLayout::stereo().unwrap();
+    let layout = SpeakerLayout::stereo();
     let centre = core::f32::consts::FRAC_1_SQRT_2;
     // (azimuth, left, right)
     for (az, left, right) in [
@@ -270,7 +270,7 @@ fn a_front_only_pair_mirrors_the_rear_and_hard_pans_outside_it() {
 /// layout folds (quad at 180 degrees lights the front pair).
 #[test]
 fn a_surrounding_layout_does_not_fold_its_rear_arc() {
-    let layout = SpeakerLayout::quad().unwrap();
+    let layout = SpeakerLayout::quad();
     let at = |az: f32| {
         let mut g = [0.0f32; 4];
         layout.gains_into(Azimuth(az), Elevation(0.0), Spread::POINT, &mut g);
@@ -421,7 +421,7 @@ fn gains_are_continuous_across_every_tuple_edge() {
 /// overlaps its neighbours and the gain jumps at their shared edge).
 #[test]
 fn a_shared_edge_has_the_same_gains_on_both_sides() {
-    let layout = SpeakerLayout::atmos_7_1_4().unwrap();
+    let layout = SpeakerLayout::atmos_7_1_4();
     let mut edges: Vec<((u16, u16), usize)> = Vec::new();
     for t in layout.tuples() {
         let s = t.speakers();

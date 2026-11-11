@@ -1,14 +1,13 @@
-use super::error::Result;
-use tutti_dsp::VbapGains;
+use super::error::{Result, VbapError};
+use tutti_dsp::{SpeakerLayout, VbapGains};
 use tutti_graph::{Cx, IntoNode, Io, Node, NodeParts, Prepare, Shape, Status};
 use tutti_types::{Azimuth, Direction, Elevation, Param, SampleRate, Spread, StereoWidth, Tail};
-use tutti_types::{ChannelLayout, Fold};
+use tutti_types::{ChannelLayout, ChannelTopology, Fold};
 
 use super::panner::VbapPanner;
 use crate::ramp::LastGood;
 use crate::spatial::SpatialTarget;
 use crate::spatial::fork::{FreshFork, fresh_fork_parts};
-use crate::spatial::layout::speaker_channel_map;
 
 /// The last finite value each control cell held.
 #[derive(Clone, Copy, Debug)]
@@ -24,8 +23,9 @@ struct Held {
 ///
 /// Build it from a preset ([`stereo`](Self::stereo), [`quad`](Self::quad),
 /// [`surround_5_1`](Self::surround_5_1), [`surround_7_1`](Self::surround_7_1),
-/// [`atmos_7_1_4`](Self::atmos_7_1_4)) or from a channel count with
-/// [`for_layout`](Self::for_layout). It is a graph node
+/// [`atmos_7_1_4`](Self::atmos_7_1_4)), or from a topology
+/// ([`for_topology`](Self::for_topology), with
+/// [`ChannelTopology::for_width`] for a bare count). It is a graph node
 /// (`tutti_graph::Node`); inserting it hands back its
 /// [`VbapPannerControls`], which move the source lock-free while it renders.
 /// Position changes are de-zippered over 50 ms. A mono source presents the
@@ -39,13 +39,12 @@ struct Held {
 /// use tutti_graph::{Prepare, Solo};
 /// use tutti_nodes::VbapPannerNode;
 ///
-/// let panner = VbapPannerNode::quad()?;
+/// let panner = VbapPannerNode::quad();
 /// panner.controls().set_position(Azimuth(45.0), Elevation(0.0)); // front-left
 ///
 /// let mut solo = Solo::new(panner, Prepare::new(SampleRate(48_000.0), Samples(64)));
 /// let out = solo.render_input(&[&[1.0; 64], &[1.0; 64]]);
 /// assert_eq!(out.len(), 4); // one channel per speaker
-/// # Ok::<(), tutti_nodes::VbapError>(())
 /// ```
 ///
 /// # The layouts are a closed set
@@ -56,8 +55,8 @@ struct Held {
 /// speakers surrounding a direction, so it needs that arrangement and not
 /// merely a channel count; a bare width does not determine one.
 ///
-/// [`for_layout`](Self::for_layout) therefore refuses an unrecognized width with
-/// [`VbapError::UnsupportedSpeakerLayout`] rather than substituting a nearby
+/// [`for_topology`](Self::for_topology) therefore refuses an unrecognized topology with
+/// [`VbapError::NoBed`] rather than substituting a nearby
 /// layout, so a caller picks a real arrangement instead of silently rendering
 /// for a different one.
 ///
@@ -81,7 +80,7 @@ struct Held {
 /// Note that LFE is not one of the gains: the panner never feeds it
 /// (a low-passed send, wired by the caller, feeds it), so it reads zero and is outside the law above.
 ///
-/// [`VbapError::UnsupportedSpeakerLayout`]: crate::spatial::VbapError::UnsupportedSpeakerLayout
+/// [`VbapError::NoBed`]: crate::spatial::VbapError::NoBed
 ///
 /// # Clone
 ///
@@ -96,11 +95,11 @@ pub struct VbapPannerNode {
     /// [`VbapPannerControls`] an insert hands back write.
     controls: VbapPannerControls,
     sample_rate: SampleRate,
-    /// Output-channel → speaker gather map, the inverse of the layout's
-    /// speaker → file-channel map (see [`crate::spatial::layout`]). `None` marks a
-    /// channel no speaker feeds — the LFE, which the panner leaves silent.
-    /// Precomputed per layout so the RT path just indexes it, and inverted so
-    /// the render can run channel-outer over each output's planar slice.
+    /// Output-channel → speaker gather map, derived from the bed's topology
+    /// (see `speaker_of_channel`). `None` marks a channel no speaker feeds:
+    /// the LFE, which the panner leaves silent. Precomputed per layout so the
+    /// RT path just indexes it, so the render can run channel-outer over each
+    /// output's planar slice.
     speaker_of_channel: Vec<Option<usize>>,
     /// The gains the previous block ended on, which this block ramps away
     /// from. `None` until the first block after construction or a
@@ -206,85 +205,66 @@ impl VbapPannerControls {
 
 impl VbapPannerNode {
     /// Creates a 2-out panner over the stereo speaker pair (±30°).
-    ///
-    /// # Errors
-    /// Returns [`VbapError::Geometry`](crate::spatial::VbapError::Geometry) if the preset
-    /// geometry is rejected.
-    pub fn stereo() -> Result<Self> {
-        let panner = VbapPanner::stereo()?;
-        Ok(Self::from_panner(panner, ChannelLayout::STEREO))
+    pub fn stereo() -> Self {
+        Self::on_bed(ChannelLayout::STEREO, SpeakerLayout::stereo())
     }
 
     /// Creates a 4-out panner over the quad field (FL/FR/RL/RR, no LFE).
-    ///
-    /// # Errors
-    /// Returns [`VbapError::Geometry`](crate::spatial::VbapError::Geometry) if the preset
-    /// geometry is rejected.
-    pub fn quad() -> Result<Self> {
-        let panner = VbapPanner::quad()?;
-        Ok(Self::from_panner(panner, ChannelLayout::from(4u16)))
+    pub fn quad() -> Self {
+        Self::on_bed(ChannelLayout::QUAD, SpeakerLayout::quad())
     }
 
     /// Creates a 6-out panner over the 5.1 field. The preset is 5.0: the LFE
     /// channel is left silent here and fed separately by
     /// the caller's wiring.
-    ///
-    /// # Errors
-    /// Returns [`VbapError::Geometry`](crate::spatial::VbapError::Geometry) if the preset
-    /// geometry is rejected.
-    pub fn surround_5_1() -> Result<Self> {
-        let panner = VbapPanner::surround_5_1()?;
-        Ok(Self::from_panner(panner, ChannelLayout::from(6u16)))
+    pub fn surround_5_1() -> Self {
+        Self::on_bed(ChannelLayout::from(6u16), SpeakerLayout::surround_5_1())
     }
 
     /// Creates an 8-out panner over the 7.1 field. Like 5.1, the preset is 7.0
     /// and the LFE channel is fed separately.
-    ///
-    /// # Errors
-    /// Returns [`VbapError::Geometry`](crate::spatial::VbapError::Geometry) if the preset
-    /// geometry is rejected.
-    pub fn surround_7_1() -> Result<Self> {
-        let panner = VbapPanner::surround_7_1()?;
-        Ok(Self::from_panner(panner, ChannelLayout::from(8u16)))
+    pub fn surround_7_1() -> Self {
+        Self::on_bed(ChannelLayout::from(8u16), SpeakerLayout::surround_7_1())
     }
 
     /// Creates a 12-out panner over the 7.1.4 Atmos bed: 7.1 plus four height
     /// speakers.
-    ///
-    /// # Errors
-    /// Returns [`VbapError::Geometry`](crate::spatial::VbapError::Geometry) if the preset
-    /// geometry is rejected.
-    pub fn atmos_7_1_4() -> Result<Self> {
-        let panner = VbapPanner::atmos_7_1_4()?;
-        Ok(Self::from_panner(panner, ChannelLayout::from(12u16)))
+    pub fn atmos_7_1_4() -> Self {
+        Self::on_bed(ChannelLayout::from(12u16), SpeakerLayout::atmos_7_1_4())
     }
 
-    /// Creates a panner for a [`tutti_types::ChannelLayout`] by its channel
-    /// count: 2 (stereo), 4 (quad), 6 (5.1), 8 (7.1) or 12 (7.1.4).
+    /// Creates a panner for the bed `topology` names: the engine's order for
+    /// 2 (stereo), 4 (quad), 6 (5.1), 8 (7.1) or 12 (7.1.4) channels.
     ///
     /// # Errors
-    /// Returns [`VbapError::UnsupportedSpeakerLayout`](crate::spatial::VbapError::UnsupportedSpeakerLayout)
-    /// for a width that has no preset, and
-    /// [`VbapError::Geometry`](crate::spatial::VbapError::Geometry) if the preset
-    /// geometry is rejected.
-    pub fn for_layout(layout: tutti_types::ChannelLayout) -> Result<Self> {
-        match layout.count() {
-            2 => Self::stereo(),
-            4 => Self::quad(),
-            6 => Self::surround_5_1(),
-            8 => Self::surround_7_1(),
-            12 => Self::atmos_7_1_4(),
-            n => Err(crate::spatial::VbapError::UnsupportedSpeakerLayout(n)),
+    /// Returns [`VbapError::NoBed`] for a
+    /// topology that is not one of those five beds.
+    pub fn for_topology(topology: &ChannelTopology) -> Result<Self> {
+        let layout = topology.layout();
+        let speakers = match layout.count() {
+            2 => SpeakerLayout::stereo(),
+            4 => SpeakerLayout::quad(),
+            6 => SpeakerLayout::surround_5_1(),
+            8 => SpeakerLayout::surround_7_1(),
+            12 => SpeakerLayout::atmos_7_1_4(),
+            _ => return Err(VbapError::NoBed(topology.clone())),
+        };
+        if ChannelTopology::assumed(layout).as_ref() != Some(topology) {
+            return Err(VbapError::NoBed(topology.clone()));
         }
+        Ok(Self::on_bed(layout, speakers))
     }
 
-    fn from_panner(panner: VbapPanner, layout: ChannelLayout) -> Self {
+    /// A panner over `speakers`, whose channels run in the engine's order for
+    /// `layout`. The bed picks the angles; the order picks the channels.
+    fn on_bed(layout: ChannelLayout, speakers: SpeakerLayout) -> Self {
+        let topology = ChannelTopology::for_width(layout);
         Self {
-            panner,
+            panner: VbapPanner::new(speakers),
             layout,
             controls: VbapPannerControls::new(),
             sample_rate: SampleRate::SR_48K,
-            speaker_of_channel: speaker_of_channel(layout),
+            speaker_of_channel: speaker_of_channel(&topology),
             ramp_from: None,
             fold: Fold::widths(ChannelLayout::STEREO, ChannelLayout::MONO)
                 .expect("stereo folds to mono"),
@@ -343,19 +323,22 @@ impl VbapPannerNode {
     }
 }
 
-/// Invert the layout's speaker → file-channel map into channel → speaker.
-///
-/// A later speaker mapped to the same channel wins. Allocates, so it runs at
-/// construction only.
-fn speaker_of_channel(layout: ChannelLayout) -> Vec<Option<usize>> {
-    let channels = layout.count() as usize;
-    let mut inverse = vec![None; channels];
-    for (speaker, &ch) in speaker_channel_map(layout).iter().enumerate() {
-        if ch < channels {
-            inverse[ch] = Some(speaker);
-        }
-    }
-    inverse
+/// Which speaker feeds each channel of the bed `topology`: the preset's
+/// speakers are its channels in order with the LFE left out, so a channel's
+/// speaker is the count of non-LFE channels before it, and the LFE's is `None`.
+/// Allocates, so it runs at construction only.
+fn speaker_of_channel(topology: &ChannelTopology) -> Vec<Option<usize>> {
+    let mut next = 0;
+    topology
+        .positions()
+        .iter()
+        .map(|position| {
+            (!position.is_lfe()).then(|| {
+                next += 1;
+                next - 1
+            })
+        })
+        .collect()
 }
 
 /// A graph node: stereo in, the layout's width out, no latency.

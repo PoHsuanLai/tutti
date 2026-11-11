@@ -5,9 +5,9 @@
 //!   layout; [`VbapPannerControls`] move it while it renders.
 //! - [`VbapError`] is what building a panner can fail with.
 //!
-//! A VBAP panner is parameterized by a speaker layout: its output width is
-//! `layout.count()`, and construction fails for a width with no preset
-//! ([`VbapError::UnsupportedSpeakerLayout`]). The binaural renderer
+//! A VBAP panner is parameterized by a speaker bed: its output width is the
+//! bed's, and construction fails for a topology with no bed
+//! ([`VbapError::NoBed`]). The binaural renderer
 //! (`HrtfBinauralNode`) is parameterized by an HRIR dataset instead, always
 //! has two outputs and has its own error type.
 

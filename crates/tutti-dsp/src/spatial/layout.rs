@@ -179,13 +179,15 @@ impl SpeakerLayout {
         })
     }
 
+    /// A fixed preset: its geometry is a constant, so `new` cannot refuse it
+    /// (every preset is built in the tests).
+    fn preset(positions: &[Direction]) -> Self {
+        Self::new(positions).expect("a preset's geometry forms tuples")
+    }
+
     /// Two speakers at 30 degrees either side of the front.
-    ///
-    /// # Errors
-    ///
-    /// Never, for this fixed geometry; the `Result` is the constructor's.
-    pub fn stereo() -> Result<Self, SpeakerGeometryError> {
-        Self::new(&[
+    pub fn stereo() -> Self {
+        Self::preset(&[
             Direction::new(Azimuth(30.0), Elevation(0.0)),
             Direction::new(Azimuth(-30.0), Elevation(0.0)),
         ])
@@ -193,12 +195,8 @@ impl SpeakerLayout {
 
     /// Four speakers at 45 and 135 degrees either side of the front (L, R,
     /// then the two rears).
-    ///
-    /// # Errors
-    ///
-    /// Never, for this fixed geometry; the `Result` is the constructor's.
-    pub fn quad() -> Result<Self, SpeakerGeometryError> {
-        Self::new(&[
+    pub fn quad() -> Self {
+        Self::preset(&[
             Direction::new(Azimuth(45.0), Elevation(0.0)),
             Direction::new(Azimuth(-45.0), Elevation(0.0)),
             Direction::new(Azimuth(135.0), Elevation(0.0)),
@@ -208,12 +206,8 @@ impl SpeakerLayout {
 
     /// 5.0 (ITU-R BS.775-1: L, R at 30, C, Ls, Rs at 110; the LFE is not
     /// panned).
-    ///
-    /// # Errors
-    ///
-    /// Never, for this fixed geometry; the `Result` is the constructor's.
-    pub fn surround_5_1() -> Result<Self, SpeakerGeometryError> {
-        Self::new(&[
+    pub fn surround_5_1() -> Self {
+        Self::preset(&[
             Direction::new(Azimuth(30.0), Elevation(0.0)),
             Direction::new(Azimuth(-30.0), Elevation(0.0)),
             Direction::new(Azimuth(0.0), Elevation(0.0)),
@@ -224,21 +218,13 @@ impl SpeakerLayout {
 
     /// 7.0: 5.0's front with side surrounds at 90 and rear surrounds at 150
     /// (L, R, C, Lss, Rss, Lrs, Rrs).
-    ///
-    /// # Errors
-    ///
-    /// Never, for this fixed geometry; the `Result` is the constructor's.
-    pub fn surround_7_1() -> Result<Self, SpeakerGeometryError> {
-        Self::new(&SEVEN_ZERO)
+    pub fn surround_7_1() -> Self {
+        Self::preset(&SEVEN_ZERO)
     }
 
     /// Dolby Atmos 7.1.4: the 7.0 bed and four overhead speakers at 45 degrees
     /// of height (Ltf, Rtf at 45, Ltr, Rtr at 135).
-    ///
-    /// # Errors
-    ///
-    /// Never, for this fixed geometry; the `Result` is the constructor's.
-    pub fn atmos_7_1_4() -> Result<Self, SpeakerGeometryError> {
+    pub fn atmos_7_1_4() -> Self {
         let mut speakers = SEVEN_ZERO.to_vec();
         speakers.extend([
             Direction::new(Azimuth(45.0), Elevation(45.0)),
@@ -246,7 +232,7 @@ impl SpeakerLayout {
             Direction::new(Azimuth(135.0), Elevation(45.0)),
             Direction::new(Azimuth(-135.0), Elevation(45.0)),
         ]);
-        Self::new(&speakers)
+        Self::preset(&speakers)
     }
 
     /// The number of speakers.

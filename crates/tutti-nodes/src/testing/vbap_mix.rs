@@ -14,14 +14,14 @@ use crate::{SvfFilterNode, SvfType, VbapError, VbapPannerNode};
 ///
 /// # Errors
 ///
-/// [`VbapError`] for a layout with no preset.
+/// [`VbapError`] for a layout with no bed.
 pub fn vbap_mix(
     g: &mut GraphBuilder,
     layout: ChannelLayout,
     sources: &[(NodeKey, Azimuth)],
 ) -> Result<(), VbapError> {
     for &(source, azimuth) in sources {
-        let panner = VbapPannerNode::for_layout(layout)?;
+        let panner = VbapPannerNode::for_topology(&ChannelTopology::for_width(layout))?;
         panner.controls().set_position(azimuth, Elevation::LEVEL);
         let (pan, _) = g.add_with_controls(panner);
         g.connect(source, 0, pan, 0).connect(source, 1, pan, 1);

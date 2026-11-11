@@ -400,18 +400,6 @@ const fn fallbacks(missing: Speaker) -> &'static [&'static [Speaker]] {
     }
 }
 
-/// The surround speaker `sp` is exchanged with: side for back and back for
-/// side.
-const fn counterpart(sp: Speaker) -> Option<Speaker> {
-    match sp {
-        Speaker::SideLeft => Some(Speaker::BackLeft),
-        Speaker::SideRight => Some(Speaker::BackRight),
-        Speaker::BackLeft => Some(Speaker::SideLeft),
-        Speaker::BackRight => Some(Speaker::SideRight),
-        _ => None,
-    }
-}
-
 const fn is_overhead(sp: Speaker) -> bool {
     use Speaker::*;
     matches!(
@@ -484,7 +472,7 @@ fn hits(src: &[Speaker], dst: &[Speaker]) -> Result<Vec<Hit>, FoldError> {
                     js.into_iter()
                         .map(|j| {
                             let reposition =
-                                counterpart(sp) == Some(dst[j]) && index(src, dst[j]).is_none();
+                                sp.counterpart() == Some(dst[j]) && index(src, dst[j]).is_none();
                             Hit {
                                 src: i,
                                 dst: j,
@@ -711,8 +699,7 @@ impl Fold {
     ///
     /// [`FoldError::Empty`] for a width of zero.
     pub fn widths(src: ChannelLayout, dst: ChannelLayout) -> Result<Self, FoldError> {
-        let from = ChannelTopology::assumed(src).unwrap_or_else(|| ChannelTopology::discrete(src));
-        Self::to_width(&from, dst)
+        Self::to_width(&ChannelTopology::for_width(src), dst)
     }
 
     /// Chooses source channels for a discrete destination: destination channel

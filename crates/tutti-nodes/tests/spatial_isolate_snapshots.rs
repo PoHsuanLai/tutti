@@ -117,7 +117,7 @@ fn vbap() {
     check_fork(
         "VbapPannerNode (7.1.4)",
         || {
-            let node = VbapPannerNode::atmos_7_1_4().expect("the Atmos preset builds");
+            let node = VbapPannerNode::atmos_7_1_4();
             node.controls()
                 .set_position(Azimuth::new(30.0), Elevation::new(0.0));
             node.controls().set_spread(Spread::new_clamped(0.2));

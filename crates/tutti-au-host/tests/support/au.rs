@@ -28,7 +28,7 @@ use tutti_types::Samples;
 enum State {
     Loaded(AuLoaded),
     Active {
-        processor: RefCell<AuProcessor>,
+        processor: Box<RefCell<AuProcessor>>,
         controller: AuController,
     },
     /// Only seen after an activation that could not hand the unit back.
@@ -95,7 +95,7 @@ impl Au {
             State::Loaded(loaded) => match loaded.initialize(self.prepare) {
                 Ok((processor, controller)) => {
                     self.state = State::Active {
-                        processor: RefCell::new(processor),
+                        processor: Box::new(RefCell::new(processor)),
                         controller,
                     };
                     Ok(())
@@ -122,14 +122,18 @@ impl Au {
             State::Active {
                 processor,
                 controller,
-            } => match AuLoaded::deactivate(&main_thread(), processor.into_inner(), controller) {
+            } => match AuLoaded::deactivate(
+                &main_thread(),
+                processor.into_inner().into_inner(),
+                controller,
+            ) {
                 Ok(loaded) => {
                     self.state = State::Loaded(loaded);
                     Ok(())
                 }
                 Err(stuck) => {
                     self.state = State::Active {
-                        processor: RefCell::new(stuck.processor),
+                        processor: Box::new(RefCell::new(stuck.processor)),
                         controller: stuck.controller,
                     };
                     Err(refusal(stuck.reason))

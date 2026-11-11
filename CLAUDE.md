@@ -1130,8 +1130,9 @@ read the `Cargo.toml`, grep for the type, run the probe.
   hardcoded `[u8; 16]`.
 - **Neither umbrella holds engine logic.** A piece with one owner goes to
   that crate; a piece composing several goes to `tutti-session`.
-- **The engine must not reference `dawai`.** Only the dated records in
-  `docs/` mention it: fix only what claims to be current, and never "update" a reference
+- **The engine must not reference `dawai`.** Every workspace crate is clear of
+  it; the parked `bevy-tutti` keeps one mention (`plugin_host/live_resize.rs`), and
+  the dated records in `docs/` keep theirs: fix only what claims to be current, and never "update" a reference
   to a new app-side path.
 - **Dead crate names:** `MidiQueueNode`, `TimedQueueNode`, `TimedSender`, `TimedSendError` → deleted (doc 017 E4: a control thread sends through `tutti_graph::EventInletNode`'s `EventInletWriter`, with `tutti_midi_runtime::MidiKeys` for the key helpers; `Graph::open_event_inlet` in the session); `ChannelSumNode` → deleted (a port or an output
   channel sums its sources: `Op::Sum`, doc 013 "Audio fan-in sums"); `tutti-spatial` → `tutti-nodes` (the panner nodes, `VbapPannerNode`

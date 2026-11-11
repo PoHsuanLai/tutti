@@ -607,7 +607,9 @@ impl MidiState {
         self.routed.remove(&node);
     }
 
-    /// `Phase::Poll`: reports the devices that came and went, retires a held
+    /// `Phase::Poll`: steps the UMP Stream negotiation of each held input and
+    /// reports those that settled (`SessionEvent::MidiStream`), reports the
+    /// devices that came and went, retires a held
     /// input or output whose device vanished, wires the event inlets of the
     /// devices that connected to their slots of the ingest node (and takes out
     /// those of devices that closed), and reports the events the hardware
@@ -636,6 +638,14 @@ impl MidiState {
                     out.push(crate::SessionEvent::MidiOutputLost(device));
                 }
             }
+        }
+        // The devices' UMP Stream negotiations take their step at `now`: the
+        // session's control tick is their timer.
+        for (device, stream) in io.poll(now) {
+            out.push(crate::SessionEvent::MidiStream {
+                device,
+                stream: Box::new(stream),
+            });
         }
         let wired = wire_inlets(&mut self.inlet_keys, io.ports().inlets(), nodes, graph);
         if !self.watch_failure_reported

@@ -803,3 +803,151 @@ fn an_output_with_a_poisoned_lock_still_sends() {
     output.poison();
     output.send_ump(&[0x2090_3C64]).expect("the send to go");
 }
+
+/// A device named `name` that publishes a UMP Endpoint in `protocol` with a
+/// block of two Groups, as a kernel UMP client does for a USB device.
+fn plug_ump(name: &str, protocol: u32) -> Virtual {
+    let device = plug(name);
+    device
+        .0
+        .publish_ump_endpoint(&tutti_alsa_ffi::UmpEndpoint {
+            protocol,
+            protocol_caps: tutti_alsa_ffi::PROTO_MIDI1 | tutti_alsa_ffi::PROTO_MIDI2,
+            name: Some("Endpoint".into()),
+            blocks: vec![tutti_alsa_ffi::UmpBlock {
+                id: 0,
+                active: true,
+                flags: 0,
+                direction: tutti_alsa_ffi::DIR_BIDIRECTION,
+                first_group: 2,
+                num_groups: 2,
+                midi_ci_version: 0,
+                sysex8_streams: 0,
+                ui_hint: 3,
+                name: Some("Keys".into()),
+            }],
+        })
+        .expect("the sequencer to take a UMP endpoint (kernel 6.5+)");
+    device
+}
+
+/// The capability of the device named `name`, once it is listed.
+fn capability_of(devices: &Watched, name: &str) -> crate::UmpCapability {
+    let want = format!("{name}: port");
+    let deadline = Instant::now() + PATIENCE;
+    loop {
+        if let Some(d) = devices.list().into_iter().find(|d| d.name == want) {
+            return devices.capability(&d.id).expect("a capability");
+        }
+        assert!(Instant::now() < deadline, "{name} never listed");
+        devices.wait(Duration::from_millis(20));
+    }
+}
+
+/// A client's protocol is the one its UMP Endpoint record has in use, not
+/// "has a block, so MIDI 2.0": the same Endpoint, with the same block, is
+/// MIDI 2.0 in one record and MIDI 1.0 in another. Its blocks are the ones
+/// the record lists, with their Groups, direction and name; a client with no
+/// record is MIDI 1.0 with none.
+#[test]
+fn a_clients_protocol_and_blocks_are_read_from_its_ump_endpoint() {
+    use tutti_ump::Protocol;
+    let devices = Watched::open();
+    let (two, one, legacy) = (unique("two"), unique("one"), unique("legacy"));
+    let _two = plug_ump(&two, tutti_alsa_ffi::PROTO_MIDI2);
+    let _one = plug_ump(&one, tutti_alsa_ffi::PROTO_MIDI1);
+    let _legacy = plug(&legacy);
+
+    let cap = capability_of(&devices, &two);
+    assert_eq!(cap.protocol, Protocol::Midi2);
+    let [block] = cap.blocks.as_slice() else {
+        panic!("blocks: {:?}", cap.blocks);
+    };
+    assert_eq!(block.first_group().get(), 2);
+    assert_eq!(block.groups().get(), 2);
+    assert_eq!(block.direction(), tutti_ump::Direction::Bidirectional);
+    assert_eq!(block.name().map(|n| n.as_str()), Some("Keys"));
+
+    let cap = capability_of(&devices, &one);
+    assert_eq!(cap.protocol, Protocol::Midi1);
+    assert_eq!(cap.blocks.len(), 1);
+
+    let cap = capability_of(&devices, &legacy);
+    assert_eq!(cap.protocol, Protocol::Midi1);
+    assert!(cap.blocks.is_empty());
+}
+
+/// A UMP Stream conversation over the real sequencer, both ways: a device
+/// that answers as `Endpoint::reply` does, on its own thread, is asked by the
+/// session's `poll` through the ALSA input pump and output, and the stream
+/// settles on what it answered. Proves the Stream messages cross the
+/// sequencer in both directions and that the pump routes them to the stream
+/// ring, not the graph.
+#[test]
+fn a_device_on_the_sequencer_is_negotiated_through_the_pump_and_the_output() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use tutti_alsa_ffi::Read;
+    use tutti_midi_device::{Capabilities, Endpoint};
+    use tutti_ump::{Message, Protocol};
+
+    let name = unique("negotiated");
+    let device = plug_ump(&name, tutti_alsa_ffi::PROTO_MIDI1);
+    let stop = std::sync::Arc::new(AtomicBool::new(false));
+    let ports = std::sync::Arc::new(HardwareMidiInputs::new(std::sync::Arc::new(
+        tutti_midi_runtime::DeviceInlets::new(4, 64, Duration::ZERO),
+    )));
+    let session = crate::MidiSession::open(ports).unwrap();
+    let want = format!("{name}: port");
+    let deadline = Instant::now() + PATIENCE;
+    let id = loop {
+        if let Some(d) = session.inputs().into_iter().find(|d| d.name == want) {
+            break d.id;
+        }
+        assert!(Instant::now() < deadline, "device never listed");
+        std::thread::sleep(Duration::from_millis(10));
+    };
+    let thread = {
+        let stop = std::sync::Arc::clone(&stop);
+        std::thread::spawn(move || {
+            // The device: in MIDI 1.0, offering MIDI 2.0.
+            let mut endpoint = Endpoint::new(Capabilities {
+                midi1: true,
+                midi2: true,
+                ..Capabilities::default()
+            });
+            while !stop.load(Ordering::Acquire) {
+                match device.0.read_event() {
+                    Ok(Read::Event(received)) => {
+                        let Some(ump) = tutti_ump::split_stream(&received.ump).next() else {
+                            continue;
+                        };
+                        let Ok(message @ Message::Stream(_)) = tutti_ump::decode(ump) else {
+                            continue;
+                        };
+                        let mut answers: Vec<tutti_ump::Ump> = Vec::new();
+                        endpoint.reply(message, &mut answers);
+                        for answer in answers {
+                            device.0.send_to_subscribers(0, answer.words()).unwrap();
+                        }
+                    }
+                    _ => std::thread::sleep(Duration::from_millis(1)),
+                }
+            }
+        })
+    };
+    session.connect_input(&id).unwrap();
+    let deadline = Instant::now() + PATIENCE;
+    let stream = loop {
+        session.poll(Instant::now());
+        if let Some(found) = session.stream(&id) {
+            break found;
+        }
+        assert!(Instant::now() < deadline, "the negotiation never settled");
+        std::thread::sleep(Duration::from_millis(2));
+    };
+    stop.store(true, Ordering::Release);
+    thread.join().unwrap();
+    assert_eq!(stream.basis(), crate::Basis::Negotiated);
+    assert_eq!(stream.config().protocol, Protocol::Midi2);
+    assert!(!stream.config().rx_jr && !stream.config().tx_jr);
+}

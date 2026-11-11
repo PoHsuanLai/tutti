@@ -16,10 +16,12 @@
 //!
 //! [`HardwareMidiInputs`]: super::HardwareMidiInputs
 
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Instant;
 
+use ringbuf::traits::{Consumer, Producer, Split};
+use ringbuf::{HeapCons, HeapProd, HeapRb};
 use tutti_midi_runtime::{DeviceInput, DeviceSlot, InletCounts};
 use tutti_ump::Ump;
 
@@ -46,7 +48,18 @@ pub struct InputProducerHandle {
     port: PortId,
     /// Whether the port delivers: shared with the port's entry.
     active: Arc<AtomicBool>,
+    /// Where the device's UMP Stream messages go: not into the graph.
+    stream: HeapProd<Ump>,
+    /// How many of them the ring had no room for: shared with the port's entry.
+    stream_lost: Arc<AtomicU64>,
 }
+
+/// How many UMP Stream messages a port holds between two looks of the control
+/// side. A discovery's replies are a few dozen packets (names are up to 98 and
+/// 91 bytes, 14 and 13 to a packet, for up to 32 blocks); the control side
+/// reads them at every update, and a reply lost to a full ring is asked for
+/// again when its step times out.
+pub(crate) const STREAM_CAPACITY: usize = 512;
 
 impl core::fmt::Debug for InputProducerHandle {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
@@ -62,6 +75,14 @@ impl InputProducerHandle {
     /// ([`DeviceInlets`](tutti_midi_runtime::DeviceInlets)), so the order and
     /// spacing of the device's events are kept to the clock map's accuracy.
     ///
+    /// A **UMP Stream message** (type `0xF`, M2-104 §7.1) is the device's talk
+    /// about itself, not music: it never reaches the graph. It goes to the
+    /// port's stream ring, which the control side reads
+    /// ([`HardwareMidiInputs::drain_stream`](super::HardwareMidiInputs::drain_stream)),
+    /// and one the ring has no room for is counted
+    /// ([`PortInfo::stream_lost`](super::PortInfo::stream_lost)) and returns
+    /// `true`: it was not lost from the inlet.
+    ///
     /// Returns `false` when the device's inlet is full; the event is then
     /// dropped, not queued, and counted
     /// ([`HardwareMidiInputs::dropped_events`](super::HardwareMidiInputs::dropped_events)).
@@ -72,6 +93,12 @@ impl InputProducerHandle {
     #[inline]
     pub fn push(&mut self, event: Ump, timestamp: Instant) -> bool {
         if !self.active.load(Ordering::Acquire) {
+            return true;
+        }
+        if event.is_stream() {
+            if self.stream.try_push(event).is_err() {
+                self.stream_lost.fetch_add(1, Ordering::Relaxed);
+            }
             return true;
         }
         self.input.push(event, timestamp)
@@ -95,6 +122,9 @@ pub(crate) struct HardwareMidiInput {
     active: Arc<AtomicBool>,
     counts: InletCounts,
     slot: DeviceSlot,
+    /// The reading end of the stream ring; control side, one reader at a time.
+    stream: Mutex<HeapCons<Ump>>,
+    stream_lost: Arc<AtomicU64>,
 }
 
 impl HardwareMidiInput {
@@ -106,6 +136,8 @@ impl HardwareMidiInput {
         port: PortId,
     ) -> (Self, InputProducerHandle) {
         let active = Arc::new(AtomicBool::new(true));
+        let stream_lost = Arc::new(AtomicU64::new(0));
+        let (stream_in, stream_out) = HeapRb::<Ump>::new(STREAM_CAPACITY).split();
         (
             Self {
                 id: port,
@@ -113,11 +145,15 @@ impl HardwareMidiInput {
                 active: Arc::clone(&active),
                 counts: input.counts(),
                 slot: input.slot(),
+                stream: Mutex::new(stream_out),
+                stream_lost: Arc::clone(&stream_lost),
             },
             InputProducerHandle {
                 input,
                 port,
                 active,
+                stream: stream_in,
+                stream_lost,
             },
         )
     }
@@ -130,6 +166,19 @@ impl HardwareMidiInput {
     /// How many events the graph found already past.
     pub(crate) fn late(&self) -> u64 {
         self.counts.late()
+    }
+
+    /// How many Stream messages the ring had no room for.
+    pub(crate) fn stream_lost(&self) -> u64 {
+        self.stream_lost.load(Ordering::Relaxed)
+    }
+
+    /// Hands every Stream message held to `take`, oldest first.
+    pub(crate) fn drain_stream(&self, mut take: impl FnMut(Ump)) {
+        let mut ring = self.stream.lock().unwrap_or_else(PoisonError::into_inner);
+        while let Some(ump) = ring.try_pop() {
+            take(ump);
+        }
     }
 
     pub(crate) fn id(&self) -> PortId {

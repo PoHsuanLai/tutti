@@ -30,6 +30,7 @@
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
+use std::time::Instant;
 use tutti_graph::UmpAt;
 
 use crate::HardwareMidiInputs;
@@ -37,6 +38,7 @@ use crate::backend;
 use crate::devices::{Devices, OpenInput, OpenOutput};
 use crate::endpoints::MidiEndpoints;
 use crate::error::{Error, Result};
+use crate::stream::{DeviceStream, Negotiation};
 use tutti_midi_device::{DeviceId, DeviceInfo};
 use tutti_midi_runtime::MidiOut;
 
@@ -77,9 +79,18 @@ struct Inner {
 #[derive(Default)]
 struct Open {
     /// Live input connections, keyed by device.
-    inputs: HashMap<DeviceId, OpenInput>,
+    inputs: HashMap<DeviceId, Held>,
     /// The single output sink, if one is connected.
     output: Option<OpenOutput>,
+}
+
+/// One open input, and the UMP Stream negotiation of its device.
+///
+/// The negotiation drops first: it holds the output it asks on, and the input
+/// it reads its answers from goes after.
+struct Held {
+    stream: Negotiation,
+    input: OpenInput,
 }
 
 impl Inner {
@@ -195,14 +206,32 @@ impl MidiSession {
     pub fn connect_input(&self, id: &DeviceId) -> Result<()> {
         let mut open = self.inner.open();
         // An input whose reader died is replaced, not kept: it is silent.
-        if open.inputs.get(id).is_some_and(OpenInput::is_alive) {
+        if open
+            .inputs
+            .get(id)
+            .is_some_and(|held| held.input.is_alive())
+        {
             return Ok(());
         }
         open.inputs.remove(id);
 
         // One ring per connection, retired with it.
         let input = self.inner.devices.open_input(id, &self.inner.ports)?;
-        open.inputs.insert(id.clone(), input);
+        // A UMP Endpoint with an output is asked what it is by the next
+        // `poll`. Its output is the negotiation's own, not the session's one
+        // destination: asking must not wait for, or disturb, that choice.
+        let os = self.inner.devices.capability(id).unwrap_or_default();
+        let out = os
+            .is_ump_endpoint()
+            .then(|| self.inner.devices.open_output(id).ok())
+            .flatten();
+        open.inputs.insert(
+            id.clone(),
+            Held {
+                stream: Negotiation::new(os, out),
+                input,
+            },
+        );
         Ok(())
     }
 
@@ -252,7 +281,7 @@ impl MidiSession {
             let open = self.inner.open();
             open.inputs
                 .iter()
-                .find(|(_, input)| input.name().to_lowercase().contains(&needle))
+                .find(|(_, held)| held.input.name().to_lowercase().contains(&needle))
                 .map(|(id, _)| id.clone())
         };
         if let Some(id) = id {
@@ -285,7 +314,7 @@ impl MidiSession {
             .open()
             .inputs
             .values()
-            .map(|input| input.name().to_owned())
+            .map(|held| held.input.name().to_owned())
             .collect()
     }
 
@@ -358,7 +387,42 @@ impl MidiSession {
             .open()
             .inputs
             .get(id)
-            .is_some_and(OpenInput::is_alive)
+            .is_some_and(|held| held.input.is_alive())
+    }
+
+    /// Steps the UMP Stream negotiation of every open input at `now`: starts
+    /// the ones connected since, hands each the Stream messages its device sent,
+    /// and sends what they answer or ask again. Returns the devices whose
+    /// negotiation settled in this call, once each.
+    ///
+    /// `now` is the caller's time: nothing here reads a clock or waits, so a
+    /// device that never answers costs a few packets over a few seconds of
+    /// polls and then reads as [`Unanswered`](crate::Basis::Unanswered). Call
+    /// it from the control tick (the session's `Phase::Poll`); it only reads
+    /// rings and sends.
+    pub fn poll(&self, now: Instant) -> Vec<(DeviceId, DeviceStream)> {
+        let mut settled = Vec::new();
+        let mut open = self.inner.open();
+        for (id, held) in &mut open.inputs {
+            let mut said = Vec::new();
+            self.inner
+                .ports
+                .drain_stream(held.input.port_id(), |ump| said.push(ump));
+            if let Some(stream) = held.stream.poll(now, said) {
+                settled.push((id.clone(), stream));
+            }
+        }
+        settled
+    }
+
+    /// What is known of the UMP Stream state of the open input `id`: `None`
+    /// when it is not open, or its negotiation has not settled yet (the first
+    /// [`poll`](Self::poll) starts it). Its
+    /// [`config`](DeviceStream::config) is the Protocol and JR Timestamps in
+    /// use.
+    #[must_use]
+    pub fn stream(&self, id: &DeviceId) -> Option<DeviceStream> {
+        self.inner.open().inputs.get(id)?.stream.settled()
     }
 
     /// Sends events to the open output.

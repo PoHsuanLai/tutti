@@ -51,12 +51,17 @@ pub struct FakeBackend {
     watchers: Arc<AtomicUsize>,
     /// The producer of each open input: the fake device's side of the wire.
     producers: Producers,
+    /// What the sinks were handed, for [`FakeCounters::take_sent`].
+    log: SentLog,
     /// How many events per batch the sink it hands out will accept.
     accepts: usize,
 }
 
 /// The producer handle of each input connection that is open, by device.
 type Producers = Arc<Mutex<Vec<(EndpointId, InputProducerHandle)>>>;
+
+/// The packets handed to the fake sinks, by the device they were sent to.
+type SentLog = Arc<Mutex<Vec<(EndpointId, tutti_ump::Ump)>>>;
 
 /// The fake OS's device lists, and the channel into each running watch.
 #[derive(Debug, Default)]
@@ -125,9 +130,19 @@ pub struct FakeCounters {
     pub watchers: Arc<AtomicUsize>,
     devices: Arc<Mutex<FakeDevices>>,
     producers: Producers,
+    log: SentLog,
 }
 
 impl FakeCounters {
+    /// Takes the packets sent to the output of device `id` since the last call,
+    /// oldest first: what the fake device received on the wire.
+    pub fn take_sent(&self, id: EndpointId) -> Vec<tutti_ump::Ump> {
+        let mut log = self.log.lock().unwrap_or_else(PoisonError::into_inner);
+        let (mine, rest) = log.drain(..).partition(|(device, _)| *device == id);
+        *log = rest;
+        mine.into_iter().map(|(_, ump)| ump).collect()
+    }
+
     /// Events handed to the sink so far.
     #[must_use]
     pub fn sent(&self) -> usize {
@@ -263,12 +278,19 @@ impl Drop for FakeConn {
 struct FakeSink {
     sent: Arc<AtomicUsize>,
     accepts: usize,
+    id: EndpointId,
+    log: SentLog,
 }
 
 impl MidiOut for FakeSink {
     fn queue(&self, events: &[UmpAt]) -> usize {
         self.sent.fetch_add(events.len(), Ordering::SeqCst);
-        self.accepts.min(events.len())
+        let taken = self.accepts.min(events.len());
+        self.log
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .extend(events.iter().take(taken).map(|(_, ump)| (self.id, *ump)));
+        taken
     }
 }
 
@@ -325,8 +347,10 @@ impl FakeBackend {
         accepts: usize,
     ) -> (Box<dyn MidiEndpoints>, FakeCounters) {
         let producers = Producers::default();
+        let log = SentLog::default();
         let counters = FakeCounters {
             producers: Arc::clone(&producers),
+            log: Arc::clone(&log),
             sent: Arc::new(AtomicUsize::new(0)),
             opens: Arc::new(AtomicUsize::new(0)),
             watchers: Arc::new(AtomicUsize::new(0)),
@@ -342,6 +366,7 @@ impl FakeBackend {
             opens: Arc::clone(&counters.opens),
             watchers: Arc::clone(&counters.watchers),
             producers,
+            log,
             accepts,
         };
         (Box::new(backend), counters)
@@ -423,6 +448,8 @@ impl MidiEndpoints for FakeBackend {
         Ok(Box::new(FakeSink {
             sent: Arc::clone(&self.sent),
             accepts: self.accepts,
+            id,
+            log: Arc::clone(&self.log),
         }))
     }
 }

@@ -16,6 +16,7 @@ mod error;
 mod port;
 mod session;
 mod stamp;
+mod stream;
 #[cfg(test)]
 mod testing;
 
@@ -33,9 +34,10 @@ pub use endpoints::{InputConnection, MidiEndpoints, Watch};
 pub use error::{Error, Result};
 pub use port::{HardwareMidiInputs, InputProducerHandle, PortId, PortInfo};
 pub use session::MidiSession;
+pub use stream::{Basis, DeviceStream};
 pub use tutti_midi_device::{
-    DeviceEvent, DeviceId, DeviceInfo, Direction, EndpointId, Identity, OsChange, OsDevice,
-    Resolved,
+    Capabilities, DeviceEvent, DeviceId, DeviceInfo, Direction, Endpoint, EndpointId,
+    FunctionBlock, Identity, OsChange, OsDevice, Resolved,
 };
 
 #[cfg(target_os = "macos")]

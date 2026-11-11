@@ -3,8 +3,15 @@
 use std::os::raw::c_int;
 
 use crate::capability::{EndpointInfo, UmpCapability};
-use tutti_alsa_ffi::{CAP_READ, CAP_SUBS_READ, CAP_SUBS_WRITE, CAP_WRITE, Client, PortEntry};
-use tutti_midi_device::{EndpointId, Identity};
+use tutti_alsa_ffi::{
+    BLOCK_IS_LOWSPEED, BLOCK_IS_MIDI1, CAP_READ, CAP_SUBS_READ, CAP_SUBS_WRITE, CAP_WRITE, Client,
+    DIR_BIDIRECTION, DIR_INPUT, DIR_OUTPUT, PROTO_MIDI2, PortEntry, UmpBlock, UmpEndpoint,
+};
+use tutti_midi_device::{BlockName, EndpointId, FunctionBlock, Identity};
+use tutti_ump::{
+    Direction as BlockDirection, FirstGroup, FunctionBlockId, GroupSpan, Midi1Port, Protocol,
+    UiHint,
+};
 
 /// Which direction an endpoint is being listed for.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -116,11 +123,6 @@ fn walk<const N: usize>(seq: &Client, directions: [Direction; N]) -> Walk<N> {
 }
 
 /// The endpoint a listed port is.
-///
-/// A client with UMP block info is a genuine UMP endpoint and speaks MIDI 2.0;
-/// one without is legacy, arriving through the kernel's converter. The
-/// distinction is real and worth recording: a per-note controller sent to a
-/// converted legacy port is dropped in translation, not carried.
 fn endpoint_of(port: PortEntry) -> EndpointInfo {
     let PortEntry {
         client,
@@ -140,10 +142,72 @@ fn endpoint_of(port: PortEntry) -> EndpointInfo {
         } else {
             format!("{client_name}: {port_name}")
         },
-        capability: if ump {
-            UmpCapability::midi2()
-        } else {
-            UmpCapability::midi1()
-        },
+        capability: capability_of(ump.as_ref()),
     }
+}
+
+/// What the sequencer says a client carries.
+///
+/// A client with a UMP Endpoint record speaks the protocol the record says it
+/// has in use (the kernel runs the USB discovery and keeps the outcome there),
+/// and declares the blocks it lists. One with no record is legacy, reached
+/// through the kernel's converter: MIDI 1.0, with no blocks. The distinction
+/// is real and worth recording: a per-note controller sent to a converted
+/// legacy port is dropped in translation, not carried. Having a block is not
+/// having the MIDI 2.0 Protocol: an Endpoint that offers both and is in MIDI
+/// 1.0 reads as MIDI 1.0.
+pub(super) fn capability_of(ump: Option<&UmpEndpoint>) -> UmpCapability {
+    let Some(endpoint) = ump else {
+        return UmpCapability::midi1();
+    };
+    let protocol = if endpoint.protocol & PROTO_MIDI2 != 0 {
+        Protocol::Midi2
+    } else {
+        Protocol::Midi1
+    };
+    UmpCapability {
+        protocol,
+        blocks: endpoint.blocks.iter().filter_map(block_of).collect(),
+    }
+}
+
+/// The Function Block a sequencer block is; `None` for one the UMP spec cannot
+/// hold (a number above 31, Groups past 16, a reserved direction).
+fn block_of(block: &UmpBlock) -> Option<FunctionBlock> {
+    let direction = match block.direction {
+        DIR_INPUT => BlockDirection::Input,
+        DIR_OUTPUT => BlockDirection::Output,
+        DIR_BIDIRECTION => BlockDirection::Bidirectional,
+        _ => return None,
+    };
+    let mut out = FunctionBlock::new(
+        FunctionBlockId::new(u8::try_from(block.id).ok()?)?,
+        direction,
+        FirstGroup::new(u8::try_from(block.first_group).ok()?)?,
+        GroupSpan::new(u8::try_from(block.num_groups).ok()?)?,
+    )?
+    .with_active(block.active)
+    .with_ui_hint(match block.ui_hint {
+        1 => UiHint::Receiver,
+        2 => UiHint::Sender,
+        3 => UiHint::Both,
+        _ => UiHint::Unknown,
+    })
+    .with_midi_ci(
+        u8::try_from(block.midi_ci_version).unwrap_or(0),
+        u8::try_from(block.sysex8_streams).unwrap_or(0),
+    );
+    if block.flags & BLOCK_IS_MIDI1 != 0 {
+        let port = if block.flags & BLOCK_IS_LOWSPEED != 0 {
+            Midi1Port::Restricted
+        } else {
+            Midi1Port::Unrestricted
+        };
+        // A port over several Groups is not one (§7.1.8): kept as a block.
+        out = out.with_midi1(port).unwrap_or(out);
+    }
+    if let Some(name) = block.name.as_deref().and_then(BlockName::new) {
+        out = out.with_name(name);
+    }
+    Some(out)
 }

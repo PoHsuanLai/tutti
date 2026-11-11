@@ -55,7 +55,7 @@ historical, and `MidiEvent`, `MidiMessage` and `tutti-midi-types` no longer exis
 | The specification | Today | Consequence |
 |---|---|---|
 | Endpoint, Function Block, Group (M2-100 §7, M2-104 App. H) | `PortId` and a name; `EndpointId` is ALSA's client and port | Identity changes across restarts; `UmpCapability::function_blocks` was never filled, and is deleted (stage 4a) |
-| Connection steps 2 to 5 (M2-100 Table 4) | Never run on connect | Protocol is guessed, and JR timestamps are a host boolean, against M2-104 §7.1.6.2 |
+| Connection steps 2 to 5 (M2-100 Table 4) | Never run on connect (steps 2 to 4 are since L6(b); step 5 is not) | Protocol is guessed, and JR timestamps are a host boolean, against M2-104 §7.1.6.2 |
 | `FunctionBlock` is a device concept | Was defined in `tutti-midi-runtime`'s `negotiate`, deleted in stage 4a | The `Endpoint` model of stage 4b defines it in `tutti-midi-device`, so `tutti-midi-hardware` needs no runtime type for it |
 | A translator bridges MIDI 1.0 connections (M2-104 §6.2) | One per input node, keyed by channel | RPN state crosses groups; output is forced to group 0 |
 | Decoding and translating are separate | `MidiEvent::message()` calls `normalize` | A MIDI 2.0 Note On at velocity 0 becomes a Note Off (M2-104 §7.4.2 says it does not), while `clip_node` counts it as a note-on |
@@ -477,6 +477,48 @@ pub enum Ending { Negotiated, Midi1Fallback }
 
 A MIDI 1.0 device has no steps 2 to 4 and appears as an `Endpoint` with one
 inferred block. An endpoint with many groups is one device, not many.
+
+**Wired (L6(b)).** `MidiSession::connect_input` starts a negotiation for the
+device it opens, and `MidiSession::poll(now)` is its timer: the session's
+`Phase::Poll` calls it with the phase's `now`, so no clock is read below it (the
+core takes an `Instant`; the hardware layer only passes one on).
+
+- *Where it lives.* One `Negotiation` per open input, in `MidiSession`'s map beside
+  the `OpenInput` (`tutti-midi-hardware`'s `stream.rs`). It owns a `Connection`
+  and its **own** output to the device (`Devices::open_output`): asking must not
+  depend on, or disturb, the session's one chosen output. It runs only where the
+  OS describes a UMP Endpoint (`UmpCapability::is_ump_endpoint`: the MIDI 2.0
+  Protocol in use, or blocks declared) and the device has an output; a MIDI 1.0
+  port has no Stream to ask (M2-104 Appendix I) and is `Basis::Described` at once.
+- *Inbound.* `InputProducerHandle::push` keeps a type-`0xF` packet out of the event
+  inlet: it goes to the port's stream ring (a `ringbuf` of 512, loss counted in
+  `PortInfo::stream_lost`), which `poll` drains into the `Connection`. Stream messages
+  never reach the graph. This is backend-independent: ALSA's pump, CoreMIDI's
+  callback and the fake all push through the same handle.
+- *Outbound.* What the `Connection` answers goes out the negotiation's output, at once.
+- *What is asked.* The MIDI 2.0 Protocol where the device offers it, else MIDI 1.0,
+  with JR Timestamps off both ways: input time is the OS arrival stamp (JR adds nothing
+  and no graph node reads a JR clock), and output JR is stamped by `UmpOut`'s flag, which
+  no negotiation drives yet. L6(c) reads `DeviceStream::config` to gate the output on it
+  (MT 4 against MT 2, JR stamping); this lane only records it.
+- *No hang.* `poll` never waits. A step unanswered for `STEP_TIMEOUT` is sent again,
+  three sends in all, and then the device is `Basis::Unanswered`, taken as the OS describes
+  it (the protocol the OS reports, JR off, its blocks), never the core's blanket
+  MIDI 1.0 fallback: an OS that has already discovered the device knows better. The result
+  is `DeviceStream` (`MidiSession::stream`, `SessionEvent::MidiStream`).
+- *`UmpCapability`* is built from an `Endpoint` (`UmpCapability::of`): the protocol in
+  use and the Function Blocks.
+- *What each OS exposes.* ALSA: the kernel runs the USB discovery itself and keeps the
+  Endpoint (`snd_seq_get_ump_endpoint_info`: protocol in use, protocol caps, name) and the
+  blocks (`snd_seq_get_ump_block_info`: Groups, direction, UI hint, MIDI-CI version, SysEx 8,
+  name); `tutti-alsa-ffi` reads both and the backend reads the *protocol*, no longer "has a
+  block, so MIDI 2.0". Whether the kernel forwards a real device's replies on a UMP client's
+  port 0 is not verified here (no USB MIDI 2.0 device on the machine); between two seq
+  clients, Stream packets cross in both directions, which the sequencer suite runs. CoreMIDI:
+  `kMIDIPropertyProtocolID` (read already); its Function Blocks (macOS 15's
+  `MIDIUMPEndpoint`) are not bound by the `coremidi` crate and are not read. No endpoint
+  tutti publishes answers Discovery: the CoreMIDI virtual endpoints are types nothing in the
+  session creates, and ALSA has none, so `Endpoint::reply` has no caller.
 
 **Stable identity.** A device is identified by what survives a restart: CoreMIDI's
 `MIDIUniqueID`, or the UMP Product Instance Id, falling back to the name. An ALSA
@@ -2349,11 +2391,11 @@ at any point; its CI codec move and `ci`/`negotiate` deletion (4a, done) shrink
    values. The `midi2`-backed Stream constructors in `tutti-midi-types` are
    deleted with their tests; `Protocol` stays there for `tutti-midi-hardware`'s
    `UmpCapability`.
-   Deferred: nothing feeds a `Connection` yet. Wiring it into
-   `tutti-midi-hardware` and the session (the inbound path that delivers Stream
-   messages and the outbound that sends them, the timer that calls `on_timeout`),
-   MIDI-CI Discovery (Table 4 step 5), and `UmpCapability` taking `Endpoint` and
-   `tutti_ump::Protocol` are a later stage. A Connection settles on the
+   **Wired in L6(b)** (§5, "Wired"): `tutti-midi-hardware` runs a `Connection` per
+   open UMP input, the session's `Phase::Poll` is its timer, and `UmpCapability` is
+   built from an `Endpoint`. Deferred: MIDI-CI Discovery (Table 4 step 5), and the
+   output side's use of the negotiated `StreamConfig` (L6(c): MT 4 against MT 2 by
+   protocol, JR stamping by the Notification). A Connection settles on the
    Notification it gets, so a device that is on MIDI 2.0 already is not asked again.
    Residue for this stage:
    - **`clock_out.rs` doc is false.** The module doc of `bevy-tutti`'s

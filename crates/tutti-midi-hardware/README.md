@@ -116,6 +116,8 @@ assert_eq!(session.send(&[(Offset::ZERO, note)]), 1);
 - [`DeviceInfo`], [`DeviceId`], [`DeviceEvent`]: what the list holds and reports;
   they live in `tutti-midi-device`, with the pure `DeviceTable` behind them.
 - [`EndpointInfo`], [`EndpointId`], [`UmpCapability`]: what a backend enumerates.
+- [`DeviceStream`], [`Basis`]: what a device's UMP Stream conversation settled
+  (`MidiSession::poll` steps it, `MidiSession::stream` reads it).
 - [`MidiEndpoints`]: the backend trait; [`MidiSession::open`] picks this
   platform's implementation.
 - [`Error`]: what opening, connecting and sending can fail with.

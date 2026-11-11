@@ -1,7 +1,8 @@
 //! List this machine's MIDI devices and what each can carry, then watch for
 //! devices coming and going.
 //!
-//! Prints, per device, its id, its name and the protocol the OS says it speaks.
+//! Prints, per device, its id, its name and the protocol the OS says it speaks,
+//! and the Function Blocks it declares where the OS exposes them (ALSA does).
 //! Expect `Midi1` for most of it: most hardware in the world is still MIDI 1.0,
 //! and only a `Midi2` device carries per-note controllers and JR Timestamps to
 //! the wire. Then it waits ten seconds and prints each change.
@@ -26,11 +27,23 @@ fn main() -> Result<(), Error> {
         println!("  (none found)");
     }
     for d in list {
-        let protocol = devices.capability(&d.id).map(|c| c.protocol);
+        let capability = devices.capability(&d.id);
+        let protocol = capability.as_ref().map(|c| c.protocol);
         println!(
             "  {:<48} {:<32} {:?} {protocol:?}",
             d.id, d.name, d.direction
         );
+        // The Function Blocks the OS exposes: which Groups, which way.
+        for block in capability.iter().flat_map(|c| &c.blocks) {
+            println!(
+                "      block {}: Groups {}..+{} {:?} {}",
+                block.id().get(),
+                block.first_group().get(),
+                block.groups().get(),
+                block.direction(),
+                block.name().map_or("", |n| n.as_str()),
+            );
+        }
     }
 
     println!("\nwatching for 10 s; plug or unplug a device");

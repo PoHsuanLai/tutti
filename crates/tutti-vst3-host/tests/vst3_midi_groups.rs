@@ -411,6 +411,30 @@ fn a_per_note_bend_is_scaled_by_the_channels_sensitivity() {
     near(value, 0.5 + 6.0 / 240.0);
 }
 
+/// **One tuning is the sounding pitch**: a Pitch told to a sounding note and
+/// then a bend are one tuning, their sum from the key, in either order: key 60
+/// told 60.5, then half a bend over ±48, is +24.5 semitones.
+#[test]
+fn a_pitch_then_a_bend_is_one_tuning_from_the_key() {
+    for bend_first in [false, true] {
+        let mut stager = Stager::new(1);
+        block(&mut stager, &[midi::note_on(group(0), ch(0), 60, 0x8000)]);
+        let pitch = midi::per_note_controller(group(0), ch(0), 60, 3, (60 << 25) | (1 << 24), true);
+        let bend = midi::per_note_pitch_bend(group(0), ch(0), 60, 0xC000_0000);
+        let (first, second) = if bend_first {
+            (bend, pitch)
+        } else {
+            (pitch, bend)
+        };
+        block(&mut stager, &[first]);
+        let seen = block(&mut stager, &[second]);
+        let [Seen::Expression { value, .. }] = seen[..] else {
+            panic!("{seen:?}");
+        };
+        near(value, 0.5 + 24.5 / 240.0);
+    }
+}
+
 /// A Per-Note Management Reset returns the sounding note's tuning to centre
 /// and its pressure to 0.
 #[test]

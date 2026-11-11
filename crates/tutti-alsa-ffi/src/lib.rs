@@ -15,12 +15,17 @@ mod poll;
 mod ports;
 mod records;
 mod sys;
+mod ump;
 
 pub use client::{Client, QueueClock, Read};
 pub use error::{Error, Result};
 pub use event::{Announced, Received};
 pub use poll::{Poller, Wait};
 pub use ports::{PortEntry, Ports};
+pub use ump::{
+    BLOCK_IS_LOWSPEED, BLOCK_IS_MIDI1, DIR_BIDIRECTION, DIR_INPUT, DIR_OUTPUT, PROTO_JRTS_RX,
+    PROTO_JRTS_TX, PROTO_MIDI1, PROTO_MIDI2, UmpBlock, UmpEndpoint,
+};
 
 /// The port may be read from (`SND_SEQ_PORT_CAP_READ`).
 pub const CAP_READ: u32 = sys::SND_SEQ_PORT_CAP_READ;

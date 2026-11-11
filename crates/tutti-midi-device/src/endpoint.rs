@@ -319,6 +319,15 @@ impl Endpoint {
         endpoint
     }
 
+    /// The Endpoint with the Protocol and JR Timestamps in use now set, for an
+    /// Endpoint whose state an OS reports rather than one that was asked
+    /// (§7.1.6.3). Nothing is checked against its capabilities.
+    #[must_use]
+    pub const fn with_active(mut self, active: StreamConfig) -> Self {
+        self.active = active;
+        self
+    }
+
     /// The Endpoint with a Device Identity (§7.1.3).
     #[must_use]
     pub const fn with_identity(mut self, identity: DeviceIdentity) -> Self {
@@ -440,6 +449,12 @@ impl Endpoint {
     ///   change (§7.1.6.1 step 3).
     ///
     /// Any other message answers nothing.
+    ///
+    /// The requester's UMP version (§7.1.1) changes no answer, and that is the
+    /// rule applied: Table 5 gives 1.1 as the first version, and every field
+    /// this reads (the five filter bits) is defined in it, so a higher version
+    /// is answered with the fields of 1.1 (its appended fields and reserved
+    /// bits are not read), and the spec defines no lower one to answer in.
     pub fn reply(&mut self, message: Message, out: &mut impl Extend<Ump>) {
         let Message::Stream(stream) = message else {
             return;

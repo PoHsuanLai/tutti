@@ -358,6 +358,35 @@ fn a_per_note_bend_is_scaled_by_the_channels_sensitivity() {
     near(tunings[0], 6.5);
 }
 
+/// **One tuning is the sounding pitch**: a Pitch told to a sounding note and
+/// then a bend are not two tunings that replace each other, the second is the
+/// sum: key 60 told 60.5, then half a bend over ±48, is +24.5 from the key, and
+/// the same two in the other order give the same.
+#[test]
+fn a_pitch_then_a_bend_is_one_tuning_from_the_key() {
+    for bend_first in [false, true] {
+        let mut list = InputEventList::new();
+        add(
+            &mut list,
+            fx::note_on(group(0), ch(0), 60, fx::MID_VELOCITY),
+        );
+        drain(&mut list);
+        let pitch = fx::per_note_controller(group(0), ch(0), 60, 3, (60 << 25) | (1 << 24), true);
+        let bend = fx::per_note_pitch_bend(group(0), ch(0), 60, 0xC000_0000);
+        let (first, second) = if bend_first {
+            (bend, pitch)
+        } else {
+            (pitch, bend)
+        };
+        add(&mut list, first);
+        drain(&mut list);
+        add(&mut list, second);
+        let events = drain(&mut list);
+        assert_eq!(events.len(), 1, "{events:?}");
+        near(expression(&events[0]).2, 24.5);
+    }
+}
+
 /// **A Group's sensitivity is its own**: RPN #00/07 on Group 0 does not
 /// change the range of the same channel in Group 1.
 #[test]

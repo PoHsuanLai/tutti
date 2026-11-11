@@ -569,7 +569,7 @@ impl Voicing {
         for e in 0..self.events.len() {
             let (note, control) = match self.events[e] {
                 NoteEvent::Started { .. } => continue,
-                NoteEvent::Control { id, control } => (id, Some(control)),
+                NoteEvent::Control { id, control, .. } => (id, Some(control)),
                 NoteEvent::Reset { id } => (id, None),
             };
             for i in 0..self.notes.len() {

@@ -14,6 +14,7 @@
 //! and render:
 //!
 //! ```
+//! use tutti_types::MaxBlock;
 //! use tutti_graph::{Cx, ForkByClone, GraphBuilder, Io, Node, Prepare, Shape, Status};
 //! use tutti_types::{ChannelLayout, SampleRate, Samples};
 //!

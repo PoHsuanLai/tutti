@@ -343,6 +343,7 @@ impl MidiClipControls {
 /// audio. See the module docs.
 ///
 /// ```
+/// use tutti_types::MaxBlock;
 /// use tutti_types::{Beat, SampleRate, Samples};
 /// use tutti_graph::NodeKey;
 /// use tutti_graph::{Editor, Prepare};

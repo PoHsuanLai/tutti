@@ -78,6 +78,7 @@ to insert the moment it is built.
 ## Quick start
 
 ```rust
+use tutti_types::MaxBlock;
 use tutti_types::{Hz, Q, UnitParam};
 use tutti_graph::{Prepare, Solo};
 use tutti_nodes::{SvfFilterNode, SvfType};

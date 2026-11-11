@@ -894,6 +894,7 @@ pub const MAX_EVENT_PORT_CAPACITY: u32 = 8_192;
 /// control side.
 ///
 /// ```
+/// use tutti_types::MaxBlock;
 /// use tutti_graph::{EventDensity, Prepare};
 /// use tutti_types::{SampleRate, Samples};
 ///

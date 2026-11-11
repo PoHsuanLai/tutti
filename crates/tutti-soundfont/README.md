@@ -33,6 +33,7 @@ are separate peers that share only the graph-node shape.
 This needs a `.sf2` on disk, so it is `no_run`.
 
 ```rust,no_run
+use tutti_types::MaxBlock;
 use std::fs::File;
 use tutti_graph::{OutPort, Source};
 use std::sync::Arc;

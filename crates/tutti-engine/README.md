@@ -52,6 +52,7 @@ does exactly this around a real device; here the block is pulled by hand, so
 the whole thing runs headless.
 
 ```rust
+use tutti_types::MaxBlock;
 use tutti_graph::{OutPort, Source};
 use tutti_types::{Beat, Bpm, ChannelLayout, InterleavedMut, SampleRate, Samples, Tail};
 use tutti_graph::NodeKey;

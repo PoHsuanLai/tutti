@@ -19,6 +19,7 @@
 //! # Examples
 //!
 //! ```
+//! use tutti_types::MaxBlock;
 //! use tutti_types::{ChannelLayout, Hz, SampleRate, Samples};
 //! use tutti_graph::{GraphBuilder, Prepare};
 //! use tutti_nodes::testing::Osc;

@@ -125,6 +125,7 @@ the sources into a ring a lane and a control thread drains them through the
 whole reason these algorithms need no engine vocabulary.
 
 ```rust
+use tutti_types::MaxBlock;
 use tutti_measure::correlate;
 use tutti_graph::{Cx, Editor, Io, Node, Prepare, Shape, Status, Transport, Unforkable};
 use tutti_graph::{OutPort, Source};

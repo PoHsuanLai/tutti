@@ -593,6 +593,7 @@ impl Error for ForkError {
 /// offline: the fork's renderer hands it the render's transport.
 ///
 /// ```
+/// use tutti_types::MaxBlock;
 /// use tutti_graph::{Editor, ForkByClone, ForkMode, ForkTarget, Prepare};
 /// # use tutti_graph::{Cx, Io, Node, Shape, Status};
 /// # use tutti_types::{ChannelLayout, SampleRate, Samples};
@@ -672,6 +673,7 @@ impl<N: Node + Clone + Send + 'static> IntoNode for ForkByClone<N> {
 /// answer is [`ForkByClone`]. Also takes an already boxed `Box<dyn Node>`.
 ///
 /// ```
+/// use tutti_types::MaxBlock;
 /// use tutti_graph::{Editor, ForkError, ForkMode, ForkTarget, Prepare, Unforkable};
 /// # use tutti_graph::{Cx, Io, Node, Shape, Status};
 /// # use tutti_types::{ChannelLayout, SampleRate, Samples};

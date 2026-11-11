@@ -615,6 +615,7 @@ pub enum RootTopologyStatus {
 /// wire) frees nothing and may run on any thread that owns the session.
 ///
 /// ```
+/// use tutti_types::MaxBlock;
 /// use tutti_types::{ChannelLayout, InterleavedMut, SampleRate, Samples};
 /// use tutti_session::{GraphSource, Session};
 /// use tutti_nodes::testing::Const;

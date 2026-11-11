@@ -283,6 +283,7 @@ impl CpalDriver {
 /// # Examples
 ///
 /// ```
+/// use tutti_types::MaxBlock;
 /// use std::sync::Arc;
 /// use tutti_engine::Engine;
 /// use tutti_transport::Transport;

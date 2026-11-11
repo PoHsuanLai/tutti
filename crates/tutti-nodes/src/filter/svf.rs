@@ -27,6 +27,7 @@ use crate::reverb::DesignNode;
 /// # Examples
 ///
 /// ```
+/// use tutti_types::MaxBlock;
 /// use tutti_types::{Hz, Q, UnitParam};
 /// use tutti_graph::{Prepare, Solo};
 /// use tutti_nodes::{SvfFilterNode, SvfType};

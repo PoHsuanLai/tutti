@@ -45,6 +45,7 @@ struct Held {
 /// # Examples
 ///
 /// ```
+/// use tutti_types::MaxBlock;
 /// use tutti_types::{SampleRate, Samples, UnitParam};
 /// use tutti_graph::{ParamNode, Prepare, Solo};
 /// use tutti_nodes::VbapPannerNode;

@@ -221,13 +221,13 @@ impl Session {
     ///
     /// # Errors
     ///
-    /// - [`Error::Reprepare`] **before the stream stops**, changing
+    /// - [`crate::Error::Reprepare`] **before the stream stops**, changing
     ///   nothing, when the graph cannot take the request: `max_block` past
     ///   the engine's block capacity (`CommitError::BlockTooLong`), a
     ///   re-prepare already between its halves (`Repreparing`; retry on a
     ///   later update), or a poisoned graph.
-    /// - What resolving or opening the device reports ([`Error::Device`]).
-    /// - [`Error::Reprepare`] from the re-prepare itself (a graph that no
+    /// - What resolving or opening the device reports ([`crate::Error::Device`]).
+    /// - [`crate::Error::Reprepare`] from the re-prepare itself (a graph that no
     ///   longer compiles): the stream is then left **stopped**. Restart
     ///   again with another `max_block`, or onto the old device and rate,
     ///   which moves nothing and plays again.

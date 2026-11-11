@@ -86,9 +86,9 @@ pub use meter::{
 /// types `NotOnMidiScale` / `UnitParamOutOfRange` / `BpmOutOfRange`.
 pub mod prelude {
     pub use crate::value::{
-        Amplitude, Beat, BeatDuration, Bpm, Cents, Db, Depth, Frame, Hz, Moment, Note, Param,
-        ParamAddr, Phase, PhaseIncrement, PitchClass, Q, SamplePosition, SampleRate, Samples,
-        Seconds, Semitones, Tail, UnitAddr, UnitParam, Velocity,
+        Amplitude, Beat, BeatDuration, Bpm, Cents, Db, Depth, Frame, Hz, MaxBlock, Moment, Note,
+        Param, ParamAddr, Phase, PhaseIncrement, PitchClass, Q, SamplePosition, SampleRate,
+        Samples, Seconds, Semitones, Tail, UnitAddr, UnitParam, Velocity,
     };
 
     pub use crate::channels::ChannelLayout;

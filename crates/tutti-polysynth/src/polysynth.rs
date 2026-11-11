@@ -54,6 +54,7 @@ use std::sync::Arc;
 /// # Examples
 ///
 /// ```
+/// use tutti_types::MaxBlock;
 /// use tutti_types::{Hz, Resonance, SampleRate, Samples};
 /// use tutti_graph::{Prepare, Solo};
 /// use tutti_polysynth::{FilterType, OscillatorType, PolySynth, SynthConfig};

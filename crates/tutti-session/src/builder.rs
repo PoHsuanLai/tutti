@@ -16,13 +16,13 @@ use crate::{Result, Session};
 /// Builds a [`Session`].
 ///
 /// ```
-/// use tutti_types::{ChannelLayout, SampleRate, Samples};
+/// use tutti_types::{ChannelLayout, MaxBlock, SampleRate, Samples};
 /// use tutti_session::Session;
 ///
 /// let session = Session::builder()
 ///     .outputs_floor(6) // a 5.1 project renders six, whatever the device
 ///     .render_workers(1)
-///     .build_offline(SampleRate(48_000.0), ChannelLayout::STEREO, Samples(512))
+///     .build_offline(SampleRate(48_000.0), ChannelLayout::STEREO, MaxBlock::of(Samples(512)))
 ///     .unwrap();
 /// assert_eq!(session.graph_ref().outputs(), 6);
 /// ```

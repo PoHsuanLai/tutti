@@ -24,6 +24,7 @@ from the values last set through it.
 ## Quick start
 
 ```rust
+use tutti_types::MaxBlock;
 use tutti_polysynth::{
     Adsr, FilterType, OscillatorType, PolySynth, SynthConfig,
 };

@@ -93,6 +93,7 @@ struct Pending {
 /// A source feeding both channels of a stereo output:
 ///
 /// ```
+/// use tutti_types::MaxBlock;
 /// use tutti_graph::{ForkByClone, GraphBuilder, Prepare};
 /// use tutti_types::{ChannelLayout, SampleRate, Samples};
 /// # use tutti_graph::{Cx, Io, Node, Shape, Status};
@@ -126,6 +127,7 @@ struct Pending {
 /// which the graph sums):
 ///
 /// ```
+/// use tutti_types::MaxBlock;
 /// use tutti_graph::{ForkByClone, GraphBuilder, Prepare};
 /// use tutti_types::{ChannelLayout, SampleRate, Samples};
 /// # use tutti_graph::{Cx, Io, Node, Shape, Status};
@@ -730,6 +732,7 @@ type TransportFn = Box<dyn FnMut(Frame) -> Transport + Send>;
 /// Render a planar input in 200-frame blocks, then silence, interleaved:
 ///
 /// ```
+/// use tutti_types::MaxBlock;
 /// use tutti_graph::{ForkByClone, GraphBuilder, Prepare, Transport};
 /// use tutti_types::{Beat, Bpm, ChannelLayout, SampleRate, Samples};
 /// # use tutti_graph::{Cx, Io, Node, Shape, Status};
@@ -977,6 +980,7 @@ impl Renderer {
 /// Allocates, as [`Renderer`] does. Not for an audio callback.
 ///
 /// ```
+/// use tutti_types::MaxBlock;
 /// use tutti_graph::{ForkByClone, Prepare, Solo};
 /// # use tutti_graph::{Cx, Io, Node, Shape, Status};
 /// # use tutti_types::{ChannelLayout, SampleRate, Samples};

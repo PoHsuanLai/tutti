@@ -429,6 +429,7 @@ struct SourcePlan {
 /// on a filter's cutoff:
 ///
 /// ```
+/// use tutti_types::MaxBlock;
 /// use std::sync::Arc;
 /// use tutti_graph::{Editor, Prepare};
 /// use tutti_modulation::{

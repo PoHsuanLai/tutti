@@ -57,6 +57,7 @@ use super::Curve;
 /// stopped there), which is halfway along it.
 ///
 /// ```
+/// use tutti_types::MaxBlock;
 /// use tutti_types::{Beat, Bpm, SampleRate, Samples};
 /// use tutti_graph::{Prepare, Solo, Transport};
 /// use tutti_nodes::automation::{Trajectory, AutomationLaneNode, Breakpoint};

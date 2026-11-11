@@ -31,6 +31,7 @@ Play a graph: open a device, build the graph at the device's rate, and hand
 both to a [`TuttiDriver`] with [`TuttiDriver::new`]:
 
 ```rust,no_run
+use tutti_types::MaxBlock;
 use std::sync::Arc;
 use tutti_graph::{OutPort, Source};
 use tutti_engine::Engine;

@@ -189,6 +189,7 @@ const PORTS_PER_GROUP: usize = MIDI_INPUT_PORTS;
 /// Group alone). See the module docs.
 ///
 /// ```
+/// use tutti_types::MaxBlock;
 /// use tutti_types::{SampleRate, Samples};
 /// use tutti_graph::NodeKey;
 /// use tutti_graph::{Editor, Prepare};

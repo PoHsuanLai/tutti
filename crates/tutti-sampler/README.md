@@ -52,6 +52,7 @@ An in-memory voice needs no streamer and no file, so it is a plain graph node:
 build the `Wave`, wrap it, put it in a graph and render.
 
 ```rust
+use tutti_types::MaxBlock;
 use std::sync::Arc;
 use tutti_types::{SampleRate, Samples};
 use tutti_graph::{Prepare, Solo};

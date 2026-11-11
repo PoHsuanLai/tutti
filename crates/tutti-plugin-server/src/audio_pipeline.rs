@@ -891,7 +891,7 @@ mod tests {
     }
 
     use tutti_plugin::server::SampleFormat as SF;
-    use tutti_plugin::server::{AudioSlab, RING_SLOTS};
+    use tutti_plugin::server::{AudioSlab, PluginBus, RING_SLOTS};
 
     /// A slab layout with real bus lists in both directions.
     ///
@@ -925,11 +925,15 @@ mod tests {
             loaded: LoadedPlugin {
                 inputs: inputs
                     .iter()
-                    .map(|&c| ChannelLayout::try_from(c).expect("a test bus is narrow"))
+                    .map(|&c| {
+                        PluginBus::main(ChannelLayout::try_from(c).expect("a test bus is narrow"))
+                    })
                     .collect(),
                 outputs: outputs
                     .iter()
-                    .map(|&c| ChannelLayout::try_from(c).expect("a test bus is narrow"))
+                    .map(|&c| {
+                        PluginBus::main(ChannelLayout::try_from(c).expect("a test bus is narrow"))
+                    })
                     .collect(),
                 latency_samples: Samples::ZERO,
                 tail: PluginTail::Unknown,
@@ -937,7 +941,6 @@ mod tests {
                 // and no speaker placement either.
                 features: Features::empty(),
                 probed: Features::empty(),
-                ..Default::default()
             },
         }
     }
@@ -1390,8 +1393,8 @@ mod tests {
         let layout = test_layout(
             N,
             SampleFormat::Float32,
-            &loaded.inputs.clone(),
-            &loaded.outputs.clone(),
+            &loaded.input_widths(),
+            &loaded.output_widths(),
         );
 
         let name = format!("tutti_noalloc_vst3_{}", std::process::id());

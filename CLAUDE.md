@@ -855,6 +855,7 @@ list (normal and build edges; dev-dependencies may go anywhere).
   public signature, field or error, and no file but `read.rs` names `winnow`
   (`scripts/check-layout.sh`, like symphonia in `tutti-codec`). A test builds files from
   `tests/support`'s encoder written from the spec, not from the crate's own writer.
+  `MidiFile::to_clip` (doc 017 stage 6c) converts a format 0 or 1 SMF to a Clip File, its meta events to Flex Data (M2-116 section 3.3, Appendix B) and everything with no UMP form returned beside the clip as `Converted::dropped`, never lost silently.
 - `tutti-midi-hardware` keeps every module private but `test_support` (CI runs the
   per-module path gate on it) and re-exports none of `tutti-midi-runtime`'s sync
   types: `MidiClockDecoder`, `MtcDecoder` and `SmpteTimecode` are the runtime's.
@@ -1123,10 +1124,18 @@ Scalars use `Param<U>`.
 
 - **Never simplify, skip or modify tests to make them pass.** Fix the bug.
 - **Report failing tests and their root causes.** Never silently remove one.
-- **Mutation-test new tests:** break the property, watch the test fail,
-  restore it, and write the mutation in a comment. If a property cannot be
-  covered here, say so in a comment rather than asserting something that
-  always passes.
+- **A test must be able to fail.** It asserts a property from the spec, an
+  analytic figure or an invariant, and its name and doc state that property.
+  When you add one, check once, locally, that breaking the code makes it fail,
+  and say how in the PR. Do not record the mutation in the source. A test that
+  cannot fail is deleted: one that is always true, that asserts only that
+  nothing panicked, or that compares a value with the function that computed it.
+  If a property cannot be covered here, say so in a comment rather than
+  asserting something that always passes.
+- **No migration tests.** A move does not get an old-against-new equivalence
+  test or a digest pinning the old render; such a test goes with the old path.
+- **No test-only seams for mutations.** A fault-injection hook stays only if it
+  is the one way to produce a behaviour the product must handle.
 
 ## The plugin contract
 
@@ -1151,8 +1160,8 @@ only ways out of a case.
 - **A case a format cannot pass is a `Gap { why, fails_with }`**: the case
   runs and must fail with that text, so a stale gap fails. `gaps = N` in the
   test file is the ratchet; raising it is a reviewed edit. Never `#[ignore]`.
-- **A new case is mutation-tested**: break the property in the host or the
-  plugin, watch it fail, restore, and write the mutation on the case.
+- **A new case must be able to fail**: check once that breaking the property
+  in the host or the plugin fails it, and say how in the PR, not on the case.
 - A plugin that cannot share the core (the C++ VST3 plugin, an in-process AU
   unit) follows the spec in `core`'s docs (and `core.hpp` mirrors it) and runs
   the same cases. A change to the spec changes both cores.
@@ -1172,6 +1181,14 @@ read the `Cargo.toml`, grep for the type, run the probe.
 
 ## Rules that came from bugs
 
+- **A node that changes width declares its buses.** The graph never guesses a
+  dry path (a bypass, a mix, a lane on the mix): main buses of different widths
+  that name no placement have no pass and are refused (`PassError`,
+  `Editor::check_pass`; doc 013 "As built (B3)"). By index, the reverbs' mono dry
+  was heard on the left alone. A node reads its ports through the value it
+  declares, so the two cannot drift: a key is a `Sidechain` bus after the main
+  one (`tutti-nodes`' `Keyed`), a crossover's band 0 its main output
+  (`Channels::port`, `Channels::main_output`).
 - **One bundle walk:** `tutti_plugin_types::bundle` is the only code that
   knows the `Contents/<arch>/` layout.
   - `native_module_in_bundle` is for hosts.

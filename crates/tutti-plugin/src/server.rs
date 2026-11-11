@@ -36,13 +36,13 @@ pub use tutti_plugin_ipc::{
 };
 pub use tutti_plugin_ipc::{FrameTooLarge, read_frame, write_frame};
 pub use tutti_plugin_types::{
-    AuComponentType, AutomationMode, BusChannels, BusTopologies, ChannelLayout, ChordChanges,
-    ChordValue, ClapFeature, EditorPresence, Features, LoadedPlugin, MIDI_STACK_CAPACITY,
-    MidiEventVec, Normalized, NoteExpressionChanges, NoteExpressionIntChanges,
-    NoteExpressionIntValue, NoteExpressionTextChanges, NoteExpressionTextValue, NoteExpressionType,
-    NoteExpressionValue, ParamFlags, ParamId, ParamRange, ParamSteps, ParameterChanges,
-    ParameterInfo, ParameterPoint, ParameterQueue, PluginClass, PluginDescriptor, PluginTail,
-    PointBuf, Preset, PresetId, SampleFormat, Samples, ScaleChanges, ScaleValue, TimeSignature,
+    AuComponentType, AutomationMode, BusChannels, BusRole, ChannelLayout, ChordChanges, ChordValue,
+    ClapFeature, EditorPresence, Features, LoadedPlugin, MIDI_STACK_CAPACITY, MidiEventVec,
+    Normalized, NoteExpressionChanges, NoteExpressionIntChanges, NoteExpressionIntValue,
+    NoteExpressionTextChanges, NoteExpressionTextValue, NoteExpressionType, NoteExpressionValue,
+    ParamFlags, ParamId, ParamRange, ParamSteps, ParameterChanges, ParameterInfo, ParameterPoint,
+    ParameterQueue, PluginBus, PluginBuses, PluginClass, PluginDescriptor, PluginTail, PointBuf,
+    Preset, PresetId, SampleFormat, Samples, ScaleChanges, ScaleValue, TimeSignature,
     TransportChange, TransportInfo, Vst2Category, Vst3PlugType, Vst3SubCategories, WireMidi,
 };
 pub use tutti_plugin_types::{ContentScale, EditorSize, WindowHandle};

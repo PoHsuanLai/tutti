@@ -25,6 +25,10 @@ use tutti_ump::{KeyEvent, Message, MidiChannel, MidiGroup, NoteNumber, Ump, Unkn
 use crate::MidiFileKind;
 use crate::{Error, Result, clip_file, flex, smf};
 
+mod to_clip;
+
+pub use to_clip::{Converted, DropReason, Dropped, ToClipError};
+
 /// A position in a file, in ticks of its division: whole numbers, so a file
 /// written back lands every event on the tick it was read at.
 ///

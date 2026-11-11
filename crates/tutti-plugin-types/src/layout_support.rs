@@ -52,10 +52,10 @@ impl LayoutSupport {
             return Self::Full;
         }
         let any = loaded
-            .input_topology
+            .inputs
             .iter()
-            .chain(loaded.output_topology.iter())
-            .any(Option::is_some);
+            .chain(&loaded.outputs)
+            .any(|b| b.topology.is_some());
         if any { Self::Partial } else { Self::None }
     }
 
@@ -82,7 +82,7 @@ impl LayoutSupport {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{ChannelLayout, ChannelTopology};
+    use crate::{BusRole, ChannelLayout, ChannelTopology, PluginBus};
 
     fn stereo() -> ChannelTopology {
         ChannelTopology::smpte(ChannelLayout::STEREO).expect("stereo has an order")
@@ -92,11 +92,10 @@ mod tests {
         input: Option<ChannelTopology>,
         output: Option<ChannelTopology>,
     ) -> LoadedPlugin {
+        let bus = |topology| PluginBus::new(ChannelLayout::STEREO, BusRole::Main).placed(topology);
         LoadedPlugin {
-            inputs: vec![ChannelLayout::STEREO],
-            outputs: vec![ChannelLayout::STEREO],
-            input_topology: vec![input],
-            output_topology: vec![output],
+            inputs: vec![bus(input)],
+            outputs: vec![bus(output)],
             ..Default::default()
         }
     }
@@ -133,22 +132,6 @@ mod tests {
         let loaded = one_bus_each(None, None);
         assert_eq!(LayoutSupport::of(&loaded), LayoutSupport::None);
         assert!(!LayoutSupport::of(&loaded).has_any());
-    }
-
-    /// A format that reports nothing at all is `None`, not `Partial`.
-    ///
-    /// Empty lists rather than lists of `None` — what VST2 produces, and what
-    /// any loader that never fills the field produces. Distinguished from the test
-    /// above because the two reach the same answer by different routes, and a
-    /// length-based check would get one of them wrong.
-    #[test]
-    fn a_format_that_reports_no_topology_at_all_is_none() {
-        let loaded = LoadedPlugin {
-            inputs: vec![ChannelLayout::STEREO],
-            outputs: vec![ChannelLayout::STEREO],
-            ..Default::default()
-        };
-        assert_eq!(LayoutSupport::of(&loaded), LayoutSupport::None);
     }
 
     /// A topology disagreeing with its bus width is not `Full`.

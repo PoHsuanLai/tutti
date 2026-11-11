@@ -3,7 +3,7 @@
 //! the plugin what to expect could not fail when the plugin is wrong. The
 //! plugin's own copy is the spec in `tutti-shared-plugin`'s `core` module.
 
-use tutti_plugin_types::{Normalized, ParamId, Samples};
+use tutti_plugin_types::{ChannelLayout, Normalized, ParamId, Samples};
 
 /// A parameter.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -74,6 +74,9 @@ impl Mode {
         Normalized::clamped(f64::from(self.index()) / 4.0)
     }
 }
+
+/// The plugin's one bus a side: a stereo main, in every format.
+pub const MAIN_BUS: ChannelLayout = ChannelLayout::STEREO;
 
 /// The Delay mode's latency.
 pub const LATENCY: Samples = Samples(137);

@@ -114,7 +114,12 @@ impl Probe {
 
 impl Node for Probe {
     fn shape(&self) -> Shape {
-        Shape::audio(ChannelLayout::MONO, ChannelLayout::from_count(3)).with_params(&self.declared)
+        // Output 0 is its main channel, which a bypass passes its input to;
+        // the other two are readouts.
+        Shape::audio(ChannelLayout::MONO, ChannelLayout::from_count(3))
+            .with_buses_in(tutti_graph::Buses::of_width(ChannelLayout::MONO))
+            .with_buses_out(tutti_graph::Buses::of_width(ChannelLayout::MONO))
+            .with_params(&self.declared)
     }
     fn prepare(&mut self, _: &Prepare) {}
     fn process(&mut self, _: &Cx<'_>, mut io: Io<'_>) -> Status {

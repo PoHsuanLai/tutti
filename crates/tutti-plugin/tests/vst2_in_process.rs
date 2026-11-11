@@ -320,8 +320,8 @@ fn a_vst2_plugin_reports_no_channel_topology() {
         LayoutSupport::None,
         "VST2 cannot be asked for speaker placement, so nothing may claim it can"
     );
-    assert_eq!(handle.input_bus_topology(0), None);
-    assert_eq!(handle.output_bus_topology(0), None);
+    assert_eq!(handle.input_buses()[0].topology, None);
+    assert_eq!(handle.output_buses()[0].topology, None);
 
     // The widths are still reported, unchanged by any of this — the placement
     // half being absent must not disturb the count half.

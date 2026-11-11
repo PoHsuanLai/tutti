@@ -185,13 +185,13 @@ pub enum ModeError {
         /// The key.
         node: NodeKey,
     },
-    /// The node's `Main` input and output buses name their channels and do not
-    /// fold into each other, so a bypass would have nowhere to put them.
+    /// The node has no pass ([`PassError`](crate::PassError)): a bypass
+    /// would have to guess where its input goes.
     Unplaced {
         /// The key.
         node: NodeKey,
-        /// Why the buses do not fold.
-        error: tutti_types::FoldError,
+        /// What it would need to declare.
+        error: crate::PassError,
     },
 }
 
@@ -199,11 +199,9 @@ impl std::fmt::Display for ModeError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::NoSuchNode { node } => write!(f, "no node {} to set the mode of", node.0),
-            Self::Unplaced { node, error } => write!(
-                f,
-                "node {}'s main buses do not fold, so it cannot be bypassed: {error}",
-                node.0
-            ),
+            Self::Unplaced { node, error } => {
+                write!(f, "node {} cannot be bypassed: {error}", node.0)
+            }
         }
     }
 }
@@ -282,6 +280,14 @@ pub enum MixError {
     /// The mix is not in `0..=1` (or is NaN): a blend position off the ends of
     /// the blend, which is [`Mix::new_clamped`]'s to make, not the graph's.
     OutOfRange,
+    /// A mix short of [`Mix::WET`] on a node with no pass
+    /// ([`PassError`](crate::PassError)): its dry side would be a guess.
+    Unplaced {
+        /// The key.
+        node: NodeKey,
+        /// What it would need to declare.
+        error: crate::PassError,
+    },
 }
 
 impl std::fmt::Display for MixError {
@@ -289,6 +295,9 @@ impl std::fmt::Display for MixError {
         match self {
             Self::NoSuchNode { node } => write!(f, "no node {} to set the mix of", node.0),
             Self::OutOfRange => write!(f, "a mix must be in 0..=1"),
+            Self::Unplaced { node, error } => {
+                write!(f, "node {} cannot be mixed with its input: {error}", node.0)
+            }
         }
     }
 }

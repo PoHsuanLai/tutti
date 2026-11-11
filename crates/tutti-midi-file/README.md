@@ -29,6 +29,10 @@ Offs.
 - **Metrical timing only.** An SMPTE division is refused with
   [`Error::MidiUnsupportedTiming`]: it has no beat grid to put a tempo map on.
 
+- **To a Clip File.** [`MidiFile::to_clip`] converts a format 0 or 1 SMF: its meta
+  events become the Flex Data messages of M2-116 Appendix B, and what has no UMP
+  form comes back in [`Converted::dropped`], never lost silently.
+
 [`MidiFileKind::detect`] tells the two containers apart by magic, not by
 extension. Nothing here touches an OS MIDI API; ports are in
 `tutti-midi-hardware`.

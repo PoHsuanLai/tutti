@@ -64,7 +64,7 @@
 //! means "these are block `seq`'s samples", and torn audio cannot leak out.
 //!
 
-use crate::protocol::SlabLayout;
+use crate::protocol::{BusChannels, ChannelLayout, SampleFormat, SlabLayout};
 use bytemuck::Pod;
 use std::sync::Arc;
 use tutti_plugin_types::Sample;
@@ -442,6 +442,33 @@ impl std::ops::Deref for SlabWriter {
 
     fn deref(&self) -> &AudioSlab {
         &self.slab
+    }
+}
+
+impl SlabLayout {
+    /// The layout of a plugin with these per-bus widths, at this build's ring
+    /// depth: an empty direction becomes one bus of no channels.
+    #[must_use]
+    pub fn new(
+        samples_per_channel: usize,
+        format: SampleFormat,
+        inputs: BusChannels,
+        outputs: BusChannels,
+    ) -> Self {
+        let bus_or_empty = |buses: BusChannels| {
+            if buses.is_empty() {
+                vec![ChannelLayout::EMPTY]
+            } else {
+                buses
+            }
+        };
+        Self {
+            samples_per_channel,
+            format,
+            slots: RING_SLOTS as u32,
+            inputs: bus_or_empty(inputs),
+            outputs: bus_or_empty(outputs),
+        }
     }
 }
 

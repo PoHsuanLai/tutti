@@ -13,11 +13,11 @@ use tutti_plugin_types::{
     AnyThread, AutomationMode, Control, EditorCapabilities, EditorError, Health, PluginError,
     StateError, WindowHandle,
 };
+use tutti_plugin_types::{ContentScale, EditorSize};
 use tutti_plugin_types::{
-    ChannelTopology, LayoutSupport, LoadedPlugin, Normalized, ParamId, PluginDescriptor, Preset,
+    LayoutSupport, LoadedPlugin, Normalized, ParamId, PluginBus, PluginDescriptor, Preset,
     PresetId, PresetSupport,
 };
-use tutti_plugin_types::{ContentScale, EditorSize};
 use tutti_plugin_types::{PluginInvalidation, PluginRefresh};
 
 /// How a [`PluginHandle`] reaches a plugin's main-thread [`Control`].
@@ -411,23 +411,21 @@ impl PluginHandle {
         LayoutSupport::of(&self.loaded)
     }
 
-    /// Returns which speaker each channel of one input bus feeds.
+    /// Returns the plugin's input buses, in bus order: each one's width, its
+    /// [`placement`](PluginBus::placement) when it reported one, and its
+    /// [`role`](PluginBus::role).
     ///
-    /// `None` when that bus reported no placement — the plugin declined, the
-    /// format cannot say, or it names a speaker this vocabulary lacks. Never
-    /// "no speakers": a bus with no channels is `Some` of an empty topology.
-    ///
-    /// Reads the same per-bus data [`layout_support`](Self::layout_support)
-    /// summarises, so a caller that got [`LayoutSupport::Partial`] uses this to
-    /// find which buses actually answered.
-    pub fn input_bus_topology(&self, bus: usize) -> Option<&ChannelTopology> {
-        self.loaded.input_bus_topology(bus)
+    /// The per-bus data [`layout_support`](Self::layout_support) summarises,
+    /// so a caller that got [`LayoutSupport::Partial`] reads here which buses
+    /// answered.
+    pub fn input_buses(&self) -> &[PluginBus] {
+        &self.loaded.inputs
     }
 
-    /// Returns which speaker each channel of one output bus feeds. See
-    /// [`input_bus_topology`](Self::input_bus_topology).
-    pub fn output_bus_topology(&self, bus: usize) -> Option<&ChannelTopology> {
-        self.loaded.output_bus_topology(bus)
+    /// Returns the plugin's output buses. See
+    /// [`input_buses`](Self::input_buses).
+    pub fn output_buses(&self) -> &[PluginBus] {
+        &self.loaded.outputs
     }
 
     /// Returns the plugin's display name, as its descriptor reports it.

@@ -115,6 +115,21 @@ pub enum CommitError {
         /// What went wrong.
         cause: String,
     },
+    /// The spec bypasses, mixes or drives the mix of a node with no pass
+    /// ([`Editor::check_pass`]): its input would go where a guess put it.
+    /// Nothing was compiled or sent, and the last plan goes on sounding.
+    ///
+    /// **Recovery:** it is usually a node replaced while bypassed or mixed. Set
+    /// that node's mode to [`Active`](NodeMode::Active)
+    /// ([`Editor::set_mode`]), its mix to [`Mix::WET`] ([`Editor::set_mix`]),
+    /// or take the lane off its mix, and commit again; or declare the node's
+    /// buses so it has a pass.
+    Unplaced {
+        /// The node.
+        node: NodeKey,
+        /// What it would need to declare.
+        error: crate::PassError,
+    },
     /// The graph has more global outputs than the host running the executor
     /// can take ([`Limits::max_global_outputs`], set with
     /// [`Editor::set_limits`]). Nothing was compiled or sent.
@@ -263,6 +278,13 @@ impl std::fmt::Display for CommitError {
             Self::Repreparing => write!(f, "a re-prepare is waiting for its units"),
             Self::Poisoned { cause } => {
                 write!(f, "the editor is poisoned ({cause}); build a new pair")
+            }
+            Self::Unplaced { node, error } => {
+                write!(
+                    f,
+                    "node {} is bypassed or mixed with no pass: {error}",
+                    node.0
+                )
             }
             Self::TooManyOutputs { outputs, limit } => {
                 write!(f, "{outputs} global outputs; the host takes {limit}")
@@ -1753,6 +1775,49 @@ impl Editor {
         self.edge_gains.get(&id).map(GainCell::knob)
     }
 
+    /// Whether `key` has a pass: where its input goes when it does not run (a
+    /// bypass) or is blended with its output (a mix short of [`Mix::WET`]).
+    /// Its main buses fold onto each other, or agree in width and name no
+    /// placement; anything else would be a guess, and every door that would
+    /// hear one refuses it ([`set_mode`](Self::set_mode),
+    /// [`set_mix`](Self::set_mix), a [`commit`](Self::commit) of a spec that
+    /// bypasses, mixes or drives the mix of such a node). A node not inserted
+    /// yet has no shape to check, and passes until it has.
+    ///
+    /// # Errors
+    ///
+    /// The [`PassError`](crate::PassError) the node would need to resolve.
+    pub fn check_pass(&self, key: NodeKey) -> Result<(), crate::PassError> {
+        self.shapes
+            .get(&key)
+            .map_or(Ok(()), |shape| Pass::of(shape).map(drop))
+    }
+
+    /// Refuses a spec that would hear a node's pass where it has none: a
+    /// bypass, a mix short of [`Mix::WET`], or a lane on the mix.
+    fn check_passes(&self) -> Result<(), CommitError> {
+        let heard = |key: NodeKey| {
+            self.spec.mode(key) == NodeMode::Bypassed
+                || self.spec.mix(key) != Mix::WET
+                || self
+                    .spec
+                    .params
+                    .get(&ParamIn {
+                        node: key,
+                        param: NodeMix::ADDR,
+                    })
+                    .is_some_and(|m| m.source.is_some())
+        };
+        for &key in self.spec.topology.nodes.keys() {
+            if heard(key)
+                && let Err(error) = self.check_pass(key)
+            {
+                return Err(CommitError::Unplaced { node: key, error });
+            }
+        }
+        Ok(())
+    }
+
     /// Sets `key`'s [`NodeMode`] **without a commit**: the spec records it
     /// and the running unit reads it once per block, from the next block on
     /// (a store while the audio thread is inside a block lands on that block
@@ -1771,16 +1836,15 @@ impl Editor {
     /// # Errors
     ///
     /// [`ModeError::NoSuchNode`] when the spec has no node at `key`;
-    /// [`ModeError::Unplaced`] to bypass a node whose `Main` buses name their
-    /// channels and do not fold (a bypass is the fold between them, doc 013
-    /// "As built (B3)"); nothing changes.
+    /// [`ModeError::Unplaced`] to bypass a node with no pass (its buses do not
+    /// say where its input goes, [`check_pass`](Self::check_pass)); nothing
+    /// changes.
     pub fn set_mode(&mut self, key: NodeKey, mode: NodeMode) -> Result<(), ModeError> {
         if !self.spec.topology.nodes.contains_key(&key) {
             return Err(ModeError::NoSuchNode { node: key });
         }
         if mode == NodeMode::Bypassed
-            && let Some(shape) = self.shapes.get(&key)
-            && let Err(error) = Pass::of(shape)
+            && let Err(error) = self.check_pass(key)
         {
             return Err(ModeError::Unplaced { node: key, error });
         }
@@ -1822,13 +1886,20 @@ impl Editor {
     ///
     /// [`MixError::NoSuchNode`] when the spec has no node at `key`,
     /// [`MixError::OutOfRange`] for a mix that is NaN or outside `0..=1`
-    /// (make one with [`Mix::new_clamped`]); nothing changes.
+    /// (make one with [`Mix::new_clamped`]), [`MixError::Unplaced`] for a mix
+    /// short of [`Mix::WET`] on a node with no pass
+    /// ([`check_pass`](Self::check_pass)); nothing changes.
     pub fn set_mix(&mut self, key: NodeKey, mix: Mix) -> Result<(), MixError> {
         if !self.spec.topology.nodes.contains_key(&key) {
             return Err(MixError::NoSuchNode { node: key });
         }
         if !NodeMix::is_sound(mix) {
             return Err(MixError::OutOfRange);
+        }
+        if mix != Mix::WET
+            && let Err(error) = self.check_pass(key)
+        {
+            return Err(MixError::Unplaced { node: key, error });
         }
         self.touch();
         self.spec.set_mix(key, mix);
@@ -2385,6 +2456,7 @@ impl Editor {
         self.limits.outputs(self.spec.topology.outputs.len())?;
         self.check_tap_widths()?;
         self.check_meter_widths()?;
+        self.check_passes()?;
         if self.pending.is_empty()
             && self.pending_taps.is_empty()
             && self.pending_event_taps.is_empty()

@@ -285,7 +285,7 @@ pub use fork::{
 pub use tutti_curve::Law;
 // The audio graph as a value, and the two passes over it. `plan` is the
 // latency pass and is exported as `latency_plan`.
-pub use bus::{Bus, BusRole, Buses, MAX_BUSES};
+pub use bus::{Bus, BusRole, Buses, InBus, MAX_BUSES, OutBus};
 pub use bus_edge::{BusError, BusFeed, BusFold, BusRef, BusSide, BusSource, Lowering};
 pub use gain::EdgeGain;
 pub use graph::{
@@ -296,7 +296,7 @@ pub use graph::{
 pub use history::TransportHistory;
 pub use inlet::InletNode;
 pub use instrument::Instrument;
-pub use io::{Channel, Inputs, Io, Outputs, PortKind};
+pub use io::{BusIn, BusOut, Channel, Inputs, Io, Outputs, PortKind};
 pub use latency::{
     ChannelFeed, Compensation, Delays, Feed, InputDelay, LatencyGraph, MAX_NODE_LATENCY,
     OutputDelay, PortFeed, delays, plan as latency_plan,

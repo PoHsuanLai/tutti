@@ -1903,6 +1903,7 @@ pub fn drive_input(
     };
     let max = Prepare::new(env.sample_rate, Samples(frames)).max_block();
     let reported = std::cell::Cell::new(None);
+    let main = shape.main_ports();
     let io = Io::new(
         max,
         frames,
@@ -1914,6 +1915,7 @@ pub fn drive_input(
         &events_in,
         &mut writers,
     )
+    .with_main(main)
     .with_params(&params)
     .with_tail(&reported);
     let status = node.process(&cx, io);
@@ -2432,6 +2434,7 @@ impl<N: Node + ?Sized> Direct<N> {
             &sorted[..self.events_in.len()],
             &mut writers[..n_ev_out],
         )
+        .with_main(self.node.shape().main_ports())
         .with_params(&params[..n_par])
         .with_lost(&lost);
         let status = self.node.process(&cx, io);

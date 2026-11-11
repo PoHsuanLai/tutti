@@ -1226,9 +1226,11 @@ read the `Cargo.toml`, grep for the type, run the probe.
   that name no placement have no pass and are refused (`PassError`,
   `Editor::check_pass`; doc 013 "As built (B3)"). By index, the reverbs' mono dry
   was heard on the left alone. A node reads its ports through the value it
-  declares, so the two cannot drift: a key is a `Sidechain` bus after the main
-  one (`tutti-nodes`' `Keyed`), a crossover's band 0 its main output
-  (`Channels::port`, `Channels::main_output`).
+  declares, so the two cannot drift: `Io::input(c)` and `output(c)` cover the
+  main bus only, and every other bus is read through the handle its shape
+  issued (`Shape::input_bus`, `spare_in`, `Io::bus_in`; doc 013 "As built
+  (T2)"): a key is a `Sidechain` bus after the main one, and a crossover's
+  band 0 its main output (`Channels::main_output`).
 - **One bundle walk:** `tutti_plugin_types::bundle` is the only code that
   knows the `Contents/<arch>/` layout.
   - `native_module_in_bundle` is for hosts.

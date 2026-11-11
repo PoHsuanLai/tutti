@@ -125,21 +125,24 @@ impl Node for Probe {
     }
     fn prepare(&mut self, _: &Prepare) {}
     fn process(&mut self, _: &Cx<'_>, mut io: Io<'_>) -> Status {
-        let mut framed = 0u32;
-        for k in 0..2 {
-            let p = io.param(k);
-            match p {
-                ParamInput::Base => {
-                    let b = self.bases[k].get();
-                    io.output(k).fill(b);
-                }
-                ParamInput::Frames(v) => {
-                    io.output(k).copy_from_slice(v);
-                    framed |= 1 << k;
-                }
+        // Outputs 1 and 2 are the ports past the main bus.
+        let readouts = self.shape().spare_out().expect("two readouts");
+        // Writes param `p` (its base, or its frames) to `out`; whether it
+        // read frames.
+        let write = |out: &mut [f32], p: ParamInput<'_>, base: f32| match p {
+            ParamInput::Base => {
+                out.fill(base);
+                false
             }
-        }
-        io.output(2).fill(framed as f32);
+            ParamInput::Frames(v) => {
+                out.copy_from_slice(v);
+                true
+            }
+        };
+        let (p0, p1) = (io.param(0), io.param(1));
+        let mut framed = u32::from(write(io.output(0), p0, self.bases[0].get()));
+        framed |= u32::from(write(io.bus_out(readouts).get(0), p1, self.bases[1].get())) << 1;
+        io.bus_out(readouts).get(1).fill(framed as f32);
         Status::Modified
     }
     fn reset(&mut self) {}

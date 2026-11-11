@@ -38,12 +38,3 @@ pub use crate::util::window::{ContentScale, EditorCapabilities, EditorSize};
 pub use capabilities::BlockCounts;
 pub use control_handle::{OptionalCapabilities, PluginHandle, PluginStatus};
 pub use tutti_plugin_types::{ChordValue, Normalized, ParamId, Preset, PresetId, ScaleValue};
-
-/// In-process VST2 graph node, and the controls inserting it hands back. Used
-/// when a host loads VST2 plugins directly in the host process (via
-/// `in_process_vst2_client`); it takes MIDI and parameter events on its event
-/// input.
-#[cfg(feature = "vst2")]
-pub use crate::format::vst2_in_process::{
-    BoundInProcessVst2Client, InProcessVst2Client, InProcessVst2Controls,
-};

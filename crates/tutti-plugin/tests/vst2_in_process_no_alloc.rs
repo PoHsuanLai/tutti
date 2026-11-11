@@ -17,6 +17,8 @@
 use assert_no_alloc::AllocDisabler;
 use std::sync::Mutex;
 use tutti_fixtures::main_thread;
+use tutti_plugin_types::Load;
+use tutti_vst2_host::Vst2Loaded;
 
 use tutti_fixtures::midi;
 use tutti_graph::contract::Direct;
@@ -37,9 +39,10 @@ fn at_start(event: Ump) -> Event {
 #[test]
 fn process_steady_state_does_not_allocate() {
     let _lock = PLUGIN_LOAD_LOCK.lock().unwrap();
-    let (unit, handle) = tutti_plugin::in_process_vst2_client(
+    let (unit, handle) = tutti_plugin::load_client::<Vst2Loaded>(
         &main_thread(),
         tutti_fixtures::vst2_probe(),
+        &Load::new(),
         SampleRate::new(48_000.0),
     )
     .expect("load failed");
@@ -77,9 +80,10 @@ fn process_with_a_meter_does_not_allocate() {
     use tutti_types::{Beat, BeatsPerBar, MeterChange, MeterMap, NoteValue, TimeSignature};
 
     let _lock = PLUGIN_LOAD_LOCK.lock().unwrap();
-    let (unit, handle) = tutti_plugin::in_process_vst2_client(
+    let (unit, handle) = tutti_plugin::load_client::<Vst2Loaded>(
         &main_thread(),
         tutti_fixtures::vst2_probe(),
+        &Load::new(),
         SampleRate::new(48_000.0),
     )
     .expect("load failed");
@@ -103,9 +107,10 @@ fn process_with_a_meter_does_not_allocate() {
 #[test]
 fn process_with_midi_does_not_allocate() {
     let _lock = PLUGIN_LOAD_LOCK.lock().unwrap();
-    let (unit, handle) = tutti_plugin::in_process_vst2_client(
+    let (unit, handle) = tutti_plugin::load_client::<Vst2Loaded>(
         &main_thread(),
         tutti_fixtures::vst2_probe(),
+        &Load::new(),
         SampleRate::new(48_000.0),
     )
     .expect("load failed");
@@ -177,9 +182,10 @@ fn two_hundred_moving_parameters_do_not_allocate() {
     // SAFETY: the lock serializes the tests here, and nothing else in this
     // process touches the environment. The probe reads it in its constructor.
     unsafe { std::env::set_var("TUTTI_VST2_PROBE_PARAMS", PARAMS.to_string()) };
-    let loaded = tutti_plugin::in_process_vst2_client(
+    let loaded = tutti_plugin::load_client::<Vst2Loaded>(
         &main_thread(),
         tutti_fixtures::vst2_probe(),
+        &Load::new(),
         SampleRate::new(48_000.0),
     );
     // SAFETY: as above.
@@ -191,7 +197,7 @@ fn two_hundred_moving_parameters_do_not_allocate() {
     // Sixteenths, a different one for every parameter, frame and block.
     let value = |b: u32, k: u32, id: u32| ((b * 2 + k + id) % 16) as f32 / 16.0;
     let mut events: Vec<Event> = Vec::with_capacity(2 * PARAMS as usize);
-    let mut block = |unit: &mut Direct<tutti_plugin::BoundInProcessVst2Client>, b: u32| {
+    let mut block = |unit: &mut Direct<tutti_plugin::PluginNode<Vst2Loaded>>, b: u32| {
         events.clear();
         for k in 0..2 {
             let at = Offset::new(32 * k as usize, Samples(64)).expect("inside");

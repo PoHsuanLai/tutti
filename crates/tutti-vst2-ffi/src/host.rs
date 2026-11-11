@@ -385,11 +385,11 @@ pub struct MidiChannelCounts {
 ///   queries, `effCanDo`, `effGetTailSize`. Nothing is checked at the call.
 /// - `getParameter` and `setParameter` are the only dispatcher-free entries VST2 lets any thread
 ///   call beside `process`: they take no token and no gate.
-/// - **Named exceptions: token-free, serialised.** The in-process backend of `tutti-plugin`
-///   asks for a parameter's name, label and display, its properties, whether it can be
+/// - **Named exceptions: token-free, serialised.** `Vst2Loaded`'s parameter reads (and so the
+///   in-process node's control surface) ask for a parameter's name, label and display, its properties, whether it can be
 ///   automated, and parses a string into it (`get_parameter_name`, `get_parameter_label`,
 ///   `get_parameter_text`, `parameter_properties`, `can_be_automated`, `string_to_parameter`),
-///   and for the state (`chunk_off_main_thread`), off the main thread, behind its own lock.
+///   off the main thread, behind its own lock.
 ///   VST2 does not allow these beside `process` (they are dispatcher calls), so each holds
 ///   the audio gate for the call, as the exclusive calls do: it waits for a render in flight
 ///   and a render that starts meanwhile is refused. They take no token only because the
@@ -2300,26 +2300,6 @@ impl PluginInstance {
     /// As [`try_get_preset_data`](Self::try_get_preset_data).
     pub fn try_get_bank_data(&self, _main: &MainThread) -> Result<Vec<u8>, ChunkError> {
         self.core.get_chunk(0 /*bank*/)
-    }
-
-    /// `effGetChunk` for the current preset, **from any thread**: the one main-thread opcode
-    /// with an entry that takes no token.
-    ///
-    /// It exists for `HostState::save_state` of the in-process backend, which the session
-    /// calls off the main thread on purpose (the health snapshot is a job on the task pool,
-    /// because a subprocess save is a blocking round trip with a ten-second timeout), behind
-    /// the backend's lock. For that backend it is a chunk read beside the editor and the audio
-    /// thread, which the SDK does not promise to be safe. Closing it is a main-thread route
-    /// for the snapshot, which is a change to `tutti-session` and `bevy-tutti`, not to this
-    /// crate; until then this is the named exception, and
-    /// [`try_get_preset_data`](Self::try_get_preset_data) is the entry for a caller on the
-    /// main thread.
-    ///
-    /// # Errors
-    ///
-    /// As [`try_get_preset_data`](Self::try_get_preset_data).
-    pub fn chunk_off_main_thread(&self) -> Result<Vec<u8>, ChunkError> {
-        self.exclusive(|| self.core.get_chunk(1 /*preset*/))
     }
 
     /// Hand a preset chunk to the plugin, reporting whether it **accepted** it.

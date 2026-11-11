@@ -14,6 +14,8 @@
 use std::path::PathBuf;
 use std::sync::{Mutex, MutexGuard};
 use tutti_fixtures::main_thread;
+use tutti_plugin_types::Load;
+use tutti_vst2_host::Vst2Loaded;
 
 use tutti_plugin::error::StateError;
 use tutti_plugin::handles::PluginHandle;
@@ -68,9 +70,10 @@ fn load_handle(env: &[(&str, &str)]) -> PluginHandle {
         // SAFETY: as above.
         unsafe { std::env::set_var(k, v) };
     }
-    let (_unit, handle) = tutti_plugin::in_process_vst2_client(
+    let (_unit, handle) = tutti_plugin::load_client::<Vst2Loaded>(
         &main_thread(),
         &path,
+        &Load::new(),
         tutti_plugin_types::SampleRate::new(SAMPLE_RATE),
     )
     .unwrap_or_else(|e| panic!("in-process VST2 load failed for {path:?}: {e:?}"));
@@ -431,9 +434,10 @@ fn the_node_reports_the_decoded_tail_rather_than_unknown() {
         // SAFETY: the probe lock is held, so no other test thread is touching
         // the environment.
         unsafe { std::env::set_var("TUTTI_VST2_PROBE_TAIL_SIZE", raw) };
-        let (unit, _handle) = tutti_plugin::in_process_vst2_client(
+        let (unit, _handle) = tutti_plugin::load_client::<Vst2Loaded>(
             &main_thread(),
             &path,
+            &Load::new(),
             tutti_plugin_types::SampleRate::new(SAMPLE_RATE),
         )
         .unwrap_or_else(|e| panic!("in-process VST2 load failed: {e:?}"));
@@ -472,9 +476,10 @@ fn midi_past_the_blocks_capacity_is_counted() {
 
     let _lock = lock_probe();
     clear_probe_env();
-    let (unit, _handle) = tutti_plugin::in_process_vst2_client(
+    let (unit, _handle) = tutti_plugin::load_client::<Vst2Loaded>(
         &main_thread(),
         tutti_fixtures::vst2_probe(),
+        &Load::new(),
         tutti_plugin_types::SampleRate::new(SAMPLE_RATE),
     )
     .expect("load the probe");

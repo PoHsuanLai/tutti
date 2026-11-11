@@ -483,6 +483,11 @@ macro_rules! fake_control {
                 _out: &mut Vec<(ParamId, Normalized)>,
             ) {
             }
+
+            /// `0`: the fake reports edits in `ProcessOutput`, like CLAP and VST3.
+            fn dropped_reported_edits(&self) -> u64 {
+                0
+            }
         }
 
         /// The fake has no editor.

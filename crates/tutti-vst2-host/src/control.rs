@@ -227,6 +227,11 @@ impl Control for Vst2Loaded {
             }
         }
     }
+
+    /// The reports the bounded queue refused ([`take_reported_edits`](Control::take_reported_edits)).
+    fn dropped_reported_edits(&self) -> u64 {
+        self.dropped_param_changes()
+    }
 }
 
 impl EditorWindow for Vst2Loaded {

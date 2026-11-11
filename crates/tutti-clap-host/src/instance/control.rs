@@ -391,6 +391,12 @@ impl Control for ClapLoaded {
     /// Nothing: CLAP reports the edits a plugin's own editor makes in the
     /// block's `ProcessOutput`.
     fn take_reported_edits(&mut self, _main: &MainThread, _out: &mut Vec<(ParamId, Normalized)>) {}
+
+    /// `0`: CLAP reports the edits a plugin's own editor makes in the block's
+    /// `ProcessOutput`, not through a queue that can drop them.
+    fn dropped_reported_edits(&self) -> u64 {
+        0
+    }
 }
 
 impl EditorWindow for ClapLoaded {
@@ -577,6 +583,10 @@ impl Control for ClapController {
 
     fn take_reported_edits(&mut self, main: &MainThread, out: &mut Vec<(ParamId, Normalized)>) {
         Control::take_reported_edits(self.loaded_mut(), main, out);
+    }
+
+    fn dropped_reported_edits(&self) -> u64 {
+        Control::dropped_reported_edits(self.loaded())
     }
 }
 

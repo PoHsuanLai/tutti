@@ -1,5 +1,5 @@
-//! `InProcessVst2Client`: the graph node (`node.rs`) that drives a VST2 plugin
-//! from the host audio thread.
+//! `InProcClient`: the graph node (`node.rs`) that drives an in-process
+//! plugin of any [`InProcess`] format from the host audio thread.
 //!
 //! The audio thread renders through the Processor the node's realtime end
 //! ([`tutti_rt::Rt`]) holds, and takes no lock. The plugin's control side
@@ -7,20 +7,22 @@
 //! that only control threads take: the handle, the node's `shape` and
 //! `prepare`, a fork. A block with no Processor in hand (it was recalled for a
 //! rate change, or the plugin refused its rate) renders silence, counted by
-//! [`InProcessVst2Client::unlent_blocks`].
+//! [`InProcClient::unlent_blocks`]; a block the Processor failed renders
+//! silence too, counted by [`InProcClient::failed_blocks`].
 //!
-//! The plugin's render scratch is the Processor's, sized at the activation to
-//! the block the plugin was told; a longer graph block is split before it
-//! reaches the plugin. The channel tables a block hands `vst2-host` are stack
-//! `ArrayVec`s of the graph's own buffers.
-//! A block is allocation-free in steady state (verified by the
+//! A block is one [`Processor::process`]: the graph's channel slices as an
+//! [`AudioBufferMut`], the block's MIDI, parameter chunk and transport as a
+//! [`ProcessContext`], and a [`ProcessOutput`] the client owns and clears each
+//! block. A block is allocation-free in steady state (verified by the
 //! `assert_no_alloc` test in `tests/`).
 
-use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use tutti_graph::UmpAt;
-use tutti_plugin_types::{MainThread, Processor};
+use tutti_plugin_types::{
+    AudioBuffer, AudioBufferMut, InProcess, MainThread, Origin, PluginDescriptor, PluginIo,
+    PluginTail, ProcessContext, ProcessOutput, Processor,
+};
 use tutti_rt::Rt;
 
 use arrayvec::ArrayVec;
@@ -28,17 +30,19 @@ use parking_lot::Mutex;
 use tutti_graph::{Cx, Offset};
 use tutti_tempo::{Cursor, TempoMap};
 use tutti_transport::TempoReader;
-use tutti_types::Samples;
-use tutti_vst2_host::{ChannelLayout, PluginInfo, Vst2ProcessContext, Vst2Processor, WireMidi};
+use tutti_types::{ChannelLayout, Samples};
 
 use super::instance::Instance;
 use crate::host::node::transport_source::TransportSource;
 use crate::host::node::{DeliveryCounters, MidiIntake, ParamDelivery, PluginMeter, SegmentPoints};
-use tutti_plugin_types::{Features, MIDI_STACK_CAPACITY, MidiEventVec, ParamId, TransportInfo};
+use tutti_plugin_types::{
+    Features, MIDI_STACK_CAPACITY, MidiEventVec, ParamId, ParameterChanges, TransportInfo,
+};
 
-/// A VST2 plugin running inside the host process, as a graph node.
+/// A plugin running inside the host process, as a graph node, whatever its
+/// format `F`.
 ///
-/// Created by [`in_process_vst2_client`](crate::in_process_vst2_client), or by
+/// Created by [`load_client`](crate::load_client), or by
 /// [`Plugin::open`](crate::catalog::Plugin::open) for a `.vst`/`.dll`/`.so`
 /// file when the `vst2` feature is enabled. MIDI arrives on the node's event
 /// input and the plugin's MIDI-out leaves on an event output (for a plugin that
@@ -53,15 +57,17 @@ use tutti_plugin_types::{Features, MIDI_STACK_CAPACITY, MidiEventVec, ParamId, T
 /// A graph holding this node forks (`Editor::fork`, which an offline export
 /// takes) **by state transfer**: a second instance of the plugin, from the same
 /// library, restored from this one's saved state. See
-/// [`BoundInProcessVst2Client::fork_instance`]. The client becomes a graph node by
+/// [`PluginNode::fork_instance`]. The client becomes a graph node by
 /// [`bind`](Self::bind)ing it to the project's tempo map.
-pub struct InProcessVst2Client {
+pub struct InProcClient<F: InProcess> {
     /// The plugin's control side. Control threads only: the audio thread
     /// renders through `rt`.
-    pub(super) inner: Arc<Mutex<Instance>>,
+    pub(super) inner: Arc<Mutex<Instance<F>>>,
     /// The realtime end the plugin's Processor is lent to.
-    pub(super) rt: Rt<Vst2Processor>,
-    pub(super) metadata: PluginInfo,
+    pub(super) rt: Rt<F::Processor>,
+    pub(super) descriptor: PluginDescriptor,
+    /// Where the plugin came from: what a fork loads again.
+    pub(super) origin: Origin,
     /// The pin counts, latency and tail the plugin declared when the node was
     /// built: what `shape` and `process` size by while the instance lock is
     /// held elsewhere. Moves are reported through the handle
@@ -72,9 +78,12 @@ pub struct InProcessVst2Client {
     /// Takes the event input's MIDI into `midi`, carrying across blocks
     /// which SysEx lost a packet to its cap.
     pub(super) intake: MidiIntake,
+    /// What the plugin emits in a block: owned here and cleared at the head of
+    /// each block, so its storage is the one allocation, made at construction.
+    pub(super) out: ProcessOutput,
     /// The block's transport, read from the graph's [`Cx`] (live and in a
     /// fork alike), with the project meter installed through
-    /// [`set_meter`](Self::set_meter).
+    /// [`NodeControls::set_meter`](crate::host::node::NodeControls::set_meter).
     pub(super) transport: TransportFeed,
     /// What the loader reported for this plugin, as the gate `transport` is
     /// read against. Stored rather than passed in per block so the node's
@@ -84,20 +93,20 @@ pub struct InProcessVst2Client {
     /// A rate the graph handed this node that the plugin has not been told
     /// about yet, or [`NO_PENDING_RATE`] when there is none.
     ///
-    /// Telling a VST2 plugin its rate is a rejoin and an activation
-    /// (`effSetSampleRate` between `effMainsChanged` brackets), which needs the
-    /// main thread. A `prepare` on it runs the change itself; one off it parks
-    /// the rate here ([`queue_sample_rate`]) for the main thread's pump
-    /// ([`drain_sample_rate`], the editor idle pump), the same deferral the
-    /// out-of-process client gets from its command queue.
+    /// Telling a plugin its rate is a deactivation and an activation, which
+    /// needs the main thread. A `prepare` on it runs the change itself; one off
+    /// it parks the rate here ([`queue_sample_rate`]) for the main thread's
+    /// pump ([`drain_sample_rate`], the editor idle pump), the same deferral
+    /// the out-of-process client gets from its command queue.
     ///
     /// Shared with the control backend, which drains it.
     pending_sample_rate: Arc<AtomicU64>,
     /// Blocks rendered silent because the realtime end held no Processor.
     /// Shared with the loader's handle side.
     pub(super) unlent: Arc<AtomicU64>,
-    /// The file the plugin was loaded from: what a fork loads again.
-    pub(super) origin: Arc<Path>,
+    /// Blocks rendered silent because the Processor failed them
+    /// ([`Processor::process`] returned an error).
+    pub(super) failed: Arc<AtomicU64>,
     /// Who tells the plugin the rate the node is prepared at.
     pub(super) rate_delivery: RateDelivery,
     /// A fork's rate could not be told to the plugin (its `prepare` ran off the
@@ -105,12 +114,12 @@ pub struct InProcessVst2Client {
     /// silence until a `prepare` on the main thread tells it.
     pub(super) rate_refused: bool,
     /// The parameter events on the event input, as changes only: a slot per
-    /// parameter the plugin declared at load and no spares (`closed`: VST2
-    /// addresses only its declared indices), the value last
+    /// parameter the plugin declared at load and no spares (`closed`: the
+    /// node addresses only its declared parameters), the value last
     /// delivered to the instance in each (`host::node`'s `param_delivery`,
     /// the out-of-process node's own). The block is its chunk.
     ///
-    /// The node is not `Clone`: a clone would drive the same `AEffect`, so
+    /// The node is not `Clone`: a clone would drive the same instance, so
     /// two of them in one graph write it in an unordered order (the
     /// parallel executor), each with its own record of what it sent, and a
     /// `ForkByClone` of it would render an export through the live
@@ -122,12 +131,11 @@ pub struct InProcessVst2Client {
 }
 
 /// Omits `inner`: formatting must not wait on the control side's lock.
-impl std::fmt::Debug for InProcessVst2Client {
+impl<F: InProcess> std::fmt::Debug for InProcClient<F> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("InProcessVst2Client")
-            .field("metadata", &self.metadata)
+        f.debug_struct("InProcClient")
+            .field("descriptor", &self.descriptor)
             .field("sample_rate", &self.sample_rate)
-            .field("origin", &self.origin)
             .finish_non_exhaustive()
     }
 }
@@ -138,15 +146,15 @@ pub(super) struct Declared {
     pub(super) inputs: ChannelLayout,
     pub(super) outputs: ChannelLayout,
     pub(super) latency: Samples,
-    pub(super) tail: tutti_plugin_types::PluginTail,
+    pub(super) tail: PluginTail,
 }
 
 /// Who tells the plugin the rate the node is prepared at.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum RateDelivery {
     /// Off the main thread, parked in `pending_sample_rate` for the main
-    /// thread's editor pump (`InProcessVst2Backend::editor_idle`) to dispatch:
-    /// the live instance.
+    /// thread's editor pump (`Backend::editor_idle`) to dispatch: the live
+    /// instance.
     Parked,
     /// Off the main thread, refused (silence until a `prepare` on it): a fork.
     /// Nothing pumps a fork's editor (it has no handle), so a parked rate
@@ -160,11 +168,11 @@ pub(super) enum RateDelivery {
 /// One path for the live node and its fork: the transport the block's input
 /// was rendered at ([`Cx::transport_at`] at its first frame, the node's
 /// compiled arrival latency earlier), mapped the way the out-of-process
-/// plugin node maps it ([`transport_source::from_cx`]), with the project
+/// plugin node maps it ([`from_cx`](crate::host::node::transport_source::from_cx)), with the project
 /// meter for the signature and bar. For an offline fork the `Cx` is the
 /// render's. The snapshot is built in `process` before the plugin is
-/// entered: `Vst2Processor::process_f32` publishes it to the cell the
-/// callback reads, then calls the plugin.
+/// entered: the Processor publishes it where the plugin reads it (VST2:
+/// the cell `audioMasterGetTime` reads), then calls the plugin.
 ///
 /// A clone shares the meter slot and reads it through a reader of its own
 /// (`Reader::clone` registers one on the same cell), and carries the counter
@@ -172,7 +180,7 @@ pub(super) enum RateDelivery {
 #[derive(Clone, Debug)]
 pub(super) struct TransportFeed {
     /// The node's meter slot, shared with its controls
-    /// ([`InProcessVst2Client::controls`]), so a meter installed through them
+    /// ([`InProcClient::controls`]), so a meter installed through them
     /// reaches the node the audio thread runs; a fork has a slot of its own
     /// ([`forked`](Self::forked)). Control side only: the block reads
     /// through `source`.
@@ -248,39 +256,38 @@ impl TransportFeed {
     }
 }
 
-/// An in-process VST2 client bound to the project's tempo map
-/// ([`InProcessVst2Client::bind`]): the graph node. It owns the reader, lends
+/// An in-process client bound to the project's tempo map
+/// ([`InProcClient::bind`]): the graph node. It owns the reader, lends
 /// the map once per block and keeps a cursor into it. Only this type is a
 /// [`Node`](tutti_graph::Node) and an [`IntoNode`](tutti_graph::IntoNode);
 /// the loaded client is neither. It derefs to the client for its control
 /// surface (`controls`, `set_meter`, ...).
-pub struct BoundInProcessVst2Client {
-    pub(super) client: InProcessVst2Client,
+pub struct PluginNode<F: InProcess> {
+    pub(super) client: InProcClient<F>,
     pub(super) tempo: TempoReader,
     pub(super) cursor: Cursor,
 }
 
-impl std::fmt::Debug for BoundInProcessVst2Client {
+impl<F: InProcess> std::fmt::Debug for PluginNode<F> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("BoundInProcessVst2Client")
-            .finish_non_exhaustive()
+        f.debug_struct("PluginNode").finish_non_exhaustive()
     }
 }
 
-impl std::ops::Deref for BoundInProcessVst2Client {
-    type Target = InProcessVst2Client;
-    fn deref(&self) -> &InProcessVst2Client {
+impl<F: InProcess> std::ops::Deref for PluginNode<F> {
+    type Target = InProcClient<F>;
+    fn deref(&self) -> &InProcClient<F> {
         &self.client
     }
 }
 
-impl std::ops::DerefMut for BoundInProcessVst2Client {
-    fn deref_mut(&mut self) -> &mut InProcessVst2Client {
+impl<F: InProcess> std::ops::DerefMut for PluginNode<F> {
+    fn deref_mut(&mut self) -> &mut InProcClient<F> {
         &mut self.client
     }
 }
 
-/// [`InProcessVst2Client::pending_sample_rate`] sentinel: nothing is waiting.
+/// [`InProcClient::pending_sample_rate`] sentinel: nothing is waiting.
 ///
 /// A rate is stored as `f64::to_bits`, so the sentinel must be a bit pattern no
 /// rate produces. Zero is not one — `0.0f64.to_bits() == 0`, and a parked `0.0`
@@ -300,15 +307,15 @@ pub(super) fn queue_sample_rate(cell: &AtomicU64, rate: f64) {
 
 /// Dispatch a parked rate, if any, and report whether one reached the plugin.
 ///
-/// Main thread only: `Instance::set_sample_rate` runs the `effMainsChanged`
-/// bracket, which allocates. This is the drain half of the deferral
+/// Main thread only: `Instance::set_sample_rate` deactivates and activates the
+/// plugin, which allocates. This is the drain half of the deferral
 /// [`queue_sample_rate`] opens. The Processor is on the audio thread, so the
 /// change starts with a recall and finishes at a later pump, once the audio
 /// thread has handed it back.
-pub(super) fn drain_sample_rate(
+pub(super) fn drain_sample_rate<F: InProcess>(
     main: &MainThread,
     cell: &AtomicU64,
-    inner: &Mutex<Instance>,
+    inner: &Mutex<Instance<F>>,
 ) -> bool {
     let bits = cell.swap(NO_PENDING_RATE, Ordering::Relaxed);
     if bits == NO_PENDING_RATE {
@@ -322,40 +329,39 @@ pub(super) fn drain_sample_rate(
     true
 }
 
-impl InProcessVst2Client {
+impl<F: InProcess> InProcClient<F> {
     pub(super) fn new(
-        inner: Arc<Mutex<Instance>>,
-        rt: Rt<Vst2Processor>,
-        metadata: PluginInfo,
+        inner: Arc<Mutex<Instance<F>>>,
+        rt: Rt<F::Processor>,
+        descriptor: PluginDescriptor,
+        origin: Origin,
         declared: Declared,
         features: Features,
         sample_rate: f64,
         pending_sample_rate: Arc<AtomicU64>,
         unlent: Arc<AtomicU64>,
-        origin: Arc<Path>,
-        param_count: usize,
+        parameters: impl IntoIterator<Item = ParamId>,
     ) -> Self {
-        // A slot per declared parameter, by index: every parameter can move
-        // in one block. Its point room is sized in `prepare`.
-        let params = ParamDelivery::closed(
-            (0..param_count as u32).map(ParamId::new),
-            Arc::new(DeliveryCounters::default()),
-        );
+        // A slot per declared parameter: every parameter can move in one
+        // block. Its point room is sized in `prepare`.
+        let params = ParamDelivery::closed(parameters, Arc::new(DeliveryCounters::default()));
         let mut segments = SegmentPoints::default();
         segments.prepare(params.room());
         Self {
             inner,
             rt,
-            metadata,
+            descriptor,
+            origin,
             declared,
             midi: MidiEventVec::new(),
             intake: MidiIntake::default(),
+            out: ProcessOutput::default(),
             transport: TransportFeed::new(),
             features,
             sample_rate,
             pending_sample_rate,
             unlent,
-            origin,
+            failed: Arc::default(),
             rate_delivery: RateDelivery::Parked,
             rate_refused: false,
             params,
@@ -364,34 +370,33 @@ impl InProcessVst2Client {
     }
 
     /// Binds the client to the reader of the project's tempo map it tells the
-    /// plugin the tempo from (`audioMasterGetTime`'s `tempo`), lent once per
+    /// plugin the tempo from, lent once per
     /// block: the step from a loaded client to a graph node, as
     /// [`PluginClient::bind`](crate::host::node::PluginClient::bind) is for
     /// the out-of-process one. `Session` hands every plugin it inserts a
     /// reader of its own; a host with no session builds one over a fixed map
     /// ([`TempoReader::fixed`]). A fork clones the reader. Control thread.
     #[must_use]
-    pub fn bind(self, tempo: TempoReader) -> BoundInProcessVst2Client {
-        BoundInProcessVst2Client {
+    pub fn bind(self, tempo: TempoReader) -> PluginNode<F> {
+        PluginNode {
             client: self,
             tempo,
             cursor: Cursor::default(),
         }
     }
 
-    /// Sets the render mode the plugin reads through
-    /// `audioMasterGetCurrentProcessLevel`.
+    /// Sets the render mode the plugin runs in ([`Control::set_render_mode`](tutti_plugin_types::Control::set_render_mode),
+    /// and a reconfiguration through the lifecycle for a format that cannot
+    /// take it live: the next activation carries the mode).
     ///
-    /// Always returns `true`: VST2 carries this on a host callback the plugin
-    /// polls, so there is nothing for a plugin to decline. Takes the instance
-    /// lock, so call it from a control thread, not the audio thread.
-    //
-    // Takes the lock rather than caching the flag locally: the answer lives on
-    // the `HostState` the plugin already holds, and a second copy could
-    // disagree with it.
+    /// `false` off the main thread, where the plugin cannot be told, and when
+    /// the plugin refuses the reconfiguration. Takes the instance lock, so
+    /// call it from a control thread, not the audio thread.
     pub fn set_render_mode(&self, mode: tutti_plugin_types::RenderMode) -> bool {
-        self.inner.lock().set_offline_render(mode.is_offline());
-        true
+        match MainThread::current() {
+            Some(main) => self.inner.lock().set_render_mode(&main, mode),
+            None => false,
+        }
     }
 
     /// Returns how many blocks the node rendered silent because its realtime
@@ -402,9 +407,18 @@ impl InProcessVst2Client {
     pub fn unlent_blocks(&self) -> u64 {
         self.unlent.load(Ordering::Relaxed)
     }
+
+    /// Returns how many blocks the node rendered silent because the plugin
+    /// failed them ([`Processor::process`] returned an error), since
+    /// construction. Such a block loses its MIDI, counted with the rest.
+    ///
+    /// Intended for diagnostics.
+    pub fn failed_blocks(&self) -> u64 {
+        self.failed.load(Ordering::Relaxed)
+    }
 }
 
-impl InProcessVst2Client {
+impl<F: InProcess> InProcClient<F> {
     /// Take `sample_rate` as the rate blocks run at, and hand it to the
     /// plugin as [`RateDelivery`] says: parked for the main thread (see
     /// `pending_sample_rate`), or, on a fork, dispatched here. What the
@@ -433,7 +447,7 @@ impl InProcessVst2Client {
             // through the handle (`take_rate_report`).
             self.rate_refused = outcome.is_err();
             if let Err(reason) = outcome {
-                tracing::error!("a VST2 plugin refused its rate: {reason}");
+                tracing::error!("a plugin refused its rate: {reason}");
             }
             return;
         }
@@ -447,7 +461,7 @@ impl InProcessVst2Client {
             RateDelivery::InPrepare => {
                 self.rate_refused = true;
                 tracing::error!(
-                    "a forked VST2 plugin was prepared off the main thread; \
+                    "a forked plugin was prepared off the main thread; \
                      it renders silence until it is prepared on it"
                 );
             }
@@ -455,48 +469,67 @@ impl InProcessVst2Client {
     }
 }
 
-/// The per-block context handed to `vst2-host`, carrying this block's MIDI and
-/// transport snapshot.
+/// The per-block context handed to the plugin, carrying this block's MIDI,
+/// parameter chunk and transport snapshot.
 ///
 /// `transport` is always attached. The decision of *what* to attach happens one
 /// level up, in [`TransportFeed::block`], which yields a default snapshot for a
 /// plugin that did not declare [`Features::TRANSPORT`] — so there is no second
-/// format check here.
+/// format check here. The parameter chunk is always attached too: it carries
+/// the changes only, and a Processor that takes parameters through a coarse
+/// write (VST2) reads it as well as one that takes curves.
 ///
-/// Named rather than inlined at the two call sites so the shape of the context
-/// the node builds is observable without a plugin binary on disk: whether
-/// `ctx.transport` is populated at all is precisely what decides if
-/// `audioMasterGetTime` has anything to serve.
+/// Named rather than inlined so the shape of the context the node builds is
+/// observable without a plugin binary on disk: whether `ctx.transport` is
+/// populated at all is precisely what decides if the plugin has a transport
+/// to read.
 pub(super) fn block_context<'a>(
-    sample_rate: f64,
     midi_events: &'a [UmpAt],
+    params: &'a ParameterChanges,
     transport: &'a TransportInfo,
-) -> Vst2ProcessContext<'a> {
-    Vst2ProcessContext::new(sample_rate)
+) -> ProcessContext<'a> {
+    ProcessContext::new()
         .midi(midi_events)
+        .params(params)
         .transport(transport)
 }
 
+/// The most channels a block hands the plugin (the stack tables `process`
+/// builds from its `Io`). A wider plugin's channels past it read silence and
+/// its graph outputs past it are silent.
+pub(super) const MAX_CHANNELS: usize = 16;
+
+/// What a block did to the plugin.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Rendered {
+    /// The plugin ran the block; its MIDI-out is in the client's `out`.
+    Ran,
+    /// No Processor in hand: the block was not rendered.
+    Unlent,
+    /// The Processor failed the block.
+    Failed,
+}
+
 /// Render one block through the plugin, from `inputs` into `outputs`: the
-/// graph's own channel buffers, each `size` frames, which `vst2-host` copies
-/// into and out of its render scratch. A free function so it can take
-/// disjoint borrows of the fields on the caller side without a self-borrow
-/// conflict.
+/// graph's own channel buffers, each `size` frames. A free function so it can
+/// take disjoint borrows of the fields on the caller side without a
+/// self-borrow conflict.
 ///
-/// Returns whether the plugin ran. On `false` (no Processor in hand)
-/// `outputs` is untouched: the caller writes the silence.
-pub(super) fn drive_f32(
-    rt: &mut Rt<Vst2Processor>,
-    unlent: &AtomicU64,
+/// On anything but [`Rendered::Ran`] `outputs` is untouched: the caller writes
+/// the silence.
+pub(super) fn render<P: Processor>(
+    rt: &mut Rt<P>,
+    counters: (&AtomicU64, &AtomicU64),
     params: &ParamDelivery,
     midi: &mut MidiEventVec,
-    midi_out: &mut dyn FnMut(&[WireMidi]),
+    out: &mut ProcessOutput,
     transport: &TransportInfo,
     inputs: &[&[f32]],
     outputs: &mut [&mut [f32]],
     size: usize,
     sample_rate: f64,
-) -> bool {
+) -> Rendered {
+    let (unlent, failed) = counters;
     // Taken whether or not the plugin runs: a block with no Processor drops
     // its MIDI rather than play it a block late. Sorted, stably: a queue may
     // hold it out of order.
@@ -513,36 +546,38 @@ pub(super) fn drive_f32(
         .collect();
     // Between blocks: take a Processor on offer, or hand this one back
     // (stopped) when the control side recalled it.
-    match rt.poll(Processor::stop) {
-        Some(processor) => {
-            apply_params(processor, params);
-            let ctx = block_context(sample_rate, &timed, transport);
-            let out = processor.process_f32(inputs, outputs, size, &ctx);
-            // The plugin's MIDI-out, each on its offset.
-            midi_out(out);
-            true
-        }
-        None => {
-            unlent.fetch_add(1, Ordering::Relaxed);
-            false
+    let Some(processor) = rt.poll(Processor::stop) else {
+        unlent.fetch_add(1, Ordering::Relaxed);
+        return Rendered::Unlent;
+    };
+    out.clear();
+    let ctx = block_context(&timed, params.chunk(), transport);
+    // `PluginIo` borrows the tables and the data for one lifetime, and a
+    // `&mut [&mut _]` is invariant in the data's: the same slices again, in a
+    // table whose borrow is this call's own. An array, not an `ArrayVec`: a
+    // type with a `Drop` would need its data to outlive the borrow of the
+    // table.
+    let width = outputs.len().min(MAX_CHANNELS);
+    let mut rest = outputs.iter_mut();
+    let mut table: [&mut [f32]; MAX_CHANNELS] =
+        std::array::from_fn(|_| rest.next().map_or(&mut [][..], |o| &mut **o));
+    let mut io = PluginIo {
+        buffer: AudioBufferMut::F32(AudioBuffer {
+            inputs,
+            outputs: &mut table[..width],
+            num_samples: size,
+            sample_rate,
+        }),
+        ctx: &ctx,
+        out,
+    };
+    match processor.process(&mut io) {
+        Ok(()) => Rendered::Ran,
+        Err(_) => {
+            failed.fetch_add(1, Ordering::Relaxed);
+            Rendered::Failed
         }
     }
-}
-
-/// The block's parameter changes, before the plugin processes it: each
-/// queue's **last** point, set with `setParameter`, as the out-of-process
-/// VST2 loader does with a chunk's (`tutti-plugin-server`'s `loaders/vst2.rs`).
-/// VST 2.4 has no sample-accurate parameter events, so a point inside the
-/// block lands on its first frame, and only the latest one counts.
-///
-/// An id the plugin did not declare has no slot (the delivery is closed), so
-/// none reaches here; a write the plugin refuses anyway is counted dropped. (No
-/// test reaches that count: the bound is the count the plugin declared at
-/// load, so a refusal cannot be provoked through the node.) On the audio
-/// thread, through the Processor: `setParameter` is the call a VST2 host
-/// automates through, and the Processor's write does not allocate.
-fn apply_params(processor: &mut Vst2Processor, params: &ParamDelivery) {
-    params.refused(u64::from(processor.write_automation(params.chunk())));
 }
 
 #[cfg(test)]
@@ -603,9 +638,9 @@ mod transport_tests {
         Features::TRANSPORT
     }
 
-    /// The context the node hands `vst2-host` carries the block's transport
+    /// The context the node hands the plugin carries the block's transport
     /// from its `Cx`: the only thing that gives `audioMasterGetTime`
-    /// something to serve. With no meter installed it is 4/4.
+    /// something to read. With no meter installed it is 4/4.
     ///
     /// Mutation (run): return `TransportInfo::default()` from
     /// `TransportFeed::block` for every plugin → 120 BPM, stopped → fails.
@@ -620,7 +655,8 @@ mod transport_tests {
             &map(),
             &mut Cursor::default(),
         );
-        let ctx = block_context(48_000.0, &[], &snapshot);
+        let params = ParameterChanges::default();
+        let ctx = block_context(&[], &params, &snapshot);
         let delivered = ctx.transport.expect("a transport snapshot");
         assert_eq!(delivered.timing.tempo, 132.0);
         assert!(delivered.state.playing);
@@ -825,5 +861,126 @@ mod transport_tests {
         let map = TempoMap::constant(Bpm::of(100.0)).expect("a tempo");
         let got = live.block(&cx(&e), 64, loader_features(), &map, &mut Cursor::default());
         assert_eq!(got.timing.tempo, 100.0);
+    }
+}
+
+/// `render`, over a Processor of the test's own: what a block does to the
+/// counters and to the plugin's output, for any format.
+#[cfg(test)]
+mod render_tests {
+    use super::*;
+    use tutti_plugin_types::{PluginError, PluginResult, WireMidi};
+    use tutti_ump::Ump;
+
+    /// A Processor that fails every block it is told to, and emits one MIDI
+    /// event in each block it is told to.
+    struct Scripted {
+        fail: bool,
+        emit: bool,
+    }
+
+    impl Processor for Scripted {
+        fn process(&mut self, io: &mut PluginIo<'_>) -> PluginResult<()> {
+            if self.fail {
+                return Err(PluginError::Block("scripted failure"));
+            }
+            if self.emit {
+                io.out.emit_midi([WireMidi {
+                    offset: 3,
+                    ump: Ump([0x2090_3C40, 0, 0, 0]),
+                }]);
+                self.emit = false;
+            }
+            Ok(())
+        }
+
+        fn stop(&mut self) {}
+
+        fn reset(&mut self) {}
+    }
+
+    /// One block of 8 frames through `render`, the rest of its arguments at
+    /// their quiet values.
+    fn block(
+        rt: &mut Rt<Scripted>,
+        counters: &(AtomicU64, AtomicU64),
+        out: &mut ProcessOutput,
+    ) -> Rendered {
+        let params = ParamDelivery::closed([], Arc::default());
+        let mut midi = MidiEventVec::new();
+        let mut channel = [0.0f32; 8];
+        render(
+            rt,
+            (&counters.0, &counters.1),
+            &params,
+            &mut midi,
+            out,
+            &TransportInfo::default(),
+            &[],
+            &mut [&mut channel[..]],
+            8,
+            48_000.0,
+        )
+    }
+
+    /// **A block the Processor fails is counted as failed, and a block with no
+    /// Processor as unlent, each apart from the other**; the caller renders
+    /// silence for both. A failure does not take the Processor away: the next
+    /// block runs.
+    ///
+    /// Mutation (run): the `failed.fetch_add` in `render` removed -> the
+    /// failed count stays 0 -> fails. Mutation (run): `Err(_)` answering
+    /// `Rendered::Unlent` -> the first assertion fails.
+    #[test]
+    fn a_failed_block_is_counted_apart_from_an_unlent_one() {
+        let counters = (AtomicU64::new(0), AtomicU64::new(0));
+        let mut out = ProcessOutput::default();
+        let (mut hand, mut rt) = tutti_rt::handoff();
+        assert_eq!(block(&mut rt, &counters, &mut out), Rendered::Unlent);
+        assert_eq!(counters.0.load(Ordering::Relaxed), 1, "unlent");
+        assert_eq!(counters.1.load(Ordering::Relaxed), 0, "failed");
+
+        assert!(
+            hand.lend(Scripted {
+                fail: true,
+                emit: false
+            })
+            .is_ok()
+        );
+        assert_eq!(block(&mut rt, &counters, &mut out), Rendered::Failed);
+        assert_eq!(counters.0.load(Ordering::Relaxed), 1, "unlent");
+        assert_eq!(counters.1.load(Ordering::Relaxed), 1, "failed");
+
+        rt.held().expect("still in hand").fail = false;
+        assert_eq!(block(&mut rt, &counters, &mut out), Rendered::Ran);
+        assert_eq!(counters.1.load(Ordering::Relaxed), 1, "failed, once");
+    }
+
+    /// **The plugin's MIDI out is what it emitted in this block**: the block
+    /// after an emitting one reads none of it, because `out` is cleared at the
+    /// head of every block.
+    ///
+    /// Mutation (run): the `out.clear()` in `render` removed -> the second
+    /// block still holds the first's event -> fails.
+    #[test]
+    fn a_blocks_midi_out_is_what_the_plugin_emitted_in_it() {
+        let counters = (AtomicU64::new(0), AtomicU64::new(0));
+        let mut out = ProcessOutput::default();
+        let (mut hand, mut rt) = tutti_rt::handoff();
+        assert!(
+            hand.lend(Scripted {
+                fail: false,
+                emit: true
+            })
+            .is_ok()
+        );
+        assert_eq!(block(&mut rt, &counters, &mut out), Rendered::Ran);
+        assert_eq!(out.midi_events.len(), 1);
+        assert_eq!(out.midi_events[0].offset, 3);
+        assert_eq!(block(&mut rt, &counters, &mut out), Rendered::Ran);
+        assert!(
+            out.midi_events.is_empty(),
+            "last block's MIDI is not this one's"
+        );
     }
 }

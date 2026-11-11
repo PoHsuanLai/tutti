@@ -23,6 +23,8 @@
 
 use std::sync::{Arc, Mutex, MutexGuard};
 use tutti_fixtures::main_thread;
+use tutti_plugin_types::Load;
+use tutti_vst2_host::Vst2Loaded;
 
 use tutti_graph::contract::Direct;
 use tutti_graph::{
@@ -31,7 +33,7 @@ use tutti_graph::{
 use tutti_modulation::ControlProgram;
 use tutti_nodes::automation::ControlLaneNode;
 use tutti_plugin::handles::{Normalized, ParamId, PluginHandle};
-use tutti_plugin::{BoundInProcessVst2Client, in_process_vst2_client};
+use tutti_plugin::{PluginNode, load_client};
 use tutti_transport::{OfflineTimeline, OfflineTimelineConfig};
 use tutti_types::{Beat, Bpm, ChannelLayout, SampleRate, Samples};
 
@@ -82,11 +84,15 @@ impl Drop for ProbeEnv {
     }
 }
 
-fn load() -> (BoundInProcessVst2Client, PluginHandle) {
+fn load() -> (PluginNode<Vst2Loaded>, PluginHandle) {
     let path = tutti_fixtures::vst2_probe();
-    let (client, handle) =
-        in_process_vst2_client(&main_thread(), path, SampleRate::new(SAMPLE_RATE))
-            .unwrap_or_else(|e| panic!("in-process load of the probe at {path:?}: {e:?}"));
+    let (client, handle) = load_client::<Vst2Loaded>(
+        &main_thread(),
+        path,
+        &Load::new(),
+        SampleRate::new(SAMPLE_RATE),
+    )
+    .unwrap_or_else(|e| panic!("in-process load of the probe at {path:?}: {e:?}"));
     (client.bind(tempo()), handle)
 }
 
@@ -178,7 +184,7 @@ fn a_held_value_is_sent_once_and_an_edit_on_the_plugin_survives_it() {
     let mut unit = Direct::new(client, SampleRate(SAMPLE_RATE), BLOCK);
     let p = 2;
 
-    let held = |unit: &mut Direct<BoundInProcessVst2Client>, v: f32, blocks: usize| {
+    let held = |unit: &mut Direct<PluginNode<Vst2Loaded>>, v: f32, blocks: usize| {
         for _ in 0..blocks {
             unit.events(0, &[ramp(0, p, v), ramp(32, p, v)]);
             unit.block();
@@ -223,7 +229,7 @@ fn a_held_value_is_sent_once_and_an_edit_on_the_plugin_survives_it() {
 /// on, and the export renders 501 too.
 ///
 /// Mutation (run): the fork's delivery not seeded (no
-/// `fork.params.seed(&delivered)` in `vst2_in_process/fork.rs`) → the fork
+/// `fork.params.seed(&delivered)` in `in_process/fork.rs`) → the fork
 /// sends the lane's 0.25 over the loaded 0.5 → the export renders 251 →
 /// fails.
 #[test]

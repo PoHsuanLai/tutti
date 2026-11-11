@@ -530,12 +530,13 @@ bytes and in place is merely harmless.
 
 `Channels` carries the widths and a `Placement` (built after PR9): `Speakers` for
 channels in the engine's order for their width (a reverb's mono centre and stereo
-pair), `Discrete` for channels that are not speaker feeds (a crossover's bands).
-`DesignNode` declares it as its main buses, so the graph's dry path (mix, bypass)
-folds a mono input onto both sides of a stereo output by speaker (doc 013,
-"Channel placement"); by index it landed on the left alone. A node outside
-`DesignNode` that changes width declares its buses too (`VbapPannerNode`), and
-`tutti-nodes`' `tests/node_buses.rs` holds every node type in the crate to it.
+pair), `Bands` for the input's channels once per band (a crossover's: band 0 is
+the main output). `DesignNode` declares it as its main buses, so the graph's dry
+path (mix, bypass) folds a mono input onto both sides of a stereo output by
+speaker; by index it landed on the left alone. The graph refuses a dry path it
+would have to guess (`PassError`, doc 013 "As built (B3)"), so a node that
+changes width and declares nothing cannot be bypassed or mixed, and the mistake
+surfaces at the first `set_mix` instead of in a render.
 
 ### 4.2 The model: one trait per class
 

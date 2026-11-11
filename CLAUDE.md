@@ -1172,6 +1172,14 @@ read the `Cargo.toml`, grep for the type, run the probe.
 
 ## Rules that came from bugs
 
+- **A node that changes width declares its buses.** The graph never guesses a
+  dry path (a bypass, a mix, a lane on the mix): main buses of different widths
+  that name no placement have no pass and are refused (`PassError`,
+  `Editor::check_pass`; doc 013 "As built (B3)"). By index, the reverbs' mono dry
+  was heard on the left alone. A node reads its ports through the value it
+  declares, so the two cannot drift: a key is a `Sidechain` bus after the main
+  one (`tutti-nodes`' `Keyed`), a crossover's band 0 its main output
+  (`Channels::port`, `Channels::main_output`).
 - **One bundle walk:** `tutti_plugin_types::bundle` is the only code that
   knows the `Contents/<arch>/` layout.
   - `native_module_in_bundle` is for hosts.

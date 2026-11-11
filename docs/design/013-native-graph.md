@@ -6973,8 +6973,8 @@ state beside the mode. The static half is built here; the driven half (a
   so its node declares a mono main bus in and a stereo one out, and the fold sends
   the mono input, a centre, to both sides at gain 1.0: at a partial mix the dry is on
   left and right, as the old blend had it and as a mono source on a stereo bus is
-  heard. A design whose outputs are not speaker feeds (the crossover's bands) is
-  `Placement::Discrete` and pairs by index. The HRTF node keeps its own: the
+  heard. A design whose outputs are bands (the crossover's) is
+  `Placement::Bands`: band 0 is its main output, at the input's speakers. The HRTF node keeps its own: the
   HRTF's dry is the mono centre fold of the input, not the input through the
   bypass mapping, so `Mix` cannot replace it.
 - **Tests.** `tutti-graph/tests/mix.rs` (WET and DRY bit for bit including
@@ -7380,28 +7380,49 @@ bit for bit (the M1 tests, unedited, are the proof).
 - **The bypass mapping** is `Pass` (`tutti-graph/src/pass.rs`), built on the
   control side from the shape's `Main` input and `Main` output buses and kept in
   the unit's `ModeState`; the reference builds the same value. Three cases:
-  (1) either side has no `Main` bus, or **both are `Discrete`** (what
-  `Shape::audio` builds, which names no placement): the width rule, output `c` is
-  input `c` below the narrower width, silence past it, unchanged to the bit;
-  (2) a named pair that folds to the identity: the same copy; (3) a named pair
-  (or one named side): `Fold::between`, applied with
-  `Fold::planar_channel` over the aligned inputs, so a 5.1 bus bypassed into a
-  stereo bus is the ITU rows, delayed by the declared latency. Every input
-  channel of the input bus has a ring of the declared latency; output `o` is the
-  fold of the rings' output. A node at a mix off `WET` reads the same fold as
-  its aligned input (`fold_aligned`). The fold's work costs a second arena of
-  `max_block` frames per output channel, only for a pass that folds.
-- **Unfoldable main buses are refused, not guessed.** `Editor::set_mode(key,
-  Bypassed)` returns `ModeError::Unplaced { node, error: FoldError }` when the
-  main buses name channels and do not fold (six `Discrete` channels into a named
-  stereo bus), and nothing changes; any other mode, and a node built from
-  widths, are not refused. The width rule is not the fallback: reading a bare
-  width as a placement is the guess "a width is not a placement" forbids. A
-  node replaced, while Bypassed or at a mix, by one whose main buses do not fold
-  passes nothing (its aligned input is absent: silence, as a channel past the
-  narrower width is) until it is set again; the commit does not fail on it, as
-  it does for a bus edge whose fold went away, because a mode is a control and
-  not an edit.
+  (1) both are `Discrete` (what `Shape::audio` builds, which names no
+  placement) **of one width**, or a side has no `Main` bus and the widths agree:
+  output `c` is input `c`, unchanged to the bit; (2) a named pair that folds to
+  the identity: the same copy; (3) a named pair, or one named side against an
+  unplaced side **of the same width** (a relabelling): `Fold::between`, applied with `Fold::planar_channel` over the aligned inputs,
+  so a 5.1 bus bypassed into a stereo bus is the ITU rows and a mono centre
+  under a stereo pair is heard on both sides at gain 1, delayed by the declared
+  latency. Every input channel of the input bus has a ring of the declared
+  latency; output `o` is the fold of the rings' output. A node at a mix off
+  `WET` reads the same fold as its aligned input (`fold_aligned`). The fold's
+  work costs a second arena of `max_block` frames per output channel, only for a
+  pass that folds.
+- **A pass the graph would have to guess is refused, wherever it would be
+  heard** (`PassError`): main buses of different widths of which either names
+  no placement (`Unplaced { inputs, outputs }`; `Fold::between` would take a
+  named source onto an unplaced destination by index, zero-filling, which suits
+  an edge that knows only a width and is the same guess for a dry path; by index, the old width rule, a mono input
+  under a stereo output was heard on the left alone, the bug the reverbs shipped
+  with after they went wet only), or named buses that do not fold (`Fold`, six
+  `Discrete` channels into a named stereo bus). `Editor::check_pass` is the one
+  check, and every door that would hear a pass asks it: `set_mode(Bypassed)`
+  (`ModeError::Unplaced`), `set_mix` short of `WET` (`MixError::Unplaced`), a
+  commit of a spec that bypasses, mixes, or drives the mix of such a node from a
+  lane (`CommitError::Unplaced`), and the modulation reconciler's route onto a
+  mix (`ReconcileError::Unplaced`). Any other mode, and a node nothing bypasses
+  or mixes, is not refused: such a node commits and runs, so a plugin whose
+  buses name nothing still loads. **Reversed by #570:** a node replaced, while Bypassed
+  or at a mix, by one with no pass used to pass nothing (silence) and the commit
+  did not fail, a mode being a control and not an edit; silence there is the
+  silent mistake this rule exists to stop, so that commit now fails naming the
+  node (`CommitError::Unplaced`), the last plan goes on sounding, and the host
+  sets the mode to Active or the mix to WET (or declares the node's buses) and
+  commits again (`tutti-session`'s
+  `a_refused_replace_keeps_the_last_plan_until_the_mix_or_mode_is_set_back`). It
+  matches B4, where a re-declared root that no longer folds fails its commit. A node whose channels
+  are not speaker feeds says what its other ports are, and reads them through
+  the same value it declares, so the declaration and the indexing cannot drift:
+  the gate's and the compressor's key is a `Sidechain` bus after the main one
+  (`tutti-nodes`' `Keyed`: `shape` declares its buses, `process` reads
+  `audio(c)` and `key(c)`, the ports those buses cover), and a crossover's band
+  0 is its main output (`tutti_dsp::Placement::Bands`; the realization writes
+  through `Channels::port`, band-major, and the node declares
+  `Channels::main_output`, output 0's ports).
 - The root as a bus sink is B4, below.
 
 **As built (B4).** The root is a bus sink: the graph's outputs take a bus edge,

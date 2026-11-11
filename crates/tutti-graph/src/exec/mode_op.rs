@@ -129,8 +129,8 @@ fn park<A: AudioSlots, F: SlotFlags + ?Sized, E: EventSlots + ?Sized>(
     }
 
     // The outputs are the inputs delayed by the declared latency: output `c`
-    // is input `c` below the narrower width, silence past it (the width rule),
-    // or the fold of the main buses (`pass.rs`).
+    // is input `c` (main buses of one width naming no placement), or the fold
+    // of the main buses (`pass.rs`).
     if u.mode.folds() {
         park_folded(u, head, st, ain, aout);
     } else {
@@ -162,7 +162,7 @@ fn park<A: AudioSlots, F: SlotFlags + ?Sized, E: EventSlots + ?Sized>(
     u.last_idle = false;
 }
 
-/// A parked node's outputs by the width rule: output `c` is input `c`.
+/// A parked node's outputs by index: output `c` is input `c`.
 fn park_by_index<A: AudioSlots, F: SlotFlags + ?Sized, E: EventSlots + ?Sized>(
     u: &mut Unit,
     head: &Head<'_, '_>,

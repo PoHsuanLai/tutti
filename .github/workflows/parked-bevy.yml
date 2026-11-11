@@ -38,15 +38,11 @@ jobs:
         with:
           submodules: recursive
       - name: Install Linux audio deps
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            libasound2-dev libdbus-1-dev pkg-config
+        uses: ./.github/actions/linux-audio-deps
       # The toolchain `rust-toolchain.toml` pins, with its components.
       - run: rustup toolchain install
-      - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: crates/bevy-tutti
+      # No Rust cache: weekly, and it resolves fresh, so a cache would be
+      # a 1 GB entry no run reuses.
       # Its own workspace root with no committed lock file: it resolves fresh,
       # so this also shows what a newer Bevy patch release does to it.
       - run: cargo check --manifest-path crates/bevy-tutti/Cargo.toml --features full,plugin --all-targets

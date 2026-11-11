@@ -78,7 +78,9 @@ that pays, and the compiler packs tasks too cheap to dispatch alone.
   in events (`take_lost`). A port that goes missing later reads nothing and
   counts nothing; a closed tap compiles to no op and a fork carries none. Its
   frames are on the rate the reader was opened at (`EventTapReader::rate`), so
-  whoever re-prepares at another rate reopens it (`Graph::reopen_event_taps`).
+  whoever re-prepares at another rate reopens its own (`Graph::reopen_event_tap`, one id;
+  `reopen_event_taps` replaces every reader, a caller's too). The session's hardware MIDI
+  out is such a tap, on the clock node, `ToOutput`, drained in `Phase::MidiOut`.
 - Copying audio into the graph is an **inlet**, the inverse of the tap:
   `InletNode` (`tutti-graph`) copies a ring (`TapReader::pair`)
   a thread of your own fills (a capture callback) into the graph, and

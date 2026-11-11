@@ -1,10 +1,13 @@
 //! The nodes at the graph's MIDI border:
 //! [`MidiInputNode`] sends a wire's events out of their channels' ports,
-//! translated; [`MidiOutNode`] hands what reaches it back to one; [`ClockNode`] ticks
+//! translated; an event tap hands what a port carries back to a control
+//! thread; [`ClockNode`] ticks
 //! Beat Clock on the frames the transport reaches, a start inside a block
 //! included.
 
 use std::sync::{Arc, Mutex};
+
+mod common;
 use tutti_graph::UmpAt;
 
 use tutti_fixtures::midi::{
@@ -18,8 +21,7 @@ use tutti_graph::{
 };
 use tutti_midi_protocol::channel_voice;
 use tutti_midi_runtime::{
-    CHANNELLESS_PORT, ClockNode, MIDI_INPUT_EVENT_CAPACITY, MIDI_INPUT_PORTS, MidiIn,
-    MidiInputNode, MidiOutNode,
+    CHANNELLESS_PORT, ClockNode, MIDI_INPUT_EVENT_CAPACITY, MIDI_INPUT_PORTS, MidiIn, MidiInputNode,
 };
 use tutti_types::{At, Beat, Bpm, Frame, SampleRate, Samples};
 use tutti_ump::{
@@ -446,7 +448,7 @@ fn an_input_nodes_fork_is_silent() {
     assert!(seen.lock().unwrap().is_empty());
 }
 
-/// **The out node hands MIDI back on the graph's clock, and counts what a
+/// **An event tap hands MIDI back on the graph's clock, and counts what a
 /// full ring drops.** Five blocks of 256 queued notes into a ring of 1 024
 /// nobody drains: 256 dropped; what is drained is the first 1 024, the
 /// first on its frame (block 0, offset 7) and the last of them on block 3's
@@ -456,21 +458,11 @@ fn an_input_nodes_fork_is_silent() {
 /// fails. Mutation (run): stamping the offset in the block alone → the last
 /// reads 8 → fails.
 #[test]
-fn the_out_node_hands_midi_back_and_counts_drops() {
+fn an_event_tap_hands_midi_back_and_counts_drops() {
     let (mut ed, mut exec) = Editor::new(Prepare::new(SampleRate(RATE), Samples(512)));
     let (inlet, mut keys) = EventInletNode::pair(256);
     ed.insert(NodeKey(1), "keys", inlet);
-    let out = ed.insert(NodeKey(2), "out", MidiOutNode::new());
-    ed.spec_mut().connect_events(
-        EventIn {
-            node: NodeKey(2),
-            port: 0,
-        },
-        EventEdge::Direct(EventOut {
-            node: NodeKey(1),
-            port: 0,
-        }),
-    );
+    let mut out = common::sink(&mut ed, 0, &[(1, 0)]);
     ed.commit().unwrap();
     for k in 0..5u64 {
         // The inlet holds each event for its frame: offset 7, then 8, in

@@ -9,7 +9,7 @@
 //! on the audio thread, by a [`ClockNode`](crate::ClockNode), and stamps each
 //! event it emits with a sample-accurate [`Offset`], so receiving gear
 //! locks tightly instead of chasing frame-quantised jitter. The node sends
-//! them out of an event port; wire it to a [`MidiOutNode`](crate::MidiOutNode)
+//! them out of an event port; tap it (`Graph::open_event_tap`)
 //! for a hardware pump to drain.
 //!
 //! **The tempo is the published map's** (doc 020, stage 5): the engine hands

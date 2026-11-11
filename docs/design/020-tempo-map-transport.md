@@ -443,7 +443,7 @@ published. What landed:
 segment seated on the map's beat, so the clock needed no code change: a cell
 edge differs from the previous end by an ulp, under `SEEK_EPSILON_BEATS`, and
 is a continuation, not a locate. `tutti-midi-runtime`'s `tests/clock_tempo_map.rs`
-renders a `ClockNode` into a `MidiOutNode` through the live engine over a
+renders a `ClockNode` under an event tap through the live engine over a
 published map and pins, against the map's definition written in the test:
 `a_step_map_puts_every_tick_on_the_maps_frame` (exact frames, a step mid-cell),
 `a_ramp_puts_every_tick_within_the_grid_bound_of_the_maps_frame` (within one

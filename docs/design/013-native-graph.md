@@ -3980,7 +3980,7 @@ Decisions:
    | node | ns / frame / channel | class |
    |---|---|---|
    | `BusStripNode` (tutti-nodes), channel-major kernel, measured on another box (the note below) | 0.06 steady, 0.4 ramping every block, 0.6–1.0 with the volume fed per frame | `Light` (fed: borderline) |
-   | `MidiClipNode`, `ClockNode` (measured); `HarmonyNode`, `EventInletNode` (once `MidiQueueNode`), `MidiInputNode`, `MidiOutNode` (the same shape of work) | 0 (event-only: about 0.3 µs a block at any length; a gain's 256 frames take 0.2) | `Light` |
+   | `MidiClipNode`, `ClockNode` (measured); `HarmonyNode`, `EventInletNode` (once `MidiQueueNode`), `MidiInputNode` (the same shape of work) | 0 (event-only: about 0.3 µs a block at any length; a gain's 256 frames take 0.2) | `Light` |
    | `DistortionNode` (tutti-nodes), stereo, by curve, measured on another box (the note below) | `HardClip` 0.11, `Softsign` 0.22 (fed 0.8 both); `Crush` 2.2 (fed 2.8), `SoftCrush` 2.8 (fed 3.5), `Atan` 7.6 (fed 9.0), `Tanh` 15–16 (fed 18) | `Light` for `HardClip` and `Softsign`, `Moderate` for the other four |
    | `ClickNode` | 3.8 | `Moderate` |
    | `InletNode` (then `MicMonitorNode`), one block copy out of the ring, measured on another box (the note below) | 0.4–0.6 | `Light` |
@@ -7388,7 +7388,7 @@ the four lanes above, the graph's own surface is:
   with the latency alignment only the graph can do.
 - **Event tap and event inlet.** Audio has a tap and an inlet; events had
   neither as a primitive. Copying events out of any event port was done by
-  MIDI-specific nodes (`MidiOutNode`, the queue nodes), and feeding events
+  MIDI-specific nodes (`MidiOutNode`, now deleted, and the queue nodes), and feeding events
   in by `MidiInputNode` and `MidiQueueNode`. The **event tap is built**
   (doc 017 stage E1): `Op::EventTap`, `TapReader`'s event sibling, a plan op of
   the `EVENTS` cost class that claims its `EventTapWriter` like `Op::Tap`
@@ -7599,10 +7599,10 @@ fourth.
     takes the transport and an emit sink rather than holding a `Timeline`
     and a sender. Its fork sends nothing. As before, a loop wrap reads as a
     locate on the next block.
-  - **`MidiOutNode`**: a sink handing its event input's MIDI to a control
-    thread through a ring, each event stamped with its **frame on the
-    graph's clock** (wrapping at 2³²), full-ring drops counted. Its fork
-    discards.
+  - **`MidiOutNode`** (deleted in doc 017 stage E3; the session's hardware
+    out is an event tap): a sink handing its event input's MIDI to a control
+    thread through a ring, each event stamped with its frame on the graph's
+    clock (wrapping at 2³²).
   Deleted: `MidiInPort`, `MidiBus`, `MidiPreBlock`, `MidiPostBlock`,
   `MidiOutSink`, `BlockClock`, `MpeModeRequest`, `OfflineRebind`,
   `MidiClipSource`, `MidiSnapshot`, `MidiSnapshotReader`, `MidiUnitIn`,

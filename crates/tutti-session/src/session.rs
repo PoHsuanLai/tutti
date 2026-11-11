@@ -53,7 +53,7 @@ pub enum Phase {
     /// lane plays from the update its node does; then the note-envelope
     /// resyncs the apply owes are sent.
     AfterCommit,
-    /// The hardware out (the clock, and whatever else is wired to its node)
+    /// The hardware out (an event tap on the clock)
     /// drained to the output (feature `midi`; `Midi::set_hardware_out`).
     MidiOut,
     /// The device's faults, as `SessionEvent::DeviceFault` (feature `device`).
@@ -558,8 +558,9 @@ impl std::fmt::Debug for SessionEvent {
 }
 
 /// The engine's MIDI, as graph nodes the builder inserts: the hardware
-/// input, the clock (Beat Clock and MTC, off until a host enables it) and the
-/// hardware out the clock feeds, with their controls.
+/// input and the clock (Beat Clock and MTC, off until a host enables it),
+/// with their controls. The hardware out is not a node: the session reads an
+/// event tap on the clock's output ([`Midi::set_hardware_out`](crate::Midi::set_hardware_out)).
 #[cfg(feature = "midi")]
 #[derive(Clone, Debug)]
 pub struct MidiNodes {
@@ -571,10 +572,6 @@ pub struct MidiNodes {
     pub clock: NodeKey,
     /// The clock master: enable it, pick MTC and its frame rate.
     pub clock_master: Arc<tutti_midi_runtime::ClockMaster>,
-    /// The hardware out's node, fed by the clock ([`Feeder::Clock`](crate::Feeder)).
-    pub hardware_out: NodeKey,
-    /// What a host drains to the OS.
-    pub out_controls: tutti_midi_runtime::MidiOutControls,
 }
 
 /// Whether the root is as it was asked to be
@@ -896,8 +893,7 @@ impl Session {
             Phase::MidiOut =>
             {
                 #[cfg(feature = "midi")]
-                self.midi_state
-                    .midi_out_phase(self.midi.as_ref(), cx.now, out)
+                self.midi_state.midi_out_phase(&mut self.graph, cx.now, out)
             }
             Phase::Plugins =>
             {

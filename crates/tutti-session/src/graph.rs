@@ -163,8 +163,6 @@ pub enum Feeder {
     /// The timed queue of an instrument's handle
     /// (`Session::add_instrument`, feature `midi`).
     Instrument,
-    /// The clock the hardware out carries.
-    Clock,
     /// A host's declarations (bevy-tutti's `EventSources`).
     Declared,
 }
@@ -2337,28 +2335,39 @@ impl Graph {
     ///
     /// The graph cannot do this by itself: a reader belongs to the thread that
     /// drains it, and the new one has to reach that thread.
+    ///
+    /// Every tap's reader is replaced, a caller's included: one that owns a
+    /// single tap reopens just that one with
+    /// [`reopen_event_tap`](Self::reopen_event_tap), so another owner's reader
+    /// is not superseded and left dead.
     pub fn reopen_event_taps(&mut self) -> Vec<EventTapReader> {
-        let open: Vec<(EventTapId, (EventSource, TapAlign, usize))> = self
-            .event_taps
-            .iter()
-            .map(|(&id, &opened)| (id, opened))
-            .collect();
-        let mut readers = Vec::with_capacity(open.len());
-        for (id, (source, align, capacity)) in open {
-            let port = EventOut {
-                node: source.node,
-                port: source.port,
-            };
-            match self.editor.open_event_tap(id, port, align, capacity) {
-                Ok(reader) => readers.push(reader),
-                Err(_) => {
-                    self.event_taps.remove(&id);
-                    self.editor.close_event_tap(id);
-                }
+        let ids: Vec<EventTapId> = self.event_taps.keys().copied().collect();
+        ids.into_iter()
+            .filter_map(|id| self.reopen_event_tap(id))
+            .collect()
+    }
+
+    /// Opens the event tap `id` again, at the rate the graph is prepared at
+    /// now: the one-tap form of [`reopen_event_taps`](Self::reopen_event_taps),
+    /// for the owner of that tap (the session's hardware MIDI out reopens its
+    /// own and no other). The reader it supersedes is fed no more. `None` for
+    /// an id that is not open, and for a tap whose node was removed since,
+    /// which is dropped from the graph's list.
+    pub fn reopen_event_tap(&mut self, id: EventTapId) -> Option<EventTapReader> {
+        let &(source, align, capacity) = self.event_taps.get(&id)?;
+        let port = EventOut {
+            node: source.node,
+            port: source.port,
+        };
+        self.edited = true;
+        match self.editor.open_event_tap(id, port, align, capacity) {
+            Ok(reader) => Some(reader),
+            Err(_) => {
+                self.event_taps.remove(&id);
+                self.editor.close_event_tap(id);
+                None
             }
         }
-        self.edited = true;
-        readers
     }
 
     /// Closes the event taps whose readers were dropped, and returns how many.

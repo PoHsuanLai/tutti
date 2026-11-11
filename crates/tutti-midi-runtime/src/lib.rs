@@ -18,9 +18,8 @@ mod traits;
 pub use ledger::{NoteLedger, Sending};
 pub use live::{
     CHANNELLESS_PORT, LIVE_INLET_CAPACITY, MAILBOX_CAPACITY, MIDI_INPUT_DENSITY,
-    MIDI_INPUT_EVENT_CAPACITY, MIDI_INPUT_PORTS, MIDI_OUT_CAPACITY, MidiInputControls,
-    MidiInputNode, MidiKeys, MidiMailbox, MidiOutControls, MidiOutNode, MidiReceiver, MidiSender,
-    RouteRule, compile_routes, input_port_of, input_ports,
+    MIDI_INPUT_EVENT_CAPACITY, MIDI_INPUT_PORTS, MidiInputControls, MidiInputNode, MidiKeys,
+    MidiMailbox, MidiReceiver, MidiSender, RouteRule, compile_routes, input_port_of, input_ports,
 };
 pub use outbound::{
     CLOCK_EVENT_CAPACITY, ClockMaster, ClockNode, JR_CLOCK_INTERVAL, JR_CLOCK_MAX_INTERVAL,

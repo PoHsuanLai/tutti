@@ -1,13 +1,11 @@
 //! [`MidiMailbox`]: a bounded, lock-free ring of MIDI events between one
 //! thread and another, split into a [`MidiSender`] and a [`MidiReceiver`].
 //!
-//! It carries MIDI out of the graph to a control thread
-//! ([`MidiOutNode`](crate::MidiOutNode), what a hardware pump sends) and a
-//! host's own outbound MIDI to the session's drain. It does not carry MIDI
-//! *into* the graph: that is `tutti-graph`'s event inlet
-//! ([`MidiKeys`](crate::MidiKeys)). Inside the graph MIDI travels on event
-//! ports, never through a mailbox. It goes with `MidiOutNode` (design 017,
-//! stage E3) and the host's outbound path.
+//! It carries a host's own outbound MIDI to the session's drain. It does not
+//! carry MIDI into the graph (that is `tutti-graph`'s event inlet,
+//! [`MidiKeys`](crate::MidiKeys)) or out of it (the hardware out reads an
+//! event tap). Inside the graph MIDI travels on event ports, never through a
+//! mailbox. It goes with the host's outbound path.
 
 use std::sync::Arc;
 use tutti_graph::UmpAt;
@@ -25,8 +23,7 @@ pub const MAILBOX_CAPACITY: usize = 256;
 pub struct MidiMailbox {
     /// Each event with a raw `u32` stamp, not an `Offset`: the ring crosses
     /// threads ahead of any block, and what the stamp means is the reader's
-    /// (the out node writes the graph-clock frame wrapped at 2^32; a host's
-    /// own events carry a block offset). The types stop here; a
+    /// (a host's own events carry a block offset). The types stop here; a
     /// stamp becomes an `Offset` where a block is known.
     events: ArrayQueue<(u32, Ump)>,
 }

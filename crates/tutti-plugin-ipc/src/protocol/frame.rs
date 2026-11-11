@@ -1,7 +1,8 @@
 //! The one framing of the control socket, shared by the host and the
 //! subprocess.
 //!
-//! A frame is a four-byte big-endian length, then that many bytes of bincode.
+//! A frame is a four-byte big-endian length, then that many bytes of
+//! [postcard](https://docs.rs/postcard), which encode exactly one message.
 //! The length is bounded by [`MAX_FRAME_BYTES`] on both ends: a sender refuses
 //! to emit a frame its peer must reject (and never lets a cast truncate the
 //! prefix, which would desynchronise a stream that has no resynchronisation
@@ -70,13 +71,21 @@ pub fn decode_prefix(prefix: [u8; 4]) -> std::result::Result<usize, FrameTooLarg
     Ok(len)
 }
 
-/// Decodes one frame's body.
+/// Decodes one frame's body, which is exactly one message.
 ///
 /// # Errors
 ///
-/// A bincode error, which is a protocol-version skew the handshake missed.
+/// A codec error for a body that does not decode, or that has bytes left
+/// after the message: either is a protocol-version skew the handshake missed.
 pub fn decode_body<T: DeserializeOwned>(body: &[u8]) -> BridgeResult<T> {
-    bincode::deserialize(body).map_err(codec)
+    match postcard::take_from_bytes(body).map_err(codec)? {
+        (msg, []) => Ok(msg),
+        (_, rest) => Err(BridgeError::Serialization(format!(
+            "{} bytes left after the message in a {}-byte frame",
+            rest.len(),
+            body.len()
+        ))),
+    }
 }
 
 /// How much capacity a frame buffer keeps between frames. A block's frames
@@ -113,9 +122,14 @@ pub fn write_frame<W: Write, T: Serialize>(w: &mut W, msg: &T) -> BridgeResult<(
     OUT.with_borrow_mut(|frame| {
         frame.clear();
         frame.extend_from_slice(&[0; 4]);
-        let written = bincode::serialize_into(&mut *frame, msg)
+        // `to_extend` takes the buffer and hands it back; taking it out of the
+        // cell keeps its capacity, so the warm path still allocates nothing.
+        let written = postcard::to_extend(msg, std::mem::take(frame))
             .map_err(codec)
-            .and_then(|()| Ok(encode_prefix(frame.len() - 4)?))
+            .and_then(|out| {
+                *frame = out;
+                Ok(encode_prefix(frame.len() - 4)?)
+            })
             .and_then(|prefix| {
                 frame[..4].copy_from_slice(&prefix);
                 w.write_all(frame)?;
@@ -132,7 +146,8 @@ pub fn write_frame<W: Write, T: Serialize>(w: &mut W, msg: &T) -> BridgeResult<(
 ///
 /// An I/O error on EOF or a short read; [`FrameTooLarge`] (as
 /// [`BridgeError::ConnectionFailed`]) for an advertised length over the cap,
-/// before any allocation; a bincode error for a body that does not decode.
+/// before any allocation; a codec error for a body that does not decode as
+/// exactly one message.
 pub fn read_frame<R: Read, T: DeserializeOwned>(r: &mut R) -> BridgeResult<T> {
     let mut prefix = [0u8; 4];
     r.read_exact(&mut prefix)?;
@@ -186,7 +201,7 @@ const _: () = {
 mod tests {
     use super::*;
 
-    /// **The frame is a big-endian `u32` length and the bincode body.** Bytes
+    /// **The frame is a big-endian `u32` length and the postcard body.** Bytes
     /// written out by hand for a `u16` message, so a change of prefix width or
     /// endianness fails here rather than as a desync between two binaries.
     ///
@@ -196,10 +211,23 @@ mod tests {
     fn a_frame_is_a_big_endian_length_then_the_body() {
         let mut out = Vec::new();
         write_frame(&mut out, &0x0102u16).unwrap();
-        assert_eq!(out, [0, 0, 0, 2, 0x02, 0x01]);
+        // postcard writes an integer as a varint: seven bits a byte, low first.
+        assert_eq!(out, [0, 0, 0, 2, 0x82, 0x02]);
 
         let back: u16 = read_frame(&mut out.as_slice()).unwrap();
         assert_eq!(back, 0x0102);
+    }
+
+    /// **A frame is exactly one message:** a body with bytes after the message
+    /// is refused, not decoded from its front. A peer whose message is longer
+    /// than ours is a version skew, and reading a prefix of it would hide that.
+    #[test]
+    fn a_body_with_bytes_after_the_message_is_refused() {
+        assert_eq!(decode_body::<u16>(&[0x82, 0x02]).unwrap(), 0x0102);
+        match decode_body::<u16>(&[0x82, 0x02, 0x00]) {
+            Err(BridgeError::Serialization(m)) => assert!(m.contains("1 bytes left"), "{m}"),
+            other => panic!("expected a Serialization error, got {other:?}"),
+        }
     }
 
     /// **The cap is inclusive on both halves, and a length over it names the

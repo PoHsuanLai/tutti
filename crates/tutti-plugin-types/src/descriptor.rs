@@ -301,7 +301,7 @@ mod tests {
 
     /// A catalog written before this field existed still loads.
     ///
-    /// The plugin database is JSON (`tutti-plugin-db`'s `database.rs`), not bincode, so it
+    /// The plugin database is JSON (`tutti-plugin-db`'s `database.rs`), not postcard, so it
     /// is self-describing and an old record simply lacks the key. Without
     /// `serde(default)` that is a parse error, and `load` quarantines the whole
     /// file — every scan result and blacklist entry gone because one field was
@@ -319,13 +319,13 @@ mod tests {
         assert_eq!(d.name, "AUDelay");
     }
 
-    /// The variant survives the bincode wire both IPC peers speak.
+    /// The variant survives the postcard wire both IPC peers speak.
     ///
     /// It is also persisted to the plugin catalog, so a decode that collapsed
     /// `Unknown` into `Absent` would bake a scan-time guess into the database.
     #[cfg(feature = "serde")]
     #[test]
-    fn the_editor_presence_survives_the_bincode_round_trip() {
+    fn the_editor_presence_survives_the_postcard_round_trip() {
         for want in [
             EditorPresence::Unknown,
             EditorPresence::Absent,
@@ -333,8 +333,8 @@ mod tests {
         ] {
             let mut d = PluginDescriptor::new("id", "name", PluginClass::Unknown);
             d.editor = want;
-            let bytes = bincode::serialize(&d).expect("serialize");
-            let back: PluginDescriptor = bincode::deserialize(&bytes).expect("deserialize");
+            let bytes = postcard::to_allocvec(&d).expect("serialize");
+            let back: PluginDescriptor = postcard::from_bytes(&bytes).expect("deserialize");
             assert_eq!(back.editor, want);
         }
     }

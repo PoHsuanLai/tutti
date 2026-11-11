@@ -643,8 +643,8 @@ mod serde_tests {
     use crate::ParamId;
 
     fn round_trip(q: &ParameterQueue) -> ParameterQueue {
-        let bytes = bincode::serialize(q).expect("serialize");
-        bincode::deserialize(&bytes).expect("deserialize")
+        let bytes = postcard::to_allocvec(q).expect("serialize");
+        postcard::from_bytes(&bytes).expect("deserialize")
     }
 
     /// A peer can hand over points in any order; the wire path has no caller to
@@ -710,7 +710,7 @@ mod serde_tests {
         let mut one = ParameterChanges::reserved(1, 1);
         one.add_change(high, 0, 1.0);
         let back: ParameterChanges =
-            bincode::deserialize(&bincode::serialize(&one).expect("serialize")).expect("de");
+            postcard::from_bytes(&postcard::to_allocvec(&one).expect("serialize")).expect("de");
         assert_eq!(back.queue(high).expect("high id survives").len(), 1);
         assert_eq!(back.queues[0].param_id.get(), 0xF000_000A);
     }
@@ -725,8 +725,8 @@ mod serde_tests {
         changes.add_change(ParamId::new(1), -4, 0.0);
         changes.add_change(ParamId::new(2), 0, 0.5);
 
-        let bytes = bincode::serialize(&changes).expect("serialize");
-        let got: ParameterChanges = bincode::deserialize(&bytes).expect("deserialize");
+        let bytes = postcard::to_allocvec(&changes).expect("serialize");
+        let got: ParameterChanges = postcard::from_bytes(&bytes).expect("deserialize");
 
         let q = got.queue(ParamId::new(1)).expect("queue 1");
         assert_eq!(q.points[0].sample_offset, 0);
@@ -748,7 +748,14 @@ mod serde_tests {
     #[test]
     fn more_than_sixteen_queues_cross_the_wire_unchanged() {
         fn seq(len: usize, items: impl IntoIterator<Item = Vec<u8>>) -> Vec<u8> {
-            let mut out = (len as u64).to_le_bytes().to_vec();
+            // The length as postcard's varint: seven bits a byte, low first.
+            let mut out = Vec::new();
+            let mut n = len;
+            while n >= 0x80 {
+                out.push((n & 0x7f) as u8 | 0x80);
+                n >>= 7;
+            }
+            out.push(n as u8);
             for item in items {
                 out.extend(item);
             }
@@ -766,19 +773,19 @@ mod serde_tests {
         let expected = seq(
             changes.queues.len(),
             changes.queues.iter().map(|q| {
-                let mut b = bincode::serialize(&q.param_id).expect("serialize");
+                let mut b = postcard::to_allocvec(&q.param_id).expect("serialize");
                 b.extend(seq(
                     q.points.len(),
                     q.points
                         .iter()
-                        .map(|p| bincode::serialize(p).expect("serialize")),
+                        .map(|p| postcard::to_allocvec(p).expect("serialize")),
                 ));
                 b
             }),
         );
-        let bytes = bincode::serialize(&changes).expect("serialize");
+        let bytes = postcard::to_allocvec(&changes).expect("serialize");
         assert_eq!(bytes, expected);
-        let back: ParameterChanges = bincode::deserialize(&bytes).expect("deserialize");
+        let back: ParameterChanges = postcard::from_bytes(&bytes).expect("deserialize");
         assert_eq!(back.queues.len(), 200);
         for (id, q) in back.queues.iter().enumerate() {
             assert_eq!(q.param_id, ParamId::new(id as u32));
@@ -798,7 +805,14 @@ mod serde_tests {
     #[test]
     fn a_pooled_set_crosses_the_wire_as_its_queues() {
         fn seq(len: usize, items: impl IntoIterator<Item = Vec<u8>>) -> Vec<u8> {
-            let mut out = (len as u64).to_le_bytes().to_vec();
+            // The length as postcard's varint: seven bits a byte, low first.
+            let mut out = Vec::new();
+            let mut n = len;
+            while n >= 0x80 {
+                out.push((n & 0x7f) as u8 | 0x80);
+                n >>= 7;
+            }
+            out.push(n as u8);
             for item in items {
                 out.extend(item);
             }
@@ -820,11 +834,11 @@ mod serde_tests {
         let expected = seq(
             200,
             (0..200i32).map(|id| {
-                let mut b = bincode::serialize(&ParamId::new(id as u32)).expect("serialize");
+                let mut b = postcard::to_allocvec(&ParamId::new(id as u32)).expect("serialize");
                 b.extend(seq(
                     13,
                     (0..13).map(|k| {
-                        bincode::serialize(&ParameterPoint {
+                        postcard::to_allocvec(&ParameterPoint {
                             sample_offset: k * 4 + id % 4,
                             value: crate::Normalized::of(0.25),
                         })
@@ -834,7 +848,7 @@ mod serde_tests {
                 b
             }),
         );
-        let bytes = bincode::serialize(&changes).expect("serialize");
+        let bytes = postcard::to_allocvec(&changes).expect("serialize");
         assert_eq!(bytes, expected);
     }
 }
@@ -1377,23 +1391,24 @@ mod wire_tests {
     /// **A point's value outside `0..=1` is refused on decode**, NaN and the
     /// infinities included, like every other `Normalized` on the IPC wire; an
     /// in-range one decodes, and the point's bytes are those of a plain `i32`
-    /// and `f64`.
+    /// (a varint) and `f64`.
     #[test]
     fn a_decoded_point_outside_the_unit_range_is_refused() {
-        let mut bytes = bincode::serialize(&ParameterPoint {
+        let mut bytes = postcard::to_allocvec(&ParameterPoint {
             sample_offset: 3,
             value: Normalized::of(0.5),
         })
         .unwrap();
-        assert_eq!(bytes.len(), 4 + 8);
-        bytes[4..].copy_from_slice(&0.25f64.to_le_bytes());
-        let point: ParameterPoint = bincode::deserialize(&bytes).unwrap();
+        // The offset 3 is one zigzag varint byte (6), the value eight bytes.
+        assert_eq!(bytes.len(), 1 + 8);
+        bytes[1..].copy_from_slice(&0.25f64.to_le_bytes());
+        let point: ParameterPoint = postcard::from_bytes(&bytes).unwrap();
         assert_eq!(point.sample_offset, 3);
         assert_eq!(point.value, Normalized::of(0.25));
         for raw in [7.5f64, -3.0, f64::NAN, f64::INFINITY] {
-            bytes[4..].copy_from_slice(&raw.to_le_bytes());
+            bytes[1..].copy_from_slice(&raw.to_le_bytes());
             assert!(
-                bincode::deserialize::<ParameterPoint>(&bytes).is_err(),
+                postcard::from_bytes::<ParameterPoint>(&bytes).is_err(),
                 "{raw}"
             );
         }

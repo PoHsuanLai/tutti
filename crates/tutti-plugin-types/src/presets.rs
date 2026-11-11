@@ -406,7 +406,7 @@ mod tests {
 
     /// Every `PresetId` variant survives the wire.
     ///
-    /// The control channel is length-prefixed bincode, and these types cross it
+    /// The control channel is length-prefixed postcard, and these types cross it
     /// in both directions — an id produced by `presets()` in the subprocess is
     /// handed back to `load_preset()`. A variant that does not round-trip is a
     /// preset that cannot be loaded from a listed one.
@@ -427,8 +427,8 @@ mod tests {
             },
             PresetId::Location(PathBuf::from("/presets/lead.clap-preset")),
         ] {
-            let bytes = bincode::serialize(&id).expect("serialize");
-            let back: PresetId = bincode::deserialize(&bytes).expect("deserialize");
+            let bytes = postcard::to_allocvec(&id).expect("serialize");
+            let back: PresetId = postcard::from_bytes(&bytes).expect("deserialize");
             assert_eq!(back, id, "{id:?} did not survive the wire");
         }
     }
@@ -443,32 +443,28 @@ mod tests {
     /// bytes — so a shift that no test catches is a v14 host handing a v14
     /// server a `Program` it decodes as a `Location`.
     ///
-    /// bincode writes the discriminant as a `u32` little-endian tag over
-    /// *declaration order*, so these leading bytes are the contract. Appending
+    /// postcard writes the discriminant as a varint tag over *declaration
+    /// order* (one byte under 128), so this leading byte is the contract. Appending
     /// a variant leaves them alone and needs no change here; reordering or
     /// inserting one breaks this test, which is the intended alarm and means a
     /// `PROTOCOL_VERSION` bump, not a new expectation.
     #[cfg(feature = "serde")]
     #[test]
     fn each_variant_keeps_its_wire_discriminant() {
-        let tag = |id: &PresetId| bincode::serialize(id).expect("serialize")[..4].to_vec();
+        let tag = |id: &PresetId| postcard::to_allocvec(id).expect("serialize")[0];
 
-        assert_eq!(
-            tag(&PresetId::Number(0)),
-            vec![0, 0, 0, 0],
-            "Number is tag 0"
-        );
+        assert_eq!(tag(&PresetId::Number(0)), 0, "Number is tag 0");
         assert_eq!(
             tag(&PresetId::Program {
                 list_id: 0,
                 index: 0
             }),
-            vec![1, 0, 0, 0],
+            1,
             "Program is tag 1"
         );
         assert_eq!(
             tag(&PresetId::Location(PathBuf::from("/x"))),
-            vec![2, 0, 0, 0],
+            2,
             "Location is tag 2"
         );
     }
@@ -488,8 +484,8 @@ mod tests {
                 "Factory",
             ),
         ] {
-            let bytes = bincode::serialize(&preset).expect("serialize");
-            let back: Preset = bincode::deserialize(&bytes).expect("deserialize");
+            let bytes = postcard::to_allocvec(&preset).expect("serialize");
+            let back: Preset = postcard::from_bytes(&bytes).expect("deserialize");
             assert_eq!(back, preset);
         }
     }

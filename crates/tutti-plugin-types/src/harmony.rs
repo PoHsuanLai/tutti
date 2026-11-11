@@ -166,7 +166,7 @@ changes_container!(
 /// reading past the rest (module docs, "Decoding truncates").
 ///
 /// Every item is still read: the excess is decoded and dropped rather than
-/// left on the stream, so a length-prefixed format (bincode) stays in step
+/// left on the stream, so a length-prefixed format (postcard) stays in step
 /// with the fields after this one.
 #[cfg(feature = "serde")]
 fn truncating<'de, D, T, const N: usize>(d: D) -> Result<ArrayVec<T, N>, D::Error>
@@ -224,11 +224,12 @@ mod tests {
         let mut c = ChordChanges::new();
         assert!(c.add_change(chord(60)));
         assert!(c.add_change(chord(62)));
-        let mut expected = (c.changes.len() as u64).to_le_bytes().to_vec();
+        // The length, 2, is one varint byte.
+        let mut expected = vec![2u8];
         for item in &c.changes {
-            expected.extend(bincode::serialize(item).expect("serialize"));
+            expected.extend(postcard::to_allocvec(item).expect("serialize"));
         }
-        assert_eq!(bincode::serialize(&c).expect("serialize"), expected);
+        assert_eq!(postcard::to_allocvec(&c).expect("serialize"), expected);
     }
 
     /// **A container past the cap from the wire keeps its first four, and
@@ -254,8 +255,8 @@ mod tests {
             changes: (60..67).map(chord).collect(),
             after: 0xDEAD_BEEF,
         };
-        let bytes = bincode::serialize(&sent).expect("serialize");
-        let got: Got = bincode::deserialize(&bytes).expect("a long list decodes");
+        let bytes = postcard::to_allocvec(&sent).expect("serialize");
+        let got: Got = postcard::from_bytes(&bytes).expect("a long list decodes");
         let roots: Vec<i16> = got.chords.changes.iter().map(|c| c.root).collect();
         assert_eq!(roots, [60, 61, 62, 63], "the first four, in order");
         assert_eq!(got.chords.changes[3].text, "chord 63");

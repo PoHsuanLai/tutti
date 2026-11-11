@@ -14,8 +14,8 @@ pub(crate) mod wire;
 /// Wire protocol version, exchanged in the [`BridgeMessage::Ready`] handshake.
 ///
 /// Bump on ANY change to the host↔server wire shape (a new or reordered field on
-/// a serialized type), since bincode is not self-describing and a skew mis-parses
-/// silently. Host and subprocess refuse to handshake on a mismatch.
+/// a serialized type), since the wire's codec (postcard) is not self-describing
+/// and a skew mis-parses silently. Host and subprocess refuse to handshake on a mismatch.
 ///
 /// # Why an appended field is still a bump
 ///
@@ -41,11 +41,16 @@ pub(crate) mod wire;
 ///   `inputs` and `outputs` lists of `PluginBus` (width, placement, a role
 ///   byte) and dropped the `input_topology` and `output_topology` lists that
 ///   followed `probed`, so a load reply reads differently from its first byte.
-pub const PROTOCOL_VERSION: u32 = 26;
+/// - The **codec** is the whole wire: **version 27** moved it from bincode 1
+///   (unmaintained, RUSTSEC-2025-0141) to postcard, whose integers and enum
+///   tags are varints, so every message reads differently. A version-26 server
+///   is refused at the handshake (`handshake` names a server whose first frame
+///   does not decode as one from another build).
+pub const PROTOCOL_VERSION: u32 = 27;
 
 /// Largest control-socket frame body either end will allocate for, in bytes.
 ///
-/// The wire is `[u32 big-endian length][bincode payload]`, so the length is
+/// The wire is `[u32 big-endian length][postcard payload]`, so the length is
 /// **attacker-controlled**: a corrupt or hostile peer can advertise `u32::MAX`,
 /// and an unbounded reader would answer with `vec![0u8; len]` — a 4 GiB zeroed
 /// allocation made before a single byte of body had been seen, let alone
@@ -105,7 +110,7 @@ pub const MAX_STATE_BYTES: usize = 1024 * 1024 * 1024;
 /// Payload size of one `StateChunk` on the wire.
 ///
 /// Comfortably under [`MAX_FRAME_BYTES`] so the framed message — chunk bytes
-/// plus the `seq`/`last` header and bincode's own overhead — cannot approach
+/// plus the `seq`/`last` header and the codec's own overhead — cannot approach
 /// the cap however the envelope grows. 4 MiB keeps a 1 GiB state to 256 round
 /// trips, which at local-socket speeds is not the bottleneck; the plugin's own
 /// `get_state`/`set_state` is.
@@ -190,8 +195,8 @@ mod tests {
             HostMessage::GetCurrentPreset,
         ];
         for msg in requests {
-            let bytes = bincode::serialize(&msg).expect("serialize");
-            let back: HostMessage = bincode::deserialize(&bytes).expect("deserialize");
+            let bytes = postcard::to_allocvec(&msg).expect("serialize");
+            let back: HostMessage = postcard::from_bytes(&bytes).expect("deserialize");
             assert_eq!(
                 format!("{back:?}"),
                 format!("{msg:?}"),
@@ -221,8 +226,8 @@ mod tests {
             BridgeMessage::CurrentPreset { id: None },
         ];
         for msg in responses {
-            let bytes = bincode::serialize(&msg).expect("serialize");
-            let back: BridgeMessage = bincode::deserialize(&bytes).expect("deserialize");
+            let bytes = postcard::to_allocvec(&msg).expect("serialize");
+            let back: BridgeMessage = postcard::from_bytes(&bytes).expect("deserialize");
             assert_eq!(
                 format!("{back:?}"),
                 format!("{msg:?}"),
@@ -233,8 +238,8 @@ mod tests {
 
     /// The preset frames were **appended**, leaving every older tag untouched.
     ///
-    /// bincode encodes an enum as a leading `u32` discriminant over declaration
-    /// order, so inserting a variant mid-enum silently renumbers every later
+    /// postcard encodes an enum as a leading varint discriminant over
+    /// declaration order, so inserting a variant mid-enum silently renumbers every later
     /// one — and a symmetric round-trip cannot catch it, because both ends move
     /// together. The two ends here are not one build: a host and its subprocess
     /// negotiate `PROTOCOL_VERSION` and then trust each other's bytes.
@@ -256,11 +261,15 @@ mod tests {
         /// move together.
         const V13_LAST_TAG: u32 = 14;
 
-        let tag = |bytes: &[u8]| u32::from_le_bytes(bytes[..4].try_into().unwrap());
+        // A tag under 128 is one varint byte; a larger one would need decoding.
+        let tag = |bytes: &[u8]| {
+            assert!(bytes[0] < 0x80, "a one-byte varint tag");
+            u32::from(bytes[0])
+        };
 
-        let first = bincode::serialize(&HostMessage::UnloadPlugin).expect("serialize");
+        let first = postcard::to_allocvec(&HostMessage::UnloadPlugin).expect("serialize");
         assert_eq!(tag(&first), 1, "UnloadPlugin follows LoadPlugin, the first");
-        let load = bincode::serialize(&HostMessage::LoadPlugin {
+        let load = postcard::to_allocvec(&HostMessage::LoadPlugin {
             path: PathBuf::new(),
             sample_rate: SampleRate(48_000.0),
             block_size: 64,
@@ -278,7 +287,7 @@ mod tests {
         // mutation: inserting ahead of `SetRenderMode` survives a relative
         // check and fails these.
         assert_eq!(
-            tag(&bincode::serialize(&HostMessage::SetRenderMode {
+            tag(&postcard::to_allocvec(&HostMessage::SetRenderMode {
                 mode: RenderMode::Offline,
             })
             .expect("serialize")),
@@ -286,19 +295,19 @@ mod tests {
             "v13's last request variant moved; a v13 peer would mis-decode it"
         );
         assert_eq!(
-            tag(&bincode::serialize(&HostMessage::GetPresetList).expect("serialize")),
+            tag(&postcard::to_allocvec(&HostMessage::GetPresetList).expect("serialize")),
             V13_LAST_TAG + 1,
             "GetPresetList must be the first v14 request frame"
         );
         assert_eq!(
-            tag(&bincode::serialize(&HostMessage::LoadPreset {
+            tag(&postcard::to_allocvec(&HostMessage::LoadPreset {
                 id: PresetId::Number(0),
             })
             .expect("serialize")),
             V13_LAST_TAG + 2,
         );
         assert_eq!(
-            tag(&bincode::serialize(&HostMessage::GetCurrentPreset).expect("serialize")),
+            tag(&postcard::to_allocvec(&HostMessage::GetCurrentPreset).expect("serialize")),
             V13_LAST_TAG + 3,
         );
     }
@@ -332,8 +341,8 @@ mod tests {
             },
         ];
         for msg in requests {
-            let bytes = bincode::serialize(&msg).expect("serialize");
-            let back: HostMessage = bincode::deserialize(&bytes).expect("deserialize");
+            let bytes = postcard::to_allocvec(&msg).expect("serialize");
+            let back: HostMessage = postcard::from_bytes(&bytes).expect("deserialize");
             assert_eq!(
                 format!("{back:?}"),
                 format!("{msg:?}"),
@@ -360,8 +369,8 @@ mod tests {
             },
         ];
         for msg in responses {
-            let bytes = bincode::serialize(&msg).expect("serialize");
-            let back: BridgeMessage = bincode::deserialize(&bytes).expect("deserialize");
+            let bytes = postcard::to_allocvec(&msg).expect("serialize");
+            let back: BridgeMessage = postcard::from_bytes(&bytes).expect("deserialize");
             assert_eq!(
                 format!("{back:?}"),
                 format!("{msg:?}"),
@@ -383,15 +392,19 @@ mod tests {
         /// `CloseEditor` ahead of it).
         const V16_LAST_REQUEST_TAG: u32 = 17;
 
-        let tag = |bytes: &[u8]| u32::from_le_bytes(bytes[..4].try_into().unwrap());
+        // A tag under 128 is one varint byte; a larger one would need decoding.
+        let tag = |bytes: &[u8]| {
+            assert!(bytes[0] < 0x80, "a one-byte varint tag");
+            u32::from(bytes[0])
+        };
 
         assert_eq!(
-            tag(&bincode::serialize(&HostMessage::GetCurrentPreset).expect("serialize")),
+            tag(&postcard::to_allocvec(&HostMessage::GetCurrentPreset).expect("serialize")),
             V16_LAST_REQUEST_TAG,
             "v16's last request variant moved; a v16 peer would mis-decode it"
         );
         assert_eq!(
-            tag(&bincode::serialize(&HostMessage::GetParameterText {
+            tag(&postcard::to_allocvec(&HostMessage::GetParameterText {
                 param_id: ParamId::new(0),
                 value: Normalized::of(0.0),
             })
@@ -401,7 +414,7 @@ mod tests {
         );
         assert_eq!(
             tag(
-                &bincode::serialize(&HostMessage::GetParameterValueFromText {
+                &postcard::to_allocvec(&HostMessage::GetParameterValueFromText {
                     param_id: ParamId::new(0),
                     text: String::new(),
                 })
@@ -412,10 +425,10 @@ mod tests {
 
         // The reply direction is a separate enum with its own numbering, so it
         // needs its own anchor rather than an offset from the request side.
-        let shutdown = tag(&bincode::serialize(&BridgeMessage::Shutdown).expect("serialize"));
+        let shutdown = tag(&postcard::to_allocvec(&BridgeMessage::Shutdown).expect("serialize"));
         assert_eq!(
             tag(
-                &bincode::serialize(&BridgeMessage::ParameterText { text: None })
+                &postcard::to_allocvec(&BridgeMessage::ParameterText { text: None })
                     .expect("serialize")
             ),
             shutdown + 1,
@@ -423,7 +436,7 @@ mod tests {
         );
         assert_eq!(
             tag(
-                &bincode::serialize(&BridgeMessage::ParameterValueFromText { value: None })
+                &postcard::to_allocvec(&BridgeMessage::ParameterValueFromText { value: None })
                     .expect("serialize")
             ),
             shutdown + 2,
@@ -480,8 +493,8 @@ mod tests {
             seq: 7,
             midi_out,
         };
-        let bytes = bincode::serialize(&msg).unwrap();
-        let back: BridgeMessage = bincode::deserialize(&bytes).unwrap();
+        let bytes = postcard::to_allocvec(&msg).unwrap();
+        let back: BridgeMessage = postcard::from_bytes(&bytes).unwrap();
         match back {
             BridgeMessage::AudioProcessed {
                 latency_us,
@@ -519,8 +532,8 @@ mod tests {
             PluginTail::Finite(Samples(96_000)),
             PluginTail::Unbounded,
         ] {
-            let bytes = bincode::serialize(&BridgeMessage::TailChanged { tail }).unwrap();
-            match bincode::deserialize::<BridgeMessage>(&bytes).unwrap() {
+            let bytes = postcard::to_allocvec(&BridgeMessage::TailChanged { tail }).unwrap();
+            match postcard::from_bytes::<BridgeMessage>(&bytes).unwrap() {
                 BridgeMessage::TailChanged { tail: back } => assert_eq!(back, tail),
                 other => panic!("expected TailChanged, got {other:?}"),
             }
@@ -537,7 +550,8 @@ mod tests {
 
     /// **`AudioProcessed` encodes its MIDI-out as a sequence**: the variant
     /// index, `latency_us`, `seq`, then a length and each event as
-    /// `offset` and four data words, all little-endian. The bytes are
+    /// `offset` and four data words, each integer a postcard varint (seven
+    /// bits a byte, low group first). The bytes are
     /// written out, so a layout change fails here instead of as a desync
     /// between two binaries built apart.
     ///
@@ -546,13 +560,13 @@ mod tests {
     #[test]
     fn audio_processed_midi_out_has_pinned_bytes() {
         #[rustfmt::skip]
-        const BYTES: [u8; 68] = [
-            2, 0, 0, 0, // variant
-            42, 0, 0, 0, 0, 0, 0, 0, // latency_us
-            7, 0, 0, 0, 0, 0, 0, 0, // seq
-            2, 0, 0, 0, 0, 0, 0, 0, // two events
-            5, 0, 0, 0, 0x40, 0x3C, 0x90, 0x20, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-            4, 3, 2, 1, 1, 0, 0, 0, 2, 0, 0, 0, 3, 0, 0, 0, 255, 255, 255, 255,
+        const BYTES: [u8; 25] = [
+            2, // variant
+            42, // latency_us
+            7, // seq
+            2, // two events
+            5, 0xC0, 0xF8, 0xC0, 0x84, 0x02, 0, 0, 0, // offset 5, 0x2090_3C40, 0, 0, 0
+            0x84, 0x86, 0x88, 0x08, 1, 2, 3, 0xFF, 0xFF, 0xFF, 0xFF, 0x0F, // 0x0102_0304; 1, 2, 3, u32::MAX
         ];
         let midi_out: MidiEventVec = [
             WireMidi {
@@ -571,9 +585,9 @@ mod tests {
             seq: 7,
             midi_out,
         };
-        assert_eq!(bincode::serialize(&msg).unwrap(), BYTES);
-        let back: BridgeMessage = bincode::deserialize(&BYTES).unwrap();
-        assert_eq!(bincode::serialize(&back).unwrap(), BYTES);
+        assert_eq!(postcard::to_allocvec(&msg).unwrap(), BYTES);
+        let back: BridgeMessage = postcard::from_bytes(&BYTES).unwrap();
+        assert_eq!(postcard::to_allocvec(&back).unwrap(), BYTES);
     }
 
     #[test]
@@ -617,8 +631,8 @@ mod tests {
             ..Default::default()
         });
 
-        let encoded = bincode::serialize(&msg).unwrap();
-        let decoded: HostMessage = bincode::deserialize(&encoded).unwrap();
+        let encoded = postcard::to_allocvec(&msg).unwrap();
+        let decoded: HostMessage = postcard::from_bytes(&encoded).unwrap();
 
         match decoded {
             HostMessage::ProcessAudio(data) => {
@@ -651,8 +665,8 @@ mod tests {
             state: None,
         };
 
-        let encoded = bincode::serialize(&msg).unwrap();
-        let decoded: HostMessage = bincode::deserialize(&encoded).unwrap();
+        let encoded = postcard::to_allocvec(&msg).unwrap();
+        let decoded: HostMessage = postcard::from_bytes(&encoded).unwrap();
 
         match decoded {
             HostMessage::LoadPlugin {
@@ -682,7 +696,7 @@ mod tests {
         assert!(!info.state.recording);
     }
 
-    /// The harmony inputs (chord / scale / text / int) must survive a bincode
+    /// The harmony inputs (chord / scale / text / int) must survive a postcard
     /// round-trip inside `ProcessAudioData`, including the owned `String`
     /// names.
     #[test]
@@ -717,8 +731,8 @@ mod tests {
             value: -42,
         }));
 
-        let bytes = bincode::serialize(&data).unwrap();
-        let back: ProcessAudioData = bincode::deserialize(&bytes).unwrap();
+        let bytes = postcard::to_allocvec(&data).unwrap();
+        let back: ProcessAudioData = postcard::from_bytes(&bytes).unwrap();
 
         assert_eq!(back.num_samples, 256);
         assert_eq!(back.chords.changes[0].text, "Cmaj7");
@@ -748,7 +762,7 @@ mod tests {
             parameters: vec![typed.clone(), untyped],
         };
         let BridgeMessage::ParameterList { parameters } =
-            bincode::deserialize(&bincode::serialize(&list).unwrap()).unwrap()
+            postcard::from_bytes(&postcard::to_allocvec(&list).unwrap()).unwrap()
         else {
             panic!("a ParameterList decodes as one");
         };
@@ -758,7 +772,7 @@ mod tests {
 
         let one = BridgeMessage::ParameterInfoResponse { info: Some(typed) };
         let BridgeMessage::ParameterInfoResponse { info: Some(info) } =
-            bincode::deserialize(&bincode::serialize(&one).unwrap()).unwrap()
+            postcard::from_bytes(&postcard::to_allocvec(&one).unwrap()).unwrap()
         else {
             panic!("a ParameterInfoResponse decodes as one");
         };

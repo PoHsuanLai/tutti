@@ -934,14 +934,14 @@ mod tests {
         assert_eq!(p.to_plain(f64::NEG_INFINITY), 0.0);
     }
 
-    /// The range survives the bincode wire format both IPC peers speak.
+    /// The range survives the postcard wire format both IPC peers speak.
     ///
-    /// Note what this does *not* prove: bincode is non-self-describing, so a
+    /// Note what this does *not* prove: postcard is non-self-describing, so a
     /// peer built against an older layout produces a payload that fails to
     /// decode rather than defaulting. `PROTOCOL_VERSION` governs that.
     #[cfg(feature = "serde")]
     #[test]
-    fn the_range_survives_the_bincode_round_trip() {
+    fn the_range_survives_the_postcard_round_trip() {
         for want in [
             ParamRange::Normalized { default: 0.25 },
             ParamRange::Plain {
@@ -952,8 +952,8 @@ mod tests {
         ] {
             let mut info = ParameterInfo::new(ParamId::new(1), "Gain");
             info.range = want;
-            let bytes = bincode::serialize(&info).expect("serialize");
-            let back: ParameterInfo = bincode::deserialize(&bytes).expect("deserialize");
+            let bytes = postcard::to_allocvec(&info).expect("serialize");
+            let back: ParameterInfo = postcard::from_bytes(&bytes).expect("deserialize");
             assert_eq!(back.range, want);
         }
     }
@@ -962,11 +962,11 @@ mod tests {
     /// mask bit would read as a reported `false`.
     #[cfg(feature = "serde")]
     #[test]
-    fn the_known_mask_survives_the_bincode_round_trip() {
+    fn the_known_mask_survives_the_postcard_round_trip() {
         let info = ParameterInfo::new(ParamId::new(1), "Gain")
             .with_flags(ParamFlags::READ_ONLY, ParamFlags::READ_ONLY);
-        let bytes = bincode::serialize(&info).expect("serialize");
-        let back: ParameterInfo = bincode::deserialize(&bytes).expect("deserialize");
+        let bytes = postcard::to_allocvec(&info).expect("serialize");
+        let back: ParameterInfo = postcard::from_bytes(&bytes).expect("deserialize");
         assert_eq!(back.flag(ParamFlags::READ_ONLY), Some(true));
         assert_eq!(back.flag(ParamFlags::AUTOMATABLE), None);
     }
@@ -975,10 +975,10 @@ mod tests {
     /// consumed in the host, so it is only useful if it crosses.
     #[cfg(feature = "serde")]
     #[test]
-    fn the_group_survives_the_bincode_round_trip() {
+    fn the_group_survives_the_postcard_round_trip() {
         let info = ParameterInfo::new(ParamId::new(1), "Mix").with_group("Ring Modulation");
-        let bytes = bincode::serialize(&info).expect("serialize");
-        let back: ParameterInfo = bincode::deserialize(&bytes).expect("deserialize");
+        let bytes = postcard::to_allocvec(&info).expect("serialize");
+        let back: ParameterInfo = postcard::from_bytes(&bytes).expect("deserialize");
         assert_eq!(back.group, "Ring Modulation");
         assert_eq!(back.qualified_name(), "Ring Modulation / Mix");
     }
@@ -1178,7 +1178,7 @@ mod measures_serde_tests {
         assert_eq!(p.role, None);
     }
 
-    /// A typed unit and a role survive JSON and the IPC's bincode.
+    /// A typed unit and a role survive JSON and the IPC's postcard.
     ///
     /// Mutation (run): the role serialized as `Some(0)` whatever it is
     /// (`role.map(|_| 0u16)`) → it reads back as `Cutoff`, and this test fails.
@@ -1196,7 +1196,7 @@ mod measures_serde_tests {
             (Some(ParamUnit::Pan), Some(UnitParam::Pan))
         );
 
-        let bin: ParameterInfo = bincode::deserialize(&bincode::serialize(&p).unwrap()).unwrap();
+        let bin: ParameterInfo = postcard::from_bytes(&postcard::to_allocvec(&p).unwrap()).unwrap();
         assert_eq!(
             (bin.measures, bin.role),
             (Some(ParamUnit::Pan), Some(UnitParam::Pan))

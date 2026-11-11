@@ -15,7 +15,7 @@ fn events_round_trip_with_deltas() {
     let events = [
         ClipEvent {
             delta_ticks: 0,
-            event: midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000),
+            event: midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, midi::MID_VELOCITY),
         },
         ClipEvent {
             delta_ticks: 240,
@@ -47,7 +47,7 @@ fn to_bytes_re_encodes_what_from_bytes_parsed() {
     let events = [
         ClipEvent::new(
             0,
-            midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000),
+            midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, midi::MID_VELOCITY),
         ),
         ClipEvent::new(
             240,
@@ -82,7 +82,7 @@ fn large_delta_writes_dcs_noop_restarts() {
         480,
         &[ClipEvent {
             delta_ticks: big,
-            event: midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000),
+            event: midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, midi::MID_VELOCITY),
         }],
     );
     let words = body_words(&bytes);
@@ -174,7 +174,7 @@ fn large_delta_round_trips() {
     let events = [
         ClipEvent {
             delta_ticks: 3_000_000,
-            event: midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000),
+            event: midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, midi::MID_VELOCITY),
         },
         ClipEvent {
             delta_ticks: DCS_MAX, // exactly one full field — no restart needed
@@ -193,7 +193,7 @@ fn exactly_max_delta_needs_no_restart() {
         480,
         &[ClipEvent {
             delta_ticks: DCS_MAX,
-            event: midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000),
+            event: midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, midi::MID_VELOCITY),
         }],
     );
     let stream = body_words(&bytes)[7..].to_vec();
@@ -209,7 +209,7 @@ fn beats_round_trip_through_the_beat_facade() {
         [
             (
                 Beat(0.0),
-                midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000),
+                midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, midi::MID_VELOCITY),
             ),
             (
                 Beat(2.0),
@@ -246,7 +246,7 @@ fn beat_facade_orders_unsorted_input() {
             ),
             (
                 Beat(0.0),
-                midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000),
+                midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, midi::MID_VELOCITY),
             ),
         ],
     );
@@ -272,7 +272,7 @@ fn header_round_trips_tempo_and_time_signature() {
         header,
         &[ClipEvent::new(
             0,
-            midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000),
+            midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, midi::MID_VELOCITY),
         )],
     );
 
@@ -343,7 +343,7 @@ fn errors_distinguish_failure_modes() {
 /// never written. Presence was checked; the value was not.
 #[test]
 fn a_zero_tick_unit_is_rejected_rather_than_dividing_by_it() {
-    let ev = midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000);
+    let ev = midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, midi::MID_VELOCITY);
     let bytes = write_clip_file(0, &[ClipEvent::new(240, ev)]);
     assert_eq!(
         ParsedClipFile::from_bytes(&bytes),
@@ -558,7 +558,7 @@ fn notes_left_open_at_end_of_clip_are_dropped() {
     let notes = notes_from([
         (
             Beat(0.0),
-            midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000),
+            midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, midi::MID_VELOCITY),
         ),
         (
             Beat(1.0),
@@ -567,7 +567,7 @@ fn notes_left_open_at_end_of_clip_are_dropped() {
         // Never closed — its duration is unknowable, so it is not a note.
         (
             Beat(2.0),
-            midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 64, 0x8000),
+            midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 64, midi::MID_VELOCITY),
         ),
     ]);
 
@@ -580,7 +580,7 @@ fn non_note_events_do_not_disturb_pairing() {
     let notes = notes_from([
         (
             Beat(0.0),
-            midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000),
+            midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, midi::MID_VELOCITY),
         ),
         (
             Beat(0.5),

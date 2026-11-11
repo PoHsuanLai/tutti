@@ -303,7 +303,11 @@ fn a_host_set_modes_reset_goes_ahead_of_the_blocks_events() {
         "the reset's six and the wire's six: {seen:?}"
     );
     for channel in 1..=6 {
-        assert_eq!(ranges.semitones(channel), 12.0, "channel {channel}");
+        assert_eq!(
+            ranges.semitones(tutti_ump::MidiChannel::of(channel)),
+            12.0,
+            "channel {channel}"
+        );
     }
 }
 
@@ -340,7 +344,11 @@ fn a_member_bend_range_fans_out_over_the_zones_ports() {
     }
     assert_eq!(range_ports, (1..=7).collect::<Vec<_>>(), "{seen:?}");
     for channel in 1..=7 {
-        assert_eq!(ranges.semitones(channel), 12.0, "channel {channel}");
+        assert_eq!(
+            ranges.semitones(tutti_ump::MidiChannel::of(channel)),
+            12.0,
+            "channel {channel}"
+        );
     }
     let notes: Vec<(usize, u64)> = seen
         .iter()

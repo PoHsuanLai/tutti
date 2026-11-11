@@ -261,7 +261,7 @@ fn process_with_midi_does_not_allocate() {
 
     let on_event = [(
         at(0),
-        fx::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000),
+        fx::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, fx::MID_VELOCITY),
     )];
     let off_event = [(
         at(0),
@@ -1014,7 +1014,7 @@ fn a_param_flood_keeps_note_offs_and_final_values() {
     let notes = [
         (
             at(0),
-            fx::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000),
+            fx::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, fx::MID_VELOCITY),
         ),
         (
             at(0),

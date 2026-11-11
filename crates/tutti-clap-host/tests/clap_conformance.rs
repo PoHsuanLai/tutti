@@ -179,7 +179,7 @@ fn host_sorts_events_by_sample_offset() {
     let midi = [
         (
             at(200),
-            fx::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000),
+            fx::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, fx::MID_VELOCITY),
         ),
         (
             at(50),
@@ -263,7 +263,7 @@ fn host_never_delivers_an_event_time_outside_the_block() {
     params.add_change(REAL_PARAM_ID, 64, 0.25); // in range → untouched
     let midi = [(
         at(9_999),
-        fx::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000),
+        fx::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, fx::MID_VELOCITY),
     )];
     let ctx = ClapProcessContext {
         midi: &midi,

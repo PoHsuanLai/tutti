@@ -22,7 +22,7 @@ fn rpn(channel: u8, rpn: Rpn, semitones: u8) -> Ump {
 fn only_the_per_note_sensitivity_sets_a_channels_range() {
     let mut ranges = PerNoteBendRanges::default();
     let channel_wide = rpn(5, Rpn::PITCH_BEND_SENSITIVITY, 2);
-    let note = midi::note_on(MidiGroup::FIRST, MidiChannel::of(5), 60, 0x8000);
+    let note = midi::note_on(MidiGroup::FIRST, MidiChannel::of(5), 60, midi::MID_VELOCITY);
     assert!(!ranges.observe(&channel_wide));
     assert!(!ranges.observe(&note));
     assert_eq!(ranges, PerNoteBendRanges::default());
@@ -30,6 +30,10 @@ fn only_the_per_note_sensitivity_sets_a_channels_range() {
     assert!(ranges.observe(&rpn(5, Rpn::PER_NOTE_PITCH_BEND_SENSITIVITY, 12)));
     for channel in 0..16 {
         let want = if channel == 5 { 12.0 } else { 48.0 };
-        assert_eq!(ranges.semitones(channel), want, "channel {channel}");
+        assert_eq!(
+            ranges.semitones(MidiChannel::of(channel)),
+            want,
+            "channel {channel}"
+        );
     }
 }

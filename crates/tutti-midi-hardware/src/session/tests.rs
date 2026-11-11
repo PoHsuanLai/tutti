@@ -40,7 +40,12 @@ fn note() -> UmpAt {
     use tutti_ump::{MidiChannel, MidiGroup};
     (
         Offset::ZERO,
-        tutti_fixtures::midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000),
+        tutti_fixtures::midi::note_on(
+            MidiGroup::FIRST,
+            MidiChannel::FIRST,
+            60,
+            tutti_fixtures::midi::MID_VELOCITY,
+        ),
     )
 }
 

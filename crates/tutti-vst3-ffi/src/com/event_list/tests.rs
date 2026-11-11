@@ -118,10 +118,7 @@ fn data_sysex(sample_offset: i32, bytes: &[u8]) -> CEvent {
 }
 
 fn framed(payload: &[u8]) -> Vec<u8> {
-    let mut v = vec![0xF0];
-    v.extend_from_slice(payload);
-    v.push(0xF7);
-    v
+    tutti_ump::frame(payload).collect()
 }
 
 fn sysex_payload(len: usize) -> Vec<u8> {

@@ -4,14 +4,12 @@ use tutti_graph::UmpAt;
 use tutti_midi_protocol::{
     bend_u32_to_signed_f32, u16_to_unit_f32, u32_to_unit_f32, unit_f32_to_u16, unit_f32_to_u32,
 };
-use tutti_midi_protocol::{midi1, narrow, widen, widen_message};
+use tutti_midi_protocol::{midi1, narrow, widen, widen_bytes};
 use tutti_plugin_types::PerNoteBendRanges;
-use tutti_plugin_types::{
-    NoteExpressionType, NoteExpressionValue, WireMidi, note_id_for, sysex_packets,
-};
+use tutti_plugin_types::{NoteExpressionType, NoteExpressionValue, WireMidi, note_id_for};
 use tutti_ump::{
-    Address, Attribute, Message, Midi1Bytes, Midi1Parser, MidiChannel, MidiGroup, NoteNumber,
-    RegisteredPerNoteController, Ump, Unknown, Voice1, Voice2, decode as decode_ump,
+    Address, CCNumber, Message, Midi1Bytes, MidiChannel, MidiGroup, NoteNumber, SysexMessage, Ump,
+    Unknown, Voice1, Voice2, decode as decode_ump,
 };
 
 use super::{
@@ -129,7 +127,7 @@ impl MidiEncoder {
                     sample_offset: offset,
                     note_id: note_id_for(channel, note),
                     expression_type: NoteExpressionType::Tuning,
-                    value: tuning_expression(bend, self.ranges.semitones(ch)),
+                    value: tuning_expression(bend, self.ranges.semitones(channel)),
                 }
                 .to_event()
             }
@@ -138,7 +136,7 @@ impl MidiEncoder {
                 controller,
                 value,
             } => {
-                let expression_type = registered_controller_expression(controller)?;
+                let expression_type = per_note_controller_expression(controller.number())?;
                 NoteExpressionValue {
                     sample_offset: offset,
                     note_id: note_id_for(channel, note),
@@ -238,47 +236,23 @@ pub(super) fn midi1_data(sample_offset: i32, bytes: Midi1Bytes) -> Event {
     )
 }
 
-/// The VST3 note-expression dimension a MIDI-2 assignable per-note controller
-/// corresponds to: the usual CC assignments, volume 7, pan 10, brightness 74.
-fn per_note_controller_expression(index: u8) -> Option<NoteExpressionType> {
-    match index {
-        7 => Some(NoteExpressionType::Volume),
-        10 => Some(NoteExpressionType::Pan),
-        74 => Some(NoteExpressionType::Brightness),
-        _ => None,
-    }
-}
+/// The per-note controllers with a VST3 note expression, and the expression
+/// each is: the usual CC assignments, volume 7, pan 10, brightness 74 (CC74,
+/// sound controller #5). The one table the assignable and the registered
+/// per-note controllers share.
+const PER_NOTE_EXPRESSIONS: [(CCNumber, NoteExpressionType); 3] = [
+    (CCNumber::VOLUME, NoteExpressionType::Volume),
+    (CCNumber::PAN, NoteExpressionType::Pan),
+    (CCNumber::BRIGHTNESS, NoteExpressionType::Brightness),
+];
 
-/// The same for a registered per-note controller. Volume, pan and brightness
-/// (CC74, sound controller #5) have a VST3 counterpart; the rest are dropped.
-fn registered_controller_expression(
-    controller: RegisteredPerNoteController,
-) -> Option<NoteExpressionType> {
-    match controller {
-        RegisteredPerNoteController::Volume => Some(NoteExpressionType::Volume),
-        RegisteredPerNoteController::Pan => Some(NoteExpressionType::Pan),
-        RegisteredPerNoteController::Brightness => Some(NoteExpressionType::Brightness),
-        RegisteredPerNoteController::Modulation
-        | RegisteredPerNoteController::Breath
-        | RegisteredPerNoteController::Pitch
-        | RegisteredPerNoteController::Balance
-        | RegisteredPerNoteController::Expression
-        | RegisteredPerNoteController::SoundVariation
-        | RegisteredPerNoteController::Timbre
-        | RegisteredPerNoteController::ReleaseTime
-        | RegisteredPerNoteController::AttackTime
-        | RegisteredPerNoteController::DecayTime
-        | RegisteredPerNoteController::VibratoRate
-        | RegisteredPerNoteController::VibratoDepth
-        | RegisteredPerNoteController::VibratoDelay
-        | RegisteredPerNoteController::SoundController10
-        | RegisteredPerNoteController::ReverbSend
-        | RegisteredPerNoteController::Effects2Depth
-        | RegisteredPerNoteController::ChorusSend
-        | RegisteredPerNoteController::Effects4Depth
-        | RegisteredPerNoteController::Effects5Depth
-        | RegisteredPerNoteController::Reserved(_) => None,
-    }
+/// The VST3 note-expression dimension a per-note controller number
+/// corresponds to ([`PER_NOTE_EXPRESSIONS`]); the rest are dropped.
+fn per_note_controller_expression(number: u8) -> Option<NoteExpressionType> {
+    PER_NOTE_EXPRESSIONS
+        .iter()
+        .find(|(controller, _)| controller.get() == number)
+        .map(|&(_, expression)| expression)
 }
 
 /// A VST3 `i16` channel field as a 4-bit MIDI channel.
@@ -286,31 +260,22 @@ fn registered_controller_expression(
     clippy::cast_possible_truncation,
     reason = "masked to 4 bits, so the narrowing cannot lose a bit the mask keeps"
 )]
-pub(super) fn midi_channel(raw: i16) -> u8 {
-    (raw as u8) & 0x0F
+pub(super) fn midi_channel(raw: i16) -> MidiChannel {
+    MidiChannel::masked(raw as u8)
 }
 
-/// A VST3 `i16` pitch field as a 7-bit MIDI note number.
+/// A VST3 `i16` pitch field as a 7-bit note number.
 #[allow(
     clippy::cast_possible_truncation,
     reason = "masked to 7 bits, so the narrowing cannot lose a bit the mask keeps"
 )]
-fn midi_note(raw: i16) -> u8 {
-    (raw as u8) & 0x7F
-}
-
-/// A VST3 `i16` pitch field as a note number (`None` is never taken: it is
-/// masked to 7 bits).
-fn note_number(raw: i16) -> Option<NoteNumber> {
-    NoteNumber::new(midi_note(raw))
+fn note_number(raw: i16) -> NoteNumber {
+    NoteNumber::masked(raw as u8)
 }
 
 /// Group 1 and the VST3 channel field, the address of a decoded event.
 fn address(channel: i16) -> Address {
-    Address {
-        group: MidiGroup::FIRST,
-        channel: MidiChannel::masked(midi_channel(channel)),
-    }
+    Address::first(midi_channel(channel))
 }
 
 /// See [`EventExt::to_midi`](super::EventExt::to_midi).
@@ -321,24 +286,16 @@ pub(super) fn decode(event: &Event) -> Option<WireMidi> {
     let built = match &event.payload {
         Payload::NoteOn(e) => Ump::from(Message::Midi2(
             address(e.channel),
-            Voice2::NoteOn {
-                note: note_number(e.pitch)?,
-                velocity: unit_f32_to_u16(e.velocity),
-                attribute: Attribute::None,
-            },
+            Voice2::note_on(note_number(e.pitch), unit_f32_to_u16(e.velocity)),
         )),
         Payload::NoteOff(e) => Ump::from(Message::Midi2(
             address(e.channel),
-            Voice2::NoteOff {
-                note: note_number(e.pitch)?,
-                velocity: unit_f32_to_u16(e.velocity),
-                attribute: Attribute::None,
-            },
+            Voice2::note_off(note_number(e.pitch), unit_f32_to_u16(e.velocity)),
         )),
         Payload::PolyPressure(e) => Ump::from(Message::Midi2(
             address(e.channel),
             Voice2::PolyPressure {
-                note: note_number(e.pitch)?,
+                note: note_number(e.pitch),
                 value: unit_f32_to_u32(e.pressure),
             },
         )),
@@ -352,17 +309,16 @@ pub(super) fn decode(event: &Event) -> Option<WireMidi> {
             // single packet; a message too long for one packet is dropped, not truncated,
             // and so is one with a payload byte of 128 or more (malformed).
             if bytes[0] == 0xF0 {
-                let mut packets = sysex_packets(bytes)?;
+                let mut packets = SysexMessage::new(bytes)?.packets(MidiGroup::FIRST);
                 if packets.len() != 1 {
                     return None;
                 }
                 return packets.next().map(|ump| WireMidi { offset: frame, ump });
             }
             // Widened to Channel Voice 2 here. System messages pass through unchanged.
-            let message = Midi1Parser::message(MidiGroup::FIRST, bytes)?;
             return Some(WireMidi {
                 offset: frame,
-                ump: Ump::from(widen_message(message)),
+                ump: widen_bytes(MidiGroup::FIRST, bytes)?,
             });
         }
         Payload::LegacyCcOut(e) => return super::legacy_cc::decode(e, frame),

@@ -24,8 +24,8 @@ use vst3::Steinberg::Vst::{
     ParamID,
 };
 
-use tutti_midi_protocol::widen;
-use tutti_ump::{Message, Ump, Unknown, Voice2, decode};
+use tutti_midi_protocol::channel_voice;
+use tutti_ump::{Address, MidiChannel, Ump, Voice2};
 
 use crate::events::{InputEvents, Stager};
 use crate::types::ParameterChanges;
@@ -124,20 +124,19 @@ impl MidiCcMapping {
     }
 
     /// Looks up the `ParamID` a given channel/controller drives, or `None` if
-    /// the slot is unmapped or out of range.
+    /// the slot is unmapped or the controller is out of range.
     ///
     /// `controller` is a VST3 `ControllerNumbers` index: 0-127 for standard
     /// CCs, [`CTRL_AFTERTOUCH`] (128) for channel pressure, [`CTRL_PITCH_BEND`]
     /// (129) for pitch bend.
-    pub(crate) fn lookup(&self, channel: u8, controller: usize) -> Option<ParamID> {
+    pub(crate) fn lookup(&self, channel: MidiChannel, controller: usize) -> Option<ParamID> {
         if self.table.is_empty() {
             return None;
         }
-        let channel = channel as usize;
-        if channel >= NUM_CHANNELS || controller >= NUM_CONTROLLERS {
+        if controller >= NUM_CONTROLLERS {
             return None;
         }
-        let id = self.table[channel * NUM_CONTROLLERS + controller];
+        let id = self.table[usize::from(channel.get()) * NUM_CONTROLLERS + controller];
         (id != NO_PARAM_ID).then_some(id)
     }
 }
@@ -146,32 +145,19 @@ impl MidiCcMapping {
 /// a VST3 `IMidiMapping` parameter expects, or `None` if the event is not a
 /// mappable controller (CC / channel pressure / pitch bend).
 ///
-/// The packet is read through [`decode`]; a MIDI 1.0 message is widened
-/// ([`widen`]) so MIDI-2 controllers keep their full width here. The group is
+/// The packet is read through [`channel_voice`]; a MIDI 1.0 message is widened
+/// so MIDI-2 controllers keep their full width here. The group is
 /// ignored: `IMidiMapping` is addressed by bus and channel only. Values are
 /// normalized to the VST3 host contract at this edge:
 /// - CC / channel pressure: 32-bit → unit `0.0..=1.0`.
 /// - Pitch bend: signed `-1.0..=1.0` (center `0.0`) → `0.0..=1.0` (center
 ///   `0.5`), matching what the plugin's parameter funnel expects.
-pub(crate) fn midi_to_mapped_controller(ump: &Ump) -> Option<(u8, usize, f64)> {
+pub(crate) fn midi_to_mapped_controller(ump: &Ump) -> Option<(MidiChannel, usize, f64)> {
     use tutti_midi_protocol::{bend_u32_to_signed_f32, u32_to_unit_f32};
 
-    let (channel, voice) = match decode(*ump) {
-        Ok(Message::Midi1(address, voice)) => (address.channel, widen(voice)),
-        Ok(Message::Midi2(address, voice)) => (address.channel, voice),
-        // Not channel voice, or a packet `decode` cannot frame: there is no
-        // controller in it, and the caller keeps the event as MIDI.
-        Ok(
-            Message::Utility(_)
-            | Message::System(..)
-            | Message::Sysex7(..)
-            | Message::Data128(..)
-            | Message::Flex(..)
-            | Message::Stream(_),
-        )
-        | Err(Unknown(_)) => return None,
-    };
-    let channel = channel.get();
+    // Not channel voice, or a packet `decode` cannot frame: there is no
+    // controller in it, and the caller keeps the event as MIDI.
+    let (Address { channel, .. }, voice) = channel_voice(*ump)?;
     match voice {
         Voice2::ControlChange { controller, value } => Some((
             channel,

@@ -888,7 +888,12 @@ mod tests {
     fn note(offset: u32) -> UmpAt {
         (
             Offset::new(offset as usize, Samples(512)).unwrap(),
-            tutti_fixtures::midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000),
+            tutti_fixtures::midi::note_on(
+                MidiGroup::FIRST,
+                MidiChannel::FIRST,
+                60,
+                tutti_fixtures::midi::MID_VELOCITY,
+            ),
         )
     }
 

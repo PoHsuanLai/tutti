@@ -26,6 +26,11 @@ fn send_jr_timestamp_word() {
 fn send_multiword_note_on() {
     // A MIDI 2.0 channel-voice note-on is two words.
     let src = UmpVirtualSource::new("Test UMP Note").expect("creates");
-    let note = tutti_fixtures::midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000);
+    let note = tutti_fixtures::midi::note_on(
+        MidiGroup::FIRST,
+        MidiChannel::FIRST,
+        60,
+        tutti_fixtures::midi::MID_VELOCITY,
+    );
     assert!(src.send_ump(note.words()).is_ok());
 }

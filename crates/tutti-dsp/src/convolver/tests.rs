@@ -1,4 +1,6 @@
 use super::*;
+use tutti_fixtures::signal::{impulse, impulse_at, peak};
+use tutti_types::Samples;
 
 /// Direct (naive) convolution — the definition, used as ground truth.
 ///
@@ -50,8 +52,7 @@ fn output_matches_direct_convolution() {
     let ir: Vec<f32> = vec![0.7, -0.35, 0.2, 0.9, -0.1, 0.05, 0.42, -0.6];
     // Input with an impulse, silence, and varying material — the impulse
     // alone would only prove the IR is stored, not that mixing is right.
-    let mut x = vec![0.0f32; 600];
-    x[3] = 1.0;
+    let mut x = impulse_at(Samples(600), Samples(3));
     x[100] = -0.5;
     for (i, s) in x.iter_mut().enumerate().skip(200).take(300) {
         *s = ((i as f32) * 0.1).sin() * 0.6;
@@ -487,7 +488,7 @@ fn reset_clears_the_convolution_tail() {
 
 /// A noise-like signal in `-1..=1`, not periodic in any block length used here.
 fn noise(len: usize) -> Vec<f32> {
-    crate::contract::noise(0x2545_f491, len, 1.0)
+    tutti_fixtures::noise(0x2545_f491, len)
 }
 
 /// An IR of `len` taps that does not decay, so a late partition carries
@@ -581,9 +582,7 @@ fn non_uniform_output_equals_direct_convolution() {
                         got[i]
                     );
                 }
-                let rest = got[want.len()..]
-                    .iter()
-                    .fold(0.0f32, |a, &s| a.max(s.abs()));
+                let rest = peak(&got[want.len()..]);
                 assert!(
                     rest <= tol,
                     "parts {parts:?}, {len} taps: ringing after the tail {rest}"
@@ -629,8 +628,7 @@ fn an_impulse_gives_the_ir_at_the_declared_latency() {
     for (head, parts) in LAYOUTS {
         let last = parts[parts.len() - 1];
         let ir = flat_ir(boundary_lengths(head, parts).into_iter().max().unwrap());
-        let mut x = vec![0.0f32; 11];
-        x[3] = 1.0;
+        let x = impulse_at(Samples(11), Samples(3));
         let mut c = Convolver::with_parts(&ir, head, parts);
         assert_eq!(c.latency(), head);
         let lat = c.latency();
@@ -675,13 +673,11 @@ fn the_tail_reaches_the_output() {
             last.start + last.part,
             last.start + last.part + 1,
         ] {
-            let mut ir = vec![0.0f32; len];
-            ir[len - 1] = 1.0;
+            let ir = impulse_at(Samples(len), Samples(len - 1));
             let mut c = Convolver::with_parts(&ir, head, parts);
             let spectra = Arc::clone(c.spectra());
             assert_eq!(spectra.levels.len(), parts.len(), "the tail level exists");
-            let mut x = vec![0.0f32; 1];
-            x[0] = 1.0;
+            let x = impulse(Samples(1));
             let got = render(&mut c, &x, &[3, 50]);
             for (n, &s) in got.iter().enumerate() {
                 let want = if n == len - 1 { 1.0 } else { 0.0 };
@@ -926,9 +922,7 @@ fn split_output_equals_direct_convolution() {
                         unsplit[i]
                     );
                 }
-                let rest = got[want.len()..]
-                    .iter()
-                    .fold(0.0f32, |a, &s| a.max(s.abs()));
+                let rest = peak(&got[want.len()..]);
                 assert!(
                     rest <= tol,
                     "parts {parts:?}/{max_sub}, {len} taps: ringing after the tail {rest}"

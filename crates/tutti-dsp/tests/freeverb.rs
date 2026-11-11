@@ -5,14 +5,14 @@
 //! Nothing here is read from another reverb's render.
 
 use tutti_dsp::Freeverb;
-use tutti_types::{Db, SampleRate};
+use tutti_fixtures::signal::{impulse as impulse_signal, peak};
+use tutti_types::{Db, SampleRate, Samples};
 
 const RATE: SampleRate = SampleRate(44_100.0);
 
 /// The wet response to a unit impulse, `frames` long.
 fn impulse(reverb: &mut Freeverb, frames: usize) -> (Vec<f32>, Vec<f32>) {
-    let mut input = vec![0.0f32; frames];
-    input[0] = 1.0;
+    let input = impulse_signal(Samples(frames));
     let (mut left, mut right) = (vec![0.0; frames], vec![0.0; frames]);
     reverb.process(&input, &mut left, &mut right);
     (left, right)
@@ -73,10 +73,7 @@ fn the_ring_out_bound_covers_the_response() {
     let bound = (reverb.ring_out(floor).get() * 44_100.0).ceil() as usize;
     let frames = bound + 20_000;
     let (left, right) = impulse(&mut reverb, frames);
-    let peak = left
-        .iter()
-        .chain(&right)
-        .fold(0.0f32, |m, s| m.max(s.abs()));
+    let peak = peak(&left).max(peak(&right));
     let last = |c: &[f32]| c.iter().rposition(|s| s.abs() >= 1e-3 * peak);
     let rang = last(&left).max(last(&right)).expect("it rings") + 1;
     println!("RINGOUT freeverb rang {rang} frames, bound {bound}");

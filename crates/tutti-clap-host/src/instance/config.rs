@@ -125,7 +125,7 @@ pub(crate) struct RangeTable {
 /// Per-port channel layouts for audio IO.
 /// E.g. `inputs = [Stereo]` for one stereo port, `[Stereo, Stereo]` for two.
 ///
-/// One [`ChannelLayout`] per bus, not a raw count: the layout survives from
+/// One [`ChannelLayout`](tutti_plugin_types::ChannelLayout) per bus, not a raw count: the layout survives from
 /// `layout_from_clap_port` (which reads CLAP's `port_type` tag, so a mono or
 /// stereo port is *named* rather than inferred from its width) all the way to
 /// the process scratch. The raw `u32` reappears only where the CLAP C ABI
@@ -139,7 +139,7 @@ pub(crate) struct PortLayout {
 impl PortLayout {
     /// Channel count summed across every input port.
     ///
-    /// Stays `usize`, not a [`ChannelLayout`]: a sum across buses is a size for
+    /// Stays `usize`, not a [`ChannelLayout`](tutti_plugin_types::ChannelLayout): a sum across buses is a size for
     /// the flat channel pool, not the layout of any one bus.
     pub fn input_channel_total(&self) -> usize {
         self.inputs.iter().map(|c| c.count() as usize).sum()

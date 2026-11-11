@@ -543,6 +543,8 @@ pub struct Pair {
     /// Declared costs (`Shape::cost`) by key; every other node declares
     /// none (`Cost::Heavy`).
     pub costs: BTreeMap<NodeKey, tutti_graph::Cost>,
+    /// The graph last switched to, for the editor's spec (`set_mode`).
+    graph: Option<ValidGraph>,
 }
 
 impl Pair {
@@ -559,6 +561,7 @@ impl Pair {
             inputs: 0,
             max_block,
             costs: BTreeMap::new(),
+            graph: None,
         }
     }
 
@@ -637,6 +640,7 @@ impl Pair {
             .collect();
         self.outputs = graph.topology().outputs.len();
         self.inputs = graph.topology().inputs.count() as usize;
+        self.graph = Some(graph.clone());
         self.plan = Some(plan.clone());
         // The editor sends each weighted lane's cell from its own spec, and
         // `set_edge_gain` checks the edge against it: with edge gains in
@@ -646,6 +650,13 @@ impl Pair {
             let live = self.editor.spec_mut();
             live.topology = graph.topology().clone();
             live.gains = graph.gains().clone();
+        }
+        // And `set_mode` checks the node against it, and a unit placed now
+        // starts in the spec's mode.
+        if !graph.modes().is_empty() || !self.editor.spec_mut().modes.is_empty() {
+            let live = self.editor.spec_mut();
+            live.topology = graph.topology().clone();
+            live.modes = graph.modes().clone();
         }
         // Back on the control side, where the box and what it retired are
         // freed.
@@ -668,6 +679,21 @@ impl Pair {
             .set_edge_gain(id, base)
             .expect("the edge has a gain entry");
         self.reference.set_edge_gain(id, base);
+    }
+
+    /// Move `key`'s mode in both, as a host clicking bypass: the editor's
+    /// `set_mode` (a store, no commit) and the reference's.
+    pub fn set_mode(&mut self, key: NodeKey, mode: tutti_graph::NodeMode) {
+        // `set_mode` checks the node against the editor's spec, which a
+        // harness that compiles itself has left empty.
+        if !self.editor.spec().topology.nodes.contains_key(&key) {
+            let graph = self.graph.as_ref().expect("a graph was switched to");
+            self.editor.spec_mut().topology = graph.topology().clone();
+        }
+        self.editor
+            .set_mode(key, mode)
+            .expect("the harness's editor holds the graph's nodes");
+        self.reference.set_mode(key, mode);
     }
 
     /// Move edge `id`'s range in both: the editor's `set_edge_gain_range` (a

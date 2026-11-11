@@ -6753,6 +6753,80 @@ says so cheaply, and it is not a mode.
 Mutations: call `process` while parked; skip the `reset`; skip the warm-up;
 fade with `EqualPower`; read the cell per op.
 
+**As built (M1).** The graph side of the above, with the choices the text
+left open.
+
+- **Types.** `NodeMode` and `MODE_DECLICK` (`tutti-graph`), `GraphSpec::modes`
+  and `ValidGraph::modes` (`GraphInvalid::ModeWithoutNode` for a node that is
+  not there), `Editor::set_mode` and `mode` (the Editor entry is in M1 because
+  the tests need it; the session's `Graph::set_mode` and `mode` and the hosts
+  are M2). `ModeError` has `NoSuchNode` only: `Unplaced` arrives with the
+  declared buses (B3), and until then the mapping is the width rule above.
+  The cell is an `AtomicU8` the editor keeps per key (`mode_cells`) and ships
+  with the unit in the commit that places it (`Commit::build`), and
+  `set_mode` is a store plus the spec; a commit that differs only in modes
+  sends nothing (`same_but_ranges` ignores them), and an edit of
+  `spec_mut().modes` lands at the next commit as a range does. A fork copies
+  `modes`, and a unit placed in any commit starts **steady** in the spec's
+  mode.
+- **The snapshot** is `ModeState::snapshot`, run for every unit of the plan
+  on the calling thread before the first op of the block, serial or parallel;
+  it also decides, once, whether the block's op is the plain one (steady
+  Active, no line, no event inputs), so a node with no latency and no event
+  inputs pays one branch.
+- **Weights, not a direction.** The fade state is the pair `(y, x)` of the
+  node's output and the aligned input, steady `(1, 0)`, `(0, 1)` or
+  `(0, 0)`; a toggle moves them from where they are to the new mode's along
+  `g(k) = CrossfadeCurve::EqualAmplitude.gains(k, 256).0`,
+  `w = w_from + (w_to - w_from) * g(k)`. From a steady mode that is exactly
+  the doc's `y * g_out + x̂ * g_in` (`1 + (0 - 1) * g` is `1 - g`), and it is
+  what makes Muted and Bypassed → Muted fades, and a flip mid-fade, one rule.
+  A term whose weight is zero at both ends is left out of the sum (`0 * NaN`),
+  and a steady mode copies, leaves or fills, so a steady bypass is bit
+  exact. The curve is the doc's, and the law is `tutti_curve`'s
+  `Law::Smootherstep` through it: no copy.
+- **Muted** leaves **event outputs** alone (the doc silences audio only).
+  Bypassed → Muted resets the node (it was parked) and does not warm it up:
+  none of its output is heard.
+- **Reset** is called when the toggle leaves a **parked** (stale) node, not on
+  every toggle: a node that was still fading out when it is toggled back kept
+  running, and is not reset. A unit that begins bypassed (a fork, a spec) is
+  stale. The warm-up is `L` frames and only toward Active.
+- **Parked** is: Bypassed, fade done, and nothing held on an event input. A
+  parked node's **params go on stepping** (a skipped node's do), so a source
+  that spoke while it was out is heard. A replace crossfade running at a
+  parked node waits (its `done` does not move) and finishes when the node is
+  called again.
+- **The line and its memory.** The aligned-input path is one `AudioRing` per
+  channel the bypass passes, `min(inputs, outputs)` of the main bus (not
+  every input: the rest are never read), built in `ModeState::new` in the
+  commit's control-side build, and rebuilt for a kept unit whose declared
+  latency changed from `Delta::cuts` (the old line returns in the commit box).
+  It is fed every block before the node's call (an in-place node overwrites
+  its input). Fades and warm-ups also need `x̂` beside the output, so every
+  unit with a channel to pass owns a scratch `Arena` of `channels × max_block`,
+  allocated with the unit; that is the cost the doc does not mention (a few
+  KiB per effect), and with it nothing allocates on the audio thread
+  (`tests/rt_no_alloc.rs`, both executors).
+- **Events.** A held note on an event input is tracked by a `Held` per event
+  input port of every unit with event inputs (8 KiB each), fed with what the
+  node's call is sent (flushed events and scheduled commands included). From
+  the toggle to Bypassed the node is sent only the closes (drained into the
+  op's overlay, as many as it takes, the rest next block), later events and
+  commands are discarded, and the node is not parked, nor skipped, until none
+  is held. What the node holds on its **outputs** when it is parked is owed
+  (`Keys::owe_held`) and written ahead on its event outputs in the parked
+  blocks, so a bypassed source ends its notes downstream; `Keys::size` now
+  makes `owed` for every note-carrying unit.
+- **Inert nodes** (no audio and no event outputs: a meter, a tap) are never
+  parked or muted, as the doc says of a sink.
+- **The reference** keeps the mode in its own types (`RefMode`, `RefFrame`):
+  the weights walked frame by frame, `VecDeque` lines, `RefHeld`; it shares
+  only `CrossfadeCurve::gains`. `Pair::set_mode` and the differential suite's
+  `modes_are_bit_identical_to_the_reference` draw modes from their own RNG.
+- **Not in M1:** the plugin test (a hosted plugin node's bypass against a
+  plain node of the same latency) is M2's, with the hosts.
+
 #### Buses and coercion between declared layouts
 
 Decided by the owner. When two ports' declared channel layouts disagree, the
@@ -6979,7 +7053,7 @@ itself.
 |---|---|---|
 | 1 | Fan-in | the six PRs of "Audio fan-in sums", point 10 |
 | 2 | Edge gain | **G1**: `EdgeGain`, `Sink`, `EdgeId`, validate, the weighted kernel and ramp, cell and `set_edge_gain`, reference, tests (static and ramped weights). **G2**: the driven lane: `connect_edge_gain`, `DelayKey::EdgeGain`, `GainPort`, the session's `ModTarget` and `EdgeRef`, tests. **G3**: session API. The audit is done here: no shipped node exists only to scale one source (the `Gain` nodes are test doubles), and `BusStripNode` keeps its volume and pan (below), so G3 deletes nothing. |
-| 3 | Bypass, mute and mix | independent of 1 and 2, in any order after the design merges. **M4** (after M1): the blend above, `Editor::set_mix`, its `ModTarget`, the reference, tests (`Mix` 1.0 bit-identical to `Active`, 0.0 bit-identical to `Bypassed` in steady state); `Mix`'s docs, and `DRY`'s and `WET`'s, say what the ends are (all of the aligned input, all of the node's output) instead of the studio words alone. **M1**: `NodeMode`, the cell, the executor's steady states, the bypass line, the declick and un-bypass sequence, the reference, tests. **M2**: `Editor::set_mode`, the session API, hosts (plugins, AU property). **M3**: delete `EqBandNode`'s flag, `BusStripNode`'s mute (and `add_general_midi`'s binding of it through `UnitParam::Mute`, which becomes `NodeMode::Muted` on the channel's strip), per-node bypass; bit-exact tests replace the tolerance one; CLAUDE.md's dead-names list gains the strip mute and `EqBandNode`'s flag. |
+| 3 | Bypass, mute and mix | independent of 1 and 2, in any order after the design merges. **M4** (after M1): the blend above, `Editor::set_mix`, its `ModTarget`, the reference, tests (`Mix` 1.0 bit-identical to `Active`, 0.0 bit-identical to `Bypassed` in steady state); `Mix`'s docs, and `DRY`'s and `WET`'s, say what the ends are (all of the aligned input, all of the node's output) instead of the studio words alone. **M1** (built): `NodeMode`, the cell, the executor's steady states, the bypass line, the declick and un-bypass sequence, the reference, tests. **M2**: `Editor::set_mode`, the session API, hosts (plugins, AU property). **M3**: delete `EqBandNode`'s flag, `BusStripNode`'s mute (and `add_general_midi`'s binding of it through `UnitParam::Mute`, which becomes `NodeMode::Muted` on the channel's strip), per-node bypass; bit-exact tests replace the tolerance one; CLAUDE.md's dead-names list gains the strip mute and `EqBandNode`'s flag. |
 | 4 | Buses and coercion | needs 1 and 2. **B1**: `BusTopology`, `Buses` and `Shape`'s buses with one `Main` bus built from widths; `Fold::contributions`; hosts fill their buses. **B2**: `BusRef`, `bus_edges`, validate, lowering to weighted lanes, `connect_bus`, session API, tests. **B3**: delete `DownmixNode` and migrate its users; bypass uses the main buses' fold. |
 
 Bypass's channel mapping for buses with different declared topologies uses

@@ -2642,3 +2642,149 @@ fn the_generator_draws_driven_lanes() {
     assert!(ports > 300, "only {ports} driven lanes");
     assert!(rings > 20, "only {rings} lane event rings");
 }
+
+// ---------------------------------------------------------------------------
+// Bypass and mute (doc 013, "Bypass and mute are graph state"): modes drawn
+// on the generated graphs.
+// ---------------------------------------------------------------------------
+
+/// A node and a mode for it, from `rng`: a stream of its own, so the graphs
+/// the other properties draw (and the seeds they replay) are untouched. A
+/// third of the draws are `Active`, so a toggle back is as common as a toggle
+/// away.
+fn pick_mode(desc: &Desc, rng: &mut Rng) -> Option<(NodeKey, tutti_graph::NodeMode)> {
+    use tutti_graph::NodeMode;
+    let key = rng.pick(&desc.order)?;
+    let mode = match rng.below(3) {
+        0 => NodeMode::Active,
+        1 => NodeMode::Bypassed,
+        _ => NodeMode::Muted,
+    };
+    Some((key, mode))
+}
+
+/// Moves `desc`'s spec to `mode` for `key`, as `Pair::set_mode` moves both
+/// interpreters.
+fn note_mode(desc: &mut Desc, key: NodeKey, mode: tutti_graph::NodeMode) {
+    desc.spec.set_mode(key, mode);
+}
+
+/// Drops the modes of nodes `mutate` removed.
+fn prune_modes(desc: &mut Desc) {
+    let nodes = &desc.spec.topology.nodes;
+    desc.spec.modes.retain(|k, _| nodes.contains_key(k));
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig { cases: 128, ..ProptestConfig::default() })]
+
+    /// Modes on the random graphs, serial and parallel, are the reference's
+    /// bit for bit: about one block in five a node (any: latent ones, event
+    /// ones, sources, sinks, in-place ones, sums of several inputs, nodes
+    /// behind PDC) is set to a random mode, so toggles land mid-fade, during
+    /// the warm-up, while parked and in blocks of every length in the
+    /// schedule; an edit halfway rewires, removes and regenerates nodes (a
+    /// kept node's mode carries, a regenerated one starts steady in the
+    /// spec's mode). The parallel render is held to the serial one through
+    /// the reference.
+    ///
+    /// Mutations (each run, each failed): call the node while parked; skip
+    /// the reset on un-bypass; skip the warm-up; fade with `EqualPower`; read
+    /// the cell per op rather than per block is pinned in `tests/mode.rs`
+    /// (nothing here stores mid-block); a bypass line one frame short; a
+    /// mode state not carried across a commit (`Unit` rebuilt on every
+    /// apply).
+    #[test]
+    fn modes_are_bit_identical_to_the_reference(seed in any::<u64>(), which in 0usize..5) {
+        for workers in modes(seed) {
+            let mut rng = Rng::new(seed ^ 0xED17);
+            let mut modes = Rng::new(seed ^ 0x40DE_5EED);
+            let mut desc = random_graph(seed);
+            let mut pair = Pair::with_workers(MAX_BLOCK, workers);
+            pair.switch(&desc.spec.validate().expect("generated graphs are valid"), &desc.kinds);
+            let blocks = schedule(which, seed, 1400);
+            let half = blocks.len() / 2;
+            let mut frame = 0u64;
+            for (i, &n) in blocks.iter().enumerate() {
+                if i == half {
+                    let mut edited = mutate(&desc, &mut rng);
+                    prune_modes(&mut edited);
+                    pair.switch(&edited.spec.validate().expect("valid"), &edited.kinds);
+                    desc = edited;
+                }
+                if modes.chance(20)
+                    && let Some((key, mode)) = pick_mode(&desc, &mut modes)
+                {
+                    pair.set_mode(key, mode);
+                    note_mode(&mut desc, key, mode);
+                }
+                let input = input_signal(frame, n);
+                let (a, b) = pair.block(n, &input);
+                prop_assert_eq!(bits(&a), bits(&b), "diverged at frame {} ({} frames)", frame, n);
+                frame += n as u64;
+            }
+        }
+    }
+}
+
+/// The modes property is not vacuous: over the seeds the draws put every mode
+/// on latent nodes, on event nodes, on nodes with no audio input and on wide
+/// ones, and toggle a node away and back.
+#[test]
+fn the_generator_draws_modes_on_every_kind_of_node() {
+    use tutti_graph::NodeMode;
+    let (mut latent_bypass, mut event_mute, mut event_bypass, mut source_bypass) = (0, 0, 0, 0);
+    let (mut wide_mute, mut round_trips, mut unlatent_bypass) = (0, 0, 0);
+    for seed in 0..300u64 {
+        let mut modes = Rng::new(seed ^ 0x40DE_5EED);
+        let desc = random_graph(seed);
+        let mut last: BTreeMap<NodeKey, NodeMode> = BTreeMap::new();
+        for _ in 0..80 {
+            if !modes.chance(20) {
+                continue;
+            }
+            let Some((key, mode)) = pick_mode(&desc, &mut modes) else {
+                continue;
+            };
+            let s = shape(&desc.kinds[&key]);
+            let latent = s.latency.samples().get() > 0;
+            let events = s.event_in + s.event_out > 0;
+            let silent_in = s.audio_in.count() == 0;
+            match mode {
+                NodeMode::Bypassed => {
+                    latent_bypass += usize::from(latent);
+                    unlatent_bypass += usize::from(!latent && !silent_in);
+                    event_bypass += usize::from(events);
+                    source_bypass += usize::from(silent_in);
+                }
+                NodeMode::Muted => {
+                    event_mute += usize::from(events);
+                    wide_mute += usize::from(s.audio_out.count() > 1);
+                }
+                NodeMode::Active => {}
+            }
+            if mode == NodeMode::Active && last.get(&key).is_some_and(|&m| m != NodeMode::Active) {
+                round_trips += 1;
+            }
+            last.insert(key, mode);
+        }
+    }
+    eprintln!(
+        "latent bypass {latent_bypass}, plain bypass {unlatent_bypass}, event bypass {event_bypass}, \
+         source bypass {source_bypass}, event mute {event_mute}, wide mute {wide_mute}, \
+         round trips {round_trips}"
+    );
+    assert!(
+        latent_bypass > 100 && unlatent_bypass > 100,
+        "{latent_bypass} {unlatent_bypass}"
+    );
+    assert!(
+        event_bypass > 100 && event_mute > 100,
+        "{event_bypass} {event_mute}"
+    );
+    assert!(
+        source_bypass > 100 && wide_mute > 50,
+        "{source_bypass} {wide_mute}"
+    );
+    assert!(round_trips > 300, "{round_trips}");
+}

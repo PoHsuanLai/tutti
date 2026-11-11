@@ -714,6 +714,42 @@ fn a_fade_keeps_the_params_it_declares() {
     );
 }
 
+/// **A bypassed node's params go on stepping** (doc 013, "Bypass and mute are
+/// graph state"): a parked node is not called, but its param ports follow the
+/// timeline as a skipped node's do, so a source that spoke while the node was
+/// out is heard when it comes back. The source steps `Cutoff` to 7 at frame
+/// 300, while the probe is parked; un-bypassed at frame 640 it reads 7 once
+/// the fade is over, not its base.
+///
+/// Mutation (run): the parked path not running the param step
+/// (`run_params` removed from `park`) → the step at frame 300 is never seen
+/// and the probe reads its base 0 → fails.
+#[test]
+fn a_parked_nodes_params_keep_stepping() {
+    let (cutoff, q) = (Cell::new(0.0), Cell::new(0.0));
+    let (mut ed, mut exec) = probe_graph(64, &cutoff, &q);
+    ed.insert(
+        NodeKey(1),
+        "once",
+        Unforkable(Ramps::steps(&[(300, UnitParam::Cutoff, 7.0)])),
+    );
+    ed.spec_mut()
+        .connect_param(param(PROBE, UnitParam::Cutoff), ev(1));
+    ed.set_mode(NodeKey(PROBE), tutti_graph::NodeMode::Bypassed)
+        .expect("a node");
+    ed.commit().expect("commits");
+    let parked = render(&mut exec, &mut ed, 640, 64);
+    assert!(parked[0].iter().all(|&x| x == 0.0), "bypassed: the input");
+    ed.set_mode(NodeKey(PROBE), tutti_graph::NodeMode::Active)
+        .expect("a node");
+    let back = render(&mut exec, &mut ed, 512, 64);
+    assert!(
+        back[0][256..].iter().all(|&x| x == 7.0),
+        "the step spoken while parked: {:?}",
+        &back[0][256..260]
+    );
+}
+
 /// A unit's first block is not a change of sources: a probe inserted with a
 /// source already connected, and one hard-replaced at its key, read the
 /// source's value from their first frame — no fade in from the base.

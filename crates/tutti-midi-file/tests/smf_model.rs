@@ -1,25 +1,25 @@
 //! The Standard MIDI File half of [`MidiFile`], against bytes built from the
 //! SMF 1.0 spec (`support`: an encoder and a decoder written from it, sharing
-//! no code with `midly`, so they are the second opinion on the bytes).
+//! no code with the crate, so they are the second opinion on the bytes).
 //!
 //! **The lossless round trip is the test**: a file read and written holds the
 //! same events, including SysEx and meta; running status and event spelling may
 //! differ, so equality is on the model and on the independent decoder's
 //! reading of the bytes, never on the bytes.
 //!
-//! Mutations run (each planted, seen to fail, restored), against `smf.rs` and
-//! `file.rs` unless a file is named:
+//! Mutations run (each planted, seen to fail, restored), against `smf/read.rs`,
+//! `smf/write.rs` and `file.rs` unless a file is named (the wire's own are in
+//! `smf_wire.rs`):
 //!
 //! | mutation | fails |
 //! |---|---|
-//! | `track_of` pushes no `Meta` events (drop the `TrackEventKind::Meta(meta)` arm's push) | `every_event_kind_survives_a_read_and_a_write` |
-//! | `track_of` reads an `F7` escape as a `SysEx` | `every_event_kind_survives_a_read_and_a_write` |
-//! | `track_of` ignores the final End of Track (`end` = last event tick) | `the_end_of_a_track_is_kept` |
-//! | `midly_track` writes each delta from tick 0 instead of the previous event | `every_event_kind_survives_a_read_and_a_write`, `a_zero_tempo_is_not_a_tempo_and_an_absurd_one_is_read_as_written` |
-//! | `smf::read` without the `scan` call | `a_file_missing_a_track_is_truncated`, `a_chunk_cut_short_is_truncated` |
-//! | the `strict` feature off in `Cargo.toml` | `a_track_that_ends_mid_event_is_a_parse_error` |
-//! | `Timing::Timecode(..)` guessed as a division instead of refused | `smpte_division_is_refused` |
-//! | delete the `ticks_per_quarter == 0` guard | `a_zero_division_is_refused` |
+//! | `read.rs` `event` reads an `F7` escape as a `SysEx` | `every_event_kind_survives_a_read_and_a_write` |
+//! | `read.rs` `track` ignores the final End of Track (`if is_end(e)` made false) | `the_end_of_a_track_is_kept`, `every_event_kind_survives_a_read_and_a_write` |
+//! | `write.rs` `append` writes each delta from tick 0 instead of the previous event | `every_event_kind_survives_a_read_and_a_write`, `a_zero_tempo_is_not_a_tempo_and_an_absurd_one_is_read_as_written` |
+//! | `read.rs` `read` without the fewer-tracks-than-declared check | `a_file_missing_a_track_is_truncated`, `no_prefix_of_a_valid_file_is_accepted` |
+//! | `read.rs` `steps` swallows an event error (`map_while` keeps only the `Ok`s) | `a_track_that_ends_mid_event_is_a_parse_error` |
+//! | `read.rs` `division` accepts an SMPTE division as ticks | `smpte_division_is_refused` |
+//! | `read.rs` `division` accepts zero | `a_zero_division_is_refused` |
 //! | `tempo_map` drops the `default` point at tick 0 | `a_file_with_no_tempo_plays_at_120` (and every file with no tempo at tick 0: `TempoError::FirstNotAtZero`) |
 //! | `tempo_map` keeps the first of two tempos on one tick | `the_later_of_two_tempos_on_one_tick_governs` |
 //! | `tempo_map` without the sort by tick | `the_tempo_map_pools_every_track` |
@@ -232,7 +232,7 @@ fn every_event_kind_survives_a_read_and_a_write() {
         let written = file.to_bytes().expect("writes");
         assert_eq!(read(&written), file, "format {format}");
         // The second opinion: the same events, read by a decoder that shares
-        // nothing with `midly`.
+        // nothing with the crate.
         assert_eq!(
             decode_smf(&written)
                 .expect("a foreign reader accepts it")
@@ -538,7 +538,7 @@ fn a_zero_division_is_refused() {
 /// **No strict prefix of a valid file is accepted, and none panics.**
 ///
 /// A file shorter than the whole cannot be the whole, so the answer needs no
-/// oracle; `midly` alone would hand back a shorter file for most of them.
+/// oracle; a lenient reader would hand back a shorter file for most of them.
 #[test]
 fn no_prefix_of_a_valid_file_is_accepted() {
     let bytes = smf(
@@ -591,7 +591,7 @@ fn a_file_missing_a_track_is_truncated() {
 }
 
 /// A track whose chunk length is right but which ends mid-event is malformed:
-/// `midly`'s default would keep the events before it and say nothing.
+/// a lenient reader would keep the events before it and say nothing.
 #[test]
 fn a_track_that_ends_mid_event_is_a_parse_error() {
     let mut bytes = build_smf(0, Division::Metrical(TPQ), &[vec![]]);

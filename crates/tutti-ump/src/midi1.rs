@@ -91,6 +91,18 @@ impl U14 {
 }
 
 impl Voice1 {
+    /// How many data bytes follow a channel voice `status` byte: one for a
+    /// Program Change (`C0`..`CF`) or Channel Pressure (`D0`..`DF`), two for
+    /// the rest of `80`..`EF`. `None` for a data byte (top bit clear) and for
+    /// a system status (`F0`..`FF`), which is not a channel voice message.
+    #[must_use]
+    pub const fn data_len(status: u8) -> Option<u8> {
+        match status {
+            0x80..=0xEF => Some(data_bytes(status)),
+            _ => None,
+        }
+    }
+
     /// The message on `channel` as MIDI 1.0 bytes.
     #[must_use]
     pub fn bytes(self, channel: MidiChannel) -> Midi1Bytes {

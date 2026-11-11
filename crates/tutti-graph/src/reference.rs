@@ -63,6 +63,21 @@
 //!   differently with a hint than without one diverges, which is the
 //!   point.
 //!
+//! - **Bypass and mute** (doc 013, "Bypass and mute are graph state"): each
+//!   node's mode is kept per key beside the unit map, in its own types
+//!   (`RefMode`), and moved by [`set_mode`](Reference::set_mode) —
+//!   `Editor::set_mode`'s contract, read at the start of the next block. A
+//!   node's weights `(y, x)` (its own output, the aligned input) are walked
+//!   **frame by frame**: Active `(1, 0)`, Bypassed `(0, 1)`, Muted `(0, 0)`,
+//!   a change of mode a 256-frame fade from the weights it has, with the
+//!   gains of frame `k` of [`CrossfadeCurve::gains`] (the one thing shared
+//!   with the executor); the aligned input is the input through a
+//!   `VecDeque` of the declared latency. A bypassed node whose fade is done
+//!   is **not called**; leaving Bypassed resets it and keeps the aligned
+//!   input audible for the latency before the fade in. A kept key's state
+//!   survives a new graph, a swap without a fade starts steady, and a swap
+//!   with one keeps it.
+//!
 //! - **Driven params** (see the `param` module docs, `src/param.rs`):
 //!   each declared param's state is kept per [`ParamIn`], dropped when its
 //!   unit is swapped (a crossfade keeps it), and on a re-prepare. A port
@@ -82,13 +97,14 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use crate::MAX_NODE_LATENCY;
 use crate::NodeKey;
-use crate::{Edge, EdgeId, InPort, OutPort, Sink, Source};
+use crate::{CrossfadeCurve, Edge, EdgeId, InPort, OutPort, Sink, Source};
 use tutti_rt::with_no_denormals;
 use tutti_types::{Amplitude, At, Frame, Latency, Samples};
 
 use crate::event::{Event, EventKind, EventWriter, SortedEvents};
 use crate::history::TransportHistory;
 use crate::io::Io;
+use crate::mode::{MODE_DECLICK, NodeMode};
 use crate::node::{
     ConstantMask, Cx, Env, InPlaceMask, Node, Prepare, SilenceMask, Status, Transport,
     TransportChanges,
@@ -220,6 +236,10 @@ pub struct Reference {
     /// Edge gain ranges moved by [`set_edge_gain_range`](Self::set_edge_gain_range)
     /// since the last graph.
     gain_ranges: BTreeMap<EdgeId, ParamRange>,
+    /// The mode each node was last told to be in: the executor's cell.
+    wanted: BTreeMap<NodeKey, NodeMode>,
+    /// What each node's mode has done so far.
+    modes: BTreeMap<NodeKey, RefMode>,
     /// The transport's jumps, kept as the executor keeps them: the same type.
     /// (Its answers are checked against the blocks themselves in
     /// `history.rs`'s tests, not against this.)
@@ -332,6 +352,8 @@ impl Reference {
             gain_moves: BTreeMap::new(),
             gain_ports: BTreeMap::new(),
             gain_ranges: BTreeMap::new(),
+            wanted: BTreeMap::new(),
+            modes: BTreeMap::new(),
             playhead: RefPlayhead::default(),
             suspended: None,
             landing: BTreeMap::new(),
@@ -519,6 +541,11 @@ impl Reference {
     }
 
     /// Moves edge `id`'s range, from the next block on, without a new graph:
+    /// `Editor::set_mode`'s contract: the node's mode from the next block on.
+    pub fn set_mode(&mut self, key: NodeKey, mode: NodeMode) {
+        self.wanted.insert(key, mode);
+    }
+
     /// `Editor::set_edge_gain_range`'s contract.
     pub fn set_edge_gain_range(&mut self, id: EdgeId, range: ParamRange) {
         self.gain_ranges.insert(id, range);
@@ -636,6 +663,16 @@ impl Reference {
                 }
             }
         }
+        // Modes: the cell of a key placed or swapped now takes the graph's
+        // mode (as the editor writes it for every unit a commit places); the
+        // state of one placed fresh starts steady in it, and a swap with a
+        // fade keeps what it had.
+        let spec_mode = |k: NodeKey| graph.modes().get(&k).copied().unwrap_or_default();
+        for &key in &replaced {
+            if t.nodes.contains_key(&key) {
+                self.wanted.insert(key, spec_mode(key));
+            }
+        }
         self.units.retain(|k, (generation, _)| {
             t.nodes.contains_key(k) && *generation == graph.generation(*k)
         });
@@ -648,7 +685,13 @@ impl Reference {
                     .remove(&key)
                     .unwrap_or_else(|| panic!("no unit for node {}", key.0));
                 unit.prepare(&self.prepare);
+                let shape = unit.shape();
                 self.units.insert(key, (graph.generation(key), unit));
+                self.wanted.insert(key, spec_mode(key));
+                self.modes.insert(
+                    key,
+                    RefMode::new(spec_mode(key), &shape, t.nodes[&key].latency.get()),
+                );
                 // A new unit, or a swapped one: its params start over. (A
                 // crossfade keeps the key's, as the unit slot stays.)
                 self.params.retain(|at, _| at.node != key);
@@ -656,6 +699,20 @@ impl Reference {
         }
         let units = &self.units;
         self.params.retain(|at, _| units.contains_key(&at.node));
+        self.modes.retain(|k, _| t.nodes.contains_key(k));
+        self.wanted.retain(|k, _| t.nodes.contains_key(k));
+        // A kept node whose declared latency changed has its line rebuilt
+        // (`Editor::set_latency`): derived from the two specs.
+        if let Some(old) = self.graph.as_ref() {
+            for (key, m) in &mut self.modes {
+                let (was, now) = (old.topology().nodes.get(key), t.nodes.get(key));
+                if let (Some(a), Some(b)) = (was, now)
+                    && a.latency != b.latency
+                {
+                    m.relined(b.latency.get());
+                }
+            }
+        }
 
         // Latency, by memoised recursion over direct predecessors. Read
         // from the spec, not the unit: `Editor::set_latency` changes a
@@ -1331,6 +1388,35 @@ impl Reference {
             .collect();
 
         let n_out = shape.audio_out.count() as usize;
+
+        // Bypass and mute (see the module docs): the mode, read as the block
+        // starts; the aligned input; and whether the node is called at all.
+        let mut mode = (shape.audio_out.count() != 0 || shape.event_out != 0)
+            .then(|| self.modes.remove(&key).expect("a mode for every node"));
+        let mut xhat: Vec<Vec<f32>> = Vec::new();
+        let mut parked = false;
+        if let Some(m) = &mut mode {
+            let want = self.wanted.get(&key).copied().unwrap_or_default();
+            if want != m.heading && m.toggle(want) {
+                self.units.get_mut(&key).expect("unit present").1.reset();
+            }
+            xhat = ins.iter().take(m.passed).cloned().collect();
+            for (x, line) in xhat.iter_mut().zip(&mut m.lines) {
+                delay_line(line, x);
+            }
+            parked = m.parked();
+            if m.heading == NodeMode::Bypassed {
+                // What the node holds is closed, and nothing else reaches it.
+                for (held, events) in m.held_in.iter_mut().zip(&mut ev_ins) {
+                    *events = held.closing(Offset::ZERO);
+                    *held = RefHeld::default();
+                }
+            } else {
+                for (held, events) in m.held_in.iter_mut().zip(&ev_ins) {
+                    held.observe(events);
+                }
+            }
+        }
         let cx = Cx {
             env,
             arrival: self.arrival[&key],
@@ -1338,40 +1424,69 @@ impl Reference {
         };
         // A crossfade here: the outgoing unit first, on its own copy of the
         // inputs, with no events; what it emits goes nowhere.
-        let outgoing: Option<Vec<Vec<f32>>> = self.fading.get_mut(&key).map(|f| {
-            let mut o: Vec<Vec<f32>> = vec![vec![0.0; frames]; n_out];
-            let copies = ins.clone();
-            let status = {
-                let in_refs: Vec<&[f32]> = copies.iter().map(Vec::as_slice).collect();
-                let mut out_refs: Vec<&mut [f32]> = o.iter_mut().map(Vec::as_mut_slice).collect();
-                let none: Vec<SortedEvents<'_>> =
-                    vec![SortedEvents::EMPTY; shape.event_in as usize];
-                // Detached writers, as the executor's: every push refused and
-                // nothing counted, so a node that reacts to a refusal does
-                // the same under both.
-                let mut writers: Vec<EventWriter<'_>> = (0..shape.event_out)
-                    .map(|_| EventWriter::detached())
-                    .collect();
-                let io = Io::new(
-                    self.prepare.max_block(),
-                    frames,
-                    &in_refs,
-                    &mut out_refs,
-                    SilenceMask::NONE,
-                    ConstantMask::NONE,
-                    InPlaceMask::NONE,
-                    &none,
-                    &mut writers,
-                )
-                .with_params(&param_table);
-                f.old.process(&cx, io)
-            };
-            settle(status, &copies, &mut o);
-            o
-        });
+        let outgoing: Option<Vec<Vec<f32>>> =
+            self.fading.get_mut(&key).filter(|_| !parked).map(|f| {
+                let mut o: Vec<Vec<f32>> = vec![vec![0.0; frames]; n_out];
+                let copies = ins.clone();
+                let status = {
+                    let in_refs: Vec<&[f32]> = copies.iter().map(Vec::as_slice).collect();
+                    let mut out_refs: Vec<&mut [f32]> =
+                        o.iter_mut().map(Vec::as_mut_slice).collect();
+                    let none: Vec<SortedEvents<'_>> =
+                        vec![SortedEvents::EMPTY; shape.event_in as usize];
+                    // Detached writers, as the executor's: every push refused and
+                    // nothing counted, so a node that reacts to a refusal does
+                    // the same under both.
+                    let mut writers: Vec<EventWriter<'_>> = (0..shape.event_out)
+                        .map(|_| EventWriter::detached())
+                        .collect();
+                    let io = Io::new(
+                        self.prepare.max_block(),
+                        frames,
+                        &in_refs,
+                        &mut out_refs,
+                        SilenceMask::NONE,
+                        ConstantMask::NONE,
+                        InPlaceMask::NONE,
+                        &none,
+                        &mut writers,
+                    )
+                    .with_params(&param_table);
+                    f.old.process(&cx, io)
+                };
+                settle(status, &copies, &mut o);
+                o
+            });
         let mut outs: Vec<Vec<f32>> = vec![vec![0.0; frames]; n_out];
         let mut ev_bufs: Vec<Vec<Event>> = vec![Vec::new(); shape.event_out as usize];
-        let (status, refused) = {
+        if parked {
+            // Not called: the aligned input, and the close of what the node
+            // held on its event outputs when it was parked.
+            let m = mode.as_mut().expect("only a moded node parks");
+            if !m.stale {
+                m.stale = true;
+                for port in 0..shape.event_out {
+                    let from = EventOut { node: key, port };
+                    if self.tracked.contains(&from) {
+                        let held = std::mem::take(self.held.entry(from).or_default());
+                        m.owed.insert(port, held);
+                    }
+                }
+            }
+            for (c, o) in outs.iter_mut().enumerate() {
+                if let Some(x) = xhat.get(c) {
+                    o.copy_from_slice(x);
+                }
+            }
+            for (port, buf) in ev_bufs.iter_mut().enumerate() {
+                if let Some(held) = m.owed.remove(&(port as u16)) {
+                    *buf = held.closing(Offset::ZERO);
+                }
+            }
+        }
+        let (status, refused) = if parked {
+            (Status::Modified, 0)
+        } else {
             let in_refs: Vec<&[f32]> = ins.iter().map(Vec::as_slice).collect();
             let mut out_refs: Vec<&mut [f32]> = outs.iter_mut().map(Vec::as_mut_slice).collect();
             let ev_refs: Vec<SortedEvents<'_>> = ev_ins
@@ -1409,7 +1524,9 @@ impl Reference {
             (status, drops.refused.get())
         };
         self.dropped += u64::from(refused);
-        settle(status, &ins, &mut outs);
+        if !parked {
+            settle(status, &ins, &mut outs);
+        }
         if let Some(old) = outgoing {
             let f = self.fading.get_mut(&key).expect("fading");
             for i in 0..frames {
@@ -1423,6 +1540,33 @@ impl Reference {
                 }
             }
             f.done = (f.done + frames).min(f.len);
+        }
+        if let Some(mut m) = mode {
+            if !parked {
+                let kinds = m.frames(frames);
+                for (c, o) in outs.iter_mut().enumerate() {
+                    for (i, (y, kind)) in o.iter_mut().zip(&kinds).enumerate() {
+                        let x = xhat.get(c).map(|x| x[i]);
+                        *y = match *kind {
+                            RefFrame::Warm => x.unwrap_or(0.0),
+                            RefFrame::Fade { wy, wx, y_on, x_on } => {
+                                match (y_on, x_on && x.is_some()) {
+                                    (true, true) => *y * wy + x.unwrap_or(0.0) * wx,
+                                    (true, false) => *y * wy,
+                                    (false, true) => x.unwrap_or(0.0) * wx,
+                                    (false, false) => 0.0,
+                                }
+                            }
+                            RefFrame::Steady => match m.heading {
+                                NodeMode::Active => *y,
+                                NodeMode::Muted => 0.0,
+                                NodeMode::Bypassed => x.unwrap_or(0.0),
+                            },
+                        };
+                    }
+                }
+            }
+            self.modes.insert(key, m);
         }
         for (port, o) in outs.into_iter().enumerate() {
             audio.insert(
@@ -1438,7 +1582,7 @@ impl Reference {
                 node: key,
                 port: port as u16,
             };
-            if self.tracked.contains(&from) {
+            if self.tracked.contains(&from) && !parked {
                 self.held.entry(from).or_default().observe(&e);
             }
             events.insert(from, e);
@@ -1709,6 +1853,145 @@ fn ref_port(st: &mut RefParam, fresh: bool, p: RefPortIn<'_>) -> Option<Vec<f32>
     st.last_base = b1;
     st.modulated = true;
     Some(vals)
+}
+
+/// One node's mode, as the reference walks it: the weights `(y, x)` of its
+/// own output and of the aligned input as the last frame left them, the fade
+/// from where it began, the warm-up left, and whether the node has run since
+/// it was parked. Written from the doc, sharing nothing with `ModeState`.
+struct RefMode {
+    heading: NodeMode,
+    y: f32,
+    x: f32,
+    /// `(y, x)` at the start of the fade, and the fade's frames done.
+    fade: Option<((f32, f32), usize)>,
+    warm: usize,
+    stale: bool,
+    latency: usize,
+    /// Channels the bypass passes: output `c` is input `c` below the narrower
+    /// width.
+    passed: usize,
+    /// The aligned input: one delay line of the declared latency per passed
+    /// channel; empty at latency zero.
+    lines: Vec<VecDeque<f32>>,
+    /// What each event input was sent and has not seen ended.
+    held_in: Vec<RefHeld>,
+    /// What the node's event outputs held when it was parked.
+    owed: BTreeMap<u16, RefHeld>,
+}
+
+/// What one frame of a node op does.
+#[derive(Clone, Copy)]
+enum RefFrame {
+    /// The aligned input alone, the node's output discarded.
+    Warm,
+    /// `y * wy + x * wx`, a term left out where its weight is zero at both ends.
+    Fade {
+        wy: f32,
+        wx: f32,
+        y_on: bool,
+        x_on: bool,
+    },
+    Steady,
+}
+
+fn weights_of(mode: NodeMode) -> (f32, f32) {
+    match mode {
+        NodeMode::Active => (1.0, 0.0),
+        NodeMode::Bypassed => (0.0, 1.0),
+        NodeMode::Muted => (0.0, 0.0),
+    }
+}
+
+impl RefMode {
+    fn new(mode: NodeMode, shape: &crate::node::Shape, latency: usize) -> Self {
+        let (y, x) = weights_of(mode);
+        let mut m = Self {
+            heading: mode,
+            y,
+            x,
+            fade: None,
+            warm: 0,
+            stale: mode == NodeMode::Bypassed,
+            latency,
+            passed: shape.audio_in.count().min(shape.audio_out.count()) as usize,
+            lines: Vec::new(),
+            held_in: (0..shape.event_in).map(|_| RefHeld::default()).collect(),
+            owed: BTreeMap::new(),
+        };
+        m.relined(latency);
+        m
+    }
+
+    /// The line of a new declared latency: empty history.
+    fn relined(&mut self, latency: usize) {
+        self.latency = latency;
+        self.lines = if latency == 0 {
+            Vec::new()
+        } else {
+            vec![VecDeque::from(vec![0.0; latency]); self.passed]
+        };
+    }
+
+    /// Whether the node is not called this block.
+    fn parked(&self) -> bool {
+        self.heading == NodeMode::Bypassed
+            && self.fade.is_none()
+            && self.warm == 0
+            && self
+                .held_in
+                .iter()
+                .all(|h| h.notes.is_empty() && h.pedals.is_empty())
+    }
+
+    /// Take the mode `want`; whether the node is to be reset first.
+    fn toggle(&mut self, want: NodeMode) -> bool {
+        self.warm = 0;
+        let reset = self.stale;
+        if reset {
+            self.stale = false;
+            if want == NodeMode::Active {
+                self.warm = self.latency;
+            }
+        }
+        self.fade = ((self.y, self.x) != weights_of(want)).then_some(((self.y, self.x), 0));
+        self.heading = want;
+        reset
+    }
+
+    /// What each of `frames` frames does; walks the state past them.
+    fn frames(&mut self, frames: usize) -> Vec<RefFrame> {
+        let target = weights_of(self.heading);
+        (0..frames)
+            .map(|_| {
+                if self.warm > 0 {
+                    self.warm -= 1;
+                    return RefFrame::Warm;
+                }
+                let Some((from, k)) = self.fade else {
+                    return RefFrame::Steady;
+                };
+                let g = CrossfadeCurve::EqualAmplitude
+                    .gains(k, MODE_DECLICK.get())
+                    .0;
+                let wy = from.0 + (target.0 - from.0) * g;
+                let wx = from.1 + (target.1 - from.1) * g;
+                (self.y, self.x) = (wy, wx);
+                self.fade = if k + 1 == MODE_DECLICK.get() {
+                    (self.y, self.x) = target;
+                    None
+                } else {
+                    Some((from, k + 1))
+                };
+                RefFrame::Fade {
+                    wy,
+                    wx,
+                    y_on: from.0 != 0.0 || target.0 != 0.0,
+                    x_on: from.1 != 0.0 || target.1 != 0.0,
+                }
+            })
+            .collect()
+    }
 }
 
 /// `(MIDI 2.0, group, channel, note)`.

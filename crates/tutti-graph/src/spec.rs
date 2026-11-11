@@ -16,6 +16,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::gain::EdgeGain;
+use crate::mode::NodeMode;
 use crate::{ChannelFeed, LatencyGraph, PortFeed};
 use crate::{Edge, EdgeId, InPort, Sink, Source};
 use crate::{Invalid, Valid};
@@ -150,6 +151,13 @@ pub struct GraphSpec {
     /// whose edge does not exist is refused by [`validate`](Self::validate);
     /// [`disconnect`](Self::disconnect) removes the edge's entry with it.
     pub gains: BTreeMap<EdgeId, EdgeGain>,
+    /// What the graph does with each node (doc 013, "Bypass and mute are
+    /// graph state"); absent is [`NodeMode::Active`]. A control, not a
+    /// rewire: [`Editor::set_mode`](crate::Editor::set_mode) changes it
+    /// without a new plan, and a commit that differs only in modes sends
+    /// nothing. An entry for a node that is not in the topology is refused by
+    /// [`validate`](Self::validate).
+    pub modes: BTreeMap<NodeKey, NodeMode>,
 }
 
 impl GraphSpec {
@@ -429,8 +437,24 @@ impl GraphSpec {
         self.params.entry(at).or_default().range = range;
     }
 
+    /// The mode of `node`: [`NodeMode::Active`] unless one was set.
+    pub fn mode(&self, node: NodeKey) -> NodeMode {
+        self.modes.get(&node).copied().unwrap_or_default()
+    }
+
+    /// Sets `node`'s mode in the spec (the canonical form has no entry for
+    /// `Active`). [`Editor::set_mode`](crate::Editor::set_mode) does the same
+    /// without waiting for a commit.
+    pub fn set_mode(&mut self, node: NodeKey, mode: NodeMode) {
+        if mode == NodeMode::Active {
+            self.modes.remove(&node);
+        } else {
+            self.modes.insert(node, mode);
+        }
+    }
+
     /// Whether `self` and `other` compile to the same plan, by value: equal
-    /// but for param ranges (a control, see
+    /// but for param ranges and modes (controls, see
     /// [`set_param_range`](Self::set_param_range)), with a param entry that
     /// has no source the same as none (as [`validate`](Self::validate)
     /// treats it).
@@ -443,6 +467,8 @@ impl GraphSpec {
             required_resolution,
             params,
             gains,
+            // A control: the plan does not read it.
+            modes: _,
         } = self;
         fn wired(p: &BTreeMap<ParamIn, ParamMod>) -> impl Iterator<Item = (&ParamIn, EventOut)> {
             p.iter().filter_map(|(at, m)| Some((at, m.source?)))
@@ -539,6 +565,11 @@ impl GraphSpec {
                 });
             }
         }
+        for &node in self.modes.keys() {
+            if !nodes.contains_key(&node) {
+                errs.push(GraphInvalid::ModeWithoutNode { node });
+            }
+        }
         for &(at, from) in self.required_resolution.keys() {
             let wired = self
                 .events
@@ -562,6 +593,7 @@ impl GraphSpec {
                     .map(|(&at, &m)| (at, m))
                     .collect(),
                 gains: self.gains.clone(),
+                modes: self.modes.clone(),
             }),
             _ => Err(errs),
         }
@@ -647,6 +679,11 @@ pub enum GraphInvalid {
         /// The key that is not there.
         missing: NodeKey,
     },
+    /// A mode is set for a node that is not in the topology.
+    ModeWithoutNode {
+        /// The key that is not there.
+        node: NodeKey,
+    },
 }
 
 /// A [`GraphSpec`] that passed [`validate`](GraphSpec::validate).
@@ -658,6 +695,7 @@ pub struct ValidGraph {
     required_resolution: BTreeMap<(EventIn, EventOut), Resolution>,
     params: BTreeMap<ParamIn, ParamMod>,
     gains: BTreeMap<EdgeId, EdgeGain>,
+    modes: BTreeMap<NodeKey, NodeMode>,
 }
 
 impl ValidGraph {
@@ -689,6 +727,11 @@ impl ValidGraph {
     /// The checked edge gains: each names an edge of the topology.
     pub fn gains(&self) -> &BTreeMap<EdgeId, EdgeGain> {
         &self.gains
+    }
+
+    /// The checked modes: each names a node of the topology.
+    pub fn modes(&self) -> &BTreeMap<NodeKey, NodeMode> {
+        &self.modes
     }
 }
 

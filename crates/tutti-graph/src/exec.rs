@@ -184,6 +184,7 @@ use crate::io::Io;
 use crate::kernels::{AudioRing, EventFifo};
 use crate::loss::{Dropped, EventLoss};
 use crate::meter::{MeterWriter, meter_op};
+use crate::mode::{BypassLine, ModeState};
 use crate::node::{
     ConstantMask, Cx, Env, InPlaceMask, MAX_PORTS, Node, Prepare, SilenceMask, Status, Transport,
     TransportChanges,
@@ -198,6 +199,8 @@ use crate::spec::{EventIn, EventOut};
 use crate::tap::TapWriter;
 use crate::{EdgeId, EventTapId, MeterId, TapId};
 use tutti_types::PlayReading;
+
+mod mode_op;
 
 /// Events per block an event output port holds when its node declares no
 /// [`Shape::event_capacity`](crate::Shape::event_capacity), unless
@@ -319,6 +322,25 @@ impl Drop for Crossfade {
     }
 }
 
+/// A unit a commit places, with everything built for it on the control
+/// side.
+struct Incoming {
+    idx: UnitIdx,
+    generation: u32,
+    node: NodeBox,
+    /// The crossfade it arrives with, over the unit at its key.
+    fade: Option<Box<Crossfade>>,
+    params: ParamState,
+    mode: ModeState,
+}
+
+/// A kept unit's rebuilt bypass line.
+struct Relined {
+    idx: UnitIdx,
+    latency: usize,
+    line: Option<BypassLine>,
+}
+
 /// A plan and the unit changes that go with it — what travels to the
 /// executor and back. Crate-private: nobody outside the pair ever holds one.
 ///
@@ -334,13 +356,21 @@ pub(crate) struct Commit {
     suspend: Option<Prepare>,
     plan: Option<Arc<Plan>>,
     delta: Delta,
-    incoming: Vec<(UnitIdx, u32, NodeBox, Option<Box<Crossfade>>, ParamState)>,
+    incoming: Vec<Incoming>,
+    /// Kept units whose declared latency changed, each with its rebuilt
+    /// bypass line (`Editor::set_latency`).
+    relined: Vec<Relined>,
     retired: Vec<(NodeKey, NodeBox)>,
     /// Param state the executor let go of, carried back to be freed on the
     /// control side: a retired unit's, and one built for an incoming unit
     /// that crossfades in over one already at its key, which keeps its own
     /// (the port's modulation runs on across a replace).
     spare_params: Vec<ParamState>,
+    /// Mode state the executor let go of (a retired unit's, an unused
+    /// incoming one's), freed on the control side.
+    spare_modes: Vec<ModeState>,
+    /// Bypass lines a rebuilt one replaced.
+    spare_lines: Vec<BypassLine>,
     /// Held-key tables the executor let go of, freed on the control side.
     spare_held: Vec<Tables>,
     old_state: Option<State>,
@@ -376,6 +406,7 @@ impl Commit {
         delta: Delta,
         mut units: BTreeMap<NodeKey, Box<dyn Node>>,
         mut params: impl FnMut(NodeKey, usize, usize) -> ParamState,
+        mut modes: impl FnMut(NodeKey) -> ModeState,
         opened: Opened,
     ) -> Box<Commit> {
         let wanted = delta
@@ -414,7 +445,28 @@ impl Commit {
                     plan.unit(p.key).map_or(0, |u| u.shape.params.len()),
                     max_block,
                 );
-                (p.idx, p.generation, NodeBox::new(unit), fade, params)
+                Incoming {
+                    idx: p.idx,
+                    generation: p.generation,
+                    node: NodeBox::new(unit),
+                    fade,
+                    params,
+                    mode: modes(p.key),
+                }
+            })
+            .collect::<Vec<_>>();
+        // A kept unit whose declared latency changed gets the line its new
+        // latency needs, built here (`Editor::set_latency` cuts it).
+        let relined = delta
+            .cuts
+            .iter()
+            .filter_map(|p| {
+                let shape = &plan.unit(p.key)?.shape;
+                Some(Relined {
+                    idx: p.idx,
+                    latency: shape.latency.samples().get(),
+                    line: BypassLine::for_shape(shape),
+                })
             })
             .collect::<Vec<_>>();
         assert!(
@@ -429,14 +481,19 @@ impl Commit {
         let spare_params =
             Vec::with_capacity(incoming.len() + delta.retire.len() + delta.replace.len());
         let delta_units = delta.retire.len() + delta.replace.len();
+        let spare_modes = Vec::with_capacity(incoming.len() + delta_units);
+        let spare_lines = Vec::with_capacity(relined.len());
         Box::new(Self {
             seq,
             suspend: None,
             plan: Some(plan),
             delta,
             incoming,
+            relined,
             retired,
             spare_params,
+            spare_modes,
+            spare_lines,
             spare_held: Vec::with_capacity(delta_units),
             old_state: None,
             opened,
@@ -454,8 +511,11 @@ impl Commit {
             plan: None,
             delta: Delta::default(),
             incoming: Vec::new(),
+            relined: Vec::new(),
             retired: Vec::with_capacity(units),
             spare_params: Vec::with_capacity(units),
+            spare_modes: Vec::with_capacity(units),
+            spare_lines: Vec::new(),
             spare_held: Vec::with_capacity(units),
             old_state: None,
             opened: Opened::default(),
@@ -466,7 +526,7 @@ impl Commit {
     fn fades_in(&self, key: NodeKey) -> bool {
         self.incoming
             .iter()
-            .any(|(_, _, _, x, _)| x.as_ref().is_some_and(|x| x.key == key))
+            .any(|i| i.fade.as_ref().is_some_and(|x| x.key == key))
     }
 
     /// Whether this box is a re-prepare's first half.
@@ -611,10 +671,12 @@ pub(crate) struct Unit {
     params: ParamState,
     /// The keys its event outputs hold or owe (`held.rs`).
     keys: Keys,
+    /// Its mode and the state that applies it (`mode.rs`).
+    mode: ModeState,
 }
 
 impl Unit {
-    fn new(generation: u32, node: NodeBox, params: ParamState) -> Self {
+    fn new(generation: u32, node: NodeBox, params: ParamState, mode: ModeState) -> Self {
         Self {
             generation,
             node,
@@ -626,6 +688,7 @@ impl Unit {
             queued: None,
             params,
             keys: Keys::default(),
+            mode,
         }
     }
 }
@@ -1037,6 +1100,7 @@ impl Executor {
                     }
                     c.retired.push((u.key, unit.node));
                     c.spare_params.push(unit.params);
+                    c.spare_modes.push(unit.mode);
                     self.parked.push((u.key, unit.keys));
                 }
             }
@@ -1129,6 +1193,7 @@ impl Executor {
                 );
                 c.retired.push((p.key, u.node));
                 c.spare_params.push(u.params);
+                c.spare_modes.push(u.mode);
                 for f in [u.fade, u.queued].into_iter().flatten() {
                     retire_fade(&mut self.fade_back, f);
                 }
@@ -1155,13 +1220,23 @@ impl Executor {
         }
         // Taken out and put back, so the list's buffer is not freed here.
         let mut incoming = std::mem::take(&mut c.incoming);
-        for (idx, generation, node, fade, params) in incoming.drain(..) {
+        for Incoming {
+            idx,
+            generation,
+            node,
+            fade,
+            params,
+            mode,
+        } in incoming.drain(..)
+        {
             let slot = &mut self.store[idx.0 as usize];
             match (fade, slot.as_mut()) {
                 (Some(mut x), Some(u)) => {
-                    // The key's param state runs on across the replace; the
-                    // one built for the incoming unit goes back unused.
+                    // The key's param state and mode run on across the
+                    // replace; the ones built for the incoming unit go back
+                    // unused.
                     c.spare_params.push(params);
+                    c.spare_modes.push(mode);
                     // A crossfade: the unit at this key fades out — or, with
                     // a fade already running here, this one waits for it,
                     // superseding one that was waiting.
@@ -1182,7 +1257,7 @@ impl Executor {
                 }
                 (fade, _) => {
                     debug_assert!(slot.is_none(), "store index {} is occupied", idx.0);
-                    *slot = Some(Unit::new(generation, node, params));
+                    *slot = Some(Unit::new(generation, node, params, mode));
                     // Nothing to fade from (reachable only through
                     // `package`): the crossfade goes back unused.
                     if let Some(x) = fade {
@@ -1192,6 +1267,16 @@ impl Executor {
             }
         }
         c.incoming = incoming;
+        // A kept unit's bypass line, rebuilt for its new declared latency.
+        let mut relined = std::mem::take(&mut c.relined);
+        for Relined { idx, latency, line } in relined.drain(..) {
+            if let Some(u) = self.store.get_mut(idx.0 as usize).and_then(Option::as_mut)
+                && let Some(old) = u.mode.relined(latency, line)
+            {
+                c.spare_lines.push(old);
+            }
+        }
+        c.relined = relined;
 
         let old_plan = self.plan.take();
         let new_state = self.rebuild(&plan, old_plan.as_deref(), &mut departed, &mut c.opened);
@@ -1920,6 +2005,12 @@ impl Executor {
             for lane in lanes.iter_mut() {
                 lane.snapshot();
             }
+            // And every unit its mode (`mode.rs`), for the same reason.
+            for rec in &plan.nodes.recs {
+                if let Some(u) = store[rec.store as usize].as_mut() {
+                    u.mode.snapshot();
+                }
+            }
 
             // Feedback reads happen before any op: the delay is a whole
             // `MaxBlock`, so nothing this block's captures queue is due yet.
@@ -2382,10 +2473,25 @@ pub(crate) fn capture_op<A: AudioSlots, F: SlotFlags + ?Sized>(
     ring.push(arena.slot(src, frames), flags.get(src) & SILENT != 0);
 }
 
-/// [`Op::Node`]: run `u` for `h.rec`, by its borrow form. Returns whether a
+/// [`Op::Node`]: run `u` for `h.rec`: the plain op for a unit whose mode asks
+/// nothing of it, else the one that applies its mode. Returns whether a
 /// crossfade running there reached its end this block.
 #[inline(always)]
 pub(crate) fn node_dispatch<A: AudioSlots, F: SlotFlags + ?Sized, E: EventSlots + ?Sized>(
+    u: &mut Unit,
+    head: &Head<'_, '_>,
+    st: &mut OpState<'_, A, F, E>,
+) -> bool {
+    if u.mode.is_plain() {
+        return run_node_op(u, head, st);
+    }
+    mode_op::moded_node_op(u, head, st)
+}
+
+/// The node op by its borrow form (a crossfade running there takes its own).
+/// Returns whether that crossfade reached its end this block.
+#[inline(always)]
+fn run_node_op<A: AudioSlots, F: SlotFlags + ?Sized, E: EventSlots + ?Sized>(
     u: &mut Unit,
     head: &Head<'_, '_>,
     st: &mut OpState<'_, A, F, E>,
@@ -2732,7 +2838,10 @@ fn node_op_with<A: AudioSlots, F: SlotFlags + ?Sized, E: EventSlots + ?Sized>(
     let unit = rec.unit;
     // Flushed events and scheduled commands only ever go to an event input.
     let injected = !ein.is_empty() && st.has_inject[st.at];
-    let scheduled = !ein.is_empty() && st.has_due[st.at];
+    // A bypassed node is sent no events but the closes of what it holds
+    // (`mode.rs`): its scheduled commands are dropped.
+    let discards = !ein.is_empty() && u.mode.discards_events();
+    let scheduled = !ein.is_empty() && !discards && st.has_due[st.at];
 
     let (in_silent, in_constant) = in_masks(ain, &*st.flags);
     let quiet_inputs = !injected
@@ -2757,6 +2866,9 @@ fn node_op_with<A: AudioSlots, F: SlotFlags + ?Sized, E: EventSlots + ?Sized>(
         } else {
             u.last_idle
         };
+    // A bypassed node is called until it has been sent the close of what
+    // it holds, whatever it says of itself.
+    let skip = skip && !(discards && u.mode.holds_input());
     u.quiet = if quiet_inputs {
         u.quiet.saturating_add(frames as u64)
     } else {
@@ -2814,6 +2926,35 @@ fn node_op_with<A: AudioSlots, F: SlotFlags + ?Sized, E: EventSlots + ?Sized>(
         let (n, lost) = st.due.overlay(unit, base, st.overlay, &mut views);
         n_views = n;
         st.dropped.at_node(rec.unit, lost);
+    }
+    if discards {
+        // Every event input is replaced by what it must close, as far as
+        // the overlay takes (the rest next block).
+        st.overlay.clear();
+        for (port, held) in u.mode.held_in().iter_mut().enumerate() {
+            let from = st.overlay.len() as u32;
+            held.drain_into(st.overlay);
+            views[n_views] = (port as u16, from, st.overlay.len() as u32);
+            n_views += 1;
+        }
+        st.has_due[st.at] = false;
+    } else if !u.mode.held_in().is_empty() {
+        // What each event input is sent, as the node will see it: the
+        // port's slot, or what flushed events and scheduled commands made
+        // of it. A bypass closes what is held (`mode.rs`).
+        for (port, held) in u.mode.held_in().iter_mut().enumerate() {
+            let view = views[..n_views].iter().find(|v| usize::from(v.0) == port);
+            let flushed = st
+                .inject
+                .iter()
+                .find(|i| i.live && i.unit == unit && usize::from(i.port) == port);
+            let events: &[Event] = match (view, flushed) {
+                (Some(&(_, a, b)), _) => &st.overlay[a as usize..b as usize],
+                (None, Some(i)) if injected => &i.merged,
+                _ => &st.events.ev(ein[port])[..],
+            };
+            held.observe(events);
+        }
     }
 
     // The table only for a unit whose step delivered frames this block;

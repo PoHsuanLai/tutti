@@ -4,7 +4,7 @@ use tutti_types::{Db, Hz, Q};
 
 use super::*;
 use crate::SvfType;
-use crate::contract::{Anchor, DesignCase, LtiCase, RealizationCase};
+use crate::contract::{DesignCase, Figure, LtiCase, RealizationCase};
 use crate::{Design, Effect, Realization};
 
 const TYPES: [SvfType; 8] = [
@@ -76,9 +76,9 @@ impl DesignCase for SvfDesign<f64> {
 /// are `Q` there, an all-pass is unity, a bell is its gain, a shelf is its
 /// gain at the far end, and a low-pass at DC is unity.
 impl LtiCase for SvfDesign<f64> {
-    fn anchors(&self) -> Vec<Anchor<SvfControls>> {
+    fn figures(&self) -> Vec<Figure<SvfControls>> {
         let rate = SampleRate(48_000.0);
-        let at = |c: SvfControls, freq: f32, gain: f64| Anchor {
+        let at = |c: SvfControls, freq: f32, gain: f64| Figure {
             controls: c,
             rate,
             output: 0,

@@ -52,7 +52,7 @@
 use tutti_types::{Cents, Db, Hz, Note, Samples, Semitones};
 
 use crate::{Error, Result};
-use tutti_dsp::Complex;
+use tutti_dsp::Complex32;
 use tutti_dsp::FftScratch;
 use tutti_dsp::StftGeometry;
 use tutti_dsp::{BinCount, Grid};
@@ -460,7 +460,7 @@ pub struct ChromaState {
     /// The geometry the buffers below were built for.
     built: Option<StftGeometry>,
     window: Vec<f32>,
-    spectrum: Vec<Complex>,
+    spectrum: Vec<Complex32>,
     magnitudes: Vec<f32>,
     sum: [f64; CLASSES],
     frames: usize,
@@ -520,7 +520,7 @@ impl ChromaState {
             self.built = Some(cfg.geometry);
             self.window = cfg.geometry.window_coefficients();
             let window = cfg.geometry.window().get();
-            self.spectrum = vec![Complex::default(); window / 2 + 1];
+            self.spectrum = vec![Complex32::default(); window / 2 + 1];
             self.magnitudes = vec![0.0; window / 2 + 1];
         }
     }
@@ -673,7 +673,7 @@ mod tests {
         for step in 0..40 {
             let bin = 100.0 + f64::from(step) / 40.0;
             let x = sine(bin * 22_050.0 / 4096.0, 4096, 0.5);
-            let mut spectrum = vec![Complex::default(); 2049];
+            let mut spectrum = vec![Complex32::default(); 2049];
             fft.forward(&x, &window, &mut spectrum);
             let mags: Vec<f32> = spectrum.iter().map(|b| b.norm()).collect();
             let top = (1..2048).fold(1, |b, i| if mags[i] > mags[b] { i } else { b });

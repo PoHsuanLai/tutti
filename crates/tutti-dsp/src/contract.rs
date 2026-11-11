@@ -23,7 +23,7 @@
 //!   move (`stream_clock`);
 //! - **`Lti`** ([`LtiCase`]), for a model that is [`Lti`](crate::Lti): the
 //!   spectral radius is under 1, the response meets the family's closed-form
-//!   anchors, the norms bound the measured peak and are not far above it, and
+//!   figures, the norms bound the measured peak and are not far above it, and
 //!   the realization is linear, shift invariant, has the model's impulse
 //!   response and decay, and stays under its l1 norm;
 //! - **`reverb`** ([`ReverbCase`]), for a [`Network`](crate::Network): the RT60s,
@@ -57,7 +57,7 @@ mod lti;
 mod macros;
 mod reverb;
 
-pub use design_case::{Anchor, DesignCase, Hook, LtiCase, RealizationCase, ReverbCase};
+pub use design_case::{DesignCase, Figure, Hook, LtiCase, RealizationCase, ReverbCase};
 pub use harness::{
     Burst, MAX_BLOCK, WINDOW, built, burst, energy, noise, render, rms, setup, widths,
 };

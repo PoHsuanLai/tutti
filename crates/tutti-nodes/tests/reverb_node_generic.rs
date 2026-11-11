@@ -5,8 +5,8 @@
 //! block-aligned park. Every figure is the definition of a delay.
 
 use tutti_dsp::{
-    Bounds, Ceiling, Channels, Design, Effect, Effort, FirSummary, MaxDecay, Network, Realization,
-    Setup, Sizes, Stage,
+    Ceiling, Channels, Design, Effect, Effort, FirSummary, MaxDecay, Network, NetworkSizes,
+    Realization, Setup, Sizes, Stage,
 };
 use tutti_graph::contract::{Driven, assert_honest_tail, drive_input, prepared};
 use tutti_graph::{Env, PlayClock, Status, Transport, TransportChanges};
@@ -38,8 +38,8 @@ struct EchoKernel {
 }
 
 impl Realization<Network> for EchoKernel {
-    type Bounds = Bounds;
-    fn prepare(&mut self, _: &Bounds, _: &Setup) {}
+    type Bounds = NetworkSizes;
+    fn prepare(&mut self, _: &NetworkSizes, _: &Setup) {}
     fn retarget(&mut self, _: &Network) {}
     fn reset(&mut self) {
         self.line.fill(0.0);
@@ -84,7 +84,7 @@ impl EchoKernel {
 impl Design for Echo {
     type Controls = ();
     type Model = Network;
-    type Bounds = Bounds;
+    type Bounds = NetworkSizes;
     type Range = MaxDecay;
     type Realization = EchoKernel;
 
@@ -107,8 +107,8 @@ impl Design for Echo {
         Network::new(rate)
     }
 
-    fn bounds(&self, ceiling: &Ceiling<MaxDecay>) -> Bounds {
-        Bounds::measure(&self.design(&(), ceiling.rate()), ceiling.floor())
+    fn bounds(&self, ceiling: &Ceiling<MaxDecay>) -> NetworkSizes {
+        NetworkSizes::measure(&self.design(&(), ceiling.rate()), ceiling.floor())
     }
 
     fn realization(&self) -> EchoKernel {

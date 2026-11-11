@@ -16,7 +16,7 @@
 use tutti_types::{Amplitude, SampleRate, Samples};
 
 use crate::{Error, Result};
-use tutti_dsp::Complex;
+use tutti_dsp::Complex32;
 use tutti_dsp::CosineWindow;
 use tutti_dsp::FftScratch;
 use tutti_dsp::StftGeometry;
@@ -119,7 +119,7 @@ impl NormalizedMagnitudes {
 /// would force a deinterleave per edit.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Stft {
-    bins: Grid<Complex>,
+    bins: Grid<Complex32>,
     geometry: StftGeometry,
 }
 
@@ -150,7 +150,7 @@ pub struct StftMagnitude {
 impl Stft {
     /// The complex bins as a `frames x bins` grid, `DC..=Nyquist` per frame.
     #[inline]
-    pub fn bins(&self) -> &Grid<Complex> {
+    pub fn bins(&self) -> &Grid<Complex32> {
         &self.bins
     }
 
@@ -197,7 +197,7 @@ impl Stft {
     /// match this transform's `frames x bins` shape.
     pub fn masked_magnitude_at(
         &self,
-        mask: &Grid<Complex>,
+        mask: &Grid<Complex32>,
         frame: FrameIndex,
         bin: BinIndex,
     ) -> Result<Amplitude> {
@@ -250,13 +250,13 @@ impl Stft {
     /// match this transform's `frames x bins` shape.
     pub fn resynthesize_masked(
         &self,
-        mask: &Grid<Complex>,
+        mask: &Grid<Complex32>,
         fft: &mut FftScratch,
     ) -> Result<Vec<f32>> {
         if !self.bins.same_shape_as(mask) {
             return Err(Error::GridShapeDisagreement);
         }
-        let masked: Vec<Complex> = self
+        let masked: Vec<Complex32> = self
             .bins
             .as_slice()
             .iter()
@@ -294,13 +294,13 @@ impl StftPolar {
     /// Back to complex bins. Lossless.
     #[must_use]
     pub fn to_rectangular(&self) -> Stft {
-        let bins: Vec<Complex> = self
+        let bins: Vec<Complex32> = self
             .magnitudes
             .grid()
             .as_slice()
             .iter()
             .zip(self.phases.as_slice())
-            .map(|(&m, &p)| Complex::from_polar(m, p))
+            .map(|(&m, &p)| Complex32::from_polar(m, p))
             .collect();
         Stft {
             bins: self.phases.same_shape(bins),
@@ -611,7 +611,7 @@ fn compute(samples: &[f32], geometry: StftGeometry, fft: &mut FftScratch) -> Stf
     let window = geometry.window_coefficients();
     let window_len = geometry.window().get();
 
-    let mut bins = vec![Complex::default(); frames.get() * bins_per_frame.get()];
+    let mut bins = vec![Complex32::default(); frames.get() * bins_per_frame.get()];
     for frame in frames.indices() {
         let offset = frame.get() * geometry.hop().get();
         let start = frame.get() * bins_per_frame.get();
@@ -895,7 +895,7 @@ mod tests {
         )
         .unwrap();
 
-        let wrong = Grid::filled(Complex::default(), FrameCount(2), tutti_dsp::BinCount(3));
+        let wrong = Grid::filled(Complex32::default(), FrameCount(2), tutti_dsp::BinCount(3));
         assert_eq!(
             transform.resynthesize_masked(&wrong, &mut fft),
             Err(Error::GridShapeDisagreement)
@@ -903,7 +903,7 @@ mod tests {
 
         // A neutral mask is the identity.
         let neutral = Grid::filled(
-            Complex::new(1.0, 0.0),
+            Complex32::new(1.0, 0.0),
             transform.bins().frames(),
             transform.bins().bins(),
         );
@@ -930,7 +930,7 @@ mod tests {
         .unwrap();
 
         let silence = Grid::filled(
-            Complex::default(),
+            Complex32::default(),
             transform.bins().frames(),
             transform.bins().bins(),
         );

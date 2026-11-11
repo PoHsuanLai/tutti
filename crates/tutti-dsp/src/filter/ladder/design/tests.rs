@@ -3,7 +3,7 @@ use rand::{Rng, SeedableRng};
 use tutti_types::{Drive, Hz, Resonance};
 
 use super::*;
-use crate::contract::{Anchor, DesignCase, LtiCase, RealizationCase};
+use crate::contract::{DesignCase, Figure, LtiCase, RealizationCase};
 use crate::{Design, Effect, Realization};
 
 const TYPES: [LadderType; 4] = [
@@ -87,9 +87,9 @@ impl DesignCase for LadderDesign<f64> {
 /// `1/sqrt(2)` at the cutoff, so with no resonance a 12 dB type is 1/2 there and
 /// a 24 dB type 1/4.
 impl LtiCase for LadderDesign<f64> {
-    fn anchors(&self) -> Vec<Anchor<LadderControls>> {
+    fn figures(&self) -> Vec<Figure<LadderControls>> {
         let rate = SampleRate(48_000.0);
-        let at = |c: LadderControls, freq: f32, gain: f64| Anchor {
+        let at = |c: LadderControls, freq: f32, gain: f64| Figure {
             controls: c,
             rate,
             output: 0,

@@ -12,7 +12,7 @@
 
 use super::RealFft;
 
-use crate::Complex;
+use crate::Complex32;
 
 /// The cached real-input plan plus the buffers a transform needs.
 ///
@@ -27,8 +27,8 @@ pub struct FftScratch {
     real: Vec<f32>,
     /// The `size / 2 + 1` input bins of an inverse transform (the plan
     /// consumes its input).
-    half: Vec<Complex>,
-    scratch: Vec<Complex>,
+    half: Vec<Complex32>,
+    scratch: Vec<Complex32>,
 }
 
 impl FftScratch {
@@ -50,7 +50,7 @@ impl FftScratch {
     /// conjugate-symmetric and carries no extra information. The imaginary
     /// parts of the DC bin (and, for an even `size`, the Nyquist bin) are
     /// exactly zero.
-    pub fn forward(&mut self, input: &[f32], window: &[f32], out: &mut [Complex]) {
+    pub fn forward(&mut self, input: &[f32], window: &[f32], out: &mut [Complex32]) {
         let size = input.len();
         debug_assert_eq!(window.len(), size);
         debug_assert_eq!(out.len(), size / 2 + 1);
@@ -62,7 +62,7 @@ impl FftScratch {
 
         let needed = fft.scratch_len();
         if self.scratch.len() < needed {
-            self.scratch.resize(needed, Complex::default());
+            self.scratch.resize(needed, Complex32::default());
         }
         fft.forward(&self.real, out, &mut self.scratch);
     }
@@ -73,7 +73,7 @@ impl FftScratch {
     /// by an inverse is the identity. The imaginary parts of the DC bin (and,
     /// for an even `size`, the Nyquist bin) do not contribute to a real signal
     /// and are ignored.
-    pub fn inverse(&mut self, bins: &[Complex], out: &mut [f32]) {
+    pub fn inverse(&mut self, bins: &[Complex32], out: &mut [f32]) {
         let size = out.len();
         debug_assert_eq!(bins.len(), size / 2 + 1);
 
@@ -83,7 +83,7 @@ impl FftScratch {
 
         let needed = fft.scratch_len();
         if self.scratch.len() < needed {
-            self.scratch.resize(needed, Complex::default());
+            self.scratch.resize(needed, Complex32::default());
         }
         fft.inverse(&mut self.half, out, &mut self.scratch);
 

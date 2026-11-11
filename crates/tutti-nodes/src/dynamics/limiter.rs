@@ -14,8 +14,7 @@ use tutti_types::{Amplitude, AtomicF32, AtomicF64};
 
 use crate::ramp::LastGood;
 use tutti_dsp::{
-    LimiterBlock, LimiterKernel, LookaheadRing, amplitude_to_db, brickwall_clip, db_to_amplitude,
-    fold_peak,
+    LimiterBlock, LimiterKernel, LookaheadRing, amplitude_to_db, brickwall_clip, fold_peak,
 };
 use tutti_types::Latency;
 use tutti_types::UnitParam;
@@ -597,7 +596,7 @@ impl BrickwallLimiterNode {
 /// `db` as a linear clamp bound, or `None` for a NaN, which has none.
 #[inline]
 fn linear_ceiling(db: Db) -> Option<f32> {
-    let linear = db_to_amplitude(db).get();
+    let linear = db.to_amplitude().get();
     (!linear.is_nan()).then_some(linear)
 }
 
@@ -744,7 +743,7 @@ mod tests {
         assert!(set.set(UnitParam::Ceiling, -6.0));
         let mut out = [0.0f32; 2];
         tick(&mut bw, &[1.0, -1.0], &mut out);
-        let ceiling = db_to_amplitude(Db::new(-6.0)).get();
+        let ceiling = Db::new(-6.0).to_amplitude().get();
         assert!((out[0] - ceiling).abs() < 1e-4, "clipped at {}", out[0]);
     }
 
@@ -893,7 +892,7 @@ mod tests {
             tick(&mut lim, &[loud, loud], &mut out);
         }
 
-        let ceiling_lin = db_to_amplitude(Db::new(-0.3)).get();
+        let ceiling_lin = Db::new(-0.3).to_amplitude().get();
         assert!(
             out[0].abs() <= ceiling_lin + 0.05,
             "Output {:.4} should be near ceiling {:.4}",
@@ -975,7 +974,7 @@ mod tests {
     #[test]
     fn test_brickwall_adjustable_ceiling() {
         let mut bw = BrickwallLimiterNode::new(Db::new(-6.0));
-        let ceiling_lin = db_to_amplitude(Db::new(-6.0)).get();
+        let ceiling_lin = Db::new(-6.0).to_amplitude().get();
 
         let mut out = [0.0f32; 2];
         tick(&mut bw, &[1.0, -1.0], &mut out);
@@ -1103,12 +1102,12 @@ mod tests {
     #[test]
     fn brickwall_a_fed_nan_ceiling_clamps_at_the_cell() {
         let mut bw = prepared_at(BrickwallLimiterNode::new(Db::new(-6.0)), RATE_44K);
-        let cell = db_to_amplitude(Db::new(-6.0)).get();
+        let cell = Db::new(-6.0).to_amplitude().get();
         let mut out = [0.0f32; 2];
         tick_fed(&mut bw, &[1.0, -1.0], &[Some(f32::NAN)], &mut out);
         assert_eq!(out, [cell, -cell]);
         tick_fed(&mut bw, &[1.0, -1.0], &[Some(-12.0)], &mut out);
-        let fed = db_to_amplitude(Db::new(-12.0)).get();
+        let fed = Db::new(-12.0).to_amplitude().get();
         assert_eq!(out, [fed, -fed]);
     }
 
@@ -1122,11 +1121,11 @@ mod tests {
         let mut out = [0.0f32; 2];
         assert!(set.set(UnitParam::Ceiling, f32::NAN));
         tick(&mut bw, &[1.0, -1.0], &mut out);
-        let held = db_to_amplitude(Db::new(-6.0)).get();
+        let held = Db::new(-6.0).to_amplitude().get();
         assert_eq!(out, [held, -held]);
         assert!(set.set(UnitParam::Ceiling, -12.0));
         tick(&mut bw, &[1.0, -1.0], &mut out);
-        let next = db_to_amplitude(Db::new(-12.0)).get();
+        let next = Db::new(-12.0).to_amplitude().get();
         assert!((out[0] - next).abs() < 1e-6, "{}", out[0]);
 
         let mut born_nan = prepared_at(BrickwallLimiterNode::new(Db::new(f32::NAN)), RATE_44K);
@@ -1409,7 +1408,7 @@ mod tests {
     #[test]
     fn loud_noise_stays_at_the_ceiling() {
         let ceiling = Db(-6.0);
-        let limit = db_to_amplitude(ceiling).get();
+        let limit = ceiling.to_amplitude().get();
         let mut lim = prepared_at(LimiterNode::new(ceiling, ceiling), RATE_44K);
         let latency = lim.ring.lookahead_samples();
         let mut seed = 7;
@@ -1433,7 +1432,7 @@ mod tests {
     #[test]
     fn a_steady_signal_passes_under_and_settles_at_ceiling_over_peak() {
         let ceiling = Db(-6.0);
-        let limit = db_to_amplitude(ceiling).get();
+        let limit = ceiling.to_amplitude().get();
         for (level, want) in [(0.25f32, 1.0f32), (1.0, limit), (3.0, limit / 3.0)] {
             let mut lim = prepared_at(
                 LimiterNode::new(ceiling, ceiling).with_release(Seconds::new(0.001)),
@@ -1460,10 +1459,7 @@ mod tests {
     #[test]
     fn a_ceiling_under_the_threshold_scales_by_the_gap_under_it() {
         let (threshold, ceiling) = (Db(-3.0), Db(-9.0));
-        let (t, c) = (
-            db_to_amplitude(threshold).get(),
-            db_to_amplitude(ceiling).get(),
-        );
+        let (t, c) = (threshold.to_amplitude().get(), ceiling.to_amplitude().get());
         for (level, gain) in [(0.1f32, c / t), (2.0, c / 2.0)] {
             let mut lim = prepared_at(
                 LimiterNode::new(threshold, ceiling).with_release(Seconds::new(0.001)),
@@ -1489,13 +1485,13 @@ mod tests {
             LimiterNode::new(threshold, ceiling).with_release(Seconds::new(0.001)),
             RATE_44K,
         );
-        let level = db_to_amplitude(Db(in_db)).get();
+        let level = Db(in_db).to_amplitude().get();
         let x = vec![level; 1024];
         let mut out = Vec::new();
         for _ in 0..16 {
             out = drive(&mut lim, RATE_44K, &[&x, &x], &[]).remove(0);
         }
-        let ceiling_lin = db_to_amplitude(ceiling).get();
+        let ceiling_lin = ceiling.to_amplitude().get();
         // The output never exceeds the ceiling (to a rounding step), in
         // every frame, including the release that rises from zero.
         assert!(
@@ -1569,7 +1565,7 @@ mod tests {
     #[test]
     fn a_nan_input_does_not_poison_the_gain() {
         let ceiling = Db(-6.0);
-        let limit = db_to_amplitude(ceiling).get();
+        let limit = ceiling.to_amplitude().get();
         let mut lim = prepared_at(
             LimiterNode::new(ceiling, ceiling).with_release(Seconds::new(0.001)),
             RATE_44K,

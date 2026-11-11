@@ -227,15 +227,15 @@ mod tests {
         let mut fft = FftScratch::new();
         let size = 16_384;
         let edge_bin = 1000usize; // 5859 Hz at 48 kHz / 16384
-        let mut bins = vec![tutti_dsp::Complex::default(); size / 2 + 1];
+        let mut bins = vec![tutti_dsp::Complex32::default(); size / 2 + 1];
         for b in bins.iter_mut().take(edge_bin).skip(1) {
-            *b = tutti_dsp::Complex::from_polar(1.0, rng.gen_range(0.0..core::f32::consts::TAU));
+            *b = tutti_dsp::Complex32::from_polar(1.0, rng.gen_range(0.0..core::f32::consts::TAU));
         }
         let mut x = vec![0.0f32; size];
         fft.inverse(&bins, &mut x);
         let width = RATE as f32 / size as f32;
         let row = {
-            let mut out = vec![tutti_dsp::Complex::default(); size / 2 + 1];
+            let mut out = vec![tutti_dsp::Complex32::default(); size / 2 + 1];
             fft.forward(&x, &vec![1.0; size], &mut out);
             out.iter().map(|b| b.norm()).collect::<Vec<_>>()
         };

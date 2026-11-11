@@ -237,14 +237,15 @@ fn convert(
         }
         FileEvent::Escape(_) => Err(DropReason::NoSuccessor),
         FileEvent::Meta(meta) => match meta {
-            Meta::Tempo { micros_per_quarter } => {
-                Ok((Rank::Tempo, vec![tempo(*micros_per_quarter)]))
-            }
+            Meta::Tempo {
+                micros_per_quarter, ..
+            } => Ok((Rank::Tempo, vec![tempo(*micros_per_quarter)])),
             Meta::TimeSignature {
                 numerator,
                 denominator_power,
                 clocks_per_click,
                 thirty_seconds_per_quarter,
+                ..
             } => {
                 if *denominator_power == 0 {
                     return Err(DropReason::WholeNoteDenominator);
@@ -263,7 +264,7 @@ fn convert(
                     .to_vec(),
                 ))
             }
-            Meta::KeySignature { sharps, minor } => {
+            Meta::KeySignature { sharps, minor, .. } => {
                 let key =
                     key_signature(*sharps, *minor).ok_or(DropReason::KeySignatureOutOfRange)?;
                 other(vec![flex(Flex::SetKeySignature(FlexAddress::Group, key))])

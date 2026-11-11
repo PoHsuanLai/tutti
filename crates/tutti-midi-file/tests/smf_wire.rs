@@ -271,6 +271,83 @@ fn a_longer_header_is_read() {
     );
 }
 
+// ---- meta events bigger than expected (SMF 1.0 section 3.3) ----------------
+
+/// SMF 1.0 section 3.3: programs "shouldn't be surprised if it's bigger than
+/// they expected. If so, they must ignore everything past what they know
+/// about." A Set Tempo, a Time Signature and a Key Signature with extra data
+/// are read as themselves, from the bytes they define.
+#[test]
+fn a_meta_event_longer_than_defined_is_read_for_what_it_defines() {
+    let bytes = raw_track(&[
+        0x00, 0xFF, 0x51, 0x05, 0x07, 0xA1, 0x20, 0xAA, 0xBB, // tempo + 2
+        0x00, 0xFF, 0x58, 0x06, 0x06, 0x03, 0x18, 0x08, 0x03, 0x04, // 6/8 + 2
+        0x00, 0xFF, 0x59, 0x03, 0xFD, 0x01, 0x99, // 3 flats minor + 1
+        0x00, 0xFF, 0x2F, 0x00,
+    ]);
+    let file = MidiFile::from_bytes(&bytes).unwrap();
+    let metas: Vec<&Meta> = file.tracks()[0]
+        .events
+        .iter()
+        .filter_map(|(_, e)| match e {
+            FileEvent::Meta(m) => Some(m),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        metas,
+        [
+            &Meta::Tempo {
+                micros_per_quarter: 500_000,
+                extra: Box::new([0xAA, 0xBB]),
+            },
+            &Meta::TimeSignature {
+                numerator: 6,
+                denominator_power: 3,
+                clocks_per_click: 24,
+                thirty_seconds_per_quarter: 8,
+                extra: Box::new([3, 4]),
+            },
+            &Meta::KeySignature {
+                sharps: -3,
+                minor: true,
+                extra: Box::new([0x99]),
+            },
+        ]
+    );
+}
+
+/// The file model is lossless: the bytes past what a program knows are written
+/// back (SMF 1.0 section 3.3: a program "must not add anything of their own"
+/// to a meta event, and so must not drop what is there).
+#[test]
+fn a_longer_meta_event_is_written_back_as_it_was() {
+    let bytes = raw_track(&[
+        0x00, 0xFF, 0x51, 0x05, 0x07, 0xA1, 0x20, 0xAA, 0xBB, //
+        0x00, 0xFF, 0x58, 0x06, 0x06, 0x03, 0x18, 0x08, 0x03, 0x04, //
+        0x00, 0xFF, 0x59, 0x03, 0xFD, 0x01, 0x99, //
+        0x00, 0xFF, 0x2F, 0x00,
+    ]);
+    let back = MidiFile::from_bytes(&bytes).unwrap().to_bytes().unwrap();
+    assert_eq!(back, bytes);
+}
+
+/// SMF 1.0 section 3.3: "An end-of-track event must occur as the last event in
+/// the track." One with events after it is refused, not read as the track's
+/// end (which would drop what follows).
+#[test]
+fn an_end_of_track_that_is_not_last_is_refused() {
+    let bytes = raw_track(&[
+        0x00, 0xFF, 0x2F, 0x00, //
+        0x00, 0x90, 60, 100, //
+        0x00, 0xFF, 0x2F, 0x00,
+    ]);
+    assert!(matches!(
+        MidiFile::from_bytes(&bytes),
+        Err(Error::MidiFileParse(_))
+    ));
+}
+
 // ---- the writer ------------------------------------------------------------
 
 fn note(key: u8) -> FileEvent {
@@ -330,6 +407,7 @@ fn a_written_file_reads_back_equal() {
             0,
             FileEvent::Meta(Meta::Tempo {
                 micros_per_quarter: 500_000,
+                extra: Box::default(),
             }),
         ),
         (0, note(60)),

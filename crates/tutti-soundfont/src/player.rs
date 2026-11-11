@@ -35,6 +35,7 @@ use crate::voices::Voices;
 // effects depths 1 and 3.
 // The fine (LSB) controller of each coarse one the player reads; a match arm
 // needs a constant, and `lsb` is `None` only above controller 31.
+const BANK_SELECT_LSB: CCNumber = CCNumber::BANK_SELECT.lsb().unwrap();
 const MOD_WHEEL_LSB: CCNumber = CCNumber::MOD_WHEEL.lsb().unwrap();
 const VOLUME_LSB: CCNumber = CCNumber::VOLUME.lsb().unwrap();
 const PAN_LSB: CCNumber = CCNumber::PAN.lsb().unwrap();
@@ -292,11 +293,13 @@ impl Player {
             // The wheel is the core's (it retunes the channel's voices).
             Voice2::PitchBend(_) => self.dispatch(channel, message),
             // A bank, when it rides along (the translator puts a MIDI 1.0
-            // Bank Select there), is selected first; the bank number is its
-            // MSB, as CC 0 sets it.
+            // Bank Select there), is the held Bank Select, and the Program
+            // Change applies it (M1 p.13).
             Voice2::ProgramChange { program, bank } => {
+                let info = &mut self.channels[usize::from(channel.get())];
                 if let Some(bank) = bank {
-                    self.channels[usize::from(channel.get())].set_bank(i32::from(bank.msb.get()));
+                    info.select_bank_coarse(bank.msb);
+                    info.select_bank_fine(bank.lsb);
                 }
                 self.program_change(channel, program);
             }
@@ -314,9 +317,10 @@ impl Player {
         }
     }
 
-    /// Selects the program `channel` plays within its bank.
+    /// Selects the program `channel` plays, in the bank held by Bank Select
+    /// (M1 p.13).
     pub(crate) fn program_change(&mut self, channel: MidiChannel, program: U7) {
-        self.channels[usize::from(channel.get())].set_patch(i32::from(program.get()));
+        self.channels[usize::from(channel.get())].program_change(program);
     }
 
     /// Hands a note or pedal message to the core, and carries out what it
@@ -335,8 +339,9 @@ impl Player {
 
     /// What a Control Change sets in the channel.
     ///
-    /// Followed: bank select, modulation, volume, pan, expression, reverb
-    /// and chorus send, and reset all controllers. RPN and NRPN arrive
+    /// Followed: bank select (held until the next program change),
+    /// modulation, volume, pan, expression, reverb and chorus send, and reset
+    /// all controllers. RPN and NRPN arrive
     /// assembled, as Registered and Assignable Controllers (the input edge's
     /// translator, design 017 §4), not as Data Entry. The pedals (64, 66), all sound off (120), all
     /// notes off (123) and the mode messages are the core's
@@ -345,7 +350,8 @@ impl Player {
         let data = i32::from(value.get());
         let info = &mut self.channels[usize::from(channel.get())];
         match controller {
-            CCNumber::BANK_SELECT => info.set_bank(data),
+            CCNumber::BANK_SELECT => info.select_bank_coarse(value),
+            BANK_SELECT_LSB => info.select_bank_fine(value),
             CCNumber::MOD_WHEEL => info.set_modulation_coarse(value),
             MOD_WHEEL_LSB => info.set_modulation_fine(value),
             CCNumber::VOLUME => info.set_volume_coarse(value),

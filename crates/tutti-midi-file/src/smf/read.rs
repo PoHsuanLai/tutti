@@ -41,7 +41,9 @@
 //! a running status with none active, a variable-length quantity over four
 //! bytes, an event cut off inside its chunk, a zero division
 //! ([`Fault::Malformed`]); and an SMPTE division ([`Fault::Timecode`]). A track
-//! with no End of Track ends at its last event.
+//! with no End of Track ends at its last event, and an End of Track that is
+//! not the track's last event is refused (SMF 1.0 section 3.3: it "must occur
+//! as the last event in the track").
 
 use std::iter::successors;
 
@@ -215,8 +217,12 @@ fn channel<'a>(status: u8) -> impl Parser<&'a [u8], FileEvent, ContextError<Faul
         .context(malformed("channel message data"))
 }
 
-/// A meta event's type byte and data as the model's [`Meta`]. Anything whose
-/// data is not exactly the typed shape stays `Other`, so no byte is lost.
+/// A meta event's type byte and data as the model's [`Meta`]. A fixed-size
+/// event with more data than it defines is read for the bytes it defines and
+/// keeps the rest as `extra` (SMF 1.0 section 3.3: "they shouldn't be surprised
+/// if it's bigger than they expected. If so, they must ignore everything past
+/// what they know about"). Anything shorter than the typed shape stays
+/// `Other`, so no byte is lost.
 fn meta_of(kind: u8, data: &[u8]) -> Meta {
     let text = |kind| Meta::Text {
         kind,
@@ -232,8 +238,9 @@ fn meta_of(kind: u8, data: &[u8]) -> Meta {
         (0x07, _) => text(TextKind::CuePoint),
         (0x08, _) => text(TextKind::ProgramName),
         (0x09, _) => text(TextKind::DeviceName),
-        (0x51, &[a, b, c]) => Meta::Tempo {
+        (0x51, &[a, b, c, ref extra @ ..]) => Meta::Tempo {
             micros_per_quarter: u32::from_be_bytes([0, a, b, c]),
+            extra: extra.into(),
         },
         (
             0x58,
@@ -242,16 +249,19 @@ fn meta_of(kind: u8, data: &[u8]) -> Meta {
                 denominator_power,
                 clocks_per_click,
                 thirty_seconds_per_quarter,
+                ref extra @ ..,
             ],
         ) => Meta::TimeSignature {
             numerator,
             denominator_power,
             clocks_per_click,
             thirty_seconds_per_quarter,
+            extra: extra.into(),
         },
-        (0x59, &[sharps, minor @ (0 | 1)]) => Meta::KeySignature {
+        (0x59, &[sharps, minor @ (0 | 1), ref extra @ ..]) => Meta::KeySignature {
             sharps: i8::from_be_bytes([sharps]),
             minor: minor == 1,
+            extra: extra.into(),
         },
         _ => Meta::Other {
             kind,
@@ -333,6 +343,17 @@ fn track(body: &[u8]) -> Res<Track> {
         })
         .collect::<Res<Vec<_>>>()?;
     let is_end = |e: &FileEvent| matches!(e, FileEvent::Meta(Meta::Other { kind: 0x2F, data }) if data.is_empty());
+    // SMF 1.0 section 3.3: "An end-of-track event must occur as the last
+    // event in the track." One before the last is refused, not read as the
+    // track's end: what follows it would be dropped, and the model is lossless.
+    let last = events.len().saturating_sub(1);
+    if events.iter().take(last).any(|(_, e)| is_end(e)) {
+        return Err(
+            refuse::<Track>("End of Track that is not the last event in its track")
+                .parse_peek(body)
+                .unwrap_err(),
+        );
+    }
     let end = match events.last() {
         Some(&(tick, ref e)) if is_end(e) => {
             events.pop();

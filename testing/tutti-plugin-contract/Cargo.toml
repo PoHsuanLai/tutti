@@ -22,11 +22,6 @@ assert_no_alloc = { version = "1", default-features = false }
 tutti-shared-plugin = { path = "../tutti-shared-plugin" }
 tutti-shared-plugin-vst3-cpp = { path = "../tutti-shared-plugin-vst3-cpp" }
 
-# AU has no build of the shared plugin: its suite loads an Apple built-in unit
-# (`tests/au.rs`), so the host is a macOS dependency only.
-[target.'cfg(target_os = "macos")'.dependencies]
-tutti-au-host = { path = "../../crates/tutti-au-host" }
-
 # Needs `cargo build -p tutti-plugin-server --no-default-features --features
 # clap,vst2,vst3` and `cargo build -p tutti-plugin-probe` first: the server
 # cannot be a dependency (it depends on `tutti-plugin`), and a dependency's
@@ -53,3 +48,8 @@ required-features = ["server"]
 [dev-dependencies]
 # `tests/probe.rs` copies the plugin under the file name its `init` reads.
 tempfile = "3"
+
+# AU has no build of the shared plugin: its suite loads an Apple built-in unit
+# (`tests/au.rs`), so the host is a macOS dependency only.
+[target.'cfg(target_os = "macos")'.dependencies]
+tutti-au-host = { path = "../../crates/tutti-au-host" }

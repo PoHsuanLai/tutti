@@ -195,8 +195,11 @@ and the docs.rs build on a dated nightly); `cargo xtask check-loom` runs clippy 
   `WindowHandle::from_window(&impl HasWindowHandle)` (winit, Bevy, any
   `raw-window-handle` 0.6 window), and the one `unsafe` constructor,
   `WindowHandle::from_u64`, is for a host holding only a bare platform handle. Test-only
-  `unsafe` is `tutti-fixtures`' (`ScopedEnv`, `StandInWindow`, and `ClapProbe` and
-  `Vst2Probe`, one typed method per probe export of the reference plugins).
+  `unsafe` is `tutti-fixtures`' (`ScopedEnv`, `StandInWindow`), and a reference
+  plugin's probe exports are reached through its own crate's typed door
+  (`tutti_clap_test_plugin::ClapProbe`, `tutti_vst2_test_plugin::Vst2Probe`, feature
+  `probe`): `tutti-fixtures` depends on no plugin, since a plugin's rlib carries its
+  entry point and two in one test binary do not link.
   `tutti-plugin-ipc` and `tutti-plugin-server` forbid `unsafe` too: the process
   edge's is `tutti-plugin-ipc-ffi`'s.
 - **Toolchain:** `rust-toolchain.toml` pins the stable every gate runs on,

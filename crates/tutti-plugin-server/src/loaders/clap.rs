@@ -1585,18 +1585,18 @@ mod tests {
 
     /// What the reference plugin recorded of its last `process` call.
     fn read_process_capture() -> tutti_clap_test_plugin::ProcessCapture {
-        tutti_fixtures::ClapProbe::get().process_capture()
+        crate::test_utils::clap().process_capture()
     }
 
     /// Arm (or, with 0, disarm) the reference plugin's thread-pool probe on
     /// the image the loader opens; see `set_clap_probe_render_mode` for why
     /// through `dlopen`.
     fn set_thread_pool_tasks(tasks: u32) {
-        tutti_fixtures::ClapProbe::get().set_thread_pool_tasks(tasks);
+        crate::test_utils::clap().set_thread_pool_tasks(tasks);
     }
 
     fn thread_pool_capture() -> tutti_clap_test_plugin::ThreadPoolCapture {
-        tutti_fixtures::ClapProbe::get().thread_pool_capture()
+        crate::test_utils::clap().thread_pool_capture()
     }
 
     fn process_blocks(instance: &mut ClapInstance, blocks: usize) {

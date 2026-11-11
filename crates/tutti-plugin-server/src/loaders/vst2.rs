@@ -535,11 +535,11 @@ mod tests {
     }
 
     fn probe_capture() -> tutti_vst2_test_plugin::ProcessCapture {
-        tutti_fixtures::Vst2Probe::get().capture()
+        crate::test_utils::vst2().capture()
     }
 
     fn reset_probe() {
-        let probe = tutti_fixtures::Vst2Probe::get();
+        let probe = crate::test_utils::vst2();
         probe.reset_capture();
         probe.reset_switches();
     }
@@ -588,7 +588,7 @@ mod tests {
             "nothing was reported yet"
         );
 
-        let answered = tutti_fixtures::Vst2Probe::get().fire_io_changed(777, 4);
+        let answered = crate::test_utils::vst2().fire_io_changed(777, 4);
         assert_eq!(answered, 1, "the host handles audioMasterIOChanged");
 
         let events = plugin.poll_async_events(&main_thread());
@@ -932,9 +932,9 @@ mod tests {
     fn a_parameter_the_plugin_moved_is_forwarded() {
         let (mut p, _lock) = load_probe(&[]);
         reset_probe();
-        tutti_fixtures::Vst2Probe::get().set_automate_burst(3);
+        crate::test_utils::vst2().set_automate_burst(3);
         render(&mut p, 64).expect("renders");
-        tutti_fixtures::Vst2Probe::get().set_automate_burst(0);
+        crate::test_utils::vst2().set_automate_burst(0);
         let moved: Vec<_> = p
             .poll(&main_thread())
             .into_iter()

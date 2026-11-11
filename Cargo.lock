@@ -3525,6 +3525,7 @@ version = "0.1.0"
 dependencies = [
  "clap-sys",
  "libc",
+ "libloading 0.8.9",
 ]
 
 [[package]]
@@ -3632,16 +3633,13 @@ dependencies = [
 name = "tutti-fixtures"
 version = "0.0.1"
 dependencies = [
- "libloading 0.8.9",
  "raw-window-handle",
  "serde",
  "serde_json",
  "tempfile",
- "tutti-clap-test-plugin",
  "tutti-midi-protocol",
  "tutti-plugin-types",
  "tutti-ump",
- "tutti-vst2-test-plugin",
 ]
 
 [[package]]
@@ -4270,6 +4268,7 @@ dependencies = [
 name = "tutti-vst2-test-plugin"
 version = "0.1.0"
 dependencies = [
+ "libloading 0.8.9",
  "num-traits",
  "tutti-vst2-author",
 ]

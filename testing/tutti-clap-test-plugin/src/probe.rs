@@ -1,8 +1,7 @@
-//! The reference CLAP plugin's exported probe symbols, as typed safe calls
-//! (feature `clap-probe`).
+//! This plugin's exported probe symbols, as typed safe calls (feature
+//! `probe`), for the suites that load it.
 //!
-//! The plugin (`tutti-clap-test-plugin`) keeps its switches and captures in
-//! statics of its cdylib. A test reaches the ones the host under test sees
+//! The plugin keeps its switches and captures in statics of its cdylib. A test reaches the ones the host under test sees
 //! through the cdylib's own image: the rlib linked for its types is a separate
 //! copy with separate statics. [`ClapProbe`] opens the cdylib and calls each
 //! `#[no_mangle] extern "C"` export through a method that carries the export's
@@ -14,10 +13,10 @@
 //! it.
 
 use std::path::Path;
-use std::sync::OnceLock;
 
 use libloading::Library;
-use tutti_clap_test_plugin::{ProcessCapture, ThreadCapture, ThreadPoolCapture};
+
+use crate::{ProcessCapture, ThreadCapture, ThreadPoolCapture};
 
 /// The plugin's `#[no_mangle] unsafe extern "C" fn(u32)` switches: one
 /// signature, one name each.
@@ -29,11 +28,11 @@ use tutti_clap_test_plugin::{ProcessCapture, ThreadCapture, ThreadPoolCapture};
 /// after the run).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ClapSwitch {
-    /// `tutti_clap_test_plugin::RenderMode`.
+    /// [`RenderMode`](crate::RenderMode).
     RenderMode,
-    /// `tutti_clap_test_plugin::StatusMode`.
+    /// [`StatusMode`](crate::StatusMode).
     StatusMode,
-    /// `tutti_clap_test_plugin::PortLayoutMode`.
+    /// [`PortLayoutMode`](crate::PortLayoutMode).
     PortLayout,
     /// The `PORTS_64BIT_*` mask.
     Ports64Bit,
@@ -48,8 +47,8 @@ pub enum ClapSwitch {
 }
 
 impl ClapSwitch {
-    /// The export's name, NUL-terminated. Every one is, in
-    /// `tutti-clap-test-plugin`, `#[no_mangle] pub unsafe extern "C" fn(u32)`
+    /// The export's name, NUL-terminated. Every one is, in this crate,
+    /// `#[no_mangle] pub unsafe extern "C" fn(u32)`
     /// (`lib.rs`: `set_render_mode`, `set_port_layout`, `set_ports_64bit`,
     /// `request_ports_rescan`, `set_latency_changed_in_activate`,
     /// `set_latency_at_activation`, `set_tail_extension`; `rt_probe.rs`:
@@ -73,7 +72,7 @@ impl ClapSwitch {
 /// The reference CLAP plugin, opened for its probe symbols.
 ///
 /// Switches reach every image of the plugin a test loads: the cargo artifact
-/// and its `.clap` alias ([`clap_probe`](crate::clap_probe)). On unix the alias
+/// and its `.clap` alias (`tutti_fixtures::clap_probe`). On unix the alias
 /// is a symlink, so both opens reach one image; on Windows it is a copy, which
 /// the loader maps as a second module with its own statics. Captures and the
 /// counters are read from the cargo artifact, the image the suites load by
@@ -85,27 +84,26 @@ pub struct ClapProbe {
 }
 
 impl ClapProbe {
-    /// The probe, opened on first use and resident for the rest of the
-    /// process.
+    /// Opens the plugin's two images: the cargo artifact
+    /// (`tutti_fixtures::cdylib`) and its `.clap` alias
+    /// (`tutti_fixtures::clap_probe`). The caller keeps the probe for the
+    /// rest of the process (see the module).
     ///
     /// # Panics
     ///
-    /// If the cdylib has not been built or does not open.
-    pub fn get() -> &'static Self {
-        static PROBE: OnceLock<ClapProbe> = OnceLock::new();
-        PROBE.get_or_init(|| {
-            let open = |path: &Path| {
-                #[allow(unsafe_code, reason = "opens the reference plugin; see the module")]
-                // SAFETY: the path is the cdylib the dev-dependency built. Its
-                // initialisers are the plugin's own, which only set statics.
-                unsafe { Library::new(path) }.expect("reference plugin opens")
-            };
-            let artifact = crate::cdylib("tutti_clap_test_plugin", "tutti-clap-test-plugin");
-            Self {
-                artifact: open(&artifact),
-                dot_clap: open(crate::clap_probe()),
-            }
-        })
+    /// If either image does not open.
+    #[must_use]
+    pub fn open(artifact: &Path, dot_clap: &Path) -> Self {
+        let open = |path: &Path| {
+            // SAFETY: the path is this crate's cdylib, which the caller's
+            // dependency built. Its initialisers are the plugin's own, which
+            // only set statics.
+            unsafe { Library::new(path) }.expect("reference plugin opens")
+        };
+        Self {
+            artifact: open(artifact),
+            dot_clap: open(dot_clap),
+        }
     }
 
     /// Sets `switch` to `value` in every image of the plugin.
@@ -120,7 +118,6 @@ impl ClapProbe {
     /// plugin's reply is not read.
     pub fn thread_command(&self, cmd: u32) {
         for lib in [&self.artifact, &self.dot_clap] {
-            #[allow(unsafe_code, reason = "typed call into the reference plugin")]
             // SAFETY: `tutti_test_plugin_thread_command` is `#[no_mangle] pub
             // extern "C" fn(cmd: u32) -> u32` in `threading.rs`.
             unsafe {
@@ -136,7 +133,6 @@ impl ClapProbe {
     /// read.
     pub fn param_command(&self, cmd: u32) {
         for lib in [&self.artifact, &self.dot_clap] {
-            #[allow(unsafe_code, reason = "typed call into the reference plugin")]
             // SAFETY: `tutti_test_plugin_param_command` is `#[no_mangle] pub
             // extern "C" fn(cmd: u32) -> u32` in `params_state.rs`.
             unsafe {
@@ -160,7 +156,6 @@ impl ClapProbe {
     /// Makes `activate` refuse the rate whose `f64::to_bits` is `rate_bits`
     /// (`u64::MAX` lifts it).
     pub fn set_activate_refusal(&self, rate_bits: u64) {
-        #[allow(unsafe_code, reason = "typed call into the reference plugin")]
         // SAFETY: `tutti_test_plugin_set_activate_refusal` is `#[no_mangle]
         // pub unsafe extern "C" fn(rate_bits: u64, frames: u32)` in
         // `refusal.rs`; 0 frames is the "any block size" the old call passed.
@@ -177,7 +172,6 @@ impl ClapProbe {
     /// [`reset_activation`](Self::reset_activation), if any.
     pub fn last_accepted_rate(&self) -> Option<f64> {
         let (mut bits, mut frames) = (0u64, 0u32);
-        #[allow(unsafe_code, reason = "typed call into the reference plugin")]
         // SAFETY: `tutti_test_plugin_last_accepted_activation` is
         // `#[no_mangle] pub unsafe extern "C" fn(*mut u64, *mut u32) -> bool`
         // in `refusal.rs`; both out-params are valid locals.
@@ -194,7 +188,6 @@ impl ClapProbe {
     /// How many times the plugin accepted `activate` since
     /// [`reset_activation`](Self::reset_activation).
     pub fn activation_count(&self) -> u32 {
-        #[allow(unsafe_code, reason = "typed call into the reference plugin")]
         // SAFETY: `tutti_test_plugin_activate_accepts` is `#[no_mangle] pub
         // unsafe extern "C" fn() -> u32` in `refusal.rs`.
         unsafe {
@@ -219,7 +212,6 @@ impl ClapProbe {
     /// If the plugin reports no capture.
     pub fn thread_capture(&self) -> ThreadCapture {
         let mut cap = ThreadCapture::default();
-        #[allow(unsafe_code, reason = "typed call into the reference plugin")]
         // SAFETY: `tutti_test_plugin_thread_capture` is `#[no_mangle] pub
         // unsafe extern "C" fn(out: *mut ThreadCapture) -> bool` in
         // `threading.rs`, and `cap` is a valid, exclusive `ThreadCapture`
@@ -246,7 +238,6 @@ impl ClapProbe {
     /// If the plugin recorded no `process` call.
     pub fn process_capture(&self) -> ProcessCapture {
         let mut cap = ProcessCapture::default();
-        #[allow(unsafe_code, reason = "typed call into the reference plugin")]
         // SAFETY: `tutti_test_plugin_capture` is `#[no_mangle] pub unsafe
         // extern "C" fn(out: *mut ProcessCapture) -> bool` in `lib.rs`, and
         // `cap` is a valid, exclusive `ProcessCapture` (`#[repr(C)]`).
@@ -263,7 +254,6 @@ impl ClapProbe {
     /// What every `process` since the plugin's last reset saw of the
     /// thread-pool probe.
     pub fn thread_pool_capture(&self) -> ThreadPoolCapture {
-        #[allow(unsafe_code, reason = "typed call into the reference plugin")]
         // SAFETY: `tutti_test_plugin_thread_pool_capture` is `#[no_mangle] pub
         // unsafe extern "C" fn() -> ThreadPoolCapture` in `thread_pool.rs`,
         // the same `#[repr(C)]` type as the rlib's.
@@ -283,7 +273,6 @@ impl ClapProbe {
 /// `name` must be an export of the reference plugin defined with exactly the
 /// signature `F`. Every caller in this module names the definition it relies
 /// on.
-#[allow(unsafe_code, reason = "typed symbol lookup; see the module")]
 unsafe fn get<F: Copy>(lib: &Library, name: &[u8]) -> F {
     // SAFETY: the caller's contract; the library is never closed, so the
     // pointer stays valid.
@@ -294,7 +283,6 @@ unsafe fn get<F: Copy>(lib: &Library, name: &[u8]) -> F {
 
 /// A `fn(u32)` export of the plugin.
 fn call_u32(lib: &Library, name: &[u8], value: u32) {
-    #[allow(unsafe_code, reason = "typed call into the reference plugin")]
     // SAFETY: only [`ClapSwitch::symbol`]'s exports and
     // `tutti_test_plugin_set_thread_pool_tasks` reach here; each is
     // `#[no_mangle] pub unsafe extern "C" fn(u32)` in the plugin.
@@ -305,7 +293,6 @@ fn call_u32(lib: &Library, name: &[u8], value: u32) {
 
 /// A `fn()` export of the plugin.
 fn call_unit(lib: &Library, name: &[u8]) {
-    #[allow(unsafe_code, reason = "typed call into the reference plugin")]
     // SAFETY: only `tutti_test_plugin_reset_activation` and
     // `tutti_test_plugin_thread_reset` reach here; each is `#[no_mangle] pub
     // [unsafe] extern "C" fn()` in the plugin.

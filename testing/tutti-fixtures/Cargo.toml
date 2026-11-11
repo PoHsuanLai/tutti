@@ -27,18 +27,9 @@ serde_json = "1"
 # meet.
 tutti-plugin-types = { path = "../../crates/tutti-plugin-types", optional = true }
 raw-window-handle = { version = "0.6", optional = true }
-# `clap-probe` and `vst2-probe`: the typed doors into the reference plugins'
-# exported probe symbols (`ClapProbe`, `Vst2Probe`). The plugin crates are
-# taken for their `#[repr(C)]` capture types (both are `rlib` as well as
-# `cdylib`); the symbols are reached through `libloading` on the cdylib.
-libloading = { version = "0.8", optional = true }
-tutti-clap-test-plugin = { path = "../tutti-clap-test-plugin", optional = true }
-tutti-vst2-test-plugin = { path = "../tutti-vst2-test-plugin", optional = true }
 
 [features]
 plugin = ["dep:tutti-plugin-types", "dep:raw-window-handle"]
-clap-probe = ["dep:libloading", "dep:tutti-clap-test-plugin"]
-vst2-probe = ["dep:libloading", "dep:tutti-vst2-test-plugin"]
 
 [dev-dependencies]
 # The lock test's private directory.

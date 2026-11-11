@@ -1273,7 +1273,7 @@ mod tests {
     /// The probe's call-site record, from the image `load_clap` loaded.
     #[cfg(feature = "clap")]
     fn clap_probe_sites() -> tutti_clap_test_plugin::ThreadCapture {
-        tutti_fixtures::ClapProbe::get().thread_capture()
+        crate::test_utils::clap().thread_capture()
     }
 
     /// **A reset reaches the plugin, between the blocks it was sent between**

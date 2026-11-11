@@ -60,7 +60,29 @@ pub(crate) mod test_utils {
     ))]
     use std::sync::{Mutex, MutexGuard};
     #[cfg(feature = "clap")]
-    use tutti_fixtures::{ClapProbe, ClapSwitch};
+    use tutti_clap_test_plugin::{ClapProbe, ClapSwitch};
+
+    /// The reference CLAP plugin's probe, opened once on its two images and
+    /// kept for the process: a switch set before a load must stay resident
+    /// for the instance loaded after it.
+    #[cfg(feature = "clap")]
+    pub fn clap() -> &'static ClapProbe {
+        static PROBE: OnceLock<ClapProbe> = OnceLock::new();
+        PROBE.get_or_init(|| {
+            ClapProbe::open(
+                &tutti_fixtures::cdylib("tutti_clap_test_plugin", "tutti-clap-test-plugin"),
+                tutti_fixtures::clap_probe(),
+            )
+        })
+    }
+
+    /// The reference VST2 plugin's probe, opened once and kept, as
+    /// [`clap`]'s.
+    #[cfg(feature = "vst2")]
+    pub fn vst2() -> &'static tutti_vst2_test_plugin::Vst2Probe {
+        static PROBE: OnceLock<tutti_vst2_test_plugin::Vst2Probe> = OnceLock::new();
+        PROBE.get_or_init(|| tutti_vst2_test_plugin::Vst2Probe::open(tutti_fixtures::vst2_probe()))
+    }
 
     /// Taken by every loader test that loads a real plugin — CLAP, VST3, VST2
     /// and, on macOS, AU. A plugin's entry point may touch process globals, so
@@ -232,7 +254,7 @@ pub(crate) mod test_utils {
     /// would be a different static that `process` never reads.
     #[cfg(feature = "clap")]
     pub fn set_clap_probe_render_mode(mode: u32) {
-        ClapProbe::get().set(ClapSwitch::RenderMode, mode);
+        clap().set(ClapSwitch::RenderMode, mode);
     }
 
     /// [`set_clap_probe_render_mode`] until the returned guard drops, which
@@ -251,7 +273,7 @@ pub(crate) mod test_utils {
     #[cfg(feature = "clap")]
     #[must_use = "the plugin goes back to `Continue` when the guard drops"]
     pub fn clap_probe_status_mode(mode: tutti_clap_test_plugin::StatusMode) -> ClapProbeStatusMode {
-        ClapProbe::get().set(ClapSwitch::StatusMode, mode as u32);
+        clap().set(ClapSwitch::StatusMode, mode as u32);
         ClapProbeStatusMode
     }
 
@@ -263,7 +285,7 @@ pub(crate) mod test_utils {
     #[cfg(feature = "clap")]
     impl Drop for ClapProbeStatusMode {
         fn drop(&mut self) {
-            ClapProbe::get().set(
+            clap().set(
                 ClapSwitch::StatusMode,
                 tutti_clap_test_plugin::StatusMode::Continue as u32,
             );
@@ -312,7 +334,7 @@ pub(crate) mod test_utils {
 
     #[cfg(feature = "clap")]
     fn set_clap_probe_port_layout(mode: u32) {
-        ClapProbe::get().set(ClapSwitch::PortLayout, mode);
+        clap().set(ClapSwitch::PortLayout, mode);
     }
 
     /// Make the reference plugin's ports on the sides in `mask` advertise
@@ -343,7 +365,7 @@ pub(crate) mod test_utils {
 
     #[cfg(feature = "clap")]
     fn set_clap_probe_ports_64bit(mask: u32) {
-        ClapProbe::get().set(ClapSwitch::Ports64Bit, mask);
+        clap().set(ClapSwitch::Ports64Bit, mask);
     }
 
     /// Make the reference plugin call `audio-ports.rescan(flags)` at its next
@@ -352,7 +374,7 @@ pub(crate) mod test_utils {
     #[cfg(feature = "clap")]
     #[must_use = "a call not yet made is cleared when the guard drops"]
     pub fn clap_probe_request_ports_rescan(flags: u32) -> ClapProbePortsRescan {
-        ClapProbe::get().set(ClapSwitch::RequestPortsRescan, flags);
+        clap().set(ClapSwitch::RequestPortsRescan, flags);
         ClapProbePortsRescan
     }
 
@@ -364,7 +386,7 @@ pub(crate) mod test_utils {
     #[cfg(feature = "clap")]
     impl Drop for ClapProbePortsRescan {
         fn drop(&mut self) {
-            ClapProbe::get().set(ClapSwitch::RequestPortsRescan, 0);
+            clap().set(ClapSwitch::RequestPortsRescan, 0);
         }
     }
 
@@ -374,7 +396,7 @@ pub(crate) mod test_utils {
     #[cfg(feature = "clap")]
     #[must_use = "a call not yet made is cleared when the guard drops"]
     pub fn clap_probe_request_restart() -> ClapProbeRestart {
-        ClapProbe::get().thread_command(tutti_clap_test_plugin::CMD_REQUEST_RESTART);
+        clap().thread_command(tutti_clap_test_plugin::CMD_REQUEST_RESTART);
         ClapProbeRestart
     }
 
@@ -386,7 +408,7 @@ pub(crate) mod test_utils {
     #[cfg(feature = "clap")]
     impl Drop for ClapProbeRestart {
         fn drop(&mut self) {
-            ClapProbe::get().thread_command(tutti_clap_test_plugin::CMD_NONE);
+            clap().thread_command(tutti_clap_test_plugin::CMD_NONE);
         }
     }
 
@@ -397,7 +419,7 @@ pub(crate) mod test_utils {
     #[cfg(feature = "clap")]
     #[must_use = "a command not yet run is cleared when the guard drops"]
     pub fn clap_probe_thread_command(cmd: u32) -> ClapProbeRestart {
-        ClapProbe::get().thread_command(cmd);
+        clap().thread_command(cmd);
         ClapProbeRestart
     }
 
@@ -407,7 +429,7 @@ pub(crate) mod test_utils {
     #[cfg(feature = "clap")]
     #[must_use = "a call not yet made is cleared when the guard drops"]
     pub fn clap_probe_param_command(cmd: u32) -> ClapProbeParamCommand {
-        ClapProbe::get().param_command(cmd);
+        clap().param_command(cmd);
         ClapProbeParamCommand
     }
 
@@ -418,7 +440,7 @@ pub(crate) mod test_utils {
     #[cfg(feature = "clap")]
     impl Drop for ClapProbeParamCommand {
         fn drop(&mut self) {
-            ClapProbe::get().param_command(tutti_clap_test_plugin::PARAM_CMD_NONE);
+            clap().param_command(tutti_clap_test_plugin::PARAM_CMD_NONE);
         }
     }
 
@@ -428,7 +450,7 @@ pub(crate) mod test_utils {
     #[cfg(feature = "clap")]
     #[must_use = "the latency goes back when the guard drops"]
     pub fn clap_probe_latency_at_activation(extra: u32) -> ClapProbeLatency {
-        ClapProbe::get().set(ClapSwitch::LatencyAtActivation, extra);
+        clap().set(ClapSwitch::LatencyAtActivation, extra);
         ClapProbeLatency
     }
 
@@ -440,7 +462,7 @@ pub(crate) mod test_utils {
     #[cfg(feature = "clap")]
     impl Drop for ClapProbeLatency {
         fn drop(&mut self) {
-            ClapProbe::get().set(ClapSwitch::LatencyAtActivation, 0);
+            clap().set(ClapSwitch::LatencyAtActivation, 0);
         }
     }
 
@@ -449,7 +471,7 @@ pub(crate) mod test_utils {
     #[cfg(feature = "clap")]
     #[must_use = "the plugin goes back to silence when the guard drops"]
     pub fn clap_probe_latency_changed_in_activate() -> ClapProbeChangedInActivate {
-        ClapProbe::get().set(ClapSwitch::LatencyChangedInActivate, 1);
+        clap().set(ClapSwitch::LatencyChangedInActivate, 1);
         ClapProbeChangedInActivate
     }
 
@@ -460,7 +482,7 @@ pub(crate) mod test_utils {
     #[cfg(feature = "clap")]
     impl Drop for ClapProbeChangedInActivate {
         fn drop(&mut self) {
-            ClapProbe::get().set(ClapSwitch::LatencyChangedInActivate, 0);
+            clap().set(ClapSwitch::LatencyChangedInActivate, 0);
         }
     }
 
@@ -468,13 +490,13 @@ pub(crate) mod test_utils {
     /// since the last reset.
     #[cfg(feature = "clap")]
     pub fn clap_probe_thread_capture() -> tutti_clap_test_plugin::ThreadCapture {
-        ClapProbe::get().thread_capture()
+        clap().thread_capture()
     }
 
     /// Zeroes [`clap_probe_thread_capture`].
     #[cfg(feature = "clap")]
     pub fn clap_probe_thread_reset() {
-        ClapProbe::get().thread_reset();
+        clap().thread_reset();
     }
 
     /// How many times the reference plugin accepted `activate` since
@@ -482,13 +504,13 @@ pub(crate) mod test_utils {
     /// re-activation shows as one more.
     #[cfg(feature = "clap")]
     pub fn clap_probe_activation_count() -> u32 {
-        ClapProbe::get().activation_count()
+        clap().activation_count()
     }
 
     /// Zeroes [`clap_probe_activation_count`].
     #[cfg(feature = "clap")]
     pub fn clap_probe_reset_activation_count() {
-        ClapProbe::get().reset_activation();
+        clap().reset_activation();
     }
 
     /// Make the reference plugin's `activate` refuse `rate` until the returned
@@ -513,14 +535,14 @@ pub(crate) mod test_utils {
 
     #[cfg(feature = "clap")]
     fn set_clap_probe_activate_refusal(rate_bits: u64) {
-        ClapProbe::get().set_activate_refusal(rate_bits);
+        clap().set_activate_refusal(rate_bits);
     }
 
     /// The rate of the reference plugin's most recent accepted `activate`
     /// since [`clap_probe_reset_activation_count`], if any.
     #[cfg(feature = "clap")]
     pub fn clap_probe_last_accepted_rate() -> Option<f64> {
-        ClapProbe::get().last_accepted_rate()
+        clap().last_accepted_rate()
     }
 
     /// Make the reference plugin withhold `clap.tail` until the returned guard
@@ -529,7 +551,7 @@ pub(crate) mod test_utils {
     #[cfg(feature = "clap")]
     #[must_use = "the plugin offers clap.tail again when the guard drops"]
     pub fn clap_probe_without_tail() -> ClapProbeWithoutTail {
-        ClapProbe::get().set(ClapSwitch::TailExtension, 0);
+        clap().set(ClapSwitch::TailExtension, 0);
         ClapProbeWithoutTail
     }
 
@@ -541,7 +563,7 @@ pub(crate) mod test_utils {
     #[cfg(feature = "clap")]
     impl Drop for ClapProbeWithoutTail {
         fn drop(&mut self) {
-            ClapProbe::get().set(ClapSwitch::TailExtension, 1);
+            clap().set(ClapSwitch::TailExtension, 1);
         }
     }
 

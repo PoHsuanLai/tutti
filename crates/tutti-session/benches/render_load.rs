@@ -152,9 +152,7 @@ struct Hold {
 
 impl Node for Hold {
     fn shape(&self) -> Shape {
-        Shape::audio(ChannelLayout::EMPTY, ChannelLayout::EMPTY)
-            .with_events(0, 1)
-            .with_cost(Cost::Light)
+        Shape::EMPTY.with_events(0, 1).with_cost(Cost::Light)
     }
     fn prepare(&mut self, _: &Prepare) {}
     fn process(&mut self, _: &Cx<'_>, mut io: Io<'_>) -> Status {

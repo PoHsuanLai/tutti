@@ -49,7 +49,7 @@ impl Plugin {
 
 impl Node for Plugin {
     fn shape(&self) -> Shape {
-        Shape::audio(ChannelLayout::MONO, ChannelLayout::MONO)
+        Shape::through_discrete(ChannelLayout::MONO)
             .with_latency(Latency::new(Samples(self.probed)))
     }
     fn prepare(&mut self, _: &Prepare) {

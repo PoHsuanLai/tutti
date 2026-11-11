@@ -410,15 +410,15 @@ mod tests {
         assert_eq!(r.get(Features::MIDI_IN), Some(false));
     }
 
-    /// Both halves survive the bincode wire the IPC peers speak. A `probed`
+    /// Both halves survive the postcard wire the IPC peers speak. A `probed`
     /// mask that failed to cross would turn every unprobed bit into a
     /// reported `false` on the far side.
     #[cfg(feature = "serde")]
     #[test]
-    fn the_probed_mask_survives_the_bincode_round_trip() {
+    fn the_probed_mask_survives_the_postcard_round_trip() {
         let r = FeatureReport::new(Features::EDITOR, Features::EDITOR);
-        let bytes = bincode::serialize(&r).expect("serialize");
-        let back: FeatureReport = bincode::deserialize(&bytes).expect("deserialize");
+        let bytes = postcard::to_allocvec(&r).expect("serialize");
+        let back: FeatureReport = postcard::from_bytes(&bytes).expect("deserialize");
         assert_eq!(back.get(Features::EDITOR), Some(true));
         assert_eq!(back.get(Features::MIDI_IN), None);
     }

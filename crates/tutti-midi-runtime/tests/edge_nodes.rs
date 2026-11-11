@@ -50,11 +50,7 @@ struct Sink {
 
 impl Node for Sink {
     fn shape(&self) -> Shape {
-        Shape::audio(
-            tutti_types::ChannelLayout::EMPTY,
-            tutti_types::ChannelLayout::MONO,
-        )
-        .with_events(self.ports, 0)
+        Shape::source_discrete(tutti_types::ChannelLayout::MONO).with_events(self.ports, 0)
     }
     fn prepare(&mut self, _: &Prepare) {}
     fn process(&mut self, cx: &Cx<'_>, mut io: Io<'_>) -> Status {

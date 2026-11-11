@@ -36,7 +36,7 @@ fn sent(record: &Record) -> Vec<Sent> {
         .unwrap()
         .iter()
         .map(
-            |bytes| match bincode::deserialize(bytes).expect("a host frame") {
+            |bytes| match postcard::from_bytes(bytes).expect("a host frame") {
                 HostMessage::ProcessAudio(data) => Sent::Chunk(Box::new(data)),
                 HostMessage::Reset => Sent::Reset,
                 HostMessage::SetSampleRate { .. } => Sent::Rate,

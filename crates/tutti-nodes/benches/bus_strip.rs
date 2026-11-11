@@ -49,7 +49,7 @@ struct Empty;
 
 impl Node for Empty {
     fn shape(&self) -> Shape {
-        Shape::audio(ChannelLayout::STEREO, ChannelLayout::STEREO)
+        Shape::through_discrete(ChannelLayout::STEREO)
     }
 
     fn prepare(&mut self, _: &Prepare) {}
@@ -63,7 +63,7 @@ impl Node for Empty {
 
 impl Node for Reference {
     fn shape(&self) -> Shape {
-        Shape::audio(ChannelLayout::STEREO, ChannelLayout::STEREO)
+        Shape::through_discrete(ChannelLayout::STEREO)
     }
 
     fn prepare(&mut self, _: &Prepare) {}

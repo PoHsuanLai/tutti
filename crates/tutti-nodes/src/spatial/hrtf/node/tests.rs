@@ -2,6 +2,7 @@ use super::*;
 use crate::testing::aim;
 use tutti_dsp::HRTF_STEP;
 use tutti_graph::contract::{drive, prepared};
+use tutti_types::ChannelLayout;
 
 const RATE: SampleRate = SampleRate(44_100.0);
 const BLOCK: usize = 64;

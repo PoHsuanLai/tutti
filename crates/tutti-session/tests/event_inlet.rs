@@ -101,7 +101,7 @@ struct Hear;
 
 impl Node for Hear {
     fn shape(&self) -> Shape {
-        Shape::audio(ChannelLayout::EMPTY, ChannelLayout::MONO).with_events(1, 0)
+        Shape::source_discrete(ChannelLayout::MONO).with_events(1, 0)
     }
     fn prepare(&mut self, _: &Prepare) {}
     fn process(&mut self, _: &Cx<'_>, mut io: Io<'_>) -> Status {

@@ -41,8 +41,7 @@ struct Src {
 
 impl Node for Src {
     fn shape(&self) -> Shape {
-        Shape::audio(ChannelLayout::EMPTY, layout(self.values.len() as u16))
-            .with_buses_out(Buses::main(self.out))
+        Shape::source(self.out)
     }
     fn prepare(&mut self, _: &Prepare) {}
     fn process(&mut self, _: &Cx<'_>, mut io: Io<'_>) -> Status {
@@ -61,8 +60,10 @@ struct Pass {
 
 impl Node for Pass {
     fn shape(&self) -> Shape {
-        let w = self.input.layout();
-        Shape::audio(w, w).with_buses_in(Buses::main(self.input))
+        Shape::buses(
+            Buses::main(self.input),
+            Buses::discrete(self.input.layout()),
+        )
     }
     fn prepare(&mut self, _: &Prepare) {}
     fn process(&mut self, _: &Cx<'_>, _: Io<'_>) -> Status {

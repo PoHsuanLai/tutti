@@ -129,13 +129,13 @@ fn recv_host_msg(stream: &interprocess::local_socket::Stream) -> Option<HostMess
     let len = u32::from_be_bytes(len_buf) as usize;
     let mut buf = vec![0u8; len];
     stream.read_exact(&mut buf).ok()?;
-    bincode::deserialize(&buf).ok()
+    postcard::from_bytes(&buf).ok()
 }
 
 fn send_bridge_msg(stream: &interprocess::local_socket::Stream, msg: &BridgeMessage) {
     use std::io::Write;
     let mut stream = stream;
-    let data = bincode::serialize(msg).unwrap();
+    let data = postcard::to_allocvec(msg).unwrap();
     let len = (data.len() as u32).to_be_bytes();
     stream.write_all(&len).unwrap();
     stream.write_all(&data).unwrap();

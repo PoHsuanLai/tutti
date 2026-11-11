@@ -428,8 +428,8 @@ mod tests {
             ),
             RATE_44K,
         );
-        assert_eq!(wide.shape().audio_in.count(), 6);
-        assert_eq!(wide.shape().audio_out.count(), 6);
+        assert_eq!(wide.shape().audio_in().count(), 6);
+        assert_eq!(wide.shape().audio_out().count(), 6);
 
         // Drive only channel 4; the rest must stay silent.
         let sig = generate_sine(300.0, 44100.0, 2048);
@@ -473,7 +473,7 @@ mod tests {
             &[UnitParam::Cutoff, UnitParam::Q, UnitParam::Drive][..]
         );
         assert_eq!(
-            (f.shape().audio_in.count(), f.shape().audio_out.count()),
+            (f.shape().audio_in().count(), f.shape().audio_out().count()),
             (6, 6)
         );
         assert_eq!(f.param_base(0), Some(1000.0));

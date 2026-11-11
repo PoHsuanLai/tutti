@@ -1,7 +1,7 @@
-//! Host-side IPC to the plugin-server: length-prefixed bincode over a
+//! Host-side IPC to the plugin-server: length-prefixed postcard over a
 //! local socket (Unix domain socket on Unix, named pipe on Windows).
 //!
-//! Wire: `[u32 big-endian length][bincode payload]` both directions, with the
+//! Wire: `[u32 big-endian length][postcard payload]` both directions, with the
 //! body capped at [`MAX_FRAME_BYTES`](crate::protocol::MAX_FRAME_BYTES) — the length arrives from the peer, so it
 //! is checked before it is believed, in both `send` and `recv`.
 //! EOF at either end surfaces as [`BridgeError::ProcessCrashed`], and so does a
@@ -740,7 +740,7 @@ mod tests {
     /// is a `Vec` the decode builds.
     ///
     /// Mutations (run), each aborts the gate: `write_frame` serializing with
-    /// `bincode::serialize` (a fresh `Vec`); `read_frame` reading into a fresh
+    /// `postcard::to_allocvec` (a fresh `Vec`); `read_frame` reading into a fresh
     /// `vec![0u8; len]`; the host's `PartialFrame` body made fresh per frame
     /// (`vec![0u8; len]`); `ProcessAudio` boxed again.
     #[test]
@@ -826,7 +826,7 @@ mod tests {
     fn send_split(peer: &ControlStream, msg: &BridgeMessage, pause: Duration) {
         use std::io::Write;
         let mut peer = peer;
-        let data = bincode::serialize(msg).unwrap();
+        let data = postcard::to_allocvec(msg).unwrap();
         peer.write_all(&(data.len() as u32).to_be_bytes()).unwrap();
         peer.flush().unwrap();
         std::thread::sleep(pause);
@@ -911,9 +911,9 @@ mod tests {
     /// After a resumed frame, the **next** frame parses correctly.
     ///
     /// The half of the property the single-frame test cannot show. A resume that
-    /// consumed one byte too few or too many still returns a plausible first
-    /// message — `bincode` is happy to decode a prefix of the buffer — and only
-    /// the frame behind it reveals the stream is off by that much. Sending a
+    /// consumed one byte too few or too many can still return a plausible first
+    /// message, and only the frame behind it reveals the stream is off by that
+    /// much. Sending a
     /// second, distinguishable message is what makes the offset observable.
     #[test]
     fn the_frame_after_a_resumed_one_still_parses() {

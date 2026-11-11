@@ -136,7 +136,7 @@ All four format hosts and `tutti-plugin` depend on it.
 - `serde` — `Serialize`/`Deserialize` on the wire-eligible types
   ([`TransportInfo`], [`ParameterChanges`], [`EditorSize`],
   [`EditorCapabilities`], [`WindowHandle`], and the metadata that rides the
-  plugin-load reply). Required by `tutti-plugin`'s bincode IPC protocol; a host
+  plugin-load reply). Required by the plugin IPC protocol (postcard); a host
   crate that does no IPC does not pay for the dependency.
 
 ## License

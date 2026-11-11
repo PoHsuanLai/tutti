@@ -234,7 +234,7 @@ struct Sine {
 
 impl tutti_graph::Node for Sine {
     fn shape(&self) -> tutti_graph::Shape {
-        tutti_graph::Shape::audio(ChannelLayout::EMPTY, ChannelLayout::MONO)
+        tutti_graph::Shape::source_discrete(ChannelLayout::MONO)
             .with_tail(tutti_types::Tail::Unbounded)
     }
     fn prepare(&mut self, p: &tutti_graph::Prepare) {
@@ -281,7 +281,7 @@ impl Lowpass {
 
 impl tutti_graph::Node for Lowpass {
     fn shape(&self) -> tutti_graph::Shape {
-        tutti_graph::Shape::audio(ChannelLayout::MONO, ChannelLayout::MONO)
+        tutti_graph::Shape::through_discrete(ChannelLayout::MONO)
             .with_tail(tutti_types::Tail::Unknown)
             .with_in_place()
     }

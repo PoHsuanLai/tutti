@@ -697,7 +697,7 @@ impl ModeState {
             warm: 0,
             // A unit that begins bypassed has not run: un-bypassing resets it.
             stale: mode == NodeMode::Bypassed,
-            inert: shape.audio_out.count() == 0 && shape.event_out == 0,
+            inert: shape.audio_out().count() == 0 && shape.event_out == 0,
             latency: shape.latency.samples().get(),
             pass,
             line: BypassLine::for_shape(shape),
@@ -1030,8 +1030,7 @@ mod tests {
     use tutti_types::{ChannelLayout, Latency};
 
     fn shape(latency: usize) -> Shape {
-        Shape::audio(ChannelLayout::MONO, ChannelLayout::MONO)
-            .with_latency(Latency::new(Samples(latency)))
+        Shape::through_discrete(ChannelLayout::MONO).with_latency(Latency::new(Samples(latency)))
     }
 
     /// A unit of `shape` at `mix`, steady Active, after the block's snapshot.

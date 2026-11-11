@@ -14,7 +14,7 @@
 //!   the audio thread moving.
 //! - **A peer that is hostile or corrupt.** `recv` reads a 4-byte big-endian
 //!   length and then does `vec![0u8; len]` — an attacker-controlled allocation.
-//!   Garbage bincode, a truncated body, and a valid-but-wrong message type are
+//!   Garbage postcard, a truncated body, and a valid-but-wrong message type are
 //!   the same class: bytes the host must reject rather than trust.
 //!
 //! The bar is not that the host produces audio — a dead peer has none to give.
@@ -118,12 +118,12 @@ fn recv_host_msg(stream: &Stream) -> std::io::Result<HostMessage> {
     let len = u32::from_be_bytes(len_buf) as usize;
     let mut buf = vec![0u8; len];
     stream.read_exact(&mut buf)?;
-    bincode::deserialize(&buf).map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
+    postcard::from_bytes(&buf).map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
 }
 
 fn send_bridge_msg(stream: &Stream, msg: &BridgeMessage) -> std::io::Result<()> {
     let mut stream = stream;
-    let data = bincode::serialize(msg).expect("serialize");
+    let data = postcard::to_allocvec(msg).expect("serialize");
     stream.write_all(&(data.len() as u32).to_be_bytes())?;
     stream.write_all(&data)
 }
@@ -346,7 +346,7 @@ impl MockServer {
                         Action::SplitEvents { split } => {
                             let mut s = &stream;
                             for n in 0.. {
-                                let body = bincode::serialize(&BridgeMessage::LatencyChanged {
+                                let body = postcard::to_allocvec(&BridgeMessage::LatencyChanged {
                                     samples: crate::protocol::Samples(n),
                                 })
                                 .unwrap();
@@ -866,7 +866,7 @@ fn a_dribbling_peer_cannot_hold_the_bridge_thread_open() {
     );
 }
 
-/// Garbage where a bincode payload should be must be rejected, not decoded.
+/// Garbage where a postcard payload should be must be rejected, not decoded.
 ///
 /// The length is honest here and the body is the right size; only the *contents*
 /// are nonsense. That isolates deserialisation from framing — a host that

@@ -287,8 +287,7 @@ fn one_silent_node_makes_the_figure_partial_without_losing_it() {
 
     impl Node for Unreporting {
         fn shape(&self) -> Shape {
-            Shape::audio(ChannelLayout::MONO, ChannelLayout::MONO)
-                .with_tail(tutti_types::Tail::Unknown)
+            Shape::through_discrete(ChannelLayout::MONO).with_tail(tutti_types::Tail::Unknown)
         }
         fn prepare(&mut self, _: &Prepare) {}
         fn process(&mut self, _: &Cx<'_>, mut io: Io<'_>) -> Status {
@@ -352,8 +351,7 @@ struct Integrator([f32; 2]);
 
 impl Node for Integrator {
     fn shape(&self) -> Shape {
-        Shape::audio(ChannelLayout::STEREO, ChannelLayout::STEREO)
-            .with_tail(tutti_types::Tail::Unbounded)
+        Shape::through_discrete(ChannelLayout::STEREO).with_tail(tutti_types::Tail::Unbounded)
     }
     fn prepare(&mut self, _: &Prepare) {}
     fn process(&mut self, _: &Cx<'_>, mut io: Io<'_>) -> Status {
@@ -1394,7 +1392,7 @@ struct Narrowing;
 
 impl Node for Narrowing {
     fn shape(&self) -> Shape {
-        Shape::audio(ChannelLayout::MONO, ChannelLayout::MONO)
+        Shape::through_discrete(ChannelLayout::MONO)
             .with_tail(tutti_types::Tail::Finite(tutti_types::Samples(4_000)))
     }
     fn prepare(&mut self, _: &Prepare) {}

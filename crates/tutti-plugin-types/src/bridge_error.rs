@@ -175,7 +175,7 @@ pub enum BridgeError {
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
 
-    /// A wire message could not be bincode-encoded or -decoded; carries the
+    /// A wire message could not be postcard-encoded or -decoded; carries the
     /// codec's message.
     #[error("Serialization error: {0}")]
     Serialization(String),

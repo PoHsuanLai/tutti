@@ -154,7 +154,7 @@ fn process_block(unit: &mut PluginNode<Vst2Loaded>, frames: usize) {
     use tutti_graph::{Env, Node, Transport, TransportChanges};
     let rate = SampleRate(SAMPLE_RATE);
     let silence = vec![0.0f32; frames];
-    let inputs: Vec<&[f32]> = (0..Node::shape(unit).audio_in.count())
+    let inputs: Vec<&[f32]> = (0..Node::shape(unit).audio_in().count())
         .map(|_| &silence[..])
         .collect();
     let env = Env {
@@ -436,7 +436,7 @@ fn the_output_is_what_the_plugin_wrote() {
         &mut loaded.unit,
         &Prepare::new(rate, tutti_types::Samples(BLOCK)),
     );
-    let channels = usize::from(Node::shape(&loaded.unit).audio_in.count());
+    let channels = usize::from(Node::shape(&loaded.unit).audio_in().count());
     assert_eq!(channels, 2, "the probe's default layout is stereo");
 
     for (block, frames) in [(0usize, BLOCK), (1, BLOCK - 17)] {
@@ -480,7 +480,8 @@ struct Fill {
 
 impl tutti_graph::Node for Fill {
     fn shape(&self) -> tutti_graph::Shape {
-        tutti_graph::Shape::audio(self.inputs, self.width)
+        // Ports with no bus: a fill of any width, which nothing bypasses.
+        tutti_graph::Shape::EMPTY.with_ports(self.inputs, self.width)
     }
     fn prepare(&mut self, _: &tutti_graph::Prepare) {}
     fn process(
@@ -714,8 +715,8 @@ fn the_shape_declares_the_plugins_buses() {
     let loaded = load();
     let shape = loaded.unit.shape();
     for (buses, ports) in [
-        (shape.buses_in, shape.audio_in),
-        (shape.buses_out, shape.audio_out),
+        (shape.buses_in(), shape.audio_in()),
+        (shape.buses_out(), shape.audio_out()),
     ] {
         assert_eq!(buses.width(), usize::from(ports.count()), "cover the ports");
         assert!(!buses.is_empty(), "the test plugin has audio on both sides");

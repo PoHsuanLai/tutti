@@ -97,8 +97,8 @@ fn drive(ed: &mut Editor, at: ParamIn, knob: Arc<AtomicF32>, layers: Vec<Layer>)
 fn render(node: NodeParts<()>, fed: Option<(UnitParam, f32)>) -> Vec<Vec<f32>> {
     let shape = node.node.shape();
     let (ins, outs) = (
-        usize::from(shape.audio_in.count()),
-        usize::from(shape.audio_out.count()),
+        usize::from(shape.audio_in().count()),
+        usize::from(shape.audio_out().count()),
     );
     let mut g = GraphBuilder::new(
         ChannelLayout::try_from(ins).expect("a test width is small"),
@@ -140,8 +140,8 @@ enum MixIs {
 fn render_mix(node: NodeParts<()>, mix: MixIs) -> Vec<Vec<f32>> {
     let shape = node.node.shape();
     let (ins, outs) = (
-        usize::from(shape.audio_in.count()),
-        usize::from(shape.audio_out.count()),
+        usize::from(shape.audio_in().count()),
+        usize::from(shape.audio_out().count()),
     );
     let mut g = GraphBuilder::new(
         ChannelLayout::try_from(ins).expect("a test width is small"),

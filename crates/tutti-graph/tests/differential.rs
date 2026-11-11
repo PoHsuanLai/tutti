@@ -160,7 +160,8 @@ fn audio_outs(desc: &Desc, among: &[NodeKey]) -> Vec<OutPort> {
     among
         .iter()
         .flat_map(|&k| {
-            (0..shape(&desc.kinds[&k]).audio_out.count()).map(move |port| OutPort { node: k, port })
+            (0..shape(&desc.kinds[&k]).audio_out().count())
+                .map(move |port| OutPort { node: k, port })
         })
         .collect()
 }
@@ -182,7 +183,7 @@ fn wire_node(desc: &mut Desc, j: usize, rng: &mut Rng) {
     let all = desc.order.clone();
     let direct = audio_outs(desc, &earlier);
     let any = audio_outs(desc, &all);
-    for port in 0..s.audio_in.count() {
+    for port in 0..s.audio_in().count() {
         let at = InPort { node: key, port };
         let roll = rng.below(100);
         let edge = if roll < 64 {
@@ -277,7 +278,7 @@ fn wire_node(desc: &mut Desc, j: usize, rng: &mut Rng) {
 
 fn spec_for(kind: &Kind) -> NodeSpec {
     let s = shape(kind);
-    NodeSpec::new("test", s.audio_in, s.audio_out)
+    NodeSpec::new("test", s.audio_in(), s.audio_out())
         .with_latency(s.latency.samples())
         .with_tail(s.tail)
 }
@@ -423,8 +424,8 @@ fn mutate(desc: &Desc, rng: &mut Rng) -> Desc {
             let new = shape(&kind);
             // Keep the port shape so edges stay valid; only swap when it
             // matches (a latency change, typically).
-            if (old.audio_in, old.audio_out, old.event_in, old.event_out)
-                == (new.audio_in, new.audio_out, new.event_in, new.event_out)
+            if (old.audio_in(), old.audio_out(), old.event_in, old.event_out)
+                == (new.audio_in(), new.audio_out(), new.event_in, new.event_out)
             {
                 d.spec.topology.nodes.insert(key, spec_for(&kind));
                 d.kinds.insert(key, kind);
@@ -1210,7 +1211,7 @@ fn close_a_cycle(desc: &mut Desc, rng: &mut Rng) -> bool {
         if !reaches(desc) {
             continue;
         }
-        if se.audio_in.count() > 0 && sl.audio_out.count() > 0 {
+        if se.audio_in().count() > 0 && sl.audio_out().count() > 0 {
             desc.spec.topology.edges.insert(
                 InPort {
                     node: early,
@@ -2026,15 +2027,15 @@ proptest! {
 fn fits(a: &Kind, b: &Kind) -> bool {
     let (a, b) = (shape(a), shape(b));
     (
-        a.audio_in,
-        a.audio_out,
+        a.audio_in(),
+        a.audio_out(),
         a.event_in,
         a.event_out,
         a.latency,
         a.in_place,
     ) == (
-        b.audio_in,
-        b.audio_out,
+        b.audio_in(),
+        b.audio_out(),
         b.event_in,
         b.event_out,
         b.latency,
@@ -3038,7 +3039,7 @@ fn the_generator_draws_modes_on_every_kind_of_node() {
             let s = shape(&desc.kinds[&key]);
             let latent = s.latency.samples().get() > 0;
             let events = s.event_in + s.event_out > 0;
-            let silent_in = s.audio_in.count() == 0;
+            let silent_in = s.audio_in().count() == 0;
             match mode {
                 NodeMode::Bypassed => {
                     latent_bypass += usize::from(latent);
@@ -3048,7 +3049,7 @@ fn the_generator_draws_modes_on_every_kind_of_node() {
                 }
                 NodeMode::Muted => {
                     event_mute += usize::from(events);
-                    wide_mute += usize::from(s.audio_out.count() > 1);
+                    wide_mute += usize::from(s.audio_out().count() > 1);
                 }
                 NodeMode::Active => {}
             }

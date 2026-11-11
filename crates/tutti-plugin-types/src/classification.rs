@@ -705,20 +705,20 @@ mod tests {
         assert!(!Vst2Category::default().was_answered());
     }
 
-    /// Both shapes survive the bincode wire, and an `Unrecognized` payload
+    /// Both shapes survive the postcard wire, and an `Unrecognized` payload
     /// arrives with its code intact — a decode that dropped it would restore
     /// the flattening this variant exists to prevent.
     #[cfg(feature = "serde")]
     #[test]
-    fn the_category_survives_the_bincode_round_trip() {
+    fn the_category_survives_the_postcard_round_trip() {
         for want in [
             Vst2Category::Unasked,
             Vst2Category::Unrecognized(0),
             Vst2Category::Unrecognized(-7),
             Vst2Category::Synth,
         ] {
-            let bytes = bincode::serialize(&want).expect("serialize");
-            let back: Vst2Category = bincode::deserialize(&bytes).expect("deserialize");
+            let bytes = postcard::to_allocvec(&want).expect("serialize");
+            let back: Vst2Category = postcard::from_bytes(&bytes).expect("deserialize");
             assert_eq!(back, want);
         }
     }

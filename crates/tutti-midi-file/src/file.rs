@@ -491,7 +491,7 @@ impl MidiFile {
                         _ => {}
                     }
                 }
-                clip_file::header_rules(&packets, clip_file::leading_profile_len(&packets))?;
+                clip_file::check_header(&packets)?;
                 if track.header_end < at || track.header_end.0 - at.0 > max_gap {
                     return invalid(format!(
                         "header: ends at tick {} before its last message or too far on",

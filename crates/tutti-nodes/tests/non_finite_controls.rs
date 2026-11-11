@@ -42,7 +42,7 @@ type Cell = (&'static str, ParamCell, f32);
 /// [`render_finite`] for a graph node: `blocks` 64-frame blocks through
 /// `tutti_graph::contract::drive` at `rate`.
 fn render_node_finite(node: &mut dyn Node, rate: SampleRate, blocks: usize, seed: u32) -> bool {
-    let width = usize::from(node.shape().audio_in.count());
+    let width = usize::from(node.shape().audio_in().count());
     let mut all = true;
     for b in 0..blocks {
         let chans = noise_block(width, seed + b as u32);

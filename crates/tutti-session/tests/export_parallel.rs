@@ -42,7 +42,7 @@ struct Branch {
 
 impl Node for Branch {
     fn shape(&self) -> Shape {
-        Shape::audio(ChannelLayout::EMPTY, ChannelLayout::MONO)
+        Shape::source_discrete(ChannelLayout::MONO)
     }
     fn prepare(&mut self, p: &Prepare) {
         self.dt = self.hz / p.sample_rate().get() as f32;
@@ -73,9 +73,11 @@ struct Sum;
 
 impl Node for Sum {
     fn shape(&self) -> Shape {
-        Shape::audio(
-            ChannelLayout::try_from(BRANCHES).expect("a few channels"),
-            ChannelLayout::MONO,
+        Shape::buses(
+            tutti_graph::Buses::discrete(
+                ChannelLayout::try_from(BRANCHES).expect("a few channels"),
+            ),
+            tutti_graph::Buses::discrete(ChannelLayout::MONO),
         )
     }
     fn prepare(&mut self, _: &Prepare) {}

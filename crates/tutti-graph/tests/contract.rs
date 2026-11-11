@@ -182,7 +182,7 @@ impl Liar {
 
 impl Node for Liar {
     fn shape(&self) -> Shape {
-        Shape::audio(ChannelLayout::EMPTY, ChannelLayout::MONO)
+        Shape::source_discrete(ChannelLayout::MONO)
             .with_events(1, 0)
             .with_latency(Latency::new(Samples(self.declared)))
             .with_tail(Tail::Unknown)
@@ -367,7 +367,7 @@ struct Tags(Arc<Mutex<Vec<(u64, u32)>>>);
 
 impl Node for Tags {
     fn shape(&self) -> Shape {
-        Shape::audio(ChannelLayout::EMPTY, ChannelLayout::MONO).with_events(1, 0)
+        Shape::source_discrete(ChannelLayout::MONO).with_events(1, 0)
     }
     fn prepare(&mut self, _: &Prepare) {}
     fn process(&mut self, cx: &Cx<'_>, io: Io<'_>) -> Status {
@@ -422,7 +422,7 @@ struct BeatEcho;
 
 impl Node for BeatEcho {
     fn shape(&self) -> Shape {
-        Shape::audio(ChannelLayout::EMPTY, ChannelLayout::MONO)
+        Shape::source_discrete(ChannelLayout::MONO)
     }
     fn prepare(&mut self, _: &Prepare) {}
     fn process(&mut self, cx: &Cx<'_>, mut io: Io<'_>) -> Status {

@@ -642,8 +642,8 @@ impl Reference {
             let slot = self.units.get_mut(&key).expect("checked");
             let (was, now) = (slot.1.shape(), incoming.shape());
             assert!(
-                was.audio_in == now.audio_in
-                    && was.audio_out == now.audio_out
+                was.audio_in() == now.audio_in()
+                    && was.audio_out() == now.audio_out()
                     && was.event_in == now.event_in
                     && was.event_out == now.event_out
                     && was.latency == now.latency
@@ -1321,7 +1321,7 @@ impl Reference {
         let shape = self.units[&key].1.shape();
 
         let mut ins: Vec<Vec<f32>> = Vec::new();
-        for port in 0..shape.audio_in.count() {
+        for port in 0..shape.audio_in().count() {
             let at = InPort { node: key, port };
             // The addends in source order, each through its own PDC delay.
             let mut addends: Vec<RefAddend> = Vec::new();
@@ -1405,11 +1405,11 @@ impl Reference {
             })
             .collect();
 
-        let n_out = shape.audio_out.count() as usize;
+        let n_out = shape.audio_out().count() as usize;
 
         // Bypass and mute (see the module docs): the mode, read as the block
         // starts; the aligned input; and whether the node is called at all.
-        let mut mode = (shape.audio_out.count() != 0 || shape.event_out != 0)
+        let mut mode = (shape.audio_out().count() != 0 || shape.event_out != 0)
             .then(|| self.modes.remove(&key).expect("a mode for every node"));
         let mut xhat: Vec<Vec<f32>> = Vec::new();
         let mut parked = false;

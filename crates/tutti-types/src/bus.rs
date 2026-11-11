@@ -61,6 +61,14 @@ impl BusTopology {
         speakers: [Speaker::Discrete; MAX_BUS_CHANNELS],
     };
 
+    /// A stereo pair: front left, front right.
+    pub const STEREO: Self = {
+        let mut speakers = Self::EMPTY.speakers;
+        speakers[0] = Speaker::FrontLeft;
+        speakers[1] = Speaker::FrontRight;
+        Self { len: 2, speakers }
+    };
+
     /// The bus of these speakers, or `None` past [`MAX_BUS_CHANNELS`].
     pub fn new(positions: impl IntoIterator<Item = Speaker>) -> Option<Self> {
         let mut bus = Self::EMPTY;

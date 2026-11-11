@@ -57,7 +57,7 @@ fn run<N: Node>(
     for block in BLOCKS {
         let mut d = Direct::new(make(), SR, block);
         let shape = d.node.shape();
-        let width = shape.audio_in.count().max(shape.audio_out.count()) as usize;
+        let width = shape.audio_in().count().max(shape.audio_out().count()) as usize;
         g.throughput(Throughput::Elements((block * width) as u64));
         fill_noise(&mut d);
         let values = fed.map(|f| f(block));

@@ -994,8 +994,8 @@ pub fn verify_fades(prev: Option<&Plan>, plan: &Plan, delta: &Delta) -> Result<(
                 key.0
             )));
         };
-        let same = was.audio_in == now.audio_in
-            && was.audio_out == now.audio_out
+        let same = was.audio_in() == now.audio_in()
+            && was.audio_out() == now.audio_out()
             && was.event_in == now.event_in
             && was.event_out == now.event_out
             && was.latency == now.latency
@@ -1034,7 +1034,7 @@ mod tests {
                     k,
                     NodeSpec::new("gen", ChannelLayout::EMPTY, ChannelLayout::MONO),
                 );
-                (k, Shape::audio(ChannelLayout::EMPTY, ChannelLayout::MONO))
+                (k, Shape::source_discrete(ChannelLayout::MONO))
             })
             .collect();
         t.set_outputs(vec![
@@ -1067,16 +1067,16 @@ mod tests {
         use crate::param::ParamIn;
         use crate::spec::EventOut;
         use tutti_types::UnitParam;
-        let generator = Shape::audio(ChannelLayout::EMPTY, ChannelLayout::MONO);
-        let sender = Shape::audio(ChannelLayout::EMPTY, ChannelLayout::MONO).with_events(0, 1);
-        let thru = Shape::audio(ChannelLayout::MONO, ChannelLayout::MONO)
+        let generator = Shape::source_discrete(ChannelLayout::MONO);
+        let sender = Shape::source_discrete(ChannelLayout::MONO).with_events(0, 1);
+        let thru = Shape::through_discrete(ChannelLayout::MONO)
             .with_in_place()
             .with_params(&[UnitParam::Cutoff]);
         let mut t = Topology::default();
         let mut shapes = Shapes::new();
         for (k, s) in [(1, generator), (2, thru), (3, sender), (4, sender)] {
             t.nodes
-                .insert(NodeKey(k), NodeSpec::new("n", s.audio_in, s.audio_out));
+                .insert(NodeKey(k), NodeSpec::new("n", s.audio_in(), s.audio_out()));
             shapes.insert(NodeKey(k), s);
         }
         t.edges.insert(
@@ -1256,7 +1256,15 @@ mod tests {
         let shapes: Shapes = t
             .nodes
             .iter()
-            .map(|(&k, s)| (k, Shape::audio(s.inputs, s.outputs)))
+            .map(|(&k, s)| {
+                (
+                    k,
+                    Shape::buses(
+                        crate::Buses::discrete(s.inputs),
+                        crate::Buses::discrete(s.outputs),
+                    ),
+                )
+            })
             .collect();
         let valid = GraphSpec::new(t).validate().expect("valid");
         let good = compile(
@@ -1314,7 +1322,7 @@ mod tests {
                     k,
                     NodeSpec::new("gen", ChannelLayout::EMPTY, ChannelLayout::MONO),
                 );
-                (k, Shape::audio(ChannelLayout::EMPTY, ChannelLayout::MONO))
+                (k, Shape::source_discrete(ChannelLayout::MONO))
             })
             .collect();
         t.outputs = vec![
@@ -1604,13 +1612,15 @@ mod tests {
         let mut t = Topology::default();
         let (generator, thru) = (NodeKey(1), NodeKey(2));
         let (sg, st) = (
-            Shape::audio(ChannelLayout::EMPTY, ChannelLayout::MONO),
-            Shape::audio(ChannelLayout::MONO, ChannelLayout::MONO),
+            Shape::source_discrete(ChannelLayout::MONO),
+            Shape::through_discrete(ChannelLayout::MONO),
+        );
+        t.nodes.insert(
+            generator,
+            NodeSpec::new("gen", sg.audio_in(), sg.audio_out()),
         );
         t.nodes
-            .insert(generator, NodeSpec::new("gen", sg.audio_in, sg.audio_out));
-        t.nodes
-            .insert(thru, NodeSpec::new("thru", st.audio_in, st.audio_out));
+            .insert(thru, NodeSpec::new("thru", st.audio_in(), st.audio_out()));
         t.edges.insert(
             crate::InPort {
                 node: thru,
@@ -1661,13 +1671,15 @@ mod tests {
         let mut t = Topology::default();
         let (generator, thru) = (NodeKey(1), NodeKey(2));
         let (sg, st) = (
-            Shape::audio(ChannelLayout::EMPTY, ChannelLayout::STEREO),
-            Shape::audio(ChannelLayout::STEREO, ChannelLayout::STEREO),
+            Shape::source_discrete(ChannelLayout::STEREO),
+            Shape::through_discrete(ChannelLayout::STEREO),
+        );
+        t.nodes.insert(
+            generator,
+            NodeSpec::new("gen", sg.audio_in(), sg.audio_out()),
         );
         t.nodes
-            .insert(generator, NodeSpec::new("gen", sg.audio_in, sg.audio_out));
-        t.nodes
-            .insert(thru, NodeSpec::new("thru", st.audio_in, st.audio_out));
+            .insert(thru, NodeSpec::new("thru", st.audio_in(), st.audio_out()));
         for port in 0..2 {
             t.edges.insert(
                 crate::InPort { node: thru, port },
@@ -1759,12 +1771,12 @@ mod tests {
         use crate::spec::{EventEdge, EventIn, EventOut};
         let mut t = Topology::default();
         let mut shapes = Shapes::new();
-        let src = Shape::audio(ChannelLayout::EMPTY, ChannelLayout::EMPTY).with_events(0, 1);
+        let src = Shape::EMPTY.with_events(0, 1);
         let declared = src.with_event_capacity(5);
-        let sink = Shape::audio(ChannelLayout::EMPTY, ChannelLayout::EMPTY).with_events(1, 0);
+        let sink = Shape::EMPTY.with_events(1, 0);
         for (k, s) in [(1, declared), (2, src), (3, sink)] {
             t.nodes
-                .insert(NodeKey(k), NodeSpec::new("n", s.audio_in, s.audio_out));
+                .insert(NodeKey(k), NodeSpec::new("n", s.audio_in(), s.audio_out()));
             shapes.insert(NodeKey(k), s);
         }
         let mut g = GraphSpec::new(t);
@@ -1835,7 +1847,7 @@ mod tests {
     fn fades_are_checked_against_both_plans() {
         use crate::fade::{CrossfadeCurve, Fade};
         let (a, b) = (NodeKey(1), NodeKey(2));
-        let generator = || Shape::audio(ChannelLayout::EMPTY, ChannelLayout::MONO);
+        let generator = || Shape::source_discrete(ChannelLayout::MONO);
         let build = |shape_a: Shape, gen_a: u32, prev: Option<&Plan>| {
             let mut t = Topology::default();
             let shapes: Shapes = [(a, shape_a), (b, generator())]
@@ -1843,7 +1855,7 @@ mod tests {
                 .map(|(k, s)| {
                     t.nodes.insert(
                         k,
-                        NodeSpec::new("gen", s.audio_in, s.audio_out).with_tail(s.tail),
+                        NodeSpec::new("gen", s.audio_in(), s.audio_out()).with_tail(s.tail),
                     );
                     (k, s)
                 })
@@ -1880,13 +1892,13 @@ mod tests {
         let twice = check(generator(), vec![(a, fade), (a, fade)]).unwrap_err();
         assert!(twice.0.contains("twice"), "{twice}");
         let in_place = check(
-            Shape::audio(ChannelLayout::EMPTY, ChannelLayout::MONO).with_in_place(),
+            Shape::source_discrete(ChannelLayout::MONO).with_in_place(),
             vec![(a, fade)],
         )
         .unwrap_err();
         assert!(in_place.0.contains("only the tail"), "{in_place}");
         let capacity = check(
-            Shape::audio(ChannelLayout::EMPTY, ChannelLayout::MONO).with_event_capacity(4),
+            Shape::source_discrete(ChannelLayout::MONO).with_event_capacity(4),
             vec![(a, fade)],
         )
         .unwrap_err();

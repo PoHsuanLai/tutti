@@ -121,7 +121,7 @@ impl Node for InletNode {
     /// As wide as the ring. A live source: [`Tail::Unbounded`], so the
     /// executor never skips it as silent.
     fn shape(&self) -> Shape {
-        Shape::audio(ChannelLayout::EMPTY, self.ring.layout())
+        Shape::source_discrete(self.ring.layout())
             .with_tail(Tail::Unbounded)
             // A block copy out of the ring: measured 0.4-0.6 ns per frame and
             // channel, against a gain's 0.05 and `SvfFilterNode`'s 4.0 on the

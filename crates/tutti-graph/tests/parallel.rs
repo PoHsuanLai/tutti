@@ -58,7 +58,7 @@ struct ParamSink;
 
 impl Node for ParamSink {
     fn shape(&self) -> Shape {
-        Shape::audio(ChannelLayout::MONO, ChannelLayout::MONO)
+        Shape::through_discrete(ChannelLayout::MONO)
             .with_params(&[tutti_types::UnitParam::Cutoff, tutti_types::UnitParam::Q])
     }
     fn prepare(&mut self, _: &Prepare) {}
@@ -105,7 +105,7 @@ impl RampEvery {
 
 impl Node for RampEvery {
     fn shape(&self) -> Shape {
-        Shape::audio(ChannelLayout::EMPTY, ChannelLayout::EMPTY)
+        Shape::EMPTY
             .with_events(0, 1)
             .with_event_capacity(16)
             .with_latency(Latency::new(Samples(self.latency)))
@@ -604,7 +604,7 @@ fn a_panic_on_a_worker_reaches_the_caller() {
     struct Boom;
     impl Node for Boom {
         fn shape(&self) -> Shape {
-            Shape::audio(ChannelLayout::MONO, ChannelLayout::MONO)
+            Shape::through_discrete(ChannelLayout::MONO)
         }
         fn prepare(&mut self, _: &Prepare) {}
         fn process(&mut self, cx: &Cx<'_>, _: Io<'_>) -> Status {
@@ -679,7 +679,7 @@ fn the_executor_waits_by_its_pools_budget() {
     struct Slow(Arc<Times>);
     impl Node for Slow {
         fn shape(&self) -> Shape {
-            Shape::audio(ChannelLayout::MONO, ChannelLayout::MONO)
+            Shape::through_discrete(ChannelLayout::MONO)
         }
         fn prepare(&mut self, _: &Prepare) {}
         fn process(&mut self, _: &Cx<'_>, _: Io<'_>) -> Status {

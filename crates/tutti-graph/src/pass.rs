@@ -6,7 +6,7 @@
 //! channels sit, the pass is the [`Fold`] between them (a mono centre reaches
 //! both sides of a stereo pair; a 5.1 bus into a stereo bus is the ITU
 //! downmix, not "the first two channels"). When neither says (every channel
-//! `Discrete`, which is what [`Shape::audio`] builds) and the widths agree,
+//! `Discrete`, which is what [`Shape::through_discrete`] builds) and the widths agree,
 //! output `c` is input `c`. **Nothing else is guessed**: main buses of
 //! different widths that name no placement, or placements that do not fold,
 //! have no pass ([`PassError`]), and the graph refuses whatever would hear one
@@ -28,7 +28,7 @@ use tutti_types::{ChannelTopology, Fold, FoldError, Speaker};
 pub enum PassError {
     /// The main input and output differ in width and one of them names no
     /// placement, so which input reaches which output is a guess. Declare the buses
-    /// ([`Shape::with_buses_in`], [`Shape::with_buses_out`]).
+    /// ([`Shape::buses`]).
     Unplaced {
         /// The main input's width.
         inputs: usize,
@@ -56,8 +56,10 @@ impl std::error::Error for PassError {}
 
 use crate::node::Shape;
 
-/// The channel mapping of a node that does not run.
-pub(crate) struct Pass {
+/// The dry path of a node: where each input channel goes when the node does
+/// not run (a bypass, the dry side of a mix). [`Shape::pass`] builds it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Pass {
     /// Input channels the aligned path carries (one ring each).
     inputs: usize,
     /// Output channels it writes; the rest are silent.
@@ -90,16 +92,17 @@ impl Pass {
         }
     }
 
-    /// The mapping of `shape`, or why it has none. Control side: allocates.
+    /// The mapping of `shape`, or why it has none ([`Shape::pass`]). Control
+    /// side: allocates.
     pub(crate) fn of(shape: &Shape) -> Result<Self, PassError> {
         let (Some((_, src)), Some((_, dst))) =
-            (shape.buses_in.main_bus(), shape.buses_out.main_bus())
+            (shape.buses_in().main_bus(), shape.buses_out().main_bus())
         else {
             // No main bus on a side: no audio there (nothing passes), or more
             // channels than a bus holds, reached by port.
             let (inputs, outputs) = (
-                usize::from(shape.audio_in.count()),
-                usize::from(shape.audio_out.count()),
+                usize::from(shape.audio_in().count()),
+                usize::from(shape.audio_out().count()),
             );
             return match (inputs, outputs) {
                 (0, _) | (_, 0) => Ok(Self::nothing()),
@@ -164,13 +167,27 @@ impl Pass {
     }
 
     /// Input channels carried.
-    pub(crate) fn inputs(&self) -> usize {
+    #[must_use]
+    pub fn inputs(&self) -> usize {
         self.inputs
     }
 
-    /// Output channels written.
-    pub(crate) fn outputs(&self) -> usize {
+    /// Output channels written; any past them are silent.
+    #[must_use]
+    pub fn outputs(&self) -> usize {
         self.outputs
+    }
+
+    /// The input channels output `c` reads, each with its gain: input `c` at
+    /// 1.0 where the path goes by index, the fold's terms where it folds, and
+    /// nothing for an output past [`outputs`](Self::outputs).
+    pub fn contributions(&self, c: usize) -> impl Iterator<Item = (usize, f32)> + use<> {
+        let terms: Vec<(usize, f32)> = match (&self.fold, c < self.outputs) {
+            (_, false) => Vec::new(),
+            (Some(fold), true) => fold.contributions(c).collect(),
+            (None, true) => vec![(c, 1.0)],
+        };
+        terms.into_iter()
     }
 
     /// Whether output `c` is a combination of inputs, not a copy of input `c`.

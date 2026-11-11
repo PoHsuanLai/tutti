@@ -26,7 +26,6 @@ use tutti_graph::{
 use tutti_midi_protocol::MpeMode;
 use tutti_midi_protocol::Translator;
 use tutti_rt::{ArcLend, Reader};
-use tutti_types::ChannelLayout;
 use tutti_ump::{MidiChannel, MidiGroup, Ump};
 
 use super::order::{BLANK, in_offset_order, offset_of};
@@ -223,7 +222,7 @@ impl Node for MidiInputNode {
     /// capacity ([`MIDI_INPUT_EVENT_CAPACITY`] at least, and
     /// [`MIDI_INPUT_DENSITY`] per frame of a long block).
     fn shape(&self) -> Shape {
-        Shape::audio(ChannelLayout::EMPTY, ChannelLayout::EMPTY)
+        Shape::EMPTY
             .with_events(0, MIDI_INPUT_PORTS as u16)
             .with_event_capacity(self.capacity as u32)
             // Event-only: a poll and a translation per event, nothing per

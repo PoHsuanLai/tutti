@@ -189,7 +189,7 @@ pub struct LoadedPlugin {
     /// nobody asked. Empty ("nothing was asked") when absent from a serialized
     /// value.
     // `serde(default)` covers JSON and struct-update construction; a short
-    // bincode payload is `PROTOCOL_VERSION`'s job, not serde's.
+    // postcard payload is `PROTOCOL_VERSION`'s job, not serde's.
     #[cfg_attr(feature = "serde", serde(default))]
     pub probed: Features,
 }
@@ -275,7 +275,7 @@ mod tests {
         ]
     }
 
-    /// A multi-bus plugin round-trips through the bincode wire, every bus's
+    /// A multi-bus plugin round-trips through the postcard wire, every bus's
     /// width, placement and role with it, and the totals sum across buses.
     ///
     /// The `None` placement is load-bearing: "unknown" is a different answer
@@ -291,8 +291,8 @@ mod tests {
             features: Features::F64_AUDIO | Features::MIDI_IN,
             probed: Features::F64_AUDIO | Features::MIDI_IN | Features::EDITOR,
         };
-        let bytes = bincode::serialize(&loaded).unwrap();
-        let back: LoadedPlugin = bincode::deserialize(&bytes).unwrap();
+        let bytes = postcard::to_allocvec(&loaded).unwrap();
+        let back: LoadedPlugin = postcard::from_bytes(&bytes).unwrap();
         assert_eq!(back, loaded);
         assert_eq!(back.inputs[1].topology, None);
         assert_eq!(back.total_inputs(), 3);
@@ -313,13 +313,13 @@ mod tests {
     fn every_role_crosses_the_wire_and_an_unknown_one_is_refused() {
         for role in [BusRole::Main, BusRole::Sidechain, BusRole::Aux] {
             let bus = PluginBus::new(ChannelLayout::MONO, role);
-            let bytes = bincode::serialize(&bus).unwrap();
-            assert_eq!(bincode::deserialize::<PluginBus>(&bytes).unwrap(), bus);
+            let bytes = postcard::to_allocvec(&bus).unwrap();
+            assert_eq!(postcard::from_bytes::<PluginBus>(&bytes).unwrap(), bus);
         }
         let mut bytes =
-            bincode::serialize(&PluginBus::new(ChannelLayout::MONO, BusRole::Aux)).unwrap();
+            postcard::to_allocvec(&PluginBus::new(ChannelLayout::MONO, BusRole::Aux)).unwrap();
         *bytes.last_mut().unwrap() = 3;
-        assert!(bincode::deserialize::<PluginBus>(&bytes).is_err());
+        assert!(postcard::from_bytes::<PluginBus>(&bytes).is_err());
     }
 
     /// An unknown bus makes the topology incomplete, and a full one completes it.
@@ -359,8 +359,8 @@ mod tests {
             probed: Features::EDITOR,
             ..Default::default()
         };
-        let bytes = bincode::serialize(&loaded).unwrap();
-        let back: LoadedPlugin = bincode::deserialize(&bytes).unwrap();
+        let bytes = postcard::to_allocvec(&loaded).unwrap();
+        let back: LoadedPlugin = postcard::from_bytes(&bytes).unwrap();
 
         assert_eq!(back.capability(Features::EDITOR), Some(true));
         assert_eq!(
@@ -383,8 +383,8 @@ mod tests {
     #[test]
     fn empty_buses_round_trip() {
         let loaded = LoadedPlugin::default();
-        let bytes = bincode::serialize(&loaded).unwrap();
-        let back: LoadedPlugin = bincode::deserialize(&bytes).unwrap();
+        let bytes = postcard::to_allocvec(&loaded).unwrap();
+        let back: LoadedPlugin = postcard::from_bytes(&bytes).unwrap();
         assert_eq!(back, loaded);
         assert!(back.inputs.is_empty());
         assert_eq!(back.total_inputs(), 0);
@@ -396,7 +396,7 @@ mod tests {
     /// Every tail arm survives the wire distinctly.
     ///
     /// The value semantics are pinned where the type lives; what belongs here is
-    /// the *encoding*, because this is the crate whose bincode IPC carries it.
+    /// the *encoding*, because this is the crate whose postcard IPC carries it.
     /// `PluginTail` is an alias rather than a local copy, and an alias changes
     /// no discriminant, no arm order and no payload — this test is the evidence
     /// for that, so it must keep passing unedited.
@@ -408,8 +408,8 @@ mod tests {
             PluginTail::Finite(Samples(48_000)),
             PluginTail::Unbounded,
         ] {
-            let bytes = bincode::serialize(&tail).unwrap();
-            assert_eq!(bincode::deserialize::<PluginTail>(&bytes).unwrap(), tail);
+            let bytes = postcard::to_allocvec(&tail).unwrap();
+            assert_eq!(postcard::from_bytes::<PluginTail>(&bytes).unwrap(), tail);
         }
     }
 }

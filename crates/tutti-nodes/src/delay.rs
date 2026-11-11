@@ -570,7 +570,7 @@ impl Node for DelayLineNode {
     /// to be late.
     fn shape(&self) -> Shape {
         let width = ChannelLayout::try_from(self.width()).expect("the width came from a layout");
-        Shape::audio(width, width)
+        Shape::through_discrete(width)
             .with_cost(tutti_graph::Cost::Moderate)
             .with_params(&DELAY_PARAMS)
             .with_tail(Tail::Unknown)
@@ -881,8 +881,8 @@ mod tests {
             Feedback::new(0.3),
         );
         let shape = d.shape();
-        assert_eq!(shape.audio_in.count(), 6);
-        assert_eq!(shape.audio_out.count(), 6);
+        assert_eq!(shape.audio_in().count(), 6);
+        assert_eq!(shape.audio_out().count(), 6);
     }
 
     #[test]
@@ -953,7 +953,10 @@ mod tests {
             shape.params.as_slice(),
             &[UnitParam::Feedback, UnitParam::DelayTime][..]
         );
-        assert_eq!((shape.audio_in.count(), shape.audio_out.count()), (2, 2));
+        assert_eq!(
+            (shape.audio_in().count(), shape.audio_out().count()),
+            (2, 2)
+        );
         let wide = DelayLineNode::with_channels(
             6u16,
             Seconds::new(1.0),
@@ -961,7 +964,7 @@ mod tests {
             Feedback::new(0.5),
         )
         .shape();
-        assert_eq!((wide.audio_in.count(), wide.audio_out.count()), (6, 6));
+        assert_eq!((wide.audio_in().count(), wide.audio_out().count()), (6, 6));
         assert_eq!(d.param_base(0), Some(0.5), "feedback's base is its control");
         assert_eq!(
             d.param_base(1),

@@ -31,16 +31,19 @@
 //! and End of Clip UMP Stream messages, and the DCS before End of Clip is the
 //! clip's length.
 //!
-//! This module reads and writes a clip as absolute ticks and packets, with no
-//! decoding past the structure: [`MidiFile`](crate::MidiFile) is the model
+//! This module reads (a `winnow` grammar, in `read.rs`) and writes a clip as
+//! absolute ticks and packets, with no decoding past the structure: [`MidiFile`](crate::MidiFile) is the model
 //! over it.
 
 use std::vec::Vec;
 
 use tutti_ump::{
-    DeltaTicks, Flex, FlexTextKind, Form, Message, Stream, Sysex7Packet, SysexStatus, Ump, Utility,
-    decode, split_stream,
+    DeltaTicks, Flex, FlexTextKind, Form, Message, Stream, SysexStatus, Ump, Utility, decode,
 };
+
+mod read;
+
+pub(crate) use read::{check_header, leading_profile_len, parse};
 
 /// The 8-byte file header: ASCII "SMF2CLIP" (M2-116 section 5).
 pub(crate) const CLIP_FILE_MAGIC: [u8; 8] = *b"SMF2CLIP";
@@ -169,186 +172,6 @@ pub enum ClipFileError {
     TrailingData,
 }
 
-pub(crate) fn parse(bytes: &[u8]) -> Result<ParsedClip, ClipFileError> {
-    if bytes.len() < 8 || bytes[..8] != CLIP_FILE_MAGIC {
-        return Err(ClipFileError::BadMagic);
-    }
-    let words = words_of(&bytes[8..]).ok_or(ClipFileError::Unaligned)?;
-
-    let mut ticks_per_quarter = None;
-    let mut events = Vec::new();
-    // The delta declared by the most recent DCS, and the total closed off by
-    // NOOP restarts before it. See the DCS/NOOP arms below.
-    let mut pending_delta: u32 = 0;
-    let mut banked_delta: u32 = 0;
-    // The value of the DCS that came right before the message being read, and
-    // `None` once a message has come since: what sections 3.2.1 and 6 say of the
-    // DCS before the DCTPQ and before a Set Profile On.
-    let mut last_dcs: Option<u32> = None;
-    let mut header_end = 0;
-    // Where the sequence is: the tick the last event (or the start) sits at.
-    let mut tick: u64 = 0;
-    // Structure order (M2-116 sections 6 and 7). `content` is whether any
-    // message other than a DCS, a Null or a JR message has come: the DCTPQ
-    // must not follow one, and `started` is whether Start of Clip has.
-    let mut content = false;
-    let mut started = false;
-    let mut end = None;
-    // The header: Set Profile On packets before the DCTPQ (counted by `pre`),
-    // then what follows the DCTPQ up to Start of Clip.
-    let mut header: Vec<(u64, Ump)> = Vec::new();
-    let mut pre = 0;
-    let mut profile = ProfileScan::default();
-
-    // Words consumed so far: `split_stream` ends at a truncated packet without
-    // saying so, and the words it left are what `taken` falls short of.
-    let mut taken = 0;
-    for ev in split_stream(&words) {
-        taken += ev.words().len();
-
-        // Classify by message. An undefined status of a Utility message
-        // (JR clock and timestamp included) is ignored, as the spec allows a
-        // reader to; any other packet that does not decode is an event, kept
-        // as its words.
-        match decode(ev) {
-            Ok(Message::Utility(utility)) => {
-                match utility {
-                    // A DCS is the count since the last event or Null message:
-                    // it *replaces* the current count rather than adding to it
-                    // (M2-116 section 3.2.2). Only `banked_delta`, closed off by
-                    // a NOOP below, carries over from earlier restarts.
-                    Utility::DeltaClockstamp(ticks) => {
-                        pending_delta = ticks.get();
-                        last_dcs = Some(ticks.get());
-                    }
-                    Utility::TicksPerQuarterNote(ticks) => {
-                        if ticks_per_quarter.is_some() {
-                            return Err(ClipFileError::DuplicateDctpq);
-                        }
-                        if content {
-                            return Err(ClipFileError::DctpqNotFirst);
-                        }
-                        if last_dcs.take() != Some(0) || banked_delta != 0 {
-                            return Err(ClipFileError::DctpqDelta);
-                        }
-                        ticks_per_quarter = Some(ticks);
-                        // The DCTPQ's DCS is 0 and starts the header's clock.
-                        tick = 0;
-                        pending_delta = 0;
-                        banked_delta = 0;
-                    }
-                    // NOOP = the Null message that restarts the delta count
-                    // (M2-116 section 3.2.2). Bank what the preceding DCS
-                    // declared; the next DCS counts from here.
-                    Utility::Noop => {
-                        last_dcs = None;
-                        banked_delta = banked_delta.saturating_add(pending_delta);
-                        pending_delta = 0;
-                    }
-                    // JR clock / timestamp: not part of a clip's sequence.
-                    Utility::JrClock(_) | Utility::JrTimestamp(_) => {}
-                }
-                continue;
-            }
-            Err(_) if ev.message_type() == 0x0 => continue,
-            Ok(Message::Stream(Stream::StartOfClip)) => {
-                if started {
-                    return Err(ClipFileError::DuplicateStartOfClip);
-                }
-                header_rules(&header, pre)?;
-                // The DCS before Start of Clip is the header's last gap.
-                header_end = tick + u64::from(banked_delta) + u64::from(pending_delta);
-                last_dcs = None;
-                started = true;
-                content = true;
-                tick = 0;
-                // The DCS before it is not an event's delta: the sequence
-                // starts at tick 0 however the file spells it.
-                pending_delta = 0;
-                banked_delta = 0;
-                continue; // structural
-            }
-            Ok(Message::Stream(Stream::EndOfClip)) => {
-                // The DCS before End of Clip is the clip's length (all of the
-                // delta since the last event, restarts included).
-                end = Some(tick + u64::from(banked_delta) + u64::from(pending_delta));
-                // Section 7.3: "A MIDI Clip File shall not have any data
-                // following the End of Clip message." There is no multi-clip
-                // clip file, so anything after this is corruption rather than
-                // a second clip.
-                if taken < words.len() {
-                    return Err(ClipFileError::TrailingData);
-                }
-                break;
-            }
-            _ => {}
-        }
-        // Sections 6.4 and 7.2: no Property Exchange, in the header or the
-        // sequence.
-        if decode(ev).is_ok_and(|m| property_exchange(&m)) {
-            return Err(ClipFileError::PropertyExchange);
-        }
-        let dcs_before = last_dcs.take();
-        // Before the DCTPQ only Set Profile On messages are allowed (section
-        // 6), with no DCS; anything else is content the DCTPQ must not follow (a
-        // Set Profile On after such content is kept, and the DCTPQ's arrival
-        // names the error).
-        if ticks_per_quarter.is_none() {
-            if decode(ev).is_ok_and(|m| profile.accepts(&m)) {
-                if dcs_before.is_some() {
-                    return Err(ClipFileError::ProfileOnDelta);
-                }
-                header.push((0, ev));
-                pre += 1;
-            } else {
-                content = true;
-            }
-            continue;
-        }
-        // After the DCTPQ and before Start of Clip: a header message, on the
-        // header's own clock.
-        if !started {
-            tick += u64::from(banked_delta) + u64::from(pending_delta);
-            header.push((tick, ev));
-            pending_delta = 0;
-            banked_delta = 0;
-            continue;
-        }
-        content = true;
-        // Its delta is the current count plus everything banked by NOOP
-        // restarts since the previous event. A u64 sum: two saturated u32
-        // deltas must not wrap.
-        tick += u64::from(banked_delta) + u64::from(pending_delta);
-        events.push((tick, ev));
-        pending_delta = 0;
-        banked_delta = 0;
-    }
-    if taken < words.len() {
-        return Err(ClipFileError::Truncated);
-    }
-
-    // Order matters: report the *earliest* structural thing that is missing, so
-    // a caller sees the first reason the file is unusable rather than the last.
-    let ticks_per_quarter = ticks_per_quarter.ok_or(ClipFileError::MissingDctpq)?;
-    // Declared, but unusable: every beat this file yields is a tick count
-    // divided by this.
-    if ticks_per_quarter == 0 {
-        return Err(ClipFileError::ZeroDctpq);
-    }
-    if !started {
-        return Err(ClipFileError::MissingStartOfClip);
-    }
-    let end = end.ok_or(ClipFileError::MissingEndOfClip)?;
-
-    Ok(ParsedClip {
-        ticks_per_quarter,
-        header,
-        events,
-        end,
-        header_end,
-    })
-}
-
 /// Whether `message` starts a MIDI-CI Property Exchange message: a System
 /// Exclusive 7 packet, first of its message, that begins `7E <device> 0D` and a
 /// sub-ID#2 of `30` to `3F` (M2-101 Table 5: "Property Exchange Messages"). The
@@ -360,84 +183,6 @@ pub(crate) fn property_exchange(message: &Message) -> bool {
     };
     matches!(packet.status(), SysexStatus::Complete | SysexStatus::Start)
         && matches!(packet.data(), [0x7E, _, 0x0D, 0x30..=0x3F, ..])
-}
-
-/// Tracks whether the packets it is fed are a Set Profile On message (MIDI-CI
-/// sub-ID 2 `0x22`, a Universal SysEx `7E <device> 0D 22 ...`), packet by
-/// packet: a message's first packet says what it is, and its Continue and End
-/// packets belong to it.
-#[derive(Default)]
-struct ProfileScan {
-    open: bool,
-}
-
-impl ProfileScan {
-    fn accepts(&mut self, message: &Message) -> bool {
-        let Message::Sysex7(_, packet) = message else {
-            self.open = false;
-            return false;
-        };
-        let is_set_profile_on = |p: &Sysex7Packet| matches!(p.data(), [0x7E, _, 0x0D, 0x22, ..]);
-        match packet.status() {
-            SysexStatus::Complete => {
-                self.open = false;
-                is_set_profile_on(packet)
-            }
-            SysexStatus::Start => {
-                self.open = is_set_profile_on(packet);
-                self.open
-            }
-            SysexStatus::Continue => self.open,
-            SysexStatus::End => std::mem::take(&mut self.open),
-        }
-    }
-}
-
-/// How many packets at the head of `header` are Set Profile On messages at
-/// tick 0: the ones a write puts before the DCTPQ, where they carry no DCS.
-pub(crate) fn leading_profile_len(header: &[(u64, Ump)]) -> usize {
-    let mut scan = ProfileScan::default();
-    header
-        .iter()
-        .take_while(|(tick, ump)| *tick == 0 && decode(*ump).is_ok_and(|m| scan.accepts(&m)))
-        .count()
-}
-
-/// The header's own rules (M2-116 sections 6.1 to 6.1.2) over `header`, whose
-/// first `pre` packets precede the DCTPQ: at most one Set Tempo and one Set
-/// Time Signature; the Set Tempo first after the DCTPQ at delta 0; the Set
-/// Time Signature right behind it (first, if there is no Set Tempo) and also at
-/// delta 0 (section 6.1.2).
-///
-/// # Errors
-///
-/// The [`ClipFileError`] naming the rule broken.
-pub(crate) fn header_rules(header: &[(u64, Ump)], pre: usize) -> Result<(), ClipFileError> {
-    let (mut tempo, mut signature) = (false, false);
-    for (i, (tick, ump)) in header[pre..].iter().enumerate() {
-        match decode(*ump) {
-            Ok(Message::Flex(_, Flex::SetTempo(_))) => {
-                if tempo {
-                    return Err(ClipFileError::DuplicateHeaderTempo);
-                }
-                if i != 0 || *tick != 0 {
-                    return Err(ClipFileError::MisplacedHeaderTempo);
-                }
-                tempo = true;
-            }
-            Ok(Message::Flex(_, Flex::SetTimeSignature(_))) => {
-                if signature {
-                    return Err(ClipFileError::DuplicateHeaderTimeSignature);
-                }
-                if i != usize::from(tempo) || *tick != 0 {
-                    return Err(ClipFileError::MisplacedHeaderTimeSignature);
-                }
-                signature = true;
-            }
-            _ => {}
-        }
-    }
-    Ok(())
 }
 
 /// Serializes a clip: the leading Set Profile On packets (no DCS), the DCTPQ,
@@ -600,14 +345,4 @@ fn start_of_clip() -> Ump {
 
 fn end_of_clip() -> Ump {
     Ump::from(Message::Stream(Stream::EndOfClip))
-}
-
-/// The big-endian 32-bit words of `bytes`, `None` if it is not a whole number
-/// of them.
-fn words_of(bytes: &[u8]) -> Option<Vec<u32>> {
-    // `as_chunks`: the remainder is empty once the length is a multiple of 4,
-    // and each chunk arrives as the `[u8; 4]` `from_be_bytes` takes.
-    let (chunks, rest) = bytes.as_chunks::<4>();
-    rest.is_empty()
-        .then(|| chunks.iter().map(|c| u32::from_be_bytes(*c)).collect())
 }

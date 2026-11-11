@@ -365,9 +365,8 @@ impl Node for GateNode {
     /// silent output whatever the envelope is doing.
     fn shape(&self) -> Shape {
         let width = self.ports.width();
-        Shape::audio(ChannelLayout::from_count(2 * width.count()), width)
-            .with_buses_in(self.ports.inputs())
-            .with_buses_out(self.ports.outputs())
+        Shape::buses(self.ports.inputs(), self.ports.outputs())
+            .with_ports(ChannelLayout::from_count(2 * width.count()), width)
             .with_cost(tutti_graph::Cost::Moderate)
             .with_tail(Tail::None)
             .with_params(&GATE_PARAMS)
@@ -662,8 +661,8 @@ mod tests {
             Seconds::new(0.1),
         );
         assert_eq!(mono.channels(), 1);
-        assert_eq!(mono.shape().audio_in.count(), 2);
-        assert_eq!(mono.shape().audio_out.count(), 1);
+        assert_eq!(mono.shape().audio_in().count(), 2);
+        assert_eq!(mono.shape().audio_out().count(), 1);
 
         let stereo = GateNode::stereo(
             Db::new(-20.0),
@@ -672,8 +671,8 @@ mod tests {
             Seconds::new(0.1),
         );
         assert_eq!(stereo.channels(), 2);
-        assert_eq!(stereo.shape().audio_in.count(), 4);
-        assert_eq!(stereo.shape().audio_out.count(), 2);
+        assert_eq!(stereo.shape().audio_in().count(), 4);
+        assert_eq!(stereo.shape().audio_out().count(), 2);
     }
 
     #[test]
@@ -724,7 +723,7 @@ mod tests {
             m.shape().params.as_slice(),
             &[UnitParam::Threshold, UnitParam::Attack, UnitParam::Release][..]
         );
-        assert_eq!(m.shape().audio_in.count(), 2);
+        assert_eq!(m.shape().audio_in().count(), 2);
         assert_eq!(
             m.param_base(0),
             Some(-20.0),
@@ -738,7 +737,7 @@ mod tests {
             Seconds::new(0.01),
             Seconds::new(0.1),
         );
-        assert_eq!(s.shape().audio_in.count(), 4);
+        assert_eq!(s.shape().audio_in().count(), 4);
     }
 
     // ── The threshold compares in the linear domain ─────────────────────────

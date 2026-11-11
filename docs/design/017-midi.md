@@ -2374,6 +2374,37 @@ spec quote. Four parts.
   five comments in `tutti-midi-hardware` and `tutti-coremidi-ffi` named the deleted
   `to_midi1_bytes`.
 
+### L1b: the Clip File reader is a grammar (done)
+
+The reader (`tutti-midi-file/src/clip_file/read.rs`) is `winnow` combinators, as the SMF
+reader is. The bytes after `SMF2CLIP` are cut into packets once (`tutti_ump::split_stream`)
+and each is classified once (`tutti_ump::decode`: a DCS, a Null, a DCTPQ, Start or End of
+Clip, a message), so the grammar runs over a `&[Packet]` token slice and a rule matches a
+whole packet; no bit field is read in it. Each M2-116 placement rule is one rule of the
+grammar and the hand checks of L1 are gone:
+
+```text
+clip      := "SMF2CLIP" preamble dctpq config start event* end eof
+preamble  := ( gap(no DCS) SetProfileOn )*          -- section 6
+dctpq     := gap(DCS 0) DCTPQ                        -- sections 3.2.1, 6
+config    := [SetTempo @0] [SetTimeSignature @0] ( gap Message )*   -- 6.1 to 6.1.2
+start     := gap StartOfClip                         -- section 7
+event     := gap Message                             -- sections 3.2.2, 7.2
+end       := gap EndOfClip                           -- section 7
+eof                                                  -- section 7.3
+gap       := ( DCS | Null | JR | undefined Utility )*
+```
+
+Every `ClipFileError` variant is kept, each from the rule it names; a rule broken past
+the point where an alternative could still match is a cut, so the error names that rule.
+Two readings sharpened: a Set Profile On message must be complete (a Start with no End,
+adjacent Continues, then End), a DCS between its parts is `ProfileOnDelta` as before, and
+the DCTPQ is `DctpqNotFirst` only when one follows something else, `MissingDctpq`
+when there is none. `MidiFile::clip` checks the header through the same `config` rule
+(`check_header`), and the writer's count of leading Set Profile On packets is the same
+`set_profile_on` rule. `scripts/check-layout.sh` holds winnow per crate: a dependency of
+`tutti-midi-file` only, named only in `smf/read.rs` and `clip_file/read.rs`.
+
 ## 11. Testing
 
 - **Spec tables.** Each message's words from M2-104 App. F and the tables in M2-115

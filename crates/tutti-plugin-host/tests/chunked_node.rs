@@ -892,11 +892,6 @@ fn transport_changes_past_the_bound_are_dropped_and_counted() {
 /// The node's shape carries the plugin's buses with their placement: a
 /// stereo main on each side and, when the plugin has one, a second input bus
 /// after it, whose ports begin after the main's two.
-///
-/// Mutations (run), each failing this test: `PluginNode::shape` not calling
-/// `with_buses_in` (the shape keeps the one `Discrete` main bus of the three
-/// ports); not calling `with_buses_out` (the output is `Discrete`, not
-/// placed).
 #[test]
 fn the_shape_declares_the_plugins_buses_with_their_placement() {
     let shape = |key_bus: bool| {
@@ -911,19 +906,22 @@ fn the_shape_declares_the_plugins_buses_with_their_placement() {
     let stereo = [Speaker::FrontLeft, Speaker::FrontRight];
 
     let plain = shape(false);
-    assert_eq!(plain.buses_in.len(), 1);
-    assert_eq!(plain.buses_in.get(0).unwrap().topology.positions(), &stereo);
+    assert_eq!(plain.buses_in().len(), 1);
     assert_eq!(
-        plain.buses_out.get(0).unwrap().topology.positions(),
+        plain.buses_in().get(0).unwrap().topology.positions(),
+        &stereo
+    );
+    assert_eq!(
+        plain.buses_out().get(0).unwrap().topology.positions(),
         &stereo
     );
 
     let keyed = shape(true);
-    assert_eq!(keyed.audio_in, ChannelLayout::from(3u16));
-    assert_eq!(keyed.buses_in.len(), 2);
-    assert_eq!(keyed.buses_in.first_port(1), Some(2));
+    assert_eq!(keyed.audio_in(), ChannelLayout::from(3u16));
+    assert_eq!(keyed.buses_in().len(), 2);
+    assert_eq!(keyed.buses_in().first_port(1), Some(2));
     assert_eq!(
-        keyed.buses_in.get(1).unwrap().topology.positions(),
+        keyed.buses_in().get(1).unwrap().topology.positions(),
         &[Speaker::FrontCenter]
     );
 }

@@ -299,7 +299,7 @@ impl Node for VoiceNode {
     /// No inputs, [`channels`](Self::channels) outputs; a generator, never
     /// skipped.
     fn shape(&self) -> Shape {
-        Shape::audio(ChannelLayout::EMPTY, self.channels)
+        Shape::source_discrete(self.channels)
             .with_tail(Tail::Unbounded)
             .with_cost(self.cost())
             .with_params(&VOICE_PARAMS)

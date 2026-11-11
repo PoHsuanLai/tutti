@@ -49,7 +49,7 @@ impl Sine {
 
 impl Node for Sine {
     fn shape(&self) -> Shape {
-        Shape::audio(ChannelLayout::EMPTY, ChannelLayout::MONO).with_tail(Tail::Unbounded)
+        Shape::source_discrete(ChannelLayout::MONO).with_tail(Tail::Unbounded)
     }
 
     fn prepare(&mut self, prepare: &Prepare) {
@@ -79,7 +79,7 @@ pub struct Gain(pub f32);
 
 impl Node for Gain {
     fn shape(&self) -> Shape {
-        Shape::audio(ChannelLayout::MONO, ChannelLayout::MONO)
+        Shape::through_discrete(ChannelLayout::MONO)
     }
 
     fn prepare(&mut self, _: &Prepare) {}

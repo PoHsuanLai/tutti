@@ -52,7 +52,6 @@ tutti-graph = { path = "../tutti-graph" }
 
 # Serialization for IPC
 serde = { version = "1", features = ["derive"] }
-bincode = "1"
 
 # Shared memory
 memmap2 = "0.9"

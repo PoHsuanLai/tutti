@@ -69,7 +69,7 @@ fn buffers(source: ExportSource, seconds: f64) -> ExportRequest {
 fn planes(session: &mut Session, request: ExportRequest) -> Vec<Vec<f32>> {
     match session.export_blocking(request) {
         Ok(out) => match out.finished() {
-            Some(ExportOutput::Buffers(rendered)) => rendered.planes,
+            Some(ExportOutput::Buffers(rendered)) => rendered.into_planes(),
             other => panic!("expected rendered buffers, got {other:?}"),
         },
         Err(e) => panic!("the export failed: {e:?}"),

@@ -286,7 +286,7 @@ fn float_samples(bytes: &[u8]) -> Vec<f32> {
 #[test]
 fn a_sine_renders_its_closed_form() {
     let cfg = config(Pcm::Float32, ChannelLayout::STEREO);
-    let planes = buffers(built(sine(1000.0)), &cfg).planes;
+    let planes = buffers(built(sine(1000.0)), &cfg).into_planes();
     assert_eq!(planes.len(), 2);
     assert_eq!(planes[0].len(), FRAMES);
     for (c, plane) in planes.iter().enumerate() {
@@ -299,7 +299,7 @@ fn a_sine_renders_its_closed_form() {
         }
     }
     assert_golden("sine", digest(&planes), 0x4b59_8dd3_79f5_90cd);
-    let forked = buffers(forked(sine(1000.0)), &cfg).planes;
+    let forked = buffers(forked(sine(1000.0)), &cfg).into_planes();
     assert_same("forked against built", &planes, &forked);
 }
 
@@ -444,7 +444,7 @@ fn a_surround_mix_folds_to_every_width() {
         built(quad_vbap()),
         &config(Pcm::Float32, ChannelLayout::QUAD),
     )
-    .planes;
+    .into_planes();
     assert_audible(&quad);
     // Not vacuous: the rear-left source put energy in channel 2, and the
     // front-left one in channel 0.
@@ -454,7 +454,7 @@ fn a_surround_mix_folds_to_every_width() {
     // No digest for these: each is the quad render (whose digest is pinned)
     // folded, to the bit.
     for width in [ChannelLayout::STEREO, ChannelLayout::MONO] {
-        let got = buffers(built(quad_vbap()), &config(Pcm::Float32, width)).planes;
+        let got = buffers(built(quad_vbap()), &config(Pcm::Float32, width)).into_planes();
         let n = width.count() as usize;
         // The ITU quad fold, written out: `Lo = FL + M3DB·BL`, `Ro = FR + M3DB·BR`,
         // and the mono file is `(Lo + Ro)·M3DB`.
@@ -477,7 +477,7 @@ fn a_surround_mix_folds_to_every_width() {
         forked(quad_vbap()),
         &config(Pcm::Float32, ChannelLayout::QUAD),
     )
-    .planes;
+    .into_planes();
     assert!(fork[2].iter().any(|s| s.abs() > 0.05), "no rear energy");
     assert_golden("quad, forked", digest(&fork), 0x800b_0ec2_8842_1715);
 }
@@ -510,7 +510,7 @@ fn a_convolver_renders_the_direct_convolution_at_the_graph_block() {
     assert_eq!(GRAPH_MAX_BLOCK.get() % 64, 0);
     let graph = built(convolved());
     let latency = graph.reported_latency().get();
-    let planes = buffers(graph, &config(Pcm::Float32, ChannelLayout::MONO)).planes;
+    let planes = buffers(graph, &config(Pcm::Float32, ChannelLayout::MONO)).into_planes();
     assert_audible(&planes);
     assert_eq!(planes[0].len(), FRAMES);
     let ir = ir();
@@ -542,7 +542,7 @@ fn the_latency_trim_drops_the_lookahead() {
 
     let mut trimmed = config(Pcm::Float32, ChannelLayout::STEREO);
     trimmed.render.latency = latency;
-    let a = buffers(built(limited()), &trimmed).planes;
+    let a = buffers(built(limited()), &trimmed).into_planes();
     assert_eq!(a[0].len(), FRAMES, "the trim does not shorten the output");
     assert_audible(&a);
 
@@ -550,7 +550,7 @@ fn the_latency_trim_drops_the_lookahead() {
     // span shifted.
     let mut whole = config(Pcm::Float32, ChannelLayout::STEREO);
     whole.render.tail = latency;
-    let b = buffers(built(limited()), &whole).planes;
+    let b = buffers(built(limited()), &whole).into_planes();
     let shifted: Vec<Vec<f32>> = b.iter().map(|p| p[240..].to_vec()).collect();
     assert_same("trimmed against untrimmed from 240", &a, &shifted);
 }
@@ -580,7 +580,7 @@ fn a_limiter_adds_no_tail_to_the_render() {
     let mut cfg = config(Pcm::Float32, ChannelLayout::STEREO);
     cfg.render.latency = latency;
     cfg.render.tail = graph.reported_tail().samples().unwrap();
-    let planes = buffers(built(limited()), &cfg).planes;
+    let planes = buffers(built(limited()), &cfg).into_planes();
     assert_eq!(
         planes[0].len(),
         FRAMES,
@@ -589,7 +589,7 @@ fn a_limiter_adds_no_tail_to_the_render() {
 
     let mut whole = config(Pcm::Float32, ChannelLayout::STEREO);
     whole.render.tail = latency + graph.reported_tail().samples().unwrap();
-    let planes = buffers(built(limited()), &whole).planes;
+    let planes = buffers(built(limited()), &whole).into_planes();
     let n = latency.get();
     assert_eq!(planes[0].len(), FRAMES + n, "the duration plus the latency");
     for p in &planes {
@@ -619,7 +619,7 @@ fn the_tail_extends_the_render_by_the_ring_out() {
     cfg.render.tail = graph.reported_tail().samples().unwrap();
     // The latency trim too, so both halves of the gate run together.
     cfg.render.latency = graph.reported_latency();
-    let planes = buffers(built(convolved()), &cfg).planes;
+    let planes = buffers(built(convolved()), &cfg).into_planes();
     assert_eq!(planes[0].len(), FRAMES + 2999);
     let ir = ir();
     for (n, &s) in planes[0].iter().enumerate() {
@@ -747,7 +747,7 @@ fn the_graph_reads_the_render_clocks_transport() {
 
     let frames = out.frames().get();
     for i in 0..frames {
-        let beat = f64::from(out.planes[0][i]) + f64::from(out.planes[1][i]);
+        let beat = f64::from(out.planes()[0][i]) + f64::from(out.planes()[1][i]);
         let want = start + bps * i as f64;
         assert!(
             (beat - want).abs() < 1e-5,
@@ -836,7 +836,7 @@ fn render_under(
 ) -> Vec<Vec<f32>> {
     render_to_buffers(graph, &config(Pcm::Float32, width), clock)
         .expect("renders")
-        .planes
+        .into_planes()
 }
 
 /// The dominant frequency of `x[from..]` between 500 and 900 Hz: the peak of

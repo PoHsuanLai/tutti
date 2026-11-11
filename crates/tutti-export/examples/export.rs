@@ -128,7 +128,7 @@ fn main() -> tutti_export::Result<()> {
         &FrozenClock,
     )?;
     let peaks: Vec<f32> = quad
-        .planes
+        .planes()
         .iter()
         .map(|p| p.iter().fold(0.0f32, |a, &b| a.max(b.abs())))
         .collect();
@@ -147,7 +147,7 @@ fn main() -> tutti_export::Result<()> {
     // like — including on a second render, without ever holding the audio.
     let mut audio = render_to_buffers(tone(), &config, &FrozenClock)?;
 
-    let cfg = LoudnessConfig::new(audio.sample_rate, ChannelLayout::STEREO);
+    let cfg = LoudnessConfig::new(audio.sample_rate(), ChannelLayout::STEREO);
     let flat = audio.interleaved();
     let before = measure_loudness(&cfg, Interleaved::new(&flat, ChannelLayout::STEREO))
         .expect("stereo is meterable");

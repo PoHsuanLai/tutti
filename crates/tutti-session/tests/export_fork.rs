@@ -87,7 +87,7 @@ fn render(session: &mut Session, request: ExportRequest) -> Vec<Vec<f32>> {
         .expect("the export renders")
         .finished()
     {
-        Some(ExportOutput::Buffers(rendered)) => rendered.planes,
+        Some(ExportOutput::Buffers(rendered)) => rendered.into_planes(),
         other => panic!("expected rendered buffers, got {other:?}"),
     }
 }
@@ -158,7 +158,7 @@ fn chain_fresh(seconds: f64) -> (Vec<Vec<f32>>, Vec<Vec<f32>>) {
         let graph = RenderGraph::new(editor, executor).expect("built together");
         render_to_buffers(graph, &config(seconds), &FrozenClock)
             .expect("renders")
-            .planes
+            .into_planes()
     };
     (render(true), render(false))
 }
@@ -884,7 +884,7 @@ fn an_export_does_not_wait_for_a_slow_fork_and_takes_no_later_edit() {
         .expect("the export renders")
         .finished()
     {
-        Some(ExportOutput::Buffers(r)) => r.planes,
+        Some(ExportOutput::Buffers(r)) => r.into_planes(),
         other => panic!("expected buffers, got {other:?}"),
     };
     assert!(built.load(Ordering::SeqCst), "the build ran");
@@ -1021,7 +1021,7 @@ fn a_main_thread_only_fork_builds_and_drops_on_the_main_thread() {
         .expect("the export renders")
         .finished()
     {
-        Some(ExportOutput::Buffers(r)) => r.planes,
+        Some(ExportOutput::Buffers(r)) => r.into_planes(),
         other => panic!("expected buffers, got {other:?}"),
     };
     assert!(

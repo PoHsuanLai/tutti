@@ -4,6 +4,7 @@
 //! render, resample, dither, encode) reports through it, so a caller matches one
 //! type whichever entry point it used.
 
+use crate::JobError;
 use std::io;
 use thiserror::Error;
 use tutti_types::ChannelLayout;
@@ -189,6 +190,11 @@ pub enum ConfigError {
     /// has no duration, so a render that means to produce audio names one.
     #[error("the render is zero frames long; set RenderConfig::duration_seconds")]
     EmptyRender,
+    /// [`Job::new`](crate::Job::new) refused the render's rate or span: a rate
+    /// that is not finite and positive, or more frames than
+    /// [`MAX_FRAMES`](crate::MAX_FRAMES).
+    #[error("the render cannot be a job: {0}")]
+    Job(JobError),
     /// The graph is prepared at another rate than the render.
     #[error(
         "the graph is prepared at {prepared} Hz and the render is at {render} Hz; \

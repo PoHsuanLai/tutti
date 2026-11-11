@@ -358,8 +358,8 @@ fn a_crossfaded_plugin_keeps_its_lane_and_a_removed_one_drops_it() {
 #[test]
 fn an_export_is_the_live_render_on_a_clap_gain() {
     use std::sync::Arc;
-    use tutti_export::{EncodeConfig, ExportConfig, Format, Outcome, Pcm, RenderConfig};
-    use tutti_session::{ExportClock, ExportOutput, ExportRequest, ExportSource, ExportTarget};
+    use tutti_export::{Outcome, Produced};
+    use tutti_session::{Bounce, ExportClock, Latency, Range, Tail};
     use tutti_transport::{OfflineTimeline, OfflineTimelineConfig};
     use tutti_types::{Beat, Bpm, ChannelLayout};
 
@@ -402,19 +402,16 @@ fn an_export_is_the_live_render_on_a_clap_gain() {
         sample_rate: RATE,
         loop_range: None,
     }));
-    let config = ExportConfig {
-        render: RenderConfig {
-            sample_rate: RATE,
-            duration_seconds: Seconds(total as f64 / RATE.get()),
-            ..Default::default()
-        },
-        encode: EncodeConfig {
-            format: Format::Wav(Pcm::Float32),
-            channels: ChannelLayout::STEREO,
-            topology: None,
-        },
-        ..Default::default()
-    };
+    let config = Bounce::project()
+        .master_buffers()
+        .channels(ChannelLayout::STEREO)
+        .range(Range::Seconds(
+            Seconds(0.0),
+            Seconds(total as f64 / RATE.get()),
+        ))
+        .sample_rate(RATE)
+        .latency(Latency::Keep)
+        .tail(Tail::None);
 
     // Live: rolling from beat 0 in device-sized blocks, a frame between each
     // as a device's callbacks would leave. The plugin's pipeline plays each
@@ -462,15 +459,11 @@ fn an_export_is_the_live_render_on_a_clap_gain() {
         drive.update(&mut s);
     }
 
-    let request = ExportRequest::new(
-        ExportSource::Mix,
-        ExportTarget::Buffers,
-        config,
-        ExportClock::timeline(timeline),
-    );
-    let Outcome::Finished(ExportOutput::Buffers(export)) =
-        s.export_blocking(request).expect("the export renders")
-    else {
+    let request = config.clock(ExportClock::timeline(timeline));
+    let Outcome::Finished(bounced) = s.bounce(request).expect("the export renders") else {
+        panic!("the export finishes into memory")
+    };
+    let Produced::Buffers(export) = bounced.into_master() else {
         panic!("the export finishes into memory")
     };
     for (c, (l, e)) in live.iter().zip(export.planes()).enumerate() {

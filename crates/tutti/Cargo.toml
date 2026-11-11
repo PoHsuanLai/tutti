@@ -181,7 +181,7 @@ rustdoc-args = ["--cfg", "docsrs"]
 
 [[example]]
 name = "headless_export"
-required-features = ["export", "dsp", "wav"]
+required-features = ["session", "export", "dsp", "wav"]
 
 # Cannot RUN in CI — it opens a sound card — but `cargo clippy --all-targets`
 # compiles it, which is the gate that matters for an example whose job is to

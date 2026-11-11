@@ -29,13 +29,13 @@ use tutti_types::Seconds;
 
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use tutti_export::{
-    Control, EncodeConfig, ExportConfig, Format, Normalize, Output, Pcm, RenderConfig, RenderGraph,
-    Rendered, Resample, Setup, Written, render_one,
+    BufferTarget, Control, FileTarget, Format, Job, Normalize, NormalizeSpec, Output, Pcm,
+    RenderGraph, Rendered, Resample, Setup, Written, render_one,
 };
 use tutti_graph::GraphBuilder;
 use tutti_nodes::testing::{Const, Osc};
 use tutti_transport::FrozenClock;
-use tutti_types::{Amplitude, ChannelLayout, Db, Hz, SampleRate};
+use tutti_types::{Amplitude, ChannelLayout, Db, Hz, SampleRate, Samples};
 
 const SR: f64 = 48_000.0;
 
@@ -69,28 +69,59 @@ fn dc_graph(rate: f64) -> RenderGraph {
     built(g, rate)
 }
 
-fn config(seconds: f64, rate: f64, channels: ChannelLayout, format: Format) -> ExportConfig {
-    ExportConfig {
-        render: RenderConfig {
-            sample_rate: SampleRate(rate),
-            duration_seconds: Seconds(seconds),
-            ..Default::default()
-        },
-        encode: EncodeConfig {
-            format,
-            channels,
-            topology: None,
-        },
+/// One render and one file: what these cases vary.
+#[derive(Clone)]
+struct Case {
+    job: Job,
+    format: Format,
+    channels: ChannelLayout,
+    resample: Option<Resample>,
+    dither: Option<tutti_dsp::DitherShape>,
+}
+
+impl Case {
+    fn job(&self) -> Job {
+        self.job
+    }
+
+    fn file_target(
+        &self,
+        path: impl Into<std::path::PathBuf>,
+        normalize: Option<Normalize>,
+    ) -> FileTarget {
+        FileTarget::new(path, self.format, self.channels)
+            .with_resample(self.resample)
+            .with_dither(self.dither)
+            .with_normalize(normalize.map(NormalizeSpec::own))
+    }
+
+    fn buffer_target(&self) -> BufferTarget {
+        BufferTarget::new(self.channels)
+    }
+}
+
+fn config(seconds: f64, rate: f64, channels: ChannelLayout, format: Format) -> Case {
+    let rate = SampleRate(rate);
+    Case {
+        job: Job::new(
+            rate,
+            Seconds(seconds).to_samples(rate),
+            Samples(0),
+            Samples(0),
+        )
+        .expect("a render"),
+        format,
+        channels,
+        resample: None,
         dither: None,
-        ..Default::default()
     }
 }
 
 /// `cfg`'s render into memory.
-fn to_buffers(mut graph: RenderGraph, cfg: &ExportConfig) -> Rendered {
+fn to_buffers(mut graph: RenderGraph, cfg: &Case) -> Rendered {
     render_one(
         &mut graph,
-        &cfg.buffers_job().expect("a render"),
+        &cfg.job(),
         &FrozenClock,
         Output::master(cfg.buffer_target()),
         &mut Control::none(),
@@ -104,13 +135,13 @@ fn to_buffers(mut graph: RenderGraph, cfg: &ExportConfig) -> Rendered {
 /// `cfg`'s render into the file at `path`, normalized by `normalize` if given.
 fn to_file(
     mut graph: RenderGraph,
-    cfg: &ExportConfig,
+    cfg: &Case,
     normalize: Option<Normalize>,
     path: &std::path::Path,
 ) -> Written {
     render_one(
         &mut graph,
-        &cfg.job().expect("a render"),
+        &cfg.job(),
         &FrozenClock,
         Output::master(cfg.file_target(path, normalize)),
         &mut Control::none(),

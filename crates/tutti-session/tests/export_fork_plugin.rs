@@ -15,7 +15,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use support::{clap_probe, plugin_server};
-use tutti_export::{ChannelLayout, EncodeConfig, ExportConfig, Format, Pcm, RenderConfig};
+use tutti_export::{ChannelLayout, Produced};
 use tutti_fixtures::midi::{note_off, note_on};
 use tutti_graph::NodeKey;
 use tutti_graph::{Cx, ForkByClone, Io, Node, Prepare, Shape, Status};
@@ -24,11 +24,10 @@ use tutti_nodes::testing::Const;
 use tutti_plugin::catalog::PluginId;
 use tutti_plugin_types::PluginForkError;
 use tutti_session::{
-    Error, ExportClock, ExportOutput, ExportRequest, ExportSource, ExportTarget, GraphSource,
-    PluginLoadRequest, Session,
+    Bounce, BounceError, ExportClock, GraphSource, Latency, PluginLoadRequest, Range, Session, Tail,
 };
 use tutti_transport::{OfflineTimeline, OfflineTimelineConfig};
-use tutti_types::{Beat, Bpm, SampleRate};
+use tutti_types::{Beat, Bpm, SampleRate, Seconds};
 use tutti_ump::{MidiChannel, MidiGroup};
 
 const RATE: f64 = 48_000.0;
@@ -40,39 +39,42 @@ const TAG_PASSTHROUGH: u32 = 1;
 const LATENCY: u32 = 3;
 const NOTES: u32 = 4;
 
-fn config(seconds: f64) -> ExportConfig {
-    ExportConfig {
-        render: RenderConfig {
-            sample_rate: SampleRate(RATE),
-            duration_seconds: tutti_types::Seconds(seconds),
-            ..Default::default()
-        },
-        encode: EncodeConfig {
-            format: Format::Wav(Pcm::Float32),
-            channels: ChannelLayout::STEREO,
-            topology: None,
-        },
-        ..Default::default()
-    }
+/// Which audio a bounce renders: the mix, or one node alone.
+#[derive(Debug, Clone, Copy)]
+enum ExportSource {
+    Mix,
+    Node(NodeKey),
 }
 
-fn buffers(source: ExportSource, seconds: f64) -> ExportRequest {
-    ExportRequest::new(
-        source,
-        ExportTarget::Buffers,
-        config(seconds),
-        ExportClock::frozen(),
-    )
+/// A bounce of `source` into memory for `seconds` at `rate`: stereo, trimming
+/// nothing and keeping no tail, on `clock`.
+fn bounce_of(source: ExportSource, seconds: f64, rate: f64, clock: ExportClock) -> Bounce {
+    let bounce = match source {
+        ExportSource::Mix => Bounce::project(),
+        ExportSource::Node(node) => Bounce::node(node),
+    };
+    bounce
+        .master_buffers()
+        .channels(ChannelLayout::STEREO)
+        .range(Range::Seconds(Seconds(0.0), Seconds(seconds)))
+        .sample_rate(SampleRate(rate))
+        .clock(clock)
+        .latency(Latency::Keep)
+        .tail(Tail::None)
 }
 
-/// The planes `request` renders; panics with the refusal otherwise.
-fn planes(session: &mut Session, request: ExportRequest) -> Vec<Vec<f32>> {
-    match session.export_blocking(request) {
-        Ok(out) => match out.finished() {
-            Some(ExportOutput::Buffers(rendered)) => rendered.into_planes(),
+fn buffers(source: ExportSource, seconds: f64) -> Bounce {
+    bounce_of(source, seconds, RATE, ExportClock::frozen())
+}
+
+/// The planes `bounce` renders; panics with the refusal otherwise.
+fn planes(session: &mut Session, bounce: Bounce) -> Vec<Vec<f32>> {
+    match session.bounce(bounce) {
+        Ok(out) => match out.finished().map(|b| b.into_master()) {
+            Some(Produced::Buffers(rendered)) => rendered.into_planes(),
             other => panic!("expected rendered buffers, got {other:?}"),
         },
-        Err(e) => panic!("the export failed: {e:?}"),
+        Err(e) => panic!("the bounce failed: {e:?}"),
     }
 }
 
@@ -180,14 +182,14 @@ impl Node for Ramp {
 /// PluginClient<Bound>` (`fork: None`) → the export is refused as not
 /// forkable, naming the plugin's key. Mutation (run, failed): trimming one
 /// frame less than the plan's latency (`reported_latency() - 1` in the
-/// session's `ExportJob::run`) → every frame reads its predecessor.
+/// session's `BounceJob::run`) → every frame reads its predecessor.
 #[test]
 fn a_plugin_effect_exports_through_its_fork() {
     let (mut session, probe) = session_with_probe(LATENCY);
     feed_with(&mut session, probe, ForkByClone(Ramp { n: 0 }));
     let planes = planes(
         &mut session,
-        buffers(ExportSource::Mix, 0.1).trim_reported_latency(),
+        buffers(ExportSource::Mix, 0.1).latency(Latency::Graph),
     );
     for (c, plane) in planes.iter().enumerate().take(2) {
         for (i, &got) in plane.iter().enumerate() {
@@ -219,11 +221,8 @@ fn a_plugin_fork_that_cannot_be_built_is_a_named_failure() {
     std::fs::copy(&real, &own).expect("copy the plugin");
     let (mut session, probe) = session_with_probe_at(TAG_PASSTHROUGH, own.clone());
     std::fs::remove_file(&own).expect("remove the plugin's file");
-    match session.export_blocking(buffers(ExportSource::Mix, 0.05)) {
-        Err(Error::Export(tutti_export::Error::Fork(tutti_graph::ForkError::Source {
-            key,
-            cause,
-        }))) => {
+    match session.bounce(buffers(ExportSource::Mix, 0.05)) {
+        Err(BounceError::Fork(tutti_graph::ForkError::Source { key, cause })) => {
             assert_eq!(key, probe, "a plugin file gone since it loaded");
             assert!(
                 matches!(
@@ -294,16 +293,10 @@ fn instrument_at(rate: f64) {
     }));
     let planes = planes(
         &mut session,
-        ExportRequest::new(
+        bounce_of(
             ExportSource::Node(probe),
-            ExportTarget::Buffers,
-            ExportConfig {
-                render: RenderConfig {
-                    sample_rate: SampleRate(rate),
-                    ..config(1.5).render
-                },
-                ..config(1.5)
-            },
+            1.5,
+            rate,
             ExportClock::timeline(timeline),
         ),
     );
@@ -346,8 +339,8 @@ fn a_plugin_fork_that_crashes_mid_export_is_a_named_failure() {
     feed_with(&mut session, probe, Const::mono(0.25));
     probe_env("TUTTI_CLAP_PROBE_CRASH_ON_BLOCK", 8);
     let started = Instant::now();
-    match session.export_blocking(buffers(ExportSource::Mix, 2.0)) {
-        Err(Error::Export(tutti_export::Error::ForkFailed { key, kind, .. })) => {
+    match session.bounce(buffers(ExportSource::Mix, 2.0)) {
+        Err(BounceError::Export(tutti_export::Error::ForkFailed { key, kind, .. })) => {
             assert_eq!(key, probe);
             assert_eq!(kind, tutti_graph::ForkFaultKind::Crashed);
         }

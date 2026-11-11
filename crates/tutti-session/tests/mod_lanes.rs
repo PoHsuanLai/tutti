@@ -200,8 +200,8 @@ impl Node for Late {
 #[cfg(feature = "export")]
 #[test]
 fn an_export_is_the_live_render_on_a_native_param() {
-    use tutti_export::{EncodeConfig, ExportConfig, Format, Outcome, Pcm, RenderConfig};
-    use tutti_session::{ExportClock, ExportOutput, ExportRequest, ExportSource, ExportTarget};
+    use tutti_export::{Outcome, Produced};
+    use tutti_session::{Bounce, ExportClock, Latency, Range, Tail};
     use tutti_transport::{OfflineTimeline, OfflineTimelineConfig};
 
     let (mut s, mut side) = rig(2);
@@ -232,28 +232,21 @@ fn an_export_is_the_live_render_on_a_native_param() {
         sample_rate: SampleRate(RATE),
         loop_range: None,
     }));
-    let config = ExportConfig {
-        render: RenderConfig {
-            sample_rate: SampleRate(RATE),
-            duration_seconds: tutti_types::Seconds(total as f64 / RATE),
-            ..Default::default()
-        },
-        encode: EncodeConfig {
-            format: Format::Wav(Pcm::Float32),
-            channels: ChannelLayout::STEREO,
-            topology: None,
-        },
-        ..Default::default()
+    let request = Bounce::project()
+        .master_buffers()
+        .channels(ChannelLayout::STEREO)
+        .range(Range::Frames(
+            tutti_types::Frame(0),
+            tutti_types::Frame(total as u64),
+        ))
+        .sample_rate(SampleRate(RATE))
+        .clock(ExportClock::timeline(timeline))
+        .latency(Latency::Keep)
+        .tail(Tail::None);
+    let Outcome::Finished(bounced) = s.bounce(request).expect("the export runs") else {
+        panic!("the export finishes into memory")
     };
-    let request = ExportRequest::new(
-        ExportSource::Mix,
-        ExportTarget::Buffers,
-        config,
-        ExportClock::timeline(timeline),
-    );
-    let Outcome::Finished(ExportOutput::Buffers(rendered)) =
-        s.export_blocking(request).expect("the export runs")
-    else {
+    let Produced::Buffers(rendered) = bounced.into_master() else {
         panic!("the export finishes into memory")
     };
     let export = rendered.into_planes();

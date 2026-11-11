@@ -1,5 +1,5 @@
-//! What a session export renders, and what it forks: no Bevy, no pool, a
-//! [`Session`] and its [`ExportJob`](tutti_session::ExportJob) driven by hand.
+//! What a session bounce renders, and what it forks: no Bevy, no pool, a
+//! [`Session`] and its [`BounceJob`](tutti_session::BounceJob) driven by hand.
 //!
 //! An export forks the live graph (`Editor::fork`). The exports are held to
 //! the same units wired fresh with `GraphBuilder` (a fork starts reset, which
@@ -21,7 +21,7 @@ use std::sync::{Arc, Mutex};
 use std::thread::ThreadId;
 use std::time::Duration;
 
-use tutti_export::{ChannelLayout, EncodeConfig, ExportConfig, Format, Pcm, RenderConfig};
+use tutti_export::{ChannelLayout, Produced};
 use tutti_fixtures::assert_golden;
 use tutti_graph::NodeKey;
 use tutti_graph::{
@@ -31,28 +31,12 @@ use tutti_graph::{
 use tutti_nodes::testing::{Const, Osc, Sink};
 use tutti_nodes::{SvfFilterNode, SvfType};
 use tutti_session::{
-    Error, ExportClock, ExportConfigError, ExportOutput, ExportRequest, ExportSource, ExportTarget,
-    GraphSource, PreparedGraph, Session,
+    Bounce, BounceConfigError, BounceError, ExportClock, GraphSource, Latency, PreparedGraph,
+    Range, Session,
 };
-use tutti_types::{Amplitude, Hz, Param, Q, SampleRate, Samples, Tail, UnitParam};
+use tutti_types::{Amplitude, Hz, Param, Q, SampleRate, Samples, Seconds, Tail, UnitParam};
 
 const RATE: f64 = 48_000.0;
-
-fn config(seconds: f64) -> ExportConfig {
-    ExportConfig {
-        render: RenderConfig {
-            sample_rate: SampleRate(RATE),
-            duration_seconds: tutti_types::Seconds(seconds),
-            ..Default::default()
-        },
-        encode: EncodeConfig {
-            format: Format::Wav(Pcm::Float32),
-            channels: ChannelLayout::STEREO,
-            topology: None,
-        },
-        ..Default::default()
-    }
-}
 
 /// A detached stereo session whose graph is at the export's rate.
 fn session() -> Session {
@@ -69,33 +53,54 @@ fn session_with_outputs(outputs: usize) -> Session {
     session
 }
 
-fn buffers(source: ExportSource, seconds: f64) -> ExportRequest {
-    ExportRequest::new(
-        source,
-        ExportTarget::Buffers,
-        config(seconds),
-        ExportClock::frozen(),
-    )
+/// Which audio a bounce renders: the mix, or one node alone.
+#[derive(Debug, Clone, Copy)]
+enum ExportSource {
+    Mix,
+    Node(NodeKey),
 }
 
-/// The planes `request` renders, run on this thread.
-fn render(session: &mut Session, request: ExportRequest) -> Vec<Vec<f32>> {
+/// A bounce of `source` into memory for `seconds`: stereo at `rate`, on a frozen
+/// clock, trimming nothing and keeping no tail (what the figures it does not
+/// name come to is each test's to ask for).
+fn bounce_at(source: ExportSource, seconds: f64, rate: f64) -> Bounce {
+    let bounce = match source {
+        ExportSource::Mix => Bounce::project(),
+        ExportSource::Node(node) => Bounce::node(node),
+    };
+    bounce
+        .master_buffers()
+        .range(Range::Seconds(Seconds(0.0), Seconds(seconds)))
+        .sample_rate(SampleRate(rate))
+        .channels(ChannelLayout::STEREO)
+        .clock(ExportClock::frozen())
+        .latency(Latency::Keep)
+        .tail(tutti_session::Tail::None)
+}
+
+fn buffers(source: ExportSource, seconds: f64) -> Bounce {
+    bounce_at(source, seconds, RATE)
+}
+
+/// The planes `bounce` renders, run on this thread.
+fn render(session: &mut Session, bounce: Bounce) -> Vec<Vec<f32>> {
     match session
-        .export_blocking(request)
-        .expect("the export renders")
+        .bounce(bounce)
+        .expect("the bounce renders")
         .finished()
+        .map(|b| b.into_master())
     {
-        Some(ExportOutput::Buffers(rendered)) => rendered.into_planes(),
+        Some(Produced::Buffers(rendered)) => rendered.into_planes(),
         other => panic!("expected rendered buffers, got {other:?}"),
     }
 }
 
-/// What the session refuses `request` with, started and run on this thread.
-fn refused(session: &mut Session, request: ExportRequest) -> Error {
-    match session.export_blocking(request) {
+/// What the session refuses `bounce` with, started and run on this thread.
+fn refused(session: &mut Session, bounce: Bounce) -> BounceError {
+    match session.bounce(bounce) {
         Err(e) => e,
         Ok(out) => panic!(
-            "expected a refusal, the export reported {:?}",
+            "expected a refusal, the bounce reported {:?}",
             out.finished()
         ),
     }
@@ -137,7 +142,9 @@ fn digest(planes: &[Vec<f32>]) -> u64 {
 /// node clamped across a stereo root). A fork starts reset, which is what a
 /// fresh graph is.
 fn chain_fresh(seconds: f64) -> (Vec<Vec<f32>>, Vec<Vec<f32>>) {
-    use tutti_export::{Control, FrozenClock, Output, Produced, RenderGraph, Setup, render_one};
+    use tutti_export::{
+        BufferTarget, Control, FrozenClock, Job, Output, Produced, RenderGraph, Setup, render_one,
+    };
     use tutti_graph::GraphBuilder;
     let render = |master: bool| {
         let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::STEREO);
@@ -154,12 +161,18 @@ fn chain_fresh(seconds: f64) -> (Vec<Vec<f32>>, Vec<Vec<f32>>) {
             .expect("builds");
         let mut graph =
             RenderGraph::assemble(editor, executor, Setup::new()).expect("built together");
-        let config = config(seconds);
+        let rate = SampleRate(RATE);
         render_one(
             &mut graph,
-            &config.buffers_job().expect("a render"),
+            &Job::new(
+                rate,
+                Seconds(seconds).to_samples(rate),
+                Samples(0),
+                Samples(0),
+            )
+            .expect("a render"),
             &FrozenClock,
-            Output::master(config.buffer_target()),
+            Output::master(BufferTarget::new(ChannelLayout::STEREO)),
             &mut Control::none(),
         )
         .expect("renders")
@@ -280,8 +293,10 @@ fn latency_and_tail_come_from_the_graph() {
     let planes = render(
         &mut session,
         buffers(ExportSource::Mix, seconds)
-            .trim_reported_latency()
-            .with_reported_tail(Samples(48_000)),
+            .latency(Latency::Graph)
+            .tail(tutti_session::Tail::Graph {
+                cap: Samples(48_000).to_seconds(SampleRate(RATE)),
+            }),
     );
     assert_eq!(planes[0].len(), frames + TAIL, "the tail");
     assert_eq!(planes[0][0], 1.0, "the latency was not trimmed");
@@ -294,7 +309,9 @@ fn latency_and_tail_come_from_the_graph() {
     session.graph().set_outputs_from(unknown);
     let planes = render(
         &mut session,
-        buffers(ExportSource::Mix, seconds).with_reported_tail(Samples(4_800)),
+        buffers(ExportSource::Mix, seconds).tail(tutti_session::Tail::Graph {
+            cap: Samples(4_800).to_seconds(SampleRate(RATE)),
+        }),
     );
     assert_eq!(
         planes[0].len(),
@@ -319,8 +336,8 @@ fn the_trim_is_read_after_the_prepare_hook() {
     let (dc, _) = session.graph().insert(Const::mono(0.5));
     session.graph().set_outputs_from(dc);
     let request = buffers(ExportSource::Mix, 0.01)
-        .trim_reported_latency()
-        .with_edit(Box::new(|prepared: PreparedGraph<'_>| {
+        .latency(Latency::Graph)
+        .edit(Box::new(|prepared: PreparedGraph<'_>| {
             let key = prepared.fresh_key();
             let editor = prepared.editor;
             editor.insert(key, "test:late", ForkByClone(Late { pos: 0 }));
@@ -347,19 +364,18 @@ fn a_prepare_hook_that_swaps_the_editor_fails_the_export() {
     let mut session = session();
     let (dc, _) = session.graph().insert(Const::mono(0.5));
     session.graph().set_outputs_from(dc);
-    let request =
-        buffers(ExportSource::Mix, 0.01).with_edit(Box::new(|prepared: PreparedGraph<'_>| {
-            let (other, _executor) = tutti_graph::Editor::new(Prepare::new(
-                SampleRate(RATE),
-                tutti_export::GRAPH_MAX_BLOCK,
-            ));
-            drop(std::mem::replace(prepared.editor, other));
-        }));
+    let request = buffers(ExportSource::Mix, 0.01).edit(Box::new(|prepared: PreparedGraph<'_>| {
+        let (other, _executor) = tutti_graph::Editor::new(Prepare::new(
+            SampleRate(RATE),
+            tutti_export::GRAPH_MAX_BLOCK,
+        ));
+        drop(std::mem::replace(prepared.editor, other));
+    }));
     match refused(&mut session, request) {
-        Error::ExportConfig(ExportConfigError::PrepareHookUnpaired) => {}
+        BounceError::Config(BounceConfigError::PrepareHookUnpaired) => {}
         other => panic!("expected the unpaired refusal, got {other:?}"),
     }
-    assert!(!session.export_in_flight(), "the token is released");
+    assert!(!session.bounce_in_flight(), "the token is released");
 }
 
 /// **An export of a graph with no outputs says so**, for the master and for
@@ -373,7 +389,7 @@ fn a_graph_with_no_outputs_says_so() {
     let (node, _) = session.graph().insert(Osc::sine(Hz(220.0)));
     for source in [ExportSource::Mix, ExportSource::Node(node)] {
         match refused(&mut session, buffers(source, 0.01)) {
-            Error::ExportConfig(ExportConfigError::GraphHasNoOutputs) => {}
+            BounceError::Config(BounceConfigError::GraphHasNoOutputs) => {}
             other => panic!("{source:?}: expected a refusal naming the outputs, got {other:?}"),
         }
     }
@@ -385,8 +401,8 @@ fn a_graph_with_no_outputs_says_so() {
 /// has an output and renders.
 ///
 /// Mutation (run, failed): the `NoOutputs` arm of `Session::export` (which
-/// maps the fork's `NoOutputs` to `TargetHasNoOutputs`) removed → the refusal
-/// is `Error::Fork(..)`, not `TargetHasNoOutputs`.
+/// maps the fork's `NoOutputs` to `NodeHasNoOutputs`) removed → the refusal
+/// is `Error::Fork(..)`, not `NodeHasNoOutputs`.
 #[test]
 fn an_unrenderable_node_is_refused() {
     let mut session = session();
@@ -395,8 +411,8 @@ fn an_unrenderable_node_is_refused() {
     // `Sink::mono()` consumes one channel and produces nothing.
     let (orphan, _) = session.graph().insert(Sink::mono());
     match refused(&mut session, buffers(ExportSource::Node(orphan), 0.01)) {
-        Error::ExportConfig(ExportConfigError::TargetHasNoOutputs) => {}
-        other => panic!("expected TargetHasNoOutputs, got {other:?}"),
+        BounceError::Config(BounceConfigError::NodeHasNoOutputs) => {}
+        other => panic!("expected NodeHasNoOutputs, got {other:?}"),
     }
     // An unwired source still renders: it has an output.
     let (loose, _) = session.graph().insert(Const::mono(0.25));
@@ -420,25 +436,8 @@ fn graph_with_one_node_on() -> (Session, NodeKey) {
     (session, node)
 }
 
-fn short() -> ExportRequest {
-    ExportRequest::new(
-        ExportSource::Mix,
-        ExportTarget::Buffers,
-        ExportConfig {
-            render: RenderConfig {
-                sample_rate: SampleRate(44_100.0),
-                duration_seconds: tutti_types::Seconds(0.05),
-                ..Default::default()
-            },
-            encode: EncodeConfig {
-                format: Format::Wav(Pcm::Float32),
-                channels: ChannelLayout::STEREO,
-                topology: None,
-            },
-            ..Default::default()
-        },
-        ExportClock::frozen(),
-    )
+fn short() -> Bounce {
+    bounce_at(ExportSource::Mix, 0.05, 44_100.0)
 }
 
 /// The `prepare` hook runs on the graph that is actually rendered, before
@@ -455,7 +454,7 @@ fn short() -> ExportRequest {
 fn a_prepare_hook_reaches_the_graph_that_gets_rendered() {
     let (mut session, _node) = graph_with_one_node_on();
     let level = 0.25f32;
-    let request = short().with_edit(Box::new(move |prepared: PreparedGraph<'_>| {
+    let request = short().edit(Box::new(move |prepared: PreparedGraph<'_>| {
         // Replace the whole graph's output with a constant.
         let key = prepared.fresh_key();
         let editor = prepared.editor;
@@ -502,15 +501,15 @@ fn the_prepare_hook_sees_the_callers_timeline() {
     }));
     let seen: Arc<Mutex<Option<(usize, usize)>>> = Arc::default();
     let into = Arc::clone(&seen);
-    let mut request = short().with_edit(Box::new(move |prepared: PreparedGraph<'_>| {
-        let transport = prepared.ctx;
-        *into.lock().unwrap() = Some((
-            transport.tempo().get().round() as usize,
-            transport.beat().get().round() as usize,
-        ));
-    }));
-    request.source = ExportSource::Node(node);
-    request.clock = ExportClock::timeline(timeline);
+    let request = bounce_at(ExportSource::Node(node), 0.05, 44_100.0)
+        .clock(ExportClock::timeline(timeline))
+        .edit(Box::new(move |prepared: PreparedGraph<'_>| {
+            let transport = prepared.ctx;
+            *into.lock().unwrap() = Some((
+                transport.tempo().get().round() as usize,
+                transport.beat().get().round() as usize,
+            ));
+        }));
     render(&mut session, request);
     assert_eq!(
         *seen.lock().unwrap(),
@@ -537,10 +536,11 @@ fn a_master_exports_prepare_hook_sees_the_callers_timeline() {
     }));
     let seen: Arc<Mutex<Option<usize>>> = Arc::default();
     let into = Arc::clone(&seen);
-    let mut request = short().with_edit(Box::new(move |prepared: PreparedGraph<'_>| {
-        *into.lock().unwrap() = Some(prepared.ctx.tempo().get().round() as usize);
-    }));
-    request.clock = ExportClock::timeline(timeline);
+    let request = short()
+        .clock(ExportClock::timeline(timeline))
+        .edit(Box::new(move |prepared: PreparedGraph<'_>| {
+            *into.lock().unwrap() = Some(prepared.ctx.tempo().get().round() as usize);
+        }));
     render(&mut session, request);
     assert_eq!(*seen.lock().unwrap(), Some(90), "the caller's 90 BPM");
 }
@@ -709,7 +709,7 @@ fn an_unforkable_node_refuses_the_export_by_key() {
         .set_output_source(1, GraphSource::Node(osc, 0));
 
     match refused(&mut session, buffers(ExportSource::Mix, 0.05)) {
-        Error::Export(tutti_export::Error::NotForkable { key }) => {
+        BounceError::NotForkable { node: key } => {
             assert_eq!(key, mic);
             assert!(
                 tutti_export::Error::NotForkable { key }
@@ -895,7 +895,7 @@ fn an_export_does_not_wait_for_a_slow_fork_and_takes_no_later_edit() {
         .set_output_source(1, GraphSource::Node(level, 0));
 
     let job = session
-        .export(buffers(ExportSource::Mix, 0.05))
+        .bounce_start(buffers(ExportSource::Mix, 0.05))
         .expect("the export starts");
     assert!(
         !built.load(Ordering::SeqCst),
@@ -912,11 +912,12 @@ fn an_export_does_not_wait_for_a_slow_fork_and_takes_no_later_edit() {
         .join()
         .expect("the render thread");
     let planes = match session
-        .finish_export(rendered)
+        .finish_bounce(rendered)
         .expect("the export renders")
         .finished()
+        .map(|b| b.into_master())
     {
-        Some(ExportOutput::Buffers(r)) => r.into_planes(),
+        Some(Produced::Buffers(r)) => r.into_planes(),
         other => panic!("expected buffers, got {other:?}"),
     };
     assert!(built.load(Ordering::SeqCst), "the build ran");
@@ -1043,17 +1044,18 @@ fn a_main_thread_only_fork_builds_and_drops_on_the_main_thread() {
     drop(release); // the slow build goes straight through
 
     let job = session
-        .export(buffers(ExportSource::Mix, 0.05))
+        .bounce_start(buffers(ExportSource::Mix, 0.05))
         .expect("the export starts");
     let rendered = std::thread::spawn(move || job.run())
         .join()
         .expect("the render thread");
     let planes = match session
-        .finish_export(rendered)
+        .finish_bounce(rendered)
         .expect("the export renders")
         .finished()
+        .map(|b| b.into_master())
     {
-        Some(ExportOutput::Buffers(r)) => r.into_planes(),
+        Some(Produced::Buffers(r)) => r.into_planes(),
         other => panic!("expected buffers, got {other:?}"),
     };
     assert!(
@@ -1069,7 +1071,7 @@ fn a_main_thread_only_fork_builds_and_drops_on_the_main_thread() {
 /// dropped: an export whose fork holds a pinned unit (built in the gather)
 /// is handed to a thread that drops it unrun (as a cancelled task is dropped
 /// by a pool); whatever the job held goes back to the session, and
-/// `drop_export_leftovers` drops it on the main thread. No render happened.
+/// `drop_bounce_leftovers` drops it on the main thread. No render happened.
 ///
 /// Mutations (each run, each failed): the session's `ToMain` drop dropping
 /// its value where it is (`drop(value)`) → the pinned unit drops on the
@@ -1088,7 +1090,7 @@ fn a_dropped_export_job_drops_its_fork_on_the_main_thread() {
         .set_output_source(1, GraphSource::Node(pinned, 0));
 
     let job = session
-        .export(buffers(ExportSource::Mix, 0.05))
+        .bounce_start(buffers(ExportSource::Mix, 0.05))
         .expect("the export starts");
     // Dropped on another thread, never run.
     std::thread::spawn(move || drop(job))
@@ -1098,10 +1100,10 @@ fn a_dropped_export_job_drops_its_fork_on_the_main_thread() {
         threads.dropped.lock().unwrap().is_empty(),
         "the pinned unit is held for the main thread, not dropped where the job was"
     );
-    session.drop_export_leftovers();
+    session.drop_bounce_leftovers();
     all_main("built", &threads.built);
     all_main("dropped", &threads.dropped);
-    assert!(!session.export_in_flight(), "the token went with the job");
+    assert!(!session.bounce_in_flight(), "the token went with the job");
 }
 
 /// Why a [`Broken`] fork's build fails: a type to downcast back out.
@@ -1177,16 +1179,13 @@ fn a_fork_build_that_fails_names_its_node_and_drops_on_the_main_thread() {
         .set_output_source(1, GraphSource::Node(broken, 0));
 
     let job = session
-        .export(buffers(ExportSource::Mix, 0.05))
+        .bounce_start(buffers(ExportSource::Mix, 0.05))
         .expect("the export starts: the build fails in the job");
     let rendered = std::thread::spawn(move || job.run())
         .join()
         .expect("the render thread");
-    match session.finish_export(rendered) {
-        Err(Error::Export(tutti_export::Error::Fork(tutti_graph::ForkError::Source {
-            key,
-            cause,
-        }))) => {
+    match session.finish_bounce(rendered) {
+        Err(BounceError::Fork(tutti_graph::ForkError::Source { key, cause })) => {
             assert_eq!(key, broken);
             assert_eq!(cause.downcast_ref::<NoServer>(), Some(&NoServer));
         }
@@ -1209,9 +1208,9 @@ impl Drop for EditWitness {
 
 /// A request for `source` whose `prepare` edit captures an
 /// [`EditWitness`] recording into `drops`.
-fn witnessed(source: ExportSource, drops: &Arc<Mutex<Vec<ThreadId>>>) -> ExportRequest {
+fn witnessed(source: ExportSource, drops: &Arc<Mutex<Vec<ThreadId>>>) -> Bounce {
     let witness = EditWitness(Arc::clone(drops));
-    buffers(source, 0.05).with_edit(Box::new(move |_prepared: PreparedGraph<'_>| {
+    buffers(source, 0.05).edit(Box::new(move |_prepared: PreparedGraph<'_>| {
         let _ = &witness;
     }))
 }
@@ -1235,15 +1234,13 @@ fn a_prepare_edit_that_never_runs_drops_on_the_main_thread() {
     session.graph().set_outputs_from(broken);
     let drops: Arc<Mutex<Vec<ThreadId>>> = Arc::default();
     let job = session
-        .export(witnessed(ExportSource::Mix, &drops))
+        .bounce_start(witnessed(ExportSource::Mix, &drops))
         .expect("the export starts");
     let rendered = std::thread::spawn(move || job.run())
         .join()
         .expect("the render thread");
-    match session.finish_export(rendered) {
-        Err(Error::Export(tutti_export::Error::Fork(tutti_graph::ForkError::Source {
-            ..
-        }))) => {}
+    match session.finish_bounce(rendered) {
+        Err(BounceError::Fork(tutti_graph::ForkError::Source { .. })) => {}
         other => panic!("expected the failing build, got {other:?}"),
     }
     all_main("dropped (failed build)", &drops);
@@ -1254,7 +1251,7 @@ fn a_prepare_edit_that_never_runs_drops_on_the_main_thread() {
     session.graph().set_outputs_from(dc);
     let drops: Arc<Mutex<Vec<ThreadId>>> = Arc::default();
     let job = session
-        .export(witnessed(ExportSource::Mix, &drops))
+        .bounce_start(witnessed(ExportSource::Mix, &drops))
         .expect("the export starts");
     std::thread::spawn(move || drop(job))
         .join()
@@ -1263,6 +1260,6 @@ fn a_prepare_edit_that_never_runs_drops_on_the_main_thread() {
         drops.lock().unwrap().is_empty(),
         "the edit is held for the main thread, not dropped where the job was"
     );
-    session.drop_export_leftovers();
+    session.drop_bounce_leftovers();
     all_main("dropped (job dropped before it ran)", &drops);
 }

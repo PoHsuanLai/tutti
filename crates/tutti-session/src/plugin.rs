@@ -1631,7 +1631,7 @@ impl Session {
     pub(crate) fn render_mode_phase(&mut self) {
         #[cfg(feature = "export")]
         {
-            let wanted = if self.export.in_flight() {
+            let wanted = if self.bounce.in_flight() {
                 tutti_plugin::RenderMode::Offline
             } else {
                 tutti_plugin::RenderMode::Realtime

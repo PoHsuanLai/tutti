@@ -29,13 +29,11 @@
 #![cfg(feature = "wav")]
 
 mod support;
+use crate::support::{EncodeConfig, ExportConfig, RenderConfig};
 
 use crate::support::render_to_file;
 use tutti_dsp::DitherShape;
-use tutti_export::{
-    ChannelLayout, EncodeConfig, ExportConfig, Format, FrozenClock, IntDepth, Pcm, RenderConfig,
-    RenderGraph, Setup,
-};
+use tutti_export::{ChannelLayout, Format, FrozenClock, IntDepth, Pcm, RenderGraph, Setup};
 use tutti_graph::GraphBuilder;
 use tutti_nodes::testing::Const;
 use tutti_types::Seconds;

@@ -49,6 +49,7 @@
 #![cfg(feature = "wav")]
 
 mod support;
+use crate::support::{EncodeConfig, ExportConfig, RenderConfig};
 
 use std::f32::consts::TAU;
 use std::sync::Arc;
@@ -57,9 +58,7 @@ use tutti_types::Seconds;
 use crate::support::render_to_file;
 use tutti_codec::Wave;
 use tutti_dsp::DitherShape;
-use tutti_export::{
-    ChannelLayout, EncodeConfig, ExportConfig, Format, Pcm, RenderConfig, RenderGraph, Setup,
-};
+use tutti_export::{ChannelLayout, Format, Pcm, RenderGraph, Setup};
 use tutti_graph::GraphBuilder;
 use tutti_sampler::{MemorySource, Playback, SlotId, Voice, VoicePool, VoiceSource};
 use tutti_transport::{OfflineTimeline, OfflineTimelineConfig};

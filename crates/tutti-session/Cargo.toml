@@ -28,6 +28,8 @@ tutti-types = { path = "../tutti-types", default-features = false }
 tutti-ump = { path = "../tutti-ump", default-features = false }
 tutti-graph = { path = "../tutti-graph" }
 tutti-transport = { path = "../tutti-transport" }
+# The project's tempo map, which a bounce's range and clock are derived from.
+tutti-tempo = { path = "../tutti-tempo" }
 tutti-metering = { path = "../tutti-metering" }
 tutti-engine = { path = "../tutti-engine" }
 tutti-nodes = { path = "../tutti-nodes", default-features = false }
@@ -49,7 +51,8 @@ tutti-sampler = { path = "../tutti-sampler", default-features = false, optional 
 tutti-soundfont = { path = "../tutti-soundfont", optional = true }
 tutti-polysynth = { path = "../tutti-polysynth", optional = true }
 tutti-export = { path = "../tutti-export", default-features = false, optional = true }
-# `DitherSink`, the dither a recording opts into (the one an export uses).
+# `DitherSink`, the dither a recording opts into (the one an export uses), and
+# the `DitherShape` a bounce names.
 tutti-dsp = { path = "../tutti-dsp", default-features = false, optional = true }
 tutti-plugin = { path = "../tutti-plugin", optional = true }
 # The control handle, the node's controls and the host policy over a handle
@@ -84,7 +87,7 @@ convolution = ["tutti-nodes/convolution"]
 # AIFF are pure Rust and opt-in, and `export-ogg` is the one path to C (the
 # Vorbis library, `ogg_next_sys`). `scripts/check-layout.sh` holds that a build
 # with `export` alone reaches no C.
-export = ["dep:tutti-export", "tutti-export/wav"]
+export = ["dep:tutti-export", "dep:tutti-dsp", "tutti-export/wav"]
 export-wav = ["export"]
 export-flac = ["export", "tutti-export/flac"]
 export-aiff = ["export", "tutti-export/aiff"]
@@ -104,8 +107,6 @@ tutti-sf2 = { path = "../tutti-sf2" }
 tutti-midi-hardware = { path = "../tutti-midi-hardware", features = ["test-support"] }
 # `ArcLend` for the tests that publish into a graph.
 tutti-rt = { path = "../tutti-rt" }
-# The tempo map a sampler test publishes through the transport.
-tutti-tempo = { path = "../tutti-tempo" }
 # Stimulus nodes (`Const`, `Osc`, `Through`) for the tests and doctests.
 tutti-nodes = { path = "../tutti-nodes", default-features = false, features = ["testing"] }
 # The in-memory tone a sampler voice test plays (`Wave`).

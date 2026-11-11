@@ -82,19 +82,13 @@ fn a_graph_bounces_to_buffers_through_the_facade() {
         tutti::export::RenderGraph::assemble(editor, executor, tutti::export::Setup::new())
             .expect("built together");
 
-    let cfg = tutti::export::ExportConfig {
-        render: tutti::export::RenderConfig {
-            sample_rate: rate,
-            duration_seconds: Seconds(0.01),
-            ..Default::default()
-        },
-        ..Default::default()
-    };
+    let job = tutti::export::Job::new(rate, Seconds(0.01).to_samples(rate), Samples(0), Samples(0))
+        .expect("a render");
     let rendered = tutti::export::render_one(
         &mut graph,
-        &cfg.buffers_job().expect("a render"),
+        &job,
         &tutti::transport::FrozenClock,
-        tutti::export::Output::master(cfg.buffer_target()),
+        tutti::export::Output::master(tutti::export::BufferTarget::new(ChannelLayout::STEREO)),
         &mut tutti::export::Control::none(),
     )
     .expect("a DC graph renders")

@@ -15,34 +15,52 @@ use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use tutti_export::{ChannelLayout, EncodeConfig, ExportConfig, Format, Pcm, RenderConfig};
+use tutti_export::{ChannelLayout, Produced};
 use tutti_graph::NodeKey;
 use tutti_sampler::testing::settle;
 use tutti_sampler::{
     ByHand, DiskStreamer, DiskVoice, MemorySource, Placement, Playback, Stream, StreamReader,
     Voice, VoiceNode, VoiceSource,
 };
-use tutti_session::{
-    Error, ExportClock, ExportOutput, ExportRequest, ExportSource, ExportTarget, Session,
-};
+use tutti_session::{Bounce, BounceError, ExportClock, Latency, Range, Session, Tail};
 use tutti_transport::{OfflineTimeline, OfflineTimelineConfig};
-use tutti_types::{Beat, Bpm, SampleRate};
+use tutti_types::{Beat, Bpm, SampleRate, Seconds};
 
 const RATE: f64 = 48_000.0;
 
-fn config(seconds: f64) -> ExportConfig {
-    ExportConfig {
-        render: RenderConfig {
-            sample_rate: SampleRate(RATE),
-            duration_seconds: tutti_types::Seconds(seconds),
-            ..Default::default()
-        },
-        encode: EncodeConfig {
-            format: Format::Wav(Pcm::Float32),
-            channels: ChannelLayout::STEREO,
-            topology: None,
-        },
-        ..Default::default()
+/// Which audio a bounce renders: the mix, or one node alone.
+#[derive(Debug, Clone, Copy)]
+enum ExportSource {
+    Mix,
+    Node(NodeKey),
+}
+
+/// A bounce of `source` into memory for `seconds` at `rate`: stereo, trimming
+/// nothing and keeping no tail, on `clock`.
+fn bounce_of(source: ExportSource, seconds: f64, rate: f64, clock: ExportClock) -> Bounce {
+    let bounce = match source {
+        ExportSource::Mix => Bounce::project(),
+        ExportSource::Node(node) => Bounce::node(node),
+    };
+    bounce
+        .master_buffers()
+        .channels(ChannelLayout::STEREO)
+        .range(Range::Seconds(Seconds(0.0), Seconds(seconds)))
+        .sample_rate(SampleRate(rate))
+        .clock(clock)
+        .latency(Latency::Keep)
+        .tail(Tail::None)
+}
+
+fn render(session: &mut Session, bounce: Bounce) -> Vec<Vec<f32>> {
+    match session
+        .bounce(bounce)
+        .expect("the bounce renders")
+        .finished()
+        .map(|b| b.into_master())
+    {
+        Some(Produced::Buffers(rendered)) => rendered.into_planes(),
+        other => panic!("expected rendered buffers, got {other:?}"),
     }
 }
 
@@ -67,24 +85,8 @@ fn timeline(tempo: f64) -> Arc<OfflineTimeline> {
     }))
 }
 
-fn on(seconds: f64, source: ExportSource, clock: &Arc<OfflineTimeline>) -> ExportRequest {
-    ExportRequest::new(
-        source,
-        ExportTarget::Buffers,
-        config(seconds),
-        ExportClock::timeline(clock.clone()),
-    )
-}
-
-fn render(session: &mut Session, request: ExportRequest) -> Vec<Vec<f32>> {
-    match session
-        .export_blocking(request)
-        .expect("the export renders")
-        .finished()
-    {
-        Some(ExportOutput::Buffers(rendered)) => rendered.into_planes(),
-        other => panic!("expected rendered buffers, got {other:?}"),
-    }
+fn on(seconds: f64, source: ExportSource, clock: &Arc<OfflineTimeline>) -> Bounce {
+    bounce_of(source, seconds, RATE, ExportClock::timeline(clock.clone()))
 }
 
 /// **A node export on a 90 BPM timeline plays where 90 BPM puts it.** A
@@ -131,12 +133,7 @@ fn a_node_export_follows_a_90_bpm_timeline() {
 
     let planes = render(
         &mut session,
-        ExportRequest::new(
-            ExportSource::Node(voice),
-            ExportTarget::Buffers,
-            config(2.5),
-            ExportClock::timeline(timeline(90.0)),
-        ),
+        on(2.5, ExportSource::Node(voice), &timeline(90.0)),
     );
     // Beat 3 at 90 BPM is frame 96 000.
     const AT: usize = 96_000;
@@ -164,12 +161,7 @@ fn a_node_export_follows_a_90_bpm_timeline() {
     // `ExportClock`). Placed at beat 0 here, where a rolling one would sound.
     let planes = render(
         &mut session,
-        ExportRequest::new(
-            ExportSource::Node(zero),
-            ExportTarget::Buffers,
-            config(0.1),
-            ExportClock::frozen(),
-        ),
+        bounce_of(ExportSource::Node(zero), 0.1, RATE, ExportClock::frozen()),
     );
     assert!(
         planes[0].iter().all(|&s| s == 0.0),
@@ -555,8 +547,8 @@ fn a_disk_voice_whose_file_cannot_be_read_fails_the_export_by_name() {
         node
     };
     std::fs::remove_file(&path).expect("removes");
-    match session.export_blocking(on(0.2, ExportSource::Mix, &timeline(120.0))) {
-        Err(Error::Export(tutti_export::Error::ForkFailed { key, kind, cause })) => {
+    match session.bounce(on(0.2, ExportSource::Mix, &timeline(120.0))) {
+        Err(BounceError::Export(tutti_export::Error::ForkFailed { key, kind, cause })) => {
             assert_eq!(key, clip);
             assert_eq!(kind, tutti_graph::ForkFaultKind::Failed);
             assert!(

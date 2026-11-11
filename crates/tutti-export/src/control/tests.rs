@@ -171,3 +171,51 @@ fn a_token_is_shared_and_none_never_cancels() {
     assert!(control.is_cancelled());
     assert!(!Control::none().is_cancelled());
 }
+
+/// **`preparing` reports the session's steps inside the band the render
+/// leaves, by the table the outputs render under.** Two of four steps are half
+/// of the band: 0.025 of a streaming render's 0 to 0.05, 0.015 of a
+/// normalized one's 0 to 0.03; the last step is the end of the band, which the
+/// render's first reading does not fall below. Each reading is `Preparing`,
+/// names no output and counts no frames.
+///
+/// Checked to fail by making `Weights::of` answer `Streaming` always: the
+/// normalized figures read 0.025 and 0.05.
+#[test]
+fn preparing_reports_steps_in_the_band_the_render_leaves() {
+    use crate::{
+        BufferTarget, ChannelLayout, FileTarget, Format, Normalize, NormalizeSpec, Output, Pcm,
+    };
+    use tutti_types::Db;
+    let streaming = [Output::master(BufferTarget::new(ChannelLayout::STEREO))];
+    let normalized = [Output::master(
+        FileTarget::new("n.wav", Format::Wav(Pcm::Int16), ChannelLayout::STEREO)
+            .with_normalize(Some(NormalizeSpec::own(Normalize::peak(Db(-1.0))))),
+    )];
+    for (outputs, steps, end) in [
+        (&streaming, [(2u32, 0.025f32), (4, 0.05)], 0.05f32),
+        (&normalized, [(2, 0.015), (4, 0.03)], 0.03),
+    ] {
+        let mut seen = Vec::new();
+        let mut record = |p: &Progress| seen.push(*p);
+        let token = CancelToken::new();
+        let mut control = Control::new(&token).on_progress(&mut record);
+        for (done, _) in steps {
+            control.preparing(outputs, done, 4);
+        }
+        control.begin(Stage::Rendering, Some(Samples(10)));
+        for (p, (_, want)) in seen.iter().zip(steps) {
+            assert!((p.fraction() - want).abs() < 1e-6, "{p:?} want {want}");
+            assert_eq!(
+                (p.stage(), p.output(), p.frames()),
+                (Stage::Preparing, None, None)
+            );
+        }
+        let first = seen.last().unwrap();
+        assert_eq!(first.stage(), Stage::Rendering);
+        assert!(
+            first.fraction() >= end,
+            "the render starts at the band's end"
+        );
+    }
+}

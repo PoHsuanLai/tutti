@@ -15,11 +15,12 @@
 #![cfg(all(feature = "wav", feature = "flac", feature = "aiff", feature = "ogg"))]
 
 mod support;
+use crate::support::{EncodeConfig, ExportConfig, RenderConfig};
 
 use crate::support::{render_to_buffers, render_to_file};
 use tutti_export::{
-    ChannelLayout, EncodeConfig, ExportConfig, FlacLevel, Format, FrozenClock, IntDepth, Pcm,
-    Quality, RenderClock, RenderConfig, RenderGraph, Resample, Setup,
+    ChannelLayout, FlacLevel, Format, FrozenClock, IntDepth, Pcm, Quality, RenderClock,
+    RenderGraph, Resample, Setup,
 };
 use tutti_graph::{Cx, ForkByClone, GraphBuilder, Io, Node, Prepare, Shape, Status};
 use tutti_nodes::testing::{Const, Osc};
@@ -546,7 +547,7 @@ fn normalized_audio_can_be_written_to_every_format() {
     ] {
         s.encode.format = format;
         let p = d.path().join(format!("n.{ext}"));
-        let w = tutti_export::write_buffers(&audio, &s, &p).expect("write");
+        let w = support::write_buffers(&audio, &s, &p).expect("write");
         assert!(w.bytes > 100, "{ext} wrote {} bytes", w.bytes);
     }
 
@@ -642,7 +643,7 @@ fn write_buffers_resamples_from_the_frames_own_rate() {
     );
 
     let p = d.path().join("w.wav");
-    tutti_export::write_buffers(&audio, &write_cfg, &p).unwrap();
+    support::write_buffers(&audio, &write_cfg, &p).unwrap();
 
     let rd = hound::WavReader::open(&p).unwrap();
     assert_eq!(rd.spec().sample_rate, 48_000);
@@ -1170,7 +1171,7 @@ fn an_unnamed_master_width_exports_at_that_width() {
 /// the same rejecting dispatch.
 #[test]
 fn an_odd_width_round_trips_through_buffers() {
-    use tutti_export::write_buffers;
+    use support::write_buffers;
 
     let d = tempfile::tempdir().unwrap();
     for width in [3u16, 5] {

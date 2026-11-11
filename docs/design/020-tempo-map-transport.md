@@ -322,7 +322,7 @@ render bit-identical (stage 0 adds the guards first).
 | 3 | Steps | Non-constant maps in the walker; step cells push `TransportChanges`; the block split at the 8th entry. `OfflineTimelineConfig` takes a map. | New step tests of §8. |
 | 4 | Ramps | Ramp cells, the grid bound, `tempo_at` slope on `TempoMap` if missing. | Ramp tests; block-size independence. |
 | 5 | Readers | Sampler, plugin transport source, MIDI clock; CLAP `tempo_inc`, VST3/VST2/AU tempo from the map (5a: the plugin hosts, below; 5b: a transport event at each change inside a chunk, below). | Per-host contract cases (`tutti-plugin-contract`), with a `gaps` ratchet untouched. |
-| 6 | Retire | `TransportCommand::Tempo`, `Timeline::tempo()`, `OfflineTimelineConfig::tempo`, `beats_to_seconds`, `duration_to_frames`; `MidiFile::seconds_at` over `TempoMap` (done, 017 stage 6); `plugin_midi_export` pins the note frames, not only the length. | Needs lane E4's bounce API; docs 013 updated. |
+| 6 | Retire | `TransportCommand::Tempo`, `Timeline::tempo()`, `OfflineTimelineConfig::tempo`, `beats_to_seconds` and `duration_to_frames` (the last two retired by doc 019 step 5); `MidiFile::seconds_at` over `TempoMap` (done, 017 stage 6); `plugin_midi_export` pins the note frames, not only the length (its bounce already adopts the file's map). | Lane E4's bounce API is built (019 step 5: the session derives range and clock from the map); docs 013 updated. |
 
 **As built, stages 0 to 2 (publish a constant map).** Stage 0's guards already
 exist (the closed-form `FrameClock` property, `offline_timeline_agrees_with_transport_clock_sample_for_sample`,

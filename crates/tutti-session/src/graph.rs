@@ -930,35 +930,41 @@ impl Graph {
 
     /// The control-thread half of a copy of `target` for an offline render
     /// at `rate`, sharing no state with this graph: `Editor::fork_gather`
-    /// with `ForkMode::Offline`, prepared as an export is
+    /// with `ForkMode::Offline`, prepared as a bounce is
     /// (`RenderGraph::prepare`). [`PendingExport::build`] makes the rest on a
     /// worker.
     ///
+    /// The fork renders on the session's render pool unless `serial`, and
+    /// places the master's channels by `root` when it is `Some` (the bounce's
+    /// own), else by the session's declared root.
+    ///
     /// # Errors
     ///
-    /// What the gather refuses (a node with no outputs or not in the graph, a
-    /// node that cannot be forked: [`tutti_export::Error::NotForkable`]).
+    /// What the gather refuses (a graph with no outputs, a node that cannot be
+    /// forked: [`tutti_export::Error::NotForkable`]).
     #[cfg(feature = "export")]
-    pub(crate) fn gather_for_export(
+    pub(crate) fn gather_for_bounce(
         &self,
-        target: AudioNodeTarget,
+        target: tutti_graph::ForkTarget,
         rate: SampleRate,
+        serial: bool,
+        root: Option<Option<tutti_types::ChannelTopology>>,
     ) -> tutti_export::Result<PendingExport> {
         // Only the master's outputs are the root's channels; a node's
         // sub-graph has its own, undeclared.
         let root = match target {
-            AudioNodeTarget::Master => self.root.clone(),
-            AudioNodeTarget::Node(_) => None,
-        };
-        let target = match target {
-            AudioNodeTarget::Master => tutti_graph::ForkTarget::Master,
-            AudioNodeTarget::Node(node) => tutti_graph::ForkTarget::Node(node),
+            tutti_graph::ForkTarget::Master => root.unwrap_or_else(|| self.root.clone()),
+            _ => None,
         };
         // Its own pool, not the live engine's: the live callback would find a
-        // shared one busy with the export's job and render alone. No start
-        // hook: an export's threads are not the callback's, and promoting
+        // shared one busy with the bounce's job and render alone. No start
+        // hook: a bounce's threads are not the callback's, and promoting
         // them would take cores from it.
-        let pool = self.render_pool("tutti-export", None);
+        let pool = if serial {
+            None
+        } else {
+            self.render_pool("tutti-export", None)
+        };
         PendingExport::gather(&self.editor, target, rate, pool, root)
     }
 
@@ -2873,16 +2879,6 @@ fn render(
     for (c, o) in output.iter_mut().enumerate() {
         *o = scratch.get(c).map_or(0.0, |s| s[0]);
     }
-}
-
-/// What an export renders: the whole graph, or one node's sub-graph.
-#[cfg(feature = "export")]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum AudioNodeTarget {
-    /// The master: every global output.
-    Master,
-    /// `node`'s outputs.
-    Node(NodeKey),
 }
 
 /// Resolves a host's modulation keys to graph nodes.

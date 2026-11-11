@@ -72,6 +72,7 @@ mod support;
 use support::corpus::THIRD_PARTY;
 use support::corpus::{
     AuRef, DELAY, INVALID_PROPERTY, LOWPASS, MIDI_SYNTH, N_BAND_EQ, SAMPLER, every_component,
+    may_initialize_in_a_sweep,
 };
 
 use tutti_au_host::AuInstance;
@@ -192,8 +193,11 @@ fn exactly_two_installed_components_implement_the_mapping_family() {
         };
         // Probe initialized as well as loaded: several AU properties only appear
         // after `AudioUnitInitialize`, and property 41 reports size 0 before it
-        // even on the implementers.
-        let _ = au.initialize();
+        // even on the implementers. Not AUSoundIsolation (`may_initialize_in_a_sweep`):
+        // it is an effect, and the family is an instrument surface.
+        if may_initialize_in_a_sweep(&info) {
+            let _ = au.initialize();
+        }
         if au.supports_parameter_midi_mapping() {
             found.push(info.name.clone());
         }
@@ -246,7 +250,9 @@ fn nothing_implements_the_deprecated_midi_control_mapping_property() {
             continue;
         };
         for phase in ["loaded", "initialized"] {
-            if phase == "initialized" && au.initialize().is_err() {
+            if phase == "initialized"
+                && (!may_initialize_in_a_sweep(&info) || au.initialize().is_err())
+            {
                 break;
             }
             for scope in [Scope::GLOBAL, Scope::INPUT, Scope::OUTPUT] {

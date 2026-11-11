@@ -1,6 +1,6 @@
 use super::*;
 use tutti_graph::UmpAt;
-use tutti_ump::{Message, MidiChannel, MidiGroup, SysexStatus, decode};
+use tutti_ump::{Message, MidiChannel, MidiGroup, SysexStatus};
 
 use tutti_fixtures::midi;
 use tutti_graph::Offset;
@@ -702,7 +702,7 @@ fn draining_a_plugins_sysex_allocates_nothing() {
     let payloads: Vec<Vec<u8>> = out
         .iter()
         .map(|e| {
-            let Ok(Message::Sysex7(_, packet)) = decode(e.ump) else {
+            let Ok(Message::Sysex7(_, packet)) = e.ump.decode() else {
                 panic!("a SysEx7 packet");
             };
             assert_eq!((packet.status(), e.offset), (SysexStatus::Complete, 7));

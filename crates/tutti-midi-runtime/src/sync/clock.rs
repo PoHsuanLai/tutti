@@ -9,7 +9,7 @@
 //! [`start_msg`](MidiClockDecoder::start_msg) etc. directly.
 
 use tutti_types::Bpm;
-use tutti_ump::{Message, System, Ump, decode};
+use tutti_ump::{Message, System, Ump};
 
 const TEMPO_WINDOW: usize = 24;
 
@@ -67,7 +67,7 @@ impl MidiClockDecoder {
     /// Any other packet is ignored.
     /// Returns `true` if the packet was a recognised transport message.
     pub fn feed(&mut self, ump: &Ump, timestamp_us: u64) -> bool {
-        let Ok(Message::System(_, system)) = decode(*ump) else {
+        let Ok(Message::System(_, system)) = (*ump).decode() else {
             return false;
         };
         match system {

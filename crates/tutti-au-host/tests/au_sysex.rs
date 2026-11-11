@@ -61,7 +61,7 @@ use tutti_graph::UmpAt;
 
 use support::corpus::{AuRef, SAMPLER};
 use tutti_graph::Offset;
-use tutti_ump::{Message, SysexStatus, Ump, decode};
+use tutti_ump::{Message, SysexStatus, Ump};
 
 // The status nibbles of a SysEx7 packet (M2-104 Table 18), written out so the
 // builder below states the wire layout it depends on.
@@ -190,7 +190,7 @@ fn an_orphaned_continuation_is_not_sent() {
 #[test]
 fn the_test_packet_builder_matches_the_ump_layout() {
     let ev = sysex7_packet(SYSEX7_STATUS_START, &[0x7E, 0x00, 0x06, 0x01, 0x02, 0x03]);
-    let Ok(Message::Sysex7(_, packet)) = decode(ev.1) else {
+    let Ok(Message::Sysex7(_, packet)) = ev.1.decode() else {
         panic!("the builder must produce a packet the decoder recognises");
     };
 
@@ -200,7 +200,7 @@ fn the_test_packet_builder_matches_the_ump_layout() {
 
     // And a short packet reports its real length rather than padding to 6.
     let short = sysex7_packet(SYSEX7_STATUS_END, &[0x44]);
-    let Ok(Message::Sysex7(_, short)) = decode(short.1) else {
+    let Ok(Message::Sysex7(_, short)) = short.1.decode() else {
         panic!("short packet decodes");
     };
     assert_eq!(short.data().len(), 1, "a 1-byte packet must not report 6");

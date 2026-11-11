@@ -21,7 +21,7 @@ use tutti_graph::Offset;
 use tutti_graph::UmpAt;
 use tutti_midi_protocol::{Narrower, widen_bytes};
 use tutti_plugin_types::WireMidi;
-use tutti_ump::{Message, MidiGroup, Ump, decode};
+use tutti_ump::{Message, MidiGroup, Ump};
 
 /// A block's plugin-to-host MIDI, reserved once and reused.
 pub type MidiEventVec = Vec<WireMidi>;
@@ -151,7 +151,7 @@ const MAX_MESSAGES: usize = 4;
 /// relative controller) or does not decode.
 fn narrowed(narrower: &mut Narrower, ump: Ump, out: &mut [[u8; 3]; MAX_MESSAGES]) -> usize {
     let mut n = 0;
-    if let Ok(message) = decode(ump) {
+    if let Ok(message) = ump.decode() {
         narrower.feed(message, |bytes| {
             if n < MAX_MESSAGES {
                 // VST2's `midi_data` is a fixed `[u8; 3]`: a short message is zero-padded.
@@ -420,7 +420,7 @@ impl MidiSendBuffer {
             // never heard on them. A message with no Group's channels (System,
             // Utility) is not a Group's.
             if ev.group().is_some_and(|group| group != MidiGroup::FIRST)
-                && matches!(decode(*ev), Ok(Message::Midi1(..) | Message::Midi2(..)))
+                && matches!((*ev).decode(), Ok(Message::Midi1(..) | Message::Midi2(..)))
             {
                 self.groups_dropped += 1;
                 continue;
@@ -872,11 +872,11 @@ mod tests {
     /// hardware input path's widening does).
     #[test]
     fn inbound_cc_promotes_to_cv2() {
-        use tutti_ump::{Message, Voice2, decode};
+        use tutti_ump::{Message, Voice2};
 
         // 0xB1 = CC on channel 1, controller 74, value 100.
         let midi = to_midi(&api_from_bytes([0xB1, 74, 100])).expect("CC decodes");
-        match decode(midi.ump).expect("valid UMP") {
+        match midi.ump.decode().expect("valid UMP") {
             Message::Midi2(address, Voice2::ControlChange { controller, value }) => {
                 assert_eq!(address.channel, MidiChannel::of(1));
                 assert_eq!(controller, CCNumber::of(74));
@@ -891,12 +891,12 @@ mod tests {
     /// form and must pass through unchanged, not be dropped or widened.
     #[test]
     fn inbound_system_message_passes_through() {
-        use tutti_ump::{Message, System, decode};
+        use tutti_ump::{Message, System};
 
         let midi = to_midi(&api_from_bytes([0xF8, 0, 0])).expect("clock decodes");
         assert!(
             matches!(
-                decode(midi.ump),
+                midi.ump.decode(),
                 Ok(Message::System(_, System::TimingClock))
             ),
             "timing clock should stay a System Real-Time message"

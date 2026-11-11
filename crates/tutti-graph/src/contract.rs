@@ -85,7 +85,7 @@ use tutti_types::MaxBlock;
 use tutti_types::{
     At, Beat, Bpm, ChannelLayout, Frame, Latency, SampleRate, Samples, Tail, UnitAddr,
 };
-use tutti_ump::{KeyEvent, Message, NoteNumber, Ump, Voice2, decode};
+use tutti_ump::{KeyEvent, Message, NoteNumber, Ump, Voice2};
 
 use crate::builder::GraphBuilder;
 use crate::controls::{ParamFork, ParamNode};
@@ -864,7 +864,7 @@ impl Row {
         let other = |note: NoteNumber| {
             NoteNumber::new(note.get() + 1).unwrap_or_else(|| NoteNumber::of(note.get() - 1))
         };
-        let message = match decode(ump) {
+        let message = match ump.decode() {
             Ok(Message::Midi2(
                 a,
                 Voice2::NoteOn {

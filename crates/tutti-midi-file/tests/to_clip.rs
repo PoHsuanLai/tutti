@@ -42,7 +42,7 @@ fn flex(f: Flex) -> FileEvent {
 }
 
 fn track(events: Vec<(u64, FileEvent)>) -> Track {
-    Track::new(events.into_iter().map(|(t, e)| (Tick(t), e)).collect())
+    unsorted(events.into_iter().map(|(t, e)| (Tick(t), e)).collect())
 }
 
 fn format0(events: Vec<(u64, FileEvent)>) -> MidiFile {
@@ -729,4 +729,14 @@ fn the_clip_round_trips_through_its_bytes() {
     let clip = smf.to_clip().unwrap().clip;
     let again = MidiFile::from_bytes(&clip.to_bytes().unwrap()).unwrap();
     assert_eq!(again, clip);
+}
+
+/// A track of `events` exactly as given: not sorted, so a test can hand the
+/// constructor events out of order.
+fn unsorted(events: Vec<(Tick, FileEvent)>) -> Track {
+    Track {
+        end: events.last().map_or(Tick(0), |&(tick, _)| tick),
+        events,
+        ..Track::new()
+    }
 }

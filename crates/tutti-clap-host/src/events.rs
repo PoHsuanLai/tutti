@@ -44,7 +44,7 @@ use tutti_midi_protocol::{
 use tutti_types::Semitones;
 use tutti_ump::{
     Address, CCNumber, Message, MidiChannel, MidiGroup, NoteId, NoteNumber, Rpn, SysexAssembler,
-    SysexStep, U7, Ump, Voice1, Voice2, decode,
+    SysexStep, U7, Ump, Voice1, Voice2,
 };
 use tutti_voicing::{NoteControl, NoteEvent, PerNoteState};
 
@@ -1005,7 +1005,7 @@ impl InputEventList {
         let (offset, ump) = *event;
         match self.sysex.push(ump) {
             SysexStep::NotSysex => {
-                if let Ok(message) = decode(ump) {
+                if let Ok(message) = ump.decode() {
                     self.add_message(offset.get(), message);
                 }
             }
@@ -2159,7 +2159,7 @@ mod tests {
     /// A Note On at the address and key of the per-note `event`, at velocity
     /// 0x8000.
     fn note_on_for(event: &UmpAt) -> Option<UmpAt> {
-        let Ok(Message::Midi2(address, voice)) = decode(event.1) else {
+        let Ok(Message::Midi2(address, voice)) = event.1.decode() else {
             return None;
         };
         let note = match voice {
@@ -2189,7 +2189,7 @@ mod tests {
 
     /// The message `midi` carries.
     fn message(midi: &WireMidi) -> Message {
-        decode(midi.ump).expect("a defined message")
+        midi.ump.decode().expect("a defined message")
     }
 
     /// A huge event time must saturate, not wrap negative.
@@ -2408,7 +2408,7 @@ mod tests {
                 [0x0FFF_0000, 0, 0, 0],
                 [0x4000_0000 | (0x7 << 20), 0, 0, 0],
             ] {
-                assert!(decode(Ump(words)).is_err(), "{words:08x?} is framed");
+                assert!(Ump(words).decode().is_err(), "{words:08x?} is framed");
                 list.add_midi(&packet(3, &words));
             }
             assert!(list.events().is_empty(), "{:?}", list.events());
@@ -2476,7 +2476,7 @@ mod tests {
         ];
         // Every packet is the kind it claims, so none tests nothing.
         for (claimed, words) in &table {
-            let kind = match decode(Ump(*words)) {
+            let kind = match Ump(*words).decode() {
                 Ok(Message::Utility(_)) => "utility",
                 Ok(Message::System(..)) => "system",
                 Ok(Message::Midi1(..)) => "midi1",

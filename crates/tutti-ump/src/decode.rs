@@ -29,16 +29,31 @@ use crate::message::{
 };
 use crate::{CCNumber, MidiChannel, MidiGroup, Ump};
 
-/// Decodes one packet.
-///
-/// Never panics, whatever the words. The words past the message type's size
-/// are not read.
-///
-/// # Errors
-///
-/// [`Unknown`], holding the words, for a reserved message type, an undefined
-/// status, or a reserved value in a defined field.
-pub fn decode(ump: Ump) -> Result<Message, Unknown> {
+impl Ump {
+    /// Decodes this packet into the [`Message`] it holds.
+    ///
+    /// Never panics, whatever the words. The words past the message type's
+    /// size are not read.
+    ///
+    /// # Errors
+    ///
+    /// [`Unknown`], holding the words, for a reserved message type, an
+    /// undefined status, or a reserved value in a defined field.
+    pub fn decode(self) -> Result<Message, Unknown> {
+        decode(self)
+    }
+}
+
+/// [`Ump::decode`], so a packet reads as `Message::try_from(ump)`.
+impl TryFrom<Ump> for Message {
+    type Error = Unknown;
+
+    fn try_from(ump: Ump) -> Result<Self, Unknown> {
+        decode(ump)
+    }
+}
+
+fn decode(ump: Ump) -> Result<Message, Unknown> {
     let w = ump.0;
     let message = match w[0] >> 28 {
         0x0 => utility(w[0]).map(Message::Utility),

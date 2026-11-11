@@ -9,10 +9,10 @@
 use tutti_ump::{Message, Midi1Bytes};
 
 use crate::file::{FileEvent, Meta, SmfFormat, TextKind, Tick, Track};
-use crate::{Error, Result};
+use crate::{ConfigError, Error, Result};
 
-fn refused(what: &str) -> Error {
-    Error::MidiFileParse(format!("failed to encode MIDI: {what}"))
+fn too_large() -> Error {
+    ConfigError::TooLarge.into()
 }
 
 /// The widest value a variable-length quantity holds: 28 bits.
@@ -53,7 +53,7 @@ fn counted(lead: &[u8], data: &[u8]) -> Result<Vec<u8>> {
     let length = u32::try_from(data.len())
         .ok()
         .and_then(vlq)
-        .ok_or_else(|| refused("an event past 28 bits of length"))?;
+        .ok_or_else(too_large)?;
     Ok(lead
         .iter()
         .copied()
@@ -144,7 +144,7 @@ fn delta(from: Tick, to: Tick) -> Result<impl Iterator<Item = u8>> {
     to.0.checked_sub(from.0)
         .and_then(|d| u32::try_from(d).ok())
         .and_then(vlq)
-        .ok_or_else(|| refused("a delta past 28 bits, or out of order"))
+        .ok_or_else(too_large)
 }
 
 /// Folds one event onto the body: its delta, then its bytes without a status
@@ -153,10 +153,7 @@ fn append((mut out, running, at): Fold, (tick, event): &(Tick, FileEvent)) -> Re
     let Some(encoded) = encode(event)? else {
         return Ok((out, running, at));
     };
-    let (&status, data) = encoded
-        .bytes()
-        .split_first()
-        .ok_or_else(|| refused("an empty event"))?;
+    let (&status, data) = encoded.bytes().split_first().ok_or_else(too_large)?;
     let is_channel = matches!(encoded, Encoded::Channel(_));
     out.extend(delta(at, *tick)?);
     out.extend(
@@ -183,7 +180,7 @@ fn body(track: &Track) -> Result<Vec<u8>> {
 
 /// A chunk: its type, the length of `body`, the body.
 fn chunk(kind: &[u8; 4], body: &[u8]) -> Result<Vec<u8>> {
-    let len = u32::try_from(body.len()).map_err(|_| refused("a chunk past 4 GB"))?;
+    let len = u32::try_from(body.len()).map_err(|_| too_large())?;
     Ok(kind
         .iter()
         .copied()
@@ -200,7 +197,7 @@ fn chunk(kind: &[u8; 4], body: &[u8]) -> Result<Vec<u8>> {
 ///
 /// # Errors
 ///
-/// [`Error::MidiFileParse`] if the SMF cannot hold it: more than 65535 tracks,
+/// [`ConfigError::TooLarge`] if the SMF cannot hold it: more than 65535 tracks,
 /// an event or a chunk too long for its length field.
 pub(crate) fn write(
     format: SmfFormat,
@@ -212,7 +209,7 @@ pub(crate) fn write(
         SmfFormat::Parallel => 1,
         SmfFormat::Sequential => 2,
     };
-    let count = u16::try_from(tracks.len()).map_err(|_| refused("more than 65535 tracks"))?;
+    let count = u16::try_from(tracks.len()).map_err(|_| too_large())?;
     let header: Vec<u8> = [format_word, count, ticks_per_quarter]
         .into_iter()
         .flat_map(u16::to_be_bytes)

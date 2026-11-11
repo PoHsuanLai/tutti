@@ -12,7 +12,6 @@ use tutti_midi_protocol::{MpeMode, MpeZone, MpeZoneConfig, MpeZones, widen};
 use tutti_ump::{
     Address, Bank, CCNumber, Message, Midi1Parser, MidiChannel, MidiGroup, NoteNumber,
     RegisteredPerNoteController, Rpn, Sysex7Packets, System, U7, U14, Ump, Utility, Voice1, Voice2,
-    decode,
 };
 
 /// A MIDI 2.0 velocity at the midpoint of its 16-bit range: M2-115 section 3
@@ -43,7 +42,8 @@ impl BendRanges {
     /// Follows `ump`: a per-note bend sensitivity sets its channel's range, and
     /// `true` says it was one. Anything else leaves the ranges as they are.
     pub fn observe(&mut self, ump: &Ump) -> bool {
-        let Ok(Message::Midi2(address, Voice2::Registered { bank, index, value })) = decode(*ump)
+        let Ok(Message::Midi2(address, Voice2::Registered { bank, index, value })) =
+            (*ump).decode()
         else {
             return false;
         };
@@ -109,7 +109,7 @@ pub fn sysex_payload(len: usize) -> Vec<u8> {
 /// still `on` here: this reads the status, not the held-key meaning). `None`
 /// for anything else.
 pub fn key_of(ump: &Ump) -> Option<(MidiChannel, NoteNumber, bool)> {
-    match decode(*ump).ok()? {
+    match (*ump).decode().ok()? {
         Message::Midi1(a, Voice1::NoteOn { note, .. })
         | Message::Midi2(a, Voice2::NoteOn { note, .. }) => Some((a.channel, note, true)),
         Message::Midi1(a, Voice1::NoteOff { note, .. })

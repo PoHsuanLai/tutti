@@ -68,7 +68,7 @@ pub(crate) fn arrival_clock(
     use std::sync::OnceLock;
     static PAIRING: OnceLock<(Instant, i64)> = OnceLock::new();
     let (instant, ns) = *PAIRING.get_or_init(|| (Instant::now(), tutti_rt::monotonic_ns()));
-    Arc::new(move || {
+    std::sync::Arc::new(move || {
         let reading = clock.read()?;
         let delta = reading.os_ns.saturating_sub(ns);
         let span = Duration::from_nanos(delta.unsigned_abs());

@@ -57,12 +57,7 @@ fn a_zero_length_is_refused() {
 #[test]
 fn a_total_that_overflows_is_refused() {
     let err = job(usize::MAX, 1, 0).unwrap_err();
-    assert_eq!(
-        err,
-        JobError::TooLong {
-            total: Samples(usize::MAX)
-        }
-    );
+    assert_eq!(err, JobError::TooLong { total: None });
     assert!(matches!(
         job(1, usize::MAX, usize::MAX),
         Err(JobError::TooLong { .. })
@@ -76,20 +71,23 @@ fn a_total_that_overflows_is_refused() {
 /// row fail; leaving `latency` out of the sum makes the latency row fail.
 #[test]
 fn a_total_past_the_most_frames_is_refused() {
-    assert!(job(MAX_FRAMES, 0, 0).is_ok(), "the bound itself is allowed");
-    assert!(job(MAX_FRAMES - 30, 10, 20).is_ok());
+    assert!(
+        job(MAX_FRAMES.get(), 0, 0).is_ok(),
+        "the bound itself is allowed"
+    );
+    assert!(job(MAX_FRAMES.get() - 30, 10, 20).is_ok());
     assert_eq!(
-        job(MAX_FRAMES, 0, 1),
+        job(MAX_FRAMES.get(), 0, 1),
         Err(JobError::TooLong {
-            total: Samples(MAX_FRAMES + 1)
+            total: Some(Samples(MAX_FRAMES.get() + 1))
         })
     );
     assert!(matches!(
-        job(MAX_FRAMES - 30, 11, 20),
+        job(MAX_FRAMES.get() - 30, 11, 20),
         Err(JobError::TooLong { .. })
     ));
     assert!(matches!(
-        job(MAX_FRAMES - 30, 10, 21),
+        job(MAX_FRAMES.get() - 30, 10, 21),
         Err(JobError::TooLong { .. })
     ));
 }

@@ -303,9 +303,10 @@ fn render_pass(
 ) -> Result<Outcome<Rendered>> {
     let ch = frame_width(config.encode.channels)?;
     // A span past `MAX_FRAMES` cannot be held, which is this render's own
-    // error rather than a malformed job.
+    // error rather than a malformed job; a sum that overflows a frame count
+    // is malformed and stays `ConfigError::Job`.
     let plan = match render::RenderPlan::new(&config.render) {
-        Err(ConfigError::Job(JobError::TooLong { total })) => {
+        Err(ConfigError::Job(JobError::TooLong { total: Some(total) })) => {
             return Err(Error::RenderTooLarge {
                 frames: total,
                 channels: config.encode.channels,

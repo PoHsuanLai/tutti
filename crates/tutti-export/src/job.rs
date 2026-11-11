@@ -17,7 +17,7 @@ use tutti_types::{SampleRate, Samples};
 /// to allocate well under it ([`Error::RenderTooLarge`](crate::Error::RenderTooLarge)),
 /// and one written to a file is under the WAV format's own size limit long
 /// before it.
-pub const MAX_FRAMES: usize = u32::MAX as usize;
+pub const MAX_FRAMES: Samples = Samples(u32::MAX as usize);
 
 /// The frames a render covers and the rate it is rendered at ([`Job::new`]).
 ///
@@ -65,14 +65,9 @@ impl Job {
             .get()
             .checked_add(length.get())
             .and_then(|n| n.checked_add(tail.get()));
-        match total {
+        match total.map(Samples) {
             Some(n) if n <= MAX_FRAMES => {}
-            Some(n) => return Err(JobError::TooLong { total: Samples(n) }),
-            None => {
-                return Err(JobError::TooLong {
-                    total: Samples(usize::MAX),
-                });
-            }
+            total => return Err(JobError::TooLong { total }),
         }
         Ok(Self {
             rate,
@@ -148,10 +143,10 @@ pub enum JobError {
     ZeroLength,
     /// Latency, length and tail together overflow a frame count or pass
     /// [`MAX_FRAMES`].
-    #[error("the render spans {total:?} frames, more than the {MAX_FRAMES} a render may")]
+    #[error("the render spans {total:?} frames, more than the {MAX_FRAMES:?} a render may")]
     TooLong {
-        /// The sum, `usize::MAX` where it overflowed.
-        total: Samples,
+        /// The sum, or `None` where it overflowed a frame count.
+        total: Option<Samples>,
     },
 }
 

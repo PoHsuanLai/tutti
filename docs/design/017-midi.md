@@ -1549,7 +1549,9 @@ MIDI follows the plugin hosts' FFI rule (design 016 §2.9): `unsafe` lives only 
 
 `sync`'s clock and MTC decoders have no consumer today beyond `ClockMaster`'s loopback
 tests. They are in the runtime (stage 5b), and are deleted if a clock slave (§9) does
-not use them. `cc::mapping` was deleted (stage 5b part (b); it had no user and is
+not use them. `MtcDecoder` ignores the quarter-frame bits the MTC text reserves ("receiver should
+ignore!") and reports the assembled position plus the two frames the text says a receiver
+"must keep" ("the information is now actually 2 frames old"). `cc::mapping` was deleted (stage 5b part (b); it had no user and is
 replaced by a CC modulation source, §9), and `jr_timestamp` is rewritten in
 `tutti-midi-device`, where it can be negotiated and driven by elapsed time.
 

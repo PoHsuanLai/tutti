@@ -1966,13 +1966,17 @@ fn test_mpe_disabled_global_pitch_bend() {
     queue_midi(&mut synth, &[bend]);
     synth.tick(&[], &mut output);
 
-    // Both voices should have zero MPE pitch bend (global bend is handled differently)
+    // Both voices sound exactly the channel's bend from their keys: the
+    // wheel is the channel's, and no per-note pitch comes of it.
     for voice in &synth.voices {
         if voice.is_active() {
+            let wheel = 12.0 * synth.bend_ratio(voice.channel()).log2();
+            assert!(wheel.abs() > 0.5, "precondition: the wheel moved");
             assert!(
-                voice.per_note_bend().get().abs() < 0.01,
-                "Non-MPE mode should not set MPE pitch bend"
+                (voice.per_note_bend().get() - wheel).abs() < 0.01,
+                "Non-MPE mode should not set a per-note pitch bend"
             );
+            assert!(voice.tuned().is_none());
         }
     }
 }
@@ -2853,6 +2857,20 @@ fn mpe_synth() -> PolySynth {
     .expect("synth builds")
 }
 
+/// What a voice sounds, as an offset from its key's equal-tempered frequency
+/// (A4 = 440 Hz) in semitones: the analytic figure of the per-note pitch
+/// (channel bend not removed: these tests leave the channel's wheel centred).
+trait SoundsAt {
+    fn per_note_bend(&self) -> tutti_types::Semitones;
+}
+
+impl SoundsAt for SynthVoice {
+    fn per_note_bend(&self) -> tutti_types::Semitones {
+        let key = 440.0_f32 * 2.0_f32.powf((f32::from(self.note().get()) - 69.0) / 12.0);
+        tutti_types::Semitones(12.0 * (self.sounding_freq().get() / key).log2())
+    }
+}
+
 fn voice_of(synth: &PolySynth, note: u8) -> &SynthVoice {
     synth
         .voices
@@ -2892,16 +2910,16 @@ fn per_note_management_flags_are_read_from_the_spec_bits() {
     assert!(held > 0.0);
     synth.apply_midi(Ump([0x40F1_3C02, 0, 0, 0]));
     synth.apply_midi(bend(0x8000_0000));
-    assert_eq!(voice_of(&synth, 60).per_note_bend().get(), held);
+    assert!((voice_of(&synth, 60).per_note_bend().get() - held).abs() < 1e-3);
 
     // S = 1: the bend resets, and the note keeps responding.
     let mut synth = mpe_synth();
     synth.apply_midi(on);
     synth.apply_midi(bend(0xFFFF_FFFF));
     synth.apply_midi(Ump([0x40F1_3C01, 0, 0, 0]));
-    assert_eq!(voice_of(&synth, 60).per_note_bend().get(), 0.0);
+    assert!(voice_of(&synth, 60).per_note_bend().get().abs() < 1e-3);
     synth.apply_midi(bend(0xFFFF_FFFF));
-    assert_eq!(voice_of(&synth, 60).per_note_bend().get(), held);
+    assert!((voice_of(&synth, 60).per_note_bend().get() - held).abs() < 1e-3);
 }
 
 /// A note with a reserved attribute type (4 and up) sounds and ends: Table 8

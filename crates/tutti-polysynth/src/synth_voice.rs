@@ -108,13 +108,6 @@ impl SynthVoice {
     pub(crate) fn gate_value(&self) -> f32 {
         if self.gate { 1.0 } else { 0.0 }
     }
-    /// The offset of the per-note sounding pitch from the key's, in
-    /// semitones (zero for a note told nothing). Observability for tests.
-    #[cfg(test)]
-    pub(crate) fn per_note_bend(&self) -> tutti_types::Semitones {
-        let key = 440.0_f32 * 2.0_f32.powf((f32::from(self.note.get()) - 69.0) / 12.0);
-        tutti_types::Semitones(self.tuned.map_or(0.0, |t| 12.0 * (t.get() / key).log2()))
-    }
     #[cfg(test)]
     pub fn mpe_state(&self) -> &MpeVoiceState {
         &self.mpe

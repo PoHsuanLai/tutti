@@ -84,8 +84,9 @@ pub enum NoteControl {
     /// The pitch the note sounds at (see the module docs): its told pitch
     /// (Registered Per-Note Controller #3, a Note On's Attribute Pitch 7.9, else
     /// its key's own) offset by the Per-Note Pitch Bend. Absolute, and without
-    /// the channel's Pitch Bend. After a [`Reset`](NoteEvent::Reset) it is the
-    /// key's again.
+    /// the channel's Pitch Bend. A note that hears no `Pitch` sounds at its
+    /// key (a note started with nothing told and no bend is sent none); after
+    /// a [`Reset`](NoteEvent::Reset) it is the key's again.
     Pitch(Pitch),
     /// Polyphonic Pressure, 32 bits.
     Pressure(u32),

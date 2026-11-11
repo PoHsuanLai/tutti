@@ -6,6 +6,11 @@
 //! nothing after [`Voicing::new`]. What differs between instruments is a value
 //! of [`Rules`] and a [`Patch`]; the logic below is the same for all of them.
 //!
+//! The core serves one Group's sixteen channels (M2-104 section 2.1.2: a Group's
+//! channels are separate from every other Group's): an instrument that plays
+//! one Group reads its messages and gives `step` the channel, so no Group is
+//! ever merged into these tables.
+//!
 //! Reading order: [`Rules`] (the declared differences), [`Command`] (what comes
 //! out), then `Voicing::step`, which is the whole of it.
 //!

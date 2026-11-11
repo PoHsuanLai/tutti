@@ -1,5 +1,7 @@
 use super::*;
-use crate::CHANNELLESS_PORT;
+use crate::{CHANNELLESS_PORT, MIDI_INPUT_PORTS};
+
+const FIRST: MidiInputPorts = MidiInputPorts::FIRST_GROUP;
 
 fn ch(c: u8) -> Option<MidiChannel> {
     Some(MidiChannel::of(c))
@@ -13,16 +15,20 @@ fn ch(c: u8) -> Option<MidiChannel> {
 #[test]
 fn a_rule_gives_its_targets_its_channels_ports() {
     let ports = compile_routes(
+        FIRST,
         [
             RouteRule {
+                group: Some(MidiGroup::FIRST),
                 channel: ch(2),
                 targets: &["lead"],
             },
             RouteRule {
+                group: Some(MidiGroup::FIRST),
                 channel: ch(5),
                 targets: &["lead"],
             },
             RouteRule {
+                group: Some(MidiGroup::FIRST),
                 channel: None,
                 targets: &["pad"],
             },
@@ -61,11 +67,12 @@ fn the_compile_is_total_and_the_fallback_holds_only_unrouted_ports() {
             .enumerate()
             .filter(|(i, _)| mask & (1 << i) != 0)
             .map(|(_, (channel, targets))| RouteRule {
+                group: Some(MidiGroup::FIRST),
                 channel: *channel,
                 targets,
             })
             .collect();
-        let ports = compile_routes(rules.iter().copied(), Some("fallback"));
+        let ports = compile_routes(FIRST, rules.iter().copied(), Some("fallback"));
 
         let reached: BTreeSet<usize> = ports.values().flatten().copied().collect();
         assert_eq!(
@@ -75,7 +82,9 @@ fn the_compile_is_total_and_the_fallback_holds_only_unrouted_ports() {
         );
         let mut routed = BTreeSet::new();
         for rule in &rules {
-            let theirs: BTreeSet<usize> = input_ports(rule.channel).collect();
+            let theirs: BTreeSet<usize> = FIRST
+                .listening(Some(MidiGroup::FIRST), rule.channel)
+                .collect();
             for target in rule.targets {
                 assert!(
                     ports[target].is_superset(&theirs),
@@ -108,7 +117,9 @@ fn the_compile_is_total_and_the_fallback_holds_only_unrouted_ports() {
 #[test]
 fn a_rule_without_targets_leaves_its_channel_to_the_fallback() {
     let ports = compile_routes(
+        FIRST,
         [RouteRule::<&str> {
+            group: Some(MidiGroup::FIRST),
             channel: ch(0),
             targets: &[],
         }],
@@ -127,9 +138,11 @@ fn a_rule_without_targets_leaves_its_channel_to_the_fallback() {
 /// channel's port alone → fails.
 #[test]
 fn without_a_fallback_an_unrouted_port_reaches_nobody() {
-    assert!(compile_routes::<&str>([], None).is_empty());
+    assert!(compile_routes::<&str>(FIRST, [], None).is_empty());
     let ports = compile_routes(
+        FIRST,
         [RouteRule {
+            group: Some(MidiGroup::FIRST),
             channel: ch(9),
             targets: &["drums"],
         }],
@@ -137,4 +150,58 @@ fn without_a_fallback_an_unrouted_port_reaches_nobody() {
     );
     assert_eq!(ports.len(), 1);
     assert_eq!(ports["drums"], BTreeSet::from([9, CHANNELLESS_PORT]));
+}
+
+/// **A rule names a Group as well as a channel**: channel 1 of Group 1 and
+/// channel 1 of Group 2 reach different listeners, an any-Group rule reaches
+/// the channel in every Group, and a rule for a Group the node does not hear
+/// reaches nobody (M2-104 Appendix B.1).
+///
+/// Mutation: `compile_routes` reading the rule's channel alone (the group
+/// dropped from the `listening` call) → the first two assertions fail.
+#[test]
+fn a_rule_names_a_group_as_well_as_a_channel() {
+    let two = MidiInputPorts::through(MidiGroup::of(1));
+    let per_group = MIDI_INPUT_PORTS;
+    let ports = compile_routes(
+        two,
+        [
+            RouteRule {
+                group: Some(MidiGroup::FIRST),
+                channel: ch(1),
+                targets: &["one"],
+            },
+            RouteRule {
+                group: Some(MidiGroup::of(1)),
+                channel: ch(1),
+                targets: &["two"],
+            },
+            RouteRule {
+                group: None,
+                channel: ch(7),
+                targets: &["both"],
+            },
+            RouteRule {
+                group: Some(MidiGroup::of(5)),
+                channel: ch(2),
+                targets: &["unheard"],
+            },
+        ],
+        None,
+    );
+    assert_eq!(ports["one"], BTreeSet::from([1, CHANNELLESS_PORT]));
+    assert_eq!(
+        ports["two"],
+        BTreeSet::from([per_group + 1, per_group + CHANNELLESS_PORT])
+    );
+    assert_eq!(
+        ports["both"],
+        BTreeSet::from([
+            7,
+            CHANNELLESS_PORT,
+            per_group + 7,
+            per_group + CHANNELLESS_PORT
+        ])
+    );
+    assert!(!ports.contains_key("unheard"));
 }

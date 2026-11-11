@@ -18,7 +18,7 @@ use std::sync::Arc;
 use tutti_midi_protocol::narrow_value;
 use tutti_sf2::SoundFont;
 use tutti_types::{SampleRate, Semitones};
-use tutti_ump::{CCNumber, MidiChannel, U7, Voice2};
+use tutti_ump::{CCNumber, MidiChannel, MidiGroup, U7, Voice2};
 use tutti_voicing::{Mode, Order, Retrigger, Rules, Steal, Voicing};
 
 use crate::array_math::ArrayMath;
@@ -245,6 +245,11 @@ impl Player {
             heard: Heard::default(),
             block_read: render.block_len(),
         })
+    }
+
+    /// The Group this player's sixteen channels are.
+    pub(crate) fn group(&self) -> MidiGroup {
+        self.settings.group()
     }
 
     /// The preset `channel` plays: its bank and program, else General MIDI's

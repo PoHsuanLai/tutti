@@ -566,6 +566,9 @@ impl std::fmt::Debug for SessionEvent {
 pub struct MidiNodes {
     /// The hardware input's node: its ports feed what a route rule names.
     pub input: NodeKey,
+    /// Which of its event outputs carries which Group and channel
+    /// ([`SessionBuilder::midi_groups`](crate::SessionBuilder::midi_groups)).
+    pub input_ports: tutti_midi_runtime::MidiInputPorts,
     /// Its controls (the MPE mode).
     pub input_controls: tutti_midi_runtime::MidiInputControls,
     /// The clock's node.

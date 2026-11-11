@@ -1183,7 +1183,7 @@ Each step is green alone, `bevy-tutti`'s full suite included.
   `MidiFileContents`) with `iter()` → `(Beat, MidiEvent)` for both, plus
   `tempo()` and `end_beat()`. The SMF half is new (midly →
   `MidiEvent::from_midi1_bytes`).
-- `tutti-midi-runtime`: the route-rule compile (rules → `input_ports`, with
+- `tutti-midi-runtime`: the route-rule compile (rules → `MidiInputPorts::listening`, with
   the fallback) as a pure function.
 - `tutti-sampler`: `memory_voice` and `voice_width`.
 - `bevy-tutti` calls them.

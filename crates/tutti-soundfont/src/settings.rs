@@ -7,9 +7,14 @@
 use std::num::NonZeroUsize;
 
 use tutti_types::SampleRate;
+use tutti_ump::MidiGroup;
 
 /// What a [`SoundFontUnit`](crate::SoundFontUnit) is built with: start from
 /// [`new`](Self::new) and change what differs with the `with_*` methods.
+///
+/// A unit plays one Group's sixteen channels ([`with_group`](Self::with_group),
+/// the first by default): a Group is a channel space of its own (M2-104 section
+/// 2.1.2, Appendix B.1), so another Group's messages are not this unit's.
 ///
 /// ```
 /// use std::num::NonZeroUsize;
@@ -24,6 +29,7 @@ use tutti_types::SampleRate;
 pub struct Settings {
     sample_rate: SampleRate,
     polyphony: NonZeroUsize,
+    group: MidiGroup,
 }
 
 impl Settings {
@@ -40,6 +46,7 @@ impl Settings {
         Self {
             sample_rate,
             polyphony: Self::DEFAULT_POLYPHONY,
+            group: MidiGroup::FIRST,
         }
     }
 
@@ -56,6 +63,19 @@ impl Settings {
     pub const fn with_polyphony(mut self, polyphony: NonZeroUsize) -> Self {
         self.polyphony = polyphony;
         self
+    }
+
+    /// These settings playing the channels of `group`, and no other Group's.
+    #[must_use]
+    pub const fn with_group(mut self, group: MidiGroup) -> Self {
+        self.group = group;
+        self
+    }
+
+    /// The Group this unit plays.
+    #[must_use]
+    pub const fn group(&self) -> MidiGroup {
+        self.group
     }
 
     /// The rate to render at.

@@ -183,9 +183,9 @@ fn a_token_is_shared_and_none_never_cancels() {
 /// normalized figures read 0.025 and 0.05.
 #[test]
 fn preparing_reports_steps_in_the_band_the_render_leaves() {
-    use crate::{
-        BufferTarget, ChannelLayout, FileTarget, Format, Normalize, NormalizeSpec, Output, Pcm,
-    };
+    use crate::{BufferTarget, FileTarget, Normalize, NormalizeSpec, Output};
+    use tutti_codec::{Format, Pcm};
+    use tutti_types::ChannelLayout;
     use tutti_types::Db;
     let streaming = [Output::master(BufferTarget::new(ChannelLayout::STEREO))];
     let normalized = [Output::master(

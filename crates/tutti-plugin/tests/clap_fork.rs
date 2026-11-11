@@ -648,8 +648,8 @@ fn fork_graph(live: &Editor, rate: SampleRate) -> tutti_export::RenderGraph {
 /// a control nobody cancels.
 fn render_to_buffers(
     mut graph: tutti_export::RenderGraph,
-    config: &(tutti_export::Job, tutti_export::ChannelLayout),
-    clock: &dyn tutti_export::RenderClock,
+    config: &(tutti_export::Job, tutti_types::ChannelLayout),
+    clock: &dyn tutti_transport::RenderClock,
 ) -> tutti_export::Result<tutti_export::Outcome<tutti_export::Rendered>> {
     tutti_export::render_one(
         &mut graph,
@@ -675,9 +675,9 @@ fn export_through_a_fork(live: &Editor) -> tutti_export::Result<tutti_export::Re
             Samples(0),
         )
         .expect("a render"),
-        tutti_export::ChannelLayout::MONO,
+        tutti_types::ChannelLayout::MONO,
     );
-    render_to_buffers(graph, &config, &tutti_export::FrozenClock).map(|outcome| {
+    render_to_buffers(graph, &config, &tutti_transport::FrozenClock).map(|outcome| {
         outcome
             .finished()
             .expect("nothing cancels a control with no token")
@@ -768,7 +768,7 @@ fn a_clip_note_reaches_an_exported_plugin_on_its_frame() {
             Samples(0),
         )
         .expect("a render"),
-        tutti_export::ChannelLayout::MONO,
+        tutti_types::ChannelLayout::MONO,
     );
     let rendered = render_to_buffers(graph, &config, timeline.as_ref())
         .expect("the fork exports")
@@ -855,7 +855,7 @@ fn a_chord_larger_than_a_chunk_ends_and_the_export_counts_the_loss() {
             )
             .expect("a render")
             .with_event_loss(policy),
-            tutti_export::ChannelLayout::MONO,
+            tutti_types::ChannelLayout::MONO,
         );
         render_to_buffers(graph, &config, timeline.as_ref()).map(|outcome| {
             outcome
@@ -1289,9 +1289,9 @@ fn an_export_is_aligned_when_the_plugin_latency_moves_offline() {
             Samples(0),
         )
         .expect("a render"),
-        tutti_export::ChannelLayout::MONO,
+        tutti_types::ChannelLayout::MONO,
     );
-    let rendered = render_to_buffers(graph, &config, &tutti_export::FrozenClock)
+    let rendered = render_to_buffers(graph, &config, &tutti_transport::FrozenClock)
         .expect("a fork whose latency settled exports without a fault")
         .finished()
         .expect("nothing cancels a control with no token");
@@ -1376,9 +1376,9 @@ fn an_export_of_plugins_is_bit_identical_on_a_pool() {
                 Samples(0),
             )
             .expect("a render"),
-            tutti_export::ChannelLayout::STEREO,
+            tutti_types::ChannelLayout::STEREO,
         );
-        let rendered = render_to_buffers(graph, &config, &tutti_export::FrozenClock)
+        let rendered = render_to_buffers(graph, &config, &tutti_transport::FrozenClock)
             .expect("the fork exports")
             .finished()
             .expect("nothing cancels a control with no token");

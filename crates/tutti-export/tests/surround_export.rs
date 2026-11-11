@@ -16,9 +16,10 @@
 mod support;
 use crate::support::{EncodeConfig, ExportConfig, RenderConfig};
 
-use tutti_export::{ChannelLayout, RenderGraph, Setup};
+use tutti_export::{RenderGraph, Setup};
 use tutti_graph::GraphBuilder;
 use tutti_types::Azimuth;
+use tutti_types::ChannelLayout;
 use tutti_types::Seconds;
 
 /// The rate [`export`] renders at, and so the rate every graph is built for.
@@ -39,13 +40,13 @@ fn export(g: GraphBuilder, layout: ChannelLayout, secs: f64, path: &std::path::P
                 ..Default::default()
             },
             encode: EncodeConfig {
-                format: tutti_export::Format::Wav(tutti_export::Pcm::Float32),
+                format: tutti_codec::Format::Wav(tutti_codec::Pcm::Float32),
                 channels: layout,
                 ..Default::default()
             },
             ..Default::default()
         },
-        &tutti_export::FrozenClock,
+        &tutti_transport::FrozenClock,
         path,
     )
     .expect("export");

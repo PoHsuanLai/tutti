@@ -18,7 +18,8 @@
 //! Run: `cargo run -p tutti --features "export,dsp,wav" \
 //!        --example headless_export -- <outdir>`
 
-use tutti::export::{Format, Pcm, Produced};
+use tutti::codec::{Format, Pcm};
+use tutti::export::Produced;
 use tutti::measure::{LoudnessConfig, measure_loudness};
 use tutti::prelude::*;
 use tutti_nodes::testing::{Const, Osc};

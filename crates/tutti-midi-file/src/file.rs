@@ -723,7 +723,7 @@ impl MidiFile {
     /// Seconds from beat 0 to `at` over the [`tempo_map`](Self::tempo_map),
     /// each stretch between two changes at its own tempo (a ramp at its own
     /// slope: a file's changes are all steps). What an offline render of the
-    /// file lasts: `seconds_at(end_beat())` is `RenderConfig::duration_seconds`.
+    /// file lasts: `seconds_at(end_beat())` is the span a bounce of the file renders (`Bounce::until(end_beat())`).
     pub fn seconds_at(&self, at: Beat) -> Seconds {
         self.tempo_map().seconds_at(Beat(at.get().max(0.0)))
     }

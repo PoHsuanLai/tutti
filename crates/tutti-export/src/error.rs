@@ -65,6 +65,11 @@ pub enum Error {
     /// as it was.
     #[error("Cannot normalize: {channels:?} at {sample_rate:?} is unmeasurable: {reason}")]
     Unmeasurable {
+        /// The output whose audio it is, by its index in the list given to
+        /// [`render`](crate::render()); `None` for planes measured on their own
+        /// ([`Normalize::gain_for_rendered`](crate::Normalize::gain_for_rendered)),
+        /// which belong to no output.
+        output: Option<usize>,
         /// The channel layout of the audio.
         channels: ChannelLayout,
         /// Its sample rate.

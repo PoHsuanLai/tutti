@@ -49,7 +49,8 @@ fn lufs_defaults_to_a_minus_one_dbtp_ceiling() {
 #[cfg(feature = "wav")]
 mod headroom {
     use super::*;
-    use crate::{ChannelLayout, Format, Pcm};
+    use tutti_codec::{Format, Pcm};
+    use tutti_types::ChannelLayout;
 
     fn config(pcm: Pcm, dither: Option<DitherShape>) -> FileTarget {
         FileTarget::new("unused.wav", Format::Wav(pcm), ChannelLayout::STEREO).with_dither(dither)

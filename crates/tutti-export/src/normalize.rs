@@ -196,6 +196,7 @@ impl Normalize {
         control: &mut Control<'_>,
     ) -> Result<Outcome<Loudness>> {
         let unmeasurable = |reason| crate::Error::Unmeasurable {
+            output: None,
             channels: rendered.layout(),
             sample_rate: rendered.sample_rate(),
             reason,
@@ -251,7 +252,7 @@ impl Normalize {
     /// The limit is one LSB plus the dither's amplitude (0 for none, half an
     /// LSB for rectangular, one for triangular) below full scale; a target or
     /// ceiling already under it is unchanged, and a format that does not
-    /// quantize ([`Pcm::Float32`](crate::Pcm::Float32), Ogg Vorbis) has no
+    /// quantize ([`Pcm::Float32`](tutti_codec::Pcm::Float32), Ogg Vorbis) has no
     /// limit.
     pub(crate) fn within(self, target: &FileTarget) -> Self {
         let Some(limit) = headroom_ceiling(target) else {

@@ -1,8 +1,10 @@
 use super::*;
 use crate::Setup;
 use crate::spill::SPILL_MEMORY_BYTES;
-use crate::{BufferTarget, FrozenClock, Normalize, NormalizeSpec, Pcm, Progress};
+use crate::{BufferTarget, Normalize, NormalizeSpec, Progress};
+use tutti_codec::Pcm;
 use tutti_graph::GraphBuilder;
+use tutti_transport::FrozenClock;
 use tutti_types::Samples;
 
 const RATE: SampleRate = SampleRate(48_000.0);
@@ -41,7 +43,7 @@ fn run(budget: usize, dir: &std::path::Path) -> (crate::Written, Vec<Vec<f32>>, 
     let mut control = Control::new(&token).on_progress(&mut watch);
     let target = crate::FileTarget::new(
         &path,
-        crate::Format::Wav(Pcm::Float32),
+        tutti_codec::Format::Wav(Pcm::Float32),
         ChannelLayout::STEREO,
     )
     .with_normalize(Some(NormalizeSpec::own(Normalize::peak(Db(-6.0)))));
@@ -123,7 +125,7 @@ fn a_cancelled_or_failed_render_removes_its_spill() {
         Output::master(
             crate::FileTarget::new(
                 &path,
-                crate::Format::Wav(Pcm::Float32),
+                tutti_codec::Format::Wav(Pcm::Float32),
                 ChannelLayout::STEREO,
             )
             .with_normalize(Some(NormalizeSpec::own(Normalize::peak(Db(-6.0))))),

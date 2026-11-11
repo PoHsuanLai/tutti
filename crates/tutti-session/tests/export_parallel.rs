@@ -20,9 +20,10 @@ use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
 use std::thread::ThreadId;
 
-use tutti_export::{ChannelLayout, Outcome, Produced, Rendered};
+use tutti_export::{Outcome, Produced, Rendered};
 use tutti_graph::{Cx, ForkByClone, Io, Node, Prepare, Shape, Status};
 use tutti_session::{Bounce, ExportClock, GraphSource, Range, Session, Stem, Tail};
+use tutti_types::ChannelLayout;
 use tutti_types::{SampleRate, Samples, Seconds};
 
 const RATE: SampleRate = SampleRate(48_000.0);

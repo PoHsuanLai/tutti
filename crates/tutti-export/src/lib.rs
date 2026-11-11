@@ -4,11 +4,6 @@
 
 mod error;
 pub use error::{ConfigError, Error, Result, Unmeasured};
-/// The container and its settings, and the sample widths, which are
-/// `tutti-codec`'s. Re-exported so a caller configuring an export names them
-/// from here.
-pub use tutti_codec::{FlacLevel, Format, IntDepth, Pcm, Quality};
-pub use tutti_types::ChannelLayout;
 
 mod control;
 use control::Weights;
@@ -42,14 +37,11 @@ pub(crate) mod process;
 pub(crate) mod render;
 
 pub use process::ChunkSize;
-/// The clock a render advances. Re-exported so callers can name it without
-/// depending on `tutti-transport` directly; `FrozenClock` is the "this graph has no
-/// transport" answer.
-pub use tutti_transport::{FrozenClock, RenderClock};
 
 use std::path::PathBuf;
 use tutti_measure::Loudness;
-use tutti_types::Db;
+use tutti_transport::RenderClock;
+use tutti_types::{ChannelLayout, Db, Samples};
 
 /// A file an export wrote, from a file [`Output`] of [`render()`]
 /// ([`Produced::File`]) or [`write_buffers`].
@@ -60,6 +52,10 @@ pub struct Written {
     /// Size on disk after finalization, in bytes. `0` if the file could not
     /// be stat'd.
     pub bytes: u64,
+    /// Frames the file holds, at the file's rate: what the encoder was given,
+    /// after the latency trim, the length and any resample (the stated length
+    /// of the resample, `StreamingResampler::output_frames`).
+    pub frames: Samples,
     /// Events the graph lost during the render that produced the file;
     /// nonzero only under [`EventLossPolicy::Allow`] (under `Fail` the render
     /// is an error instead).
@@ -121,7 +117,7 @@ fn frame_width(layout: ChannelLayout) -> Result<usize> {
 /// latency trimmed from the head of every output, the tail kept past the end
 /// and what to do about a dropped event. `clock` is advanced once per block,
 /// after the graph processes ([`RenderClock::render_graph`]); pass
-/// [`FrozenClock`] for a graph with no time-dependent nodes. `graph` is
+/// [`FrozenClock`](tutti_transport::FrozenClock) for a graph with no time-dependent nodes. `graph` is
 /// borrowed, so a graph holding a unit whose teardown is main-thread-only (an
 /// in-process VST2 plugin's fork) and rendered on a worker is brought back and
 /// dropped on the main thread.

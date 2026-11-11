@@ -577,6 +577,23 @@ s.midi().route(MidiRouteRule::any_channel().to(synth)); // `midi-hardware`
 **Transport.** `s.transport()` returns today's `Transport` handle, and
 `MotionFsm::schedule(At, ..)` is unchanged.
 
+> **Superseded by doc 019 (steps 5 and 6).** The request below is what step 5
+> of this doc's plan built, and doc 019 replaced it: `ExportRequest`,
+> `ExportSource`, `ExportTarget`, `ExportOutput`, `ExportJob`, `ExportRendered`,
+> `ExportHandle` and `Error::ExportInFlight` are now `Bounce` (a builder: the
+> master's fork, `stem`s as plan taps, `Range`, `Latency`, `Tail`),
+> `BounceJob`, `BounceRendered`, `BounceHandle` and `BounceError::InFlight`;
+> `Session::{export, export_blocking, finish_export{,_unannounced},
+> drop_export_leftovers, export_in_flight}` and `EXPORT_STALL_WARNING` are
+> `Session::{bounce, bounce_start, finish_bounce{,_unannounced},
+> drop_bounce_leftovers, bounce_in_flight}` and `BOUNCE_STALL_WARNING`;
+> `tutti-export`'s `ExportConfig` is `Job` plus `Output`/`Target`. What this
+> section says about the token, the render-mode level, cancellation and one
+> job at a time holds unchanged under the new names. `ExportClock`,
+> `PrepareEdit` and `PreparedGraph` stay. The Bevy side
+> (`ExportRequest`, `ExportDone`, `ExportInFlight`, `ExportPlugin`) is parked
+> with `bevy-tutti` and becomes `BounceRequest` and the rest in doc 019 step 7.
+
 **Export.** The session has its own request, free of `Entity` and `World`.
 It is today's `bevy-tutti` request with the two Bevy-bound fields
 replaced:

@@ -1,8 +1,8 @@
 //! [`Rendered`]: planar audio held in memory, which only this crate builds
 //! unchecked.
 
-use crate::ChannelLayout;
 use crate::job::is_rate;
+use tutti_types::ChannelLayout;
 use tutti_types::{SampleRate, Samples};
 
 /// Rendered audio held in memory, one `Vec` per channel.

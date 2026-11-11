@@ -29,7 +29,7 @@ use tutti_polysynth::{FilterType, OscillatorType, PolySynth, SynthConfig};
 use tutti_types::{Hz, Q, SampleRate};
 use tutti_ump::{
     Address, Attribute, CCNumber, Message, MidiChannel, MidiGroup, NoteNumber,
-    RegisteredPerNoteController, U7, U14, Ump, Voice1, Voice2,
+    RegisteredPerNoteController, Rpn, U7, U14, Ump, Voice1, Voice2,
 };
 
 #[global_allocator]
@@ -591,6 +591,10 @@ fn mono_and_legato_event_paths_are_allocation_free() {
                 max_voices: 4,
                 voice_mode: mode,
                 oscillator: OscillatorType::Saw,
+                portamento: Some(tutti_polysynth::PortamentoConfig {
+                    mode: tutti_polysynth::PortamentoMode::Always,
+                    ..Default::default()
+                }),
                 ..Default::default()
             })
             .unwrap(),
@@ -616,6 +620,28 @@ fn mono_and_legato_event_paths_are_allocation_free() {
                     note_off(0, 64),
                     cc(64, u32::from(round % 2) * 127),
                     cc(66, u32::from(round % 3 == 0) * 127),
+                    // The channel's controllers, the glide's switches and a
+                    // Portamento Control (a glide of the stream's own, over the
+                    // config's), pressure and the registered parameters.
+                    cc(1, u32::from(round % 128)),
+                    cc(5, u32::from(round % 128)),
+                    cc(7, u32::from(round % 128)),
+                    cc(10, u32::from(round % 128)),
+                    cc(11, u32::from(round % 128)),
+                    cc(65, u32::from(round % 2) * 127),
+                    cc(68, u32::from(round % 3 == 0) * 127),
+                    cc(84, 60),
+                    midi::channel_pressure(
+                        MidiGroup::FIRST,
+                        MidiChannel::of(0),
+                        u32::from(round) << 24,
+                    ),
+                    midi::registered_rpn(
+                        MidiGroup::FIRST,
+                        MidiChannel::of(0),
+                        Rpn::new(U7::of(0), U7::of([1, 2, 5][usize::from(round % 3)])),
+                        u32::from(round % 128) << 25,
+                    ),
                 ]);
                 synth.block(64);
                 synth.queue_midi(&[note_off(0, 60), note_off(1, 67), cc(123, 0), cc(124, 0)]);

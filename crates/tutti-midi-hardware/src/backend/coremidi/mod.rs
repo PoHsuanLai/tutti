@@ -21,18 +21,31 @@
 //! speaking MIDI 2.0, so [`UmpCapability`] records `kMIDIPropertyProtocolID` as
 //! the OS reports it — and falls back to `Midi1` when the property is absent,
 //! which is the conservative direction (see `UmpCapability::default`).
+//!
+//! # Function Blocks (macOS 15)
+//!
+//! Where the OS has a `MIDIUMPEndpoint` for an endpoint (read by
+//! `tutti-coremidi-ffi`, which is where the Objective-C classes are bound), the
+//! capability is that endpoint's: the Protocol in use and its Function Blocks,
+//! which CoreMIDI has already discovered (Stream negotiation is the OS's for a
+//! device it presents as UMP). Before macOS 15 the classes do not exist and the
+//! capability is the property's alone, with no blocks.
 
 use coremidi::{
     Client, Destinations, EventBuffer, InputPortWithContext, OutputPort, Properties,
     PropertyGetter, Protocol as CmProtocol, Source, Sources,
 };
+use std::sync::atomic::{AtomicBool, Ordering};
+
 use tutti_graph::UmpAt;
 
 use crate::InputProducerHandle;
+use crate::block::RawBlock;
 use crate::capability::{EndpointInfo, UmpCapability};
 use crate::devices::{ChangeSink, os_devices};
-use crate::endpoints::{InputConnection, MidiEndpoints, Watch};
+use crate::endpoints::{DeviceOut, InputConnection, MidiEndpoints, Watch};
 use crate::error::{Error, Result};
+use tutti_coremidi_ffi::{UmpEndpointInfo, ump_endpoints};
 use tutti_midi_device::{EndpointId, Identity, OsDevice};
 use tutti_midi_runtime::MidiOut;
 use tutti_ump::{Protocol, split_stream};
@@ -94,15 +107,71 @@ fn endpoint_name(object: &coremidi::Object, index: usize) -> String {
 
 /// What the OS says this endpoint carries.
 ///
-/// An absent or unreadable `kMIDIPropertyProtocolID` means "the OS did not say",
+/// The UMP Endpoint the OS keeps for it (`ump`, which has the endpoint's
+/// `unique_id` as its source or destination), when there is one: its Protocol in
+/// use and its blocks. Otherwise the endpoint's property. An absent or unreadable `kMIDIPropertyProtocolID` means "the OS did not say",
 /// which resolves to MIDI 1.0 — claiming MIDI 2.0 on no evidence would feed
 /// per-note messages to an endpoint that cannot carry them.
-fn endpoint_capability(object: &coremidi::Object) -> UmpCapability {
+fn endpoint_capability(object: &coremidi::Object, ump: Option<&UmpEndpointInfo>) -> UmpCapability {
+    if let Some(ump) = ump {
+        return ump_capability(ump);
+    }
     let protocol_id: std::result::Result<i32, _> = Properties::protocol_id().value_from(object);
     match protocol_id {
         Ok(id) if id == PROTOCOL_ID_MIDI_2_0 => UmpCapability::midi2(),
         _ => UmpCapability::midi1(),
     }
+}
+
+/// A UMP Endpoint as a capability: the Protocol it has in use (having blocks is
+/// not having the MIDI 2.0 Protocol) and the blocks the spec can hold.
+fn ump_capability(ump: &UmpEndpointInfo) -> UmpCapability {
+    let protocol = if ump.protocol == PROTOCOL_ID_MIDI_2_0 {
+        Protocol::Midi2
+    } else {
+        Protocol::Midi1
+    };
+    let blocks = ump
+        .blocks
+        .iter()
+        .filter_map(|block| {
+            // CoreMIDI's direction, MIDI 1.0 info and UI hint enums carry the
+            // spec's own values (M2-104 §7.1.8).
+            RawBlock {
+                id: u32::from(block.id),
+                active: block.active,
+                direction: u32::try_from(block.direction).ok()?,
+                first_group: u32::from(block.first_group),
+                groups: u32::from(block.groups),
+                midi1: u32::try_from(block.midi1).unwrap_or(0),
+                ui_hint: u32::try_from(block.ui_hint).unwrap_or(0),
+                // `MIDIUMPFunctionBlock` has no MIDI-CI version of its own.
+                midi_ci_version: 0,
+                sysex8_streams: u32::from(block.sysex8_streams),
+                name: Some(block.name.as_str()),
+            }
+            .function_block()
+        })
+        .collect();
+    UmpCapability { protocol, blocks }
+}
+
+/// The UMP Endpoint whose source (`input`) or destination is `object`, by
+/// `kMIDIPropertyUniqueID`.
+fn ump_of<'a>(
+    all: &'a [UmpEndpointInfo],
+    object: &coremidi::Object,
+    input: bool,
+) -> Option<&'a UmpEndpointInfo> {
+    let id = unique_id(object)?;
+    all.iter().find(|e| {
+        let own = if input {
+            e.source_unique_id
+        } else {
+            e.destination_unique_id
+        };
+        own == Some(id)
+    })
 }
 
 /// A stable id for an endpoint, or `None` when the OS gives it no unique id.
@@ -187,6 +256,7 @@ impl MidiEndpoints for CoreMidiEndpoints {
     }
 
     fn inputs(&self) -> Vec<EndpointInfo> {
+        let umps = ump_endpoints().unwrap_or_default();
         (0..Sources::count())
             .filter_map(Source::from_index)
             .enumerate()
@@ -195,13 +265,14 @@ impl MidiEndpoints for CoreMidiEndpoints {
                     id: endpoint_id(&source)?,
                     identity: Identity::CoreMidi(unique_id(&source)?),
                     name: endpoint_name(&source, index),
-                    capability: endpoint_capability(&source),
+                    capability: endpoint_capability(&source, ump_of(&umps, &source, true)),
                 })
             })
             .collect()
     }
 
     fn outputs(&self) -> Vec<EndpointInfo> {
+        let umps = ump_endpoints().unwrap_or_default();
         (0..Destinations::count())
             .filter_map(coremidi::Destination::from_index)
             .enumerate()
@@ -210,7 +281,7 @@ impl MidiEndpoints for CoreMidiEndpoints {
                     id: endpoint_id(&dest)?,
                     identity: Identity::CoreMidi(unique_id(&dest)?),
                     name: endpoint_name(&dest, index),
-                    capability: endpoint_capability(&dest),
+                    capability: endpoint_capability(&dest, ump_of(&umps, &dest, false)),
                 })
             })
             .collect()
@@ -261,12 +332,11 @@ impl MidiEndpoints for CoreMidiEndpoints {
         Ok(Box::new(CoreMidiInput { _port: port }))
     }
 
-    fn open_output(&self, id: EndpointId) -> Result<Box<dyn MidiOut>> {
+    fn open_output(&self, id: EndpointId) -> Result<Box<dyn DeviceOut>> {
         let client = self.client()?;
         let destination = Self::find_destination(id).ok_or_else(|| {
             Error::MidiDevice(format!("no MIDI destination with id {}", id.raw()))
         })?;
-        let protocol = endpoint_capability(&destination).protocol;
 
         let port = client
             .output_port("tutti-out")
@@ -278,7 +348,8 @@ impl MidiEndpoints for CoreMidiEndpoints {
         Ok(Box::new(CoreMidiOutput {
             port,
             destination,
-            protocol,
+            // `OpenOutput` says which, before anything is queued (`follow`).
+            midi2: AtomicBool::new(false),
         }))
     }
 }
@@ -302,7 +373,10 @@ impl InputConnection for CoreMidiInput {}
 struct CoreMidiOutput {
     port: OutputPort,
     destination: coremidi::Destination,
-    protocol: Protocol,
+    /// Whether the event lists go out tagged MIDI 2.0: the Protocol the output
+    /// is in now ([`DeviceOut::follow`]), which a negotiation can change after
+    /// the OS reported its own at open.
+    midi2: AtomicBool,
 }
 
 impl CoreMidiOutput {
@@ -315,11 +389,10 @@ impl CoreMidiOutput {
         if words.is_empty() {
             return Ok(());
         }
-        let cm_protocol = match self.protocol {
-            Protocol::Midi2 => CmProtocol::Midi20,
-            // A reserved protocol value is one nobody can speak: unknown means
-            // MIDI 1.0, the conservative direction (see `UmpCapability::default`).
-            Protocol::Midi1 | Protocol::Reserved(_) => CmProtocol::Midi10,
+        let cm_protocol = if self.midi2.load(Ordering::Relaxed) {
+            CmProtocol::Midi20
+        } else {
+            CmProtocol::Midi10
         };
         let buffer = EventBuffer::new(cm_protocol).with_packet(0, words);
         self.port
@@ -328,6 +401,15 @@ impl CoreMidiOutput {
                 operation: "send event list",
                 status,
             })
+    }
+}
+
+impl DeviceOut for CoreMidiOutput {
+    fn follow(&self, protocol: Protocol) {
+        // A reserved protocol value is one nobody can speak: unknown means
+        // MIDI 1.0, the conservative direction (see `UmpCapability::default`).
+        self.midi2
+            .store(protocol == Protocol::Midi2, Ordering::Relaxed);
     }
 }
 

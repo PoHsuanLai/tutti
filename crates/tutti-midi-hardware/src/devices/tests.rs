@@ -243,7 +243,7 @@ impl MidiEndpoints for Refuses {
     ) -> Result<Box<dyn InputConnection>> {
         Err(Error::MidiDevice("refused".into()))
     }
-    fn open_output(&self, _: EndpointId) -> Result<Box<dyn tutti_midi_runtime::MidiOut>> {
+    fn open_output(&self, _: EndpointId) -> Result<Box<dyn crate::DeviceOut>> {
         Err(Error::MidiDevice("refused".into()))
     }
 }
@@ -591,4 +591,64 @@ fn a_seed_after_a_change_is_refused() {
     sink.send(OsChange::Present(present[0].clone()));
     assert_eq!(sink.seed(present), Err(SeedError));
     assert_eq!(events.try_iter().count(), 1, "only the reported change");
+}
+
+/// A backend whose one output records the Protocols it is told to follow.
+struct Tagging(Arc<std::sync::Mutex<Vec<tutti_ump::Protocol>>>);
+
+struct TaggedSink(Arc<std::sync::Mutex<Vec<tutti_ump::Protocol>>>);
+
+impl tutti_midi_runtime::MidiOut for TaggedSink {
+    fn queue(&self, events: &[tutti_graph::UmpAt]) -> usize {
+        events.len()
+    }
+}
+
+impl crate::DeviceOut for TaggedSink {
+    fn follow(&self, protocol: tutti_ump::Protocol) {
+        self.0.lock().unwrap().push(protocol);
+    }
+}
+
+impl MidiEndpoints for Tagging {
+    fn watch(&self, sink: ChangeSink) -> Result<Box<dyn Watch>> {
+        sink.seed(os_devices(&[], &self.outputs()))?;
+        Ok(Box::new(crate::endpoints::NoWatch))
+    }
+    fn inputs(&self) -> Vec<EndpointInfo> {
+        Vec::new()
+    }
+    fn outputs(&self) -> Vec<EndpointInfo> {
+        vec![endpoint(1, "Synth")]
+    }
+    fn open_input(
+        &self,
+        _: EndpointId,
+        _: crate::InputProducerHandle,
+    ) -> Result<Box<dyn InputConnection>> {
+        Err(Error::MidiDevice("no inputs".into()))
+    }
+    fn open_output(&self, _: EndpointId) -> Result<Box<dyn crate::DeviceOut>> {
+        Ok(Box::new(TaggedSink(Arc::clone(&self.0))))
+    }
+}
+
+/// The sink is told the Protocol the batches are in, as the output opens and
+/// again at each change of configuration: a transport that tags its packets
+/// (CoreMIDI's event list) tags them with the negotiated Protocol, not the one
+/// the OS reported at open (M2-104 §7.1.6.2: the Protocol is what the Stream
+/// Configuration settled).
+#[test]
+fn the_sink_follows_the_protocol_the_output_is_in() {
+    use tutti_ump::{Protocol, StreamConfig};
+    let told = Arc::default();
+    let devices = Devices::open_over(Box::new(Tagging(Arc::clone(&told)))).unwrap();
+    let out = devices.open_output(&id_of(&devices, "Synth")).unwrap();
+    assert_eq!(*told.lock().unwrap(), [Protocol::Midi2], "at open");
+    out.set_config(StreamConfig {
+        protocol: Protocol::Midi1,
+        rx_jr: false,
+        tx_jr: false,
+    });
+    assert_eq!(*told.lock().unwrap(), [Protocol::Midi2, Protocol::Midi1]);
 }

@@ -31,6 +31,19 @@ impl Rpn {
     /// MSB semitones, LSB cents form, not the per-note 7.25 fixed point.
     pub const PITCH_BEND_SENSITIVITY: Self = Self::new(U7::of(0), U7::of(0));
 
+    /// RPN #00/01, **Channel Fine Tuning** (RP-022 renamed it from Master Fine
+    /// Tuning): 14 bits centred at `0x2000`, 100 cents over the half range.
+    pub const CHANNEL_FINE_TUNING: Self = Self::new(U7::of(0), U7::of(1));
+
+    /// RPN #00/02, **Channel Coarse Tuning** (RP-022): the data MSB is semitones
+    /// centred at 64; the LSB is not used.
+    pub const CHANNEL_COARSE_TUNING: Self = Self::new(U7::of(0), U7::of(2));
+
+    /// RPN #00/05, **Modulation Depth Range** (CA-026): scales the effective
+    /// range of the Modulation Wheel (CC 1). The MSB is semitones and the LSB
+    /// 100/128 cent, as GM2 section 3.4.4 words it.
+    pub const MODULATION_DEPTH_RANGE: Self = Self::new(U7::of(0), U7::of(5));
+
     /// RPN #00/06, the **MPE Configuration Message** (RP-053; M2-104 lists it as
     /// RPN 0x0006, "MPE MCM"). Its data is the member-channel count of the zone
     /// the message's channel names; `0` disables the zone.
@@ -73,6 +86,9 @@ mod tests {
     fn the_named_addresses_are_the_specs_numbers() {
         let table = [
             (Rpn::PITCH_BEND_SENSITIVITY, 0u8, 0u8),
+            (Rpn::CHANNEL_FINE_TUNING, 0, 1),
+            (Rpn::CHANNEL_COARSE_TUNING, 0, 2),
+            (Rpn::MODULATION_DEPTH_RANGE, 0, 5),
             (Rpn::MPE_CONFIGURATION, 0, 6),
             (Rpn::PER_NOTE_PITCH_BEND_SENSITIVITY, 0, 7),
         ];

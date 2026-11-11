@@ -489,7 +489,7 @@ impl crate::MidiEndpoints for Panicky {
     fn open_output(
         &self,
         _: tutti_midi_device::EndpointId,
-    ) -> crate::Result<Box<dyn tutti_midi_runtime::MidiOut>> {
+    ) -> crate::Result<Box<dyn crate::DeviceOut>> {
         Err(crate::Error::MidiDevice("none".into()))
     }
 }

@@ -8,7 +8,7 @@ use tutti_midi_protocol::narrow_velocity;
 use tutti_sf2::SoundFont;
 use tutti_types::{Amplitude, Semitones};
 use tutti_ump::MidiChannel;
-use tutti_voicing::{Command, VoiceId, VoiceView};
+use tutti_voicing::{ChannelState, Command, VoiceId, VoiceView};
 
 use crate::channel::Channel;
 use crate::patch::PresetPatch;
@@ -93,6 +93,7 @@ impl Voices {
                     velocity,
                     spec,
                     steal,
+                    glide,
                 } => {
                     let voice = steal.and_then(|v| self.take(v)).or_else(|| self.free.pop());
                     let Some(mut voice) = voice else { continue };
@@ -106,7 +107,16 @@ impl Voices {
                         i32::from(key.get()),
                         i32::from(narrow_velocity(velocity).get().max(1)),
                     );
+                    voice.glide(glide);
                     self.active.push(Slot { id, voice });
+                }
+                // A voice moved to a new key without a new attack: a legato
+                // channel's (the footswitch, CC 68), or the sounding voice a
+                // Portamento Control names.
+                Command::Retarget { id, key, glide, .. } => {
+                    if let Some(slot) = self.slot(id) {
+                        slot.voice.retarget(key, glide);
+                    }
                 }
                 Command::Release { id, .. } => {
                     if let Some(slot) = self.slot(id) {
@@ -123,8 +133,7 @@ impl Voices {
                         self.free.push(voice);
                     }
                 }
-                // `Rules::mode` is `Poly`, which never moves a voice to a new
-                // key; and a `Retune` is the core's answer to a bend, which
+                // A `Retune` is the core's answer to a bend or a tuning, which
                 // `process` reads back from the core each chunk
                 // (`Voicing::channel_pitch`): it is the one place the bend
                 // lives, so there is nothing to mirror here.
@@ -138,7 +147,7 @@ impl Voices {
                         slot.voice.reset_controls();
                     }
                 }
-                Command::Retarget { .. } | Command::Retune { .. } => {}
+                Command::Retune { .. } => {}
             }
         }
     }
@@ -159,11 +168,12 @@ impl Voices {
         &mut self,
         data: &[i16],
         channels: &[Channel],
+        states: &[ChannelState; MidiChannel::COUNT as usize],
         bends: &[Semitones; MidiChannel::COUNT as usize],
     ) {
         let mut i = 0;
         while i < self.active.len() {
-            if self.active[i].voice.process(data, channels, bends) {
+            if self.active[i].voice.process(data, channels, states, bends) {
                 i += 1;
             } else {
                 let slot = self.active.remove(i);

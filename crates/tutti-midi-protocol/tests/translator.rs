@@ -562,6 +562,160 @@ fn reset_all_controllers_nulls_the_selection() {
     );
 }
 
+/// **RP-015: Reset All Controllers sets "Registered and Non-registered
+/// parameter number LSB and MSB (#98-#101) to null value (127)"**, both halves.
+/// A select of the LSB alone afterwards therefore pairs with an MSB of 127, not
+/// with the MSB the channel had before the reset: RPN 0 (pitch bend
+/// sensitivity) must not come back from a lone `CC 100 = 0`.
+#[test]
+fn reset_all_controllers_nulls_both_halves_of_the_number() {
+    let mut t = Translator::new();
+    let out = run(
+        &mut t,
+        &[
+            cc(CCNumber::RPN_MSB, 0),
+            cc(CCNumber::RPN_LSB, 0),
+            cc(CCNumber::RESET_ALL, 0),
+            cc(CCNumber::RPN_LSB, 0),
+            cc(CCNumber::DATA_ENTRY, 12),
+            cc(CCNumber::DATA_ENTRY_LSB, 0),
+        ],
+    );
+    assert_eq!(out[5], vec![registered(127, 0, zx(12, 0))]);
+}
+
+/// **CA-031: "Bn 58 vv: vv = lower 7 bits affixed to the subsequent Note On /
+/// Note Off velocity"**; the velocity byte is the higher 7 bits. The 14-bit
+/// velocity is scaled Min-Center-Max to the 16 bits of the MIDI 2.0 Note On
+/// (M2-115 section 3), so `0x3FFF` is `0xFFFF` and `0x2000` the centre `0x8000`.
+/// The CC 88 itself is absorbed (M2-104 section 7.4.6: it "shall not be used
+/// for High Resolution Velocity" in the MIDI 2.0 Protocol).
+#[test]
+fn a_velocity_prefix_is_the_low_seven_bits_of_the_next_note_on() {
+    let note_on = |v: u8| -> Ump {
+        Message::Midi1(
+            at(A.0, A.1),
+            Voice1::NoteOn {
+                note: NoteNumber::of(60),
+                velocity: U7::of(v),
+            },
+        )
+        .into()
+    };
+    let on = |velocity: u16| {
+        Message::Midi2(
+            at(A.0, A.1),
+            Voice2::NoteOn {
+                note: NoteNumber::of(60),
+                velocity,
+                attribute: Attribute::None,
+            },
+        )
+    };
+    let mut t = Translator::new();
+    let out = run(
+        &mut t,
+        &[
+            cc(CCNumber::VELOCITY_PREFIX, 127),
+            note_on(127),
+            cc(CCNumber::VELOCITY_PREFIX, 1),
+            note_on(64),
+            // The prefix was cleared after the first parse: this is 7-bit.
+            note_on(64),
+        ],
+    );
+    assert_eq!(out[0], vec![]);
+    assert_eq!(out[1], vec![on(0xFFFF)]);
+    // 0x2001 is one step above the 14-bit centre.
+    assert_ne!(out[3], vec![on(0x8000)]);
+    assert_eq!(out[4], vec![on(0x8000)]);
+    // 0x3F81 (high 0x7F, low 0x01) is not the 7-bit maximum.
+    let out = run(&mut t, &[cc(CCNumber::VELOCITY_PREFIX, 1), note_on(127)]);
+    assert_ne!(out[1], vec![on(0xFFFF)]);
+}
+
+/// **CA-031: "A single High Resolution Velocity Prefix message only affects the
+/// next Note On or Note Off received on the matching channel. There may be
+/// other MIDI messages in between"**, and the smallest 14-bit Note On velocity
+/// is `0x0080`, so `Bn 58 00` then `9n kk 01` is the quietest Note On, the one
+/// the 7-bit message already was. A prefix on another channel does not apply.
+#[test]
+fn a_velocity_prefix_waits_across_other_messages_on_its_channel_only() {
+    let on = |channel: u8, v: u8| -> Ump {
+        Message::Midi1(
+            at(0, channel),
+            Voice1::NoteOn {
+                note: NoteNumber::of(60),
+                velocity: U7::of(v),
+            },
+        )
+        .into()
+    };
+    let mut t = Translator::new();
+    let out = run(
+        &mut t,
+        &[
+            cc_on(at(0, 0), CCNumber::VELOCITY_PREFIX, 0x40),
+            cc_on(at(0, 0), CCNumber::MOD_WHEEL, 5),
+            on(1, 1),
+            on(0, 1),
+        ],
+    );
+    let velocity = |m: &Vec<Message>| match m[..] {
+        [Message::Midi2(_, Voice2::NoteOn { velocity, .. })] => velocity,
+        _ => panic!("not one Note On: {m:?}"),
+    };
+    // Channel 1 carries no prefix: 7-bit 1 is 0x0200 (1 << 9).
+    assert_eq!(velocity(&out[2]), 0x0200);
+    // Channel 0: 14-bit 0x00C0 (1 << 7 | 0x40) is 0x0300 at 16 bits.
+    assert_eq!(velocity(&out[3]), 0x0300);
+}
+
+/// **CA-031: "If 9n kk 00 is received, that still qualifies as a valid Note
+/// Off, and the preceding Bn 58 xx has no effect."** The Note Off is the one
+/// `widen` makes (release velocity `0x8000`, M2-104 D.3.1), and the prefix does
+/// not carry over to the Note On after it.
+#[test]
+fn a_velocity_prefix_has_no_effect_on_a_note_on_at_zero() {
+    let note = |v: u8| -> Ump {
+        Message::Midi1(
+            at(A.0, A.1),
+            Voice1::NoteOn {
+                note: NoteNumber::of(60),
+                velocity: U7::of(v),
+            },
+        )
+        .into()
+    };
+    let mut t = Translator::new();
+    let out = run(
+        &mut t,
+        &[cc(CCNumber::VELOCITY_PREFIX, 0x55), note(0), note(64)],
+    );
+    assert_eq!(
+        out[1],
+        vec![Message::Midi2(
+            at(A.0, A.1),
+            Voice2::NoteOff {
+                note: NoteNumber::of(60),
+                velocity: 0x8000,
+                attribute: Attribute::None,
+            }
+        )]
+    );
+    assert_eq!(
+        out[2],
+        vec![Message::Midi2(
+            at(A.0, A.1),
+            Voice2::NoteOn {
+                note: NoteNumber::of(60),
+                velocity: 0x8000,
+                attribute: Attribute::None,
+            }
+        )]
+    );
+}
+
 // A stream that ends: `flush` sends what a trigger would have.
 
 /// **`flush` sends a CC 6 that no CC 38 followed, at LSB 0** (D.3.3's

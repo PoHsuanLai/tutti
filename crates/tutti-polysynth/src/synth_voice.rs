@@ -16,13 +16,17 @@
 //! first frame after the MIDI event that caused them — so an edge still lands
 //! on the event's frame.
 
+use crate::Portamento;
 use crate::bank::VoiceBank;
 use crate::mpe::{MpeControl, SLIDE_CENTER};
 use crate::unison::MAX_UNISON_VOICES;
 use crate::{FilterModConfig, FilterType, SynthConfig};
 use crate::{MpeVoiceState, UnisonEngine, UnisonVoiceParams};
-use tutti_types::{Amplitude, Depth, Hz, Pan, Phase, PhaseIncrement, Resonance};
+use tutti_types::{
+    Amplitude, Depth, Hz, Pan, Phase, PhaseIncrement, Resonance, SampleRate, Seconds,
+};
 use tutti_ump::{MidiChannel, NoteNumber};
+use tutti_voicing::{ChannelState, DEFAULT_MODULATION_RANGE};
 
 /// A gate edge waiting for the next control step.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -64,7 +68,6 @@ pub(crate) struct SynthVoice {
     /// lane: the SVF's `Q` is fixed for the synth, so CC71 reaches only
     /// [`FilterType::Moog`], as it always has.
     base_filter_resonance: Resonance,
-    mod_wheel_value: f32,
     velocity_mod_value: f32,
     /// Normalized CC74 (Brightness) position, `0..1` centered at `0.5` — a
     /// controller value, not a frequency. Mapped onto `base_filter_cutoff` as
@@ -84,7 +87,37 @@ pub(crate) struct SynthVoice {
     /// with its per-note bend, before the channel's bend), if any: else the
     /// key's.
     tuned: Option<Hz>,
+    /// This voice's glide: its pitch over the pitch it glides to is a factor on
+    /// the sounding pitch ([`glide_ratio`](Self::glide_ratio)), so a glide, a
+    /// per-note pitch and the channel's bend are three factors on one pitch and
+    /// none overwrites another. Only this voice glides.
+    glide: Portamento,
     sub_voices: usize,
+}
+
+/// What the channel's Volume and Expression do to a voice's gain: General MIDI 2
+/// section 3.3.4's square law ("the square of the value is proportional to the
+/// volume": `gain in dB = 40 * log10(cc7/127)`) on their product, relative to
+/// the defaults (Volume 100, Expression 127), so a channel that has been told
+/// nothing sounds at the voice's own level.
+fn channel_level(channel: &ChannelState) -> f32 {
+    let relative = channel.volume() * channel.expression() / ChannelState::DEFAULT_LEVEL;
+    relative * relative
+}
+
+/// The channel's pan (CC 10) as a pair of gains on a voice's own: RP-036's
+/// `cos` and `sin` of `Pi/2` along the pan, scaled by `sqrt(2)` so that the
+/// centre leaves the voice's own placement alone (its constant-power pan law
+/// puts `sqrt(0.5)` in each channel at its centre, which a mono voice at the
+/// channel's centre keeps: RP-036's `cos (Pi/4)`). A mono voice panned by the
+/// channel alone thus has RP-036's gains exactly; a unison stack, whose
+/// sub-voices spread about the centre, is balanced by it.
+fn channel_pan(channel: &ChannelState) -> (f32, f32) {
+    // `sqrt(2) cos(Pi/4 + d)` is `cos d - sin d` and `sqrt(2) sin(Pi/4 + d)` is
+    // `cos d + sin d`, with `d` the angle off the centre: written so, the centre
+    // is 1 exactly, where `SQRT_2 * FRAC_PI_4.cos()` is one ulp short in `f32`.
+    let (sin, cos) = (std::f32::consts::FRAC_PI_4 * channel.pan().get()).sin_cos();
+    (cos - sin, cos + sin)
 }
 
 impl SynthVoice {
@@ -115,8 +148,13 @@ impl SynthVoice {
 
     /// The voice's amplitude right now: its envelope times its gain. What the
     /// allocator compares when it steals the quietest voice.
-    pub(crate) fn output_level(&self, bank: &VoiceBank, index: usize) -> f32 {
-        bank.envelope(bank.lane(index, 0)).get() * self.voice_gain()
+    pub(crate) fn output_level(
+        &self,
+        bank: &VoiceBank,
+        index: usize,
+        channel: &ChannelState,
+    ) -> f32 {
+        bank.envelope(bank.lane(index, 0)).get() * self.voice_gain(channel)
     }
 
     /// Whether this voice is silent, so a note-on would start it fresh.
@@ -168,7 +206,6 @@ impl SynthVoice {
             pitch: Hz(440.0),
             base_filter_cutoff,
             base_filter_resonance,
-            mod_wheel_value: 0.0,
             velocity_mod_value: 1.0,
             cc_cutoff_value: 0.5,
             cc_resonance_value: 0.0,
@@ -179,6 +216,10 @@ impl SynthVoice {
             mpe: MpeVoiceState::new(config.mpe_enabled),
             base_note_freq: Hz(440.0),
             tuned: None,
+            glide: Portamento::new(
+                config.portamento.clone().unwrap_or_default(),
+                config.sample_rate,
+            ),
             sub_voices: unison_count.max(1),
         }
     }
@@ -230,7 +271,6 @@ impl SynthVoice {
         self.edge = GateEdge::None;
         self.snap_tone = false;
         self.snap_gain = false;
-        self.mod_wheel_value = 0.0;
         self.velocity_mod_value = 1.0;
         self.cc_cutoff_value = 0.5;
         self.cc_resonance_value = 0.0;
@@ -239,6 +279,46 @@ impl SynthVoice {
         self.base_note_freq = Hz(440.0);
         self.tuned = None;
         self.pitch = Hz(440.0);
+        self.glide.reset(Hz(440.0));
+    }
+
+    /// Re-rates the glide.
+    pub(crate) fn set_rate(&mut self, sample_rate: SampleRate) {
+        self.glide.set_sample_rate(sample_rate);
+    }
+
+    /// Starts a glide from `from` to `to` over `time`: what the MIDI stream
+    /// asked for (Portamento On/Off, Portamento Control).
+    pub(crate) fn begin_glide(&mut self, from: Hz, to: Hz, time: Seconds) {
+        self.glide.begin(from, to, time);
+    }
+
+    /// The glide the synth's config asks of a note that was given none by the
+    /// stream: `last` is the pitch struck before it. A voice moved by legato
+    /// glides on from where it is.
+    pub(crate) fn config_glide(&mut self, last: Hz, to: Hz, legato: bool) {
+        if !legato {
+            self.glide.reset(last);
+        }
+        self.glide.set_target(to, legato);
+    }
+
+    /// The factor the glide puts on the voice's pitch: 1 when it is not
+    /// gliding.
+    pub(crate) fn glide_ratio(&self) -> f32 {
+        self.glide.ratio()
+    }
+
+    /// Whether the voice is gliding now.
+    pub(crate) fn is_gliding(&self) -> bool {
+        self.glide.is_gliding()
+    }
+
+    /// Advances the glide by `frames`, to the end of a control step: the voices
+    /// are aimed at where it will be at the end of the step and the bank ramps
+    /// the lanes there.
+    pub(crate) fn advance_glide(&mut self, frames: usize) {
+        self.glide.advance(frames);
     }
 
     #[cfg(test)]
@@ -275,6 +355,7 @@ impl SynthVoice {
         index: usize,
         frames: usize,
         unison: Option<&UnisonEngine>,
+        channel: &ChannelState,
     ) {
         let edge = core::mem::replace(&mut self.edge, GateEdge::None);
         for sub in 0..self.sub_voices {
@@ -291,10 +372,10 @@ impl SynthVoice {
             }
         }
 
-        let cutoff = self.modulated_cutoff(frames, bank.sample_rate());
+        let cutoff = self.modulated_cutoff(frames, bank.sample_rate(), channel);
         let resonance = self.modulated_resonance();
         let freq = self.sounding_freq().get();
-        let gain = self.voice_gain();
+        let (gain, (pan_left, pan_right)) = (self.voice_gain(channel), channel_pan(channel));
 
         // One coefficient computation for the whole stack: the sub-voices
         // share the voice's cutoff.
@@ -315,8 +396,8 @@ impl SynthVoice {
             let (pan, g) = (pan.get(), amplitude.get() * gain);
             bank.set_gains(
                 lane,
-                Amplitude(((1.0 - pan) * 0.5).sqrt() * g),
-                Amplitude(((1.0 + pan) * 0.5).sqrt() * g),
+                Amplitude(((1.0 - pan) * 0.5).sqrt() * g * pan_left),
+                Amplitude(((1.0 + pan) * 0.5).sqrt() * g * pan_right),
             );
             if self.snap_tone {
                 bank.snap_tone(lane);
@@ -330,10 +411,11 @@ impl SynthVoice {
         self.snap_gain = false;
     }
 
-    /// Velocity, MPE pressure and per-note gain, combined.
-    fn voice_gain(&self) -> f32 {
-        let (pressure_gain, note_gain) = self.mpe.gain_factors();
-        self.velocity * pressure_gain * note_gain
+    /// Velocity, pressure (the note's and the channel's), per-note gain and the
+    /// channel's Volume and Expression, combined.
+    fn voice_gain(&self, channel: &ChannelState) -> f32 {
+        let (pressure_gain, note_gain) = self.mpe.gain_factors(channel.pressure());
+        self.velocity * pressure_gain * note_gain * channel_level(channel)
     }
 
     /// The cutoff every modulation source leaves, advancing the filter LFO by
@@ -344,7 +426,12 @@ impl SynthVoice {
     /// the cutoff the others computed, and the cutoff is recomputed even when
     /// every source is idle, so a slide that returns to center returns the
     /// filter too.
-    fn modulated_cutoff(&mut self, frames: usize, sample_rate: tutti_types::SampleRate) -> Hz {
+    fn modulated_cutoff(
+        &mut self,
+        frames: usize,
+        sample_rate: tutti_types::SampleRate,
+        channel: &ChannelState,
+    ) -> Hz {
         let fm = &self.filter_mod;
         let mut cutoff = self.base_filter_cutoff.get();
 
@@ -352,7 +439,12 @@ impl SynthVoice {
         // type at the multiply rather than the struct carrying bare floats for
         // the arithmetic's sake.
         if fm.mod_wheel_depth > Depth(0.0) {
-            cutoff *= 1.0 + self.mod_wheel_value * fm.mod_wheel_depth.get();
+            // The channel's wheel: its depth over the Modulation Depth Range
+            // (RPN 5, CA-026) the depth is measured in, so at the default range
+            // a full wheel is `mod_wheel_depth` and a range twice that opens
+            // twice as far.
+            let wheel = channel.modulation_depth().get() / DEFAULT_MODULATION_RANGE.get();
+            cutoff *= 1.0 + wheel * fm.mod_wheel_depth.get();
         }
 
         if fm.velocity_depth > Depth(0.0) {
@@ -397,15 +489,6 @@ impl SynthVoice {
     #[cfg(test)]
     pub(crate) fn sound_controllers(&self) -> (f32, f32) {
         (self.cc_cutoff_value, self.cc_resonance_value)
-    }
-
-    #[cfg(test)]
-    pub(crate) fn mod_wheel(&self) -> f32 {
-        self.mod_wheel_value
-    }
-
-    pub(crate) fn set_mod_wheel(&mut self, value: f32) {
-        self.mod_wheel_value = value;
     }
 
     pub(crate) fn set_velocity_mod(&mut self, value: f32) {

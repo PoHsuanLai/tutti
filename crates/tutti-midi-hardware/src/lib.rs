@@ -9,6 +9,14 @@
 // No `///` on these: a doc comment on a `pub mod` shadows the module's own
 // `//!` and re-resolves its intra-doc links in this scope.
 mod backend;
+// Compiled everywhere so its tests run on every platform; only the native
+// backends (ALSA, CoreMIDI) convert an OS block, so it is dead where the stub
+// is the backend.
+#[cfg_attr(
+    not(any(target_os = "macos", all(target_os = "linux", alsa_ump))),
+    allow(dead_code, reason = "only a native backend converts OS blocks")
+)]
+mod block;
 mod capability;
 mod devices;
 mod endpoints;
@@ -31,7 +39,7 @@ pub use devices::{
     ChangeSink, DeviceEvents, Devices, OpenInput, OpenOutput, RecvTimeoutError, SeedError,
     WatchFailure,
 };
-pub use endpoints::{InputConnection, MidiEndpoints, Watch};
+pub use endpoints::{DeviceOut, InputConnection, MidiEndpoints, Watch};
 pub use error::{Error, Result};
 pub use port::{HardwareMidiInputs, InputProducerHandle, PortId, PortInfo};
 pub use session::MidiSession;

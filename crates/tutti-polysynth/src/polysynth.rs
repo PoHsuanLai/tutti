@@ -16,7 +16,7 @@ use crate::bank::{CONTROL_BLOCK, VoiceBank};
 use crate::mpe::MpeControl;
 use crate::synth_voice::SynthVoice;
 use crate::voice::Gate;
-use crate::{Portamento, UnisonEngine, VoiceAllocator, VoiceAllocatorConfig};
+use crate::{UnisonEngine, VoiceAllocator, VoiceAllocatorConfig};
 use tutti_graph::{EventKind, SubBlocks};
 use tutti_midi_protocol::{MpeZoneConfig, MpeZones};
 use tutti_midi_protocol::{channel_voice, narrow_value};
@@ -25,9 +25,9 @@ use tutti_types::Hz;
 use tutti_types::{Amplitude, Param, Tail};
 use tutti_ump::NoteId;
 use tutti_ump::{
-    Attribute, CCNumber, MidiChannel, NoteNumber, RegisteredPerNoteController, Rpn, Ump, Voice2,
+    Attribute, CCNumber, MidiChannel, NoteNumber, RegisteredPerNoteController, Ump, Voice2,
 };
-use tutti_voicing::{Controller, Effect, NoteControl, Stop};
+use tutti_voicing::{Controller, Effect, Glide, NoteControl, Stop};
 
 use std::sync::Arc;
 
@@ -80,7 +80,9 @@ pub struct PolySynth {
     voices: Vec<SynthVoice>,
     /// Every sub-voice's oscillator, filter and envelope state, in SIMD lanes.
     bank: VoiceBank,
-    portamento: Option<Portamento>,
+    /// The key frequency last struck: where a glide the config asks for leaves
+    /// from (the glides themselves are the voices').
+    last_freq: Hz,
     unison: Option<UnisonEngine>,
     /// Where each channel's pitch stands, as the note logic last said: what
     /// its wheel times its sensitivity comes to.
@@ -136,11 +138,6 @@ impl PolySynth {
             .collect();
         let bank = Self::build_bank(&config, unison_count);
 
-        let portamento = config
-            .portamento
-            .as_ref()
-            .map(|p| Portamento::new(p.clone(), config.sample_rate));
-
         let master_volume = Param::new(Amplitude::UNITY);
         let bends = [tutti_types::Semitones(0.0); 16];
 
@@ -149,7 +146,7 @@ impl PolySynth {
             allocator,
             voices,
             bank,
-            portamento,
+            last_freq: Hz(440.0),
             unison,
             bends,
             master_volume,
@@ -382,13 +379,25 @@ impl PolySynth {
                 // every instrument; the rest are this synth's own.
                 match Controller::effect(controller, narrow_value(value)) {
                     Some(effect) => self.handle_effect(effect, channel),
-                    None => self.handle_cc(controller, u32_to_unit_f32(value)),
+                    // The channel's controllers (modulation, volume, pan,
+                    // expression, the portamento and legato switches) are the
+                    // note logic's, which keeps them for each channel; the sound
+                    // controllers are this synth's own.
+                    None => {
+                        self.bend_message(channel, &voice);
+                        self.handle_cc(controller, u32_to_unit_f32(value));
+                    }
                 }
             }
+            // Channel Pressure is the channel's, kept by the note logic.
+            Voice2::ChannelPressure(_) => self.bend_message(channel, &voice),
             // A channel's pitch bend moves the notes sounding on that channel
             // (MIDI 1.0, Pitch Bend Change). The note logic keeps the wheels and
             // says where each channel's pitch stands.
             Voice2::PitchBend(_) => self.bend_message(channel, &voice),
+            // The channel's registered parameters (the bend sensitivity, the
+            // channel tuning, the Modulation Depth Range) are the note logic's.
+            Voice2::Registered { .. } => self.bend_message(channel, &voice),
             // Per-note controllers, Per-Note Management and the per-note bend's
             // sensitivity (RPN 0/7) are the note logic's: it keeps what each
             // channel's Note Number was told (so a value sent before its Note
@@ -400,24 +409,11 @@ impl PolySynth {
             | Voice2::AssignablePerNote { .. }
             | Voice2::RegisteredPerNote { .. }
             | Voice2::PerNoteManagement { .. } => self.bend_message(channel, &voice),
-            Voice2::Registered { bank, index, .. }
-                if Rpn::new(bank, index) == Rpn::PER_NOTE_PITCH_BEND_SENSITIVITY =>
-            {
-                self.bend_message(channel, &voice);
-            }
-            // Channel Pitch Bend Sensitivity (RPN 0): the note logic's.
-            Voice2::Registered { bank, index, .. }
-                if Rpn::new(bank, index) == Rpn::PITCH_BEND_SENSITIVITY =>
-            {
-                self.bend_message(channel, &voice);
-            }
             // Controllers and messages with no target in a synth.
-            Voice2::Registered { .. }
-            | Voice2::Assignable { .. }
+            Voice2::Assignable { .. }
             | Voice2::RelativeRegistered { .. }
             | Voice2::RelativeAssignable { .. }
-            | Voice2::ProgramChange { .. }
-            | Voice2::ChannelPressure(_) => {}
+            | Voice2::ProgramChange { .. } => {}
         }
     }
 
@@ -476,7 +472,10 @@ impl PolySynth {
                     .fractional_note_to_freq(pitch.note_number());
                 let ratio = self.bend_ratio(self.voices[slot].channel());
                 self.voices[slot].set_tuning_freq(freq);
-                self.voices[slot].set_pitch(freq * ratio);
+                // The note's own pitch, with the glide it may be on and the
+                // channel's bend on it.
+                let glide = self.voices[slot].glide_ratio();
+                self.voices[slot].set_pitch(freq * glide * ratio);
                 return;
             }
             NoteControl::Pressure(value) => MpeControl::Pressure(u32_to_unit_f32(value)),
@@ -510,20 +509,15 @@ impl PolySynth {
             }
             // Reset All Controllers (RP-015, M2-104 Appendix B.2): the channel's
             // controllers return to their defaults, but not the per-note
-            // controllers, which belong to individual notes. Pedals up and the
-            // wheel centred are the note logic's (the notes the pedals held are
-            // released).
+            // controllers, which belong to individual notes (but for Polyphonic
+            // Pressure). All of it is the note logic's: the pedals, the wheel,
+            // modulation, expression, pressure (the notes the pedals held are
+            // released), by channel. The sound controllers (CC 70-79:
+            // resonance, brightness) are not reset by RP-015, so CC 71 and CC 74
+            // stay where they were.
             Effect::ResetControllers => {
                 self.allocator.reset_controllers(channel);
                 self.carry_out_gates();
-                // The modulation wheel returns to 0, but it is the synth's
-                // one global wheel here, not a channel's: every voice's is
-                // reset whichever channel asks. The sound controllers
-                // (CC 70-79: resonance, brightness) are not reset by RP-015,
-                // so CC 71 and CC 74 stay where they were.
-                for v in &mut self.voices {
-                    v.set_mod_wheel(0.0);
-                }
             }
             Effect::Stop(Stop::Cut) => {
                 self.allocator.all_sound_off(channel);
@@ -541,9 +535,6 @@ impl PolySynth {
 
     fn handle_cc(&mut self, cc_num: CCNumber, value: f32) {
         match cc_num {
-            CCNumber::MOD_WHEEL => {
-                self.voices.iter_mut().for_each(|v| v.set_mod_wheel(value));
-            }
             CCNumber::RESONANCE => {
                 self.voices
                     .iter_mut()
@@ -561,12 +552,6 @@ impl PolySynth {
     }
 
     fn apply_pitch_bend(&mut self) {
-        if let Some(ref porta) = self.portamento
-            && porta.is_gliding()
-        {
-            return;
-        }
-
         // The bend is a frequency ratio at every site (note-on and glide bend
         // interpolated frequencies, which have no note number). Adding it to
         // the note number instead would differ on an unequal tuning table.
@@ -575,14 +560,18 @@ impl PolySynth {
         self.voices
             .iter_mut()
             .filter(|v| v.is_active())
-            .for_each(|voice| {
-                let base_freq = voice.tuned().unwrap_or_else(|| {
-                    tuning.fractional_note_to_freq(f32::from(voice.note().get()))
-                });
-                voice.set_pitch(
-                    base_freq * bends[usize::from(voice.channel().get())].to_pitch_ratio(),
-                );
-            });
+            .for_each(|voice| Self::sound(voice, tuning, bends));
+    }
+
+    /// Sets `voice`'s pitch to what its factors make of it: the note's own (its
+    /// key's, or the one a per-note controller told it), the glide it is on and
+    /// its channel's bend.
+    fn sound(voice: &mut SynthVoice, tuning: &crate::Tuning, bends: &[tutti_types::Semitones; 16]) {
+        let base_freq = voice
+            .tuned()
+            .unwrap_or_else(|| tuning.fractional_note_to_freq(f32::from(voice.note().get())));
+        let bend = bends[usize::from(voice.channel().get())].to_pitch_ratio();
+        voice.set_pitch(base_freq * voice.glide_ratio() * bend);
     }
 
     /// Does to the voices what the note logic's commands asked of their slots.
@@ -612,7 +601,8 @@ impl PolySynth {
                     channel,
                     velocity,
                     legato,
-                } => self.start_voice(slot, key, channel, velocity, legato),
+                    glide,
+                } => self.start_voice(slot, key, channel, velocity, legato, glide),
             }
         }
         self.allocator.return_gates(gates);
@@ -622,6 +612,10 @@ impl PolySynth {
     }
 
     /// Starts the voice in `slot` on `note` (or, `legato`, moves it there).
+    /// `glide` is the one the stream asked for (Portamento On/Off and
+    /// Portamento Control, resolved by the note logic): the voice's pitch leaves
+    /// the glide's key and reaches the note's in the glide's time. With none,
+    /// the config's own portamento rule may glide it from the key struck before.
     fn start_voice(
         &mut self,
         slot_index: usize,
@@ -629,18 +623,12 @@ impl PolySynth {
         channel: MidiChannel,
         vel_norm: f32,
         is_legato: bool,
+        glide: Option<Glide>,
     ) {
-        let base_freq = self
-            .config
-            .tuning
-            .fractional_note_to_freq(f32::from(note.get()));
+        let tuning = &self.config.tuning;
+        let base_freq = tuning.fractional_note_to_freq(f32::from(note.get()));
+        let last = std::mem::replace(&mut self.last_freq, base_freq);
         let bend_multiplier = self.bend_ratio(channel);
-        let target_freq = if let Some(ref mut porta) = self.portamento {
-            porta.set_target(base_freq, is_legato);
-            porta.current() * bend_multiplier
-        } else {
-            base_freq * bend_multiplier
-        };
         let voice = &mut self.voices[slot_index];
         if !is_legato && voice.is_fresh() {
             // A fresh draw for this voice alone, held by the voice: the notes of
@@ -651,11 +639,21 @@ impl PolySynth {
         }
         voice.set_velocity_mod(vel_norm);
         if is_legato {
-            voice.set_pitch(target_freq);
+            // The new key's own pitch: what a per-note controller told the old
+            // one is not the new one's.
+            voice.clear_tuning();
             voice.update_legato(note, channel);
         } else {
-            voice.note_on(note, channel, vel_norm, target_freq);
+            voice.note_on(note, channel, vel_norm, base_freq);
         }
+        match glide {
+            Some(g) => {
+                let from = tuning.fractional_note_to_freq(f32::from(g.from.get()));
+                voice.begin_glide(from, base_freq, g.time);
+            }
+            None => voice.config_glide(last, base_freq, is_legato),
+        }
+        voice.set_pitch(base_freq * voice.glide_ratio() * bend_multiplier);
     }
 
     fn mark_voice_finished(&mut self, slot_index: usize) {
@@ -675,22 +673,27 @@ impl PolySynth {
     /// Rendering a whole sub-block at the glide's final pitch would instead
     /// produce a staircase, one step per MIDI sub-block.
     fn control_step(&mut self, frames: usize) {
-        if let Some(ref mut porta) = self.portamento
-            && porta.is_gliding()
+        // Each gliding voice advances by the step and is aimed where its glide
+        // will be at the end of it. Its pitch is its own factors again (the
+        // note's, the glide, the bend), so a glide never overwrites what a
+        // per-note controller told the note. Neither operand changes inside a
+        // step (MIDI is handled between steps).
+        let tuning = &self.config.tuning;
+        let bends = &self.bends;
+        for voice in self
+            .voices
+            .iter_mut()
+            .filter(|v| v.is_active() && v.is_gliding())
         {
-            let freq = porta.advance(frames);
-            // Neither operand changes inside a step (MIDI is handled between
-            // steps).
-            let bends = &self.bends;
-            for voice in self.voices.iter_mut().filter(|v| v.is_active()) {
-                voice.set_pitch(freq * bends[usize::from(voice.channel().get())].to_pitch_ratio());
-            }
+            voice.advance_glide(frames);
+            Self::sound(voice, tuning, bends);
         }
 
         let unison = self.unison.as_ref();
         for (i, voice) in self.voices.iter_mut().enumerate() {
             if voice.is_active() {
-                voice.drive(&mut self.bank, i, frames, unison);
+                let channel = self.allocator.channel_state(voice.channel());
+                voice.drive(&mut self.bank, i, frames, unison, channel);
             }
         }
     }
@@ -733,7 +736,8 @@ impl PolySynth {
             if !voice.is_active() {
                 continue;
             }
-            let level = voice.output_level(&self.bank, i);
+            let channel = *self.allocator.channel_state(voice.channel());
+            let level = voice.output_level(&self.bank, i, &channel);
             voice.set_envelope_level(level);
             self.allocator.update_envelope_level(i, level);
             if voice.is_finished(&self.bank, i) {
@@ -781,9 +785,7 @@ impl PolySynth {
         self.bank.reset();
         self.allocator.reset();
         self.bends = [tutti_types::Semitones(0.0); 16];
-        if let Some(ref mut porta) = self.portamento {
-            porta.reset(Hz::new(440.0));
-        }
+        self.last_freq = Hz(440.0);
     }
 
     /// Detach the control cells (master volume, unison detune and spread)
@@ -799,8 +801,8 @@ impl PolySynth {
     /// Re-rate the voice bank and the glide.
     pub(crate) fn set_rate(&mut self, sample_rate: tutti_types::SampleRate) {
         self.bank.set_sample_rate(sample_rate);
-        if let Some(ref mut porta) = self.portamento {
-            porta.set_sample_rate(sample_rate);
+        for voice in &mut self.voices {
+            voice.set_rate(sample_rate);
         }
     }
 }
@@ -814,7 +816,7 @@ impl Clone for PolySynth {
             allocator: self.allocator.clone(),
             voices: self.voices.clone(),
             bank: self.bank.clone(),
-            portamento: self.portamento.clone(),
+            last_freq: self.last_freq,
             unison: self.unison.clone(),
             bends: self.bends,
             master_volume: self.master_volume.clone(),

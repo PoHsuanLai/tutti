@@ -2,16 +2,14 @@
 
 use std::os::raw::c_int;
 
+use crate::block::RawBlock;
 use crate::capability::{EndpointInfo, UmpCapability};
 use tutti_alsa_ffi::{
     BLOCK_IS_LOWSPEED, BLOCK_IS_MIDI1, CAP_READ, CAP_SUBS_READ, CAP_SUBS_WRITE, CAP_WRITE, Client,
-    DIR_BIDIRECTION, DIR_INPUT, DIR_OUTPUT, PROTO_MIDI2, PortEntry, UmpBlock, UmpEndpoint,
+    PROTO_MIDI2, PortEntry, UmpBlock, UmpEndpoint,
 };
-use tutti_midi_device::{BlockName, EndpointId, FunctionBlock, Identity};
-use tutti_ump::{
-    Direction as BlockDirection, FirstGroup, FunctionBlockId, GroupSpan, Midi1Port, Protocol,
-    UiHint,
-};
+use tutti_midi_device::{EndpointId, FunctionBlock, Identity};
+use tutti_ump::Protocol;
 
 /// Which direction an endpoint is being listed for.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -174,40 +172,24 @@ pub(super) fn capability_of(ump: Option<&UmpEndpoint>) -> UmpCapability {
 /// The Function Block a sequencer block is; `None` for one the UMP spec cannot
 /// hold (a number above 31, Groups past 16, a reserved direction).
 fn block_of(block: &UmpBlock) -> Option<FunctionBlock> {
-    let direction = match block.direction {
-        DIR_INPUT => BlockDirection::Input,
-        DIR_OUTPUT => BlockDirection::Output,
-        DIR_BIDIRECTION => BlockDirection::Bidirectional,
-        _ => return None,
+    let midi1 = if block.flags & BLOCK_IS_MIDI1 == 0 {
+        0
+    } else if block.flags & BLOCK_IS_LOWSPEED != 0 {
+        2
+    } else {
+        1
     };
-    let mut out = FunctionBlock::new(
-        FunctionBlockId::new(u8::try_from(block.id).ok()?)?,
-        direction,
-        FirstGroup::new(u8::try_from(block.first_group).ok()?)?,
-        GroupSpan::new(u8::try_from(block.num_groups).ok()?)?,
-    )?
-    .with_active(block.active)
-    .with_ui_hint(match block.ui_hint {
-        1 => UiHint::Receiver,
-        2 => UiHint::Sender,
-        3 => UiHint::Both,
-        _ => UiHint::Unknown,
-    })
-    .with_midi_ci(
-        u8::try_from(block.midi_ci_version).unwrap_or(0),
-        u8::try_from(block.sysex8_streams).unwrap_or(0),
-    );
-    if block.flags & BLOCK_IS_MIDI1 != 0 {
-        let port = if block.flags & BLOCK_IS_LOWSPEED != 0 {
-            Midi1Port::Restricted
-        } else {
-            Midi1Port::Unrestricted
-        };
-        // A port over several Groups is not one (§7.1.8): kept as a block.
-        out = out.with_midi1(port).unwrap_or(out);
+    RawBlock {
+        id: block.id,
+        active: block.active,
+        direction: block.direction,
+        first_group: block.first_group,
+        groups: block.num_groups,
+        midi1,
+        ui_hint: block.ui_hint,
+        midi_ci_version: block.midi_ci_version,
+        sysex8_streams: block.sysex8_streams,
+        name: block.name.as_deref(),
     }
-    if let Some(name) = block.name.as_deref().and_then(BlockName::new) {
-        out = out.with_name(name);
-    }
-    Some(out)
+    .function_block()
 }

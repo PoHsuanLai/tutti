@@ -1,9 +1,10 @@
 //! Portamento: one pitch glide, stepped per sample.
 //!
-//! There is a single glide per synth rather than one per voice — it tracks the
-//! last note targeted, and every sounding voice is driven to its current
-//! frequency. That is what makes glide a monophonic idea in practice even when
-//! the synth is polyphonic.
+//! Each voice has its own, so a note's glide moves that voice and no other (M1
+//! p.16: a Portamento Control "does not affect the pitch of other currently
+//! sounding voices"). A glide is a factor on the voice's pitch
+//! ([`Portamento::ratio`]), not a pitch of its own, so it composes with a
+//! per-note pitch and the channel's bend instead of replacing them.
 //!
 //! Interpolation is logarithmic, so a glide is even in musical interval rather
 //! than in [`Hz`]; the [`Law`] of [`PortamentoConfig::curve`] reshapes only how far along
@@ -146,6 +147,36 @@ impl Portamento {
         }
     }
 
+    /// Starts a glide from `from` to `to` over `time`, whatever the config's mode:
+    /// a glide the MIDI stream asked for (Portamento On/Off and Portamento
+    /// Control, which `tutti-voicing` resolves to a source key and a time). A
+    /// glide of no time, or between equal pitches, is a jump.
+    pub fn begin(&mut self, from: Hz, to: Hz, time: Seconds) {
+        self.target_freq = to;
+        let glide_samples = (time.get() * self.sample_rate.get()) as f32;
+        if from == to || glide_samples <= 0.0 {
+            self.start_freq = to;
+            self.current_freq = to;
+            self.progress = 1.0;
+        } else {
+            self.start_freq = from;
+            self.current_freq = from;
+            self.rate = 1.0 / glide_samples;
+            self.progress = 0.0;
+        }
+    }
+
+    /// The glide's pitch over the pitch it is gliding to: what a voice multiplies
+    /// its own pitch (a per-note tuning, the bend) by. 1 once it has arrived.
+    #[inline]
+    pub fn ratio(&self) -> f32 {
+        if self.progress >= 1.0 {
+            1.0
+        } else {
+            self.current_freq.get() / self.target_freq.get()
+        }
+    }
+
     /// One frame of the glide: the reference [`advance`](Self::advance) is
     /// pinned against (`advance_is_that_many_ticks`).
     #[cfg(test)]
@@ -194,6 +225,7 @@ impl Portamento {
         Hz((log_start + (log_target - log_start) * t).exp())
     }
 
+    #[cfg(test)]
     #[inline]
     pub fn current(&self) -> Hz {
         self.current_freq

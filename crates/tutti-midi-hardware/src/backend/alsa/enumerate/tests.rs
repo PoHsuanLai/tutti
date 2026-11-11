@@ -1,4 +1,5 @@
 use super::*;
+use tutti_alsa_ffi::{DIR_BIDIRECTION, DIR_INPUT, DIR_OUTPUT};
 
 // What `pack_id` makes unpacks to what went in, at the ends of both bytes.
 #[test]

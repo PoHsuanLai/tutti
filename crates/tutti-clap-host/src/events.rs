@@ -512,7 +512,7 @@ impl ClapEvent {
     /// `0.0..=1.0`: a MIDI 1.0 note is widened first
     /// ([`tutti_midi_protocol::widen`]), so its Note On at velocity 0 is a Note
     /// Off at release velocity 0.5 (M2-104 Appendix D.3.1). A native MIDI 2.0
-    /// Note On at velocity 0 is a Note Off at 0.0. Per-note pitch bend, pressure and the per-note controllers CLAP
+    /// Note On at velocity 0 is a note-on at 0.0 (§7.4.2). Per-note pitch bend, pressure and the per-note controllers CLAP
     /// has an expression for are note expressions. Every other channel voice
     /// message CLAP has no typed event for (CC, channel pitch bend and
     /// pressure, program change) is a generic MIDI-1 `Midi` event, and a System
@@ -609,17 +609,9 @@ impl ClapEvent {
             // CLAP note events carry no attribute, so the note plays whatever its
             // attribute type. M2-104 Table 8 (section 7.4.14) marks types 0x04 to
             // 0xFF reserved and tells senders not to use them (section 2.1.3); it
-            // gives a receiver no rule for them.
-            Voice2::NoteOn {
-                note,
-                velocity: 0,
-                attribute: _,
-            } => Some(ClapEvent::note_off(
-                time,
-                clap_channel,
-                i16::from(note.get()),
-                0.0,
-            )),
+            // gives a receiver no rule for them. A Note On at velocity 0 is a
+            // note-on at 0.0 (M2-104 §7.4.2: velocity 0 "does not function as a
+            // Note Off"); a CLAP note-on carries 0 with no such convention.
             Voice2::NoteOn {
                 note,
                 velocity,
@@ -2140,11 +2132,13 @@ mod tests {
 
     /// **A MIDI 1.0 Note On at velocity 0 is a Note Off at release velocity
     /// 0x8000** (M2-104 Appendix D.3.1), so the plugin hears a release at
-    /// `0x8000 / 0xFFFF`, not 0. A native MIDI 2.0 Note On at velocity 0 stays
-    /// a Note Off at 0.
+    /// `0x8000 / 0xFFFF`, not 0. A native MIDI 2.0 Note On at velocity 0 is a
+    /// note-on at 0.0 (M2-104 §7.4.2: it "does not function as a Note Off").
     ///
-    /// Mutation (run): a MIDI 1.0 Note On at velocity 0 folded to a Note Off
-    /// at 0 instead of widened → the first assertion fails.
+    /// Mutations (run): a MIDI 1.0 Note On at velocity 0 folded to a Note Off
+    /// at 0 instead of widened → the first assertion fails; the MIDI 2.0 Note
+    /// On at velocity 0 sent as a Note Off (the arm this replaced) → the
+    /// second fails.
     #[test]
     fn a_midi1_note_on_at_velocity_zero_releases_at_half() {
         let ranges = PerNoteBendRanges::default();
@@ -2160,10 +2154,10 @@ mod tests {
         );
 
         let midi2 = packet(0, &[0x4091_3C00, 0]);
-        let Some(ClapEvent::NoteOff(e)) = ClapEvent::from_midi(&midi2, &ranges) else {
-            panic!("a MIDI 2.0 Note On at velocity 0 is a Note Off here");
+        let Some(ClapEvent::NoteOn(e)) = ClapEvent::from_midi(&midi2, &ranges) else {
+            panic!("a MIDI 2.0 Note On at velocity 0 is a note-on");
         };
-        assert_eq!(e.velocity, 0.0);
+        assert_eq!((e.channel, e.key, e.velocity), (1, 60, 0.0));
     }
 
     /// **A reserved attribute type does not stop the note** (M2-104 Table 8,

@@ -1001,13 +1001,15 @@ mod message {
         assert!((off.velocity - 0.5).abs() < 1e-4);
     }
 
-    /// A MIDI 2.0 Note On at velocity 0 stays a Note Off at release velocity
-    /// 0, though M2-104 §7.4.2 keeps it a Note On.
+    /// A MIDI 2.0 Note On at velocity 0 is a Note On (M2-104 §7.4.2: it
+    /// "does not function as a Note Off"), at the smallest velocity above 0,
+    /// 1/65535 (D.2's 0 -> 1), since a VST3 plugin reads a note-on at 0 as a
+    /// release.
     ///
-    /// Mutation (run): deleting the velocity-0 arm of `voice2` → a Note On at
-    /// velocity 0.0 → fails.
+    /// Mutations (run): the velocity-0 arm sending a Note Off → fails; sending
+    /// the Note On at velocity 0 → fails.
     #[test]
-    fn a_midi2_note_on_at_velocity_zero_is_a_note_off_at_zero() {
+    fn a_midi2_note_on_at_velocity_zero_is_a_note_on_at_the_least_velocity() {
         let event = packet(Message::Midi2(
             address(2),
             Voice2::NoteOn {
@@ -1017,10 +1019,11 @@ mod message {
             },
         ));
         let vst3 = encode(&event).expect("a note");
-        let Payload::NoteOff(off) = vst3.payload else {
-            panic!("expected a Note Off, got {vst3:?}");
+        let Payload::NoteOn(on) = vst3.payload else {
+            panic!("expected a Note On, got {vst3:?}");
         };
-        assert_eq!((off.channel, off.pitch, off.velocity), (2, 60, 0.0));
+        assert_eq!((on.channel, on.pitch), (2, 60));
+        assert_eq!(on.velocity, 1.0 / 65535.0);
     }
 
     /// A reserved attribute type (M2-104 Table 8, §7.4.14: reserved for senders,

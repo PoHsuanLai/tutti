@@ -15,7 +15,7 @@
 //! bypass and mute) is not in the graph yet, so a bypassed source's silence is
 //! M1's to test.
 
-mod common;
+use tutti_graph::testing as common;
 
 use assert_no_alloc::AllocDisabler;
 use common::{Kind, TestNode, prepare};

@@ -1,0 +1,464 @@
+#!/usr/bin/env bash
+#
+# The adapter rules of design 015 section 8 (checks 3 and 5), which no compile
+# can make.
+#
+# PARKED: `bevy-tutti` is out of the workspace (CLAUDE.md, "bevy-tutti is
+# parked"), so NOTHING RUNS THIS SCRIPT: not CI, not a `cargo xtask` recipe.
+# It is kept, whole, for the day the adapter is un-parked: put `crates/bevy-tutti`
+# back in `members`, port this to a Rust gate in `xtask/src/gates/` like the rest,
+# and run it in CI. Until then it can be run by hand and should pass against
+# `crates/bevy-tutti/src` as it stands. (Check 4, `tutti-session` re-exports no
+# crate whole, is not about the adapter and is the live `cargo xtask check-session`.)
+#
+# 3. `bevy-tutti` holds no engine composition. Its source
+#    (`crates/bevy-tutti/src`), tests and comments excluded, names none of the
+#    types in DENY below as a whole word. Each is a piece of composition the
+#    session owns; the entry names the owner, and a hit prints it. Method
+#    names (`.commit()`, `.apply(`) are not checked: they cannot tell an
+#    `Editor` from a `Session`. A type name can, and no composition happens
+#    without naming one.
+# 5. `bevy-tutti` holds no policy. Its source (tests excluded, as in 3):
+#    - every `Instant::now` is the direct argument of a session phase:
+#      `run_phase(.., Instant::now())`, `run_phase_with_mods(..)` or
+#      `PhaseCx::at(..)`. The clock is the session's to read; a system that
+#      reads it for itself is deciding something (a throttle, a debounce) the
+#      session should own, and tests with a clock passed as a value.
+#    - there is no `const NAME: usize` or `const NAME: Duration`: a count or a
+#      time limit is a policy. (A const generic parameter, `<const N: usize>`,
+#      is not a const item and is not read.)
+#    Violations that exist today are listed in EXCEPTIONS below, each with the
+#    lane that removes it. An exception that no longer matches a violation
+#    fails the gate, so the list shrinks and cannot rot.
+#
+# A script rather than a test: a test that shells out inside `cargo nextest`
+# contends for the build lock, and this needs no build at all (perl only), so
+# CI runs it in the static `paths` job.
+#
+# How (3) reads a file. A small lexer, not a grep, so that:
+# - comments (`//`, `///`, `//!`, `/* */`, nested) and the contents of string,
+#   raw-string, byte-string and char literals are blanked, newlines kept (so
+#   line numbers hold, and `error!("... Audio Engine ...")` is not a hit);
+# - an item under `#[cfg(test)]` or `#[cfg(all(test, ...))]` is blanked from
+#   the attribute to the end of what it governs: the `}` that closes its
+#   first brace (a `mod tests {}` block, a test-only `fn`, anywhere in the
+#   file), a `;` or `,` at depth 0 (an out-of-line `mod`, a `use`, a struct
+#   or tuple field, a call argument, an array element), or the closer of the
+#   group it sits in (a last field or argument without a trailing comma),
+#   which is kept;
+# - a test module declared out of line (`#[cfg(test)] mod tests;`, with or
+#   without `#[path = ".."]`) excludes its file, and any directory module of
+#   that name, by path;
+# - a session phase (`Phase::Modulation`) is the session's enum variant, not
+#   the type of that name, and is not a hit.
+#
+# Its limits, each a way to hide a name from it, none a way to report a
+# false hit on code that names none:
+# - `#[cfg(any(test, ..))]` and `#[cfg(not(..))]` items are checked (they
+#   build outside tests); so is test-only code without a `cfg(test)` on the
+#   item itself (a `pub mod test_support`), deliberately.
+# - A name built by a macro from pieces (`concat_idents!`, a `paste!` of
+#   `Edi` and `tor`), or reached through a type alias declared outside
+#   `bevy-tutti/src`, is not seen. An alias declared inside it is: the
+#   alias names the type.
+# - A `,` at depth 0 ends the blanked span, and `<`/`>` are not brackets
+#   (they are also comparisons), so a test-only item whose header has a
+#   comma outside parentheses (`fn f<A, B>()`, `impl<T> X where T: A, U: B`)
+#   is blanked only up to that comma. That can only report a false hit on
+#   the rest of the item, never hide one; split the item if it happens.
+# - The cfg attribute must be on its own item; an inner `#![cfg(test)]` at
+#   the top of a module file is not read (`bevy-tutti` has none: its test
+#   modules are `#[cfg(test)] mod tests` at the end of a file, or out of line
+#   in `tests.rs`).
+#
+# On landing it found one hit: `bevy_tutti::export` re-exported
+# `RenderGraph`. The re-export is gone; a prepare hook calls the graph's
+# methods without naming it, and a host that names it depends on
+# `tutti-export`.
+#
+# Mutations (run when this script landed, each one then reverted):
+# - `fn f(e: &mut tutti_graph::Editor) { e.commit(); }` in
+#   `src/graph/commit.rs` → (3) fails, names `Editor` at that line and
+#   `tutti_session::Session` (its `Graph`) as the owner.
+
+# - The lexer, each case appended to `src/graph/commit.rs`: `Engine` in a
+#   `//` comment, in nested `/* */`, in a string and a raw string, inside
+#   `#[cfg(test)] mod tests { .. }` (with `"}"` and `'}'` in it) and as
+#   `Phase::Modulation` passes; `tutti_engine::Engine` on an item after that
+#   block, after a `#[cfg(test)]` fn, and under `#[cfg(any(test, ..))]`
+#   fails. `type E = tutti_engine::Engine;` in the out-of-line
+#   `src/graph/tests.rs` passes, and fails with the by-path exclusion
+#   deleted.
+#   (Current main names no denied type inside its test code either, so the
+#   exclusions are exercised only by these cases.)
+# - (3), from review: a `#[cfg(test)]` on a field, an argument or an
+#   expression used to blank the rest of the file (the scan went past the
+#   closer of its group at depth -1). `AudioGraphRes`'s `cfg(test)` phase
+#   log field hid the 247 lines after it, and
+#   `let _probe: Option<tutti_engine::Engine> = None;` planted in its `read()`
+#   passed. With the scan ending at a depth-0 `,` or the closer of its
+#   group, each of these, appended to `src/graph/commit.rs` with
+#   `fn k() -> Option<tutti_engine::Engine> { None }` after it, now fails (and
+#   passed before): `struct P(u8, #[cfg(test)] u16);`,
+#   `struct Q { a: u8, #[cfg(test)] b: u16 }` (a last field, no comma),
+#   `(x, #[cfg(test)] x)` in a fn body, and
+#   `g(1, #[cfg(test)] 2, 3); let _v = [1, #[cfg(test)] 2];`. The planted
+#   probe in `read()` fails too. `struct P(u8, #[cfg(test)]
+#   tutti_engine::Engine);` passes (the test-only field is still excluded),
+#   and `#[cfg(test)] fn t<A, B>() -> Option<tutti_engine::Engine>` reports
+#   a false hit (the generics limit above).
+#
+# - (5), each appended to `src/graph/commit.rs` (or `midi/hardware/device.rs`)
+#   and removed. These fail: `Instant::now()` in a fn that is no phase
+#   argument, `let now = Instant::now(); g.run_phase(.., now)` (the clock must
+#   be the argument itself), `use std::time::Instant as I; I::now()`,
+#   `type Clk = Instant; Clk::now()`, `SystemTime::now()`,
+#   `run_phase(.., Instant::now().checked_add(d))` and `a + Instant::now()`
+#   in an argument, `const LIMIT: usize`, `static CAP: usize`, a `Duration`
+#   const or static (also through `type Span = Duration`), and a
+#   `LazyLock::new(|| Instant::now())` static after the excepted
+#   `midi_device_poll_system` (reported in `<item>`, not hidden by that fn's
+#   exception). These pass: `g.run_phase(Phase::Poll, Instant::now())`,
+#   `PhaseCx::at(Instant::now())`, a multi-line `run_phase_with_mods(..)`,
+#   `impl<const N: usize> W<N>`, `fn k<A, const M: usize>()`, `const KIND: u32`,
+#   `&'static str`, a trait `fn now(&self)`, the same text in a comment or a
+#   string, a closure inside the excepted fn, and `#[cfg(test)]` items.
+#   Deleting the `midi_device_poll_system` exception fails at `device.rs`, and
+#   an exception for a fn or const that does not exist fails as stale.
+#   Holes that remain, deliberately: an exception is keyed by file and
+#   enclosing fn, so a second clock read in the same excepted fn is not
+#   reported separately; a limit that is not a `const`/`static` item of type
+#   `usize` or a duration (`const N: u32`, `Duration::from_secs(2)` in an
+#   expression, a `2` in a comparison) is not read; a clock or alias reached
+#   through a macro, a glob import renamed in another crate, or a generic
+#   alias with parameters is not seen; the fn that holds a site is found by
+#   braces, not by parsing, so a `fn` in a macro body can mis-name it.
+#
+# Usage:
+#   scripts/parked/check-bevy-tutti.sh
+
+set -uo pipefail
+
+cd "$(dirname "$0")/../.."
+
+readonly ADAPTER_SRC=crates/bevy-tutti/src
+
+# A moved crate must fail here rather than leave both scans reading nothing.
+if [ -z "$(find "$ADAPTER_SRC" -name '*.rs' -print -quit 2>/dev/null)" ]; then
+  echo "FAIL: $ADAPTER_SRC holds no .rs file; was the crate moved?"
+  exit 1
+fi
+
+# DENY: `type|owner, and what to call instead`. The owner is printed on a hit.
+readonly deny_list='
+Editor|tutti_session::Session and its Graph (the graph'"'"'s control half): Session::graph(), Graph::commit
+Executor|tutti_session::Session and its Graph (the graph'"'"'s audio half): SessionBuilder, Graph::take_audio_side
+Modulation|the session'"'"'s modulation phase: Session::run_phase(Phase::Modulation, ..) with a ModInput
+TuttiDriver|tutti_session::Device (the sound card): SessionBuilder::build_device, Session::restart
+AudioCallbackState|tutti_session::Device (the sound card): SessionBuilder::build_device
+Engine|tutti_session::SessionBuilder (the renderer): build_device / build_offline
+RenderGraph|tutti_session::Session::bounce (the offline render): Bounce, BounceJob, finish_bounce
+'
+
+# EXCEPTIONS: `kind|file|name|the lane that removes it`. Check 5's violations
+# that exist today. `kind` is `instant` (name: the fn holding the
+# `Instant::now`) or `const` (name: the const). One that matches no violation
+# fails the gate, so removing the code must remove its line.
+readonly exceptions='
+instant|crates/bevy-tutti/src/midi/hardware/device.rs|midi_device_poll_system|the MIDI device layer of doc 017 (the session owns the roster poll and its cadence)
+const|crates/bevy-tutti/src/plugin_host/load.rs|MAX_CONCURRENT_LOADS|job admission, with PluginDb for scans (the session admits loads)
+'
+
+# Shared by the perl checks: strict perl, and `lex`, which blanks comments and
+# literal contents (keeping newlines, so offsets and line numbers hold).
+prelude_pl=$(cat <<'PL'
+use strict; use warnings;
+# Blank comments and literal contents, keeping newlines.
+sub lex {
+  my ($s) = @_;
+  my $out = "";
+  pos($s) = 0;
+  my $blank = sub { (my $t = $_[0]) =~ s/[^\n]/ /g; $t };
+  while (pos($s) < length $s) {
+    if ($s =~ /\G(\/\/[^\n]*)/gc) { $out .= $blank->($1); next }
+    if ($s =~ /\G\/\*/gc) {
+      my $depth = 1; my $text = "/*";
+      while ($depth && pos($s) < length $s) {
+        if ($s =~ /\G\/\*/gc) { $depth++; $text .= "/*" }
+        elsif ($s =~ /\G\*\//gc) { $depth--; $text .= "*/" }
+        else { $s =~ /\G(.)/gcs; $text .= $1 }
+      }
+      $out .= $blank->($text); next
+    }
+    if ($s =~ /\G(b?r(#*)")/gc) {
+      my ($open, $hashes) = ($1, $2);
+      $s =~ /\G(.*?"$hashes)/gcs or die "unterminated raw string\n";
+      $out .= $open . $blank->(substr($1, 0, -1 - length $hashes)) . "\"" . $hashes; next
+    }
+    if ($s =~ /\G(b?")/gc) {
+      my $open = $1;
+      $s =~ /\G((?:\\.|[^"\\])*)"/gcs or die "unterminated string\n";
+      $out .= $open . $blank->($1) . "\""; next
+    }
+    if ($s =~ /\G(b?\x27(?:\\(?:x[0-9a-fA-F]{2}|u\{[0-9a-fA-F]*\}|.)|[^\\\x27\n])\x27)/gc) {
+      $out .= $blank->($1); next
+    }
+    if ($s =~ /\G([A-Za-z_][A-Za-z0-9_]*|.)/gcs) { $out .= $1; next }
+  }
+  return $out;
+}
+PL
+)
+readonly prelude_pl
+
+# Shared by checks 3 and 5: every adapter file lexed with its test-only items
+# blanked. Returns (\@files, \%code, \%skip_file, \@skip_dir), the last two
+# naming out-of-line test modules (by file and by directory).
+adapter_pl=$(cat <<'PL'
+use File::Find; use File::Basename;
+sub adapter_code {
+  my ($root) = @_;
+  my @files;
+  find({ wanted => sub { push @files, $File::Find::name if /\.rs\z/ }, no_chdir => 1 }, $root);
+  @files = sort @files;
+  
+  
+  # A test-only attribute: `#[cfg(test)]` or `#[cfg(all(test, ...))]`.
+  my $test_attr = qr/\#\[\s*cfg\s*\(\s*(?:test|all\s*\(\s*test\s*,[^\]]*\))\s*\)\s*\]/;
+  
+  my (%code, %skip_file, @skip_dir);
+  for my $f (@files) {
+    open my $fh, "<", $f or die "$f: $!\n";
+    local $/; my $src = <$fh>; close $fh;
+    my $c = lex($src);
+    # Blank every test-only item, and note the out-of-line modules.
+    while ($c =~ /$test_attr/g) {
+      my $start = $-[0];
+      my $i = $+[0];
+      my $path;
+      # Further attributes on the same item.
+      while (substr($c, $i) =~ /\A(\s*\#\[)/) {
+        my $at = $i + length($1) - 2;
+        my $d = 0; my $j = $at;
+        for (; $j < length $c; $j++) {
+          my $ch = substr($c, $j, 1);
+          $d++ if $ch eq "["; $d-- if $ch eq "]";
+          last if $d == 0 && $ch eq "]";
+        }
+        my $attr = substr($src, $at, $j + 1 - $at);
+        $path = $1 if $attr =~ /path\s*=\s*"([^"]*)"/;
+        $i = $j + 1;
+      }
+      if (substr($c, $i) =~ /\A\s*(?:pub(?:\([^)]*\))?\s+)?mod\s+(\w+)\s*;/) {
+        my $name = $1;
+        my $dir = dirname($f);
+        my $base = basename($f, ".rs");
+        my $mdir = ($base =~ /\A(?:mod|lib|main)\z/) ? $dir : "$dir/$base";
+        if (defined $path) { $skip_file{"$dir/$path"} = 1 }
+        else { $skip_file{"$mdir/$name.rs"} = 1; push @skip_dir, "$mdir/$name/" }
+      }
+      # What the attribute governs: to the `}` closing its first brace, a `;`
+      # or `,` at depth 0, or (kept) the closer of the enclosing group. Without
+      # the last two, a cfg(test) field or argument ran on past the closer of
+      # its group at depth -1 and blanked the rest of the file.
+      my $d = 0; my $j = $i;
+      for (; $j < length $c; $j++) {
+        my $ch = substr($c, $j, 1);
+        if ($ch eq "{" || $ch eq "(" || $ch eq "[") { $d++ }
+        elsif ($ch eq "}" || $ch eq ")" || $ch eq "]") {
+          $d--;
+          if ($d < 0) { $j--; last }
+          last if $d == 0 && $ch eq "}";
+        }
+        elsif (($ch eq ";" || $ch eq ",") && $d == 0) { last }
+      }
+      my $len = $j + 1 - $start;
+      (my $b = substr($c, $start, $len)) =~ s/[^\n]/ /g;
+      substr($c, $start, $len) = $b;
+      pos($c) = $start + $len;
+    }
+    $code{$f} = $c;
+  }
+  return (\@files, \%code, \%skip_file, \@skip_dir);
+}
+PL
+)
+readonly adapter_pl
+
+fail=0
+
+# 3. The adapter's source. Perl: one pass to collect the out-of-line test
+#    modules, one to blank and scan.
+hits=$(DENY="$deny_list" perl -e "$prelude_pl$adapter_pl"'
+my $root = shift @ARGV;
+my %deny;
+for (split /\n/, $ENV{DENY} // "") { next unless /\S/; my ($t, $o) = split /\|/, $_, 2; $deny{$t} = $o; }
+die "the deny-list is empty\n" unless %deny;
+my ($files, $code, $skip_file, $skip_dir) = adapter_code($root);
+my @files = @$files; my %code = %$code; my %skip_file = %$skip_file; my @skip_dir = @$skip_dir;
+
+my $words = join "|", map { quotemeta } sort keys %deny;
+for my $f (@files) {
+  next if $skip_file{$f};
+  next if grep { index($f, $_) == 0 } @skip_dir;
+  my @lines = split /\n/, $code{$f}, -1;
+  open my $fh, "<", $f or die; my @orig = <$fh>; close $fh;
+  for my $n (0 .. $#lines) {
+    (my $l = $lines[$n]) =~ s/\bPhase\s*::\s*\w+//g;
+    while ($l =~ /(?<![\w])($words)(?![\w])/g) {
+      my $w = $1;
+      (my $text = $orig[$n]) =~ s/^\s+|\s+$//g;
+      printf "%s:%d: %s\n    denied `%s`; it belongs to %s\n", $f, $n + 1, $text, $w, $deny{$w};
+    }
+  }
+}
+' "$ADAPTER_SRC")
+status=$?
+if [[ $status -ne 0 ]]; then
+  echo "$hits"
+  echo "FAIL: the bevy-tutti scan did not run (perl exited $status)."
+  exit 1
+fi
+if [[ -n $hits ]]; then
+  echo "$hits"
+  echo "FAIL: bevy-tutti names engine composition the session owns (design 015 §8,"
+  echo "      check 3). bevy-tutti is the adapter: ECS components, systems, assets and"
+  echo "      windows. Move the composition into tutti-session and call it from here."
+  fail=1
+fi
+# 5. Policy in the adapter. Same lexing and test exclusions as (3).
+hits=$(EXCEPTIONS="$exceptions" perl -e "$prelude_pl$adapter_pl"'
+my $root = shift @ARGV;
+my %exc;
+for (split /\n/, $ENV{EXCEPTIONS} // "") {
+  next unless /\S/;
+  my ($kind, $file, $name, $why) = split /\|/, $_, 4;
+  die "exception without a lane: $_\n" unless defined $why && $why =~ /\S/;
+  $exc{"$kind|$file|$name"} = $why;
+}
+my ($files, $code, $skip_file, $skip_dir) = adapter_code($root);
+my @live = grep { my $f = $_; !$skip_file->{$f} && !(grep { index($f, $_) == 0 } @$skip_dir) } @$files;
+
+# Names that stand for a clock or a duration: the types, and every alias of
+# them in any file (`use .. Instant as I`, `type T = Duration;`).
+my (%clock, %span) = ();
+%clock = map { $_ => 1 } qw(Instant SystemTime);
+%span = map { $_ => 1 } qw(Duration);
+for my $f (@live) {
+  my $c = $code->{$f};
+  while ($c =~ /\b(Instant|SystemTime|Duration)\s+as\s+(\w+)/g) { ($1 eq "Duration" ? \%span : \%clock)->{$2} = 1 }
+  while ($c =~ /\btype\s+(\w+)\s*(?:<[^>]*>)?\s*=\s*(?:\w+\s*::\s*)*(Instant|SystemTime|Duration)\b/g) {
+    ($2 eq "Duration" ? \%span : \%clock)->{$1} = 1;
+  }
+}
+my $clock_re = join "|", map { quotemeta } sort keys %clock;
+my $span_re  = join "|", map { quotemeta } sort keys %span;
+
+# Each fn body as [start, end, name], to name the fn that holds a site. A
+# site in no fn body (a static initialiser) is `<item>`, which no exception
+# names.
+sub fn_bodies {
+  my ($c) = @_;
+  my (@stack, @out);
+  my ($pending, $pend_depth, $paren) = (undef, 0, 0);
+  while ($c =~ /(\bfn\s+(\w+)|[{}()\[\];])/g) {
+    my ($tok, $name, $at) = ($1, $2, $-[0]);
+    if (defined $name) { $pending = $name; $pend_depth = $paren; next }
+    if ($tok eq "(" || $tok eq "[") { $paren++ }
+    elsif ($tok eq ")" || $tok eq "]") { $paren-- }
+    elsif ($tok eq ";") { $pending = undef if defined $pending && $paren == $pend_depth }
+    elsif ($tok eq "{") {
+      if (defined $pending && $paren == $pend_depth) { push @stack, [$at, $pending]; $pending = undef }
+      else { push @stack, [$at, undef] }
+    }
+    elsif ($tok eq "}") {
+      my $top = pop @stack or next;
+      push @out, [$top->[0], $at, $top->[1]] if defined $top->[1];
+    }
+  }
+  return \@out;
+}
+
+my %found;   # key => [line, text, why]
+for my $f (@live) {
+  my $c = $code->{$f};
+  open my $fh, "<", $f or die; my @orig = <$fh>; close $fh;
+  my $line_of = sub { 1 + (substr($c, 0, $_[0]) =~ tr/\n//) };
+  my $text_of = sub { (my $t = $orig[$_[0] - 1]) =~ s/^\s+|\s+$//g; $t };
+  my $bodies = fn_bodies($c);
+  my $fn_at = sub {
+    my ($best, $size) = ("<item>", undef);
+    for my $b (@$bodies) {
+      next unless $b->[0] < $_[0] && $_[0] < $b->[1];
+      my $w = $b->[1] - $b->[0];
+      ($best, $size) = ($b->[2], $w) if !defined $size || $w < $size;
+    }
+    return $best;
+  };
+
+  # A clock read is `Clock::now()` standing alone as an argument of a session
+  # phase: `run_phase(.., Instant::now())`, `run_phase_with_mods(..)` or
+  # `PhaseCx::at(..)`, with nothing chained on it.
+  while ($c =~ /((?:\w+\s*::\s*)*)\b($clock_re)\s*::\s*now\b/g) {
+    my ($at, $end) = ($-[0], $+[0]);
+    my $ok = 0;
+    my $before = substr($c, 0, $at);
+    my $after = substr($c, $end);
+    if ($before =~ /[(,]\s*\z/ && $after =~ /\A\s*\(\s*\)\s*[,)]/) {
+      my $call = "";
+      my $depth = 0;
+      for (my $i = $at - 1; $i >= 0; $i--) {
+        my $ch = substr($c, $i, 1);
+        if ($ch eq ")") { $depth++ }
+        elsif ($ch eq "(") {
+          if ($depth == 0) { $call = substr($c, 0, $i) =~ /([\w:]+)\s*\z/ ? $1 : ""; last }
+          $depth--;
+        }
+        elsif ($depth == 0 && ($ch eq ";" || $ch eq "{" || $ch eq "}")) { last }
+      }
+      $ok = $call =~ /(?:\A|::)(?:run_phase|run_phase_with_mods)\z/ || $call =~ /(?:\A|::)PhaseCx::at\z/;
+    }
+    next if $ok;
+    my $line = $line_of->($at);
+    $found{"instant|$f|" . $fn_at->($at)} //= [$line, $text_of->($line), "reads the clock for itself"];
+  }
+
+  # No `const`/`static` item of type `usize` or a duration. A const generic
+  # parameter (`<const N: usize>`, `, const N: usize`) is not an item.
+  while ($c =~ /(?<![\w\x27])(?:const|static(?:\s+mut)?)\s+([A-Za-z_]\w*)\s*:\s*(?:\w+\s*::\s*)*(?:usize|$span_re)\s*=/g) {
+    my ($name, $at) = ($1, $-[0]);
+    next if substr($c, 0, $at) =~ /[<,]\s*\z/;
+    my $line = $line_of->($at);
+    $found{"const|$f|$name"} //= [$line, $text_of->($line), "a count or time limit is a policy"];
+  }
+}
+for my $key (sort keys %found) {
+  next if exists $exc{$key};
+  my ($kind, $f, $name) = split /\|/, $key;
+  my ($line, $text, $why) = @{ $found{$key} };
+  print "$f:$line: $text\n    new violation (`$kind` in `$name`): $why\n";
+}
+for my $key (sort keys %exc) {
+  next if exists $found{$key};
+  print "STALE exception, no violation matches it: $key\n    (it was to be removed by: $exc{$key})\n";
+}
+' "$ADAPTER_SRC")
+status=$?
+if [[ $status -ne 0 ]]; then
+  echo "$hits"
+  echo "FAIL: the bevy-tutti policy scan did not run (perl exited $status)."
+  exit 1
+fi
+if [[ -n $hits ]]; then
+  echo "$hits"
+  echo "FAIL: bevy-tutti holds policy (check 5). A clock is read by the session's phases"
+  echo "      (Session::run_phase(.., Instant::now())); a count or a time limit"
+  echo "      (const NAME: usize|Duration) is the session's. Move the decision into"
+  echo "      tutti-session. A violation that predates the check goes in EXCEPTIONS with the"
+  echo "      lane that removes it; a stale exception fails here and is deleted."
+  fail=1
+fi
+if [[ $fail -ne 0 ]]; then
+  exit 1
+fi
+echo "OK: bevy-tutti names no engine composition or policy."

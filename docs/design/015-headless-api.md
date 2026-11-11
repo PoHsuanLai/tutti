@@ -1444,19 +1444,19 @@ lines.
 | the crossfade retry and compensation publish in `commit_graph` | `Phase::{Collect, Commit}` |
 
 Tests: the three `runtime.rs` tests split as planned. The session halves
-are in `tests/graph.rs` (`every_param_write_path_reaches_a_fork`,
+are in `tests/wiring/graph.rs` (`every_param_write_path_reaches_a_fork`,
 `a_crossfade_refused_busy_during_a_re_prepare_lands_on_a_later_update`,
 `a_crossfade_on_a_poisoned_graph_is_refused`); the adapter halves are in
 `bevy-tutti`'s `graph/tests.rs`. The properties above are
 `an_offline_session_renders_a_sines_analytic_rms`,
 `a_latent_branch_is_compensated_on_the_other_to_the_sample`,
 `a_rerate_keeps_the_published_compensation_in_step_with_the_plan`
-(`tests/device.rs`), `an_edit_between_updates_is_committed_by_the_next`,
+(`tests/io/device.rs`), `an_edit_between_updates_is_committed_by_the_next`,
 `an_update_with_no_edit_sends_no_plan`,
 `move_feeds_moves_every_feeders_sources` with `bevy-tutti`'s
 `a_re_bound_target_keeps_its_clip`, and `Device`'s `compile_fail`
 doctest. The engine tests of `engine/build.rs` (the click, the rate, the
-voices, `root_width`) moved to `tests/engine.rs` and `tests/graph.rs`;
+voices, `root_width`) moved to `tests/wiring/engine.rs` and `tests/wiring/graph.rs`;
 `the_transport_converts_at_the_sessions_rate` is new, because the click
 cannot see the transport's rate. `scripts/check-bevy-free.sh` runs in
 `cargo xtask ci` and CI, with its mutations recorded in the script. After review:
@@ -1564,14 +1564,14 @@ is `ModRefusal` (`Apply(ReconcileError)` or `TwoDeclarers`, with `route`,
 `SessionEvent::ModulationRefused`. `Session::remove` forgets the session's
 own declarations on the node, and a clip or live input that was it.
 
-Tests. The session's: `tests/modulation.rs`
+Tests. The session's: `tests/modulation/modulation.rs`
 (`the_8_1_example_renders_its_analytic_values`,
 `a_target_placed_one_update_later_resolves_on_that_update`,
 `the_unresolved_warning_fires_after_four_seconds_not_n_updates`,
 `a_refusal_names_the_route_key_the_session_minted`,
 `a_host_and_the_session_cannot_both_declare`,
 `removing_a_node_forgets_its_declarations`,
-`a_param_ref_round_trips_through_its_key`) and `tests/midi.rs`
+`a_param_ref_round_trips_through_its_key`) and `tests/midi/midi.rs`
 (`a_clip_plays_its_note_on_its_frame`, `a_clip_edit_updates_in_place`,
 `a_target_without_an_event_input_takes_no_clip`,
 `a_clip_and_a_live_input_survive_a_re_bind`,

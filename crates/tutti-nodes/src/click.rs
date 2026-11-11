@@ -1097,7 +1097,7 @@ mod tests {
     ///
     /// Before its port to `tutti_graph::Node` the click read the live play flag once per
     /// 64-frame chunk, so a mid-block start or stop gated it from the
-    /// block's start (the gap `tests/env_beat.rs` recorded).
+    /// block's start (the gap `tests/render/env_beat.rs` recorded).
     #[test]
     fn a_start_or_stop_inside_a_block_gates_on_its_frame() {
         let (_, settings, mut node) = make_click();

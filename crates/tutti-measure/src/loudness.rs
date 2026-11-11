@@ -546,12 +546,15 @@ mod tests {
     /// Interleaved stereo sine at `amp`, `secs` long.
     fn sine(rate: f64, secs: f64, freq: f32, amp: f32) -> Vec<f32> {
         let n = (rate * secs) as usize;
-        (0..n)
-            .flat_map(|i| {
-                let s = amp * (TAU * freq * i as f32 / rate as f32).sin();
-                [s, s]
-            })
-            .collect()
+        tutti_fixtures::signal::sine(
+            tutti_types::Hz(freq),
+            tutti_types::Amplitude(amp),
+            SampleRate(rate),
+            tutti_types::Samples(n),
+        )
+        .into_iter()
+        .flat_map(|s| [s, s])
+        .collect()
     }
 
     fn cfg(rate: f64) -> LoudnessConfig {

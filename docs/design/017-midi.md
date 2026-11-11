@@ -55,7 +55,7 @@ historical, and `MidiEvent`, `MidiMessage` and `tutti-midi-types` no longer exis
 | The specification | Today | Consequence |
 |---|---|---|
 | Endpoint, Function Block, Group (M2-100 §7, M2-104 App. H) | `PortId` and a name; `EndpointId` is ALSA's client and port | Identity changes across restarts; `UmpCapability::function_blocks` was never filled, and is deleted (stage 4a) |
-| Connection steps 2 to 5 (M2-100 Table 4) | Never run on connect (steps 2 to 4 are since L6(b); step 5 is not) | Protocol is guessed, and JR timestamps are a host boolean, against M2-104 §7.1.6.2 |
+| Connection steps 2 to 5 (M2-100 Table 4) | Never run on connect (steps 2 to 4 are since L6(b); step 5 is not) | Protocol was guessed, and JR timestamps were a host boolean, against M2-104 §7.1.6.2 (both follow the device's `StreamConfig` since L6(c)) |
 | `FunctionBlock` is a device concept | Was defined in `tutti-midi-runtime`'s `negotiate`, deleted in stage 4a | The `Endpoint` model of stage 4b defines it in `tutti-midi-device`, so `tutti-midi-hardware` needs no runtime type for it |
 | A translator bridges MIDI 1.0 connections (M2-104 §6.2) | One per input node, keyed by channel | RPN state crosses groups; output is forced to group 0 |
 | Decoding and translating are separate | `MidiEvent::message()` calls `normalize` | A MIDI 2.0 Note On at velocity 0 becomes a Note Off (M2-104 §7.4.2 says it does not), while `clip_node` counts it as a note-on |
@@ -498,9 +498,67 @@ core takes an `Instant`; the hardware layer only passes one on).
 - *Outbound.* What the `Connection` answers goes out the negotiation's output, at once.
 - *What is asked.* The MIDI 2.0 Protocol where the device offers it, else MIDI 1.0,
   with JR Timestamps off both ways: input time is the OS arrival stamp (JR adds nothing
-  and no graph node reads a JR clock), and output JR is stamped by `UmpOut`'s flag, which
-  no negotiation drives yet. L6(c) reads `DeviceStream::config` to gate the output on it
-  (MT 4 against MT 2, JR stamping); this lane only records it.
+  and no graph node reads a JR clock), and output JR follows the settled configuration
+  (L6(c), "The output protocol edge" below), so none is sent to a device that was not
+  asked to receive it.
+- *After the settle (L6(b3)).* A `Connection` that negotiated goes on hearing the
+  device (`Action::Changed`, returned by `MidiSession::poll` as the settle is): a Stream
+  Configuration Notification is the Protocol and JR in use whenever it comes (§7.1.6.1
+  step 3: the Sender starts "using the Protocol and JR Timestamps configuration as
+  declared in the Stream Configuration Notification"), and a Function Block Info or Name is
+  read only when Endpoint Info did not declare the blocks static (§6.1.1: such an Endpoint
+  "will not change any of the properties of its Function Blocks after initial discovery";
+  §7.1.8 and §7.1.9 send the Notifications only from one that has not). The reading is
+  normalised: a declared count above 32 is refused, not clamped (numbers are 0 to 31, §7.1.7),
+  so the Endpoint Info is never heard and the step ends as a silent peer's; a block outside
+  the declared count is not read (and no longer raises the count the connection waits for); a
+  static Endpoint's block sent inactive is read active (§7.1.8: it "shall not have any
+  inactive Function Blocks"); a MIDI 1.0 port over several Groups is read as a plain block
+  (§7.1.8: "Number of Groups Spanned shall be 1").
+- *The output protocol edge (L6(c)).* One place, `OpenOutput::queue` (`wire.rs`), puts a
+  batch in the device's wire form from its `StreamConfig`: the OS's description when the
+  output opens (`Devices::open_output`: ALSA's endpoint `protocol`, the kernel's record of
+  what the USB discovery and Stream negotiation left, and CoreMIDI's
+  `kMIDIPropertyProtocolID`; a legacy port is MIDI 1.0). USB's `bMIDIProtocol` has no
+  field of its own in either API: it reaches tutti, if at all, as that protocol, and
+  whether the kernel seeds it from the descriptor for a given device was not checked (no
+  USB MIDI 2.0 device on the machine), then what the negotiation settled
+  (`MidiSession::poll` sets the held output's config, and `connect_output` reads an
+  already-settled one). A MIDI 2.0 Protocol endpoint gets the graph's packets as they are.
+  A MIDI 1.0 Protocol endpoint, or a MIDI 1.0 port, gets MIDI 1.0 (§3.2: "UMP MIDI 1.0
+  Devices shall not use any messages from Message Type 0x4"): each type-4 packet through
+  one `Narrower` per output (D.2; a Registered Controller as CC 101, 100, 6, 38, the select
+  skipped while it holds; the narrower is reset when the Protocol changes), type 2, System,
+  SysEx7 and Stream as they are, a message with no MIDI 1.0 form (D.2.8) dropped. JR Clock
+  and JR Timestamp go only when `rx_jr` is set (§7.1.6.2: the Sender "shall not send JR
+  Timestamps until after a Stream Configuration Notification message ... has been
+  received"); Delta Clockstamp and Ticks Per Quarter Note are a clip's and never go. The
+  session's `UmpOut` JR stamping follows the same configuration each `Phase::Poll` and
+  `Phase::MidiOut` (`MidiSession::output_config`): `Midi::set_jr_stamping`, the host's
+  boolean, is gone, and the edge drops a JR message a stale stamper still produced. The
+  count `queue` returns is in the caller's events (an event that became nothing counts as
+  taken). A MIDI 1.0 port is never sent type 4: this was a violation on CoreMIDI, whose
+  `Midi10` event list carried whatever the graph had.
+  *Not done, with the reason.* (1) **No per-Group narrowing for a MIDI 1.0 Function Block
+  inside a MIDI 2.0 endpoint.** §7.1.6.2 allows MIDI 1.0 Protocol "optionally" for "that
+  Function Block", but §6.2.2 says "it is up to the Device to handle the required
+  translation" for a MIDI 1.0 block, and §3.3.2 forbids type 2 in the MIDI 2.0 Protocol for
+  the rest of the endpoint; a MIDI 2.0 packet is always valid to the endpoint, and the
+  per-Group flag the blocks give (`FunctionBlock::midi1`) is kept as data. (2) **The graph
+  carries no type 2** (the input edge's `Translator` widens it), so a MIDI 2.0 endpoint is
+  not sent a widened type 2; a packet that is one passes as it is. (3) **CoreMIDI's output
+  event list is tagged with the protocol the OS reported when the output opened**; a
+  negotiation that settled on another Protocol for a CoreMIDI device would be tagged wrongly.
+  CoreMIDI runs its own Stream negotiation for a device it presents as UMP, so this has not
+  been seen, and the backend is not changed here.
+- *Received JR (L6(c)).* A JR Clock or JR Timestamp a device sends is dropped at
+  `InputProducerHandle::push` (`Ump::is_jr`), not read. §7.2.2.1 leaves the use to the
+  Receiver ("the Receiver may use smoothing or averaging of time from each JR Clock message
+  ... to determine a steady JR Clock to render against"), the session asks for JR off, an
+  event is placed by its OS arrival stamp, and nothing in the graph reads a timestamp
+  utility message. A `JrReceiver` per device, its delay folded into the arrival stamp, would
+  refine a time the OS has already stamped. Revisit it with a transport that has no arrival
+  stamp.
 - *No hang.* `poll` never waits. A step unanswered for `STEP_TIMEOUT` is sent again,
   three sends in all, and then the device is `Basis::Unanswered`, taken as the OS describes
   it (the protocol the OS reports, JR off, its blocks), never the core's blanket
@@ -1269,7 +1327,7 @@ Built as specified, except where the code decided otherwise:
   list moved to `tutti-graph/tests/event_inlet.rs`.
 - **The panic predicate is `Ump::is_panic_controller`** (CC 120 and 123 of a
   MIDI 1.0 or 2.0 Control Change), beside `is_note_off`.
-- **The parallel test is in the inlet's own file**, not in `tests/parallel.rs`'s
+- **The parallel test is in the inlet's own file**, not in `tests/executor/parallel.rs`'s
   `build`: that graph has no handle to pre-fill a ring before each run. The
   test compares the serial and pooled audio bit for bit and inlet 1's tap
   against its script, with the ring pre-filled and every participant under
@@ -1312,7 +1370,7 @@ into the `UmpOut` and adds `take_lost` to the drop count that
 - **Tests:** the nodes' tests that used `MidiOutNode` as a sink
   (`rt_no_alloc`, `cost_classes`, `clock_tempo_map`, `edge_nodes`, the hardware
   poll gate) read a tap through a small test sink (`tests/common`) with the same
-  properties; the session's own are `tests/midi_out_tap.rs`, the device restart
+  properties; the session's own are `tests/midi/midi_out_tap.rs`, the device restart
   test and `midi.rs`'s router tests. A note-off's room past the ring is the
   tap's, pinned in `tutti-graph/tests/event_tap.rs`; the hardware out's clock
   sends none.
@@ -1727,9 +1785,9 @@ design's model, and it does not enforce the name limits in M2-104 §7.1.
   only oracle, so `tests/midi2_oracle.rs` and the dev-dependency are deleted. What
   survives is what those tests named: a swap of two neighbouring numbers in a
   number-to-name table, or of two fields or flags, fails a spec-literal test in
-  `tests/spec_words.rs` or `tests/spec_tables.rs`. Its SysEx7 comparison (the
+  `tests/messages/spec_words.rs` or `tests/messages/spec_tables.rs`. Its SysEx7 comparison (the
   fragmenter's packets for every length around the 6-byte boundary) is
-  `tests/sysex_packets.rs`'s literal cases (one, seven, twelve and thirteen bytes, and
+  `tests/streams/sysex_packets.rs`'s literal cases (one, seven, twelve and thirteen bytes, and
   a long run). The round-trip properties and the fuzz target check the codec only
   against itself (decode, encode, decode), so a mistake made the same way in both
   directions passes them; the spec-literal tests are what catch it. What the removal
@@ -2410,8 +2468,8 @@ at any point; its CI codec move and `ci`/`negotiate` deletion (4a, done) shrink
    **Wired in L6(b)** (§5, "Wired"): `tutti-midi-hardware` runs a `Connection` per
    open UMP input, the session's `Phase::Poll` is its timer, and `UmpCapability` is
    built from an `Endpoint`. Deferred: MIDI-CI Discovery (Table 4 step 5), and the
-   output side's use of the negotiated `StreamConfig` (L6(c): MT 4 against MT 2 by
-   protocol, JR stamping by the Notification). A Connection settles on the
+   output side's use of the negotiated `StreamConfig` (done in L6(c), §5, "The output
+   protocol edge"). A Connection settles on the
    Notification it gets, so a device that is on MIDI 2.0 already is not asked again.
    Residue for this stage:
    - **`clock_out.rs` doc is false.** The module doc of `bevy-tutti`'s

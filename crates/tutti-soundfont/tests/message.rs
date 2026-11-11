@@ -5,6 +5,7 @@
 //! code.
 
 use std::sync::Arc;
+use tutti_fixtures::signal::rms;
 
 mod support;
 
@@ -83,10 +84,6 @@ fn render(unit: &mut Hand, events: &[Ump], frames: usize) -> Vec<f32> {
         out.extend_from_slice(left);
     }
     out
-}
-
-fn rms(samples: &[f32]) -> f32 {
-    (samples.iter().map(|s| s * s).sum::<f32>() / samples.len() as f32).sqrt()
 }
 
 /// RMS of the organ note after `events`, from 0.25 s to 0.5 s.

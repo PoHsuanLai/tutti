@@ -143,7 +143,7 @@ marked "on `main` (#367)".
 | On `main`: `Realization` (non-generic; PR 1a renamed it from `Kernel`, and step 1 / PR 1b makes it `Realization<M>`), `Setup { rate, max_block }`, `Effort` | `network/realization.rs` | `Realization` names `Network` and `Bounds`; `Setup` and `Effort` are not reverb at all |
 | `design_contract!`, `DesignCase`, `Mutant`; `realization_contract!`, `RealizationCase`, `Defect` (PR 1a renamed them from `kernel_contract!`, `KernelCase`) | `contract/design.rs`, `contract/realization.rs` (a crate-root `#[cfg(test)] mod contract` since PR 1a) | Crate-private and `cfg(test)`; the cases mix generic ones (pure, bounds dominate, reset, fresh, block independence, click-free, latency, no allocation) with reverb ones (`rt60`, `band_order`, `decorrelated`, `line_lengths`, freeze) |
 | On `main`: `DesignNode<D>`, `NodeDesign`, `ControlParams` (PR 1a renamed them from `ReverbNode`, `ReverbDesign`, `ReverbParams`), `DryAlign` | `tutti-nodes/src/reverb.rs`, `dry_align.rs` | The control path, tail report, `longest`, parking, cut-to-frame, fork and dry alignment are generic; the names are not |
-| On `main`: node tests | `tutti-nodes/tests/reverb_node.rs`, `reverb_node_generic.rs` | Generic cases through a lying design |
+| On `main`: node tests | `tutti-nodes/tests/reverb/reverb_node.rs`, `reverb_node_generic.rs` | Generic cases through a lying design |
 
 Two things the code already does that this design builds on rather than adds.
 `SvfCoeffs::new` (`tutti-dsp/src/filter/svf/kernel.rs`) and
@@ -1648,13 +1648,13 @@ realization_contract!(Tdf2Design: Lti, tolerance = ..);       // another realiza
 The node's silence scan, cut to the frame, park and wake, and high-water tail logic
 are generic over **any realization that rings out** (a finite or unbounded `tail`),
 and the contract treats them so. The cases that need a node and a graph (not just a realization) are today
-`tutti-nodes/tests/reverb_node.rs` and `reverb_node_generic.rs`. They generalise to
+`tutti-nodes/tests/reverb/reverb_node.rs` and `reverb_node_generic.rs`. They generalise to
 `node_contract!(D)` in `tutti-nodes`'s `testing` module (feature `testing`,
 `Cargo.toml` line 29), over `tutti_graph::contract::Driven`: the declared tail
 is honest after the cut (`assert_honest_tail`), park and wake equal a fresh node,
 a port-driven block equals a cell-driven one, the dry path is aligned to the
 realization's latency and not its delay (the graph's mix, `reverb_node_generic.rs`), a fork renders from
-silence, and a serial/pooled render is bit-identical (`tests/parallel.rs`). The
+silence, and a serial/pooled render is bit-identical (`tests/executor/parallel.rs`). The
 "lying design" fixture (an echo that rings past its claim, with a latency) becomes
 a shared test double.
 

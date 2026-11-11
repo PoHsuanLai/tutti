@@ -23,9 +23,9 @@ fn read(samples: &[f32]) -> Level {
 
 /// An amplitude-`a` sine, 64 frames per period.
 fn sine(a: f32, frames: usize) -> Vec<f32> {
-    (0..frames)
-        .map(|i| a * (std::f32::consts::TAU * i as f32 / 64.0).sin())
-        .collect()
+    use tutti_types::{Amplitude, Hz, SampleRate, Samples};
+    // One cycle per 64 frames: 1 Hz at a 64 Hz rate.
+    tutti_fixtures::signal::sine(Hz(1.0), Amplitude(a), SampleRate(64.0), Samples(frames))
 }
 
 /// A constant block reads its analytic peak and RMS, exactly.

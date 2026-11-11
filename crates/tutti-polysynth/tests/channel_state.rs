@@ -10,6 +10,7 @@ mod support;
 
 use support::{BLOCK, Hand};
 use tutti_fixtures::midi;
+use tutti_fixtures::signal::peak;
 use tutti_graph::Node;
 use tutti_midi_protocol::PitchBendSensitivity;
 use tutti_polysynth::{
@@ -91,10 +92,6 @@ fn play(hand: &mut Hand, events: &[Ump], seconds: f64) -> Vec<f32> {
         out.extend_from_slice(hand.block(BLOCK).0);
     }
     out
-}
-
-fn peak(x: &[f32]) -> f32 {
-    x.iter().fold(0.0, |a, &b| a.max(b.abs()))
 }
 
 /// A sine's frequency from the span of its rising zero crossings, which

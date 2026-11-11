@@ -18,6 +18,13 @@ publish = false
 [dependencies]
 tutti-ump = { path = "../../crates/tutti-ump", default-features = false }
 tutti-midi-protocol = { path = "../../crates/tutti-midi-protocol" }
+# The units a signal helper takes (`Hz`, `Amplitude`, `SampleRate`, `Samples`).
+# `tutti-types` dev-depends on this crate, so its own tests meet a second copy
+# of it here: they use none of `signal`, whose signatures name its units.
+tutti-types = { path = "../../crates/tutti-types" }
+# `signal`'s float WAV, the independent reader and writer the codecs are
+# checked against.
+hound = "3.5"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 # `plugin`: what a plugin crate's tests share (`main_thread`). Only crates above

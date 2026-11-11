@@ -20,7 +20,7 @@
 
 //! The host half of the VST2.4 API: the ABI types, the plugin loader and the host callback.
 //!
-//! Every VST2 `unsafe` lives here (`scripts/check-plugin-ffi.sh`).
+//! Every VST2 `unsafe` lives here (`cargo xtask check-ffi`).
 //!
 //! The VST API is multi-threaded. A VST host calls into a plugin generally from two threads -
 //! the *processing* thread and the *UI* thread. The organization of this crate reflects this

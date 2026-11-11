@@ -5,7 +5,7 @@
 //! Each scenario runs on the serial executor, on the parallel one and on the
 //! reference interpreter, and the three must log the same events.
 
-mod common;
+use tutti_graph::testing as common;
 
 use std::sync::{Arc, Mutex};
 

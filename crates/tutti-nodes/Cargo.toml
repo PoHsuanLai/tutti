@@ -71,7 +71,7 @@ tutti-nodes = { path = ".", features = ["testing"] }
 tutti-fixtures = { path = "../../testing/tutti-fixtures" }
 approx = "0.5"
 # An independent RBJ-cookbook biquad, as a second opinion on the SVF's magnitude
-# response in `tests/oracle_biquad.rs`. Adds no transitive crates — `num-traits`
+# response in `tests/filters/oracle_biquad.rs`. Adds no transitive crates — `num-traits`
 # is already in the tree.
 biquad = "0.5"
 assert_no_alloc = { version = "1", default-features = false }
@@ -81,7 +81,7 @@ criterion.workspace = true
 wide = { version = "1.6", default-features = false }
 # `engine_render`'s Graph backend rows: the graph behind `Engine`.
 # `contract`: the graph's sample-accuracy contract harness, which
-# `tests/contract.rs` runs the latency-bearing nodes through.
+# `tests/node_contract/contract.rs` runs the latency-bearing nodes through.
 tutti-graph = { path = "../tutti-graph", features = ["contract"] }
 # `Engine`, which the engine bench and `tests/rt_no_alloc_engine.rs` render the
 # nodes through.

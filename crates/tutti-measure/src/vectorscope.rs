@@ -92,9 +92,12 @@ mod tests {
     const ONE: NonZeroUsize = NonZeroUsize::MIN;
 
     fn sine(len: usize) -> Vec<f32> {
-        (0..len)
-            .map(|i| (core::f32::consts::TAU * 440.0 * i as f32 / 48_000.0).sin())
-            .collect()
+        tutti_fixtures::signal::sine(
+            tutti_types::Hz(440.0),
+            tutti_types::Amplitude(1.0),
+            tutti_types::SampleRate(48_000.0),
+            tutti_types::Samples(len),
+        )
     }
 
     fn scope(l: &[f32], r: &[f32], decimate: NonZeroUsize) -> Vec<ScopePoint> {

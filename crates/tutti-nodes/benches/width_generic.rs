@@ -29,15 +29,15 @@ use tutti_types::{ChannelLayout, Feedback, Hz, Q, Resonance, SampleRate, Seconds
 const BLOCK: usize = 64;
 const SR: SampleRate = SampleRate(48_000.0);
 
-/// Deterministic broadband input: a cheap LCG, so the bench needs no `rand`.
+/// Deterministic broadband input: `tutti_fixtures::Noise`, a cheap LCG, so the
+/// bench needs no `rand`.
 /// Planar, `channels` × `BLOCK`.
 fn noise_block(channels: usize) -> Vec<[f32; BLOCK]> {
     let mut buf = vec![[0.0f32; BLOCK]; channels];
-    let mut state = 0x2545_f491_u32;
+    let mut stream = tutti_fixtures::Noise::from_state(0x2545_f491);
     for ch in &mut buf {
         for s in ch.iter_mut() {
-            state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
-            *s = (state >> 8) as f32 / (1u32 << 24) as f32 * 2.0 - 1.0;
+            *s = stream.next().expect("endless");
         }
     }
     buf

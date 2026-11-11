@@ -1,7 +1,7 @@
 //! Where the test suites find things: the repo's `assets/`, the reference plugin
 //! cdylibs and the `plugin-server` and `plugin-probe` binaries;
 //! [`check_range_contract`], the one check a range-checked type keeps its
-//! contract; [`Fnv`] and [`noise`], what a digest test is made of, and [`assert_golden`],
+//! contract; [`Fnv`], [`digest()`] and [`noise`], what a digest test is made of, and [`assert_golden`],
 //! the gate that pins a digest where its libm was recorded; and
 //! [`sf2`], a SoundFont built in memory.
 //!
@@ -52,8 +52,9 @@ pub mod midi;
 mod plugin;
 mod range_contract;
 pub mod sf2;
+pub mod signal;
 
-pub use digest::{Fnv, Noise, noise};
+pub use digest::{Fnv, Noise, digest, digest_planes, noise};
 pub use env::ScopedEnv;
 pub use golden::{RECORDED_ARCH, RECORDED_GLIBC, assert_golden};
 pub use machine_lock::{MachineLock, machine_lock};

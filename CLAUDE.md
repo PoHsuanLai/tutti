@@ -158,7 +158,7 @@ serial one.
 - **Nodes run inside `with_no_denormals`**: never make memory safety depend
   on an exact float result (its `# Soundness` docs say why).
 - A parallel test compares against the **serial render, bit for bit**
-  (`tests/parallel.rs`, the differential suite's `modes`), and a gate on the
+  (`tests/executor/parallel.rs`, the differential suite's `modes`), and a gate on the
   parallel path runs every participant inside `assert_no_alloc`, helpers
   included (`TestPool::no_alloc`, the `GatedPool` in `tutti-engine`'s `rt_no_alloc_engine`, `tutti-nodes`'s
   `rt_no_alloc_modulation` and `tutti-clap-host`'s `clap_thread_pool`).
@@ -175,21 +175,25 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt
 cargo xtask check-paths [<crate> <module>...]  # the import-path gate (also searches *.md)
 cargo xtask check-submodule-pins   # VST3 SDK pins, asserted by SHA
-scripts/check-bevy-free.sh         # tutti-session reaches no Bevy and has no bevy feature
-scripts/check-adapter.sh           # tutti-session re-exports no crate whole (bevy-tutti's composition/policy scans are skipped while it is parked)
+cargo xtask check-session          # tutti-session reaches no Bevy, has no bevy feature, re-exports no crate whole
 cargo xtask check-doc-features     # rustdoc per feature for tutti-session, tutti
-scripts/check-guards.sh            # every host callback runs under the panic guard
-scripts/check-plugin-ffi.sh        # no CLAP/VST3/AU unsafe outside the -ffi crates; the forbids; VST2 held to its pins
-scripts/check-midi-ffi.sh          # no ALSA/CoreMIDI unsafe outside tutti-alsa-ffi/tutti-coremidi-ffi; the forbid; the -ffi lints
-scripts/check-layout.sh            # flat crates/ and testing/, no crates->testing edges, layering
+cargo xtask check-guards           # every host callback runs under the panic guard
+cargo xtask check-ffi              # every crate root forbids unsafe but the -ffi crates (plugin formats, MIDI), rt and arc-lend; the -ffi lints
+cargo xtask check-layout           # flat crates/ and testing/, layering, codec boundary, depth-free test paths, no C library in `export`
 cargo xtask check-range-types      # no plain derived Deserialize on a private tuple field
-scripts/check-hosting.sh           # every InProcess/OutOfProcess impl is in the contract's hostings
+cargo xtask check-hosting          # every InProcess/OutOfProcess impl is in the contract's hostings
 cargo xtask deny                   # RustSec advisories, yanked and unmaintained crates (deny.toml)
 ```
 
-`check-paths`, `check-submodule-pins`, `check-doc-features` and `check-range-types` are
-Rust gates in `xtask/src/gates/` (a pure function from the files, read through `Tree`,
-to a `Report`, with tests over in-memory trees); the `scripts/` ones are still scripts.
+Every static gate (`check-paths`, `check-submodule-pins`, `check-doc-features`,
+`check-range-types`, `check-session`, `check-guards`, `check-ffi`, `check-layout` and
+`check-hosting`) is a Rust gate in `xtask/src/gates/`: a pure function from the files, read
+through `Tree`, to a `Report` (what it asks of `git` or `cargo tree` comes through `Git` and
+`Cargo`), with tests over in-memory trees. xtask is std only, so the parsing is by hand.
+A rule the compiler already enforces is not a gate: `check-ffi` checks that a crate root
+carries `#![forbid(unsafe_code)]` and lets the compiler refuse the token. The one script left
+is `scripts/parked/check-bevy-tutti.sh` (the parked adapter's composition and policy scans:
+nothing runs it, and it is ported to a gate with un-parking).
 
 `cargo xtask deny` needs `cargo install cargo-deny --version 0.20.2 --locked` (CI pins
 the same version) and fails with that command when it is missing.
@@ -201,7 +205,7 @@ and the docs.rs build on a dated nightly); `cargo xtask check-loom` runs clippy 
 - **`unsafe`:** a library with none carries `#![forbid(unsafe_code)]`. Plugin FFI
   `unsafe` lives only in the per-format `-ffi` crates (`tutti-clap-ffi`,
   `tutti-vst3-ffi`, `tutti-au-ffi` and `tutti-vst2-ffi`); host crates forbid
-  `unsafe` (`scripts/check-plugin-ffi.sh`, design 016 §2.9). A higher crate calls a
+  `unsafe` (`cargo xtask check-ffi`, design 016 §2.9). A higher crate calls a
   safe wrapper and forbids `unsafe`: a parent window is
   `WindowHandle::from_window(&impl HasWindowHandle)` (winit, Bevy, any
   `raw-window-handle` 0.6 window), and the one `unsafe` constructor,
@@ -216,7 +220,7 @@ and the docs.rs build on a dated nightly); `cargo xtask check-loom` runs clippy 
   MIDI's OS `unsafe` lives only in `tutti-alsa-ffi` (Linux) and `tutti-coremidi-ffi`
   (macOS), which `deny` `undocumented_unsafe_blocks` and `missing_safety_doc`;
   `tutti-midi-hardware` forbids `unsafe` and names no raw-binding crate
-  (`scripts/check-midi-ffi.sh`, design 017 stage 4d).
+  (`cargo xtask check-ffi`, design 017 stage 4d).
 - **Toolchain:** `rust-toolchain.toml` pins the stable every gate runs on,
   and `Cargo.lock` is committed (`--locked` everywhere). To bump, edit
   `rust-toolchain.toml`, run `cargo xtask ci`, and fix the new lints in the same PR.
@@ -235,7 +239,7 @@ cargo xtask test-all              # test, test-features, test-editor, test-au-in
 
 - **A test finds a repo file through `tutti_fixtures`, never a relative `..`
   path:** `asset("audio/stereo.flac")` and `repo_root()` for the repo's files
-  (`scripts/check-layout.sh` greps for depth-dependent paths), and `cdylib`
+  (`cargo xtask check-layout` greps for depth-dependent paths), and `cdylib`
   and `plugin_server` for the reference plugins and `plugin-server`, which it
   finds in the test binary's own profile directory (no build script or env
   var, so it holds under `CARGO_TARGET_DIR` and `--target`). It is a
@@ -243,12 +247,13 @@ cargo xtask test-all              # test, test-features, test-editor, test-au-in
   (`tutti-sf2`'s `samples/`) is `CARGO_MANIFEST_DIR.join(..)` without
   `..`.
 - **Build `plugin-server` first:** `cargo build -p tutti-plugin-server`.
-  Without it, `tutti-plugin`'s `clap_pdc_alignment`, `clap_crash_recovery` and
-  `real_stall_tests`, `tutti-plugin-ipc`'s `subprocess::launch` tests,
-  `tutti-session`'s `plugin` suite, `tutti`'s §5.2
+  Without it, `tutti-plugin`'s `clap_nodes` binary (`clap_pdc_alignment`,
+  `clap_crash_recovery`) and `real_stall_tests`, `tutti-plugin-ipc`'s `subprocess::launch` tests,
+  `tutti`'s §5.2
   example (`plugin_midi_export`, `--features clap,export`), and `tutti-session`'s
-  `export_fork_plugin`, `plugin_latency` and `plugin_modulation` suites (ported
-  from `bevy-tutti`; `--features clap,export,modulation,device`) fail with that
+  `plugin` binary (the `plugin`, `export_fork_plugin`, `plugin_latency` and
+  `plugin_modulation` modules, ported from `bevy-tutti`;
+  `--features clap,export,modulation,device`) fail with that
   exact command, and
   `tutti-plugin-contract`'s `server` suite (`--features server`) needs
   `--no-default-features --features clap,vst2,vst3`. They must fail
@@ -359,8 +364,9 @@ breaks it is not a reason to touch it. Build it on demand with
 `cargo check --manifest-path crates/bevy-tutti/Cargo.toml --features full,plugin
 --all-targets` (no committed lock file; it resolves fresh). Un-parking is one
 migration PR: put it back in `members`, drop the `exclude`, restore its
-`workspace = true` inheritance, the CI/xtask lines and `ADAPTER_PARKED` in
-`scripts/check-adapter.sh`. Its engine-path tests were ported to
+`workspace = true` inheritance, the CI/xtask lines, and port
+`scripts/parked/check-bevy-tutti.sh` (checks 3 and 5 of design 015 §8: the adapter names
+no engine composition and holds no policy) to a gate that CI runs. Its engine-path tests were ported to
 Bevy-free suites in `tutti-session` first. The rules below that name it
 describe the adapter as it was parked.
 
@@ -540,7 +546,7 @@ vendor/          third-party code we never edit
 
 **Layering.** Dependencies between workspace crates point strictly down this
 list (normal and build edges; dev-dependencies may go anywhere).
-`scripts/check-layout.sh` holds the table and fails on an unplaced crate:
+`cargo xtask check-layout` holds the table and fails on an unplaced crate:
 
 0. `arc-lend`, `tutti-alsa-ffi`, `tutti-coremidi-ffi`, `tutti-ump`, `tutti-types`, `tutti-plugin-ipc-ffi`
 1. `tutti-rt`, `tutti-midi-protocol`, `tutti-midi-device`, `tutti-curve`
@@ -565,7 +571,7 @@ list (normal and build edges; dev-dependencies may go anywhere).
   dev-dependency.
 - `xtask` is in no layer: it depends on no workspace crate (of any kind, and
   on no outside crate: std only), nothing depends on it, it is
-  `#![forbid(unsafe_code)]` and `publish = false` (`scripts/check-layout.sh`).
+  `#![forbid(unsafe_code)]` and `publish = false` (`cargo xtask check-layout`).
   A recipe is its planning in `xtask/src/recipes.rs`; keep the commands there
   the commands CI runs.
 - `vendor/` holds third-party code we never edit and no workspace member.
@@ -653,7 +659,7 @@ list (normal and build edges; dev-dependencies may go anywhere).
   `Extend<Ump>` and allocates nothing, `Connection` is Table 4 steps 2 to 4 as a
   state machine whose time is an `Instant` argument (`on_message`, `on_timeout`,
   `deadline`), never read from a clock; the bit fields stay in `tutti-ump`. The
-  CI codec takes `tutti-ump`'s `U7`, `MidiChannel` and `FunctionBlockId` for its fields. `tutti-midi-hardware` feeds them: one `Connection` per open UMP input, stepped by `MidiSession::poll(now)` from the session's `Phase::Poll`, with the device's Stream messages kept out of the graph (`InputProducerHandle::push`); `Endpoint::reply` has no caller, since tutti publishes no endpoint. A consumer that persists a `DeviceInfo` depends on it with
+  CI codec takes `tutti-ump`'s `U7`, `MidiChannel` and `FunctionBlockId` for its fields. `tutti-midi-hardware` feeds them: one `Connection` per open UMP input, stepped by `MidiSession::poll(now)` from the session's `Phase::Poll`, with the device's Stream messages kept out of the graph (`InputProducerHandle::push`, which also drops a JR Clock or JR Timestamp a device sends) and the connection still hearing a Stream Configuration Notification (and, unless the Endpoint declared its blocks static, Function Block changes) after it settles; **an output is put in the device's wire form at one place, `OpenOutput::queue`**: from the device's `StreamConfig` (the OS's description, then what the negotiation settled), a MIDI 2.0 Protocol endpoint gets the graph's packets as they are, a MIDI 1.0 Protocol endpoint or port never gets type `0x4` (one `tutti_midi_protocol::Narrower` per output) and JR goes only when `rx_jr` is set, and the session's `UmpOut` stamps by the same configuration (there is no host JR switch); `Endpoint::reply` has no caller, since tutti publishes no endpoint. A consumer that persists a `DeviceInfo` depends on it with
   its `serde` feature (no umbrella forwards it; renaming an `Identity` variant
   breaks saved files) and restores it with `Devices::resolve`. Only `Exact`
   is safe to bind unasked: an ALSA identity is a name, so a lone device with
@@ -697,7 +703,7 @@ list (normal and build edges; dev-dependencies may go anywhere).
   `decode-flac`, `decode-mp3`, `decode-ogg` for reading. A decode feature pulls
   exactly one `symphonia` container and no encoder library, an encode feature
   pulls no decoder, and the C Vorbis library is `encode-vorbis`'s alone, so a
-  build that only reads never needs it (`scripts/check-layout.sh` holds both).
+  build that only reads never needs it (`cargo xtask check-layout` holds both).
   A `Format` variant exists only with its `encode-*` feature: no `cfg(not)`
   arm refuses a format. An `Encoder` takes blocks already at the
   `Spec`'s rate and width; it does not pull, resample or dither, and nothing in
@@ -720,7 +726,7 @@ list (normal and build edges; dev-dependencies may go anywhere).
   `symphonia`, all in `src/decode.rs` and `src/decode/`, so the library is
   swapped by editing that module. No `symphonia` type is in a public signature,
   field or error (`DecodeError` is ours), and no file outside that module names
-  it (`scripts/check-layout.sh`). `Wave` is here because decoding produces it and
+  it (`cargo xtask check-layout`). `Wave` is here because decoding produces it and
   `tutti-sampler`, `tutti-export` and `bevy-tutti` consume it; it needs no
   feature. `FileIn` is here because it is the decoder's streaming state.
 - `tutti-rt` names no tutti crate. Its one workspace-member dependency is
@@ -833,7 +839,7 @@ list (normal and build edges; dev-dependencies may go anywhere).
   dev-dependency.
 - `tutti-session` keeps every module private too (`tutti_session::Graph`;
   CI runs the per-module path gate on it), has no `bevy` feature and
-  re-exports no crate whole (`scripts/check-adapter.sh`).
+  re-exports no crate whole (`cargo xtask check-session`).
 - `tutti-plugin-db` depends on `tutti-plugin-types` alone among workspace
   crates, keeps every module private (`tutti_plugin_db::Scanner`; CI runs
   the per-module path gate on it), is `#![forbid(unsafe_code)]` and has no
@@ -864,12 +870,12 @@ list (normal and build edges; dev-dependencies may go anywhere).
   copies cannot race in this process). It knows no format:
   the editor-only instance a `PluginBridge` opens is loaded by the host's
   `EditorLoader`, and no `tutti-*-host` depends on it
-  (`scripts/check-layout.sh`). Its test-only knobs (`set_rate_timeout`,
+  (`cargo xtask check-layout`). Its test-only knobs (`set_rate_timeout`,
   `settled_replies`) are behind `test-support`, which `tutti-plugin`'s
   dev-dependency turns on.
 - `tutti-plugin-host` depends on `tutti-plugin-types`, `tutti-graph`,
   `tutti-transport`, `tutti-tempo`, `tutti-types`, `tutti-rt` and `tutti-ump`
-  alone among workspace crates (`scripts/check-layout.sh`): no `tutti-plugin-ipc`,
+  alone among workspace crates (`cargo xtask check-layout`): no `tutti-plugin-ipc`,
   no format host as a normal dependency, and not `tutti-plugin`. It keeps every
   module private (`tutti_plugin_host::PluginHandle`; CI runs the per-module path
   gate on it), is `publish = false`, has no `bevy` feature and is
@@ -903,7 +909,7 @@ list (normal and build edges; dev-dependencies may go anywhere).
   (`src/clip_file/read.rs`, doc 017 L1b) is a `winnow` grammar over the packets `split_stream` and `decode`
   made, each M2-116 placement rule one rule of it. No winnow type is in a
   public signature, field or error, and no file but those two `read.rs` names `winnow`
-  (`scripts/check-layout.sh` holds it per crate, like symphonia in `tutti-codec`). A test builds files from
+  (`cargo xtask check-layout` holds it per crate, like symphonia in `tutti-codec`). A test builds files from
   `tests/support`'s encoder written from the spec, not from the crate's own writer.
   `MidiFile::to_clip` (doc 017 stage 6c) converts a format 0 or 1 SMF to a Clip File, its meta events to Flex Data (M2-116 section 3.3, Appendix B) and everything with no UMP form returned beside the clip as `Converted::dropped`, never lost silently.
 - `tutti-midi-hardware` keeps every module private but `test_support` (CI runs the
@@ -932,10 +938,10 @@ list (normal and build edges; dev-dependencies may go anywhere).
 - (While `bevy-tutti` is parked a Bevy app has no maintained adapter.) A Bevy app depends on `bevy-tutti`; a headless consumer depends on `tutti`.
   `bevy-tutti` does not depend on `tutti`. Both use `tutti-session`. It
   holds only code that names two or more engine crates, or the order they
-  run in, has no `bevy` feature (`scripts/check-bevy-free.sh`) and
+  run in, has no `bevy` feature (`cargo xtask check-session`) and
   re-exports no crate whole. `bevy-tutti` reaches the engine's composition
   only through it, reads no clock but as a session phase's argument and holds
-  no `usize`/`Duration` limit const (`scripts/check-adapter.sh`, whose short
+  no `usize`/`Duration` limit const (`scripts/parked/check-bevy-tutti.sh`, whose short
   exception list names the lane that removes each), and does not re-export it.
 
 ## Unit types (MANDATORY)
@@ -1004,7 +1010,7 @@ shape (`MidiChannel` is the reference). No macro.
   `cargo xtask check-range-types` fails a private tuple field with a derived
   `Deserialize` that is not `serde(try_from)` (`transparent` and `from` are
   flagged too). Its exception list names what removes each entry.
-- `tutti-ump` does not dev-depend on `tutti-fixtures` (`check-layout.sh`: it
+- `tutti-ump` does not dev-depend on `tutti-fixtures` (`cargo xtask check-layout`: it
   depends on no workspace crate, of any kind), so its types keep their own
   tests.
 
@@ -1172,6 +1178,14 @@ Scalars use `Param<U>`.
 
 ## Testing policy
 
+- **One integration binary per area.** Each `tests/*.rs` is its own binary and
+  link step, so a crate's public-API tests are `tests/<area>/main.rs` with one
+  `mod` per file; a file stays its own binary only when it must (a
+  `#[global_allocator]`, `harness = false`, `cfg(loom)`, the graph's differential
+  suite). A feature-gated file is a `#[cfg(feature = ..)] mod` line, not a
+  `required-features` entry. A `support` module that another binary or an
+  example includes by path stays in `tests/support` and the area reaches it
+  with `#[path]`.
 - **Never simplify, skip or modify tests to make them pass.** Fix the bug.
 - **Report failing tests and their root causes.** Never silently remove one.
 - **A test must be able to fail.** It asserts a property from the spec, an

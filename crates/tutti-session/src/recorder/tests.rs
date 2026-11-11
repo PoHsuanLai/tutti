@@ -1,6 +1,6 @@
 //! The pump loop, stepped by hand: counts are exact because the passes are the
 //! test's, never a sleep. What only a thread runs (the stop handshake, the
-//! park, the join) is `tests/recorder_thread.rs`.
+//! park, the join) is `tests/io/recorder_thread.rs`.
 
 use super::*;
 use tutti_codec::{FileOut, Format, Pcm, Spec};

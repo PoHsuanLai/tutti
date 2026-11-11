@@ -37,7 +37,8 @@ use std::time::{Duration, Instant};
 use tutti_graph::{GraphBuilder, Prepare, Renderer};
 use tutti_types::{ChannelLayout, SampleRate, Samples};
 
-use crate::handles::{PluginClient, PluginHandle};
+use crate::handles::PluginClient;
+use tutti_plugin_host::PluginHandle;
 use tutti_plugin_ipc::BridgeConfig;
 
 const SAMPLE_RATE: f64 = 48_000.0;
@@ -155,7 +156,7 @@ fn load_probe(env: &mut ProbeEnv, render_mode: u32) -> (PluginClient, PluginHand
         SampleRate::new(SAMPLE_RATE),
     )
     .expect("load the reference CLAP plugin through a real plugin-server");
-    let handle = PluginHandle::from_client(&client);
+    let handle = client.handle();
     (client, handle)
 }
 
@@ -437,7 +438,7 @@ fn a_parked_plugin_shows_as_abandoned_blocks_with_no_replies_and_can_be_terminat
     );
     assert_eq!(
         handle.status(),
-        crate::handles::PluginStatus::Alive,
+        tutti_plugin_host::PluginStatus::Alive,
         "a parked plugin has not crashed"
     );
 

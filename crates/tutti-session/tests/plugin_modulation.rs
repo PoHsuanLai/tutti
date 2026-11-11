@@ -25,7 +25,8 @@ use support::{clap_probe, plugin_server};
 use tutti_graph::NodeKey;
 use tutti_modulation::Lfo;
 use tutti_plugin::catalog::PluginId;
-use tutti_plugin::handles::{Normalized, ParamId, PluginClient};
+use tutti_plugin::handles::PluginClient;
+use tutti_plugin_types::{Normalized, ParamId};
 use tutti_session::{
     Crossfade, PHASES, ParamRef, PhaseCx, PluginLoadRequest, Session, SessionEvent,
 };

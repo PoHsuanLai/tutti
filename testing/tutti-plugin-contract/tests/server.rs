@@ -10,12 +10,13 @@ use std::path::PathBuf;
 use tutti_fixtures::main_thread;
 
 use tutti_plugin::BridgeConfig;
-use tutti_plugin::handles::{ParamId, PluginClient, PluginHandle};
+use tutti_plugin::handles::PluginClient;
 use tutti_plugin_contract::spec::{Mode, Param};
 use tutti_plugin_contract::{
     Clap, Format, Transcript, Vst2, Vst3, Vst3Cpp, bundle_of, clap_path, library, patch_mode,
     vst3_cpp_module, vst3_module,
 };
+use tutti_plugin_types::ParamId;
 
 fn through_server<F: Format>(path: PathBuf) {
     // SAFETY: set before any thread of this test reads it.
@@ -26,7 +27,7 @@ fn through_server<F: Format>(path: PathBuf) {
         tutti_plugin_types::SampleRate::new(48_000.0),
     )
     .unwrap_or_else(|e| panic!("{}: the server loads the plugin: {e:?}", F::NAME));
-    let handle = PluginHandle::from_client(&client);
+    let handle = client.handle();
     let pid = handle.server_pid().expect("the plugin lives in a server");
     assert_ne!(pid, std::process::id(), "a process other than this one");
 

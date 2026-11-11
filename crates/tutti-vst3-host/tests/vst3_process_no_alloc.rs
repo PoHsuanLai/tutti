@@ -12,7 +12,7 @@
 //! cargo test -p tutti-vst3-host --test vst3_process_no_alloc -- --ignored
 //! ```
 //!
-//! Mirrors the pattern in `tutti-plugin/tests/vst2_in_process_no_alloc.rs`
+//! Mirrors the pattern in `tutti-plugin-host/tests/vst2_in_process_no_alloc.rs`
 //! and `clap-host/tests/clap_process_no_alloc.rs`.
 //!
 //! ## What each test is actually guarding

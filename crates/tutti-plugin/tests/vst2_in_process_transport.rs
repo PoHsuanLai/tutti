@@ -24,8 +24,8 @@ use tutti_graph::{
     Env, GraphBuilder, IntoNode, LoopRange, Offset, Prepare, Renderer, Transport, TransportChanges,
     Unforkable,
 };
-use tutti_plugin::handles::PluginHandle;
-use tutti_plugin::{PluginNode, load_client};
+use tutti_plugin_host::PluginHandle;
+use tutti_plugin_host::{PluginNode, load_client};
 use tutti_transport::ProjectMeter;
 use tutti_types::Latency;
 use tutti_types::{

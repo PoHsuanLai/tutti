@@ -329,7 +329,7 @@ pub enum SessionEvent {
     /// hot-plug is reported. Reported once.
     #[cfg(feature = "midi-hardware")]
     MidiWatchFailed(tutti_midi_hardware::WatchFailure),
-    /// A hosted plugin was declared dead (`tutti_plugin::Liveness`) with
+    /// A hosted plugin was declared dead (`tutti_plugin_host::Liveness`) with
     /// recovery off: its node was removed. Reported once. With recovery on
     /// the death is `PluginReloading`, and the node's removal
     /// `PluginGaveUp`.

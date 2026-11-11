@@ -19,8 +19,8 @@ fn lookup_range(table: &[(u32, (f64, f64))], id: u32) -> Option<(f64, f64)> {
         .ok()
         .map(|i| table[i].1)
 }
-use crate::util::window::{ContentScale, EditorSize, WindowHandle};
 use std::path::Path;
+use tutti_plugin_types::{ContentScale, EditorSize, WindowHandle};
 
 pub(crate) struct AuGuiInstance {
     inner: tutti_au_host::AuInstance,

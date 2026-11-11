@@ -36,7 +36,8 @@ use tutti_graph::NodeKey;
 use tutti_graph::contract::Latent;
 use tutti_graph::{GraphBuilder, Prepare, Renderer, Unforkable};
 use tutti_plugin::BridgeConfig;
-use tutti_plugin::handles::{Bound, PluginClient, PluginControls, PluginHandle};
+use tutti_plugin::handles::{Bound, PluginClient};
+use tutti_plugin_host::{PluginControls, PluginHandle};
 use tutti_types::{ChannelLayout, Latency, SampleRate, Samples};
 
 /// A bound plugin as the only node of a graph: the global inputs feed
@@ -382,7 +383,7 @@ pub fn load_probe_with(config: BridgeConfig, sample_rate: f64) -> LoadedProbe {
         SampleRate::new(sample_rate),
     )
     .expect("load the reference CLAP plugin through a real plugin-server");
-    let handle = PluginHandle::from_client(&client);
+    let handle = client.handle();
     LoadedProbe { client, handle }
 }
 

@@ -23,9 +23,9 @@
 //! A constant signal would separate none of those, which is why the ramp is
 //! load-bearing rather than decorative.
 
-use crate::host::node::ChunkCounters;
 use crate::host::node::batcher::Batcher;
 use tutti_fixtures::machine_lock;
+use tutti_plugin_host::ChunkCounters;
 use tutti_plugin_ipc::BridgeThread;
 use tutti_plugin_ipc::PluginBridge;
 

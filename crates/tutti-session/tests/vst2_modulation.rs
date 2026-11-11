@@ -15,7 +15,7 @@ use std::time::{Duration, Instant};
 use tutti_graph::NodeKey;
 use tutti_graph::{Cx, Io, Node, Prepare, Shape, Status};
 use tutti_plugin::catalog::PluginId;
-use tutti_plugin::handles::{Normalized, ParamId};
+use tutti_plugin_types::{Normalized, ParamId};
 use tutti_session::{Feeder, PHASES, ParamRef, PhaseCx, PluginLoadRequest, Session, SessionEvent};
 use tutti_types::{ChannelLayout, Depth, SampleRate};
 

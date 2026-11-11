@@ -18,8 +18,8 @@ use tutti_plugin_types::Load;
 use tutti_vst2_host::Vst2Loaded;
 
 use tutti_plugin::error::StateError;
-use tutti_plugin::handles::PluginHandle;
 use tutti_plugin::server::EditorPresence;
+use tutti_plugin_host::PluginHandle;
 use tutti_plugin_types::{Normalized, ParamId};
 
 const SAMPLE_RATE: f64 = 48_000.0;
@@ -70,7 +70,7 @@ fn load_handle(env: &[(&str, &str)]) -> PluginHandle {
         // SAFETY: as above.
         unsafe { std::env::set_var(k, v) };
     }
-    let (_unit, handle) = tutti_plugin::load_client::<Vst2Loaded>(
+    let (_unit, handle) = tutti_plugin_host::load_client::<Vst2Loaded>(
         &main_thread(),
         &path,
         &Load::new(),
@@ -434,7 +434,7 @@ fn the_node_reports_the_decoded_tail_rather_than_unknown() {
         // SAFETY: the probe lock is held, so no other test thread is touching
         // the environment.
         unsafe { std::env::set_var("TUTTI_VST2_PROBE_TAIL_SIZE", raw) };
-        let (unit, _handle) = tutti_plugin::load_client::<Vst2Loaded>(
+        let (unit, _handle) = tutti_plugin_host::load_client::<Vst2Loaded>(
             &main_thread(),
             &path,
             &Load::new(),
@@ -476,7 +476,7 @@ fn midi_past_the_blocks_capacity_is_counted() {
 
     let _lock = lock_probe();
     clear_probe_env();
-    let (unit, _handle) = tutti_plugin::load_client::<Vst2Loaded>(
+    let (unit, _handle) = tutti_plugin_host::load_client::<Vst2Loaded>(
         &main_thread(),
         tutti_fixtures::vst2_probe(),
         &Load::new(),

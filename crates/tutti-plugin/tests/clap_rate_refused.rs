@@ -21,7 +21,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use tutti_graph::Prepare;
-use tutti_plugin::handles::{PluginHandle, PluginStatus};
+use tutti_plugin_host::{PluginHandle, PluginStatus};
 use tutti_plugin_types::PluginInvalidation;
 use tutti_types::{SampleRate, Samples};
 

@@ -278,7 +278,7 @@ Today CLAP uses `max(0)` plus `clamp_times`, VST3 uses
 ## 6. The FFI crates
 
 - **One `WindowHandle` decode** (P5). `HostEditor::open_editor` takes a
-  `WindowHandle`. `util/window.rs`'s `extract_platform_ptr` becomes the one
+  `WindowHandle`. `tutti-plugin-host`'s `window.rs` `extract_platform_ptr` becomes the one
   `unsafe` decode, with one `// SAFETY:`, and `from_ptr` is deleted. This
   removes the two backends' decodes, the no-op round trips in `gui/au.rs` and
   the server's `loaders/au.rs`, and the `VST2_CALLERS` pin in

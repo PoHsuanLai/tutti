@@ -9,9 +9,9 @@
 use std::path::Path;
 use tutti_plugin_types::MainThread;
 
-use crate::host::handles::PluginHandle;
 use crate::host::node::PluginClient;
 use tutti_plugin_db::{PluginFormat, format_from_path};
+use tutti_plugin_host::PluginHandle;
 use tutti_plugin_ipc::AudioConfig;
 use tutti_plugin_types::BridgeResult;
 use tutti_plugin_types::PluginRole;
@@ -29,7 +29,7 @@ enum Backend {
     /// `BridgeResult` carrying one — pay the larger figure.
     Subprocess(Box<PluginClient>),
     #[cfg(feature = "vst2")]
-    InProcess(Box<crate::format::in_process::InProcClient<tutti_vst2_host::Vst2Loaded>>),
+    InProcess(Box<tutti_plugin_host::InProcClient<tutti_vst2_host::Vst2Loaded>>),
 }
 
 /// A loaded plugin: its audio node, its control surface, and the per-block
@@ -190,7 +190,7 @@ impl Plugin {
                         .map_err(|e| e.to_string())
                 }
             });
-            let (client, handle, restored) = crate::format::in_process::load_client_restoring(
+            let (client, handle, restored) = tutti_plugin_host::load_client_restoring(
                 main,
                 path,
                 &tutti_plugin_types::Load::new(),
@@ -207,7 +207,7 @@ impl Plugin {
             state,
         )
         .map(|(client, restored)| {
-            let handle = PluginHandle::from_client(&client);
+            let handle = client.handle();
             ((client, restored), handle)
         })?;
         Ok((Self::from_subprocess(client, handle), restored))
@@ -233,7 +233,7 @@ impl Plugin {
     /// Wrap an in-process VST2 client.
     #[cfg(feature = "vst2")]
     fn from_in_process(
-        client: crate::format::in_process::InProcClient<tutti_vst2_host::Vst2Loaded>,
+        client: tutti_plugin_host::InProcClient<tutti_vst2_host::Vst2Loaded>,
         handle: PluginHandle,
     ) -> Self {
         Self {
@@ -347,7 +347,7 @@ impl Plugin {
     /// The node's meter cell, as a handle of its own, for either backend:
     /// what a host keeps to install the meter after the plugin has moved
     /// into a graph (the same cell [`set_meter`](Self::set_meter) writes).
-    pub fn meter(&self) -> crate::host::node::PluginMeter {
+    pub fn meter(&self) -> tutti_plugin_host::PluginMeter {
         match &self.backend {
             Backend::Subprocess(c) => c.controls().meter(),
             #[cfg(feature = "vst2")]
@@ -433,7 +433,7 @@ impl Plugin {
 /// `plugin-server` for a subprocess plugin, and a second instance in this
 /// process for an in-process VST2 one.
 ///
-/// [`PluginControls`]: crate::host::node::PluginControls
+/// [`PluginControls`]: tutti_plugin_host::PluginControls
 pub struct BoundPlugin {
     backend: BoundBackend,
 }
@@ -441,7 +441,7 @@ pub struct BoundPlugin {
 enum BoundBackend {
     Subprocess(Box<PluginClient<crate::host::node::Bound>>),
     #[cfg(feature = "vst2")]
-    InProcess(Box<crate::format::in_process::PluginNode<tutti_vst2_host::Vst2Loaded>>),
+    InProcess(Box<tutti_plugin_host::PluginNode<tutti_vst2_host::Vst2Loaded>>),
 }
 
 impl std::fmt::Debug for BoundPlugin {
@@ -451,7 +451,7 @@ impl std::fmt::Debug for BoundPlugin {
 }
 
 impl tutti_graph::IntoNode for BoundPlugin {
-    type Controls = Option<crate::host::node::PluginControls>;
+    type Controls = Option<tutti_plugin_host::PluginControls>;
 
     fn into_node(self) -> (Box<dyn tutti_graph::Node>, Self::Controls) {
         let tutti_graph::NodeParts { node, controls, .. } = self.into_parts();

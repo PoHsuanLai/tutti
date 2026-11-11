@@ -454,6 +454,11 @@ crates/          everything shipped; directory name = package name; no nesting
                  control socket, the plugin-server's launch, and the
                  client of a served plugin, `PluginBridge`; no plugin format,
                  design 021 §6.1),
+  tutti-plugin-host (the format-generic half of hosting, not a format host: the
+                 `PluginHandle` control surface and its `Host*` capability traits,
+                 the node's controls, meter, transport and parameter delivery, the
+                 host policy (`Liveness`, `PluginParamValues`) and the in-process
+                 node; no wire, design 021 §6.1),
   tutti-plugin-probe (the `plugin-probe` binary: reads a plugin's descriptor
                  into a result file, `tutti-plugin-types`' `probe_wire`; the format
                  hosts and no hosting; nothing depends on it, design 021 §2.5),
@@ -486,7 +491,8 @@ list (normal and build edges; dev-dependencies may go anywhere).
    `tutti-plugin-db`, `tutti-plugin-ipc`
 5. `tutti-cpal`, `tutti-export`, `tutti-sampler`,
    `tutti-polysynth`, `tutti-soundfont`, `tutti-midi-hardware`,
-   `tutti-clap-host`, `tutti-vst3-host`, `tutti-au-host`, `tutti-vst2-host`
+   `tutti-clap-host`, `tutti-vst3-host`, `tutti-au-host`, `tutti-vst2-host`,
+   `tutti-plugin-host`
 6. `tutti-plugin`, `tutti-plugin-probe`
 7. `tutti-plugin-server`, `tutti-session`
 8. `tutti` (and `bevy-tutti`, when it is unparked)
@@ -764,6 +770,19 @@ list (normal and build edges; dev-dependencies may go anywhere).
   (`scripts/check-layout.sh`). Its test-only knobs (`set_rate_timeout`,
   `settled_replies`) are behind `test-support`, which `tutti-plugin`'s
   dev-dependency turns on.
+- `tutti-plugin-host` depends on `tutti-plugin-types`, `tutti-graph`,
+  `tutti-transport`, `tutti-tempo`, `tutti-types`, `tutti-rt` and `tutti-ump`
+  alone among workspace crates (`scripts/check-layout.sh`): no `tutti-plugin-ipc`,
+  no format host as a normal dependency, and not `tutti-plugin`. It keeps every
+  module private (`tutti_plugin_host::PluginHandle`; CI runs the per-module path
+  gate on it), is `publish = false` and has no `bevy` feature. It is
+  `#![deny(unsafe_code)]` rather than forbid: the in-process `HostEditor`'s one
+  `WindowHandle` decode is its only `unsafe` (see design 021 §10.3). What it
+  exports for the served node in `tutti-plugin` (`ParamDelivery`,
+  `TransportSource`, `TransportWalk`, ...) says who it is for. Its in-process
+  tests load the reference VST2 plugin through a dev-dependency on
+  `tutti-vst2-host`, so they run in the workspace with no feature. Consumers
+  name its items from it, not through `tutti-plugin`.
 - `tutti-midi-file` is OS-free and keeps every module private
   (`tutti_midi_file::smf_to_bytes`; the per-module path gate is not in CI because the
   parked `bevy-tutti` still names `tutti_midi_file::smf::`). It holds

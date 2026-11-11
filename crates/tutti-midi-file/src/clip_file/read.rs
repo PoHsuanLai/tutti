@@ -5,7 +5,7 @@
 //!
 //! The bytes after `SMF2CLIP` are cut into Universal MIDI Packets once, by
 //! `tutti_ump::split_stream`, and each packet is classified once, by
-//! `tutti_ump::decode`, into a [`Packet`]. The grammar then runs over a
+//! `Ump::decode`, into a [`Packet`]. The grammar then runs over a
 //! `&[Packet]` token slice, so a rule matches a whole packet ("a DCTPQ", "a Set
 //! Tempo") and no rule reads a bit field: a word is never seen here, only what
 //! `tutti-ump` made of it. A byte input would put the 32-bit word framing and
@@ -39,7 +39,7 @@ use winnow::combinator::{alt, cut_err, eof, fail, opt, peek, repeat};
 use winnow::error::{ContextError, ModalResult};
 use winnow::token::any;
 
-use tutti_ump::{Flex, Message, Stream, SysexStatus, Ump, Utility, decode, split_stream};
+use tutti_ump::{Flex, Message, Stream, SysexStatus, Ump, Utility, split_stream};
 
 use super::{CLIP_FILE_MAGIC, ClipFileError, ParsedClip, property_exchange};
 
@@ -66,7 +66,7 @@ enum Fault {
 
 type Res<T> = ModalResult<T, ContextError<Fault>>;
 
-/// What a packet is to the grammar, decided once by `tutti_ump::decode`.
+/// What a packet is to the grammar, decided once by `Ump::decode`.
 #[derive(Clone, Copy, Debug)]
 enum Kind {
     /// A Delta Clockstamp and its ticks (M2-116 section 3.2.2).
@@ -94,7 +94,7 @@ struct Packet {
 }
 
 fn classify(ump: Ump) -> Packet {
-    let kind = match decode(ump) {
+    let kind = match ump.decode() {
         Ok(Message::Utility(Utility::DeltaClockstamp(ticks))) => Kind::Dcs(ticks.get()),
         Ok(Message::Utility(Utility::TicksPerQuarterNote(ticks))) => Kind::Dctpq(ticks),
         Ok(Message::Utility(Utility::Noop)) => Kind::Noop,

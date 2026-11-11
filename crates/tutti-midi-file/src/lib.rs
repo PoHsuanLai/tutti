@@ -3,12 +3,14 @@
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
 mod clip_file;
+mod config;
 mod file;
 mod flex;
 mod kind;
 mod smf;
 
 pub use clip_file::ClipFileError;
+pub use config::{ConfigError, OutOfOrder, Refusal};
 pub use file::{
     Converted, DropReason, Dropped, FileEvent, Meta, MidiFile, PairedNote, SmfFormat, TextKind,
     Tick, ToClipError, Track,
@@ -49,9 +51,14 @@ pub enum Error {
 
     /// The tracks cannot make a file of the container asked for: an empty
     /// track list, a zero division, events out of order, an event the
-    /// container cannot hold. The message says which.
-    #[error("Invalid config: {0}")]
-    InvalidConfig(String),
+    /// container cannot hold. The [`ConfigError`] says which and where.
+    #[error("invalid tracks: {0}")]
+    Config(#[from] ConfigError),
+
+    /// An event pushed before the last of its track
+    /// ([`Track::push`]).
+    #[error(transparent)]
+    OutOfOrder(#[from] OutOfOrder),
 
     /// The file's tempo events do not make a tempo map.
     #[error("the file's tempo events: {0}")]

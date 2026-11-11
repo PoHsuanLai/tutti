@@ -4,11 +4,11 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicBool as StdAtomicBool;
 use tutti_graph::UmpAt;
 use tutti_types::Bpm;
-use tutti_ump::{Message, System, decode};
+use tutti_ump::{Message, System};
 
 /// The System message a packet carries.
 fn system(ump: Ump) -> Option<System> {
-    match decode(ump) {
+    match ump.decode() {
         Ok(Message::System(_, system)) => Some(system),
         _ => None,
     }

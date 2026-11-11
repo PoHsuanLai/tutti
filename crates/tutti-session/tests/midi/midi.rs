@@ -148,6 +148,24 @@ fn a_clip_plays_its_note_on_its_frame() {
     assert_eq!(note_ons(&seen), vec![(8_000, 60)]);
 }
 
+/// **A clip takes `(Beat, Ump)` pairs as they are** (what a file's
+/// `timeline()` yields): the pair's beat is the event's beat, so a note a
+/// third of a beat in lands on frame 8 000 at 120 BPM / 48 kHz, as the
+/// `TimedMidiEvent` form does.
+#[test]
+fn a_clip_plays_beat_and_packet_pairs() {
+    let mut s = offline();
+    let (synth, seen) = tap(&mut s);
+    let on = midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, MF);
+    let off = midi::note_off(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0);
+    s.midi()
+        .play_clip(synth, [(Beat(1.0 / 3.0), on), (Beat(4.0 / 3.0), off)])
+        .expect("the tap takes MIDI");
+    let _ = s.update();
+    roll(&s, 9_000);
+    assert_eq!(note_ons(&seen), vec![(8_000, 60)]);
+}
+
 /// **A clip edit updates in place**: a second `play_clip` on one target
 /// replaces its clip's events, and the graph's node count stays the same.
 /// `stop_clip` empties it and keeps it.
@@ -189,7 +207,7 @@ fn a_target_without_an_event_input_takes_no_clip() {
             0.5,
         )));
     assert!(matches!(
-        s.midi().play_clip(dc, []),
+        s.midi().play_clip(dc, std::iter::empty::<TimedMidiEvent>()),
         Err(Error::NoEventInput(n)) if n == dc
     ));
     s.remove(dc);
@@ -1058,7 +1076,7 @@ fn a_connected_ump_endpoint_is_negotiated_by_the_session_tick() {
         }));
         let mut answers: Vec<Ump> = Vec::new();
         for ump in fake.take_sent(raw) {
-            if let Ok(message) = tutti_ump::decode(ump) {
+            if let Ok(message) = ump.decode() {
                 device.reply(message, &mut answers);
             }
         }
@@ -1092,7 +1110,7 @@ fn a_connected_ump_endpoint_is_negotiated_by_the_session_tick() {
 #[test]
 fn the_hardware_out_stamps_as_the_devices_configuration_says() {
     use tutti_midi_hardware::{Capabilities, Endpoint};
-    use tutti_ump::{Message, Protocol, Stream, StreamConfig, decode};
+    use tutti_ump::{Message, Protocol, Stream, StreamConfig};
 
     let (mut s, fake) = hot_plug_session();
     plug(&fake, 7, "Dev", Direction::Duplex);
@@ -1121,7 +1139,7 @@ fn the_hardware_out_stamps_as_the_devices_configuration_says() {
             .any(|e| matches!(e, SessionEvent::MidiStream { .. }));
         let mut answers = Vec::new();
         for ump in fake.take_sent(raw) {
-            if let Ok(message @ Message::Stream(_)) = decode(ump) {
+            if let Ok(message @ Message::Stream(_)) = ump.decode() {
                 device.reply(message, &mut answers);
             }
         }

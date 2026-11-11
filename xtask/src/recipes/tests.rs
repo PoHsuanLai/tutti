@@ -36,11 +36,23 @@ fn every_recipe_plans_with_no_arguments() {
     }
 }
 
-/// The justfile's 37, `check-hosting` (design 021 step 1) and the two gates
-/// that became recipes of their own when their scripts moved into `gates`.
+/// The justfile's 37, `check-hosting` (design 021 step 1), the two gates
+/// that became recipes of their own when their scripts moved into `gates`, and
+/// `check-midi-ffi` (design 017 stage 4d).
 #[test]
 fn the_justfiles_37_recipes_and_check_hosting() {
-    assert_eq!(RECIPES.len(), 40);
+    assert_eq!(RECIPES.len(), 41);
+}
+
+// Mutation: leave `check-midi-ffi` out of the `ci` list: the second assertion fails.
+#[test]
+fn check_midi_ffi_runs_its_script_and_ci_runs_it() {
+    assert_eq!(dry("check-midi-ffi", &[]), ["scripts/check-midi-ffi.sh"]);
+    assert!(
+        dry("ci", &[])
+            .iter()
+            .any(|l| l == "scripts/check-midi-ffi.sh")
+    );
 }
 
 /// The four ported gates are recipes that run in this process, and `ci`

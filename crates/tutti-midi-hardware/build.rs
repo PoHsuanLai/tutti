@@ -1,4 +1,4 @@
-//! Turn the `tutti-alsa-ump-sys` probe result into this crate's cfgs.
+//! Turn the `tutti-alsa-ffi` probe result into this crate's cfgs.
 //!
 //! - `alsa_ump`: alsa-lib >= 1.2.10, the UMP sequencer API the Linux backend
 //!   needs.
@@ -6,7 +6,7 @@
 //!   endpoint.
 //!
 //! An older or absent alsa-lib degrades to the empty stub rather than failing
-//! the build; the sys crate's build script prints the reason as a warning.
+//! the build; the ffi crate's build script prints the reason as a warning.
 
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
@@ -14,7 +14,7 @@ fn main() {
     println!("cargo:rustc-check-cfg=cfg(alsa_ump)");
     println!("cargo:rustc-check-cfg=cfg(alsa_ump_create)");
 
-    // Cargo exports the sys crate's `cargo:KEY=` lines as `DEP_ASOUND_KEY`,
+    // Cargo exports the ffi crate's `cargo:KEY=` lines as `DEP_ASOUND_KEY`,
     // only on Linux, where it is a dependency.
     if std::env::var_os("DEP_ASOUND_ALSA_UMP").is_some() {
         println!("cargo:rustc-cfg=alsa_ump");

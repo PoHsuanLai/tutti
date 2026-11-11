@@ -145,7 +145,7 @@ an id, or [`MidiSession::disconnect_all_inputs`].
 which OS it is talking to.
 
 **A build may have no backend, and it is not an error.** On Linux, the
-`tutti-alsa-ump-sys` build script probes alsa-lib via `pkg-config`; below 1.2.10 (or with no alsa-lib) it emits a
+`tutti-alsa-ffi` build script probes alsa-lib via `pkg-config`; below 1.2.10 (or with no alsa-lib) it emits a
 `cargo:warning` naming the version and compiles the same stub Windows gets:
 zero endpoints, and [`Error::Unsupported`] naming the reason. So code using this
 crate compiles everywhere and simply enumerates nothing where there is no

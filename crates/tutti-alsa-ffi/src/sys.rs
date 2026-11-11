@@ -1,10 +1,10 @@
-//! Raw FFI for the part of ALSA's sequencer and **UMP** API (alsa-lib >= 1.2.10)
-//! that `alsa-sys` does not bind.
+//! Raw declarations for the part of ALSA's sequencer and **UMP** API
+//! (alsa-lib >= 1.2.10) that `alsa-sys` does not bind.
 //!
 //! Not a general ALSA binding: it declares the functions, types and constants
 //! the UMP path calls, with alsa-lib's C names so they can be looked up in its
-//! headers. `tutti-midi-hardware` has the safe wrappers. Linux only; empty
-//! elsewhere.
+//! headers. Private to the crate: the safe handles above it are the only
+//! callers, and each `unsafe` call is argued where it is made.
 //!
 //! # The struct is measured, not guessed
 //!
@@ -15,12 +15,11 @@
 //!
 //! # Version floors
 //!
-//! Everything declared here needs alsa-lib 1.2.10, reported to dependents by
-//! `build.rs` as `DEP_ASOUND_ALSA_UMP`. It also detects 1.2.13
-//! (`DEP_ASOUND_ALSA_UMP_CREATE`), which adds `snd_seq_create_ump_endpoint`;
-//! that is not declared here.
+//! Everything declared here needs alsa-lib 1.2.10, reported by `build.rs` as
+//! `cfg(alsa_ump)` (and `DEP_ASOUND_ALSA_UMP` to dependents). It also detects
+//! 1.2.13 (`DEP_ASOUND_ALSA_UMP_CREATE`), which adds
+//! `snd_seq_create_ump_endpoint`; that is not declared here.
 
-#![cfg(target_os = "linux")]
 #![allow(
     non_camel_case_types,
     reason = "FFI type names mirror alsa-lib's C spelling, so a reader can grep the header"
@@ -132,10 +131,18 @@ impl snd_seq_ump_event_t {
 }
 
 impl Default for snd_seq_ump_event_t {
+    /// The "unset" event the send path fills in: every field zero.
     fn default() -> Self {
-        // Safe: every field is a plain integer type with no niche, so all-zero
-        // is a valid value. This is the "unset" event the send path fills in.
-        unsafe { std::mem::zeroed() }
+        Self {
+            type_: 0,
+            flags: 0,
+            tag: 0,
+            queue: 0,
+            time: [0; 8],
+            source: snd_seq_addr_t::default(),
+            dest: snd_seq_addr_t::default(),
+            ump: [0; 4],
+        }
     }
 }
 
@@ -213,14 +220,6 @@ pub const SND_SEQ_PORT_TYPE_MIDI_GENERIC: c_uint = 1 << 1;
 /// A port owned by an application.
 pub const SND_SEQ_PORT_TYPE_APPLICATION: c_uint = 1 << 20;
 
-/// `snd_ump_block_info_get_direction` results (M2-104 §7.1.8 function-block
-/// direction).
-pub const SND_UMP_DIR_INPUT: c_uint = 1;
-/// The block sends.
-pub const SND_UMP_DIR_OUTPUT: c_uint = 2;
-/// The block sends and receives.
-pub const SND_UMP_DIR_BIDIRECTION: c_uint = 3;
-
 // --- Functions -------------------------------------------------------------
 
 // Only declared when `build.rs` found alsa-lib >= 1.2.10 (`cfg(alsa_ump)`); the
@@ -262,8 +261,6 @@ unsafe extern "C" {
         caps: c_uint,
         type_: c_uint,
     ) -> c_int;
-    /// Delete a port created by `snd_seq_create_simple_port`.
-    pub fn snd_seq_delete_simple_port(seq: *mut snd_seq_t, port: c_int) -> c_int;
     /// Subscribe `my_port` to events sent by `src_client:src_port`.
     pub fn snd_seq_connect_from(
         seq: *mut snd_seq_t,
@@ -273,20 +270,6 @@ unsafe extern "C" {
     ) -> c_int;
     /// Subscribe `dest_client:dest_port` to events sent by `my_port`.
     pub fn snd_seq_connect_to(
-        seq: *mut snd_seq_t,
-        my_port: c_int,
-        dest_client: c_int,
-        dest_port: c_int,
-    ) -> c_int;
-    /// Undo `snd_seq_connect_from`.
-    pub fn snd_seq_disconnect_from(
-        seq: *mut snd_seq_t,
-        my_port: c_int,
-        src_client: c_int,
-        src_port: c_int,
-    ) -> c_int;
-    /// Undo `snd_seq_connect_to`.
-    pub fn snd_seq_disconnect_to(
         seq: *mut snd_seq_t,
         my_port: c_int,
         dest_client: c_int,
@@ -349,8 +332,6 @@ unsafe extern "C" {
     pub fn snd_seq_port_info_get_name(info: *const snd_seq_port_info_t) -> *const c_char;
     /// The port's `SND_SEQ_PORT_CAP_*` bits.
     pub fn snd_seq_port_info_get_capability(info: *const snd_seq_port_info_t) -> c_uint;
-    /// Set the port's `SND_SEQ_PORT_CAP_*` bits.
-    pub fn snd_seq_port_info_set_capability(info: *mut snd_seq_port_info_t, capability: c_uint);
     /// Fill `info` from one of `seq`'s own ports.
     pub fn snd_seq_get_port_info(
         seq: *mut snd_seq_t,
@@ -412,16 +393,6 @@ unsafe extern "C" {
     pub fn snd_ump_block_info_malloc(ptr: *mut *mut snd_ump_block_info_t) -> c_int;
     /// Free a record from `snd_ump_block_info_malloc`.
     pub fn snd_ump_block_info_free(ptr: *mut snd_ump_block_info_t);
-    /// Non-zero when the function block is active.
-    pub fn snd_ump_block_info_get_active(info: *const snd_ump_block_info_t) -> c_int;
-    /// The block's direction, one of `SND_UMP_DIR_*`.
-    pub fn snd_ump_block_info_get_direction(info: *const snd_ump_block_info_t) -> c_uint;
-    /// Index of the first UMP group the block covers.
-    pub fn snd_ump_block_info_get_first_group(info: *const snd_ump_block_info_t) -> c_uint;
-    /// Number of UMP groups the block covers.
-    pub fn snd_ump_block_info_get_num_groups(info: *const snd_ump_block_info_t) -> c_uint;
-    /// The block name; valid while the record lives.
-    pub fn snd_ump_block_info_get_name(info: *const snd_ump_block_info_t) -> *const c_char;
     /// @@ALSA_1.2.10
     pub fn snd_seq_get_ump_block_info(
         seq: *mut snd_seq_t,
@@ -429,6 +400,12 @@ unsafe extern "C" {
         blk: c_int,
         info: *mut c_void,
     ) -> c_int;
+}
+
+#[cfg(all(alsa_ump, feature = "test-support"))]
+unsafe extern "C" {
+    /// Set the port's `SND_SEQ_PORT_CAP_*` bits.
+    pub fn snd_seq_port_info_set_capability(info: *mut snd_seq_port_info_t, capability: c_uint);
 }
 
 /// The measured `snd_seq_ump_event_t` size, alignment and field offsets, checked

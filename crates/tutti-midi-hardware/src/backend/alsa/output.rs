@@ -3,29 +3,25 @@
 use std::sync::{Mutex, PoisonError};
 use tutti_graph::UmpAt;
 
-use super::client::{SeqClient, check};
 use super::enumerate::unpack_id;
 use crate::error::{Error, Result};
-use tutti_alsa_ump_sys as sys;
+use tutti_alsa_ffi::{CAP_READ, Client, TYPE_APPLICATION, TYPE_MIDI_GENERIC};
 use tutti_midi_device::EndpointId;
 use tutti_midi_runtime::MidiOut;
 
 /// An open ALSA output, as a [`MidiOut`].
 pub struct AlsaOutput {
-    /// The client, its port, and this client's own id — all three are needed to
-    /// address an outbound event, and they are only valid together.
+    /// The client and its port, which are only valid together.
     ///
-    /// Behind a `Mutex` because `MidiOut::queue` takes `&self` while
-    /// `snd_seq_ump_event_output_direct` takes `*mut`. Sending happens on the
-    /// control thread's output drain, never the audio thread, so a lock costs
-    /// nothing that matters here.
+    /// Behind a `Mutex` because `MidiOut::queue` takes `&self` and a `Client`
+    /// is used from one thread at a time. Sending happens on the control
+    /// thread's output drain, never the audio thread, so a lock costs nothing
+    /// that matters here.
     inner: Mutex<Sender>,
 }
 
 struct Sender {
-    seq: SeqClient,
-    /// Our client id, as the sequencer addresses it.
-    own_client: u8,
+    seq: Client,
     port: u8,
 }
 
@@ -53,43 +49,8 @@ impl AlsaOutput {
         // output drain over a fault that is already past.
         let inner = self.inner.lock().unwrap_or_else(PoisonError::into_inner);
 
-        let mut ev = sys::snd_seq_ump_event_t {
-            // `SND_SEQ_EVENT_NONE`. For a UMP event the type field is unused —
-            // the message type lives in the first word's top nibble — but it
-            // must be zeroed rather than left stale.
-            type_: 0,
-            source: sys::snd_seq_addr_t {
-                client: inner.own_client,
-                port: inner.port,
-            },
-            // **Not** the destination's own address, even though it is known.
-            //
-            // The port is already subscribed (`snd_seq_connect_to` at open), and
-            // an explicit `dest` on top of a subscription is rejected outright —
-            // `snd_seq_ump_event_output_direct` returns `-EINVAL`, not a partial
-            // send. `SUBSCRIBERS` means "everyone connected to my port", which
-            // is exactly the set `connect_to` established.
-            dest: sys::snd_seq_addr_t {
-                client: sys::SND_SEQ_ADDRESS_SUBSCRIBERS,
-                port: 0,
-            },
-            // Dispatch now rather than through a queue. Zero here is queue 0 —
-            // a real queue this client never created — which is the other half
-            // of that same `-EINVAL`.
-            queue: sys::SND_SEQ_QUEUE_DIRECT,
-            ..Default::default()
-        };
-        // A UMP message is 1–4 words; the rest of the field stays zero.
-        let n = words.len().min(4);
-        ev.ump[..n].copy_from_slice(&words[..n]);
-
-        // SAFETY: `seq` is open for the life of `inner`; `ev` is a fully
-        // initialised, correctly laid out event (see the sys crate's compile-time layout asserts) that
-        // alsa-lib reads and does not retain.
-        check(
-            unsafe { sys::snd_seq_ump_event_output_direct(inner.seq.raw(), &mut ev) },
-            "snd_seq_ump_event_output_direct",
-        )?;
+        // A UMP message is 1-4 words; only the first four are sent.
+        inner.seq.send_to_subscribers(inner.port, words)?;
         Ok(())
     }
 }
@@ -145,23 +106,18 @@ pub(super) fn connect(id: EndpointId) -> Result<AlsaOutput> {
 
     // Blocking: a send should apply back-pressure rather than silently drop when
     // the destination's queue is full. Only the *input* pump needs to poll.
-    let seq = SeqClient::open("tutti-out", false)?;
+    let seq = super::client::open("tutti-out", false)?;
     let port = seq.open_port(
         "tutti-out",
         // Not subscribable by others, so never listed as a device (see
         // `input::open`); this client subscribes its own port to the
         // destination.
-        sys::SND_SEQ_PORT_CAP_READ,
-        sys::SND_SEQ_PORT_TYPE_MIDI_GENERIC | sys::SND_SEQ_PORT_TYPE_APPLICATION,
+        CAP_READ,
+        TYPE_MIDI_GENERIC | TYPE_APPLICATION,
     )?;
-    let own_client = seq_addr_byte(seq.id()?, "snd_seq_client_id")?;
     let own_port = seq_addr_byte(port, "snd_seq_create_simple_port")?;
 
-    // SAFETY: `seq` is open; the address came from enumeration.
-    check(
-        unsafe { sys::snd_seq_connect_to(seq.raw(), port, dest_client, dest_port) },
-        "snd_seq_connect_to",
-    )?;
+    seq.connect_to(port, dest_client, dest_port)?;
 
     // The destination is not stored: once `connect_to` has subscribed us, every
     // send addresses `SUBSCRIBERS` rather than the endpoint by name. Keeping the
@@ -170,7 +126,6 @@ pub(super) fn connect(id: EndpointId) -> Result<AlsaOutput> {
     Ok(AlsaOutput {
         inner: Mutex::new(Sender {
             seq,
-            own_client,
             port: own_port,
         }),
     })

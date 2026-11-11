@@ -1,0 +1,28 @@
+[package]
+name = "tutti-coremidi-ffi"
+version = "0.0.1"
+edition.workspace = true
+rust-version.workspace = true
+description = "The unsafe half of the macOS MIDI backend: a native-UMP virtual source and the host clock, behind safe handles"
+license.workspace = true
+repository.workspace = true
+documentation = "https://docs.rs/tutti-coremidi-ffi"
+readme = "README.md"
+keywords = ["coremidi", "ump", "midi", "ffi"]
+categories = ["external-ffi-bindings", "multimedia::audio", "os::macos-apis"]
+publish = false
+
+[lints]
+workspace = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
+# `MIDISourceCreateWithProtocol` and the event list calls, which the safe
+# `coremidi` wrapper does not expose for a source.
+coremidi-sys = { workspace = true }
+core-foundation = { workspace = true }
+# `mach_absolute_time` and `mach_timebase_info`: CoreMIDI's packet timestamps
+# (libc marks its copies of these deprecated in favour of this crate).
+mach2 = "0.4"
+
+[package.metadata.docs.rs]
+targets = ["aarch64-apple-darwin"]

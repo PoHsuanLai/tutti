@@ -185,7 +185,7 @@ LAYERS = [
     # no workspace dependency at all
     # (`tutti-types` is here: it depends on no workspace crate, and
     # `tutti-curve`, the layer above, depends on it.)
-    ["arc-lend", "tutti-alsa-ump-sys", "tutti-ump", "tutti-types", "tutti-plugin-ipc-ffi"],
+    ["arc-lend", "tutti-alsa-ffi", "tutti-coremidi-ffi", "tutti-ump", "tutti-types", "tutti-plugin-ipc-ffi"],
     ["tutti-rt", "tutti-midi-protocol", "tutti-midi-device", "tutti-curve"],
     ["tutti-graph", "tutti-dsp", "tutti-modulation", "tutti-metering",
      "tutti-codec", "tutti-tempo", "tutti-voicing", "tutti-sf2"],

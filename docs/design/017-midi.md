@@ -1383,9 +1383,9 @@ nothing new: nothing here adds `unsafe` or a lock-free structure.
 | `tutti-ump` | Packet | `Ump`, `Message`, codec, `MidiGroup`, `MidiChannel`, `CCNumber`, field types, MIDI 1.0 bytes and `Midi1Parser`, `Rpn` (an RPN address), `SYSEX7_MAX_PAYLOAD` and `split_stream` (a buffer of concatenated packets) | No tutti crate |
 | `tutti-midi-protocol` | Translation | `Translator`, App. D, M2-115 scaling, MPE zone values (`MpeZoneConfig`, `MpeZones`, `MpeMode`), `PitchBendSensitivity` | `tutti-ump` |
 | `tutti-midi-device` | Endpoint, Function Block | `Endpoint`, `Connection`, CI codec, JR | `tutti-ump` |
-| `tutti-midi-hardware` | Transport | OS backends, no graph (the target: today `port/manager.rs` imports `tutti_graph::{Offset, UmpAt}` and turns an arrival `Instant` into an `Offset` on the audio thread; stage E5 moves that behind the event inlet); `#![forbid(unsafe_code)]` once the `-ffi` crates exist (today the ALSA wrappers hold the `unsafe`) | `tutti-midi-device`, the two `-ffi` crates |
-| `tutti-alsa-ffi` | FFI | All ALSA `unsafe`, safe wrappers (from `tutti-alsa-ump-sys`) | Linux only |
-| `tutti-coremidi-ffi` | FFI | The raw CoreMIDI calls the `coremidi` crate lacks | macOS only |
+| `tutti-midi-hardware` | Transport | OS backends, no graph (the target: today `port/manager.rs` imports `tutti_graph::{Offset, UmpAt}` and turns an arrival `Instant` into an `Offset` on the audio thread; stage E5 moves that behind the event inlet); `#![forbid(unsafe_code)]` (stage 4d: the `-ffi` crates hold the `unsafe`) | `tutti-midi-device`, the two `-ffi` crates |
+| `tutti-alsa-ffi` | FFI | All ALSA `unsafe`, safe wrappers (`tutti-alsa-ump-sys` folded in as a private module) | Linux only |
+| `tutti-coremidi-ffi` | FFI | The raw CoreMIDI calls the `coremidi` crate lacks, and the Mach host clock | macOS only |
 | `tutti-midi-runtime` | Engine | Graph nodes, `ClockMaster`, and the inbound sync decoders (`MidiClockDecoder`, `MtcDecoder`, `SmpteTimecode`, `SmpteFrameRate`, `ClockTransportState`) | `tutti-graph`, `tutti-midi-protocol` |
 | `tutti-graph` | Graph | Event ports hold `Ump`; the event tap and the event inlet | `tutti-types`, `tutti-ump` |
 | `tutti-midi-file` | Files | SMF, Clip File (the byte codec and the path-level reader and writer) | `tutti-ump`, `tutti-tempo` |
@@ -1544,7 +1544,7 @@ is named for what it is. A byte-stream source is read by `tutti_ump::Midi1Parser
 `Sysex7ByteAssembler` had no product caller and is deleted.
 
 MIDI follows the plugin hosts' FFI rule (design 016 §2.9): `unsafe` lives only in the
-`-ffi` crates, and `scripts/check-plugin-ffi.sh` or a sibling gate enforces it.
+`-ffi` crates, and `scripts/check-midi-ffi.sh` (a sibling of `check-plugin-ffi.sh`) enforces it.
 
 `sync`'s clock and MTC decoders have no consumer today beyond `ClockMaster`'s loopback
 tests. They are in the runtime (stage 5b), and are deleted if a clock slave (§9) does
@@ -2160,6 +2160,29 @@ at any point; its CI codec move and `ci`/`negotiate` deletion (4a, done) shrink
      `JrStream::stamp_span`); the session's `send_stamped_span` and `origin` follow.
      `HardwareMidiDrain::cycle_start_read_all_inputs` still takes `nframes: usize`,
      and goes with the drain's rebuild (E5).
+   **Stage 4d, the `-ffi` crates. Done.** `unsafe` left `tutti-midi-hardware`, which is
+   `#![forbid(unsafe_code)]` and has no `libc`, `coremidi-sys`, `mach2` or raw ALSA
+   dependency. `tutti-alsa-ffi` (Linux; `tutti-alsa-ump-sys` was folded into it as a
+   private `sys` module, nothing else used it, and its `build.rs` probe and
+   `links = "asound"` are unchanged, so `cfg(alsa_ump)` and `DEP_ASOUND_*` still
+   reach the backend) holds every ALSA call behind `Client` (open in UMP mode, ports,
+   the subscriptions, `read_event`, `send_to_subscribers`, `stamp_port` and its
+   `QueueClock`, `list_ports`), `Poller` (the sequencer's descriptors and a stop
+   descriptor, over `poll(2)`) and `Received` (an event copied out of alsa-lib's
+   buffer, with `announced()` for the announce port). `tutti-coremidi-ffi` (macOS)
+   holds `UmpSource` (`MIDISourceCreateWithProtocol`, the one call the safe
+   `coremidi` crate lacks; the endpoint disposes on drop) and the Mach host clock
+   (`Timebase`, `host_ticks`). What the safe `coremidi` crate wraps stays in the
+   backend. Both crates are layer 0 (no workspace dependency) and `deny` the
+   `undocumented_unsafe_blocks` and `missing_safety_doc` lints.
+   `scripts/check-midi-ffi.sh` is the gate (no `unsafe` token in the backend, its
+   forbid, no raw-binding dependency, the `-ffi` lints). Behaviour is unchanged
+   except that the unneeded `unsafe impl Send`/`Sync` on `UmpVirtualSource`,
+   `CoreMidiInput` and `CoreMidiOutput` are gone (their fields are plain `u32`
+   handles and the compiler proves it), and `port/manager.rs`'s one match was a
+   comment. `unsafe` tokens in code: 46 in `tutti-midi-hardware` and 2 in
+   `tutti-alsa-ump-sys` before; 0, 49 (`tutti-alsa-ffi`, the extern declarations
+   among them) and 6 (`tutti-coremidi-ffi`) after.
 - **Stage 3d. The helpers the plugin crates drop their own for. Done.** The float
    converters (`u7_to_unit_f32`, `u16_to_unit_f32`, `u32_to_unit_f32`,
    `bend_u14_to_signed_f32`, `bend_u32_to_signed_f32`, `unit_f32_to_u16`,

@@ -46,8 +46,10 @@
 //!   ends of Q7.25's range. The channel's own Pitch Bend and Channel Tuning
 //!   are not in it: they are the channel's, and the instrument applies them.
 //!   A consumer with one tuning per note takes it as it is.
-//! - Reset All Controllers does not reach it (Appendix B.2): nothing here reads
-//!   a Control Change.
+//! - Reset All Controllers does not reach it (Appendix B.2) but for Polyphonic
+//!   Pressure, which RP-015 resets and Appendix B.2 does not list among the new
+//!   per-note controllers it leaves: [`reset_pressure`](PerNoteState::reset_pressure)
+//!   is the caller's to call. [`step`](PerNoteState::step) reads no Control Change.
 //!
 //! The state is sized in [`PerNoteState::new`], about 270 KiB for each Group
 //! (128 notes on 16 channels), and `step` allocates nothing.
@@ -465,6 +467,25 @@ impl PerNoteState {
                 self.sound_all(at, address);
             }
         }
+    }
+
+    /// Reset All Controllers' "Reset polyphonic pressure for all notes to 0"
+    /// (RP-015) on `address`'s channel: every Note Number whose held Polyphonic
+    /// Pressure is not 0 takes 0, and its live notes are told. The other
+    /// per-note controllers are left (M2-104 Appendix B.2). The slice is valid
+    /// until the next call.
+    pub fn reset_pressure(&mut self, address: Address) -> &[NoteEvent] {
+        self.out.clear();
+        let Some(c) = self.channel_index(address) else {
+            return &self.out;
+        };
+        for key in 0..KEYS {
+            let at = c * KEYS + key;
+            if self.held[at].get(Held::PRESSURE).is_some_and(|v| v != 0) {
+                self.control(address, NoteNumber::masked(key as u8), Held::PRESSURE, 0);
+            }
+        }
+        &self.out
     }
 
     /// The note `id` has fully ended (its voice was freed, the plugin said its

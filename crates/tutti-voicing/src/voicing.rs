@@ -39,11 +39,24 @@
 //! keys; past that the oldest is forgotten. A layered note keeps its layers
 //! across keys: a prior voice is taken over by the new key's voice with the
 //! same [`VoiceSpec::tag`].
+//!
+//! **Legato and glide follow M1 pp.14 to 17**, per channel: the Legato Footswitch
+//! (CC 68) makes the channel [`Mode::Legato`] while it is down; a Portamento
+//! Control (CC 84) names the source key of the next Note On on its channel (and
+//! only that one), which then glides from it, or, in a polyphonic channel with a
+//! voice sounding at the source key, moves that voice with no new attack;
+//! Portamento On (CC 65) glides a note from the key struck before it. The
+//! [`Glide`] on a [`Command::Start`] or [`Command::Retarget`] says from which key
+//! and for how long (the channel's Portamento Time). What a channel holds
+//! besides notes is its [`ChannelState`](crate::ChannelState).
 
-use tutti_midi_protocol::{MpeZones, bend_u32_to_signed_f32, narrow_value};
-use tutti_types::{Amplitude, Semitones};
-use tutti_ump::{Address, Attribute, MidiChannel, MidiGroup, NoteId, NoteNumber, Rpn, Voice2};
+use tutti_midi_protocol::{MpeZones, bend_u32_to_signed_f32, narrow_value, u32_to_unit_f32};
+use tutti_types::{Amplitude, Seconds, Semitones};
+use tutti_ump::{
+    Address, Attribute, CCNumber, MidiChannel, MidiGroup, NoteId, NoteNumber, Rpn, U7, Voice2,
+};
 
+use crate::channel::{Bend, ChannelState};
 use crate::per_note::{MAX_EVENTS as NOTE_EVENTS, NOTE_CONTROLS};
 use crate::{Controller, Effect, Holds, NoteControl, NoteEvent, PerNoteState, Phase, Stop};
 
@@ -164,6 +177,39 @@ pub struct VoiceSpec {
     pub tag: u32,
 }
 
+/// A glide a note starts or moves with: the voice's pitch starts at `from`'s
+/// and reaches the note's own in `time`, at a constant rate in cents (a straight
+/// line in pitch), as the channel's Portamento Time says (General MIDI 2 section
+/// 3.3.3). It comes from Portamento On (CC 65) or a Portamento Control (CC 84,
+/// M1 p.16: the key "the subsequent note is gliding from").
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Glide {
+    /// The key the glide leaves. Its pitch is the key's, with the channel's
+    /// bend on it as on the note's own ("Pitch bend offsets the pitch used by
+    /// both the Portamento Control starting note and the target Note-On").
+    pub from: NoteNumber,
+    /// How long it takes to arrive.
+    pub time: Seconds,
+}
+
+/// Where a Note On's glide would come from, resolved from the channel before the
+/// note is placed.
+#[derive(Debug, Clone, Copy)]
+struct GlideSource {
+    /// The Portamento Control's key, which the note consumes.
+    ptc: Option<NoteNumber>,
+    /// The key last struck on the channel, if Portamento is on.
+    previous: Option<NoteNumber>,
+}
+
+impl GlideSource {
+    /// The key a glide leaves for a note that starts: the Portamento Control's,
+    /// else the previous key.
+    fn start(self) -> Option<NoteNumber> {
+        self.ptc.or(self.previous)
+    }
+}
+
 /// A patch says which voices a note starts.
 pub trait Patch {
     /// Calls `spec` once for each voice a strike of `key` at `velocity` on
@@ -204,8 +250,12 @@ pub enum Command {
         spec: VoiceSpec,
         /// The voice it takes the slot of.
         steal: Option<VoiceId>,
+        /// The glide it starts with, if the channel has Portamento on or a
+        /// Portamento Control pending.
+        glide: Option<Glide>,
     },
-    /// Move a sounding voice to a new key without a new attack (legato).
+    /// Move a sounding voice to a new key without a new attack (legato, or the
+    /// voice a Portamento Control names in a polyphonic channel).
     Retarget {
         /// The voice.
         id: VoiceId,
@@ -213,6 +263,11 @@ pub enum Command {
         key: NoteNumber,
         /// The new velocity.
         velocity: u16,
+        /// The glide to the new key, if there is one: the voice's pitch
+        /// starts at the glide's key (an immediate jump there, M1 p.16) and
+        /// reaches the new key's in the glide's time; without one it moves at
+        /// once.
+        glide: Option<Glide>,
     },
     /// Let a voice go into its release.
     Release {
@@ -278,19 +333,6 @@ struct Note {
     off_velocity: u16,
 }
 
-#[derive(Debug, Clone, Copy)]
-struct Bend {
-    /// The wheel, `-1..=1`.
-    position: f32,
-    range: Semitones,
-}
-
-impl Bend {
-    fn semitones(self) -> Semitones {
-        self.range * self.position
-    }
-}
-
 /// A channel's held keys, most recent last. Fixed capacity.
 #[derive(Debug, Clone, Copy)]
 struct Held {
@@ -346,7 +388,8 @@ pub struct Voicing {
     /// Sorted by id: voices are appended as they start.
     notes: Vec<Note>,
     sustain: [bool; CHANNELS],
-    bends: [Bend; CHANNELS],
+    /// What each channel has been told that outlives its notes.
+    channels: [ChannelState; CHANNELS],
     zones: Option<MpeZones>,
     next: u64,
     strike: u64,
@@ -372,7 +415,7 @@ impl Clone for Voicing {
             rules: self.rules,
             notes,
             sustain: self.sustain,
-            bends: self.bends,
+            channels: self.channels,
             zones: self.zones,
             next: self.next,
             strike: self.strike,
@@ -397,10 +440,7 @@ impl Voicing {
             ),
             rules,
             sustain: [false; CHANNELS],
-            bends: [Bend {
-                position: 0.0,
-                range: rules.bend_range,
-            }; CHANNELS],
+            channels: [ChannelState::new(rules.bend_range); CHANNELS],
             zones: None,
             next: 1,
             strike: 0,
@@ -420,21 +460,19 @@ impl Voicing {
         self.zones = zones;
     }
 
-    /// Forgets every note, pedal, bend, held key and per-note controller: a
-    /// fresh start. No command is returned; the instrument returns its pitches
-    /// to centre. Ids are not reused.
+    /// Forgets every note, pedal, controller, bend, held key and per-note
+    /// controller: a fresh start. No command is returned; the instrument returns
+    /// its pitches to centre. Ids are not reused.
     pub fn reset(&mut self) {
         self.forget_notes();
         self.per_note.clear();
-        self.bends = [Bend {
-            position: 0.0,
-            range: self.rules.bend_range,
-        }; CHANNELS];
+        self.channels = [ChannelState::new(self.rules.bend_range); CHANNELS];
     }
 
-    /// Forgets every note, pedal and held key, and keeps the bends and the
-    /// per-note controllers: a channel's wheel and sensitivity, and what a
-    /// Note Number was told, are controller state, which outlives its notes.
+    /// Forgets every note, pedal and held key, and keeps the channels'
+    /// controllers and the per-note controllers: a channel's wheel, sensitivity
+    /// and modulation, and what a Note Number was told, are controller state,
+    /// which outlives its notes.
     /// No command is returned; the instrument ends its voices.
     pub fn forget_notes(&mut self) {
         for n in &self.notes {
@@ -451,6 +489,21 @@ impl Voicing {
     #[must_use]
     pub fn channel_pitch(&self, channel: MidiChannel) -> Semitones {
         self.pitch(usize::from(channel.get()))
+    }
+
+    /// Every channel's [`ChannelState`], by channel number.
+    #[must_use]
+    pub fn channels(&self) -> &[ChannelState; MidiChannel::COUNT as usize] {
+        &self.channels
+    }
+
+    /// What `channel` has been told apart from its notes: its controllers,
+    /// pressure, pitch wheel and tuning, and portamento switches. The
+    /// instrument reads the ones it renders (modulation, volume, pan,
+    /// expression) from it when it makes a block.
+    #[must_use]
+    pub fn channel(&self, channel: MidiChannel) -> &ChannelState {
+        &self.channels[usize::from(channel.get())]
     }
 
     /// What holds `id` open, if it is a voice the core knows and has not
@@ -513,24 +566,52 @@ impl Voicing {
                 self.note_off(channel, note, velocity, patch, voices);
             }
             Voice2::ControlChange { controller, value } => {
-                if let Some(effect) = Controller::effect(controller, narrow_value(value)) {
-                    self.effect(channel, effect);
+                let value = narrow_value(value);
+                match Controller::effect(controller, value) {
+                    Some(effect) => self.effect(channel, effect),
+                    None => self.controller(channel, controller, value),
                 }
+            }
+            Voice2::ChannelPressure(pressure) => {
+                let pressure = u32_to_unit_f32(pressure);
+                self.channels[usize::from(channel.get())].set_pressure(pressure);
             }
             Voice2::PitchBend(bend) => {
                 let position = bend_u32_to_signed_f32(bend);
                 self.bend(channel, |b| b.position = position);
             }
-            Voice2::Registered { bank, index, value }
-                if Rpn::new(bank, index) == Rpn::PITCH_BEND_SENSITIVITY =>
-            {
-                let range = bend_sensitivity(value);
-                self.bend(channel, |b| b.range = range);
-            }
+            // The channel's registered parameters: the pitch bend sensitivity
+            // (RPN 0), the Channel Fine and Coarse Tuning (RP-022: RPN 1 and 2) and
+            // the Modulation Depth Range (CA-026: RPN 5). The data is the MIDI
+            // 1.0 pair zero-extended (M2-115 section 4.1): `MSB << 7 | LSB` in
+            // the top 14 bits.
+            Voice2::Registered { bank, index, value } => match Rpn::new(bank, index) {
+                Rpn::PITCH_BEND_SENSITIVITY => {
+                    let range = bend_sensitivity(value);
+                    self.bend(channel, |b| b.range = range);
+                }
+                Rpn::CHANNEL_FINE_TUNING => {
+                    // 14 bits centred at 0x2000, a semitone over the half range.
+                    let fine = Semitones((value >> 18) as f32 / 8192.0 - 1.0);
+                    self.bend(channel, |b| b.fine = fine);
+                }
+                Rpn::CHANNEL_COARSE_TUNING => {
+                    // The MSB, centred at 64, in semitones.
+                    let coarse = Semitones((value >> 25) as f32 - 64.0);
+                    self.bend(channel, |b| b.coarse = coarse);
+                }
+                Rpn::MODULATION_DEPTH_RANGE => {
+                    self.channels[usize::from(channel.get())].set_modulation_range(value);
+                }
+                _ => {
+                    let address = Self::address(channel);
+                    self.events
+                        .extend_from_slice(self.per_note.step(address, message));
+                }
+            },
             // The per-note controllers, Per-Note Management and RPN 0/7 are
             // `PerNoteState`'s; this core carries what it says to the voices.
-            Voice2::Registered { .. }
-            | Voice2::RegisteredPerNote { .. }
+            Voice2::RegisteredPerNote { .. }
             | Voice2::AssignablePerNote { .. }
             | Voice2::PerNotePitchBend { .. }
             | Voice2::PolyPressure { .. }
@@ -544,6 +625,73 @@ impl Voicing {
         self.deliver();
         self.settle();
         &self.out
+    }
+
+    /// A Control Change the instrument does not own: the channel's 14-bit
+    /// controllers and Portamento Time ([`ChannelState`]), and the three that
+    /// change how notes are placed: Portamento On/Off (CC 65, "recognized as
+    /// OFF" below 64, GM2 section 3.3.8), the Legato Footswitch (CC 68, M1
+    /// p.14: 40 to 7F is Legato) and Portamento Control (CC 84, M1 p.16). Any
+    /// other controller is the instrument's own.
+    fn controller(&mut self, channel: MidiChannel, controller: CCNumber, value: U7) {
+        let ch = usize::from(channel.get());
+        match controller {
+            CCNumber::PORTAMENTO_SWITCH => self.channels[ch].portamento = Controller::pedal(value),
+            CCNumber::LEGATO => {
+                let down = Controller::pedal(value);
+                self.channels[ch].legato = down;
+                // The keys a legato channel held are only a stack while the
+                // channel is monophonic.
+                if !down && self.rules.mode == Mode::Poly {
+                    self.held[ch] = Held::NONE;
+                }
+            }
+            // "A single Portamento Control message only affects the next Note-On
+            // received on the matching channel (i.e. it is reset after the
+            // Note-On). Receiving a Portamento Control message does not affect
+            // the pitch of any currently sustaining or releasing notes."
+            CCNumber::PORTAMENTO_CONTROL => {
+                self.channels[ch].glide_from = NoteNumber::new(value.get());
+            }
+            _ => self.channels[ch].control(controller, value),
+        }
+    }
+
+    /// How many voices sound for `channel`: the rules' mode, or Legato while
+    /// the Legato Footswitch is down ("turn monophonic legato response on and
+    /// off", M1 p.14; "When turned off the voice assignment mode [...] returns
+    /// to the state it was in").
+    fn mode(&self, channel: MidiChannel) -> Mode {
+        if self.channels[usize::from(channel.get())].legato {
+            Mode::Legato
+        } else {
+            self.rules.mode
+        }
+    }
+
+    /// Where a Note On's glide comes from, and the channel's key last struck.
+    /// The Portamento Control is consumed; Portamento On starts from the key
+    /// struck before.
+    fn glide_source(&mut self, channel: MidiChannel, key: NoteNumber) -> GlideSource {
+        let state = &mut self.channels[usize::from(channel.get())];
+        let source = GlideSource {
+            ptc: state.glide_from.take(),
+            previous: state.last_key.filter(|_| state.portamento),
+        };
+        state.last_key = Some(key);
+        source
+    }
+
+    /// The glide a note on `key` makes from `from`, if the keys differ.
+    fn glide(
+        &self,
+        channel: MidiChannel,
+        from: Option<NoteNumber>,
+        key: NoteNumber,
+    ) -> Option<Glide> {
+        let from = from.filter(|&f| f != key)?;
+        let time = self.channels[usize::from(channel.get())].glide_time(from, key);
+        Some(Glide { from, time })
     }
 
     fn address(channel: MidiChannel) -> Address {
@@ -616,8 +764,19 @@ impl Voicing {
     ) {
         self.strike += 1;
         self.reconcile(voices);
-        if self.rules.mode != Mode::Poly {
-            self.play_mono(channel, key, velocity, patch, voices, false);
+        let source = self.glide_source(channel, key);
+        if self.mode(channel) != Mode::Poly {
+            self.play_mono(channel, key, velocity, patch, voices, source, false);
+            return;
+        }
+        // A Portamento Control names a key that may sound: "If there is a
+        // currently sounding voice whose note number is coincident with the
+        // source note number, the voice's pitch will glide to the new Note-On's
+        // pitch according to the portamento time without re-attacking. Then, no
+        // new voice should be assigned." (M1 p.16)
+        if let Some(from) = source.ptc
+            && self.glide_voices(channel, from, key, velocity)
+        {
             return;
         }
         if self.rules.retrigger == Retrigger::Replace {
@@ -625,8 +784,40 @@ impl Voicing {
         }
         let (specs, count) = Self::specs(patch, channel, key, velocity);
         for &spec in &specs[..count] {
-            self.start_poly(channel, key, velocity, spec, voices);
+            self.start_poly(channel, key, velocity, spec, voices, source.start());
         }
+    }
+
+    /// Moves the sounding voices of `from` on `channel` to `key`, gliding, with
+    /// no new attack. Whether there were any.
+    fn glide_voices(
+        &mut self,
+        channel: MidiChannel,
+        from: NoteNumber,
+        key: NoteNumber,
+        velocity: u16,
+    ) -> bool {
+        let glide = self.glide(channel, Some(from), key);
+        let strike = self.strike;
+        let mut moved = false;
+        for i in 0..self.notes.len() {
+            let n = &mut self.notes[i];
+            if n.channel == channel && n.key == from && !n.released {
+                n.key = key;
+                n.strike = strike;
+                let id = n.id;
+                let old = std::mem::replace(&mut n.note, self.strike_note);
+                self.retire(old);
+                self.push(Command::Retarget {
+                    id,
+                    key,
+                    velocity,
+                    glide,
+                });
+                moved = true;
+            }
+        }
+        moved
     }
 
     /// Liveness is read on a note message only: a voice the instrument no
@@ -697,6 +888,7 @@ impl Voicing {
         velocity: u16,
         spec: VoiceSpec,
         voices: &[VoiceView],
+        from: Option<NoteNumber>,
     ) {
         self.damp_exclusive(spec, None);
         let steal = if self.notes.len() < self.rules.polyphony {
@@ -706,7 +898,7 @@ impl Voicing {
         } else {
             return;
         };
-        self.start(channel, key, velocity, spec, steal);
+        self.start(channel, key, velocity, spec, steal, from);
     }
 
     /// Mono and legato: the channel has one note, and a new key takes over the
@@ -721,6 +913,7 @@ impl Voicing {
         velocity: u16,
         patch: &P,
         voices: &[VoiceView],
+        source: GlideSource,
         returning: bool,
     ) {
         let ch = usize::from(channel.get());
@@ -732,7 +925,8 @@ impl Voicing {
             .notes
             .iter()
             .any(|n| n.channel == channel && !n.released);
-        let legato = self.rules.mode == Mode::Legato && (was_held || returning) && sounding;
+        let legato = self.mode(channel) == Mode::Legato && (was_held || returning) && sounding;
+        let portamento = self.channels[ch].portamento;
         let (specs, count) = Self::specs(patch, channel, key, velocity);
         let strike = self.strike;
         for &spec in &specs[..count] {
@@ -750,17 +944,28 @@ impl Voicing {
             match at {
                 Some(i) if legato && !self.notes[i].released => {
                     let id = self.notes[i].id;
+                    // The voice leaves the Portamento Control's key (M1 p.16:
+                    // "an immediate pitch jump to the key specified by the
+                    // portamento Control message, and then a glide"), else, with
+                    // Portamento on, the key it sounded.
+                    let from = source.ptc.or(portamento.then_some(self.notes[i].key));
+                    let glide = self.glide(channel, from, key);
                     self.notes[i].key = key;
                     self.notes[i].strike = strike;
                     let moved = std::mem::replace(&mut self.notes[i].note, self.strike_note);
                     self.retire(moved);
-                    self.push(Command::Retarget { id, key, velocity });
+                    self.push(Command::Retarget {
+                        id,
+                        key,
+                        velocity,
+                        glide,
+                    });
                 }
                 Some(i) => {
                     let id = self.notes[i].id;
-                    self.start(channel, key, velocity, spec, Some(id));
+                    self.start(channel, key, velocity, spec, Some(id), source.start());
                 }
-                None => self.start_poly(channel, key, velocity, spec, voices),
+                None => self.start_poly(channel, key, velocity, spec, voices, source.start()),
             }
         }
         // Layers the new key lacks go.
@@ -774,7 +979,9 @@ impl Voicing {
         velocity: u16,
         spec: VoiceSpec,
         steal: Option<VoiceId>,
+        from: Option<NoteNumber>,
     ) {
+        let glide = self.glide(channel, from, key);
         if let Some(v) = steal
             && let Ok(i) = self.notes.binary_search_by_key(&v, |n| n.id)
         {
@@ -804,6 +1011,7 @@ impl Voicing {
             velocity,
             spec,
             steal,
+            glide,
         });
     }
 
@@ -854,7 +1062,7 @@ impl Voicing {
     ) {
         let ch = usize::from(channel.get());
         self.reconcile(voices);
-        if self.rules.mode != Mode::Poly {
+        if self.mode(channel) != Mode::Poly {
             let was_top = self.held[ch].top().map(|k| k.0) == Some(key);
             if self.held[ch].remove(key) {
                 // A held key under the sounding one changes nothing; the
@@ -865,7 +1073,14 @@ impl Voicing {
                 if let Some((back, v)) = self.held[ch].top() {
                     self.strike += 1;
                     self.begin(channel, back, Attribute::None);
-                    self.play_mono(channel, back, v, patch, voices, true);
+                    // The return glides from the key just let go, with Portamento
+                    // on; it is a return, not a Portamento Control's note.
+                    let source = GlideSource {
+                        ptc: None,
+                        previous: self.channels[ch].portamento.then_some(key),
+                    };
+                    self.channels[ch].last_key = Some(back);
+                    self.play_mono(channel, back, v, patch, voices, source, true);
                     return;
                 }
             }
@@ -930,12 +1145,23 @@ impl Voicing {
                     }
                 }
             }
-            // Reset All Controllers puts the pedals up and centres the wheel;
-            // the sensitivity stays (RP-015).
+            // Reset All Controllers (RP-015) puts the pedals up, centres the
+            // wheel and returns the controllers it names ([`ChannelState`]); the
+            // sensitivity, the tuning and the parameters stay. "Reset
+            // polyphonic pressure for all notes to 0": the per-note state
+            // sets each held Polyphonic Pressure of the channel to 0 (M2-104
+            // Appendix B.2 leaves the new per-note controllers alone, and Poly
+            // Pressure is not one of them). The parameter numbers go null in
+            // the translator, which keeps the selection.
             Effect::ResetControllers => {
                 self.each_channel(covers, |s, ch| {
                     s.sustain[ch] = false;
                     s.held[ch] = Held::NONE;
+                    s.channels[ch].reset_controllers();
+                    if let Some(c) = MidiChannel::new(ch as u8) {
+                        let events = s.per_note.reset_pressure(Self::address(c));
+                        s.events.extend_from_slice(events);
+                    }
                 });
                 self.each_note(on_channel, |n| {
                     let a = n.holds.sustain_up();
@@ -970,9 +1196,9 @@ impl Voicing {
 
     /// Where `channel`'s pitch stands: its own wheel, and its master's.
     fn pitch(&self, channel: usize) -> Semitones {
-        let own = self.bends[channel].semitones();
+        let own = self.channels[channel].bend.semitones();
         self.master_of(channel)
-            .map_or(own, |m| own + self.bends[m].semitones())
+            .map_or(own, |m| own + self.channels[m].bend.semitones())
     }
 
     /// Changes the wheel or the sensitivity of `channel`, and tells the
@@ -980,7 +1206,7 @@ impl Voicing {
     /// a zone master, each member's.
     fn bend(&mut self, channel: MidiChannel, change: impl Fn(&mut Bend)) {
         let ch = usize::from(channel.get());
-        change(&mut self.bends[ch]);
+        change(&mut self.channels[ch].bend);
         for i in 0..CHANNELS {
             if (i == ch || self.master_of(i) == Some(ch))
                 && let Some(channel) = MidiChannel::new(i as u8)
@@ -1643,12 +1869,14 @@ mod tests {
                 Command::Retarget {
                     id: id(1),
                     key: NoteNumber::of(62),
-                    velocity: 0x8000
+                    velocity: 0x8000,
+                    glide: None,
                 },
                 Command::Retarget {
                     id: id(2),
                     key: NoteNumber::of(62),
-                    velocity: 0x8000
+                    velocity: 0x8000,
+                    glide: None,
                 },
             ]
         );
@@ -1690,7 +1918,8 @@ mod tests {
                 Command::Retarget {
                     id: id(1),
                     key: NoteNumber::of(62),
-                    velocity: 0x8000
+                    velocity: 0x8000,
+                    glide: None,
                 },
                 release(2)
             ]
@@ -1768,7 +1997,8 @@ mod tests {
             [Command::Retarget {
                 id: id(1),
                 key: NoteNumber::of(60),
-                velocity: 0x3000
+                velocity: 0x3000,
+                glide: None,
             }]
         );
         assert_eq!(s.off(0, 60), [release(1)]);
@@ -2442,6 +2672,253 @@ mod tests {
         s.cc(0, 121, 0);
         let c = s.on(0, 5);
         assert!(matches!(c.last(), Some(Command::Control { .. })), "{c:?}");
+    }
+
+    // ---- channel controllers, glide and legato -----------------------------
+
+    fn glide_of(c: &[Command]) -> Option<Glide> {
+        c.iter().find_map(|x| match x {
+            Command::Start { glide, .. } | Command::Retarget { glide, .. } => *glide,
+            _ => None,
+        })
+    }
+
+    fn registered(index: u8, value: u32) -> Voice2 {
+        Voice2::Registered {
+            bank: U7::of(0),
+            index: U7::of(index),
+            value,
+        }
+    }
+
+    /// M1 p.14, Legato Footswitch: "40-7F Legato" turns "monophonic legato
+    /// response" on: "if a new Note-On is received before the Note-Off for the
+    /// currently sounding note, pitch is changed without re-attacking"; "When
+    /// turned off the voice assignment mode (polyphonic or monophonic) returns to
+    /// the state it was in", and it is per channel.
+    #[test]
+    fn the_legato_footswitch_makes_a_channel_legato_until_it_is_up() {
+        let mut s = Sim::new(POLY);
+        s.cc(0, 68, 0x40);
+        s.on(0, 60);
+        let c = s.on(0, 62);
+        assert!(
+            matches!(c[..], [Command::Retarget { id: v, .. }] if v == id(1)),
+            "{c:?}"
+        );
+        // Another channel is still polyphonic.
+        s.on(1, 60);
+        assert!(matches!(s.on(1, 62)[..], [Command::Start { .. }]));
+        // Up: poly again, and the first note's key sounds as the voice's.
+        s.cc(0, 68, 0x3F);
+        assert!(matches!(s.on(0, 64)[..], [Command::Start { .. }]));
+    }
+
+    /// M1 p.16, Example 2: `B0 54 3C` (PTC from #60), `90 40 40` (Note-On #64)
+    /// is "#64 with glide from #60"; "A single Portamento Control message only
+    /// affects the next Note-On received on the matching channel (i.e. it is
+    /// reset after the Note-On)". The glide is at the portamento time's rate,
+    /// "ignoring portamento on/off".
+    #[test]
+    fn a_portamento_control_glides_the_next_note_only() {
+        let mut s = Sim::new(POLY);
+        assert_eq!(s.cc(0, 84, 60), []);
+        let c = s.on(0, 64);
+        let glide = glide_of(&c).expect("the note glides");
+        assert_eq!(glide.from, NoteNumber::of(60));
+        // 400 cents at CC 5 = 0, the fastest rate of GM2 section 3.3.3's
+        // figure (1,000 cent/msec): 0.4 ms.
+        assert!((glide.time.get() - 0.0004).abs() < 1e-6, "{glide:?}");
+        assert_eq!(glide_of(&s.on(0, 65)), None);
+        // Another channel's note is not the one it is for.
+        s.cc(0, 84, 60);
+        assert_eq!(glide_of(&s.on(1, 64)), None);
+    }
+
+    /// M1 p.16, Example 1: #60 on; `B0 54 3C` "no change in current note";
+    /// `90 40 40` "re-tune from #60 to #64" (and "no new voice should be
+    /// assigned"); `80 3C 40` "no change"; `80 40 40` "#64 off". The note is
+    /// "turned off by a note that matches the Note-On key number; not the key
+    /// number stated in the Portamento Control message".
+    #[test]
+    fn a_portamento_control_from_a_sounding_key_retunes_that_voice() {
+        let mut s = Sim::new(POLY);
+        s.on(0, 60);
+        assert_eq!(s.cc(0, 84, 60), []);
+        let c = s.on(0, 64);
+        assert!(
+            matches!(&c[..], [Command::Retarget { id: v, key, glide: Some(g), .. }]
+                if *v == id(1) && *key == NoteNumber::of(64) && g.from == NoteNumber::of(60)),
+            "{c:?}"
+        );
+        assert_eq!(s.off(0, 60), []);
+        assert_eq!(s.off(0, 64), [release(1)]);
+    }
+
+    /// M1 p.16: "if in Mono mode or if Legato Footswitch is currently on, a new
+    /// overlapped note event would result in an immediate pitch jump to the key
+    /// specified by the portamento Control message, and then a glide": the move
+    /// leaves the Portamento Control's key, not the sounding one.
+    #[test]
+    fn a_legato_move_with_a_portamento_control_leaves_that_key() {
+        let mut s = Sim::new(LEGATO);
+        s.on(0, 60);
+        s.cc(0, 84, 55);
+        let c = s.on(0, 64);
+        assert!(
+            matches!(&c[..], [Command::Retarget { glide: Some(g), .. }] if g.from == NoteNumber::of(55)),
+            "{c:?}"
+        );
+    }
+
+    /// GM2 section 3.3.8: Portamento On/Off "Default Value: 0 (OFF)", "values
+    /// between 0 and 63 are recognized as OFF; values between 64 and 127 are
+    /// recognized as ON". With it on a note glides from the key struck before it,
+    /// in the time GM2 section 3.3.3's rate gives the interval: at CC 5 = 127
+    /// (0.01 cent/msec, the figure's slowest) a semitone takes 10 s; and the
+    /// default (0) is the fastest, 1,000 cent/msec.
+    #[test]
+    fn portamento_on_glides_from_the_previous_key_at_the_time_cc_5_sets() {
+        let mut s = Sim::new(POLY);
+        s.on(0, 60);
+        assert_eq!(glide_of(&s.on(0, 61)), None, "off by default");
+        s.cc(0, 65, 63);
+        assert_eq!(glide_of(&s.on(0, 62)), None, "63 is still off");
+        s.cc(0, 65, 64);
+        s.cc(0, 5, 127);
+        let g = glide_of(&s.on(0, 63)).expect("on");
+        assert_eq!(g.from, NoteNumber::of(62));
+        assert!((g.time.get() - 10.0).abs() < 1e-3, "{g:?}");
+        s.cc(0, 5, 0);
+        let g = glide_of(&s.on(0, 75)).expect("on");
+        assert_eq!(g.from, NoteNumber::of(63));
+        assert!((g.time.get() - 0.0012).abs() < 1e-6, "{g:?}");
+    }
+
+    /// RP-022: RPN 01 is Channel Fine Tuning and RPN 02 Channel Coarse Tuning;
+    /// the channel's notes sound that far from their keys (M1 RPN table: fine is
+    /// 14 bits centred at 2000H over 100 cents, coarse an MSB of semitones centred
+    /// at 64), and a bend adds to it.
+    #[test]
+    fn channel_tuning_retunes_the_channel() {
+        let mut s = Sim::new(POLY);
+        // Coarse: MSB 65 is one semitone up.
+        assert_eq!(
+            retunes(&s.send(2, registered(2, 65 << 25), &One)),
+            [(2, 1.0)]
+        );
+        // Fine: 0x3000 is half way between 0x2000 and 0x4000, 50 cents up.
+        let r = retunes(&s.send(2, registered(1, 0x3000 << 18), &One));
+        assert!((r[0].1 - 1.5).abs() < 1e-4, "{r:?}");
+        // Full bend up at range 2 adds 2.
+        let r = retunes(&s.send(2, bend(u32::MAX), &One));
+        assert!((r[0].1 - 3.5).abs() < 1e-4, "{r:?}");
+        // Another channel is untouched.
+        assert!(s.core.channel_pitch(MidiChannel::of(3)).0 == 0.0);
+    }
+
+    /// RP-015: "Set Expression (#11) to 127; Set Modulation (#1) to 0; Set
+    /// Pedals (#64, #65, #66, #67) to 0; [...] Reset channel pressure to 0.
+    /// [...] Do NOT reset Volume (#7); Do NOT reset Pan (#10); [...] Do NOT
+    /// reset registered or non-registered parameters" (the Modulation Depth
+    /// Range, the tuning and the sensitivity), and it is the channel's own.
+    #[test]
+    fn reset_all_controllers_follows_rp_015_on_its_channel() {
+        let mut s = Sim::new(POLY);
+        for c in [0, 1] {
+            s.cc(c, 1, 100);
+            s.cc(c, 7, 50);
+            s.cc(c, 10, 20);
+            s.cc(c, 11, 30);
+            s.cc(c, 65, 127);
+            s.send(c, Voice2::ChannelPressure(u32::MAX), &One);
+            s.send(c, registered(5, 1 << 25), &One);
+            s.send(c, registered(2, 66 << 25), &One);
+        }
+        s.cc(0, 121, 0);
+        let ch = s.core.channel(MidiChannel::of(0));
+        let position = |cc: u8| f32::from(cc) * 128.0 / 16383.0;
+        assert_eq!(ch.expression(), position(127));
+        assert_eq!(ch.modulation(), 0.0);
+        assert_eq!(ch.pressure(), 0.0);
+        assert!(!ch.portamento());
+        assert_eq!(ch.volume(), position(50));
+        assert_eq!(ch.pan(), {
+            let mut probe = Sim::new(POLY);
+            probe.cc(0, 10, 20);
+            probe.core.channel(MidiChannel::of(0)).pan()
+        });
+        assert_eq!(ch.modulation_range(), tutti_types::Cents(100.0));
+        assert_eq!(s.core.channel_pitch(MidiChannel::of(0)).0, 2.0);
+        // Channel 1 heard none of it.
+        let other = s.core.channel(MidiChannel::of(1));
+        assert_eq!(other.modulation(), position(100));
+        assert_eq!(other.expression(), position(30));
+        assert_eq!(other.pressure(), 1.0);
+        assert!(other.portamento());
+    }
+
+    /// RP-015: "Reset polyphonic pressure for all notes to 0". The Registered
+    /// and Assignable Per-Note Controllers and Per-Note Pitch Bend are the ones
+    /// M2-104 Appendix B.2 says are NOT reset.
+    #[test]
+    fn reset_all_controllers_zeroes_poly_pressure_and_leaves_the_other_per_note_values() {
+        let mut s = Sim::new(POLY);
+        s.send(
+            0,
+            Voice2::PolyPressure {
+                note: NoteNumber::of(60),
+                value: 1 << 31,
+            },
+            &One,
+        );
+        pnc(&mut s, 0, 60, RegisteredPerNoteController::Volume, 1 << 30);
+        s.on(0, 60);
+        let c = s.cc(0, 121, 0);
+        assert!(
+            c.iter().any(|x| matches!(
+                x,
+                Command::Control {
+                    control: NoteControl::Pressure(0),
+                    ..
+                }
+            )),
+            "{c:?}"
+        );
+        assert!(
+            !c.iter().any(|x| matches!(
+                x,
+                Command::Control {
+                    control: NoteControl::Registered(..),
+                    ..
+                }
+            )),
+            "{c:?}"
+        );
+    }
+
+    /// CA-026: RPN 5 scales Control Change 1; GM2 section 3.3.2 "The depth of
+    /// change at the maximum value conforms to the value that is set by
+    /// Modulation Depth Range", section 3.4.4: default "+/-50 cents", and "MSB =
+    /// 01H, LSB = 00H" is one semitone.
+    #[test]
+    fn the_modulation_depth_range_scales_the_wheel() {
+        let mut s = Sim::new(POLY);
+        s.cc(0, 1, 127);
+        s.cc(0, 33, 127);
+        let depth = |s: &Sim| s.core.channel(MidiChannel::of(0)).modulation_depth().get();
+        assert!((depth(&s) - 50.0).abs() < 1e-3);
+        s.send(0, registered(5, 1 << 25), &One);
+        assert!((depth(&s) - 100.0).abs() < 1e-3);
+    }
+
+    /// M1 Channel Pressure is per channel: the value is the channel's own.
+    #[test]
+    fn channel_pressure_is_per_channel() {
+        let mut s = Sim::new(POLY);
+        s.send(3, Voice2::ChannelPressure(1 << 31), &One);
+        assert!((s.core.channel(MidiChannel::of(3)).pressure() - 0.5).abs() < 1e-3);
+        assert_eq!(s.core.channel(MidiChannel::of(0)).pressure(), 0.0);
     }
 
     // ---- random streams ------------------------------------------------

@@ -2253,8 +2253,23 @@ at any point; its CI codec move and `ci`/`negotiate` deletion (4a, done) shrink
      spec's rule, and the reason senders close a run with the Null Function. A
      clip's loader flushes it (`Translator::flush`, §4).
    - Each half of a parameter number is kept per kind (RPN and NRPN apart) until
-     selected again; Reset All Controllers (CC 121, RP-015) sets both to null,
-     drops what the run had not sent and passes on.
+     selected again; Reset All Controllers (CC 121, RP-015) sets both halves of both
+     to null (127: a later select of one half pairs with a null other, not with the
+     number from before), drops what the run had not sent and passes on.
+   - **CC 88, the High Resolution Velocity Prefix (CA-031), is folded here.** `Bn 58 vv`
+     is "the lower 7 bits affixed to the subsequent Note On / Note Off velocity"; the
+     Note's byte is the high 7. The translator is the MIDI 1.0 input edge, which is the
+     one place a prefix can arrive, and M2-104 section 7.4.6 says "In MIDI 2.0 Protocol,
+     Control Change 88 shall not be used for High Resolution Velocity" (the 16-bit Note
+     On "has a higher range"), so a CC 88 is absorbed (a receiver never sees one) and the
+     next Note On or Off on that channel carries the 14-bit velocity scaled Min-Center-Max
+     to 16 bits (`0x3FFF` is `0xFFFF`, `0x2000` the centre `0x8000`). One prefix affects only
+     the next Note On or Off on its channel, whatever came between; it is cleared after
+     it ("the lower 7 bits of the receiver's 14-bit velocity register should be
+     cleared"); `9n kk 00` stays a Note Off and the prefix "has no effect". The minimum
+     14-bit Note On, `0x0080`, is the 7-bit 1 already (`1 << 9` after scaling), so the quietest
+     Note On is unchanged. The state is one `Option<U7>` for each channel: the translator
+     stays fixed-size and allocates nothing.
    - Registered controllers 0 to 31 of bank 0 are zero-extended (M2-115 §4.1);
      every other controller is scaled Min-Center-Max. The group is kept (the old
      translator sent everything on group 1).
@@ -2265,7 +2280,8 @@ at any point; its CI codec move and `ci`/`negotiate` deletion (4a, done) shrink
    - The SoundFont reads Registered Controllers 0, 1 and 2 (pitch bend
      sensitivity, fine and coarse tuning) and a Program Change's bank, which is
      stage 2's SoundFont residue, done here because the translator absorbs the
-     Bank Select the SoundFont followed before. The SoundFont holds a Bank Select (CC 0 and 32; an
+     Bank Select the SoundFont followed before. (The registered controllers moved to
+     `Voicing` in L4c, below.) The SoundFont holds a Bank Select (CC 0 and 32; an
      MSB zeroes the held LSB, M1 p.12) until the next Program Change applies it (M1 p.13).
    The plan was: Deletes
    the SoundFont's RPN state machine (`Channel::{set_rpn_*, data_entry_*}`, which
@@ -2723,6 +2739,88 @@ ignored all of it. Now:
   per-note expressions still reach the previous note. They take `PerNoteState` events instead: the
   minted id as the note id, `Control`s as the note's expressions (the held values as the new
   note's initial ones), `Reset` as an expression reset.
+
+### L4c: channel controllers are state (done)
+
+What a channel has been told that outlives its notes is one value, `ChannelState`, in
+`tutti-voicing`: `Voicing` keeps one for each of the Group's sixteen channels and reads every
+message into it, so the two instruments and a future one share one reading, and a SoundFont
+swap (L4d) hands the sixteen over whole. An instrument asks for what it renders
+(`Voicing::channel`, `channels`); the note logic that follows from it is the core's and reaches
+the instrument as `Command`s.
+
+- **What it holds.** The 14-bit controllers Modulation (CC 1 and 33), Volume (7 and 39), Pan (10
+  and 42), Expression (11 and 43) and Portamento Time (5 and 37), with M1 p.12's rule that an MSB
+  zeroes the LSB; Channel Pressure; the pitch wheel, its sensitivity (RPN 0) and the Channel
+  Tuning (RP-022: RPN 1, fine, 14 bits centred at 2000H over 100 cents, and RPN 2, coarse, an
+  MSB of semitones centred at 64), which `Voicing` folds into one pitch (`Command::Retune`,
+  `channel_pitch`), so no instrument adds tuning of its own; the Modulation Depth Range (CA-026,
+  RPN 5: MSB semitones, LSB 100/128 cent per GM2 3.4.4, default 00H/40H, "+/-50 cents"); the
+  Portamento switch (CC 65), the Legato Footswitch (CC 68) and the pending Portamento Control
+  (CC 84). The Modulation depth is the wheel's position over that range ("linear in cents", GM2
+  3.3.2), so a range of 0 is no modulation.
+- **Reset All Controllers is RP-015's list and no more**, per channel (and a zone master's, for
+  the zone, as the pedals are): Expression to 127, Modulation to 0, the pedals (64 to 67, so
+  Portamento off) up, channel pressure to 0, the wheel centred, and "Reset polyphonic pressure
+  for all notes to 0" (`PerNoteState::reset_pressure`: held Polyphonic Pressure only; M2-104
+  Appendix B.2's list, the Registered and Assignable Per-Note Controllers and Per-Note Pitch Bend,
+  stays). Volume, Pan, the sound controllers (70 to 79), the effects depths, the Legato Footswitch
+  (not in RP-015's list), Bank Select, Program Change and every registered or non-registered
+  parameter (the sensitivity, the tuning, the Modulation Depth Range) are left. The parameter
+  numbers go null in the translator (above), the one place the selection lives. The synth's
+  modulation wheel was one global value that any channel's reset cleared for all; it is the
+  channel's now, as Volume, Pan, Expression and Pressure are.
+- **Legato Footswitch and Portamento Control are note logic** (`Voicing::step`), per channel.
+  The footswitch makes the channel's mode `Legato` while it is down (M1 p.14: 40 to 7F), and the
+  rules' mode again when it is up. A Portamento Control "only affects the next Note-On received on
+  the matching channel", is consumed by it and does not move any sounding note on its own. A
+  Note On after one is "gliding from" the source key, "ignoring portamento on/off": in a poly
+  channel, a sounding voice at the source key is moved to the new key with no new attack ("no new
+  voice should be assigned": `Command::Retarget`, M1 p.16 Example 1, and the note it moved is
+  turned off by the new key, not the source), otherwise a new voice starts with a glide from the
+  source (Example 2); in a mono channel or with the footswitch down an overlapped note "would
+  result in an immediate pitch jump to the key specified by the portamento Control message, and
+  then a glide". With Portamento On (CC 65, GM2 3.3.8: "values between 64 and 127 are recognized
+  as ON", default off) a note glides from the key struck before it (a legato return to a held
+  key, from the key just let go).
+- **A glide is a `Glide { from, time }`** on `Command::Start` and `Retarget`: the voice leaves
+  `from`'s pitch (with the channel's bend on it, as on the note's: "Pitch bend offsets the pitch
+  used by both") and arrives at the note's in `time`, at a constant rate in cents. The rate is
+  Portamento Time's: GM2 3.3.3 gives "the recommended example" as a figure on a log axis from 0.01
+  to 1,000 cent/msec, falling from CC 5 = 0 to 127; `ChannelState::glide_rate` is the figure's end
+  points (the tests' oracle) with the curve between them read off the gridlines, interpolated in
+  log. The default, 0, is the fastest. The time is the interval in cents (100 to the key) over it.
+- **The polysynth glides one voice at a time.** Each voice has its own `Portamento`, and a glide
+  is a factor on the voice's pitch (`Portamento::ratio`), with the note's own pitch (its key's, or
+  the one a per-note controller told it) and the channel's bend as the other two. The glide
+  state was one value for the synth, every sounding voice was driven to it, and
+  `apply_pitch_bend` returned early while it ran and `control_step` rewrote every pitch each
+  step: so a per-note sounding pitch (found in L4e) was lost for as long as a glide ran, and a
+  Portamento Control would have moved every voice. `PortamentoConfig` stays as the synth's own
+  glide, taken when the stream asks for none, from the key last struck.
+- **The channel's Volume, Pan and Expression, Modulation and Pressure in the instruments.**
+  The polysynth renders them per channel: Volume and Expression by GM2 3.3.4's square law ("the
+  square of the value is proportional to the volume", `40 * log10(cc7/127)` dB) relative to their
+  defaults, so a channel told nothing sounds at the voice's own level; Pan by RP-036 below; the
+  wheel scaling the filter's `mod_wheel_depth` by the Modulation Depth over its default range (so
+  RPN 5 scales it); Channel Pressure by the factor per-note pressure has (`1 + p / 2`, the larger of
+  the two). The SoundFont reads the same state in its voice (the vibrato depth by RPN 5, the
+  square law, Pan) and glides and moves its voices by `Start` and `Retarget`; it has no generator
+  to drive with Channel Pressure.
+- **Pan is RP-036's**, which "shall override all previous recommended practices, including [...]
+  GM1, GM2, DLS1, and DLS2": "the effective range for CC#10 is modified to be 1 to 127, and
+  values 0 and 1 both pan hard left", the gains `cos` and `sin` of `Pi/2 * max(0, CC#10 - 1) /
+  126`, so 64 is true centre. The 14-bit pan is read the same way (the subtracted 1 is 128 of its
+  steps). `ChannelState::pan` is that position as a `Pan` (`-1` to `1`). The SoundFont adds it to
+  the SF2 pan generator in the angle (the generator's `+/-50%` and the channel's both move the
+  same `Pi/200 * (pan + 50)`; it was `0` to `16383` read straight, which put 64 off centre by a
+  step and 1 off the wall); the polysynth applies it as a balance on the voice's own pan law
+  (RP-036's gains times `sqrt(2)`, so the centre leaves the voice alone and a mono voice has
+  RP-036's gains exactly). A pan change on a sounding note "without audible artifacts, clicks or
+  zipper noise": both instruments ramp a gain from its last block's value across the next one.
+- **Not done.** A SoundFont does not follow a Rhythm Channel's exemptions from CC 1, 5 and 65 (GM2
+  "Rhythm Channels shall not respond"); Soft Pedal (CC 67), which RP-015 resets, is not modelled, so
+  there is nothing to reset.
 
 ## 11. Testing
 

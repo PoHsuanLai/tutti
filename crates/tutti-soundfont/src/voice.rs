@@ -8,8 +8,8 @@ use tutti_dsp::{Biquad, DirectForm1, SOLVE_CEILING, SvfControls, SvfModel, SvfTy
 use tutti_midi_protocol::u32_to_unit_f32;
 use tutti_sf2::Side;
 use tutti_types::{Db, Hz, Q, SampleRate, Semitones};
-use tutti_ump::{MidiChannel, RegisteredPerNoteController};
-use tutti_voicing::NoteControl;
+use tutti_ump::{MidiChannel, NoteNumber, RegisteredPerNoteController};
+use tutti_voicing::{ChannelState, Glide, NoteControl};
 
 /// The longest an exclusive class's quick release takes, in seconds, to fall
 /// 100 dB as every release time does (section 8.1.2, generator 38): the floor
@@ -79,6 +79,17 @@ impl NoteControls {
     };
 }
 
+/// A glide in progress: the pitch is `offset` semitones above the note's own
+/// and falls to it in a straight line over `frames` frames, a constant rate in
+/// cents (General MIDI 2 section 3.3.3 gives the portamento rate in cents a
+/// millisecond).
+#[derive(Debug, Clone, Copy)]
+struct GlideRun {
+    offset: f32,
+    frames: f32,
+    done: f32,
+}
+
 #[derive(Debug, Clone)]
 #[non_exhaustive]
 pub(crate) struct Voice {
@@ -113,6 +124,13 @@ pub(crate) struct Voice {
     channel: i32,
     key: i32,
     velocity: i32,
+    /// The key the note is played on now: where it started, or where a legato
+    /// move or a Portamento Control last took it (the zone's forced key, which
+    /// `key` follows, is not it).
+    played: i32,
+    /// Semitones the voice has been moved from the key it started on.
+    transpose: f32,
+    glide: Option<GlideRun>,
 
     // The note's per-note controllers (M2-104 section 7.4); the defaults of
     // `NoteControls::DEFAULT` until a message sets one.
@@ -170,6 +188,9 @@ impl Voice {
             channel: 0,
             key: 0,
             velocity: 0,
+            played: 0,
+            transpose: 0_f32,
+            glide: None,
             note: NoteControls::DEFAULT,
             note_gain: 0_f32,
             cutoff: 0_f32,
@@ -192,6 +213,9 @@ impl Voice {
     }
 
     pub(crate) fn start(&mut self, region: &RegionPair, channel: i32, key: i32, velocity: i32) {
+        self.played = key;
+        self.transpose = 0_f32;
+        self.glide = None;
         // Generators 46 and 47 (SF2 2.04 section 8.1.2) force the key and the
         // velocity of the zone: everything keyed on either reads the forced one.
         let key = region
@@ -260,6 +284,47 @@ impl Voice {
         self.voice_length = 0;
     }
 
+    /// Starts the glide a note begins with, if it has one: the voice sounds at
+    /// the pitch of the glide's key and arrives at its own.
+    pub(crate) fn glide(&mut self, glide: Option<Glide>) {
+        self.glide = glide.map(|g| self.glide_run(g));
+    }
+
+    /// Moves the voice to `key` with no new attack (a legato move, or the voice
+    /// a Portamento Control names). With a glide it jumps to the glide's key and
+    /// glides to the new one; without, it is at the new key at once.
+    pub(crate) fn retarget(&mut self, key: NoteNumber, glide: Option<Glide>) {
+        let key = i32::from(key.get());
+        self.transpose += (key - self.played) as f32;
+        self.played = key;
+        self.glide = glide.map(|g| self.glide_run(g));
+    }
+
+    fn glide_run(&self, glide: Glide) -> GlideRun {
+        GlideRun {
+            offset: (i32::from(glide.from.get()) - self.played) as f32,
+            frames: (glide.time.get() * self.rate.get()) as f32,
+            done: 0_f32,
+        }
+    }
+
+    /// The glide's offset now, and its advance by `frames`.
+    fn step_glide(&mut self, frames: usize) -> f32 {
+        let Some(run) = &mut self.glide else {
+            return 0_f32;
+        };
+        let offset = if run.frames > 0_f32 {
+            run.offset * (1_f32 - run.done / run.frames)
+        } else {
+            0_f32
+        };
+        run.done += frames as f32;
+        if run.done >= run.frames {
+            self.glide = None;
+        }
+        offset
+    }
+
     /// Takes a per-note controller's value (M2-104 section 7.4). What a
     /// SoundFont voice can carry: the note's sounding pitch (its told Pitch
     /// 7.25 or Attribute Pitch 7.9 and its per-note bend, summed by
@@ -323,6 +388,7 @@ impl Voice {
         &mut self,
         data: &[i16],
         channels: &[Channel],
+        states: &[ChannelState; MidiChannel::COUNT as usize],
         bends: &[Semitones; MidiChannel::COUNT as usize],
     ) -> bool {
         if self.note_gain < SoundFontMath::NON_AUDIBLE {
@@ -330,6 +396,7 @@ impl Voice {
         }
 
         let channel_info = &channels[self.channel as usize];
+        let state = &states[self.channel as usize];
 
         if !self.vol_env.process(self.block.len()) {
             return false;
@@ -339,12 +406,19 @@ impl Voice {
         self.vib_lfo.process();
         self.mod_lfo.process();
 
-        let vib_pitch_change =
-            (0.01_f32 * channel_info.modulation() + self.vib_lfo_to_pitch) * self.vib_lfo.value();
+        // The wheel's depth in cents (the Modulation Depth Range of RPN 5 over its
+        // position) and the generator's, as semitones.
+        let vib_pitch_change = (0.01_f32 * state.modulation_depth().get() + self.vib_lfo_to_pitch)
+            * self.vib_lfo.value();
         let mod_pitch_change = self.mod_lfo_to_pitch * self.mod_lfo.value()
             + self.mod_env_to_pitch * self.mod_env.value();
-        let channel_pitch_change = channel_info.tune() + bends[self.channel as usize].0;
+        // The core's pitch for the channel: the wheel over its sensitivity and
+        // the Channel Tuning (RP-022).
+        let channel_pitch_change = bends[self.channel as usize].0;
+        let glide = self.step_glide(self.block.len());
         let pitch = self.note.pitch.unwrap_or(self.key as f32)
+            + self.transpose
+            + glide
             + vib_pitch_change
             + mod_pitch_change
             + channel_pitch_change;
@@ -376,7 +450,7 @@ impl Voice {
         self.previous_chorus_send = self.current_chorus_send;
 
         // According to the GM spec, the following value should be squared.
-        let ve = channel_info.volume() * channel_info.expression();
+        let ve = state.volume() * state.expression();
         let channel_gain = ve * ve;
 
         // A per-note Volume is the channel's law (the GM square) applied to
@@ -391,7 +465,8 @@ impl Voice {
             mix_gain *= SoundFontMath::decibels_to_linear(decibels);
         }
 
-        let pan = self.note.pan.unwrap_or_else(|| channel_info.pan());
+        // RP-036's pan, as the percent the angle below is built from.
+        let pan = self.note.pan.unwrap_or_else(|| 50_f32 * state.pan().get());
         let angle = (consts::PI / 200_f32) * (pan + self.instrument_pan + 50_f32);
         if angle <= 0_f32 {
             self.current_mix_gain_left = mix_gain;

@@ -97,20 +97,36 @@ already measured.
   `Ambisonic` topology are not built. (A4) the periodic view of class 6, theory only
   (section 4.2). (A5) a cap that bounds a design is a `Bounds` field (section 4.4).
   Steps 2b0 and 7a of section 10 carry them.
+- **Amendments B of 2026-11-11, after step 2b's first six PRs: one realization, one control
+  source.** Pressure-testing the built filters showed the realizations repeat (the SVF's and the
+  ladder's are the same code over a coefficient type, a state type and a step function), and a survey
+  of every effect in the inventory found each differs from them in only three places: whether its
+  channels couple, what its state is sized from, and the law of its approach to a new model. (B1)
+  **One realization**: a family is a `Kernel` (its per-frame math), every effect's realization is
+  `Realized<K>`, and the approach to a new model is one `Glide` (section 4.3a). (B2) **`NodeDesign`
+  shrinks**: `ControlParams` is deleted (its one implementation, `Params<S: ControlSet>`, landed in
+  #544) and `Blend` leaves for the graph's mix (section 5). (B3) **`ControlSource` is made real** as the
+  producer of a lane's pieces, with one `SourceNode` that sends them; the follower, the note envelope
+  and the control lane are its first users (section 4.5a). (B4) **`Anchor` becomes `{ Stream, Play }`**,
+  and a `DesignNode` **solves at a lane's corners** as well as on its grid (section 4.5). (B5) IAMF
+  re-tested on B1 to B4: every stage is a kernel, an edge gain or a control source, with no new trait
+  (section 4.10). Section 10, "Step 2b as built, and the lanes after it", carries them.
 - **The contract is written once per class** (section 6): every LTI realization
   inherits the impulse-response-against-response, ring-time-against-decay,
   linearity and shift-invariance checks; every static map inherits the level
   sweep. Composites inherit their class's cases for free.
-- **`ReverbNode<D>` becomes `DesignNode<D>`** (section 5), with `Blend`,
-  `Readouts` and `CADENCE` as associated types, not runtime flags. The first
-  finding against the reverb-only node is the cadence: filters solve every 16
-  frames inside a block, and the dynamics nodes take per-frame lanes.
+- **`ReverbNode<D>` became `DesignNode<D>`** (section 5), its options associated
+  types and constants, not runtime flags. The first finding against the
+  reverb-only node was the cadence: filters solve every 16 frames inside a block,
+  and the dynamics nodes take per-frame lanes. After B2 a `NodeDesign` names its
+  `ControlSet`, whether it parks and its sampling grid, and nothing else.
 - **Plan (section 10): a step 0b (the analysis split and the first consolidations, section 9) and seven steps after the merged #367, each a PR.**
   Generalise on the reverb (answering as `Lti`); filters (several realizations of
   one H(z); G8); composition (the parametric EQ, then reverb 3b); dynamics (G9);
   delay, modulation effects and the waveshaper; convolver and HRTF; the rest. The
   amendments above enter as step 2b0 (A1, A2: before or with 2b) and step 7a (A3: before the
-  panners).
+  panners). Amendments B re-cut the steps after 2b into lanes, one per family group, each moving
+  its effects onto `Realized<K>`, plus a lane for the control sources (section 10).
 
 ## 1. Current state
 
@@ -729,13 +745,14 @@ a trait when a second family answers it and one contract case covers both.
 
 ```rust
 /// One realization of a model: a state-space structure that computes its input-output map.
-pub trait Realization<M>: Send + Sized {
-    fn prepare(&mut self, setup: &Setup);                 // control side; allocates
+pub trait Realization<M>: Clone + Send + Sized {          // Clone: B1
+    type Bounds;
+    fn prepare(&mut self, bounds: &Self::Bounds, setup: &Setup);   // control side; allocates
     fn retarget(&mut self, model: &M);                    // audio thread; samples theta; no allocation
     fn reset(&mut self);
     fn latency(&self) -> Samples { Samples::ZERO }
     fn effort(&self) -> Effort { Effort::Heavy }          // engineering
-    #[must_use] fn fresh(&self) -> Self;
+    #[must_use] fn fresh(&self) -> Self { let mut f = self.clone(); f.reset(); f }   // B1: a default
 }
 /// The planar block shape a graph node drives.
 pub trait Effect<M>: Realization<M> { fn process(&mut self, input: &[&[f32]], output: &mut [&mut [f32]]); }
@@ -743,12 +760,11 @@ pub trait Effect<M>: Realization<M> { fn process(&mut self, input: &[&[f32]], ou
 pub trait Readout { type Value: Copy; fn take(&mut self) -> Self::Value; }
 ```
 
-`Realization<M>` no longer takes `bounds` in `prepare`: the sizes are the design's
-(`Design::bounds`), and a realization that needs them takes them in its constructor
-(`Design::realization` has the design), so the realization trait names no engineering type.
-(On `main` `prepare(&Bounds, &Setup)` does; moving it is a one-line change per
-realization, and step 1 may instead keep an associated `type Bounds` on `Realization`.
-Q16.)
+`prepare` takes the design's sizes (`Design::bounds`) through an associated `type Bounds`
+(Q16, as built in step 1: an earlier draft moved them into the constructor). Under B1 the
+realization of every effect is the one generic `Realized<K>` (section 4.3a), so this trait is
+implemented once in production; it stays the seam the contract runs against, and the contract's
+mutants (`contract/flaws.rs`) implement it directly.
 
 **The model is the equivalence class and the realization is one realization.** The
 trait says so by being generic over the model rather than an associated type of
@@ -767,6 +783,98 @@ different shape trait for their block. The contract's measuring helpers render
 through a small harness trait (`Render`, **(proposal)**) that each shape
 implements, so the same measurement (an impulse, a tone burst, a noise run) works
 for any of them.
+
+### 4.3a One realization: `Kernel`, `Glide`, `Realized<K>` (amendment B1)
+
+**Finding (2026-11-11, on step 2b's built filters).** `SvfRealization` and `LadderRealization` were
+the same ~110 lines (the previous and next coefficients, the phase into the glide, the first-retarget
+landing, a held path running up to eight channels side by side, `retarget`, `reset`, `fresh`,
+`process`) over a coefficient type, a state type and a step function; `SvfDesign` and `LadderDesign`
+the same ~45. A survey of every other effect (dynamics, delays, chorus, phaser, waveshaper,
+convolver, panners, strip, the reverbs) found each realization does the same four things (allocate
+state from `Bounds`; aim at a new model; run frames with the coefficients it holds, stepping them on
+a fixed period; clear) and differs from the filters in three places only:
+
+1. **Channel coupling.** A filter runs each channel alone; a compressor links its detection, a reverb
+   mixes its lines, a panner fans one input out to a layout.
+2. **State.** A filter's is a few `Copy` words per channel; a delay's, a reverb's and a limiter's are
+   lines sized from `Bounds` at `prepare`.
+3. **The approach to a new model.** Every one is a linear glide in some steps: a filter's
+   coefficients over 16 frames, the FDN's gains over 20 ms, a delay length rate-limited (`Slew::aim_rate`
+   is a linear glide whose step count is the distance over the rate). Only the number of steps is
+   chosen differently, and the step's length (one frame for a filter, 32 for the FDN).
+
+So the family is its kernel, and the realization is written once:
+
+```rust
+/// A linear approach to a target in `n` steps, computed from (from, to, k / n), never accumulated,
+/// so it lands exactly. `n` is fixed (a filter's 16 frames, a gain's 20 ms) or from a rate (a delay
+/// length: a swept delay is a pitch shift, and the rate bounds it). `Steps::Fixed(0)` lands at once.
+pub struct Glide<T: Lerp> { from: T, to: T, k: u32, n: u32 }
+pub enum Steps { Fixed(u32), Rate(f32) }
+pub trait Lerp: Copy { fn lerp(&self, to: &Self, t: f64) -> Self; }   // t through Law::Linear
+
+/// A coefficient set that approaches a target: a struct of `Glide`s (or a `Crossfade`), sized at prepare.
+pub trait Approach { fn step(&mut self) -> bool; fn settle(&mut self); }   // step: false once landed
+
+/// An effect's per-frame math, any channel shape and any state.
+pub trait Kernel: Clone + Send + 'static {
+    type Model;
+    type Bounds;
+    type Coeffs: Approach + Clone + Send;
+    type State: Clone + Send;
+    const STEP: usize;                                                   // frames per coefficient step
+    fn prepare(&self, bounds: &Self::Bounds, setup: &Setup) -> (Self::Coeffs, Self::State);
+    fn aim(&self, coeffs: &mut Self::Coeffs, model: &Self::Model);       // in place, no allocation
+    fn clear(&self, state: &mut Self::State);
+    /// Frames run with the coefficients as they stand (a whole block once landed).
+    fn run(&self, c: &Self::Coeffs, s: &mut Self::State, input: &[&[f32]], output: &mut [&mut [f32]]);
+    fn latency(&self) -> Samples { Samples::ZERO }
+    fn effort(&self) -> Effort { Effort::Heavy }
+}
+
+/// The one realization: runs of `STEP` frames while the coefficients move, one run once landed.
+#[derive(Clone)]
+pub struct Realized<K: Kernel> { kernel: K, coeffs: K::Coeffs, state: K::State, into_step: usize }
+impl<K: Kernel> Realization<K::Model> for Realized<K> { type Bounds = K::Bounds; /* ... */ }
+impl<K: Kernel> Effect<K::Model> for Realized<K> { /* ... */ }
+
+/// A kernel whose channels run alone: per-channel `Copy` state, and the held path that runs up to
+/// eight channels side by side, written once (it is `PerChannel`'s, never a family's).
+pub trait ChannelKernel: Clone + Send + 'static {
+    type Model;
+    type Coeffs: Copy + PartialEq + Lerp;
+    type State: Copy + Default;
+    type Frame: AsRef<[f32]>;                         // [y], or a crossover's bands
+    const STEPS: Steps;                               // Fixed(16) for the SVF and ladder, Fixed(0) for the crossover
+    fn outputs(&self) -> usize { 1 }                  // per input channel; output o of channel c is o * width + c
+    fn coeffs(&self, model: &Self::Model) -> Self::Coeffs;
+    fn tick(c: &Self::Coeffs, s: &mut Self::State, x: f32) -> Self::Frame;
+}
+pub struct PerChannel<C>(C);                          // impl Kernel: Coeffs = Glide<C::Coeffs>, STEP = 1
+```
+
+- **Who is what.** The SVF, the ladder and the crossover are `ChannelKernel`s under `PerChannel`
+  (the ladder's coefficient carries its type, and its lerp keeps the target's). **The crossover lands
+  whole** (`Steps::Fixed(0)`): a blend of an LR split's biquads is not an LR set, so its bands would stop
+  summing to an all-pass inside the glide (section 4.5); its glide stays in hertz, on the controls. The FDN
+  is a `Kernel` with `STEP = 32` (its `aim` is today's retarget target code, its `run` today's chunk body,
+  and `Slew` goes). Freeverb is a `Kernel` and **gains a glide**: its `retarget` jumped the comb feedback
+  and damping, so a moving room size could click.
+- **`Crossfade<T>`** is the second `Approach`, for what cannot be lerped (an HRIR set, a convolver's IR,
+  a mode switch): it runs the old and the new side by side and fades the outputs over the step; it is the
+  HRTF's step crossfade, generalized, and it gives the convolver a live IR swap. It is built with its
+  first user (the spatial lane), not before.
+- **`Design` stays per family**: it is the math. The filters, whose design is only `Model::new(controls)`,
+  share `Filter<K>`, one `Design` impl over a `ChannelKernel` and a layout (the crossover's band and
+  width checks stay in its constructor); the reverbs keep theirs.
+- **Where it stops.** A source with no input run through a model (an LFO, a lane, the click) and an
+  instrument (a voice pool) are not kernels: section 4.5a and the instruments' own structure.
+  A node with no control and no state (the downmix) is a fixed `Fold` and stays a plain node, or is the
+  `Matrix` kernel's fixed case once that kernel exists (section 4.10).
+- **What goes.** Five `Realization` impls become one; `tutti_dsp::Ramp`, the FDN's `Slew` and the
+  filters' glide become `Glide`. Every effect moved onto it renders independently of the block length
+  (the compressor, gate, delay, strip and VBAP ramp across the block today).
 
 ### 4.4 The engineering layer
 
@@ -825,6 +933,9 @@ decides whether the render depends on the block length.
 pub struct Cadence { period: Period, anchor: Anchor }
 pub enum Period { Block, Frames(NonZeroU32) }
 pub enum Anchor { Block, Stream { offset: Samples } }   // grid at offset + k * period on the stream clock
+// After B4: `enum Anchor { Stream { offset: Samples }, Play }`. `Block` goes with its last user (the
+// phaser, moved to the stream grid); `Play` is the play clock's grid (transport frames), which the
+// control sources run on (section 4.5a). `every` goes with `Block`.
 impl Cadence {
     pub const BLOCK: Self;                              // Period::Block, Anchor::Block: one design per block
     pub const fn every(n: NonZeroU32) -> Self;          // Frames(n) from the block's start: the filters
@@ -858,7 +969,8 @@ frames and a drive cell reaches its value at the block's last solve instead of l
 block); **the crossover's coefficients do not ramp**: a retarget lands whole and the segment runs on the set it
 solved (it held its coefficients per 16-chunk before, and a blend of the three biquads of a split is not an
 LR set, so the bands would stop summing to an all-pass inside the segment); the glide is the node's, linear in
-hertz across the block as the old render ramped the frequencies, and a lane is sampled per segment. The phaser is
+hertz across the block as the old render ramped the frequencies, and a lane is sampled per segment (under B1
+this is `Steps::Fixed(0)` on its `ChannelKernel`, section 4.3a). The phaser is
 still on the block-anchored `every(16)` (`COEFF_CADENCE`), the one user of `Cadence::every` left. A frame-based
 model (an STFT effect, a decimator) states its period as `Cadence::stream(hop)`; its
 `latency = size - 1` (doc 028 §3.8) is then the wait for the stream-anchored frame, derived and
@@ -891,16 +1003,29 @@ solved at its last frame, the first block (`unprimed`) solves at its first sampl
 `position` is not read. The realization owns the interpolation; the node owns where the steps
 are.
 
+**Solve at corners (amendment B4).** A lane's pieces carry their corners (a `ParamSegment` has a
+position and a length), and a step piece's value is meant on its frame. The grid alone samples it up
+to a period late, which is wrong for a step automation and for a format whose parameter frames are
+normative (IAMF's demixing, section 4.10). So a `DesignNode` also cuts the block at every corner a
+driving lane delivers inside it, and solves there; on a lane with no corner in the block nothing
+changes. Corners are data on the stream, so the render stays a function of the stream: block
+independence holds.
+
+**Two clocks, one rule.** An effect solves on the **stream** clock (frames since its reset), because
+audio runs through it while the transport is stopped. A control source produces on the clock it
+follows: the **play** clock (transport frames: automation, a beat-synced LFO, the note envelope) or the
+stream (a free-running follower). A lane sampled by an effect is exact at any frame, so the two clocks
+meet without loss; only the glide between solves approximates, by at most one period.
+
 **Where cadence stops.** The compressor, gate and limiter nodes take a threshold
 (and the limiter a ceiling) as a **per-frame lane** (`io.param(0).frames()`,
 `compressor.rs` line 469, `limiter.rs` line 365). `every(1)` per-frame would pay
 the node's per-segment overhead on every frame, which is exactly the fixed shape
-the owner warned against. So per-frame lanes are not a `Cadence` (the limit of `every`, one frame, is a lane); they are a
-second, optional realization shape (**(proposal)** `Driven<M>`: `process_driven(input,
-output, lane)`, chosen by the node on a block whose port is `Frames`), or the node
-keeps its own `process` and adopts the model and the contract only. Section 11 Q3
-recommends deciding that against the code in step 4, and states the fallback,
-which loses nothing: the dynamics get their curves, readouts and contract either way.
+the owner warned against. So per-frame lanes are not a `Cadence` (the limit of `every`, one frame, is a lane). Under B1 the
+answer (Q3, to confirm in the dynamics lane) is that a per-frame lane is an **input of the kernel's
+`run`**, not a coefficient: the kernel declares which of its controls it reads per frame, and
+`Realized<K>` hands their frames to `run` beside the audio. That is the old `Driven<M>` proposal
+without a second realization shape.
 
 
 ### 4.5a Trajectory: `theta(t)` as a signal with a law
@@ -915,14 +1040,26 @@ the filters' "applied controls" are fields of `ControlParams`. A2 gives them one
 names and deletes the proposals that were beside them.
 
 ```rust
-/// A source of controls on the model's clock. (proposal)
-pub trait ControlSource {
-    type Theta: Copy;
-    /// `theta` at absolute time `t` (control side; may allocate).
-    fn at(&self, t: Samples) -> Self::Theta;
+/// A source of controls: theta(t) as pieces, produced on the audio thread and sent to lanes
+/// (amendment B3; it replaces the control-side `at(t)` proposal, whose query is a piece's value).
+pub trait ControlSource: Clone + Send + 'static {
+    /// The grid it produces on when it has no corner: play-anchored 32 frames for lanes, or stream.
+    const CADENCE: Cadence;
+    fn prepare(&mut self, rate: SampleRate);
+    fn feed(&mut self, at: Offset, event: &Event) {}             // MIDI in, resync (the note envelope)
+    fn hear(&mut self, frames: &[&[f32]]) {}                     // audio in (the follower: a detector)
+    /// The next exact breakpoint after `t`: an automation point, an ADSR stage, a parameter subblock.
+    fn next_corner(&self, t: Frame) -> Option<Frame>;
+    /// theta from `t` to `until` (the next corner or grid point): exact law to a corner, a chord on the grid.
+    fn piece(&mut self, t: Frame, until: Frame) -> Piece;
     /// A bound on `|d theta / dt|` per frame, the declared slowness; `None` if it jumps.
-    fn slew_bound(&self) -> Option<f64>;
+    fn slew_bound(&self) -> Option<f64> { None }
 }
+/// The one sender: walks its clock, emits a piece at every grid point and corner, keeps the capacity
+/// and the owed re-send, the play-start epoch and resync, and forks. Today the follower, the note
+/// envelope and the control lane each hand-write this; they become `SourceNode<Follower>`,
+/// `SourceNode<Adsr>` and `SourceNode<ControlProgram>`.
+pub struct SourceNode<S: ControlSource> { /* source, walk, capacity, owed, epoch */ }
 /// A detector in steady state: `theta` constant in `t` (doc 028 §3.4's `Controlled::at(level)`).
 pub struct Settled<D: SteadyState>(D);
 /// Sorted pieces `(start, length, from, to, law)`, in `Design::Controls`' space. This is
@@ -964,15 +1101,24 @@ impl<S, D> Controlled<S, D> {
   `Scheduled<M, S>` (a schedule of models is a trajectory of controls); doc 026's `Warp` as a
   separate trait (a monotone scalar trajectory, `Trajectory<f64>`; doc 026 and doc 028 note
   it); the idea of sending a matrix as an event (`theta` travels and `design_into` builds the
-  matrix on the audio thread). **Not subsumed on purpose:** `Smoother` and the spatial `AngleSmoother`
-  (row 46) are a causal *filter* on `theta`, a class-1 system on the control signal and not a
-  law with fixed endpoints; it is an alternative realization of "applied follows target" whose
-  step response is the exponential law, and it keeps its place.
+  matrix on the audio thread). **Not subsumed on purpose:** `Smoother` (row 46) is a causal
+  *filter* on `theta`, a class-1 system on the control signal and not a law with fixed endpoints;
+  it keeps its place where a filter is what is meant. The panners' `AngleSmoother` is the exception
+  the spatial lane removes (B1): it was there because the panners solve once per block and ramp
+  across it, which dips the energy between distant directions at long blocks; on the stream grid a
+  direction `Glide` solved every 16 frames along the path does not, and it is block independent.
 - **The sampler.** The structure common to step 2b's blockers 1, 2, 3 and 6 is
   `theta_applied = sampler(theta_target; grid, law, hold-state)`, whose output feeds
-  `design_into`. Today that sampler is an unnamed part of `DesignNode` and `ControlParams`;
-  here the grid is `Cadence`, the law is the piece's, and the hold-state is the source's.
-- **Queries and cases.** `at(t)` equals the realization's frozen response at grid points;
+  `design_into`. **Built (step 2b PR6, #544):** `Params<S: ControlSet>`, one reader for every family:
+  a lane drives a control to its value at the solve frame, else a cell glides from the applied value,
+  each through `LastGood`; sanitizing is the design's, never the reader's.
+- **Who produces, who consumes.** A control source produces pieces on its clock; a lane carries them
+  to a port or an edge gain; an effect samples the port at its solve frames and corners (section 4.5).
+  The follower's detector is `tutti-dsp`'s `EnvelopeFollower`, the one the compressor kernel runs
+  inside its `run`: the same detector, sent as pieces or used in place. The audio-rate sources (the
+  automation lane's audio output, the audio LFO) evaluate the same functions per frame and stay audio
+  sources; the click is a beat-onset source with a one-shot voice, and belongs with the instruments.
+- **Queries and cases.** `Controlled::at(t)` equals the realization's frozen response at grid points;
   `norm_over_theta` is the over guarantee for a limiter ahead of a time-varying mixer; if every
   `at(t)` is an isometry (section 4.2, order 0) the time-varying system preserves energy
   **iff the law is applied in `theta`-space** (entrywise interpolation of an isometry is not
@@ -1193,11 +1339,31 @@ BS.2127 renderer's HOA decoder is AllRAD.
 | Binaural | `Series<Controlled<Quat, ShRotation>, SH-to-ear FIR bank>` | the rotation is order 0 and exact; the bank is an `Lti` with typed ear outputs and needs a multi-input FIR realization |
 | Limiter | class 4 `GainControl` | no frequency response by design |
 
+**Re-tested on amendments B (2026-11-11): how each stage runs.** The table above is the model of each
+stage; this is its runtime on B1 to B4, the DSP only. Every stage is a kernel, an edge gain or a control
+source; nothing is IAMF-specific, and no trait is added.
+
+| Stage | Runs as | Exact? |
+|---|---|---|
+| Parameter blocks (mix gain, demixing, recon gain; subblocks at `parameter_rate`) | `SourceNode<ParamBlocks<T>>`: a corner at each subblock's start (the anchor is data), step, linear and Bezier pieces | step and linear exact; the quadratic Bezier needs `Law::Bezier` (Q28) |
+| Mix gain (in dB, interpolated per sample) | an **edge gain** driven by its lane (doc 013 "Edge gain"; the graph evaluates `Piece::value` per frame): no node | linear in dB is exactly `Law::Exp(k = ln(a1 / a0))` in amplitude (its doc states the geometric case); Bezier in dB needs a piece whose law is in dB (A2's parameter-space law) |
+| Demixing (an index per frame, a saturating counter, no interpolation) | a `Matrix` kernel (model a `Fold`), `Steps::Fixed(0)`; the counter is the source's state | exact, by solving at corners (B4) |
+| Recon gain (per-channel gains, a crossfade window at the frame head) | the same `Matrix` kernel, diagonal, `Steps::Fixed(window)` from the corner | exact |
+| Channel render, scene decode (AllRAD), object pan | the `Matrix` kernel: static `Fold`s (the downmix node is its fixed case); AllRAD the product of the SH decode and the VBAP columns, built once; object pan the VBAP kernel | exact (order 0) |
+| Head rotation | the `Matrix` kernel over a quaternion control (slerp pieces), the SH rotation designed per solve | within the 16-frame chord of a small rotation |
+| Binaural (SH to ears) | the convolver's kernel generalized to an **FIR bank** (a matrix of IRs, inputs by outputs, summed per output): mono, stereo, true stereo and SH-to-binaural are its cases | exact (LTI) |
+| Loudness normalization | a fixed edge gain from the presentation's measured loudness | exact |
+| Output limiter (-1 dBTP) | the dynamics lane's limiter kernel with a **true-peak detector** (BS.1770's 4x oversampling: the filter in `tutti-dsp`, which `tutti-measure`'s loudness then reuses) | to the spec's tolerance |
+
+What it adds: solving at corners (B4), `Steps::Fixed(0)`, one `Matrix` kernel family (downmix, demix, recon
+gain, decode, pan, rotation), the FIR bank, a true-peak detector, and `Law::Bezier` with dB-domain pieces (Q28,
+A2). Each is an instance of an existing piece, built with the lane that first needs it.
+
 **Placement, as planned and not built.** The bitstream is data at layer 2, as `tutti-sf2` is the
 SoundFont file as data (a crate named `tutti-iamf` in the plan); `tutti-codec` grows a packet
 API and a multi-track ISOBMFF layer; demix and recon gain are `Fold`s with a basis; at runtime
-the parameter blocks ride the existing `ControlProgram` and `ControlLaneNode`; loudness stays in
-`tutti-measure`. There is no player crate.
+the parameter blocks are a `ControlSource` sent by `SourceNode` (B3), as the control lane's program
+is; loudness stays in `tutti-measure`. There is no player crate.
 
 **Correctly outside the abstraction.** The codecs; the bitstream and the container; loudness, a
 measurement (class M). **Remaining gaps, neither a design gap:** the packet-level decode API in
@@ -1215,17 +1381,36 @@ that tolerance is Q28.
 `ReverbNode<D>` becomes **`DesignNode<D>`** in `tutti-nodes`. It is the node of
 doc 022 section 5 and "Step 1b as built" with the reverb removed from its names.
 
+As amended by B2 (2026-11-11; `Readouts` is still step 4's, below):
+
 ```rust
-pub trait NodeDesign: Design + 'static
-where Self::Realization: Effect<Self::Model> {
-    type Params: ControlParams<Controls = Self::Controls>;   // was ReverbDesign::Params
-    type Blend: Blend;                                       // NoBlend | DryWet
-    type Readouts: Readouts<Self::Realization>;                   // () | a realization's readout, published
+pub trait NodeDesign: Design<Realization: Effect<<Self as Design>::Model>> + 'static {
+    type Set: ControlSet<Controls = Self::Controls>;   // was `type Params: ControlParams`; one reader, `Params<S>`
+    const PARKS: bool = true;                          // a filter: false (Tail::Unknown, never parks)
+    const SAMPLING: Cadence = Cadence::BLOCK;          // where controls are read; the filters: their CADENCE
+    fn set(&self, initial: &Self::Controls) -> Self::Set;
 }
-pub struct DesignNode<D: NodeDesign> { /* design, realization, params, mode, blend, readouts,
+/// What a family maps between its controls and its ports: the addresses, the defaults, the values.
+pub trait ControlSet: Clone + Debug + Send + 'static {
+    type Controls: Copy + PartialEq + Send;
+    fn addrs(&self) -> &'static [UnitAddr];
+    fn defaults(&self) -> Self::Controls;
+    fn flatten(&self, c: &Self::Controls, out: &mut [f32]);
+    fn assemble(&self, v: &[f32]) -> Self::Controls;
+    fn longest(&self, lowest: &Self::Controls, highest: &Self::Controls) -> Self::Controls;   // default: highest
+    fn moved(&self, applied: &Self::Controls, target: &Self::Controls) -> bool;              // default: !=
+}
+pub struct DesignNode<D: NodeDesign> { /* design, realization, params: Params<D::Set>, mode,
     model: Box<D::Model>, longest: Box<D::Model>, applied, current, ceiling, rate,
     channels, ring, since, silent */ }
 ```
+
+`Blend` leaves (B2): a node's dry/wet is the graph's mix (`Graph::set_mix`, doc 013 M4; the convolver,
+delay, chorus/flanger and phaser went wet-only in #542, the reverbs follow). The `SAMPLING` default stays
+`BLOCK`, not `CADENCE`: the reverbs' `CADENCE` is stream-anchored (the FDN's 32, Freeverb's 1) while they
+read their controls per block, and a `CADENCE` default would redesign Freeverb every frame. The filters set
+it once, on `Filter<K>`'s one `NodeDesign` impl. A `ControlSet` impl is plain data (about 25 lines); a
+macro was weighed and dropped, because what it would generate is the one part worth reading.
 
 ### 5.1 What it carries, and what is optional
 
@@ -1236,7 +1421,7 @@ pub struct DesignNode<D: NodeDesign> { /* design, realization, params, mode, ble
 | The tail report and the `ring` high-water rule | `io.report_tail(tail_of(self.ring))` | **Always**, from `Model: System::tail` |
 | `longest()` for the tail over a block | `ReverbParams::longest` | Only for a family whose model has a controllable tail: `Params::longest` returns `None` by default; section 8.2 makes it a declared direction |
 | Parking: scan for the last non-zero input frame, owe `ring + latency` frames, cut to the frame, `reset`, `Status::Idle` | the body of `process` | **Always**, and uniformly from `System::tail`: a memoryless model owes zero frames; dither's `Unbounded` never parks; a realization that lies about its tail is caught by `assert_honest_tail` (doc 013 step 0b) and the node contract |
-| Dry/wet | `mix: Param<Mix>`, `DryAlign`, the blend loop | **Optional through `D::Blend`**: a reverb, delay or chorus has a wet; a filter, a compressor or a panner has none |
+| Dry/wet | `mix: Param<Mix>`, `DryAlign`, the blend loop | **Leaves under B2** for the graph's mix (doc 013 M4); until the reverbs move, optional through `D::Blend` |
 | A readout | not on `main` | **Optional through `D::Readouts`** |
 | Fork | `fork_fresh`: design clone, `Realization::fresh`, cells detached, `ParamNode` | Always; export forks with preroll (doc 013) |
 | Shape | `Shape::audio(..).with_cost(effort).with_latency(realization.latency()).with_tail(ceiling).with_param_addrs(..)` | Always; `Cost` is a `match` over `Effort` |
@@ -1688,19 +1873,24 @@ Step 1a (PR 1a, renames only) did the rows it marks **done**; step 1b (PR 1b, th
 
 ## 10. Staged plan
 
-Each step is one PR that passes `cargo xtask ci`. Bit-identity rule: where a realization is
-unchanged, record a digest of the node's render of seeded input at the commit
-before the step, and assert it after (the method of doc 022 "Bit-identity of the
-General MIDI send"); a render that calls libm (`tan`, `powf`, `exp10`) uses
-`tutti_nodes::testing::assert_golden`, on the target it was recorded on. No new
-test compares a render against another reference render.
+Each step is one PR that passes `cargo xtask ci`. **Correctness rule (owner, 2026-11-11; it replaces
+the bit-identity rule of the earlier steps):** a step may change a render; no code is kept to
+reproduce a past render, and no digest is recorded only to pin one. Correctness is the external
+spec's (the published filter, crossover, reverb and format definitions), held by analytic and
+invariant tests in CI and cross-checked once, at the end of step 2b, against an external
+implementation (scipy) in a report that is not a CI dependency; our own past render is not an
+oracle. Bit-identity stays only where it is a correctness rule: the parallel render equals the
+serial one, block independence, the contract macros, fork determinism, codec and MIDI bytes. At
+most five golden tripwires remain (section "Step 2b as built"), each through
+`tutti_nodes::testing::assert_golden` on the target it was recorded on. No test compares a render
+against another reference render.
 
 | Step | Content | Moves | Proves it | After |
 |---|---|---|---|---|
 | 0 | This document | | | |
 | 0b | **Split and consolidate the code the survey found (section 9), before step 1.** **The split has landed (#376: `tutti-measure`, layer 3, `check-layout.sh` places it), and so have consolidations 1 (#448), 2 (#451), 3 (#446), 9 (#443) and 10 (#444); the `tutti-dsp` `Error` split (#452) followed as a PR of its own, not a numbered consolidation.** The `tutti-measure` split (layer 3, over `tutti-dsp`; `window`, `geometry`, `grid` and `error` stay), then consolidations 1 (HRIR sinc onto dsp's resampler and `CosineWindow`), 2 (`Smoother`), 3 (delete the width-only folds, callers onto `Fold`), 9 (`LimiterKernel`) and 10 (the phaser sweep mapping and the strip balance law). Each is its own PR, the split first. The split PR updates CLAUDE.md and `scripts/check-layout.sh`; the rest are code moves under existing rules | `tutti-dsp/src/analysis/` to `tutti-measure`; `tutti-nodes` `hrtf/sphere.rs` and `smoothing.rs`; `tutti-types/src/downmix.rs` and its callers; `tutti-nodes` `dynamics/limiter.rs`, `modulation/phaser.rs`, `strip.rs` | The split: the workspace builds and tests with the same tests, unmoved; `check-layout.sh` places the crate. Each consolidation: the moved code's own tests, unchanged (never edited to pass); a digest of the node's render before and after where the output must not change (limiter, strip, phaser; golden-guarded where it calls libm); the HRIR resampler against its analytic anchors (unity DC gain, the response of the windowed sinc), not against the old output | #367 (merged) |
 | 1 | **Landed: 1a (renames) and 1b (the model; see "Step 1b as built" below).** **Generalise on the reverb, which answers as `Lti`. Two PRs: 1a (the renames below marked "renamed in this step", landed as a renames-only PR with the port order pinned first) and 1b (the model).** The neutral `model` module: `Design`'s `type Model`, `blank`, `measure`, engineering `Bounds`/`Range`; the class traits `System` and `Lti` (`Memoryless` and `Autonomous` are not added until they have an implementer); `Realization<M>` and `Effect<M>` (**the code's `Kernel`, on `main` since #367 and reverb only, is renamed `Realization` in this step**, with `Design::kernel` to `Design::realization`, `kernel_contract!` to `realization_contract!` and `KernelCase` to `RealizationCase`; doc 022 and CLAUDE.md are updated in the same PR. `Effect<M>` **keeps its name**: it names the planar block shape (an audio effect), which is engineering, not a term the math conventions use for something else; recommend keeping it), `Ceiling<R>`, `Cadence` (only `Block` used); `Network: System + Lti` (`frequency_response` from the comb sums and the FDN solve over its own lines, `spectral_radius` from `rt60_bound`, `gain_bound` from the L1 bound `peak_bound` already computes, and `hinf_norm` the same figure until a tighter one exists); the `contract` feature with core and `Lti` groups and the reverb-only cases split out, including the three cases the FDN (PR #372) found (section 6.1): **landed**, the **stream clock** for ramps, and the **vacuity** hook; `ReverbNode` to `DesignNode` with `DryWet`, `NoBlend` and `()` as `Readouts`; the renames of section 9. The polysynth's `kernel.rs` is not renamed here: it holds oscillator functions, implements no `Kernel`, and its name is the step 7 PR's to settle | `network/{design,kernel,contract,kernel_contract,queries}.rs` (the files keep their names or are renamed with their types, the PR's choice), `tutti-nodes/src/reverb.rs`, `dry_align.rs` | The GM digest `the_general_midi_send_renders_what_it_always_did` and `retargeting_to_the_general_midi_network_changes_no_coefficient` pass unchanged; every 022 case passes under its new name and still fails its `Defect`; the new `Lti` group passes on Freeverb (response at the comb frequencies, measured decay against `spectral_radius`, linearity and shift invariance) and fails a defective realization; `tests/reverb_node*.rs` pass; port order pinned. The FDN's contract workarounds (fit depth, tone probes, static probes, the 15% RT60 tolerance) exist only because the model has no `frequency_response`; the solve below retires them. Risk named: `Network::frequency_response` for a mixing FDN is a control-side solve per frequency (64x64 at most). If it proves too large, `frequency_response` splits into a sub-trait `Spectral: Lti` and the reverb implements it in 1c | #367 (merged); ideally 1c (PR #372, the FDN) so **two reverb realizations** run the traits; if 1c is not in, the test-only `ToyFdn` is the second |
-| 2 | **2a landed (the models and `Biquad`, and Q21 by measurement; see "Step 2 as built"); 2b open: the `Design`, the realization, `Cadence::every(16)` and the node migration, together, after step 2b0 (or in its PR) and once `DesignNode` has the three pieces 2b0 does not supply (tail and park, the public API, `DryWet`; see "What 2b has to solve").** **Filters (SVF, ladder, LR crossover), with several realizations of one H(z).** `SvfModel`, `LadderModel` (small signal, class 1 by `Linearised`), `CrossoverModel`; `Cadence::every(16)` in the node, **or the same ramp inside the realization at `Cadence::BLOCK`** (decided by measurement in this step, Q21); separate the crossover's design from its state; **a transposed-direct-form-II biquad realization and a lattice realization as second and third realizations of `SvfModel`'s response** (test-support realizations in `tutti-dsp`), so the `Lti` group is run on three realizations of one H(z) and the model is shown to be the equivalence class; `Describe::curve` and `Curve::Magnitude`; `ControlParams::snapshot`. **Consolidation 4 landed with this step**: the SoundFont's RBJ biquad is deleted; the voice takes `SvfModel::biquad()` and runs it in `DirectForm1`, both `tutti-dsp`'s. **Delivers G8** | `filter/*.rs` in `tutti-dsp`; `SvfFilterNode`, `LadderFilterNode`, `CrossoverNode`, `EqBandNode` become `DesignNode` aliases | The `Lti` group on all three realizations (mutants: a 2% cutoff error, a `tanh` in the loop); analytic anchors; ring time from the slowest pole against the measured tail; node digests (golden-guarded, `tan`) before and after, including a swept-cutoff block, which pins that `every(16)` is the old schedule; the segment-end case | 1 |
+| 2 | **2a landed (the models and `Biquad`, and Q21 by measurement; see "Step 2 as built"); 2b: PRs 1 to 6 and 8a landed, PRs 7 to 10 next (see "Step 2b as built, and the lanes after it").** **Filters (SVF, ladder, LR crossover), with several realizations of one H(z).** `SvfModel`, `LadderModel` (small signal, class 1 by `Linearised`), `CrossoverModel`; `Cadence::every(16)` in the node, **or the same ramp inside the realization at `Cadence::BLOCK`** (decided by measurement in this step, Q21); separate the crossover's design from its state; **a transposed-direct-form-II biquad realization and a lattice realization as second and third realizations of `SvfModel`'s response** (test-support realizations in `tutti-dsp`), so the `Lti` group is run on three realizations of one H(z) and the model is shown to be the equivalence class; `Describe::curve` and `Curve::Magnitude`; `ControlParams::snapshot`. **Consolidation 4 landed with this step**: the SoundFont's RBJ biquad is deleted; the voice takes `SvfModel::biquad()` and runs it in `DirectForm1`, both `tutti-dsp`'s. **Delivers G8** | `filter/*.rs` in `tutti-dsp`; `SvfFilterNode`, `LadderFilterNode`, `CrossoverNode`, `EqBandNode` become `DesignNode` aliases | The `Lti` group on all three realizations (mutants: a 2% cutoff error, a `tanh` in the loop); analytic anchors; ring time from the slowest pole against the measured tail; node digests (golden-guarded, `tan`) before and after, including a swept-cutoff block, which pins that `every(16)` is the old schedule; the segment-end case | 1 |
 | 2b0 | **The time grid and the trajectory (amendments A1 and A2 of 2026-11-11), before 2b or in its PR.** (A1, **landed**, the filters' stream anchor is Q27: built for the SVF and the EQ band in step 2b's PR3, the ladder in PR4 and the crossover in PR5) `Cadence { period, anchor }` replaces the enum (`BLOCK`, `every`, `stream`, `block_independent`) and the block-independence case is required iff `block_independent()`; `DesignNode` reading `Design::CADENCE` is 2b's. (A2) The trajectory and its laws (one set: `tutti-curve`'s `Law`, with `PortamentoCurve` and the crossfade smootherstep joined; consolidation 6, home decided by Q25), `ParamSegment` split into a pure piece plus an address and a position (32 bytes kept, no new `EventKind`; **`tutti_curve::Piece` landed** and the modulation program, the shapes, the control lane and `Trajectory` evaluate through it, `Law::interpolate` deleted; **the graph landed too:** `ParamSegment::piece()`, and the param port, `event.rs`, the reference interpreter and the edge gain's `ramp_at` evaluate through `Piece::value`), `ControlSource` and `Controlled<S, D>` in `tutti-dsp`'s `model`, and `tutti_curve::Trajectory` (built: breakpoints in `Beat`, f32) generalised in unit and time domain, not a second type (doc 028 §3.4's `Controlled` is this type, built once: its `Settled` source lands with the dynamic EQ, doc 028 C1). `ControlParams` reads the *applied* controls through the source. `Ltv`, `Variation` and `Scheduled` are not built | `tutti-dsp/src/model/cadence.rs` and a new source module; the law's home, `tutti-curve` (Q25); `tutti-graph/src/event.rs`, `tutti-modulation/src/shape.rs`, `tutti-polysynth/src/portamento.rs` | The `Controlled` group of section 6.2 with its mutants; the existing tests of each law moved unchanged, and digests of segment, LFO and portamento renders before and after consolidation 6; `filter_digests.rs` unchanged through PR2 (`every(16)` at the block anchor), its SVF, bell and EQ digests re-recorded once in PR3 (the stream anchor) and its held digests never moved; a trajectory crossing a block edge against the same inside one block | 2a; consolidation 6 (Q25 decided, partly landed) |
 | 3 | **Composition, first consumer the parametric EQ.** `Series`, `Parallel`, `SeriesN` and their realizations (two realizations in order; two summed), with the algebra as free functions over `Lti` parts that `Network`'s stage fold also uses; a parametric EQ design whose model is `SeriesN<SvfModel, N>`; the `Series` tail bound proof. Reverb step 3b (early reflections as `Parallel<Taps, Network>`) is then unblocked and is doc 022's own PR | `tutti-dsp` `model` module, a new EQ design in `filter/` | The algebra laws as unit tests (response of `Series` is the product of the parts' responses at random points; `Parallel` aligns latency; stability preserved); the composite passes the unchanged `Lti` group; the tail bound against the measured tail on random pairs; mutants: sum the latencies in `Parallel`, drop the alignment | 2 (and the reverb's 1b for the 3b consumer) |
 | 4 | **Dynamics: compressor, gate, limiter, brickwall (class 3 and 4).** `SteadyState`, `Wiener`, `Hammerstein`, `GainControl` (over the memoryless `Memoryless` for the brickwall and the gain maps), `Readout`, `Readouts` publishing through `level_cell`, `Describe::readout`, `Curve::Transfer`. Decide `Driven<M>` against the code (Q3). Gate hold and the limiter's windowed minimum stay inherent (they are class E and a nonlinear operator). **Delivers G9** | `dynamics/*.rs`; the dynamics nodes | The class-4 settled-level sweep and step response (mutants: threshold +1 dB, ratio off, knee ignored); the readout equals the measured gain; node digests; the `multiband` readout test unchanged | 3 (`Wiener`), 2 (the `Describe` plumbing) |
@@ -1913,6 +2103,53 @@ implemented by a node (`tutti-nodes`, layer 4) and read by `tutti-session` (laye
 does not say which; `DesignNode::curve()` and `ControlParams::snapshot` have no filter node to serve until 2b. The
 model side is in place (`SvfModel::frequency_response`, exact), so the curve is the node's one `design` and
 `Lti::magnitude`.
+
+### Step 2b as built, and the lanes after it
+
+Step 2b ran as one lane of PRs; amendments B (Summary) re-cut what follows it.
+
+| PR | What | State |
+|---|---|---|
+| 1 | Q9: the filters' cell accessors and setters go; the `ParamSet` is the one route | #519 |
+| 2 | the `DesignNode` seam (`At`, `moved`, `PARKS`, `SAMPLING`, `Cadence::steps`); SVF and EQ band as `DesignNode`s | #522 |
+| 3 | Q27: SVF and EQ band on the stream grid | #524 |
+| 4 | the ladder on the stream grid; its drive joins the grid | #538 |
+| 5 | the crossover on the stream grid; one `FilterSizes` | #539 |
+| 6 | one control reader, `Params<S: ControlSet>`; the readers' floors and clamps go to the models | #544 |
+| 8a | the convolver, delay, chorus/flanger and phaser wet only; their blend is the graph's mix | #542 |
+| 7 | **B1 and B2:** `Glide`, `Approach`, `Kernel`, `Realized<K>`, `ChannelKernel`/`PerChannel`, `Filter<K>`; the SVF, ladder, crossover, Freeverb and FDN onto them (Freeverb gains a glide); `ControlParams` deleted, `NodeDesign` as in section 5; `Realization: Clone` with a default `fresh`; `tutti_dsp::Ramp` and `Slew` replaced by `Glide` | next |
+| 8 | the second paths go: the multiband onto `Realized<PerChannel<Crossover>>` (`Crossover::split_block` and its helpers deleted), the phaser onto the stream grid (`Cadence::every`, `Anchor::Block` and `COEFF_CADENCE` deleted) | |
+| 9 | the reverbs' own dry/wet goes; `Blend`, `DryWet`, `NoBlend` leave `NodeDesign`. HRTF keeps its centre-fold blend (its dry is not the input) | |
+| 10 | tests from the spec replace the past-render digests; at most five tripwires stay (the SVF lane, the limiter, VBAP stereo, the reverb GM render, the SoundFont voice); the scipy validation report | |
+
+Proof for PR7: the contract macros on every kernel, block independence, and the SVF and ladder digests
+unmoved (the generic runs the same step and glide as the code it replaces, so a moved digest is a defect
+in the generic); a new contract case that a glide's midpoint between two reachable coefficient sets is
+stable (a biquad's stable region in `(a1, a2)` is a triangle, so convex), with a mutation (lerp past 1).
+The FDN may move in the last bits; Freeverb moves where a control moves (its new glide), and both are
+listed in the PR.
+
+**The lanes after step 2b** (each moves a family group onto `Realized<K>`, deletes its `Ramp` uses and
+becomes block independent; each builds the addition it is the first user of):
+
+1. **Dynamics** (step 4's content, re-cut): compressor and gate as frame kernels with a side-chain **bus**
+   (`Design::channels` declares buses; doc 013 B1, #541), the limiter (its lookahead ring sized from
+   `Bounds`), the multiband (a kernel of kernels: the crossover and a compressor per band; solo and bypass
+   glide). Per-frame lanes as `run` inputs (Q3, section 4.5).
+2. **Delay and modulation** (step 5's): the delay (lines from `Bounds`, its time a rate-limited `Glide`),
+   chorus/flanger and the phaser (their LFO is state inside `run`); the waveshaper as a stateless
+   `ChannelKernel`.
+3. **Spatial and strip** (step 7's panners, after 7a): VBAP (its gains glide on the grid; the angle
+   one-pole becomes a direction glide, a change of sound), HRTF (`STEP = 128`, **`Crossfade`**), the strip's
+   gains; the `Matrix` kernel (the downmix is its fixed case).
+4. **Convolver** (step 6's): a gain glide, the IR swapped by `Crossfade` (a live IR swap, which needs a new
+   node today), and the **FIR bank** generalization.
+5. **Control sources** (B3, independent of 1 to 4): `ControlSource`, `SourceNode`, `Anchor::Play`; the
+   follower, the note envelope and the control lane onto them; solve-at-corners in `DesignNode` (B4).
+
+Outside this structure, noted for the instruments' own lane: the polysynth's control step is anchored on
+event boundaries, so its render depends on how a block is split; the SoundFont places MIDI to an 8-frame
+chunk.
 
 **Why this order.** Step 0b goes before step 1 because it moves code the later steps build on: the analysers leave `tutti-dsp` before the class traits arrive in it, so the new `model` module lands in a crate that holds processors only, and the smoother, `LimiterKernel` and the balance law are in dsp before steps 4 and 5 write their models. Step 1 is the only step that changes a shipped API, so it goes
 first and on the family whose behaviour is pinned by a digest; the reverb answers

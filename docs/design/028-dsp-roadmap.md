@@ -142,6 +142,13 @@ law (§3.4; doc 024 §4.5a); doc 026's `Warp` is a monotone `Trajectory<f64>` an
 additive and land in the PR of their first consumer (§9 D10); P3 reverses a
 recorded recommendation of doc 024 (§9 D10).
 
+Doc 024 was amended again on 2026-11-11 (amendments B, its §4.3a, §4.5, §4.5a, §4.10, §5 and §10):
+every effect's realization is one `Realized<K>` over a family `Kernel`, the control producers are one
+`ControlSource` sent by one `SourceNode`, and the families this document schedules move onto them in
+the lanes of doc 024 §10 ("Step 2b as built, and the lanes after it"). The dynamic EQ's (C1) detector
+is the `EnvelopeFollower` the compressor kernel and the follower source share; ambisonic decode and
+rotation (F1) are the `Matrix` kernel; the binaural decode is the convolver's FIR bank.
+
 **P1. The measured onset, added beside the alignment delay.** `System::latency`
 stays what the graph reads: the one number PDC aligns by, that a node's `Shape`
 declares, and that `latency_plan`, plugin latency and CLAUDE.md ("report only

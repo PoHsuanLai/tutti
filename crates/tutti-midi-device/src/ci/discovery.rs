@@ -1,12 +1,15 @@
-//! MIDI-CI Discovery, Invalidate MUID, and NAK: the bodies and sub-IDs (M2-101 §5.5, §5.9, §5.11).
+//! MIDI-CI Discovery and its reply: the body, the sub-IDs of every message the
+//! codec models, and the two range-checked fields (M2-101 §5.5 and §5.6).
 //!
 //! Discovery is the opening handshake: an initiator broadcasts its identity and
 //! the CI categories it supports, and each responder replies in kind. The reply
 //! shares the Discovery *body* format, so [`DiscoveryData`] serves both.
 
+use std::fmt;
 use std::vec::Vec;
 
 use bitflags::bitflags;
+use tutti_ump::{FunctionBlockId, U7};
 
 /// Sub-ID#2: Discovery message (M2-101 §5.5).
 pub const SUB_ID2_DISCOVERY: u8 = 0x70;
@@ -14,6 +17,8 @@ pub const SUB_ID2_DISCOVERY: u8 = 0x70;
 pub const SUB_ID2_DISCOVERY_REPLY: u8 = 0x71;
 /// Sub-ID#2: Invalidate MUID message (M2-101 §5.9).
 pub const SUB_ID2_INVALIDATE_MUID: u8 = 0x7E;
+/// Sub-ID#2: ACK message (M2-101 §5.10).
+pub const SUB_ID2_ACK: u8 = 0x7D;
 /// Sub-ID#2: NAK message (M2-101 §5.11).
 pub const SUB_ID2_NAK: u8 = 0x7F;
 
@@ -33,11 +38,95 @@ bitflags! {
     }
 }
 
-/// The "no Function Block" value for [`DiscoveryData::function_block`]
-/// (M2-101 §5.6.2: "If the MIDI-CI Device is not associated with a Function
-/// Block (for example, is connected by a MIDI 1.0 byte stream), then set the
-/// value to 0x7F").
-pub const NO_FUNCTION_BLOCK: u8 = 0x7F;
+/// The wire value of "no Function Block", `0x7F` (M2-101 §5.6.2: "If the
+/// MIDI-CI Device is not associated with a Function Block (for example, is
+/// connected by a MIDI 1.0 byte stream), then set the value to 0x7F (no
+/// Function Block)"). [`DiscoveryData::function_block`] is `None` for it.
+const NO_FUNCTION_BLOCK_WIRE: u8 = 0x7F;
+
+/// The Receivable Maximum SysEx Message Size (M2-101 §5.5.3): 28 bits, and at
+/// least 128.
+///
+/// "All MIDI-CI Devices shall support System Exclusive message lengths of at
+/// least 128 bytes. The allowed values in the Receivable Maximum SysEx Message
+/// Size are 128 or greater." A device that can initiate Profile Configuration
+/// or Property Exchange "shall support message lengths of at least 512 bytes":
+/// whether a device is one is the caller's to say, so that floor is
+/// [`INITIATOR_MIN`](Self::INITIATOR_MIN) and not checked here.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(try_from = "u32", into = "u32"))]
+pub struct MaxSysexSize(u32);
+
+impl MaxSysexSize {
+    /// The smallest size, 128 bytes (§5.5.3).
+    pub const MIN: u32 = 128;
+    /// The smallest size of a device that initiates Profile Configuration or
+    /// Property Exchange transactions, 512 bytes (§5.5.3).
+    pub const INITIATOR_MIN: u32 = 512;
+    /// The largest, 28 bits: four 7-bit bytes.
+    pub const MAX: u32 = 0x0FFF_FFFF;
+
+    /// The size, or `None` below 128 bytes or past 28 bits.
+    #[must_use]
+    pub const fn new(raw: u32) -> Option<Self> {
+        if raw >= Self::MIN && raw <= Self::MAX {
+            Some(Self(raw))
+        } else {
+            None
+        }
+    }
+
+    /// The size for a literal or a constant.
+    ///
+    /// # Panics
+    ///
+    /// Below 128 or past 28 bits; in a `const` that is a compile error.
+    #[must_use]
+    #[track_caller]
+    pub const fn of(raw: u32) -> Self {
+        match Self::new(raw) {
+            Some(size) => size,
+            None => panic!("a receivable maximum SysEx size is 128 to 2^28 - 1"),
+        }
+    }
+
+    /// The size in bytes.
+    #[must_use]
+    pub const fn get(self) -> u32 {
+        self.0
+    }
+}
+
+/// A raw value that is not a Receivable Maximum SysEx Message Size.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct NotASysexSize(pub u32);
+
+impl fmt::Display for NotASysexSize {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "{} is not a receivable SysEx size (128 to 2^28 - 1)",
+            self.0
+        )
+    }
+}
+
+impl std::error::Error for NotASysexSize {}
+
+impl TryFrom<u32> for MaxSysexSize {
+    type Error = NotASysexSize;
+
+    fn try_from(raw: u32) -> Result<Self, NotASysexSize> {
+        Self::new(raw).ok_or(NotASysexSize(raw))
+    }
+}
+
+impl From<MaxSysexSize> for u32 {
+    fn from(size: MaxSysexSize) -> u32 {
+        size.0
+    }
+}
 
 /// The body of a Discovery / Discovery Reply message (M2-101 Tables 6 and 8):
 /// the sending device's SysEx identity, the CI categories it supports, its
@@ -65,23 +154,24 @@ pub struct DiscoveryData {
     pub software_revision: [u8; 4],
     /// CI categories this device supports.
     pub categories: CiCategories,
-    /// Maximum SysEx message size the device can receive (28-bit).
-    pub max_sysex_size: u32,
+    /// Maximum SysEx message size the device can receive (§5.5.3).
+    pub max_sysex_size: MaxSysexSize,
     /// **Output Path ID** (Message Version 2). On a Discovery this is the
     /// initiator's own path id — §5.5.4: "Initiators that have multiple MIDI Out
     /// connections should use a unique Output Path ID for each connection." On a
     /// reply it echoes the id from the Discovery that prompted it, which §5.6.1
     /// makes mandatory: "The Reply to Discovery shall return the same Output
     /// Path ID provided in the originating Discovery Message."
-    pub output_path_id: u8,
+    pub output_path_id: U7,
     /// **Function Block** this responder represents (Message Version 2, *reply
-    /// only*), or [`NO_FUNCTION_BLOCK`] if it represents none.
+    /// only*), or `None` (wire `0x7F`) if it represents none. A number the
+    /// spec does not give a Function Block (32 to 126) is malformed.
     ///
     /// §5.6.2: "The Reply to Discovery shall declare the number of the Function
     /// Block that this Responder represents. This allows an Initiator to tie a
     /// Function Block to a MIDI-CI Device." Ignored when encoding a Discovery,
     /// which has no such field.
-    pub function_block: u8,
+    pub function_block: Option<FunctionBlockId>,
 }
 
 impl DiscoveryData {
@@ -98,7 +188,7 @@ impl DiscoveryData {
     pub const REPLY_LEN: usize = Self::BODY_LEN + 2;
 
     /// A body with the Message-Version-2 fields at their neutral values: path
-    /// id 0 and [`NO_FUNCTION_BLOCK`]. Use the field setters for a device that
+    /// id 0 and no Function Block. Use the field setters for a device that
     /// has several MIDI Out connections or sits behind a Function Block.
     #[must_use]
     pub fn new(
@@ -107,7 +197,7 @@ impl DiscoveryData {
         family_model: u16,
         software_revision: [u8; 4],
         categories: CiCategories,
-        max_sysex_size: u32,
+        max_sysex_size: MaxSysexSize,
     ) -> Self {
         Self {
             manufacturer,
@@ -116,8 +206,8 @@ impl DiscoveryData {
             software_revision,
             categories,
             max_sysex_size,
-            output_path_id: 0,
-            function_block: NO_FUNCTION_BLOCK,
+            output_path_id: U7::default(),
+            function_block: None,
         }
     }
 
@@ -133,158 +223,57 @@ impl DiscoveryData {
         out.extend_from_slice(&self.software_revision);
         out.push(self.categories.bits());
         // 28-bit max size as four little-endian 7-bit bytes.
-        out.push((self.max_sysex_size & 0x7F) as u8);
-        out.push(((self.max_sysex_size >> 7) & 0x7F) as u8);
-        out.push(((self.max_sysex_size >> 14) & 0x7F) as u8);
-        out.push(((self.max_sysex_size >> 21) & 0x7F) as u8);
-        out.push(self.output_path_id & 0x7F);
+        let size = self.max_sysex_size.get();
+        out.push((size & 0x7F) as u8);
+        out.push(((size >> 7) & 0x7F) as u8);
+        out.push(((size >> 14) & 0x7F) as u8);
+        out.push(((size >> 21) & 0x7F) as u8);
+        out.push(self.output_path_id.get());
         if is_reply {
-            out.push(self.function_block & 0x7F);
+            out.push(
+                self.function_block
+                    .map_or(NO_FUNCTION_BLOCK_WIRE, FunctionBlockId::get),
+            );
         }
     }
 
-    /// Decode a Discovery or Reply body.
+    /// Decode a Discovery or Reply body, or `None` when it is malformed: shorter
+    /// than the common fields, a byte with its top bit set, a Receivable
+    /// Maximum SysEx Message Size under 128 (§5.5.3), or a Function Block that
+    /// is neither 0 to 31 nor `0x7F` (§5.6.2).
     ///
     /// The Version-2 trailer is read when present and defaulted when absent, so
     /// a Message Format Version 1 peer still decodes: §5.3 requires a receiver
     /// to "process the fields, values, and bits defined in the received version"
-    /// when it is lower than its own. A missing Function Block reads as
-    /// [`NO_FUNCTION_BLOCK`] rather than block 0, which would be a lie.
+    /// when it is lower than its own. A missing Function Block reads as `None`
+    /// rather than block 0, which would be a lie.
     pub(crate) fn decode_body(is_reply: bool, b: &[u8]) -> Option<DiscoveryData> {
-        if b.len() < Self::BODY_LEN {
+        if b.len() < Self::BODY_LEN || b[..Self::BODY_LEN].iter().any(|&v| v & 0x80 != 0) {
             return None;
         }
+        let max_sysex_size = MaxSysexSize::new(
+            u32::from(b[12])
+                | (u32::from(b[13]) << 7)
+                | (u32::from(b[14]) << 14)
+                | (u32::from(b[15]) << 21),
+        )?;
+        let output_path_id = match b.get(Self::BODY_LEN) {
+            Some(&id) => U7::new(id)?,
+            None => U7::default(),
+        };
+        let function_block = match (is_reply, b.get(Self::BODY_LEN + 1)) {
+            (true, Some(&NO_FUNCTION_BLOCK_WIRE)) | (false, _) | (true, None) => None,
+            (true, Some(&n)) => Some(FunctionBlockId::new(n)?),
+        };
         Some(DiscoveryData {
             manufacturer: [b[0], b[1], b[2]],
-            family: (b[3] as u16 & 0x7F) | ((b[4] as u16 & 0x7F) << 7),
-            family_model: (b[5] as u16 & 0x7F) | ((b[6] as u16 & 0x7F) << 7),
+            family: u16::from(b[3]) | (u16::from(b[4]) << 7),
+            family_model: u16::from(b[5]) | (u16::from(b[6]) << 7),
             software_revision: [b[7], b[8], b[9], b[10]],
             categories: CiCategories::from_bits_truncate(b[11]),
-            max_sysex_size: (b[12] as u32 & 0x7F)
-                | ((b[13] as u32 & 0x7F) << 7)
-                | ((b[14] as u32 & 0x7F) << 14)
-                | ((b[15] as u32 & 0x7F) << 21),
-            output_path_id: b.get(Self::BODY_LEN).copied().unwrap_or(0),
-            function_block: if is_reply {
-                b.get(Self::BODY_LEN + 1)
-                    .copied()
-                    .unwrap_or(NO_FUNCTION_BLOCK)
-            } else {
-                NO_FUNCTION_BLOCK
-            },
-        })
-    }
-}
-
-/// The body of a NAK message (M2-101 Table 15).
-///
-/// Everything below `nak_sub_id2` was added in Message Format Version 2. Older
-/// devices sent an empty NAK, so decoding defaults each absent field.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct Nak {
-    /// "Original Transaction Sub-ID#2 Classification" — the sub-ID#2 of the
-    /// message being NAK'd (0 if unknown). §5.11.1: it "is used, along with
-    /// other fields, to link the NAK message with the original Transaction".
-    pub nak_sub_id2: u8,
-    /// Status code for *why* (Table 16; 0 = generic).
-    pub status_code: u8,
-    /// Status data — the secondary detail some Table 16 codes require, 0 when
-    /// "no additional information is needed".
-    pub status_data: u8,
-    /// "NAK details for each Sub ID Classification": 5 bytes whose meaning
-    /// depends on `nak_sub_id2`. Zeroed when a transaction has no detail to add.
-    pub details: [u8; 5],
-    /// Human-readable reason, sent as a length-prefixed UTF-8 run ("2 bytes
-    /// Message Length (ml) (LSB first)" then "ml bytes Message Text"). Empty for
-    /// no text.
-    pub message: String,
-}
-
-impl Nak {
-    /// Generic failure, no further detail (M2-101 Table 16).
-    pub const STATUS_NAK: u8 = 0x00;
-    /// "MIDI-CI message not supported" — the message is not implemented at all.
-    pub const STATUS_MESSAGE_NOT_SUPPORTED: u8 = 0x01;
-    /// "MIDI-CI version not supported".
-    pub const STATUS_VERSION_NOT_SUPPORTED: u8 = 0x02;
-    /// "Channel/Group/Function Block Not in use".
-    pub const STATUS_NOT_IN_USE: u8 = 0x03;
-    /// "Profile not supported on the requested Channel, Group, or Function Block".
-    pub const STATUS_PROFILE_NOT_SUPPORTED: u8 = 0x04;
-    /// "Error occurred, please retry" — unlike the 0x00-0x1F codes, this one
-    /// tells the initiator a retry is worthwhile.
-    pub const STATUS_RETRY: u8 = 0x40;
-    /// "Message was malformed".
-    pub const STATUS_MALFORMED: u8 = 0x41;
-    /// "Timeout has occurred".
-    pub const STATUS_TIMEOUT: u8 = 0x42;
-
-    /// A NAK for `nak_sub_id2` with a specific Table 16 status code.
-    ///
-    /// Prefer a precise code over [`Self::STATUS_NAK`]: Table 16 splits
-    /// "Do Not Retry" (0x00-0x1F) from "Retry is recommended" (0x40-0x5F), and a
-    /// generic 0x00 tells the peer only that something went wrong.
-    #[must_use]
-    pub fn new(nak_sub_id2: u8, status_code: u8) -> Self {
-        Self {
-            nak_sub_id2,
-            status_code,
-            status_data: 0,
-            details: [0; 5],
-            message: String::new(),
-        }
-    }
-
-    /// Attach a human-readable reason (Table 15's Message Text).
-    #[must_use]
-    pub fn with_message(mut self, message: impl Into<String>) -> Self {
-        self.message = message.into();
-        self
-    }
-
-    /// Attach the 5-byte per-classification detail block.
-    #[must_use]
-    pub fn with_details(mut self, details: [u8; 5]) -> Self {
-        self.details = details;
-        self
-    }
-
-    pub(crate) fn encode_body(&self, out: &mut Vec<u8>) {
-        out.push(self.nak_sub_id2);
-        out.push(self.status_code);
-        out.push(self.status_data);
-        out.extend_from_slice(&self.details);
-        // Message Text is 7-bit SysEx data, so only ASCII survives; anything
-        // else is dropped rather than truncated mid-character.
-        let text: Vec<u8> = self
-            .message
-            .bytes()
-            .filter(|b| b.is_ascii() && *b < 0x80)
-            .collect();
-        let len = text.len().min(0x3FFF) as u16;
-        out.push((len & 0x7F) as u8);
-        out.push(((len >> 7) & 0x7F) as u8);
-        out.extend_from_slice(&text[..len as usize]);
-    }
-
-    pub(crate) fn decode_body(b: &[u8]) -> Option<Nak> {
-        // Every field past `nak_sub_id2` is Version-2, and a pre-1.2 peer sends
-        // an empty NAK — so each is defaulted rather than required.
-        let mut details = [0u8; 5];
-        for (i, slot) in details.iter_mut().enumerate() {
-            *slot = b.get(3 + i).copied().unwrap_or(0);
-        }
-        let len = match (b.get(8), b.get(9)) {
-            (Some(lo), Some(hi)) => ((*lo as usize) & 0x7F) | (((*hi as usize) & 0x7F) << 7),
-            _ => 0,
-        };
-        let text = b.get(10..10 + len).unwrap_or(&[]);
-        Some(Nak {
-            nak_sub_id2: b.first().copied().unwrap_or(0),
-            status_code: b.get(1).copied().unwrap_or(0),
-            status_data: b.get(2).copied().unwrap_or(0),
-            details,
-            message: String::from_utf8_lossy(text).into_owned(),
+            max_sysex_size,
+            output_path_id,
+            function_block,
         })
     }
 }

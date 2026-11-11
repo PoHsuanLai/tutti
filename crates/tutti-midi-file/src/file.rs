@@ -212,6 +212,15 @@ pub struct Track {
     /// start. Their ticks are the header's own clock, counted from the DCTPQ;
     /// the leading Set Profile On messages are at 0. Empty for an SMF.
     pub header: Vec<(Tick, FileEvent)>,
+    /// Where the header ends, on the header's clock: the tick of Start of Clip,
+    /// which is the last header message's tick plus the Delta Clockstamp before
+    /// Start of Clip. M2-116 section 6.1: "the cumulative values of all Delta
+    /// Clockstamp up to and including the Delta Clockstamp for the Start of
+    /// Clip Message determines the total length of time allocated to the Clip
+    /// Configuration Header", which a receiver may need to configure itself.
+    /// Not before the last header message. `Tick(0)` for an SMF, and for a
+    /// header that asks for no time after its last message.
+    pub header_end: Tick,
     /// The events, in file order. Their ticks do not decrease.
     pub events: Vec<(Tick, FileEvent)>,
     /// Where the track ends: an SMF's End of Track, a Clip File's End of
@@ -225,6 +234,7 @@ impl Track {
         let end = events.last().map_or(Tick(0), |&(tick, _)| tick);
         Self {
             header: Vec::new(),
+            header_end: Tick(0),
             events,
             end,
         }
@@ -418,12 +428,15 @@ impl MidiFile {
     /// # Errors
     ///
     /// [`Error::InvalidConfig`] if the division is zero, the events or the
-    /// header's are out of order or the events past the track's end, two are
-    /// further apart than a `u32`, or an event is not a packet (`SysEx`,
-    /// `Escape` and `Meta` are SMF's) or is the file's own structure (a Delta
-    /// Clockstamp, the DCTPQ, a Null, Start or End of Clip);
+    /// header's are out of order or the events past the track's end, the header
+    /// ends before its last message, two are further apart than a `u32`, or an
+    /// event is not a packet (`SysEx`, `Escape` and `Meta` are SMF's), is a
+    /// MIDI-CI Property Exchange message (sections 6.4 and 7.2) or is the
+    /// file's own structure (a Delta Clockstamp, the DCTPQ, a Null, Start or End
+    /// of Clip);
     /// [`Error::Clip`] if the header breaks a rule of sections 6.1 to 6.1.2
-    /// (a second Set Tempo or Set Time Signature, one misplaced);
+    /// (a second Set Tempo or Set Time Signature, one misplaced or not at delta
+    /// 0);
     /// [`Error::Tempo`] if the Set Tempo messages do not make a
     /// [`TempoMap`].
     pub fn clip(ticks_per_quarter: u16, track: Track) -> Result<Self> {
@@ -455,7 +468,7 @@ impl MidiFile {
             Container::Clip => u64::from(u32::MAX),
         };
         for (i, track) in tracks.iter().enumerate() {
-            if !track.header.is_empty() {
+            if !track.header.is_empty() || track.header_end != Tick(0) {
                 if container != Container::Clip {
                     return invalid(format!("track {i}: an SMF has no configuration header"));
                 }
@@ -479,6 +492,12 @@ impl MidiFile {
                     }
                 }
                 clip_file::header_rules(&packets, clip_file::leading_profile_len(&packets))?;
+                if track.header_end < at || track.header_end.0 - at.0 > max_gap {
+                    return invalid(format!(
+                        "header: ends at tick {} before its last message or too far on",
+                        track.header_end.0
+                    ));
+                }
             }
             let mut at = Tick(0);
             for (tick, event) in &track.events {
@@ -564,6 +583,7 @@ impl MidiFile {
                 let track = Track {
                     header: events(clip.header),
                     events: events(clip.events),
+                    header_end: Tick(clip.header_end),
                     end: Tick(clip.end),
                 };
                 Self::build(Container::Clip, clip.ticks_per_quarter, vec![track])
@@ -613,6 +633,7 @@ impl MidiFile {
                 Ok(clip_file::write(
                     self.ticks_per_quarter,
                     &packets(&track.header),
+                    track.header_end.0,
                     &packets(&track.events),
                     track.end.0,
                 ))
@@ -751,6 +772,12 @@ fn refuses(container: Container, event: &FileEvent) -> Option<String> {
                 tutti_ump::Stream::StartOfClip | tutti_ump::Stream::EndOfClip,
             )),
         ) => Some("Start and End of Clip are the Clip File's own structure".into()),
+        (Container::Clip, FileEvent::Message(message)) if clip_file::property_exchange(message) => {
+            Some(
+                "a Clip File holds no Property Exchange message (M2-116 sections 6.4 and 7.2)"
+                    .into(),
+            )
+        }
         (Container::Clip, _) => None,
     }
 }

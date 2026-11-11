@@ -1,7 +1,7 @@
 //! The pure core of MIDI device detection (design 017 §5), and the MIDI-CI codec.
 //!
 //! Detection first. The CI codec ([`CiMessage`], [`Muid`], [`DiscoveryData`])
-//! turns Discovery, Invalidate MUID and NAK into SysEx payload bytes and back;
+//! turns Discovery, Invalidate MUID, ACK and NAK into SysEx payload bytes and back;
 //! it holds no state and no transport.
 //!
 //! A backend reports what the OS says as an [`OsChange`]; [`DeviceTable::apply`]
@@ -63,9 +63,10 @@ mod name;
 mod table;
 
 pub use ci::{
-    CI_DEVICE_ID_FUNCTION_BLOCK, CI_SUB_ID_1, CI_UNIVERSAL_SYSEX, CI_VERSION, CiCategories,
-    CiHeader, CiMessage, Destination, DiscoveryData, Muid, NO_FUNCTION_BLOCK, Nak, NotAMuid,
-    SUB_ID2_DISCOVERY, SUB_ID2_DISCOVERY_REPLY, SUB_ID2_INVALIDATE_MUID, SUB_ID2_NAK,
+    Ack, CI_SUB_ID_1, CI_UNIVERSAL_SYSEX, CI_VERSION, CiCategories, CiDeviceId, CiHeader,
+    CiMessage, CiVersion, Decoded, Destination, DiscoveryData, MaxSysexSize, MessageText, Muid,
+    Nak, NotADeviceId, NotAMuid, NotASysexSize, NotAVersion, SUB_ID2_ACK, SUB_ID2_DISCOVERY,
+    SUB_ID2_DISCOVERY_REPLY, SUB_ID2_INVALIDATE_MUID, SUB_ID2_NAK, Unread, UnreadReason,
 };
 
 pub use connection::{Action, Connection, Ending, MAX_ATTEMPTS, NAME_GRACE, STEP_TIMEOUT};

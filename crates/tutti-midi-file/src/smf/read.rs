@@ -343,6 +343,7 @@ fn track(body: &[u8]) -> Res<Track> {
     };
     Ok(Track {
         header: Vec::new(),
+        header_end: Tick(0),
         events,
         end,
     })

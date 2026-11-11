@@ -5,12 +5,24 @@
 use std::fmt;
 
 use tutti_ump::Form;
+use unicode_normalization::{UnicodeNormalization, is_nfc};
 
 /// A UTF-8 name of at most `N` bytes with no NUL, held inline.
 ///
 /// A NUL ends a name on the wire (M2-104 §7.1.4: unused bytes of the last
 /// packet are `0x00`), so a name cannot contain one. [`EndpointName`] and
 /// [`BlockName`] are the two sizes.
+///
+/// M2-104 §1.8, "Unicode in Message Fields": "MIDI messages only use normalized
+/// UTF-8 encoded Unicode characters, following the NFC (Normalization Form C)
+/// standard" and "Unicode text in MIDI messages shall not include a Byte Order
+/// Mark." So a name is always held in NFC and never starts with U+FEFF:
+/// [`new`](Self::new) composes the text it is given and refuses a BOM, and a
+/// name a peer sent is read the same way (a BOM is refused, text that is not
+/// NFC is composed: §1.8 states a rule for what is sent and none for a
+/// receiver, so a receiver that composes keeps the name it displays and compares
+/// one thing, where one that refuses would lose a name a sender spelled
+/// loosely). The length bound is on the composed bytes.
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Name<const N: usize> {
     bytes: [u8; N],
@@ -23,23 +35,38 @@ pub type EndpointName = Name<98>;
 
 /// A Function Block Name: at most 91 bytes.
 ///
-/// M2-104 §7.1.9 says 98, as for an Endpoint Name, but a Function Block Name
-/// packet carries 13 bytes, and a Start, five Continue and an End packet hold
-/// 7 x 13 = 91. 91 is what fits the message the spec describes.
+/// M2-104 §7.1.9: "The name shall not be any longer than 91 bytes in size,
+/// either in a Complete message (if less than 14 bytes) ... or comprised of a
+/// Start, up to five optional Continue messages and an End message." A Function
+/// Block Name packet carries 13 bytes, and 7 x 13 = 91, one less than an
+/// Endpoint Name's 98 (7 x 14).
 pub type BlockName = Name<91>;
 
 impl<const N: usize> Name<N> {
-    /// The name, or `None` when it is longer than `N` bytes or holds a NUL.
+    /// The name, composed to NFC, or `None` when the composed text is longer
+    /// than `N` bytes, holds a NUL or starts with a Byte Order Mark (§1.8).
     #[must_use]
     pub fn new(text: &str) -> Option<Self> {
         Self::from_bytes(text.as_bytes())
     }
 
     pub(crate) fn from_bytes(bytes: &[u8]) -> Option<Self> {
+        let text = std::str::from_utf8(bytes).ok()?;
+        if text.starts_with('\u{FEFF}') {
+            return None;
+        }
+        // Composed only when it is not NFC already, so the common name does not
+        // allocate.
+        let composed;
+        let bytes = if is_nfc(text) {
+            bytes
+        } else {
+            composed = text.nfc().collect::<String>();
+            composed.as_bytes()
+        };
         if bytes.len() > N || bytes.contains(&0) {
             return None;
         }
-        std::str::from_utf8(bytes).ok()?;
         let mut held = [0; N];
         held[..bytes.len()].copy_from_slice(bytes);
         Some(Self {

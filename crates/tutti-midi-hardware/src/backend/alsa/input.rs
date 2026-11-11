@@ -6,18 +6,16 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, mpsc};
 use std::time::{Duration, Instant};
 
-use super::client::{QueueClock, SeqClient, check};
 use super::enumerate::unpack_id;
-use super::poll::{ErrorRun, PollSet, Wait};
+use super::poll::ErrorRun;
 use crate::InputProducerHandle;
 use crate::endpoints::InputConnection;
 use crate::error::Result;
-use tutti_alsa_ump_sys as sys;
+use tutti_alsa_ffi::{
+    CAP_WRITE, Client, Poller, QueueClock, Read, TYPE_APPLICATION, TYPE_MIDI_GENERIC, Wait,
+};
 use tutti_midi_device::EndpointId;
 use tutti_ump::split_stream;
-
-/// `-EAGAIN`. Not an error — "nothing queued yet".
-const EAGAIN: i32 = -11;
 
 /// Times the pump came back from `poll`, for the test that an idle pump sleeps.
 /// The count is per process, so the test relies on nextest running each test in
@@ -76,7 +74,7 @@ impl Drop for AlsaInput {
     fn drop(&mut self) {
         drop(self.stop.take());
         if let Some(t) = self.thread.take() {
-            // Joining matters: the thread owns the `SeqClient`, and letting it
+            // Joining matters: the thread owns the `Client`, and letting it
             // outlive this would leave the port subscribed to a device the
             // caller believes it disconnected. But not for ever: a pump stuck in
             // alsa-lib is detached, and says so.
@@ -115,30 +113,26 @@ pub fn open(id: EndpointId, producer: InputProducerHandle) -> Result<Box<dyn Inp
 
     // Non-blocking, so the pump reads until the queue is empty and then waits in
     // `poll`, which the stop descriptor can interrupt. One client per connection
-    // — see `SeqClient`.
-    let seq = SeqClient::open("tutti-in", true)?;
+    // — see `client::open`.
+    let seq = super::client::open("tutti-in", true)?;
     let port = seq.open_port(
         "tutti-in",
         // Not subscribable by others: the engine's pump is not a device, and a
         // port nobody else can connect to is never listed as one. This client
         // makes its own subscription below, which needs no such capability.
-        sys::SND_SEQ_PORT_CAP_WRITE,
-        sys::SND_SEQ_PORT_TYPE_MIDI_GENERIC | sys::SND_SEQ_PORT_TYPE_APPLICATION,
+        CAP_WRITE,
+        TYPE_MIDI_GENERIC | TYPE_APPLICATION,
     )?;
 
     // The kernel stamps each event as it delivers it, so the time an event
     // is given is when it arrived, not when this pump got round to reading it.
     let clock = seq.stamp_port(port)?;
 
-    // SAFETY: `seq` is open; the address came from enumeration.
-    check(
-        unsafe { sys::snd_seq_connect_from(seq.raw(), port, src_client, src_port) },
-        "snd_seq_connect_from",
-    )?;
+    seq.connect_from(port, src_client, src_port)?;
 
     let (stop_tx, stop_rx) = UnixStream::pair()
         .map_err(|e| crate::error::Error::MidiDevice(format!("MIDI pump stop pair: {e}")))?;
-    let polls = PollSet::new(&seq, stop_rx.as_raw_fd())?;
+    let polls = Poller::new(&seq, stop_rx.as_raw_fd())?;
     let died = Arc::new(AtomicBool::new(false));
     let flag = Arc::clone(&died);
     let (ending, ended) = mpsc::channel();
@@ -170,8 +164,8 @@ pub fn open(id: EndpointId, producer: InputProducerHandle) -> Result<Box<dyn Inp
 /// Takes `seq` **by value** so the client is dropped here, on this thread, when
 /// the loop ends — the port unsubscribes exactly when the pump stops.
 fn pump(
-    seq: SeqClient,
-    mut polls: PollSet,
+    seq: Client,
+    mut polls: Poller,
     clock: QueueClock,
     // Held so its descriptor stays open while the pump polls it.
     _stop: UnixStream,
@@ -188,56 +182,55 @@ fn pump(
         pairing: None,
     };
     loop {
-        let mut ev: *mut sys::snd_seq_ump_event_t = std::ptr::null_mut();
-        // SAFETY: `seq` is open for the life of this function; `ev` is a valid
-        // out-pointer. On success alsa-lib points it at a buffer it owns, valid
-        // until the next call on this client — which is why the words are copied
-        // out immediately below and the pointer never escapes.
-        let rc = unsafe { sys::snd_seq_ump_event_input(seq.raw(), &mut ev) };
+        let read = seq.read_event();
         #[cfg(test)]
-        let rc = if INJECT_READ_ERROR.load(Ordering::SeqCst) {
-            EIO
+        let read = if INJECT_READ_ERROR.load(Ordering::SeqCst) {
+            Err(tutti_alsa_ffi::Error {
+                operation: "snd_seq_ump_event_input",
+                code: EIO,
+            })
         } else {
-            rc
+            read
         };
 
-        if rc < 0 {
-            if rc != EAGAIN {
+        let received = match read {
+            Ok(Read::Event(received)) => received,
+            Ok(Read::Skipped) => {
+                errors.read();
+                continue;
+            }
+            Ok(Read::Empty) => {
+                // Empty queue is the common case, not a failure.
+                let waited = polls.wait(None);
+                #[cfg(test)]
+                PUMP_WAKES.fetch_add(1, Ordering::SeqCst);
+                #[cfg(test)]
+                if let Ok(Wait::Ready) = waited {
+                    let ms = PUMP_STALL_MS.load(Ordering::SeqCst);
+                    std::thread::sleep(Duration::from_millis(ms));
+                }
+                match waited {
+                    Ok(Wait::Ready) => continue,
+                    Ok(Wait::Stopped) => return,
+                    Ok(Wait::Broken) => return die("the sequencer descriptor failed"),
+                    Ok(Wait::Timeout) => unreachable!("wait(None) has no timeout"),
+                    Err(e) => return die(&e.to_string()),
+                }
+            }
+            Err(e) => {
                 // An overrun or a failing read: try again at once, a few times
                 // in a row at most (a level-triggered descriptor would spin).
-                tracing::debug!("ALSA MIDI input: {}", super::client::strerror(rc));
+                tracing::debug!("ALSA MIDI input: {}", e.message());
                 if errors.failed() {
-                    return die(&super::client::strerror(rc));
+                    return die(&e.message());
                 }
                 continue;
             }
-            // Empty queue is the common case, not a failure.
-            let waited = polls.wait(None);
-            #[cfg(test)]
-            PUMP_WAKES.fetch_add(1, Ordering::SeqCst);
-            #[cfg(test)]
-            if let Ok(Wait::Ready) = waited {
-                let ms = PUMP_STALL_MS.load(Ordering::SeqCst);
-                std::thread::sleep(Duration::from_millis(ms));
-            }
-            match waited {
-                Ok(Wait::Ready) => continue,
-                Ok(Wait::Stopped) => return,
-                Ok(Wait::Broken) => return die("the sequencer descriptor failed"),
-                Ok(Wait::Timeout) => unreachable!("wait(None) has no timeout"),
-                Err(e) => return die(&e.to_string()),
-            }
-        }
+        };
         errors.read();
-        if ev.is_null() {
-            continue;
-        }
-
-        // SAFETY: `rc >= 0` and `ev` non-NULL means alsa-lib wrote a complete
-        // event; copying by value ends this function's use of its buffer.
-        let (words, stamped) = unsafe { ((*ev).ump, (*ev).real_time()) };
-        let now = match stamped {
-            Some(t) => arrivals.at(&seq, Duration::new(u64::from(t.tv_sec), t.tv_nsec)),
+        let words = received.ump;
+        let now = match received.stamp {
+            Some(t) => arrivals.at(&seq, t),
             // A port that is not stamping: the read is the best there is.
             None => Instant::now(),
         };
@@ -270,7 +263,7 @@ impl Arrivals {
     /// The OS instant an event stamped `stamped` on the queue arrived at. Reads
     /// a fresh pairing when the held one is older than the event (the event
     /// came after it) or than [`PAIRING_AGE`]; one syscall, not one per event.
-    fn at(&mut self, seq: &SeqClient, stamped: Duration) -> Instant {
+    fn at(&mut self, seq: &Client, stamped: Duration) -> Instant {
         let stale = self
             .pairing
             .is_none_or(|(os, queue)| stamped > queue || os.elapsed() > PAIRING_AGE);

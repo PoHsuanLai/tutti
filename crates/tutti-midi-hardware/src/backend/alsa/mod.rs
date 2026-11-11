@@ -38,9 +38,9 @@ use crate::capability::EndpointInfo;
 use crate::devices::{ChangeSink, os_devices};
 use crate::endpoints::{InputConnection, MidiEndpoints, Watch};
 use crate::error::Result;
-use client::SeqClient;
 use enumerate::Direction;
 use std::sync::{Mutex, PoisonError};
+use tutti_alsa_ffi::Client;
 use tutti_midi_device::{EndpointId, OsDevice};
 use tutti_midi_runtime::MidiOut;
 
@@ -52,7 +52,7 @@ use tutti_midi_runtime::MidiOut;
 /// it pumps or sends through, and the watch enumerates on its own.
 #[derive(Default)]
 pub struct AlsaEndpoints {
-    enumerator: Mutex<Option<SeqClient>>,
+    enumerator: Mutex<Option<Client>>,
 }
 
 impl core::fmt::Debug for AlsaEndpoints {
@@ -78,7 +78,7 @@ impl AlsaEndpoints {
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
         if held.is_none() {
-            *held = SeqClient::open("tutti-enum", true)
+            *held = client::open("tutti-enum", true)
                 .inspect_err(|e| tracing::debug!("ALSA enumeration: {e}"))
                 .ok();
         }
@@ -90,7 +90,7 @@ impl AlsaEndpoints {
 
 /// Every device now, enumerated on `seq`; `None` when the enumeration was cut
 /// short by an error.
-fn devices(seq: &SeqClient) -> Option<Vec<OsDevice>> {
+fn devices(seq: &Client) -> Option<Vec<OsDevice>> {
     let (inputs, outputs) = enumerate::both(seq)?;
     Some(os_devices(&inputs, &outputs))
 }

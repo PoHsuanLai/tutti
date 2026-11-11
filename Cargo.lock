@@ -3443,8 +3443,11 @@ dependencies = [
 ]
 
 [[package]]
-name = "tutti-alsa-ump-sys"
+name = "tutti-alsa-ffi"
 version = "0.0.1"
+dependencies = [
+ "libc",
+]
 
 [[package]]
 name = "tutti-au-ffi"
@@ -3548,6 +3551,15 @@ dependencies = [
  "tutti-nodes",
  "tutti-types",
  "vorbis_rs",
+]
+
+[[package]]
+name = "tutti-coremidi-ffi"
+version = "0.0.1"
+dependencies = [
+ "core-foundation 0.10.1",
+ "coremidi-sys",
+ "mach2",
 ]
 
 [[package]]
@@ -3714,13 +3726,11 @@ dependencies = [
  "assert_no_alloc",
  "core-foundation 0.10.1",
  "coremidi",
- "coremidi-sys",
- "libc",
- "mach2",
  "ringbuf",
  "thiserror 2.0.21",
  "tracing",
- "tutti-alsa-ump-sys",
+ "tutti-alsa-ffi",
+ "tutti-coremidi-ffi",
  "tutti-fixtures",
  "tutti-graph",
  "tutti-midi-device",

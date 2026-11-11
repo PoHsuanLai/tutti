@@ -175,6 +175,7 @@ pub(crate) const RECIPES: &[(&str, &str, &str)] = &[
     ("check-adapter", "", "scripts/check-adapter.sh"),
     ("check-guards", "", "scripts/check-guards.sh"),
     ("check-plugin-ffi", "", "scripts/check-plugin-ffi.sh"),
+    ("check-midi-ffi", "", "scripts/check-midi-ffi.sh"),
     ("check-layout", "", "scripts/check-layout.sh"),
     (
         "check-range-types",
@@ -412,6 +413,7 @@ impl Planner<'_> {
             "check-adapter" => self.lines(&["scripts/check-adapter.sh"]),
             "check-guards" => self.lines(&["scripts/check-guards.sh"]),
             "check-plugin-ffi" => self.lines(&["scripts/check-plugin-ffi.sh"]),
+            "check-midi-ffi" => self.lines(&["scripts/check-midi-ffi.sh"]),
             "check-layout" => self.lines(&["scripts/check-layout.sh"]),
             "check-range-types" => self.out.push(Step::Gate(Gate::RangeTypes)),
             "check-submodule-pins" => self.out.push(Step::Gate(Gate::SubmodulePins)),
@@ -458,7 +460,7 @@ impl Planner<'_> {
             "ci" => {
                 for d in [
                     "lint", "deny", "check-paths", "check-bevy-free", "check-adapter", "check-guards",
-                    "check-plugin-ffi", "check-layout", "check-range-types", "check-hosting",
+                    "check-plugin-ffi", "check-midi-ffi", "check-layout", "check-range-types", "check-hosting",
                     "check-submodule-pins",
                     "check-features",
                     "check-loom", "test", "test-features", "test-editor", "test-doc",

@@ -32,7 +32,7 @@ use tutti_nodes::{
     PhaserNode, ShapeKind, SvfControls, SvfFilterNode, SvfType,
 };
 use tutti_types::{
-    Amplitude, ChannelLayout, CompressionRatio, Db, Depth, Drive, Feedback, Hz, Mix, Pan,
+    Amplitude, ChannelLayout, CompressionRatio, Db, Depth, Drive, Feedback, Hz, Pan,
     PhaseIncrement, Q, Resonance, Seconds, UnitParam,
 };
 
@@ -114,7 +114,6 @@ fn delay_line() {
             Feedback::new(0.5_f32),
         );
         d.set_cross_feedback(Feedback::new(0.3_f32));
-        d.set_mix(Mix::new(0.5_f32));
         d
     })
     .control("delay time (left)", |d| d.set_delay_time_l(Seconds(0.08)))
@@ -123,7 +122,6 @@ fn delay_line() {
     .control("cross feedback", |d| {
         d.set_cross_feedback(Feedback::new(0.0_f32))
     })
-    .control("mix", |d| d.set_mix(Mix::new(0.9_f32)))
     .check();
 }
 
@@ -159,7 +157,6 @@ fn chorus() {
     .control("rate", |c| c.set_rate(Hz(3.0)))
     .control("depth", |c| c.set_depth(Seconds(0.001)))
     .control("feedback", |c| c.set_feedback(Feedback::new(0.6_f32)))
-    .control("mix", |c| c.set_mix(Mix::new(0.2_f32)))
     .check();
 }
 
@@ -173,7 +170,6 @@ fn phaser() {
     .control("rate", |p| p.set_rate(Hz(3.0)))
     .control("depth", |p| p.set_depth(Depth::new_clamped(0.2)))
     .control("feedback", |p| p.set_feedback(Feedback::new(0.7_f32)))
-    .control("mix", |p| p.set_mix(Mix::new(0.2_f32)))
     .check();
 }
 
@@ -233,7 +229,6 @@ fn bus_strip() {
 #[test]
 fn convolver() {
     use tutti_nodes::ConvolverNode;
-    use tutti_types::Mix;
     // A short decaying tail: a fixed LCG, so the IR is the same every run.
     let ir: Vec<f32> = (0..512u32)
         .map(|n| {
@@ -242,12 +237,7 @@ fn convolver() {
             white * (-(n as f32) / 128.0).exp()
         })
         .collect();
-    IsolateRow::new("ConvolverNode (mono)", move || {
-        let c = ConvolverNode::new(&ir, 64);
-        c.set_mix(Mix::new_clamped(0.5));
-        c
-    })
-    .control("mix", |c| c.set_mix(Mix::new_clamped(0.9)))
-    .control("gain", |c| c.set_gain(Amplitude(0.3)))
-    .check();
+    IsolateRow::new("ConvolverNode (mono)", move || ConvolverNode::new(&ir, 64))
+        .control("gain", |c| c.set_gain(Amplitude(0.3)))
+        .check();
 }

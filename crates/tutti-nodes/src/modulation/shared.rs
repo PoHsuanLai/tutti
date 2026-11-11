@@ -1,6 +1,6 @@
 //! Parameter groupings shared by modulation effects (chorus, flanger, phaser).
 
-use tutti_types::{Depth, Feedback, Hz, Mix, Param, Phase, PhaseIncrement, SampleRate, Seconds};
+use tutti_types::{Depth, Feedback, Hz, Param, Phase, PhaseIncrement, SampleRate, Seconds};
 
 use crate::ramp::{LastGood, clamp_finite};
 
@@ -104,57 +104,44 @@ impl LfoDrive {
     }
 }
 
-/// Wet/dry + feedback + unitless 0..1 depth (phaser-style).
+/// Feedback + unitless 0..1 depth (phaser-style).
 ///
 /// Phaser uses `depth` as a unitless scalar that modulates the amplitude of
 /// the LFO sweep over its all-pass frequency range.
 #[derive(Clone, Debug)]
-pub struct LinearModMix {
+pub struct LinearMod {
     pub depth: Param<Depth>,
     pub feedback: Param<Feedback>,
-    pub mix: Param<Mix>,
-    /// Last finite depth / feedback / mix (see [`LastGood`]).
-    good: [LastGood; 3],
+    /// Last finite depth / feedback (see [`LastGood`]).
+    good: [LastGood; 2],
 }
 
-impl LinearModMix {
-    pub fn new(
-        depth: impl Into<Depth>,
-        feedback: impl Into<Feedback>,
-        mix: impl Into<Mix>,
-    ) -> Self {
-        let (depth, feedback, mix) = (
-            depth.into(),
-            Feedback::new_clamped(feedback.into().get()),
-            Mix::new_clamped(mix.into().get()),
-        );
+impl LinearMod {
+    pub fn new(depth: impl Into<Depth>, feedback: impl Into<Feedback>) -> Self {
+        let (depth, feedback) = (depth.into(), Feedback::new_clamped(feedback.into().get()));
         Self {
             depth: Param::new(depth),
             feedback: Param::new(feedback),
-            mix: Param::new(mix),
             good: [
                 LastGood::new(depth.get(), 0.0),
                 LastGood::new(feedback.get(), 0.0),
-                LastGood::new(mix.get(), 0.0),
             ],
         }
     }
 
-    /// Returns (depth, feedback, mix). `mix` stays typed — it is consumed by
-    /// [`Mix::blend`] rather than by raw arithmetic; the other two feed
-    /// per-sample math and unwrap here.
-    #[inline]
+    /// Returns (depth, feedback).
     ///
-    /// `driven` holds the block's depth, feedback and mix from the node's
+    /// `driven` holds the block's depth and feedback from the node's
     /// param ports where a lane drives them
     /// (`block_driven`); `None` reads the cell.
-    /// A driven feedback or mix is clamped as the setters clamp: a lane's
+    /// A driven feedback is clamped as the setter clamps: a lane's
     /// range is the host's, and an unstable feedback would blow up.
-    pub fn load(&mut self, driven: [Option<f32>; 3]) -> (f32, f32, Mix) {
-        // Non-finite writes read as unchanged: all three feed recursive state
+    #[inline]
+    pub fn load(&mut self, driven: [Option<f32>; 2]) -> (f32, f32) {
+        // Non-finite writes read as unchanged: both feed recursive state
         // (the sweep, the recirculation) or the output every later block ramps
         // from.
-        let [depth, fb, mix] = driven;
+        let [depth, fb] = driven;
         (
             // `set_depth`'s clamp, at the point of use: a depth past the
             // unit range sweeps the all-pass past Nyquist.
@@ -164,8 +151,6 @@ impl LinearModMix {
                 || self.feedback.load().get(),
                 |v| Feedback::new_clamped(v).get(),
             )),
-            Mix(self.good[2]
-                .read(mix.map_or_else(|| self.mix.load().get(), |v| Mix::new_clamped(v).get()))),
         )
     }
 
@@ -174,69 +159,54 @@ impl LinearModMix {
     pub fn detach(&mut self) {
         self.depth.detach();
         self.feedback.detach();
-        self.mix.detach();
     }
 }
 
-/// Wet/dry + feedback + time-amplitude depth in seconds (chorus/flanger-style).
+/// Feedback + time-amplitude depth in seconds (chorus/flanger-style).
 ///
 /// Chorus and flanger consume `depth` as the amplitude of LFO time-modulation
 /// around their base delay: `delay = base + lfo * depth * sample_rate`.
 #[derive(Clone, Debug)]
-pub struct TimeModMix {
+pub struct TimeMod {
     pub depth: Param<Seconds>,
     pub feedback: Param<Feedback>,
-    pub mix: Param<Mix>,
-    /// Last finite depth / feedback / mix (see [`LastGood`]).
-    good: [LastGood; 3],
+    /// Last finite depth / feedback (see [`LastGood`]).
+    good: [LastGood; 2],
 }
 
-impl TimeModMix {
-    pub fn new(
-        depth: impl Into<Seconds>,
-        feedback: impl Into<Feedback>,
-        mix: impl Into<Mix>,
-    ) -> Self {
-        let (depth, feedback, mix) = (
-            depth.into(),
-            Feedback::new_clamped(feedback.into().get()),
-            Mix::new_clamped(mix.into().get()),
-        );
+impl TimeMod {
+    pub fn new(depth: impl Into<Seconds>, feedback: impl Into<Feedback>) -> Self {
+        let (depth, feedback) = (depth.into(), Feedback::new_clamped(feedback.into().get()));
         Self {
             depth: Param::new(depth),
             feedback: Param::new(feedback),
-            mix: Param::new(mix),
             good: [
                 LastGood::new(depth.to_f32(), 0.0),
                 LastGood::new(feedback.get(), 0.0),
-                LastGood::new(mix.get(), 0.0),
             ],
         }
     }
 
-    /// Returns (depth_secs, feedback, mix) — depth carries `Seconds`
-    /// semantically but unwraps to `f32` here for the per-sample math. `mix`
-    /// stays typed: it is consumed by [`Mix::blend`], not by raw arithmetic.
-    #[inline]
+    /// Returns (depth_secs, feedback) — depth carries `Seconds`
+    /// semantically but unwraps to `f32` here for the per-sample math.
     ///
-    /// `driven` holds the block's depth, feedback and mix from the node's
+    /// `driven` holds the block's depth and feedback from the node's
     /// param ports where a lane drives them
     /// (`block_driven`); `None` reads the cell.
-    /// A driven feedback or mix is clamped as the setters clamp: a lane's
+    /// A driven feedback is clamped as the setter clamps: a lane's
     /// range is the host's, and an unstable feedback would blow up.
-    pub fn load(&mut self, driven: [Option<f32>; 3]) -> (f32, f32, Mix) {
-        // Non-finite writes read as unchanged: all three feed recursive state
+    #[inline]
+    pub fn load(&mut self, driven: [Option<f32>; 2]) -> (f32, f32) {
+        // Non-finite writes read as unchanged: both feed recursive state
         // (the sweep, the recirculation) or the output every later block ramps
         // from.
-        let [depth, fb, mix] = driven;
+        let [depth, fb] = driven;
         (
             self.good[0].read(depth.unwrap_or_else(|| self.depth.load().to_f32())),
             self.good[1].read(fb.map_or_else(
                 || self.feedback.load().get(),
                 |v| Feedback::new_clamped(v).get(),
             )),
-            Mix(self.good[2]
-                .read(mix.map_or_else(|| self.mix.load().get(), |v| Mix::new_clamped(v).get()))),
         )
     }
 
@@ -245,7 +215,6 @@ impl TimeModMix {
     pub fn detach(&mut self) {
         self.depth.detach();
         self.feedback.detach();
-        self.mix.detach();
     }
 }
 

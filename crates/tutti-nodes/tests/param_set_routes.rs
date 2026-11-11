@@ -344,11 +344,12 @@ fn compressor_makeup_is_addressed_as_gain_db() {
 
 #[cfg(feature = "convolution")]
 #[test]
-fn convolver_only_addresses_wet() {
-    // Room size is baked into the IR; only Wet is a control.
+fn convolver_addresses_nothing() {
+    // Room size is baked into the IR, the gain has no address and the mix is
+    // the graph's (`NodeMix::ADDR`, not a node's param).
     // A minimal unit IR is fine — only the param surface is probed.
     let node = tutti_nodes::ConvolverNode::shared_ir(2u16, &[1.0], 64);
-    assert!(addresses(&node, UnitParam::Wet));
+    assert!(!addresses(&node, UnitParam::Wet));
     assert!(!addresses(&node, UnitParam::RoomSize));
     assert!(!addresses(&node, UnitParam::Cutoff));
 }
@@ -592,7 +593,7 @@ fn a_limiter_driven_below_its_release_floor_still_releases() {
 /// And the depth gets `set_depth`'s clamp: driven to 8 it sounds as it
 /// does driven to exactly 1 (the knob at 1, nothing added).
 ///
-/// Mutation (run): `LinearModMix::load` without
+/// Mutation (run): `LinearMod::load` without
 /// `Depth::new_clamped` → the sweep hold keeps the +8 drive bounded, but it
 /// sweeps unlike depth 1 → the last assertion fails. Mutation (run):
 /// `allpass_coeff` without the sweep hold → the −7.5 drive

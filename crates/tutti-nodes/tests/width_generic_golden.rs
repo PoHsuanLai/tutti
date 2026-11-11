@@ -8,6 +8,14 @@
 //! chorus and flanger do the same to the LFO's sine; control changes ramped
 //! across a block; the cross-feedback matrix).
 //!
+//! The nodes that blend nothing themselves (the delay, the chorus and flanger,
+//! the phaser) are rendered through a graph at the mix their case names, which
+//! is the graph's blend of the node's output with its input (`Mix`): the pins
+//! were captured when those nodes blended internally, and the blend is the same
+//! two products and sum (the ramp across a block that moves is `Piece`'s, a
+//! last-ulp different arithmetic from the old node's, well inside the
+//! tolerance).
+//!
 //! Captured with `cargo nextest run -p tutti-nodes -E 'test(print_goldens)'
 //! --run-ignored only --no-capture`.
 //!
@@ -20,7 +28,7 @@
 use std::sync::atomic::Ordering;
 
 use tutti_graph::contract::drive;
-use tutti_graph::{Node, ParamNode, Prepare};
+use tutti_graph::{GraphBuilder, Node, ParamNode, Prepare, Unforkable};
 use tutti_nodes::{
     DelayLineNode, InterpolationMode, LadderFilterNode, LadderType, ModDelayNode, PhaserNode,
     SvfControls, SvfFilterNode, SvfType,
@@ -78,6 +86,10 @@ struct Case {
     /// unchanged, so the pins are too.)
     params: Vec<Option<Vec<f32>>>,
     automation: Option<Automation>,
+    /// The graph's mix of the node when it is not wet only, and (for a mix that
+    /// moves) its value before each block.
+    mix: Option<Mix>,
+    mix_at: Option<Box<dyn Fn(usize) -> Mix>>,
 }
 
 fn node_case(name: &'static str, node: impl Node, inputs: Vec<Vec<f32>>) -> Case {
@@ -87,6 +99,16 @@ fn node_case(name: &'static str, node: impl Node, inputs: Vec<Vec<f32>>) -> Case
         inputs,
         params: Vec::new(),
         automation: None,
+        mix: None,
+        mix_at: None,
+    }
+}
+
+/// `node_case` blended with its input at `mix` by the graph.
+fn mixed_case(name: &'static str, node: impl Node, inputs: Vec<Vec<f32>>, mix: f32) -> Case {
+    Case {
+        mix: Some(Mix::new(mix)),
+        ..node_case(name, node, inputs)
     }
 }
 
@@ -265,8 +287,7 @@ fn cases() -> Vec<Case> {
         Feedback::new(0.6),
     )
     .with_interpolation(InterpolationMode::CubicHermite);
-    node.set_mix(Mix::new(0.4));
-    v.push(node_case("delay_mono_cubic", node, noise_channels(1)));
+    v.push(mixed_case("delay_mono_cubic", node, noise_channels(1), 0.4));
     let node = DelayLineNode::stereo(
         Seconds::new(0.5),
         Seconds::new(0.010),
@@ -274,16 +295,19 @@ fn cases() -> Vec<Case> {
         Feedback::new(0.5),
     );
     node.set_cross_feedback(Feedback::new(0.3));
-    node.set_mix(Mix::new(0.7));
-    v.push(node_case("delay_stereo_cross_fed", node, noise_channels(2)));
+    v.push(mixed_case(
+        "delay_stereo_cross_fed",
+        node,
+        noise_channels(2),
+        0.7,
+    ));
     let node = DelayLineNode::with_channels(
         6u16,
         Seconds::new(0.5),
         Seconds::new(0.011),
         Feedback::new(0.45),
     );
-    node.set_mix(Mix::new(0.6));
-    v.push(node_case("delay_wide6", node, noise_channels(6)));
+    v.push(mixed_case("delay_wide6", node, noise_channels(6), 0.6));
     let feedback = (0..LEN).map(|i| 0.9 * (i as f32 / LEN as f32)).collect();
     let time = (0..LEN)
         .map(|i| 0.002 + 0.01 * (i as f32 / LEN as f32))
@@ -338,18 +362,21 @@ fn cases() -> Vec<Case> {
     node.set_rate(Hz::new(1.7));
     node.set_depth(Seconds::new(0.007));
     node.set_feedback(Feedback::new(0.45));
-    node.set_mix(Mix::new(0.6));
-    v.push(node_case("chorus_stereo", node, noise_channels(2)));
-    v.push(node_case(
+    v.push(mixed_case("chorus_stereo", node, noise_channels(2), 0.6));
+    v.push(mixed_case(
         "flanger_stereo",
         ModDelayNode::flanger(ChannelLayout::STEREO),
         noise_channels(2),
+        0.5,
     ));
-    let node = ModDelayNode::chorus(6u16);
-    let automation = automate(node.mix(), |k| (k % 3) as f32 * 0.5);
     v.push(Case {
-        automation,
-        ..node_case("chorus_wide6_mix_automated", node, noise_channels(6))
+        mix_at: Some(Box::new(|k| Mix::new((k % 3) as f32 * 0.5))),
+        ..mixed_case(
+            "chorus_wide6_mix_automated",
+            ModDelayNode::chorus(6u16),
+            noise_channels(6),
+            0.0,
+        )
     });
 
     // ── Phaser ──
@@ -357,10 +384,10 @@ fn cases() -> Vec<Case> {
     node.set_rate(Hz::new(0.3));
     node.set_depth(Depth::new(0.8));
     node.set_feedback(Feedback::new(0.6));
-    v.push(node_case("phaser_mono", node, noise_channels(1)));
+    v.push(mixed_case("phaser_mono", node, noise_channels(1), 0.5));
     let node = PhaserNode::with_channels(ChannelLayout::STEREO, 4);
     node.set_rate(Hz::new(2.0));
-    v.push(node_case("phaser_stereo", node, noise_channels(2)));
+    v.push(mixed_case("phaser_stereo", node, noise_channels(2), 0.5));
     let node = PhaserNode::with_channels(6u16, 8).with_phase_offsets(&[
         PhaseIncrement(0.0),
         PhaseIncrement(0.1),
@@ -370,18 +397,82 @@ fn cases() -> Vec<Case> {
         PhaseIncrement(0.5),
     ]);
     node.set_rate(Hz::new(3.0));
-    v.push(node_case("phaser_wide6_staggered", node, noise_channels(6)));
+    v.push(mixed_case(
+        "phaser_wide6_staggered",
+        node,
+        noise_channels(6),
+        0.5,
+    ));
 
     v
 }
 
 fn render(case: &mut Case) -> Vec<Vec<f32>> {
+    if let Some(mix) = case.mix {
+        return render_mixed(case, mix);
+    }
     render_node(
         case.node.as_mut(),
         &case.inputs,
         &case.params,
         case.automation.as_ref(),
     )
+}
+
+/// The case's node alone in a graph (as `Solo` places it) with its mix set
+/// before the unit is placed (so the first block does not ramp in from wet), the
+/// same ragged blocks, and the mix moved before each block when `mix_at` says.
+fn render_mixed(case: &mut Case, mix: Mix) -> Vec<Vec<f32>> {
+    let node = std::mem::replace(&mut case.node, Box::new(Silent));
+    let shape = node.shape();
+    let mut g = GraphBuilder::new(shape.audio_in, shape.audio_out);
+    let key = g.add(Unforkable(node));
+    for c in 0..usize::from(shape.audio_in.count()) {
+        g.connect_input(c, key, c);
+    }
+    for c in 0..usize::from(shape.audio_out.count()) {
+        g.connect_output(key, c, c);
+    }
+    g.spec_mut().set_mix(key, mix);
+    let mut r = g
+        .renderer(Prepare::new(SR, Samples(64)))
+        .expect("a one-node graph builds");
+    let mut out: Vec<Vec<f32>> = Vec::new();
+    let (mut pos, mut k) = (0, 0);
+    while pos < LEN {
+        let n = PATTERN[k % PATTERN.len()].min(LEN - pos);
+        if let Some(at) = &case.mix_at
+            && k > 0
+        {
+            r.editor_mut()
+                .set_mix(key, at(k))
+                .expect("a mix in range, on a node in the graph");
+        }
+        k += 1;
+        let ins: Vec<&[f32]> = case.inputs.iter().map(|c| &c[pos..pos + n]).collect();
+        let block = r.render_input(&ins);
+        out.resize(block.len(), Vec::with_capacity(LEN));
+        for (o, b) in out.iter_mut().zip(block) {
+            o.extend(b);
+        }
+        pos += n;
+    }
+    out
+}
+
+/// What a case's node is replaced with once the graph owns it.
+#[derive(Debug)]
+struct Silent;
+
+impl Node for Silent {
+    fn shape(&self) -> tutti_graph::Shape {
+        tutti_graph::Shape::audio(ChannelLayout::EMPTY, ChannelLayout::EMPTY)
+    }
+    fn prepare(&mut self, _: &Prepare) {}
+    fn process(&mut self, _: &tutti_graph::Cx<'_>, _: tutti_graph::Io<'_>) -> tutti_graph::Status {
+        tutti_graph::Status::Idle
+    }
+    fn reset(&mut self) {}
 }
 
 /// The pinned frames of the first and last channel, in that order.

@@ -4,7 +4,7 @@
 //! [`CircularBuffer`](crate::CircularBuffer): a delay whose time is modulated
 //! must interpolate between taps or it steps audibly.
 
-use tutti_types::{Mix, SampleRate, Seconds};
+use tutti_types::{SampleRate, Seconds};
 
 /// How a fractional delay position is turned into a sample.
 ///
@@ -177,19 +177,12 @@ pub fn fractional_samples(secs: Seconds, sample_rate: SampleRate) -> f32 {
 }
 
 /// One sample of one uncoupled channel: read the feedback tap, write the line,
-/// read the output tap, blend.
+/// read the output tap (the wet sample).
 #[inline(always)]
-pub fn delay_step(
-    line: &mut DelayLine,
-    x: f32,
-    d: f32,
-    fb: f32,
-    mix: f32,
-    interp: InterpolationMode,
-) -> f32 {
+pub fn delay_step(line: &mut DelayLine, x: f32, d: f32, fb: f32, interp: InterpolationMode) -> f32 {
     let tap = line.read_sample((d.max(1.0) - 1.0).max(0.0), interp);
     line.push_sample(x + tap * fb);
-    Mix(mix).blend(x, line.read_sample(d, interp))
+    line.read_sample(d, interp)
 }
 
 #[cfg(test)]

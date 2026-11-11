@@ -3,8 +3,9 @@
 //! width-only folds to `tutti_types::Fold` (design 024 step 0b, consolidation 3).
 //!
 //! The digest is FNV-1a over the bits of every output sample, channel by channel,
-//! block by block. A mid-render change of the convolver's wet/dry mix covers the
-//! ramp path. The downmix render is adds and multiplies of `f32`, so its digest holds on
+//! block by block. A mid-render change of the convolver's mix (the graph's:
+//! the digest was recorded when the node blended internally, and is unchanged
+//! by the move) covers the ramp path. The downmix render is adds and multiplies of `f32`, so its digest holds on
 //! every platform and is a plain `assert_eq!`. The convolver's FFT reaches `libm`
 //! (twiddle factors), so its digest goes through `assert_golden`.
 //!
@@ -14,11 +15,15 @@
 use tutti_fixtures::{Fnv, noise};
 use tutti_graph::contract::{drive, prepared};
 #[cfg(feature = "convolution")]
+use tutti_graph::{GraphBuilder, Prepare};
+#[cfg(feature = "convolution")]
 use tutti_nodes::ConvolverNode;
 use tutti_nodes::DownmixNode;
 #[cfg(feature = "convolution")]
 use tutti_nodes::testing::assert_golden;
 use tutti_types::{ChannelLayout, ChannelTopology, SampleRate};
+#[cfg(feature = "convolution")]
+use tutti_types::{Mix, Samples};
 
 const RATE: SampleRate = SampleRate(48_000.0);
 const BLOCK: usize = 64;
@@ -79,8 +84,10 @@ fn the_downmix_node_renders_what_the_width_folds_did() {
 }
 
 #[cfg(feature = "convolution")]
-/// The convolver's mono-to-stereo fold at the widths the tree uses (2, 6), with
-/// the mix moved mid-render.
+/// The convolver's mono-to-stereo fold at the widths the tree uses (2, 6), in a
+/// graph at a mix of 0.5 moved to 0.8 mid-render.
+///
+/// Mutation (run): the graph's mix set to 0.6 instead of 0.5 fails.
 #[test]
 fn the_convolver_fold_renders_what_it_always_did() {
     let ir_a = noise(1, 200);
@@ -90,14 +97,29 @@ fn the_convolver_fold_renders_what_it_always_did() {
         let irs: Vec<&[f32]> = (0..width)
             .map(|c| if c % 2 == 0 { &ir_a[..] } else { &ir_b[..] })
             .collect();
-        let mut node = prepared(ConvolverNode::folded(&irs, 32), RATE, BLOCK);
-        let handle = node.mix();
-        let d = digest(&mut node, &input(width, 1500), |b| {
+        let x = input(width, 1500);
+        let mut g = GraphBuilder::new(
+            ChannelLayout::from(width as u16),
+            ChannelLayout::from(width as u16),
+        );
+        let (key, _) = g.add_with_controls(ConvolverNode::folded(&irs, 32));
+        for c in 0..width {
+            g.connect_input(c, key, c).connect_output(key, c, c);
+        }
+        g.spec_mut().set_mix(key, Mix::new(0.5));
+        let mut r = g.renderer(Prepare::new(RATE, Samples(BLOCK))).unwrap();
+        let mut h = Fnv::new();
+        for (b, at) in (0..1500).step_by(BLOCK).enumerate() {
             if b == 5 {
-                handle.store(0.8, std::sync::atomic::Ordering::Relaxed);
+                r.editor_mut().set_mix(key, Mix::new(0.8)).unwrap();
             }
-        });
-        all.u64(d);
+            let n = BLOCK.min(1500 - at);
+            let block: Vec<&[f32]> = x.iter().map(|c| &c[at..at + n]).collect();
+            for out in r.render_input(&block) {
+                h.f32s(&out);
+            }
+        }
+        all.u64(h.finish());
     }
     println!("DIGEST convolver {:#018x}", all.finish());
     assert_golden("the convolver's folded render", all.finish(), CONVOLVER);

@@ -2,7 +2,7 @@
 //!
 //! [`DelayLine`] is the bare fractional-read ring; [`DelayLineNode`] wraps it
 //! into a width-generic graph node with feedback, an explicit cross-feedback
-//! routing matrix, wet/dry [`Mix`], and feedback and delay time the graph can
+//! routing matrix, and feedback and delay time the graph can
 //! modulate per frame. The fractional read is the
 //! reason this is not just a [`CircularBuffer`](tutti_dsp::CircularBuffer):
 //! a delay whose time is modulated must interpolate between taps or it steps
@@ -15,9 +15,9 @@ use tutti_graph::{
     Cx, Inputs, IntoNode, Io, Node, NodeParts, Outputs, ParamNode, ParamSet, Prepare, Shape, Status,
 };
 use tutti_types::UnitParam;
-use tutti_types::{ChannelLayout, Feedback, Mix, Param, SampleRate, Seconds, Tail};
+use tutti_types::{ChannelLayout, Feedback, Param, SampleRate, Seconds, Tail};
 
-use crate::ramp::{LastGood, block_driven, finite_or};
+use crate::ramp::{LastGood, finite_or};
 use tutti_dsp::Ramp;
 use tutti_dsp::{DelayLine, InterpolationMode, delay_step, fractional_samples};
 
@@ -27,7 +27,6 @@ use tutti_dsp::{DelayLine, InterpolationMode, delay_step, fractional_samples};
 struct DelayControls {
     fb: f32,
     cf: f32,
-    mix: f32,
 }
 
 /// A feedback delay of any width: `N` audio inputs, `N` outputs, one delay
@@ -41,12 +40,15 @@ struct DelayControls {
 /// [`with_cross_feedback_matrix`](Self::with_cross_feedback_matrix) routes any
 /// width.
 ///
-/// [`Seconds`] delay times, [`Feedback`] recirculation, cross-feedback and
-/// wet/dry [`Mix`] are live [`Param`]s shared across clones, all read **once
-/// per block**. A value that moved since the last block is ramped linearly
-/// across the block — a delay time glides (a brief pitch bend) rather than
-/// jumping (a click), and a mix change fades rather than stepping. A block of
-/// one takes a change whole.
+/// [`Seconds`] delay times, [`Feedback`] recirculation and cross-feedback
+/// are live [`Param`]s shared across clones, all read **once per block**. A
+/// value that moved since the last block is ramped linearly across the
+/// block — a delay time glides (a brief pitch bend) rather than jumping (a
+/// click). A block of one takes a change whole.
+///
+/// The output is the delayed signal alone (the wet signal). The blend with the
+/// dry input is the graph's: `Editor::set_mix` mixes the output with the
+/// input, which this node does not delay (it declares no latency).
 ///
 /// The maximum delay is baked at construction and the lines are never
 /// reallocated on the audio thread; a longer request is clamped rather than
@@ -61,14 +63,13 @@ struct DelayControls {
 /// modulated delay time drives *every* channel through one shared value (the
 /// natural flanger/chorus control — the lines interpolate). An unmodulated
 /// param reads its own control, which costs nothing, the common case.
-/// Cross-feedback and mix are not modulatable.
+/// Cross-feedback is not modulatable.
 ///
 /// # In a graph
 ///
 /// A graph node ([`IntoNode`]): inserted, its controls are a [`ParamSet`]
-/// over feedback ([`UnitParam::Feedback`]), channel 0's delay time
-/// ([`UnitParam::DelayTime`], the modulation's base too) and the mix
-/// ([`UnitParam::Wet`]); a fork of it starts from the values last set
+/// over feedback ([`UnitParam::Feedback`]) and channel 0's delay time
+/// ([`UnitParam::DelayTime`], the modulation's base too); a fork of it starts from the values last set
 /// through that set, and every other cell at its value when forked. The graph
 /// prepares it at the device rate, which sizes the lines, before its first
 /// block. Its tail is [`Tail::Unknown`]: a recirculating line rings for as
@@ -89,7 +90,6 @@ pub struct DelayLineNode {
     /// Whether any routing weight is non-zero. When none is, the channels are
     /// independent and render channel-outer.
     cross_routed: bool,
-    mix: Param<Mix>,
     interpolation: InterpolationMode,
     sample_rate: SampleRate,
     /// The longest delay this line can hold. Kept typed: it is a duration the
@@ -107,11 +107,11 @@ pub struct DelayLineNode {
     /// Per-channel tap scratch for the cross-fed loop: every channel's
     /// feedback tap is read before any line is written. Sized at construction.
     taps: Vec<f32>,
-    /// The last finite feedback / cross-feedback / mix the cells held, and
+    /// The last finite feedback / cross-feedback the cells held, and
     /// each channel's last finite delay time: a non-finite write reads as
     /// unchanged, so it never reaches a line (see [`LastGood`]). A NaN pushed
     /// into a recirculating line stays there for good.
-    good: [LastGood; 3],
+    good: [LastGood; 2],
     good_delay: Vec<LastGood>,
 }
 
@@ -123,7 +123,6 @@ impl std::fmt::Debug for DelayLineNode {
             .field("feedback", &self.feedback)
             .field("cross_feedback", &self.cross_feedback)
             .field("cross_routed", &self.cross_routed)
-            .field("mix", &self.mix)
             .field("interpolation", &self.interpolation)
             .field("sample_rate", &self.sample_rate)
             .field("max_delay", &self.max_delay)
@@ -136,19 +135,16 @@ impl std::fmt::Debug for DelayLineNode {
 }
 
 /// The params a [`DelayLineNode`] lets the graph modulate, in port order.
-/// Feedback and delay time are read per sample; the mix is block-rate in
-/// the node (ramped across the block), so a driven port is read once per
-/// block (`block_driven`).
-pub const DELAY_PARAMS: [UnitParam; 3] =
-    [UnitParam::Feedback, UnitParam::DelayTime, UnitParam::Wet];
+/// Both are read per sample.
+pub const DELAY_PARAMS: [UnitParam; 2] = [UnitParam::Feedback, UnitParam::DelayTime];
 
 impl DelayLineNode {
     /// A mono delay (1 in, 1 out): a line sized for `max_delay_secs`, an
     /// initial `delay_secs` tap and `feedback` recirculation.
     ///
     /// `feedback` is clamped to the stable range — at or past unity a delay
-    /// self-oscillates and grows without bound. `mix` starts fully wet
-    /// ([`Mix::WET`]); set it for a parallel send.
+    /// self-oscillates and grows without bound. The output is the wet signal
+    /// alone; a parallel send is the graph's mix.
     ///
     /// A `max_delay_secs` that is not finite or not positive is an empty
     /// line (zero frames, as [`Seconds::to_samples_ceil`] reads it), and a
@@ -190,7 +186,7 @@ impl DelayLineNode {
 
     /// A delay `channels` wide (clamped to at least 1): each channel gets its
     /// own line and delay time (all seeded to `delay_secs`), with
-    /// self-feedback. The `feedback`/`cross_feedback`/`mix` surface is shared
+    /// self-feedback. The `feedback`/`cross_feedback` surface is shared
     /// across the channels (one linked control).
     ///
     /// Width 2 gets the L↔R swap routing, so `with_channels(STEREO, …)` is
@@ -236,7 +232,6 @@ impl DelayLineNode {
             cross_feedback: Param::new(Feedback::NONE),
             cross_routed: n == 2,
             cross_routing,
-            mix: Param::new(Mix::WET),
             interpolation: InterpolationMode::Linear,
             sample_rate: SampleRate::DEFAULT,
             max_delay,
@@ -244,11 +239,7 @@ impl DelayLineNode {
             last_delay: vec![0.0; n],
             delay_ramps: vec![Ramp::new(0.0, 0.0, 1); n],
             taps: vec![0.0; n],
-            good: [
-                LastGood::new(feedback.get(), 0.0),
-                LastGood::fixed(0.0),
-                LastGood::fixed(Mix::WET.get()),
-            ],
+            good: [LastGood::new(feedback.get(), 0.0), LastGood::fixed(0.0)],
             good_delay: vec![LastGood::new(delay_secs.to_f32(), 0.0); n],
         }
     }
@@ -349,12 +340,6 @@ impl DelayLineNode {
         self.cross_feedback.as_atomic()
     }
 
-    /// The shared wet/dry [`Mix`] cell, applied to every channel alike: `0.0`
-    /// is the dry input untouched, `1.0` the delayed signal alone.
-    pub fn mix(&self) -> Arc<AtomicF32> {
-        self.mix.as_atomic()
-    }
-
     /// Sets the cross-[`Feedback`], clamped to the stable range.
     ///
     /// Cross- and self-feedback feed the same recirculation, so they are
@@ -407,11 +392,6 @@ impl DelayLineNode {
         self.feedback.store(Feedback::new_clamped(fb.into().get()));
     }
 
-    /// Sets the wet/dry [`Mix`] for every channel, clamped to `0.0..=1.0`.
-    pub fn set_mix(&self, mix: impl Into<Mix>) {
-        self.mix.store(Mix::new_clamped(mix.into().get()));
-    }
-
     /// Constrain a requested delay into `0..=max_delay`, narrowed to the `f32`
     /// the line's kernel works in.
     #[inline]
@@ -426,7 +406,6 @@ impl DelayLineNode {
     /// Every control atomic is read once, here. `fb_port` / `dt_port` are the
     /// graph's per-frame feedback and delay time for the block when it
     /// modulates them (the node's param ports); they are read per sample.
-    /// `mix_port` is the block's driven mix (clamped as `set_mix` clamps).
     /// Everything else ramps from where the previous block ended (see
     /// `tutti_dsp::Ramp`).
     fn render(
@@ -436,7 +415,6 @@ impl DelayLineNode {
         outputs: &mut Outputs<'_, '_>,
         fb_port: Option<&[f32]>,
         dt_port: Option<&[f32]>,
-        mix_port: Option<f32>,
     ) {
         let width = self.width();
         let interp = self.interpolation;
@@ -450,24 +428,15 @@ impl DelayLineNode {
             } else {
                 0.0
             },
-            mix: self.good[2].read(mix_port.map_or_else(
-                || self.mix.load().get(),
-                |m| tutti_types::Mix::new_clamped(m).get(),
-            )),
         };
         let from = self.last.unwrap_or(target);
         let fb_r = Ramp::new(from.fb, target.fb, size);
         let cf_r = Ramp::new(from.cf, target.cf, size);
-        let mix_r = Ramp::new(from.mix, target.mix, size);
 
         // Per-channel delay ramps from the atomics. Unprimed (first block,
         // after `reset` or a rate change), the ramp starts on the target.
         let primed = self.last.is_some();
-        let mut steady = fb_port.is_none()
-            && dt_port.is_none()
-            && fb_r.is_flat()
-            && cf_r.is_flat()
-            && mix_r.is_flat();
+        let mut steady = fb_port.is_none() && dt_port.is_none() && fb_r.is_flat() && cf_r.is_flat();
         for c in 0..width {
             let secs = self.good_delay[c].read(self.delay_time[c].load().to_f32());
             let d = fractional_samples(Seconds::from_f32(secs), sr);
@@ -488,16 +457,9 @@ impl DelayLineNode {
             // Nothing moves this block: every control is a constant in the
             // loop, which is the common case and the one worth keeping tight.
             let (fb, cf) = Feedback::stable_pair(target.fb, target.cf);
-            let (fb, cf, mix) = (fb.get(), cf.get(), target.mix);
+            let (fb, cf) = (fb.get(), cf.get());
             let ramps = &self.delay_ramps;
-            lines.run(
-                size,
-                inputs,
-                outputs,
-                |_| (fb, cf),
-                |c, _| ramps[c].at(0),
-                |_| mix,
-            );
+            lines.run(size, inputs, outputs, |_| (fb, cf), |c, _| ramps[c].at(0));
         } else {
             // Self- and cross-feedback feed the same loop, so they are bounded
             // as a pair — clamping each alone still admits a combined 1.98. A
@@ -523,7 +485,7 @@ impl DelayLineNode {
                     _ => ramps[c].at(i),
                 }
             };
-            lines.run(size, inputs, outputs, loop_gain, delay_at, |i| mix_r.at(i));
+            lines.run(size, inputs, outputs, loop_gain, delay_at);
         }
 
         // Where the next block's ramps start.
@@ -551,8 +513,7 @@ struct Lines<'a> {
 
 impl Lines<'_> {
     /// Render the block. `gain(i)` is the bounded `(fb, cf)` pair at sample
-    /// `i`, `delay_at(c, i)` channel `c`'s delay in samples, `mix_at(i)` the
-    /// wet/dry mix. Constant closures compile down to constants.
+    /// `i`, `delay_at(c, i)` channel `c`'s delay in samples. Constant closures compile down to constants.
     #[inline(always)]
     fn run(
         self,
@@ -561,7 +522,6 @@ impl Lines<'_> {
         outputs: &mut Outputs<'_, '_>,
         gain: impl Fn(usize) -> (f32, f32),
         delay_at: impl Fn(usize, usize) -> f32,
-        mix_at: impl Fn(usize) -> f32,
     ) {
         let interp = self.interp;
         if !self.coupled {
@@ -570,7 +530,7 @@ impl Lines<'_> {
                 let (input, output) = (&inputs.get(c)[..size], &mut outputs.get(c)[..size]);
                 for (i, (y, &x)) in output.iter_mut().zip(input).enumerate() {
                     let (fb, _) = gain(i);
-                    *y = delay_step(line, x, delay_at(c, i), fb, mix_at(i), interp);
+                    *y = delay_step(line, x, delay_at(c, i), fb, interp);
                 }
             }
             return;
@@ -580,7 +540,6 @@ impl Lines<'_> {
         let n = self.delays.len();
         for i in 0..size {
             let (fb, cf) = gain(i);
-            let mix = Mix(mix_at(i));
             for (c, line) in self.delays.iter().enumerate() {
                 let d = delay_at(c, i);
                 self.taps[c] = line.read_sample((d.max(1.0) - 1.0).max(0.0), interp);
@@ -595,22 +554,20 @@ impl Lines<'_> {
                 line.push_sample(acc);
             }
             for (c, line) in self.delays.iter().enumerate() {
-                let wet = line.read_sample(delay_at(c, i), interp);
-                outputs.get(c)[i] = mix.blend(inputs.get(c)[i], wet);
+                outputs.get(c)[i] = line.read_sample(delay_at(c, i), interp);
             }
         }
     }
 }
 
 impl Node for DelayLineNode {
-    /// `N` in, `N` out, feedback, delay time and mix as param ports.
+    /// `N` in, `N` out, feedback and delay time as param ports.
     ///
     /// Zero latency, whatever the delay time: the echo is the *effect*, not
     /// processing latency. PDC compensates whatever a node declares by
     /// delaying every other path, so reporting the delay time would push the
     /// whole rest of the mix late to "line up" with an echo that is supposed
-    /// to be late. The dry half of the blend is undelayed, so the output's earliest
-    /// energy leaves with the input.
+    /// to be late.
     fn shape(&self) -> Shape {
         let width = ChannelLayout::try_from(self.width()).expect("the width came from a layout");
         Shape::audio(width, width)
@@ -634,13 +591,9 @@ impl Node for DelayLineNode {
         if size == 0 {
             return Status::Modified;
         }
-        let (fb, dt, mix) = (
-            io.param(0).frames(),
-            io.param(1).frames(),
-            block_driven(&io, 2),
-        );
+        let (fb, dt) = (io.param(0).frames(), io.param(1).frames());
         let (inputs, mut outputs) = io.split();
-        self.render(size, &inputs, &mut outputs, fb, dt, mix);
+        self.render(size, &inputs, &mut outputs, fb, dt);
         Status::Modified
     }
 
@@ -657,21 +610,19 @@ impl Node for DelayLineNode {
         match k {
             0 => Some(self.feedback.load().get()),
             1 => Some(self.delay_time[0].load().to_f32()),
-            2 => Some(self.mix.load().get()),
             _ => None,
         }
     }
 }
 
 impl ParamNode for DelayLineNode {
-    /// Feedback, channel 0's delay time and the mix. The other channels'
+    /// Feedback and channel 0's delay time. The other channels'
     /// times and the cross-feedback have no address: set them through the
     /// node's own handles.
     fn param_set(&self) -> ParamSet {
         ParamSet::builder()
             .param(UnitParam::Feedback, self.feedback.as_atomic())
             .param(UnitParam::DelayTime, self.delay_time[0].as_atomic())
-            .param(UnitParam::Wet, self.mix.as_atomic())
             .build()
     }
 
@@ -682,7 +633,6 @@ impl ParamNode for DelayLineNode {
         fork.delay_time.iter_mut().for_each(Param::detach);
         fork.feedback.detach();
         fork.cross_feedback.detach();
-        fork.mix.detach();
         Node::reset(&mut fork);
         fork
     }
@@ -707,7 +657,6 @@ impl Clone for DelayLineNode {
             cross_feedback: self.cross_feedback.handle(),
             cross_routing: self.cross_routing.clone(),
             cross_routed: self.cross_routed,
-            mix: self.mix.handle(),
             interpolation: self.interpolation,
             sample_rate: self.sample_rate,
             max_delay: self.max_delay,
@@ -773,9 +722,9 @@ mod tests {
     /// `ParamSet` and shares no cell with it (see
     /// `tutti_graph::contract::assert_param_fork`).
     ///
-    /// Mutation (run): drop the `mix` detach in `fork_fresh` → "a live write
-    /// reached the fork" for `Wet`. Leave `Wet` out of `param_set` → the
-    /// address list below fails.
+    /// Mutation (run): drop the `feedback` detach in `fork_fresh` → "a live
+    /// write reached the fork" for `Feedback`. Leave `DelayTime` out of
+    /// `param_set` → the address list below fails.
     #[test]
     fn a_fork_starts_from_the_authored_values_and_shares_nothing() {
         let node = DelayLineNode::stereo(
@@ -786,7 +735,7 @@ mod tests {
         );
         assert_eq!(
             node.param_set().params().collect::<Vec<_>>(),
-            [UnitParam::Feedback, UnitParam::DelayTime, UnitParam::Wet]
+            [UnitParam::Feedback, UnitParam::DelayTime]
         );
         assert_param_fork(node);
     }
@@ -819,11 +768,10 @@ mod tests {
             DelayLineNode::new(Seconds::new(1.0), Seconds::new(0.0), Feedback::new(0.0)),
             44_100.0,
         );
-        node.set_mix(Mix::new(0.0));
         let out = frames(&mut node, &[&[0.5]], &[]);
         assert!(
             (out[0][0] - 0.5).abs() < 0.001,
-            "Dry-only should pass through input"
+            "A zero delay without feedback passes the input through"
         );
     }
 
@@ -985,7 +933,7 @@ mod tests {
         (out.pop().expect("two outputs"), r)
     }
 
-    /// The node declares feedback, delay time and mix as its params, and
+    /// The node declares feedback and delay time as its params, and
     /// never changes the arity: a modulatable delay is as wide as it was
     /// built, in and out. (Doc 014 §12.6 widened the list: a route onto any of these was
     /// refused once the frame-rate driver went.)
@@ -993,7 +941,7 @@ mod tests {
     /// Mutation (run): swap `DELAY_PARAMS`' order → the first assertion
     /// fails (and `feedback_feed_modulates` reads a delay time as feedback).
     #[test]
-    fn the_feed_declares_feedback_delay_time_and_mix() {
+    fn the_feed_declares_feedback_and_delay_time() {
         let d = DelayLineNode::stereo(
             Seconds::new(1.0),
             Seconds::new(0.01),
@@ -1003,7 +951,7 @@ mod tests {
         let shape = d.shape();
         assert_eq!(
             shape.params.as_slice(),
-            &[UnitParam::Feedback, UnitParam::DelayTime, UnitParam::Wet][..]
+            &[UnitParam::Feedback, UnitParam::DelayTime][..]
         );
         assert_eq!((shape.audio_in.count(), shape.audio_out.count()), (2, 2));
         let wide = DelayLineNode::with_channels(
@@ -1020,8 +968,7 @@ mod tests {
             Some(0.01),
             "delay time's base is channel 0's"
         );
-        d.set_mix(Mix::new(0.25));
-        assert_eq!(d.param_base(2), Some(0.25), "the mix's base is its control");
+        assert_eq!(d.param_base(2), None, "no third param");
     }
 
     #[test]
@@ -1151,30 +1098,6 @@ mod tests {
         run.assert_ramps_in("delay time");
         let want = fractional_samples(Seconds(0.2), tutti_types::SampleRate(48_000.0));
         assert_eq!(run.ramped.last_delay, vec![want, want]);
-    }
-
-    /// A mix change fades across the next block.
-    ///
-    /// Mutation: `Ramp::new(target.mix, target.mix, size)` fails.
-    #[test]
-    fn a_mix_change_fades_across_the_next_block() {
-        use crate::test_support::{change_between_node_blocks, noise};
-        let x = noise(4, 128);
-        let run = change_between_node_blocks(
-            || {
-                DelayLineNode::with_channels(
-                    6u16,
-                    Seconds::new(0.1),
-                    Seconds::new(0.0005),
-                    Feedback::new(0.3),
-                )
-            },
-            |n| n.set_mix(Mix::new(0.0)),
-            &(0..6).map(|_| &x[..64]).collect::<Vec<_>>(),
-            &(0..6).map(|_| &x[64..]).collect::<Vec<_>>(),
-        );
-        run.assert_ramps_in("delay mix");
-        assert_eq!(run.r[0][63], x[127], "the block ends fully dry");
     }
 
     /// A ring routing spins an echo around a six-channel field: channel 0's

@@ -505,7 +505,9 @@ pub enum Op {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ParamPortOp {
     /// Its index in the node's declared params
-    /// ([`Shape::params`](crate::Shape::params)).
+    /// ([`Shape::params`](crate::Shape::params)), or [`MIX_PORT`](Self::MIX_PORT):
+    /// the node's [`Mix`](tutti_types::Mix), which no node declares and the
+    /// mode state runs (doc 013, "Bypass and mute are graph state", M4b).
     pub port: u16,
     /// The param.
     pub param: UnitAddr,
@@ -515,6 +517,18 @@ pub struct ParamPortOp {
     pub from: EventOut,
     /// The event slot it reads its source's events from.
     pub slot: u32,
+}
+
+impl ParamPortOp {
+    /// The sentinel [`port`](Self::port) of a node's mix, [`NodeMix::ADDR`](crate::NodeMix::ADDR):
+    /// past every declared index, so it is the last entry of an op's span.
+    pub const MIX_PORT: u16 = u16::MAX;
+
+    /// Whether this is the node's mix lane, not a declared param.
+    #[must_use]
+    pub const fn is_mix(&self) -> bool {
+        self.port == Self::MIX_PORT
+    }
 }
 
 /// One driven lane of an [`Op::WeightedSum`]: the fused step that gives an

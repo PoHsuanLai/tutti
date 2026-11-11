@@ -31,6 +31,7 @@ use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
 use crate::NodeKey;
+use crate::mode::NodeMix;
 use tutti_rt::{PackedAtomic, RtScope};
 use tutti_types::{ParamAddr, Samples, UnitAddr, UnitParam};
 
@@ -75,6 +76,13 @@ impl ParamPorts {
         ids: [UnitAddr::first(UnitParam::Cutoff); MAX_PARAM_PORTS],
     };
 
+    /// The one port of a node's mix lane, [`NodeMix::ADDR`]: what only the
+    /// graph may list (a node's own list refuses it).
+    pub(crate) const MIX: Self = Self {
+        len: 1,
+        ids: [NodeMix::ADDR; MAX_PARAM_PORTS],
+    };
+
     /// `ids`, each at index 0, in this order. A node with several params of a
     /// kind lists them with [`of`](Self::of).
     ///
@@ -104,6 +112,9 @@ impl ParamPorts {
                 panic!("more modulatable params than MAX_PARAM_PORTS")
             }
             Err(ParamPortsError::Duplicate(_)) => panic!("a param is declared modulatable twice"),
+            Err(ParamPortsError::Reserved(_)) => {
+                panic!("a param is declared at an address the graph reserves")
+            }
         }
     }
 
@@ -137,7 +148,8 @@ impl ParamPorts {
     /// [`ParamPortsError::TooMany`] for a list of more than
     /// [`MAX_PARAM_PORTS`], [`ParamPortsError::Duplicate`] for one naming an
     /// address (kind **and** index) twice: the same kind at another index is
-    /// another param.
+    /// another param, and [`ParamPortsError::Reserved`] for
+    /// [`NodeMix::ADDR`], the address a node's mix is driven at.
     pub const fn try_of(addrs: &[UnitAddr]) -> Result<Self, ParamPortsError> {
         if addrs.len() > MAX_PARAM_PORTS {
             return Err(ParamPortsError::TooMany { count: addrs.len() });
@@ -151,6 +163,9 @@ impl ParamPorts {
                     return Err(ParamPortsError::Duplicate(addrs[i]));
                 }
                 j += 1;
+            }
+            if addrs[i].to_u16() == NodeMix::ADDR.to_u16() {
+                return Err(ParamPortsError::Reserved(addrs[i]));
             }
             out.ids[i] = addrs[i];
             i += 1;
@@ -196,6 +211,8 @@ pub enum ParamPortsError {
     },
     /// An address (kind and index) listed twice.
     Duplicate(UnitAddr),
+    /// [`NodeMix::ADDR`]: the graph's own, which a node's mix is driven at.
+    Reserved(UnitAddr),
 }
 
 impl std::fmt::Display for ParamPortsError {
@@ -206,6 +223,7 @@ impl std::fmt::Display for ParamPortsError {
                 "{count} modulatable params past a node's {MAX_PARAM_PORTS}"
             ),
             Self::Duplicate(p) => write!(f, "{p:?} is declared modulatable twice"),
+            Self::Reserved(p) => write!(f, "{p:?} is reserved for a node's mix"),
         }
     }
 }

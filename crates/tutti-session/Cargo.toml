@@ -187,6 +187,11 @@ required-features = ["modulation"]
 name = "edge_modulation"
 required-features = ["modulation"]
 
+# A route onto a node's mix (doc 013, "Bypass and mute are graph state", M4b).
+[[test]]
+name = "mix_modulation"
+required-features = ["modulation"]
+
 # Modulation on control lanes through the session: renders, takes, refusals
 # and the node-side declarations (`export` and `synth` gate two cases inside
 # the file).

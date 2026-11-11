@@ -243,8 +243,8 @@ fn the_crossover_renders_what_it_always_did() {
         },
     );
     println!("DIGEST crossover {digest:#018x}");
-    // Placeholder until recorded on glibc 2.39 (it moved in PR5: was 0xe487_a6a1_7b13_6f8d).
-    assert_golden("crossover_render", digest, 0);
+    // Moved in step 2b PR5 (the stream grid); was 0xe487_a6a1_7b13_6f8d. Recorded on glibc 2.39.
+    assert_golden("crossover_render", digest, 0x333a_7595_b2e8_7939);
 }
 
 // Held controls (doc 024 step 2b, PR1): no cell moves and no lane drives, so the

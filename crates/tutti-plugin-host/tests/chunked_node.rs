@@ -49,6 +49,10 @@ struct Seen {
     tempo: f64,
     /// `(frame, tempo)` of each transport change in the call.
     changes: Vec<(u32, f64)>,
+    /// `(frame, playing, quarters)` of the same changes.
+    moves: Vec<(u32, bool, f64)>,
+    /// The transport's `tempo_inc`.
+    inc: f64,
     midi: Vec<u32>,
     /// Chord offsets, `None` when no sequencer context was attached.
     chords: Option<Vec<i32>>,
@@ -245,6 +249,18 @@ impl Processor for RecProcessor {
                     .iter()
                     .map(|c| (c.offset, c.transport.timing.tempo))
                     .collect(),
+                moves: ctx
+                    .transport_changes
+                    .iter()
+                    .map(|c| {
+                        (
+                            c.offset,
+                            c.transport.state.playing,
+                            c.transport.position.quarters,
+                        )
+                    })
+                    .collect(),
+                inc: transport.timing.tempo_inc,
                 midi: ctx.midi_events.iter().map(|(at, _)| at.get()).collect(),
                 chords: ctx.expressive.as_ref().map(|e| {
                     e.chords
@@ -309,16 +325,35 @@ fn node(rig: &Arc<Rig>, block: usize, map: TempoReader) -> (Direct<PluginNode<Re
 /// The block of `len` frames starting at global frame `frame`, rolling at
 /// 120 BPM from beat 4 at frame 0.
 fn run_block(unit: &mut Direct<PluginNode<Rec>>, frame: u64, len: usize) {
+    run_block_at(
+        unit,
+        frame,
+        len,
+        Bpm::of(120.0),
+        Beat(4.0 + frame as f64 * BEATS_PER_FRAME),
+    );
+}
+
+/// The block of `len` frames at global frame `frame`, with the transport's own
+/// tempo and playhead given: a test with a tempo step needs a playhead that
+/// follows the map, or the block after the step is a seek.
+fn run_block_at(unit: &mut Direct<PluginNode<Rec>>, frame: u64, len: usize, bpm: Bpm, beat: Beat) {
+    run_block_with(unit, frame, len, true, bpm, beat);
+}
+
+fn run_block_with(
+    unit: &mut Direct<PluginNode<Rec>>,
+    frame: u64,
+    len: usize,
+    playing: bool,
+    bpm: Bpm,
+    beat: Beat,
+) {
     let env = Env {
         frame: Frame(frame),
         sample_rate: SR,
         block_len: Samples(len),
-        transport: Transport::new(
-            true,
-            Bpm::of(120.0),
-            Beat(4.0 + frame as f64 * BEATS_PER_FRAME),
-            None,
-        ),
+        transport: Transport::new(playing, bpm, beat, None),
         changes: TransportChanges::NONE,
         play: PlayClock::ZERO,
     };
@@ -347,15 +382,18 @@ fn note_on(frame: usize, len: usize) -> Event {
 /// **A block is cut at the Processor's chunk edges, counted from `prepare`**,
 /// whatever the block's length: blocks of 100 over a chunk of 64 are 64+36,
 /// then 28+64+8, then 56+44, then 20+64+16. The audio the pieces carry joins
-/// back to the block bit for bit (the plugin copies its input), and **each
-/// piece reads the transport at its own first frame**.
+/// back to the block bit for bit (the plugin copies its input), and **every
+/// piece reads the transport at its chunk's first frame** (the contract of
+/// `Processor::chunk`, amended in design 021 step 4b PR 3a: the transport is
+/// chunk-level, like the parameters).
 ///
-/// Mutation (run): cutting at the block's start (`phase` always 0) → the second
-/// block is 64+36 → fails. Mutation (run): the transport read at the block's
-/// first frame (`Offset::new(0, ..)` for every piece, steady `at(0)`) → the
-/// second piece's position is the first's → fails.
+/// Mutation (run): cutting at the block's start (`phase` always 0) -> the second
+/// block is 64+36 -> fails. Mutation (run): the transport snapshot taken per
+/// piece (`begin` and the snapshot at every piece's first frame, not at
+/// `phase == 0`) -> a continued piece reads its own first frame, not its chunk's
+/// -> fails.
 #[test]
-fn a_block_is_cut_at_the_chunk_edges_and_each_piece_reads_its_transport() {
+fn a_block_is_cut_at_the_chunk_edges_and_each_piece_reads_its_chunks_transport() {
     let rig = Rig::new(Some(64), Features::TRANSPORT);
     let (mut unit, _) = node(&rig, 100, tempo(None));
     let mut heard = Vec::new();
@@ -370,36 +408,47 @@ fn a_block_is_cut_at_the_chunk_edges_and_each_piece_reads_its_transport() {
     );
     let ramp: Vec<f32> = (0..400).map(|i| i as f32).collect();
     assert_eq!(heard, ramp, "the pieces join to the block, bit for bit");
-    let mut start = 0.0;
+    let mut start = 0usize;
     for seen in rig.seen.lock().unwrap().iter() {
-        let want = 4.0 + start * BEATS_PER_FRAME;
+        let chunk_start = start / 64 * 64;
+        let want = 4.0 + chunk_start as f64 * BEATS_PER_FRAME;
         assert!(
             (seen.quarters - want).abs() < 1e-9,
-            "a piece of {} frames from frame {start} read beat {}, not {want}",
+            "a piece of {} frames from frame {start} read beat {}, not its chunk's {want}",
             seen.frames,
             seen.quarters
         );
         assert!(seen.changes.is_empty());
-        start += seen.frames as f64;
+        start += seen.frames;
     }
 }
 
-/// **A tempo-map point inside a piece is a transport change of that piece and
-/// of no other.** The map steps to 90 BPM at frame 80 of the first block: the
-/// second piece (frames 64..100) has it at its frame 16, with the tempo it
-/// steps to, and its own first transport is still at 120; every piece before
-/// and after has no change and the tempo it stands at.
+/// **A tempo-map point is a transport change of its chunk, on the chunk's
+/// frame, in the piece that holds it and the pieces after it.** The map steps
+/// to 90 BPM at frame 80, in the chunk that starts at 64: the change is at
+/// chunk frame 16, the piece that holds it (64..100) and the rest of that
+/// chunk (100..128) are handed it (the chunk's changes so far), and the chunk's
+/// own transport stays the 120 it started at; the chunks before and after have
+/// no change and the tempo they stand at.
 ///
-/// Mutation (run): each piece's `scan` run to the block's end (`size - at`, not
-/// `n`) → the first piece has the change too → fails.
+/// Mutation (run): each piece scanned alone (the walk begun at every piece's
+/// first frame, changes cleared per piece, chunk frame 0) -> the change is at
+/// piece frame 16 only in the piece that holds it and the rest of the chunk
+/// has none -> fails. Mutation (run): the scan's chunk frame left at 0 for a
+/// continued piece -> a change in a continued piece lands at its piece
+/// frame -> fails (see the stop and seek pins, below).
 #[test]
-fn a_transport_change_lands_in_the_piece_that_holds_it() {
+fn a_transport_change_is_the_chunks_on_the_chunks_frame() {
     let rig = Rig::new(Some(64), Features::TRANSPORT);
     // Frame 80 is 80 / 24000 beats in; half a frame past it, so frame 80 is
     // the first at or after the point.
     let (mut unit, _) = node(&rig, 100, tempo(Some(4.0 + 79.5 * BEATS_PER_FRAME)));
     run_block(&mut unit, 0, 100);
-    run_block(&mut unit, 100, 100);
+    // The playhead follows the map: 90 BPM from the step, so the second block
+    // continues the stretch (a playhead that did not is a seek, below).
+    let step = 4.0 + 79.5 * BEATS_PER_FRAME;
+    let beat = step + 20.5 * BEATS_PER_FRAME * 0.75;
+    run_block_at(&mut unit, 100, 100, Bpm::of(90.0), Beat(beat));
     let seen = rig.seen.lock().unwrap();
     let pieces: Vec<_> = seen
         .iter()
@@ -410,7 +459,7 @@ fn a_transport_change_lands_in_the_piece_that_holds_it() {
         [
             (64, vec![], 120.0),
             (36, vec![(16, 90.0)], 120.0),
-            (28, vec![], 90.0),
+            (28, vec![(16, 90.0)], 120.0),
             (64, vec![], 90.0),
             (8, vec![], 90.0),
         ]
@@ -604,4 +653,149 @@ fn a_chunked_processors_lost_midi_reaches_the_graphs_event_losses() {
         .map(|l| l.count)
         .sum();
     assert_eq!(lost, 3);
+}
+
+/// **A stop and a seek that land exactly on a block boundary inside a chunk are
+/// changes at that chunk frame**, as the served node's walk reported them: a
+/// block of 100 and a chunk of 64, so the second block starts at chunk frame 36
+/// of the chunk begun at 64. Stopped there, the piece that starts it is handed
+/// a change at 36 (not playing) and so is every later piece of the chunk; moved
+/// to beat 10 there, the change is at 36 and carries the new playhead. The
+/// chunk's own transport is still the one it began with.
+///
+/// Mutation (run): the walk begun at every piece (`phase == 0` check removed:
+/// a continued piece starts a fresh stretch) -> the break is never seen -> no
+/// change -> fails. Mutation (run): the scan's chunk frame left at 0 -> the
+/// change lands at frame 0 of the chunk -> fails.
+#[test]
+fn a_stop_and_a_seek_on_a_block_boundary_are_changes_at_their_chunk_frame() {
+    for (playing, beat, want) in [
+        (false, 4.0 + 100.0 * BEATS_PER_FRAME, (36, false)),
+        (true, 10.0, (36, true)),
+    ] {
+        let rig = Rig::new(Some(64), Features::TRANSPORT);
+        let (mut unit, _) = node(&rig, 100, tempo(None));
+        run_block(&mut unit, 0, 100);
+        run_block_with(&mut unit, 100, 100, playing, Bpm::of(120.0), Beat(beat));
+        let seen = rig.seen.lock().unwrap();
+        let moves: Vec<_> = seen.iter().map(|s| s.moves.clone()).collect();
+        let held = (want.0, want.1, beat);
+        assert_eq!(moves[0], []);
+        assert_eq!(moves[1], []);
+        assert_eq!(moves[2].len(), 1, "playing {playing}: {:?}", moves[2]);
+        assert_eq!((moves[2][0].0, moves[2][0].1), want);
+        assert!((moves[2][0].2 - held.2).abs() < 1e-9, "{:?}", moves[2]);
+        assert!(
+            (seen[2].quarters - (4.0 + 64.0 * BEATS_PER_FRAME)).abs() < 1e-9,
+            "the chunk's own transport is its first frame's"
+        );
+    }
+}
+
+/// **A tempo ramp across a block boundary inside a chunk gives the chunk's
+/// `tempo_inc`, the ramp's own slope.** The map ramps linearly in time from
+/// 120 BPM at beat 0 to 90 at beat 100: `D = 120 * 100 / (120 + 90)` seconds
+/// long, so the slope is `-30 / D` BPM a second, `-30 / D / 48000` a frame. The
+/// chunk 64..128 spans the boundary of the 100-frame blocks, and its transport
+/// (final in the piece that completes it) carries that figure.
+///
+/// Mutation (run): `finish` not called at the completing piece -> `tempo_inc`
+/// stays 0 -> fails.
+#[test]
+fn a_tempo_ramp_across_a_block_boundary_gives_the_chunks_slope() {
+    let rig = Rig::new(Some(64), Features::TRANSPORT);
+    let ramp = TempoReader::fixed(Arc::new(
+        TempoMap::new(vec![
+            TempoPoint {
+                beat: Beat(0.0),
+                tempo: Bpm::of(120.0),
+                shape: Shape::RampTime,
+            },
+            TempoPoint {
+                beat: Beat(100.0),
+                tempo: Bpm::of(90.0),
+                shape: Shape::Step,
+            },
+        ])
+        .expect("a map"),
+    ));
+    let (mut unit, _) = node(&rig, 100, ramp);
+    // The playhead follows the ramp: beat(t) = (120 t - 0.525 t^2 / 2) / 60.
+    let (duration, rate) = (120.0 * 100.0 / 210.0, 48_000.0);
+    let k = -30.0 / duration;
+    let at = |frame: u64| {
+        let t = frame as f64 / rate;
+        (
+            Beat((120.0 * t + k * t * t / 2.0) / 60.0),
+            Bpm::of(120.0 + k * t),
+        )
+    };
+    for frame in [0u64, 100] {
+        let (beat, bpm) = at(frame);
+        run_block_at(&mut unit, frame, 100, bpm, beat);
+    }
+    let want = k / rate;
+    let seen = rig.seen.lock().unwrap();
+    // Pieces 64 | 36 28 | 64 8 ...: the chunk 64..128 is pieces 1 and 2, and
+    // the piece that completes it holds the final figure.
+    assert!((seen[2].inc - want).abs() < 1e-12, "{} {want}", seen[2].inc);
+}
+
+/// **The MIDI a chunk holds in flight when the node resets is lost, counted**:
+/// a note in the second piece of a chunk that never completes. The reset drops
+/// the chunk (the Processor clears its own), so the delivery's dropped-MIDI
+/// count has it at once and the block after reports it to the executor
+/// (`Io::count_lost`, what an export fails on).
+///
+/// Mutation (run): `drop_chunk` not adding to the delivery's dropped-MIDI count
+/// -> the first count stays 0 -> fails. Mutation (run): `drop_chunk` not owing
+/// it to the executor (`owed_lost`) -> the executor's count stays 0 -> fails.
+#[test]
+fn the_midi_in_flight_at_a_reset_is_lost_and_counted() {
+    let rig = Rig::new(Some(64), Features::TRANSPORT);
+    let (mut unit, controls) = node(&rig, 100, tempo(None));
+    unit.events(0, &[note_on(70, 100)]);
+    run_block(&mut unit, 0, 100);
+    assert_eq!(unit.lost(), 0);
+    assert_eq!(controls.dropped_midi_in(), 0, "held, not lost");
+    unit.node.reset();
+    assert_eq!(controls.dropped_midi_in(), 1, "dropped with the chunk");
+    run_block(&mut unit, 100, 100);
+    assert_eq!(
+        unit.lost(),
+        1,
+        "reported to the executor with the next block"
+    );
+    run_block(&mut unit, 200, 100);
+    assert_eq!(unit.lost(), 1, "once");
+}
+
+/// **A chunk's transport changes past the inline bound are dropped and
+/// counted**, in the same counter the served node used
+/// (`NodeControls::dropped_transport_changes`): twelve tempo steps inside one
+/// chunk, eight kept (`MAX_TRANSPORT_CHANGES`), four counted.
+///
+/// Mutation (run): the `over` of `scan` not counted -> the count stays 0 ->
+/// fails.
+#[test]
+fn transport_changes_past_the_bound_are_dropped_and_counted() {
+    let rig = Rig::new(Some(64), Features::TRANSPORT);
+    let mut points = vec![TempoPoint {
+        beat: Beat(0.0),
+        tempo: Bpm::of(120.0),
+        shape: Shape::Step,
+    }];
+    for i in 0..12u32 {
+        points.push(TempoPoint {
+            beat: Beat(4.0 + (4.5 + 4.0 * f64::from(i)) * BEATS_PER_FRAME),
+            tempo: Bpm::of(100.0 - f64::from(i)),
+            shape: Shape::Step,
+        });
+    }
+    let map = TempoReader::fixed(Arc::new(TempoMap::new(points).expect("a map")));
+    let (mut unit, controls) = node(&rig, 100, map);
+    run_block(&mut unit, 0, 64);
+    assert_eq!(controls.dropped_transport_changes(), 4);
+    let seen = rig.seen.lock().unwrap();
+    assert_eq!(seen[0].changes.len(), 8, "the bound");
 }

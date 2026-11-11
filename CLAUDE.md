@@ -453,13 +453,17 @@ crates/          everything shipped; directory name = package name; no nesting
   tutti-plugin-ipc (the process edge: the wire, the shared-memory slab and
                  control socket, the plugin-server's launch, and the
                  client of a served plugin, `PluginBridge`, with the pipeline
-                 that feeds it (`Batcher`, `OfflineWait`) and the server's
-                 process (`ProcessGuard`); no plugin format, design 021 §6.1),
+                 that feeds it (`Batcher`, `OfflineWait`), the server's
+                 process (`ProcessGuard`) and the served plugin as a `Loaded`
+                 (`Ipc`, `IpcProcessor`, `IpcController`); no plugin format,
+                 design 021 §6.1),
   tutti-plugin-host (the format-generic half of hosting, not a format host: the
                  `PluginHandle` control surface and its `Host*` capability traits,
                  the node's controls, meter, transport and parameter delivery, the
-                 host policy (`Liveness`, `PluginParamValues`) and the in-process
-                 node; no wire, design 021 §6.1),
+                 host policy (`Liveness`, `PluginParamValues`) and the plugin node
+                 over any `Loaded` hosting (`PluginNode`: in-process through
+                 `load_client`, served through `client_over`); no wire, design
+                 021 §6.1),
   tutti-plugin-probe (the `plugin-probe` binary: reads a plugin's descriptor
                  into a result file, `tutti-plugin-types`' `probe_wire`; the format
                  hosts and no hosting; nothing depends on it, design 021 §2.5),
@@ -761,10 +765,15 @@ list (normal and build edges; dev-dependencies may go anywhere).
   name its types from it, not through `tutti-plugin`.
 - `tutti-plugin-ipc` depends on `tutti-types`, `tutti-rt`, `tutti-ump` and
   `tutti-plugin-types` alone among workspace crates (no `tutti-graph`: the
-  `Batcher` takes the plain values it reads from a `Prepare`),
+  `Batcher` takes the plain values it reads from a `Prepare`; `Ipc` is a
+  `tutti_plugin_types::Loaded`, one for every format by path until AU has its own),
   keeps every module private but `state_chunk` (the namespace both ends chunk
   a state with; CI runs the per-module path gate on the rest) and has no
-  `bevy` feature. Its `unsafe` is the process edge's own (shared memory and
+  `bevy` feature. **The served control is thread-agnostic:** `Ipc`'s and
+  `IpcController`'s `Control` methods take a `MainThread` and ignore it, and
+  nothing in `-ipc` hops to the main thread; a rate, block and quantum are
+  taken through `Processor::retune`, a reopen with `Ipc::reopen_restoring`.
+  Its `unsafe` is the process edge's own (shared memory and
   its mapping, the Windows control-socket deadline, the launch), each block
   under a `// SAFETY:`. It knows no format:
   the editor-only instance a `PluginBridge` opens is loaded by the host's

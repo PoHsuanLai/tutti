@@ -27,7 +27,7 @@ use std::num::NonZeroUsize;
 use crate::{
     AudioBufferMut, AutomationMode, EditorWindow, LoadedPlugin, Normalized, ParamId, ParameterInfo,
     PluginDescriptor, PluginError, PluginResult, PluginTail, Preset, PresetId, ProcessContext,
-    ProcessOutput, Samples,
+    ProcessOutput, SampleRate, Samples,
 };
 use crate::{FdId, MainThread, Prepare, RenderMode, Request, RescanScope, RestartRules, TimerId};
 
@@ -264,14 +264,55 @@ pub trait Processor: Send {
     /// With `Some(n)` the graph node cuts each block at the Processor's chunk
     /// edges, counted in frames from `prepare` and from every
     /// [`reset`](Self::reset), and calls `process` once per piece: each call
-    /// is inside one chunk, its [`ProcessContext::transport`] is the
-    /// transport at the call's first frame, and its MIDI, harmony and
-    /// [`transport_changes`](crate::ProcessContext::transport_changes) are the
-    /// ones inside the call, on frames from its start. The parameter changes
-    /// are the chunk's so far, on chunk frames. Read each block, on the
-    /// realtime thread: it must not change while the Processor renders.
+    /// is inside one chunk. What a call carries:
+    ///
+    /// - **Per piece, on the piece's frames** (from its start): the audio,
+    ///   the MIDI ([`ProcessContext::midi_events`]) and the harmony
+    ///   ([`ProcessContext::expressive`]). The Processor accumulates these
+    ///   into its chunk itself, at the piece's place in it.
+    /// - **Per chunk, so far, on the chunk's frames** (from the chunk's first):
+    ///   the parameter changes ([`ProcessContext::param_changes`]) and the
+    ///   transport. [`ProcessContext::transport`] is the transport at the
+    ///   **chunk's** first frame in every piece, and
+    ///   [`transport_changes`](ProcessContext::transport_changes) are the
+    ///   chunk's changes up to and including the piece, one walk across its
+    ///   pieces: a stop, a seek or a tempo-map point on a block boundary inside
+    ///   the chunk is a change at its chunk frame. Both are final in the
+    ///   piece that **completes** the chunk (the transport's `tempo_inc` is the
+    ///   slope to the chunk's end, known only then), which is the call a
+    ///   Processor that ships the chunk there reads them in.
+    ///
+    /// Read each block, on the realtime thread: it must not change while the
+    /// Processor renders.
     fn chunk(&self) -> Option<NonZeroUsize> {
         None
+    }
+
+    /// The frames of latency this Processor adds to the plugin's own (the
+    /// [`Controller::latency`] figure): the served pipeline's chunk, which it
+    /// ships to another process and plays the one before. `0`, the default,
+    /// for a Processor that renders in place. Read from the node's `prepare`,
+    /// after [`retune`](Self::retune), so a graph compiled from the node's
+    /// shape compensates for it.
+    fn latency(&self) -> Samples {
+        Samples(0)
+    }
+
+    /// Follows the graph's rate, block ceiling and device quantum without a
+    /// restart, for a Processor that can (the served pipeline: it tells its
+    /// server the rate by a queued command and settles its chunk from the
+    /// block and quantum). `true` when it took them, so the graph node does
+    /// not deactivate and activate the plugin for them; `false`, the default,
+    /// when only a [`Lifecycle`](crate::Lifecycle) reconfiguration can.
+    ///
+    /// Called from the node's `prepare`, which runs off the audio thread with
+    /// the node out of any executor, so it may allocate; it starts the
+    /// Processor over (its chunk phase and any chunk in flight), as a
+    /// [`reset`](Self::reset) does. Needs no [`MainThread`],
+    /// which is why the served hosting can take it from any thread.
+    fn retune(&mut self, rate: SampleRate, max_block: Samples, quantum: Option<Samples>) -> bool {
+        let _ = (rate, max_block, quantum);
+        false
     }
 }
 

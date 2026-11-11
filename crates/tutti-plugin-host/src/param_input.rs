@@ -6,7 +6,7 @@
 //!
 //! One walk for both plugin nodes: the out-of-process node runs it for each
 //! piece of a chunk (`PluginChunks::take`, in `graph_node`), the in-process
-//! node for each block (`format::in_process`), so the two read a
+//! node for each block (`node`), so the two read a
 //! ramp, a segment and an address the same way.
 
 use tutti_graph::{Cx, Event, EventKind, Offset, ParamSegment};

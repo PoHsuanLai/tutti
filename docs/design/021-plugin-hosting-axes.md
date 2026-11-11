@@ -913,7 +913,9 @@ gains what `graph_node.rs` does; the in-process Processors answer the defaults,
 so their render is unchanged (`tutti-plugin-host`'s 116 tests and the
 `vst2_in_process_*` suites pass untouched).
 
-1. **`Processor::chunk() -> Option<NonZeroUsize>`**, default `None`. With
+1. **`Processor::chunk() -> Option<NonZeroUsize>`**, default `None`
+   (*the transport rule below was amended in 3a, item 7 of "PR 3a as built":
+   the transport is the chunk's, not the piece's*). With
    `Some(n)` the node polls the Processor once, cuts the block at the chunk
    edges (frames counted from `prepare` and every `reset`, in `InProcClient`'s
    `phase`) and calls `process` once per piece. Each piece reads its transport
@@ -963,6 +965,113 @@ the block's frames and written after the last piece, capped at the inline list);
 the bridge rather than a deactivate and activate; and the node's `segments`
 chunk length, which the in-process path has never set (`SegmentPoints::begin`
 is called only for a chunked Processor).
+
+**PR 3a as built.** The served hosting is added **beside** the served node;
+nothing that ships changes (`PluginClient`, `graph_node.rs`, the served
+`fork.rs`, `subprocess_backend.rs` are as they were).
+
+1. **`Ipc: Loaded`** (`tutti-plugin-ipc`, module `ipc/`, no format parameter,
+   no `tutti-graph` or `tutti-plugin-host` edge). `Ipc::new(IpcParts)` wraps a
+   running server (bridge, `ProcessGuard`, `LoadedPlugin`, the slab writer);
+   `Ipc::launch(config, path, rate, state, EditorLoader)` starts one.
+   `activate` gives an `IpcProcessor` (the `Batcher` behind `process`: one
+   call is one piece inside one chunk; the chunk's payload is the first piece's
+   transport, and the pieces' MIDI, harmony and transport changes shifted to
+   chunk frames; the parameter changes are the node's chunk so far, copied
+   into the buffer the bridge swaps; `midi_lost`, `params_unsent` and the
+   MIDI-out are reported in `ProcessOutput`) and an `IpcController` (`Control`
+   over the bridge, `Controller::latency` the plugin's own). `RESTARTS` is
+   `NONE`. `chunk()` is the configured chunk (required test, mutation "override
+   deleted" run).
+2. **Two defaulted `Processor` methods**, because the served pipeline's rate,
+   block and quantum are not an activation: `retune(rate, max_block, quantum)
+   -> bool` (taken live, no restart, no token; `false` default sends the node
+   down the lifecycle's reconfiguration, so in-process hostings are
+   unchanged) and `latency()` (what the Processor adds to the plugin's own: the
+   chunk; the node declares the sum).
+3. **Where `Control`/`Loaded` did not fit.** (a) *Tokens.* `Control` takes a
+   `&MainThread` for every call; `Ipc` ignores it and the bridge answers from
+   any thread, so the served control stays thread-agnostic with no hop added
+   (the in-process `ControlBackend`, which hops through `defer_to_main`, is not
+   generalised: 3b/4 give the served handle a backend over `IpcController`'s
+   inherent bridge access). (b) *Rate.* `Loaded::activate` and the lifecycle
+   take a token and restart; a served rate is a queued command, hence `retune`.
+   (c) *Latency* is read by the lifecycle through the controller with a token;
+   hence the split above, so a `retune` off the main thread needs no re-read.
+   (d) *Events.* The bridge's listener events become `Request::LatencyChanged`
+   / `TailChanged` for the lifecycle; the others (parameter edits, resyncs, a
+   refused rate, a crash) are forwarded through `Ipc::forward_events` and wired
+   to the handle's sinks in 3b. (e) *`Health`* (`is_crashed`, `crash_cause`,
+   `terminate`, `rate_refusal`, `block_counts`) is not needed by 3a and is left
+   to PR 4: nothing here moves a handle.
+4. **Reopen without a token.** `Reopen::reopen` takes one and gives a stateless
+   instance, so `Ipc` implements it and adds `Ipc::reopen_restoring(state) ->
+   Launched` (a new server of its own socket, the state restored before
+   activation, no `MainThread`), tested on a worker thread against a real
+   server. `Ipc::wait_offline()` gives the `OfflineWait` of an export's fork.
+   Not wired into the generic fork.
+5. **The node is generic over `Loaded`.** `tutti-plugin-host`'s `in_process/`
+   is `node/` (`git mv`; its `node.rs` is `graph.rs`). `Instance`,
+   `InProcClient` and `PluginNode` are over `H: Loaded`; the parts that load
+   (`Instance::load`, `load_client`) and fork (`Fork`, `IntoNode`) stay
+   `InProcess`, and a client has an `Option<Origin>` (none: no fork).
+   `client_over(main, loaded, rate, block, spares)` builds one for any
+   hosting (`PluginNode<Ipc>` is built in `tutti-plugin`); its delivery learns
+   `spares` unlisted addresses as the served node's does. `InProcClient::go_offline`
+   drops the host clock. The type keeps the name `InProcClient`; renaming it is
+   3b's. A chunked Processor's parameter room is its chunk (it was the larger of
+   chunk and block).
+6. **Tests.** `ipc_node_tests` pins `PluginNode<Ipc>` analytically against the
+   mock server (a click comes out one declared latency later; per chunk the
+   transport at its first frame, a tempo step on its frame in the chunk that
+   holds it, notes, a chord and parameter points on their chunk frames, the
+   MIDI-out one chunk late, `reset` restarting the chunk phase, sequence
+   numbers across it). `migration_old_and_new_served_nodes_agree` is a
+   **migration aid, deleted with the old served node in 3b** (it compares one
+   render against another, which a lasting test may not): the same schedule
+   through the old node and the new one, audio and every audio-path frame the
+   server receives equal bit for bit. What only the aid checks: the byte
+   identity of the wire frames, and a parameter ramp with a duration (its
+   grid points are `ParamDelivery`'s, pinned in `tutti-plugin-host`).
+7. **Amended in 3a: the chunk's transport is chunk-level (PR 2's contract
+   changed).** PR 2 handed each piece the transport at the piece's first frame
+   and the changes inside the piece. Reading the code against the served
+   node showed that loses what the served walk reported: a stop or seek on a
+   block boundary inside a chunk (a break between pieces, never scanned) and
+   the slope (`tempo_inc`) to the chunk's end. So for a chunked Processor the
+   context's `transport` is the transport at the **chunk's** first frame and
+   `transport_changes` are the chunk's so far, on chunk frames, from one
+   `TransportWalk` across the pieces (`begin` at the chunk's first frame,
+   `scan` each piece at its chunk frame, `finish` at the completing piece, as
+   `graph_node.rs` does); both are final in the completing piece, which is the
+   call `IpcProcessor` reads them in (`-ipc` walks nothing). MIDI and harmony
+   stay per piece, on piece frames; the parameters are the chunk's, as before.
+   PR 2's two per-piece transport tests in `chunked_node.rs` encoded the old
+   rule and were rewritten to the new one (a step at frame 80 in the chunk
+   from 64 is a change at chunk frame 16, in the piece that holds it and the
+   rest of the chunk; every piece reads its chunk's first-frame transport),
+   with fresh mutations. New pins: a stop and a seek on a block boundary, a
+   tempo ramp's `tempo_inc`, at the node (`chunked_node`) and at the server
+   (`ipc_node_tests`); the migration aid is extended with all three and agrees
+   with the old node.
+8. **Counted losses.** The MIDI the Processor holds for the chunk in flight
+   when the node resets (or is re-prepared) is dropped with it and counted:
+   at once in the delivery's dropped MIDI, and in the executor's lost count
+   with the next block (a reset has no `Io`; `Direct::lost` exposes it to
+   tests). Transport changes past the inline bound
+   (`MAX_TRANSPORT_CHANGES`) go to `dropped_transport_changes`, the counter the
+   served node used (the node's walk is where they overflow; `IpcProcessor`
+   receives the same bounded list). A chunk's MIDI past the Processor's cap is
+   counted lost through `ProcessOutput::count_midi_lost`.
+
+**3b must still:** switch `PluginClient`/`Plugin::open` to `PluginNode<Ipc>`
+(the handle over a served backend, the sinks on `forward_events`, `PluginControls`
+counters and `attach_bridge_midi`, the `ChunkCounters`); build the fork from
+`Ipc::reopen_restoring` with `wait_offline`, `settle` in `prepare` and
+`ForkWatch` over the generic node; move
+`mock_server.rs` out of the migration aid's neighbourhood (the pins use it) and
+delete `differential_tests.rs`, `graph_node.rs`, the served `fork.rs`,
+`node/mod.rs` and `subprocess_backend.rs`.
 
 ## 11. Open questions
 

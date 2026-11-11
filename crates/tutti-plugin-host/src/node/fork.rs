@@ -143,18 +143,20 @@ impl<F: InProcess + 'static> Fork<F>
 where
     F::Processor: 'static,
 {
-    pub(super) fn of(bound: &PluginNode<F>) -> Self {
+    /// The source for `bound`, or `None` for a plugin with no origin to load
+    /// again.
+    pub(super) fn of(bound: &PluginNode<F>) -> Option<Self> {
         let client = &bound.client;
-        Self {
+        Some(Self {
             tempo: bound.tempo.clone(),
             live: Arc::downgrade(&client.inner),
-            origin: client.origin.clone(),
+            origin: client.origin.clone()?,
             id: client.descriptor.id.clone(),
             sample_rate: client.sample_rate,
             features: client.features,
             transport: client.transport.clone(),
             delivery: client.params.counters(),
-        }
+        })
     }
 
     /// The six steps in the module docs, in order.
@@ -312,6 +314,15 @@ where
         main: &MainThread,
         mode: ForkMode,
     ) -> Result<PluginNode<F>, PluginForkError> {
-        Fork::of(self).instance(main, mode)
+        Fork::of(self)
+            .ok_or_else(|| PluginForkError::Load {
+                path: std::path::PathBuf::new(),
+                source: tutti_plugin_types::BridgeError::LoadFailed {
+                    path: std::path::PathBuf::new(),
+                    stage: tutti_plugin_types::LoadStage::Opening,
+                    reason: "this node has no origin to load again".into(),
+                },
+            })?
+            .instance(main, mode)
     }
 }

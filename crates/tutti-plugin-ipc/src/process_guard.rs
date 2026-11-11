@@ -78,8 +78,9 @@ impl ProcessGuard {
     }
 
     /// Test-only: create a guard without a real subprocess. Used by
-    /// `handle_over` in `tutti-plugin`'s mock-server tests.
-    #[cfg(feature = "test-support")]
+    /// `handle_over` in `tutti-plugin`'s mock-server tests, and by this
+    /// crate's own for `Ipc`.
+    #[cfg(any(test, feature = "test-support"))]
     pub fn for_test(config: BridgeConfig) -> Self {
         Self {
             process: Mutex::new(None),

@@ -13,7 +13,7 @@
 //! `tutti-plugin-ipc`'s, and `tutti-plugin` puts a served plugin behind these
 //! types. Nothing here is a dependency of either.
 
-// One `unsafe` block, the window decode of `in_process`'s `HostEditor` (the raw
+// One `unsafe` block, the window decode of `node`'s `HostEditor` (the raw
 // pointer `PluginHandle::open_editor` extracts): `deny` rather than `forbid` so
 // that one site can say so, with its `SAFETY` comment. Nothing else here is.
 #![deny(unsafe_code)]
@@ -21,10 +21,10 @@
 mod capabilities;
 mod control_handle;
 mod controls;
-mod in_process;
 mod listeners;
 mod liveness;
 mod meter;
+mod node;
 mod param_delivery;
 mod param_input;
 mod param_values;
@@ -39,10 +39,10 @@ pub use capabilities::{
 };
 pub use control_handle::{OptionalCapabilities, PluginHandle, PluginStatus};
 pub use controls::{ForkedSources, NodeControls, PluginControls, lock_tail};
-pub use in_process::{InProcClient, PluginNode, load_client, load_client_restoring};
 pub use listeners::{InvalidateSink, Listener, ParameterChangeSink, RefreshSink};
 pub use liveness::{Liveness, Verdict};
 pub use meter::PluginMeter;
+pub use node::{InProcClient, PluginNode, client_over, load_client, load_client_restoring};
 pub use param_delivery::{DeliveryCounters, ParamDelivery, ParamDeliveryStats};
 pub use param_input::take as take_param_input;
 pub use param_values::{ParamRead, PluginParamValues};

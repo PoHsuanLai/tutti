@@ -763,7 +763,7 @@ mod tests {
     fn test_lfo_reset() {
         let mut d = Direct::new(LfoNode::new(LfoShape::Sine), SampleRate(100.0), 50);
         d.block();
-        Node::reset(&mut d.node);
+        Node::reset(&mut *d.node);
         d.block();
         assert!(
             d.output(0)[0].abs() < 0.1,

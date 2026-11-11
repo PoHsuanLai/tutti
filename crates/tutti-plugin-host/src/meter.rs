@@ -151,7 +151,7 @@ mod tests {
     /// installed (so the slot's value held the meter's last `Arc`).
     ///
     /// Each block does the node's read (one borrow of the node's cell, as
-    /// `graph_node.rs` and the in-process VST2 feed do) under
+    /// the generic node does) under
     /// `assert_no_alloc`, and the host's install or clear lands while the
     /// borrow is live, under `permit_alloc`: the free of the replaced meter
     /// must then fall to the control side, never to the borrow's drop. The

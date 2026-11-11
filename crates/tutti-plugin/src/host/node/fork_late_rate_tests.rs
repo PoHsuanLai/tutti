@@ -57,8 +57,8 @@ impl Drop for Env {
 /// with the refusal standing and the answer unread. Every block must be live
 /// and the fork must report no fault.
 ///
-/// Mutation (run): drop the `c.bridge.settle()` in a fork's `prepare`
-/// (`graph_node.rs`) → the refusal still stands when the render starts,
+/// Mutation (run): drop the `bridge.settle()` in a watched fork's retune
+/// (`IpcProcessor::retune`) → the refusal still stands when the render starts,
 /// `await_output` latches it and the fork reports `Failed` (`RateRefused`,
 /// "did not answer") with silent blocks → fails.
 #[test]

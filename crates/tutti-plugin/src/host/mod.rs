@@ -6,10 +6,10 @@
 //! *being a plugin host*:
 //!
 //! - [`db_probe`] — the subprocess probe that `tutti-plugin-db` scans with.
-//! - `subprocess_backend` — a served plugin's client behind the handles'
-//!   capability traits.
-//! - [`node`] — the [`PluginClient`](node::PluginClient) graph node that the
-//!   out-of-process plugin presents to the audio graph.
+//! - `subprocess_backend` — a served plugin's bridge behind the handles'
+//!   capability traits (until the traits go, design 021 step 4b PR 4).
+//! - [`node`] — the [`PluginClient`](node::PluginClient): the generic plugin
+//!   node over the served hosting, and what the host keeps beside it.
 //! - [`handles`] — the client's typestates ([`PluginClient`](node::PluginClient)
 //!   is born `Unbound` and binds into a graph node).
 //! - [`plugin`] / [`plugins`] — the public load API.

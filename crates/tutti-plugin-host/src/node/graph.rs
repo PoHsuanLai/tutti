@@ -57,9 +57,12 @@ where
         // (`poll_changes` keeps them current; nothing is dispatched to the
         // plugin here), falling back to this node's copy while the control
         // thread holds the instance.
-        let (latency, tail) = match this.inner.try_lock() {
-            Some(instance) => instance.figures(),
-            None => (this.declared.latency, this.declared.tail),
+        let (latency, tail) = match (&this.controls, this.inner.try_lock()) {
+            // A served plugin's, re-reported by the bridge's thread into the
+            // controls' cells, which also hold the pipeline's chunk.
+            (Some(controls), _) => (controls.latency(), controls.tail()),
+            (None, Some(instance)) => instance.figures(),
+            (None, None) => (this.declared.latency, this.declared.tail),
         };
         // The plugin's own latency, and what the Processor adds to it (the
         // served pipeline's chunk).
@@ -84,7 +87,15 @@ where
         // A Processor that follows the graph takes its rate, block and
         // quantum live (no restart, no main thread); one that does not is
         // told the rate by the lifecycle.
-        if !this.retune(p) {
+        if this.retune(p) {
+            // The Processor started its pipeline over: the chunk in flight is
+            // dropped (`drop_chunk` below), and the rest of a SysEx open in it
+            // is cut, as at a reset. Its far end keeps its reassembler's open
+            // message across the retune (a served server does nothing for a
+            // rate it already has), so a tail taken now would complete the
+            // message with a gap.
+            this.intake.lost();
+        } else {
             this.set_rate(p.sample_rate());
         }
         // A chunked Processor's delivery chunk is its own (`Processor::chunk`),
@@ -831,5 +842,64 @@ mod owed_tests {
         let processor = unit.node.rt.held().expect("lent");
         assert_eq!(processor.dropped_sysex(), 1, "the cut dump, whole");
         assert_eq!(controls.dropped_midi_in(), (cut.len() - 3) as u64);
+    }
+}
+
+#[cfg(test)]
+mod harmony_tests {
+    use super::*;
+    use tutti_plugin_types::HARMONY_CAPACITY;
+
+    /// **A chord and a scale become the plugin's chord and scale changes**,
+    /// at their frames, for a plugin that takes sequencer context; a plugin
+    /// that does not gets none. Past the inline capacity the rest are dropped
+    /// (no allocation).
+    ///
+    /// Mutation: drop the `SEQUENCER_CONTEXT` gate → the second plugin gets
+    /// the chord → fails. Mutation: bass from the root (`i16::from(h.root())`)
+    /// → the slash chord's bass is wrong → fails. Mutation: `push_harmony`
+    /// through `changes.push` rather than `add_change` → the fifth chord
+    /// panics past the cap → fails. (That the node routes a harmony event here
+    /// is pinned by `chunked_node`'s `midi_and_harmony_arrive_on_the_frames_of_their_piece`.)
+    #[test]
+    fn harmony_becomes_chord_and_scale_changes_for_a_plugin_that_takes_it() {
+        let (mut chords, mut scales) = (ChordChanges::default(), ScaleChanges::default());
+        let takes = Features::SEQUENCER_CONTEXT;
+        let chord = Harmony::chord(65, 69, 0b1001_0001);
+        push_harmony(&mut chords, &mut scales, takes, chord, 12);
+        let scale = Harmony::scale(69, 0b0101_1010_1101);
+        push_harmony(&mut chords, &mut scales, takes, scale, 30);
+        let c = &chords.changes[0];
+        assert_eq!(
+            (c.sample_offset, c.root, c.bass_note, c.mask),
+            (12, 65, 69, 0b1001_0001)
+        );
+        let s = &scales.changes[0];
+        assert_eq!(
+            (s.sample_offset, s.root, s.mask),
+            (30, 69, 0b0101_1010_1101)
+        );
+
+        let (mut none_chords, mut none_scales) = (ChordChanges::default(), ScaleChanges::default());
+        let chord = Harmony::chord(60, 60, 1);
+        push_harmony(
+            &mut none_chords,
+            &mut none_scales,
+            Features::empty(),
+            chord,
+            0,
+        );
+        assert!(none_chords.changes.is_empty());
+
+        for i in 0..100 {
+            push_harmony(
+                &mut chords,
+                &mut scales,
+                takes,
+                Harmony::chord(60, 60, 1),
+                i,
+            );
+        }
+        assert_eq!(chords.changes.len(), HARMONY_CAPACITY, "kept to the cap");
     }
 }

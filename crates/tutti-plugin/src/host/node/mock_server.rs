@@ -6,7 +6,6 @@
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use tutti_fixtures::main_thread;
 use tutti_graph::Offset;
 use tutti_graph::contract::Direct;
 use tutti_plugin_host::client_over;
@@ -16,8 +15,8 @@ use tutti_plugin_ipc::{
     unique_socket_path,
 };
 use tutti_plugin_types::{
-    ChannelLayout, EditorPresence, Features, LoadedPlugin, ParamId, ParameterChanges,
-    ParameterInfo, PluginClass, PluginDescriptor, PluginTail, SampleFormat,
+    ChannelLayout, EditorPresence, Features, LoadedPlugin, MaxBlock, ParamId, ParameterChanges,
+    ParameterInfo, PluginClass, PluginDescriptor, PluginTail, Prepare, SampleFormat,
 };
 use tutti_tempo::{Shape, TempoMap, TempoPoint};
 use tutti_transport::TempoReader;
@@ -155,6 +154,11 @@ pub(super) fn rig(label: &str) -> Rig {
                     HostMessage::GetPresetList => Some(BridgeMessage::PresetList {
                         presets: Vec::new(),
                     }),
+                    // What `PluginBridge::settle` asks, which a watched
+                    // plugin's retune waits on.
+                    HostMessage::GetCurrentPreset => {
+                        Some(BridgeMessage::CurrentPreset { id: None })
+                    }
                     HostMessage::ProcessAudio(data) => {
                         log.lock().unwrap().push(bytes);
                         Some(answer(&mut server_slab, &mut scratch, data))
@@ -266,15 +270,24 @@ pub(super) fn new_node(
         timeout: Duration::from_secs(5),
         origin: None,
     });
-    let _ = ipc.wait_offline();
-    let mut client = client_over(
-        &main_thread(),
-        ipc,
-        SR,
-        CHUNK,
+    let _ = ipc.watch(true);
+    let prepare =
+        Prepare::new(SR, MaxBlock::new(Samples(CHUNK)).expect("a block")).expect("a rate");
+    let descriptor = ipc.descriptor().clone();
+    let wiring = ipc.loaded().clone();
+    let (processor, controller) = ipc
+        .activate_anywhere(prepare)
+        .unwrap_or_else(|_| panic!("the served plugin activates"));
+    let mut client = client_over::<Ipc>(
+        processor,
+        controller,
+        prepare,
+        descriptor,
+        &wiring,
+        PARAMS.iter().map(|&id| ParamId::new(id)),
         ParameterChanges::SPARE_QUEUES,
-    )
-    .expect("the served plugin activates");
+        None,
+    );
     client.go_offline();
     (Direct::new(client.bind(tempo), SR, CHUNK), record, threads)
 }

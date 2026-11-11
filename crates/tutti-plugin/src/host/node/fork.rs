@@ -9,7 +9,7 @@
 //! bridge: a copy of the node would drive the live plugin from the render
 //! thread — two callers interleaving blocks into one instance's state. So the
 //! node is not `Clone`, and a bound client hands the editor its **own**
-//! [`ForkSource`] through [`IntoNode`] instead.
+//! [`ForkSource`] through [`IntoNode`](tutti_graph::IntoNode) instead.
 //!
 //! # What a fork is
 //!
@@ -68,12 +68,14 @@
 //!    its own editor is never re-sent live; seeded, the fork does not send
 //!    it either, and the export renders what playback plays.
 //! 5. **Bind it**, and **offline only:** tell it
-//!    [`RenderMode::Offline`](crate::RenderMode), and make its batcher wait for
-//!    each chunk (see `Batcher::set_offline_wait`) — the live pipeline never
-//!    waits, which on a render worker would turn every chunk the subprocess
-//!    had not finished yet into silence — and drop its host clock, so the
-//!    plugin is told no `systemTime`: no clock relates to a render that runs
-//!    at its own speed.
+//!    [`RenderMode::Offline`](crate::RenderMode), and make its pipeline wait for
+//!    each chunk (`Ipc::watch`, before the plugin is activated; the live
+//!    pipeline never waits, which on a render worker would turn every chunk the
+//!    subprocess had not finished yet into silence) — and drop its host clock,
+//!    so the plugin is told no `systemTime`: no clock relates to a render that
+//!    runs at its own speed. A fork, offline or live, is **watched**: its
+//!    `prepare` (`IpcProcessor::retune`) settles the server's queued rate and
+//!    mode changes and records the latency its graph is compiled against.
 //!
 //! Any failure is a [`PluginForkError`] naming the step, and the fresh
 //! instance (if one started) is dropped with it, which kills and reaps its
@@ -117,36 +119,21 @@
 //! - **A fork of its own.** The node the fork source builds is inserted
 //!   without one, like every forked node.
 //!
-//! An in-process plugin (`PluginNode`) forks by state transfer too, into a
-//! second instance in this process from the same library
-//! (`format::in_process`'s `fork` module).
+//! An in-process plugin (`PluginNode` over an `InProcess` format) forks by state
+//! transfer too, into a second instance in this process from the same
+//! library (`tutti-plugin-host`'s `fork` module).
 
-use std::path::PathBuf;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Weak};
-use std::time::Duration;
 
-use tutti_graph::{
-    ForkBuild, ForkCause, ForkFaultKind, ForkHealth, ForkMode, ForkSource, Forked, IntoNode, Node,
-    NodeParts,
-};
-use tutti_types::Latency;
-use tutti_types::Samples;
+use tutti_graph::{ForkBuild, ForkCause, ForkFaultKind, ForkHealth, ForkMode, ForkSource, Forked};
+use tutti_types::{Latency, SampleRate};
 
 use super::{Bound, PluginClient, Unbound};
 use tutti_plugin_host::{ForkedSources, PluginControls};
-use tutti_plugin_ipc::PluginRenderFault;
-use tutti_plugin_ipc::{BridgeConfig, unique_socket_path};
-use tutti_plugin_ipc::{OfflineWait, PluginBridge};
+use tutti_plugin_ipc::{IpcOrigin, Launched, OfflineWait, PluginBridge, PluginRenderFault};
 use tutti_plugin_types::PluginForkError;
 use tutti_plugin_types::RenderMode;
 use tutti_plugin_types::StateError;
-
-/// What a [`PluginClient`] was loaded from: enough to load it again.
-pub(super) struct Origin {
-    pub(super) config: BridgeConfig,
-    pub(super) plugin_path: PathBuf,
-}
 
 /// Whether a forked instance has failed while rendering: its
 /// `tutti_graph::ForkHealth` probe. See "When the fork fails while
@@ -154,39 +141,21 @@ pub(super) struct Origin {
 pub(super) struct ForkWatch {
     /// The fork's controls: the latency it declares now.
     controls: PluginControls,
-    /// The latency the fork's graph was compiled against, recorded by the
-    /// node's `prepare` once the plugin has settled (`usize::MAX`: not
-    /// prepared yet).
-    planned: AtomicUsize,
     /// The fork's bridge. Weak: a probe the editor keeps must not keep the
     /// fork alive after its node is gone (a dropped fork has nothing left to
-    /// fail), and the fork's own batcher holds the wait.
+    /// fail), and the fork's own pipeline holds the wait.
     bridge: Weak<PluginBridge>,
-    /// What the fork's batcher waits on and latches into (shared with it).
+    /// What the fork's pipeline waits on and latches into (shared with it),
+    /// and the latency its graph was compiled against (`OfflineWait::plan`,
+    /// recorded by the node's `prepare` once the plugin has settled).
     wait: Arc<OfflineWait>,
 }
 
 impl ForkWatch {
-    /// The wait the fork's batcher is given.
-    pub(super) fn wait(&self) -> Arc<OfflineWait> {
-        Arc::clone(&self.wait)
-    }
-
-    /// Record the latency the fork's graph is compiled against: what the
-    /// node's `Shape` declares right after this `prepare`.
-    pub(super) fn plan(&self, latency: Latency) {
-        self.planned
-            .store(latency.samples().get(), Ordering::Release);
-    }
-
-    /// The fork's latency, if it moved since [`plan`](Self::plan): `(planned,
+    /// The fork's latency, if it moved since the plan was recorded: `(planned,
     /// now)`.
     fn latency_moved(&self) -> Option<(Latency, Latency)> {
-        let planned = self.planned.load(Ordering::Acquire);
-        if planned == usize::MAX {
-            return None;
-        }
-        let planned = Latency::new(Samples(planned));
+        let planned = Latency::new(self.wait.planned()?);
         let now = self.controls.declared_latency();
         (now != planned).then_some((planned, now))
     }
@@ -235,13 +204,15 @@ impl ForkHealth for ForkWatch {
 /// runs: everything a fork needs from the live node, and nothing that keeps
 /// it alive, so a source held by an editor does not outlive the plugin it
 /// forks.
-struct PluginFork {
+pub(super) struct ServedFork {
     /// The live bridge — asked for the state, nothing else. Weak: once every
     /// node and handle on the live instance is gone, a fork answers
     /// [`PluginForkError::LiveGone`] at once instead of queueing a save on a
     /// bridge with no process behind it.
     bridge: Weak<PluginBridge>,
-    origin: Arc<Origin>,
+    /// Where the live instance came from, which the fresh one is launched
+    /// from again (`None`: nothing to reopen).
+    origin: Option<IpcOrigin>,
     /// The live instance's plugin id, which the fresh one must match.
     id: String,
     /// The live node's controls: its installed sources and its rate.
@@ -253,8 +224,8 @@ struct PluginFork {
     tempo: tutti_transport::TempoReader,
 }
 
-impl PluginFork {
-    fn of(client: &PluginClient<Bound>) -> Self {
+impl ServedFork {
+    pub(super) fn of(client: &PluginClient<Bound>) -> Self {
         Self::reading(client, client.state.tempo.clone())
     }
 
@@ -263,7 +234,7 @@ impl PluginFork {
         Self {
             tempo,
             bridge: Arc::downgrade(&client.bridge),
-            origin: Arc::clone(&client.origin),
+            origin: client.origin.clone(),
             id: client.descriptor.id.clone(),
             controls: client.controls.clone(),
         }
@@ -291,10 +262,18 @@ impl PluginFork {
         let delivered = self.controls.delivered();
         let state = live.save_state().map_err(PluginForkError::SaveState)?;
         drop(live);
+        let origin = self.origin.clone().ok_or_else(|| PluginForkError::Load {
+            path: std::path::PathBuf::new(),
+            source: tutti_plugin_types::BridgeError::LoadFailed {
+                path: std::path::PathBuf::new(),
+                stage: tutti_plugin_types::LoadStage::Opening,
+                reason: "this served plugin has no origin to reopen".into(),
+            },
+        })?;
         Ok(Capture {
             state,
             delivered,
-            origin: Arc::clone(&self.origin),
+            origin,
             id: self.id.clone(),
             sample_rate: self.controls.sample_rate(),
             sources: self.controls.sources_now(),
@@ -316,11 +295,11 @@ struct Capture {
     /// is not sent to the fork either, and the export renders what live
     /// playback plays.
     delivered: Vec<(tutti_plugin_types::ParamId, f64)>,
-    origin: Arc<Origin>,
+    origin: IpcOrigin,
     /// The live instance's plugin id, which the fresh one must match.
     id: String,
     /// The live node's rate, which the fresh instance is launched at.
-    sample_rate: tutti_types::SampleRate,
+    sample_rate: SampleRate,
     sources: ForkedSources,
     /// A reader of the project's tempo map of the fork's own, registered at
     /// the gather.
@@ -332,60 +311,54 @@ impl Capture {
     /// Steps 2 to 5 of the module docs: the slow part (a `plugin-server`
     /// launch and a state load), free to run off the control thread.
     fn build(self) -> Result<PluginClient<Bound>, PluginForkError> {
-        let path = self.origin.plugin_path.clone();
-        let config = BridgeConfig {
-            // Its own rendezvous: two bridges on one socket path is the
-            // collision `unique_socket_path` exists to prevent.
-            socket_path: unique_socket_path(),
-            ..self.origin.config.clone()
-        };
-        let timeout = Duration::from_millis(config.timeout_ms);
+        let path = self.origin.path.clone();
         // The live instance's state goes in **before the fork's plugin is
-        // activated** (`PluginClient::new_with_state`): a plugin may take its
-        // mode from the state at activation.
-        let (fork, restored) =
-            PluginClient::new_with_state(config, path.clone(), self.sample_rate, Some(&self.state))
-                .map_err(|source| PluginForkError::Load {
-                    path: path.clone(),
-                    source,
-                })?;
-        if fork.descriptor.id != self.id {
+        // activated** (`IpcOrigin::reopen`): a plugin may take its mode from
+        // the state at activation.
+        let Launched { mut ipc, restored } = self
+            .origin
+            .reopen(self.sample_rate, Some(&self.state))
+            .map_err(|source| PluginForkError::Load {
+                path: path.clone(),
+                source,
+            })?;
+        if ipc.descriptor().id != self.id {
             return Err(PluginForkError::Mismatch {
                 path,
                 expected: self.id,
-                found: fork.descriptor.id.clone(),
+                found: ipc.descriptor().id.clone(),
             });
         }
         if let Some(Err(reason)) = restored {
             return Err(PluginForkError::LoadState(StateError::Rejected(reason)));
         }
 
+        // Watched before it is activated: offline, the pipeline waits for each
+        // chunk; either way a `prepare` settles and records the plan.
+        let wait = ipc.watch(self.offline);
+        let mut fork = PluginClient::over(ipc).map_err(|source| PluginForkError::Load {
+            path: path.clone(),
+            source,
+        })?;
         self.sources.install(&fork.controls);
-        let watch = Arc::new(ForkWatch {
+        fork.fork_watch = Some(Arc::new(ForkWatch {
             controls: fork.controls.clone(),
-            planned: AtomicUsize::new(usize::MAX),
             bridge: Arc::downgrade(&fork.bridge),
-            wait: Arc::new(OfflineWait::new(
-                timeout,
-                Arc::downgrade(&fork.process_guard),
-            )),
-        });
-        let mut fork = fork.bind(self.tempo);
-        fork.state.params.seed(&self.delivered);
+            wait,
+        }));
+        fork.state.client.seed_delivery(&self.delivered);
         if self.offline {
             // Advisory: a plugin without the concept keeps rendering as it
             // would live, which is not an error (`Features::RENDER_MODE`).
             let _ = fork.set_render_mode(RenderMode::Offline);
-            fork.state.io.set_offline_wait(watch.wait());
             // Not pinned end to end here: the out-of-process reference
             // plugin is CLAP, which has no system-time field. The in-process
             // VST2 fork drops its clock the same way, and
             // `vst2_in_process_fork`'s `a_fork_reads_its_transport_from_the_render`
             // pins that.
-            fork.state.transport.go_offline();
+            fork.state.client.go_offline();
         }
-        fork.fork_watch = Some(watch);
-        Ok(fork)
+        Ok(fork.bind(self.tempo))
     }
 }
 
@@ -393,14 +366,14 @@ impl Capture {
 /// source of its own, with its health probe.
 fn forked(fork: PluginClient<Bound>) -> Forked {
     let health = fork.fork_health();
-    let forked = Forked::new(Box::new(fork));
+    let forked = Forked::new(fork.state.node);
     match health {
         Some(health) => forked.with_health(health),
         None => forked,
     }
 }
 
-impl ForkSource for PluginFork {
+impl ForkSource for ServedFork {
     fn fork(&self, mode: ForkMode) -> Result<Forked, ForkCause> {
         self.instance(mode).map(forked).map_err(ForkCause::new)
     }
@@ -430,7 +403,7 @@ impl PluginClient<Unbound> {
         mode: ForkMode,
         tempo: tutti_transport::TempoReader,
     ) -> Result<PluginClient<Bound>, PluginForkError> {
-        PluginFork::reading(self, tempo).instance(mode)
+        ServedFork::reading(self, tempo).instance(mode)
     }
 }
 
@@ -452,7 +425,7 @@ impl PluginClient<Bound> {
     /// This instance is only asked for its state. What the fork renders, and
     /// any parameter changed on either afterwards, does not reach the other.
     ///
-    /// Inserting a bound `PluginClient` into a graph ([`IntoNode`]) hands the
+    /// Inserting a bound `PluginClient` into a graph ([`IntoNode`](tutti_graph::IntoNode)) hands the
     /// editor a fork source that calls this, so `Editor::fork` forks a graph
     /// holding a plugin.
     ///
@@ -463,10 +436,10 @@ impl PluginClient<Bound> {
     /// to load, it turned out to be a different plugin, or it refused the
     /// state. A partly started fork is shut down before this returns.
     pub fn fork_instance(&self, mode: ForkMode) -> Result<PluginClient<Bound>, PluginForkError> {
-        PluginFork::of(self).instance(mode)
+        ServedFork::of(self).instance(mode)
     }
 
-    /// The [`ForkSource`] [`IntoNode::into_parts`] hands the editor: a fork
+    /// The [`ForkSource`] [`IntoNode::into_parts`](tutti_graph::IntoNode::into_parts) hands the editor: a fork
     /// of this plugin by state transfer ([`fork_instance`](Self::fork_instance)).
     ///
     /// For a host that inserts the plugin through its own node builder rather
@@ -475,7 +448,7 @@ impl PluginClient<Bound> {
     /// Holds nothing that keeps this instance alive (see
     /// [`PluginForkError::LiveGone`]).
     pub fn fork_source(&self) -> Box<dyn ForkSource> {
-        Box::new(PluginFork::of(self))
+        Box::new(ServedFork::of(self))
     }
 
     /// On a fork ([`fork_instance`](Self::fork_instance)): the probe that
@@ -490,36 +463,12 @@ impl PluginClient<Bound> {
     }
 }
 
-/// A bound plugin as a graph node: the node itself, the [`PluginControls`] a
-/// host drives it through from then on, and a [`ForkSource`] that forks it by
-/// state transfer (a fresh instance in its own subprocess, loaded with the
-/// live instance's saved state).
-///
-/// Only [`Bound`] implements this: an unbound plugin is not a node.
-impl IntoNode for PluginClient<Bound> {
-    type Controls = PluginControls;
-
-    fn into_node(self) -> (Box<dyn Node>, PluginControls) {
-        let controls = self.controls();
-        (Box::new(self), controls)
-    }
-
-    fn into_parts(self) -> NodeParts<PluginControls> {
-        let fork = PluginFork::of(&self);
-        let (node, controls) = self.into_node();
-        NodeParts {
-            node,
-            controls,
-            fork: Some(Box::new(fork)),
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Duration;
     use tutti_plugin_types::PluginTail;
-    use tutti_types::SampleRate;
+    use tutti_types::{SampleRate, Samples};
 
     /// A fork's health reports a latency that moved after its graph was
     /// compiled — `Failed`, with `PluginRenderFault::LatencyChanged` naming
@@ -534,13 +483,12 @@ mod tests {
             PluginControls::new(Samples(137), PluginTail::default(), SampleRate(48_000.0));
         let watch = ForkWatch {
             controls: controls.clone(),
-            planned: AtomicUsize::new(usize::MAX),
             bridge: Weak::new(),
             wait: Arc::new(OfflineWait::new(Duration::from_secs(1), Weak::new())),
         };
         assert!(watch.fault().is_none(), "not planned yet");
         controls.set_pipeline(Samples(64));
-        watch.plan(controls.declared_latency());
+        watch.wait.plan(controls.declared_latency().samples());
         assert!(watch.fault().is_none(), "the plan holds");
         controls.set_latency(Samples(161));
         let (kind, cause) = watch.fault().expect("the latency moved");

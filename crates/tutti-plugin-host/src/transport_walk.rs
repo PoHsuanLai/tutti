@@ -3,7 +3,7 @@
 //! A chunk is the plugin node's FIFO batch, not the graph's block: it can span
 //! several calls, and hold a tempo-map point, a seek, a loop wrap or a start
 //! or stop. The chunk's own transport is the one at its first frame
-//! (`PluginChunks::begin`); this walk adds an entry for each change after it,
+//! (the node's `begin`); this walk adds an entry for each change after it,
 //! at the chunk frame the change happens on, so a format with an inter-block
 //! transport event (CLAP) can send one at that frame. Each entry's tempo and
 //! slope hold over its own **stretch**, up to the next entry or the chunk's

@@ -141,6 +141,31 @@ impl<F: Loaded> Instance<F> {
         Ok((this, rt))
     }
 
+    /// A plugin its shell activated itself, on any thread, at `prepare`
+    /// (`Lifecycle::adopt`): the Processor is lent to the realtime end this
+    /// returns. For a hosting whose activation needs no main thread.
+    pub(super) fn adopt(
+        processor: F::Processor,
+        controller: F::Controller,
+        prepare: Prepare,
+        wiring: &tutti_plugin_types::LoadedPlugin,
+    ) -> (Self, Rt<F::Processor>) {
+        let (mut hand, rt) = Hand::threaded();
+        let (lifecycle, state) =
+            Lifecycle::adopt(processor, controller, prepare, wiring, &mut hand);
+        let this = Self {
+            lifecycle,
+            state,
+            hand,
+            origin: None,
+            prepare,
+            changes: Changes::default(),
+            rate_report: None,
+            rate_refused: false,
+        };
+        (this, rt)
+    }
+
     /// Steps `event` and keeps what it told; the reason of a refused
     /// activation, if it was one.
     fn drive(&mut self, main: &MainThread, event: Event) -> Option<String> {

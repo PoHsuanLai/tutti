@@ -34,7 +34,7 @@
 //! stateless instance; [`Ipc::reopen_restoring`] is the same without the
 //! token and with the state restored before the plugin is activated, which is
 //! what a fork built on a worker thread needs (`ForkBuild::deferred`). The
-//! offline wait of an export's fork is [`Ipc::wait_offline`].
+//! offline wait of an export's fork is [`Ipc::watch`].
 
 mod control;
 mod processor;
@@ -70,6 +70,25 @@ pub struct IpcOrigin {
     pub path: PathBuf,
     /// Loads the editor-only instance, as the first launch's did.
     pub load_editor: EditorLoader,
+}
+
+impl IpcOrigin {
+    /// A fresh instance of the plugin, from the same file and configuration
+    /// in a server of its own (its own socket), at `rate`, with `state`
+    /// restored before it is activated. See [`Ipc::reopen_restoring`].
+    ///
+    /// # Errors
+    ///
+    /// As [`Ipc::launch`].
+    pub fn reopen(&self, rate: SampleRate, state: Option<&[u8]>) -> BridgeResult<Launched> {
+        let config = BridgeConfig {
+            // Its own rendezvous: two bridges on one socket path is the
+            // collision `unique_socket_path` exists to prevent.
+            socket_path: unique_socket_path(),
+            ..self.config.clone()
+        };
+        Ipc::launch(config, self.path.clone(), rate, state, self.load_editor)
+    }
 }
 
 impl std::fmt::Debug for IpcOrigin {
@@ -172,8 +191,9 @@ pub(crate) struct Link {
     events: Arc<Events>,
     /// The rate the server runs at, as bits.
     rate: AtomicU64,
-    /// An offline fork waits for each chunk.
-    wait: Mutex<Option<Arc<OfflineWait>>>,
+    /// A fork's watch: the latches it reads back, and whether the pipeline
+    /// waits for each chunk (an offline fork).
+    wait: Mutex<Option<Watch>>,
 }
 
 impl Link {
@@ -198,7 +218,7 @@ impl Link {
         self.rate.store(rate.get().to_bits(), Ordering::Release);
     }
 
-    pub(crate) fn wait(&self) -> Option<Arc<OfflineWait>> {
+    pub(crate) fn watch(&self) -> Option<Watch> {
         self.wait
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
@@ -221,6 +241,14 @@ impl Link {
         let (queues, points) = self.param_room(chunk);
         self.bridge.reserve_param_changes(queues, points);
     }
+}
+
+/// A fork's watch on its pipeline ([`Ipc::watch`]).
+#[derive(Clone)]
+pub(crate) struct Watch {
+    pub(crate) wait: Arc<OfflineWait>,
+    /// The pipeline waits for each chunk, up to the wait's budget.
+    pub(crate) offline: bool,
 }
 
 /// A served plugin that is configured and not rendering.
@@ -384,27 +412,18 @@ impl Ipc {
                 reason: "this served plugin has no origin to reopen".into(),
             });
         };
-        let config = BridgeConfig {
-            // Its own rendezvous: two bridges on one socket path is the
-            // collision `unique_socket_path` exists to prevent.
-            socket_path: unique_socket_path(),
-            ..origin.config.clone()
-        };
-        Self::launch(
-            config,
-            origin.path.clone(),
-            self.link.rate(),
-            state,
-            origin.load_editor,
-        )
+        origin.reopen(self.link.rate(), state)
     }
 
-    /// Makes this plugin's pipeline wait for each chunk, up to the
-    /// configuration's timeout: the offline mode of a forked instance. The
-    /// batcher records a miss, a dead server or a refused rate in the
-    /// returned [`OfflineWait`], which the fork's health probe reads. Call
-    /// before [`activate`](Loaded::activate).
-    pub fn wait_offline(&mut self) -> Arc<OfflineWait> {
+    /// Watches this plugin as a fork: the returned [`OfflineWait`] holds what
+    /// the pipeline latches (when `offline`, which makes it wait for each
+    /// chunk, up to the configuration's timeout: the offline mode of a forked
+    /// instance) and the latency the
+    /// fork's graph is planned against. Either way, a retune settles the
+    /// server's queued rate and mode changes and records that latency
+    /// (`IpcProcessor::retune`), live as offline: the health reports a later
+    /// move as a fault. Call before [`activate`](Loaded::activate).
+    pub fn watch(&mut self, offline: bool) -> Arc<OfflineWait> {
         let wait = Arc::new(OfflineWait::new(
             self.link.timeout,
             Arc::downgrade(&self.link.guard),
@@ -413,7 +432,10 @@ impl Ipc {
             .link
             .wait
             .lock()
-            .unwrap_or_else(PoisonError::into_inner) = Some(Arc::clone(&wait));
+            .unwrap_or_else(PoisonError::into_inner) = Some(Watch {
+            wait: Arc::clone(&wait),
+            offline,
+        });
         wait
     }
 
@@ -434,6 +456,37 @@ impl Ipc {
     /// no [`MainThread`] to hold (the served control is thread-agnostic).
     pub fn bridge(&self) -> &Arc<PluginBridge> {
         &self.link.bridge
+    }
+
+    /// What the plugin is: its catalog identity.
+    pub fn descriptor(&self) -> &PluginDescriptor {
+        &self.link.descriptor
+    }
+
+    /// What the server reported at load.
+    pub fn loaded(&self) -> &LoadedPlugin {
+        &self.link.loaded
+    }
+
+    /// Where it came from, for a fork to reopen (`None`: built by
+    /// [`Ipc::new`] with none).
+    pub fn origin(&self) -> Option<&IpcOrigin> {
+        self.link.origin.as_ref()
+    }
+
+    /// The slab's per-chunk size: the most a chunk can be.
+    pub fn ceiling(&self) -> usize {
+        self.link.ceiling
+    }
+
+    /// The format the blocks travel in.
+    pub fn format(&self) -> SampleFormat {
+        self.link.format
+    }
+
+    /// The rate the server runs at.
+    pub fn rate(&self) -> SampleRate {
+        self.link.rate()
     }
 
     /// The server's lifetime guard.
@@ -487,20 +540,17 @@ impl Controller for IpcController {
     }
 }
 
-impl Loaded for Ipc {
-    type Processor = IpcProcessor;
-    type Controller = IpcController;
-
-    /// Nothing restarts a served plugin: a rate, a block and a latency change
-    /// are re-read or taken live, as the served path does today.
-    const RESTARTS: RestartRules = RestartRules::NONE;
-
-    /// Builds the pipeline for `prepare`'s block and the Processor over it.
-    /// The server is told no rate here: it was launched at one, and a node
-    /// that follows another tells it through [`Processor::retune`](tutti_plugin_types::Processor::retune).
-    fn activate(
+impl Ipc {
+    /// [`Loaded::activate`] with no token: the served activation reads none,
+    /// so a node over a served plugin is built on any thread (a fork's
+    /// deferred build, a host with no main thread).
+    ///
+    /// # Errors
+    ///
+    /// Never, today: the pipeline is built, and a rate is told to the server
+    /// by a queued command that cannot be refused here.
+    pub fn activate_anywhere(
         self,
-        _main: &MainThread,
         prepare: Prepare,
     ) -> Result<(IpcProcessor, IpcController), Refused<Self>> {
         let Self { link, slab } = self;
@@ -518,12 +568,36 @@ impl Loaded for Ipc {
         )
         .with_counters(Arc::clone(&link.counters));
         batcher.prepare(Samples(prepare.max_block().get()), None);
-        if let Some(wait) = link.wait() {
+        if let Some(Watch {
+            wait,
+            offline: true,
+        }) = link.watch()
+        {
             batcher.set_offline_wait(wait);
         }
         link.reserve(batcher.chunk());
         let processor = IpcProcessor::new(Arc::clone(&link), batcher);
         Ok((processor, IpcController { link }))
+    }
+}
+
+impl Loaded for Ipc {
+    type Processor = IpcProcessor;
+    type Controller = IpcController;
+
+    /// Nothing restarts a served plugin: a rate, a block and a latency change
+    /// are re-read or taken live, as the served path does today.
+    const RESTARTS: RestartRules = RestartRules::NONE;
+
+    /// Builds the pipeline for `prepare`'s block and the Processor over it.
+    /// The server is told no rate here: it was launched at one, and a node
+    /// that follows another tells it through [`Processor::retune`](tutti_plugin_types::Processor::retune).
+    fn activate(
+        self,
+        _main: &MainThread,
+        prepare: Prepare,
+    ) -> Result<(IpcProcessor, IpcController), Refused<Self>> {
+        self.activate_anywhere(prepare)
     }
 
     fn deactivate(

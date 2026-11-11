@@ -16,9 +16,9 @@ use std::marker::PhantomData;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
 use crate::{
-    Control, Controller, Effect, Event, Layout, Loaded, LoadedPlugin, MainThread, Normalized,
-    Notice, ParamId, ParameterInfo, PluginDescriptor, PluginError, PluginResult, Prepare,
-    Processor, Refused, Reply, SampleRate, State, Stuck, step,
+    Control, Controller, Effect, Event, HostOp, Layout, Loaded, LoadedPlugin, MainThread,
+    Normalized, Notice, ParamId, ParameterInfo, PluginDescriptor, PluginError, PluginResult,
+    Prepare, Processor, Refused, Reply, SampleRate, State, Stuck, step,
 };
 
 /// The main thread's end of the Processor's trip to the realtime thread.
@@ -123,6 +123,53 @@ impl<L: Loaded> Lifecycle<L> {
     #[must_use]
     pub fn initial_state() -> State {
         State::new(L::RESTARTS)
+    }
+
+    /// A lifecycle over a plugin whose shell activated it itself, with the
+    /// core's state as if [`Lifecycle::drive`] had: for a hosting whose
+    /// activation needs no main thread (a served plugin, `tutti-plugin-ipc`'s
+    /// `Ipc::activate_anywhere`), so a node over it is built on any thread.
+    ///
+    /// `wiring` is what the plugin reports now: its layout, latency and tail
+    /// are the figures the core records. The Processor is lent through `hand`
+    /// as an activation lends it. Nothing here calls into the plugin.
+    ///
+    /// The state is stepped through the pure core with the replies an
+    /// activation gets, so it cannot differ from the driven one
+    /// (`an_adopted_plugin_is_in_the_state_a_driven_activation_leaves`).
+    #[must_use]
+    pub fn adopt(
+        processor: L::Processor,
+        controller: L::Controller,
+        prepare: Prepare,
+        wiring: &LoadedPlugin,
+        hand: &mut Hand<L::Processor>,
+    ) -> (Self, State) {
+        let mut lifecycle = Self::Active {
+            seat: Seat::Held(processor),
+            controller,
+        };
+        // The op plans the activation, which the shell has done; each effect
+        // the activation's answer plans is answered from `wiring`.
+        let (mut state, _) = step(Self::initial_state(), Event::Op(HostOp::Activate(prepare)));
+        let mut replies = VecDeque::from([Reply::Activated]);
+        while let Some(reply) = replies.pop_front() {
+            let (next, effects) = step(state, Event::Replied(reply));
+            state = next;
+            for effect in effects {
+                match effect {
+                    Effect::ReadLatency => {
+                        replies.push_back(Reply::Latency(wiring.latency_samples))
+                    }
+                    Effect::ReadTail => replies.push_back(Reply::Tail(wiring.tail)),
+                    Effect::ReadLayout => replies.push_back(Reply::Layout(Layout::from(wiring))),
+                    Effect::Lend => replies.push_back(Reply::Done),
+                    _ => {}
+                }
+            }
+        }
+        lifecycle.lend(hand);
+        (lifecycle, state)
     }
 
     /// Whether a transition has left no plugin.

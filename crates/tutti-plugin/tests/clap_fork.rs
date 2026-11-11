@@ -113,7 +113,7 @@ fn env() -> ProbeEnv {
 /// fork's block at the same index (both are one block late), and the fork's are
 /// checked against the arithmetic too.
 ///
-/// Mutation: drop the `load_state` call in `PluginFork::instance` → the fork
+/// Mutation: drop the `load_state` call in `ServedFork::instance` → the fork
 /// renders at 0 dB → fails. Mutation: drop `set_offline_wait` → unpaced blocks
 /// read silence → fails. (A client is not `Clone`, so "return the live client
 /// as the fork" is not a mutation the code can express;
@@ -176,7 +176,7 @@ fn a_fork_renders_like_the_live_instance_from_its_state() {
 /// the fork keeps rendering until the live run is done, and the test asserts
 /// the fork rendered blocks while the live run was still going.
 ///
-/// Mutation: have `PluginFork::instance` skip the fresh launch and return a
+/// Mutation: have `ServedFork::instance` skip the fresh launch and return a
 /// client on the live bridge (`PluginBridge` shared) → the fork thread's
 /// blocks land in the live instance, and the live gain change reaches the
 /// "fork" → fails on both halves. Mutation: mark the live run done before it
@@ -271,7 +271,7 @@ fn a_fork_and_the_live_instance_do_not_reach_each_other() {
 /// The refusal is armed after the live instance loaded, so only the fork's
 /// server (spawned later, inheriting the environment) refuses.
 ///
-/// Mutation: ignore `load_state`'s result in `PluginFork::instance` →
+/// Mutation: ignore `load_state`'s result in `ServedFork::instance` →
 /// both forks succeed → fails.
 #[test]
 fn a_state_the_fresh_instance_refuses_is_a_named_fork_error() {
@@ -425,7 +425,7 @@ fn render_fork_of(client: PluginClient, blocks: usize) -> (Editor, Duration) {
 /// finishes without waiting out any budget, and the forked editor reports
 /// `Crashed` for the plugin's key with a `PluginRenderFault::Crashed` cause.
 ///
-/// Mutation: hand no health probe from `PluginFork::fork` → `fork_health` is
+/// Mutation: hand no health probe from `ServedFork::fork` → `fork_health` is
 /// `Ok` → fails. Mutation: never ask the process (`server_died`) in the
 /// batcher's wait → the bridge, sent nothing, never notices the death, and the
 /// block waits out its 5 s budget → the time bound fails. Mutation: drop the
@@ -583,7 +583,7 @@ fn a_dropped_forks_server_is_reaped() {
 /// (`/proc/self/task/*/children`). The guard is the same code everywhere.
 ///
 /// Mutation: `std::mem::forget(fork)` on the `LoadState` error path in
-/// `PluginFork::instance` → the refused fork's server stays a child →
+/// `ServedFork::instance` → the refused fork's server stays a child →
 /// fails.
 #[cfg(target_os = "linux")]
 #[test]
@@ -1394,7 +1394,7 @@ fn an_export_of_plugins_is_bit_identical_on_a_pool() {
 /// within the cap adds nothing.
 ///
 /// Mutation (run): the drop not counted (`count_midi_dropped` removed from
-/// `PluginChunks::take`) → the count stays 0 → fails.
+/// `PluginChunks::take`, now the generic node's `count_midi_dropped` in its piece loop) → the count stays 0 → fails.
 #[test]
 fn midi_past_the_chunks_capacity_is_counted() {
     use tutti_fixtures::midi;
@@ -1407,10 +1407,11 @@ fn midi_past_the_chunks_capacity_is_counted() {
     let _env = ProbeEnv::new().render_mode(render::NOTES);
     let probe = load_probe(SAMPLE_RATE);
     let controls = probe.client.controls();
-    let mut node = Direct::new(
-        probe.client.bind(
+    let mut node = Direct::boxed(
+        tutti_graph::IntoNode::into_node(probe.client.bind(
             tutti_transport::TempoReader::constant(tutti_types::Bpm::of(120.0)).expect("a tempo"),
-        ),
+        ))
+        .0,
         SampleRate(SAMPLE_RATE),
         512,
     );

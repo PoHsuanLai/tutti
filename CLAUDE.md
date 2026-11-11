@@ -462,8 +462,9 @@ crates/          everything shipped; directory name = package name; no nesting
                  the node's controls, meter, transport and parameter delivery, the
                  host policy (`Liveness`, `PluginParamValues`) and the plugin node
                  over any `Loaded` hosting (`PluginNode`: in-process through
-                 `load_client`, served through `client_over`); no wire, design
-                 021 §6.1),
+                 `load_client`, served through `client_over`, which takes an
+                 already-activated plugin and needs no main thread); no wire,
+                 design 021 §6.1),
   tutti-plugin-probe (the `plugin-probe` binary: reads a plugin's descriptor
                  into a result file, `tutti-plugin-types`' `probe_wire`; the format
                  hosts and no hosting; nothing depends on it, design 021 §2.5),
@@ -772,7 +773,10 @@ list (normal and build edges; dev-dependencies may go anywhere).
   `bevy` feature. **The served control is thread-agnostic:** `Ipc`'s and
   `IpcController`'s `Control` methods take a `MainThread` and ignore it, and
   nothing in `-ipc` hops to the main thread; a rate, block and quantum are
-  taken through `Processor::retune`, a reopen with `Ipc::reopen_restoring`.
+  taken through `Processor::retune`, a reopen with `Ipc::reopen_restoring`
+  (or `IpcOrigin::reopen`), an activation with no token with
+  `Ipc::activate_anywhere`, and a fork's watch (`Ipc::watch`: its retune
+  settles the server and records the plan) with `OfflineWait`.
   Its `unsafe` is the process edge's own (shared memory and
   its mapping, the Windows control-socket deadline, the launch), each block
   under a `// SAFETY:`. It knows no format:
@@ -1156,8 +1160,14 @@ read the `Cargo.toml`, grep for the type, run the probe.
   format-generic items (`PluginHandle`, `NodeControls`, `PluginMeter`, `TransportSource`,
   `ParamDelivery`, `Liveness`, `PluginParamValues`, `PluginNode`, `InProcClient`, `load_client`)
   → `tutti_plugin_host::` (doc 021 step 4a-4b; `PluginHandle::from_client` →
-  `tutti_plugin::PluginClient::handle`). A comment or doc that disagrees with the
-  code is the bug.
+  `tutti_plugin::PluginClient::handle`), `tutti-plugin`'s served node (`PluginClient<Bound>`'s own
+  `tutti_graph::Node`, `host::node::graph_node`, its `PluginChunks`, the served `fork.rs`'s
+  `PluginFork` and `Origin`, the `Bound` typestate's `Batcher`, `BlockPayload`, `TransportWalk`
+  and `ParamDelivery` fields, and `migration_old_and_new_served_nodes_agree`) → deleted (doc 021
+  step 4b, PR 3b: the node is `tutti_plugin_host::PluginNode<tutti_plugin_ipc::Ipc>`, which
+  `PluginClient<Bound>` holds and boxes (`into_plugin_node` gives it concretely); the chunk walk
+  is the generic node's, the fork is `ServedFork` over `Ipc`'s reopen). A comment or doc that
+  disagrees with the code is the bug.
 - **MSVC render gate:** `render_is_bit_identical_to_the_audionode_era` is
   gated off MSVC, because `sin` differs in the last ulp between CRTs.
 

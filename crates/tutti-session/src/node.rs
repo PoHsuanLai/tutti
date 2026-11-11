@@ -167,11 +167,11 @@ impl SessionNode for tutti_midi_runtime::HarmonyNode {
     }
 }
 
-/// The live MIDI input: its `MidiInputControls`, no params; the MPE modes
+/// The MIDI ingest: its `MidiIngestControls`, no params; the MPE modes
 /// it replaced freed by its reclaimer.
 #[cfg(feature = "midi")]
-impl SessionNode for tutti_midi_runtime::MidiInputNode {
-    fn reclaimer(controls: &tutti_midi_runtime::MidiInputControls) -> Option<Reclaimer> {
+impl SessionNode for tutti_midi_runtime::MidiIngestNode {
+    fn reclaimer(controls: &tutti_midi_runtime::MidiIngestControls) -> Option<Reclaimer> {
         let controls = controls.clone();
         Some(Reclaimer::new(move || controls.reclaim()))
     }
@@ -262,7 +262,7 @@ mod tests {
         {
             assert!(keeps_one(tutti_midi_runtime::MidiClipNode::new([])));
             assert!(keeps_one(tutti_midi_runtime::HarmonyNode::new([])));
-            assert!(keeps_one(tutti_midi_runtime::MidiInputNode::new(None)));
+            assert!(keeps_one(tutti_midi_runtime::MidiIngestNode::new(1)));
         }
         #[cfg(feature = "sampler")]
         {

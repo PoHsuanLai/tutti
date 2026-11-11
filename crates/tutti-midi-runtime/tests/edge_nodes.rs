@@ -1,5 +1,5 @@
 //! The nodes at the graph's MIDI border:
-//! [`MidiInputNode`] sends a wire's events out of their channels' ports,
+//! [`MidiIngestNode`] sends the events of its device inlets out of their channels' ports,
 //! translated; an event tap hands what a port carries back to a control
 //! thread; [`ClockNode`] ticks
 //! Beat Clock on the frames the transport reaches, a start inside a block
@@ -14,15 +14,15 @@ use tutti_fixtures::midi::{
     continue_msg, m1_cc, note_off, note_on, pitch_bend, registered_rpn, song_position, start,
     timing_clock,
 };
-use tutti_graph::NodeKey;
 use tutti_graph::{
     Cx, Editor, EventEdge, EventIn, EventInletNode, EventKind, EventOut, Executor, ForkMode,
     ForkTarget, Io, Node, Offset, Prepare, Shape, Status, Transport, TransportChanges,
 };
+use tutti_graph::{IntoNode as _, NodeKey};
 use tutti_midi_protocol::channel_voice;
 use tutti_midi_runtime::{
-    CHANNELLESS_PORT, ClockNode, MIDI_INPUT_EVENT_CAPACITY, MIDI_INPUT_PORTS, MidiIn,
-    MidiInputNode, MidiInputPorts,
+    CHANNELLESS_PORT, ClockNode, MIDI_INPUT_EVENT_CAPACITY, MIDI_INPUT_PORTS, MidiIngestNode,
+    MidiInputPorts,
 };
 use tutti_types::{At, Beat, Bpm, Frame, SampleRate, Samples};
 use tutti_ump::{
@@ -76,8 +76,19 @@ fn rig<N: tutti_graph::IntoNode>(
     ports: u16,
     max: usize,
 ) -> (Editor, Executor, N::Controls, Seen) {
+    rig_with(source, ports, max, |_| {})
+}
+
+/// [`rig`], and `extra` adds what feeds the source before the commit.
+fn rig_with<N: tutti_graph::IntoNode>(
+    source: N,
+    ports: u16,
+    max: usize,
+    extra: impl FnOnce(&mut Editor),
+) -> (Editor, Executor, N::Controls, Seen) {
     let (mut ed, exec) = Editor::new(Prepare::new(SampleRate(RATE), Samples(max)));
     let controls = ed.insert(NodeKey(1), "source", source);
+    extra(&mut ed);
     let seen = Seen::default();
     ed.insert(
         NodeKey(2),
@@ -109,26 +120,90 @@ fn rig<N: tutti_graph::IntoNode>(
     (ed, exec, controls, seen)
 }
 
+/// An ingest node and the device inlets that feed it (keys 3 upward), over
+/// `ports` sink inputs.
+fn ingest(
+    ingest: Ingest,
+    ports: u16,
+    max: usize,
+) -> (
+    Editor,
+    Executor,
+    tutti_midi_runtime::MidiIngestControls,
+    Seen,
+) {
+    let Ingest { node, inlets } = ingest;
+    rig_with(node, ports, max, |ed| {
+        for (slot, inlet) in inlets.into_iter().enumerate() {
+            let key = NodeKey(3 + slot as u64);
+            ed.insert(key, "inlet", inlet);
+            ed.spec_mut().connect_events(
+                EventIn {
+                    node: NodeKey(1),
+                    port: slot as u16,
+                },
+                EventEdge::Direct(EventOut { node: key, port: 0 }),
+            );
+        }
+    })
+}
+
 fn block(exec: &mut Executor, len: usize) {
     let mut out = vec![0.0f32; len];
     exec.process(len, &Transport::default(), &[], &mut [&mut out[..]]);
 }
 
-/// A wire that hands out one scripted batch per poll.
-struct Wire(std::collections::VecDeque<Vec<UmpAt>>);
+/// What a device sends, one batch for each block: each event on its offset in
+/// its block (the blocks are 512 frames).
+struct Script(Vec<Vec<UmpAt>>);
 
-impl Wire {
-    fn new(batches: Vec<Vec<UmpAt>>) -> Box<Self> {
-        Box::new(Self(batches.into()))
+impl Script {
+    fn new(batches: Vec<Vec<UmpAt>>) -> Self {
+        Self(batches)
     }
 }
 
-impl MidiIn for Wire {
-    fn poll_block(&mut self, _block_size: Samples, buffer: &mut [UmpAt]) -> usize {
-        let batch = self.0.pop_front().unwrap_or_default();
-        let n = batch.len().min(buffer.len());
-        buffer[..n].copy_from_slice(&batch[..n]);
-        n
+/// An ingest node with one device slot for each script, and the inlet each
+/// device's thread has pushed its script into, every event for its frame; an
+/// inlet holds it until its block.
+struct Ingest {
+    node: MidiIngestNode,
+    inlets: Vec<EventInletNode>,
+}
+
+impl Ingest {
+    fn new(script: Script) -> Self {
+        Self::devices(vec![script])
+    }
+
+    fn devices(scripts: Vec<Script>) -> Self {
+        let inlets = scripts
+            .iter()
+            .map(|script| {
+                let (inlet, mut writer) = EventInletNode::pair(4096);
+                for (block, batch) in script.0.iter().enumerate() {
+                    for &(offset, ump) in batch {
+                        let frame = Frame(512 * block as u64 + u64::from(offset.get()));
+                        writer.push(At::Frame(frame), ump).expect("room");
+                    }
+                }
+                inlet
+            })
+            .collect();
+        Self {
+            node: MidiIngestNode::new(scripts.len()),
+            inlets,
+        }
+    }
+
+    fn hearing(mut self, ports: MidiInputPorts) -> Self {
+        self.node = self.node.hearing(ports);
+        self
+    }
+
+    fn with_mpe(mut self, mode: tutti_midi_protocol::MpeMode) -> Self {
+        self.node = self.node.with_mpe(mode);
+        self
     }
 }
 
@@ -153,7 +228,15 @@ fn note(channel: u8, note: u8, offset: u32) -> UmpAt {
 
 /// A MIDI 1.0 CC.
 fn cc_ev(channel: u8, control: CCNumber, value: u8) -> UmpAt {
-    at(0, m1_cc(MidiChannel::of(channel), control, U7::of(value)))
+    cc_at(0, channel, control, value)
+}
+
+/// A MIDI 1.0 CC at frame `offset`.
+fn cc_at(offset: u32, channel: u8, control: CCNumber, value: u8) -> UmpAt {
+    at(
+        offset,
+        m1_cc(MidiChannel::of(channel), control, U7::of(value)),
+    )
 }
 
 /// **Each event leaves on its channel's port, in offset order.** A note on
@@ -166,9 +249,8 @@ fn cc_ev(channel: u8, control: CCNumber, value: u8) -> UmpAt {
 #[test]
 fn each_event_leaves_on_its_channels_port() {
     let clock = at(20, timing_clock(MidiGroup::FIRST));
-    let wire = Wire::new(vec![vec![note(9, 64, 40), note(0, 60, 10), clock]]);
-    let (_ed, mut exec, _c, seen) =
-        rig(MidiInputNode::new(Some(wire)), MIDI_INPUT_PORTS as u16, 512);
+    let wire = Script::new(vec![vec![note(9, 64, 40), note(0, 60, 10), clock]]);
+    let (_ed, mut exec, _c, seen) = ingest(Ingest::new(wire), MIDI_INPUT_PORTS as u16, 512);
     block(&mut exec, 512);
     let got: Vec<(usize, u64)> = seen.lock().unwrap().iter().map(|s| (s.0, s.1)).collect();
     assert_eq!(got, vec![(0, 10), (9, 40), (CHANNELLESS_PORT, 20)]);
@@ -197,16 +279,13 @@ fn a_groups_channels_leave_on_their_own_ports() {
         )
     };
     let ports = MidiInputPorts::through(MidiGroup::of(1));
-    let wire = Wire::new(vec![vec![
+    let wire = Script::new(vec![vec![
         group(0, 1, 60),
         group(1, 1, 61),
         group(2, 1, 62),
     ]]);
-    let (live, mut exec, _c, seen) = rig(
-        MidiInputNode::new(Some(wire)).hearing(ports),
-        ports.count() as u16,
-        512,
-    );
+    let (live, mut exec, _c, seen) =
+        ingest(Ingest::new(wire).hearing(ports), ports.count() as u16, 512);
     block(&mut exec, 512);
     let got: Vec<(usize, u8)> = seen
         .lock()
@@ -231,7 +310,7 @@ fn a_groups_channels_leave_on_their_own_ports() {
 /// plain CC → fails.
 #[test]
 fn an_rpn_run_split_across_blocks_is_assembled() {
-    let wire = Wire::new(vec![
+    let wire = Script::new(vec![
         vec![
             cc_ev(3, CCNumber::RPN_MSB, 0),
             cc_ev(3, CCNumber::RPN_LSB, 6),
@@ -241,8 +320,7 @@ fn an_rpn_run_split_across_blocks_is_assembled() {
             cc_ev(3, CCNumber::DATA_ENTRY_LSB, 0),
         ],
     ]);
-    let (_ed, mut exec, _c, seen) =
-        rig(MidiInputNode::new(Some(wire)), MIDI_INPUT_PORTS as u16, 512);
+    let (_ed, mut exec, _c, seen) = ingest(Ingest::new(wire), MIDI_INPUT_PORTS as u16, 512);
     block(&mut exec, 512);
     block(&mut exec, 512);
     let seen = seen.lock().unwrap();
@@ -254,6 +332,122 @@ fn an_rpn_run_split_across_blocks_is_assembled() {
         matches!(decode(ev), Ok(Message::Midi2(_, Voice2::Registered { .. }))),
         "{ev:?}"
     );
+}
+
+/// A Registered Controller on channel 3, as a received `Voice2` says.
+fn is_registered(ev: Ump) -> bool {
+    matches!(decode(ev), Ok(Message::Midi2(_, Voice2::Registered { .. })))
+}
+
+/// **Two devices' (N)RPN runs do not meet** (M2-104 D.3.3 gives a run to the
+/// one controller that sends it: a Data Entry completes the parameter *its*
+/// sender selected). Device 0 selects RPN 0/6 on channel 3 and device 1 sends a
+/// Data Entry on channel 3 with no select of its own: no Registered
+/// Controller is made.
+/// Alone on one device, the same two messages make one.
+#[test]
+fn two_devices_runs_do_not_meet() {
+    let select = vec![vec![
+        cc_ev(3, CCNumber::RPN_MSB, 0),
+        cc_ev(3, CCNumber::RPN_LSB, 6),
+    ]];
+    let entry = vec![vec![
+        cc_ev(3, CCNumber::DATA_ENTRY, 10),
+        cc_ev(3, CCNumber::DATA_ENTRY_LSB, 0),
+    ]];
+    // One device sending both: the run completes.
+    let together: Vec<Vec<UmpAt>> = vec![select[0].iter().chain(&entry[0]).copied().collect()];
+    let (_ed, mut exec, _c, seen) = ingest(
+        Ingest::new(Script::new(together)),
+        MIDI_INPUT_PORTS as u16,
+        512,
+    );
+    block(&mut exec, 512);
+    assert_eq!(
+        seen.lock()
+            .unwrap()
+            .iter()
+            .filter(|s| is_registered(s.2))
+            .count(),
+        1,
+        "one device's select and entry make a run"
+    );
+
+    // Two devices, one sending each.
+    let (_ed, mut exec, _c, seen) = ingest(
+        Ingest::devices(vec![Script::new(select), Script::new(entry)]),
+        MIDI_INPUT_PORTS as u16,
+        512,
+    );
+    block(&mut exec, 512);
+    let seen = seen.lock().unwrap();
+    assert_eq!(
+        seen.iter().filter(|s| is_registered(s.2)).count(),
+        0,
+        "device 1's Data Entry did not complete device 0's select: {seen:?}"
+    );
+}
+
+/// **A restarted slot starts empty**: device 0 selects an RPN in block 0, its
+/// slot is restarted, and its Data Entry in block 1 finds no select to
+/// complete, so no Registered Controller is made; without the restart the same
+/// Data Entry completes the run.
+#[test]
+fn a_restarted_slot_forgets_the_previous_devices_half_sent_run() {
+    let script = || {
+        Script::new(vec![
+            vec![
+                cc_ev(3, CCNumber::RPN_MSB, 0),
+                cc_ev(3, CCNumber::RPN_LSB, 6),
+            ],
+            vec![
+                cc_ev(3, CCNumber::DATA_ENTRY, 10),
+                cc_ev(3, CCNumber::DATA_ENTRY_LSB, 0),
+            ],
+        ])
+    };
+    for restart in [false, true] {
+        let (_ed, mut exec, controls, seen) =
+            ingest(Ingest::new(script()), MIDI_INPUT_PORTS as u16, 512);
+        block(&mut exec, 512);
+        if restart {
+            assert!(controls.restart_slot(0));
+        }
+        block(&mut exec, 512);
+        let made = seen
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|s| is_registered(s.2))
+            .count();
+        assert_eq!(made, usize::from(!restart), "restart: {restart}");
+    }
+    assert!(
+        !MidiIngestNode::new(1).into_parts().controls.restart_slot(1),
+        "a slot the node has no input for"
+    );
+}
+
+/// **The devices merge in the listener's fan-in**: two devices' notes on one
+/// channel arrive on that channel's port, in time order.
+#[test]
+fn two_devices_notes_merge_on_the_channels_port() {
+    let (_ed, mut exec, _c, seen) = ingest(
+        Ingest::devices(vec![
+            Script::new(vec![vec![note(0, 60, 30)]]),
+            Script::new(vec![vec![note(0, 64, 10)]]),
+        ]),
+        MIDI_INPUT_PORTS as u16,
+        512,
+    );
+    block(&mut exec, 512);
+    let got: Vec<(usize, u64, u8)> = seen
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|s| (s.0, s.1, note_of(s.2).unwrap()))
+        .collect();
+    assert_eq!(got, vec![(0, 10, 64), (0, 30, 60)]);
 }
 
 /// **A requested MPE mode is adopted once and holds.** With the lower zone
@@ -271,7 +465,7 @@ fn an_rpn_run_split_across_blocks_is_assembled() {
 fn a_requested_mpe_mode_is_adopted_once() {
     let member = MidiChannel::of(1);
     let bend = at(0, pitch_bend(MidiGroup::FIRST, member, 0xC000_0000));
-    let wire = Wire::new(vec![
+    let wire = Script::new(vec![
         vec![at(
             0,
             note_on(
@@ -284,8 +478,7 @@ fn a_requested_mpe_mode_is_adopted_once() {
         vec![bend],
         vec![bend],
     ]);
-    let (_ed, mut exec, controls, seen) =
-        rig(MidiInputNode::new(Some(wire)), MIDI_INPUT_PORTS as u16, 512);
+    let (_ed, mut exec, controls, seen) = ingest(Ingest::new(wire), MIDI_INPUT_PORTS as u16, 512);
     let mode = tutti_fixtures::midi::lower_zone(6);
     controls.set_mpe_mode(mode);
     assert_eq!(controls.pending_mpe_mode(), Some(mode));
@@ -318,8 +511,8 @@ fn a_requested_mpe_mode_is_adopted_once() {
 /// at the reset's ±48 → fails.
 #[test]
 fn a_host_set_modes_reset_goes_ahead_of_the_blocks_events() {
+    use tutti_fixtures::midi::BendRanges;
     use tutti_midi_protocol::PitchBendSensitivity;
-    use tutti_plugin_types::PerNoteBendRanges;
     use tutti_ump::Rpn;
     let range = at(
         0,
@@ -330,13 +523,12 @@ fn a_host_set_modes_reset_goes_ahead_of_the_blocks_events() {
             PitchBendSensitivity::of(12).to_rpn_bits(),
         ),
     );
-    let wire = Wire::new(vec![vec![range]]);
-    let (_ed, mut exec, controls, seen) =
-        rig(MidiInputNode::new(Some(wire)), MIDI_INPUT_PORTS as u16, 512);
+    let wire = Script::new(vec![vec![range]]);
+    let (_ed, mut exec, controls, seen) = ingest(Ingest::new(wire), MIDI_INPUT_PORTS as u16, 512);
     controls.set_mpe_mode(tutti_fixtures::midi::lower_zone(6));
     block(&mut exec, 512);
     let seen = seen.lock().unwrap();
-    let mut ranges = PerNoteBendRanges::default();
+    let mut ranges = BendRanges::default();
     let mut per_member = 0;
     for (_, frame, ev) in seen.iter() {
         if ranges.observe(ev) {
@@ -368,19 +560,19 @@ fn a_host_set_modes_reset_goes_ahead_of_the_blocks_events() {
 /// fan-out overwrites the unread note → fails.
 #[test]
 fn a_member_bend_range_fans_out_over_the_zones_ports() {
-    use tutti_plugin_types::PerNoteBendRanges;
-    let wire = Wire::new(vec![vec![
+    use tutti_fixtures::midi::BendRanges;
+    let wire = Script::new(vec![vec![
         cc_ev(2, CCNumber::RPN_MSB, 0),
         cc_ev(2, CCNumber::RPN_LSB, 0),
         cc_ev(2, CCNumber::DATA_ENTRY, 12),
         cc_ev(2, CCNumber::DATA_ENTRY_LSB, 0),
         note(1, 60, 5),
     ]]);
-    let node = MidiInputNode::new(Some(wire)).with_mpe(tutti_fixtures::midi::lower_zone(7));
-    let (_ed, mut exec, _c, seen) = rig(node, MIDI_INPUT_PORTS as u16, 512);
+    let node = Ingest::new(wire).with_mpe(tutti_fixtures::midi::lower_zone(7));
+    let (_ed, mut exec, _c, seen) = ingest(node, MIDI_INPUT_PORTS as u16, 512);
     block(&mut exec, 512);
     let seen = seen.lock().unwrap();
-    let mut ranges = PerNoteBendRanges::default();
+    let mut ranges = BendRanges::default();
     let mut range_ports = Vec::new();
     for (port, _, ev) in seen.iter() {
         if ranges.observe(ev) {
@@ -417,22 +609,22 @@ fn a_member_bend_range_fans_out_over_the_zones_ports() {
 /// dropped → fails. Mutation (run): leave the counter out → 0 → fails.
 #[test]
 fn a_fan_out_with_no_room_is_dropped_whole_and_counted() {
-    use tutti_plugin_types::PerNoteBendRanges;
+    use tutti_fixtures::midi::BendRanges;
+    // The run is sent after the notes: an inlet delivers in time order.
     let mut batch: Vec<UmpAt> = (0..507).map(|i| note(0, 60, i)).collect();
     batch.extend([
-        cc_ev(2, CCNumber::RPN_MSB, 0),
-        cc_ev(2, CCNumber::RPN_LSB, 0),
-        cc_ev(2, CCNumber::DATA_ENTRY, 12),
-        cc_ev(2, CCNumber::DATA_ENTRY_LSB, 0),
+        cc_at(508, 2, CCNumber::RPN_MSB, 0),
+        cc_at(508, 2, CCNumber::RPN_LSB, 0),
+        cc_at(508, 2, CCNumber::DATA_ENTRY, 12),
+        cc_at(508, 2, CCNumber::DATA_ENTRY_LSB, 0),
         note(1, 61, 509),
     ]);
     assert_eq!(batch.len(), MIDI_INPUT_EVENT_CAPACITY);
-    let node = MidiInputNode::new(Some(Wire::new(vec![batch])))
-        .with_mpe(tutti_fixtures::midi::lower_zone(7));
-    let (_ed, mut exec, controls, seen) = rig(node, MIDI_INPUT_PORTS as u16, 512);
+    let node = Ingest::new(Script::new(vec![batch])).with_mpe(tutti_fixtures::midi::lower_zone(7));
+    let (_ed, mut exec, controls, seen) = ingest(node, MIDI_INPUT_PORTS as u16, 512);
     block(&mut exec, 512);
     let seen = seen.lock().unwrap();
-    let mut ranges = PerNoteBendRanges::default();
+    let mut ranges = BendRanges::default();
     assert!(
         !seen.iter().any(|s| ranges.observe(&s.2)),
         "no range went out"
@@ -462,14 +654,13 @@ fn a_note_off_has_room_past_the_capacity() {
     ]);
     batch.extend((0..4).map(|k| {
         at(
-            510 + k,
+            508 + k,
             note_off(MidiGroup::FIRST, MidiChannel::of(1), 61 + k as u8, 0),
         )
     }));
     assert_eq!(batch.len(), MIDI_INPUT_EVENT_CAPACITY);
-    let node = MidiInputNode::new(Some(Wire::new(vec![batch])))
-        .with_mpe(tutti_fixtures::midi::lower_zone(7));
-    let (_ed, mut exec, controls, seen) = rig(node, MIDI_INPUT_PORTS as u16, 512);
+    let node = Ingest::new(Script::new(vec![batch])).with_mpe(tutti_fixtures::midi::lower_zone(7));
+    let (_ed, mut exec, controls, seen) = ingest(node, MIDI_INPUT_PORTS as u16, 512);
     block(&mut exec, 512);
     let seen = seen.lock().unwrap();
     assert_eq!(seen.iter().filter(|s| s.2.is_note_off()).count(), 4);
@@ -483,8 +674,8 @@ fn a_note_off_has_room_past_the_capacity() {
 /// Mutation: the fork polling the live wire → it takes the batch → fails.
 #[test]
 fn an_input_nodes_fork_is_silent() {
-    let wire = Wire::new(vec![vec![note(0, 60, 0)]]);
-    let (live, _exec, _c, seen) = rig(MidiInputNode::new(Some(wire)), MIDI_INPUT_PORTS as u16, 512);
+    let wire = Script::new(vec![vec![note(0, 60, 0)]]);
+    let (live, _exec, _c, seen) = ingest(Ingest::new(wire), MIDI_INPUT_PORTS as u16, 512);
     let prepare = *live.prepare();
     let (_fork, mut fork_exec) = live
         .fork(ForkTarget::Master, ForkMode::Live, prepare)

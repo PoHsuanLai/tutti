@@ -65,6 +65,12 @@ pub enum Error {
         code: i32,
     },
 
+    /// Every slot for an input device is taken: a device is an event input of
+    /// the graph's ingest node, and it has as many as the session was built
+    /// with.
+    #[error(transparent)]
+    NoFreeSlot(#[from] tutti_midi_runtime::NoFreeSlot),
+
     /// A backend seeded its device list twice, or after reporting a change.
     #[error(transparent)]
     Seed(#[from] crate::SeedError),

@@ -1790,7 +1790,7 @@ impl Graph {
         self.editor
             .spec()
             .bus_edges
-            .get(&BusRef { node, bus })
+            .get(&BusRef::new(node, bus))
             .map(|feeds| feeds.iter().map(|f| f.source).collect())
             .unwrap_or_default()
     }

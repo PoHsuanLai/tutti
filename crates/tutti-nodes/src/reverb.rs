@@ -20,12 +20,10 @@ use tutti_dsp::{
     MAX_CHANNELS, Range, Realization, Ring, Setup, Sizes, System,
 };
 use tutti_graph::{
-    BusOut, Cost, Cx, IntoNode, Io, Node, NodeParts, OutBus, ParamNode, ParamSet, Prepare, Shape,
-    Status,
+    Bus, BusRole, Buses, Cost, Cx, IntoNode, Io, Node, NodeParts, OutBus, ParamNode, ParamSet,
+    Prepare, Shape, Status,
 };
 use tutti_types::{Db, Latency, MaxBlock, Mix, SampleRate, Samples, Tail, UnitAddr, UnitParam};
-
-use crate::buses::main_bus;
 
 use crate::params::{At, ControlSet, Params};
 
@@ -173,9 +171,8 @@ pub struct DesignNode<D: NodeDesign> {
     ceiling: u64,
     rate: SampleRate,
     channels: Channels,
-    /// Every output by handle in port order: the main bus, then the outputs
-    /// past it (a split's bands after the first).
-    outs: OutBuses,
+    /// The output bus, every band of it.
+    out: OutBus,
     /// Frames of ring-out after the last non-silent input frame that the
     /// settings in force since may still need.
     ring: u64,
@@ -221,7 +218,9 @@ impl<D: NodeDesign> DesignNode<D> {
     fn build(design: D, controls: D::Controls, mode: Mode<D::Controls>) -> Self {
         let rate = SampleRate::DEFAULT;
         let channels = design.channels();
-        let outs = OutBuses::of(&ports(channels));
+        let out = ports(channels)
+            .output_bus(0)
+            .expect("a design has an output");
         let realization = design.realization();
         let params = Params::new(design.set(&controls), &controls);
         let (network, longest) = (Box::new(design.blank(rate)), Box::new(design.blank(rate)));
@@ -237,7 +236,7 @@ impl<D: NodeDesign> DesignNode<D> {
             ceiling: 0,
             rate,
             channels,
-            outs,
+            out,
             ring: 0,
             since: UNBOUNDED,
             silent: true,
@@ -304,7 +303,7 @@ impl<D: NodeDesign> DesignNode<D> {
     /// figure held until a shorter decay has been heard out.
     fn cut(&mut self, io: &mut Io<'_>) -> usize {
         let size = io.frames();
-        let inputs = usize::from(self.channels.input.count());
+        let inputs = self.channels.input_width();
         let mut current = self.current;
         if matches!(self.mode, Mode::Live)
             && let Some(longest) = self.params.longest(io)
@@ -360,18 +359,18 @@ impl<D: NodeDesign> DesignNode<D> {
         if frames.is_empty() {
             return;
         }
-        let inputs = usize::from(self.channels.input.count());
+        let inputs = self.channels.input_width();
         let (ins, mut outs) = io.split();
         let mut input: [&[f32]; MAX_CHANNELS] = [&[]; MAX_CHANNELS];
         for (c, slot) in input.iter_mut().enumerate().take(inputs) {
             *slot = &ins.get(c)[frames.clone()];
         }
         let mut output: [&mut [f32]; MAX_CHANNELS] = std::array::from_fn(|_| Default::default());
-        let channels = outs.buses(self.outs.get()).flat_map(BusOut::into_channels);
+        let channels = outs.bus(self.out).into_channels();
         for (slot, ch) in output.iter_mut().zip(channels) {
             *slot = &mut ch[frames.clone()];
         }
-        let width = usize::from(self.channels.output.count());
+        let width = self.channels.output_width();
         self.realization
             .process(&input[..inputs], &mut output[..width]);
     }
@@ -460,39 +459,16 @@ fn cost(effort: Effort) -> Cost {
     }
 }
 
-/// A design's ports: its main buses, and a split's bands past the first as
-/// ports past them.
+/// A design's ports: its input bus, and its outputs as one main bus of its
+/// bands (one, but for a split).
 fn ports(channels: Channels) -> Shape {
-    Shape::buses(main_bus(channels.input), main_bus(channels.main_output()))
-        .with_ports(channels.input, channels.output)
-}
-
-/// A design's output handles in port order: the main bus, and the outputs
-/// past it when there are any.
-#[derive(Clone, Copy, Debug)]
-struct OutBuses {
-    handles: [OutBus; 2],
-    count: usize,
-}
-
-impl OutBuses {
-    fn of(shape: &Shape) -> Self {
-        let main = shape.output_bus(0).expect("a design has an output");
-        match shape.spare_out() {
-            Some(rest) => Self {
-                handles: [main, rest],
-                count: 2,
-            },
-            None => Self {
-                handles: [main, main],
-                count: 1,
-            },
-        }
-    }
-
-    fn get(&self) -> &[OutBus] {
-        &self.handles[..self.count]
-    }
+    let bands = u8::try_from(channels.band_count()).expect("a design's bands fit a bus");
+    let output =
+        Bus::banded(channels.output(), BusRole::Main, bands).expect("a design has an output band");
+    Shape::buses(
+        Buses::main(channels.input()),
+        Buses::NONE.with(output).expect("one bus"),
+    )
 }
 
 impl<D: NodeDesign> Node for DesignNode<D> {
@@ -567,7 +543,7 @@ impl<D: NodeDesign> Node for DesignNode<D> {
         }
         if cut < size {
             let (_, mut outs) = io.split();
-            for ch in outs.buses(self.outs.get()).flat_map(BusOut::into_channels) {
+            for ch in outs.bus(self.out).into_channels() {
                 ch[cut..size].fill(0.0);
             }
             if !self.silent {
@@ -607,7 +583,7 @@ impl<D: NodeDesign> Clone for DesignNode<D> {
             ceiling: self.ceiling,
             rate: self.rate,
             channels: self.channels,
-            outs: self.outs,
+            out: self.out,
             ring: 0,
             since: UNBOUNDED,
             silent: true,

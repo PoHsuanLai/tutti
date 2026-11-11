@@ -12,7 +12,7 @@ use tutti_graph::contract::{Driven, assert_honest_tail, drive_input, prepared};
 use tutti_graph::{Env, PlayClock, Status, Transport, TransportChanges};
 use tutti_graph::{Node, ParamNode, Prepare, Solo};
 use tutti_nodes::{ControlSet, DesignNode, NodeDesign};
-use tutti_types::{ChannelLayout, Frame, Mix, SampleRate, Samples, Seconds, UnitAddr, UnitParam};
+use tutti_types::{BusTopology, Frame, Mix, SampleRate, Samples, Seconds, UnitAddr, UnitParam};
 
 const SR: SampleRate = SampleRate(48_000.0);
 const BLOCK: usize = 64;
@@ -88,7 +88,7 @@ impl Design for Echo {
     type Realization = EchoKernel;
 
     fn channels(&self) -> Channels {
-        Channels::speakers(ChannelLayout::MONO, ChannelLayout::MONO)
+        Channels::same(BusTopology::MONO)
     }
 
     fn design_into(&self, _: &(), rate: SampleRate, out: &mut Network) {

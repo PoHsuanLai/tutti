@@ -12,7 +12,7 @@
 
 use core::marker::PhantomData;
 
-use tutti_types::{ChannelLayout, SampleRate};
+use tutti_types::{BusTopology, SampleRate};
 
 use super::real::Real;
 use super::svf::{SvfCoefficients, svf_step};
@@ -32,10 +32,10 @@ pub type SvfDesign<F> = Filter<Svf<F>>;
 pub struct Svf<F>(PhantomData<fn() -> F>);
 
 impl<F> SvfDesign<F> {
-    /// A design `channels` wide.
+    /// A design on the bus `input`, one output bus where it is.
     #[must_use]
-    pub fn new(channels: ChannelLayout) -> Self {
-        Self::over(Svf(PhantomData), channels)
+    pub fn new(input: BusTopology) -> Self {
+        Self::over(Svf(PhantomData), input)
     }
 }
 
@@ -98,7 +98,7 @@ mod tests {
     }
 
     fn design() -> SvfDesign<f64> {
-        SvfDesign::new(ChannelLayout::MONO)
+        SvfDesign::new(BusTopology::MONO)
     }
 
     impl DesignCase for SvfDesign<f64> {

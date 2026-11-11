@@ -48,7 +48,7 @@
 //! Portamento On (CC 65) glides a note from the key struck before it. The
 //! [`Glide`] on a [`Command::Start`] or [`Command::Retarget`] says from which key
 //! and for how long (the channel's Portamento Time). What a channel holds
-//! besides notes is its [`ChannelState`](crate::ChannelState).
+//! besides notes is its [`ChannelState`].
 
 use tutti_midi_protocol::{MpeZones, bend_u32_to_signed_f32, narrow_value, u32_to_unit_f32};
 use tutti_types::{Amplitude, Seconds, Semitones};

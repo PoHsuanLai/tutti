@@ -544,17 +544,31 @@ mod halves {
     }
 
     /// An offline `Prepare` writes `kAudioUnitProperty_OfflineRender` before the
-    /// unit initializes, and the unit reports it was taken.
+    /// unit initializes, and the unit reports whether it took it: AUSampler
+    /// implements the property, and AUDelay does not (it is absent there, so the
+    /// write is refused, which is the probe behind `Features::RENDER_MODE`).
     #[test]
-    fn an_offline_activation_writes_the_render_mode() {
-        let comp = find_apple_delay().expect("AUDelay should be present");
-        let loaded = AuLoaded::new(comp, 44_100.0, 512).unwrap();
+    fn an_offline_activation_writes_the_render_mode_and_says_who_took_it() {
         let offline = prepare(44_100.0, 512).with_mode(tutti_plugin_types::RenderMode::Offline);
-        let (p, c) = loaded
+
+        let sampler = support::corpus::SAMPLER.require();
+        let (p, c) = AuLoaded::new(sampler.component, 44_100.0, 512)
+            .unwrap()
+            .activate(&main_thread(), offline)
+            .unwrap_or_else(|e| panic!("AUSampler activates: {}", e.reason));
+        assert!(c.render_mode_accepted(), "AUSampler takes the offline-render property");
+        assert!(c.is_offline_render().unwrap(), "and holds it");
+        drop((p, c));
+
+        let comp = find_apple_delay().expect("AUDelay should be present");
+        let (p, c) = AuLoaded::new(comp, 44_100.0, 512)
+            .unwrap()
             .activate(&main_thread(), offline)
             .unwrap_or_else(|e| panic!("AUDelay activates: {}", e.reason));
-        assert!(c.render_mode_accepted(), "AUDelay takes the offline-render property");
-        assert!(c.is_offline_render().unwrap());
+        assert!(
+            !c.render_mode_accepted(),
+            "AUDelay does not implement the property, so it did not take the mode"
+        );
         drop(p);
     }
 }

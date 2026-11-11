@@ -1,6 +1,6 @@
 //! `DesignNode` over Freeverb, as the graph runs it (design 022 step 1b): its
 //! ports, its tail (a ceiling it narrows and honours), its controls (a cell, or
-//! a port the graph modulates), its mix, and its fork. Every figure is from the
+//! a port the graph modulates), and its fork. Every figure is from the
 //! definition (the network's own analytic tail, an impulse's first echo, a
 //! decay measured on a real lane), not from another reverb's render.
 
@@ -122,8 +122,8 @@ fn the_general_midi_send_renders_what_it_always_did() {
 }
 
 /// The General MIDI send takes a mono input and gives a stereo one, with no
-/// latency, and offers the mix alone to the graph; a live node offers the room
-/// and the damping after it. Its tail is a ceiling.
+/// latency, and offers no cell to the graph (its dry/wet is the graph's mix); a
+/// live node offers the room and the damping. Its tail is a ceiling.
 ///
 /// Mutation (run): `Mode::Live` offering no addresses fails the live row;
 /// `Mode::Fixed` offering the cells fails the fixed one; the realization's latency
@@ -136,13 +136,13 @@ fn the_ports_and_the_ceiling() {
     assert_eq!(shape.audio_in, ChannelLayout::MONO);
     assert_eq!(shape.audio_out, ChannelLayout::STEREO);
     assert_eq!(shape.latency.samples(), Samples::ZERO);
-    assert_eq!(shape.params.len(), 1, "the mix alone");
+    assert_eq!(shape.params.len(), 0, "no cells");
     assert_eq!(shape.tail, Tail::Finite(Samples(tail_of(gm()))));
 
     let live = live(gm());
     let shape = live.shape();
     let ports = shape.params.len();
-    assert_eq!(ports, 3, "the mix, the room and the damping");
+    assert_eq!(ports, 2, "the room and the damping");
     let Tail::Finite(ceiling) = shape.tail else {
         panic!("finite")
     };
@@ -151,31 +151,29 @@ fn the_ports_and_the_ceiling() {
         "the live ceiling is the worst case (room 1), far above the General MIDI room's"
     );
     // The fixed node's ceiling is exact, the live node's is not.
-    assert_eq!(live.param_set().params().count(), 3);
-    assert_eq!(fixed.param_set().params().count(), 1);
+    assert_eq!(live.param_set().params().count(), 2);
+    assert_eq!(fixed.param_set().params().count(), 0);
     assert_eq!(
         live.param_set().get(UnitParam::Wet),
-        Some(1.0),
-        "wet only by default"
+        None,
+        "wet only: the blend is the graph's mix, not a port"
     );
 }
 
 /// The ports are in a fixed order, which the graph's wires and a saved project
-/// name by index: the mix first, then the design's cells in the order its params
-/// list them. Freeverb offers `[Wet, RoomSize, Damping]`; the FDN offers the
-/// mix, then the three decays, the size, the diffusion, the pre-delay, the
+/// name by index: the design's cells in the order its params list them. Freeverb
+/// offers `[RoomSize, Damping]`; the FDN offers the three decays, the size, the diffusion, the pre-delay, the
 /// modulation depth and rate, the width and the wet gain.
 ///
 /// Mutation (run): swapping the room and damping addresses in
 /// `FreeverbSet::addrs` fails the first assertion; swapping the first two
 /// decays in the FDN's `ADDRS` fails the second.
 #[test]
-fn the_port_order_is_the_mix_then_the_cells() {
+fn the_port_order_is_the_cells_in_their_order() {
     let freeverb = live(gm());
     assert_eq!(
         freeverb.shape().params.as_slice(),
         [
-            UnitAddr::first(UnitParam::Wet),
             UnitAddr::first(UnitParam::RoomSize),
             UnitAddr::first(UnitParam::Damping),
         ]
@@ -188,7 +186,6 @@ fn the_port_order_is_the_mix_then_the_cells() {
     assert_eq!(
         fdn.shape().params.as_slice(),
         [
-            UnitAddr::first(UnitParam::Wet),
             UnitAddr::new(UnitParam::Decay, 0),
             UnitAddr::new(UnitParam::Decay, 1),
             UnitAddr::new(UnitParam::Decay, 2),
@@ -394,7 +391,7 @@ fn a_modulated_port_is_read_at_the_blocks_end_and_its_peak_sets_the_tail() {
     let none: Option<&[f32]> = None;
     for chunk in x.chunks(BLOCK) {
         assert_eq!(
-            by_port.block(chunk, &[none, Some(&rising), none]).audio,
+            by_port.block(chunk, &[Some(&rising), none]).audio,
             by_cell.block(chunk, &[]).audio
         );
     }
@@ -402,7 +399,7 @@ fn a_modulated_port_is_read_at_the_blocks_end_and_its_peak_sets_the_tail() {
     // Falling through the block: 0.9 at the start, 0.1 at the end.
     let falling: Vec<f32> = rising.iter().rev().copied().collect();
     let mut rig = Rig::new(live(controls(0.5, 0.5)));
-    let d = rig.block(&impulse(), &[none, Some(&falling), none]);
+    let d = rig.block(&impulse(), &[Some(&falling), none]);
     assert!(
         reported(&d) >= tail_of(controls(0.9, 0.5)),
         "{} against the long room's {}",
@@ -434,39 +431,26 @@ fn a_non_finite_cell_write_is_ignored() {
     }
 }
 
-/// The mix blends the dry input against the room, both channels alike: at 0 the
-/// output is the input, at 0.5 the first frame is half the input (the room has
-/// not come round yet) and the first echo half of what a wet-only one gives.
-/// Wet only (the default) leaves the first frame silent.
+/// The node is the room alone: an impulse leaves the first frame silent on both
+/// channels (no dry input in the output), and the first left echo is the input at
+/// the fixed gain, 1215 frames in at 48 kHz. Its dry/wet is the graph's mix
+/// (`node_mix.rs`), which blends this signal with the aligned input.
 ///
-/// Mutation (run): the dry sent to the first output only fails the right channel;
-/// `blend` with its arguments swapped fails the first frame.
+/// Mutation (run): the node adding `0.01 * input` to each output channel fails
+/// the first frame; scaling its output by 0.9 fails the echo's figure.
 #[test]
-fn the_mix_blends_the_dry_input() {
+fn the_node_is_the_room_alone() {
     let mut x = vec![0.0f32; 1_400];
     x[0] = 1.0;
-    let run = |mix: f32| -> Vec<Vec<f32>> {
-        let node = live(gm());
-        node.mix().store(Mix(mix));
-        let mut rig = Rig::new(node);
-        let mut out = vec![Vec::new(), Vec::new()];
-        for chunk in x.chunks(BLOCK) {
-            for (all, more) in out.iter_mut().zip(rig.block(chunk, &[]).audio) {
-                all.extend(more);
-            }
+    let mut rig = Rig::new(live(gm()));
+    let mut out = [Vec::new(), Vec::new()];
+    for chunk in x.chunks(BLOCK) {
+        for (all, more) in out.iter_mut().zip(rig.block(chunk, &[]).audio) {
+            all.extend(more);
         }
-        out
-    };
-    let (wet, half, dry) = (run(1.0), run(0.5), run(0.0));
-    assert!(wet.iter().all(|c| c[0] == 0.0), "wet only: nothing at once");
-    for c in 0..2 {
-        assert_eq!(dry[c][0], 1.0, "dry: the input");
-        assert!(dry[c][1..].iter().all(|&s| s == 0.0), "dry: nothing else");
-        assert_eq!(half[c][0], 0.5, "half: half the input");
     }
-    // The first left echo: the input at the fixed gain, 1215 frames in at 48 kHz.
-    assert!((wet[0][1_215] - Freeverb::FIXED_GAIN).abs() < 1e-6);
-    assert!((half[0][1_215] - 0.5 * wet[0][1_215]).abs() < 1e-6);
+    assert!(out.iter().all(|c| c[0] == 0.0), "nothing at once");
+    assert!((out[0][1_215] - Freeverb::FIXED_GAIN).abs() < 1e-6);
 }
 
 /// A fork of the node starts from silence with the values set, and shares nothing
@@ -475,7 +459,7 @@ fn the_mix_blends_the_dry_input() {
 ///
 /// Mutation (run): `fork_fresh` returning a plain clone of the state (not
 /// `Realization::fresh`) carries the ring into the fork and fails the second half;
-/// not detaching the mix fails `assert_param_fork`.
+/// not detaching the cells fails `assert_param_fork`.
 #[test]
 fn a_fork_starts_silent_with_the_values_set() {
     assert_param_fork(DesignNode::live(FreeverbDesign, gm()));
@@ -560,13 +544,16 @@ fn a_lane_driving_the_room_changes_how_long_it_rings() {
 }
 
 /// A `DesignNode` is an `IntoNode` whose controls are its
-/// `ParamSet`, so the session can address the mix and the room by `UnitParam`.
+/// `ParamSet`, so the session can address the room by `UnitParam`.
 #[test]
 fn it_is_inserted_with_a_param_set() {
     let (_, set) = DesignNode::live(FreeverbDesign, gm()).into_node();
     assert!(set.set(UnitParam::RoomSize, 0.7));
     assert_eq!(set.get(UnitParam::RoomSize), Some(0.7));
-    assert!(set.set(UnitParam::Wet, 0.25));
+    assert!(
+        !set.set(UnitParam::Wet, 0.25),
+        "no mix port: the graph blends"
+    );
     let (_, fixed) = FreeverbNode::general_midi().into_node();
     assert!(!fixed.set(UnitParam::RoomSize, 0.7), "the send has no room");
 }

@@ -1,5 +1,5 @@
 //! **A node's blend with its input is the graph's mix**, not the node's: the
-//! convolver, the delay, the chorus and flanger and the phaser output their wet
+//! convolver, the delay, the chorus and flanger, the phaser and the two reverbs output their wet
 //! signal alone, and `Editor::set_mix` blends it with the input delayed by the
 //! node's declared latency (doc 013, "Bypass and mute are graph state", M4).
 //! These nodes once held a dry/wet of their own; each property they pinned is
@@ -7,7 +7,9 @@
 //!
 //! - at `Mix::WET` the graph's output is the node rendered alone, bit for bit;
 //! - at `Mix::DRY` the output is the input delayed by the node's latency, bit
-//!   for bit (the convolver's block; none for the rest);
+//!   for bit (the convolver's block; none for the rest), on the channels the
+//!   input has (a reverb's mono input leaves its right channel silent: the graph's
+//!   rule is `y * m` where there is no `x̂`);
 //! - at a mix between, the output is `y * m + x̂ * (1 - m)`, with `y` the node's
 //!   own output (rendered alone, at `WET`) and `x̂` the aligned input, bit for bit;
 //! - a mix that moves ramps across the block it lands on, to the new mix.
@@ -15,10 +17,11 @@
 //! Each render is preceded by one block of silence, the block the mix's ramp from
 //! the unit's `WET` start lands on, and only the frames after it are compared.
 
+use tutti_dsp::{FdnControls, FdnDesign, FreeverbControls, FreeverbDesign};
 use tutti_fixtures::noise;
 use tutti_graph::contract::drive;
 use tutti_graph::{IntoNode, Prepare, Solo};
-use tutti_nodes::{DelayLineNode, ModDelayNode, PhaserNode};
+use tutti_nodes::{DelayLineNode, DesignNode, ModDelayNode, PhaserNode};
 use tutti_types::{ChannelLayout, Feedback, Mix, SampleRate, Samples, Seconds};
 
 const RATE: SampleRate = SampleRate(48_000.0);
@@ -73,16 +76,32 @@ fn delayed(x: &[f32], latency: usize) -> Vec<f32> {
 }
 
 /// The three properties above for the node `make` builds, of `latency` frames
-/// declared and `width` channels.
+/// declared and `width` channels in and out.
 fn check<N: IntoNode>(name: &str, make: &dyn Fn() -> N, width: usize, latency: usize) {
-    let x: Vec<Vec<f32>> = (0..width).map(|c| noise(40 + c as u32, FRAMES)).collect();
+    check_io(name, make, width, width, latency);
+}
+
+/// [`check`] for a node of `inputs` channels in and `outputs` out: a channel with
+/// no input has no `x̂`, so its DRY is silence and its mix is `y * m`.
+fn check_io<N: IntoNode>(
+    name: &str,
+    make: &dyn Fn() -> N,
+    inputs: usize,
+    outputs: usize,
+    latency: usize,
+) {
+    let x: Vec<Vec<f32>> = (0..inputs).map(|c| noise(40 + c as u32, FRAMES)).collect();
+    let aligned = |c: usize| match x.get(c) {
+        Some(x) => delayed(x, latency),
+        None => vec![0.0; FRAMES],
+    };
 
     // DRY is the aligned input.
     let dry = rendered(make, &x, Mix::DRY);
-    for c in 0..width {
+    for (c, dry) in dry.iter().enumerate().take(outputs) {
         assert_eq!(
-            bits(&dry[c]),
-            bits(&delayed(&x[c], latency)),
+            bits(dry),
+            bits(&aligned(c)),
             "{name}: channel {c} at DRY is the input delayed by {latency}"
         );
     }
@@ -95,7 +114,7 @@ fn check<N: IntoNode>(name: &str, make: &dyn Fn() -> N, width: usize, latency: u
         alone
     };
     let input = after_silence(&x);
-    let mut solo_out: Vec<Vec<f32>> = vec![Vec::new(); width];
+    let mut solo_out: Vec<Vec<f32>> = vec![Vec::new(); outputs];
     for at in (0..input[0].len()).step_by(BLOCK) {
         let block: Vec<&[f32]> = input.iter().map(|c| &c[at..at + BLOCK]).collect();
         for (o, b) in solo_out
@@ -105,7 +124,7 @@ fn check<N: IntoNode>(name: &str, make: &dyn Fn() -> N, width: usize, latency: u
             o.extend(b);
         }
     }
-    for c in 0..width {
+    for c in 0..outputs {
         assert_eq!(
             bits(&wet[c]),
             bits(&solo_out[c][BLOCK..]),
@@ -116,13 +135,16 @@ fn check<N: IntoNode>(name: &str, make: &dyn Fn() -> N, width: usize, latency: u
     // A mix between is the formula.
     let m = 0.3_f32;
     let mixed = rendered(make, &x, Mix::new(m));
-    for c in 0..width {
-        let xh = delayed(&x[c], latency);
-        let want: Vec<f32> = wet[c]
-            .iter()
-            .zip(&xh)
-            .map(|(&y, &x)| y * m + x * (1.0 - m))
-            .collect();
+    for c in 0..outputs {
+        let want: Vec<f32> = if c < inputs {
+            wet[c]
+                .iter()
+                .zip(aligned(c))
+                .map(|(&y, x)| y * m + x * (1.0 - m))
+                .collect()
+        } else {
+            wet[c].iter().map(|&y| y * m).collect()
+        };
         assert_eq!(
             bits(&mixed[c]),
             bits(&want),
@@ -205,6 +227,42 @@ fn the_chorus_flanger_and_phaser_are_blended_by_the_graph() {
     check(
         "phaser (stereo, 4 stages)",
         &|| PhaserNode::with_channels(ChannelLayout::STEREO, 4),
+        2,
+        0,
+    );
+}
+
+/// The Freeverb and the feedback delay network, mono in and stereo out, are
+/// blended by the graph like the rest: WET is the node alone, DRY the aligned
+/// input (on the left; the right has no input and is silent), and between them
+/// `y * m + x̂ * (1 - m)`, bit for bit. They held a dry/wet of their own
+/// (`DryWet`, since deleted) that added the dry input to both channels.
+///
+/// Mutation (run): every reverb's shape declaring one frame of latency it does
+/// not have (the graph's aligned input one frame late) fails the DRY comparison
+/// and the formula. (A residual dry or a scaled wet in the node cannot show here,
+/// where WET is the node compared with itself: `reverb_node.rs`'s
+/// `the_node_is_the_room_alone` pins the analytic wet.)
+#[test]
+fn the_reverbs_are_blended_by_the_graph() {
+    check_io(
+        "freeverb (General MIDI room)",
+        &|| DesignNode::fixed(FreeverbDesign, FreeverbControls::GENERAL_MIDI),
+        1,
+        2,
+        0,
+    );
+    check_io(
+        "freeverb (live)",
+        &|| DesignNode::live(FreeverbDesign, FreeverbControls::GENERAL_MIDI),
+        1,
+        2,
+        0,
+    );
+    check_io(
+        "fdn",
+        &|| DesignNode::live(FdnDesign::default(), FdnControls::DEFAULT),
+        1,
         2,
         0,
     );

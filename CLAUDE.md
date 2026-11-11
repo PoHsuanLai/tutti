@@ -723,9 +723,8 @@ list (normal and build edges; dev-dependencies may go anywhere).
   ring buffers and the waveshaping curves. `tutti-nodes` holds the `tutti_graph::Node` adapters over
   them (shape, prepare, process, params, fork; `DesignNode<D: NodeDesign>` is
   the one node over every reverb `Design`, with `FreeverbNode` and `FdnNode`
-  its two instances and `ReverbKind` the choice between them; a `NodeDesign` names
-  its `Blend`, `DryWet` for an insert with a mix port and `NoBlend` for a
-  wet-only family), and re-exports only the
+  its two instances and `ReverbKind` the choice between them; a design node is
+  the wet signal alone, and its dry/wet is the graph's mix, `Editor::set_mix`), and re-exports only the
   algorithm types that sit in a node's signature (`SvfType`, `LadderType`,
   `Real`, `CrossoverError`, `InterpolationMode`, `ShapeKind`, `FdnControls`,
   `FdnDesign`, `FreeverbControls`, `FreeverbDesign`).

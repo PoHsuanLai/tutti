@@ -3,12 +3,8 @@
 //! The plugin-server subprocess owns audio processing; the editor must live in
 //! the host process because platform GUI toolkits are host-process-local. Each
 //! format that is [`OutOfProcess`](tutti_plugin_types::OutOfProcess) loads an
-//! editor-only second instance here through `load_editor` (design 021 §5); the
-//! CLAP and VST3 ones live in their host crates. AU's is in this module until
-//! its `Loaded` lands (design 021 step 7).
-
-#[cfg(all(feature = "au", target_os = "macos"))]
-mod au;
+//! editor-only second instance here through `load_editor` (design 021 §5); each
+//! lives in its format's host crate.
 
 use std::path::Path;
 use tutti_plugin_types::LoadStage;
@@ -31,11 +27,7 @@ pub(crate) fn load_gui_instance(main: &MainThread, path: &Path) -> BridgeResult<
         #[cfg(feature = "clap")]
         PluginFormat::Clap => editor::<tutti_clap_host::ClapLoaded>(main, path, "CLAP"),
         #[cfg(all(feature = "au", target_os = "macos"))]
-        PluginFormat::AudioUnit => Ok(Box::new(au::AuGuiInstance::load(
-            main,
-            path,
-            &tutti_plugin_types::Load::new(),
-        )?)),
+        PluginFormat::AudioUnit => editor::<tutti_au_host::AuLoaded>(main, path, "AU"),
         PluginFormat::Vst2 => Err(BridgeError::LoadFailed {
             path: path.to_path_buf(),
             stage: LoadStage::Opening,
@@ -57,7 +49,10 @@ pub(crate) fn load_gui_instance(main: &MainThread, path: &Path) -> BridgeResult<
 }
 
 /// `F`'s editor-only instance, boxed.
-#[cfg(all(any(feature = "vst3", feature = "clap"), unix))]
+#[cfg(any(
+    all(any(feature = "vst3", feature = "clap"), unix),
+    all(feature = "au", target_os = "macos")
+))]
 fn editor<F: tutti_plugin_types::OutOfProcess>(
     main: &MainThread,
     path: &Path,

@@ -48,3 +48,8 @@ required-features = ["server"]
 [dev-dependencies]
 # `tests/probe.rs` copies the plugin under the file name its `init` reads.
 tempfile = "3"
+
+# AU has no build of the shared plugin: its suite loads an Apple built-in unit
+# (`tests/au.rs`), so the host is a macOS dependency only.
+[target.'cfg(target_os = "macos")'.dependencies]
+tutti-au-host = { path = "../../crates/tutti-au-host" }

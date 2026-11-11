@@ -12,9 +12,9 @@
 //! # No format parameter
 //!
 //! One `Ipc` serves every format by path, as `PluginClient` does: the
-//! `plugin-server` loads whichever format the path names, and AU has no
-//! [`Loaded`] yet (design 021 §10.4 (c)). It gains `<F: OutOfProcess>` when
-//! step 7 gives AU one.
+//! `plugin-server` loads whichever format the path names, and its AU loader is
+//! still its own (design 021 §10.4 (c)). It gains `<F: OutOfProcess>` when
+//! step 7 replaces that loader.
 //!
 //! # Threads
 //!

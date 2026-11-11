@@ -4,6 +4,8 @@
 //! RNG that continues across blocks. [`DitherNoise`] is that RNG and the two
 //! noise shapes; which signals to dither, and at what depth, is the caller's.
 
+pub(crate) mod sink;
+
 use tutti_types::Amplitude;
 
 /// The probability density of the noise a [`DitherNoise`] adds.

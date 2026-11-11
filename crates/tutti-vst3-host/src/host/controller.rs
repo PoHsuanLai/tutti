@@ -440,6 +440,16 @@ impl Vst3Loaded {
         main: &MainThread,
         prepare: Prepare,
     ) -> std::result::Result<(Vst3Processor<T>, Vst3Controller), Refused<Self>> {
+        // `maxSamplesPerBlock` is an `i32`, narrower than a `MaxBlock`'s `u32`.
+        if i32::try_from(prepare.max_block().get_u32()).is_err() {
+            return Err(Refused {
+                plugin: Some(self),
+                reason: PluginError::Other(format!(
+                    "a block of {} frames exceeds VST3's maxSamplesPerBlock (i32)",
+                    prepare.max_block().get()
+                )),
+            });
+        }
         super::shell::warm_retirement();
         super::shell::reap();
         let mode = if prepare.mode().is_offline() {
@@ -450,22 +460,17 @@ impl Vst3Loaded {
         // What an earlier rejoin carried over reaches the plugin in the first
         // block, unless this activation is refused, which keeps it.
         let carried = std::mem::take(&mut self.carried);
-        let staged = match Staged::<T>::stage(
-            main,
-            self,
-            prepare.rate().0,
-            prepare.max_block().get(),
-            mode,
-        ) {
-            Ok(staged) => staged,
-            Err((mut plugin, error)) => {
-                plugin.carried = carried;
-                return Err(Refused {
-                    plugin: Some(plugin),
-                    reason: plugin_error(error),
-                });
-            }
-        };
+        let staged =
+            match Staged::<T>::stage(main, self, prepare.rate(), prepare.max_block().get(), mode) {
+                Ok(staged) => staged,
+                Err((mut plugin, error)) => {
+                    plugin.carried = carried;
+                    return Err(Refused {
+                        plugin: Some(plugin),
+                        reason: plugin_error(error),
+                    });
+                }
+            };
         let Staged { loaded, audio, .. } = staged;
         // The plugin may announce its latency from inside `setActive`; the
         // figure is read right after every activation, so the announcement is

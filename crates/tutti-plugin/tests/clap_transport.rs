@@ -226,7 +226,7 @@ fn the_transport_an_offline_fork_sees_is_env_at_every_chunk() {
     const BLOCK: usize = 2 * CHUNK;
     // A 64-frame device quantum in 128-frame blocks: two chunks a block.
     let prepare = tutti_graph::Prepare::new(SampleRate(SAMPLE_RATE), MaxBlock::of(Samples(BLOCK)))
-        .with_quantum(Samples(CHUNK));
+        .with_quantum(MaxBlock::of(Samples(CHUNK)));
     let mut rig = Rig::prepared(fork, prepare);
 
     const BLOCKS: usize = 24;
@@ -304,7 +304,7 @@ fn a_plugin_behind_a_latent_path_sees_the_transport_its_input_was_rendered_at() 
     const BLOCK: usize = 2 * CHUNK;
     const ARRIVAL: usize = 40;
     let prepare = tutti_graph::Prepare::new(SampleRate(SAMPLE_RATE), MaxBlock::of(Samples(BLOCK)))
-        .with_quantum(Samples(CHUNK));
+        .with_quantum(MaxBlock::of(Samples(CHUNK)));
     let mut rig = Rig::behind(fork, prepare, Latency::new(Samples(ARRIVAL)));
 
     const BLOCKS: usize = 24;
@@ -368,7 +368,7 @@ fn the_plugin_is_told_the_maps_tempo_and_slope() {
         .fork_instance(ForkMode::Offline, ramp_tempo())
         .expect("the probe forks");
     let prepare = tutti_graph::Prepare::new(SampleRate(SAMPLE_RATE), MaxBlock::of(Samples(CHUNK)))
-        .with_quantum(Samples(CHUNK));
+        .with_quantum(MaxBlock::of(Samples(CHUNK)));
     let mut rig = Rig::prepared(fork, prepare);
 
     let ins = rig.inputs();
@@ -451,7 +451,7 @@ fn a_ramps_end_inside_a_chunk_is_a_transport_event_at_its_frame() {
         .fork_instance(ForkMode::Offline, two_ramps())
         .expect("the probe forks");
     let prepare = tutti_graph::Prepare::new(SampleRate(SAMPLE_RATE), MaxBlock::of(Samples(CHUNK)))
-        .with_quantum(Samples(CHUNK));
+        .with_quantum(MaxBlock::of(Samples(CHUNK)));
     let mut rig = Rig::prepared(fork, prepare);
 
     let s0 = (-2.0 + (4.0f64 + 1.25 * 3.999).sqrt()) / 0.625;

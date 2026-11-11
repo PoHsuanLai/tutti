@@ -1,5 +1,5 @@
-//! Control-rate helpers shared by the filters, delay lines and the phaser: the
-//! solve interval, block ramps and channel grouping.
+//! Control-rate helpers: the solve interval and stream cadence, block ramps, and the
+//! channel grouping the filters' held path runs in.
 
 use core::num::NonZeroU32;
 

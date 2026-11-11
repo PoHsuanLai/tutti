@@ -30,7 +30,7 @@ use tutti_ump::{Address, MidiChannel, MidiGroup, Ump, Voice2};
 use crate::events::{InputEvents, Stager};
 use crate::types::ParameterChanges;
 use tutti_graph::UmpAt;
-use tutti_plugin_types::{MIDI_STACK_CAPACITY, MainThread};
+use tutti_plugin_types::{MIDI_STACK_CAPACITY, MainThread, Normalized};
 use tutti_rt::{Reader, RtVec};
 use tutti_vst3_ffi::{EventList, Plugin};
 
@@ -141,8 +141,18 @@ impl MidiCcMapping {
     }
 }
 
-/// Decompose a UMP packet into the `(channel, controller, normalized_value)`
-/// a VST3 `IMidiMapping` parameter expects, or `None` if the event is not a
+/// A mappable controller message, as `IMidiMapping` addresses it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct MappedController {
+    pub(crate) channel: MidiChannel,
+    /// A VST3 `ControllerNumbers` index, as [`MidiCcMapping::lookup`] takes it.
+    pub(crate) controller: usize,
+    /// The controller's value on the parameter's `0..=1` scale.
+    pub(crate) value: Normalized,
+}
+
+/// Decompose a UMP packet into the [`MappedController`] a VST3 `IMidiMapping`
+/// parameter expects, or `None` if the event is not a
 /// mappable controller (CC / channel pressure / pitch bend).
 ///
 /// The packet is read through [`channel_voice`]; a MIDI 1.0 message is widened
@@ -155,7 +165,7 @@ impl MidiCcMapping {
 /// - CC / channel pressure: 32-bit → unit `0.0..=1.0`.
 /// - Pitch bend: signed `-1.0..=1.0` (center `0.0`) → `0.0..=1.0` (center
 ///   `0.5`), matching what the plugin's parameter funnel expects.
-pub(crate) fn midi_to_mapped_controller(ump: &Ump) -> Option<(MidiChannel, usize, f64)> {
+pub(crate) fn midi_to_mapped_controller(ump: &Ump) -> Option<MappedController> {
     use tutti_midi_protocol::{bend_u32_to_signed_f32, u32_to_unit_f32};
 
     // Not channel voice, or a packet `decode` cannot frame: there is no
@@ -165,20 +175,24 @@ pub(crate) fn midi_to_mapped_controller(ump: &Ump) -> Option<(MidiChannel, usize
         return None;
     }
     match voice {
-        Voice2::ControlChange { controller, value } => Some((
+        Voice2::ControlChange { controller, value } => Some(MappedController {
             channel,
-            usize::from(controller.get()),
-            f64::from(u32_to_unit_f32(value)),
-        )),
-        Voice2::ChannelPressure(pressure) => Some((
+            controller: usize::from(controller.get()),
+            value: Normalized::clamped(f64::from(u32_to_unit_f32(value))),
+        }),
+        Voice2::ChannelPressure(pressure) => Some(MappedController {
             channel,
-            CTRL_AFTERTOUCH,
-            f64::from(u32_to_unit_f32(pressure)),
-        )),
+            controller: CTRL_AFTERTOUCH,
+            value: Normalized::clamped(f64::from(u32_to_unit_f32(pressure))),
+        }),
         Voice2::PitchBend(bend) => {
             // Signed [-1, 1] (center 0) → unit [0, 1] (center 0.5).
             let value = bend_u32_to_signed_f32(bend);
-            Some((channel, CTRL_PITCH_BEND, (f64::from(value) + 1.0) / 2.0))
+            Some(MappedController {
+                channel,
+                controller: CTRL_PITCH_BEND,
+                value: Normalized::clamped((f64::from(value) + 1.0) / 2.0),
+            })
         }
         // No `IMidiMapping` slot: the caller keeps these as MIDI.
         Voice2::RegisteredPerNote { .. }
@@ -217,14 +231,19 @@ pub(crate) fn route_cc_events(
     for event in midi_events {
         let mapped = midi_to_mapped_controller(&event.1);
         match mapped {
-            Some((channel, controller, value)) => match mapping.lookup(channel, controller) {
+            Some(MappedController {
+                channel,
+                controller,
+                value,
+            }) => match mapping.lookup(channel, controller) {
                 Some(param_id) => {
                     // `IMidiMapping` answers with a `ParamID` — opaque, like
                     // every VST3 parameter address. Past the queue's room it
                     // keeps the latest value in time, the host's or the CC's
                     // (`PointBuf::push_or_replace_last`), counted in the
                     // set's `points_overflowed`.
-                    let _ = out_params.add_change(param_id.into(), event.0.get() as i32, value);
+                    let _ =
+                        out_params.add_change(param_id.into(), event.0.get() as i32, value.get());
                 }
                 // Mappable message but no mapping for this slot — keep it as a
                 // MIDI event so the plugin can still react.

@@ -49,6 +49,35 @@ pub struct BusRef {
     pub node: NodeKey,
     /// Which of its buses on that side, in port order.
     pub bus: u8,
+    /// Which band of a repeated bus ([`Bus::bands`](crate::Bus::bands)): 0
+    /// for every other bus.
+    pub band: u8,
+}
+
+impl BusRef {
+    /// Bus `bus` of `node`, its only band.
+    #[must_use]
+    pub const fn new(node: NodeKey, bus: u8) -> Self {
+        Self { node, bus, band: 0 }
+    }
+
+    /// Band `band` of bus `bus` of `node`.
+    #[must_use]
+    pub const fn band(node: NodeKey, bus: u8, band: u8) -> Self {
+        Self { node, bus, band }
+    }
+
+    /// The topology of one band of this bus in `buses`, and its first port:
+    /// `None` when the bus or the band is not there.
+    fn resolve(self, buses: &crate::Buses) -> Option<(BusTopology, usize)> {
+        let index = usize::from(self.bus);
+        let bus = buses.get(index)?;
+        let band = usize::from(self.band);
+        (band < bus.bands())
+            .then(|| buses.first_port(index))
+            .flatten()
+            .map(|first| (bus.topology, first + band * bus.band_width()))
+    }
 }
 
 /// What feeds a sink bus.
@@ -307,15 +336,8 @@ impl GraphSpec {
             bus: to,
             side: BusSide::Input,
         };
-        let sink_bus = sink_shape
-            .buses_in()
-            .get(usize::from(to.bus))
-            .ok_or(no_sink.clone())?;
-        let sink_first = sink_shape
-            .buses_in()
-            .first_port(usize::from(to.bus))
-            .ok_or(no_sink)?;
-        self.fold_lanes(shapes, from, sink_bus.topology, fold, |c| {
+        let (sink_topology, sink_first) = to.resolve(sink_shape.buses_in()).ok_or(no_sink)?;
+        self.fold_lanes(shapes, from, sink_topology, fold, |c| {
             Sink::Port(InPort {
                 node: to.node,
                 port: (sink_first + c) as u16,
@@ -364,15 +386,8 @@ impl GraphSpec {
                     bus,
                     side: BusSide::Output,
                 };
-                let found = shape
-                    .buses_out()
-                    .get(usize::from(bus.bus))
-                    .ok_or(no_bus.clone())?;
-                let first = shape
-                    .buses_out()
-                    .first_port(usize::from(bus.bus))
-                    .ok_or(no_bus)?;
-                (found.topology, first, Some(bus.node))
+                let (topology, first) = bus.resolve(shape.buses_out()).ok_or(no_bus)?;
+                (topology, first, Some(bus.node))
             }
             BusSource::Global => {
                 let width = self.topology.inputs;

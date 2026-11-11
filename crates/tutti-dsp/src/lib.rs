@@ -133,8 +133,8 @@ pub use grid::{BinCount, BinIndex, FrameCount, FrameIndex, Grid};
 pub use interp::cubic_hermite;
 pub use model::{
     Anchor, Approach, Cadence, Ceiling, Channels, Design, Effect, Effort, Glide, Kernel, Lerp, Lti,
-    MaxDecay, MaxDecayError, Period, Placement, Range, Realization, Realized, Ring, Setup, Sizes,
-    Step, Steps, System,
+    MaxDecay, MaxDecayError, Period, Range, Realization, Realized, Ring, Setup, Sizes, Step, Steps,
+    System,
 };
 pub use network::{
     Absorption, AllPass, AllPassForm, Band, Bounds, Fdn, FirSummary, Full, Gains, Inline, Line,

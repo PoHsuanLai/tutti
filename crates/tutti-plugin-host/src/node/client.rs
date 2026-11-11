@@ -220,10 +220,7 @@ fn buses_of(plugin: &[PluginBus]) -> Buses {
         let Some(topology) = placed.or_else(|| BusTopology::unassigned(bus.channels)) else {
             break;
         };
-        match buses.with(Bus {
-            topology,
-            role: bus.role,
-        }) {
+        match buses.with(Bus::new(topology, bus.role)) {
             Some(more) => buses = more,
             None => break,
         }

@@ -7,7 +7,9 @@ use std::sync::Arc;
 use tutti_dsp::{
     CrossoverControls, CrossoverDesign, CrossoverError, CrossoverTree, MAX_SPLITS, fit_to_rate,
 };
-use tutti_types::{AtomicF32, ChannelLayout, Hz, Param, SampleRate, UnitAddr, UnitParam};
+use tutti_types::{
+    AtomicF32, BusTopology, ChannelLayout, Hz, Param, SampleRate, UnitAddr, UnitParam,
+};
 
 use super::NodeKernel;
 use crate::params::ControlSet;
@@ -107,12 +109,13 @@ impl CrossoverNode {
     /// # Errors
     ///
     /// [`CrossoverError`] if the frequencies are invalid at 48 kHz (see
-    /// [`CrossoverControls::new`]), or `layout` has no channels or `bands * channels`
-    /// exceeds the graph's 64 ports.
+    /// [`CrossoverControls::new`]), or `layout` has no channels, more than a bus
+    /// holds (16), or `bands * channels` exceeds the graph's 64 ports.
     pub fn new(layout: ChannelLayout, frequencies: &[Hz]) -> Result<Self, CrossoverError> {
         let controls = CrossoverControls::new(frequencies, SampleRate::DEFAULT)?;
-        let design = CrossoverDesign::new(layout, frequencies.len() + 1)?;
         let channels = usize::from(layout.count());
+        let input = BusTopology::assumed(layout).ok_or(CrossoverError::Channels { channels })?;
+        let design = CrossoverDesign::new(input, frequencies.len() + 1)?;
         if channels * design.bands() > tutti_graph::MAX_PORTS {
             return Err(CrossoverError::Channels { channels });
         }

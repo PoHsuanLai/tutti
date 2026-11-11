@@ -11,6 +11,7 @@ use tutti_dsp::{Real, Svf, SvfControls, SvfDesign, SvfType};
 use tutti_types::{ChannelLayout, Db, Hz, Q, UnitAddr, UnitParam};
 
 use super::NodeKernel;
+use super::filter_bus;
 use crate::params::ControlSet;
 use crate::reverb::DesignNode;
 
@@ -125,7 +126,7 @@ impl<F: Real> SvfFilterNode<F> {
     /// fixed here: a node with another one is another node.
     #[must_use]
     pub fn with_controls(channels: impl Into<ChannelLayout>, controls: SvfControls) -> Self {
-        Self::live(SvfDesign::new(channels.into()), controls)
+        Self::live(SvfDesign::new(filter_bus(channels.into())), controls)
     }
 }
 

@@ -1,6 +1,6 @@
 //! The note logic of an instrument, as one pure step.
 //!
-//! `Voicing::step(channel, message, patch, voices)` reads one channel voice
+//! `Voicing::step(channel, message, patch, level)` reads one channel voice
 //! message and the voices that exist, and returns the [`Command`]s the
 //! instrument must carry out. It renders no audio, owns no voice and allocates
 //! nothing after [`Voicing::new`]. What differs between instruments is a value
@@ -16,13 +16,14 @@
 //!
 //! # What the instrument tells the core
 //!
-//! The voices that exist, as a slice of [`VoiceView`] **sorted by [`VoiceId`]**
-//! (ids only grow, so an instrument that appends each new voice and removes
-//! each ended one keeps it sorted for free). The core looks voices up by
-//! binary search and reads liveness only when a note starts: a note whose voice
-//! has ended stays in the core's table until then, so a command may name a
-//! voice that has since ended. The instrument ignores a command for a voice it
-//! no longer has.
+//! The voices that exist, as a lookup: `level(id)` is the envelope level of the
+//! voice `id` ([`Amplitude`]), or `None` when the instrument no longer has it.
+//! The instrument keeps its voices in whatever order and structure it likes;
+//! the core asks about its own notes by id and needs no list, no order and no
+//! copy. It calls `level` on a note message only (never for a controller, a
+//! bend or a pressure): a note whose voice has ended stays in the core's table
+//! until then, so a command may name a voice that has since ended. The
+//! instrument ignores a command for a voice it no longer has.
 //!
 //! # Rules that are tutti's own
 //!
@@ -49,6 +50,8 @@
 //! [`Glide`] on a [`Command::Start`] or [`Command::Retarget`] says from which key
 //! and for how long (the channel's Portamento Time). What a channel holds
 //! besides notes is its [`ChannelState`].
+
+use std::num::NonZeroU16;
 
 use tutti_midi_protocol::{MpeZones, bend_u32_to_signed_f32, narrow_value, u32_to_unit_f32};
 use tutti_types::{Amplitude, Seconds, Semitones};
@@ -87,7 +90,31 @@ const NEUTRAL_RELEASE: u16 = 0x8000;
 /// A voice, named in the order the core started them. Ids only grow and are 64
 /// bits wide, so two voices never share one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct VoiceId(pub u64);
+pub struct VoiceId(u64);
+
+impl VoiceId {
+    /// The voice numbered `id`. Every `u64` names a voice, so this is total.
+    #[must_use]
+    pub const fn new(id: u64) -> Self {
+        Self(id)
+    }
+
+    /// The number.
+    #[must_use]
+    pub const fn get(self) -> u64 {
+        self.0
+    }
+}
+
+impl From<VoiceId> for u64 {
+    fn from(id: VoiceId) -> Self {
+        id.get()
+    }
+}
+
+/// The instrument's answer to "does this voice still sound, and how loud":
+/// its envelope level, `None` for a voice it no longer has.
+type Levels<'a> = &'a dyn Fn(VoiceId) -> Option<Amplitude>;
 
 /// How many voices sound for a channel.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -160,14 +187,117 @@ pub struct Rules {
     pub per_note_bend_range: Semitones,
 }
 
+impl Rules {
+    /// The polyphony of [`Rules::default`], [`mono`](Self::mono) and
+    /// [`legato`](Self::legato): enough for a monophonic note's layers.
+    pub const DEFAULT_POLYPHONY: usize = 8;
+
+    /// A polyphonic instrument of `polyphony` voices: a struck key again
+    /// replaces its voice ([`Retrigger::Replace`]), the oldest voice gives way
+    /// when the pool is full, there are no exclusive groups, CC 66 is the
+    /// sostenuto, and a full bend spans General MIDI's 2 semitones (a per-note
+    /// one 48).
+    #[must_use]
+    pub const fn poly(polyphony: usize) -> Self {
+        Self {
+            mode: Mode::Poly,
+            retrigger: Retrigger::Replace,
+            polyphony,
+            steal: Steal::By(Order::Oldest),
+            exclusive_groups: false,
+            sostenuto: true,
+            bend_range: Semitones(2.0),
+            per_note_bend_range: Semitones(48.0),
+        }
+    }
+
+    /// [`poly`](Self::poly) in [`Mode::Mono`], with
+    /// [`DEFAULT_POLYPHONY`](Self::DEFAULT_POLYPHONY) for a monophonic note's
+    /// layers.
+    #[must_use]
+    pub const fn mono() -> Self {
+        Self::poly(Self::DEFAULT_POLYPHONY).with_mode(Mode::Mono)
+    }
+
+    /// [`poly`](Self::poly) in [`Mode::Legato`], with
+    /// [`DEFAULT_POLYPHONY`](Self::DEFAULT_POLYPHONY).
+    #[must_use]
+    pub const fn legato() -> Self {
+        Self::poly(Self::DEFAULT_POLYPHONY).with_mode(Mode::Legato)
+    }
+
+    /// These rules with `mode`.
+    #[must_use]
+    pub const fn with_mode(mut self, mode: Mode) -> Self {
+        self.mode = mode;
+        self
+    }
+
+    /// These rules with `retrigger`.
+    #[must_use]
+    pub const fn with_retrigger(mut self, retrigger: Retrigger) -> Self {
+        self.retrigger = retrigger;
+        self
+    }
+
+    /// These rules with `polyphony` voices.
+    #[must_use]
+    pub const fn with_polyphony(mut self, polyphony: usize) -> Self {
+        self.polyphony = polyphony;
+        self
+    }
+
+    /// These rules with `steal`.
+    #[must_use]
+    pub const fn with_steal(mut self, steal: Steal) -> Self {
+        self.steal = steal;
+        self
+    }
+
+    /// These rules with exclusive groups on or off.
+    #[must_use]
+    pub const fn with_exclusive_groups(mut self, on: bool) -> Self {
+        self.exclusive_groups = on;
+        self
+    }
+
+    /// These rules with CC 66 as the sostenuto, or not.
+    #[must_use]
+    pub const fn with_sostenuto(mut self, on: bool) -> Self {
+        self.sostenuto = on;
+        self
+    }
+
+    /// These rules with `range` as what a full pitch bend spans.
+    #[must_use]
+    pub const fn with_bend_range(mut self, range: Semitones) -> Self {
+        self.bend_range = range;
+        self
+    }
+
+    /// These rules with `range` as what a full Per-Note Pitch Bend spans.
+    #[must_use]
+    pub const fn with_per_note_bend_range(mut self, range: Semitones) -> Self {
+        self.per_note_bend_range = range;
+        self
+    }
+}
+
+impl Default for Rules {
+    /// [`Rules::poly`] of [`DEFAULT_POLYPHONY`](Rules::DEFAULT_POLYPHONY) voices.
+    fn default() -> Self {
+        Self::poly(Self::DEFAULT_POLYPHONY)
+    }
+}
+
 /// One voice a note becomes: what [`Patch::voices`] hands the core.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct VoiceSpec {
-    /// Its exclusive group, `0` for none. A voice of a group, when it starts,
-    /// ends every other voice of the same group and scope that a different
-    /// strike started, on any channel. The voices one strike starts (a stereo
-    /// pair) never end each other.
-    pub group: u16,
+    /// Its exclusive group, `None` for none. A voice of a group, when it
+    /// starts, ends every other voice of the same group and scope that a
+    /// different strike started, on any channel. The voices one strike starts
+    /// (a stereo pair) never end each other.
+    pub group: Option<NonZeroU16>,
     /// What a group is scoped to: a plain id the patch chooses (a SoundFont
     /// gives its preset's number). Groups of different scopes are unrelated.
     pub scope: u32,
@@ -222,15 +352,6 @@ pub trait Patch {
         velocity: u16,
         spec: &mut dyn FnMut(VoiceSpec),
     );
-}
-
-/// What the instrument tells the core about a voice that exists.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct VoiceView {
-    /// The voice.
-    pub id: VoiceId,
-    /// Its envelope level now.
-    pub level: Amplitude,
 }
 
 /// What the instrument must do, in order.
@@ -323,7 +444,7 @@ struct Note {
     strike: u64,
     channel: MidiChannel,
     key: NoteNumber,
-    group: u16,
+    group: Option<NonZeroU16>,
     scope: u32,
     tag: u32,
     holds: Holds,
@@ -573,19 +694,21 @@ impl Voicing {
         }
     }
 
-    /// Reads one message on `channel`, with the voices that exist (sorted by
-    /// id), and returns what to do. The slice is valid until the next call.
+    /// Reads one message on `channel`, with `level` to ask about the voices
+    /// that exist (the envelope level of a voice, `None` when it has ended), and
+    /// returns what to do. The slice is valid until the next call.
     pub fn step<P: Patch + ?Sized>(
         &mut self,
         channel: MidiChannel,
-        message: &Voice2,
+        message: Voice2,
         patch: &P,
-        voices: &[VoiceView],
+        level: impl Fn(VoiceId) -> Option<Amplitude>,
     ) -> &[Command] {
+        let levels: Levels<'_> = &level;
         self.out.clear();
         self.events.clear();
         self.retired.clear();
-        match *message {
+        match message {
             // A MIDI 2.0 Note On at velocity 0 is a Note On (M2-104 section
             // 7.4.2), played as quietly as there is. A MIDI 1.0 one is a Note
             // Off, and `widen` has already made it one.
@@ -595,10 +718,10 @@ impl Voicing {
                 attribute,
             } => {
                 self.begin(channel, note, attribute);
-                self.note_on(channel, note, velocity.max(1), patch, voices);
+                self.note_on(channel, note, velocity.max(1), patch, levels);
             }
             Voice2::NoteOff { note, velocity, .. } => {
-                self.note_off(channel, note, velocity, patch, voices);
+                self.note_off(channel, note, velocity, patch, levels);
             }
             Voice2::ControlChange { controller, value } => {
                 let value = narrow_value(value);
@@ -775,7 +898,7 @@ impl Voicing {
         velocity: u16,
     ) -> ([VoiceSpec; MAX_SPECS], usize) {
         let mut specs = [VoiceSpec {
-            group: 0,
+            group: None,
             scope: 0,
             tag: 0,
         }; MAX_SPECS];
@@ -795,13 +918,13 @@ impl Voicing {
         key: NoteNumber,
         velocity: u16,
         patch: &P,
-        voices: &[VoiceView],
+        levels: Levels<'_>,
     ) {
         self.strike += 1;
-        self.reconcile(voices);
+        self.reconcile(levels);
         let source = self.glide_source(channel, key);
         if self.mode(channel) != Mode::Poly {
-            self.play_mono(channel, key, velocity, patch, voices, source, false);
+            self.play_mono(channel, key, velocity, patch, levels, source, false);
             return;
         }
         // A Portamento Control names a key that may sound: "If there is a
@@ -819,7 +942,7 @@ impl Voicing {
         }
         let (specs, count) = Self::specs(patch, channel, key, velocity);
         for &spec in &specs[..count] {
-            self.start_poly(channel, key, velocity, spec, voices, source.start());
+            self.start_poly(channel, key, velocity, spec, levels, source.start());
         }
     }
 
@@ -859,10 +982,10 @@ impl Voicing {
     /// longer has (it ended, as a sampler's does at its sample's end) leaves
     /// the table, so the polyphony, the steal and a return to a held key see
     /// what sounds.
-    fn reconcile(&mut self, voices: &[VoiceView]) {
+    fn reconcile(&mut self, levels: Levels<'_>) {
         let retired = &mut self.retired;
         self.notes.retain(|n| {
-            let alive = voices.binary_search_by_key(&n.id, |v| v.id).is_ok();
+            let alive = levels(n.id).is_some();
             if !alive && retired.len() < retired.capacity() && !retired.contains(&n.note) {
                 retired.push(n.note);
             }
@@ -896,7 +1019,7 @@ impl Voicing {
     /// then on. `except` is a (channel, tag) taken over in place instead
     /// (mono), which is not damped.
     fn damp_exclusive(&mut self, spec: VoiceSpec, except: Option<(MidiChannel, u32)>) {
-        if !self.rules.exclusive_groups || spec.group == 0 {
+        if !self.rules.exclusive_groups || spec.group.is_none() {
             return;
         }
         let strike = self.strike;
@@ -922,13 +1045,13 @@ impl Voicing {
         key: NoteNumber,
         velocity: u16,
         spec: VoiceSpec,
-        voices: &[VoiceView],
+        levels: Levels<'_>,
         from: Option<NoteNumber>,
     ) {
         self.damp_exclusive(spec, None);
         let steal = if self.notes.len() < self.rules.polyphony {
             None
-        } else if let Some(v) = self.victim(voices) {
+        } else if let Some(v) = self.victim(levels) {
             Some(v)
         } else {
             return;
@@ -947,7 +1070,7 @@ impl Voicing {
         key: NoteNumber,
         velocity: u16,
         patch: &P,
-        voices: &[VoiceView],
+        levels: Levels<'_>,
         source: GlideSource,
         returning: bool,
     ) {
@@ -1000,7 +1123,7 @@ impl Voicing {
                     let id = self.notes[i].id;
                     self.start(channel, key, velocity, spec, Some(id), source.start());
                 }
-                None => self.start_poly(channel, key, velocity, spec, voices, source.start()),
+                None => self.start_poly(channel, key, velocity, spec, levels, source.start()),
             }
         }
         // Layers the new key lacks go.
@@ -1053,18 +1176,13 @@ impl Voicing {
     /// Who gives way, in one pass over the notes (which are in id order, so the
     /// first of equals is the oldest): released voices first, the quietest of
     /// them; then by [`Order`]. A strike's own voices are not candidates.
-    fn victim(&self, voices: &[VoiceView]) -> Option<VoiceId> {
+    fn victim(&self, levels: Levels<'_>) -> Option<VoiceId> {
         let Steal::By(order) = self.rules.steal else {
             return None;
         };
-        let mut seen = voices.iter().peekable();
         let mut best: Option<(&Note, f32)> = None;
         for n in &self.notes {
-            while seen.next_if(|v| v.id < n.id).is_some() {}
-            let level = seen
-                .peek()
-                .filter(|v| v.id == n.id)
-                .map_or(0.0, |v| v.level.get());
+            let level = levels(n.id).map_or(0.0, Amplitude::get);
             if n.strike == self.strike {
                 continue;
             }
@@ -1093,10 +1211,10 @@ impl Voicing {
         key: NoteNumber,
         velocity: u16,
         patch: &P,
-        voices: &[VoiceView],
+        levels: Levels<'_>,
     ) {
         let ch = usize::from(channel.get());
-        self.reconcile(voices);
+        self.reconcile(levels);
         if self.mode(channel) != Mode::Poly {
             let was_top = self.held[ch].top().map(|k| k.0) == Some(key);
             if self.held[ch].remove(key) {
@@ -1115,7 +1233,7 @@ impl Voicing {
                         previous: self.channels[ch].portamento.then_some(key),
                     };
                     self.channels[ch].last_key = Some(back);
-                    self.play_mono(channel, back, v, patch, voices, source, true);
+                    self.play_mono(channel, back, v, patch, levels, source, true);
                     return;
                 }
             }
@@ -1125,7 +1243,7 @@ impl Voicing {
             |n| n.channel == channel && n.key == key,
             |n| {
                 n.off_velocity = velocity;
-                n.holds.key_up(pedal)
+                n.holds.key_up(pedal).is_now()
             },
         );
     }
@@ -1144,7 +1262,7 @@ impl Voicing {
             Effect::Sustain(down) => {
                 self.each_channel(covers, |s, ch| s.sustain[ch] = down);
                 if !down {
-                    self.each_note(on_channel, |n| n.holds.sustain_up());
+                    self.each_note(on_channel, |n| n.holds.sustain_up().is_now());
                 }
             }
             Effect::Sostenuto(down) if self.rules.sostenuto => {
@@ -1154,7 +1272,7 @@ impl Voicing {
                         false
                     });
                 } else {
-                    self.each_note(on_channel, |n| n.holds.sostenuto_up());
+                    self.each_note(on_channel, |n| n.holds.sostenuto_up().is_now());
                 }
             }
             Effect::Sostenuto(_) => {}
@@ -1163,7 +1281,9 @@ impl Voicing {
                 self.each_channel(covers, |s, ch| s.held[ch] = Held::NONE);
                 let pedals = self.sustain;
                 self.each_note(on_channel, |n| {
-                    n.holds.key_up(pedals[usize::from(n.channel.get())])
+                    n.holds
+                        .key_up(pedals[usize::from(n.channel.get())])
+                        .is_now()
                 });
             }
             Effect::Stop(Stop::Cut) => {
@@ -1199,8 +1319,8 @@ impl Voicing {
                     }
                 });
                 self.each_note(on_channel, |n| {
-                    let a = n.holds.sustain_up();
-                    let b = n.holds.sostenuto_up();
+                    let a = n.holds.sustain_up().is_now();
+                    let b = n.holds.sostenuto_up().is_now();
                     a || b
                 });
                 self.bend(channel, |b| b.position = 0.0);
@@ -1283,7 +1403,7 @@ mod tests {
     impl Patch for One {
         fn voices(&self, _: MidiChannel, _: NoteNumber, _: u16, spec: &mut dyn FnMut(VoiceSpec)) {
             spec(VoiceSpec {
-                group: 0,
+                group: None,
                 scope: 0,
                 tag: 0,
             });
@@ -1300,7 +1420,7 @@ mod tests {
         fn voices(&self, _: MidiChannel, _: NoteNumber, _: u16, spec: &mut dyn FnMut(VoiceSpec)) {
             for tag in 0..2 {
                 spec(VoiceSpec {
-                    group: self.group,
+                    group: NonZeroU16::new(self.group),
                     scope: self.scope,
                     tag,
                 });
@@ -1315,42 +1435,31 @@ mod tests {
     impl Patch for Grouped {
         fn voices(&self, _: MidiChannel, _: NoteNumber, _: u16, spec: &mut dyn FnMut(VoiceSpec)) {
             spec(VoiceSpec {
-                group: 7,
+                group: NonZeroU16::new(7),
                 scope: self.scope,
                 tag: 0,
             });
         }
     }
 
-    const POLY: Rules = Rules {
-        mode: Mode::Poly,
-        retrigger: Retrigger::Replace,
-        polyphony: 4,
-        steal: Steal::By(Order::Oldest),
-        exclusive_groups: false,
-        sostenuto: true,
-        bend_range: Semitones(2.0),
-        per_note_bend_range: Semitones(48.0),
-    };
-    const MONO: Rules = Rules {
-        mode: Mode::Mono,
-        polyphony: 8,
-        ..POLY
-    };
-    const LEGATO: Rules = Rules {
-        mode: Mode::Legato,
-        polyphony: 8,
-        ..POLY
-    };
+    const POLY: Rules = Rules::poly(4);
+    const MONO: Rules = Rules::mono();
+    const LEGATO: Rules = Rules::legato();
 
     /// The instrument's side: the voices it has, in id order, carrying out the
     /// commands.
     struct Sim {
         core: Voicing,
-        voices: Vec<VoiceView>,
+        voices: Vec<Sounding>,
+    }
+
+    /// A voice the instrument has, and its envelope level.
+    struct Sounding {
+        id: VoiceId,
+        level: Amplitude,
     }
     fn id(n: u64) -> VoiceId {
-        VoiceId(n)
+        VoiceId::new(n)
     }
     fn release(n: u64) -> Command {
         Command::Release {
@@ -1367,15 +1476,18 @@ mod tests {
             }
         }
         fn send<P: Patch>(&mut self, c: u8, m: Voice2, p: &P) -> Vec<Command> {
+            let voices = &self.voices;
             let cmds = self
                 .core
-                .step(MidiChannel::of(c), &m, p, &self.voices)
+                .step(MidiChannel::of(c), m, p, |id| {
+                    voices.iter().find(|v| v.id == id).map(|v| v.level)
+                })
                 .to_vec();
             for cmd in &cmds {
                 match *cmd {
                     Command::Start { id, steal, .. } => {
                         self.voices.retain(|v| Some(v.id) != steal);
-                        self.voices.push(VoiceView {
+                        self.voices.push(Sounding {
                             id,
                             level: Amplitude(1.0),
                         });
@@ -1431,6 +1543,90 @@ mod tests {
 
     // ---- allocation ---------------------------------------------------
 
+    /// `poly`, `mono` and `legato` differ in the mode alone, `Default` is the
+    /// polyphonic one, and a setter changes only its own field. The bend
+    /// defaults are General MIDI's (RP-003's 2 semitones) and M2-104 7.4.13's
+    /// per-note range has none, tutti's 48.
+    #[test]
+    fn the_rules_constructors_differ_in_mode_and_the_setters_in_one_field() {
+        assert_eq!(Rules::poly(8), Rules::default());
+        assert_eq!(
+            Rules::mono(),
+            Rules::poly(Rules::DEFAULT_POLYPHONY).with_mode(Mode::Mono)
+        );
+        assert_eq!(Rules::legato().mode, Mode::Legato);
+        assert_eq!(Rules::poly(5).polyphony, 5);
+        assert_eq!(Rules::default().bend_range, Semitones(2.0));
+        let r = Rules::default().with_sostenuto(false);
+        assert_eq!(
+            r,
+            Rules {
+                sostenuto: false,
+                ..Rules::default()
+            }
+        );
+    }
+
+    /// The core asks about voices by id: the order the instrument keeps them in
+    /// does not change who is stolen.
+    #[test]
+    fn the_victim_does_not_depend_on_the_order_of_the_instruments_voices() {
+        for order in [Order::Oldest, Order::Newest, Order::Quietest] {
+            let mut forward = Sim::new(POLY.with_steal(Steal::By(order)));
+            let mut backward = Sim::new(POLY.with_steal(Steal::By(order)));
+            for k in 60..64 {
+                forward.on(0, k);
+                backward.on(0, k);
+            }
+            forward.voices[2].level = Amplitude(0.1);
+            backward.voices[2].level = Amplitude(0.1);
+            backward.voices.reverse();
+            assert_eq!(forward.on(0, 70), backward.on(0, 70), "{order:?}");
+        }
+    }
+
+    /// Only a note message asks about voices: a controller, a bend and a
+    /// pressure never call the lookup.
+    #[test]
+    fn only_a_note_message_asks_about_voices() {
+        let mut core = Voicing::new(POLY);
+        let ch = MidiChannel::of(0);
+        let never = |_: VoiceId| -> Option<Amplitude> { panic!("asked") };
+        core.step(
+            ch,
+            Voice2::ControlChange {
+                controller: CCNumber::of(64),
+                value: 1 << 31,
+            },
+            &One,
+            never,
+        );
+        core.step(ch, Voice2::PitchBend(1 << 31), &One, never);
+        core.step(ch, Voice2::ChannelPressure(1 << 31), &One, never);
+    }
+
+    /// A voice the lookup no longer knows is gone from the core's table, so its
+    /// slot is free again.
+    #[test]
+    fn a_voice_the_instrument_dropped_frees_its_slot() {
+        let mut s = Sim::new(POLY);
+        for k in 60..64 {
+            s.on(0, k);
+        }
+        s.end(id(1));
+        let c = s.on(0, 70);
+        assert!(matches!(c[0], Command::Start { steal: None, .. }), "{c:?}");
+    }
+
+    /// A voice id is its number, the whole `u64`.
+    #[test]
+    fn a_voice_id_is_its_number() {
+        for n in [0, 1, u64::MAX] {
+            assert_eq!(VoiceId::new(n).get(), n);
+            assert_eq!(u64::from(VoiceId::new(n)), n);
+        }
+    }
+
     #[test]
     fn the_oldest_gives_way_when_full() {
         let mut s = Sim::new(POLY);
@@ -1448,7 +1644,7 @@ mod tests {
         fn voices(&self, _: MidiChannel, _: NoteNumber, _: u16, spec: &mut dyn FnMut(VoiceSpec)) {
             for tag in 0..self.0 {
                 spec(VoiceSpec {
-                    group: 0,
+                    group: None,
                     scope: 0,
                     tag,
                 });
@@ -1463,10 +1659,7 @@ mod tests {
     /// layers is whole.
     #[test]
     fn a_strike_starts_at_most_the_cap_and_a_patch_within_it_is_whole() {
-        let rules = Rules {
-            polyphony: 64,
-            ..POLY
-        };
+        let rules = POLY.with_polyphony(64);
         let tags = |c: &[Command]| -> Vec<u32> {
             c.iter()
                 .filter_map(|c| match c {
@@ -1499,10 +1692,7 @@ mod tests {
 
     #[test]
     fn never_drops_the_note_and_disturbs_nothing() {
-        let mut s = Sim::new(Rules {
-            steal: Steal::Never,
-            ..POLY
-        });
+        let mut s = Sim::new(POLY.with_steal(Steal::Never));
         for k in 60..64 {
             s.on(0, k);
         }
@@ -1518,10 +1708,7 @@ mod tests {
             (Order::HighestNote, 4),
             (Order::LowestNote, 1),
         ] {
-            let mut s = Sim::new(Rules {
-                steal: Steal::By(order),
-                ..POLY
-            });
+            let mut s = Sim::new(POLY.with_steal(Steal::By(order)));
             for k in 60..64 {
                 s.on(0, k);
             }
@@ -1532,10 +1719,7 @@ mod tests {
             );
         }
         // Quietest: the voice with the lowest level; among released ones too.
-        let mut s = Sim::new(Rules {
-            steal: Steal::By(Order::Quietest),
-            ..POLY
-        });
+        let mut s = Sim::new(POLY.with_steal(Steal::By(Order::Quietest)));
         for k in 60..64 {
             s.on(0, k);
         }
@@ -1563,10 +1747,7 @@ mod tests {
     /// whose first voice took the last slot drops its second.
     #[test]
     fn a_strike_does_not_steal_its_own_voices() {
-        let mut s = Sim::new(Rules {
-            polyphony: 3,
-            ..POLY
-        });
+        let mut s = Sim::new(POLY.with_polyphony(3));
         s.on(0, 60);
         s.on(0, 62);
         let c = s.on_with(0, 64, &Pair { group: 0, scope: 0 });
@@ -1593,10 +1774,7 @@ mod tests {
         let c = s.on(0, 60);
         assert_eq!(c[0], release(1));
         assert!(matches!(c[1], Command::Start { steal: None, .. }));
-        let mut s = Sim::new(Rules {
-            retrigger: Retrigger::Layer,
-            ..POLY
-        });
+        let mut s = Sim::new(POLY.with_retrigger(Retrigger::Layer));
         s.on(0, 60);
         let c = s.on(0, 60);
         assert_eq!(c.len(), 1);
@@ -1615,11 +1793,7 @@ mod tests {
 
     // ---- exclusive groups (SF2 2.04 section 8.1.2, generator 57) --------
 
-    const EXCLUSIVE: Rules = Rules {
-        exclusive_groups: true,
-        polyphony: 8,
-        ..POLY
-    };
+    const EXCLUSIVE: Rules = POLY.with_exclusive_groups(true).with_polyphony(8);
 
     /// The scope of an exclusive class is the whole preset (8.1.2, generator
     /// 57, Read): a note of the class ends the sounding notes of that class
@@ -1742,10 +1916,7 @@ mod tests {
         assert!(s.off(0, 60).is_empty());
         assert_eq!(s.off(0, 62), [release(2)], "struck after the pedal");
         assert_eq!(s.cc(0, 66, 0), [release(1)]);
-        let mut s = Sim::new(Rules {
-            sostenuto: false,
-            ..POLY
-        });
+        let mut s = Sim::new(POLY.with_sostenuto(false));
         s.on(0, 60);
         s.cc(0, 66, 127);
         assert_eq!(s.off(0, 60), [release(1)]);
@@ -1930,13 +2101,13 @@ mod tests {
                 spec: &mut dyn FnMut(VoiceSpec),
             ) {
                 spec(VoiceSpec {
-                    group: 0,
+                    group: None,
                     scope: 0,
                     tag: 0,
                 });
                 if k.get() < 61 {
                     spec(VoiceSpec {
-                        group: 0,
+                        group: None,
                         scope: 0,
                         tag: 1,
                     });
@@ -1976,13 +2147,13 @@ mod tests {
             ) {
                 if k.get() < 61 {
                     spec(VoiceSpec {
-                        group: 0,
+                        group: None,
                         scope: 0,
                         tag: 0,
                     });
                 }
                 spec(VoiceSpec {
-                    group: 0,
+                    group: None,
                     scope: 0,
                     tag: 1,
                 });
@@ -2140,10 +2311,7 @@ mod tests {
     /// it is the first to give way when the pool is full.
     #[test]
     fn a_damped_voice_counts_as_released_and_is_told_once() {
-        let mut s = Sim::new(Rules {
-            polyphony: 2,
-            ..EXCLUSIVE
-        });
+        let mut s = Sim::new(EXCLUSIVE.with_polyphony(2));
         s.on_with(0, 60, &Grouped { scope: 5 });
         let c = s.on_with(0, 62, &Grouped { scope: 5 });
         assert_eq!(c[0], Command::Damp(id(1)), "{c:?}");
@@ -2178,10 +2346,7 @@ mod tests {
     /// it takes its own channel's voice over in place.
     #[test]
     fn a_mono_takeover_still_ends_its_exclusive_class() {
-        let mut s = Sim::new(Rules {
-            exclusive_groups: true,
-            ..MONO
-        });
+        let mut s = Sim::new(MONO.with_exclusive_groups(true));
         s.on(0, 60);
         s.on_with(1, 62, &Grouped { scope: 5 });
         let c = s.on_with(0, 64, &Grouped { scope: 5 });
@@ -2991,17 +3156,15 @@ mod tests {
                 Steal::By(Order::LowestNote),
                 Steal::Never,
             ][((stream / 3) % 6) as usize];
-            let rules = Rules {
-                mode,
-                steal,
-                polyphony: 6,
-                retrigger: if stream % 2 == 0 {
+            let rules = POLY
+                .with_mode(mode)
+                .with_steal(steal)
+                .with_polyphony(6)
+                .with_retrigger(if stream % 2 == 0 {
                     Retrigger::Replace
                 } else {
                     Retrigger::Layer
-                },
-                ..POLY
-            };
+                });
             let layers = stream % 4 >= 2;
             let mut s = Sim::new(rules);
             // What the keys are, in the order they went down.
@@ -3285,7 +3448,7 @@ mod tests {
                 panic!("a chase message is MIDI 2.0 channel voice: {ump:?}");
             };
             assert_eq!(address.group, MidiGroup::of(2));
-            b.core.step(address.channel, &voice, &One, &[]);
+            b.core.step(address.channel, voice, &One, |_| None);
         }
         assert_eq!(b.core.channels(), a.core.channels());
         // The pedal too: lifting it releases a note that only it holds.

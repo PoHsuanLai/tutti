@@ -282,7 +282,7 @@ impl MidiEncoder {
             | Voice2::PerNoteManagement { note, .. } => (Some(note), None),
             _ => (None, None),
         };
-        for event in self.notes.step(address, &voice) {
+        for event in self.notes.step(address, voice) {
             let made = match *event {
                 NoteEvent::Started { id, note, .. } => {
                     // A MIDI 2.0 Note On at velocity 0 is a Note On (M2-104

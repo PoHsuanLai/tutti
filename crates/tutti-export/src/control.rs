@@ -85,8 +85,9 @@ impl Progress {
         self.fraction
     }
 
-    /// The output being measured, written or finalized; `None` while rendering
-    /// (one render serves every output).
+    /// The output being measured, written or finalized (its index in the list
+    /// given to [`render`](crate::render())); `None` while rendering (one render
+    /// serves every output).
     #[must_use]
     pub fn output(&self) -> Option<usize> {
         self.output
@@ -94,10 +95,9 @@ impl Progress {
 
     /// Frames done and frames in all, for a stage that counts frames. They are
     /// the stage's own units: the graph's frames while rendering, and for
-    /// `Measuring` the frames converted and then measured (the conversion is
-    /// counted against twice the render's length, an estimate the measurement
-    /// replaces with the converted length; with no conversion the stage is
-    /// the render's length).
+    /// `Measuring` and `Writing` the frames of the render read back, at the
+    /// render's rate, summed over the outputs the stage covers (the
+    /// conversion to the file's rate is part of reading them).
     #[must_use]
     pub fn frames(&self) -> Option<(Samples, Samples)> {
         self.frames
@@ -215,6 +215,8 @@ pub struct Control<'a> {
     progress: Option<&'a mut dyn FnMut(&Progress)>,
     weights: Weights,
     last: Option<Progress>,
+    /// The output the stages after rendering are working on.
+    output: usize,
 }
 
 impl std::fmt::Debug for Control<'_> {
@@ -235,6 +237,7 @@ impl<'a> Control<'a> {
             progress: None,
             weights: Weights::Streaming,
             last: None,
+            output: 0,
         }
     }
 
@@ -257,6 +260,7 @@ impl<'a> Control<'a> {
             progress: None,
             weights: Weights::Streaming,
             last: None,
+            output: 0,
         }
     }
 
@@ -271,6 +275,13 @@ impl<'a> Control<'a> {
     pub(crate) fn weigh(&mut self, weights: Weights) {
         self.weights = weights;
         self.last = None;
+        self.output = 0;
+    }
+
+    /// The output the readings of the stages after rendering name, from the
+    /// next reading on.
+    pub(crate) fn set_output(&mut self, output: usize) {
+        self.output = output;
     }
 
     /// Enters `stage`: always delivered, at the start of its band.
@@ -326,10 +337,9 @@ impl<'a> Control<'a> {
         let progress = Progress {
             stage,
             fraction,
-            // One output until `render` takes several (doc 019 step 3).
             output: match stage {
                 Stage::Preparing | Stage::Rendering => None,
-                Stage::Measuring | Stage::Writing | Stage::Finalizing => Some(0),
+                Stage::Measuring | Stage::Writing | Stage::Finalizing => Some(self.output),
             },
             frames,
         };

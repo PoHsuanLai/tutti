@@ -3,8 +3,8 @@ use crate::GRAPH_MAX_BLOCK;
 use crate::control::{CancelToken, Progress, Stage};
 use tutti_graph::GraphBuilder;
 use tutti_transport::{FrozenClock, OfflineTimeline, OfflineTimelineConfig};
-use tutti_types::ChannelLayout;
 use tutti_types::{Beat, Bpm, SampleRate};
+use tutti_types::{ChannelLayout, Interleaved};
 use tutti_ump::Ump;
 
 const RATE: SampleRate = SampleRate(48_000.0);
@@ -19,7 +19,8 @@ fn mono_dc(v: f32) -> RenderGraph {
 }
 
 /// Render `frames` frames of `graph` at a runtime width under `clock`,
-/// returned as owned frames.
+/// returned as owned frames: folded onto `ch` channels the way a lane folds
+/// the graph's outputs.
 fn render(
     graph: &mut RenderGraph,
     clock: &dyn RenderClock,
@@ -31,21 +32,33 @@ fn render(
         output_length: Samples(frames),
         latency: Samples(0),
     };
+    let layout = ChannelLayout::try_from(ch).expect("a test width is small");
     let mut out = Vec::new();
-    let file = FileChannels {
-        layout: ChannelLayout::try_from(ch).expect("a test width is small"),
-        topology: None,
-    };
-    with_source(graph, RATE, clock, &file, |src| {
+    with_source(graph, RATE, clock, |src| {
+        let file = FileChannels {
+            layout,
+            topology: None,
+        };
+        let fold = file.fold_from(src.outputs(), src.root())?;
+        let mut scratch = vec![0.0f32; src.max_block() * ch];
         drive(
             src,
-            ChannelLayout::try_from(ch).expect("a test width is small"),
             &plan,
             Stage::Rendering,
             &mut Control::none(),
             crate::EventLossPolicy::default(),
-            |b| {
-                out.extend(b.iter_frames().map(<[f32]>::to_vec));
+            |src, _, window| {
+                let planes = src.planes();
+                let block = &mut scratch[..window.len() * ch];
+                fold.planar_to_interleaved(
+                    |c| &planes[c][window.clone()],
+                    InterleavedMut::new(block, layout),
+                );
+                out.extend(
+                    Interleaved::new(block, layout)
+                        .iter_frames()
+                        .map(<[f32]>::to_vec),
+                );
                 Ok(())
             },
         )
@@ -58,7 +71,7 @@ fn render(
 }
 
 /// Drive `frames` of `mono_dc` reporting to `report`, which may cancel
-/// `token`; returns the outcome and the frames consumed.
+/// `token`; returns the outcome and the frames kept.
 fn drive_reported(
     frames: usize,
     token: &CancelToken,
@@ -70,20 +83,15 @@ fn drive_reported(
         latency: Samples(0),
     };
     let mut consumed = 0;
-    let file = FileChannels {
-        layout: ChannelLayout::MONO,
-        topology: None,
-    };
-    let outcome = with_source(&mut mono_dc(0.5), RATE, &FrozenClock, &file, |src| {
+    let outcome = with_source(&mut mono_dc(0.5), RATE, &FrozenClock, |src| {
         drive(
             src,
-            ChannelLayout::MONO,
             &plan,
             Stage::Rendering,
             &mut Control::new(token).on_progress(report),
             crate::EventLossPolicy::default(),
-            |b| {
-                consumed += b.iter_frames().count();
+            |_, _, window| {
+                consumed += window.len();
                 Ok(())
             },
         )
@@ -218,7 +226,7 @@ fn a_spec_narrowed_without_a_commit_still_renders_the_committed_width() {
 /// source hands it; here a test node calls `Env::for_each_beat`.
 ///
 /// Mutation (run): `self.clock.advance(Samples(1))` before `render_graph`
-/// in `GraphSource::fill` → the first frame reads a frame past the start
+/// in `GraphSource::render_block` → the first frame reads a frame past the start
 /// beat.
 #[test]
 fn the_clock_advances_exactly_once_per_frame_and_never_ahead() {
@@ -280,7 +288,7 @@ fn the_clock_advances_exactly_once_per_frame_and_never_ahead() {
 }
 
 /// A plane set narrower than the requested width zero-fills the tail —
-/// and does so on EVERY block, not just the first. `drive` reuses one
+/// and does so on EVERY block, not just the first. The write pass reuses one
 /// buffer, so a `PlaneSource` that skipped the missing channels would leak
 /// the previous block's samples into them.
 #[test]
@@ -289,13 +297,13 @@ fn plane_source_zero_fills_a_missing_channel_every_block() {
     let mut src = PlaneSource::new(&planes, None);
     let mut out = vec![9.9f32; 4 * 4];
     let quad = ChannelLayout::from(4u16);
-    assert_eq!(src.fill(InterleavedMut::new(&mut out, quad)), 4);
+    assert_eq!(src.fill(InterleavedMut::new(&mut out, quad)).unwrap(), 4);
     for f in out.as_chunks::<4>().0 {
         assert_eq!(f, &[1.0, 0.0, 0.0, 0.0]);
     }
     // Second pull into the same dirty buffer.
     out.fill(9.9);
-    assert_eq!(src.fill(InterleavedMut::new(&mut out, quad)), 4);
+    assert_eq!(src.fill(InterleavedMut::new(&mut out, quad)).unwrap(), 4);
     for f in out.as_chunks::<4>().0 {
         assert_eq!(f, &[1.0, 0.0, 0.0, 0.0]);
     }
@@ -373,19 +381,14 @@ mod loss {
             output_length: Samples(GRAPH_MAX_BLOCK.get()),
             latency: Samples(0),
         };
-        let file = FileChannels {
-            layout: ChannelLayout::MONO,
-            topology: None,
-        };
-        with_source(graph, RATE, &FrozenClock, &file, |src| {
+        with_source(graph, RATE, &FrozenClock, |src| {
             drive(
                 src,
-                ChannelLayout::MONO,
                 &plan,
                 Stage::Rendering,
                 &mut Control::none(),
                 crate::EventLossPolicy::Allow,
-                |_| Ok(()),
+                |_, _, _| Ok(()),
             )
         })
         .unwrap()

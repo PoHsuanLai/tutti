@@ -7,7 +7,7 @@
 //!
 //! # What is measured, and what is deliberately not
 //!
-//! `render/` drives `render_to_buffers` — no file, no encoder, no
+//! `render/` drives a render into a `BufferTarget` — no file, no encoder, no
 //! filesystem. That is the part this crate owns and the part a change here
 //! can regress.
 //!
@@ -29,8 +29,8 @@ use tutti_types::Seconds;
 
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use tutti_export::{
-    Control, Dither, EncodeConfig, ExportConfig, Format, Normalize, Pcm, RenderConfig, RenderGraph,
-    Resample, render_normalized_to_file, render_to_buffers, render_to_file,
+    Control, EncodeConfig, ExportConfig, Format, Normalize, Output, Pcm, RenderConfig, RenderGraph,
+    Rendered, Resample, Written, render_one,
 };
 use tutti_graph::GraphBuilder;
 use tutti_nodes::testing::{Const, Osc};
@@ -81,9 +81,44 @@ fn config(seconds: f64, rate: f64, channels: ChannelLayout, format: Format) -> E
             channels,
             topology: None,
         },
-        dither: Dither::Off,
+        dither: None,
         ..Default::default()
     }
+}
+
+/// `cfg`'s render into memory.
+fn to_buffers(mut graph: RenderGraph, cfg: &ExportConfig) -> Rendered {
+    render_one(
+        &mut graph,
+        &cfg.buffers_job().expect("a render"),
+        &FrozenClock,
+        Output::master(cfg.buffer_target()),
+        &mut Control::none(),
+    )
+    .expect("renders")
+    .finished()
+    .and_then(tutti_export::Produced::buffers)
+    .expect("nothing cancels a control with no token")
+}
+
+/// `cfg`'s render into the file at `path`, normalized by `normalize` if given.
+fn to_file(
+    mut graph: RenderGraph,
+    cfg: &ExportConfig,
+    normalize: Option<Normalize>,
+    path: &std::path::Path,
+) -> Written {
+    render_one(
+        &mut graph,
+        &cfg.job().expect("a render"),
+        &FrozenClock,
+        Output::master(cfg.file_target(path, normalize)),
+        &mut Control::none(),
+    )
+    .expect("writes")
+    .finished()
+    .and_then(tutti_export::Produced::file)
+    .expect("nothing cancels a control with no token")
 }
 
 /// Render throughput by duration, width and rate. No file touched.
@@ -102,16 +137,7 @@ fn bench_render(c: &mut Criterion) {
         group.bench_with_input(
             BenchmarkId::new("stereo-48k", format!("{seconds}s")),
             &cfg,
-            |b, cfg| {
-                b.iter(|| {
-                    black_box(
-                        render_to_buffers(tone_graph(SR), cfg, &FrozenClock, &mut Control::none())
-                            .expect("renders")
-                            .finished()
-                            .expect("nothing cancels a control with no token"),
-                    )
-                })
-            },
+            |b, cfg| b.iter(|| black_box(to_buffers(tone_graph(SR), cfg))),
         );
     }
 
@@ -125,14 +151,7 @@ fn bench_render(c: &mut Criterion) {
         let cfg = config(0.25, SR, layout, Format::Wav(Pcm::Float32));
         group.throughput(Throughput::Elements((0.25 * SR) as u64));
         group.bench_with_input(BenchmarkId::new("width", name), &cfg, |b, cfg| {
-            b.iter(|| {
-                black_box(
-                    render_to_buffers(dc_graph(SR), cfg, &FrozenClock, &mut Control::none())
-                        .expect("renders")
-                        .finished()
-                        .expect("nothing cancels a control with no token"),
-                )
-            })
+            b.iter(|| black_box(to_buffers(dc_graph(SR), cfg)))
         });
     }
 
@@ -141,14 +160,7 @@ fn bench_render(c: &mut Criterion) {
         let cfg = config(0.25, rate, ChannelLayout::STEREO, Format::Wav(Pcm::Float32));
         group.throughput(Throughput::Elements((0.25 * rate) as u64));
         group.bench_with_input(BenchmarkId::new("rate", rate as u64), &cfg, |b, cfg| {
-            b.iter(|| {
-                black_box(
-                    render_to_buffers(tone_graph(rate), cfg, &FrozenClock, &mut Control::none())
-                        .expect("renders")
-                        .finished()
-                        .expect("nothing cancels a control with no token"),
-                )
-            })
+            b.iter(|| black_box(to_buffers(tone_graph(rate), cfg)))
         });
     }
 
@@ -188,30 +200,17 @@ fn bench_encode(c: &mut Criterion) {
         let cfg = config(0.25, SR, ChannelLayout::STEREO, format);
         let path = dir.path().join(format!("bench.{name}"));
         group.bench_with_input(BenchmarkId::from_parameter(name), &cfg, |b, cfg| {
-            b.iter(|| {
-                black_box(
-                    render_to_file(
-                        tone_graph(SR),
-                        cfg,
-                        &FrozenClock,
-                        &path,
-                        &mut Control::none(),
-                    )
-                    .expect("writes")
-                    .finished()
-                    .expect("nothing cancels a control with no token"),
-                )
-            })
+            b.iter(|| black_box(to_file(tone_graph(SR), cfg, None, &path)))
         });
     }
     group.finish();
 }
 
 /// The two-pass path's sample-rate conversion over a long render: a
-/// `render_normalized_to_file` that converts 44.1 kHz to 48 kHz before
-/// measuring the peak. That path pushes the whole render into the resampler
-/// at once, so its cost over the duration is what shows whether the
-/// conversion is linear. Long durations on purpose, unlike the rest of this
+/// normalizing output that converts 44.1 kHz to 48 kHz and measures the peak
+/// at the file's rate. That path reads the render back through the resampler
+/// twice (measured, then written), so its cost over the duration is what
+/// shows whether the conversion is linear. Long durations on purpose, unlike the rest of this
 /// file: the scaling is the measurement. Writes a WAV like `encode/`, so read
 /// it for the trend across durations, not as a gate.
 fn bench_resample(c: &mut Criterion) {
@@ -234,19 +233,12 @@ fn bench_resample(c: &mut Criterion) {
             &cfg,
             |b, cfg| {
                 b.iter(|| {
-                    black_box(
-                        render_normalized_to_file(
-                            dc_graph(from),
-                            cfg,
-                            &FrozenClock,
-                            Normalize::Peak { target: Db(-1.0) },
-                            &path,
-                            &mut Control::none(),
-                        )
-                        .expect("writes")
-                        .finished()
-                        .expect("nothing cancels a control with no token"),
-                    )
+                    black_box(to_file(
+                        dc_graph(from),
+                        cfg,
+                        Some(Normalize::Peak { target: Db(-1.0) }),
+                        &path,
+                    ))
                 })
             },
         );

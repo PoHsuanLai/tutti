@@ -399,3 +399,66 @@ fn a_rate_no_header_holds_is_refused_by_every_format() {
         }
     }
 }
+
+/// `finalize` closes a file and leaves it beside its path: the path holds what
+/// it held, the closed file is a complete one under its temporary name, and
+/// `commit` is what moves it. Dropping the `Finalized` instead removes the
+/// temporary and leaves the path alone.
+#[test]
+fn a_finalized_file_waits_for_its_commit() {
+    let dir = tempfile::tempdir().unwrap();
+    for (ext, format) in formats() {
+        let path = dir.path().join(format!("take.{ext}"));
+        std::fs::write(&path, b"previous").unwrap();
+        let spec = spec(format, 2);
+
+        let write = |path: &std::path::Path| {
+            let mut encoder = Encoder::create_file(&spec, path).unwrap();
+            encoder
+                .write(Interleaved::new(&saw(2, 5_000), spec.layout))
+                .unwrap();
+            encoder.finalize().unwrap()
+        };
+
+        let finalized = write(&path);
+        assert_eq!(std::fs::read(&path).unwrap(), b"previous", "{ext}");
+        let temp = listing(dir.path())
+            .into_iter()
+            .find(|n| n != &format!("take.{ext}"))
+            .unwrap_or_else(|| panic!("{ext}: no temporary beside the path"));
+        assert!(
+            std::fs::metadata(dir.path().join(&temp)).unwrap().len() > 100,
+            "{ext}: the closed file is complete under its temporary name"
+        );
+        finalized.commit().unwrap();
+        assert!(std::fs::read(&path).unwrap().len() > 100, "{ext}");
+        assert_eq!(listing(dir.path()), [format!("take.{ext}")], "{ext}");
+
+        std::fs::write(&path, b"previous").unwrap();
+        drop(write(&path));
+        assert_eq!(std::fs::read(&path).unwrap(), b"previous", "{ext}");
+        assert_eq!(listing(dir.path()), [format!("take.{ext}")], "{ext}");
+        std::fs::remove_file(&path).unwrap();
+    }
+}
+
+/// A rename that fails after `finalize` is an `Io` error, the temporary is
+/// removed and what is at the path (a directory here) is untouched.
+#[test]
+fn a_commit_that_cannot_rename_removes_the_temporary() {
+    let dir = tempfile::tempdir().unwrap();
+    for (ext, format) in formats() {
+        let path = dir.path().join(format!("take.{ext}"));
+        let spec = spec(format, 2);
+        let mut encoder = Encoder::create_file(&spec, &path).unwrap();
+        encoder
+            .write(Interleaved::new(&saw(2, 5_000), spec.layout))
+            .unwrap();
+        let finalized = encoder.finalize().unwrap();
+        std::fs::create_dir(&path).unwrap();
+        let err = finalized.commit().expect_err("a directory is in the way");
+        assert!(matches!(err, Error::Io(_)), "{ext}: {err}");
+        assert_eq!(listing(dir.path()), [format!("take.{ext}")], "{ext}");
+        std::fs::remove_dir(&path).unwrap();
+    }
+}

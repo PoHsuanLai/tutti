@@ -17,7 +17,7 @@
 //!
 //! # Dither is off in the exact cases
 //!
-//! `Dither::Triangular` is the *default*, and it adds +-1 LSB of noise before
+//! `Some(DitherShape::Triangular)` is the *default*, and it adds +-1 LSB of noise before
 //! quantization. That is correct behaviour and is exercised in
 //! `dither_stats.rs`; it just makes bit-accuracy untestable, so the round-trip
 //! cases turn it off explicitly. A config literal that forgets to is the most
@@ -32,8 +32,8 @@ mod support;
 
 use crate::support::render_to_file;
 use tutti_export::{
-    ChannelLayout, Dither, EncodeConfig, ExportConfig, FlacLevel, Format, FrozenClock, IntDepth,
-    Pcm, RenderConfig, RenderGraph,
+    ChannelLayout, EncodeConfig, ExportConfig, FlacLevel, Format, FrozenClock, IntDepth, Pcm,
+    RenderConfig, RenderGraph,
 };
 use tutti_graph::GraphBuilder;
 use tutti_nodes::testing::Const;
@@ -84,7 +84,7 @@ fn config(format: Format) -> ExportConfig {
             topology: None,
         },
         // Exactness: see the module note.
-        dither: Dither::Off,
+        dither: None,
         ..Default::default()
     }
 }

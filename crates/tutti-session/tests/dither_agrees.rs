@@ -10,7 +10,7 @@
 #![cfg(all(feature = "record", feature = "export"))]
 
 use tutti_codec::{FileOut, Format, IntDepth, Pcm, Spec};
-use tutti_export::{Dither, EncodeConfig, ExportConfig, Rendered, write_buffers};
+use tutti_export::{EncodeConfig, ExportConfig, Rendered, write_buffers};
 use tutti_session::{DitherShape, DitherSink, DitherSpec, IDLE_PARK, Recorder};
 use tutti_types::{ChannelLayout, Pull, SampleRate, Samples, Source};
 
@@ -73,7 +73,7 @@ fn record(path: &std::path::Path, dither: Option<DitherShape>) {
     rec.wait().expect("the take ends and finalizes");
 }
 
-fn export(path: &std::path::Path, dither: Dither) {
+fn export(path: &std::path::Path, dither: Option<DitherShape>) {
     let rendered = Rendered::new(planes(), RATE, 0).expect("planes");
     let config = ExportConfig {
         encode: EncodeConfig {
@@ -99,14 +99,11 @@ fn export(path: &std::path::Path, dither: Dither) {
 #[test]
 fn a_live_take_and_an_export_agree_when_dithered_alike() {
     let dir = tempfile::tempdir().expect("dir");
-    for (shape, option) in [
-        (DitherShape::Triangular, Dither::Triangular),
-        (DitherShape::Rectangular, Dither::Rectangular),
-    ] {
+    for shape in [DitherShape::Triangular, DitherShape::Rectangular] {
         let take = dir.path().join("take.wav");
         let exported = dir.path().join("export.wav");
         record(&take, Some(shape));
-        export(&exported, option);
+        export(&exported, Some(shape));
         let (take, exported) = (samples(&take), samples(&exported));
         assert_eq!(take.len(), FRAMES * 2);
         assert_eq!(take, exported, "{shape:?}: take and export differ");
@@ -120,7 +117,7 @@ fn a_live_take_and_an_export_agree_when_dithered_alike() {
 }
 
 /// With no dither the take is what it always was: the plain quantization of
-/// the frames, and the export with `Dither::Off` writes the same.
+/// the frames, and the export with no dither writes the same.
 ///
 /// Mutation (run): make `DitherSink::new` default a `None` spec to a
 /// triangular one and the first assertion fails.
@@ -135,6 +132,6 @@ fn without_dither_a_take_is_the_plain_quantization() {
         .collect();
     assert_eq!(samples(&take), expected);
     let exported = dir.path().join("off.wav");
-    export(&exported, Dither::Off);
+    export(&exported, None);
     assert_eq!(samples(&exported), expected);
 }

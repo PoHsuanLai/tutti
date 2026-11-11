@@ -9,7 +9,7 @@ plus `verify_export.py` are an independent correctness harness.
 cargo run --example export -- /tmp/export-demo
 ```
 
-Writes a tone to all four formats, folds a mono graph to quad, and normalizes a
+Writes a tone to a file, then to the other formats in one pass, folds a mono graph to quad, and normalizes a
 render to −14 LUFS.
 
 ### Why this exists

@@ -46,8 +46,8 @@ mod support;
 
 use crate::support::render_to_file;
 use tutti_export::{
-    ChannelLayout, Dither, EncodeConfig, ExportConfig, Format, FrozenClock, Pcm, RenderConfig,
-    RenderGraph, Resample,
+    ChannelLayout, EncodeConfig, ExportConfig, Format, FrozenClock, Pcm, RenderConfig, RenderGraph,
+    Resample,
 };
 use tutti_graph::GraphBuilder;
 use tutti_nodes::testing::Osc;
@@ -90,7 +90,7 @@ fn config(freq_target: SampleRateTarget) -> ExportConfig {
             channels: ChannelLayout::STEREO,
             topology: None,
         },
-        dither: Dither::Off,
+        dither: None,
         resample: match freq_target {
             SampleRateTarget::Convert => Some(Resample::to(tutti_types::SampleRate(OUT_RATE))),
             SampleRateTarget::Passthrough => None,

@@ -49,8 +49,8 @@ use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
 use tutti_export::{
-    CancelToken, ConfigError, Control, ExportConfig, Normalize, Outcome, Progress, RenderClock,
-    RenderGraph, Rendered, Written,
+    CancelToken, ConfigError, Control, ExportConfig, Normalize, Outcome, Output, Produced,
+    Progress, RenderClock, RenderGraph, Rendered, Written,
 };
 use tutti_graph::NodeKey;
 use tutti_transport::OfflineTransport;
@@ -684,41 +684,40 @@ impl ExportJob {
         }
         let record = &mut |p: &Progress| handle.record(p);
         let mut control = Control::new(&handle.cancel).on_progress(record);
-        let result = match target {
-            ExportTarget::File {
-                path,
-                normalize: None,
-            } => tutti_export::render_to_file(
-                &mut *graph,
-                &config,
-                clock.as_ref(),
-                &path,
-                &mut control,
-            )
-            .map(|o| o.map(ExportOutput::File)),
-            ExportTarget::File {
-                path,
-                normalize: Some(normalize),
-            } => tutti_export::render_normalized_to_file(
-                &mut *graph,
-                &config,
-                clock.as_ref(),
-                normalize,
-                &path,
-                &mut control,
-            )
-            .map(|o| o.map(ExportOutput::File)),
-            ExportTarget::Buffers => {
-                tutti_export::render_to_buffers(&mut *graph, &config, clock.as_ref(), &mut control)
-                    .map(|o| o.map(ExportOutput::Buffers))
-            }
-        };
+        let result = render_request(&mut graph, &config, clock.as_ref(), target, &mut control);
         ExportRendered {
             result,
             graph: Some(graph),
             _token: token,
         }
     }
+}
+
+/// The render `target` asks for: the one output `config` describes, rendered
+/// by `tutti_export::render_one`.
+fn render_request(
+    graph: &mut RenderGraph,
+    config: &ExportConfig,
+    clock: &dyn RenderClock,
+    target: ExportTarget,
+    control: &mut Control<'_>,
+) -> tutti_export::Result<Outcome<ExportOutput>> {
+    let (job, output) = match target {
+        ExportTarget::File { path, normalize } => (
+            config.job()?,
+            Output::master(config.file_target(path, normalize)),
+        ),
+        ExportTarget::Buffers => (
+            config.buffers_job()?,
+            Output::master(config.buffer_target()),
+        ),
+    };
+    let produced = tutti_export::render_one(graph, &job, clock, output, control)?;
+    Ok(produced.map(|p| match p {
+        Produced::File(written) => ExportOutput::File(written),
+        Produced::Buffers(rendered) => ExportOutput::Buffers(rendered),
+        _ => unreachable!("one file or buffers output produces its own kind"),
+    }))
 }
 
 /// What a finished [`ExportJob`] returns: the result, the rendered graph

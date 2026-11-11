@@ -140,7 +140,7 @@ fn digest(planes: &[Vec<f32>]) -> u64 {
 /// node clamped across a stereo root). A fork starts reset, which is what a
 /// fresh graph is.
 fn chain_fresh(seconds: f64) -> (Vec<Vec<f32>>, Vec<Vec<f32>>) {
-    use tutti_export::{Control, FrozenClock, RenderGraph, render_to_buffers};
+    use tutti_export::{Control, FrozenClock, Output, Produced, RenderGraph, render_one};
     use tutti_graph::GraphBuilder;
     let render = |master: bool| {
         let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::STEREO);
@@ -155,12 +155,20 @@ fn chain_fresh(seconds: f64) -> (Vec<Vec<f32>>, Vec<Vec<f32>>) {
         let (editor, executor) = g
             .build(RenderGraph::prepare(SampleRate(RATE)))
             .expect("builds");
-        let graph = RenderGraph::new(editor, executor).expect("built together");
-        render_to_buffers(graph, &config(seconds), &FrozenClock, &mut Control::none())
-            .expect("renders")
-            .finished()
-            .expect("nothing cancels a control with no token")
-            .into_planes()
+        let mut graph = RenderGraph::new(editor, executor).expect("built together");
+        let config = config(seconds);
+        render_one(
+            &mut graph,
+            &config.buffers_job().expect("a render"),
+            &FrozenClock,
+            Output::master(config.buffer_target()),
+            &mut Control::none(),
+        )
+        .expect("renders")
+        .finished()
+        .and_then(Produced::buffers)
+        .expect("nothing cancels a control with no token")
+        .into_planes()
     };
     (render(true), render(false))
 }

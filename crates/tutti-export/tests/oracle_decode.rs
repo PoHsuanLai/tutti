@@ -54,8 +54,8 @@ use tutti_types::Seconds;
 
 use crate::support::render_to_file;
 use tutti_export::{
-    ChannelLayout, Dither, EncodeConfig, ExportConfig, FlacLevel, Format, FrozenClock, Pcm,
-    Quality, RenderConfig, RenderGraph,
+    ChannelLayout, EncodeConfig, ExportConfig, FlacLevel, Format, FrozenClock, Pcm, Quality,
+    RenderConfig, RenderGraph,
 };
 use tutti_graph::GraphBuilder;
 use tutti_nodes::testing::{Const, Osc};
@@ -118,7 +118,7 @@ fn config(format: Format) -> ExportConfig {
             channels: ChannelLayout::STEREO,
             topology: None,
         },
-        dither: Dither::Off,
+        dither: None,
         ..Default::default()
     }
 }
@@ -498,7 +498,7 @@ fn a_flac_decodes_to_exactly_the_rendered_frames_with_a_valid_md5() {
                         channels: layout,
                         topology: None,
                     },
-                    dither: Dither::Off,
+                    dither: None,
                     ..Default::default()
                 };
                 let tag = format!("w{width}_{bit_depth:?}_{frames}");

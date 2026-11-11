@@ -3621,6 +3621,7 @@ dependencies = [
  "symphonia",
  "tempfile",
  "thiserror 2.0.21",
+ "tracing",
  "tutti-codec",
  "tutti-dsp",
  "tutti-export",
@@ -3694,7 +3695,9 @@ dependencies = [
  "proptest",
  "serde",
  "serde_json",
+ "tutti-fixtures",
  "tutti-ump",
+ "unicode-normalization",
 ]
 
 [[package]]

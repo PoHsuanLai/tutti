@@ -78,7 +78,7 @@ fn a_graph_bounces_to_buffers_through_the_facade() {
     let (editor, executor) = g
         .build(tutti::export::RenderGraph::prepare(rate))
         .expect("builds");
-    let graph = tutti::export::RenderGraph::new(editor, executor).expect("built together");
+    let mut graph = tutti::export::RenderGraph::new(editor, executor).expect("built together");
 
     let cfg = tutti::export::ExportConfig {
         render: tutti::export::RenderConfig {
@@ -88,14 +88,16 @@ fn a_graph_bounces_to_buffers_through_the_facade() {
         },
         ..Default::default()
     };
-    let rendered = tutti::export::render_to_buffers(
-        graph,
-        &cfg,
+    let rendered = tutti::export::render_one(
+        &mut graph,
+        &cfg.buffers_job().expect("a render"),
         &tutti::transport::FrozenClock,
+        tutti::export::Output::master(cfg.buffer_target()),
         &mut tutti::export::Control::none(),
     )
     .expect("a DC graph renders")
     .finished()
+    .and_then(tutti::export::Produced::buffers)
     .expect("nothing cancels a control with no token");
     assert!(!rendered.planes().is_empty());
     assert!(rendered.planes()[0].iter().all(|&s| (s - 0.5).abs() < 1e-6));

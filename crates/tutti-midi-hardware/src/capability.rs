@@ -36,8 +36,8 @@ pub struct UmpCapability {
 ///
 /// MIDI 2.0 is what this engine speaks, and the **wrong** default for a *device*
 /// whose protocol the OS never told us: it would quietly claim MIDI 2.0 for
-/// every unknown endpoint, sending per-note messages into a `to_midi1_bytes`
-/// drop. Assuming MIDI 1.0 only costs resolution, so unknown means `Midi1`.
+/// every unknown endpoint, sending it per-note messages a MIDI 1.0 endpoint
+/// cannot carry. Assuming MIDI 1.0 only costs resolution, so unknown means `Midi1`.
 impl Default for UmpCapability {
     fn default() -> Self {
         Self::midi1()
@@ -62,10 +62,10 @@ impl UmpCapability {
     /// Whether this endpoint carries MIDI-2-only messages — per-note
     /// controllers, per-note pitch bend, and JR Timestamps — intact.
     ///
-    /// A `Midi1` endpoint reaches the wire through `to_midi1_bytes`, which
-    /// returns `None` for exactly those, so they are dropped. This is the
-    /// question a caller actually asks, named once so no call site re-derives it
-    /// from `protocol` and gets the polarity wrong.
+    /// A `Midi1` endpoint carries MIDI 1.0 messages, which have none of those,
+    /// and nothing narrows the graph's output for it yet (design 017, L6(c)).
+    /// This is the question a caller actually asks, named once so no call site
+    /// re-derives it from `protocol` and gets the polarity wrong.
     pub fn carries_midi2_only(&self) -> bool {
         matches!(self.protocol, Protocol::Midi2)
     }

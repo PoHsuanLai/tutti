@@ -8,14 +8,11 @@
 //!
 //! There is deliberately no "mastering" type and no whole-signal pass.
 //! Normalization is the one step that genuinely needs two passes (measure, then
-//! apply), and it is not a stage here: `tutti_measure::measure_loudness` measures —
-//! streaming, while the render runs — and the caller applies the `Db` that
-//! `Loudness::gain_to` returns. Keeping that out is precisely what lets every
-//! export stream.
+//! apply), and it is not a stage here: [`crate::normalize`] measures a spill of
+//! the render and the write pass applies the `Db` it chooses. Keeping that out
+//! is precisely what lets every other output stream.
 
 pub(crate) mod dither;
-pub(crate) mod resample;
 
 pub(crate) use dither::dither_spec;
-pub(crate) use resample::resample_rendered;
 pub use tutti_dsp::ChunkSize;

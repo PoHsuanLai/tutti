@@ -11,11 +11,11 @@
 
 mod support;
 
-use support::render_to_file;
+use support::{render_buffers_under, render_file_under, render_to_file};
 use tutti_export::{
-    CancelToken, ChannelLayout, Control, EncodeConfig, ExportConfig, FlacLevel, Format,
-    FrozenClock, GRAPH_MAX_BLOCK, IntDepth, Normalize, Outcome, Pcm, Progress, Quality,
-    RenderConfig, RenderGraph, Resample, Stage, Written,
+    CancelToken, ChannelLayout, Control, EncodeConfig, ExportConfig, FileTarget, FlacLevel, Format,
+    FrozenClock, GRAPH_MAX_BLOCK, IntDepth, Normalize, NormalizeSpec, Outcome, Output, Pcm,
+    Produced, Progress, Quality, RenderConfig, RenderGraph, Resample, Stage, Written, render,
 };
 use tutti_graph::GraphBuilder;
 use tutti_nodes::testing::Const;
@@ -88,15 +88,32 @@ struct Run {
     seen: Vec<Progress>,
 }
 
-/// Renders `config` (normalized when `normalize` is set) to `path`, recording
+/// What a render of several outputs reported, and what it returned.
+struct RunMany {
+    outcome: Outcome<Vec<Produced>>,
+    seen: Vec<Progress>,
+}
+
+/// The second output of a two-output render: FLAC at 16 bits, so the two files
+/// differ in format and quantization.
+fn second_format() -> Format {
+    Format::Flac {
+        depth: IntDepth::Int16,
+        level: FlacLevel::default(),
+    }
+}
+
+/// Renders `config` once into a file at each of `paths` (the first as
+/// `config` says, any other as FLAC at 16 bits), normalized when `normalize`
+/// is set (the first measures itself and the others take its gain), recording
 /// every reading and cancelling the token at the first one `cancel_at`
 /// accepts.
-fn run(
+fn run_many(
     config: &ExportConfig,
     normalize: Option<Normalize>,
-    path: &std::path::Path,
+    paths: &[&std::path::Path],
     cancel_at: impl Fn(&Progress) -> bool,
-) -> Run {
+) -> RunMany {
     let token = CancelToken::new();
     let mut seen = Vec::new();
     let mut report = |p: &Progress| {
@@ -106,19 +123,51 @@ fn run(
         }
     };
     let mut control = Control::new(&token).on_progress(&mut report);
-    let outcome = match normalize {
-        None => tutti_export::render_to_file(graph(), config, &FrozenClock, path, &mut control),
-        Some(n) => tutti_export::render_normalized_to_file(
-            graph(),
-            config,
-            &FrozenClock,
-            n,
-            path,
-            &mut control,
-        ),
-    }
+    let outputs: Vec<Output> = paths
+        .iter()
+        .enumerate()
+        .map(|(i, path)| {
+            let target = if i == 0 {
+                config.file_target(path, None)
+            } else {
+                FileTarget::new(path, second_format(), ChannelLayout::STEREO)
+                    .with_resample(config.resample)
+            };
+            let spec = normalize.map(|n| {
+                if i == 0 {
+                    NormalizeSpec::own(n)
+                } else {
+                    NormalizeSpec::from_output(n, 0)
+                }
+            });
+            Output::master(target.with_normalize(spec))
+        })
+        .collect();
+    let outcome = render(
+        &mut graph(),
+        &config.job().expect("a render"),
+        &FrozenClock,
+        outputs,
+        &mut control,
+    )
     .expect("a cancelled or finished render is not an error");
-    Run { outcome, seen }
+    RunMany { outcome, seen }
+}
+
+/// Renders `config` (normalized when `normalize` is set) to `path`, recording
+/// every reading and cancelling the token at the first one `cancel_at`
+/// accepts.
+fn run(
+    config: &ExportConfig,
+    normalize: Option<Normalize>,
+    path: &std::path::Path,
+    cancel_at: impl Fn(&Progress) -> bool,
+) -> Run {
+    let RunMany { outcome, seen } = run_many(config, normalize, &[path], cancel_at);
+    Run {
+        outcome: outcome.map(|mut produced| produced.remove(0).file().expect("a file output")),
+        seen,
+    }
 }
 
 /// The frames a reading has done, 0 for one that counts none.
@@ -130,8 +179,9 @@ fn done(p: &Progress) -> usize {
 /// error, not a short file), has rendered exactly those frames, and leaves
 /// nothing at its path, in every format.
 ///
-/// Mutation (run): `encode_to_file` writing to `path` itself -> the partial
-/// file stays and the `exists` assertion fails.
+/// Mutation (run): `open_file` writing to `path` itself (`Encoder::create` over
+/// `File::create(path)`) -> the partial file stays and the `exists` assertion
+/// fails.
 /// Mutation (run): `drive` ignoring the token -> the outcome assertion fails.
 #[test]
 fn a_cancelled_file_render_is_cancelled_and_leaves_no_file() {
@@ -165,7 +215,7 @@ fn names(dir: &std::path::Path) -> Vec<String> {
 /// lands in, and leaves no temporary beside it: the render is written aside
 /// and renamed over the target only when it finishes.
 ///
-/// Mutation (run): `encode_to_file` writing to `path` itself (no `Staged`) ->
+/// Mutation (run): `open_file` writing to `path` itself (no `Staged`) ->
 /// the old bytes are truncated and the comparison fails in every case.
 /// Mutation (run): `Staged::drop` not removing the temporary -> the
 /// directory listing holds a `.tmp` and fails.
@@ -242,8 +292,8 @@ fn a_failed_write_leaves_the_target_and_no_temporary() {
 /// Rendering to memory stops the same way, with nothing returned, whether the
 /// token is cancelled while it renders or as its last stage begins.
 ///
-/// Mutation (run): `render_to_buffers` skipping the check after `begin` of
-/// the finalizing stage -> the second case is `Finished`; fails.
+/// Mutation (run): `finalize_files` skipping the check after `begin` of the
+/// finalizing stage -> the second case is `Finished`; fails.
 #[test]
 fn a_cancelled_buffer_render_is_cancelled() {
     let cfg = config(Format::Wav(Pcm::Int16));
@@ -256,7 +306,7 @@ fn a_cancelled_buffer_render_is_cancelled() {
                 token.cancel();
             }
         };
-        let outcome = tutti_export::render_to_buffers(
+        let outcome = render_buffers_under(
             graph(),
             &cfg,
             &FrozenClock,
@@ -349,24 +399,51 @@ fn a_cancel_on_the_final_reading_is_cancelled() {
 struct Shape {
     normalize: bool,
     resample: bool,
+    /// Two outputs from the one pass: the second is FLAC at 16 bits and, with
+    /// normalize, takes the first's gain.
+    two: bool,
 }
 
+/// The shapes of a render of one output.
 const SHAPES: [Shape; 4] = [
     Shape {
         normalize: false,
         resample: false,
+        two: false,
     },
     Shape {
         normalize: false,
         resample: true,
+        two: false,
     },
     Shape {
         normalize: true,
         resample: false,
+        two: false,
     },
     Shape {
         normalize: true,
         resample: true,
+        two: false,
+    },
+];
+
+/// The shapes of a render of two outputs.
+const TWO_OUTPUT_SHAPES: [Shape; 3] = [
+    Shape {
+        normalize: false,
+        resample: false,
+        two: true,
+    },
+    Shape {
+        normalize: true,
+        resample: false,
+        two: true,
+    },
+    Shape {
+        normalize: true,
+        resample: true,
+        two: true,
     },
 ];
 
@@ -416,17 +493,9 @@ const POINTS: [Point; 12] = [
         at: |_, p| p.stage() == Stage::Measuring && done(p) == 0,
     },
     Point {
-        name: "mid resample chunks",
-        exists: |s| s.normalize && s.resample,
-        at: |_, p| p.stage() == Stage::Measuring && done(p) >= 48_000 && done(p) < LONG_FRAMES,
-    },
-    Point {
         name: "between measure chunks",
         exists: |s| s.normalize,
-        at: |s, p| {
-            let converted = if s.resample { LONG_FRAMES } else { 0 };
-            p.stage() == Stage::Measuring && done(p) >= converted + 48_000
-        },
+        at: |_, p| p.stage() == Stage::Measuring && done(p) >= 48_000 && done(p) < LONG_FRAMES,
     },
     Point {
         name: "after the last measure chunk",
@@ -449,9 +518,19 @@ const POINTS: [Point; 12] = [
         at: |_, p| p.stage() == Stage::Finalizing && p.fraction() < 0.96,
     },
     Point {
+        name: "between outputs' finalize",
+        exists: |s| s.two,
+        at: |_, p| {
+            p.stage() == Stage::Finalizing
+                && p.output() == Some(0)
+                && p.fraction() > 0.96
+                && p.fraction() < 1.0
+        },
+    },
+    Point {
         name: "before the commit",
         exists: |_| true,
-        at: |_, p| p.stage() == Stage::Finalizing && p.fraction() > 0.96 && p.fraction() < 1.0,
+        at: |_, p| p.stage() == Stage::Finalizing && p.fraction() > 0.97 && p.fraction() < 1.0,
     },
     Point {
         name: "(a reading after the commit cannot stop it)",
@@ -462,61 +541,62 @@ const POINTS: [Point; 12] = [
 
 /// A cancel at each point of doc 019 section 6.2 that the pipeline owns, in
 /// each shape of render (with and without normalize, with and without a
-/// conversion): the render is `Cancelled`, the next thing it would have done
-/// is not done (the cancelling reading is the last one), no temporary is
-/// left, and the target is as it was: absent where it did not exist,
-/// byte for byte where it did.
+/// conversion, one output or two from the one pass): the render is
+/// `Cancelled`, the next thing it would have done is not done (the cancelling
+/// reading is the last one), no temporary is left, and every target is as it
+/// was: absent where it did not exist, byte for byte where it did.
 ///
-/// The last row is the exception the doc names: once the file is in place
+/// The last row is the exception the doc names: once the files are in place
 /// the render has finished, and the cancel comes too late.
 ///
-/// Mutations (each run, each failed): `drive` without its check after the
-/// reading (the "after the last block" row, and with
-/// `a_cancel_on_the_final_reading_is_cancelled`); `Normalize::measure`
-/// without the check at the top of its chunk loop ("between measure
-/// chunks") and without the one after it ("after the last measure chunk");
-/// `resample_rendered` without the one at the top of its loop ("mid resample
-/// chunks"); `encode_to_file` without the check after `begin(Finalizing)`
-/// ("before the resample flush and the finalize") and without the one after
-/// `at(Finalizing, 0.5)` ("before the commit").
+/// The two-output shapes carry the split step 2 deferred: every output's
+/// encoder is finalized into its temporary first, then the token is checked,
+/// then the renames. "between outputs' finalize" is the check before the
+/// second output's finalize (the first is closed, beside its path, and is
+/// removed with the rest), and "before the commit" is the one after the last
+/// finalize, before the first rename.
 ///
 /// Not pinned by a row, because the next check catches the same cancel
 /// before anything observable happens: the check after `begin(Measuring)`
-/// (the chunk loops' own top-of-loop checks come next), the one before
-/// `rs.finish` in `resample_rendered` (the measure loop's follows it), and the
-/// one at the top of `drive`'s loop (a cancel at its entry reading is also
-/// caught after the first block; `driver::tests` pins that one).
+/// (the chunk loop's own top-of-loop check comes next) and the one at the top
+/// of `drive`'s loop (a cancel at its entry reading is also caught after the
+/// first block; `driver::tests` pins that one).
 #[test]
 fn a_cancel_at_each_pipeline_point_stops_there_and_leaves_the_targets() {
     let old = b"an earlier export, byte for byte".to_vec();
-    for shape in SHAPES {
+    for shape in SHAPES.into_iter().chain(TWO_OUTPUT_SHAPES) {
         for point in &POINTS {
             if !(point.exists)(shape) {
                 continue;
             }
             for existing in [false, true] {
                 let dir = tempfile::tempdir().unwrap();
-                let path = dir.path().join("t.wav");
+                let paths: Vec<std::path::PathBuf> = if shape.two {
+                    vec![dir.path().join("t.wav"), dir.path().join("u.flac")]
+                } else {
+                    vec![dir.path().join("t.wav")]
+                };
                 if existing {
-                    std::fs::write(&path, &old).unwrap();
+                    for path in &paths {
+                        std::fs::write(path, &old).unwrap();
+                    }
                 }
                 let before = names(dir.path());
-                let r = run(&shape.config(LONG_FRAMES), shape.normalize(), &path, |p| {
+                let refs: Vec<&std::path::Path> = paths.iter().map(|p| p.as_path()).collect();
+                let r = run_many(&shape.config(LONG_FRAMES), shape.normalize(), &refs, |p| {
                     (point.at)(shape, p)
                 });
                 let ctx = format!("{shape:?} at `{}` (existing {existing})", point.name);
                 let at = |p: &Progress| (point.at)(shape, p);
                 if point.name.starts_with('(') {
-                    // Too late: finished, and the new file is in place.
+                    // Too late: finished, and the new files are in place.
                     assert!(matches!(r.outcome, Outcome::Finished(_)), "{ctx}");
-                    assert_ne!(
-                        std::fs::read(&path).ok().as_deref(),
-                        Some(&old[..]),
-                        "{ctx}"
-                    );
+                    for path in &paths {
+                        assert_ne!(std::fs::read(path).ok().as_deref(), Some(&old[..]), "{ctx}");
+                    }
                     continue;
                 }
-                assert_eq!(r.outcome, Outcome::Cancelled, "{ctx}");
+                assert_eq!(r.outcome.finished().map(|_| ()), None, "{ctx}: finished");
                 let hits = r.seen.iter().filter(|p| at(p)).count();
                 assert_eq!(
                     (hits, at(r.seen.last().unwrap())),
@@ -524,10 +604,12 @@ fn a_cancel_at_each_pipeline_point_stops_there_and_leaves_the_targets() {
                     "{ctx}: it went on after the cancelling reading"
                 );
                 assert_eq!(names(dir.path()), before, "{ctx}: a temporary or a target");
-                if existing {
-                    assert_eq!(std::fs::read(&path).unwrap(), old, "{ctx}");
-                } else {
-                    assert!(!path.exists(), "{ctx}");
+                for path in &paths {
+                    if existing {
+                        assert_eq!(std::fs::read(path).unwrap(), old, "{ctx}");
+                    } else {
+                        assert!(!path.exists(), "{ctx}");
+                    }
                 }
             }
         }
@@ -542,8 +624,8 @@ fn a_cancel_at_each_pipeline_point_stops_there_and_leaves_the_targets() {
 /// after; and no reading is `1.0` but the last.
 ///
 /// Mutations (each run, each failed): `NORMALIZED`'s `Measuring` band
-/// widened to 0.70 (the band check); `encode_to_file` delivering
-/// `at(Finalizing, 1.0)` before `encoder.finish()` (the file-exists check);
+/// widened to 0.70 (the band check); `finalize_files` delivering
+/// `at(Finalizing, 1.0)` before the renames (the one-reading-at-1.0 check);
 /// `deliver` giving `Rendering` an output (the output check). Monotonic is
 /// the unit test's (`the_fraction_never_falls`), which reorders stages.
 #[test]
@@ -556,17 +638,14 @@ fn progress_is_monotonic_banded_and_ends_on_one_after_the_rename() {
         let mut report = |p: &Progress| seen.push((*p, path.exists()));
         let mut control = Control::new(&token).on_progress(&mut report);
         let cfg = shape.config(BLOCKS * GRAPH_MAX_BLOCK.get());
-        let outcome = match shape.normalize() {
-            None => tutti_export::render_to_file(graph(), &cfg, &FrozenClock, &path, &mut control),
-            Some(n) => tutti_export::render_normalized_to_file(
-                graph(),
-                &cfg,
-                &FrozenClock,
-                n,
-                &path,
-                &mut control,
-            ),
-        }
+        let outcome = render_file_under(
+            graph(),
+            &cfg,
+            &FrozenClock,
+            shape.normalize(),
+            &path,
+            &mut control,
+        )
         .unwrap();
         assert!(matches!(outcome, Outcome::Finished(_)), "{shape:?}");
 
@@ -686,4 +765,47 @@ fn readings_come_at_least_every_4096_frames_and_at_every_stage_change() {
             "{shape:?}: every stage change was delivered"
         );
     }
+}
+
+/// With two outputs a reading names the output it is working on: none while
+/// rendering (one render serves both), the measured one while measuring (only
+/// the first measures itself; the second takes its gain), each in turn while
+/// writing, and each as it is finalized.
+#[test]
+fn a_reading_names_the_output_it_is_working_on() {
+    let shape = TWO_OUTPUT_SHAPES[1];
+    let dir = tempfile::tempdir().unwrap();
+    let (a, b) = (dir.path().join("a.wav"), dir.path().join("b.flac"));
+    let r = run_many(
+        &shape.config(LONG_FRAMES),
+        shape.normalize(),
+        &[&a, &b],
+        |_| false,
+    );
+    assert!(matches!(r.outcome, Outcome::Finished(_)));
+    let outputs_of = |stage: Stage| -> Vec<Option<usize>> {
+        let mut v: Vec<Option<usize>> = r
+            .seen
+            .iter()
+            .filter(|p| p.stage() == stage)
+            .map(Progress::output)
+            .collect();
+        v.dedup();
+        v
+    };
+    assert_eq!(outputs_of(Stage::Rendering), [None]);
+    assert_eq!(outputs_of(Stage::Measuring), [Some(0)]);
+    assert_eq!(outputs_of(Stage::Writing), [Some(0), Some(1)]);
+    assert_eq!(outputs_of(Stage::Finalizing), [Some(0), Some(1)]);
+    let writing: Vec<usize> = r
+        .seen
+        .iter()
+        .filter(|p| p.stage() == Stage::Writing)
+        .map(done)
+        .collect();
+    assert_eq!(
+        (writing.first(), writing.last()),
+        (Some(&0), Some(&(2 * LONG_FRAMES))),
+        "writing counts the frames of both outputs against their sum"
+    );
 }

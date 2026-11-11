@@ -35,7 +35,7 @@ pub use aiff::AiffWriter;
 #[cfg(decode)]
 pub use decode::{DecodeError, FileIn, WaveMetadata};
 pub use decode::{can_decode, decodable_extensions};
-pub use encoder::Encoder;
+pub use encoder::{Encoder, Finalized};
 pub use error::{Codec, Error, Result, SpecError};
 pub use file_out::FileOut;
 #[cfg(feature = "encode-flac")]

@@ -1,37 +1,41 @@
-//! The render source: a graph presented as a block-at-a-time frame source.
+//! The render source: a graph presented as a block-at-a-time source of planes.
 //!
-//! [`GraphSource`] block-renders a `tutti_graph` executor into
-//! interleaved frames and advances the caller's [`RenderClock`] in lockstep.
-//! Everything downstream — gating, dither, the encoder — pulls from it (or
-//! from [`PlaneSource`], replaying a render already held), so the graph is
-//! stepped exactly once per block no matter which encoder is driving.
+//! [`GraphSource`] block-renders a `tutti_graph` executor into one plane per
+//! global output and advances the caller's [`RenderClock`] in lockstep.
+//! [`drive`] pulls it block by block, applying the latency and length gate,
+//! and hands each block to the outputs (the fold onto each one's layout is
+//! theirs, [`FileChannels::fold_from`]), so the graph is stepped exactly once
+//! per block however many outputs there are. [`PlaneSource`] replays planes a
+//! caller already holds, through the same [`Replay`] the spilled audio of a
+//! normalized output is read back by.
 //!
 //! The frame width is a runtime value carried by
-//! [`Interleaved`], never a `const CH`. A width in the type can only carry one that is a property of the
-//! *code*; the destination width here is a property of the caller's config, so
+//! `Interleaved`, never a `const CH`. A width in the type can only carry one that is a property of the
+//! *code*; the destination width here is a property of the caller's target, so
 //! any positive count renders — 3- and 5-wide masters included.
 //!
-//! `GraphSource` folds the graph's real output width onto the requested one
-//! ([`tutti_types::Fold`], built once in [`GraphSource::new`]), so a graph wider
-//! than the file is downmixed rather than truncated, and a narrower one is
-//! zero-filled rather than duplicated.
+//! A fold from the graph's real output width onto a target's
+//! ([`tutti_types::Fold`], built once, before the first block) downmixes a
+//! wider graph rather than truncating it, and zero-fills a narrower one
+//! rather than duplicating.
 
 use crate::control::{Control, Outcome, Stage};
 use crate::render::BlockCursor;
 use crate::{ConfigError, RenderGraph};
+use std::ops::Range;
 use tutti_transport::RenderClock;
-use tutti_types::{ChannelLayout, ChannelTopology, Fold, Interleaved, InterleavedMut, Samples};
+use tutti_types::{ChannelLayout, ChannelTopology, Fold, InterleavedMut, Samples};
 
-/// What the file's channels are, for the fold from the graph's outputs: its
-/// width, and the speakers they feed when the config states them.
+/// What a target's channels are, for the fold from the graph's outputs or a
+/// tap's lanes: its width, and the speakers they feed when it states them.
 pub(crate) struct FileChannels<'a> {
     pub(crate) layout: ChannelLayout,
     pub(crate) topology: Option<&'a ChannelTopology>,
 }
 
 impl FileChannels<'_> {
-    /// The fold from a graph of `outputs` channels. The graph is what it
-    /// declared (`root`), or else the engine's order for its width (a bare 4 is
+    /// The fold from a source of `outputs` channels. The source is what it
+    /// declared (`root`: the graph's root, or a tap's placement), or else the engine's order for its width (a bare 4 is
     /// quad); the file the topology it states or else the same assumption for
     /// its width; where either has no order, or the file states discrete
     /// channels, the channels go by index ([`Fold::widths`],
@@ -87,54 +91,12 @@ impl FileChannels<'_> {
     }
 }
 
-/// Anything that can hand out frames one block at a time.
-///
-/// Two implementations: [`GraphSource`] renders a graph, and [`PlaneSource`]
-/// replays PCM a caller already holds. Both feed the same encoders, so a
-/// normalized export (render → measure → apply → write) shares every codec
-/// path with a streamed one instead of growing a second writer per format.
-pub(crate) trait FrameSource {
-    /// Fill the leading frames of `out`, returning how many frames were
-    /// written.
-    fn fill(&mut self, out: InterleavedMut<'_>) -> usize;
-    /// Frames handed out so far.
-    fn produced(&self) -> Samples;
-    /// The most frames one [`fill`](Self::fill) produces — what [`drive`]
-    /// sizes its block by.
-    ///
-    /// Per source rather than one crate constant, because the sources differ:
-    /// the graph renders whatever `MaxBlock` it was prepared for, and a
-    /// replay has no block of its own. Pulling the graph 64 frames at a time
-    /// would run its per-block walk sixteen times as often as it needs to.
-    fn max_block(&self) -> usize;
-    /// Events the graph lost since the render began (`Executor::lost_event_count`):
-    /// not a note-off it refused and sent again. A replay loses none.
-    fn lost_events(&self) -> u64 {
-        0
-    }
-    /// Whether the units behind this source are still healthy: a forked unit
-    /// (a hosted plugin) that failed mid-render rendered silence from then
-    /// on, and `process` has no error channel to say so. A replay has no unit
-    /// to fail.
-    ///
-    /// Asked before a file is put in place, so a failed render never replaces
-    /// the user's file.
-    ///
-    /// # Errors
-    ///
-    /// [`Error::ForkFailed`](crate::Error::ForkFailed) naming the first unit
-    /// that failed.
-    fn check_health(&self) -> crate::Result<()> {
-        Ok(())
-    }
-}
-
 /// The render source for the graph: a `tutti_graph::Executor` (a
 /// fork, or a pair built for the render) rendered one block at a time.
 ///
-/// One block per [`fill`](FrameSource::fill), folded onto the caller's width,
-/// the clock advanced by exactly the frames produced. The executor reads the
-/// transport from each block's `Env`, so this hands it one — through
+/// One block per [`render_block`](Self::render_block), the clock advanced by
+/// exactly the frames produced. The executor reads the transport from each
+/// block's `Env`, so this hands it one — through
 /// [`RenderClock::render_graph`], which reads the clock's snapshot before the
 /// block and advances it after (`OfflineTimeline::render_graph` is that call
 /// for an offline timeline).
@@ -148,8 +110,8 @@ pub(crate) struct GraphSource<'a> {
     global_inputs: usize,
     /// One plane per global output, `max_block` long.
     planes: Vec<Vec<f32>>,
-    /// The graph's outputs onto the file's channels, built in [`new`](Self::new).
-    fold: Fold,
+    /// What the graph's output channels are, when it declared it.
+    root: Option<ChannelTopology>,
     max_block: usize,
     produced: Samples,
     /// The executor's dropped and recovered counts the render counts from
@@ -172,8 +134,7 @@ impl<'a> GraphSource<'a> {
         executor: &'a mut tutti_graph::Executor,
         sample_rate: tutti_types::SampleRate,
         clock: &'a dyn RenderClock,
-        file: &FileChannels<'_>,
-        root: Option<&ChannelTopology>,
+        root: Option<ChannelTopology>,
         before: (u64, u64),
     ) -> crate::Result<Self> {
         let prepared = executor.prepare().sample_rate();
@@ -202,7 +163,6 @@ impl<'a> GraphSource<'a> {
             |p| (p.global_inputs() as usize, p.global_outputs()),
         );
         let planes = vec![vec![0.0f32; max_block]; outputs];
-        let fold = file.fold_from(outputs, root)?;
         Ok(Self {
             editor,
             executor,
@@ -210,7 +170,7 @@ impl<'a> GraphSource<'a> {
             silence: vec![0.0; max_block],
             global_inputs,
             planes,
-            fold,
+            root,
             max_block,
             produced: Samples(0),
             before,
@@ -226,19 +186,46 @@ impl GraphSource<'_> {
             self.executor.recovered_event_count(),
         )
     }
-}
 
-impl FrameSource for GraphSource<'_> {
-    /// A render never starves: the graph produces a full block on demand, so
-    /// the only `0` this returns is for a zero-length request.
+    /// The graph's global output channels: the planes of a block.
+    pub(crate) fn outputs(&self) -> usize {
+        self.planes.len()
+    }
+
+    /// What the graph's outputs are, when it declared it.
+    pub(crate) fn root(&self) -> Option<&ChannelTopology> {
+        self.root.as_ref()
+    }
+
+    /// The planes of the block last rendered: one per global output, the first
+    /// frames of each valid.
+    pub(crate) fn planes(&self) -> &[Vec<f32>] {
+        &self.planes
+    }
+
+    /// Frames handed out so far.
+    pub(crate) fn produced(&self) -> Samples {
+        self.produced
+    }
+
+    /// The most frames one [`render_block`](Self::render_block) produces: the
+    /// block the graph was prepared for. Pulling it 64 frames at a time would
+    /// run its per-block walk sixteen times as often as it needs to.
+    pub(crate) fn max_block(&self) -> usize {
+        self.max_block
+    }
+
+    /// Renders up to `want` frames (never more than [`max_block`](Self::max_block))
+    /// into [`planes`](Self::planes) and returns how many. A render never
+    /// starves: the graph produces a full block on demand, so the only `0`
+    /// this returns is for a zero-length request.
     ///
     /// That is the offline/live split in one line. A `Source`'s pull answers
     /// starved, ended or failed, because it is polled until dry on a clock of
     /// its own. An offline render is driven to a known frame count, so no
     /// verdict is asked for and this is not a `Source` (doc 025, §5.4).
-    fn fill(&mut self, mut out: InterleavedMut<'_>) -> usize {
-        let ch = out.stride();
-        let block_size = out.len().min(self.max_block);
+    pub(crate) fn render_block(&mut self, want: usize) -> usize {
+        let block_size = want.min(self.max_block);
         if block_size == 0 {
             return 0;
         }
@@ -266,32 +253,28 @@ impl FrameSource for GraphSource<'_> {
         // Retired units and returned commits are freed here, on this thread,
         // as a host's control loop would free them.
         self.editor.collect();
-
-        // The fold was built for the file's width; a block of another is a
-        // caller's bug, and `planar_to_interleaved` checks it in every build.
-        let planes = &self.planes;
-        let block = &mut out.samples_mut()[..block_size * ch];
-        self.fold.planar_to_interleaved(
-            |c| &planes[c][..block_size],
-            InterleavedMut::new(block, self.fold.dst_layout()),
-        );
         self.produced = Samples(self.produced.get() + block_size);
         block_size
     }
 
-    fn produced(&self) -> Samples {
-        self.produced
-    }
-
-    fn max_block(&self) -> usize {
-        self.max_block
-    }
-
-    fn lost_events(&self) -> u64 {
+    /// Events the graph lost since the render began (`Executor::lost_event_count`):
+    /// not a note-off it refused and sent again.
+    pub(crate) fn lost_events(&self) -> u64 {
         lost_over(self.before, self.counts())
     }
 
-    fn check_health(&self) -> crate::Result<()> {
+    /// Whether the units behind this source are still healthy: a forked unit
+    /// (a hosted plugin) that failed mid-render rendered silence from then
+    /// on, and `process` has no error channel to say so.
+    ///
+    /// Asked before a file is put in place, so a failed render never replaces
+    /// the user's file.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::ForkFailed`](crate::Error::ForkFailed) naming the first unit
+    /// that failed.
+    pub(crate) fn check_health(&self) -> crate::Result<()> {
         self.editor
             .fork_health()
             .map_err(|fault| crate::Error::ForkFailed {
@@ -307,14 +290,13 @@ impl FrameSource for GraphSource<'_> {
 /// to do about them is the caller's ([`check_loss`]), made before a file is
 /// committed and not for a cancelled render.
 ///
-/// The one place a [`RenderGraph`] becomes a [`FrameSource`], so every entry
-/// point renders and checks identically.
+/// The one place a [`RenderGraph`] becomes a [`GraphSource`], so every render
+/// is made and checked identically.
 pub(crate) fn with_source<T>(
     graph: &mut RenderGraph,
     sample_rate: tutti_types::SampleRate,
     clock: &dyn RenderClock,
-    file: &FileChannels<'_>,
-    f: impl FnOnce(&mut dyn FrameSource) -> crate::Result<Outcome<T>>,
+    f: impl FnOnce(&mut GraphSource<'_>) -> crate::Result<Outcome<T>>,
 ) -> crate::Result<(Outcome<T>, u64)> {
     // Again at render, as a real error: `editor_mut` can swap the editor
     // after `RenderGraph::new` checked it (see `RenderGraph`, "The pair").
@@ -322,22 +304,13 @@ pub(crate) fn with_source<T>(
     let root = graph.root_topology().cloned();
     let settled = graph.settled();
     let (editor, executor) = graph.parts_mut();
-    let mut src = GraphSource::new(
-        editor,
-        executor,
-        sample_rate,
-        clock,
-        file,
-        root.as_ref(),
-        settled,
-    )?;
+    let mut src = GraphSource::new(editor, executor, sample_rate, clock, root, settled)?;
     let rendered = f(&mut src);
     // The next render counts from here, whether this one finished or not.
     let counts = src.counts();
     let lost = src.lost_events();
-    // The fallback: the entry points that put a file in place ask before they
-    // do (`encode_to_file`), and the one that holds planes asks before it
-    // returns them (`render_pass`); this one covers any caller that did not.
+    // The fallback: the render asks before it puts a file in place or returns
+    // planes (`render`); this one covers any caller that did not.
     // A render the caller cancelled is not judged, so a fault that came
     // before the cancel does not turn it into a failure.
     let health = match &rendered {
@@ -370,7 +343,15 @@ pub(crate) fn check_loss(policy: crate::EventLossPolicy, lost: u64) -> crate::Re
     Ok(())
 }
 
-/// Replays already-rendered planes as a frame source.
+/// Audio read back in blocks: planes a caller holds, or what a normalized
+/// output spilled while the graph rendered.
+pub(crate) trait Replay {
+    /// Fills the leading frames of `out`, returning how many frames were
+    /// written; `0` is the end.
+    fn fill(&mut self, out: InterleavedMut<'_>) -> crate::Result<usize>;
+}
+
+/// Replays already-rendered planes.
 ///
 /// Planes of the file's own width replay as they are. Any other width is
 /// folded onto the file's through the [`Fold`] the caller built
@@ -393,8 +374,8 @@ impl<'a> PlaneSource<'a> {
     }
 }
 
-impl FrameSource for PlaneSource<'_> {
-    fn fill(&mut self, mut out: InterleavedMut<'_>) -> usize {
+impl Replay for PlaneSource<'_> {
+    fn fill(&mut self, mut out: InterleavedMut<'_>) -> crate::Result<usize> {
         let available = self
             .planes
             .first()
@@ -413,39 +394,36 @@ impl FrameSource for PlaneSource<'_> {
             }
             // `interleave_from` writes every sample of every frame (rather
             // than leaving whatever the buffer held), which matters because
-            // `drive`'s block is reused across iterations.
+            // the caller's block is reused across iterations.
             None => InterleavedMut::new(block, layout).interleave_from(self.planes, pos),
         }
         self.pos = Samples(self.pos.get() + n);
-        n
-    }
-    fn produced(&self) -> Samples {
-        self.pos
-    }
-
-    /// The planes are already rendered, so the size only paces the encoder:
-    /// 64 frames.
-    ///
-    /// Not raised to the graph's block: Ogg Vorbis's bytes depend on how its
-    /// input is split into `encode_audio_block` calls, so this size is part of
-    /// what a replayed Ogg export writes, and a 1024-frame replay measured no
-    /// faster for the PCM formats.
-    fn max_block(&self) -> usize {
-        64
+        Ok(n)
     }
 }
 
-/// Pull the whole render out of `src`, gating each block, handing the kept
-/// frames to `consume`.
+/// The frames the replay of planes hands out per block: 64, which only paces
+/// the encoder.
+///
+/// Not raised to the graph's block: Ogg Vorbis's bytes depend on how its
+/// input is split into `encode_audio_block` calls, so this size is part of
+/// what a replayed Ogg export writes, and a 1024-frame replay measured no
+/// faster for the PCM formats.
+pub(crate) const REPLAY_BLOCK: usize = 64;
+
+/// Pull the whole render out of `src`, gating each block, handing every block
+/// to `consume`.
 ///
 /// The gate (latency trim + output-length cap) lives here rather than on a sink
-/// because it needs counters that span blocks. `consume` is called only with
-/// frames that survive it.
+/// because it needs counters that span blocks. `consume` is called for every
+/// block, with the block's planes (the first `n` frames of each valid) and the
+/// frame range of it the gate keeps: empty for a block before the latency or
+/// past the length, which a tap still has to drain.
 ///
 /// The token is checked before every block and after the progress a block
 /// delivered (a callback may cancel; the last block's too), and a cancelled
 /// render ends there as [`Outcome::Cancelled`]. `stage` is the stage the
-/// frames count in: `Rendering` for a graph, `Writing` for planes replayed.
+/// frames count in.
 ///
 /// Under [`EventLossPolicy::Fail`](crate::EventLossPolicy::Fail) the render
 /// stops at the first block that has lost an event, after that block's
@@ -454,8 +432,7 @@ impl FrameSource for PlaneSource<'_> {
 /// been lost by then: a render that is going to fail does not spend the rest
 /// of its length first.
 pub(crate) fn drive<F>(
-    src: &mut dyn FrameSource,
-    layout: ChannelLayout,
+    src: &mut GraphSource<'_>,
     plan: &crate::render::RenderPlan,
     stage: Stage,
     control: &mut Control<'_>,
@@ -463,16 +440,9 @@ pub(crate) fn drive<F>(
     mut consume: F,
 ) -> crate::Result<Outcome<()>>
 where
-    F: FnMut(Interleaved<'_>) -> crate::Result<()>,
+    F: FnMut(&GraphSource<'_>, usize, Range<usize>) -> crate::Result<()>,
 {
-    let ch = usize::from(layout.count());
-    if ch == 0 {
-        return Err(crate::Error::UnsupportedChannels);
-    }
-    // Heap, not a stack array: at 12 channels a 1024-frame graph block is
-    // 48 KiB. Derived once, never inside the loop.
     let max_block = src.max_block().max(1);
-    let mut block = vec![0.0f32; max_block * ch];
     let mut kept = Samples(0);
 
     control.begin(stage, Some(plan.total));
@@ -488,8 +458,7 @@ where
             .remaining_after(src.produced())
             .min(Samples(max_block));
         let block_start = src.produced();
-        // `want` is a FRAME count and `block` is flat samples, hence `* ch`.
-        let n = src.fill(InterleavedMut::new(&mut block[..want.get() * ch], layout));
+        let n = src.render_block(want.get());
         if n == 0 {
             break;
         }
@@ -501,13 +470,9 @@ where
             output_length: plan.output_length,
         };
         let window = cursor.window(Samples(n));
-        if !window.is_empty() {
-            // `window` is a frame range; `Interleaved::window` applies the
-            // stride.
-            let filled = Interleaved::new(&block[..n * ch], layout);
-            consume(filled.window(window.clone()))?;
-            kept = Samples(kept.get() + window.len());
-        }
+        let kept_now = window.len();
+        consume(src, n, window)?;
+        kept = Samples(kept.get() + kept_now);
         control.advance(stage, src.produced(), plan.total);
         if control.is_cancelled() {
             return Ok(Outcome::Cancelled);

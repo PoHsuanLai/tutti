@@ -28,8 +28,8 @@ use tutti_rt::Rt;
 
 use arrayvec::ArrayVec;
 use parking_lot::Mutex;
-use tutti_graph::{Bus, BusRole, Buses, Cx, Offset};
-use tutti_plugin_types::{BusChannels, BusTopologies, LoadedPlugin};
+use tutti_graph::{Bus, Buses, Cx, Offset};
+use tutti_plugin_types::{LoadedPlugin, PluginBus};
 use tutti_tempo::{Cursor, TempoMap};
 use tutti_transport::TempoReader;
 use tutti_types::{BusTopology, ChannelLayout, Samples};
@@ -201,35 +201,33 @@ impl Declared {
         Self {
             inputs: ChannelLayout::clamped(loaded.total_inputs()),
             outputs: ChannelLayout::clamped(loaded.total_outputs()),
-            buses_in: buses_of(&loaded.inputs, &loaded.input_topology),
-            buses_out: buses_of(&loaded.outputs, &loaded.output_topology),
+            buses_in: buses_of(&loaded.inputs),
+            buses_out: buses_of(&loaded.outputs),
             latency: loaded.latency_samples,
             tail: loaded.tail,
         }
     }
 }
 
-/// The buses a plugin's per-bus widths and topologies make, in bus order: the
-/// first is [`Main`](BusRole::Main), the rest [`Aux`](BusRole::Aux) (the
-/// wiring data does not yet say which of them is a sidechain).
+/// The node's buses for a plugin's, in bus order, each with the role the
+/// format gave it.
 ///
-/// A bus whose topology is unknown (`None`) or does not have its width's
-/// channels is `Discrete` at that width: a count is not a placement. The
-/// list stops at the first bus past [`MAX_BUSES`](tutti_graph::MAX_BUSES) or wider than a bus holds;
-/// the plugin's remaining channels are ports the node still has.
-fn buses_of(widths: &BusChannels, topologies: &BusTopologies) -> Buses {
+/// A bus without a [`placement`](PluginBus::placement) (unknown, or one that
+/// does not have its width's channels) is `Discrete` at that width: a count is
+/// not a placement. The list stops at the first bus past
+/// [`MAX_BUSES`](tutti_graph::MAX_BUSES) or wider than a bus holds; the
+/// plugin's remaining channels are ports the node still has.
+fn buses_of(plugin: &[PluginBus]) -> Buses {
     let mut buses = Buses::NONE;
-    for (i, &width) in widths.iter().enumerate() {
-        let placed = topologies
-            .get(i)
-            .and_then(Option::as_ref)
-            .filter(|t| t.layout() == width)
-            .and_then(|t| BusTopology::try_from(t).ok());
-        let Some(topology) = placed.or_else(|| BusTopology::discrete(width)) else {
+    for bus in plugin {
+        let placed = bus.placement().and_then(|t| BusTopology::try_from(t).ok());
+        let Some(topology) = placed.or_else(|| BusTopology::discrete(bus.channels)) else {
             break;
         };
-        let role = if i == 0 { BusRole::Main } else { BusRole::Aux };
-        match buses.with(Bus { topology, role }) {
+        match buses.with(Bus {
+            topology,
+            role: bus.role,
+        }) {
             Some(more) => buses = more,
             None => break,
         }
@@ -1190,7 +1188,7 @@ mod render_tests {
 #[cfg(test)]
 mod declared_buses {
     use super::*;
-    use tutti_graph::Shape;
+    use tutti_graph::{BusRole, Shape};
     use tutti_plugin_types::{ChannelTopology, Speaker};
 
     fn width(n: u16) -> ChannelLayout {
@@ -1201,27 +1199,25 @@ mod declared_buses {
         ChannelTopology::new([Speaker::FrontLeft, Speaker::FrontRight])
     }
 
-    /// The plugin's buses are the node's, in bus order and with their
-    /// placement: a stereo main and a mono key. The first is `Main`; a count
-    /// without a topology (or one that disagrees with it) is `Discrete`, and
-    /// the shape's ports are every channel.
+    /// A plugin's buses are the node's, in order, each with the plugin's role
+    /// and placement: a stereo main, a mono sidechain and an aux. A bus
+    /// without a placement (or with one that disagrees with its width) is
+    /// `Discrete`, and the shape's ports are every channel.
     ///
-    /// Mutations (run), each failing this test: the topology filter on
-    /// `layout() == width` removed (the disagreeing bus keeps its two
-    /// speakers); `i == 0` -> `i == 1` for `Main`; `buses_of` reading
-    /// `outputs` for the input side.
+    /// Mutations (run), each failing this test: `PluginBus::placement`'s
+    /// width filter removed (the disagreeing bus keeps its two speakers); the
+    /// role taken as `Main` for the first bus and `Aux` for the rest (the
+    /// sidechain is lost); `buses_of` reading `outputs` for the input side.
     #[test]
-    fn a_plugins_buses_are_the_nodes_in_order_and_placed() {
+    fn a_plugins_buses_are_the_nodes_in_order_placed_and_with_their_roles() {
         let loaded = LoadedPlugin {
-            inputs: vec![width(2), width(1), width(3)],
-            outputs: vec![width(2)],
-            input_topology: vec![
-                Some(stereo()),
-                None,
+            inputs: vec![
+                PluginBus::new(width(2), BusRole::Main).placed(Some(stereo())),
+                PluginBus::new(width(1), BusRole::Sidechain),
                 // Declares two speakers for a three-channel bus.
-                Some(stereo()),
+                PluginBus::new(width(3), BusRole::Aux).placed(Some(stereo())),
             ],
-            output_topology: vec![Some(stereo())],
+            outputs: vec![PluginBus::main(width(2)).placed(Some(stereo()))],
             ..LoadedPlugin::default()
         };
         let declared = Declared::of(&loaded);
@@ -1238,7 +1234,7 @@ mod declared_buses {
             ins,
             [
                 (BusRole::Main, vec![Speaker::FrontLeft, Speaker::FrontRight]),
-                (BusRole::Aux, vec![Speaker::Discrete]),
+                (BusRole::Sidechain, vec![Speaker::Discrete]),
                 (BusRole::Aux, vec![Speaker::Discrete; 3]),
             ]
         );
@@ -1262,8 +1258,8 @@ mod declared_buses {
         assert!(none.buses_in.is_empty() && none.buses_out.is_empty());
 
         let many = LoadedPlugin {
-            inputs: vec![width(1); 5],
-            outputs: vec![width(2), width(20), width(2)],
+            inputs: vec![PluginBus::main(width(1)); 5],
+            outputs: [2, 20, 2].map(|n| PluginBus::main(width(n))).to_vec(),
             ..LoadedPlugin::default()
         };
         let declared = Declared::of(&many);

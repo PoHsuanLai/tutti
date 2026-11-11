@@ -855,6 +855,7 @@ list (normal and build edges; dev-dependencies may go anywhere).
   public signature, field or error, and no file but `read.rs` names `winnow`
   (`scripts/check-layout.sh`, like symphonia in `tutti-codec`). A test builds files from
   `tests/support`'s encoder written from the spec, not from the crate's own writer.
+  `MidiFile::to_clip` (doc 017 stage 6c) converts a format 0 or 1 SMF to a Clip File, its meta events to Flex Data (M2-116 section 3.3, Appendix B) and everything with no UMP form returned beside the clip as `Converted::dropped`, never lost silently.
 - `tutti-midi-hardware` keeps every module private but `test_support` (CI runs the
   per-module path gate on it) and re-exports none of `tutti-midi-runtime`'s sync
   types: `MidiClockDecoder`, `MtcDecoder` and `SmpteTimecode` are the runtime's.
@@ -1172,6 +1173,14 @@ read the `Cargo.toml`, grep for the type, run the probe.
 
 ## Rules that came from bugs
 
+- **A node that changes width declares its buses.** The graph never guesses a
+  dry path (a bypass, a mix, a lane on the mix): main buses of different widths
+  that name no placement have no pass and are refused (`PassError`,
+  `Editor::check_pass`; doc 013 "As built (B3)"). By index, the reverbs' mono dry
+  was heard on the left alone. A node reads its ports through the value it
+  declares, so the two cannot drift: a key is a `Sidechain` bus after the main
+  one (`tutti-nodes`' `Keyed`), a crossover's band 0 its main output
+  (`Channels::port`, `Channels::main_output`).
 - **One bundle walk:** `tutti_plugin_types::bundle` is the only code that
   knows the `Contents/<arch>/` layout.
   - `native_module_in_bundle` is for hosts.

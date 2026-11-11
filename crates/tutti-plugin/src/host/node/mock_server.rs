@@ -16,7 +16,7 @@ use tutti_plugin_ipc::{
 };
 use tutti_plugin_types::{
     ChannelLayout, EditorPresence, Features, LoadedPlugin, MaxBlock, ParamId, ParameterChanges,
-    ParameterInfo, PluginClass, PluginDescriptor, PluginTail, Prepare, SampleFormat,
+    ParameterInfo, PluginBus, PluginClass, PluginDescriptor, PluginTail, Prepare, SampleFormat,
 };
 use tutti_tempo::{Shape, TempoMap, TempoPoint};
 use tutti_transport::TempoReader;
@@ -198,8 +198,8 @@ pub(super) fn rig(label: &str) -> Rig {
             editor: EditorPresence::Absent,
         },
         loaded: LoadedPlugin {
-            inputs: vec![ChannelLayout::STEREO],
-            outputs: vec![ChannelLayout::STEREO],
+            inputs: vec![PluginBus::main(ChannelLayout::STEREO)],
+            outputs: vec![PluginBus::main(ChannelLayout::STEREO)],
             latency_samples: Samples::ZERO,
             tail: PluginTail::Unknown,
             features: Features::TRANSPORT

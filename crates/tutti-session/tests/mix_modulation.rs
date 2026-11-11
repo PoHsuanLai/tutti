@@ -12,8 +12,9 @@
 
 use tutti_graph::{Cx, ForkByClone, Io, Node, NodeKey, Prepare, Shape, Status};
 use tutti_modulation::Macro;
+use tutti_nodes::ReconcileError;
 use tutti_nodes::testing::Const;
-use tutti_session::{GraphSource, MixRef, ModTarget, ParamRef, Session};
+use tutti_session::{GraphSource, MixRef, ModRefusal, ModTarget, ParamRef, PassError, Session};
 use tutti_types::{ChannelLayout, Depth, InterleavedMut, Mix, SampleRate, Samples, UnitParam};
 
 const BLOCK: usize = 128;
@@ -194,4 +195,67 @@ fn a_removed_node_takes_its_mix_route_with_it() {
     assert!(s.remove(node));
     // Nothing is left declared on the node: no refusal, nothing unresolved.
     settle(&mut s);
+}
+
+/// `out = (in, in)`: a mono node with a stereo output that names no placement,
+/// so its dry path would be a guess (by index, the input on the left alone).
+#[derive(Clone)]
+struct Spread;
+
+impl Node for Spread {
+    fn shape(&self) -> Shape {
+        Shape::audio(ChannelLayout::MONO, ChannelLayout::STEREO)
+    }
+    fn prepare(&mut self, _: &Prepare) {}
+    fn process(&mut self, _: &Cx<'_>, mut io: Io<'_>) -> Status {
+        let (ins, mut outs) = io.split();
+        for c in 0..2 {
+            outs.get(c).copy_from_slice(ins.get(0));
+        }
+        Status::Modified
+    }
+    fn reset(&mut self) {}
+}
+
+/// **A route onto the mix of a node with no pass is refused**, naming the
+/// target and what the node would need to declare, as `Graph::set_mix` refuses
+/// the same mix: the lane would blend in a dry signal the graph would have to
+/// guess. The node itself runs.
+///
+/// Mutation (run): the reconciler's `Target::Mix` arm not asking
+/// `Editor::check_pass` → the lane is built and the declarations apply → the
+/// refusal is `None` and the assertion fails.
+#[test]
+fn a_route_onto_the_mix_of_a_node_with_no_pass_is_refused() {
+    let mut s = offline();
+    let g = s.graph();
+    let (a, _) = g.insert(Const::mono(A));
+    let (spread, _) = g.insert(ForkByClone(Spread));
+    g.set_source(spread, 0, GraphSource::Node(a, 0));
+    g.set_output_source(0, GraphSource::Node(spread, 0));
+    settle(&mut s);
+    assert!(
+        s.graph().set_mix(spread, Mix::new(0.5)).is_err(),
+        "set_mix refuses the same mix"
+    );
+
+    let mix = MixRef::of(spread);
+    let mut m = s.mods();
+    m.range(mix, 0.0, 1.0);
+    let source = m.macro_(0.5);
+    m.route(source, mix, Depth(0.5));
+    let target = m.key(mix);
+    for _ in 0..6 {
+        s.update();
+    }
+    assert_eq!(
+        s.mod_state().refusal(),
+        Some(&ModRefusal::Apply(ReconcileError::Unplaced {
+            target,
+            error: PassError::Unplaced {
+                inputs: 1,
+                outputs: 2
+            },
+        }))
+    );
 }

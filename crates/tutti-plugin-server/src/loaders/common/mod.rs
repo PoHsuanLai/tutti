@@ -1,35 +1,17 @@
 //! Shared helpers used by format-specific loaders.
 
-use tutti_plugin::server::{BusChannels, ChannelLayout, LoadedPlugin, PluginDescriptor};
+use tutti_plugin::server::{LoadedPlugin, PluginDescriptor};
 
 /// The two metadata snapshots every loaded plugin carries: the catalog
 /// [`PluginDescriptor`] (identity + native class) and the runtime
-/// [`LoadedPlugin`] (per-bus widths, latency, f64). Each loader stores one of
+/// [`LoadedPlugin`] (its buses, latency, f64). Each loader stores one of
 /// these and forwards the `descriptor()` / `loaded()` trait methods to it.
 #[derive(Debug, Clone, Default)]
 pub(crate) struct Meta {
     /// Catalog identity — name, vendor, unique id, native class. Fixed at load.
     pub descriptor: PluginDescriptor,
-    /// Runtime shape — per-bus channel widths, latency in `Samples`, tail, and
+    /// Runtime shape — the buses, latency in `Samples`, tail, and
     /// the declared feature flags. A loader refreshes fields here when the
     /// plugin reports a change, so this is not read-only after load.
     pub loaded: LoadedPlugin,
-}
-
-/// Build a [`BusChannels`] holding a single main bus of `layout`.
-///
-/// Takes a layout rather than a raw count so a caller that already has one
-/// (every FFI-inbound conversion produces a [`ChannelLayout`]) passes it
-/// straight through instead of degrading it to a `usize` for this function to
-/// rebuild. Callers holding only a count still pass it — the `Into` accepts
-/// `u8`/`u16`/`u32`/`usize`. Note there is deliberately no `From<i32>`, so a
-/// bare integer literal must be named (`ChannelLayout::STEREO`) or suffixed.
-// The module is reachable in a loaderless *test* build, because
-// `audio_pipeline`'s tests build a `Meta`. They do not build a `BusChannels`
-// through this, so it alone needs the narrower gate: a loader that builds a
-// bus list itself (CLAP asks the plugin per port, and the VST2 and VST3 host
-// crates build their own, so none of those uses it).
-#[cfg_attr(not(all(feature = "au", target_os = "macos")), allow(dead_code))]
-pub(crate) fn single_bus(layout: impl Into<ChannelLayout>) -> BusChannels {
-    vec![layout.into()]
 }

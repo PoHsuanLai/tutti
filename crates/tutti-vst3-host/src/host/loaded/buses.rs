@@ -1,7 +1,8 @@
 //! Bus configuration: the layout read back from the component, topologies, latency and tail.
 
 use super::*;
-use tutti_plugin_types::MainThread;
+use crate::host::instance::bus_layout;
+use tutti_plugin_types::{BusRole, MainThread, PluginBus, PluginBuses};
 
 impl Vst3Loaded {
     /// Reads the current processing latency directly from
@@ -111,38 +112,39 @@ impl Vst3Loaded {
         self.info = self.info.clone().f64_support(supports_f64);
     }
 
-    /// The channel topology of each **input** bus, as the plugin runs it.
-    /// See [`output_bus_topologies`](Self::output_bus_topologies).
+    /// The plugin's audio buses in `direction`, as it runs them.
     ///
-    /// Two named methods rather than one taking a direction, so a caller does
-    /// not need the crate's private `kInput`/`kOutput` constants and cannot
-    /// pass an `i32` that is neither.
-    pub fn input_bus_topologies(&self, main: &MainThread) -> Vec<Option<ChannelTopology>> {
-        self.bus_topologies(main, BusDirection::Input)
-    }
-
-    /// The channel topology of each **output** bus.
-    ///
-    /// Queried live from `getBusArrangement` rather than cached from
-    /// negotiation, because a plugin may restructure its buses after it. An
-    /// entry is `None` when the plugin's arrangement names a speaker this
-    /// vocabulary cannot, or when the query failed: both mean "cannot route
-    /// this bus by speaker". A bus whose arrangement is fully named yields
-    /// `Some`, and its width always equals the count reported beside it.
-    pub fn output_bus_topologies(&self, main: &MainThread) -> Vec<Option<ChannelTopology>> {
-        self.bus_topologies(main, BusDirection::Output)
-    }
-
-    pub(super) fn bus_topologies(
-        &self,
-        main: &MainThread,
-        direction: BusDirection,
-    ) -> Vec<Option<ChannelTopology>> {
-        let widths = self.plugin.audio_bus_channels(main, direction);
-        self.read_back_arrangements(main, direction, widths.len())
-            .into_iter()
-            .zip(widths)
-            .map(|(topology, width)| usable_topology(topology, width))
+    /// Each bus is its width as the last reconcile read it (the widths the
+    /// buffers are sized to), its arrangement queried live from
+    /// `getBusArrangement` (a plugin may restructure its buses after
+    /// negotiation; `None` when the arrangement names a speaker this
+    /// vocabulary cannot, or the query failed: both mean "cannot route this bus
+    /// by speaker"), and its role from `busType`: `kMain` is
+    /// [`BusRole::Main`], `kAux` (or a bus whose info cannot be read)
+    /// [`BusRole::Aux`]. VST3 marks no bus a sidechain.
+    pub fn buses(&self, main: &MainThread, direction: BusDirection) -> PluginBuses {
+        let widths = match direction {
+            BusDirection::Input => &self.info.input_bus_channels,
+            BusDirection::Output => &self.info.output_bus_channels,
+        };
+        let arrangements = self.read_back_arrangements(main, direction, widths.len());
+        widths
+            .iter()
+            .zip(arrangements)
+            .enumerate()
+            .map(|(i, (&width, arrangement))| {
+                let kind = self
+                    .plugin
+                    .bus_info(main, MediaType::Audio, direction, i as i32)
+                    .ok()
+                    .and_then(|bus| bus.bus_type());
+                let role = if kind == Some(crate::BusType::Main) {
+                    BusRole::Main
+                } else {
+                    BusRole::Aux
+                };
+                PluginBus::new(bus_layout(width), role).placed(usable_topology(arrangement, width))
+            })
             .collect()
     }
 

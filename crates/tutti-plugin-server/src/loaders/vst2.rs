@@ -616,7 +616,7 @@ mod tests {
             unreachable!("constructed as Vst2")
         };
         assert_eq!(p.loaded().latency_samples.get(), 777);
-        assert_eq!(p.loaded().inputs[0].count(), 4);
+        assert_eq!(p.loaded().inputs[0].channels.count(), 4);
         assert!(
             plugin.poll_async_events(&main_thread()).is_empty(),
             "consumed"
@@ -627,9 +627,9 @@ mod tests {
     ///
     /// The loader's own comment calls VST2 "single-bus", and this is what that
     /// claim means downstream: a host sizing buffers reads one width per side.
-    /// Asserting the *width* as well as the bus count is what fails if
-    /// `single_bus` is ever handed a count where a layout was meant — the two
-    /// are both integers, so a swap compiles.
+    /// Asserting the *width* as well as the bus count is what fails if the
+    /// input and output counts are swapped on their way to
+    /// `PluginBus::single`: both are integers, so a swap compiles.
     #[test]
     fn declared_channel_counts_arrive_as_one_bus_per_side() {
         let (p, _lock) = load_probe(&[
@@ -640,8 +640,8 @@ mod tests {
 
         assert_eq!(loaded.inputs.len(), 1, "VST2 has exactly one input bus");
         assert_eq!(loaded.outputs.len(), 1, "VST2 has exactly one output bus");
-        assert_eq!(loaded.inputs[0].count(), 2, "input width");
-        assert_eq!(loaded.outputs[0].count(), 2, "output width");
+        assert_eq!(loaded.inputs[0].channels.count(), 2, "input width");
+        assert_eq!(loaded.outputs[0].channels.count(), 2, "output width");
     }
 
     /// A width other than stereo survives the mapping.
@@ -656,8 +656,8 @@ mod tests {
         ]);
         let loaded = p.loaded();
 
-        assert_eq!(loaded.inputs[0].count(), 1, "mono in");
-        assert_eq!(loaded.outputs[0].count(), 4, "quad out");
+        assert_eq!(loaded.inputs[0].channels.count(), 1, "mono in");
+        assert_eq!(loaded.outputs[0].channels.count(), 4, "quad out");
     }
 
     /// Both MIDI directions reach `Features` from the host's own resolution.
@@ -769,16 +769,20 @@ mod tests {
     /// Speaker topology is empty for both sides.
     ///
     /// VST2 cannot be asked — the `VstSpeakerArrangement` struct is not in the
-    /// forked bindings — so empty lists claim nothing rather than asserting
-    /// a placement the format never reported.
+    /// forked bindings — so no bus claims a placement the format never
+    /// reported.
     #[test]
     fn no_speaker_topology_is_claimed() {
         let (p, _lock) = load_probe(&[("TUTTI_VST2_PROBE_OUTPUTS", "6")]);
         let loaded = p.loaded();
 
         assert!(
-            loaded.input_topology.is_empty() && loaded.output_topology.is_empty(),
-            "VST2 reports no speaker placement, so neither side may claim one"
+            loaded
+                .inputs
+                .iter()
+                .chain(&loaded.outputs)
+                .all(|bus| bus.topology.is_none()),
+            "VST2 reports no speaker placement, so no bus may claim one"
         );
     }
 

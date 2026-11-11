@@ -6,11 +6,10 @@ use super::Reaped;
 use crate::config::BridgeConfig;
 use crate::error::unexpected_message;
 use crate::protocol::{
-    BridgeMessage, BusChannels, ChannelLayout, HostMessage, LoadedPlugin, PluginDescriptor,
-    SampleFormat, StagedState,
+    BridgeMessage, HostMessage, LoadedPlugin, PluginDescriptor, SampleFormat, StagedState,
 };
 use crate::transport::control::{self as ipc, ControlStream};
-use crate::transport::shm::{AudioSlab, RING_SLOTS, SlabLayout, SlabWriter};
+use crate::transport::shm::{AudioSlab, SlabLayout, SlabWriter};
 use std::path::Path;
 use std::process::{Child, Command};
 use std::thread;
@@ -397,43 +396,22 @@ fn slab_layout_for(
     format: SampleFormat,
     max_buffer_size: usize,
 ) -> SlabLayout {
-    // Carry the plugin's per-bus layout so both processes agree how each
-    // direction's channels partition into buses. Loaders normally populate at
-    // least the main bus; an empty list means the plugin's shape was never
-    // determined. Reading it as "one flat range shared in place by both
-    // directions" would alias input and output and silently bypass the plugin,
-    // so an unknown shape gets an explicit stereo default instead.
-    let inputs = default_if_empty(&loaded.inputs);
-    let outputs = default_if_empty(&loaded.outputs);
-
-    SlabLayout {
-        // Sized to the largest chunk the node ships (`MAX_CHUNK`: one device
-        // callback, see the batcher), NOT to `config.max_buffer_size`. The two
-        // are different quantities: `max_buffer_size` (8192 by default) is
-        // what the *plugin* is told to size its own buffers for on
-        // `LoadPlugin`, whereas this is what crosses the shared region per
-        // chunk. `min` rather than a bare `MAX_CHUNK` so a host that
-        // deliberately configures a *smaller* buffer still gets a slab it
-        // cannot overrun (the node's chunk is capped at the same figure).
-        samples_per_channel: max_buffer_size.min(MAX_CHUNK),
+    // Sized to the largest chunk the node ships (`MAX_CHUNK`: one device
+    // callback, see the batcher), NOT to `config.max_buffer_size`. The two
+    // are different quantities: `max_buffer_size` (8192 by default) is
+    // what the *plugin* is told to size its own buffers for on
+    // `LoadPlugin`, whereas this is what crosses the shared region per
+    // chunk. `min` rather than a bare `MAX_CHUNK` so a host that
+    // deliberately configures a *smaller* buffer still gets a slab it
+    // cannot overrun (the node's chunk is capped at the same figure).
+    // The per-bus widths are carried so both processes agree how each
+    // direction's channels partition into buses.
+    SlabLayout::new(
+        max_buffer_size.min(MAX_CHUNK),
         format,
-        slots: RING_SLOTS as u32,
-        inputs,
-        outputs,
-    }
-}
-
-/// A plugin whose bus layout is unknown gets one stereo bus rather than nothing.
-///
-/// Stereo because it is what the overwhelming majority of plugins present; the
-/// assumption is stated as a bus, so no later code has to guess what an empty
-/// list meant.
-fn default_if_empty(buses: &BusChannels) -> BusChannels {
-    if buses.is_empty() {
-        vec![ChannelLayout::STEREO]
-    } else {
-        buses.clone()
-    }
+        loaded.input_widths(),
+        loaded.output_widths(),
+    )
 }
 
 fn setup_shm(
@@ -465,6 +443,8 @@ fn next_shm_name() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::protocol::ChannelLayout;
+    use crate::transport::shm::RING_SLOTS;
 
     /// A failed launch must not leave the subprocess running.
     ///
@@ -792,9 +772,15 @@ mod tests {
     }
 
     fn loaded(inputs: &[ChannelLayout], outputs: &[ChannelLayout]) -> LoadedPlugin {
+        let buses = |widths: &[ChannelLayout]| {
+            widths
+                .iter()
+                .map(|&w| tutti_plugin_types::PluginBus::main(w))
+                .collect()
+        };
         LoadedPlugin {
-            inputs: inputs.to_vec(),
-            outputs: outputs.to_vec(),
+            inputs: buses(inputs),
+            outputs: buses(outputs),
             ..Default::default()
         }
     }
@@ -844,18 +830,21 @@ mod tests {
         assert!(layout.input_ring_bytes() > layout.output_ring_bytes());
     }
 
-    /// A plugin whose bus layout was never determined (filename-fallback
-    /// discovery) gets an explicit stereo bus per direction.
+    /// A direction with no buses (an instrument's inputs) is one bus of no
+    /// channels at the slab, which refuses an empty list: it occupies no
+    /// bytes, and the output ring is sized as before.
     ///
-    /// Not merely a convenience: an empty list is *invalid* at the slab, since
-    /// it would otherwise encode "share one region in place". Defaulting here
-    /// keeps an undiscoverable plugin loadable without reviving that meaning.
+    /// Mutation (run): `SlabLayout::new` passing an empty list through → the
+    /// input list is empty → fails.
     #[test]
-    fn unknown_buses_default_to_stereo_per_direction() {
-        let layout = slab_layout_for(&loaded(&[], &[]), SampleFormat::Float32, DEFAULT_MAX_BUFFER);
-        assert_eq!(layout.inputs.len(), 1);
-        assert_eq!(layout.outputs.len(), 1);
-        assert_eq!(layout.input_channels(), 2);
+    fn a_direction_with_no_buses_is_one_bus_of_no_channels() {
+        let layout = slab_layout_for(
+            &loaded(&[], &[ChannelLayout::STEREO]),
+            SampleFormat::Float32,
+            DEFAULT_MAX_BUFFER,
+        );
+        assert_eq!(layout.inputs, vec![ChannelLayout::EMPTY]);
+        assert_eq!(layout.input_ring_bytes(), 0);
         assert_eq!(layout.output_channels(), 2);
     }
 

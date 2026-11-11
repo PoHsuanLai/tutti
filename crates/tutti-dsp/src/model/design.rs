@@ -18,7 +18,7 @@ pub struct Channels {
     pub output: ChannelLayout,
     /// Where the channels sit: what a node declares as its main buses, so the
     /// graph's dry path (mix, bypass) folds the input onto the outputs by
-    /// speaker, not by index.
+    /// speaker. The graph refuses a dry path it would have to guess.
     pub placement: Placement,
 }
 
@@ -35,13 +35,52 @@ impl Channels {
         }
     }
 
-    /// Channels by index, at no speaker: a crossover's bands.
+    /// The input's channels once per band, band-major (output
+    /// `band * input + channel`): a crossover's. Band 0 sits where the input
+    /// does, the main output; the further bands are not speaker feeds.
+    ///
+    /// # Panics
+    ///
+    /// If `input` times `bands` is wider than a layout holds.
     #[must_use]
-    pub const fn discrete(input: ChannelLayout, output: ChannelLayout) -> Self {
+    pub const fn bands(input: ChannelLayout, bands: u16) -> Self {
+        let Some(width) = input.count().checked_mul(bands) else {
+            panic!("bands wider than a layout holds");
+        };
         Self {
             input,
-            output,
-            placement: Placement::Discrete,
+            output: ChannelLayout::from_count(width),
+            placement: Placement::Bands,
+        }
+    }
+}
+
+impl Channels {
+    /// The output port of input channel `channel`'s output `output` (its band,
+    /// for a crossover): band-major, `output * input + channel`. The realization
+    /// writes through it ([`of_port`](Self::of_port) is its inverse), and a node
+    /// declares [`main_output`](Self::main_output) from the same order: output
+    /// 0's ports are the first `input`, so they are a bus.
+    #[must_use]
+    pub const fn port(&self, output: usize, channel: usize) -> usize {
+        output * self.input.count() as usize + channel
+    }
+
+    /// The `(output, channel)` port `port` carries: [`port`](Self::port)'s
+    /// inverse.
+    #[must_use]
+    pub const fn of_port(&self, port: usize) -> (usize, usize) {
+        let width = self.input.count() as usize;
+        (port / width, port % width)
+    }
+
+    /// The width of the main output: every output where the channels sit as
+    /// speakers, output 0's ports (`port(0, c)`) for bands.
+    #[must_use]
+    pub const fn main_output(&self) -> ChannelLayout {
+        match self.placement {
+            Placement::Speakers => self.output,
+            Placement::Bands => self.input,
         }
     }
 }
@@ -53,8 +92,9 @@ pub enum Placement {
     /// mono source is a centre, which the graph's fold sends to both sides of a
     /// stereo output (`Fold::between`).
     Speakers,
-    /// By index, at no speaker: an output that is not a speaker feed.
-    Discrete,
+    /// The output is the input's channels once per band ([`Channels::bands`]):
+    /// band 0 is the main output, at the input's speakers.
+    Bands,
 }
 
 /// The sizes a realization allocates for the worst case of a design: lines, taps,
@@ -143,4 +183,38 @@ pub trait Design: Clone + Send {
 
     /// An unprepared realization for this design. Control side; allocates.
     fn realization(&self) -> Self::Realization;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// **Output 0's ports are the main output, and `of_port` inverts `port`**,
+    /// for speakers and for bands: what a node declares as its main bus
+    /// (`main_output`, a prefix of the ports) is where the realization writes
+    /// output 0, so the graph's dry path and the node's band 0 are one place.
+    ///
+    /// Mutation (each run, each failed): `port` channel-major
+    /// (`channel * bands + output`, with `of_port` to match) → band 0 of a
+    /// stereo crossover is ports 0 and 2, not the main output's 0 and 1;
+    /// `main_output` the full width for bands → ports 2 and 3 are not output 0.
+    #[test]
+    fn output_zeros_ports_are_the_main_output() {
+        for channels in [
+            Channels::speakers(ChannelLayout::MONO, ChannelLayout::MONO),
+            Channels::speakers(ChannelLayout::STEREO, ChannelLayout::STEREO),
+            Channels::bands(ChannelLayout::MONO, 3),
+            Channels::bands(ChannelLayout::STEREO, 2),
+            Channels::bands(ChannelLayout::from_count(6), 4),
+        ] {
+            let width = usize::from(channels.input.count());
+            let main = usize::from(channels.main_output().count());
+            for port in 0..usize::from(channels.output.count()) {
+                let (output, channel) = channels.of_port(port);
+                assert_eq!(channels.port(output, channel), port, "{channels:?}");
+                assert!(channel < width, "{channels:?}");
+                assert_eq!(output == 0, port < main, "{channels:?}: port {port}");
+            }
+        }
+    }
 }

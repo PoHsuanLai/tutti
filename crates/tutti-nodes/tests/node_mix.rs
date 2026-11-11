@@ -21,8 +21,12 @@ use tutti_dsp::{FdnControls, FdnDesign, FreeverbControls, FreeverbDesign};
 use tutti_fixtures::noise;
 use tutti_graph::contract::drive;
 use tutti_graph::{IntoNode, Prepare, Solo};
-use tutti_nodes::{DelayLineNode, DesignNode, ModDelayNode, PhaserNode};
-use tutti_types::{ChannelLayout, Feedback, Mix, SampleRate, Samples, Seconds};
+use tutti_nodes::{
+    CompressorNode, CrossoverNode, DelayLineNode, DesignNode, GateNode, ModDelayNode, PhaserNode,
+};
+use tutti_types::{
+    ChannelLayout, CompressionRatio, Db, Feedback, Hz, Mix, SampleRate, Samples, Seconds,
+};
 
 const RATE: SampleRate = SampleRate(48_000.0);
 const BLOCK: usize = 64;
@@ -242,8 +246,9 @@ fn the_chorus_flanger_and_phaser_are_blended_by_the_graph() {
 ///
 /// Mutations (run): every reverb's shape declaring one frame of latency it does
 /// not have (the graph's aligned input one frame late) fails the DRY comparison
-/// and the formula; the reverbs' channels `Placement::Discrete` (the dry on the
-/// left only, paired by index) fails DRY on the right. (A residual dry or a scaled wet in the node cannot show here,
+/// and the formula; the reverbs' main buses left as `Shape::audio` builds them (mono
+/// into stereo naming no placement) → the graph refuses their mix
+/// (`MixError::Unplaced`) and the test fails at its first `set_mix`. (A residual dry or a scaled wet in the node cannot show here,
 /// where WET is the node compared with itself: `reverb_node.rs`'s
 /// `the_node_is_the_room_alone` pins the analytic wet.)
 #[test]
@@ -311,4 +316,57 @@ fn a_mix_move_on_a_delay_ramps_across_the_block() {
             "channel {c}: the block ends fully dry"
         );
     }
+}
+
+/// **A keyed node and a split are blended on their main bus.** The gate and the
+/// compressor take their audio, then a key as wide (a `Sidechain` bus): the dry
+/// side of their mix is the audio, never the key. The crossover writes its
+/// input's channels once per band, band-major: the dry side is band 0, the
+/// further bands silent. Each declares it; built from widths alone, each would
+/// have no pass and the graph would refuse its mix.
+///
+/// Mutation (each run, each failed): the gate's or the compressor's
+/// `with_buses_in(keyed(..))` / `with_buses_out(..)` removed → `set_mix`
+/// refuses (`MixError::Unplaced`, four in and two out naming no placement);
+/// the crossover's band 0 declared at the full output width
+/// (`Placement::Bands => self.channels.output`) → the mono crossover's centre
+/// folds onto both bands and band 1 at DRY is the input. (The stereo one cannot
+/// show that mutation: four channels are quad, and a stereo pair folds onto its
+/// front pair, band 0, either way.)
+#[test]
+fn a_keyed_node_and_a_split_are_blended_on_their_main_bus() {
+    let s = Seconds::new;
+    check_io(
+        "gate (stereo, keyed)",
+        &|| GateNode::stereo(Db(-20.0), s(0.001), s(0.01), s(0.05)),
+        4,
+        2,
+        0,
+    );
+    check_io(
+        "compressor (stereo, keyed)",
+        &|| CompressorNode::stereo(Db(-20.0), CompressionRatio::new(4.0), s(0.005), s(0.05)),
+        4,
+        2,
+        0,
+    );
+    check_io(
+        "crossover (stereo, two bands)",
+        &|| CrossoverNode::new(ChannelLayout::STEREO, &[Hz(1_000.0)]).expect("one split"),
+        2,
+        4,
+        0,
+    );
+    // Mono: band 0 is the input at DRY, band 1 silent (not a centre on both).
+    let x = vec![noise(90, FRAMES)];
+    let dry = rendered(
+        &|| CrossoverNode::new(ChannelLayout::MONO, &[Hz(1_000.0)]).expect("one split"),
+        &x,
+        Mix::DRY,
+    );
+    assert_eq!(bits(&dry[0]), bits(&x[0]), "mono crossover: band 0 at DRY");
+    assert!(
+        dry[1].iter().all(|&v| v == 0.0),
+        "mono crossover: band 1 at DRY is silent"
+    );
 }
